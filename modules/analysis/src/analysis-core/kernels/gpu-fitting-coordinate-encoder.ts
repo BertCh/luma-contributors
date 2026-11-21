@@ -99,6 +99,12 @@ export type GPUFittingCoordinateEncoderProps<
     | {encoding: 'spherical-harmonics'; maximumDegree: number}
   );
 
+/** Union keys retain options specific to each encoding branch. */
+type EncoderPropKeys<Props> = Props extends unknown ? keyof Props : never;
+type EncoderAllowedKeys = EncoderPropKeys<
+  GPUFittingCoordinateEncoderProps<GraphDataView | GraphVectorView>
+>;
+
 /**
  * Fourier features [cos(2 pi Bx), sin(2 pi Bx)] interleaved per frequency (Tancik et al. 2020), or
  * orthonormal real spherical harmonics through maximumDegree. Harmonics are ordered l*l+l+m,
@@ -110,8 +116,12 @@ export type GPUFittingCoordinateEncoderProps<
  * phase magnitudes beyond 8192 radians are invalid, protecting float32 trig argument reduction.
  * Coordinates, mask and outputs may be chunked at identical source-row boundaries. Coordinate
  * chunks hold rows * dimensions scalars; feature chunks hold rows * featureCount scalars.
- * Every chunk must fit one device binding. Frequencies stay packed. The fitting row/work budgets
- * are unchanged; they apply to the total source rows.
+ * Every row chunk must fit one device storage binding and contain at most 2^32 - 1 scalar
+ * elements; row chunks have no additional 128 MiB fitting cap. Frequencies stay packed, capped
+ * at 128 MiB and the device binding limit. Total source rowCount across all chunks is at most
+ * 2^24 (16,777,216), including masked rows. Total encoding work is at most 5,000,000,000:
+ * rowCount * featureCount * dimensions for Fourier, or rowCount * featureCount *
+ * (maximumDegree + 1) for harmonics. Chunking does not increase either total budget.
  */
 export class GPUFittingCoordinateEncoder<
   Props extends GPUFittingCoordinateEncoderProps<
@@ -126,37 +136,83 @@ export class GPUFittingCoordinateEncoder<
   readonly estimatedCommandNodeCount: number;
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: Props) {
+  constructor(input: Props & Record<Exclude<keyof Props, EncoderAllowedKeys>, never>) {
+    let props: Props = input;
+    const allowedKeys = new Set([
+      'id',
+      'rowCount',
+      'coordinates',
+      'spatialContext',
+      'mask',
+      'output',
+      'encoding',
+      'dimensions',
+      'frequencies',
+      'frequencyCount',
+      'maximumDegree'
+    ]);
+    const suppliedKeys = new Set<PropertyKey>();
+    // Inspect names, never getter values: class accessors are non-enumerable.
+    let prototype: object | null = props;
+    while (prototype !== null && prototype !== Object.prototype) {
+      for (const key of Reflect.ownKeys(prototype)) {
+        if (prototype !== props && key === 'constructor') continue;
+        suppliedKeys.add(key);
+      }
+      prototype = Object.getPrototypeOf(prototype);
+    }
+    const identity = Object.getOwnPropertyDescriptor(props, 'id');
+    const validationId =
+      identity && 'value' in identity && typeof identity.value === 'string'
+        ? identity.value
+        : 'fitting-coordinate-encoder';
+    for (const key of suppliedKeys) {
+      validateRequirement(
+        validationId,
+        typeof key === 'string' && allowedKeys.has(key),
+        `unknown prop ${String(key)}; use a declared GPUFittingCoordinateEncoder option`
+      );
+    }
+    const encoding = props.encoding;
+    validateRequirement(
+      validationId,
+      encoding === 'fourier' || encoding === 'spherical-harmonics',
+      `encoding must be fourier or spherical-harmonics; received ${encoding}`
+    );
+    const branchKeys = new Set(
+      encoding === 'fourier' ? ['dimensions', 'frequencies', 'frequencyCount'] : ['maximumDegree']
+    );
+    for (const key of suppliedKeys) {
+      if (['dimensions', 'frequencies', 'frequencyCount', 'maximumDegree'].includes(String(key))) {
+        validateRequirement(
+          validationId,
+          branchKeys.has(String(key)),
+          `prop ${String(key)} is not supported for encoding ${encoding}; use an option for the selected branch`
+        );
+      }
+    }
+    const commonProps = snapshotConstructionFields(props, [
+      'id',
+      'rowCount',
+      'coordinates',
+      'spatialContext',
+      'mask',
+      'output'
+    ]);
+    const encodingProps = snapshotConstructionFields(props, [...branchKeys] as (keyof Props)[]);
     props = Object.freeze({
-      ...snapshotConstructionFields(props, [
-        'id',
-        'rowCount',
-        'coordinates',
-        'spatialContext',
-        'mask',
-        'output',
-        'encoding'
-      ]),
-      ...(props.encoding === 'fourier'
-        ? {
-            dimensions: props.dimensions,
-            frequencies: props.frequencies,
-            frequencyCount: props.frequencyCount
-          }
-        : {maximumDegree: props.maximumDegree}),
+      ...commonProps,
+      ...encodingProps,
+      encoding,
       spatialContext:
-        props.spatialContext && snapshotConstructionSpatialContext(props.spatialContext),
-      output: snapshotConstructionFields(props.output, ['features', 'validity'])
+        commonProps.spatialContext &&
+        snapshotConstructionSpatialContext(commonProps.spatialContext),
+      output: snapshotConstructionFields(commonProps.output, ['features', 'validity'])
     }) as Props;
     this.id = props.id ?? 'fitting-coordinate-encoder';
     this.props = props as Props & GPUFittingCoordinateEncoderProps<Props['coordinates']>;
     const {id} = this;
     validateCapacity(id, 'rowCount', props.rowCount, 0, GPU_FITTING_MAXIMUM_ROW_COUNT);
-    validateRequirement(
-      id,
-      props.encoding === 'fourier' || props.encoding === 'spherical-harmonics',
-      'encoding must be fourier or spherical-harmonics'
-    );
     this.spatialContext = snapshotConstructionSpatialContext(
       resolveGPUSpatialContext(id, props.spatialContext, {
         coordinateSpaces: [props.encoding === 'fourier' ? 'planar' : 'longitude-latitude'],

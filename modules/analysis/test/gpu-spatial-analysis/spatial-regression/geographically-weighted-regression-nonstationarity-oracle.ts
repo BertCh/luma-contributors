@@ -10,6 +10,7 @@ import {
   getSwapOrNotRounds
 } from '../../../src/analysis-core/kernels/permutation-shuffle';
 import {computeGeographicallyWeightedRegressionOnCPU} from './geographically-weighted-regression-oracle';
+import {validateCapacity} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 
 /** Scene of the non-stationarity specs. */
 export type NonstationarityScene = {
@@ -17,6 +18,7 @@ export type NonstationarityScene = {
   predictors: Float32Array;
   predictorCount: number;
   response: Float32Array;
+  mask?: Uint32Array;
 };
 
 function createRandom(seed: number): () => number {
@@ -86,30 +88,30 @@ export function getLocalEstimateStandardDeviations(
   coefficientCount: number
 ): number[] {
   const rows = coefficients.length / coefficientCount;
-  const sums = new Array<number>(coefficientCount).fill(0);
-  const squares = new Array<number>(coefficientCount).fill(0);
-  let count = 0;
+  const retained: number[][] = [];
   for (let row = 0; row < rows; row++) {
     const values = coefficients.slice(row * coefficientCount, (row + 1) * coefficientCount);
     if (!values.every(Number.isFinite)) {
       continue;
     }
-    count++;
-    values.forEach((value, column) => {
-      sums[column] += value;
-      squares[column] += value * value;
-    });
+    retained.push(values);
   }
-  return sums.map((sum, column) =>
-    count > 0 ? Math.sqrt(Math.max(squares[column] / count - (sum / count) ** 2, 0)) : Number.NaN
-  );
+  return Array.from({length: coefficientCount}, (_, column) => {
+    if (!retained.length) return NaN;
+    const anchor = retained[0][column];
+    const differences = retained.map(values => values[column] - anchor);
+    const mean = differences.reduce((sum, value) => sum + value, 0) / differences.length;
+    return Math.sqrt(
+      differences.reduce((sum, value) => sum + (value - mean) ** 2, 0) / differences.length
+    );
+  });
 }
 
 /** Result of {@link computeNonstationarityOnCPU}. */
 export type NonstationarityOracleResult = {
   /** Row 0 is the observed run, rows `1..P` the permutations; each holds one value per coefficient. */
   standardDeviations: number[][];
-  /** Per coefficient: `(g + 1) / (P + 1)` with `g = #{sd_p >= sd_observed}`. */
+  /** Per coefficient: `(g + 1) / (P + 1)` with `g = #{sd_p >= sd_observed}`; NaN unless every spread is defined. */
   pseudoPValues: number[];
   exceedances: number[];
 };
@@ -118,7 +120,9 @@ export type NonstationarityOracleResult = {
  * Float64 reference of `GPUGeographicallyWeightedRegressionNonstationarityTest`: every permutation
  * physically rearranges `(X, y)` among the locations by the swap-or-not assignment and refits with the
  * float64 `GPUGeographicallyWeightedRegression` oracle at the same fixed bandwidth, then compares
- * the standard deviations of the local estimates.
+ * the standard deviations of the local estimates. Throws when permutations is not a positive
+ * integer. Undefined observed or requested permuted spreads make the corresponding exceedance
+ * count and pseudo p-value NaN.
  */
 export function computeNonstationarityOnCPU(
   scene: NonstationarityScene,
@@ -126,9 +130,41 @@ export function computeNonstationarityOnCPU(
   permutations: number,
   seed: number
 ): NonstationarityOracleResult {
-  const {positions, predictors, predictorCount, response} = scene;
+  validateCapacity('computeNonstationarityOnCPU', 'permutations', permutations, 1);
+  const {predictorCount} = scene;
+  const retained = Array.from({length: scene.response.length}, (_, row) => row).filter(
+    row =>
+      (!scene.mask || scene.mask[row] !== 0) &&
+      Number.isFinite(scene.response[row]) &&
+      Number.isFinite(scene.positions[2 * row]) &&
+      Number.isFinite(scene.positions[2 * row + 1]) &&
+      Array.from(
+        {length: predictorCount},
+        (_, column) => scene.predictors[row * predictorCount + column]
+      ).every(Number.isFinite)
+  );
+  const positions = Float32Array.from(
+    retained.flatMap(row => [scene.positions[2 * row], scene.positions[2 * row + 1]])
+  );
+  const predictors = Float32Array.from(
+    retained.flatMap(row =>
+      Array.from(
+        {length: predictorCount},
+        (_, column) => scene.predictors[row * predictorCount + column]
+      )
+    )
+  );
+  const response = Float32Array.from(retained.map(row => scene.response[row]));
   const rows = response.length;
   const coefficientCount = predictorCount + 1;
+  const observed = computeGeographicallyWeightedRegressionOnCPU({
+    positions,
+    predictors,
+    predictorCount,
+    response,
+    settings
+  });
+  const fixedSettings = {...settings, bandwidths: [observed.selectedValue]};
   const run = (assignment: readonly number[]) => {
     const permutedPredictors = new Float32Array(predictors.length);
     const permutedResponse = new Float32Array(rows);
@@ -145,17 +181,21 @@ export function computeNonstationarityOnCPU(
       predictors: permutedPredictors,
       predictorCount,
       response: permutedResponse,
-      settings
+      settings: fixedSettings
     });
     return getLocalEstimateStandardDeviations(result.coefficients, coefficientCount);
   };
-  const identity = Array.from({length: rows}, (_, row) => row);
-  const standardDeviations = [run(identity)];
+  const standardDeviations = [
+    getLocalEstimateStandardDeviations(observed.coefficients, coefficientCount)
+  ];
   for (let permutation = 1; permutation <= permutations; permutation++) {
     standardDeviations.push(run(getNonstationarityAssignment(rows, seed, permutation)));
   }
-  const exceedances = standardDeviations[0].map(
-    (observed, column) => standardDeviations.slice(1).filter(row => row[column] >= observed).length
+  const exceedances = standardDeviations[0].map((observed, column) =>
+    Number.isFinite(observed) &&
+    standardDeviations.slice(1).every(row => Number.isFinite(row[column]))
+      ? standardDeviations.slice(1).filter(row => row[column] >= observed).length
+      : NaN
   );
   return {
     standardDeviations,

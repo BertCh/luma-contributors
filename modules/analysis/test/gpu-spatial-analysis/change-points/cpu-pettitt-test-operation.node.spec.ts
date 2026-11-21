@@ -13,8 +13,14 @@ import {
   GPUPettittTestOperation,
   type PettittTestOperationProps
 } from '../../../src/gpu-spatial-analysis/change-points/gpu-pettitt-test-operation';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {GPUPettittTest} from '../../../src/gpu-spatial-analysis/change-points/gpu-pettitt-test';
+import {WgslExec, WgslParser, WgslReflect} from 'wgsl_reflect';
 import {createOperationTestViewGetter} from '../../utils/statistics-dynamics-operation-test-utils';
+import {computeMultipleTestingAdjustmentOnCPU} from '../../../src/gpu-spatial-analysis/multiple-testing/cpu-multiple-testing-adjustment-operation';
 
 const PROPS: PettittTestOperationProps = {
   id: 'pettitt-check',
@@ -73,7 +79,89 @@ it('rank prefixes agree with exhaustive cross-split comparisons, ties, gaps and 
     // Hand computation: K=6, n=5, p=2 exp(-216/150).
     expect(result.pValues[0]).toBeCloseTo(0.4738555174, 6);
     expect(result.pValues[1]).toBe(1);
-    expect(result.pValues[2]).toBe(1);
+    expect(result.pValues[2]).toBeNaN();
+  }
+});
+
+it('DGN-01 excludes untested cells from Pettitt to Bonferroni and keeps tested constants', () => {
+  for (const missing of [
+    new Array<number>(12).fill(NaN),
+    [2, ...new Array<number>(11).fill(NaN)]
+  ]) {
+    const result = computePettittTestOnCPU(
+      Float32Array.from([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, ...missing]),
+      {cellCount: 2, sliceCount: 12, layout: 'cell-major'}
+    );
+    const adjusted = computeMultipleTestingAdjustmentOnCPU(result.pValues, 'bonferroni');
+    // Six-by-six cross-split comparisons give K=36; p=2 exp(-6*36²/(12³+12²)).
+    expect(Number.isFinite(adjusted.adjustedPValues[0])).toBe(true);
+    expect(adjusted.adjustedPValues[0]).toBeCloseTo(0.03140780113025614, 7);
+    expect(adjusted.adjustedPValues[1]).toBeNaN();
+    expect(Array.from(adjusted.effectiveFamilySize)).toEqual([1]);
+    expect(Array.from(adjusted.adjustedPValues, value => Number(value <= 0.05))).toEqual([1, 0]);
+  }
+  const constant = computePettittTestOnCPU(new Float32Array(12).fill(3), {
+    cellCount: 1,
+    sliceCount: 12,
+    layout: 'cell-major'
+  });
+  expect(Array.from(constant.pValues)).toEqual([1]);
+  expect(
+    Array.from(
+      computeMultipleTestingAdjustmentOnCPU(constant.pValues, 'bonferroni').effectiveFamilySize
+    )
+  ).toEqual([1]);
+});
+
+it('DGN-01 executes emitted Pettitt WGSL before Bonferroni', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const getView = createOperationTestViewGetter(graph, {
+      values: {format: 'float32', length: 24},
+      statistic: {format: 'uint32', length: 2},
+      changeSlice: {format: 'uint32', length: 2},
+      pValues: {format: 'float32', length: 2}
+    });
+    const kernel = getGPUCommandNodeKernelSources(
+      new GPUPettittTest({
+        values: getView<'float32'>('values'),
+        cellCount: 2,
+        sliceCount: 12,
+        layout: 'cell-major',
+        output: {
+          statistic: getView<'uint32'>('statistic'),
+          changeSlice: getView<'uint32'>('changeSlice'),
+          pValues: getView<'float32'>('pValues')
+        }
+      }).getCommandNodes(graph)
+    )[0];
+    const values = new Float32Array(24).fill(NaN);
+    values.fill(0, 0, 6);
+    values.fill(1, 6, 12);
+    const pValues = new Float32Array(2);
+    const memory: Record<string, Float32Array | Uint32Array> = {
+      values,
+      pValues,
+      statistic: new Uint32Array(2),
+      changeSlice: new Uint32Array(2)
+    };
+    const bindings: Record<number, Record<number, Float32Array | Uint32Array>> = {0: {}};
+    for (const binding of new WgslReflect(kernel.source).storage)
+      bindings[binding.group][binding.binding] = memory[binding.name];
+    new WgslExec(new WgslParser().parse(kernel.source)).dispatchWorkgroups('main', 1, bindings, {
+      constants: kernel.constants
+    });
+    expect(Array.from(memory['statistic'])).toEqual([36, 0]);
+    expect(Array.from(memory['changeSlice'])).toEqual([6, 0xffffffff]);
+    const adjusted = computeMultipleTestingAdjustmentOnCPU(pValues, 'bonferroni');
+    expect(Number.isFinite(adjusted.adjustedPValues[0])).toBe(true);
+    expect(adjusted.adjustedPValues[0]).toBeCloseTo(0.03140780113025614, 7);
+    expect(adjusted.adjustedPValues[1]).toBeNaN();
+    expect(Array.from(adjusted.effectiveFamilySize)).toEqual([1]);
+    expect(Array.from(adjusted.adjustedPValues, value => Number(value <= 0.05))).toEqual([1, 0]);
+  } finally {
+    device.destroy();
   }
 });
 
@@ -95,7 +183,7 @@ it('supports series above the GPU private-array limit and rejects inconsistent v
   ).toThrow(/values length/);
 });
 
-it('validates CPU construction and delegates GPU shape and limit checks to contributor construction', () => {
+it('validates CPU and GPU construction with their respective limits', () => {
   for (const Operation of [CPUPettittTestOperation, GPUPettittTestOperation]) {
     expect(() => new Operation({...PROPS, output: {...PROPS.output, statistic: 'values'}})).toThrow(
       /^pettitt-check outputs.statistic/
@@ -105,7 +193,7 @@ it('validates CPU construction and delegates GPU shape and limit checks to contr
     /^pettitt-check cellCount/
   );
   expect(() => new GPUPettittTestOperation({...PROPS, cellCount: 0})).toThrow(
-    /^pettitt-check outputs.statistic.length/
+    /^pettitt-check cellCount/
   );
   expect(
     () =>

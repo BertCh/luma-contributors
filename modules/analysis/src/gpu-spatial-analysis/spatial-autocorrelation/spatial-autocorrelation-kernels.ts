@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {getConditionalPopulationConstantNodes} from './conditional-population-constants';
 
 import {
   createTransientView,
@@ -87,7 +88,7 @@ export type SpatialAutocorrelationInputProps = {
 export type SpatialAutocorrelationInputs<Parameters> = {
   nodes: GPUCommandNode<Parameters>[];
   /**
-   * `rows + 6` floats: centered values `x - mean` (quiet NaN for rows outside the analysis)
+   * `rows + 10` floats: centered values `x - mean` (quiet NaN for rows outside the analysis)
    * followed by the moments `[n, mean, variance, sumOfSquares, islandCount, residualMean]`.
    * `residualMean` is internal to the centering passes (see
    * {@link SPATIAL_AUTOCORRELATION_RESIDUAL_MEAN_SLOT}).
@@ -226,7 +227,7 @@ export function validateSpatialAutocorrelationBindings<Parameters>(
     graph.device,
     props.id,
     'statistics scratch',
-    (props.values.length + 6) * 4,
+    (props.values.length + 10) * 4,
     'reduce packed values rows or request larger device bindings'
   );
 }
@@ -364,7 +365,7 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
     blockCount
   );
   const squarePartials = createTransientView(graph, `${id}-square-partials`, 'float32', blockCount);
-  const statistics = createTransientView(graph, `${id}-statistics`, 'float32', rows + 6);
+  const statistics = createTransientView(graph, `${id}-statistics`, 'float32', rows + 10);
   const counts = props.globalCounts ?? createTransientView(graph, `${id}-counts`, 'uint32', 2);
   const rowStates = hasIslandPass
     ? createTransientView(graph, `${id}-row-states`, 'uint32', rows)
@@ -785,5 +786,17 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
   }`
     })
   );
+  if (operation === 'GPULocalMoran' || operation === 'GPUHotSpotAnalysis')
+    nodes.push(
+      ...getConditionalPopulationConstantNodes(
+        graph,
+        id,
+        rows,
+        values,
+        statistics,
+        counts,
+        parameters
+      )
+    );
   return {nodes, statistics, counts};
 }

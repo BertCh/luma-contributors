@@ -3,7 +3,9 @@
 
 // GPUArealInterpolation: source zones (muted) re-aggregated onto different target zones. The
 // operation writes source-target overlap weights; GPUSpatialLag applies them to the source values,
-// and the per-target result is expanded to cells for drawing.
+// and the per-target result is expanded to cells for drawing. The service areas are clipped to the
+// tract footprint, so both sides of the curtain cover the same land, and their boundaries are drawn
+// over the tracts.
 
 import {
   GPUArealInterpolation,
@@ -11,8 +13,9 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {parameters} from './areal-interpolation.parameters';
-import {createRunGrid} from './support/grid';
+import {createRunGrid, type RunGrid} from './support/grid';
 import {makeRandom} from '../../../demos/kit';
+import {findPolygonAt} from '../../pick';
 import {createTracts} from '../../inputs';
 import {
   addTractZones,
@@ -22,6 +25,33 @@ import {
   createVoronoiZones
 } from './support/zones';
 
+const NO_ZONE = 0xffffffff;
+/** Service areas end this far across the world, so part of the city has no target zone. */
+const COVERAGE_WEST = 0.25;
+
+/** Boundary segments (x0, y0, x1, y1) between cells of different zones, neither side empty. */
+function getZoneBoundaries(grid: RunGrid, zones: Uint32Array): Float32Array {
+  const segments: number[] = [];
+  const {columns, rows, cellSize, centers} = grid;
+  const half = cellSize / 2;
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const cell = row * columns + column;
+      const zone = zones[cell];
+      if (zone === NO_ZONE) continue;
+      const x = centers[cell * 2];
+      const y = centers[cell * 2 + 1];
+      const right = column + 1 < columns ? zones[cell + 1] : NO_ZONE;
+      const below = row + 1 < rows ? zones[cell + columns] : NO_ZONE;
+      if (right !== NO_ZONE && right !== zone)
+        segments.push(x + half, y - half, x + half, y + half);
+      if (below !== NO_ZONE && below !== zone)
+        segments.push(x - half, y - half, x + half, y - half);
+    }
+  }
+  return Float32Array.from(segments);
+}
+
 export default defineOperationRun({
   parameters,
   caption:
@@ -29,18 +59,31 @@ export default defineOperationRun({
   createInputs: ({random, world}) => {
     const grid = createRunGrid(world, 64);
     const tracts = createTracts(random, world, 8);
-    return {grid, tracts, world, tractCells: countTractCells(grid, tracts)};
+    // Cells inside any tract: the land both zone systems share.
+    const covered = new Uint8Array(grid.columns * grid.rows);
+    for (let cell = 0; cell < covered.length; cell++) {
+      const x = grid.centers[cell * 2];
+      const y = grid.centers[cell * 2 + 1];
+      covered[cell] =
+        findPolygonAt(tracts.vertices, tracts.triangleIndices, tracts.triangleOwners, x, y) >= 0
+          ? 1
+          : 0;
+    }
+    return {grid, tracts, world, covered, tractCells: countTractCells(grid, tracts)};
   },
-  build(builder, {grid, tracts, world, tractCells}, current) {
+  build(builder, {grid, tracts, world, covered, tractCells}, current) {
     const target = createVoronoiZones(
       makeRandom(100 + current.targetZoneCount),
       grid,
       world,
       current.targetZoneCount
     );
-    // The service area stops partway across the tract window, making partial coverage explicit.
+    // Service areas cover the city only, and stop partway across it from the west, so part of
+    // the tract population has no target zone (partial coverage).
     for (let cell = 0; cell < target.zones.length; cell++) {
-      if (grid.centers[cell * 2] < world.width * 0.4) target.zones[cell] = 0xffffffff;
+      if (!covered[cell] || grid.centers[cell * 2] < world.width * COVERAGE_WEST) {
+        target.zones[cell] = NO_ZONE;
+      }
     }
     const capacity = Math.min(tracts.count * target.zoneCount, grid.columns * grid.rows);
     const sourceZones = addTractZones(builder, grid, tracts);
@@ -121,7 +164,12 @@ export default defineOperationRun({
           'result-raster',
           isExtensive ? targetDivisors : undefined
         ),
-        rangeMaximum
+        rangeMaximum,
+        targetBoundaries: builder.upload(
+          'target-boundaries',
+          'float32x4',
+          getZoneBoundaries(grid, target.zones)
+        )
       }
     };
   },
@@ -130,7 +178,7 @@ export default defineOperationRun({
   interaction: {
     kind: 'swipe',
     hint: 'swipe tracts and areas',
-    rest: [0.4, 0.5],
+    rest: [0.5, 0.5],
     resolve: (pointer, {values}) => ({
       curtain: pointer.x,
       glyphs: [{shape: 'curtain', x: pointer.x}],
@@ -138,7 +186,7 @@ export default defineOperationRun({
     })
   },
   draw: ({inputs, outputs, values, interaction, world}) => {
-    const curtain = values.show === 1 ? (interaction.curtain ?? world.width * 0.4) : world.width;
+    const curtain = values.show === 1 ? (interaction.curtain ?? world.width * 0.5) : world.width;
     const range = [0, outputs.rangeMaximum * 0.5] as const;
     return [
       {
@@ -158,6 +206,12 @@ export default defineOperationRun({
               rows: inputs.grid.rows,
               range,
               clip: {side: 'right' as const, x: curtain}
+            },
+            {
+              layer: 'lines' as const,
+              segments: outputs.targetBoundaries,
+              color: [1, 1, 1, 1] as const,
+              alpha: 0.55
             }
           ]
         : [])

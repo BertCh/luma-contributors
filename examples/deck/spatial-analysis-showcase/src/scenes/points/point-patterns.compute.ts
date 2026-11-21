@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGlobalEnvelopeProbability} from './point-patterns-probability';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -1438,14 +1439,16 @@ export async function createPointPatterns(
       'globalTest',
       `${statistic}: ${result.statistic.toFixed(3)} ${unit}; conservative p = ${result.pValue.toFixed(3)} (${result.simulationCount} simulations, resolution ${result.pResolution.toFixed(3)})${interval}`
     );
+    const pValue = getGlobalEnvelopeProbability(result.pValue, result.simulationCount);
+    const pInterval = result.pInterval?.map(value =>
+      getGlobalEnvelopeProbability(value, result.simulationCount)
+    );
     const tieBoundsStraddleLevel = Boolean(
-      result.pInterval &&
-        result.pInterval[0] <= significanceLevel &&
-        significanceLevel < result.pInterval[1]
+      pInterval && pInterval[0] <= significanceLevel && significanceLevel < pInterval[1]
     );
     ctx.setReadout(
       'globalDecision',
-      `${tieBoundsStraddleLevel ? 'Tie bounds straddle α; conservative result does not reject' : result.pValue <= significanceLevel ? 'Reject' : 'Do not reject'} at α = ${significanceLevel.toFixed(2)}; global test over the full radius range`
+      `${tieBoundsStraddleLevel ? 'Tie bounds straddle α; conservative result does not reject' : pValue <= significanceLevel ? 'Reject' : 'Do not reject'} at α = ${significanceLevel.toFixed(2)}; global test over the full radius range`
     );
   }
 
@@ -1860,7 +1863,9 @@ export async function createPointPatterns(
     const options = ctx.options;
     const maximumDistance = options.maximumDistance;
     const parameterBounds = options.window === 'rectangle' ? bounds : 'study-window';
-    neighborParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: options.radius}));
+    neighborParameters.write(
+      getGPUNeighborSearchParameterValues({bounds, searchRadius: options.radius})
+    );
     lastGuardDistance = getGuardDistance();
     ripleyParameters.write(
       getGPURipleyParameterValues({
@@ -1881,7 +1886,7 @@ export async function createPointPatterns(
         bounds: parameterBounds,
         clarkEvansCorrection: 'guard',
         guardDistance: lastGuardDistance,
-        maximumDistance: Math.min(maximumDistance, 400)
+        indexCellSizeHint: Math.min(maximumDistance, 400)
       })
     );
   }

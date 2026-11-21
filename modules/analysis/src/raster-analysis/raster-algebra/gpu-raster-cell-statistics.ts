@@ -24,6 +24,7 @@ import {
   validateRasterAlgebraStack
 } from './raster-algebra-stack-input';
 import {GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH} from './local-operations-parameters';
+import type {RasterAlgebraAtLeastOne} from './raster-algebra-output';
 import {
   getRasterAlgebraValueWGSL,
   validateRasterAlgebraAliasing,
@@ -43,7 +44,7 @@ const MAXIMUM_ANALYSIS_NODE_COUNT = 3;
  * Caller-owned outputs of {@link GPURasterCellStatistics}, each at least `cellCount` rows. Provide
  * any non-empty subset. Float outputs are NaN where the cell is nodata.
  */
-export type GPURasterCellStatisticsOutput = {
+export type GPURasterCellStatisticsOutput = RasterAlgebraAtLeastOne<{
   /** Smallest valid layer value. */
   minimum?: GraphDataView<'float32'>;
   /** Largest valid layer value. */
@@ -67,7 +68,7 @@ export type GPURasterCellStatisticsOutput = {
   variety?: GraphDataView<'uint32'>;
   /** Number of valid layers, written for every cell (0 where `mask` is zero). */
   counts?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPURasterCellStatistics}.
@@ -114,6 +115,10 @@ export type GPURasterCellStatisticsProps = {
  * each scheduled only when one of its outputs is requested. Frequencies compare every pair of
  * layers (`O(layerCount^2)` per cell, at most 64 layers) with exact f32 equality, so `-0` and `+0`
  * count as one value.
+ * Band inputs are calibrated to float32 before categorical equality. Integer categories must
+ * be exactly representable in float32: all integers in [-16777216, 16777216] are exact, while
+ * adjacent integers outside that range can merge. Native integer nearest warp labels do not
+ * make this categorical stack route exact for such values.
  */
 export class GPURasterCellStatistics implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

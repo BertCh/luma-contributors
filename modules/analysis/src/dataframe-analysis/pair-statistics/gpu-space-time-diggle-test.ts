@@ -38,6 +38,7 @@ import {
   PAIR_HISTOGRAM_MAXIMUM_ACCUMULATORS
 } from './pair-histogram';
 import {PAIR_STATISTICS_FLOAT_WGSL, validatePairStatisticsInputs} from './pair-statistics-grid';
+import {snapshotSpaceTimePairProps} from './space-time-pair-construction';
 import {
   createSpaceTimeKNodes,
   GPU_SPACE_TIME_K_FUNCTION_PARAMETER_LENGTH,
@@ -185,11 +186,11 @@ export type GPUSpaceTimeDiggleTestProps = {
  * and the inputs.
  */
 export function getGPUSpaceTimeDiggleRandomParameterValues(seed: number): Uint32Array {
-  if (!Number.isSafeInteger(seed) || seed < 0) {
-    throw new Error(
-      'getGPUSpaceTimeDiggleRandomParameterValues seed must be a non-negative safe integer'
-    );
-  }
+  validateRequirement(
+    'getGPUSpaceTimeDiggleRandomParameterValues',
+    Number.isSafeInteger(seed) && seed >= 0,
+    'seed must be a non-negative safe integer'
+  );
   return Uint32Array.from([seed % 2 ** 32, Math.floor(seed / 2 ** 32)]);
 }
 
@@ -260,7 +261,7 @@ export function getGPUSpaceTimeDiggleRandomParameterValues(seed: number): Uint32
 export class GPUSpaceTimeDiggleTest implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
-  /** Validated properties. */
+  /** Captured construction properties and metadata; referenced buffer contents remain live. */
   readonly props: GPUSpaceTimeDiggleTestProps;
   /** Resolved coordinate contract (planar/native). */
   readonly spatialContext: GPUSpatialContext;
@@ -274,6 +275,36 @@ export class GPUSpaceTimeDiggleTest implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSpaceTimeDiggleTestProps) {
+    props = snapshotSpaceTimePairProps(
+      props,
+      [
+        'id',
+        'spatialContext',
+        'temporalContext',
+        'positions',
+        'times',
+        'mask',
+        'parameters',
+        'randomParameters',
+        'gridSize',
+        'distanceClassCount',
+        'timeClassCount',
+        'edgeCorrection',
+        'permutationCount',
+        'output'
+      ],
+      [
+        'd',
+        'statistics',
+        'summary',
+        'permutationMean',
+        'permutationStandardDeviation',
+        'k',
+        'spatialK',
+        'temporalK',
+        'status'
+      ]
+    );
     this.id = props.id ?? 'space-time-diggle-test';
     this.props = props;
     const {id} = this;

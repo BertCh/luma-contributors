@@ -8,6 +8,7 @@ import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {GPUTrajectoryEncounters} from '../../../src/gpu-spatial-analysis/trajectory-encounters/index';
+import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -49,6 +50,8 @@ type RunOptions = {
   hitCapacity: number;
   pairCapacity: number;
   trackValid?: Uint32Array;
+  bounds?: readonly [number, number, number, number];
+  spatialContext?: GPUSpatialContext;
 };
 
 async function runEncounters(
@@ -89,6 +92,7 @@ async function runEncounters(
   graph.add(
     new GPUTrajectoryEncounters({
       id: 'encounters',
+      spatialContext: options.spatialContext,
       samples: importGraphBuffer(graph, 'samples', input(samples), 'float32x2', samples.length / 2),
       trackCount,
       bucketCount,
@@ -103,7 +107,7 @@ async function runEncounters(
         1
       ),
       cellSize: options.cellSize,
-      bounds: BOUNDS,
+      bounds: options.bounds ?? BOUNDS,
       hitCapacity: options.hitCapacity,
       bucketTimes: importGraphBuffer(
         graph,
@@ -176,6 +180,70 @@ async function runEncounters(
     buffer.destroy();
   }
   return result;
+}
+
+it('GPUTrajectoryEncounters finds an exact-distance pair across rounded columns 1 and 3', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Hand oracle: the only unordered pair has planar distance 1 in bucket 0.
+  // Independent binary32 normalization assigns the samples columns 1 and 3.
+  const result = await runEncounters(device, Float32Array.of(-18.5, 0.5, -17.5, 0.5), 2, 1, {
+    bounds: [-20.5, 0, 20.5, 1],
+    distance: 1,
+    cellSize: 1,
+    hitCapacity: 2,
+    pairCapacity: 2
+  });
+  expect(result.count).toBe(1);
+  expect(result.requiredCount).toBe(1);
+  expect(result.overflow).toBe(0);
+  expect(result.candidateOverflow).toBe(0);
+  expect(result.pairCandidateOverflow).toBe(0);
+  expect(result.ids[0]).toBe(0);
+  expect(result.partners[0]).toBe(1);
+  expect(result.first[0]).toBe(0);
+  expect(result.distances[0]).toBe(1);
+  expect(result.counts[0]).toBe(1);
+  expect(result.times[0]).toBe(100);
+});
+
+for (const wrapColumns of [false, true]) {
+  it.each([
+    [-140, 170],
+    [170, -140]
+  ])(`GPUTrajectoryEncounters respects seam bounds in both track orders (wrap=${wrapColumns}, first=%s)`, async (first, second) => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const result = await runEncounters(device, Float32Array.of(first, 0, second, 0), 2, 1, {
+      bounds: wrapColumns ? [-180, -1, 180, 1] : [-170, -1, 170, 1],
+      distance: 1,
+      cellSize: 86,
+      hitCapacity: 2,
+      pairCapacity: 2,
+      spatialContext: {
+        coordinateSpace: 'longitude-latitude',
+        metric: 'great-circle',
+        sphereRadius: 1
+      }
+    });
+    // The 310-degree raw separation crosses the seam and is excluded by partial bounds.
+    // Full longitude bounds accept its 50-degree shortest arc exactly once.
+    expect(result.count).toBe(wrapColumns ? 1 : 0);
+    expect(result.requiredCount).toBe(wrapColumns ? 1 : 0);
+    expect(result.overflow).toBe(0);
+    expect(result.candidateOverflow).toBe(0);
+    expect(result.pairCandidateOverflow).toBe(0);
+    if (wrapColumns) {
+      expect(result.ids[0]).toBe(0);
+      expect(result.partners[0]).toBe(1);
+      expect(result.first[0]).toBe(0);
+      expect(result.counts[0]).toBe(1);
+      expect(result.times[0]).toBe(100);
+      // Closed form 50*pi/180; 1e-4 radians allows single-precision haversine error.
+      expect(Number.isFinite(result.distances[0])).toBe(true);
+      expect(Math.abs(result.distances[0] - 0.8726646259971648)).toBeLessThan(1e-4);
+    }
+  });
 }
 
 it('GPUTrajectoryEncounters matches the all-pairs oracle', async () => {

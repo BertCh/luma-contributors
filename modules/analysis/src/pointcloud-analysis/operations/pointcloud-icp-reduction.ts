@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getPlaneMomentTransferSource} from './pointcloud-plane-transfer';
+
 // A bounded merge limits each invocation to 256 partial blocks; levels form a fixed-order tree.
 export const POINT_CLOUD_ICP_MERGE_BLOCK_COUNT = 256;
 
@@ -21,15 +23,7 @@ for(var batchIndex=mergeBegin;batchIndex<mergeEnd;batchIndex++){
 }
 for(var batchIndex=mergeBegin;batchIndex<mergeEnd;batchIndex++){
  let base=batchIndex*48u;if(!(readPartials(base+1u)>0.0)){continue;}
- let offset=vec3f(readPartials(base+45u),readPartials(base+46u),readPartials(base+47u))-centroid;
- // Row-major skew matrix of the offset: transfer * n = cross(offset, n).
- var transfer:array<f32,9>;transfer[1]=-offset.z;transfer[2]=offset.y;transfer[3]=offset.z;transfer[5]=-offset.x;transfer[6]=-offset.y;transfer[7]=offset.x;
- var blockSystem:array<f32,42>;
- for(var row=0u;row<6u;row++){for(var column=0u;column<6u;column++){blockSystem[row*7u+column]=readPartials(base+3u+row*6u+column);}blockSystem[row*7u+6u]=readPartials(base+39u+row);}
- // Rotation rows, then rotation columns: each reads only the translation rows or columns, which do not change.
- for(var row=0u;row<3u;row++){for(var column=0u;column<7u;column++){for(var term=0u;term<3u;term++){blockSystem[row*7u+column]+=transfer[row*3u+term]*blockSystem[(3u+term)*7u+column];}}}
- for(var row=0u;row<6u;row++){for(var column=0u;column<3u;column++){for(var term=0u;term<3u;term++){blockSystem[row*7u+column]+=blockSystem[row*7u+3u+term]*transfer[column*3u+term];}}}
- for(var entry=0u;entry<42u;entry++){system[entry]+=blockSystem[entry];}
+${getPlaneMomentTransferSource('readPartials')}
 }
 let outputBase = index * 48u;
 writeMoments(outputBase, count); writeMoments(outputBase + 1u, weight); writeMoments(outputBase + 2u, residualSum);

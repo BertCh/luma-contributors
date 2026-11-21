@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/inference';
+import {
+  validateFiniteNumber,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {resolveGPUMultipleTestingMethod} from '../multiple-testing/gpu-multiple-testing-adjustment';
 
 /** Number of float32 elements in an emerging-hot-spot parameter buffer. */
 export const GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH = 8;
@@ -95,11 +101,33 @@ export const GPU_EMERGING_HOT_SPOTS_CATEGORIES = {
 } as const;
 
 /** Two-sided normal critical z of the 90%, 95% and 99% confidence levels. */
-export const GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES: Readonly<Record<string, number>> = {
-  '0.9': 1.6448536269514722,
-  '0.95': 1.959963984540054,
-  '0.99': 2.5758293035489004
-};
+export const GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES = Object.freeze({
+  0.9: 1.6448536269514722,
+  0.95: 1.959963984540054,
+  0.99: 2.5758293035489004
+});
+
+function isTabulatedConfidenceLevel(
+  confidenceLevel: number
+): confidenceLevel is keyof typeof GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES {
+  return (
+    typeof confidenceLevel === 'number' &&
+    Object.hasOwn(GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES, confidenceLevel)
+  );
+}
+
+/** Returns the tabulated two-sided critical z for confidence level 0.9, 0.95 or 0.99. */
+export function getGPUEmergingHotSpotsCriticalZ(
+  confidenceLevel: number,
+  id = 'emerging-hot-spots'
+): number {
+  validateRequirement(
+    id,
+    isTabulatedConfidenceLevel(confidenceLevel),
+    `confidenceLevel must be 0.9, 0.95 or 0.99; received ${confidenceLevel}`
+  );
+  return GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES[confidenceLevel];
+}
 
 /**
  * CPU settings of `GPUEmergingHotSpots`, packed by {@link getGPUEmergingHotSpotsParameterValues}
@@ -162,6 +190,23 @@ export type GPUEmergingHotSpotsSettings = {
   sporadicRequiresFinalSlice?: boolean;
 };
 
+/** Captures every accepted setting once, including inherited descriptors. @internal */
+export function snapshotEmergingHotSpotSettings(
+  settings: GPUEmergingHotSpotsSettings
+): GPUEmergingHotSpotsSettings {
+  return snapshotConstructionFields(settings, [
+    'radius',
+    'temporalWindow',
+    'confidenceLevel',
+    'criticalZ',
+    'multipleTesting',
+    'minimumTrendSliceCount',
+    'trendSignificanceLevel',
+    'persistentFraction',
+    'sporadicRequiresFinalSlice'
+  ]);
+}
+
 /**
  * Packs emerging-hot-spot settings into the 8-element float32 layout read by
  * `GPUEmergingHotSpots`.
@@ -170,64 +215,115 @@ export type GPUEmergingHotSpotsSettings = {
  * minimumTrendSliceCount, significanceLevel, usesLegacySporadic]`, where `usesLegacySporadic` is
  * `1` for `sporadicRequiresFinalSlice: false` and `0` otherwise, `significanceLevel = 1 -
  * confidenceLevel` and `criticalZ` is only read with `multipleTesting: 'none'`.
+ * Settings must retain their stated domains after float32 encoding; overflow and rounded
+ * probability/fraction boundaries are rejected before the target is written.
  *
  * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
+ * @param id Error-message identity, supplied by the contributor for instance-specific diagnostics.
  * @throws If a value is not finite or out of range, `criticalZ` is combined with a correction,
  * `confidenceLevel` is not 0.9, 0.95 or 0.99 without a `criticalZ` and `multipleTesting: 'none'`,
  * or `target` is too short.
  */
 export function getGPUEmergingHotSpotsParameterValues(
   settings: GPUEmergingHotSpotsSettings,
-  target: Float32Array = new Float32Array(GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH)
+  target: Float32Array = new Float32Array(GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH),
+  id = 'GPUEmergingHotSpots'
 ): Float32Array {
-  if (target.length < GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH) {
-    throw new Error('GPUEmergingHotSpots target is too short');
-  }
+  settings = snapshotEmergingHotSpotSettings(settings);
+  validateRequirement(
+    id,
+    target.length >= GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+    `target length must be at least ${GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH}; received ${target.length}`
+  );
   const {temporalWindow} = settings;
   const radius = settings.radius ?? 0;
-  if (!Number.isFinite(radius) || radius < 0) {
-    throw new Error('GPUEmergingHotSpots radius must be a finite number >= 0');
-  }
-  if (!Number.isInteger(temporalWindow) || temporalWindow < 0) {
-    throw new Error('GPUEmergingHotSpots temporalWindow must be an integer >= 0');
-  }
+  validateRequirement(
+    id,
+    Number.isFinite(radius) && radius >= 0,
+    `radius must be a finite number >= 0; received ${radius}`
+  );
+  validateFiniteNumber(id, 'radius float32', Math.fround(radius), 0);
+  validateRequirement(
+    id,
+    Number.isInteger(temporalWindow) && temporalWindow >= 0,
+    `temporalWindow must be an integer >= 0; received ${temporalWindow}`
+  );
+  validateFiniteNumber(id, 'temporalWindow float32', Math.fround(temporalWindow), 0);
   const confidenceLevel = settings.confidenceLevel ?? 0.95;
-  if (!(confidenceLevel > 0 && confidenceLevel < 1)) {
-    throw new Error('GPUEmergingHotSpots confidenceLevel must be in (0, 1)');
-  }
-  const multipleTesting = settings.multipleTesting ?? 'benjamini-hochberg';
+  validateRequirement(
+    id,
+    confidenceLevel > 0 && confidenceLevel < 1,
+    `confidenceLevel must be in (0, 1); received ${confidenceLevel}`
+  );
+  const significanceLevel = Math.fround(1 - confidenceLevel);
+  validateRequirement(
+    id,
+    significanceLevel > 0 && significanceLevel < 1,
+    'confidenceLevel must produce a float32 significanceLevel in (0, 1); choose a confidence level farther from 0 or 1'
+  );
+  const multipleTesting = resolveGPUMultipleTestingMethod(
+    `${id} multipleTesting`,
+    settings.multipleTesting ?? 'benjamini-hochberg'
+  );
   let criticalZ = settings.criticalZ;
   if (criticalZ !== undefined) {
-    if (multipleTesting !== 'none') {
-      throw new Error("GPUEmergingHotSpots criticalZ requires multipleTesting 'none'");
-    }
-    if (!Number.isFinite(criticalZ) || criticalZ <= 0) {
-      throw new Error('GPUEmergingHotSpots criticalZ must be a finite number > 0');
-    }
+    validateRequirement(
+      id,
+      multipleTesting === 'none',
+      `criticalZ requires multipleTesting 'none'; received ${multipleTesting}`
+    );
+    validateRequirement(
+      id,
+      Number.isFinite(criticalZ) && criticalZ > 0,
+      `criticalZ must be a finite number > 0; received ${criticalZ}`
+    );
+    validateRequirement(
+      id,
+      Number.isFinite(Math.fround(criticalZ)) && Math.fround(criticalZ) > 0,
+      'criticalZ must round to a finite float32 > 0; choose a representable positive threshold'
+    );
+  } else if (multipleTesting === 'none' || isTabulatedConfidenceLevel(confidenceLevel)) {
+    criticalZ = getGPUEmergingHotSpotsCriticalZ(confidenceLevel, id);
   } else {
-    criticalZ = GPU_EMERGING_HOT_SPOTS_CRITICAL_Z_SCORES[String(confidenceLevel)];
-    if (criticalZ === undefined) {
-      if (multipleTesting === 'none') {
-        throw new Error('GPUEmergingHotSpots confidenceLevel must be 0.9, 0.95 or 0.99');
-      }
-      // Unused with a correction: the adjusted p-value decides.
-      criticalZ = 0;
-    }
+    // Unused with a correction: the adjusted p-value decides.
+    criticalZ = 0;
   }
   const minimumTrendSliceCount =
     settings.minimumTrendSliceCount ?? GPU_EMERGING_HOT_SPOTS_DEFAULT_MINIMUM_TREND_SLICE_COUNT;
-  if (!Number.isInteger(minimumTrendSliceCount) || minimumTrendSliceCount < 0) {
-    throw new Error('GPUEmergingHotSpots minimumTrendSliceCount must be an integer >= 0');
-  }
+  validateRequirement(
+    id,
+    Number.isInteger(minimumTrendSliceCount) && minimumTrendSliceCount >= 0,
+    `minimumTrendSliceCount must be an integer >= 0; received ${minimumTrendSliceCount}`
+  );
+  validateFiniteNumber(
+    id,
+    'minimumTrendSliceCount float32',
+    Math.fround(minimumTrendSliceCount),
+    0
+  );
   const trendSignificanceLevel = settings.trendSignificanceLevel ?? 1 - confidenceLevel;
-  if (!(trendSignificanceLevel > 0 && trendSignificanceLevel < 1)) {
-    throw new Error('GPUEmergingHotSpots trendSignificanceLevel must be in (0, 1)');
-  }
+  validateRequirement(
+    id,
+    trendSignificanceLevel > 0 && trendSignificanceLevel < 1,
+    `trendSignificanceLevel must be in (0, 1); received ${trendSignificanceLevel}`
+  );
+  validateRequirement(
+    id,
+    Math.fround(trendSignificanceLevel) > 0 && Math.fround(trendSignificanceLevel) < 1,
+    'trendSignificanceLevel must round to a float32 in (0, 1); choose a representable probability'
+  );
   const persistentFraction = settings.persistentFraction ?? 0.9;
-  if (!(persistentFraction > 0.5 && persistentFraction <= 1)) {
-    throw new Error('GPUEmergingHotSpots persistentFraction must be in (0.5, 1]');
-  }
+  validateRequirement(
+    id,
+    persistentFraction > 0.5 && persistentFraction <= 1,
+    `persistentFraction must be in (0.5, 1]; received ${persistentFraction}`
+  );
+  validateRequirement(
+    id,
+    Math.fround(persistentFraction) > 0.5 && Math.fround(persistentFraction) <= 1,
+    'persistentFraction must round to a float32 in (0.5, 1]; choose a fraction farther above 0.5'
+  );
   target.set([
     radius,
     temporalWindow,
@@ -235,7 +331,7 @@ export function getGPUEmergingHotSpotsParameterValues(
     trendSignificanceLevel,
     persistentFraction,
     minimumTrendSliceCount,
-    1 - confidenceLevel,
+    significanceLevel,
     settings.sporadicRequiresFinalSlice === false ? 1 : 0
   ]);
   return target;

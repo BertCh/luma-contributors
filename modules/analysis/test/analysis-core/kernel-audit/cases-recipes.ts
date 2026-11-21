@@ -4,6 +4,8 @@
 
 import {
   addChangeOfSupportRecipe,
+  addBuildingTessellationReferenceRecipe,
+  addLocalBuildingTessellationRecipe,
   addClusterAndOutlineRecipe,
   addFleetDwellRecipe,
   addFleetDwellZoneEventsRecipe,
@@ -13,6 +15,7 @@ import {
   addRateClusterMapRecipe,
   addSpaceTimeHotSpotsRecipe,
   addSpatialRegressionRecipe,
+  addStopValueCubeRecipe,
   addStraightLineCatchmentsRecipe
 } from '../../../src/gpu-spatial-analysis/index';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
@@ -395,7 +398,7 @@ const CHANGE_OF_SUPPORT_CASES: KernelAuditCase[] = [
         sourceCategories: view('uint32', 256, 'categories'),
         categoryCount: 16
       },
-      outputs: {categoryShares: view('float32', 256 * 16, 'category-output')}
+      output: {categoryShares: view('float32', 256 * 16, 'category-output')}
     } as never);
   }
 }));
@@ -427,6 +430,90 @@ for (const mode of ['exact', 'jump-flood'] as const) {
 
 /** Kernel-audit cases for recipes. */
 export const RECIPES_CASES: KernelAuditCase[] = [
+  {
+    exportName: 'addBuildingTessellationReferenceRecipe',
+    name: 'named reference route with explicit overlay capacities',
+    build: ({graph, view, declare}) => {
+      declare(addBuildingTessellationReferenceRecipe, graph, {
+        segments: view('float32x4', 8, 'building-segments'),
+        segmentBuildingIds: view('uint32', 8, 'building-rows'),
+        buildingCount: 2,
+        enclosure: view('float32x2', 4, 'enclosure'),
+        sampleSpacing: 1,
+        sampleCapacity: 16,
+        vertexTolerance: 1 / 1024,
+        capacity: {intersections: 64, nodedSegments: 128, vertices: 128, rings: 32}
+      });
+    }
+  },
+  {
+    exportName: 'addLocalBuildingTessellationRecipe',
+    name: 'named local route with bounded sample-cell union',
+    build: ({graph, view, declare}) => {
+      declare(addLocalBuildingTessellationRecipe, graph, {
+        segments: view('float32x4', 8, 'building-segments'),
+        segmentBuildingIds: view('uint32', 8, 'building-rows'),
+        buildingCount: 2,
+        enclosure: view('float32x2', 4, 'enclosure'),
+        sampleSpacing: 1,
+        sampleCapacity: 16,
+        candidateRadius: 5,
+        vertexTolerance: 1 / 1024,
+        maximumSamplesPerBuilding: 8,
+        candidateCapacity: 16,
+        cellVertexCapacity: 8,
+        maximumGridVisits: 64
+      });
+    }
+  },
+  ...(['start', 'finish'] as const).map(
+    (time): KernelAuditCase => ({
+      exportName: 'addStopValueCubeRecipe',
+      name: `${time} time, live stops, dictionary and source loss`,
+      build: context => {
+        const {graph, view} = context;
+        context.declare(addStopValueCubeRecipe, graph, {
+          id: `stop-cube-${time}`,
+          time,
+          family: 'quadbin',
+          resolution: 1,
+          dictionary: view('uint32x2', 2, 'dictionary'),
+          timestamps: view('uint32x2', 6, 'signed-int64-timestamps'),
+          temporalContext: {
+            unit: 'second',
+            epoch: 'unix',
+            encoding: 'int64-words',
+            axis: {kind: 'irregular'}
+          },
+          periods: {kind: 'fixed', origin: -10n, width: 10, count: 3},
+          stops: {
+            centroids: view('float32x2', 4, 'stop-centroids'),
+            startRows: view('uint32', 4, 'start-rows'),
+            finishRows: view('uint32', 4, 'finish-rows'),
+            status: {
+              count: view('uint32', 1, 'live-stop-count'),
+              overflow: view('uint32', 1, 'stop-overflow'),
+              candidateOverflow: view('uint32', 1, 'stop-candidate-overflow')
+            }
+          },
+          weights: {
+            ...context.weights(2, 1),
+            status: {
+              overflow: view('uint32', 1, 'weights-overflow'),
+              candidateOverflow: view('uint32', 1, 'weights-candidate-overflow')
+            }
+          },
+          sliceStatuses: [
+            {
+              overflow: view('uint32', 1, 'slice-overflow'),
+              candidateOverflow: view('uint32', 1, 'slice-candidate-overflow')
+            }
+          ],
+          output: {counts: view('uint32', 6, 'cube-counts')}
+        });
+      }
+    })
+  ),
   {
     exportName: 'addPointsInPolygonsChoroplethRecipe',
     name: 'prepared great-circle polygons',

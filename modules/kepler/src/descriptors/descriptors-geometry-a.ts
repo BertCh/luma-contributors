@@ -6,7 +6,7 @@ import type {
   GPUAnalysisPresentationSpec,
   GPUAnalysisQuestion,
   GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   KeplerOperationDescriptor,
   KeplerOperationOutputDescriptor,

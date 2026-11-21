@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {MODAL_SPEED_COMPARISON_WGSL} from './modal-speed-comparison';
+import {
+  resolveModalSpeedOptions,
+  validateModalSpeedOptionName,
+  type ModalSpeedOptions
+} from './modal-split-options';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateTrajectoryBindings,
@@ -71,60 +77,53 @@ export type GPUModalSplitTriplegs = {
 /**
  * Properties for {@link GPUModalSplit}: the trajectory layout plus the tripleg table, the tripleg
  * modes, and the metric. `modes` holds one row per tripleg capacity row, values in
- * `[0, modeCount)`; when `modeSpeedBreaks` is given, modes are predicted from average tripleg
+ * `[0, modeCount)`; when `modeSpeedUpperBoundsFloat32` is given, modes are predicted from average tripleg
  * speed instead (trackintel `simple-coarse`) and written to `output.predictedModes`.
  */
-export type GPUModalSplitProps = GPUTrajectoryGeometryFields & {
-  /** Prefix for node and transient IDs. Defaults to `'modal-split'`. */
-  id?: string;
-  /** Planar or longitude/latitude great-circle; distances in the context's length unit. */
-  spatialContext?: GPUSpatialContext;
-  triplegs: GPUModalSplitTriplegs;
-  /**
-   * Mode of each tripleg, unless `modeSpeedBreaks` is given. A tripleg whose mode is the missing
-   * key `0xffffffff` is left out of every class; any other value at or above `modeCount` counts
-   * as the last class.
-   */
-  modes?: GraphDataView<'uint32'>;
-  /**
-   * Ascending upper bounds (exclusive) of each speed class, length unit per timestamp unit:
-   * class `i` holds speeds in `[modeSpeedBreaks[i - 1], modeSpeedBreaks[i])`, `-inf` below the
-   * first (compile-time, `modeCount` is its length). The last class has no upper bound: a speed at
-   * or above the last break stays in the last class, so a finite last break only names the class
-   * (trackintel leaves such a tripleg without a category). A tripleg with no speed, because no
-   * time passes between its first and last row or its length is not finite, gets the missing key
-   * `0xffffffff` and is left out of `output.modalSplit`. Trackintel `simple-coarse` is
-   * `[15/3.6, 100/3.6, Infinity]`, in metres per second.
-   */
-  modeSpeedBreaks?: readonly number[];
-  /** Number of modes; with `modeSpeedBreaks`, its length. */
-  modeCount: number;
-  /** Aggregation per (track, mode). Compile-time. */
-  metric: GPUModalSplitMetric;
-  output: {
-    /** Per-(track, mode) metric; all NaN when supplied tripleg loss is nonzero. */
-    modalSplit: GraphDataView<'float32'>;
+export type GPUModalSplitProps = GPUTrajectoryGeometryFields &
+  ModalSpeedOptions & {
+    /** Prefix for node and transient IDs. Defaults to `'modal-split'`. */
+    id?: string;
+    /** Planar or longitude/latitude great-circle; distances in the context's length unit. */
+    spatialContext?: GPUSpatialContext;
+    triplegs: GPUModalSplitTriplegs;
     /**
-     * Optional predicted mode per tripleg (requires `modeSpeedBreaks`); `0xffffffff` for a tripleg
-     * with no speed. With complete input, rows at and after the tripleg count are 0.
-     * If either supplied tripleg loss flag is nonzero, every capacity row is `0xffffffff`.
+     * Mode of each tripleg, unless `modeSpeedUpperBoundsFloat32` is given. A tripleg whose mode is the missing
+     * key `0xffffffff` is left out of every class; any other value at or above `modeCount` counts
+     * as the last class.
      */
-    predictedModes?: GraphDataView<'uint32'>;
+    modes?: GraphDataView<'uint32'>;
+    /** Number of modes; with `modeSpeedUpperBoundsFloat32`, its length. */
+    modeCount: number;
+    /** Aggregation per (track, mode). Compile-time. */
+    metric: GPUModalSplitMetric;
+    output: {
+      /** Per-(track, mode) metric; all NaN when supplied tripleg loss is nonzero. */
+      modalSplit: GraphDataView<'float32'>;
+      /**
+       * Optional predicted mode per tripleg; supplied-mode runs write missing keys. Prediction writes `0xffffffff` for a tripleg
+       * with no speed. With complete input, rows at and after the tripleg count are 0.
+       * If either supplied tripleg loss flag is nonzero, every capacity row is `0xffffffff`.
+       */
+      predictedModes?: GraphDataView<'uint32'>;
+    };
   };
-};
 
 /**
  * Modal split of triplegs (trackintel `calculate_modal_split`): one thread per track accumulates
  * count, summed haversine or Euclidean length, or summed duration per (track, mode). With
- * `modeSpeedBreaks`, the mode comes from trackintel's `simple-coarse` speed classes.
+ * `modeSpeedUpperBoundsFloat32`, the mode comes from trackintel's `simple-coarse` speed classes. Each step
+ * length is encoded as binary32 and path lengths are summed in row order using nearest-even
+ * binary32 addition. Exclusive classification compares length < duration * bound exactly,
+ * without dividing and rounding a quotient.
  */
 export class GPUModalSplit implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUModalSplitProps;
   readonly spatialContext: GPUSpatialContext;
 
-  constructor(props: GPUModalSplitProps) {
-    props = snapshotConstructionFields(props, [
+  constructor(input: GPUModalSplitProps) {
+    let props = snapshotConstructionFields(input, [
       'id',
       'positions',
       'timestamps',
@@ -133,17 +132,20 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       'spatialContext',
       'triplegs',
       'modes',
-      'modeSpeedBreaks',
+      'modeSpeedUpperBoundsFloat32',
+      'unknownModePolicy',
       'modeCount',
       'metric',
       'output'
     ]);
+    validateModalSpeedOptionName(props.id ?? 'modal-split', input);
     const triplegSnapshot = snapshotConstructionFields(props.triplegs, [
       'tracks',
       'startRows',
       'endRows',
       'status'
     ]);
+    const speedBounds = resolveModalSpeedOptions(props.id ?? 'modal-split', props);
     props = {
       ...props,
       triplegs: {
@@ -155,7 +157,7 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
         ])
       },
       output: snapshotConstructionFields(props.output, ['modalSplit', 'predictedModes']),
-      modeSpeedBreaks: props.modeSpeedBreaks && Object.freeze([...props.modeSpeedBreaks])
+      modeSpeedUpperBoundsFloat32: speedBounds
     };
     this.id = props.id ?? 'modal-split';
     this.props = props;
@@ -172,7 +174,7 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       triplegs,
       output,
       modes,
-      modeSpeedBreaks,
+      modeSpeedUpperBoundsFloat32,
       modeCount
     } = props;
     for (const [name, view] of Object.entries(triplegs.status)) {
@@ -197,8 +199,8 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
     validateCapacity(id, 'modeCount', modeCount);
     validateRequirement(
       id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     const trackCount = trackOffsets.length - 1;
     validateSinglePackedView(output.modalSplit, ['float32'], `${id} output.modalSplit`);
@@ -208,38 +210,22 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       ['count', 'distance', 'duration'].includes(props.metric),
       "metric must be 'count', 'distance' or 'duration'"
     );
-    if (modeSpeedBreaks) {
-      validateRequirement(
-        id,
-        modeSpeedBreaks.every(value => Number.isFinite(Math.fround(value)) || value === Infinity),
-        'modeSpeedBreaks must contain finite float32 values or positive Infinity'
-      );
-      validateRequirement(
-        id,
-        modeSpeedBreaks.length === modeCount,
-        'modeSpeedBreaks must hold modeCount values'
-      );
-      validateRequirement(
-        id,
-        modeSpeedBreaks.every((value, index) => index === 0 || value > modeSpeedBreaks[index - 1]),
-        'modeSpeedBreaks must be strictly ascending'
-      );
-      if (output.predictedModes) {
-        validateSinglePackedView(output.predictedModes, ['uint32'], `${id} output.predictedModes`);
-        validateViewLength(id, 'output.predictedModes', output.predictedModes, capacity);
-      }
-    } else {
-      validateRequirement(id, Boolean(modes), 'modes or modeSpeedBreaks is required');
+    if (!modeSpeedUpperBoundsFloat32) {
+      validateRequirement(id, Boolean(modes), 'modes or modeSpeedUpperBoundsFloat32 is required');
       validateSinglePackedView(modes!, ['uint32'], `${id} modes`);
       validateViewLength(id, 'modes', modes!, capacity);
     }
+    if (output.predictedModes) {
+      validateSinglePackedView(output.predictedModes, ['uint32'], `${id} output.predictedModes`);
+      validateViewLength(id, 'output.predictedModes', output.predictedModes, capacity);
+    }
     validateTrajectoryOutputRanges(this.id, this.getUsedProps().output);
-    if (modeSpeedBreaks) {
+    if (modeSpeedUpperBoundsFloat32) {
       validateGraphOutputsDisjointFromInputs(id, [output.modalSplit], [output.predictedModes]);
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.modalSplit, modeSpeedBreaks ? output.predictedModes : undefined],
+      [output.modalSplit, output.predictedModes],
       [
         positions,
         timestamps,
@@ -250,7 +236,7 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
         triplegs.status.count,
         triplegs.status.overflow,
         triplegs.status.candidateOverflow,
-        modeSpeedBreaks ? undefined : modes
+        modeSpeedUpperBoundsFloat32 ? undefined : modes
       ]
     );
   }
@@ -259,10 +245,10 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
     const {props} = this;
     return {
       ...props,
-      modes: props.modeSpeedBreaks ? undefined : props.modes,
+      modes: props.modeSpeedUpperBoundsFloat32 ? undefined : props.modes,
       output: {
         ...props.output,
-        predictedModes: props.modeSpeedBreaks ? props.output.predictedModes : undefined
+        predictedModes: props.output.predictedModes
       }
     };
   }
@@ -271,7 +257,8 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, trackOffsets, triplegs, output, modeCount, modeSpeedBreaks} = props;
+    const {positions, trackOffsets, triplegs, output, modeCount, modeSpeedUpperBoundsFloat32} =
+      props;
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       props.timestamps,
@@ -282,9 +269,9 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       triplegs.status.count,
       triplegs.status.overflow,
       triplegs.status.candidateOverflow,
-      modeSpeedBreaks ? undefined : props.modes,
+      modeSpeedUpperBoundsFloat32 ? undefined : props.modes,
       output.modalSplit,
-      modeSpeedBreaks ? output.predictedModes : undefined
+      output.predictedModes
     ]);
     const capacity = triplegs.tracks.length;
     const trackCount = trackOffsets.length - 1;
@@ -314,7 +301,7 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       'uint32',
       trackCount + 1
     );
-    const modes = modeSpeedBreaks
+    const modes = modeSpeedUpperBoundsFloat32
       ? (output.predictedModes ?? createTransientView(graph, `${id}-modes`, 'uint32', capacity))
       : props.modes!;
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -328,18 +315,18 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
         trackCount
       })
     ];
-    const distanceSource = `${radius === undefined ? '' : GEODESIC_WGSL}
+    const distanceSource = `${MODAL_SPEED_COMPARISON_WGSL}\n${radius === undefined ? '' : GEODESIC_WGSL}
 fn position(row: u32) -> vec2<f32> { return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); }
 fn stepDistance(row: u32) -> f32 {
   return ${radius === undefined ? 'length(position(row) - position(row - 1u))' : `geodesicHaversineDistance(position(row - 1u), position(row), ${getWGSLFloatLiteral(radius)})`};
 }
 fn triplegLength(start: u32, end: u32) -> f32 {
   var summed = 0.0;
-  for (var row = start + 1u; row < end; row++) { summed += stepDistance(row); }
+  for (var row = start + 1u; row < end; row++) { summed = modalAddLength(summed, stepDistance(row)); }
   return summed;
 }`;
-    if (modeSpeedBreaks) {
-      const breaks = modeSpeedBreaks
+    if (modeSpeedUpperBoundsFloat32) {
+      const breaks = modeSpeedUpperBoundsFloat32
         .map(value => (Number.isFinite(value) ? getWGSLFloatLiteral(value) : '3.402823466e+38'))
         .join(', ');
       nodes.push(
@@ -364,18 +351,31 @@ fn triplegLength(start: u32, end: u32) -> f32 {
     let duration = timeDifferenceRows(end - 1u, start);
     // No speed (no time passed, or a non-finite length): no class.
     mode = MISSING_MODE;
-    if (duration > 0.0) {
-      let speed = triplegLength(start, end) / duration;
-      if (isFiniteValue(speed)) {
+    if (duration > 0.0 && isFiniteValue(duration)) {
+      let pathLength = triplegLength(start, end);
+      if (isFiniteValue(pathLength)) {
         // The last class has no upper bound: a speed at or above every break stays in it.
         mode = ${modeCount - 1}u;
         for (var candidate = 0u; candidate < ${modeCount}u; candidate++) {
-          if (speed < SPEED_BREAKS[candidate]) { mode = candidate; break; }
+          if (modalSpeedBelowBound(pathLength, duration, SPEED_BREAKS[candidate])) { mode = candidate; break; }
         }
       }
     }
   }
   modes[modesOffset + index] = mode;`
+        })
+      );
+    }
+    if (!modeSpeedUpperBoundsFloat32 && output.predictedModes) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-no-predictions`,
+          operation: OPERATION,
+          invocationCount: capacity,
+          bindings: [
+            {name: 'predicted', view: output.predictedModes, type: 'u32', access: 'read_write'}
+          ],
+          body: 'predicted[predictedOffset + index] = 0xffffffffu;'
         })
       );
     }
@@ -400,7 +400,7 @@ fn triplegLength(start: u32, end: u32) -> f32 {
   }
   for (var row = offsets[offsetsOffset + index]; row < offsets[offsetsOffset + index + 1u]; row++) {
     // The missing key 0xffffffff is in no class; any other out-of-range mode counts as the last.
-    if (modes[modesOffset + row] == 0xffffffffu) { continue; }
+    if (modes[modesOffset + row] == 0xffffffffu${props.unknownModePolicy === 'exclude' ? ` || modes[modesOffset + row] >= ${modeCount}u` : ''}) { continue; }
     let mode = min(modes[modesOffset + row], ${modeCount - 1}u);
     let start = starts[startsOffset + row];
     let end = ends[endsOffset + row];
@@ -420,18 +420,21 @@ fn triplegLength(start: u32, end: u32) -> f32 {
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-suppress-incomplete`,
           operation: OPERATION,
-          invocationCount: Math.max(output.modalSplit.length, modeSpeedBreaks ? modes.length : 0),
+          invocationCount: Math.max(
+            output.modalSplit.length,
+            modeSpeedUpperBoundsFloat32 ? modes.length : 0
+          ),
           bindings: [
             ...lossBindings,
             {name: 'modalSplit', view: output.modalSplit, type: 'f32', access: 'read_write'},
-            ...(modeSpeedBreaks
+            ...(modeSpeedUpperBoundsFloat32
               ? [{name: 'modes', view: modes, type: 'u32' as const, access: 'read_write' as const}]
               : [])
           ],
           declarations: GET_NAN_WGSL,
           body: `if (${hasLoss}) {
     if (index < ${output.modalSplit.length}u) { modalSplit[modalSplitOffset + index] = getNaN(); }
-    ${modeSpeedBreaks ? `if (index < ${modes.length}u) { modes[modesOffset + index] = 0xffffffffu; }` : ''}
+    ${modeSpeedUpperBoundsFloat32 ? `if (index < ${modes.length}u) { modes[modesOffset + index] = 0xffffffffu; }` : ''}
   }`
         })
       );

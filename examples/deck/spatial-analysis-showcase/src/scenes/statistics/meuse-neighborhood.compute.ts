@@ -152,7 +152,7 @@ export async function createMeuseNeighborhood(
         Math.max(...positions.filter((_, index) => index % 2 === 0)),
         Math.max(...positions.filter((_, index) => index % 2 === 1))
       ],
-      weightKind: 'binary',
+      weightType: 'binary',
       rowStandardize: true
     })
   );
@@ -429,7 +429,7 @@ export async function createMeuseNeighborhood(
   const weightsSearch = new GPUNeighborSearch({
     id: 'meuse-eight-nearest-row-weights',
     mode: 'knn',
-    k: NEIGHBOR_COUNT,
+    neighborCount: NEIGHBOR_COUNT,
     positions: positionsView,
     parameters: searchParametersView,
     gridSize: [64, 64],
@@ -528,6 +528,8 @@ export async function createMeuseNeighborhood(
   );
   graph.add(
     new GPUQuantileLISA({
+      // Preserve this scene's GeoDa legacy strict-complement pseudo p-values.
+      alternative: 'geoda-legacy',
       id: 'meuse-measured-metal-quantile-lisa',
       values: valuesView,
       weights,
@@ -656,13 +658,13 @@ export async function createMeuseNeighborhood(
       weights,
       values: multivariateView,
       variableCount: 3,
-      maximumPermutations: MAXIMUM_PERMUTATIONS,
+      permutationCount: MAXIMUM_PERMUTATIONS,
       seed: [31, 0],
       tail: 'equal-tail',
       correction: 'none',
       output: {
         statistic: multivariateGearyView,
-        pValues: multivariateGearyPView,
+        pseudoPValues: multivariateGearyPView,
         classes: multivariateGearyClassesView
       }
     })
@@ -674,7 +676,7 @@ export async function createMeuseNeighborhood(
     values: valuesView,
     parameters: autocorrelationParametersView,
     multipleTesting: 'benjamini-yekutieli',
-    outputs: {
+    output: {
       losh: importGraphBuffer(graph, 'losh', loshBuffer, 'float32', rowCount),
       loshStatus: importGraphBuffer(graph, 'losh-status', loshStatusBuffer, 'uint32', rowCount),
       localI: importGraphBuffer(
@@ -1283,7 +1285,7 @@ export async function createMeuseNeighborhood(
           Number.isFinite(value) ? value.toFixed(3) : value < 0 ? '−∞' : '+∞';
         ctx.setReadout(
           'quantileSummary',
-          `${quantileValidCount} finite rows · ${memberCount} in q${selectedQuantile}/${ctx.options.quantileCount} · type-5 interval [${formatBoundary(quantileBoundaries[0])}, ${formatBoundary(quantileBoundaries[1])}) log units`
+          `${quantileValidCount} finite rows · ${memberCount} in q${selectedQuantile}/${ctx.options.quantileCount} · type-5 interval [${formatBoundary(quantileBoundaries[0])}, ${formatBoundary(quantileBoundaries[1])}) log units · geoda-legacy strict-complement pseudo p-values (anti-conservative)`
         );
         let summedJoinCount = 0;
         let maximumJoinCount = 0;

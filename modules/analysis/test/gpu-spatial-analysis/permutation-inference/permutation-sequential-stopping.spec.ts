@@ -162,11 +162,12 @@ it('GPULocalPermutationTest: ties stop every row at L = h, extreme rows never st
   const weights = createKnnWeights(positions, 4, true);
   const permutations = 299;
   const parameters = {seed: 2, permutationCount: permutations, significanceLevel: 0.05};
-  // Constant values: every simulated term ties the observed one, so g = l = L after L permutations
+  // Defined constant-rate local G: its positive denominator makes all raw lag ties valid,
+  // so g = l = L after L permutations
   // and every tested row stops at exactly L = h with p = min(2 h, h) / h = 1.
   const ties = createLocalPermutationHarness(device, {
     scene: {weights, values: new Float32Array(600).fill(3), rowStandardized: true},
-    statistic: 'localMoran',
+    statistic: 'localG',
     parameters,
     maximumPermutations: 999,
     stopAfterExceedances: 12

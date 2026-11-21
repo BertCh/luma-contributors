@@ -25,7 +25,7 @@ import {snapshotConstructionFields} from './construction-snapshot';
 export const GPU_FITTING_MINIBATCH_ORDER_SORT_NODE_ALLOWANCE = 128;
 
 export type GPUFittingMinibatchOrderOutput = {
-  /** Original row identifiers sorted by Philox key, ties in original row order. */
+  /** Zero-based source row indices sorted by Philox key, ties in original row order. */
   order: GraphDataView<'uint32'>;
 };
 export type GPUFittingMinibatchOrderProps = {
@@ -54,6 +54,8 @@ export function getGPUFittingMinibatchOrderParameterValues(
 
 /**
  * Seeded row permutation for model fitting using Philox keys and published stable GPUSort.
+ * Total source rowCount is at most 2^24 (16,777,216). Each packed binding is at most 128 MiB
+ * and must also fit the device binding limit. output.order contains zero-based source rows.
  * Compile-time: row count. Per-frame: both seed words and epoch. Equal keys preserve ascending
  * source row order; there is no sampling with replacement and no lost row on a key collision.
  * A random-key sort has a small finite-key tie bias; it is not claimed to be a uniform draw from

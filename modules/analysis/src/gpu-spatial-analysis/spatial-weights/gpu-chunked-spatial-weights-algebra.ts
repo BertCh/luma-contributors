@@ -1,7 +1,10 @@
+import {validateAndSnapshotWeightsAlgebraProps} from './spatial-weights-operation-name';
+import {createWeightsCountNodes} from './spatial-weights-count';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGPUSpatialWeightsProducerStatus} from './spatial-weights';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -9,7 +12,12 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
-import {snapshotWeightsAlgebraProps, snapshotWeightsPort} from './weights-construction-snapshot';
+import {snapshotWeightsPort} from './weights-construction-snapshot';
+import {
+  assertCompatibleGPUSpatialContexts,
+  validateGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {validateSpatialStatisticsWritableDispatches} from './spatial-statistics-writable-dispatches';
 import {
   createWeightsLossNodes,
@@ -19,6 +27,7 @@ import {
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -44,7 +53,7 @@ import {
   getGPUSpatialWeightsViews,
   validateGPUSpatialWeightsOutput,
   type GPUSpatialWeightsInformation,
-  type GPUSpatialWeightsOutput
+  type GPUSpatialWeightsProducerOutput as GPUSpatialWeightsOutput
 } from './spatial-weights';
 
 const OPERATION = 'GPUChunkedSpatialWeightsAlgebra';
@@ -87,7 +96,7 @@ export type GPUChunkedSpatialWeightsAlgebraProps =
 
 /**
  * The row-local operations of {@link GPUSpatialWeightsAlgebra} over chunked weights: `union`,
- * `intersection`, `difference`, `symmetricDifference`, `selfWeight` and `subgraph`. One
+ * `intersection`, `difference`, `symmetric-difference`, `selfWeight` and `subgraph`. One
  * count/scan/emit pipeline per chunk (dispatch count linear in the chunk count), each writing the
  * matching output chunk, so output row order and content do not depend on the chunking; there is no
  * repacking and overflow is reported per chunk.
@@ -96,6 +105,7 @@ export type GPUChunkedSpatialWeightsAlgebraProps =
  * through the frontier, and `block`, which has no weights input.
  *
  * Binary operands must be chunked identically (same row ranges); the output must match too.
+ * Optional output.chunks[c].weights.status.count is the retained slot count of chunk c, not the matrix total.
  */
 export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   readonly id: string;
@@ -104,11 +114,46 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   readonly outputWeights: GPUChunkedSpatialWeights;
 
   constructor(props: GPUChunkedSpatialWeightsAlgebraProps) {
-    props = snapshotWeightsAlgebraProps(props);
+    props = validateAndSnapshotWeightsAlgebraProps(props, true);
+    for (const chunk of props.output.chunks)
+      validateGPUSpatialWeightsProducerStatus(
+        props.id ?? 'chunked-spatial-weights-algebra',
+        chunk.weights.status
+      );
+    getWeightsLossSources(
+      'left' in props ? [props.left, props.right] : [props.weights],
+      props.id ?? 'chunked-spatial-weights-algebra',
+      true
+    );
     const id = props.id ?? 'chunked-spatial-weights-algebra';
     this.id = id;
     this.props = props;
     const operands = this.getOperands();
+    let spatialContext: GPUSpatialContext | undefined;
+    for (const operand of operands) {
+      for (const context of [
+        operand.spatialContext,
+        ...operand.chunks.map(chunk => chunk.weights.spatialContext)
+      ]) {
+        if (spatialContext && context)
+          assertCompatibleGPUSpatialContexts(id, spatialContext, context, {
+            purpose: 'metric-results'
+          });
+        if (context) {
+          const previous = spatialContext;
+          spatialContext = {
+            ...context,
+            ...Object.fromEntries(
+              Object.entries(previous ?? {}).filter(([, value]) => value !== undefined)
+            )
+          } as GPUSpatialContext;
+          if (previous?.metric === 'none') spatialContext.metric = context.metric;
+          if (previous?.units === 'native' && context.units === 'meters')
+            spatialContext.units = 'meters';
+          validateGPUSpatialContext(id, spatialContext);
+        }
+      }
+    }
     const rows = validateGPUChunkedSpatialWeights(id, operands[0]);
     for (const operand of operands.slice(1)) {
       if (validateGPUChunkedSpatialWeights(id, operand) !== rows) {
@@ -125,8 +170,33 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
           throw new Error(`${id} output chunk ${index} must match the operand chunk row range`);
         }
       }
-      if (validateGPUSpatialWeightsOutput(id, outputChunk.weights) !== outputChunk.rowCount) {
+      if (
+        validateGPUSpatialWeightsOutput(id, outputChunk.weights, undefined, true) !==
+        outputChunk.rowCount
+      ) {
         throw new Error(`${id} output chunk ${index} offsets must hold rowCount + 1 entries`);
+      }
+      if (outputChunk.weights.distances) {
+        if ('left' in props) {
+          validateRequirement(
+            id,
+            Boolean(props.left.chunks[index].weights.distances),
+            `output chunk ${index}.distances requires left chunk distances; omit output.distances otherwise`
+          );
+          if (props.operation === 'union' || props.operation === 'symmetric-difference') {
+            validateRequirement(
+              id,
+              Boolean(props.right.chunks[index].weights.distances),
+              `output chunk ${index}.distances requires right chunk distances; omit output.distances otherwise`
+            );
+          }
+        } else {
+          validateRequirement(
+            id,
+            Boolean(props.weights.chunks[index].weights.distances),
+            `output chunk ${index}.distances requires input chunk distances; omit output.distances otherwise`
+          );
+        }
       }
     });
     if (props.operation === 'selfWeight' && typeof props.selfWeight !== 'number') {
@@ -150,8 +220,8 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       throw new Error(`${id} unknown weightRule ${props.weightRule}`);
     }
     const inputViews = [
-      ...operands.flatMap(getGPUSpatialWeightsOrChunksViews),
-      ...validateWeightsLossSources(id, operands),
+      ...operands.flatMap(weights => getGPUSpatialWeightsOrChunksViews(weights, true)),
+      ...validateWeightsLossSources(id, operands, true),
       props.operation === 'subgraph' ? props.mask : undefined,
       props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
         ? props.selfWeight
@@ -176,14 +246,22 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       id,
       props.output.chunks.flatMap(chunk => [
         ...getGPUSpatialWeightsViews(chunk.weights),
-        ...getGPUSpatialWeightsStatusViews(chunk.weights)
+        ...getGPUSpatialWeightsStatusViews(chunk.weights, true)
       ]),
       inputViews
     );
-    const information = this.getOutputInformation(rows);
+    const chunkSelfWeights = props.output.chunks.map((_, index) => this.getChunkSelfWeights(index));
+    const information = {
+      ...this.getOutputInformation(rows),
+      hasSelfWeights: chunkSelfWeights.some(flag => flag === true)
+        ? true
+        : chunkSelfWeights.every(flag => flag === false)
+          ? false
+          : undefined
+    };
     this.outputWeights = {
       rowCount: rows,
-      spatialContext: operands[0].spatialContext,
+      spatialContext,
       information,
       status: {
         overflow: createTransientView(
@@ -199,12 +277,17 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
           1
         )
       },
-      chunks: props.output.chunks.map(chunk => ({
+      chunks: props.output.chunks.map((chunk, index) => ({
         rowStart: chunk.rowStart,
         rowCount: chunk.rowCount,
         weights: {
           ...chunk.weights,
-          information: {...information, rowCount: chunk.rowCount},
+          spatialContext,
+          information: {
+            ...information,
+            rowCount: chunk.rowCount,
+            hasSelfWeights: chunkSelfWeights[index]
+          },
           status: {...chunk.weights.status, overflow: undefined, candidateOverflow: undefined}
         }
       }))
@@ -217,6 +300,19 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     return props.operation === 'selfWeight' || props.operation === 'subgraph'
       ? [props.weights]
       : [props.left, props.right];
+  }
+
+  private getChunkSelfWeights(index: number): boolean | undefined {
+    const {props} = this;
+    if (props.operation === 'selfWeight') return true;
+    const operands = props.operation === 'difference' ? [props.left] : this.getOperands();
+    const flags = operands.map(
+      operand =>
+        operand.chunks[index].weights.information?.hasSelfWeights ??
+        operand.information?.hasSelfWeights
+    );
+    if (props.operation === 'intersection' && flags.includes(false)) return false;
+    return flags.includes(true) ? true : flags.every(flag => flag === false) ? false : undefined;
   }
 
   private getOutputInformation(rowCount: number): GPUSpatialWeightsInformation {
@@ -257,7 +353,15 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
               )
             ),
       symmetric,
-      hasSelfWeights: false,
+      hasSelfWeights:
+        props.operation === 'intersection' &&
+        operands.some(operand => operand.information?.hasSelfWeights === false)
+          ? false
+          : operands.some(operand => operand.information?.hasSelfWeights)
+            ? true
+            : operands.every(operand => operand.information?.hasSelfWeights === false)
+              ? false
+              : undefined,
       provenance
     };
   }
@@ -265,14 +369,25 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    return [
+      ...this.getWeightsCommandNodes(graph),
+      ...this.props.output.chunks.flatMap((chunk, index) =>
+        createWeightsCountNodes(graph, `${this.id}-chunk${index}`, chunk.weights)
+      )
+    ];
+  }
+
+  private getWeightsCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [
-      ...this.getOperands().flatMap(getGPUSpatialWeightsOrChunksViews),
-      ...validateWeightsLossSources(id, this.getOperands()),
+      ...this.getOperands().flatMap(weights => getGPUSpatialWeightsOrChunksViews(weights, true)),
+      ...validateWeightsLossSources(id, this.getOperands(), true),
       ...Object.values(this.outputWeights.status ?? {}),
       ...props.output.chunks.flatMap(chunk => [
         ...getGPUSpatialWeightsViews(chunk.weights),
-        ...getGPUSpatialWeightsStatusViews(chunk.weights)
+        ...getGPUSpatialWeightsStatusViews(chunk.weights, true)
       ]),
       props.operation === 'subgraph' ? props.mask : undefined,
       props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
@@ -318,7 +433,7 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
           )
         : []
     );
-    const inherited = getWeightsLossSources(this.getOperands());
+    const inherited = getWeightsLossSources(this.getOperands(), id, true);
     const sources = getWeightsLossSources(props.output.chunks.map(chunk => chunk.weights));
     return [
       ...clear,
@@ -333,7 +448,9 @@ export class GPUChunkedSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         graph,
         `${id}-aggregate-candidate`,
         [...sources.candidateOverflow, ...inherited.overflow, ...inherited.candidateOverflow],
-        this.outputWeights.status!.candidateOverflow!
+        this.outputWeights.status!.candidateOverflow!,
+        false,
+        inherited.complete
       )
     ];
   }

@@ -99,7 +99,7 @@ it('uses even-odd holes and preserves empty/non-finite status and NaN fields', (
   expect(result.witnesses.slice(2).every(Number.isNaN)).toBe(true);
 });
 
-it('validates construction and pure-function arguments and ignores GPU budgets during execution', () => {
+it('validates construction and pure-function arguments and honors explicit search budgets', () => {
   for (const Operation of [
     GPUMaximumInscribedCircleOperation,
     CPUMaximumInscribedCircleOperation
@@ -118,7 +118,6 @@ it('validates construction and pure-function arguments and ignores GPU budgets d
       [
         [0, 0],
         [4, 0],
-        [4, 4],
         [0, 4]
       ]
     ]
@@ -151,7 +150,7 @@ it('validates construction and pure-function arguments and ignores GPU budgets d
     }
   });
   expect(result).not.toBeInstanceOf(Promise);
-  expect((result as Record<string, Uint32Array>)['status'][0]).toBe(0);
+  expect((result as Record<string, Uint32Array>)['status'][0]).toBe(1);
 });
 
 it('reports the hand-derived successful square error at tolerance 0.01', () => {
@@ -168,10 +167,9 @@ it('reports the hand-derived successful square error at tolerance 0.01', () => {
     ]),
     0.01
   );
-  // Adjacent cells have d = 2 - halfSize and bound = d + sqrt(2)*halfSize.
-  // The first successful dyadic halfSize is 1/64: error = (sqrt(2) - 1)/64.
+  // An inscribed disk cannot exceed half the shorter envelope side, 2. The center attains it.
   expect(Array.from(result.circles.slice(0, 3))).toEqual([2, 2, 2]);
-  expect(result.circles[3]).toBeCloseTo((Math.SQRT2 - 1) / 64, 8);
+  expect(result.circles[3]).toBe(0);
   expect(result.circles[3]).toBeGreaterThanOrEqual(0);
   expect(result.circles[3]).toBeLessThanOrEqual(Math.fround(0.01));
   expect(Array.from(result.witnesses)).toEqual([0, 2]);

@@ -16,7 +16,8 @@ import {GEODESIC_WGSL} from '../gpu-spatial-analysis/geometry-measures/geodesic-
  *   straight segment in the coordinates (the shorter way around in longitude, wrapped to +-180).
  * - `networkSegmentDistance(point, start, end, fraction)`: distance from `point` to the position at
  *   `fraction`, without rounding that position to absolute coordinates first (an f32 longitude
- *   near +-180 is only good to about a meter), so short snap distances keep their precision.
+ *   near +-180 is only good to about a meter, a planar coordinate near 1e7 to one unit), so short
+ *   snap distances keep their precision and do not change when the network is translated.
  *
  * The great-circle variants wrap the public `GEODESIC_WGSL` helpers (`geodesicHaversineDistance`,
  * `geodesicSegmentFraction`, `geodesicSegmentDistance`); only `networkInterpolate` is local, since
@@ -46,7 +47,9 @@ fn networkInterpolate(start: vec2<f32>, end: vec2<f32>, fraction: f32) -> vec2<f
   return start + fraction * (end - start);
 }
 fn networkSegmentDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32) -> f32 {
-  let offset = point - (start + fraction * (end - start));
+  // Local frame at the segment start: forming the absolute projected point first rounds it to the
+  // float32 spacing of the coordinates (1 at 1e7), which can erase the whole residual.
+  let offset = (point - start) - fraction * (end - start);
   return sqrt(dot(offset, offset));
 }`;
   }

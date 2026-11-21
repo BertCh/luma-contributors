@@ -22,7 +22,7 @@ export type KeplerPointQuantileLISAProps = Omit<WeightedQuantileLISAProps, 'topo
   pointWeights: KeplerPointWeightsBinding;
 };
 
-/** Selected-quantile joins on fixed source-wide point neighbors, with legacy directed inference. */
+/** Selected-quantile joins on fixed source-wide point neighbors, with an explicit inference tail. */
 export function addKeplerPointQuantileLISA<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: KeplerPointQuantileLISAProps

@@ -38,8 +38,6 @@ export type SpatialPanelLagMaximumLikelihoodOperationProps = Pick<
         string
       >
     >;
-    /** Compatibility alias for status.overflow, used only when that field is absent. */
-    overflow?: string;
   };
   predictors: string;
   response: string;
@@ -116,10 +114,7 @@ export class GPUSpatialPanelLagMaximumLikelihoodOperation extends GPUContributor
           Object.entries(props.weights.status ?? {})
             .filter(([, value]) => value !== undefined)
             .map(([field, value]) => [`weightsStatus_${field}`, value!])
-        ),
-        ...(props.weights.overflow && !props.weights.status?.overflow
-          ? {overflow: props.weights.overflow}
-          : {})
+        )
       },
       outputs: {
         coefficients: {
@@ -158,19 +153,13 @@ export class GPUSpatialPanelLagMaximumLikelihoodOperation extends GPUContributor
             weights: getView<'float32'>('weights'),
             distances:
               props.weights.distances !== undefined ? getView<'float32'>('distances') : undefined,
-            status:
-              props.weights.status || props.weights.overflow
-                ? {
-                    ...Object.fromEntries(
-                      Object.entries(props.weights.status ?? {})
-                        .filter(([, value]) => value !== undefined)
-                        .map(([field]) => [field, getView<'uint32'>(`weightsStatus_${field}`)])
-                    ),
-                    ...(props.weights.overflow && !props.weights.status?.overflow
-                      ? {overflow: getView<'uint32'>('overflow')}
-                      : {})
-                  }
-                : undefined
+            status: props.weights.status
+              ? Object.fromEntries(
+                  Object.entries(props.weights.status)
+                    .filter(([, value]) => value !== undefined)
+                    .map(([field]) => [field, getView<'uint32'>(`weightsStatus_${field}`)])
+                )
+              : undefined
           },
           output: {
             coefficients: getView<'float32'>('coefficients'),

@@ -32,6 +32,12 @@ const CONTRIBUTOR_OPERATION_FORMATS = new Set<GPUGraphVectorFormat>([
 /** Operation type shared by every {@link GPUContributorOperation}; the lowering matches on it. */
 export const GPU_CONTRIBUTOR_OPERATION_TYPE = 'analysis-contributor';
 
+// Symbol.for shares identity across the package's import/require implementations. The version
+// names the lowering protocol, not the package release. A type string alone never establishes it.
+const CONTRIBUTOR_OPERATION_BRAND = Symbol.for(
+  '@luma-contributors/analysis/GPUContributorOperation/v1'
+);
+
 /** One logical graph value a contributor operation writes. Contributor outputs are caller-sized. */
 export type GPUContributorOperationOutput = {
   /** Non-empty name of the logical graph value. */
@@ -41,22 +47,60 @@ export type GPUContributorOperationOutput = {
   length: number;
 };
 
+// Construction captures descriptor fields in a frozen plain object, not a descriptor subclass.
+type OperationOutputSnapshot<Descriptor> = Descriptor extends GPUContributorOperationOutput
+  ? Readonly<Pick<Descriptor, keyof GPUContributorOperationOutput>>
+  : undefined;
+
+// Distribute over both map alternatives and requested keys. An index signature (including a
+// template pattern such as `band${number}`) does not guarantee that any matching key is present.
+// A broader/overlapping request can also miss a finite known key, so it includes absence.
+type OperationOutputLookup<Outputs, Port extends string> = Outputs extends unknown
+  ? Port extends unknown
+    ? [Port & keyof Outputs] extends [never]
+      ? undefined
+      : {
+          [Key in keyof Outputs]-?: [Port & Key] extends [never]
+            ? [never]
+            : [
+                | OperationOutputSnapshot<Outputs[Key]>
+                | (Port extends Key
+                    ? {} extends Pick<Outputs, Key>
+                      ? undefined
+                      : never
+                    : undefined)
+              ];
+        }[keyof Outputs][0]
+    : never
+  : never;
+
 /**
  * Returns the packed view of one port at lowering time. `port` is a key of
  * {@link GPUContributorOperationProps.inputs} or {@link GPUContributorOperationProps.outputs}.
+ * Pass a format or readonly format tuple to check the resolved view and infer its format. Outputs
+ * are always checked against their declaration. The legacy one-argument input form is unchecked.
  */
-export type GPUContributorOperationViewGetter = <Format extends GPUGraphVectorFormat>(
-  port: string
-) => GraphDataView<Format>;
+export type GPUContributorOperationViewGetter = {
+  <Format extends GPUGraphVectorFormat>(port: string, format: Format): GraphDataView<Format>;
+  <Format extends GPUGraphVectorFormat>(
+    port: string,
+    formats: readonly Format[]
+  ): GraphDataView<Format>;
+  <Format extends GPUGraphVectorFormat>(port: string): GraphDataView<Format>;
+};
 
 /** Properties of {@link GPUContributorOperation}. */
-export type GPUContributorOperationProps = {
+export type GPUContributorOperationProps<
+  Outputs extends Readonly<Record<string, GPUContributorOperationOutput>> = Readonly<
+    Record<string, GPUContributorOperationOutput>
+  >
+> = {
   /** Operation ID, also the ID in messages. */
   id: string;
   /** Non-empty names of logical graph values the contributor reads, by port name. */
   inputs: Readonly<Record<string, string>>;
   /** Logical graph values the contributor writes, by port name. */
-  outputs: Readonly<Record<string, GPUContributorOperationOutput>>;
+  outputs: Outputs;
   /**
    * Output ports whose length may be zero, for contributors that accept an empty output (an
    * empty batch, a zero capacity). Every other output must have at least one row. A name that
@@ -66,6 +110,47 @@ export type GPUContributorOperationProps = {
   /** Builds the contributor from the views the graph resolved for the ports. */
   createContributor(getView: GPUContributorOperationViewGetter): GPUGraphPrimitive;
 };
+
+/**
+ * Validates original logical-port maps before CPU or GPU forms key outputs by destination.
+ * Repeated input reads are allowed; outputs must have distinct destinations and cannot overwrite
+ * inputs. This checks names only and imposes no GPU format, allocation or row-count limits.
+ */
+export function validateOperationGraphNames(
+  id: string,
+  inputs: Readonly<Record<string, string>>,
+  outputs: Readonly<Record<string, string>>
+): void {
+  const inputValues = new Set(Object.values(inputs));
+  const outputValues = new Set<string>();
+  for (const [port, value] of Object.entries(inputs)) {
+    validateRequirement(id, port.length > 0, 'input port name must be non-empty');
+    validateRequirement(
+      id,
+      typeof value === 'string' && value.length > 0,
+      `inputs.${port} must be a non-empty graph value name`
+    );
+  }
+  for (const [port, value] of Object.entries(outputs)) {
+    validateRequirement(id, port.length > 0, 'output port name must be non-empty');
+    validateRequirement(
+      id,
+      !Object.hasOwn(inputs, port),
+      `port "${port}" must not be both an input and an output`
+    );
+    validateRequirement(
+      id,
+      typeof value === 'string' && value.length > 0,
+      `outputs.${port}.value must be a non-empty graph value name`
+    );
+    validateRequirement(
+      id,
+      !inputValues.has(value) && !outputValues.has(value),
+      `outputs.${port} must name a graph value ("${value}") that no other port uses`
+    );
+    outputValues.add(value);
+  }
+}
 
 /**
  * A contributor as a luma.gl `GPUGraph` operation: logical value names in place of bound views.
@@ -78,9 +163,12 @@ export type GPUContributorOperationProps = {
  *
  * Compile the graph with {@link GPU_CONTRIBUTOR_OPERATION_LOWERING} in `lowerings`.
  *
- * Limits, all from the published mixed executor: every value is a `float32`, `sint32` or `uint32`
- * vector of one to four components; no textures; no value read and written by the same operation;
- * each value is one packed chunk.
+ * Limits from the published mixed executor: every value is a `float32`, `sint32` or `uint32`
+ * vector of one to four components; no textures; no value read and written by the same operation.
+ * The executor accepts multiple chunks, but this adapter's lowering
+ * ({@link GPU_CONTRIBUTOR_OPERATION_LOWERING}) requires every resolved port to be one packed chunk
+ * and rejects a split value, even when the contributor itself accepts chunked views; use the
+ * contributor's `getCommandNodes(graph)` directly for chunked input.
  * Graph value names, output formats and output lengths are validated at construction, before
  * luma.gl plans the contract or the contributor is built. Zero output lengths require the port
  * to be listed in `emptyOutputPorts`. Packed chunks are checked when views are resolved.
@@ -91,15 +179,21 @@ export type GPUContributorOperationProps = {
  * after the compiled graph is destroyed to release the last one. An operation therefore serves
  * one compiled graph, and one prepared execution of it at a time.
  */
-export class GPUContributorOperation implements GPUOperation {
+export class GPUContributorOperation<
+  Outputs extends Readonly<Record<string, GPUContributorOperationOutput>> = Readonly<
+    Record<string, GPUContributorOperationOutput>
+  >
+> implements GPUOperation
+{
+  readonly [CONTRIBUTOR_OPERATION_BRAND] = true;
   readonly type = GPU_CONTRIBUTOR_OPERATION_TYPE;
   readonly id: string;
   readonly inputs: Readonly<Record<string, string>>;
-  readonly outputs: Readonly<Record<string, GPUContributorOperationOutput>>;
+  readonly outputs: Readonly<Record<string, Readonly<GPUContributorOperationOutput>>>;
   private readonly contributorFactory: GPUContributorOperationProps['createContributor'];
   private ownedContributor?: {destroy(): void};
 
-  constructor(props: GPUContributorOperationProps) {
+  constructor(props: GPUContributorOperationProps<Outputs>) {
     this.id = props.id;
     this.inputs = Object.freeze({...props.inputs});
     this.outputs = Object.freeze(
@@ -108,27 +202,13 @@ export class GPUContributorOperation implements GPUOperation {
       )
     );
     this.contributorFactory = props.createContributor;
-    const inputValues = new Set(Object.values(this.inputs));
+    validateOperationGraphNames(
+      this.id,
+      this.inputs,
+      Object.fromEntries(Object.entries(this.outputs).map(([port, output]) => [port, output.value]))
+    );
     const emptyOutputPorts = new Set(props.emptyOutputPorts ?? []);
-    const outputValues = new Set<string>();
-    for (const [port, value] of Object.entries(this.inputs)) {
-      validateRequirement(
-        this.id,
-        typeof value === 'string' && value.length > 0,
-        `inputs.${port} must be a non-empty graph value name`
-      );
-    }
     for (const [port, output] of Object.entries(this.outputs)) {
-      validateRequirement(
-        this.id,
-        !Object.hasOwn(this.inputs, port),
-        `port "${port}" must not be both an input and an output`
-      );
-      validateRequirement(
-        this.id,
-        typeof output.value === 'string' && output.value.length > 0,
-        `outputs.${port}.value must be a non-empty graph value name`
-      );
       validateRequirement(
         this.id,
         CONTRIBUTOR_OPERATION_FORMATS.has(output.format),
@@ -141,13 +221,18 @@ export class GPUContributorOperation implements GPUOperation {
         output.length,
         emptyOutputPorts.has(port) ? 0 : 1
       );
-      validateRequirement(
-        this.id,
-        !inputValues.has(output.value) && !outputValues.has(output.value),
-        `outputs.${port} must name a graph value ("${output.value}") that no other port uses`
-      );
-      outputValues.add(output.value);
     }
+  }
+
+  /**
+   * Looks up a logical output port, not its graph destination. Returns frozen value/format/length
+   * fields with their literal types. Conditional selections, index signatures and dynamic keys
+   * include possible absence. Wrappers can pass their selected output map as the class type
+   * argument. The legacy `outputs` dictionary remains available.
+   */
+  getOutput<Port extends string>(port: Port): OperationOutputLookup<Outputs, Port>;
+  getOutput(port: string): Readonly<GPUContributorOperationOutput> | undefined {
+    return Object.hasOwn(this.outputs, port) ? this.outputs[port] : undefined;
   }
 
   get contract(): GPUOperationContract {
@@ -195,6 +280,42 @@ export class GPUContributorOperation implements GPUOperation {
   }
 }
 
+/** Checks the versioned identity and every field the lowering consumes across module conditions. */
+function isContributorOperation(operation: GPUOperation): operation is GPUContributorOperation {
+  const candidate = operation as Partial<GPUContributorOperation>;
+  if (
+    candidate[CONTRIBUTOR_OPERATION_BRAND] !== true ||
+    candidate.type !== GPU_CONTRIBUTOR_OPERATION_TYPE ||
+    typeof candidate.id !== 'string' ||
+    typeof candidate.createContributor !== 'function' ||
+    typeof candidate.destroy !== 'function' ||
+    !candidate.inputs ||
+    typeof candidate.inputs !== 'object' ||
+    Array.isArray(candidate.inputs) ||
+    !candidate.outputs ||
+    typeof candidate.outputs !== 'object' ||
+    Array.isArray(candidate.outputs)
+  ) {
+    return false;
+  }
+  if (
+    !Object.values(candidate.inputs).every(value => typeof value === 'string' && value.length > 0)
+  ) {
+    return false;
+  }
+  return Object.values(candidate.outputs).every(
+    output =>
+      output !== null &&
+      typeof output === 'object' &&
+      typeof output.value === 'string' &&
+      output.value.length > 0 &&
+      CONTRIBUTOR_OPERATION_FORMATS.has(output.format) &&
+      Number.isInteger(output.length) &&
+      output.length >= 0 &&
+      output.length <= 0xffffffff
+  );
+}
+
 /**
  * Lowers every {@link GPUContributorOperation} of a graph: resolves its ports to packed views and
  * adds the contributor's command nodes. Pass it in `lowerings` when compiling the `GPUGraph`.
@@ -202,10 +323,20 @@ export class GPUContributorOperation implements GPUOperation {
 export const GPU_CONTRIBUTOR_OPERATION_LOWERING: GPUOperationLowering = {
   type: GPU_CONTRIBUTOR_OPERATION_TYPE,
   lower(operation, context) {
-    if (!(operation instanceof GPUContributorOperation)) {
+    if (!isContributorOperation(operation)) {
       throw new Error(`${operation.id} is not a GPUContributorOperation`);
     }
-    const getView = <Format extends GPUGraphVectorFormat>(port: string): GraphDataView<Format> => {
+    validateOperationGraphNames(
+      operation.id,
+      operation.inputs,
+      Object.fromEntries(
+        Object.entries(operation.outputs).map(([port, output]) => [port, output.value])
+      )
+    );
+    const getView: GPUContributorOperationViewGetter = <Format extends GPUGraphVectorFormat>(
+      port: string,
+      formats?: Format | readonly Format[]
+    ): GraphDataView<Format> => {
       // Own keys only: a port name such as `constructor` must not reach Object.prototype.
       const value = Object.hasOwn(operation.inputs, port)
         ? operation.inputs[port]
@@ -220,7 +351,22 @@ export const GPU_CONTRIBUTOR_OPERATION_LOWERING: GPUOperationLowering = {
         chunks.length === 1,
         `port "${port}" (graph value "${value}") must be one packed chunk, not ${chunks.length}`
       );
-      return chunks[0];
+      const view = chunks[0];
+      const output = Object.hasOwn(operation.outputs, port) ? operation.outputs[port] : undefined;
+      const checkFormats = (expected: readonly GPUGraphVectorFormat[]) => {
+        validateRequirement(
+          operation.id,
+          expected.includes(view.format),
+          `port "${port}" (graph value "${value}") must have format ${expected.join(' or ')}, not ${view.format}`
+        );
+      };
+      if (output) {
+        checkFormats([output.format]);
+      }
+      if (formats !== undefined) {
+        checkFormats(typeof formats === 'string' ? [formats] : formats);
+      }
+      return view;
     };
     context.lower(operation.createContributor(getView));
   }

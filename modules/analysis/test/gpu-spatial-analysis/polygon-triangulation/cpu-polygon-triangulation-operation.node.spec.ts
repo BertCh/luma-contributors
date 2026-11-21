@@ -429,8 +429,12 @@ it('validates both operation shapes at construction and contributor props when v
     expect(
       () => new Operation({...props, output: {...props.output, indices: 'positions'}})
     ).toThrow(/^polygon-twin/);
+    expect(() => new Operation({...props, monotoneMinimumVertices: 0})).toThrow(
+      /^polygon-twin.*monotoneMinimumVertices/
+    );
   }
-  // View-dependent and routing validation remains with construction of the lowered contributor.
+  // Routing limits are host-known and rejected above. Bound views still need one validity row
+  // per polygon: the fixture has three polygons, so a two-row validity view must be rejected.
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const views = {
     positions: createTransientView(graph, 'positions', 'float32x2', input.positions.length / 2),
@@ -438,14 +442,14 @@ it('validates both operation shapes at construction and contributor props when v
     polygonOffsets: createTransientView(graph, 'polygons', 'uint32', input.polygonOffsets.length),
     ringOffsets: createTransientView(graph, 'rings', 'uint32', input.ringOffsets.length),
     indices: createTransientView(graph, 'indices', 'uint32', props.indexCapacity),
-    valid: createTransientView(graph, 'valid', 'uint32', props.polygonCount),
+    valid: createTransientView(graph, 'valid', 'uint32', props.polygonCount - 1),
     triangleCount: createTransientView(graph, 'counts', 'uint32', props.polygonCount),
     triangleOffsets: createTransientView(graph, 'offsets', 'uint32', props.polygonCount + 1)
   };
-  const operation = new GPUPolygonTriangulationOperation({...props, monotoneMinimumVertices: 0});
+  const operation = new GPUPolygonTriangulationOperation(props);
   expect(() =>
     operation.createContributor(port => views[port as keyof typeof views] as never)
-  ).toThrow(/^polygon-twin.*monotoneMinimumVertices/);
+  ).toThrow(/^polygon-twin.*output\.valid length must equal the polygon count/);
   expect(
     () =>
       new CPUPolygonTriangulationOperation({

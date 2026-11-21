@@ -31,7 +31,8 @@ const CASES: SearchCase[] = [
   {
     kebab: 'visibility-graph-recipe',
     element: 'addVisibilityGraphRecipe',
-    outputs: /return visibility;$/
+    outputs:
+      /export async function runExample\(graph: GPUCommandGraph, props: GPUNetworkVisibilityGraphCSRProps\) \{\s*const visibility = addVisibilityGraphRecipe\(graph, props\);\s*return visibility;\s*\}$/
   },
   {
     kebab: 'network-service-areas',

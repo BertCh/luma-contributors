@@ -111,7 +111,7 @@ export default defineOperationRun({
       outputs: {speedField, positions, speeds, trails},
       update: values => {
         const settings = {
-          fieldExtent: [0, 0, field.cellSize, field.cellSize] as const,
+          fieldPlacement: {origin: [0, 0], cellSize: [field.cellSize, field.cellSize]} as const,
           timeStep: values.timeStep,
           speedScale: values.speedScale,
           dropRate: values.dropRate,

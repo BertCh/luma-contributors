@@ -324,3 +324,25 @@ it('R6 describes the effective analytic minimum and excluded islands when minimu
     device.destroy();
   }
 });
+
+it('weighted points retain their exact sum-loss word on the stage and joined table', () => {
+  for (const family of ['quadbin', 'h3'] as const) {
+    for (const supplied of [false, true]) {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'sum-loss'});
+      const values = createTransientView(graph, 'weights', 'float32', 10);
+      const sumOverflow = supplied
+        ? createTransientView(graph, 'sum-overflow', 'uint32', 1)
+        : undefined;
+      const recipe = addHotSpotAnalysisRecipe(graph, {
+        ...createProps(graph, {family, values}),
+        scratch: {pointTable: {status: {sumOverflow}}}
+      });
+      const stage = recipe.status.stages.find(entry => entry.stage === 'point-aggregation');
+      expect(stage?.status.sumOverflow).toBeDefined();
+      expect(recipe.table?.status.sumOverflow).toBe(stage?.status.sumOverflow);
+      if (supplied) {
+        expect(stage?.status.sumOverflow).toBe(sumOverflow);
+      }
+    }
+  }
+});

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it, vi} from 'vitest';
+import {expect, expectTypeOf, it, vi} from 'vitest';
 import {getStorageTopKNodeRecord} from '../../../src/analysis-core/kernels/storage-backed-top-k';
 import {getReservedWGSLWords} from '../spatial-join/wgsl-reserved-words';
 import {WgslReflect} from 'wgsl_reflect';
@@ -15,6 +15,7 @@ import {
   GPUInverseDistanceWeighting,
   GPUKriging,
   type GPUFocalStatisticsProps,
+  type GPUFocalStatisticsOutput,
   type GPUInverseDistanceWeightingProps,
   type GPUKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/index';
@@ -533,12 +534,19 @@ it('GPUKriging schedules only requested nodes within eight storage bindings', ()
 });
 
 it('GPUFocalStatistics validates its props and schedules only requested kernels', () => {
+  const emptyOutput = {};
+  expectTypeOf(emptyOutput).not.toExtend<GPUFocalStatisticsOutput>();
+  withGraph(graph => {
+    // Reflect exercises the runtime refusal without pretending this invalid shape is assignable.
+    expect(() =>
+      Reflect.construct(GPUFocalStatistics, [{...createFocalProps(graph), output: emptyOutput}])
+    ).toThrow(/at least one output/);
+  });
   const cases: [(graph: GPUCommandGraph) => Partial<GPUFocalStatisticsProps>, RegExp][] = [
     [() => ({grid: {...GRID_4_BY_3, height: -1}}), /grid dimensions/],
     [() => ({maximumRadius: 65}), /maximumRadius/],
     [() => ({maximumRadius: 1.5}), /maximumRadius/],
     [() => ({noDataValue: NaN}), /noDataValue/],
-    [() => ({output: {}}), /at least one output/],
     [graph => ({values: view(graph, 'float32', 11)}), /values must hold/],
     [graph => ({validity: view(graph, 'uint32', 11)}), /validity must hold/],
     [graph => ({parameters: view(graph, 'float32', 3)}), /parameters/],

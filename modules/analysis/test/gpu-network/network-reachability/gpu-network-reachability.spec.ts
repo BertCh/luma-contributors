@@ -1575,3 +1575,31 @@ it('GPUNetworkReachability sums the counters over lanes', async () => {
     buffer.destroy();
   }
 });
+
+it('duplicate equal seeds preserve plateau roots and isolated sentinels', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 0 -> 1 -> 2 is a zero-cost plateau; 2 -> 0 closes a cycle, and 3 is isolated.
+  // Rows 0/1 duplicate the accepted root. Row 2 is ineligible (negative cost).
+  const fixture = createReachabilityFixture(
+    device,
+    buildCSR(4, [
+      [0, 1, 0],
+      [1, 2, 0],
+      [2, 0, 0]
+    ]),
+    4,
+    {sources: [0, 0, 3], sourceCosts: [0, 0, -1]}
+  );
+  fixture.graph.add(new GPUNetworkReachability(fixture.props));
+  const compiled = fixture.graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readCosts(fixture)).toEqual([0, 0, 0, Infinity]);
+    expect(await readUint32(fixture.predecessorsBuffer, 4)).toEqual([NONE, 0, 1, NONE]);
+    expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([1]);
+  } finally {
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
+});

@@ -4,6 +4,11 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslParser} from 'wgsl_reflect';
+import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {GPUSpatialRegressionDiagnostics} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-regression-diagnostics';
 import type {GPUSpatialRegressionDiagnosticsProps} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-regression-diagnostics';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -19,6 +24,35 @@ import {
 } from './spatial-regression-diagnostics-oracle';
 
 let serial = 0;
+
+for (const tileRowCount of [1, 7, 64])
+  for (const restandardizeRows of [false, true])
+    it(`v3-1 diagnostics modules have unique global declarations, tile ${tileRowCount}, restandardize ${restandardizeRows}`, () => {
+      const device = createNullWebGPUDevice();
+      try {
+        const graph = new GPUCommandGraph(device);
+        recordWGSLKernelNodes(graph);
+        const nodes = new GPUSpatialRegressionDiagnostics(
+          createProps(graph, {tileRowCount, restandardizeRows})
+        ).getCommandNodes(graph);
+        const duplicates: string[] = [];
+        for (const node of nodes) {
+          const record = getWGSLKernelNodeRecord(graph, node.id);
+          if (!record) continue;
+          // The parser accepts duplicate globals; WGSL/Tint forbids them. Inspect only module
+          // declarations, preserving legitimate repeated local names in different functions.
+          const names = new Set<string>();
+          for (const declaration of new WgslParser().parse(record.source)) {
+            if (!('name' in declaration) || typeof declaration.name !== 'string') continue;
+            if (names.has(declaration.name)) duplicates.push(`${node.id}: ${declaration.name}`);
+            names.add(declaration.name);
+          }
+        }
+        expect(duplicates).toEqual([]);
+      } finally {
+        device.destroy();
+      }
+    });
 
 function createProps(
   graph: GPUCommandGraph,
@@ -99,13 +133,29 @@ it('F2 diagnostics finish reads both weights-loss flags', () => {
       weights: {...props.weights, status: {overflow, candidateOverflow}}
     }).getCommandNodes(graph);
     const finish = nodes.find(node => node.id.endsWith('-finish'))!;
-    for (const flag of [overflow, candidateOverflow])
-      expect(
-        finish.resources?.some(
+    const lossNodes = nodes.filter(node => node.id.includes('-weights-loss-'));
+    for (const flag of [overflow, candidateOverflow]) {
+      const reader = lossNodes.find(node =>
+        node.resources?.some(
           resource =>
             'buffer' in resource && resource.buffer === flag && resource.usage === 'storage-read'
         )
-      ).toBe(true);
+      );
+      expect(reader, 'both source flags feed the shared loss fold').toBeDefined();
+    }
+    const reset = nodes.find(node => node.id.endsWith('-weights-loss-reset'))!;
+    const loss = reset.resources?.find(resource => resource.usage === 'storage-read-write');
+    expect(
+      loss &&
+        'buffer' in loss &&
+        finish.resources?.some(
+          resource =>
+            'buffer' in resource &&
+            resource.buffer === loss.buffer &&
+            resource.usage === 'storage-read'
+        )
+    ).toBe(true);
+    expect(nodes.indexOf(reset)).toBeLessThan(nodes.indexOf(finish));
   } finally {
     graph.device.destroy();
   }
@@ -122,10 +172,14 @@ it('GPUSpatialRegressionDiagnostics declares its kernels, including the weights 
     'spatial-regression-diagnostics-row-table'
   ]);
   expect(ids.slice(-3)).toEqual([
-    'spatial-regression-diagnostics-moments-tiles',
-    'spatial-regression-diagnostics-moments-merge',
-    'spatial-regression-diagnostics-finish'
+    'spatial-regression-diagnostics-moran-centered-norm-tiles',
+    'spatial-regression-diagnostics-moran-centered-norm-merge',
+    'spatial-regression-diagnostics-moran-centered-report'
   ]);
+  expect(ids).toContain('spatial-regression-diagnostics-fitted-lag-projection');
+  expect(ids).toContain('spatial-regression-diagnostics-fitted-lag-residuals');
+  expect(ids).toContain('spatial-regression-diagnostics-origin-row-tiles');
+  expect(ids).toContain('spatial-regression-diagnostics-observed-origin');
   expect(ids).toContain('spatial-regression-diagnostics-transpose-slot-keys');
   expect(ids).toContain('spatial-regression-diagnostics-transposed-lag');
   device.destroy();

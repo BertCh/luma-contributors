@@ -114,7 +114,7 @@ export type GPUNearestFeatureWeightsProps = {
    * `slotCapacity`, or to `slotCapacity - 1` with `excludeSelf`. Rows with fewer valid slots keep
    * fewer (no padding entries are written).
    */
-  k?: number;
+  neighborCount?: number;
   /**
    * Self-join: drop the slot whose feature row equals the query row (libpysal `KNN` never lists a
    * row as its own neighbor). Run the join with `k + 1` neighbors so `k` remain.
@@ -140,15 +140,21 @@ export type GPUNearestFeatureWeightsProps = {
    * each row. `distances` is filled when present. The capacity (`neighbors.length`) must be at least
    * `1`; `rows * (k)` always suffices. `status.overflow` is 1 when the kept neighbors did not fit;
    * `status.candidateOverflow` receives upstream join loss (including truncated tie slots), or zero
-   * without neighborStatus. It is required when neighborStatus is supplied. Omit status.requiredCount.
+   * without neighborStatus. It is required when neighborStatus is supplied. Only these two
+   * completeness flags are published. Other captured bounded-result and join-status diagnostics
+   * are rejected at construction; unrelated metadata keys are omitted from the captured status.
    */
-  output: GPUSpatialWeightsOutput;
+  output: Omit<GPUSpatialWeightsOutput, 'status'> & {
+    status: GPUOverflowStatusPort & GPUCandidateStatusPort;
+  };
 };
 
 /**
  * Adapter from the k-nearest output of {@link GPUNearestFeatureJoin} to a {@link GPUSpatialWeights}
  * CSR: libpysal 4.15 `KNN` / `Graph.build_knn` for features of any kind (points, lines, polygons),
  * with the join's exact geometry distances.
+ * Multipart point/line neighbors occupy one feature row each, so their minimum part-pair
+ * distances and feature counts pass through without flattening parts or remapping identities.
  *
  * Per row it keeps the first `k` valid slots in the join's `(distance, feature row)` order, drops
  * padding (`GPU_SPATIAL_JOIN_NO_FEATURE`, slots past `neighborCounts`) and, with `excludeSelf`, the
@@ -158,10 +164,10 @@ export type GPUNearestFeatureWeightsProps = {
  * Distances and `distanceFloor` use the producing join's length unit. Pass its resolved
  * `spatialContext` to carry that unit into `outputWeights` and subsequent transforms.
  *
- * The weights are directed: a nearest-neighbor relation is generally not symmetric, so this
- * output does not meet the symmetric-pattern requirement of the `'symmetrize'` transform. Take the
- * union of the weights with their transpose (`GPUSpatialWeightsAlgebra` `'union'` with
- * `GPUSpatialWeightsTranspose`) first. Deviation from libpysal: binary weights are 1 and
+ * The `'average-reciprocal'` transform accepts these directed weights with a separate output.
+ * It preserves the stored links and treats a missing reverse weight as zero. To add missing
+ * reverse links, take the union of the weights and their transpose with `GPUSpatialWeightsAlgebra`
+ * and `GPUSpatialWeightsTranspose`. Deviation from libpysal: binary weights are 1 and
  * inverse-distance weights floor the distance instead of dividing by zero.
  */
 export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
@@ -172,15 +178,18 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
   /** Number of rows (queries). */
   readonly rows: number;
   /** Resolved neighbors kept per row. */
-  readonly k: number;
+  readonly neighborCount: number;
   /** Upper bound including every storage sorting chunk and the scan. */
   readonly estimatedCommandNodeCount: number;
   /** Resolved context of the producing join. */
   readonly spatialContext: GPUSpatialContext;
   /** Output CSR carrying the producing join context and weights metadata. */
-  readonly outputWeights: GPUSpatialWeights;
+  readonly outputWeights: Omit<GPUSpatialWeights, 'status'> & {
+    status?: Pick<NonNullable<GPUSpatialWeights['status']>, 'overflow' | 'candidateOverflow'>;
+  };
 
   constructor(props: GPUNearestFeatureWeightsProps) {
+    const hasLegacyNeighborCount = 'k' in props;
     props = snapshotConstructionFields(props, [
       'id',
       'spatialContext',
@@ -191,7 +200,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       'neighborStatus',
       'slotCapacity',
       'scratchChunkRowCount',
-      'k',
+      'neighborCount',
       'excludeSelf',
       'weightType',
       'power',
@@ -199,9 +208,27 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       'output'
     ] as readonly (keyof GPUNearestFeatureWeightsProps)[]);
     const id = props.id ?? 'nearest-feature-weights';
+    validateRequirement(
+      {id, contributor: 'GPUNearestFeatureWeights', messagePrefix: `${id}:`},
+      !hasLegacyNeighborCount,
+      'k was renamed; use neighborCount'
+    );
     const {slotCapacity} = props;
     validateCapacity(id, 'slotCapacity', slotCapacity, 1, MAXIMUM_SLOTS);
     const output = snapshotJoinWeights(props.output);
+    validateRequirement(
+      id,
+      Boolean(output.status?.overflow),
+      'output.status.overflow is required because this adapter publishes final CSR capacity loss; provide one uint32 overflow destination'
+    );
+    const outputStatus = output.status as GPUSpatialWeightsOutput['status'];
+    for (const [name, destination] of Object.entries(outputStatus)) {
+      validateRequirement(
+        id,
+        destination === undefined || name === 'overflow' || name === 'candidateOverflow',
+        `output.status.${name} is unsupported because this adapter publishes only overflow and candidateOverflow; omit ${name} and use those completeness flags`
+      );
+    }
     props = Object.freeze({
       ...props,
       slotCapacity,
@@ -239,8 +266,9 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
         MAXIMUM_TOTAL_SLOTS
       );
     }
-    this.k = props.k ?? (props.excludeSelf ? Math.max(slotCapacity - 1, 1) : slotCapacity);
-    validateCapacity(id, 'k', this.k, 1, slotCapacity);
+    this.neighborCount =
+      props.neighborCount ?? (props.excludeSelf ? Math.max(slotCapacity - 1, 1) : slotCapacity);
+    validateCapacity(id, 'neighborCount', this.neighborCount, 1, slotCapacity);
     validateSinglePackedView(props.neighborRows, ['uint32'], `${id} neighborRows`);
     validateSinglePackedView(props.neighborCounts, ['uint32'], `${id} neighborCounts`);
     this.rows = props.neighborCounts.length;
@@ -258,7 +286,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
           .maxStorageBufferBindingSize /
           4 -
           1) /
-          (this.k * 2)
+          (this.neighborCount * 2)
       )
     );
     this.estimatedCommandNodeCount =
@@ -300,13 +328,10 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
         transform: weightType === 'binary' ? 'binary' : 'raw',
         symmetric: 'unknown',
         hasSelfWeights: !props.excludeSelf,
-        provenance: {source: OPERATION, criterion: 'knn', k: this.k}
+        provenance: {source: OPERATION, criterion: 'knn', k: this.neighborCount}
       }
     });
     const {status} = props.output;
-    if (status.requiredCount) {
-      throw new Error(`${id} does not write output.status.requiredCount`);
-    }
     validateRequirement(
       id,
       !props.neighborStatus || Boolean(props.neighborStatus.overflow),
@@ -365,7 +390,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, rows, k} = this;
+    const {id, props, rows, neighborCount} = this;
     const {output: weights, slotCapacity} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.neighborRows,
@@ -404,15 +429,18 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     const scratchRows = Math.min(
       rows,
       props.scratchChunkRowCount ?? rows,
-      Math.max(1, Math.floor((graph.device.limits.maxStorageBufferBindingSize / 4 - 1) / (k * 2)))
+      Math.max(
+        1,
+        Math.floor((graph.device.limits.maxStorageBufferBindingSize / 4 - 1) / (neighborCount * 2))
+      )
     );
-    const cursorWord = scratchRows * k * 2;
+    const cursorWord = scratchRows * neighborCount * 2;
     validateGPUStorageBindingByteLength(
       graph.device,
       id,
       'kept neighbor scratch',
       storageBacked ? (cursorWord + 1) * 4 : 0,
-      'reduce rows or k'
+      'reduce rows or neighborCount'
     );
     const keptScratch = storageBacked
       ? createTransientView(graph, `${id}-kept`, 'uint32', cursorWord + 1)
@@ -433,7 +461,7 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rows);
     const inverse = (props.weightType ?? 'binary') === 'inverse-distance';
     const declarations = `const SLOTS: u32 = ${slotCapacity}u;
-const KEEP: u32 = ${k}u;
+const KEEP: u32 = ${neighborCount}u;
 const EXCLUDE_SELF: bool = ${props.excludeSelf === true};
 const NO_FEATURE: u32 = ${GPU_SPATIAL_JOIN_NO_FEATURE}u;
 const POWER: f32 = ${getWGSLFloatLiteral(props.power ?? 1)};

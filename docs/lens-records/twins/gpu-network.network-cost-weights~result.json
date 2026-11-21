@@ -4,15 +4,15 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const costWeights = new GPUNetworkCostWeights({\n  costs: matrixCosts,\n  rowCount: facilityCount,\n  orientation: 'rows',\n  parameters,\n  output: {\n    offsets: createTransientView(graph, 'weightOffsets', 'uint32', facilityCount + 1),\n    neighbors: createTransientView(graph, 'weightNeighbors', 'uint32', slotCount),\n    weights: createTransientView(graph, 'weightValues', 'float32', slotCount),\n    distances: createTransientView(graph, 'weightDistances', 'float32', slotCount),\n    status: {overflow: createTransientView(graph, 'weightOverflow', 'uint32', 1)}\n  }\n});\ngraph.add(costWeights);\nconst {offsets, neighbors, weights} = costWeights.props.output;",
+    "code": "const costWeights = new GPUNetworkCostWeights({\n  costs: matrixCosts,\n  costsComplete: matrixComplete,\n  costLimit: matrixCostLimit,\n  rowCount: facilityCount,\n  orientation: 'rows',\n  parameters,\n  output: {\n    offsets: createTransientView(graph, 'weightOffsets', 'uint32', facilityCount + 1),\n    neighbors: createTransientView(graph, 'weightNeighbors', 'uint32', slotCount),\n    weights: createTransientView(graph, 'weightValues', 'float32', slotCount),\n    distances: createTransientView(graph, 'weightDistances', 'float32', slotCount),\n    status: {complete, overflow: createTransientView(graph, 'weightOverflow', 'uint32', 1)}\n  }\n});\ngraph.add(costWeights);\nconst {offsets, neighbors, weights} = costWeights.props.output;",
     "language": "ts",
-    "lineCount": 15
+    "lineCount": 17
   },
   "scenarioId": "gpu-network.network-cost-weights",
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-cost-weights: facilityPositions → retained-nodes. points: 823. values read back from the GPU run. input facilityPositions: 1 points.",
   "description": "Result of gpu-network.network-cost-weights: facilityPositions → retained-nodes. points: 823. values read back from the GPU run. input facilityPositions: 1 points.",
-  "llms": "Result of gpu-network.network-cost-weights: facilityPositions → retained-nodes\n\n- points: 823\n- input facilityPositions: 1 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 823 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-cost-weights: facilityPositions → retained-nodes\n\n- points: 823\n- input facilityPositions: 1 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 823 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients weightComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "823"
@@ -24,16 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:15.714Z",
-    "runId": "run-739ba1bc",
+    "date": "2026-11-20T23:48:43.928Z",
+    "runId": "run-701d42f6",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased"
+      "lens twin: transients weightComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-739ba1bc",
+    "runId": "run-701d42f6",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -294,10 +294,11 @@ every named status and its meaning. The [lens spec](../modules/lenses/test/compu
 checks readback provenance, expected matrix, reconstructed factors, zero residual, three usable
 bins, weight `60`, and the excluded-bin count.
 
-The API page currently contains result and graph directives for this scenario, but the active
-[website compiler](../website/build/markdown-plugin.ts#L101) renders them as literal text.
-`docs/lens-records/gpu-dataframe.coregionalization-fit.json` and its twins now exist after GPU recapture.
-Running the lens spec checks a live capture; it does not publish a record or a website embed. Use the
+The API page's result and graph directives both link to the scenario's recording page. The
+[website compiler](../website/build/markdown-plugin.ts#L175) renders the links, and the recording
+page displays the graph. The committed capture is
+`docs/lens-records/gpu-dataframe.coregionalization-fit.json`. Running the lens spec checks live
+GPU readback. To regenerate the capture for publication, use the
 [headless record-capture spec](../modules/lenses/test/computation-lenses/capture-records.spec.ts)
 to capture this scenario on a GPU runner, with capture enabled and the scenario selected:
 
@@ -305,10 +306,9 @@ to capture this scenario on a GPU runner, with capture enabled and the scenario 
 VITE_CAPTURE_LENS_RECORDS=1 node_modules/.bin/vitest run --project headless modules/lenses/test/computation-lenses/capture-records.spec.ts -t '^capture lens record gpu-dataframe[.]coregionalization-fit$'
 ```
 
-Before describing a published embed, verify the scenario record exists and render this API
-section through the active website compiler: both directives must produce figures backed by that
-record. Capturing a record alone does not add directive support to the compiler. The walkthrough
-review spec renders this section and checks the distinction; it does not publish the capture.
+Verify that the scenario record exists and render this API section through the active website
+compiler. Both links should point to the same recording page, where readers can inspect
+the capture and its graph.
 
 When graph nodes or capture layouts change, arrange to recapture the committed lens records with
 the GPU runner. Review the resulting tables and diagnostics against these expectations. A

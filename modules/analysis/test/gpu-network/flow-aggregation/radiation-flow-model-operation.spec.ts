@@ -10,7 +10,7 @@ import {
   type RadiationFlowModelOperationProps
 } from '../../../src/gpu-network/flow-aggregation/gpu-radiation-flow-model-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 it('radiation twins preserve tiny distinct great-circle separations', async () => {
   const device = await getWebGPUTestDevice();
@@ -106,3 +106,27 @@ for (const normalization of ['none', 'finite-size'] as const) {
     });
   }
 }
+
+it('DGN-05 radiation operation publishes invalid centroids and preserves the zero diagonal', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: RadiationFlowModelOperationProps = {
+    zoneCount: 2,
+    positions: 'positions',
+    populations: 'populations',
+    outflows: 'outflows',
+    output: {flows: 'flows', invalidInput: 'invalid'}
+  };
+  const rows = await runOperationGraph(device, {
+    inputs: {
+      positions: {format: 'float32x2', values: Float32Array.of(0, 0, NaN, 0)},
+      populations: {format: 'float32', values: Float32Array.of(1, 1)},
+      outflows: {format: 'float32', values: Float32Array.of(8, 6)}
+    },
+    operations: [new GPURadiationFlowModelOperation(props)],
+    outputs: ['flows', 'invalid']
+  });
+  // Self flow is zero independently of centroids; unknown distances suppress both other flows.
+  expect(Array.from(rows['flows'])).toEqual([0, NaN, NaN, 0]);
+  expect(Array.from(rows['invalid'])).toEqual([1, 1]);
+});

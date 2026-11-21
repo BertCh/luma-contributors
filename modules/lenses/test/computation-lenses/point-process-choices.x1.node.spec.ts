@@ -8,6 +8,22 @@ import {createSpatialChoice} from '../../src/gpu-spatial-analysis/computation-pa
 import {getLensScenario} from '../../src/computation-lenses/registry-implementation';
 import {declareLensScenario} from './scenario-declaration.test-utils';
 
+test('R5 estimated intensity retains active bandwidth and self-contribution controls', () => {
+  const values = getPointProcessLensChoices('GPUInhomogeneousPointPattern', {
+    bandwidth: 1,
+    selfContribution: 'exclude'
+  });
+  for (const name of ['bandwidth', 'selfContribution']) {
+    const template = getSpatialOperatorEntry('GPUInhomogeneousPointPattern')!.choices!.find(
+      choice => choice.name === name
+    )!;
+    expect(createSpatialChoice(template, values[name])).toMatchObject({
+      value: name === 'bandwidth' ? 1 : 'exclude',
+      sweepable: true
+    });
+  }
+});
+
 test.each([
   'dbscan',
   'xi'
@@ -59,7 +75,7 @@ test.each([
 });
 
 test.each([
-  ['inhomogeneous-point-pattern', ['bandwidth']],
+  ['inhomogeneous-point-pattern', ['bandwidth', 'selfContribution']],
   ['point-pattern-envelope', ['significanceLevel']],
   ['optics', ['xi', 'minimumClusterSize']]
 ] as const)('X6 live %s receipts mark branch-inapplicable settings non-sweepable', async (name, disabledNames) => {

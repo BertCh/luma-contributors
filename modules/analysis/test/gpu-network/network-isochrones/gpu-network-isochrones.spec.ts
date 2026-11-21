@@ -45,7 +45,33 @@ import {
   getTriangleAreasPerBand,
   splatIsochroneRasterOnCPU
 } from './network-isochrones-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
+import {createLeadingSlotRasterFixture} from './leading-slot-raster-fixture';
+
+it.each([
+  false,
+  true
+])('leaves every raster pixel unreached for an unowned leading CSR slot (NET-109, sourcePaths=%s)', async sourcePaths => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createOptimizationHarness(device);
+  const {contributor, values, sourcePathOffsets} = createLeadingSlotRasterFixture(
+    harness,
+    sourcePaths
+  );
+  const read = await harness.run(
+    contributor,
+    sourcePaths
+      ? first => {
+          expect(first(values)).toEqual([7, 7, 7, Math.fround(1e30)]);
+          harness.rewrite(sourcePathOffsets!, Uint32Array.of(1, 1, 1));
+        }
+      : undefined
+  );
+  // Slot 0 belongs to no row. Slot 1 is a self-loop at unreachable vertex 1: neither is a road.
+  expect(read(values)).toEqual(new Array(4).fill(Math.fround(1e30)));
+});
 
 const GRID = 9;
 const NODE_COUNT = GRID * GRID;

@@ -136,6 +136,61 @@ export function getCellCoverRangesLength(
 
 const NONE = '0xffffffffu';
 
+/**
+ * Exclusive scan of per-feature counts that saturates at `0xffffffff` instead of wrapping. Each
+ * count is below 2^32, so a step whose uint32 prefix sum wrapped is exactly a step where the
+ * prefix decreases; every entry at or after the first such step is set to `0xffffffff`. The
+ * entries stay nondecreasing, so range searches over them still find the unsaturated features,
+ * and a saturated total compares above every capacity. @internal
+ */
+export function getCellCoverSaturatedScanNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  input: GraphDataView<'uint32'>,
+  output: GraphDataView<'uint32'>
+): GPUCommandNode<Parameters>[] {
+  const length = input.length;
+  const wraps = createTransientView(graph, `${id}-wraps`, 'uint32', length);
+  const wrapCounts = createTransientView(graph, `${id}-wrap-counts`, 'uint32', length);
+  return [
+    ...new GPUScan({id, input, output, mode: 'exclusive'}).getCommandNodes(graph),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-wrap-flags`,
+      operation: 'GPUCellCover',
+      variant: 'saturated-scan-flags',
+      bindings: [
+        {name: 'starts', view: output, type: 'u32', access: 'read'},
+        {name: 'wraps', view: wraps, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: length,
+      body: `var wrapped = false;
+  if (index > 0u) {
+    wrapped = starts[startsOffset + index] < starts[startsOffset + index - 1u];
+  }
+  wraps[wrapsOffset + index] = select(0u, 1u, wrapped);`
+    }),
+    ...new GPUScan({
+      id: `${id}-wrap-scan`,
+      input: wraps,
+      output: wrapCounts,
+      mode: 'inclusive'
+    }).getCommandNodes(graph),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-saturate`,
+      operation: 'GPUCellCover',
+      variant: 'saturated-scan-saturate',
+      bindings: [
+        {name: 'wrapCounts', view: wrapCounts, type: 'u32', access: 'read'},
+        {name: 'starts', view: output, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: length,
+      body: `if (wrapCounts[wrapCountsOffset + index] != 0u) {
+    starts[startsOffset + index] = 0xffffffffu;
+  }`
+    })
+  ];
+}
+
 /** Offset-array search: the largest `i` in `[0, rangeCount)` with `offsets[i] <= value`, else NONE. */
 function getRangeSearchWGSL(name: string, binding: string, rangeCount: number): string {
   return /* wgsl */ `
@@ -477,12 +532,7 @@ ${lattice}`,
   }
   cost[costOffset + index] = featureCost;`
     }),
-    ...new GPUScan({
-      id: make('cost-scan'),
-      input: cost,
-      output: costStarts,
-      mode: 'exclusive'
-    }).getCommandNodes(graph)
+    ...getCellCoverSaturatedScanNodes(graph, make('cost-scan'), cost, costStarts)
   );
 
   // 4. Selection: a feature whose cost fits after the earlier candidates takes the scanline path.
@@ -507,8 +557,9 @@ ${lattice}`,
       body: `let rb = rangesOffset + index * STRIDE;
   countCarry[countCarryOffset + index] = 0u;
   let featureCost = cost[costOffset + index];
-  // The sum of capped costs stays below 2^32 because (featureCount + 1) * (capacity + 1) does.
-  let selected = featureCost > 0u && (costStarts[costStartsOffset + index] + featureCost) <= SLOT_CAPACITY;
+  // costStarts saturates at 0xffffffff, so compare without forming the possibly wrapping sum.
+  let costStart = costStarts[costStartsOffset + index];
+  let selected = featureCost > 0u && featureCost <= SLOT_CAPACITY && costStart <= SLOT_CAPACITY - featureCost;
   ranges[rb + 5u] = (ranges[rb + 5u] & 1u) | select(0u, 2u, selected);
   ranges[rb + 6u] = 0u;
   ranges[rb + 7u] = 0u;

@@ -34,7 +34,7 @@ const BOUNDS = NEIGHBOR_SEARCH_CLUSTERED_ORACLE.bounds;
 const f32 = Math.fround;
 
 /** Weights of a kernel make any difference in a neighbor's distance visible as a different bit pattern. */
-const KERNEL_PARAMETERS = {weightKind: 'kernel', kernel: 'gaussian'} as const;
+const KERNEL_PARAMETERS = {weightType: 'kernel', kernel: 'gaussian'} as const;
 
 async function runStructure(
   device: Parameters<typeof createNeighborSearchHarness>[0],
@@ -89,30 +89,30 @@ it('GPUNeighborSearch grid, bvh and auto equal each other, scipy and the oracle 
       : undefined;
     const base = {positions, mask, queryPositions, gridSize: [32, 32] as [number, number]};
     const cases = [
-      ...Object.entries(scene.knn).map(([k, csr]) => ({
-        label: `${scene.name} k=${k}`,
+      ...Object.entries(scene.knn).map(([neighborCount, csr]) => ({
+        label: `${scene.name} k=${neighborCount}`,
         csr,
         mode: 'knn' as const,
-        k: Number(k),
+        neighborCount: Number(neighborCount),
         parameters: {bounds: BOUNDS, ...KERNEL_PARAMETERS} as GPUNeighborSearchSettings
       })),
       ...Object.entries(scene.radius).map(([radius, csr]) => ({
         label: `${scene.name} radius=${radius}`,
         csr,
         mode: 'radius' as const,
-        k: undefined,
+        neighborCount: undefined,
         parameters: {
           bounds: BOUNDS,
-          radius: Number(radius),
+          searchRadius: Number(radius),
           ...KERNEL_PARAMETERS
         } as GPUNeighborSearchSettings
       }))
     ];
-    for (const {label, csr, mode, k, parameters} of cases) {
+    for (const {label, csr, mode, neighborCount, parameters} of cases) {
       const options = {
         ...base,
         mode,
-        k,
+        neighborCount,
         parameters,
         capacity: Math.max(csr.neighbors.length, 1)
       };
@@ -126,7 +126,7 @@ it('GPUNeighborSearch grid, bvh and auto equal each other, scipy and the oracle 
       // The existing brute-force oracle agrees too (it shares the f32 distance expression).
       const oracle = computeNeighborSearchOracle({
         mode,
-        k,
+        neighborCount,
         positions,
         mask,
         queryPositions,
@@ -151,11 +151,11 @@ it('GPUNeighborSearch bvh and auto equal the grid with a query mask and an excee
   }
   const queryMask = new Uint32Array(count).fill(1);
   for (let row = 0; row < count; row += 4) queryMask[row] = 0;
-  const parameters: GPUNeighborSearchSettings = {bounds: [0, 0, 1000, 1000], radius: 6};
+  const parameters: GPUNeighborSearchSettings = {bounds: [0, 0, 1000, 1000], searchRadius: 6};
   for (const mode of ['knn', 'radius'] as const) {
     const options = {
       mode,
-      k: mode === 'knn' ? 8 : undefined,
+      neighborCount: mode === 'knn' ? 8 : undefined,
       positions,
       queryMask,
       parameters: mode === 'knn' ? {bounds: parameters.bounds} : parameters,
@@ -206,7 +206,7 @@ it('GPUNeighborSearch bvh and auto equal the grid when per-frame inputs change w
       structure,
       createNeighborSearchHarness(device, {
         mode: 'knn',
-        k: 6,
+        neighborCount: 6,
         positions,
         mask,
         capacity: count * 6,

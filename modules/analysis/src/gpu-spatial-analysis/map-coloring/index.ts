@@ -11,6 +11,7 @@ export {
 } from './gpu-map-coloring';
 export type {
   GPUMapColoringOutput,
+  GPUMapColoringPriority,
   GPUMapColoringProps,
   GPUMapColoringSettings
 } from './gpu-map-coloring';

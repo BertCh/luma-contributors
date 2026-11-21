@@ -89,7 +89,7 @@ function addJacquezTest(
       neighbors: getPairs(context, rows),
       times: view('float32', rows),
       parameters: view('uint32', GPU_SPACE_TIME_PARAMETER_LENGTH),
-      k,
+      neighborCount: k,
       maximumPermutations,
       ...(stopAfterExceedances === undefined ? {} : {stopAfterExceedances}),
       output: {

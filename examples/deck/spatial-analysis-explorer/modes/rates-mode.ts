@@ -394,7 +394,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
             'uint32',
             pointCount
           ),
-          featureCounts: featureCountsView,
+          polygonAssignmentCounts: featureCountsView,
           status: {
             overflow: importGraphBuffer(joinGraph, 'join-overflow', joinOverflow, 'uint32', 1)
           }
@@ -480,7 +480,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
           spatialContext: zips.frame.spatialContext,
           id: 'rates-neighbors',
           mode: 'knn',
-          k,
+          neighborCount: k,
           gridSize: [32, 32],
           positions: importGraphBuffer(
             graph,
@@ -704,7 +704,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
       searchParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: geometry.bounds,
-          weightKind: 'binary',
+          weightType: 'binary',
           rowStandardize: true
         })
       );
@@ -917,11 +917,11 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
         summary: take(GPU_EMPIRICAL_BAYES_SUMMARY.length),
         statistics: take(STATISTICS_LENGTH),
         classCounts: take(CLASS_COUNT),
-        flags: take(3),
+        flags: take(4),
         words: 0
       };
     })();
-    layout.words = layout.flags + 3;
+    layout.words = layout.flags + 4;
 
     const formatNumber = (value: number, digits = 3) =>
       Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
@@ -963,6 +963,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
       );
     };
 
+    let ratesComplete = false;
     const reader = new SummaryReader(
       resources,
       'rates',
@@ -980,12 +981,32 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
         {buffer: classCountsBuffer, size: CLASS_COUNT * 4},
         {buffer: searchOverflow, size: 4},
         {buffer: totalNeighbors, size: 4},
-        {buffer: localOverflow, size: 4}
+        {buffer: localOverflow, size: 4},
+        {buffer: joinOverflow, size: 4}
       ],
       bytes => {
         const floats = new Float32Array(bytes);
         const words = new Uint32Array(bytes);
         const slice = (start: number) => floats.slice(start, start + featureCount);
+        ratesComplete = words[layout.flags + 3] === 0 && words[layout.flags] === 0;
+        if (!ratesComplete) {
+          latest = null;
+          eventsKnown = false;
+          for (const readout of [
+            pooledReadout,
+            varianceReadout,
+            priorReadout,
+            smallStdReadout,
+            extremeReadout,
+            moranReadout,
+            classReadout,
+            selectedReadout
+          ])
+            readout.setValue('unavailable: incomplete assignment or weights');
+          flagsReadout.setValue('incomplete assignment or weights');
+          context.updateLayers();
+          return;
+        }
         latest = {
           raw: slice(layout.raw),
           smoothed: slice(layout.smoothed),
@@ -1105,6 +1126,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
         return true;
       },
       getLayers() {
+        if (!ratesComplete) return [];
         const coordinateOrigin: [number, number, number] = [zips.origin[0], zips.origin[1], 0];
         const palette = (color: (index: number) => SpatialAnalysisColor) =>
           Array.from({length: 8}, (_, index) => color(index));

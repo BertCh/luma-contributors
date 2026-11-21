@@ -53,8 +53,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:19.136Z",
-    "runId": "run-3282b989",
+    "date": "2026-11-20T23:48:57.347Z",
+    "runId": "run-3bba1f97",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -62,7 +62,7 @@
     ]
   },
   "state": {
-    "runId": "run-3282b989",
+    "runId": "run-3bba1f97",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

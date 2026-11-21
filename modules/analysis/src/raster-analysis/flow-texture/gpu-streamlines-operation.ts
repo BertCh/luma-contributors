@@ -90,7 +90,11 @@ export function snapshotStreamlinesOperationProps(
   });
 }
 
-/** Vector-backed streamlines; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
+/**
+ * Vector-backed streamlines; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
+ * Forward lines.status.candidateOverflow or status.iterationLimitReached along with compact
+ * count/overflow. Capacity overflow 0 alone does not establish that all seeds were decided.
+ */
 export class GPUStreamlinesOperation extends GPUContributorOperation {
   constructor(props: StreamlinesOperationProps) {
     props = snapshotStreamlinesOperationProps(props);

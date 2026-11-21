@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterOperationArray} from '../raster-grid/raster-operation-band';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  snapshotRasterGrid,
+  snapshotRasterWalkingModel
+} from '../raster-grid/raster-construction-snapshot';
 import {
   validateCapacity,
   validateRequirement
@@ -16,6 +22,8 @@ import {GPU_RASTER_WALKING_COST_PARAMETER_LENGTH} from '../gpu-raster-walking-co
 import {
   calibrateRasterOperationBand,
   readRasterOperationBand,
+  snapshotRasterOperationBand,
+  validateRasterOperationOutputNames,
   validateRasterOperationBand,
   type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
@@ -29,7 +37,7 @@ export type CPURasterWalkingCostInput = {
 };
 export type CPURasterWalkingCostOptions = Pick<
   RasterWalkingCostOperationProps,
-  'grid' | 'cellSizeMode' | 'model'
+  'grid' | 'cellSizeMode' | 'model' | 'maximumIterations'
 >;
 export type CPURasterWalkingCostResult = {
   costs: Float32Array;
@@ -49,13 +57,14 @@ export type CPURasterWalkingCostResult = {
  * grid.width * grid.height sources rows are read; surplus source rows are ignored.
  *
  * What differs from the GPU contributor:
- * - Relaxation always reaches the exact fixed point: maximumIterations and the GPU command-node
- *   budget are ignored. converged is 1 and iterationLimitReached is 0, even with no sources.
+ * - Explicit maximumIterations permits at most maximumIterations + 1 synchronous rounds, just
+ *   as on the GPU, publishing partial costs and the stopping flags. With no explicit budget the
+ *   CPU retains its complete fixed-point solve. The GPU command-node cap does not apply.
  * - Calibration, ground scales, transitions and costs use float64 before one float32 output
  *   rounding. Compare costs with relative tolerance 3e-5; near-equal path choices and the number
  *   of rounds can differ. A float64-finite transition that overflows float32 remains usable.
- * - iterationCount counts synchronous float64 rounds including the first unchanged round; it
- *   can exceed the GPU budget. invalidCount keeps the GPU's model-layout mismatch meaning.
+ * - iterationCount counts synchronous float64 rounds including the first unchanged round, when
+ *   reached. invalidCount keeps the GPU's model-layout mismatch meaning.
  * - Subnormal samples and costs are retained; GPU implementations may flush them to zero.
  *
  * @throws Error naming an input whose array length is inconsistent, or an invalid option.
@@ -65,8 +74,10 @@ export function computeRasterWalkingCostOnCPU(
   options: CPURasterWalkingCostOptions
 ): CPURasterWalkingCostResult {
   const id = 'computeRasterWalkingCostOnCPU';
-  validateRasterOperationBand(id, input.elevation, options.grid);
-  validateRasterOperationBand(id, input.friction, options.grid);
+  validateRasterOperationArray(id, 'sources', input.sources, 'Uint32Array');
+  validateRasterOperationArray(id, 'parameters', input.parameters, 'Float32Array');
+  validateRasterOperationBand(id, input.elevation, options.grid, 'elevation');
+  validateRasterOperationBand(id, input.friction, options.grid, 'friction');
   validateWalkingOptions(id, options);
   const {width, height} = options.grid;
   const length = width * height;
@@ -160,6 +171,9 @@ export function computeRasterWalkingCostOnCPU(
     }
   }
   let iterationCount = 0;
+  let converged = false;
+  const maximumRounds =
+    options.maximumIterations === undefined ? Infinity : options.maximumIterations + 1;
   for (;;) {
     let changed = false;
     for (let cell = 0; cell < length; cell++) {
@@ -171,22 +185,23 @@ export function computeRasterWalkingCostOnCPU(
     }
     iterationCount++;
     [previous, next] = [next, previous];
-    if (!changed) break;
+    if (!changed) {
+      converged = true;
+      break;
+    }
+    if (iterationCount >= maximumRounds) break;
   }
   return {
     costs: Float32Array.from(previous, (cost, cell) => (validity[cell] !== 0 ? cost : NaN)),
     validity,
-    converged: Uint32Array.of(1),
-    iterationLimitReached: Uint32Array.of(0),
+    converged: Uint32Array.of(Number(converged)),
+    iterationLimitReached: Uint32Array.of(Number(!converged)),
     iterationCount: Uint32Array.of(iterationCount),
     invalidCount: Uint32Array.of(parametersMatchModel ? 0 : 1)
   };
 }
 
-function validateWalkingOptions(
-  id: string,
-  options: CPURasterWalkingCostOptions & {maximumIterations?: number}
-): void {
+function validateWalkingOptions(id: string, options: CPURasterWalkingCostOptions): void {
   const mode = options.cellSizeMode ?? 'uniform';
   validateRequirement(
     id,
@@ -222,12 +237,66 @@ function validateWalkingOptions(
     validateCapacity(id, 'maximumIterations', options.maximumIterations);
 }
 
-/** CPU directed walking cost, without the GPU command-node or convergence budget. */
+/** CPU directed walking cost with binding caller budgets and no GPU command-node cap. */
 export class CPURasterWalkingCostOperation extends GPUCPUOperation {
   constructor(props: RasterWalkingCostOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'cellSizeMode',
+      'model',
+      'maximumIterations',
+      'elevation',
+      'friction',
+      'sources',
+      'parameters',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['costs', 'validity', 'status']);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      model: snapshotRasterWalkingModel(props.model, props.id ?? 'raster-walking-cost'),
+      elevation: snapshotRasterOperationBand(props.elevation),
+      friction: snapshotRasterOperationBand(props.friction),
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'converged',
+          'iterationLimitReached',
+          'iterationCount',
+          'invalidCount'
+        ])
+      })
+    });
     const id = props.id ?? 'raster-walking-cost';
-    validateRasterOperationBand(id, props.elevation, props.grid);
-    validateRasterOperationBand(id, props.friction, props.grid);
+    validateRasterOperationOutputNames(
+      id,
+      {
+        'output.costs': props.output.costs,
+        'output.validity': props.output.validity,
+        'output.status.converged': props.output.status.converged
+      },
+      {
+        'output.status.iterationLimitReached': props.output.status.iterationLimitReached,
+        'output.status.iterationCount': props.output.status.iterationCount,
+        'output.status.invalidCount': props.output.status.invalidCount
+      },
+      {
+        'elevation.storage.values': props.elevation.storage.values,
+        'friction.storage.values': props.friction.storage.values,
+        ...(props.elevation.validity !== undefined
+          ? {'elevation.validity': props.elevation.validity}
+          : {}),
+        ...(props.friction.validity !== undefined
+          ? {'friction.validity': props.friction.validity}
+          : {}),
+        sources: props.sources,
+        parameters: props.parameters
+      }
+    );
+    validateRasterOperationBand(id, props.elevation, props.grid, 'elevation');
+    validateRasterOperationBand(id, props.friction, props.grid, 'friction');
     validateWalkingOptions(id, props);
     const length = props.grid.width * props.grid.height;
     super({
@@ -263,12 +332,14 @@ export class CPURasterWalkingCostOperation extends GPUCPUOperation {
                 values: inputs['elevationValues']!,
                 validity: inputs['elevationValidity']!
               },
-              props.elevation
+              props.elevation,
+              'elevation'
             ),
             friction: readRasterOperationBand(
               id,
               {...inputs, values: inputs['frictionValues']!, validity: inputs['frictionValidity']!},
-              props.friction
+              props.friction,
+              'friction'
             ),
             sources: getCPUOperationUint32Rows(id, inputs, 'sources'),
             parameters: getCPUOperationFloat32Rows(id, inputs, 'parameters')

@@ -269,7 +269,7 @@ graph.add(
   new GPUBufferSelection({spatialContext: projection.spatialContext,
     points: {kind: 'points', positions: observationPositions}, // ${POINT_LABELS[state.points]}, float32x2 meters
     features: ${state.features === 'lines' ? "{kind: 'segments', starts: transitStarts, ends: transitEnds}" : `{kind: 'points', positions: ${state.features === 'stations' ? 'stationPositions' : 'busPositions'}}`},
-    distance: distance.importToGraph(graph), // one float32, rewritten per frame
+    radius: distance.importToGraph(graph), // one float32, rewritten per frame
     candidateCapacity: observationPositions.length * ${state.features === 'lines' ? 40 : 24},
     spatialSort: ${state.spatialSort},
     output: {

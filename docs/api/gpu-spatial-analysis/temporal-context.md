@@ -6,6 +6,8 @@ converts data. Import it from `@luma-contributors/analysis/analysis-core` or
 `@luma-contributors/analysis/gpu-spatial-analysis`.
 
 ```ts
+import type {GPUTemporalCalendarUnit} from '@luma-contributors/analysis/analysis-core';
+
 type GPUTemporalContext = {
   unit: 'second' | 'millisecond' | 'microsecond' | 'nanosecond'; // ArrowAnalyticsTimeUnit
   epoch: 'unix' | bigint; // bigint: origin as signed Int64 ticks of `unit` after the Unix epoch
@@ -66,10 +68,11 @@ support at construction.
 | Temporal reduction | `GPUTemporalReduction` | `int64-words` or `float32-relative` | Any unit, caller's epoch |
 | Trajectory metrics, resample, playhead, zone events, encounters, closest approach | `GPUTrajectoryGeometryPort.temporalContext` | `int64-words` for `uint32x2` rows, `float32-relative` for `float32` rows; metrics also take `double-single` with `timestampsLow`. The context must match the bound view | Any unit; irregular axis only; `maximumGap` in the context unit |
 | Kalman and restriction | `GPUTrajectoryKalman`, trajectory restriction (`temporalContext` beside the `times` or `timestamps` fields) | `int64-words` or `float32-relative` | Kalman derives `timeUnitsPerSecond` from the context unit (1, 1e3, 1e6 or 1e9) for either encoding, and a `timeUnitsPerSecond` given with it must agree; without a context it is for words only, and float32 times are seconds |
-| Pair tests | `GPUKnoxTest`, `GPUMantelTest` | `float32-relative`, origin subtracted on the CPU | Caller's unit; no context prop |
+| Knox pair test | `GPUKnoxTest` | `float32-relative`, origin subtracted on the CPU | Caller's unit; no context prop |
+| Mantel pair test | `GPUMantelTest` (`temporalContext`, optional) | `float32-relative` only | Caller's unit and origin; direct, named-operation and standalone CPU forms capture and validate the descriptor without converting values. The caller supplies timestamps in that unit |
 | Near-repeat, local Knox and Jacquez | `GPUNearRepeatKnox`, `GPULocalKnox`, `GPUJacquezTest` (`temporalContext`) | `float32-relative` only; `int64-words` and `double-single` are refused | Any unit, any axis, and the epoch must be a declared bigint origin (`'unix'` is refused for float32). `getGPUSpaceTimeGuardedRelativeTimes` builds the times and returns the context; `GPUTimeWordsRelative.outputTemporalContext` is the context of times produced on the GPU |
 | Space-time kriging | `GPUSpaceTimeKriging` (`temporalContext`, optional `queryTemporalContext`) | `float32-relative` only; the query context must agree with the sample context on unit, epoch and encoding | Any unit and axis. `GPUTimeWordsRelative.outputTemporalContext` provides the context |
-| Space-time clustering | `GPUSpatialClustering`, `GPUOPTICS` (`temporalContext` with `times`; see [Space-time clustering](./space-time-clustering.md)) | `float32-relative` only; the context is required with `times` and rejected without | Any unit, time zone and axis; `timeEpsilon` and `maximumTimeDistance` are in the context unit |
+| Space-time clustering | `GPUDBSCAN`, `GPUOPTICS` (`temporalContext` with `times`; see [Space-time clustering](./space-time-clustering.md)) | `float32-relative` only; the context is required with `times` and rejected without | Any unit, time zone and axis; `timeEpsilon` and `maximumTimeDistance` are in the context unit |
 | Neighbor search | `GPUNeighborSearch` (`temporalContext` with `times`; see [`GPUNeighborSearch`](./operators-weights.md)) | `float32-relative` only; the context is required with `times` and rejected without | Any unit, time zone and axis; `timeRadius` and `timeBounds` are in the context unit |
 | Variogram | `GPUSpaceTimeVariogram` | `float32-relative` | Caller's unit and origin |
 | Cube statistics | `GPUEmergingHotSpots`, `addSpaceTimeHotSpotsRecipe`, `GPUValueCube`, `GPUCellPeriodKeys` | Integer slice index, cell-major | The recipe's event words are Int64 milliseconds from the Unix epoch |

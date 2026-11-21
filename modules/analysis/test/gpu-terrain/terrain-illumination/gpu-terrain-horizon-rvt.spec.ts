@@ -230,7 +230,7 @@ async function runSkyView(
     settings.write(
       getGPUTerrainHorizonParameterValues(
         {
-          anisotropyAzimuthDegrees: reference.mainDirection,
+          rvtDirectionDegrees: reference.mainDirection,
           anisotropyLevel: reference.level,
           anisotropyMinimumWeight: reference.minimumWeight
         },

@@ -48,12 +48,15 @@ export type CPUProfilePeaksResult = {
  * Parameters use the layout of getGPUProfilePeaksParameterValues (minimumProminence).
  *
  * What differs from the GPU contributor:
- * - All intermediate arithmetic and ranking use float64; outputs round once to float32. Near
- *   prominence ties or the inclusive suppression boundary, float32 GPU decisions can differ.
+ * - Prominence rounds to float32 before inclusive minimum acceptance and candidate ranking,
+ *   matching the reported precision. Parabolic refinement uses float64 and rounds on output;
+ *   near the inclusive suppression boundary, float32 GPU position decisions can differ.
  * - Suppression honors the round budget (default 16). Within a round, decisions are visited in
  *   source-row order; GPU invocation scheduling can decide a different subset at a small budget.
  * - GPU radius limits are dropped; window and radius may exceed 4096.
  * - Unused compact ID rows are zero-filled; only the first count rows are defined by the GPU.
+ * - As on the GPU, overflow reports capacity alone. candidateOverflow reports undecided peaks;
+ *   a compact-only operation must forward that port or a convergence status to prove completion.
  */
 export function computeProfilePeaksOnCPU(
   values: Float32Array,
@@ -131,7 +134,7 @@ export function computeProfilePeaksOnCPU(
         return {lowest, validCount};
       });
       if (sides.some(side => side.validCount < minimumSide)) continue;
-      const prominence = height - Math.max(sides[0].lowest, sides[1].lowest);
+      const prominence = Math.fround(height - Math.max(sides[0].lowest, sides[1].lowest));
       if (prominence < minimumProminence) continue;
       const previous = getNeighbor(local, -1);
       const next = getNeighbor(local, 1);
@@ -229,7 +232,6 @@ export class CPUProfilePeaksOperation extends GPUCPUOperation {
     const operation = new GPUProfilePeaksOperation(props);
     const {id} = operation;
     const options = {...props, capacity: props.output.peaks?.capacity ?? props.sampleCount};
-    validateCapacity(id, 'sampleCount', props.sampleCount, 1);
     validateProfileOptions(id, options);
     validateRequirement(
       id,

@@ -4,7 +4,7 @@
 
 import {Buffer} from '@luma.gl/core';
 import {describe, expect, it, vi} from 'vitest';
-import {computeGPUAnalysisSpacingStatistics} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {computeGPUAnalysisSpacingStatistics} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {GPU_COLUMN_PROFILE_STATISTIC_COUNT} from '@luma-contributors/analysis/dataframe-analysis';
 import {createNullWebGPUDevice} from '../../../analysis/test/utils/gpu-contributor-test-utils';
 import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';

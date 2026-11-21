@@ -57,7 +57,7 @@ function createScenario(element: Element): NetworkElementScenario {
           output: {
             intensity: floats('intensity', [0, 0, 0]),
             kernelMass: floats('kernelMass', [0, 0]),
-            status: integers('status', [0, 0, 0])
+            validity: integers('validity', [0, 0, 0])
           }
         });
       } else {
@@ -85,12 +85,15 @@ function createScenario(element: Element): NetworkElementScenario {
       return {views};
     },
     capture(final, _context, captured) {
-      if (Array.from(final('status').values).some(value => value !== 0))
-        throw new Error('Point-process example has invalid status');
-      const outputs =
-        element === 'GPUNetworkKernelDensity'
-          ? ['intensity', 'kernelMass', 'status']
-          : ['k', 'numerator', 'normalization', 'status'];
+      const isDensity = element === 'GPUNetworkKernelDensity';
+      const diagnostic = isDensity ? 'validity' : 'status';
+      if (
+        Array.from(final(diagnostic).values).some(value => (isDensity ? value === 0 : value !== 0))
+      )
+        throw new Error(`Point-process example has invalid ${diagnostic}`);
+      const outputs = isDensity
+        ? ['intensity', 'kernelMass', 'validity']
+        : ['k', 'numerator', 'normalization', 'status'];
       return captured.map(capture => ({
         ...capture,
         keySpace: 'entry',

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SORTED_TIME_RANGE_MAXIMUM_ROW_COUNT} from './sorted-range-bounds';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
@@ -28,8 +29,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateCompactOutput,
-  validateSinglePackedView,
-  getGraphViewChunks
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
 import {TEMPORAL_REDUCTION_WORD_DIVISION_WGSL} from './temporal-reduction-word-division';
@@ -59,7 +59,7 @@ const SORTED_WORKGROUP_SIZE = 256;
 /** Largest slot count; `0xffffffff` is the internal "no slot" sentinel. */
 const MAXIMUM_SLOT_COUNT = 0xfffffffe;
 /** Row indices and exact slot counters use uint32; 0xffffffff remains an unused row sentinel. */
-const MAXIMUM_ROW_COUNT = 0xffffffff;
+const MAXIMUM_ROW_COUNT = SORTED_TIME_RANGE_MAXIMUM_ROW_COUNT;
 /**
  * Largest bucket count in float32 mode. Below 2^20 the 2.5 ULP error of an f32 division moves the
  * quotient by well under one bucket and `fround(b * width)` is strictly increasing in `b`.
@@ -156,6 +156,9 @@ export type GPUTemporalReductionProps = {
  *
  * The compact list of occupied slots comes from `GPUVisibilityWorkflow`, so it is ascending and
  * stable. Inputs must be single packed views (chunked vectors are not supported).
+ * The logical cellCount * bucketCount limit is 4294967294 slots. On the uint32x2 time route,
+ * each slot needs eight bytes in one time-key binding, further limiting a call to
+ * floor(maxStorageBufferBindingSize / 8) slots (16777216 with a 128 MiB binding limit).
  *
  * With `sorted: true` the per-row work is limited to the contiguous range of rows whose time falls
  * in `[origin, origin + bucketCount * width)`: a row belongs to it exactly when its bucket
@@ -299,40 +302,17 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
           ...(output.occupiedSlots.ids.length < this.slotCount ? [output.occupiedSlots.ids] : [])
         ]
       ];
-      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
-      const writableWordChunks = Object.values(writableOutputs)
-        .flatMap(view => (view ? getGraphViewChunks(view) : []))
-        .map(
-          view =>
-            new GraphDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset,
-              byteStride: 4,
-              rowByteLength: 4
-            })
-        );
-      const writableWordCount = writableWordChunks.reduce(
-        (total, chunk) => total + chunk.length,
-        0
-      );
-      validateDisjointWritableViews(id, {
-        outputs: new GraphVectorView({
-          id: `${id}-writable-ranges`,
-          name: 'outputs',
-          format: 'uint32',
-          length: writableWordCount,
-          valueLength: writableWordCount,
-          stride: 1,
-          byteStride: 4,
-          rowByteLength: 4,
-          data: writableWordChunks
-        })
-      });
+      validateDisjointWritableViews(id, writableOutputs, {separateDispatches: true});
       for (const fields of publicationPasses) {
         validateDisjointWritableViews(
           id,
-          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+          Object.fromEntries(
+            fields.map((view, index) => [
+              Object.entries(writableOutputs).find(([, candidate]) => candidate === view)?.[0] ??
+                String(index),
+              view
+            ])
+          )
         );
       }
     }
@@ -826,7 +806,26 @@ const FLOAT_BUCKET_BODY = /* wgsl */ `let time = timestamps[timestampsOffset + r
     return;
   }
   let difference = time - origin;
-  var bucketFloat = floor(difference / width);
+  // A reciprocal of widths near 1e38 is subnormal and Metal may flush it to zero.
+  // Shift exponents in integer bits: arithmetic scaling could be canceled by fast-math.
+  var quotientNumerator = difference;
+  var quotientDenominator = width;
+  let widthBits = bitcast<u32>(width);
+  let widthExponent = (widthBits >> 23u) & 255u;
+  if (widthExponent >= 253u) {
+    let differenceBits = bitcast<u32>(difference);
+    let differenceMagnitude = differenceBits & 0x7fffffffu;
+    if (differenceMagnitude >= 0x7f800000u) { return; }
+    if ((differenceBits & 0x80000000u) != 0u && differenceMagnitude != 0u) { return; }
+    let exponentShift = widthExponent - 127u;
+    let differenceExponent = (differenceBits >> 23u) & 255u;
+    quotientDenominator = bitcast<f32>((widthBits & 0x007fffffu) | 0x3f800000u);
+    quotientNumerator = 0.0;
+    if (differenceExponent > exponentShift) {
+      quotientNumerator = bitcast<f32>((differenceBits & 0x807fffffu) | ((differenceExponent - exponentShift) << 23u));
+    }
+  }
+  var bucketFloat = floor(quotientNumerator / quotientDenominator);
   if (isNanBits(bucketFloat) || bucketFloat < -1.0 || bucketFloat > f32(BUCKET_COUNT) + 1.0) {
     return;
   }

@@ -5,10 +5,11 @@
 // set. Demand dots take the color of the facility that serves them; capacities bound how many can.
 
 import {GPUBoundedFacilityAllocation} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUNetworkCostMatrix} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
-import {addCostMatrix, createAccessScene, uploadSearch} from './shared/access';
+import {uploadNetworkTopology} from '../../inputs';
 import type {RunGlyph} from '../../interaction';
-import {getFacilityMarkers} from './shared/access';
+import {createAccessScene, getFacilityMarkers} from './shared/access';
 import {addFlaggedIds} from './shared/display';
 import {getRoadContext, uploadRoads} from './shared/roads';
 import {parameters} from './bounded-facility-allocation.parameters';
@@ -18,24 +19,30 @@ const CANDIDATE_COUNT = 8;
 
 export default defineOperationRun({
   parameters,
-  caption: 'The chosen facilities (bright) and the demand each serves within its capacity.',
+  caption:
+    'The chosen facilities (bright) and the demand each serves. Capacitated mode assigns demand in row order.',
   createInputs: ({random, world}) =>
     createAccessScene(random, world, CANDIDATE_COUNT, DEMAND_COUNT),
   build(builder, scene, values) {
     const {network} = scene;
-    const search = uploadSearch(builder, network);
-    const matrix = addCostMatrix(
-      builder,
-      search,
-      scene.demandNodes,
-      network.nodeCount,
-      scene.facilityNodes
+    const {topology} = uploadNetworkTopology(builder, network);
+    const matrix = builder.allocate('cost-matrix', 'float32', DEMAND_COUNT * CANDIDATE_COUNT);
+    const costsComplete = builder.allocate('costs-complete', 'uint32', 1);
+    builder.graph.add(
+      new GPUNetworkCostMatrix({
+        topology,
+        startNodes: builder.upload('start-nodes', 'uint32', scene.demandNodes).view,
+        targetNodes: builder.upload('target-nodes', 'uint32', scene.facilityNodes).view,
+        maximumIterations: 48,
+        output: {costs: matrix.view, status: {converged: costsComplete.view}}
+      })
     );
     const capacities = builder.allocate('capacities', 'float32', CANDIDATE_COUNT);
     const selected = builder.allocate('selected', 'uint32', CANDIDATE_COUNT);
     const assignments = builder.allocate('assignments', 'uint32', DEMAND_COUNT);
     const objective = builder.allocate('objective', 'float32', 1);
     const status = builder.allocate('status', 'uint32', 3);
+    const complete = builder.allocate('allocation-complete', 'uint32', 1);
     const selectCount = Math.round(values.selectCount);
     builder.graph.add(
       new GPUBoundedFacilityAllocation({
@@ -43,6 +50,7 @@ export default defineOperationRun({
         facilityCount: CANDIDATE_COUNT,
         selectCount,
         costs: matrix.view,
+        costsComplete: costsComplete.view,
         demand: builder.upload(
           'demand',
           'float32',
@@ -53,7 +61,8 @@ export default defineOperationRun({
           selectedFacilities: selected.view,
           assignments: assignments.view,
           objective: objective.view,
-          status: status.view
+          status: status.view,
+          ports: {status: {complete: complete.view}}
         }
       })
     );
@@ -63,6 +72,7 @@ export default defineOperationRun({
         ...uploadRoads(builder, network),
         assignments,
         selected,
+        complete,
         selectedIds: addFlaggedIds(builder, {
           id: 'selected',
           flags: selected,
@@ -72,13 +82,16 @@ export default defineOperationRun({
         candidates: builder.upload('candidates', 'float32x2', scene.facilityPositions)
       },
       update: current => {
-        search.costLimit.write(Float32Array.of(4));
         // Capacity per facility as a share of the average load for the selected count.
         capacities.write(
           new Float32Array(CANDIDATE_COUNT).fill((totalDemand / selectCount) * current.capacity)
         );
       }
     };
+  },
+  async afterRun({outputs}) {
+    const bytes = await outputs.complete.buffer.readAsync();
+    return {complete: new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0] !== 0};
   },
   rebuildOn: ['operation', 'selectCount'],
   // Probe: the hovered chosen facility, the demand it serves and its load against its capacity.
@@ -87,12 +100,17 @@ export default defineOperationRun({
     hint: 'hover a facility',
     rest: ({inputs, toUnit}) => toUnit([inputs.facilityPositions[0], inputs.facilityPositions[1]]),
     resolve(pointer, {inputs, outputs, values, peek}) {
+      const complete = peek(outputs.complete);
       const selected = peek(outputs.selected);
       const assignments = peek(outputs.assignments);
+      if (!complete) return {};
+      if (!complete[0])
+        return {readout: 'Assignments unavailable due to incomplete costs or invalid inputs'};
+      if (!selected || !assignments) return {};
       let facility = 0;
       let nearestDistance = Infinity;
       for (let site = 0; site < CANDIDATE_COUNT; site++) {
-        if (selected && selected[site] !== 1) continue;
+        if (selected[site] !== 1) continue;
         const distance = Math.hypot(
           inputs.facilityPositions[site * 2] - pointer.x,
           inputs.facilityPositions[site * 2 + 1] - pointer.y
@@ -109,32 +127,40 @@ export default defineOperationRun({
       const glyphs: RunGlyph[] = [{shape: 'ring', at, radius: 0.04}];
       let served = 0;
       let load = 0;
-      if (assignments) {
-        for (let demand = 0; demand < assignments.length; demand++) {
-          if (assignments[demand] !== facility) continue;
-          served++;
-          load += Math.round(inputs.population[demand]);
-          if (glyphs.length < 200) {
-            glyphs.push({
-              shape: 'line',
-              from: at,
-              to: [inputs.demandPositions[demand * 2], inputs.demandPositions[demand * 2 + 1]]
-            });
-          }
+      for (let demand = 0; demand < assignments.length; demand++) {
+        if (assignments[demand] !== facility) continue;
+        served++;
+        load += Math.round(inputs.population[demand]);
+        if (glyphs.length < 200) {
+          glyphs.push({
+            shape: 'line',
+            from: at,
+            to: [inputs.demandPositions[demand * 2], inputs.demandPositions[demand * 2 + 1]]
+          });
         }
       }
       const total = inputs.population.reduce((sum, value) => sum + Math.round(value), 0);
       const capacity = (total / Math.round(values.selectCount)) * values.capacity;
+      const loadText = values.operation === 0 ? `${load}` : `${load} of ${capacity.toFixed(0)}`;
       return {
         spotlight: null,
         glyphs,
-        readout: `facility ${facility + 1} · serves ${served} · load ${load} of ${capacity.toFixed(0)}`
+        readout: `facility ${facility + 1} · serves ${served} · load ${loadText}`
       };
     }
   },
-  draw: ({outputs, theme}) => [
+  draw: ({outputs, extra, theme}) => [
     getRoadContext(outputs),
-    {layer: 'dots', positions: outputs.demands, values: outputs.assignments, radius: 7},
-    ...getFacilityMarkers(outputs.candidates, theme, {ids: outputs.selectedIds, radius: 11})
+    ...(extra?.complete
+      ? [
+          {
+            layer: 'dots' as const,
+            positions: outputs.demands,
+            values: outputs.assignments,
+            radius: 7
+          },
+          ...getFacilityMarkers(outputs.candidates, theme, {ids: outputs.selectedIds, radius: 11})
+        ]
+      : [{layer: 'dots' as const, positions: outputs.demands, context: true, radius: 7}])
   ]
 });

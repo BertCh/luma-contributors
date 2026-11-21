@@ -411,7 +411,7 @@ perPolygon.add(new GPULineLengthPerPolygon({
   lineWeights: ${state.weight},                // optional per-street multiplier
   polygons: {kind: 'polygons', positions: polygonPositions, featureOffsets, polygonOffsets, ringOffsets},
   ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : 'spatialContext: distanceProjection.spatialContext,'}
-  output: {lengths, weightedLengths, segmentCounts, status: {overflow}}
+  output: {clippedLengths: lengths, weightedLengths, segmentCounts, status: {overflow}}
 }));`,
 
   about: {

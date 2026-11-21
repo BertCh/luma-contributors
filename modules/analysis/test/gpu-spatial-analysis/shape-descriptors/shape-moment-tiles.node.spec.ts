@@ -69,7 +69,11 @@ it('executes fixed-order moment tiles against closed-form rectangle integrals', 
       result => result.type === 'return' && result.value.buffer.id === `moments-tile-${name}`
     )!.value;
     const actual = memory.readFloat32(view);
-    for (const value of actual.slice(0, 4)) expect(value).toBeCloseTo(expected, 3);
+    expect(actual).toHaveLength(5);
+    for (const value of actual.slice(0, 4)) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeCloseTo(expected, 3);
+    }
     expect(actual[4]).toBe(0);
   }
   vi.restoreAllMocks();

@@ -293,20 +293,20 @@
      1
     ],
     "expected": [
-     0.32377679996954184,
-     0.39023515519519436,
-     0.25596277587679894,
+     0.3237767999695419,
+     0.3902351551951944,
+     0.25596277587679883,
      0.3110637874467185
     ],
-    "expectedLastStep": 1.1734363467553554e-09,
+    "expectedLastStep": 1.1734363250875555e-09,
     "optimumObjective": 3.2463746922639345,
     "expectedAfterThreeIterations": [
      0.3219195967018669,
      0.3868495439343976,
-     0.25801718539767426,
-     0.309768901782346
+     0.2580171853976743,
+     0.30976890178234606
     ],
-    "expectedLastStepAfterThreeIterations": 0.00356013989530785
+    "expectedLastStepAfterThreeIterations": 0.0035601398953078824
    },
    {
     "values": [
@@ -375,19 +375,19 @@
     ],
     "expected": [
      0.25469606738306194,
-     0.3606401355116594,
-     0.33993921600794086,
+     0.36064013551165947,
+     0.3399392160079409,
      0.31714008178734776
     ],
-    "expectedLastStep": 4.729113821916319e-10,
+    "expectedLastStep": 4.729114033385581e-10,
     "optimumObjective": 14.26969706291414,
     "expectedAfterThreeIterations": [
-     0.3067569620183239,
-     0.37034343485489585,
-     0.35152229952258196,
-     0.34748408032058514
+     0.30675696201832403,
+     0.3703434348548959,
+     0.35152229952258207,
+     0.3474840803205852
     ],
-    "expectedLastStepAfterThreeIterations": 0.0708057663246592
+    "expectedLastStepAfterThreeIterations": 0.07080576632465922
    },
    {
     "values": [
@@ -455,20 +455,20 @@
      1
     ],
     "expected": [
-     0.3428695006229348,
+     0.34286950062293486,
      0.3442445360734211,
      0.26329859946388656,
-     0.23075897222956215
+     0.23075897222956218
     ],
-    "expectedLastStep": 6.333478892210758e-13,
+    "expectedLastStep": 6.333288001627009e-13,
     "optimumObjective": 2.482173939996825,
     "expectedAfterThreeIterations": [
      0.3440413433033179,
-     0.3467423539445977,
+     0.34674235394459774,
      0.26168426841237596,
-     0.2305546950779816
+     0.23055469507798157
     ],
-    "expectedLastStepAfterThreeIterations": 0.003853188609756248
+    "expectedLastStepAfterThreeIterations": 0.0038531886097562026
    },
    {
     "values": [
@@ -536,20 +536,20 @@
      1
     ],
     "expected": [
-     0.31036144913128677,
-     0.26006236495329876,
-     0.2516650850375452,
-     0.33455383172789593
+     0.3103614491312867,
+     0.2600623649532987,
+     0.25166508503754514,
+     0.334553831727896
     ],
-    "expectedLastStep": 1.4537323660135231e-11,
+    "expectedLastStep": 1.4537294929268656e-11,
     "optimumObjective": 2.661043574634231,
     "expectedAfterThreeIterations": [
      0.31015268303963917,
-     0.26049315746902146,
+     0.2604931574690214,
      0.25234829591786295,
-     0.33388944575826984
+     0.3338894457582699
     ],
-    "expectedLastStepAfterThreeIterations": 0.002028928760403009
+    "expectedLastStepAfterThreeIterations": 0.002028928760402972
    },
    {
     "values": [
@@ -1573,6 +1573,198 @@
       "flags": 0
      }
     ]
+   }
+  ]
+ },
+ "scalarMedoid": {
+  "source": "independent central-order-statistic interval derivation; decimal inputs",
+  "sliceCount": 4,
+  "bandCount": 1,
+  "cells": [
+   {
+    "values": [
+     0.1,
+     0.2,
+     0.3,
+     0.4
+    ],
+    "validity": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "expectedSlice": 1,
+    "expectedValue": 0.2
+   },
+   {
+    "values": [
+     0.1,
+     0.3,
+     0.2,
+     0.4
+    ],
+    "validity": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "expectedSlice": 1,
+    "expectedValue": 0.3
+   },
+   {
+    "values": [
+     0.4,
+     0.2,
+     0.2,
+     0.1
+    ],
+    "validity": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "expectedSlice": 1,
+    "expectedValue": 0.2
+   },
+   {
+    "values": [
+     0.2,
+     0.1,
+     0.3,
+     0.2
+    ],
+    "validity": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "expectedSlice": 0,
+    "expectedValue": 0.2
+   },
+   {
+    "values": [
+     0.2,
+     0.1,
+     0.3,
+     0.4
+    ],
+    "validity": [
+     0,
+     1,
+     1,
+     1
+    ],
+    "expectedSlice": 2,
+    "expectedValue": 0.3
+   }
+  ]
+ },
+ "geometricMedianIdentity": {
+  "source": "independent identity: one retained point or identical points minimizes sum of distances exactly",
+  "sliceCount": 3,
+  "bandCount": 1,
+  "iterationCount": 1,
+  "distanceEpsilon": 9.999999747378752e-06,
+  "cells": [
+   {
+    "values": [
+     20.0,
+     7.0,
+     -16.0
+    ],
+    "validity": [
+     0,
+     1,
+     0
+    ],
+    "expected": [
+     7.0
+    ],
+    "expectedLastStep": 0.0
+   },
+   {
+    "values": [
+     7.0,
+     7.0,
+     7.0
+    ],
+    "validity": [
+     1,
+     1,
+     1
+    ],
+    "expected": [
+     7.0
+    ],
+    "expectedLastStep": 0.0
+   },
+   {
+    "values": [
+     456800.5,
+     456787.5,
+     456764.5
+    ],
+    "validity": [
+     0,
+     1,
+     0
+    ],
+    "expected": [
+     456787.5
+    ],
+    "expectedLastStep": 0.0
+   },
+   {
+    "values": [
+     456787.5,
+     456787.5,
+     456787.5
+    ],
+    "validity": [
+     1,
+     1,
+     1
+    ],
+    "expected": [
+     456787.5
+    ],
+    "expectedLastStep": 0.0
+   },
+   {
+    "values": [
+     13.1,
+     0.1,
+     -22.9
+    ],
+    "validity": [
+     0,
+     1,
+     0
+    ],
+    "expected": [
+     0.1
+    ],
+    "expectedLastStep": 0.0
+   },
+   {
+    "values": [
+     0.1,
+     0.1,
+     0.1
+    ],
+    "validity": [
+     1,
+     1,
+     1
+    ],
+    "expected": [
+     0.1
+    ],
+    "expectedLastStep": 0.0
    }
   ]
  }

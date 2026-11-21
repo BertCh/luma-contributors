@@ -3,9 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {type GPUCommandGraph, type GraphDataView, GPUHistogram} from '@luma.gl/graph/gpu-core';
+import {
+  type GPUCommandGraph,
+  type GraphDataView,
+  GPUHistogram,
+  createTransientView
+} from '@luma.gl/graph/gpu-core';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUParameterBuffer, createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUCostDistance,
   GPU_COST_DISTANCE_PARAMETER_LENGTH,
@@ -57,10 +62,43 @@ export async function runExample(device: Device, input: CostDistancePathExampleI
     graph.add(
       new GPUCostDistancePath({id: `walk-${index}`, grid, backLinks, target, output: {path}})
     );
-    // The histogram counts each traced cell ID once.
-    const domain: [number, number] = [0, mask.length];
-    graph.add(new GPUHistogram({id: `mask-${index}`, input: path.ids, domain, output: mask}));
+    addCostDistancePathMembership(graph, path, mask, `mask-${index}`);
   }
   // #endregion example
   return {parameters};
+}
+
+/** Count bounds the readable ID prefix; every spare membership row is overwritten on every run. */
+export function addCostDistancePathMembership(
+  graph: GPUCommandGraph,
+  path: GPUCostDistancePathOutput['path'],
+  membership: GraphDataView<'uint32'>,
+  id: string
+): void {
+  const ids = path.ids;
+  const count = path.status.count;
+  const rowMask = createTransientView(graph, `${id}-rows`, 'uint32', ids.length);
+  graph.add({
+    getCommandNodes: currentGraph => [
+      createWGSLKernelNode(currentGraph, {
+        id: `${id}-prefix`,
+        operation: 'CostDistancePathMembership',
+        invocationCount: ids.length,
+        bindings: [
+          {name: 'count', view: count, type: 'u32', access: 'read'},
+          {name: 'rowMask', view: rowMask, type: 'u32', access: 'read_write'}
+        ],
+        body: 'rowMask[rowMaskOffset + index] = select(0u, 1u, index < count[countOffset]);'
+      })
+    ]
+  });
+  graph.add(
+    new GPUHistogram({
+      id,
+      input: ids,
+      mask: rowMask,
+      domain: [0, membership.length],
+      output: membership
+    })
+  );
 }

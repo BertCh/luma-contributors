@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 import {
   type GPUCommandGraph,
@@ -9,7 +11,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {dggs} from '@luma.gl/shaders';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateSinglePackedView,
   validateGraphViewsBelongToGraph,
@@ -22,6 +24,9 @@ import {
 import {H3_NEIGHBOR_WGSL} from '../cell-topology/h3-neighbor-wgsl';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
 import {getOrCreateView, RecipeBuilder} from './recipe-utils';
+
+/** Maximum pairs examined per cell or directed-edge slot in one direct-scan pass. */
+export const GPU_CELL_FLOW_TOPOLOGY_MAXIMUM_PAIRS_PER_PASS = 4096;
 
 export type GPUCellFlowTopologyOutput = {
   outgoingTotals: GraphDataView<'float32'>;
@@ -48,14 +53,21 @@ export type GPUCellFlowTopologyRecipeProps = {
   destinations: GraphDataView<'uint32'>;
   /** Nonnegative finite flow per pair. Repeated pairs are summed deterministically in input order. */
   values: GraphDataView<'float32'>;
-  outputs?: Partial<GPUCellFlowTopologyOutput>;
+  /** Caller-owned terminal destinations. */
+  output?: Partial<GPUCellFlowTopologyOutput>;
 };
 
 /** R11: preserves the original OD table and separately aggregates actual neighboring-cell flows.
  * Cell totals include every valid OD pair (including self and nonneighbor pairs). Edge totals
- * include only immediate H3 neighbors. Therefore sum(outgoing) == sum(incoming) == valid pair sum,
- * while the edge sum can be smaller. No route inference is performed. The bounded direct scan
- * is O(cellCount * pairCount); use preaggregated pairs for large workloads. H3 keys are exact;
+ * include only immediate H3 neighbors; edge sums can therefore be smaller. Each accumulator
+ * sums valid rows in input order with sequential float32 rounding. Regrouping by origin or
+ * destination changes rounding, so sums of the cell totals need not equal each other or the
+ * valid-pair sum exactly. No route inference is performed. Each direct-scan invocation examines
+ * at most GPU_CELL_FLOW_TOPOLOGY_MAXIMUM_PAIRS_PER_PASS = 4096 pairs per pass, per cell or edge
+ * slot. Larger tables use ordered passes carrying the previous float32 accumulator, with no
+ * total pair cutoff. Aligned pair subviews let full passes share a shader, with separate output
+ * initialization. Work remains O(cellCount * pairCount), including six edge-slot scans per
+ * cell; preaggregate pairs when that cost is too large. H3 keys are exact;
  * shared-boundary coordinates inherit the existing f32 H3 geometry precision limits.
  */
 export function addCellFlowTopologyRecipe<Parameters>(
@@ -70,6 +82,7 @@ function declareCellFlowTopologyRecipe<Parameters>(
   props: GPUCellFlowTopologyRecipeProps
 ) {
   const id = props.id ?? 'cell-flow-topology';
+  const destinations = resolveRecipeDestinations(id, props);
   const cellCount = props.cells.length;
   const pairCount = props.values.length;
   const edgeCount = cellCount * 6;
@@ -93,64 +106,52 @@ function declareCellFlowTopologyRecipe<Parameters>(
       `${id}-outgoing`,
       'float32',
       cellCount,
-      props.outputs?.outgoingTotals
+      destinations?.outgoingTotals
     ),
     incomingTotals: getOrCreateView(
       graph,
       `${id}-incoming`,
       'float32',
       cellCount,
-      props.outputs?.incomingTotals
+      destinations?.incomingTotals
     ),
     directedEdges: getOrCreateView(
       graph,
       `${id}-edges`,
       'uint32x2',
       edgeCount,
-      props.outputs?.directedEdges
+      destinations?.directedEdges
     ),
     neighboringCells: getOrCreateView(
       graph,
       `${id}-neighbors`,
       'uint32x2',
       edgeCount,
-      props.outputs?.neighboringCells
+      destinations?.neighboringCells
     ),
-    edgeFlows: getOrCreateView(
-      graph,
-      `${id}-flows`,
-      'float32',
-      edgeCount,
-      props.outputs?.edgeFlows
-    ),
+    edgeFlows: getOrCreateView(graph, `${id}-flows`, 'float32', edgeCount, destinations?.edgeFlows),
     boundaries: getOrCreateView(
       graph,
       `${id}-boundaries`,
       'float32x2',
       edgeCount * 3,
-      props.outputs?.boundaries
+      destinations?.boundaries
     ),
     boundaryCounts: getOrCreateView(
       graph,
       `${id}-boundary-counts`,
       'uint32',
       edgeCount,
-      props.outputs?.boundaryCounts
+      destinations?.boundaryCounts
     ),
-    validity: getOrCreateView(
-      graph,
-      `${id}-validity`,
-      'uint32',
-      pairCount,
-      props.outputs?.validity
-    ),
+    validity: getOrCreateView(graph, `${id}-validity`, 'uint32', pairCount, destinations?.validity),
     status: {
       invalidCount: getOrCreateView(
         graph,
         `${id}-invalid-count`,
         'uint32',
         1,
-        props.outputs?.status?.invalidCount
+        destinations?.status?.invalidCount
       )
     }
   };
@@ -202,6 +203,22 @@ function declareCellFlowTopologyRecipe<Parameters>(
     {name: 'destinations', view: props.destinations, type: 'u32', access: 'read'},
     {name: 'values', view: props.values, type: 'f32', access: 'read'}
   ] as const;
+  // Every 4096-row step advances 16384 bytes, a multiple of storage binding alignment.
+  // Relative WGSL offsets stay constant even when caller views begin at a nonzero offset.
+  const chunkBindings = (pairStart: number, pairChunkCount: number) =>
+    [
+      ...pairBindings,
+      {name: 'validity', view: outputs.validity, type: 'u32', access: 'read'} as const
+    ].map(binding => ({
+      ...binding,
+      view: graph.createDataView(binding.view.buffer, {
+        format: binding.view.format,
+        length: pairChunkCount,
+        byteOffset: binding.view.byteOffset + pairStart * 4,
+        byteStride: binding.view.byteStride,
+        rowByteLength: binding.view.rowByteLength
+      })
+    }));
   addNode(
     createWGSLKernelNode(graph, {
       id: `${id}-validate`,
@@ -220,25 +237,57 @@ function declareCellFlowTopologyRecipe<Parameters>(
   validity[validityOffset+index]=select(0u,1u,valid);`
     })
   );
-  addNode(
-    createWGSLKernelNode(graph, {
-      id: `${id}-cell-totals`,
-      operation: 'CellFlowTopologyRecipe',
-      variant: 'cell-totals',
-      invocationCount: cellCount,
-      bindings: [
-        ...pairBindings,
-        {name: 'validity', view: outputs.validity, type: 'u32', access: 'read'},
-        {name: 'outgoing', view: outputs.outgoingTotals, type: 'f32', access: 'read_write'},
-        {name: 'incoming', view: outputs.incomingTotals, type: 'f32', access: 'read_write'},
-        {name: 'invalidCount', view: outputs.status.invalidCount, type: 'u32', access: 'read_write'}
-      ],
-      declarations: constants,
-      body: `var outgoingTotal=0.0;var incomingTotal=0.0;var invalid=0u;
-  for(var pair=0u;pair<PAIR_COUNT;pair++){if(validity[validityOffset+pair]==0u){invalid++;continue;}let value=values[valuesOffset+pair];if(origins[originsOffset+pair]==index){outgoingTotal+=value;}if(destinations[destinationsOffset+pair]==index){incomingTotal+=value;}}
+  for (const [name, view, type] of [
+    ['outgoing', outputs.outgoingTotals, 'f32'],
+    ['incoming', outputs.incomingTotals, 'f32'],
+    ['invalid', outputs.status.invalidCount, 'u32'],
+    ['flows', outputs.edgeFlows, 'f32']
+  ] as const)
+    addNode(
+      createFillNode(graph, {
+        id: `${id}-reset-${name}`,
+        operation: 'CellFlowTopologyRecipe',
+        view,
+        type,
+        value: type === 'f32' ? '0.0' : '0u',
+        componentCount: 1
+      })
+    );
+  for (
+    let pairStart = 0;
+    pairStart < pairCount;
+    pairStart += GPU_CELL_FLOW_TOPOLOGY_MAXIMUM_PAIRS_PER_PASS
+  ) {
+    const pairChunkCount = Math.min(
+      GPU_CELL_FLOW_TOPOLOGY_MAXIMUM_PAIRS_PER_PASS,
+      pairCount - pairStart
+    );
+    const chunkConstants = `const PAIR_CHUNK_COUNT: u32 = ${pairChunkCount}u;`;
+    addNode(
+      createWGSLKernelNode(graph, {
+        id: `${id}-cell-totals-${pairStart}`,
+        operation: 'CellFlowTopologyRecipe',
+        variant: 'cell-totals',
+        invocationCount: cellCount,
+        bindings: [
+          ...chunkBindings(pairStart, pairChunkCount),
+          {name: 'outgoing', view: outputs.outgoingTotals, type: 'f32', access: 'read_write'},
+          {name: 'incoming', view: outputs.incomingTotals, type: 'f32', access: 'read_write'},
+          {
+            name: 'invalidCount',
+            view: outputs.status.invalidCount,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        declarations: chunkConstants,
+        body: `var outgoingTotal=outgoing[outgoingOffset+index];var incomingTotal=incoming[incomingOffset+index];var invalid=0u;
+  if(index==0u){invalid=invalidCount[invalidCountOffset];}
+  for(var slot=0u;slot<PAIR_CHUNK_COUNT;slot++){let pair=slot;if(validity[validityOffset+pair]==0u){invalid++;continue;}let value=values[valuesOffset+pair];if(origins[originsOffset+pair]==index){outgoingTotal+=value;}if(destinations[destinationsOffset+pair]==index){incomingTotal+=value;}}
   outgoing[outgoingOffset+index]=outgoingTotal;incoming[incomingOffset+index]=incomingTotal;if(index==0u){invalidCount[invalidCountOffset]=invalid;}`
-    })
-  );
+      })
+    );
+  }
   addNode(
     createWGSLKernelNode(graph, {
       id: `${id}-boundaries`,
@@ -262,25 +311,35 @@ function declareCellFlowTopologyRecipe<Parameters>(
   counts[countsOffset+index]=count;for(var slot=0u;slot<3u;slot++){boundaries[boundariesOffset+index*6u+slot*2u]=points[slot].x;boundaries[boundariesOffset+index*6u+slot*2u+1u]=points[slot].y;}`
     })
   );
-  addNode(
-    createWGSLKernelNode(graph, {
-      id: `${id}-edge-flows`,
-      operation: 'CellFlowTopologyRecipe',
-      variant: 'edge-flows',
-      invocationCount: edgeCount,
-      bindings: [
-        cellBinding,
-        ...pairBindings,
-        {name: 'validity', view: outputs.validity, type: 'u32', access: 'read'},
-        {name: 'neighbors', view: outputs.neighboringCells, type: 'u32', access: 'read'},
-        {name: 'flows', view: outputs.edgeFlows, type: 'f32', access: 'read_write'}
-      ],
-      declarations: constants,
-      body: `let origin=index/6u;let neighbor=vec2u(neighbors[neighborsOffset+index*2u],neighbors[neighborsOffset+index*2u+1u]);var total=0.0;
-  if(any(neighbor!=vec2u(0u))){for(var pair=0u;pair<PAIR_COUNT;pair++){if(validity[validityOffset+pair]==0u||origins[originsOffset+pair]!=origin){continue;}let destination=destinations[destinationsOffset+pair];let key=vec2u(cells[cellsOffset+destination*2u],cells[cellsOffset+destination*2u+1u]);if(all(key==neighbor)){total+=values[valuesOffset+pair];}}}
+  for (
+    let pairStart = 0;
+    pairStart < pairCount;
+    pairStart += GPU_CELL_FLOW_TOPOLOGY_MAXIMUM_PAIRS_PER_PASS
+  ) {
+    const pairChunkCount = Math.min(
+      GPU_CELL_FLOW_TOPOLOGY_MAXIMUM_PAIRS_PER_PASS,
+      pairCount - pairStart
+    );
+    const chunkConstants = `const PAIR_CHUNK_COUNT: u32 = ${pairChunkCount}u;`;
+    addNode(
+      createWGSLKernelNode(graph, {
+        id: `${id}-edge-flows-${pairStart}`,
+        operation: 'CellFlowTopologyRecipe',
+        variant: 'edge-flows',
+        invocationCount: edgeCount,
+        bindings: [
+          cellBinding,
+          ...chunkBindings(pairStart, pairChunkCount),
+          {name: 'neighbors', view: outputs.neighboringCells, type: 'u32', access: 'read'},
+          {name: 'flows', view: outputs.edgeFlows, type: 'f32', access: 'read_write'}
+        ],
+        declarations: chunkConstants,
+        body: `let origin=index/6u;let neighbor=vec2u(neighbors[neighborsOffset+index*2u],neighbors[neighborsOffset+index*2u+1u]);var total=flows[flowsOffset+index];
+  if(any(neighbor!=vec2u(0u))){for(var slot=0u;slot<PAIR_CHUNK_COUNT;slot++){let pair=slot;if(validity[validityOffset+pair]==0u||origins[originsOffset+pair]!=origin){continue;}let destination=destinations[destinationsOffset+pair];let key=vec2u(cells[cellsOffset+destination*2u],cells[cellsOffset+destination*2u+1u]);if(all(key==neighbor)){total+=values[valuesOffset+pair];}}}
   flows[flowsOffset+index]=total;`
-    })
-  );
+      })
+    );
+  }
   return {
     contributors: builder.contributors,
     outputs,

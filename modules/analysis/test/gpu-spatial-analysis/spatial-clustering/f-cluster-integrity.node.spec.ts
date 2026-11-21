@@ -18,15 +18,15 @@ import {
 import {expect, it, vi} from 'vitest';
 import {GPUDorlingCartogram} from '../../../src/gpu-spatial-analysis/dorling-cartogram/gpu-dorling-cartogram';
 import {GPUSpatialKMeans} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-spatial-kmeans';
-import {GPUSpatialClustering} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-spatial-clustering';
-import {GPUHierarchicalDensityClustering} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-hierarchical-density-clustering';
+import {GPUDBSCAN} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-spatial-clustering';
+import {GPUHDBSCAN} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-hierarchical-density-clustering';
 import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
 import {GPUInhomogeneousPointPattern} from '../../../src/gpu-spatial-analysis/point-process/gpu-inhomogeneous-point-pattern';
 import {GPUPointPatternEnvelope} from '../../../src/gpu-spatial-analysis/point-process/gpu-point-pattern-envelope';
 import {GPURegionPartitionEvaluation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-region-partition-evaluation';
 import {
   GPUSpatialWeightsMinimumSpanningTree,
-  GPU_MINIMUM_SPANNING_TREE_STATUS
+  GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
 import {GPURedcapSingleLinkage} from '../../../src/gpu-spatial-analysis/redcap-regions/gpu-redcap-single-linkage';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -45,7 +45,7 @@ it('rejects output aliases in DBSCAN, k-means, HDBSCAN, REDCAP, regionalization 
     const positions = view('float32x2', 8);
     expect(
       () =>
-        new GPUSpatialClustering({
+        new GPUDBSCAN({
           positions,
           parameters: view('float32', 10),
           gridSize: [2, 2],
@@ -56,7 +56,7 @@ it('rejects output aliases in DBSCAN, k-means, HDBSCAN, REDCAP, regionalization 
       () =>
         new GPUSpatialKMeans({
           positions,
-          k: 2,
+          clusterCount: 2,
           maximumIterations: 2,
           parameters: view('uint32', 2),
           output: {
@@ -68,7 +68,7 @@ it('rejects output aliases in DBSCAN, k-means, HDBSCAN, REDCAP, regionalization 
     const combined = view('uint32', 64);
     expect(
       () =>
-        new GPUHierarchicalDensityClustering({
+        new GPUHDBSCAN({
           positions,
           minimumClusterSize: 2,
           output: {
@@ -167,7 +167,7 @@ it('preflights k-means aligned inputs and its command node budget before scratch
         length: 4,
         byteOffset: 64
       }),
-      k: 2,
+      clusterCount: 2,
       maximumIterations: 2,
       parameters: createTransientView(graph, 'parameters', 'uint32', 2),
       output: {
@@ -183,7 +183,7 @@ it('preflights k-means aligned inputs and its command node budget before scratch
     const big = {
       ...props,
       positions: createTransientView(graph, 'many-positions', 'float32x2', 256),
-      k: 256,
+      clusterCount: 256,
       maximumIterations: 64,
       restartCount: 32,
       initialization: 'kmeans++' as const,
@@ -254,7 +254,7 @@ it('keeps k-means graph estimates above real node counts for seeds, iterations a
       const graph = new GPUCommandGraph(device);
       const contributor = new GPUSpatialKMeans({
         positions: createTransientView(graph, 'positions', 'float32x2', 513),
-        k: clusters,
+        clusterCount: clusters,
         maximumIterations: iterations,
         restartCount: restarts,
         initialization: 'kmeans++',
@@ -431,7 +431,7 @@ it('accepts disjoint REDCAP and HDBSCAN outputs sharing an aligned binding prefi
           }
         })
     ).toThrow(/must not overlap writable byte ranges/);
-    const density = new GPUHierarchicalDensityClustering({
+    const density = new GPUHDBSCAN({
       positions: view('float32x2', 8),
       minimumClusterSize: 2,
       output: {
@@ -578,14 +578,14 @@ it('accepts packed MST outputs and separate-pass k-means status/inertia without 
         treeEdgeFlags: unsigned(0, 8),
         componentLabels: unsigned(32, 8),
         standardizedValues: floating(64, 8),
-        status: unsigned(96, GPU_MINIMUM_SPANNING_TREE_STATUS.length)
+        status: unsigned(96, GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length)
       }
     });
     expect(() => spanningTree.getCommandNodes(graph)).not.toThrow();
     const kmeans = new GPUSpatialKMeans({
       positions: createTransientView(graph, 'positions', 'float32x2', 8),
       parameters: createTransientView(graph, 'parameters', 'uint32', 2),
-      k: 2,
+      clusterCount: 2,
       maximumIterations: 2,
       output: {
         labels: unsigned(0, 8),
@@ -653,13 +653,13 @@ it('rejects non-STORAGE DBSCAN and HDBSCAN inputs before their nested index buil
     const positions = createTransientView(graph, 'non-storage-positions', 'float32x2', 8);
     const labels = createTransientView(graph, 'non-storage-labels', 'uint32', 8);
     const contributors = [
-      new GPUSpatialClustering({
+      new GPUDBSCAN({
         positions,
         parameters: createTransientView(graph, 'non-storage-parameters', 'float32', 10),
         gridSize: [2, 2],
         output: {labels}
       }),
-      new GPUHierarchicalDensityClustering({positions, minimumClusterSize: 2, output: {labels}})
+      new GPUHDBSCAN({positions, minimumClusterSize: 2, output: {labels}})
     ];
     Object.defineProperty(positions.buffer, 'usage', {value: Buffer.COPY_DST});
     const allocate = vi.spyOn(graph, 'createTransientBuffer');
@@ -778,26 +778,39 @@ it('distinguishes writable packing, separate dispatches and whole-buffer read/wr
     ).not.toThrow();
 
     const positions = createTransientView(graph, 'usage-positions', 'float32x2', 8);
+    const sharedCenters = graph.createDataView(storage.buffer, {
+      format: 'float32x2',
+      length: 2,
+      byteOffset: 256
+    });
+    const parameters = createTransientView(graph, 'usage-parameters', 'uint32', 2);
+    // The historical uncentered route assigns against the caller's centers while writing labels.
     expect(
       () =>
         new GPUSpatialKMeans({
           positions,
-          parameters: createTransientView(graph, 'usage-parameters', 'uint32', 2),
-          k: 2,
+          parameters,
+          clusterCount: 2,
           maximumIterations: 2,
-          output: {
-            labels: first,
-            centers: graph.createDataView(storage.buffer, {
-              format: 'float32x2',
-              length: 2,
-              byteOffset: 256
-            })
-          }
+          centerCoordinates: false,
+          output: {labels: first, centers: sharedCenters}
         })
     ).toThrow(/physical buffers/);
+    // The default centered route assigns against scratch centers and only writes the caller's
+    // centers in a later dispatch, so the same layout is accepted.
     expect(
       () =>
-        new GPUSpatialClustering({
+        new GPUSpatialKMeans({
+          positions,
+          parameters,
+          clusterCount: 2,
+          maximumIterations: 2,
+          output: {labels: first, centers: sharedCenters}
+        })
+    ).not.toThrow();
+    expect(
+      () =>
+        new GPUDBSCAN({
           positions,
           parameters: createTransientView(graph, 'usage-density-parameters', 'float32', 10),
           gridSize: [2, 2],
@@ -808,16 +821,16 @@ it('distinguishes writable packing, separate dispatches and whole-buffer read/wr
           }
         })
     ).toThrow(/physical buffers/);
+    // HDBSCAN publishes its count while selecting clusters, then writes labels in a separate pass.
     expect(
       () =>
-        new GPUHierarchicalDensityClustering({
+        new GPUHDBSCAN({
           positions,
           minimumClusterSize: 2,
           output: {
-            labels: createTransientView(graph, 'usage-hierarchical-labels', 'uint32', 8),
+            labels: first,
             status: {
-              count: graph.createDataView(storage.buffer, {format: 'uint32', length: 1}),
-              requiredCount: graph.createDataView(storage.buffer, {
+              count: graph.createDataView(storage.buffer, {
                 format: 'uint32',
                 length: 1,
                 byteOffset: 256
@@ -825,7 +838,7 @@ it('distinguishes writable packing, separate dispatches and whole-buffer read/wr
             }
           }
         })
-    ).toThrow(/physical buffers/);
+    ).not.toThrow();
     const dorlingOutput = {
       positions: graph.createDataView(storage.buffer, {format: 'float32x2' as const, length: 8}),
       radii: createTransientView(graph, 'usage-radii', 'float32', 8),
@@ -892,8 +905,7 @@ it('accepts zero-byte unused DBSCAN views while preflighting every bound empty-r
         format: 'float32x2',
         length: 4,
         byteOffset: 16
-      }),
-      drawInstanceCount: view('uint32', 1)
+      })
     };
     const props = {
       positions,
@@ -902,7 +914,7 @@ it('accepts zero-byte unused DBSCAN views while preflighting every bound empty-r
       gridSize: [2, 2] as const,
       output
     };
-    const nodes = new GPUSpatialClustering(props).getCommandNodes(graph);
+    const nodes = new GPUDBSCAN(props).getCommandNodes(graph);
     expect(nodes.map(node => node.id)).toEqual([
       'spatial-clustering-cluster-count',
       'spatial-clustering-cluster-sizes',
@@ -964,8 +976,7 @@ it('accepts zero-byte unused DBSCAN views while preflighting every bound empty-r
       output.clusterCentroids,
       output.clusters.status.count,
       output.clusters.status.overflow,
-      output.clusters.status.requiredCount,
-      output.drawInstanceCount
+      output.clusters.status.requiredCount
     ]) {
       expect(
         [
@@ -984,16 +995,13 @@ it('accepts zero-byte unused DBSCAN views while preflighting every bound empty-r
       output.clusterCentroids,
       output.clusters.status.count,
       output.clusters.status.overflow,
-      output.clusters.status.requiredCount,
-      output.drawInstanceCount
+      output.clusters.status.requiredCount
     ]) {
       const usage = field.buffer.usage;
       Object.defineProperty(field.buffer, 'usage', {value: Buffer.COPY_DST, configurable: true});
       const allocate = vi.spyOn(graph, 'createTransientBuffer');
       const createView = vi.spyOn(graph, 'createDataView');
-      expect(() => new GPUSpatialClustering(props).getCommandNodes(graph)).toThrow(
-        /Buffer.STORAGE/
-      );
+      expect(() => new GPUDBSCAN(props).getCommandNodes(graph)).toThrow(/Buffer.STORAGE/);
       expect(allocate).not.toHaveBeenCalled();
       expect(createView).not.toHaveBeenCalled();
       allocate.mockRestore();
@@ -1011,7 +1019,7 @@ it('does not bind or preflight DBSCAN sourceIds when compact outputs are absent'
   try {
     const sourceIds = createTransientView(graph, 'unused-source-ids', 'uint32', 1);
     Object.defineProperty(sourceIds.buffer, 'usage', {value: Buffer.COPY_DST});
-    const nodes = new GPUSpatialClustering({
+    const nodes = new GPUDBSCAN({
       positions: createTransientView(graph, 'one-position', 'float32x2', 1),
       parameters: createTransientView(graph, 'one-parameters', 'float32', 10),
       sourceIds,

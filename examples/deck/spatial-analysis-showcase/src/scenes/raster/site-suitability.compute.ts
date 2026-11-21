@@ -77,7 +77,7 @@ export type SiteSuitabilityOptions = {
   siteThreshold: number;
   siteSize: number;
   sampleMethod: 'nearest' | 'bilinear' | 'bicubic';
-  sampleNoData: 'strict' | 'renormalize';
+  sampleNoData: 'propagate' | 'renormalize';
   zonalOrder: GPURasterZonalStatisticsSumOrder;
   ignoreTrees: boolean;
 };

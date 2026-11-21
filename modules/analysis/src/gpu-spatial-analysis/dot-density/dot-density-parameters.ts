@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /** Number of uint32 elements in a {@link GPUDotDensity} or {@link GPURandomPointsInPolygon} parameter view. */
 export const GPU_DOT_DENSITY_PARAMETER_LENGTH = 8;
 
@@ -14,11 +16,11 @@ export type GPUDotDensitySettings = {
    * {@link GPURandomPointsInPolygon}. Zero or a non-finite value draws no dots. Defaults to 1.
    */
   dotsPerUnit?: number;
-  /**
-   * Placement `[originX, originY, cellWidth, cellHeight]` of the optional dasymetric mask raster
-   * (row 0 has the smallest y). Defaults to `[0, 0, 1, 1]`; ignored without a mask.
-   */
-  maskExtent?: readonly [number, number, number, number];
+  /** Mask origin and signed cell steps in polygon position units. Defaults to origin [0,0], cellSize [1,1]. */
+  maskPlacement?: {
+    origin: readonly [number, number];
+    cellSize: readonly [number, number];
+  };
 };
 
 /**
@@ -40,17 +42,26 @@ export function getGPUDotDensityParameterValues(
       `Dot density parameter target must hold ${GPU_DOT_DENSITY_PARAMETER_LENGTH} elements`
     );
   }
-  if (!Number.isInteger(settings.seed) || settings.seed < 0 || settings.seed > 0xffffffff) {
+  const {seed} = settings;
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
     throw new Error('Dot density seed must be a uint32 integer');
   }
   const floats = new Float32Array(target.buffer, target.byteOffset, target.length);
-  const maskExtent = settings.maskExtent ?? [0, 0, 1, 1];
-  target[0] = settings.seed;
-  floats[1] = settings.dotsPerUnit ?? 1;
-  floats[2] = maskExtent[0];
-  floats[3] = maskExtent[1];
-  floats[4] = maskExtent[2];
-  floats[5] = maskExtent[3];
+  validateRequirement(
+    'GPUDotDensity',
+    !('maskExtent' in settings),
+    'maskExtent was removed; use maskPlacement with origin and cellSize'
+  );
+  const {origin, cellSize} = settings.maskPlacement ?? {origin: [0, 0], cellSize: [1, 1]};
+  const [originX, originY] = origin;
+  const [cellWidth, cellHeight] = cellSize;
+  const dotsPerUnit = settings.dotsPerUnit ?? 1;
+  target[0] = seed;
+  floats[1] = dotsPerUnit;
+  floats[2] = originX;
+  floats[3] = originY;
+  floats[4] = cellWidth;
+  floats[5] = cellHeight;
   target[6] = 0;
   target[7] = 0;
   return target;

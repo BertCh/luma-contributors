@@ -13,6 +13,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCommandNodeBudget,
+  validateGraphPorts,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement,
@@ -173,6 +174,17 @@ export class GPUPointCloudGround implements GPUCommandNodeProducer {
       'output'
     ]);
     this.id = props.id ?? 'gpu-pointcloud-ground';
+    validateGraphPorts(this.id, props, {
+      positions: {required: true, viewType: 'either', formats: ['float32x3']},
+      classifications: {required: true, viewType: 'either', formats: ['uint32']},
+      gridParameters: {required: false, viewType: 'data', formats: ['float32']},
+      parameters: {required: false, viewType: 'data', formats: ['float32']},
+      minimumSurface: {required: true, viewType: 'data', formats: ['float32']},
+      coverage: {required: true, viewType: 'data', formats: ['uint32']},
+      'output.groundMask': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.outputClassifications': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
     validateRequirement(
       this.id,
       props.output !== undefined && props.output !== null,

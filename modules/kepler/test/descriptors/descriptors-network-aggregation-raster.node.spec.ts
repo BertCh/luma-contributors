@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 import {
   computeGPUAnalysisSpacingStatistics,
@@ -10,8 +10,8 @@ import {
   resolveGPUAnalysisDefault,
   tokenizeGPUAnalysisColumnName,
   validateGPUAnalysisResultEncoding
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import type {GPUAnalysisDataProfile} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
+import type {GPUAnalysisDataProfile} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import {
   getCatalogBinding,

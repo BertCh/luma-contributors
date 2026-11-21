@@ -19,6 +19,84 @@ export type OperatorAnnotation = {
  * are being reworked, so a limit that disappears from its source must be removed here as well.
  */
 export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> = {
+  GPUPolygonPrecisionReduction: {
+    limitation:
+      'Delegated polygonization publishes output.nodedSegments.status.requiredCount for noded edges and output.directedEdges.status.requiredCount for directed edges. Neither is an output feature requirement; geometry ring requirements remain under output.status.requiredRingCount.'
+  },
+  GPUSpatialWeightsTransform: {
+    limitation:
+      'outputWeights forwards input status views when supplied; these kinds are preserved evidence, not newly computed counters.'
+  },
+  GPUSpatialWeightsTranspose: {
+    limitation:
+      'outputWeights preserves supplied input diagnostic status views but omits count and requiredCount because a rectangular transpose can drop columns. Transpose does not clear prior input loss.'
+  },
+  GPUChunkedSpatialWeightsTransform: {
+    limitation:
+      'outputWeights preserves supplied outer status and each chunk status independently; no combined scalar is synthesized.'
+  },
+  GPUChunkedSpatialWeightsTranspose: {
+    limitation:
+      "For chunked output, outputWeights.chunks[i].weights.status publishes destination count and requiredCount when supplied. outputWeights.status publishes aggregate overflow and candidateOverflow and forwards the other supplied input diagnostics; input cardinalities are omitted. Packed output follows the packed transpose contract and has no destination cardinality status. A supplied requiredCount needs the producer's final overflow flag. Stopping and unresolved-work ports require a verified complete CSR without those views."
+  },
+  GPUSpatialWeightsValidation: {
+    limitation:
+      'Validation computes invalidCount and preserves supplied input status views for the other kinds in outputWeights.status. The forwarded diagnostics are input evidence, not newly computed validation counters.'
+  },
+  GPUChunkedSpatialWeightsValidation: {
+    limitation:
+      'Validation computes invalidCount in outputWeights.status and preserves supplied outer diagnostics and each chunk status. Forwarded counts and loss diagnostics are input evidence, not newly computed validation counters.'
+  },
+  GPUCellRollup: {
+    limitation:
+      'Each output table publishes count, overflow and optional requiredCount; candidateOverflow preserves final or inherited loss from the source table.'
+  },
+  GPUCellPyramid: {
+    limitation:
+      'Each level publishes its own count, overflow and optional requiredCount; coarser levels report inherited source loss through candidateOverflow.'
+  },
+  GPUEmergingHotSpots: {
+    limitation:
+      'The optional scalar count is the legacy output.count alias of includedCount: exact input population, not emitted output rows. Per-cell hot/cold slice counts are separate.'
+  },
+  addSpatialRegressionRecipe: {
+    limitation:
+      'The ordinary least squares and spatial diagnostics stages publish solver outcome in `stage.code` and excluded rows in `stage.status.invalidCount`. The optional geographically weighted regression stage publishes per-observation `rowCodes`.'
+  },
+  addSpaceTimeHotSpotsRecipe: {
+    limitation:
+      "With caller-supplied cell IDs, the weights stage preserves cells.weights.status. Its status kinds include forwarded input diagnostics as well as the other stages' computed counts and loss diagnostics."
+  },
+
+  GPUSphericalArcOverlay: {
+    tier: 'reference',
+    limits: [
+      {
+        name: 'left.positions.length + right.positions.length',
+        maximum: 128,
+        reason: 'Constructor enforces the total input bound of the serial reference arrangement.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/global-coordinates/gpu-spherical-arc-overlay.ts'
+      },
+      {
+        name: 'output.positions.length',
+        maximum: 1024,
+        reason: 'Constructor bounds assembled geometry and serial output vertex clearing.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/global-coordinates/gpu-spherical-arc-overlay.ts'
+      },
+      {
+        name: 'segmentCapacity',
+        maximum: 16512,
+        reason:
+          'Derived from L+R<=128: L+R+4LR is maximized at L=R=64. Storage binding bytes are preflighted.',
+        source:
+          'modules/analysis/src/gpu-spatial-analysis/global-coordinates/gpu-spherical-arc-overlay.ts'
+      }
+    ],
+    limitation:
+      'Bounded reference route with one arrangement invocation; parallel input-offset packing and output-offset padding. Scratch holds max(1,L+R+4LR)*7 float32 values plus packed ring offsets. Prefer CPUSphericalArcOverlayOperation when GPU graph composition is unnecessary.'
+  },
   ...Object.fromEntries(
     [
       ['GPUSkaterRegions', 'gpu-skater-regions.ts'],
@@ -219,7 +297,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
     limitation:
       'Tile ownership rectangles must partition domain cells; stitched polylines are tile-local fragments. Placement uses a shared extent with row zero at minY, not the grid affine.'
   },
-  GPUHierarchicalDensityClustering: {
+  GPUHDBSCAN: {
     tier: 'scale',
     limits: [
       {
@@ -619,11 +697,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
     ]
   },
   GPURasterStreamingAccumulator: {
+    limitation:
+      'At most 256 slices per submission. Declared stream-wide encoding headroom maximumStreamSliceCount defaults to 16,777,216 (2^24); it is independent of submission size. Counts per cell and calendar slot saturate at 4,294,967,295 (2^32 - 1), preserving prior statistics on overflow. Optional uint32 state.status has one word per cell/slot: 0 complete, 1 observation-count overflow; loss remains sticky across submissions until reset. Legacy counts alone cannot certify completeness. Keep the encoding plan, magnitude and stream headroom fixed between resets.',
     limits: [
       {
         name: 'chunkSliceCount',
         maximum: 256,
-        reason: 'One invocation per cell loops over the chunk; the stream has no slice limit.',
+        reason: 'At most 256 slices in one dispatch; independent of stream-wide encoding headroom.',
         source:
           'modules/analysis/src/raster-analysis/raster-time-series/gpu-raster-streaming-accumulator.ts'
       },
@@ -1360,12 +1440,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   GPUS2PolygonCovering: {
     tier: 'reference',
     limitation:
-      "The default 'serial' traversal runs in one invocation (an O(V squared) ring check, then a depth-first walk of up to 1,048,576 cells). The option refinement: 'level-synchronous' distributes both across invocations.",
+      "Both refinements use parallel segmented ring preparation and bounded cell predicates. The default 'serial' route recovers the ordered depth-first prefix with subtree sizes and ranks; maximumVisitedCells bounds that published prefix while up to that many candidate cells can be classified per configured level. The 'level-synchronous' route suppresses the whole cover on frontier exhaustion. Each work invocation processes at most 4,096 input edges or edge pairs; larger rings use integer winding partials.",
     limits: [
       {
         name: 'maximumVisitedCells',
         maximum: 1048576,
-        reason: 'Bounds the visited-cell walk of the traversal.',
+        reason:
+          'Bounds the serial published DFS prefix and per-level candidate slots; level-synchronous exhaustion suppresses the whole cover.',
         source: 'modules/analysis/src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering.ts'
       }
     ]
@@ -1550,7 +1631,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   GPUPointCloudICP: {
     limits: [
       {
-        name: 'iterations',
+        name: 'maximumIterations',
         maximum: 100,
         reason: 'Iterations are unrolled into the command graph.',
         source: 'modules/analysis/src/pointcloud-analysis/operations/pointcloud-limits.ts'
@@ -1712,6 +1793,8 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
     ]
   },
   GPURestrictedRegimeRegression: {
+    limitation:
+      'Optional robust inference requires robust and output.robust together. For score allocation, rows is response.length, including masked rows. Its whole score binding needs rows * (restrictedCoefficientCount + 1) * 4 bytes <= device.maxStorageBufferBindingSize, in addition to the predictor binding and 16,777,216-row count limit. restrictedCoefficientCount is the sum of 1 for each common column and regimeCount for each varying column, including the intercept; the extra word marks complete cases. White HC0/HC1 uses HC0 by default and HC1 when smallSample is true. White and spatial HAC publish separate covariance and Wald chi-square results; classical output.chow remains the nested-model Chow F. HAC requires square sorted-unique original-row CSR, symmetric finite nonnegative unstandardized kernel weights and unit diagonal including masked rows. Host-knowable malformed declared shapes or metadata can throw at construction. Robust status 1 takes precedence when the restricted fit fails or has no residual degrees of freedom. Invalid kernel contents or incomplete loss evidence yield robust status 2 once the restricted fit and residual degrees are usable, suppressing robust float results; supplied kernel status ports have exactly one word. No masked-neighbor renormalization is applied.',
     limits: [
       {
         name: 'rows',
@@ -2040,7 +2123,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   GPUJacquezTest: {
     limits: [
       {
-        name: 'k',
+        name: 'neighborCount',
         maximum: 256,
         reason:
           'The k temporal nearest neighbors of an event are held in per-invocation registers.',
@@ -2102,10 +2185,10 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   GPUMobilityIndicators: {
     limits: [
       {
-        name: 'entropySequenceRows',
+        name: 'maximumEntropySequenceRows',
         maximum: 16384,
         reason:
-          'The real-entropy estimator is cubic in the staypoints of a track in the worst case, so the location sequence is capped.',
+          'The real-entropy estimator is cubic in the usable location keys of a track in the worst case.',
         source:
           'modules/analysis/src/gpu-spatial-analysis/trajectory-mobility/gpu-mobility-indicators.ts'
       }
@@ -2309,13 +2392,13 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUIslandAttachment: {
     limitation:
-      'Default auto uses exhaustive scan through 4096 rows and a neighbor grid above it. Grid rows and CSR output slots are device-binding bound; explicit scan retains its 65,535-row reference ceiling.',
+      'Automatic scan/grid crossover is 4,096 rows; forced scan supports at most 65,535 rows. Grid requires rows * 16 <= 4,294,967,295 candidate slots and an admissible command schedule and device bindings. The arithmetic ceiling of 268,435,455 rows already fails scheduling; it is not an admitted grid maximum. Offer grid only when its plan fits.',
     limits: [
       {
-        name: 'positions.length (grid)',
-        maximum: 4294967294,
+        name: 'candidate slots (grid rows * 16)',
+        maximum: 4294967295,
         reason:
-          'uint32 row IDs reserve the invalid sentinel; device bindings further constrain capacity.',
+          'Necessary uint32 candidate-addressing bound; command scheduling and device bindings must also fit.',
         source: 'modules/analysis/src/gpu-spatial-analysis/spatial-weights/gpu-island-attachment.ts'
       },
       {
@@ -2419,7 +2502,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
       'Private top-k through 64 slots, storage-backed top-k above 64; total slots remain uint32-bounded and device storage bindings impose lower limits. Nearest-feature point queries and aligned outputs accept chunked GraphVectorView input; neighbors mode retains its own packed geometry and slot layout. Optional neighborRows are original feature rows before sourceIds remapping; they require disjoint neighborIds output. Wire neighborRows into GPUPairGather.neighbors.rows; neighborIds may contain caller identities.',
     limits: [
       {
-        name: 'k/neighborCapacity',
+        name: 'neighborCount/neighborCapacity',
         maximum: 2147483646,
         reason:
           'Signed-compatible storage-backed top-k slots; rows times slots and device bindings also constrain capacity.',
@@ -2442,7 +2525,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUPairGather: {
     limitation:
-      'Dense neighbor input is neighbors.rows (original feature row indices), not neighbors.ids or application IDs. candidateOverflow reports inherited candidate-stage loss separately from final-capacity overflow. rowCount is clamped to output capacity; optional status.matchedCount counts matched rows. Supplied candidate loss requires an output candidateOverflow destination.'
+      'Dense neighbor input is neighbors.rows (original feature row indices), not neighbors.ids or application IDs. candidateOverflow reports inherited candidate-stage loss separately from final-capacity overflow. status.count is clamped to output capacity; optional status.matchedCount counts matched input rows. Supplied candidate loss requires an output candidateOverflow destination.'
   },
   GPURasterFractionalCategoricalStatistics: {
     limitation:
@@ -2456,10 +2539,10 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
           'modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts'
       },
       {
-        name: 'zoneCount * categoryCapacity (tiled)',
+        name: 'zoneCount * (categoryCapacity + 1) (tiled)',
         maximum: 4294967294,
         reason:
-          'uint32 group keys reserve the inactive sentinel; dense outputs must fit device bindings.',
+          'zoneCount * (categoryCapacity + 1) includes the missing-category slot; uint32 group keys reserve the inactive sentinel. Dense outputs must also fit device bindings and the independent schedule budget.',
         source:
           'modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts'
       },
@@ -2471,9 +2554,10 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
           'modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts'
       },
       {
-        name: 'zoneCount * categoryCapacity (exact)',
+        name: 'zoneCount * (categoryCapacity + 1) (exact)',
         maximum: 65535,
-        reason: 'Explicit dense group reference.',
+        reason:
+          'zoneCount * (categoryCapacity + 1) includes the missing-category slot in the explicit dense group reference; independent binding and schedule limits also apply.',
         source:
           'modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts'
       },
@@ -2489,7 +2573,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   addBuildingTessellationRecipe: {
     tier: 'reference',
     limitation:
-      'Local mode uses an adaptive candidate index and publishes convex-piece triangle unions for bounded simple nonconvex or holed enclosures (at most 32 rings). Reference mode retains dissolved rings, 64 buildings and 128 samples. Device bindings and certification/overflow status still apply.',
+      'Local mode uses an adaptive candidate index and publishes fixed-stride convex polygon pieces of variable vertex count for bounded simple nonconvex or holed enclosures (at most 32 rings). Reference mode retains dissolved rings, 64 buildings and 128 samples. Device bindings and certification/overflow status still apply. Local mode publishes result.status.{count,requiredCount,overflow,candidateOverflow,invalidCount}. The default reference layout publishes result.outputs[i].status.{count,overflow,candidateOverflow,requiredRingCount} per building overlay. A caller-owned overlay may omit requiredRingCount and supply ringCount, uncertainCount and nodedSegmentRequiredCount. result.outputs[i].boundary.status.requiredCount is the selected boundary-edge requirement, not a geometry ring or feature requirement. Reference also publishes packed result.status.sampling and per-building result.status.complete.',
     limits: [
       {
         name: 'buildingCount (local)',
@@ -2518,32 +2602,12 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   '@luma-contributors/analysis/gpu-network:addVisibilityGraphRecipe': {
     tier: 'reference',
     limitation:
-      'CSR metrics use budgeted exact all-source calculations or deterministic sampled estimates. Auto mode samples when the exact command budget cannot fit; explicit exact mode rejects an insufficient budget. Sampled maximum depth is a lower bound.'
+      'CSR metrics use budgeted exact all-source calculations or deterministic sampled estimates. When pivotCount and pivotNodes are omitted, auto searches smaller feasible whole batches when all-source work fails lane divisibility, allocation or binding bytes, or the total recipe command budget of 32,768. Explicit pivotCount or pivotNodes is preserved and rejects infeasible work; explicit exact rejects when all-source work cannot fit. Use addVisibilityGraphRecipe.executionPlanner for the network-qualified recipe; the spatial recipe supplies adjacency only. Sampled maximum depth is a lower bound.'
   },
   '@luma-contributors/analysis/gpu-spatial-analysis:addVisibilityGraphRecipe': {
     tier: 'reference',
     limitation:
-      'CSR mode provides visibility adjacency and degree only. Dense reference mode provides all-pairs metrics through 256 viewpoints. Network metrics for CSR are supplied by the separate gpu-network recipe.',
-    limits: [
-      {
-        name: 'positions.length (csr)',
-        maximum: 1000000,
-        reason: 'Indexed sparse point queries; device bindings and grid visit budgets also apply.',
-        source: 'modules/analysis/src/gpu-spatial-analysis/urban-morphology/visibility-graph-csr.ts'
-      },
-      {
-        name: 'edgeCapacity (csr)',
-        maximum: 16777216,
-        reason: 'Sparse output slots and device scratch bindings.',
-        source: 'modules/analysis/src/gpu-spatial-analysis/urban-morphology/visibility-graph-csr.ts'
-      },
-      {
-        name: 'positions.length (reference)',
-        maximum: 256,
-        reason: 'Dense all-pairs reference.',
-        source: 'modules/analysis/src/gpu-spatial-analysis/urban-morphology/visibility-graph.ts'
-      }
-    ]
+      'CSR mode provides visibility adjacency and degree only. Dense reference mode provides all-pairs metrics through 256 viewpoints. Network metrics for CSR are supplied by the separate gpu-network recipe.'
   },
   GPUFittingCoordinateEncoder: {
     limitation:
@@ -2715,7 +2779,32 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUClassBreaks: {
     limitation:
-      'GraphVectorView values and aligned masks support chunked classification for compiled methods excluding maximum-breaks. Exact and monotone natural-breaks remain packed-only; global reductions and moment scratch preserve their existing row limits.'
+      'GraphVectorView values and aligned masks support chunked classification for compiled methods excluding maximum-breaks. Exact and monotone natural-breaks remain packed-only. Inclusive source-row bounds when natural-breaks is compiled: exact materialized 1,024, exact recompute 8,192, monotone 262,144; masked/missing rows count. Storage/mode compatibility is validated separately. Global reductions, moment scratch, device bindings and command budgets also apply.',
+    limits: [
+      {
+        name: 'source rows (natural-breaks exact materialized)',
+        maximum: 1024,
+        reason:
+          'Inclusive source-row bound when natural-breaks is compiled with exact materialized storage.',
+        source:
+          'modules/analysis/src/dataframe-analysis/column-classification/natural-breaks-limits.ts'
+      },
+      {
+        name: 'source rows (natural-breaks exact recompute)',
+        maximum: 8192,
+        reason:
+          'Inclusive source-row bound when natural-breaks is compiled with exact recomputed storage.',
+        source:
+          'modules/analysis/src/dataframe-analysis/column-classification/natural-breaks-limits.ts'
+      },
+      {
+        name: 'source rows (natural-breaks monotone)',
+        maximum: 262144,
+        reason: 'Inclusive source-row bound when natural-breaks is compiled in monotone mode.',
+        source:
+          'modules/analysis/src/dataframe-analysis/column-classification/natural-breaks-limits.ts'
+      }
+    ]
   },
   GPUTransitionMatrix: {
     limitation:
@@ -2887,7 +2976,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   GPUTerrainTiledFlow: {
     tier: 'scale',
     limitation:
-      'execution auto selects resident or bounded D8 tile/boundary reconciliation; explicit tiled requires D8 and resident retains the reference route. Tiled D8 keeps maximum-tile scratch plus a coarse boundary forest; caller inputs/outputs remain resident. No host paging or branching reconciliation.',
+      'execution auto selects resident or bounded D8 tile/boundary reconciliation; explicit tiled requires D8 and resident retains the reference route. Tiled D8 keeps maximum-tile scratch plus a coarse boundary forest; caller inputs/outputs remain resident. Resident domains contain at most 536,870,911 cells; tiled D8 domains at most 4,294,967,295 cells. Each owned tile and the total coarse boundary contain at most 536,870,911 cells; each axis is at most 2,147,483,646. Owned rectangles must be disjoint and cover the domain. Scratch and caller views must fit device bindings; no host paging or branching reconciliation.',
     limits: [
       {
         name: 'estimatedCommandNodeCount',
@@ -2896,10 +2985,24 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
         source: 'modules/analysis/src/gpu-terrain/terrain-processing/gpu-terrain-tiled-flow.ts'
       },
       {
-        name: 'grid cell count',
+        name: 'grid cell count (resident)',
         maximum: 536870911,
         reason: 'Eight fraction words per cell require uint32 addressing.',
         source: 'modules/analysis/src/gpu-terrain/terrain-processing/gpu-terrain-tiled-flow.ts'
+      },
+      {
+        name: 'grid cell count (tiled D8)',
+        maximum: 4294967295,
+        reason:
+          'Uint32 global cell addressing; tile, boundary, command and device limits also apply.',
+        source: 'modules/analysis/src/gpu-terrain/terrain-processing/gpu-terrain-tiled-flow.ts'
+      },
+      {
+        name: 'owned cells per tile and total coarse boundary cells (tiled D8)',
+        maximum: 536870911,
+        reason:
+          'Eight uint32 tour-sum words per forest cell; device bindings can impose lower bounds.',
+        source: 'modules/analysis/src/gpu-terrain/terrain-processing/terrain-tiled-plan.ts'
       }
     ]
   },
@@ -3196,7 +3299,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUOffsetCurve: {
     limitation:
-      'Compact output layouts are opt-in; offsets and counts describe only emitted geometry. Position addressing is at most 2,147,483,647 and candidate/fragment word counts must fit uint32.',
+      "Compact output layouts are opt-in; offsets and counts describe only emitted geometry. The status port (count, overflow, vertex counts) exists only with `output.layout: 'compact'`; the default fixed-stride layout has none. Position addressing is at most 2,147,483,647 and candidate/fragment word counts must fit uint32.",
     limits: [
       {
         name: 'position address count',
@@ -3324,7 +3427,7 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
   },
   GPUGlobalSpatialStatistics: {
     limitation:
-      'Default tiled reductions support analytic Moran, Geary, General G, bivariate Moran and join counts. Exact uint32 population, island and black counts accompany float32 statistics. Reference mode retains its prior limits; all bindings must fit.',
+      "Default tiled reductions support analytic Moran, Geary, General G, bivariate Moran and join counts. Exact uint32 population, island and black counts accompany float32 statistics. Reference mode retains its prior limits; all bindings must fit. A supplied requiredCount needs the producer's final overflow flag. Stopping and unresolved-work ports require a verified complete CSR without those views. Bind root overflow and candidateOverflow as one-row uint32 views.",
     limits: [
       {
         name: 'aggregate slots',
@@ -3385,9 +3488,9 @@ export const OPERATOR_ANNOTATIONS: Readonly<Record<string, OperatorAnnotation>> 
     limitation:
       'Reusable fixed-lane pivot batches accumulate GPU-resident node/edge totals. First submission requires reset nonzero; pad the last batch with 0xffffffff. Keep the original sample-count scale and retain per-pivot outputs before the next submission. Each batch still must converge within its round budget.'
   },
-  GPUKeyJoin: {
+  GPUKeyLookup: {
     limitation:
-      'Exact finite-value count-distinct joins are available. Right rows are at most 2,147,483,648, subject to published sort and device binding limits.',
+      'Lookup supports exact finite-value count-distinct. Right rows are at most 2,147,483,648, subject to published sort and device binding limits.',
     limits: [
       {
         name: 'right rows',

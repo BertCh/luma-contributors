@@ -91,6 +91,10 @@ fn getTraceTwo(rho: f32) -> f32 {
  * point is a candidate when the derivative points outward, and the candidate with the largest
  * objective wins (the first on ties). A NaN derivative produces no candidate. The generalized
  * method of moments error estimator minimizes by passing the negated objective and slope.
+ * Stationary endpoint minima are excluded using the inward derivative sign; a flat profile
+ * keeps the lower endpoint. Endpoint classification never replaces a refined interior root.
+ * A rejected stationary lower endpoint seeds the first cell with its inward derivative so
+ * an interior maximum within that cell remains bracketed.
  */
 export function getParameterSearchWGSL(
   scanSteps: number = GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SCAN_STEPS,
@@ -111,7 +115,11 @@ fn searchParameter(bound: f32) -> SearchResult {
   let step = 2.0 * bound / ${scanSteps}.0;
   var previousParameter = -bound;
   var previous = getDerivative(previousParameter);
-  if (previous <= 0.0) {
+  // At a stationary lower endpoint inspect the closest representable inward point;
+  // derivative zero alone also describes a minimum. Flat profiles retain the lower tie.
+  let lowerInward = -bitcast<f32>(bitcast<u32>(bound) - 1u);
+  let lowerInwardDerivative = getDerivative(lowerInward);
+  if (previous < 0.0 || (previous == 0.0 && lowerInwardDerivative <= 0.0)) {
     let objective = getObjective(previousParameter);
     count = count + 1u;
     if (objective > bestObjective) {
@@ -120,6 +128,13 @@ fn searchParameter(bound: f32) -> SearchResult {
       bestAtBoundary = true;
     }
   }
+  if (previous == 0.0 && lowerInwardDerivative > 0.0) {
+    // A stationary minimum can precede an interior maximum in the first scan cell.
+    // Seed that cell with the inward positive sign rather than the endpoint's zero.
+    previous = lowerInwardDerivative;
+    previousParameter = lowerInward;
+  }
+  var upperBoundaryCounted = false;
   for (var index = 1u; index <= ${scanSteps}u; index++) {
     var parameter = bound;
     if (index < ${scanSteps}u) {
@@ -137,19 +152,24 @@ fn searchParameter(bound: f32) -> SearchResult {
           high = middle;
         }
       }
-      let root = 0.5 * (low + high);
+      // An exact stationary upper endpoint is a boundary candidate, just like the lower
+      // endpoint. Preserve its value rather than rounding a bisection midpoint into the interior.
+      let root = select(0.5 * (low + high), bound, index == ${scanSteps}u && current == 0.0 && high == bound);
+      upperBoundaryCounted = upperBoundaryCounted || root == bound;
       let objective = getObjective(root);
       count = count + 1u;
       if (objective > bestObjective) {
         best = root;
         bestObjective = objective;
-        bestAtBoundary = false;
+        bestAtBoundary = root == -bound || root == bound;
       }
     }
     previous = current;
     previousParameter = parameter;
   }
-  if (previous > 0.0) {
+  let upperInward = bitcast<f32>(bitcast<u32>(bound) - 1u);
+  let upperInwardDerivative = getDerivative(upperInward);
+  if (!upperBoundaryCounted && (previous > 0.0 || (previous == 0.0 && upperInwardDerivative > 0.0))) {
     let objective = getObjective(bound);
     count = count + 1u;
     if (objective > bestObjective) {
@@ -166,11 +186,9 @@ fn searchParameter(bound: f32) -> SearchResult {
 /**
  * Sum of `source[source_offset + base + item * stride]` over `item in [0, count)`, as WGSL
  * statements declaring the variable `name`. The sum is a fixed pairwise (cascade) sum, see
- * `getPairwiseSumWGSL`: the Kahan compensation this helper is named after is folded to zero by
- * the shader compiler of the test GPU, where it returned the plain serial sum. The name is kept
- * until the exported-symbol pass (roadmap 12.4).
+ * `getPairwiseSumWGSL`. This is a pairwise reduction, without compensation.
  */
-export function getKahanSumWGSL(
+export function getStridedPairwiseSumWGSL(
   source: string,
   base: string,
   stride: string,

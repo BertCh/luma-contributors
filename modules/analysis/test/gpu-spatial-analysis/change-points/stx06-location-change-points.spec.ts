@@ -20,6 +20,8 @@ import {
   createChangePointScene
 } from './stx06-change-point-reference';
 
+import {UNIT_SCALING_PARTITIONS} from './unit-scaling-fixture';
+
 type LayoutName = 'cell-major' | 'period-major';
 
 const flatten = (rows: Float32Array[], layout: LayoutName): Float32Array => {
@@ -359,15 +361,64 @@ describe('GPUPettittTest', () => {
     const gappy = Float32Array.from(tied, (value, slice) => (slice % 5 === 0 ? Number.NaN : value));
     const single = new Float32Array(30).fill(Number.NaN);
     single[9] = 1;
-    const result = await runPettitt([tied, gappy, single]);
+    const constant = new Float32Array(30).fill(Number.NaN);
+    constant[1] = 5;
+    constant[3] = 5;
+    const result = await runPettitt([tied, gappy, single, constant]);
     if (!result.statistic) return;
-    [tied, gappy, single].forEach((row, cell) => {
+    [tied, gappy, single, constant].forEach((row, cell) => {
       const expected = computePettittReference(row);
       expect(result.statistic[cell]).toBe(expected.statistic);
       expect(result.changeSlice[cell]).toBe(expected.changeSlice);
-      expect(Math.abs(result.pValues[cell] - expected.pValue)).toBeLessThan(
-        1e-4 * Math.max(expected.pValue, 1e-3)
-      );
+      if (Number.isNaN(expected.pValue)) {
+        expect(result.pValues[cell]).toBeNaN();
+      } else {
+        expect(Number.isFinite(result.pValues[cell])).toBe(true);
+        expect(Math.abs(result.pValues[cell] - expected.pValue)).toBeLessThan(
+          1e-4 * Math.max(expected.pValue, 1e-3)
+        );
+      }
     });
   });
 });
+
+for (const fixture of UNIT_SCALING_PARTITIONS) {
+  it(`PTS-125 device ${fixture.cost}, units x${fixture.scale}, penalty ${fixture.penalty}`, async () => {
+    const result = await runChangePoints({
+      rows: [Float32Array.from(fixture.values)],
+      layout: 'cell-major',
+      cost: fixture.cost,
+      penalty: fixture.penalty,
+      minimumSegmentLength: fixture.minimum,
+      maximumChangePoints: 7
+    });
+    const points = result.points.slice(0, result.count[0]);
+    if (fixture.cost === 'mean' && (fixture.scale === 1 || fixture.penalty === 200)) {
+      expect([[], [4]]).toContainEqual(points);
+    } else expect(points).toEqual(fixture.points);
+    expect(Number.isFinite(result.cost[0])).toBe(true);
+    expect(Math.abs(result.cost[0] - fixture.expectedCost)).toBeLessThan(0.002);
+    expect(result.overflow).toBe(0);
+  });
+}
+
+for (const [scale, penalty, expectedPoints] of [
+  [1, 2, []],
+  [10, 2, [4]],
+  [10, 20, []]
+] as const) {
+  it(`PTS-125 device Poisson count scale ${scale}, penalty ${penalty}`, async () => {
+    // Hand-computed split gain: scale * 2*(4*log(2/3)+8*log(4/3)) = scale*1.359192294363178.
+    const result = await runChangePoints({
+      rows: [Float32Array.from([1, 1, 1, 1, 2, 2, 2, 2], value => value * scale)],
+      layout: 'cell-major',
+      cost: 'poisson',
+      penalty,
+      minimumSegmentLength: 2,
+      maximumChangePoints: 7
+    });
+    expect(result.points.slice(0, result.count[0])).toEqual(expectedPoints);
+    expect(Number.isFinite(result.cost[0])).toBe(true);
+    expect(result.overflow).toBe(0);
+  });
+}

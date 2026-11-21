@@ -4,7 +4,7 @@
 
 import {expect, test} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 import {
   createKeplerEmbeddingFixture,
   runKeplerRasterEmbedding,
@@ -189,4 +189,149 @@ test('time-varying slices integrate their ramp, and lost particles invalidate FT
   expect(Array.from(invalid.flowValidity).every(value => value === 0)).toBe(true);
   expect(Array.from(invalid.validity).every(value => value === 0)).toBe(true);
   expect(Array.from(invalid.ftle).every(Number.isNaN)).toBe(true);
+});
+
+test.each([1, 0])('PCA zero components use mid-grey for rank %s covariance', async rank => {
+  const device = await getDevice();
+  // Unbiased covariance of x=[-1,0,1] is 1. Its two-sigma interval [-2,2]
+  // maps those scores to [0.25,0.5,0.75]. Two zero components map to 0.5.
+  // The rank-zero control uses [-1,1] for all three zero components.
+  const result = await runKeplerRasterEmbedding(
+    device,
+    {
+      width: 3,
+      height: 1,
+      dimensions: 3,
+      vectors: new Float32Array([-rank, 0, 0, 0, 0, 0, rank, 0, 0])
+    },
+    {operation: 'pca'}
+  );
+  expect(result.rowCount).toBe(3);
+  for (const name of ['component_1', 'component_2', 'component_3', 'rgb_1', 'rgb_2', 'rgb_3'])
+    expect(result.columns[name]).toHaveLength(3);
+  const expectedRed = rank ? [0.25, 0.5, 0.75] : [0.5, 0.5, 0.5];
+  for (let row = 0; row < 3; row++) {
+    for (const channel of [0, 1, 2]) {
+      const actual = result.columns[`rgb_${channel + 1}`][row];
+      expect(Number.isFinite(actual)).toBe(true);
+      expect(actual).toBeCloseTo(channel === 0 ? expectedRed[row] : 0.5, 6);
+    }
+  }
+});
+
+test('FLT-10 epoch slices match a zero-origin control through flow and FTLE', async () => {
+  const device = await getDevice();
+  const field = strainField(0);
+  field.velocitiesEnd = strainField(0.04).velocitiesStart;
+  const results = [];
+  for (const origin of [0, 1700000000]) {
+    results.push(
+      await runKeplerLagrangianDiagnostics(device, field, {
+        timeStep: 0.1,
+        stepCount: 10,
+        startTime: origin + 4,
+        sliceStartTime: origin,
+        sliceEndTime: origin + 10
+      })
+    );
+  }
+  expect(Array.from(results[1].positions)).toEqual(Array.from(results[0].positions));
+  expect(Array.from(results[1].flowValidity)).toEqual(new Array(36).fill(1));
+  expect(Array.from(results[1].validity)).toEqual(new Array(36).fill(1));
+  // RK2 at midpoint time t+.05 for the linear strain a(t)=.004*t:
+  // x' = x*(1+h*a(t+h/2)*(1+h*a(t)/2)); no contributor is used as oracle.
+  let multiplier = 1;
+  let contractingMultiplier = 1;
+  for (let step = 0; step < 10; step++) {
+    const time = 4 + step * 0.1;
+    multiplier *= 1 + 0.1 * 0.004 * (time + 0.05) * (1 + 0.05 * 0.004 * time);
+    contractingMultiplier *= 1 - 0.1 * 0.004 * (time + 0.05) * (1 - 0.05 * 0.004 * time);
+  }
+  for (const result of results) {
+    expect(result.seeds).toHaveLength(72);
+    expect(result.positions).toHaveLength(72);
+    expect(result.flowValidity).toHaveLength(36);
+    expect(result.ftle).toHaveLength(36);
+    expect(result.validity).toHaveLength(36);
+    for (let index = 0; index < 36; index++) {
+      const position = result.positions[index * 2];
+      const ftle = result.ftle[index];
+      const contractingPosition = result.positions[index * 2 + 1];
+      expect(Number.isFinite(contractingPosition)).toBe(true);
+      expect(contractingPosition).toBeCloseTo(
+        result.seeds[index * 2 + 1] * contractingMultiplier,
+        5
+      );
+      expect(Number.isFinite(position)).toBe(true);
+      expect(Number.isFinite(ftle)).toBe(true);
+      expect(position).toBeCloseTo(result.seeds[index * 2] * multiplier, 5);
+      expect(ftle).toBeCloseTo(Math.log(multiplier), 5);
+    }
+  }
+});
+
+for (const operation of ['covariance', 'pca', 'projection'] as const) {
+  test(`sparse-band ${operation} adapter consumes the public covariance and mean`, async () => {
+    const device = await getDevice();
+    const pixelCount = 262144;
+    const vectors = new Float32Array(pixelCount * 3);
+    vectors[0] = 0.7;
+    const result = await runKeplerRasterEmbedding(
+      device,
+      {width: 1024, height: 256, dimensions: 3, vectors},
+      {operation}
+    );
+    // One stored a=float32(.7), n-1 zeros. Exact mean=a/n and unbiased covariance=a*a/n.
+    // All other bands are zero. The leading eigenvector is [1,0,0], so scores are a-a/n then -a/n.
+    if (operation === 'covariance') {
+      const covariance = result.columns['covariance'];
+      expect(covariance).toHaveLength(9);
+      for (let index = 0; index < 9; index++) {
+        expect(Number.isFinite(covariance[index])).toBe(true);
+        expect(
+          Math.abs(covariance[index] - (index === 0 ? 1.8692015964916214e-6 : 0))
+        ).toBeLessThan(2e-11);
+      }
+    } else {
+      const scores = result.columns['component_1'];
+      for (const name of ['component_1', 'component_2', 'component_3', 'rgb_1', 'rgb_2', 'rgb_3'])
+        expect(result.columns[name]).toHaveLength(pixelCount);
+      for (const row of [0, 1, pixelCount - 1]) {
+        expect(Number.isFinite(scores[row])).toBe(true);
+        const expected = row === 0 ? 0.6999973058700562 : -2.670288040462765e-6;
+        expect(Math.abs(scores[row] - expected)).toBeLessThan(row === 0 ? 1e-7 : 1e-10);
+      }
+      for (const name of ['component_2', 'component_3']) {
+        for (const row of [0, 1, pixelCount - 1]) expect(result.columns[name][row]).toBe(0);
+      }
+    }
+  });
+}
+
+test('B2 omitted absolute flow start retains the established ramp displacement', async () => {
+  const field = strainField(0);
+  field.extent = [-8, -8, 2, 2];
+  field.velocitiesEnd = Float32Array.from({length: 128}, (_, index) => (index % 2 === 0 ? 0.8 : 0));
+  const result = await runKeplerLagrangianDiagnostics(await getDevice(), field, {
+    timeStep: 1,
+    stepCount: 2,
+    sliceStartTime: -4,
+    sliceEndTime: 4
+  });
+  expect(result.positions).toHaveLength(72);
+  expect(result.seeds).toHaveLength(72);
+  expect(result.ftle).toHaveLength(36);
+  expect(Array.from(result.flowValidity)).toEqual(new Array(36).fill(1));
+  expect(Array.from(result.validity)).toEqual(new Array(36).fill(1));
+  // The uniform ramp is v(t)=.1*(t+4). Midpoint steps at .5 and 1.5 move .45+.55=1 metre.
+  for (let index = 0; index < 36; index++) {
+    const positionX = result.positions[index * 2];
+    const positionY = result.positions[index * 2 + 1];
+    expect(Number.isFinite(positionX)).toBe(true);
+    expect(Number.isFinite(positionY)).toBe(true);
+    expect(Number.isFinite(result.ftle[index])).toBe(true);
+    expect(positionX).toBeCloseTo(result.seeds[index * 2] + 1, 5);
+    expect(positionY).toBeCloseTo(result.seeds[index * 2 + 1], 5);
+    expect(result.ftle[index]).toBeCloseTo(0, 5);
+  }
 });

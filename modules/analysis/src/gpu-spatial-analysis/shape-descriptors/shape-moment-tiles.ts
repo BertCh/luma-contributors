@@ -16,7 +16,7 @@ import {
   validateCapacity,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {SHAPE_MOMENT_RANGE_WGSL} from './shape-moment-range-wgsl';
 import {
@@ -170,8 +170,8 @@ ringCentroids[ringCentroidsOffset + 2u * index] = centroid.x; ringCentroids[ring
           access: 'read_write' as const
         }))
       ],
-      declarations: `${ADDITION_ROUNDING_ERROR_WGSL}\n${IS_NAN_BITS_WGSL}\n${SHAPE_MOMENT_RANGE_WGSL}
-fn addMoment(accumulator: vec2<f32>, value: f32) -> vec2<f32> { let sum = accumulator.x; let total = sum + value; return vec2<f32>(total, accumulator.y + getAdditionRoundingError(sum, value, total)); }
+      declarations: `${COMPENSATED_SUM_WGSL}\n${IS_NAN_BITS_WGSL}\n${SHAPE_MOMENT_RANGE_WGSL}
+fn addMoment(accumulator: vec2<f32>, value: f32) -> vec2<f32> { return addCompensatedValue(accumulator, value); }
 fn position(row: u32) -> vec2<f32> { return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); }`,
       body: `var area = vec2<f32>(0.0); var xx = vec2<f32>(0.0); var yy = vec2<f32>(0.0); var xy = vec2<f32>(0.0);
 let ringCount = arrayLength(&tileOffsets) - tileOffsetsOffset - 1u;

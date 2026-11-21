@@ -24,6 +24,15 @@ import type {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SatelliteTrackSet} from './satellite-tracks';
 
+/**
+ * Shared playback precision for trail bounds and their displayed clock. Satellite scene callers
+ * must apply this to clock.advance(frame) before formatting or encoding the frame: adding the
+ * Unix epoch to an unquantized value can round across a minute boundary.
+ */
+export function quantizeSatellitePlaybackTime(seconds: number): number {
+  return Math.floor(seconds * 1024) / 1024;
+}
+
 /** Readback of the playhead graph: who is active, where and how high, and how many trail segments are live. */
 export type SatellitePlaybackSnapshot = {
   activeCount: number;
@@ -67,7 +76,11 @@ export type SatellitePlaybackCore = {
     playhead: number,
     maxGapSeconds?: number
   ) => void;
-  /** Writes the window `[end - length, end]` and encodes the trail graph. */
+  /**
+   * Writes `[end - length, end]`, rounding each bound down to a 1/1024-second grid,
+   * and encodes the trail graph. Callers must format quantizeSatellitePlaybackTime(end)
+   * to display the uploaded endpoint, including when epoch addition rounds near a minute.
+   */
   encodeTrails: (
     commandEncoder: CommandEncoder,
     end: number,
@@ -366,10 +379,12 @@ export async function createSatellitePlaybackCore(
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
     },
     encodeTrails(commandEncoder, end, lengthSeconds, fadeSeconds) {
+      const windowStart = quantizeSatellitePlaybackTime(end - lengthSeconds);
+      const windowEnd = quantizeSatellitePlaybackTime(end);
       windowParameters.write(
         getGPUTimeWindowFilterParameterValues({
-          start: end - lengthSeconds,
-          end,
+          start: windowStart,
+          end: windowEnd,
           startFadeDuration: fadeSeconds
         })
       );

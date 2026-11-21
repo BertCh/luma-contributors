@@ -56,7 +56,7 @@ export default defineOperationRun({
       new GPUBufferSelection({
         points: {kind: 'points', positions: points.view},
         features: {kind: 'segments', starts: starts.view, ends: ends.view},
-        distance: distance.view,
+        radius: distance.view,
         candidateCapacity: 1 << 16,
         output: {
           outputMask: outputMask.view,

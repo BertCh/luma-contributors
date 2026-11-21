@@ -9,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -20,6 +21,8 @@ import {runInNewContext} from 'node:vm';
 import {transformSync} from 'esbuild';
 import {afterEach, expect, it} from 'vitest';
 import {
+  getChildNodeOptions,
+  getIsolatedNodeHeapArguments,
   getOptInBrowserDefines,
   getOptInTestExclusions,
   listTestFiles,
@@ -35,7 +38,7 @@ function write(directory: string, path: string, contents: string) {
 }
 
 function fixture(script: string) {
-  const directory = mkdtempSync(join(tmpdir(), 'verify-command-'));
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'verify-command-')));
   directories.push(directory);
   mkdirSync(join(directory, 'scripts'));
   copyFileSync(join(ROOT, 'scripts', script), join(directory, 'scripts', script));
@@ -163,6 +166,47 @@ it('final2 G8 forwards a CLI heap override through verify instead of the larger 
   expect(heap).toBeLessThan(384);
 });
 
+it('TOOL-103 accepts a lower CLI heap that overrides an environment heap above the ceiling', () => {
+  // Node applies the last heap option and command-line options follow NODE_OPTIONS (AGENTS.md).
+  expect(
+    getIsolatedNodeHeapArguments('--max-old-space-size=16384 "--max-old-space-size=256"')
+  ).toEqual(['--max-old-space-size=256']);
+  expect(getChildNodeOptions('--max-old-space-size=16384', ['--max-old-space-size=256'])).toBe(
+    '--max-old-space-size=16384 --max-old-space-size=256'
+  );
+  // The effective value still meets the ceiling, and percentages are refused anywhere.
+  expect(() =>
+    getChildNodeOptions('--max-old-space-size=256', ['--max-old-space-size=16384'])
+  ).toThrow('at most 8192 MiB');
+  expect(() =>
+    getChildNodeOptions('--max-old-space-size-percentage=50', ['--max-old-space-size=256'])
+  ).toThrow('at most 8192 MiB');
+  expect(() =>
+    getChildNodeOptions('--max-old-space-size=abc', ['--max-old-space-size=256'])
+  ).toThrow('at most 8192 MiB');
+
+  const directory = verificationFixture();
+  const result = spawnSync(
+    process.execPath,
+    ['--max-old-space-size=256', join(directory, 'scripts/verify.mjs'), '--only', 'lint'],
+    {
+      cwd: directory,
+      encoding: 'utf8',
+      timeout: 10000,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: '--max-old-space-size=16384',
+        PATH: `${join(directory, 'node_modules/.bin')}:${process.env['PATH']}`
+      }
+    }
+  );
+  const output = `${result.stdout}${result.stderr}`;
+  expect(result.status, output).toBe(0);
+  const heap = Number(output.match(/heap-mib=([\d.]+)/)?.[1]);
+  expect(heap).toBeGreaterThan(256);
+  expect(heap).toBeLessThan(384);
+});
+
 function verificationFixture() {
   const directory = fixture('verify.mjs');
   // These commands are tiny stand-ins; test disk policy independently of host free space.
@@ -194,17 +238,21 @@ require('node:module').syncBuiltinESMExports();`
 const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
-fs.appendFileSync('commands.jsonl', JSON.stringify(args) + '\\n');
+if (args[0] === '--version') { process.stdout.write('1.22.22\\n'); process.exit(0); }
+fs.appendFileSync('.typecheck/commands.jsonl', JSON.stringify(args) + '\\n');
 process.stdout.write('heap-mib=' + require('node:v8').getHeapStatistics().heap_size_limit / 1024 ** 2 + '\\n');
 if (args[0] === process.env.FAIL_STEP) process.exit(7);
-if (args[0] === 'test-headless') {
-  const files = args.slice(1).filter(argument => argument.endsWith('.spec.ts'));
+if (args[0] === 'test-headless' || args[0] === 'test-node') {
+  const files = args[0] === 'test-node'
+    ? ['modules/analysis/test/ordinary.node.spec.ts']
+    : args.slice(1).filter(argument => argument.endsWith('.spec.ts'));
   if (process.env.OMIT_FILE) files.pop();
-  const report = {testResults: files.map(file => ({name: path.resolve(file), assertionResults: [{status: process.env.ALL_SKIPPED ? 'pending' : 'passed'}]}))};
-  fs.writeFileSync(args.find(argument => argument.startsWith('--outputFile.json=')).split('=')[1], JSON.stringify(report));
+  const report = {testResults: files.map(file => ({name: path.resolve(file), assertionResults: [{status: process.env.ALL_SKIPPED ? 'skipped' : 'passed'}]}))};
+  fs.writeFileSync(args.find(argument => argument.startsWith('--outputFile.json=')).slice('--outputFile.json='.length), JSON.stringify(report));
 }
 `
   );
+  write(directory, 'modules/analysis/test/ordinary.node.spec.ts', 'export {};');
   write(directory, 'modules/analysis/test/first/one.spec.ts', '');
   write(directory, 'modules/analysis/test/second/two.spec.ts', '');
   write(directory, 'modules/analysis/test/second/timing-bench.spec.ts', '');
@@ -220,7 +268,7 @@ function runVerification(directory: string, arguments_: string[], environment = 
 }
 
 function readCommands(directory: string): string[][] {
-  const file = join(directory, 'commands.jsonl');
+  const file = join(directory, '.typecheck/commands.jsonl');
   return existsSync(file)
     ? readFileSync(file, 'utf8')
         .trim()
@@ -238,7 +286,7 @@ it('runs steps in order, stops on the first failure, and resumes only the reques
     'check-upstream-first',
     'check-contributor-contract'
   ]);
-  rmSync(join(directory, 'commands.jsonl'));
+  rmSync(join(directory, '.typecheck/commands.jsonl'));
   const resumed = runVerification(directory, ['--from', 'test-node']);
   expect(resumed.status, resumed.output).toBe(0);
   const commands = readCommands(directory);
@@ -247,10 +295,23 @@ it('runs steps in order, stops on the first failure, and resumes only the reques
     'test-headless',
     'test-headless'
   ]);
-  expect(commands[0]).toEqual(['test-node', '--maxWorkers=1']);
+  const receipt = JSON.parse(
+    readFileSync(join(directory, '.typecheck/verify/latest.json'), 'utf8')
+  );
+  expect(commands[0]).toEqual([
+    'test-node',
+    '--maxWorkers=1',
+    '--reporter=default',
+    '--reporter=json',
+    `--outputFile.json=${join(directory, '.typecheck/verify', `${receipt.id}-node.json`)}`
+  ]);
+  expect(receipt.inventories.node.selected).toEqual([
+    'modules/analysis/test/ordinary.node.spec.ts'
+  ]);
+  expect(receipt.inputChanges).toEqual([]);
   expect(resumed.output).toContain('matched 2 files in 2 directory chunks');
   expect(resumed.output).toContain('(partial)');
-  rmSync(join(directory, 'commands.jsonl'));
+  rmSync(join(directory, '.typecheck/commands.jsonl'));
   expect(runVerification(directory, ['--only', 'lint']).status).toBe(0);
   expect(readCommands(directory)).toEqual([['lint']]);
 });
@@ -415,11 +476,15 @@ it('preserves warm compiler caches, prunes removed-source outputs, and skips unc
     'scripts/build-commonjs.mjs',
     `export async function transformCommonJSModule(source) { return {code: source}; }`
   );
-  write(
-    directory,
-    'scripts/typescript-project-inputs.mjs',
-    `import {join, dirname} from 'node:path'; export function getTypeScriptProjectInputs(configuration) { const rootDir = join(dirname(configuration), 'src'); return {files: [join(rootDir, 'index.ts')], options: {rootDir}}; }`
-  );
+  // Use the production planner/freshness API; only compilation and transformation are fake.
+  mkdirSync(join(directory, 'node_modules'), {recursive: true});
+  for (const dependency of ['typescript', 'esbuild']) {
+    symlinkSync(
+      join(ROOT, 'node_modules', dependency),
+      join(directory, 'node_modules', dependency),
+      'dir'
+    );
+  }
   write(
     directory,
     'node_modules/.bin/tspc',
@@ -427,6 +492,15 @@ it('preserves warm compiler caches, prunes removed-source outputs, and skips unc
   );
   chmodSync(join(directory, 'node_modules/.bin/tspc'), 0o755);
   for (const moduleName of ['analysis', 'lenses', 'kepler']) {
+    write(
+      directory,
+      `modules/${moduleName}/tsconfig.json`,
+      JSON.stringify({
+        compilerOptions: {rootDir: 'src', outDir: 'dist', declaration: true, types: []},
+        include: ['src/**/*']
+      })
+    );
+    write(directory, `modules/${moduleName}/package.json`, '{"type":"module"}');
     write(directory, `modules/${moduleName}/tsconfig.tsbuildinfo`, 'warm');
     write(directory, `modules/${moduleName}/src/index.ts`, 'export const value = 1;');
     write(directory, `modules/${moduleName}/dist/index.js`, 'export const value = 1;');
@@ -438,7 +512,16 @@ it('preserves warm compiler caches, prunes removed-source outputs, and skips unc
   const cold = run(directory, 'build.mjs');
   expect(cold.status, cold.output).toBe(0);
   expect(cold.output.match(/wrote 1 CommonJS/g)).toHaveLength(3);
-  expect(existsSync(join(directory, 'modules/analysis/dist/removed.d.ts'))).toBe(false);
+  for (const moduleName of ['analysis', 'lenses', 'kepler']) {
+    for (const extension of ['js', 'd.ts', 'cjs']) {
+      expect(existsSync(join(directory, `modules/${moduleName}/dist/index.${extension}`))).toBe(
+        true
+      );
+      expect(existsSync(join(directory, `modules/${moduleName}/dist/removed.${extension}`))).toBe(
+        false
+      );
+    }
+  }
   const warm = run(directory, 'build.mjs');
   expect(warm.status, warm.output).toBe(0);
   expect(warm.output.match(/wrote 0 CommonJS/g)).toHaveLength(3);
@@ -454,4 +537,42 @@ it('preserves warm compiler caches, prunes removed-source outputs, and skips unc
   expect(repaired.status, repaired.output).toBe(0);
   expect(existsSync(join(directory, 'modules/analysis/dist/index.js'))).toBe(true);
   expect(readFileSync(join(directory, 'compiler-args.jsonl'), 'utf8')).toContain('--force');
+});
+
+it.each([
+  'test-node',
+  'test-headless'
+])('review B5 preserves equals signs in the %s report path', step => {
+  const directory = verificationFixture();
+  const reportFile = join(directory, 'r19=a', '.typecheck/verify/run=node.json');
+  const writes: string[] = [];
+  // Run the actual fake-runner text with captured filesystem writes: the old split would
+  // otherwise write outside the requested report directory. No probe writes reach disk.
+  runInNewContext(readFileSync(join(directory, 'fake-yarn.cjs'), 'utf8'), {
+    require(name: string) {
+      if (name === 'node:fs')
+        return {
+          appendFileSync() {},
+          writeFileSync(destination: string) {
+            writes.push(destination);
+          }
+        };
+      if (name === 'node:path') return {resolve};
+      if (name === 'node:v8')
+        return {getHeapStatistics: () => ({heap_size_limit: 256 * 1024 ** 2})};
+      throw new Error(`unexpected fake-runner import ${name}`);
+    },
+    process: {
+      argv: [
+        'node',
+        'fake-yarn.cjs',
+        step,
+        'modules/analysis/test/first/one.spec.ts',
+        `--outputFile.json=${reportFile}`
+      ],
+      env: {},
+      stdout: {write() {}}
+    }
+  });
+  expect(writes).toEqual([reportFile]);
 });

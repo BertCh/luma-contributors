@@ -179,6 +179,7 @@ it('GPUTerrainTopographicPosition builds one exact summed-area table and validat
   expect(ids.filter(id => id.includes('-transpose-'))).toHaveLength(5);
   expect(ids.every(id => id.startsWith('terrain-topographic-position-'))).toBe(true);
 
+  // @ts-expect-error Empty output is deliberately exercised through the JavaScript guard.
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({scales: []})).toThrow(/scales must contain/);
   expect(() => create({scales: [{radius: 0}]})).toThrow(/integer radius/);
@@ -254,6 +255,7 @@ it('GPUTerrainWeissLandforms composes position, slope, statistics, and classific
     /getGPUTerrainWeissLandformsParameterValues/
   );
   expect(GPU_TERRAIN_WEISS_LANDFORMS.mountainTop).toBe(10);
+  // @ts-expect-error Empty output is deliberately exercised through the JavaScript guard.
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({standardization: 'median' as never})).toThrow(/global or local/);
   expect(() => create({smallScale: {radius: 1.5}})).toThrow(/integer radius/);

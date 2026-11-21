@@ -1,7 +1,7 @@
 # luma.gl
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-"""Reference space-time clusterings for GPUSpatialClustering (ST-DBSCAN) and GPUOPTICS (ST-OPTICS).
+"""Reference space-time clusterings for GPUDBSCAN (ST-DBSCAN) and GPUOPTICS (ST-OPTICS).
 
 Writes fixtures/space-time-clustering.json next to this script (consumed by
 test/gpu-spatial-analysis/spatial-clustering/space-time-clustering.spec.ts). Run from the

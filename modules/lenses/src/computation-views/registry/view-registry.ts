@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getRecordOperator} from './record-operator';
 import {assert} from '@luma.gl/core';
 import {LENS_RUNG_IDS} from '../types';
 import type {LensRungId} from '../types';
@@ -158,8 +159,17 @@ export function createViewContext(
   partial: Partial<Omit<ViewContext, 'record'>> = {}
 ): ViewContext {
   assertLensSidecarIdentity(record);
+  const operator = getRecordOperator({
+    record,
+    bindings: {},
+    ground: 'light',
+    idPrefix: 'lens',
+    reducedMotion: false,
+    ...partial
+  });
   return {
     ...partial,
+    ...(operator ? {options: {...partial.options, element: operator}} : {}),
     record,
     bindings: partial.bindings ?? {},
     ground: partial.ground ?? 'light',

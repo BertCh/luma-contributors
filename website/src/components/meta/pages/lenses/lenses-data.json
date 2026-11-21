@@ -2,56 +2,60 @@
   "featured": [
     {
       "id": "gpu-spatial-analysis.kernel-density",
-      "recordBytes": 93201,
+      "recordBytes": 95209,
       "viewModelBytes": 45443
     },
     {
       "id": "gpu-spatial-analysis.local-moran",
-      "recordBytes": 365686,
-      "viewModelBytes": 41539
+      "recordBytes": 389071,
+      "viewModelBytes": 40793
     },
     {
       "id": "gpu-network.network-service-areas",
-      "recordBytes": 124992,
+      "recordBytes": 129313,
       "viewModelBytes": 35623
     }
   ],
   "median": {
-    "id": "gpu-terrain.profile-peaks",
-    "kernels": 27
+    "id": "gpu-network.edge-bundling",
+    "kernels": 30
   },
   "bins": [
     {
+      "label": "0",
+      "count": 0
+    },
+    {
       "label": "1",
-      "count": 39
+      "count": 36
     },
     {
       "label": "2-4",
-      "count": 69
+      "count": 67
     },
     {
       "label": "5-9",
-      "count": 35
+      "count": 36
     },
     {
       "label": "10-19",
-      "count": 49
+      "count": 48
     },
     {
       "label": "20-49",
-      "count": 83
+      "count": 81
     },
     {
       "label": "50-99",
-      "count": 53
+      "count": 61
     },
     {
       "label": "100-299",
-      "count": 64
+      "count": 61
     },
     {
       "label": "300+",
-      "count": 35
+      "count": 38
     }
   ]
 }

@@ -2,17 +2,27 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RequireTrajectoryOutput} from '../trajectory-analysis/trajectory-output-choice';
 import {
   GPUContributorOperation,
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
-import {GPUMobilityIndicators, type GPUMobilityIndicatorsProps} from './gpu-mobility-indicators';
-import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  GPUMobilityIndicators,
+  type GPUMobilityIndicatorsProps,
+  type GPUMobilityIndicatorsOutput
+} from './gpu-mobility-indicators';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {resolveGyrationCenter} from './gyration-center';
+import {
+  snapshotConstructionSpatialContext,
+  snapshotConstructionFields
+} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Graph-value names and explicit input lengths shared by both operation classes. */
 export type MobilityIndicatorsOperationProps = Pick<
   GPUMobilityIndicatorsProps,
-  'id' | 'spatialContext' | 'trackCount' | 'maximumEntropySequenceRows'
+  'id' | 'spatialContext' | 'trackCount' | 'maximumEntropySequenceRows' | 'gyrationCenter'
 > & {
   timestamps: string;
   timestampFormat?: 'float32' | 'uint32x2';
@@ -23,8 +33,13 @@ export type MobilityIndicatorsOperationProps = Pick<
     centroids: string;
     startRows: string;
     durations: string;
-    locationIds: string;
-    status: {count: string; overflow?: string; candidateOverflow?: string};
+    locationIds?: string;
+    status: {
+      count: string;
+      overflow?: string;
+      candidateOverflow?: string;
+      locationIterationLimitReached?: string;
+    };
   };
   triplegCapacity?: number;
   triplegs?: {
@@ -34,7 +49,7 @@ export type MobilityIndicatorsOperationProps = Pick<
     status: {count: string; overflow?: string; candidateOverflow?: string};
     staypointFinishRows: string;
   };
-  output: {
+  output: RequireTrajectoryOutput<{
     radiusOfGyration?: string;
     jumpLengths?: string;
     waitingTimes?: string;
@@ -44,8 +59,8 @@ export type MobilityIndicatorsOperationProps = Pick<
     homeLocations?: string;
     workLocations?: string;
     trackingQuality?: string;
-    status?: {candidateOverflow?: string};
-  };
+    status?: {candidateOverflow?: string; excludedLocationCount?: string};
+  }>;
 };
 
 /** @internal Capture settings and nested maps shared by both operation forms. */
@@ -57,6 +72,7 @@ export function snapshotMobilityIndicatorsOperationProps(
     'spatialContext',
     'trackCount',
     'maximumEntropySequenceRows',
+    'gyrationCenter',
     'timestamps',
     'timestampFormat',
     'rowCount',
@@ -97,9 +113,17 @@ export function snapshotMobilityIndicatorsOperationProps(
   ]);
   return {
     ...props,
+    spatialContext: props.spatialContext
+      ? snapshotConstructionSpatialContext(props.spatialContext)
+      : undefined,
     staypoints: {
       ...stays,
-      status: snapshotConstructionFields(stays.status, ['count', 'overflow', 'candidateOverflow'])
+      status: snapshotConstructionFields(stays.status, [
+        'count',
+        'overflow',
+        'candidateOverflow',
+        'locationIterationLimitReached'
+      ])
     },
     triplegs: legs && {
       ...legs,
@@ -107,7 +131,9 @@ export function snapshotMobilityIndicatorsOperationProps(
     },
     output: {
       ...output,
-      status: output.status && snapshotConstructionFields(output.status, ['candidateOverflow'])
+      status:
+        output.status &&
+        snapshotConstructionFields(output.status, ['candidateOverflow', 'excludedLocationCount'])
     }
   };
 }
@@ -116,6 +142,7 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
   constructor(props: MobilityIndicatorsOperationProps) {
     props = snapshotMobilityIndicatorsOperationProps(props);
     const id = props.id ?? 'mobility-indicators';
+    resolveGyrationCenter(id, props.gyrationCenter, props.spatialContext);
     const outputs: Record<string, GPUContributorOperationOutput> = {};
     for (const port of [
       'radiusOfGyration',
@@ -139,12 +166,11 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
               : props.trackCount
         };
     }
-    if (props.output.status?.candidateOverflow !== undefined)
-      outputs['candidateOverflow'] = {
-        value: props.output.status.candidateOverflow,
-        format: 'uint32',
-        length: 1
-      };
+    validateRequirement(id, Object.keys(outputs).length > 0, 'requires at least one output');
+    for (const port of ['candidateOverflow', 'excludedLocationCount'] as const) {
+      const value = props.output.status?.[port];
+      if (value !== undefined) outputs[port] = {value, format: 'uint32', length: 1};
+    }
     super({
       id,
       inputs: {
@@ -153,8 +179,13 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
         centroids: props.staypoints.centroids,
         stayStartRows: props.staypoints.startRows,
         durations: props.staypoints.durations,
-        locationIds: props.staypoints.locationIds,
+        ...(props.staypoints.locationIds !== undefined
+          ? {locationIds: props.staypoints.locationIds}
+          : {}),
         stayCount: props.staypoints.status.count,
+        ...(props.staypoints.status.locationIterationLimitReached !== undefined
+          ? {locationIterationLimitReached: props.staypoints.status.locationIterationLimitReached}
+          : {}),
         ...(props.staypoints.status.overflow !== undefined
           ? {stayOverflow: props.staypoints.status.overflow}
           : {}),
@@ -186,6 +217,7 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
         return new GPUMobilityIndicators({
           id,
           spatialContext: props.spatialContext,
+          gyrationCenter: props.gyrationCenter,
           trackCount: props.trackCount,
           maximumEntropySequenceRows: props.maximumEntropySequenceRows,
           timestamps:
@@ -197,9 +229,16 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
             centroids: getView<'float32x2'>('centroids'),
             startRows: getView<'uint32'>('stayStartRows'),
             durations: getView<'float32'>('durations'),
-            locationIds: getView<'uint32'>('locationIds'),
+            locationIds:
+              props.staypoints.locationIds !== undefined
+                ? getView<'uint32'>('locationIds')
+                : undefined,
             status: {
               count: getView<'uint32'>('stayCount'),
+              locationIterationLimitReached:
+                props.staypoints.status.locationIterationLimitReached !== undefined
+                  ? getView<'uint32'>('locationIterationLimitReached')
+                  : undefined,
               overflow:
                 props.staypoints.status.overflow !== undefined
                   ? getView<'uint32'>('stayOverflow')
@@ -239,8 +278,11 @@ export class GPUMobilityIndicatorsOperation extends GPUContributorOperation {
             homeLocations: optionalIntegerView('homeLocations'),
             workLocations: optionalIntegerView('workLocations'),
             trackingQuality: optionalFloatView('trackingQuality'),
-            status: {candidateOverflow: optionalIntegerView('candidateOverflow')}
-          }
+            status: {
+              candidateOverflow: optionalIntegerView('candidateOverflow'),
+              excludedLocationCount: optionalIntegerView('excludedLocationCount')
+            }
+          } as GPUMobilityIndicatorsOutput
         });
       }
     });

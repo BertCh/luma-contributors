@@ -7,7 +7,7 @@ import {MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS} from '@luma-contributors/kepl
 import {
   normalizeQuantileLisaSettings,
   type QuantileLisaSettings
-} from './analysis-quantile-lisa-settings';
+} from './analysis-quantile-lisa-inference';
 import {ResidentAnalysisSheetForm} from './analysis-sheet';
 import {
   makePointSheetDefaults,
@@ -29,7 +29,8 @@ export function getQuantileLisaSheetSettings(
       selectedQuantile: Number(values['selectedQuantile']),
       seed: Number(values['seed']),
       permutationCount: Number(values['permutationCount']),
-      significanceLevel: Number(values['significanceLevel'])
+      significanceLevel: Number(values['significanceLevel']),
+      alternative: values['alternative'] as QuantileLisaSettings['alternative']
     },
     rowCount
   );
@@ -58,7 +59,8 @@ export function QuantileLisaPanel({
       selectedQuantile: settings?.selectedQuantile ?? 2,
       seed: settings?.seed ?? 314159,
       permutationCount: settings?.permutationCount ?? 199,
-      significanceLevel: settings?.significanceLevel ?? 0.05
+      significanceLevel: settings?.significanceLevel ?? 0.05,
+      alternative: settings?.alternative ?? 'geoda-legacy'
     }),
     settings,
     coordinateResetKey,
@@ -71,6 +73,13 @@ export function QuantileLisaPanel({
     'Quantile LISA',
     sheet.source,
     [
+      {
+        name: 'alternative',
+        label: 'Quantile LISA p-value alternative',
+        controlId: 'analysis-quantile-lisa-alternative',
+        kind: 'enum',
+        options: ['greater', 'two-sided', 'geoda-legacy']
+      },
       {
         name: 'quantileCount',
         label: 'Quantile LISA quantile count',
@@ -134,7 +143,7 @@ export function QuantileLisaPanel({
         checks={getPointSheetChecks(fields, () =>
           getQuantileLisaSheetSettings(sheet.values, rowCount)
         )}
-        method="Resident Quantile LISA counts binary-weight neighbors in a selected quantile. It retains the legacy directed pseudo p-value rule without multiple-testing correction; results are exploratory."
+        method="Resident Quantile LISA counts binary-weight neighbors in a selected quantile. Choose the p-value alternative explicitly; no multiple-testing correction is applied."
         submitLabel="Apply neighbors and run Quantile LISA"
         onChange={(name, value) => sheet.change(name, value)}
         onApply={current =>
@@ -148,18 +157,18 @@ export function QuantileLisaPanel({
         fixed source graph without replacements.
       </p>
       <p className="hint">
-        This compatibility statistic uses legacy directed pseudo p-values: (min(upper-tail count,
-        permutations − upper-tail count) + 1) / (permutations + 1). It is anti-conservative, has no
-        two-sided error-control guarantee and applies no multiple-testing correction. Tied or
-        constant memberships can appear significant. Treat results as exploratory.
+        Greater uses the inclusive upper tail. Two-sided uses inclusive tails and gives p = 1 for
+        all ties. The geoda-legacy compatibility choice uses (min(upper-tail count, permutations −
+        upper-tail count) + 1) / (permutations + 1). It is anti-conservative, has no two-sided
+        error-control guarantee and applies no multiple-testing correction. Tied or constant
+        memberships can appear significant. Treat results as exploratory.
       </p>
       <p className="hint">
         Only selected-quantile members with positive local joins are tested. Isolated points are
         excluded from inference. Gray includes nonsignificant and untested rows; red denotes
-        significance under the legacy rule; orange denotes isolated points. The table retains
-        membership, join count, pseudo p-value and legacy tail count. A fixed seed is reproducible
-        for the same source and selection. More rows, neighbors and permutations increase
-        computation time.
+        significance under the chosen alternative; orange denotes isolated points. The table retains
+        membership, join count, pseudo p-value and tail count. A fixed seed is reproducible for the
+        same source and selection. More rows, neighbors and permutations increase computation time.
       </p>
     </details>
   );

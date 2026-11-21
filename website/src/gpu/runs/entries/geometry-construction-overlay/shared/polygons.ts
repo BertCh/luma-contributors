@@ -8,7 +8,7 @@
 import {createShoreRing, SHORE_PROFILE_COUNT} from '../../../../data/hydrography';
 import type {GPUPolygonOverlayOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {RunBuffer, RunBuilder} from '../../../define-run';
-import {addKernelPass} from './kernel';
+import {addKernelPass, getViewBuffer} from './kernel';
 import {
   addPackedSegments,
   createPackedSegments,
@@ -159,8 +159,11 @@ export function addPolygonDrawing(
   id: string,
   polygons: PolygonBuffers,
   featureCount: RunBuffer<'uint32'>,
-  options: PackedDrawingOptions = {}
+  options: PackedDrawingOptions & {
+    status: Pick<GPUPolygonOverlayOutput['status'], 'overflow' | 'candidateOverflow'>;
+  }
 ): PackedDrawing {
+  const {status, ...drawingOptions} = options;
   const ringCount = builder.allocate(`${id}-ring-count`, 'uint32', 1);
   addKernelPass(builder, {
     id: `${id}-ring-count-pass`,
@@ -169,9 +172,19 @@ export function addPolygonDrawing(
       {name: 'featureCount', buffer: featureCount, access: 'read'},
       {name: 'featureOffsets', buffer: polygons.featureOffsets, access: 'read'},
       {name: 'polygonOffsets', buffer: polygons.polygonOffsets, access: 'read'},
-      {name: 'ringCount', buffer: ringCount, access: 'read_write'}
+      {name: 'ringCount', buffer: ringCount, access: 'read_write'},
+      {name: 'overflow', buffer: getViewBuffer(status.overflow), access: 'read'},
+      {
+        name: 'candidateOverflow',
+        buffer: getViewBuffer(status.candidateOverflow),
+        access: 'read'
+      }
     ],
     body: /* wgsl */ `
+  if (overflow[overflowOffset] != 0u || candidateOverflow[candidateOverflowOffset] != 0u) {
+    ringCount[ringCountOffset] = 0u;
+    return;
+  }
   let features = min(featureCount[featureCountOffset], ${polygons.featureOffsets.length - 1}u);
   let polygonTotal = min(featureOffsets[featureOffsetsOffset + features], ${polygons.polygonOffsets.length - 1}u);
   ringCount[ringCountOffset] = min(polygonOffsets[polygonOffsetsOffset + polygonTotal], ${polygons.ringOffsets.length - 1}u);`
@@ -179,7 +192,7 @@ export function addPolygonDrawing(
   return addPackedSegments(builder, id, polygons.positions, polygons.ringOffsets, {
     closed: true,
     lineCount: ringCount,
-    ...options
+    ...drawingOptions
   });
 }
 

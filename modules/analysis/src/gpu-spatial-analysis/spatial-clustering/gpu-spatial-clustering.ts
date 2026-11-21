@@ -20,11 +20,13 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateMaximumCount,
+  validateRequirement,
   validateSinglePackedView,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateSpatialOutputViews} from './spatial-output-validation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {getKeyGroupNodes, getKeyPairSortNodes} from '../spatial-weights/key-pair-grouping';
 import {
   createSpatialClusteringBorderNode,
@@ -41,8 +43,12 @@ import {
   createSpatialClusteringUnionNode
 } from './spatial-clustering-kernels';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
-import {createPointNeighborGridIndexNodes} from '../shared/point-neighbor-grid-index';
-import {GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} from './spatial-clustering-parameters';
+import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
+import {
+  getGPUDBSCANParameterValues,
+  type GPUDBSCANSettings,
+  GPU_DBSCAN_PARAMETER_LENGTH
+} from './spatial-clustering-parameters';
 import {
   resolveGPUTemporalContext,
   type GPUTemporalContext
@@ -61,7 +67,7 @@ const CLUSTERING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.free
   measure: 'distance'
 });
 
-const OPERATION = 'GPUSpatialClustering';
+const OPERATION = 'GPUDBSCAN';
 
 /** ST-DBSCAN reads relative float32 times, such as the output of `GPUTimeWordsRelative`. */
 const CLUSTERING_TEMPORAL_CONTEXT_SUPPORT = Object.freeze({
@@ -69,15 +75,15 @@ const CLUSTERING_TEMPORAL_CONTEXT_SUPPORT = Object.freeze({
 });
 
 /**
- * Largest cluster capacity (`output.clusters.ids` rows) of {@link GPUSpatialClustering} with
+ * Largest cluster capacity (`output.clusters.ids` rows) of {@link GPUDBSCAN} with
  * `output.clusterCentroids` and the default `sumOrder: 'sorted'`: the sorted centroid sums run one
  * 256-thread workgroup per cluster, and `capacity * 256` invocations must fit one uint32 dispatch,
  * so `2^24 - 1`.
  */
-export const GPU_SPATIAL_CLUSTERING_MAXIMUM_SORTED_CLUSTER_COUNT = 2 ** 24 - 1;
+export const GPU_DBSCAN_MAXIMUM_SORTED_CLUSTER_COUNT = 2 ** 24 - 1;
 
-/** Caller-owned outputs of {@link GPUSpatialClustering}. */
-export type GPUSpatialClusteringOutput = {
+/** Caller-owned outputs of {@link GPUDBSCAN}. */
+export type GPUDBSCANOutput = {
   /** Labels, one row per point: compact cluster ID `0..k-1`, or `0xffffffff` (noise). */
   labels: GraphDataView<'uint32'>;
   /**
@@ -94,16 +100,11 @@ export type GPUSpatialClusteringOutput = {
    * Optional bounded per-cluster output. `ids[labelId]` is the `sourceIds` entry (or row index) of
    * the cluster's root point, `count` is `min(k, ids.length)` and `overflow` is `1` when
    * `k > ids.length`. `ids.length` is the cluster capacity and must be at least one (at most
-   * {@link GPU_SPATIAL_CLUSTERING_MAXIMUM_SORTED_CLUSTER_COUNT} with sorted centroid sums). Labels at or
+   * {@link GPU_DBSCAN_MAXIMUM_SORTED_CLUSTER_COUNT} with sorted centroid sums). Labels at or
    * above the capacity are still written to `labels` but excluded from sizes and centroids.
+   * For indirect rendering, bind the draw record's `instanceCount` view to `status.count`.
    */
   clusters?: GPUCompactOutput;
-  /**
-   * Optional packed one-row view that receives the clamped cluster count (`clusters.status.count`),
-   * typically an indirect draw record's `instanceCount` imported with
-   * `graph.importGPUData(id, drawCommands.getInstanceCountData(0))`. Requires `clusters`.
-   */
-  drawInstanceCount?: GraphDataView<'uint32'>;
   /** Optional per-cluster member count (core and border points); requires `clusters`. Length equals `clusters.ids.length`. */
   clusterSizes?: GraphDataView<'uint32'>;
   /**
@@ -118,7 +119,7 @@ export type GPUSpatialClusteringOutput = {
 };
 
 /**
- * Properties for {@link GPUSpatialClustering}.
+ * Properties for {@link GPUDBSCAN}.
  *
  * Per-frame (no recompile): the contents of `positions`, `parameters` (bounds, epsilon, minimum
  * points) and `sourceIds`. Compile-time (needs a new graph): `positions.length`, `gridSize`,
@@ -130,7 +131,7 @@ export type GPUSpatialClusteringOutput = {
  * `bounds / gridSize` stays exact but puts more points in each cell, and a large epsilon simply
  * uses fewer cells.
  */
-export type GPUSpatialClusteringProps = {
+export type GPUDBSCANProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-clustering'`. */
   id?: string;
   /**
@@ -143,8 +144,9 @@ export type GPUSpatialClusteringProps = {
    * and wraps at the antimeridian: points on the two sides of +-180 are neighbors when their
    * great-circle distance is within `epsilon`, so a cluster straddling +-180 is one cluster, as in
    * `GPUOPTICS`. `clusterCentroids` stay arithmetic means of the longitudes and latitudes, so the
-   * centroid longitude of a straddling cluster is not on the cluster: shift longitudes into a
-   * continuous range first if centroids are needed. `denseBoxShortcut`
+   * centroid longitude of a straddling cluster is not on the cluster: rotate around a central meridian and wrap into [-180, 180], rotate bounds consistently,
+   * then invert that rotation on the centroid. For [179.9, -179.9], rotate by 180 degrees
+   * to approximately [-0.1, 0.1]; unwrapping to [179.9, 180.1] violates the bounds contract. `denseBoxShortcut`
    * is planar only. Other contexts and metrics throw.
    *
    * Precision (planar): positions are float32. Near a coordinate of magnitude `M` the spacing between
@@ -176,8 +178,8 @@ export type GPUSpatialClusteringProps = {
   temporalContext?: GPUTemporalContext;
   /**
    * Per-frame parameters: packed float32 view of at least
-   * {@link GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} elements written with
-   * `getGPUSpatialClusteringParameterValues`. Invalid parameters (non-finite or non-positive
+   * {@link GPU_DBSCAN_PARAMETER_LENGTH} elements written with
+   * `getGPUDBSCANParameterValues`. Invalid parameters (non-finite or non-positive
    * epsilon, non-finite or inverted bounds) exclude every point.
    */
   parameters: GraphDataView<'float32'>;
@@ -190,7 +192,7 @@ export type GPUSpatialClusteringProps = {
   /** Optional stable IDs, one per point, emitted in `clusters.ids`. Row indices otherwise. */
   sourceIds?: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
-  output: GPUSpatialClusteringOutput;
+  output: GPUDBSCANOutput;
   /**
    * Accumulation order of the centroid sums. Compile-time; defaults to `'sorted'`.
    *
@@ -208,7 +210,7 @@ export type GPUSpatialClusteringProps = {
   /**
    * FDBSCAN's dense-box shortcut. Compile-time; default `false`. Points are binned into a virtual
    * grid of boxes with side `0.7 * epsilon`, so every pair of points in one box is within epsilon.
-   * A box holding at least `minimumPoints` points makes all of its points core without scanning
+   * A box holding at least `minimumSamples` points makes all of its points core without scanning
    * their neighbors. The result is identical to the plain algorithm (the shortcut only decides core
    * flags the scan would also reach), and the extra cost is two radix sorts of the points by box.
    * It pays off when epsilon is large relative to the point spacing so most points are core and
@@ -225,7 +227,8 @@ export type GPUSpatialClusteringProps = {
  * - The neighborhood of a point is every valid point with `dx * dx + dy * dy <= epsilon * epsilon`
  *   (f32), the point itself included. Valid points are finite and inside the inclusive bounds;
  *   all others are noise and are never anyone's neighbor.
- * - A point is core when its neighborhood holds at least `minimumPoints` points.
+ * - A point is core when its neighborhood holds at least `minimumSamples` points, counting
+ *   the point itself toward the threshold.
  * - Clusters are the connected components of core points under the neighbor relation, and the
  *   root of a cluster is its smallest core row.
  * - A border point (valid, not core, with a core neighbor) joins the adjacent cluster with the
@@ -243,8 +246,13 @@ export type GPUSpatialClusteringProps = {
  * Positions are float32, planar by default or longitude/latitude with a great-circle `epsilon` (see
  * `spatialContext` for the quantization limit, local-origin advice and the antimeridian rule).
  *
+ * Planar epsilon must encode in the inclusive interval [2^-63, 2^63]; raw parameter buffers
+ * outside that interval invalidate the lattice and label every row noise. The geographic route
+ * instead requires bounds inside [-180, 180] by [-90, 90] degrees and halfAngle =
+ * 0.5 * epsilon / sphereRadius < 1.5707963 radians, with finite lattice steps.
+ *
  * ST-DBSCAN: with `times` the neighbor relation gains the temporal test `|t_a - t_b| <= timeEpsilon`
- * (see {@link GPUSpatialClusteringProps.times}); the same grid, core, union, border and label
+ * (see {@link GPUDBSCANProps.times}); the same grid, core, union, border and label
  * kernels run with that extra predicate, and times are gathered into cell order beside the
  * positions. The spatial grid does not prune by time, so the cost is that of the spatial neighbor
  * scan.
@@ -253,11 +261,11 @@ export type GPUSpatialClusteringProps = {
  * clustering across frames, and cluster shapes or hulls (compose `GPUGroupGeometry` and
  * `GPUGroupConvexHull` over the cluster labels).
  */
-export class GPUSpatialClustering implements GPUCommandNodeProducer {
+export class GPUDBSCAN implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUSpatialClusteringProps;
+  readonly props: GPUDBSCANProps;
   /** Resolved spatial context (native planar when none was given). */
   readonly spatialContext: GPUSpatialContext;
   /** Resolved context of `times` (ST-DBSCAN), else undefined. */
@@ -265,7 +273,56 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
   /** Sphere radius in the epsilon unit for a great-circle context, else undefined (planar). */
   readonly geographicRadius?: number;
 
-  constructor(props: GPUSpatialClusteringProps) {
+  constructor(props: GPUDBSCANProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'times',
+      'temporalContext',
+      'parameters',
+      'gridSize',
+      'sourceIds',
+      'output',
+      'sumOrder',
+      'denseBoxShortcut'
+    ]);
+    validateRequirement(
+      props.id ?? 'spatial-clustering',
+      !('drawInstanceCount' in props.output),
+      'output.drawInstanceCount was removed; bind the draw instance-count view as output.clusters.status.count'
+    );
+    const output = snapshotConstructionFields(props.output, [
+      'labels',
+      'rootRows',
+      'coreFlags',
+      'clusterCount',
+      'clusters',
+      'clusterSizes',
+      'clusterCentroids'
+    ]);
+    const clusters =
+      output.clusters && snapshotConstructionFields(output.clusters, ['ids', 'status']);
+    props = Object.freeze({
+      ...props,
+      gridSize: Object.freeze([...props.gridSize]) as readonly [number, number],
+      output: Object.freeze({
+        ...output,
+        ...(clusters
+          ? {
+              clusters: Object.freeze({
+                ...clusters,
+                status: snapshotConstructionFields(clusters.status, [
+                  'count',
+                  'requiredCount',
+                  'overflow',
+                  'candidateOverflow'
+                ])
+              })
+            }
+          : {})
+      })
+    });
     this.id = props.id ?? 'spatial-clustering';
     this.props = props;
     const id = this.id;
@@ -274,58 +331,71 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       props.spatialContext,
       CLUSTERING_SPATIAL_CONTEXT_SUPPORT
     );
-    if (
-      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
-      this.spatialContext.metric !== 'great-circle'
-    ) {
-      throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
-    }
+    validateRequirement(
+      id,
+      !(
+        this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+        this.spatialContext.metric !== 'great-circle'
+      ),
+      `longitude-latitude positions need the great-circle metric; received ${this.spatialContext.metric}`
+    );
     this.geographicRadius =
       this.spatialContext.coordinateSpace === 'longitude-latitude'
         ? getGPUSphereRadius(this.spatialContext)
         : undefined;
-    if (this.geographicRadius !== undefined && props.denseBoxShortcut) {
-      throw new Error(`${id} denseBoxShortcut is planar only`);
-    }
+    validateRequirement(
+      id,
+      !(this.geographicRadius !== undefined && props.denseBoxShortcut),
+      `denseBoxShortcut is planar only; received ${props.denseBoxShortcut}`
+    );
     const rows = props.positions.length;
     if (props.times) {
-      if (!props.temporalContext) {
-        throw new Error(`${id} times need a temporalContext`);
-      }
+      validateRequirement(
+        id,
+        !!props.temporalContext,
+        `times need a temporalContext; received ${props.temporalContext}`
+      );
       this.temporalContext = resolveGPUTemporalContext(
         id,
         props.temporalContext,
         CLUSTERING_TEMPORAL_CONTEXT_SUPPORT
       );
       validateSinglePackedView(props.times, ['float32'], `${id} times`);
-      if (props.times.length !== rows) {
-        throw new Error(`${id} times length must equal positions length`);
-      }
-      if (props.denseBoxShortcut) {
-        throw new Error(`${id} denseBoxShortcut cannot be combined with times`);
-      }
-    } else if (props.temporalContext) {
-      throw new Error(`${id} temporalContext needs times`);
-    }
+      validateRequirement(
+        id,
+        !(props.times.length !== rows),
+        `times length must equal positions length (${rows}); received ${props.times.length}`
+      );
+      validateRequirement(
+        id,
+        !props.denseBoxShortcut,
+        `denseBoxShortcut cannot be combined with times; received ${props.denseBoxShortcut}`
+      );
+    } else
+      validateRequirement(
+        id,
+        !props.temporalContext,
+        `temporalContext needs times; received ${props.temporalContext}`
+      );
 
-    if (
-      props.sumOrder !== undefined &&
-      props.sumOrder !== 'atomic' &&
-      props.sumOrder !== 'sorted'
-    ) {
-      throw new Error(`${id} sumOrder must be atomic or sorted`);
-    }
+    validateRequirement(
+      id,
+      !(props.sumOrder !== undefined && props.sumOrder !== 'atomic' && props.sumOrder !== 'sorted'),
+      `sumOrder must be atomic or sorted; received ${props.sumOrder}`
+    );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} float32 values`
-      );
-    }
+    validateRequirement(
+      id,
+      !(props.parameters.length < GPU_DBSCAN_PARAMETER_LENGTH),
+      `parameters must hold ${GPU_DBSCAN_PARAMETER_LENGTH} float32 values; received ${props.parameters.length}`
+    );
     const [columns, gridRows] = props.gridSize;
-    if (!Number.isInteger(columns) || !Number.isInteger(gridRows) || columns < 1 || gridRows < 1) {
-      throw new Error(`${id} gridSize must be two positive integers`);
-    }
+    validateRequirement(
+      id,
+      !(!Number.isInteger(columns) || !Number.isInteger(gridRows) || columns < 1 || gridRows < 1),
+      `gridSize must be two positive integers; received ${columns}, ${gridRows}`
+    );
     for (const [name, view] of [
       ['sourceIds', props.sourceIds],
       ['output.labels', props.output.labels],
@@ -336,44 +406,41 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         continue;
       }
       validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
-      if (view.length !== rows) {
-        throw new Error(`${id} ${name} length must equal positions length`);
-      }
+      validateRequirement(
+        id,
+        !(view.length !== rows),
+        `${name} length must equal positions length (${rows}); received ${view.length}`
+      );
     }
     if (props.output.clusterCount) {
       validateSinglePackedView(props.output.clusterCount, ['uint32'], `${id} output.clusterCount`);
-      if (props.output.clusterCount.length < 1) {
-        throw new Error(`${id} output.clusterCount must contain one uint32 row`);
-      }
+      validateRequirement(
+        id,
+        !(props.output.clusterCount.length < 1),
+        `output.clusterCount must contain one uint32 row; received ${props.output.clusterCount.length}`
+      );
     }
     if (props.output.clusters) {
       validateCompactOutput(id, props.output.clusters);
-      if (props.output.clusters.ids.length < 1) {
-        throw new Error(`${id} output.clusters.ids must hold at least one row`);
-      }
-    }
-    if (props.output.drawInstanceCount) {
-      validateSinglePackedView(
-        props.output.drawInstanceCount,
-        ['uint32'],
-        `${id} output.drawInstanceCount`
+      validateRequirement(
+        id,
+        !(props.output.clusters.ids.length < 1),
+        `output.clusters.ids must hold at least one row; received ${props.output.clusters.ids.length}`
       );
-      if (props.output.drawInstanceCount.length < 1) {
-        throw new Error(`${id} output.drawInstanceCount must contain one uint32 row`);
-      }
-      if (!props.output.clusters) {
-        throw new Error(`${id} output.drawInstanceCount requires clusters`);
-      }
     }
-    if ((props.output.clusterSizes || props.output.clusterCentroids) && !props.output.clusters) {
-      throw new Error(`${id} output.clusterSizes and clusterCentroids require clusters`);
-    }
+    validateRequirement(
+      id,
+      !((props.output.clusterSizes || props.output.clusterCentroids) && !props.output.clusters),
+      `output.clusterSizes and clusterCentroids require clusters; received ${props.output.clusterSizes}, ${props.output.clusterCentroids}, ${props.output.clusters}`
+    );
     const capacity = props.output.clusters?.ids.length ?? 0;
     if (props.output.clusterSizes) {
       validateSinglePackedView(props.output.clusterSizes, ['uint32'], `${id} output.clusterSizes`);
-      if (props.output.clusterSizes.length !== capacity) {
-        throw new Error(`${id} output.clusterSizes length must equal clusters.ids length`);
-      }
+      validateRequirement(
+        id,
+        !(props.output.clusterSizes.length !== capacity),
+        `output.clusterSizes length must equal clusters.ids length (${capacity}); received ${props.output.clusterSizes.length}`
+      );
     }
     if (props.output.clusterCentroids) {
       validateSinglePackedView(
@@ -381,15 +448,17 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         ['float32x2'],
         `${id} output.clusterCentroids`
       );
-      if (props.output.clusterCentroids.length !== capacity) {
-        throw new Error(`${id} output.clusterCentroids length must equal clusters.ids length`);
-      }
+      validateRequirement(
+        id,
+        !(props.output.clusterCentroids.length !== capacity),
+        `output.clusterCentroids length must equal clusters.ids length (${capacity}); received ${props.output.clusterCentroids.length}`
+      );
       if (props.sumOrder !== 'atomic') {
         validateMaximumCount(
           id,
           'clusters.ids rows with sorted centroid sums',
           capacity,
-          GPU_SPATIAL_CLUSTERING_MAXIMUM_SORTED_CLUSTER_COUNT
+          GPU_DBSCAN_MAXIMUM_SORTED_CLUSTER_COUNT
         );
       }
     }
@@ -404,9 +473,9 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         count: props.output.clusters?.status.count,
         overflow: props.output.clusters?.status.overflow,
         requiredCount: props.output.clusters?.status.requiredCount,
+        candidateOverflow: props.output.clusters?.status.candidateOverflow,
         clusterSizes: props.output.clusterSizes,
-        clusterCentroids: props.output.clusterCentroids,
-        drawInstanceCount: props.output.clusters ? props.output.drawInstanceCount : undefined
+        clusterCentroids: props.output.clusterCentroids
       },
       [
         ...(rows > 0
@@ -430,7 +499,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
                   props.output.clusters.status.count,
                   props.output.clusters.status.overflow,
                   props.output.clusters.status.requiredCount,
-                  props.output.drawInstanceCount
+                  props.output.clusters.status.candidateOverflow
                 ]
               }
             ]
@@ -448,9 +517,9 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         props.output.clusters?.status.count,
         props.output.clusters?.status.overflow,
         props.output.clusters?.status.requiredCount,
+        props.output.clusters?.status.candidateOverflow,
         props.output.clusterSizes,
-        props.output.clusterCentroids,
-        props.output.drawInstanceCount
+        props.output.clusterCentroids
       ],
       // The empty route reads none of the caller inputs and never binds the per-point views.
       rows > 0 ? [props.positions, props.parameters, props.sourceIds, props.times] : []
@@ -499,6 +568,17 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
   }
 
   /** Returns the clustering nodes in dependency order; the publish node, when any, is last. */
+  /** Packs settings with the temporal and spatial contract of this contributor. */
+  getParameterValues(settings: GPUDBSCANSettings, target?: Float32Array): Float32Array {
+    validateRequirement(
+      this.id,
+      !this.props.times ||
+        (settings.timeEpsilon !== undefined && Math.fround(settings.timeEpsilon) > 0),
+      `timeEpsilon must be positive for times; received ${settings.timeEpsilon}`
+    );
+    return getGPUDBSCANParameterValues({...settings, spatialContext: this.spatialContext}, target);
+  }
+
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -519,9 +599,9 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       clusters?.status.count,
       clusters?.status.overflow,
       clusters?.status.requiredCount,
+      clusters?.status.candidateOverflow,
       props.output.clusterSizes,
-      props.output.clusterCentroids,
-      props.output.drawInstanceCount
+      props.output.clusterCentroids
     ]);
     const cellCount = gridSize[0] * gridSize[1];
     validateMaximumCount(
@@ -553,9 +633,9 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
             count: clusters.status.count,
             overflow: clusters.status.overflow,
             requiredCount: clusters.status.requiredCount,
+            candidateOverflow: clusters.status.candidateOverflow,
             clusterSizes: props.output.clusterSizes,
-            clusterCentroids: props.output.clusterCentroids,
-            drawInstanceCount: props.output.drawInstanceCount
+            clusterCentroids: props.output.clusterCentroids
           }
         : {})
     });
@@ -619,8 +699,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
             id: `${id}-publish`,
             operation: OPERATION,
             requiredCount: clusterCount,
-            output: clusters,
-            extraCounts: props.output.drawInstanceCount ? [props.output.drawInstanceCount] : []
+            output: clusters
           })
         );
       }
@@ -696,7 +775,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
       // The core pass visits valid points only, so excluded rows need their zero flag first.
       createFillNode<Parameters>(graph, {
         id: `${id}-core-flags-clear`,
-        operation: 'GPUSpatialClustering',
+        operation: 'GPUDBSCAN',
         view: coreFlags,
         type: 'u32',
         value: '0u'
@@ -859,8 +938,7 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         operation: OPERATION,
         requiredCount: clusterCount,
         compactIds: rootIds,
-        output: clusters,
-        extraCounts: props.output.drawInstanceCount ? [props.output.drawInstanceCount] : []
+        output: clusters
       })
     );
     return nodes;

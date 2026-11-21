@@ -31,10 +31,18 @@ export function getSpatialCrossValidationAllocationLengths(
   if (!design) return {'block order': 2 * rows};
   return {
     'design state': 4 + (design.mode === 'nndm' ? rows : 0),
+    ...(design.mode === 'environmental'
+      ? {
+          'environmental centered features': rows * design.featureCount,
+          'environmental rounding zero': 1
+        }
+      : {}),
     ...(design.mode === 'nndm' ? {'NNDM distances': rows * rows} : {}),
     ...(design.mode === 'knndm' && !design.candidates
       ? {
-          'generated kNNDM candidates': rows * (design.candidateCount ?? 8)
+          'generated kNNDM candidates': rows * (design.candidateCount ?? 8),
+          'generated kNNDM centered features': rows * 2,
+          'generated kNNDM rounding zero': 1
         }
       : {})
   };

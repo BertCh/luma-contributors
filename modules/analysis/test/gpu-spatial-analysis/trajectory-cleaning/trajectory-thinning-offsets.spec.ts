@@ -47,7 +47,7 @@ it('writes adjacent count and candidate subviews without touching their neighbor
       trackOffsets: input('tracks', Uint32Array.of(0, 4), 'uint32'),
       parameters: input('parameters', Float32Array.of(10, 0, 0, 0), 'float32'),
       output: {
-        rowIds: importGraphBuffer(graph, 'rows', rows, 'uint32', 4),
+        sourceRows: importGraphBuffer(graph, 'rows', rows, 'uint32', 4),
         trackOffsets: importGraphBuffer(graph, 'out-offsets', offsets, 'uint32', 2),
         status: {
           count: graph.createDataView(storage.buffer, {format: 'uint32', length: 1}),
@@ -109,9 +109,9 @@ it('thins independent five-row tracks and publishes their closed-form offsets in
         trackCount,
         capacity: expectedRows.length,
         output: {
-          rowIds: 'rows',
+          sourceRows: 'rows',
           trackOffsets: 'offsets',
-          status: {count: 'count', overflow: 'overflow'}
+          status: {count: 'count', candidateOverflow: 'candidateOverflow', overflow: 'overflow'}
         }
       })
     ],

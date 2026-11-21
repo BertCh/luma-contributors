@@ -24,6 +24,15 @@ import {
   getGPURasterEmbeddingChangeParameterValues
 } from '@luma-contributors/analysis/raster-analysis';
 import {withCatalogGpuSession, type CatalogGpuOutput} from './catalog-gpu-session';
+import type {CatalogExecutionStage} from './catalog-binding-types';
+
+/** Shared declaration for discovery and execution evidence, including the host eigensolver. */
+export function describeRasterEmbeddingStages(names: readonly string[]): CatalogExecutionStage[] {
+  return names.map(exportName => ({
+    identity: {package: '@luma-contributors/analysis/raster-analysis', exportName},
+    execution: exportName === 'getRasterEmbeddingPrincipalComponents' ? 'cpu' : 'gpu'
+  }));
+}
 
 export const RASTER_EMBEDDING_OPERATIONS = [
   'kmeans',
@@ -81,6 +90,7 @@ export type RasterEmbeddingResult = {
   layout: 'pixels' | 'ranks' | 'bands' | 'matrix' | 'zones' | 'words';
   columns: Record<string, Float32Array | Uint32Array>;
   contributors: string[];
+  stages?: readonly CatalogExecutionStage[];
 };
 
 /** Generated unit-vector raster: two separated embedding classes, one missing pixel. No dataset license. */
@@ -336,7 +346,8 @@ export async function runKeplerRasterEmbedding(
             rowCount: dimensions * dimensions,
             layout: 'matrix',
             columns: {covariance: covarianceValues},
-            contributors
+            contributors,
+            stages: describeRasterEmbeddingStages(contributors)
           };
         const componentCount = Math.min(dimensions, 3);
         const principal = getRasterEmbeddingPrincipalComponents(
@@ -378,10 +389,9 @@ export async function runKeplerRasterEmbedding(
                   ? projectionSession.input(
                       'parameters',
                       getGPURasterEmbeddingProjectionParameterValues({
-                        stretchRanges: getRasterEmbeddingStretchRanges(principal.eigenvalues).map(
-                          ([low, high]) =>
-                            high > low ? ([low, high] as const) : ([-1, 1] as const)
-                        )
+                        // The public helper already supplies nondegenerate ranges for zero
+                        // eigenvalues, borrowing the widest spread or using [-1, 1] if all zero.
+                        stretchRanges: getRasterEmbeddingStretchRanges(principal.eigenvalues)
                       }),
                       'float32'
                     )
@@ -406,7 +416,11 @@ export async function runKeplerRasterEmbedding(
                   ? vectorColumns(await projectionSession.readFloat32(rgb), pixelCount, 3, 'rgb')
                   : {})
               },
-              contributors: [...contributors, 'GPURasterEmbeddingProjection']
+              contributors: [...contributors, 'GPURasterEmbeddingProjection'],
+              stages: describeRasterEmbeddingStages([
+                ...contributors,
+                'GPURasterEmbeddingProjection'
+              ])
             };
           }
         );
@@ -532,6 +546,14 @@ export async function runKeplerRasterEmbedding(
       );
       columns['rank'] = Uint32Array.from({length: rowCount}, (_, index) => index % resultCount);
     }
-    return {width, height, rowCount, layout, columns, contributors};
+    return {
+      width,
+      height,
+      rowCount,
+      layout,
+      columns,
+      contributors,
+      stages: describeRasterEmbeddingStages(contributors)
+    };
   });
 }

@@ -18,12 +18,160 @@ import {
   GPULocalMoran
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import {GPUEmpiricalBayesRates} from '../../../src/gpu-spatial-analysis/rate-smoothing/index';
+import {
+  GPUContiguityWeights,
+  GPUSpatialWeightsTransform
+} from '../../../src/gpu-spatial-analysis/spatial-weights/index';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {computeContiguityWeightsOnCPU} from '../../../src/gpu-spatial-analysis/spatial-weights/cpu-contiguity-weights-operation';
 import {flattenPolygons, type OraclePolygons} from '../spatial-weights/spatial-weights-oracle';
 
 const ROWS = 4;
+
+test('B7 preserves the supplied contiguity count through transformed weights and checks aliases', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const countBuffer = createTransientView(graph, 'count', 'uint32', ROWS);
+  const count = graph.createDataView(countBuffer.buffer, {format: 'uint32', length: 1});
+  const props = createProps(graph);
+  try {
+    const result = addRateClusterMapRecipe(graph, {
+      ...props,
+      scratch: {weights: {status: {count}}}
+    });
+    expect(result.weights.status.count === count).toBe(true);
+    const contiguity = result.contributors.find(
+      contributor => contributor instanceof GPUContiguityWeights
+    ) as GPUContiguityWeights;
+    expect(contiguity.outputWeights.status?.count).toBe(count);
+    expect(() =>
+      addRateClusterMapRecipe(graph, {
+        ...props,
+        id: 'alias',
+        output: {quadrants: countBuffer},
+        scratch: {weights: {status: {count}}}
+      })
+    ).toThrow(/overlap|same|disjoint|alias/);
+  } finally {
+    props.parameters.destroy();
+    graph.device.destroy();
+  }
+});
+
+test('N1 captures changing rate-cluster settings once for both buffers and metadata', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph, {
+    permutation: {
+      parameters: createParameterBuffer(graph, 'uint32', GPU_PERMUTATION_PARAMETER_LENGTH),
+      maximumPermutations: 999
+    }
+  });
+  const moranWrite = vi.spyOn(props.parameters, 'write');
+  const permutationWrite = vi.spyOn(props.permutation!.parameters, 'write');
+  try {
+    const result = addRateClusterMapRecipe(graph, props);
+    const moranBaseline = moranWrite.mock.calls.length;
+    const permutationBaseline = permutationWrite.mock.calls.length;
+    let reads = 0;
+    result.setSettings(
+      Object.create({
+        get significanceLevel() {
+          return [0.125, 0.25, 0.5][reads++];
+        }
+      })
+    );
+    expect(reads).toBe(1);
+    expect(Array.from(moranWrite.mock.calls[moranBaseline][0])).toEqual(
+      Array.from(getGPUSpatialAutocorrelationParameterValues({significanceLevel: 0.125}))
+    );
+    expect(result.inference.significanceLevel).toBe(0.125);
+    const permutation = result.contributors.find(
+      contributor => contributor instanceof GPULocalPermutationTest
+    ) as GPULocalPermutationTest;
+    expect(Array.from(permutationWrite.mock.calls[permutationBaseline][0])).toEqual(
+      Array.from(
+        permutation.getParameterValues({significanceLevel: 0.125, permutationCount: 999, seed: 0})
+      )
+    );
+    const previous = result.inference;
+    expect(() => result.setSettings({significanceLevel: -1})).toThrow();
+    expect(result.inference).toBe(previous);
+    expect(moranWrite.mock.calls.length).toBe(moranBaseline + 1);
+    expect(permutationWrite.mock.calls.length).toBe(permutationBaseline + 1);
+  } finally {
+    props.parameters.destroy();
+    props.permutation!.parameters.destroy();
+    graph.device.destroy();
+  }
+});
+
+test('B4 pins the applied permutation metadata used by the 42-polygon GPU fixture', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph, {
+    settings: {seed: 11, permutationCount: 999, significanceLevel: 0.05},
+    permutation: {
+      parameters: createParameterBuffer(graph, 'uint32', GPU_PERMUTATION_PARAMETER_LENGTH),
+      maximumPermutations: 999
+    }
+  });
+  try {
+    const result = addRateClusterMapRecipe(graph, props);
+    expect(result.inference).toEqual({
+      alternative: 'two-sided',
+      permutationCount: 999,
+      seed: 11,
+      multipleTesting: 'benjamini-hochberg',
+      significanceLevel: 0.05000000074505806,
+      requestedPermutationCount: 999,
+      stoppingRule: {method: 'fixed-count'},
+      pValueConstruction: 'doubled-minimum-tail',
+      testedRowsDefinition: expect.stringContaining('positive-weight neighbors')
+    });
+  } finally {
+    props.parameters.destroy();
+    props.permutation!.parameters.destroy();
+    graph.device.destroy();
+  }
+});
+
+test('UST-02 retains row-standardized weights and loss evidence in every consumer', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createProps(graph, {
+    permutation: {
+      parameters: createParameterBuffer(graph, 'uint32', GPU_PERMUTATION_PARAMETER_LENGTH),
+      maximumPermutations: 7
+    }
+  });
+  try {
+    const result = addRateClusterMapRecipe(graph, props);
+    const contiguity = result.contributors.find(
+      contributor => contributor instanceof GPUContiguityWeights
+    ) as GPUContiguityWeights;
+    const transform = result.contributors.find(
+      contributor => contributor instanceof GPUSpatialWeightsTransform
+    ) as GPUSpatialWeightsTransform;
+    expect(contiguity).toBeDefined();
+    expect(transform).toBeDefined();
+    expect(result.weights.information?.transform).toBe('row');
+    expect(result.weights).toBe(transform.outputWeights);
+    expect(result.weights.status?.overflow).toBe(contiguity.outputWeights.status?.overflow);
+    expect(result.weights.status?.candidateOverflow).toBe(
+      contiguity.outputWeights.status?.candidateOverflow
+    );
+    for (const contributor of result.contributors) {
+      if (contributor instanceof GPULocalMoran || contributor instanceof GPULocalPermutationTest) {
+        expect(contributor.props.weights.information?.transform).toBe('row');
+        expect(contributor.props.weights.status?.candidateOverflow).toBe(
+          result.weights.status?.candidateOverflow
+        );
+      }
+    }
+  } finally {
+    props.parameters.destroy();
+    props.permutation!.parameters.destroy();
+    graph.device.destroy();
+  }
+});
 
 test('F13 pair-only loss is separate from final neighbor capacity on three squares', () => {
   const layout = flattenPolygons(
@@ -40,20 +188,20 @@ test('F13 pair-only loss is separate from final neighbor capacity on three squar
   const runs = [1, 32].map(pairCapacity =>
     computeContiguityWeightsOnCPU(input, {criterion: 'queen', capacity: 16, pairCapacity})
   );
-  expect(Array.from(runs[0].overflow)).toEqual([0]);
-  expect(Array.from(runs[0].candidateOverflow)).toEqual([1]);
-  expect(runs[0].requiredCount[0]).toBeLessThanOrEqual(4);
-  expect(Array.from(runs[1].overflow)).toEqual([0]);
-  expect(Array.from(runs[1].candidateOverflow)).toEqual([0]);
-  expect(Array.from(runs[1].requiredCount)).toEqual([4]);
+  expect(Array.from(runs[0].status.overflow)).toEqual([0]);
+  expect(Array.from(runs[0].status.candidateOverflow)).toEqual([1]);
+  expect(runs[0].status.requiredCount[0]).toBeLessThanOrEqual(4);
+  expect(Array.from(runs[1].status.overflow)).toEqual([0]);
+  expect(Array.from(runs[1].status.candidateOverflow)).toEqual([0]);
+  expect(Array.from(runs[1].status.requiredCount)).toEqual([4]);
   const finalLoss = computeContiguityWeightsOnCPU(input, {
     criterion: 'queen',
     capacity: 3,
     pairCapacity: 32
   });
-  expect(Array.from(finalLoss.overflow)).toEqual([1]);
-  expect(Array.from(finalLoss.candidateOverflow)).toEqual([0]);
-  expect(Array.from(finalLoss.requiredCount)).toEqual([4]);
+  expect(Array.from(finalLoss.status.overflow)).toEqual([1]);
+  expect(Array.from(finalLoss.status.candidateOverflow)).toEqual([0]);
+  expect(Array.from(finalLoss.status.requiredCount)).toEqual([4]);
 });
 
 test('F13 preserves caller candidate loss and publishes it in the weights stage', () => {
@@ -137,13 +285,16 @@ describe('addRateClusterMapRecipe inference metadata', () => {
       permutationCount: 49,
       significanceLevel: 0.01
     });
-    expect(result.inference).toEqual(expected);
+    expect(result.inference).toEqual({
+      ...expected,
+      permutationCount: expected.requestedPermutationCount
+    });
     expect(result.inference).toMatchObject({
       alternative: 'greater',
       permutationCount: 49,
       seed: 7,
       multipleTesting: 'holm',
-      significanceLevel: 0.01
+      significanceLevel: 0.009999999776482582
     });
   });
 
@@ -244,7 +395,8 @@ describe('addRateClusterMapRecipe settings (one source of truth, rule 19)', () =
     const node = result.contributors.find(
       contributor => contributor instanceof GPULocalPermutationTest
     ) as GPULocalPermutationTest;
-    expect(result.inference).toEqual(node.getInferenceMetadata(settings));
+    const plan = node.getInferenceMetadata(settings);
+    expect(result.inference).toEqual({...plan, permutationCount: plan.requestedPermutationCount});
     expect(writes.permutation).toEqual([Array.from(node.getParameterValues(settings))]);
     expect(writes.parameters).toEqual([
       Array.from(getGPUSpatialAutocorrelationParameterValues({significanceLevel: 0.01}))
@@ -253,7 +405,11 @@ describe('addRateClusterMapRecipe settings (one source of truth, rule 19)', () =
     // Per-frame change: both buffers and the metadata follow one object.
     const next = {significanceLevel: 0.05, seed: 11, permutationCount: 99};
     result.setSettings!(next);
-    expect(result.inference).toEqual(node.getInferenceMetadata(next));
+    const nextPlan = node.getInferenceMetadata(next);
+    expect(result.inference).toEqual({
+      ...nextPlan,
+      permutationCount: nextPlan.requestedPermutationCount
+    });
     expect(writes.permutation.at(-1)).toEqual(Array.from(node.getParameterValues(next)));
     // Invalid settings write nothing and keep the metadata.
     expect(() => result.setSettings!({permutationCount: 100})).toThrow();

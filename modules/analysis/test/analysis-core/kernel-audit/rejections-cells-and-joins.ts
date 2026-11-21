@@ -24,8 +24,9 @@ export const CELLS_AND_JOINS_REJECTIONS: readonly KernelAuditRejection[] = [
     exportName: 'GPUNeighborSearch',
     name: 'radius gridSize above the maximum',
     kind: 'binding',
-    limit: 33554431,
-    rejects: /^Error: neighbor-search gridSize cells must be at most 33554431$/
+    limit: 134217728,
+    rejects:
+      /^Error: neighbor-search gridSize cells needs 134217732 bytes, above the device limit of 134217728; reduce rows, grid size or neighborCount, or use smaller independent queries$/
   },
   {
     exportName: 'GPUNearestFeatureJoin',
@@ -48,7 +49,7 @@ export const CELLS_AND_JOINS_REJECTIONS: readonly KernelAuditRejection[] = [
     name: 'pairs above the maximum',
     kind: 'dispatch',
     limit: 16777215,
-    rejects: /^Error: track-similarity pairA.length must be an integer in \[1, 16777215\]$/
+    rejects: /^Error: track-similarity pairA.length must be an integer in \[0, 16777215\]$/
   },
   {
     exportName: 'GPUTrajectoryEncounters',

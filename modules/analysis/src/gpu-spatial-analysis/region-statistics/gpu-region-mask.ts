@@ -6,7 +6,7 @@ import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
-  GraphVectorView,
+  type GraphVectorView,
   createTransientView,
   validatePackedUint32View,
   type GPUCommandGraph,
@@ -22,6 +22,8 @@ import {
 import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  isGraphVectorView,
+  validateCapacity,
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -45,9 +47,43 @@ import {
 } from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRegionSelection, snapshotRegionMaskOutput} from './region-construction-snapshot';
 
 /** Number of float32 elements in a region screen transform. */
 export const GPU_REGION_SCREEN_TRANSFORM_LENGTH = 20;
+
+/** Validates shape storage before any composing contributor allocates graph resources. @internal */
+export function validateRegionShape(id: string, region: GPURegionShape): void {
+  if (region.kind === 'rectangle') {
+    validateSinglePackedView(region.bounds, ['float32'], `${id} bounds`);
+    validateCapacity(id, 'bounds.length', region.bounds.length, 4, 4);
+  } else {
+    validateSinglePackedView(region.vertices, ['float32x2'], `${id} vertices`);
+    validateCapacity(id, 'vertices.length', region.vertices.length, 3, Number.MAX_SAFE_INTEGER);
+    validatePackedUint32View(region.vertexCount, `${id} vertexCount`);
+    validateCapacity(
+      id,
+      'vertexCount.length',
+      region.vertexCount.length,
+      1,
+      Number.MAX_SAFE_INTEGER
+    );
+  }
+  if (region.screenTransform) {
+    validateSinglePackedView(region.screenTransform, ['float32'], `${id} screenTransform`);
+    validateCapacity(
+      id,
+      'screenTransform.length',
+      region.screenTransform.length,
+      GPU_REGION_SCREEN_TRANSFORM_LENGTH,
+      GPU_REGION_SCREEN_TRANSFORM_LENGTH
+    );
+  }
+}
 
 /** WGSL helper that rejects NaN and infinities. @internal */
 export const REGION_STATISTICS_WGSL_HELPERS = /* wgsl */ IS_FINITE_VALUE_WGSL;
@@ -98,6 +134,29 @@ export class GPURegionMask implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURegionMaskProps) {
+    const construction = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'regionSpatialContext',
+      'positions',
+      'region',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...construction,
+      ...(construction.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(construction.spatialContext)}
+        : {}),
+      ...(construction.regionSpatialContext
+        ? {
+            regionSpatialContext: snapshotConstructionSpatialContext(
+              construction.regionSpatialContext
+            )
+          }
+        : {}),
+      region: snapshotRegionSelection(construction.region),
+      output: snapshotRegionMaskOutput(construction.output)
+    });
     this.id = props.id ?? 'region-mask';
     this.props = props;
     this.spatialContext = resolveGPURegionSpatialContext(
@@ -124,27 +183,7 @@ export class GPURegionMask implements GPUCommandNodeProducer {
     if (!output.status.overflow) {
       throw new Error(`${id} output.status.overflow is required`);
     }
-    if (region.kind === 'rectangle') {
-      validateSinglePackedView(region.bounds, ['float32'], `${id} bounds`);
-      if (region.bounds.length !== 4) {
-        throw new Error(`${id} bounds must contain four float32 values`);
-      }
-    } else {
-      validateSinglePackedView(region.vertices, ['float32x2'], `${id} vertices`);
-      if (region.vertices.length < 3) {
-        throw new Error(`${id} vertices must hold at least three vertices`);
-      }
-      validatePackedUint32View(region.vertexCount, `${id} vertexCount`);
-      if (region.vertexCount.length < 1) {
-        throw new Error(`${id} vertexCount must contain one uint32 row`);
-      }
-    }
-    if (region.screenTransform) {
-      validateSinglePackedView(region.screenTransform, ['float32'], `${id} screenTransform`);
-      if (region.screenTransform.length !== GPU_REGION_SCREEN_TRANSFORM_LENGTH) {
-        throw new Error(`${id} screenTransform must contain 20 float32 values`);
-      }
-    }
+    validateRegionShape(id, region);
     validateDisjointWritableViews(id, {mask: output.mask, ...output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -274,7 +313,7 @@ fn isInsideRegion(point: vec2f) -> bool {
   return validBounds && all(point >= minimum) && all(point <= maximum);
 }`;
 
-    const isVector = positions instanceof GraphVectorView;
+    const isVector = isGraphVectorView(positions);
     let rowStart = 0;
     for (const [chunkIndex, chunk] of getGraphViewChunks(positions).entries()) {
       if (chunk.length > 0) {

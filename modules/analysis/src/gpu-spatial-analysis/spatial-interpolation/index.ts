@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPULocalKriging} from './gpu-local-kriging';
+import type {decodeGPUVecchiaLogLikelihoodResult} from './gpu-vecchia-log-likelihood';
+import type {decodeGPUVecchiaFisherScoringResult} from './gpu-vecchia-fisher-scoring';
+
+export {GPULocalKriging, decodeGPULocalKrigingStatus} from './gpu-local-kriging';
 export type {GPULocalKrigingProps, GPUPredictionCovariance} from './gpu-local-kriging';
 export {
   getGPULocalKrigingParameterLength,
@@ -37,7 +40,9 @@ export type {
 } from '../../dataframe-analysis/pair-statistics/space-time-variogram-model';
 export {
   GPUVecchiaLogLikelihood,
-  getVecchiaLogLikelihoodResult
+  getVecchiaLogLikelihoodResult,
+  decodeGPUVecchiaLogLikelihoodStatus,
+  decodeGPUVecchiaLogLikelihoodResult
 } from './gpu-vecchia-log-likelihood';
 export type {
   GPUVecchiaLogLikelihoodOutput,
@@ -46,7 +51,9 @@ export type {
 export {
   GPUVecchiaFisherScoring,
   GPU_VECCHIA_FISHER_CELL_COUNT,
-  getVecchiaFisherEvaluation
+  getVecchiaFisherEvaluation,
+  decodeGPUVecchiaFisherScoringStatus,
+  decodeGPUVecchiaFisherScoringResult
 } from './gpu-vecchia-fisher-scoring';
 export type {
   GPUVecchiaFisherScoringOutput,
@@ -55,17 +62,26 @@ export type {
 export {
   GPUVecchiaSpaceTimeLogLikelihood,
   GPU_VECCHIA_SPACE_TIME_PARAMETER_LENGTH,
-  getGPUVecchiaSpaceTimeLogLikelihoodParameterValues
+  getGPUVecchiaSpaceTimeLogLikelihoodParameterValues,
+  decodeGPUVecchiaSpaceTimeLogLikelihoodResult,
+  decodeGPUVecchiaSpaceTimeLogLikelihoodStatus
 } from './gpu-vecchia-space-time-log-likelihood';
-export type {GPUVecchiaSpaceTimeLogLikelihoodProps} from './gpu-vecchia-space-time-log-likelihood';
+export type {
+  GPUVecchiaSpaceTimeLogLikelihoodProps,
+  GPUVecchiaSpaceTimeLogLikelihoodOutput
+} from './gpu-vecchia-space-time-log-likelihood';
 export {
   buildVecchiaConditioningSets,
   buildVecchiaPredictionNeighborhoods,
-  getVecchiaMaxMinOrdering
+  getVecchiaMaxMinOrdering,
+  uploadVecchiaNeighborhoods,
+  MAXIMUM_VECCHIA_NEIGHBOR_COUNT,
+  MAXIMUM_VECCHIA_ENTRY_COUNT
 } from './vecchia-conditioning-sets';
 export type {
   VecchiaConditioningSetProps,
-  VecchiaConditioningSets
+  VecchiaConditioningSets,
+  PreparedVecchiaConditioningSets
 } from './vecchia-conditioning-sets';
 export {
   fitVecchiaCovarianceFisherScoring,
@@ -86,7 +102,7 @@ export {
 } from './vecchia-parameters';
 export type {GPUVecchiaCovariance, GPUVecchiaCovarianceModel} from './vecchia-parameters';
 export type {GPUVecchiaLikelihoodOutput} from './vecchia-likelihood-nodes';
-export {GPULocalRBF} from './gpu-local-rbf';
+export {GPULocalRBF, decodeGPULocalRBFStatus} from './gpu-local-rbf';
 export type {GPULocalRBFProps} from './gpu-local-rbf';
 export {GPUNaturalNeighbor} from './gpu-natural-neighbor';
 export type {GPUNaturalNeighborProps} from './gpu-natural-neighbor';
@@ -144,7 +160,8 @@ export {
 } from './cpu-vecchia-fisher-scoring-operation';
 export type {
   CPUVecchiaFisherScoringInput,
-  CPUVecchiaFisherScoringResult
+  CPUVecchiaFisherScoringResult,
+  PreparedCPUVecchiaFisherScoringResult
 } from './cpu-vecchia-fisher-scoring-operation';
 export {
   computeVecchiaLogLikelihoodOnCPU,
@@ -152,7 +169,8 @@ export {
 } from './cpu-vecchia-log-likelihood-operation';
 export type {
   CPUVecchiaLogLikelihoodInput,
-  CPUVecchiaLogLikelihoodResult
+  CPUVecchiaLogLikelihoodResult,
+  PreparedCPUVecchiaLogLikelihoodResult
 } from './cpu-vecchia-log-likelihood-operation';
 export {
   computeVecchiaSpaceTimeLogLikelihoodOnCPU,
@@ -160,7 +178,8 @@ export {
 } from './cpu-vecchia-space-time-log-likelihood-operation';
 export type {
   CPUVecchiaSpaceTimeLogLikelihoodInput,
-  CPUVecchiaSpaceTimeLogLikelihoodResult
+  CPUVecchiaSpaceTimeLogLikelihoodResult,
+  PreparedCPUVecchiaSpaceTimeLogLikelihoodResult
 } from './cpu-vecchia-space-time-log-likelihood-operation';
 export {GPUConditionalGaussianSimulationOperation} from './gpu-conditional-gaussian-simulation-operation';
 export type {ConditionalGaussianSimulationOperationProps} from './gpu-conditional-gaussian-simulation-operation';
@@ -197,8 +216,21 @@ export {
 
 export {
   GPU_LOCAL_KRIGING_MAXIMUM_NEIGHBOR_COUNT,
-  GPU_LOCAL_KRIGING_MAXIMUM_SUPPORT_COUNT
+  GPU_LOCAL_KRIGING_MAXIMUM_SUPPORT_COUNT,
+  GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT,
+  GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK
 } from './gpu-local-kriging';
 export {GPU_LOCAL_RBF_MAXIMUM_NEIGHBOR_COUNT} from './gpu-local-rbf';
 
 export {GPU_CONDITIONAL_GAUSSIAN_SIMULATION_MAXIMUM_JOINT_ROW_COUNT} from './gpu-conditional-gaussian-simulation';
+
+/** Typed ports accepted by the checked Vecchia likelihood readback decoder. */
+export type GPUVecchiaLogLikelihoodReadback = Parameters<
+  typeof decodeGPUVecchiaLogLikelihoodResult
+>[0];
+/** Typed ports accepted by the checked Vecchia Fisher-scoring readback decoder. */
+export type GPUVecchiaFisherScoringReadback = Parameters<
+  typeof decodeGPUVecchiaFisherScoringResult
+>[0];
+
+export type {VecchiaNeighborhoodStatus} from './vecchia-neighborhood-status';

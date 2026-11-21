@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   RasterSpectralIndex,
@@ -20,13 +20,13 @@ export type GPURasterNDWIProps = SpectralIndexProps &
   (
     | {
         method: 'gao';
-        nearInfrared: GPURasterBufferBand;
-        shortwaveInfrared: GPURasterBufferBand;
+        nearInfrared: GPURasterBand;
+        shortwaveInfrared: GPURasterBand;
       }
     | {
         method: 'mcfeeters';
-        green: GPURasterBufferBand;
-        nearInfrared: GPURasterBufferBand;
+        green: GPURasterBand;
+        nearInfrared: GPURasterBand;
       }
   );
 
@@ -38,8 +38,8 @@ export class GPURasterNDWI
   constructor(props: GPURasterNDWIProps) {
     const captured = snapshotConstructionFields(
       props as GPURasterNDWIProps & {
-        green?: GPURasterBufferBand;
-        shortwaveInfrared?: GPURasterBufferBand;
+        green?: GPURasterBand;
+        shortwaveInfrared?: GPURasterBand;
       },
       ['id', 'width', 'height', 'output', 'outputValidity', 'epsilon', 'clamp', 'method']
     );
@@ -47,8 +47,8 @@ export class GPURasterNDWI
       throw new Error('GPURasterNDWI requires an explicit gao or mcfeeters method');
     const sources = snapshotConstructionFields(
       props as GPURasterNDWIProps & {
-        green?: GPURasterBufferBand;
-        shortwaveInfrared?: GPURasterBufferBand;
+        green?: GPURasterBand;
+        shortwaveInfrared?: GPURasterBand;
       },
       ['nearInfrared', captured.method === 'gao' ? 'shortwaveInfrared' : 'green']
     );

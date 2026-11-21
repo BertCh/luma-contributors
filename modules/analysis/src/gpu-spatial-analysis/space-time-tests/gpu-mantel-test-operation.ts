@@ -3,9 +3,18 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateRequirement,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUMantelTest, type GPUMantelTransform} from './gpu-mantel-test';
 import {GPU_SPACE_TIME_SUMMARY_LENGTH} from './space-time-parameters';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import type {GPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
+import {snapshotSpaceTimeTemporalContext} from './space-time-construction';
+import {resolveGPUSpaceTimeTemporalContext} from './space-time-bands';
 
 /** Shared graph-value properties; parameters retain getGPUSpaceTimeParameterValues layout. */
 export type MantelTestOperationProps = {
@@ -20,12 +29,19 @@ export type MantelTestOperationProps = {
     status?: {overflow?: string; candidateOverflow?: string};
   };
   times: string;
+  /** Metadata of the live float32-relative times, captured at construction. */
+  temporalContext?: GPUTemporalContext;
   parameters: string;
   maximumPermutations: number;
   stopAfterExceedances?: number;
   distanceTransform?: GPUMantelTransform;
   timeTransform?: GPUMantelTransform;
-  output: {statistics: string; summary: string; permutationCount?: string};
+  output: {
+    statistics: string;
+    summary: string;
+    permutationCount?: string;
+    usablePermutationCount?: string;
+  };
 };
 
 /** Capture the schema and optional port presence once for both operation forms. @internal */
@@ -37,6 +53,7 @@ export function snapshotMantelOperationProps(
     'rowCount',
     'pairs',
     'times',
+    'temporalContext',
     'parameters',
     'maximumPermutations',
     'stopAfterExceedances',
@@ -44,6 +61,17 @@ export function snapshotMantelOperationProps(
     'timeTransform',
     'output'
   ]);
+  const id = captured.id ?? 'mantel-test';
+  validateRequirement(
+    id,
+    Boolean(captured.pairs && typeof captured.pairs === 'object'),
+    `pairs must be a port map; received ${String(captured.pairs)}`
+  );
+  validateRequirement(
+    id,
+    Boolean(captured.output && typeof captured.output === 'object'),
+    `output must be a port map; received ${String(captured.output)}`
+  );
   const pairs = snapshotConstructionFields(captured.pairs, [
     'offsets',
     'neighbors',
@@ -53,6 +81,8 @@ export function snapshotMantelOperationProps(
   ]);
   return Object.freeze({
     ...captured,
+    temporalContext:
+      captured.temporalContext && snapshotSpaceTimeTemporalContext(captured.temporalContext),
     pairs: Object.freeze({
       ...pairs,
       status:
@@ -61,7 +91,8 @@ export function snapshotMantelOperationProps(
     output: snapshotConstructionFields(captured.output, [
       'statistics',
       'summary',
-      'permutationCount'
+      'permutationCount',
+      'usablePermutationCount'
     ]),
     distanceTransform:
       captured.distanceTransform &&
@@ -72,6 +103,35 @@ export function snapshotMantelOperationProps(
   });
 }
 
+/** Shared host checks before either operation declares outputs. @internal */
+export function validateMantelOperationProps(id: string, props: MantelTestOperationProps): void {
+  validateCapacity(id, 'rowCount', props.rowCount, 2);
+  validateCapacity(id, 'maximumPermutations', props.maximumPermutations, 1, 0xfffffffe);
+  if (props.stopAfterExceedances !== undefined)
+    validateCapacity(
+      id,
+      'stopAfterExceedances',
+      props.stopAfterExceedances,
+      1,
+      props.maximumPermutations
+    );
+  validateRequirement(
+    id,
+    props.stopAfterExceedances === undefined || props.output.permutationCount !== undefined,
+    'output.permutationCount is required when stopAfterExceedances is supplied'
+  );
+  for (const [name, transform] of [
+    ['distanceTransform', props.distanceTransform],
+    ['timeTransform', props.timeTransform]
+  ] as const) {
+    if (transform) {
+      validateFiniteNumber(id, `${name}.constant`, transform.constant);
+      validateFiniteNumber(id, `${name}.power`, transform.power);
+    }
+  }
+  resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
+}
+
 /**
  * Vector operation form. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
  * Optional pair loss ports are read on every execution, including CPU execution.
@@ -79,6 +139,7 @@ export function snapshotMantelOperationProps(
 export class GPUMantelTestOperation extends GPUContributorOperation {
   constructor(props: MantelTestOperationProps) {
     props = snapshotMantelOperationProps(props);
+    validateMantelOperationProps(props.id ?? 'mantel-test', props);
     super({
       id: props.id ?? 'mantel-test',
       inputs: {
@@ -114,13 +175,27 @@ export class GPUMantelTestOperation extends GPUContributorOperation {
                 format: 'uint32' as const,
                 length: 1
               }
+            }),
+        ...(props.output.usablePermutationCount === undefined
+          ? {}
+          : {
+              usablePermutationCount: {
+                value: props.output.usablePermutationCount,
+                format: 'uint32' as const,
+                length: 1
+              }
             })
       },
-      createContributor: getView =>
-        new GPUMantelTest({
+      createContributor: getView => {
+        const id = props.id ?? 'mantel-test';
+        const times = getView<'float32'>('times');
+        const offsets = getView<'uint32'>('offsets');
+        validateViewLength(id, 'times (rowCount)', times, props.rowCount);
+        validateViewLength(id, 'pairs.offsets (rowCount + 1)', offsets, props.rowCount + 1);
+        return new GPUMantelTest({
           ...props,
           pairs: {
-            offsets: getView<'uint32'>('offsets'),
+            offsets,
             neighbors: getView<'uint32'>('neighbors'),
             weights: getView<'float32'>('weights'),
             distances: getView<'float32'>('distances'),
@@ -135,7 +210,7 @@ export class GPUMantelTestOperation extends GPUContributorOperation {
                   : undefined
             }
           },
-          times: getView<'float32'>('times'),
+          times,
           parameters: getView<'uint32'>('parameters'),
           output: {
             statistics: getView<'float32'>('statistics'),
@@ -143,9 +218,14 @@ export class GPUMantelTestOperation extends GPUContributorOperation {
             permutationCount:
               props.output.permutationCount === undefined
                 ? undefined
-                : getView<'uint32'>('permutationCount')
+                : getView<'uint32'>('permutationCount'),
+            usablePermutationCount:
+              props.output.usablePermutationCount === undefined
+                ? undefined
+                : getView<'uint32'>('usablePermutationCount')
           }
-        })
+        });
+      }
     });
   }
 }

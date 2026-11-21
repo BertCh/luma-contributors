@@ -72,7 +72,7 @@ export default defineOperationRun({
       update: values =>
         parameterBuffer.write(
           getGPUNetworkSubgraphFilterParameterValues(LAYOUT, {
-            edgeRanges: [[values.minimumSpeed, values.maximumSpeed]]
+            edgeAttributeRanges: [[values.minimumSpeed, values.maximumSpeed]]
           })
         )
     };

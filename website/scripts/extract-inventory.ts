@@ -76,6 +76,21 @@ const MAX_TYPE_LENGTH = 60;
 const MAX_JSDOC_LENGTH = 70;
 const MAX_LENS_SCENARIOS = 3;
 const MAX_CONTENT_LENS_MATCHES = 3;
+const RENAMED_OPERATOR_SCENARIOS = new Map([
+  ['GPUDBSCAN', {recordedName: 'GPUSpatialClustering', id: 'gpu-spatial-analysis.spatial-clustering'}],
+  [
+    'GPUHDBSCAN',
+    {
+      recordedName: 'GPUHierarchicalDensityClustering',
+      id: 'gpu-spatial-analysis.hierarchical-density-clustering'
+    }
+  ],
+  ['GPUKeyLookup', {recordedName: 'GPUKeyJoin', id: 'gpu-dataframe.key-join'}],
+  [
+    'GPUPycnophylacticInterpolation',
+    {recordedName: 'GPUPycnophylactic', id: 'gpu-spatial-analysis.pycnophylactic'}
+  ]
+]);
 
 function listEntryPoints(): {importPath: string; file: string}[] {
   const packageJson = JSON.parse(
@@ -237,7 +252,7 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
   const resolveProps = (
     parameter: ts.Symbol | undefined,
     location: ts.Node
-  ): {propsType: string | null; props: InventoryProp[]} => {
+  ): Pick<InventoryContract, 'propsType' | 'props' | 'mode'> => {
     if (!parameter) return {propsType: null, props: []};
     const declaredType = checker.getTypeOfSymbolAtLocation(parameter, location);
     const parameterType = resolveInventoryParameterType(checker, declaredType);
@@ -247,6 +262,7 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
       ? typeNode.getText().replace(/\s+/g, ' ').slice(0, MAX_TYPE_LENGTH)
       : formatType(parameterType);
     const props: InventoryProp[] = [];
+    let mode: InventoryContract['mode'];
     // Unions (for example discriminated option sets) contribute every member's props; a prop that
     // is missing from some member is reported as optional.
     const members = parameterType.isUnion() ? parameterType.types : [parameterType];
@@ -275,17 +291,24 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
       // symbol so the catalog retains the usable type and documentation from the other arm.
       const combinedProperty = checker.getPropertyOfType(parameterType, property.name) ?? property;
       const propertyType = checker.getTypeOfSymbolAtLocation(combinedProperty, location);
+      const isOptional = optional || count < members.length;
+      if (property.name === 'mode') {
+        const nonNullableType = checker.getNonNullableType(propertyType);
+        const modeTypes = nonNullableType.isUnion() ? nonNullableType.types : [nonNullableType];
+        if (modeTypes.every(modeType => modeType.isStringLiteral()))
+          mode = {values: modeTypes.map(modeType => modeType.value), optional: isOptional};
+      }
       props.push({
         name: property.name,
         type: formatType(propertyType),
-        optional: optional || count < members.length,
+        optional: isOptional,
         jsdoc: summarizeText(
           ts.displayPartsToString(combinedProperty.getDocumentationComment(checker)),
           MAX_JSDOC_LENGTH
         )
       });
     }
-    return {propsType, props};
+    return {propsType, props, ...(mode ? {mode} : {})};
   };
 
   const listObjectFields = (type: ts.Type, location: ts.Node): InventoryProp[] => {
@@ -412,12 +435,15 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
       if (!included || (isCoreInternal && !isOperator) || isMarkedInternal || isOperationForm)
         continue;
 
+      // Use the resolved export's public signatures. TypeScript excludes the implementation of an
+      // overloaded function, while retaining any declared overload that accepts a union.
+      const targetType = checker.getTypeOfSymbolAtLocation(target, declaration);
       const signatures = isClass
-        ? checker.getTypeOfSymbolAtLocation(target, declaration).getConstructSignatures()
-        : checker.getTypeOfSymbolAtLocation(target, declaration).getCallSignatures();
+        ? targetType.getConstructSignatures()
+        : targetType.getCallSignatures();
       const contracts: InventoryContract[] = signatures.map(signature => {
         // Skip leading infrastructure parameters (device, graph) to reach the options object.
-        const parameter = signature?.getParameters().find(candidate => {
+        const parameter = signature.getParameters().find(candidate => {
           const typeText = checker.typeToString(
             checker.getTypeOfSymbolAtLocation(candidate, declaration)
           );
@@ -426,24 +452,17 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
             !/^(Device|GPUCommandGraph)\b/.test(typeText)
           );
         });
-        const resolved = resolveProps(parameter, declaration);
-        const propsType = resolved.propsType;
+        const {propsType, props: resolvedProps, mode} = resolveProps(parameter, declaration);
         const props =
-          resolved.props.length > 0 || isClass || !signature
-            ? resolved.props
+          resolvedProps.length > 0 || isClass
+            ? resolvedProps
             : resolveParameterProps(signature, declaration);
         const outputs = resolveOutputs(isClass, props, parameter, signature, declaration);
-        const modeProperty = props.find(property => property.name === 'mode');
-        const modeValues = modeProperty
-          ? [...modeProperty.type.matchAll(/["']([^"']+)["']/g)].map(match => match[1])
-          : [];
         return {
           propsType,
           props,
           outputs,
-          ...(modeValues.length
-            ? {mode: {values: modeValues, optional: modeProperty!.optional}}
-            : {})
+          ...(mode ? {mode} : {})
         };
       });
       const contract = contracts.find(contract => contract.mode?.optional) ??
@@ -469,7 +488,6 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
         : /Recipe$|ToGraph$/.test(name)
           ? 'recipe'
           : 'function';
-      const wordPattern = new RegExp(`\\b${name}\\b`);
       const pageScores = documentation.pages
         .map(page => ({
           page,
@@ -493,8 +511,13 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
             record.id.startsWith(`${importPath.split('/').at(-1)}.`)
           )
         : lensScenarios.records;
+      const archivedScenario = RENAMED_OPERATOR_SCENARIOS.get(name);
       const nameMatches = qualifiedLensRecords
-        .filter(record => [kebabName, `${kebabName}-recipe`].includes(scenarioName(record.id)))
+        .filter(
+          record =>
+            record.id === archivedScenario?.id ||
+            [kebabName, `${kebabName}-recipe`].includes(scenarioName(record.id))
+        )
         .map(record => record.id);
       const nearMatches = qualifiedLensRecords
         .filter(
@@ -502,6 +525,9 @@ export async function extractInventory(operatorsOverride?: readonly GPUAnalysisO
         )
         .map(record => record.id);
       // Content references are only trusted when specific: a symbol named in many records is noise.
+      const wordPattern = new RegExp(
+        archivedScenario ? `\\b(?:${name}|${archivedScenario.recordedName})\\b` : `\\b${name}\\b`
+      );
       const contentMatches = qualifiedLensRecords
         .filter(
           record =>

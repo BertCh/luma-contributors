@@ -421,5 +421,36 @@ it('column profile oracle bins follow the official ratio rule', () => {
   expect(resolveOracleDomain(2, 2, 4).mode).toBe(2);
   expect(resolveOracleDomain(3, 2, 4).mode).toBe(0);
   expect(resolveOracleDomain(NaN, 2, 4).mode).toBe(0);
-  expect(resolveOracleDomain(-3.4e38, 3.4e38, 4).mode).toBe(0);
+  // Finite ordered endpoints whose float32 span overflows are a regular domain (review LUMA-102).
+  expect(resolveOracleDomain(-3.4e38, 3.4e38, 4).mode).toBe(1);
+});
+
+it('review LUMA-102: a finite domain whose float32 span overflows still counts every row', () => {
+  // [-2^127, 0, 2^127] over the same explicit domain, two bins: the edge is 0, which belongs to
+  // the upper bin, and the maximum is in the last bin, so the hand count is [1, 2]. Before the fix
+  // fround(2^127 - -2^127) = Infinity disabled the domain and the histogram was [0, 0].
+  const half = 2 ** 127;
+  const [explicit, automatic] = computeColumnProfileOracle({
+    columns: [
+      {kind: 'numeric', values: Float32Array.from([-half, 0, half])},
+      {kind: 'numeric', values: Float32Array.from([-half, 0, half])}
+    ],
+    domains: [[-half, half], undefined],
+    histogramBinCount: 2,
+    precision: 4,
+    topCategoryCount: 1
+  });
+  expect(Array.from(explicit.histogram)).toEqual([1, 2]);
+  expect(Array.from(automatic.histogram)).toEqual([1, 2]);
+  // [-3e38, 3e38], four bins of width 1.5e38 (edges -1.5e38, 0, 1.5e38), hand-binned with
+  // floor((v + 3e38) / 6e38 * 4): -3e38 and -1.6e38 in bin 0, 0 and 1e38 in bin 2, 3e38 in bin 3.
+  const [wide] = computeColumnProfileOracle({
+    columns: [{kind: 'numeric', values: Float32Array.from([-3e38, -1.6e38, 0, 1e38, 3e38])}],
+    // The packed domain is float32, as the GPU reads it.
+    domains: [[Math.fround(-3e38), Math.fround(3e38)]],
+    histogramBinCount: 4,
+    precision: 4,
+    topCategoryCount: 1
+  });
+  expect(Array.from(wide.histogram)).toEqual([2, 0, 2, 1]);
 });

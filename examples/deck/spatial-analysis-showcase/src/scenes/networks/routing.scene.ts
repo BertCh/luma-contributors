@@ -166,7 +166,7 @@ const options: readonly OptionSpec<RoutingOptions>[] = [
   },
   {
     kind: 'slider',
-    id: 'angleCost',
+    id: 'turnCostPerRadian',
     label: 'Cost per radian turned',
     group: 'Turns',
     apply: 'param',
@@ -222,7 +222,7 @@ const options: readonly OptionSpec<RoutingOptions>[] = [
   },
   {
     kind: 'slider',
-    id: 'straightAngle',
+    id: 'straightAngleRadians',
     label: 'Straight-on threshold',
     group: 'Turns',
     apply: 'param',
@@ -508,8 +508,8 @@ graph.add(new GPUNetworkLineGraph({
   output: {topology: {offsets: lineOffsets, neighbors: lineNeighbors, weights: lineWeights}, arcCount, status: {overflow}}
 }));
 turnParameters.write(getGPUNetworkLineGraphParameterValues({
-  angleCost: ${state.angleCost}, leftTurnCost: ${state.leftTurnCost}, rightTurnCost: ${state.rightTurnCost},
-  uTurnCost: ${state.uTurns === 'banned' ? -1 : 90}, straightAngle: ${state.straightAngle}
+  turnCostPerRadian: ${state.turnCostPerRadian}, leftTurnCost: ${state.leftTurnCost}, rightTurnCost: ${state.rightTurnCost},
+  uTurnCost: ${state.uTurns === 'banned' ? -1 : 90}, straightAngleRadians: ${state.straightAngleRadians}
 }));
 // then a second GPUNetworkReachability over lineOffsets/lineNeighbors/lineWeights,
 // seeded with the out-edges of the origin at their own weights.`
@@ -607,7 +607,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       textAlternative:
         'An orange plain route and a purple dashed turn-aware route compare between United Center and Wrigley Field, with paired turn-count bars.',
       optionsMode: 'fresh',
-      controls: ['leftTurnCost', 'angleCost', 'uTurns'],
+      controls: ['leftTurnCost', 'turnCostPerRadian', 'uTurns'],
       readouts: ['plainTurns', 'turnTurns', 'turnCost', 'turnComparison'],
       title: 'Turns cost time too',
       body: 'A line graph makes each directed edge a node, so the next edge can charge an angle or left-turn cost. Orange is the plain route; purple dashes pay turn costs. The paired readouts count turns from the two extracted paths.',
@@ -622,7 +622,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
         destinationPlace: 'wrigley',
         showTurnRoute: true,
         leftTurnCost: 120,
-        angleCost: 25
+        turnCostPerRadian: 25
       },
       highlight: {readout: 'turnTurns'}
     },

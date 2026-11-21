@@ -71,7 +71,7 @@ export default defineOperationRun({
       values: attribute.view,
       maximumOrder: values.maximumOrder,
       slotCapacity: tracts.contiguity.neighbors.length * values.maximumOrder * 3,
-      outputs: {correlogram: correlogram.view, incompleteOrders: incomplete.view}
+      output: {correlogram: correlogram.view, incompleteOrders: incomplete.view}
     });
     return {
       outputs: {
@@ -95,7 +95,8 @@ export default defineOperationRun({
   async afterRun({outputs, values, upload}) {
     const table = await readFloats(outputs.correlogram);
     const statistics = Float32Array.from({length: MAXIMUM_ORDER}, (_, order) =>
-      order < values.maximumOrder ? table[order * COLUMNS.length + COLUMNS.statistic] : 0
+      // Orders beyond maximumOrder were not computed: NaN draws no bar (0 read as I = 0).
+      order < values.maximumOrder ? table[order * COLUMNS.length + COLUMNS.statistic] : Number.NaN
     );
     return {statistics: upload('moran', 'float32', statistics), table};
   },

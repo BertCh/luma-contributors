@@ -455,12 +455,14 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
     }
     const graphSwap = resources.track(new GraphSwap());
 
+    let visitsComplete = false;
     const writeChoropleth = () => {
       choroplethParameters.write(
         Float32Array.of(METRIC_INDEX[metric], metricMaximum[metric], 0, 0)
       );
     };
     const describeZone = (zone: number): string => {
+      if (!visitsComplete) return 'unavailable: incomplete visits';
       if (zone === NO_ZONE) return 'none';
       const row = table.keys.indexOf(zone);
       const name = `Zone ${zone + 1}`;
@@ -622,6 +624,14 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
         if (destroyed) return;
         const words = new Uint32Array(bytes);
         const floats = new Float32Array(bytes);
+        visitsComplete = ![words[1], words[3], words[4], words[5], words[6]].some(Boolean);
+        context.updateLayers();
+        if (!visitsComplete) {
+          visitReadout.setValue('unavailable: incomplete events or visits');
+          selectedReadout.setValue('unavailable: incomplete events or visits');
+          eventReadout.setValue(`${formatCount(words[0])} retained events (incomplete)`);
+          return;
+        }
         const zone = (index: number) => 7 + index * ZONE_COUNT;
         table = {
           keys: words.slice(zone(0), zone(1)),
@@ -667,12 +677,22 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
         {buffer: visitOverflow, size: 4},
         {buffer: visitTracks, size: tableCapacity * 4},
         {buffer: visitZones, size: tableCapacity * 4},
-        {buffer: visitDwell, size: tableCapacity * 4}
+        {buffer: visitDwell, size: tableCapacity * 4},
+        {buffer: eventOverflow, size: 4},
+        {buffer: eventCandidateOverflow, size: 4},
+        {buffer: trackOverflow, size: 4},
+        {buffer: scratchOverflow, size: 4}
       ],
       bytes => {
         if (destroyed) return;
         const words = new Uint32Array(bytes);
         const floats = new Float32Array(bytes);
+        const loss = words.slice(2 + tableCapacity * 3, 2 + tableCapacity * 3 + 4);
+        if (words[1] || loss.some(Boolean)) {
+          visitTableReadout.setValue('incomplete visits');
+          topDwellReadouts.forEach(readout => readout.setValue('unavailable: incomplete visits'));
+          return;
+        }
         const count = Math.min(words[0], tableCapacity);
         const tracksStart = 2;
         const zonesStart = 2 + tableCapacity;
@@ -732,6 +752,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
         visitSummary.flush(commandEncoder);
       },
       getLayers() {
+        if (!visitsComplete) return [];
         const coordinateOrigin: [number, number, number] = [trips.origin[0], trips.origin[1], 0];
         const layers: Layer[] = [
           new ZoneChoroplethLayer({

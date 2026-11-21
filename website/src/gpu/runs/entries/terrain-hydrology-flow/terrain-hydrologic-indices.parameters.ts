@@ -13,6 +13,6 @@ export const parameters: GpuSceneParameter[] = [
     max: 3,
     step: 1,
     default: 0,
-    options: ['wetnessIndex', 'streamPowerIndex', 'slope', 'specificCatchmentArea']
+    options: ['wetnessIndex', 'streamPowerIndex', 'descentTangent', 'specificCatchmentArea']
   }
 ];

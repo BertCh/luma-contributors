@@ -86,7 +86,12 @@ it('GPUBufferSurface compaction and winding membership kernels parse', () => {
           polygonOffsets: view('uint32', 9),
           ringOffsets: view('uint32', 9)
         },
-        status: status(),
+        // requiredCount is published for boundary segments, not assembled geometry.
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1),
+          candidateOverflow: view('uint32', 1)
+        },
         boundary: {
           endpoints: view('float32x4', 64),
           operandIds: view('uint32', 64),
@@ -94,7 +99,7 @@ it('GPUBufferSurface compaction and winding membership kernels parse', () => {
           status: status()
         }
       }
-    } as never);
+    });
     expectKernelsParse(surface.getCommandNodes(graph), `buffer ${kind}`);
   }
 });

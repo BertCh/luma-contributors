@@ -20,6 +20,7 @@ import {
 import {GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH} from './gpu-shape-descriptors';
 import {
   GPUShapeDescriptorsOperation,
+  snapshotShapeDescriptorsOperation,
   type ShapeDescriptorsOperationProps
 } from './gpu-shape-descriptors-operation';
 
@@ -158,7 +159,7 @@ function computeHullArea(points: Point[]): number {
  * - Convexity always uses a monotone-chain hull with exact float32-coordinate turn predicates;
  *   convexityMethod and maximumVerticesPerFeature only steer GPU execution and are unused.
  * - No GPU sorting, storage-binding or per-invocation hull limits apply.
- * - Empty position storage is accepted for empty features; the GPU requires at least one row.
+ * - Empty source storage preserves zero features and declared empty features in both backends.
  *
  * @throws If positions, offsets or parameters arrays are inconsistent.
  */
@@ -267,9 +268,10 @@ export function computeShapeDescriptorsOnCPU(
 /** CPU twin; hull selection hints and GPU hull resource limits are unused. */
 export class CPUShapeDescriptorsOperation extends GPUCPUOperation {
   constructor(props: ShapeDescriptorsOperationProps) {
+    props = snapshotShapeDescriptorsOperation(props);
     const operation = new GPUShapeDescriptorsOperation(props);
     const {id} = operation;
-    validateCapacity(id, 'featureCount', props.featureCount, 1);
+    validateCapacity(id, 'featureCount', props.featureCount, 0);
     validateRequirement(
       id,
       Object.keys(operation.outputs).length > 0,
@@ -286,7 +288,7 @@ export class CPUShapeDescriptorsOperation extends GPUCPUOperation {
         ])
       ),
       execute({inputs}) {
-        const input = readCPUPolygonRows(id, inputs);
+        const input = readCPUPolygonRows(id, inputs, props.storage);
         validateRequirement(
           id,
           input.featureOffsets.length === props.featureCount + 1,

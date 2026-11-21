@@ -1,0 +1,198 @@
+{
+  "sampleCount": 512,
+  "cases": [
+    {
+      "mean": 0,
+      "sumMinimum": 0,
+      "sumMaximum": 0,
+      "varianceMinimum": 0,
+      "varianceMaximum": 0.0,
+      "threshold": 0,
+      "belowMinimum": 512,
+      "belowMaximum": 512
+    },
+    {
+      "mean": 0.5,
+      "sumMinimum": 166,
+      "sumMaximum": 358,
+      "varianceMinimum": 0.23470526027891347,
+      "varianceMaximum": 0.7652947397210865,
+      "threshold": 0,
+      "belowMinimum": 243,
+      "belowMaximum": 375
+    },
+    {
+      "mean": 2,
+      "sumMinimum": 838,
+      "sumMaximum": 1222,
+      "varianceMinimum": 1.1608183851043536,
+      "varianceMaximum": 2.8391816148956464,
+      "threshold": 2,
+      "belowMinimum": 281,
+      "belowMaximum": 407
+    },
+    {
+      "mean": 29,
+      "sumMinimum": 14123,
+      "sumMaximum": 15585,
+      "varianceMinimum": 18.0211053799002,
+      "varianceMaximum": 39.9788946200998,
+      "threshold": 29,
+      "belowMinimum": 213,
+      "belowMaximum": 348
+    },
+    {
+      "mean": 30,
+      "sumMinimum": 14623,
+      "sumMaximum": 16109,
+      "varianceMinimum": 18.645725424966834,
+      "varianceMaximum": 41.354274575033166,
+      "threshold": 30,
+      "belowMinimum": 213,
+      "belowMaximum": 347
+    },
+    {
+      "mean": 100,
+      "sumMinimum": 49849,
+      "sumMaximum": 52563,
+      "varianceMinimum": 62.36978332580102,
+      "varianceMaximum": 137.63021667419898,
+      "threshold": 100,
+      "belowMinimum": 202,
+      "belowMaximum": 337
+    },
+    {
+      "mean": 1000000,
+      "sumMinimum": 511864291,
+      "sumMaximum": 512135720,
+      "varianceMinimum": 624633.1580876965,
+      "varianceMaximum": 1375366.8419123036,
+      "threshold": 1000000,
+      "belowMinimum": 189,
+      "belowMaximum": 324
+    },
+    {
+      "mean": 10000000,
+      "sumMinimum": 5119570838,
+      "sumMaximum": 5120429173,
+      "varianceMinimum": 6246332.423802473,
+      "varianceMaximum": 13753667.576197527,
+      "threshold": 10000000,
+      "belowMinimum": 189,
+      "belowMaximum": 324
+    }
+  ],
+  "conditionalSampleCount": 1024,
+  "conditional": [
+    {
+      "model": "poisson",
+      "thresholds": [
+        {
+          "score": 0.111554994487,
+          "probability": 0.205078125,
+          "minimum": 146,
+          "maximum": 280
+        },
+        {
+          "score": 1.194418926187,
+          "probability": 0.87158203125,
+          "minimum": 834,
+          "maximum": 945
+        },
+        {
+          "score": 3.140329075242,
+          "probability": 0.9912109375,
+          "minimum": 996,
+          "maximum": 1024
+        },
+        {
+          "score": 5.949285441653,
+          "probability": 0.999755859375,
+          "minimum": 1018,
+          "maximum": 1024
+        },
+        {
+          "score": 10.397207708399,
+          "probability": 1,
+          "minimum": 1024,
+          "maximum": 1024
+        }
+      ]
+    },
+    {
+      "model": "bernoulli",
+      "thresholds": [
+        {
+          "score": 0.100127475759,
+          "probability": 0.023976023976023976,
+          "minimum": 4,
+          "maximum": 54
+        },
+        {
+          "score": 0.769570550194,
+          "probability": 0.07192807192807193,
+          "minimum": 35,
+          "maximum": 120
+        },
+        {
+          "score": 1.100448849923,
+          "probability": 0.5649350649350655,
+          "minimum": 496,
+          "maximum": 660
+        },
+        {
+          "score": 2.376570120991,
+          "probability": 0.9725274725274737,
+          "minimum": 965,
+          "maximum": 1018
+        },
+        {
+          "score": 3.909059412781,
+          "probability": 1,
+          "minimum": 1024,
+          "maximum": 1024
+        }
+      ]
+    },
+    {
+      "model": "bernoulli-complement",
+      "thresholds": [
+        {
+          "score": 0.462972105026,
+          "probability": 0.023976023976023976,
+          "minimum": 4,
+          "maximum": 54
+        },
+        {
+          "score": 0.974272664519,
+          "probability": 0.7692307692307705,
+          "minimum": 715,
+          "maximum": 855
+        },
+        {
+          "score": 1.545490233174,
+          "probability": 1,
+          "minimum": 1024,
+          "maximum": 1024
+        }
+      ]
+    },
+    {
+      "model": "space-time-permutation",
+      "thresholds": [
+        {
+          "score": 0.0,
+          "probability": 0.01989121989121989,
+          "minimum": 2,
+          "maximum": 47
+        },
+        {
+          "score": 0.420394160303,
+          "probability": 1,
+          "minimum": 1024,
+          "maximum": 1024
+        }
+      ]
+    }
+  ]
+}

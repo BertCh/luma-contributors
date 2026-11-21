@@ -172,11 +172,20 @@ it('GPUTrackSimilarity validates props and the Frechet cap', () => {
     /maximumFrechetVertexCount/
   );
   expect(() => new GPUTrackSimilarity({...props, densify: 1.5})).toThrow(/densify/);
+  // Offset count = track count + one terminal: [0] is a valid zero-track table.
+  // A zero-entry offsets view is invalid because even its terminal is missing.
   expect(
     () =>
       new GPUTrackSimilarity({
         ...props,
-        linesB: {kind: 'lines', positions: view('float32x2', 2), lineOffsets: view('uint32', 1)}
+        linesB: {kind: 'lines', positions: view('float32x2', 0), lineOffsets: view('uint32', 1)}
+      })
+  ).not.toThrow();
+  expect(
+    () =>
+      new GPUTrackSimilarity({
+        ...props,
+        linesB: {kind: 'lines', positions: view('float32x2', 0), lineOffsets: view('uint32', 0)}
       })
   ).toThrow(/linesB.lineOffsets/);
   expect(

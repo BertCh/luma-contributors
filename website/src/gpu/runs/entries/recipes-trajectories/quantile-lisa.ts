@@ -63,6 +63,7 @@ export default defineOperationRun({
         weights: uploadSpatialWeights(builder, tracts.contiguity),
         quantileParameters: quantileParameters.view,
         parameters: permutationParameters.view,
+        alternative: 'greater',
         maximumPermutations: MAXIMUM_PERMUTATIONS,
         maximumNeighbors: 8,
         output: {

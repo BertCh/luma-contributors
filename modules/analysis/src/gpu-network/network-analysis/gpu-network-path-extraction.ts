@@ -10,7 +10,11 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createFillNode, createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createFillNode,
+  createPublishNode,
+  createWGSLKernelNode
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
@@ -26,6 +30,8 @@ import {
   type GPUNetworkTopology
 } from '../../analysis-core/contracts/network-topology';
 import {
+  createPathCheckTotalsNode,
+  createPathSuppressUnrepresentableNode,
   createPathEdgeLengthsNode,
   createPathMeasureNode,
   createPathStatusNode,
@@ -59,10 +65,11 @@ export type GPUNetworkPathExtractionEdges = {
   /**
    * Concatenated edge lists in target-row order. A path with `n` nodes contributes
    * `max(n - 1, 0)` edges ordered source to target. Slots with no matching CSR edge hold
-   * {@link GPU_NETWORK_PATH_NO_EDGE}. Optional candidateOverflow reports bounded walks;
-   * overflow reports final edge-list capacity only.
+   * {@link GPU_NETWORK_PATH_NO_EDGE}. Optional `status.candidateOverflow` reports walk truncation.
+   * `status.overflow` reports an edge-list capacity shortfall or a required node total above
+   * 4,294,967,295 rows. The latter suppresses both lists and sets optional `status.unrepresentable`.
    */
-  output: GPUCompactOutput & {
+  output: NetworkPathExtractionCompactOutput & {
     /** Optional CSR row indices, independent of the caller identities in ids; same capacity. */
     edgeRows?: GraphDataView<'uint32'>;
     /** Optional `targets.length + 1` rows: unclamped start of each path in `ids`, then the total. */
@@ -71,7 +78,14 @@ export type GPUNetworkPathExtractionEdges = {
 };
 
 /** Views written by {@link GPUNetworkPathExtraction}. */
-export type GPUNetworkPathExtractionOutput = GPUCompactOutput & {
+export type NetworkPathExtractionCompactOutput = GPUCompactOutput & {
+  status: GPUCompactOutput['status'] & {
+    /** 1 when required offsets cannot fit uint32. Counts/offsets are suppressed; split the target batch. */
+    unrepresentable?: GraphDataView<'uint32'>;
+  };
+};
+
+export type GPUNetworkPathExtractionOutput = NetworkPathExtractionCompactOutput & {
   /** Optional node row indices for positional gathers; ids always contains caller identities. Same capacity as ids. */
   nodeRows?: GraphDataView<'uint32'>;
   /** Optional `targets.length + 1` rows: unclamped start of each path in `ids`, then the total. */
@@ -94,6 +108,8 @@ export type GPUNetworkPathExtractionProps = {
   id?: string;
   /** Per-node predecessor or `GPU_NETWORK_REACHABILITY_NONE`; its length defines the node count. Per-frame contents. */
   predecessors: GraphDataView<'uint32'>;
+  /** Authoritative CSR slots; invalid endpoint provenance resolves to NONE. */
+  predecessorEdges?: GraphDataView<'uint32'>;
   /** Per-node shortest-path cost, `+Infinity` when unreached, with one row per node. Per-frame contents. */
   costs: GraphDataView<'float32'>;
   /** Target node indices. Capacity is compile-time, contents are per-frame. May have zero rows. */
@@ -132,6 +148,7 @@ function snapshotNetworkPathExtractionProps(
   const snapshot = snapshotConstructionFields(props, [
     'id',
     'predecessors',
+    'predecessorEdges',
     'costs',
     'targets',
     'targetCount',
@@ -153,7 +170,13 @@ function snapshotNetworkPathExtractionProps(
     snapshot.edges && snapshotConstructionFields(snapshot.edges, ['topology', 'edgeIds', 'output']);
   const edgeOutput =
     edges && snapshotConstructionFields(edges.output, ['ids', 'edgeRows', 'status', 'lineOffsets']);
-  const statusFields = ['count', 'overflow', 'requiredCount', 'candidateOverflow'] as const;
+  const statusFields = [
+    'count',
+    'overflow',
+    'requiredCount',
+    'candidateOverflow',
+    'unrepresentable'
+  ] as const;
   return Object.freeze({
     ...snapshot,
     output: Object.freeze({
@@ -188,8 +211,12 @@ function snapshotNetworkPathExtractionProps(
  * candidateOverflow when requested. A found target that is itself a root yields a one-node path. Target rows that
  * are out of range, unreached (non-finite cost) or inactive yield empty paths. Path lengths are
  * prefix-summed with `GPUScan` so lists are packed in target-row order and written in parallel.
+ * Supply predecessorEdges for authoritative edge provenance. Edges-only inference is deprecated.
  * Edges link each predecessor to its successor using the smallest CSR edge whose weight explains
  * the cost difference exactly in f32, falling back to the smallest edge with the right neighbor.
+ * Batches whose activeTargetUpperBound × min(nodeCount, maximumPathLength) exceeds 4294967295
+ * use checked totals. Unrepresentable batches publish zero counts/offsets, overflow=1 (walk-loss candidateOverflow remains independent)
+ * and optional status.unrepresentable=1; split targets into smaller batches.
  * Every encoding rewrites every output.
  *
  * Non-goals: k-shortest paths, path geometry, and computing the predecessors themselves, which
@@ -216,6 +243,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
     const {edges, output} = props;
     for (const [name, view] of [
       ['predecessors', props.predecessors],
+      ['predecessorEdges', props.predecessorEdges],
       ['targets', props.targets],
       ['targetCount', typeof props.targetCount === 'object' ? props.targetCount : undefined],
       ['predecessorsComplete', props.predecessorsComplete],
@@ -225,7 +253,9 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       ['output.pathFound', output.pathFound],
       ['edges.edgeIds', edges?.edgeIds],
       ['edges.output.lineOffsets', edges?.output.lineOffsets],
-      ['edges.output.edgeRows', edges?.output.edgeRows]
+      ['edges.output.edgeRows', edges?.output.edgeRows],
+      ['output.status.unrepresentable', output.status.unrepresentable],
+      ['edges.output.status.unrepresentable', edges?.output.status.unrepresentable]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
@@ -241,6 +271,8 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
     }
     const nodeCount = props.predecessors.length;
     const targetCapacity = props.targets.length;
+    if (props.predecessorEdges)
+      validateViewLength(id, 'predecessorEdges', props.predecessorEdges, nodeCount);
     if (nodeCount < 1) {
       throw new Error(`${id} predecessors must contain at least one node`);
     }
@@ -292,6 +324,8 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       GPU_NETWORK_PATH_MAXIMUM_LENGTH
     );
     validateCompactOutput(id, output);
+    for (const view of [output.status.unrepresentable, edges?.output.status.unrepresentable])
+      if (view) validateViewLength(id, 'status.unrepresentable', view, 1);
     if (output.nodeRows)
       validateViewLength(id, 'output.nodeRows', output.nodeRows, output.ids.length);
     if (edges?.output.edgeRows)
@@ -307,6 +341,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       output.status.count,
       output.status.overflow,
       output.status.candidateOverflow,
+      output.status.unrepresentable,
       output.status.requiredCount,
       output.lineOffsets,
       output.pathCosts,
@@ -316,6 +351,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       edges?.output.status.count,
       edges?.output.status.overflow,
       edges?.output.status.candidateOverflow,
+      edges?.output.status.unrepresentable,
       edges?.output.status.requiredCount,
       edges?.output.lineOffsets
     ]
@@ -323,6 +359,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       .map(getNetworkPhysicalBuffer);
     const inputs = [
       props.predecessors,
+      props.predecessorEdges,
       props.costs,
       props.targets,
       typeof props.targetCount === 'object' ? props.targetCount : undefined,
@@ -349,7 +386,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
     const {edges, output} = props;
     validateNetworkViewBindings(id, graph, getViews(props), {
       totals: 4,
-      status: props.targets.length > 0 ? 8 : 0,
+      status: props.targets.length > 0 ? 12 : 0,
       // Scan hierarchy buffers have at most one word per target.
       targetColumns: props.targets.length * 4,
       linkColumns: edges && props.targets.length > 0 ? edges.output.ids.length * 4 : 0
@@ -363,6 +400,17 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     if (targetCapacity === 0) {
+      for (const view of [output.status.unrepresentable, edges?.output.status.unrepresentable])
+        if (view)
+          nodes.push(
+            createFillNode(graph, {
+              id: `${id}-empty-representability-${nodes.length}`,
+              operation: OPERATION,
+              view,
+              type: 'u32',
+              value: '0u'
+            })
+          );
       nodes.push(
         createPathTotalsNode<Parameters>(graph, {
           id: `${id}-totals`,
@@ -393,9 +441,15 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       return nodes;
     }
 
-    // Word 0: a walk was truncated (ORed into the output overflow). Word 1: the search that wrote
-    // the predecessors converged, so a NONE predecessor is a source.
-    const status = createTransientView(graph, `${id}-status`, 'uint32', 2);
+    // Word 0 reports walk truncation through candidateOverflow. Word 1 records search convergence
+    // (assumed if no view is supplied), which lets a NONE predecessor identify a source. Word 2
+    // reports an unrepresentable node total, suppressing both lists and setting overflow.
+    const status = createTransientView(graph, `${id}-status`, 'uint32', 3);
+    const unrepresentable = graph.createDataView(status.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: status.byteOffset + 8
+    });
     const nodeLengths = createTransientView(graph, `${id}-node-lengths`, 'uint32', targetCapacity);
     const nodeStarts = createTransientView(graph, `${id}-node-starts`, 'uint32', targetCapacity);
     nodes.push(
@@ -441,6 +495,47 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
         }).getCommandNodes(graph)
       );
     }
+    const activeTargetUpperBound =
+      typeof props.targetCount === 'number' ? props.targetCount : targetCapacity;
+    const requiresCheckedTotals =
+      activeTargetUpperBound * Math.min(nodeCount, maximumPathLength) > 0xffffffff;
+    if (requiresCheckedTotals) {
+      nodes.push(
+        createPathCheckTotalsNode(graph, {
+          id: `${id}-check-totals`,
+          starts: nodeStarts,
+          lengths: nodeLengths,
+          status
+        })
+      );
+      nodes.push(
+        createPathSuppressUnrepresentableNode(graph, {
+          id: `${id}-suppress-unrepresentable`,
+          starts: nodeStarts,
+          lengths: nodeLengths,
+          edgeStarts,
+          edgeLengths,
+          status,
+          pathFound: output.pathFound,
+          pathCosts: output.pathCosts
+        })
+      );
+    }
+    for (const view of [output.status.unrepresentable, edges?.output.status.unrepresentable])
+      if (view)
+        nodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-representability-${nodes.length}`,
+            operation: OPERATION,
+            variant: 'representability',
+            bindings: [
+              {name: 'status', view: status, type: 'u32', access: 'read'},
+              {name: 'output', view, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: 1,
+            body: 'output[outputOffset] = status[statusOffset + 2u];'
+          })
+        );
     nodes.push(
       createPathTotalsNode<Parameters>(graph, {
         id: `${id}-totals`,
@@ -483,6 +578,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
         operation: OPERATION,
         requiredCount: nodeTotal,
         output: output,
+        overflowSources: requiresCheckedTotals ? [unrepresentable] : [],
         candidateOverflowSources: output.status.candidateOverflow ? [status] : []
       })
     );
@@ -516,6 +612,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
             linkTails,
             linkHeads,
             costs: props.costs,
+            predecessorEdges: props.predecessorEdges,
             offsets: edges.topology.offsets,
             neighbors: edges.topology.neighbors,
             weights: edges.topology.weights,
@@ -539,6 +636,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
           operation: OPERATION,
           requiredCount: edgeTotal,
           output: edges.output,
+          overflowSources: requiresCheckedTotals ? [unrepresentable] : [],
           candidateOverflowSources: edges.output.status.candidateOverflow ? [status] : []
         })
       );
@@ -552,6 +650,7 @@ function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefi
   const {edges, output} = props;
   return [
     props.predecessors,
+    props.predecessorEdges,
     props.costs,
     props.targets,
     typeof props.targetCount === 'object' ? props.targetCount : undefined,
@@ -562,6 +661,7 @@ function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefi
     output.status.count,
     output.status.overflow,
     output.status.candidateOverflow,
+    output.status.unrepresentable,
     output.status.requiredCount,
     output.lineOffsets,
     output.pathCosts,
@@ -573,7 +673,15 @@ function getViews(props: GPUNetworkPathExtractionProps): (GraphDataView | undefi
     edges?.output.status.count,
     edges?.output.status.overflow,
     edges?.output.status.candidateOverflow,
+    edges?.output.status.unrepresentable,
     edges?.output.status.requiredCount,
     edges?.output.lineOffsets
   ];
 }
+
+export {decodeGPUNetworkPathExtractionOutput} from './network-path-readback';
+export type {
+  NetworkPathReadbackWords,
+  NetworkPathReadbackInput,
+  NetworkPathReadbackPath
+} from './network-path-readback';

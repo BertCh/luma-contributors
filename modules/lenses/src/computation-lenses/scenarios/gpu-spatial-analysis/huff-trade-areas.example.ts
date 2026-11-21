@@ -79,8 +79,8 @@ export async function runExample(
     length: 12,
     values: getGPUNeighborSearchParameterValues({
       bounds,
-      radius: 2500,
-      weightKind: 'inverseDistance',
+      searchRadius: 2500,
+      weightType: 'inverse-distance',
       power: 2,
       distanceFloor: 100
     })

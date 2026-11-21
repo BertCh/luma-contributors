@@ -206,7 +206,7 @@ it('prechecks later input/output chunks, status bindings and graph ownership bef
   for (const failure of ['input', 'output', 'status']) {
     const {device, graph, props} = createFixture([1, 3, 2], 'fixed');
     Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {
-      value: failure === 'input' ? 24 : 256
+      value: failure === 'input' ? 24 : failure === 'status' ? 128 : 256
     });
     if (failure === 'output') {
       const backing = createTransientView(graph, 'large-output', 'uint32', 128);
@@ -222,10 +222,16 @@ it('prechecks later input/output chunks, status bindings and graph ownership bef
         output.data[2]
       ]);
     }
-    if (failure === 'status')
+    if (failure === 'status') {
+      const backing = createTransientView(graph, 'large-status', 'uint32', 128);
       props.output.status = {
-        invalidCount: createTransientView(graph, 'large-status', 'uint32', 65)
+        invalidCount: graph.createDataView(backing.buffer, {
+          format: 'uint32',
+          byteOffset: 252,
+          length: 1
+        })
       };
+    }
     const contributor = new GPUPeriodIndex(props);
     const allocate = vi.spyOn(graph, 'createTransientBuffer');
     const createView = vi.spyOn(graph, 'createDataView');

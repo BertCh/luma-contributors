@@ -72,7 +72,7 @@ const FIELDS: Record<GPUGroupStatistic, (keyof GPUGroupStatisticsColumnOutput)[]
   skewness: ['skewness'],
   kurtosis: ['kurtosis'],
   median: ['medians'],
-  percentiles: ['percentiles'],
+  percentiles: ['quantiles'],
   mode: ['modes'],
   uniqueCount: ['uniqueCounts'],
   zScore: ['zScores']
@@ -264,11 +264,7 @@ async function createRun(harness: Harness, scene: Scene, chunking?: InputChunkin
     for (const statistic of column.statistics) {
       for (const field of FIELDS[statistic]) {
         const length =
-          field === 'zScores'
-            ? rows
-            : field === 'percentiles'
-              ? capacity * fractionCount
-              : capacity;
+          field === 'zScores' ? rows : field === 'quantiles' ? capacity * fractionCount : capacity;
         const format =
           field === 'sums'
             ? 'uint32x2'
@@ -317,7 +313,7 @@ async function createRun(harness: Harness, scene: Scene, chunking?: InputChunkin
     columns,
     variance: scene.variance,
     keyCount: scene.keyCount,
-    percentiles: parameters?.importToGraph(graph),
+    probabilities: parameters?.importToGraph(graph),
     sumScale: SUM_SCALE,
     output: {
       keys: importGraphBuffer(graph, 'out-keys', outputBuffers.keys, keyFormat, capacity) as never,
@@ -553,10 +549,10 @@ function expectMatchesOracle(
       if (out.uniqueCounts) {
         expect(out.uniqueCounts[group], `${where} unique`).toBe(stats?.uniqueCount ?? 0);
       }
-      if (out.percentiles) {
+      if (out.quantiles) {
         for (let fraction = 0; fraction < fractionCount; fraction++) {
           expectExactFloat(
-            out.percentiles[group * fractionCount + fraction],
+            out.quantiles[group * fractionCount + fraction],
             stats?.percentiles[fraction] ?? NaN,
             `${where} percentile ${scene.fractions[fraction]}`
           );
@@ -788,7 +784,7 @@ it('GPUGroupStatistics percentile fractions, values and masks change without a r
   const second = await run.run();
   expectMatchesOracle(second, rewritten, 'fractions B');
   expect(run.compiled).toBe(compiled);
-  expect(second.columns[0].percentiles).not.toEqual(first.columns[0].percentiles);
+  expect(second.columns[0].quantiles).not.toEqual(first.columns[0].quantiles);
   // Out-of-range and non-finite fractions give NaN (the shared order-statistic policy).
   const odd = {...scene, fractions: [-3, 7, NaN]};
   run.parameters!.write(Float32Array.from(odd.fractions));
@@ -906,6 +902,49 @@ it('GPUGroupStatistics treats a large constant group as zero variance despite me
   expect(actual.columns[0].zScores!.slice(0, 5000).every(z => z === 0)).toBe(true);
   run.destroy();
   harness.destroy();
+});
+
+// DPC-109. Four float32 values of 1e38 sum past the float32 maximum (3.4028235e38), and the
+// mean used to be the infinite rounded sum divided by 4. The mean of equal values is the value:
+// Math.fround(1e38) = 9.999999680285692e37.
+it('GPUGroupStatistics keeps a finite mean when the group sum is past the float32 range', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const large = Math.fround(1e38);
+  const scene: Scene = {
+    keyBits: 32,
+    keys: [5n, 5n, 5n, 5n, 6n, 6n],
+    columns: [
+      {
+        // The control group must keep its bits in the column's fixed-point unit, which follows
+        // the largest value: 2^35 here (biased exponent 253 - 127 + 1 + 3 headroom bits - 95),
+        // so 1 and 3 would quantize to 0. 2^120 and 3 * 2^120 are exact multiples of it.
+        values: Float32Array.from([large, large, large, large, 2 ** 120, 3 * 2 ** 120]),
+        statistics: ['sum', 'mean', 'variance', 'zScore']
+      }
+    ],
+    fractions: [],
+    capacity: 4
+  };
+  const run = await createRun(harness, scene);
+  try {
+    const actual = await run.run();
+    const column = actual.columns[0];
+    const group = actual.keys.indexOf(5n);
+    const smallGroup = actual.keys.indexOf(6n);
+    expect(column.sumValues![group]).toBe(Number.POSITIVE_INFINITY);
+    expect(Number.isFinite(column.means![group]), `mean ${column.means![group]}`).toBe(true);
+    expect(column.means![group]).toBe(9.999999680285692e37);
+    expect(column.variances![group]).toBe(0);
+    expect(column.zScores!.slice(0, 4)).toEqual([0, 0, 0, 0]);
+    // The ordinary finite path is unchanged: (2^120 + 3 * 2^120) / 2 = 2^121 exactly.
+    expect(column.sumValues![smallGroup]).toBe(2 ** 122);
+    expect(column.means![smallGroup]).toBe(2 ** 121);
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
 });
 
 it('GPUGroupStatistics sums, means and z-scores of small-magnitude columns are right to float32', async () => {
@@ -1174,7 +1213,7 @@ it('GPUGroupStatistics percentiles follow the shared order-statistic edge policy
   });
   try {
     const actual = await run.run();
-    const percentiles = actual.columns[0].percentiles!;
+    const percentiles = actual.columns[0].quantiles!;
     for (const [index, row] of ORDER_STATISTIC_EDGE_POLICY.entries()) {
       const fraction = fractions.findIndex(value => Object.is(value, row.probability));
       const value = percentiles[index * fractions.length + fraction];
@@ -1824,7 +1863,7 @@ it('GPUGroupStatistics keeps non-finite percentile fractions in runtime data and
     expectMatchesOracle(actual, scene, 'non-finite runtime fractions');
     expect(actual.counts).toEqual([4]);
     expect(actual.columns[0].means).toEqual([2]);
-    expect(actual.columns[0].percentiles).toEqual([-1, 2, 5, NaN, NaN, NaN]);
+    expect(actual.columns[0].quantiles).toEqual([-1, 2, 5, NaN, NaN, NaN]);
   } finally {
     run.destroy();
     harness.destroy();

@@ -14,6 +14,7 @@ import {
 
 function getInput() {
   return {
+    storage: 'resident-capacity' as const,
     positions: new Float32Array([0, 0, 2, 0, 0, 0, 8, 0, 8, 0, 20, 0, 99, 0]),
     timestamps: new Float32Array([0, 2, 4, 100, 103, 200, 999]),
     trackOffsets: new Uint32Array([0, 3, 3, 5, 6]),
@@ -23,6 +24,7 @@ function getInput() {
 
 it('clamps terminal offsets for a two-fix stationary track', () => {
   const result = computeTrajectoryRecursionsOnCPU({
+    storage: 'resident-capacity',
     positions: new Float32Array(4),
     timestamps: new Float32Array([0, 1]),
     trackOffsets: new Uint32Array([0, 3]),
@@ -35,7 +37,7 @@ it('clamps terminal offsets for a two-fix stationary track', () => {
   expect(Array.from(result.candidateOverflow)).toEqual([0]);
 });
 
-it('accepts empty trajectories in the pure function and retains the graph minimum of one fix', () => {
+it('executes empty trajectories in the pure function and CPU named form', async () => {
   const result = computeTrajectoryRecursionsOnCPU({
     positions: new Float32Array(),
     timestamps: new Float32Array(),
@@ -47,18 +49,39 @@ it('accepts empty trajectories in the pure function and retains the graph minimu
   expect(result.firstPassageTimes.length).toBe(0);
   expect(result.firstPassageCensored.length).toBe(0);
   expect(Array.from(result.candidateOverflow)).toEqual([0]);
-  expect(
-    () =>
-      new CPUTrajectoryRecursionsOperation({
-        positions: 'positions',
-        timestamps: 'timestamps',
-        trackOffsets: 'trackOffsets',
-        radii: 'radii',
-        rowCount: 0,
-        radiusCount: 1,
-        output: {revisits: 'revisits'}
-      })
-  ).toThrow(/length|rowCount/);
+  const operation = new CPUTrajectoryRecursionsOperation({
+    positions: 'positions',
+    timestamps: 'timestamps',
+    trackOffsets: 'trackOffsets',
+    radii: 'radii',
+    rowCount: 0,
+    radiusCount: 1,
+    output: {
+      revisits: 'revisits',
+      residenceTimes: 'residence',
+      firstPassageTimes: 'passage',
+      firstPassageCensored: 'censored',
+      status: {candidateOverflow: 'loss'}
+    }
+  });
+  const column = (
+    format: 'float32' | 'float32x2' | 'uint32',
+    values: Float32Array | Uint32Array
+  ) => {
+    const length = values.length / (format === 'float32x2' ? 2 : 1);
+    return {format, length, chunks: [{values, length}], pack: () => values};
+  };
+  const outputs = await operation.execute({
+    inputs: {
+      positions: column('float32x2', new Float32Array()),
+      timestamps: column('float32', new Float32Array()),
+      trackOffsets: column('uint32', Uint32Array.of(0, 0)),
+      radii: column('float32', Float32Array.of(1))
+    }
+  });
+  for (const port of ['revisits', 'residence', 'passage', 'censored'])
+    expect(Array.from(outputs[port] as Float32Array | Uint32Array)).toEqual([]);
+  expect(Array.from(outputs['loss'] as Uint32Array)).toEqual([0]);
 });
 
 it('accepts empty radii only in the pure function', () => {
@@ -182,7 +205,7 @@ it('validates array consistency and both operation output shapes at construction
     output: {revisits: 'revisits'}
   };
   for (const Operation of [GPUTrajectoryRecursionsOperation, CPUTrajectoryRecursionsOperation]) {
-    expect(() => new Operation({...props, rowCount: 0})).toThrow(/^recursion-test .*length/);
+    expect(() => new Operation({...props, rowCount: -1})).toThrow(/^recursion-test .*rowCount/);
     expect(() => new Operation({...props, output: {revisits: 'positions'}})).toThrow(
       /^recursion-test /
     );
@@ -199,4 +222,20 @@ it('validates array consistency and both operation output shapes at construction
         maximumTrackSegments: 100000
       })
   ).not.toThrow();
+});
+
+it('rejects clamping and unowned tails under explicit compact storage', () => {
+  const input = getInput();
+  expect(() => computeTrajectoryRecursionsOnCPU({...input, storage: 'compact'})).toThrow(
+    /terminal offset/
+  );
+  expect(() =>
+    computeTrajectoryRecursionsOnCPU({
+      storage: 'compact',
+      positions: new Float32Array(4),
+      timestamps: Float32Array.of(0, 1),
+      trackOffsets: Uint32Array.of(0, 3),
+      radii: Float32Array.of(1)
+    })
+  ).toThrow(/trackOffsets/);
 });

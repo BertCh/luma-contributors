@@ -5,7 +5,8 @@
 ```ts
 import {
   getGPUSpaceTimeHawkesParameterValues,
-  GPUSpaceTimeHawkes
+  GPUSpaceTimeHawkes,
+  GPUSpaceTimeHawkesOperation
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 ```
 
@@ -27,7 +28,7 @@ lambda(s, t) = mu + sum over earlier events i of
 | `beta` (`decayRate`) | Rate of the exponential time kernel; mean lag `1 / beta` | per time unit |
 | `sigma` (`spatialStandardDeviation`) | Standard deviation of the isotropic Gaussian offspring displacement | position units |
 
-Each iteration is one E-step and one M-step. The E-step gives every event `j` the probability `p_jj = mu / lambda_j` that it is background and `p_ij` that earlier event `i` triggered it. The M-step sets `mu = sum_j p_jj / (A T)`, `omega = sum_j (1 - p_jj) / sum_i (1 - exp(-beta (T - t_i)))`, `beta = sum p_ij / sum p_ij lag_ij` and `sigma^2 = sum p_ij d_ij^2 / (2 sum p_ij)`, with `A` the window area and `T` the duration. The sum over `i` in `omega` accounts for offspring that would fall after the end of the window.
+Each iteration is one E-step and one finite-window M-step. The E-step gives every event `j` the probability `p_jj = mu / lambda_j` that it is background and `p_ij` that earlier event `i` triggered it. Write `S = sum p_ij`, `L = sum p_ij lag_ij` and `M(beta) = sum_i -expm1(-beta (T-t_i))`. The M-step sets `mu = sum_j p_jj / (A T)` and `sigma^2 = sum p_ij d_ij^2 / (2 S)`. It maximizes `Q(beta) = S log(beta) - beta L - S log(M(beta))`, refitting `omega = S/M(beta)` at each candidate decay. This includes the finite-window compensator derivative omitted by the uncorrected `S/L` decay update. The branching-ratio floor is retained. The profile score `S E[u] - L/T` decreases strictly in `beta`, so its root, bracketed by `beta*T` in `[1e-6, S T/L]`, is the unique maximizer. Newton steps start at the entering decay and fall back to bisection outside the bracket. The GPU makes eight refinements with tiled window integrals; the CPU twin makes up to 64. Both publish the last evaluated iterate. Both then evaluate the actual catalogue likelihood at the updated fit, and restore the entering fit when it is lower by more than `2^-16` times the summed magnitudes of the log intensities, the compensator and the entering likelihood (the float32 rounding allowance). That iteration then counts toward the budget without changing the fit. A fitted `beta*T = 1e-6` represents the zero-decay boundary, where `omega` can be large while `omega*beta` remains finite.
 
 What is not modelled, and what that costs:
 
@@ -43,10 +44,30 @@ On GPU, squared initialSpatialStandardDeviation must be finite normal float32 an
 The CPU reference retains its wider variance domain.
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUSpaceTimeHawkes, getGPUSpaceTimeHawkesParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const graph: GPUCommandGraph;
+declare const positions: GraphDataView<'float32x2'>;
+declare const times: GraphDataView<'float32'>;
+declare const parameterBuffer: GPUParameterBuffer<'float32'>; // allocated with length: 9
+const parameters = parameterBuffer.importToGraph(graph);
+declare const estimates: GraphDataView<'float32'>;
+declare const logLikelihood: GraphDataView<'float32'>;
+declare const fittedLogLikelihood: GraphDataView<'float32'>;
+declare const backgroundProbability: GraphDataView<'float32'>;
+declare const converged: GraphDataView<'uint32'>;
+declare const iterationLimitReached: GraphDataView<'uint32'>;
+declare const iterationCount: GraphDataView<'uint32'>;
+declare const candidateOverflow: GraphDataView<'uint32'>;
+declare const invalidCount: GraphDataView<'uint32'>;
+declare const approximation: GraphDataView<'uint32'>;
+
 const hawkes = new GPUSpaceTimeHawkes({
   positions,        // GraphDataView<'float32x2'>
   times,            // GraphDataView<'float32'>, relative to the start of the window
-  parameters,       // GraphDataView<'float32'> from getGPUSpaceTimeHawkesParameterValues
+  parameters,       // graph view of the application-owned parameter buffer
   maximumIterations: 100,
   maximumParents: 256,
   output: {
@@ -59,7 +80,8 @@ const hawkes = new GPUSpaceTimeHawkes({
 });
 graph.add(hawkes);
 
-getGPUSpaceTimeHawkesParameterValues({
+// Initialize before the first encoding; repeat this owner write to update the same graph.
+parameterBuffer.write(getGPUSpaceTimeHawkesParameterValues({
   windowArea: 1,
   windowDuration: 400,
   maximumLag: 5,
@@ -68,7 +90,7 @@ getGPUSpaceTimeHawkesParameterValues({
   initialBranchingRatio: 0.3,
   initialDecayRate: 1,
   initialSpatialStandardDeviation: 0.05
-});
+}));
 ```
 
 Per-frame (no recompile): the contents of `parameters` (window area and duration, `maximumLag`, `maximumDistance`, `tolerance`, the four starting values) and of `positions` and `times`. Compile-time (a new graph): the event count, `maximumIterations`, `maximumParents`, and which optional outputs exist. Extra props: `id`, `spatialContext` (planar/native only) and `temporalContext` (`float32-relative`, checked and exposed, nothing converted).
@@ -92,7 +114,7 @@ so a finite three-factor result survives intermediate overflow from changing are
 The Kepler fit summary pairs estimates with `fittedLogLikelihood`; the optional entering-iterate
 `logLikelihood` remains a separate contributor diagnostic.
 
-Limits (named constants, checked with named messages): `maximumIterations` from 1 to `GPU_SPACE_TIME_HAWKES_MAXIMUM_ITERATIONS` (1000); `maximumParents` from 1 to `GPU_SPACE_TIME_HAWKES_MAXIMUM_PARENTS` (4096; defaults `GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS` 100 and `GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_PARENTS` 256); events from 2 to 2^24, the exact float32 integer range of the counts, and at most 8,388,608 for the 16-byte event table in a default 128 MiB binding. `estimatedCommandNodeCount` is an upper bound of the command nodes: six fixed nodes, an allowance of 64 for the published sort, and three nodes per iteration.
+GPU limits (named constants, checked with named messages): `maximumIterations` from 1 to `GPU_SPACE_TIME_HAWKES_MAXIMUM_ITERATIONS` (1000), default `GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS` (100); `maximumParents` per event from 1 to `GPU_SPACE_TIME_HAWKES_MAXIMUM_PARENTS` (4096), default `GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_PARENTS` (256). Total events range from 2 to 2^24, the exact float32 integer range of the counts, and at most 8,388,608 for the 16-byte event table in a default 128 MiB binding. `estimatedCommandNodeCount` is an upper bound of the command nodes: six fixed nodes, an allowance of 64 for the published sort, and at most 32 nodes per iteration, plus two for fitted-likelihood publication and one when the resolved budget output is bound.
 
 {/* lens:GPUSpaceTimeHawkes */}
 
@@ -103,6 +125,8 @@ Limits (named constants, checked with named messages): `maximumIterations` from 
 {/* parameters: GPUSpaceTimeHawkes generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUSpaceTimeHawkes` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUSpaceTimeHawkes`.
 
 - Packer: `getGPUSpaceTimeHawkesParameterValues(settings)`, writes `GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH` (9) `float32` values.
 
@@ -122,20 +146,59 @@ Settings of `getGPUSpaceTimeHawkesParameterValues`:
 
 {/* /parameters */}
 
+## Operation form
+
+`GPUSpaceTimeHawkesOperation` accepts graph-value names for `positions`, `times`, `parameters`
+and each requested output, plus `rowCount` and the contributor's construction options. Compile it
+with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. `CPUSpaceTimeHawkesOperation` uses the same port
+names and publishes the same two likelihood diagnostics. GPU and CPU share a default of 100 iterations;
+CPU honors an explicit longer budget without the GPU unrolling cap. Both operation forms accept
+`output.status.maximumIterations` (one uint32 word) beside `iterationCount` to report the resolved budget;
+the standalone CPU result always includes `maximumIterations`. Callers needing the former CPU reference
+budget should pass `{maximumIterations: 1000}`. `maximumParents`
+bounds only GPU enumeration; CPU examines all eligible parents.
+
+```ts
+import {GPUSpaceTimeHawkesOperation} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+const operation = new GPUSpaceTimeHawkesOperation({
+  id: 'hawkes-fit',
+  rowCount: 2,
+  positions: 'eventPositions',
+  times: 'eventTimes',
+  parameters: 'hawkesParameters',
+  maximumIterations: 1,
+  output: {
+    estimates: 'fit',
+    logLikelihood: 'enteringLikelihood',
+    fittedLogLikelihood: 'fittedLikelihood',
+    status: {iterationCount: 'iterations', candidateOverflow: 'parentOverflow'}
+  }
+});
+```
+
+The independent two-event density fixture uses events `(0,0,0)` and `(1,0,1)` with
+`A=1`, `T=2`, `mu=1`, `omega=0.5`, `beta=sigma=1`. The second intensity is
+`1 + exp(-1.5)/(4*pi)` and the integrated offspring mass is
+`0.5 * (2-exp(-2)-exp(-1))`. It checks both the entering and fitted likelihoods through
+contributor and operation forms.
+
 ## How it runs
 
 1. Events are stably sorted by time (a radix sort of the order-preserving float key) into a table of position and time; excluded rows get a NaN time and sort last.
 2. For each event one thread binary-searches the first earlier event inside the lag bound and walks the candidates up to `maximumParents` back, the ordered pair enumeration of a time-sorted list used by the Knox tests. Pairs outside the distance bound or with a non-positive lag are skipped.
 3. The intensity is accumulated in the log domain in one pass with a running maximum (log-sum-exp), together with the lag- and distance-weighted sums, so no division by a tiny `lambda` occurs.
 4. Event statistics are summed in tiles of consecutive events in float32 and the tile partials by a fixed pairwise (cascade) sum, so results are bitwise repeatable on a device.
-5. `maximumIterations` iterations are unrolled. A one-thread node tests convergence and disarms a GPU dispatch gate, after which the remaining iterations launch nothing.
+5. `maximumIterations` iterations are unrolled. Each update profiles decay with eight tiled window-integral passes and refits the branching ratio. A second event pass checks the actual likelihood before acceptance. A scalar node tests convergence and disarms the E-step dispatch gate; remaining control nodes return without changing the fit.
 6. When `fittedLogLikelihood` is requested, two final reduction nodes evaluate the log intensities and temporal mass at the published estimates. This same event evaluation writes `backgroundProbability` when requested, replacing its separate evaluation. The command-node estimate adds an allowance of two nodes. The operation form and CPU twin accept the same optional fitted-likelihood output.
 
-Cost per iteration is `events * min(maximumParents, candidates in the lag bound)` exp evaluations. No benchmark has been run on a GPU for this item.
+Cost per iteration includes two `events * min(maximumParents, candidates in the lag bound)` parent walks and eight tiled window-integral passes. No benchmark has been run on a GPU for this item.
 
 ## Single precision: what was measured
 
-The single-precision techniques come from Ko, Suchard and Holbrook (2024), who report a float32 kernel that runs reliably at one million events with log-sum-exp and a floor on tiny sums. They were measured here with [stm08-hawkes-float32.mjs](../../../dev-docs/research/spatiotemporal-review-2026-11-09/experiments/stm08-hawkes-float32.mjs), a CPU emulation of binary32 (`Math.fround` after every operation, denormals flushed) on a simulated catalogue of 987,262 events (unit square, `mu` 2, `omega` 0.5, `beta` 2, `sigma` 0.01, six EM iterations), against binary64 arithmetic on the same float32-rounded inputs:
+The following measurements predate the finite-window decay optimizer. They characterize the E-step arithmetic. The revised optimizer was checked on the device against the binary64 reference (see Validation).
+
+The single-precision techniques come from Ko, Suchard and Holbrook (2024), who report a float32 kernel that runs reliably at one million events with log-sum-exp and a floor on tiny sums. They were measured here with [stm08-hawkes-float32.mjs](https://github.com/visgl/luma-contributors/blob/master/dev-docs/research/spatiotemporal-review-2026-11-09/experiments/stm08-hawkes-float32.mjs), a CPU emulation of binary32 (`Math.fround` after every operation, denormals flushed) on a simulated catalogue of 987,262 events (unit square, `mu` 2, `omega` 0.5, `beta` 2, `sigma` 0.01, six EM iterations), against binary64 arithmetic on the same float32-rounded inputs:
 
 | Technique | Measured effect |
 | --- | --- |
@@ -148,6 +211,7 @@ The dominant error at one million events is not the arithmetic but the float32 t
 
 ## Validation
 
-- **Reference.** A binary64 EM written from the definition above (`stm08-hawkes-reference.ts`), checked against a hand calculation of a three-event catalogue. The GPU matches it to 7e-7 relative in the estimates after 1 to 3 iterations and 4e-7 in the log-likelihood; at convergence the stopping iteration can differ by one and the estimates differ by up to 4e-5 (specs allow 1e-5 and 3e-4).
+- **Finite-window oracle.** SciPy score equations independently pin the eight-event fit; direct dense likelihood evaluation pins the four-event square's entering likelihood (about -10.594463), first-step increase, and boundary optimum (about -7.975385). The ordinary CPU budget is tested against explicit 100, and longer reference fits explicitly request 1000. Generated square-update kernels also pass host interpreter evaluation. On the test GPU (Apple Metal, headless Chromium), the four-event square increases its likelihood on the first step and converges to the boundary optimum with a finite-difference score below 0.003. An omitted budget and an explicit 100 also give identical eight-event fits and the resolved budget 100.
+- **Reference.** A binary64 EM written from the definition above (`stm08-hawkes-reference.ts`), checked against an independent three-event finite-window score root. With the revised optimizer, the GPU stays within the specs' 1e-5 relative of it after 1, 3 and 5 iterations, and within 3e-4 at convergence, where the stopping iteration can differ by one.
 - **External oracle: pending.** The ETAS R package (0.7.2, GPL) is the oracle named for this item. R is not installed where this was built, ETAS fits a magnitude-dependent model this operator does not have, and no ETAS fixture has been generated. Nothing here claims agreement with ETAS.
-- **Recovery on simulated data with known parameters.** Catalogues of about 1,500 events are simulated from `mu` 2, `omega` 0.5, `beta` 2, `sigma` 0.02 on a unit square over 400 time units. The sampling distribution of the estimator is measured by fitting 24 independent simulations in binary64: standard deviations of 0.059 (`mu`), 0.016 (`omega`), 0.106 (`beta`) and 0.00037 (`sigma`), and means 2.018, 0.486, 2.028 and 0.0197, the 3 percent shortfall of `omega` being the unmodelled spatial edge. A GPU fit must lie within the absolute bias plus four standard deviations of the truth, a two-sided normal probability of about 6e-5 per parameter; three fits pass. Negative controls: a catalogue simulated with `omega` 0 returns `omega` below 0.1, and the generating background and triggered labels are separated by the background probability (mean 0.85 or more for background events, 0.25 or less for triggered events).
+- **Recovery on simulated data with known parameters (historical measurements).** Catalogues of about 1,500 events are simulated from `mu` 2, `omega` 0.5, `beta` 2, `sigma` 0.02 on a unit square over 400 time units. Before the finite-window decay correction, 24 independent binary64 fits gave standard deviations of 0.059 (`mu`), 0.016 (`omega`), 0.106 (`beta`) and 0.00037 (`sigma`), and means 2.018, 0.486, 2.028 and 0.0197. The spatial edge remains unmodelled. The recovery specs recompute the reference distribution with the revised estimator; on the test GPU, the three recovery fits and the negative controls (`omega` below 0.1 for a catalogue simulated with `omega` 0, and separation of background and triggered labels) pass.

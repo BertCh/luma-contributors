@@ -11,6 +11,14 @@ export const GPU_SPACE_TIME_HAWKES_ESTIMATE_LENGTH = 4;
 /** Default relative parameter change below which the EM iteration stops. */
 export const GPU_SPACE_TIME_HAWKES_DEFAULT_TOLERANCE = 1e-4;
 
+/** Shared ordinary CPU/GPU iteration budget; longer CPU reference budgets remain explicit. */
+export const SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS = 100;
+
+/** Resolve the ordinary iteration budget identically in both execution forms. @internal */
+export function resolveSpaceTimeHawkesMaximumIterations(maximumIterations?: number): number {
+  return maximumIterations ?? SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS;
+}
+
 /** Per-frame settings of {@link GPUSpaceTimeHawkes}. */
 export type GPUSpaceTimeHawkesSettings = {
   /** Area of the observation window, in squared position units. Positive and finite. */

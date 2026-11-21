@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {getTrajectoryVotePositionWGSL} from './geographic-vote';
 import {
   validateTrajectoryBindings,
   validateTrajectoryWritableDispatches,
@@ -27,6 +29,7 @@ import type {
   GPUTrajectoryGeometryFields
 } from '../../analysis-core/contracts/index';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
+import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
   validateCompactOutput,
@@ -142,23 +145,28 @@ export function getGPUTrajectoryStaypointsParameterValues(
  * whose `ids` hold the track of each staypoint, ordered by track and then time. Rows at and after
  * `count` are rewritten: `0xffffffff` for IDs and rows, `0` for floats.
  *
- * `status.candidateOverflow` is 1 when a chain anchor's forward search hit `maximumSearchRows`
- * before deciding: the window is then cut at that row, so a longer stay reports as consecutive
- * staypoints. Raise `maximumSearchRows`.
+ * The required one-row uint32 `output.status.candidateOverflow` is 1 when a chain anchor hits
+ * `maximumSearchRows` before deciding. The window is cut at that row, so longer stays report as consecutive
+ * staypoints. Every staypoint of such a track then has NaN `durations` and `centroids`.
+ * `maximumSearchRows` defaults to 4096 and accepts at most 16,777,216.
  */
 export type GPUTrajectoryStaypointsOutput = GPUCompactOutput & {
-  status: GPUCompactOutput['status'] & GPUCandidateStatusPort;
+  status: GPUCompactOutput['status'] &
+    Required<GPUCandidateStatusPort> & {
+      /** Number of masked or nonfinite position rows, independent of capacity loss. */
+      missingFixCount?: GraphDataView<'uint32'>;
+    };
   /** Optional one-row scalar receiving the clamped count again, for an indirect draw record. */
   drawInstanceCount?: GraphDataView<'uint32'>;
   /** Optional first row of each staypoint (`started_at`). */
   startRows?: GraphDataView<'uint32'>;
   /** Optional row after the last row of the staypoint (exclusive); the rows `[start, end)` are its fixes. */
   endRows?: GraphDataView<'uint32'>;
-  /** Optional row whose time is `finished_at`: `endRows` before a break, the last row at a track end. */
+  /** Optional finished-at row: the spatial breaking fix, or the last observed fix before a missing fix or track end. */
   finishRows?: GraphDataView<'uint32'>;
-  /** Optional centroid of the staypoint's distinct coordinates (trackintel `union_all`). */
+  /** Optional centroid of distinct coordinates; great-circle voting identifies wrapped longitudes and ignores longitude at exact poles. NaN on a track whose search hit `maximumSearchRows`. */
   centroids?: GraphDataView<'float32x2'>;
-  /** Optional `finished_at - started_at` in the timestamps' unit. */
+  /** Optional `finished_at - started_at` in the timestamps' unit; NaN on a track whose search hit `maximumSearchRows`. */
   durations?: GraphDataView<'float32'>;
   /** Optional per-row staypoint index (`staypoint_id`), `positions.length` rows; other rows are `0xffffffff`. */
   staypointIds?: GraphDataView<'uint32'>;
@@ -178,6 +186,10 @@ export type GPUTrajectoryStaypointsProps = GPUTrajectoryGeometryFields & {
   parameters: GraphDataView<'float32'>;
   /** Forward-search cap per anchor in rows (default 4096, at most 16,777,216). */
   maximumSearchRows?: number;
+  /** Nonzero means observed; zero and nonfinite positions break the observed run. */
+  mask?: GraphDataView<'uint32'>;
+  /** Missing fixes end dwell at the previous observed timestamp. Defaults to break. */
+  missingFixPolicy?: 'break';
   /** Caller-owned staypoint table. `ids.length` is the capacity. */
   output: GPUTrajectoryStaypointsOutput;
 };
@@ -190,7 +202,9 @@ export type GPUTrajectoryStaypointsProps = GPUTrajectoryGeometryFields & {
  * the anchor at the fix after the gap and emits nothing; a fix at `distanceThreshold` or farther
  * from the anchor closes the window, emits a staypoint when `timeThreshold` has elapsed since the
  * anchor (`finished_at` is the breaking fix, its geometry and rows exclude it) and restarts the
- * anchor at the breaking fix either way. With `includeLast` the window open at the end of a track
+ * anchor at the breaking fix either way. A masked or nonfinite fix ends the observed run at
+ * its previous observation, and restarts at the next observed fix; missingFixCount counts these
+ * rows independently of capacity loss. With `includeLast` the window open at the end of a track
  * becomes a staypoint when long enough, its geometry and rows then including the last fix.
  *
  * Because that decision depends only on the fixes after an anchor, every row searches forward
@@ -198,6 +212,8 @@ export type GPUTrajectoryStaypointsProps = GPUTrajectoryGeometryFields & {
  * successor row. Pointer doubling then marks the rows reachable from each track's first row in
  * `ceil(log2(rowCount))` fixed passes, which reproduces the sequential chain exactly. Those two
  * steps are the whole serial part of the algorithm; the rest is compaction and gathers.
+ * Supply a one-row uint32 `output.status.candidateOverflow` to detect searches cut at
+ * `maximumSearchRows` (default 4096, at most 16,777,216 rows ahead per anchor).
  *
  * Time comparisons use exact word differences for Int64 words (exact below 2^24 ticks).
  *
@@ -215,8 +231,79 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
   readonly maximumSearchRows: number;
 
   constructor(props: GPUTrajectoryStaypointsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'temporalContext',
+      'positions',
+      'timestamps',
+      'trackOffsets',
+      'parameters',
+      'maximumSearchRows',
+      'mask',
+      'missingFixPolicy',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(props.output, [
+      'ids',
+      'status',
+      'drawInstanceCount',
+      'startRows',
+      'endRows',
+      'finishRows',
+      'centroids',
+      'durations',
+      'staypointIds'
+    ]);
+    props = {
+      ...props,
+      output: {
+        ...capturedOutput,
+        status: snapshotConstructionFields(
+          capturedOutput.status ?? ({} as typeof capturedOutput.status),
+          ['count', 'overflow', 'requiredCount', 'candidateOverflow', 'missingFixCount']
+        )
+      }
+    };
     this.id = props.id ?? 'trajectory-staypoints';
     this.props = props;
+    validateRequirement(
+      this.id,
+      Boolean(props.output.status?.candidateOverflow),
+      'output.status.candidateOverflow is required; pass a one-row uint32 view'
+    );
+    validateSinglePackedView(
+      props.output.status.candidateOverflow,
+      ['uint32'],
+      `${this.id} output.status.candidateOverflow`
+    );
+    validateRequirement(
+      this.id,
+      props.output.status.candidateOverflow.length === 1,
+      `output.status.candidateOverflow must contain one uint32 row, received ${props.output.status.candidateOverflow.length} rows`
+    );
+    validateRequirement(
+      this.id,
+      props.missingFixPolicy === undefined || props.missingFixPolicy === 'break',
+      'missingFixPolicy must be break'
+    );
+    if (props.mask) {
+      validateSinglePackedView(props.mask, ['uint32'], `${this.id} mask`);
+      validateViewLength(this.id, 'mask', props.mask, props.positions.length);
+    }
+    if (props.output.status.missingFixCount) {
+      validateSinglePackedView(
+        props.output.status.missingFixCount,
+        ['uint32'],
+        `${this.id} output.status.missingFixCount`
+      );
+      validateViewLength(
+        this.id,
+        'output.status.missingFixCount',
+        props.output.status.missingFixCount,
+        1
+      );
+    }
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(
       id,
@@ -231,8 +318,8 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
     validateViewLength(id, 'timestamps', timestamps, positions.length);
     validateRequirement(
       id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
@@ -271,6 +358,7 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
     validateTrajectoryWritableDispatches(this.id, [
       {ids: output.ids, startRows: output.startRows},
       {endRows: output.endRows, finishRows: output.finishRows},
+      {durations: output.durations, centroids: output.centroids},
       {candidateOverflow: output.status.candidateOverflow},
       {
         count: output.status.count,
@@ -294,7 +382,7 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
 
   private getInputViews(): (GraphDataView | undefined)[] {
     const {positions, timestamps, trackOffsets, parameters} = this.props;
-    return [positions, timestamps, trackOffsets, parameters];
+    return [positions, timestamps, trackOffsets, parameters, this.props.mask];
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
@@ -305,6 +393,7 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
       output.status.overflow,
       output.status.requiredCount,
       output.status.candidateOverflow,
+      output.status.missingFixCount,
       output.drawInstanceCount,
       output.startRows,
       output.endRows,
@@ -364,13 +453,19 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
         invocationCount: rowCount,
         bindings: [
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
+          ...(props.mask
+            ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
+            : []),
           ...timeBindings,
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
           {name: 'rowEnds', view: rowEnds, type: 'u32', access: 'read'},
           {name: 'next', view: next, type: 'u32', access: 'read_write'},
           {name: 'flags', view: flags, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${getTrajectoryTimeSource(timeMode)}\n${getMovementDistanceWGSL(radius)}`,
+        declarations: `${getTrajectoryTimeSource(timeMode)}\n${getMovementDistanceWGSL(radius)}
+fn isObserved(row: u32) -> bool {
+  return ${props.mask ? 'mask[maskOffset + row] != 0u &&' : ''} (bitcast<u32>(positions[positionsOffset + 2u * row]) & 0x7f800000u) != 0x7f800000u && (bitcast<u32>(positions[positionsOffset + 2u * row + 1u]) & 0x7f800000u) != 0x7f800000u;
+}`,
         body: `let distanceThreshold = parameters[parametersOffset];
   let timeThreshold = parameters[parametersOffset + 1u];
   let maximumGap = parameters[parametersOffset + 2u];
@@ -380,8 +475,16 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
   var state = 0u;
   if (trackEnd != ${MOVEMENT_SENTINEL_WGSL}) {
     let searchEnd = min(trackEnd, index + 1u + ${this.maximumSearchRows}u);
-    var decided = false;
+    var decided = !isObserved(index);
+    if (decided) { successor = min(index + 1u, trackEnd - 1u); }
+    if (!decided) {
     for (var row = index + 1u; row < searchEnd; row++) {
+      if (!isObserved(row)) {
+        successor = row;
+        if (timeDifferenceRows(row - 1u, index) >= timeThreshold) { state = 9u; }
+        decided = true;
+        break;
+      }
       if (maximumGap > 0.0 && timeDifferenceRows(row, row - 1u) > maximumGap) {
         successor = row;
         decided = true;
@@ -393,6 +496,7 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
         decided = true;
         break;
       }
+    }
     }
     if (!decided) {
       if (searchEnd == trackEnd) {
@@ -427,6 +531,36 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
         body: `stayFlags[stayFlagsOffset + index] = select(0u, 1u, reach[reachOffset + index] != 0u && (flags[flagsOffset + index] & 1u) != 0u);`
       })
     ];
+    if (output.status.missingFixCount) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-missing-reset`,
+          operation: OPERATION,
+          view: output.status.missingFixCount,
+          type: 'u32',
+          value: '0u'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-missing-count`,
+          operation: OPERATION,
+          invocationCount: rowCount,
+          bindings: [
+            {name: 'rowTracks', view: rowTracks, type: 'u32', access: 'read'},
+            {name: 'positions', view: positions, type: 'f32', access: 'read'},
+            ...(props.mask
+              ? [{name: 'mask', view: props.mask, type: 'u32', access: 'read'} as const]
+              : []),
+            {
+              name: 'missing',
+              view: output.status.missingFixCount,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            }
+          ],
+          body: `if (rowTracks[rowTracksOffset + index] != 0xffffffffu && (${props.mask ? 'mask[maskOffset + index] == 0u ||' : ''} (bitcast<u32>(positions[positionsOffset + 2u * index]) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(positions[positionsOffset + 2u * index + 1u]) & 0x7f800000u) == 0x7f800000u)) { atomicAdd(&missing[missingOffset], 1u); }`
+        })
+      );
+    }
     if (output.status.candidateOverflow) {
       nodes.push(
         createFillNode<Parameters>(graph, {
@@ -455,6 +589,39 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
         })
       );
     }
+    // Tracks whose reached chain was cut by the search budget, for the NaN geometry below.
+    const truncatedTracks =
+      output.durations || output.centroids
+        ? createTransientView(graph, `${id}-truncated-tracks`, 'uint32', trackOffsets.length - 1)
+        : undefined;
+    if (truncatedTracks) {
+      nodes.push(
+        createFillNode<Parameters>(graph, {
+          id: `${id}-truncated-tracks-reset`,
+          operation: OPERATION,
+          view: truncatedTracks,
+          type: 'u32',
+          value: '0u'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-truncated-tracks`,
+          operation: OPERATION,
+          invocationCount: rowCount,
+          bindings: [
+            {name: 'reach', view: reach, type: 'u32', access: 'read'},
+            {name: 'flags', view: flags, type: 'u32', access: 'read'},
+            {name: 'rowTracks', view: rowTracks, type: 'u32', access: 'read'},
+            {
+              name: 'truncatedTracks',
+              view: truncatedTracks,
+              type: 'atomic<u32>',
+              access: 'read_write'
+            }
+          ],
+          body: `if (reach[reachOffset + index] != 0u && (flags[flagsOffset + index] & 2u) != 0u) { atomicStore(&truncatedTracks[truncatedTracksOffset + rowTracks[rowTracksOffset + index]], 1u); }`
+        })
+      );
+    }
     nodes.push(
       createRowIdsNode<Parameters>(graph, {id: `${id}-row-ids`, operation: OPERATION, rowIds}),
       ...new GPUCompaction({
@@ -472,7 +639,8 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
         next,
         flags,
         rowEnds,
-        rowTracks
+        rowTracks,
+        truncatedTracks
       }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
@@ -504,11 +672,13 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
       flags: GraphDataView<'uint32'>;
       rowEnds: GraphDataView<'uint32'>;
       rowTracks: GraphDataView<'uint32'>;
+      truncatedTracks?: GraphDataView<'uint32'>;
     }
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output, positions} = props;
     const {rowCount, capacity, stayRows, stayTotal, next, flags, rowEnds, rowTracks} = context;
+    const {truncatedTracks} = context;
     const startRows =
       output.startRows ?? createTransientView(graph, `${id}-start-rows`, 'uint32', capacity);
     const endRows =
@@ -536,7 +706,7 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
     let isTrackEnd = (flags[flagsOffset + row] & 4u) != 0u;
     let trackEnd = rowEnds[rowEndsOffset + row];
     endRows[endRowsOffset + index] = select(next[nextOffset + row], trackEnd, isTrackEnd);
-    finishRows[finishRowsOffset + index] = select(next[nextOffset + row], trackEnd - 1u, isTrackEnd);
+    finishRows[finishRowsOffset + index] = select(select(next[nextOffset + row], next[nextOffset + row] - 1u, (flags[flagsOffset + row] & 8u) != 0u), trackEnd - 1u, isTrackEnd);
   } else {
     endRows[endRowsOffset + index] = ${MOVEMENT_SENTINEL_WGSL};
     finishRows[finishRowsOffset + index] = ${MOVEMENT_SENTINEL_WGSL};
@@ -597,9 +767,10 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
             {name: 'endRows', view: endRows, type: 'u32', access: 'read'},
             {name: 'centroids', view: output.centroids, type: 'f32', access: 'read_write'}
           ],
-          declarations: `fn longitudeOffset(delta: f32) -> f32 { return ${radius === undefined ? 'delta' : 'delta - 360.0 * round(delta / 360.0)'}; }
+          declarations: `${getTrajectoryVotePositionWGSL(radius !== undefined)}
+fn longitudeOffset(delta: f32) -> f32 { return ${radius === undefined ? 'delta' : 'delta - 360.0 * round(delta / 360.0)'}; }
 fn rowPosition(row: u32) -> vec2<f32> {
-  return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
+  return votePosition(vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]));
 }`,
           body: `var centroid = vec2<f32>(0.0, 0.0);
   if (index < stayTotal[stayTotalOffset]) {
@@ -621,7 +792,7 @@ fn rowPosition(row: u32) -> vec2<f32> {
       }
     }
     centroid = anchor + offset / f32(max(distinctCount, 1u));
-    centroid.x = ${radius === undefined ? 'centroid.x' : '((centroid.x + 180.0) - 360.0 * floor((centroid.x + 180.0) / 360.0)) - 180.0'};
+    centroid.x = ${radius === undefined ? 'centroid.x' : 'canonicalLongitude(centroid.x)'};
   }
   centroids[centroidsOffset + index * 2u] = centroid.x;
   centroids[centroidsOffset + index * 2u + 1u] = centroid.y;`
@@ -650,6 +821,50 @@ fn rowPosition(row: u32) -> vec2<f32> {
           body: `if (index < stayTotal[stayTotalOffset]) {
     for (var row = startRows[startRowsOffset + index]; row < min(endRows[endRowsOffset + index], ${rowCount}u); row++) {
       staypointIds[staypointIdsOffset + row] = index;
+    }
+  }`
+        })
+      );
+    }
+    if (truncatedTracks && (output.durations || output.centroids)) {
+      // A cut window is not a staypoint: NaN, never a plausible duration or centroid.
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-truncated-geometry`,
+          operation: OPERATION,
+          invocationCount: capacity,
+          bindings: [
+            {name: 'stayRows', view: stayRows, type: 'u32', access: 'read'},
+            {name: 'stayTotal', view: stayTotal, type: 'u32', access: 'read'},
+            {name: 'rowTracks', view: rowTracks, type: 'u32', access: 'read'},
+            {name: 'truncatedTracks', view: truncatedTracks, type: 'u32', access: 'read'},
+            ...(output.durations
+              ? [
+                  {
+                    name: 'durations',
+                    view: output.durations,
+                    type: 'f32',
+                    access: 'read_write'
+                  } as const
+                ]
+              : []),
+            ...(output.centroids
+              ? [
+                  {
+                    name: 'centroids',
+                    view: output.centroids,
+                    type: 'f32',
+                    access: 'read_write'
+                  } as const
+                ]
+              : [])
+          ],
+          declarations: GET_NAN_WGSL,
+          body: `if (index < min(stayTotal[stayTotalOffset], ${capacity}u)) {
+    let track = rowTracks[rowTracksOffset + stayRows[stayRowsOffset + index]];
+    if (truncatedTracks[truncatedTracksOffset + track] != 0u) {
+      ${output.durations ? 'durations[durationsOffset + index] = getNaN();' : ''}
+      ${output.centroids ? 'centroids[centroidsOffset + index * 2u] = getNaN(); centroids[centroidsOffset + index * 2u + 1u] = getNaN();' : ''}
     }
   }`
         })

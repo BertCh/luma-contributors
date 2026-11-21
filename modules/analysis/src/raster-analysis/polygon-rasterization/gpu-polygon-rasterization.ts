@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterWritableDispatches} from '../raster-grid/raster-view-validation';
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   GPU_LINEAR_EDGE_MODELS,
@@ -226,6 +227,23 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} must contain ${length} uint32 rows`);
       }
     }
+    validateRasterWritableDispatches(
+      id,
+      getRasterPreflightOutputViews(props),
+      getRasterPreflightOutputViews(output),
+      [
+        {
+          inputs: [],
+          outputs: getRasterPreflightOutputViews({zones: output.zones, boundary: output.boundary})
+        },
+        {inputs: [], outputs: getRasterPreflightOutputViews(output.status)},
+        // Public inputs may remain bound read-only when a caller result is writable.
+        ...getRasterPreflightOutputViews(output).map(view => ({
+          inputs: getRasterPreflightOutputViews(props),
+          outputs: [view]
+        }))
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.zones, output.boundary, output.status.overflow, output.status.crossingCount],

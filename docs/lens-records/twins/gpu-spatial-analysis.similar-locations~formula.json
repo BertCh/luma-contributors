@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Per attribute column c over the valid rows: z_ic = (x_ic - mean_c) / s_c with s_c the population standard deviation (0 for a constant column); with standardization rank, z is the average-tie percentile rank (rank - 1) / (n - 1) instead. The…",
   "description": "Formula Per attribute column c over the valid rows: z_ic = (x_ic - mean_c) / s_c with s_c the population standard deviation (0 for a constant column); with standardization rank, z is the average-tie percentile rank (rank - 1) / (n - 1) instead. The…",
-  "llms": "Formula Per attribute column c over the valid rows: z_ic = (x_ic - mean_c) / s_c with s_c the population standard deviation (0 for a constant column); with standardization rank, z is the average-tie percentile rank (rank - 1) / (n - 1) instead. The reference vector r_c is the mean of the standardized values of the selected reference rows R. Distance d_i = sqrt(sum_c w_c (z_ic - r_c)^2) with non-negative column weights w_c. Rows are ranked by d (lowest row on ties; rank 0 is the most similar, or the least with direction least); invalid, masked and reference rows get no rank and a NaN distance.\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Per attribute column c over the valid rows: z_ic = (x_ic - mean_c) / s_c with s_c the population standard deviation (0 for a constant column); with standardization rank, z is the average-tie percentile rank (rank - 1) / (n - 1) instead. The reference vector r_c is the mean of the standardized values of the selected reference rows R. Distance d_i = sqrt(sum_c w_c (z_ic - r_c)^2) with non-negative column weights w_c. Rows are ranked by d (lowest row on ties; rank 0 is the most similar, or the least with direction least); invalid, masked and reference rows get no rank and a NaN distance.\n\n- bound symbols: 4/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "4/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>similar-locations-distance</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{standardized}{z_{ic}}&amp;=\\frac{x_{ic}-\\bar{x}_c}{\\term{deviation}{s_c}},\\qquad \\term{reference}{r_c}=\\frac{1}{\\lvert R\\rvert}\\sum_{i\\in R}z_{ic}\\\\\n\\term{distance}{d_i}&amp;=\\sqrt{\\sum_c \\term{weight}{w_c}\\,\\bigl(z_{ic}-r_c\\bigr)^2}\n\\end{aligned}</pre><p class=\"lens-ascii\">Per attribute column c over the valid rows: z_ic = (x_ic - mean_c) / s_c with s_c the population standard deviation (0 for a constant column); with standardization rank, z is the average-tie percentile rank (rank - 1) / (n - 1) instead. The reference vector r_c is the mean of the standardized values of the selected reference rows R. Distance d_i = sqrt(sum_c w_c (z_ic - r_c)^2) with non-negative column weights w_c. Rows are ranked by d (lowest row on ties; rank 0 is the most similar, or the least with direction least); invalid, masked and reference rows get no rank and a NaN distance.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-standardize-zscore\" data-value=\"standardized\">standardized · intermediate · standardized</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-column-statistics\" data-value=\"deviation\">deviation · intermediate · deviation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-reference\" data-value=\"reference\">reference · intermediate · reference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-distance\" data-value=\"distance\">distance · output · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-distance\" data-value=\"weight\">weight · parameter · weight</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>similar-locations-distance</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{standardized}{z_{ic}}&amp;=\\frac{x_{ic}-\\bar{x}_c}{\\term{deviation}{s_c}},\\qquad \\term{reference}{r_c}=\\frac{1}{\\lvert R\\rvert}\\sum_{i\\in R}z_{ic}\\\\\n\\term{distance}{d_i}&amp;=\\sqrt{\\sum_c \\term{weight}{w_c}\\,\\bigl(z_{ic}-r_c\\bigr)^2}\n\\end{aligned}</pre><p class=\"lens-ascii\">Per attribute column c over the valid rows: z_ic = (x_ic - mean_c) / s_c with s_c the population standard deviation (0 for a constant column); with standardization rank, z is the average-tie percentile rank (rank - 1) / (n - 1) instead. The reference vector r_c is the mean of the standardized values of the selected reference rows R. Distance d_i = sqrt(sum_c w_c (z_ic - r_c)^2) with non-negative column weights w_c. Rows are ranked by d (lowest row on ties; rank 0 is the most similar, or the least with direction least); invalid, masked and reference rows get no rank and a NaN distance.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"standardized\">standardized · intermediate · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-column-statistics\" data-value=\"deviation\">deviation · intermediate · deviation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-reference\" data-value=\"reference\">reference · intermediate · reference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-distance\" data-value=\"distance\">distance · output · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.similar-locations-compiled:similar-locations-distance\" data-value=\"weight\">weight · parameter · weight</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,7 +29,7 @@
       [
         "standardized",
         "intermediate",
-        "standardized",
+        "unbound",
         "—",
         "metadata"
       ],
@@ -77,8 +77,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:03.274Z",
-    "runId": "run-dcfdcc74",
+    "date": "2026-11-20T23:50:54.297Z",
+    "runId": "run-1bf64dcd",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -86,7 +86,7 @@
     ]
   },
   "state": {
-    "runId": "run-dcfdcc74",
+    "runId": "run-1bf64dcd",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

@@ -99,7 +99,7 @@ it('review 1: constant orthogonal prediction has undefined pseudo R squared', as
     );
 });
 
-it('review question: probes the GPU zero-residual response while the CPU rejects its unbounded likelihood', async () => {
+it('rejects the exact-linear response with no finite Gaussian maximum in both operation forms', async () => {
   const values = Float32Array.of(0, 1, 2, 3, 4, 5, 6, 7);
   const [gpu, cpu] = await runReviewOperations(
     {
@@ -109,31 +109,20 @@ it('review question: probes the GPU zero-residual response while the CPU rejects
     },
     {predictorCount: 1, maximumPower: 8}
   );
-  expect(cpu['code'][0]).toBe(3);
-  expect(cpu['table'].every(Number.isNaN)).toBe(true);
   // There is no finite Gaussian ML fit: b=(0,1) makes the variance exactly zero.
-  // The GPU may reject it or report a fit from f32 noise. Log the answer for the integrator;
-  // retain the documented CPU rejection and compare the meaningful shared row/trace outputs.
-  console.info('exact-linear error ML GPU probe', {
-    code: gpu['code'][0],
-    sigmaSquared: gpu['summary'][2],
-    logLikelihood: gpu['summary'][3]
-  });
-  expect([0, 3]).toContain(gpu['code'][0]);
-  expect(gpu['summary'][0]).toBe(cpu['summary'][0]);
-  expectRegressionRowsClose(gpu['errors'], cpu['errors'], 0);
-  if (gpu['code'][0] === 3) {
-    for (const port of ['code', 'converged', 'table', 'summary', 'residuals'])
-      expectRegressionRowsClose(gpu[port], cpu[port], 0);
-  } else {
-    expect(gpu['summary'][2]).toBeGreaterThan(0);
-    // A 32-ulp f32 error per fitted row gives variance below (32*eps*max|y|)^2.
-    expect(gpu['summary'][2]).toBeLessThan((32 * 2 ** -23 * 7) ** 2);
-    expectRegressionRowsClose([gpu['table'][4]], [1], 5e-3);
+  // A rounding-created positive variance must not certify this unbounded likelihood.
+  for (const result of [gpu, cpu]) {
+    expect(result['code'][0]).toBe(3);
+    expect(result['converged'][0]).toBe(0);
+    expect(result['summary'][0]).toBe(8);
+    expect(result['summary'].subarray(1).every(Number.isNaN)).toBe(true);
+    expect(result['table'].every(Number.isNaN)).toBe(true);
+    expect(result['residuals'].every(Number.isNaN)).toBe(true);
+    expect(Array.from(result['errors'])).toEqual(new Array(8).fill(0));
   }
 });
 
-it('review question: preserves the analytic flat-profile invariants and reports the GPU tie choice', async () => {
+it('the scalar-identity flat profile uses the lower-bound tie and undefined spatial inference', async () => {
   const [gpu, cpu] = await runReviewOperations(
     {
       weights: {
@@ -150,14 +139,17 @@ it('review question: preserves the analytic flat-profile invariants and reports 
   expect(gpu['code'][0]).toBe(0);
   expect(cpu['code'][0]).toBe(0);
   expect(cpu['summary'][1]).toBe(Math.fround(-0.33));
-  console.info('flat-profile error ML GPU probe', {
-    parameter: gpu['summary'][1],
-    localMaximumCount: gpu['summary'][20],
-    converged: gpu['converged'][0]
-  });
   // Filtering scales every design/response row by 1-3lambda. Coefficients, their SEs,
-  // residuals, conditioning and LL are invariant; the GPU's rounded derivative can pick
-  // another tie and its lambda information is not identifiable. Compare these invariants.
+  // residuals, conditioning and LL are invariant. The structural certificate fixes the
+  // lower-parameter tie and suppresses inference on the unidentifiable lambda.
+  for (const result of [gpu, cpu]) {
+    expect(result['summary'][1]).toBe(Math.fround(-0.33));
+    expect(result['summary'][16]).toBe(1);
+    expect(result['summary'][19]).toBe(0);
+    expect(result['summary'][20]).toBe(1);
+    expect(result['converged'][0]).toBe(0);
+    expect(result['table'].subarray(9, 12).every(Number.isNaN)).toBe(true);
+  }
   expectRegressionRowsClose(gpu['table'].subarray(0, 8), cpu['table'].subarray(0, 8), 5e-3);
   expectRegressionRowsClose(gpu['residuals'], cpu['residuals'], 5e-3);
   for (const slot of [0, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 17, 18])
@@ -282,6 +274,17 @@ for (const scene of [
         expect(results[0]['summary'][slot] === results[1]['summary'][slot]).toBe(true);
     }
     if (expectedCode === 0) {
+      // Compare each backend directly with the independent dense NumPy/SciPy literals.
+      for (const result of results) {
+        for (const port of ['table', 'summary', 'residuals', 'powerTraceStandardErrors'] as const) {
+          expectRegressionRowsClose(
+            result[port === 'powerTraceStandardErrors' ? 'errors' : port],
+            Float32Array.from(fixture.expected[port], value => value ?? NaN),
+            5e-3
+          );
+        }
+        expect(result['converged'][0]).toBe(fixture.expected.summary[15]);
+      }
       expect(Math.abs(results[1]['summary'][1])).toBeGreaterThan(0.05);
       expect(results[1]['table'][15]).toBeGreaterThan(0.01);
       expect(results[1]['table'][15]).toBeLessThan(0.9);

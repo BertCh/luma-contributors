@@ -109,8 +109,9 @@ describe('getGPUSpatialJoinCapacityPlan', () => {
         expect(plan.estimatedPeakTransientBytes).toBe(getJoinTransientBytes(graph, 'join'));
         if (leftCount === 10 && leftKind === 'lines' && rightKind === 'lines') {
           // 2128 bounds/BVH bytes, 240 count-scan bytes, 48 state/page words, 16 per slot,
-          // and one 12-byte indirect triple per page (six triples for tile capacity seven).
-          expect(plan.estimatedPeakTransientBytes).toBe(candidateTileCapacity ? 2600 : 3020);
+          // and one 12-byte indirect triple per page (six triples for tile capacity seven),
+          // plus the graph-owned four-byte pair candidate-loss word.
+          expect(plan.estimatedPeakTransientBytes).toBe(candidateTileCapacity ? 2604 : 3024);
         }
         // The join's own plan for the next frame, from the counts it reported, is the same plan.
         const next = join.getCapacityPlan({

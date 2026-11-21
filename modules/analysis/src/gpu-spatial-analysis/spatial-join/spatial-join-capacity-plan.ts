@@ -52,6 +52,8 @@ export type GPUSpatialJoinCapacityPlanningOptions = {
   rightKind?: GPUSpatialJoinGeometry['kind'];
   /** Whether candidates are classified by the relate engine (it keeps one matrix per candidate). */
   relate?: boolean;
+  /** Whether the singleton point/polygon classifier is used. Defaults from kinds; set false for multipart point/line operands. */
+  robustPointPolygon?: boolean;
   /** Right-hand BVH leaf slots. Defaults to the join's default, the next power of two of `rightCount`. */
   leafCapacity?: number;
   /** Candidate capacity to report on; defaults to the estimated requirement. */
@@ -60,6 +62,8 @@ export type GPUSpatialJoinCapacityPlanningOptions = {
   candidateTileCapacity?: number;
   /** Pair capacity to report on; defaults to the estimated requirement. */
   pairCapacity?: number;
+  /** Graph-owned scalar result diagnostics, four bytes each. Defaults to one pair candidate-loss word. */
+  graphOwnedStatusCount?: number;
   /** Candidates per left feature before a run supplied `observedCandidateCount`. Defaults to `min(rightCount, 8)`. */
   expectedCandidatesPerLeft?: number;
   /** Matches per left feature before a run supplied `observedRequiredCount`. Defaults to `min(rightCount, 1)`. */
@@ -110,8 +114,9 @@ export function getGPUSpatialJoinCapacityPlan(
     'observedRequiredCount'
   );
   const usesRobustPointPolygon =
-    (leftKind === 'points' && rightKind === 'polygons') ||
-    (leftKind === 'polygons' && rightKind === 'points');
+    options.robustPointPolygon ??
+    ((leftKind === 'points' && rightKind === 'polygons') ||
+      (leftKind === 'polygons' && rightKind === 'points'));
   const candidateBytes =
     CANDIDATE_BYTES +
     (options.relate ? RELATE_CANDIDATE_BYTES : 0) +
@@ -149,6 +154,7 @@ export function getGPUSpatialJoinCapacityPlan(
     STATE_BYTES +
     PAGE_QUERY_BYTES +
     PAGE_FLAG_BYTES +
+    4 * validateCount(options.graphOwnedStatusCount ?? 1, 'graphOwnedStatusCount') +
     pageCount *
       DISPATCH_BYTES *
       (1 + Number(Boolean(options.relate)) + Number(usesRobustPointPolygon)) +

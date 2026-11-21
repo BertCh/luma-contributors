@@ -7,7 +7,7 @@ import {expect, it} from 'vitest';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {addClusterAndOutlineRecipe} from '../../../src/gpu-spatial-analysis/recipes/cluster-and-outline-recipe';
 import {addSpatialRegressionRecipe} from '../../../src/gpu-spatial-analysis/recipes/spatial-regression-recipe';
-import {GPUSpatialClustering} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
+import {GPUDBSCAN} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {
   GPUGroupGeometry,
   GPUGroupConvexHull
@@ -69,13 +69,13 @@ it('cluster-and-outline defaults to planar and forwards the resolved context to 
         const isGlueStage = Object.getPrototypeOf(contributor) === Object.prototype;
         expect(
           isGlueStage ||
-            contributor instanceof GPUSpatialClustering ||
+            contributor instanceof GPUDBSCAN ||
             contributor instanceof GPUGroupGeometry ||
             contributor instanceof GPUGroupConvexHull ||
             contributor instanceof GPUGeometryMeasures
         ).toBe(true);
         if (
-          contributor instanceof GPUSpatialClustering ||
+          contributor instanceof GPUDBSCAN ||
           contributor instanceof GPUGroupGeometry ||
           contributor instanceof GPUGroupConvexHull ||
           contributor instanceof GPUGeometryMeasures

@@ -6,10 +6,23 @@ description: "Conventions and execution model of GPU Terrain contributors."
 
 # GPU Terrain concepts
 
+Start with the [checked raster alignment and cost-unit example](./README.md#check-alignment-before-extracting-bands):
+construct `new GPURaster({metadata, bands})`, call `assertCompatibleWith` before
+`getBand('red')`, and inspect `getPixelWorldPosition(0,0)`. One-column shifts are rejected.
+A GDAL reader takes geotransform `[GT0,GT1,GT2,GT3,GT4,GT5]`, for example
+`[700,20,0,350,0,-10]`. A library `GPURasterMetadata.affine` takes
+`[GT1,GT2,GT0,GT4,GT5,GT3]`, hence `[20,0,700,0,-10,350]` for that same grid.
+Both consumers place area-pixel center `(0,0)` at `[710,345]`:
+`[700 + 20/2, 350 - 10/2]`. Pass each tuple only to its corresponding consumer.
+Factory cell sizes are magnitudes and
+`rowDirection` sets the row sign. A CRS does not select `cellSizeMode`: the one-degree unit-friction
+costs are `[0,1]` by default versus `[0,111319.4921875]` in geographic mode; 10 m projected
+cells with friction `[1,3,1]` give `[0,20,40]`.
+
 
 ## Conventions
 
-- **One grid.** Every contributor takes `grid: GPURasterMetadata` (`makeGPURasterMetadata` builds
+- **Raster grids.** Grid-based terrain contributors take `grid: GPURasterMetadata` (`makeGPURasterMetadata` builds
   an axis-aligned one); its width and height size the kernels. Cell sizes and the latitude band
   are never typed twice: each packer that needs them takes the frame's grid as its second
   argument, `getGPU<Class>ParameterValues(settings, grid)`, and reads them from `grid.affine`
@@ -44,7 +57,7 @@ description: "Conventions and execution model of GPU Terrain contributors."
 - **Shared contracts.** Four shapes mean the same on every analysis page:
   - **Status.** Every GPU-written status word sits in the `status` member of the bag that owns it:
     `output.status.overflow`, `output.status.converged`, and `output.status.code` for model fits.
-  - **Grid.** Raster and terrain contributors take `grid: GPURasterMetadata`, and their packers read
+  - **Grid.** Grid-based raster and terrain contributors take `grid: GPURasterMetadata`, and their packers read
     the cell size from it (see [GPU Terrain conventions](#conventions)).
   - **Network.** Network contributors take `topology: GPUNetworkTopology` (`offsets`, `neighbors`,
     `weights`, optional `nodePositions`). Its CSR part can be passed as `GPUSpatialWeights` (see
@@ -121,3 +134,37 @@ unrolled loop of gated rounds whose indirect dispatch drops to zero once a round
 
 ::lens{scenario=gpu-terrain.terrain-derivatives rung=graph caption="A local operator: two Sobel passes feed one fused shade kernel, each one invocation per cell."}
 ::lens{scenario=gpu-terrain.terrain-derivatives rung=kernel caption="One shade invocation per cell; the dispatch is the grid, not a loop."}
+
+## Grid metrics and texture-shading tiles
+
+Curvature, geomorphons, vector ruggedness, Weiss landforms, relief shading, horizon, cast shadow,
+viewshed, line of sight, cumulative viewshed, summits, peak snap, flow field and point-horizon
+models use perpendicular pixel-axis lengths. Their constructors and public grid-taking per-frame
+packers reject shear. Each packed pixel-axis length must also stay positive and finite after
+float32 conversion: even an axis-aligned length of `1e-46` (rounds to zero) or `1e39` (rounds to
+infinity) is rejected before target writes. Uniform mode still accepts genuinely rotated orthogonal
+affines. Cumulative viewshed uses the line-of-sight packer; both point-horizon packers validate their own grid before
+packing. These checks happen before the packer changes its target. Full-affine distance operators
+and uniform patch metrics retain their own supported shear semantics.
+
+`GPUTextureShading.requiredHalo` bounds source reads only when expanded tile origins share the
+full cascade's decimation phase. Use `getCommandNodesForTile(graph, expandedOrigin)` for an explicit
+checked route: the expanded window's integer column and row, relative to one common source-pixel
+origin, must each be divisible by the largest scale `2 ** levelScaleLog2[levelCount - 1]`.
+It validates both axes before declaring nodes. Supply at least `requiredHalo` source pixels around
+the retained core and keep the same cascade settings across tiles. The radius-only halo assembler
+does not read or validate origins. With `downsampleLevels: false`, the largest scale is 1 and any
+integer expanded origin is supported. Physical source borders retain replicated-edge sampling.
+
+
+`GPUPointHorizonVisibility` exposes `estimatedCommandNodeCount` and rejects a total estimate
+above 32,768 command nodes per contributor at construction. The estimate includes the target
+chunks (at least one, even for zero targets), the chunk-table writer, elevation preparation and
+any locally built pyramid; a shared pyramid's construction belongs to its producer. Increase
+`targetsPerDispatch` (default 65,536) or partition targets to stay within this total budget.
+
+
+The point-horizon `web-mercator` projection requires an axis-aligned EPSG:3857 window with square
+pixels, columns increasing east and rows increasing south. Both contributors and their parameter
+packers reject rotated or mirrored axes: the projection's latitude depends only on row. The planar
+route retains its existing orthogonal-grid support.

@@ -150,22 +150,34 @@ fn main(@builtin(local_invocation_index) localInvocationIndex: u32,
         data: settings,
         usage: Buffer.UNIFORM | Buffer.COPY_DST
       });
-      const kernel = new Kernel(device, {
-        id: props.id,
-        source,
-        shaderLayout: {
-          bindings: [
-            ...props.bindings.map((binding, bindingIndex) => ({
-              name: binding.name,
-              type:
-                binding.access === 'read' ? ('read-only-storage' as const) : ('storage' as const),
-              group: 0,
-              location: bindingIndex
-            })),
-            {name: 'selectionSettings', type: 'uniform', group: 0, location: props.bindings.length}
-          ]
-        }
-      });
+      let kernel: Kernel;
+      try {
+        kernel = new Kernel(device, {
+          id: props.id,
+          source,
+          shaderLayout: {
+            bindings: [
+              ...props.bindings.map((binding, bindingIndex) => ({
+                name: binding.name,
+                type:
+                  binding.access === 'read' ? ('read-only-storage' as const) : ('storage' as const),
+                group: 0,
+                location: bindingIndex
+              })),
+              {
+                name: 'selectionSettings',
+                type: 'uniform',
+                group: 0,
+                location: props.bindings.length
+              }
+            ]
+          }
+        });
+      } catch (error) {
+        // The uniform is node-owned; release it when the pipeline is refused.
+        configuration.destroy();
+        throw error;
+      }
       return {
         encode: ({computePass, getBuffer}) => {
           const bindings: Record<string, Binding> = {selectionSettings: configuration};

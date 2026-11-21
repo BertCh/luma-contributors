@@ -98,14 +98,19 @@ for (const scene of [
           'modes',
           'zScores'
         ] as const) {
-          if (!expected[field]) continue;
+          // The parity fixtures keep the reference name `percentiles`; the output is `quantiles`.
+          if (!(expected as Record<string, number[] | undefined>)[field]) continue;
           const length =
             field === 'zScores'
               ? rows
               : field === 'percentiles'
                 ? scene.capacity * scene.fractions.length
                 : scene.capacity;
-          output[field] = harness.output(`${columnIndex}/${field}`, length, 'float32');
+          output[field === 'percentiles' ? 'quantiles' : field] = harness.output(
+            `${columnIndex}/${field}`,
+            length,
+            'float32'
+          );
         }
         return {
           values: harness.input(`values-${columnIndex}`, Float32Array.from(values), 'float32'),
@@ -123,7 +128,7 @@ for (const scene of [
           variance,
           sumScale: scene.sumScale,
           keyCount: scene.keyCount || undefined,
-          percentiles: columns.some(column => column.statistics.includes('percentiles'))
+          probabilities: columns.some(column => column.statistics.includes('percentiles'))
             ? harness.input('fractions', Float32Array.from(scene.fractions), 'float32')
             : undefined,
           output: {

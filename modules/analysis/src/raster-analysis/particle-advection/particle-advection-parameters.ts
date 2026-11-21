@@ -2,7 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateNonZeroFiniteNumber} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  resolveFlowRasterPlacement,
+  resolveFlowLocalOrigin,
+  type FlowRasterPlacement
+} from '../flow-texture/flow-raster-placement';
+
+import {
+  validateNonZeroFiniteNumber,
+  validateFiniteNumber
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 
 /** Number of float32 elements in a {@link GPUParticleAdvection} parameter view. */
@@ -18,13 +27,17 @@ export const PARTICLE_ADVECTION_DROP_PURPOSE = PHILOX_PURPOSES.particleAdvection
 
 /** Per-frame float settings of {@link GPUParticleAdvection}. */
 export type GPUParticleAdvectionSettings = {
+  /** Planar origin subtracted in binary64 before packing. State, previous positions and trails
+   * stay local across frames; upload initial positions as world minus this origin before narrowing.
+   * Add it back in binary64 on readback. Keep it fixed until reset. Defaults to [0, 0]. */
+  localOrigin?: readonly [number, number];
   /**
-   * Field raster placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds.
+   * Field raster placement with an outer-corner `origin` and `cellSize`.
    * Positive cellHeight puts row zero on the smallest-y side; signed sizes set index direction.
    * Cell `(i, j)` is centered at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size
    * that is zero or not finite throws.
    */
-  fieldExtent: readonly [number, number, number, number];
+  fieldPlacement: FlowRasterPlacement;
   /** Time step of this frame, in the time unit of the field velocities. */
   timeStep: number;
   /** Multiplier on the time step, for example a playback speed. Defaults to 1. */
@@ -39,6 +52,9 @@ export type GPUParticleAdvectionSettings = {
    */
   spawnBounds?: readonly [number, number, number, number];
 };
+
+/** Settings accepted by the float parameter packer. */
+export type GPUParticleAdvectionParameterSettings = GPUParticleAdvectionSettings;
 
 /** Per-frame integer settings of {@link GPUParticleAdvection}. */
 export type GPUParticleAdvectionUint32Settings = {
@@ -66,7 +82,7 @@ export type GPUParticleAdvectionUint32Settings = {
  * @param target Optional destination of at least {@link GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH} elements.
  */
 export function getGPUParticleAdvectionParameterValues(
-  settings: GPUParticleAdvectionSettings,
+  settings: GPUParticleAdvectionParameterSettings,
   fieldSize: readonly [number, number],
   target: Float32Array = new Float32Array(GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH)
 ): Float32Array {
@@ -75,18 +91,46 @@ export function getGPUParticleAdvectionParameterValues(
       `Particle advection parameter target must hold ${GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH} elements`
     );
   }
-  const [originX, originY, cellWidth, cellHeight] = settings.fieldExtent;
-  validateNonZeroFiniteNumber('GPUParticleAdvection', 'fieldExtent cellWidth', cellWidth);
-  validateNonZeroFiniteNumber('GPUParticleAdvection', 'fieldExtent cellHeight', cellHeight);
-  const spawnBounds = settings.spawnBounds ?? [
-    originX,
-    originY,
-    originX + cellWidth * fieldSize[0],
-    originY + cellHeight * fieldSize[1]
-  ];
+  const [originX, originY, cellWidth, cellHeight] = resolveFlowRasterPlacement(
+    'GPUParticleAdvection',
+    settings,
+    'fieldPlacement',
+    'fieldExtent'
+  );
+  validateNonZeroFiniteNumber('GPUParticleAdvection', 'fieldPlacement cellWidth', cellWidth);
+  validateNonZeroFiniteNumber('GPUParticleAdvection', 'fieldPlacement cellHeight', cellHeight);
+  const [localOriginX, localOriginY] = resolveFlowLocalOrigin(
+    'GPUParticleAdvection',
+    settings.localOrigin
+  );
+  const localFieldOriginX = originX - localOriginX;
+  const localFieldOriginY = originY - localOriginY;
+  const spawnBounds = settings.spawnBounds
+    ? [
+        settings.spawnBounds[0] - localOriginX,
+        settings.spawnBounds[1] - localOriginY,
+        settings.spawnBounds[2] - localOriginX,
+        settings.spawnBounds[3] - localOriginY
+      ]
+    : [
+        localFieldOriginX,
+        localFieldOriginY,
+        localFieldOriginX + cellWidth * fieldSize[0],
+        localFieldOriginY + cellHeight * fieldSize[1]
+      ];
+  for (const [name, value] of [
+    ['fieldPlacement originX - localOrigin', originX - localOriginX],
+    ['fieldPlacement originY - localOrigin', originY - localOriginY],
+    ['spawnBounds minX - localOrigin', spawnBounds[0]],
+    ['spawnBounds minY - localOrigin', spawnBounds[1]],
+    ['spawnBounds maxX - localOrigin', spawnBounds[2]],
+    ['spawnBounds maxY - localOrigin', spawnBounds[3]]
+  ] as const) {
+    validateFiniteNumber('GPUParticleAdvection', `${name} (received ${value})`, value);
+  }
   target.set([
-    originX,
-    originY,
+    originX - localOriginX,
+    originY - localOriginY,
     cellWidth,
     cellHeight,
     settings.timeStep,

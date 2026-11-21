@@ -31,7 +31,6 @@ import {
   getGPUTrajectoryEncounterCapacityPlan
 } from '../../../src/analysis-core/contracts/capacity-planning';
 import {
-  assertCompatibleGPUPreparedIndexes,
   getGPUSpatialQueryCostPlan,
   getGPUTileSeamOwner,
   isGPUSeamResultOwner
@@ -320,16 +319,6 @@ describe('GPU spatial-analysis contracts', () => {
         preparedBVHDepth: 8
       })
     ).toMatchObject({strategy: 'grid', estimatedComparisons: 310});
-
-    const prepared = {
-      spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
-      partitioning,
-      revision: 4
-    } as const;
-    expect(() => assertCompatibleGPUPreparedIndexes('join', prepared, prepared)).not.toThrow();
-    expect(() =>
-      assertCompatibleGPUPreparedIndexes('join', prepared, {...prepared, revision: 5})
-    ).toThrow(/revision/);
 
     const tiles = {
       tiles: [

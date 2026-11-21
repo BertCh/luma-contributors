@@ -156,3 +156,135 @@ it('GPUGridGenerator polygon and corner kernels parse for every grid type', () =
   }
   device.destroy();
 });
+
+// GEO-109: the kernels place cells with f32 lattice indices, exact only up to 2^24, so a one-row
+// square grid of 2^24 + 2 columns used to repeat cell positions silently. Closed-form limits:
+// square/point `column + 1 <= 2^24`; triangle `2 * columns + 2 <= 2^24`; pointy hex
+// `2 * columns + 1 <= 2^24` and `3 * rows + 1 <= 2^24` (flat hex swaps the axes).
+it('GPUGridGenerator rejects columns and rows whose lattice indices float32 cannot represent', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let serial = 0;
+  const create = (
+    gridType: 'square' | 'point' | 'triangle' | 'hex',
+    columns: number,
+    rows: number,
+    hexOrientation?: 'pointy' | 'flat'
+  ) => {
+    const cellCount = getGPUGridCellCount(gridType, columns, rows);
+    const vertexCount = cellCount * getGPUGridVerticesPerCell(gridType);
+    return new GPUGridGenerator({
+      gridType,
+      columns,
+      rows,
+      hexOrientation,
+      parameters: createTransientView(graph, `limit-parameters-${serial++}`, 'float32', 4),
+      output:
+        gridType === 'point'
+          ? {
+              centers: createTransientView(
+                graph,
+                `limit-centers-${serial++}`,
+                'float32x2',
+                cellCount
+              )
+            }
+          : {
+              positions: createTransientView(
+                graph,
+                `limit-positions-${serial++}`,
+                'float32x2',
+                vertexCount
+              )
+            }
+    });
+  };
+  const exact = 2 ** 24;
+  const cases: [Parameters<typeof create>, 'columns' | 'rows', number][] = [
+    [['point', exact / 2, 1], 'columns', exact / 2],
+    [['square', exact, 1], 'columns', exact],
+    [['square', 1, exact], 'rows', exact],
+    [['triangle', exact / 2 - 1, 1], 'columns', exact / 2 - 1],
+    [['triangle', 1, exact], 'rows', exact],
+    [['hex', 8388607, 1], 'columns', 8388607],
+    [['hex', 1, 5592405], 'rows', 5592405],
+    [['hex', 5592405, 1, 'flat'], 'columns', 5592405],
+    [['hex', 1, 8388607, 'flat'], 'rows', 8388607]
+  ];
+  for (const [[gridType, columns, rows, orientation], name, maximum] of cases) {
+    const label = `${gridType} ${orientation ?? ''} ${name}`;
+    expect(() => create(gridType, columns, rows, orientation), label).not.toThrow();
+    const larger: [number, number] = name === 'columns' ? [columns + 1, rows] : [columns, rows + 1];
+    expect(() => create(gridType, ...larger, orientation), label).toThrow(
+      gridType === 'point'
+        ? new RegExp(`${name}.*at most ${maximum}`)
+        : `grid-generator ${name} must be an integer in [1, ${maximum}]`
+    );
+  }
+  // The finding's reproduction: one row of 2^24 + 2 square cells.
+  expect(() => create('square', exact + 2, 1)).toThrow(/columns must be an integer/);
+});
+
+it('admits exact half-cell center indices separately from square integer corners', () => {
+  // Binary32 has 24 significand bits. Half-integers are exact only below 2^23;
+  // round-to-even at columns 8388609 and 8388610 maps both unit centers to 8388610.
+  expect([8388609, 8388610].map(column => Math.fround(Math.fround(column) + 0.5))).toEqual([
+    8388610, 8388610
+  ]);
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  expect(() => GPUGridGenerator.getMaximumAxisCellCounts({gridType: 'unknown' as never})).toThrow(
+    /gridType.*square.*point.*received unknown/
+  );
+  expect(() =>
+    GPUGridGenerator.getMaximumAxisCellCounts({gridType: 'hex', hexOrientation: 'unknown' as never})
+  ).toThrow(/pointy.*flat.*received unknown/);
+  expect(GPUGridGenerator.getMaximumAxisCellCounts({gridType: 'point'})).toEqual({
+    columns: 8388608,
+    rows: 8388608
+  });
+  expect(GPUGridGenerator.getMaximumAxisCellCounts({gridType: 'square', centers: true})).toEqual({
+    columns: 8388608,
+    rows: 8388608
+  });
+  expect(GPUGridGenerator.getMaximumAxisCellCounts({gridType: 'square'})).toEqual({
+    columns: 16777216,
+    rows: 16777216
+  });
+  const parameters = createTransientView(graph, 'parameters', 'float32', 4);
+  const centers = createTransientView(graph, 'centers', 'float32x2', 1);
+  try {
+    for (const gridType of ['point', 'square'] as const) {
+      for (const axis of ['columns', 'rows'] as const) {
+        expect(
+          () =>
+            new GPUGridGenerator({
+              gridType,
+              columns: axis === 'columns' ? 8388609 : 1,
+              rows: axis === 'rows' ? 8388609 : 1,
+              parameters,
+              output: {centers}
+            })
+        ).toThrow(new RegExp(`${axis}.*8388608.*received 8388609`));
+      }
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('N2 sizing helpers reject unknown grid types and state their supported values', () => {
+  expect(() => getGPUGridVerticesPerCell('hexagonal' as never)).toThrow(
+    /square.*hex.*triangle.*point.*hexagonal/
+  );
+  expect(() => getGPUGridCellCount('hexagonal' as never, 2, 3)).toThrow(
+    /square.*hex.*triangle.*point.*hexagonal/
+  );
+  expect(() => getGPUGridCornerCount('hexagonal' as never, 2, 3)).toThrow(/square.*hex.*hexagonal/);
+  expect(() => getGPUGridCornerCount('point' as never, 2, 3)).toThrow(
+    /square.*hex.*received point/
+  );
+  expect(getGPUGridCellCount('hex', 2, 3)).toBe(6);
+  expect(getGPUGridCornerCount('hex', 2, 3)).toBe(22);
+  expect(getGPUGridCellCount('triangle', 2, 3)).toBe(12);
+  expect(getGPUGridCornerCount('square', 2, 3)).toBe(12);
+});

@@ -1,5 +1,7 @@
 # Bounded network optimization and trajectory analysis
 
+Import from `@luma-contributors/analysis/gpu-network`. Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 These graph contributors implement the supported modes below. They accept explicit packed views;
 the application owns preparation, uploads, graph compilation, submission and optional readback.
 No contributor creates a CPU numerical fallback or combines source batches implicitly. Build one
@@ -12,7 +14,7 @@ All outputs are caller-owned. Graph scratch is transient and graph-owned.
 | NW02 | `GPUNetworkFlow` | Integral maximum flow, residual source cut, edge-aligned feasible flow, flow/cut equality certificate and optional path decomposition; unit capacities provide edge-disjoint paths | Reference mode: 128 nodes, 1024 original directed edges and total capacity at most 16,777,215. Parallel mode: up to 30 million nodes/edges and total capacity at most 4,294,967,295, subject to device binding and command-budget limits. Optional decomposition requires at most 128 expanded vertices and 1024 expanded edges with either solver. Explicit reverse residuals preserve antiparallel edges. |
 | NW03 | `GPUNetworkFlow` with `costs`, `prepareGPUNetworkFlowDemands` | Minimum-cost requested/maximum flow, reverse cancellation, explicit balanced-demand preparation and optional exact 64-bit integer objective | Nonnegative original costs ≤32767; no negative-cost circulation or lower-bound constraints. Summary cost is f32; `exactCost` preserves the integer objective. |
 | NW04 | `GPUNetworkLouvain` | Sparse parallel weighted directed/undirected modularity, quotient coarsening, objective trace and convergence; legacy dense reference | See [Louvain limits](louvain.md#parameters-and-limits) for sparse addressing, per-binding storage, dense-reference and command-budget bounds. This is a modularity heuristic, never a global optimum certificate. |
-| NW05 | `GPUNetworkFacilityOptimization` | Exhaustive backup coverage, p-dispersion and unsplit capacitated p-median; feasibility and exhaustive completion certificates | At most 16 facilities, 64 demand rows and 1,048,576 (2^20) candidates, checked at construction. Backup coverage and p-dispersion enumerate `2 ** facilityCount` candidates, so 64 rows is their real demand limit. Capacitated p-median enumerates `facilityCount ** demandRows` candidates, so the candidate limit, not the 64-row ceiling, bounds its demand rows: 20 rows at 2 facilities, 10 at 4, 5 at 16. For larger problems use `GPULocationAllocation`. Candidates run independently in GPU batches of at most 65,536, with deterministic hierarchical winner reductions. Exhaustive search can still be expensive within the limit; there is no branch-and-bound or scalable mixed-integer solver. |
+| NW05 | `GPUNetworkFacilityOptimization` | Exact backup coverage, p-dispersion and unsplit capacitated p-median by exhaustive GPU enumeration | Every mode requires ≤16 facilities, ≤64 total demand rows and ≤2^20 total candidates together. Candidate counts: `2^facilityCount` for backup coverage/p-dispersion; `facilityCount^demandRows` for capacitated p-median. One-facility p-median accepts 64 demand rows and rejects 65. `maximumCandidates` only shortens the examined prefix. |
 | NW06 | `GPUNetworkTimeRouting`, `prepareGPUNetworkRestrictionStates` | FIFO affine or piecewise-arrival routing, first-sample waiting, reachable forbidden-sequence states and original-edge provenance | ≤256 states,4096 transitions,256 samples/transition. Non-FIFO schedules and arbitrary time windows remain unsupported. CPU topology preparation never solves routes. |
 | NW07 | `GPUNetworkRationalAccess` | Congestion equalization with integral/fractional demand, fractional/absolute shift caps, unserved demand and explicit equilibrium gap | ≤64 origins,32 facilities,4096 cycles; f32 demand total ≤2^24. Integral rounding stalls remain unconverged. Fractional conservation has f32 rounding tolerance. |
 | MV01 | `GPUTrajectoryKalman`, `prepareGPUTrajectoryObservations` | Isotropic or full correlated 4x4 Kalman/Joseph covariance and RTS smoothing; explicit WGS84 local-plane/bigint epoch preparation | Linear planar constant velocity; sequential per track, parallel across tracks. Local tangent projection is explicit and drops height/curvature, not an automatic CRS choice. |
@@ -50,11 +52,8 @@ To reconstruct it, begin at the destination, follow at least one predecessor, an
 the source. Direct same-edge travel and unreachable labels retain `0xffffffff`; use the cost
 and status to distinguish them. All other source entries retain the sentinel.
 Time routing reports `[valid, converged, chosenTargetState, arrivalTimeBits]`. Only a valid
-converged search can establish that an infinite distance is unreachable. Transition provenance
-from `prepareGPUNetworkRestrictionStates().originalEdges` maps predecessor transitions back to
-the original directed edges. Initial states are the empty restriction prefix at each vertex.
-The topology helper does no searching, consumes explicit JavaScript topology arrays, and returns
-typed arrays for explicit upload; it does not read GPU data.
+converged search can establish that an infinite distance is unreachable. Use the prepared
+`originalEdges` array to map predecessor transitions back to the original directed edges.
 
 The [Louvain guide](louvain.md) defines summary/trace layouts, completion status and the
 differences between sparse parallel, dense reference and CPU execution. Compare objective and
@@ -70,6 +69,13 @@ instead fixes that count. P-dispersion maximizes the minimum selected pair dista
 symmetric costs and at least two facilities. Capacitated p-median assigns whole demand rows,
 minimizing demand-weighted distance with individual capacity constraints. Assignments are published
 only for capacitated p-median; other modes leave the assignment sentinel intact.
+
+All modes enforce at most 16 facilities, 64 total demand rows and 1,048,576 total candidates
+at construction. The candidate space is `2^facilityCount` for backup coverage and p-dispersion,
+or `facilityCount^demandRows` for capacitated p-median. These bounds apply together: with one
+facility, p-median accepts 64 demand rows and rejects 65 even though the candidate count is one.
+`maximumCandidates` only shortens the examined prefix after these checks. It does not admit
+a larger candidate space or more demand rows.
 
 Candidates are scored independently in batches that reuse one score buffer. Each candidate
 retains input row order for floating-point sums and capacity checks. Hierarchical reductions select
@@ -105,10 +111,16 @@ last offset observation count, and every intermediate offset inside that range. 
 incomplete partitions are outside the input contract; outputs outside supplied track spans are not
 implicitly initialized.
 
+For host arrays, pass `storage: 'compact'` in the input to `computeTrajectoryKalmanOnCPU` to
+enforce that partition. A single `[0]` offset represents zero tracks over zero observations. The
+host function defaults to `storage: 'resident-capacity'`, which clamps offsets to the observation
+count and leaves unowned rows zero.
+
 State rows are `[x,y,vx,vy]`. Covariance rows are `[positionVariance,covariance,covariance,velocityVariance]`,
 shared by the independent x and y axes. Status bits are reset=1, prediction-only=2, invalid=4,
-singular backward solve=8. A singular backward prediction retains the forward estimate and marks
-bit 8; it is not represented as a successful RTS update. Noise units must match coordinates and
+RTS fallback=8. A singular or nonfinite backward solve, or a nonfinite backward correction,
+retains both the filtered state and filtered covariance for that row and marks bit 8. The next
+backward step consumes that retained row. Noise units must match coordinates and
 relative seconds. Subtract a nearby epoch before converting timestamps to f32. Far from one epoch,
 pass `times` as `uint32x2` Int64 `(low, high)` words instead: each step is differenced exactly and
 only then converted to f32, so 10 Hz samples stay 0.1 s apart however far they are from the epoch.
@@ -153,9 +165,9 @@ The supplied pair arrays are the candidate index and stable provenance; batching
 ## Evidence and remaining gates
 
 The independent generator is
-[`network-movement-coverage.py`](../../../modules/analysis/test/oracles/network-movement-coverage.py),
+[`network-movement-coverage.py`](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/network-movement-coverage.py),
 with committed
-[`network-movement-coverage.json`](../../../modules/analysis/test/oracles/fixtures/network-movement-coverage.json).
+[`network-movement-coverage.json`](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/fixtures/network-movement-coverage.json).
 It pins NetworkX 3.5 and NumPy 2.2.6. Network flow and modularity fixtures call NetworkX directly;
 Kalman fixtures are independent dense matrix compositions, not MovingPandas calls. Tests also
 check conservation, reverse residual cancellation, self-loops, a greedy-allocation counterexample,
@@ -166,13 +178,13 @@ portable eight-storage-binding limit.
 The selected RAAM source is
 [`access` v1.1.9 `raam.py`](https://github.com/pysal/access/blob/v1.1.9/access/raam.py);
 the implementation here is independent and exposes final-load and convergence semantics explicitly.
-The additional [advanced generator](../../../modules/analysis/test/oracles/network-movement-advanced.py)
+The additional [advanced generator](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/network-movement-advanced.py)
 calls MovingPandas 0.22.4/StoneSoup 1.8 smoothing and polygon clipping, tslearn 0.6.4 Euclidean-cost
 DTW/LCSS, similaritymeasures 1.3.0 Fréchet, access 1.1.9 RAAM, and spopt 0.7.0/PuLP 3.3.0 CBC facility models directly. It also includes an
 independent full-covariance NumPy solve, pyproj ECEF projection, and NetworkX virtual-split/time-expanded
-routing equivalents. A separate [server generator](../../../modules/analysis/test/oracles/network-movement-postgres.py)
+routing equivalents. A separate [server generator](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/network-movement-postgres.py)
 executes PostgreSQL 16.6, PostGIS 3.5.3, pgRouting 3.8.0 and MobilityDB 1.2.1 directly.
-Its [saved results](../../../modules/analysis/test/oracles/fixtures/network-movement-postgres.json)
+Its [saved results](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/fixtures/network-movement-postgres.json)
 cover directed fractional same-edge, parallel-edge and unreachable routes; polygon holes;
 all four time endpoint policies; continuous encounter intervals; and absent common support.
 SQL NULL unreachable costs map to infinity, and NULL temporal relationships map to `0xffffffff`.
@@ -192,7 +204,7 @@ loader. No reference algorithm source was changed. The local socket-only stack p
 505 MB and was removed after fixture capture. Reproduction needs these extensions installed;
 the generator accepts `--psql` and standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` settings.
 
-The [benchmark fixture](../../../modules/analysis/test/oracles/fixtures/network-movement-benchmark.json)
+The [benchmark fixture](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/fixtures/network-movement-benchmark.json)
 records 30 workloads on Apple Metal3 WebGPU, including all nine contributors and 4096 trajectory
 pairs. Upload/preparation, compilation, first execution, three warm executions and readback are
 separate. Full-survivor 4096-pair Fréchet took median 5.2 ms; 205 survivors took 1.1 ms with bounded
@@ -317,11 +329,58 @@ For full Kalman covariance set `covarianceMode: 'full'`; parameters are
 `[qxx,qxy,qyy,rxx,rxy,ryy,vxx,vxy,vyy,maxGap]`. Process/velocity covariance must be positive semidefinite;
 measurement covariance must be positive definite. Covariance outputs contain **four float32x4 rows
 per observation**, the column-major 4x4 covariance in `[x,y,vx,vy]` state order. Full RTS uses a pivoted
-4x4 inverse; singular/nonfinite backward solves retain forward values and set bit 8.
-`prepareGPUTrajectoryObservations` subtracts a bigint epoch before f32 conversion (and also returns
-exact `timeWords`, the absolute timestamps as a `uint32x2` Kalman `times` column) and transforms
-WGS84 longitude/latitude through ellipsoidal ECEF into an explicitly chosen local east/north plane.
-It returns projection/epoch metadata and performs no filtering or GPU readback.
+4x4 inverse. A singular or nonfinite backward solve, or a nonfinite correction, sets RTS
+fallback bit 8 and retains both the filtered state and filtered covariance for that row. The
+next backward step consumes that retained row.
+`prepareGPUTrajectoryObservations` transforms WGS84 longitude/latitude through ellipsoidal ECEF
+into an explicit local east/north plane and subtracts a bigint epoch before float32 conversion.
+Its `spatialContext` describes planar meters; `projection.origin` is a captured longitude/latitude
+degree tuple. It performs no filtering or GPU readback.
+
+The two time columns have different metadata and are alternative Kalman `times` bindings:
+
+| Prepared column | Graph format and binding | Unit and absolute origin |
+| --- | --- | --- |
+| `times` | scalar `float32`, bind as Kalman `times` | Elapsed **seconds**; `timesMetadata` retains exact `epochTicks` and `epochUnitsPerSecond` |
+| `timeWords` | `uint32x2`, bind as Kalman `times` | Absolute source ticks in signed Int64 `(low, high)` words; `timeWordsTemporalContext` describes the source tick unit |
+
+For source timestamps `[1000500n, 1001500n]`, choose `epoch: 1000500n` and
+`unitsPerSecond: 1000n`. Preparation gives `times = [0, 1]` and
+`timeWords = [1000500, 0, 1001500, 0]`. The exact origin is 1,000.5 seconds.
+Rounding it to integer second 1,000 loses half a second: adding elapsed `[0,1]` would recover
+`[1000,1001]` rather than `[1000.5,1001.5]` seconds. Therefore `timesTemporalContext` is undefined
+for this epoch; preserve `timesMetadata` rather than inventing an integer-second epoch.
+
+After explicitly importing the arrays, use either binding (with the other required Kalman props):
+
+```ts
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {prepareGPUTrajectoryObservations} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+const prepared = prepareGPUTrajectoryObservations({
+  longitudeLatitude: [0, 0, 0, 0], timestamps: [1000500n, 1001500n],
+  epoch: 1000500n, unitsPerSecond: 1000n, origin: [0, 0]
+});
+
+// Pass views of the explicitly uploaded prepared.times and prepared.timeWords arrays.
+export function getPreparedKalmanTimeBindings(
+  elapsedTimesView: GraphDataView<'float32'>,
+  absoluteTimeWordsView: GraphDataView<'uint32x2'>
+) {
+  const elapsedTimeBinding = {times: elapsedTimesView}; // seconds; default tick rate 1
+  const absoluteTimeBinding = {
+    times: absoluteTimeWordsView,
+    temporalContext: prepared.timeWordsTemporalContext, // int64-words, millisecond, Unix epoch
+    timeUnitsPerSecond: 1000
+  };
+  return {elapsedTimeBinding, absoluteTimeBinding, elapsedMetadata: prepared.timesMetadata};
+}
+```
+
+Word context is available for 1, 1,000, 1,000,000 or 1,000,000,000 ticks/second; for other rates
+bind words with the explicit `timeUnitsPerSecond`. Do not apply the source millisecond rate to
+the elapsed-seconds column. Process noise and velocity retain per-second units; `maximumGap`
+uses the selected timestamp column's unit.
 
 For polygons, append flattened ring coordinates after the seven restriction parameters and set
 `polygonRingVertexCounts`. Rings close implicitly; even-odd parity supports holes regardless of ring
@@ -443,16 +502,46 @@ made before complete enumeration.
 
 Compile-time controls are the operation, view lengths, `facilityCount`, `selectCount`,
 `maximumCandidates` and which status ports exist. Costs, demand, capacities and threshold are
-per-frame buffer contents. Every encoding rewrites all outputs, including empty-demand results.
+per-frame buffer contents. Construction captures these controls and nested output/status maps before
+validation; later caller-object mutations cannot redirect writes or change the declared search.
+Graph views retain their identities and their buffer contents remain live across submissions.
+Every encoding rewrites all outputs, including empty-demand results.
 All four optimization contributors reject unsupported own fields in `output.status` at
 construction, even when an extended object is structurally assignable in TypeScript. Only
 `invalidCount`, `iterationCount`, `converged` and `iterationLimitReached` are supported.
 The flow, time-routing and rational-access GPU and CPU operation forms apply the same field
 validation before declaring outputs, so an extra status key cannot replace a primary port.
 Each output and named port needs a distinct buffer. `estimatedCommandNodeCount` includes the
-candidate batches, hierarchical reductions and optional status pass, at most 83 commands at the
-largest search. Construction enforces the shared command budget; encoding checks storage
-binding sizes before creating scratch or kernels.
+candidate batches, hierarchical reductions and optional status pass. The full `2^20`-candidate
+search declares 130 commands without named status ports and 131 with named status ports:
+two fixed commands plus 16 batches of eight commands (candidate upload/scoring and three
+reduction levels, each with a parameter upload and a dispatch), plus the optional status pass.
+Construction enforces the shared command budget; encoding checks storage binding sizes before
+creating scratch or kernels.
+
+## Restriction-state preparation
+
+`prepareGPUNetworkRestrictionStates({nodeCount, edges, restrictions})` builds the expanded
+topology on the CPU. `edges` uses the same `GPUNetworkEdgeEndpoints` tuples as
+`prepareGPUNetworkFlowDemands`. Each `[source, target]` holds physical vertex indices in
+`[0, nodeCount)`. Each restriction is a nonempty traversal sequence of indices into `edges`.
+Parallel edges have separate indices. The expanded graph can contain up to 256 states and
+4,096 transitions.
+
+The result contains four packed `Uint32Array` columns. The `formats` object gives the GPU
+format for each column, and the counts give logical rows.
+
+| Column | GPU format | Rows | Meaning |
+| --- | --- | --- | --- |
+| `stateVertices` | `uint32` | `stateCount` | Physical vertex index for each expanded state. |
+| `transitions` | `uint32x2` | `transitionCount` | Interleaved source and target state indices for each allowed transition, two array elements per row. |
+| `originalEdges` | `uint32` | `transitionCount` | Original edge index for each transition. Use this index to gather costs and interpret predecessors. |
+| `initialStates` | `uint32` | `nodeCount` | Empty-history state index for each physical vertex. |
+
+Upload `stateVertices` and `transitions` into graph views using their formats and row counts.
+The routing `endpoints` view holds `[initialStates[sourceVertex], destinationVertex]`.
+Supply costs in expanded transition order by gathering each transition's cost from its original
+edge. Keep `originalEdges` and `initialStates` on the CPU when their lookups happen there.
 
 ## Departure-time routing example
 
@@ -474,6 +563,16 @@ The GPU and CPU operation forms accept the same named graph values and honor the
 `maximumRelaxations` sweep budget (default: state count). Zero sweeps retain only the initial
 label and report a budget exit. CPU labels use float64 internally, so rounding can affect ties
 and the sweep in which convergence is certified.
+
+For clock rebasing use `t′ = t - origin`. An affine arrival `t + base + slope * t` becomes
+`t′ + base′ + slope * t′`, with `base′ = base + slope * origin` and unchanged slope. For
+piecewise samples subtract the origin from both departure and arrival columns; shift the first
+window departure and preserve its step. Keep rebased times nonnegative and FIFO. The cooperative
+64-lane GPU reference uses elapsed labels for route choice and publishes absolute arrivals
+separately. Its large-clock GPU regression is queued; absolute float32 payloads can still round.
+The pure CPU result and CPU operation's optional `output.unrepresentable` distinguish finite
+float64 arrivals that overflow float32 from disconnected Infinity. See
+[clock units and rebasing](./network-time-geography.md#clock-units-and-rebasing).
 
 ## Congestion allocation example
 
@@ -504,3 +603,40 @@ Uniform workgroup exits stop at equilibrium or invalid arithmetic without unroll
 per cycle. Ordered initialization and score publication preserve partial outputs on rejection.
 The graph uses two kernels plus optional named-status publication. This remains a bounded reference
 solver; it does not extend to larger allocations.
+
+## Preflight and upstream travel-cost completion
+
+Before allocating exhaustive facility inputs, call
+`getNetworkFacilitySearchLimits({operation, facilityCount, demandCount})`. It returns `candidateCount`,
+`minimumFacilityCount`, the applicable maxima, `supported` and `limitingDimension`.
+All modes allow at most 16 facilities, 64 total demand rows and 1,048,576 total candidates together.
+P-dispersion needs at least two facilities; the other modes need at least one. Candidates number
+`2 ** facilityCount` for backup coverage and p-dispersion, or `facilityCount ** demandCount` for
+capacitated p-median. One-facility p-median accepts 64 demand rows and refuses 65 despite both
+candidate spaces having size one. The maxima are exported as
+`GPU_NETWORK_FACILITY_OPTIMIZATION_MAXIMUM_FACILITY_COUNT`,
+`GPU_NETWORK_FACILITY_OPTIMIZATION_MAXIMUM_DEMAND_COUNT` and
+`GPU_NETWORK_FACILITY_OPTIMIZATION_MAXIMUM_CANDIDATE_COUNT`.
+
+Partitioning demands changes joint capacity allocation and shared facility selection: combining
+partition winners cannot recover an exhaustive joint optimum. With preselected facilities, use
+`GPUNetworkServiceAreas`; for larger joint selection, `GPULocationAllocation` has a separate
+heuristic solver contract. `mode: 'auto'` on network structure chooses the SCC route automatically;
+the exact SCC maxima are also exported from the network entry.
+
+Both `GPUNetworkFacilityOptimization` and all rational-access forms accept one-row `costsComplete`
+(uint32, nonzero for complete upstream costs) and `costLimit` (float32, in the same travel-cost
+unit as the matrix). When supplying either graph input, request `output.status.complete` and check
+it before using an unserved-demand, infeasibility or optimality decision. Existing summary and
+iteration/enumeration words remain local diagnostics. `status.complete` is one only for valid,
+locally completed work on complete costs within the required horizon. Backup coverage additionally
+requires the matrix horizon to cover its threshold. Unbounded rational-access, p-median and
+p-dispersion objectives require an infinite supplied horizon. Omitted provenance is the caller's
+promise of complete costs. Pure CPU rational access always returns the one-row `status.complete`.
+
+For example, one origin with unit demand, one facility and provisional cost Infinity must have
+`costsComplete=[0]`; the decision is incomplete even if equilibrium reports success. After the
+matrix recovers cost 2 and `costsComplete=[1]`, the full unit is served and completion can be one.
+A finite horizon still prevents an unbounded-objective certificate. These checks preserve local
+iteration/enumeration diagnostics. Requesting facility `status.complete` adds one command beyond
+the documented 130/131 counts for the original iteration status ports.

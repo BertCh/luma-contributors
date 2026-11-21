@@ -44,7 +44,7 @@ function similarity(context: KernelAuditContext, metric: 'cosine' | 'dot', query
   const {graph, view} = context;
   const pixelCount = pixelsAtBindingLimit(context);
   graph.add(
-    new GPURasterEmbeddingSimilarity({
+    context.construct(GPURasterEmbeddingSimilarity, {
       pixelCount,
       dimensions: DIMENSIONS,
       queryCount,
@@ -72,7 +72,7 @@ function classifier(
   const {graph, view} = context;
   const pixelCount = pixelsAtBindingLimit(context);
   graph.add(
-    new GPURasterEmbeddingKNearestClassifier({
+    context.construct(GPURasterEmbeddingKNearestClassifier, {
       pixelCount,
       dimensions: DIMENSIONS,
       metric,
@@ -97,7 +97,7 @@ function covariance(context: KernelAuditContext, rangeCount = 256): void {
   const {graph, view} = context;
   const pixelCount = pixelsAtBindingLimit(context);
   graph.add(
-    new GPURasterEmbeddingCovariance({
+    context.construct(GPURasterEmbeddingCovariance, {
       pixelCount,
       dimensions: DIMENSIONS,
       rangeCount,
@@ -116,7 +116,7 @@ function projection(context: KernelAuditContext, componentCount = 16): void {
   const {graph, view} = context;
   const pixelCount = pixelsAtBindingLimit(context);
   graph.add(
-    new GPURasterEmbeddingProjection({
+    context.construct(GPURasterEmbeddingProjection, {
       pixelCount,
       dimensions: DIMENSIONS,
       componentCount,
@@ -142,7 +142,7 @@ function zoneMean(
   const pixelCount = pixelsAtBindingLimit(context);
   const tupleCapacity = 1 << 20;
   graph.add(
-    new GPURasterEmbeddingZoneMean({
+    context.construct(GPURasterEmbeddingZoneMean, {
       pixelCount,
       dimensions: DIMENSIONS,
       zoneCount,
@@ -174,7 +174,7 @@ function pyramid(context: KernelAuditContext, source: 'vectors' | 'quantized', s
   const sourcePixels = sourceWidth * sourceHeight;
   const outputPixels = Math.ceil(sourceWidth / scale) * Math.ceil(sourceHeight / scale);
   graph.add(
-    new GPURasterEmbeddingPyramidLevel({
+    context.construct(GPURasterEmbeddingPyramidLevel, {
       sourceWidth,
       sourceHeight,
       dimensions: DIMENSIONS,
@@ -194,13 +194,13 @@ function pyramid(context: KernelAuditContext, source: 'vectors' | 'quantized', s
 }
 
 function falseDiscoveryRate(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   method: 'benjamini-hochberg' | 'holm',
   withOptional: boolean,
   cellCount = 1 << 20
 ): void {
   graph.add(
-    new GPURasterFalseDiscoveryRateMask({
+    construct(GPURasterFalseDiscoveryRateMask, {
       cellCount,
       method,
       pValues: view('float32', cellCount),
@@ -209,7 +209,7 @@ function falseDiscoveryRate(
       output: {
         significant: view('uint32', cellCount),
         adjustedPValues: withOptional ? view('float32', cellCount) : undefined,
-        testedCount: withOptional ? view('uint32', 1) : undefined,
+        effectiveFamilySize: withOptional ? view('uint32', 1) : undefined,
         significantCount: withOptional ? view('uint32', 1) : undefined,
         criticalPValue: withOptional ? view('float32', 1) : undefined,
         histogram: withOptional ? view('uint32', 65536) : undefined
@@ -233,9 +233,9 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'GPURasterFalseDiscoveryRateMask',
     name: 'rts01-histogram-above-maximum',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURasterFalseDiscoveryRateMask({
+        construct(GPURasterFalseDiscoveryRateMask, {
           cellCount: 1024,
           pValues: view('float32', 1024),
           parameters: view('float32', 1),

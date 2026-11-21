@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/temporal-context';
-import {getGPUHierarchicalDensityClusteringParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
+import {getGPUHDBSCANParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import type {Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {GPUHierarchicalDensityClustering} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
+import {GPUHDBSCAN} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -16,8 +16,8 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 
-/** Runs one `GPUHierarchicalDensityClustering` graph and reads labels, core distances and the cluster count. */
-export async function runHierarchicalDensityClustering(
+/** Runs one `GPUHDBSCAN` graph and reads labels, core distances and the cluster count. */
+export async function runHDBSCAN(
   device: Device,
   positions: Float32Array,
   options: {
@@ -36,12 +36,10 @@ export async function runHierarchicalDensityClustering(
   labels: number[];
   coreDistances: number[];
   clusterCount: number;
-  requiredClusterCount: number;
   positionUpdated: {
     labels: number[];
     coreDistances: number[];
     clusterCount: number;
-    requiredClusterCount: number;
   }[];
   medianEncodingMilliseconds?: number;
   updated: {labels: number[]; coreDistances: number[]; clusterCount: number}[];
@@ -52,16 +50,12 @@ export async function runHierarchicalDensityClustering(
   const labelsBuffer = createOutputBuffer(device, rows);
   const coreBuffer = createOutputBuffer(device, rows);
   const countBuffer = createOutputBuffer(device, 1);
-  const requiredCountBuffer = createOutputBuffer(device, 1);
   const timesBuffer = options.times ? createInputBuffer(device, options.times) : undefined;
   const parametersBuffer = options.times
-    ? createInputBuffer(
-        device,
-        getGPUHierarchicalDensityClusteringParameterValues({timeScale: options.timeScale ?? 1})
-      )
+    ? createInputBuffer(device, getGPUHDBSCANParameterValues({timeScale: options.timeScale ?? 1}))
     : undefined;
   graph.add(
-    new GPUHierarchicalDensityClustering({
+    new GPUHDBSCAN({
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
       ...(timesBuffer && parametersBuffer
         ? {
@@ -82,14 +76,7 @@ export async function runHierarchicalDensityClustering(
         labels: importGraphBuffer(graph, 'labels', labelsBuffer, 'uint32', rows),
         coreDistances: importGraphBuffer(graph, 'core-distances', coreBuffer, 'float32', rows),
         status: {
-          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-          requiredCount: importGraphBuffer(
-            graph,
-            'required-count',
-            requiredCountBuffer,
-            'uint32',
-            1
-          )
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1)
         }
       }
     })
@@ -97,7 +84,6 @@ export async function runHierarchicalDensityClustering(
   const compiled = await graph.compileAsync();
   const poisonStatus = () => {
     countBuffer.write(new Uint32Array([options.statusPoison ?? 123]));
-    requiredCountBuffer.write(new Uint32Array([options.statusPoison ?? 123]));
   };
   poisonStatus();
   submitGraph(device, compiled, undefined);
@@ -118,12 +104,11 @@ export async function runHierarchicalDensityClustering(
     labels: await readUint32(labelsBuffer, rows),
     coreDistances: await readFloat32(coreBuffer, rows),
     clusterCount: (await readUint32(countBuffer, 1))[0],
-    requiredClusterCount: (await readUint32(requiredCountBuffer, 1))[0],
     medianEncodingMilliseconds
   };
   const updated: {labels: number[]; coreDistances: number[]; clusterCount: number}[] = [];
   for (const timeScale of options.timeScaleUpdates ?? []) {
-    parametersBuffer!.write(getGPUHierarchicalDensityClusteringParameterValues({timeScale}));
+    parametersBuffer!.write(getGPUHDBSCANParameterValues({timeScale}));
     submitGraph(device, compiled, undefined);
     updated.push({
       labels: await readUint32(labelsBuffer, rows),
@@ -139,18 +124,11 @@ export async function runHierarchicalDensityClustering(
     positionUpdated.push({
       labels: await readUint32(labelsBuffer, rows),
       coreDistances: await readFloat32(coreBuffer, rows),
-      clusterCount: (await readUint32(countBuffer, 1))[0],
-      requiredClusterCount: (await readUint32(requiredCountBuffer, 1))[0]
+      clusterCount: (await readUint32(countBuffer, 1))[0]
     });
   }
   compiled.destroy();
-  for (const buffer of [
-    positionsBuffer,
-    labelsBuffer,
-    coreBuffer,
-    countBuffer,
-    requiredCountBuffer
-  ]) {
+  for (const buffer of [positionsBuffer, labelsBuffer, coreBuffer, countBuffer]) {
     buffer.destroy();
   }
   timesBuffer?.destroy();

@@ -76,7 +76,7 @@ export async function runExample(
     parameters,
     settings: {significanceLevel: 0.05},
     restandardizeRows: true,
-    outputs: {
+    output: {
       ols: {coefficients, residuals, fitted},
       diagnostics: {tests},
       specification: {decision},

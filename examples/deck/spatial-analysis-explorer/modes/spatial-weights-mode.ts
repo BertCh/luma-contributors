@@ -54,6 +54,7 @@
  * Hover the map to draw the neighbor links of the nearest row; click to pin it.
  */
 
+import {getNeighborhoodSelectionBody} from '../../spatial-analysis-showcase/src/scenes/weights/neighborhood-display';
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
@@ -88,7 +89,7 @@ import {
   type GPULatticeCriterion,
   type GPUNeighborhoodSummaryStatistic,
   type GPUNeighborSearchKernel,
-  type GPUNeighborSearchWeightKind
+  type GPUNeighborSearchWeightType
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {
@@ -213,7 +214,7 @@ type AlgebraOperation =
   | 'union'
   | 'intersection'
   | 'difference'
-  | 'symmetricDifference'
+  | 'symmetric-difference'
   | 'higherOrder'
   | 'subgraph'
   | 'block';
@@ -253,11 +254,11 @@ const CATEGORY_COLORS: SpatialAnalysisColor[] = [
 
 const WEIGHT_SCHEMES: Record<
   WeightScheme,
-  {kind: GPUNeighborSearchWeightKind; power?: number; kernel?: GPUNeighborSearchKernel}
+  {kind: GPUNeighborSearchWeightType; power?: number; kernel?: GPUNeighborSearchKernel}
 > = {
   binary: {kind: 'binary'},
-  inverse: {kind: 'inverseDistance', power: 1},
-  'inverse-squared': {kind: 'inverseDistance', power: 2},
+  inverse: {kind: 'inverse-distance', power: 1},
+  'inverse-squared': {kind: 'inverse-distance', power: 2},
   gaussian: {kind: 'kernel', kernel: 'gaussian'},
   bisquare: {kind: 'kernel', kernel: 'bisquare'}
 };
@@ -511,7 +512,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           spatialContext: trips.frame.spatialContext,
           id: 'neighbor-search',
           mode,
-          k: mode === 'knn' ? k : undefined,
+          neighborCount: mode === 'knn' ? k : undefined,
           gridSize: GRID_SIZE,
           positions,
           parameters: searchParameters.importToGraph(graph),
@@ -876,7 +877,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         case 'union':
         case 'intersection':
         case 'difference':
-        case 'symmetricDifference':
+        case 'symmetric-difference':
           graph.add(new GPUSpatialWeightsAlgebra({...common, operation, left, right}));
           break;
         case 'higherOrder':
@@ -914,7 +915,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       'union',
       'intersection',
       'difference',
-      'symmetricDifference',
+      'symmetric-difference',
       'subgraph',
       'block'
     ] as const) {
@@ -1440,7 +1441,18 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       neighborhoodGraph.add(
         new GPUNeighborhoodSummary({
           id: 'neighborhood',
-          weights: importCsr(neighborhoodGraph, 'a', weightsA, capacity),
+          weights: {
+            ...importCsr(neighborhoodGraph, 'a', weightsA, capacity),
+            status: {
+              overflow: importGraphBuffer(
+                neighborhoodGraph,
+                'search-overflow',
+                searchOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
+          },
           values: importGraphBuffer(
             neighborhoodGraph,
             'values',
@@ -1495,22 +1507,10 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           },
           {name: 'selected', view: selected, type: 'f32', access: 'read_write'}
         ],
-        body: /* wgsl */ `
-  let choice = source[sourceOffset];
-  var value = 0.0;
-  if (choice < ${NEIGHBORHOOD_COLUMNS.length}u) {
-    value = table[tableOffset + index * ${NEIGHBORHOOD_COLUMNS.length}u + choice];
-  } else if (choice == ${NEIGHBORHOOD_COLUMNS.length}u) {
-    let mode = modes[modesOffset + index];
-    value = select(f32(mode), 0.0, mode == ${GPU_NEIGHBORHOOD_SUMMARY_NO_MODE}u);
-  } else {
-    value = entropy[entropyOffset + index];
-  }
-  // Rows without members hold quiet NaN: draw them as zero and keep the extent finite.
-  if ((bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u) {
-    value = 0.0;
-  }
-  selected[selectedOffset + index] = value;`
+        body: getNeighborhoodSelectionBody(
+          NEIGHBORHOOD_COLUMNS.length,
+          GPU_NEIGHBORHOOD_SUMMARY_NO_MODE
+        )
       });
       neighborhoodGraph.add(
         new GPUReduction({
@@ -1537,8 +1537,9 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       searchParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: cells.bounds,
-          radius: neighborChoice === 'radius' || capKnn ? radiusMeters : Infinity,
-          weightKind: scheme.kind,
+          searchRadius: neighborChoice === 'radius' ? radiusMeters : undefined,
+          maximumDistance: neighborChoice !== 'radius' && capKnn ? radiusMeters : undefined,
+          weightType: scheme.kind,
           power: scheme.power,
           distanceFloor: CELL_METERS / 2,
           kernel: scheme.kernel,
@@ -1560,8 +1561,8 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       bandParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: cells.bounds,
-          radius: bandRadius,
-          weightKind: 'binary'
+          searchRadius: bandRadius,
+          weightType: 'binary'
         })
       );
       dirtyAlgebra = true;
@@ -1913,7 +1914,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           {value: 'union', label: 'A ∪ B (union)'},
           {value: 'intersection', label: 'A ∩ B (intersection)'},
           {value: 'difference', label: 'A − B (difference)'},
-          {value: 'symmetricDifference', label: 'A △ B (symmetric difference)'},
+          {value: 'symmetric-difference', label: 'A △ B (symmetric difference)'},
           {value: 'higherOrder', label: 'Higher order of A'},
           {value: 'subgraph', label: 'Subgraph of A (busy cells only)'},
           {value: 'block', label: `Block weights (${BLOCK_CELLS * CELL_METERS} m blocks)`}
@@ -2256,18 +2257,32 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         const nextResultLinks = Math.min(resultSlots, resultCapacity);
         const extentLow = floats[SUMMARY_EXTENT];
         const extentHigh = floats[SUMMARY_EXTENT + 1];
+        const medianOverflow =
+          neighborhoodStatistic === 'median' && words[SUMMARY_TOOLKIT_FLAGS + 4] !== 0;
+        const rangeAvailable =
+          !searchOverflow &&
+          !medianOverflow &&
+          Number.isFinite(extentLow) &&
+          Number.isFinite(extentHigh);
         neighborhoodReadout.setValue(
-          `${formatNumber(extentLow)} to ${formatNumber(extentHigh)}${words[SUMMARY_TOOLKIT_FLAGS + 4] ? ' (median overflow: rows over 64 neighbors are NaN)' : ''}`
+          searchOverflow
+            ? 'unavailable (incomplete input weights)'
+            : medianOverflow
+              ? 'unavailable (median overflow: rows over 64 neighbors are NaN)'
+              : rangeAvailable
+                ? `${formatNumber(extentLow)} to ${formatNumber(extentHigh)}`
+                : 'unavailable'
         );
         if (
           nextResultLinks !== resultLinkCount ||
           maximumCardinality !== cardinalityMaximum ||
-          extentLow !== neighborhoodRange[0] ||
-          extentHigh !== neighborhoodRange[1]
+          (rangeAvailable &&
+            (extentLow !== neighborhoodRange[0] || extentHigh !== neighborhoodRange[1]))
         ) {
           resultLinkCount = nextResultLinks;
           cardinalityMaximum = Math.max(1, maximumCardinality);
-          neighborhoodRange = [extentLow, Math.max(extentHigh, extentLow + 1e-6)];
+          if (rangeAvailable)
+            neighborhoodRange = [extentLow, Math.max(extentHigh, extentLow + 1e-6)];
           context.updateLayers();
         }
       } catch {
@@ -2297,6 +2312,25 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           return;
         }
         kitSummary = summary;
+        // The kit's producerOverflow combines final and candidate-stage loss.
+        context.updateLayers();
+        if (summary.producerOverflow) {
+          sourceRowsReadout.setValue(
+            `${formatCount(active.rowCount)} / unavailable: incomplete weights`
+          );
+          for (const readout of [
+            sourceDegreeReadout,
+            sourceIslandsReadout,
+            sourceMomentsReadout,
+            sourceAsymmetryReadout,
+            sourceUnionReadout,
+            sourceLagReadout,
+            sourceFocusReadout
+          ]) {
+            readout.setValue('unavailable: incomplete weights');
+          }
+          return;
+        }
         const slotCount = Math.min(summary.slots, active.linkCapacity);
         const mean = slotCount / active.rowCount;
         const activeNote = source === 'lattice' ? ` (${formatCount(latticeActive)} active)` : '';
@@ -2442,6 +2476,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
               valueFormat: 'float32',
               colormap: 'viridis',
               valueRange: neighborhoodRange,
+              noDataColor: HIDDEN,
               radiusPixels: 3.5
             })
           );
@@ -2698,6 +2733,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         }`;
       },
       getLayers() {
+        if (kitSummary?.producerOverflow) return [];
         const layers = source === 'cells' ? getCellLayers() : getAlternativeLayers();
         return [...layers, ...getFocusLayers()];
       },

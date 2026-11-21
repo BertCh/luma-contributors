@@ -127,7 +127,7 @@ it('G5 prepared dasymetric coverage reads the first logical word of padded statu
     const evidence = result.status.stages.find(
       stage => stage.stage === 'coverage-validation'
     )!.status;
-    if (!('converged' in evidence) || !evidence.converged)
+    if (!('complete' in evidence) || !evidence.complete)
       throw new Error('coverage validation must publish completeness');
     const memory = createCPUGraphMemory();
     memory.write(status.count, Uint32Array.of(1, 0xffffffff));
@@ -136,7 +136,7 @@ it('G5 prepared dasymetric coverage reads the first logical word of padded statu
     for (const loss of [0, 1, 0]) {
       memory.write(status.candidateOverflow, Uint32Array.of(loss, 1 - loss));
       executeCommandNodesOnCPU([node], memory);
-      expect(memory.readUint32(evidence.converged)[0]).toBe(1 - loss);
+      expect(memory.readUint32(evidence.complete)[0]).toBe(1 - loss);
     }
   } finally {
     device.destroy();
@@ -244,7 +244,7 @@ it.each([
     expect(() =>
       addDasymetricRedistributionRecipe(graph, {
         ...props,
-        ...(boundary === 'output alias' ? {outputs: {targetTotals: props.sourceTotals}} : {}),
+        ...(boundary === 'output alias' ? {output: {targetTotals: props.sourceTotals}} : {}),
         ...(boundary === 'target length' ? {targetZones: view('uint32', 5)} : {}),
         ...(boundary === 'source validity length'
           ? {
@@ -258,6 +258,32 @@ it.each([
         ...(boundary === 'shape bound' ? {targetZoneCount: 524289} : {})
       })
     ).toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('STA-05 publishes completeness and eligible-source evidence with compatibility identities', () => {
+  const {device, graph, props} = createContext();
+  try {
+    const result = addDasymetricRedistributionRecipe(graph, props);
+    const conservation = result.status.stages.find(
+      stage => stage.stage === 'dasymetric-conservation'
+    )!.status;
+    const validation = result.status.stages.find(
+      stage => stage.stage === 'coverage-validation'
+    )!.status;
+    if (
+      !('complete' in conservation) ||
+      !('zeroEligibleCount' in conservation) ||
+      !('complete' in validation)
+    )
+      throw new Error('missing canonical conservation status');
+    expect(conservation.complete).toBe(result.status.complete);
+    expect(conservation.zeroEligibleCount).toBe(result.status.zeroEligibleCount);
+    expect(conservation).not.toHaveProperty('converged');
+    expect(conservation).not.toHaveProperty('invalidCount');
+    expect(validation).not.toHaveProperty('converged');
   } finally {
     device.destroy();
   }

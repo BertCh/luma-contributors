@@ -14,9 +14,6 @@ defineLensScenario({
   title: 'Geometry validity of Chicago North Side parks',
   rungs: DEFAULT_LENS_RUNGS,
   dataset: S2_DATASETS.parks,
-  presentation: {
-    primaryOutputCaptureId: 'gpu-spatial-analysis-geometry-validity-snapshots-resultParks-0'
-  },
   load: async () => {
     const [{runS2Lens, createS2ChicagoFrame, uploadS2JoinPolygons}, {runExample}, parks] =
       await Promise.all([

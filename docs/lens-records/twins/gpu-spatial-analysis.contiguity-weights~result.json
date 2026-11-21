@@ -4,9 +4,9 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "graph.add(\n  new GPUGeometryMeasures({\n    geometryType: 'polygons',\n    positions: tracts.positions,\n    ringOffsets: tracts.ringOffsets,\n    featureOffsets: tracts.featureOffsets,\n    polygonOffsets: tracts.polygonOffsets,\n    spatialContext,\n    output: {centroids}\n  })\n);\nconst builder = new GPUContiguityWeights({\n  polygons: tracts,\n  criterion: 'queen',\n  output: weightOutput\n});\ngraph.add(builder);\nconst weights = builder.outputWeights;\nconst {offsets: weightsRowOffsets, neighbors: weightsNeighbors, weights: weightsValues} = weights;",
+    "code": "const builder = new GPUContiguityWeights({\n  polygons: tracts,\n  criterion: 'queen',\n  pairCapacity: input.pairCapacity,\n  output: weightOutput\n});\ngraph.add(builder);\nconst weights = builder.outputWeights;\nconst {offsets: weightsRowOffsets, neighbors: weightsNeighbors, weights: weightsValues} = weights;",
     "language": "ts",
-    "lineCount": 19
+    "lineCount": 9
   },
   "scenarioId": "gpu-spatial-analysis.contiguity-weights",
   "viewId": "result-view",
@@ -35,8 +35,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:32.417Z",
-    "runId": "run-70d22c88",
+    "date": "2026-11-20T23:49:30.018Z",
+    "runId": "run-3001a5e7",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -44,7 +44,7 @@
     ]
   },
   "state": {
-    "runId": "run-70d22c88",
+    "runId": "run-3001a5e7",
     "rung": "result",
     "bindings": {},
     "clauses": [],

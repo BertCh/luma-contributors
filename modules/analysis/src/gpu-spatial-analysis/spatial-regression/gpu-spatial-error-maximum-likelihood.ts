@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getPanelErrorSpectrumRepetitions} from './panel-error-spectrum-context';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -9,8 +10,11 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
-import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
+import {snapshotRegressionConstructionPropsWithCompleteness as snapshotRegressionConstructionProps} from './regression-certificate-snapshot';
+import {
+  getRegressionCompletenessViews,
+  getRegressionWeightsSuppressionNodes
+} from './regression-weights-completeness';
 import {getRegressionTraceLayout} from './regression-trace-layout';
 import {
   getWGSLFloatLiteral,
@@ -18,10 +22,20 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
+  validateCommandNodeBudget,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getRegressionTileLayout,
+  getRowTileSumNodes,
+  getRowTileMergeNodes,
+  REGRESSION_TILE_MAXIMUM_TILE_COUNT
+} from './regression-row-tiles';
+import {getRegressionLikelihoodCommandNodeCount} from './regression-command-counts';
 import {
   ERFC_VALUE_WGSL,
   GET_NAN_WGSL,
@@ -35,8 +49,10 @@ import {
 } from '../spatial-weights/index';
 import {
   getGPUSpatialWeightsTilePlan,
-  rewriteWeightsChunkTileBodyWGSL
+  rewriteWeightsChunkTileBodyWGSL,
+  wrapWeightsChunkRowBodyWGSL
 } from './chunked-weights-kernels';
+import {getSpatialErrorScalarCertificateWGSL} from './spatial-error-scalar-profile';
 import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
 import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/contracts/model-result';
 import {
@@ -82,7 +98,7 @@ import {
   getSpatialMaximumLikelihoodSeriesLimit
 } from './spatial-maximum-likelihood-parameters';
 import {
-  getKahanSumWGSL,
+  getStridedPairwiseSumWGSL,
   getParameterSearchWGSL,
   getTableRowWGSL,
   getTraceSeriesWGSL
@@ -97,8 +113,8 @@ import {
 } from './spatial-regression-solve';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   getSpatialLogDeterminantWGSL,
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
@@ -118,12 +134,10 @@ import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
 
 const OPERATION = 'GPUSpatialErrorMaximumLikelihood';
-const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
-const MINIMUM_DEFAULT_TILE_ROWS = 64;
 const TILE_WORKGROUP_SIZE = SPATIAL_MAXIMUM_LIKELIHOOD_TILE_WORKGROUP_SIZE;
 const LN_TWO_PI = Math.log(2 * Math.PI);
 /** Residual sums: `u'u`, `sum u`, `sum (y - ybar) u`, `sum (y - ybar)^2`. */
-const RESIDUAL_SUM_COUNT = 4;
+const RESIDUAL_SUM_COUNT = 6;
 
 /** Caller-owned outputs of {@link GPUSpatialErrorMaximumLikelihood}. */
 export type GPUSpatialErrorMaximumLikelihoodOutput = {
@@ -187,9 +201,10 @@ export type GPUSpatialErrorMaximumLikelihoodProps = {
    * stored traces (`spatial-series-tail.ts`). The search interval then reaches the full
    * `0.99 / ||W||_inf` instead of stopping where the plain series loses accuracy (about 0.93 of
    * the bound for `Q = 128`), so strongly autocorrelated data can yield an interior estimate.
-   * It is an approximation that assumes the traces have converged by `Q` (true for a
-   * row-standardized `W`, whose traces tend to the number of components); with stochastic traces
-   * the tail inherits the probe noise. Defaults to false (the plain truncated series), which is a
+   * It is an approximation that assumes a geometric dominant spectral structure has emerged by
+   * `Q`. Row standardization alone does not guarantee this: periodic components can keep the
+   * traces oscillating. With stochastic traces the tail inherits the probe noise. Defaults to
+   * false (the plain truncated series), which is a
    * maintainer decision to revisit once enough measurements exist.
    */
   tailExtrapolation?: boolean;
@@ -259,6 +274,17 @@ export type GPUSpatialErrorMaximumLikelihoodProps = {
  *    from the power traces and `tr3` from the probe pass at the estimated `lambda`
  *    (`createSeriesProbeNodes`). Like spreg, the coefficient standard errors treat `lambda` as
  *    known and the covariance of the betas with `lambda` is zero.
+ *    With exact log determinant, positive residual variance and structurally certified `W = c I`, the profile is constant:
+ *    `lambda` and `s2` cannot be identified separately. Both CPU and GPU forms choose the lower
+ *    search bound, report one boundary candidate and `converged = 0`, retain coefficient
+ *    inference and publish NaN for the lambda standard error/z/p with `varianceDefined = 0`.
+ *    The certificate checks actual CSR entries, including chunk boundaries: eigenvalues that
+ *    merely round to the same float32 number are insufficient. The finite-series mode retains
+ *    its requested approximate objective and does not apply this exact-profile convention.
+ *    A certified scalar profile solves the unfiltered Gram and uses its unfiltered residual
+ *    variance for coefficient inference. Only the published innovation variance is multiplied
+ *    by `(1-c*lambda)^2`; subtracting nearly equal filtered Grams loses precision for negative c
+ *    at the lower bound, where `1-c*lambda` is 0.01.
  * 4. The full log-likelihood is `-n/2 ln(s2) + ln|I - lambda W| - n/2 (ln 2 pi + 1)` (spreg
  *    `logll`); `pr2` is the squared correlation of `y` and `X b`. spreg's `ML_Error` counts the
  *    intercept and predictors only (not `lambda`) in AIC and Schwarz (`k = x.shape[1]`), so the
@@ -275,10 +301,17 @@ export type GPUSpatialErrorMaximumLikelihoodProps = {
  * Belsley number of its raw `[c, X - lambda W X]` Gram matrix, the correlation condition number of
  * the unit-scaled filtered centered system and its largest predictor variance inflation factor.
  *
- * The float32 traces `tr(W^q)` grow like `n ||W||_inf^q`: for a raw (unstandardized) `W` choose
- * `maximumPower` with `||W||_inf^maximumPower < 1e36`, else they overflow and the status is 3.
+ * Power traces use `W / ||W||_inf`, so their magnitudes are bounded by `n` when the norm is
+ * representable and scaling succeeds. Raw-weight Gram and information moments still need to
+ * fit float32; non-finite moments give status 3.
  * Inputs must be finite: a non-finite predictor, response or weight gives status 3 (NaN outputs).
  * At most 15 predictors (the 16-wide Cholesky); no kernel binds more than 8 storage buffers.
+ * Row partials above 4096 tiles are merged pairwise within consecutive groups of at most 4096,
+ * then pairwise over groups, up to REGRESSION_TILE_MAXIMUM_TILE_COUNT (16,777,216 = 4096 squared)
+ * tiles subject to device bindings and the command budget. Through the 4096-tile default target
+ * the historical nodes and summation order are unchanged.
+ * Nested trace layouts retain their historical widths; more than 4096 nonempty chunks use
+ * hierarchical merges rather than a separate chunk-count refusal, subject to the same tile limit.
  */
 export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -299,11 +332,20 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
   readonly tileRowCount: number;
   /** Number of accumulation tiles. */
   readonly tileCount: number;
+  /** Upper bound including trace children, chunk dispatches and information probes. */
+  readonly estimatedCommandNodeCount: number;
 
+  private readonly exactSpectrumRepetitionCount: number;
   private readonly traceTileRowCount: number;
   private readonly traceTileCount: number;
 
   constructor(props: GPUSpatialErrorMaximumLikelihoodProps) {
+    validateRequirement(
+      props.id ?? 'spatial-error-maximum-likelihood',
+      !('exactSpectrumRepetitionCount' in props),
+      'exactSpectrumRepetitionCount is not a public prop; use the panel-error contributor with an entity spectrum'
+    );
+    this.exactSpectrumRepetitionCount = getPanelErrorSpectrumRepetitions(props);
     props = snapshotRegressionConstructionProps(
       props,
       [
@@ -350,7 +392,14 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
       validateCapacity(id, 'maximumPower', maximumPower, SPATIAL_SERIES_TAIL_MINIMUM_POWER, 256); // tail model needs three stored traces
     }
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
-    this.exactLogDeterminant = validateExactLogDeterminant(id, props, rows);
+    const spectrumRepetitions = this.exactSpectrumRepetitionCount;
+    validateCapacity(id, 'exactSpectrumRepetitionCount', spectrumRepetitions);
+    validateRequirement(
+      id,
+      rows % spectrumRepetitions === 0,
+      `row count ${rows} must be divisible by exactSpectrumRepetitionCount ${spectrumRepetitions}`
+    );
+    this.exactLogDeterminant = validateExactLogDeterminant(id, props, rows / spectrumRepetitions);
     validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     validateSinglePackedView(props.response, ['float32'], `${id} response`);
     if (props.response.length !== rows) {
@@ -368,8 +417,8 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     }
     this.traceMode =
       props.traceMode ??
-      (rows <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic');
-    if (this.traceMode === 'exact' && rows > GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT) {
+      (rows <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic');
+    if (this.traceMode === 'exact' && rows > GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS) {
       throw new Error(`${id} exact traces support at most 16384 rows; use traceMode 'stochastic'`);
     }
     if (props.traceProbeCount !== undefined) {
@@ -406,18 +455,49 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
         throw new Error(`${id} output.residuals must hold one row per input row`);
       }
     }
+    if (output.powerTraceStandardErrors) {
+      validateSinglePackedView(
+        output.powerTraceStandardErrors,
+        ['float32'],
+        `${id} output.powerTraceStandardErrors`
+      );
+      validateCapacity(
+        id,
+        'output.powerTraceStandardErrors length',
+        output.powerTraceStandardErrors.length,
+        maximumPower
+      );
+    }
     if (props.tileRowCount !== undefined) {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
-    this.tileRowCount =
-      props.tileRowCount ??
-      Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
+    this.tileRowCount = getRegressionTileLayout(rows, props.tileRowCount).tileRowCount;
     // Tiles never span chunks; a whole CSR has ceil(rows / tileRowCount) tiles.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
+    validateMaximumCount(id, 'tileCount', this.tileCount, REGRESSION_TILE_MAXIMUM_TILE_COUNT);
     const traceLayout = getRegressionTraceLayout(id, props.weights, rows);
     this.traceTileRowCount = traceLayout.tileRowCount;
     this.traceTileCount = traceLayout.tileCount;
+    this.estimatedCommandNodeCount =
+      getRegressionLikelihoodCommandNodeCount({
+        weights: props.weights,
+        rowCount: rows,
+        tileCount: this.tileCount,
+        traceTileCount: traceLayout.tileCount,
+        maximumPower,
+        probeTotal:
+          this.traceMode === 'exact'
+            ? rows
+            : (props.traceProbeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT),
+        stochastic: this.traceMode === 'stochastic',
+        kind: 'error'
+      }) +
+      (this.exactLogDeterminant
+        ? getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).dispatches.length
+        : 0);
+    this.estimatedCommandNodeCount += this.exactLogDeterminant ? 2 : 0;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRegressionOutputDispatches(
       id,
       {
@@ -445,7 +525,8 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
         props.response,
         props.eigenvalues,
         props.traceParameters,
-        ...getGPUSpatialWeightsOrChunksViews(getLikelihoodWeightsWithoutDistances(props.weights))
+        ...getGPUSpatialWeightsOrChunksViews(getLikelihoodWeightsWithoutDistances(props.weights)),
+        ...getRegressionCompletenessViews(props.weights)
       ]
     );
   }
@@ -464,6 +545,12 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
       response: props.response,
       eigenvalues: props.eigenvalues,
       traceParameters: props.traceParameters,
+      ...Object.fromEntries(
+        getRegressionCompletenessViews(props.weights).map((view, index) => [
+          `weights completeness ${index}`,
+          view
+        ])
+      ),
       ...Object.fromEntries(
         getGPUSpatialWeightsOrChunksViews(getLikelihoodWeightsWithoutDistances(props.weights)).map(
           (view, index) => [`weights ${index}`, view]
@@ -495,7 +582,11 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     );
     const tailWGSL = tailExtrapolation ? getSpatialSeriesTailWGSL(maximumPower, 'powerTraces') : '';
     const exact = this.exactLogDeterminant;
-    const exactWGSL = getExactLogDeterminantWGSL('eigenvalues', rowCount);
+    const exactWGSL = getExactLogDeterminantWGSL(
+      'eigenvalues',
+      rowCount / this.exactSpectrumRepetitionCount,
+      this.exactSpectrumRepetitionCount
+    );
     const logDeterminantWGSL = exact
       ? exactWGSL
       : `${getSpatialLogDeterminantWGSL(maximumPower, 'powerTraces', 'infinityNorm[infinityNormOffset]', tailExtrapolation)}${tailWGSL}`;
@@ -517,6 +608,7 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
       props.response,
       props.eigenvalues,
       ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...getRegressionCompletenessViews(weights),
       output.table,
       output.summary,
       output.status.code,
@@ -554,6 +646,8 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     allocate('TRACES', 3);
     allocate('STANDARD_ERRORS', p + 1);
     allocate('VARIANCE_DEFINED');
+    // A certified scalar c, or zero for a non-scalar profile. Zero-link weights already refuse.
+    if (exact) allocate('SCALAR_WEIGHT');
     const slotConstants = Object.entries(slots)
       .map(([name, value]) => `const W_${name}: u32 = ${value}u;`)
       .join('\n');
@@ -561,6 +655,36 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const kernel = createKernelFactory(graph, id, OPERATION);
+    const mergeKernel = (
+      name: string,
+      bindings: WGSLKernelBinding[],
+      invocationCount: number,
+      declarations: string,
+      body: string
+    ) =>
+      getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-${name}`,
+          operation: OPERATION,
+          variant: name,
+          bindings,
+          invocationCount,
+          declarations,
+          body
+        },
+        {
+          tileCount,
+          partials: [
+            {
+              name: name === 'lambda-search' ? 'partialNorm' : 'partial',
+              termCount: bindings[0].view.length / tileCount,
+              ...(name === 'gram-merge' ? {blockWidth: packedCount} : {}),
+              ...(name === 'lambda-search' ? {maxima: {0: 0}} : {})
+            }
+          ]
+        }
+      );
     const workspace = transient('workspace', slotCount);
     const constants = `const ROWS: u32 = ${rowCount}u;
 const K: u32 = ${k}u;
@@ -612,6 +736,11 @@ ${IS_FINITE_VALUE_WGSL}`;
     const residualView = output.residuals ?? transient('residuals', rowCount);
     const partialResiduals = transient('partial-residuals', tileCount * RESIDUAL_SUM_COUNT);
     const residualSums = transient('residual-sums', RESIDUAL_SUM_COUNT);
+    const scalarDifferenceTotal = exact ? transient('scalar-difference-total', 1) : undefined;
+    const scalarDifferencePartials = exact
+      ? transient('scalar-difference-partials', getRegressionTileLayout(rowCount).tileCount)
+      : undefined;
+    const scalarDifferences = exact ? transient('scalar-differences', rowCount) : undefined;
 
     const getRowWGSL = /* wgsl */ `
 ${ROUNDED_DIFFERENCE_WGSL}
@@ -681,6 +810,42 @@ ${
       );
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...(scalarDifferences
+        ? tilePlan.dispatches.map(dispatch =>
+            kernel(
+              `scalar-profile-certificate${dispatch.idSuffix}`,
+              [
+                ...getWeightBindings(dispatch.weights),
+                f32('eigenvalues', props.eigenvalues!, 'read'),
+                f32('scalarDifferences', scalarDifferences, 'read_write')
+              ],
+              dispatch.rowCount,
+              `${constants}${dispatch.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}\n${IS_FINITE_VALUE_WGSL}`,
+              wrapWeightsChunkRowBodyWGSL(
+                dispatch,
+                getSpatialErrorScalarCertificateWGSL().replace(
+                  'eigenvaluesOffset + index',
+                  `eigenvaluesOffset + index % ${props.eigenvalues!.length}u`
+                )
+              )
+            )
+          )
+        : []),
+      ...(scalarDifferences
+        ? getRowTileSumNodes(graph, {
+            id: `${id}-scalar-certificate-sum`,
+            operation: OPERATION,
+            variant: 'scalar-certificate-sum',
+            rowCount,
+            layout: getRegressionTileLayout(rowCount),
+            sumCount: 1,
+            partial: scalarDifferencePartials!,
+            output: scalarDifferenceTotal!,
+            bindings: [f32('differences', scalarDifferences, 'read')],
+            declarations:
+              'fn accumulateRow(row:u32,terms:ptr<function,array<f32,TERM_COUNT>>){(*terms)[0]+=differences[differencesOffset+row];}'
+          })
+        : []),
       ...tileKernel(
         'weights-norm-tiles',
         chunkWeights => [
@@ -723,12 +888,12 @@ ${
     partial[partialOffset + index * ${k + 1}u + slot] = sums[slot];
   }`
       ),
-      kernel(
+      ...mergeKernel(
         'means-merge',
         [f32('partial', partialMeans, 'read'), f32('workspace', workspace, 'read_write')],
         k + 1,
         constants,
-        `${getKahanSumWGSL('partial', 'index', `${k + 1}u`, 'TILE_COUNT')}
+        `${getStridedPairwiseSumWGSL('partial', 'index', `${k + 1}u`, 'TILE_COUNT')}
   workspace[workspaceOffset + W_MEANS + index] = sum / f32(ROWS);`
       ),
       ...tileKernel(
@@ -760,12 +925,12 @@ ${
     partial[partialOffset + index * ${olsSumCount}u + slot] = sums[slot];
   }`
       ),
-      kernel(
+      ...mergeKernel(
         'ols-merge',
         [f32('partial', partialOls, 'read'), f32('olsSums', olsSums, 'read_write')],
         olsSumCount,
         constants,
-        `${getKahanSumWGSL('partial', 'index', `${olsSumCount}u`, 'TILE_COUNT')}
+        `${getStridedPairwiseSumWGSL('partial', 'index', `${olsSumCount}u`, 'TILE_COUNT')}
   olsSums[olsSumsOffset + index] = sum;`
       ),
       kernel(
@@ -827,17 +992,17 @@ ${getCholeskyWGSL(k)}`,
       ...gramTiles(0),
       ...gramTiles(1),
       ...gramTiles(2),
-      kernel(
+      ...mergeKernel(
         'gram-merge',
         [f32('partial', partialGram, 'read'), f32('gram', gram, 'read_write')],
         3 * packedCount,
         constants,
         `let mode = index / PACK;
   let entry = index % PACK;
-  ${getKahanSumWGSL('partial', 'mode * TILE_COUNT * PACK + entry', 'PACK', 'TILE_COUNT')}
+  ${getStridedPairwiseSumWGSL('partial', 'mode * TILE_COUNT * PACK + entry', 'PACK', 'TILE_COUNT')}
   gram[gramOffset + index] = sum;`
       ),
-      kernel(
+      ...mergeKernel(
         'lambda-search',
         [
           f32('partialNorm', partialNorm, 'read'),
@@ -846,6 +1011,9 @@ ${getCholeskyWGSL(k)}`,
             ? getF32Binding('eigenvalues', props.eigenvalues!, 'read')
             : f32('powerTraces', powerTraces, 'read'),
           f32('infinityNorm', infinityNorm, 'read'),
+          ...(scalarDifferenceTotal
+            ? [f32('scalarDifferenceTotal', scalarDifferenceTotal, 'read')]
+            : []),
           f32('workspace', workspace, 'read_write')
         ],
         1,
@@ -923,10 +1091,25 @@ ${getParameterSearchWGSL()}`,
   workspace[workspaceOffset + W_VALID] = 0.0;
   workspace[workspaceOffset + W_CANDIDATES] = 0.0;
   workspace[workspaceOffset + W_AT_BOUNDARY] = 0.0;
+  ${
+    exact
+      ? `let scalarDifferenceSum=scalarDifferenceTotal[scalarDifferenceTotalOffset];
+  workspace[workspaceOffset + W_SCALAR_WEIGHT] = select(0.0, eigenvalues[eigenvaluesOffset], scalarDifferenceSum == 0.0);`
+      : ''
+  }
   let count = gram[gramOffset];
   let responseSquares = gram[gramOffset + packedIndex(K + 1u, K + 1u)];
   if (validNorm && isFiniteValue(count) && isFiniteValue(responseSquares) && count > 0.0 && responseSquares > 0.0) {
-    let result = searchParameter(bound);
+    ${
+      exact
+        ? `var result: SearchResult;
+    if (workspace[workspaceOffset + W_SCALAR_WEIGHT] != 0.0) {
+      result = SearchResult(-bound, 1u, true);
+    } else {
+      result = searchParameter(bound);
+    }`
+        : 'let result = searchParameter(bound);'
+    }
     workspace[workspaceOffset + W_PARAMETER] = result.parameter;
     workspace[workspaceOffset + W_VALID] = select(0.0, 1.0, isFiniteValue(result.parameter));
     workspace[workspaceOffset + W_CANDIDATES] = f32(result.localMaximumCount);
@@ -943,7 +1126,7 @@ ${getCholeskyWGSL(p)}
 ${getSymmetricEigenvalueRangeWGSL(p)}
 ${getBelsleyConditionNumberWGSL(k)}
 ${getGramWGSL()}`,
-        getFilteredSolveBodyWGSL(k, p)
+        getFilteredSolveBodyWGSL(k, p, exact)
       ),
       ...tileKernel(
         'residuals-tiles',
@@ -954,34 +1137,39 @@ ${getGramWGSL()}`,
           f32('residualOut', residualView, 'read_write'),
           f32('partial', partialResiduals, 'read_write')
         ],
-        constants,
+        `${constants}\n${ROUNDED_DIFFERENCE_WGSL}`,
         `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
   let ybar = workspace[workspaceOffset + W_YBAR];
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
   var sums: array<f32, ${RESIDUAL_SUM_COUNT}>;
   for (var row = firstRow; row < lastRow; row++) {
     var fitted = workspace[workspaceOffset + W_BETA];
+    var fittedCentered = 0.0;
     for (var column = 0u; column < K; column++) {
       fitted += design[designOffset + row * K + column] * workspace[workspaceOffset + W_BETA + 1u + column];
+      fittedCentered += getRoundedDifference(design[designOffset + row * K + column], workspace[workspaceOffset + W_MEANS + column], runtimeZero) * workspace[workspaceOffset + W_BETA + 1u + column];
     }
     let u = response[responseOffset + row] - fitted;
-    let y = response[responseOffset + row] - ybar;
+    let y = getRoundedDifference(response[responseOffset + row], ybar, runtimeZero);
     residualOut[residualOutOffset + row] = u;
     sums[0] += u * u;
-    sums[1] += u;
-    sums[2] += y * u;
+    sums[1] += fittedCentered * fittedCentered;
+    sums[2] += y * fittedCentered;
     sums[3] += y * y;
+    sums[4] += fittedCentered;
+    sums[5] += y;
   }
   for (var slot = 0u; slot < ${RESIDUAL_SUM_COUNT}u; slot++) {
     partial[partialOffset + index * ${RESIDUAL_SUM_COUNT}u + slot] = sums[slot];
   }`
       ),
-      kernel(
+      ...mergeKernel(
         'residuals-merge',
         [f32('partial', partialResiduals, 'read'), f32('residualSums', residualSums, 'read_write')],
         RESIDUAL_SUM_COUNT,
         constants,
-        `${getKahanSumWGSL('partial', 'index', `${RESIDUAL_SUM_COUNT}u`, 'TILE_COUNT')}
+        `${getStridedPairwiseSumWGSL('partial', 'index', `${RESIDUAL_SUM_COUNT}u`, 'TILE_COUNT')}
   residualSums[residualSumsOffset + index] = sum;`
       )
     ];
@@ -1028,7 +1216,7 @@ ${traceOnlyWGSL}`,
   workspace[workspaceOffset + W_TRACES + 1u] = traceTwo;
   workspace[workspaceOffset + W_TRACES + 2u] = traceThree;
   let information = traceTwo + traceThree - 2.0 * traceOne * traceOne / n;
-  if (information > 0.0 && isFiniteValue(information)) {
+  if (information > 0.0 && isFiniteValue(information)${exact ? ' && workspace[workspaceOffset + W_SCALAR_WEIGHT] == 0.0' : ''}) {
     workspace[workspaceOffset + W_STANDARD_ERRORS + P] = sqrt(1.0 / information);
   } else {
     workspace[workspaceOffset + W_STANDARD_ERRORS + P] = getNaN();
@@ -1057,13 +1245,25 @@ ${finiteDeclarations}
 ${ERFC_VALUE_WGSL}
 ${logDeterminantWGSL}
 ${getTableRowWGSL()}
-${getFinishWGSL(k, maximumPower, stochastic, output.status.converged !== undefined, exact)}`,
+${getFinishWGSL(k, maximumPower, stochastic, output.status.converged !== undefined, exact, tailExtrapolation)}`,
         'finish();'
       )
     );
     return [
       ...nodes,
-      ...getRegressionWeightsSuppressionNodes<Parameters>(graph, id, props.weights, props.output)
+      ...getRegressionWeightsSuppressionNodes<Parameters>(
+        graph,
+        id,
+        props.weights,
+        props.output,
+        undefined,
+        {
+          table: (k + 2) * GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE,
+          summary: GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH,
+          residuals: rowCount,
+          powerTraceStandardErrors: maximumPower
+        }
+      )
     ];
   }
 }
@@ -1096,9 +1296,19 @@ fn getGramDerivative(first: u32, second: u32, lambda: f32) -> f32 {
  * status code, the raw coefficients, `s2`, the conditioning and the coefficient standard errors
  * (the lambda standard error is written by the variance kernel).
  */
-function getFilteredSolveBodyWGSL(k: number, p: number): string {
+function getFilteredSolveBodyWGSL(k: number, p: number, exact: boolean): string {
+  const solveParameter = exact ? 'solveParameter' : 'lambda';
+  const covarianceSigma2 = exact ? 'regressionSigma2' : 'sigma2';
   return `let n = f32(ROWS);
   let lambda = workspace[workspaceOffset + W_PARAMETER];
+  ${
+    exact
+      ? `let scalarWeight = workspace[workspaceOffset + W_SCALAR_WEIGHT];
+  // W=cI scales every column alike. Solve the raw Gram, retaining coefficient inference
+  // without cancellation when 1-c*lambda is small; rescale only the published variance.
+  let solveParameter = select(lambda, 0.0, scalarWeight != 0.0);`
+      : ''
+  }
   let nan = getNaN();
   for (var slot = 0u; slot < P + 1u; slot++) {
     workspace[workspaceOffset + W_STANDARD_ERRORS + slot] = nan;
@@ -1145,7 +1355,7 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
     return;
   }
   for (var column = 0u; column < P; column++) {
-    let diagonal = getGramValue(column, column, lambda);
+    let diagonal = getGramValue(column, column, ${solveParameter});
     if (!(diagonal > 0.0) || !isFiniteValue(diagonal)) {
       workspace[workspaceOffset + W_STATUS] = 1.0;
       return;
@@ -1154,11 +1364,11 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
   }
   for (var row = 0u; row < P; row++) {
     for (var column = 0u; column < P; column++) {
-      let value = getGramValue(row, column, lambda) / (scale[row] * scale[column]);
+      let value = getGramValue(row, column, ${solveParameter}) / (scale[row] * scale[column]);
       a[row * P + column] = value;
       unit[row * P + column] = value;
     }
-    rhs[row] = getGramValue(row, K + 1u, lambda) / scale[row];
+    rhs[row] = getGramValue(row, K + 1u, ${solveParameter}) / scale[row];
   }
   if (!choleskyFactor_${p}(&a)) {
     workspace[workspaceOffset + W_STATUS] = 1.0;
@@ -1174,15 +1384,24 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
   }
   choleskySolve_${p}(&a, &rhs);
   var filtered: array<f32, ${p}>;
-  var errorSumOfSquares = getGramValue(K + 1u, K + 1u, lambda);
+  var errorSumOfSquares = getGramValue(K + 1u, K + 1u, ${solveParameter});
   for (var row = 0u; row < P; row++) {
     filtered[row] = rhs[row] / scale[row];
-    errorSumOfSquares -= 2.0 * filtered[row] * getGramValue(row, K + 1u, lambda);
+    errorSumOfSquares -= 2.0 * filtered[row] * getGramValue(row, K + 1u, ${solveParameter});
     for (var column = 0u; column < P; column++) {
-      errorSumOfSquares += filtered[row] * (rhs[column] / scale[column]) * getGramValue(row, column, lambda);
+      errorSumOfSquares += filtered[row] * (rhs[column] / scale[column]) * getGramValue(row, column, ${solveParameter});
     }
   }
-  let sigma2 = errorSumOfSquares / n;
+  let ${covarianceSigma2} = errorSumOfSquares / n;
+  ${
+    exact
+      ? `var sigma2 = regressionSigma2;
+  if (scalarWeight != 0.0) {
+    let filteringScale = 1.0 - lambda * scalarWeight;
+    sigma2 = regressionSigma2 * filteringScale * filteringScale;
+  }`
+      : ''
+  }
   if (!(sigma2 > 0.0) || !isFiniteValue(sigma2)) {
     workspace[workspaceOffset + W_STATUS] = 3.0;
     return;
@@ -1197,7 +1416,8 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
     workspace[workspaceOffset + W_BETA + 1u + column] = slope;
   }
   workspace[workspaceOffset + W_BETA] = intercept;
-  // Covariance sigma2 (Xs'Xs)^-1 = sigma2 D^-1 (unit^-1) D^-1 from unit solves.
+  // Covariance on the solved design. For a certified scalar profile, the common filter
+  // scale cancels between variance and Gram, so use the raw variance and raw Gram directly.
   var covariance: array<f32, ${p * p}>;
   var vifs = 0.0;
   for (var column = 0u; column < P; column++) {
@@ -1205,7 +1425,7 @@ function getFilteredSolveBodyWGSL(k: number, p: number): string {
     unitVector[column] = 1.0;
     choleskySolve_${p}(&a, &unitVector);
     for (var row = 0u; row < P; row++) {
-      covariance[row * P + column] = sigma2 * unitVector[row] / (scale[row] * scale[column]);
+      covariance[row * P + column] = ${covarianceSigma2} * unitVector[row] / (scale[row] * scale[column]);
     }
     if (column > 0u) {
       vifs = max(vifs, unitVector[column]);
@@ -1255,7 +1475,8 @@ function getFinishWGSL(
   maximumPower: number,
   stochastic: boolean,
   hasConverged: boolean,
-  exact: boolean
+  exact: boolean,
+  tailExtrapolation: boolean
 ): string {
   const rows = k + 2;
   const summary = (slot: number) => `summaryOut[summaryOutOffset + ${slot}u]`;
@@ -1283,10 +1504,12 @@ fn finish() {
   let lambda = workspace[workspaceOffset + W_PARAMETER];
   let sigma2 = workspace[workspaceOffset + W_SIGMA2];
   let residualSquares = residualSums[residualSumsOffset];
-  let residualTotal = residualSums[residualSumsOffset + 1u];
-  let responseResidual = residualSums[residualSumsOffset + 2u];
-  let responseSquares = residualSums[residualSumsOffset + 3u];
-  if (!isFiniteValue(residualSquares) || !isFiniteValue(responseSquares) || !isFiniteValue(responseResidual)) {
+  let predictionTotal = residualSums[residualSumsOffset + 4u];
+  let responseTotal = residualSums[residualSumsOffset + 5u];
+  let predictionVariance = residualSums[residualSumsOffset + 1u] - (predictionTotal / n) * predictionTotal;
+  let predictionCovariance = residualSums[residualSumsOffset + 2u] - (predictionTotal / n) * responseTotal;
+  let responseSquares = residualSums[residualSumsOffset + 3u] - (responseTotal / n) * responseTotal;
+  if (!isFiniteValue(residualSquares) || !isFiniteValue(responseSquares) || !isFiniteValue(predictionCovariance)) {
     fail(3u);
     return;
   }
@@ -1298,8 +1521,6 @@ fn finish() {
   let logLikelihood = -0.5 * n * log(sigma2) + logDeterminant - 0.5 * n * (${getWGSLFloatLiteral(LN_TWO_PI)} + 1.0);
   // spreg ML_Error counts the intercept and the predictors only.
   let parameterCount = f32(P);
-  let predictionCovariance = responseSquares - responseResidual;
-  let predictionVariance = responseSquares - 2.0 * responseResidual + residualSquares - residualTotal * residualTotal / n;
   let correlationCondition = workspace[workspaceOffset + W_CONDITIONING + 1u];
   let bound = workspace[workspaceOffset + W_BOUND];
   let norm = workspace[workspaceOffset + W_NORM];
@@ -1311,7 +1532,8 @@ fn finish() {
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_LIKELIHOOD)} = logLikelihood;
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AIC)} = 2.0 * parameterCount - 2.0 * logLikelihood;
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SCHWARZ)} = parameterCount * log(n) - 2.0 * logLikelihood;
-  ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED)} = predictionCovariance * predictionCovariance / (responseSquares * predictionVariance);
+  // Ratios first preserve correlation when products of finite sums overflow or underflow.
+  ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED)} = (predictionCovariance / responseSquares) * (predictionCovariance / predictionVariance);
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED_SPATIAL)} = getNaN();
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_RESIDUAL_SUM_OF_SQUARES)} = residualSquares;
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONDITION_NUMBER)} = workspace[workspaceOffset + W_CONDITIONING];
@@ -1329,6 +1551,7 @@ fn finish() {
     scaled < 1.0
   );
   ${exact ? `${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND)} = 0.0;` : ''}
+  ${!exact && tailExtrapolation ? `${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND)} += abs(getSeriesTailLogDeterminant(lambda * workspace[workspaceOffset + W_NORM]));` : ''}
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_VARIANCE_DEFINED)} = workspace[workspaceOffset + W_VARIANCE_DEFINED];
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOCAL_MAXIMUM_COUNT)} = workspace[workspaceOffset + W_CANDIDATES];
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_DETERMINANT)} = logDeterminant;

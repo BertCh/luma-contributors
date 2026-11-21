@@ -3,9 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {KeplerAllocationError} from '../runtime/dataset-registry';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {
-  GPUSpatialClustering,
-  getGPUSpatialClusteringParameterValues
+  GPUDBSCAN,
+  getGPUDBSCANParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
 import {
@@ -44,7 +45,7 @@ function makePointText(frame: LocalFrame, x: number, y: number): string {
 }
 
 // ---------------------------------------------------------------------------------------------
-// DBSCAN (GPUSpatialClustering)
+// DBSCAN (GPUDBSCAN)
 // ---------------------------------------------------------------------------------------------
 
 export type DbscanResult = {
@@ -52,6 +53,13 @@ export type DbscanResult = {
   labels: Int32Array;
   coreFlags: Uint8Array;
 };
+
+export const MAXIMUM_DBSCAN_CPU_POINTS = 20000;
+
+/** Bucketed CPU DBSCAN has a point cap, independent of the matrix routes' pair-work cap. */
+export function isDbscanCpuPointCountAdmitted(count: number): boolean {
+  return Number.isInteger(count) && count >= 0 && count <= MAXIMUM_DBSCAN_CPU_POINTS;
+}
 
 /** Round the coordinate difference once, after compensating only measured translation errors. */
 function getDbscanCoordinateDifference(
@@ -66,17 +74,18 @@ function getDbscanCoordinateDifference(
   return difference + (differenceError + (firstError - secondError));
 }
 
-/** Canonical DBSCAN labeling, as documented for GPUSpatialClustering. */
+/** Canonical bucketed CPU DBSCAN, at most MAXIMUM_DBSCAN_CPU_POINTS = 20000 total points. */
 export function computeDbscanLabels(
   sample: Sample,
   epsilon: number,
-  minimumPoints: number
+  minimumSamples: number
 ): DbscanResult {
   const n = sample.count;
-  if (n > 20000)
-    throw new Error(
-      'density-clustering: points count exceeds the 20,000 point limit; reduce or partition the input.'
-    );
+  validateRequirement(
+    'density-clustering:',
+    isDbscanCpuPointCountAdmitted(n),
+    `points count must be at most ${MAXIMUM_DBSCAN_CPU_POINTS}; received ${n}; reduce or partition the input.`
+  );
   const epsilonSquared = epsilon * epsilon;
   // Widen bucket lookup only; the radius check compensates measured translation errors below.
   let maximumTranslationError = 0;
@@ -126,7 +135,7 @@ export function computeDbscanLabels(
     let count = 0;
     for (const _other of neighbors(index)) {
       count++;
-      if (count >= minimumPoints) {
+      if (count >= minimumSamples) {
         coreFlags[index] = 1;
         break;
       }
@@ -179,7 +188,7 @@ export async function computeDbscanLabelsGpu(
   context: CatalogGpuContext,
   sample: Sample,
   epsilon: number,
-  minimumPoints: number
+  minimumSamples: number
 ): Promise<DbscanResult> {
   const n = sample.count;
   const positions = new Float32Array(n * 2);
@@ -196,15 +205,15 @@ export async function computeDbscanLabelsGpu(
     const labels = session.output('labels', 'uint32', n);
     const coreFlags = session.output('core-flags', 'uint32', n);
     session.graph.add(
-      new GPUSpatialClustering({
+      new GPUDBSCAN({
         id: 'catalog-density-clustering',
         positions: session.input('positions', positions, 'float32x2'),
         parameters: session.input(
           'parameters',
-          getGPUSpatialClusteringParameterValues({
+          getGPUDBSCANParameterValues({
             bounds: [-1, -1, maxX + 1, maxY + 1],
             epsilon,
-            minimumPoints
+            minimumSamples
           }),
           'float32'
         ),
@@ -531,7 +540,7 @@ export function runLocalOutlierFactor(
 // Mutual-reachability density clustering (flat cut of the HDBSCAN* hierarchy)
 // ---------------------------------------------------------------------------------------------
 
-export function runHierarchicalDensityClustering(
+export function runHDBSCANCut(
   points: CatalogFeatureCollection,
   parameters: {
     minimumSamples: number;
@@ -710,6 +719,32 @@ export function runSimilarLocations(
 // Location allocation (p-median)
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Demand weights must be non-negative: a negative weight would reward distance and invert the
+ * p-median objective. Such features are skipped and added to `droppedCount` (once per feature).
+ */
+function removeNegativeWeights(sample: Sample): Sample {
+  const kept: number[] = [];
+  const droppedFeatures = new Set<number>();
+  for (let index = 0; index < sample.count; index++)
+    if (sample.value[index] >= 0) kept.push(index);
+    else droppedFeatures.add(sample.sourceIndex[index]);
+  if (!droppedFeatures.size) return sample;
+  const pickFloat = (values: Float64Array) => Float64Array.from(kept, index => values[index]);
+  const pickInteger = (values: Int32Array) => Int32Array.from(kept, index => values[index]);
+  return {
+    x: pickFloat(sample.x),
+    y: pickFloat(sample.y),
+    ...(sample.translationErrorX ? {translationErrorX: pickFloat(sample.translationErrorX)} : {}),
+    ...(sample.translationErrorY ? {translationErrorY: pickFloat(sample.translationErrorY)} : {}),
+    value: pickFloat(sample.value),
+    sourceIndex: pickInteger(sample.sourceIndex),
+    partIndex: pickInteger(sample.partIndex),
+    count: kept.length,
+    droppedCount: sample.droppedCount + droppedFeatures.size
+  };
+}
+
 export function runLocationAllocation(
   demand: CatalogFeatureCollection,
   candidates: CatalogFeatureCollection,
@@ -725,9 +760,15 @@ export function runLocationAllocation(
     [...collectAllPositions(demand), ...collectAllPositions(candidates)],
     {shift: 'minimum'}
   );
-  const demandSample = readPointSamples(demand, parameters.weightProperty, frame);
+  const demandSample = removeNegativeWeights(
+    readPointSamples(demand, parameters.weightProperty, frame)
+  );
   const candidateSample = readPointSamples(candidates, '', frame);
-  addDroppedDiagnostic(diagnostics, demandSample.droppedCount + candidateSample.droppedCount);
+  addDroppedDiagnostic(
+    diagnostics,
+    demandSample.droppedCount + candidateSample.droppedCount,
+    'Features without a point position or with a missing, non-numeric or negative weight are skipped.'
+  );
   const demandCount = demandSample.count;
   const candidateCount = candidateSample.count;
   // Both demand and candidate points are required, with at least as many candidates as facilities.

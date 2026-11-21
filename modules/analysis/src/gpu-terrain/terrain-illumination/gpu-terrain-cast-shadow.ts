@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from './terrain-output-selection';
+
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -32,6 +34,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters,
   validateRasterOutputTexture
 } from '../../raster-analysis/raster-band-utils';
@@ -129,6 +132,12 @@ export function getGPUTerrainCastShadowParameterValues(
   grid: GPURasterMetadata,
   target?: Float32Array
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainCastShadowParameterValues', grid);
+  if (settings.sweepSourceGrid)
+    validateRasterGridOrthogonal(
+      'getGPUTerrainCastShadowParameterValues sweepSourceGrid',
+      settings.sweepSourceGrid
+    );
   const usesSharedSource =
     settings.sweepReferenceCellSize !== undefined ||
     settings.sweepOrigin !== undefined ||
@@ -187,7 +196,7 @@ export function getGPUTerrainCastShadowParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUTerrainCastShadow}; at least one is required. */
-export type GPUTerrainCastShadowOutput = {
+export type GPUTerrainCastShadowOutput = TerrainOutputSelection<{
   /** Fraction of the solar disk above the local horizon per pixel, in `[0, 1]`. */
   sunVisibility?: GraphDataView<'float32'>;
   /** Horizon angle in degrees along the sun azimuth. */
@@ -196,7 +205,7 @@ export type GPUTerrainCastShadowOutput = {
   outputValidity?: GraphDataView<'uint32'>;
   /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `sunVisibility`. */
   sunVisibilityTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainCastShadow}.
@@ -348,6 +357,8 @@ export class GPUTerrainCastShadow implements GPUCommandNodeProducer {
     );
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,

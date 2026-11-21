@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../../raster-analysis/raster-grid/raster-construction-snapshot';
 import {
   validateTerrainBindings,
   getTerrainGateScratchByteLength
@@ -53,7 +55,7 @@ export const GPU_TERRAIN_WATERSHED_UNRESOLVED = 0xfffffffe;
 
 /** One-row status words of {@link GPUTerrainWatersheds}. */
 export type GPUTerrainWatershedsStatus = {
-  /** One row set to 1 when pointer jumping reached its fixpoint. Presence is compile-time. */
+  /** One row set to 1 when pointer jumping is stable and every valid path reaches a genuine stop. Presence is compile-time. */
   converged?: GraphDataView<'uint32'>;
   /** One row set to 1 when `maximumIterations` ran out before pointer jumping converged. Presence is compile-time. */
   iterationLimitReached?: GraphDataView<'uint32'>;
@@ -68,8 +70,8 @@ export type GPUTerrainWatershedsOutput = {
    * cell, inclusive, or `GPU_TERRAIN_WATERSHED_NONE` when the path reaches none. Without pour points:
    * the cell index of the terminal cell (outlet or pit) the cell drains to. Invalid cells are always
    * `GPU_TERRAIN_WATERSHED_NONE`. `GPU_TERRAIN_WATERSHED_UNRESOLVED` on valid cells whose path
-   * meets an unresolved direction before a stop cell, and on every cell whose pointer jumping did
-   * not reach its fixpoint (`status.converged` 0).
+   * meets an unresolved direction or a receiver cycle before a stop cell, or has not reached its
+   * stop within the pointer-jumping budget. Other completed paths retain their labels.
    */
   labels: GraphDataView<'uint32'>;
   /** One-row status words. */
@@ -126,9 +128,11 @@ export type GPUTerrainWatershedsProps = {
  * Watershed delineation on one raster tile from D8 flow directions.
  *
  * Every cell follows its D8 receivers to a stop cell: a pour point when `pourPoints` is given, the
- * terminal cell otherwise. The path is resolved with GPU pointer jumping (in-place
- * `pointer[c] = pointer[pointer[c]]` rounds), the same technique as parallel list ranking
- * (Wyllie 1979). The fixpoint is unique, so labels never depend on thread scheduling. Pour points
+ * terminal cell otherwise. The path is resolved with GPU pointer jumping
+ * (`pointer[c] = pointer[pointer[c]]` rounds), the same technique as parallel list ranking
+ * (Wyllie 1979). Explicit budgets read a separate snapshot per round, making partial labels
+ * deterministic. The default route updates in place; its completed acyclic fixpoint is unique.
+ * Pour points
  * are marked with `atomicMin` so that duplicates resolve to the lowest point index. Nested pour
  * points give nested watersheds: each cell takes its nearest downstream pour point, and cells that
  * drain past all pour points are `GPU_TERRAIN_WATERSHED_NONE`.
@@ -154,6 +158,30 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
   readonly props: GPUTerrainWatershedsProps;
 
   constructor(props: GPUTerrainWatershedsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'directionEncoding',
+      'maximumIterations',
+      'flowDirections',
+      'pourPoints',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(props.output, ['labels', 'status']);
+    props = {
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      output: Object.freeze({
+        ...capturedOutput,
+        status:
+          capturedOutput.status &&
+          snapshotConstructionFields(capturedOutput.status, [
+            'converged',
+            'iterationLimitReached',
+            'iterationCount'
+          ])
+      })
+    };
     this.id = props.id ?? 'terrain-watersheds';
     this.props = props;
     const {id} = this;
@@ -250,6 +278,7 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
         width,
         height,
         maxIterations: props.maximumIterations ?? 32,
+        stableRounds: props.maximumIterations !== undefined,
         flowDirections: props.flowDirections,
         directionEncoding: props.directionEncoding,
         pointer,
@@ -265,6 +294,16 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
       ...(markers
         ? [{name: 'markers', view: markers, type: 'u32' as const, access: 'read' as const}]
         : []),
+      ...(output.status?.converged
+        ? [
+            {
+              name: 'converged',
+              view: output.status.converged,
+              type: 'atomic<u32>' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : []),
       {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'}
     ];
     nodes.push(
@@ -274,7 +313,7 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
         variant: markers ? 'label-pour-points' : 'label-basins',
         bindings,
         invocationCount: cellCount,
-        declarations: getTerrainFlowTracingWGSL(width, height),
+        declarations: getTerrainFlowTracingWGSL(width, height, props.directionEncoding),
         body: `let reached = pointer[pointerOffset + index];
   var label = NO_CELL;
   if (flowDirections[flowDirectionsOffset + index] != NO_CELL) {
@@ -285,11 +324,14 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
         : `if (flowDirections[flowDirectionsOffset + reached] != NO_CELL) { label = reached; }
     let isStop = false;`
     }
-    // A pointer that is not a fixpoint means the jumping stopped early. A path that ends on an
-    // unresolved direction (and no pour point) has an unknown destination, not an outlet.
+    // Doubling can collapse a receiver cycle to self-pointers. A genuine terminal must have
+    // no original receiver, unless an explicit pour point stops the path there.
+    let reachedCode = getFlowDirectionCode(flowDirections[flowDirectionsOffset + reached]);
     if (pointer[pointerOffset + reached] != reached ||
-        (!isStop && flowDirections[flowDirectionsOffset + reached] == UNRESOLVED_DIRECTION)) {
+        (!isStop && (reachedCode == UNRESOLVED_DIRECTION ||
+                     getFlowReceiver(reached, reachedCode) != NO_CELL))) {
       label = ${GPU_TERRAIN_WATERSHED_UNRESOLVED}u;
+      ${output.status?.converged ? 'atomicStore(&converged[convergedOffset], 0u);' : ''}
     }
   }
   labels[labelsOffset + index] = label;`

@@ -113,7 +113,13 @@ cases.push({
           reachability: view('float32', 4096),
           predecessors: view('uint32', 4096),
           labels: view('uint32', 4096),
-          status: view('uint32', 3)
+          ports: {
+            status: {
+              iterationCount: view('uint32', 1),
+              converged: view('uint32', 1),
+              invalidCount: view('uint32', 1)
+            }
+          }
         }
       })
     );
@@ -138,8 +144,14 @@ cases.push({
           reachability: view('float32', 65536),
           predecessors: view('uint32', 65536),
           labels: view('uint32', 65536),
-          status: view('uint32', 3),
-          ports: {status: {candidateOverflow: view('uint32', 1)}}
+          ports: {
+            status: {
+              candidateOverflow: view('uint32', 1),
+              iterationCount: view('uint32', 1),
+              converged: view('uint32', 1),
+              invalidCount: view('uint32', 1)
+            }
+          }
         }
       })
     );
@@ -163,7 +175,7 @@ for (const [eventCount, queryCount] of [
           output: {
             intensity: view('float32', queryCount),
             kernelMass: view('float32', eventCount),
-            status: view('uint32', queryCount)
+            validity: view('uint32', queryCount)
           }
         })
       );
@@ -259,7 +271,13 @@ for (const predecessorCorrection of [false, true]) {
             reachability: view('float32', 4096),
             predecessors: view('uint32', 4096),
             labels: view('uint32', 4096),
-            status: view('uint32', 3),
+            ports: {
+              status: {
+                iterationCount: view('uint32', 1),
+                converged: view('uint32', 1),
+                invalidCount: view('uint32', 1)
+              }
+            },
             clusterIntervals: view('uint32x2', 4096),
             clusterSummary: view('uint32', 2)
           }

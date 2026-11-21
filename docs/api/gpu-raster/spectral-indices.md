@@ -1,14 +1,75 @@
 # Calibrated spectral indices
 
 `GPURasterNDWI`, `GPURasterNBR`, `GPURasterEVI`, and `GPURasterSAVI` compose
-`GPURasterBandMath` into graph-native recipes. They accept co-registered buffer bands,
+`GPURasterBandMath` into graph-native recipes. They accept co-registered buffer or texture bands,
 caller-owned float32 outputs, and a separate uint32 validity output. They do not upload,
 submit, read back, resample, choose sensor bands, or decode cloud/quality bits.
-`GPURasterNDVI` remains the existing vegetation normalized-difference contributor.
+`GPURasterNDVI` is the upstream vegetation normalized-difference contributor, imported and
+scheduled differently from the four analysis recipes:
+
+```ts
+import {GPURasterNDVI, type GPURasterNDVIProps} from '@luma.gl/graph/gpu-raster';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+
+export function addNDVI(graph: GPUCommandGraph, props: GPURasterNDVIProps): void {
+  new GPURasterNDVI(props).addToGraph(graph);
+}
+```
+
+NDVI and `GPURasterBandMath` accept buffer bands. For textures, explicitly gather each
+selected channel and its validity before scheduling NDVI. `applyCalibration: true` applies each
+texture band's scale/offset once; the gathered buffer bands below are already calibrated:
+
+```ts
+import {createTransientView, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPURasterNDVI, GPURasterTextureToBuffer, type GPURasterTextureBand} from '@luma.gl/graph/gpu-raster';
+
+export function addTextureNDVI(
+  graph: GPUCommandGraph, width: number, height: number,
+  nearInfrared: GPURasterTextureBand, red: GPURasterTextureBand,
+  output: GraphDataView<'float32'>, outputValidity: GraphDataView<'uint32'>
+): void {
+  const nearInfraredValues = createTransientView(graph, 'texture-ndvi-nir', 'float32', width * height);
+  const nearInfraredValidity = createTransientView(graph, 'texture-ndvi-nir-validity', 'uint32', width * height);
+  const redValues = createTransientView(graph, 'texture-ndvi-red', 'float32', width * height);
+  const redValidity = createTransientView(graph, 'texture-ndvi-red-validity', 'uint32', width * height);
+  new GPURasterTextureToBuffer({
+    id: 'texture-ndvi-gather-nir', input: nearInfrared, applyCalibration: true,
+    output: nearInfraredValues, outputValidity: nearInfraredValidity
+  }).addToGraph(graph);
+  new GPURasterTextureToBuffer({
+    id: 'texture-ndvi-gather-red', input: red, applyCalibration: true,
+    output: redValues, outputValidity: redValidity
+  }).addToGraph(graph);
+  new GPURasterNDVI({
+    id: 'texture-ndvi', width, height,
+    nearInfrared: {id: 'nir', format: 'float32', validity: nearInfraredValidity,
+      storage: {kind: 'buffer', values: nearInfraredValues}},
+    red: {id: 'red', format: 'float32', validity: redValidity,
+      storage: {kind: 'buffer', values: redValues}},
+    output, outputValidity
+  }).addToGraph(graph);
+}
+```
+
+The two texture dimensions must equal `width` and `height`. Each gather rejects raw nodata,
+source-mask zeros and nonfinite values; its output validity reaches the matching NDVI buffer
+band. NDVI intersects those two validity domains and rejects unusable denominators. The graph
+owns these four transient views; output buffers remain caller-owned. Use distinct ID prefixes
+when adding more than one copy of this example to a graph.
+
+For a texture-capable recipe without explicit gather wiring, `GPURasterSAVI` with
+`soilAdjustment: 0` computes the NDVI formula and internally gathers textures; it retains the
+SAVI API and `graph.add` scheduling contract. See the
+[NDVI-to-temporal-mean handoff](./remote-sensing.md#ndvi-to-temporal-mean) for per-date outputs,
+QA and stack layout.
 
 Add these producers with `graph.add(new GPURasterNBR(props))` (likewise NDWI, EVI and SAVI).
-`getCommandNodes(graph)` returns their ordered passes without scheduling them; `addToGraph` has
-been removed. EVI returns six band-math passes, SAVI three, and NDWI/NBR one each.
+`getCommandNodes(graph)` returns the four analysis recipes' ordered passes without scheduling them.
+For those four recipes use `graph.add`; upstream NDVI uses `.addToGraph(graph)`. EVI returns six band-math passes, SAVI three, and NDWI/NBR one each.
+Texture inputs add public `GPURasterTextureToBuffer` gather passes for the selected channel,
+resolving raw nodata, validity and calibration before band math. They read texture contents on every
+submission. Buffer inputs retain their existing band-math route.
 Repeated inspection on the same graph reuses those passes. It is safe to inspect with
 `getCommandNodes(graph)` and then schedule once with `graph.add(producer)`.
 The returned list is frozen and readonly; attempts to remove or reorder inspected passes cannot
@@ -63,7 +124,7 @@ buffer's actual spectral response or physical units.
 
 ## Calibration, masks, and denominators
 
-Each `GPURasterBufferBand` supplies `scale` and `offset`, applying
+Each `GPURasterBand` supplies `scale` and `offset`, applying
 `reflectance = raw * scale + offset`. Defaults are one and zero for already calibrated
 inputs. Raw integer nodata is compared in its native format before it can be lost to
 float32 conversion. Each source's `validity` accepts any nonzero flag. The output
@@ -160,11 +221,15 @@ These examples use explicit synthetic inputs and expose real GPU graph captures.
 
 ### GPURasterNDWI
 
+Construct `GPURasterNDWI` using the [Formula and band contracts](#formula-and-band-contracts). See [Usage](#usage) and [Calibration, masks, and denominators](#calibration-masks-and-denominators).
+
 {/* lens:GPURasterNDWI */}
 
 ::lens{scenario=gpu-raster.raster-ndwi rung=graph}
 
 ### GPURasterNBR
+
+Construct `GPURasterNBR` using the [Formula and band contracts](#formula-and-band-contracts). See [Usage](#usage) and [Calibration, masks, and denominators](#calibration-masks-and-denominators).
 
 {/* lens:GPURasterNBR */}
 
@@ -172,11 +237,15 @@ These examples use explicit synthetic inputs and expose real GPU graph captures.
 
 ### GPURasterEVI
 
+Construct `GPURasterEVI` using the [Formula and band contracts](#formula-and-band-contracts). See [Usage](#usage) and [Calibration, masks, and denominators](#calibration-masks-and-denominators).
+
 {/* lens:GPURasterEVI */}
 
 ::lens{scenario=gpu-raster.raster-evi rung=graph}
 
 ### GPURasterSAVI
+
+Construct `GPURasterSAVI` using the [Formula and band contracts](#formula-and-band-contracts). See [Usage](#usage) and [Calibration, masks, and denominators](#calibration-masks-and-denominators).
 
 {/* lens:GPURasterSAVI */}
 

@@ -248,3 +248,189 @@ it('retains the mathematical midpoint when opposing finite samples overflow a fl
   );
   expect(Array.from(result.segments)).toEqual([1, 1.5, 1, 0.5]);
 });
+
+it('WRT-01 reports segment loss without stitching in the CPU helper and named operation', async () => {
+  const sceneGrid = makeGPURasterMetadata({width: 2, height: 2});
+  const scene = {
+    values: Float32Array.of(0, 1, 1, 0),
+    levels: Float32Array.of(0.5),
+    parameters: getGPUIsolinesParameterValues({levelCount: 1, extent: [0, 0, 2, 2]}, sceneGrid)
+  };
+  // A checkerboard cell has two crossings/segments, so capacity one loses one.
+  for (const vertexCapacity of [undefined, 4]) {
+    const result = computeIsolinesOnCPU(scene, {
+      grid: sceneGrid,
+      segmentCapacity: 1,
+      vertexCapacity
+    });
+    expect([
+      result.requiredCount[0],
+      result.count[0],
+      result.overflow[0],
+      result.polylineOverflow[0]
+    ]).toEqual([2, 1, 1, 1]);
+  }
+  const operation = new CPUIsolinesOperation({
+    grid: sceneGrid,
+    segmentCapacity: 1,
+    values: 'values',
+    levels: 'levels',
+    parameters: 'parameters',
+    output: {
+      segments: 'segments',
+      segmentLevels: 'segmentLevels',
+      status: {count: 'count', overflow: 'overflow', polylineOverflow: 'polylineOverflow'}
+    }
+  });
+  const rows = (values: Float32Array): GPUCPUVector => ({
+    format: 'float32',
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  const retainedWord = Uint32Array.of(99);
+  const observed = [retainedWord[0]];
+  for (const values of [scene.values, new Float32Array(4)]) {
+    const result = await operation.execute({
+      inputs: {values: rows(values), levels: rows(scene.levels), parameters: rows(scene.parameters)}
+    });
+    retainedWord.set(result['polylineOverflow'] as Uint32Array);
+    observed.push(retainedWord[0]);
+  }
+  expect(observed).toEqual([99, 1, 0]);
+});
+
+it('EGR-13 decodes only retained CPU polyline rows and rejects incomplete layouts', async () => {
+  const {decodeGPUIsolinesPolylines} = await import(
+    '../../../src/raster-analysis/isolines/gpu-isolines'
+  );
+  const result = computeIsolinesOnCPU(input, {grid, segmentCapacity: 8, vertexCapacity: 12});
+  const readback = {polylines: result, status: result};
+  const decoded = decodeGPUIsolinesPolylines(readback, {
+    levels: input.levels,
+    localOrigin: [100, 200]
+  });
+  expect(decoded).toEqual({
+    segmentComplete: true,
+    polylineComplete: true,
+    complete: true,
+    polylines: [
+      {
+        levelIndex: 0,
+        levelValue: 0.5,
+        closed: false,
+        coordinates: [
+          [101, 202.5],
+          [101, 201.5],
+          [101, 200.5]
+        ]
+      },
+      {
+        levelIndex: 1,
+        levelValue: 1.5,
+        closed: false,
+        coordinates: [
+          [102, 202.5],
+          [102, 201.5],
+          [102, 200.5]
+        ]
+      }
+    ]
+  });
+  const bytes = (values: Float32Array | Uint32Array) => {
+    const storage = new Uint8Array(values.byteLength + 3);
+    storage.set(new Uint8Array(values.buffer, values.byteOffset, values.byteLength), 1);
+    return storage.subarray(1, 1 + values.byteLength);
+  };
+  const packed = {
+    polylines: {
+      ...result,
+      vertices: bytes(result.vertices),
+      polylineOffsets: bytes(result.polylineOffsets),
+      polylineCount: result.polylineCount.slice().buffer
+    },
+    status: result
+  };
+  expect(
+    decodeGPUIsolinesPolylines(packed, {levels: bytes(input.levels)}).polylines[0].coordinates
+  ).toEqual([
+    [1, 2.5],
+    [1, 1.5],
+    [1, 0.5]
+  ]);
+  for (const invalid of [
+    {...readback, status: {...result, overflow: new Uint32Array(0)}},
+    {...readback, polylines: {...result, vertices: new Uint8Array(3)}},
+    {...readback, polylines: {...result, polylineCount: Uint32Array.of(20)}},
+    {...readback, polylines: {...result, polylineOffsets: Uint32Array.of(0, 0, 6)}},
+    {...readback, polylines: {...result, polylineLevels: Uint32Array.of(0, 9)}},
+    {...readback, polylines: {...result, vertexCount: Uint32Array.of(25)}}
+  ])
+    expect(() => decodeGPUIsolinesPolylines(invalid, {levels: input.levels})).toThrow(
+      /decodeGPUIsolinesPolylines/
+    );
+  const segmentOverflow = computeIsolinesOnCPU(input, {
+    grid,
+    segmentCapacity: 1,
+    vertexCapacity: 12
+  });
+  expect(
+    decodeGPUIsolinesPolylines(
+      {polylines: segmentOverflow, status: segmentOverflow},
+      {levels: input.levels}
+    )
+  ).toMatchObject({
+    segmentComplete: false,
+    polylineComplete: false,
+    complete: false,
+    polylines: []
+  });
+  const truncated = computeIsolinesOnCPU(input, {grid, segmentCapacity: 8, vertexCapacity: 3});
+  expect(
+    decodeGPUIsolinesPolylines({polylines: truncated, status: truncated}, {levels: input.levels})
+  ).toMatchObject({segmentComplete: true, polylineComplete: false, complete: false});
+});
+
+it('EGR-13 retains closure and bounds empty results without reading stale coordinate tails', async () => {
+  const {decodeGPUIsolinesPolylines} = await import(
+    '../../../src/raster-analysis/isolines/gpu-isolines'
+  );
+  const polylines = {
+    vertices: Float32Array.of(0, 0, 1, 0, 0, 0, NaN, NaN),
+    polylineOffsets: Uint32Array.of(0, 3, 999),
+    polylineLevels: Uint32Array.of(0, 999),
+    polylineClosed: Uint32Array.of(1, 999),
+    polylineCount: Uint32Array.of(1),
+    vertexCount: Uint32Array.of(3)
+  };
+  const status = {overflow: Uint32Array.of(0), polylineOverflow: Uint32Array.of(0)};
+  expect(
+    decodeGPUIsolinesPolylines({polylines, status}, {levels: Float32Array.of(7)}).polylines
+  ).toEqual([
+    {
+      coordinates: [
+        [0, 0],
+        [1, 0],
+        [0, 0]
+      ],
+      levelIndex: 0,
+      levelValue: 7,
+      closed: true
+    }
+  ]);
+  expect(
+    decodeGPUIsolinesPolylines(
+      {
+        polylines: {...polylines, polylineCount: Uint32Array.of(0), vertexCount: Uint32Array.of(0)},
+        status
+      },
+      {levels: new Float32Array(0)}
+    ).polylines
+  ).toEqual([]);
+  expect(() =>
+    decodeGPUIsolinesPolylines(
+      {polylines, status: {...status, polylineOverflow: new Uint32Array(0)}},
+      {levels: Float32Array.of(7)}
+    )
+  ).toThrow(/polylineOverflow/);
+});

@@ -12,8 +12,10 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
+  getAccessibilityWeightsLossChecks,
   validateCatchmentViews,
   validateCatchmentStorage
 } from './catchment-accessibility-validation';
@@ -61,7 +63,7 @@ export type GPUCatchmentAccessibilityOutput = {
    * and was left out of every facility's ratio. The accessibility of a flagged row does not read
    * its own demand and remains valid. The same output as `GPUHuffTradeAreas`.
    */
-  validity?: GraphDataView<'uint32'>;
+  demandValidity?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -97,6 +99,15 @@ export type GPUCatchmentAccessibilityProps = {
    * the transpose or a second `GPUNeighborSearch` from demand to facilities.
    */
   demandWeights?: GPUSpatialWeights;
+  /**
+   * Optional one-row completeness word of the costs behind both weights tables, for example the
+   * `output.status.complete` of `GPUNetworkCostWeights` (fed by the cost matrix
+   * `status.converged` and `costLimit`). A finite weights table cannot show a route the matrix
+   * did not finish or a horizon below the catchment cutoff, so when this word is 0 the dependent
+   * results are suppressed exactly like supplied weights loss: `accessibility` and `ratios` become
+   * NaN and `reachableFacilities` 0xffffffff. `demandValidity` is unaffected (NET-101).
+   */
+  costsComplete?: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPUCatchmentAccessibilityOutput;
 };
@@ -122,17 +133,17 @@ export type GPUCatchmentAccessibilityProps = {
  * Each output row accumulates its neighbors in slot order in one invocation, so results are
  * deterministic and match a sequential CPU sum within f32 rounding. Neighbor IDs outside the
  * partner row space are skipped, and a non-finite demand or ratio (from a non-finite supply) is
- * missing: it adds nothing to a sum. The optional `validity` output flags the demand rows whose
- * demand was missing.
+ * missing: it adds nothing to a sum. The optional `demandValidity` output flags finite demand.
  *
  * Network costs: `GPUNetworkCostWeights` turns a network cost matrix into the facility weights and
  * their transpose, which is how the `catchment` option of `GPUNetworkAccessibility` runs.
  *
  * When both weights declare spatial contexts, they must be compatible.
  * Pass each producer's described outputWeights to retain its loss flags. Supplied nonzero
- * overflow/candidateOverflow suppresses dependent float results with NaN and forward counts
- * with 0xffffffff. Demand validity still describes finite demand only. Clearing loss flags
- * restores ordinary results on the next submission of the same compiled graph.
+ * overflow/candidateOverflow, or zero status.complete, suppresses dependent float results with
+ * NaN and forward counts with 0xffffffff. Completeness is read independently of candidate loss.
+ * Demand validity still describes finite demand only. Clear negative loss flags and write nonzero
+ * completeness once the input is whole to restore results on the next graph submission.
  *
  * Spatial context: this operator reads no positions, only the weights, so it has no
  * `spatialContext` prop. Distance units and the coordinate space (planar, or great-circle meters)
@@ -151,6 +162,30 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
 
   constructor(props: GPUCatchmentAccessibilityProps) {
     const id = props.id ?? 'catchment-accessibility';
+    validateRequirement(
+      id,
+      !('validity' in props.output),
+      'output.validity was removed. Use output.demandValidity'
+    );
+    props = {
+      ...props,
+      facilityWeights: {
+        ...props.facilityWeights,
+        status: props.facilityWeights.status ? {...props.facilityWeights.status} : undefined
+      },
+      demandWeights: props.demandWeights
+        ? {
+            ...props.demandWeights,
+            status: props.demandWeights.status ? {...props.demandWeights.status} : undefined
+          }
+        : undefined,
+      output: snapshotConstructionFields(props.output, [
+        'accessibility',
+        'ratios',
+        'reachableFacilities',
+        'demandValidity'
+      ])
+    };
     this.id = id;
     this.props = props;
     if (props.method !== '2sfca' && props.method !== '3sfca') {
@@ -203,12 +238,20 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
     if (output.reachableFacilities && output.reachableFacilities.length !== this.demandCount) {
       throw new Error(`${id} output.reachableFacilities length must equal the demand count`);
     }
-    if (output.validity) {
-      validateSinglePackedView(output.validity, ['uint32'], `${id} output.validity`);
+    if (props.costsComplete) {
+      validateSinglePackedView(props.costsComplete, ['uint32'], `${id} costsComplete`);
       validateRequirement(
         id,
-        output.validity.length === this.demandCount,
-        'output.validity must have one row per demand location'
+        props.costsComplete.length === 1,
+        'costsComplete must contain exactly one row'
+      );
+    }
+    if (output.demandValidity) {
+      validateSinglePackedView(output.demandValidity, ['uint32'], `${id} output.demandValidity`);
+      validateRequirement(
+        id,
+        output.demandValidity.length === this.demandCount,
+        'output.demandValidity must have one row per demand location'
       );
     }
     const weightViews = getWeightViews(props);
@@ -242,19 +285,20 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
         reads: {offsets: demandWeights.offsets, neighbors: demandWeights.neighbors},
         writes: {reachableFacilities: output.reachableFacilities}
       },
-      {reads: {demand: props.demand}, writes: {validity: output.validity}}
+      {reads: {demand: props.demand}, writes: {demandValidity: output.demandValidity}}
     ]);
   }
 
   /**
    * Returns the nodes in order: `selection` (3SFCA only), `ratios`, `scores`, and `reachable` and
-   * `validity` when requested.
+   * `demandValidity` when requested.
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, facilityCount, demandCount} = this;
-    const {supply, demand, facilityWeights, output} = props;
+    const {supply, demand, facilityWeights} = props;
+    const {output} = props;
     const {accessibility} = output;
     const demandWeights = props.demandWeights ?? facilityWeights;
     validateSpatialAnalysisPackedOutputAllocations(graph, id, output);
@@ -264,7 +308,7 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
       accessibility,
       output.ratios,
       output.reachableFacilities,
-      output.validity,
+      output.demandValidity,
       ...getWeightViews(props)
     ]);
     validateGraphChunkBindingRanges(graph, id, {
@@ -413,7 +457,7 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
         })
       );
     }
-    if (output.validity) {
+    if (output.demandValidity) {
       nodes.push(
         getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-validity`,
@@ -421,7 +465,7 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
           variant: 'validity',
           bindings: [
             {name: 'demand', view: demand, type: 'f32', access: 'read'},
-            {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'}
+            {name: 'validity', view: output.demandValidity, type: 'u32', access: 'read_write'}
           ],
           invocationCount: demandCount,
           declarations: IS_FINITE_BITS_WGSL,
@@ -429,18 +473,32 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
         })
       );
     }
-    const forwardLoss = getCatchmentWeightLossFlags(demandWeights);
-    const reverseLoss = getCatchmentWeightLossFlags(facilityWeights);
+    // Supplied loss flags suppress when nonzero; the costs completeness word when zero.
+    const forwardLoss = getAccessibilityWeightsLossChecks(id, demandWeights);
+    const reverseLoss = getAccessibilityWeightsLossChecks(id, facilityWeights);
+    const incompleteCosts = props.costsComplete ? [{flag: props.costsComplete, test: '== 0u'}] : [];
     for (const [name, view, flags, type, value] of [
-      ['accessibility', output.accessibility, [...forwardLoss, ...reverseLoss], 'f32', 'getNaN()'],
       [
-        'ratios',
-        output.ratios,
-        [...reverseLoss, ...(isThreeStep ? forwardLoss : [])],
+        'accessibility',
+        output.accessibility,
+        [...forwardLoss, ...reverseLoss, ...incompleteCosts],
         'f32',
         'getNaN()'
       ],
-      ['reachableFacilities', output.reachableFacilities, forwardLoss, 'u32', '0xffffffffu']
+      [
+        'ratios',
+        output.ratios,
+        [...reverseLoss, ...(isThreeStep ? forwardLoss : []), ...incompleteCosts],
+        'f32',
+        'getNaN()'
+      ],
+      [
+        'reachableFacilities',
+        output.reachableFacilities,
+        [...forwardLoss, ...incompleteCosts],
+        'u32',
+        '0xffffffffu'
+      ]
     ] as const) {
       if (!view || flags.length === 0) continue;
       nodes.push(
@@ -449,7 +507,7 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
           operation: OPERATION,
           variant: 'incomplete-input',
           bindings: [
-            ...flags.map((flag, index) => ({
+            ...flags.map(({flag}, index) => ({
               name: `loss${index}`,
               view: flag,
               type: 'u32' as const,
@@ -459,7 +517,7 @@ ${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
           ],
           invocationCount: view.length,
           declarations: type === 'f32' ? GET_NAN_WGSL : undefined,
-          body: `if (${flags.map((_, index) => `loss${index}[loss${index}Offset] != 0u`).join(' || ')}) {
+          body: `if (${flags.map(({test}, index) => `loss${index}[loss${index}Offset] ${test}`).join(' || ')}) {
   result[resultOffset + index] = ${value};
 }`
         })
@@ -478,16 +536,12 @@ function getWeightViews(props: GPUCatchmentAccessibilityProps): GraphDataView[] 
         weights.offsets,
         weights.neighbors,
         weights.weights,
-        ...getCatchmentWeightLossFlags(weights)
+        ...getAccessibilityWeightsLossChecks(props.id ?? 'catchment-accessibility', weights).map(
+          check => check.flag
+        )
       );
     }
   }
+  if (props.costsComplete) views.push(props.costsComplete);
   return views;
-}
-
-/** Supplied loss flags must be declared as graph inputs and checked on every submission. */
-function getCatchmentWeightLossFlags(weights: GPUSpatialWeights): GraphDataView<'uint32'>[] {
-  return [weights.status?.overflow, weights.status?.candidateOverflow].filter(
-    (view): view is GraphDataView<'uint32'> => view !== undefined
-  );
 }

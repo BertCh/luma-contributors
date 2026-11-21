@@ -83,7 +83,7 @@ function publish(uncertainty: number) {
 const source = () =>
   readFileSync(
     new URL(
-      '../../../src/gpu-spatial-analysis/polygon-overlay/gpu-polygon-overlay.ts',
+      '../../../src/gpu-spatial-analysis/polygon-overlay/polygon-overlay-types.ts',
       import.meta.url
     ),
     'utf8'

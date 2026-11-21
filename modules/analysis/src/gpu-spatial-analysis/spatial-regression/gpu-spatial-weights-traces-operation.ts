@@ -48,7 +48,7 @@ export type SpatialWeightsTracesOperationProps = Pick<
 /** GPU trace operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUSpatialWeightsTracesOperation extends GPUContributorOperation {
   constructor(props: SpatialWeightsTracesOperationProps) {
-    props = snapshotRegressionOperationProps(props);
+    props = snapshotRegressionOperationProps(props, ['approximation']);
     const id = props.id ?? 'spatial-weights-traces';
     validateCompleteRegressionWeights(id, props.weights);
     super({

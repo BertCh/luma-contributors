@@ -285,11 +285,27 @@ export default defineScene<ChicagoRouteWorkbenchOptions>({
 }));
 graph.add(new GPUNetworkTimeRouting({
   stateVertices, transitions, costs: ${state.timeModel === 'affine-duration' ? 'affineDurations' : 'piecewiseArrivalSamples'},
-  costModel: '${state.timeModel}', endpoints, departure, output: {arrivals, predecessorTransitions, summary}
+  costModel: '${state.timeModel}',${state.timeModel === 'piecewise-arrival' ? '\n  samplesPerTransition: 3,' : ''}
+  endpoints, departure, output: {arrivals, predecessorTransitions, summary}
 }));
-const restriction = prepareGPUNetworkRestrictionStates(nodeCount, directedEdges, [[66, 38]]);
+const restriction = prepareGPUNetworkRestrictionStates({
+  nodeCount,
+  edges: directedEdges, // [source, target] pairs in original edge order
+  restrictions: [[66, 38]]
+});
+const restrictionStateVertices = view(
+  resources.createBuffer('restriction-state-vertices', restriction.stateVertices),
+  'uint32',
+  restriction.stateCount
+);
+const restrictionTransitions = view(
+  resources.createBuffer('restriction-transitions', restriction.transitions),
+  'uint32x2',
+  restriction.transitionCount
+);
 graph.add(new GPUNetworkTimeRouting({
-  stateVertices: restriction.stateVertices, transitions: restriction.transitions,
+  id: 'chicago-route-workbench-hypothetical-turn-restriction',
+  stateVertices: restrictionStateVertices, transitions: restrictionTransitions,
   costs: affineDurationCostsMappedBy(restriction.originalEdges), endpoints, departure, output
 }));
 graph.add(new GPUAlternativeRoutes({topology, sources, targets, routeCount: 3, maximumExpansions: 100000, maximumFrontierSize: 1024, output}));

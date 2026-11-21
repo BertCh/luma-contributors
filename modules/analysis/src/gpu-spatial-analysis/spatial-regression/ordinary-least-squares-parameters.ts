@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /** Number of float32 elements in the optional per-frame ordinary least squares parameter view. */
 export const GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH = 1;
 
@@ -92,12 +97,15 @@ export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTO
  */
 export const GPU_ORDINARY_LEAST_SQUARES_SUMMARY_PRECISION_WARNING = 21;
 
+/** Smallest positive ridge request the float32 GPU route can apply without flushing to zero. */
+export const MINIMUM_GPU_ORDINARY_LEAST_SQUARES_RIDGE_LAMBDA = 2 ** -126;
+
 /** Per-frame settings of `GPUOrdinaryLeastSquares`, packed by {@link getGPUOrdinaryLeastSquaresParameterValues}. */
 export type GPUOrdinaryLeastSquaresSettings = {
   /**
    * Ridge penalty in squared predictor units, added as `lambda * I` to the centered normal matrix
    * of the predictors (never to the intercept). A value that is not finite and positive means no
-   * penalty. Defaults to 0.
+   * penalty. Positive finite requests must remain normal and finite in float32 (at least 2^-126); smaller penalties cannot be applied reliably on Metal. Defaults to 0.
    */
   ridgeLambda?: number;
 };
@@ -118,6 +126,34 @@ export function getGPUOrdinaryLeastSquaresParameterValues(
       `getGPUOrdinaryLeastSquaresParameterValues target must hold ${GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH} element`
     );
   }
-  target[0] = settings.ridgeLambda ?? 0;
+  const requested = settings.ridgeLambda ?? 0;
+  const packed = Math.fround(requested);
+  validateRequirement(
+    'getGPUOrdinaryLeastSquaresParameterValues',
+    !(Number.isFinite(requested) && requested > 0) ||
+      (Number.isFinite(packed) && packed >= MINIMUM_GPU_ORDINARY_LEAST_SQUARES_RIDGE_LAMBDA),
+    `ridgeLambda must remain a positive normal float32 (at least ${MINIMUM_GPU_ORDINARY_LEAST_SQUARES_RIDGE_LAMBDA}) or be 0; received ${requested} (float32 ${packed})`
+  );
+  target[0] = packed;
   return target;
+}
+
+/** Resolve exact view-based predictor widths; name-based operation forms require an explicit width. @internal */
+export function resolveOrdinaryLeastSquaresPredictorCount(
+  id: string,
+  predictorLength: number,
+  responseLength: number,
+  explicitPredictorCount?: number,
+  maximumPredictorCount = 0xffffffff
+): number {
+  validateRequirement(
+    id,
+    explicitPredictorCount !== undefined ||
+      (responseLength > 0 && predictorLength % responseLength === 0),
+    `predictorCount must be explicit for zero-row or non-divisible layouts; received predictors.length ${predictorLength} and response.length ${responseLength}. Write predictorCount and a matching row-major design instead`
+  );
+  const predictorCount =
+    explicitPredictorCount ?? (responseLength > 0 ? predictorLength / responseLength : NaN);
+  validateCapacity(id, 'predictorCount', predictorCount, 1, maximumPredictorCount);
+  return predictorCount;
 }

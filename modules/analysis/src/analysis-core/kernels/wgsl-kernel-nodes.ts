@@ -29,9 +29,10 @@ import {
   type GraphResourceUse,
   type GraphTextureView
 } from '@luma.gl/graph/gpu-core';
-import {validateWGSLIdentifier} from './wgsl-identifiers';
+import {validateKernelNamespace} from './kernel-namespace';
 import type {GPUCompactOutput} from './gpu-contributor-types';
 import {
+  isGraphVectorView,
   validateCapacity,
   validateMaximumCount,
   validateRequirement,
@@ -129,17 +130,17 @@ override MAXIMUM_Y: u32;`,
     },
     body: `let itemCount = min(count[countOffset + COUNT_ROW], MAXIMUM_ITEM_COUNT);
   let invocationCount = itemCount * INVOCATIONS_PER_ITEM + ADDITIONAL_INVOCATION_COUNT;
-  let workgroupCount = (invocationCount + TARGET_WORKGROUP_SIZE - 1u) / TARGET_WORKGROUP_SIZE;
+  let workgroupCount = invocationCount / TARGET_WORKGROUP_SIZE + select(0u, 1u, invocationCount % TARGET_WORKGROUP_SIZE != 0u);
   var x = min(workgroupCount, MAXIMUM_X);
   var y = 1u;
   var z = 1u;
   if (workgroupCount > MAXIMUM_X) {
     x = MAXIMUM_X;
-    y = min((workgroupCount + MAXIMUM_X - 1u) / MAXIMUM_X, MAXIMUM_Y);
+    y = min(workgroupCount / MAXIMUM_X + select(0u, 1u, workgroupCount % MAXIMUM_X != 0u), MAXIMUM_Y);
   }
   if (workgroupCount > MAXIMUM_X * MAXIMUM_Y) {
     y = MAXIMUM_Y;
-    z = (workgroupCount + MAXIMUM_X * MAXIMUM_Y - 1u) / (MAXIMUM_X * MAXIMUM_Y);
+    z = workgroupCount / (MAXIMUM_X * MAXIMUM_Y) + select(0u, 1u, workgroupCount % (MAXIMUM_X * MAXIMUM_Y) != 0u);
   }
   dispatch[dispatchOffset] = x;
   dispatch[dispatchOffset + 1u] = y;
@@ -374,13 +375,12 @@ export function createWGSLKernelNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: WGSLKernelProps<Parameters>
 ): GPUCommandNode<Parameters> {
-  for (const binding of props.bindings) {
-    validateWGSLIdentifier(props.id, 'binding name', binding.name);
-    validateWGSLIdentifier(props.id, 'binding offset', `${binding.name}Offset`);
-  }
-  for (const texture of props.textures ?? []) {
-    validateWGSLIdentifier(props.id, 'texture name', texture.name);
-  }
+  validateKernelNamespace(props.id, props.bindings, props.textures ?? [], [
+    'main',
+    'INVOCATION_COUNT',
+    'WGSL_KERNEL_DISPATCH_X',
+    'WGSL_KERNEL_DISPATCH_Y'
+  ]);
   const workgroupSize =
     props.workgroupSize ??
     (props.guardIndex === false
@@ -493,6 +493,12 @@ fn main(
       writeByteLength += byteLength;
     }
   }
+  const recordEntry: WGSLKernelNodeRecordEntry = {
+    props,
+    source: kernelSource,
+    workgroupSize,
+    layout
+  };
   const node = createGPUComputeCommandNode<Parameters>({
     id: props.id,
     resources,
@@ -507,7 +513,7 @@ fn main(
       readByteLength,
       writeByteLength
     },
-    compile: ({device}) => {
+    compile: function compileRecordedKernel({device}) {
       const kernel = new Kernel(device, {
         id: props.id,
         source: kernelSource,
@@ -541,6 +547,11 @@ fn main(
           ]
         }
       });
+      registerCompiledWGSLKernelNodeRecord(
+        graph,
+        resolveWGSLKernelNodeRecord(recordEntry),
+        compileRecordedKernel
+      );
       // The binding record is rebuilt only when a resolved buffer or texture view changes. That
       // saves the JavaScript allocation of the `getViewBinding` records on every encode, nothing
       // more: `Kernel.dispatch` passes the bindings to `ComputePass.setBindings`, which asks the
@@ -585,12 +596,7 @@ fn main(
   });
   // One WeakMap lookup when the graph records nothing. When it does, the entry references only
   // values the node's compile and encode closures already hold.
-  WGSL_KERNEL_NODE_RECORDS.get(graph)?.set(props.id, {
-    props,
-    source: kernelSource,
-    workgroupSize,
-    layout
-  });
+  WGSL_KERNEL_NODE_RECORDS.get(graph)?.set(props.id, recordEntry);
   return node;
 }
 
@@ -729,10 +735,60 @@ type WGSLKernelNodeRecordEntry = {
  * Graphs whose kernel facts are kept, keyed weakly by graph. The compiled graph publishes node ids,
  * not node objects, and `graph.add` copies nodes, so entries are keyed by node id within a graph.
  */
-const WGSL_KERNEL_NODE_RECORDS = new WeakMap<
+// Symbol.for shares the versioned registry across ESM/CommonJS copies in the same realm.
+const RECORD_REGISTRY_KEY = Symbol.for('@luma-contributors/analysis/wgsl-kernel-records/v1');
+const COMPILED_RECORD_REGISTRY_KEY = Symbol.for(
+  '@luma-contributors/analysis/wgsl-selected-kernel-records/v2'
+);
+const CALLBACK_RECORD_REGISTRY_KEY = Symbol.for(
+  '@luma-contributors/analysis/wgsl-compile-callback-records/v2'
+);
+type KernelRecordRegistry = WeakMap<
   object,
   Map<string, WGSLKernelNodeRecordEntry | WGSLKernelNodeRecord>
->();
+>;
+const sharedRecordRegistries = globalThis as typeof globalThis & {
+  [RECORD_REGISTRY_KEY]?: KernelRecordRegistry;
+  [COMPILED_RECORD_REGISTRY_KEY]?: KernelRecordRegistry;
+  [CALLBACK_RECORD_REGISTRY_KEY]?: WeakMap<object, WGSLKernelNodeRecord>;
+};
+sharedRecordRegistries[RECORD_REGISTRY_KEY] ??= new WeakMap();
+const WGSL_KERNEL_NODE_RECORDS = sharedRecordRegistries[RECORD_REGISTRY_KEY];
+sharedRecordRegistries[COMPILED_RECORD_REGISTRY_KEY] ??= new WeakMap();
+const WGSL_COMPILED_KERNEL_NODE_RECORDS = sharedRecordRegistries[COMPILED_RECORD_REGISTRY_KEY];
+sharedRecordRegistries[CALLBACK_RECORD_REGISTRY_KEY] ??= new WeakMap();
+const WGSL_COMPILE_CALLBACK_RECORDS = sharedRecordRegistries[CALLBACK_RECORD_REGISTRY_KEY];
+
+/** Record facts from the selected custom node's successful compile, separately from candidates. @internal */
+export function registerCompiledWGSLKernelNodeRecord<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  record: WGSLKernelNodeRecord,
+  compileCallback?: object
+): void {
+  if (!isRecordingWGSLKernelNodes(graph) || !compileCallback) return;
+  WGSL_COMPILE_CALLBACK_RECORDS.set(compileCallback, {
+    ...record,
+    constants: {...record.constants},
+    bindings: record.bindings.map(binding => ({...binding})),
+    textures: record.textures.map(texture => ({...texture})),
+    workgroupSize: [...record.workgroupSize],
+    workgroups: [...record.workgroups]
+  });
+}
+
+/**
+ * Facts captured when a selected graph callback returns a successfully compiled executable.
+ * Independent inspection of an original node callback never publishes selected graph facts.
+ * GPUCommandGraph builders compile once; the selected snapshot remains stable for that builder.
+ * The ordinary getter deliberately retains its documented last-created lookup.
+ */
+export function getCompiledWGSLKernelNodeRecord<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  nodeId: string
+): WGSLKernelNodeRecord | undefined {
+  const entry = WGSL_COMPILED_KERNEL_NODE_RECORDS.get(graph)?.get(nodeId);
+  return entry && resolveWGSLKernelNodeRecord(entry);
+}
 
 /** Register the actual module and graph bindings of a custom analysis kernel. No-op unless recording is enabled. */
 export function registerWGSLKernelNodeRecord<Parameters>(
@@ -759,7 +815,41 @@ export function registerWGSLKernelNodeRecord<Parameters>(
  * the graph's nodes do not already hold.
  */
 export function recordWGSLKernelNodes(graph: GPUCommandGraph<any>): void {
-  if (!WGSL_KERNEL_NODE_RECORDS.has(graph)) WGSL_KERNEL_NODE_RECORDS.set(graph, new Map());
+  if (WGSL_KERNEL_NODE_RECORDS.has(graph)) return;
+  WGSL_KERNEL_NODE_RECORDS.set(graph, new Map());
+  const addComputePass = graph.addComputePass.bind(graph);
+  // Observe the public selection boundary: graph.add copies nodes through addComputePass.
+  graph.addComputePass = node => {
+    const compile = node.compile;
+    const compileAsync = node.compileAsync;
+    const publishSelected = (callback: object) => {
+      const record = WGSL_COMPILE_CALLBACK_RECORDS.get(callback);
+      if (!record || record.id !== node.id) return;
+      let selected = WGSL_COMPILED_KERNEL_NODE_RECORDS.get(graph);
+      if (!selected) {
+        selected = new Map();
+        WGSL_COMPILED_KERNEL_NODE_RECORDS.set(graph, selected);
+      }
+      selected.set(node.id, record);
+    };
+    addComputePass({
+      ...node,
+      compile: context => {
+        WGSL_COMPILE_CALLBACK_RECORDS.delete(compile);
+        const executable = compile(context);
+        publishSelected(compile);
+        return executable;
+      },
+      ...(compileAsync && {
+        compileAsync: async context => {
+          WGSL_COMPILE_CALLBACK_RECORDS.delete(compileAsync);
+          const executable = await compileAsync(context);
+          publishSelected(compileAsync);
+          return executable;
+        }
+      })
+    });
+  };
 }
 
 /** Whether {@link recordWGSLKernelNodes} was called for `graph`. */
@@ -779,7 +869,12 @@ export function getWGSLKernelNodeRecord(
   nodeId: string
 ): WGSLKernelNodeRecord | undefined {
   const entry = WGSL_KERNEL_NODE_RECORDS.get(graph)?.get(nodeId);
-  if (!entry) return undefined;
+  return entry && resolveWGSLKernelNodeRecord(entry);
+}
+
+function resolveWGSLKernelNodeRecord(
+  entry: WGSLKernelNodeRecordEntry | WGSLKernelNodeRecord
+): WGSLKernelNodeRecord {
   if (!('props' in entry)) return entry;
   const {props, source, workgroupSize, layout} = entry;
   return {
@@ -893,7 +988,7 @@ export function createTransientUint32Rows<Parameters>(
   id: string,
   template: GraphDataView | GraphVectorView
 ): GraphDataView<'uint32'> | GraphVectorView<'uint32'> {
-  if (!(template instanceof GraphVectorView)) {
+  if (!isGraphVectorView(template)) {
     return createTransientView(graph, id, 'uint32', template.length);
   }
   let emptyChunk: GraphDataView<'uint32'> | undefined;

@@ -13,7 +13,7 @@ import type {
   KeplerPolygonWeightsSettings
 } from '../src/recipes/analysis-recipe';
 import {AnalysisRuntime} from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 
 function square(left: number, bottom: number) {
   return {
@@ -255,7 +255,7 @@ test('polygon analysis keeps original rows, rejects incomplete topology and reus
       seed: 7,
       permutationCount: 99,
       significanceLevel: 0.9999,
-      inference: 'legacy-directed-pseudo',
+      alternative: 'geoda-legacy',
       multipleTesting: 'none',
       islands: 'exclude',
       quantileMethod: 'type-5'
@@ -267,6 +267,7 @@ test('polygon analysis keeps original rows, rejects incomplete topology and reus
     // D remains in the four-value type-5 distribution; geometryless E=1000 is excluded first.
     // The lowest quantile has an exterior -Infinity bound, with median (20 + 60) / 2 = 40.
     expect(analysis.summary?.quantileLisa).toEqual({
+      alternative: 'geoda-legacy',
       boundaries: [-Infinity, 40],
       validCount: 4,
       islandCount: 1,

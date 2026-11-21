@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {toDegrees, toRadians} from '@math.gl/core';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {EARTH_RADIUS_METERS} from '../analysis/catalog-geodesy';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {
@@ -85,11 +86,32 @@ export type KeplerQuantileLISASettings = Readonly<{
   seed: number;
   permutationCount: number;
   significanceLevel: number;
-  inference: 'legacy-directed-pseudo';
+  /** Inclusive upper, inclusive two-sided, or the anti-conservative GeoDa compatibility tail. */
+  alternative: 'greater' | 'two-sided' | 'geoda-legacy';
   multipleTesting: 'none';
   islands: 'exclude';
   quantileMethod: 'type-5';
 }>;
+
+export function resolveKeplerQuantileLISAAlternative(
+  settings: Partial<Pick<KeplerQuantileLISASettings, 'alternative'>>,
+  id = 'kepler-quantile-lisa',
+  defaultAlternative?: KeplerQuantileLISASettings['alternative']
+): KeplerQuantileLISASettings['alternative'] {
+  validateRequirement(
+    id,
+    !('inference' in settings),
+    "inference was removed; use alternative: 'geoda-legacy'"
+  );
+  const suppliedAlternative = settings.alternative;
+  const alternative = suppliedAlternative === undefined ? defaultAlternative : suppliedAlternative;
+  validateRequirement(
+    id,
+    alternative === 'greater' || alternative === 'two-sided' || alternative === 'geoda-legacy',
+    `alternative must be 'greater', 'two-sided', or 'geoda-legacy'; received ${String(alternative)}`
+  );
+  return alternative;
+}
 
 /** Geographic interpolation limits: uint32 rows and one device storage binding of cells. */
 export const MAXIMUM_KEPLER_IDW_SOURCE_ROWS = 2 ** 24 - 1;
@@ -108,6 +130,8 @@ export type KeplerIDWSettings = Readonly<{
     height: number;
   }>;
   searchRadius: number;
+  /** Search may wrap across the antimeridian and poles; omitted means clipped. */
+  longitudeSearch?: 'clipped' | 'wrapped';
   power: number;
   neighborCount: number;
   minimumNeighborCount: number;
@@ -131,6 +155,8 @@ export type KeplerKrigingSettings = Readonly<{
     height: number;
   }>;
   searchRadiusMeters: number;
+  /** Search may wrap across the antimeridian and poles; omitted means clipped. */
+  longitudeSearch?: 'clipped' | 'wrapped';
   neighborCount: number;
   minimumNeighbors: number;
   variogram: Readonly<{
@@ -417,6 +443,9 @@ export function parseKeplerAnalysisRecipe(value: unknown): KeplerAnalysisRecipe 
       break;
     }
     case 'quantile-lisa-points': {
+      const alternative = resolveKeplerQuantileLISAAlternative(
+        operation as KeplerQuantileLISASettings
+      );
       checkKeys(operation, [
         'kind',
         'column',
@@ -426,7 +455,7 @@ export function parseKeplerAnalysisRecipe(value: unknown): KeplerAnalysisRecipe 
         'seed',
         'permutationCount',
         'significanceLevel',
-        'inference',
+        'alternative',
         'multipleTesting',
         'islands',
         'quantileMethod'
@@ -456,7 +485,7 @@ export function parseKeplerAnalysisRecipe(value: unknown): KeplerAnalysisRecipe 
           MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS
         ),
         significanceLevel,
-        inference: readChoice(operation['inference'], ['legacy-directed-pseudo'] as const),
+        alternative,
         multipleTesting: readChoice(operation['multipleTesting'], ['none'] as const),
         islands: readChoice(operation['islands'], ['exclude'] as const),
         quantileMethod: readChoice(operation['quantileMethod'], ['type-5'] as const)
@@ -464,6 +493,9 @@ export function parseKeplerAnalysisRecipe(value: unknown): KeplerAnalysisRecipe 
       break;
     }
     case 'quantile-lisa-polygons': {
+      const alternative = resolveKeplerQuantileLISAAlternative(
+        operation as KeplerQuantileLISASettings
+      );
       checkKeys(operation, [
         'kind',
         'column',
@@ -473,7 +505,7 @@ export function parseKeplerAnalysisRecipe(value: unknown): KeplerAnalysisRecipe 
         'seed',
         'permutationCount',
         'significanceLevel',
-        'inference',
+        'alternative',
         'multipleTesting',
         'islands',
         'quantileMethod'
@@ -503,7 +535,7 @@ export function parseKeplerAnalysisRecipe(value: unknown): KeplerAnalysisRecipe 
           MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS
         ),
         significanceLevel,
-        inference: readChoice(operation['inference'], ['legacy-directed-pseudo'] as const),
+        alternative,
         multipleTesting: readChoice(operation['multipleTesting'], ['none'] as const),
         islands: readChoice(operation['islands'], ['exclude'] as const),
         quantileMethod: readChoice(operation['quantileMethod'], ['type-5'] as const)
@@ -1064,16 +1096,19 @@ export function parseKeplerIDWSettings(value: unknown): KeplerIDWSettings {
     'units',
     'grid',
     'searchRadius',
+    'longitudeSearch',
     'power',
     'neighborCount',
     'minimumNeighborCount',
     'taper'
   ]);
+  const longitudeSearch = parseInterpolationLongitudeSearch('kepler-idw', settings);
   const {grid, searchRadius} = parseGeographicInterpolationGrid(
     settings['grid'],
     settings['searchRadius'],
     MAXIMUM_KEPLER_IDW_GRID_DIMENSION,
-    MAXIMUM_KEPLER_IDW_CELLS
+    MAXIMUM_KEPLER_IDW_CELLS,
+    longitudeSearch
   );
   const power = settings['power'];
   if (typeof power !== 'number' || !Number.isFinite(power) || power < 0 || power > 32)
@@ -1087,6 +1122,7 @@ export function parseKeplerIDWSettings(value: unknown): KeplerIDWSettings {
     units: readChoice(settings['units'], ['meters'] as const),
     grid,
     searchRadius,
+    ...(settings['longitudeSearch'] === undefined ? {} : {longitudeSearch}),
     power: Math.fround(power),
     neighborCount,
     minimumNeighborCount: readInteger(settings['minimumNeighborCount'], 1, neighborCount),
@@ -1114,6 +1150,7 @@ export function parseKeplerKrigingSettings(value: unknown): KeplerKrigingSetting
     'units',
     'grid',
     'searchRadiusMeters',
+    'longitudeSearch',
     'neighborCount',
     'minimumNeighbors',
     'variogram',
@@ -1121,11 +1158,13 @@ export function parseKeplerKrigingSettings(value: unknown): KeplerKrigingSetting
     'crossValidation',
     'variogramFit'
   ]);
+  const longitudeSearch = parseInterpolationLongitudeSearch('kepler-kriging', settings);
   const {grid, searchRadius} = parseGeographicInterpolationGrid(
     settings['grid'],
     settings['searchRadiusMeters'],
     MAXIMUM_KEPLER_KRIGING_GRID_DIMENSION,
-    MAXIMUM_KEPLER_KRIGING_CELLS
+    MAXIMUM_KEPLER_KRIGING_CELLS,
+    longitudeSearch
   );
   const neighborCount = readInteger(settings['neighborCount'], 1, MAXIMUM_KEPLER_KRIGING_NEIGHBORS);
   const variogram = readObject(settings['variogram']);
@@ -1144,6 +1183,7 @@ export function parseKeplerKrigingSettings(value: unknown): KeplerKrigingSetting
     units: readChoice(settings['units'], ['meters'] as const),
     grid,
     searchRadiusMeters: searchRadius,
+    ...(settings['longitudeSearch'] === undefined ? {} : {longitudeSearch}),
     neighborCount,
     minimumNeighbors: readInteger(settings['minimumNeighbors'], 1, neighborCount),
     variogram: Object.freeze({
@@ -1219,11 +1259,25 @@ function parseKrigingDiagnosticSettings(settings: Record<string, unknown>) {
   return result;
 }
 
+function parseInterpolationLongitudeSearch(
+  id: string,
+  settings: Record<string, unknown>
+): 'clipped' | 'wrapped' {
+  const longitudeSearch = settings['longitudeSearch'];
+  validateRequirement(
+    id,
+    longitudeSearch === undefined || longitudeSearch === 'clipped' || longitudeSearch === 'wrapped',
+    `longitudeSearch must be clipped or wrapped; received ${String(longitudeSearch)}`
+  );
+  return longitudeSearch === 'wrapped' ? 'wrapped' : 'clipped';
+}
+
 function parseGeographicInterpolationGrid(
   gridValue: unknown,
   radiusValue: unknown,
   maximumDimension: number,
-  maximumCells: number
+  maximumCells: number,
+  longitudeSearch: 'clipped' | 'wrapped'
 ) {
   const grid = readObject(gridValue);
   checkKeys(grid, ['bounds', 'width', 'height']);
@@ -1254,7 +1308,10 @@ function parseGeographicInterpolationGrid(
   const latitudeSpan = toDegrees(searchRadius / EARTH_RADIUS_METERS) * 1.01;
   const highestLatitude = Math.max(Math.abs(south), Math.abs(north)) + latitudeSpan;
   const longitudeSpan = latitudeSpan / Math.cos(toRadians(highestLatitude));
-  if (highestLatitude >= 89.9 || west - longitudeSpan <= -180 || east + longitudeSpan >= 180)
+  if (
+    longitudeSearch === 'clipped' &&
+    (highestLatitude >= 89.9 || west - longitudeSpan <= -180 || east + longitudeSpan >= 180)
+  )
     throw new Error('Interpolation search domain must not reach poles or cross the antimeridian');
   return {
     grid: Object.freeze({

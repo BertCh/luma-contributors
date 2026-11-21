@@ -108,7 +108,7 @@ it('accepts valid packed output layouts throughout the terrain processing valida
           cellNodes: slice('uint32', 1, 16),
           levels: view('float32', 2),
           curves: view('float32', 2),
-          status: view('uint32', 3)
+          status: {count: view('uint32'), requiredCount: view('uint32'), overflow: view('uint32')}
         }
       }),
       new GPUTerrainDEMCoregistration({

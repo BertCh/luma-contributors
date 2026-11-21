@@ -58,7 +58,7 @@ export function computeTerrainPeakProminenceOnCPU(
   elevation: CPURasterOperationBand,
   grid: GPURasterMetadata
 ): CPUTerrainPeakProminenceResult {
-  validateRasterOperationBand('computeTerrainPeakProminenceOnCPU', elevation, grid);
+  validateRasterOperationBand('computeTerrainPeakProminenceOnCPU', elevation, grid, 'elevation');
   validateTerrainPeakProminenceNoDataValue('computeTerrainPeakProminenceOnCPU', elevation);
   const count = grid.width * grid.height;
   const values = calibrateRasterOperationBand(
@@ -150,7 +150,7 @@ export class CPUTerrainPeakProminenceOperation extends GPUCPUOperation {
   constructor(props: TerrainPeakProminenceOperationProps) {
     const operation = new GPUTerrainPeakProminenceOperation(props);
     const {id} = operation;
-    validateRasterOperationBand(id, props.elevation, props.grid);
+    validateRasterOperationBand(id, props.elevation, props.grid, 'elevation');
     validateTerrainPeakProminenceNoDataValue(id, props.elevation);
     super({
       id,

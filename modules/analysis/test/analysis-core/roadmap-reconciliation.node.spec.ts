@@ -11,18 +11,41 @@ import {GPULocalKriging} from '../../src/gpu-spatial-analysis/spatial-interpolat
 import {runCentralityContinuationPhases} from '../../src/gpu-network/network-centrality/network-centrality-continuation';
 import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
 
+import {getRenderedDocTableRows} from './doc-heading-sections.test-utils';
+import {findRoadmapRows, getIdentityTokens, getRoadmapRole} from './roadmap-rows.test-utils';
+
 const REPOSITORY_ROOT = resolve(import.meta.dirname, '../../../..');
 
 function readRepositoryFile(path: string): string {
   return readFileSync(resolve(REPOSITORY_ROOT, path), 'utf8');
 }
 
-function readRoadmapRow(identity: string): string {
-  const row = readRepositoryFile('dev-docs/roadmap.md')
-    .split('\n')
-    .find(line => line.startsWith(`| ${identity} |`));
-  expect(row, `missing roadmap row ${identity}`).toBeDefined();
-  return row!;
+// Prose assertions in this file are editorial reconciliation pins. Only the constructor and
+// continuation executions qualify runtime behavior; prose alone cannot qualify a release gate.
+
+function readRoadmapRow(identity: string, section: string, role = 'implementation'): string {
+  const rows = findRoadmapRows(readRepositoryFile('dev-docs/roadmap.md'), identity, section, role);
+  expect(rows, `exact roadmap row ${section}/${role}/${identity}`).toHaveLength(1);
+  return rows[0].text;
+}
+
+function getMissingPriorityIdentities(markdown: string): string[] {
+  const rows = getRenderedDocTableRows(markdown).filter(row => row.headers[0] === 'ID');
+  const indexed = new Set(
+    rows
+      .filter(row => getRoadmapRole(row) === 'summary')
+      .flatMap(row => getIdentityTokens(row.cells[0]))
+  );
+  return rows
+    .filter(row => {
+      if (getRoadmapRole(row) !== 'implementation') return false;
+      const priorityIndex = row.headers.indexOf('Priority');
+      // KI is an explicit active pass with no Priority column; all its exact records need indexing.
+      return priorityIndex >= 0
+        ? /^H(?:\s|$)/.test(row.cells[priorityIndex])
+        : row.sections.some(section => /^Known-issues pass .*\(KI\)$/.test(section));
+    })
+    .flatMap(row => getIdentityTokens(row.cells[0]).filter(identity => !indexed.has(identity)));
 }
 
 function withGraph(action: (graph: GPUCommandGraph) => void): void {
@@ -58,7 +81,7 @@ it('R1 retains the rejecting class-breaks boundary and distinguishes quantile ra
       else expect(construct).toThrow(/moment counts and quantile ranks are held in float32/);
     });
   }
-  const row = readRoadmapRow('GPU-13');
+  const row = readRoadmapRow('GPU-13', 'Contributor contracts and GPU-scale designs');
   expect(row).toContain('GPUClassBreaks');
   expect(row).toContain('2^24');
   expect(row).toContain('GPUColumnQuantiles');
@@ -87,7 +110,7 @@ it('R2 retains the local-system bound and usable-sample indexing acceptance case
       else expect(construct).toThrow(/neighborCount.*32/);
     });
   }
-  const row = readRoadmapRow('IN05 / IN02');
+  const row = readRoadmapRow('IN05 / IN02', 'Interpolation and simulation');
   expect(row).toContain('local kriging');
   expect(row).toContain('32');
   expect(row).toContain('automatic RBF indexing');
@@ -102,7 +125,10 @@ it('R3 keeps a fast table preview from closing any AX-40 map gate', () => {
   expect(script).toContain('mapLatencyMilliseconds: null');
   expect(script).toContain('Retained table preview measured');
   expect(script).toContain('qualified: false');
-  const row = readRoadmapRow('AX-40');
+  const row = readRoadmapRow(
+    'AX-40',
+    'Analysis experience (AX, implementation pass landed 2026-11-15)'
+  );
   expect(row).toContain('including kernel density');
   expect(row).toContain('500 ms');
   expect(row).toContain('map update');
@@ -118,14 +144,22 @@ it('R4 assigns the million-row fixture and established thresholds only to AX-20'
   const fixture = readRepositoryFile('modules/kepler/test/profile/dataset-profile-gpu.spec.ts');
   expect(fixture).toContain('rowCount = 1_000_000');
   expect(fixture).toContain('metadata(rowCount, 8)');
-  const row = readRoadmapRow('AX-20');
+  const row = readRoadmapRow(
+    'AX-20',
+    'Analysis experience (AX, implementation pass landed 2026-11-15)'
+  );
   for (const phrase of ['1,000,000', '8 columns', 'same frame', '1 s', '10 s', 'progress']) {
     expect(row).toContain(phrase);
   }
   expect(row).toContain('dataset-profile-gpu.spec.ts');
-  const residentRow = readRepositoryFile('dev-docs/roadmap.md')
-    .split('\n')
-    .find(line => line.startsWith('| AX-02 |'));
+  const residentRows = findRoadmapRows(
+    readRepositoryFile('dev-docs/roadmap.md'),
+    'AX-02',
+    'Analysis experience (AX, implementation pass landed 2026-11-15)',
+    'implementation'
+  );
+  expect(residentRows.length).toBeLessThanOrEqual(1);
+  const residentRow = residentRows[0]?.text;
   if (residentRow) {
     expect(residentRow).not.toMatch(/million|latency|threshold/);
     expect(residentRow).toContain('resident');
@@ -133,12 +167,20 @@ it('R4 assigns the million-row fixture and established thresholds only to AX-20'
 });
 
 it('R5 describes simple holed tessellation and budgeted CSR metrics as shipped routes', () => {
-  const tessellation = readRoadmapRow('Urban tessellation');
+  const tessellation = readRoadmapRow(
+    'Urban tessellation',
+    'Known limits recorded by finished passes',
+    'limit'
+  );
   expect(tessellation).toContain('simple');
   expect(tessellation).toContain('holed');
   expect(tessellation).toContain('32');
   expect(tessellation.toLowerCase()).toContain('dissolved');
-  const visibility = readRoadmapRow('Visibility graph');
+  const visibility = readRoadmapRow(
+    'Visibility graph',
+    'Known limits recorded by finished passes',
+    'limit'
+  );
   for (const phrase of [
     'integration',
     'normalized choice',
@@ -148,7 +190,7 @@ it('R5 describes simple holed tessellation and budgeted CSR metrics as shipped r
   ]) {
     expect(visibility).toContain(phrase);
   }
-  const backlog = readRoadmapRow('GPU-11');
+  const backlog = readRoadmapRow('GPU-11', 'Contributor contracts and GPU-scale designs');
   expect(backlog).toContain('simple');
   expect(backlog).toContain('budget');
   expect(backlog).not.toContain('lift 64-building/256-point');
@@ -173,7 +215,7 @@ it('R6 permits convergence in the second host-controlled GPU-gated batch', async
   ]);
   const proposal = readRepositoryFile('dev-docs/upstream-proposals.md');
   expect(proposal).toContain('one convergence readback per batch');
-  const row = readRoadmapRow('PLAT-04');
+  const row = readRoadmapRow('PLAT-04', 'Spatiotemporal and platform');
   expect(row).toContain('GPU-gated batches');
   expect(row).toContain('one convergence readback per batch');
   expect(row).toContain('host chooses');
@@ -181,7 +223,7 @@ it('R6 permits convergence in the second host-controlled GPU-gated batch', async
 });
 
 it('R7 scopes the missing size floor to direct REDCAP and preserves the SSD-route floor', () => {
-  const row = readRoadmapRow('STX-08');
+  const row = readRoadmapRow('STX-08', 'Spatiotemporal and platform');
   expect(row).toContain('GPURedcapSingleLinkage');
   expect(row).toContain('minimumRegionSize');
   expect(row).toContain('both sides');
@@ -189,6 +231,7 @@ it('R7 scopes the missing size floor to direct REDCAP and preserves the SSD-rout
   expect(row).toContain('row-count');
 });
 
+// Editorial prose pins below document intended migration guidance; they are not runtime qualification.
 it('R8 preserves the B1/B2 migration contracts in the BL-PASS completion record', () => {
   const completion = readRepositoryFile('dev-docs/roadmap.md')
     .split('## Completed passes')[1]
@@ -214,19 +257,85 @@ it('R8 preserves the B1/B2 migration contracts in the BL-PASS completion record'
   }
 });
 
-it('R9 indexes every high-priority domain row including qualified upstream priorities', () => {
-  const roadmap = readRepositoryFile('dev-docs/roadmap.md');
-  const summary = roadmap.split('## High-priority summary')[1].split('## Earlier')[0];
-  const domain = roadmap.split('## Open backlog by domain')[1].split('## Known limits')[0];
-  const missing: string[] = [];
-  for (const line of domain.split('\n')) {
-    const cells = line
-      .split('|')
-      .slice(1, -1)
-      .map(cell => cell.trim());
-    if (cells.length !== 5 || !/^H(?:\s|$)/.test(cells[3])) continue;
-    const identities = cells[0].split(/\s*\/\s*/);
-    if (!identities.some(identity => summary.includes(identity))) missing.push(cells[0]);
-  }
-  expect(missing).toEqual([]);
+it('R9 indexes every high-priority domain and LR row plus each active KI record', () => {
+  expect(getMissingPriorityIdentities(readRepositoryFile('dev-docs/roadmap.md'))).toEqual([]);
+});
+
+it('ROAD-112 resolves exact compound IDs by rendered section and role, with explicit ranges', () => {
+  const markdown = `# Roadmap
+## High-priority summary
+| ID | Still open |
+| --- | --- |
+| AX-40, IN05, LR-04, KI-01 to KI-02 | Index |
+## Domain
+| Name | Item | Priority |
+| --- | --- | --- |
+| AX-40 | Unrelated table | H |
+
+| ID | Item | Priority |
+| --- | --- | --- |
+| AX-400 | Prefix collision | H |
+| AX-40 | Implementation | H |
+| IN05 / IN02 | Both needed | H (upstream) |
+### Decisions for the maintainer
+| ID | Item | Priority |
+| --- | --- | --- |
+| AX-40 | Decision | Decision |
+## Library review (LR)
+| ID | Item | Priority |
+| --- | --- | --- |
+| LR-04 | Release | H |
+## Known-issues pass 2026-11-18 (KI)
+| ID | Item | Plan |
+| --- | --- | --- |
+| KI-01 | Audit | None |
+| KI-02 | Fix | None |
+## Other
+| ID | Item |
+| --- | --- |
+| LOW-01 | No priority column |
+`;
+  expect(
+    findRoadmapRows(markdown, 'AX-40', 'Domain', 'implementation').map(row => row.cells[1])
+  ).toEqual(['Implementation']);
+  expect(findRoadmapRows(markdown, 'AX-40', 'Domain', 'decision').map(row => row.cells[1])).toEqual(
+    ['Decision']
+  );
+  expect(findRoadmapRows(markdown, 'IN05 / IN03', 'Domain', 'implementation')).toEqual([]);
+  expect(getIdentityTokens('KI-01 to KI-03')).toEqual(['KI-01', 'KI-02', 'KI-03']);
+  expect(getMissingPriorityIdentities(markdown)).toEqual(['AX-400', 'IN02']);
+  expect(
+    getMissingPriorityIdentities(
+      markdown.replace('AX-40, IN05, LR-04, KI-01 to KI-02', 'AX-40, IN05')
+    )
+  ).toEqual(['AX-400', 'IN02', 'LR-04', 'KI-01', 'KI-02']);
+  expect(getMissingPriorityIdentities(markdown)).not.toContain('LOW-01');
+});
+
+it('REVIEW S2 rejects an extra compound ID member for exact row lookup', () => {
+  const markdown =
+    '# Roadmap\n\n## Domain\n\n| ID | Item | Priority |\n| --- | --- | --- |\n| IN05 / IN02 / IN99 | Extra member | H |\n';
+  expect(findRoadmapRows(markdown, 'IN05 / IN02', 'Domain', 'implementation')).toEqual([]);
+  expect(findRoadmapRows(markdown, 'IN99 / IN02 / IN05', 'Domain', 'implementation')).toHaveLength(
+    1
+  );
+});
+
+it.each([
+  ['NW06', 'X04'],
+  ['raster-fields-05', 'STD-06']
+])('review B2 preserves both components of %s / %s', (first, second) => {
+  const markdown = `# Roadmap
+## Domain
+| ID | Item | Priority |
+| --- | --- | --- |
+| ${first} / ${second} | Compound record | H |
+`;
+  expect(findRoadmapRows(markdown, first, 'Domain', 'implementation')).toEqual([]);
+  expect(findRoadmapRows(markdown, second, 'Domain', 'implementation')).toEqual([]);
+  expect(
+    findRoadmapRows(markdown, `${second} / ${first}`, 'Domain', 'implementation').map(
+      row => row.cells[1]
+    )
+  ).toEqual(['Compound record']);
 });

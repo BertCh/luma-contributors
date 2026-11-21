@@ -120,7 +120,7 @@ for (const contributorClass of [GPULocalMoran, GPUHotSpotAnalysis, GPULocalGeary
               ...props,
               output: {...props.output, status: {invalidCount, overflow}}
             })
-        ).toThrow(/^analytic-status-validation .*invalidCount.*1/);
+        ).toThrow(/^analytic-status-validation invalidCount must contain one uint32 row$/);
         expect(allocate).not.toHaveBeenCalled();
         expect(() =>
           graph.add(

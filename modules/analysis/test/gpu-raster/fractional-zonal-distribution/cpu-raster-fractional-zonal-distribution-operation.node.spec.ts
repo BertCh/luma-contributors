@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {GPURasterFractionalZonalDistribution} from '../../../src/raster-analysis/gpu-raster-fractional-zonal-distribution';
+import {AREA_PACKET_CASES, createAreaPackets} from './versioned-area-packets.test-utils';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   GPU_WGS84_FLATTENING,
@@ -20,6 +24,114 @@ import {
   createUnitDistributionInput,
   DISTRIBUTION_PROPS
 } from './raster-fractional-zonal-distribution-operation-fixture';
+
+for (const {cellSizeMode, originY, area} of AREA_PACKET_CASES) {
+  it(`UNI-03 CPU distribution reads legacy padding and rebased ${cellSizeMode} area packets`, () => {
+    const {grid, packets} = createAreaPackets(originY);
+    expect(grid.affine[5]).not.toBe(originY);
+    for (const parameters of packets) {
+      const input = createUnitDistributionInput(Float32Array.of(7), Float32Array.of(0.5));
+      input.coverage.fractions[0] = 0.5;
+      input.cellAreas = undefined;
+      const result = computeRasterFractionalZonalDistributionOnCPU(
+        {...input, parameters},
+        {grid, zoneCount: 1, cellSizeMode}
+      );
+      expect(
+        Object.fromEntries(Object.entries(result).map(([port, rows]) => [port, Array.from(rows)]))
+      ).toEqual({
+        means: [7],
+        populationVariances: [0],
+        sampleVariances: [NaN],
+        effectiveSampleSizes: [1],
+        weightSums: [0.5],
+        squaredWeightSums: [0.25],
+        coveredArea: [Math.fround(0.5 * area)],
+        validArea: [Math.fround(0.5 * area)],
+        quantiles: [7],
+        quantileValidity: [1],
+        validity: [1],
+        status: [8]
+      });
+      expect(result.validity[0]).toBe(1);
+      expect(result.means[0]).toBe(7);
+      for (const actual of [result.coveredArea[0], result.validArea[0]]) {
+        expect(Number.isFinite(actual)).toBe(true);
+        expect(actual / (0.5 * area)).toBeCloseTo(1, 6);
+      }
+    }
+  });
+}
+
+for (const invalid of ['means', 'quantileMethod', 'cellSizeMode'] as const) {
+  it(`review S2 both operation constructors reject invalid ${invalid} before lowering`, () => {
+    const props = {...DISTRIBUTION_PROPS, output: {...DISTRIBUTION_PROPS.output}};
+    if (invalid === 'means') Reflect.deleteProperty(props.output, 'means');
+    if (invalid === 'quantileMethod') Object.assign(props, {quantileMethod: 'nearest'});
+    if (invalid === 'cellSizeMode') Object.assign(props, {cellSizeMode: 'meters'});
+    for (const Operation of [
+      CPURasterFractionalZonalDistributionOperation,
+      GPURasterFractionalZonalDistributionOperation
+    ]) {
+      expect(() => new Operation(props)).toThrow(new RegExp(invalid));
+    }
+  });
+}
+
+it('W5-13 GPU operation captures inherited means and input getters once for lowering', () => {
+  let destination = 'average';
+  let source = 'values';
+  let outputReads = 0;
+  let inputReads = 0;
+  const output = {...DISTRIBUTION_PROPS.output};
+  Reflect.deleteProperty(output, 'means');
+  Object.setPrototypeOf(output, {
+    get means() {
+      outputReads++;
+      return destination;
+    }
+  });
+  const storage = Object.create({
+    get values() {
+      inputReads++;
+      return source;
+    }
+  }) as typeof DISTRIBUTION_PROPS.input.storage;
+  storage.kind = 'buffer';
+  const operation = new GPURasterFractionalZonalDistributionOperation({
+    ...DISTRIBUTION_PROPS,
+    input: {...DISTRIBUTION_PROPS.input, storage},
+    output
+  });
+  expect(operation.outputs['means']?.value).toBe('average');
+  destination = 'replaced';
+  source = 'changed';
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const views = Object.fromEntries(
+      Object.entries(createDistributionGraphInputs()).map(([port, input]) => [
+        port,
+        createTransientView(graph, port, input.format, input.values.length)
+      ])
+    );
+    for (const [port, descriptor] of Object.entries(operation.outputs)) {
+      views[port] = createTransientView(graph, port, descriptor.format, descriptor.length);
+    }
+    const contributor = operation.createContributor(port => views[port] as never);
+    expect(contributor).toBeInstanceOf(GPURasterFractionalZonalDistribution);
+    const props = (contributor as GPURasterFractionalZonalDistribution).props;
+    expect(props.output.means).toBe(views['means']);
+    expect(props.input.storage.kind === 'buffer' && props.input.storage.values).toBe(
+      views['values']
+    );
+    expect(operation.inputs['values']).toBe('values');
+    expect(outputReads).toBe(1);
+    expect(inputReads).toBe(1);
+  } finally {
+    device.destroy();
+  }
+});
 
 it('matches hand-computed reliability moments and equal-weight distinct-value interpolation', () => {
   // Weights 1,2,1 at 0,10,20: W=4, W2=6, M2=200, denominator=2.5.
@@ -316,4 +428,68 @@ it('validates cellSizeMode and its grid and manual-area constraints in both cons
     /^distribution cellSizeMode/
   );
   expect(() => constructGPU(unknown)).toThrow(/^distribution cellSizeMode/);
+});
+
+for (const defect of [
+  'empty-result',
+  'duplicate-result',
+  'input-result',
+  'empty-input',
+  'empty-input-validity'
+] as const) {
+  it(`FRM-01 CPURasterFractionalZonalDistributionOperation rejects ${defect} before keying outputs`, () => {
+    const props = {
+      ...DISTRIBUTION_PROPS,
+      input: {...DISTRIBUTION_PROPS.input, storage: {...DISTRIBUTION_PROPS.input.storage}},
+      output: {...DISTRIBUTION_PROPS.output}
+    };
+    if (defect === 'empty-result') props.output.means = '';
+    if (defect === 'duplicate-result') props.output.means = props.output.validity;
+    if (defect === 'input-result') props.output.means = props.input.storage.values;
+    if (defect === 'empty-input') props.input.storage.values = '';
+    if (defect === 'empty-input-validity') props.input.validity = '';
+    for (const Operation of [
+      CPURasterFractionalZonalDistributionOperation,
+      GPURasterFractionalZonalDistributionOperation
+    ]) {
+      expect(() => new Operation(props)).toThrow(/graph value/);
+    }
+  });
+}
+
+it('B3 captures a getter-backed means name for declarations and execution', async () => {
+  let destination = 'average';
+  let reads = 0;
+  const output = {...DISTRIBUTION_PROPS.output};
+  Reflect.deleteProperty(output, 'means');
+  Object.setPrototypeOf(
+    output,
+    new (class {
+      get means() {
+        reads++;
+        return destination;
+      }
+    })()
+  );
+  const operation = new CPURasterFractionalZonalDistributionOperation({
+    ...DISTRIBUTION_PROPS,
+    output
+  });
+  expect(Object.keys(operation.outputs)).toContain('average');
+  destination = 'replaced';
+  const inputs = Object.fromEntries(
+    Object.entries(createDistributionGraphInputs()).map(([name, input]) => [
+      name,
+      {
+        format: input.format,
+        length: input.values.length,
+        chunks: [{values: input.values, length: input.values.length}],
+        pack: () => input.values
+      }
+    ])
+  );
+  const result = await operation.execute({inputs});
+  expect(Array.from(result['average'] as Float32Array)).toEqual([10]);
+  expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+  expect(reads).toBe(1);
 });

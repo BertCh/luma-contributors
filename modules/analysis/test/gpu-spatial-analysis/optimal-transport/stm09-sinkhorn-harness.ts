@@ -38,7 +38,7 @@ export type SinkhornGPUOptions = Partial<
   Pick<GPUSinkhornDivergenceSettings, 'tolerance' | 'epsilonStart' | 'scalingFactor'>
 > & {
   maximumIterations?: number;
-  blurRadius?: number;
+  transportRadius?: number;
   /** Slots of the packed parameter view to overwrite, to reach states the packer refuses. */
   parameterOverride?: Readonly<Record<number, number>>;
 };
@@ -98,7 +98,7 @@ export async function runSinkhornGPU(
       target: importGraphBuffer(graph, 'target', input(getMasses(problem.target)), 'float32'),
       parameters: importGraphBuffer(graph, 'parameters', input(parameters), 'float32'),
       maximumIterations: options.maximumIterations,
-      blurRadius: options.blurRadius,
+      transportRadius: options.transportRadius,
       output: {
         divergence: importGraphBuffer(graph, 'o-divergence', outputs.divergence, 'float32', 1),
         components: importGraphBuffer(graph, 'o-components', outputs.components, 'float32', 3),

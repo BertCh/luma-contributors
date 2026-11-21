@@ -43,10 +43,10 @@ it('final1 higher-order CPU algebra honors an explicit intermediate budget separ
       workCapacity: 1
     };
     const result = computeSpatialWeightsAlgebraOnCPU({weights}, options);
-    expect(Array.from(result.overflow)).toEqual([0]);
-    expect(Array.from(result.candidateOverflow)).toEqual([1]);
+    expect(Array.from(result.status.overflow)).toEqual([0]);
+    expect(Array.from(result.status.candidateOverflow)).toEqual([1]);
     expect(Array.from(result.offsets)).toEqual(cumulative ? [0, 2, 2, 2] : [0, 1, 1, 1]);
-    expect(Array.from(result.neighbors).slice(0, result.requiredCount[0])).toEqual(
+    expect(Array.from(result.neighbors).slice(0, result.status.requiredCount[0])).toEqual(
       cumulative ? [1, 2] : [2]
     );
   }
@@ -101,9 +101,11 @@ it('rejects incompatible declared contexts at CPU construction and GPU host lowe
   // Identical two-row inputs have a union containing precisely the same two entries.
   const expected = {
     ...REVIEW_ROWS,
-    overflow: Uint32Array.of(0),
-    requiredCount: Uint32Array.of(2),
-    candidateOverflow: Uint32Array.of(0)
+    status: {
+      overflow: Uint32Array.of(0),
+      requiredCount: Uint32Array.of(2),
+      candidateOverflow: Uint32Array.of(0)
+    }
   };
   expect(
     computeSpatialWeightsAlgebraOnCPU(
@@ -265,8 +267,8 @@ it('truncates an exact-order generation prefix before sorting and computes the u
   // Row 0 reaches 5 through frontier row 1 before reaching 3 and 4 through frontier row 2.
   expect(Array.from(result.neighbors)).toEqual([5]);
   expect(Array.from(result.offsets)).toEqual([0, 1, 1, 1, 1, 1, 1]);
-  expect(result.requiredCount[0]).toBe(3);
-  expect(result.overflow[0]).toBe(1);
+  expect(result.status.requiredCount[0]).toBe(3);
+  expect(result.status.overflow[0]).toBe(1);
   const props: SpatialWeightsAlgebraOperationProps = {
     rowCount: 6,
     capacity: 1,
@@ -298,9 +300,9 @@ it('truncates an exact-order generation prefix before sorting and computes the u
     offsets: bounded.offsets,
     neighbors: bounded.neighbors,
     weights: bounded.weights,
-    overflow: bounded.overflow,
-    requiredCount: bounded.requiredCount,
-    candidateOverflow: bounded.candidateOverflow
+    overflow: bounded.status.overflow,
+    requiredCount: bounded.status.requiredCount,
+    candidateOverflow: bounded.status.candidateOverflow
   });
 });
 
@@ -335,8 +337,8 @@ it('higher orders agree with all-pairs Floyd-Warshall shortest paths, including 
         ).toEqual(expected);
         count += expected.length;
       }
-      expect(result.requiredCount[0]).toBe(count);
-      expect(result.overflow[0]).toBe(0);
+      expect(result.status.requiredCount[0]).toBe(count);
+      expect(result.status.overflow[0]).toBe(0);
       expect(Array.from(result.weights.slice(0, count))).toEqual(new Array(count).fill(1));
     }
 });
@@ -373,13 +375,13 @@ it('hand-computed weighted set operations preserve distance provenance and all c
       ['union', [0, 2, 3], [0, 1, 0], [2, combined, 11], [4, 5, 9]],
       ['intersection', [0, 1, 1], [1], [combined], [5]],
       ['difference', [0, 1, 1], [0], [2], [4]],
-      ['symmetricDifference', [0, 1, 2], [0, 0], [2, 11], [4, 9]]
+      ['symmetric-difference', [0, 1, 2], [0, 0], [2, 11], [4, 9]]
     ] as const) {
       const result = computeSpatialWeightsAlgebraOnCPU(
         {left, right},
         {operation, weightRule, capacity: 4, distances: true}
       );
-      const count = result.requiredCount[0];
+      const count = result.status.requiredCount[0];
       expect(Array.from(result.offsets)).toEqual(expectedOffsets);
       expect(Array.from(result.neighbors.slice(0, count))).toEqual(expectedNeighbors);
       expect(Array.from(result.weights.slice(0, count))).toEqual(
@@ -423,8 +425,8 @@ it('self replacement, masked subgraphs, groups and overflow match hand-counted r
     expect(Array.from(grouped.neighbors.slice(0, Math.min(4, capacity)))).toEqual(
       [2, 3, 0, 1].slice(0, capacity)
     );
-    expect(grouped.requiredCount[0]).toBe(4);
-    expect(grouped.overflow[0]).toBe(Number(capacity < 4));
+    expect(grouped.status.requiredCount[0]).toBe(4);
+    expect(grouped.status.overflow[0]).toBe(Number(capacity < 4));
   }
 });
 
@@ -534,4 +536,23 @@ it('validates malformed arrays and both operation constructions, deferring GPU c
       {operation: 'selfWeight', capacity: 8}
     )
   ).toThrow('selfWeights');
+});
+
+it('NAM-09 named CPU and GPU operation forms reject the removed spelling at construction', () => {
+  for (const Operation of [CPUSpatialWeightsAlgebraOperation, GPUSpatialWeightsAlgebraOperation]) {
+    const props = {...REVIEW_PROPS, operation: 'symmetric-difference'} as const;
+    expect(() => new Operation(props)).not.toThrow();
+    for (const operation of ['Union', 'symmetricDifference']) {
+      expect(() => new Operation({...props, operation} as never)).toThrow(
+        /operation.*union.*intersection.*symmetric-difference/
+      );
+    }
+    expect(
+      () =>
+        new Operation({
+          ...props,
+          output: {...props.output, status: {...props.output.status, converged: 'unwritten'}}
+        } as never)
+    ).toThrow(/output.status.converged/);
+  }
 });

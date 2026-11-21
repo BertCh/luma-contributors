@@ -28,6 +28,8 @@ import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {GPUUint32Rows} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  isGraphVectorView,
+  validateGraphPorts,
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -35,9 +37,10 @@ import {
   validateCompactOutput,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {GPUPickRegionMask} from './gpu-pick-region-mask';
+import {GPUPickRegionMask, validateRegionPicks} from './gpu-pick-region-mask';
 import {
   GPURegionMask,
+  validateRegionShape,
   REGION_STATISTICS_WGSL_HELPERS,
   getRegionLonLatPolygonCheckNodes
 } from './gpu-region-mask';
@@ -64,6 +67,14 @@ import {
 
 import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  snapshotRegionSelection,
+  snapshotRegionStatisticsOutput
+} from './region-construction-snapshot';
 
 /** Workgroup size of the counting kernel: lane 0 publishes one global atomic per workgroup. */
 const COUNT_WORKGROUP_SIZE = 256;
@@ -135,6 +146,97 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURegionStatisticsProps) {
+    let construction = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'regionSpatialContext',
+      'region',
+      'positions',
+      'values',
+      'sourceIds',
+      'histogram',
+      'output',
+      'spatialIndex'
+    ]);
+    props = construction;
+    validateGraphPorts(props.id ?? 'region-statistics', props, {
+      positions: {required: false, viewType: 'either', formats: ['float32x2']},
+      values: {required: false, viewType: 'either', formats: ['float32']},
+      sourceIds: {required: false, viewType: 'either', formats: ['uint32']}
+    });
+    // Rewrap only public vector metadata for upstream consumers that use local constructors.
+    // Every chunk and GPU buffer keeps its identity and order.
+    props = {
+      ...props,
+      positions: isGraphVectorView(props.positions)
+        ? new GraphVectorView({...props.positions})
+        : props.positions,
+      values: isGraphVectorView(props.values)
+        ? new GraphVectorView({...props.values})
+        : props.values,
+      sourceIds: isGraphVectorView(props.sourceIds)
+        ? new GraphVectorView({...props.sourceIds})
+        : props.sourceIds
+    };
+    construction = props;
+    const constructionHistogram =
+      construction.histogram &&
+      snapshotConstructionFields(construction.histogram, ['binCount', 'domain']);
+    const spatialIndex =
+      construction.spatialIndex &&
+      snapshotConstructionFields(construction.spatialIndex, ['kind', 'index', 'candidateCapacity']);
+    const index =
+      spatialIndex &&
+      snapshotConstructionFields(spatialIndex.index, [
+        'cellOffsets',
+        'objectIds',
+        'count',
+        'overflow',
+        'gridSize',
+        'bounds'
+      ]);
+    props = Object.freeze({
+      ...construction,
+      ...(construction.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(construction.spatialContext)}
+        : {}),
+      ...(construction.regionSpatialContext
+        ? {
+            regionSpatialContext: snapshotConstructionSpatialContext(
+              construction.regionSpatialContext
+            )
+          }
+        : {}),
+      region: snapshotRegionSelection(construction.region),
+      output: snapshotRegionStatisticsOutput(construction.output),
+      ...(constructionHistogram
+        ? {
+            histogram: Object.freeze({
+              ...constructionHistogram,
+              ...(Array.isArray(constructionHistogram.domain)
+                ? {
+                    domain: Object.freeze([...constructionHistogram.domain]) as readonly [
+                      number,
+                      number
+                    ]
+                  }
+                : {})
+            })
+          }
+        : {}),
+      ...(spatialIndex && index
+        ? {
+            spatialIndex: Object.freeze({
+              ...spatialIndex,
+              index: Object.freeze({
+                ...index,
+                gridSize: Object.freeze([...index.gridSize]) as typeof index.gridSize,
+                bounds: Object.freeze([...index.bounds]) as typeof index.bounds
+              })
+            })
+          }
+        : {})
+    });
     this.id = props.id ?? 'region-statistics';
     this.props = props;
     const {id} = this;
@@ -181,6 +283,15 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal the source row count`);
       }
     }
+    if (
+      positions &&
+      (selection.kind === 'rectangle' ||
+        selection.kind === 'polygon' ||
+        selection.kind === 'radius')
+    ) {
+      for (const chunk of getGraphViewChunks(positions))
+        validateSinglePackedView(chunk, ['float32x2'], `${id} positions`);
+    }
     for (const chunk of values ? getGraphViewChunks(values) : []) {
       validateSinglePackedView(chunk, ['float32'], `${id} values`);
     }
@@ -208,14 +319,36 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         }
       }
     }
+    if (selection.kind === 'rectangle' || selection.kind === 'polygon') {
+      validateRegionShape(id, selection);
+    }
+    if (selection.kind === 'pick-region') {
+      validateRegionPicks(id, selection.picks, selection.batchIndex);
+    }
     if (selection.kind === 'radius') {
       validateSinglePackedView(selection.circle, ['float32'], `${id} region.circle`);
       if (selection.circle.length !== 3) {
         throw new Error(`${id} region.circle must contain three float32 values`);
       }
     }
+    if (selection.kind === 'mask') {
+      validatePackedUint32View(selection.mask, `${id} region.mask`);
+      if (selection.summary) {
+        validatePackedUint32View(selection.summary, `${id} region.summary`);
+        validateCapacity(
+          id,
+          'region.summary.length',
+          selection.summary.length,
+          GPU_REGION_STATISTICS_HEADER_LENGTH,
+          Number.MAX_SAFE_INTEGER
+        );
+      }
+    }
     if (selection.kind === 'mask' && outputMask) {
       throw new Error(`${id} output.mask cannot be combined with a mask region`);
+    }
+    if (selection.kind === 'mask' && selection.status) {
+      validateGPUStatusPort(`${id} region.status`, selection.status);
     }
     if (outputMask) {
       validatePackedUint32View(outputMask, `${id} output.mask`);
@@ -356,7 +489,10 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
             nodes.push(
               ...new GPUPointSpatialFilter({
                 id: `${id}-filter`,
-                positions: positions as GPUFloat32Positions,
+                // The public upstream filter still dispatches with its local vector constructor.
+                positions: (isGraphVectorView(positions)
+                  ? new GraphVectorView({...positions})
+                  : positions) as GPUFloat32Positions,
                 kind: selection.kind === 'radius' ? 'radius' : 'bounds',
                 query: selection.kind === 'radius' ? selection.circle : selection.bounds,
                 outputMask: mask as GraphDataView<'uint32'>,
@@ -399,6 +535,43 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
           );
           break;
         case 'mask':
+          if (selection.summary) {
+            nodes.push(
+              createWGSLKernelNode<Parameters>(graph, {
+                id: `${id}-region-overflow`,
+                operation: OPERATION,
+                variant: 'mask-membership-flags',
+                bindings: [
+                  {name: 'upstreamSummary', view: selection.summary, type: 'u32', access: 'read'},
+                  {name: 'regionOverflow', view: regionOverflow, type: 'u32', access: 'read_write'}
+                ],
+                invocationCount: 1,
+                body: 'regionOverflow[regionOverflowOffset] = upstreamSummary[upstreamSummaryOffset + 7u] & 6u;'
+              })
+            );
+            break;
+          }
+          if (selection.status?.overflow) {
+            nodes.push(
+              createWGSLKernelNode<Parameters>(graph, {
+                id: `${id}-region-overflow`,
+                operation: OPERATION,
+                variant: 'mask-overflow',
+                bindings: [
+                  {
+                    name: 'upstreamOverflow',
+                    view: selection.status.overflow,
+                    type: 'u32',
+                    access: 'read'
+                  },
+                  {name: 'regionOverflow', view: regionOverflow, type: 'u32', access: 'read_write'}
+                ],
+                invocationCount: 1,
+                body: 'regionOverflow[regionOverflowOffset] = select(0u, 1u, upstreamOverflow[upstreamOverflowOffset] != 0u);'
+              })
+            );
+            break;
+          }
           nodes.push(
             createFillNode<Parameters>(graph, {
               id: `${id}-region-overflow-clear`,
@@ -538,6 +711,7 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
         id: `${id}-summary`,
         counts,
         hasCandidateFlag: Boolean(candidates),
+        regionOverflowIsFlags: selection.kind === 'mask' && Boolean(selection.summary),
         regionOverflow,
         sumValue,
         extentValue,
@@ -628,7 +802,7 @@ function getStatisticsInputs(
       selectionViews.push(selection.picks);
       break;
     case 'mask':
-      selectionViews.push(selection.mask);
+      selectionViews.push(selection.mask, selection.status?.overflow, selection.summary);
       break;
   }
   const domain =
@@ -657,7 +831,7 @@ function getCountNodes<Parameters>(
   valueMask: GraphDataView<'uint32'> | undefined
 ): GPUCommandNode<Parameters>[] {
   const chunks = values ? getGraphViewChunks(values) : [undefined];
-  const isVector = values instanceof GraphVectorView;
+  const isVector = isGraphVectorView(values);
   const nodes: GPUCommandNode<Parameters>[] = [];
   let rowStart = 0;
   for (const [chunkIndex, chunk] of chunks.entries()) {
@@ -724,6 +898,7 @@ function getSummaryNode<Parameters>(
     id: string;
     counts: GraphDataView<'uint32'>;
     hasCandidateFlag: boolean;
+    regionOverflowIsFlags: boolean;
     regionOverflow: GraphDataView<'uint32'>;
     sumValue?: GraphDataView<'float32'>;
     extentValue?: GraphDataView<'float32'>;
@@ -782,8 +957,8 @@ const SELECTION_CAPACITY: u32 = ${props.selectionCapacity}u;`,
         : 'let outsideCount = 0u;'
     }
     let selectionTruncated = ${selectionTotal ? 'selectionTotal[selectionTotalOffset] > SELECTION_CAPACITY' : 'false'};
-    let regionTruncated = regionOverflow[regionOverflowOffset] != 0u;
-    let candidatesTruncated = ${props.hasCandidateFlag ? 'counts[countsOffset + 2u] != 0u' : 'false'};
+    let regionTruncated = ${props.regionOverflowIsFlags ? '(regionOverflow[regionOverflowOffset] & 2u) != 0u' : 'regionOverflow[regionOverflowOffset] != 0u'};
+    let candidatesTruncated = ${props.hasCandidateFlag ? 'counts[countsOffset + 2u] != 0u' : 'false'}${props.regionOverflowIsFlags ? ' || (regionOverflow[regionOverflowOffset] & 4u) != 0u' : ''};
     summary[summaryOffset + 0u] = selectedCount;
     summary[summaryOffset + 1u] = valueCount;
     summary[summaryOffset + 2u] = bitcast<u32>(sum);

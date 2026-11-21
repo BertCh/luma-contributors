@@ -27,6 +27,42 @@ const OUTPUT = {
 };
 
 for (const convexityMethod of ['gift-wrapping', 'monotone-chain'] as const) {
+  it(`preserves both triangle hulls across out-of-order feature windows (${convexityMethod})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const props: ShapeDescriptorsOperationProps = {
+      positions: 'positions',
+      ringOffsets: 'ringOffsets',
+      polygonOffsets: 'polygonOffsets',
+      featureOffsets: 'featureOffsets',
+      parameters: 'parameters',
+      featureCount: 3,
+      convexityMethod,
+      output: {areas: 'areas', convexity: 'convexity'}
+    };
+    for (const Operation of [GPUShapeDescriptorsOperation, CPUShapeDescriptorsOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          positions: {
+            format: 'float32x2',
+            values: Float32Array.of(0, 0, 2, 0, 0, 2, 10, 0, 14, 0, 10, 4)
+          },
+          ringOffsets: {format: 'uint32', values: Uint32Array.of(3, 6, 0, 3)},
+          polygonOffsets: {format: 'uint32', values: Uint32Array.of(0, 1, 2, 3)},
+          featureOffsets: {format: 'uint32', values: Uint32Array.of(0, 1, 2, 3)},
+          parameters: {format: 'float32', values: getGPUShapeDescriptorsParameterValues()}
+        },
+        operations: [new Operation(props)],
+        outputs: ['areas', 'convexity']
+      });
+      // Features 0 and 2 have areas 4 * 4 / 2 and 2 * 2 / 2. Each triangle is its own hull.
+      expect(result['areas']).toEqual(Float32Array.of(8, 0, 2));
+      expect(result['convexity']).toEqual(Float32Array.of(1, NaN, 1));
+    }
+  });
+}
+
+for (const convexityMethod of ['gift-wrapping', 'monotone-chain'] as const) {
   for (const edgeCase of [false, true]) {
     it(`shape twins compare all nine columns (${convexityMethod}, ${edgeCase ? 'empty/degenerate' : 'ordinary/holed'})`, async () => {
       const device = await getWebGPUTestDevice();

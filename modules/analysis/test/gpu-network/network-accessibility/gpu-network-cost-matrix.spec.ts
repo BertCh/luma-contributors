@@ -24,7 +24,102 @@ import {
   type AccessibilityCSR,
   type AccessibilitySeed
 } from './network-accessibility-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {GPUNetworkNoding} from '../../../src/gpu-network/network-noding/gpu-network-noding';
+import {createOracleContext} from '../adjacency-matrix/network-output-oracle-test-utils';
+
+it('noded topology excludes spare start and target rows while ordinary CSR retains isolated nodes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const context = createOracleContext(device);
+  const {graph, input, output, read} = context;
+  try {
+    const noding = new GPUNetworkNoding({
+      lines: {
+        kind: 'lines',
+        positions: input('positions', 'float32x2', [0, 0, 1, 0]),
+        lineOffsets: input('lines', 'uint32', [0, 2])
+      },
+      tolerance: input('tolerance', 'float32', [0]),
+      intersectionCapacity: 1,
+      output: {
+        pieces: {
+          geometry: {
+            kind: 'lines',
+            positions: output('pieces', 'float32x2', 2),
+            lineOffsets: output('piece-offsets', 'uint32', 2)
+          },
+          sourceIds: output('piece-ids', 'uint32'),
+          status: {
+            count: output('piece-count', 'uint32'),
+            overflow: output('piece-overflow', 'uint32')
+          }
+        },
+        nodes: {
+          positions: output('nodes', 'float32x2', 3),
+          status: {count: output('node-count', 'uint32')}
+        },
+        edges: {
+          fromNodes: output('from', 'uint32'),
+          toNodes: output('to', 'uint32'),
+          lengths: output('lengths', 'float32')
+        },
+        topology: {
+          offsets: output('offsets', 'uint32', 4),
+          neighbors: output('neighbors', 'uint32', 2),
+          weights: output('weights', 'float32', 2)
+        },
+        status: {
+          overflow: output('overflow', 'uint32'),
+          uncertainCount: output('uncertain', 'uint32')
+        }
+      }
+    });
+    graph.add(noding);
+    const costs = output('costs', 'float32', 6);
+    const converged = output('converged', 'uint32');
+    const sourceComplete = output('source-complete', 'uint32');
+    graph.add(
+      new GPUNetworkCostMatrix({
+        topology: noding.outputTopology.topology,
+        nodedTopology: noding.outputTopology,
+        startNodes: input('starts', 'uint32', [0, 2]),
+        targetNodes: input('targets', 'uint32', [0, 1, 2]),
+        output: {costs, status: {converged, sourceComplete}}
+      })
+    );
+    const dense = output('dense', 'float32', 6);
+    graph.add(
+      new GPUNetworkCostMatrix({
+        id: 'dense-matrix',
+        topology: noding.outputTopology.topology,
+        nodedTopology: noding.outputTopology,
+        startNodes: input('dense-starts', 'uint32', [0, 2]),
+        output: {costs: dense, status: {sourceComplete: output('dense-source-complete', 'uint32')}}
+      })
+    );
+    const ordinary = output('ordinary', 'float32');
+    graph.add(
+      new GPUNetworkCostMatrix({
+        id: 'ordinary-matrix',
+        topology: noding.outputTopology.topology,
+        startNodes: input('ordinary-start', 'uint32', [2]),
+        targetNodes: input('ordinary-target', 'uint32', [2]),
+        output: {costs: ordinary}
+      })
+    );
+    context.run();
+    // One undirected unit segment has exactly two live nodes. Capacity row 2 is not a node.
+    expect(await read(noding.outputTopology.nodes.status.count)).toEqual([2]);
+    expect(await read(costs)).toEqual([0, 1, Infinity, Infinity, Infinity, Infinity]);
+    expect(await read(dense)).toEqual([0, 1, Infinity, Infinity, Infinity, Infinity]);
+    expect(await read(ordinary)).toEqual([0]);
+    expect(await read(converged)).toEqual([1]);
+    expect(await read(sourceComplete)).toEqual([1]);
+  } finally {
+    context.destroy();
+  }
+});
 
 /** Flattens seed rows into seed views with explicit rows. */
 function flattenRows(rows: readonly (readonly AccessibilitySeed[])[]) {

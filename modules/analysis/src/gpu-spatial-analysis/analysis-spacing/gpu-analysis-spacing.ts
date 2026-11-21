@@ -33,6 +33,7 @@ import {
   getGPUAnalysisExtentSizes
 } from '../ontology/analysis-experience/index';
 import {createAnalysisSpacingStatisticsNodes} from './analysis-spacing-statistics-nodes';
+import {getPackedUint32Values} from '../../analysis-core/kernels/packed-readback';
 
 /** One million keeps row scratch bounded and counts exactly representable in float32. */
 export const GPU_ANALYSIS_SPACING_MAXIMUM_POINT_COUNT = 1_000_000;
@@ -225,11 +226,24 @@ export class GPUAnalysisSpacing implements GPUCommandNodeProducer {
   }
 }
 
-/** Decodes the single bounded readback, refusing overflow and nonfinite numerical results. */
-export function decodeGPUAnalysisSpacingStatistics(
-  words: Uint32Array
-): GPUAnalysisSpacingStatistics | undefined {
+/** Evidence remains readable even when no numerical profile can be returned. */
+export type GPUAnalysisSpacingStatisticsDecodeResult = {
+  pointCount: number;
+  invalidCount: number;
+  overflow: number;
+  candidateOverflow: number;
+  requiredCount: number;
+  complete: number;
+  statistics?: GPUAnalysisSpacingStatistics;
+  unavailableReason?: 'empty' | 'all-invalid' | 'incomplete' | 'nonfinite-statistics';
+};
+
+/** Checked, offset-aware decoding of words or raw readback bytes, retaining all loss evidence. */
+export function decodeGPUAnalysisSpacingStatisticsDetailed(
+  input: Uint32Array | Uint8Array | ArrayBuffer
+): GPUAnalysisSpacingStatisticsDecodeResult {
   const id = 'decodeGPUAnalysisSpacingStatistics';
+  const words = getPackedUint32Values(input);
   validateCapacity(
     id,
     'summary.length',
@@ -238,21 +252,27 @@ export function decodeGPUAnalysisSpacingStatistics(
     GPU_ANALYSIS_SPACING_SUMMARY_LENGTH
   );
   validateRequirement(id, words[7] === 1, 'summary version must be 1');
-  validateRequirement(id, words[2] === 0, `summary overflow must be 0 (requiredCount ${words[3]})`);
-  validateRequirement(
-    id,
-    words[27] === 0,
-    `summary candidateOverflow must be 0 (requiredCount ${words[3]})`
-  );
   const pointCount = words[0];
-  if (pointCount === 0) return undefined;
-  validateCapacity(id, 'pointCount', pointCount, 1, GPU_ANALYSIS_SPACING_MAXIMUM_POINT_COUNT);
+  validateCapacity(id, 'pointCount', pointCount, 0, GPU_ANALYSIS_SPACING_MAXIMUM_POINT_COUNT);
+  const evidence = {
+    pointCount,
+    invalidCount: words[1],
+    overflow: words[2],
+    candidateOverflow: words[27],
+    requiredCount: words[3],
+    complete: 1
+  };
+  if (evidence.overflow || evidence.candidateOverflow)
+    return {...evidence, complete: 0, unavailableReason: 'incomplete'};
+  if (pointCount === 0)
+    return {...evidence, unavailableReason: evidence.invalidCount ? 'all-invalid' : 'empty'};
   const values = new Float32Array(words.buffer, words.byteOffset, words.length);
   const coordinateModel = words[26] === 1 ? 'geographic' : 'planar';
   const extent = Array.from(values.slice(8, 12)) as [number, number, number, number];
   const sizes = getGPUAnalysisExtentSizes(extent, coordinateModel);
   const statistics: GPUAnalysisSpacingStatistics = {
     pointCount,
+    invalidCount: words[1],
     sampleSize: pointCount,
     sampled: false,
     coordinateModel,
@@ -293,10 +313,31 @@ export function decodeGPUAnalysisSpacingStatistics(
     statistics.kDistance = {k: words[5], distances};
     usedValues.push(...distances);
   }
+  if (!usedValues.every(Number.isFinite))
+    return {...evidence, complete: 0, unavailableReason: 'nonfinite-statistics'};
+  return {...evidence, statistics};
+}
+
+/** Convenience decoder: empty/all-invalid inputs return undefined; loss/nonfinite results throw. */
+export function decodeGPUAnalysisSpacingStatistics(
+  input: Uint32Array | Uint8Array | ArrayBuffer
+): GPUAnalysisSpacingStatistics | undefined {
+  const result = decodeGPUAnalysisSpacingStatisticsDetailed(input);
+  const id = 'decodeGPUAnalysisSpacingStatistics';
   validateRequirement(
     id,
-    usedValues.every(Number.isFinite),
+    result.overflow === 0,
+    `summary overflow must be 0 (requiredCount ${result.requiredCount})`
+  );
+  validateRequirement(
+    id,
+    result.candidateOverflow === 0,
+    `summary candidateOverflow must be 0 (requiredCount ${result.requiredCount})`
+  );
+  validateRequirement(
+    id,
+    result.unavailableReason !== 'nonfinite-statistics',
     'summary distances and coordinates must be finite (use a local planar frame for extreme magnitudes)'
   );
-  return statistics;
+  return result.statistics;
 }

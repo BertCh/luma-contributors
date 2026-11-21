@@ -2,6 +2,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_SPATIAL_WEIGHTS_TRACES_ROUTES} from './spatial-weights-traces-routes';
+export {GPU_SPATIAL_WEIGHTS_TRACES_ROUTES} from './spatial-weights-traces-routes';
+
+import type {
+  GPUAnalysisRoute,
+  GPUAnalysisExecutionPlanner
+} from '../ontology/spatial-analysis-ontology';
+import {
+  evaluateStatisticsRoute,
+  getStatisticsRequirementCheck,
+  getStatisticsViewBindingByteLength,
+  getStatisticsExecutionPlan,
+  validateStatisticsExecutionPlan,
+  type GPUStatisticsPlanDeviceLimits
+} from '../geographic-distribution/statistics-execution-plan';
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
 import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
 import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
@@ -35,7 +50,9 @@ import {
 } from './spatial-maximum-likelihood-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateMaximumCount,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -53,9 +70,9 @@ import {
 } from './chunked-weights-kernels';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER,
   GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getSpatialWeightsTracesProbeWGSL,
@@ -64,13 +81,28 @@ import {
 } from './spatial-weights-traces-parameters';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {
+  createSpatialWeightsGramProbes,
+  getProtectedGramCommandCount,
+  getSpatialWeightsGramProbeLengths,
+  GRAM_PROTECTION_WGSL
+} from './spatial-weights-gram-probes';
+import {
+  getGramLoadWGSL,
+  getGramPairwiseSumWGSL,
+  SPATIAL_WEIGHTS_GRAM_WGSL
+} from './spatial-weights-gram-wgsl';
+import {getRegressionTraceCommandNodeCount} from './regression-command-counts';
+import {
+  getRowTileMergeNodes,
+  REGRESSION_TILE_MAXIMUM_TILE_COUNT,
+  type RowTileMergePartial
+} from './regression-row-tiles';
 
 const OPERATION = 'GPUSpatialWeightsTraces';
 const TILE_WORKGROUP_SIZE = 64;
 const MINIMUM_DEFAULT_TILE_ROWS = 32;
 const DEFAULT_TILE_COUNT = 1024;
-// Bounds the serial norm merge to the regression family's 4096-partial merge budget.
-const MAXIMUM_TILE_COUNT = 4096;
 
 /** Caller-owned outputs of {@link GPUSpatialWeightsTraces}. */
 export type GPUSpatialWeightsTracesOutput = {
@@ -127,7 +159,7 @@ export type GPUSpatialWeightsTracesProps = {
   /**
    * `'exact'` runs one unit-vector probe per row (exact up to float32 rounding, `O(rows)` chains)
    * and `'stochastic'` runs Hutchinson estimation with `probeCount` Rademacher probes. Defaults to
-   * `'exact'` when `rows <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT` (4096) and to
+   * `'exact'` when `rows <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS` (4096) and to
    * `'stochastic'` otherwise. An explicit `'exact'` is accepted up to 16384 rows.
    */
   mode?: GPUSpatialWeightsTracesMode;
@@ -198,20 +230,40 @@ export function validateGPUSpatialWeightsTracesParameters(
  * - `gramTraces` (optional, unscaled `W`) are `tr(W'W) = sum w_ij^2` and `sum_i c_i^2` with `c_i = sum_l w_li^2`
  *   (exact, the latter through `GPUSpatialWeightsTranspose`), and `tr(W'W W) = E[(Wz)'(WWz)]`,
  *   `tr((W'W)^2) = E[||W'(W z)||^2]` over the same probes (exact in exact mode). They are the
- *   moments of the Kelejian-Prucha / Anselin-Kelejian variance formulas.
+ *   moments of the Kelejian-Prucha / Anselin-Kelejian variance formulas. A weight exponent
+ *   envelope selects the scalar normalized probe path or a raw-weight path with separate exponents.
+ *
+ * Optional positive complete certificates are retained at whole, chunk-root and per-chunk level.
+ * A zero certificate suppresses the traces independently of clear loss flags; restoring it to one
+ * recomputes the result on the same graph.
  *
  * Probes run in batches sized so the two ping-pong vectors stay within 64 MiB
  * (`max(1, floor(8M / rows))` probes per batch). Every dot product is a fixed-order tile sum
- * followed by a fixed pairwise merge, so results are deterministic and no float atomics are used. Nothing
+ * followed by a fixed pairwise merge, so results are deterministic and no float atomics are used.
+ * The historical order remains through 4096 tiles. Above that, consecutive groups of at most 4096 tiles are merged
+ * pairwise before the final pairwise merge over groups, up to REGRESSION_TILE_MAXIMUM_TILE_COUNT
+ * (2^24) tiles, subject to device binding limits. Nothing
  * is read back. The shaders do not depend on the power, the batch or the probe index (rule 12):
  * per-power and per-batch tables are 64-element aligned sub-views, and a uint32 batch table holds
  * each batch's first probe and probe count, so the pipeline count is independent of
  * `maximumPower` and of the number of batches (the short last batch runs the full lane count
  * behind a guard). Cost: `ceil(probes / batch) * (Q + 2)` dispatches of `batch * rows * nnz / rows`
- * work; see `GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT` for the exact-mode default limit.
+ * work; see `GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS` for the exact-mode default limit.
  *
  */
 export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
+  /** Numeric route metadata; hard limits and automatic crossovers are distinct. */
+  static get routes(): readonly GPUAnalysisRoute[] {
+    return GPU_SPATIAL_WEIGHTS_TRACES_ROUTES;
+  }
+  /** Preflight topology and, when supplied, actual device binding/allocation limits. */
+  static getExecutionPlan(
+    props: GPUSpatialWeightsTracesProps,
+    deviceLimits?: GPUStatisticsPlanDeviceLimits
+  ) {
+    return getGPUSpatialWeightsTracesExecutionPlan(props, deviceLimits);
+  }
+
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -230,6 +282,8 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
   readonly tileCount: number;
   /** Whether the Gram traces are computed. */
   readonly includeGramTraces: boolean;
+  /** Construction-time upper bound including chunk dispatches, probe batches and group passes. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSpatialWeightsTracesProps) {
     props = snapshotRegressionConstructionProps(
@@ -254,7 +308,8 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
         'infinityNorm',
         'status'
       ],
-      'spatial-weights-traces'
+      'spatial-weights-traces',
+      ['approximation']
     );
     const id = props.id ?? 'spatial-weights-traces';
     this.id = id;
@@ -265,16 +320,14 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
     if (props.mode !== undefined && props.mode !== 'exact' && props.mode !== 'stochastic') {
       throw new Error(`${id} mode must be 'exact' or 'stochastic'`);
     }
-    const mode =
-      props.mode ??
-      (rows <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic');
-    if (mode === 'exact' && rows > GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT) {
+    const routePlan = getGPUSpatialWeightsTracesExecutionPlan(props);
+    const mode = routePlan.route;
+    if (mode === 'exact' && rows > GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS) {
       throw new Error(
-        `${id} exact mode supports at most ${GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT} rows; use mode 'stochastic'`
+        `${id} exact mode supports at most ${GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS} rows; use mode 'stochastic'`
       );
     }
     const probeCount = props.probeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT;
-    validateCapacity(id, 'probeCount', probeCount);
     validateGPUSpatialWeightsTracesParameters(id, 'parameters', props.parameters);
     if (props.tileRowCount !== undefined) {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
@@ -342,7 +395,10 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / DEFAULT_TILE_COUNT));
     // Tiles never span chunks, so a chunked matrix has at least one tile per chunk.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
-    validateMaximumCount(id, 'tileCount', this.tileCount, MAXIMUM_TILE_COUNT);
+    validateMaximumCount(id, 'tileCount', this.tileCount, REGRESSION_TILE_MAXIMUM_TILE_COUNT);
+    this.estimatedCommandNodeCount = routePlan.estimatedCommandNodeCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateStatisticsExecutionPlan(id, routePlan);
     // The Gram traces need W', which has no chunked form yet.
     if (includeGram && isGPUChunkedSpatialWeights(props.weights)) {
       throw new Error(`${id} Gram traces need whole weights`); // chunked transpose is not available
@@ -375,6 +431,10 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateStatisticsExecutionPlan(
+      this.id,
+      getGPUSpatialWeightsTracesExecutionPlan(this.props, graph.device.limits)
+    );
     const {id, props, rowCount, probeTotal, batchProbeCount, tileRowCount, tileCount} = this;
     const {weights, output, maximumPower} = props;
     const stochastic = this.mode === 'stochastic';
@@ -468,6 +528,30 @@ const PROBE_TOTAL: u32 = ${probeTotal}u;`;
         count,
         term: `${source}[${source}Offset + ${indexExpression} + sumItem * ${stride}]`
       });
+    const mergeKernel = (
+      name: string,
+      bindings: WGSLKernelBinding[],
+      invocationCount: number,
+      declarations: string,
+      body: string,
+      partials: readonly RowTileMergePartial[],
+      strideConstants?: readonly string[],
+      workgroupSize?: number
+    ) =>
+      getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-${name}`,
+          operation: OPERATION,
+          variant: name.replace(/-\d+(-\d+)?$/, ''),
+          bindings,
+          invocationCount,
+          declarations,
+          body,
+          ...(workgroupSize ? {workgroupSize} : {})
+        },
+        {tileCount, partials, strideConstants}
+      );
     const nodes: GPUCommandNode<Parameters>[] = [];
     const {dispatches} = getGPUSpatialWeightsTilePlan(weights, tileRowCount);
     // Chunked weights with Gram traces are rejected in the constructor.
@@ -476,7 +560,11 @@ const PROBE_TOTAL: u32 = ${probeTotal}u;`;
 
     // ---- s = ||W||_inf and the scaled weights W / s used by every power chain. ----
     const infinityNorm = output.infinityNorm ?? transient('infinity-norm', 1);
-    const normPartial = transient('norm-partial', tileCount);
+    const normPartialWidth = includeGram ? 3 : 1;
+    const normPartial = transient('norm-partial', tileCount * normPartialWidth);
+    const gramProtection = includeGram
+      ? createTransientView(graph, `${id}-gram-protection`, 'uint32', 1)
+      : undefined;
     const scaledWeightViews = dispatches.map(dispatch =>
       transient(`scaled-weights${dispatch.idSuffix}`, dispatch.weights.weights.length)
     );
@@ -491,34 +579,88 @@ const PROBE_TOTAL: u32 = ${probeTotal}u;`;
             dispatch,
             `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
-  var largest = 0.0;
+  var largest = 0.0;${
+    includeGram
+      ? `
+  var inverseMinimum = 0.0;
+  var maximum = 0.0;`
+      : ''
+  }
   for (var row = firstRow; row < lastRow; row++) {
     var sum = 0.0;
     for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
       if (neighbors[neighborsOffset + slot] >= ROWS) {
         continue;
       }
-      sum += abs(weights[weightsOffset + slot]);
+      sum += abs(weights[weightsOffset + slot]);${
+        includeGram
+          ? `
+      let magnitude = bitcast<u32>(weights[weightsOffset + slot]) & 0x7fffffffu;
+      if (magnitude != 0u) {
+        let exponent = magnitude >> 23u;
+        inverseMinimum = max(inverseMinimum, f32(256u - exponent));
+        maximum = max(maximum, f32(exponent));
+      }`
+          : ''
+      }
     }
     largest = max(largest, sum);
   }
-  normPartial[normPartialOffset + index] = largest;`
+  normPartial[normPartialOffset + index * ${normPartialWidth}u] = largest;${
+    includeGram
+      ? `
+  normPartial[normPartialOffset + index * 3u + 1u] = inverseMinimum;
+  normPartial[normPartialOffset + index * 3u + 2u] = maximum;`
+      : ''
+  }`
           ),
           undefined,
           TILE_WORKGROUP_SIZE
         )
       ),
-      kernel(
+      ...mergeKernel(
         'norm-merge',
-        [f32('normPartial', normPartial, 'read'), f32('infinityNorm', infinityNorm, 'read_write')],
+        [
+          f32('normPartial', normPartial, 'read'),
+          f32('infinityNorm', infinityNorm, 'read_write'),
+          ...(gramProtection ? [u32('gramProtection', gramProtection, 'read_write')] : [])
+        ],
         1,
-        constants,
-        `var largest = 0.0;
+        `${constants}${gramProtection ? GRAM_PROTECTION_WGSL : ''}`,
+        `var largest = 0.0;${
+          gramProtection
+            ? `
+  var inverseMinimum = 0.0;
+  var maximum = 0.0;`
+            : ''
+        }
   for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    largest = max(largest, normPartial[normPartialOffset + tile]);
+    largest = max(largest, normPartial[normPartialOffset + tile * ${normPartialWidth}u]);${
+      gramProtection
+        ? `
+    inverseMinimum = max(inverseMinimum, normPartial[normPartialOffset + tile * 3u + 1u]);
+    maximum = max(maximum, normPartial[normPartialOffset + tile * 3u + 2u]);`
+        : ''
+    }
   }
   // An empty or non-finite W scales by 1 (non-finite weights then propagate through the chains).
-  infinityNorm[infinityNormOffset] = select(1.0, largest, largest > 0.0 && largest < 3.0e38);`
+  let largestBits = bitcast<u32>(largest);
+  infinityNorm[infinityNormOffset] = select(1.0, largest, largestBits > 0u && largestBits < 0x7f800000u);${
+    gramProtection
+      ? `
+  gramProtection[gramProtectionOffset] = select(0u, 1u, needsProtectedGram(
+    largestBits, inverseMinimum, maximum, ${Math.ceil(Math.log2(Math.max(1, wholeWeights.weights.length)))},
+    ${Math.ceil(Math.log2(rowCount))}, ${Math.ceil(Math.log2(probeTotal))}
+  ));`
+      : ''
+  }`,
+        [
+          {
+            name: 'normPartial',
+            termCount: normPartialWidth,
+            maxima: includeGram ? {0: 0, 1: 0, 2: 0} : {0: 0}
+          }
+        ]
       ),
       ...dispatches.map((dispatch, chunkIndex) =>
         kernel(
@@ -530,7 +672,27 @@ const PROBE_TOTAL: u32 = ${probeTotal}u;`;
           ],
           dispatch.weights.weights.length,
           '',
-          `scaledWeights[scaledWeightsOffset + index] = weights[weightsOffset + index] / infinityNorm[infinityNormOffset];`
+          `let weight = weights[weightsOffset + index];
+  let norm = infinityNorm[infinityNormOffset];
+  let normBits = bitcast<u32>(norm);
+  var scaledWeight = weight;
+  if (normBits < 0x7e800000u) {
+    scaledWeight = weight / norm;
+  } else {
+    // At norm >= 2^126 Metal can flush its reciprocal. Decrement both exponents
+    // by three so the reciprocal of the rebased norm stays normal.
+    let weightBits = bitcast<u32>(weight);
+    let magnitude = weightBits & 0x7fffffffu;
+    if (magnitude < 0x02000000u) {
+      // This quotient is below the smallest subnormal even before rounding.
+      scaledWeight = bitcast<f32>(weightBits & 0x80000000u);
+    } else if (magnitude < 0x7f800000u) {
+      let exponentDecrement = 3u << 23u;
+      scaledWeight = bitcast<f32>(weightBits - exponentDecrement) /
+        bitcast<f32>(normBits - exponentDecrement);
+    }
+  }
+  scaledWeights[scaledWeightsOffset + index] = scaledWeight;`
         )
       )
     );
@@ -591,14 +753,16 @@ const PROBE_TOTAL: u32 = ${probeTotal}u;`;
       );
     }
     nodes.push(
-      kernel(
+      ...mergeKernel(
         'sums-merge',
         [f32('sumsPartial', sumsPartial, 'read'), f32('powerSums', output.powerSums, 'read_write')],
         maximumPower,
         `${constants}
 const SUMS_STRIDE: u32 = ${sumsStride}u;`,
         `${kahanLoop('sumsPartial', 'index * SUMS_STRIDE', '1u', 'TILE_COUNT')}
-  powerSums[powerSumsOffset + index] = sum;`
+  powerSums[powerSumsOffset + index] = sum;`,
+        [{name: 'sumsPartial', termCount: maximumPower, blockWidth: 1, blockStride: sumsStride}],
+        ['SUMS_STRIDE']
       )
     );
 
@@ -690,14 +854,29 @@ const SUMS_STRIDE: u32 = ${sumsStride}u;`,
     ];
     nodes.push(batches.node);
     const probeDeclarations = getSpatialWeightsTracesProbeWGSL(stochastic);
+    const gramProbes =
+      transposed && gramProtection
+        ? createSpatialWeightsGramProbes(graph, {
+            id,
+            weights: wholeWeights,
+            transposed,
+            rowCount,
+            tileCount,
+            constants,
+            probeTotal,
+            batches,
+            probeDeclarations,
+            gramProtection
+          })
+        : undefined;
     // Reduces the tile partials of every probe of a batch into one aligned block of one dot row.
     const mergeNode = (
       name: string,
       batchIndex: number,
       partial: GraphDataView,
       dotRow: number
-    ): GPUCommandNode<Parameters> =>
-      kernel(
+    ): GPUCommandNode<Parameters>[] =>
+      mergeKernel(
         name,
         [
           f32('partial', partial, 'read'),
@@ -711,6 +890,7 @@ const SUMS_STRIDE: u32 = ${sumsStride}u;`,
   }
   ${kahanLoop('partial', 'index * TILE_COUNT', '1u', 'TILE_COUNT')}
   dots[dotsOffset + index] = sum;`,
+        [{name: 'partial', termCount: batchProbeCount, blockWidth: 1}],
         undefined,
         TILE_WORKGROUP_SIZE
       );
@@ -797,7 +977,7 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
         );
         if (powerDot) {
           nodes.push(
-            mergeNode(
+            ...mergeNode(
               `probe-merge-${batchIndex}-${step}`,
               batchIndex,
               partialPower as GraphDataView,
@@ -807,7 +987,7 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
         }
         if (gramStep) {
           nodes.push(
-            mergeNode(
+            ...mergeNode(
               `probe-merge-pair-${batchIndex}`,
               batchIndex,
               partialGram as GraphDataView,
@@ -815,7 +995,7 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
             )
           );
         }
-        if (gramStep && transposed) {
+        if (gramStep && transposed && gramProtection) {
           // W' (W z) from the first-step vector, still held by the source buffer.
           nodes.push(
             kernel(
@@ -824,6 +1004,7 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
                 ...csrBindings('transposed', transposed),
                 f32('vectorIn', source, 'read'),
                 f32('partialGram', partialGram as GraphDataView, 'read_write'),
+                u32('gramProtection', gramProtection, 'read'),
                 batchInformation
               ],
               batchProbeCount * tileCount,
@@ -833,6 +1014,10 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
     return;
   }
   let tile = index % TILE_COUNT;
+  if (gramProtection[gramProtectionOffset] != 0u) {
+    partialGram[partialGramOffset + probe * TILE_COUNT + tile] = 0.0;
+    return;
+  }
   let base = probe * ROWS;
   let firstRow = tile * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
@@ -854,7 +1039,7 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
             )
           );
           nodes.push(
-            mergeNode(
+            ...mergeNode(
               `probe-merge-square-${batchIndex}`,
               batchIndex,
               partialGram as GraphDataView,
@@ -863,12 +1048,16 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
           );
         }
       }
+      if (gramProbes) nodes.push(...gramProbes.getBatchNodes(batchIndex));
     }
 
     // ---- Final merge over probes (and tiles of the exact Gram moments). ----
     const finalBindings: WGSLKernelBinding[] = [
       f32('dots', dots, 'read'),
-      f32('infinityNorm', infinityNorm, 'read'),
+      ...(includeGram ? [f32('infinityNorm', infinityNorm, 'read')] : []),
+      ...(gramProbes && gramProtection
+        ? [u32('gramProtection', gramProtection, 'read'), f32('gramDots', gramProbes.dots, 'read')]
+        : []),
       ...(gramPartial ? [f32('gramPartial', gramPartial, 'read')] : []),
       f32('powerTraces', output.powerTraces, 'read_write'),
       ...(output.powerTraceStandardErrors
@@ -878,15 +1067,32 @@ ${powerDot ? '  partialPower[partialPowerOffset + probe * TILE_COUNT + tile] = p
     ];
     const scale = stochastic ? `1.0 / f32(PROBE_TOTAL)` : '1.0';
     nodes.push(
-      kernel(
+      ...mergeKernel(
         'final-merge',
         finalBindings,
         dotRowCount + (includeGram ? 2 : 0),
         `${constants}${output.powerTraceStandardErrors ? `\n${GET_NAN_WGSL}` : ''}
 const POWER_COUNT: u32 = ${maximumPower}u;
 const DOT_ROWS: u32 = ${dotRowCount}u;
-const POWER_ROWS: u32 = ${powerRowCount}u;`,
-        `if (index < DOT_ROWS) {
+const POWER_ROWS: u32 = ${powerRowCount}u;
+${gramProbes ? SPATIAL_WEIGHTS_GRAM_WGSL : ''}`,
+        `${
+          gramProbes
+            ? `if (index >= POWER_ROWS && index < DOT_ROWS && gramProtection[gramProtectionOffset] != 0u) {
+    let moment = index - POWER_ROWS;
+    ${getGramPairwiseSumWGSL(
+      'PROBE_TOTAL',
+      getGramLoadWGSL(
+        'gramDots',
+        `2u * ((gramItem / ${batchProbeCount}u) * ${batches.blockStride}u + gramItem % ${batchProbeCount}u) + moment`
+      )
+    )}
+    gramTraces[gramTracesOffset + 1u + moment] = publishGram(gramSum, ${stochastic ? 'f32(PROBE_TOTAL)' : '1.0'});
+    return;
+  }
+  `
+            : ''
+        }if (index < DOT_ROWS) {
     ${batches.getSumWGSL('dots', 'sum', `index * ${dotsRowStride}u`)}
     let value = sum * ${scale};
     if (index < POWER_COUNT) {
@@ -926,7 +1132,8 @@ const POWER_ROWS: u32 = ${powerRowCount}u;`,
     gramTraces[gramTracesOffset + select(0u, 3u, slot == 1u)] = sum;
   }`
       : ''
-  }`
+  }`,
+        includeGram ? [{name: 'gramPartial', termCount: 2}] : []
       )
     );
     if (output.status?.approximation) {
@@ -942,7 +1149,195 @@ const POWER_ROWS: u32 = ${powerRowCount}u;`,
     }
     return [
       ...nodes,
-      ...getRegressionWeightsSuppressionNodes<Parameters>(graph, id, props.weights, props.output)
+      ...getRegressionWeightsSuppressionNodes<Parameters>(
+        graph,
+        id,
+        props.weights,
+        props.output,
+        undefined,
+        {
+          powerTraces: maximumPower,
+          powerTraceStandardErrors: maximumPower,
+          powerSums: maximumPower,
+          gramTraces: GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH,
+          infinityNorm: 1
+        }
+      )
     ];
   }
 }
+
+/** Exact/stochastic topology, domain crossover and forced exact maximum. */
+
+/** Uses the actual chunk tile, probe batch, schedule and padded allocation helpers. */
+export function getGPUSpatialWeightsTracesExecutionPlan(
+  props: GPUSpatialWeightsTracesProps,
+  deviceLimits?: GPUStatisticsPlanDeviceLimits
+) {
+  const id = props.id ?? 'spatial-weights-traces';
+  validateCapacity(
+    id,
+    'probeCount',
+    props.probeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT
+  );
+  const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
+  validateRequirement(
+    id,
+    props.mode === undefined || ['exact', 'stochastic'].includes(props.mode),
+    `mode must be exact or stochastic; received ${props.mode}`
+  );
+  const route =
+    props.mode ??
+    (rows <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic');
+  const probeTotal =
+    route === 'exact' ? rows : (props.probeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT);
+  const batchProbeCount = Math.min(
+    probeTotal,
+    props.probeBatchSize ?? Infinity,
+    Math.max(1, Math.floor(GPU_SPATIAL_WEIGHTS_TRACES_SCRATCH_ELEMENT_LIMIT / rows))
+  );
+  const tileRowCount =
+    props.tileRowCount ?? Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / DEFAULT_TILE_COUNT));
+  validateCapacity(id, 'tileRowCount', tileRowCount);
+  validateCapacity(id, 'probeTotal', probeTotal);
+  validateCapacity(id, 'batchProbeCount', batchProbeCount);
+  const tileCount = getGPUSpatialWeightsTilePlan(props.weights, tileRowCount).tileCount;
+  const includeGram = props.includeGramTraces ?? props.output.gramTraces !== undefined;
+  const descriptor = GPU_SPATIAL_WEIGHTS_TRACES_ROUTES[0];
+  const checks = [
+    evaluateStatisticsRoute(descriptor, rows),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'maximumPower',
+        kind: 'hard-limit',
+        quantity: 'maximumPower',
+        unit: 'elements',
+        maximum: GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER,
+        minimum: 1,
+        appliesWhen: 'all routes'
+      },
+      props.maximumPower
+    ),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'tile-count',
+        kind: 'hard-limit',
+        quantity: 'total chunk-local tiles',
+        unit: 'elements',
+        maximum: REGRESSION_TILE_MAXIMUM_TILE_COUNT,
+        appliesWhen: 'tiles never span chunks'
+      },
+      tileCount
+    ),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'Gram-whole-weights',
+        kind: 'hard-limit',
+        quantity: 'chunked Gram request',
+        unit: 'elements',
+        maximum: 0,
+        appliesWhen: 'includeGramTraces'
+      },
+      Number(includeGram && isGPUChunkedSpatialWeights(props.weights))
+    )
+  ];
+  checks.push(
+    getStatisticsRequirementCheck(
+      descriptor,
+      'output.gramTraces is required exactly when includeGramTraces is true',
+      includeGram === Boolean(props.output.gramTraces)
+    )
+  );
+  for (const [name, view, minimum] of [
+    ['parameters', props.parameters, GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH],
+    ['output.powerTraces', props.output.powerTraces, props.maximumPower],
+    ['output.powerSums', props.output.powerSums, props.maximumPower],
+    ['output.powerTraceStandardErrors', props.output.powerTraceStandardErrors, props.maximumPower],
+    ['output.gramTraces', props.output.gramTraces, GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH],
+    ['output.infinityNorm', props.output.infinityNorm, 1],
+    ['output.status.approximation', props.output.status?.approximation, 1]
+  ] as const)
+    if (view)
+      checks.push(
+        evaluateStatisticsRoute(
+          {
+            ...descriptor,
+            name,
+            quantity: name,
+            kind: 'hard-limit',
+            unit: 'rows',
+            scope: 'output',
+            minimum,
+            maximum: undefined,
+            appliesWhen: 'view supplied'
+          },
+          view.length
+        )
+      );
+  if (route === 'exact')
+    checks.push(
+      evaluateStatisticsRoute(
+        {
+          ...descriptor,
+          name: 'forced-exact-maximum',
+          kind: 'hard-limit',
+          quantity: 'rows for exact mode',
+          maximum: GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS,
+          appliesWhen: 'mode exact'
+        },
+        rows
+      )
+    );
+  const estimated =
+    getRegressionTraceCommandNodeCount({
+      weights: props.weights,
+      tileCount,
+      maximumPower: props.maximumPower,
+      probeTotal,
+      batchProbeCount,
+      stochastic: route === 'stochastic',
+      includeGram,
+      approximation: Boolean(props.output.status?.approximation)
+    }) + (includeGram ? getProtectedGramCommandCount(tileCount, probeTotal, batchProbeCount) : 0);
+  const allocations = getRegressionTraceAllocationLengths({
+    rowCount: rows,
+    edgeCount: getRegressionMaximumEdgeCount(props.weights),
+    maximumPower: props.maximumPower,
+    tileCount,
+    mode: route,
+    probeCount: props.probeCount,
+    probeBatchSize: props.probeBatchSize,
+    includeGram
+  });
+  const gramAllocations = includeGram
+    ? getSpatialWeightsGramProbeLengths(rows, tileCount, probeTotal, batchProbeCount)
+    : {};
+  const bindings = Object.fromEntries(
+    Object.entries<number>({...allocations, ...gramAllocations}).map(([name, elements]) => [
+      name,
+      elements * 4
+    ])
+  );
+  for (const [name, view] of Object.entries({
+    ...getRegressionWeightBindings(props.weights),
+    parameters: props.parameters,
+    ...props.output,
+    status: undefined,
+    approximation: props.output.status?.approximation
+  }))
+    if (view) bindings[name] = getStatisticsViewBindingByteLength(view);
+  return {
+    ...getStatisticsExecutionPlan(route, checks, estimated, bindings, deviceLimits, descriptor),
+    tileRowCount,
+    tileCount,
+    probeTotal,
+    batchProbeCount
+  };
+}
+export const GPU_SPATIAL_WEIGHTS_TRACES_PLANNER: GPUAnalysisExecutionPlanner<
+  GPUSpatialWeightsTracesProps,
+  GPUStatisticsPlanDeviceLimits | undefined
+> = {getExecutionPlan: getGPUSpatialWeightsTracesExecutionPlan};

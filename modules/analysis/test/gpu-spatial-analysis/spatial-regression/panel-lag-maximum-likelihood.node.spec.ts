@@ -7,10 +7,17 @@ import {WgslExec, WgslParser} from 'wgsl_reflect';
 import {expect, it, vi} from 'vitest';
 import {
   recordWGSLKernelNodes,
-  getWGSLKernelNodeRecord
+  getWGSLKernelNodeRecord,
+  createWGSLKernelNode
 } from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
-import {createCPUGraphMemory} from '../segment-intersection/wgsl-graph-executor';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
 import {GPUSpatialPanelLagMaximumLikelihood} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-lag-maximum-likelihood';
+import {PANEL_LAG_PROFILE_SCORE_WGSL} from '../../../src/gpu-spatial-analysis/spatial-regression/panel-lag-profile-score-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from '../../../src/gpu-spatial-analysis/spatial-regression/rounded-difference-wgsl';
+import {IS_FINITE_BITS_WGSL} from '../../../src/analysis-core/kernels/wgsl-common';
 import {
   auditWGSLModule,
   stripWGSLComments,
@@ -65,6 +72,108 @@ function createFixture(rows = 64) {
   };
   return {device, graph, view, sur, panel};
 }
+
+it('reference panel search retains rho under response rescaling and a nonzero variance floor', () => {
+  const fixture = createFixture();
+  try {
+    recordWGSLKernelNodes(fixture.graph);
+    const fit = new GPUSpatialPanelLagMaximumLikelihood(fixture.panel)
+      .getCommandNodes(fixture.graph)
+      .find(node => node.id.endsWith('-random-fit'))!;
+    const record = getWGSLKernelNodeRecord(fixture.graph, fit.id)!;
+    // Execute the actual bounded search and objective, without the shared Cholesky solve
+    // which wgsl_reflect cannot emulate. For W=0, RSS=32+16*(rho-.5)^2 has minimizer .5.
+    const search = record.body.slice(
+      record.body.indexOf('var lower=-0.999'),
+      record.body.indexOf('bracketWidth=upper-lower')
+    );
+    // The interpreter also lacks LU's nested struct-array assignment. Substitute only the
+    // independent closed-form log determinant (zero, or log(1-rho^2)), retaining the
+    // contributor's variance arithmetic, objective and search unchanged.
+    const memory = createCPUGraphMemory();
+    const results = record.bindings.find(binding => binding.name === 'results')!.view;
+    for (const profile of [
+      {
+        name: 'zero',
+        determinant: '0.0',
+        direct: 'vec4f(32.0*scale, 16.0*scale, .5, 0.0)',
+        expected: 0.5,
+        tolerance: 1e-6
+      },
+      // NumPy SVD / SciPy score root in panel-audit.oracle.py, referenceProfile. The
+      // ring spectrum [-1,0,0,1] gives log|I-rho W|=log(1-rho^2) and trace=2rho/(1-rho^2).
+      {
+        name: 'ring',
+        determinant: 'log(1.0-rho*rho)',
+        direct: 'vec4f(17.123268364327416*scale, 56.76483801338246*scale, -.3033754550574301, 0.0)',
+        expected: -0.2608984009903809,
+        tolerance: 1e-6
+      }
+    ]) {
+      const traceStart = record.declarations!.indexOf('fn getPanelLagTrace(');
+      const traceEnd = record.declarations!.indexOf('fn evaluatePanelObjective(', traceStart);
+      expect(traceStart).toBeGreaterThanOrEqual(0);
+      expect(traceEnd).toBeGreaterThan(traceStart);
+      const trace = profile.name === 'zero' ? '0.0' : '2.0*rho/(1.0-rho*rho)';
+      const withTrace = `${record.declarations!.slice(0, traceStart)}fn getPanelLagTrace(rho:f32)->vec2f{return vec2f(${trace},1.0);}\n${record.declarations!.slice(traceEnd)}`;
+      const declarations = withTrace.replace(
+        /var matrix:array<f32,16>;[\s\S]*?let determinant=factorization.logAbsDeterminant;/,
+        `let determinant=${profile.determinant};`
+      );
+      expect(declarations).not.toBe(withTrace);
+      const node = createWGSLKernelNode(fixture.graph, {
+        id: `reference-profile-scale-probe-${profile.name}`,
+        operation: 'PanelProfileOracle',
+        invocationCount: 2,
+        bindings: [...record.bindings],
+        declarations: `${declarations}\nfn auditSearch(direct: vec4f) -> f32 { var rho = 0.0; let runtimeZero=bitcast<u32>(centers[centersOffset+2u]); ${search} return rho; }`,
+        body: `let scale = select(1.0, 4.0, index == 1u); results[resultsOffset + index] = auditSearch(${profile.direct});`
+      });
+      executeCommandNodesOnCPU([node], memory);
+      const actual = memory.readFloat32(results, 2);
+      for (const value of actual) {
+        expect(Number.isFinite(value)).toBe(true);
+        expect(Math.abs(value - profile.expected)).toBeLessThanOrEqual(profile.tolerance);
+      }
+      expect(actual[1]).toBe(actual[0]);
+    }
+  } finally {
+    fixture.device.destroy();
+  }
+});
+
+it('panel likelihood score matches independent Gaussian derivatives and propagates unusable inputs', () => {
+  const fixture = createFixture();
+  try {
+    const memory = createCPUGraphMemory();
+    const parameters = fixture.view('uint32', 1),
+      output = fixture.view('float32', 10);
+    const node = createWGSLKernelNode(fixture.graph, {
+      id: 'panel-score-oracle',
+      operation: 'PanelScoreOracle',
+      invocationCount: 5,
+      bindings: [
+        {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+        {name: 'output', view: output, type: 'f32', access: 'read_write'}
+      ],
+      declarations: `${IS_FINITE_BITS_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}\n${PANEL_LAG_PROFILE_SCORE_WGSL}`,
+      body: `let rho=select(-.5+f32(index)*.5,0.0,index>=3u);let trace=vec2f(2.0*rho/(1.0-rho*rho),select(1.0,0.0,index==3u));
+let direct=select(vec4f(17.123268364327416,56.76483801338246,-.3033754550574301,0.0),vec4f(0.0),index==4u);
+let value=getPanelLagProfileScore(rho,direct,trace,16.0,4.0,parameters[parametersOffset]);output[outputOffset+2u*index]=value.x;output[outputOffset+2u*index+1u]=value.y;`
+    });
+    executeCommandNodesOnCPU([node], memory);
+    // panel-audit.oracle.py: n*delta/(S/d+delta^2)+T*sum(lambda/(1-rho lambda)).
+    const expected = [
+      -14.577717216187487, 1, 12.329535210089412, 1, 18.90580121063879, 1, 0, 0, 0, 0
+    ];
+    memory.readFloat32(output).forEach((value, index) => {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(Math.abs(value - expected[index])).toBeLessThanOrEqual(1e-5);
+    });
+  } finally {
+    fixture.device.destroy();
+  }
+});
 
 it('tiled panel profile retains the variance minimum when a nonzero floor hides rho differences', () => {
   const fixture = createFixture();

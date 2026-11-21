@@ -42,7 +42,8 @@ import {
   getRasterJacobiLoopNodeCount,
   requireRasterLength,
   validateRasterExpansionGraph,
-  validateRasterExpansionViews
+  validateRasterExpansionViews,
+  validateRasterExpansionPorts
 } from '../../raster-analysis/raster-expansion-utils';
 import {
   getTerrainGroundMeasureWGSL,
@@ -99,12 +100,12 @@ export type GPUTerrainStreamNetworkProps = {
      * float32 spacing at their magnitude (0.5 m at 4.5e6, 7.6e-6 degree at longitude 122).
      */
     positions: GraphDataView<'float32x2'>;
-    /** Reach lengths in affine units by default (geographic degrees are not ground meters), or ground meters under `cellSizeMode`. */
+    /** Reach lengths in affine units by default or ground metres in geographic and Web Mercator modes. */
     lengths: GraphDataView<'float32'>;
     reachCount: GraphDataView<'uint32'>;
     vertexCount: GraphDataView<'uint32'>;
     status: {overflow: GraphDataView<'uint32'>};
-    /** Number of stream cells whose bounded downstream traversal is unresolved, including cycles. */
+    /** Number of stream cells whose bounded downstream traversal or junction membership is unresolved, including cycles and upstream paths to uncertain junctions. */
     unresolvedCount: GraphDataView<'uint32'>;
   };
 };
@@ -113,8 +114,10 @@ export type GPUTerrainStreamNetworkProps = {
  * Extracts compact directed reaches between headwaters, confluences and terminals. Each reach
  * retains all cell centers as its polyline; junctions occur in each incident reach. A stream path
  * ends when it leaves the supplied mask. Cycles and unresolved directions never produce reaches.
- * Lengths use the affine units, or ground meters under `cellSizeMode`. One complete D8 grid is
- * required.
+ * Unknown donor membership makes a junction uncertain: that cell and paths reaching it are
+ * unresolved and produce no reaches. Separate definite reaches remain available.
+ * Lengths use affine units by default or ground metres in geographic and Web Mercator modes.
+ * One complete D8 grid is required.
  *
  * Reach ends and path completeness are found by pointer jumping (`ceil(log2(path bound))` gated
  * rounds), and reaches are compacted with `GPUCompaction` and `GPUScan`. When the outputs are too
@@ -138,6 +141,19 @@ export class GPUTerrainStreamNetwork implements GPUCommandNodeProducer {
       'localOrigin must be two finite numbers'
     );
     validateTerrainFlowDirectionEncoding(this.id, props.directionEncoding);
+    validateRasterExpansionPorts(this.id, props, {
+      flowDirections: ['uint32'],
+      streams: ['uint32'],
+      'output.sourceCells': ['uint32'],
+      'output.targetCells': ['uint32'],
+      'output.vertexOffsets': ['uint32'],
+      'output.positions': ['float32x2'],
+      'output.lengths': ['float32'],
+      'output.reachCount': ['uint32'],
+      'output.vertexCount': ['uint32'],
+      'output.status.overflow': ['uint32'],
+      'output.unresolvedCount': ['uint32']
+    });
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,
@@ -216,7 +232,15 @@ fn incomingCount(cell:u32)->u32 {
  let otherColumn=column+columnOffset;let otherRow=row+rowOffset;
  if(otherColumn<0||otherRow<0||otherColumn>=i32(GRID_WIDTH)||otherRow>=i32(GRID_HEIGHT)||(columnOffset==0&&rowOffset==0)){continue;}
  let other=u32(otherRow)*GRID_WIDTH+u32(otherColumn);
- if(isStream(other)&&getFlowReceiver(other,getFlowDirectionCode(directions[directionsOffset+other]))==cell){incoming++;}
+ if(isStream(other)){
+  let word=streams[streamsOffset+other];
+  let code=getFlowDirectionCode(directions[directionsOffset+other]);
+  let receiver=getFlowReceiver(other,code);
+  // An unknown direction may donate to any neighbour. An unknown stream word with a known
+  // receiver may or may not contribute that donor, so it cannot certify a junction count.
+  if(code==UNRESOLVED_DIRECTION||(word>=UNRESOLVED_DIRECTION&&receiver==cell)){return UNRESOLVED_DIRECTION;}
+  if(receiver==cell){incoming++;}
+ }
  }}return incoming;
 }`;
     const streamBindings = [
@@ -244,7 +268,7 @@ if(isStream(index)){
  let code=getFlowDirectionCode(directions[directionsOffset+index]);
  let receiver=getFlowReceiver(index,code);
  let leaves=receiver==NO_CELL||!isStream(receiver);
- if(stream==NO_CELL||stream==UNRESOLVED_DIRECTION||(code!=0u&&receiver==NO_CELL)){outcome=2u;}
+ if(stream==NO_CELL||stream==UNRESOLVED_DIRECTION||(code!=0u&&receiver==NO_CELL)||incomingCount(index)==UNRESOLVED_DIRECTION){outcome=2u;}
  else if(leaves){outcome=1u;}
  else{nextCell=receiver;}
  // The reach continues through the receiver only while it is a stream cell with exactly one donor.

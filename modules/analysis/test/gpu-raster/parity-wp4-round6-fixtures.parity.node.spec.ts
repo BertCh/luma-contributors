@@ -52,6 +52,7 @@ it('WP4 round6 fixtures preserve sources, versions, full extents and exact-sum c
   }
   expect((await decodePackedNumbers(samplingCases[0].values)).length).toBe(512 * 512);
   expect(samplingCases[0].pointCount).toBe(5380);
+  expect(samplingCases[0].frames.map(frame => frame.noDataPolicy)).toContain('propagate');
 });
 
 for (const scene of joinCases) {

@@ -132,7 +132,10 @@ export async function createDotDensity(
       0.03
     )
   };
-  const maskExtent = [grid.originX, grid.originY, grid.cellSize, grid.cellSize] as const;
+  const maskPlacement = {
+    origin: [grid.originX, grid.originY],
+    cellSize: [grid.cellSize, grid.cellSize]
+  } as const;
 
   // --- Buffers --------------------------------------------------------------------------------
   const resources = new SpatialAnalysisResources(device, 'dot-density');
@@ -251,7 +254,7 @@ export async function createDotDensity(
           DOT_CAPACITY
         ),
         slotCounts: importGraphBuffer(dotGraph, 'slot-counts', slotCounts, 'uint32', slotCount),
-        slotOffsets: importGraphBuffer(dotGraph, 'slot-offsets', slotOffsets, 'uint32', slotCount),
+        slotStarts: importGraphBuffer(dotGraph, 'slot-offsets', slotOffsets, 'uint32', slotCount),
         status: {failedCount: importGraphBuffer(dotGraph, 'dot-failed', dotFailed, 'uint32', 1)}
       }
     })
@@ -327,7 +330,7 @@ export async function createDotDensity(
   }
 
   function writeDotParameters(dotsPerUnit: number): void {
-    parameters.write(getGPUDotDensityParameterValues({seed, dotsPerUnit, maskExtent}));
+    parameters.write(getGPUDotDensityParameterValues({seed, dotsPerUnit, maskPlacement}));
   }
 
   function writeRandomCounts(dotsPerUnit: number): void {
@@ -346,7 +349,7 @@ export async function createDotDensity(
       }
     }
     randomCountsBuffer.write(counts);
-    randomParameters.write(getGPUDotDensityParameterValues({seed: seed + 1, maskExtent}));
+    randomParameters.write(getGPUDotDensityParameterValues({seed: seed + 1, maskPlacement}));
   }
 
   // --- Summary read-back ----------------------------------------------------------------------
@@ -463,7 +466,7 @@ export async function createDotDensity(
     ctx.setReadout('graphTime', 'measuring...');
     try {
       writeDotParameters(getDotsPerUnit(REFERENCE_ZOOM));
-      randomParameters.write(getGPUDotDensityParameterValues({seed: seed + 1, maskExtent}));
+      randomParameters.write(getGPUDotDensityParameterValues({seed: seed + 1, maskPlacement}));
       const options = {parameters: undefined, completionBuffer: dotOverflow, signal: ctx.signal};
       const dotTiming = await measureCompiledGraph(device, compiledDots, options);
       const randomTiming = await measureCompiledGraph(device, compiledRandom, options);

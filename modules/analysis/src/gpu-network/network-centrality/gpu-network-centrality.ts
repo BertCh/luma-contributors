@@ -152,13 +152,14 @@ export type GPUNetworkCentralityProps = {
    */
   topology: GPUNetworkTopology;
   /**
+   * Optional for outward distance metrics; required for node or edge betweenness.
    * The transpose of `topology`: the same edges reversed, with bitwise-identical weights (for
    * example from `GPUCOOToCSR` on the reversed edge list). An undirected network that lists both
    * directions of every edge with equal weights may pass the same topology. The sigma and delta
    * phases walk both directions to find each node's tight predecessors and successors, so a
    * reverse topology that is not the exact transpose gives wrong centrality values.
    */
-  reverseTopology: GPUNetworkTopology;
+  reverseTopology?: GPUNetworkTopology;
   /**
    * Pivot (source) nodes, one centrality row each. Use every node for exact centrality, or a
    * sample for estimates (set `betweennessScale`). Out-of-range nodes are ignored and their
@@ -254,7 +255,7 @@ export type GPUNetworkCentralityProps = {
  *   1/2 factor is applied; halve the result for an undirected graph that lists both directions.
  * - Closeness is outward: the cost from the pivot to the nodes it reaches. networkx's
  *   `closeness_centrality` on a `DiGraph` uses incoming distances, so compare against
- *   `closeness_centrality(G.reverse(), u=pivot, wf_improved=False)` (and `harmonic_centrality(G.reverse(), ...)`),
+ *   `nx.closeness_centrality(G.reverse(), u=p, distance='weight', wf_improved=False)` (and `nx.harmonic_centrality(G.reverse(), nbunch=[p], distance='weight')[p]`),
  *   or pass the reverse topologies (swap `topology` and `reverseTopology`) to get networkx's incoming
  *   convention. The Wasserman-Faust factor `(r - 1) / (nodeCount - 1)` is not applied.
  * - Edges of weight exactly zero are tight when the two end nodes have equal cost, and are counted
@@ -284,6 +285,12 @@ export type GPUNetworkCentralityProps = {
  * mantissa, counter, dependency, path-count exponent) and a packed copy of both CSRs, copied once
  * per encoding.
  *
+ * Per pivot batch, cost search and optional sigma/delta each use at most
+ * min(maximumIterations, nodeCount) rounds. maximumIterations is 1..1024 (default 64).
+ * Search localIterations is 1..64 hops per workgroup (default 16); sigma/delta each use one
+ * hop per round for cross-workgroup ordering. Optional scalar flags aggregate every batch;
+ * exhausted phases retain incumbent contributions and cannot certify exact centralities.
+ *
  * Compile cost: the rounds of every batch are unrolled, so the command node count is about
  * `batchCount * phases * min(maximumIterations, nodeCount)` (see
  * {@link GPUNetworkCentrality.estimatedCommandNodeCount}), where `phases` is 1 for the reachability
@@ -297,6 +304,9 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNetworkCentralityProps;
+  private readonly executionProps: GPUNetworkCentralityProps & {
+    reverseTopology: GPUNetworkTopology;
+  };
   /** Number of network nodes. */
   readonly nodeCount: number;
   /** Number of pivot rows. */
@@ -329,228 +339,19 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
    * range, `estimatedCommandNodeCount` exceeds the 32,768 command node cap, or conflicting output
    * or input byte ranges overlap. Fields used in separate dispatches may share aligned prefixes.
    */
-  constructor(props: GPUNetworkCentralityProps);
-  constructor(
-    props: GPUNetworkCentralityProps,
-    /** @internal Metadata validation for schedulers that publish each scalar status separately. */
-    separateStatusDispatches = false
-  ) {
-    this.id = props.id ?? 'network-centrality';
-    this.props = props;
-    const {id} = this;
-    const {output} = props;
-    const forward = validateGPUNetworkTopology(id, props.topology, {weights: true});
-    const reverse = validateGPUNetworkTopology(id, props.reverseTopology, {weights: true});
-    validateRequirement(
-      id,
-      forward.nodeCount === reverse.nodeCount,
-      'reverseTopology must have the node count of topology'
-    );
-    this.nodeCount = forward.nodeCount;
-    validateSinglePackedView(props.pivotNodes, ['uint32'], `${id} pivotNodes`);
-    this.pivotCount = props.pivotNodes.length;
-    validateRequirement(id, this.pivotCount >= 1, 'pivotNodes must contain at least one pivot');
-    if (props.costLimit) {
-      validateSinglePackedView(props.costLimit, ['float32'], `${id} costLimit`);
-      validateRequirement(
-        id,
-        props.costLimit.length === 1,
-        'costLimit must contain exactly one row'
-      );
-    }
-    validateRequirement(
-      id,
-      Boolean(
-        output.betweenness ||
-          output.edgeBetweenness ||
-          output.closeness ||
-          output.harmonicCloseness ||
-          output.reachedCounts
-      ),
-      'output must contain betweenness, edgeBetweenness, closeness, harmonicCloseness or reachedCounts'
-    );
-    for (const [name, view, length] of [
-      ['output.betweenness', output.betweenness, this.nodeCount],
-      ['output.edgeBetweenness', output.edgeBetweenness, forward.edgeCount],
-      ['output.closeness', output.closeness, this.pivotCount],
-      ['output.harmonicCloseness', output.harmonicCloseness, this.pivotCount]
-    ] as const) {
-      if (view) {
-        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
-        validateRequirement(
-          id,
-          view.length === length,
-          `${name} must contain one row per ${name === 'output.betweenness' ? 'node' : name === 'output.edgeBetweenness' ? 'edge slot' : 'pivot'}`
-        );
-      }
-    }
-    if (output.reachedCounts) {
-      validateSinglePackedView(output.reachedCounts, ['uint32'], `${id} output.reachedCounts`);
-      validateRequirement(
-        id,
-        output.reachedCounts.length === this.pivotCount,
-        'output.reachedCounts must contain one row per pivot'
-      );
-    }
-    validateRequirement(
-      id,
-      props.sampling === undefined || props.sampling === 'exact' || props.sampling === 'sampled',
-      "sampling must be 'exact' or 'sampled'"
-    );
-    const approximation = output.status?.approximation;
-    if (approximation) {
-      validateSinglePackedView(approximation, ['uint32'], `${id} output.status.approximation`);
-      validateCapacity(id, 'output.status.approximation.length', approximation.length, 1, 1);
-    }
-    const converged = output.status?.converged;
-    if (converged) {
-      validateSinglePackedView(converged, ['uint32'], `${id} output.status.converged`);
-      validateRequirement(
-        id,
-        converged.length === 1,
-        'output.status.converged must contain exactly one row'
-      );
-    }
-    const iterationLimitReached = output.status?.iterationLimitReached;
-    if (iterationLimitReached) {
-      validateSinglePackedView(
-        iterationLimitReached,
-        ['uint32'],
-        `${id} output.status.iterationLimitReached`
-      );
-      validateRequirement(
-        id,
-        iterationLimitReached.length === 1,
-        'output.status.iterationLimitReached must contain exactly one row'
-      );
-    }
-    const zeroWeightCycle = output.status?.zeroWeightCycle;
-    if (zeroWeightCycle) {
-      validateSinglePackedView(zeroWeightCycle, ['uint32'], `${id} output.status.zeroWeightCycle`);
-      validateRequirement(
-        id,
-        zeroWeightCycle.length === 1,
-        'output.status.zeroWeightCycle must contain exactly one row'
-      );
-      validateRequirement(
-        id,
-        Boolean(output.betweenness || output.edgeBetweenness),
-        'output.status.zeroWeightCycle needs output.betweenness or output.edgeBetweenness'
-      );
-    }
-    // Any stopping or cycle status flag gives every batch a status slot, its search a finalize
-    // node and the betweenness phases a status node.
-    const hasStatus = Boolean(converged || zeroWeightCycle || iterationLimitReached);
-    this.maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
-    this.localIterations = props.localIterations ?? DEFAULT_LOCAL_ITERATIONS;
-    validateCapacity(
-      id,
-      'maximumIterations',
-      this.maximumIterations,
-      1,
-      GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS
-    );
-    validateCapacity(
-      id,
-      'localIterations',
-      this.localIterations,
-      1,
-      GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS
-    );
-    this.betweennessScale = props.betweennessScale ?? 1;
-    validateFiniteNumber(id, 'betweennessScale', Math.fround(this.betweennessScale));
-    // Reachability bounds the expanded size; betweenness also keeps three scratch arrays
-    // (sigma, counters, delta) of one word per expanded node in one storage binding.
-    // The lane count is fixed here, before the device is known, so it sizes the lanes for the
-    // default 128 MiB binding (the reachability frontier queues hold 8 bytes per expanded node).
-    const maximumExpandedNodeCount =
-      output.betweenness || output.edgeBetweenness
-        ? Math.min(getCoreBindingElementLimit(8), getCoreBindingElementLimit(12))
-        : getCoreBindingElementLimit(8);
-    const maximumLaneCount = clamp(
-      Math.floor(maximumExpandedNodeCount / this.nodeCount),
-      1,
-      this.pivotCount
-    );
-    this.laneCount =
-      props.laneCount ??
-      Math.min(
-        maximumLaneCount,
-        recommendLaneCount({
-          rowCount: this.pivotCount,
-          nodeCount: this.nodeCount,
-          edgeCount: forward.edgeCount
-        })
-      );
-    validateCapacity(id, 'laneCount', this.laneCount, 1, this.pivotCount);
-    validateMaximumCount(
-      id,
-      'laneCount * nodeCount',
-      this.laneCount * this.nodeCount,
-      maximumExpandedNodeCount
-    );
-    this.batchCount = Math.ceil(this.pivotCount / this.laneCount);
-    const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
-    const hasCloseness = Boolean(
-      output.closeness || output.harmonicCloseness || output.reachedCounts
-    );
-    if (hasCloseness)
-      validateMaximumCount(
-        id,
-        'laneCount for closeness outputs',
-        this.laneCount,
-        CENTRALITY_MAXIMUM_CLOSENESS_LANE_COUNT
-      );
-    const roundCount = Math.min(this.maximumIterations, this.nodeCount);
-    const betweennessOutputCount =
-      Number(Boolean(output.betweenness)) + Number(Boolean(output.edgeBetweenness));
-    const nodeCountPerBatch =
-      roundCount +
-      2 +
-      Number(hasStatus) +
-      Number(hasCloseness) +
-      (hasBetweenness ? 2 * roundCount + 3 + betweennessOutputCount + Number(hasStatus) : 0);
-    this.estimatedCommandNodeCount =
-      1 +
-      Number(hasCloseness) +
-      (hasBetweenness ? 1 + betweennessOutputCount : 0) +
-      Number(hasStatus) +
-      Number(Boolean(approximation)) +
-      this.batchCount * nodeCountPerBatch;
-    // The rounds of every batch are unrolled into command nodes, so this count is the compile cost.
-    // Past the cap, lower maximumIterations or the pivot count, or raise laneCount.
-    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
-    validateCentralityLogicalRanges(
-      id,
-      {
-        betweenness: output.betweenness,
-        edgeBetweenness: output.edgeBetweenness,
-        closeness: output.closeness,
-        harmonicCloseness: output.harmonicCloseness,
-        reachedCounts: output.reachedCounts,
-        ...output.status
-      },
-      {
-        offsets: props.topology.offsets,
-        neighbors: props.topology.neighbors,
-        weights: props.topology.weights,
-        reverseOffsets: props.reverseTopology.offsets,
-        reverseNeighbors: props.reverseTopology.neighbors,
-        reverseWeights: props.reverseTopology.weights,
-        pivotNodes: props.pivotNodes,
-        costLimit: props.costLimit
-      }
-    );
-    validateDisjointWritableViews(
-      id,
-      {
-        closeness: output.closeness,
-        harmonicCloseness: output.harmonicCloseness,
-        reachedCounts: output.reachedCounts
-      },
-      {strictAlignedBindings: true}
-    );
-    if (!separateStatusDispatches) validateCentralityStatusBindings(id, output);
+  constructor(props: GPUNetworkCentralityProps) {
+    const prepared = prepareNetworkCentrality(props);
+    this.id = prepared.id;
+    this.props = {...props};
+    this.executionProps = prepared.props;
+    this.nodeCount = prepared.nodeCount;
+    this.pivotCount = prepared.pivotCount;
+    this.laneCount = prepared.laneCount;
+    this.batchCount = prepared.batchCount;
+    this.maximumIterations = prepared.maximumIterations;
+    this.localIterations = prepared.localIterations;
+    this.betweennessScale = prepared.betweennessScale;
+    this.estimatedCommandNodeCount = prepared.estimatedCommandNodeCount;
   }
 
   /**
@@ -563,10 +364,11 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, nodeCount, pivotCount, laneCount, batchCount} = this;
+    const {id, nodeCount, pivotCount, laneCount, batchCount} = this;
+    const props = this.executionProps;
     const {output} = props;
     validateCentralityStatusBindings(id, output);
-    this.validateGraphBindings(graph);
+    validateNetworkCentralityBindings(graph, {...this, props});
     const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
     const hasCloseness = Boolean(
       output.closeness || output.harmonicCloseness || output.reachedCounts
@@ -855,103 +657,353 @@ export class GPUNetworkCentrality implements GPUCommandNodeProducer {
     }
     return nodes;
   }
+}
 
-  /** Allocation-free device binding preflight, also used by host-scheduled centrality. @internal */
-  private validateGraphBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
-    const {id, props, nodeCount, laneCount, batchCount} = this;
-    const {output} = props;
-    const views = {
-      'topology.offsets': props.topology.offsets,
-      'topology.neighbors': props.topology.neighbors,
-      'topology.weights': props.topology.weights,
-      'reverseTopology.offsets': props.reverseTopology.offsets,
-      'reverseTopology.neighbors': props.reverseTopology.neighbors,
-      'reverseTopology.weights': props.reverseTopology.weights,
-      pivotNodes: props.pivotNodes,
-      costLimit: props.costLimit,
-      'output.betweenness': output.betweenness,
-      'output.edgeBetweenness': output.edgeBetweenness,
-      'output.closeness': output.closeness,
-      'output.harmonicCloseness': output.harmonicCloseness,
-      'output.reachedCounts': output.reachedCounts,
-      ...Object.fromEntries(
-        Object.entries(output.status ?? {}).map(([name, view]) => [`output.status.${name}`, view])
-      )
-    };
-    // Positions retain ownership/shape validation but are never bound by centrality kernels.
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...Object.values(views),
-      props.topology.nodePositions,
-      props.reverseTopology.nodePositions
-    ]);
-    validateGraphChunkBindingRanges(graph, id, views);
-    const expandedNodeCount = laneCount * nodeCount;
-    const roundCount = Math.min(this.maximumIterations, nodeCount);
-    const phaseLayout = getFrontierPhaseLayout(roundCount);
-    const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
-    const hasStatus = Boolean(
-      output.status?.converged ||
-        output.status?.zeroWeightCycle ||
-        output.status?.iterationLimitReached
+/** Allocation-free binding validation shared by direct and host-scheduled routes. @internal */
+export function validateNetworkCentralityBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  prepared: PreparedNetworkCentrality
+): void {
+  const {id, props, nodeCount, laneCount, batchCount} = prepared;
+  const {output} = props;
+  const views = {
+    'topology.offsets': props.topology.offsets,
+    'topology.neighbors': props.topology.neighbors,
+    'topology.weights': props.topology.weights,
+    'reverseTopology.offsets': props.reverseTopology.offsets,
+    'reverseTopology.neighbors': props.reverseTopology.neighbors,
+    'reverseTopology.weights': props.reverseTopology.weights,
+    pivotNodes: props.pivotNodes,
+    costLimit: props.costLimit,
+    'output.betweenness': output.betweenness,
+    'output.edgeBetweenness': output.edgeBetweenness,
+    'output.closeness': output.closeness,
+    'output.harmonicCloseness': output.harmonicCloseness,
+    'output.reachedCounts': output.reachedCounts,
+    ...Object.fromEntries(
+      Object.entries(output.status ?? {}).map(([name, view]) => [`output.status.${name}`, view])
+    )
+  };
+  // Positions retain ownership/shape validation but are never bound by centrality kernels.
+  validateGraphViewsBelongToGraph(id, graph, [
+    ...Object.values(views),
+    props.topology.nodePositions,
+    props.reverseTopology.nodePositions
+  ]);
+  validateGraphChunkBindingRanges(graph, id, views);
+  const expandedNodeCount = laneCount * nodeCount;
+  const roundCount = Math.min(prepared.maximumIterations, nodeCount);
+  const phaseLayout = getFrontierPhaseLayout(roundCount);
+  const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
+  const hasStatus = Boolean(
+    output.status?.converged ||
+      output.status?.zeroWeightCycle ||
+      output.status?.iterationLimitReached
+  );
+  const hasCloseness = Boolean(
+    output.closeness || output.harmonicCloseness || output.reachedCounts
+  );
+  const bindings: [string, number][] = [
+    ['expanded seeds', batchCount * alignElementCount(laneCount)],
+    ['costs', expandedNodeCount],
+    ['reachability queues', 2 * expandedNodeCount],
+    ['reachability queued rounds', expandedNodeCount],
+    ['reachability control', phaseLayout.controlWordCount],
+    ['reachability dispatch slots', phaseLayout.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS]
+  ];
+  if (hasCloseness) bindings.push(['batch info', batchCount * CENTRALITY_ALIGNMENT_ELEMENTS]);
+  if (hasStatus) bindings.push(['batch status', batchCount * CENTRALITY_ALIGNMENT_ELEMENTS]);
+  if (hasBetweenness)
+    bindings.push(
+      [
+        'adjacency',
+        getCentralityAdjacencyLayout(
+          nodeCount,
+          props.topology.neighbors.length,
+          props.reverseTopology.neighbors.length
+        ).wordCount
+      ],
+      ['scratch', 3 * expandedNodeCount],
+      ['sigma exponents', expandedNodeCount],
+      ['dependency queues', 2 * expandedNodeCount],
+      ['dependency queued rounds', expandedNodeCount],
+      ['dependency control', 2 * phaseLayout.controlWordCount],
+      [
+        'dependency dispatch slots',
+        2 * phaseLayout.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS
+      ]
     );
-    const hasCloseness = Boolean(
-      output.closeness || output.harmonicCloseness || output.reachedCounts
+  for (const [name, wordCount] of bindings) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      4 * wordCount,
+      'reduce laneCount, pivot count, edge count or maximumIterations'
     );
-    const bindings: [string, number][] = [
-      ['expanded seeds', batchCount * alignElementCount(laneCount)],
-      ['costs', expandedNodeCount],
-      ['reachability queues', 2 * expandedNodeCount],
-      ['reachability queued rounds', expandedNodeCount],
-      ['reachability control', phaseLayout.controlWordCount],
-      ['reachability dispatch slots', phaseLayout.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS]
-    ];
-    if (hasCloseness) bindings.push(['batch info', batchCount * CENTRALITY_ALIGNMENT_ELEMENTS]);
-    if (hasStatus) bindings.push(['batch status', batchCount * CENTRALITY_ALIGNMENT_ELEMENTS]);
-    if (hasBetweenness)
-      bindings.push(
-        [
-          'adjacency',
-          getCentralityAdjacencyLayout(
-            nodeCount,
-            props.topology.neighbors.length,
-            props.reverseTopology.neighbors.length
-          ).wordCount
-        ],
-        ['scratch', 3 * expandedNodeCount],
-        ['sigma exponents', expandedNodeCount],
-        ['dependency queues', 2 * expandedNodeCount],
-        ['dependency queued rounds', expandedNodeCount],
-        ['dependency control', 2 * phaseLayout.controlWordCount],
-        [
-          'dependency dispatch slots',
-          2 * phaseLayout.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS
-        ]
-      );
-    for (const [name, wordCount] of bindings) {
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        name,
-        4 * wordCount,
-        'reduce laneCount, pivot count, edge count or maximumIterations'
-      );
-    }
   }
 }
 
-/** Runs the private allocation-free preflight for scheduler composition. @internal */
-export function validateNetworkCentralityBindings<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  contributor: GPUNetworkCentrality
-): void {
-  Reflect.apply(Reflect.get(contributor, 'validateGraphBindings'), contributor, [graph]);
-}
-
-/** Validates a scheduler whose status scalars are published in separate dispatches. @internal */
+/** Prepare a scheduler whose scalar statuses are published separately. @internal */
 export function createNetworkCentralityForComposition(
   props: GPUNetworkCentralityProps
-): GPUNetworkCentrality {
-  return Reflect.construct(GPUNetworkCentrality, [props, true]) as GPUNetworkCentrality;
+): PreparedNetworkCentrality {
+  return prepareNetworkCentrality(props, {separateStatusDispatches: true});
+}
+
+/** Validated, allocation-free construction metadata shared by all centrality routes. @internal */
+export type PreparedNetworkCentrality = Pick<
+  GPUNetworkCentrality,
+  | 'id'
+  | 'props'
+  | 'nodeCount'
+  | 'pivotCount'
+  | 'laneCount'
+  | 'batchCount'
+  | 'maximumIterations'
+  | 'localIterations'
+  | 'betweennessScale'
+  | 'estimatedCommandNodeCount'
+> & {props: GPUNetworkCentralityProps & {reverseTopology: GPUNetworkTopology}};
+
+/** Validate props once; scheduler status scalars are merged in separate dispatches. @internal */
+export function prepareNetworkCentrality(
+  props: GPUNetworkCentralityProps,
+  {separateStatusDispatches = false}: {separateStatusDispatches?: boolean} = {}
+): PreparedNetworkCentrality {
+  const id = props.id ?? 'network-centrality';
+  validateRequirement(
+    id,
+    !(props.output.betweenness || props.output.edgeBetweenness) || Boolean(props.reverseTopology),
+    'reverseTopology is required for betweenness; supply the transpose or request only distance metrics'
+  );
+  const normalizedProps = {...props, reverseTopology: props.reverseTopology ?? props.topology};
+  return prepareNormalizedNetworkCentrality(normalizedProps, {separateStatusDispatches});
+}
+
+function prepareNormalizedNetworkCentrality(
+  props: GPUNetworkCentralityProps & {reverseTopology: GPUNetworkTopology},
+  {separateStatusDispatches = false}: {separateStatusDispatches?: boolean} = {}
+): PreparedNetworkCentrality {
+  const id = props.id ?? 'network-centrality';
+  const {output} = props;
+  const forward = validateGPUNetworkTopology(id, props.topology, {weights: true});
+  const reverse = validateGPUNetworkTopology(id, props.reverseTopology, {weights: true});
+  validateRequirement(
+    id,
+    forward.nodeCount === reverse.nodeCount,
+    'reverseTopology must have the node count of topology'
+  );
+  const nodeCount = forward.nodeCount;
+  validateSinglePackedView(props.pivotNodes, ['uint32'], `${id} pivotNodes`);
+  const pivotCount = props.pivotNodes.length;
+  validateRequirement(id, pivotCount >= 1, 'pivotNodes must contain at least one pivot');
+  if (props.costLimit) {
+    validateSinglePackedView(props.costLimit, ['float32'], `${id} costLimit`);
+    validateRequirement(id, props.costLimit.length === 1, 'costLimit must contain exactly one row');
+  }
+  validateRequirement(
+    id,
+    Boolean(
+      output.betweenness ||
+        output.edgeBetweenness ||
+        output.closeness ||
+        output.harmonicCloseness ||
+        output.reachedCounts
+    ),
+    'output must contain betweenness, edgeBetweenness, closeness, harmonicCloseness or reachedCounts'
+  );
+  for (const [name, view, length] of [
+    ['output.betweenness', output.betweenness, nodeCount],
+    ['output.edgeBetweenness', output.edgeBetweenness, forward.edgeCount],
+    ['output.closeness', output.closeness, pivotCount],
+    ['output.harmonicCloseness', output.harmonicCloseness, pivotCount]
+  ] as const) {
+    if (view) {
+      validateSinglePackedView(view, ['float32'], `${id} ${name}`);
+      validateRequirement(
+        id,
+        view.length === length,
+        `${name} must contain one row per ${name === 'output.betweenness' ? 'node' : name === 'output.edgeBetweenness' ? 'edge slot' : 'pivot'}`
+      );
+    }
+  }
+  if (output.reachedCounts) {
+    validateSinglePackedView(output.reachedCounts, ['uint32'], `${id} output.reachedCounts`);
+    validateRequirement(
+      id,
+      output.reachedCounts.length === pivotCount,
+      'output.reachedCounts must contain one row per pivot'
+    );
+  }
+  validateRequirement(
+    id,
+    props.sampling === undefined || props.sampling === 'exact' || props.sampling === 'sampled',
+    "sampling must be 'exact' or 'sampled'"
+  );
+  const approximation = output.status?.approximation;
+  if (approximation) {
+    validateSinglePackedView(approximation, ['uint32'], `${id} output.status.approximation`);
+    validateCapacity(id, 'output.status.approximation.length', approximation.length, 1, 1);
+  }
+  const converged = output.status?.converged;
+  if (converged) {
+    validateSinglePackedView(converged, ['uint32'], `${id} output.status.converged`);
+    validateRequirement(
+      id,
+      converged.length === 1,
+      'output.status.converged must contain exactly one row'
+    );
+  }
+  const iterationLimitReached = output.status?.iterationLimitReached;
+  if (iterationLimitReached) {
+    validateSinglePackedView(
+      iterationLimitReached,
+      ['uint32'],
+      `${id} output.status.iterationLimitReached`
+    );
+    validateRequirement(
+      id,
+      iterationLimitReached.length === 1,
+      'output.status.iterationLimitReached must contain exactly one row'
+    );
+  }
+  const zeroWeightCycle = output.status?.zeroWeightCycle;
+  if (zeroWeightCycle) {
+    validateSinglePackedView(zeroWeightCycle, ['uint32'], `${id} output.status.zeroWeightCycle`);
+    validateRequirement(
+      id,
+      zeroWeightCycle.length === 1,
+      'output.status.zeroWeightCycle must contain exactly one row'
+    );
+    validateRequirement(
+      id,
+      Boolean(output.betweenness || output.edgeBetweenness),
+      'output.status.zeroWeightCycle needs output.betweenness or output.edgeBetweenness'
+    );
+  }
+  // Any stopping or cycle status flag gives every batch a status slot, its search a finalize
+  // node and the betweenness phases a status node.
+  const hasStatus = Boolean(converged || zeroWeightCycle || iterationLimitReached);
+  const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
+  const localIterations = props.localIterations ?? DEFAULT_LOCAL_ITERATIONS;
+  validateCapacity(
+    id,
+    'maximumIterations',
+    maximumIterations,
+    1,
+    GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS
+  );
+  validateCapacity(
+    id,
+    'localIterations',
+    localIterations,
+    1,
+    GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS
+  );
+  const betweennessScale = props.betweennessScale ?? 1;
+  validateFiniteNumber(id, 'betweennessScale', Math.fround(betweennessScale));
+  // Reachability bounds the expanded size; betweenness also keeps three scratch arrays
+  // (sigma, counters, delta) of one word per expanded node in one storage binding.
+  // The lane count is fixed here, before the device is known, so it sizes the lanes for the
+  // default 128 MiB binding (the reachability frontier queues hold 8 bytes per expanded node).
+  const maximumExpandedNodeCount =
+    output.betweenness || output.edgeBetweenness
+      ? Math.min(getCoreBindingElementLimit(8), getCoreBindingElementLimit(12))
+      : getCoreBindingElementLimit(8);
+  const maximumLaneCount = clamp(Math.floor(maximumExpandedNodeCount / nodeCount), 1, pivotCount);
+  const laneCount =
+    props.laneCount ??
+    Math.min(
+      maximumLaneCount,
+      recommendLaneCount({
+        rowCount: pivotCount,
+        nodeCount: nodeCount,
+        edgeCount: forward.edgeCount
+      })
+    );
+  validateCapacity(id, 'laneCount', laneCount, 1, pivotCount);
+  validateMaximumCount(
+    id,
+    'laneCount * nodeCount',
+    laneCount * nodeCount,
+    maximumExpandedNodeCount
+  );
+  const batchCount = Math.ceil(pivotCount / laneCount);
+  const hasBetweenness = Boolean(output.betweenness || output.edgeBetweenness);
+  const hasCloseness = Boolean(
+    output.closeness || output.harmonicCloseness || output.reachedCounts
+  );
+  if (hasCloseness)
+    validateMaximumCount(
+      id,
+      'laneCount for closeness outputs',
+      laneCount,
+      CENTRALITY_MAXIMUM_CLOSENESS_LANE_COUNT
+    );
+  const roundCount = Math.min(maximumIterations, nodeCount);
+  const betweennessOutputCount =
+    Number(Boolean(output.betweenness)) + Number(Boolean(output.edgeBetweenness));
+  const nodeCountPerBatch =
+    roundCount +
+    2 +
+    Number(hasStatus) +
+    Number(hasCloseness) +
+    (hasBetweenness ? 2 * roundCount + 3 + betweennessOutputCount + Number(hasStatus) : 0);
+  const estimatedCommandNodeCount =
+    1 +
+    Number(hasCloseness) +
+    (hasBetweenness ? 1 + betweennessOutputCount : 0) +
+    Number(hasStatus) +
+    Number(Boolean(approximation)) +
+    batchCount * nodeCountPerBatch;
+  // The rounds of every batch are unrolled into command nodes, so this count is the compile cost.
+  // Past the cap, lower maximumIterations or the pivot count, or raise laneCount.
+  validateCommandNodeBudget(id, estimatedCommandNodeCount);
+  validateCentralityLogicalRanges(
+    id,
+    {
+      betweenness: output.betweenness,
+      edgeBetweenness: output.edgeBetweenness,
+      closeness: output.closeness,
+      harmonicCloseness: output.harmonicCloseness,
+      reachedCounts: output.reachedCounts,
+      ...output.status
+    },
+    {
+      offsets: props.topology.offsets,
+      neighbors: props.topology.neighbors,
+      weights: props.topology.weights,
+      reverseOffsets: props.reverseTopology.offsets,
+      reverseNeighbors: props.reverseTopology.neighbors,
+      reverseWeights: props.reverseTopology.weights,
+      pivotNodes: props.pivotNodes,
+      costLimit: props.costLimit
+    }
+  );
+  validateDisjointWritableViews(
+    id,
+    {
+      closeness: output.closeness,
+      harmonicCloseness: output.harmonicCloseness,
+      reachedCounts: output.reachedCounts
+    },
+    {strictAlignedBindings: true}
+  );
+  if (!separateStatusDispatches) validateCentralityStatusBindings(id, output);
+
+  return {
+    id,
+    props,
+    nodeCount,
+    pivotCount,
+    laneCount,
+    batchCount,
+    maximumIterations,
+    localIterations,
+    betweennessScale,
+    estimatedCommandNodeCount
+  };
 }
 
 /** Scalar statuses of the direct contributor are bound together; schedulers merge them separately. */

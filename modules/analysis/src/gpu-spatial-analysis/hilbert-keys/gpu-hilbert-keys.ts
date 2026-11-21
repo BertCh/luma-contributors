@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+
+import {
   validateCellDispatchBindings,
   validateCellDispatchOutputs
 } from '../cell-indexing/cell-dispatch-validation';
@@ -84,7 +89,7 @@ export type GPUHilbertKeysOutput = {
  * Per-frame (no recompile): the contents of `positions` or `minima`/`maxima` and `bounds`.
  * Compile-time: `order`, the item count and which outputs are present.
  */
-export type GPUHilbertKeysProps = {
+type GPUHilbertKeysSharedProps = {
   /** Prefix for generated node IDs. Defaults to `'hilbert-keys'`. */
   id?: string;
   /**
@@ -110,6 +115,16 @@ export type GPUHilbertKeysProps = {
   /** Output keys and optional curve-order permutation. */
   output: GPUHilbertKeysOutput;
 };
+
+/** Exactly one complete geometry source: positions, or paired box minima/maxima. */
+export type GPUHilbertKeysProps = Omit<
+  GPUHilbertKeysSharedProps,
+  'positions' | 'minima' | 'maxima'
+> &
+  (
+    | {positions: GraphDataView<'float32x2'>; minima?: never; maxima?: never}
+    | {positions?: never; minima: GraphDataView<'float32x2'>; maxima: GraphDataView<'float32x2'>}
+  );
 
 /**
  * Computes 2D Hilbert curve indices for points or feature-box centers within bounds ("Hilbert
@@ -150,6 +165,28 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
   readonly itemCount: number;
 
   constructor(props: GPUHilbertKeysProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'order',
+      'positions',
+      'minima',
+      'maxima',
+      'bounds',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(captured.output, [
+      'keys',
+      'sortedRows',
+      'sortedKeys'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      ...(captured.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+        : {}),
+      output: Object.freeze({...capturedOutput})
+    });
     const id = props.id ?? 'hilbert-keys';
     this.id = id;
     this.props = props;

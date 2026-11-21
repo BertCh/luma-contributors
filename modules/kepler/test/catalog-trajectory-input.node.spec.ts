@@ -31,8 +31,50 @@ import {
   makeTrajectoryTracks
 } from '../src/analysis/catalog-trajectory-common';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
+import {profileKeplerNativeDataset} from '../src/profile/native-dataset-profile';
 
 const ORIGIN = Date.UTC(2026, 0, 1);
+
+test('typed track identities stay separate and ambiguous string publication rejects', () => {
+  const tracks: CatalogFeatureCollection = {
+    type: 'FeatureCollection',
+    features: [7, '7'].map((identity, index) => ({
+      id: identity,
+      properties: {timestamp: index},
+      geometry: {type: 'Point', coordinates: [index, 0]}
+    }))
+  };
+  const binding = getCatalogBinding('trajectory-thinning')!;
+  const trajectory = prepareCatalogTrajectory(tracks, getCatalogDefaultParameters(binding));
+  // Each identity has exactly one fix, so there can be no movement segment.
+  expect(Array.from(trajectory.trackOffsets)).toEqual([0, 1, 2]);
+  expect(trajectory.fixes.map(fix => fix.trackIndex)).toEqual([0, 1]);
+  expect(() => makeTrajectoryFixes(trajectory)).toThrow(/track.*identit.*distinct string/i);
+  expect(() => runCatalogOperation(binding, {}, {tracks})).toThrow(/distinct string/);
+  const profile = profileKeplerNativeDataset(
+    {
+      rowCount: 2,
+      columns: [
+        {name: 'track', values: [7, '7']},
+        {name: 'time', values: [0, 1]},
+        {name: 'longitude', values: [0, 1]},
+        {name: 'latitude', values: [0, 0]}
+      ]
+    },
+    {
+      datasetId: 'typed-tracks',
+      label: 'Typed tracks',
+      pointColumns: {longitude: 'longitude', latitude: 'latitude'}
+    },
+    {
+      kind: 'trajectories',
+      trackColumn: 'track',
+      timeColumn: 'time',
+      timestampEncoding: 'unix-millisecond'
+    }
+  );
+  expect(profile.trajectory?.trackCount).toBe(2);
+});
 
 test('every trajectory UI operation has a valid shared sample, and CPU samples run', () => {
   for (const binding of TRAJECTORY_BINDINGS) {
@@ -387,4 +429,35 @@ test('typed non-feature support preserves the trajectory feature callback contra
   const actual = runCatalogOperation(binding, {}, {tracks});
   expect(actual.tables).toEqual(expected.tables);
   expect(actual.summary).toEqual(expected.summary);
+});
+
+const pooledTracks: CatalogFeatureCollection = {
+  type: 'FeatureCollection',
+  features: [2, '2'].flatMap((identity, track) =>
+    [0, 1000].map((timestamp, index) => ({
+      id: identity,
+      properties: {timestamp},
+      geometry: {type: 'Point' as const, coordinates: [index, track]}
+    }))
+  )
+};
+test('pooled Brownian bridge accepts typed identities with the same spelling', () => {
+  const result = runCatalogOperation(
+    getCatalogBinding('trajectory-brownian-bridge')!,
+    {},
+    {tracks: pooledTracks}
+  );
+  expect(result.tables[0].rowCount).toBe(256);
+  expect(result.tables[0].columns['track_id']).toBeUndefined();
+});
+test('pooled isopleths binding accepts typed identities before device access', async () => {
+  const binding = getCatalogBinding('trajectory-isopleths')!;
+  const context = {
+    get device(): never {
+      throw new Error('accepted pooled input; device requested');
+    }
+  };
+  await expect(
+    binding.runGpu!(context, {tracks: pooledTracks}, getCatalogDefaultParameters(binding))
+  ).rejects.toThrow('accepted pooled input; device requested');
 });

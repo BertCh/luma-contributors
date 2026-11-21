@@ -23,6 +23,7 @@ import type {GPUSpaceTimeInferenceMetadata} from './space-time-parameters';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
@@ -49,6 +50,7 @@ import {
   getGPUSpaceTimeInferenceMetadata,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY_LENGTH,
+  type GPUSpaceTimePValueField,
   type GPUSpaceTimeSettings
 } from './space-time-parameters';
 import {
@@ -62,7 +64,7 @@ import {GET_ORDERED_KEY_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const OPERATION = 'GPUJacquezTest';
 
-/** Largest compile-time `k` of {@link GPUJacquezTest}. */
+/** Largest compile-time `neighborCount` of {@link GPUJacquezTest}. */
 export const GPU_JACQUEZ_MAXIMUM_K = 256;
 
 /** Caller-owned outputs of {@link GPUJacquezTest}. */
@@ -90,7 +92,7 @@ export type GPUJacquezTestOutput = {
  * Properties for {@link GPUJacquezTest}.
  *
  * Per-frame (no recompile): the contents of `times`, `neighbors` and `parameters` (seed and
- * permutation count). Compile-time: `k`, the row count, `maximumPermutations` and the list
+ * permutation count). Compile-time: `neighborCount`, the row count, `maximumPermutations` and the list
  * capacity.
  */
 export type GPUJacquezTestProps = {
@@ -121,9 +123,9 @@ export type GPUJacquezTestProps = {
   parameters: GraphDataView<'uint32'>;
   /**
    * Compile-time number of nearest neighbors in time, 1 to {@link GPU_JACQUEZ_MAXIMUM_K} and below
-   * the row count. Use the `k` of the spatial list.
+   * the row count. Use the same neighbor count as the spatial list.
    */
-  k: number;
+  neighborCount: number;
   /** Compile-time upper bound on the per-frame permutation count, 1 to 65536. */
   maximumPermutations: number;
   /**
@@ -167,6 +169,7 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
   readonly temporalContext?: GPUTemporalContext;
 
   constructor(props: GPUJacquezTestProps) {
+    const hasLegacyNeighborCount = 'k' in props;
     props = snapshotSpaceTimeTestProps(
       props,
       [
@@ -175,7 +178,7 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
         'times',
         'temporalContext',
         'parameters',
-        'k',
+        'neighborCount',
         'maximumPermutations',
         'stopAfterExceedances',
         'output'
@@ -183,6 +186,11 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
       'neighbors'
     );
     const id = props.id ?? 'jacquez-test';
+    validateRequirement(
+      {id, contributor: 'GPUJacquezTest', messagePrefix: `${id}:`},
+      !hasLegacyNeighborCount,
+      'k was renamed; use neighborCount'
+    );
     this.id = id;
     this.props = props;
     this.rows = validateGPUSpatialWeights(id, props.neighbors, 'neighbors');
@@ -191,19 +199,23 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
     validateSinglePackedView(props.output.statistics, ['uint32'], `${id} output.statistics`);
     validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     this.temporalContext = resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
-    validateCapacity(id, 'k', props.k, 1, GPU_JACQUEZ_MAXIMUM_K);
-    if (this.rows <= props.k) {
-      throw new Error(`${id} needs more than k rows`);
-    }
-    if (this.rows > SPACE_TIME_MAXIMUM_ROWS) {
-      throw new Error(`${id} supports at most ${SPACE_TIME_MAXIMUM_ROWS} rows`);
-    }
-    if (props.times.length !== this.rows) {
-      throw new Error(`${id} times needs one row per neighbors row`);
-    }
-    if (props.parameters.length < GPU_SPACE_TIME_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
-    }
+    validateCapacity(id, 'neighborCount', props.neighborCount, 1, GPU_JACQUEZ_MAXIMUM_K);
+    validateRequirement(
+      id,
+      this.rows > props.neighborCount,
+      `neighbors rowCount needs more rows than neighborCount (${props.neighborCount})`
+    );
+    validateCapacity(id, 'neighbors rowCount', this.rows, 2, SPACE_TIME_MAXIMUM_ROWS);
+    validateRequirement(
+      id,
+      props.times.length === this.rows,
+      `times needs one row per neighbors row`
+    );
+    validateRequirement(
+      id,
+      props.parameters.length >= GPU_SPACE_TIME_PARAMETER_LENGTH,
+      `parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`
+    );
     validateCapacity(
       id,
       'maximumPermutations',
@@ -211,18 +223,22 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
       1,
       SPACE_TIME_MAXIMUM_PERMUTATIONS
     );
-    if (props.output.statistics.length < props.maximumPermutations + 1) {
-      throw new Error(`${id} output.statistics needs maximumPermutations + 1 rows`);
-    }
+    validateRequirement(
+      id,
+      props.output.statistics.length >= props.maximumPermutations + 1,
+      `output.statistics needs maximumPermutations + 1 rows`
+    );
     validateSpaceTimeStopping(
       id,
       props.stopAfterExceedances,
       props.maximumPermutations,
       props.output.permutationCount
     );
-    if (props.output.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
-      throw new Error(`${id} output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
-    }
+    validateRequirement(
+      id,
+      props.output.summary.length >= GPU_SPACE_TIME_SUMMARY_LENGTH,
+      `output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`
+    );
     validateTrajectoryOutputRanges(this.id, this.props.output);
     validateTrajectoryWritableDispatches(this.id, [
       {summary: props.output.summary, permutationCount: props.output.permutationCount}
@@ -240,14 +256,16 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
         props.neighbors.status?.candidateOverflow
       ]
     );
-    if (
-      props.output.statistics.buffer === props.output.summary.buffer ||
-      (props.output.permutationCount &&
-        (props.output.permutationCount.buffer === props.output.statistics.buffer ||
-          props.output.permutationCount.buffer === props.output.summary.buffer))
-    ) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    validateRequirement(
+      id,
+      !(
+        props.output.statistics.buffer === props.output.summary.buffer ||
+        (props.output.permutationCount &&
+          (props.output.permutationCount.buffer === props.output.statistics.buffer ||
+            props.output.permutationCount.buffer === props.output.summary.buffer))
+      ),
+      `outputs must use separate buffers`
+    );
   }
 
   /**
@@ -258,13 +276,17 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
    *
    * @param settings The per-frame settings packed into `parameters`.
    */
-  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUSpaceTimeInferenceMetadata {
+  getInferenceMetadata(
+    settings: GPUSpaceTimeSettings,
+    summaryField: GPUSpaceTimePValueField = 'pseudoPGreater'
+  ): GPUSpaceTimeInferenceMetadata {
     return {
       ...getGPUSpaceTimeInferenceMetadata(
         'knox',
         settings,
         this.props.maximumPermutations,
-        this.props.stopAfterExceedances
+        this.props.stopAfterExceedances,
+        summaryField
       ),
       testedRowsDefinition: 'all listed (event, spatial neighbor) entries, counted once each'
     };
@@ -279,7 +301,7 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, rows} = this;
-    const {neighbors, times, parameters, maximumPermutations, k} = props;
+    const {neighbors, times, parameters, maximumPermutations, neighborCount} = props;
     const {statistics, summary} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
       neighbors.offsets,
@@ -353,7 +375,7 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
         declarations: `${common}
 ${getSpaceTimeShuffleWGSL(blocks, PHILOX_PURPOSES.knoxTestShuffle.id)}
 const SLOT_COUNT: u32 = ${tableSlots}u;
-const NEAREST: u32 = ${k}u;${batchDeclarations}`,
+const NEAREST: u32 = ${neighborCount}u;${batchDeclarations}`,
         // As the Knox partials: a workgroup is one permutation, an invocation owns interleaved
         // rows. The row at location `row` carries the event `image = pi(row)`; its temporal
         // neighbors are the ranks `windowStart[image] .. windowStart[image] + NEAREST`, and a
@@ -479,7 +501,7 @@ const SLOT_COUNT: u32 = ${tableSlots}u;${batchDeclarations}`,
         ],
         invocationCount: rows,
         declarations: `const ROWS: u32 = ${rows}u;
-const NEAREST: u32 = ${k}u;`,
+const NEAREST: u32 = ${neighborCount}u;`,
         // Grows the interval [low, high] around the event's rank by the nearer neighbor (the lower
         // rank on a tie) until it holds NEAREST + 1 ranks; at an end of the order it grows the
         // other way. The interval start is the whole temporal neighborhood.
@@ -542,8 +564,8 @@ const NEAREST: u32 = ${k}u;`,
     pairTotal += pairPartials[pairPartialsOffset + block];
   }
   let observedPairs = f32(pairTotal);
-  let timeClosePairs = f32(ROWS) * ${k}.0;
-  let expected = observedPairs * ${k}.0 / f32(ROWS - 1u);
+  let timeClosePairs = f32(ROWS) * ${neighborCount}.0;
+  let expected = observedPairs * ${neighborCount}.0 / f32(ROWS - 1u);
   ${getSpaceTimeSummaryBodyWGSL('u32', stopAfterExceedances)}`
       }),
       ...createSpatialWeightsSuppressionNodes(

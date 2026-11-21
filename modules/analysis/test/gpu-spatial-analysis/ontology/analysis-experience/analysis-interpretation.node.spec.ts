@@ -28,7 +28,7 @@ import {
   GPU_LOCAL_MORAN_QUADRANT
 } from '../../../../src/gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-parameters';
 import {GPU_LOCAL_GEARY_CLASS} from '../../../../src/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-test';
-import {GPU_SPATIAL_CLUSTERING_NOISE} from '../../../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-parameters';
+import {GPU_DBSCAN_NOISE} from '../../../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-parameters';
 
 function findClass(
   scheme: (typeof GPU_ANALYSIS_CLASS_SCHEMES)[number],
@@ -157,13 +157,10 @@ describe('getGPUAnalysisResultClasses', () => {
   });
 
   it('pins cluster membership: noise is 0xffffffff (contributor) or -1 (Kepler), first cluster 0', () => {
-    // spatial-clustering-parameters.ts:14 GPU_SPATIAL_CLUSTERING_NOISE; the Kepler cluster tables
+    // spatial-clustering-parameters.ts:14 GPU_DBSCAN_NOISE; the Kepler cluster tables
     // convert it to -1 (catalog-platform3-b-clusters.ts:164).
     const contributor = getGPUAnalysisResultClasses('cluster-membership');
-    expect(contributor.map(resultClass => resultClass.value)).toEqual([
-      GPU_SPATIAL_CLUSTERING_NOISE,
-      0
-    ]);
+    expect(contributor.map(resultClass => resultClass.value)).toEqual([GPU_DBSCAN_NOISE, 0]);
     expect(contributor[0].tone).toBe('excluded');
     const catalog = getGPUAnalysisResultClasses('cluster-membership', 'catalog-signed-label');
     expect(catalog.map(resultClass => resultClass.value)).toEqual([-1, 0]);
@@ -272,28 +269,28 @@ describe('classifyGPUAnalysisResultValues', () => {
       0,
       0,
       1,
-      GPU_SPATIAL_CLUSTERING_NOISE,
-      GPU_SPATIAL_CLUSTERING_NOISE,
+      GPU_DBSCAN_NOISE,
+      GPU_DBSCAN_NOISE,
       -1,
       1.5,
       Number.NaN,
-      GPU_SPATIAL_CLUSTERING_NOISE + 1
+      GPU_DBSCAN_NOISE + 1
     ]);
     expect([...tally.counts]).toEqual([
-      [GPU_SPATIAL_CLUSTERING_NOISE, 2],
+      [GPU_DBSCAN_NOISE, 2],
       [0, 2],
       [1, 1],
       [3, 1]
     ]);
     expect(tally.unrecognized).toBe(4);
     const empty = classifyGPUAnalysisResultValues('cluster-membership', []);
-    expect([...empty.counts]).toEqual([[GPU_SPATIAL_CLUSTERING_NOISE, 0]]);
+    expect([...empty.counts]).toEqual([[GPU_DBSCAN_NOISE, 0]]);
   });
 
   it('reads -1 as noise only under the signed encoding', () => {
     const tally = classifyGPUAnalysisResultValues(
       'cluster-membership',
-      [-1, 0, 0, -1, -2, GPU_SPATIAL_CLUSTERING_NOISE],
+      [-1, 0, 0, -1, -2, GPU_DBSCAN_NOISE],
       'catalog-signed-label'
     );
     expect([...tally.counts]).toEqual([
@@ -1131,7 +1128,7 @@ describe('validateGPUAnalysisResultEncoding', () => {
       'catalog-text': ['HH', 'HL', 'LH', 'LL', 'not-significant', 'not-tested']
     },
     'cluster-membership': {
-      'contributor-integer': [0, 1, 2, GPU_SPATIAL_CLUSTERING_NOISE],
+      'contributor-integer': [0, 1, 2, GPU_DBSCAN_NOISE],
       'catalog-signed-label': [0, 1, 2, -1]
     },
     'significance-flag': {'contributor-integer': [0, 1, true, false]},
@@ -1167,8 +1164,8 @@ describe('validateGPUAnalysisResultEncoding', () => {
     ).toBe(0);
     expect(
       validateGPUAnalysisResultEncoding('cluster-membership', 'catalog-signed-label', [
-        GPU_SPATIAL_CLUSTERING_NOISE,
-        GPU_SPATIAL_CLUSTERING_NOISE
+        GPU_DBSCAN_NOISE,
+        GPU_DBSCAN_NOISE
       ])
     ).toBe(0);
   });
@@ -1951,5 +1948,141 @@ describe('review regressions: inference and floating-point labels', () => {
     expect(marginal).toContain('about 10 in 100');
     expect(marginal).toContain('even when tests depend on each other');
     expect(marginal).toContain('joint behaviour');
+  });
+});
+
+describe('NUM-05 permutation counting construction', () => {
+  it('distinguishes one replicate-maximum count from doubled minimum tails at 19 draws', () => {
+    // Zero exceedances plus the observed statistic: 1/20 versus 2/20.
+    for (const [pValueConstruction, expectedFloor, attainable] of [
+      ['upper-tail-count', 0.05, true],
+      ['doubled-minimum-tail', 0.1, false]
+    ] as const) {
+      const result = getGPUAnalysisSignificanceAttainability({
+        correction: 'none',
+        testCount: 1,
+        permutationCount: 19,
+        significanceLevel: 0.05,
+        pValueConstruction
+      });
+      expect(result.smallestPValue).toBe(expectedFloor);
+      expect(result.attainable).toBe(attainable);
+      expect(getGPUAnalysisSmallestPseudoPValue(19, pValueConstruction)).toBe(expectedFloor);
+      expect(canResolveGPUAnalysisSignificanceLevel(19, 0.05, pValueConstruction)).toBe(attainable);
+      const description = describeGPUAnalysisPermutationResolution(19, 0.05, pValueConstruction);
+      if (attainable) expect(description).toBeUndefined();
+      else {
+        expect(description).toContain('below 0.1');
+        expect(description).toContain('at least 39 permutations');
+        expect(result.requiredPermutationCount).toBe(39);
+        expect(result.reason).toContain('smallest pseudo p-value is 0.1');
+      }
+    }
+    expect(getGPUAnalysisSmallestPseudoPValue(19)).toBe(0.05);
+    expect(getGPUAnalysisSmallestPseudoPValue(0, 'doubled-minimum-tail')).toBe(1);
+    expect(() => getGPUAnalysisSmallestPseudoPValue(19, 'unknown' as 'upper-tail-count')).toThrow(
+      /pValueConstruction must be upper-tail-count or doubled-minimum-tail; received unknown/
+    );
+  });
+});
+
+describe('review round 1 inference evidence', () => {
+  it('B1 forwards counting construction into public caution IDs and sentences', () => {
+    const facts = {
+      correction: 'bonferroni' as const,
+      testCount: 30,
+      featureCount: 30,
+      permutationCount: 999,
+      significanceLevel: 0.05,
+      pValueConstruction: 'doubled-minimum-tail' as const
+    };
+    // 2/1000 > .05/30; ceil(2*30/.05)-1 = 1199 draws, versus 599 for one tail.
+    expect(deriveGPUAnalysisCautions(facts)).toContain('significance-not-attainable');
+    const text = getGPUAnalysisCautionText('significance-not-attainable', facts).text;
+    expect(text).toContain('smallest pseudo p-value is 0.002');
+    expect(text).toContain('at least 1,199 permutations');
+    expect(text).not.toContain('which is at most the threshold');
+    const clusterFacts = {
+      ...facts,
+      highHighCount: 0,
+      lowLowCount: 0,
+      highLowCount: 0,
+      lowHighCount: 0
+    };
+    expect(summarizeGPUAnalysisResult('local-cluster-count', clusterFacts)).toContain(
+      'No feature could be significant'
+    );
+    expect(summarizeGPUAnalysisResult('local-cluster-count', clusterFacts)).toContain(
+      'at least 1,199 permutations'
+    );
+    expect(
+      summarizeGPUAnalysisResult('local-cluster-count', {...clusterFacts, permutationCount: 0})
+    ).toContain('at least 1,199 permutations');
+    expect(
+      summarizeGPUAnalysisResult('significant-hot-cold-count', {
+        ...facts,
+        hotCount: 0,
+        coldCount: 0,
+        confidencePercent: 95
+      })
+    ).toContain('at least 1,199 permutations');
+    expect(
+      deriveGPUAnalysisCautions({...facts, pValueConstruction: 'upper-tail-count'})
+    ).not.toContain('significance-not-attainable');
+  });
+
+  it('B4 prints the exact fraction when the displayed floor would round', () => {
+    // 2/32 = .0625 exactly, below the old displayed .063 bound.
+    const text = describeGPUAnalysisPermutationResolution(31, 0.0624, 'doubled-minimum-tail');
+    expect(text).toContain('below 2 / 32 (approximately 0.063)');
+    expect(text).toContain('at least 32 permutations');
+  });
+
+  it('B5 recommends the minimum integer budget at large test counts', () => {
+    const facts = {
+      correction: 'bonferroni' as const,
+      testCount: 50_000_000,
+      significanceLevel: 0.05,
+      permutationCount: 999,
+      pValueConstruction: 'doubled-minimum-tail' as const
+    };
+    // .05/50,000,000 = 1e-9; 2/(P+1) <= 1e-9 iff P >= 1,999,999,999.
+    const result = getGPUAnalysisSignificanceAttainability(facts);
+    expect(result.requiredPermutationCount).toBe(1_999_999_999);
+    expect(
+      getGPUAnalysisSignificanceAttainability({...facts, permutationCount: 1_999_999_999})
+        .attainable
+    ).toBe(true);
+    expect(
+      getGPUAnalysisSignificanceAttainability({...facts, permutationCount: 1_999_999_998})
+        .attainable
+    ).toBe(false);
+    expect(
+      canResolveGPUAnalysisSignificanceLevel(1_999_999_998, 1e-9, 'doubled-minimum-tail')
+    ).toBe(false);
+  });
+
+  it('S2 rejects an unknown correction at public boundaries', () => {
+    const correction = 'mystery' as 'bonferroni';
+    const facts = {
+      correction,
+      testCount: 30,
+      featureCount: 30,
+      permutationCount: 999,
+      significanceLevel: 0.05
+    };
+    const accepted = /none.*bonferroni.*holm.*sidak.*false-discovery-rate/;
+    expect(() => getGPUAnalysisSignificanceAttainability(facts)).toThrow(accepted);
+    expect(() => deriveGPUAnalysisCautions(facts)).toThrow(accepted);
+    expect(() => getGPUAnalysisCautionText('significance-not-attainable', facts)).toThrow(accepted);
+    expect(() =>
+      summarizeGPUAnalysisResult('local-cluster-count', {
+        ...facts,
+        highHighCount: 0,
+        lowLowCount: 0,
+        highLowCount: 0,
+        lowHighCount: 0
+      })
+    ).toThrow(accepted);
   });
 });

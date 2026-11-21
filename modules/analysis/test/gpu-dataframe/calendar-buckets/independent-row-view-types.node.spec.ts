@@ -45,6 +45,9 @@ it('keeps exported props and output aliases packed by default', () => {
     GraphDataView<'sint32'> | undefined
   >();
   expectTypeOf<GPUCalendarBucketsProps['timestamps']>().toEqualTypeOf<GraphDataView<'uint32x2'>>();
+  expectTypeOf<GPUTimeWordsRelativeProps['mask']>().toEqualTypeOf<
+    GraphDataView<'uint32'> | undefined
+  >();
   expectTypeOf<GPUTimeWordsRelativeProps['output']>().toEqualTypeOf<GraphDataView<'float32'>>();
   expectTypeOf<GPUPeriodIndexOutput['periods']>().toEqualTypeOf<GraphDataView<'uint32'>>();
   expectTypeOf<GPUCellPeriodKeysOutput['keys']>().toEqualTypeOf<GraphDataView<'uint32x2'>>();
@@ -126,6 +129,7 @@ it('preserves inferred packed and chunked ports, including omitted optional fiel
       periods: packed('uint32'),
       periodCount: 1,
       fill: 'zeros',
+      layout: 'zero-period-bit-identity',
       output: {keys: packed('uint32x2')}
     });
     const keysChunked = new GPUCellPeriodKeys({
@@ -133,6 +137,7 @@ it('preserves inferred packed and chunked ports, including omitted optional fiel
       periods: chunked('uint32'),
       periodCount: 1,
       fill: 'zeros',
+      layout: 'zero-period-bit-identity',
       output: {keys: chunked('uint32x2')}
     });
     expectTypeOf(keysPacked.props.output.keys).toExtend<GraphDataView<'uint32x2'>>();

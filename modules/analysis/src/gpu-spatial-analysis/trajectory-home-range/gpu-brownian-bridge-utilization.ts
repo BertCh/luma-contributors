@@ -21,7 +21,6 @@ import {
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 import {
   validateCapacity,
-  validateFiniteNumber,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -43,6 +42,7 @@ import {
 } from '../trajectory-staypoints/movement-common';
 
 const OPERATION = 'GPUBrownianBridgeUtilization';
+import {BROWNIAN_BRIDGE_COORDINATES_WGSL} from './brownian-bridge-coordinates';
 
 /** Number of float32 elements in a {@link GPUBrownianBridgeUtilization} parameter view. */
 export const GPU_BROWNIAN_BRIDGE_UTILIZATION_PARAMETER_LENGTH = 4;
@@ -62,10 +62,27 @@ export const GPU_BROWNIAN_BRIDGE_MAXIMUM_FIX_COUNT = 16384;
 
 /**
  * Standard deviations beyond which a segment's bridge no longer adds to a cell. The Gaussian at
- * this distance is `exp(-24.5)`, about 2e-11 of its peak, so the omitted density is below float32
- * resolution of the cell total.
+ * this distance is `exp(-24.5)`, about 2.3e-11 of its peak density. This is a bound relative to
+ * each Gaussian's peak, not relative to the accumulated density of a cell.
  */
 export const GPU_BROWNIAN_BRIDGE_CUTOFF_SIGMA_COUNT = 7;
+
+/** Whether to retain Gaussian tails or skip segments outside their seven-sigma bounds. */
+export type BrownianBridgeTailPolicy = 'full' | 'truncate-at-seven-sigma';
+
+/** Shared explicit policy validation, retaining each backend's historical omitted default. @internal */
+export function resolveBrownianBridgeTailPolicy(
+  id: string,
+  policy: BrownianBridgeTailPolicy | undefined,
+  defaultPolicy: BrownianBridgeTailPolicy
+): BrownianBridgeTailPolicy {
+  validateRequirement(
+    id,
+    policy === undefined || policy === 'full' || policy === 'truncate-at-seven-sigma',
+    `tailPolicy must be full or truncate-at-seven-sigma; received ${policy}`
+  );
+  return policy ?? defaultPolicy;
+}
 
 /** Per-frame settings of {@link GPUBrownianBridgeUtilization}. */
 export type GPUBrownianBridgeUtilizationSettings = {
@@ -90,12 +107,23 @@ export function getGPUBrownianBridgeUtilizationParameterValues(
       `${OPERATION} parameter target must hold ${GPU_BROWNIAN_BRIDGE_UTILIZATION_PARAMETER_LENGTH} elements`
     );
   }
-  const [minX, minY, maxX, maxY] = settings.extent;
-  for (const value of settings.extent) {
-    validateFiniteNumber(OPERATION, 'extent', value);
-  }
-  validateRequirement(OPERATION, maxX > minX && maxY > minY, 'extent must have max > min');
-  target.set([minX, minY, maxX, maxY]);
+  const endpoints = [
+    settings.extent[0],
+    settings.extent[1],
+    settings.extent[2],
+    settings.extent[3]
+  ];
+  const encoded = Float32Array.from(endpoints);
+  const [minX, minY, maxX, maxY] = encoded;
+  validateRequirement(
+    OPERATION,
+    endpoints.every(value => typeof value === 'number') &&
+      encoded.every(Number.isFinite) &&
+      maxX > minX &&
+      maxY > minY,
+    `extent must have finite float32 endpoints with max > min on each axis; received [${settings.extent.join(', ')}], encoded [${encoded.join(', ')}]; subtract the same local origin from positions and extent`
+  );
+  target.set(encoded);
   return target;
 }
 
@@ -120,11 +148,13 @@ export type GPUBrownianBridgeUtilizationProps = GPUTrajectoryGeometryFields & {
   parameters: GraphDataView<'float32'>;
   /** Midpoint-rule steps per segment (1 to 256, default 15). Compile-time. */
   subStepCount?: number;
+  /** Explicit tail rule. Omitted: GPU truncates at seven sigma; CPU retains full tails. Compile-time. */
+  tailPolicy?: BrownianBridgeTailPolicy;
   output: {
     /**
      * Probability density at each cell centre, `columns * rows` rows (row-major, row 0 at the
-     * smallest y), per unit of area. It integrates to 1 over the plane; the sum of
-     * `density * cellArea` over the grid is below 1 by the mass outside the grid.
+     * smallest y), per square position unit. The area-weighted sampled sum approximates captured
+     * mass and may exceed one on a coarse grid. The isopleth stage normalizes over the supplied raster.
      */
     density: GraphDataView<'float32'>;
   };
@@ -144,7 +174,8 @@ export type GPUBrownianBridgeUtilizationProps = GPUTrajectoryGeometryFields & {
  * whole track is divided by the total duration of the segments.
  *
  * A segment is valid when its next fix is in the same track and the time increases. Segments
- * further than 7 standard deviations from a cell are skipped for that cell. A step with zero
+ * further than 7 standard deviations from a cell are skipped by the default tail policy;
+ * `tailPolicy: 'full'` retains them. A step with zero
  * variance (no motion variance and no location error) contributes nothing. The first and last
  * segments are used; `move` omits them by default.
  *
@@ -168,20 +199,21 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
 
   constructor(props: GPUBrownianBridgeUtilizationProps) {
     const id = props.id ?? 'brownian-bridge-utilization';
+    resolveBrownianBridgeTailPolicy(id, props.tailPolicy, 'truncate-at-seven-sigma');
     resolveGPUSpatialContext(id, props.spatialContext, GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT);
     const {positions, timestamps, trackOffsets, gridSize, output} = props;
     validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
     this.rowCount = positions.length;
-    validateCapacity(id, 'fix count', this.rowCount, 2);
+    validateCapacity(id, 'fix count', this.rowCount, 0);
     validateMaximumCount(id, 'fix count', this.rowCount, GPU_BROWNIAN_BRIDGE_MAXIMUM_FIX_COUNT);
     validateViewLength(id, 'timestamps', timestamps, this.rowCount);
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
       id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     validateSinglePackedView(props.motionVariances, ['float32'], `${id} motionVariances`);
     validateViewLength(id, 'motionVariances', props.motionVariances, this.rowCount);
@@ -219,7 +251,7 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
       ]
     );
     this.id = id;
-    this.props = props;
+    this.props = {...props, gridSize: [...props.gridSize], output: {...props.output}};
   }
 
   getCommandNodes<Parameters>(
@@ -244,6 +276,17 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
       gridSize[0] * gridSize[1] * 4,
       'use a smaller grid'
     );
+    if (rowCount < 2)
+      return [
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-empty-density`,
+          operation: OPERATION,
+          variant: 'empty-density',
+          invocationCount: gridSize[0] * gridSize[1],
+          bindings: [{name: 'density', view: output.density, type: 'f32', access: 'read_write'}],
+          body: 'density[densityOffset + index] = 0.0;'
+        })
+      ];
     const rowStarts = createTransientView(graph, `${id}-row-starts`, 'uint32', rowCount);
     const rowEnds = createTransientView(graph, `${id}-row-ends`, 'uint32', rowCount);
     const rowTracks = createTransientView(graph, `${id}-row-tracks`, 'uint32', rowCount);
@@ -273,11 +316,13 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
           {name: 'density', view: output.density, type: 'f32', access: 'read_write'}
         ],
         declarations: `${getTrajectoryTimeSource(timeMode)}
+${BROWNIAN_BRIDGE_COORDINATES_WGSL}
 const COLUMNS: u32 = ${gridSize[0]}u;
 const ROWS: u32 = ${gridSize[1]}u;
 const FIX_COUNT: u32 = ${rowCount}u;
 const SUB_STEPS: u32 = ${subStepCount}u;
 const CUTOFF: f32 = ${GPU_BROWNIAN_BRIDGE_CUTOFF_SIGMA_COUNT}.0;
+const TRUNCATE_TAILS: bool = ${resolveBrownianBridgeTailPolicy(id, props.tailPolicy, 'truncate-at-seven-sigma') === 'truncate-at-seven-sigma'};
 const TWO_PI: f32 = 6.283185307179586;
 fn fixPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -285,8 +330,6 @@ fn fixPosition(row: u32) -> vec2<f32> {
         body: /* wgsl */ `
   let minimum = vec2<f32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
   let maximum = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]);
-  let cellSize = (maximum - minimum) / vec2<f32>(f32(COLUMNS), f32(ROWS));
-  let center = minimum + (vec2<f32>(f32(index % COLUMNS), f32(index / COLUMNS)) + vec2<f32>(0.5)) * cellSize;
   var weightedDensity = 0.0;
   var totalDuration = 0.0;
   for (var row = 0u; row + 1u < FIX_COUNT; row = row + 1u) {
@@ -299,27 +342,33 @@ fn fixPosition(row: u32) -> vec2<f32> {
       continue;
     }
     totalDuration = totalDuration + duration;
-    let pathStart = fixPosition(row);
-    let pathEnd = fixPosition(row + 1u);
+    let start = fixPosition(row);
+    let end = fixPosition(row + 1u);
+    // Centre each segment at this cell, preserving the low part of distant-origin subtraction.
+    let startX = bridgeFixOffset(start.x, minimum.x, maximum.x, index % COLUMNS, COLUMNS);
+    let startY = bridgeFixOffset(start.y, minimum.y, maximum.y, index / COLUMNS, ROWS);
+    let endX = bridgeFixOffset(end.x, minimum.x, maximum.x, index % COLUMNS, COLUMNS);
+    let endY = bridgeFixOffset(end.y, minimum.y, maximum.y, index / COLUMNS, ROWS);
+    let pathStart = vec2<f32>(startX.x + startX.y, startY.x + startY.y);
+    let pathEnd = vec2<f32>(endX.x + endX.y, endY.x + endY.y);
     let motion = max(motionVariances[motionVariancesOffset + row], 0.0);
     let errorFrom = locationErrors[locationErrorsOffset + row];
     let errorTo = locationErrors[locationErrorsOffset + row + 1u];
     let largestError = max(abs(errorFrom), abs(errorTo));
-    let reach = CUTOFF * sqrt(0.25 * duration * motion + largestError * largestError);
-    let lower = min(pathStart, pathEnd) - vec2<f32>(reach);
-    let upper = max(pathStart, pathEnd) + vec2<f32>(reach);
-    if (any(center < lower) || any(center > upper)) {
+    let cutoffVariance = 0.25 * duration * motion + largestError * largestError;
+    let cutoffSquared = CUTOFF * CUTOFF * cutoffVariance;
+    if (TRUNCATE_TAILS && (bridgeAxisOutside(pathStart.x, pathEnd.x, cutoffSquared) || bridgeAxisOutside(pathStart.y, pathEnd.y, cutoffSquared))) {
       continue;
     }
     var segmentDensity = 0.0;
     for (var step = 0u; step < SUB_STEPS; step = step + 1u) {
       let fraction = (f32(step) + 0.5) / f32(SUB_STEPS);
-      let mean = pathStart + fraction * (pathEnd - pathStart);
+      let mean = vec2<f32>(bridgeMeanOffset(startX, endX, fraction), bridgeMeanOffset(startY, endY, fraction));
       let variance = duration * fraction * (1.0 - fraction) * motion +
         (1.0 - fraction) * (1.0 - fraction) * errorFrom * errorFrom +
         fraction * fraction * errorTo * errorTo;
       if (variance > 0.0) {
-        let offset = center - mean;
+        let offset = -mean;
         segmentDensity = segmentDensity + exp(-dot(offset, offset) / (2.0 * variance)) / (TWO_PI * variance);
       }
     }

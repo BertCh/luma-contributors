@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   getSpatialAnalysisPackedKernelNodes,
   validateSpatialAnalysisPackedOutputAllocations
@@ -10,6 +11,12 @@ import {
   addPatchProximityBoundaryRecipe,
   type GPUPatchProximityBoundaryProps
 } from './patch-proximity-boundary';
+import {
+  prepareLandscapePatchInput,
+  addLandscapePatchInput,
+  validateLandscapePatchDestinations,
+  suppressUnresolvedLandscapeResults
+} from './landscape-patch-input';
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getRecipeView} from '../recipes/expansion-recipe-utils';
@@ -89,7 +96,18 @@ export function addPatchProximityRecipe<Parameters>(
 export function addPatchProximityRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUPatchProximityProps | GPUPatchProximityBoundaryProps
+):
+  | ReturnType<typeof addPatchProximityBoundaryRecipe>
+  | ReturnType<typeof addPatchProximityReferenceRecipe>;
+export function addPatchProximityRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPatchProximityProps | GPUPatchProximityBoundaryProps
 ) {
+  validateRequirement(
+    props.id ?? 'patch-proximity',
+    props.mode === undefined || props.mode === 'reference' || props.mode === 'boundary',
+    "mode must be 'reference' or 'boundary'"
+  );
   return props.mode === 'boundary'
     ? addPatchProximityBoundaryRecipe(graph, props)
     : addPatchProximityReferenceRecipe(graph, props);
@@ -98,9 +116,25 @@ export function addPatchProximityRecipe<Parameters>(
 /** Exact rectangular-cell boundary distances on a complete raster; background is a core-area barrier. */
 function addPatchProximityReferenceRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPUPatchProximityProps
+  inputProps: GPUPatchProximityProps
 ) {
+  validateRequirement(
+    inputProps.id ?? 'patch-proximity',
+    !('outputs' in inputProps),
+    'outputs was removed; use output'
+  );
+  const props = prepareLandscapePatchInput(graph, inputProps.id ?? 'patch-proximity', inputProps);
   const id = props.id ?? 'patch-proximity';
+  for (const [name, value, accepted] of [
+    ['distanceModel', props.distanceModel, ['cell-boundary', 'cell-center']],
+    ['coreModel', props.coreModel, ['physical', 'raster-erosion']],
+    ['coreBoundary', props.coreBoundary, ['edge', 'open']]
+  ] as const)
+    validateRequirement(
+      id,
+      value === undefined || (accepted as readonly string[]).includes(value),
+      `${name} must be ${accepted.map(option => `'${option}'`).join(' or ')}`
+    );
   const {width, height, cellSize, edgeDepth, searchRadius} = props;
   const cellCount = width * height;
   const patchCount = props.patchClasses.length;
@@ -153,7 +187,17 @@ function addPatchProximityReferenceRecipe<Parameters>(
     !rasterCore || Number.isSafeInteger(edgeDepth),
     "edgeDepth must be an integer when coreModel is 'raster-erosion'"
   );
-  const output = props.output;
+  const output =
+    props.output &&
+    snapshotConstructionFields(props.output, [
+      'core',
+      'distances',
+      'metrics',
+      'horizontal',
+      'fields',
+      'reconciledPatches',
+      'patchParents'
+    ]);
   const inputs = {patches: props.patches, patchClasses: props.patchClasses};
   const outputs = {
     core: output?.core,
@@ -220,15 +264,18 @@ function addPatchProximityReferenceRecipe<Parameters>(
     ['core cells', cellCount * 4]
   ] as const)
     validateLandscapeStorage(graph.device, id, name, bytes);
+  validateLandscapePatchDestinations(graph, id, props, Object.values(outputs));
+  const inputPatches = addLandscapePatchInput(graph, id, props);
   const reconciled = props.reconcilePatches
     ? reconcileLandscapePatchLabels(graph, {
         ...props,
+        patches: inputPatches,
         id,
         connectivity: props.connectivity ?? 4,
         output: {patches: output?.reconciledPatches, parents: output?.patchParents}
       })
     : undefined;
-  const patches = reconciled?.patches ?? props.patches;
+  const patches = reconciled?.patches ?? inputPatches;
   const separation = props.distanceModel === 'cell-center' ? 0 : 1;
   const core = getRecipeView(graph, `${id}-core`, 'uint32', cellCount, output?.core);
   const distances = getRecipeView(
@@ -352,15 +399,31 @@ for(var other=0u;other<${patchCount}u;other++){
   if(distance==0.0){proximity+=otherArea/(distance*distance);}else{proximity+=getScaledQuotient(otherArea,distance,distance,0);}
  }
 }
-${props.distanceModel === 'cell-center' ? 'if(nearest==bitcast<f32>(0x7f800000u | (index & 0u))){nearest=bitcast<f32>(0x7fc00000u | (index & 0u));}' : ''}
+${props.distanceModel === 'cell-center' ? 'if(bitcast<u32>(nearest)==0x7f800000u){nearest=bitcast<f32>(0x7fc00000u | (index & 0u));}' : ''}
 writeOutput(index,vec4<f32>(area,coreArea,nearest,proximity));`
     })
   );
+  suppressUnresolvedLandscapeResults(
+    graph,
+    id,
+    props,
+    [
+      core,
+      metrics,
+      distances,
+      horizontal,
+      fields,
+      ...(reconciled ? [reconciled.patches, reconciled.parents] : [])
+    ],
+    [{view: core, value: 0}]
+  );
   return {
+    inputStatus: props.denseLabels?.status,
     outputs: {core, distances, metrics},
     intermediates: {horizontal, fields},
     provenance: {
-      patches: props.patches,
+      patches: inputPatches,
+      denseLabels: props.denseLabels,
       reconciledPatches: reconciled?.patches,
       patchParents: reconciled?.parents,
       patchClasses: props.patchClasses,

@@ -13,7 +13,12 @@ import {
   snapshotDiagnosticsOperationProps,
   type SpatialRegressionDiagnosticsOperationProps
 } from './gpu-spatial-regression-diagnostics-operation';
-import {validateCPURegressionWeights, type CPURegressionWeights} from './cpu-regression-weights';
+import {
+  validateCPURegressionWeights,
+  hasCPURegressionWeightsLoss,
+  type CPURegressionWeights,
+  type CPURegressionWeightsStatus
+} from './cpu-regression-weights';
 import {fitCPURegressionWithQR} from './cpu-regression-linear-algebra';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import {
@@ -24,7 +29,7 @@ import {
 /** Supplied OLS residuals are consumed as-is, with common finite/unmasked row selection. */
 export type CPUSpatialRegressionDiagnosticsInput = {
   weights: CPURegressionWeights & {
-    status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
+    status?: CPURegressionWeightsStatus;
   };
   predictors: Float32Array;
   response: Float32Array;
@@ -49,8 +54,8 @@ export type CPUSpatialRegressionDiagnosticsResult = {
  *
  * What differs from the GPU contributor:
  * - Float64 QR and sparse products replace float32 centered Gram solves and reductions.
- *   Information is computed by directly summing squared residuals of W(y-e) against the design,
- *   avoiding the GPU's subtraction of two large squares. Well-conditioned comparisons use
+ *   Both forms compute information from squared projection residuals of W(y-e); the CPU uses
+ *   an orthonormal QR basis and the GPU uses its scaled Gram solve. Well-conditioned comparisons use
  *   relative tolerance 5e-3, with row counts and test degrees compared exactly.
  * - Shader-only 15-predictor and device binding-size limits are dropped; tileRowCount is ignored.
  *   Design rank uses norm-scaled QR pivots > 64 * Number.EPSILON, so some GPU status-1 designs
@@ -121,8 +126,7 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
     result.status[0] = code;
     return result;
   };
-  if (input.weights.status?.overflow?.[0] || input.weights.status?.candidateOverflow?.[0])
-    return fail(3);
+  if (hasCPURegressionWeightsLoss(id, input.weights)) return fail(3);
   if (usedCount <= width + 1) return fail(2);
   const active = usedRows.map(row => {
     const entries: [number, number][] = [];
@@ -214,10 +218,13 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
       basis.reduce((sum, row, position) => sum + row[first] * lagBasis[position][second], 0)
     )
   );
+  const centeredFittedLag = fittedLag.map(value => value - fittedLag[0]);
   const projection = Array.from({length: width}, (_, column) =>
-    basis.reduce((sum, row, position) => sum + row[column] * fittedLag[position], 0)
+    basis.reduce((sum, row, position) => sum + row[column] * centeredFittedLag[position], 0)
   );
-  const fittedLagResidual = fittedLag.map((value, row) => value - dot(basis[row], projection));
+  const fittedLagResidual = centeredFittedLag.map(
+    (value, row) => value - dot(basis[row], projection)
+  );
   const sigmaSquared = residualSquares / usedCount;
   const information = dot(fittedLagResidual, fittedLagResidual) / sigmaSquared + trace;
   const errorGradient = residualLag / sigmaSquared;
@@ -263,7 +270,7 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
   const scale = usedCount / weightSum;
   const moranI = (scale * residualLag) / residualSquares;
   const moranExpectation = (-scale * traceCorrection) / degrees;
-  const moranVariance =
+  let moranVariance =
     (scale ** 2 *
       (squareSum -
         lagNormSquared -
@@ -275,7 +282,79 @@ export function computeSpatialRegressionDiagnosticsOnCPU(
         traceCorrection ** 2)) /
       (degrees * (degrees + 2)) -
     moranExpectation ** 2;
-  const moranZ = moranVariance > 0 ? (moranI - moranExpectation) / Math.sqrt(moranVariance) : NaN;
+  // Bound cancellation at the scale of the individual trace terms, not the near-zero result.
+  const varianceScale =
+    (scale ** 2 *
+      (Math.abs(squareSum) +
+        Math.abs(lagNormSquared) +
+        Math.abs(transposedNormSquared) +
+        Math.abs(correctionNormSquared) +
+        Math.abs(crossSum) +
+        2 * Math.abs(crossCorrection) +
+        Math.abs(traceCorrectionSquared) +
+        traceCorrection ** 2)) /
+      (degrees * (degrees + 2)) +
+    moranExpectation ** 2;
+  let moranNumerator = moranI - moranExpectation;
+  if (Math.abs(moranVariance) <= 64 * Number.EPSILON * varianceScale) {
+    // Var(I)=2 s² ||M S M - tr(M S)M/d||_F²/[d(d+2)], S=(W+W')/2.
+    // B=S+cI-c11' removes an observed complete-graph component BEFORE any projection.
+    // Since M1=0 the centered projected matrices of S and B are identical.
+    const rows = active.map(entries => new Map(entries));
+    const neighbor = active[0].find(([neighbor]) => neighbor !== 0)?.[0];
+    const origin =
+      neighbor === undefined
+        ? 0
+        : ((rows[0].get(neighbor) ?? 0) + (rows[neighbor].get(0) ?? 0)) / 2;
+    const entry = (first: number, second: number) =>
+      first === second
+        ? 0
+        : ((rows[first].get(second) ?? 0) + (rows[second].get(first) ?? 0)) / 2 - origin;
+    const lag = basis.map((_, row) =>
+      Array.from({length: width}, (_, column) =>
+        basis.reduce((sum, other, position) => sum + entry(row, position) * other[column], 0)
+      )
+    );
+    const cross = Array.from({length: width}, (_, first) =>
+      Array.from({length: width}, (_, second) =>
+        basis.reduce((sum, row, position) => sum + row[first] * lag[position][second], 0)
+      )
+    );
+    const projectedTrace = -cross.reduce((sum, row, column) => sum + row[column], 0);
+    let centeredNorm = 0;
+    let residualQuadratic = 0;
+    for (let first = 0; first < usedCount; first++) {
+      for (let second = 0; second < usedCount; second++) {
+        const weight = entry(first, second);
+        const firstProduct = dot(basis[first], lag[second]);
+        const secondProduct = dot(lag[first], basis[second]);
+        let centered = weight - firstProduct - secondProduct;
+        let roundingScale = Math.abs(weight) + Math.abs(firstProduct) + Math.abs(secondProduct);
+        for (let row = 0; row < width; row++)
+          for (let column = 0; column < width; column++) {
+            const product = basis[first][row] * cross[row][column] * basis[second][column];
+            centered += product;
+            roundingScale += Math.abs(product);
+          }
+        const correction =
+          (projectedTrace / degrees) *
+          (Number(first === second) - dot(basis[first], basis[second]));
+        centered -= correction;
+        roundingScale += Math.abs(correction);
+        // A vanished projected operator has only projection roundoff left. Apply a local
+        // arithmetic error bound BEFORE squaring; a small but resolved operator survives.
+        if (Math.abs(centered) <= 64 * Number.EPSILON * roundingScale) centered = 0;
+        centeredNorm += centered ** 2;
+        residualQuadratic += residuals[first] * weight * residuals[second];
+      }
+    }
+    moranVariance = (2 * scale ** 2 * centeredNorm) / (degrees * (degrees + 2));
+    const total = residuals.reduce((sum, value) => sum + value, 0);
+    moranNumerator =
+      scale *
+      ((residualQuadratic + origin * total ** 2) / residualSquares - projectedTrace / degrees);
+  }
+  const moranZ = moranVariance > 0 ? moranNumerator / Math.sqrt(moranVariance) : NaN;
   const moranP = moranVariance > 0 ? getChiSquareSurvival(moranZ ** 2, 1) : NaN;
   result.tests.set([moranZ, 0, moranP], 15);
   result.summary.set([
@@ -325,6 +404,16 @@ export class CPUSpatialRegressionDiagnosticsOperation extends GPUCPUOperation {
               neighbors: getCPUOperationUint32Rows(id, inputs, 'neighbors'),
               weights: getCPUOperationFloat32Rows(id, inputs, 'weights'),
               status: {
+                complete:
+                  props.weights.status?.complete !== undefined
+                    ? getCPUOperationUint32Rows(id, inputs, 'complete')
+                    : undefined,
+                count: props.weights.status?.count
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsCount')
+                  : undefined,
+                requiredCount: props.weights.status?.requiredCount
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsRequiredCount')
+                  : undefined,
                 overflow: props.weights.status?.overflow
                   ? getCPUOperationUint32Rows(id, inputs, 'weightsOverflow')
                   : undefined,

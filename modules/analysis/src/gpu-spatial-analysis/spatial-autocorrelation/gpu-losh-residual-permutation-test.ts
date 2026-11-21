@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotSpatialAutocorrelationProps} from './spatial-autocorrelation-construction';
+
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
@@ -49,11 +51,28 @@ export class GPULOSHResidualPermutationTest implements GPUCommandNodeProducer {
   readonly id: string;
 
   constructor(readonly props: GPULOSHResidualPermutationTestProps) {
+    props = snapshotSpatialAutocorrelationProps(props);
+    this.props = props;
     this.id = props.id ?? 'losh-residual-permutation-test';
     if (!['greater', 'lesser', 'two-sided'].includes(props.alternative)) {
       throw new Error(`${this.id}: an explicit greater, lesser or two-sided tail is required`);
     }
     new GPULocalSpatialHeteroscedasticity(props);
+    // Validate the inference shape/settings now, before its residual scratch view exists. The
+    // residual field has exactly the source values' packed float32 shape; no contents are read.
+    new GPULocalPermutationTest({
+      id: `${this.id}-conditional`,
+      weights: props.weights,
+      values: props.values,
+      parameters: props.parameters,
+      maximumPermutations: props.maximumPermutations,
+      maximumNeighbors: props.maximumNeighbors,
+      multipleTesting: props.multipleTesting,
+      alternative: props.alternative,
+      islands: 'keep',
+      statistic: 'localG',
+      output: props.output.inference
+    });
     validateDisjointWritableViews(this.id, {
       statistic: props.output.statistic,
       status: props.output.status,

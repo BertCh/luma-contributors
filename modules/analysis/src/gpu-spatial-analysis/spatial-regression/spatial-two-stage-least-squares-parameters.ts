@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/** Maximum centered instrument columns in the dense 2SLS solve (intercept excluded). @internal */
+export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_CENTERED_INSTRUMENT_COLUMN_COUNT = 16;
+
 /**
  * Largest predictor count of `GPUSpatialTwoStageLeastSquares` with `instrumentOrder: 1`. The
  * instruments are `[1, X, W X]`; the constant is centered out, so the solve factors the
@@ -16,7 +19,10 @@ export const GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT = 8;
 export function getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount(
   instrumentOrder: 1 | 2
 ): number {
-  return Math.floor(16 / (instrumentOrder + 1));
+  return Math.floor(
+    GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_CENTERED_INSTRUMENT_COLUMN_COUNT /
+      (instrumentOrder + 1)
+  );
 }
 
 /** Number of float32 values per `table` row: coefficient, standard error, z statistic, p-value. */

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConditionalGaussianSimulationOperationProps} from './interpolation-operation-snapshots';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -28,7 +30,7 @@ import {
   type ConditionalGaussianSimulationOperationProps
 } from './gpu-conditional-gaussian-simulation-operation';
 
-/** Packed inputs in the contributor's layouts. Zero observation validity omits that sample. */
+/** Packed inputs in the contributor's layouts. Observation validity must be strictly > 0; zero, negative and NaN omit the sample. */
 export type CPUConditionalGaussianSimulationInput = {
   positions: Float32Array;
   observations: Float32Array;
@@ -113,7 +115,7 @@ function validateSimulationOptions(
  * - Philox words and their order match. Box-Muller and its half-bin angle are evaluated in
  *   float64; GPU transcendental and angle rounding differ. Compare ordinary moments at relative
  *   1e-4 and realizations at 2e-4 of max(conditional standard deviation, absolute mean).
- * - reusePreparation is not needed for the pure function or CPU operation; each call recomputes.
+ * - The pure function and CPU operation recompute preparation on each call.
  * - Invalid included observations or queries give status 1; singular observations give status 2.
  *   Subnormal outputs are retained; finite float64 results outside float32 range round to infinity
  *   without setting status 2. These extremes are outside GPU comparisons.
@@ -126,12 +128,21 @@ export function computeConditionalGaussianSimulationOnCPU(
 ): CPUConditionalGaussianSimulationResult {
   const id = 'computeConditionalGaussianSimulationOnCPU';
   validateSimulationOptions(id, options);
-  if (input.positions.length % 2 !== 0)
-    throw new Error('positions length must be a multiple of two');
-  if (input.observations.length !== input.positions.length * 2)
-    throw new Error('observations length must equal positions row count * four');
-  if (input.queries.length % 2 !== 0 || input.queries.length === 0)
-    throw new Error('queries must contain one or more two-component rows');
+  validateRequirement(
+    'computeConditionalGaussianSimulationOnCPU',
+    !(input.positions.length % 2 !== 0),
+    'positions length must be a multiple of two'
+  );
+  validateRequirement(
+    'computeConditionalGaussianSimulationOnCPU',
+    !(input.observations.length !== input.positions.length * 2),
+    'observations length must equal positions row count * four'
+  );
+  validateRequirement(
+    'computeConditionalGaussianSimulationOnCPU',
+    !(input.queries.length % 2 !== 0 || input.queries.length === 0),
+    'queries must contain one or more two-component rows'
+  );
   const queryCount = input.queries.length / 2;
   validateCapacity(id, 'queryCount * replicateCount', queryCount * options.replicateCount);
   const result: CPUConditionalGaussianSimulationResult = {
@@ -286,6 +297,7 @@ export function computeConditionalGaussianSimulationOnCPU(
 /** CPU simulation without the GPU joint-row cap or retained preparation state. */
 export class CPUConditionalGaussianSimulationOperation extends GPUCPUOperation {
   constructor(props: ConditionalGaussianSimulationOperationProps) {
+    props = snapshotConditionalGaussianSimulationOperationProps(props);
     const id = props.id ?? 'conditional-gaussian-simulation';
     validateCapacity(id, 'observationCount', props.observationCount, 0);
     validateCapacity(id, 'queryCount', props.queryCount);
@@ -308,15 +320,27 @@ export class CPUConditionalGaussianSimulationOperation extends GPUCPUOperation {
       execute({inputs}) {
         const positions = getCPUOperationFloat32Rows(id, inputs, 'positions', 'float32x2');
         const queries = getCPUOperationFloat32Rows(id, inputs, 'queries', 'float32x2');
-        if (positions.length !== props.observationCount * 2)
-          throw new Error(`${id} positions length must equal observationCount * 2`);
-        if (queries.length !== props.queryCount * 2)
-          throw new Error(`${id} queries length must equal queryCount * 2`);
+        const observations = getCPUOperationFloat32Rows(id, inputs, 'observations', 'float32x4');
+        validateRequirement(
+          id,
+          observations.length === props.observationCount * 4,
+          'observations length must equal observationCount * 4'
+        );
+        validateRequirement(
+          id,
+          !(positions.length !== props.observationCount * 2),
+          `positions length must equal observationCount * 2`
+        );
+        validateRequirement(
+          id,
+          !(queries.length !== props.queryCount * 2),
+          `queries length must equal queryCount * 2`
+        );
         const result = computeConditionalGaussianSimulationOnCPU(
           {
             positions,
             queries,
-            observations: getCPUOperationFloat32Rows(id, inputs, 'observations', 'float32x4')
+            observations
           },
           props
         );

@@ -15,6 +15,8 @@ import {
   validateGPUStorageBindingByteLength,
   validateCapacity,
   validateMaximumCount,
+  validateGraphPorts,
+  type GPUGraphPortDescriptor,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateWGSLIdentifier} from '../../analysis-core/kernels/wgsl-identifiers';
@@ -26,6 +28,7 @@ import {
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   createWGSLKernelNode,
+  type WGSLKernelProps,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
@@ -58,7 +61,7 @@ export type PointCloudKernelProps = {
  */
 export function getPointCloudKernelNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: PointCloudKernelProps
+  props: PointCloudKernelProps & Pick<WGSLKernelProps<Parameters>, 'modules'>
 ): GPUCommandNode<Parameters>[] {
   validateGraphChunkBindingRanges(graph, props.id, {...props.inputs, ...props.outputs});
   const inputEntries = Object.entries(props.inputs);
@@ -114,6 +117,7 @@ fn runPointCloudRow(index: u32, localInvocationIndex: u32) {
       invocationCount: workgroupSize ? props.length * workgroupSize : props.length,
       ...(workgroupSize ? {workgroupSize, guardIndex: false} : {}),
       declarations,
+      modules: props.modules,
       body: workgroupSize
         ? `if (workgroupIndex >= ${props.length}u) { return; }
   runPointCloudRow(workgroupIndex, localInvocationIndex);`
@@ -216,10 +220,17 @@ export function validatePointCloudPackedViews(
   id: string,
   inputs: PointCloudNamedViews,
   outputs: PointCloudNamedViews,
-  dispatches: readonly PointCloudDispatchViews[] = [{inputs, outputs}]
+  dispatches: readonly PointCloudDispatchViews[] = [{inputs, outputs}],
+  descriptors?: Readonly<Record<string, GPUGraphPortDescriptor>>
 ): void {
+  if (descriptors) validateGraphPorts(id, {...inputs, ...outputs}, descriptors);
   for (const [name, view] of Object.entries({...inputs, ...outputs})) {
-    if (view) validateSinglePackedView(view, [view.format], `${id} ${name}`);
+    if (view)
+      validateSinglePackedView(
+        view,
+        descriptors?.[name]?.formats ?? ['float32x3', 'uint32', 'float32'],
+        `${id} ${name}`
+      );
   }
   validatePointCloudLogicalViews(id, outputs);
   for (const [inputName, input] of Object.entries(inputs)) {

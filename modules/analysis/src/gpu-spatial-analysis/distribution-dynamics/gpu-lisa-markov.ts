@@ -16,7 +16,8 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   getGraphOutputViews,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -32,11 +33,16 @@ import {
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {GPU_CLASS_ASSIGNMENT_NO_CLASS} from './gpu-class-assignment';
-import {GPUTransitionMatrix, type GPUTransitionMatrixOutput} from './gpu-transition-matrix';
+import {
+  GPUTransitionMatrix,
+  validateTransitionMatrixOutput,
+  type GPUTransitionMatrixOutput
+} from './gpu-transition-matrix';
 import {createPeriodPackNode, getPaddedPeriodStride, getPeriodView} from './period-views';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateSpatialAutocorrelationBindings} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
+import {getGPUSpatialWeightsLossViews} from '../spatial-weights/gpu-chunked-spatial-weights';
 
 const OPERATION = 'GPULISAMarkov';
 
@@ -143,11 +149,25 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
   readonly gating: GPULISAMarkovGating;
 
   constructor(props: GPULISAMarkovProps) {
+    props = {
+      ...props,
+      weights: {
+        ...props.weights,
+        information: props.weights.information ? {...props.weights.information} : undefined,
+        status: props.weights.status ? {...props.weights.status} : undefined
+      },
+      output: {...props.output, status: props.output.status ? {...props.output.status} : undefined}
+    };
     const id = props.id ?? 'lisa-markov';
     this.id = id;
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(id, props.weights);
     this.gating = props.gating ?? 'none';
+    validateRequirement(
+      id,
+      this.gating === 'none' || this.gating === 'significance',
+      "gating must be 'none' or 'significance'"
+    );
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH) {
@@ -170,6 +190,13 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
         throw new Error(`${id} output.quadrants length must equal rowCount * periodCount`);
       }
     }
+    validateTransitionMatrixOutput(
+      id,
+      props.output,
+      GPU_LISA_MARKOV_STATE_COUNT,
+      1,
+      props.minimumTransitions
+    );
     const outputs = getGraphOutputViews({
       ...props.output,
       status: {converged: props.output.status?.converged}
@@ -180,7 +207,8 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
       props.mask,
       props.weights.offsets,
       props.weights.neighbors,
-      props.weights.weights
+      props.weights.weights,
+      ...getGPUSpatialWeightsLossViews(props.weights)
     ]);
     validateSpatialOutputViews(
       id,

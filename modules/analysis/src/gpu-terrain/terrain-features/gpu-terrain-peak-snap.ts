@@ -38,6 +38,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -126,6 +127,7 @@ export function getGPUTerrainPeakSnapParameterValues(
   validateTerrainFeaturesScalar(name, 'maximumMove', maximumMove, 0);
   validateTerrainFeaturesScalar(name, 'maximumHeightChange', maximumHeightChange, 0);
   validateTerrainFeaturesCellSize(name, getRasterGridGeoreference(grid).cellSize);
+  validateRasterGridOrthogonal('getGPUTerrainPeakSnapParameterValues', grid);
   target[0] = radius;
   target[1] = maximumMove;
   target[2] = maximumHeightChange;
@@ -270,6 +272,8 @@ export class GPUTerrainPeakSnap implements GPUCommandNodeProducer {
     validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     validateTerrainFeaturesMaximumRadiusPixels(id, props.maximumRadiusPixels);
     validateSinglePackedView(props.candidates, ['float32x2'], `${id} candidates`);
     const candidateCount = props.candidates.length;

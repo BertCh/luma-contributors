@@ -14,13 +14,18 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {validateSpatialWeightsOperationInformation} from '../spatial-weights/gpu-spatial-weights-algebra-operation';
 import type {GPUSpatialWeightsInformation} from '../spatial-weights/spatial-weights';
-import {GPU_AZP_REGIONS_PARAMETER_LENGTH, GPU_AZP_STATUS} from './gpu-azp-regions';
-import {GPUAZPRegionsOperation, type AZPRegionsOperationProps} from './gpu-azp-regions-operation';
+import {GPU_AZP_REGIONS_PARAMETER_LENGTH, GPU_AZP_STATUS_LAYOUT} from './gpu-azp-regions';
+import {
+  GPUAZPRegionsOperation,
+  snapshotAZPRegionsOperationProps,
+  type AZPRegionsOperationProps
+} from './gpu-azp-regions-operation';
 import {
   countCPURegionInvalid,
   getCPURegionAdjacency,
   getCPURegionObjective,
   getCPURegionTable,
+  hasCPURegionInputLoss,
   validateCPURegionInput,
   type CPURegionInput
 } from './cpu-region-inputs';
@@ -36,6 +41,7 @@ export type CPUAZPRegionsOptions = Pick<
   AZPRegionsOperationProps,
   'columnCount' | 'standardize' | 'regionCapacity' | 'minimumRegionSize'
 > & {
+  id?: string;
   maximumIterations?: number;
   information?: GPUSpatialWeightsInformation;
 };
@@ -156,7 +162,6 @@ export function computeAZPRegionsTableOnCPU(
       )
         continue;
       let bestDelta = Infinity;
-      let bestScale = 0;
       let bestDestination = regionCapacity;
       for (const neighbor of adjacency[row]) {
         const destination = labels[neighbor];
@@ -184,14 +189,16 @@ export function computeAZPRegionsTableOnCPU(
             (sourceSum - value) ** 2 / (sourceSize - 1) +
             (destinationSum + value) ** 2 / (destinationSize + 1);
         }
-        if (delta < bestDelta || (delta === bestDelta && destination < bestDestination)) {
+        if (
+          delta < -4e-6 * scale &&
+          (delta < bestDelta || (delta === bestDelta && destination < bestDestination))
+        ) {
           bestDelta = delta;
-          bestScale = scale;
           bestDestination = destination;
         }
       }
       // Retain the contributor's explicit relative gain rule, in float64.
-      if (bestDestination === regionCapacity || !(bestDelta < -4e-6 * bestScale)) continue;
+      if (bestDestination === regionCapacity) continue;
       if (!isRegionRemovalSafe(adjacency, labels, row)) continue;
       moves.push({
         row,
@@ -249,29 +256,72 @@ export function computeAZPRegionsTableOnCPU(
  *   Full initial connectivity has no GPU hook-round cutoff, so it never reports an unfinished
  *   component search as invalid input.
  *
+ * Nonzero input.status overflow or candidateOverflow suppresses both forms: missing labels
+ * (0xffffffff), NaN objective and zero status words.
+ *
  * @throws Error naming inconsistent arrays, including malformed CSR offsets.
  */
 export function computeAZPRegionsOnCPU(
   input: CPUAZPRegionsInput,
   options: CPUAZPRegionsOptions
 ): CPUAZPRegionsResult {
+  const id = options.id ?? 'computeAZPRegionsOnCPU';
   const columnCount = options.columnCount ?? 1;
-  const rowCount = validateCPURegionInput(input, columnCount, GPU_AZP_REGIONS_PARAMETER_LENGTH);
-  validateOptions('computeAZPRegionsOnCPU', options, rowCount);
-  validateSpatialWeightsOperationInformation(
-    'computeAZPRegionsOnCPU',
-    'weights',
-    options.information,
-    rowCount
-  );
+  const rowCount = validateCPURegionInput(input, columnCount, GPU_AZP_REGIONS_PARAMETER_LENGTH, id);
+  validateOptions(id, options, rowCount);
+  validateSpatialWeightsOperationInformation(id, 'weights', options.information, rowCount);
   if (input.initialLabels.length !== rowCount)
-    throw new Error('initialLabels length must equal rowCount');
+    validateRequirement(
+      id,
+      false,
+      `initialLabels length must equal rowCount; received input.initialLabels.length=${input.initialLabels.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'initialLabels.length',
+        received: input.initialLabels.length,
+        expected: 'initialLabels length must equal rowCount'
+      }
+    );
   if ((input.extensiveValues === undefined) !== (input.extensiveThreshold === undefined))
-    throw new Error('extensiveValues and extensiveThreshold are required together');
+    validateRequirement(id, false, 'extensiveValues and extensiveThreshold are required together', {
+      code: 'MISSING_PROP',
+      path: 'extensiveValues',
+      received: {
+        extensiveValues: input.extensiveValues,
+        extensiveThreshold: input.extensiveThreshold
+      },
+      expected: 'both views or neither'
+    });
   if (input.extensiveValues && input.extensiveValues.length !== rowCount)
-    throw new Error('extensiveValues length must equal rowCount');
+    validateRequirement(
+      id,
+      false,
+      `extensiveValues length must equal rowCount; received input.extensiveValues.length=${input.extensiveValues.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'extensiveValues.length',
+        received: input.extensiveValues.length,
+        expected: 'extensiveValues length must equal rowCount'
+      }
+    );
   if (input.extensiveThreshold && input.extensiveThreshold.length < 1)
-    throw new Error('extensiveThreshold must hold one value');
+    validateRequirement(
+      id,
+      false,
+      `extensiveThreshold must hold one value; received input.extensiveThreshold.length=${input.extensiveThreshold.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'extensiveThreshold.length',
+        received: input.extensiveThreshold.length,
+        expected: 'extensiveThreshold must hold one value'
+      }
+    );
+  if (hasCPURegionInputLoss(input, id))
+    return {
+      labels: new Uint32Array(rowCount).fill(0xffffffff),
+      objective: Float32Array.of(NaN),
+      status: new Uint32Array(GPU_AZP_STATUS_LAYOUT.length)
+    };
   const adjacency = getCPURegionAdjacency(input, options.information);
   const table = getCPURegionTable(input.values, columnCount, options.standardize);
   let invalidCount = countCPURegionInvalid(input);
@@ -292,13 +342,13 @@ export function computeAZPRegionsOnCPU(
     invalidCount,
     options.maximumIterations ?? 256
   );
-  const status = new Uint32Array(GPU_AZP_STATUS.length);
-  status[GPU_AZP_STATUS.iterationCount] = result.iterationCount;
-  status[GPU_AZP_STATUS.converged] = Number(result.invalidCount === 0 && result.converged);
-  status[GPU_AZP_STATUS.iterationLimitReached] = Number(
+  const status = new Uint32Array(GPU_AZP_STATUS_LAYOUT.length);
+  status[GPU_AZP_STATUS_LAYOUT.iterationCount] = result.iterationCount;
+  status[GPU_AZP_STATUS_LAYOUT.converged] = Number(result.invalidCount === 0 && result.converged);
+  status[GPU_AZP_STATUS_LAYOUT.iterationLimitReached] = Number(
     result.invalidCount === 0 && !result.converged
   );
-  status[GPU_AZP_STATUS.invalidCount] = result.invalidCount;
+  status[GPU_AZP_STATUS_LAYOUT.invalidCount] = result.invalidCount;
   return {
     labels: result.labels,
     objective: Float32Array.of(
@@ -311,7 +361,7 @@ export function computeAZPRegionsOnCPU(
 /** CPU twin, honoring the round budget without GPU storage limits. */
 export class CPUAZPRegionsOperation extends GPUCPUOperation {
   constructor(props: AZPRegionsOperationProps) {
-    props = Object.freeze({...props});
+    props = snapshotAZPRegionsOperationProps(props);
     const id = props.id ?? 'azp-regions';
     validateCapacity(id, 'rowCount', props.rowCount, 2);
     validateRequirement(
@@ -344,7 +394,17 @@ export class CPUAZPRegionsOperation extends GPUCPUOperation {
       execute({inputs}) {
         const offsets = getCPUOperationUint32Rows(id, inputs, 'offsets');
         if (offsets.length !== props.rowCount + 1)
-          throw new Error(`${id} offsets length must equal rowCount + 1`);
+          validateRequirement(
+            id,
+            false,
+            `offsets length must equal rowCount + 1; received offsets.length=${offsets.length}`,
+            {
+              code: 'VIEW_LENGTH',
+              path: 'offsets.length',
+              received: offsets.length,
+              expected: 'offsets length must equal rowCount + 1'
+            }
+          );
         const result = computeAZPRegionsOnCPU(
           {
             offsets,
@@ -357,6 +417,16 @@ export class CPUAZPRegionsOperation extends GPUCPUOperation {
             values: getCPUOperationFloat32Rows(id, inputs, 'values'),
             initialLabels: getCPUOperationUint32Rows(id, inputs, 'initialLabels'),
             parameters: getCPUOperationUint32Rows(id, inputs, 'parameters'),
+            status: {
+              overflow:
+                props.weights.status?.overflow === undefined
+                  ? undefined
+                  : getCPUOperationUint32Rows(id, inputs, 'weightsOverflow'),
+              candidateOverflow:
+                props.weights.status?.candidateOverflow === undefined
+                  ? undefined
+                  : getCPUOperationUint32Rows(id, inputs, 'weightsCandidateOverflow')
+            },
             extensiveValues:
               props.extensiveValues === undefined
                 ? undefined
@@ -366,7 +436,7 @@ export class CPUAZPRegionsOperation extends GPUCPUOperation {
                 ? undefined
                 : getCPUOperationFloat32Rows(id, inputs, 'extensiveThreshold')
           },
-          {...props, information: props.weights.information}
+          {...props, id, information: props.weights.information}
         );
         return {
           [props.output.labels]: result.labels,

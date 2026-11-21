@@ -196,10 +196,10 @@ it('nested sink ownership produces analytic stage areas and volumes and rejects 
       levels = output(capacity * 2, 'float32'),
       ownership = output(3, 'uint32'),
       curves = output(capacity * 4, 'float32'),
-      status = output(3, 'uint32'),
+      storedCount = output(1, 'uint32'),
       requiredCount = output(1, 'uint32'),
       overflow = output(1, 'uint32');
-    results.push({nodes, curves, status, requiredCount, overflow});
+    results.push({nodes, curves, storedCount, requiredCount, overflow});
     graph.add(
       new GPUTerrainDepressionHierarchy({
         id: `hierarchy-${capacity}`,
@@ -213,22 +213,25 @@ it('nested sink ownership produces analytic stage areas and volumes and rejects 
           levels: levels.view,
           cellNodes: ownership.view,
           curves: curves.view,
-          status: status.view,
-          ports: {status: {requiredCount: requiredCount.view, overflow: overflow.view}}
+          status: {
+            count: storedCount.view,
+            requiredCount: requiredCount.view,
+            overflow: overflow.view
+          }
         }
       })
     );
   }
   const destroy = run();
-  expect(await results[0].status.read()).toEqual([3, 3, 0]);
+  expect(await results[0].storedCount.read()).toEqual([3]);
   expect(await results[0].requiredCount.read()).toEqual([3]);
   expect(await results[0].overflow.read()).toEqual([0]);
-  // Named ports beside the loose status words: required 3 nodes, capacity 1 overflowed.
+  // The three-node hierarchy cannot fit in one node.
+  expect(await results[1].storedCount.read()).toEqual([1]);
   expect(await results[1].requiredCount.read()).toEqual([3]);
   expect(await results[1].overflow.read()).toEqual([1]);
   expect((await results[0].curves.read()).slice(8)).toEqual(reference.nested.rootCurves);
   expect((await results[0].nodes.read()).slice(0, 4)).toEqual([2, 0, 0xffffffff, 1]);
-  expect(await results[1].status.read()).toEqual([1, 3, 1]);
   expect((await results[1].curves.read()).every(Number.isNaN)).toBe(true);
   destroy();
 });
@@ -444,7 +447,9 @@ it('nodata barriers preserve disconnected closed sinks', async () => {
     levels = output(6, 'float32'),
     ownership = output(3, 'uint32'),
     curves = output(6, 'float32'),
-    status = output(3, 'uint32');
+    storedCount = output(1, 'uint32'),
+    requiredCount = output(1, 'uint32'),
+    overflow = output(1, 'uint32');
   graph.add(
     new GPUTerrainDepressionHierarchy({
       grid: grid(3),
@@ -457,12 +462,18 @@ it('nodata barriers preserve disconnected closed sinks', async () => {
         levels: levels.view,
         cellNodes: ownership.view,
         curves: curves.view,
-        status: status.view
+        status: {
+          count: storedCount.view,
+          requiredCount: requiredCount.view,
+          overflow: overflow.view
+        }
       }
     })
   );
   const destroy = run();
-  expect(await status.read()).toEqual([2, 2, 0]);
+  expect(await storedCount.read()).toEqual([2]);
+  expect(await requiredCount.read()).toEqual([2]);
+  expect(await overflow.read()).toEqual([0]);
   expect(await ownership.read()).toEqual([0, 0xffffffff, 1]);
   expect((await nodes.read()).slice(0, 8)).toEqual([
     0xffffffff, 0, 0, 1, 0xffffffff, 2, 0xffffffff, 1
@@ -1064,7 +1075,9 @@ it('depression hierarchy and branching flow honour validity and ground units', a
       levels: output(6, 'float32'),
       cellNodes: output(3, 'uint32'),
       curves: output(12, 'float32'),
-      status: output(3, 'uint32')
+      storedCount: output(1, 'uint32'),
+      requiredCount: output(1, 'uint32'),
+      overflow: output(1, 'uint32')
     };
     graph.add(
       new GPUTerrainDepressionHierarchy({
@@ -1081,7 +1094,11 @@ it('depression hierarchy and branching flow honour validity and ground units', a
           levels: result.levels.view,
           cellNodes: result.cellNodes.view,
           curves: result.curves.view,
-          status: result.status.view
+          status: {
+            count: result.storedCount.view,
+            requiredCount: result.requiredCount.view,
+            overflow: result.overflow.view
+          }
         }
       })
     );

@@ -128,7 +128,11 @@ export const COVERAGE_TERRAIN_CASES: KernelAuditCase[] = [
             levels: view('float32', count * 2),
             cellNodes: view('uint32', count),
             curves: view('float32', count * 4),
-            status: view('uint32', 3)
+            status: {
+              count: view('uint32', 1),
+              requiredCount: view('uint32', 1),
+              overflow: view('uint32', 1)
+            }
           }
         })
       );

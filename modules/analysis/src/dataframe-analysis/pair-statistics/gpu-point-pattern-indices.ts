@@ -12,7 +12,9 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {ERFC_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {QUADRAT_INDEX_WGSL} from './quadrat-index-wgsl';
 import {
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -54,6 +56,20 @@ import {
 
 const OPERATION = 'GPUPointPatternIndices';
 
+/** The legacy lower-tail series and upper-tail continued fraction retain their exact budgets. */
+const GAMMA_MAXIMUM_ITERATIONS = 500;
+/** Large-degree-of-freedom lower-tail series uses the centered gamma prefactor. */
+const GAMMA_CENTERED_SERIES_MAXIMUM_ITERATIONS = 2048;
+/** Final polynomial order of the centered log1p(delta) - delta expansion. */
+const GAMMA_CENTERED_LOG_MAXIMUM_ORDER = 20;
+/** Stirling's expansion is evaluated only after shifting its argument to this value. */
+const LOG_GAMMA_SHIFT_TARGET = 8;
+/** Eager select evaluation admits shape -0.5: ceil(8 - (-0.5)) = 9 shifts. */
+const LOG_GAMMA_MAXIMUM_SHIFT_COUNT = 9;
+/** The seven-word Clark-Evans layout preserves n and guards the six result fields at 1–6. */
+const CLARK_EVANS_FIRST_GUARDED_FIELD = 1;
+const CLARK_EVANS_GUARDED_FIELD_COUNT = GPU_CLARK_EVANS_LENGTH - CLARK_EVANS_FIRST_GUARDED_FIELD;
+
 /**
  * `getNormalPValue(z, alternative)`: p-value of a standard-normal statistic. Alternative codes
  * 0 two-sided, 1 greater (upper tail), 2 lesser (lower tail). Needs `erfcValue`.
@@ -90,7 +106,7 @@ fn getGammaPrefix(shape: f32, value: f32) -> f32 {
   if (abs(delta) <= 0.25) {
     var power = -delta * delta;
     centeredLog = 0.5 * power;
-    for (var order = 3; order <= 20; order++) {
+    for (var order = 3; order <= ${GAMMA_CENTERED_LOG_MAXIMUM_ORDER}; order++) {
       power *= -delta;
       centeredLog += power / f32(order);
     }
@@ -115,8 +131,9 @@ function getChiSquarePValueWGSL(quadratCount: number): string {
 fn getLogGamma(value: f32) -> f32 {
   var x = value;
   var shift = 0.0;
+  // LOG_GAMMA_MAXIMUM_SHIFT_COUNT = ${LOG_GAMMA_MAXIMUM_SHIFT_COUNT}, including eager shape -0.5.
   loop {
-    if (x >= 8.0) { break; }
+    if (x >= ${LOG_GAMMA_SHIFT_TARGET}.0) { break; }
     shift += log(x);
     x += 1.0;
   }
@@ -136,7 +153,7 @@ fn getGammaTails(a: f32, x: f32) -> vec2<f32> {
     var term = 1.0 / a;
     var sum = term;
     var denominator = a;
-    for (var iteration = 0; iteration < ${useStableGamma ? 2048 : 500}; iteration++) {
+    for (var iteration = 0; iteration < ${useStableGamma ? GAMMA_CENTERED_SERIES_MAXIMUM_ITERATIONS : GAMMA_MAXIMUM_ITERATIONS}; iteration++) {
       denominator += 1.0;
       term *= x / denominator;
       sum += term;
@@ -149,7 +166,7 @@ fn getGammaTails(a: f32, x: f32) -> vec2<f32> {
   var c = 1.0e30;
   var d = 1.0 / b;
   var h = d;
-  for (var iteration = 1; iteration < 500; iteration++) {
+  for (var iteration = 1; iteration < ${GAMMA_MAXIMUM_ITERATIONS}; iteration++) {
     let an = -f32(iteration) * (f32(iteration) - a);
     b += 2.0;
     d = an * d + b;
@@ -277,6 +294,7 @@ export type GPUPointPatternIndicesProps = {
 /**
  * Clark-Evans nearest-neighbor index and quadrat-count dispersion statistics of a planar point
  * pattern in a rectangle or prepared polygon window (pointpats `PointPattern` / ArcGIS Average Nearest Neighbor).
+ * This class publishes no overflow word.
  *
  * Definition, which the GPU result matches within the bounds below:
  * - The window is the per-frame bounds rectangle or prepared polygon with area `A`. Included rows have a nonzero mask
@@ -285,7 +303,8 @@ export type GPUPointPatternIndicesProps = {
  *   distance `dx * dx + dy * dy`, ties to the smallest row index, found by an expanding ring search
  *   over the shared lattice cells that stops once the ring's smallest possible distance exceeds
  *   the best found. It is exact for any distance (isolated points search the whole lattice) and
- *   independent of `maximumDistance`, which only sizes the cells.
+ *   independent of `indexCellSizeHint`, which only
+ *   sizes the cells and changes search work; it never truncates nearest-neighbor distances.
  * - Clark-Evans: `observed = mean of nearest-neighbor distances`, `ratio R = observed / expected`
  *   (below 1 clustered, above 1 dispersed), `z = (observed - expected) / standardError`. All but
  *   `n` are NaN when `n < 2` or the window has no area. The mean is a deterministic fixed-order
@@ -300,20 +319,21 @@ export type GPUPointPatternIndicesProps = {
  *   published value is used here, the difference is at most 0.5% of the correction term.)
  *   `'none'` is the infinite-plane `expected = 0.5 sqrt(A / n)` with
  *   `standardError = 0.26136 sqrt(A) / n` (pointpats, ArcGIS Average Nearest Neighbor). The
- *   `pValue` is the normal-theory p-value of `z` for the per-frame `alternative` (`'two-sided'`
+ *   `pValue` is the normal-theory p-value of `z` for the per-frame `analyticAlternative` (`'two-sided'`
  *   default; `'greater'` tests for regularity, `'lesser'` for clustering). The rectangular
  *   window is assumed to be the study area. Polygon windows require explicit 'none' or 'guard'.
  *   'guard' averages nearest-neighbor distances only over included points at least guardDistance
  *   from any boundary; neighbors still include every included point. Its expectation is
  *   `0.5 sqrt(A / n)` and standard error `0.26136 sqrt(A / (n * focusCount))`. Zero focus
  *   points give NaN statistics. Recommend `guardDistance >= 2 / sqrt(n / A)`.
- * - Quadrats: the window splits into `columns x rows` equal rectangles (a point on the maximum
- *   edge belongs to the last one). With `m` quadrats and counts `c_q` (sum `n`): `mean = n / m`,
+ * - Quadrats: the window splits into `columns x rows` equal rectangles (a point on an interior
+ *   edge belongs to the upper quadrat, decided by products rather than a quotient, and a point on
+ *   the maximum edge to the last one). With `m` quadrats and counts `c_q` (sum `n`): `mean = n / m`,
  *   sample `variance = sum (c_q - mean)^2 / (m - 1)`, `varianceToMeanRatio = variance / mean`
  *   (above 1 clustered), `chiSquare = (m - 1) * varianceToMeanRatio`, `degreesOfFreedom = m - 1`.
  *   Undefined values are NaN. The summary is one serial fixed-order loop over the counts, so it is
  *   bitwise reproducible. `pValue` is the chi-square p-value with `m - 1` degrees of freedom for
- *   the per-frame `alternative`: `'two-sided'` (default) is `min(1, 2 min(P(X <= x), P(X >= x)))`,
+ *   the per-frame `analyticAlternative`: `'two-sided'` (default) is `min(1, 2 min(P(X <= x), P(X >= x)))`,
  *   `'greater'` the upper tail (clustered, spatstat `quadrat.test` alternative `"clustered"`),
  *   `'lesser'` the lower tail (regular). It uses the regularized incomplete gamma function at
  *   every degree of freedom (series or Lentz continued fraction in float32; above 101 quadrats
@@ -321,7 +341,10 @@ export type GPUPointPatternIndicesProps = {
  *   expected counts of about 5 or more per quadrat.
  *
  * Polygon quadrats sample a quadratSamples² midpoint lattice, normalize the sampled areas to A,
- * drop zero-area quadrats and use expected counts n * area / A. The variance row is the sum
+ * drop zero-area quadrats and use expected counts n * area / A, as spatstat `quadrat.test` does
+ * with exact areas. When a quadrat with no area sample holds points (a window feature narrower
+ * than the lattice), its expected count is unknown: mean, variance, ratio, chiSquare and pValue
+ * are NaN (quadratCount and degreesOfFreedom stay); raise quadratSamples. The variance row is the sum
  * of squared residuals / df; the ratio row is chiSquare / df. Equal areas retain the rectangle formula.
  * Counts, ids and `n` are exact. Distances have f32 rounding only; quadrat counts are exact.
  */
@@ -349,66 +372,78 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
     const wantsNearest =
       output.nearestNeighborDistances || output.nearestNeighborIds || output.clarkEvans;
     const wantsQuadrats = output.quadratCounts || output.quadratStatistics || output.quadratAreas;
-    if (!wantsNearest && !wantsQuadrats) {
-      throw new Error(`${id} output needs at least one view`);
-    }
+    validateRequirement(
+      id,
+      Boolean(wantsNearest || wantsQuadrats),
+      'output needs at least one view'
+    );
     if (output.nearestNeighborDistances) {
       validateSinglePackedView(
         output.nearestNeighborDistances,
         ['float32'],
         `${id} output.nearestNeighborDistances`
       );
-      if (output.nearestNeighborDistances.length !== rows) {
-        throw new Error(`${id} output.nearestNeighborDistances length must equal positions length`);
-      }
+      validateRequirement(
+        id,
+        output.nearestNeighborDistances.length === rows,
+        `output.nearestNeighborDistances length ${output.nearestNeighborDistances.length} must equal positions length (${rows})`
+      );
     }
     if (output.nearestNeighborIds) {
       validatePackedUint32View(output.nearestNeighborIds, `${id} output.nearestNeighborIds`);
-      if (output.nearestNeighborIds.length !== rows) {
-        throw new Error(`${id} output.nearestNeighborIds length must equal positions length`);
-      }
+      validateRequirement(
+        id,
+        output.nearestNeighborIds.length === rows,
+        `output.nearestNeighborIds length ${output.nearestNeighborIds.length} must equal positions length (${rows})`
+      );
     }
     if (output.clarkEvans) {
       validateSinglePackedView(output.clarkEvans, ['float32'], `${id} output.clarkEvans`);
-      if (output.clarkEvans.length < GPU_CLARK_EVANS_LENGTH) {
-        throw new Error(`${id} output.clarkEvans must hold ${GPU_CLARK_EVANS_LENGTH} rows`);
-      }
+      validateRequirement(
+        id,
+        output.clarkEvans.length >= GPU_CLARK_EVANS_LENGTH,
+        `output.clarkEvans length ${output.clarkEvans.length} must hold at least ${GPU_CLARK_EVANS_LENGTH} rows`
+      );
     }
     if (wantsQuadrats) {
       const quadratGrid = props.quadratGrid;
-      if (
-        !quadratGrid ||
-        !Number.isInteger(quadratGrid[0]) ||
-        !Number.isInteger(quadratGrid[1]) ||
-        quadratGrid[0] < 1 ||
-        quadratGrid[1] < 1 ||
-        quadratGrid[0] * quadratGrid[1] > GPU_QUADRAT_MAXIMUM_COUNT
-      ) {
-        throw new Error(
-          `${id} quadratGrid must be two positive integers with columns * rows <= ${GPU_QUADRAT_MAXIMUM_COUNT}`
-        );
-      }
+      validateRequirement(
+        id,
+        quadratGrid !== undefined,
+        `quadratGrid must be two positive integers with columns * rows <= ${GPU_QUADRAT_MAXIMUM_COUNT}`
+      );
+      validateRequirement(
+        id,
+        Number.isInteger(quadratGrid[0]) &&
+          Number.isInteger(quadratGrid[1]) &&
+          quadratGrid[0] >= 1 &&
+          quadratGrid[1] >= 1 &&
+          quadratGrid[0] * quadratGrid[1] <= GPU_QUADRAT_MAXIMUM_COUNT,
+        `quadratGrid must be two positive integers with columns * rows <= ${GPU_QUADRAT_MAXIMUM_COUNT}`
+      );
       const quadratSamples = props.quadratSamples ?? 16;
-      if (
-        !Number.isInteger(quadratSamples) ||
-        quadratSamples < 1 ||
-        quadratSamples ** 2 * quadratGrid[0] * quadratGrid[1] > 16777216
-      ) {
-        throw new Error(
-          `${id} quadratSamples squared times the quadrat count must be at most 16777216`
-        );
-      }
+      validateRequirement(
+        id,
+        Number.isInteger(quadratSamples) &&
+          quadratSamples >= 1 &&
+          quadratSamples ** 2 * quadratGrid[0] * quadratGrid[1] <= 16777216,
+        'quadratSamples must be a positive integer with quadratSamples squared times the quadrat count at most 16777216'
+      );
       if (output.quadratAreas) {
         validateSinglePackedView(output.quadratAreas, ['float32'], `${id} output.quadratAreas`);
-        if (output.quadratAreas.length !== quadratGrid[0] * quadratGrid[1]) {
-          throw new Error(`${id} output.quadratAreas must hold columns * rows rows`);
-        }
+        validateRequirement(
+          id,
+          output.quadratAreas.length === quadratGrid[0] * quadratGrid[1],
+          `output.quadratAreas length ${output.quadratAreas.length} must equal quadratGrid columns * rows (${quadratGrid[0] * quadratGrid[1]})`
+        );
       }
       if (output.quadratCounts) {
         validatePackedUint32View(output.quadratCounts, `${id} output.quadratCounts`);
-        if (output.quadratCounts.length !== quadratGrid[0] * quadratGrid[1]) {
-          throw new Error(`${id} output.quadratCounts must hold columns * rows rows`);
-        }
+        validateRequirement(
+          id,
+          output.quadratCounts.length === quadratGrid[0] * quadratGrid[1],
+          `output.quadratCounts length ${output.quadratCounts.length} must equal quadratGrid columns * rows (${quadratGrid[0] * quadratGrid[1]})`
+        );
       }
       if (output.quadratStatistics) {
         validateSinglePackedView(
@@ -416,15 +451,17 @@ export class GPUPointPatternIndices implements GPUCommandNodeProducer {
           ['float32'],
           `${id} output.quadratStatistics`
         );
-        if (output.quadratStatistics.length < GPU_QUADRAT_STATISTICS_LENGTH) {
-          throw new Error(
-            `${id} output.quadratStatistics must hold ${GPU_QUADRAT_STATISTICS_LENGTH} rows`
-          );
-        }
+        validateRequirement(
+          id,
+          output.quadratStatistics.length >= GPU_QUADRAT_STATISTICS_LENGTH,
+          `output.quadratStatistics length ${output.quadratStatistics.length} must hold at least ${GPU_QUADRAT_STATISTICS_LENGTH} rows`
+        );
       }
     } else if (props.quadratGrid) {
-      throw new Error(
-        `${id} quadratGrid needs output.quadratCounts, output.quadratAreas or output.quadratStatistics`
+      validateRequirement(
+        id,
+        false,
+        'quadratGrid needs output.quadratCounts, output.quadratAreas or output.quadratStatistics'
       );
     }
     validateGraphOutputsDisjointFromInputs(
@@ -500,10 +537,11 @@ ${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
       gridSize,
       mask: props.mask,
       studyWindow,
-      legacyIndex: true
+      legacyIndex: true,
+      cellSizeHintOnly: true
     });
     const nodes = [...(windowParameters?.nodes ?? []), ...inputs.nodes];
-    const sharedWGSL = getPairStatisticsSharedWGSL(gridSize);
+    const sharedWGSL = getPairStatisticsSharedWGSL(gridSize, false, true);
 
     if (output.nearestNeighborDistances || output.nearestNeighborIds || output.clarkEvans) {
       const distances =
@@ -775,6 +813,7 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
               {name: 'clarkEvans', view: output.clarkEvans, type: 'f32', access: 'read_write'},
               ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : [])
             ],
+            // contract-allow: single-invocation guard of CLARK_EVANS_GUARDED_FIELD_COUNT = 6 result fields starting at CLARK_EVANS_FIRST_GUARDED_FIELD = 1; GPU_CLARK_EVANS_LENGTH = 7 words, no row scan.
             invocationCount: 1,
             declarations: `${PAIR_STATISTICS_FLOAT_WGSL}${windowWGSL}
 ${ERFC_VALUE_WGSL}
@@ -784,7 +823,7 @@ ${NORMAL_P_VALUE_WGSL}`,
   let focusCount = guardCount[guardCountOffset];
   let area = ${studyWindow ? 'studyWindowSummaryValue(4u)' : '(parameters[parametersOffset + 2u] - parameters[parametersOffset]) * (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u])'};
   let nan = getQuietNaN(index);
-  for (var row = 1u; row < 7u; row++) { clarkEvans[clarkEvansOffset + row] = nan; }
+  for (var row = ${CLARK_EVANS_FIRST_GUARDED_FIELD}u; row < ${CLARK_EVANS_FIRST_GUARDED_FIELD + CLARK_EVANS_GUARDED_FIELD_COUNT}u; row++) { clarkEvans[clarkEvansOffset + row] = nan; }
   if (count >= 2.0 && focusCount > 0.0 && isFiniteValue(area) && area > 0.0) {
     let observed = guardTotal[guardTotalOffset] / focusCount;
     let expected = 0.5 * sqrt(area / count);
@@ -823,7 +862,8 @@ ${NORMAL_P_VALUE_WGSL}`,
           invocationCount: rows,
           declarations: `${sharedWGSL}
 const QUADRAT_COLUMNS: u32 = ${quadratColumns}u;
-const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
+const QUADRAT_ROWS: u32 = ${quadratRows}u;
+${QUADRAT_INDEX_WGSL}`,
           body: `if (cellKeys[cellKeysOffset + index] < CELL_COUNT) {
     let x = positions[positionsOffset + index * 2u];
     let y = positions[positionsOffset + index * 2u + 1u];
@@ -832,10 +872,10 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
     var column = 0u;
     var row = 0u;
     if (width > 0.0) {
-      column = min(u32(floor((x - readParameter(0u)) / width * f32(QUADRAT_COLUMNS))), QUADRAT_COLUMNS - 1u);
+      column = getQuadratIndex(x - readParameter(0u), width, QUADRAT_COLUMNS);
     }
     if (height > 0.0) {
-      row = min(u32(floor((y - readParameter(1u)) / height * f32(QUADRAT_ROWS))), QUADRAT_ROWS - 1u);
+      row = getQuadratIndex(y - readParameter(1u), height, QUADRAT_ROWS);
     }
     atomicAdd(&quadratCounts[quadratCountsOffset + row * QUADRAT_COLUMNS + column], 1u);
   }`
@@ -1038,6 +1078,66 @@ const QUADRAT_COUNT: u32 = ${quadratCount}u;`,
     isFiniteValue(chiSquare));`
           })
         );
+        if (areaSamples) {
+          // spatstat quadrat.test counts every window point, with expected counts in proportion
+          // to the quadrat's area in the window. A quadrat that holds points but no area sample
+          // (a feature narrower than the lattice) has no expected count, so the test is undefined
+          // instead of dropping those points while keeping them in n. Parallel invocations
+          // reduce an atomic flag; a separate single writer invalidates the statistics.
+          const unsampled = createTransientView(graph, `${id}-quadrat-invalid`, 'uint32', 1);
+          nodes.push(
+            createPairStatisticsClearNode(
+              graph,
+              `${id}-quadrat-invalid-clear`,
+              OPERATION,
+              unsampled
+            ),
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-quadrat-unsampled`,
+              operation: OPERATION,
+              variant: 'quadrat-unsampled',
+              bindings: [
+                {name: 'quadratCounts', view: counts, type: 'u32', access: 'read'},
+                {name: 'areaSamples', view: areaSamples, type: 'u32', access: 'read'},
+                {
+                  name: 'unsampled',
+                  view: unsampled,
+                  type: 'atomic<u32>',
+                  access: 'read_write'
+                }
+              ],
+              invocationCount: quadratCount,
+              body: `if (areaSamples[areaSamplesOffset + index] == 0u &&
+      quadratCounts[quadratCountsOffset + index] > 0u) {
+    atomicOr(&unsampled[unsampledOffset], 1u);
+  }`
+            }),
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-quadrat-invalid-finish`,
+              operation: OPERATION,
+              variant: 'quadrat-invalid-finish',
+              bindings: [
+                {name: 'unsampled', view: unsampled, type: 'u32', access: 'read'},
+                {
+                  name: 'quadratStatistics',
+                  view: output.quadratStatistics,
+                  type: 'f32',
+                  access: 'read_write'
+                }
+              ],
+              invocationCount: 1,
+              declarations: PAIR_STATISTICS_FLOAT_WGSL,
+              body: `if (unsampled[unsampledOffset] != 0u) {
+    let nan = getQuietNaN(index);
+    quadratStatistics[quadratStatisticsOffset + 1u] = nan;
+    quadratStatistics[quadratStatisticsOffset + 2u] = nan;
+    quadratStatistics[quadratStatisticsOffset + 3u] = nan;
+    quadratStatistics[quadratStatisticsOffset + 4u] = nan;
+    quadratStatistics[quadratStatisticsOffset + 6u] = nan;
+  }`
+            })
+          );
+        }
       }
     }
     return nodes;

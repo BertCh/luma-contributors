@@ -12,7 +12,7 @@ export type MetricDefinition = {
   unit: string;
   /**
    * `slot` reads one float slot of the metrics buffer, `unsigned` one uint32 slot, `percentile`
-   * indexes the percentile block and `derived` the columns `GPUKeyJoin` attached to the areas.
+   * indexes the percentile block and `derived` the columns `GPUKeyLookup` attached to the areas.
    */
   kind: 'slot' | 'unsigned' | 'percentile' | 'derived';
   family: MetricFamily;
@@ -68,7 +68,7 @@ export const GROUP_METRICS: readonly MetricDefinition[] = [
     family: 'rate',
     index: DERIVED.perThousand,
     suppressed: true,
-    help: 'Rows per group divided by the residents GPUKeyJoin sums over the tracts of each area.'
+    help: 'Rows per group divided by the residents GPUKeyLookup sums over the tracts of each area.'
   },
   {
     id: 'researchShare',
@@ -120,6 +120,6 @@ export const GROUP_METRICS: readonly MetricDefinition[] = [
     family: 'income',
     index: DERIVED.income,
     suppressed: false,
-    help: 'GPUKeyJoin sums income times residents over the tracts of each area; the map divides by the residents with a known income.'
+    help: 'GPUKeyLookup sums income times residents over the tracts of each area; the map divides by the residents with a known income.'
   }
 ];

@@ -14,7 +14,6 @@ import {
   matchCatalogInvocationInputs
 } from '../src/analysis/catalog-bindings';
 import {NETWORK_CATEGORICAL_BINDINGS} from '../src/analysis/catalog-network-categorical-bindings';
-import {completeNetworkCategoricalCatalogEntries} from '../src/analysis/catalog-network-categorical-discovery';
 import {
   readCategories,
   readNumbers,
@@ -94,16 +93,15 @@ for (const binding of NETWORK_CATEGORICAL_BINDINGS) {
 }
 
 test('all requested contributors have executable discovery entries without changing the shared registry', () => {
-  const entries = completeNetworkCategoricalCatalogEntries(listCatalogEntries());
-  expect(completeNetworkCategoricalCatalogEntries(entries)).toEqual(entries);
-  expect(new Set(entries.map(entry => entry.contributorName)).size).toBe(entries.length);
+  const entries = listCatalogEntries({lensScenarios: []});
+  expect(new Set(entries.map(entry => JSON.stringify(entry.identity))).size).toBe(entries.length);
   for (const name of EXPECTED_CONTRIBUTORS) {
     const bindings = NETWORK_CATEGORICAL_BINDINGS.filter(binding =>
       binding.gpuContributorNames.includes(name)
     );
     expect(bindings.length, name).toBeGreaterThan(0);
     for (const binding of bindings) expect(getCatalogBinding(binding.id)).toBe(binding);
-    const entry = entries.find(candidate => candidate.contributorName === name);
+    const entry = entries.find(candidate => candidate.identity.exportName === name);
     expect(entry, name).toBeDefined();
     expect(entry!.runnable, name).toBe('catalog-binding');
     expect(entry!.engine).toBe('gpu');

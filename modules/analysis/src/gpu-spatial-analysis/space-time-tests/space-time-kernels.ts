@@ -227,6 +227,7 @@ export function getSpaceTimeSummaryBodyWGSL(
       : 'let permutations = readPermutationCount();'
   }
   let observed = statistics[statisticsOffset];
+  ${statisticType === 'f32' ? 'let nullCenter = statistics[statisticsOffset + 1u];' : ''}
   var greater = 0u;
   var lesser = 0u;
   var sumDeviation = 0.0;
@@ -234,18 +235,18 @@ export function getSpaceTimeSummaryBodyWGSL(
     let value = statistics[statisticsOffset + slot];
     if (value >= observed) { greater++; }
     if (value <= observed) { lesser++; }
-    sumDeviation += ${statisticType === 'u32' ? 'f32(i32(value) - i32(observed))' : 'value - observed'};
+    sumDeviation += ${statisticType === 'u32' ? 'f32(i32(value) - i32(observed))' : 'value - nullCenter'};
   }
   let permutationCount = f32(permutations);
   let meanDeviation = sumDeviation / permutationCount;
   var sumSquares = 0.0;
   for (var slot = 1u; slot <= permutations; slot++) {
     let value = statistics[statisticsOffset + slot];
-    let deviation = ${statisticType === 'u32' ? 'f32(i32(value) - i32(observed))' : 'value - observed'} - meanDeviation;
+    let deviation = ${statisticType === 'u32' ? 'f32(i32(value) - i32(observed))' : 'value - nullCenter'} - meanDeviation;
     sumSquares += deviation * deviation;
   }
   let variance = select(0.0, sumSquares / (permutationCount - 1.0), permutations > 1u);
-  let mean = ${toFloat('observed')} + meanDeviation;
+  let mean = ${statisticType === 'u32' ? toFloat('observed') : 'nullCenter'} + meanDeviation;
   let pGreater = ${
     stopping
       ? `select(f32(greater + 1u) / (permutationCount + 1.0), min(1.0, ${stopAfterExceedances}.0 / f32(max(stopIndex, 1u))), (stopIndex != 0u))`

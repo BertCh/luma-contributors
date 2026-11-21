@@ -2,161 +2,68 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {
-  GPUParameterBuffer,
-  importGraphBuffer
-} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {
-  GPUEdgeBundling,
-  getGPUEdgeBundlingParameterValues,
-  type GPUEdgeBundlingSettings
-} from '../../../src/gpu-network/edge-bundling/index';
-import {
-  createInputBuffer,
-  createOutputBuffer,
-  isSoftwareDevice,
-  readFloat32,
-  readUint32,
-  submitGraph
-} from '../../utils/gpu-contributor-test-utils';
+import type {GPUEdgeBundlingSettings} from '../../../src/gpu-network/edge-bundling/index';
+import {isSoftwareDevice, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {bundleEdgesOracle, type EdgeBundlingOracleInput} from './edge-bundling-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {
+  createClusteredScene,
+  createFixture,
+  type Fixture,
+  type Scene
+} from './edge-bundling-fixture';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {
+  BUNDLING_INDEPENDENT_PATHS,
+  BUNDLING_INDEPENDENT_SETTINGS
+} from './bundling-independent-fixture';
+
+it('pins endpoints, every coordinate and maximum point error over an independent full schedule (NET-121)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createFixture(
+    device,
+    {
+      positions: Float32Array.of(100, 450, 900, 450, 100, 550, 900, 550),
+      sources: Uint32Array.of(0, 2),
+      targets: Uint32Array.of(1, 3)
+    },
+    {
+      pointsPerEdge: 5,
+      iterations: 8,
+      densityResolution: 64,
+      parameters: BUNDLING_INDEPENDENT_SETTINGS
+    }
+  );
+  try {
+    const paths = await fixture.run();
+    expect(paths.length).toBe(20);
+    expect(Array.from(paths).every(Number.isFinite)).toBe(true);
+    for (const endpoint of [0, 4, 5, 9]) {
+      expect(Array.from(paths.slice(2 * endpoint, 2 * endpoint + 2))).toEqual(
+        BUNDLING_INDEPENDENT_PATHS.slice(2 * endpoint, 2 * endpoint + 2)
+      );
+    }
+    const pointErrors = Array.from({length: 10}, (_, point) =>
+      Math.hypot(
+        paths[2 * point] - BUNDLING_INDEPENDENT_PATHS[2 * point],
+        paths[2 * point + 1] - BUNDLING_INDEPENDENT_PATHS[2 * point + 1]
+      )
+    );
+    expect(Math.max(...pointErrors)).toBeLessThan(0.25);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+// The 10k-edge timing measurement is in `gpu-edge-bundling-bench.spec.ts` (TOOL-110).
 
 /**
  * Tight parity tolerance, as a fraction of the work box side, for a single iteration. The schedule
  * is chaotic (see the oracle), so longer runs are compared by quantiles instead.
  */
 const PARITY_TOLERANCE = 1e-5;
-
-type Scene = {
-  positions: Float32Array;
-  sources: Uint32Array;
-  targets: Uint32Array;
-  mask?: Uint32Array;
-};
-
-type FixtureOptions = {
-  pointsPerEdge?: number;
-  iterations?: number;
-  densityResolution?: number;
-  parameterFormat?: 'uint32' | 'float32';
-  parameters?: GPUEdgeBundlingSettings;
-  withIndices?: boolean;
-  geographic?: boolean;
-};
-
-type Fixture = {
-  edgeCount: number;
-  pointsPerEdge: number;
-  iterations: number;
-  densityResolution: number;
-  compiled: CompiledGPUCommandGraph;
-  nodeCount: number;
-  buffers: Buffer[];
-  parameterBuffer?: GPUParameterBuffer;
-  parameterFormat: 'uint32' | 'float32';
-  pathsBuffer: Buffer;
-  startIndicesBuffer?: Buffer;
-  drawRecordBuffer?: Buffer;
-  setParameters(values: GPUEdgeBundlingSettings): void;
-  run(): Promise<Float32Array>;
-  destroy(): void;
-};
-
-function createFixture(device: Device, scene: Scene, options: FixtureOptions = {}): Fixture {
-  const pointsPerEdge = options.pointsPerEdge ?? 16;
-  const iterations = options.iterations ?? 15;
-  const densityResolution = options.densityResolution ?? 256;
-  const edgeCount = scene.sources.length;
-  const vertexCount = scene.positions.length / 2;
-  const graph = new GPUCommandGraph(device, {id: 'edge-bundling'});
-  const buffers = [
-    createInputBuffer(device, scene.positions),
-    createInputBuffer(device, scene.sources),
-    createInputBuffer(device, scene.targets)
-  ];
-  const maskBuffer = scene.mask ? createInputBuffer(device, scene.mask) : undefined;
-  const pathsBuffer = createOutputBuffer(device, edgeCount * pointsPerEdge * 2);
-  const startIndicesBuffer = options.withIndices
-    ? createOutputBuffer(device, edgeCount + 1)
-    : undefined;
-  const drawRecordBuffer = options.withIndices ? createOutputBuffer(device, 4) : undefined;
-  buffers.push(pathsBuffer);
-  if (maskBuffer) buffers.push(maskBuffer);
-  if (startIndicesBuffer) buffers.push(startIndicesBuffer);
-  if (drawRecordBuffer) buffers.push(drawRecordBuffer);
-  const parameterFormat = options.parameterFormat ?? 'uint32';
-  const parameterBuffer = options.parameters
-    ? new GPUParameterBuffer(device, {
-        id: 'bundling-parameters',
-        format: parameterFormat,
-        length: 5,
-        values:
-          parameterFormat === 'uint32'
-            ? getGPUEdgeBundlingParameterValues(options.parameters, 'uint32')
-            : getGPUEdgeBundlingParameterValues(options.parameters, 'float32')
-      })
-    : undefined;
-  const contributor = new GPUEdgeBundling({
-    nodePositions: importGraphBuffer(graph, 'positions', buffers[0], 'float32x2', vertexCount),
-    sourceNodes: importGraphBuffer(graph, 'sources', buffers[1], 'uint32', edgeCount),
-    targetNodes: importGraphBuffer(graph, 'targets', buffers[2], 'uint32', edgeCount),
-    edgeMask: maskBuffer && importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', edgeCount),
-    pointsPerEdge,
-    maximumIterations: iterations,
-    densityResolution,
-    spatialContext: options.geographic
-      ? {coordinateSpace: 'longitude-latitude', metric: 'none'}
-      : undefined,
-    parameters: parameterBuffer?.importToGraph(graph),
-    output: {
-      paths: importGraphBuffer(graph, 'paths', pathsBuffer, 'float32x2', edgeCount * pointsPerEdge),
-      lineOffsets:
-        startIndicesBuffer &&
-        importGraphBuffer(graph, 'start-indices', startIndicesBuffer, 'uint32', edgeCount + 1),
-      drawRecord:
-        drawRecordBuffer && importGraphBuffer(graph, 'draw-record', drawRecordBuffer, 'uint32', 4)
-    }
-  });
-  graph.add(contributor);
-  const nodeCount =
-    4 + 3 * iterations + (options.withIndices ? 1 : 0) + (options.parameters ? 1 : 0);
-  const compiled = graph.compile();
-  return {
-    edgeCount,
-    pointsPerEdge,
-    iterations,
-    densityResolution,
-    compiled,
-    nodeCount,
-    buffers,
-    parameterBuffer,
-    parameterFormat,
-    pathsBuffer,
-    startIndicesBuffer,
-    drawRecordBuffer,
-    setParameters(values) {
-      parameterBuffer!.write(
-        parameterFormat === 'uint32'
-          ? getGPUEdgeBundlingParameterValues(values, 'uint32')
-          : getGPUEdgeBundlingParameterValues(values, 'float32')
-      );
-    },
-    async run() {
-      submitGraph(device, compiled, undefined);
-      return Float32Array.from(await readFloat32(pathsBuffer, edgeCount * pointsPerEdge * 2));
-    },
-    destroy() {
-      compiled.destroy();
-      parameterBuffer?.destroy();
-      for (const buffer of buffers) buffer.destroy();
-    }
-  };
-}
 
 function oracleFor(
   scene: Scene,
@@ -202,45 +109,6 @@ function maxDivergence(actual: Float32Array, expected: Float32Array, side: numbe
     maximum = Math.max(maximum, Math.abs(actual[i] - expected[i]) / side);
   }
   return maximum;
-}
-
-/** Deterministic xorshift in [0, 1). */
-function createRandom(seed: number): () => number {
-  let state = seed >>> 0 || 1;
-  return () => {
-    state ^= state << 13;
-    state >>>= 0;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    state >>>= 0;
-    return state / 0x100000000;
-  };
-}
-
-/** Random flows between a few clusters, so bundling has real structure to find. */
-function createClusteredScene(vertexCount: number, edgeCount: number, seed: number): Scene {
-  const random = createRandom(seed);
-  const centers = [
-    [20, 25],
-    [80, 30],
-    [30, 80],
-    [85, 85]
-  ];
-  const positions = new Float32Array(vertexCount * 2);
-  for (let v = 0; v < vertexCount; v++) {
-    const center = centers[v % centers.length];
-    positions[v * 2] = center[0] + (random() - 0.5) * 12;
-    positions[v * 2 + 1] = center[1] + (random() - 0.5) * 12;
-  }
-  const sources = new Uint32Array(edgeCount);
-  const targets = new Uint32Array(edgeCount);
-  for (let e = 0; e < edgeCount; e++) {
-    sources[e] = Math.floor(random() * vertexCount);
-    do {
-      targets[e] = Math.floor(random() * vertexCount);
-    } while (targets[e] === sources[e]);
-  }
-  return {positions, sources, targets};
 }
 
 const WORK_WIDTH = 1000;
@@ -306,6 +174,7 @@ it('GPUEdgeBundling tracks the CPU oracle statistically over a full schedule', a
   );
   expect(p50).toBeLessThan(2e-4);
   expect(p90).toBeLessThan(3e-3);
+  expect(Array.from(actual).every(Number.isFinite)).toBe(true);
   const straight = bundleEdgesOracle({...oracleFor(scene, fixture), activeIterations: 0});
   expect(maxDivergence(actual, straight.paths, expected.box[2])).toBeGreaterThan(0.01);
   fixture.destroy();
@@ -602,26 +471,3 @@ it('GPUEdgeBundling geographic input matches planar bundling of cos-latitude sca
   b.destroy();
   flat.destroy();
 });
-
-it('GPUEdgeBundling measures 10k edges x 16 points x 15 iterations at 256 squared', async () => {
-  const device = await getWebGPUTestDevice();
-  if (!device || isSoftwareDevice(device)) {
-    return;
-  }
-  const scene = createClusteredScene(2000, 10000, 99);
-  const fixture = createFixture(device, scene, {withIndices: true});
-  await fixture.run();
-  const times: number[] = [];
-  for (let sample = 0; sample < 7; sample++) {
-    const start = performance.now();
-    submitGraph(device, fixture.compiled, undefined);
-    await readUint32(fixture.drawRecordBuffer!, 4);
-    times.push(performance.now() - start);
-  }
-  times.sort((a, b) => a - b);
-  console.log(
-    `edge-bundling 10k x 16 x 15 @256^2: median ${times[3].toFixed(1)} ms (min ${times[0].toFixed(1)}, max ${times[6].toFixed(1)}), ${fixture.nodeCount} nodes`
-  );
-  expect(times[3]).toBeGreaterThan(0);
-  fixture.destroy();
-}, 120000);

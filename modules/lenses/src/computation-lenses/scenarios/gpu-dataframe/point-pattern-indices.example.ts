@@ -57,7 +57,7 @@ export async function runExample(
     id: 'point-pattern-parameters',
     format: 'float32',
     length: GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
-    values: getGPUPointPatternIndicesParameterValues({bounds: studyWindow, maximumDistance: 500})
+    values: getGPUPointPatternIndicesParameterValues({bounds: studyWindow, indexCellSizeHint: 500})
   });
   graph.add(
     new GPUPointPatternIndices({

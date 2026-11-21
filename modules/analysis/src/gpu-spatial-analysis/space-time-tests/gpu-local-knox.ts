@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotSpaceTimeTestProps} from './space-time-construction';
 import {
   validateTrajectoryBindings,
   validateTrajectoryOutputRanges
@@ -18,6 +19,7 @@ import type {GPUInferenceMetadata, GPUTemporalContext} from '../../analysis-core
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
@@ -27,6 +29,7 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {createSpatialWeightsSuppressionNodes} from '../spatial-weights/spatial-weights-suppression';
 import {
   getSpaceTimeBlocks,
   getSpaceTimeCommonWGSL,
@@ -132,6 +135,10 @@ export type GPULocalKnoxProps = {
  * `n` tests; apply a correction to `summary` on the CPU or with the package's local-statistics
  * tools. The sum of permuted counts per event is a uint32, so `maximumPermutations` times the
  * largest row length must stay below 2^32.
+ *
+ * Incomplete pairs: when `pairs.status.overflow` or `pairs.status.candidateOverflow` is nonzero
+ * the rows are truncated, so every word of `summary` is quiet NaN for that frame, as in
+ * `GPUKnoxTest`. Clearing the flags restores the ordinary summary on the next frame.
  */
 export class GPULocalKnox implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -144,6 +151,11 @@ export class GPULocalKnox implements GPUCommandNodeProducer {
   readonly temporalContext?: GPUTemporalContext;
 
   constructor(props: GPULocalKnoxProps) {
+    props = snapshotSpaceTimeTestProps(
+      props,
+      ['id', 'pairs', 'times', 'temporalContext', 'parameters', 'maximumPermutations', 'output'],
+      'pairs'
+    );
     const id = props.id ?? 'local-knox';
     this.id = id;
     this.props = props;
@@ -152,18 +164,13 @@ export class GPULocalKnox implements GPUCommandNodeProducer {
     validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     this.temporalContext = resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
-    if (this.rows < 2) {
-      throw new Error(`${id} needs at least two rows`);
-    }
-    if (this.rows > SPACE_TIME_MAXIMUM_ROWS) {
-      throw new Error(`${id} supports at most ${SPACE_TIME_MAXIMUM_ROWS} rows`);
-    }
-    if (props.times.length !== this.rows) {
-      throw new Error(`${id} times needs one row per pairs row`);
-    }
-    if (props.parameters.length < GPU_SPACE_TIME_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
-    }
+    validateCapacity(id, 'pairs rowCount', this.rows, 2, SPACE_TIME_MAXIMUM_ROWS);
+    validateRequirement(id, props.times.length === this.rows, `times needs one row per pairs row`);
+    validateRequirement(
+      id,
+      props.parameters.length >= GPU_SPACE_TIME_PARAMETER_LENGTH,
+      `parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`
+    );
     validateCapacity(
       id,
       'maximumPermutations',
@@ -171,9 +178,11 @@ export class GPULocalKnox implements GPUCommandNodeProducer {
       1,
       SPACE_TIME_MAXIMUM_PERMUTATIONS
     );
-    if (props.output.summary.length < this.rows * GPU_LOCAL_KNOX_SUMMARY_LENGTH) {
-      throw new Error(`${id} output.summary needs rows * ${GPU_LOCAL_KNOX_SUMMARY_LENGTH} rows`);
-    }
+    validateRequirement(
+      id,
+      props.output.summary.length >= this.rows * GPU_LOCAL_KNOX_SUMMARY_LENGTH,
+      `output.summary needs rows * ${GPU_LOCAL_KNOX_SUMMARY_LENGTH} rows`
+    );
     validateTrajectoryOutputRanges(this.id, this.props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -183,7 +192,9 @@ export class GPULocalKnox implements GPUCommandNodeProducer {
         props.parameters,
         props.pairs.offsets,
         props.pairs.neighbors,
-        props.pairs.weights
+        props.pairs.weights,
+        props.pairs.status?.overflow,
+        props.pairs.status?.candidateOverflow
       ]
     );
   }
@@ -201,7 +212,10 @@ export class GPULocalKnox implements GPUCommandNodeProducer {
     };
   }
 
-  /** Returns the nodes in order: `entry-mask`, `observed`, `permutations` and `summary`. */
+  /**
+   * Returns the nodes in order: `entry-mask`, `observed`, `permutations`, `summary`, then one
+   * `incomplete` node per pair loss flag.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -358,7 +372,16 @@ ${getSpaceTimeShuffleWGSL(blocks, PHILOX_PURPOSES.knoxTestShuffle.id)}`,
   summary[rowOffset + ${GPU_LOCAL_KNOX_SUMMARY.lesserCount}u] = f32(lesser);
   summary[rowOffset + ${GPU_LOCAL_KNOX_SUMMARY.pseudoPGreater}u] = f32(greater + 1u) / (permutationCount + 1.0);
   summary[rowOffset + ${GPU_LOCAL_KNOX_SUMMARY.pseudoPLesser}u] = f32(lesser + 1u) / (permutationCount + 1.0);`
-      })
+      }),
+      // Truncated pair rows give truncated local counts: suppress the whole summary.
+      ...createSpatialWeightsSuppressionNodes(
+        graph,
+        id,
+        OPERATION,
+        pairs,
+        {summary},
+        {summary: rows * GPU_LOCAL_KNOX_SUMMARY_LENGTH}
+      )
     ];
   }
 }

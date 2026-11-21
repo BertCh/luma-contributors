@@ -55,11 +55,18 @@ export function createRasterViewPack(
   const operators: Record<string, OperatorDescriptor> = {};
   const formulas: Record<string, GPUComputationFormulaRef | ViewPackNoFormula> = {};
   const variableKinds: Record<string, VariableKind> = {};
+  const conflicts = new Set<string>();
   for (const [name, entry] of Object.entries(entries)) {
     const kinds = getRasterVariableKinds(entry);
     operators[name] = {...entry.descriptor, variableKinds: kinds};
     formulas[name] = entry.formula;
-    Object.assign(variableKinds, kinds);
+    for (const [capture, kind] of Object.entries(kinds)) {
+      const previous = variableKinds[capture];
+      if (previous && (previous.level !== kind.level || previous.extent !== kind.extent))
+        conflicts.add(capture);
+      if (!conflicts.has(capture)) variableKinds[capture] = kind;
+      else delete variableKinds[capture];
+    }
   }
   return {
     id: packId,

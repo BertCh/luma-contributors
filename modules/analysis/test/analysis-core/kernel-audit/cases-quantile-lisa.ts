@@ -13,6 +13,8 @@ export const QUANTILE_LISA_AUDIT_CASES: KernelAuditCase[] = [
     build: ({graph, view}) => {
       graph.add(
         new GPUQuantileLISA({
+          // Pin the strict-complement inference exercised by the original oracle (DEF-01).
+          alternative: 'geoda-legacy',
           values: view('float32', 300, 'values'),
           additionalVariables: [
             {

@@ -759,7 +759,7 @@ export const CURATED_DRIVE_TIME_BANDS_BINDING: CatalogOperationBinding = {
         costBreaks,
         bandCapacity: prepared.costBreaks.length,
         scratch: {facilityEdges: facilityEdges.view, demandEdges: demandEdges.view},
-        outputs: {
+        output: {
           demandTimes: times.view,
           demandBands: demandBands.view,
           status: {serviceAreaConverged: converged.view},

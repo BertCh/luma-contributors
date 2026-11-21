@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {POINT_CLOUD_NORM_COMPARISON_WGSL} from './pointcloud-norm-comparison-wgsl';
+import {getPointCloudReadbackLaneReader} from './pointcloud-readback';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
@@ -16,6 +18,7 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
@@ -37,6 +40,36 @@ import {
   validatePointCloudGridIndexBindings,
   type PointCloudGrid
 } from './pointcloud-grid-index';
+
+/** No scale supplies a usable normal (existing status bit 1). */
+export const GPU_POINT_CLOUD_NORMAL_SCALE_STATUS_NO_USABLE_SCALE = 1;
+/** Candidate capacity was exceeded at one or more scales (existing status bit 2). */
+export const GPU_POINT_CLOUD_NORMAL_SCALE_STATUS_CANDIDATE_OVERFLOW = 2;
+/** Eigensolve exhausted its budget at one or more scales (existing status bit 4). */
+export const GPU_POINT_CLOUD_NORMAL_SCALE_STATUS_EIGENSOLVE_EXHAUSTED = 4;
+
+/** A usable selected scale can coexist with a loss flag from another scale. */
+export function decodeGPUPointCloudNormalScaleStatus(
+  value: number | Uint32Array | Uint8Array | ArrayBuffer
+) {
+  const word =
+    typeof value === 'number'
+      ? value
+      : getPointCloudReadbackLaneReader(
+          'decodeGPUPointCloudNormalScaleStatus',
+          'status',
+          value,
+          'uint32',
+          1
+        )(0);
+  validateCapacity('decodeGPUPointCloudNormalScaleStatus', 'word', word, 0);
+  return {
+    word,
+    noUsableScale: Boolean(word & GPU_POINT_CLOUD_NORMAL_SCALE_STATUS_NO_USABLE_SCALE),
+    candidateOverflow: Boolean(word & GPU_POINT_CLOUD_NORMAL_SCALE_STATUS_CANDIDATE_OVERFLOW),
+    eigensolveExhausted: Boolean(word & GPU_POINT_CLOUD_NORMAL_SCALE_STATUS_EIGENSOLVE_EXHAUSTED)
+  };
+}
 
 /** Float32 rows: minimumSupport, viewpoint X/Y/Z, and viewpoint-enabled flag. */
 export const GPU_POINT_CLOUD_NORMAL_SCALE_PARAMETER_LENGTH = 5;
@@ -145,6 +178,16 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
       'output'
     ]);
     this.id = props.id ?? 'gpu-pointcloud-normal-scale';
+    validateGraphPorts(this.id, props, {
+      positions: {required: true, viewType: 'data', formats: ['float32x3']},
+      queryRows: {required: false, viewType: 'data', formats: ['uint32']},
+      gridParameters: {required: false, viewType: 'data', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'output.normals': {required: true, viewType: 'data', formats: ['float32x3']},
+      'output.normalScales': {required: true, viewType: 'data', formats: ['float32']},
+      'output.normalVariances': {required: true, viewType: 'data', formats: ['float32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     validateRequirement(
       this.id,
       props.output !== undefined && props.output !== null,
@@ -365,13 +408,28 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
         ...getPointCloudRuntimeKernelNodes(graph, {
           id: `${this.id}-support-${scaleIndex}`,
           length: rows,
-          inputs: {distances, counts, parameters: this.props.parameters},
+          inputs: {
+            distances,
+            counts,
+            positions,
+            indices,
+            parameters: this.props.parameters,
+            ...(queryRows ? {queryRows} : {})
+          },
           outputs: {scaleCounts},
-          runtimeWords: [new Uint32Array(new Float32Array([radius ** 2]).buffer)[0]],
+          runtimeWords: Array.from(new Uint32Array(new Float32Array([radius ** 2, radius]).buffer)),
+          preciseNorms: true,
+          declarations: POINT_CLOUD_NORM_COMPARISON_WGSL,
           body: `var support = 0u;
 let retained = min(readCounts(index), ${capacity}u);
 for (var slot = 0u; slot < retained; slot++) {
-  if (readDistances(index * ${capacity}u + slot) <= bitcast<f32>(readDispatchParameter(0u))) { support++; }
+  let distance = readDistances(index * ${capacity}u + slot);
+  let cutoff = bitcast<f32>(readDispatchParameter(0u));
+  if (pointCloudNormKeysSeparated(distance, cutoff)) {
+    if (distance <= cutoff) { support++; }
+  } else if (comparePointCloudNorms(readPositions(readIndices(index * ${capacity}u + slot)),
+      readPositions(${queryRows ? 'readQueryRows(index)' : 'index'}),
+      vec3f(bitcast<f32>(readDispatchParameter(1u)), 0.0, 0.0), vec3f(0.0)) <= 0) { support++; }
 }
 // If the boundary reaches the last retained point, omitted ties might also belong to this scale.
 if (readCounts(index) > ${capacity}u && support == ${capacity}u) { support = ${capacity + 1}u; }

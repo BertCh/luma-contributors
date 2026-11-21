@@ -16,6 +16,31 @@ import {
 
 const NONE = 0xffffffff;
 
+it('rejects legacy hierarchy operation outputs with the replacement paths', () => {
+  const props = makeHierarchyProps();
+  for (const Operation of [
+    GPUTerrainDepressionHierarchyOperation,
+    CPUTerrainDepressionHierarchyOperation
+  ]) {
+    expect(
+      () =>
+        new Operation({
+          ...props,
+          // @ts-expect-error A packed status graph value is no longer accepted.
+          output: {...props.output, status: 'status'}
+        })
+    ).toThrow(/^hierarchy-test output\.status.*output\.status\.count.*requiredCount.*overflow/);
+    expect(
+      () =>
+        new Operation({
+          ...props,
+          // @ts-expect-error The former optional status map has been removed.
+          output: {...props.output, ports: {status: {overflow: 'oldOverflow'}}}
+        })
+    ).toThrow(/^hierarchy-test output\.ports.*output\.status\.count.*requiredCount.*overflow/);
+  }
+});
+
 it('constructs the deferred GPU contributor and rejects inconsistent stage-dependent shapes', () => {
   const props = makeHierarchyProps();
   const shapes = {
@@ -91,7 +116,7 @@ it('matches a hand-drawn four-leaf, three-merge tree and exact stage areas/volum
     NaN
   ]);
   expect(Array.from(result.cellNodes)).toEqual([0, 4, 2, 6, 1, 5, 3]);
-  expect(Array.from(result.status)).toEqual([7, 7, 0]);
+  expect(Array.from(result.count)).toEqual([7]);
   expect(Array.from(result.requiredCount)).toEqual([7]);
   expect(Array.from(result.overflow)).toEqual([0]);
   expect(Array.from(result.curves)).toEqual([
@@ -174,7 +199,7 @@ it('agrees with independent sublevel connectivity counts and direct root-volume 
       if (input.elevation[cell] <= stage && (cell === 0 || input.elevation[cell - 1] > stage))
         components++;
     let liveNodes = 0;
-    for (let node = 0; node < result.status[0]; node++)
+    for (let node = 0; node < result.count[0]; node++)
       if (result.levels[node * 2] <= stage && result.levels[node * 2 + 1] > stage) liveNodes++;
     expect(liveNodes).toBe(components);
     const wetHeights = Array.from(input.elevation).filter(height => height <= stage);
@@ -189,16 +214,20 @@ it('invalidates all nodes on overflow, retains ownership, and supports barriers 
   const input = makeHierarchyInput(),
     props = makeHierarchyProps(2);
   const result = computeTerrainDepressionHierarchyOnCPU(input, props);
-  expect(Array.from(result.status)).toEqual([2, 7, 1]);
+  expect(Array.from(result.count)).toEqual([2]);
+  expect(Array.from(result.requiredCount)).toEqual([7]);
+  expect(Array.from(result.overflow)).toEqual([1]);
   expect(Array.from(result.nodes)).toEqual([NONE, NONE, NONE, 0, NONE, NONE, NONE, 0]);
+  expect(result.levels).toHaveLength(4);
+  expect(result.curves).toHaveLength(16);
   expect(result.levels.every(Number.isNaN)).toBe(true);
   expect(result.curves.every(Number.isNaN)).toBe(true);
   expect(Array.from(result.cellNodes)).toEqual([0, 4, 2, 6, 1, 5, 3]);
-  expect(result.requiredCount[0]).toBe(7);
-  expect(result.overflow[0]).toBe(1);
   input.validity.fill(0);
   const empty = computeTerrainDepressionHierarchyOnCPU(input, props);
-  expect(Array.from(empty.status)).toEqual([0, 0, 0]);
+  expect(Array.from(empty.count)).toEqual([0]);
+  expect(Array.from(empty.requiredCount)).toEqual([0]);
+  expect(Array.from(empty.overflow)).toEqual([0]);
   expect(empty.cellNodes.every(word => word === NONE)).toBe(true);
   expect(empty.curves.every(Number.isNaN)).toBe(true);
   input.validity.fill(1);
@@ -220,7 +249,9 @@ it('handles equal elevations and validates operation declarations and malformed 
     props = makeHierarchyProps();
   input.elevation.fill(-2);
   const result = computeTerrainDepressionHierarchyOnCPU(input, props);
-  expect(Array.from(result.status)).toEqual([1, 1, 0]);
+  expect(Array.from(result.count)).toEqual([1]);
+  expect(Array.from(result.requiredCount)).toEqual([1]);
+  expect(Array.from(result.overflow)).toEqual([0]);
   expect(Array.from(result.cellNodes)).toEqual([0, 0, 0, 0, 0, 0, 0]);
   expect(Array.from(result.nodes.subarray(0, 4))).toEqual([NONE, 0, 0, 1]);
   for (const Operation of [
@@ -228,7 +259,6 @@ it('handles equal elevations and validates operation declarations and malformed 
     CPUTerrainDepressionHierarchyOperation
   ]) {
     expect(() => new Operation({...props, nodeCapacity: 0})).toThrow(/^hierarchy-test/);
-    expect(() => new Operation({...props, stageCount: 0})).toThrow(/^hierarchy-test/);
     expect(() => new Operation({...props, output: {...props.output, curves: 'stages'}})).toThrow(
       /^hierarchy-test/
     );
@@ -237,4 +267,19 @@ it('handles equal elevations and validates operation declarations and malformed 
     expect(() =>
       computeTerrainDepressionHierarchyOnCPU({...input, [name]: input[name].subarray(1)}, props)
     ).toThrow(new RegExp(name));
+});
+
+it('requires a positive integer stage count before sizing curves in either operation form', () => {
+  const props = makeHierarchyProps(2);
+  for (const Operation of [
+    CPUTerrainDepressionHierarchyOperation,
+    GPUTerrainDepressionHierarchyOperation
+  ]) {
+    // At capacity two, 1.5 stages would yield an integer curve length of six.
+    for (const stageCount of [1.5, 0, -1]) {
+      expect(() => new Operation({...props, stageCount})).toThrow(
+        /^hierarchy-test stageCount must be an integer in \[1, 4294967295\]$/
+      );
+    }
+  }
 });

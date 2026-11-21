@@ -10,6 +10,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   assertCompatibleGPUVerticalDatums,
   resolveGPUElevationVerticalDatum
@@ -31,7 +32,8 @@ import {
 } from '../../raster-analysis/raster-pyramid/gpu-raster-extrema-pyramid';
 import {
   getRasterBufferBandNodes,
-  validateRasterGrid
+  validateRasterGrid,
+  validateRasterGridOrthogonal
 } from '../../raster-analysis/raster-band-utils';
 import {
   GPU_WGS84_FLATTENING,
@@ -41,6 +43,7 @@ import {resolveTerrainRowDirection} from '../terrain-curvature/terrain-geomorpho
 import {
   GPU_POINT_HORIZON_EARTH_RADIUS,
   POINT_HORIZON_PROJECTION_TAGS,
+  validatePointHorizonWebMercatorGrid,
   type GPUPointHorizonHeightReference,
   type GPUPointHorizonProjection,
   type GPUPointHorizonRowDirection,
@@ -338,12 +341,12 @@ export type GPUPointHorizonModelOptions = {
    * `'march'`.
    */
   pyramid?: GPURasterExtremaPyramidOutput;
-  /** Divisions of 360 degrees. Defaults to 720. */
+  /** Full-cycle divisions of 360 degrees, clockwise from grid north. Defaults to 720. */
   azimuthCount?: number;
-  /** First global azimuth index of the covered sector. Defaults to 0. */
-  firstAzimuth?: number;
-  /** Number of azimuth indices covered, wrapping past `azimuthCount`. Defaults to `azimuthCount`. */
-  azimuthSpan?: number;
+  /** First global bin index, clockwise from grid north; angle = index * 360 / azimuthCount. Defaults to 0. */
+  firstAzimuthIndex?: number;
+  /** Covered bin count, wrapping past the separate full-cycle `azimuthCount`. Defaults to `azimuthCount`. */
+  azimuthBinCount?: number;
   /** Last sample distance in meters (required). */
   maximumDistance: number;
   /** First sample distance in meters. Defaults to 20. */
@@ -368,6 +371,23 @@ export type GPUPointHorizonModelOptions = {
   segmentTolerance?: number;
 };
 
+/** Rejects removed bin-selection props, including on the visibility contributor. @internal */
+function validatePointHorizonRemovedAzimuthOptions(
+  id: string,
+  options: GPUPointHorizonModelOptions
+): void {
+  validateRequirement(
+    id,
+    !('firstAzimuth' in options),
+    'firstAzimuth was removed; use firstAzimuthIndex'
+  );
+  validateRequirement(
+    id,
+    !('azimuthSpan' in options),
+    'azimuthSpan was removed; use azimuthBinCount'
+  );
+}
+
 /** Validated, defaulted model. @internal */
 export type ResolvedPointHorizonModel = {
   grid: GPURasterMetadata;
@@ -378,8 +398,8 @@ export type ResolvedPointHorizonModel = {
   heightReference: GPUPointHorizonHeightReference;
   traversal: GPUPointHorizonTraversal;
   azimuthCount: number;
-  firstAzimuth: number;
-  azimuthSpan: number;
+  firstAzimuthIndex: number;
+  azimuthBinCount: number;
   lattice: GPUPointHorizonDistanceLattice;
   segments: GPUPointHorizonSegments | null;
   /** Pyramid layout, present for the `'pyramid'` traversal. */
@@ -416,20 +436,25 @@ export function validatePointHorizonVerticalDatum(
 export function resolvePointHorizonModel(
   id: string,
   grid: GPURasterMetadata,
-  options: GPUPointHorizonModelOptions
+  options: GPUPointHorizonModelOptions,
+  azimuthOptions: Pick<
+    GPUPointHorizonModelOptions,
+    'azimuthCount' | 'firstAzimuthIndex' | 'azimuthBinCount'
+  > = options
 ): ResolvedPointHorizonModel {
+  validatePointHorizonRemovedAzimuthOptions(id, options);
   const {width, height} = grid;
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 2 || height < 2) {
     throw new Error(`${id} dimensions must be integers of at least 2`);
   }
-  if (width * height > 0xffffffff) {
-    throw new Error(`${id} dimensions must be positive integers`);
-  }
   validateRasterGrid(id, grid);
+  // Ray distances use the two pixel-axis lengths as if perpendicular.
+  validateRasterGridOrthogonal(id, grid);
   const projection = options.projection ?? 'planar';
   if (projection !== 'planar' && projection !== 'web-mercator') {
     throw new Error(`${id} projection must be planar or web-mercator`);
   }
+  if (projection === 'web-mercator') validatePointHorizonWebMercatorGrid(id, grid);
   // North comes from the grid, as in every terrain contributor with a `rowDirection`: the default
   // is the sign of `grid.affine[4]`, and an explicit value that contradicts it throws.
   const rowDirection = resolveTerrainRowDirection(id, grid, options.rowDirection);
@@ -444,7 +469,7 @@ export function resolvePointHorizonModel(
   if (options.pyramid && traversal !== 'pyramid') {
     throw new Error(`${id} pyramid requires the pyramid traversal`);
   }
-  const azimuthCount = options.azimuthCount ?? 720;
+  const azimuthCount = azimuthOptions.azimuthCount ?? 720;
   if (
     !Number.isInteger(azimuthCount) ||
     azimuthCount < 1 ||
@@ -452,13 +477,25 @@ export function resolvePointHorizonModel(
   ) {
     throw new Error(`${id} azimuthCount must be an integer in [1, 2^24]`);
   }
-  const firstAzimuth = options.firstAzimuth ?? 0;
-  if (!Number.isInteger(firstAzimuth) || firstAzimuth < 0 || firstAzimuth >= azimuthCount) {
-    throw new Error(`${id} firstAzimuth must be an integer in [0, azimuthCount)`);
+  const firstAzimuthIndex = azimuthOptions.firstAzimuthIndex ?? 0;
+  if (
+    !Number.isInteger(firstAzimuthIndex) ||
+    firstAzimuthIndex < 0 ||
+    firstAzimuthIndex >= azimuthCount
+  ) {
+    validateRequirement(
+      id,
+      false,
+      `firstAzimuthIndex must be an integer in [0, azimuthCount = ${azimuthCount}); received ${firstAzimuthIndex}`
+    );
   }
-  const azimuthSpan = options.azimuthSpan ?? azimuthCount;
-  if (!Number.isInteger(azimuthSpan) || azimuthSpan < 1 || azimuthSpan > azimuthCount) {
-    throw new Error(`${id} azimuthSpan must be an integer in [1, azimuthCount]`);
+  const azimuthBinCount = azimuthOptions.azimuthBinCount ?? azimuthCount;
+  if (!Number.isInteger(azimuthBinCount) || azimuthBinCount < 1 || azimuthBinCount > azimuthCount) {
+    validateRequirement(
+      id,
+      false,
+      `azimuthBinCount must be an integer in [1, azimuthCount = ${azimuthCount}]; received ${azimuthBinCount}`
+    );
   }
   let lattice: GPUPointHorizonDistanceLattice;
   try {
@@ -475,8 +512,8 @@ export function resolvePointHorizonModel(
     heightReference,
     traversal,
     azimuthCount,
-    firstAzimuth,
-    azimuthSpan,
+    firstAzimuthIndex,
+    azimuthBinCount,
     lattice,
     segments: projection === 'web-mercator' ? getGPUPointHorizonSegments(lattice, options) : null,
     layout: options.pyramid
@@ -971,8 +1008,8 @@ const HEIGHT: u32 = ${model.height}u;
 const WIDTH_I: i32 = ${model.width};
 const HEIGHT_I: i32 = ${model.height};
 const AZIMUTH_COUNT: u32 = ${model.azimuthCount}u;
-const FIRST_AZIMUTH: u32 = ${model.firstAzimuth}u;
-const AZIMUTH_SPAN: u32 = ${model.azimuthSpan}u;
+const FIRST_AZIMUTH: u32 = ${model.firstAzimuthIndex}u;
+const AZIMUTH_SPAN: u32 = ${model.azimuthBinCount}u;
 const SKIP_EPSILON: f32 = 7.62939453125e-6;
 ${PRECISION_WGSL}
 // Exact power-of-two distance lattice: octave k holds 2^k + j * step_k, all exact in f32.

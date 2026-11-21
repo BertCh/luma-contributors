@@ -13,7 +13,7 @@
     "value": "4/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.buffer-selection</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{selected}{s_i}=\\mathbf{1}[0\\le\\min_{\\term{feature}{j}}\\term{distance}{\\lVert\\mathbf{x}_i-\\mathbf{f}_j\\rVert_2}\\le\\term{radius}{r}]</pre><p class=\"lens-ascii\">For finite nonnegative radius r, select a point iff its nearest-library planar distance is &gt;= 0 and &lt;= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-mask\" data-value=\"selected\">selection mask · output · maskOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-mask\" data-value=\"feature\">feature · input · featureIds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-join-reduce-distance\" data-value=\"distance\">planar distance · intermediate · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-join-reduce-distance\" data-value=\"radius\">buffer radius · parameter · radius</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.buffer-selection</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{selected}{s_i}=\\mathbf{1}[0\\le\\min_{\\term{feature}{j}}\\term{distance}{\\lVert\\mathbf{x}_i-\\mathbf{f}_j\\rVert_2}\\le\\term{radius}{r}]</pre><p class=\"lens-ascii\">For finite nonnegative radius r, select a point iff its nearest-library planar distance is &gt;= 0 and &lt;= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-mask\" data-value=\"selected\">selection mask · output · maskOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-mask\" data-value=\"feature\">feature · input · featureIds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-join-distance\" data-value=\"distance\">planar distance · intermediate · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-join-distance\" data-value=\"radius\">buffer radius · parameter · radius</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -82,12 +82,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:23.313Z",
-    "runId": "run-f263d699",
+    "date": "2026-11-20T23:49:15.384Z",
+    "runId": "run-2b671803",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-f263d699",
+    "runId": "run-2b671803",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

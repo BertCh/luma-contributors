@@ -11,7 +11,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/optimal-transport/gpu-sinkhorn-divergence-operation';
 import {getGPUSinkhornDivergenceParameterValues} from '../../../src/gpu-spatial-analysis/optimal-transport/sinkhorn-divergence-parameters';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {computeSinkhornDivergenceReference} from './stm09-sinkhorn-reference';
 
 // Log masses and dual potentials round at the unit cost/epsilon scale in this two-cell case.
@@ -88,7 +88,7 @@ for (const scenario of [
     requireTestDevice(device);
     const tinyMass = scenario.startsWith('tiny-mass');
     const unreachableTarget = scenario === 'unreachable-target';
-    const maximumIterations = scenario === 'tiny-mass-converged' ? 3 : 2;
+    const maximumIterations = unreachableTarget ? 10 : scenario === 'tiny-mass-converged' ? 3 : 2;
     const shouldConverge = scenario === 'tiny-mass-converged' || scenario === 'decaying-epsilon';
     const props: SinkhornDivergenceOperationProps = {
       grid: {
@@ -101,7 +101,7 @@ for (const scenario of [
       target: 'target',
       parameters: 'parameters',
       maximumIterations,
-      blurRadius: unreachableTarget ? 1 : undefined,
+      transportRadius: unreachableTarget ? 1 : undefined,
       output: {
         divergence: 'divergence',
         marginalError: 'error',
@@ -113,10 +113,7 @@ for (const scenario of [
         }
       }
     };
-    // The CPU twin always uses the full kernel; the unreachable window is GPU-only.
-    const operations = unreachableTarget
-      ? [GPUSinkhornDivergenceOperation]
-      : [CPUSinkhornDivergenceOperation, GPUSinkhornDivergenceOperation];
+    const operations = [GPUSinkhornDivergenceOperation, CPUSinkhornDivergenceOperation];
     for (const Operation of operations) {
       const result = await runOperationGraph(device, {
         inputs: {
@@ -298,3 +295,84 @@ for (const frame of ['ordinary', 'limited', 'empty', 'bad-parameters'] as const)
     if (frame === 'limited') expect(cpu['limited'][0]).toBe(1);
   });
 }
+
+it('retains bounded approximation and zero iterations for an empty frame on both backends', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [CPUSinkhornDivergenceOperation, GPUSinkhornDivergenceOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        source: {format: 'float32', values: Float32Array.of(1, 0, 0, 0)},
+        target: {format: 'float32', values: new Float32Array(4)},
+        parameters: {
+          format: 'float32',
+          values: getGPUSinkhornDivergenceParameterValues({cellWidth: 1, cellHeight: 1, epsilon: 1})
+        }
+      },
+      outputs: ['approximation', 'iterations'],
+      operations: [
+        new Operation({
+          grid: {width: 4, height: 1, pixelInterpretation: 'area', affine: [1, 0, 0, 0, 1, 0]},
+          source: 'source',
+          target: 'target',
+          parameters: 'parameters',
+          transportRadius: 1,
+          output: {
+            divergence: 'divergence',
+            status: {approximation: 'approximation', iterationCount: 'iterations'}
+          }
+        })
+      ]
+    });
+    expect(Array.from(result['approximation'])).toEqual([1]);
+    expect(Array.from(result['iterations'])).toEqual([0]);
+  }
+});
+
+it('preserves point-mass stopping when squared costs and epsilon scale together', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const Operation of [CPUSinkhornDivergenceOperation, GPUSinkhornDivergenceOperation]) {
+    for (const cellWidth of [1, 2 ** 50]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          source: {format: 'float32', values: Float32Array.of(1, 0)},
+          target: {format: 'float32', values: Float32Array.of(0, 1)},
+          parameters: {
+            format: 'float32',
+            values: getGPUSinkhornDivergenceParameterValues({
+              cellWidth,
+              cellHeight: 1,
+              epsilon: cellWidth ** 2
+            })
+          }
+        },
+        outputs: ['divergence', 'error', 'converged', 'limited', 'iterations'],
+        operations: [
+          new Operation({
+            grid: {width: 2, height: 1, pixelInterpretation: 'area', affine: [1, 0, 0, 0, 1, 0]},
+            source: 'source',
+            target: 'target',
+            parameters: 'parameters',
+            maximumIterations: 8,
+            output: {
+              divergence: 'divergence',
+              marginalError: 'error',
+              status: {
+                converged: 'converged',
+                iterationLimitReached: 'limited',
+                iterationCount: 'iterations'
+              }
+            }
+          })
+        ]
+      });
+      // One coupling cell at squared distance cellWidth², no entropy; normalized cost/epsilon=1.
+      expect(Array.from(result['divergence'])).toEqual([cellWidth ** 2]);
+      expect(Array.from(result['error'])).toEqual([0]);
+      expect(Array.from(result['converged'])).toEqual([1]);
+      expect(Array.from(result['limited'])).toEqual([0]);
+      expect(Array.from(result['iterations'])).toEqual([2]);
+    }
+  }
+});

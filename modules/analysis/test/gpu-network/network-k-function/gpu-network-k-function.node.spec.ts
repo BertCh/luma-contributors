@@ -14,6 +14,7 @@ import {
   getGPUNetworkKFunctionParameterValues,
   GPUNetworkKFunction
 } from '../../../src/gpu-network/network-k-function/index';
+import {GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT} from '../../../src/gpu-network/network-k-function/gpu-network-k-function';
 import {GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK} from '../../../src/gpu-network/network-accessibility/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -227,12 +228,12 @@ it('GPUNetworkKFunction rejects configurations above the command node budget', (
 });
 
 it('GPUNetworkKFunction schedules events times edges above the unindexed snapping limit', () => {
-  // 2^21 events on 128 edges are 2^28 point-edge tests, above the 2^27 a direct GPUNetworkSnapping
-  // accepts without candidateCapacity. This configuration built before the limit existed, so the
-  // K function must still construct and schedule it, with no error under the nested snapping id.
+  // 92,682 events (the pair-count cap, NET-110) on 2,048 edges are about 1.9e8 point-edge tests,
+  // above the 2^27 a direct GPUNetworkSnapping accepts without candidateCapacity. The K function
+  // must still construct and schedule it, with no error under the nested snapping id.
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
-  const events = 2 ** 21;
-  const edgeCount = 128;
+  const events = GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT;
+  const edgeCount = 2048;
   const props = createProps(
     graph,
     {
@@ -253,4 +254,55 @@ it('GPUNetworkKFunction schedules events times edges above the unindexed snappin
   );
   const nodes = contributor.getCommandNodes(graph);
   expect(nodes.some(node => node.id === 'k-snap-scan')).toBe(true);
+});
+
+it('GPUNetworkKFunction rejects event counts whose unordered pair count can wrap uint32 (NET-110)', () => {
+  // Largest n with n (n - 1) / 2 <= 2^32 - 1, computed exactly with BigInt.
+  const UINT32_MAXIMUM = 2n ** 32n - 1n;
+  const pairCount = (count: bigint) => (count * (count - 1n)) / 2n;
+  expect(pairCount(92682n)).toBe(4294930221n);
+  expect(pairCount(92682n) <= UINT32_MAXIMUM).toBe(true);
+  expect(pairCount(92683n) > UINT32_MAXIMUM).toBe(true);
+  expect(GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT).toBe(92682);
+  const create = (eventCount: number) => () => {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    return new GPUNetworkKFunction(
+      createProps(
+        graph,
+        {
+          simulationCount: 0,
+          rowsPerBlock: 2047,
+          maximumIterations: 1,
+          positions: createTransientView(graph, `points-${eventCount}`, 'float32x2', eventCount)
+        },
+        {kValues: createTransientView(graph, `k-values-${eventCount}`, 'float32', 8)}
+      )
+    );
+  };
+  expect(create(92682)).not.toThrow();
+  for (const eventCount of [92683, 100000]) {
+    expect(create(eventCount)).toThrow(/^k eventCount must be at most 92682$/);
+  }
+});
+
+it('PCK-12 instance packing enforces its compiled simulationCount', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const contributor = new GPUNetworkKFunction(
+      createProps(
+        graph,
+        {id: 'my-k', simulationCount: 1},
+        {kValues: createTransientView(graph, 'bounded-values', 'float32', 16)}
+      )
+    );
+    expect(() => contributor.getParameterValues({seed: 1, activeSimulations: 2})).toThrow(
+      /my-k.*activeSimulations/
+    );
+    expect(
+      Array.from(contributor.getParameterValues({seed: 2 ** 32 + 1, activeSimulations: 0}))
+    ).toEqual([1, 1, 0, 0]);
+  } finally {
+    device.destroy();
+  }
 });

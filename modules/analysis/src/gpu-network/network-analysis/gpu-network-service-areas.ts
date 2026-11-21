@@ -12,6 +12,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE,
   validateCapacity,
   validateRequirement,
   validateSinglePackedView
@@ -163,8 +164,8 @@ export type GPUNetworkServiceAreasOutput = {
  * network", the evaluation step of location-allocation), with per-facility node counts and total
  * cost served.
  *
- * Ties are broken deterministically: when several facilities achieve the minimum cost at a node,
- * the smallest facility row wins.
+ * Ties are broken deterministically: the smallest facility row reaching the node through
+ * tight shortest-path edges wins.
  *
  * Design: two frontier phases rather than one packed (cost, facility) relaxation. Phase 1 composes
  * {@link GPUNetworkReachability} with the facilities as multi-source seeds and yields exact f32
@@ -172,17 +173,31 @@ export type GPUNetworkServiceAreasOutput = {
  * tight-edge subgraph with the same compact frontier rounds (atomic minimum, workgroup-chained
  * hops, no gate nodes), seeded from the facility nodes: an edge `u -> v` is tight when `costs[u] + weight == costs[v]` in f32
  * (zero-weight edges included, so zero-cost connectors keep their facility). The label fixpoint
- * is the smallest facility row among all facilities that achieve the minimum cost, regardless of
+ * is the smallest facility row whose label can propagate along tight edges, regardless of
  * atomic scheduling. A packed relaxation is not used because WGSL has no 64-bit atomics, so
  * packing cost and facility into one u32 would either quantize costs or cap the facility count.
  * Reachability predecessors are not used for labels because they pick the smallest node index
- * rather than facility row and are `NONE` across zero-weight edges.
+ * rather than facility row. Requested predecessors are resolved after labels, within that label.
+ *
+ * Per encoding, cost rounds (`maximumIterations`, default 64) and label rounds
+ * (`maximumLabelIterations`, default min(maximumIterations, 32)) each accept 1..1024.
+ * `activeIterations` clamps each of those phases separately; `localIterations` is 1..64
+ * hops per workgroup per round (default 16). Optional predecessors add independent equal-cost
+ * level rounds (`maximumTieIterations`, 1..1024, default 4), unaffected by `activeIterations`.
+ * Optional scalar `converged`/`iterationLimitReached` cover all requested phases and facilities.
+ * Stopped costs, labels, parents and facility summaries are incumbents, not a nearest-facility
+ * certificate; an infinite cost or NONE assignment need not mean unreachable.
  *
  * Every encoding recomputes from scratch and rewrites every output word; nothing is read back.
  *
  * @remarks Non-goals: capacity constraints, facility selection (p-median or coverage
  * optimization), turn penalties, and time-dependent costs. Facility costs and edge weights are
  * f32; assignments follow the f32 tight-edge rule.
+ * With `output.predecessors`, tie levels and costs take `8 * nodeCount` bytes in one storage
+ * binding. A separate binding for labels and weights takes `4 * (nodeCount + edgeCount)` bytes.
+ * The combined node and stored edge count must therefore be at most 33,554,432 at construction.
+ * Without predecessors, node and edge bindings are sized independently. Declaration also checks
+ * both bindings against the actual device limit (134,217,728 bytes on the default device).
  */
 export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -248,6 +263,23 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
     }
     if (networkNodeCount !== nodeCount) {
       throw new Error(`${id} topology must contain one node per output.assignments row`);
+    }
+    if (output.predecessors) {
+      const tieLabelsAndWeightsBytes = 4 * (nodeCount + props.topology.neighbors.length);
+      validateRequirement(
+        id,
+        tieLabelsAndWeightsBytes <= GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE,
+        `output.predecessors tieLabelsAndWeights needs ${tieLabelsAndWeightsBytes} bytes in one binding (limit ${GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE}); omit output.predecessors or reduce the topology size`,
+        {
+          code: 'INTEGER_RANGE',
+          path: 'output.predecessors',
+          received: tieLabelsAndWeightsBytes,
+          expected: {
+            maximum: GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE,
+            source: 'GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE'
+          }
+        }
+      );
     }
     if (props.facilityCosts && props.facilityCosts.length !== props.facilities.length) {
       throw new Error(`${id} facilityCosts length must equal facilities length`);
@@ -359,6 +391,8 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
     const predecessorLayout = getFrontierPhaseLayout(this.maximumTieIterations);
     validateNetworkViewBindings(id, graph, getViews(props), {
       nodeColumns: nodeCount * 4,
+      tieLevelsAndCosts: output.predecessors ? nodeCount * 8 : 4,
+      tieLabelsAndWeights: output.predecessors ? (nodeCount + neighbors.length) * 4 : 4,
       frontierQueues: nodeCount * 8,
       costControl: costLayout.controlWordCount * 4,
       costDispatch: costLayout.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS * 4,
@@ -546,16 +580,23 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
     const {state, tiePhase, costs, predecessors} = context;
     const {offsets, neighbors, weights} = props.topology;
     const nodeCount = props.output.assignments.length;
-    const edgeCount = neighbors.length;
     const labels = props.output.assignments;
     const csr = {offsets, neighbors, weights};
-    const levels = createTransientView(graph, `${id}-tie-levels`, 'uint32', nodeCount);
-    const tieBits = createTransientView(
-      graph,
-      `${id}-tie-bits`,
-      'uint32',
-      Math.max(1, Math.ceil(edgeCount / 32))
-    );
+    const levels = createTransientView(graph, `${id}-tie-levels`, 'uint32', 2 * nodeCount);
+    const tie = {
+      levels,
+      costs,
+      weights,
+      labeledWeights: {
+        labels,
+        packed: createTransientView(
+          graph,
+          `${id}-tie-labels-and-weights`,
+          'uint32',
+          nodeCount + neighbors.length
+        )
+      }
+    };
     const nodes: GPUCommandNode<Parameters>[] = [
       createFillNode<Parameters>(graph, {
         id: `${id}-clear-predecessors`,
@@ -566,11 +607,9 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
       }),
       createReachabilityTieInitializeNode<Parameters>(graph, {
         id: `${id}-tie-initialize`,
-        nodeCount,
         state,
         tiePhase,
-        levels,
-        tieBits
+        tie
       }),
       createReachabilityPredecessorsNode<Parameters>(graph, {
         id: `${id}-predecessors`,
@@ -578,7 +617,7 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
         csr,
         costs,
         predecessors,
-        tieBits,
+        levels,
         labels
       })
     ];
@@ -603,42 +642,33 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
     nodes.push(
       createReachabilityTieSeedNode<Parameters>(graph, {
         id: `${id}-tie-seed`,
-        nodeCount,
-        edgeCount,
         state,
         tiePhase,
-        offsets: offsets,
-        tieBits,
-        predecessors,
-        levels
+        offsets,
+        neighbors,
+        tie
       })
     );
     for (let round = 0; round < this.maximumTieIterations; round++) {
       nodes.push(
         createReachabilityTieLevelNode<Parameters>(graph, {
           id: `${id}-tie-level-${round}`,
-          nodeCount,
-          edgeCount,
           state,
           tiePhase,
           round,
           localIterations,
-          offsets: offsets,
-          neighbors: neighbors,
-          tieBits,
-          levels
+          offsets,
+          neighbors,
+          tie
         })
       );
     }
     nodes.push(
       createReachabilityTiePredecessorsNode<Parameters>(graph, {
         id: `${id}-tie-predecessors`,
-        nodeCount,
-        edgeCount,
-        offsets: offsets,
-        neighbors: neighbors,
-        tieBits,
-        levels,
+        offsets,
+        neighbors,
+        tie,
         predecessors
       })
     );

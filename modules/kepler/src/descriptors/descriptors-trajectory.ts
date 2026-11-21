@@ -343,7 +343,7 @@ export const TRAJECTORY_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     [
       ...describeSegmentParameters(),
       describeConstant('metric', 'basic'),
-      describeConstant('modeSpeedBreaks', 'basic')
+      describeConstant('modeSpeedUpperBoundsFloat32', 'basic')
     ],
     [
       describeOutput('trajectory-modal-split', 'summary', 'value'),
@@ -351,7 +351,7 @@ export const TRAJECTORY_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     ],
     [
       STAY_NOTE,
-      'modeSpeedBreaks are positive, strictly ascending, exclusive speed upper bounds in length/second; the final class also catches speeds above the final bound. Mode numbers are speed classes, not inferred transport labels. The table value is count, distance in the frame length unit, or duration in seconds according to metric.'
+      'modeSpeedUpperBoundsFloat32 are positive, strictly ascending, exclusive speed upper bounds in length/second; the final class also catches speeds above the final bound. Mode numbers are speed classes, not inferred transport labels. The table value is count, distance in the frame length unit, or duration in seconds according to metric.'
     ]
   ),
   describeTrajectory(

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getWGSLFloatLiteral} from './wgsl-kernel-nodes';
+
 /**
  * Small dense solvers for one invocation (contributor contract rule 11): a Cholesky factorization
  * for symmetric positive definite systems and an LU factorization with partial pivoting for
@@ -65,6 +67,61 @@ const DENSE_SOLVE_NOT_CONVERGED: u32 = 4u;
  * @internal
  */
 export const DENSE_SOLVE_MAXIMUM_CAPACITY = 64;
+
+/** Largest square f32 function array at the 8,192-byte shader audit limit. @internal */
+export const EQUILIBRATED_CHOLESKY_MAXIMUM_SIZE = 45;
+
+/**
+ * Largest complete caller holding only a matrix, scale and RHS under 8,192 function bytes:
+ * 4 * (44^2 + 2 * 44) = 8,096. Additional caller locals require a smaller size or their own audit.
+ * The per-array generator ceiling of 45 is not a supported size for this complete layout.
+ * @internal
+ */
+export const EQUILIBRATED_CHOLESKY_MAXIMUM_SOLVE_SIZE = 44;
+
+/**
+ * Fixed-size equilibrated factor, solve and inverse-diagonal wrappers for dense Cholesky.
+ * Requires `getDenseCholeskyWGSL(size)` and `choleskyInverseDiagonal_size` in the same module.
+ * The caller supplies its factor-pivot tolerance; factorization receives its square. Function
+ * names and arithmetic match the historical regression wrapper. Each function-local square
+ * array is at most 8,100 bytes (size 45). A caller holding matrix, scale and RHS together supports
+ * at most EQUILIBRATED_CHOLESKY_MAXIMUM_SOLVE_SIZE = 44 (8,096 total bytes); size 45 needs 8,460
+ * bytes in that layout. Regression families retain their smaller limits and caller storage audits.
+ * @internal
+ */
+export function getEquilibratedCholeskyWGSL(size: number, pivotTolerance: number): string {
+  if (!Number.isInteger(size) || size < 1 || size > EQUILIBRATED_CHOLESKY_MAXIMUM_SIZE) {
+    throw new Error(
+      `getEquilibratedCholeskyWGSL size must be an integer in [1, ${EQUILIBRATED_CHOLESKY_MAXIMUM_SIZE}], got ${size}`
+    );
+  }
+  if (
+    !Number.isFinite(pivotTolerance) ||
+    pivotTolerance < 0 ||
+    !Number.isFinite(Math.fround(pivotTolerance ** 2))
+  ) {
+    throw new Error(
+      'getEquilibratedCholeskyWGSL pivotTolerance must be finite, nonnegative and have a finite float32 square'
+    );
+  }
+  const minimumPivotRatio = getWGSLFloatLiteral(pivotTolerance ** 2);
+  return /* wgsl */ `
+fn factorEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>) -> bool {
+  let factorization = factorDenseCholesky_${size}(a, ${size}u, true, ${minimumPivotRatio});
+  *scale = factorization.scale;
+  return factorization.status == 0u;
+}
+
+fn solveEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>, vector: ptr<function, array<f32, ${size}>>) {
+  var factorization = DenseCholesky_${size}(*scale, ${size}u, 0u, 1.0);
+  solveDenseCholesky_${size}(a, &factorization, vector);
+}
+
+fn inverseDiagonalEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>, column: u32) -> f32 {
+  return choleskyInverseDiagonal_${size}(a, column) * (*scale)[column] * (*scale)[column];
+}
+`;
+}
 
 function validateDenseSolveCapacity(generator: string, capacity: number): void {
   if (!Number.isInteger(capacity) || capacity < 1 || capacity > DENSE_SOLVE_MAXIMUM_CAPACITY) {

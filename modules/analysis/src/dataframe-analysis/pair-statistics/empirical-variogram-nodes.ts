@@ -17,16 +17,19 @@ import {
 } from './pair-histogram';
 import {
   getPairStatisticsInputNodes,
+  getPairStatisticsSharedWGSL,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsRowCount
 } from './pair-statistics-grid';
-import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
+import {
+  getPairStatisticsUnitVarianceNodes,
+  PAIR_STATISTICS_UNIT_SCALING_WGSL
+} from './pair-statistics-fixed-point-unit';
 import {getLegacyVariogramFallbackNodes} from './legacy-variogram-fallback';
+import {PAIR_LAG_INDEX_WGSL} from './pair-lag-index-wgsl';
 import type {GPUSpaceTimeVariogramProps} from './gpu-space-time-variogram';
 
 const OPERATION = 'GPUSpaceTimeVariogram';
-/** Fixed-point units per typical cross term, shared with the spatial variogram. */
-const UNITS_PER_TYPICAL_TERM = 16777216;
 
 /** Indexed empirical variogram inputs; the legacy cross layout permits an absent time column. */
 type EmpiricalVariogramProps = Omit<GPUSpaceTimeVariogramProps, 'times'> &
@@ -71,6 +74,51 @@ export function getEmpiricalVariogramNodes<Parameters>(
   const rows = positions.length;
   const bins = (props.lagCount + 1) * (props.temporalLagCount + 1);
   const temporalClasses = props.temporalLagCount + 1;
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  // One complete-case population for the moments, the fixed-point units and the pairs: a row
+  // whose position is outside the window, or whose second value or time is not finite, is
+  // in no pair, so it must not move either center or enter the robust IQR
+  // (a single excluded value of 1e9 would otherwise erase every retained float32 difference).
+  const completeCaseMask = createTransientView(graph, `${id}-complete-case`, 'uint32', rows);
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-complete-case`,
+      operation: OPERATION,
+      variant: 'complete-case',
+      invocationCount: rows,
+      bindings: [
+        {name: 'positions', view: positions, type: 'f32', access: 'read'},
+        {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+        {name: 'firstValues', view: values, type: 'f32', access: 'read'},
+        ...(secondValues
+          ? [
+              {
+                name: 'secondValues',
+                view: secondValues,
+                type: 'f32' as const,
+                access: 'read' as const
+              }
+            ]
+          : []),
+        ...(times
+          ? [{name: 'times', view: times, type: 'f32' as const, access: 'read' as const}]
+          : []),
+        ...(mask
+          ? [{name: 'mask', view: mask, type: 'u32' as const, access: 'read' as const}]
+          : []),
+        {name: 'completeCase', view: completeCaseMask, type: 'u32', access: 'read_write'}
+      ],
+      declarations: getPairStatisticsSharedWGSL(gridSize),
+      body: `let included = ${mask ? 'mask[maskOffset + index] != 0u' : 'true'};
+  let first = firstValues[firstValuesOffset + index];
+  let second = ${secondValues ? 'secondValues[secondValuesOffset + index]' : 'first'};
+  let time = ${times ? 'times[timesOffset + index]' : '0.0'};
+  let position = positionsOffset + 2u * index;
+  let point = vec2f(positions[position], positions[position + 1u]);
+  let complete = included && isPointValid(readLattice(), point.x, point.y) && isFiniteValue(first) && isFiniteValue(second) && isFiniteValue(time);
+  completeCase[completeCaseOffset + index] = select(0u, 1u, complete);`
+    })
+  );
   const inputs = getPairStatisticsInputNodes<Parameters>(graph, {
     id,
     operation: OPERATION,
@@ -78,14 +126,14 @@ export function getEmpiricalVariogramNodes<Parameters>(
     parameters,
     gridSize,
     values,
-    mask
+    mask: completeCaseMask
   });
-  const nodes = [...inputs.nodes];
+  nodes.push(...inputs.nodes);
   const unit = getPairStatisticsUnitVarianceNodes<Parameters>(graph, {
     id,
     operation: OPERATION,
     values,
-    mask,
+    mask: completeCaseMask,
     statistics: inputs.statistics!
   });
   nodes.push(...unit.nodes);
@@ -100,13 +148,13 @@ export function getEmpiricalVariogramNodes<Parameters>(
       parameters,
       gridSize,
       values: secondValues,
-      mask
+      mask: completeCaseMask
     });
     const secondUnitNodes = getPairStatisticsUnitVarianceNodes<Parameters>(graph, {
       id: `${id}-second`,
       operation: OPERATION,
       values: secondValues,
-      mask,
+      mask: completeCaseMask,
       statistics: second.statistics!
     });
     nodes.push(...second.nodes, ...secondUnitNodes.nodes);
@@ -115,7 +163,8 @@ export function getEmpiricalVariogramNodes<Parameters>(
   }
 
   // Fixed-point scale of the cross term: 2^24 units per sqrt(u1 * u2); 0 for a constant column.
-  const scale = createTransientView(graph, `${id}-scale`, 'float32', 1);
+  // [representable reciprocal or zero, geometric-mean unit mantissa, exponent].
+  const scale = createTransientView(graph, `${id}-scale`, 'float32', 3);
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-scale`,
@@ -136,9 +185,17 @@ export function getEmpiricalVariogramNodes<Parameters>(
           : []),
         {name: 'scale', view: scale, type: 'f32', access: 'read_write'}
       ],
+      declarations: PAIR_STATISTICS_UNIT_SCALING_WGSL,
       body: `let first = firstUnit[firstUnitOffset];
   let second = ${secondUnit ? 'secondUnit[secondUnitOffset]' : 'first'};
-  scale[scaleOffset] = select(0.0, ${UNITS_PER_TYPICAL_TERM}.0 / (sqrt(first) * sqrt(second)), first > 0.0 && second > 0.0);`
+  let firstPower = i32(firstUnit[firstUnitOffset + 1u]);
+  let secondPower = ${secondUnit ? 'i32(secondUnit[secondUnitOffset + 1u])' : 'firstPower'};
+  // Unit exponents are multiples of 64, so their mean is exact.
+  let unitPower = (firstPower + secondPower) / 2;
+  let unit = sqrt(first) * sqrt(second);
+  scale[scaleOffset] = getPairStatisticsFixedPointScale(unit, unitPower);
+  scale[scaleOffset + 1u] = unit;
+  scale[scaleOffset + 2u] = f32(unitPower);`
     })
   );
 
@@ -181,7 +238,7 @@ export function getEmpiricalVariogramNodes<Parameters>(
 
   // Channels: 0 count, 1 positive terms, 2 negative terms, 3 and 4 their large-term channels.
   const channelCount = 5;
-  const declarations = `
+  const declarations = `${PAIR_STATISTICS_UNIT_SCALING_WGSL}
 const LAG_COUNT: u32 = ${props.lagCount}u;
 const TEMPORAL_LAG_COUNT: u32 = ${props.temporalLagCount}u;
 const TEMPORAL_CLASSES: u32 = ${temporalClasses}u;
@@ -201,23 +258,26 @@ const LARGE_TERM_UNIT: f32 = ${2 ** PAIR_HISTOGRAM_LARGE_TERM_SHIFT}.0;`;
       {name: 'rowTable', view: rowTable, type: 'f32', access: 'read'},
       {name: 'scaleView', view: scale, type: 'f32', access: 'read'}
     ],
-    declarations,
+    declarations: `${declarations}\n${PAIR_LAG_INDEX_WGSL}`,
     focusPrologue: `let focusBase = rowTableOffset + focus * 3u;
     let focusFirst = rowTable[focusBase];
     let focusSecond = rowTable[focusBase + 1u];
     let focusTime = rowTable[focusBase + 2u];
     let maximumTime = readParameter(5u);
     let scale = scaleView[scaleViewOffset];
+    let unit = scaleView[scaleViewOffset + 1u];
+    let unitPower = i32(scaleView[scaleViewOffset + 2u]);
     let focusUsable = isFiniteValue(focusFirst) && isFiniteValue(maximumTime) && maximumTime > 0.0;`,
     pairAction: `let otherBase = rowTableOffset + neighbor * 3u;
             let otherFirst = rowTable[otherBase];
             if (!focusUsable || !isFiniteValue(otherFirst)) { continue; }
             let timeLag = abs(rowTable[otherBase + 2u] - focusTime);
             if (timeLag > maximumTime) { continue; }
-            let spatialClass = select(1u + min(u32(pairDistance / lattice.maximumDistance * f32(LAG_COUNT)), LAG_COUNT - 1u), 0u, deltaX == 0.0 && deltaY == 0.0);
-            let temporalClass = select(1u + min(u32(timeLag / maximumTime * f32(TEMPORAL_LAG_COUNT)), TEMPORAL_LAG_COUNT - 1u), 0u, timeLag == 0.0);
+            let spatialClass = select(1u + getPairLagIndex(pairDistance, lattice.maximumDistance, LAG_COUNT), 0u, deltaX == 0.0 && deltaY == 0.0);
+            let temporalClass = select(1u + getPairLagIndex(timeLag, maximumTime, TEMPORAL_LAG_COUNT), 0u, timeLag == 0.0);
             let bin = spatialClass * TEMPORAL_CLASSES + temporalClass;
-            let term = 0.5 * (rowTable[otherBase] - focusFirst) * (rowTable[otherBase + 1u] - focusSecond) * scale;
+            let amount = 0.5 * (rowTable[otherBase] - focusFirst) * (rowTable[otherBase + 1u] - focusSecond);
+            let term = scalePairStatisticsAmount(amount, unit, unitPower, scale);
             accumulate(bin, 0u, 1u);
             accumulateScaled(bin, 1u, 3u, term);
             accumulateScaled(bin, 2u, 4u, -term);`
@@ -244,12 +304,16 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', bins)}`,
   let count = readPairAccumulator(index, 0u);
   let positive = readPairAccumulator(index, 1u) + readPairAccumulator(index, 3u) * LARGE_TERM_UNIT;
   let negative = readPairAccumulator(index, 2u) + readPairAccumulator(index, 4u) * LARGE_TERM_UNIT;
-  // A zero scale means a constant column: every term is 0.
-  let value = select(0.0, (positive - negative) / scale / count, scale > 0.0);
+  let unit = scaleView[scaleViewOffset + 1u];
+  let unitPower = i32(scaleView[scaleViewOffset + 2u]);
+  let value = decodePairStatisticsAmount(positive - negative, unit, unitPower, scale) / max(count, 1.0);
   let finite = isFiniteValue(value);
   semivariances[semivariancesOffset + index] = select(getQuietNaN(index), value, count > 0.0 && finite);
   pairCounts[pairCountsOffset + index] = readPairCount(index, 0u);
-  status[statusOffset + index] = select(select(select(2u, 0u, finite), 3u, readPairOverflow()), 1u, count == 0.0);`
+  // A nonzero high word of the exact 64-bit pair count saturates the uint32 pairCounts output:
+  // report it as status 3, as the cross variogram and marked point statistics do.
+  let countSaturated = accumulators[accumulatorsOffset + index * ${channelCount * 2}u + 1u] != 0u;
+  status[statusOffset + index] = select(select(select(2u, 0u, finite), 3u, readPairOverflow() || countSaturated), 1u, count == 0.0);`
     })
   );
   return nodes;

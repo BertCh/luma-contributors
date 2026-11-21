@@ -21,7 +21,11 @@ export type VecchiaFisherFitOptions = {
   evaluate: (
     covariance: GPUVecchiaCovariance
   ) => Promise<VecchiaFisherEvaluation> | VecchiaFisherEvaluation;
-  /** Estimate the nugget. Default true; a zero nugget stays zero and fixed. */
+  /**
+   * Estimate the requested nugget. Default true; an initial zero disables nugget estimation.
+   * The effective nugget is always at least the model floor, which may move with the sill even
+   * when the requested nugget is fixed (including zero).
+   */
   fitNugget?: boolean;
   /** Most Fisher iterations. Default 30. */
   maximumIterations?: number;
@@ -40,6 +44,14 @@ export type VecchiaFisherFit = {
   covariance: GPUVecchiaCovariance;
   logLikelihood: number;
   iterationCount: number;
+  /** Legacy named exit; a stall retains the last usable fit. See stallReason for its cause. */
+  stopReason: 'converged' | 'iteration-limit' | 'initial-failure' | 'line-search-stall';
+  /**
+   * Present for a stall: could not resolve all required branches, or a line search found no
+   * acceptable step. At a fixed nugget on its floor, either unresolved one-sided branch stops
+   * the fit before any trial, even when the other branch has a usable direction.
+   */
+  stallReason?: 'direction-failure' | 'line-search-rejected';
   /** One when the Newton decrement fell below the tolerance. */
   converged: boolean;
   /** One when the budget ran out first. */
@@ -48,7 +60,7 @@ export type VecchiaFisherFit = {
   failed: boolean;
   /** True when the nugget stopped at `getVecchiaNuggetFloor`. */
   atNuggetFloor: boolean;
-  /** Log-likelihood and Newton decrement after each accepted iteration. */
+  /** Accepted post-step log-likelihood and the pre-step Newton decrement that proposed it. */
   history: {logLikelihood: number; decrement: number}[];
 };
 
@@ -57,7 +69,14 @@ const MAXIMUM_LINE_SEARCH_HALVINGS = 6;
 const MAXIMUM_PARAMETER_STEP = 1.5;
 
 function isUsable(evaluation: VecchiaFisherEvaluation): boolean {
-  return evaluation.failedSiteCount === 0 && Number.isFinite(evaluation.logLikelihood);
+  return (
+    evaluation.failedSiteCount === 0 &&
+    Number.isFinite(evaluation.logLikelihood) &&
+    evaluation.score.length >= 3 &&
+    evaluation.information.length >= 6 &&
+    Array.from(evaluation.score).every(Number.isFinite) &&
+    Array.from(evaluation.information).every(Number.isFinite)
+  );
 }
 
 /** Solves a small dense symmetric system restricted to `active`, by Gaussian elimination. */
@@ -65,15 +84,28 @@ function solveActive(
   information: ArrayLike<number>,
   score: ArrayLike<number>,
   active: readonly number[]
-): number[] {
+): number[] | undefined {
   const matrixIndex = (row: number, column: number): number => {
     const first = Math.min(row, column);
     const second = Math.max(row, column);
     return first === 0 ? second : first === 1 ? 2 + second : 5;
   };
-  const size = active.length;
-  const matrix = active.map(row => active.map(column => information[matrixIndex(row, column)]));
-  const right = active.map(row => score[row]);
+  // A zero-information, zero-score row is unidentifiable and contributes no step. A nonzero
+  // score or cross-information in such a row cannot be solved reliably: retain the last fit.
+  const supported = active.filter(row => information[matrixIndex(row, row)] > 0);
+  for (const row of active) {
+    if (
+      information[matrixIndex(row, row)] < 0 ||
+      (!supported.includes(row) &&
+        (score[row] !== 0 || active.some(column => information[matrixIndex(row, column)] !== 0)))
+    )
+      return undefined;
+  }
+  const size = supported.length;
+  const matrix = supported.map(row =>
+    supported.map(column => information[matrixIndex(row, column)])
+  );
+  const right = supported.map(row => score[row]);
   for (let row = 0; row < size; row++) {
     matrix[row][row] *= 1 + 1e-9;
   }
@@ -84,6 +116,7 @@ function solveActive(
         best = row;
       }
     }
+    if (!Number.isFinite(matrix[best][pivot]) || matrix[best][pivot] === 0) return undefined;
     [matrix[pivot], matrix[best]] = [matrix[best], matrix[pivot]];
     [right[pivot], right[best]] = [right[best], right[pivot]];
     for (let row = pivot + 1; row < size; row++) {
@@ -102,7 +135,41 @@ function solveActive(
     }
     solution[row] = value / matrix[row][row];
   }
-  return solution;
+  if (!solution.every(Number.isFinite)) return undefined;
+  return active.map(parameter => {
+    const index = supported.indexOf(parameter);
+    return index < 0 ? 0 : solution[index];
+  });
+}
+
+type FisherDirection = {step: number[]; decrement: number; followsFloor: boolean};
+
+/** Fisher direction on a smooth branch, optionally restricted to a one-sided sill step. */
+function getFisherDirection(
+  evaluation: VecchiaFisherEvaluation,
+  active: readonly number[],
+  followsFloor: boolean,
+  sillSign?: number
+): FisherDirection | undefined {
+  const score = Array.from(evaluation.score);
+  const information = Array.from(evaluation.information);
+  if (followsFloor) {
+    score[0] += score[2];
+    information[0] += 2 * information[2] + information[5];
+    information[1] += information[4];
+  }
+  let step = solveActive(information, score, active);
+  if (!step) return undefined;
+  if (sillSign !== undefined && step[0] * sillSign < 0) {
+    // The constrained optimum of this branch is on its sill=0 boundary. Re-solve its free
+    // range direction, retaining the cross-terms in the unconstrained branch solve above.
+    const remaining = active.filter(parameter => parameter !== 0);
+    const boundary = solveActive(information, score, remaining);
+    if (!boundary) return undefined;
+    step = active.map(parameter => (parameter === 0 ? 0 : boundary[remaining.indexOf(parameter)]));
+  }
+  const decrement = step.reduce((sum, value, row) => sum + value * score[active[row]], 0);
+  return Number.isFinite(decrement) && decrement >= 0 ? {step, decrement, followsFloor} : undefined;
 }
 
 /**
@@ -110,6 +177,9 @@ function solveActive(
  * (Guinness 2019) in log parameters, with a CPU-driven outer loop and a halving line search. Each
  * step reads one evaluation back. Nugget floors from `getVecchiaNuggetFloor` are enforced by clamping
  * the proposal and dropping the nugget from the system while the score pushes against the floor.
+ * An estimated nugget pinned to the floor follows the sill in both directions. At a fixed positive
+ * nugget equal to the floor, convergence checks both feasible one-sided sill directions. Zero-score,
+ * zero-information coordinates are held fixed; an unusable system stops at the last accepted fit.
  */
 export async function fitVecchiaCovarianceFisherScoring(
   options: VecchiaFisherFitOptions
@@ -124,59 +194,74 @@ export async function fitVecchiaCovarianceFisherScoring(
     Math.log(initial.range),
     Math.log(Math.max(initial.nugget ?? 0, Number.MIN_VALUE))
   ];
-  const toCovariance = (values: readonly number[]): GPUVecchiaCovariance => {
+  const toCovariance = (
+    values: readonly number[],
+    pinEstimatedNugget = false
+  ): GPUVecchiaCovariance => {
     const sill = Math.exp(values[0]);
     const proposedNugget = estimatesNugget ? Math.exp(values[2]) : (initial.nugget ?? 0);
     return {
       model: initial.model,
       sill,
       range: Math.exp(values[1]),
-      nugget: Math.max(proposedNugget, getVecchiaNuggetFloor({model: initial.model, sill}))
+      nugget: pinEstimatedNugget
+        ? getVecchiaNuggetFloor({model: initial.model, sill})
+        : Math.max(proposedNugget, getVecchiaNuggetFloor({model: initial.model, sill}))
     };
   };
-  let current = await evaluate(toCovariance(theta));
+  let covariance = toCovariance(theta);
+  let current = await evaluate(covariance);
   const history: {logLikelihood: number; decrement: number}[] = [];
   if (!isUsable(current)) {
     return {
-      covariance: toCovariance(theta),
+      covariance,
       logLikelihood: Number.NaN,
       iterationCount: 0,
       converged: false,
       iterationLimitReached: false,
       failed: true,
+      stopReason: 'initial-failure',
       atNuggetFloor: false,
       history
     };
   }
   let iteration = 0;
   let converged = false;
+  let stallReason: VecchiaFisherFit['stallReason'];
   for (; iteration < maximumIterations; iteration++) {
-    const atFloor = (): boolean => {
-      const covariance = toCovariance(theta);
-      return (
-        covariance.nugget! <=
-        getVecchiaNuggetFloor({model: initial.model, sill: covariance.sill}) * (1 + 1e-9)
-      );
-    };
-    const nuggetFrozen = estimatesNugget && atFloor() && current.score[2] < 0;
+    const floor = getVecchiaNuggetFloor(covariance);
+    const atFloor = covariance.nugget! <= floor * (1 + 1e-9);
+    const nuggetFrozen = estimatesNugget && atFloor && current.score[2] < 0;
     const active = [0, 1];
-    if (estimatesNugget && !nuggetFrozen) {
-      active.push(2);
+    if (estimatesNugget && !nuggetFrozen) active.push(2);
+    const followsFloor = floor > 0 && atFloor && (!estimatesNugget || nuggetFrozen);
+    const requestedNugget = initial.nugget ?? 0;
+    const fixedAtKink =
+      !estimatesNugget &&
+      floor > 0 &&
+      requestedNugget > 0 &&
+      Math.abs(requestedNugget - floor) <= floor * 1e-12;
+    // At equality a fixed positive nugget has two feasible one-sided derivatives. Check both
+    // quadratics before claiming convergence: decreasing sill need not decrease that nugget.
+    // Conservatively require both branch systems to be resolved before taking either direction.
+    const directions = fixedAtKink
+      ? [
+          getFisherDirection(current, active, false, -1),
+          getFisherDirection(current, active, true, 1)
+        ]
+      : [getFisherDirection(current, active, followsFloor)];
+    if (directions.some(direction => !direction)) {
+      stallReason = 'direction-failure';
+      break;
     }
-    // Held at the floor, the nugget moves with the sill, so log sill also carries its score and
-    // information, keeping the step a true Fisher step for the constrained problem.
-    const score = Array.from(current.score);
-    const information = Array.from(current.information);
-    if (nuggetFrozen) {
-      score[0] += current.score[2];
-      information[0] += 2 * current.information[2] + current.information[5];
-      information[1] += current.information[4];
-    }
-    const step = solveActive(information, score, active);
-    const decrement = step.reduce((sum, value, row) => sum + value * score[active[row]], 0);
+    const direction = directions.reduce<FisherDirection | undefined>(
+      (best, candidate) =>
+        candidate && (!best || candidate.decrement > best.decrement) ? candidate : best,
+      undefined
+    )!;
+    const {step, decrement} = direction;
     if (decrement < tolerance) {
       converged = true;
-      history.push({logLikelihood: current.logLikelihood, decrement});
       break;
     }
     const largest = Math.max(...step.map(Math.abs));
@@ -191,29 +276,50 @@ export async function fitVecchiaCovarianceFisherScoring(
       if (estimatesNugget) {
         const floor = getVecchiaNuggetFloor({model: initial.model, sill: Math.exp(trial[0])});
         if (floor > 0) {
-          trial[2] = Math.max(trial[2], Math.log(floor));
+          trial[2] = nuggetFrozen ? Math.log(floor) : Math.max(trial[2], Math.log(floor));
         }
       }
-      const evaluation = await evaluate(toCovariance(trial));
+      const trialCovariance = toCovariance(trial, nuggetFrozen);
+      if (
+        !(trialCovariance.sill > 0) ||
+        !(trialCovariance.range > 0) ||
+        ![
+          trialCovariance.sill,
+          trialCovariance.range,
+          trialCovariance.nugget!,
+          trialCovariance.sill + trialCovariance.nugget!
+        ].every(Number.isFinite)
+      ) {
+        scale /= 2;
+        continue;
+      }
+      const evaluation = await evaluate(trialCovariance);
       if (isUsable(evaluation) && evaluation.logLikelihood >= current.logLikelihood - noise) {
         theta = trial;
+        covariance = trialCovariance;
         current = evaluation;
         accepted = true;
       } else {
         scale /= 2;
       }
     }
-    history.push({logLikelihood: current.logLikelihood, decrement});
     if (!accepted) {
+      stallReason = 'line-search-rejected';
       break;
     }
+    history.push({logLikelihood: current.logLikelihood, decrement});
   }
-  const covariance = toCovariance(theta);
   return {
     covariance,
     logLikelihood: current.logLikelihood,
     iterationCount: iteration,
     converged,
+    ...(stallReason ? {stallReason} : {}),
+    stopReason: converged
+      ? 'converged'
+      : iteration >= maximumIterations
+        ? 'iteration-limit'
+        : 'line-search-stall',
     iterationLimitReached: !converged && iteration >= maximumIterations,
     failed: false,
     atNuggetFloor:

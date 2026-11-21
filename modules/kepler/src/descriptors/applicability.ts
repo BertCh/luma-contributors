@@ -5,15 +5,13 @@
 import {
   evaluateGPUAnalysisParameterCondition,
   getGPUAnalysisParameterComparisons
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 import {
   assignGPUAnalysisFieldRoles,
   evaluateGPUAnalysisRequirements,
   getGPUAnalysisCatalogGeometryForDataKind,
   getGPUAnalysisQuestion,
-  getGPUVecchiaLogLikelihoodParameterValues,
-  getGPUVecchiaSpaceTimeLogLikelihoodParameterValues,
   GPU_ANALYSIS_QUESTIONS,
   guessGPUAnalysisMeasurementLevel,
   matchGPUAnalysisFieldRole,
@@ -26,11 +24,19 @@ import {
   type GPUAnalysisRequirementResult,
   type GPUAnalysisRequirementSpec,
   type GPUSpatialAnalysisDataKind
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
+import {
+  getGPUVecchiaLogLikelihoodParameterValues,
+  getGPUVecchiaSpaceTimeLogLikelihoodParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   isValidationVecchiaCovarianceUsable,
   makeValidationSpaceTimeCovariance
 } from '../analysis/catalog-validation-vecchia';
+import {
+  isDbscanCpuPointCountAdmitted,
+  MAXIMUM_DBSCAN_CPU_POINTS
+} from '../analysis/catalog-platform3-b-clusters';
 import type {
   CatalogInputSpec,
   CatalogOperationBinding,
@@ -144,6 +150,13 @@ export function isKeplerDatasetCompatibleWithInput(
   inputKind: GPUSpatialAnalysisDataKind,
   restrictedGeometry?: CatalogGeometry
 ): boolean {
+  if (
+    input.acceptsTable &&
+    dataset.kind === 'attributes' &&
+    dataset.geometryColumns.length === 0 &&
+    getKeplerDatasetGeometries(dataset).length === 0
+  )
+    return restrictedGeometry === undefined;
   if (input.dataKind === 'table' || input.dataKind === 'raster') {
     const expectedKind = input.dataKind === 'table' ? 'attributes' : 'surface';
     return (
@@ -1849,11 +1862,17 @@ function evaluateApplicability(
     // Requirements: the descriptor's, plus the binding's own capacities where the descriptor is
     // silent or states a looser limit. A requirement about a column role that has no column cannot
     // be evaluated: the role is optional and unused, or it is missing and already listed.
+    const selectedTableRoute =
+      input.dataKind === 'table' ||
+      (input.acceptsTable &&
+        dataset.kind === 'attributes' &&
+        getKeplerDatasetGeometries(dataset).length === 0);
     const own: (GPUAnalysisRequirementSpec &
       Pick<KeplerOperationRequirement, 'statisticsScope'>)[] = descriptor.requirements
       .filter(
         requirement =>
           requirement.input === inputName &&
+          !(selectedTableRoute && requirement.id === 'maximum-vertices') &&
           evaluateGPUAnalysisParameterCondition(requirement.activeWhen, requirementParameters) &&
           (requirement.role === undefined ||
             toNames(roles.roleColumns[requirement.role]).length > 0)
@@ -1889,7 +1908,7 @@ function evaluateApplicability(
               limit: input.maximumFeatures,
               remedy: 'Filter the layer to the area of interest or aggregate it first'
             },
-            ...(input.dataKind === 'table'
+            ...(selectedTableRoute
               ? []
               : [
                   {
@@ -2237,7 +2256,7 @@ function evaluateApplicability(
       radius >= spacing.nearestNeighbor.maximum
     ) {
       warnings.push(
-        `At ${clusteringRadius}=${radius}, chains of neighbours can join every point into one cluster; reduce ${clusteringRadius} to look for smaller groups and review minimumPoints and the resulting noise`
+        `At ${clusteringRadius}=${radius}, chains of neighbours can join every point into one cluster; reduce ${clusteringRadius} to look for smaller groups and review minimumSamples and the resulting noise`
       );
     }
   }
@@ -2346,6 +2365,18 @@ function evaluateApplicability(
   }
 
   // The CPU engine's work caps for pairwise work (grid work raised the cell size above).
+  if (
+    binding.id === 'density-clustering' &&
+    getKeplerEffectiveEngine(binding, executionEngine) === 'cpu' &&
+    assigned[0] &&
+    !isDbscanCpuPointCountAdmitted(assigned[0].dataset.rowCount)
+  ) {
+    add(
+      'hard',
+      `CPU DBSCAN accepts at most ${MAXIMUM_DBSCAN_CPU_POINTS} total points; received ${assigned[0].dataset.rowCount}`,
+      'Filter or partition the layer'
+    );
+  }
   const cpuCap = KEPLER_CPU_WORK_CAPS[binding.id];
   if (
     cpuCap?.kind === 'rows-squared' &&

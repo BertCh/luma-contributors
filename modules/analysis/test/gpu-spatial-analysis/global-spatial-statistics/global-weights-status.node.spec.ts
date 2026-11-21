@@ -124,7 +124,7 @@ for (const mode of ['tiled', 'reference'] as const) {
               ...props,
               output: {...props.output, status: {candidateOverflow: view('uint32', 2)}}
             })
-        ).toThrow(/candidateOverflow.*1/);
+        ).toThrow(/candidateOverflow must contain one uint32 row/);
         expect(
           () =>
             new GPUGlobalSpatialStatistics({

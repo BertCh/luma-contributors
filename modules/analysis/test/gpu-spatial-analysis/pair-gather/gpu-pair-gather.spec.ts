@@ -81,8 +81,11 @@ it('final1 compact pairs gather rows independently of permuted caller IDs and pr
         output: {
           leftRows: output('left'),
           rightRows: output('right'),
-          rowCount: output('count'),
-          status: {overflow: output('overflow'), candidateOverflow: output('candidate')}
+          status: {
+            count: output('count'),
+            overflow: output('overflow'),
+            candidateOverflow: output('candidate')
+          }
         }
       });
     }
@@ -104,7 +107,7 @@ it('final1 compact pairs gather rows independently of permuted caller IDs and pr
 });
 
 for (const kind of ['gather', 'predicate', 'prepared'] as const) {
-  it(`F5 ${kind} example clears the removed tract bin after the pair prefix shrinks`, async () => {
+  it(`F5 R8 ${kind} example counts the active prefix and clears bins on reuse`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const fixture = new RecipeTestFixture(device, `histogram-reuse-${kind}`);
@@ -146,6 +149,34 @@ for (const kind of ['gather', 'predicate', 'prepared'] as const) {
         pairs: pairs('pairs'),
         spatialContext: {coordinateSpace: 'planar' as const, metric: 'native' as const}
       };
+      const prefixControl = fixture.output('prefix-control', 'uint32', 2);
+      prefixControl.buffer.write(Uint32Array.of(0, 1));
+      const add = fixture.graph.add.bind(fixture.graph);
+      let prefixWriters = 0;
+      // Interpose only the fixture data writer, immediately before the example's actual
+      // membership kernel. Keep its shader, bindings and GPUHistogram untouched.
+      fixture.graph.add = node => {
+        if ('id' in node && typeof node.id === 'string' && node.id.endsWith('active-pairs')) {
+          prefixWriters++;
+          add(
+            createWGSLKernelNode(fixture.graph, {
+              id: 'fixture-published-prefix',
+              operation: 'review-fixture',
+              invocationCount: 2,
+              bindings: [
+                {name: 'control', view: prefixControl.view, type: 'u32', access: 'read'},
+                {name: 'rightRows', view: input.pairs.rightRows, type: 'u32', access: 'read_write'},
+                {name: 'count', view: input.pairs.status.count, type: 'u32', access: 'read_write'}
+              ],
+              body: `if (control[controlOffset] != 0u) {
+              rightRows[rightRowsOffset + index] = index;
+              if (index == 0u) { count[countOffset] = control[controlOffset + 1u]; }
+            }`
+            })
+          );
+        }
+        add(node);
+      };
       const preparedResult =
         kind === 'prepared'
           ? await runPreparedExample(fixture.graph, {...input, candidatePairs: pairs('candidates')})
@@ -160,6 +191,8 @@ for (const kind of ['gather', 'predicate', 'prepared'] as const) {
             })
           : await runPredicateExample(fixture.graph, input));
       const bins = fixture.output('bins', 'uint32', 2);
+      expect(prefixWriters).toBe(1);
+      fixture.graph.add = add;
       fixture.graph.add(
         createWGSLKernelNode(fixture.graph, {
           id: 'capture-tract-bins',
@@ -178,6 +211,15 @@ for (const kind of ['gather', 'predicate', 'prepared'] as const) {
       parkPositions.buffer.write(new Float32Array([2.2, 0.2, 2.8, 0.2, 2.8, 0.8, 2.2, 0.8]));
       submitGraph(device, compiled, undefined);
       expect(await fixture.readUint32(bins, 2)).toEqual([0, 1]);
+      // Independent hand oracle: rightRows=[0,1], count=1 includes only bin 0.
+      // Inverting select's arms would instead count spare slot 1. Reusing the same
+      // compiled graph with count=0 must clear both bins, not retain old counts.
+      prefixControl.buffer.write(Uint32Array.of(1, 1));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(bins, 2)).toEqual([1, 0]);
+      prefixControl.buffer.write(Uint32Array.of(1, 0));
+      submitGraph(device, compiled, undefined);
+      expect(await fixture.readUint32(bins, 2)).toEqual([0, 0]);
     } finally {
       compiled?.destroy();
       prepared?.destroy();
@@ -350,8 +392,7 @@ it.each([
         output: {
           leftRows,
           rightRows: createOutput('right-rows'),
-          rowCount: createOutput('row-count'),
-          status: {overflow: createOutput('overflow')}
+          status: {count: createOutput('row-count'), overflow: createOutput('overflow')}
         }
       })
     );
@@ -416,8 +457,7 @@ it('GPUPairGather fills unmatched and out-of-range uint32 column rows with all o
         output: {
           leftRows: outputs['leftRows'],
           rightRows: outputs['rightRows'],
-          rowCount: outputs['rowCount'],
-          status: {overflow: outputs['overflow']}
+          status: {count: outputs['rowCount'], overflow: outputs['overflow']}
         }
       });
     }
@@ -484,8 +524,8 @@ function createGather(
     output: {
       leftRows: outputs['leftRows'],
       rightRows: outputs['rightRows'],
-      rowCount: outputs['rowCount'],
       status: {
+        count: outputs['rowCount'],
         overflow: outputs['overflow'],
         matchedCount: outputs['matchedCount'],
         candidateOverflow: outputs['candidateOverflow']

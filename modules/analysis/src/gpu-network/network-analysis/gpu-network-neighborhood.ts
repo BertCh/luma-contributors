@@ -399,9 +399,11 @@ function getOutputViews(
     output.nodes?.status.count,
     output.nodes?.status.overflow,
     output.nodes?.status.requiredCount,
+    output.nodes?.status.candidateOverflow,
     output.edges?.ids,
     output.edges?.status.count,
     output.edges?.status.overflow,
-    output.edges?.status.requiredCount
+    output.edges?.status.requiredCount,
+    output.edges?.status.candidateOverflow
   ];
 }

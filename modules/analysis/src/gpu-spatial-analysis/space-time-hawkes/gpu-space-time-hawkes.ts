@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotHawkesBudgetProps as snapshotSpaceTimeHawkesProps} from './hawkes-budget-snapshot';
+import {createHawkesDecayProfileNodes, HAWKES_PROFILE_LENGTH} from './hawkes-decay-profile-nodes';
+import {HAWKES_DECAY_REFINEMENTS, HAWKES_LIKELIHOOD_DECREASE_SLACK} from './hawkes-finite-window';
 import {
   createTransientView,
   GPUSort,
@@ -53,7 +56,9 @@ import {
 import {resolveGPUSpaceTimeTemporalContext} from '../space-time-tests/space-time-bands';
 import {
   GPU_SPACE_TIME_HAWKES_ESTIMATE_LENGTH,
-  GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH
+  GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH,
+  SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS,
+  resolveSpaceTimeHawkesMaximumIterations
 } from './space-time-hawkes-parameters';
 import {
   getSpaceTimeHawkesEventWGSL,
@@ -72,10 +77,11 @@ const OPERATION = 'GPUSpaceTimeHawkes';
 const IGNORED_ROW_KEY = 0xffffffff;
 
 /** Default number of EM iterations that are unrolled into the graph. */
-export const GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS = 100;
+export const GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS =
+  SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS;
 
 /**
- * Largest unrolled iteration count. Each iteration is three command nodes, so this keeps the graph
+ * Largest unrolled iteration count. Each iteration is at most 32 command nodes, so this keeps the graph
  * far below the shared command node budget.
  */
 export const GPU_SPACE_TIME_HAWKES_MAXIMUM_ITERATIONS = 1000;
@@ -125,7 +131,10 @@ export type GPUSpaceTimeHawkesOutput = {
   status?: GPUIterationStatusPort &
     GPUCandidateStatusPort &
     GPUInvalidStatusPort &
-    GPUApproximationStatusPort;
+    GPUApproximationStatusPort & {
+      /** Resolved iteration budget (one uint32), beside the executed iterationCount. */
+      maximumIterations?: GraphDataView<'uint32'>;
+    };
 };
 
 /**
@@ -192,9 +201,14 @@ export type GPUSpaceTimeHawkesProps = {
  * offspring displacement. Each iteration computes, for every event `j`, the responsibilities
  * `p_jj = mu / lambda_j` and `p_ij = (offspring term of i) / lambda_j` (E-step) and updates
  * `mu = sum_j p_jj / (A T)`, `omega = sum_j (1 - p_jj) / sum_i (1 - exp(-beta (T - t_i)))`,
- * `beta = sum p_ij / sum p_ij lag_ij` and `sigma^2 = sum p_ij d_ij^2 / (2 sum p_ij)` (M-step), where
- * `A` is the window area and `T` the duration. Offspring that would fall after `T` are accounted
- * for in `omega`; offspring that would fall outside the spatial window are not, so the spatial
+ * `sigma^2 = sum p_ij d_ij^2 / (2 sum p_ij)` (M-step). Decay maximizes the finite-window
+ * profile `Q(beta) = S log(beta) - beta L - S log(M(beta))`, refitting `omega=S/M(beta)`
+ * at every candidate, with S the triggered mass, L the weighted lag and M the temporal mass.
+ * Eight bracketed Newton refinements, started at the entering decay, use tiled window integrals;
+ * the last evaluated iterate is the fit, and beta*T=1e-6 represents the zero-decay boundary. An
+ * actual likelihood check restores the entering fit when the likelihood falls by more than the
+ * float32 rounding allowance `HAWKES_LIKELIHOOD_DECREASE_SLACK` (2^-16) of the summed magnitudes.
+ * `A` is the window area and `T` the duration. Offspring outside the spatial window are not corrected, so the spatial
  * kernel is treated as having its whole mass in the window (keep `sigma` small against the window).
  * Pairs beyond `maximumLag` or `maximumDistance` are dropped and the kernel is not renormalized, so
  * choose them at several `1 / beta` and several `sigma`. Simultaneous events (equal times) do not
@@ -216,7 +230,7 @@ export type GPUSpaceTimeHawkesProps = {
  * `tolerance`) and disarms a GPU dispatch gate, so finished iterations launch nothing. If the budget is
  * exhausted first the latest estimates are still published with `iterationLimitReached` set.
  *
- * Cost per iteration is `events * min(maximumParents, candidates in the lag bound)`; memory is
+ * Cost per iteration is two event/parent walks plus eight tiled window-integral passes; memory is
  * 16 bytes per event plus the sort. Event counts are limited to 2^24 (float32 counts) and by the
  * 16-byte event table binding.
  */
@@ -237,6 +251,7 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSpaceTimeHawkesProps) {
+    props = snapshotSpaceTimeHawkesProps(props);
     this.id = props.id ?? 'space-time-hawkes';
     this.props = props;
     const {id} = this;
@@ -245,8 +260,7 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
       measure: 'area'
     });
     this.temporalContext = resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
-    this.maximumIterations =
-      props.maximumIterations ?? GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS;
+    this.maximumIterations = resolveSpaceTimeHawkesMaximumIterations(props.maximumIterations);
     this.maximumParents = props.maximumParents ?? GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_PARENTS;
     validateCapacity(
       id,
@@ -350,8 +364,9 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
     this.estimatedCommandNodeCount =
       FIXED_COMMAND_NODE_COUNT +
       SORT_COMMAND_NODE_ALLOWANCE +
-      3 * this.maximumIterations +
-      (output.fittedLogLikelihood ? 2 : 0);
+      (8 + 3 * HAWKES_DECAY_REFINEMENTS) * this.maximumIterations +
+      (output.fittedLogLikelihood ? 2 : 0) +
+      (output.status?.maximumIterations ? 1 : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
@@ -587,6 +602,13 @@ const MINIMUM_SPATIAL_VARIANCE: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKE
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
     const sumsSlot = slots.sums;
+    const profile = createTransientView(
+      graph,
+      `${id}-decay-profile`,
+      'float32',
+      HAWKES_PROFILE_LENGTH
+    );
+    const checkedLikelihood = createTransientView(graph, `${id}-checked-likelihood`, 'float32', 3);
     for (let iteration = 0; iteration < maximumIterations; iteration++) {
       nodes.push(
         ...getRowTileSumNodes<Parameters>(graph, {
@@ -625,6 +647,18 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
         })
       );
       nodes.push(
+        ...createHawkesDecayProfileNodes(graph, {
+          id: `${id}-iteration-${iteration}`,
+          rowCount,
+          stateConstants,
+          state,
+          events,
+          params: props.parameters,
+          profile,
+          partial
+        })
+      );
+      nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-iteration-${iteration}-update`,
           operation: OPERATION,
@@ -633,6 +667,7 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
           bindings: [
             {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
             {name: 'state', view: state, type: 'f32', access: 'read_write'},
+            {name: 'profile', view: profile, type: 'f32', access: 'read_write'},
             gate.binding
           ],
           declarations: `${stateConstants}\n${getNaNDeclaration()}
@@ -675,17 +710,19 @@ fn relativeChange(next: f32, previous: f32) -> f32 {
     return;
   }
   let nextBackground = getScaledQuotient(backgroundSum, area, duration, 0);
-  let nextBranchingRatio = max(getScaledQuotient(triggeredSum, windowMass, 1.0, 0), BRANCHING_RATIO_FLOOR);
+  var nextBranchingRatio = max(getScaledQuotient(triggeredSum, windowMass, 1.0, 0), BRANCHING_RATIO_FLOOR);
   var nextDecayRate = decayRate;
   var nextVariance = variance;
   if (triggeredSum > 1e-6 && lagSum > 0.0 && distanceSum > 0.0) {
-    nextDecayRate = getScaledQuotient(triggeredSum, lagSum, 1.0, 0);
+    nextDecayRate = getScaledQuotient(profile[profileOffset + 3u], duration, 1.0, 0);
+    nextBranchingRatio = profile[profileOffset + 4u];
     nextVariance = getScaledQuotient(distanceSum, triggeredSum, 1.0, -1);
   }
   let change = max(
     max(relativeChange(nextBackground, background), relativeChange(nextBranchingRatio, branchingRatio)),
     max(relativeChange(nextDecayRate, decayRate), relativeChange(nextVariance, variance))
   );
+  profile[profileOffset + 14u] = change;
   state[stateOffset + S_BACKGROUND] = nextBackground;
   state[stateOffset + S_BRANCHING_RATIO] = nextBranchingRatio;
   state[stateOffset + S_DECAY_RATE] = nextDecayRate;
@@ -696,6 +733,69 @@ fn relativeChange(next: f32, previous: f32) -> f32 {
     state[stateOffset + S_CONVERGED] = select(0.0, 1.0, converged);
     state[stateOffset + S_ITERATION_LIMIT_REACHED] = select(1.0, 0.0, converged);
     ${gate.disarmWGSL}
+  }`
+        })
+      );
+      // Check the actual fitted objective before accepting the update: a decrease larger than
+      // the rounding slack restores the entering fit. This also catches float32 rounding that a
+      // Q-profile comparison alone cannot detect.
+      nodes.push(
+        ...getRowTileSumNodes(graph, {
+          id: `${id}-iteration-${iteration}-check`,
+          operation: OPERATION,
+          variant: 'check-likelihood',
+          rowCount,
+          layout,
+          sumCount: 3,
+          bindings: [
+            ...tileBindings,
+            {name: 'profile', view: profile, type: 'f32', access: 'read'}
+          ],
+          partial,
+          output: checkedLikelihood,
+          declarations: `${stateConstants}\n${IS_FINITE_VALUE_WGSL}\n${eventWGSL}
+fn accumulateRow(row:u32, terms:ptr<function,array<f32,TERM_COUNT>>) {
+  if (profile[profileOffset + 9u] == 0.0) { return; }
+  let time = events[eventsOffset + 4u*row + 2u];
+  if (!isFiniteValue(time)) { return; }
+  let statistics = evaluateEvent(row);
+  let exponent = state[stateOffset + S_DECAY_RATE] * (params[paramsOffset + 1u]-time);
+  (*terms)[0] += statistics.logIntensity;
+  (*terms)[1] += select(1.0-exp(-exponent), exponent-0.5*exponent*exponent, exponent < 1e-3);
+  (*terms)[2] += abs(statistics.logIntensity);
+}`
+        }),
+        createWGSLKernelNode(graph, {
+          id: `${id}-iteration-${iteration}-safeguard`,
+          operation: OPERATION,
+          variant: 'safeguard',
+          invocationCount: 1,
+          bindings: [
+            {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
+            {name: 'state', view: state, type: 'f32', access: 'read_write'},
+            {name: 'profile', view: profile, type: 'f32', access: 'read'},
+            {name: 'checked', view: checkedLikelihood, type: 'f32', access: 'read'},
+            gate.binding
+          ],
+          declarations: `${stateConstants}\n${SPACE_TIME_HAWKES_COMPENSATOR_WGSL}\n${IS_FINITE_VALUE_WGSL}`,
+          body: `if (profile[profileOffset + 9u] == 0.0) { return; }
+  let compensator = getHawkesBackgroundCompensator(state[stateOffset + S_BACKGROUND], params[paramsOffset], params[paramsOffset + 1u]) + state[stateOffset + S_BRANCHING_RATIO]*checked[checkedOffset + 1u];
+  let candidate = checked[checkedOffset] - compensator;
+  let entering = state[stateOffset + S_LOG_LIKELIHOOD];
+  // A decrease within the float32 rounding of the two sums is not evidence against the
+  // update; rejecting it would repeat the same step until the budget ran out.
+  let slack = ${getWGSLFloatLiteral(HAWKES_LIKELIHOOD_DECREASE_SLACK)} * (checked[checkedOffset + 2u] + abs(compensator) + abs(entering));
+  if (isFiniteValue(candidate) && candidate < entering - slack) {
+    state[stateOffset + S_BACKGROUND] = profile[profileOffset + 10u];
+    state[stateOffset + S_BRANCHING_RATIO] = profile[profileOffset + 11u];
+    state[stateOffset + S_DECAY_RATE] = profile[profileOffset + 12u];
+    state[stateOffset + S_SPATIAL_VARIANCE] = profile[profileOffset + 13u];
+    let converged = profile[profileOffset + 14u] <= params[paramsOffset + 4u];
+    let atLimit = state[stateOffset + S_ITERATION_COUNT] >= ${maximumIterations}.0;
+    state[stateOffset + S_CONVERGED] = select(0.0,1.0,converged);
+    state[stateOffset + S_ITERATION_LIMIT_REACHED] = select(0.0,1.0,atLimit && !converged);
+    state[stateOffset + S_DONE] = select(0.0,1.0,converged || atLimit);
+    if (converged || atLimit) { ${gate.disarmWGSL} } else { ${gate.armWGSL} }
   }`
         })
       );
@@ -838,6 +938,19 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
       })
     );
     const status = output.status ?? {};
+    if (status.maximumIterations)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-publish-budget`,
+          operation: OPERATION,
+          variant: 'publish-budget',
+          invocationCount: 1,
+          bindings: [
+            {name: 'budget', view: status.maximumIterations, type: 'u32', access: 'read_write'}
+          ],
+          body: `budget[budgetOffset] = ${maximumIterations}u;`
+        })
+      );
     const statusBindings = (
       [
         ['converged', status.converged],

@@ -222,7 +222,7 @@ it('point join evaluates more slab candidates than one core binding can hold', a
         querySort: false,
         output: {
           pointFeatureIds: outputs['assignment'] as GraphDataView<'uint32'>,
-          featureCounts: outputs['featureCounts'] as GraphDataView<'uint32'>,
+          polygonAssignmentCounts: outputs['featureCounts'] as GraphDataView<'uint32'>,
           matches: {
             ids: outputs['ids'] as GraphDataView<'uint32'>,
             status: {

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveKernelShapeName} from '../shared/kernel-shape-name';
 import {
   createTransientView,
   GPUReduction,
@@ -31,10 +32,14 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/index';
-import {getRectangleScanWGSL} from '../spatial-interpolation/grid-neighbor-scan';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
 import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
-import {GRID_COORDINATE_WGSL} from '../spatial-interpolation/gpu-inverse-distance-weighting';
+import {GPU_GRID_COORDINATE_WGSL} from '@luma.gl/graph/gpu-core';
+import {
+  getDensityDomainConstantsWGSL,
+  getDensityNeighborScanWGSL,
+  DENSITY_VALUE_WGSL
+} from './density-neighbor-wgsl';
 import {
   getGPUKernelDensityParameterValues,
   GPU_KERNEL_DENSITY_PARAMETER_LENGTH,
@@ -55,6 +60,8 @@ import {
   validateDensityViewBindings,
   validateDensityWritableViews
 } from './density-point-passes';
+
+import {snapshotDensityConstructionProps} from './density-construction-snapshot';
 
 const OPERATION = 'GPUAdaptiveBandwidthKernelDensity';
 
@@ -156,12 +163,6 @@ export type GPUAdaptiveBandwidthKernelDensityOutput = {
   pilotDensities?: GraphDataView<'float32'>;
 };
 
-/** Defines `DOMAIN_MIN` and `DOMAIN_MAX` of the index domain. */
-function getDomainConstantsWGSL(bounds: readonly [number, number, number, number]): string {
-  return `const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(bounds[0])}, ${getWGSLFloatLiteral(bounds[1])});
-const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(bounds[2])}, ${getWGSLFloatLiteral(bounds[3])});`;
-}
-
 /**
  * Adaptive-bandwidth (variable-kernel) density estimate on a raster: the bandwidth of each point
  * is wider where the data are sparse and narrower where they are dense.
@@ -206,6 +207,25 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
   readonly cellCount: number;
 
   constructor(props: GPUAdaptiveBandwidthKernelDensityProps) {
+    props = snapshotDensityConstructionProps(
+      props,
+      [
+        'bandwidthFactorLimit',
+        'grid',
+        'id',
+        'indexBounds',
+        'indexGridSize',
+        'kernel',
+        'normalization',
+        'output',
+        'parameters',
+        'positions',
+        'spatialContext',
+        'weights'
+      ],
+      ['values', 'weightSum', 'pointBandwidths', 'pilotDensities'],
+      []
+    );
     const id = props.id ?? 'adaptive-kernel-density';
     this.id = id;
     this.props = props;
@@ -213,7 +233,11 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
       ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
       measure: 'area'
     } as const);
-    this.kernel = props.kernel === 'bisquare' ? 'quartic' : (props.kernel ?? 'gaussian');
+    this.kernel = resolveKernelShapeName(id, props.kernel ?? 'gaussian', [
+      'gaussian',
+      'quartic',
+      'epanechnikov'
+    ]);
     this.normalization = props.normalization ?? 'intensity';
     this.bandwidthFactorLimit =
       props.bandwidthFactorLimit ?? GPU_ADAPTIVE_BANDWIDTH_DEFAULT_FACTOR_LIMIT;
@@ -402,7 +426,7 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
     const weightSum =
       output.weightSum ?? createTransientView(graph, `${id}-weight-sum`, 'float32', 1);
     const logSum = createTransientView(graph, `${id}-log-sum`, 'float32', 1);
-    const domainConstants = getDomainConstantsWGSL(indexBounds);
+    const domainConstants = getDensityDomainConstantsWGSL(indexBounds);
     const supportFactor = getWGSLFloatLiteral(
       kernel === 'gaussian' ? GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION : 1
     );
@@ -414,23 +438,9 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
 const INDEX_HEIGHT: u32 = ${indexGridSize[1]}u;
 const SUPPORT_FACTOR: f32 = ${supportFactor};
 ${domainConstants}
-${GRID_COORDINATE_WGSL}
+${DENSITY_VALUE_WGSL}${GPU_GRID_COORDINATE_WGSL}
 ${getKernelValueWGSL(kernel)}`;
-    // Binds columnLow..rowHigh for the rectangle scan around `center` with search `radius`.
-    const getScan = (visit: string) => `let queryMin = center - vec2f(radius);
-    let queryMax = center + vec2f(radius);
-    if (all(queryMax >= DOMAIN_MIN) && all(queryMin <= DOMAIN_MAX)) {
-      let clampedMin = max(queryMin, DOMAIN_MIN);
-      let clampedMax = min(queryMax, DOMAIN_MAX);
-      // Widened by one index cell per side to absorb f32 rounding of the cell mapping.
-      var columnLow = getCoordinate(clampedMin.x, DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH);
-      var rowLow = getCoordinate(clampedMin.y, DOMAIN_MIN.y, DOMAIN_MAX.y, INDEX_HEIGHT);
-      columnLow = columnLow - min(columnLow, 1u);
-      rowLow = rowLow - min(rowLow, 1u);
-      let columnHigh = min(getCoordinate(clampedMax.x, DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH) + 1u, INDEX_WIDTH - 1u);
-      let rowHigh = min(getCoordinate(clampedMax.y, DOMAIN_MIN.y, DOMAIN_MAX.y, INDEX_HEIGHT) + 1u, INDEX_HEIGHT - 1u);
-      ${getRectangleScanWGSL(visit)}
-    }`;
+    const getScan = getDensityNeighborScanWGSL;
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -446,7 +456,7 @@ ${getKernelValueWGSL(kernel)}`;
         ],
         invocationCount: pointCount,
         declarations: `${domainConstants}
-${GRID_COORDINATE_WGSL}`,
+${DENSITY_VALUE_WGSL}${GPU_GRID_COORDINATE_WGSL}`,
         body: `let position = vec2f(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
   let weight = ${props.weights ? 'inputWeights[inputWeightsOffset + index]' : '1.0'};
   let included = isFiniteValue(position.x) && isFiniteValue(position.y) &&

@@ -364,7 +364,7 @@ instruments[instrumentsOffset + index * 4u] = firstPredictor; instruments[instru
         kernel,
         output: {
           covariance: view(`pooled-iv-${method}-covariance`, covarianceBuffer, 'float32', 16),
-          status: view(`pooled-iv-${method}-status`, statusBuffer, 'uint32', 1)
+          status: {code: view(`pooled-iv-${method}-status`, statusBuffer, 'uint32', 1)}
         }
       })
     );

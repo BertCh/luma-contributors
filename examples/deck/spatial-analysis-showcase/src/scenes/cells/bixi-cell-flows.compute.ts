@@ -331,7 +331,7 @@ async function buildGraph(
     origins,
     destinations,
     values,
-    outputs: output
+    output: output
   });
   const compiled = resources.track(await graph.compileAsync());
   let activeGraph: BixiCellGraph;

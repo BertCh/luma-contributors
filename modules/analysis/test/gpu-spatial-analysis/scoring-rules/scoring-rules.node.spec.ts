@@ -95,7 +95,7 @@ it('GPUEnsembleScores kernels fit the core limits at large sizes and use no atom
     observations: view('float32', 8192),
     memberCount: 512,
     dimension: 8192,
-    fair: true,
+    estimator: 'fair',
     variogramPairs: view('uint32x2', 100000),
     variogramWeights: view('float32', 100000),
     output: {
@@ -110,10 +110,8 @@ it('GPUEnsembleScores kernels fit the core limits at large sizes and use no atom
     'ensemble-scores-energy-terms',
     'ensemble-scores-variogram-terms'
   ]) {
-    const source = sources.get(id);
-    expect(source, id).toBeDefined();
-    expect(getStorageBindingCount(source!), id).toBeLessThanOrEqual(8);
     for (const kernel of sources.getConfigurations(id)) {
+      expect(getStorageBindingCount(kernel.source), id).toBeLessThanOrEqual(8);
       expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants), id).toBeLessThanOrEqual(
         16384
       );
@@ -147,7 +145,7 @@ it('GPUEnsembleScores validates its props', () => {
   expect(() => new GPUEnsembleScores({...props, ensemble: view('float32', 11)})).toThrow(
     /ensemble/
   );
-  expect(() => new GPUEnsembleScores({...props, memberCount: 1, fair: true})).toThrow(
+  expect(() => new GPUEnsembleScores({...props, memberCount: 1, estimator: 'fair'})).toThrow(
     /memberCount/
   );
   expect(() => new GPUEnsembleScores({...props, output: {}})).toThrow(/needs crps/);

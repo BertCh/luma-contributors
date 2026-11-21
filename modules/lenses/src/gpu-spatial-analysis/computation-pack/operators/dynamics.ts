@@ -145,7 +145,7 @@ export const DYNAMICS_OPERATORS: SpatialFamilyOperators = {
       {stage: 'support', name: 'conditionCount', label: 'conditions C', sweepable: false},
       {stage: 'inference', name: 'minimumTransitions', sweepable: true}
     ],
-    // gpu-transition-diagnostics.ts `summary` kernel: the Q branch of `homogeneity`; the p-value is the upper chi-square tail.
+    // transition-diagnostics-summary.ts homogeneity-terms and publish-homogeneity kernels; the p-value is the upper chi-square tail.
     formula: {
       id: 'gpu-spatial-analysis.transition-diagnostics',
       tex: String.raw`\term{q}{Q} = \sum_{c,a,b} \frac{(\term{observed}{n_{cab}} - \term{expected}{e_{cab}})^2}{e_{cab}}, \quad \term{expected}{e_{cab}} = \term{regimeTotal}{n_{ca}}\,\frac{\term{pooled}{n_{ab}}}{\term{pooledTotal}{n_{a}}}, \quad p = 1 - F_{\chi^2}(Q;\ \term{dof}{\nu})`,
@@ -154,11 +154,11 @@ export const DYNAMICS_OPERATORS: SpatialFamilyOperators = {
         'n_ab pooled over conditions. Terms with n_ab = 0 are skipped; a from-class without transitions is skipped. ' +
         'nu = sum over a of (regimes_a - 1)(nonZeroCells_a - 1). p = upper chi-square tail of Q (one-sided, greater); no multiple-testing correction.',
       symbols: [
-        {id: 'q', role: 'output', label: 'Q', binding: 'wgsl:q'},
-        {id: 'observed', role: 'input', label: 'n_cab', binding: 'wgsl:observed'},
+        {id: 'q', role: 'output', label: 'Q', binding: 'wgsl:statistic'},
+        {id: 'observed', role: 'input', label: 'n_cab', binding: 'wgsl:observedInteger'},
         {id: 'expected', role: 'intermediate', label: 'e_cab', binding: 'wgsl:expected'},
         {id: 'regimeTotal', role: 'intermediate', label: 'n_ca', binding: 'wgsl:regimeTotal'},
-        {id: 'pooled', role: 'intermediate', label: 'n_ab', binding: 'wgsl:pooledRow'},
+        {id: 'pooled', role: 'intermediate', label: 'n_ab', binding: 'wgsl:pooledCount'},
         {id: 'pooledTotal', role: 'intermediate', label: 'n_a', binding: 'wgsl:pooledTotal'},
         {id: 'dof', role: 'intermediate', label: 'nu', binding: 'wgsl:degreesOfFreedom'}
       ],
@@ -306,11 +306,18 @@ export const DYNAMICS_OPERATORS: SpatialFamilyOperators = {
     // gpu-mantel-test.ts `reduce` kernel (r from centred sums) and getSpaceTimeSummaryBodyWGSL (pGreater, one-sided).
     formula: {
       id: 'gpu-spatial-analysis.mantel-test',
-      tex: String.raw`\term{r}{r} = \frac{\term{covariance}{S_{xy}}}{\sqrt{\term{varianceX}{S_{xx}}\,\term{varianceY}{S_{yy}}}}, \quad S_{xy} = \sum xy - \frac{\sum x \sum y}{\term{pairCount}{N}}, \qquad \term{p}{p} = \frac{1 + \#\{s : r_s \ge r\}}{P + 1}`,
+      tex: String.raw`\begin{aligned}
+\term{r}{r}&=\frac{\term{covariance}{S_{xy}}}{\sqrt{\term{varianceX}{S_{xx}}\,\term{varianceY}{S_{yy}}}}, & S_{xy}&=\sum xy-\frac{\sum x\sum y}{\term{pairCount}{N}}\\
+r&=\mathrm{undefined}\quad\text{if }N<2\text{ or }S_{xx}S_{yy}=0, & U&=\{s\in\{1,\ldots,A\}:r_s\text{ finite}\},\quad M=|U|\\
+A&=\text{attempted permutationCount}, & x,y&=\text{distance and time-gap values after any supplied transforms}\\
+\term{p}{p}&=\frac{1+\#\{s\in U:r_s\ge r\}}{M+1}\quad\text{(fixed count)}, & p&=\mathrm{undefined}\quad\text{if }r\text{ undefined or }M=0
+\end{aligned}`,
       ascii:
-        'r = S_xy / sqrt(S_xx S_yy) over the N listed pairs i < j, x = spatial distance, y = |t_i - t_j|; S_xy = sum xy - sum x sum y / N, ' +
-        'S_xx = sum xx - (sum x)^2 / N, S_yy likewise. r = 0 when N <= 1 or a variance is 0. ' +
-        'p = (1 + #{permutations s with r_s >= r}) / (P + 1): one-sided (positive space-time correlation), +1 counts the observed value, ties count as exceedances.',
+        'r = S_xy / sqrt(S_xx S_yy) over the N listed pairs i < j. By default, x = spatial distance, y = |t_i - t_j|; supplied distanceTransform and timeTransform instead use (value + constant)^power for the respective pair values. S_xy = sum xy - sum x sum y / N, ' +
+        'S_xx = sum xx - (sum x)^2 / N, S_yy likewise. r is undefined (NaN) when N < 2 or either norm is zero; the observed pair count N is retained. ' +
+        'U contains only finite null statistics in slots 1 through attempted permutationCount inclusive; unused capacity slots never enter U. For fixed-count inference with M usable null draws, p = (1 + #{usable draws s with r_s >= r}) / (M + 1): one-sided (positive space-time correlation), +1 counts the observed value, ties count as exceedances. ' +
+        'Unusable draws retain NaN slots and do not enter either tail or its denominator. If the observed correlation is undefined or M = 0, inference is unavailable (NaN), not p = 1. ' +
+        'With stopAfterExceedances h reached, the greater-tail estimate is min(1, h / M); attempted permutationCount and usablePermutationCount are distinct.',
       symbols: [
         {id: 'r', role: 'output', label: 'r', binding: 'wgsl:result'},
         {id: 'covariance', role: 'intermediate', label: 'S_xy', binding: 'wgsl:covariance'},

@@ -290,7 +290,7 @@ it('ignores unbound predicate/simplification views but validates supplied validi
   const offsets = createTransientView(graph, 'offsets', 'uint32', 2);
   const mask = createTransientView(graph, 'mask', 'uint32', 2);
   const importance = createTransientView(graph, 'importance', 'float32', 2);
-  const ignoredStatus = foreign.createDataView(unused.buffer, {format: 'uint32', length: 1});
+  const foreignStatus = foreign.createDataView(unused.buffer, {format: 'uint32', length: 1});
   expect(() =>
     new GPUGeometryPredicates({
       geometry: {kind: 'points', positions},
@@ -299,13 +299,22 @@ it('ignores unbound predicate/simplification views but validates supplied validi
         positions: foreign.createDataView(unused.buffer, {format: 'float32x2', length: 2})
       },
       parameters: unused,
-      output: {numCoordinates: mask, status: {overflow: ignoredStatus}}
+      output: {numCoordinates: mask}
     }).getCommandNodes(graph)
   ).not.toThrow();
+  // Predicate status is now a published output, unlike unused other/parameter inputs.
+  // Supply the documented capacity so this checks binding ownership, not a missing prop.
+  expect(() =>
+    new GPUGeometryPredicates({
+      geometry: {kind: 'points', positions},
+      intersectionCapacity: 1,
+      output: {numCoordinates: mask, status: {overflow: foreignStatus}}
+    }).getCommandNodes(graph)
+  ).toThrow(/target graph/);
   expect(() =>
     new GPUGeometryValidity({
       points: {kind: 'points', positions},
-      output: {issueCode: mask, status: {overflow: ignoredStatus}}
+      output: {issueCode: mask, status: {overflow: foreignStatus}}
     }).getCommandNodes(graph)
   ).toThrow(/target graph/);
   expect(() =>

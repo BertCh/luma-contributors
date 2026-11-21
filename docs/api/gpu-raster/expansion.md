@@ -3,7 +3,14 @@
 These experimental command-graph contributors keep inputs and results on the GPU. They add
 bounded analytical operations and explicit completeness evidence. They have small independent
 reference fixtures; they do not yet establish a speed advantage or large-domain production parity.
-All outputs are caller-owned, packed graph views. Input/output buffers must be distinct. Import
+All outputs are caller-owned, packed graph views. Input/output buffers must be distinct.
+Constructors reject views whose element formats disagree with their named ports, including
+status leaves. A buffer band's values must match its declared float32, sint32 or uint32
+format; validity is uint32. `makeGPURasterBand` applies the same scalar/validity checks before
+borrowing a grid-sized prefix, preserving byte offsets and exact-sized view identities.
+Required named ports fail at construction when omitted; optional status words remain optional.
+Fractional coverage status accessors are captured once and validated like ordinary fields.
+Fractional zonal `quantity` accepts only `'extensive'`, `'density'` or `'intensive'`. Import
 raster contributors from `@luma-contributors/analysis/raster-analysis`, terrain contributors from
 `@luma-contributors/analysis/gpu-terrain`, and hull/mesh contributors from
 `@luma-contributors/analysis/gpu-spatial-analysis`.
@@ -32,7 +39,29 @@ boundary, including each supplied view's format, packing and exact row count, be
 default outputs. A rejected texture or invalid output can be corrected and retried on the same
 graph with the same recipe ID.
 
+## Choose a task
+
+- [Morphology and surface preparation](#morphology-and-surface-preparation): fill missing values,
+  filter, reconstruct, fill holes, thin or measure medial disks (C05, C06, C22, C26).
+- [Costs and travel](#costs-and-travel): directed walking cost (C21).
+- [Hydrology](#hydrology): drainage distances/networks and watershed partitions (C07, C08, C25).
+- [Geometry and coverage](#geometry-and-coverage): fractional quantities, outlines and constrained
+  triangulation (C04, C10, C24). [Reprojection](#gpurasterreprojection) covers C23.
+
 ## Operations and contracts
+
+The rank filter's optional `output.changed` is one where a valid result differs from its
+calibrated input center, zero for an unchanged or invalid center. Omitting it still computes
+the same `output.values` and `output.validity`.
+Skeleton `output.status.iterationCount`, when supplied, counts whole thinning rounds, including
+the round that confirms no deletion. An isolated center reports one; a solid 3 by 3 block that
+thins to its center reports two. Omitting this diagnostic does not change the skeleton.
+The required nodata-fill `status` object may be empty when `invalidCount` is not needed.
+Focal-pair count and status outputs accompany any nonempty subset of float metrics: requesting
+only covariance, correlation, slope, intercept, R-squared or residual sum of squares uses the
+same paired windows and normalization as requesting every metric. Scalar-ridge strength and
+walking-cost iteration/invalid-count diagnostics can likewise be omitted without changing their
+required results.
 
 | Proposal | Public API | Contract and current boundary |
 | --- | --- | --- |
@@ -41,13 +70,17 @@ graph with the same recipe ID.
 | C06 | `GPURasterRankFilter` | Square footprints with radius 0–8. Quantile selects `min(floor(q*n),n-1)` (upper middle for an even median). Clamp or nodata borders; strict or ignored missing neighbors. Invalid centers stay invalid. |
 | C07 | `GPUTerrainFlowDistance` | D8 paths stop at streams or terminal cells. Defaults to planar affine distance; explicit nonnegative transition costs support other units. Cycles, unresolved directions/stream masks, numerical overflow and budget exhaustion remain unresolved. |
 | C08 | `GPUTerrainStreamNetwork` | Compact polylines between headwaters, junctions and outlets, with source/target raster cell IDs, vertex offsets, affine cell-center positions and lengths. Valid D8 stream paths only. Reach order is source-cell order. Stream order can be gathered from the source-cell IDs. |
-| C10 | `GPUConcaveHull`, `GPUGroupConcaveHull` | Alpha-complex area hulls retain Delaunay triangles by maximum circumradius. Directed boundary edges preserve holes and disconnected components. This is radius-based alpha geometry, not GEOS ratio-based concave hull. Collinear/isolated points emit no area. |
+| C10 | [`GPUConcaveHull`, `GPUGroupConcaveHull`](../gpu-spatial-analysis/operators-geometry.md#hull-construction) | Alpha-complex area hulls retain Delaunay triangles by maximum circumradius. Directed boundary edges preserve holes and disconnected components. This is radius-based alpha geometry, not GEOS ratio-based concave hull. Collinear/isolated points emit no area. |
 | C21 | `GPURasterWalkingCost` | Directed eight-neighbor movement from elevation and friction. Tobler time or explicitly supplied GRASS-style energy coefficients; nonnegative finite edges only. Whole-grid Jacobi rounds are gated on the GPU and stop once a round changes nothing; the current costs are always published and `status.converged` tells whether they are final. Required `parameters` (packed by `getGPURasterWalkingCostParameterValues`, 16 float32 values) carry the affine, row edges, `frictionWeight` and GRASS coefficients per frame, so a changed georeference does not recompile. Optional `cellSizeMode` (`'uniform'` default, `'web-mercator'`, `'geographic'`) converts steps and slopes to WGS84 ground meters per row. |
 | C22 | `GPURasterReconstruction`, `GPURasterFillHoles` | Grayscale geodesic dilation/erosion under a mask; hole filling reconstructs background from the boundary. `connectivity` is 4 or 8: reconstruction defaults to 8 (the 3 x 3 square, the default footprint of `skimage.morphology.reconstruction` and of the published `GPURasterDilation`; it was 4 before 2026-11-10), hole filling defaults to a 4-connected background (the rule of `scipy.ndimage.binary_fill_holes`). The current values are always published; `status.converged=0` marks an unfinished run, whose hole mask reports background the boundary flood has not reached as holes. |
-| C23 | `GPURasterReprojection` | Generates destination centers, applies an explicit inverse `CompiledProjection`, inverts a nonsingular source affine and samples nearest/bilinear values. Supports rotated grids. One caller-selected source tile; no tile fetching. Float32 projection path only. Grids in the same CRS are differenced at their origins in float64, so large projected origins (UTM northings) keep sub-cell accuracy; with an inverse projection, keep `destinationGrid` in a local frame and set the projection's `destinationOrigin` near the source grid origin. |
-| C24 | `GPUConstrainedDelaunayTriangulation` | Existing shell/hole triangulation followed by bounded constrained Lawson flips. Boundary edges remain fixed. Per-polygon triangulation validity and Delaunay convergence are separate; exhaustion retains a valid initial/refined mesh with `output.status.converged=0`. |
+| C23 | `GPURasterReprojection` | Generates destination centers, applies an explicit inverse `CompiledProjection`, inverts a nonsingular source affine and samples nearest/bilinear values. Supports rotated grids. One caller-selected source tile; no tile fetching. Same-CRS composition is computed on the host in float64; explicit projections use local float32 or double-single coordinates, subtracting the split source origin before tile-relative float32 sampling. Grids in the same CRS are differenced at their origins in float64, so large projected origins (UTM northings) keep sub-cell accuracy; with an inverse projection, keep `destinationGrid` in a local frame and set the projection's `destinationOrigin` near the source grid origin. |
+| C24 | [`GPUConstrainedDelaunayTriangulation`](../gpu-spatial-analysis/operators-geometry.md#constrained-delaunay-triangulation) | Existing shell/hole triangulation followed by bounded constrained Lawson flips. Boundary edges remain fixed. Per-polygon triangulation validity and Delaunay convergence are separate; exhaustion retains a valid initial/refined mesh with `output.status.converged=0`. |
 | C25 | `GPURasterWatershedSegmentation` | Default `method: 'fifo'` preserves marker priority flooding by path maximum elevation and discovery age, within 16,384 cells. Explicit `'minimum-spanning-forest'` uses parallel rooted Boruvka contraction with linear scratch and device-sized domains. Both support four/eight connectivity and fixed markers; their plateau tie policies differ. The FIFO order is by path maximum, not by the cell's own value as in `skimage.segmentation.watershed`, so the two can differ where fronts from higher markers meet on lower ground. |
 | C26 | `GPURasterSkeleton`, `GPURasterMedialAxis` | Zhang–Suen thinning is separate from maximal Euclidean disk centers. The thinning is the 1984 algorithm unchanged, so an isolated 2 x 2 block is deleted completely and two-pixel-thick strokes can vanish. Medial axis uses an exact distance transform and an integer lattice-step containment test, with linear storage and dimensions up to 32,768 subject to device storage limits. Exterior pixels are background; radii remain in pixel units. Even-width plateaus can retain multiple centers. |
+
+## Hydrology
+
+See also [drainage outputs](#drainage-outputs).
 
 ### Watershed methods
 
@@ -77,6 +110,104 @@ the device's storage binding limits. Supplying `maximumSteps` with this method, 
 non-marker cells unresolved (`0xfffffffe`), rather than publishing a partial partition as complete.
 Neither method assembles tiles; independent tile segmentation does not preserve global ownership.
 
+The CPU function and CPU/GPU operation forms honor the same explicit budgets: FIFO counts queue
+pops and the forest counts synchronous rooted Boruvka contractions. If reachable work remains,
+`status.converged` is 0, `status.iterationLimitReached` is 1, and usable non-marker labels are
+`0xfffffffe`. For elevations `[5, 0, 0]` and markers `[7, 0, 0]`, one forest round joins cells 1
+and 2 but leaves their component unseeded; two rounds finish with labels `[7, 7, 7]`.
+Without an explicit CPU forest budget, the complete Kruskal solution retains its existing tie
+order. CPU arithmetic remains float64; elevations tied only after float32 rounding can differ.
+CPU and GPU watershed operations capture these budgets at construction; changing the original
+props object later does not change the operation's budget.
+They also capture each band's raw nodata, calibration and logical port names, and every output
+name, including inherited and non-enumerable properties. A raw nodata barrier therefore remains
+a barrier through either operation form; later nested metadata or output-name edits do not change
+the declared operation. Direct GPU contributors capture their budgets, band metadata, storage
+and output descriptors too. Both operation forms and the direct contributor copy grid dimensions
+and affine coordinates before validation; later caller edits cannot resize a validated raster.
+GPU views retain their identities and their contents can still change between runs.
+The direct watershed and walking constructors require `output.status.converged` and validate
+all captured status views, including inherited properties: each must hold a `uint32` word and
+must not overlap raster outputs or inputs. Missing or malformed convergence ports are rejected
+at construction, before command nodes are generated.
+Both CPU and GPU operation forms require non-empty logical output names. Every raster and
+status output must have its own name, distinct from all inputs; optional status names may be
+omitted but cannot be empty. Validation precedes keyed declarations so a convergence word cannot
+silently replace a raster vector with the same name.
+CPU forest relabeling compresses shared parent paths, so a long flat row resolves roots once
+instead of repeatedly walking the full chain for each cell.
+
+### Drainage outputs
+
+`GPUTerrainFlowDistance` returns dense `distance`, `validity`, and `terminalCells`.
+`0xffffffff` is invalid; `0xfffffffe` is unresolved. `maximumSteps` defaults to the cell count.
+A resolved stream cell has distance zero. If no streams are supplied, outlets/pits stop the path.
+Distances use the full affine's planar lengths; geographic and Mercator physical corrections are
+not implicit.
+
+`GPUTerrainStreamNetwork` takes `flowDirections`, `streams` and the same grid. Allocate
+`sourceCells`, `targetCells`, `lengths` to a reach capacity, `vertexOffsets` to capacity plus one,
+and `positions` to a separate vertex capacity. It returns scalar reach/vertex counts, `status.overflow` and
+unresolved-cell count. Junction cells appear in every incident polyline. Isolated stream cells have
+no line reach. Cycles and paths crossing unknown directions or stream status are omitted with
+unresolved evidence. Cross-tile drainage and branching D-infinity/MFD are not implied.
+
+## Morphology and surface preparation
+
+See [preparing continuous surfaces](#preparing-continuous-surfaces) for a fill example.
+
+### Preparing continuous surfaces
+
+```typescript
+import {GPURasterFillNoData} from '@luma-contributors/analysis/raster-analysis';
+declare const grid: NonNullable<ConstructorParameters<typeof GPURasterFillNoData>[0]['grid']>;
+declare const elevationBand: NonNullable<ConstructorParameters<typeof GPURasterFillNoData>[0]['input']>;
+declare const preparedValues: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterFillNoData>[0]['output']>['values']>;
+declare const preparedValidity: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterFillNoData>[0]['output']>['validity']>;
+declare const filled: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterFillNoData>[0]['output']>['filled']>;
+declare const invalidCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPURasterFillNoData>[0]['output']>['status']>['invalidCount']>;
+const preparation = new GPURasterFillNoData({
+  grid,
+  input: elevationBand,
+  maximumDistance: 8,
+  method: 'nearest',
+  output: {values: preparedValues, validity: preparedValidity, filled, status: {invalidCount}}
+});
+graph.add(preparation);
+```
+
+### Choose a neighborhood statistic
+
+| Task | Public import entry and class | Radius in source pixels | Missing center and physical edge |
+| --- | --- | --- | --- |
+| Moving mean, sum, extrema, population standard deviation | `GPUFocalStatistics` from `@luma-contributors/analysis/gpu-spatial-analysis` | Compiled `maximumRadius` (0–64); per-frame `radius` in `getGPUFocalStatisticsParameterValues`, clamped to that cap | Clips the window and skips invalid neighbors; fills a missing center unless per-frame `propagateCenterNoData` is true. |
+| Covariance, correlation, regression | `GPURasterFocalPairs` from `@luma-contributors/analysis/raster-analysis` | Compiled `radius` (0–8) | Default clipped jointly valid pairs; compiled `propagateCenterNoData` defaults to false. See [paired focal statistics](./focal-pairs.md#missing-pairs-and-borders). |
+| Rank or median | `GPURasterRankFilter` from `@luma-contributors/analysis/raster-analysis` | Compiled `radius` (0–8) | Default clamp at physical edges; a missing center stays invalid even with `noDataPolicy: 'ignore'`. |
+
+For `[1, NaN, 3]` at radius 1, the ordinary moving mean at the center is `(1 + 3) / 2 = 2`
+when center propagation is disabled. With response `[2, NaN, 6]`, paired statistics use the two
+surviving positions: center sample covariance `4`, slope `2`, paired count `2`. Rank filtering
+keeps that center invalid (NaN and validity 0). These policies differ even on the same footprint.
+
+At internal tile boundaries, expand the source by each contributor's advertised `requiredHalo`
+(`maximumRadius` for ordinary moving statistics, `radius` for paired statistics and rank).
+Execute on the expanded grid and crop back to the core before stitching outputs or accumulating
+counts. Physical-edge border policies do not replace the halo at an internal boundary.
+
+Nodata-policy spelling is per operation: rank filtering accepts `'propagate'` and its legacy
+`'strict'` alias, or `'ignore'`; reprojection accepts `'propagate'` (legacy `'strict'`) or
+`'renormalize'`. Propagation rejects a result with a missing participating sample, whereas
+renormalization redistributes the remaining interpolation weights. Reprojection methods are
+`'nearest'` and `'bilinear'`; fill methods are `'nearest'`, `'inverse-distance'` and
+`'gdal-four-quadrant'`. Unknown option strings must be rejected rather than selecting a
+default; consult the installed method type before copying settings between these operations.
+
+All-donor interpolation never uses a newly filled cell as a donor. A tile requires a halo at least
+`maximumDistance` wide to match the full-domain result on its core. Rank filtering requires its
+radius as a halo. These contributors do not assemble tiles or suppress halo counts automatically.
+Filling nodata and hydrological depression filling remain different operations. The surface
+preparation recipe exposes provenance through both stages.
+
 ### Exact medial disk containment
 
 `GPURasterMedialAxis` composes the exact banded distance transform with one candidate check per
@@ -90,6 +221,37 @@ does not rescale pixel-unit distances. This operation does not perform thinning 
 promise a one-pixel-wide or topology-preserving skeleton. Storage is linear in cell count, but the
 distance-transform scratch still needs to fit device limits; the dimension bound alone is not a
 memory or throughput guarantee.
+
+## Geometry and coverage
+
+Use a common local frame for coverage geometry and its raster. The versioned parameter packet
+retains the absolute Y placement for ground-area calculations:
+
+```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {getGPURasterFractionalCoverageParameterValues} from '@luma-contributors/analysis/raster-analysis';
+const absoluteGrid: GPURasterMetadata = {
+  width: 1, height: 1, affine: [1, 0, 0, 0, 1, 4_600_000], pixelInterpretation: 'area'
+};
+const localOrigin = [0, 4_600_000] as const;
+const originalVertices = new Float64Array([
+  0, 4_600_000.25, 1, 4_600_000.25, 1, 4_600_000.75, 0, 4_600_000.75
+]);
+const localVertices = Float32Array.from(originalVertices, (value, index) => value - localOrigin[index % 2]);
+const sharedParameters = getGPURasterFractionalCoverageParameterValues(absoluteGrid, {localOrigin});
+const sharedStorage = new GPUParameterBuffer(device, {
+  id: 'shared-coverage-area-parameters', format: 'float32', length: 10, values: sharedParameters
+});
+const sharedView = sharedStorage.importToGraph(graph);
+// Upload localVertices as part of the four-level polygon geometry; Y remains .25 and .75.
+// Both coverage and area consumers: grid: absoluteGrid, parameters: sharedView.
+// Ground-area statistics: cellSizeMode: 'web-mercator' for this meter-coordinate example.
+// Destroy sharedStorage after its compiled graph is destroyed.
+```
+
+
+See also [group outlines and recipes](#group-outlines-and-recipes).
 
 ### Fractional quantities
 
@@ -114,9 +276,25 @@ affine `[1, 0, 0, 0, 1, 0]` bypasses snapping, preserving all representable subp
 For other affines, snapping compares displacement from the nearest lattice point and moves a
 vertex by at most 1e-5 pixel per axis, independently of pixel index. Clipping uses cell-local
 coordinates. The snap cannot
-absorb the rounding of `position - origin`: keep the grid origin near the geometry. The required `parameters` view
-(`getGPURasterFractionalCoverageParameterValues(grid)`, 8 float32 values) carries the affine, so a
-moved georeference of the same size does not recompile.
+absorb rounding already lost at upload. Subtract a common origin from original binary64 polygon
+vertices **before** constructing a Float32Array, and use the same relative origin in coverage
+parameters. At northing 4,600,000, absolute `.25`/`.75` offsets round to 0/1 in float32;
+subtracting first preserves the half-cell strip. Pack with
+`getGPURasterFractionalCoverageParameterValues(absoluteGrid, {localOrigin})` and give the same
+ten-word view to clipping and area consumers. Words 0–6 hold
+`[relativeOriginX, relativeOriginY, a, b, d, e, determinant]`; word 7 remains ignored legacy
+padding, word 8 is the layout discriminator `2`, and word 9 restores absolute Y. Clipping
+inverts the actual packed axes, using integer significand products where cancellation would erase
+the determinant or a numerator. Normal significands and separate binary exponents keep division
+finite when the determinant is subnormal and its reciprocal would overflow. Word 6 remains the separately consumed original-grid area metadata.
+The no-options packer returns eight words when it allocates the destination. In a caller-provided
+destination it also zeros any present extension words at indices 8 and 9 to clear version-2
+metadata. Words at index 10 and above retain their previous values. Repacking either layout moves
+the georeference without recompiling when dimensions and pixel interpretation stay fixed.
+Public coverage and patch-metrics packets retain the signed physical determinant of the original
+affine in word 6. Clipping inverts the packed axes independently. The analysis-core resolver's
+coordinate packet instead carries its packed-axes determinant and exposes `affineDeterminant`
+separately.
 The website coverage runs distinguish pending readback, incomplete polygon coverage and a valid
 empty intersection. Pending/incomplete readouts show that state and clear the highlighted support;
 only complete coverage may display zero cells and zero area.
@@ -128,6 +306,11 @@ and `validity`. Extensive cell totals use `value * fraction`; density and intens
 Means divide the value/fraction sum by observed fractions. Empty or wholly unobserved zones have
 invalid totals/means; covered/observed areas remain available. Incomplete coverage invalidates all
 aggregates. The default `cellSizeMode: 'uniform'` uses source-coordinate units squared.
+The scalar input can be a packed buffer band or supported sampled-texture band. Raw nodata
+and mask are tested before calibration; scale/offset are applied exactly once to continuous
+float32 results. Native integer labels require nearest reprojection with identity calibration and
+matching `output.labels` (see the checked [reprojection example](#gpurasterreprojection));
+bilinear interpolation is continuous and cannot preserve arbitrary uint32 identities.
 Scalar, categorical and distribution consumers require `count <= tuple capacity`,
 `requiredCount == count`, zero `overflow`, zero optional `candidateOverflow`, and nonzero
 zone validity. Prepared-coverage operation ports preserve optional candidateOverflow. Missing
@@ -136,20 +319,26 @@ submission restores usable results. Means divide by the actual positive fraction
 normal float32 sums below 1e-30; only zero support uses a safe denominator.
 `'geographic'` (longitude/latitude degrees) and `'web-mercator'` (EPSG:3857 meters) use WGS84
 ground square meters at each row center, with the same approximation as the fractional categorical
-and distribution contributors. Both modes require an axis-aligned grid. Alternatively, supply
+and distribution contributors. Geographic cell area is `abs(a*e-b*d)` times WGS84
+longitude and latitude meters-per-degree at the row center. Whole-cell zonal statistics instead
+uses an authalic latitude strip with `R = 6371007.180918475 m`; a `.001°` square has
+fractional/whole-cell ratios `.995530` at 0° and `1.008584` at 80°. Counts, area sums and
+value-times-area totals are distinct measures. Both modes require an axis-aligned grid. Alternatively, supply
 positive finite `cellAreas`, exactly one per raster cell, in caller-declared area units; this requires
 uniform mode. An invalid explicit area suppresses the affected zone's result (NaN areas and
 totals/means, validity zero). `coveredArea` and `validArea` use the selected area units; density
 and intensive `totals` have input units times area, while extensive totals retain input units.
 Means remain coverage-fraction weighted in input units for every area model.
 The default planar determinant is that of `grid.affine`, fixed at compile time, unless
-the optional `parameters` prop is given: pass the same per-frame georeference view as the coverage
-class, and the cell area is read from it on every encoding. Do so whenever the coverage
-`parameters` are rewritten for another cell size; otherwise the fractions follow the new
-georeference while `coveredArea`, `validArea` and density `totals` keep the compiled cell area.
-`GPURasterFractionalCategoricalStatistics` and `GPURasterFractionalZonalDistribution` take the
-same prop.
-Ground-mode row centers also follow the origin y and signed row step in `parameters`.
+an optional `parameters` view supplies the per-frame georeference. Prefer the shared version-2
+view shown above for rebased geometry: geographic/Web Mercator consumers restore absolute Y
+from word 9 only when word 8 is `2`; word 7 is always ignored. Update that shared packet when
+cell size or absolute latitude changes. Separate local coverage and absolute area views remain
+a valid alternative for legacy packets, which carry no absolute-Y extension. For a 1 m² EPSG:3857
+cell centered at Y `4,600,000.5`, WGS84 ground area is about `.617505 m²`; using a legacy packet
+with rebased Y center `.5` instead gives `.993306 m²`.
+Ground-mode row centers follow the origin y, signed row step and versioned absolute Y offset
+in `parameters`.
 Explicit `cellAreas` override the affine area and must be updated by the caller when needed.
 With explicit areas the unused affine determinant need not fit float32. Ground modes also check
 the per-frame cross-axis words: a repacked non-axis-aligned affine suppresses all scalar results
@@ -161,44 +350,20 @@ zones. Empty or wholly missing zones retain their finite area outputs and validi
 
 #### `GPURasterFractionalCoverage` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterFractionalCoverage`.
+
 - Packer: `getGPURasterFractionalCoverageParameterValues(grid)`, writes `GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH` (8) `float32` values.
-  - `grid` (`GPURasterMetadata`): Grid whose affine is packed; it must be invertible.
+  - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
+- Packer: `getGPURasterFractionalCoverageParameterValues(grid, options)`, writes `GPU_RASTER_FRACTIONAL_COVERAGE_LOCAL_PARAMETER_LENGTH` (10) `float32` values.
+  - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
+
+Settings of `getGPURasterFractionalCoverageParameterValues(grid, options)` for `GPURasterFractionalCoverageParameterOptions`:
+
+| Field | Type | Description |
+|---|---|---|
+| `localOrigin` (optional) | `readonly [number, number]` | Subtract this binary64 world origin from vertices before converting them to float32. |
 
 {/* /parameters */}
-
-### Preparing continuous surfaces
-
-```typescript
-const preparation = new GPURasterFillNoData({
-  grid,
-  input: elevationBand,
-  maximumDistance: 8,
-  method: 'nearest',
-  output: {values: preparedValues, validity: preparedValidity, filled, status: {invalidCount}}
-});
-graph.add(preparation);
-```
-
-All-donor interpolation never uses a newly filled cell as a donor. A tile requires a halo at least
-`maximumDistance` wide to match the full-domain result on its core. Rank filtering requires its
-radius as a halo. These contributors do not assemble tiles or suppress halo counts automatically.
-Filling nodata and hydrological depression filling remain different operations. The surface
-preparation recipe exposes provenance through both stages.
-
-### Drainage outputs
-
-`GPUTerrainFlowDistance` returns dense `distance`, `validity`, and `terminalCells`.
-`0xffffffff` is invalid; `0xfffffffe` is unresolved. `maximumSteps` defaults to the cell count.
-A resolved stream cell has distance zero. If no streams are supplied, outlets/pits stop the path.
-Distances use the full affine's planar lengths; geographic and Mercator physical corrections are
-not implicit.
-
-`GPUTerrainStreamNetwork` takes `flowDirections`, `streams` and the same grid. Allocate
-`sourceCells`, `targetCells`, `lengths` to a reach capacity, `vertexOffsets` to capacity plus one,
-and `positions` to a separate vertex capacity. It returns scalar reach/vertex counts, `status.overflow` and
-unresolved-cell count. Junction cells appear in every incident polyline. Isolated stream cells have
-no line reach. Cycles and paths crossing unknown directions or stream status are omitted with
-unresolved evidence. Cross-tile drainage and branching D-infinity/MFD are not implied.
 
 ### Group outlines and recipes
 
@@ -218,6 +383,8 @@ reservation is bounded by 715,827,882 rows for uint32 addressing and by device b
 `hullOffsets` and `hullCounts` are empty, because one ring cannot represent holes and disconnected
 components. Default convex behavior is unchanged. Empty area has zero area/perimeter and undefined
 centroid. Nonconverged groups report invalid measures.
+
+## Costs and travel
 
 ### `GPURasterWalkingCost` georeference
 
@@ -240,6 +407,8 @@ GRASS kernel given Tobler's zero coefficients charged only friction, silently.
 
 #### `GPURasterWalkingCost` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterWalkingCost`.
+
 - Packer: `getGPURasterWalkingCostParameterValues(settings, grid)`, writes `GPU_RASTER_WALKING_COST_PARAMETER_LENGTH` (16) `float32` values.
   - `grid` (`GPURasterMetadata`): Grid whose georeference is packed. Its width and height must match the compiled one.
 
@@ -252,7 +421,52 @@ Settings of `getGPURasterWalkingCostParameterValues`:
 
 {/* /parameters */}
 
+## Reproject rasters
+
 ### `GPURasterReprojection`
+
+Nearest interpolation alone does not preserve native integer identity in `output.values`.
+Request matching `output.labels` and read it with `output.validity`. This uint32 example
+uses identity calibration; sint32 input similarly requires a sint32 labels view:
+
+```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPURasterReprojection, makeGPURasterBand, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+const grid = makeGPURasterMetadata({width: 2, height: 1});
+const inputStorage = new GPUParameterBuffer(device, {
+  id: 'warp-input', format: 'uint32', length: 2, values: Uint32Array.of(33554432, 33554433)
+});
+const labelStorage = new GPUParameterBuffer(device, {id: 'warp-labels', format: 'uint32', length: 2});
+const valueStorage = new GPUParameterBuffer(device, {id: 'warp-values', format: 'float32', length: 2});
+const validityStorage = new GPUParameterBuffer(device, {id: 'warp-validity', format: 'uint32', length: 2});
+const reprojection = new GPURasterReprojection({
+  sourceGrid: grid, destinationGrid: grid, method: 'nearest',
+  input: makeGPURasterBand(inputStorage.importToGraph(graph), grid, {scale: 1, offset: 0}),
+  output: {
+    labels: labelStorage.importToGraph(graph), values: valueStorage.importToGraph(graph),
+    validity: validityStorage.importToGraph(graph)
+  }
+});
+graph.add(reprojection);
+const compiled = await graph.compileAsync();
+const encoder = device.createCommandEncoder();
+compiled.encode(encoder, {parameters: undefined});
+device.submit(encoder.finish());
+const labelBytes = await labelStorage.buffer.readAsync();
+const validityBytes = await validityStorage.buffer.readAsync();
+const valueBytes = await valueStorage.buffer.readAsync();
+const labels = new Uint32Array(labelBytes.buffer, labelBytes.byteOffset, 2);
+const validity = new Uint32Array(validityBytes.buffer, validityBytes.byteOffset, 2);
+const values = new Float32Array(valueBytes.buffer, valueBytes.byteOffset, 2);
+for (let row = 0; row < 2; row++) {
+  if (validity[row] !== 0) console.log(labels[row], values[row]);
+}
+// Native labels: [33554432,33554433]; continuous values: [33554432,33554432].
+// Invalid rows have unspecified labels; always check validity before using them.
+compiled.destroy();
+reprojection.destroy();
+inputStorage.destroy(); labelStorage.destroy(); valueStorage.destroy(); validityStorage.destroy();
+```
 
 The sampling transform is read from a float32 parameter view packed by
 `getGPURasterReprojectionParameterValues({sourceGrid, destinationGrid, inverseProjection})`.
@@ -303,6 +517,8 @@ the half-cell boundary up when adding 0.5 in float32.
 
 #### `GPURasterReprojection` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterReprojection`.
+
 - Packer: `getGPURasterReprojectionParameterValues(settings)`, writes `GPU_RASTER_REPROJECTION_PARAMETER_LENGTH` (20) `float32` values.
 
 Settings of `getGPURasterReprojectionParameterValues`:
@@ -339,6 +555,26 @@ partially thinned mask. Earlier releases published all-NaN or `0xfffffffe` outpu
 that relied on that must now test `converged`. Watershed segmentation leaves original
 markers identifiable but publishes unresolved non-marker pixels when its step budget is exhausted.
 
+The CPU walking-cost function and operation honor an explicit `maximumIterations` with the same
+`maximumIterations + 1` round limit as the GPU contributor and operation. A flat six-cell unit-cost
+line seeded at cell 0 with a budget of one publishes `[0, 1, 2, Infinity, Infinity, Infinity]`,
+`iterationCount=2`, `converged=0` and `iterationLimitReached=1`. A complete solve needs five
+advances and one unchanged pass. Without an explicit CPU budget the existing complete solve is
+retained. `invalidCount` is independently 1 for a parameter block packed for the other model,
+and 0 for a matching block; that diagnostic does not count unreachable cells.
+Both walking-cost operation forms capture `maximumIterations` at construction.
+The direct GPU walking contributor captures it too. Band metadata and declared output/status
+names are captured by property access, including inherited names; later nested caller edits do
+not rename the graph's outputs. All walking forms also capture grid dimensions/affine. Operation
+constructors default only an omitted model to Tobler; supplied models must have kind `'tobler'`
+or `'grass'`, checked before capturing model-specific options. Changing the caller's model from
+GRASS to Tobler cannot invalidate an already constructed GRASS operation. GPU-resident values,
+masks and parameter contents remain dynamic. Both CPU and GPU walking and watershed operation
+forms require nonempty selected input and output graph names. Optional validity is selected
+whenever it is not `undefined`, so `''` is rejected. Repeated reads of one input are allowed;
+outputs must be distinct and cannot overwrite an input. These name checks add no GPU capacities
+to CPU admission.
+
 For reconstruction and fill holes, `maximumIterations` bounds the published propagation distance
 in neighbor steps. The extra verification pass only checks whether the budgeted result is a fixed
 point; it never advances that result. `iterationCount` includes this check and can therefore be
@@ -347,9 +583,18 @@ budget, reconstruction publishes `[1, 1, 0, 0]`, count 2, `converged=0` and
 `iterationLimitReached=1`. The CPU reconstruction and hole-fill twins obey the same budget and
 default of 64 rounds; they drop only the GPU command-node cap. For an unfinished hole fill,
 background farther than the budget from the boundary is still marked as a hole.
+CPU reconstruction band calibration follows GPU float32 conversion order: convert the raw
+sample, scale and offset to float32 before multiplication/addition, then determine usable
+marker/mask pairs. Native integer nodata is compared before conversion. Thus marker 33554433
+with offset -33554432 and mask 0 yields usable value 0, because the integer rounds to 33554432
+first. Both reconstruction forms read only the grid prefix of padded values/validity arrays.
 The CPU hole-fill queue stops at that frontier and only inspects immediate neighbors there to
 verify completeness; it does not traverse the remaining connected component. Construction captures
 the grid, iteration budget and nested port names in both operation forms and contributors.
+Reconstruction and fill-hole operation forms capture documented band/storage and convergence
+names by property access, including inherited getters, and retain those names through lowering.
+Reconstruction selects marker and mask validity whenever the name is not `undefined`; an
+explicitly empty name is rejected rather than dropping the validity input.
 The website's fill-hole and reconstruction previews return convergence, label unfinished propagation,
 and withhold final fill/cut counts and their derived overlays until convergence.
 The showcase's missing-observations scene likewise omits the reconstruction bar from its selected-cell
@@ -362,7 +607,7 @@ so a nonzero offset in either values or validity remains meaningful. Undersized 
 
 ## Reference evidence
 
-[`raster-terrain-expansion.py`](../../../modules/analysis/test/oracles/raster-terrain-expansion.py)
+[`raster-terrain-expansion.py`](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/raster-terrain-expansion.py)
 records exact package versions and produces committed fixtures using SciPy median/hole filling,
 scikit-image reconstruction/watershed, NetworkX path lengths, Shapely intersections/CDT, and a
 SciPy-Delaunay/Shapely alpha-complex composition. The matching browser tests execute actual GPU

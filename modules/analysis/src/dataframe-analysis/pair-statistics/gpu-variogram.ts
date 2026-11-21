@@ -4,6 +4,7 @@
 
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
+  createTransientView,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -30,13 +31,17 @@ import {
   validatePairHistogramShape
 } from './pair-histogram';
 import {
+  getPairStatisticsTotalSumNodes,
   getPairStatisticsInputNodes,
   getPairStatisticsWindowParameterNodes,
   PAIR_STATISTICS_FLOAT_WGSL,
   validatePairStatisticsInputs,
   validatePairStatisticsRowCount
 } from './pair-statistics-grid';
-import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
+import {
+  getPairStatisticsUnitVarianceNodes,
+  PAIR_STATISTICS_UNIT_SCALING_WGSL
+} from './pair-statistics-fixed-point-unit';
 import {
   GPU_VARIOGRAM_PARAMETER_LENGTH,
   GPU_VARIOGRAM_STATISTICS_LENGTH
@@ -181,8 +186,9 @@ export type GPUVariogramProps = {
  *   f32 as `sqrt(dx * dx + dy * dy)`) falls in lag `min(floor(d / maximumDistance * lagCount),
  *   lagCount - 1)` and, with `directionCount > 1`, in sector
  *   `min(floor(a / pi * directionCount), directionCount - 1)` where `a` is
- *   `atan2(dy, dx) - azimuthOffset` reduced modulo pi into `[0, pi)`. A pair of coincident
- *   points (`dx = dy = 0`) has no direction and is counted in sector 0 for every `azimuthOffset`
+ *   `atan2(dy, dx) - sectorOffsetRadians` reduced modulo pi
+ *   into `[0, pi)`. A pair of coincident
+ *   points (`dx = dy = 0`) has no direction and is counted in sector 0 for every `sectorOffsetRadians`
  *   (lag 0), so the sector counts add up to the omnidirectional counts.
  * - Per bin with `N` pairs: `gamma = sum (z_i - z_j)^2 / (2 N)` (Matheron), mean distance
  *   `sum d / N`, and the Cressie-Hawkins estimator
@@ -197,7 +203,8 @@ export type GPUVariogramProps = {
  * - Matheron `gamma`: the unit is derived from the typical term, never the maximum. A term
  *   `(z_i - z_j)^2 / 2` is multiplied by `2^24 / u` and rounded to the nearest integer, where `u`
  *   is the robust variance `(IQR / 1.349)^2` of the included values (exact quartiles of the
- *   masked finite values), clamped to `[variance * 2^-32, variance]` so that it is never coarser
+ *   finite values included by the mask and spatial window), clamped to
+ *   `[variance * 2^-32, variance]` so that it is never coarser
  *   than the population variance (`variance * 2^-12` when the IQR is 0, i.e. over half of the
  *   values are tied). The absolute error of a
  *   bin mean is at most `u * 2^-25` (at most `variance * 2^-25`), plus f32 rounding of the term
@@ -444,6 +451,7 @@ export class GPUVariogram implements GPUCommandNodeProducer {
       operation: OPERATION,
       values: props.values,
       mask: props.mask,
+      population: {cellKeys: inputs.cellKeys, cellCount: gridSize[0] * gridSize[1]},
       statistics
     });
     nodes.push(...unit.nodes);
@@ -451,6 +459,7 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     // Scales derive from the GPU moments and parameters, so the pair and finishing kernels compute
     // bitwise identical values.
     const scaleWGSL = /* wgsl */ `
+${PAIR_STATISTICS_UNIT_SCALING_WGSL}
 const MOMENTS: u32 = ${rows}u;
 const LAG_COUNT: u32 = ${lagCount}u;
 const DIRECTION_COUNT: u32 = ${directionCount}u;
@@ -461,6 +470,8 @@ const PI: f32 = 3.14159265358979;
 
 struct VariogramScales {
   semivariance: f32,
+  unitVariance: f32,
+  unitPower: i32,
   robust: f32,
   distance: f32
 }
@@ -470,7 +481,9 @@ fn getVariogramScales() -> VariogramScales {
   var scales: VariogramScales;
   // The Matheron unit comes from the typical term (the robust variance), not from the value range.
   let unitVariance = unitVarianceView[unitVarianceViewOffset];
-  scales.semivariance = select(0.0, SEMIVARIANCE_UNITS_PER_VARIANCE / unitVariance, unitVariance > 0.0);
+  scales.unitVariance = unitVariance;
+  scales.unitPower = i32(unitVarianceView[unitVarianceViewOffset + 1u]);
+  scales.semivariance = getPairStatisticsFixedPointScale(unitVariance, scales.unitPower);
   scales.robust = select(0.0, FIXED_POINT_SCALE / sqrt(valueRange), valueRange > 0.0);
   scales.distance = FIXED_POINT_SCALE / parameters[parametersOffset + 4u];
   return scales;
@@ -506,7 +519,7 @@ fn getVariogramScales() -> VariogramScales {
             let bin = sector * LAG_COUNT + lag;
             let difference = statistics[statisticsOffset + neighbor] - focusValue;
             accumulate(bin, 0u, 1u);
-            accumulateScaled(bin, 1u, ${largeChannel}u, 0.5 * difference * difference * scales.semivariance);
+            accumulateScaled(bin, 1u, ${largeChannel}u, scalePairStatisticsAmount(0.5 * difference * difference, scales.unitVariance, scales.unitPower, scales.semivariance));
             accumulate(bin, 2u, quantizePairAmount(pairDistance * scales.distance));
             ${robust ? 'accumulate(bin, 3u, quantizePairAmount(sqrt(abs(difference)) * scales.robust));' : ''}`
     });
@@ -560,7 +573,7 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
   // The large channel holds terms in units of LARGE_TERM_UNIT fixed-point units.
   let semivarianceSum = readPairAccumulator(index, 1u) + readPairAccumulator(index, ${largeChannel}u) * LARGE_TERM_UNIT;
   // A zero variance means every difference is 0 (scale 0, sum 0).
-  let semivariance = select(0.0, semivarianceSum / scales.semivariance / pairCount, scales.semivariance > 0.0);
+  let semivariance = decodePairStatisticsAmount(semivarianceSum, scales.unitVariance, scales.unitPower, scales.semivariance) / max(pairCount, 1.0);
   semivariances[semivariancesOffset + index] = select(nan, semivariance, hasPairs);
   ${output.pairCounts ? 'pairCounts[pairCountsOffset + index] = readPairCount(index, 0u);' : ''}
   ${
@@ -583,22 +596,39 @@ ${getPairHistogramReadWGSL('accumulators', channelCount, '', binCount)}`,
     );
 
     if (output.status?.overflow) {
-      // One row: the histogram overflow word, or any bin whose pair count left the low word.
+      const overflowTerms = createTransientView(graph, `${id}-overflow-terms`, 'float32', binCount);
+      const overflowTotal = createTransientView(graph, `${id}-overflow-total`, 'float32', 1);
       nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-overflow-terms`,
+          operation: OPERATION,
+          variant: 'overflow-terms',
+          invocationCount: binCount,
+          bindings: [
+            {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
+            {name: 'overflowTerms', view: overflowTerms, type: 'f32', access: 'read_write'}
+          ],
+          declarations: getPairHistogramReadWGSL('accumulators', channelCount, '', binCount),
+          body: `overflowTerms[overflowTermsOffset + index] = select(0.0, 1.0, readPairCount(index, 0u) == 0xffffffffu);`
+        }),
+        ...getPairStatisticsTotalSumNodes<Parameters>(graph, {
+          id: `${id}-overflow-reduction`,
+          operation: OPERATION,
+          input: overflowTerms,
+          output: overflowTotal
+        }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-overflow`,
           operation: OPERATION,
           variant: 'overflow',
+          invocationCount: 1,
           bindings: [
             {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
-            {name: 'overflow', view: output.status?.overflow, type: 'u32', access: 'read_write'}
+            {name: 'overflowTotal', view: overflowTotal, type: 'f32', access: 'read'},
+            {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
           ],
-          invocationCount: 1,
           declarations: getPairHistogramReadWGSL('accumulators', channelCount, '', binCount),
-          body: `var flagged = readPairOverflow();
-  for (var bin = 0u; bin < ${binCount}u; bin++) {
-    flagged = flagged || readPairCount(bin, 0u) == 0xffffffffu;
-  }
+          body: `let flagged = readPairOverflow() || overflowTotal[overflowTotalOffset] > 0.0;
   overflow[overflowOffset] = select(0u, 1u, flagged);`
         })
       );

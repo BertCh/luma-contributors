@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SCAN_MEMBERSHIP_BODY} from './space-time-clusters-membership';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -135,19 +136,25 @@ function formatProbability(value: number): string {
 /** One-line histogram of a permutation distribution with the percentile of the observed value. */
 function formatDistribution(values: ArrayLike<number>, count: number, observed: number): string {
   if (!Number.isFinite(observed) || count <= 0) return 'unavailable';
+  const usable = Array.from(
+    {length: Math.min(count, values.length)},
+    (_, index) => values[index]
+  ).filter(Number.isFinite);
+  count = usable.length;
+  if (count === 0) return 'unavailable';
   const bins = 32;
   let minimum = observed;
   let maximum = observed;
   for (let index = 0; index < count; index++) {
-    minimum = Math.min(minimum, values[index]);
-    maximum = Math.max(maximum, values[index]);
+    minimum = Math.min(minimum, usable[index]);
+    maximum = Math.max(maximum, usable[index]);
   }
   const span = Math.max(maximum - minimum, 1e-9);
   const heights = new Array<number>(bins).fill(0);
   let below = 0;
   for (let index = 0; index < count; index++) {
-    heights[Math.min(bins - 1, Math.floor(((values[index] - minimum) / span) * bins))]++;
-    if (values[index] < observed) below++;
+    heights[Math.min(bins - 1, Math.floor(((usable[index] - minimum) / span) * bins))]++;
+    if (usable[index] < observed) below++;
   }
   const bars = '.:-=+*#@';
   const peak = Math.max(...heights, 1);
@@ -339,6 +346,7 @@ export async function createSpaceTimeClusters(
     const knoxSummary = buffer('knox-summary', GPU_SPACE_TIME_SUMMARY_LENGTH * 4);
     const mantelStatistics = buffer('mantel-statistics', (MAXIMUM_PERMUTATIONS + 1) * 4);
     const mantelSummary = buffer('mantel-summary', GPU_SPACE_TIME_SUMMARY_LENGTH * 4);
+    const mantelAttempted = buffer('mantel-attempted', 4);
     const segments = buffer('segments', slotCapacity * 16);
     const fade = buffer('fade', slotCapacity * 4);
     const graph = new GPUCommandGraph<void>(device, {id: `knox-${key}`});
@@ -386,6 +394,7 @@ export async function createSpaceTimeClusters(
         maximumPermutations: MAXIMUM_PERMUTATIONS,
         output: {
           statistics: v('mantel-statistics', mantelStatistics, 'float32', MAXIMUM_PERMUTATIONS + 1),
+          permutationCount: v('mantel-attempted', mantelAttempted, 'uint32', 1),
           summary: v('mantel-summary', mantelSummary, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
         }
       })
@@ -459,7 +468,9 @@ export async function createSpaceTimeClusters(
         {buffer: mantelSummary, size: GPU_SPACE_TIME_SUMMARY_LENGTH * 4},
         {buffer: overflow, size: 4},
         {buffer: knoxStatistics, size: (MAXIMUM_PERMUTATIONS + 1) * 4},
-        {buffer: mantelStatistics, size: (MAXIMUM_PERMUTATIONS + 1) * 4}
+        {buffer: mantelStatistics, size: (MAXIMUM_PERMUTATIONS + 1) * 4},
+        {buffer: mantelAttempted, size: 4},
+        {buffer: testParameters.buffer, size: GPU_SPACE_TIME_PARAMETER_LENGTH * 4}
       ],
       bytes => {
         if (destroyed || current?.key !== key) return;
@@ -473,7 +484,16 @@ export async function createSpaceTimeClusters(
           words * 8 + 4 + (MAXIMUM_PERMUTATIONS + 1) * 4,
           MAXIMUM_PERMUTATIONS + 1
         );
-        const permutations = ctx.options.permutations;
+        const permutations = new Uint32Array(
+          bytes,
+          words * 8 + 4 + (MAXIMUM_PERMUTATIONS + 1) * 8 + 4,
+          GPU_SPACE_TIME_PARAMETER_LENGTH
+        )[2];
+        const attemptedMantel = new Uint32Array(
+          bytes,
+          words * 8 + 4 + (MAXIMUM_PERMUTATIONS + 1) * 8,
+          1
+        )[0];
         ctx.setReadout(
           'pairs',
           Number.isFinite(knox[SUMMARY.pairCount]) ? knox[SUMMARY.pairCount] : 'unavailable'
@@ -514,7 +534,7 @@ export async function createSpaceTimeClusters(
         ctx.setReadout('mantelP', formatProbability(mantel[SUMMARY.pseudoPGreater]));
         ctx.setReadout(
           'mantelDistribution',
-          formatDistribution(mantelPermuted.subarray(1), permutations, mantel[SUMMARY.observed])
+          formatDistribution(mantelPermuted.subarray(1), attemptedMantel, mantel[SUMMARY.observed])
         );
         ctx.setReadout('pairOverflow', overflowFlag ? 'yes: lower the radius' : 'no');
       }
@@ -557,6 +577,7 @@ export async function createSpaceTimeClusters(
     const clusterStatistics = buffer('cluster-statistics', MAXIMUM_CLUSTERS * 8 * 4);
     const statistics = buffer('statistics', (MAXIMUM_PERMUTATIONS + 1) * 4);
     const summary = buffer('summary', GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH * 4);
+    const invalidCount = buffer('invalid-count', 4);
     const zoneStatistics = buffer('zone-statistics', (zoneCount + 1) * 4);
     const membership = buffer('membership', (zoneCount + 1) * 4);
     const perCapita = new Float32Array(zoneCount + 1).fill(NaN);
@@ -633,7 +654,8 @@ export async function createSpaceTimeClusters(
           clusterStatistics: clusterStatisticsView,
           statistics: v('statistics', statistics, 'float32', MAXIMUM_PERMUTATIONS + 1),
           summary: v('summary', summary, 'uint32', GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH),
-          zoneStatistics: v('zone-statistics', zoneStatistics, 'float32', zoneCount)
+          zoneStatistics: v('zone-statistics', zoneStatistics, 'float32', zoneCount),
+          status: {invalidCount: v('invalid-count', invalidCount, 'uint32', 1)}
         }
       })
     );
@@ -645,6 +667,12 @@ export async function createSpaceTimeClusters(
       bindings: [
         {name: 'indices', view: clusterIndicesView, type: 'u32', access: 'read'},
         {name: 'stats', view: clusterStatisticsView, type: 'f32', access: 'read'},
+        {
+          name: 'invalidCount',
+          view: v('invalid-count', invalidCount, 'uint32', 1),
+          type: 'u32',
+          access: 'read'
+        },
         {name: 'positions', view: zonePositions, type: 'f32', access: 'read'},
         {
           name: 'alpha',
@@ -659,31 +687,7 @@ export async function createSpaceTimeClusters(
           access: 'read_write'
         }
       ],
-      body: /* wgsl */ `
-  if (index >= ZONES) {
-    membership[membershipOffset + index] = 0xffffffffu;
-    return;
-  }
-  var member = 0u;
-  let px = positions[positionsOffset + index * 2u];
-  let py = positions[positionsOffset + index * 2u + 1u];
-  for (var cluster = 0u; cluster < CLUSTERS; cluster++) {
-    if (indices[indicesOffset + cluster * 4u + 1u] == 0u) {
-      continue;
-    }
-    if (stats[statsOffset + cluster * 8u + 3u] > alpha[alphaOffset]) {
-      continue;
-    }
-    let center = indices[indicesOffset + cluster * 4u];
-    let dx = px - positions[positionsOffset + center * 2u];
-    let dy = py - positions[positionsOffset + center * 2u + 1u];
-    let radius = stats[statsOffset + cluster * 8u + 4u];
-    if (dx * dx + dy * dy <= radius * radius * 1.00002 + 1.0) {
-      member = cluster + 1u;
-      break;
-    }
-  }
-  membership[membershipOffset + index] = member;`
+      body: SCAN_MEMBERSHIP_BODY
     });
     const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
@@ -693,7 +697,9 @@ export async function createSpaceTimeClusters(
         {buffer: summary, size: GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH * 4},
         {buffer: clusterIndices, size: MAXIMUM_CLUSTERS * 16},
         {buffer: clusterStatistics, size: MAXIMUM_CLUSTERS * 32},
-        {buffer: membership, size: (zoneCount + 1) * 4}
+        {buffer: membership, size: (zoneCount + 1) * 4},
+        {buffer: invalidCount, size: 4},
+        {buffer: significanceParameter.buffer, size: 4}
       ],
       bytes => {
         if (destroyed || current?.key !== key) return;
@@ -767,8 +773,8 @@ export async function createSpaceTimeClusters(
     searchParameters.write(
       getGPUNeighborSearchParameterValues({
         bounds: searchBounds,
-        radius: options.spatialRadius,
-        weightKind: 'binary'
+        searchRadius: options.spatialRadius,
+        weightType: 'binary'
       })
     );
     testParameters.write(
@@ -796,7 +802,7 @@ export async function createSpaceTimeClusters(
         windowShape: options.windowShape
       })
     );
-    significanceParameter.write(Float32Array.of(options.significance));
+    significanceParameter.write(Float32Array.of(getScanSignificance()));
     scanDirty = true;
     scanChangedAt = performance.now();
   }
@@ -807,14 +813,35 @@ export async function createSpaceTimeClusters(
     const stats = new Float32Array(bytes, 16 + MAXIMUM_CLUSTERS * 16, MAXIMUM_CLUSTERS * 8);
     cpuMembership = new Uint32Array(bytes, 16 + MAXIMUM_CLUSTERS * 48, zoneCount + 1);
     _cpuStatistics = stats;
+    const invalidCount = new Uint32Array(
+      bytes,
+      16 + MAXIMUM_CLUSTERS * 48 + (zoneCount + 1) * 4,
+      1
+    )[0];
+    const alpha = new Float32Array(
+      bytes,
+      16 + MAXIMUM_CLUSTERS * 48 + (zoneCount + 1) * 4 + 4,
+      1
+    )[0];
     const clusters = summary[0];
+    if (invalidCount !== 0 || (clusters > 0 && !Number.isFinite(stats[0]))) {
+      cpuMembership = null;
+      _cpuStatistics = null;
+      ctx.setReadout('scanCases', formatCount(summary[1]));
+      ctx.setReadout('scanClusters', 'unavailable (invalid or numerically lost scan input)');
+      for (let rank = 0; rank < 3; rank++) ctx.setReadout(`cluster${rank + 1}`, 'unavailable');
+      ctx.requestLayers();
+      return;
+    }
     ctx.setReadout('scanCases', formatCount(summary[1]));
     ctx.setReadout(
       'scanClusters',
-      `${clusters} found, ${countSignificant(stats, clusters)} significant`
+      `${clusters} found, ${countSignificant(stats, clusters, alpha)} significant`
     );
-    llrMaximum = Math.max(1e-6, stats[0]);
-    ctx.setLegendExtent('llr', [0, llrMaximum]);
+    if (clusters > 0 && Number.isFinite(stats[0])) {
+      llrMaximum = Math.max(1e-6, stats[0]);
+      ctx.setLegendExtent('llr', [0, llrMaximum]);
+    }
     for (let rank = 0; rank < 3; rank++) {
       if (rank >= clusters) {
         ctx.setReadout(`cluster${rank + 1}`, '-');
@@ -834,12 +861,17 @@ export async function createSpaceTimeClusters(
     ctx.requestLayers();
   }
 
-  function countSignificant(stats: Float32Array, clusters: number): number {
+  function countSignificant(stats: Float32Array, clusters: number, alpha: number): number {
     let count = 0;
     for (let cluster = 0; cluster < clusters; cluster++) {
-      if (stats[cluster * 8 + 3] <= ctx.options.significance) count++;
+      if (stats[cluster * 8 + 3] <= alpha) count++;
     }
     return count;
+  }
+
+  /** Effective alpha written to the float32 map parameter and used by host readouts. */
+  function getScanSignificance(): number {
+    return Math.fround(ctx.options.significance);
   }
 
   function adoptVariant(variant: Variant): void {
@@ -985,7 +1017,9 @@ export async function createSpaceTimeClusters(
             values: current.scan.membership,
             valueFormat: 'uint32',
             colormap: 'category',
-            palette: CLUSTER_PALETTE
+            palette: CLUSTER_PALETTE,
+            noDataValue: NO_CELL,
+            noDataColor: [0, 0, 0, 0]
           })
         );
       } else if (options.scanView === 'zone-llr') {

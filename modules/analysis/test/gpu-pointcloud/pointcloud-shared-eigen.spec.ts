@@ -87,7 +87,7 @@ for (const scale of [1e-6, 1, 1e6]) {
           source: fixture.view('float32x3', new Float32Array(source.flat())).view,
           target: fixture.view('float32x3', new Float32Array(target.flat())).view,
           maximumDistance: 0.2 * scale,
-          iterations: 6,
+          maximumIterations: 6,
           translationTolerance: 1e-5 * scale,
           rotationTolerance: 1e-5,
           output: {

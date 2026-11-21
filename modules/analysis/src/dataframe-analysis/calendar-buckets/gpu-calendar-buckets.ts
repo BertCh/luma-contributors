@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  captureDataframeConstructorProps,
+  type DataframePropKeys,
+  type DataframeOutputSelection
+} from './dataframe-constructor-contracts';
+
+import {
   createGraphChunkGroupKernelNode,
   validateGraphChunkGroupKernelSupport
 } from '../../analysis-core/kernels/graph-chunk-groups';
@@ -10,7 +16,7 @@ import {
 import {
   getBoundedDispatchLayout,
   GraphDataView,
-  GraphVectorView,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
@@ -26,8 +32,10 @@ import {
 } from '../../analysis-core/contracts/temporal-context';
 import type {ArrowAnalyticsTimeUnit} from '../../analysis-core/graph-support/arrow-analytics-normalization';
 import {
+  isGraphDataView,
   getGraphViewChunks,
   validateCommandNodeBudget,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -67,34 +75,39 @@ type GPUCalendarBucketsRowView<
  * row; a masked or invalid row writes `0xffffffff` to `uint32` columns and `-2^31` to `year` and
  * `isoWeekYear`.
  */
+type GPUCalendarBucketsOptionalOutput<
+  Rows extends GraphDataView | GraphVectorView = GraphDataView
+> = {
+  /** Proleptic Gregorian year of the local time, astronomical numbering (year 0 exists). */
+  year?: GPUCalendarBucketsRowView<'sint32', Rows>;
+  /** Month, 1 to 12. */
+  month?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /** Day of the month, 1 to 31. */
+  dayOfMonth?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /** Hour, 0 to 23. */
+  hour?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /** Minute, 0 to 59. */
+  minute?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /** Weekday, 0 to 6, where 0 is the `firstDayOfWeek` parameter (Monday by default). */
+  weekday?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /** Day of the year, 1 to 366. */
+  dayOfYear?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /** ISO 8601 week number, 1 to 53 (weeks start on Monday, week 1 contains the first Thursday). */
+  isoWeek?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /** ISO 8601 week-based year, which differs from `year` around January 1. */
+  isoWeekYear?: GPUCalendarBucketsRowView<'sint32', Rows>;
+  /** Quarter of the year, 1 to 4. */
+  quarter?: GPUCalendarBucketsRowView<'uint32', Rows>;
+  /**
+   * Hour by weekday count matrix, `weekday * 24 + hour`, at least 168 elements. It is cleared on
+   * every encoding, then every valid row adds one. The counts are exact integers.
+   */
+  hourWeekdayCounts?: GraphDataView<'uint32'>;
+};
+
+/** Caller-owned calendar output selection with at least one terminal column or count matrix. */
 export type GPUCalendarBucketsOutput<Rows extends GraphDataView | GraphVectorView = GraphDataView> =
-  {
-    /** Proleptic Gregorian year of the local time, astronomical numbering (year 0 exists). */
-    year?: GPUCalendarBucketsRowView<'sint32', Rows>;
-    /** Month, 1 to 12. */
-    month?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /** Day of the month, 1 to 31. */
-    dayOfMonth?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /** Hour, 0 to 23. */
-    hour?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /** Minute, 0 to 59. */
-    minute?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /** Weekday, 0 to 6, where 0 is the `firstDayOfWeek` parameter (Monday by default). */
-    weekday?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /** Day of the year, 1 to 366. */
-    dayOfYear?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /** ISO 8601 week number, 1 to 53 (weeks start on Monday, week 1 contains the first Thursday). */
-    isoWeek?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /** ISO 8601 week-based year, which differs from `year` around January 1. */
-    isoWeekYear?: GPUCalendarBucketsRowView<'sint32', Rows>;
-    /** Quarter of the year, 1 to 4. */
-    quarter?: GPUCalendarBucketsRowView<'uint32', Rows>;
-    /**
-     * Hour by weekday count matrix, `weekday * 24 + hour`, at least 168 elements. It is cleared on
-     * every encoding, then every valid row adds one. The counts are exact integers.
-     */
-    hourWeekdayCounts?: GraphDataView<'uint32'>;
-  };
+  DataframeOutputSelection<GPUCalendarBucketsOptionalOutput<Rows>>;
 
 /**
  * Time zone transition table read by {@link GPUCalendarBuckets}; build it with
@@ -150,7 +163,7 @@ export type GPUCalendarBucketsProps<Rows extends GraphDataView | GraphVectorView
     mask?: GPUCalendarBucketsRowView<'uint32', Rows>;
     /**
      * Optional UTC offset in minutes per row (`sint32`, within `[-1440, 1440]`), which overrides the
-     * fixed offset in `parameters`. This is the only way to express daylight saving time: the caller
+     * fixed offset in `parameters`. As an alternative to `timeZone`, the caller
      * precomputes each row's offset from its zone rules. An out-of-range offset makes the row invalid.
      */
     utcOffsets?: GPUCalendarBucketsRowView<'sint32', Rows>;
@@ -240,7 +253,27 @@ export class GPUCalendarBuckets<
   readonly estimatedCommandNodeCount: number;
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: Props) {
+  constructor(
+    input: Props &
+      Record<
+        Exclude<
+          DataframePropKeys<Props>,
+          DataframePropKeys<GPUCalendarBucketsProps<GraphDataView | GraphVectorView>>
+        >,
+        never
+      >
+  ) {
+    const props = captureDataframeConstructorProps(input.id ?? 'calendar-buckets', input, [
+      'id',
+      'timestamps',
+      'unit',
+      'temporalContext',
+      'mask',
+      'utcOffsets',
+      'timeZone',
+      'parameters',
+      'output'
+    ]);
     this.id = props.id ?? 'calendar-buckets';
     this.props = props as Props & GPUCalendarBucketsProps<Props['timestamps']>;
     const id = this.id;
@@ -333,7 +366,7 @@ export class GPUCalendarBuckets<
         const view = output[name];
         return [
           name,
-          view instanceof GraphDataView && view.length > this.rowCount
+          isGraphDataView(view) && view.length > this.rowCount
             ? new GraphDataView(view.buffer, {...view, length: this.rowCount})
             : view
         ];
@@ -377,40 +410,17 @@ export class GPUCalendarBuckets<
         | GraphVectorView
         | undefined
       )[])[] = dispatches;
-      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
-      const writableWordChunks = Object.values(writableOutputs)
-        .flatMap(view => (view ? getGraphViewChunks(view) : []))
-        .map(
-          view =>
-            new GraphDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset,
-              byteStride: 4,
-              rowByteLength: 4
-            })
-        );
-      const writableWordCount = writableWordChunks.reduce(
-        (total, chunk) => total + chunk.length,
-        0
-      );
-      validateDisjointWritableViews(id, {
-        outputs: new GraphVectorView({
-          id: `${id}-writable-ranges`,
-          name: 'outputs',
-          format: 'uint32',
-          length: writableWordCount,
-          valueLength: writableWordCount,
-          stride: 1,
-          byteStride: 4,
-          rowByteLength: 4,
-          data: writableWordChunks
-        })
-      });
+      validateDisjointWritableViews(id, writableOutputs, {separateDispatches: true});
       for (const fields of publicationPasses) {
         validateDisjointWritableViews(
           id,
-          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+          Object.fromEntries(
+            fields.map((view, index) => [
+              Object.entries(writableOutputs).find(([, candidate]) => candidate === view)?.[0] ??
+                (view === packedMatrix ? 'hourWeekdayCounts' : String(index)),
+              view
+            ])
+          )
         );
       }
     }
@@ -584,8 +594,13 @@ export class GPUCalendarBuckets<
 
 function resolveCalendarUnit(
   id: string,
-  {unit, temporalContext}: GPUCalendarBucketsProps
+  {unit, temporalContext}: Pick<GPUCalendarBucketsProps, 'unit' | 'temporalContext'>
 ): ArrowAnalyticsTimeUnit {
+  validateRequirement(
+    id,
+    unit === undefined || ['second', 'millisecond', 'microsecond', 'nanosecond'].includes(unit),
+    `unit must be one of second, millisecond, microsecond, nanosecond; received ${String(unit)}`
+  );
   if (!temporalContext) {
     return unit ?? 'millisecond';
   }
@@ -700,6 +715,10 @@ fn decodeCalendar(time: vec2<u32>, offsetMilliseconds: i32, firstDay: u32) -> Ca
     if (millisecondsOfDay != 0u) {
       days = days + 1;
       millisecondsOfDay = MILLISECONDS_PER_DAY - millisecondsOfDay;
+    }
+    // The floored day, not the truncated quotient, must lie within -MAXIMUM_DAYS.
+    if (u32(days) > MAXIMUM_DAYS) {
+      return invalid;
     }
     days = -days;
   }

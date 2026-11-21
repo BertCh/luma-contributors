@@ -202,18 +202,46 @@ async function expectEigenCasesMatchReference(
   cases: {matrix: Matrix; maximumSweeps: number}[]
 ): Promise<{status: number; sweeps: number; values: number[]; vectors: Matrix}[]> {
   const results = await runEigenCases(cases);
+  expect(getEigenMismatches(cases, results).slice(0, 10)).toEqual([]);
+  return results;
+}
+
+/**
+ * Mismatches of eigen results against the float64 reference. Every bound is written so that NaN
+ * fails, and missing or extra values, vectors or vector entries are mismatches (TOOL-109).
+ */
+function getEigenMismatches(
+  cases: {matrix: Matrix; maximumSweeps: number}[],
+  results: {status: number; sweeps: number; values: number[]; vectors: Matrix}[]
+): string[] {
   const mismatches: string[] = [];
+  if (results.length !== cases.length) {
+    mismatches.push(`${results.length} results for ${cases.length} cases`);
+  }
   cases.forEach(({matrix}, caseIndex) => {
-    const {status, values, vectors} = results[caseIndex];
+    const result = results[caseIndex];
+    if (!result) {
+      mismatches.push(`case ${caseIndex}: no result`);
+      return;
+    }
+    const {status, values, vectors} = result;
     const size = matrix.length;
     const reference = getReferenceEigenvalues(matrix);
     const scale = Math.max(...reference.map(Math.abs), 1e-30);
     if (status !== DENSE_SOLVE_STATUS.OK) {
       mismatches.push(`case ${caseIndex}: status ${status}`);
     }
-    values.forEach((value, index) => {
-      if (Math.abs(value - reference[index]) > 1e-5 * scale) {
-        mismatches.push(`case ${caseIndex}: value ${index} ${value} versus ${reference[index]}`);
+    if (values.length !== size) {
+      mismatches.push(`case ${caseIndex}: ${values.length} values for size ${size}`);
+    }
+    if (vectors.length !== size || vectors.some(row => row.length !== size)) {
+      mismatches.push(`case ${caseIndex}: vectors are not ${size} by ${size}`);
+      return;
+    }
+    reference.forEach((expected, index) => {
+      const value = values[index];
+      if (!Number.isFinite(value) || !(Math.abs(value - expected) <= 1e-5 * scale)) {
+        mismatches.push(`case ${caseIndex}: value ${index} ${value} versus ${expected}`);
       }
     });
     for (let column = 0; column < size; column++) {
@@ -225,19 +253,18 @@ async function expectEigenCasesMatchReference(
             values[column] * vector[rowIndex]
         )
       );
-      if (residual > 1e-5 * scale) {
+      if (!(residual <= 1e-5 * scale)) {
         mismatches.push(`case ${caseIndex}: residual of vector ${column} is ${residual}`);
       }
       for (let other = 0; other < size; other++) {
         const dot = vectors.reduce((sum, row) => sum + row[column] * row[other], 0);
-        if (Math.abs(dot - (column === other ? 1 : 0)) > 1e-5) {
+        if (!(Math.abs(dot - (column === other ? 1 : 0)) <= 1e-5)) {
           mismatches.push(`case ${caseIndex}: vectors ${column}, ${other} dot ${dot}`);
         }
       }
     }
   });
-  expect(mismatches.slice(0, 10)).toEqual([]);
-  return results;
+  return mismatches;
 }
 
 it('symmetric Jacobi eigen reports non-finite input and non-convergence', async () => {
@@ -281,4 +308,44 @@ it('symmetric Jacobi eigen reports non-finite input and non-convergence', async 
     [0, 1],
     [1, 0]
   ]);
+});
+
+// CORE-106: diagonals of opposite sign near the float32 limit overflowed theta's difference, and a
+// coupling above 1.7e38 overflowed twice the coupling; the rotation then cleared the coupling with
+// a zero (or 45 degree) angle and returned OK with residuals near 0.03. Reference eigenvalues:
+// numpy.linalg.eigh in float64 of the float32 entries (/usr/bin/python3).
+it('symmetric Jacobi eigen keeps a coupling when the diagonal difference overflows (CORE-106)', async () => {
+  const cases = [
+    {
+      matrix: roundToFloat32([
+        [-3e38, 1e37],
+        [1e37, 3e38]
+      ]),
+      values: [-3.0016662094333818e38, 3.0016662094333818e38]
+    },
+    {
+      matrix: roundToFloat32([
+        [0, 2e38],
+        [2e38, 1e38]
+      ]),
+      values: [-1.5615527628837527e38, 2.561552730912322e38]
+    }
+  ];
+  const results = await runEigenCases(cases.map(({matrix}) => ({matrix, maximumSweeps: 16})));
+  results.forEach((result, caseIndex) => {
+    const {matrix, values} = cases[caseIndex];
+    expect(result.status).toBe(DENSE_SOLVE_STATUS.OK);
+    expect([...result.values, ...result.vectors.flat()].every(Number.isFinite)).toBe(true);
+    result.values.forEach((value, index) => {
+      expect(Math.abs(value - values[index])).toBeLessThanOrEqual(1e-5 * Math.abs(values[1]));
+      // Residual |A v - lambda v| / |lambda| in float64.
+      const x = result.vectors[0][index];
+      const y = result.vectors[1][index];
+      const residual = Math.hypot(
+        matrix[0][0] * x + matrix[0][1] * y - value * x,
+        matrix[1][0] * x + matrix[1][1] * y - value * y
+      );
+      expect(residual / Math.abs(value)).toBeLessThan(1e-5);
+    });
+  });
 });

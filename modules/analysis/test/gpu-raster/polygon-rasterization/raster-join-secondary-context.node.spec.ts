@@ -29,8 +29,17 @@ function createJoin(zonesSpatialContext?: GPUSpatialContext) {
   });
 }
 it('raster join accepts absent and matching zones contexts', () => {
-  expect(createJoin().spatialContext).toBe(PRIMARY);
-  expect(createJoin({...PRIMARY}).spatialContext).toBe(PRIMARY);
+  for (const zonesSpatialContext of [undefined, {...PRIMARY}]) {
+    const context = createJoin(zonesSpatialContext).spatialContext;
+    // Construction captures metadata rather than retaining the caller's mutable descriptor.
+    expect(context).toStrictEqual({
+      coordinateSpace: 'longitude-latitude',
+      metric: 'none',
+      datum: 'EPSG:4326'
+    });
+    expect(context).not.toBe(PRIMARY);
+    expect(Object.isFrozen(context)).toBe(true);
+  }
 });
 it('raster join rejects a zones datum mismatch', () => {
   expect(() => createJoin({...PRIMARY, datum: 'EPSG:4267'})).toThrowError(

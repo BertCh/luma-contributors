@@ -16,6 +16,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -49,6 +50,8 @@ import {
 } from '../../analysis-core/kernels/study-window-wgsl';
 
 import {validatePairStatisticsBindings} from './pair-statistics-preflight';
+
+import {RECTANGLE_ISOTROPIC_WEIGHT_WGSL} from './rectangle-isotropic-weight-wgsl';
 
 const OPERATION = 'GPURipley';
 
@@ -141,6 +144,8 @@ export type GPURipleyProps = {
  * Ripley's K, Besag's L and the annulus pair-correlation function of a planar point pattern in a
  * rectangle or prepared polygon window (spatstat `Kest`, `Lest`, `pcf`), from one
  * deterministic pass over every ordered pair within the per-frame maximum distance.
+ * This class publishes no overflow word. Internal pair accumulation uses 64-bit integers;
+ * the optional uint32 `pairCounts` output saturates at `0xffffffff`.
  *
  * Definition, which the GPU result matches within the bounds below:
  * - The window is the per-frame bounds rectangle or prepared polygon with area `A`. Included rows
@@ -177,8 +182,10 @@ export type GPURipleyProps = {
  *   of `K` (a noisy, unsmoothed estimator; spatstat's `pcf` smooths with a kernel).
  * - Undefined results (`n < 2`, an empty border set, zero window area) are quiet NaN.
  *
- * Determinism and precision: all pair counts are exact 64-bit integer sums (so `pairCounts` is
- * exact, and `'none'` and `'border'` give `K` exactly up to f32 rounding of the final division).
+ * Determinism and precision: internal pair counts are exact 64-bit integer sums. The optional
+ * uint32 `pairCounts` is exact only up to `0xffffffff` per annulus and saturates above that limit.
+ * The `'none'` and `'border'` estimators use the internal counts, giving `K` exactly up to f32
+ * rounding of the final division.
  * Isotropic weights are accumulated as `round(e * 2^17)`, an error of at most `2^-18` per pair
  * plus the f32 error of the weight itself. Results are bitwise reproducible.
  *
@@ -214,16 +221,20 @@ export class GPURipley implements GPUCommandNodeProducer {
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['float32'], `${id} ${name}`);
-        if (view.length < radiusCount) {
-          throw new Error(`${id} ${name} must hold radiusCount rows`);
-        }
+        validateRequirement(
+          id,
+          view.length >= radiusCount,
+          `${name} length ${view.length} must be at least radiusCount (${radiusCount})`
+        );
       }
     }
     if (output.pairCounts) {
       validatePackedUint32View(output.pairCounts, `${id} output.pairCounts`);
-      if (output.pairCounts.length < radiusCount) {
-        throw new Error(`${id} output.pairCounts must hold radiusCount rows`);
-      }
+      validateRequirement(
+        id,
+        output.pairCounts.length >= radiusCount,
+        `output.pairCounts length ${output.pairCounts.length} must be at least radiusCount (${radiusCount})`
+      );
     }
     validateDisjointWritableViews(id, output);
     validateGraphOutputsDisjointFromInputs(
@@ -333,34 +344,7 @@ ${getStudyWindowWGSL(getStudyWindowWGSLOptions(studyWindow))}`
       channelCount: CHANNEL_COUNT,
       pairOrder: 'ordered',
       extraBindings: studyWindow ? [getStudyWindowBinding(studyWindow)] : undefined,
-      declarations: /* wgsl */ `${constantsWGSL}${windowWGSL}
-// Angle of the arc of a circle of radius d (centered at distance h from a side line) outside it.
-fn getSideAngle(h: f32, d: f32) -> f32 {
-  if (d > h) {
-    // A point on the side line: a quarter turn. h can be -0.0 (a coordinate of -0.0 against a
-    // bound of 0), and atan2(y, -0.0) is -pi / 2 on some adapters.
-    if (h == 0.0) {
-      return HALF_PI;
-    }
-    return atan2(sqrt((d - h) * (d + h)), h);
-  }
-  return 0.0;
-}
-
-fn getArcOverlap(first: f32, second: f32) -> f32 {
-  return max(0.0, first + second - HALF_PI);
-}
-
-// Ripley (1977) weight 1 / (fraction of the circle inside the rectangle), capped.
-fn getIsotropicWeight(left: f32, bottom: f32, right: f32, top: f32, d: f32) -> f32 {
-  let a = getSideAngle(left, d);
-  let b = getSideAngle(bottom, d);
-  let c = getSideAngle(right, d);
-  let e = getSideAngle(top, d);
-  let overlap = getArcOverlap(a, b) + getArcOverlap(b, c) + getArcOverlap(c, e) + getArcOverlap(e, a);
-  let inside = 1.0 - (a + b + c + e) / PI + overlap / (2.0 * PI);
-  return min(1.0 / max(inside, 1.0 / WEIGHT_CAP), WEIGHT_CAP);
-}`,
+      declarations: /* wgsl */ `${constantsWGSL}${windowWGSL}${RECTANGLE_ISOTROPIC_WEIGHT_WGSL}`,
       focusPrologue: `let mode = u32(readParameter(5u) + 0.5);
     ${
       studyWindow

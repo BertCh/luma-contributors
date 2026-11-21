@@ -11,6 +11,7 @@ import {NATIONAL_FURNITURE} from '../../cartography/projection-notes';
 import {defineScene, type LegendSpec, type OptionSpec} from '../scene';
 import {REFERENCE_PRESETS, SIMILARITY_ATTRIBUTES} from './b5-variables';
 import type {SimilarPlacesLegendData, SimilarPlacesOptions} from './similar-places.compute';
+import {resolveProfileStandardization} from './similar-places-standardization';
 import {getWeights, WEIGHT_SETS} from './similar-places.style';
 
 /** The contiguous US, the frame of every national county step. */
@@ -90,7 +91,7 @@ function getLegends(
     counts,
     interactive: true,
     layout: 'list',
-    note: `Weighted distance on ${state.standardization === 'zscore' ? 'z-scores' : 'percentile ranks'}. The reference is excluded from its own ranking.`
+    note: `Weighted distance on ${resolveProfileStandardization(state.standardization) === 'zscore' ? 'z-scores' : 'percentile ranks'}. The reference is excluded from its own ranking.`
   });
   const ink = hexToRgba(MAP_INK[tone].ink);
   const entries: Extract<LegendSpec, {kind: 'categories'}>['entries'][number][] = [
@@ -221,10 +222,10 @@ export default defineScene<SimilarPlacesOptions>({
       group: 'Ranking',
       apply: 'compile',
       display: 'segmented',
-      default: 'zscore',
-      help: 'How columns are put on a common scale. Z-score: (x - mean) / sd, which keeps magnitudes. Percentile rank: robust to outliers but loses magnitude. Compile-time: the rank graph compiles the first time it is chosen.',
+      default: 'z-score',
+      help: 'How columns are put on a common scale. Z-score: (x - mean) / sd, which keeps magnitudes. Saved zscore is the old spelling of z-score. Percentile rank: robust to outliers but loses magnitude. Compile-time: the rank graph compiles the first time it is chosen.',
       options: [
-        {value: 'zscore', label: 'Z-score'},
+        {value: 'z-score', label: 'Z-score'},
         {value: 'rank', label: 'Percentile rank'}
       ]
     },

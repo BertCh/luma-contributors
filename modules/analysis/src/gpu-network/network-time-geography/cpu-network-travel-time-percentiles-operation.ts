@@ -17,9 +17,10 @@ import {
   type CPUNetworkTimeRoutingInput
 } from '../network-optimization/cpu-network-time-routing-operation';
 import {
-  GPUNetworkTravelTimePercentilesOperation,
+  getNetworkTravelTimePercentilesOperationDescriptors,
   type NetworkTravelTimePercentilesOperationProps
 } from './gpu-network-travel-time-percentiles-operation';
+import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {getNetworkTravelTimePercentileRank} from './network-travel-time-percentile-rank';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
@@ -30,6 +31,7 @@ export type CPUNetworkTravelTimePercentilesInput = Omit<
 > & {
   vertexCount: number;
   departureCount: number;
+  /** Percentages in (0, 100], not fractions: probability .95 is percentile 95. */
   percentiles: readonly number[];
   initialState: Uint32Array;
   window: Float32Array;
@@ -58,17 +60,27 @@ function validatePercentileOptions(
   );
 }
 
+/** CPU percentile payload and representability evidence in the travelTimes row domain. */
+export type CPUNetworkTravelTimePercentilesResult = {
+  travelTimes: Float32Array;
+  reachedCounts: Uint32Array;
+  status: Uint32Array;
+  /** One per selected percentile: finite float64 result that overflows float32. */
+  unrepresentable: Uint32Array;
+};
+
 /**
  * Routes every window departure within its budget, then selects vertex-major nearest-rank travel
  * times. Unreachable or invalid departures count as Infinity. Optional graph outputs have the
  * same layouts as these always-returned reachedCounts and per-departure [valid, converged] rows.
- * Ranks are ceil(percentile * departureCount / 100), evaluated exactly for the supplied
- * binary64 percentile without an epsilon, using the same host helper as the GPU contributor.
+ * Ranks are ceil(percentile * departureCount / 100), evaluated exactly for the percentile's
+ * shortest round-trip decimal (String(percentile)) without an epsilon, so 99.9% of 1,000
+ * departures is rank 999; the same host helper serves the GPU contributor.
  *
  * What differs from the GPU contributor:
  * - Routing state, transition, sample and round caps are dropped, as are the 60-departure and
  *   16-percentile caps. Explicit maximumRelaxations still bounds each departure's sweeps.
- * - Departures, routing labels and travel-time subtraction stay float64 until final float32
+ * - Departures and elapsed routing labels stay float64 until final float32
  *   output; the GPU rounds at its intermediate buffers and shader operations.
  * - Float32 output overflow does not clear valid. A budget exit reports [1, 0]; invalid input
  *   contents retain the GPU's [0, 0] routing status.
@@ -77,11 +89,7 @@ function validatePercentileOptions(
  */
 export function computeNetworkTravelTimePercentilesOnCPU(
   input: CPUNetworkTravelTimePercentilesInput
-): {
-  travelTimes: Float32Array;
-  reachedCounts: Uint32Array;
-  status: Uint32Array;
-} {
+): CPUNetworkTravelTimePercentilesResult {
   validatePercentileOptions('network-travel-time-percentiles', input);
   if (input.initialState.length !== 1) throw new Error('initialState must hold one row');
   if (input.window.length !== 2) throw new Error('window must hold first departure and step');
@@ -118,11 +126,12 @@ export function computeNetworkTravelTimePercentilesOnCPU(
         if (vertex < vertexCount)
           values[vertex][departure] = Math.min(
             values[vertex][departure],
-            result.arrivals[state] - time
+            result.elapsedTimes[state]
           );
       }
   }
   const travelTimes = new Float32Array(vertexCount * percentiles.length);
+  const unrepresentable = new Uint32Array(travelTimes.length);
   const reachedCounts = new Uint32Array(vertexCount);
   for (let vertex = 0; vertex < vertexCount; vertex++) {
     values[vertex].sort();
@@ -131,13 +140,20 @@ export function computeNetworkTravelTimePercentilesOnCPU(
       0
     );
     for (let column = 0; column < percentiles.length; column++) {
-      travelTimes[vertex * percentiles.length + column] = values[vertex][ranks[column] - 1];
+      const value = values[vertex][ranks[column] - 1];
+      const row = vertex * percentiles.length + column;
+      travelTimes[row] = value;
+      unrepresentable[row] = Number.isFinite(value) && !Number.isFinite(travelTimes[row]) ? 1 : 0;
     }
   }
-  return {travelTimes, reachedCounts, status};
+  return {travelTimes, reachedCounts, status, unrepresentable};
 }
 
-/** CPU reference twin with no GPU routing, window or percentile caps. */
+/**
+ * CPU reference twin with no GPU routing, window or percentile caps. Requested status retains
+ * incumbents; without status any invalid/unconverged departure suppresses travelTimes with NaN
+ * and clears reachedCounts. The pure function always returns its certificate and incumbents.
+ */
 export class CPUNetworkTravelTimePercentilesOperation extends GPUCPUOperation {
   constructor(originalProps: NetworkTravelTimePercentilesOperationProps) {
     const settings = snapshotConstructionFields(originalProps, [
@@ -164,13 +180,20 @@ export class CPUNetworkTravelTimePercentilesOperation extends GPUCPUOperation {
       output: snapshotConstructionFields(settings.output, [
         'travelTimes',
         'reachedCounts',
-        'status'
+        'status',
+        'unrepresentable'
       ])
     };
     const id = props.id ?? 'network-travel-time-percentiles';
     validatePercentileOptions(id, props);
     validateNetworkTimeRoutingOperationProps(id, props);
-    const operation = new GPUNetworkTravelTimePercentilesOperation(props);
+    // Validate graph names and output aliases independently of the GPU routing limits.
+    const operation = new GPUContributorOperation({
+      ...getNetworkTravelTimePercentilesOperationDescriptors(props),
+      createContributor: () => {
+        throw new Error(`${id}: CPU descriptors do not lower a contributor`);
+      }
+    });
     super({
       id,
       inputs: operation.inputs,
@@ -201,12 +224,18 @@ export class CPUNetworkTravelTimePercentilesOperation extends GPUCPUOperation {
           samplesPerTransition: props.samplesPerTransition,
           waitingPolicy: props.waitingPolicy
         });
+        if (props.output.status === undefined && result.status.some(word => word === 0)) {
+          result.travelTimes.fill(NaN);
+          result.reachedCounts.fill(0);
+        }
         const outputs: Record<string, Float32Array | Uint32Array> = {
           [props.output.travelTimes]: result.travelTimes
         };
         if (props.output.reachedCounts !== undefined)
           outputs[props.output.reachedCounts] = result.reachedCounts;
         if (props.output.status !== undefined) outputs[props.output.status] = result.status;
+        if (props.output.unrepresentable !== undefined)
+          outputs[props.output.unrepresentable] = result.unrepresentable;
         return outputs;
       }
     });

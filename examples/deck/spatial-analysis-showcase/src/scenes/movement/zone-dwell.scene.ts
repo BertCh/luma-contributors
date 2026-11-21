@@ -253,7 +253,7 @@ export default defineScene<ZoneDwellOptions>({
       apply: 'compile',
       default: '64',
       expert: true,
-      help: 'Compile-time bound on the event list kept for drawing. Dwell and visit statistics always use every event; only the drawn pulses are capped (an overflow flag says when a vessel exceeded the cap).',
+      help: 'Compile-time per-vessel cap on retained crossings. Per-vessel and global list caps truncate crossing and dependent inside-visit lists; dense zone-event statistics remain exact only when candidate scratch is complete. Candidate loss invalidates dense zone-event statistics and dependent visits. Stopped statistics and stopped visits depend independently on stop-list and spatial-join completeness; runtime captions identify each loss.',
       options: [
         {value: '16', label: '16 events'},
         {value: '32', label: '32 events'},
@@ -451,7 +451,7 @@ addFleetDwellRecipe(stopsGraph, {
   parameters: stopParameters.importToGraph(stopsGraph),     // speed threshold + minimum duration
   stopCapacity: 4096,
   zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity: ${1 << 18}},
-  outputs: {
+  output: {
     stops: {ids, status: {count, overflow}, centroids, durations},
     status: {joinOverflow},
     table: {counts, sumValues, means, maximums}
@@ -472,9 +472,9 @@ addFleetDwellZoneEventsRecipe(eventsGraph, {
   trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},   // planar meters, float32 seconds
   zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets},
   candidateCapacity: ${1 << 20}, trackEventCapacity: ${state.eventsPerVessel},
-  outputs: {events: {ids, status: {count, overflow}, eventZones, eventTypes, eventTimes, eventPositions}},
+  output: {events: {ids, status: {count, overflow}, eventZones, eventTypes, eventTimes, eventPositions},
+            table: {counts, sumValues, means, maximums}}, // dense: row k is zone k
   scratch: {visitTable: {ids: visitIds, zones: visitZones, dwellTimes}},   // one row per (track, zone) visit
-  outputs: {table: {counts, sumValues, means, maximums}}          // dense: row k is zone k
 });
 const eventsCompiled = await eventsGraph.compileAsync();  // once`;
     const after = `

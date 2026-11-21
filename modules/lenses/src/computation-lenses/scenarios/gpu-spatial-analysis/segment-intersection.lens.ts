@@ -15,9 +15,6 @@ defineLensScenario({
   title: 'Street segment intersections, Lincoln Park and Lake View',
   rungs: DEFAULT_LENS_RUNGS,
   dataset: S2_DATASETS.roads,
-  presentation: {
-    primaryOutputCaptureId: 'gpu-spatial-analysis-segment-intersection-snapshots-intersections-0'
-  },
   load: async () => {
     const [{runS2Lens, createS2ChicagoFrame, projectS2Positions}, {runExample}, roads] =
       await Promise.all([

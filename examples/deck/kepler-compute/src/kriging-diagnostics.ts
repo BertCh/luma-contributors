@@ -4,6 +4,7 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {
   estimateKeplerEmpiricalVariogram,
   fitKeplerVariogram,
@@ -46,7 +47,8 @@ export type KrigingVariogramSuggestion = {
 
 /**
  * Fits a variogram to the declared longitude, latitude and response vectors and returns settings
- * that replay the fit exactly (explicit parameters plus provenance).
+ * that replay the fit exactly (explicit parameters plus provenance). Empirical weighted-least-squares
+ * fitting uses clipped pair discovery; wrapped settings require a manual variogram for that route.
  */
 export async function suggestKrigingVariogram(
   vectors: {
@@ -60,12 +62,17 @@ export async function suggestKrigingVariogram(
     fitMethod?: 'weighted-least-squares' | 'vecchia-likelihood' | 'vecchia-fisher';
   } = {}
 ): Promise<KrigingVariogramSuggestion> {
+  const usesVecchia = Boolean(options.fitMethod && options.fitMethod !== 'weighted-least-squares');
+  validateRequirement(
+    'suggestKrigingVariogram',
+    usesVecchia || settings.longitudeSearch !== 'wrapped',
+    'longitudeSearch wrapped is unsupported by empirical weighted-least-squares fitting; supply a manual variogram instead'
+  );
   const [longitudes, latitudes, values] = await Promise.all([
     readFloat32Vector(vectors.longitude),
     readFloat32Vector(vectors.latitude),
     readFloat32Vector(vectors.values)
   ]);
-  const usesVecchia = Boolean(options.fitMethod && options.fitMethod !== 'weighted-least-squares');
   const empirical = usesVecchia
     ? undefined
     : estimateKeplerEmpiricalVariogram(longitudes, latitudes, values, {

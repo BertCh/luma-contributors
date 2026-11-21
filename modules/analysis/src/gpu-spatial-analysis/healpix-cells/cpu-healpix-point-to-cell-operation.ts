@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveHealpixIndexScheme} from './healpix-scheme';
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   getCPUOperationFloat32Rows,
@@ -20,6 +22,9 @@ import {
   type HealpixPointToCellOperationProps
 } from './gpu-healpix-point-to-cell-operation';
 
+/** Packed little-endian key words and row-aligned uint32 validity, including real nested key zero. */
+export type CPUHealpixPointToCellResult = {cells: Uint32Array; validity: Uint32Array};
+
 /**
  * Projects packed longitude/latitude degrees to nested or UNIQ keys, little-endian low/high
  * words, with validity zero for masked or non-finite coordinates. Latitude clamps to [-90,90].
@@ -29,14 +34,15 @@ import {
  *   float32 projection, especially at high orders; input float32 quantization remains.
  * - Longitude reduction uses remainder, avoiding cancellation for very large finite longitudes.
  * - The order limit 29 is retained for the HEALPix 64-bit key layout. Empty arrays are accepted
- *   by the pure function; the graph operation, like the GPU contributor, requires at least one row.
+ *   by the pure function and named graph forms; the direct GPU contributor requires at least one row.
  *
  * @throws Error naming positions or mask when packed arrays have inconsistent lengths.
  */
 export function computeHealpixPointToCellOnCPU(
   positions: Float32Array,
   options: {order: number; scheme?: GPUHealpixIndexScheme; mask?: Uint32Array}
-): {cells: Uint32Array; validity: Uint32Array} {
+): CPUHealpixPointToCellResult {
+  resolveHealpixIndexScheme('healpix-point-to-cell', options.scheme);
   const rowCount = positions.length / 2;
   if (!Number.isInteger(rowCount)) throw new Error('positions must contain float32x2 rows');
   if (options.mask && options.mask.length !== rowCount)
@@ -103,9 +109,19 @@ export function computeHealpixPointToCellOnCPU(
 /** CPU twin of the HEALPix graph operation. Every property is compile-time except input contents. */
 export class CPUHealpixPointToCellOperation extends GPUCPUOperation {
   constructor(props: HealpixPointToCellOperationProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'order',
+      'scheme',
+      'spatialContext',
+      'positions',
+      'mask',
+      'rowCount',
+      ['output', ['cells', 'validity']]
+    ]);
     const operation = new GPUHealpixPointToCellOperation(props);
     const {id} = operation;
-    validateCapacity(id, 'rowCount', props.rowCount);
+    validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'order', props.order, 0, HEALPIX_MAXIMUM_ORDER);
     resolveGPUSpatialContext(
       id,
@@ -128,11 +144,11 @@ export class CPUHealpixPointToCellOperation extends GPUCPUOperation {
         const result = computeHealpixPointToCellOnCPU(positions, {
           order: props.order,
           scheme: props.scheme,
-          mask: props.mask ? getCPUOperationUint32Rows(id, inputs, 'mask') : undefined
+          mask: props.mask === undefined ? undefined : getCPUOperationUint32Rows(id, inputs, 'mask')
         });
         return {
           [props.output.cells]: result.cells,
-          ...(props.output.validity ? {[props.output.validity]: result.validity} : {})
+          ...(props.output.validity === undefined ? {} : {[props.output.validity]: result.validity})
         };
       }
     });

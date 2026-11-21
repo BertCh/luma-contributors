@@ -48,11 +48,18 @@ const CASES = [
     parameters: 'lane: u32, chunk: u32, pointCount: u32',
     bytes: 4
   },
-  {shader: TRACK, expression: 'dot(edge, edge)', parameters: 'edge: vec2<f32>', bytes: 4},
+  // The scaled metric still produces one f32: the copied mutable scalar occupies four bytes.
   {
     shader: TRACK,
-    expression: 'clamp(dot(point - from0, edge) / lengthSquared, 0.0, 1.0)',
-    parameters: 'point: vec2f, from0: vec2f, edge: vec2f, lengthSquared: f32',
+    expression: 'dot(normalizedEdge, normalizedEdge)',
+    parameters: 'normalizedEdge: vec2<f32>',
+    bytes: 4
+  },
+  {
+    shader: TRACK,
+    expression:
+      'clamp(dot((point - from0) / scale, normalizedEdge) / dot(normalizedEdge, normalizedEdge), 0.0, 1.0)',
+    parameters: 'point: vec2f, from0: vec2f, normalizedEdge: vec2f, scale: f32',
     bytes: 4
   },
   {

@@ -19,138 +19,291 @@
         "type": "category",
         "label": "Spatial analysis",
         "items": [
-          "api/gpu-spatial-analysis/README",
-          "api/gpu-spatial-analysis/concepts",
-          "api/gpu-spatial-analysis/analysis-experience",
-          "api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics",
-          "api/gpu-spatial-analysis/chunked-spatial-weights-transpose",
-          "api/gpu-spatial-analysis/geodesic-precision",
-          "api/gpu-spatial-analysis/instrumental-variables-covariance",
-          "api/gpu-spatial-analysis/temporal-context",
-          "api/gpu-spatial-analysis/movement-semantics",
-          "api/gpu-spatial-analysis/home-range-and-recursion-mob07",
-          "api/gpu-spatial-analysis/track-similarity-measures",
-          "api/gpu-spatial-analysis/space-time-statistics",
-          "api/gpu-spatial-analysis/space-time-clustering",
-          "api/gpu-spatial-analysis/space-time-density-and-k-function",
-          "api/gpu-spatial-analysis/change-points-and-expectation-based-scan",
-          "api/gpu-spatial-analysis/geographical-detector-redcap-entropy",
-          "api/gpu-spatial-analysis/colocation-category-dependence-adaptive-density",
-          "api/gpu-spatial-analysis/healpix-cells-dggs-json",
-          "api/gpu-spatial-analysis/scoring-rules",
-          "api/gpu-spatial-analysis/space-time-hawkes",
-          "api/gpu-spatial-analysis/sinkhorn-divergence",
-          "api/gpu-spatial-analysis/spatial-frames",
-          "api/gpu-spatial-analysis/operators",
           {
             "type": "category",
-            "label": "Operator Families",
+            "label": "Start and choose",
             "items": [
-              "api/gpu-spatial-analysis/operators-weights",
-              "api/gpu-spatial-analysis/operators-statistics",
-              "api/gpu-spatial-analysis/operators-dynamics",
-              "api/gpu-spatial-analysis/operators-accessibility",
-              "api/gpu-spatial-analysis/operators-joins",
-              "api/gpu-spatial-analysis/operators-validity",
-              "api/gpu-spatial-analysis/operators-density",
-              "api/gpu-spatial-analysis/operators-cells",
-              "api/gpu-spatial-analysis/operators-lines",
-              "api/gpu-spatial-analysis/operators-geometry",
-              "api/gpu-spatial-analysis/operators-regression",
-              "api/gpu-spatial-analysis/recipes"
+              "api/gpu-spatial-analysis/README",
+              "api/gpu-spatial-analysis/concepts",
+              "api/gpu-spatial-analysis/analysis-experience",
+              "api/gpu-spatial-analysis/operators"
             ]
           },
-          "api/gpu-spatial-analysis/statistical-expansion",
-          "api/gpu-spatial-analysis/quantile-lisa",
-          "api/gpu-spatial-analysis/gpu-dorling-cartogram",
-          "api/gpu-spatial-analysis/rate-mapping",
-          "api/gpu-spatial-analysis/adaptive-generalized-gwr",
-          "api/gpu-spatial-analysis/panel-fixed-effects",
-          "api/gpu-spatial-analysis/losh-residual-permutation",
-          "api/gpu-spatial-analysis/expansion-recipes",
-          "api/gpu-spatial-analysis/dasymetric-redistribution",
-          "api/gpu-spatial-analysis/expansion-lenses",
-          "api/gpu-spatial-analysis/coverage-expansion",
-          "api/gpu-spatial-analysis/global-coordinates",
-          "api/gpu-spatial-analysis/interpolation-expansion",
-          "api/gpu-spatial-analysis/vecchia-likelihood",
-          "api/gpu-spatial-analysis/gaussian-random-field",
-          "api/gpu-spatial-analysis/coverage-statistics",
-          "api/gpu-spatial-analysis/spatial-validation-advanced",
-          "api/gpu-spatial-analysis/point-process",
-          "api/gpu-spatial-analysis/urban-morphology",
-          "api/gpu-spatial-analysis/landscape-ecology",
-          "api/gpu-spatial-analysis/urban-ecology-lenses",
-          "api/gpu-spatial-analysis/geometry-refinement-lenses",
-          "api/gpu-spatial-analysis/interpolation-lenses",
-          "api/gpu-spatial-analysis/movement-coverage",
-          "api/gpu-geometry-refinement"
+          {
+            "type": "category",
+            "label": "Join and select",
+            "items": [
+              "api/gpu-spatial-analysis/operators-joins",
+              "api/gpu-spatial-analysis/operators-validity"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Measure and construct geometry",
+            "items": [
+              "api/gpu-spatial-analysis/operators-geometry",
+              "api/gpu-spatial-analysis/operators-lines",
+              "api/gpu-spatial-analysis/geodesic-precision",
+              "api/gpu-spatial-analysis/global-coordinates",
+              "api/gpu-geometry-refinement",
+              "api/gpu-spatial-analysis/geometry-refinement-lenses"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Build neighborhoods and cells",
+            "items": [
+              "api/gpu-spatial-analysis/operators-weights",
+              "api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics",
+              "api/gpu-spatial-analysis/chunked-spatial-weights-transpose",
+              "api/gpu-spatial-analysis/spatial-weights-audit",
+              "api/gpu-spatial-analysis/operators-cells",
+              "api/gpu-spatial-analysis/healpix-cells-dggs-json"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Test spatial patterns",
+            "items": [
+              "api/gpu-spatial-analysis/operators-statistics",
+              "api/gpu-spatial-analysis/quantile-lisa",
+              "api/gpu-spatial-analysis/geographical-detector-redcap-entropy",
+              "api/gpu-spatial-analysis/colocation-category-dependence-adaptive-density",
+              "api/gpu-spatial-analysis/losh-residual-permutation",
+              "api/gpu-spatial-analysis/gpu-dorling-cartogram",
+              "api/gpu-spatial-analysis/rate-mapping",
+              "api/gpu-spatial-analysis/point-process"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Estimate and validate",
+            "items": [
+              "api/gpu-spatial-analysis/operators-density",
+              "api/gpu-spatial-analysis/operators-regression",
+              "api/gpu-spatial-analysis/adaptive-generalized-gwr",
+              "api/gpu-spatial-analysis/panel-fixed-effects",
+              "api/gpu-spatial-analysis/instrumental-variables-covariance",
+              "api/gpu-spatial-analysis/scoring-rules",
+              "api/gpu-spatial-analysis/sinkhorn-divergence",
+              "api/gpu-spatial-analysis/interpolation-expansion",
+              "api/gpu-spatial-analysis/vecchia-likelihood",
+              "api/gpu-spatial-analysis/gaussian-random-field",
+              "api/gpu-spatial-analysis/coverage-statistics",
+              "api/gpu-spatial-analysis/spatial-validation-advanced",
+              "api/gpu-spatial-analysis/interpolation-lenses"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Analyze change over time",
+            "items": [
+              "api/gpu-spatial-analysis/temporal-context",
+              "api/gpu-spatial-analysis/space-time-statistics",
+              "api/gpu-spatial-analysis/space-time-clustering",
+              "api/gpu-spatial-analysis/space-time-density-and-k-function",
+              "api/gpu-spatial-analysis/change-points-and-expectation-based-scan",
+              "api/gpu-spatial-analysis/space-time-hawkes",
+              "api/gpu-spatial-analysis/operators-dynamics"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Analyze tracks and accessibility",
+            "items": [
+              "api/gpu-spatial-analysis/movement-semantics",
+              "api/gpu-spatial-analysis/track-similarity-measures",
+              "api/gpu-spatial-analysis/movement-coverage",
+              "api/gpu-spatial-analysis/operators-accessibility",
+              "api/gpu-spatial-analysis/home-ranges-and-recursions"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Compose urban and landscape workflows",
+            "items": [
+              "api/gpu-spatial-analysis/recipes",
+              "api/gpu-spatial-analysis/expansion-recipes",
+              "api/gpu-spatial-analysis/dasymetric-redistribution",
+              "api/gpu-spatial-analysis/urban-morphology",
+              "api/gpu-spatial-analysis/landscape-ecology",
+              "api/gpu-spatial-analysis/urban-ecology-lenses",
+              "api/gpu-spatial-analysis/expansion-lenses"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Coordinate and capability coverage",
+            "items": [
+              "api/gpu-spatial-analysis/spatial-frames",
+              "api/gpu-spatial-analysis/coverage-expansion",
+              "api/gpu-spatial-analysis/statistical-expansion"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Compatibility URLs",
+            "items": [
+              "api/gpu-spatial-analysis/home-range-and-recursion-mob07"
+            ]
+          }
         ]
       },
       {
         "type": "category",
         "label": "Network",
         "items": [
-          "api/gpu-network/README",
-          "api/gpu-network/concepts",
-          "api/gpu-network/operators",
-          "api/gpu-network/louvain",
-          "api/gpu-network/alternative-routes",
-          "api/gpu-network/k-shortest-paths",
-          "api/gpu-network/visibility-graph",
-          "api/gpu-network/flow-models-mob10",
-          "api/gpu-network/map-matched-edge-volumes-mob05",
-          "api/gpu-network/network-time-geography-mob09",
-          "api/gpu-network/expansion",
-          "api/gpu-network/network-movement-coverage",
-          "api/gpu-network/network-movement-benchmarks",
-          "api/gpu-network/point-process"
+          {
+            "type": "category",
+            "label": "Start and choose",
+            "items": [
+              "api/gpu-network/README",
+              "api/gpu-network/concepts",
+              "api/gpu-network/operators"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Route and measure access",
+            "items": [
+              "api/gpu-network/alternative-routes",
+              "api/gpu-network/k-shortest-paths",
+              "api/gpu-network/network-time-geography"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Analyze topology and spatial patterns",
+            "items": [
+              "api/gpu-network/louvain",
+              "api/gpu-network/visibility-graph",
+              "api/gpu-network/expansion",
+              "api/gpu-network/point-process"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Analyze movement and flows",
+            "items": [
+              "api/gpu-network/network-movement-coverage",
+              "api/gpu-network/network-movement-benchmarks",
+              "api/gpu-network/origin-destination-flow-models",
+              "api/gpu-network/map-matched-edge-volumes"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Inspect recorded outputs and status",
+            "items": [
+              "api/gpu-network/status-oracles"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Compatibility URLs",
+            "items": [
+              "api/gpu-network/network-time-geography-mob09",
+              "api/gpu-network/flow-models-mob10",
+              "api/gpu-network/map-matched-edge-volumes-mob05"
+            ]
+          }
         ]
       },
       {
         "type": "category",
         "label": "Terrain",
         "items": [
-          "api/gpu-terrain/README",
-          "api/gpu-terrain/concepts",
-          "api/gpu-terrain/operators",
-          "api/gpu-terrain/height-above-drainage",
-          "api/gpu-terrain/expansion-lenses",
-          "api/gpu-terrain/terrain-processing"
+          {
+            "type": "category",
+            "label": "Start and choose",
+            "items": [
+              "api/gpu-terrain/README",
+              "api/gpu-terrain/concepts",
+              "api/gpu-terrain/operators"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Route water and compare surfaces",
+            "items": [
+              "api/gpu-terrain/height-above-drainage",
+              "api/gpu-terrain/terrain-processing",
+              "api/gpu-terrain/expansion-lenses"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Inspect recorded outputs and status",
+            "items": [
+              "api/gpu-terrain/output-oracles",
+              "api/gpu-terrain/status-and-count-evidence"
+            ]
+          }
         ]
       },
       {
         "type": "category",
         "label": "Raster analysis",
         "items": [
-          "api/gpu-raster/README",
-          "api/gpu-raster/operations",
-          "api/gpu-raster/isolines-tiles",
           {
             "type": "category",
-            "label": "Operation Families",
+            "label": "Start and choose",
             "items": [
+              "api/gpu-raster/README",
+              "api/gpu-raster/operations",
               "api/gpu-raster/operations-analysis"
             ]
           },
-          "api/gpu-raster/expansion",
-          "api/gpu-raster/contrast-equalization",
-          "api/gpu-raster/raster-embedding-codecs",
-          "api/gpu-raster/raster-patches",
-          "api/gpu-raster/spectral-filter",
-          "api/gpu-raster/fill-nodata",
-          "api/gpu-raster/tile-reprojection",
-          "api/gpu-raster/fractional-zonal-distribution",
-          "api/gpu-raster/fractional-categorical-statistics",
-          "api/gpu-raster/focal-pairs",
-          "api/gpu-raster/spectral-indices",
-          "api/gpu-raster/expansion-lenses",
-          "api/gpu-raster/raster-time-series",
-          "api/gpu-raster/raster-change-monitoring",
-          "api/gpu-raster/raster-eof-analysis",
-          "api/gpu-raster/raster-embeddings",
-          "api/gpu-raster/lagrangian-diagnostics-mob06",
-          "api/gpu-raster/remote-sensing"
+          {
+            "type": "category",
+            "label": "Prepare surfaces and geometry",
+            "items": [
+              "api/gpu-raster/expansion",
+              "api/gpu-raster/contrast-equalization",
+              "api/gpu-raster/fill-nodata",
+              "api/gpu-raster/tile-reprojection",
+              "api/gpu-raster/expansion-lenses"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Summarize zones and local structure",
+            "items": [
+              "api/gpu-raster/fractional-zonal-distribution",
+              "api/gpu-raster/fractional-categorical-statistics",
+              "api/gpu-raster/focal-pairs",
+              "api/gpu-raster/raster-patches",
+              "api/gpu-raster/isolines-tiles",
+              "api/gpu-raster/spectral-filter"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Compare spectra and embeddings",
+            "items": [
+              "api/gpu-raster/spectral-indices",
+              "api/gpu-raster/raster-embedding-codecs",
+              "api/gpu-raster/raster-embeddings",
+              "api/gpu-raster/remote-sensing"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Analyze time and transport",
+            "items": [
+              "api/gpu-raster/raster-time-series",
+              "api/gpu-raster/raster-change-monitoring",
+              "api/gpu-raster/raster-eof-analysis",
+              "api/gpu-raster/flow-map-and-particle-diagnostics"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "Compatibility URLs",
+            "items": [
+              "api/gpu-raster/lagrangian-diagnostics-mob06"
+            ]
+          }
         ]
       },
       {

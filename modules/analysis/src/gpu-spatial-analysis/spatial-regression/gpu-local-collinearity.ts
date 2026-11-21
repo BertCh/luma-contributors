@@ -19,11 +19,19 @@ import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgs
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
+  getGPUSpatialWeightsChunks,
   getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 import {wrapWeightsChunkRowBodyWGSL} from './chunked-weights-kernels';
+import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {validateGWRBindings, validateGWROutputs} from './gwr-scalability-utils';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {
+  getRegressionWeightsLossNodes,
+  getRegressionWeightsSuppressionNodes
+} from './regression-weights-completeness';
 import {
   getDesignSingularValueWGSL,
   LOCAL_COLLINEARITY_CONDITION_CAP,
@@ -32,6 +40,32 @@ import {
 
 const CONDITION_CAP = LOCAL_COLLINEARITY_CONDITION_CAP.toExponential();
 const SINGULAR_RATIO = LOCAL_COLLINEARITY_SINGULAR_RATIO.toExponential();
+
+function getWeightsCountGroups(weights: GPUSpatialWeights | GPUChunkedSpatialWeights) {
+  const chunks = getGPUSpatialWeightsChunks(weights);
+  return [
+    {
+      status: weights.status,
+      capacity: chunks.reduce((sum, chunk) => sum + chunk.weights.neighbors.length, 0)
+    },
+    ...chunks.map(chunk => ({
+      status: chunk.weights.status,
+      capacity: chunk.weights.neighbors.length
+    }))
+  ].filter(
+    (group, index, groups) =>
+      !groups
+        .slice(0, index)
+        .some(previous => previous.status === group.status && previous.capacity === group.capacity)
+  );
+}
+
+function getWeightsCountViews(weights: GPUSpatialWeights | GPUChunkedSpatialWeights) {
+  return getWeightsCountGroups(weights).flatMap(({status}) => [
+    status?.requiredCount,
+    status?.count
+  ]);
+}
 
 export type GPULocalCollinearityProps = {
   id?: string;
@@ -64,11 +98,36 @@ export type GPULocalCollinearityProps = {
  * matrix. Weights are supplied explicitly so diagnostics use exactly the neighborhoods of the fit.
  * Every predictor uses the same complete rows. This is a correlation condition index, distinct
  * from mgwr's uncentered, intercept-inclusive variance-decomposition condition index.
+ * If any supplied weights overflow or candidateOverflow flag is nonzero, a complete certificate
+ * is zero, or requiredCount exceeds count, retained CSR edges or neighbor capacity, every diagnostic
+ * is NaN and every status is 1 (insufficient complete neighbors). Restoring completeness restores normal
+ * results on the next encoding. Compile-time options and port maps are captured at construction;
+ * input buffer contents, including loss flags, remain per-frame.
  */
 export class GPULocalCollinearity implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPULocalCollinearityProps) {
+    props = snapshotRegressionConstructionProps(
+      props,
+      ['id', 'weights', 'predictors', 'predictorCount', 'mask', 'output'],
+      [
+        'varianceInflationFactors',
+        'conditionNumbers',
+        'designConditionNumbers',
+        'varianceDecomposition',
+        'status'
+      ],
+      'local-collinearity',
+      [],
+      'scalar'
+    );
+    this.props = props;
     this.id = props.id ?? 'local-collinearity';
+    for (const view of getWeightsCountViews(props.weights)) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${this.id} weights status count`);
+      validateCapacity(this.id, 'weights status count length', view.length, 1);
+    }
     const rows = validateGPUSpatialWeightsOrChunks(this.id, props.weights);
     const columns = props.predictorCount;
     validateCapacity(this.id, 'predictorCount', columns, 1, 12);
@@ -92,7 +151,24 @@ export class GPULocalCollinearity implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.predictors,
       props.mask,
-      ...getGPUSpatialWeightsOrChunksViews(props.weights)
+      ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
+      ...getWeightsCountViews(props.weights)
+    ]);
+    validateGWROutputs(this.id, Object.values(props.output), [
+      {
+        writes: [
+          props.output.varianceInflationFactors,
+          props.output.conditionNumbers,
+          props.output.status
+        ]
+      },
+      {
+        writes: [
+          props.output.designConditionNumbers,
+          props.output.varianceDecomposition,
+          props.output.status
+        ]
+      }
     ]);
   }
   getCommandNodes<Parameters>(
@@ -105,9 +181,22 @@ export class GPULocalCollinearity implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.predictors,
       props.mask,
-      ...getGPUSpatialWeightsOrChunksViews(props.weights),
+      ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
+      ...getWeightsCountViews(props.weights),
       ...Object.values(props.output)
     ]);
+    validateGWRBindings(
+      graph.device,
+      id,
+      [
+        props.predictors,
+        props.mask,
+        ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
+        ...getWeightsCountViews(props.weights),
+        ...Object.values(props.output)
+      ],
+      [['weights loss', 4]]
+    );
     const nodes = [
       ...dispatches.map(dispatch =>
         createWGSLKernelNode<Parameters>(graph, {
@@ -138,7 +227,7 @@ export class GPULocalCollinearity implements GPUCommandNodeProducer {
             {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
           ],
           declarations: `${dispatch.constantsWGSL}
-${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${getDesignSingularValueWGSL(columns)}
+${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}\n${getDesignSingularValueWGSL(columns)}
 fn included(row: u32) -> bool {
   if (row >= ${rows}u) { return false; }
   ${props.mask ? 'if (mask[maskOffset + row] == 0u) { return false; }' : ''}
@@ -157,6 +246,8 @@ for (var column = 0u; column < ${columns}u; column++) {
 let slotBegin = offsets[offsetsOffset + index];
 let slotEnd = offsets[offsetsOffset + index + 1u];
 var means: array<f32, ${columns}>;
+var anchors: array<f32, ${columns}>;
+let runtimeZero = offsets[offsetsOffset];
 var total = 0.0;
 var count = 0u;
 for (var slot = slotBegin; slot < slotEnd; slot++) {
@@ -166,7 +257,10 @@ for (var slot = slotBegin; slot < slotEnd; slot++) {
   total += weight;
   count++;
   for (var column = 0u; column < ${columns}u; column++) {
-    means[column] += weight / total * (predictors[predictorsOffset + neighbor * ${columns}u + column] - means[column]);
+    let value = predictors[predictorsOffset + neighbor * ${columns}u + column];
+    if (count == 1u) { anchors[column] = value; }
+    let difference = getRoundedDifference(value, anchors[column], runtimeZero);
+    means[column] += weight / total * (difference - means[column]);
   }
 }
 if (count <= ${columns}u) { return; }
@@ -177,9 +271,9 @@ for (var slot = slotBegin; slot < slotEnd; slot++) {
   let weight = weights[weightsOffset + slot];
   if (!included(neighbor) || !(weight > 0.0)) { continue; }
   for (var first = 0u; first < ${columns}u; first++) {
-    let firstValue = predictors[predictorsOffset + neighbor * ${columns}u + first] - means[first];
+    let firstValue = getRoundedDifference(predictors[predictorsOffset + neighbor * ${columns}u + first], anchors[first], runtimeZero) - means[first];
     for (var second = 0u; second < ${columns}u; second++) {
-      correlation[first * ${columns}u + second] += weight * firstValue * (predictors[predictorsOffset + neighbor * ${columns}u + second] - means[second]);
+      correlation[first * ${columns}u + second] += weight * firstValue * (getRoundedDifference(predictors[predictorsOffset + neighbor * ${columns}u + second], anchors[second], runtimeZero) - means[second]);
     }
   }
 }
@@ -197,7 +291,7 @@ for (var slot = slotBegin; slot < slotEnd; slot++) {
   if (!included(neighbor) || !(weight > 0.0)) { continue; }
   var designRow: array<f32, ${columns}>;
   for (var column = 0u; column < ${columns}u; column++) {
-    designRow[column] = sqrt(weight) * (predictors[predictorsOffset + neighbor * ${columns}u + column] - means[column]) * scale[column];
+    designRow[column] = sqrt(weight) * (getRoundedDifference(predictors[predictorsOffset + neighbor * ${columns}u + column], anchors[column], runtimeZero) - means[column]) * scale[column];
   }
   updateDesignFactor_${columns}(&factor, &designRow);
 }
@@ -326,6 +420,29 @@ for (var column = 0u; column < ${size}u; column++) {
             )
           })
         )
+      );
+    }
+    nodes.push(
+      ...getRegressionWeightsSuppressionNodes(graph, id, props.weights, {
+        ...props.output,
+        status: undefined
+      })
+    );
+    const completeness = getRegressionWeightsLossNodes(graph, `${id}-local-status`, props.weights);
+    nodes.push(...completeness.nodes);
+    if (completeness.loss) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-incomplete-status`,
+          operation: 'GPULocalCollinearity',
+          variant: 'incomplete-input',
+          invocationCount: rows,
+          bindings: [
+            {name: 'loss', view: completeness.loss, type: 'u32', access: 'read'},
+            {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
+          ],
+          body: 'if (loss[lossOffset] != 0u) { status[statusOffset + index] = 1u; }'
+        })
       );
     }
     return nodes;

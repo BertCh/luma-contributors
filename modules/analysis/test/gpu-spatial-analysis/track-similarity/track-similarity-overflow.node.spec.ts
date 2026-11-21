@@ -46,7 +46,7 @@ it('reports invalid pair status before a densified count can wrap to one vertex'
   }
 });
 
-it('preflights the sixteen-byte decision record before declaring any pair scratch', () => {
+it('preflights each word-sized decision column before declaring any scratch', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   try {
@@ -63,13 +63,11 @@ it('preflights the sixteen-byte decision record before declaring any pair scratc
       output: {frechetWithin: createTransientView(graph, 'within', 'uint32', 17)}
     });
     Object.defineProperty(device, 'limits', {
-      value: {...device.limits, maxStorageBufferBindingSize: 256}
+      value: {...device.limits, maxStorageBufferBindingSize: 64}
     });
     const declarations = graph as unknown as {buffers: Map<string, unknown>; nodes: unknown[]};
     const before = [declarations.buffers.size, declarations.nodes.length];
-    expect(() => contributor.getCommandNodes(graph)).toThrow(
-      /decision pair ranges needs 272 bytes/
-    );
+    expect(() => contributor.getCommandNodes(graph)).toThrow(/pairA chunk 0 needs 68 bytes/);
     expect([declarations.buffers.size, declarations.nodes.length]).toEqual(before);
   } finally {
     device.destroy();

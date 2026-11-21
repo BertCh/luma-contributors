@@ -9,18 +9,18 @@ import {
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/index';
 import {getOrdinaryLeastSquaresAllocationLengths} from './gpu-ordinary-least-squares';
-import {getRegressionTileLayout} from './regression-row-tiles';
+import {getRegressionTileLayout, getRowTileMergeScratchLength} from './regression-row-tiles';
 import {
   getSpatialProbeAllocationLengths,
   type RegressionAllocationLengths
 } from './spatial-likelihood-allocations';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
 import {padToAlignedElementCount} from './spatial-maximum-likelihood-nodes';
-import {getRegressionLossViews} from './regression-weights-completeness';
+import {getRegressionCompletenessViews} from './regression-weights-completeness';
 
 /** CSR and completeness bindings; optional distances and descriptive metadata are not read. */
 export function getRegressionWeightBindings(
@@ -32,7 +32,7 @@ export function getRegressionWeightBindings(
       [`neighbors ${index}`, chunk.weights.neighbors] as const,
       [`weights ${index}`, chunk.weights.weights] as const
     ]),
-    ...getRegressionLossViews(weights).map(
+    ...getRegressionCompletenessViews(weights).map(
       (view, index) => [`weights loss ${index}`, view] as const
     )
   ]);
@@ -64,7 +64,7 @@ export function getRegressionTraceAllocationLengths(props: {
     props.tileCount ?? Math.ceil(rowCount / Math.max(32, Math.ceil(rowCount / 1024)));
   const mode =
     props.mode ??
-    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic');
+    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic');
   const probeTotal =
     mode === 'exact'
       ? rowCount
@@ -79,6 +79,10 @@ export function getRegressionTraceAllocationLengths(props: {
       props.probeBatchSize
     ),
     'trace norm partials': tileCount,
+    'trace merge groups': getRowTileMergeScratchLength(
+      tileCount,
+      Math.max(maximumPower, props.includeGram ? 2 : 1)
+    ),
     'trace scaled weights': edgeCount,
     'trace sums partials': maximumPower * padToAlignedElementCount(tileCount),
     'trace ones vectors': rowCount,
@@ -118,6 +122,7 @@ export function getRegressionErrorGMAllocationLengths(props: {
     'GM row scratch': rowCount,
     'GM workspace': predictorCount + 4 + columns + 16,
     'GM mean partials': tileCount * columns,
+    'GM merge groups': getRowTileMergeScratchLength(tileCount, Math.max(filteredCount, 7)),
     'GM moment partials': tileCount * 7,
     'GM moments': 7,
     'GM filtered partials': tileCount * filteredCount,
@@ -159,6 +164,10 @@ export function getRegressionTwoStageAllocationLengths(
   const momentStride = momentCount + columns + 1 + instrumentCount - predictorCount;
   return {
     '2SLS mean partials': tileCount * meanCount,
+    '2SLS merge groups': getRowTileMergeScratchLength(
+      tileCount,
+      Math.max(momentStride, meanCount, columns + 5)
+    ),
     '2SLS moment partials': tileCount * momentStride,
     '2SLS moments': momentStride,
     '2SLS workspace': meanCount + 2 * columns + 6,

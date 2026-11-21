@@ -4,6 +4,7 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUSpatialLagImpacts, type GPUSpatialLagImpactsProps} from './gpu-spatial-lag-impacts';
+import {snapshotSpatialLagImpactsProps} from './spatial-lag-impacts-snapshot';
 
 /** Graph-value names in place of the contributor's views. Outputs have their minimum size. */
 export type SpatialLagImpactsOperationProps = Pick<
@@ -26,6 +27,7 @@ export type SpatialLagImpactsOperationProps = Pick<
 /** GPU impacts as a graph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUSpatialLagImpactsOperation extends GPUContributorOperation {
   constructor(props: SpatialLagImpactsOperationProps) {
+    props = snapshotSpatialLagImpactsProps(props);
     const id = props.id ?? 'spatial-lag-impacts';
     super({
       id,
@@ -34,7 +36,7 @@ export class GPUSpatialLagImpactsOperation extends GPUContributorOperation {
         powerTraces: props.traces.powerTraces,
         powerSums: props.traces.powerSums,
         infinityNorm: props.traces.infinityNorm,
-        ...(props.status ? {status: props.status} : {})
+        ...(props.status !== undefined ? {status: props.status} : {})
       },
       outputs: {
         impacts: {value: props.output.impacts, format: 'float32', length: props.predictorCount * 3}
@@ -49,7 +51,7 @@ export class GPUSpatialLagImpactsOperation extends GPUContributorOperation {
             powerSums: getView<'float32'>('powerSums'),
             infinityNorm: getView<'float32'>('infinityNorm')
           },
-          status: props.status ? getView<'uint32'>('status') : undefined,
+          status: props.status !== undefined ? getView<'uint32'>('status') : undefined,
           output: {impacts: getView<'float32'>('impacts')}
         })
     });

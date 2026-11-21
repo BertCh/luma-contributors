@@ -43,7 +43,13 @@ it.each([
         neighbors: integers('neighbors', [0, 1]),
         weights: floats('weights', [1, 1]),
         status:
-          role === 'demand' ? {overflow, requiredCount: integers('required-count', [2])} : undefined
+          role === 'demand'
+            ? {
+                overflow,
+                candidateOverflow: overflow,
+                requiredCount: integers('required-count', [2])
+              }
+            : undefined
       },
       facilityWeights: {
         offsets: reverseOffsets,
@@ -51,7 +57,11 @@ it.each([
         weights: floats('reverse-weights', [1, 1]),
         status:
           role === 'facility'
-            ? {overflow, requiredCount: integers('required-count', [2])}
+            ? {
+                overflow,
+                candidateOverflow: overflow,
+                requiredCount: integers('required-count', [2])
+              }
             : undefined
       },
       output: {probabilities, tradeArea, expectedDemand}

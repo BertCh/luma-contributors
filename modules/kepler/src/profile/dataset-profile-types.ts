@@ -10,7 +10,7 @@ import type {
   GPUAnalysisMeasurementLevel,
   GPUAnalysisRowSemantics,
   GPUAnalysisSpacingStatistics
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 // What the Kepler host knows about one loaded dataset when it chooses analyses for it: the
 // host-neutral analysis profile plus how the dataset is addressed in Kepler.

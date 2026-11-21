@@ -254,7 +254,7 @@ export const networkKFunctionMode: SpatialAnalysisModeDefinition = {
     let routeEnabled = false;
     let routeColor: RouteColor = 'turns';
     let routeBudget = 900;
-    let angleCost = 40;
+    let turnCostPerRadian = 40;
     let leftTurnCost = 30;
     let allowUTurns = false;
     let originNode = findNearestNode(roads.nodePositions, projection.project(...DEFAULT_ORIGIN));
@@ -424,7 +424,7 @@ const NO_EDGE: u32 = ${NO_EDGE}u;`,
     const writeTurnParameters = () => {
       turnParameters.write(
         getGPUNetworkLineGraphParameterValues({
-          angleCost,
+          turnCostPerRadian,
           leftTurnCost,
           uTurnCost: allowUTurns ? 120 : -1
         })
@@ -539,10 +539,10 @@ const NO_EDGE: u32 = ${NO_EDGE}u;`,
       min: 0,
       max: 200,
       step: 5,
-      value: angleCost,
+      value: turnCostPerRadian,
       format: value => `${value} m/rad`,
       onChange: value => {
-        angleCost = value;
+        turnCostPerRadian = value;
         writeTurnParameters();
       }
     });

@@ -73,7 +73,7 @@ it('points -> counts -> W -> Moran chains on one feature table, multipart featur
         positions: fixture.input('points', positions, 'float32x2', positions.length / 2)
       },
       polygons: {...polygons, candidateCapacity: 4096},
-      outputs: {counts: counts.view}
+      output: {counts: counts.view}
     });
     const offsets = fixture.output('offsets', 'uint32', CHAIN_FEATURE_COUNT + 1);
     const neighborIds = fixture.output('neighbors', 'uint32', capacity);

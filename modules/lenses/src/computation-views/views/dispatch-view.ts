@@ -6,6 +6,7 @@ import {renderRasterImage} from '../encoding/raster-image';
 import {CARD_COLORS} from '../encoding/card-tokens';
 import {resolveValueScale} from './value-strip';
 import {assert} from '@luma.gl/core';
+import {resolveGPUComputationCaptureGraph} from '@luma-contributors/analysis/computation-record';
 import type {GPUComputationNode} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
 import type {MarkProvenance} from '../types';
@@ -173,7 +174,7 @@ export function buildDispatchViewModel(context: ViewContext): DispatchViewModel 
   const graph = context.record.graphs.find(candidate => candidate.nodes.includes(node));
   const probes = getAllCaptures(context.record).filter(
     capture =>
-      (capture.graph === undefined || capture.graph === graph?.id) &&
+      resolveGPUComputationCaptureGraph(context.record, capture) === graph &&
       (capture.name === 'id-probe' || capture.meaning?.includes('global_invocation_id'))
   );
   const probe =

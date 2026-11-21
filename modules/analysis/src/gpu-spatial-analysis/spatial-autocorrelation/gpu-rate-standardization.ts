@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotSpatialAutocorrelationProps} from './spatial-autocorrelation-construction';
+
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
@@ -229,7 +231,7 @@ ${workgroupDeclarations}`,
  * Handling of a negative prior variance: `a` can be negative when the rates vary less than
  * Poisson noise alone predicts. esda does NOT clamp `a` globally. It keeps the (negative) `a`
  * wherever `v_i` stays non-negative and falls back to the pure Poisson variance `b / n_i` only for
- * the rows where `v_i < 0` (the smallest populations). This node does exactly the same for parity
+ * the rows where `v_i < 0` (the largest populations, with the smallest `b / n_i`). This node does exactly the same for parity
  * (`statistics[3]` reports the unclamped `a`). Note that the EB rate smoothing in `rate-smoothing`
  * clamps the prior variance at zero instead, which is a different (also standard) convention for
  * shrinkage; the two are not meant to agree when `a < 0`.
@@ -269,6 +271,7 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
   readonly props: GPUAssuncaoReisStandardizationProps;
 
   constructor(props: GPUAssuncaoReisStandardizationProps) {
+    props = snapshotSpatialAutocorrelationProps(props);
     const id = props.id ?? 'assuncao-reis-standardization';
     this.id = id;
     this.props = props;

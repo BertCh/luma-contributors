@@ -91,7 +91,7 @@ function makeJacquez(views: Views, overrides: Record<string, unknown> = {}, perm
     neighbors: pairs,
     times: view('float32', ROWS),
     parameters: view('uint32', GPU_SPACE_TIME_PARAMETER_LENGTH),
-    k: 4,
+    neighborCount: 4,
     maximumPermutations: permutations,
     output: {
       statistics: view('uint32', permutations + 1),
@@ -166,9 +166,9 @@ describe('getGPUSpaceTimeGuardedRelativeTimes', () => {
     const result = getGPUSpaceTimeGuardedRelativeTimes([origin, origin + 10], 1, {
       temporalContext: {unit: 'second', epoch: 'unix'}
     });
-    expect(makeLocal(makeViews(), {temporalContext: result.temporalContext}).temporalContext).toBe(
-      result.temporalContext
-    );
+    expect(
+      makeLocal(makeViews(), {temporalContext: result.temporalContext}).temporalContext
+    ).toEqual(result.temporalContext);
   });
 });
 
@@ -180,7 +180,24 @@ describe('space-time statistics temporalContext', () => {
   } as const;
   for (const [name, make] of Object.entries(makers)) {
     it(`${name} exposes a float32-relative context and rejects other encodings`, () => {
-      expect(make(makeViews(), {temporalContext: CONTEXT}).temporalContext).toBe(CONTEXT);
+      const callerContext: GPUTemporalContext = {
+        ...CONTEXT,
+        axis: {kind: 'regular', step: {calendarUnit: 'day', interval: 1}}
+      };
+      const captured = make(makeViews(), {temporalContext: callerContext}).temporalContext;
+      const expected = {
+        ...callerContext,
+        axis: {kind: 'regular', step: {calendarUnit: 'day', interval: 1}}
+      };
+      callerContext.unit = 'millisecond';
+      if (callerContext.axis.kind === 'regular' && typeof callerContext.axis.step === 'object')
+        callerContext.axis.step.interval = 2;
+      expect(captured).toEqual(expected);
+      expect(captured).not.toBe(callerContext);
+      expect(captured?.axis).not.toBe(callerContext.axis);
+      if (captured?.axis?.kind === 'regular' && callerContext.axis?.kind === 'regular')
+        expect(captured.axis.step).not.toBe(callerContext.axis.step);
+      expect(make(makeViews(), {temporalContext: CONTEXT}).temporalContext).toEqual(CONTEXT);
       expect(make(makeViews()).temporalContext).toBeUndefined();
       for (const encoding of ['int64-words', 'double-single'] as const) {
         expect(() =>
@@ -231,19 +248,19 @@ describe('GPUNearRepeatKnox validation', () => {
     const views = makeViews();
     const {distances: _distances, ...withoutDistances} = views.pairs;
     expect(() => makeNearRepeat(views, {pairs: withoutDistances})).toThrow(
-      /pairs.distances is required/
+      /pairs.distances must be a data graph view of float32/
     );
     const {view} = views;
     expect(() =>
       makeNearRepeat(views, {
         output: {counts: view('uint32', 599), summary: view('float32', 48)}
       })
-    ).toThrow(/output.counts needs \(maximumPermutations \+ 1\) \* cells rows/);
+    ).toThrow(/output.counts.length must be an integer in \[600, 4294967295\]/);
     expect(() =>
       makeNearRepeat(views, {
         output: {counts: view('uint32', 600), summary: view('float32', 47)}
       })
-    ).toThrow(/output.summary needs cells \* 8 rows/);
+    ).toThrow(/output.summary.length must be an integer in \[48, 4294967295\]/);
     expect(() => makeNearRepeat(views, {maximumPermutations: 65537})).toThrow(
       /maximumPermutations must be an integer in \[1, 65536\]/
     );
@@ -254,6 +271,7 @@ describe('GPUNearRepeatKnox validation', () => {
       makeNearRepeat(makeViews()).getInferenceMetadata({seed: 3, permutationCount: 500})
     ).toEqual({
       alternative: 'greater',
+      pValueConstruction: 'upper-tail-count',
       permutationCount: 99,
       requestedPermutationCount: 99,
       stoppingRule: {method: 'fixed-count'},
@@ -286,20 +304,25 @@ describe('GPULocalKnox and GPUJacquezTest validation', () => {
     ).toThrow(/output.summary needs rows \* 6 rows/);
   });
 
-  it('checks k against the rows and the maximum', () => {
+  it('checks neighborCount against the rows and the maximum', () => {
+    expect(() => makeJacquez(makeViews(), {k: 4})).toThrow(
+      'jacquez-test: k was renamed; use neighborCount'
+    );
     for (const k of [0, 1.5, GPU_JACQUEZ_MAXIMUM_K + 1]) {
-      expect(() => makeJacquez(makeViews(), {k})).toThrow(/k must be an integer in \[1, 256\]/);
+      expect(() => makeJacquez(makeViews(), {neighborCount: k})).toThrow(
+        /neighborCount must be an integer in \[1, 256\]/
+      );
     }
-    expect(makeJacquez(makeViews(), {k: 256}).rows).toBe(ROWS);
+    expect(makeJacquez(makeViews(), {neighborCount: 256}).rows).toBe(ROWS);
     const small = makeViews();
     const offsets = small.view('uint32', 6);
     expect(() =>
       makeJacquez(small, {
         neighbors: {...small.pairs, offsets},
         times: small.view('float32', 5),
-        k: 5
+        neighborCount: 5
       })
-    ).toThrow(/needs more than k rows/);
+    ).toThrow(/needs more rows than neighborCount/);
   });
 
   it('validates stopAfterExceedances like GPUKnoxTest', () => {

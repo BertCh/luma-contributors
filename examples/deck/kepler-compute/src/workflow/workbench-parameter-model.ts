@@ -64,7 +64,13 @@ export function formatWorkbenchParameterHint(
               ? differentDefault.map(value => value.toLocaleString()).join(', ')
               : String(differentDefault)
         }`;
-  return [range, defaultText].filter(Boolean).join(' · ');
+  const exclusions = [
+    spec.nonzero ? 'nonzero' : '',
+    spec.nonzeroFloat32Scale !== undefined
+      ? `unscaled value must remain finite and nonzero as Float32 · value multiplied by ${spec.nonzeroFloat32Scale} must remain finite and nonzero as Float32`
+      : ''
+  ];
+  return [range, ...exclusions, defaultText].filter(Boolean).join(' · ');
 }
 
 export function hasWorkbenchRunOptionOverrides(step: WorkflowStep): boolean {

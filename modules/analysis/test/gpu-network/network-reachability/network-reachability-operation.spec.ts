@@ -184,7 +184,7 @@ for (const empty of [false, true])
     );
   });
 
-it('reuses the same slot-indexed tie flag across overlapping CSR rows on both backends', async () => {
+it('checks each source separately for tight predecessor ties across overlapping CSR rows', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const topology = getOverlappingRoutingTopology();
@@ -210,10 +210,10 @@ it('reuses the same slot-indexed tie flag across overlapping CSR rows on both ba
     starts: {format: 'uint32' as const, values: Uint32Array.of(0, 2)},
     startCosts: {format: 'float32' as const, values: Float32Array.of(1, 0)}
   };
-  // The shared slot is marked by row 2, then reused by the smaller root 0 despite its higher cost.
+  // Slot 0 costs zero and ends at node 1. Only row 2 reaches node 1 at its shortest cost, 0.
   const expected: Record<string, number[]> = {
     costs: [1, 0, 0],
-    parents: [0xffffffff, 0, 0xffffffff],
+    parents: [0xffffffff, 2, 0xffffffff],
     unresolved: [0],
     converged: [1],
     limitReached: [0]
@@ -229,13 +229,8 @@ it('reuses the same slot-indexed tie flag across overlapping CSR rows on both ba
     operations: [new CPUNetworkReachabilityOperation(props)],
     outputs
   });
-  // Integer costs and all metadata compare exactly, using numeric equality for zero signs.
   for (const output of outputs) {
-    expect(gpuRows[output].length).toBe(expected[output].length);
-    expect(cpuRows[output].length).toBe(expected[output].length);
-    for (let index = 0; index < expected[output].length; index++) {
-      expect(gpuRows[output][index] === expected[output][index]).toBe(true);
-      expect(cpuRows[output][index] === expected[output][index]).toBe(true);
-    }
+    expect(Array.from(gpuRows[output]), `GPU ${output}`).toEqual(expected[output]);
+    expect(Array.from(cpuRows[output]), `CPU ${output}`).toEqual(expected[output]);
   }
 });

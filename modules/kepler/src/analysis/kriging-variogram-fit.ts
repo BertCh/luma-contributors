@@ -9,6 +9,7 @@ import {
 } from '@luma-contributors/analysis/dataframe-analysis';
 export {fitKeplerVecchiaVariogram} from './kriging-vecchia-fit';
 import {toDegrees, toRadians} from '@math.gl/core';
+import type {VecchiaFisherFit} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {EARTH_RADIUS_METERS, getHaversineDistanceMeters} from './catalog-geodesy';
 
 export type KeplerEmpiricalVariogramOptions = {
@@ -49,7 +50,8 @@ export type KeplerEmpiricalVariogram = {
  * Binned empirical semivariogram of geographic point values (Matheron estimator, great-circle
  * meters, float64 arithmetic). Pairs are found through a latitude/longitude bucket grid at least
  * one lag wide, so cost follows the number of pairs within the lag rather than all N squared pairs.
- * The antimeridian and poles are not wrapped, matching the kriging adapter's supported bounds.
+ * The empirical bucket search does not wrap the antimeridian or poles; interpolation separately
+ * supports optional wrapped geographic searches.
  */
 export function estimateKeplerEmpiricalVariogram(
   longitudes: ArrayLike<number>,
@@ -234,17 +236,25 @@ export type KeplerVariogramCandidate = {
   criterion: number;
 };
 
-export type KeplerVariogramFit = KeplerVariogramCandidate & {
-  method: 'weighted-least-squares' | 'vecchia-likelihood' | 'vecchia-fisher';
-  weighting: 'cressie' | 'conditional-likelihood';
-  diagnostics?: Readonly<Record<string, number>>;
-  /** Every attempted family, ranked best first. */
-  candidates: KeplerVariogramCandidate[];
-  /** Zero for Vecchia fits, which do not bin empirical pairs. */
-  binCount: number;
-  /** Empirical pair count for WLS, conditioning-entry count for Vecchia. */
-  pairCount: number;
-};
+export type KeplerVariogramFit = KeplerVariogramCandidate &
+  Partial<
+    Pick<
+      VecchiaFisherFit,
+      'stopReason' | 'stallReason' | 'iterationLimitReached' | 'history' | 'logLikelihood'
+    >
+  > & {
+    method: 'weighted-least-squares' | 'vecchia-likelihood' | 'vecchia-fisher';
+    weighting: 'cressie' | 'conditional-likelihood';
+    diagnostics?: Readonly<Record<string, number>>;
+    /** Producer explanation when the last usable covariance is retained without convergence. */
+    nonconvergenceDiagnostic?: string;
+    /** Every attempted family, ranked best first. */
+    candidates: KeplerVariogramCandidate[];
+    /** Zero for Vecchia fits, which do not bin empirical pairs. */
+    binCount: number;
+    /** Empirical pair count for WLS, conditioning-entry count for Vecchia. */
+    pairCount: number;
+  };
 
 /**
  * Automatic variogram selection: each requested family is fitted to the binned empirical

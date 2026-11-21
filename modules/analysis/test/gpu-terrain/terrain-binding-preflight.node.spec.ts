@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUPointHorizonProfile} from '../../src/gpu-terrain/point-horizon/gpu-point-horizon-profile';
+import {GPUPointHorizonVisibility} from '../../src/gpu-terrain/point-horizon/gpu-point-horizon-visibility';
 import {
   getViewBindingRange,
   type GPUCommandNodeProducer,
@@ -117,6 +120,22 @@ const EXTRA_CASES: KernelAuditCase[] = [
 
 type Contributor = GPUCommandNodeProducer & {readonly props: unknown};
 
+/** Keep the same grid footprint when correcting the stale audit fixture's northward rows. */
+function createSouthIncreasingHorizonGrid(grid: GPURasterMetadata): GPURasterMetadata {
+  const [columnX, rowX, originX, columnY, rowY, originY] = grid.affine;
+  return {
+    ...grid,
+    affine: [
+      columnX,
+      rowX,
+      originX,
+      columnY,
+      -Math.abs(rowY),
+      originY + grid.height * Math.abs(rowY)
+    ]
+  };
+}
+
 function createFixture(name: string, selectedCase?: KernelAuditCase) {
   const context = createKernelAuditContext(`terrain-preflight-${name}`);
   // Real, valid prefix ranges: every view starts one format-sized row into its backing buffer.
@@ -136,8 +155,42 @@ function createFixture(name: string, selectedCase?: KernelAuditCase) {
   const auditCase =
     selectedCase ??
     [...EXTRA_CASES, ...TERRAIN_CASES].find(candidate => candidate.exportName === name)!;
+  // The shared audit still uses northward rows for Web Mercator. Keep every input,
+  // output, prefix offset and traversal option, but construct this preflight fixture
+  // from its matching planar case before applying the required east/south model.
+  const webMercatorHorizon =
+    ['GPUPointHorizonProfile', 'GPUPointHorizonVisibility'].includes(name) &&
+    auditCase.name.startsWith('web-mercator,');
+  const sourceCase = webMercatorHorizon
+    ? TERRAIN_CASES.find(
+        candidate =>
+          candidate.exportName === name &&
+          candidate.name === auditCase.name.replace('web-mercator,', 'planar,')
+      )
+    : auditCase;
+  expect(sourceCase, auditCase.name).toBeDefined();
   try {
-    auditCase.build(context);
+    sourceCase!.build(context);
+    if (webMercatorHorizon) {
+      const captured = contributor as Contributor | undefined;
+      if (captured instanceof GPUPointHorizonProfile) {
+        contributor = new GPUPointHorizonProfile({
+          ...captured.props,
+          projection: 'web-mercator',
+          rowDirection: 'south',
+          grid: createSouthIncreasingHorizonGrid(captured.props.grid)
+        });
+      } else if (captured instanceof GPUPointHorizonVisibility) {
+        contributor = new GPUPointHorizonVisibility({
+          ...captured.props,
+          projection: 'web-mercator',
+          rowDirection: 'south',
+          grid: createSouthIncreasingHorizonGrid(captured.props.grid)
+        });
+      } else {
+        throw new Error(`${auditCase.name} must construct the named point-horizon contributor`);
+      }
+    }
   } finally {
     declaration.mockRestore();
   }

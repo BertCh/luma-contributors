@@ -250,7 +250,7 @@ levels[levelsOffset + destination * 2u] = elevation[elevationOffset + order[orde
 levels[levelsOffset + destination * 2u + 1u] = spill;`,
     common
   );
-  // Split ownership/status publishing from record to remain within eight storage bindings.
+  // Split ownership and status publishing from record to remain within eight storage bindings.
   appendKernel(
     'ownership',
     count,
@@ -259,20 +259,30 @@ levels[levelsOffset + destination * 2u + 1u] = spill;`,
       terrainBinding('elevation', elevation),
       terrainBinding('links', links),
       terrainBinding('offsets', offsets),
-      terrainBinding('flags', flags),
-      terrainBinding('ownership', hierarchy.output.cellNodes, 'read_write'),
-      terrainBinding('status', hierarchy.output.status, 'read_write')
+      terrainBinding('ownership', hierarchy.output.cellNodes, 'read_write')
     ],
     `let cell = order[orderOffset + index];
 var owner = NONE;
 if (isFiniteValue(elevation[elevationOffset + cell])) { owner = offsets[offsetsOffset + links[linksOffset + index * 2u]]; }
-ownership[ownershipOffset + cell] = owner;
-if (index == ${count - 1}u) {
- let required = offsets[offsetsOffset + index] + flags[flagsOffset + index];
- status[statusOffset] = min(required, ${hierarchy.nodeCapacity}u);
- status[statusOffset + 1u] = required; status[statusOffset + 2u] = u32(required > ${hierarchy.nodeCapacity}u);
-}`,
+ownership[ownershipOffset + cell] = owner;`,
     common
+  );
+  const {status} = hierarchy.output;
+  appendKernel(
+    'status',
+    1,
+    [
+      terrainBinding('offsets', offsets),
+      terrainBinding('flags', flags),
+      terrainBinding('storedCount', status.count, 'read_write'),
+      terrainBinding('requiredCount', status.requiredCount, 'read_write'),
+      terrainBinding('overflow', status.overflow, 'read_write')
+    ],
+    `let last = ${count - 1}u;
+let required = offsets[offsetsOffset + last] + flags[flagsOffset + last];
+storedCount[storedCountOffset] = min(required, ${hierarchy.nodeCapacity}u);
+requiredCount[requiredCountOffset] = required;
+overflow[overflowOffset] = u32(required > ${hierarchy.nodeCapacity}u);`
   );
   return nodes;
 }

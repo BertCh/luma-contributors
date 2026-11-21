@@ -28,6 +28,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {computeCostDistance} from './cost-distance-oracle';
 
 const SIZE = 256;
 const CELLS = SIZE * SIZE;
@@ -114,13 +115,19 @@ function createRun(device: Device, frictionBuffer: Buffer, continued: boolean) {
   return {
     state,
     history,
-    execute: async () => {
+    execute: async (restartRequested = false) => {
       submitGraph(device, compiled, undefined);
       const [[isConverged], [count], stateWords] = await Promise.all([
         readUint32(converged, 1),
         readUint32(iterationCount, 1),
         continued ? readUint32(state, 6) : Promise.resolve([] as number[])
       ]);
+      const previous = history.at(-1);
+      const previousCount =
+        restartRequested || !previous || previous.converged ? 0 : previous.iterationCount;
+      expect(count).toBeGreaterThan(previousCount);
+      expect(count).toBeLessThanOrEqual(previousCount + (continued ? 64 : 512));
+      if (!isConverged) expect(count).toBe(previousCount + (continued ? 64 : 512));
       history.push({converged: isConverged, iterationCount: count, state: stateWords});
       if (continued) {
         expect(count, 'published count must match caller-owned continuation state').toBe(
@@ -156,7 +163,8 @@ async function runToConvergence(run: ReturnType<typeof createRun>, maximumExecut
 it('GPUCostDistance continuation: repeated 64-round executions equal the one-shot 512-round result', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const frictionBuffer = createInputBuffer(device, createSpiralFriction(SIZE));
+  const friction = createSpiralFriction(SIZE);
+  const frictionBuffer = createInputBuffer(device, friction);
   const oneShot = createRun(device, frictionBuffer, false);
   const continued = createRun(device, frictionBuffer, true);
 
@@ -172,14 +180,52 @@ it('GPUCostDistance continuation: repeated 64-round executions equal the one-sho
   for (const [cell, cost] of oneShotCosts.entries()) {
     expect(Object.is(continuedCosts[cell], cost), `cell ${cell}`).toBe(true);
   }
-  // The schedule follows the cumulative count, so the cumulative count equals the one-shot count.
-  expect(
-    result.iterationCount,
-    JSON.stringify({oneShot: oneShot.history, continued: continued.history})
-  ).toBe(expected.iterationCount);
-  console.log(
-    `continuation spiral ${SIZE}^2: ${result.executions} executions, ${result.iterationCount} iterations`
-  );
+  // Independent Dijkstra integration on unit cells. Float32 path additions accumulate rounding;
+  // 3e-5 relative bounds that error here. Check finiteness first so NaN cannot pass the comparison.
+  const oracle = computeCostDistance({
+    width: SIZE,
+    height: SIZE,
+    friction,
+    georeference: {cellSize: [1, 1], northEdge: 0, southEdge: 0},
+    sources: [{cell: 0, cost: 0}]
+  });
+  // Literal checkpoints from gpu-cost-distance-round-determinism.oracle.py, whose float32
+  // Dijkstra uses no production geometry or relaxation helpers. Include an interior tail,
+  // the opposite raster corner, sources and barriers rather than checking only the rim.
+  const checkpoints = [
+    [0, 0],
+    [1, 1],
+    [255, 255],
+    [256, 1],
+    [65280, 255],
+    [65535, 505.8995056152344],
+    [32896, 3777.5693359375],
+    [32639, Infinity],
+    [32888, 3758.497802734375],
+    [33124, 3620.283203125],
+    [1028, Infinity]
+  ];
+  for (const values of [oneShotCosts, continuedCosts]) {
+    for (const [cell, cost] of values.entries()) {
+      if (oracle[cell] === Infinity) expect(cost).toBe(Infinity);
+      else {
+        expect(Number.isFinite(cost), `cell ${cell}`).toBe(true);
+        expect(Math.abs(cost - oracle[cell])).toBeLessThanOrEqual(3e-5 * Math.max(1, oracle[cell]));
+      }
+    }
+    for (const [cell, expectedCost] of checkpoints) {
+      if (expectedCost === Infinity) expect(values[cell]).toBe(Infinity);
+      else {
+        expect(Number.isFinite(values[cell]), `independent checkpoint ${cell}`).toBe(true);
+        expect(Math.abs(values[cell] - expectedCost)).toBeLessThanOrEqual(
+          3e-5 * Math.max(1, expectedCost)
+        );
+      }
+    }
+  }
+  // In-place halo visibility changes propagation speed, including between submissions.
+  expect(expected.iterationCount).toBeLessThanOrEqual(512);
+  expect(result.iterationCount).toBeLessThanOrEqual(result.executions * 64);
 
   oneShot.destroy();
   continued.destroy();
@@ -205,7 +251,7 @@ it('GPUCostDistance continuation: an unconverged execution reports NaN, and a re
   const changed = Float32Array.from(friction, (value, cell) => (cell % 11 === 0 ? 3 : value));
   frictionBuffer.write(changed);
   continued.state.write(Uint32Array.of(1), GPU_RASTER_RELAXATION_RESTART_WORD * 4);
-  const restarted = await continued.execute();
+  const restarted = await continued.execute(true);
   expect(restarted.iterationCount).toBe(64);
   const finalStatus = await runToConvergence(continued, 64);
   expect(finalStatus.converged).toBe(1);

@@ -129,11 +129,12 @@ function expectParameterRefusal(
 }
 
 describe('workflow source declarations', () => {
-  test('exposes the three bounded builtin host sources in a stable order', () => {
+  test('exposes bounded host sources with the legacy first three in stable order', () => {
     expect(getWorkflowSourceOperations().map(operation => operation.id)).toEqual([
       WORKFLOW_SOURCE_DATASET_OPERATION_ID,
       WORKFLOW_SOURCE_GEOJSON_OPERATION_ID,
-      WORKFLOW_SOURCE_DRAWING_OPERATION_ID
+      WORKFLOW_SOURCE_DRAWING_OPERATION_ID,
+      'source-table'
     ]);
     for (const operation of getWorkflowSourceOperations()) {
       expect(operation).toMatchObject({
@@ -145,8 +146,8 @@ describe('workflow source declarations', () => {
         outputs: [
           {
             name: 'data',
-            label: 'Data',
-            kind: 'features',
+            label: operation.id === 'source-table' ? 'Table rows' : 'Data',
+            kind: operation.id === 'source-table' ? 'table' : 'features',
             identityColumns:
               operation.id === WORKFLOW_SOURCE_DRAWING_OPERATION_ID ? ['drawing_id'] : [],
             maximumRows:

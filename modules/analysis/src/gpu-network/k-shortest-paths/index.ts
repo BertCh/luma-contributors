@@ -26,5 +26,6 @@ export type {
   GPUKShortestPathsOutputLayoutOptions,
   GPUKShortestPathsOutputLayout,
   GPUKShortestPathsReadback,
+  GPUKShortestPathsByteReadback,
   GPUKShortestPathsDecodedResult
 } from './k-shortest-paths-output';

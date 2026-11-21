@@ -34,6 +34,7 @@ export function getLocalVariabilityMomentNodes<Parameters>(
     bindings: WGSLKernelBinding[];
     declarations: string;
     variance: GraphDataView<'float32'>;
+    centered: GraphDataView<'float32'>;
     count?: GraphDataView<'uint32'>;
   }
 ): readonly GPUCommandNode<Parameters>[] {
@@ -53,6 +54,7 @@ export function getLocalVariabilityMomentNodes<Parameters>(
       invocationCount: blocks * props.columns,
       bindings: [
         ...props.bindings,
+        {name: 'centered', view: props.centered, type: 'f32', access: 'read'},
         {name: 'partials', view: partials, type: 'f32', access: 'read_write'}
       ],
       declarations: props.declarations,
@@ -61,7 +63,7 @@ var count = 0u; var mean = 0.0; var squares = 0.0;
 let begin = blockIndex * ${LOCAL_VARIABILITY_MOMENT_BLOCK_ROWS}u;
 for (var row = begin; row < min(begin + ${LOCAL_VARIABILITY_MOMENT_BLOCK_ROWS}u, ${props.rows}u); row++) {
  if (!included(row)) { continue; }
- let value = values[valuesOffset + row * ${props.columns}u + column]; count++;
+ let value = centered[centeredOffset + row * ${props.columns}u + column]; count++;
  let delta = value - mean; mean += delta / f32(count); squares += delta * (value - mean);
 }
 let destination = partialsOffset + index * 3u; partials[destination] = f32(count); partials[destination + 1u] = mean; partials[destination + 2u] = squares;`

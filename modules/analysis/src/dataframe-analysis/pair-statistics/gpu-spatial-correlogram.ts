@@ -30,7 +30,10 @@ import {
   PAIR_HISTOGRAM_LARGE_TERM_SHIFT,
   validatePairHistogramShape
 } from './pair-histogram';
-import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
+import {
+  getPairStatisticsUnitVarianceNodes,
+  PAIR_STATISTICS_UNIT_SCALING_WGSL
+} from './pair-statistics-fixed-point-unit';
 import {validatePairStatisticsBindings} from './pair-statistics-preflight';
 import {
   getPairStatisticsInputNodes,
@@ -473,11 +476,23 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
       operation: OPERATION,
       values: props.values,
       mask: props.mask,
+      population: {cellKeys: inputs.cellKeys, cellCount: gridSize[0] * gridSize[1]},
       statistics
     });
     nodes.push(...unit.nodes);
     const unitVariance = unit.unitVariance;
-    const momentsWGSL = `const MOMENTS: u32 = ${rows}u;
+    const momentPowerWGSL = `
+fn getCorrelogramMomentPower(sumOfSquares: f32) -> i32 {
+  // Preserve ordinary arithmetic; at extreme magnitudes scale both M2 and
+  // each centered value by the same exact binary power before forming M4/M2^2.
+  if (sumOfSquares > 0.0 && (sumOfSquares < ${2 ** -32} || sumOfSquares > ${2 ** 32})) {
+    return frexp(sumOfSquares).exp / 2;
+  }
+  return 0;
+}`;
+    const momentsWGSL = `${PAIR_STATISTICS_UNIT_SCALING_WGSL}
+${momentPowerWGSL}
+const MOMENTS: u32 = ${rows}u;
 const BAND_COUNT: u32 = ${bandCount}u;
 const PRODUCT_UNITS_PER_VARIANCE: f32 = ${PRODUCT_UNITS_PER_VARIANCE}.0;
 const LARGE_TERM_UNIT: f32 = ${2 ** PAIR_HISTOGRAM_LARGE_TERM_SHIFT}.0;
@@ -485,7 +500,7 @@ const LARGE_TERM_UNIT: f32 = ${2 ** PAIR_HISTOGRAM_LARGE_TERM_SHIFT}.0;
 // Fixed-point units per unit of product, from the typical magnitude (the variance), not the maximum.
 fn getProductScale() -> f32 {
   let unitVariance = unitVarianceView[unitVarianceViewOffset];
-  return select(0.0, PRODUCT_UNITS_PER_VARIANCE / unitVariance, unitVariance > 0.0);
+  return getPairStatisticsFixedPointScale(unitVariance, i32(unitVarianceView[unitVarianceViewOffset + 1u]));
 }`;
 
     // Fourth central moment for the randomization variance: a deterministic tree sum of c^4.
@@ -501,8 +516,10 @@ fn getProductScale() -> f32 {
           {name: 'fourthTerms', view: fourthTerms, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
-        declarations: PAIR_STATISTICS_FLOAT_WGSL,
-        body: `let centered = statistics[statisticsOffset + index];
+        declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
+${momentPowerWGSL}`,
+        body: `let momentPower = getCorrelogramMomentPower(statistics[statisticsOffset + ${rows}u + 2u]);
+  let centered = ldexp(statistics[statisticsOffset + index], -momentPower);
   let square = centered * centered;
   fourthTerms[fourthTermsOffset + index] = select(0.0, square * square, isFiniteValue(centered));`
       }),
@@ -538,7 +555,7 @@ fn getProductScale() -> f32 {
             let product = focusValue * statistics[statisticsOffset + neighbor];
             accumulate(band, 0u, 1u);
             let positive = product >= 0.0;
-            accumulateScaled(band, select(2u, 1u, positive), select(7u, 6u, positive), abs(product) * productScale);`,
+            accumulateScaled(band, select(2u, 1u, positive), select(7u, 6u, positive), scalePairStatisticsAmount(abs(product), unitVarianceView[unitVarianceViewOffset], i32(unitVarianceView[unitVarianceViewOffset + 1u]), productScale));`,
       // k^2 can exceed 32 bits: split k (< 2^24) into 12-bit limbs, k = a * 2^12 + c, and
       // accumulate a^2, 2ac and c^2, weighted 2^24, 2^12 and 1 when read.
       focusEpilogue: `var runningDegree = 0u;
@@ -612,7 +629,7 @@ fn toFloat(sum: vec2<u32>) -> f32 {
   // The large channels hold products in units of LARGE_TERM_UNIT fixed-point units.
   let positiveSum = toFloat(sumChannel(firstBand, index, 1u)) + toFloat(sumChannel(firstBand, index, 6u)) * LARGE_TERM_UNIT;
   let negativeSum = toFloat(sumChannel(firstBand, index, 2u)) + toFloat(sumChannel(firstBand, index, 7u)) * LARGE_TERM_UNIT;
-  let productSum = select(0.0, (positiveSum - negativeSum) / productScale, productScale > 0.0);
+  let productSum = decodePairStatisticsAmount(positiveSum - negativeSum, unitVarianceView[unitVarianceViewOffset], i32(unitVarianceView[unitVarianceViewOffset + 1u]), productScale);
   // Squared neighbor counts are per band (already cumulative when the bands are).
   let degreeSquares = toFloat(sumChannel(index, index, 3u)) * 16777216.0 +
     toFloat(sumChannel(index, index, 4u)) * 4096.0 + toFloat(sumChannel(index, index, 5u));
@@ -641,7 +658,8 @@ fn toFloat(sum: vec2<u32>) -> f32 {
       variance = firstTerm - secondTerm + thirdTerm - expected * expected;
       magnitude = firstTerm + secondTerm + thirdTerm + expected * expected;
     } else if (count >= 4.0) {
-      let kurtosis = count * fourthTotal[fourthTotalOffset] / (sumOfSquares * sumOfSquares);
+      let normalizedSumOfSquares = ldexp(sumOfSquares, -2 * getCorrelogramMomentPower(sumOfSquares));
+      let kurtosis = count * fourthTotal[fourthTotalOffset] / (normalizedSumOfSquares * normalizedSumOfSquares);
       let denominator = (count - 1.0) * (count - 2.0) * (count - 3.0);
       let firstTerm = count * ((countSquare - 3.0 * count + 3.0) * (s1 / weightSquare) -
         count * (s2 / weightSquare) + 3.0);
@@ -813,14 +831,16 @@ fn readZ(band: u32) -> f32 {
             {name: 'statisticsOut', view: output.statistics, type: 'f32', access: 'read_write'}
           ],
           invocationCount: 1,
-          declarations: `const MOMENTS: u32 = ${rows}u;`,
+          declarations: `${momentPowerWGSL}
+const MOMENTS: u32 = ${rows}u;`,
           body: `let count = statistics[statisticsOffset + MOMENTS];
   let sumOfSquares = statistics[statisticsOffset + MOMENTS + 2u];
   statisticsOut[statisticsOutOffset] = count;
   statisticsOut[statisticsOutOffset + 1u] = statistics[statisticsOffset + MOMENTS + 1u];
   statisticsOut[statisticsOutOffset + 2u] = sumOfSquares / count;
   statisticsOut[statisticsOutOffset + 3u] = sumOfSquares;
-  statisticsOut[statisticsOutOffset + 4u] = count * fourthTotal[fourthTotalOffset] / (sumOfSquares * sumOfSquares);`
+  let normalizedSumOfSquares = ldexp(sumOfSquares, -2 * getCorrelogramMomentPower(sumOfSquares));
+  statisticsOut[statisticsOutOffset + 4u] = count * fourthTotal[fourthTotalOffset] / (normalizedSumOfSquares * normalizedSumOfSquares);`
         })
       );
     }

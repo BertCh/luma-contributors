@@ -15,9 +15,9 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 
 it('R1 preserves legacy areas with zero and nonzero padding', () => {
-  const expected = getRasterZonalCellArea([1, 1, 60, 59], 0, 1);
+  const expected = getRasterZonalCellArea([1, 1, 60, 59], 0, 1, 1);
   for (const sentinel of [0, 13]) {
-    expect(getRasterZonalCellArea([1, 1, 60, 59, sentinel, 17, 23, 29], 0, 1)).toBe(expected);
+    expect(getRasterZonalCellArea([1, 1, 60, 59, sentinel, 17, 23, 29], 0, 1, 1)).toBe(expected);
   }
 });
 
@@ -80,6 +80,69 @@ it('preserves thin geographic cell area in either row direction and across windo
     expect(Number.isFinite(windowArea)).toBe(true);
     expect(windowArea / expected).toBeCloseTo(1, 7);
     expect(fullArea).toBe(windowArea);
+  }
+});
+
+it('RT-101 default props decode the default packer output with the signed row step', () => {
+  // A one-row window at 60 degrees N, 1e-6 degrees square. Expected from /usr/bin/python3:
+  // R^2 dLon 2 cos(midLatitude) sin(|dLat| / 2) with R = 6371007.180918475 m, dLon = dLat = 1e-6
+  // degrees, midLatitude = 60 - 0.5e-6 degrees: 0.00618216988533045 m2. The legacy decoding gives
+  // 0 because the float32 north and south edges round equal.
+  const grid: GPURasterMetadata = {
+    width: 1,
+    height: 1,
+    affine: [1e-6, 0, 10, 0, -1e-6, 60],
+    pixelInterpretation: 'area'
+  };
+  const settings = getGPURasterZonalStatisticsParameterValues(grid);
+  const area = getRasterZonalCellArea(settings, 0, 1);
+  expect(Number.isFinite(area)).toBe(true);
+  expect(area / 0.00618216988533045).toBeCloseTo(1, 6);
+
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = {
+    grid,
+    zones: createTransientView(graph, 'zones', 'uint32', 1),
+    values: {
+      id: 'values',
+      format: 'float32' as const,
+      storage: {kind: 'buffer' as const, values: createTransientView(graph, 'values', 'float32', 1)}
+    },
+    zoneCapacity: 1,
+    cellSizeMode: 'geographic' as const,
+    parameters: createTransientView(graph, 'parameters', 'float32', settings.length),
+    output: {weightSums: createTransientView(graph, 'weights', 'float32', 1)}
+  };
+  const sources = getGPUCommandNodeKernelSources(
+    new GPURasterZonalStatistics(props).getCommandNodes(graph)
+  );
+  expect(
+    sources.some(({source}) => source.includes('const ZONAL_PARAMETER_LAYOUT_VERSION: u32 = 2u;'))
+  ).toBe(true);
+
+  // Without an explicit version, a view that is not the seven-word packer output is rejected
+  // instead of being decoded under a layout it may not have.
+  for (const length of [4, 8]) {
+    const shortGraph = new GPUCommandGraph(createNullWebGPUDevice());
+    expect(
+      () =>
+        new GPURasterZonalStatistics({
+          ...props,
+          zones: createTransientView(shortGraph, 'zones', 'uint32', 1),
+          values: {
+            ...props.values,
+            storage: {
+              kind: 'buffer' as const,
+              values: createTransientView(shortGraph, 'values', 'float32', 1)
+            }
+          },
+          parameters: createTransientView(shortGraph, 'parameters', 'float32', length),
+          output: {weightSums: createTransientView(shortGraph, 'weights', 'float32', 1)}
+        })
+    ).toThrow(/parameterLayoutVersion/);
+    expect(() => getRasterZonalCellArea(new Array(length).fill(1), 0, 1)).toThrow(
+      /parameterLayoutVersion/
+    );
   }
 });
 

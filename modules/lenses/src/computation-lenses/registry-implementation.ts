@@ -2,16 +2,26 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  serializeGPUComputationCaptures,
+  deserializeGPUComputationCaptures,
+  type GPUComputationCaptures
+} from '@luma-contributors/analysis/computation-record';
 import {LENS_RUNG_IDS} from '../computation-views/types';
 import {compactLensRecordEnvelope, expandLensRecordEnvelope} from './record-encoding';
 import type {
   DecodedLensFile,
   LensRecordingMetadata,
   LensScenarioDescriptor,
+  LensScenarioPresentation,
   LensScenarioResult,
   RecordedLensFile
 } from './types';
-import {assertLensSidecarIdentity, assertValidLensRecord} from './validate-lens-record';
+import {
+  assertLensSidecarIdentity,
+  assertValidLensRecord,
+  assertValidLensSidecars
+} from './validate-lens-record';
 
 const SCENARIO_ID =
   /^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
@@ -71,16 +81,28 @@ export function listLensScenarios(): LensScenarioDescriptor[] {
  */
 export function toRecordedLensFile(
   result: LensScenarioResult,
-  options: {scenarioId: string; recordedAt: string; adapterLabel: string; variant?: string}
+  options: {
+    scenarioId: string;
+    recordedAt: string;
+    adapterLabel: string;
+    variant?: string;
+    /** Persisted so isolated readers select the same headline; see LensRecordingMetadata. */
+    presentation?: LensScenarioPresentation;
+  }
 ): RecordedLensFile {
-  const metadata = {schema: 'luma.lens-record/1' as const, ...options};
+  const {presentation, ...rest} = options;
+  const metadata = {
+    schema: 'luma.lens-record/1' as const,
+    ...rest,
+    ...(presentation !== undefined ? {presentation: {...presentation}} : {})
+  };
   validateLensRecordingMetadata(metadata);
   assertLensSidecarIdentity(result);
   // The record schema is numeric in memory; only this serialization boundary uses string tokens.
   // Lossless compaction (see record-encoding.ts) keeps docs records within their size budget.
   return compactLensRecordEnvelope({
     ...metadata,
-    record: transformValues(result, false)
+    record: transformRecordValues(result, false)
   }) as RecordedLensFile;
 }
 
@@ -115,9 +137,14 @@ export function fromRecordedLensFile(json: unknown): DecodedLensFile {
   ) {
     throw new Error('Invalid lens record graph: expected decoded graph and node objects with ids');
   }
-  const envelope = transformValues(expanded, true) as DecodedLensFile;
+  const {record: _record, ...metadata} = expanded;
+  const envelope = {
+    ...(transformValues(metadata, true) as object),
+    record: transformRecordValues(expandedRecord, true)
+  } as DecodedLensFile;
   assertValidLensRecord(envelope.record);
   assertLensSidecarIdentity(envelope.record);
+  assertValidLensSidecars(envelope.record, envelope.record);
   return envelope;
 }
 
@@ -134,10 +161,68 @@ function validateLensRecordingMetadata(
     throw new Error('Invalid lens record adapterLabel');
   if (json['variant'] !== undefined && typeof json['variant'] !== 'string')
     throw new Error('Invalid lens record variant');
+  const presentation = json['presentation'];
+  if (
+    presentation !== undefined &&
+    (!isObject(presentation) ||
+      Object.keys(presentation).some(key => key !== 'primaryOutputCaptureId') ||
+      (presentation['primaryOutputCaptureId'] !== undefined &&
+        (typeof presentation['primaryOutputCaptureId'] !== 'string' ||
+          !presentation['primaryOutputCaptureId'])))
+  )
+    throw new Error(
+      'Invalid lens record presentation: expected {primaryOutputCaptureId?: nonempty string}'
+    );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Canonicalize legacy numeric arrays before JSON can erase signed zero or nonfinite lanes. */
+function prepareLegacyCaptureArrays(value: Record<string, unknown>): Record<string, unknown> {
+  const wire = {...value};
+  for (const category of ['snapshots', 'stamps', 'replays']) {
+    const captures = value[category];
+    if (!Array.isArray(captures)) continue; // The public decoder reports malformed envelopes.
+    wire[category] = captures.map((capture: unknown) => {
+      if (
+        !isObject(capture) ||
+        !(Array.isArray(capture['values']) || ArrayBuffer.isView(capture['values']))
+      )
+        return capture;
+      const encoded = JSON.parse(
+        serializeGPUComputationCaptures({
+          schema: 'luma.computation-captures/1',
+          runId: value['runId'],
+          snapshots: [capture],
+          stamps: [],
+          replays: []
+        } as unknown as GPUComputationCaptures)
+      ) as {snapshots: {values: string}[]};
+      // Preserve any recorded valueCount so malformed legacy payload lengths still reject.
+      return {...capture, values: encoded.snapshots[0].values};
+    });
+  }
+  return wire;
+}
+
+/** The shared capture codec belongs only to the record's actual sidecar property. */
+function transformRecordValues(value: unknown, restore: boolean): unknown {
+  if (!isObject(value)) return value;
+  const {captures, ...record} = value;
+  return {
+    ...(transformValues(record, restore) as object),
+    ...(captures === undefined
+      ? {}
+      : {
+          captures: restore
+            ? deserializeGPUComputationCaptures(
+                JSON.stringify(isObject(captures) ? prepareLegacyCaptureArrays(captures) : captures)
+              )
+            : JSON.parse(serializeGPUComputationCaptures(captures as GPUComputationCaptures))
+        })
+  };
 }
 
 function transformValues(value: unknown, restore: boolean): unknown {
@@ -153,18 +238,6 @@ function transformValues(value: unknown, restore: boolean): unknown {
     // Free-form attributes may also be named "values" without representing a capture.
     if (key !== 'values' || (!isArrayLike && value['elementType'] === undefined)) {
       result[key] = transformValues(item, restore);
-      continue;
-    }
-    const elementType = value['elementType'];
-    const isTyped = elementType === 'f32' || elementType === 'u32' || elementType === 'i32';
-    // Typed captures travel as base64 of their little-endian bytes: exact, and about a third the
-    // size of decimal text. Number arrays are still accepted on restore.
-    if (!restore && isTyped) {
-      result[key] = encodeCaptureValues(item as ArrayLike<number>, elementType);
-      continue;
-    }
-    if (restore && isTyped && typeof item === 'string') {
-      result[key] = decodeCaptureValues(item, elementType);
       continue;
     }
     if (
@@ -186,65 +259,7 @@ function transformValues(value: unknown, restore: boolean): unknown {
       if (typeof entry !== 'number') throw new Error('Invalid record values: expected numbers');
       return Number.isFinite(entry) ? entry : String(entry);
     });
-    if (!restore || value['elementType'] === undefined) {
-      result[key] = values;
-      continue;
-    }
-    // Restoring produces numeric entries; the element type selects the capture storage.
-    const numbers = values as number[];
-    switch (value['elementType']) {
-      case 'f32':
-        result[key] = new Float32Array(numbers);
-        break;
-      case 'u32':
-      case 'i32': {
-        const minimum = value['elementType'] === 'u32' ? 0 : -2147483648;
-        const maximum = value['elementType'] === 'u32' ? 4294967295 : 2147483647;
-        if (
-          numbers.some(number => !Number.isInteger(number) || number < minimum || number > maximum)
-        )
-          throw new Error(`Invalid ${value['elementType']} values`);
-        result[key] =
-          value['elementType'] === 'u32' ? new Uint32Array(numbers) : new Int32Array(numbers);
-        break;
-      }
-      default:
-        throw new Error(`Invalid capture elementType: ${String(value['elementType'])}`);
-    }
+    result[key] = values;
   }
   return result;
-}
-
-const BASE64_PREFIX = 'b64:';
-
-function encodeCaptureValues(
-  values: ArrayLike<number>,
-  elementType: 'f32' | 'u32' | 'i32'
-): string {
-  const typed =
-    elementType === 'f32'
-      ? Float32Array.from(values)
-      : elementType === 'u32'
-        ? Uint32Array.from(values)
-        : Int32Array.from(values);
-  const bytes = new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength);
-  let binary = '';
-  // Chunked to stay under argument-count limits of String.fromCharCode.
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return `${BASE64_PREFIX}${btoa(binary)}`;
-}
-
-function decodeCaptureValues(
-  text: string,
-  elementType: 'f32' | 'u32' | 'i32'
-): Float32Array | Uint32Array | Int32Array {
-  if (!text.startsWith(BASE64_PREFIX)) throw new Error('Invalid record values: expected b64 text');
-  const binary = atob(text.slice(BASE64_PREFIX.length));
-  if (binary.length % 4 !== 0) throw new Error(`Invalid ${elementType} values`);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  if (elementType === 'f32') return new Float32Array(bytes.buffer);
-  return elementType === 'u32' ? new Uint32Array(bytes.buffer) : new Int32Array(bytes.buffer);
 }

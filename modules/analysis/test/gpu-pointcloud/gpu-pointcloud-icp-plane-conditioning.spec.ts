@@ -10,6 +10,12 @@ import {
 } from '@luma-contributors/analysis/pointcloud-analysis';
 import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
+import {expectPointCloudICPConverged} from './pointcloud-review-assertions';
+import {
+  createPlaneTransferFixture,
+  PLANE_TRANSFER_ANGLE,
+  PLANE_TRANSFER_TRANSLATION
+} from './pointcloud-icp-transfer-fixture';
 
 // Point-to-plane ICP on a room corner (three mutually orthogonal faces), which constrains all six
 // rigid parameters. The expected transform is the one the scene was built with, in float64; the
@@ -26,11 +32,14 @@ type Scene = {
 };
 
 const SCENES: Scene[] = [
+  {name: 'a 10 m room at the origin', center: [0, 0, 0], extent: 10},
   {name: 'a 10 m room 500 m from the origin', center: [500, 300, 0], extent: 10},
   {name: 'a centred room with a 10 km extent', center: [0, 0, 0], extent: 10000},
   {name: 'a centred 30 m room in millimetres', center: [0, 0, 0], extent: 30000}
 ];
 
+// Twelve 256-row moment blocks exercise centred transfers in the reduction tree. The two 10 m
+// scenes have identical local geometry and rigid motion at different common coordinate offsets.
 const POINT_COUNT = 3000;
 /** Rotation about the vertical axis through the room corner, radians. */
 const ROTATION_ANGLE = 0.002;
@@ -83,7 +92,7 @@ for (const scene of SCENES) {
       const iterations = 12;
       const history = fixture.view('float32x3', new Float32Array(3 * iterations));
       const mask = fixture.view('uint32', new Uint32Array(POINT_COUNT));
-      const status = fixture.view('uint32', new Uint32Array(1));
+      const status = fixture.view('uint32', new Uint32Array([99]));
       fixture.graph.add(
         new GPUPointCloudICP({
           source: source.view,
@@ -91,7 +100,7 @@ for (const scene of SCENES) {
           targetNormals: normals.view,
           metric: 'point-to-plane',
           maximumDistance: 0.02 * scene.extent,
-          iterations,
+          maximumIterations: iterations,
           translationTolerance: 1e-4 * scene.extent,
           rotationTolerance: 1e-4,
           output: {
@@ -103,10 +112,10 @@ for (const scene of SCENES) {
         })
       );
       await fixture.run();
-      const [code] = await readIntegers(status.buffer);
-      expect(code).not.toBe(GPU_POINT_CLOUD_ICP_STATUS_DEGENERATE);
-      expect(code).toBe(0);
+      expectPointCloudICPConverged(await readIntegers(status.buffer));
       const actual = await readFloats(transform.buffer);
+      expect(actual).toHaveLength(16);
+      expect(actual.every(Number.isFinite)).toBe(true);
       // Rotation columns of a rotation by ROTATION_ANGLE about the vertical axis.
       const expectedRotation = [cosine, sine, 0, -sine, cosine, 0, 0, 0, 1];
       for (let column = 0; column < 3; column++) {
@@ -130,8 +139,93 @@ for (const scene of SCENES) {
           Math.abs(moved[axis] - (scene.center[axis] + translation[axis])) / scene.extent
         ).toBeLessThan(5e-5);
       }
+      // A point away from the rotation centre pins both rotation and translation. This is the
+      // scene's closed-form rigid transform, independently of the normal-system transfer.
+      const localProbe = [0.17, -0.23, 0.31].map(value => value * scene.extent);
+      const probe = localProbe.map((value, axis) => value + scene.center[axis]);
+      const expectedProbe = [
+        cosine * localProbe[0] - sine * localProbe[1],
+        sine * localProbe[0] + cosine * localProbe[1],
+        localProbe[2]
+      ].map((value, axis) => value + scene.center[axis] + translation[axis]);
+      for (let axis = 0; axis < 3; axis++) {
+        const transformed =
+          actual[axis] * probe[0] +
+          actual[4 + axis] * probe[1] +
+          actual[8 + axis] * probe[2] +
+          actual[12 + axis];
+        expect(Number.isFinite(transformed)).toBe(true);
+        expect(Math.abs(transformed - expectedProbe[axis]) / scene.extent).toBeLessThan(5e-5);
+      }
       const inliers = await readIntegers(mask.buffer);
+      expect(inliers).toHaveLength(POINT_COUNT);
       expect(inliers.reduce((sum, value) => sum + value, 0)).toBe(POINT_COUNT);
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
+
+for (const center of [
+  [0, 0, 0],
+  [500, 300, 0]
+]) {
+  it(`point-to-plane ICP observes rotation only between blocks at offset ${center} (B1)`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = makeSpatialFixture(device);
+    try {
+      const values = createPlaneTransferFixture(center);
+      const count = values.source.length / 3;
+      const iterations = 12;
+      const transform = fixture.view('float32', new Float32Array(16).fill(99));
+      const status = fixture.view('uint32', new Uint32Array([99]));
+      fixture.graph.add(
+        new GPUPointCloudICP({
+          source: fixture.view('float32x3', Float32Array.from(values.source)).view,
+          target: fixture.view('float32x3', Float32Array.from(values.target)).view,
+          targetNormals: fixture.view('float32x3', Float32Array.from(values.normals)).view,
+          metric: 'point-to-plane',
+          maximumDistance: 0.25,
+          maximumIterations: iterations,
+          translationTolerance: 1e-3,
+          rotationTolerance: 1e-5,
+          output: {
+            transform: transform.view,
+            status: status.view,
+            history: fixture.view('float32x3', new Float32Array(iterations * 3)).view,
+            inlierMask: fixture.view('uint32', new Uint32Array(count)).view
+          }
+        })
+      );
+      await fixture.run();
+      expectPointCloudICPConverged(await readIntegers(status.buffer));
+      const actual = await readFloats(transform.buffer);
+      expect(actual).toHaveLength(16);
+      expect(actual.every(Number.isFinite)).toBe(true);
+      // At the target geometry the six [cross(position,normal),normal] rows are
+      // [0,0,0,1,0,0], [0,0,0,0,1,0], [0,0,0,0,0,1],
+      // [-4,0,0,0,1,0], [0,-5,0,0,0,1], [0,0,-6,1,0,0], determinant 120.
+      // Centring is an invertible change of variables. Without block transfers all rotation
+      // columns vanish because each block contains one repeated point; rank then drops to 3.
+      const localProbe = [1, -2, 3];
+      const probe = localProbe.map((value, axis) => value + center[axis]);
+      const cosine = Math.cos(PLANE_TRANSFER_ANGLE);
+      const sine = Math.sin(PLANE_TRANSFER_ANGLE);
+      const expected = [
+        cosine * localProbe[0] - sine * localProbe[1],
+        sine * localProbe[0] + cosine * localProbe[1],
+        localProbe[2]
+      ].map((value, axis) => value + center[axis] + PLANE_TRANSFER_TRANSLATION[axis]);
+      for (let axis = 0; axis < 3; axis++) {
+        const moved =
+          actual[axis] * probe[0] +
+          actual[4 + axis] * probe[1] +
+          actual[8 + axis] * probe[2] +
+          actual[12 + axis];
+        expect(Number.isFinite(moved)).toBe(true);
+        expect(Math.abs(moved - expected[axis])).toBeLessThan(0.0003);
+      }
     } finally {
       fixture.destroy();
     }
@@ -173,7 +267,7 @@ it('point-to-plane ICP still reports a single tilted plane as degenerate', async
         targetNormals: fixture.view('float32x3', new Float32Array(normalValues)).view,
         metric: 'point-to-plane',
         maximumDistance: 0.2,
-        iterations: 4,
+        maximumIterations: 4,
         output: {
           transform: transform.view,
           history: history.view,

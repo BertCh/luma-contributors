@@ -109,7 +109,10 @@ const MAXIMUM_ROWS = Math.floor(MAXIMUM_BINDING_BYTES / (27 * 4));
 function buildGlobalStatistics(
   rows: number,
   capacity: number,
-  options: {islands?: 'keep' | 'exclude'; alternative?: 'greater' | 'lesser' | 'two-sided'} = {}
+  options: {
+    islands?: 'keep' | 'exclude';
+    analyticAlternative?: 'greater' | 'lesser' | 'two-sided';
+  } = {}
 ) {
   const inspected = createInspectedGraph('global-limits');
   const {view, graph} = inspected;

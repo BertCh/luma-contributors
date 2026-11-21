@@ -194,6 +194,7 @@ it.each([
   );
   write(directory, 'test/kepler-compute-example-specs.json', '{"excludedFromRuns":{}}');
   write(directory, 'modules/analysis/test/analysis-core/inherited.node.spec.ts', 'export {};');
+  write(directory, 'modules/analysis/src/index.ts', 'export {};');
   mkdirSync(join(directory, 'node_modules'), {recursive: true});
   symlinkSync(
     join(ROOT, 'node_modules/typescript'),

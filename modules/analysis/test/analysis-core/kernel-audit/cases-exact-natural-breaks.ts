@@ -18,9 +18,9 @@ export const EXACT_NATURAL_BREAKS_AUDIT_CASES: readonly KernelAuditCase[] = (
 ).map(({mode, storage, rowCount}) => ({
   exportName: 'GPUClassBreaks',
   name: `${mode}-natural-breaks-${storage ?? 'default'}-${rowCount}-rows`,
-  build: ({graph, view}) => {
+  build: ({graph, view, construct}) => {
     graph.add(
-      new GPUClassBreaks({
+      construct(GPUClassBreaks, {
         values: view('float32', rowCount),
         mask: view('uint32', rowCount),
         parameters: view('float32', getGPUClassBreaksParameterLength(64)),

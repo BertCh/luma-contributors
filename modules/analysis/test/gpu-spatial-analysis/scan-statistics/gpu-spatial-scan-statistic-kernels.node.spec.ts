@@ -269,7 +269,7 @@ describe('GPUSpatialScanStatistic replicate batches', () => {
   test('validates the limits: the old replicate-table cap is gone', () => {
     const device = createNullWebGPUDevice();
     const graph = new GPUCommandGraph(device);
-    // (P + 1) * cells = 99_999_001 * ... would have exceeded 2^25 words in one pass.
+    // The per-batch cap is 4096: ceil(99999 / 4096) = 25 batches.
     expect(createScan(graph, 'poisson', {maximumPermutations: 99999}).batchCount).toBe(25);
     expect(() => createScan(graph, 'poisson', {maximumPermutations: 100000})).toThrow(
       /maximumPermutations/
@@ -284,7 +284,10 @@ describe('GPUSpatialScanStatistic replicate batches', () => {
         maximumWindowZones: 4,
         maximumPermutations: 99999
       })
-    ).toThrow(/1588 batches of 63 replicates, more than 1024/);
+    ).toThrow(
+      /^scan-statistic maximumPermutations received 99999; needs 1588 batches of 63, maximum 1024; reduce maximumPermutations or cells$/
+    );
+    // ceil(60000 / 63) = 953, within the independent 1024-batch ceiling.
     expect(
       createScan(graph, 'poisson', {
         zones: 16384,
@@ -292,7 +295,7 @@ describe('GPUSpatialScanStatistic replicate batches', () => {
         maximumWindowZones: 4,
         maximumPermutations: 60000
       }).batchCount
-    ).toBeLessThanOrEqual(1024);
+    ).toBe(953);
     device.destroy();
   });
 

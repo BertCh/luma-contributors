@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import type {
@@ -12,6 +13,8 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {
+  validateGraphPorts,
+  validateOption,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement,
@@ -195,7 +198,8 @@ export type GPUPointCloudICPProps = {
   targetNormals?: GraphDataView<'float32x3'>;
   /** Iteratively reweighted rigid least squares; scale is in coordinate units. Default is unweighted. */
   robust?: {method: 'huber' | 'tukey'; scale: number};
-  iterations?: number;
+  /** Compile-time iteration budget, 1–100; default 20. */
+  maximumIterations?: number;
   translationTolerance?: number;
   rotationTolerance?: number;
   /** Caller-owned result views; their contents are written by the graph. */
@@ -272,18 +276,20 @@ function getPointCloudICPInitialTransform(
 /**
  * Bounded GPU point-to-point ICP with distance rejection and Horn's rigid least-squares solve.
  * Per-frame: input contents and parameters (maximumDistance, robust scale, convergence tolerances
- * and initialTransform). Compile-time: iterations, metric, robust method, targetGrid, origin and
- * view shapes. Centered block moments merge through a fixed-order, bounded 256-way tree;
+ * and initialTransform). Compile-time: maximumIterations, metric, robust
+ * method, targetGrid, origin and view shapes. Centered block moments merge through a fixed-order, bounded 256-way tree;
  * floating-point rounding may differ from a serial sum. Without parameters, numeric props
- * retain their constructor-time behavior.
+ * retain their constructor-time behavior. The total iteration budget is 1–100, default 20;
+ * both spellings must agree when supplied; the budget is resolved at construction.
  */
 export class GPUPointCloudICP implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly iterations: number;
+  readonly maximumIterations: number;
   readonly estimatedCommandNodeCount: number;
   /** Initial transform in the local frame of `origin` (identity origin when omitted). */
   private readonly localInitialTransform: readonly number[];
   constructor(readonly props: GPUPointCloudICPProps) {
+    const hasRemovedIterations = 'iterations' in props;
     props = snapshotConstructionFields(props, [
       'parameters',
       'id',
@@ -296,12 +302,34 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
       'metric',
       'targetNormals',
       'robust',
-      'iterations',
+      'maximumIterations',
       'translationTolerance',
       'rotationTolerance',
       'output'
     ]);
     this.id = props.id ?? 'gpu-pointcloud-icp';
+    validateRequirement(
+      this.id,
+      !hasRemovedIterations,
+      'iterations was removed; use maximumIterations'
+    );
+    props = {
+      ...props,
+      robust:
+        props.robust && typeof props.robust === 'object'
+          ? snapshotConstructionFields(props.robust, ['method', 'scale'])
+          : props.robust
+    };
+    validateGraphPorts(this.id, props, {
+      source: {required: true, viewType: 'data', formats: ['float32x3']},
+      target: {required: true, viewType: 'data', formats: ['float32x3']},
+      targetNormals: {required: false, viewType: 'data', formats: ['float32x3']},
+      parameters: {required: false, viewType: 'data', formats: ['float32']},
+      'output.transform': {required: true, viewType: 'data', formats: ['float32']},
+      'output.history': {required: true, viewType: 'data', formats: ['float32x3']},
+      'output.inlierMask': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     validateRequirement(
       this.id,
       props.output !== undefined && props.output !== null,
@@ -341,11 +369,11 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
         }
       ]
     );
-    this.iterations = props.iterations ?? 20;
+    this.maximumIterations = props.maximumIterations ?? 20;
     validateCapacity(
       this.id,
-      'iterations',
-      this.iterations,
+      'maximumIterations',
+      this.maximumIterations,
       1,
       GPU_POINT_CLOUD_MAXIMUM_ICP_ITERATIONS
     );
@@ -357,7 +385,7 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
     }
     this.estimatedCommandNodeCount =
       4 +
-      this.iterations * (4 + mergeLevels * 2) +
+      this.maximumIterations * (4 + mergeLevels * 2) +
       (props.targetGrid ? POINT_CLOUD_ICP_INDEX_NODE_ALLOWANCE : 0);
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateFiniteNumber(this.id, 'maximumDistance', props.maximumDistance);
@@ -371,9 +399,13 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
     validateFiniteNumber(this.id, 'translationTolerance', props.translationTolerance ?? 1e-5, 0);
     validateFiniteNumber(this.id, 'rotationTolerance', props.rotationTolerance ?? 1e-5, 0);
     validateViewLength(this.id, 'transform', props.output.transform, 16);
-    validateViewLength(this.id, 'history', props.output.history, this.iterations);
+    validateViewLength(this.id, 'history', props.output.history, this.maximumIterations);
     validateViewLength(this.id, 'inlierMask', props.output.inlierMask, props.source.length);
     validateViewLength(this.id, 'status', props.output.status, 1);
+    validateOption(this.id, 'metric', props.metric ?? 'point-to-point', [
+      'point-to-point',
+      'point-to-plane'
+    ]);
     if (props.metric === 'point-to-plane') {
       validateRequirement(
         this.id,
@@ -382,6 +414,7 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
       );
     }
     if (props.robust) {
+      validateOption(this.id, 'robust.method', props.robust.method, ['huber', 'tukey']);
       validateFiniteNumber(this.id, 'robust.scale', props.robust.scale);
       validateRequirement(
         this.id,
@@ -514,9 +547,9 @@ let translation = vec3f(readState(12u),readState(13u),readState(14u));`;
       const grid = this.props.targetGrid;
       // Clamp in floating point before integer conversion; large radius/cell ratios and
       // queries outside the grid must not overflow signed cell coordinates.
-      candidateStart = `let displacement=position-vec3f(${grid.origin.map(Math.fround).join(',')});
-let lower=vec3i(clamp(floor(getPointCloudQuotient3(displacement-vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}),${Math.fround(grid.cellSize)}))-vec3f(1.0),vec3f(0.0),vec3f(${grid.dimensions.join(',')})));
-let upper=vec3i(clamp(floor(getPointCloudQuotient3(displacement+vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}),${Math.fround(grid.cellSize)}))+vec3f(1.0),vec3f(-1.0),vec3f(${grid.dimensions.map(value => value - 1).join(',')})));
+      candidateStart = `let displacement=position-vec3f(${grid.origin.map(getWGSLFloatLiteral).join(',')});
+let lower=vec3i(clamp(floor(getPointCloudQuotient3(displacement-vec3f(${parameters ? 'readParameters(0u)' : getWGSLFloatLiteral(this.props.maximumDistance)}),${getWGSLFloatLiteral(grid.cellSize)}))-vec3f(1.0),vec3f(0.0),vec3f(${grid.dimensions.join(',')})));
+let upper=vec3i(clamp(floor(getPointCloudQuotient3(displacement+vec3f(${parameters ? 'readParameters(0u)' : getWGSLFloatLiteral(this.props.maximumDistance)}),${getWGSLFloatLiteral(grid.cellSize)}))+vec3f(1.0),vec3f(-1.0),vec3f(${grid.dimensions.map(value => value - 1).join(',')})));
 for(var depth=lower.z;depth<=upper.z;depth++){for(var row=lower.y;row<=upper.y;row++){for(var column=lower.x;column<=upper.x;column++){
 let cell=(u32(depth)*${grid.dimensions[1]}u+u32(row))*${grid.dimensions[0]}u+u32(column);
 for(var slot=readOffsets(cell);slot<readOffsets(cell+1u);slot++){let candidate=readSortedIndices(slot);`;
@@ -555,7 +588,7 @@ if(all(abs(position)<=vec3f(3.402823e38))){
 let weight=select(0.0,${weightExpression},nearestId!=0xffffffffu);
 writeWeights(index,weight);${matchIds ? 'writeMatchIds(index,nearestId);' : 'writeMatches(index,nearest);'}`
       });
-    for (let iteration = 0; iteration < this.iterations; iteration++) {
+    for (let iteration = 0; iteration < this.maximumIterations; iteration++) {
       nodes.push(...correspondence(iteration));
       nodes.push(
         ...getPointCloudKernelNodes(graph, {
@@ -674,7 +707,7 @@ writeHistory(readDispatchParameter(0u),vec3f(f32(count),residual,step));`
         })
       );
     }
-    nodes.push(...correspondence(this.iterations));
+    nodes.push(...correspondence(this.maximumIterations));
     if (matchIds)
       nodes.push(
         ...getPointCloudKernelNodes(graph, {
@@ -700,7 +733,7 @@ writeHistory(readDispatchParameter(0u),vec3f(f32(count),residual,step));`
       ...getPointCloudKernelNodes(graph, {
         id: `${this.id}-publish`,
         length: 1,
-        inputs: {state: states[this.iterations % 2]},
+        inputs: {state: states[this.maximumIterations % 2]},
         outputs: {transform, status},
         body: 'for (var entry = 0u; entry < 16u; entry++) { writeTransform(entry,readState(entry)); } writeStatus(0u,u32(readState(16u)));'
       })

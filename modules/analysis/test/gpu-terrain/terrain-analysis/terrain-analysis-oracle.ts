@@ -103,7 +103,11 @@ export function computeTerrainDerivatives(
     const east = (zFactor * gradientX.values[index]) / (8 * cellX);
     const north = (rowSign * zFactor * gradientY.values[index]) / (8 * cellY);
     const magnitude = Math.hypot(east, north);
-    const isValid = gradientX.validity[index] === 1 && Number.isFinite(magnitude);
+    const isValid =
+      gradientX.validity[index] === 1 &&
+      Number.isFinite(magnitude) &&
+      Number.isFinite(settings[3]) &&
+      Number.isFinite(settings[4]);
     const slope =
       options.slopeUnits === 'percent' ? magnitude * 100 : Math.atan(magnitude) * DEGREES;
     let aspect = -1;
@@ -134,7 +138,8 @@ export function sampleBilinear(
   width: number,
   height: number,
   x: number,
-  y: number
+  y: number,
+  valid?: ArrayLike<number>
 ): number {
   const clampedX = Math.min(Math.max(x, 0), width - 1);
   const clampedY = Math.min(Math.max(y, 0), height - 1);
@@ -144,11 +149,49 @@ export function sampleBilinear(
   const nextY = Math.min(baseY + 1, height - 1);
   const fractionX = clampedX - baseX;
   const fractionY = clampedY - baseY;
-  const top =
-    values[baseY * width + baseX] * (1 - fractionX) + values[baseY * width + nextX] * fractionX;
-  const bottom =
-    values[nextY * width + baseX] * (1 - fractionX) + values[nextY * width + nextX] * fractionX;
-  return top * (1 - fractionY) + bottom * fractionY;
+  const corners = [
+    [baseY * width + baseX, (1 - fractionX) * (1 - fractionY)],
+    [baseY * width + nextX, fractionX * (1 - fractionY)],
+    [nextY * width + baseX, (1 - fractionX) * fractionY],
+    [nextY * width + nextX, fractionX * fractionY]
+  ];
+  const samples = [0, 0, 0, 0];
+  for (const [corner, [index, weight]] of corners.entries()) {
+    if (weight > 0) {
+      if ((valid && valid[index] === 0) || !Number.isFinite(values[index])) {
+        return Number.NaN;
+      }
+      samples[corner] = values[index];
+    }
+  }
+  const interpolate = (first: number, second: number, fraction: number): number => {
+    if (fraction === 0 || first === second) return first;
+    if (fraction === 1) return second;
+    return first * (1 - fraction) + second * fraction;
+  };
+  return interpolate(
+    interpolate(samples[0], samples[1], fractionX),
+    interpolate(samples[2], samples[3], fractionX),
+    fractionY
+  );
+}
+
+/** Exact integer-endpoint lattice hits, without snapping genuinely fractional positions. */
+function getRayCoordinate(origin: number, delta: number, step: number, count: number): number {
+  if (Number.isInteger(origin) && Number.isInteger(delta)) {
+    let first = count;
+    let second = step;
+    while (second !== 0) {
+      const remainder = first % second;
+      first = second;
+      second = remainder;
+    }
+    const divisor = count / first;
+    if (Math.abs(delta) % divisor === 0) {
+      return origin + (delta / divisor) * (step / first);
+    }
+  }
+  return origin + delta * (step / count);
 }
 
 /** Float64 ground-cell interpretation for each ray; defaults to the packed grid georeference. */
@@ -173,21 +216,8 @@ export function computeTerrainViewshed(
   const isValid = (column: number, row: number) =>
     (!valid || valid[row * width + column] !== 0) && Number.isFinite(values[row * width + column]);
   const sample = (x: number, y: number): number | undefined => {
-    const clampedX = Math.min(Math.max(x, 0), width - 1);
-    const clampedY = Math.min(Math.max(y, 0), height - 1);
-    const baseX = Math.floor(clampedX);
-    const baseY = Math.floor(clampedY);
-    const nextX = Math.min(baseX + 1, width - 1);
-    const nextY = Math.min(baseY + 1, height - 1);
-    if (
-      !isValid(baseX, baseY) ||
-      !isValid(nextX, baseY) ||
-      !isValid(baseX, nextY) ||
-      !isValid(nextX, nextY)
-    ) {
-      return undefined;
-    }
-    return sampleBilinear(values, width, height, x, y);
+    const elevation = sampleBilinear(values, width, height, x, y, valid);
+    return Number.isFinite(elevation) ? elevation : undefined;
   };
   const [
     observerX,
@@ -214,7 +244,12 @@ export function computeTerrainViewshed(
   const result: number[] = [];
   for (let row = 0; row < height; row++) {
     for (let column = 0; column < width; column++) {
-      if (observerSample === undefined || !isValid(column, row)) {
+      if (
+        observerSample === undefined ||
+        !Number.isFinite(observerHeight) ||
+        !Number.isFinite(targetHeight) ||
+        !isValid(column, row)
+      ) {
         result.push(3);
         continue;
       }
@@ -247,7 +282,10 @@ export function computeTerrainViewshed(
       let visible = true;
       for (let step = 1; step < stepCount; step++) {
         const fraction = step / stepCount;
-        const elevation = sample(observerX + deltaX * fraction, observerY + deltaY * fraction);
+        const elevation = sample(
+          getRayCoordinate(observerX, deltaX, step, stepCount),
+          getRayCoordinate(observerY, deltaY, step, stepCount)
+        );
         if (elevation === undefined) {
           continue;
         }
@@ -330,24 +368,9 @@ export function computeTerrainSightLine(
   heights?: readonly [number, number],
   options: TerrainSightLineOptions = {}
 ): TerrainSightLineResult {
-  const isValid = (column: number, row: number) =>
-    (!valid || valid[row * width + column] !== 0) && Number.isFinite(values[row * width + column]);
   const sample = (x: number, y: number): number | undefined => {
-    const clampedX = Math.min(Math.max(x, 0), width - 1);
-    const clampedY = Math.min(Math.max(y, 0), height - 1);
-    const baseX = Math.floor(clampedX);
-    const baseY = Math.floor(clampedY);
-    const nextX = Math.min(baseX + 1, width - 1);
-    const nextY = Math.min(baseY + 1, height - 1);
-    if (
-      !isValid(baseX, baseY) ||
-      !isValid(nextX, baseY) ||
-      !isValid(baseX, nextY) ||
-      !isValid(nextX, nextY)
-    ) {
-      return undefined;
-    }
-    return sampleBilinear(values, width, height, x, y);
+    const elevation = sampleBilinear(values, width, height, x, y, valid);
+    return Number.isFinite(elevation) ? elevation : undefined;
   };
   const [observerHeight, targetHeight, maximumDistance, cellX, cellY, curvature] =
     Array.from(settings);
@@ -378,6 +401,10 @@ export function computeTerrainSightLine(
     return noData;
   }
   const eye = observerSample + (heights ? heights[0] : observerHeight);
+  const targetTop = targetSample + (heights ? heights[1] : targetHeight);
+  if (!Number.isFinite(eye) || !Number.isFinite(targetTop)) {
+    return noData;
+  }
   const deltaX = target[0] - observer[0];
   const deltaY = target[1] - observer[1];
   const groundCell = getRasterGroundCellSize(
@@ -403,7 +430,6 @@ export function computeTerrainSightLine(
       band: 0
     };
   }
-  const targetTop = targetSample + (heights ? heights[1] : targetHeight);
   const targetSlope = (targetTop - curvature * distance * distance - eye) / distance;
   const band = (toleranceMeters + (tolerancePerKilometer * distance) / 1000) / distance;
   const stopDistance = distance - Math.max(ignoreDistance, ignoreFraction * distance);
@@ -415,7 +441,10 @@ export function computeTerrainSightLine(
     if (sampleDistance > stopDistance) {
       break;
     }
-    const elevation = sample(observer[0] + deltaX * fraction, observer[1] + deltaY * fraction);
+    const elevation = sample(
+      getRayCoordinate(observer[0], deltaX, step, stepCount),
+      getRayCoordinate(observer[1], deltaY, step, stepCount)
+    );
     if (elevation === undefined) {
       continue;
     }

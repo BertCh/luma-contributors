@@ -29,8 +29,9 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import reference from '../../oracles/terrain-dinf-hand.json';
+import {createTerrainReviewFixture} from '../terrain-processing/terrain-review-fixture';
 
 type Input = {
   width: number;
@@ -46,6 +47,7 @@ type Input = {
   noDataValue?: number;
   maximumIterations?: number;
   drainageOnly?: boolean;
+  d8?: boolean;
 };
 
 async function runHAND(device: Device, input: Input, generateFractions = false) {
@@ -102,7 +104,10 @@ async function runHAND(device: Device, input: Input, generateFractions = false) 
         offset: input.offset,
         noDataValue: input.noDataValue
       }),
-      flowFractions: fractions,
+      flowFractions: input.d8 ? undefined : fractions,
+      flowDirections: input.d8
+        ? source(input.flowDirections ?? new Array(count).fill(0), 'uint32')
+        : undefined,
       streams: source(input.streams, 'uint32'),
       maximumIterations: input.maximumIterations ?? 16,
       output: {
@@ -232,12 +237,14 @@ it('honors band validity, nodata, calibration, unresolved rows and stream preced
     2,
     3
   ]);
+  expect(unknown.status.slice(0, 2)).toEqual([0, 0]);
   fractions[8] = 1;
   const streamUnknown = await runHAND(device, {
     ...chain,
     streams: [0, GPU_TERRAIN_FLOW_STREAM_UNRESOLVED, 1, 1]
   });
   expect(streamUnknown.drainage).toEqual(unknown.drainage);
+  expect(streamUnknown.status.slice(0, 2)).toEqual([0, 0]);
   const labels = await runHAND(device, {...chain, drainageOnly: true});
   expect(labels.drainage).toEqual([2, 2, 2, 3]);
 });
@@ -267,5 +274,98 @@ it('rejects contaminated positive branches and ignores zero-weight neighbors on 
     GPU_TERRAIN_DRAINAGE_NONE,
     GPU_TERRAIN_DRAINAGE_UNRESOLVED
   ]);
-  expect(result.status.slice(0, 2)).toEqual([1, 0]);
+  expect(result.status.slice(0, 2)).toEqual([0, 0]);
+});
+
+it('W5-01 both HAND routes distinguish unknown membership, streams and known outlets', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const d8 of [true, false]) {
+    for (const [stream, drainage, height, converged] of [
+      [0xffffffff, 0xfffffffe, NaN, 0],
+      [1, 0, 0, 1],
+      [0, 0xffffffff, NaN, 1]
+    ]) {
+      const result = await runHAND(device, {
+        width: 1,
+        height: 1,
+        elevation: [5],
+        fractions: new Array(8).fill(0),
+        streams: [stream],
+        d8
+      });
+      expect(result.hand).toEqual([height]);
+      expect(result.drainage).toEqual([drainage]);
+      expect(result.status.slice(0, 2)).toEqual([converged, 0]);
+      expect(result.status[2]).toBeGreaterThanOrEqual(1);
+      expect(result.status[2]).toBeLessThanOrEqual(16);
+    }
+    const result = await runHAND(device, {
+      width: 2,
+      height: 1,
+      elevation: [5, 3],
+      fractions: [1, ...new Array(15).fill(0)],
+      streams: [0, 0xffffffff],
+      flowDirections: [1, 0],
+      d8
+    });
+    expect(result.hand).toEqual([NaN, NaN]);
+    expect(result.drainage).toEqual([0xfffffffe, 0xfffffffe]);
+    expect(result.status.slice(0, 2)).toEqual([0, 0]);
+  }
+});
+
+it('B1/B4 inherited HAND diagnostics overwrite poison on unknown-to-known replay with drainage-only and paired outputs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const drainageOnly of [false, true]) {
+    const fixture = createTerrainReviewFixture(device);
+    const grid = makeGPURasterMetadata({width: 3, height: 1});
+    const fractions = new Array(24).fill(0);
+    fractions[0] = fractions[8] = 1;
+    const streams = fixture.input('uint32', [0, 0, 0xffffffff]);
+    const height = fixture.output('float32', 3),
+      drainage = fixture.output('uint32', 3);
+    const converged = fixture.output('uint32', 1),
+      limit = fixture.output('uint32', 1),
+      rounds = fixture.output('uint32', 1);
+    for (const destination of [converged, limit, rounds])
+      destination.buffer.write(Uint32Array.of(77));
+    fixture.graph.add(
+      new GPUTerrainHeightAboveDrainage({
+        grid,
+        elevation: makeGPURasterBand(fixture.input('float32', [15, 11, 3]).view, grid),
+        flowFractions: fixture.input('float32', fractions).view,
+        streams: streams.view,
+        maximumIterations: 16,
+        output: {
+          heightAboveDrainage: drainageOnly ? undefined : height.view,
+          drainageCells: drainage.view,
+          status: Object.create({
+            converged: converged.view,
+            iterationLimitReached: limit.view,
+            iterationCount: rounds.view
+          })
+        }
+      })
+    );
+    const compiled = fixture.graph.compile();
+    try {
+      for (const unknown of [true, false]) {
+        streams.buffer.write(Uint32Array.of(0, 0, unknown ? 0xffffffff : 1));
+        fixture.submit(compiled);
+        expect(await drainage.read()).toEqual(
+          unknown ? [0xfffffffe, 0xfffffffe, 0xfffffffe] : [2, 2, 2]
+        );
+        if (!drainageOnly)
+          expect(await height.read()).toEqual(unknown ? [NaN, NaN, NaN] : [12, 8, 0]);
+        expect(await converged.read()).toEqual([unknown ? 0 : 1]);
+        expect(await limit.read()).toEqual([0]);
+        expect(await rounds.read()).toEqual([3]);
+      }
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  }
 });

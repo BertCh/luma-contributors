@@ -2,6 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateInterpolationPorts} from './interpolation-view-validation';
+import {
+  createInterpolationNeighborhoodLossNodes,
+  getInterpolationNeighborhoodLossViews,
+  decodeInterpolationPredictionStatus,
+  type InterpolationNeighborhoodWeights
+} from './interpolation-neighborhood-loss';
+
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {isGraphVectorView} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {
   validateInterpolationPredictionViews,
   validateInterpolationOutputsDisjointFromInputs
@@ -95,6 +108,10 @@ export type GPULocalRBFProps<
   sampleSmoothing?: GraphDataView<'float32'>;
   /** Optional query-major candidate rows supplied by a resident neighbor index; 0xffffffff pads. */
   neighborhoods?: GraphDataView<'uint32'>;
+  /** Resident CSR including optional live producer overflow/candidateOverflow evidence. */
+  neighborhoodWeights?: InterpolationNeighborhoodWeights;
+  /** Producer loss for legacy fixed-width or CSR candidate ports. */
+  neighborhoodStatus?: InterpolationNeighborhoodWeights['status'];
   /** Optional CSR offsets from GPUNeighborSearch; replaces fixed candidate row widths. */
   neighborhoodOffsets?: GraphDataView<'uint32'>;
   /** Fixed candidate slots per query. Each row must contain distinct sample indices. */
@@ -104,7 +121,7 @@ export type GPULocalRBFProps<
   output: {
     /** [prediction, pivot ratio, neighbor count, 0]. */
     values: ValueRows;
-    /** 0 success; 1 no usable neighborhood; 2 deficient polynomial/kernel rank. */
+    /** 0 success; 1 no usable neighborhood; 2 deficient polynomial/kernel rank; 3 incomplete candidate input (overflow or candidateOverflow). */
     status: StatusRows;
   };
 };
@@ -151,8 +168,41 @@ export class GPULocalRBF<
   private readonly chunkPlan?: GraphChunkDispatchPlan;
 
   constructor(props: GPULocalRBFProps<QueryRows, ValueRows, StatusRows>) {
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'degree',
+        'epsilon',
+        'id',
+        'kernel',
+        'neighborCount',
+        'neighborhoodCapacity',
+        'neighborhoodOffsets',
+        'neighborhoods',
+        'neighborhoodWeights',
+        'neighborhoodStatus',
+        'output',
+        'positions',
+        'queries',
+        'sampleSmoothing',
+        'searchRadius',
+        'smoothing',
+        'spatialContext',
+        'values'
+      ],
+      ['values', 'status']
+    );
     this.id = props.id ?? 'local-rbf';
+    validateInterpolationPorts({id: this.id, contributor: 'GPULocalRBF'}, props, {
+      positions: {required: true, viewType: 'data', formats: ['float32x2']},
+      values: {required: true, viewType: 'data', formats: ['float32']},
+      queries: {required: true, viewType: 'either', formats: ['float32x2']},
+      neighborhoods: {required: false, viewType: 'data', formats: ['uint32']},
+      neighborhoodOffsets: {required: false, viewType: 'data', formats: ['uint32']},
+      sampleSmoothing: {required: false, viewType: 'data', formats: ['float32']},
+      'output.values': {required: true, viewType: 'either', formats: ['float32x4']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
@@ -186,46 +236,54 @@ export class GPULocalRBF<
         'neighborhoodCapacity',
         props.neighborhoodCapacity ?? this.neighborCount
       );
-    if (
-      ![-1, 0, 1, 2].includes(this.degree) ||
-      ![
-        'thin-plate-spline',
-        'cubic',
-        'gaussian',
-        'linear',
-        'quintic',
-        'multiquadric',
-        'inverse-multiquadric',
-        'inverse-quadratic'
-      ].includes(this.kernel) ||
-      (['thin-plate-spline', 'cubic'].includes(this.kernel) && this.degree < 1) ||
-      (['linear', 'multiquadric'].includes(this.kernel) && this.degree < 0) ||
-      (this.kernel === 'quintic' && this.degree < 2) ||
-      !Number.isFinite(props.epsilon ?? 1) ||
-      !((props.epsilon ?? 1) > 0) ||
-      !Number.isFinite(props.smoothing ?? 0) ||
-      !((props.smoothing ?? 0) >= 0) ||
-      !(props.searchRadius === undefined || props.searchRadius > 0)
-    ) {
-      throw new Error(`${this.id} invalid interpolation model`);
-    }
-    if (
-      props.positions.length !== props.values.length ||
-      (props.sampleSmoothing && props.sampleSmoothing.length !== props.positions.length) ||
-      (props.neighborhoodOffsets &&
-        (!props.neighborhoods || props.neighborhoodOffsets.length !== props.queries.length + 1)) ||
-      (props.neighborhoods &&
-        !props.neighborhoodOffsets &&
-        (!Number.isSafeInteger(props.neighborhoodCapacity ?? this.neighborCount) ||
-          (props.neighborhoodCapacity ?? this.neighborCount) < 1 ||
-          props.neighborhoods.length !==
-            props.queries.length * (props.neighborhoodCapacity ?? this.neighborCount))) ||
-      props.output.values.length < props.queries.length ||
-      props.output.status.length < props.queries.length
-    ) {
-      throw new Error(`${this.id} invalid view lengths`);
-    }
+    validateRequirement(
+      this.id,
+      !(
+        ![-1, 0, 1, 2].includes(this.degree) ||
+        ![
+          'thin-plate-spline',
+          'cubic',
+          'gaussian',
+          'linear',
+          'quintic',
+          'multiquadric',
+          'inverse-multiquadric',
+          'inverse-quadratic'
+        ].includes(this.kernel) ||
+        (['thin-plate-spline', 'cubic'].includes(this.kernel) && this.degree < 1) ||
+        (['linear', 'multiquadric'].includes(this.kernel) && this.degree < 0) ||
+        (this.kernel === 'quintic' && this.degree < 2) ||
+        !Number.isFinite(props.epsilon ?? 1) ||
+        !((props.epsilon ?? 1) > 0) ||
+        !Number.isFinite(props.smoothing ?? 0) ||
+        !((props.smoothing ?? 0) >= 0) ||
+        !(props.searchRadius === undefined || props.searchRadius > 0)
+      ),
+      `kernel and degree must form a supported pair (degree -1..2; thin-plate-spline/cubic >= 1, linear/multiquadric >= 0, quintic = 2); epsilon must be finite and positive, smoothing finite and nonnegative, searchRadius positive when supplied`
+    );
+    validateRequirement(
+      this.id,
+      !(
+        props.positions.length !== props.values.length ||
+        (props.sampleSmoothing && props.sampleSmoothing.length !== props.positions.length) ||
+        (props.neighborhoodOffsets &&
+          (!props.neighborhoods ||
+            props.neighborhoodOffsets.length !== props.queries.length + 1)) ||
+        (props.neighborhoods &&
+          !props.neighborhoodOffsets &&
+          (!Number.isSafeInteger(props.neighborhoodCapacity ?? this.neighborCount) ||
+            (props.neighborhoodCapacity ?? this.neighborCount) < 1 ||
+            props.neighborhoods.length !==
+              props.queries.length * (props.neighborhoodCapacity ?? this.neighborCount))) ||
+        props.output.values.length < props.queries.length ||
+        props.output.status.length < props.queries.length
+      ),
+      `values and sampleSmoothing must match positions.length; neighborhoodOffsets requires neighborhoods and queries.length + 1 rows; fixed neighborhoods must contain queries.length * neighborhoodCapacity entries; output.values/status must cover queries.length`
+    );
+
+    const lossViews = getInterpolationNeighborhoodLossViews(this.id, props);
     const inputs: (GraphDataView | GraphVectorView | undefined)[] = [
+      ...lossViews,
       props.positions,
       props.values,
       props.queries,
@@ -233,19 +291,10 @@ export class GPULocalRBF<
       props.neighborhoodOffsets,
       props.sampleSmoothing
     ];
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      values: props.values,
-      neighborhoods: props.neighborhoods,
-      neighborhoodOffsets: props.neighborhoodOffsets,
-      sampleSmoothing: props.sampleSmoothing
-    })) {
-      if (view) validateSinglePackedView(view, [view.format], `${this.id} ${name}`);
-    }
     if (
-      props.queries instanceof GraphVectorView ||
-      props.output.values instanceof GraphVectorView ||
-      props.output.status instanceof GraphVectorView
+      isGraphVectorView(props.queries) ||
+      isGraphVectorView(props.output.values) ||
+      isGraphVectorView(props.output.status)
     ) {
       this.chunkPlan = planGraphChunkDispatch(this.id, {
         queries: props.queries,
@@ -266,7 +315,8 @@ export class GPULocalRBF<
     }
     validateDisjointWritableViews(this.id, props.output);
     validateInterpolationOutputsDisjointFromInputs(this.id, Object.values(props.output), inputs);
-    this.estimatedCommandNodeCount = this.chunkPlan ? this.chunkPlan.nonemptyChunkCount : 1;
+    this.estimatedCommandNodeCount =
+      (this.chunkPlan ? this.chunkPlan.nonemptyChunkCount : 1) * (1 + lossViews.length);
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
 
@@ -284,8 +334,20 @@ export class GPULocalRBF<
       neighborhoodOffsets: props.neighborhoodOffsets,
       sampleSmoothing: props.sampleSmoothing
     });
-    if (!chunkPlan)
-      return [createWGSLKernelNode(graph, this.getKernelProps(props as PackedLocalRBFProps))];
+    const losses = getInterpolationNeighborhoodLossViews(id, props);
+    if (!chunkPlan) {
+      const packed = props as PackedLocalRBFProps;
+      return [
+        createWGSLKernelNode(graph, this.getKernelProps(packed)),
+        ...createInterpolationNeighborhoodLossNodes(
+          graph,
+          id,
+          losses,
+          packed.output,
+          props.queries.length
+        )
+      ];
+    }
     validateGraphChunkGroupKernelSupport(
       graph,
       id,
@@ -295,7 +357,7 @@ export class GPULocalRBF<
         Number(Boolean(props.sampleSmoothing)),
       LOCAL_RBF_CHUNK_WORKGROUP_SIZE
     );
-    return chunkPlan.chunks
+    const nodes = chunkPlan.chunks
       .filter(chunk => chunk.length > 0)
       .map(chunk => {
         const kernelProps = this.getKernelProps(
@@ -318,6 +380,21 @@ export class GPULocalRBF<
           body: `let queryIndex = getChunkParameter(0u) + index;\n${kernelProps.body}`
         });
       });
+    for (const chunk of chunkPlan.chunks)
+      if (chunk.length > 0)
+        nodes.push(
+          ...createInterpolationNeighborhoodLossNodes(
+            graph,
+            `${id}-chunk-${chunk.chunkIndex}`,
+            losses,
+            {
+              values: chunk.views['results'] as GraphDataView<'float32x4'>,
+              status: chunk.views['statuses'] as GraphDataView<'uint32'>
+            },
+            chunk.length
+          )
+        );
+    return nodes;
   }
 
   private getKernelProps<Parameters>(
@@ -470,4 +547,12 @@ write_results(index, vec4<f32>(prediction, pivotRatio, f32(retained), 0.0));
 statuses[statusesOffset + index] = 0u;`
     };
   }
+}
+
+/** Decode one query status: 0 complete, 1 invalid/insufficient input, 2 singular solve, 3 incomplete candidates. */
+export function decodeGPULocalRBFStatus(
+  input: Uint32Array | Uint8Array | ArrayBuffer,
+  row: number = 0
+) {
+  return decodeInterpolationPredictionStatus('decodeGPULocalRBFStatus', input, row);
 }

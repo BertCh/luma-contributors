@@ -24,13 +24,15 @@ export async function runExample(
     values: GraphDataView<'float32'>;
     searchParameters: GraphDataView<'float32'>;
     colorParameters: GraphDataView<'uint32'>;
+    capacity?: number;
+    pairCapacity?: number;
   }
 ) {
   const {graph, tracts} = input;
   // Inputs and outputs must belong to this device.
   assert(graph.device === device);
   const count = tracts.featureOffsets.length - 1;
-  const capacity = 32768;
+  const capacity = input.capacity ?? 32768;
   const usage = Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST;
   const createFloat = (name: string, length = count) =>
     createTransientView(graph, name, 'float32', length, usage);
@@ -53,7 +55,6 @@ export async function runExample(
     metric: 'great-circle',
     units: 'meters'
   } as const;
-  // #region example
   graph.add(
     new GPUGeometryMeasures({
       geometryType: 'polygons',
@@ -65,9 +66,11 @@ export async function runExample(
       output: {centroids}
     })
   );
+  // #region example
   const builder = new GPUContiguityWeights({
     polygons: tracts,
     criterion: 'queen',
+    pairCapacity: input.pairCapacity,
     output: weightOutput
   });
   graph.add(builder);
@@ -83,6 +86,7 @@ export async function runExample(
       weightsNeighbors,
       weightsValues,
       weightsOverflow: weights.status!.overflow!,
+      weightsCandidateOverflow: weights.status!.candidateOverflow!,
       statistics: statistics,
       counts: counts,
       neighborCounts: neighborCounts,

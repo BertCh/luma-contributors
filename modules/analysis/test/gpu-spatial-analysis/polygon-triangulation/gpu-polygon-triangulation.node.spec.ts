@@ -229,7 +229,7 @@ it('every monotone kernel parses, binds at most 8 storage buffers and stays with
     ) {
       // Reserved words, NaN self-compares and calls to undeclared functions, the compile traps
       // that wgsl_reflect accepts and Dawn rejects.
-      expect(auditWGSLModule(kernel.source), kernel.id).toEqual([]);
+      expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
     }
   }
 });

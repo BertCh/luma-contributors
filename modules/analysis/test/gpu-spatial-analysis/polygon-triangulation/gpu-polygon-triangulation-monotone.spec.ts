@@ -13,7 +13,11 @@ import {
   type GPUPolygonTriangulationProps
 } from '../../../src/gpu-spatial-analysis/polygon-triangulation/index';
 import {createOutputBuffer, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {
+  TOUCHING_HOLE_RINGS,
+  expectTouchingHoleTiling
+} from './polygon-triangulation-touching-hole-contract';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {CPUPolygonTriangulationOperation} from '../../../src/analysis-core/polygon-triangulation/cpu-polygon-triangulation-operation';
 import {
@@ -517,4 +521,16 @@ it('GPUPolygonTriangulation monotone method keeps large polygons that touch a ho
   expect(check.boundaryMatches).toBe(true);
   expect(check.area).toBe(9450);
   expect(check.minimumSignedArea).toBeGreaterThan(0);
+});
+
+it('GEO-124 monotone retains two zero-area rows for holes touching at (4,4)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runTriangulation(device, [TOUCHING_HOLE_RINGS], {
+    monotoneMinimumVertices: 3,
+    maximumWork: 1
+  });
+  expect(result.valid).toEqual([1]);
+  expect(result.triangleCount).toEqual([14]);
+  expectTouchingHoleTiling(getTriangles(result, 0, result.triangleCount[0]));
 });

@@ -403,3 +403,63 @@ describe('period index CPU twin', () => {
     expect(getGPUPeriodIndexStepIndex('hour', {year: 1970, month: 1, day: 2, hour: 3})).toBe(27);
   });
 });
+
+it('rejects impossible civil origins in both calendar forms (UDF-11)', () => {
+  // Gregorian leap rule: 2023 is common, 2024 and year 0 are leap years; 1900 is common.
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    for (const calendarUnit of ['day', 'week', 'hour'] as const) {
+      const step = {calendarUnit};
+      const origin = {year: 2023, month: 2, day: 29};
+      expect(() =>
+        getGPUPeriodIndexCalendarPeriod(step, origin, 10, {year: 2023, month: 3, day: 1})
+      ).toThrow(/periods.origin.day.*2023-02-29/);
+      const columns = {
+        year: viewOf(graph, 'sint32'),
+        month: viewOf(graph, 'uint32'),
+        dayOfMonth: viewOf(graph, 'uint32'),
+        hour: viewOf(graph, 'uint32')
+      };
+      expect(
+        () =>
+          new GPUPeriodIndex(
+            createProps(graph, {
+              columns,
+              periods: {kind: 'calendar', step, origin, count: 10}
+            })
+          )
+      ).toThrow(/periods.origin.day.*2023-02-29/);
+      const leapOrigin = {...origin, year: 2024};
+      expect(getGPUPeriodIndexCalendarPeriod(step, leapOrigin, 10, leapOrigin)).toBe(0);
+      expect(
+        () =>
+          new GPUPeriodIndex(
+            createProps(graph, {
+              columns,
+              periods: {kind: 'calendar', step, origin: leapOrigin, count: 10}
+            })
+          )
+      ).not.toThrow();
+    }
+    expect(() => getGPUPeriodIndexDaysFromCivil(1900, 2, 29)).toThrow(/day/);
+    expect(getGPUPeriodIndexDaysFromCivil(0, 3, 1) - getGPUPeriodIndexDaysFromCivil(0, 2, 29)).toBe(
+      1
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
+it('excludes actual missing calendar output sentinels before civil row validation (B2)', () => {
+  const fields = {year: -2147483648, month: 4294967295, day: 4294967295, hour: 4294967295};
+  for (const calendarUnit of ['day', 'week', 'hour'] as const) {
+    // The calendar GPU producer marks an undecodable row with the minimum signed year.
+    expect(
+      getGPUPeriodIndexCalendarPeriod({calendarUnit}, {year: 2024, month: 2, day: 29}, 3, fields)
+    ).toBe(-1);
+    expect(() =>
+      getGPUPeriodIndexCalendarPeriod({calendarUnit}, {year: 2023, month: 2, day: 29}, 3, fields)
+    ).toThrow(/periods.origin.day.*2023-02-29/);
+  }
+});

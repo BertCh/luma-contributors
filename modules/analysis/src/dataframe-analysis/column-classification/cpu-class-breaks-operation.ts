@@ -3,12 +3,19 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {validateClassBreaksInput} from './class-breaks-input';
-import {snapshotClassBreaksOperationProps} from './class-breaks-operation-snapshot';
 import {
-  validateCapacity,
-  validateRequirement
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+  getClassBreaksProvenance,
+  resolveClassBreaksMethods,
+  validateClassBreaksNaturalOptions,
+  validateClassBreaksInputAssertions,
+  validateClassBreaksGraphOptions,
+  validateClassBreaksInput
+} from './class-breaks-input';
+import {
+  getClassBreaksOperationPorts,
+  snapshotClassBreaksOperationProps
+} from './class-breaks-operation-snapshot';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows,
@@ -17,9 +24,9 @@ import {
 import {
   getGPUClassBreaksParameterLength,
   GPU_CLASS_BREAKS_METHOD_CODES,
-  GPU_CLASS_BREAKS_METHODS,
   GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH,
-  GPU_CLASS_BREAKS_BOX_PLOT_CLASS_COUNT
+  GPU_CLASS_BREAKS_BOX_PLOT_CLASS_COUNT,
+  type GPUClassBreaksMethod
 } from './class-breaks-parameters';
 import {
   getGPUColumnQuantilesParameterLength,
@@ -27,17 +34,20 @@ import {
   GPU_COLUMN_QUANTILE_INTERPOLATION_CODES
 } from './column-quantiles-parameters';
 import {computeColumnQuantilesOnCPU} from './cpu-column-quantiles-operation';
-import {getOrderedFloat32Key} from './column-classification-shared';
-import {
-  GPUClassBreaksOperation,
-  type ClassBreaksOperationProps
-} from './gpu-class-breaks-operation';
+import {getComparisonFloat32Key, getOrderedFloat32Key} from './column-classification-shared';
+import type {ClassBreaksOperationProps} from './gpu-class-breaks-operation';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
+
+/** Named props alias for the public CPU operation class. */
+export type CPUClassBreaksOperationProps = ClassBreaksOperationProps;
 
 export type CPUClassBreaksOptions = Pick<
   ClassBreaksOperationProps,
-  'maximumClassCount' | 'methods'
+  'maximumClassCount' | 'methods' | 'naturalBreaksMode'
 >;
 export type CPUClassBreaksResult = {
+  /** Resolved requested GPU mode and the actual float64 CPU natural-breaks algorithm. */
+  provenance?: ReturnType<typeof getClassBreaksProvenance>;
   breaks: Float32Array;
   classCount: Uint32Array;
   classCounts: Uint32Array;
@@ -46,18 +56,8 @@ export type CPUClassBreaksResult = {
 function validateClassOptions(id: string, options: CPUClassBreaksOptions): void {
   // The edge array needs maximumClassCount + 1 uint32-addressable rows.
   validateCapacity(id, 'maximumClassCount', options.maximumClassCount, 1, 0xfffffffe);
-  const methods = options.methods ?? GPU_CLASS_BREAKS_METHODS;
-  validateRequirement(
-    id,
-    methods.length > 0 && methods.every(method => GPU_CLASS_BREAKS_METHODS.includes(method)),
-    'methods must name supported class-break methods'
-  );
-  validateRequirement(
-    id,
-    !methods.includes('box-plot') ||
-      options.maximumClassCount >= GPU_CLASS_BREAKS_BOX_PLOT_CLASS_COUNT,
-    'maximumClassCount must be at least 6 with box-plot'
-  );
+  validateClassBreaksNaturalOptions(id, options);
+  resolveClassBreaksMethods(id, options, false, false);
 }
 
 // Exhaustive layered Fisher-Jenks DP over distinct values with their original multiplicities.
@@ -116,8 +116,8 @@ function computeNaturalEdges(sorted: number[], requestedClasses: number): number
 /**
  * Computes all class-break methods with float64 moments and exact Fisher-Jenks partitions.
  * Outputs retain the lower-edge classification rule, repeated edges, end-class infinities and
- * NaN tails. Ordering, maximum-gap distinctness and class assignment use the contributor's
- * ordered float32 keys: uploaded -0 sorts below +0, including when this changes integer counts.
+ * NaN tails. Maximum-gap distinctness and class assignment use numeric float32 comparison keys:
+ * -0 equals +0 and both enter the upper class at a zero break. Raw key ordering preserves extrema bits.
  * Integer input columns undergo the contributor's initial float32 conversion.
  *
  * What differs from the GPU contributor:
@@ -130,9 +130,12 @@ function computeNaturalEdges(sorted: number[], requestedClasses: number): number
  *   cost ties retain the smallest predecessor, as GPU exact mode does; near ties may differ.
  * - Maximum-break gaps and midpoints use float64; float32 gap overflow or rounded gap ties no
  *   longer affect their order. Equal exact gaps still favor the lower sorted position.
+ *   Published edges are float32; a midpoint rounding to the lower observation uses the upper one.
  * - The GPU's 64-class, 2^24-row, bin-count and exact/monotone storage limits are dropped;
  *   uint32 counts and edge-array lengths remain. Natural-break execution/storage settings are
- *   ignored by the CPU operation. Its DP costs O(k u^2) time and O(k u) memory for u distinct values.
+ *   ignored numerically by the CPU operation. Explicit approximate graph declarations still
+ *   require maximumClassCount <= naturalBreaksBinCount; implicit CPU defaults retain the exact
+ *   natural method without a GPU bin ceiling. Its DP costs O(k u^2) time and O(k u) memory for u distinct values.
  * - Subnormals and finite float64 intermediates beyond float32 range are retained. Non-custom
  *   computed inner edges are clamped to the finite data range before publishing, as on the GPU.
  *
@@ -152,12 +155,13 @@ export function computeClassBreaksOnCPU(
   if (parameters.length < getGPUClassBreaksParameterLength(maximumClassCount))
     throw new Error('parameters must hold the header and maximumClassCount + 1 data values');
   const result: CPUClassBreaksResult = {
+    provenance: getClassBreaksProvenance(options, 'cpu'),
     breaks: new Float32Array(maximumClassCount + 1).fill(NaN),
     classCount: Uint32Array.of(0),
     classCounts: new Uint32Array(maximumClassCount)
   };
   const [methodCode, classValue, standardDeviationInterval, rawRatio, hinge] = parameters;
-  const method = (options.methods ?? GPU_CLASS_BREAKS_METHODS).find(
+  const method = resolveClassBreaksMethods('computeClassBreaksOnCPU', options, false, false).find(
     candidate => GPU_CLASS_BREAKS_METHOD_CODES[candidate] === methodCode
   );
   if (method === undefined) return result;
@@ -266,13 +270,22 @@ export function computeClassBreaksOnCPU(
           const gaps: {gap: number; position: number}[] = [];
           for (let position = 1; position < sorted.length; position++)
             if (
-              getOrderedFloat32Key(sorted[position]) !== getOrderedFloat32Key(sorted[position - 1])
+              getComparisonFloat32Key(sorted[position]) !==
+              getComparisonFloat32Key(sorted[position - 1])
             )
               gaps.push({gap: sorted[position] - sorted[position - 1], position});
           gaps.sort((first, second) => second.gap - first.gap || first.position - second.position);
           inner = gaps
             .slice(0, classes - 1)
-            .map(({position}) => (sorted[position - 1] + sorted[position]) / 2)
+            .map(({position}) => {
+              const lower = sorted[position - 1];
+              const upper = sorted[position];
+              const midpoint = Math.fround((lower + upper) / 2);
+              // Lower edges include equality in the upper class; a selected gap must split rows.
+              return getComparisonFloat32Key(midpoint) <= getComparisonFloat32Key(lower)
+                ? upper
+                : midpoint;
+            })
             .sort((first, second) => first - second);
           classes = inner.length + 1;
           break;
@@ -293,13 +306,13 @@ export function computeClassBreaksOnCPU(
   for (let row = 0; row < converted.length; row++) {
     const value = converted[row];
     if (Number.isNaN(value) || (mask && mask[row] === 0)) continue;
-    const key = getOrderedFloat32Key(value);
+    const key = getComparisonFloat32Key(value);
     // Same lower-edge binary search, including raw custom edges used as given.
     let lower = 1;
     let upper = classes;
     while (lower < upper) {
       const middle = Math.floor((lower + upper) / 2);
-      if (getOrderedFloat32Key(result.breaks[middle]) <= key) lower = middle + 1;
+      if (getComparisonFloat32Key(result.breaks[middle]) <= key) lower = middle + 1;
       else upper = middle;
     }
     result.classCounts[lower - 1]++;
@@ -307,15 +320,32 @@ export function computeClassBreaksOnCPU(
   return result;
 }
 
-/** CPU class-break twin: all natural-break modes use the full float64 global optimum. */
+/**
+ * CPU class-break twin: all natural-break modes use the full float64 global optimum.
+ * Empty non-custom input is supported: NaN edges, classCount [0], zero classCounts.
+ * GPU lowering requires at least one row; guard empty inputs before adding the GPU operation.
+ */
 export class CPUClassBreaksOperation extends GPUCPUOperation {
+  /** Compiled methods for the packed CPU computation, including packed source chunks. */
+  readonly methods: readonly GPUClassBreaksMethod[];
+  /** Natural-breaks metadata; CPU always uses the exact float64 reference. */
+  readonly provenance: ReturnType<typeof getClassBreaksProvenance>;
   constructor(inputProps: ClassBreaksOperationProps) {
     const props = snapshotClassBreaksOperationProps(inputProps);
     const id = props.id ?? 'class-breaks';
     validateClassOptions(id, props);
     if (props.naturalBreaksBinCount !== undefined)
       validateCapacity(id, 'naturalBreaksBinCount', props.naturalBreaksBinCount, 2);
-    const operation = new GPUClassBreaksOperation(props);
+    validateClassBreaksInputAssertions(id, props);
+    const methods = validateClassBreaksGraphOptions(id, props, 'cpu');
+    const operation = getClassBreaksOperationPorts(props);
+    validateOperationGraphNames(
+      id,
+      operation.inputs,
+      Object.fromEntries(
+        Object.entries(operation.outputs).map(([port, output]) => [port, output.value])
+      )
+    );
     super({
       id,
       inputs: operation.inputs,
@@ -329,7 +359,7 @@ export class CPUClassBreaksOperation extends GPUCPUOperation {
         const input = inputs['values'];
         if (input === undefined || typeof input === 'number')
           throw new Error(`${id} values must be a vector`);
-        validateClassBreaksInput(id, props, input);
+        validateClassBreaksInput(id, props, input, true);
         const values =
           input.format === 'uint32'
             ? getCPUOperationUint32Rows(id, inputs, 'values')
@@ -339,16 +369,19 @@ export class CPUClassBreaksOperation extends GPUCPUOperation {
         const result = computeClassBreaksOnCPU(
           values,
           getCPUOperationFloat32Rows(id, inputs, 'parameters'),
-          props,
+          {...props, methods},
           props.mask !== undefined ? getCPUOperationUint32Rows(id, inputs, 'mask') : undefined
         );
-        return Object.fromEntries(
-          Object.entries(operation.outputs).map(([port, output]) => [
-            output.value,
-            result[port as keyof CPUClassBreaksResult]
-          ])
-        );
+        const outputs: Record<string, Float32Array | Uint32Array> = {
+          [props.output.breaks]: result.breaks,
+          [props.output.classCount]: result.classCount
+        };
+        if (props.output.classCounts !== undefined)
+          outputs[props.output.classCounts] = result.classCounts;
+        return outputs;
       }
     });
+    this.methods = methods;
+    this.provenance = getClassBreaksProvenance({...props, methods: this.methods}, 'cpu');
   }
 }

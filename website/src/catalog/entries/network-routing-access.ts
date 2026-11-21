@@ -958,9 +958,9 @@ graph.add(new GPULocationAllocation({
     importPath: '@luma-contributors/analysis/gpu-spatial-analysis',
     title: 'Bounded facility allocation',
     summary:
-      'Exhaustive p-center or capacitated p-median: scores every facility subset (up to 65536) in parallel.',
+      'Scores up to 65,536 facility subsets for exact p-center or greedy capacitated p-median.',
     explanation:
-      'Best when the candidate set is small and you want the exact optimum, not a heuristic. Each GPU thread evaluates one subset against the cost matrix. Capacities are enforced for the capacitated variant.',
+      'P-center finds the exact optimum for a complete travel cost matrix computed without a cutoff. Capacitated p-median assigns each demand row greedily to its nearest facility with enough remaining capacity, then compares the resulting subsets. The order of demand rows can change the result.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['route', 'model'],
     domains: ['urban', 'transport'],
@@ -982,7 +982,8 @@ graph.add(new GPULocationAllocation({
         name: 'costs',
         type: 'GraphDataView<"float32">',
         required: true,
-        description: 'Demand x facility cost matrix.'
+        description:
+          'Demand × facility travel costs. Forward the matrix convergence flag as costsComplete and any routing cutoff as costLimit.'
       },
       {
         name: 'demand',
@@ -998,13 +999,17 @@ graph.add(new GPULocationAllocation({
       },
       {
         name: 'output',
-        type: '{selectedFacilities, assignments}',
+        type: 'GPUBoundedFacilityAllocationOutput',
         required: true,
         description: 'selectedFacilities, assignments, objective, status.'
       }
     ],
     outputs: [
-      {name: 'selectedFacilities', type: "GraphDataView<'uint32'>", description: 'Best subset.'},
+      {
+        name: 'selectedFacilities',
+        type: "GraphDataView<'uint32'>",
+        description: 'Facility selection flags for the best evaluated subset.'
+      },
       {
         name: 'assignments',
         type: "GraphDataView<'uint32'>",
@@ -1013,9 +1018,20 @@ graph.add(new GPULocationAllocation({
       {
         name: 'objective',
         type: "GraphDataView<'float32'>",
-        description: 'Optimal objective value.'
+        description:
+          'Maximum assigned cost for p-center or demand-weighted sum for capacitated p-median. Infinity when any demand is unassigned.'
       },
-      {name: 'status', type: "GraphDataView<'uint32'>", description: 'Result status code.'}
+      {
+        name: 'status',
+        type: "GraphDataView<'uint32'>",
+        description:
+          '[unassigned demand count, valid-input flag, global-optimum certificate]. The third word is always 0 in capacitated mode, even when ports.status.complete is 1.'
+      },
+      {
+        name: 'ports.status.complete',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Optional one-row certificate for valid inputs and complete, unbounded costs.'
+      }
     ],
     example: `import {GPUBoundedFacilityAllocation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
@@ -1026,9 +1042,13 @@ graph.add(new GPUBoundedFacilityAllocation({
   costs: costs.importToGraph(graph),
   demand: demand.importToGraph(graph),
   capacities: capacities.importToGraph(graph),
-  output: {selectedFacilities, assignments, objective, status}
+  output: {selectedFacilities, assignments, objective, status, ports: {status: {complete}}}
 }));`,
-    preview: {kind: 'point-clusters', caption: 'All subsets tried; the best four win.', seed: 4311},
+    preview: {
+      kind: 'point-clusters',
+      caption: 'All subsets are scored to choose four sites.',
+      seed: 4311
+    },
     related: ['location-allocation', 'network-facility-optimization'],
     lensScenario: 'gpu-spatial-analysis.bounded-facility-allocation',
     reference: 'api/gpu-spatial-analysis/expansion-lenses',
@@ -1426,7 +1446,7 @@ const recipe = addDriveTimeCatchmentRecipe(graph, {
   costBreaks: breaks.importToGraph(graph),   // 5, 10, 15 minutes
   bandCapacity: 8,
   maximumIterations: 64,
-  outputs: {demandBands, bands: {keys, counts, sumValues}}
+  output: {demandBands, bands: {keys, counts, sumValues}}
 });`,
     preview: {
       kind: 'isochrones',
@@ -3705,6 +3725,16 @@ graph.add(new GPUNetworkInhomogeneousK({
         required: true,
         description: 'Query-major shortest-path distances, queries x events.'
       },
+      {
+        name: 'costsComplete',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'One-row distance matrix completeness flag. Required for status.complete.'
+      },
+      {
+        name: 'costLimit',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Supply the one-row routing limit in network units whenever it was used.'
+      },
       {name: 'eventCount', type: 'number', required: true, description: 'Number of events.'},
       {
         name: 'quadratureLengths',
@@ -3725,9 +3755,9 @@ graph.add(new GPUNetworkInhomogeneousK({
       },
       {
         name: 'output',
-        type: '{intensity, kernelMass}',
+        type: 'GPUNetworkKernelDensityOutput',
         required: true,
-        description: 'intensity, kernelMass, status.'
+        description: 'Intensity, kernel mass, per-query validity, and optional named diagnostics.'
       }
     ],
     outputs: [
@@ -3741,7 +3771,21 @@ graph.add(new GPUNetworkInhomogeneousK({
         type: "GraphDataView<'float32'>",
         description: 'Total kernel mass per event.'
       },
-      {name: 'status', type: "GraphDataView<'uint32'>", description: 'Status words.'}
+      {
+        name: 'validity',
+        type: "GraphDataView<'uint32'>",
+        description: '1 per usable query, 0 per invalid or suppressed query.'
+      },
+      {
+        name: 'status.invalidCount',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Optional one-row count of zero-validity queries.'
+      },
+      {
+        name: 'status.complete',
+        type: "GraphDataView<'uint32'> | undefined",
+        description: 'Optional one-row certificate for complete distances inside the bandwidth.'
+      }
     ],
     example: `import {GPUNetworkKernelDensity} from '@luma-contributors/analysis/gpu-network';
 
@@ -3750,7 +3794,7 @@ graph.add(new GPUNetworkKernelDensity({
   eventCount,
   quadratureLengths: lengths.importToGraph(graph),
   bandwidth: 400,
-  output: {intensity, kernelMass, status}
+  output: {intensity, kernelMass, validity}
 }));`,
     preview: {
       kind: 'density-surface',

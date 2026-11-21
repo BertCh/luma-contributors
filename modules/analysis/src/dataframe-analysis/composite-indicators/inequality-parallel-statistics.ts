@@ -18,7 +18,7 @@ import {INEQUALITY_HELPERS_WGSL, INEQUALITY_STATS_STRIDE} from './inequality-wgs
 import {createInequalityLorenzPrefixNodes} from './inequality-lorenz-prefix';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
-/** Six row terms: x log x, Lorenz area, Theil T, log ratios, Atkinson powers, absolute deviations. */
+/** Six indexed row terms; slot 1 is reserved for the separate bidirectional Gini gap reduction. */
 const INEQUALITY_TERM_COUNT = 6;
 const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
   name,
@@ -114,10 +114,23 @@ export function createInequalityParallelStatisticsNodes<Parameters>(
   stats[base] = getScaledQuotient(income, population, 1.0, 0);
   stats[base + 7u] = population; stats[base + 8u] = income;
   let hasZero = values[valuesOffset + sortedRows[sortedRowsOffset + begin]] == 0.0;
-  stats[base + 3u] = select(0.0, nan, hasZero);`
+  stats[base + 3u] = select(0.0, nan, hasZero);
+  if (income > 0.0) {
+    var low = begin; var high = end;
+    while (low < high) {
+      let middle = low + (high - low) / 2u;
+      if (values[valuesOffset + sortedRows[sortedRowsOffset + middle]] == 0.0) { low = middle + 1u; }
+      else { high = middle; }
+    }
+    // Atkinson's slot temporarily holds zero-income weight until term 4 publishes the index.
+    var zeroWeight = 0.0;
+    if (low > begin) { zeroWeight = prefixWeights[prefixWeightsOffset + low - 1u]; }
+    stats[base + 4u] = zeroWeight;
+  }`
     })
   );
   for (let term = 0; term < INEQUALITY_TERM_COUNT; term++) {
+    if (term === 1) continue;
     nodes.push(
       createGraphChunkGroupKernelNode(graph, {
         id: `${id}-terms-${term}`,
@@ -131,7 +144,6 @@ export function createInequalityParallelStatisticsNodes<Parameters>(
           read('values', values, 'f32'),
           ...(weights ? [read('weights', weights, 'f32')] : []),
           read('stats', stats, 'f32'),
-          read('prefixIncomes', prefix.incomes, 'f32'),
           read('params', parameters, 'f32'),
           write('terms', terms, 'f32')
         ],
@@ -150,14 +162,28 @@ export function createInequalityParallelStatisticsNodes<Parameters>(
     if (value > 0.0) { contribution = weight * value * log(value); }
   } else if (income > 0.0) {
     let ratio = getScaledQuotient(value, stats[base], 1.0, 0);
-    if (term == 1u) {
-      contribution = (getScaledQuotient(weight, population, 1.0, 0)) * (2.0 * (getScaledQuotient(prefixIncomes[prefixIncomesOffset + index], income, 1.0, 0)) - weight * getScaledQuotient(value, income, 1.0, 0));
-    } else if (term == 5u) { contribution = weight * abs(value - stats[base]);
+    if (term == 5u) { contribution = weight * abs(value - stats[base]);
     } else if (value > 0.0) {
       let logRatio = log(ratio);
       if (term == 2u) { contribution = weight * ratio * logRatio; }
-      if (term == 3u) { contribution = weight * logRatio; }
-      if (term == 4u) { contribution = weight * exp((1.0 - params[paramsOffset]) * logRatio); }
+      if (term == 3u) {
+        if (params[paramsOffset] == 1.0 && shouldNormalizeAtkinsonWeights(population)) {
+          let weightFraction = getScaledQuotient(weight, population, 1.0, 0);
+          contribution = weightFraction * getAtkinsonLogRatio(value, stats[base], ratio);
+        } else {
+          contribution = weight * logRatio;
+        }
+      }
+      if (term == 4u) {
+        let power = 1.0 - params[paramsOffset];
+        if (power != 0.0 && abs(power) <= 0.01 && (power > 0.0 || stats[base + 4u] == 0.0)) {
+          var atkinsonWeight = weight;
+          if (shouldNormalizeAtkinsonWeights(population)) {
+            atkinsonWeight = getScaledQuotient(weight, population, 1.0, 0);
+          }
+          contribution = atkinsonWeight * getAtkinsonCenteredTerm(getAtkinsonLogRatio(value, stats[base], ratio), power);
+        } else { contribution = weight * exp(power * logRatio); }
+      }
     }
   }
   terms[termsOffset + index] = contribution;`
@@ -194,12 +220,27 @@ export function createInequalityParallelStatisticsNodes<Parameters>(
   if (term == 0u) { stats[base + 9u] = total; return; }
   let population = stats[base + 7u]; let income = stats[base + 8u];
   if (!(income > 0.0)) { return; }
-  if (term == 1u) { stats[base + 1u] = 1.0 - total; }
   if (term == 2u) { stats[base + 2u] = getScaledQuotient(total, population, 1.0, 0); }
-  if (term == 3u) { if (isFiniteBits(stats[base + 3u])) { stats[base + 3u] = -getScaledQuotient(total, population, 1.0, 0); } }
+  if (term == 3u && isFiniteBits(stats[base + 3u])) {
+    var weightedLogMean = total;
+    if (!(params[paramsOffset] == 1.0 && shouldNormalizeAtkinsonWeights(population))) {
+      weightedLogMean = getScaledQuotient(total, population, 1.0, 0);
+    }
+    stats[base + 3u] = -weightedLogMean;
+  }
   if (term == 4u) {
     let power = 1.0 - params[paramsOffset]; var atkinson = getNaN();
-    if (power == 0.0) { atkinson = 1.0 - exp(-stats[base + 3u]); }
+    // Positive-weight zeros at a positive mean have the continuous boundary value 1.
+    if (power <= 0.0 && stats[base + 4u] > 0.0) { atkinson = 1.0; }
+    else if (power == 0.0) { atkinson = 1.0 - exp(-stats[base + 3u]); }
+    else if (abs(power) <= 0.01 && (power > 0.0 || stats[base + 4u] == 0.0)) {
+      var centeredMean = total;
+      if (!shouldNormalizeAtkinsonWeights(population)) {
+        centeredMean = getScaledQuotient(total, population, 1.0, 0);
+      }
+      atkinson = getAtkinsonFromCenteredMean(centeredMean, power,
+        getScaledQuotient(stats[base + 4u], population, 1.0, 0));
+    }
     else if (power > 0.0 || isFiniteBits(stats[base + 3u])) { atkinson = 1.0 - pow(getScaledQuotient(total, population, 1.0, 0), 1.0 / power); }
     stats[base + 4u] = select(getNaN(), atkinson, isFiniteBits(atkinson));
   }

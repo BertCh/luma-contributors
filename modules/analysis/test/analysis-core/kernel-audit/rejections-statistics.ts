@@ -9,6 +9,22 @@ const CORE_STORAGE_BINDING_BYTE_LIMIT = 134217728;
 
 /** Expected declaration refusals of the statistics cases. */
 export const STATISTICS_REJECTIONS: readonly KernelAuditRejection[] = [
+  ...[false, true].flatMap(includeGramTraces => [
+    {
+      exportName: 'GPUSpatialWeightsTraces',
+      name: `exact gram ${includeGramTraces} next batch above the command limit`,
+      kind: 'dispatch' as const,
+      limit: 32768,
+      rejects: /^Error: spatial-weights-traces estimated command node count must be at most 32768$/
+    },
+    {
+      exportName: 'GPUSpatialWeightsTraces',
+      name: `exact gram ${includeGramTraces} binding-limited rows exceed the command limit`,
+      kind: 'dispatch' as const,
+      limit: 32768,
+      rejects: /^Error: spatial-weights-traces estimated command node count must be at most 32768$/
+    }
+  ]),
   ...['none', 'bonferroni', 'holm', 'benjamini-hochberg', 'benjamini-yekutieli'].map(method => ({
     exportName: 'GPUMultipleTestingAdjustment',
     name: `${method} one row above the binding limit`,

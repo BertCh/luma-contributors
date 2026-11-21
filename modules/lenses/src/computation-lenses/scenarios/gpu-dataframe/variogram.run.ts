@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {runExample} from './variogram.example';
 import {
@@ -18,9 +19,9 @@ const LAG_COUNT = 12;
 const MAXIMUM_DISTANCE = 300_000;
 
 /** Runs the station variogram once and reads the inputs and every lag bin back from the GPU. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-ghcn-stations');
+  const dataset = await loadDataFrameLensData('f-ghcn-stations', options?.datasetResolver);
   const {x, y, prcp} = dataset.columns;
   const positions = new Float32Array(x.length * 2);
   x.forEach((value, index) => {
@@ -75,7 +76,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         {id: 'lag', label: 'Lag (25 km)', size: LAG_COUNT, indexSpace: '1d'}
       ],
       choices: [
-        createDataFrameChoice('group', 'azimuthOffset', 0),
+        createDataFrameChoice('group', 'sectorOffsetRadians', 0),
         createDataFrameChoice('select', 'gridSize', '64 x 64'),
         createDataFrameChoice('filter', 'studyWindow', 'rectangle'),
         createDataFrameChoice('filter', 'coordinateModel', 'projected', {

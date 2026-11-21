@@ -44,8 +44,15 @@ export function getGPULocalOutlierFactorParameterValues(
   if (settings.threshold !== undefined && Number.isNaN(settings.threshold)) {
     throw new Error('GPULocalOutlierFactor threshold must not be NaN');
   }
-  if (!Number.isFinite(densityFloor) || !(Math.fround(densityFloor) > 0)) {
-    throw new Error('GPULocalOutlierFactor densityFloor must be a positive finite number');
+  const packedDensityFloor = Math.fround(densityFloor);
+  if (
+    !Number.isFinite(packedDensityFloor) ||
+    !(packedDensityFloor > 0) ||
+    !Number.isFinite(Math.fround(1 / packedDensityFloor))
+  ) {
+    throw new Error(
+      'GPULocalOutlierFactor densityFloor must be positive and finite with a finite float32 reciprocal; increase densityFloor or rescale distances'
+    );
   }
   const values = new Float32Array(GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH);
   values[0] = threshold;

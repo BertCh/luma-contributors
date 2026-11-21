@@ -72,8 +72,8 @@ for (const sourceIds of [undefined, [1, 0], [100, 200]]) {
             output: {
               leftRows: outputs['leftRows'] as GraphDataView<'uint32'>,
               rightRows: outputs['rightRows'] as GraphDataView<'uint32'>,
-              rowCount: outputs['rowCount'] as GraphDataView<'uint32'>,
               status: {
+                count: outputs['rowCount'] as GraphDataView<'uint32'>,
                 overflow: outputs['overflow'] as GraphDataView<'uint32'>,
                 candidateOverflow: outputs['candidateOverflow'] as GraphDataView<'uint32'>
               }

@@ -14,6 +14,7 @@ export type {
   GPUComputationAxes,
   GPUComputationAxis,
   GPUComputationBinding,
+  GPUComputationDeclaredBinding,
   GPUComputationCapture,
   GPUComputationCaptureElementType,
   GPUComputationCaptureGeometry,
@@ -63,7 +64,8 @@ export type {
 } from './create-computation-record';
 export {
   validateGPUComputationRecord,
-  validateGPUComputationSidecars
+  validateGPUComputationSidecars,
+  resolveGPUComputationCaptureGraph
 } from './validate-computation-record';
 export type {
   GPUComputationValidationIssue,
@@ -107,3 +109,9 @@ export {createGPUKernelAnnotation, getGPUElementType} from './create-kernel-anno
 export type {GPUKernelAnnotationProps} from './create-kernel-annotation';
 export {GPUTransferMask} from './gpu-transfer-mask';
 export type {GPUTransferMaskProps, GPUTransferMaskRelation} from './gpu-transfer-mask';
+
+export {
+  serializeGPUComputationCaptures,
+  deserializeGPUComputationCaptures
+} from './computation-capture-codec';
+export {getGPUComputationRasterSamplePosition} from './capture-raster-validation';

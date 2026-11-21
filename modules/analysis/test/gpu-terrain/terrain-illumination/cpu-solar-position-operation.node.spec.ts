@@ -80,7 +80,7 @@ it('validates array shapes and both operation declarations at construction', () 
       /^solar-validation/
     );
   }
-  expect(() => new CPUSolarPositionOperation({...props, output: {}})).toThrow(
+  expect(() => Reflect.construct(CPUSolarPositionOperation, [{...props, output: {}}])).toThrow(
     /solar-validation.*output/
   );
   expect(() => computeSolarPositionOnCPU(new Float32Array(1), PARAMETERS)).toThrow(/positions/);

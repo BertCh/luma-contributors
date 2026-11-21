@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  snapshotRestrictedRegimeKernelStatus,
+  snapshotRestrictedRegimeKernelInformation
+} from './restricted-regime-kernel-snapshot';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -29,11 +33,28 @@ import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../analysis-core/kernels/incom
 import {getCholeskyWGSL, getPivotLimitedCholeskyWGSL} from './spatial-regression-solve';
 import {getRegimeMomentNodes, getRegimeMomentStride} from './regime-moments';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {validateGPUSpatialWeights} from '../spatial-weights/spatial-weights';
+import {
+  getRestrictedRegimeRobustNodes,
+  type RestrictedRegimeRobustOptions,
+  type RestrictedRegimeRobustOutput
+} from './restricted-regime-robust';
+export {
+  RESTRICTED_REGIME_ROBUST_OK,
+  RESTRICTED_REGIME_ROBUST_FIT_UNAVAILABLE,
+  RESTRICTED_REGIME_ROBUST_INVALID_KERNEL,
+  RESTRICTED_REGIME_ROBUST_INVALID_COVARIANCE
+} from './restricted-regime-robust';
 import {
   getRegressionTileLayout,
   getRowTileSumNodes,
   REGRESSION_TILE_MAXIMUM_ROW_COUNT
 } from './regression-row-tiles';
+
+/** Maximum total coefficients in either restricted or unrestricted dense solve. */
+export const MAXIMUM_RESTRICTED_REGIME_COEFFICIENT_COUNT = 16;
 
 export type GPURestrictedRegimeRegressionProps = {
   id?: string;
@@ -45,7 +66,11 @@ export type GPURestrictedRegimeRegressionProps = {
   /** Intercept first. True shares a coefficient across regimes, false estimates one per regime. */
   common: readonly boolean[];
   mask?: GraphDataView<'uint32'>;
+  /** Optional HC0 (smallSample: HC1) or spatial HAC covariance and chi-square stability inference. */
+  robust?: RestrictedRegimeRobustOptions;
   output: {
+    /** Required with robust; raw covariance, joint Wald chow, per-column/joint stability and status. */
+    robust?: RestrictedRegimeRobustOutput;
     /** Source-column-major: one slot if common, otherwise regimeCount slots. */
     coefficients: GraphDataView<'float32'>;
     /** Full covariance of the restricted model, pooled homoskedastic SSE/(n-parameterCount). */
@@ -66,7 +91,20 @@ export type GPURestrictedRegimeRegressionProps = {
 /**
  * Restricted OLS with any common/varying intercept and slopes, plus the joint nested-model Chow
  * F statistic against fully varying regimes on exactly the same complete observations. The test
- * assumes independent homoskedastic normal errors; no spatial correction or p-value is implied.
+ * assumes independent homoskedastic normal errors. Optional robust inference publishes separate
+ * HC0/HC1 or Kelejian-Prucha spatial-HAC covariance and Wald chi-square tails; it does not alter F.
+ * HAC requires square sorted-unique CSR on the original row space, symmetric finite nonnegative
+ * kernel weights with k_ii=1 (including masked rows), without row normalization. Shape and declared
+ * metadata are checked at construction; malformed values or incomplete producer status give robust
+ * status 2. Build a fixed-bandwidth kernel with self weights, or upload such a kernel. No masked
+ * neighbor renormalization is applied. Robust status 0 means usable; 1 means the restricted fit
+ * failed or has no residual degrees of freedom. The unrestricted comparison may fail independently.
+ * 2 means invalid/incomplete kernel; 3 means nonfinite covariance or a tested contrast covariance
+ * not positive definite (including numerical cancellation below the score accumulation error scale).
+ * Supplied kernel status ports are exactly one word; requiredCount above CSR capacity is incomplete.
+ * Nonzero status suppresses all robust float results;
+ * test degrees are zero. Shared-column tests and no-varying-column joint tests are [NaN,0,NaN].
+ * Compile-time: all props and view identities. Per-frame: input view contents.
  * Empty/singular regimes invalidate the unrestricted comparison explicitly. Total unrestricted
  * coefficients are bounded at 16. Design columns are norm-scaled, not implicitly ridge-regularized.
  *
@@ -95,7 +133,8 @@ export type GPURestrictedRegimeRegressionProps = {
  * shader compiler of the test GPU otherwise regroups `(y - mean) - fit` as `y - (mean + fit)`
  * and every residual comes out in float32 steps of the response (a Chow statistic was 12% off
  * for a response near 10,000 with residuals of 0.05). `fitted` is still evaluated from the raw
- * coefficients and carries the float32 rounding of the response magnitude. The residual sums of squares, the Chow numerator and the Wald stability tests are
+ * coefficients and carries float32 rounding of the raw terms, including cancellation between
+ * large predictor and intercept terms. The residual sums of squares, the Chow numerator and the Wald stability tests are
  * evaluated in the shifted basis: the Chow numerator is the direct sum of squared differences of
  * the two fits (equal to `SSE_restricted - SSE_unrestricted` for nested least squares), and each
  * Wald contrast is formed from differences of shifts before it meets the coefficients.
@@ -108,13 +147,50 @@ export type GPURestrictedRegimeRegressionProps = {
  * from a stable regime sort and one workgroup per regime (see `GPUSpatialRegimeRegression`), one
  * invocation solves the small dense systems of both nested models from them, and the residual
  * sums of squares are row-tile sums with a fixed-order tile merge. Rows are limited by float32
- * counts (`2^24`) and by the predictor binding of the device.
+ * counts (`2^24`), by the predictor binding of the device, and, with robust inference, by the
+ * whole score binding: response.length * (2 * restrictedCoefficientCount + 3) * 4 bytes
+ * must fit device.maxStorageBufferBindingSize, including masked original rows.
+ * restrictedCoefficientCount sums one for each common column and regimeCount for each
+ * varying column, including the intercept.
+ *
+ * Optional robust inference certifies every tested covariance pivot against accumulation and
+ * residual-formation uncertainty; exact fits and unresolved contrast ranks suppress inference.
+ * HAC validates the complete accessible CSR, compares requiredCount with retained slots and a
+ * supplied count, and honors a zero complete certificate. Classical insufficient-row status
+ * keeps precedence even when a separately attempted restricted fit fails.
  */
 export class GPURestrictedRegimeRegression implements GPUCommandNodeProducer {
   readonly id: string;
   readonly coefficientCount: number;
   readonly coefficientOffsets: readonly number[];
   constructor(readonly props: GPURestrictedRegimeRegressionProps) {
+    this.props = {
+      ...props,
+      common: [...props.common],
+      output: {...props.output, robust: props.output.robust ? {...props.output.robust} : undefined},
+      robust: props.robust ? {...props.robust} : undefined
+    };
+    if (this.props.robust?.type === 'hac') {
+      // Capture accessor values before validation; every later check and binding uses this copy.
+      const {offsets, neighbors, weights, distances, spatialContext, information, status} =
+        this.props.robust.kernelWeights;
+      this.props = {
+        ...this.props,
+        robust: {
+          ...this.props.robust,
+          kernelWeights: {
+            offsets,
+            neighbors,
+            weights,
+            distances,
+            spatialContext,
+            information: snapshotRestrictedRegimeKernelInformation(information),
+            status: status && snapshotRestrictedRegimeKernelStatus(status)
+          }
+        }
+      };
+    }
+    props = this.props;
     this.id = props.id ?? 'restricted-regime-regression';
     validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, 7);
     validateCapacity(this.id, 'regimeCount', props.regimeCount, 2, 8);
@@ -123,7 +199,7 @@ export class GPURestrictedRegimeRegression implements GPUCommandNodeProducer {
       'unrestricted coefficients',
       (props.predictorCount + 1) * props.regimeCount,
       1,
-      16
+      MAXIMUM_RESTRICTED_REGIME_COEFFICIENT_COUNT
     );
     validateCapacity(this.id, 'rows', props.response.length, 1, REGRESSION_TILE_MAXIMUM_ROW_COUNT);
     validateRequirement(
@@ -150,18 +226,106 @@ export class GPURestrictedRegimeRegression implements GPUCommandNodeProducer {
       ['output.fitted', props.output.fitted, 'float32', rows],
       ['output.chow', props.output.chow, 'float32', 3],
       ['output.stability', props.output.stability, 'float32', (props.predictorCount + 2) * 3],
-      ['output.status', props.output.status, 'uint32', 1]
+      ['output.status', props.output.status, 'uint32', 1],
+      ['output.robust.covariance', props.output.robust?.covariance, 'float32', count * count],
+      ['output.robust.chow', props.output.robust?.chow, 'float32', 3],
+      [
+        'output.robust.stability',
+        props.output.robust?.stability,
+        'float32',
+        (props.predictorCount + 2) * 3
+      ],
+      ['output.robust.status', props.output.robust?.status, 'uint32', 1]
     ] as const)
       if (view) {
         validateSinglePackedView(view, [format], this.id);
         validateViewLength(this.id, name, view, length);
       }
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
-      props.predictors,
-      props.response,
-      props.regimes,
-      props.mask
-    ]);
+    validateRequirement(
+      this.id,
+      Boolean(props.robust) === Boolean(props.output.robust),
+      'robust and output.robust must be supplied together'
+    );
+    if (props.robust) {
+      validateRequirement(
+        this.id,
+        props.robust.type === 'white' || props.robust.type === 'hac',
+        "robust.type must be 'white' or 'hac'"
+      );
+      if (props.robust.type === 'white')
+        validateRequirement(
+          this.id,
+          props.robust.smallSample === undefined || typeof props.robust.smallSample === 'boolean',
+          'robust.smallSample must be boolean'
+        );
+      else {
+        const kernel = props.robust.kernelWeights;
+        for (const [name, view] of Object.entries(kernel.status ?? {}))
+          if (view)
+            validateRequirement(
+              this.id,
+              view.length === 1,
+              `robust.kernelWeights.status.${name} must hold exactly one value`
+            );
+        validateRequirement(
+          this.id,
+          validateGPUSpatialWeights(this.id, kernel, 'robust.kernelWeights') === rows,
+          'robust.kernelWeights must be square on the response rows'
+        );
+        validateRequirement(
+          this.id,
+          kernel.information?.transform !== 'row' &&
+            kernel.information?.symmetric !== false &&
+            kernel.information?.hasSelfWeights !== false,
+          'robust.kernelWeights requires a symmetric unstandardized kernel with unit diagonal; use kernel weights with self weights'
+        );
+      }
+    }
+    const {robust: robustOutput, ...classicalOutputs} = props.output;
+    if (robustOutput) {
+      for (const name of ['covariance', 'chow', 'stability', 'status'] as const)
+        validateRequirement(
+          this.id,
+          Boolean(robustOutput[name]),
+          `output.robust.${name} is required with robust`
+        );
+    }
+    validateRegressionOutputDispatches(
+      this.id,
+      {
+        ...classicalOutputs,
+        robustCovariance: robustOutput?.covariance,
+        robustChow: robustOutput?.chow,
+        robustStability: robustOutput?.stability,
+        robustStatus: robustOutput?.status
+      },
+      [
+        ['coefficients', 'covariance', 'chow', 'status'],
+        {read: ['coefficients'], write: ['fitted']},
+        {read: ['status'], write: ['stability']},
+        ['robustCovariance', 'robustStatus'],
+        ['robustCovariance', 'robustStatus', 'robustStability', 'robustChow']
+      ]
+    );
+    const kernel = props.robust?.type === 'hac' ? props.robust.kernelWeights : undefined;
+    validateGraphOutputsDisjointFromInputs(
+      this.id,
+      [...Object.values(classicalOutputs), ...Object.values(robustOutput ?? {})],
+      [
+        props.predictors,
+        props.response,
+        props.regimes,
+        props.mask,
+        ...(kernel
+          ? [
+              kernel.offsets,
+              kernel.neighbors,
+              kernel.weights,
+              ...Object.values(kernel.status ?? {})
+            ]
+          : [])
+      ]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -170,6 +334,31 @@ export class GPURestrictedRegimeRegression implements GPUCommandNodeProducer {
     const columns = props.predictorCount;
     const unrestricted = (columns + 1) * props.regimeCount;
     const rows = props.response.length;
+    if (props.robust) {
+      const kernel = props.robust.type === 'hac' ? props.robust.kernelWeights : undefined;
+      const {robust: robustOutput, ...classicalOutputs} = props.output;
+      validateGraphChunkBindingRanges(graph, id, {
+        predictors: props.predictors,
+        response: props.response,
+        regimes: props.regimes,
+        mask: props.mask,
+        ...classicalOutputs,
+        robustCovariance: robustOutput?.covariance,
+        robustChow: robustOutput?.chow,
+        robustStability: robustOutput?.stability,
+        robustStatus: robustOutput?.status,
+        ...(kernel
+          ? {
+              kernelOffsets: kernel.offsets,
+              kernelNeighbors: kernel.neighbors,
+              kernelWeights: kernel.weights,
+              ...Object.fromEntries(
+                Object.entries(kernel.status ?? {}).map(([name, view]) => [`kernel_${name}`, view])
+              )
+            }
+          : {})
+      });
+    }
     // The predictor view is the largest binding: rows * predictorCount float32 values.
     validateCapacity(
       id,
@@ -178,7 +367,10 @@ export class GPURestrictedRegimeRegression implements GPUCommandNodeProducer {
       1,
       Math.min(
         REGRESSION_TILE_MAXIMUM_ROW_COUNT,
-        getStorageBindingElementLimit(graph.device, 4 * columns)
+        getStorageBindingElementLimit(graph.device, 4 * columns),
+        ...(props.robust
+          ? [getStorageBindingElementLimit(graph.device, 4 * (2 * restricted + 3))]
+          : [])
       )
     );
     const common = `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}
@@ -407,7 +599,18 @@ return true;
       props.response,
       props.regimes,
       props.mask,
-      ...Object.values(props.output)
+      ...(Object.values(props.output).filter(
+        view => view !== props.output.robust
+      ) as GraphDataView[]),
+      ...Object.values(props.output.robust ?? {}),
+      ...(props.robust?.type === 'hac'
+        ? [
+            props.robust.kernelWeights.offsets,
+            props.robust.kernelWeights.neighbors,
+            props.robust.kernelWeights.weights,
+            ...Object.values(props.robust.kernelWeights.status ?? {})
+          ]
+        : [])
     ]);
     const moments = getRegimeMomentNodes<Parameters>(graph, {
       id,
@@ -442,15 +645,16 @@ ${momentsWGSL}\n${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(restricted)}\n${getPi
 workspace[workspaceOffset + ${workspaceRuntimeZero}u] = 0.0;
 let count = segmentOffsets[segmentOffsetsOffset + ${regimeCount}u] - segmentOffsets[segmentOffsetsOffset];
 workspace[workspaceOffset + ${workspaceCount}u] = f32(count);
-workspace[workspaceOffset + ${workspaceStatus}u] = 1.0; if (count <= ${unrestricted}u) { return; }
+workspace[workspaceOffset + ${workspaceStatus}u] = 1.0; if (count <= ${props.robust ? restricted : unrestricted}u) { return; }
 var estimate: array<f32, ${restricted}>; var inverse: array<f32, ${restricted * restricted}>; var levels: array<f32, ${regimeCount * levelStride}>;
 var shiftedEstimate: array<f32, ${restricted}>; var shiftedInverse: array<f32, ${restricted * restricted}>; var transform: array<f32, ${restricted * restricted}>; var origin: array<f32, ${restricted}>; var forms: array<f32, ${formLength}>;
-workspace[workspaceOffset + ${workspaceStatus}u] = 2.0; if (!fit_restricted(&estimate, &levels, &inverse, &shiftedEstimate, &shiftedInverse, &transform, &origin, &forms)) { return; }
+workspace[workspaceOffset + ${workspaceStatus}u] = select(2.0, 1.0, count <= ${unrestricted}u); if (!fit_restricted(&estimate, &levels, &inverse, &shiftedEstimate, &shiftedInverse, &transform, &origin, &forms)) { return; }
 for (var slot = 0u; slot < ${formLength}u; slot++) { workspace[workspaceOffset + ${workspaceForms}u + slot] = forms[slot]; }
 for (var slot = 0u; slot < ${restricted}u; slot++) { workspace[workspaceOffset + ${workspaceRestricted}u + slot] = estimate[slot]; workspace[workspaceOffset + ${workspaceShiftedEstimate}u + slot] = shiftedEstimate[slot]; workspace[workspaceOffset + ${workspaceOrigin}u + slot] = origin[slot]; }
 for (var slot = 0u; slot < ${restricted * restricted}u; slot++) { workspace[workspaceOffset + ${workspaceInverse}u + slot] = inverse[slot]; workspace[workspaceOffset + ${workspaceShiftedInverse}u + slot] = shiftedInverse[slot]; workspace[workspaceOffset + ${workspaceTransform}u + slot] = transform[slot]; }
 for (var slot = 0u; slot < ${regimeCount * levelStride}u; slot++) { workspace[workspaceOffset + ${workspaceRestrictedLevels}u + slot] = levels[slot]; }
 var fullEstimate: array<f32, ${unrestricted}>; var fullLevels: array<f32, ${regimeCount * levelStride}>;
+${props.robust ? `if (count <= ${unrestricted}u) { workspace[workspaceOffset + ${workspaceStatus}u] = 1.0; return; }` : ''}
 workspace[workspaceOffset + ${workspaceStatus}u] = 3.0; if (!fit_unrestricted(&fullEstimate, &fullLevels)) { return; }
 for (var slot = 0u; slot < ${unrestricted}u; slot++) { workspace[workspaceOffset + ${workspaceUnrestricted}u + slot] = fullEstimate[slot]; }
 for (var slot = 0u; slot < ${regimeCount * levelStride}u; slot++) { workspace[workspaceOffset + ${workspaceUnrestrictedLevels}u + slot] = fullLevels[slot]; }
@@ -515,7 +719,7 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
         id: `${id}-finish`,
         operation: 'GPURestrictedRegimeRegression',
         variant: 'finish',
-        // contract-allow: single-invocation -- <=16 coefficients and <=256 covariance entries; no row scan.
+        // contract-allow: single-invocation -- MAXIMUM_RESTRICTED_REGIME_COEFFICIENT_COUNT = 16 bounds coefficients and its square bounds 256 covariance entries; no row scan.
         invocationCount: 1,
         bindings: [
           {name: 'workspace', view: workspace, type: 'f32', access: 'read'},
@@ -625,6 +829,35 @@ statistic = max(0.0, statistic); stability[stabilityOffset + index * 3u] = stati
         })
       );
     }
+    if (props.robust && props.output.robust)
+      nodes.push(
+        ...getRestrictedRegimeRobustNodes(graph, {
+          id,
+          rowCount: rows,
+          predictorCount: columns,
+          regimeCount,
+          coefficientCount: restricted,
+          common: props.common,
+          offsets: this.coefficientOffsets,
+          inputs,
+          declarations: common,
+          workspace,
+          layout: tileLayout,
+          robust: props.robust,
+          output: props.output.robust,
+          locations: {
+            count: workspaceCount,
+            status: workspaceStatus,
+            levels: workspaceRestrictedLevels,
+            estimate: workspaceShiftedEstimate,
+            inverse: workspaceShiftedInverse,
+            transform: workspaceTransform,
+            origin: workspaceOrigin,
+            forms: workspaceForms,
+            runtimeZero: workspaceRuntimeZero
+          }
+        })
+      );
     return nodes;
   }
 }

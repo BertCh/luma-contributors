@@ -67,6 +67,13 @@ it.each([
     expect(captures).toHaveProperty('polygonRequiredRingCount');
     expect(captures).not.toHaveProperty('polygonRequiredCount');
     expect(captures['polygonRequiredRingCount'].view.length).toBe(1);
+    // LENS-108: after candidate loss the assembled requirement is only a lower bound, so the
+    // label must not present it as the exact capacity to allocate.
+    const meaning = captures['polygonRequiredRingCount'].meaning ?? '';
+    expect(meaning).toContain('only a lower bound when it is 1');
+    expect(meaning).toContain('polygonCandidateOverflow');
+    expect(captures).toHaveProperty('polygonCandidateOverflow');
+    expect(meaning).not.toMatch(/^face rings needed \(ring capacity to allocate\)$/);
   } finally {
     spy.mockRestore();
     device.destroy();

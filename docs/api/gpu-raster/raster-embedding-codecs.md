@@ -29,6 +29,17 @@ normal magnitudes are `(1024 + fraction) * 2^(exponent - 25)` and subnormals are
 The decoder reads integer fields, preserving half-float subnormals without `shader-f16`.
 
 ```ts
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPURasterEmbeddingDequantize} from '@luma-contributors/analysis/raster-analysis';
+
+// Packed input has pixelCount * 128 / 4 words; output has pixelCount * 128 floats.
+declare const pixelCount: number;
+declare const packedSignedBytes: GraphDataView<'uint32'>;
+declare const mask: GraphDataView<'uint32'>;
+declare const validity: GraphDataView<'uint32'>;
+declare const pixelScales: GraphDataView<'float32'>;
+declare const vectors: GraphDataView<'float32'>;
+// pixelScales, mask and validity each have pixelCount rows, in distinct buffers.
 graph.add(new GPURasterEmbeddingDequantize({
   pixelCount,
   dimensions: 128,
@@ -66,6 +77,16 @@ Encodes float32 vectors to the AlphaEarth int8 format, including vectors produce
 Finite components outside [-1, 1] saturate. The encoder does not normalize vectors.
 
 ```ts
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPURasterEmbeddingQuantize} from '@luma-contributors/analysis/raster-analysis';
+
+declare const pixelCount: number;
+// Overview input has pixelCount * 64 float32 components, with a per-pixel mask.
+declare const overviewVectors: GraphDataView<'float32'>;
+declare const overviewValidity: GraphDataView<'uint32'>;
+declare const packedSignedBytes: GraphDataView<'uint32'>;
+declare const validity: GraphDataView<'uint32'>;
+// Packed output has pixelCount * 64 / 4 words; validity has pixelCount rows.
 graph.add(new GPURasterEmbeddingQuantize({
   pixelCount,
   dimensions: 64,

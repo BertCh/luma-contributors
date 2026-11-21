@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getComplementaryErrorFunction} from '../shared/complementary-error-function';
+import {getDensityClippedCapMass} from './density-compact-overlap';
+import {getNormalIntervalMass} from '../shared/complementary-error-function';
+import {resolveKernelShapeName} from '../shared/kernel-shape-name';
 
 /** Radially symmetric 2D kernel of {@link GPUKernelDensity}. */
 export type GPUKernelDensityKernel = 'gaussian' | 'quartic' | 'epanechnikov';
@@ -31,7 +33,14 @@ export type GPUKernelDensityWindow = readonly [number, number, number, number];
  * second moment. The compact kernels use the support radius as bandwidth, so Gaussian-scale values
  * undersmooth them: epanechnikov `192^(1/6)`, quartic (biweight) `(2304 / 5)^(1/6)`.
  */
-export function getGPUKernelDensityCanonicalBandwidthScale(kernel: GPUKernelDensityKernel): number {
+export function getGPUKernelDensityCanonicalBandwidthScale(
+  kernel: GPUKernelDensityKernelName
+): number {
+  kernel = resolveKernelShapeName('getGPUKernelDensityCanonicalBandwidthScale', kernel, [
+    'gaussian',
+    'quartic',
+    'epanechnikov'
+  ]);
   if (kernel === 'epanechnikov') {
     return 192 ** (1 / 6);
   }
@@ -46,9 +55,14 @@ export const GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION = 5;
  * compact `'quartic'` and `'epanechnikov'` kernels, `5 * bandwidth` for `'gaussian'`.
  */
 export function getGPUKernelDensitySupportRadius(
-  kernel: GPUKernelDensityKernel,
+  kernel: GPUKernelDensityKernelName,
   bandwidth: number
 ): number {
+  kernel = resolveKernelShapeName('getGPUKernelDensitySupportRadius', kernel, [
+    'gaussian',
+    'quartic',
+    'epanechnikov'
+  ]);
   return kernel === 'gaussian' ? GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION * bandwidth : bandwidth;
 }
 
@@ -63,10 +77,15 @@ export function getGPUKernelDensitySupportRadius(
  * Zero beyond {@link getGPUKernelDensitySupportRadius}.
  */
 export function evaluateGPUKernelDensityKernel(
-  kernel: GPUKernelDensityKernel,
+  kernel: GPUKernelDensityKernelName,
   bandwidth: number,
   distance: number
 ): number {
+  kernel = resolveKernelShapeName('evaluateGPUKernelDensityKernel', kernel, [
+    'gaussian',
+    'quartic',
+    'epanechnikov'
+  ]);
   const t = (distance * distance) / (bandwidth * bandwidth);
   if (distance >= getGPUKernelDensitySupportRadius(kernel, bandwidth)) {
     return 0;
@@ -80,18 +99,6 @@ export function evaluateGPUKernelDensityKernel(
   return kernel === 'epanechnikov'
     ? (2 * (1 - t)) / (Math.PI * bandwidth * bandwidth)
     : (3 * (1 - t) * (1 - t)) / (Math.PI * bandwidth * bandwidth);
-}
-
-/** Normal probability mass between `low` and `high`, accurate in either tail. */
-function getNormalMass(low: number, high: number): number {
-  const getUpperTail = (z: number) => 0.5 * getComplementaryErrorFunction(z * Math.SQRT1_2);
-  if (low > 0) {
-    return getUpperTail(low) - getUpperTail(high);
-  }
-  if (high < 0) {
-    return getUpperTail(-high) - getUpperTail(-low);
-  }
-  return 1 - getUpperTail(-low) - getUpperTail(high);
 }
 
 /** Integral of `(1 - t^2)^(n / 2)` over `[0, x]` for odd `n` in `{1, 3, 5}`, `0 <= x <= 1`. */
@@ -136,16 +143,34 @@ function getPolynomialQuadrantMass(power: 1 | 2, a: number, b: number): number {
   return ((power + 1) / Math.PI) * total;
 }
 
+/** Integral of a disk chord from x to 1, x >= .75, in remaining support width.
+ * The binomial series of (2t-t²)^(power+.5) converges geometrically (t/2 <= 1/8).
+ * Twelve terms give < 2e-14 relative truncation error; no nearly equal primitives are subtracted.
+ */
+function getPolynomialCapMass(power: 1 | 2, x: number): number {
+  const remaining = Math.max(0, 1 - x);
+  const exponent = power + 0.5;
+  let coefficient = 1;
+  let series = 1 / (exponent + 1);
+  for (let order = 1; order <= 12; order++) {
+    coefficient *= ((order - 1 - exponent) * remaining) / (2 * order);
+    series += coefficient / (exponent + order + 1);
+  }
+  const chordScale = power === 1 ? 8 / (3 * Math.PI) : 16 / (5 * Math.PI);
+  return chordScale * 2 ** exponent * remaining ** (exponent + 1) * series;
+}
+
 /**
  * Kernel mass inside a rectangular window, `e(u) = integral over the window of K_h(u - v) dv`,
  * the quantity that edge correction divides by. It is 1 when the whole kernel lies inside the
  * window, and decreases toward 0 as `point` moves outside.
  *
  * Gaussian: the product of normal-CDF differences (untruncated; the 5-bandwidth truncation of the
- * estimator loses less than 4e-6). Quartic and epanechnikov: exact. By symmetry the mass of the
+ * estimator loses less than 4e-6). Quartic and epanechnikov use closed-form quadrants. By symmetry the mass of the
  * window is an inclusion-exclusion over four signed quadrant rectangles, and each quadrant mass is
  * a closed-form integral of the polynomial kernel over disk-clipped rows (an asin term from the
- * chord integral `(1 - x^2)^(n / 2)`), with no numerical quadrature. The erfc fit limits the gaussian to
+ * chord integral `(1 - x^2)^(n / 2)`). Thin clipped caps instead integrate in remaining width,
+ * with sixteen-point Gaussian quadrature on smooth segments split at rectangle-edge transitions. The erfc fit limits the gaussian to
  * about 1e-7 relative error. This function is the float64 reference of the WGSL used on the GPU.
  *
  * @param kernel Kernel.
@@ -153,18 +178,48 @@ function getPolynomialQuadrantMass(power: 1 | 2, a: number, b: number): number {
  * @param point Query position `u`.
  * @param window Window `[minX, minY, maxX, maxY]`.
  */
-export function getGPUKernelDensityWindowMass(
-  kernel: GPUKernelDensityKernel,
+export function getGPUKernelDensityWindowOverlap(
+  kernel: GPUKernelDensityKernelName,
   bandwidth: number,
   point: readonly [number, number],
   window: GPUKernelDensityWindow
 ): number {
+  kernel = resolveKernelShapeName('getGPUKernelDensityWindowOverlap', kernel, [
+    'gaussian',
+    'quartic',
+    'epanechnikov'
+  ]);
   const x0 = (window[0] - point[0]) / bandwidth;
   const y0 = (window[1] - point[1]) / bandwidth;
   const x1 = (window[2] - point[0]) / bandwidth;
   const y1 = (window[3] - point[1]) / bandwidth;
   if (kernel === 'gaussian') {
-    return getNormalMass(x0, x1) * getNormalMass(y0, y1);
+    return getNormalIntervalMass(x0, x1) * getNormalIntervalMass(y0, y1);
+  }
+  // A thin cap is much smaller than a quadrant mass. Integrate in remaining width
+  // whenever the perpendicular extent covers its chord, including reflected caps.
+  for (const [low, high, acrossLow, acrossHigh] of [
+    [x0, x1, y0, y1],
+    [y0, y1, x0, x1]
+  ]) {
+    const capLow = low >= 0.75 ? low : high <= -0.75 ? -high : 0;
+    const capHigh = low >= 0.75 ? high : -low;
+    if (capLow >= 0.75) {
+      const chord = Math.sqrt(Math.max(0, (1 - capLow) * (1 + capLow)));
+      if (acrossLow <= -chord && acrossHigh >= chord) {
+        const power = kernel === 'epanechnikov' ? 1 : 2;
+        return (
+          getPolynomialCapMass(power, capLow) - getPolynomialCapMass(power, Math.min(1, capHigh))
+        );
+      }
+      return getDensityClippedCapMass(
+        kernel === 'epanechnikov' ? 1 : 2,
+        capLow,
+        capHigh,
+        acrossLow,
+        acrossHigh
+      );
+    }
   }
   const power = kernel === 'epanechnikov' ? 1 : 2;
   const getSignedMass = (a: number, b: number) =>

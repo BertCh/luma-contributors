@@ -62,7 +62,10 @@ for (const scene of ['illConditioned', 'singularRobust', 'insufficient'] as cons
               response: 'response',
               weights: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
               robust: robust
-                ? {method: 'HC0', output: {covariance: 'covariance', status: 'robustStatus'}}
+                ? {
+                    method: 'HC0',
+                    output: {covariance: 'covariance', status: {code: 'robustStatus'}}
+                  }
                 : undefined,
               output: {
                 status: {code: 'code'},
@@ -259,7 +262,7 @@ for (const scene of [
                             weights: 'kernelWeights'
                           }
                         : undefined,
-                    output: {covariance: 'covariance', status: 'robustStatus'}
+                    output: {covariance: 'covariance', status: {code: 'robustStatus'}}
                   }
                 : undefined,
               output: {

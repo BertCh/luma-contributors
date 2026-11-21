@@ -3,6 +3,18 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
+import {validateGeometryAuxiliaryOutput} from './geometry-output-destinations';
+
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+
+import {
+  captureGeometryPartitionProvenance,
+  getGeometryPartitionProvenanceNodes
+} from './partition-provenance';
+
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -111,6 +123,10 @@ export const GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW = 2;
  * `sizes` still holds the true hull size.
  */
 export type GPUGroupConvexHullOutput = {
+  /** Optional one-word partition completion; geometry remains available for provisional labels. */
+  labelsComplete?: GraphDataView<'uint32'>;
+  /** Per group: 1 if the global lattice moved a finite source coordinate, else 0. */
+  precisionLimited?: GraphDataView<'uint32'>;
   /** Original row index of each hull vertex; slots past the emitted total hold `0xffffffff`. */
   vertexIndices: GraphDataView<'uint32'>;
   /** Hull positions `[x, y]`, aligned with `vertexIndices` (NaN past the emitted total). */
@@ -139,6 +155,8 @@ export type GPUGroupConvexHullOutput = {
  * view lengths, `groupCount`, `noiseLabel`, `maximumVerticesPerGroup` and `vertexCapacity`.
  */
 export type GPUGroupConvexHullProps = {
+  /** Optional solver completion word; omission denotes ordinary categorical labels. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /** Prefix for generated node and transient IDs. Defaults to `'group-convex-hull'`. */
   id?: string;
   /**
@@ -245,6 +263,8 @@ export type GPUGroupConvexHullProps = {
 export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  /** Solver provenance independent of hull/medoid limits; absent means categorical labels. */
+  readonly partitionProvenance: Readonly<{labelsComplete?: GraphDataView<'uint32'>}>;
   /** Validated properties. */
   readonly props: GPUGroupConvexHullProps;
   /** Resolved spatial context (planar). */
@@ -257,8 +277,55 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   readonly extremePointFilter: boolean;
 
   constructor(props: GPUGroupConvexHullProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'labels',
+      'labelsComplete',
+      'groupCount',
+      'noiseLabel',
+      'maximumVerticesPerGroup',
+      'vertexCapacity',
+      'prefilterLevels',
+      'extremePointFilter',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(captured.output, [
+      'labelsComplete',
+      'precisionLimited',
+      'vertexIndices',
+      'vertexPositions',
+      'offsets',
+      'counts',
+      'sizes',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      ...(captured.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+        : {}),
+      output: Object.freeze({
+        ...capturedOutput,
+        ...(capturedOutput.status
+          ? {
+              status: snapshotConstructionFields(capturedOutput.status, [
+                'overflow',
+                'groupOverflow',
+                'vertexOverflow'
+              ])
+            }
+          : {})
+      })
+    });
     this.id = props.id ?? 'group-convex-hull';
     this.props = props;
+    this.partitionProvenance = captureGeometryPartitionProvenance(
+      this.id,
+      props.labelsComplete,
+      props.output.labelsComplete
+    );
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
@@ -299,11 +366,13 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     }
     const groups = this.groupCount;
     const checks = [
+      ['labelsComplete', output.labelsComplete, ['uint32'], 1],
       ['vertexIndices', output.vertexIndices, ['uint32'], props.vertexCapacity],
       ['vertexPositions', output.vertexPositions, ['float32x2'], props.vertexCapacity],
       ['offsets', output.offsets, ['uint32'], groups + 1],
       ['counts', output.counts, ['uint32'], groups],
       ['sizes', output.sizes, ['uint32'], groups],
+      ['precisionLimited', output.precisionLimited, ['uint32'], groups],
       ['status.overflow', output.status.overflow, ['uint32'], 1],
       ['status.groupOverflow', output.status.groupOverflow, ['uint32'], 1],
       ['status.vertexOverflow', output.status.vertexOverflow, ['uint32'], 1]
@@ -319,6 +388,17 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
         `output.${name} must hold at least ${length} rows`
       );
     }
+    for (const name of ['labelsComplete', 'precisionLimited'] as const)
+      validateGeometryAuxiliaryOutput(
+        id,
+        name,
+        output[name],
+        Object.fromEntries(
+          checks
+            .filter(([otherName]) => otherName !== name)
+            .map(([otherName, view]) => [otherName, view])
+        )
+      );
     for (const [name, scalar] of Object.entries(output.status)) {
       if (!scalar) continue;
       for (const [otherName, other] of checks) {
@@ -337,7 +417,7 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       checks.map(([, view]) => view),
-      [props.positions, props.labels]
+      [props.positions, props.labels, props.labelsComplete]
     );
   }
 
@@ -397,7 +477,12 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
         declarations: `const GROUP_COUNT: u32 = ${groupCount}u;\n${declarations}`,
         body
       });
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = getGeometryPartitionProvenanceNodes(
+      graph,
+      id,
+      props.labelsComplete,
+      output.labelsComplete
+    );
 
     // 1. Group keys, valid flags, planar coordinates and per-group counts.
     const groupKeys = u32('group-keys', rows);
@@ -502,6 +587,42 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
   latticeY[latticeYOffset + index] = select(0u, u32(nearest.y), isValid);`
       )
     );
+
+    if (output.precisionLimited) {
+      nodes.push(
+        createFillNode(graph, {
+          id: `${id}-clear-precision`,
+          operation: OPERATION,
+          view: output.precisionLimited,
+          type: 'u32',
+          value: '0u'
+        }),
+        kernel(
+          'source-precision',
+          rows,
+          [
+            read('xs', xs, 'f32'),
+            read('ys', ys, 'f32'),
+            read('validFlags', validFlags, 'u32'),
+            read('groupKeys', groupKeys, 'u32'),
+            read('lattice', lattice, 'f32'),
+            write('precisionLimited', output.precisionLimited, 'atomic<u32>')
+          ],
+          `if (validFlags[validFlagsOffset + index] != 0u) {
+  let source = vec2f(xs[xsOffset + index], ys[ysOffset + index]);
+  let origin = vec2f(lattice[latticeOffset], lattice[latticeOffset + 1u]);
+  let scale = lattice[latticeOffset + 2u];
+  let scaled = (source - origin) * scale;
+  let lower = floor(scaled);
+  let nearest = lower + step(vec2f(0.5), scaled - lower);
+  let restored = nearest / scale + origin;
+  if (any(restored != source)) {
+    atomicOr(&precisionLimited[precisionLimitedOffset + groupKeys[groupKeysOffset + index]], 1u);
+  }
+}`
+        )
+      );
+    }
 
     // 2b. Akl-Toussaint filter: rows strictly inside their group's extreme octagon get the
     // excluded-row key, so they sort last and no later stage walks them.

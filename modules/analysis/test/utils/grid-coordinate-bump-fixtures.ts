@@ -70,6 +70,8 @@ export const GRID_COORDINATE_CASES = [
     oldBinningCell: 359
   },
   {
+    // The uploaded bounds are symmetric. Their f32 width overflows, but the exact fraction is 1/2.
+    // Interior edges belong to the cell on their right, so floor((1/2) * 360) is 180.
     name: 'overflowing domain width',
     value: 0,
     minimum: -3e38,
@@ -92,7 +94,51 @@ export const GRID_COORDINATE_CASES = [
 ] as const;
 export type GridCoordinateCase = (typeof GRID_COORDINATE_CASES)[number];
 
-/** Test-only CPU model of uploaded f32 grid arithmetic, rounding each WGSL operation. */
+const WIDE_GRID_EDGE_UNIT = 2 ** 122;
+const WIDE_GRID_EDGE = 10 * WIDE_GRID_EDGE_UNIT;
+const WIDE_GRID_EDGE_ULP = 2 ** 102;
+
+export const WIDE_GRID_COORDINATE_CASES = [
+  {
+    name: 'asymmetric overflowing domain width',
+    value: 0,
+    minimum: -3e38,
+    maximum: 2e38,
+    size: 361,
+    // Independent floor(361 * 3 / 5) = 216, away from a grid edge.
+    cell: 216
+  },
+  // Exact rational coordinates from the uploaded float32 values are 13 - 1/5242880,
+  // 13, and 13 + 1/5242880. The edge belongs to the cell on its right.
+  ...[
+    {
+      name: 'wide grid one float32 below an edge',
+      value: WIDE_GRID_EDGE - WIDE_GRID_EDGE_ULP,
+      cell: 12
+    },
+    {name: 'wide grid exact interior edge', value: WIDE_GRID_EDGE, cell: 13},
+    {
+      name: 'wide grid one float32 above an edge',
+      value: WIDE_GRID_EDGE + WIDE_GRID_EDGE_ULP,
+      cell: 13
+    }
+  ].map(testCase => ({
+    ...testCase,
+    minimum: -55 * WIDE_GRID_EDGE_UNIT,
+    maximum: 55 * WIDE_GRID_EDGE_UNIT,
+    size: 22
+  }))
+] as const;
+
+/** An uploaded float32 expressed exactly in units of the smallest positive subnormal. */
+function getFloat32GridUnits(bits: number): bigint {
+  const exponent = (bits >>> 23) & 0xff;
+  const significand = (bits & 0x7fffff) | (exponent === 0 ? 0 : 0x800000);
+  const magnitude = BigInt(significand) << BigInt(Math.max(exponent, 1) - 1);
+  return bits >>> 31 ? -magnitude : magnitude;
+}
+
+/** Test-only CPU model of density and flow grid arithmetic on uploaded f32 inputs. */
 export function getFloat32GridCoordinate(
   value: number,
   minimum: number,
@@ -104,17 +150,18 @@ export function getFloat32GridCoordinate(
   maximum = Math.fround(maximum);
   if (maximum === minimum || value <= minimum) return 0;
   if (value >= maximum) return size - 1;
-  if (minimum < 0 && maximum > Math.fround(Math.fround(3.402823466e38) + minimum)) {
-    const scale = Math.max(Math.abs(minimum), Math.abs(maximum));
-    value = Math.fround(value / scale);
-    minimum = Math.fround(minimum / scale);
-    maximum = Math.fround(maximum / scale);
+  const boundMagnitude = Math.max(Math.abs(minimum), Math.abs(maximum));
+  if (boundMagnitude >= 2 ** 125 && Number.isFinite(boundMagnitude)) {
+    const bits = new Uint32Array(Float32Array.of(value, minimum, maximum).buffer);
+    const offset = getFloat32GridUnits(bits[0]) - getFloat32GridUnits(bits[1]);
+    const width = getFloat32GridUnits(bits[2]) - getFloat32GridUnits(bits[1]);
+    return Number((offset * BigInt(size)) / width);
   }
   const fraction = Math.fround(Math.fround(value - minimum) / Math.fround(maximum - minimum));
   return Math.min(Math.trunc(Math.fround(fraction * Math.fround(size))), size - 1);
 }
 
-/** Extract the actual reader's coordinate function, including nested overflow guards. */
+/** Extract the public coordinate helper from a reader shader, including its overflow guard. */
 export function getGridCoordinateFunction(source: string): string {
   const start = source.indexOf('fn getCoordinate(');
   if (start < 0) throw new Error('Reader shader has no getCoordinate');
@@ -294,7 +341,7 @@ export function createGridCoordinateFixture(
 
 export const GRID_PROBE_COMPLETED = 0x51a7e001;
 
-/** Match the actual readers: uploaded positions, literal bounds, and flow's active dimensions. */
+/** Probe the public helper with uploaded positions, literal bounds and flow's active dimensions. */
 export function createGridCoordinateReaderProbe(
   fixture: ReturnType<typeof createGridCoordinateFixture>,
   testCase: GridCoordinateCase,

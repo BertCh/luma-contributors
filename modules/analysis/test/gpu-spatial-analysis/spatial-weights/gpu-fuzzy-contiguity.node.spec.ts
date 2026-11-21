@@ -315,6 +315,39 @@ it.each([1, 4])('rejects vector geometry with %i chunks at construction', chunkC
   }
 });
 
+describe('multipart fuzzy contiguity against Shapely', () => {
+  useCPUExecutorTestHooks();
+  it('reduces distance over all polygon parts and preserves an empty feature row', () => {
+    // multipart-polygon-contiguity.oracle.py: feature 0 has two disjoint unit squares;
+    // its first part touches row 1, its second part lies exactly 0.25 from row 2.
+    const {device, graph, contributor} = setup(4, 4, 16);
+    const memory = createFuzzyCPUMemory();
+    const {polygons, output} = contributor.props;
+    memory.write(
+      polygons.positions,
+      Float32Array.from([0, 4, 1, 5.25].flatMap(x => [x, 0, x + 1, 0, x + 1, 1, x, 1]))
+    );
+    memory.write(polygons.featureOffsets, Uint32Array.of(0, 2, 3, 4, 4));
+    memory.write(output.status.overflow, Uint32Array.of(99));
+    memory.write(output.status.requiredCount!, Uint32Array.of(99));
+    memory.write(polygons.polygonOffsets, Uint32Array.of(0, 1, 2, 3, 4));
+    memory.write(polygons.ringOffsets, Uint32Array.of(0, 4, 8, 12, 16));
+    try {
+      executeCommandNodesOnCPU(contributor.getCommandNodes(graph), memory);
+      expect(Array.from(memory.readUint32(output.featureStatus))).toEqual([0, 0, 0, 1]);
+      expect(Array.from(memory.readUint32(output.offsets))).toEqual([0, 2, 3, 4, 4]);
+      expect(Array.from(memory.readUint32(output.neighbors))).toEqual([1, 2, 0, 0]);
+      expect(Array.from(memory.readFloat32(output.weights))).toEqual([1, 1, 1, 1]);
+      expect(Array.from(memory.readFloat32(output.distances!))).toEqual([0, 0.25, 0, 0.25]);
+      expect(Array.from(memory.readUint32(output.added))).toEqual([0, 1, 0, 1]);
+      expect(Array.from(memory.readUint32(output.status.requiredCount!))).toEqual([4]);
+      expect(Array.from(memory.readUint32(output.status.overflow))).toEqual([0]);
+    } finally {
+      device.destroy();
+    }
+  });
+});
+
 describe('fuzzy pair sorting executes the shared gathers around stable sort passes', () => {
   useCPUExecutorTestHooks();
 

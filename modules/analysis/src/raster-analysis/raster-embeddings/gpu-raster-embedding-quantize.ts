@@ -107,10 +107,6 @@ export class GPURasterEmbeddingQuantize<
     if (output.validity) {
       validateViewLength(id, 'output.validity', output.validity, pixelCount);
     }
-    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs(), [
-      {inputs: this.getInputs(), outputs: output.validity ? [output.validity] : []},
-      {inputs: [vectors], outputs: this.getOutputs()}
-    ]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,
@@ -128,6 +124,10 @@ export class GPURasterEmbeddingQuantize<
       'vectors',
       2
     );
+    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs(), [
+      {inputs: this.getInputs(), outputs: output.validity ? [output.validity] : []},
+      {inputs: [vectors], outputs: this.getOutputs()}
+    ]);
     this.estimatedCommandNodeCount =
       1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * 2;
   }

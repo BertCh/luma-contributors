@@ -34,6 +34,10 @@ export type RankMarkovOperationProps = {
  */
 export class GPURankMarkovOperation extends GPUContributorOperation {
   constructor(props: RankMarkovOperationProps) {
+    props = {
+      ...props,
+      output: {...props.output, status: props.output.status ? {...props.output.status} : undefined}
+    };
     const output = props.output;
     const ports = {
       ranks: {

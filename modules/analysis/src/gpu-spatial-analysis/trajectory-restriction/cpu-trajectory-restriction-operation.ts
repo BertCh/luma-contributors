@@ -22,19 +22,23 @@ import {joinTimeWords} from '../../dataframe-analysis/time-window-filter/time-wo
 import {GPU_TRAJECTORY_RESTRICTION_STATUS as FLAGS} from './gpu-trajectory-restriction';
 import {
   GPUTrajectoryRestrictionOperation,
+  validateRestrictionInputNames,
   type TrajectoryRestrictionOperationProps
 } from './gpu-trajectory-restriction-operation';
 
 /** Packed input rows. Int64 times and origin are little-endian signed low/high words. */
 export type CPUTrajectoryRestrictionInput = {
   positions: Float32Array;
-  times: Float32Array | Uint32Array;
-  offsets: Uint32Array;
+  timestamps: Float32Array | Uint32Array;
+  trackOffsets: Uint32Array;
   timeOrigin?: Uint32Array;
   /** The contributor's seven scalar parameters followed by polygon coordinates. No packer exists. */
   parameters: Float32Array;
   pairs?: {first: Uint32Array; second: Uint32Array; count?: Uint32Array};
 };
+
+/** Packed positions, timestamps and track offsets for the CPU restriction form. */
+export type CPUTrajectoryRestrictionGraphInput = CPUTrajectoryRestrictionInput;
 
 /** Output capacities and compile-time predicate choices. GPU scratch and shader caps are absent. */
 export type CPUTrajectoryRestrictionOptions = Pick<
@@ -164,7 +168,7 @@ function validateOptions(
  * - Unowned observation rows are initialized to NaN intervals/positions and zero status; the
  *   GPU leaves those rows unwritten. Empty inputs and zero compact capacity are supported.
  *   Offsets are clamped independently; reversed track ranges are empty, as on the GPU.
- *   Overlapping nonempty geometry ranges throw an Error naming offsets, because their GPU
+ *   Overlapping nonempty geometry ranges throw an Error naming trackOffsets, because their GPU
  *   invocations race on shared output slots. Pairwise ranges may overlap.
  * - Nonfinite fixes/parameters follow the GPU invalid/gap branches. Finite values whose
  *   intermediate arithmetic overflows float32 can remain valid on the CPU.
@@ -176,31 +180,22 @@ export function computeTrajectoryRestrictionOnCPU(
   options: CPUTrajectoryRestrictionOptions = {}
 ): CPUTrajectoryRestrictionResult {
   const id = 'trajectory-restriction';
-  const {positions, times, parameters, pairs} = input;
+  validateRestrictionInputNames(id, input);
+  const {positions, parameters, pairs, timestamps, trackOffsets} = input;
   const pairwise = pairs !== undefined || options.pairwiseTracks !== undefined;
   validateOptions(id, options, pairwise);
   if (pairs && options.pairwiseTracks)
     throw new Error('pairs and pairwiseTracks must not both be given');
-  if (input.offsets.length < 1) throw new Error('offsets must contain a terminal offset');
+  if (trackOffsets.length < 1) throw new Error('trackOffsets must contain a terminal offset');
   // Reuse the packed-array checks and exact timestamp subtraction, without imposing the shared
   // helper's monotonic partition policy: restriction clamps each track endpoint independently.
-  const trajectory = (() => {
-    try {
-      return getCPUTrajectoryRows({
-        positions,
-        timestamps: times,
-        trackOffsets: Uint32Array.of(0, positions.length / 2)
-      });
-    } catch (error) {
-      throw new Error(
-        (error as Error).message
-          .replaceAll('timestamps', 'times')
-          .replaceAll('trackOffsets', 'offsets')
-      );
-    }
-  })();
+  const trajectory = getCPUTrajectoryRows({
+    positions,
+    timestamps,
+    trackOffsets: Uint32Array.of(0, positions.length / 2)
+  });
   const rowCount = trajectory.rowCount;
-  const offsets = input.offsets.map(offset => Math.min(offset, rowCount));
+  const offsets = trackOffsets.map(offset => Math.min(offset, rowCount));
   const trackCount = offsets.length - 1;
   if (!pairwise) {
     const ranges = Array.from({length: trackCount}, (_, track) => [
@@ -211,17 +206,21 @@ export function computeTrajectoryRestrictionOnCPU(
       .sort(([firstStart], [secondStart]) => firstStart - secondStart);
     for (let range = 1; range < ranges.length; range++) {
       if (ranges[range][0] < ranges[range - 1][1])
-        throw new Error('offsets must not assign an observation to overlapping geometry tracks');
+        throw new Error(
+          'trackOffsets must not assign an observation to overlapping geometry tracks'
+        );
     }
   }
-  const wordTimes = times instanceof Uint32Array;
+  const wordTimes = timestamps instanceof Uint32Array;
   if (wordTimes !== (input.timeOrigin !== undefined))
     throw new Error('timeOrigin is required only for word times');
   if (input.timeOrigin && input.timeOrigin.length < 2)
     throw new Error('timeOrigin must contain at least two words');
   const origin = input.timeOrigin ? joinTimeWords(input.timeOrigin[0], input.timeOrigin[1]) : 0n;
   const getTime = (row: number): number =>
-    wordTimes ? Number(joinTimeWords(times[row * 2], times[row * 2 + 1]) - origin) : times[row];
+    wordTimes
+      ? Number(joinTimeWords(timestamps[row * 2], timestamps[row * 2 + 1]) - origin)
+      : timestamps[row];
   const getPosition = (row: number): Point => [positions[row * 2], positions[row * 2 + 1]];
   const rings = options.polygonRingVertexCounts ?? [];
   const vertexCount = rings.reduce((total, count) => total + count, 0);
@@ -823,13 +822,6 @@ export class CPUTrajectoryRestrictionOperation extends GPUCPUOperation {
           pair.every(track => Number.isInteger(track) && track >= 0 && track < props.trackCount),
         'pairwiseTracks must contain pairs of track indices below trackCount'
       );
-    validateRequirement(
-      id,
-      Boolean(props.times && props.offsets) !== Boolean(props.timestamps && props.trackOffsets) &&
-        !(props.times && props.timestamps) &&
-        !(props.offsets && props.trackOffsets),
-      'takes either times and offsets or timestamps and trackOffsets'
-    );
     const compactPorts = [
       props.output.compactIntervals,
       props.output.compactPositions,
@@ -865,7 +857,7 @@ export class CPUTrajectoryRestrictionOperation extends GPUCPUOperation {
         if (positions.length !== props.rowCount * 2)
           throw new Error(`${id} positions must match rowCount`);
         if (offsets.length !== props.trackCount + 1)
-          throw new Error(`${id} offsets must match trackCount`);
+          throw new Error(`${id} trackOffsets must match trackCount`);
         const pairs = props.pairs
           ? {
               first: getCPUOperationUint32Rows(id, inputs, 'pairFirst'),
@@ -881,9 +873,9 @@ export class CPUTrajectoryRestrictionOperation extends GPUCPUOperation {
         const result = computeTrajectoryRestrictionOnCPU(
           {
             positions,
-            offsets,
+            trackOffsets: offsets,
             pairs,
-            times:
+            timestamps:
               props.timestampFormat === 'uint32x2'
                 ? getCPUOperationUint32Rows(id, inputs, 'times', 'uint32x2')
                 : getCPUOperationFloat32Rows(id, inputs, 'times'),

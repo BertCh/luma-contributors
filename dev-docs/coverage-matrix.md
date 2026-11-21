@@ -27,7 +27,7 @@ The **LIB entry point** column names the directory under `modules/analysis/src` 
 | `pointcloud-analysis` | `@luma-contributors/analysis/pointcloud-analysis` |
 | `geospatial-analysis` | `@luma-contributors/analysis/geospatial-analysis` |
 
-Rows marked "Published" use `@luma.gl/graph@10.0.0-alpha.10` and have no code here. Every other symbol in this table was found by grep in `modules/analysis/src` and is reachable through its directory barrel (`index.ts`) on 2026-11-07. The `B-` rows are baselines that existed before the expansion; the other IDs come from the backlog.
+Rows marked "Published" name `@luma.gl/graph` symbols and have no code here; they were recorded against `10.0.0-alpha.10`, and the published exports were not walked again for the integration target `10.0.0-alpha.16` (see [release-package.md](./release-package.md)). Every other symbol in this table was found by grep in `modules/analysis/src` and is reachable through its directory barrel (`index.ts`) on 2026-11-07. The `B-` rows are baselines that existed before the expansion; the other IDs come from the backlog.
 
 Reference library links are in the archived matrix.
 
@@ -162,7 +162,7 @@ Reference library links are in the archived matrix.
 
 | ID | Status | Reference | Supported subset or target | LIB entry point |
 | --- | --- | --- | --- | --- |
-| B-PP01 | Implemented | scikit-learn HDBSCAN | HDBSCAN already exists as a distinct clustering operation; no implication of OPTICS reachability output. | `gpu-spatial-analysis`: `GPUHierarchicalDensityClustering` |
+| B-PP01 | Implemented | scikit-learn HDBSCAN | HDBSCAN already exists as a distinct clustering operation; no implication of OPTICS reachability output. | `gpu-spatial-analysis`: `GPUHDBSCAN` |
 | B-PP02 | Implemented | Random points within polygons | Existing bounded random point generation; no GRTS inclusion-probability design. | `gpu-spatial-analysis`: `GPURandomPointsInPolygon` |
 | PP01 | Implemented | spatstat Kinhom/pcf/density.ppp | Supplied/self-included/leave-one-out Epanechnikov intensity; polygon border or translation K; kernel-smoothed pcf with radius/distance divisor and none/reflection origin correction. Direct pinned spatstat and exact clipped-overlap references cover concave, holed and disconnected windows; 4096-event resident execution is verified. | `gpu-spatial-analysis`: `GPUInhomogeneousPointPattern` |
 | PP02 | Implemented | spatstat envelope/dclf.test | Resident supplied curves, pointwise envelopes, maximum-deviation/DCLF tests, and two-sided extreme-rank simultaneous envelopes with conservative tie intervals. Direct spatstat DCLF and independent SciPy rank fixtures. | `gpu-spatial-analysis`: `GPUPointPatternEnvelope` |
@@ -251,7 +251,7 @@ Reference library links are in the archived matrix.
 | --- | --- |
 | PC02 | Voxel downsample and radius filter come from published `@luma.gl/graph/gpu-pointcloud`; the statistical-outlier mask and voxel merge are local. |
 | KG06 | The SQL engine is published `@luma.gl/graph/gpu-sql`. SQL gaps are upstream work. |
-| IN01 | Resident variogram fitting is slower than CPU on small inputs; kept for pipeline residency. |
+| IN01 | Historical native Apple Metal/WebGPU measurements: the [October 23, 2026 expanded run](../docs/api/gpu-spatial-analysis/interpolation-expansion.md#direct-reference-parity-and-expanded-scaling) measured the serial three-model fit at 4.3 / 51.3 ms for 20 / 256 bins, versus 1.3 / 3.2 ms for the CPU round trip including bin readback and parameter reupload. The [October 24 cooperative refinement record](./research/gpu-geospatial-performance-2026-10-23/integration-notes.md#variogram-refinement-integration-2026-10-24md-variogram-model-fit) separately records a 256-bin, three-model, pair-weighted fit at 0.7 ms warm GPU execution; changed-input GPU execution was 0.7 ms versus a 2.3–2.5 ms CPU round trip including transfers. GPU execution excludes output readback. Small cooperative fits had no consistent winner; these dated results establish no universal crossover or new performance claim. Kept for pipeline residency. |
 | NW-SCC | The exact route is limited to 1,024 vertices and 65,536 CSR slots. `mode: 'auto'` selects parallel SCC above either bound; `mode: 'parallel'` selects it at any size. The parallel route is iteration-budgeted; inspect `strongComponentsStatus` for exhaustion (labels become `0xffffffff`). Device binding and auxiliary scratch limits also apply (`gpu-network/network-structure/gpu-network-structure.ts`). |
 
 ## Updating an entry

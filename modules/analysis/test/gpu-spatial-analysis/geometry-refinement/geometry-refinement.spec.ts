@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -19,8 +19,71 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import fixtures from '../../oracles/fixtures/geometry-refinement.json';
+import {createEqualityMetricFixture, type EqualityView} from './canonical-equality-fixture';
+import {createOracleFixture} from '../global-coordinates/output-oracle-fixture';
+
+for (const kind of ['tree', 'polygon'] as const) {
+  it.each([
+    {name: 'interior', delta: [3, 4] as const, tolerance: 6, expected: 1},
+    {name: 'inclusive boundary', delta: [3683, 7644] as const, tolerance: 8485, expected: 1},
+    {name: 'exterior', delta: [3, 4] as const, tolerance: 4, expected: 0}
+  ])(`GPU ${kind} Euclidean equality range cases: $name`, async scene => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createOracleFixture(device);
+    const output = fixture.output('uint32', 1);
+    const view: EqualityView = (format, values) =>
+      format === 'uint32' && values.length === 1 && values[0] === 99
+        ? (output.view as GraphDataView<typeof format>)
+        : fixture.input(format, values);
+    const equality = createEqualityMetricFixture(
+      kind,
+      'euclidean',
+      view,
+      scene.delta,
+      scene.tolerance
+    );
+    fixture.graph.add(equality.contributor);
+    const compiled = fixture.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      expect(await output.read()).toEqual([scene.expected]);
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  });
+}
+
+for (const kind of ['tree', 'polygon'] as const) {
+  it.each([
+    undefined,
+    'per-coordinate',
+    'euclidean'
+  ] as const)(`GPU ${kind} equality names its tolerance metric: %s`, async metric => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createOracleFixture(device);
+    const output = fixture.output('uint32', 1);
+    const view: EqualityView = (format, values) =>
+      format === 'uint32' && values.length === 1 && values[0] === 99
+        ? (output.view as GraphDataView<typeof format>)
+        : fixture.input(format, values);
+    const equality = createEqualityMetricFixture(kind, metric, view);
+    fixture.graph.add(equality.contributor);
+    const compiled = fixture.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      // Each displacement is (.75,.75): coordinate maximum .75, Euclidean sqrt(1.125).
+      expect(await output.read()).toEqual([metric === 'euclidean' ? 0 : 1]);
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  });
+}
 
 it('GPU geometry canonicalization and bounded circles agree with direct Shapely 2.1.2 fixtures', async () => {
   const device = await getWebGPUTestDevice();

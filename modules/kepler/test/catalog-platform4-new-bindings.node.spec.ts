@@ -65,7 +65,7 @@ test('PLATFORM4 new bindings are registered, complete and runnable in the catalo
     expect(binding.declaredBehavior.length).toBeGreaterThan(0);
     expect(binding.limitation).not.toBe('');
     for (const contributorName of binding.gpuContributorNames) {
-      const entry = entries.find(candidate => candidate.contributorName === contributorName);
+      const entry = entries.find(candidate => candidate.identity.exportName === contributorName);
       // The raster contributors are not ontology operators, so the catalog listing has no row for them.
       // The chunked weights classes (PLATFORM5) execute the ontology contributors and have no row of their own.
       if (!entry && contributorName.startsWith('GPUChunked')) continue;
@@ -233,7 +233,7 @@ test('weights bindings build, combine, transpose and standardize CSR weights', (
   const union = edges('weights-algebra', {operation: 'union'});
   const intersection = edges('weights-algebra', {operation: 'intersection'});
   const difference = edges('weights-algebra', {operation: 'difference'});
-  const symmetric = edges('weights-algebra', {operation: 'symmetricDifference'});
+  const symmetric = edges('weights-algebra', {operation: 'symmetric-difference'});
   // |A u B| = |A| + |B| - |A n B| and A xor B = (A u B) minus (A n B).
   expect(union.rowCount - intersection.rowCount).toBe(symmetric.rowCount);
   expect(difference.rowCount).toBeLessThanOrEqual(36 * 3);
@@ -408,4 +408,90 @@ test('raster-join-points-in-polygons CPU engine is the exact even-odd join with 
   expect(result.tables[0].columns['sum']).toEqual([1, 5]);
   expect(result.summary['outsideCount']).toBe(2);
   expect(result.summary['isApproximate']).toBe(0);
+});
+
+test('DGGS-105: spherical holes and antipodes are independent of ring winding', () => {
+  // Small great-circle rectangles: (0,0) is in the hole, (5,0) is in the shell,
+  // and (-175,0) is the antipode of the latter, outside the minor region.
+  const shell = [
+    [-10, -10],
+    [10, -10],
+    [10, 10],
+    [-10, 10],
+    [-10, -10]
+  ];
+  const hole = [
+    [-2, -2],
+    [-2, 2],
+    [2, 2],
+    [2, -2],
+    [-2, -2]
+  ];
+  for (const reverse of [false, true]) {
+    const polygons: CatalogFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          geometry: {
+            type: 'Polygon',
+            coordinates: [shell, hole].map(ring => (reverse ? [...ring].reverse() : ring))
+          },
+          properties: {}
+        }
+      ]
+    };
+    const result = runCatalogOperation(
+      getCatalogBinding('spherical-point-in-polygon')!,
+      {},
+      {
+        points: points([{coordinates: [0, 0]}, {coordinates: [5, 0]}, {coordinates: [-175, 0]}]),
+        polygons
+      }
+    );
+    expect(result.tables[0].columns['point_feature_index']).toEqual([1]);
+  }
+});
+
+test('DGGS-105 B2: off-axis city-scale holes exclude the center in either winding', () => {
+  const longitude = -87.63;
+  const latitude = 41.88;
+  const square = (halfWidth: number) => [
+    [longitude - halfWidth, latitude - halfWidth],
+    [longitude + halfWidth, latitude - halfWidth],
+    [longitude + halfWidth, latitude + halfWidth],
+    [longitude - halfWidth, latitude + halfWidth],
+    [longitude - halfWidth, latitude - halfWidth]
+  ];
+  const shell = square(0.01);
+  const hole = square(0.01 / 3).reverse();
+  // The center lies in the hole, .007 degrees east lies between hole and shell,
+  // and the antipode is outside both minor regions. Neither is on a boundary.
+  for (const reverse of [false, true]) {
+    const polygons: CatalogFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          properties: {},
+          geometry: {
+            type: 'Polygon',
+            coordinates: [shell, hole].map(ring => (reverse ? [...ring].reverse() : ring))
+          }
+        }
+      ]
+    };
+    const output = runCatalogOperation(
+      getCatalogBinding('spherical-point-in-polygon')!,
+      {},
+      {
+        points: points([
+          {coordinates: [longitude, latitude]},
+          {coordinates: [longitude + 0.007, latitude]},
+          {coordinates: [longitude + 180, -latitude]}
+        ]),
+        polygons
+      }
+    );
+    expect(output.diagnostics).toEqual([]);
+    expect(output.tables[0].columns['point_feature_index']).toEqual([1]);
+  }
 });

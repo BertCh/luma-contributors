@@ -18,6 +18,12 @@
 /** Value of `BAND_RADIUS` for an unbanded dynamic time warping. @internal */
 export const TRACK_SIMILARITY_NO_BAND = 0xffffffff;
 
+/** Threshold membership, shared by the decision and edit programs. */
+const COUPLED_WITHIN_WGSL = `fn coupledWithin(swapped: bool, startA: u32, countA: u32, startB: u32, countB: u32, rowLong: u32, rowShort: u32, radius: f32) -> bool {
+  if (swapped) { return pointWithin(densifiedPointB(startB, countB, rowLong), densifiedPointA(startA, countA, rowShort), radius); }
+  return pointWithin(densifiedPointA(startA, countA, rowLong), densifiedPointB(startB, countB, rowShort), radius);
+}`;
+
 /** WGSL: metric value between densified vertex `rowLong` of the longer track and `rowShort` of the other. */
 export const COUPLED_METRIC_WGSL = /* wgsl */ `
 fn coupledMetric(swapped: bool, startA: u32, countA: u32, startB: u32, countB: u32, rowLong: u32, rowShort: u32) -> f32 {
@@ -25,7 +31,8 @@ fn coupledMetric(swapped: bool, startA: u32, countA: u32, startB: u32, countB: u
     return pointMetric(densifiedPointB(startB, countB, rowLong), densifiedPointA(startA, countA, rowShort));
   }
   return pointMetric(densifiedPointA(startA, countA, rowLong), densifiedPointB(startB, countB, rowShort));
-}`;
+}
+${COUPLED_WITHIN_WGSL}`;
 
 /** WGSL statements shared by both programs: track lengths and roles, uniform across the workgroup. */
 const TRACK_ROLES_WGSL = /* wgsl */ `let infinity = 3.402823466e+38;
@@ -142,7 +149,7 @@ const LANES: u32 = ${lanes}u;
 var<workgroup> olderDiagonal: array<f32, ${lanes}>;
 var<workgroup> previousDiagonal: array<f32, ${lanes}>;
 var<workgroup> boundaryRow: array<f32, ${shortCapacity}>;
-const PLANAR_BOUNDS: bool = ${!isGreatCircle};
+// Threshold frame is reachability (0 inside, 1 outside), including ${isGreatCircle ? 'great-circle' : 'planar'} pairs.
 var<workgroup> partials: array<vec4f, ${lanes}>;
 var<workgroup> sharedLongCount: u32;
 var<workgroup> sharedShortCount: u32;
@@ -150,10 +157,9 @@ var<workgroup> sharedDecision: u32;
 var<workgroup> sharedReachable: u32;
 var<workgroup> reachableCounter: atomic<u32>;
 var<workgroup> boundaryReachableCounter: atomic<u32>;
-${COUPLED_METRIC_WGSL}
-// Epsilon in the internal metric space of pointMetric (squared planar distance, or the context's length unit).
-fn getEpsilonMetric(epsilon: f32) -> f32 {
-  ${isGreatCircle ? 'return epsilon;' : 'return epsilon * epsilon;'}
+${COUPLED_WITHIN_WGSL}
+fn coupledMetric(swapped: bool, startA: u32, countA: u32, startB: u32, countB: u32, rowLong: u32, rowShort: u32) -> f32 {
+  return select(1.0, 0.0, coupledWithin(swapped, startA, countA, startB, countB, rowLong, rowShort, frechetEpsilon[frechetEpsilonOffset]));
 }
 // Short index coupled with long index rowLong by a fixed monotone coupling: proportional
 // (floor(l * (S - 1) / (L - 1))) when that product fits 32 bits, otherwise the diagonal min(l, S - 1).
@@ -177,7 +183,7 @@ fn getCoupledShortRow(rowLong: u32, longCount: u32, shortCount: u32) -> u32 {
  * 1. Bound pruning, `O(L + S)`: the Frechet distance is at least the larger endpoint distance
  *    (lower bound, above epsilon decides 0) and at most the largest coupled distance of a fixed
  *    monotone coupling (upper bound, at most epsilon decides 1). Endpoints are checked first;
- *    undecided planar pairs also use coordinate-extrema box lower bounds before the DP.
+ *    undecided pairs use the exact same membership predicate in the DP.
  * 2. Otherwise the free-space dynamic program: a cell is reachable when its coupled distance is
  *    at most epsilon and a predecessor (up, up-left, left) is reachable. A strip stops early once
  *    an anti-diagonal holds no reachable cell and no later column of the carried row is reachable,
@@ -192,7 +198,7 @@ export function getFrechetDecisionBody(prologue: string): string {
   ${TRACK_ROLES_WGSL}
   let epsilon = frechetEpsilon[frechetEpsilonOffset];
   let isEpsilonUsable = (bitcast<u32>(epsilon) & 0x7f800000u) != 0x7f800000u && epsilon >= 0.0;
-  let limit = getEpsilonMetric(epsilon);
+  let limit = 0.0;
   // Reject endpoints before reading the rest of either track or reducing a coupling bound.
   if (lane == 0u) {
     sharedDecision = 2u;
@@ -223,45 +229,6 @@ export function getFrechetDecisionBody(prologue: string): string {
   }
   if (lane == 0u && partials[0].x <= limit) { sharedDecision = 1u; }
   decision = workgroupUniformLoad(&sharedDecision);
-  if (decision == 0u && PLANAR_BOUNDS) {
-    // Every vertex must be matched. Differences between corresponding extrema of the two
-    // boxes lower-bound the maximum distance in any coupling, even when the boxes overlap.
-    // Use densified samples too: these are exactly the coordinates used by the free-space DP.
-    var minima = vec4f(infinity);
-    var maxima = vec4f(-infinity);
-    for (var vertex = lane; vertex < denseA; vertex += LANES) {
-      let point = densifiedPointA(startA, countA, vertex);
-      minima = vec4f(min(minima.xy, point), minima.zw);
-      maxima = vec4f(max(maxima.xy, point), maxima.zw);
-    }
-    for (var vertex = lane; vertex < denseB; vertex += LANES) {
-      let point = densifiedPointB(startB, countB, vertex);
-      minima = vec4f(minima.xy, min(minima.zw, point));
-      maxima = vec4f(maxima.xy, max(maxima.zw, point));
-    }
-    partials[lane] = minima;
-    workgroupBarrier();
-    for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
-      if (lane < stride) { partials[lane] = min(partials[lane], partials[lane + stride]); }
-      workgroupBarrier();
-    }
-    let minimumGap = abs(partials[0].xy - partials[0].zw);
-    workgroupBarrier();
-    partials[lane] = maxima;
-    workgroupBarrier();
-    for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
-      if (lane < stride) { partials[lane] = max(partials[lane], partials[lane + stride]); }
-      workgroupBarrier();
-    }
-    if (lane == 0u) {
-      let maximumGap = abs(partials[0].xy - partials[0].zw);
-      let gaps = max(minimumGap, maximumGap);
-      let lower = max(gaps.x, gaps.y);
-      // Widen the threshold to keep f32 rounding at equality in the exact DP path.
-      if (lower * lower > limit * 1.000001) { sharedDecision = 2u; }
-    }
-    decision = workgroupUniformLoad(&sharedDecision);
-  }
   // 2. Free-space reachability, 1.0 reachable and 0.0 not.
   if (decision == 0u) {
     var finalValue = 0.0;
@@ -382,7 +349,7 @@ export function getLongestCommonSubsequenceBody(prologue: string, tolerance: num
         if (column > 0u) { left = previousDiagonal[lane]; }
         value = max(up, left);
         if (isInBand(rowLong, column, longCount, shortCount) &&
-          finishMetric(coupledMetric(swapped, startA, countA, startB, countB, rowLong, column)) <= f32(${tolerance})) {
+          coupledWithin(swapped, startA, countA, startB, countB, rowLong, column, f32(${tolerance}))) {
           value = max(value, previous + 1.0);
         }
         if (rowLong == longCount - 1u && column == shortCount - 1u) { finalValue = value; }

@@ -6,7 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
 import {expect, it} from 'vitest';
 import {
-  GPU_MAX_P_STATUS,
+  GPU_MAX_P_STATUS_LAYOUT,
   GPUMaxPRegions
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
 import {getGPUMaxPRoundCounts} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions';
@@ -64,7 +64,7 @@ function buildNodes(
     output: {
       labels: view('uint32', rows),
       objective: view('float32', 1),
-      status: view('uint32', GPU_MAX_P_STATUS.length)
+      status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
     }
   }).getCommandNodes(graph) as readonly NodeRecord[];
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {clamp} from '@math.gl/core';
 import {
   createTransientView,
@@ -34,6 +35,7 @@ import {
   validateRasterFractionalWritableViews
 } from '../fractional-coverage/raster-fractional-tile-kernel';
 import {validateRasterGrid} from '../raster-band-utils';
+import type {RasterAlgebraAtLeastOne} from '../raster-algebra/raster-algebra-output';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   DECODE_ORDERED_KEY_WGSL,
@@ -53,6 +55,11 @@ const OPERATION = 'GPURasterStretch';
 const DEFAULT_BIN_COUNT = 1024;
 const DEFAULT_LUT_SIZE = 256;
 const MAXIMUM_PALETTE_SIZE = 65536;
+/** Each rank search halves the inclusive bin interval at most 16 times. @internal */
+export const GPU_RASTER_STRETCH_MAXIMUM_RANK_SEARCH_STEPS = 16;
+/** Maximum admitted histogram bins; independent of the palette size. @internal */
+export const GPU_RASTER_STRETCH_MAXIMUM_HISTOGRAM_BIN_COUNT =
+  2 ** GPU_RASTER_STRETCH_MAXIMUM_RANK_SEARCH_STEPS;
 const STATISTICS_WORKGROUP_SIZE = 256;
 /** Cells each thread folds into registers before the workgroup combines its tile. */
 const REDUCE_CELLS_PER_THREAD = 16;
@@ -87,7 +94,7 @@ fn getStretchDomainValue(fraction: f32, lower: f32, upper: f32) -> f32 {
 `;
 
 /** Caller-owned outputs of {@link GPURasterStretch}. At least one is required. */
-export type GPURasterStretchOutput = {
+export type GPURasterStretchOutput = RasterAlgebraAtLeastOne<{
   /** Stretched value per cell in `[0, 1]`; NaN for nodata. At least `grid.width * grid.height` rows. */
   stretched?: GraphDataView<'float32'>;
   /** Packed rgba8 per cell (`r | g << 8 | b << 16 | a << 24`); 0 for nodata. Requires `palette`. */
@@ -102,7 +109,7 @@ export type GPURasterStretchOutput = {
   statistics?: GraphDataView<'float32'>;
   /** Exact included finite-cell count as one uint32, including counts above 2^24. */
   validCount?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPURasterStretch}.
@@ -182,6 +189,31 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
   readonly lutSize: number;
 
   constructor(props: GPURasterStretchProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'values',
+      'grid',
+      'noDataValue',
+      'mask',
+      'regionMask',
+      'parameters',
+      'palette',
+      'binCount',
+      'lutSize',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...props,
+      output: snapshotConstructionFields(props.output ?? {}, [
+        'stretched',
+        'colors',
+        'lut',
+        'lutColors',
+        'histogram',
+        'statistics',
+        'validCount'
+      ])
+    });
     this.id = props.id ?? 'raster-stretch';
     this.props = props;
     const {id} = this;
@@ -195,7 +227,13 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     }
     this.binCount = props.binCount ?? DEFAULT_BIN_COUNT;
     this.lutSize = props.lutSize ?? DEFAULT_LUT_SIZE;
-    validateRasterAlgebraCount(id, 'binCount', this.binCount, 16, 65536);
+    validateRasterAlgebraCount(
+      id,
+      'binCount',
+      this.binCount,
+      16,
+      GPU_RASTER_STRETCH_MAXIMUM_HISTOGRAM_BIN_COUNT
+    );
     validateRasterAlgebraCount(id, 'lutSize', this.lutSize, 2, 65536);
     validateRasterAlgebraNoData(id, props.noDataValue);
     validateRasterAlgebraInput(id, 'values', props.values, props.grid, cellCount);
@@ -215,7 +253,7 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     if (props.palette && props.palette.length > MAXIMUM_PALETTE_SIZE) {
       throw new Error(`${id} palette must hold at most ${MAXIMUM_PALETTE_SIZE} colors`);
     }
-    if (!output || Object.values(output).every(view => view === undefined)) {
+    if (!output || Object.values(output).every(view => !view)) {
       throw new Error(`${id} needs at least one output`);
     }
     if ((output.colors || output.lutColors) && !props.palette) {

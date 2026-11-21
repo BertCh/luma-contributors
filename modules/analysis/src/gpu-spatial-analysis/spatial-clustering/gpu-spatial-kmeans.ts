@@ -5,6 +5,7 @@
 import {validateSpatialOutputViews} from './spatial-output-validation';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 import {
   createTransientView,
   GPUCompaction,
@@ -19,6 +20,7 @@ import {
   createWGSLKernelNode
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateRequirement,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -27,7 +29,7 @@ import {
   validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {GPU_SPATIAL_CLUSTERING_NOISE} from './spatial-clustering-parameters';
+import {GPU_DBSCAN_NOISE} from './spatial-clustering-parameters';
 import {
   GET_QUIET_NAN_SEEDED_WGSL,
   IS_FINITE_FLOAT_WGSL,
@@ -124,12 +126,13 @@ export function getGPUSpatialKMeansParameterValues(
 ): Uint32Array {
   const seed = settings.seed ?? 0;
   const tolerance = settings.tolerance ?? 0;
-  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
-    throw new Error('GPUSpatialKMeans seed must be a uint32');
-  }
-  if (!Number.isFinite(tolerance) || tolerance < 0) {
-    throw new Error('GPUSpatialKMeans tolerance must be a finite number >= 0');
-  }
+  validateCapacity('GPUSpatialKMeans', 'seed', seed, 0, 0xffffffff);
+  // The float32 word must stay finite: a larger value would round to infinity and stop at once.
+  validateRequirement(
+    'GPUSpatialKMeans',
+    Number.isFinite(Math.fround(tolerance)) && tolerance >= 0,
+    'tolerance must be a finite float32 number >= 0'
+  );
   const values = new Uint32Array(GPU_SPATIAL_KMEANS_PARAMETER_LENGTH);
   values[0] = seed;
   new Float32Array(values.buffer)[1] = tolerance;
@@ -178,6 +181,8 @@ export type GPUSpatialKMeansOutput = {
      * sums, or an infinite center) never converges.
      */
     converged?: GPUStatusScalar;
+    /** One when the chosen restart exhausted its budget without meeting tolerance. */
+    iterationLimitReached?: GPUStatusScalar;
   };
 };
 
@@ -185,7 +190,7 @@ export type GPUSpatialKMeansOutput = {
  * Properties for {@link GPUSpatialKMeans}.
  *
  * Per-frame (no recompile): the contents of `positions` and `parameters` (seed, tolerance).
- * Compile-time: `positions.length`, `k`, `maximumIterations`, `initialization`, `restartCount` and
+ * Compile-time: `positions.length`, `clusterCount`, `maximumIterations`, `initialization`, `restartCount` and
  * which optional outputs are present.
  */
 export type GPUSpatialKMeansProps = {
@@ -200,7 +205,7 @@ export type GPUSpatialKMeansProps = {
   /** Packed planar points, one row per point. Rows with a non-finite coordinate are noise. */
   positions: GraphDataView<'float32x2'>;
   /** Number of clusters, an integer in `[1, 256]`. Compile-time. */
-  k: number;
+  clusterCount: number;
   /**
    * Maximum number of Lloyd iterations (assign then update), an integer in `[1, 64]`.
    * Compile-time. The graph always holds this many iterations, but once an iteration moves no
@@ -214,14 +219,19 @@ export type GPUSpatialKMeansProps = {
    */
   parameters: GraphDataView<'uint32'>;
   /**
-   * Accumulates in coordinates relative to a data origin (the first finite point) instead of the
-   * raw coordinates. Float32 sums of projected coordinates near 1e6 to 1e7 lose metres of
-   * precision over 1e5 or more points per cluster, which shifts centers and can keep a
-   * `tolerance` of 0 from ever being reached; offsets from a nearby origin keep the sums at the
-   * scale of the data extent. Assignments, centers and distances are computed in the shifted frame
-   * and the origin is added back to `output.centers` (a float32 rounding of the absolute
-   * coordinates remains). Defaults to false: results are then bit-identical to earlier releases.
-   * Compile-time; costs two small extra kernels and one binding per kernel that reads positions.
+   * Accumulates each cluster in coordinates relative to its own origin, the data point it was
+   * seeded from (or moved to by empty-cluster relocation), instead of the raw coordinates. Float32
+   * sums of projected coordinates near 1e6 to 1e7 lose metres of precision over 1e5 or more points
+   * per cluster, which shifts centers and can keep a `tolerance` of 0 from ever being reached;
+   * offsets from a cluster's own origin keep its sums and distances at the scale of that cluster's
+   * extent, so a small cluster next to a distant one keeps its spread too. Assignments, centers and
+   * distances are computed in each cluster's frame and the origin is added back to
+   * `output.centers` (one float32 rounding of the absolute coordinates remains). Defaults to true.
+   * Set false explicitly to reproduce the historical uncentered arithmetic, which can lose
+   * distances and inertia even for 255 projected points. Compile-time. It adds no kernel to a
+   * multi-restart run (which already publishes centers); a single-restart run gains one
+   * `publish-centers` kernel, and the scratch centers hold `2k + 1` extra floats pairs (origins and
+   * a zero word).
    */
   centerCoordinates?: boolean;
   /**
@@ -291,6 +301,8 @@ export type GPUSpatialKMeansProps = {
 export class GPUSpatialKMeans implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  /** Resolved outputs, including graph-owned stopping views after graph.add(). */
+  output: GPUSpatialKMeansOutput;
   readonly estimatedCommandNodeCount: number;
   /** Validated properties. */
   readonly props: GPUSpatialKMeansProps;
@@ -305,11 +317,18 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
 
   constructor(props: GPUSpatialKMeansProps) {
     const id = props.id ?? 'kmeans';
+    validateRequirement(
+      {id, contributor: 'GPUSpatialKMeans', messagePrefix: `${id}:`},
+      !('k' in props),
+      'k was renamed; use clusterCount'
+    );
     this.id = id;
+    props = {...props, output: {...props.output, status: {...props.output.status}}};
     this.props = props;
+    this.output = props.output;
     this.initialization = props.initialization ?? 'kmeans++';
     this.restartCount = props.restartCount ?? 1;
-    this.centerCoordinates = props.centerCoordinates ?? false;
+    this.centerCoordinates = props.centerCoordinates ?? true;
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
@@ -317,16 +336,14 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
     );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
-    if (rows < 1) {
-      throw new Error(`${id} positions must hold at least one row`);
-    }
-    if (
-      !Number.isInteger(props.k) ||
-      props.k < 1 ||
-      props.k > GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS
-    ) {
-      throw new Error(`${id} k must be an integer in [1, ${GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS}]`);
-    }
+    validateRequirement(id, rows >= 1, 'positions must hold at least one row');
+    validateCapacity(
+      id,
+      'clusterCount',
+      props.clusterCount,
+      1,
+      GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS
+    );
     validateCapacity(
       id,
       'maximumIterations',
@@ -334,30 +351,29 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
       1,
       GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS
     );
-    if (this.initialization !== 'first-valid' && this.initialization !== 'kmeans++') {
-      throw new Error(`${id} initialization must be 'first-valid' or 'kmeans++'`);
-    }
-    if (
-      !Number.isInteger(this.restartCount) ||
-      this.restartCount < 1 ||
-      this.restartCount > GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS
-    ) {
-      throw new Error(
-        `${id} restartCount must be an integer in [1, ${GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS}]`
-      );
-    }
-    if (this.restartCount > 1 && this.initialization !== 'kmeans++') {
-      throw new Error(`${id} restartCount above 1 needs the 'kmeans++' initialization`);
-    }
+    validateRequirement(
+      id,
+      !(this.initialization !== 'first-valid' && this.initialization !== 'kmeans++'),
+      `initialization must be 'first-valid' or 'kmeans++'`
+    );
+    validateCapacity(id, 'restartCount', this.restartCount, 1, GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS);
+    validateRequirement(
+      id,
+      !(this.restartCount > 1 && this.initialization !== 'kmeans++'),
+      `restartCount above 1 needs the 'kmeans++' initialization`
+    );
     validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
-    if (props.parameters.length < GPU_SPATIAL_KMEANS_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters must hold ${GPU_SPATIAL_KMEANS_PARAMETER_LENGTH} uint32`);
-    }
+    validateRequirement(
+      id,
+      !(props.parameters.length < GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
+      `parameters must hold ${GPU_SPATIAL_KMEANS_PARAMETER_LENGTH} uint32`
+    );
     const {output} = props;
     for (const [name, view] of [
       ['inertia', output.inertia],
       ['status.iterationCount', output.status?.iterationCount],
-      ['status.converged', output.status?.converged]
+      ['status.converged', output.status?.converged],
+      ['status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view) {
         validateSinglePackedView(
@@ -365,24 +381,28 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
           name === 'inertia' ? ['float32'] : ['uint32'],
           `${id} output.${name}`
         );
-        if (view.length !== 1) {
-          throw new Error(`${id} output.${name} must hold one row`);
-        }
+        validateRequirement(id, !(view.length !== 1), `output.${name} must hold one row`);
       }
     }
     validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
-    if (output.labels.length !== rows) {
-      throw new Error(`${id} output.labels length must equal positions length`);
-    }
+    validateRequirement(
+      id,
+      !(output.labels.length !== rows),
+      `output.labels length must equal positions length`
+    );
     validateSinglePackedView(output.centers, ['float32x2'], `${id} output.centers`);
-    if (output.centers.length !== props.k) {
-      throw new Error(`${id} output.centers length must equal k`);
-    }
+    validateRequirement(
+      id,
+      !(output.centers.length !== props.clusterCount),
+      `output.centers length must equal clusterCount`
+    );
     if (output.sizes) {
       validateSinglePackedView(output.sizes, ['uint32'], `${id} output.sizes`);
-      if (output.sizes.length !== props.k) {
-        throw new Error(`${id} output.sizes length must equal k`);
-      }
+      validateRequirement(
+        id,
+        !(output.sizes.length !== props.clusterCount),
+        `output.sizes length must equal clusterCount`
+      );
     }
     if (output.squaredDistances) {
       validateSinglePackedView(
@@ -390,9 +410,11 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
         ['float32'],
         `${id} output.squaredDistances`
       );
-      if (output.squaredDistances.length !== rows) {
-        throw new Error(`${id} output.squaredDistances length must equal positions length`);
-      }
+      validateRequirement(
+        id,
+        !(output.squaredDistances.length !== rows),
+        `output.squaredDistances length must equal positions length`
+      );
     }
     validateSpatialOutputViews(
       id,
@@ -418,7 +440,7 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
       this.restartCount *
         (KMEANS_RESTART_COMMAND_NODE_ALLOWANCE +
           KMEANS_NODES_PER_ITERATION * props.maximumIterations +
-          (this.initialization === 'kmeans++' ? KMEANS_NODES_PER_SEED * props.k : 0));
+          (this.initialization === 'kmeans++' ? KMEANS_NODES_PER_SEED * props.clusterCount : 0));
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(id, getOutputs(output), [
       props.positions,
@@ -431,7 +453,8 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {positions, k, maximumIterations, parameters, output} = props;
+    const {positions, clusterCount, maximumIterations, parameters} = props;
+    const output = {...props.output, status: {...props.output.status}};
     const {labels, centers} = output;
     validateGraphViewsBelongToGraph(id, graph, [positions, parameters, ...getOutputs(output)]);
     const rows = positions.length;
@@ -440,11 +463,12 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
       parameters,
       ...Object.fromEntries(getOutputs(output).map((view, index) => [`output[${index}]`, view]))
     });
-    const partialCount = k * Math.min(MAXIMUM_CHUNKS, Math.ceil(rows / REDUCTION_WORKGROUP_SIZE));
+    const partialCount =
+      clusterCount * Math.min(MAXIMUM_CHUNKS, Math.ceil(rows / REDUCTION_WORKGROUP_SIZE));
     for (const [name, byteLength] of [
       ['row scratch', rows * 4],
       ['partial reductions', partialCount * 4],
-      ['cluster sums', k * 8],
+      ['cluster sums', clusterCount * 8],
       ['iteration dispatch', 48]
     ] as const)
       validateGPUStorageBindingByteLength(
@@ -452,8 +476,12 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
         id,
         name,
         byteLength,
-        'reduce positions rows or k'
+        'reduce positions rows or clusterCount'
       );
+    for (const name of ['converged', 'iterationCount', 'iterationLimitReached'] as const) {
+      output.status[name] ??= createTransientView(graph, `${id}-status-${name}`, 'uint32', 1);
+    }
+    this.output = output;
     const restartCount = this.restartCount;
     const multiStart = restartCount > 1;
     const view = <Format extends 'uint32' | 'float32'>(
@@ -463,30 +491,35 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
     ) => createTransientView(graph, `${id}-${name}`, format, length);
 
     const centering = this.centerCoordinates;
-    // The data origin (x, y) of centered runs; absent otherwise.
-    const originView = centering
-      ? createTransientView(graph, `${id}-origin`, 'float32', 2)
-      : undefined;
-    const originBindings = originView
-      ? [{name: 'origin', view: originView, type: 'f32' as const, access: 'read' as const}]
-      : [];
-    // A position coordinate (0: x, 1: y) of row expression `row`, relative to the origin if centered.
-    const readPosition = (row: string, axis: 0 | 1) =>
-      `(positions[positionsOffset + ${row} * 2u${axis === 1 ? ' + 1u' : ''}]${
-        centering ? ` - origin[originOffset + ${axis}u]` : ''
-      })`;
+    // Centered runs keep one origin per cluster beside its center. In the scratch centers, floats
+    // [0, 2k) are the centers relative to their origins, [2k, 4k) the absolute origins and the
+    // pair at 4k is zero: shaders read it as the runtime zero that keeps the origin subtraction
+    // from being regrouped (`getRoundedDifference`).
+    const centerSlotCount = centering ? 4 * clusterCount + 2 : 2 * clusterCount;
+    const rawPosition = (row: string, axis: 0 | 1) =>
+      `positions[positionsOffset + ${row} * 2u${axis === 1 ? ' + 1u' : ''}]`;
+    const originOf = (array: string, cluster: string, axis: 0 | 1) =>
+      `${array}[${array}Offset + ${2 * clusterCount}u + (${cluster}) * 2u${axis === 1 ? ' + 1u' : ''}]`;
+    const runtimeZero = (array: string) =>
+      `bitcast<u32>(${array}[${array}Offset + ${4 * clusterCount}u])`;
+    // Coordinate `value` relative to the origin of `cluster` (unchanged when not centered).
+    const localPosition = (value: string, array: string, cluster: string, axis: 0 | 1) =>
+      centering
+        ? `getRoundedDifference(${value}, ${originOf(array, cluster, axis)}, ${runtimeZero(array)})`
+        : value;
     const validFlags = view('valid-flags', 'uint32', rows);
     const rowIds = view('row-ids', 'uint32', rows);
-    const xs = view('xs', 'float32', rows);
-    const ys = view('ys', 'float32', rows);
-    const sizes = output.sizes ?? view('sizes', 'uint32', k);
+    // Uncentered partial sums read the valid-selected coordinates; centered ones read positions.
+    const xs = centering ? undefined : view('xs', 'float32', rows);
+    const ys = centering ? undefined : view('ys', 'float32', rows);
+    const sizes = output.sizes ?? view('sizes', 'uint32', clusterCount);
     // With restarts every Lloyd run works on scratch centers and sizes; the best restart's centers
     // are copied to the caller's views at the end.
     const workCenters =
       multiStart || centering
-        ? createTransientView(graph, `${id}-work-centers`, 'float32x2', k)
+        ? createTransientView(graph, `${id}-work-centers`, 'float32x2', centerSlotCount / 2)
         : centers;
-    const workSizes = multiStart ? view('work-sizes', 'uint32', k) : sizes;
+    const workSizes = multiStart ? view('work-sizes', 'uint32', clusterCount) : sizes;
     // Squared distances are always produced when inertia is needed (restart scoring or output).
     const finalDistances =
       output.squaredDistances ??
@@ -505,14 +538,14 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
     const chunkCount = Math.min(MAXIMUM_CHUNKS, Math.ceil(rows / REDUCTION_WORKGROUP_SIZE));
     const chunkSize =
       Math.ceil(rows / chunkCount / REDUCTION_WORKGROUP_SIZE) * REDUCTION_WORKGROUP_SIZE;
-    const slices = Math.min(MAXIMUM_SLICES, Math.floor(REDUCTION_WORKGROUP_SIZE / k));
-    const partialCounts = view('partial-counts', 'uint32', k * chunkCount);
-    const partialSumsX = view('partial-sums-x', 'float32', k * chunkCount);
-    const partialSumsY = view('partial-sums-y', 'float32', k * chunkCount);
+    const slices = Math.min(MAXIMUM_SLICES, Math.floor(REDUCTION_WORKGROUP_SIZE / clusterCount));
+    const partialCounts = view('partial-counts', 'uint32', clusterCount * chunkCount);
+    const partialSumsX = view('partial-sums-x', 'float32', clusterCount * chunkCount);
+    const partialSumsY = view('partial-sums-y', 'float32', clusterCount * chunkCount);
     // Per-iteration scratch of the empty-cluster relocation: each point's squared distance to the
     // center it was assigned to, and the per-cluster coordinate sums before the means are taken.
     const iterationDistances = view('iteration-distances', 'float32', rows);
-    const clusterSums = createTransientView(graph, `${id}-cluster-sums`, 'float32x2', k);
+    const clusterSums = createTransientView(graph, `${id}-cluster-sums`, 'float32x2', clusterCount);
     // Indirect dispatch triples of the gated Lloyd kernels (assign, partial, update, relocate).
     // Each restart arms them; the one-thread converge kernel zeroes every x once the centers stop
     // moving, so the remaining iterations launch nothing. The converge kernel itself stays ungated:
@@ -523,12 +556,12 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
       shapes: [
         [rows],
         [chunkCount * REDUCTION_WORKGROUP_SIZE, REDUCTION_WORKGROUP_SIZE],
-        [k * REDUCTION_WORKGROUP_SIZE, REDUCTION_WORKGROUP_SIZE],
+        [clusterCount * REDUCTION_WORKGROUP_SIZE, REDUCTION_WORKGROUP_SIZE],
         [REDUCTION_WORKGROUP_SIZE, REDUCTION_WORKGROUP_SIZE]
       ]
     });
-    const sharedWGSL = `const K: u32 = ${k}u;
-const NOISE: u32 = ${GPU_SPATIAL_CLUSTERING_NOISE}u;
+    const sharedWGSL = `const K: u32 = ${clusterCount}u;
+const NOISE: u32 = ${GPU_DBSCAN_NOISE}u;
 
 // Mirrors getGPUSpatialKMeansRestartSeed: restart 0 uses the seed itself, later restarts a murmur3 mix.
 // The seed is the per-frame parameters word 0, so the source is the same for every seed.
@@ -547,7 +580,8 @@ fn getRestartSeed(seed: u32, restart: u32) -> u32 {
 ${IS_FINITE_FLOAT_WGSL}
 ${IS_NAN_BITS_WGSL}
 
-${GET_QUIET_NAN_SEEDED_WGSL}`;
+${GET_QUIET_NAN_SEEDED_WGSL}
+${centering ? ROUNDED_DIFFERENCE_WGSL : ''}`;
 
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
@@ -558,8 +592,12 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
           {name: 'validFlags', view: validFlags, type: 'u32', access: 'read_write'},
           {name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'},
-          {name: 'xs', view: xs, type: 'f32', access: 'read_write'},
-          {name: 'ys', view: ys, type: 'f32', access: 'read_write'},
+          ...(xs && ys
+            ? [
+                {name: 'xs', view: xs, type: 'f32' as const, access: 'read_write' as const},
+                {name: 'ys', view: ys, type: 'f32' as const, access: 'read_write' as const}
+              ]
+            : []),
           {name: 'seedCursor', view: seedCursor, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
@@ -572,84 +610,15 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
   let y = positions[positionsOffset + index * 2u + 1u];
   let valid = isFiniteFloat(x) && isFiniteFloat(y);
   validFlags[validFlagsOffset + index] = select(0u, 1u, valid);
-  rowIds[rowIdsOffset + index] = index;
+  rowIds[rowIdsOffset + index] = index;${
+    xs
+      ? `
   xs[xsOffset + index] = select(0.0, x, valid);
   ys[ysOffset + index] = select(0.0, y, valid);`
+      : ''
+  }`
       })
     ];
-
-    if (originView) {
-      // The origin is the first finite point (lowest valid row): a data point, so offsets from it
-      // are bounded by the data extent. The workgroup folds its lowest valid row before the one
-      // global atomic.
-      const originRow = view('origin-row', 'uint32', 1);
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-origin-reset`,
-          operation: OPERATION,
-          variant: 'origin-reset',
-          bindings: [{name: 'originRow', view: originRow, type: 'u32', access: 'read_write'}],
-          invocationCount: 1,
-          body: `originRow[originRowOffset] = ${NO_ROW};`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-origin-row`,
-          operation: OPERATION,
-          variant: 'origin-row',
-          bindings: [
-            {name: 'validFlags', view: validFlags, type: 'u32', access: 'read'},
-            {name: 'originRow', view: originRow, type: 'atomic<u32>', access: 'read_write'}
-          ],
-          invocationCount: rows,
-          workgroupSize: REDUCTION_WORKGROUP_SIZE,
-          guardIndex: false,
-          declarations: 'var<workgroup> groupRow: atomic<u32>;',
-          body: `if (localInvocationIndex == 0u) {
-      atomicStore(&groupRow, ${NO_ROW});
-    }
-    workgroupBarrier();
-    if (index < INVOCATION_COUNT && validFlags[validFlagsOffset + index] != 0u) {
-      atomicMin(&groupRow, index);
-    }
-    workgroupBarrier();
-    if (localInvocationIndex == 0u) {
-      atomicMin(&originRow[originRowOffset], atomicLoad(&groupRow));
-    }`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-origin`,
-          operation: OPERATION,
-          variant: 'origin',
-          bindings: [
-            {name: 'positions', view: positions, type: 'f32', access: 'read'},
-            {name: 'originRow', view: originRow, type: 'u32', access: 'read'},
-            {name: 'origin', view: originView, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: 1,
-          // No finite point: every row is noise, the origin is irrelevant.
-          body: `let row = originRow[originRowOffset];
-    let found = row != ${NO_ROW};
-    origin[originOffset] = select(0.0, positions[positionsOffset + row * 2u], found);
-    origin[originOffset + 1u] = select(0.0, positions[positionsOffset + row * 2u + 1u], found);`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-center-coordinates`,
-          operation: OPERATION,
-          variant: 'center-coordinates',
-          bindings: [
-            {name: 'validFlags', view: validFlags, type: 'u32', access: 'read'},
-            {name: 'origin', view: originView, type: 'f32', access: 'read'},
-            {name: 'xs', view: xs, type: 'f32', access: 'read_write'},
-            {name: 'ys', view: ys, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: rows,
-          body: `if (validFlags[validFlagsOffset + index] != 0u) {
-      xs[xsOffset + index] = xs[xsOffset + index] - origin[originOffset];
-      ys[ysOffset + index] = ys[ysOffset + index] - origin[originOffset + 1u];
-    }`
-        })
-      );
-    }
 
     const seeding = this.initialization === 'kmeans++';
     const minDistance = seeding ? view('min-distance', 'float32', rows) : undefined!;
@@ -658,7 +627,7 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
     const bestRow = seeding ? view('best-row', 'uint32', 1) : undefined!;
     const bestInertia = output.inertia ?? view('best-inertia', 'float32', 1);
     const bestCenters = multiStart
-      ? createTransientView(graph, `${id}-best-centers`, 'float32x2', k)
+      ? createTransientView(graph, `${id}-best-centers`, 'float32x2', centerSlotCount / 2)
       : undefined;
     const bestState = multiStart ? view('best-state', 'uint32', 3) : undefined;
     const assignNode = (
@@ -675,7 +644,6 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
         ...(withDistances ? {} : iterationGate.getGate(0)),
         bindings: [
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
-          ...originBindings,
           {name: 'centers', view: centersView, type: 'f32', access: 'read'},
           {name: 'labels', view: labels, type: 'u32', access: 'read_write'},
           ...(withDistances
@@ -702,15 +670,15 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
     return;
   }
   `
-        }let x = ${readPosition('index', 0)};
-  let y = ${readPosition('index', 1)};
+        }let x = ${rawPosition('index', 0)};
+  let y = ${rawPosition('index', 1)};
   var best = NOISE;
   var bestDistance = getQuietNaN(index);
   if (isFiniteFloat(x) && isFiniteFloat(y)) {
     // Strict comparison: the lowest center ID wins ties; NaN centers never win.
     for (var center = 0u; center < K; center++) {
-      let deltaX = centers[centersOffset + center * 2u] - x;
-      let deltaY = centers[centersOffset + center * 2u + 1u] - y;
+      let deltaX = centers[centersOffset + center * 2u] - ${localPosition('x', 'centers', 'center', 0)};
+      let deltaY = centers[centersOffset + center * 2u + 1u] - ${localPosition('y', 'centers', 'center', 1)};
       let distance = deltaX * deltaX + deltaY * deltaY;
       if (!isNanBits(distance) && (best == NOISE || distance < bestDistance)) {
         best = center;
@@ -740,27 +708,46 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
             variant: 'initial-centers',
             bindings: [
               {name: 'positions', view: positions, type: 'f32', access: 'read'},
-              ...originBindings,
               {name: 'compactIds', view: compactIds, type: 'u32', access: 'read'},
               {name: 'validCount', view: validCount, type: 'u32', access: 'read'},
               {name: 'centers', view: workCenters, type: 'f32', access: 'read_write'}
             ],
-            invocationCount: k,
+            invocationCount: clusterCount,
             declarations: sharedWGSL,
-            body: `let nan = getQuietNaN(index);
+            body: centering
+              ? `var x = getQuietNaN(index);
+    var y = x;
+    var originX = 0.0;
+    var originY = 0.0;
+    if (index < validCount[validCountOffset]) {
+      let row = compactIds[compactIdsOffset + index];
+      originX = ${rawPosition('row', 0)};
+      originY = ${rawPosition('row', 1)};
+      x = 0.0;
+      y = 0.0;
+    }
+    centers[centersOffset + index * 2u] = x;
+    centers[centersOffset + index * 2u + 1u] = y;
+    ${originOf('centers', 'index', 0)} = originX;
+    ${originOf('centers', 'index', 1)} = originY;
+    if (index == 0u) {
+      centers[centersOffset + ${4 * clusterCount}u] = 0.0;
+      centers[centersOffset + ${4 * clusterCount + 1}u] = 0.0;
+    }`
+              : `let nan = getQuietNaN(index);
     var x = nan;
     var y = nan;
     if (index < validCount[validCountOffset]) {
       let row = compactIds[compactIdsOffset + index];
-      x = ${readPosition('row', 0)};
-      y = ${readPosition('row', 1)};
+      x = ${rawPosition('row', 0)};
+      y = ${rawPosition('row', 1)};
     }
     centers[centersOffset + index * 2u] = x;
     centers[centersOffset + index * 2u + 1u] = y;`
           })
         );
       } else {
-        for (let round = 0; round < k; round++) {
+        for (let round = 0; round < clusterCount; round++) {
           const roundId = `${restartId}-seed-${round}`;
           nodes.push(
             createWGSLKernelNode<Parameters>(graph, {
@@ -847,7 +834,6 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
               variant: 'seed-update',
               bindings: [
                 {name: 'positions', view: positions, type: 'f32', access: 'read'},
-                ...originBindings,
                 {name: 'validFlags', view: validFlags, type: 'u32', access: 'read'},
                 {name: 'bestRow', view: bestRow, type: 'u32', access: 'read'},
                 {name: 'minDistance', view: minDistance, type: 'f32', access: 'read_write'},
@@ -862,16 +848,27 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
     var centerX = getQuietNaN(index);
     var centerY = centerX;
     if (hasCenter) {
-      centerX = ${readPosition('row', 0)};
-      centerY = ${readPosition('row', 1)};
+      centerX = ${rawPosition('row', 0)};
+      centerY = ${rawPosition('row', 1)};
     }
-    if (index == 0u) {
+    if (index == 0u) {${
+      centering
+        ? `
+      // The drawn point becomes the cluster's origin and its relative center is zero.
+      centers[centersOffset + round * 2u] = select(centerX, 0.0, hasCenter);
+      centers[centersOffset + round * 2u + 1u] = select(centerY, 0.0, hasCenter);
+      ${originOf('centers', 'round', 0)} = select(0.0, centerX, hasCenter);
+      ${originOf('centers', 'round', 1)} = select(0.0, centerY, hasCenter);
+      centers[centersOffset + ${4 * clusterCount}u] = 0.0;
+      centers[centersOffset + ${4 * clusterCount + 1}u] = 0.0;`
+        : `
       centers[centersOffset + round * 2u] = centerX;
-      centers[centersOffset + round * 2u + 1u] = centerY;
+      centers[centersOffset + round * 2u + 1u] = centerY;`
+    }
     }
     if (hasCenter && validFlags[validFlagsOffset + index] != 0u) {
-      let deltaX = ${readPosition('index', 0)} - centerX;
-      let deltaY = ${readPosition('index', 1)} - centerY;
+      let deltaX = ${rawPosition('index', 0)} - centerX;
+      let deltaY = ${rawPosition('index', 1)} - centerY;
       let distance = deltaX * deltaX + deltaY * deltaY;
       minDistance[minDistanceOffset + index] =
         select(min(minDistance[minDistanceOffset + index], distance), distance, round == 0u);
@@ -892,8 +889,25 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
             variant: 'partial',
             bindings: [
               {name: 'labels', view: labels, type: 'u32', access: 'read'},
-              {name: 'xs', view: xs, type: 'f32', access: 'read'},
-              {name: 'ys', view: ys, type: 'f32', access: 'read'},
+              ...(xs && ys
+                ? [
+                    {name: 'xs', view: xs, type: 'f32' as const, access: 'read' as const},
+                    {name: 'ys', view: ys, type: 'f32' as const, access: 'read' as const}
+                  ]
+                : [
+                    {
+                      name: 'positions',
+                      view: positions,
+                      type: 'f32' as const,
+                      access: 'read' as const
+                    },
+                    {
+                      name: 'centers',
+                      view: workCenters,
+                      type: 'f32' as const,
+                      access: 'read' as const
+                    }
+                  ]),
               {name: 'state', view: state, type: 'u32', access: 'read'},
               {name: 'partialCounts', view: partialCounts, type: 'u32', access: 'read_write'},
               {name: 'partialSumsX', view: partialSumsX, type: 'f32', access: 'read_write'},
@@ -909,7 +923,7 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
   const CHUNK_COUNT: u32 = ${chunkCount}u;
   const TILE_COUNT: u32 = ${chunkSize / REDUCTION_WORKGROUP_SIZE}u;
   const SLICES: u32 = ${slices}u;
-  const LANES: u32 = ${slices * k}u;
+  const LANES: u32 = ${slices * clusterCount}u;
   var<workgroup> tileLabels: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;
   var<workgroup> tileXs: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
   var<workgroup> tileYs: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
@@ -934,9 +948,18 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
       var x = 0.0;
       var y = 0.0;
       if (!converged && row < end) {
-        label = labels[labelsOffset + row];
+        label = labels[labelsOffset + row];${
+          centering
+            ? `
+        // Offsets from the origin of the assigned cluster; noise rows add nothing.
+        if (label < K) {
+          x = ${localPosition(rawPosition('row', 0), 'centers', 'label', 0)};
+          y = ${localPosition(rawPosition('row', 1), 'centers', 'label', 1)};
+        }`
+            : `
         x = xs[xsOffset + row];
-        y = ys[ysOffset + row];
+        y = ys[ysOffset + row];`
+        }
       }
       tileLabels[lane] = label;
       tileXs[lane] = x;
@@ -986,7 +1009,7 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
               {name: 'state', view: state, type: 'u32', access: 'read'}
             ],
             workgroupSize: REDUCTION_WORKGROUP_SIZE,
-            invocationCount: k * REDUCTION_WORKGROUP_SIZE,
+            invocationCount: clusterCount * REDUCTION_WORKGROUP_SIZE,
             guardIndex: false,
             ...iterationGate.getGate(2),
             declarations: `const CHUNK_COUNT: u32 = ${chunkCount}u;
@@ -1038,7 +1061,6 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
             variant: 'relocate',
             bindings: [
               {name: 'positions', view: positions, type: 'f32', access: 'read'},
-              ...originBindings,
               {name: 'labels', view: labels, type: 'u32', access: 'read'},
               {name: 'distances', view: iterationDistances, type: 'f32', access: 'read'},
               {name: 'clusterSums', view: clusterSums, type: 'f32', access: 'read'},
@@ -1062,7 +1084,13 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
   var<workgroup> clusterSumsY: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
   var<workgroup> emptyClusters: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;
   var<workgroup> laneDistances: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
-  var<workgroup> laneRows: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;`,
+  var<workgroup> laneRows: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;${
+    centering
+      ? `
+  var<workgroup> clusterOriginsX: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;
+  var<workgroup> clusterOriginsY: array<f32, ${REDUCTION_WORKGROUP_SIZE}>;`
+      : ''
+  }`,
             // Barriers sit in uniform control flow: every branch that contains one is decided by
             // `workgroupUniformLoad` of a flag only lane 0 writes.
             body: `let lane = localInvocationIndex;
@@ -1073,10 +1101,21 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
   if (workgroupUniformLoad(&activeFlag) == 0u) {
     return;
   }
-  if (lane < K) {
+  ${
+    centering
+      ? `let zero = ${runtimeZero('centers')};
+  `
+      : ''
+  }if (lane < K) {
     clusterCounts[lane] = sizes[sizesOffset + lane];
     clusterSumsX[lane] = clusterSums[clusterSumsOffset + lane * 2u];
-    clusterSumsY[lane] = clusterSums[clusterSumsOffset + lane * 2u + 1u];
+    clusterSumsY[lane] = clusterSums[clusterSumsOffset + lane * 2u + 1u];${
+      centering
+        ? `
+    clusterOriginsX[lane] = ${originOf('centers', 'lane', 0)};
+    clusterOriginsY[lane] = ${originOf('centers', 'lane', 1)};`
+        : ''
+    }
   }
   workgroupBarrier();
   if (lane == 0u) {
@@ -1141,14 +1180,29 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
         pickRow = row;
         let emptyCluster = emptyClusters[pickIndex];
         let donor = labels[labelsOffset + row];
-        let x = ${readPosition('row', 0)};
-        let y = ${readPosition('row', 1)};
+${
+  centering
+    ? `        // The donor loses the point in its own frame; the point becomes the empty
+        // cluster's origin, so its relative sum is zero.
+        let pointX = ${rawPosition('row', 0)};
+        let pointY = ${rawPosition('row', 1)};
+        clusterSumsX[donor] -= getRoundedDifference(pointX, clusterOriginsX[donor], zero);
+        clusterSumsY[donor] -= getRoundedDifference(pointY, clusterOriginsY[donor], zero);
+        clusterCounts[donor] -= 1u;
+        clusterOriginsX[emptyCluster] = pointX;
+        clusterOriginsY[emptyCluster] = pointY;
+        clusterSumsX[emptyCluster] = 0.0;
+        clusterSumsY[emptyCluster] = 0.0;
+        clusterCounts[emptyCluster] = 1u;`
+    : `        let x = ${rawPosition('row', 0)};
+        let y = ${rawPosition('row', 1)};
         clusterSumsX[donor] -= x;
         clusterSumsY[donor] -= y;
         clusterCounts[donor] -= 1u;
         clusterSumsX[emptyCluster] = x;
         clusterSumsY[emptyCluster] = y;
-        clusterCounts[emptyCluster] = 1u;
+        clusterCounts[emptyCluster] = 1u;`
+}
       }
     }
     workgroupBarrier();
@@ -1166,28 +1220,61 @@ ${GET_QUIET_NAN_SEEDED_WGSL}`;
     let previousX = centers[centersOffset + lane * 2u];
     let previousY = centers[centersOffset + lane * 2u + 1u];
     var nextX = previousX;
-    var nextY = previousY;
+    var nextY = previousY;${
+      centering
+        ? `
+    let previousOriginX = ${originOf('centers', 'lane', 0)};
+    let previousOriginY = ${originOf('centers', 'lane', 1)};
+    var nextOriginX = clusterOriginsX[lane];
+    var nextOriginY = clusterOriginsY[lane];`
+        : ''
+    }
     if (size > 0u) {
       nextX = clusterSumsX[lane] / f32(size);
       nextY = clusterSumsY[lane] / f32(size);
     } else if (isFiniteFloat(previousX) && clusterCounts[largest] > 0u) {
       nextX = clusterSumsX[largest] / f32(clusterCounts[largest]);
-      nextY = clusterSumsY[largest] / f32(clusterCounts[largest]);
+      nextY = clusterSumsY[largest] / f32(clusterCounts[largest]);${
+        centering
+          ? `
+      nextOriginX = clusterOriginsX[largest];
+      nextOriginY = clusterOriginsY[largest];`
+          : ''
+      }
     }
-    sizes[sizesOffset + lane] = size;
+    sizes[sizesOffset + lane] = size;${
+      centering
+        ? `
+    // The absolute shift: the origin move plus the relative move, each rounded once.
+    let deltaX = getRoundedDifference(nextOriginX, previousOriginX, zero) + getRoundedDifference(nextX, previousX, zero);
+    let deltaY = getRoundedDifference(nextOriginY, previousOriginY, zero) + getRoundedDifference(nextY, previousY, zero);`
+        : `
     let deltaX = nextX - previousX;
-    let deltaY = nextY - previousY;
-    let shift = sqrt(deltaX * deltaX + deltaY * deltaY);
+    let deltaY = nextY - previousY;`
+    }
+    let magnitude = max(abs(deltaX), abs(deltaY));
+    var shift = magnitude;
+    if (magnitude > 0.0) {
+      let scaledX = deltaX / magnitude;
+      let scaledY = deltaY / magnitude;
+      shift = magnitude * sqrt(scaledX * scaledX + scaledY * scaledY);
+    }
     // A never-initialized (NaN) center does not move. Any other non-finite shift (overflowed
-    // coordinate sums or squares, or an infinite center) counts as +infinity, so the iteration
-    // cannot report convergence.
-    if (isFiniteFloat(shift)) {
+    // coordinate sums or an infinite center) counts as +infinity, written as integer bits (an
+    // infinite f32 value cannot appear in WGSL text), so the iteration cannot report convergence.
+    if (isFiniteFloat(deltaX) && isFiniteFloat(deltaY) && isFiniteFloat(shift)) {
       atomicMax(&state[stateOffset + 2u], bitcast<u32>(shift));
     } else if (!isNanBits(previousX)) {
       atomicMax(&state[stateOffset + 2u], 0x7f800000u);
     }
     centers[centersOffset + lane * 2u] = nextX;
-    centers[centersOffset + lane * 2u + 1u] = nextY;
+    centers[centersOffset + lane * 2u + 1u] = nextY;${
+      centering
+        ? `
+    ${originOf('centers', 'lane', 0)} = nextOriginX;
+    ${originOf('centers', 'lane', 1)} = nextOriginY;`
+        : ''
+    }
   }`
           }),
           createWGSLKernelNode<Parameters>(graph, {
@@ -1360,7 +1447,7 @@ var<workgroup> improves: u32;`,
     multiStart
       ? `
   if (workgroupUniformLoad(&improves) != 0u) {
-    for (var slot = lane; slot < ${2 * k}u; slot += ${REDUCTION_WORKGROUP_SIZE}u) {
+    for (var slot = lane; slot < ${centerSlotCount}u; slot += ${REDUCTION_WORKGROUP_SIZE}u) {
       bestCenters[bestCentersOffset + slot] = centers[centersOffset + slot];
     }
   }`
@@ -1400,8 +1487,8 @@ var<workgroup> improves: u32;`,
         addScore(`${restartId}-score`);
       }
     }
-    // A centered run keeps relative centers for the final assignment and publishes the absolute
-    // centers (origin added back) to the caller's view.
+    // A centered run keeps relative centers and their origins for the final assignment and
+    // publishes the absolute centers (each cluster's origin added back) to the caller's view.
     const relativeCenters = multiStart ? bestCenters! : workCenters;
     if (multiStart || centering) {
       nodes.push(
@@ -1411,12 +1498,11 @@ var<workgroup> improves: u32;`,
           variant: centering ? 'publish-centers-absolute' : 'publish-centers',
           bindings: [
             {name: 'bestCenters', view: relativeCenters, type: 'f32', access: 'read'},
-            ...originBindings,
             {name: 'centers', view: centers, type: 'f32', access: 'read_write'}
           ],
-          invocationCount: 2 * k,
+          invocationCount: 2 * clusterCount,
           body: `centers[centersOffset + index] = bestCenters[bestCentersOffset + index]${
-            centering ? ' + origin[originOffset + index % 2u]' : ''
+            centering ? ` + bestCenters[bestCentersOffset + ${2 * clusterCount}u + index]` : ''
           };`
         })
       );
@@ -1454,6 +1540,24 @@ var<workgroup> improves: u32;`,
         );
       }
     }
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-publish-iteration-limit`,
+        operation: OPERATION,
+        variant: 'publish-iteration-limit',
+        bindings: [
+          {name: 'state', view: multiStart ? bestState! : state, type: 'u32', access: 'read'},
+          {
+            name: 'limit',
+            view: output.status!.iterationLimitReached!,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: 1,
+        body: `limit[limitOffset] = select(0u, 1u, state[stateOffset] == 0u);`
+      })
+    );
     return nodes;
   }
 }
@@ -1467,6 +1571,7 @@ function getOutputs(output: GPUSpatialKMeansOutput): (GraphDataView | undefined)
     output.squaredDistances,
     output.inertia,
     output.status?.iterationCount,
-    output.status?.converged
+    output.status?.converged,
+    output.status?.iterationLimitReached
   ];
 }

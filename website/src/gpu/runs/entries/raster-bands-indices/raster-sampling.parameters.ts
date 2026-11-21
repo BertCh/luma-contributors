@@ -21,7 +21,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 1,
     step: 1,
     default: 0,
-    options: ['strict', 'renormalize']
+    options: ['propagate', 'renormalize']
   },
   {id: 'gridWidth', label: 'grid.width', min: 8, max: 40, step: 2, default: 16, unit: 'cells'}
 ];

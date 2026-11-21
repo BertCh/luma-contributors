@@ -25,8 +25,13 @@ for (let caseIndex = 0; caseIndex < 720; caseIndex++) {
     const testCase = (await decoded).cases[caseIndex];
     const harness = createRound4Harness(device);
     try {
-      const output: GPUFocalStatisticsOutput = {};
-      for (const key of showcaseOutputs) output[key] = harness.output(key, testCase.n, 'float32');
+      const output: GPUFocalStatisticsOutput = {
+        mean: harness.output('mean', testCase.n, 'float32'),
+        min: harness.output('min', testCase.n, 'float32'),
+        max: harness.output('max', testCase.n, 'float32'),
+        range: harness.output('range', testCase.n, 'float32'),
+        standardDeviation: harness.output('standardDeviation', testCase.n, 'float32')
+      };
       harness.graph.add(
         new GPUFocalStatistics({
           // The showcase passes nodata as NaN, with no separate validity/sentinel.

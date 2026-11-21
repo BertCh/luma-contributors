@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {validateRasterGrid} from '../raster-band-utils';
 import type {
   GraphDataView,
@@ -16,6 +15,7 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -33,6 +33,7 @@ export type GPURasterTextureProps = {
   mask?: GraphDataView<'uint32'>;
   /** 2–32 quantization bins, clamped to the supplied finite increasing range. */
   levels: number;
+  /** Endpoints are rounded to float32 once; bin boundaries round upward, with ties in the upper bin. */
   range: readonly [number, number];
   /** Square radius 1–8. Both pair endpoints must lie inside the clipped window. */
   radius: number;
@@ -48,15 +49,55 @@ export const MAXIMUM_TEXTURE_LEVELS = 32;
 /** Window radius and offset magnitude: each cell scans (2 * radius + 1) squared neighbours in one invocation. */
 export const MAXIMUM_TEXTURE_RADIUS = 8;
 
+const MINIMUM_POSITIVE_FLOAT32 = 2 ** -149;
+const FLOAT32_SIGNIFICAND_BITS = 24;
+
+/** Interpolates validated float32 endpoints exactly and rounds the cutoffs toward positive infinity. */
+function getTextureBinBoundaries(minimum: number, maximum: number, levels: number): number[] {
+  // Multiplying a float32 by 2^149 is exact in binary64 and gives its integer units.
+  const minimumUnits = BigInt(minimum / MINIMUM_POSITIVE_FLOAT32);
+  const maximumUnits = BigInt(maximum / MINIMUM_POSITIVE_FLOAT32);
+  const levelCount = BigInt(levels);
+  return Array.from({length: levels - 1}, (_, index) => {
+    const ordinal = BigInt(index + 1);
+    const numerator = (levelCount - ordinal) * minimumUnits + ordinal * maximumUnits;
+    // Round up to a whole unit, then to the float32 spacing at that magnitude. Every float32
+    // lies on the integer-unit grid, so the first ceiling cannot skip a representable boundary.
+    const units = divideRoundingUp(numerator, levelCount);
+    const magnitude = units < 0n ? -units : units;
+    const spacing =
+      1n << BigInt(Math.max(0, magnitude.toString(2).length - FLOAT32_SIGNIFICAND_BITS));
+    const roundedUnits = divideRoundingUp(units, spacing) * spacing;
+    return Number(roundedUnits) * MINIMUM_POSITIVE_FLOAT32;
+  });
+}
+
+/** Ceiling division with a positive divisor. BigInt division already rounds negative quotients up. */
+function divideRoundingUp(numerator: bigint, divisor: bigint): bigint {
+  return numerator > 0n ? (numerator + divisor - 1n) / divisor : numerator / divisor;
+}
+
 /** Local normalized GLCM; natural-log entropy, constant-window correlation 1, empty features NaN.
  * Run once per direction; symmetry counts each directed pair twice. requiredHalo is radius,
  * since endpoints outside each window are excluded. Interior seams require a source halo.
+ * Quantization compares samples with upward-rounded float32 bin boundaries interpolated
+ * between the captured float32 endpoints. Equality with a boundary enters the upper bin.
  */
 export class GPURasterTexture implements GPUCommandNodeProducer, GPURasterHaloStage {
   readonly id: string;
   readonly requiredHalo: number;
+  private readonly binBoundaries: readonly number[];
   constructor(readonly props: GPURasterTextureProps) {
+    validateGraphPorts(props.id ?? 'raster-texture', props, {
+      values: {required: true, viewType: 'data', formats: ['float32']},
+      mask: {required: false, viewType: 'data', formats: ['uint32']},
+      features: {required: true, viewType: 'data', formats: ['float32']},
+      pairCount: {required: true, viewType: 'data', formats: ['uint32']}
+    });
     this.id = props.id ?? 'raster-texture';
+    const rangeMinimum = Math.fround(props.range[0]);
+    const rangeMaximum = Math.fround(props.range[1]);
+    const rangeWidth = Math.fround(rangeMaximum - rangeMinimum);
     validateRasterGrid(this.id, props.grid);
     this.requiredHalo = props.radius;
     validateCapacity(this.id, 'grid.width', props.grid.width);
@@ -67,10 +108,14 @@ export class GPURasterTexture implements GPUCommandNodeProducer, GPURasterHaloSt
     validateCapacity(this.id, 'radius', props.radius, 1, MAXIMUM_TEXTURE_RADIUS);
     validateRequirement(
       this.id,
-      props.range.every(value => Number.isFinite(Math.fround(value))) &&
-        Math.fround(props.range[1]) > Math.fround(props.range[0]) &&
-        Number.isFinite(Math.fround(props.range[1] - props.range[0])),
+      Number.isFinite(rangeMinimum) &&
+        Number.isFinite(rangeMaximum) &&
+        rangeMaximum > rangeMinimum &&
+        Number.isFinite(rangeWidth),
       'range must be finite float32 values with range[1] > range[0]'
+    );
+    this.binBoundaries = Object.freeze(
+      getTextureBinBoundaries(rangeMinimum, rangeMaximum, props.levels)
     );
     validateRequirement(
       this.id,
@@ -124,8 +169,11 @@ export class GPURasterTexture implements GPUCommandNodeProducer, GPURasterHaloSt
           rasterBinding('pairCount', props.pairCount, true)
         ],
         declarations: `${RASTER_FINITE_WGSL}
-${SCALED_QUOTIENT_WGSL}
-fn quantize(value: f32) -> u32 { return u32(clamp(floor(getScaledQuotient(value - ${getWGSLFloatLiteral(props.range[0])}, ${getWGSLFloatLiteral(props.range[1] - props.range[0])}, 1.0, 0) * ${props.levels}.0), 0.0, ${props.levels - 1}.0)); }`,
+fn quantize(value: f32) -> u32 {
+  var bin = 0u;
+  ${this.binBoundaries.map(boundary => `bin += select(0u, 1u, value >= ${getWGSLFloatLiteral(boundary)});`).join('\n  ')}
+  return bin;
+}`,
         body: `var histogram: array<u32, ${props.levels * props.levels}>;
 let center = vec2<i32>(i32(index % ${props.grid.width}u), i32(index / ${props.grid.width}u));
 let lower = max(center - vec2<i32>(${props.radius}), vec2<i32>(0));

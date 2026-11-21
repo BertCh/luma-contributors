@@ -54,7 +54,7 @@ async function runFixture(
   const label = `${fixture.name} ${context.units} grid ${gridSize}`;
   const knn = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: fixture.k,
+    neighborCount: fixture.k,
     positions,
     capacity: fixture.knn.length * fixture.k,
     parameters: {bounds: WORLD},
@@ -68,7 +68,7 @@ async function runFixture(
     mode: 'radius',
     positions,
     capacity: total + 16,
-    parameters: {bounds: WORLD, radius: fixture.radius * scale},
+    parameters: {bounds: WORLD, searchRadius: fixture.radius * scale},
     spatialContext: context,
     gridSize
   });
@@ -103,7 +103,7 @@ it('GPUNeighborSearch great-circle search with bounds narrower than 360 degrees 
     mode: 'radius',
     positions,
     capacity: fixture.radiusRows.reduce((sum, row) => sum + row.length, 0) + 16,
-    parameters: {bounds: [-180, -20, 180, 20], radius: fixture.radius},
+    parameters: {bounds: [-180, -20, 180, 20], searchRadius: fixture.radius},
     spatialContext: GREAT_CIRCLE,
     gridSize: [12, 4]
   });
@@ -120,12 +120,12 @@ it('GPUNeighborSearch kNN adaptive kernels match libpysal Kernel(fixed=False) on
   for (const [kernel, oracle] of Object.entries(planar.kernels)) {
     const harness = createNeighborSearchHarness(device, {
       mode: 'knn',
-      k: planar.k,
+      neighborCount: planar.k,
       positions,
       capacity: (positions.length / 2) * planar.k,
       parameters: {
         bounds: [0, 0, 100, 100],
-        weightKind: 'kernel',
+        weightType: 'kernel',
         kernel: kernel as 'triangular'
       },
       gridSize: [8, 8]
@@ -154,7 +154,7 @@ it('GPUNeighborSearch invalidCount counts masked rows dropped for non-finite coo
     positions,
     mask,
     capacity: 16,
-    parameters: {bounds: [0, 0, 10, 10], radius: 5}
+    parameters: {bounds: [0, 0, 10, 10], searchRadius: 5}
   });
   const result = await harness.run();
   expect(result.invalidCount).toBe(3);
@@ -164,7 +164,7 @@ it('GPUNeighborSearch invalidCount counts masked rows dropped for non-finite coo
   // Cross join: target rows and query rows are both counted.
   const cross = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 1,
+    neighborCount: 1,
     positions: new Float32Array([1, 1, 20, 20]),
     queryPositions: new Float32Array([2, 2, NaN, NaN, 3, 3]),
     capacity: 8,

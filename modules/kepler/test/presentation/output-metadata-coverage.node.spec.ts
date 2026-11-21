@@ -5,7 +5,7 @@
 import {
   GPU_ANALYSIS_CAUTIONS,
   GPU_ANALYSIS_SUMMARY_TEMPLATES
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import {
   getCatalogBinding,

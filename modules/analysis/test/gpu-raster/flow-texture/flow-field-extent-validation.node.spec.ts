@@ -7,19 +7,19 @@ import {getGPULineIntegralConvolutionParameterValues} from '../../../src/raster-
 import {getGPUStreamlinesParameterValues} from '../../../src/raster-analysis/flow-texture/streamlines-parameters';
 import {getGPUParticleAdvectionParameterValues} from '../../../src/raster-analysis/particle-advection/particle-advection-parameters';
 
-type Extent = readonly [number, number, number, number];
+type Placement = {origin: readonly [number, number]; cellSize: readonly [number, number]};
 
-const VALID_EXTENT: Extent = [10, 20, 2, 3];
+const VALID_PLACEMENT: Placement = {origin: [10, 20], cellSize: [2, 3]};
 // A size that is zero, rounds to zero in float32, or is not finite makes every field sample
 // invalid in the kernel (a division by the cell size), so the packers refuse it.
 const UNUSABLE_SIZES = [0, -0, 1e-50, Number.NaN, Number.POSITIVE_INFINITY, 1e39];
 
-function withCellWidth(cellWidth: number): Extent {
-  return [10, 20, cellWidth, 3];
+function withCellWidth(cellWidth: number): Placement {
+  return {origin: [10, 20], cellSize: [cellWidth, 3]};
 }
 
-function withCellHeight(cellHeight: number): Extent {
-  return [10, 20, 2, cellHeight];
+function withCellHeight(cellHeight: number): Placement {
+  return {origin: [10, 20], cellSize: [2, cellHeight]};
 }
 
 describe('flow field extent validation', () => {
@@ -27,16 +27,16 @@ describe('flow field extent validation', () => {
     for (const size of UNUSABLE_SIZES) {
       expect(() =>
         getGPUParticleAdvectionParameterValues(
-          {fieldExtent: withCellWidth(size), timeStep: 1},
+          {fieldPlacement: withCellWidth(size), timeStep: 1},
           [4, 4]
         )
-      ).toThrow(/GPUParticleAdvection fieldExtent cellWidth/);
+      ).toThrow(/GPUParticleAdvection fieldPlacement cellWidth/);
       expect(() =>
         getGPUParticleAdvectionParameterValues(
-          {fieldExtent: withCellHeight(size), timeStep: 1},
+          {fieldPlacement: withCellHeight(size), timeStep: 1},
           [4, 4]
         )
-      ).toThrow(/GPUParticleAdvection fieldExtent cellHeight/);
+      ).toThrow(/GPUParticleAdvection fieldPlacement cellHeight/);
     }
   });
 
@@ -44,16 +44,16 @@ describe('flow field extent validation', () => {
     for (const size of UNUSABLE_SIZES) {
       expect(() =>
         getGPULineIntegralConvolutionParameterValues({
-          fieldExtent: withCellWidth(size),
-          outputExtent: VALID_EXTENT
+          fieldPlacement: withCellWidth(size),
+          outputPlacement: VALID_PLACEMENT
         })
-      ).toThrow(/GPULineIntegralConvolution fieldExtent cellWidth/);
+      ).toThrow(/GPULineIntegralConvolution fieldPlacement cellWidth/);
       expect(() =>
         getGPULineIntegralConvolutionParameterValues({
-          fieldExtent: VALID_EXTENT,
-          outputExtent: withCellHeight(size)
+          fieldPlacement: VALID_PLACEMENT,
+          outputPlacement: withCellHeight(size)
         })
-      ).toThrow(/GPULineIntegralConvolution outputExtent cellHeight/);
+      ).toThrow(/GPULineIntegralConvolution outputPlacement cellHeight/);
     }
   });
 
@@ -61,11 +61,11 @@ describe('flow field extent validation', () => {
     for (const size of UNUSABLE_SIZES) {
       expect(() =>
         getGPUStreamlinesParameterValues({
-          fieldExtent: withCellHeight(size),
-          gridExtent: VALID_EXTENT,
+          fieldPlacement: withCellHeight(size),
+          gridPlacement: VALID_PLACEMENT,
           stepLength: 1
         })
-      ).toThrow(/GPUStreamlines fieldExtent cellHeight/);
+      ).toThrow(/GPUStreamlines fieldPlacement cellHeight/);
     }
   });
 
@@ -73,41 +73,44 @@ describe('flow field extent validation', () => {
     for (const size of [...UNUSABLE_SIZES, -1]) {
       expect(() =>
         getGPUStreamlinesParameterValues({
-          fieldExtent: VALID_EXTENT,
-          gridExtent: withCellWidth(size),
+          fieldPlacement: VALID_PLACEMENT,
+          gridPlacement: withCellWidth(size),
           stepLength: 1
         })
-      ).toThrow(/GPUStreamlines gridExtent cells/);
+      ).toThrow(/GPUStreamlines gridPlacement cells/);
       expect(() =>
         getGPUStreamlinesParameterValues({
-          fieldExtent: VALID_EXTENT,
-          gridExtent: withCellHeight(size),
+          fieldPlacement: VALID_PLACEMENT,
+          gridPlacement: withCellHeight(size),
           stepLength: 1
         })
-      ).toThrow(/GPUStreamlines gridExtent cells/);
+      ).toThrow(/GPUStreamlines gridPlacement cells/);
     }
   });
 
   it('keeps accepting the extents that packed before, including a negative cell height', () => {
-    const northUpExtent: Extent = [10, 127, 2, -3];
+    const northUpPlacement: Placement = {origin: [10, 127], cellSize: [2, -3]};
     expect(
       Array.from(
-        getGPUParticleAdvectionParameterValues({fieldExtent: northUpExtent, timeStep: 1}, [4, 4])
+        getGPUParticleAdvectionParameterValues(
+          {fieldPlacement: northUpPlacement, timeStep: 1},
+          [4, 4]
+        )
       ).slice(0, 4)
     ).toEqual([10, 127, 2, -3]);
     expect(
       Array.from(
         getGPULineIntegralConvolutionParameterValues({
-          fieldExtent: northUpExtent,
-          outputExtent: VALID_EXTENT
+          fieldPlacement: northUpPlacement,
+          outputPlacement: VALID_PLACEMENT
         })
       ).slice(0, 8)
     ).toEqual([10, 127, 2, -3, 10, 20, 2, 3]);
     expect(
       Array.from(
         getGPUStreamlinesParameterValues({
-          fieldExtent: northUpExtent,
-          gridExtent: VALID_EXTENT,
+          fieldPlacement: northUpPlacement,
+          gridPlacement: VALID_PLACEMENT,
           stepLength: 1
         })
       ).slice(0, 4)

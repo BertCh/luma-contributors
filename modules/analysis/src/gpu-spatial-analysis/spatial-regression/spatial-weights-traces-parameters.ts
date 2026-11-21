@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+export {GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS} from './spatial-weights-traces-routes';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {getPhilox4x32} from '../../analysis-core/kernels/philox-random';
 import {getSpatialSeriesLogDeterminantTail} from './spatial-series-tail';
@@ -12,19 +13,8 @@ export const GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER = 256;
 /** Default number of Rademacher probes of the stochastic mode. */
 export const GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT = 64;
 
-/**
- * Largest row count for which `mode` defaults to `'exact'`.
- *
- * Exact mode runs one unit-vector probe per row, so its work is `rows * maximumPower * nnz` and
- * its probe batches (scratch capped at 64 MiB) number `ceil(rows * rows / 8M)`. At 4096 rows and
- * `maximumPower = 256` that is 2 batches, about 520 dispatches and `3e10` multiply-adds for an
- * 8-neighbor `W`, which stays well under a second; at 16384 rows it is 32 batches, 8200
- * dispatches and `5e11` multiply-adds, which is no longer an interactive default.
- */
-export const GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT = 4096;
-
-/** Largest row count an explicit `mode: 'exact'` accepts (see the dispatch estimate above). */
-export const GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT = 16384;
+/** Largest row count an explicit `mode: 'exact'` accepts. */
+export const GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS = 16384;
 
 /**
  * Probe-scratch budget in float32 elements per ping-pong buffer: two buffers of 8M elements are
@@ -203,15 +193,19 @@ export function getSpatialLogDeterminantTruncationBound(
 
 /**
  * Upper bound of the absolute truncation error of {@link getSpatialMultiplierTraceFromTraces}
- * (and of the total multiplier numerator), `n |s|^(Q+1) / (1 - |s|)`. Returns `Infinity` when `s >= 1`.
+ * and of the total multiplier numerator, `n |t|^(Q+1) / (1 - |t|)`, `t = rho * infinityNorm`.
+ * Pass the maximum absolute row sum `||W||_inf` (1 for row-standardized weights), or a larger
+ * bound on that norm. Spectral radius alone does not bound total multipliers on directed weights:
+ * their powers can have nonzero row sums even when every eigenvalue is zero.
+ * Returns `Infinity` when `|t| >= 1`.
  */
 export function getSpatialMultiplierTruncationBound(
   rho: number,
   maximumPower: number,
   rowCount: number,
-  spectralRadius = 1
+  infinityNorm = 1
 ): number {
-  const scaled = Math.abs(rho) * spectralRadius;
+  const scaled = Math.abs(rho) * infinityNorm;
   if (!(scaled < 1)) {
     return Infinity;
   }

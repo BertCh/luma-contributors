@@ -8,6 +8,7 @@ import {
   demoteWorkflowParameter,
   formatWorkflowParameterValue,
   getWorkflowParameterProblem,
+  resolveCatalogParameterUnit,
   promoteWorkflowParameter,
   resolveWorkflowParameters,
   setWorkflowParameter,
@@ -76,6 +77,7 @@ const ParameterHintRow = styled.div`
 export function WorkbenchParameterValue({
   spec,
   value,
+  coordinateSystem,
   onCommit,
   testId,
   errorTestId,
@@ -96,6 +98,7 @@ export function WorkbenchParameterValue({
 }: {
   spec: WorkflowParameterSpec;
   value: CatalogParameterValue;
+  coordinateSystem?: unknown;
   onCommit: (value: CatalogParameterValue) => void;
   testId: string;
   errorTestId?: string;
@@ -384,7 +387,9 @@ export function WorkbenchParameterValue({
       <label htmlFor={identifier}>
         {spec.label}
         {spec.apply === 'rebuild' && <span className="unit">Rebuild</span>}
-        {spec.unit && <span className="unit">{spec.unit === 'crs' ? 'CRS units' : spec.unit}</span>}
+        {spec.unit && (
+          <span className="unit">{resolveCatalogParameterUnit(spec, coordinateSystem)}</span>
+        )}
       </label>
       {input}
       {isSqlQuery && (
@@ -543,50 +548,55 @@ export function WorkbenchParameterForm({
   const step = document?.steps.find(candidate => candidate.id === stepId);
   const operation = step && store.registry.get(step.operationId);
   const datasets = useMemo(() => store.host.listDatasets(), [store, state.document, state.runner]);
-  const rows = useMemo(
-    () =>
-      document && step && operation
-        ? getWorkbenchParameterRows(
-            document,
-            step,
-            operation,
-            getWorkbenchAnalysisOptions(
+  const parameterRows = useMemo(() => {
+    try {
+      const rows =
+        document && step && operation
+          ? getWorkbenchParameterRows(
               document,
               step,
               operation,
-              store.registry,
-              store.host,
-              state.runner
-            )
-          ).map(row => ({
-            ...row,
-            controlSpec: getWorkbenchParameterControlSpec(
-              row.spec,
-              document.inputs.find(input => input.id === row.inputId)
-            ),
-            suggestions: ['column', 'column-list', 'expression'].includes(row.spec.kind)
-              ? getWorkbenchColumnSuggestions(
-                  document,
-                  step,
-                  operation,
-                  row.spec,
-                  store.registry,
-                  state.runner,
-                  datasets,
-                  getWorkbenchAnalysisOptions(
+              getWorkbenchAnalysisOptions(
+                document,
+                step,
+                operation,
+                store.registry,
+                store.host,
+                state.runner
+              )
+            ).map(row => ({
+              ...row,
+              controlSpec: getWorkbenchParameterControlSpec(
+                row.spec,
+                document.inputs.find(input => input.id === row.inputId)
+              ),
+              suggestions: ['column', 'column-list', 'expression'].includes(row.spec.kind)
+                ? getWorkbenchColumnSuggestions(
                     document,
                     step,
                     operation,
+                    row.spec,
                     store.registry,
-                    store.host,
-                    state.runner
-                  )?.profilesByInput
-                )
-              : undefined
-          }))
-        : [],
-    [document, step, operation, store, state.runner, datasets]
-  );
+                    state.runner,
+                    datasets,
+                    getWorkbenchAnalysisOptions(
+                      document,
+                      step,
+                      operation,
+                      store.registry,
+                      store.host,
+                      state.runner
+                    )?.profilesByInput
+                  )
+                : undefined
+            }))
+          : [];
+      return {rows, error: null};
+    } catch (error) {
+      return {rows: [], error: error instanceof Error ? error.message : String(error)};
+    }
+  }, [document, step, operation, store, state.runner, datasets]);
+  const rows = parameterRows.rows;
   const resolvedValues = useMemo(
     () =>
       document && step && operation ? resolveWorkflowParameters(document, step, operation) : {},
@@ -600,6 +610,7 @@ export function WorkbenchParameterForm({
     [store, operation, state.document, state.runner]
   );
   if (!document || !step || !operation) return null;
+  if (parameterRows.error) return <p role="alert">{parameterRows.error}</p>;
   return (
     <>
       {operation.analysisPresets && operation.analysisPresets.length > 0 && (
@@ -657,6 +668,9 @@ export function WorkbenchParameterForm({
             <ParameterField key={`${stepId}:${spec.name}`}>
               <WorkbenchParameterValue
                 spec={row.controlSpec}
+                coordinateSystem={
+                  rows.find(candidate => candidate.spec.name === 'coordinateSystem')?.value
+                }
                 operationId={operation.id}
                 value={row.value}
                 testId={WORKBENCH_TEST_IDS.parameter(spec.name)}
@@ -672,7 +686,16 @@ export function WorkbenchParameterForm({
                     ? undefined
                     : () =>
                         store.edit(`parameter:${stepId}:${spec.name}`, currentDocument =>
-                          setWorkflowParameter(currentDocument, stepId, spec.name, undefined)
+                          [
+                            spec.name,
+                            ...(operation.analysisBinding?.parameters
+                              .filter(parameter => parameter.aliasFor === spec.name)
+                              .map(parameter => parameter.name) ?? [])
+                          ].reduce(
+                            (changed, name) =>
+                              setWorkflowParameter(changed, stepId, name, undefined),
+                            currentDocument
+                          )
                         )
                 }
                 onCommit={value =>
@@ -691,6 +714,10 @@ export function WorkbenchParameterForm({
                       dataset && currentStep
                         ? getWorkbenchDatasetParameters(currentStep, operation, spec.name, dataset)
                         : {[spec.name]: value};
+                    for (const alias of operation.analysisBinding?.parameters.filter(
+                      parameter => parameter.aliasFor === spec.name
+                    ) ?? [])
+                      values[alias.name] = value;
                     return Object.entries(values).reduce(
                       (changed, [name, parameterValue]) =>
                         setWorkflowParameter(changed, stepId, name, {

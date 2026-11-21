@@ -54,7 +54,7 @@ const OFFICIAL_WGSL_COPIES: OfficialWGSLCopy[] = [
   {
     functionName: 'encodeOrderedFloat',
     localFile:
-      'modules/analysis/src/raster-analysis/raster-zonal-statistics/gpu-raster-zonal-statistics.ts',
+      'modules/analysis/src/raster-analysis/raster-zonal-statistics/raster-zonal-fused-statistics.ts',
     officialFiles: [GRID_AGGREGATION_KERNEL],
     pinSpec: THIS_SPEC,
     reason:

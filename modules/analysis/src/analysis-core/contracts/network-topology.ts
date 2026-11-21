@@ -3,10 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer} from '@luma.gl/core';
-import {DynamicBuffer} from '@luma.gl/core/dynamic';
+import type {DynamicBuffer} from '@luma.gl/core/dynamic';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUVector} from '@luma.gl/graph/gpu-data';
 import {validateSinglePackedView} from '../kernels/gpu-contributor-utils';
+import type {
+  GPUCandidateStatusPort,
+  GPUCardinalityPort,
+  GPUOverflowStatusPort,
+  GPUStatusScalar,
+  GPUVertexCountStatusPort
+} from './status';
 
 /**
  * A network in compressed sparse row (CSR) form, the one network input of every `gpu-network`
@@ -17,9 +24,15 @@ import {validateSinglePackedView} from '../kernels/gpu-contributor-utils';
  * An undirected network lists every edge in both directions.
  *
  * The CSR part (`offsets`, `neighbors`, `weights`) has the names and formats of
- * `GPUSpatialWeights`, so a topology can be passed wherever spatial weights are read. The weights
- * invariants (ascending neighbor IDs, no self pairs) are not required of a network; a consumer that
- * relies on them states it.
+ * `GPUSpatialWeights`, but reuse as spatial weights requires strictly ascending, unique neighbor
+ * rows within each CSR row, no self pairs, and finite non-negative weights. These invariants are
+ * not required of a network; check them with `GPUSpatialWeightsValidation` (or
+ * `computeSpatialWeightsValidationOnCPU`) before the handoff and explicitly choose the statistical
+ * meaning of each weight (travel cost is not automatically statistical influence). Parallel edges
+ * require an explicit aggregation policy before reuse.
+ *
+ * This explicitly sized topology treats every row up to `offsets.length - 1` as a node. For a
+ * noding result with spare node capacity, retain {@link GPUNodedNetworkTopologyPort} instead.
  */
 export type GPUNetworkTopology = {
   /** `nodeCount + 1` exclusive row offsets into the edge slots. */
@@ -30,6 +43,37 @@ export type GPUNetworkTopology = {
   weights: GraphDataView<'float32'>;
   /** Optional position per node, required by the contributors that measure geometry. */
   nodePositions?: GraphDataView<'float32x2'>;
+};
+
+/**
+ * Non-owning handoff of a noded network, retaining its live node count and supplied build status.
+ * A `GPUNetworkNodingOutput` is assignable directly, preserving every view by identity.
+ *
+ * Only node rows in `[0, nodes.status.count)` are live; `topology.offsets.length - 1` is node
+ * capacity. Consumers must bound start/target rows by the GPU-written count and propagate or
+ * refuse supplied build loss (`status` and `pieces.status`) independently of search convergence.
+ * Overall status remains optional; its omission does not certify a complete source network.
+ * Piece count and overflow are mandatory, as on the producer, so its guaranteed loss evidence
+ * cannot be omitted from this handoff.
+ */
+export type GPUNodedNetworkTopologyPort = {
+  topology: GPUNetworkTopology;
+  /** Live node cardinality, retained from the noding output's `nodes.status`. */
+  nodes: {status: GPUCardinalityPort};
+  /** Producer-specific build diagnostics, not canonical fallback or final-capacity status. */
+  status?: {
+    /** Legacy producer spelling: uncertified segment pairs left unsplit, not fallback successes. */
+    uncertainCount?: GPUStatusScalar;
+    /** One after piece/vertex/intersection/node capacity loss OR tolerance-grid range failure. */
+    overflow?: GPUStatusScalar;
+  };
+  /** Piece-generation loss, including final piece/vertex loss and intermediate candidate loss. */
+  pieces: {
+    status: GPUCardinalityPort &
+      GPUOverflowStatusPort &
+      GPUCandidateStatusPort &
+      GPUVertexCountStatusPort;
+  };
 };
 
 /**
@@ -129,7 +173,9 @@ export function getGraphViewDefaultBuffer(
  * @internal
  */
 export function getCoreDefaultBuffer(buffer: Buffer | DynamicBuffer): Buffer {
-  return buffer instanceof DynamicBuffer ? buffer.buffer : buffer;
+  // The published dynamic wrapper exposes its current core allocation through `buffer`.
+  // Constructor identity differs between ESM and CommonJS; core Buffer has no such property.
+  return 'buffer' in buffer ? buffer.buffer : buffer;
 }
 
 /**

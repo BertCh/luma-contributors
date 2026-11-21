@@ -123,19 +123,32 @@ type PreparedGeometry = {
   bounds: Bounds | null;
 };
 
-function prepareGeometry(feature: CatalogFeatureCollection['features'][number]): PreparedGeometry {
-  const points = getPointPositions(feature.geometry).map(toPlanar);
+const ZERO_ORIGIN: PlanarPoint = [0, 0];
+
+/**
+ * Prepares planar parts relative to `origin`. Subtracting a candidate-pair origin keeps the
+ * boundary tolerance (scaled by local coordinate magnitude) independent of where the data sit.
+ */
+function prepareGeometry(
+  feature: CatalogFeatureCollection['features'][number],
+  origin: PlanarPoint = ZERO_ORIGIN
+): PreparedGeometry {
+  const toLocal = (position: CatalogPosition): PlanarPoint => {
+    const [x, y] = toPlanar(position);
+    return [x - origin[0], y - origin[1]];
+  };
+  const points = getPointPositions(feature.geometry).map(toLocal);
   const chains = getLineParts(feature.geometry)
     .filter(part => part.length >= 2)
-    .map(part => part.map(toPlanar));
+    .map(part => part.map(toLocal));
   const polygons = getPolygonParts(feature.geometry)
-    .map(polygon => polygon.filter(ring => ring.length >= 4).map(ring => ring.map(toPlanar)))
+    .map(polygon => polygon.filter(ring => ring.length >= 4).map(ring => ring.map(toLocal)))
     .filter(polygon => polygon.length);
   for (const polygon of polygons) for (const ring of polygon) chains.push(ring);
   return {points, chains, polygons, bounds: getFeatureBounds(feature)};
 }
 
-function isOnBoundary(x: number, y: number, polygon: readonly PlanarPoint[][]): boolean {
+function isOnBoundary(x: number, y: number, polygon: readonly (readonly PlanarPoint[])[]): boolean {
   for (const ring of polygon)
     for (let index = 1; index < ring.length; index++)
       if (
@@ -153,18 +166,55 @@ function isOnBoundary(x: number, y: number, polygon: readonly PlanarPoint[][]): 
   return false;
 }
 
-function isInsidePolygon(x: number, y: number, polygon: readonly PlanarPoint[][]): boolean {
+function isInsidePolygon(
+  x: number,
+  y: number,
+  polygon: readonly (readonly PlanarPoint[])[]
+): boolean {
   let inside = false;
   for (const ring of polygon) if (isPointInRing(x, y, ring)) inside = !inside;
   return inside;
 }
 
-function isInsideOrOn(x: number, y: number, polygons: readonly PlanarPoint[][][]): boolean {
+function isInsideOrOn(
+  x: number,
+  y: number,
+  polygons: readonly (readonly (readonly PlanarPoint[])[])[]
+): boolean {
   return polygons.some(polygon => isInsidePolygon(x, y, polygon) || isOnBoundary(x, y, polygon));
 }
 
-function isStrictlyInside(x: number, y: number, polygons: readonly PlanarPoint[][][]): boolean {
+function isStrictlyInside(
+  x: number,
+  y: number,
+  polygons: readonly (readonly (readonly PlanarPoint[])[])[]
+): boolean {
   return polygons.some(polygon => isInsidePolygon(x, y, polygon) && !isOnBoundary(x, y, polygon));
+}
+
+/** Scan strips between vertex heights; verify a midpoint in an interior x interval. */
+function getPolygonInteriorPoint(polygon: readonly (readonly PlanarPoint[])[]): PlanarPoint | null {
+  const heights = Array.from(new Set(polygon.flat().map(point => point[1]))).sort(
+    (first, second) => first - second
+  );
+  for (let strip = 1; strip < heights.length; strip++) {
+    const y = heights[strip - 1] + (heights[strip] - heights[strip - 1]) / 2;
+    const crossings: number[] = [];
+    for (const ring of polygon) {
+      for (let index = 1; index < ring.length; index++) {
+        const start = ring[index - 1];
+        const end = ring[index];
+        if (start[1] > y !== end[1] > y)
+          crossings.push(start[0] + ((y - start[1]) / (end[1] - start[1])) * (end[0] - start[0]));
+      }
+    }
+    crossings.sort((first, second) => first - second);
+    for (let interval = 1; interval < crossings.length; interval++) {
+      const x = crossings[interval - 1] + (crossings[interval] - crossings[interval - 1]) / 2;
+      if (isStrictlyInside(x, y, [polygon])) return [x, y];
+    }
+  }
+  return null;
 }
 
 function doesIntersect(geometry: PreparedGeometry, target: PreparedGeometry): boolean {
@@ -220,22 +270,36 @@ function isWithin(geometry: PreparedGeometry, target: PreparedGeometry): boolean
       }
     }
   }
-  // A target hole fully inside a polygon geometry would be covered by it.
+  // A covered target hole may share every vertex with the candidate boundary.
+  // Check a verified hole-interior point as well as the existing strict vertex probes.
   for (const polygon of geometry.polygons)
     for (const targetPolygon of target.polygons)
-      for (const hole of targetPolygon.slice(1))
+      for (const hole of targetPolygon.slice(1)) {
         if (hole.some(([x, y]) => isStrictlyInside(x, y, [polygon]))) return false;
+        const interior = getPolygonInteriorPoint([hole]);
+        if (
+          interior &&
+          isStrictlyInside(interior[0], interior[1], [polygon]) &&
+          !isInsideOrOn(interior[0], interior[1], target.polygons)
+        )
+          return false;
+      }
   return true;
 }
 
 export type SpatialPredicate = 'intersects' | 'within' | 'contains';
+
+/** Frame belongs to a candidate pair; unrelated features cannot change its tolerance. */
+function getGeometryOrigin(first: Bounds, second: Bounds): PlanarPoint {
+  return [Math.min(first[0], second[0]), Math.min(first[1], second[1])];
+}
 
 export function runSpatialPredicateJoin(
   left: CatalogFeatureCollection,
   right: CatalogFeatureCollection,
   predicate: SpatialPredicate
 ): CatalogRunOutput {
-  const preparedRight = right.features.map(prepareGeometry);
+  const rightBounds = right.features.map(feature => getFeatureBounds(feature));
   const table = makeCatalogTable('spatial-join-pairs', 'Spatial join pairs', {
     join_id: 'string',
     left_index: 'int32',
@@ -246,17 +310,29 @@ export function runSpatialPredicateJoin(
   });
   const diagnostics: CatalogDiagnostic[] = [];
   left.features.forEach((leftFeature, leftIndex) => {
-    const geometry = prepareGeometry(leftFeature);
-    if (!geometry.bounds) return;
-    preparedRight.forEach((target, rightIndex) => {
-      if (!target.bounds) return;
+    const bounds = getFeatureBounds(leftFeature);
+    if (!bounds) return;
+    rightBounds.forEach((targetBounds, rightIndex) => {
+      if (!targetBounds) return;
+      const origin = getGeometryOrigin(bounds, targetBounds);
+      // Bound the largest local coordinate used by the exact boundary test, including
+      // points just outside the unexpanded box. Filtering must not discard tolerated contact.
+      const tolerance =
+        1e-12 *
+        Math.max(
+          1,
+          Math.max(bounds[2], targetBounds[2]) - origin[0],
+          Math.max(bounds[3], targetBounds[3]) - origin[1]
+        );
       if (
-        geometry.bounds![2] < target.bounds[0] ||
-        geometry.bounds![0] > target.bounds[2] ||
-        geometry.bounds![3] < target.bounds[1] ||
-        geometry.bounds![1] > target.bounds[3]
+        bounds[2] < targetBounds[0] - tolerance ||
+        bounds[0] > targetBounds[2] + tolerance ||
+        bounds[3] < targetBounds[1] - tolerance ||
+        bounds[1] > targetBounds[3] + tolerance
       )
         return;
+      const geometry = prepareGeometry(leftFeature, origin);
+      const target = prepareGeometry(right.features[rightIndex], origin);
       const matches =
         predicate === 'intersects'
           ? doesIntersect(geometry, target)
@@ -280,7 +356,7 @@ export function runSpatialPredicateJoin(
     diagnostics,
     'planar-predicates',
     'info',
-    'Predicates use planar tests on the raw coordinates, boundary contact counts as inside; within means every part of the left geometry lies in the right polygons, contains needs a polygon on the left.'
+    'Predicates use planar tests relative to the minimum corner of each candidate pair; bounds filtering includes the same boundary tolerance; a point within 1e-12 times the larger of 1 and its local coordinate magnitude of an edge is on the boundary, and boundary contact counts as inside; within means every part of the left geometry lies in the right polygons, contains needs a polygon on the left.'
   );
   return {tables: [table], diagnostics, summary: {pairCount: table.rowCount}};
 }
@@ -290,7 +366,7 @@ export function runSpatialPredicateJoin(
 // ---------------------------------------------------------------------------------------------
 
 export function runCoverageValidity(polygons: CatalogFeatureCollection): CatalogRunOutput {
-  const prepared = polygons.features.map(prepareGeometry);
+  const bounds = polygons.features.map(feature => getFeatureBounds(feature));
   const pairTable = makeCatalogTable('coverage-overlaps', 'Coverage overlaps', {
     overlap_id: 'string',
     first_index: 'int32',
@@ -311,28 +387,26 @@ export function runCoverageValidity(polygons: CatalogFeatureCollection): Catalog
           (shell[index][1] + shell[index + 1][1]) / 2
         ]);
       }
-      const open = shell.slice(0, -1);
-      const centroid: PlanarPoint = [
-        open.reduce((sum, point) => sum + point[0], 0) / open.length,
-        open.reduce((sum, point) => sum + point[1], 0) / open.length
-      ];
-      if (isInsidePolygon(centroid[0], centroid[1], polygon)) probes.push(centroid);
+      const interior = getPolygonInteriorPoint(polygon);
+      if (interior) probes.push(interior);
     }
     return probes;
   };
-  const probes = prepared.map(getProbes);
-  for (let first = 0; first < prepared.length; first++)
-    for (let second = first + 1; second < prepared.length; second++) {
-      const a = prepared[first];
-      const b = prepared[second];
-      if (!a.bounds || !b.bounds) continue;
+  for (let first = 0; first < bounds.length; first++)
+    for (let second = first + 1; second < bounds.length; second++) {
+      const firstBounds = bounds[first];
+      const secondBounds = bounds[second];
+      if (!firstBounds || !secondBounds) continue;
       if (
-        a.bounds[2] < b.bounds[0] ||
-        a.bounds[0] > b.bounds[2] ||
-        a.bounds[3] < b.bounds[1] ||
-        a.bounds[1] > b.bounds[3]
+        firstBounds[2] < secondBounds[0] ||
+        firstBounds[0] > secondBounds[2] ||
+        firstBounds[3] < secondBounds[1] ||
+        firstBounds[1] > secondBounds[3]
       )
         continue;
+      const origin = getGeometryOrigin(firstBounds, secondBounds);
+      const a = prepareGeometry(polygons.features[first], origin);
+      const b = prepareGeometry(polygons.features[second], origin);
       let kind: string | null = null;
       for (const polygonA of a.polygons) {
         for (const ringA of polygonA)
@@ -356,8 +430,8 @@ export function runCoverageValidity(polygons: CatalogFeatureCollection): Catalog
       }
       if (
         !kind &&
-        (probes[first].some(([x, y]) => isStrictlyInside(x, y, b.polygons)) ||
-          probes[second].some(([x, y]) => isStrictlyInside(x, y, a.polygons)))
+        (getProbes(a).some(([x, y]) => isStrictlyInside(x, y, b.polygons)) ||
+          getProbes(b).some(([x, y]) => isStrictlyInside(x, y, a.polygons)))
       )
         kind = 'contained';
       if (!kind) continue;
@@ -403,7 +477,7 @@ export function runCoverageValidity(polygons: CatalogFeatureCollection): Catalog
         severity: 'info',
         count: 1,
         message:
-          'Only interior overlaps are reported (proper edge crossings, or a boundary, edge midpoint or interior probe strictly inside another polygon); gaps between polygons are not detected, and shared-edge mismatches are not reported.'
+          'Tests use the minimum corner of each candidate pair as a local origin. Only interior overlaps are reported (proper edge crossings, or a boundary, edge midpoint or verified interior point of each polygon part strictly inside another polygon); gaps between polygons are not detected, and shared-edge mismatches are not reported.'
       }
     ],
     summary: {

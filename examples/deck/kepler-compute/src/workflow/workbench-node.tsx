@@ -7,6 +7,7 @@ import {Handle, Position, type NodeProps} from '@xyflow/react';
 import styled from 'styled-components';
 import {
   updateWorkflowStep,
+  getWorkflowOutputKind,
   type WorkflowInputPortSpec,
   type WorkflowOutputPortSpec
 } from '@luma-contributors/kepler';
@@ -353,7 +354,13 @@ export const WorkbenchNode = memo(function WorkbenchNode(
         </div>
         <div>
           {ports.outputs.map(port => {
-            const kind = stepState?.result?.outputs[port.name]?.kind ?? port.kind;
+            const kind =
+              stepState?.result?.outputs[port.name]?.kind ??
+              (state.document
+                ? getWorkflowOutputKind(state.document, store.registry, step.id, port.name, {
+                    host: store.host
+                  })
+                : port.kind);
             return (
               <Port key={port.name} $output>
                 <PortHandle

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.neighborhood-summary: values, categories → table…",
   "description": "Result of gpu-spatial-analysis.neighborhood-summary: values, categories → table.geometry. polygons: 791. values read back from the GPU run. input values: 791 rows.",
-  "llms": "Result of gpu-spatial-analysis.neighborhood-summary: values, categories → table.geometry\n\n- polygons: 791\n- input values: 791 rows\n- input categories: 791 rows\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- table.geometry: 7 of 791 polygons shown; evenly sampled features and vertices\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.neighborhood-summary: values, categories → table.geometry\n\n- polygons: 791\n- input values: 791 rows\n- input categories: 791 rows\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 77 categories; 5 largest coloured\n- table.geometry: 7 of 791 polygons shown; evenly sampled features and vertices\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "791"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:50.517Z",
-    "runId": "run-13ee4ad1",
+    "date": "2026-11-20T23:50:17.283Z",
+    "runId": "run-76606963",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-13ee4ad1",
+    "runId": "run-76606963",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -29,7 +29,7 @@ import {countContourSegments} from '../../gpu-terrain/terrain-analysis/terrain-a
 import {makeExtentGrid} from './extent-grid';
 import {GREAT_CIRCLE_REFERENCE} from './great-circle-reference';
 import {interpolateInverseDistanceWeightingOnCPU} from './spatial-interpolation-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 /**
  * GPU versus float64 oracle tolerance: `|gpu - cpu| <= 2e-5 * valueScale`, where `valueScale` is
@@ -49,6 +49,7 @@ type Scene = {
   maximumNeighborCount: number;
   invocationTileSize?: number;
   spatialContext?: GPUSpatialContext;
+  longitudeSearch?: 'clipped' | 'wrapped';
 };
 
 type Result = {values: Float32Array; counts: Uint32Array};
@@ -104,6 +105,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
     new GPUInverseDistanceWeighting({
       id: 'idw',
       spatialContext: scene.spatialContext,
+      longitudeSearch: scene.longitudeSearch,
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -748,5 +750,167 @@ it.each([
   } finally {
     tiled.destroy();
     untiled.destroy();
+  }
+});
+
+it('PTS-117 characterizes both clipped seam sides separately from spherical IDW distances', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Equator distances independently R*pi/180 * [.0625,.1875,.1875,.3125]:
+  // [6949.6925146,20849.0775438,20849.0775438,34748.4625730] metres.
+  // Full inverse-square average = (1+2/9+3/9+4/25)/(1+1/9+1/9+1/25)
+  // = 1.3591549295774648. Clipped first two candidates give 1.1.
+  for (const sign of [-1, 1]) {
+    for (const seam of [false, true]) {
+      const shift = seam ? 180 : 0;
+      const longitude = (x: number) => sign * (x + shift > 180 ? x + shift - 360 : x + shift);
+      const query = longitude(-0.0625);
+      const fixture = createFixture(device, {
+        positions: Float32Array.from([-0.125, -0.25, 0.125, 0.25].flatMap(x => [longitude(x), 0])),
+        values: Float32Array.of(1, 2, 3, 4),
+        width: 1,
+        height: 1,
+        indexGridSize: [8, 2],
+        indexBounds: seam ? [-180, -1, 180, 1] : [-1, -1, 1, 1],
+        maximumNeighborCount: 4,
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      });
+      try {
+        const result = await fixture.run({
+          extent: [query - 0.015625, -0.015625, query + 0.015625, 0.015625],
+          searchRadius: 50000,
+          power: 2,
+          neighborCount: 4
+        });
+        expect(Array.from(result.counts)).toEqual([seam ? 2 : 4]);
+        expect(result.values).toHaveLength(1);
+        expect(Number.isFinite(result.values[0])).toBe(true);
+        expect(result.values[0]).toBeCloseTo(seam ? 1.1 : 1.3591549295774648, 3);
+      } finally {
+        fixture.destroy();
+      }
+    }
+  }
+});
+
+it('PTS-117 wraps both IDW seam sides and translated controls', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Equator distances independently R*pi/180 * [.0625,.1875,.1875,.3125]:
+  // [6949.6925146,20849.0775438,20849.0775438,34748.4625730] metres.
+  // Full inverse-square average = (1+2/9+3/9+4/25)/(1+1/9+1/9+1/25)
+  // = 1.3591549295774648. Clipped first two candidates give 1.1.
+  for (const sign of [-1, 1]) {
+    for (const seam of [false, true]) {
+      const shift = seam ? 180 : 0;
+      const longitude = (x: number) => sign * (x + shift > 180 ? x + shift - 360 : x + shift);
+      const query = longitude(-0.0625);
+      const fixture = createFixture(device, {
+        positions: Float32Array.from([-0.125, -0.25, 0.125, 0.25].flatMap(x => [longitude(x), 0])),
+        values: Float32Array.of(1, 2, 3, 4),
+        width: 1,
+        height: 1,
+        indexGridSize: [8, 2],
+        indexBounds: seam ? [-180, -1, 180, 1] : [-1, -1, 1, 1],
+        maximumNeighborCount: 4,
+        longitudeSearch: 'wrapped',
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      });
+      try {
+        const result = await fixture.run({
+          extent: [query - 0.015625, -0.015625, query + 0.015625, 0.015625],
+          searchRadius: 50000,
+          power: 2,
+          neighborCount: 4
+        });
+        expect(Array.from(result.counts)).toEqual([4]);
+        expect(result.values).toHaveLength(1);
+        expect(Number.isFinite(result.values[0])).toBe(true);
+        expect(result.values[0]).toBeCloseTo(1.3591549295774648, 3);
+      } finally {
+        fixture.destroy();
+      }
+    }
+  }
+});
+
+it('PTS-117 wrapped polar caps and coarse overlapping seam intervals visit samples once', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const polar of [false, true]) {
+    const query = polar ? [0, 89.9] : [179.9375, 0];
+    const fixture = createFixture(device, {
+      positions: Float32Array.from(
+        polar ? [0, 89, 90, 89, 180, 89, -90, 89] : [179.875, 0, 179.75, 0, -179.875, 0, -179.75, 0]
+      ),
+      values: Float32Array.of(1, 2, 3, 4),
+      width: 1,
+      height: 1,
+      indexGridSize: [1, 1],
+      indexBounds: [-180, -90, 180, 90],
+      maximumNeighborCount: 4,
+      longitudeSearch: 'wrapped',
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+    });
+    try {
+      const result = await fixture.run({
+        extent: [
+          query[0] - 0.015625,
+          query[1] - 0.015625,
+          query[0] + 0.015625,
+          query[1] + 0.015625
+        ],
+        searchRadius: polar ? 200000 : 50000,
+        power: 0,
+        neighborCount: 0
+      });
+      expect(Array.from(result.counts)).toEqual([4]);
+      expect(result.values).toHaveLength(1);
+      expect(Number.isFinite(result.values[0])).toBe(true);
+      expect(result.values[0]).toBeCloseTo(2.5, 5); // Four equal weights: (1+2+3+4)/4.
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
+it('R1 B1 S1 wrapped IDW includes inclusive seam endpoints and multi-turn queries', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const [query, sample, radius] of [
+    [179.99998474121094, -180, 2],
+    [-179.99998474121094, 180, 2],
+    [-720, 0, 2000],
+    [720, 0, 2000],
+    [1080, 0, 2000]
+  ]) {
+    const halfWidth = Math.abs(query) < 180 ? 2 ** -16 : 0.5;
+    const fixture = createFixture(device, {
+      positions: Float32Array.of(sample, 0),
+      values: Float32Array.of(7),
+      width: 1,
+      height: 1,
+      indexGridSize: [12, 1],
+      indexBounds: [-180, -1, 180, 1],
+      maximumNeighborCount: 4,
+      longitudeSearch: 'wrapped',
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+    });
+    try {
+      const result = await fixture.run({
+        extent: [query - halfWidth, -0.5, query + halfWidth, 0.5],
+        searchRadius: radius,
+        power: 2,
+        neighborCount: 0
+      });
+      expect(result.counts).toHaveLength(1);
+      expect(result.values).toHaveLength(1);
+      expect(Array.from(result.counts)).toEqual([1]);
+      expect(Number.isFinite(result.values[0])).toBe(true);
+      // A single represented neighbor always interpolates its observed value.
+      expect(result.values[0]).toBe(7);
+    } finally {
+      fixture.destroy();
+    }
   }
 });

@@ -23,7 +23,7 @@ export default defineScene<MigrationStopoversOptions>({
   order: 8,
   summary:
     "Dwells found in 101 GPS-tracked animal-years of marsh harriers, Montagu's harriers and spoonbills, filtered to stopovers and clustered on the GPU into ranked sites with their dwell in bird-days.",
-  contributors: ['GPUTrajectoryMetrics', 'GPUSpatialClustering'],
+  contributors: ['GPUTrajectoryMetrics', 'GPUDBSCAN'],
   datasets: [{id: 'poopdeck-animals', role: 'GPS tracks of 42 birds, a fix every two hours'}],
   initialView: EUROPE_AFRICA_VIEW,
   basemap: ground('paperCity'),
@@ -237,7 +237,7 @@ export default defineScene<MigrationStopoversOptions>({
     {
       id: 'sites',
       label: 'Sites',
-      help: 'Clusters found by GPUSpatialClustering and the stopovers left out as noise.'
+      help: 'Clusters found by GPUDBSCAN and the stopovers left out as noise.'
     },
     {
       id: 'siteList',
@@ -300,8 +300,8 @@ export default defineScene<MigrationStopoversOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  GPUTrajectoryMetrics, GPUSpatialClustering,
-  getGPUTrajectoryMetricsParameterValues, getGPUSpatialClusteringParameterValues
+  GPUTrajectoryMetrics, GPUDBSCAN,
+  getGPUTrajectoryMetricsParameterValues, getGPUDBSCANParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CLUSTER_PALETTE} from '../../../../spatial-analysis-shared/layer-constants';
 
@@ -319,20 +319,20 @@ metricsParameters.write(getGPUTrajectoryMetricsParameterValues({
 
 // 2. Kernel: keep stays <= ${state.maxStayDays} d that begin in the window; rejected stops get NaN centroids
 // 3. DBSCAN over the kept centroids: sites
-clusterGraph.add(new GPUSpatialClustering({
+clusterGraph.add(new GPUDBSCAN({
   positions: keptCentroids, parameters: clusterParameters.importToGraph(clusterGraph),
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   gridSize: [192, 192],
   output: {labels, clusters: {ids, status: {count, overflow}}, clusterSizes, clusterCentroids}   // capacity 512
 }));
-clusterParameters.write(getGPUSpatialClusteringParameterValues({
+clusterParameters.write(getGPUDBSCANParameterValues({
   bounds: dataBounds,   // degrees [minLon, minLat, maxLon, maxLat]
-  epsilon: ${state.epsilonKm * 1000}, minimumPoints: ${state.minimumStops}   // meters
+  epsilon: ${state.epsilonKm * 1000}, minimumSamples: ${state.minimumStops}   // meters
 }));
 // Ranking by ${state.rankBy} is a few lines on the CPU over the read-back labels and durations.`,
 
   about: {
-    what: '`GPUTrajectoryMetrics` scans every track for runs of slow steps and reports each dwell with its start and end rows, mean position and duration. A selection kernel keeps the dwells that are short enough to be stopovers, begin in the chosen season and belong to the chosen species. `GPUSpatialClustering` runs DBSCAN on the kept centers to group them into sites.',
+    what: '`GPUTrajectoryMetrics` scans every track for runs of slow steps and reports each dwell with its start and end rows, mean position and duration. A selection kernel keeps the dwells that are short enough to be stopovers, begin in the chosen season and belong to the chosen species. `GPUDBSCAN` runs DBSCAN on the kept centers to group them into sites.',
     why: 'Conservation money goes to places, not to GPS fixes. Ranking the places where birds actually stop, by bird-days of dwell or by the number of birds that use them, says which wetlands and plains the population depends on, and when.',
     howToRead:
       'Each dot is one dwell, colored by how long the bird stayed. The large discs are the ranked sites (the top three have a halo): a disc is the centroid of a cluster of dwells. Tracks run under the dots. All durations are in days of the folded year; the same bird in different years counts as one bird, and its stays add up as dwell.'
@@ -413,7 +413,7 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'A metric radius ring groups individual stop points into a site.',
       optionsMode: 'fresh',
       title: 'From stops to sites',
-      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\n**`GPUSpatialClustering`** runs DBSCAN on the stopover centers: two stopovers are neighbors when they lie within the **Site radius**, and a stop is a core point when **Minimum stops per site** of them are near. Clusters become **sites**; stops that never reach the minimum are noise (grey). The clustering runs on the GPU on longitude and latitude with a great-circle radius, and moving either slider just rewrites a parameter buffer.\n\nColor the stops by **Site** to see the clusters. Compare the live **Sites** count at 10, 80 and 300 km. A larger radius can join neighboring stops; a smaller radius can split sites or leave more stops as noise.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\n**`GPUDBSCAN`** runs DBSCAN on the stopover centers: two stopovers are neighbors when they lie within the **Site radius**, and a stop is a core point when **Minimum stops per site** of them are near. Clusters become **sites**; stops that never reach the minimum are noise (grey). The clustering runs on the GPU on longitude and latitude with a great-circle radius, and moving either slider just rewrites a parameter buffer.\n\nColor the stops by **Site** to see the clusters. Compare the live **Sites** count at 10, 80 and 300 km. A larger radius can join neighboring stops; a smaller radius can split sites or leave more stops as noise.',
       options: {showSites: true, colorStops: 'cluster', maxStayDays: 14},
       highlight: {readout: 'sites'},
       controls: ['colorStops', 'epsilonKm', 'minimumStops'],

@@ -4,6 +4,7 @@
 
 import {NETWORK_CENTRALITY_SCHEDULE_KERNEL_AUDIT_CASES} from '../../gpu-network/network-centrality/network-centrality-kernel-audit-cases';
 import {FITTING_KERNEL_AUDIT_CASES} from './cases-fitting-kernels';
+import {COMPUTATION_RECORD_AUDIT_CASES} from './cases-computation-record';
 import {QUANTILE_LISA_AUDIT_CASES} from './cases-quantile-lisa';
 import {COREGIONALIZATION_FIT_AUDIT_CASES} from './cases-coregionalization-fit';
 import {EXACT_NATURAL_BREAKS_AUDIT_CASES} from './cases-exact-natural-breaks';
@@ -118,6 +119,7 @@ export const KERNEL_AUDIT_CASES: Readonly<Record<string, readonly KernelAuditCas
     ...EXACT_NATURAL_BREAKS_AUDIT_CASES
   ],
   'analysis-core': FITTING_KERNEL_AUDIT_CASES,
+  'computation-record': COMPUTATION_RECORD_AUDIT_CASES,
   raster: RASTER_CASES,
   terrain: TERRAIN_CASES,
   network: [...NETWORK_CASES, ...NETWORK_CENTRALITY_SCHEDULE_KERNEL_AUDIT_CASES],

@@ -4,6 +4,8 @@
 
 import {SCALED_QUOTIENT_WGSL} from '../analysis-core/kernels/scaled-quotient-wgsl';
 
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+
 import {validateNetworkViewBindings, validateNetworkWritableViews} from './network-view-utils';
 
 import {
@@ -18,7 +20,6 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
-  validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../analysis-core/kernels/wgsl-common';
@@ -117,6 +118,27 @@ export class GPUNetworkInhomogeneousK implements GPUCommandNodeProducer {
   readonly props: GPUNetworkInhomogeneousKProps;
 
   constructor(props: GPUNetworkInhomogeneousKProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'eventNodeIds',
+      'intensity',
+      'nodeDistances',
+      'nodeCount',
+      'edgeNodes',
+      'edgeLengths',
+      'radii',
+      'correction',
+      'normalization',
+      'maximumPairCount',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(captured.output, [
+      'k',
+      'numerator',
+      'normalization',
+      'status'
+    ]);
+    props = {...captured, output};
     this.id = props.id ?? 'network-inhomogeneous-k';
     this.props = props;
     validateNetworkWritableViews(this.id, props.output, [
@@ -156,21 +178,57 @@ export class GPUNetworkInhomogeneousK implements GPUCommandNodeProducer {
       props.normalization === undefined || NORMALIZATIONS.includes(props.normalization),
       `normalization must be one of ${NORMALIZATIONS.join(', ')}`
     );
-    validatePointProcessView(props.eventNodeIds, 'uint32', eventCount);
-    validatePointProcessView(props.intensity, 'float32', eventCount);
-    validatePointProcessView(props.nodeDistances, 'float32', eventCount * props.nodeCount);
-    validatePointProcessView(props.edgeLengths, 'float32', props.edgeLengths.length);
-    validateSinglePackedView(props.edgeNodes, ['uint32x2'], 'network-inhomogeneous-k edgeNodes');
+    validatePointProcessView(id, 'eventNodeIds', props.eventNodeIds, ['uint32'], eventCount);
+    validatePointProcessView(id, 'intensity', props.intensity, ['float32'], eventCount);
+    validatePointProcessView(
+      id,
+      'nodeDistances',
+      props.nodeDistances,
+      ['float32'],
+      eventCount * props.nodeCount
+    );
+    validatePointProcessView(
+      id,
+      'edgeLengths',
+      props.edgeLengths,
+      ['float32'],
+      props.edgeLengths.length
+    );
+    validatePointProcessView(
+      id,
+      'edgeNodes',
+      props.edgeNodes,
+      ['uint32x2'],
+      props.edgeLengths.length
+    );
     validateRequirement(
       id,
       props.edgeNodes.length === props.edgeLengths.length,
       'edgeNodes must hold one row per edge length'
     );
-    validatePointProcessView(props.radii, 'float32', props.radii.length);
-    validatePointProcessView(props.output.k, 'float32', props.radii.length);
-    validatePointProcessView(props.output.numerator, 'float32', props.radii.length);
-    validatePointProcessView(props.output.normalization, 'float32', 3);
-    validatePointProcessView(props.output.status, 'uint32', props.radii.length);
+    validatePointProcessView(id, 'radii', props.radii, ['float32'], props.radii.length);
+    validatePointProcessView(id, 'output.k', props.output.k, ['float32'], props.radii.length);
+    validatePointProcessView(
+      id,
+      'output.numerator',
+      props.output.numerator,
+      ['float32'],
+      props.radii.length
+    );
+    validatePointProcessView(
+      id,
+      'output.normalization',
+      props.output.normalization,
+      ['float32'],
+      3
+    );
+    validatePointProcessView(
+      id,
+      'output.status',
+      props.output.status,
+      ['uint32'],
+      props.radii.length
+    );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), getInputs(props));
   }
 

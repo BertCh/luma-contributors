@@ -86,7 +86,8 @@ function build(variant: Variant) {
         weights: {
           offsets: view('uint32', cells + 1),
           neighbors: view('uint32', cells * 8),
-          weights: view('float32', cells * 8)
+          weights: view('float32', cells * 8),
+          status: {overflow: view('uint32', 1), candidateOverflow: view('uint32', 1)}
         },
         selfWeight: 1
       }
@@ -150,7 +151,7 @@ it('GPUEmergingHotSpots lattice with a uint32 cube fits the core limits', () => 
 });
 
 for (const multipleTesting of METHODS) {
-  it(`GPUEmergingHotSpots weights mode ${multipleTesting} at maximal slices fits the core limits`, () => {
+  it(`GPUEmergingHotSpots weights mode ${multipleTesting} with AMG-19 live loss at maximal slices fits the core limits`, () => {
     const {device, nodes} = build({
       gridWidth: 64,
       gridHeight: 1,

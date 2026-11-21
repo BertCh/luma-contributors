@@ -107,7 +107,15 @@ it.each([
       expectCellStorageScopes(nodes);
       expect(nodes).toHaveLength(contributor.estimatedCommandNodeCount);
       for (const stage of ['classify', 'write']) {
-        const selected = nodes.filter(node => node.id.includes(`-${stage}-`));
+        // Polygon covering now batches classification per level and publishes ranked tree prefixes.
+        // This fixture has 257 candidates and one ring, so each level fits one predicate batch.
+        const selected = nodes.filter(node =>
+          family === 'polygon'
+            ? stage === 'classify'
+              ? /-round-\d+-batch-0-classify$/.test(node.id)
+              : /-publish-prefix-\d+$/.test(node.id)
+            : node.id.includes(`-${stage}-`)
+        );
         expect(selected).toHaveLength(level + 1);
         expect(getGPUCommandNodePipelineKeys(selected).size).toBe(1);
         for (const kernel of getGPUCommandNodeKernelSources(selected)) {

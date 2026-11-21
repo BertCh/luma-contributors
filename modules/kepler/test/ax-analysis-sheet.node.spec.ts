@@ -51,7 +51,7 @@ function elements(node: ReactNode): Element[] {
 }
 
 // Real callbacks and effect lifetimes, with deterministic state; no browser timing claim.
-function createProbe<Properties>(component: (properties: Properties) => React.JSX.Element) {
+function createProbe<Properties>(component: (properties: Properties) => ReactNode) {
   const states: unknown[] = [];
   const references: {current: unknown}[] = [];
   const dependencies = new Map<number, readonly unknown[]>();
@@ -82,6 +82,8 @@ function createProbe<Properties>(component: (properties: Properties) => React.JS
           return references[index];
         },
         useId: () => 'probe-parameter',
+        useContext: (context: React.Context<unknown>): unknown =>
+          Reflect.get(context, '_currentValue'),
         useMemo: (factory: () => unknown) => factory(),
         useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot(),
         useEffect(effect: () => void | (() => void), next: readonly unknown[]) {
@@ -114,6 +116,14 @@ function createProbe<Properties>(component: (properties: Properties) => React.JS
       for (const cleanup of cleanups.values()) cleanup();
     }
   };
+}
+function renderAnalysisSheetParameter(properties: Parameters<typeof AnalysisSheetParameter>[0]) {
+  const probe = createProbe(AnalysisSheetParameter);
+  try {
+    return probe.render(properties);
+  } finally {
+    probe.unmount();
+  }
 }
 function change(nodes: Element[], name: string, value: string) {
   const control = nodes.find(
@@ -589,8 +599,8 @@ describe('generated analysis sheet', () => {
         element =>
           (element.props['spec'] as {name?: string} | undefined)?.name === 'segmentsPerQuarter'
       )!;
-      const parameterNodes = elements(
-        AnalysisSheetParameter(parameter.props as Parameters<typeof AnalysisSheetParameter>[0])
+      const parameterNodes = renderAnalysisSheetParameter(
+        parameter.props as Parameters<typeof AnalysisSheetParameter>[0]
       );
       const sharedControl = parameterNodes.find(
         element => element.type === WorkbenchParameterValue
@@ -629,16 +639,14 @@ describe('generated analysis sheet', () => {
     const {binding, sheet} = model('geometry-point-buffer');
     const row = sheet.rows.find(candidate => candidate.specification.name === 'coordinateSystem')!;
     const onChange = vi.fn();
-    const parameter = AnalysisSheetParameter({
+    const parameterNodes = renderAnalysisSheetParameter({
       spec: binding.parameters.find(candidate => candidate.name === 'coordinateSystem')!,
       row,
       value: row.value,
       source: row.source,
       onChange
     });
-    const sharedControl = elements(parameter).find(
-      element => element.type === WorkbenchParameterValue
-    )!;
+    const sharedControl = parameterNodes.find(element => element.type === WorkbenchParameterValue)!;
     const probe = createProbe(WorkbenchParameterValue);
     try {
       const nodes = probe.render(
@@ -827,8 +835,8 @@ describe('generated analysis sheet', () => {
       const parameter = nodes.find(
         element => (element.props['spec'] as {name?: string} | undefined)?.name === 'radius'
       )!;
-      const sharedControl = elements(
-        AnalysisSheetParameter(parameter.props as Parameters<typeof AnalysisSheetParameter>[0])
+      const sharedControl = renderAnalysisSheetParameter(
+        parameter.props as Parameters<typeof AnalysisSheetParameter>[0]
       ).find(element => element.type === WorkbenchParameterValue)!;
       const controlProperties = sharedControl.props as Parameters<
         typeof WorkbenchParameterValue

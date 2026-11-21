@@ -12,7 +12,9 @@ import {
 } from '../../analysis-core/contracts/index';
 import type {GPUCapacityPlan} from '../../analysis-core/contracts/capacity-planning';
 import {
+  validateGraphOutputsDisjointFromInputs,
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
@@ -247,19 +249,56 @@ const TRANSFORM_STATES: readonly GPUSpatialWeightsTransformState[] = [
  * `GPULatticeWeights`, `GPUSpatialWeightsAlgebra`): the CSR views plus the one-row status scalars
  * the producer writes.
  */
-export type GPUSpatialWeightsOutput = GPUSpatialWeights & {
+export type GPUSpatialWeightsProducerOutput = Omit<GPUSpatialWeights, 'status'> & {
   status: {
+    /** Retained slots, copied from the terminal CSR offset. Supported only by producers that explicitly write count. Chunked builders report a chunk-local count. */
+    count?: GraphDataView<'uint32'>;
     /** One when final neighbor slots did not fit capacity, else 0. Intermediate loss is candidateOverflow. */
     overflow: GraphDataView<'uint32'>;
     /**
      * Optional unclamped slot requirement: exact unless `candidateOverflow` (or the producer's
-     * documented intermediate stage) overflowed, in which case it is a lower bound.
+     * documented intermediate stage) overflowed. After loss it counts the retained intermediate
+     * computation; see each producer's contract. It need not bound the exact full requirement.
      */
     requiredCount?: GraphDataView<'uint32'>;
     /** Optional: one after intermediate-stage loss or inherited incomplete input (see each producer). */
     candidateOverflow?: GraphDataView<'uint32'>;
   };
 };
+
+/** Compatibility destination type for producers with their own status schemas. */
+export type GPUSpatialWeightsOutput = GPUSpatialWeights &
+  Pick<GPUSpatialWeightsProducerOutput, 'status'>;
+
+/** @internal Validate requested writers before a construction snapshot can omit unknown fields. */
+export function validateGPUSpatialWeightsProducerStatus(
+  id: string,
+  status: object | undefined,
+  writesCount = true
+): void {
+  if (!status) {
+    validateRequirement(
+      id,
+      false,
+      'output.status is required and must include output.status.overflow'
+    );
+    return;
+  }
+  const accepted = [
+    'overflow',
+    'requiredCount',
+    'candidateOverflow',
+    ...(writesCount ? ['count'] : [])
+  ];
+  for (const [name, view] of Object.entries(status)) {
+    if (view !== undefined)
+      validateRequirement(
+        id,
+        accepted.includes(name),
+        `output.status.${name} is unsupported; accepted fields are ${accepted.join(', ')}`
+      );
+  }
+}
 
 /**
  * Validates a {@link GPUSpatialWeightsOutput} and returns its row count.
@@ -271,14 +310,21 @@ export type GPUSpatialWeightsOutput = GPUSpatialWeights & {
 export function validateGPUSpatialWeightsOutput(
   id: string,
   output: GPUSpatialWeightsOutput,
-  writableDispatches?: readonly (readonly string[])[]
+  writableDispatches?: readonly (readonly string[])[],
+  writesCount?: boolean
 ): number {
+  if (writesCount !== undefined)
+    validateGPUSpatialWeightsProducerStatus(id, output.status, writesCount);
   const rowCount = validateGPUSpatialWeights(id, output, 'output');
+  if (output.status?.count)
+    validateGraphOutputsDisjointFromInputs(id, [output.status.count], [output.offsets]);
+
   const writableFields = {
     offsets: output.offsets,
     neighbors: output.neighbors,
     weights: output.weights,
     distances: output.distances,
+    count: output.status?.count,
     overflow: output.status?.overflow,
     requiredCount: output.status?.requiredCount,
     candidateOverflow: output.status?.candidateOverflow
@@ -301,9 +347,15 @@ export function getGPUSpatialWeightsViews(
 
 /** Returns the status views of a {@link GPUSpatialWeightsOutput}. @internal */
 export function getGPUSpatialWeightsStatusViews(
-  output: GPUSpatialWeightsOutput
+  output: GPUSpatialWeightsOutput,
+  includeCount = false
 ): (GraphDataView<'uint32'> | undefined)[] {
-  return [output.status.overflow, output.status.requiredCount, output.status.candidateOverflow];
+  return [
+    output.status.overflow,
+    output.status.requiredCount,
+    output.status.candidateOverflow,
+    ...(includeCount ? [output.status.count] : [])
+  ];
 }
 
 /**
@@ -339,6 +391,11 @@ export const GPU_SPATIAL_WEIGHTS_DISTANCE_BYTE_LENGTH = 4;
 /** Default growth headroom of {@link getGPUSpatialWeightsCapacityPlan}: 25 percent. */
 export const GPU_SPATIAL_WEIGHTS_CAPACITY_HEADROOM = 0.25;
 
+/** Requirement evidence read together with the producer's candidate-loss certificate. */
+export type GPUSpatialWeightsRequirementObservation =
+  | {kind: 'unknown'}
+  | {kind: 'lower-bound' | 'exact' | 'saturated'; value: number};
+
 /** Inputs to {@link getGPUSpatialWeightsCapacityPlan}. */
 export type GPUSpatialWeightsCapacityPlanOptions = {
   /** Focus rows of the CSR (`offsets.length - 1`). */
@@ -346,7 +403,7 @@ export type GPUSpatialWeightsCapacityPlanOptions = {
   /** Slot capacity the producer ran with, or the first guess. */
   capacity: number;
   /** `output.status.requiredCount` read back after a frame, when the producer wrote it. */
-  requiredCount?: number;
+  requiredCount?: number | GPUSpatialWeightsRequirementObservation;
   /** Whether `distances` are allocated. Defaults to false. */
   distances?: boolean;
   /** Extra fraction of `requiredCount` allocated on growth. Defaults to 0.25. */
@@ -355,6 +412,9 @@ export type GPUSpatialWeightsCapacityPlanOptions = {
 
 /** Slot plan and caller-owned output bytes of a {@link GPUSpatialWeightsOutput}. */
 export type GPUSpatialWeightsCapacityPlan = GPUCapacityPlan & {
+  /** Retry candidate coverage before sizing from nonexact evidence. limited concerns final allocation only. */
+  retryStage: 'none' | 'candidates' | 'final';
+  requirement: GPUSpatialWeightsRequirementObservation;
   /** Bytes of `offsets` (`(rowCount + 1) * 4`). */
   offsetsByteLength: number;
 };
@@ -364,10 +424,14 @@ export type GPUSpatialWeightsCapacityPlan = GPUCapacityPlan & {
  * `GPUContiguityWeights`, `GPULatticeWeights`, `GPUSpatialWeightsAlgebra`): plans the slot
  * capacity of the next allocation and the bytes of the caller-owned CSR views.
  *
+ * Inspect candidateOverflow first: retry the producer candidate stage before sizing final slots.
+ * Unknown, lower-bound and saturated observations return retryStage: candidates with no final growth.
+ * limited=false describes final allocation only, never input completeness.
  * The loop: build with a guess, read `output.status.requiredCount` (and `overflow`) after a
  * frame, and when the required count exceeds the capacity allocate `plan.capacity` slots and
  * rebuild. The capacity stays unchanged while `requiredCount` fits; otherwise it is
- * `requiredCount` plus `headroom`, so a slowly growing input does not rebuild every frame.
+ * `requiredCount` plus `headroom`, capped at the uint32 CSR limit, so a slowly growing input does
+ * not rebuild every frame. A requirement above that limit gives `limited: true`; use chunked CSR.
  * `estimatedOutputBytes` is the bytes of `neighbors`, `weights` (and `distances`) at that
  * capacity plus `offsets`, from the same per-slot constants the recipes allocate with.
  */
@@ -377,21 +441,44 @@ export function getGPUSpatialWeightsCapacityPlan(
   const {rowCount, capacity} = options;
   validateCapacity('getGPUSpatialWeightsCapacityPlan', 'rowCount', rowCount);
   validateCapacity('getGPUSpatialWeightsCapacityPlan', 'capacity', capacity);
-  const headroom = Math.max(options.headroom ?? GPU_SPATIAL_WEIGHTS_CAPACITY_HEADROOM, 0);
-  const requiredCount = options.requiredCount ?? capacity;
+  const requestedHeadroom = options.headroom ?? GPU_SPATIAL_WEIGHTS_CAPACITY_HEADROOM;
+  validateRequirement(
+    'getGPUSpatialWeightsCapacityPlan',
+    Number.isFinite(requestedHeadroom),
+    'headroom must be finite; use a finite growth fraction'
+  );
+  const headroom = Math.max(requestedHeadroom, 0);
+  const observation = options.requiredCount;
+  const requirement: GPUSpatialWeightsRequirementObservation =
+    observation === undefined
+      ? {kind: 'unknown'}
+      : typeof observation === 'object'
+        ? observation
+        : {kind: 'exact', value: observation};
+  validateRequirement(
+    'getGPUSpatialWeightsCapacityPlan',
+    ['unknown', 'lower-bound', 'exact', 'saturated'].includes(requirement.kind),
+    `requiredCount.kind must be unknown, lower-bound, exact or saturated; received ${requirement.kind}`
+  );
+  const candidateRetry = requirement.kind !== 'exact';
+  const requiredCount = requirement.kind === 'unknown' ? capacity : requirement.value;
   if (!(Number.isSafeInteger(requiredCount) && requiredCount >= 0)) {
     throw new Error('getGPUSpatialWeightsCapacityPlan requiredCount must be >= 0');
   }
   const nextCapacity =
-    requiredCount <= capacity ? capacity : Math.ceil(requiredCount * (1 + headroom));
+    candidateRetry || requiredCount <= capacity
+      ? capacity
+      : Math.min(0xffffffff, Math.ceil(requiredCount * (1 + headroom)));
   const slotByteLength =
     GPU_SPATIAL_WEIGHTS_SLOT_BYTE_LENGTH +
     (options.distances ? GPU_SPATIAL_WEIGHTS_DISTANCE_BYTE_LENGTH : 0);
   const offsetsByteLength = (rowCount + 1) * Uint32Array.BYTES_PER_ELEMENT;
   return {
     capacity: nextCapacity,
+    requirement,
+    retryStage: candidateRetry ? 'candidates' : requiredCount > capacity ? 'final' : 'none',
     estimatedRequiredCount: requiredCount,
-    limited: nextCapacity < requiredCount,
+    limited: !candidateRetry && nextCapacity < requiredCount,
     offsetsByteLength,
     estimatedOutputBytes: nextCapacity * slotByteLength + offsetsByteLength,
     estimatedPeakTransientBytes: 0

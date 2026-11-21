@@ -2,6 +2,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_RANK_MARKOV_ROUTES, GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS} from './rank-markov-routes';
+export {GPU_RANK_MARKOV_ROUTES, GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS} from './rank-markov-routes';
+
+import type {
+  GPUAnalysisRoute,
+  GPUAnalysisExecutionPlanner
+} from '../ontology/spatial-analysis-ontology';
+import {
+  evaluateStatisticsRoute,
+  getStatisticsRequirementCheck,
+  getStatisticsViewBindingByteLength,
+  getStatisticsExecutionPlan,
+  validateStatisticsExecutionPlan,
+  type GPUStatisticsPlanDeviceLimits
+} from '../geographic-distribution/statistics-execution-plan';
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {
   createTransientView,
@@ -31,8 +46,6 @@ import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph
 import {createSortedRankNodes, createRankMobilityNodes} from './rank-markov-sorted';
 import {getLoadBalancedTileCount} from '../../analysis-core/kernels/load-balanced-for-each';
 
-/** Pairwise ranking compares every pair and is retained as the small reference route. */
-export const GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS = 64;
 /** Period sort keys and the balanced-panel API retain the existing 65,536-period envelope. */
 export const GPU_RANK_MARKOV_MAXIMUM_PERIOD_COUNT = 65536;
 /** Published stable sorting indexes at most 2^31 panel entries; bindings impose a tighter cap. */
@@ -71,15 +84,32 @@ export type GPURankMarkovProps = {
  * cases keep the population comparable over time. The n-by-n matrix retains original capacity
  * even when rows are excluded; zero transition rows remain zero. Existing transition diagnostics
  * explicitly report nonergodicity instead of inventing a unique stationary distribution.
- * Sorting supports more than 64 rows; dense n-by-n counts must fit a device binding.
- * Optional reference diagnostics retain their separate 64-state limit.
+ * Pairwise ranking and optional reference diagnostics support at most 64 logical states.
+ * Sorted ranking supports up to 65,535 logical states over the domain, subject to dense n-by-n
+ * output bindings. Request sorted without homogeneity, steadyStates, stateSparsity or status
+ * diagnostics above 64 states.
  */
 export class GPURankMarkov implements GPUCommandNodeProducer {
+  /** Numeric route metadata; hard limits and automatic crossovers are distinct. */
+  static get routes(): readonly GPUAnalysisRoute[] {
+    return GPU_RANK_MARKOV_ROUTES;
+  }
+  /** Preflight topology and, when supplied, actual device binding/allocation limits. */
+  static getExecutionPlan(props: GPURankMarkovProps, deviceLimits?: GPUStatisticsPlanDeviceLimits) {
+    return getGPURankMarkovExecutionPlan(props, deviceLimits);
+  }
+
   readonly id: string;
   readonly rowCount: number;
   readonly rankingMethod: 'pairwise' | 'sorted';
   readonly estimatedCommandNodeCount = RANK_MARKOV_COMMAND_NODE_ALLOWANCE;
-  constructor(readonly props: GPURankMarkovProps) {
+  readonly props: GPURankMarkovProps;
+  constructor(props: GPURankMarkovProps) {
+    props = {
+      ...props,
+      output: {...props.output, status: props.output.status ? {...props.output.status} : undefined}
+    };
+    this.props = props;
     this.id = props.id ?? 'rank-markov';
     validateCapacity(
       this.id,
@@ -94,12 +124,28 @@ export class GPURankMarkov implements GPUCommandNodeProducer {
       ['auto', 'pairwise', 'sorted'].includes(props.rankingMethod ?? 'auto'),
       'rankingMethod must be auto, pairwise or sorted'
     );
-    this.rankingMethod =
-      props.rankingMethod === 'pairwise' ||
-      ((props.rankingMethod ?? 'auto') === 'auto' &&
-        this.rowCount <= GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS)
-        ? 'pairwise'
-        : 'sorted';
+    const routePlan = getGPURankMarkovExecutionPlan(props);
+    this.rankingMethod = routePlan.route;
+    const hasDiagnostics = Boolean(
+      props.output.homogeneity ||
+        props.output.steadyStates ||
+        props.output.stateSparsity ||
+        props.output.status
+    );
+    if (
+      this.rankingMethod === 'pairwise' &&
+      this.rowCount > GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS
+    ) {
+      const alternative = getGPURankMarkovExecutionPlan({...props, rankingMethod: 'sorted'});
+      const failed = alternative.constraints.find(
+        check => check.kind !== 'auto-crossover' && !check.satisfied
+      );
+      validateRequirement(
+        this.id,
+        false,
+        `rowCount received ${this.rowCount}; pairwise ranking supports at most 64 rows${alternative.feasible ? "; use rankingMethod: 'sorted' subject to dense output bindings" : `; ${hasDiagnostics ? 'requested diagnostics: ' : ''}sorted alternative fails ${failed?.quantity ?? 'numeric admission checks'}`}`
+      );
+    }
     validateCapacity(
       this.id,
       'rowCount',
@@ -117,6 +163,7 @@ export class GPURankMarkov implements GPUCommandNodeProducer {
       GPU_RANK_MARKOV_MAXIMUM_PANEL_VALUES
     );
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateStatisticsExecutionPlan(this.id, routePlan);
     const outputs = getGraphOutputViews({
       ...props.output,
       status: {converged: props.output.status?.converged}
@@ -153,6 +200,10 @@ export class GPURankMarkov implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateStatisticsExecutionPlan(
+      this.id,
+      getGPURankMarkovExecutionPlan(this.props, graph.device.limits)
+    );
     const {id, props, rowCount: rows} = this;
     const ranks = props.output.ranks;
     const outputViews = getGraphOutputViews({
@@ -286,3 +337,190 @@ if (rank < ${rows}u) { classes[classesOffset + index - row + rank] = row; }`
     return nodes;
   }
 }
+
+/** Includes the dense state-square outputs and period-panel sorting scratch. */
+export function getGPURankMarkovExecutionPlan(
+  props: GPURankMarkovProps,
+  deviceLimits?: GPUStatisticsPlanDeviceLimits
+) {
+  const id = props.id ?? 'rank-markov';
+  validateRequirement(
+    id,
+    ['full-rank', 'geographic-rank'].includes(props.mode ?? 'full-rank'),
+    `mode must be full-rank or geographic-rank; received ${props.mode}`
+  );
+  validateRequirement(
+    id,
+    ['giddy', 'row-id'].includes(props.tieOrder ?? 'giddy'),
+    `tieOrder must be giddy or row-id; received ${props.tieOrder}`
+  );
+  const requested = props.rankingMethod ?? 'auto';
+  validateRequirement(
+    id,
+    ['auto', 'pairwise', 'sorted'].includes(requested),
+    `rankingMethod must be auto, pairwise or sorted; received ${requested}`
+  );
+  const rows = props.values.length / props.periodCount;
+  const route =
+    requested === 'pairwise' ||
+    (requested === 'auto' && rows <= GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS)
+      ? 'pairwise'
+      : 'sorted';
+  const diagnostics = Boolean(
+    props.output.homogeneity ||
+      props.output.steadyStates ||
+      props.output.stateSparsity ||
+      props.output.status
+  );
+  const descriptor = GPU_RANK_MARKOV_ROUTES[0];
+  const checks = [
+    evaluateStatisticsRoute(descriptor, rows),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'route-state-maximum',
+        kind: 'hard-limit',
+        appliesWhen: `rankingMethod ${route}`,
+        minimum: 1,
+        maximum:
+          route === 'pairwise'
+            ? GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS
+            : GPU_TRANSITION_MATRIX_MAXIMUM_CLASS_COUNT
+      },
+      rows
+    ),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'periodCount',
+        kind: 'hard-limit',
+        quantity: 'periodCount',
+        unit: 'elements',
+        minimum: 2,
+        maximum: GPU_RANK_MARKOV_MAXIMUM_PERIOD_COUNT,
+        appliesWhen: 'all routes'
+      },
+      props.periodCount
+    ),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'panel-product',
+        kind: 'hard-limit',
+        quantity: 'rows * periodCount',
+        unit: 'elements',
+        maximum: GPU_RANK_MARKOV_MAXIMUM_PANEL_VALUES,
+        appliesWhen: 'all routes'
+      },
+      props.values.length
+    ),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'transition-opportunities',
+        kind: 'hard-limit',
+        quantity: 'rows * (periodCount - 1)',
+        unit: 'elements',
+        maximum: 0xffffffff,
+        appliesWhen: 'all routes'
+      },
+      rows * (props.periodCount - 1)
+    )
+  ];
+  if (diagnostics)
+    checks.push(
+      evaluateStatisticsRoute(
+        {
+          ...descriptor,
+          name: 'diagnostic-state-maximum',
+          quantity: 'classCount',
+          kind: 'hard-limit',
+          maximum: 64,
+          appliesWhen: 'any diagnostic output or status group'
+        },
+        rows
+      )
+    );
+  const bindings: Record<string, number> = {
+    values: getStatisticsViewBindingByteLength(props.values),
+    ...(props.mask ? {mask: getStatisticsViewBindingByteLength(props.mask)} : {}),
+    'panel scratch: rows * periodCount * 4': props.values.length * 4,
+    'complete cases: rows * 4': rows * 4,
+    'dense counts: rows * rows * 4': rows * rows * 4,
+    'mobility offsets: periodCount * 4': props.periodCount * 4,
+    ...(route === 'sorted'
+      ? {
+          'radix histogram: ceil(panelValues / 256) * 16 * 4':
+            Math.ceil(props.values.length / RANK_MARKOV_SORT_WORKGROUP_SIZE) *
+            RANK_MARKOV_SORT_BUCKET_COUNT *
+            4
+        }
+      : {}),
+    ...(props.output.mobility
+      ? {
+          'mobility totals': (props.periodCount - 1) * 8,
+          'mobility tile carries':
+            getLoadBalancedTileCount(props.periodCount - 1, rows * (props.periodCount - 1)) * 12
+        }
+      : {})
+  };
+  const outputViews = {
+    ...props.output,
+    status: undefined,
+    'status.converged': props.output.status?.converged
+  };
+  for (const [name, view] of Object.entries(outputViews))
+    if (view) bindings[`output.${name}`] = getStatisticsViewBindingByteLength(view);
+  for (const [name, view, minimum, exact] of [
+    ['ranks', props.output.ranks, props.values.length, true],
+    ['counts', props.output.counts, rows * rows, false],
+    ['probabilities', props.output.probabilities, rows * rows, false],
+    ['rowTotals', props.output.rowTotals, rows, false],
+    ['ignored', props.output.ignored, 1, false],
+    ['mobility', props.output.mobility, props.periodCount - 1, true],
+    ['steadyStates', props.output.steadyStates, rows, false],
+    ['stateSparsity', props.output.stateSparsity, 2, false],
+    ['status.converged', props.output.status?.converged, 1, true]
+  ] as const)
+    if (view)
+      checks.push(
+        getStatisticsRequirementCheck(
+          descriptor,
+          `output.${name} ${exact ? 'length must equal' : 'must hold at least'} ${minimum}`,
+          exact ? view.length === minimum : view.length >= minimum
+        )
+      );
+  checks.push(
+    getStatisticsRequirementCheck(
+      descriptor,
+      'output.homogeneity needs at least 2 conditions; Rank Markov has 1',
+      !props.output.homogeneity
+    )
+  );
+  checks.push(
+    getStatisticsRequirementCheck(
+      descriptor,
+      'output.status.converged needs output.steadyStates',
+      !props.output.status?.converged || Boolean(props.output.steadyStates)
+    )
+  );
+  checks.push(
+    getStatisticsRequirementCheck(
+      descriptor,
+      'mask length must equal rowCount',
+      !props.mask || props.mask.length === rows
+    )
+  );
+  return getStatisticsExecutionPlan(
+    route,
+    checks,
+    RANK_MARKOV_COMMAND_NODE_ALLOWANCE,
+    bindings,
+    deviceLimits,
+    descriptor
+  );
+}
+export const GPU_RANK_MARKOV_PLANNER: GPUAnalysisExecutionPlanner<
+  GPURankMarkovProps,
+  GPUStatisticsPlanDeviceLimits | undefined
+> = {getExecutionPlan: getGPURankMarkovExecutionPlan};

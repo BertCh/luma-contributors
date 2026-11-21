@@ -50,7 +50,7 @@ defineLensScenario({
           entry: STATISTICS_OPERATORS['GPUSimilarLocations'],
           columns: {},
           choices: {
-            standardization: 'zscore',
+            standardization: 'z-score',
             resultCount: 10,
             direction: 'most',
             excludeReference: true

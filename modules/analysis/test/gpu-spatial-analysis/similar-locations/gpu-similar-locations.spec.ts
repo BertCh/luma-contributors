@@ -34,7 +34,7 @@ it('GPUSimilarLocations matches the NumPy/SciPy reference and changes parameters
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const {rowCount, attributeCount} = REFERENCE;
-  for (const standardization of ['zscore', 'rank'] as GPUSimilarLocationsStandardization[]) {
+  for (const standardization of ['z-score', 'rank'] as GPUSimilarLocationsStandardization[]) {
     const attributes = createInputBuffer(device, REFERENCE.attributes);
     const mask = createInputBuffer(device, REFERENCE.mask);
     const selection = createOutputBuffer(device, rowCount);
@@ -165,7 +165,7 @@ it('GPUSimilarLocations standardizes large tied inputs with the column reduction
   const valid = Array.from({length: rowCount}, (_, row) =>
     [0, 1, 2].every(channel => Number.isFinite(attributes[row * 3 + channel]))
   );
-  for (const standardization of ['zscore', 'rank'] as GPUSimilarLocationsStandardization[]) {
+  for (const standardization of ['z-score', 'rank'] as GPUSimilarLocationsStandardization[]) {
     const standardized = new Float64Array(rowCount * attributeCount);
     for (let channel = 0; channel < attributeCount; channel++) {
       const column = Array.from({length: rowCount}, (_, row) => attributes[row * 3 + channel]);
@@ -176,7 +176,7 @@ it('GPUSimilarLocations standardizes large tied inputs with the column reduction
       );
       const sorted = [...validColumn].sort((left, right) => left - right);
       for (let row = 0; row < rowCount; row++) {
-        if (standardization === 'zscore') {
+        if (standardization === 'z-score') {
           standardized[row * 3 + channel] = deviation > 0 ? (column[row] - mean) / deviation : 0;
         } else {
           // Average-tie percentile rank by binary search on the sorted column.

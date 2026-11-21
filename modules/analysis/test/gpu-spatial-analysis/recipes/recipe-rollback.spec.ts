@@ -65,7 +65,7 @@ it('surface preparation retries a failed second contributor with the same IDs an
       grid: GRID,
       input: {id: 'band', format: 'float32' as const, storage: {kind: 'buffer' as const, values}},
       maximumDistance: 1,
-      outputs: {values: output.view}
+      output: {values: output.view}
     };
     expect(() =>
       addSurfacePreparationRecipe(fixture.graph, {...props, filter: {radius: 9}})
@@ -98,7 +98,7 @@ it('nested raster calibration and zonal statistics retry a late output failure w
     expect(() =>
       addRasterZonalDistributionRecipe(fixture.graph, {
         ...props,
-        outputs: {medians: shortMedians.view}
+        output: {medians: shortMedians.view}
       })
     ).toThrow();
     const alias = fixture.graph.createDataView(values.buffer, {
@@ -107,11 +107,11 @@ it('nested raster calibration and zonal statistics retry a late output failure w
       byteOffset: 4
     });
     expect(() =>
-      addRasterZonalDistributionRecipe(fixture.graph, {...props, outputs: {medians: alias}})
+      addRasterZonalDistributionRecipe(fixture.graph, {...props, output: {medians: alias}})
     ).toThrow(/share|alias|overlap/);
     addRasterZonalDistributionRecipe(fixture.graph, {
       ...props,
-      outputs: {medians: medians.view, validCounts: counts.view}
+      output: {medians: medians.view, validCounts: counts.view}
     });
     fixture.run();
     expect(await fixture.readFloat32(medians, 2)).toEqual([3, 7]);
@@ -160,7 +160,7 @@ it('R2 reuses a declared prepared polygon index when executing zonal distributio
           candidateCapacity: 8
         }
       },
-      outputs: {medians: median.view, validCounts: count.view}
+      output: {medians: median.view, validCounts: count.view}
     };
     expect(() => addZonalDistributionRecipe(fixture.graph, props)).toThrow(/prepared.*declared/);
     fixture.graph.add(prepared);
@@ -211,7 +211,7 @@ it('R3 R4 R5 validate color ports and independent rates, then execute with a fro
       neighborCapacity: 16,
       pairCapacity: 16,
       palette: fixture.input('palette', new Uint32Array([11, 22, 33, 44, 55]), 'uint32', 5),
-      outputs: {
+      output: {
         smoothedRates: rates.view,
         zScores: scores.view,
         colors: colorView,
@@ -219,13 +219,13 @@ it('R3 R4 R5 validate color ports and independent rates, then execute with a fro
       }
     };
     expect(() =>
-      addRateClusterMapRecipe(fixture.graph, {...props, outputs: {...props.outputs, colors: short}})
+      addRateClusterMapRecipe(fixture.graph, {...props, output: {...props.output, colors: short}})
     ).toThrow(/colors/);
     const shortQuadrants = fixture.output('short-quadrants', 'uint32', 1);
     expect(() =>
       addRateClusterMapRecipe(fixture.graph, {
         ...props,
-        outputs: {...props.outputs, quadrants: shortQuadrants.view}
+        output: {...props.output, quadrants: shortQuadrants.view}
       })
     ).toThrow(/quadrants/);
     const shortPalette = fixture.input('short-palette', new Uint32Array([11]), 'uint32', 1);
@@ -235,7 +235,7 @@ it('R3 R4 R5 validate color ports and independent rates, then execute with a fro
     expect(() =>
       addRateClusterMapRecipe(fixture.graph, {
         ...props,
-        outputs: {...props.outputs, zScores: rates.view}
+        output: {...props.output, zScores: rates.view}
       })
     ).toThrow(/share|alias|overlap/);
     addRateClusterMapRecipe(fixture.graph, props);
@@ -283,7 +283,7 @@ it('R6 retries unequal track pairs and keeps metrics before flags during GPU exe
         ...props,
         similarity: {...props.similarity, pairB: short}
       })
-    ).toThrow(/pairA and pairB/);
+    ).toThrow(/^retry-similarity pairB\.length must equal pairA\.length 2; received 1$/);
     const result = addTrackQualityRecipe(fixture.graph, props);
     const flags = fixture.output('flags', 'uint32', 4);
     fixture.graph.add(

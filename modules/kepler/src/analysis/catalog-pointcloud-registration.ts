@@ -4,6 +4,15 @@
 
 import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {
+  getCatalogNumberProblem,
+  getCatalogValidationIdentity
+} from './catalog-parameter-constraints';
+import {
+  POINT_CLOUD_ICP_ID,
+  POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER,
+  REMOVED_POINT_CLOUD_ICP_ITERATIONS_MESSAGE
+} from './catalog-pointcloud-icp-parameters';
+import {
   GPUPointCloudICP,
   GPUPointCloudChange,
   GPUPointCloudVoxelMerge
@@ -17,12 +26,32 @@ import {
   type PreparedPointCloudInputs
 } from './catalog-pointcloud-input';
 
+/** Kepler keeps its 10-iteration default and 1–30 route limit, independently of producer defaults. */
+export function resolvePointCloudIcpMaximumIterations(parameters: PointCloudParameters): number {
+  validateRequirement(
+    getCatalogValidationIdentity(POINT_CLOUD_ICP_ID),
+    !('iterations' in parameters),
+    REMOVED_POINT_CLOUD_ICP_ITERATIONS_MESSAGE
+  );
+  const parameter = POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER;
+  const maximumIterations = Number(parameters['maximumIterations'] ?? parameter.defaultValue);
+  const problem = getCatalogNumberProblem(parameter, maximumIterations);
+  validateRequirement(
+    'pointcloud-icp:',
+    !problem && Number.isInteger(maximumIterations),
+    `maximumIterations ${problem ?? `must be a whole number; received ${maximumIterations}`}`
+  );
+  return maximumIterations;
+}
+
 export async function runPointCloudRegistration(
   context: CatalogGpuContext,
   operation: string,
   prepared: PreparedPointCloudInputs,
   parameters: PointCloudParameters
 ): Promise<CatalogRunOutput> {
+  const maximumIterations =
+    operation === 'icp' ? resolvePointCloudIcpMaximumIterations(parameters) : 0;
   if (operation === 'voxel-merge') return runVoxelMerge(context, prepared, parameters);
   if (operation === 'change')
     validateRequirement(
@@ -38,7 +67,7 @@ export async function runPointCloudRegistration(
     `catalog-pointcloud-${operation}`,
     async (session): Promise<CatalogRunOutput> => {
       if (operation === 'icp') {
-        const iterations = Number(parameters['iterations']);
+        const iterations = maximumIterations;
         const transform = session.output('transform', 'float32', 16);
         const history = session.output('history', 'float32x3', iterations);
         const inlierMask = session.output('inlier-mask', 'uint32', count);
@@ -48,7 +77,7 @@ export async function runPointCloudRegistration(
             source: session.input('source', cloud.positions, 'float32x3'),
             target: session.input('target', other.positions, 'float32x3'),
             maximumDistance: Number(parameters['maximumDistance']),
-            iterations,
+            maximumIterations,
             output: {
               transform: transform.view,
               history: history.view,

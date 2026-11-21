@@ -17,8 +17,7 @@ export {
 } from './gpu-network-time-routing';
 export type {
   GPUNetworkTimeRoutingProps,
-  GPUNetworkTimeRoutingOutput,
-  GPUNetworkRestrictionEdge
+  GPUNetworkTimeRoutingOutput
 } from './gpu-network-time-routing';
 export {GPUNetworkPointRouting} from './gpu-network-point-routing';
 export type {GPUNetworkPointRoutingProps} from './gpu-network-point-routing';
@@ -33,6 +32,7 @@ export type {
   GPUNetworkRationalAccessOutput
 } from './gpu-network-rational-access';
 export {prepareGPUNetworkFlowDemands} from './prepare-flow-demands';
+export type {GPUNetworkEdgeEndpoints} from './prepare-flow-demands';
 export {prepareGPUNetworkPointRoutingTurns} from './prepare-point-routing-turns';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
@@ -40,7 +40,10 @@ export {
   computeNetworkTimeRoutingOnCPU,
   CPUNetworkTimeRoutingOperation
 } from './cpu-network-time-routing-operation';
-export type {CPUNetworkTimeRoutingInput} from './cpu-network-time-routing-operation';
+export type {
+  CPUNetworkTimeRoutingInput,
+  CPUNetworkTimeRoutingResult
+} from './cpu-network-time-routing-operation';
 export {GPUNetworkTimeRoutingOperation} from './gpu-network-time-routing-operation';
 export type {NetworkTimeRoutingOperationProps} from './gpu-network-time-routing-operation';
 export {
@@ -61,6 +64,7 @@ export type {
 } from './cpu-network-flow-operation';
 export {
   computeNetworkLouvainOnCPU,
+  decodeNetworkLouvainStatus,
   CPUNetworkLouvainOperation
 } from './cpu-network-louvain-operation';
 export type {
@@ -83,3 +87,10 @@ export {GPUNetworkLouvainOperation} from './gpu-network-louvain-operation';
 export type {NetworkLouvainOperationProps} from './gpu-network-louvain-operation';
 export {GPUNetworkRationalAccessOperation} from './gpu-network-rational-access-operation';
 export type {NetworkRationalAccessOperationProps} from './gpu-network-rational-access-operation';
+
+export {
+  getNetworkFacilitySearchLimits,
+  MAXIMUM_FACILITY_COUNT as GPU_NETWORK_FACILITY_OPTIMIZATION_MAXIMUM_FACILITY_COUNT,
+  MAXIMUM_DEMAND_COUNT as GPU_NETWORK_FACILITY_OPTIMIZATION_MAXIMUM_DEMAND_COUNT,
+  MAXIMUM_CANDIDATE_COUNT as GPU_NETWORK_FACILITY_OPTIMIZATION_MAXIMUM_CANDIDATE_COUNT
+} from './gpu-network-facility-optimization';

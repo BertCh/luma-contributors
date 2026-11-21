@@ -48,6 +48,10 @@ export type {
   GPUTerrainHorizonProps,
   GPUTerrainHorizonSettings
 } from './gpu-terrain-horizon';
+/** Word arrays or bounded byte readbacks accepted by {@link unpackGPUTerrainHorizonUnorm16}. */
+export type GPUTerrainHorizonUnorm16Input = Parameters<
+  typeof import('./gpu-terrain-horizon.js').unpackGPUTerrainHorizonUnorm16
+>[0];
 export {
   getGPUTerrainCastShadowParameterValues,
   GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH,
@@ -65,6 +69,7 @@ export {
   getGPUSolarIrradianceSunTable,
   GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH,
   GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE,
+  MAXIMUM_GPU_SOLAR_IRRADIANCE_SAMPLE_COUNT,
   GPUSolarIrradiance
 } from './gpu-solar-irradiance';
 export type {

@@ -6,8 +6,8 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  GPUSpatialClustering,
-  getGPUSpatialClusteringParameterValues
+  GPUDBSCAN,
+  getGPUDBSCANParameterValues
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import fixture from '../../oracles/fixtures/parity-wp1-clustering-modes.json';
 import {compareReference} from '../../oracles/parity-wp1-round8-compare';
@@ -18,7 +18,7 @@ for (const scene of fixture.cases) {
   for (const sumOrder of ['atomic', 'sorted'] as const) {
     for (const denseBoxShortcut of scene.geographic ? [false] : [false, true]) {
       for (const capacity of [1, 4]) {
-        it(`GPUSpatialClustering summaries ${scene.name}/${sumOrder}/${denseBoxShortcut}/${capacity}`, async () => {
+        it(`GPUDBSCAN summaries ${scene.name}/${sumOrder}/${denseBoxShortcut}/${capacity}`, async () => {
           const device = await getWebGPUTestDevice();
           requireTestDevice(device);
           const rig = new GraphRig(device, 'parity-cluster-modes');
@@ -28,14 +28,13 @@ for (const scene of fixture.cases) {
           const rootRows = rig.output('uint32', count);
           const clusterCount = rig.output('uint32', 1);
           const ids = rig.output('uint32', capacity);
-          const stored = rig.output('uint32', 1);
           const overflow = rig.output('uint32', 1);
           const sizes = rig.output('uint32', capacity);
           const centroids = rig.output('float32', 2 * capacity);
           const draw = rig.output('uint32', 1);
           try {
             rig.run(
-              new GPUSpatialClustering({
+              new GPUDBSCAN({
                 positions: rig.input(new Float32Array(scene.positions), 'float32x2', count),
                 ...(scene.geographic
                   ? {
@@ -47,10 +46,10 @@ for (const scene of fixture.cases) {
                     }
                   : {}),
                 parameters: rig.input(
-                  getGPUSpatialClusteringParameterValues({
+                  getGPUDBSCANParameterValues({
                     bounds: [scene.bounds[0], scene.bounds[1], scene.bounds[2], scene.bounds[3]],
                     epsilon: scene.epsilon,
-                    minimumPoints: scene.minimumPoints
+                    minimumSamples: scene.minimumPoints
                   }),
                   'float32'
                 ),
@@ -66,7 +65,7 @@ for (const scene of fixture.cases) {
                   coreFlags: coreFlags.view,
                   rootRows: rootRows.view,
                   clusterCount: clusterCount.view,
-                  clusters: {ids: ids.view, status: {count: stored.view, overflow: overflow.view}},
+                  clusters: {ids: ids.view, status: {count: draw.view, overflow: overflow.view}},
                   clusterSizes: sizes.view,
                   clusterCentroids: importGraphBuffer(
                     rig.graph,
@@ -74,14 +73,13 @@ for (const scene of fixture.cases) {
                     centroids.buffer,
                     'float32x2',
                     capacity
-                  ),
-                  drawInstanceCount: draw.view
+                  )
                 }
               })
             );
             const compare = (metric: string, actual: number[], expected: number[], exact = true) =>
               compareReference(
-                'GPUSpatialClustering',
+                'GPUDBSCAN',
                 {...scene, name: `${scene.name}/${sumOrder}/${denseBoxShortcut}/${capacity}`},
                 metric,
                 actual,
@@ -92,13 +90,10 @@ for (const scene of fixture.cases) {
             compare('core-flags', await coreFlags.readUint32(), scene.coreMask);
             compare('root-rows', await rootRows.readUint32(), scene.rootRows);
             compare('cluster-count', await clusterCount.readUint32(), [scene.roots.length]);
-            compare('stored-count', await stored.readUint32(), [
-              Math.min(capacity, scene.roots.length)
-            ]);
             compare('overflow', await overflow.readUint32(), [
               Number(capacity < scene.roots.length)
             ]);
-            compare('draw-count', await draw.readUint32(), [
+            compare('stored/draw-count', await draw.readUint32(), [
               Math.min(capacity, scene.roots.length)
             ]);
             compare(

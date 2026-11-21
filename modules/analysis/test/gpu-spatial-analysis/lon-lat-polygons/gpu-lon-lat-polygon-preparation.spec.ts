@@ -134,7 +134,11 @@ function createFixture(
         candidateCapacity: queryPoints.length * input.featureOffsets.length,
         output: {
           pointFeatureIds: output('pointFeatureIds', 'uint32', queryPoints.length),
-          featureCounts: output('featureCounts', 'uint32', input.featureOffsets.length - 1),
+          polygonAssignmentCounts: output(
+            'featureCounts',
+            'uint32',
+            input.featureOffsets.length - 1
+          ),
           status: {overflow: output('joinOverflow', 'uint32', 1)}
         }
       })

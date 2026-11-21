@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 import {
   type GPUSpatialContext,
   warnGPUShortLongitudeLatitudeDistance
@@ -78,24 +80,32 @@ export function getGPUKrigingParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_KRIGING_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_KRIGING_PARAMETER_LENGTH) {
-    throw new Error(`Kriging parameter target must hold ${GPU_KRIGING_PARAMETER_LENGTH} elements`);
-  }
+  validateRequirement(
+    'getGPUKrigingParameterValues',
+    !(target.length < GPU_KRIGING_PARAMETER_LENGTH),
+    `Kriging parameter target must hold ${GPU_KRIGING_PARAMETER_LENGTH} elements`
+  );
   const {variogram} = settings;
   const modelCode = MODEL_CODES[variogram.model];
-  if (modelCode === undefined) {
-    throw new Error(`Unknown variogram model ${String(variogram.model)}`);
-  }
-  if (
-    !(variogram.nugget >= 0) ||
-    !(variogram.sill >= 0) ||
-    !(variogram.nugget + variogram.sill > 0)
-  ) {
-    throw new Error('Kriging variogram nugget and sill must be non-negative with a positive total');
-  }
-  if (!(variogram.range > 0) || !Number.isFinite(variogram.range)) {
-    throw new Error('Kriging variogram range must be positive and finite');
-  }
+  validateRequirement(
+    'getGPUKrigingParameterValues',
+    Object.prototype.hasOwnProperty.call(MODEL_CODES, variogram.model),
+    `variogram.model must be spherical, exponential, gaussian, matern-3/2 or matern-5/2; received ${String(variogram.model)}`
+  );
+  validateRequirement(
+    'getGPUKrigingParameterValues',
+    !(
+      !(variogram.nugget >= 0) ||
+      !(variogram.sill >= 0) ||
+      !(variogram.nugget + variogram.sill > 0)
+    ),
+    'Kriging variogram nugget and sill must be non-negative with a positive total'
+  );
+  validateRequirement(
+    'getGPUKrigingParameterValues',
+    !(!(variogram.range > 0) || !Number.isFinite(variogram.range)),
+    'Kriging variogram range must be positive and finite'
+  );
   const neighborCount = settings.neighborCount ?? 16;
   const minimumNeighborCount = settings.minimumNeighborCount ?? 3;
   for (const [name, count] of [
@@ -114,7 +124,8 @@ export function getGPUKrigingParameterValues(
     settings.spatialContext,
     settings.variogram.range
   );
-  target.fill(0);
+  const destination = target;
+  target = new Float32Array(GPU_KRIGING_PARAMETER_LENGTH);
   target.set(getRasterGridCorners('getGPUKrigingParameterValues', grid), 0);
   target[4] = settings.searchRadius;
   target[5] = neighborCount;
@@ -123,7 +134,25 @@ export function getGPUKrigingParameterValues(
   target[8] = variogram.sill;
   target[9] = variogram.range;
   target[10] = minimumNeighborCount;
-  return target;
+  validateRequirement(
+    'getGPUKrigingParameterValues',
+    [7, 8, 9].every(index => Number.isFinite(target[index])) && target[9] > 0,
+    `variogram nugget, sill and range must remain finite with positive range after float32 encoding; received ${variogram.nugget}, ${variogram.sill}, ${variogram.range}`
+  );
+  const encodedTotalVariance = Math.fround(target[7] + target[8]);
+  validateRequirement(
+    'getGPUKrigingParameterValues',
+    Number.isFinite(encodedTotalVariance) && encodedTotalVariance > 0,
+    `variogram total variance must be finite and positive after float32 encoding; received ${encodedTotalVariance}`
+  );
+  validateRequirement(
+    'getGPUKrigingParameterValues',
+    settings.searchRadius >= 0 &&
+      (settings.searchRadius === Infinity || Number.isFinite(target[4])),
+    `searchRadius must be nonnegative and finite after float32 encoding, or Infinity; received ${settings.searchRadius}`
+  );
+  destination.set(target);
+  return destination;
 }
 
 /**

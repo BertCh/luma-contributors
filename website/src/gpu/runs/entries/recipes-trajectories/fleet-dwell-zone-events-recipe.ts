@@ -62,7 +62,7 @@ export default defineOperationRun({
       },
       candidateCapacity: 8192,
       trackEventCapacity: values.trackEventCapacity,
-      outputs: {
+      output: {
         events: {
           status: {
             count: eventCount.view,

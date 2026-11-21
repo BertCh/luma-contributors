@@ -244,28 +244,22 @@ it('invalid HAC kernel changes only robust inference', () => {
   const input = getInput();
   const malformedOffsets = Uint32Array.from(fixture.kernel.offsets);
   malformedOffsets[1] = malformedOffsets[2] + 1;
-  for (const change of [
-    {overflow: Uint32Array.of(1)},
-    {kernel: {...input.weights}},
-    {
-      kernel: {
-        offsets: malformedOffsets,
-        neighbors: Uint32Array.from(fixture.kernel.neighbors),
-        weights: Float32Array.from(fixture.kernel.weights)
-      }
-    }
+  const validKernel = {
+    offsets: Uint32Array.from(fixture.kernel.offsets),
+    neighbors: Uint32Array.from(fixture.kernel.neighbors),
+    weights: Float32Array.from(fixture.kernel.weights)
+  };
+  for (const kernel of [
+    {...validKernel, status: {overflow: Uint32Array.of(1)}},
+    input.weights,
+    {...validKernel, offsets: malformedOffsets}
   ]) {
     const result = computeSpatialTwoStageLeastSquaresOnCPU(
       {
         ...input,
         robust: {
           method: 'HAC',
-          kernel: {
-            offsets: Uint32Array.from(fixture.kernel.offsets),
-            neighbors: Uint32Array.from(fixture.kernel.neighbors),
-            weights: Float32Array.from(fixture.kernel.weights)
-          },
-          ...change
+          kernel
         }
       },
       {predictorCount: 2}
@@ -314,7 +308,7 @@ it('validates both operation constructions and retains CPU support beyond shader
     () =>
       new CPUSpatialTwoStageLeastSquaresOperation({
         ...PROPS,
-        robust: {method: 'HAC', output: {covariance: 'covariance', status: 'robustStatus'}}
+        robust: {method: 'HAC', output: {covariance: 'covariance', status: {code: 'robustStatus'}}}
       })
   ).toThrow(/kernel/);
 });

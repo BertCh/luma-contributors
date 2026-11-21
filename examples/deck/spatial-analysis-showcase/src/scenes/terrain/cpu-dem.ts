@@ -258,7 +258,7 @@ export type DemProbe = {
   getGroundCellSize(row: number): number;
   /**
    * Bilinear elevation at a longitude and latitude in metres; NaN outside the raster or when one
-   * of the four cells has no data.
+   * of the positive-weight contributing cells has no data.
    */
   sampleAt(lngLat: readonly [number, number]): number;
   /** Bilinear elevation at pixel-edge coordinates (see the module doc). */
@@ -380,9 +380,20 @@ export function createDemProbe(dem: TerrainDem): DemProbe {
     const fractionX = cx - column;
     const fractionY = cy - row;
     const index = row * width + column;
-    const top = values[index] * (1 - fractionX) + values[index + 1] * fractionX;
-    const bottom = values[index + width] * (1 - fractionX) + values[index + width + 1] * fractionX;
-    return top * (1 - fractionY) + bottom * fractionY;
+    const interpolateRow = (start: number): number => {
+      if (fractionX === 0) return values[start];
+      if (fractionX === 1) return values[start + 1];
+      const first = values[start];
+      const second = values[start + 1];
+      if (!Number.isFinite(first) || !Number.isFinite(second)) return Number.NaN;
+      return first === second ? first : first * (1 - fractionX) + second * fractionX;
+    };
+    if (fractionY === 0) return interpolateRow(index);
+    if (fractionY === 1) return interpolateRow(index + width);
+    const top = interpolateRow(index);
+    const bottom = interpolateRow(index + width);
+    if (!Number.isFinite(top) || !Number.isFinite(bottom)) return Number.NaN;
+    return top === bottom ? top : top * (1 - fractionY) + bottom * fractionY;
   };
   const sampleAt = (lngLat: readonly [number, number]): number => {
     const [x, y] = dem.getPixelCoordinates(lngLat[0], lngLat[1]);

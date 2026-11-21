@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {
-  validateCapacity,
-  validateRequirement
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
@@ -14,13 +13,17 @@ import {
 import {
   calibrateRasterOperationBand,
   readRasterOperationBand,
+  snapshotRasterOperationBand,
   validateRasterOperationBand,
   type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
 import {GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH} from '../gpu-raster-fractional-coverage';
 import {GPU_RASTER_FRACTIONAL_ZONAL_DISTRIBUTION_STATUS as STATUS} from '../gpu-raster-fractional-zonal-distribution';
 import type {RasterFractionalZonalDistributionOperationProps} from './gpu-raster-fractional-zonal-distribution-operation';
-import {validateRasterGridAxisAligned} from '../raster-band-utils';
+import {
+  validateRasterFractionalDistributionOptions,
+  snapshotRasterFractionalDistributionOutput
+} from './raster-fractional-distribution-options';
 import {
   getRasterRowAreaScale,
   isRasterEffectiveAxisAligned
@@ -96,7 +99,7 @@ export function computeRasterFractionalZonalDistributionOnCPU(
 ): CPURasterFractionalZonalDistributionResult {
   const id = 'computeRasterFractionalZonalDistributionOnCPU';
   validateRasterOperationBand(id, input.input, options.grid);
-  validateDistributionOptions(id, options, input.cellAreas !== undefined);
+  validateRasterFractionalDistributionOptions(id, options, input.cellAreas !== undefined);
   const {coverage, probabilities} = input;
   const capacity = coverage.zoneIds.length;
   validateCapacity(id, 'coverage.zoneIds length', capacity);
@@ -116,7 +119,8 @@ export function computeRasterFractionalZonalDistributionOnCPU(
   for (const name of ['observationWeights', 'cellAreas'] as const)
     if (input[name] && input[name].length !== cellCount)
       throw new Error(`${id} ${name} must have one row per cell`);
-  // The packer's final word is padding; like the contributor only the preceding words are needed.
+  // Legacy word 7 is ignored padding; seven words suffice here. Version 2 appends
+  // word 8 = 2 and word 9 = absolute Y offset, restoring the ground-area row latitude.
   if (
     input.parameters &&
     input.parameters.length < GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH - 1
@@ -124,7 +128,8 @@ export function computeRasterFractionalZonalDistributionOnCPU(
     throw new Error(`${id} parameters must contain the coverage georeference layout`);
   const elevations = calibrateRasterOperationBand(input.input, cellCount);
   const [columnX, rowX, , columnY, rowY] = options.grid.affine;
-  // Layout of getGPURasterFractionalCoverageParameterValues: originX, originY, a, b, d, e, determinant, padding.
+  // getGPURasterFractionalCoverageParameterValues: [originX, originY, a, b, d, e, determinant, padding],
+  // optionally followed by [2, absolute Y offset]. Reuse the same ten words for clipping and area.
   const [, , , , , , parameterDeterminant] = input.parameters ?? [];
   const defaultArea = Math.abs(
     input.parameters ? parameterDeterminant : columnX * rowY - rowX * columnY
@@ -325,42 +330,49 @@ export function computeRasterFractionalZonalDistributionOnCPU(
   return result;
 }
 
-function validateDistributionOptions(
-  id: string,
-  options: CPURasterFractionalZonalDistributionOptions,
-  hasCellAreas: boolean
-): void {
-  validateCapacity(id, 'zoneCount', options.zoneCount, 0);
-  validateRequirement(
-    id,
-    ['uniform', 'geographic', 'web-mercator'].includes(options.cellSizeMode ?? 'uniform'),
-    'cellSizeMode must be uniform, geographic or web-mercator'
-  );
-  validateRasterGridAxisAligned(id, options.grid, options.cellSizeMode);
-  validateRequirement(
-    id,
-    !hasCellAreas || (options.cellSizeMode ?? 'uniform') === 'uniform',
-    'cellSizeMode must be uniform when cellAreas is given (cellAreas already declares the areas)'
-  );
-  validateRequirement(
-    id,
-    ['exactextract', 'inverse-cdf'].includes(options.quantileMethod ?? 'exactextract'),
-    "quantileMethod must be 'exactextract' or 'inverse-cdf'"
-  );
-  const [columnX, rowX, , columnY, rowY] = options.grid.affine;
-  validateRequirement(
-    id,
-    Number.isFinite(columnX * rowY - rowX * columnY) && columnX * rowY - rowX * columnY !== 0,
-    'grid.affine must have a finite nonzero determinant'
-  );
-}
-
 /** CPU twin without GPU tuple, probability or zone caps. */
 export class CPURasterFractionalZonalDistributionOperation extends GPUCPUOperation {
   constructor(props: RasterFractionalZonalDistributionOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'zoneCount',
+      'coverage',
+      'probabilities',
+      'probabilityCount',
+      'quantileMethod',
+      'observationWeights',
+      'parameters',
+      'cellSizeMode',
+      'cellAreas',
+      'output'
+    ]);
+    const output = snapshotRasterFractionalDistributionOutput(props.output);
+    const coverage = snapshotConstructionFields(props.coverage, [
+      'zoneIds',
+      'cellIds',
+      'fractions',
+      'zoneValidity',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...props,
+      input: snapshotRasterOperationBand(props.input),
+      coverage: Object.freeze({
+        ...coverage,
+        status: snapshotConstructionFields(coverage.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow'
+        ])
+      }),
+      output
+    });
     const id = props.id ?? 'raster-fractional-zonal-distribution';
     validateRasterOperationBand(id, props.input, props.grid);
-    validateDistributionOptions(id, props, props.cellAreas !== undefined);
+    validateRasterFractionalDistributionOptions(id, props, props.cellAreas !== undefined);
     // The operation base requires nonempty graph outputs, even though the pure function accepts zero zones.
     validateCapacity(id, 'zoneCount', props.zoneCount);
     validateCapacity(id, 'probabilityCount', props.probabilityCount);
@@ -370,28 +382,30 @@ export class CPURasterFractionalZonalDistributionOperation extends GPUCPUOperati
       props.zoneCount * props.probabilityCount,
       0
     );
+    const inputs = {
+      values: props.input.storage.values,
+      probabilities: props.probabilities,
+      zoneIds: props.coverage.zoneIds,
+      cellIds: props.coverage.cellIds,
+      fractions: props.coverage.fractions,
+      zoneValidity: props.coverage.zoneValidity,
+      count: props.coverage.status.count,
+      requiredCount: props.coverage.status.requiredCount,
+      overflow: props.coverage.status.overflow,
+      ...(props.coverage.status.candidateOverflow !== undefined
+        ? {candidateOverflow: props.coverage.status.candidateOverflow}
+        : {}),
+      ...(props.input.validity !== undefined ? {inputValidity: props.input.validity} : {}),
+      ...(props.observationWeights !== undefined
+        ? {observationWeights: props.observationWeights}
+        : {}),
+      ...(props.cellAreas !== undefined ? {cellAreas: props.cellAreas} : {}),
+      ...(props.parameters !== undefined ? {parameters: props.parameters} : {})
+    };
+    validateOperationGraphNames(id, inputs, props.output);
     super({
       id,
-      inputs: {
-        values: props.input.storage.values,
-        probabilities: props.probabilities,
-        zoneIds: props.coverage.zoneIds,
-        cellIds: props.coverage.cellIds,
-        fractions: props.coverage.fractions,
-        zoneValidity: props.coverage.zoneValidity,
-        count: props.coverage.status.count,
-        requiredCount: props.coverage.status.requiredCount,
-        overflow: props.coverage.status.overflow,
-        ...(props.coverage.status.candidateOverflow !== undefined
-          ? {candidateOverflow: props.coverage.status.candidateOverflow}
-          : {}),
-        ...(props.input.validity !== undefined ? {inputValidity: props.input.validity} : {}),
-        ...(props.observationWeights !== undefined
-          ? {observationWeights: props.observationWeights}
-          : {}),
-        ...(props.cellAreas !== undefined ? {cellAreas: props.cellAreas} : {}),
-        ...(props.parameters !== undefined ? {parameters: props.parameters} : {})
-      },
+      inputs,
       outputs: Object.fromEntries(
         Object.entries(props.output).map(([port, value]) => [
           value,

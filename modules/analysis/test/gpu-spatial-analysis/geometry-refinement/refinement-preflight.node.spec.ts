@@ -416,3 +416,84 @@ it.each([
       })
   ).toThrow(/overlap|separate physical buffers/);
 });
+
+it.each([
+  'positions',
+  'ringOffsets',
+  'polygonOffsets',
+  'featureOffsets'
+] as const)('rejects substituted subdivision %s formats before declaration', name => {
+  const {graph, contributor} = fixture('subdivide');
+  const props = (contributor as GPUSubdividePolygons).props;
+  const format = name === 'positions' ? 'uint32x2' : 'float32';
+  const wrong = createTransientView(graph, 'wrong-format', format, props[name].length);
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  expect(() => new GPUSubdividePolygons({...props, [name]: wrong} as never)).toThrow(
+    new RegExp(`subdivide-polygons ${name}.*received ${format}`)
+  );
+  expect(allocate).not.toHaveBeenCalled();
+});
+
+it('rejects child work before scratch and permits a same-ID subdivision retry', () => {
+  const {graph, contributor} = fixture('subdivide');
+  const props = (contributor as GPUSubdividePolygons).props;
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  expect(() => new GPUSubdividePolygons({...props, maximumWork: NaN})).toThrow(
+    /subdivide-polygons maximumWork/
+  );
+  expect(allocate).not.toHaveBeenCalled();
+  const correctedProps = {...props, maximumWork: 4000000};
+  const corrected = new GPUSubdividePolygons(correctedProps);
+  correctedProps.maximumWork = NaN;
+  expect(corrected.props.maximumWork).toBe(4000000);
+  const nodes = corrected.getCommandNodes(graph);
+  expect(nodes.map(node => node.id)).toEqual(
+    expect.arrayContaining([
+      'subdivide-polygons-triangulation-earcut',
+      'subdivide-polygons-merge-count',
+      'subdivide-polygons-merge-write'
+    ])
+  );
+  const identifiers = allocate.mock.calls.map(([descriptor]) => descriptor.id);
+  expect(identifiers).toEqual(
+    expect.arrayContaining([
+      'subdivide-polygons-indices',
+      'subdivide-polygons-valid',
+      'subdivide-polygons-triangle-offsets',
+      'subdivide-polygons-polygon-info',
+      'subdivide-polygons-consumed',
+      'subdivide-polygons-piece-vertex-counts',
+      'subdivide-polygons-piece-flags',
+      'subdivide-polygons-piece-offsets'
+    ])
+  );
+  expect(new Set(identifiers).size).toBe(identifiers.length);
+});
+
+it('declares zero polygons with resident position capacity without leaking scratch', () => {
+  const {graph, contributor} = fixture('subdivide');
+  const original = (contributor as GPUSubdividePolygons).props;
+  const props = {
+    ...original,
+    positions: createTransientView(graph, 'resident-position-capacity', 'float32x2', 2),
+    ringOffsets: createTransientView(graph, 'empty-rings', 'uint32', 1),
+    polygonOffsets: createTransientView(graph, 'empty-polygons', 'uint32', 1),
+    featureOffsets: createTransientView(graph, 'empty-features', 'uint32', 1)
+  };
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  // No polygon can own an index, irrespective of the unused resident position capacity.
+  expect(() => new GPUSubdividePolygons(props).getCommandNodes(graph)).not.toThrow();
+  expect(allocate).not.toHaveBeenCalled();
+  const identifiers = allocate.mock.calls.map(([descriptor]) => descriptor.id);
+  expect(new Set(identifiers).size).toBe(identifiers.length);
+});
+
+it('rejects an explicit null subdivision method instead of defaulting it', () => {
+  const {graph, contributor} = fixture('subdivide');
+  const props = (contributor as GPUSubdividePolygons).props;
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  expect(() => new GPUSubdividePolygons({...props, method: null as never})).toThrow(
+    /subdivide-polygons method.*convex.*rectilinear.*received null/
+  );
+  expect(allocate).not.toHaveBeenCalled();
+});

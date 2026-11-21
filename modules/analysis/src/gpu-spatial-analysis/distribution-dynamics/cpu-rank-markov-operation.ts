@@ -73,7 +73,8 @@ function validateOptions(id: string, rowCount: number, options: CPURankMarkovOpt
  *
  * What differs from the GPU contributor:
  * - Arithmetic uses float64 and rounds once at the outputs; use 2e-6 relative tolerance for floats.
- * - The GPU-only 64-location and 65536-period caps are dropped. Dense output sizes and total
+ * - The GPU pairwise/diagnostic 64-state and 65,536-period caps are dropped. The CPU retains
+ *   its 65,535-row dense-square bound. Dense output sizes and total
  *   transition opportunities must fit uint32.
  * - Sorting replaces pairwise ranking. Tie order and missing ranks are unchanged.
  * - Diagnostics call the public float64 computeTransitionDiagnosticsOnCPU, including its
@@ -161,6 +162,10 @@ export function computeRankMarkovOnCPU(
 /** CPU twin, retaining uint32 layout limits and dropping GPU-only size caps. */
 export class CPURankMarkovOperation extends GPUCPUOperation {
   constructor(props: RankMarkovOperationProps) {
+    props = {
+      ...props,
+      output: {...props.output, status: props.output.status ? {...props.output.status} : undefined}
+    };
     const operation = new GPURankMarkovOperation(props);
     const {id} = operation;
     validateOptions(id, props.rowCount, props);

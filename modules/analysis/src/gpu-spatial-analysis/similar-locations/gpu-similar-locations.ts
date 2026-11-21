@@ -16,6 +16,7 @@ import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-wei
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
@@ -30,6 +31,9 @@ import type {GPUCardinalityPort} from '../../analysis-core/contracts/status';
 
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {MULTIPLICATION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/multiplication-rounding-error-wgsl';
 
 const OPERATION = 'GPUSimilarLocations';
 /** Lanes of the column-reduction workgroups (one workgroup per attribute). */
@@ -43,7 +47,7 @@ export const GPU_SIMILAR_LOCATIONS_MAXIMUM_COLUMN_COUNT = Math.floor(0xffffffff 
 
 /**
  * Largest `values` length (`rowCount * columnCount`) of {@link GPUSimilarLocations} on `device`: the
- * attribute matrix and its standardized copy hold 4 bytes per entry in one storage binding, so
+ * attribute matrix (and its materialized copy on the rank route) holds 4 bytes per entry in one storage binding, so
  * 33554432 on a default device (128 MiB bindings).
  *
  * @param device Device whose `maxStorageBufferBindingSize` applies.
@@ -63,7 +67,38 @@ const RANK_SORT_MINIMUM_ROWS = 4096;
 const REDUCTION_WGSL = /* wgsl */ `
 const LANES: u32 = ${REDUCTION_LANES}u;
 var<workgroup> floatScratch: array<f32, ${REDUCTION_LANES}>;
+var<workgroup> errorScratch: array<f32, ${REDUCTION_LANES}>;
 var<workgroup> countScratch: array<u32, ${REDUCTION_LANES}>;
+fn addReferenceSum(total: vec2<f32>, value: f32, zero: u32) -> vec2<f32> {
+  let next = getRoundedDifference(total.x + value, 0.0, zero);
+  let remainder = total.y + getAdditionRoundingError(total.x, value, next);
+  let high = getRoundedDifference(next + remainder, 0.0, zero);
+  return vec2<f32>(high, getAdditionRoundingError(next, remainder, high));
+}
+fn reduceReferenceSum(value: vec2<f32>, lane: u32, zero: u32) -> vec2<f32> {
+  workgroupBarrier();
+  floatScratch[lane] = value.x; errorScratch[lane] = value.y;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
+    if (lane < stride) {
+      var total = addReferenceSum(vec2<f32>(floatScratch[lane], errorScratch[lane]), floatScratch[lane + stride], zero);
+      total = addReferenceSum(total, errorScratch[lane + stride], zero);
+      floatScratch[lane] = total.x; errorScratch[lane] = total.y;
+    }
+    workgroupBarrier();
+  }
+  return vec2<f32>(floatScratch[0], errorScratch[0]);
+}
+fn reduceMaximum(value: f32, lane: u32) -> f32 {
+  workgroupBarrier();
+  floatScratch[lane] = value;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
+    if (lane < stride) { floatScratch[lane] = max(floatScratch[lane], floatScratch[lane + stride]); }
+    workgroupBarrier();
+  }
+  return floatScratch[0];
+}
 fn reduceSum(value: f32, lane: u32) -> f32 {
   workgroupBarrier();
   floatScratch[lane] = value;
@@ -87,6 +122,16 @@ fn reduceCount(value: u32, lane: u32) -> u32 {
     workgroupBarrier();
   }
   return countScratch[0];
+}
+fn reduceFirstRow(value: u32, lane: u32) -> u32 {
+  workgroupBarrier();
+  countScratch[lane] = value;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
+    if (lane < stride) { countScratch[lane] = min(countScratch[lane], countScratch[lane + stride]); }
+    workgroupBarrier();
+  }
+  return countScratch[0];
 }`;
 
 /** Order-preserving u32 key of a finite f32 (-0 and +0 share a key); WGSL for the rank sort. */
@@ -101,13 +146,13 @@ fn getOrderedKey(value: f32) -> u32 {
 
 /**
  * How attribute columns are standardized before distances are measured:
- * - `'zscore'`: `(x - mean) / standard deviation` over the valid rows (population deviation); a
+ * - `'z-score'`: `(x - mean) / standard deviation` over the valid rows (population deviation); a
  *   constant column contributes zero.
  * - `'rank'`: average-tie percentile rank in `[0, 1]`, `(rank - 1) / (n - 1)`. Below 4096 rows
  *   the ranking is an all-pairs count per column; from 4096 rows each column is radix sorted and
  *   the counts come from binary searches (O(n log n)). Both give the same ranks.
  */
-export type GPUSimilarLocationsStandardization = 'zscore' | 'rank';
+export type GPUSimilarLocationsStandardization = 'z-score' | 'rank';
 
 /** Caller-owned outputs of {@link GPUSimilarLocations}. */
 export type GPUSimilarLocationsOutput = {
@@ -158,7 +203,7 @@ export type GPUSimilarLocationsProps = {
   referenceMask: GraphDataView<'uint32'>;
   /** Per-frame float32 view written with `getGPUSimilarLocationsParameterValues`. */
   parameters: GraphDataView<'float32'>;
-  /** Standardization of the attribute columns. Defaults to `'zscore'`. */
+  /** Standardization of the attribute columns. Defaults to `'z-score'`. */
   standardization?: GPUSimilarLocationsStandardization;
   /** Compile-time capacity of `output.topIds`, at most `rowCount`. Defaults to `min(rowCount, 32)`. */
   resultCapacity?: number;
@@ -190,6 +235,7 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
   readonly resultCapacity: number;
 
   constructor(props: GPUSimilarLocationsProps) {
+    props = {...props, output: {...props.output, status: {...props.output.status}}};
     this.id = props.id ?? 'similar-locations';
     this.props = props;
     const {id} = this;
@@ -208,9 +254,11 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    if (props.standardization && !['zscore', 'rank'].includes(props.standardization)) {
-      throw new Error(`${id} standardization must be 'zscore' or 'rank'`);
-    }
+    validateRequirement(
+      id,
+      props.standardization === undefined || ['z-score', 'rank'].includes(props.standardization),
+      `standardization must be 'z-score' or 'rank'; received ${props.standardization}`
+    );
     this.resultCapacity = props.resultCapacity ?? Math.min(this.rowCount, 32);
     validateCapacity(id, 'resultCapacity', this.resultCapacity, 1, this.rowCount);
     if (props.mask) {
@@ -258,8 +306,9 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount, resultCapacity} = this;
     validateSpatialStatisticsBindings(graph, id, props, {
-      'standardized matrix': props.values.length * 4,
-      'column moments': props.columnCount * 8,
+      ...(props.standardization === 'rank'
+        ? {'standardized matrix': props.values.length * 4, 'rank reference': props.columnCount * 4}
+        : {'column moments': props.columnCount * 16}),
       'sort keys and IDs': rowCount * 4
     });
     const {output, columnCount: attributeCount} = props;
@@ -282,8 +331,16 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
     const isRank = props.standardization === 'rank';
     const matrixLength = rowCount * attributeCount;
     const validity = createTransientView(graph, `${id}-validity`, 'uint32', rowCount);
-    const standardized = createTransientView(graph, `${id}-standardized`, 'float32', matrixLength);
-    const reference = createTransientView(graph, `${id}-reference`, 'float32', attributeCount);
+    const standardized = isRank
+      ? createTransientView(graph, `${id}-standardized`, 'float32', matrixLength)
+      : undefined;
+    const reference = createTransientView(
+      graph,
+      `${id}-reference`,
+      'float32',
+      attributeCount * (isRank ? 1 : 4)
+    );
+    let columnStatistics: GraphDataView<'float32'> | undefined;
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', rowCount);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rowCount);
     const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', rowCount);
@@ -293,7 +350,10 @@ const ATTRIBUTE_COUNT: u32 = ${attributeCount}u;
 const MAX_RESULTS: u32 = ${resultCapacity}u;
 const NO_RANK: u32 = 0xffffffffu;
 ${IS_FINITE_VALUE_WGSL}
-${GET_NAN_WGSL}`;
+${GET_NAN_WGSL}
+${ROUNDED_DIFFERENCE_WGSL}
+${ADDITION_ROUNDING_ERROR_WGSL}
+${MULTIPLICATION_ROUNDING_ERROR_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const kernel = (
       name: string,
@@ -351,7 +411,7 @@ ${GET_NAN_WGSL}`;
         [
           read('attributes', props.values, 'f32'),
           read('validity', validity, 'u32'),
-          write('standardized', standardized, 'f32')
+          write('standardized', standardized!, 'f32')
         ],
         matrixLength,
         `let row = index / ATTRIBUTE_COUNT;
@@ -440,7 +500,7 @@ ${GET_NAN_WGSL}`;
           [
             read('sortedKeys', rankSortedKeys, 'u32'),
             read('sortedIds', rankSortedIds, 'u32'),
-            write('standardized', standardized, 'f32'),
+            write('standardized', standardized!, 'f32'),
             read('rankColumn', rankColumn, 'u32')
           ],
           rowCount,
@@ -476,7 +536,8 @@ fn lowerBound(bound: u32) -> u32 {
         );
       }
     } else {
-      const stats = createTransientView(graph, `${id}-stats`, 'float32', 2 * attributeCount);
+      const stats = createTransientView(graph, `${id}-stats`, 'float32', 4 * attributeCount);
+      columnStatistics = stats;
       kernel(
         'column-statistics',
         [
@@ -487,12 +548,31 @@ fn lowerBound(bound: u32) -> u32 {
         attributeCount,
         `let column = index / LANES;
   let lane = localInvocationIndex;
+  var firstRow = ROW_COUNT;
+  for (var row = lane; row < ROW_COUNT; row += LANES) {
+    if (validity[validityOffset + row] != 0u) { firstRow = row; break; }
+  }
+  let anchorRow = min(reduceFirstRow(firstRow, lane), ROW_COUNT - 1u);
+  let anchor = attributes[attributesOffset + anchorRow * ATTRIBUTE_COUNT + column];
+  let runtimeZero = validity[validityOffset + anchorRow] - 1u;
+  // A common binary frame keeps squares normal when attribute units are tiny or huge.
+  var maximumPartial = 0.0;
+  for (var row = lane; row < ROW_COUNT; row += LANES) {
+    if (validity[validityOffset + row] != 0u) {
+      maximumPartial = max(maximumPartial, abs(attributes[attributesOffset + row * ATTRIBUTE_COUNT + column]));
+    }
+  }
+  let maximum = reduceMaximum(maximumPartial, lane);
+  let exponent = (bitcast<u32>(maximum) >> 23u) & 255u;
+  // Keep the exponent, not a tiny multiplier whose reciprocal/product can flush or be
+  // reassociated into the final normalization on Metal. ldexp fixes the normalized frame.
+  let scaleExponent = 127 - i32(clamp(exponent, 1u, 254u));
   var validPartial = 0u;
   var sumPartial = 0.0;
   for (var row = lane; row < ROW_COUNT; row += LANES) {
     if (validity[validityOffset + row] != 0u) {
       validPartial += 1u;
-      sumPartial += attributes[attributesOffset + row * ATTRIBUTE_COUNT + column];
+      sumPartial += getRoundedDifference(ldexp(attributes[attributesOffset + row * ATTRIBUTE_COUNT + column], scaleExponent), ldexp(anchor, scaleExponent), runtimeZero);
     }
   }
   let valid = reduceCount(validPartial, lane);
@@ -500,43 +580,30 @@ fn lowerBound(bound: u32) -> u32 {
   var squaresPartial = 0.0;
   for (var row = lane; row < ROW_COUNT; row += LANES) {
     if (validity[validityOffset + row] != 0u) {
-      let delta = attributes[attributesOffset + row * ATTRIBUTE_COUNT + column] - mean;
+      let centered = getRoundedDifference(ldexp(attributes[attributesOffset + row * ATTRIBUTE_COUNT + column], scaleExponent), ldexp(anchor, scaleExponent), runtimeZero);
+      let delta = getRoundedDifference(centered, mean, runtimeZero);
       squaresPartial += delta * delta;
     }
   }
   let squares = reduceSum(squaresPartial, lane);
   if (lane == 0u) {
     let deviation = select(0.0, sqrt(squares / f32(valid)), valid > 0u);
-    stats[statsOffset + 2u * column] = mean;
-    stats[statsOffset + 2u * column + 1u] = select(0.0, 1.0 / deviation, deviation > 0.0);
+    stats[statsOffset + 4u * column] = anchor;
+    stats[statsOffset + 4u * column + 3u] = f32(scaleExponent);
+    stats[statsOffset + 4u * column + 1u] = mean;
+    stats[statsOffset + 4u * column + 2u] = select(0.0, 1.0 / deviation, deviation > 0.0);
   }`,
         {reduction: true}
-      );
-      kernel(
-        'standardize-zscore',
-        [
-          read('attributes', props.values, 'f32'),
-          read('validity', validity, 'u32'),
-          read('stats', stats, 'f32'),
-          write('standardized', standardized, 'f32')
-        ],
-        matrixLength,
-        `let row = index / ATTRIBUTE_COUNT;
-  let channel = index % ATTRIBUTE_COUNT;
-  if (validity[validityOffset + row] == 0u) {
-    standardized[standardizedOffset + index] = getNaN();
-    return;
-  }
-  standardized[standardizedOffset + index] =
-    (attributes[attributesOffset + index] - stats[statsOffset + 2u * channel]) *
-    stats[statsOffset + 2u * channel + 1u];`
       );
     }
 
     kernel(
       'reference',
       [
-        read('standardized', standardized, 'f32'),
+        isRank
+          ? read('standardized', standardized!, 'f32')
+          : read('attributes', props.values, 'f32'),
+        ...(!isRank ? [read('stats', columnStatistics!, 'f32')] : []),
         read('validity', validity, 'u32'),
         read('selection', props.referenceMask, 'u32'),
         write('reference', reference, 'f32')
@@ -544,18 +611,50 @@ fn lowerBound(bound: u32) -> u32 {
       attributeCount,
       `let column = index / LANES;
   let lane = localInvocationIndex;
+  ${
+    isRank
+      ? ''
+      : `var firstRow = ROW_COUNT;
+  for (var row = lane; row < ROW_COUNT; row += LANES) {
+    if (validity[validityOffset + row] != 0u && selection[selectionOffset + row] != 0u) { firstRow = row; break; }
+  }
+  let anchorRow = min(reduceFirstRow(firstRow, lane), ROW_COUNT - 1u);
+  let scaleExponent = i32(stats[statsOffset + 4u * column + 3u]);
+  let anchor = ldexp(attributes[attributesOffset + anchorRow * ATTRIBUTE_COUNT + column], scaleExponent);
+  let zero = validity[validityOffset + anchorRow] - 1u;`
+  }
   var countPartial = 0u;
-  var sumPartial = 0.0;
+  var sumPartial = ${isRank ? '0.0' : 'vec2<f32>(0.0)'};
   for (var row = lane; row < ROW_COUNT; row += LANES) {
     if (validity[validityOffset + row] != 0u && selection[selectionOffset + row] != 0u) {
       countPartial += 1u;
-      sumPartial += standardized[standardizedOffset + row * ATTRIBUTE_COUNT + column];
+      ${
+        isRank
+          ? 'sumPartial += standardized[standardizedOffset + row * ATTRIBUTE_COUNT + column];'
+          : `let value = ldexp(attributes[attributesOffset + row * ATTRIBUTE_COUNT + column], scaleExponent);
+      let centered = getRoundedDifference(value, anchor, zero);
+      sumPartial = addReferenceSum(sumPartial, centered, zero);
+      sumPartial = addReferenceSum(sumPartial, getAdditionRoundingError(value, -anchor, centered), zero);`
+      }
     }
   }
   let count = reduceCount(countPartial, lane);
-  let sum = reduceSum(sumPartial, lane);
+  let sum = ${isRank ? 'reduceSum(sumPartial, lane)' : 'reduceReferenceSum(sumPartial, lane, zero)'};
   if (lane == 0u) {
-    reference[referenceOffset + column] = select(getNaN(), sum / f32(count), count > 0u);
+    ${
+      isRank
+        ? 'reference[referenceOffset + column] = select(getNaN(), sum / f32(count), count > 0u);'
+        : `let divisor = f32(max(count, 1u));
+    let mean = sum.x / divisor;
+    let product = getRoundedDifference(mean * divisor, 0.0, zero);
+    let remainder = (getRoundedDifference(sum.x, product, zero) - getMultiplicationRoundingError(mean, divisor, product) + sum.y) / divisor;
+    var center = addReferenceSum(vec2<f32>(anchor, 0.0), mean, zero);
+    center = addReferenceSum(center, remainder, zero);
+    reference[referenceOffset + 4u * column] = select(getNaN(), center.x, count > 0u);
+    reference[referenceOffset + 4u * column + 1u] = center.y;
+    reference[referenceOffset + 4u * column + 3u] = stats[statsOffset + 4u * column + 3u];
+    reference[referenceOffset + 4u * column + 2u] = stats[statsOffset + 4u * column + 2u];`
+    }
   }`,
       {reduction: true}
     );
@@ -563,7 +662,9 @@ fn lowerBound(bound: u32) -> u32 {
     kernel(
       'distance',
       [
-        read('standardized', standardized, 'f32'),
+        isRank
+          ? read('standardized', standardized!, 'f32')
+          : read('attributes', props.values, 'f32'),
         read('validity', validity, 'u32'),
         read('selection', props.referenceMask, 'u32'),
         read('reference', reference, 'f32'),
@@ -581,8 +682,16 @@ fn lowerBound(bound: u32) -> u32 {
   var distanceSquared = 0.0;
   for (var channel = 0u; channel < ATTRIBUTE_COUNT; channel++) {
     let weight = params[paramsOffset + ${GPU_SIMILAR_LOCATIONS_CONTROL_LENGTH}u + channel];
-    let delta = standardized[standardizedOffset + index * ATTRIBUTE_COUNT + channel] -
-      reference[referenceOffset + channel];
+    ${
+      isRank
+        ? `let delta = standardized[standardizedOffset + index * ATTRIBUTE_COUNT + channel] -
+      reference[referenceOffset + channel];`
+        : `let value = ldexp(attributes[attributesOffset + index * ATTRIBUTE_COUNT + channel], i32(reference[referenceOffset + 4u * channel + 3u]));
+    let center = reference[referenceOffset + 4u * channel];
+    let centered = getRoundedDifference(value, center, validity[validityOffset + index] - 1u);
+    let differenceError = getAdditionRoundingError(value, -center, centered);
+    let delta = (getRoundedDifference(centered, reference[referenceOffset + 4u * channel + 1u], validity[validityOffset + index] - 1u) + differenceError) * reference[referenceOffset + 4u * channel + 2u];`
+    }
     distanceSquared += weight * delta * delta;
   }
   eligible = eligible && isFiniteValue(distanceSquared);
@@ -604,6 +713,14 @@ fn lowerBound(bound: u32) -> u32 {
       }).getCommandNodes(graph)
     );
 
+    if (output.topIds.length > resultCapacity) {
+      kernel(
+        'top-ids-tail',
+        [write('topIds', output.topIds, 'u32')],
+        output.topIds.length - resultCapacity,
+        'topIds[topIdsOffset + MAX_RESULTS + index] = NO_RANK;'
+      );
+    }
     kernel(
       'rank',
       [

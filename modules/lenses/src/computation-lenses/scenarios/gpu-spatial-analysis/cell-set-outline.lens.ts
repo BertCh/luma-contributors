@@ -5,7 +5,7 @@
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
 
 const SCENARIO_ID = 'gpu-spatial-analysis.cell-set-outline';
-/** Rows of the cover and of the aggregated cell table (about 160 cells are expected). */
+/** Rows of the cover and of the compacted cell table (about 160 cells are expected). */
 const CELL_CAPACITY = 512;
 const SEGMENT_CAPACITY = 512;
 const RING_CAPACITY = 32;
@@ -26,7 +26,7 @@ defineLensScenario({
       {runExample},
       {runExample: runCover},
       {addCellBoundariesWithOffsets, createCellTable, CELL_DISPLAY_H3_VERTEX_COUNT},
-      {GPUCellAggregation},
+      {GPUCellCompaction},
       data
     ] = await Promise.all([
       import('./s3-lens-run'),
@@ -62,8 +62,8 @@ defineLensScenario({
           choices: {family: 'h3', 'rings.vertexTolerance': 5e-5, 'rings.normalizeWinding': true},
           metadata: geographicMetadata(),
           async build(graph, uploads) {
-            // Setup: cover the areas with H3 cells, then aggregate them into the sorted, distinct
-            // table that the outline requires. Unwritten cover rows are empty keys (uploaded as zero).
+            // Read the cover's live prefix and completeness evidence, sorting/deduplicating
+            // without coarsening the resolution-8 cells required by the outline.
             const areas = {
               positions: uploads.view('positions', data.positionsLonLat, 'float32x2'),
               ringOffsets: uploads.view('areaRingOffsets', data.ringOffsets, 'uint32'),
@@ -78,17 +78,18 @@ defineLensScenario({
             const cover = await runCover(graph, {areas, cellSlots});
             const table = createCellTable(graph, 'table', CELL_CAPACITY);
             graph.add(
-              new GPUCellAggregation({
+              new GPUCellCompaction({
                 id: 'cover-table',
                 family: 'h3',
-                resolution: 8,
-                cells: cover.cells,
-                output: table
+                operation: {type: 'compact', resolution: 8, minimumResolution: 8},
+                source: cover,
+                output: {cells: table.cells, status: table.status}
               })
             );
             const output = await runExample(graph, {
               cells: table.cells,
               count: table.status.count,
+              source: table,
               segmentCapacity: SEGMENT_CAPACITY,
               ringCapacity: RING_CAPACITY
             });
@@ -105,7 +106,7 @@ defineLensScenario({
                 keySpace: 'cellVertex',
                 geometry: geographicGeometry('polygons', {offsetsCapture: 'cellBoundariesOffsets'}),
                 meaning:
-                  'H3 resolution-8 cells covering the 17 community areas (GPUCellCover, then GPUCellAggregation); boundaries from GPUCellGeometry for display'
+                  'H3 resolution-8 cells covering the 17 community areas (GPUCellCover, then GPUCellCompaction); boundaries from GPUCellGeometry for display'
               },
               cellBoundariesOffsets: {view: display.offsets, role: 'intermediate'},
               tableCount: {

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {defineLensScenario, DEFAULT_LENS_RUNGS} from '../../define-lens-scenarios';
+import {createSpatialChoice} from '../../../gpu-spatial-analysis/computation-pack/choices';
 
 defineLensScenario({
   id: 'gpu-spatial-analysis.quantile-lisa',
@@ -29,7 +30,22 @@ defineLensScenario({
           element: 'GPUQuantileLISA',
           datasets: ['quantile-lisa-cycle/1'],
           seed: 314159,
-          choices: {quantileParameters: 'quantile 4 of 4', permutationCount: 199},
+          recordChoices: [
+            createSpatialChoice(
+              {
+                stage: 'inference',
+                name: 'alternative',
+                sweepable: true,
+                alternatives: ['greater', 'two-sided', 'geoda-legacy']
+              },
+              'geoda-legacy'
+            )
+          ],
+          choices: {
+            quantileParameters: 'quantile 4 of 4',
+            permutationCount: 199,
+            alternative: 'geoda-legacy'
+          },
           build: buildQuantileLISAScenario
         })
     };

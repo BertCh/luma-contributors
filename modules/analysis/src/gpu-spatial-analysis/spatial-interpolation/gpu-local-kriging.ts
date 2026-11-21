@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateInterpolationPorts} from './interpolation-view-validation';
+import {
+  createInterpolationNeighborhoodLossNodes,
+  getInterpolationNeighborhoodLossViews,
+  decodeInterpolationPredictionStatus,
+  type InterpolationNeighborhoodWeights
+} from './interpolation-neighborhood-loss';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {validateInterpolationOutputsDisjointFromInputs} from './interpolation-view-validation';
 
 import {
@@ -29,7 +39,6 @@ import {
   validateNonZeroFiniteNumber,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView,
   validateCommandNodeBudget,
   validateMaximumCount,
   validateRequirement
@@ -48,7 +57,10 @@ import {
   validateGraphChunkBindingRanges,
   type GraphChunkDispatchPlan
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
+import {
+  createPointNeighborGridIndexNodes,
+  POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL
+} from '../../analysis-core/kernels/point-neighbor-grid-index';
 import {
   getNeighborSearchLatticeWGSL,
   getNearestNeighborSearchWGSL,
@@ -174,7 +186,7 @@ export type GPULocalKrigingProps<
    */
   spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
-  /** Rows [value, observationErrorVariance, variableIndex (0..variableCount-1), validity (0 skips)]. */
+  /** Rows [value, observationErrorVariance, variableIndex (0..variableCount-1), validity (> 0 includes; zero, negative and NaN skip)]. */
   observations: GraphDataView<'float32x4'>;
   /** Query-major quadrature: float32x2 has equal weights; float32x4 stores [x,y,weight,reserved]. */
   supports: SupportRows;
@@ -219,6 +231,10 @@ export type GPULocalKrigingProps<
    * Each extra binding counts against the device storage-buffer limit of the kernel.
    */
   neighborhoods?: GraphDataView<'uint32'>;
+  /** Resident CSR including optional live producer overflow/candidateOverflow evidence. */
+  neighborhoodWeights?: InterpolationNeighborhoodWeights;
+  /** Producer loss for legacy fixed-width or CSR candidate ports. */
+  neighborhoodStatus?: InterpolationNeighborhoodWeights['status'];
   /** Optional CSR offsets (query count + 1) replacing fixed candidate row widths. */
   neighborhoodOffsets?: GraphDataView<'uint32'>;
   /** Fixed candidate slots per query. Each row must contain distinct sample indices. */
@@ -255,7 +271,7 @@ export type GPULocalKrigingProps<
   output: {
     /** [prediction, latent point/block variance, pivot ratio, retained neighbor count]. */
     values: ValueRows;
-    /** 0 success; 1 invalid/missing/insufficient data; 2 singular or unreliable variance. */
+    /** 0 success; 1 invalid/missing/insufficient data; 2 singular or unreliable variance; 3 incomplete candidate input (overflow or candidateOverflow). */
     status: StatusRows;
     /** Optional query-major weights in neighbor order (distance, original row); padded with 0. */
     weights?: WeightRows;
@@ -337,18 +353,63 @@ export class GPULocalKriging<
   /** Resolved candidate source: supplied `neighborhoods`, an exhaustive scan, or the grid index. */
   readonly sampleIndex: 'supplied' | 'brute-force' | 'grid';
   private readonly covarianceParameters?: LocalKrigingParameterState;
-  private readonly sampleIndexChunkQueryCount?: number;
+  /** Optional derived-query chunk ceiling for specialized producers. @internal */
+  protected get sampleIndexChunkQueryCount(): number | undefined {
+    return undefined;
+  }
 
   constructor(
     props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>
-  );
-  constructor(
-    props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>,
-    sampleIndexChunkQueryCount?: number
   ) {
-    this.sampleIndexChunkQueryCount = sampleIndexChunkQueryCount;
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'coKrigingMean',
+        'coregionalization',
+        'coregionalizationModels',
+        'covariance',
+        'covarianceStructureCount',
+        'driftCount',
+        'emptyNeighborhood',
+        'id',
+        'means',
+        'mode',
+        'neighborCount',
+        'neighborhoodCapacity',
+        'neighborhoodOffsets',
+        'neighborhoods',
+        'neighborhoodWeights',
+        'neighborhoodStatus',
+        'observations',
+        'output',
+        'parameters',
+        'positions',
+        'queryDrift',
+        'sampleDrift',
+        'sampleIndex',
+        'searchRadius',
+        'spatialContext',
+        'supportCount',
+        'supports',
+        'targetVariable',
+        'variableCount'
+      ],
+      ['values', 'status', 'weights']
+    );
     this.id = props.id ?? 'local-kriging';
+    validateInterpolationPorts({id: this.id, contributor: 'GPULocalKriging'}, props, {
+      positions: {required: true, viewType: 'data', formats: ['float32x2']},
+      observations: {required: true, viewType: 'data', formats: ['float32x4']},
+      supports: {required: true, viewType: 'either', formats: ['float32x2', 'float32x4']},
+      sampleDrift: {required: false, viewType: 'data', formats: ['float32', 'float32x4']},
+      queryDrift: {required: false, viewType: 'either', formats: ['float32', 'float32x4']},
+      neighborhoods: {required: false, viewType: 'data', formats: ['uint32']},
+      neighborhoodOffsets: {required: false, viewType: 'data', formats: ['uint32']},
+      parameters: {required: false, viewType: 'data', formats: ['float32']},
+      'output.values': {required: true, viewType: 'either', formats: ['float32x4']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.weights': {required: false, viewType: 'either', formats: ['float32']}
+    });
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
@@ -395,104 +456,124 @@ export class GPULocalKriging<
       validateCapacity(this.id, 'neighborhoodCapacity', props.neighborhoodCapacity ?? 0);
     this.covarianceStructureCount =
       props.covarianceStructureCount ?? props.coregionalizationModels?.length ?? 1;
-    if (props.covariance) {
-      validatePredictionCovariance(props.covariance);
-    } else if (!props.parameters) {
-      throw new Error(`${this.id} needs covariance or parameters`);
+    if (!props.parameters && !(props.mode === 'co-kriging' && props.coregionalizationModels)) {
+      validateRequirement(
+        this.id,
+        Boolean(props.covariance),
+        `covariance or parameters must be supplied (or coregionalizationModels in co-kriging mode)`
+      );
+      validatePredictionCovariance(props.covariance!, this.id);
     }
-    if (
-      props.parameters &&
-      (props.parameters.format !== 'float32' ||
-        !Number.isInteger(this.covarianceStructureCount) ||
-        this.covarianceStructureCount < 1 ||
-        this.covarianceStructureCount > 4 ||
-        (props.mode !== 'co-kriging' && this.covarianceStructureCount !== 1) ||
-        props.parameters.length <
-          getGPULocalKrigingParameterLength(this.covarianceStructureCount, this.variableCount))
-    ) {
-      throw new Error(`${this.id} invalid parameters`);
-    }
-    if (
-      this.driftCount < 0 ||
-      this.driftCount > 8 ||
-      !Number.isInteger(this.driftCount) ||
-      props.positions.length !== props.observations.length ||
-      props.output.values.length < this.queryCount ||
-      props.output.status.length < this.queryCount ||
-      (props.output.weights && props.output.weights.length < this.queryCount * this.neighborCount)
-    ) {
-      throw new Error(`${this.id} invalid capacities`);
-    }
-    if (
-      (props.neighborhoodOffsets &&
-        (!props.neighborhoods || props.neighborhoodOffsets.length !== this.queryCount + 1)) ||
-      (props.neighborhoods &&
-        !props.neighborhoodOffsets &&
-        props.neighborhoods.length !== this.queryCount * (props.neighborhoodCapacity ?? 0))
-    ) {
-      throw new Error(`${this.id} invalid neighborhoods`);
-    }
-    if (
-      !['simple', 'ordinary', 'universal', 'external-drift', 'co-kriging'].includes(props.mode) ||
-      !(props.searchRadius === undefined || props.searchRadius > 0)
-    ) {
-      throw new Error(`${this.id} invalid mode or radius`);
-    }
-    if (
-      this.suppliedDrift &&
-      (!props.sampleDrift ||
-        !props.queryDrift ||
-        props.sampleDrift.length !==
-          props.positions.length * (props.sampleDrift.format === 'float32' ? this.driftCount : 1) ||
-        props.queryDrift.length !==
-          this.queryCount * (props.queryDrift.format === 'float32' ? this.driftCount : 1) ||
-        (this.driftCount > 4 &&
-          (props.sampleDrift.format !== 'float32' || props.queryDrift.format !== 'float32')) ||
-        this.driftCount < 1)
-    ) {
-      throw new Error(`${this.id} missing external drift`);
-    }
-    if (
-      props.mode === 'co-kriging' &&
-      !props.parameters &&
-      !props.coregionalization &&
-      !props.coregionalizationModels
-    ) {
-      throw new Error(`${this.id} co-kriging requires PSD loading factors`);
-    }
-    if (
-      ![...(props.means ?? [0, 0]), ...(props.coregionalization ?? [1, 0, 0, 1])].every(
+    validateRequirement(
+      this.id,
+      !(
+        props.parameters &&
+        (props.parameters.format !== 'float32' ||
+          !Number.isInteger(this.covarianceStructureCount) ||
+          this.covarianceStructureCount < 1 ||
+          this.covarianceStructureCount > 4 ||
+          (props.mode !== 'co-kriging' && this.covarianceStructureCount !== 1) ||
+          props.parameters.length <
+            getGPULocalKrigingParameterLength(this.covarianceStructureCount, this.variableCount))
+      ),
+      `parameters must be float32 with getGPULocalKrigingParameterLength(structureCount, variableCount) elements; covarianceStructureCount must be an integer in [1, 4] and equal 1 outside co-kriging`
+    );
+    validateRequirement(
+      this.id,
+      !(
+        this.driftCount < 0 ||
+        this.driftCount > 8 ||
+        !Number.isInteger(this.driftCount) ||
+        props.positions.length !== props.observations.length ||
+        props.output.values.length < this.queryCount ||
+        props.output.status.length < this.queryCount ||
+        (props.output.weights && props.output.weights.length < this.queryCount * this.neighborCount)
+      ),
+      `driftCount must be an integer in [0, 8]; observations.length must equal positions.length; output.values/status must cover queryCount and output.weights must cover queryCount * neighborCount`
+    );
+    validateRequirement(
+      this.id,
+      !(
+        (props.neighborhoodOffsets &&
+          (!props.neighborhoods || props.neighborhoodOffsets.length !== this.queryCount + 1)) ||
+        (props.neighborhoods &&
+          !props.neighborhoodOffsets &&
+          props.neighborhoods.length !== this.queryCount * (props.neighborhoodCapacity ?? 0))
+      ),
+      `neighborhoodOffsets requires neighborhoods and queryCount + 1 rows; fixed neighborhoods.length must equal queryCount * neighborhoodCapacity`
+    );
+    validateRequirement(
+      this.id,
+      !(
+        !['simple', 'ordinary', 'universal', 'external-drift', 'co-kriging'].includes(props.mode) ||
+        !(props.searchRadius === undefined || props.searchRadius > 0)
+      ),
+      `mode must be simple, ordinary, universal, external-drift or co-kriging; searchRadius must be positive when supplied`
+    );
+    validateRequirement(
+      this.id,
+      !(
+        this.suppliedDrift &&
+        (!props.sampleDrift ||
+          !props.queryDrift ||
+          props.sampleDrift.length !==
+            props.positions.length *
+              (props.sampleDrift.format === 'float32' ? this.driftCount : 1) ||
+          props.queryDrift.length !==
+            this.queryCount * (props.queryDrift.format === 'float32' ? this.driftCount : 1) ||
+          (this.driftCount > 4 &&
+            (props.sampleDrift.format !== 'float32' || props.queryDrift.format !== 'float32')) ||
+          this.driftCount < 1)
+      ),
+      `sampleDrift and queryDrift must provide driftCount columns per sample/query; driftCount must be in [1, 8], with scalar float32 required above 4 columns`
+    );
+    validateRequirement(
+      this.id,
+      !(
+        props.mode === 'co-kriging' &&
+        !props.parameters &&
+        !props.coregionalization &&
+        !props.coregionalizationModels
+      ),
+      `co-kriging requires parameters, coregionalization or coregionalizationModels with PSD loading factors`
+    );
+    validateRequirement(
+      this.id,
+      !![...(props.means ?? [0, 0]), ...(props.coregionalization ?? [1, 0, 0, 1])].every(
         Number.isFinite
-      )
-    ) {
-      throw new Error(`${this.id} nonfinite model`);
-    }
+      ),
+      `means and coregionalization entries must be finite`
+    );
     const structures = props.coregionalizationModels;
-    if (
-      this.variableCount < (props.mode === 'co-kriging' ? 2 : 1) ||
-      this.variableCount > 4 ||
-      !Number.isInteger(this.variableCount) ||
-      !Number.isInteger(props.targetVariable ?? 0) ||
-      (props.targetVariable ?? 0) < 0 ||
-      (props.targetVariable ?? 0) >= this.variableCount ||
-      (props.means && props.means.length < this.variableCount) ||
-      (props.coKrigingMean && !['known', 'ordinary'].includes(props.coKrigingMean)) ||
-      (props.mode === 'co-kriging' &&
-        this.variableCount !== 2 &&
-        !structures &&
-        !props.parameters) ||
-      (structures && (structures.length < 1 || structures.length > 4))
-    ) {
-      throw new Error(`${this.id} invalid multivariate model`);
-    }
+    validateRequirement(
+      this.id,
+      !(
+        this.variableCount < (props.mode === 'co-kriging' ? 2 : 1) ||
+        this.variableCount > 4 ||
+        !Number.isInteger(this.variableCount) ||
+        !Number.isInteger(props.targetVariable ?? 0) ||
+        (props.targetVariable ?? 0) < 0 ||
+        (props.targetVariable ?? 0) >= this.variableCount ||
+        (props.means && props.means.length < this.variableCount) ||
+        (props.coKrigingMean && !['known', 'ordinary'].includes(props.coKrigingMean)) ||
+        (props.mode === 'co-kriging' &&
+          this.variableCount !== 2 &&
+          !structures &&
+          !props.parameters) ||
+        (structures && (structures.length < 1 || structures.length > 4))
+      ),
+      `variableCount must be an integer in [2, 4] for co-kriging or 1 otherwise; targetVariable must be an integer in [0, variableCount); means must cover variableCount; coKrigingMean must be known or ordinary; 1..4 coregionalizationModels are required above 2 variables without parameters`
+    );
     for (const structure of structures ?? []) {
-      validatePredictionCovariance(structure.covariance);
-      if (
-        structure.loadings.length !== this.variableCount ** 2 ||
-        !structure.loadings.every(Number.isFinite)
-      ) {
-        throw new Error(`${this.id} invalid PSD loading dimensions`);
-      }
+      validatePredictionCovariance(structure.covariance, this.id);
+      validateRequirement(
+        this.id,
+        !(
+          structure.loadings.length !== this.variableCount ** 2 ||
+          !structure.loadings.every(Number.isFinite)
+        ),
+        `coregionalizationModels.loadings must contain variableCount squared finite entries`
+      );
     }
     const emptyNeighborhood = props.emptyNeighborhood ?? 'insufficient';
     validateRequirement(
@@ -561,12 +642,12 @@ export class GPULocalKriging<
           GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK
         );
       }
-      if (sampleIndexChunkQueryCount !== undefined) {
-        validateCapacity(this.id, 'sampleIndexChunkQueryCount', sampleIndexChunkQueryCount, 1);
+      if (this.sampleIndexChunkQueryCount !== undefined) {
+        validateCapacity(this.id, 'sampleIndexChunkQueryCount', this.sampleIndexChunkQueryCount, 1);
       }
     }
     this.chunkPlan = planGraphChunkGroups(
-      this.id,
+      {id: this.id, contributor: 'GPULocalKriging'},
       {view: props.supports, rowsPerQuery: this.supportCount},
       {
         supports: {view: props.supports, rowsPerQuery: this.supportCount},
@@ -588,7 +669,10 @@ export class GPULocalKriging<
             : undefined
       }
     );
+
+    const lossViews = getInterpolationNeighborhoodLossViews(this.id, props);
     const sharedInputs = {
+      ...Object.fromEntries(lossViews.map((view, index) => [`neighborhoodLoss${index}`, view])),
       positions: props.positions,
       observations: props.observations,
       sampleDrift: props.sampleDrift,
@@ -596,8 +680,6 @@ export class GPULocalKriging<
       neighborhoodOffsets: props.neighborhoodOffsets,
       parameters: props.parameters
     };
-    for (const [name, view] of Object.entries(sharedInputs))
-      if (view) validateSinglePackedView(view, [view.format], `${this.id} ${name}`);
     validateDisjointWritableViews(this.id, props.output);
     validateInterpolationOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       ...Object.values(sharedInputs),
@@ -608,7 +690,7 @@ export class GPULocalKriging<
     const gridChunkLength = Math.max(
       1,
       Math.min(
-        sampleIndexChunkQueryCount ?? Infinity,
+        this.sampleIndexChunkQueryCount ?? Infinity,
         getSampleIndexChunkQueryCount(
           owner.device.limits.maxStorageBufferBindingSize,
           sampleCount,
@@ -623,7 +705,10 @@ export class GPULocalKriging<
             0
           )
         : this.chunkPlan.nonemptyChunkCount;
-    this.estimatedCommandNodeCount = LOCAL_KRIGING_SHARED_COMMAND_NODE_ALLOWANCE + dispatchCount;
+    this.estimatedCommandNodeCount =
+      LOCAL_KRIGING_SHARED_COMMAND_NODE_ALLOWANCE +
+      dispatchCount +
+      lossViews.length * this.chunkPlan.nonemptyChunkCount;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     if (!props.parameters) {
       this.covarianceParameters = {
@@ -636,7 +721,7 @@ export class GPULocalKriging<
                 variableCount: this.variableCount
               }
             : {})
-        }),
+        } as GPULocalKrigingSettings),
         buffers: new Set()
       };
       validateRequirement(
@@ -851,6 +936,23 @@ else { packed[packedOffset + index] = parameters[parametersOffset + index - ${ob
         );
         dispatchIndex++;
       }
+    }
+    const losses = getInterpolationNeighborhoodLossViews(id, props);
+    for (const chunk of this.chunkPlan.chunks) {
+      if (chunk.length > 0)
+        nodes.push(
+          ...createInterpolationNeighborhoodLossNodes(
+            graph,
+            `${id}-chunk-${chunk.chunkIndex}`,
+            losses,
+            {
+              values: chunk.views['results'] as GraphDataView<'float32x4'>,
+              status: chunk.views['statuses'] as GraphDataView<'uint32'>,
+              weights: chunk.views['weights'] as GraphDataView<'float32'> | undefined
+            },
+            chunk.length
+          )
+        );
     }
     return nodes;
   }
@@ -1199,16 +1301,10 @@ ${props.output.weights ? 'for (var row = 0u; row < retained; row++) { weights[we
         {name: 'parameters', view: parameters.parameters, type: 'f32', access: 'read'},
         {name: 'gridPositions', view: gridPositions, type: 'f32', access: 'read_write'}
       ],
-      // Keep spans relative to the origin: at large float32 coordinates adding one cell to
-      // a constant axis can round back to its origin. Other grid callers keep their mapping.
-      declarations: `${getPackedPredictionAccessors({positions: 2, observations: 4})}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${latticeWGSL}\n${usableSampleWGSL}
-fn getKrigingGridUnitPosition(lattice: Lattice, position: vec2<f32>) -> vec2<f32> {
-  let width = max(lattice.maximumX - lattice.minimumX, lattice.cellWidth * f32(COLUMNS));
-  let height = max(lattice.maximumY - lattice.minimumY, lattice.cellHeight * f32(ROWS));
-  return (position - vec2<f32>(lattice.minimumX, lattice.minimumY)) / vec2<f32>(width, height);
-}`,
+      // Encode the reader's cell centre so index assignment and the walk share one cell rule.
+      declarations: `${getPackedPredictionAccessors({positions: 2, observations: 4})}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${latticeWGSL}\n${usableSampleWGSL}\n${POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL}`,
       body: `let lattice = readLattice(); var unitPosition = vec2<f32>(getNaN());
-if (lattice.valid && isUsableSample(index)) { unitPosition = getKrigingGridUnitPosition(lattice, read_positions(index)); }
+if (lattice.valid && isUsableSample(index)) { unitPosition = getGridUnitPosition(lattice, read_positions(index).x, read_positions(index).y); }
 gridPositions[gridPositionsOffset + index * 2u] = unitPosition.x;
 gridPositions[gridPositionsOffset + index * 2u + 1u] = unitPosition.y;`
     });
@@ -1305,25 +1401,10 @@ for (var slot = 0u; slot < found; slot++) { candidates[candidatesOffset + index 
   }
 }
 
-/** Forces small query chunks for sample-index tests without changing public props. @internal */
-export function createLocalKrigingForTesting<
-  SupportRows extends
-    | GraphDataView<'float32x2' | 'float32x4'>
-    | GraphVectorView<'float32x2' | 'float32x4'>,
-  ValueRows extends GraphDataView<'float32x4'> | GraphVectorView<'float32x4'>,
-  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'>,
-  WeightRows extends GraphDataView<'float32'> | GraphVectorView<'float32'>,
-  DriftRows extends
-    | GraphDataView<'float32' | 'float32x4'>
-    | GraphVectorView<'float32' | 'float32x4'>
->(
-  props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows> & {
-    sampleIndexChunkQueryCount?: number;
-  }
-): GPULocalKriging<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows> {
-  const {sampleIndexChunkQueryCount, ...publicProps} = props;
-  return Reflect.construct(GPULocalKriging, [
-    publicProps,
-    sampleIndexChunkQueryCount
-  ]) as GPULocalKriging<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>;
+/** Decode one query status: 0 complete, 1 invalid/insufficient input, 2 singular solve, 3 incomplete candidates. */
+export function decodeGPULocalKrigingStatus(
+  input: Uint32Array | Uint8Array | ArrayBuffer,
+  row: number = 0
+) {
+  return decodeInterpolationPredictionStatus('decodeGPULocalKrigingStatus', input, row);
 }

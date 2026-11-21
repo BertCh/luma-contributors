@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {expect, it} from 'vitest';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, GraphVectorView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {Buffer, Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {
@@ -35,7 +35,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 function makeFixture(device: Device) {
   const graph = new GPUCommandGraph(device);
@@ -1470,6 +1470,66 @@ it('spherical predicates and adaptive covers reject self-crossing and touching r
         expect((await readUint32(counts.buffer, 2))[0]).toBeGreaterThan(0);
         expect((await readUint32(visited.buffer, 1))[0]).toBeGreaterThan(0);
       }
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  }
+});
+
+it('ENT-02 spherical containment preserves public-shape vector chunks across module formats', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const kind of ['convex', 'polygon'] as const) {
+    const fixture = makeFixture(device);
+    // A metadata-only object with the published vector shape has no realm-specific prototype.
+    // The Node companion uses actual CommonJS constructors; here we execute the same shape.
+    const vector = <Format extends 'float32x3' | 'uint32'>(data: GraphDataView<Format>[]) => {
+      const rows = new GraphVectorView({
+        id: 'rows',
+        name: 'rows',
+        format: data[0].format,
+        length: data.length,
+        valueLength: (data.length * data[0].rowByteLength) / 4,
+        stride: data[0].rowByteLength / 4,
+        byteStride: data[0].byteStride,
+        rowByteLength: data[0].rowByteLength,
+        data
+      });
+      return Object.assign(Object.create(null), rows) as GraphVectorView<Format>;
+    };
+    const direction = 1 / Math.sqrt(3);
+    const contains = [fixture.output('uint32', 1), fixture.output('uint32', 1)];
+    const status = [fixture.output('uint32', 1), fixture.output('uint32', 1)];
+    for (const field of [...contains, ...status]) field.buffer.write(Uint32Array.of(0xffffffff));
+    const props = {
+      positions: fixture.input('float32x3', [1, 0, 0, 0, 1, 0, 0, 0, 1]),
+      queries: vector([
+        fixture.input('float32x3', [direction, direction, direction]),
+        fixture.input('float32x3', [-direction, -direction, -direction])
+      ]),
+      polygonIndices: vector([fixture.input('uint32', [0]), fixture.input('uint32', [0])]),
+      output: {
+        contains: vector(contains.map(field => field.view)),
+        status: vector(status.map(field => field.view))
+      }
+    };
+    fixture.graph.add(
+      kind === 'convex'
+        ? new GPUSphericalConvexContains({...props, offsets: fixture.input('uint32', [0, 3])})
+        : new GPUSphericalPolygonContains({
+            ...props,
+            ringOffsets: fixture.input('uint32', [0, 3]),
+            polygonOffsets: fixture.input('uint32', [0, 1])
+          })
+    );
+    const compiled = fixture.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      // The positive octant triangle contains its normalized center, excludes its antipode.
+      expect(await readUint32(contains[0].buffer, 1)).toEqual([1]);
+      expect(await readUint32(contains[1].buffer, 1)).toEqual([0]);
+      for (const field of status) expect(await readUint32(field.buffer, 1)).toEqual([0]);
     } finally {
       compiled.destroy();
       fixture.destroy();

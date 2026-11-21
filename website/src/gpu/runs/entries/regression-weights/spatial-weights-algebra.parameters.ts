@@ -12,7 +12,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 3,
     step: 1,
     default: 1,
-    options: ['union', 'intersection', 'difference', 'symmetricDifference']
+    options: ['union', 'intersection', 'difference', 'symmetric-difference']
   },
   {id: 'k', label: 'Data: left k', min: 2, max: 6, step: 1, default: 3},
   {

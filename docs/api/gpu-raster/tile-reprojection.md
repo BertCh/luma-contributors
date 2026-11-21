@@ -1,5 +1,7 @@
 # GPURasterTileReprojection
 
+Import from `@luma-contributors/analysis/raster-analysis`.
+
 `GPURasterTileReprojection` explicitly assembles resident source tiles on the GPU, then delegates
 projection and sampling to `GPURasterReprojection`. It implements `GPUCommandNodeProducer` and can
 be added to a `GPUCommandGraph`. It does not fetch tiles or read source data back to the CPU.
@@ -26,7 +28,15 @@ Declared options, grid fields, tile descriptors and output bindings are read onc
 inherited fields and non-enumerable getters, before validation.
 Each grid's CRS authority, well-known text and nested projection JSON are copied as JSON values
 at construction. Later edits to either caller-owned CRS cannot change the sampler's same-CRS
-comparison. Construct a new contributor to change CRS metadata.
+comparison. CRS object members are compared by value regardless of member order, recursively;
+array order remains significant (for example, axis arrays `[x, y]` and `[y, x]` differ).
+Construct a new contributor to change CRS metadata. Incompatible projection input formats are
+rejected before mosaic allocation. The affine packer compares source CRS against destination CRS
+when `inverseProjection` is absent; it does not compare either grid with the compiled contributor.
+Supplying an inverse projection permits different source and destination CRS. Changing both CRS
+together to another matching pair also passes the unprojected packer's check. Between submissions,
+the caller must keep both grids and the inverse projection consistent with the compiled contributor.
+A rejected affine or unprojected source/destination CRS mismatch leaves the previous packet intact.
 Changing the original grid objects afterward cannot shrink the mosaic, move validated bounds
 outside its allocation, or change the sampler's initial geometry. Construct a new contributor
 for a different grid shape; supported affine updates still go through the explicit parameter
@@ -60,7 +70,11 @@ validity zero and NaN values. Invalid higher-priority samples do not fall back t
 
 Bilinear interpolation resolves all four taps from the assembled mosaic, so taps can cross both
 horizontal and vertical tile boundaries. Only positive-weight taps matter. `strict` requires every
-such tap; `renormalize` divides by the sum of available valid weights. Missing outer support remains
+such tap; `renormalize` divides by the sum of available valid weights.
+Both direct and tiled reprojection accept only `method: 'nearest' | 'bilinear'` (default
+`'bilinear'`) and `noDataPolicy: 'propagate' | 'strict' | 'renormalize'` (default `'propagate'`).
+`'strict'` is the deprecated spelling of `'propagate'`; both require all positive-weight taps.
+Unknown method or policy values reject at construction. Missing outer support remains
 nodata under strict sampling; there is no implicit edge clamp. Include an interpolation halo of one
 source pixel beyond the required sample centers when dividing work into independent windows.
 Nearest sampling compares the fractional coordinate to 0.5 before incrementing the integer part.
@@ -71,6 +85,27 @@ Projection remains destination driven. An explicit inverse projection is require
 and source CRS differ. Projection-domain invalidity propagates to output validity. Coordinates and
 samples are float32; double-single inverse projections are supported by the sampler. The adapter adds no longitude wrapping.
 Use local coordinates and bounded windows when large world origins would lose pixel precision.
+
+## Continuous values and native integer labels
+
+`method: 'nearest'` alone still returns calibrated **continuous float32** `output.values`.
+Integers beyond 2^24 may round, so do not use that output to recover categorical IDs.
+For exact labels, additionally request `output.labels` with format `uint32` or `sint32`, matching
+every source band. This route requires explicit `method: 'nearest'`, integer inputs of one common
+format, and identity calibration (`scale: 1`, `offset: 0`). Native nodata is compared before any
+float conversion, and mosaic assembly preserves label bits.
+
+Always request/read `output.validity` alongside labels: zero means the label word is unspecified;
+nonzero makes that destination label usable. For uint32 input `[16777216, 16777217]` and identity geometry,
+`method: 'nearest', output: {values, validity, labels}` preserves both exact label words with
+validity `[1, 1]`, while continuous float32 values are `[16777216, 16777216]`.
+With unit cells, shifting the destination origin by half a source cell in the positive X
+direction selects exact ID `16777217` then outside support: validity `[1, 0]`, and the second
+label word is unspecified. Nearest ties select the higher source index; no extrapolation occurs.
+`output.values` remains required alongside optional native labels. A missing tile or native nodata
+makes validity zero. A supplied native nodata sentinel must be an integer in the selected uint32
+or sint32 domain. This is the same
+[integer-label route as single-grid reprojection](./expansion.md#gpurasterreprojection).
 
 ## Resources and reuse
 
@@ -114,6 +149,8 @@ coverage, and changed borrowed inputs on a reused compiled graph.
 {/* parameters: GPURasterTileReprojection generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ## `GPURasterTileReprojection` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterTileReprojection`.
 
 - Packer: `getGPURasterReprojectionParameterValues(settings)`, writes `GPU_RASTER_REPROJECTION_PARAMETER_LENGTH` (20) `float32` values.
   - Input port: `parameters`.

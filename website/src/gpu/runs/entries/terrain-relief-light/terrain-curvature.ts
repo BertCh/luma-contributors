@@ -9,8 +9,10 @@ import {
   getGPUTerrainCurvatureParameterValues,
   GPUTerrainCurvature,
   type GPUTerrainCurvatureKind,
-  type GPUTerrainCurvatureMethod
+  type GPUTerrainCurvatureMethod,
+  type GPUTerrainCurvatureOutput
 } from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {defineOperationRun} from '../../define-run';
 import {
   createTerrainInput,
@@ -25,6 +27,25 @@ import {parameters} from './terrain-curvature.parameters';
 
 const METHODS: GPUTerrainCurvatureMethod[] = ['evans-young', 'zevenbergen-thorne', 'florinsky'];
 const KINDS: GPUTerrainCurvatureKind[] = ['profile', 'plan', 'mean', 'gaussian'];
+
+/** One selected curvature output; the class requires at least one named kind. */
+function getCurvatureOutput(
+  kind: GPUTerrainCurvatureKind,
+  view: GraphDataView<'float32'>
+): GPUTerrainCurvatureOutput {
+  switch (kind) {
+    case 'profile':
+      return {curvatures: {profile: view}};
+    case 'plan':
+      return {curvatures: {plan: view}};
+    case 'mean':
+      return {curvatures: {mean: view}};
+    case 'gaussian':
+      return {curvatures: {gaussian: view}};
+    default:
+      throw new Error(`terrain-curvature run: unsupported curvature kind ${String(kind)}`);
+  }
+}
 
 export default defineOperationRun({
   parameters,
@@ -41,7 +62,7 @@ export default defineOperationRun({
         elevation: band,
         parameters: parameterBuffer.view,
         method: METHODS[values.method],
-        output: {curvatures: {[KINDS[values.curvature]]: curvature.view}}
+        output: getCurvatureOutput(KINDS[values.curvature], curvature.view)
       })
     );
     return {

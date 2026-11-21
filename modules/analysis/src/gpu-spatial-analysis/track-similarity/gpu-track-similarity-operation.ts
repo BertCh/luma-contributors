@@ -7,14 +7,16 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUTrackSimilarity, type GPUTrackSimilarityProps} from './gpu-track-similarity';
+import {validateMultipartTrackMeasures} from './multipart-track-layout';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Graph-value properties shared by the GPU and CPU track similarity operations. */
 export type TrackSimilarityOperationProps = Omit<
   GPUTrackSimilarityProps,
   'linesA' | 'linesB' | 'pairA' | 'pairB' | 'activePairCount' | 'frechetEpsilon' | 'output'
 > & {
-  linesA: {positions: string; lineOffsets: string};
-  linesB?: {positions: string; lineOffsets: string};
+  linesA: {positions: string; lineOffsets: string; featureOffsets?: string};
+  linesB?: {positions: string; lineOffsets: string; featureOffsets?: string};
   pairA: string;
   pairB: string;
   /** Explicit pair capacity, inferred from pairA.length by the contributor. */
@@ -31,15 +33,25 @@ export type TrackSimilarityOperationProps = Omit<
  */
 export class GPUTrackSimilarityOperation extends GPUContributorOperation {
   constructor(props: TrackSimilarityOperationProps) {
+    props = snapshotTrackSimilarityOperationProps(props);
+    validateMultipartTrackMeasures(
+      props.id ?? 'track-similarity',
+      Boolean(props.linesA.featureOffsets || props.linesB?.featureOffsets),
+      Object.keys(props.output).filter(
+        key => props.output[key as keyof typeof props.output] !== undefined
+      )
+    );
     const inputs: Record<string, string> = {
       positionsA: props.linesA.positions,
       offsetsA: props.linesA.lineOffsets,
       pairA: props.pairA,
       pairB: props.pairB
     };
+    if (props.linesA.featureOffsets) inputs['featuresA'] = props.linesA.featureOffsets;
     if (props.linesB) {
       inputs['positionsB'] = props.linesB.positions;
       inputs['offsetsB'] = props.linesB.lineOffsets;
+      if (props.linesB.featureOffsets) inputs['featuresB'] = props.linesB.featureOffsets;
     }
     if (props.activePairCount !== undefined) inputs['activePairCount'] = props.activePairCount;
     if (props.frechetEpsilon !== undefined) inputs['frechetEpsilon'] = props.frechetEpsilon;
@@ -55,6 +67,7 @@ export class GPUTrackSimilarityOperation extends GPUContributorOperation {
     }
     super({
       id: props.id ?? 'track-similarity',
+      emptyOutputPorts: Object.keys(outputs),
       inputs,
       outputs,
       createContributor: getView =>
@@ -63,13 +76,17 @@ export class GPUTrackSimilarityOperation extends GPUContributorOperation {
           linesA: {
             kind: 'lines',
             positions: getView<'float32x2'>('positionsA'),
-            lineOffsets: getView<'uint32'>('offsetsA')
+            lineOffsets: getView<'uint32'>('offsetsA'),
+            ...(props.linesA.featureOffsets ? {featureOffsets: getView<'uint32'>('featuresA')} : {})
           },
           linesB: props.linesB
             ? {
                 kind: 'lines',
                 positions: getView<'float32x2'>('positionsB'),
-                lineOffsets: getView<'uint32'>('offsetsB')
+                lineOffsets: getView<'uint32'>('offsetsB'),
+                ...(props.linesB.featureOffsets
+                  ? {featureOffsets: getView<'uint32'>('featuresB')}
+                  : {})
               }
             : undefined,
           pairA: getView<'uint32'>('pairA'),
@@ -82,4 +99,25 @@ export class GPUTrackSimilarityOperation extends GPUContributorOperation {
         })
     });
   }
+}
+
+/** @internal Shared descriptor snapshot for both operation forms. */
+export function snapshotTrackSimilarityOperationProps(
+  props: TrackSimilarityOperationProps
+): TrackSimilarityOperationProps {
+  return Object.freeze({
+    ...props,
+    linesA: snapshotConstructionFields(props.linesA, [
+      'positions',
+      'lineOffsets',
+      'featureOffsets'
+    ]),
+    linesB:
+      props.linesB &&
+      snapshotConstructionFields(props.linesB, ['positions', 'lineOffsets', 'featureOffsets']),
+    output: Object.freeze({...props.output}),
+    editDistanceGapPoint:
+      props.editDistanceGapPoint &&
+      (Object.freeze([...props.editDistanceGapPoint]) as readonly [number, number])
+  });
 }

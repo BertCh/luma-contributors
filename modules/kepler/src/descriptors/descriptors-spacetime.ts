@@ -656,7 +656,7 @@ export const SPACETIME_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor
     notes: [
       ...SERIES_NOTES,
       INFERENCE_NOTES,
-      'One rank-based Pettitt change per location with approximate analytic two-sided p-values. change_slice is a period index; change_time is in the input epoch unit. Per-location statistic, change and p-value are repeated on every observation, not independent discoveries per row.'
+      'One rank-based Pettitt change per location with approximate analytic two-sided p-values. Summaries include only tested locations (at least two finite observations); untested p-values are unavailable, tested constant series have p=1 and no change or segment evidence. change_slice is a period index; change_time is in the input epoch unit. Per-location statistic, change and p-value are repeated on every observation, not independent discoveries per row. The catalog input requires a complete rectangle of finite observations.'
     ]
   },
   {

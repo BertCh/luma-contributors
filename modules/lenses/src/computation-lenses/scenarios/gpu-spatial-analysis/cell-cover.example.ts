@@ -33,7 +33,8 @@ export async function runExample(
       count: scalar('count'),
       requiredCount: scalar('requiredCount'),
       overflow: scalar('overflow'),
-      candidateOverflow: scalar('candidateOverflow')
+      candidateOverflow: scalar('candidateOverflow'),
+      complete: scalar('complete')
     }
   };
   graph.add(

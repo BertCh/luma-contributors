@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, it, vi} from 'vitest';
+import {expect, it} from 'vitest';
+import {decodeGPUMultiscaleGeographicallyWeightedRegressionStatusFields} from '../../../src/gpu-spatial-analysis/spatial-regression/regression-status-decoders';
 import {getGPUGeographicallyWeightedRegressionParameterValues} from '../../../src/gpu-spatial-analysis/spatial-regression/geographically-weighted-regression-parameters';
 import {
   computeMultiscaleGeographicallyWeightedRegressionOnCPU,
@@ -177,36 +178,46 @@ it('allocates all 66 three-word MGWR search rows at the 64-step limit', () => {
   ).toBe(198);
 });
 
-vi.mock('../../../../../website/src/gpu/runs/define-run', () => ({
-  defineOperationRun: (specification: unknown) => specification
-}));
-vi.mock('../../../../../website/src/gpu/runs/interaction', () => ({
-  bindAxes: (_parameters: unknown, specification: unknown) => specification
-}));
-vi.mock('../../../../../website/src/gpu/runs/entries/regression-weights/shared/regression', () => ({
-  createRegressionInputs: vi.fn(),
-  createResponse: vi.fn(),
-  drawTractMap: vi.fn(),
-  TRUE_COEFFICIENTS: [1, 2, 3],
-  uploadRegressionMap: vi.fn()
-}));
-vi.mock('../../../../../website/src/gpu/runs/entries/regression-weights/shared/weights', () => ({
-  addTableColumn: vi.fn()
-}));
-
-it('labels converged, excluded, and displayed limit rows separately in the real website readout', async () => {
-  const scenePath = '../../../../../website/src/gpu/runs/entries/regression-weights/multiscale-gwr';
-  const scene = (await import(scenePath)).default;
-  const {readout} = scene.interaction.decorate(
-    {firstBandwidth: 1, interceptBandwidth: 2},
-    {x: 0, y: 0},
-    {
-      outputs: {codes: {}},
-      peek: () => Uint32Array.of(0, 1, 3)
-    }
+it('decodes excluded MGWR rows and finite last iterates independently of website wording', () => {
+  const input = {
+    positions: Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0),
+    predictors: Float32Array.of(1, -1, 1, 2),
+    response: Float32Array.of(2, 4, 8, 100),
+    parameters: Float32Array.of(1e-6, 1, 1),
+    mask: Uint32Array.of(1, 1, 1, 0)
+  };
+  const unfinished = computeMultiscaleGeographicallyWeightedRegressionOnCPU(input, {
+    predictorCount: 1,
+    kernel: 'bisquare',
+    maximumIterations: 1
+  });
+  const statuses = Array.from(
+    unfinished.codes,
+    decodeGPUMultiscaleGeographicallyWeightedRegressionStatusFields
   );
-  expect(readout).toContain('1 converged');
-  expect(readout).toContain('1 excluded');
-  expect(readout).toContain('1 iteration-limit estimate displayed');
-  expect(readout).toContain('0 failed');
+  expect(statuses.map(status => status.name)).toEqual([
+    'iteration-limit',
+    'iteration-limit',
+    'iteration-limit',
+    'excluded'
+  ]);
+  expect(statuses.map(status => status.excluded)).toEqual([false, false, false, true]);
+  expect(statuses.map(status => status.converged)).toEqual([false, false, false, false]);
+  expect(statuses.map(status => status.failed)).toEqual([false, false, false, false]);
+  // h=1 bisquare admits only self. Global OLS is [4.5, 0.5]; the first intercept update is
+  // y - 0.5*x and the unchanged slope is 0.5. All three fitted values therefore equal y.
+  expect(Array.from(unfinished.coefficients.slice(0, 6)).every(Number.isFinite)).toBe(true);
+  expect(Array.from(unfinished.coefficients)).toEqual([1.5, 0.5, 4.5, 0.5, 7.5, 0.5, NaN, NaN]);
+  expect(Array.from(unfinished.fitted.slice(0, 3)).every(Number.isFinite)).toBe(true);
+  expect(Array.from(unfinished.fitted)).toEqual([2, 4, 8, NaN]);
+  const finished = computeMultiscaleGeographicallyWeightedRegressionOnCPU(input, {
+    predictorCount: 1,
+    kernel: 'bisquare',
+    maximumIterations: 2
+  });
+  expect(
+    Array.from(finished.codes, decodeGPUMultiscaleGeographicallyWeightedRegressionStatusFields).map(
+      status => status.name
+    )
+  ).toEqual(['converged', 'converged', 'converged', 'excluded']);
 });

@@ -60,8 +60,8 @@ type ProfileResult = {
 async function runProfile(device: Device, config: ProfileConfig): Promise<ProfileResult> {
   const {grid, values, validity, observers, model} = config;
   const {width, height} = grid;
-  const azimuthSpan = model.azimuthSpan ?? model.azimuthCount ?? 720;
-  const rayCount = observers.length * azimuthSpan;
+  const azimuthBinCount = model.azimuthBinCount ?? model.azimuthCount ?? 720;
+  const rayCount = observers.length * azimuthBinCount;
   const terrain = createInputBuffer(device, values);
   const validityBuffer = validity ? createInputBuffer(device, validity) : undefined;
   const observerBuffer = createInputBuffer(
@@ -160,8 +160,8 @@ function getOracleModel(config: ProfileConfig): PointHorizonOracleModel {
     rowDirection: model.rowDirection,
     heightReference: model.heightReference,
     azimuthCount,
-    firstAzimuth: model.firstAzimuth ?? 0,
-    azimuthSpan: model.azimuthSpan ?? azimuthCount,
+    firstAzimuthIndex: model.firstAzimuthIndex ?? 0,
+    azimuthBinCount: model.azimuthBinCount ?? azimuthCount,
     lattice,
     segments:
       model.projection === 'web-mercator' ? getGPUPointHorizonSegments(lattice, model) : undefined,
@@ -397,7 +397,7 @@ it('GPUPointHorizonProfile sector run equals the slice of the full run', async (
   const full = await runProfile(device, config);
   const sector = await runProfile(device, {
     ...config,
-    model: {...config.model, firstAzimuth: 30, azimuthSpan: 25}
+    model: {...config.model, firstAzimuthIndex: 30, azimuthBinCount: 25}
   });
   expect(Array.from(toBits(sector.tangent))).toEqual(
     Array.from(toBits(full.tangent.slice(30, 55)))

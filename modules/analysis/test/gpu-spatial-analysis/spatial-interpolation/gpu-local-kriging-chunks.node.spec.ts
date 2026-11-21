@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createLocalKrigingForTesting} from './local-kriging-test-assembly';
 import {createTransientView, GPUCommandGraph, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {afterAll, expect, it, vi} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   GPULocalKriging,
-  createLocalKrigingForTesting,
   type GPULocalKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
 import {expectValidQueryShaderLiterals} from '../linear-referencing/gpu-linear-referencing-chunks.test-utils';
@@ -18,6 +18,16 @@ import {
   getGPUCommandNodeKernelSources,
   getGPUCommandNodePipelineKeys
 } from '../../utils/gpu-contributor-test-utils';
+
+import {
+  GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT,
+  GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+it('ENT-05 publishes the route thresholds through the consumer spatial entry', () => {
+  expect(GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT).toBe(4096);
+  expect(GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK).toBe(2 ** 32);
+});
 
 type ChunkedProps = GPULocalKrigingProps<
   GraphVectorView<'float32x2' | 'float32x4'>,

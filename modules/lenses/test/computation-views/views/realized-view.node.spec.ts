@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUComputationNodeMetrics} from '@luma-contributors/analysis/computation-record';
 import {describe, expect, test} from 'vitest';
 import {makeHost} from '../fixtures/v5-host';
 import {
@@ -125,7 +126,7 @@ describe('realized view', () => {
       }
     ];
     let model = buildRealizedViewModel(context);
-    expect(model.loops[0].executedIterations).toBe(0);
+    expect(model.loops[0].executedIterations).toBeUndefined();
     expect(model.pinned?.settledAt).toHaveProperty('unknown');
     expect(model.pinned?.trajectory).toEqual([]);
     context.record.metrics = undefined;
@@ -135,7 +136,7 @@ describe('realized view', () => {
     expect(REALIZED_VIEW.satisfies(context)).toEqual({
       ok: false,
       reason:
-        'no realized iterations recorded (needs a loop trace: series, per-iteration snapshots or stamps)'
+        'no realized iterations recorded (needs a loop trace: execution measurements, series, per-iteration snapshots or stamps)'
     });
   });
   test('keeps nonpositive convergence linear and preserves replay texture', () => {
@@ -214,4 +215,21 @@ test('realized mount replaces records and stops updating after destruction', () 
   expect(host.getChildCount()).toBe(0);
   mounted.update(record);
   expect(host.getChildCount()).toBe(0);
+});
+
+test.each([
+  [{cpuEncodeMs: 0, gpuTimeMs: 2}, 1],
+  [{cpuEncodeMs: 0, gpuTimeMs: 0}, 1],
+  [{cpuEncodeMs: 1}, undefined],
+  [{cpuEncodeMs: 0, gpuBegin: 0, gpuEnd: 2}, 1],
+  [{cpuEncodeMs: 0, gpuTimeMs: 2, outcome: 'skipped'}, 0]
+] satisfies ReadonlyArray<
+  readonly [GPUComputationNodeMetrics, number | undefined]
+>)('ROAD-111 execution evidence %j gives %s iterations', (measurement, expected) => {
+  const context = makeContext();
+  context.record.metrics![0].nodes = {
+    'relax-0': measurement,
+    'relax-1': {cpuEncodeMs: 0, outcome: 'skipped'}
+  };
+  expect(buildRealizedViewModel(context).loops[0].executedIterations).toBe(expected);
 });

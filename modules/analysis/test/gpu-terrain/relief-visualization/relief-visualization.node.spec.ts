@@ -66,7 +66,8 @@ it('GPUSimpleLocalRelief validates props and schedules two mean filter passes', 
   expect(nodeIds[nodeIds.length - 1]).toBe('simple-local-relief-mean-deviation');
   expect(() => create({maximumRadius: 0})).toThrow(/maximumRadius/);
   expect(() => create({maximumRadius: 2.5})).toThrow(/maximumRadius/);
-  expect(() => create({output: {}})).toThrow(/at least one output/);
+  // Intentional JavaScript-only empty selection; excluded by the public output type.
+  expect(() => Reflect.apply(create, undefined, [{output: {}}])).toThrow(/at least one output/);
   expect(() => create({grid: {...GRID, width: 0}})).toThrow(/dimensions/);
   expect(() =>
     create({parameters: createTransientView(graph, 'short-settings', 'float32', 3)})
@@ -167,7 +168,8 @@ it('GPUMultiScaleRelief validates scales and schedules one or two filters', () =
   expect(() => create({resolution: 0})).toThrow(/resolution/);
   expect(() => create({scalingFactor: 0.5})).toThrow(/scalingFactor/);
   expect(() => create({featureMaximum: Infinity})).toThrow(/finite/);
-  expect(() => create({output: {}})).toThrow(/at least one output/);
+  // Intentional JavaScript-only empty selection; excluded by the public output type.
+  expect(() => Reflect.apply(create, undefined, [{output: {}}])).toThrow(/at least one output/);
   expect(() =>
     create({parameters: createTransientView(graph, 'short-settings', 'float32', 2)})
   ).toThrow(/parameters/);
@@ -208,7 +210,8 @@ it('GPULocalDominance validates props and schedules one kernel', () => {
   expect(() => create({minimumRadius: 0})).toThrow(/minimumRadius/);
   expect(() => create({minimumRadius: 25})).toThrow(/minimumRadius/);
   expect(() => create({radiusIncrement: 1.5})).toThrow(/radiusIncrement/);
-  expect(() => create({output: {}})).toThrow(/at least one output/);
+  // Intentional JavaScript-only empty selection; excluded by the public output type.
+  expect(() => Reflect.apply(create, undefined, [{output: {}}])).toThrow(/at least one output/);
   expect(() =>
     create({parameters: createTransientView(graph, 'short-settings', 'float32', 3)})
   ).toThrow(/parameters/);
@@ -256,7 +259,8 @@ it('GPUReliefBlend validates layer count, settings and presets', () => {
   ).toHaveLength(1);
   expect(() => create({layers: createLayers(6)})).toThrow(/1 to 5/);
   expect(() => create({layers: []})).toThrow(/1 to 5/);
-  expect(() => create({output: {}})).toThrow(/at least one output/);
+  // Intentional JavaScript-only empty selection; excluded by the public output type.
+  expect(() => Reflect.apply(create, undefined, [{output: {}}])).toThrow(/at least one output/);
   expect(() =>
     create({parameters: createTransientView(graph, 'short-settings', 'float32', 19)})
   ).toThrow(/parameters/);

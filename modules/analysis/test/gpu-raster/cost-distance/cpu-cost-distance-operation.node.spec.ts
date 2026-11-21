@@ -258,3 +258,199 @@ it('reports synchronous hop diagnostics on a two-cell line', () => {
   expect(Array.from(result.settledAt)).toEqual([0, 1]);
   expect(Array.from(result.iterationCount)).toEqual([2]);
 });
+
+async function executeBudgetedLine(
+  values: Float32Array,
+  maximumIterations: number,
+  maximumTieIterations?: number,
+  includeBackLinks = true
+) {
+  const sceneGrid = makeGPURasterMetadata({width: values.length, height: 1});
+  const rows = (format: 'float32' | 'uint32', data: Float32Array | Uint32Array): GPUCPUVector => ({
+    format,
+    length: data.length,
+    chunks: [{values: data, length: data.length}],
+    pack: () => data
+  });
+  const operation = new CPUCostDistanceOperation({
+    grid: sceneGrid,
+    maximumIterations,
+    maximumTieIterations,
+    friction: {id: 'friction', format: 'float32', storage: {kind: 'buffer', values: 'friction'}},
+    parameters: 'parameters',
+    sources: 'sources',
+    costBreaks: 'costBreaks',
+    costBreakCount: 1,
+    output: {
+      costs: 'costs',
+      settledAt: 'settledAt',
+      ...(includeBackLinks ? {backLinks: 'backLinks'} : {}),
+      bands: 'bands',
+      bandCounts: 'bandCounts',
+      status: {
+        iterationCount: 'iterationCount',
+        converged: 'converged',
+        iterationLimitReached: 'limited'
+      }
+    }
+  });
+  return operation.execute({
+    inputs: {
+      values: rows('float32', values),
+      parameters: rows('float32', getGPUCostDistanceParameterValues({}, sceneGrid)),
+      sources: rows('uint32', Uint32Array.of(0)),
+      costBreaks: rows('float32', Float32Array.of(Infinity))
+    }
+  });
+}
+
+it('honors explicit cost budgets before certifying the two-cell fixed point on the public CPU callback', async () => {
+  // Hand integration: one unit edge. Round 1 lowers cell 1 to 1; round 2 certifies no change.
+  // A budget-1 implementation that computes the whole Dijkstra result must not publish it as final.
+  for (const budget of [1, 2]) {
+    const result = await executeBudgetedLine(Float32Array.of(1, 1), budget);
+    expect(Array.from(result['costs'] as Float32Array)).toEqual(budget === 1 ? [NaN, NaN] : [0, 1]);
+    expect(Array.from(result['settledAt'] as Uint32Array)).toEqual([0, 1]);
+    expect(Array.from(result['backLinks'] as Uint32Array)).toEqual(
+      budget === 1 ? [0xfffffffe, 0xfffffffe] : [0, 16]
+    );
+    expect(Array.from(result['bands'] as Uint32Array)).toEqual(
+      budget === 1 ? [0xfffffffe, 0xfffffffe] : [0, 0]
+    );
+    expect(Array.from(result['bandCounts'] as Uint32Array)).toEqual(
+      budget === 1 ? [0xfffffffe] : [2]
+    );
+    expect(Array.from(result['iterationCount'] as Uint32Array)).toEqual([budget]);
+    expect(Array.from(result['converged'] as Uint32Array)).toEqual([budget === 2 ? 1 : 0]);
+    expect(Array.from(result['limited'] as Uint32Array)).toEqual([budget === 1 ? 1 : 0]);
+  }
+});
+
+it('honors explicit tie budgets while preserving certified zero-cost values and valid partial links', async () => {
+  // All three costs are zero. Cost and tie fronts each improve in round 1 and certify in round 2.
+  // The cost phase succeeds at budget 2; tie budget 1 cannot certify, even if all links are usable.
+  for (const tieBudget of [1, 2]) {
+    const result = await executeBudgetedLine(Float32Array.of(0, 0, 0), 2, tieBudget);
+    expect(Array.from(result['costs'] as Float32Array)).toEqual([0, 0, 0]);
+    expect(Array.from(result['settledAt'] as Uint32Array)).toEqual([0, 1, 1]);
+    expect(Array.from(result['backLinks'] as Uint32Array)).toEqual([0, 16, 16]);
+    expect(Array.from(result['bands'] as Uint32Array)).toEqual([0, 0, 0]);
+    expect(Array.from(result['bandCounts'] as Uint32Array)).toEqual([3]);
+    expect(Array.from(result['iterationCount'] as Uint32Array)).toEqual([2]);
+    expect(Array.from(result['converged'] as Uint32Array)).toEqual([tieBudget === 2 ? 1 : 0]);
+    expect(Array.from(result['limited'] as Uint32Array)).toEqual([tieBudget === 1 ? 1 : 0]);
+  }
+});
+
+it('cost truncation preserves impassable sentinels while suppressing every passable output', async () => {
+  const result = await executeBudgetedLine(Float32Array.of(1, 1, NaN), 1);
+  expect(Array.from(result['costs'] as Float32Array)).toEqual([NaN, NaN, Infinity]);
+  expect(Array.from(result['settledAt'] as Uint32Array)).toEqual([0, 1, 0]);
+  expect(Array.from(result['backLinks'] as Uint32Array)).toEqual([
+    0xfffffffe, 0xfffffffe, 0xffffffff
+  ]);
+  expect(Array.from(result['bands'] as Uint32Array)).toEqual([0xfffffffe, 0xfffffffe, 0xffffffff]);
+  expect(Array.from(result['bandCounts'] as Uint32Array)).toEqual([0xfffffffe]);
+  expect(Array.from(result['iterationCount'] as Uint32Array)).toEqual([1]);
+  expect(Array.from(result['converged'] as Uint32Array)).toEqual([0]);
+  expect(Array.from(result['limited'] as Uint32Array)).toEqual([1]);
+});
+
+it('marks unreached tie levels unresolved across tile boundaries and skips an unrequested tie phase', async () => {
+  // Three tiles. Snapshot visibility needs three improving cost rounds plus certification.
+  // A single tie round reaches only source tile 0; later tiles cannot claim source link 0.
+  const result = await executeBudgetedLine(new Float32Array(33), 8, 1);
+  expect(Array.from(result['costs'] as Float32Array)).toEqual(new Array(33).fill(0));
+  expect(Array.from(result['backLinks'] as Uint32Array)).toEqual([
+    0,
+    ...new Array(15).fill(16),
+    ...new Array(17).fill(0xfffffffe)
+  ]);
+  expect(Array.from(result['settledAt'] as Uint32Array)).toEqual([
+    0,
+    ...new Array(15).fill(1),
+    ...new Array(16).fill(2),
+    3
+  ]);
+  expect(Array.from(result['bands'] as Uint32Array)).toEqual(new Array(33).fill(0));
+  expect(Array.from(result['bandCounts'] as Uint32Array)).toEqual([33]);
+  expect(Array.from(result['iterationCount'] as Uint32Array)).toEqual([4]);
+  expect(Array.from(result['converged'] as Uint32Array)).toEqual([0]);
+  expect(Array.from(result['limited'] as Uint32Array)).toEqual([1]);
+
+  const costsOnly = await executeBudgetedLine(Float32Array.of(0, 0, 0), 2, 1, false);
+  expect(Array.from(costsOnly['costs'] as Float32Array)).toEqual([0, 0, 0]);
+  expect(Array.from(costsOnly['converged'] as Uint32Array)).toEqual([1]);
+  expect(Array.from(costsOnly['limited'] as Uint32Array)).toEqual([0]);
+});
+
+it('the pure CPU form uses bounded tiled rounds and the cumulative directional schedule', () => {
+  const sceneGrid = makeGPURasterMetadata({width: 128, height: 1});
+  for (const budget of [3, 4]) {
+    const result = computeCostDistanceOnCPU(
+      {
+        friction: {...friction, values: new Float32Array(128).fill(1)},
+        parameters: getGPUCostDistanceParameterValues({}, sceneGrid),
+        sources: Uint32Array.of(0)
+      },
+      {grid: sceneGrid, maximumIterations: budget, sweepAfterIteration: 1}
+    );
+    expect(Array.from(result.costs)).toEqual(
+      budget === 3 ? new Array(128).fill(NaN) : Array.from({length: 128}, (_, cell) => cell)
+    );
+    expect(Array.from(result.iterationCount)).toEqual([budget]);
+    expect(Array.from(result.converged)).toEqual([budget === 4 ? 1 : 0]);
+    expect(Array.from(result.iterationLimitReached)).toEqual([budget === 3 ? 1 : 0]);
+    expect(result.settledAt[127]).toBe(3);
+  }
+});
+
+it('bounded CPU tiles match the closed-form octile surface across both raster axes and tail tiles', () => {
+  const width = 17;
+  const sceneGrid = makeGPURasterMetadata({width, height: width});
+  const input = {
+    friction: {...friction, values: new Float32Array(width * width).fill(1)},
+    parameters: getGPUCostDistanceParameterValues({}, sceneGrid),
+    sources: Uint32Array.of(0)
+  };
+  // Unit D8 geometry: min(column,row) diagonal moves, then axial moves. Two improving
+  // snapshot rounds reach all four tiles; the third unchanged round certifies them.
+  const limited = computeCostDistanceOnCPU(input, {grid: sceneGrid, maximumIterations: 2});
+  expect(Array.from(limited.costs)).toEqual(new Array(width * width).fill(NaN));
+  expect(Array.from(limited.iterationCount)).toEqual([2]);
+  expect(Array.from(limited.converged)).toEqual([0]);
+  const complete = computeCostDistanceOnCPU(input, {grid: sceneGrid, maximumIterations: 3});
+  const expected = Array.from({length: width * width}, (_, cell) => {
+    const column = cell % width;
+    const row = Math.floor(cell / width);
+    return Math.fround(Math.max(column, row) + (Math.SQRT2 - 1) * Math.min(column, row));
+  });
+  expect(Array.from(complete.costs)).toEqual(expected);
+  expect(Array.from(complete.iterationCount)).toEqual([3]);
+  expect(Array.from(complete.converged)).toEqual([1]);
+  expect(Array.from(complete.iterationLimitReached)).toEqual([0]);
+  expect([
+    complete.settledAt[0],
+    complete.settledAt[15],
+    complete.settledAt[16],
+    complete.settledAt[width * width - 1]
+  ]).toEqual([0, 1, 2, 2]);
+});
+
+it('rejects explicit cost and tie budgets outside the shared round limit', () => {
+  for (const name of ['maximumIterations', 'maximumTieIterations'] as const) {
+    for (const value of [0, 1025, NaN]) {
+      expect(() =>
+        computeCostDistanceOnCPU(
+          {friction, parameters, sources: Uint32Array.of(0)},
+          {
+            grid,
+            [name]: value
+          }
+        )
+      ).toThrow(
+        new RegExp(`^computeCostDistanceOnCPU ${name} must be an integer in \\[1, 1024\\]`)
+      );
+    }
+  }
+});

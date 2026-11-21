@@ -108,7 +108,9 @@ test('review 2: Gi star permutations map row-keyed GPU readback through canonica
   // any source-order dependence without constructing buffers or executing a GPU contributor.
   const session = vi.spyOn(gpuSession, 'withCatalogGpuSession').mockResolvedValue({
     observed: new Float32Array(25),
-    pValues: Float32Array.from({length: 25}, (_, index) => (index + 1) / 200)
+    pValues: Float32Array.from({length: 25}, (_, index) => (index + 1) / 200),
+    // At alpha 0.05, the first ten literal p-values are significant (p <= alpha).
+    significant: Uint32Array.from({length: 25}, (_, index) => Number(index < 10))
   });
   try {
     const binding = getCatalogBinding('local-lisa-variants')!;
@@ -252,7 +254,7 @@ test('review 4: S2 clamps explicit requests above the global contributor cap', (
 test('review 5: DBSCAN never counts a point twice when neighboring bucket keys collide', () => {
   const result = run(
     'density-clustering',
-    {epsilon: 1e-9, minimumPoints: 2},
+    {epsilon: 1e-9, minimumSamples: 2},
     points([
       [0, 0],
       [1e9, 0]
@@ -290,7 +292,7 @@ test('review 7: DBSCAN excludes represented out-of-radius distances without a fr
   for (const distance of [1, 1.000000000000001]) {
     const result = run(
       'density-clustering',
-      {epsilon: 1, minimumPoints: 2},
+      {epsilon: 1, minimumSamples: 2},
       points([
         [0, 0],
         [distance, 0]
@@ -304,7 +306,7 @@ test('review 7: DBSCAN excludes represented out-of-radius distances without a fr
 test('review 7: DBSCAN still includes the original exactly-one boundary after local translation', () => {
   const result = run(
     'density-clustering',
-    {epsilon: 1, minimumPoints: 2},
+    {epsilon: 1, minimumSamples: 2},
     points([
       [-0.1, 100],
       [0.1, 0],

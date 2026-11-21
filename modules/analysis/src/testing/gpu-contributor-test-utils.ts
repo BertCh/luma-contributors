@@ -12,6 +12,7 @@ import {
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {NullDevice} from '@luma.gl/core/test-utils';
 import {WgslReflect} from 'wgsl_reflect';
+import {readPackedBuffer} from '../analysis-core/kernels/gpu-contributor-utils';
 import {getWGSLModuleUsage, getWGSLStorageBindingCount} from './wgsl-memory-usage';
 
 /**
@@ -61,6 +62,8 @@ export type RecordedGPUKernelSource = {
  * pipeline instead of creating it, for `.node.spec.ts` checks of generated kernels (WGSL parsing,
  * binding counts, private and workgroup memory) at the core limits of {@link createNullWebGPUDevice}.
  * Each compiled node is destroyed after recording, including any node-owned parameter buffers.
+ * When a node's `compile` throws, the buffers, textures, shaders and samplers it created before throwing
+ * are destroyed before the error propagates, since no compiled object exists to release them.
  *
  * Use it instead of `vi.mock`: the node project runs with `isolate: false`, so a module mock of
  * `@luma.gl/engine` is not applied reliably when another spec file loaded the module first.
@@ -99,13 +102,38 @@ export function getGPUCommandNodeKernelSources(
       return {id: props.id ?? '', hash: '', destroy: () => {}};
     }
   });
+  // Resources created by the node being compiled, released if its compile throws (TOOL-121).
+  const created: {destroyed: boolean; destroy: () => void}[] = [];
+  const track = <Resource extends {destroyed: boolean; destroy: () => void}>(
+    resource: Resource
+  ): Resource => {
+    created.push(resource);
+    return resource;
+  };
+  const createBuffer = device.createBuffer.bind(device);
+  const createTexture = device.createTexture.bind(device);
+  const createShader = device.createShader.bind(device);
+  const createSampler = device.createSampler.bind(device);
+  device.createBuffer = props => track(createBuffer(props));
+  device.createTexture = props => track(createTexture(props));
+  device.createShader = props => track(createShader(props));
+  device.createSampler = props => track(createSampler(props));
   try {
     for (const node of nodes as {
       workload?: {operation?: string};
       compile?: (context: {device: Device}) => {destroy?: () => void} | undefined;
     }[]) {
       operation = node.workload?.operation ?? '';
-      const compiled = node.compile?.({device});
+      created.length = 0;
+      let compiled: {destroy?: () => void} | undefined;
+      try {
+        compiled = node.compile?.({device});
+      } catch (error) {
+        for (const resource of created.reverse()) {
+          if (!resource.destroyed) resource.destroy();
+        }
+        throw error;
+      }
       compiled?.destroy?.();
     }
   } finally {
@@ -192,8 +220,14 @@ export const CORE_PRIVATE_MEMORY_LIMIT_BYTES = 8192;
 /** Core WebGPU `maxComputeWorkgroupStorageSize`, in bytes. */
 export const CORE_WORKGROUP_STORAGE_LIMIT_BYTES = 16384;
 
-function requireResolvedMemoryUsage(source: string, constants: Readonly<Record<string, number>>) {
-  const usage = getWGSLModuleUsage(source, constants);
+function requireResolvedMemoryUsage(
+  source: string | RecordedGPUKernelSource,
+  constants: Readonly<Record<string, number>>
+) {
+  const usage =
+    typeof source === 'string'
+      ? getWGSLModuleUsage(source, constants)
+      : getWGSLModuleUsage(source.source, source.constants);
   const unresolved = [...usage.unresolvedLengths, ...usage.unresolvedTypes];
   if (unresolved.length) throw new Error(`unresolved shader memory: ${unresolved.join(', ')}`);
   return usage;
@@ -204,18 +238,33 @@ function requireResolvedMemoryUsage(source: string, constants: Readonly<Record<s
  * treated as registers. This estimates declared storage, not total compiler/device allocation.
  * Resolves named constants, pipeline overrides, aliases and struct padding. Throws when a memory
  * layout cannot be resolved rather than returning an unsafe bound. This is not device allocation.
+ * Pass a complete recorded kernel when iterating configurations so its pipeline overrides travel
+ * with its shader; raw strings remain supported for standalone shader fixtures.
  */
+export function getPrivateMemoryBytes(kernel: RecordedGPUKernelSource): number;
 export function getPrivateMemoryBytes(
   source: string,
+  constants?: Readonly<Record<string, number>>
+): number;
+export function getPrivateMemoryBytes(
+  source: string | RecordedGPUKernelSource,
   constants: Readonly<Record<string, number>> = {}
 ): number {
   const usage = requireResolvedMemoryUsage(source, constants);
   return usage.privateBytes + usage.localAggregateBytes;
 }
 
-/** WebGPU workgroup storage usage, rounding each variable up to 16 bytes; refuses unresolved layouts. */
+/**
+ * WebGPU workgroup storage usage, rounding each variable up to 16 bytes; refuses unresolved layouts.
+ * A complete recorded kernel supplies its own overrides; raw-source fixtures may pass them separately.
+ */
+export function getWorkgroupMemoryBytes(kernel: RecordedGPUKernelSource): number;
 export function getWorkgroupMemoryBytes(
   source: string,
+  constants?: Readonly<Record<string, number>>
+): number;
+export function getWorkgroupMemoryBytes(
+  source: string | RecordedGPUKernelSource,
   constants: Readonly<Record<string, number>> = {}
 ): number {
   return requireResolvedMemoryUsage(source, constants).workgroupStorageBytes;
@@ -244,18 +293,12 @@ export function createOutputBuffer(device: Device, length: number, usage: number
 
 /** Reads the first `length` (default all) uint32 values of a submitted buffer. */
 export async function readUint32(buffer: Buffer, length?: number): Promise<number[]> {
-  const bytes = await buffer.readAsync();
-  return Array.from(
-    new Uint32Array(bytes.buffer, bytes.byteOffset, length ?? bytes.byteLength / 4)
-  );
+  return Array.from(await readPackedBuffer(buffer, 0, 'uint32', length ?? buffer.byteLength / 4));
 }
 
 /** Reads the first `length` (default all) float32 values of a submitted buffer. */
 export async function readFloat32(buffer: Buffer, length?: number): Promise<number[]> {
-  const bytes = await buffer.readAsync();
-  return Array.from(
-    new Float32Array(bytes.buffer, bytes.byteOffset, length ?? bytes.byteLength / 4)
-  );
+  return Array.from(await readPackedBuffer(buffer, 0, 'float32', length ?? buffer.byteLength / 4));
 }
 
 /** Reads a compact result prefix: `count` first, then that many IDs. */

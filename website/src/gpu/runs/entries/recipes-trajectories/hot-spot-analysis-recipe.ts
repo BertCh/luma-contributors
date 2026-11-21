@@ -53,7 +53,7 @@ export default defineOperationRun({
       },
       parameters: parameterBuffer,
       minimumNeighbors: values.minimumNeighbors,
-      outputs: {zScores: zScores.view}
+      output: {zScores: zScores.view}
     });
     return {
       outputs: {zScores, dots: builder.upload('events', 'float32x2', dots)},

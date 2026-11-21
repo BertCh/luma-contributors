@@ -17,6 +17,11 @@ convolution, and exact min/max pyramids. Each is an algorithm or workflow that d
 caller-owned `GPUCommandGraph` through `getCommandNodes(graph)` (`GPUCommandNodeProducer`). It never
 compiles, submits, encodes, or reads back.
 
+Optional output views select which results are published. A reclassification can request just
+`classCounts`, just `classes`, or just `reclassified`; raster joins can request `pointZones`
+without counts, and cell statistics can request minimum without mean. These independent routes
+use the same classification, join and statistics definitions as requests containing every output.
+
 ## When to use it
 
 Use these contributors when a map analysis needs a finished, bounded result rather than a
@@ -38,6 +43,36 @@ recompiling.
   [GPU Network](/docs/api/gpu-network) reachability when travel follows a
   road network rather than a grid.
 
+## Keep the georeference through composition
+
+Keep the upstream raster container until alignment and units have been checked. A band wrapper
+bounds storage but does not carry the entire grid into a bare-view consumer.
+
+```ts
+import {GPURaster} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterBand, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+declare const allocation: import('@luma.gl/graph/gpu-core').GraphDataView<'float32'>;
+declare const second: GPURaster;
+const grid = makeGPURasterMetadata({width: 2, height: 2, cellSize: 30, origin: [100, 200]});
+const first = new GPURaster({metadata: grid, bands: [makeGPURasterBand(allocation, grid, {id: 'red'})]});
+first.assertCompatibleWith(second); // Reject shifted or reversed grids before extracting bands.
+const red = first.getBand('red');
+const firstCenter = first.getPixelWorldPosition(0, 0); // [115, 185]
+const logicalValues = makeGPURasterBand(allocation, grid).storage.values;
+// Nonzero-offset example: allocation must cover at least eight float32 rows.
+const offsetAllocation = graph.createDataView(allocation.buffer, {
+  format: 'float32', byteOffset: allocation.byteOffset + 16, length: 4
+});
+const offsetValues = makeGPURasterBand(offsetAllocation, grid).storage.values;
+// Both logical views have four rows; offsetValues retains the nonzero byteOffset, without copying.
+```
+
+Feed `logicalValues`, rather than spare allocation rows, to class breaks or other bare-view
+consumers. With GDAL coefficients, the affine mapping is `[GT1, GT2, GT0, GT4, GT5, GT3]`.
+With `makeGPURasterMetadata`, pass positive cell-size magnitudes and use `rowDirection` for Y.
+Two 30 m grids shifted by one column have first centers `[115,185]` and `[145,185]`;
+matching width and height alone does not establish alignment.
+
 ## Quick start
 
 ```ts
@@ -47,8 +82,16 @@ import {
   GPUDistanceField,
   getGPUDistanceFieldParameterValues
 } from '@luma-contributors/analysis/raster-analysis';
+declare const grid: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['grid']>;
+declare const seedPositions: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['seedPositions']>;
+declare const seedCount: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['seedCount']>;
+declare const seedMask: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['seedMask']>;
+declare const distances: NonNullable<NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['output']>['distances']>;
+declare const allocation: NonNullable<NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['output']>['allocation']>;
+declare const withinDistance: NonNullable<NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['output']>['withinDistance']>;
 
-const graph = new GPUCommandGraph(device, {id: 'raster-analysis'});
+// Use the graph that already owns every supplied input and output view.
+declare const graph: GPUCommandGraph;
 const parameters = new GPUParameterBuffer(device, {id: 'df-parameters', format: 'float32', length: 8});
 
 // `grid` is a `GPURasterMetadata` (see `makeGPURasterMetadata`). `seedPositions`, `seedCount`,
@@ -118,18 +161,20 @@ covers `compileAsync()`, rebuilding without a stall, submission and why `paramet
   vertices within 0.02 mm of a float64 reference, against 0.34 m with absolute coordinates). The
   default `[0, 0]` keeps absolute coordinates. `GPUPolygonRasterization` follows the same rule
   with caller-subtracted coordinates.
-- **Row direction.** `GPURasterSampling`, `GPURasterProfile`, `GPUDistanceField`, `GPUCostDistance`,
-  `GPUPolygonRasterization`, `GPURasterReprojection` and the fractional coverage classes take the
-  row direction from `grid.affine`. `GPUIsolines`, `GPUIsobands`, `GPUIsobandRings` and the flow
-  family (`GPULineIntegralConvolution`, `GPUStreamlines`, `GPUParticleAdvection`,
-  `GPULagrangianFlowMap`, `GPUFiniteTimeLyapunovExponent`) do not: they place row 0 at the
-  smallest y of their extent and ignore the affine, with no check at construction. Give them a
-  raster whose rows run from south to north (reverse the row order of a north-up raster before
-  upload). In the flow family `v` is the velocity toward larger y. Making them follow the affine
-  is deferred (roadmap 12.4).
-- **Non-finite samples are nodata.** NaN and both infinities are nodata in every raster
-  contributor on this page, `GPURasterSampling`, `GPURasterProfile` and `GPUFocalStatistics`
-  included (before 2026-11-10 those three kept an infinity as a value).
+- **Row direction.** Grid-based sampling, profiles, distance, cost, rasterization,
+  reprojection and fractional coverage follow `grid.affine`. Flow placements are outer-corner
+  origins plus signed cell steps, not bounds. A north-up FlowMap preserves row order with
+  a top-edge origin, passed as `fieldPlacement: {origin: [100, 220], cellSize: [10, -10]}`. A positive Y step instead needs
+  reversed rows and the bottom-edge origin `[100, 200]` for this two-row grid. In both cases `v`
+  means velocity toward larger world y. Isoline/isoband bounds use min/max coordinates; do not
+  pass them as flow placement tuples.
+- **Missing samples.** Calibrated `GPURasterBand` inputs compare raw nodata and the raw validity
+  mask before scale/offset, then reject nonfinite calibrated values. Legacy bare-view contracts
+  must be checked separately: sampling and profiles reject both infinities and NaN; stretch's
+  bare-view path excludes NaN and its sentinel but can retain infinities under an explicit
+  finite domain in application (statistics still exclude them). Isolines/isobands reject
+  infinities; legacy map-algebra views use NaN/sentinel rules and can retain infinities.
+  Do not infer that every legacy view has the calibrated band's missingness rule.
 - **One import per buffer.** Import a buffer once (for example with `graph.importGPUData()` or
   `GPUParameterBuffer.importToGraph()`) and pass the returned view to every contributor that reads
   it, so the graph tracks hazards on one logical handle.
@@ -139,6 +184,59 @@ covers `compileAsync()`, rebuilding without a stall, submission and why `paramet
 `GPUCostDistance`: With continuation, settledAt stores cumulative last-decrease rounds across
 resumed submissions. Explicit or automatic restart clears it together with costs/state; removing all
 sources restarts the result.
+
+Completed cost surfaces are deterministic. `iterationCount` and `settledAt` are scheduling
+diagnostics: a workgroup can read a neighboring tile's writes during the same round. Equal inputs
+can therefore take different numbers of rounds, and a fixed budget can converge on one execution
+but truncate another. `iterationCount` includes the first unchanged round and is bounded by
+`maximumIterations` per submission (cumulatively by submissions × `maximumIterations` with
+continuation). Poll `converged`; do not use count equality or a recorded settling stamp to certify
+completion. Directional sweeps accelerate many corridors but do not guarantee fewer rounds than
+every possible plain-pass schedule.
+
+`CPUCostDistanceOperation` and `computeCostDistanceOnCPU` honor explicit cost and tie budgets using
+16×16 tiled rounds, 32 synchronous inner updates per tile, round-start snapshots across tiles,
+and ordered writes within each directional sweep line. The unchanged certification round consumes
+budget. Cost exhaustion publishes NaN on every passable cell and unresolved links/bands/counts;
+tie exhaustion leaves certified costs intact and reports convergence 0, with unresolved links where
+tie levels were not reached. The operation runs the tie phase only when back-links are requested.
+Without an explicit cost budget, CPU costs still use float64 Dijkstra and its diagnostics remain
+minimum path hops; with an explicit cost budget, count/stamps describe its tiled rounds. CPU and GPU
+round counts need not match, since their visibility choices differ. Float64 CPU costs are rounded
+once at output; the existing relative cost tolerance remains 3e-5.
+
+Cost units are distance units times friction units. CRS metadata alone does not select ground
+conversion: for an EPSG:4326 grid, explicitly select `cellSizeMode: 'geographic'` on the
+contributor, and pass the same geographic grid to its packer. Two adjacent one-degree equatorial cells with unit friction and
+source cell 0 give `[0,1]` in default uniform mode versus `[0,111319.4921875]` in geographic
+mode (float32 meters). A projected 10 m row with friction `[1,3,1]` gives `[0,20,40]`, since
+each step costs 10 times the mean endpoint friction. Metres times seconds/metre yields seconds.
+
+```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUCostDistance, getGPUCostDistanceParameterValues} from '@luma-contributors/analysis/raster-analysis';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+declare const friction: ConstructorParameters<typeof GPUCostDistance>[0]['friction'];
+declare const sources: NonNullable<ConstructorParameters<typeof GPUCostDistance>[0]['sources']>;
+declare const costs: NonNullable<ConstructorParameters<typeof GPUCostDistance>[0]['output']['costs']>;
+const geographicGrid: GPURasterMetadata = {
+  width: 2, height: 1, affine: [1, 0, 0, 0, -1, .5],
+  pixelInterpretation: 'area', coordinateReferenceSystem: {authority: 'EPSG:4326'}
+};
+const parameters = new GPUParameterBuffer(device, {
+  id: 'geographic-cost-parameters', format: 'float32', length: 8,
+  values: getGPUCostDistanceParameterValues({}, geographicGrid)
+});
+graph.add(new GPUCostDistance({
+  grid: geographicGrid, cellSizeMode: 'geographic',
+  friction, sources, parameters: parameters.importToGraph(graph), output: {costs}
+}));
+// Unit friction [1,1], source row [0] gives float32 costs [0,111319.4921875].
+```
+
+`cellSizeMode` selects the contributor's kernel; it is not a setting accepted by
+`getGPUCostDistanceParameterValues`. The grid argument supplies its cell sizes and latitude band.
+
 
 Accumulated cost surface over a friction raster from per-frame source cells, a source mask, or
 both: 8-connected moves cost ground distance times mean friction, invalid or negative friction is
@@ -161,6 +259,17 @@ converged one. Every relaxation round shares one pipeline per pass variant: its 
 word, not WGSL text.
 
 ```ts
+import {makeGPURasterMetadata, GPUCostDistance, GPUCostDistancePath, getGPUCostDistanceParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const width: number;
+declare const height: number;
+declare const friction: NonNullable<ConstructorParameters<typeof GPUCostDistance>[0]['friction']>;
+declare const parameters: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'float32'>;
+declare const sources: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'uint32'>;
+declare const costs: NonNullable<NonNullable<ConstructorParameters<typeof GPUCostDistance>[0]['output']>['costs']>;
+declare const backLinks: NonNullable<NonNullable<ConstructorParameters<typeof GPUCostDistance>[0]['output']>['backLinks']>;
+declare const converged: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCostDistance>[0]['output']>['status']>['converged']>;
+declare const target: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'uint32'>;
+declare const output: NonNullable<ConstructorParameters<typeof GPUCostDistancePath>[0]['output']['path']>;
 const grid = makeGPURasterMetadata({width, height, cellSize: 10});
 graph.add(new GPUCostDistance({
   grid, friction, parameters: parameters.importToGraph(graph),
@@ -187,7 +296,25 @@ every passable cell when the cost relaxation stops at `maximumIterations`, and p
 level did not converge. `GPUCostDistancePath` returns an empty path when the walk meets an unresolved
 link, and sets its optional one-row `output.status.iterationLimitReached`. It also returns an empty path for
 links that do not form a valid forest (an invalid code, a link off the grid or into an unreached
-cell, a cycle), so it only ever reports a complete path from the target to a source.
+cell, a cycle), so every nonempty result follows a validated target-to-source walk. When path
+capacity is short, it publishes the prefix that fits and sets `output.path.status.overflow`.
+The inherited optional compact `output.path.status.candidateOverflow` is always zero: path
+extraction has no bounded candidate search. It is independent of final path-capacity overflow
+and of `output.status.iterationLimitReached`, and is rewritten when supplied, including when
+`requiredCount` is omitted. It must be a packed one-row `uint32` view belonging to the target
+graph, with no writable overlap with the path IDs, other outputs or inputs.
+Disjoint ranges may share a buffer across separate nodes: for example, back-links at bytes
+`[0,12)` and candidate overflow at `[256,260)` are legal because the walk reads the former and
+the publisher writes the latter. Read-only and writable views sharing a physical buffer in the
+same dispatch remain invalid.
+The contributor captures its view bindings and grid metadata at construction. Replacing a nested
+path/status property afterward does not redirect the walk or publisher; buffer contents remain
+the per-frame inputs.
+`GPUCostDistancePathOperation` and `CPUCostDistancePathOperation` accept independent optional
+`output.path.status.requiredCount` and `candidateOverflow` graph value names. The first reports
+the full validated walk length, even when capacity truncates its prefix; the second reports zero
+because path extraction does not search candidates. Omitting either name omits that output from
+the operation contract. `computeCostDistancePathOnCPU` also returns `candidateOverflow: [0]`.
 
 `maximumIterations` defaults to 512. After `sweepAfterIteration` iterations (default 96) relaxation adds
 directional tile sweeps that carry a front along a whole row or column of tiles, so long corridors and
@@ -217,7 +344,7 @@ collides with a caller resource, the error names the contributor and the generat
 
 | Output | Type | Description |
 |---|---|---|
-| `output.settledAt` (optional) | `GraphDataView<'uint32'>` | Packed, one value per cell: the 1-based gated relaxation round in which its cost last decreased; 0 for sources and cells whose cost never decreased. For a converged run, visualizes the propagation wavefront. Adds one store per improved cell; omit in production. Must be distinct from inputs and other outputs. Not supported with `continuation`. |
+| `output.settledAt` (optional) | `GraphDataView<'uint32'>` | Packed, one value per cell: the 1-based gated relaxation round in which its cost last decreased; 0 for sources and cells whose cost never decreased. Visualizes a run's propagation wavefront; stamps depend on scheduling. Adds one store per improved cell; omit in production. Must be distinct from inputs and other outputs. With `continuation`, import it from a caller-owned buffer; stamps are cumulative and clear on restart. |
 
 #### `GPUCostDistance`
 
@@ -232,6 +359,8 @@ Relaxes accumulated travel cost outward from a source cell over a friction raste
 {/* parameters: GPUCostDistance generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUCostDistance` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUCostDistance`.
 
 - Packer: `getGPUCostDistanceParameterValues(settings, grid)`, writes `GPU_COST_DISTANCE_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -257,6 +386,16 @@ Settings of `getGPUCostDistanceParameterValues`:
 #### `GPUCostDistancePath`
 
 Walks D8 back-links from each target cell to the source and lists the least-cost route cell by cell.
+Only grids with at most 256 total grid cells use the reference walk
+(`MAXIMUM_COST_DISTANCE_PATH_REFERENCE_CELLS = 256`). Larger grids use parallel pointer doubling
+and prefix expansion, with six uint32 scratch planes: 24 bytes per cell total (4 bytes per cell
+in each plane).
+On either route, read only `output.path.ids[0..count)`, where `count` is the word in
+`output.path.status.count` and is the exclusive upper bound. Allocation tails are unspecified.
+Both cost-path operation forms capture inherited declared path/status names at construction and
+reject colliding destinations. With capacity 2 and a full path `2 → 1 → 0`, named outputs receive
+IDs `[2, 1]`, count 2, overflow 1, optional requiredCount 3 and optional candidateOverflow 0.
+The separate `output.status` carries optional `iterationLimitReached`.
 
 ::lens{scenario=gpu-raster.cost-distance-path rung=result caption="Three least-cost routes from the Greenville source to tree-cover targets."}
 
@@ -264,10 +403,14 @@ Walks D8 back-links from each target cell to the source and lists the least-cost
 
 {/* lens:GPUCostDistancePath */}
 
+The linked recording archive records an earlier implementation with serial `walk-0-walk`,
+`walk-1-walk` and `walk-2-walk` nodes. Its kernel capture predates the parallel route described
+above; the scenario needs recapture to show the current larger-grid extraction.
+
 ::lens{scenario=gpu-raster.cost-distance-path rung=datum datum=2930 caption="Follow one target cell by cell through its back-links until the walk reaches the source."}
 ::lens{scenario=gpu-raster.cost-distance-path rung=iterations caption="Cost relaxation rounds that produce the back-links the walk reads."}
-::lens{scenario=gpu-raster.cost-distance-path rung=kernel caption="One thread walks the chain of back-links, bounded by the cell count."}
-::lens{scenario=gpu-raster.cost-distance-path rung=graph caption="Cost distance with back-links feeds three walks; a histogram turns each path into a mask."}
+::lens{scenario=gpu-raster.cost-distance-path rung=kernel caption="Grids above 256 total cells use parallel pointer doubling and prefix expansion; smaller grids use a reference walk."}
+::lens{scenario=gpu-raster.cost-distance-path rung=graph caption="Cost distance with back-links feeds three path extractions; a count-derived row mask bounds each membership histogram."}
 
 ## `GPURasterZonalStatistics`
 
@@ -287,10 +430,22 @@ validity, and non-finite samples are honored; one ignored zone ID is skipped sil
 at or above the compile-time capacity raise a GPU overflow flag. Composes `GPUGroupAggregation`.
 
 ```ts
+import {GPURasterZonalStatistics} from '@luma-contributors/analysis/raster-analysis';
+declare const grid: NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['grid']>;
+declare const zones: NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['zones']>;
+declare const featureCount: NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['zoneCapacity']>;
+declare const values: import('@luma.gl/graph/gpu-core').GraphDataView<'float32'>;
+declare const polygonOverflow: NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['producerOverflow']>;
+declare const valueCounts: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['output']>['valueCounts']>;
+declare const means: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['output']>['means']>;
+declare const minimums: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['output']>['minimums']>;
+declare const maximums: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['output']>['maximums']>;
+declare const overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['output']>['status']>['overflow']>;
+declare const incomplete: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPURasterZonalStatistics>[0]['output']>['status']>['incomplete']>;
 graph.add(new GPURasterZonalStatistics({
   grid, zones, values: {id: 'ndvi', format: 'float32', storage: {kind: 'buffer', values}},
-  zoneCapacity: 256, ignoredZone: 0,
-  output: {valueCounts, means, minimums, maximums, status: {overflow}}
+  zoneCapacity: featureCount, producerOverflow: polygonOverflow,
+  output: {valueCounts, means, minimums, maximums, status: {overflow, incomplete}}
 }));
 ```
 
@@ -309,20 +464,130 @@ The signed row step preserves thin-cell area when the float32 latitude edges rou
 `originPoleDistance = 90 - abs(firstRowEdgeLatitude)` is packed before float32 rounding;
 `poleSign` is -1 south of the equator and +1 otherwise. Evaluating the midpoint relative to that
 pole preserves shifted thin polar windows. Geographic weighting requires an axis-aligned grid.
-The default `parameterLayoutVersion: 1` always decodes the legacy four-word prefix and ignores
-all padding, including nonzero padding. It derives the row step from the edge difference and can
-lose thin-cell area. Version 2 is explicitly selected and requires at least seven words; view
-length never selects a layout. A packer target shorter than seven words requests the legacy prefix.
-Each cell is then weighted by its area on the WGS84 authalic sphere: `sums` are `sum(a * v)` in
+Omitting `parameterLayoutVersion` selects v2 and requires exactly seven words. Explicit
+`parameterLayoutVersion: 1` accepts at least four words and ignores padding; explicit version 2
+accepts at least seven words and permits padding. Length never selects the consumer layout.
+A four-to-six-word packer target requests the legacy four-word prefix: set version 1 explicitly
+at its consumer. Legacy edge differencing can lose thin-cell area.
+Each geographic cell uses the authalic latitude-strip area
+`R² * abs(deltaLongitudeRadians) * abs(sin(northLatitude) - sin(southLatitude))`,
+with `R = 6371007.180918475 m` and latitudes in radians: `sums` are `sum(a * v)` in
 value times square meters, `means` are `sum(a * v) / sum(a)`, and the optional `weightSums` column is
 the valid area of each zone. Counts, minimums, and maximums are never weighted, and the default
 `'uniform'` mode is unchanged. Optional `variances` and `standardDeviations` are unbiased two-pass
 estimates with the `GPUZonalStatistics` convention: `sum (v - mean)^2 / (n - 1)`, or with cell areas
 as reliability weights `sum a (v - m)^2 / (V1 - V2 / V1)` (`numpy.cov(v, aweights=a, ddof=1)`). They
-add a second pass over the cells, so request them only when needed. The divisor is `n - 1` (sample
-form): two cells with values 1 and 3 give a standard deviation of 1.414. ArcGIS Zonal Statistics,
+add a second pass over the cells, so request them only when needed. In uniform mode the divisor
+is `n - 1` (sample form): two cells with values 1 and 3 give a standard deviation of 1.414. ArcGIS Zonal Statistics,
 rasterstats and `GPURasterCellStatistics` divide by `n` (1 for the same cells); multiply a variance
-by `(n - 1) / n` to convert.
+by `(n - 1) / n` **only for equal weights** to convert. For reliability weights the
+factor is `1 - sum(w²) / sum(w)²`. Apply either conversion only when the sample variance
+is defined (positive sample divisor). For a singleton, sample variance is NaN but population
+variance is zero: `NaN * 0` does not recover it. An empty zone has no population variance.
+`weightSums` gives only `sum(w)`, so it cannot supply
+this factor alone. For values `[1, 3]`, weights `[1, 3]`, the weighted mean is 2.5,
+weighted squared deviations total 3, sample variance is 2, and population variance is 0.75:
+the correct factor is 0.375, while the count-only factor incorrectly gives 1.
+The fractional distribution sibling exposes `squaredWeightSums` and `populationVariances`.
+Whole-cell zonal statistics also writes an optional `output.populationVariances` destination,
+as shown below. Both sample `variances` and `populationVariances` have squared band-value units;
+`standardDeviations` has band-value units. For an empty zone, both variance outputs are NaN;
+for one positive-weight value, population variance is zero and sample variance is undefined (NaN).
+
+Whole-cell counts are numbers of cells; `weightSums` has mode-dependent units:
+in uniform mode it is a count of valid cells, and in geographic mode it is valid area in
+square meters. Two valid 2 m by 2 m cells therefore give uniform `weightSums = 2`, not 8.
+Geographic `sums` is value times area; uniform `sums` is a sum of values. Fractional geographic area instead uses the absolute affine determinant
+in degrees squared times WGS84 longitude/latitude meters-per-degree scales at the row center.
+For a `.001°` square the fractional/whole-cell area ratio is about `0.995530` at 0° and
+`1.008584` at 80°. Full fractional coverage therefore need not equal whole-cell geographic area.
+Explicit fractional `cellAreas` defines caller-declared area units; totals for density/intensive
+quantities multiply values by those units, while extensive totals multiply only by coverage.
+
+Polygon-derived zones are feature rows: retain row zero with `zoneCapacity: featureCount`
+and omit `ignoredZone`. Use `ignoredZone: 0` only for a source whose zero means background.
+Pass rasterizer `producerOverflow` and allocate/read `output.status.incomplete`; a nonzero
+word suppresses aggregates. A clean overflow word without the producer evidence is insufficient.
+For cost-plus-polygon composition, include cost nonconvergence as well as polygon loss:
+
+```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPURasterZonalStatistics, makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
+declare const grid: import('@luma.gl/graph/gpu-raster').GPURasterMetadata;
+declare const costs: import('@luma.gl/graph/gpu-core').GraphDataView<'float32'>;
+declare const zones: import('@luma.gl/graph/gpu-core').GraphDataView<'uint32'>;
+declare const polygonOverflow: import('@luma.gl/graph/gpu-core').GraphDataView<'uint32'>;
+declare const costIterationLimitReached: import('@luma.gl/graph/gpu-core').GraphDataView<'uint32'>;
+declare const featureCount: number;
+declare function publishZoneStatistics(result: {
+  means: Float32Array;
+  populationVariances: Float32Array;
+} | null): void;
+const incompleteStorage = new GPUParameterBuffer(device, {
+  id: 'zone-incomplete', format: 'uint32', length: 1
+});
+const meanStorage = new GPUParameterBuffer(device, {
+  id: 'zone-means', format: 'float32', length: featureCount
+});
+const populationVarianceStorage = new GPUParameterBuffer(device, {
+  id: 'zone-population-variances', format: 'float32', length: featureCount
+});
+const incomplete = incompleteStorage.importToGraph(graph);
+const means = meanStorage.importToGraph(graph);
+const populationVariances = populationVarianceStorage.importToGraph(graph);
+graph.add(new GPURasterZonalStatistics({
+  grid, zones, zoneCapacity: featureCount,
+  producerOverflow: polygonOverflow,
+  incompleteSources: [costIterationLimitReached],
+  values: makeGPURasterBand(costs, grid),
+  output: {means, populationVariances, status: {incomplete}}
+}));
+const compiled = await graph.compileAsync();
+const encoder = device.createCommandEncoder();
+compiled.encode(encoder, {parameters: undefined});
+device.submit(encoder.finish());
+// Await this submission's output.status.incomplete before reading either result column.
+const incompleteBytes = await incompleteStorage.buffer.readAsync();
+const incompleteWords = new Uint32Array(incompleteBytes.buffer, incompleteBytes.byteOffset, 1);
+if (incompleteWords[0] === 0) {
+  const meanBytes = await meanStorage.buffer.readAsync();
+  const populationVarianceBytes = await populationVarianceStorage.buffer.readAsync();
+  publishZoneStatistics({
+    means: new Float32Array(meanBytes.buffer, meanBytes.byteOffset, featureCount),
+    populationVariances: new Float32Array(
+      populationVarianceBytes.buffer, populationVarianceBytes.byteOffset, featureCount
+    )
+  });
+} else {
+  publishZoneStatistics(null); // Hide both columns for incomplete input.
+}
+// Finish these reads before submitting another frame that writes the same buffers.
+// Release compiled and caller-owned buffers when this graph is no longer needed.
+```
+
+Each input flag is one uint32 loss word. `producerOverflow` and `incompleteSources` are ORed;
+any nonzero source writes `output.status.incomplete = 1` and suppresses primary results (NaN
+floats and `0xffffffff` integers). Check this combined loss word before publishing zone values,
+including empty/unreachable zones. Complete unreachable costs and unfinished costs can both
+have no usable values, so the aggregates alone cannot establish completeness.
+When supplying producer loss flags, request `output.status.incomplete` as above.
+If using `converged` instead, first convert it to a loss flag (`converged == 0`).
+
+Alternatively, combine the flags with a single `GPUMask` OR node and pass its result as
+`producerOverflow` to a reducer with `output.status.incomplete`. This retains the same combined
+loss check for consumers that accept one status word:
+
+```ts
+import {GPUMask} from '@luma.gl/graph/gpu-core';
+declare const polygonOverflow: import('@luma.gl/graph/gpu-core').GraphDataView<'uint32'>;
+declare const costIterationLimitReached: import('@luma.gl/graph/gpu-core').GraphDataView<'uint32'>;
+declare const incompleteInput: import('@luma.gl/graph/gpu-core').GraphDataView<'uint32'>;
+graph.add(new GPUMask({
+  id: 'cost-zone-loss', operation: 'or',
+  inputs: [costIterationLimitReached, polygonOverflow], output: incompleteInput
+}));
+// Use producerOverflow: incompleteInput instead of the two separate reducer inputs above.
+```
 
 #### How it computes
 
@@ -336,6 +601,8 @@ by `(n - 1) / n` to convert.
 {/* parameters: GPURasterZonalStatistics generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPURasterZonalStatistics` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterZonalStatistics`.
 
 - Packer: `getGPURasterZonalStatisticsParameterValues(grid)`, writes `GPU_RASTER_ZONAL_STATISTICS_PARAMETER_LENGTH` (7) `float32` values.
   - `grid` (`GPURasterMetadata`): The frame's grid; its width and height must match the contributor's.
@@ -352,14 +619,39 @@ Euclidean distance transform and nearest-seed allocation (Voronoi zones) on a ra
 seed points snapped to cells, a labeled seed raster, or both. `distances` holds the grid distance
 from each cell center to the nearest seed cell center (`+Infinity` when unreached), `allocation`
 the nearest seed's ID, and `nearestCells` its cell; ties break on the smallest seed ID. A
-per-frame `maximumDistance` clears cells beyond it and fills an optional `withinDistance` mask, and an
+per-frame `maximumDistance` clears cells beyond the distance to the seed found and fills an optional `withinDistance` mask, and an
 optional `r32float` texture receives a copy of `distances`. Cell sizes may differ in x and y.
+The texture can be requested without allocation or nearest-cell outputs. For a unit-spaced
+three-cell row with the only seed in its middle cell, both distance outputs are `[1,0,1]`;
+the texture's values are distances, not seed IDs or cell indices.
+
+Supply `seedPositions` with an optional `seedMask`, or supply `seedMask` alone. Include
+`seedIds` or `seedCount` only when supplying `seedPositions`.
+
+Seed-mask zero is background, whereas allocation ID zero is a valid seed ID.
+`GPU_DISTANCE_FIELD_NONE` (`0xffffffff`) is the missing allocation sentinel. A labeled seed
+word encodes ID + 1, so raw `0xffffffff` decodes to ID `0xfffffffe`. Convert a terrain peak mask
+to a binary seed mask by **equality to 1**, never by nonzero: `0xffffffff` means undecided there.
+Carry `candidateOverflow` through this conversion and suppress the downstream result if nonzero.
+For zero-budget peaks on `[0, 1, 0]`, `[count, overflow, candidateOverflow]` is `[0, 0, 1]`.
+Check both final capacity and candidate evidence before using compact peaks or streamlines.
+Jump-flood cutoffs apply to the real seed found; a different nearer seed can still lie inside
+that cutoff even when the approximation rejects the cell.
 
 Distances use grid units (world units of the affine), so degree grids yield degree distances, not
 meters; ground-meter conversion is a non-goal of `GPUDistanceField`—use `GPUCostDistance` with
 `cellSizeMode: 'geographic' | 'web-mercator'` and unit friction for ground-meter distances.
 
 ```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUDistanceField, getGPUDistanceFieldParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const grid: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['grid']>;
+declare const seedPositions: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['seedPositions']>;
+declare const seedCount: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['seedCount']>;
+declare const seedMask: NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['seedMask']>;
+declare const distances: NonNullable<NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['output']>['distances']>;
+declare const allocation: NonNullable<NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['output']>['allocation']>;
+declare const withinDistance: NonNullable<NonNullable<ConstructorParameters<typeof GPUDistanceField>[0]['output']>['withinDistance']>;
 const parameters = new GPUParameterBuffer(device, {id: 'df-parameters', format: 'float32', length: 8});
 graph.add(new GPUDistanceField({
   grid, parameters: parameters.importToGraph(graph),
@@ -406,6 +698,8 @@ cell edge snap to the same cell as in float64. The grid origin stays absolute.
 
 ### `GPUDistanceField` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUDistanceField`.
+
 - Packer: `getGPUDistanceFieldParameterValues(settings, grid)`, writes `GPU_DISTANCE_FIELD_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): The frame's grid; its width and height must match the contributor's.
 
@@ -428,6 +722,35 @@ The raster placement (origin, cell size, and row direction, north-up or north-do
 `grid`, packed by `getGPUPolygonRasterizationParameterValues(grid)`.
 
 ```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {getGPUPolygonRasterizationParameterValues, GPUPolygonRasterization, GPURasterJoin} from '@luma-contributors/analysis/raster-analysis';
+declare const grid: import('@luma.gl/graph/gpu-raster').GPURasterMetadata;
+declare const positions: NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['positions']>;
+declare const featureOffsets: NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['featureOffsets']>;
+declare const polygonOffsets: NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['polygonOffsets']>;
+declare const ringOffsets: NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['ringOffsets']>;
+declare const zones: NonNullable<NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['output']>['zones']>;
+declare const boundary: NonNullable<NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['output']>['boundary']>;
+declare const overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['output']>['status']>['overflow']>;
+declare const crossingCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUPolygonRasterization>[0]['output']>['status']>['crossingCount']>;
+declare const points: NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['points']>;
+declare const values: NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['values']>;
+declare const featureCount: NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['zoneCount']>;
+declare const publishCounts: (counts: Uint32Array | null) => void;
+const countStorage = new GPUParameterBuffer(device, {
+  id: 'join-counts', format: 'uint32', length: featureCount
+});
+const counts = countStorage.importToGraph(graph);
+declare const sums: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['output']>['sums']>;
+declare const boundaryCounts: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['output']>['boundaryCounts']>;
+declare const unassignedBoundaryCount: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['output']>['unassignedBoundaryCount']>;
+declare const outsideCount: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['output']>['outsideCount']>;
+declare const pointBoundaryMask: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterJoin>[0]['output']>['pointBoundaryMask']>;
+const incompleteStorage = new GPUParameterBuffer(device, {
+  id: 'join-incomplete', format: 'uint32', length: 1
+});
+const incomplete = incompleteStorage.importToGraph(graph);
+declare const nextGrid: import('@luma.gl/graph/gpu-raster').GPURasterMetadata;
 const parameters = new GPUParameterBuffer(device, {id: 'raster-parameters', format: 'float32', length: 4});
 parameters.write(getGPUPolygonRasterizationParameterValues(grid));
 const parametersView = parameters.importToGraph(graph);
@@ -439,9 +762,24 @@ graph.add(new GPUPolygonRasterization({
 }));
 graph.add(new GPURasterJoin({
   grid, parameters: parametersView, points, values, zones, boundary, zoneCount: featureCount,
-  output: {counts, sums, boundaryCounts, unassignedBoundaryCount, outsideCount, pointBoundaryMask}
+  producerOverflow: overflow,
+  output: {counts, sums, boundaryCounts, unassignedBoundaryCount, outsideCount, pointBoundaryMask,
+    status: {incomplete}}
 }));
 parameters.write(getGPUPolygonRasterizationParameterValues(nextGrid)); // no recompile
+const compiled = await graph.compileAsync();
+const encoder = device.createCommandEncoder();
+compiled.encode(encoder, {parameters: undefined});
+device.submit(encoder.finish());
+const incompleteBytes = await incompleteStorage.buffer.readAsync();
+const incompleteWords = new Uint32Array(incompleteBytes.buffer, incompleteBytes.byteOffset, 1);
+if (incompleteWords[0] !== 0) {
+  publishCounts(null); // Incomplete: hide counts and assignments rather than showing an empty join.
+} else {
+  const countBytes = await countStorage.buffer.readAsync();
+  publishCounts(new Uint32Array(countBytes.buffer, countBytes.byteOffset, featureCount));
+}
+// Release compiled and caller-owned buffers when this graph is no longer needed.
 ```
 
 **Longitude/latitude polygons — rasterization.** Pass `spatialContext: {coordinateSpace:
@@ -472,6 +810,8 @@ Scan-converts polygon rings into a zone raster whose cells hold the feature cove
 
 ##### `GPUPolygonRasterization` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUPolygonRasterization`.
+
 - Packer: `getGPUPolygonRasterizationParameterValues(grid)`, writes `GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH` (4) `float32` values.
   - `grid` (`GPURasterMetadata`): The frame's grid: axis-aligned; its width and height must match the contributor's.
 
@@ -489,11 +829,17 @@ Scan-converts polygon rings into a zone raster whose cells hold the feature cove
 
 Assigns each point the zone stored in its raster cell, counting points per zone in O(1) per point.
 
-::lens{scenario=gpu-raster.raster-join rung=result caption="Burned cell centres coloured by zone; the few outside the perimeter take no zone."}
+::lens{scenario=gpu-raster.raster-join rung=result caption="Assignments are coloured by zone only with complete producer evidence; incomplete assignments are withheld."}
+
+The stored recording predates the `joinIncomplete` certificate. Its assignment colours do not
+certify current output; the scenario and its result/datum views need recapture from the current
+producer before using them as completeness evidence.
 
 {/* parameters: GPURasterJoin generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPURasterJoin` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterJoin`.
 
 - Packer: `getGPUPolygonRasterizationParameterValues(grid)`, writes `GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH` (4) `float32` values.
   - Input port: `parameters`.
@@ -556,6 +902,40 @@ format, and select an existing channel. Validity must belong to the same graph a
   of breaks `<= value` (left-closed `[b[k - 1], b[k])`, default) or `< value` (right-closed), found
   by binary search. Outputs: `classes` (`0xffffffff` for nodata), `reclassified`
   (`classValues[class]`), and deterministic `classCounts` (integer atomics).
+  `closed` accepts only `'left'` (default) or `'right'`; unknown values reject in the packer.
+  The compact float32 parameter `breakCount` must be a nonnegative uint32-domain integer that
+  is exactly representable in float32: all integers through `2^24 = 16,777,216` qualify, but
+  `16,777,217` does not (some larger even counts do). For an exact larger count, supply the
+  one-word uint32 `activeBreakCount` input, which overrides the float header; pack `breakCount: 0`.
+  Each submission packs that exact count and current closure into an internal two-word view.
+  The active count is clamped to `breaks.length`; it is distinct from allocated class capacity
+  `breaks.length + 1` and from published class IDs `0..activeCount` (or `0xffffffff` for nodata).
+  `classValues` and `classCounts`, when requested, need the full allocated class capacity.
+
+```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPURasterReclassify, getGPURasterReclassifyParameterValues} from '@luma-contributors/analysis/raster-analysis';
+// Compact route: three active breaks, exactly representable, default left closure.
+const compactParameters = getGPURasterReclassifyParameterValues({breakCount: 3});
+// Exact-count route: breaks must have at least breakCount allocated rows.
+const breakCount = 16_777_217;
+declare const breaks: import('@luma.gl/graph/gpu-core').GraphDataView<'float32'>;
+declare const values: import('@luma.gl/graph/gpu-core').GraphDataView<'float32'>;
+declare const classes: import('@luma.gl/graph/gpu-core').GraphDataView<'uint32'>;
+const parameters = new GPUParameterBuffer(device, {id: 'classify', format: 'float32', length: 4});
+const activeBreakCount = new GPUParameterBuffer(device, {id: 'classify-count', format: 'uint32', length: 1});
+parameters.write(getGPURasterReclassifyParameterValues({breakCount: 0, closed: 'left'}));
+activeBreakCount.write(Uint32Array.of(breakCount));
+graph.add(new GPURasterReclassify({
+  values, breaks, parameters: parameters.importToGraph(graph),
+  activeBreakCount: activeBreakCount.importToGraph(graph), output: {classes}
+}));
+```
+
+Cell statistics defaults to `'ignore'`; weighted overlay defaults to `'propagate'`. Both
+packers accept `'strict'` as a legacy alias for `'propagate'`, and reject other policy strings.
+Propagation invalidates a cell if any participating layer is missing; ignoring uses valid layers.
+
 - `GPUWeightedOverlay` (suitability) scores up to 16 layers: each value is remapped linearly from
   `[inputMinimum, inputMaximum]` to `[0, 1]` (clamped, optionally inverted) or through a per-layer break
   table, then `score = sum(weight * remapped)` in fixed layer order. A NaN table value marks a
@@ -563,11 +943,27 @@ format, and select an existing channel. Validity must belong to the same graph a
   nodata `'propagate'` or `'ignore'`. `scoreRange` is the exact min/max of the defined scores
   (order-preserving integer atomics) and `validity` flags the defined scores. An optional `mask`
   input (nonzero keeps the cell) marks whole cells nodata.
+  Layer `mode` accepts `'linear'` (default) or `'table'`; table interval `closed` accepts `'left'`
+  (default, number of breaks `<= value`) or `'right'` (number of breaks `< value`). Unknown mode,
+  closure or policy strings reject even when that option is inactive. Packing a table layer with
+  `{hasTables: false}` rejects; provide tables or select linear mode.
+  Active linear ramps require finite float32 endpoints that retain the requested endpoint order.
+  Unequal endpoints such as `[99.999999, 100.000001]` that both encode as 100 reject rather than
+  silently becoming a step. Their reciprocal scale must be finite and normal in float32
+  (`abs(scale) >= 2^-126`); use table mode for a wider domain. Deliberately equal endpoints encode
+  a step: score 1 for `value >= inputMinimum`, else 0, before optional inversion.
+  Table mode ignores retained linear endpoint/scale settings, so those ramp constraints do not
+  apply there. The packer validates the entire candidate before publication: a failed pack leaves
+  the previous target intact, including when a later layer rejects.
 - `GPURasterCellStatistics` (ArcGIS "Cell Statistics") reduces up to 64 layers per cell:
   minimum, maximum, range, sum, mean, population standard deviation (divisor `n`, centred second
-  pass; `GPURasterZonalStatistics` divides by `n - 1`),
+  pass; `GPURasterZonalStatistics` uses `n - 1` for uniform sample variance, or
+  `sum(w) - sum(w²)/sum(w)` for geographic reliability weights),
   majority, minority (ties pick the smallest value), variety, and valid `counts`. Frequencies are an
-  `O(layerCount^2)` exact-equality scan per cell. An optional `mask` input (nonzero keeps the cell)
+  `O(layerCount^2)` scan per cell using equality after float32 calibration. Every integer in
+  `[-2^24, 2^24]` is exactly representable; adjacent integers outside that range can merge,
+  including labels preserved by a preceding native integer warp. For example, 16,777,216 and
+  16,777,217 compare equal after conversion to float32. An optional `mask` input (nonzero keeps the cell)
   marks the whole cell nodata: float outputs NaN, `variety` and `counts` 0.
 - `GPURasterConditional` is `where(condition, a, b)`: a `uint32` mask, or a float raster compared
   per frame (`<`, `<=`, `>`, `>=`, `==`, `!=`, inclusive `between`); `a` and `b` are rasters or
@@ -580,6 +976,15 @@ format, and select an existing channel. Validity must belong to the same graph a
   An optional `mask` input (nonzero keeps the cell) marks a cell nodata: the result is NaN.
 
 ```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {getGPUWeightedOverlayParameterLength, GPUWeightedOverlay, getGPUWeightedOverlayParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const stack: NonNullable<ConstructorParameters<typeof GPUWeightedOverlay>[0]['stack']>;
+declare const width: NonNullable<ConstructorParameters<typeof GPUWeightedOverlay>[0]['cellCount']>;
+declare const height: NonNullable<ConstructorParameters<typeof GPUWeightedOverlay>[0]['cellCount']>;
+declare const remapBreaks: NonNullable<ConstructorParameters<typeof GPUWeightedOverlay>[0]['remapBreaks']>;
+declare const remapValues: NonNullable<ConstructorParameters<typeof GPUWeightedOverlay>[0]['remapValues']>;
+declare const score: NonNullable<NonNullable<ConstructorParameters<typeof GPUWeightedOverlay>[0]['output']>['score']>;
+declare const scoreRange: NonNullable<NonNullable<ConstructorParameters<typeof GPUWeightedOverlay>[0]['output']>['scoreRange']>;
 const overlayParameters = new GPUParameterBuffer(device, {
   id: 'overlay', format: 'float32', length: getGPUWeightedOverlayParameterLength(3)
 });
@@ -621,6 +1026,8 @@ Scales two rasters and combines them per cell; here near-infrared reflectance af
 
 ##### `GPURasterArithmetic` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterArithmetic`.
+
 - Packer: `getGPURasterArithmeticParameterValues(settings)`, writes `GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH` (8) `float32` values.
 
 Settings of `getGPURasterArithmeticParameterValues`:
@@ -657,13 +1064,15 @@ Reduces a stack of aligned rasters to one statistic per cell; here the mean of n
 
 ##### `GPURasterCellStatistics` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterCellStatistics`.
+
 - Packer: `getGPURasterCellStatisticsParameterValues(settings?)`, writes `GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPURasterCellStatisticsParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `noDataPolicy` (optional) | `'ignore' \| 'propagate'` | `'ignore'` (default, ArcGIS "DATA"): statistics use the valid layers of each cell. `'propagate'`: any nodata layer makes the cell nodata. |
+| `noDataPolicy` (optional) | `'ignore' \| 'propagate' \| 'strict'` | `'ignore'` (default, ArcGIS "DATA"): statistics use the valid layers of each cell. `'propagate'`: any nodata layer makes the cell nodata. `'strict'` is an alias for propagate. |
 | `minimumValidCount` (optional) | `number` | Cells with fewer valid layers are nodata. Defaults to 1. |
 
 {/* /parameters */}
@@ -686,6 +1095,8 @@ Chooses one of two values per cell by comparing a raster with a threshold; here 
 {/* parameters: GPURasterConditional generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPURasterConditional` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterConditional`.
 
 - Packer: `getGPURasterConditionalParameterValues(settings?)`, writes `GPU_RASTER_CONDITIONAL_PARAMETER_LENGTH` (8) `float32` values.
 
@@ -720,6 +1131,8 @@ Maps raster values through ascending breaks to class values; here land cover cod
 
 ##### `GPURasterReclassify` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterReclassify`.
+
 - Packer: `getGPURasterReclassifyParameterValues(settings)`, writes `GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPURasterReclassifyParameterValues`:
@@ -750,7 +1163,10 @@ Scores each cell as a weighted sum of remapped layers; here land cover and eleva
 
 ##### `GPUWeightedOverlay` parameters
 
-- Packer: `getGPUWeightedOverlayParameterValues(settings, options?)`, writes `getGPUWeightedOverlayParameterLength(...)` `float32` values.
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUWeightedOverlay`.
+
+- Packer: `getGPUWeightedOverlayParameterValues(settings, target?, options?)`, writes `getGPUWeightedOverlayParameterLength(...)` `float32` values.
+  - `target` (`Float32Array`): Optional destination of at least `getGPUWeightedOverlayParameterLength(layers)`.
   - `options` (`{hasTables?: boolean}`): `hasTables: false` declares that the overlay was built without remap tables, so a `'table'` layer throws here instead of scoring NaN (nodata) on every cell. Defaults to true.
 
 Settings of `getGPUWeightedOverlayParameterValues`:
@@ -759,7 +1175,7 @@ Settings of `getGPUWeightedOverlayParameterValues`:
 |---|---|---|
 | `layers` | `readonly GPUWeightedOverlayLayerSettings[]` | One record per input layer, in stack order. |
 | `normalizeWeights` (optional) | `boolean` | Divide the weighted sum by the sum of absolute weights of the contributing layers. |
-| `noDataPolicy` (optional) | `'propagate' \| 'ignore'` | `'propagate'` (default): a nodata input makes the cell nodata. `'ignore'`: nodata layers are skipped (and excluded from weight normalization); a cell with no valid layer is nodata. |
+| `noDataPolicy` (optional) | `'ignore' \| 'propagate' \| 'strict'` | `'propagate'` (default): a nodata input makes the cell nodata. `'ignore'`: nodata layers are skipped (and excluded from weight normalization); a cell with no valid layer is nodata. `'strict'` is an alias for propagate. |
 
 {/* /parameters */}
 
@@ -801,7 +1217,15 @@ the same band metadata limits as reclassify and conditional above.
 Statistics (exact min/max, a `binCount` histogram, its CDF) come from the valid, finite cells inside a
 per-frame window `[column0, row0, column1, row1)` and an optional per-frame `regionMask`; the apply
 step always covers every cell. A viewport mask (for example from `GPURegionMask`) gives QGIS-style
-"stretch to visible extent" per frame. The domain is `'auto'` (exact min/max) or an explicit
+"stretch to visible extent" per frame. Percentile settings are percentages in `[0,100]`, not fractions:
+
+| Fraction used in other APIs | Stretch percentage |
+| --- | --- |
+| `.95` | `95` |
+| `[.02, .98]` | `[2, 98]` |
+
+`getGPURasterStretchParameterValues({percentiles: [2, 98]})` packs `[.02, .98]`
+into its two percentile slots (within float32 rounding). The domain is `'auto'` (exact min/max) or an explicit
 `[min, max]`. Percentile bounds use the rank rule of the published `GPURasterGlobalPercentile`: the bin
 that holds order statistic `floor((N - 1) * p)` of the `N` counted cells, reported at its centre, so they
 are within half a `binWidth` of that order statistic; with an automatic domain `p = 0` and `p = 1` are the
@@ -815,6 +1239,16 @@ equal to 0.5, above to 1; with an automatic domain and no included cell, `statis
 `validCount` 0.
 
 ```ts
+import {GPURasterStretch, getGPURasterStretchParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const values: NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['values']>;
+declare const grid: NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['grid']>;
+declare const stretchParameters: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'float32'>;
+declare const viewportMask: NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['regionMask']>;
+declare const palette: NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['palette']>;
+declare const colors: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['output']>['colors']>;
+declare const lut: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['output']>['lut']>;
+declare const histogram: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['output']>['histogram']>;
+declare const statistics: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterStretch>[0]['output']>['statistics']>;
 const stretch = new GPURasterStretch({
   values, grid, noDataValue: -9999,
   binCount: 1024, lutSize: 256, // topology
@@ -846,6 +1280,8 @@ sigmoid, palette interpolation, mask, and palette contents never recompile.
 
 ### `GPURasterStretch` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterStretch`.
+
 - Packer: `getGPURasterStretchParameterValues(settings?)`, writes `GPU_RASTER_STRETCH_PARAMETER_LENGTH` (16) `float32` values.
 
 Settings of `getGPURasterStretchParameterValues`:
@@ -853,13 +1289,13 @@ Settings of `getGPURasterStretchParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `window` (optional) | `readonly [number, number, number, number]` | Statistics window `[column0, row0, column1, row1)` in cells; clamped to the raster. Defaults to the whole raster. Only statistics (min/max, histogram) use it: the apply step runs on all cells. |
-| `domain` (optional) | `'auto' \| readonly [number, number]` | `'auto'` (default) takes the exact minimum and maximum of the included valid cells, or an explicit `[min, max]` with `min <= max`. Cells outside an explicit domain are not counted in the histogram and clamp to 0 or 1 when applied. |
+| `domain` (optional) | `readonly [number, number] \| 'auto'` | `'auto'` (default) takes the exact minimum and maximum of the included valid cells, or an explicit `[min, max]` with `min <= max`. Cells outside an explicit domain are not counted in the histogram and clamp to 0 or 1 when applied. |
 | `mode` (optional) | `GPURasterStretchMode` | `'linear'` (default) maps the domain to `[0, 1]`. `'percentile'` maps the `percentiles` of the histogram, each taken as the centre of the bin that holds order statistic `floor((N - 1) * p)` (the rule of the published `GPURasterGlobalPercentile`). `'equalize'` maps through the histogram CDF as `(cdf[bin] - cdfFirst) / (total - cdfFirst)` (the rule of the published `GPURasterContrast`). |
 | `percentiles` (optional) | `readonly [number, number]` | Percentile mode: `[low, high]` in percent, `0 <= low <= high <= 100`. Defaults to `[2, 98]`. |
 | `gamma` (optional) | `number` | Display gamma: applies `t' = t ** (1 / gamma)` after the mode, as rio-color and GIMP levels do, so `gamma > 1` brightens and `gamma < 1` darkens. Finite and positive, defaults to 1. GDAL has no gamma; its `-exponent e` (`gdal_translate`, VRT) is `t ** e`, so it equals `gamma: 1 / e`. |
 | `sigmoidContrast` (optional) | `number` | Sigmoidal contrast (rio-color / ImageMagick style) applied after gamma, normalised so 0 maps to 0 and 1 to 1. Zero or undefined disables it; otherwise `(0, 80]`. |
 | `sigmoidMidpoint` (optional) | `number` | Sigmoid midpoint in `(0, 1)`. Defaults to 0.5. |
-| `paletteInterpolation` (optional) | `'nearest' \| 'linear'` | Palette lookup: `'nearest'` (default) or `'linear'` channel interpolation. |
+| `paletteInterpolation` (optional) | `'linear' \| 'nearest'` | Palette lookup: `'nearest'` (default) or `'linear'` channel interpolation. |
 
 {/* /parameters */}
 
@@ -940,6 +1376,32 @@ band and cell. An optional `status.vertexCount` (`3 * status.count`) feeds a non
 `firstBand`/`lastBand` limit the emitted bands per frame.
 
 ```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPU_ISOLINES_PARAMETER_LENGTH, makeGPURasterMetadata, GPUIsolines, GPUIsobands, getGPUIsolinesParameterValues, getGPUIsobandsParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const width: number;
+declare const height: number;
+declare const values: NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['values']>;
+declare const levels: NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['levels']>;
+declare const segments: NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['segments']>;
+declare const segmentLevels: NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['segmentLevels']>;
+declare const vertices: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['polylines']>['vertices']>;
+declare const polylineOffsets: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['polylines']>['polylineOffsets']>;
+declare const polylineLevels: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['polylines']>['polylineLevels']>;
+declare const polylineClosed: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['polylines']>['polylineClosed']>;
+declare const polylineCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['polylines']>['polylineCount']>;
+declare const vertexCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['polylines']>['vertexCount']>;
+declare const count: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['status']>['count']>;
+declare const requiredCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['status']>['requiredCount']>;
+declare const overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['status']>['overflow']>;
+declare const polylineOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsolines>[0]['output']>['status']>['polylineOverflow']>;
+declare const bandParameters: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'float32'>;
+declare const bandClasses: NonNullable<NonNullable<ConstructorParameters<typeof GPUIsobands>[0]['output']>['bandClasses']>;
+declare const triangles: NonNullable<NonNullable<ConstructorParameters<typeof GPUIsobands>[0]['output']>['triangles']>;
+declare const triangleBands: NonNullable<NonNullable<ConstructorParameters<typeof GPUIsobands>[0]['output']>['triangleBands']>;
+declare const triangleCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsobands>[0]['output']>['status']>['count']>;
+declare const drawVertexCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsobands>[0]['output']>['status']>['vertexCount']>;
+declare const triangleOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUIsobands>[0]['output']>['status']>['overflow']>;
+declare const extent: readonly [number, number, number, number];
 const lineParameters = new GPUParameterBuffer(device, {
   id: 'isolines', format: 'float32', length: GPU_ISOLINES_PARAMETER_LENGTH
 });
@@ -989,6 +1451,12 @@ byte offsets. Intermediate edge status ranges must not overlap final ring output
 rejects these aliases before allocating scratch. Props and output/status bindings are captured once.
 A zero final overflow word alone does not establish complete rings.
 Construction refuses an omitted edge-loss word; both flags are overwritten each encoding.
+The optional segment diagnostics and packed `polygons` layout can be requested independently.
+`segmentRings` identifies each edge's written ring; `segmentVertices` identifies its start vertex
+in the closed-ring position buffer. Packed polygon rings omit the repeated closing vertex, and
+unused offset entries repeat the final offset. `polygons.sourceIds` contains each shell's band
+index, with `0xffffffff` in unused feature rows. The ring count and `status.requiredCount` count
+rings, while `status.touchingSegmentCount` counts segments ending at a shared vertex.
 Maximum: `edgeCapacity` and the ring capacity (`output.ringOffsets.length - 1`) are each at most `getGPUIsobandRingsMaximumEdgeCapacity(device)` and `getGPUIsobandRingsMaximumRingCapacity(device)` (8388608 on a default device). Unlike the triangle fill it
 gives true boundary geometry, but filling it for display needs polygon triangulation or rasterization
 (`GPUPolygonRasterization` gives an exact even-odd fill at raster resolution).
@@ -997,7 +1465,11 @@ Outputs are ordered by count, `GPUScan`, and scatter, so they are deterministic;
 `segments.length` and `triangleBands.length`, with clamped `status.count`, `status.overflow`, and `status.requiredCount`
 rewritten every encoding. If segments overflow, stitching produces no polylines and sets its own
 `status.polylineOverflow`; a short `vertices` buffer keeps only the complete polylines that fit (the worst case is
-`2 * segmentCapacity` vertices). Coordinates match an f32 CPU oracle within a few ULP (GPU
+`2 * segmentCapacity` vertices). For a two-column 0-to-2 ramp at level 1 over a 2 by 3 extent,
+the stitched open chain is `(1,2.5), (1,1.5), (1,0.5)`, with offsets `[0,3]`, level 0 and
+`polylineClosed = 0`. A two-vertex capacity drops this entire chain and reports
+`polylineCount = vertexCount = 0` and `polylineOverflow = 1`, including in the operation forms.
+Coordinates match an f32 CPU oracle within a few ULP (GPU
 division and FMA contraction); topology, ordering, and band indices match exactly.
 
 #### `GPUIsolines`
@@ -1009,6 +1481,8 @@ Traces marching-squares contour lines of an elevation raster at several levels a
 {/* parameters: GPUIsolines generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUIsolines` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUIsolines`.
 
 - Packer: `getGPUIsolinesParameterValues(settings, grid)`, writes `GPU_ISOLINES_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): Frame raster grid; its width and height give the cell sizes and must match the contributor's unless `GPUIsolinesProps.tile` is set: then pass the DOMAIN grid and extent, and reuse identical parameters (including localOrigin) for all tiles. Tile offsets are applied in domain sample coordinates by the contributor, before interpolation.
@@ -1041,6 +1515,8 @@ Fills the elevation bands between consecutive breaks with counter-clockwise tria
 {/* parameters: GPUIsobands generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUIsobands` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUIsobands`.
 
 - Packer: `getGPUIsobandsParameterValues(settings, grid)`, writes `GPU_ISOBANDS_PARAMETER_LENGTH` (12) `float32` values.
   - `grid` (`GPURasterMetadata`): Frame raster grid; its width and height give the cell sizes and must match the contributor's.
@@ -1106,7 +1582,7 @@ inside it, indices beyond the outermost centres clamp to the edge cell. `nearest
 containing the point (the `maxX`/`maxY` edge belongs to the last cell), `bilinear` uses the four
 surrounding centres, `bicubic` is Catmull-Rom (`a = -0.5`) over the 4x4 support. A neighbour
 participates only when both axis weights are nonzero, so a point on a cell centre returns that cell.
-`noDataPolicy: 'strict'` gives NaN when a participating neighbour is nodata; `'renormalize'` divides
+`noDataPolicy: 'propagate'` gives NaN when a participating neighbour is nodata; `'renormalize'` divides
 the valid bilinear weights by their sum; bicubic with nodata in its support falls back to the bilinear
 rule of the same policy. Nodata is NaN or an infinity, an optional finite `noDataValue`, or a zero `validity` flag.
 `method`, `noDataPolicy`, and the packed grid placement are per-frame; `pointCount` is an optional per-frame active
@@ -1121,6 +1597,22 @@ and maximum over finite samples (gain and loss sum positive and negative differe
 consecutive finite samples); plus `status.count`, `status.overflow`, and `status.requiredCount`.
 
 ```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPU_RASTER_SAMPLING_PARAMETER_LENGTH, GPURasterSampling, GPURasterProfile, getGPURasterSamplingParameterValues, getGPURasterProfileParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const grid: NonNullable<ConstructorParameters<typeof GPURasterSampling>[0]['grid']>;
+declare const elevation: NonNullable<ConstructorParameters<typeof GPURasterSampling>[0]['values']>;
+declare const positions: NonNullable<ConstructorParameters<typeof GPURasterSampling>[0]['positions']>;
+declare const pointElevations: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterSampling>[0]['output']>['values']>;
+declare const outputValidity: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterSampling>[0]['output']>['outputValidity']>;
+declare const lineVertices: NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['positions']>;
+declare const lineOffsets: NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['lineOffsets']>;
+declare const profileParameters: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'float32'>;
+declare const count: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['output']>['status']>['count']>;
+declare const overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['output']>['status']>['overflow']>;
+declare const sampleValues: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['output']>['sampleValues']>;
+declare const sampleDistances: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['output']>['sampleDistances']>;
+declare const lineGains: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['output']>['lineGains']>;
+declare const lineLosses: NonNullable<NonNullable<ConstructorParameters<typeof GPURasterProfile>[0]['output']>['lineLosses']>;
 const samplingParameters = new GPUParameterBuffer(device, {
   id: 'sampling', format: 'float32', length: GPU_RASTER_SAMPLING_PARAMETER_LENGTH
 });
@@ -1131,6 +1623,7 @@ graph.add(new GPURasterSampling({
 graph.add(new GPURasterProfile({
   grid, values: elevation, positions: lineVertices, lineOffsets,
   parameters: profileParameters.importToGraph(graph),
+  sampleCapacity: Math.min(sampleDistances.length, sampleValues.length),
   output: {status: {count, overflow}, sampleValues, sampleDistances, lineGains, lineLosses}
 }));
 samplingParameters.write(getGPURasterSamplingParameterValues({method: 'bicubic'}, grid));
@@ -1141,10 +1634,41 @@ On projected rasters pass `localOrigin` (for example the raster corner) to eithe
 upload point `positions` and line `positions` relative to it; `samplePositions` come back relative to it.
 Distances are unaffected.
 
-The profile pipeline is a serial per-line walk, `GPUScan`, a per-sample binary search and sample,
-then a serial per-line cumulative pass, all in fixed order, so results are deterministic. Exactly
-representable (dyadic) inputs match an f32 CPU oracle bit for bit; elsewhere GPU division and FMA
-contraction give a few ULP.
+Profile `sampleCapacity` must be a positive integer, at least 1, even for empty lines. When no
+sample column is requested, supply it explicitly. With differently sized supplied sample columns,
+set capacity to their minimum length as above (include every supplied sample column in the
+minimum). The constructor automatically infers the minimum length across every supplied sample column. Four distance rows and two value rows require capacity 2.
+After submission, slice the host values using the returned count:
+
+```ts
+declare const sampleValues: Float32Array; // Readback of output.sampleValues.
+declare const count: number; // Readback of output.status.count.
+const readableValues = sampleValues.subarray(0, count);
+```
+
+`status.count` bounds the readable sample
+prefix; offsets are clamped to capacity. Inside the capacity, unused position/distance/value
+rows are NaN and line IDs are `GPU_RASTER_PROFILE_NO_LINE_ID`; cumulative gain/loss tails
+are unwritten. Storage beyond `sampleCapacity` is untouched, even in oversized output views.
+
+Sampling and profiles default to `noDataPolicy: 'propagate'`. A missing participating cell invalidates
+the interpolated result.
+`'renormalize'` instead redistributes surviving interpolation weights. Unknown policy or method
+values are rejected by either parameter packer.
+
+Nearest sampling and distance-field seeding use the same canonical float32 signed grid step.
+The reciprocal supplies a candidate cell, corrected by comparing the original position with
+cell edges in that position's coordinate frame. Interior ties belong to the next column/row in
+the signed-step direction, including a negative row step. Sampling/profile keep their included
+outermost extent edge by clamping to the last cell; distance-field seeding excludes it.
+
+The profile pipeline uses parallel segmented scans over vertex distances and optional cumulative
+gain/loss, plus a count scan and per-sample binary searches. Its tree summation order is fixed and
+deterministic. When only status words are requested, it retains geometric length/count work and
+omits locate/sample dispatches, raster staging and all sample-sized scratch. Counts therefore do
+not depend on whether raster elevations are finite or NaN. `requiredCount` is before total output
+capacity clamping but after the per-line limit; it is a lower bound on geometric demand when
+`overflow` reports per-line truncation. Sample capacity must fit uint32 (at most 4,294,967,295).
 
 #### `GPURasterSampling`
 
@@ -1156,6 +1680,8 @@ Reads a raster at point positions with nearest, bilinear or bicubic interpolatio
 
 ##### `GPURasterSampling` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterSampling`.
+
 - Packer: `getGPURasterSamplingParameterValues(settings, grid)`, writes `GPU_RASTER_SAMPLING_PARAMETER_LENGTH` (12) `float32` values.
   - `grid` (`GPURasterMetadata`): The frame's grid; its width and height must match the contributor's.
 
@@ -1164,7 +1690,7 @@ Settings of `getGPURasterSamplingParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `method` (optional) | `GPURasterSamplingMethod` | Interpolation method. Defaults to `'bilinear'`. |
-| `noDataPolicy` (optional) | `GPURasterSamplingNoDataPolicy` | Nodata handling for bilinear and bicubic. Defaults to `'strict'`. |
+| `noDataPolicy` (optional) | `GPURasterSamplingNoDataPolicy` | Nodata handling for bilinear and bicubic. Defaults to `'propagate'`. |
 | `localOrigin` (optional) | `readonly [number, number]` | Float64 point that query positions (sampling points, profile line vertices) are given relative to, and that profile sample positions are written relative to. Defaults to `[0, 0]` (absolute positions). Pass the raster or tile corner `[minX, minY]` for projected rasters: absolute float32 positions are quantized to 0.5 m at a UTM northing of 4.6e6 m, origin-relative ones to about `1.2e-7` of their distance from the origin (1.2 cm at 100 km). |
 
 {/* /parameters */}
@@ -1174,7 +1700,7 @@ Settings of `getGPURasterSamplingParameterValues`:
 {/* lens:GPURasterSampling */}
 
 ::lens{scenario=gpu-raster.raster-sampling rung=datum datum=7 caption="Point 7 sits on a cell corner, so four cells each weigh 0.25."}
-::lens{scenario=gpu-raster.raster-sampling rung=formula caption="Each point blends the four surrounding cell centres by distance; nodata gives NaN under strict."}
+::lens{scenario=gpu-raster.raster-sampling rung=formula caption="Each point blends the four surrounding cell centres by distance; nodata gives NaN under the propagate policy."}
 ::lens{scenario=gpu-raster.raster-sampling rung=kernel caption="One invocation per point finds its cell and weights, then reads the raster."}
 ::lens{scenario=gpu-raster.raster-sampling rung=graph caption="A single sampling node reads the raster, the points and the parameters."}
 
@@ -1188,6 +1714,8 @@ Samples a raster along a polyline at a fixed spacing, giving elevation and dista
 
 ##### `GPURasterProfile` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterProfile`.
+
 - Packer: `getGPURasterProfileParameterValues(settings, grid)`, writes `GPU_RASTER_PROFILE_PARAMETER_LENGTH` (12) `float32` values.
   - `grid` (`GPURasterMetadata`): The frame's grid; its width and height must match the contributor's.
 
@@ -1196,7 +1724,7 @@ Settings of `getGPURasterProfileParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `method` (optional) | `GPURasterSamplingMethod` | Interpolation method. Defaults to `'bilinear'`. |
-| `noDataPolicy` (optional) | `GPURasterSamplingNoDataPolicy` | Nodata handling for bilinear and bicubic. Defaults to `'strict'`. |
+| `noDataPolicy` (optional) | `GPURasterSamplingNoDataPolicy` | Nodata handling for bilinear and bicubic. Defaults to `'propagate'`. |
 | `localOrigin` (optional) | `readonly [number, number]` | Float64 point that query positions (sampling points, profile line vertices) are given relative to, and that profile sample positions are written relative to. Defaults to `[0, 0]` (absolute positions). Pass the raster or tile corner `[minX, minY]` for projected rasters: absolute float32 positions are quantized to 0.5 m at a UTM northing of 4.6e6 m, origin-relative ones to about `1.2e-7` of their distance from the origin (1.2 cm at 100 km). |
 | `spacing` | `number` | Distance between samples along a line, in grid world units. Must be finite and positive. |
 
@@ -1223,6 +1751,16 @@ readback. Unlike screen-space fading trails, the trails are in data space, so th
 and zooming.
 
 ```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUParticleAdvection, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const velocities: NonNullable<ConstructorParameters<typeof GPUParticleAdvection>[0]['velocities']>;
+declare const positions: NonNullable<NonNullable<ConstructorParameters<typeof GPUParticleAdvection>[0]['state']>['positions']>;
+declare const ages: NonNullable<NonNullable<ConstructorParameters<typeof GPUParticleAdvection>[0]['state']>['ages']>;
+declare const generations: NonNullable<NonNullable<ConstructorParameters<typeof GPUParticleAdvection>[0]['state']>['generations']>;
+declare const previousPositions: NonNullable<NonNullable<ConstructorParameters<typeof GPUParticleAdvection>[0]['output']>['previousPositions']>;
+declare const speeds: NonNullable<NonNullable<ConstructorParameters<typeof GPUParticleAdvection>[0]['output']>['speeds']>;
+declare const trailPositions: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUParticleAdvection>[0]['output']>['trails']>['positions']>;
+declare const frame: number;
 const parameters = new GPUParameterBuffer(device, {id: 'wind', format: 'float32', length: 12});
 const words = new GPUParameterBuffer(device, {id: 'wind-words', format: 'uint32', length: 4});
 graph.add(
@@ -1243,7 +1781,7 @@ graph.add(
 // Every frame, no recompile:
 parameters.write(
   getGPUParticleAdvectionParameterValues(
-    {fieldExtent: [-180, -90, 1, 1], timeStep: 1 / 60, speedScale: 0.2, dropRate: 0.003},
+    {fieldPlacement: {origin: [-180, -90], cellSize: [1, 1]}, timeStep: 1 / 60, speedScale: 0.2, dropRate: 0.003},
     [360, 180]
   )
 );
@@ -1277,6 +1815,8 @@ words.write(getGPUParticleAdvectionUint32ParameterValues({seed: 1, frame, maximu
 
 ### `GPUParticleAdvection` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUParticleAdvection`.
+
 - Packer: `getGPUParticleAdvectionParameterValues(settings, fieldSize)`, writes `GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH` (12) `float32` values.
   - `fieldSize` (`readonly [number, number]`): `[width, height]` of the field in cells, used for the default spawn bounds.
 - Packer: `getGPUParticleAdvectionUint32ParameterValues(settings)`, writes `GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH` (4) `uint32` values.
@@ -1285,7 +1825,8 @@ Settings of `getGPUParticleAdvectionParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `fieldExtent` | `readonly [number, number, number, number]` | Field raster placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. Positive cellHeight puts row zero on the smallest-y side; signed sizes set index direction. Cell `(i, j)` is centered at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size that is zero or not finite throws. |
+| `localOrigin` (optional) | `readonly [number, number]` | Planar origin subtracted in binary64 before packing. State, previous positions and trails stay local across frames; upload initial positions as world minus this origin before narrowing. Add it back in binary64 on readback. Keep it fixed until reset. Defaults to [0, 0]. |
+| `fieldPlacement` | `FlowRasterPlacement` | Field raster placement with an outer-corner `origin` and `cellSize`. Positive cellHeight puts row zero on the smallest-y side; signed sizes set index direction. Cell `(i, j)` is centered at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size that is zero or not finite throws. |
 | `timeStep` | `number` | Time step of this frame, in the time unit of the field velocities. |
 | `speedScale` (optional) | `number` | Multiplier on the time step, for example a playback speed. Defaults to 1. |
 | `dropRate` (optional) | `number` | Probability in `[0, 1]` that a particle respawns this frame regardless of age. Defaults to 0. |
@@ -1314,6 +1855,14 @@ direction is visible everywhere. Output is a float raster in `[0, 1]` (plus an o
 texture and a speed raster) for a `BitmapLayer`, typically modulated by a speed colour ramp.
 
 ```ts
+import {GPULineIntegralConvolution, makeGPURasterMetadata, getGPULineIntegralConvolutionParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const velocities: NonNullable<ConstructorParameters<typeof GPULineIntegralConvolution>[0]['velocities']>;
+declare const parameters: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'float32'>;
+declare const words: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'uint32'>;
+declare const values: NonNullable<NonNullable<ConstructorParameters<typeof GPULineIntegralConvolution>[0]['output']>['values']>;
+declare const speeds: NonNullable<NonNullable<ConstructorParameters<typeof GPULineIntegralConvolution>[0]['output']>['speeds']>;
+declare const texture: NonNullable<NonNullable<ConstructorParameters<typeof GPULineIntegralConvolution>[0]['output']>['texture']>;
+declare const frame: number;
 graph.add(
   new GPULineIntegralConvolution({
     velocities, fieldWidth: 360, fieldHeight: 180,
@@ -1324,10 +1873,12 @@ graph.add(
     output: {values, speeds, texture}
   })
 );
+const fieldPlacement = {origin: [-180, -90] as const, cellSize: [1, 1] as const};
+const outputPlacement = {origin: [-180, -90] as const, cellSize: [360 / 1024, 180 / 512] as const};
 parameters.write(
   getGPULineIntegralConvolutionParameterValues({
-    fieldExtent: [-180, -90, 1, 1],
-    outputExtent: [-180, -90, 360 / 1024, 180 / 512],
+    fieldPlacement,
+    outputPlacement,
     stepLength: 0.5, // output pixels
     period: 8, // animated ripple, in steps; 0 = static LIC
     phase: frame / 30 // advance every frame to make the texture flow
@@ -1335,10 +1886,40 @@ parameters.write(
 );
 ```
 
+LIC checks the RK2 midpoint **and landing velocity** before accumulating landing noise.
+For noise `[0, 1]`, step `.75`, one step per direction and a static Hann kernel (center weight 1, landing weight 0.5), the first
+pixel is 0 with only one supported field cell, versus `1/3` with two supported field cells.
+The landing outside field support contributes neither a sample nor a weight.
+By default, the packer retains world-frame origins (`localOrigin: [0, 0]`). Supply
+`localOrigin: outputPlacement.origin` explicitly to subtract a common origin in binary64
+before float32 upload. For example:
+
+```ts
+import {getGPULineIntegralConvolutionParameterValues} from '@luma-contributors/analysis/raster-analysis';
+const fieldPlacement = {origin: [10_000_000.25, 9_999_999.875] as const, cellSize: [1, -1] as const};
+const outputPlacement = {origin: [10_000_000, 10_000_000] as const, cellSize: [0.5, -0.5] as const};
+const worldPacket = getGPULineIntegralConvolutionParameterValues({fieldPlacement, outputPlacement});
+// First eight words: [10000000, 10000000, 1, -1, 10000000, 10000000, 0.5, -0.5].
+const localPacket = getGPULineIntegralConvolutionParameterValues({
+  fieldPlacement, outputPlacement, localOrigin: outputPlacement.origin
+});
+// First eight words: [0.25, -0.125, 1, -1, 0, 0, 0.5, -0.5].
+```
+
+LIC traces in output-cell coordinates and maps those positions into the field frame for velocity
+sampling. Both placements retain signed cell steps, including negative row steps; origins are
+outer corners, not min/max bounds. Scalar LIC values need no translation or coordinate restoration.
+For particle and streamline positions, subtract the captured common `localOrigin` from binary64
+world coordinates **before** creating float32 upload arrays. Retain particle state, previous
+positions and trail history in that local frame across submissions. Restore world positions in
+binary64 after readback, e.g. `worldX = Number(localX) + localOrigin[0]`; adding the origin to a
+float32 history between steps loses the precision this frame preserves.
+
 - Noise is Philox white noise per output pixel keyed by `(seed, column, row)`; the kernel is a Hann
   window, optionally times an animated ripple `0.5 * (1 + cos(2 * pi * (s / period - phase)))`.
 - Streamlines step along the normalised field (RK2) and stop at the field or output edge, NaN data,
-  or speeds at or below `minimumSpeed`. Pixels whose centre has no data are NaN. A step is tangent
+  or zero speed or speeds strictly below `minimumSpeed`. A positive landing speed equal to
+  the threshold still contributes noise. Pixels whose centre has no data are NaN. A step is tangent
   to the field in world space and `stepLength` output pixels long, also on non-square output cells
   (before 2026-11-10 the step was scaled per axis, which bent the trace on non-square cells).
 - The output extent is independent of the field, so a viewport renders at screen resolution from a
@@ -1357,15 +1938,18 @@ parameters.write(
 
 ### `GPULineIntegralConvolution` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPULineIntegralConvolution`.
+
 - Packer: `getGPULineIntegralConvolutionParameterValues(settings)`, writes `GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH` (12) `float32` values.
-- Packer: `getGPULineIntegralConvolutionUint32ParameterValues(settings)`, writes `GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH` (4) `uint32` values.
+- Packer: `getGPULineIntegralConvolutionUint32ParameterValues(settings?)`, writes `GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH` (4) `uint32` values.
 
 Settings of `getGPULineIntegralConvolutionParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `fieldExtent` | `readonly [number, number, number, number]` | Field placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. The origin is an outer corner; sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times cell size. Positive cellHeight places row zero at the smallest y; signed cell sizes set the direction of increasing indices. Zero or non-finite sizes throw. The field is sampled bilinearly between centers, with edge clamping inside its half-open outer bounds. |
-| `outputExtent` | `readonly [number, number, number, number]` | Output raster placement `[originX, originY, cellWidth, cellHeight]`. LIC starts at each output center, origin + `(column + 0.5, row + 0.5)` times cell size, independently of the field lattice. Signed cell sizes set row/column direction; zero or non-finite sizes throw. grid.affine and pixelInterpretation do not change this placement. |
+| `localOrigin` (optional) | `readonly [number, number]` | Optional common planar origin subtracted in binary64 before packing both placements. Defaults to [0, 0], preserving world-frame packet words. For precise relative placement, pass outputPlacement.origin as localOrigin. LIC outputs are scalars; they require no coordinate reconstruction. |
+| `fieldPlacement` | `FlowRasterPlacement` | Field placement uses an outer-corner `origin` and signed `cellSize`. Sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times cell size. Positive cellHeight places row zero at the smallest y; signed cell sizes set the direction of increasing indices. Zero or non-finite sizes throw. The field is sampled bilinearly between centers, with edge clamping inside its half-open outer bounds. |
+| `outputPlacement` | `FlowRasterPlacement` | Output raster placement with an outer-corner `origin` and `cellSize`. LIC starts at each output center, origin + `(column + 0.5, row + 0.5)` times cell size, independently of the field lattice. Signed cell sizes set row/column direction; zero or non-finite sizes throw. grid.affine and pixelInterpretation do not change this placement. |
 | `stepLength` (optional) | `number` | Streamline step in output pixels. Defaults to 0.5. The step follows the field in world space; on non-square output cells its world length is the one that spans `stepLength` pixels in that direction. |
 | `minimumSpeed` (optional) | `number` | A streamline stops where the field is slower than this. Defaults to 0. |
 | `phase` (optional) | `number` | Animation phase in kernel periods; advance it every frame to make the texture flow. Defaults to 0. |
@@ -1389,8 +1973,33 @@ Traces evenly spaced streamlines from jittered seeds of a vector field and prune
 Evenly spaced streamlines (after Jobard and Lefer) whose pruning is resolved by a random priority
 per seed instead of processing order, so the result is deterministic. Output is CSR polylines for a
 `PathLayer`.
+`GPUStreamlinesOperation` and `CPUStreamlinesOperation` publish accepted seed-row IDs in ascending
+order and use the same CSR layout: `lineOffsets` delimit the lines in `positions`, with counts
+and status words describing the published result. The CPU form integrates in float64 and rounds
+positions once to float32. Compare positions with absolute tolerance `3e-5` times placement
+magnitude; near field or occupancy-grid boundaries, integer selections can differ between forms,
+including accepted IDs, offsets and counts. The horizontal-flow oracle fixture is a numerical
+regression for its specified scene with absolute coordinate tolerance `5e-4`.
+Optional `candidates` exposes the traced
+positions before compaction and four span words per seed: backward/forward traced counts,
+then backward/forward kept counts. Kept spans for rejected seeds are not a portable CPU/GPU
+comparison; accepted seeds and the full traced coordinates have independent reference checks.
+Omitting the candidate diagnostics preserves the compact output.
 
 ```ts
+import {GPUStreamlines, getGPUStreamlinesParameterValues, getGPUStreamlinesUint32ParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const velocities: NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['velocities']>;
+declare const parameters: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'float32'>;
+declare const words: import('@luma-contributors/analysis/analysis-core').GPUParameterBuffer<'uint32'>;
+declare const ids: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['lines']>['ids']>;
+declare const count: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['lines']>['status']>['count']>;
+declare const overflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['lines']>['status']>['overflow']>;
+declare const requiredCount: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['lines']>['status']>['requiredCount']>;
+declare const candidateOverflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['lines']>['status']>['candidateOverflow']>;
+declare const lineOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['lineOffsets']>;
+declare const positions: NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['positions']>;
+declare const positionCount: NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['positionCount']>;
+declare const iterationLimitReached: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUStreamlines>[0]['output']>['status']>['iterationLimitReached']>;
 graph.add(
   new GPUStreamlines({
     velocities, fieldWidth: 360, fieldHeight: 180,
@@ -1399,15 +2008,15 @@ graph.add(
     parameters: parameters.importToGraph(graph), // float32, 12
     uint32Parameters: words.importToGraph(graph), // uint32, 4
     output: {
-      lines: {ids, status: {count, overflow, requiredCount}}, lineOffsets, positions, positionCount,
+      lines: {ids, status: {count, overflow, requiredCount, candidateOverflow}}, lineOffsets, positions, positionCount,
       status: {iterationLimitReached}
     }
   })
 );
 parameters.write(
   getGPUStreamlinesParameterValues({
-    fieldExtent: [-180, -90, 1, 1],
-    gridExtent: [-180, -90, 2, 2],
+    fieldPlacement: {origin: [-180, -90], cellSize: [1, 1]},
+    gridPlacement: {origin: [-180, -90], cellSize: [2, 2]},
     stepLength: 0.5
   })
 );
@@ -1428,6 +2037,12 @@ words.write(getGPUStreamlinesUint32ParameterValues({seed: 1, minimumPoints: 8}))
   a lower bound. The CPU twin and both operation forms honor `maximumIterations` (default 32)
   and expose the same flags. `GPU_STREAMLINES_CANDIDATE_UNCONVERGED` (1) replaces the old
   overflow bit-2 constant; a zero final-capacity flag alone does not establish completeness.
+- In the 16×1 constant eastward-field fixture (three seed columns, seed 3, two steps,
+  capacity three lines/15 positions), `[count, overflow, candidateOverflow]` is `[2, 0, 1]`
+  at budget 1 and `[3, 0, 0]` at budget 32. Read `candidateOverflow` even when capacity fits.
+  `count` bounds the active lines; every remaining offset repeats `positionCount`.
+  For one line with three positions and five line slots, offsets are `[0,3,3,3,3,3]`.
+  Only `positions[0..positionCount)` is the readable position prefix; its tail is unspecified.
 - Optional `candidates` outputs expose the traced lines before pruning, for diagnostics.
 
 Both operation forms capture iteration budgets and nested output bindings once at construction,
@@ -1446,15 +2061,18 @@ operation; changes to bound buffer contents still apply on each execution.
 
 ### `GPUStreamlines` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUStreamlines`.
+
 - Packer: `getGPUStreamlinesParameterValues(settings)`, writes `GPU_STREAMLINES_PARAMETER_LENGTH` (12) `float32` values.
-- Packer: `getGPUStreamlinesUint32ParameterValues(settings)`, writes `GPU_STREAMLINES_UINT32_PARAMETER_LENGTH` (4) `uint32` values.
+- Packer: `getGPUStreamlinesUint32ParameterValues(settings?)`, writes `GPU_STREAMLINES_UINT32_PARAMETER_LENGTH` (4) `uint32` values.
 
 Settings of `getGPUStreamlinesParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `fieldExtent` | `readonly [number, number, number, number]` | Field placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. The origin is an outer corner; sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times cell size. Positive cellHeight puts row zero at the smallest y; signed cell sizes determine the direction of increasing indices. Zero or non-finite sizes throw. Sampling is bilinear between centers, clamped inside the outer bounds. No grid affine changes this placement. |
-| `gridExtent` | `readonly [number, number, number, number]` | Occupancy grid placement `[originX, originY, cellWidth, cellHeight]`. The cell size is the separation distance between streamlines; seeds and traced points stay inside the grid. Cell `(column, row)` is the half-open rectangle from origin + `(column, row)` times cell size to origin + `(column + 1, row + 1)` times cell size. Both cell sizes must be positive. |
+| `localOrigin` (optional) | `readonly [number, number]` | Planar origin subtracted before packing both placements. All returned positions, including candidates, are local; add this origin in binary64 on readback. Defaults to [0, 0]. |
+| `fieldPlacement` | `FlowRasterPlacement` | Field placement uses an outer-corner `origin` and signed `cellSize`. Sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times cell size. Positive cellHeight puts row zero at the smallest y; signed cell sizes determine the direction of increasing indices. Zero or non-finite sizes throw. Sampling is bilinear between centers, clamped inside the outer bounds. No grid affine changes this placement. |
+| `gridPlacement` | `FlowRasterPlacement` | Occupancy grid placement. The cell size is the separation distance between streamlines; seeds and traced points stay inside the grid. Cell `(column, row)` is the half-open rectangle from origin + `(column, row)` times cell size to origin + `(column + 1, row + 1)` times cell size. Both cell sizes must be positive. Both cell sizes must also have finite float32 reciprocals. |
 | `stepLength` | `number` | Integration step in world units. |
 | `minimumSpeed` (optional) | `number` | A streamline stops where the field is slower than this. Defaults to 0. |
 | `seed` (optional) | `number` | Seed of the jittered seed lattice and the line priorities. Defaults to 0. |
@@ -1485,6 +2103,18 @@ present output group adds one compute node (`two-slice`, `multiband`, `t-test`, 
 deterministic and no atomics are used.
 
 ```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPU_CHANGE_DETECTION_PARAMETER_LENGTH, GPUChangeDetection, getGPUChangeDetectionParameterValues} from '@luma-contributors/analysis/raster-analysis';
+declare const stack: NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['slices']>;
+declare const cellCount: NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['cellCount']>;
+declare const sliceCount: NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['sliceCount']>;
+declare const difference: NonNullable<NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['output']>['difference']>;
+declare const logRatio: NonNullable<NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['output']>['logRatio']>;
+declare const tStatistic: NonNullable<NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['output']>['tStatistic']>;
+declare const tPValue: NonNullable<NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['output']>['tPValue']>;
+declare const senSlope: NonNullable<NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['output']>['senSlope']>;
+declare const mannKendallS: NonNullable<NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['output']>['mannKendallS']>;
+declare const significance: NonNullable<NonNullable<ConstructorParameters<typeof GPUChangeDetection>[0]['output']>['significance']>;
 const parameters = new GPUParameterBuffer(device, {
   id: 'change-parameters',
   format: 'float32',
@@ -1544,6 +2174,8 @@ parameters.write(
 {/* parameters: GPUChangeDetection generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUChangeDetection` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPUChangeDetection`.
 
 - Packer: `getGPUChangeDetectionParameterValues(settings)`, writes `GPU_CHANGE_DETECTION_PARAMETER_LENGTH` (5) `float32` values.
 

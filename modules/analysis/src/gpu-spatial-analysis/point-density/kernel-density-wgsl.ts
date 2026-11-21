@@ -10,7 +10,8 @@ import {
   getStudyWindowWGSLOptions
 } from '../../analysis-core/kernels/study-window-wgsl';
 import type {GPUPolygonStudyWindowViews} from '../../analysis-core/contracts/study-window';
-import {ERFC_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {getDensityClippedCapWGSL} from './density-compact-overlap';
+import {DENSITY_NORMAL_INTERVAL_WGSL} from './density-normal-interval-wgsl';
 import {
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION,
   type GPUKernelDensityKernel
@@ -51,23 +52,18 @@ fn getKernelValue(distanceSquared: f32, bandwidth: f32) -> f32 {
 
 /**
  * WGSL `getWindowMass(point, windowMin, windowMax, bandwidth)`: the float32 mirror of
- * {@link getGPUKernelDensityWindowMass}. All positions are relative to a common local origin.
+ * {@link getGPUKernelDensityWindowOverlap}. All positions are relative to a common local origin.
  * @internal
  */
 export function getWindowMassWGSL(kernel: GPUKernelDensityKernel): string {
   if (kernel === 'gaussian') {
     return /* wgsl */ `
-${ERFC_VALUE_WGSL}
-fn getUpperTail(z: f32) -> f32 { return 0.5 * erfcValue(z * 0.70710678); }
-fn getNormalMass(low: f32, high: f32) -> f32 {
-  if (low > 0.0) { return getUpperTail(low) - getUpperTail(high); }
-  if (high < 0.0) { return getUpperTail(-high) - getUpperTail(-low); }
-  return 1.0 - getUpperTail(-low) - getUpperTail(high);
-}
+${DENSITY_NORMAL_INTERVAL_WGSL}
 fn getWindowMass(point: vec2f, windowMin: vec2f, windowMax: vec2f, bandwidth: f32) -> f32 {
   let low = (windowMin - point) / bandwidth;
   let high = (windowMax - point) / bandwidth;
-  return getNormalMass(low.x, high.x) * getNormalMass(low.y, high.y);
+  let width = (windowMax - windowMin) / bandwidth;
+  return getDensityNormalIntervalMassWithWidth(low.x, high.x, width.x) * getDensityNormalIntervalMassWithWidth(low.y, high.y, width.y);
 }`;
   }
   const power = kernel === 'epanechnikov' ? 1 : 2;
@@ -79,6 +75,18 @@ fn getWindowMass(point: vec2f, windowMin: vec2f, windowMax: vec2f, bandwidth: f3
       : 'height * (bulkEnd - 2.0 * bulkEnd3 / 3.0 + bulkEnd5 / 5.0) - (2.0 * height3 / 3.0) * (bulkEnd - bulkEnd3 / 3.0) + height5 * bulkEnd / 5.0';
   const chordScale = power === 1 ? getWGSLFloatLiteral(2 / 3) : getWGSLFloatLiteral(8 / 15);
   return /* wgsl */ `
+${getDensityClippedCapWGSL(power)}
+fn getCapMass(x: f32) -> f32 {
+  let remaining = max(0.0, 1.0 - x);
+  let exponent = ${power}.5;
+  var coefficient = 1.0;
+  var series = 1.0 / (exponent + 1.0);
+  for (var order = 1u; order <= 12u; order++) {
+    coefficient *= (f32(order - 1u) - exponent) * remaining / (2.0 * f32(order));
+    series += coefficient / (exponent + f32(order) + 1.0);
+  }
+  return ${getWGSLFloatLiteral((power === 1 ? 8 / (3 * Math.PI) : 16 / (5 * Math.PI)) * 2 ** (power + 0.5))} * pow(remaining, exponent + 1.0) * series;
+}
 fn getChordIntegral(x: f32) -> f32 {
   let clamped = clamp(x, 0.0, 1.0);
   let s = sqrt(max(1.0 - clamped * clamped, 0.0));
@@ -108,6 +116,18 @@ fn getSignedQuadrantMass(a: f32, b: f32) -> f32 {
 fn getWindowMass(point: vec2f, windowMin: vec2f, windowMax: vec2f, bandwidth: f32) -> f32 {
   let low = (windowMin - point) / bandwidth;
   let high = (windowMax - point) / bandwidth;
+  for (var axis = 0u; axis < 2u; axis++) {
+    let across = 1u - axis;
+    let capLow = select(select(0.0, -high[axis], high[axis] <= -0.75), low[axis], low[axis] >= 0.75);
+    let capHigh = select(-low[axis], high[axis], low[axis] >= 0.75);
+    if (capLow >= 0.75) {
+      let chord = sqrt(max(0.0, (1.0 - capLow) * (1.0 + capLow)));
+      if (low[across] <= -chord && high[across] >= chord) {
+        return getCapMass(capLow) - getCapMass(min(1.0, capHigh));
+      }
+      return getClippedCapMass(capLow, capHigh, low[across], high[across]);
+    }
+  }
   return getSignedQuadrantMass(high.x, high.y) - getSignedQuadrantMass(low.x, high.y) -
     getSignedQuadrantMass(high.x, low.y) + getSignedQuadrantMass(low.x, low.y);
 }`;

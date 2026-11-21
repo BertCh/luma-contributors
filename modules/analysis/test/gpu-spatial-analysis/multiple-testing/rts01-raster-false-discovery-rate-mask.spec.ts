@@ -22,7 +22,7 @@ async function getDevice() {
 type MaskRun = {
   significant: number[];
   adjusted: number[];
-  testedCount: number;
+  effectiveFamilySize: number;
   significantCount: number;
   criticalPValue: number;
   histogram: number[];
@@ -55,7 +55,7 @@ async function runMask(
       output: {
         significant: harness.output('significant', 'uint32', cellCount),
         adjustedPValues: harness.output('adjusted', 'float32', cellCount),
-        testedCount: harness.output('testedCount', 'uint32', 1),
+        effectiveFamilySize: harness.output('effectiveFamilySize', 'uint32', 1),
         significantCount: harness.output('significantCount', 'uint32', 1),
         criticalPValue: harness.output('criticalPValue', 'float32', 1),
         histogram: harness.output('histogram', 'uint32', binCount)
@@ -65,7 +65,7 @@ async function runMask(
   return {
     significant: result['significant'],
     adjusted: result['adjusted'],
-    testedCount: result['testedCount'][0],
+    effectiveFamilySize: result['effectiveFamilySize'][0],
     significantCount: result['significantCount'][0],
     criticalPValue: result['criticalPValue'][0],
     histogram: result['histogram']
@@ -134,7 +134,7 @@ it('RTS-01 reproduces the Benjamini-Hochberg 1995 worked example (4 rejections a
   // Hand values: p_(k) m / k = 0.0015, 0.003, 0.0095, 0.035625, 0.0603, ... so the first four pass.
   expect(result.significant).toEqual(SCRAMBLE.map(index => (index < 4 ? 1 : 0)));
   expect(result.significantCount).toBe(4);
-  expect(result.testedCount).toBe(15);
+  expect(result.effectiveFamilySize).toBe(15);
   expect(result.criticalPValue).toBeCloseTo(0.0095, 7);
   const adjustedByIndex = new Map(SCRAMBLE.map((index, row) => [index, result.adjusted[row]]));
   expect(adjustedByIndex.get(0)).toBeCloseTo(0.0015, 6);
@@ -216,7 +216,7 @@ it('RTS-01 masks agree with the textbook step-up and step-down rules on a mixed 
     expect(result.significantCount, method).toBe(
       result.significant.reduce((sum, flag) => sum + flag, 0)
     );
-    expect(result.testedCount).toBe(pValues.filter(Number.isFinite).length);
+    expect(result.effectiveFamilySize).toBe(pValues.filter(Number.isFinite).length);
   }
 });
 
@@ -225,10 +225,20 @@ it('RTS-01 zero validity removes a cell from the family and the histogram', asyn
   const validity = [1, 1, 1, 1, 1, 1, 0, 0];
   const masked = await runMask(pValues, {validity, alpha: 0.05, binCount: 10});
   const reference = await runMask(pValues.slice(0, 6), {alpha: 0.05, binCount: 10});
-  expect(masked.testedCount).toBe(6);
+  expect(masked.effectiveFamilySize).toBe(6);
+  // Independent BH steps for the six tested p-values: [0.006, 0.006,
+  // 0.06, 0.06, 0.6, 0.6]. Only the first two pass alpha=0.05.
+  for (const [row, expected] of [0.006, 0.006, 0.06, 0.06, 0.6, 0.6].entries()) {
+    expect(Number.isFinite(masked.adjusted[row])).toBe(true);
+    expect(masked.adjusted[row]).toBeCloseTo(expected, 6);
+  }
+  expect(masked.significant).toEqual([1, 1, 0, 0, 0, 0, 0, 0]);
+  expect(masked.significantCount).toBe(2);
+  expect(masked.criticalPValue).toBeCloseTo(0.002, 8);
   expect(masked.significant.slice(0, 6)).toEqual(reference.significant);
   expect(masked.significant.slice(6)).toEqual([0, 0]);
   expect(masked.adjusted[6]).toBeNaN();
+  expect(masked.adjusted[7]).toBeNaN();
   expect(masked.histogram).toEqual(reference.histogram);
   // Bins of width 0.1: three values below 0.1, 0.5 and 0.6 in their own bins.
   expect(masked.histogram).toEqual([4, 0, 0, 0, 0, 1, 1, 0, 0, 0]);

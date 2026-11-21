@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, it} from 'vitest';
+import {expect, expectTypeOf, it} from 'vitest';
 import {
   computeSpatialLagImpactsOnCPU,
-  CPUSpatialLagImpactsOperation
+  CPUSpatialLagImpactsOperation,
+  type CPUSpatialLagImpactsResult
 } from '../../../src/gpu-spatial-analysis/spatial-regression/cpu-spatial-lag-impacts-operation';
 import {
   GPUSpatialLagImpactsOperation,
@@ -23,6 +24,12 @@ const OPTIONS = {
   rowCount: 2,
   maximumPower: 8
 };
+
+it('TYP-16 exposes the named lag impacts result type', () => {
+  expectTypeOf<
+    ReturnType<typeof computeSpatialLagImpactsOnCPU>
+  >().toEqualTypeOf<CPUSpatialLagImpactsResult>();
+});
 const INPUT = {
   coefficients: Float32Array.of(99, 99, 2, 99, -3, 99, 0.25),
   // W = [[0, 2], [2, 0]], norm 2; W/norm swaps the rows.
@@ -37,6 +44,26 @@ const PROPS: SpatialLagImpactsOperationProps = {
   traces: {powerTraces: 'traces', powerSums: 'sums', infinityNorm: 'norm'},
   output: {impacts: 'impacts'}
 };
+
+it('rejects an empty impacts destination before constructing descriptors (FRM-01)', () => {
+  expect(() => new CPUSpatialLagImpactsOperation({...PROPS, output: {impacts: ''}})).toThrow(
+    /impacts-test.*non-empty/
+  );
+});
+
+it('FRM-01 rejects empty required and optional input names in both forms', () => {
+  for (const Operation of [CPUSpatialLagImpactsOperation, GPUSpatialLagImpactsOperation]) {
+    expect(() => new Operation({...PROPS, coefficients: ''})).toThrow(/impacts-test.*non-empty/);
+    expect(() => new Operation({...PROPS, traces: {...PROPS.traces, powerTraces: ''}})).toThrow(
+      /impacts-test.*non-empty/
+    );
+  }
+  for (const Operation of [CPUSpatialLagImpactsOperation, GPUSpatialLagImpactsOperation]) {
+    expect(() => new Operation({...PROPS, status: ''})).toThrow(/impacts-test.*status.*non-empty/);
+    expect(new Operation(PROPS).inputs).not.toHaveProperty('status');
+    expect(new Operation({...PROPS, status: 'fitStatus'}).inputs['status']).toBe('fitStatus');
+  }
+});
 
 it('matches finite geometric-series closed forms for a scaled two-node weights matrix', () => {
   // The swap has even trace 2 and odd trace 0. No Horner recurrence in this oracle.

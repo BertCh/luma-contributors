@@ -14,6 +14,9 @@ import {GPUNetworkAccessibility} from '@luma-contributors/analysis/gpu-network';
 export type NetworkAccessibilityExampleInput = {
   graph: GPUCommandGraph;
   matrixCosts: GraphDataView<'float32'>;
+  /** The matrix convergence certificate and its horizon, when bounded. */
+  matrixComplete?: GraphDataView<'uint32'>;
+  matrixCostLimit?: GraphDataView<'float32'>;
   opportunityWeights: GraphDataView<'float32'>;
   parameters: GraphDataView<'float32'>;
   nodeCount: number;
@@ -22,16 +25,23 @@ export type NetworkAccessibilityExampleInput = {
 /** Builds the contributor shown on the card; the lens compiles, executes and reads it back. */
 export async function runExample(_device: Device, input: NetworkAccessibilityExampleInput) {
   const {graph, matrixCosts, opportunityWeights, parameters, nodeCount} = input;
+  const {matrixComplete, matrixCostLimit} = input;
+  const complete = matrixComplete
+    ? createTransientView(graph, 'accessibilityComplete', 'uint32', 1)
+    : undefined;
   // #region example
   const accessibility = new GPUNetworkAccessibility({
     costs: matrixCosts,
+    costsComplete: matrixComplete,
+    costLimit: matrixCostLimit,
     orientation: 'opportunity-rows',
     opportunityWeights,
     parameters,
+    status: {complete},
     gravity: createTransientView(graph, 'gravity', 'float32', nodeCount)
   });
   graph.add(accessibility);
   const {gravity} = accessibility.props;
   // #endregion example
-  return {accessibility, gravity: gravity!};
+  return {accessibility, gravity: gravity!, complete};
 }

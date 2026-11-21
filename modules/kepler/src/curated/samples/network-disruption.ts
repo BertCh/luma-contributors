@@ -126,7 +126,9 @@ export const NETWORK_DISRUPTION_EXPECTATIONS = {
   accessibilityDifferences: [-7, 0],
   stages: [
     {stage: 'baseline-routing', converged: 1},
-    {stage: 'scenario-routing', converged: 1}
+    {stage: 'scenario-routing', converged: 1},
+    {stage: 'baseline-accessibility', complete: 1},
+    {stage: 'scenario-accessibility', complete: 1}
   ]
 } as const;
 
@@ -201,6 +203,8 @@ export const NETWORK_DISRUPTION_SECOND_EXPECTATIONS = {
   accessibilityDifferences: [-7],
   stages: [
     {stage: 'baseline-routing', converged: 1},
-    {stage: 'scenario-routing', converged: 1}
+    {stage: 'scenario-routing', converged: 1},
+    {stage: 'baseline-accessibility', complete: 1},
+    {stage: 'scenario-accessibility', complete: 1}
   ]
 } as const;

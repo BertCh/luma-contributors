@@ -17,8 +17,15 @@ import {
   GPULocationAllocationGraphOperation,
   type LocationAllocationOperationProps
 } from '../../../src/gpu-spatial-analysis/location-allocation/gpu-location-allocation-operation';
-import {GPU_LOCATION_ALLOCATION_STATUS} from '../../../src/gpu-spatial-analysis/location-allocation/gpu-location-allocation';
+import {
+  GPULocationAllocation,
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT
+} from '../../../src/gpu-spatial-analysis/location-allocation/gpu-location-allocation';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
 
 const OUTPUT = {
   selectedFacilities: 'selected',
@@ -73,7 +80,7 @@ for (const sparse of [false, true]) {
     expect(Array.from(result.selectedFacilities)).toEqual([0, 1, 1]);
     expect(Array.from(result.assignments)).toEqual([1, 1, 2, 2]);
     expect(result.objective[0]).toBe(Math.fround(2 * Math.fround(1e30)));
-    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount]).toBe(1);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.swapIterationCount]).toBe(1);
   });
 
   it(`keeps every finite float32 cost reachable, sparse ${sparse}`, () => {
@@ -101,7 +108,7 @@ for (const sparse of [false, true]) {
     expect(Array.from(result.assignments)).toEqual([0, 0, 0, 0xffffffff]);
     expect(Array.from(result.assignedCosts)).toEqual(Array.from(costs));
     expect(result.objective[0]).toBe(Math.fround(costs[0] + costs[1] + costs[2]));
-    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.uncoveredDemandCount]).toBe(1);
   });
 
   for (const threshold of [Math.fround(1e30), Infinity])
@@ -124,7 +131,7 @@ for (const sparse of [false, true]) {
       );
       expect(Array.from(result.selectedFacilities)).toEqual([1]);
       expect(Array.from(result.assignments)).toEqual([0, 0xffffffff]);
-      expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
+      expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.uncoveredDemandCount]).toBe(1);
     });
 }
 const COVERAGE_COSTS = Float32Array.of(
@@ -309,7 +316,7 @@ it('rejects inconsistent arrays and validates both classes at construction/lower
         port === 'costs'
           ? 12
           : port === 'status'
-            ? GPU_LOCATION_ALLOCATION_STATUS.length
+            ? GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length
             : port === 'selectedFacilities'
               ? 3
               : port === 'objective'
@@ -343,4 +350,140 @@ it('rejects inconsistent arrays and validates both classes at construction/lower
       props
     )
   ).toThrow('sparseCosts.offsets');
+});
+
+it('clears status complete for incomplete or short-horizon costs (NET-101)', () => {
+  // Directed unit chain 0 -> 1 -> 2 -> 3 -> 4, one facility at node 0, five unit demands, a
+  // demand-major one-column matrix. One reachability round gives [0, 1, inf, inf, inf] with
+  // converged 0; five rounds give [0, 1, 2, 3, 4] with converged 1. Maximum coverage at 4 covers
+  // 2 versus 5 rows. By hand, complete = budget filled && costsComplete != 0 && requested <=
+  // costLimit, with requested = coverageDistance (4) or +Infinity for p-median.
+  const truncated = Float32Array.of(0, 1, Infinity, Infinity, Infinity);
+  const final = Float32Array.of(0, 1, 2, 3, 4);
+  const options = {demandCount: 5, facilityCount: 1, maximumFacilityCount: 1} as const;
+  const coverage = (
+    costs: Float32Array,
+    costsComplete?: number,
+    costLimit?: number
+  ): [number, number] => {
+    const result = computeLocationAllocationOnCPU(
+      {
+        costs,
+        coverageDistance: Float32Array.of(4),
+        costsComplete: costsComplete === undefined ? undefined : Uint32Array.of(costsComplete),
+        costLimit: costLimit === undefined ? undefined : Float32Array.of(costLimit)
+      },
+      {...options, operation: 'maximum-coverage', maximumSwapIterations: 0}
+    );
+    return [result.objective[0], result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.complete]];
+  };
+  // Without the word the budget rule alone reports a finished search, as before.
+  expect(coverage(truncated)).toEqual([2, 1]);
+  expect(coverage(truncated, 0)).toEqual([2, 0]);
+  expect(coverage(final, 1)).toEqual([5, 1]);
+  expect(coverage(final, 1, 4)).toEqual([5, 1]);
+  expect(coverage(truncated, 1, 1)).toEqual([2, 0]);
+  // A supplied horizon is evidence even without a supplied convergence word.
+  expect(coverage(truncated, undefined, 1)).toEqual([2, 0]);
+  expect(coverage(final, undefined, 4)).toEqual([5, 1]);
+  expect(coverage(final, undefined, Number.NaN)).toEqual([5, 0]);
+  expect(coverage(final, 1, Number.NaN)).toEqual([5, 0]);
+  const pMedian = (costLimit?: number) =>
+    computeLocationAllocationOnCPU(
+      {
+        costs: final,
+        costsComplete: Uint32Array.of(1),
+        costLimit: costLimit === undefined ? undefined : Float32Array.of(costLimit)
+      },
+      {...options, operation: 'p-median', maximumSwapIterations: 0}
+    ).status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.complete];
+  expect(pMedian()).toBe(1);
+  expect(pMedian(Infinity)).toBe(1);
+  expect(pMedian(4)).toBe(0);
+  for (const [costLimit, expected] of [
+    [4, 0],
+    [Infinity, 1],
+    [Number.NaN, 0]
+  ] as const) {
+    const result = computeLocationAllocationOnCPU(
+      {costs: final, costLimit: Float32Array.of(costLimit)},
+      {...options, operation: 'p-median', maximumSwapIterations: 0}
+    );
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.complete]).toBe(expected);
+  }
+  expect(() =>
+    computeLocationAllocationOnCPU(
+      {costs: final, costsComplete: Uint32Array.of(1, 1)},
+      {...options, operation: 'p-median'}
+    )
+  ).toThrow(/costsComplete must contain exactly one row/);
+});
+
+it('GPU location allocation clears status complete like the CPU twin (NET-101)', () => {
+  // Same chain as above. The greedy kernels use workgroup barriers, which the CPU WGSL executor
+  // cannot run, so the status words are seeded as the finalize pass leaves them (budget filled,
+  // complete 1) and only the costs completeness node runs.
+  const cases = [
+    ['maximum-coverage', Float32Array.of(0, 1, Infinity, Infinity, Infinity), 0, 4, 0],
+    ['maximum-coverage', Float32Array.of(0, 1, 2, 3, 4), 1, 4, 1],
+    ['maximum-coverage', Float32Array.of(0, 1, Infinity, Infinity, Infinity), 1, 1, 0],
+    ['p-median', Float32Array.of(0, 1, 2, 3, 4), 1, 4, 0],
+    ['p-median', Float32Array.of(0, 1, 2, 3, 4), 1, Infinity, 1],
+    ['maximum-coverage', Float32Array.of(0, Infinity), undefined, 1, 0],
+    ['maximum-coverage', Float32Array.of(0, 1, 2, 3, 4), undefined, 4, 1],
+    ['maximum-coverage', Float32Array.of(0, 1, 2, 3, 4), undefined, Number.NaN, 0],
+    ['p-median', Float32Array.of(0, 1, 2, 3, 4), undefined, 4, 0],
+    ['p-median', Float32Array.of(0, 1, 2, 3, 4), undefined, Infinity, 1]
+  ] as const;
+  for (const [operation, costValues, costsCompleteWord, matrixCostLimit, expected] of cases) {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const memory = createCPUGraphMemory();
+    const floats = (name: string, values: Float32Array) => {
+      const view = createTransientView(graph, name, 'float32', values.length);
+      memory.write(view, values);
+      return view;
+    };
+    const integers = (name: string, values: Uint32Array) => {
+      const view = createTransientView(graph, name, 'uint32', values.length);
+      memory.write(view, values);
+      return view;
+    };
+    try {
+      const seeded = new Uint32Array(GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length);
+      seeded[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.selectedFacilityCount] = 1;
+      seeded[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.complete] = 1;
+      const status = integers('status', seeded);
+      const nodes = new GPULocationAllocation({
+        costs: floats('costs', costValues),
+        facilityCount: 1,
+        operation,
+        maximumFacilityCount: 1,
+        maximumSwapIterations: 0,
+        coverageDistance:
+          operation === 'p-median' ? undefined : floats('coverage', Float32Array.of(4)),
+        costsComplete:
+          costsCompleteWord === undefined
+            ? undefined
+            : integers('costs-complete', Uint32Array.of(costsCompleteWord)),
+        costLimit: floats('cost-limit', Float32Array.of(matrixCostLimit)),
+        output: {
+          selectedFacilities: integers('selected', new Uint32Array(1)),
+          assignments: integers('assignments', new Uint32Array(costValues.length)),
+          objective: floats('objective', new Float32Array(1)),
+          status
+        }
+      }).getCommandNodes(graph);
+      const completeNodes = nodes.filter(node => node.id === 'location-allocation-costs-complete');
+      expect(completeNodes).toHaveLength(1);
+      expect(nodes.at(-1)).toBe(completeNodes[0]);
+      executeCommandNodesOnCPU(completeNodes, memory);
+      const words = memory.readUint32(status);
+      const label = `${operation} ${costsCompleteWord} ${matrixCostLimit}`;
+      expect(words[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.selectedFacilityCount], label).toBe(1);
+      expect(words[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.complete], label).toBe(expected);
+    } finally {
+      device.destroy();
+    }
+  }
 });

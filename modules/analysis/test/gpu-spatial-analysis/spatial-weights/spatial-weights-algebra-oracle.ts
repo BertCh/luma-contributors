@@ -55,7 +55,7 @@ export type OracleCombineRule = 'left' | 'right' | 'sum' | 'min' | 'max' | 'prod
 
 /** CPU union, intersection, difference or symmetric difference of two CSRs. */
 export function computeBinaryOracle(
-  operation: 'union' | 'intersection' | 'difference' | 'symmetricDifference',
+  operation: 'union' | 'intersection' | 'difference' | 'symmetric-difference',
   left: OracleCSR,
   right: OracleCSR,
   rule: OracleCombineRule = 'left',
@@ -85,7 +85,7 @@ export function computeBinaryOracle(
         union: true,
         intersection: Boolean(a && b),
         difference: Boolean(a && !b),
-        symmetricDifference: Boolean(a) !== Boolean(b)
+        'symmetric-difference': Boolean(a) !== Boolean(b)
       }[operation];
       if (!keep) continue;
       const weight = rule === 'binary' ? 1 : a && b ? combine(a[1], b[1]) : (a ?? b)![1];

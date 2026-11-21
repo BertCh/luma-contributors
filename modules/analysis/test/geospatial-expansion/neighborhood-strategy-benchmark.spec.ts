@@ -207,6 +207,8 @@ async function measureNeighborhoods(
     );
   const expectedIndices: number[] = [];
   const expectedDistances: number[] = [];
+  // IEEE-754 maximum finite f32: exponent 254, all 23 fraction bits set.
+  const emptySquaredDistance = new Float32Array(Uint32Array.of(0x7f7fffff).buffer)[0];
   const expectedCounts: number[] = [];
   for (let query = 0; query < queryCount; query++) {
     const queryRow = queryValues[query];
@@ -288,7 +290,7 @@ async function measureNeighborhoods(
                 0
               )
             )
-          : Math.fround(3.402823e38)
+          : emptySquaredDistance
       );
     }
   }

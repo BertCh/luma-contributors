@@ -20,6 +20,9 @@ import {
 
 const ID = 'prepareGPUNetworkFlowDemands';
 
+/** Source and target vertex indices of one directed edge. */
+export type GPUNetworkEdgeEndpoints = readonly [source: number, target: number];
+
 /** Explicit static super-source/sink adapter. Positive demand is net inflow, negative is supply.
  * Auto resolves reference/parallel against expanded vertex/edge counts and total capacity;
  * pass the returned solver to GPUNetworkFlow, including for a small graph with wide capacities.
@@ -27,7 +30,7 @@ const ID = 'prepareGPUNetworkFlowDemands';
  */
 export function prepareGPUNetworkFlowDemands(props: {
   nodeCount: number;
-  edges: readonly (readonly [number, number])[];
+  edges: readonly GPUNetworkEdgeEndpoints[];
   capacities: ArrayLike<number>;
   demands: ArrayLike<number>;
   costs?: ArrayLike<number>;
@@ -60,14 +63,31 @@ export function prepareGPUNetworkFlowDemands(props: {
     !props.costs || props.costs.length === props.edges.length,
     'costs must hold one entry per edge'
   );
-  const edges = props.edges.flatMap(edge => {
+  const edges: number[] = [];
+  for (let row = 0; row < props.edges.length; row++) {
+    const edge = props.edges[row];
     validateRequirement(
       ID,
-      edge.every(vertex => Number.isInteger(vertex) && vertex >= 0 && vertex < props.nodeCount),
-      'edges must have integer endpoints below nodeCount'
+      Array.isArray(edge),
+      `edges[${row}] must contain [source, target]; received ${edge}`
     );
-    return [edge[0], edge[1]];
-  });
+    for (const [endpoint, name] of ['source', 'target'].entries()) {
+      validateRequirement(
+        ID,
+        endpoint in edge &&
+          Number.isInteger(edge[endpoint]) &&
+          edge[endpoint] >= 0 &&
+          edge[endpoint] < props.nodeCount,
+        `edges[${row}].${name} in [source, target] must be a present integer in [0, ${props.nodeCount - 1}], received ${edge?.[endpoint]}`
+      );
+    }
+    validateRequirement(
+      ID,
+      edge.length === 2,
+      `edges[${row}] must contain exactly [source, target]; received length ${edge.length}`
+    );
+    edges.push(edge[0], edge[1]);
+  }
   const capacities = Array.from(props.capacities);
   validateRequirement(
     ID,

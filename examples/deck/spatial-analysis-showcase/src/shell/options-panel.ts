@@ -432,7 +432,8 @@ function createDropdownControl(
     element,
     spec,
     refresh: state => {
-      const current = state[spec.id] as string;
+      const raw = state[spec.id] as string;
+      const current = spec.aliases?.[raw] ?? raw;
       select.value = current;
       const selected = spec.options.find(option => option.value === current);
       optionHelp.textContent = selected?.help ?? '';

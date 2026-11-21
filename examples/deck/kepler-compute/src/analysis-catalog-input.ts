@@ -13,6 +13,11 @@ import {
 } from './analysis-catalog-pointcloud';
 import {
   createKeplerCuratedAnalysisSample,
+  parseCatalogFeatureCollection,
+  makeCatalogTableInput,
+  parseCatalogTableInput,
+  type CatalogTableInput,
+  type CatalogOutputTable,
   type CatalogFeature,
   type CatalogFeatureCollection,
   type KeplerDatasetProfileDeclarations
@@ -28,7 +33,7 @@ import {
   getCatalogTrajectorySampleInputs,
   normalizeCatalogTrajectoryProperties
 } from './analysis-catalog-trajectory';
-import {validateCapacity} from '@luma-contributors/analysis/analysis-core';
+import {validateCapacity, validateRequirement} from '@luma-contributors/analysis/analysis-core';
 
 export const MAXIMUM_CATALOG_NATIVE_ROWS = 20000;
 
@@ -117,6 +122,47 @@ function readNativeProperty(value: unknown, depth = 0): NativeProperty | undefin
     });
   }
   return undefined;
+}
+
+/** Geometry-free scalar rows retain their native row order and numeric precision. */
+export function readCatalogTableFromNativeDataset(
+  dataset: NativeDatasetLike,
+  maximumRows = MAXIMUM_CATALOG_NATIVE_ROWS
+): CatalogTableInput {
+  const rowCount = dataset.dataContainer.numRows();
+  validateCapacity(
+    'catalog-native-table',
+    'rowCount',
+    rowCount,
+    0,
+    Math.min(maximumRows, MAXIMUM_CATALOG_NATIVE_ROWS)
+  );
+  const table: CatalogOutputTable = {
+    id: 'catalog-native-table',
+    label: 'Native table',
+    rowCount,
+    columns: {},
+    columnTypes: {}
+  };
+  dataset.fields.forEach((field, columnIndex) => {
+    const values = Array.from({length: rowCount}, (_, rowIndex) => {
+      const value = readNativeProperty(dataset.dataContainer.valueAt(rowIndex, columnIndex));
+      validateRequirement(
+        'catalog-native-table',
+        value !== undefined && !Array.isArray(value),
+        `${field.name} must contain scalar values; received ${value === undefined ? 'an unsupported value' : 'a list'}; select scalar columns instead`
+      );
+      return value;
+    });
+    table.columns[field.name] = values;
+    const present = values.filter(value => value !== null);
+    table.columnTypes[field.name] = present.every(value => typeof value === 'number')
+      ? 'float64'
+      : present.every(value => typeof value === 'boolean')
+        ? 'boolean'
+        : 'string';
+  });
+  return makeCatalogTableInput(table, {maximumRows});
 }
 
 /** Explicit, capacity-bounded GeoJSON read; scalar and list columns become plain JSON properties. */
@@ -469,4 +515,43 @@ export function getCatalogSampleInputs(operationId: string): Record<string, stri
     default:
       return getPointCloudCatalogSamples(operationId);
   }
+}
+
+/** Reader supplied to feature-only sensitivity controls; table/raster transport is refused explicitly. */
+export async function readCatalogFeatureInputs(
+  readInputs: () => Promise<Record<string, import('@luma-contributors/kepler').CatalogDataInput>>
+): Promise<Record<string, CatalogFeatureCollection>> {
+  const inputs = await readInputs();
+  const features: Record<string, CatalogFeatureCollection> = {};
+  for (const [name, input] of Object.entries(inputs)) {
+    validateRequirement(
+      'catalog-sensitivity',
+      input.type === 'FeatureCollection',
+      `${name} requires feature input; received ${input.type}`
+    );
+    features[name] = input;
+  }
+  return features;
+}
+
+/** Decode either GeoJSON or an explicitly admitted, bounded scalar-table snapshot. */
+export function readCatalogTextInput(
+  text: string,
+  input: import('@luma-contributors/kepler').CatalogInputSpec
+): import('@luma-contributors/kepler').CatalogDataInput {
+  const parsed: unknown = JSON.parse(text);
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    'type' in parsed &&
+    parsed.type === 'table'
+  ) {
+    validateRequirement(
+      'catalog-text-input',
+      Boolean(input.acceptsTable || input.dataKind === 'table'),
+      `${input.name} does not accept table rows`
+    );
+    return parseCatalogTableInput(text, input.maximumFeatures);
+  }
+  return parseCatalogFeatureCollection(text);
 }

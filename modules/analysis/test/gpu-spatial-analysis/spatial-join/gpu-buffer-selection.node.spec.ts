@@ -4,7 +4,7 @@
 
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   GPUBufferSelection,
   type GPUBufferSelectionProps
@@ -30,7 +30,7 @@ function createProps(
       starts: view('starts', 'float32x2', 3),
       ends: view('ends', 'float32x2', 3)
     },
-    distance: view('distance', 'float32', 1),
+    radius: view('distance', 'float32', 1),
     candidateCapacity: 16,
     output: {outputMask: view('mask', 'uint32', 10)},
     ...overrides
@@ -41,11 +41,22 @@ it('GPUBufferSelection builds nodes for a valid configuration', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'buffer-selection-node'});
   const selection = new GPUBufferSelection(createProps(graph));
   expect(selection.id).toBe('buffer-selection');
-  expect(selection.id).toBe('buffer-selection');
   const ids = selection.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('buffer-selection-mask');
   expect(ids.some(id => id.startsWith('buffer-selection-join'))).toBe(true);
-  expect(ids.some(id => id.startsWith('buffer-selection-publish'))).toBe(false);
+  expect(ids).toContain('buffer-selection-publish');
+  const matches = selection.getMatches(graph);
+  expect(matches.ids.length).toBe(10);
+  for (const view of [
+    matches.status.count,
+    matches.status.requiredCount,
+    matches.status.overflow,
+    matches.status.candidateOverflow
+  ]) {
+    expect(view?.format).toBe('uint32');
+    expect(view?.length).toBe(1);
+  }
+  expect(ids).toContain('buffer-selection-publish-candidate');
 });
 
 it('GPUBufferSelection builds one mask node per chunk and a publish node with output', () => {
@@ -55,34 +66,38 @@ it('GPUBufferSelection builds one mask node per chunk and a publish node with ou
     format: Format,
     length: number
   ) => createTransientView(graph, name, format, length);
-  const selection = new GPUBufferSelection(
-    createProps(graph, {
-      points: {
-        kind: 'points',
-        positions: createVectorView('points', 'float32x2', [
-          view('points-0', 'float32x2', 6),
-          view('points-1', 'float32x2', 4)
-        ])
-      },
-      output: {
-        outputMask: createVectorView('mask', 'uint32', [
-          view('mask-0', 'uint32', 6),
-          view('mask-1', 'uint32', 4)
-        ]),
-        matches: {
-          ids: view('out-ids', 'uint32', 4),
-          status: {
-            count: view('out-count', 'uint32', 1),
-            overflow: view('out-overflow', 'uint32', 1)
-          }
+  const props = createProps(graph, {
+    points: {
+      kind: 'points',
+      positions: createVectorView('points', 'float32x2', [
+        view('points-0', 'float32x2', 6),
+        view('points-1', 'float32x2', 4)
+      ])
+    },
+    output: {
+      outputMask: createVectorView('mask', 'uint32', [
+        view('mask-0', 'uint32', 6),
+        view('mask-1', 'uint32', 4)
+      ]),
+      matches: {
+        ids: view('out-ids', 'uint32', 4),
+        status: {
+          count: view('out-count', 'uint32', 1),
+          overflow: view('out-overflow', 'uint32', 1)
         }
       }
-    })
-  );
+    }
+  });
+  const selection = new GPUBufferSelection(props);
   const ids = selection.getCommandNodes(graph).map(node => node.id);
   expect(ids).toContain('buffer-selection-mask-chunk-0');
   expect(ids).toContain('buffer-selection-mask-chunk-1');
   expect(ids).toContain('buffer-selection-publish');
+  const matches = selection.getMatches(graph);
+  expect(matches.ids).toBe(props.output.matches!.ids);
+  expect(matches.status.count).toBe(props.output.matches!.status.count);
+  expect(matches.status.overflow).toBe(props.output.matches!.status.overflow);
+  expect(matches.status.candidateOverflow.length).toBe(1);
 });
 
 it('GPUBufferSelection validates outputs and the distance view', () => {
@@ -92,12 +107,20 @@ it('GPUBufferSelection validates outputs and the distance view', () => {
     format: Format,
     length: number
   ) => createTransientView(graph, name, format, length);
-  expect(() => new GPUBufferSelection(createProps(graph, {output: {}}))).toThrow(
-    /needs output.outputMask or output.matches/
+  const emptyOutput = new GPUBufferSelection(
+    createProps(graph, {id: 'implicit-matches', output: {}})
+  );
+  const matches = emptyOutput.getMatches(graph);
+  expect(matches.ids.length).toBe(10);
+  expect(matches.status.count.length).toBe(1);
+  expect(matches.status.overflow.length).toBe(1);
+  expect(matches.status.candidateOverflow.length).toBe(1);
+  expect(emptyOutput.getCommandNodes(graph).map(node => node.id)).toContain(
+    'implicit-matches-publish'
   );
   expect(
-    () => new GPUBufferSelection(createProps(graph, {distance: view('bad-distance', 'float32', 2)}))
-  ).toThrow(/distance needs one float32 row/);
+    () => new GPUBufferSelection(createProps(graph, {radius: view('bad-distance', 'float32', 2)}))
+  ).toThrow(/radius needs one float32 row/);
   expect(
     () =>
       new GPUBufferSelection(
@@ -120,9 +143,12 @@ it('GPUBufferSelection validates outputs and the distance view', () => {
         })
       )
   ).toThrow(/output.matches.ids needs at least one row/);
-  expect(() => new GPUBufferSelection(createProps(graph, {candidateCapacity: 0}))).toThrow(
-    /candidateCapacity/
-  );
+  const invalidProps = createProps(graph, {candidateCapacity: 0});
+  const scratch = vi.spyOn(graph, 'createTransientBuffer');
+  const nodes = vi.spyOn(graph, 'add');
+  expect(() => new GPUBufferSelection(invalidProps)).toThrow(/candidateCapacity/);
+  expect(scratch).not.toHaveBeenCalled();
+  expect(nodes).not.toHaveBeenCalled();
 });
 
 it('GPUBufferSelection resolves planar and great-circle contexts', () => {

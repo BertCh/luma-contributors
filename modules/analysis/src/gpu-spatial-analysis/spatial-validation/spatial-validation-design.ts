@@ -16,17 +16,84 @@ import {
   validateCapacity,
   validateSinglePackedView,
   validateGraphViewsBelongToGraph,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
-import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL,
+  IS_NAN_BITS_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUSpatialCrossValidationProps} from './gpu-spatial-cross-validation';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotWeightsSpatialContext} from '../spatial-weights/weights-construction-snapshot';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {getValidationBufferMembershipWGSL} from './validation-buffer-membership-wgsl';
+
+/** @internal Capture the same fold configuration in the contributor and both named forms. */
+export function snapshotSpatialCrossValidationProps<
+  Props extends {spatialContext?: GPUSpatialContext; design?: object; output?: object}
+>(input: Props): Props {
+  const props = snapshotConstructionFields(input, [
+    'id',
+    'rowCount',
+    'spatialContext',
+    'positions',
+    'blocks',
+    'mask',
+    'design',
+    'foldCount',
+    'seed',
+    'bufferDistance',
+    'output'
+  ] as readonly (keyof Props)[]);
+  return Object.freeze({
+    ...props,
+    ...(props.output
+      ? {
+          output: snapshotConstructionFields(props.output, [
+            'folds',
+            'training',
+            'testing',
+            'counts',
+            'status'
+          ] as never[])
+        }
+      : {}),
+    ...(props.spatialContext
+      ? {spatialContext: snapshotWeightsSpatialContext(props.spatialContext)}
+      : {}),
+    ...(props.design
+      ? {
+          design: snapshotConstructionFields(props.design, [
+            'mode',
+            'features',
+            'featureCount',
+            'standardize',
+            'maximumIterations',
+            'predictionPositions',
+            'predictionRowCount',
+            'maximumDistance',
+            'minimumTrainingFraction',
+            'candidates',
+            'candidateCount',
+            'maximumFoldFraction',
+            'diagnostics'
+          ] as never[])
+        }
+      : {})
+  });
+}
 
 /**
- * Largest design row count. Fold designs run as ONE serial invocation (k-means, NNDM swaps,
+ * Largest design row count. Fold fitting/matching uses ONE serial invocation (k-means, NNDM swaps,
  * kNNDM restarts and the nearest-neighbor tables loop over rows and prediction rows), so 256 is
  * where that invocation stays within a frame. This is the reference tier; the parallel design for
- * each fold design is described in `GPUSpatialCrossValidation`.
+ * each fold design is described in `GPUSpatialCrossValidation`. Environmental centering is a
+ * separate GPU pass before the serial fit.
  */
 export const MAXIMUM_DESIGN_ROW_COUNT = 256;
 /** Largest prediction-location count: NNDM and kNNDM compare every row with every location. */
@@ -85,12 +152,22 @@ export function getSpatialDesignInputs(design?: GPUSpatialValidationDesign): Gra
     ...(design.mode === 'knndm' && design.candidates ? [design.candidates] : [])
   ];
 }
+
+/** Shared construction-time mode check for views, named forms and the CPU twin. @internal */
+export function validateSpatialValidationDesignMode(id: string, mode: unknown): void {
+  validateRequirement(
+    id,
+    typeof mode === 'string' && ['groups', 'environmental', 'nndm', 'knndm'].includes(mode),
+    `design.mode must be groups, environmental, nndm or knndm; received ${String(mode)}`
+  );
+}
 export function validateSpatialValidationDesign(
   id: string,
   props: GPUSpatialCrossValidationProps
 ): void {
   const design = props.design;
   if (!design) return;
+  validateSpatialValidationDesignMode(id, design.mode);
   const rows = props.positions.length;
   validateCapacity(id, 'design rows', rows, 2, MAXIMUM_DESIGN_ROW_COUNT);
   if (design.mode === 'environmental') {
@@ -175,7 +252,11 @@ export function createSpatialValidationDesignNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSpatialCrossValidationProps,
   id: string
-): {nodes: GPUCommandNode<Parameters>[]; state: GraphDataView<'float32'>} {
+): {
+  nodes: GPUCommandNode<Parameters>[];
+  state: GraphDataView<'float32'>;
+  adaptiveNeighbors?: GraphDataView<'uint32'>;
+} {
   const design = props.design!;
   const rows = props.positions.length;
   if (design.mode === 'knndm' && !design.candidates) {
@@ -242,6 +323,9 @@ fn rowDistance(first:u32,second:u32)->f32 { return distance(location(first),loca
   const initialize = `state[stateOffset]=0.0; state[stateOffset+1u]=0.0; state[stateOffset+2u]=getNaN(); state[stateOffset+3u]=getNaN(); for(var row=0u;row<${rows}u;row++){folds[foldsOffset+row]=0xffffffffu;}`;
   let body = initialize;
   let extraDeclarations = '';
+  const parameterNodes: GPUCommandNode<Parameters>[] = [];
+  const finalNodes: GPUCommandNode<Parameters>[] = [];
+  let adaptiveNeighbors: GraphDataView<'uint32'> | undefined;
   if (design.mode === 'groups') {
     bindings.push({name: 'groups', view: props.blocks, type: 'u32', access: 'read'});
     body += `var ordered:array<u32,${rows}>;var count=0u;
@@ -250,21 +334,102 @@ for(var row=0u;row<${rows}u;row++){if(!valid(row)){continue;}let group=groups[gr
   } else if (design.mode === 'environmental') {
     const columns = design.featureCount,
       clusters = props.foldCount;
-    bindings.push({name: 'features', view: design.features, type: 'f32', access: 'read'});
-    extraDeclarations = `fn complete(row:u32)->bool{if(!valid(row)){return false;}for(var column=0u;column<${columns}u;column++){if(!isFiniteBits(features[featuresOffset+row*${columns}u+column])){return false;}}return true;}`;
-    body += `var means:array<f32,${columns}>;var scales:array<f32,${columns}>;var centers:array<f32,${clusters * columns}>;var assignments:array<u32,${rows}>;var sampleCount=0u;
-for(var row=0u;row<${rows}u;row++){assignments[row]=0xffffffffu;if(!complete(row)){continue;}sampleCount++;for(var column=0u;column<${columns}u;column++){let value=features[featuresOffset+row*${columns}u+column];let difference=value-means[column];means[column]+=difference/f32(sampleCount);scales[column]+=difference*(value-means[column]);}}
+    const rounding = createSpatialStatisticsParameterNodes(
+      graph,
+      `${id}-rounding-zero`,
+      Uint32Array.of(0)
+    );
+    parameterNodes.push(...rounding.nodes);
+    const centeredFeatures = createTransientView(
+      graph,
+      `${id}-centered-features`,
+      'float32',
+      rows * columns
+    );
+    // Persist the subtraction before Lloyd fitting. A separate shader cannot regroup
+    // raw translated values into the centroid sums or distance calculations below.
+    parameterNodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-center-features`,
+        operation: 'GPUSpatialCrossValidation',
+        variant: 'center-environmental-features',
+        invocationCount: columns,
+        bindings: [
+          {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+          ...(props.mask
+            ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
+            : []),
+          {name: 'features', view: design.features, type: 'f32', access: 'read'},
+          {name: 'roundingZero', view: rounding.parameters, type: 'u32', access: 'read'},
+          {name: 'centeredFeatures', view: centeredFeatures, type: 'f32', access: 'read_write'}
+        ],
+        declarations: `${declarations}
+${ROUNDED_DIFFERENCE_WGSL}
+fn complete(row:u32)->bool{if(!valid(row)){return false;}for(var column=0u;column<${columns}u;column++){if(!isFiniteBits(features[featuresOffset+row*${columns}u+column])){return false;}}return true;}`,
+        body: `var origin=0.0;var minimum=0.0;var found=false;
+// Retain the previous first-value shift if it is reversible. Otherwise try the
+// minimum value, then raw coordinates. Recovery proves no input distinction was lost.
+for(var row=0u;row<${rows}u;row++){if(complete(row)){let value=features[featuresOffset+row*${columns}u+index];if(!found){origin=value;minimum=value;found=true;}minimum=min(minimum,value);}}
+for(var attempt=0u;attempt<2u;attempt++){
+  var lossless=true;
+  for(var row=0u;row<${rows}u;row++){
+    if(!complete(row)){continue;}
+    let raw=features[featuresOffset+row*${columns}u+index];
+    let shifted=getRoundedDifference(raw,origin,roundingZero[roundingZeroOffset]);
+    let restored=getRoundedDifference(shifted,-origin,roundingZero[roundingZeroOffset]);
+    if(bitcast<u32>(restored)!=bitcast<u32>(raw)){lossless=false;break;}
+  }
+  if(lossless){break;}
+  origin=select(minimum,0.0,attempt==1u);
+}
+for(var row=0u;row<${rows}u;row++){
+  var value=getNaN();
+  if(complete(row)){let raw=features[featuresOffset+row*${columns}u+index];value=raw;if(origin!=0.0){value=getRoundedDifference(raw,origin,roundingZero[roundingZeroOffset]);}}
+  centeredFeatures[centeredFeaturesOffset+row*${columns}u+index]=value;
+}`
+      })
+    );
+    bindings.push({name: 'roundingZero', view: rounding.parameters, type: 'u32', access: 'read'});
+    bindings.push({name: 'centeredFeatures', view: centeredFeatures, type: 'f32', access: 'read'});
+    // NaN marks originally unusable rows. Infinite centered differences instead
+    // retain their row and reach the arithmetic-failure guard, rather than being omitted.
+    extraDeclarations = `${ROUNDED_DIFFERENCE_WGSL}
+${IS_NAN_BITS_WGSL}
+fn complete(row:u32)->bool{if(!valid(row)){return false;}for(var column=0u;column<${columns}u;column++){if(isNanBits(centeredFeatures[centeredFeaturesOffset+row*${columns}u+column])){return false;}}return true;}
+fn featureDifference(row:u32,column:u32,origin:f32,center:f32,scale:f32)->f32 {
+  let offset=getRoundedDifference(centeredFeatures[centeredFeaturesOffset+row*${columns}u+column],origin,roundingZero[roundingZeroOffset]);
+  return getRoundedDifference(offset,center,roundingZero[roundingZeroOffset])/scale;
+}
+fn featureDistance(row:u32,cluster:u32,origins:array<f32,${clusters * columns}>,centers:array<f32,${clusters * columns}>,scales:array<f32,${columns}>)->f32 {
+  var differences:array<f32,${columns}>;var maximum=0.0;
+  for(var column=0u;column<${columns}u;column++){
+    let difference=featureDifference(row,column,origins[cluster*${columns}u+column],centers[cluster*${columns}u+column],scales[column]);
+    differences[column]=difference;maximum=max(maximum,abs(difference));
+  }
+  if((bitcast<u32>(maximum)&0x7fffffffu)==0u){return 0.0;}
+  var squared=0.0;
+  for(var column=0u;column<${columns}u;column++){let normalized=differences[column]/maximum;squared+=normalized*normalized;}
+  return maximum*sqrt(squared);
+}`;
+    body += `var means:array<f32,${columns}>;var scales:array<f32,${columns}>;var origins:array<f32,${clusters * columns}>;var centers:array<f32,${clusters * columns}>;var assignments:array<u32,${rows}>;var sampleCount=0u;
+for(var row=0u;row<${rows}u;row++){assignments[row]=0xffffffffu;if(!complete(row)){continue;}sampleCount++;for(var column=0u;column<${columns}u;column++){let value=centeredFeatures[centeredFeaturesOffset+row*${columns}u+column];let difference=value-means[column];means[column]+=difference/f32(sampleCount);scales[column]+=difference*(value-means[column]);}}
 if(sampleCount<${clusters}u){state[stateOffset]=1.0;return;}
 for(var column=0u;column<${columns}u;column++){scales[column]=${design.standardize === false ? '1.0;means[column]=0.0' : 'select(1.0,sqrt(scales[column]/f32(sampleCount-1u)),scales[column]>0.0)'};}
 var seedRow=${(props.seed ?? 0) % rows}u;for(var offset=0u;offset<${rows}u;offset++){let row=(seedRow+offset)%${rows}u;if(complete(row)){seedRow=row;break;}}
 for(var cluster=0u;cluster<${clusters}u;cluster++){
- if(cluster>0u){var farthest=-1.0;for(var row=0u;row<${rows}u;row++){if(!complete(row)){continue;}var nearest=3.402823e38;for(var previous=0u;previous<cluster;previous++){var squared=0.0;for(var column=0u;column<${columns}u;column++){let difference=(features[featuresOffset+row*${columns}u+column]-means[column])/scales[column]-centers[previous*${columns}u+column];squared+=difference*difference;}if(!isFiniteBits(squared)){state[stateOffset]=1.0;return;}nearest=min(nearest,squared);}if(nearest>farthest){farthest=nearest;seedRow=row;}}if(!(farthest>0.0)){state[stateOffset]=2.0;return;}}
- for(var column=0u;column<${columns}u;column++){centers[cluster*${columns}u+column]=(features[featuresOffset+seedRow*${columns}u+column]-means[column])/scales[column];}}
+ if(cluster>0u){var farthest=-1.0;for(var row=0u;row<${rows}u;row++){if(!complete(row)){continue;}var nearest=3.402823e38;for(var previous=0u;previous<cluster;previous++){let squared=featureDistance(row,previous,origins,centers,scales);if(!isFiniteBits(squared)){state[stateOffset]=1.0;return;}nearest=min(nearest,squared);}if(nearest>farthest){farthest=nearest;seedRow=row;}}if(!(farthest>0.0)){state[stateOffset]=2.0;return;}}
+ for(var column=0u;column<${columns}u;column++){origins[cluster*${columns}u+column]=centeredFeatures[centeredFeaturesOffset+seedRow*${columns}u+column];}}
+// Keep a fixed cluster-local origin and a separate residual centroid, so fractional
+// updates do not round back into the much larger origin. Compare scaled norms before
+// squaring for the objective: a nonzero separation may have an unrepresentable square.
+// Accumulate offsets from the current centroid, including on the raw-coordinate
+// fallback. A constant cluster then has an exactly zero update even when division
+// uses an approximate reciprocal; summing repeated large coordinates does not.
 var converged=false;var objective=0.0;
 for(var iteration=0u;iteration<${design.maximumIterations ?? 100}u;iteration++){var sums:array<f32,${clusters * columns}>;var counts:array<u32,${clusters}>;var changed=false;objective=0.0;
-for(var row=0u;row<${rows}u;row++){if(!complete(row)){continue;}var nearest=3.402823e38;var selected=0u;for(var cluster=0u;cluster<${clusters}u;cluster++){var squared=0.0;for(var column=0u;column<${columns}u;column++){let difference=(features[featuresOffset+row*${columns}u+column]-means[column])/scales[column]-centers[cluster*${columns}u+column];squared+=difference*difference;}if(!isFiniteBits(squared)){state[stateOffset]=1.0;return;}if(squared<nearest){nearest=squared;selected=cluster;}}
-changed=changed||assignments[row]!=selected;assignments[row]=selected;objective+=nearest;counts[selected]++;for(var column=0u;column<${columns}u;column++){sums[selected*${columns}u+column]+=(features[featuresOffset+row*${columns}u+column]-means[column])/scales[column];}}
-for(var cluster=0u;cluster<${clusters}u;cluster++){if(counts[cluster]==0u){state[stateOffset]=2.0;return;}for(var column=0u;column<${columns}u;column++){centers[cluster*${columns}u+column]=sums[cluster*${columns}u+column]/f32(counts[cluster]);}}
+for(var row=0u;row<${rows}u;row++){if(!complete(row)){continue;}var nearest=3.402823e38;var selected=0u;for(var cluster=0u;cluster<${clusters}u;cluster++){let squared=featureDistance(row,cluster,origins,centers,scales);if(!isFiniteBits(squared)){state[stateOffset]=1.0;return;}if(squared<nearest){nearest=squared;selected=cluster;}}
+changed=changed||assignments[row]!=selected;assignments[row]=selected;objective+=nearest*nearest;counts[selected]++;for(var column=0u;column<${columns}u;column++){sums[selected*${columns}u+column]+=featureDifference(row,column,origins[selected*${columns}u+column],centers[selected*${columns}u+column],1.0);}}
+for(var cluster=0u;cluster<${clusters}u;cluster++){if(counts[cluster]==0u){state[stateOffset]=2.0;return;}for(var column=0u;column<${columns}u;column++){centers[cluster*${columns}u+column]+=sums[cluster*${columns}u+column]/f32(counts[cluster]);}}
 state[stateOffset+1u]=f32(iteration+1u);if(!changed){converged=true;break;}}
 if(!isFiniteBits(objective)){state[stateOffset]=1.0;return;}state[stateOffset]=select(3.0,0.0,converged);state[stateOffset+2u]=objective;if(converged){for(var row=0u;row<${rows}u;row++){folds[foldsOffset+row]=assignments[row];}}`;
   } else {
@@ -278,15 +443,43 @@ if(!isFiniteBits(objective)){state[stateOffset]=1.0;return;}state[stateOffset]=s
     body += `var predictionDistances:array<f32,${predictions}>; for(var row=0u;row<${rows}u;row++){if(!valid(row)){state[stateOffset]=1.0;return;}}
 for(var sample=0u;sample<${predictions}u;sample++){let point=vec2<f32>(prediction[predictionOffset+sample*2u],prediction[predictionOffset+sample*2u+1u]);if(!isFiniteBits(point.x)||!isFiniteBits(point.y)){state[stateOffset]=1.0;return;}var nearest=3.402823e38;for(var row=0u;row<${rows}u;row++){let separation=distance(point,location(row));if(!isFiniteBits(separation)){state[stateOffset]=1.0;return;}nearest=min(nearest,separation);}predictionDistances[sample]=nearest;}`;
     if (design.mode === 'nndm') {
+      extraDeclarations = `${getValidationBufferMembershipWGSL(0)}
+fn nearer(row:u32,candidate:u32,current:u32)->bool{if(current==0xffffffffu){return true;}return isValidationNeighborCloser(location(candidate),location(row),location(current));}`;
       const distances = createTransientView(graph, `${id}-nndm-distances`, 'float32', rows * rows);
       bindings.push({name: 'distances', view: distances, type: 'f32', access: 'read_write'});
+      adaptiveNeighbors = createTransientView(graph, `${id}-adaptive-neighbors`, 'uint32', rows);
+      finalNodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-adaptive-neighbors`,
+          operation: 'GPUSpatialCrossValidation',
+          variant: 'adaptive-neighbors',
+          invocationCount: rows,
+          bindings: [
+            {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+            {name: 'distances', view: distances, type: 'f32', access: 'read'},
+            {name: 'designState', view: state, type: 'f32', access: 'read'},
+            {name: 'adaptiveNeighbors', view: adaptiveNeighbors, type: 'u32', access: 'read_write'}
+          ],
+          // Each parallel invocation scans at most MAXIMUM_NNDM_ROW_COUNT = 64 retained distances.
+          declarations: `${getValidationBufferMembershipWGSL(0)}
+fn location(row:u32)->vec2<f32>{return vec2<f32>(positions[positionsOffset+2u*row],positions[positionsOffset+2u*row+1u]);}`,
+          body: `var selected = 0xffffffffu;
+  if (designState[designStateOffset] == 0.0) {
+    for (var other = 0u; other < ${rows}u; other++) {
+      let value = distances[distancesOffset + index * ${rows}u + other];
+      if(value>=0.0){if(selected==0xffffffffu){selected=other;}else if(isValidationNeighborCloser(location(other),location(index),location(selected))){selected=other;}}
+    }
+  }
+  adaptiveNeighbors[adaptiveNeighborsOffset + index] = selected;`
+        })
+      );
       body += `var nearest:array<f32,${rows}>;var neighbors:array<u32,${rows}>;var remaining:array<u32,${rows}>;
-for(var row=0u;row<${rows}u;row++){nearest[row]=3.402823e38;remaining[row]=${rows - 1}u;for(var other=0u;other<${rows}u;other++){let value=select(rowDistance(row,other),-1.0,row==other);if(!isFiniteBits(value)){state[stateOffset]=1.0;return;}distances[distancesOffset+row*${rows}u+other]=value;if(value>=0.0&&value<nearest[row]){nearest[row]=value;neighbors[row]=other;}}}
+for(var row=0u;row<${rows}u;row++){nearest[row]=3.402823e38;neighbors[row]=0xffffffffu;remaining[row]=${rows - 1}u;for(var other=0u;other<${rows}u;other++){let value=select(rowDistance(row,other),-1.0,row==other);if(!isFiniteBits(value)){state[stateOffset]=1.0;return;}distances[distancesOffset+row*${rows}u+other]=value;if(value>=0.0&&nearer(row,other,neighbors[row])){nearest[row]=value;neighbors[row]=other;}}}
 var radius=3.402823e38;var chosen=0u;for(var row=0u;row<${rows}u;row++){if(nearest[row]<radius){radius=nearest[row];chosen=row;}}
 for(var iteration=0u;iteration<${rows * rows + rows}u&&radius<=${getWGSLFloatLiteral(design.maximumDistance)};iteration++){
 var trainingBelow=0u;var predictionBelow=0u;for(var row=0u;row<${rows}u;row++){trainingBelow+=u32(nearest[row]<=radius);}for(var sample=0u;sample<${predictions}u;sample++){predictionBelow+=u32(predictionDistances[sample]<=radius);}
 let remove=f32(trainingBelow-1u)/${getWGSLFloatLiteral(rows)}>=f32(predictionBelow)/${getWGSLFloatLiteral(predictions)}&&f32(remaining[chosen])/${getWGSLFloatLiteral(rows)}>${getWGSLFloatLiteral(design.minimumTrainingFraction ?? 0.05)};
-if(remove){distances[distancesOffset+chosen*${rows}u+neighbors[chosen]]=-1.0;remaining[chosen]--;nearest[chosen]=3.402823e38;for(var other=0u;other<${rows}u;other++){let value=distances[distancesOffset+chosen*${rows}u+other];if(value>=0.0&&value<nearest[chosen]){nearest[chosen]=value;neighbors[chosen]=other;}}}else if(trainingBelow==${rows}u){break;}
+if(remove){distances[distancesOffset+chosen*${rows}u+neighbors[chosen]]=-1.0;remaining[chosen]--;nearest[chosen]=3.402823e38;neighbors[chosen]=0xffffffffu;for(var other=0u;other<${rows}u;other++){let value=distances[distancesOffset+chosen*${rows}u+other];if(value>=0.0&&nearer(chosen,other,neighbors[chosen])){nearest[chosen]=value;neighbors[chosen]=other;}}}else if(trainingBelow==${rows}u){break;}
 var next=3.402823e38;for(var row=0u;row<${rows}u;row++){if(select(nearest[row]>radius,nearest[row]>=radius,remove)&&nearest[row]<next){next=nearest[row];chosen=row;}}radius=next;state[stateOffset+1u]=f32(iteration+1u);}
 for(var row=0u;row<${rows}u;row++){folds[foldsOffset+row]=row;state[stateOffset+row+4u]=nearest[row];}`;
     } else {
@@ -301,16 +494,20 @@ state[stateOffset+1u]=${getWGSLFloatLiteral(design.candidateCount ?? 8)};if(sele
   }
   return {
     state,
+    adaptiveNeighbors,
     nodes: [
+      ...parameterNodes,
       createWGSLKernelNode(graph, {
         id: `${id}-design`,
         operation: 'GPUSpatialCrossValidation',
         variant: design.mode,
+        // contract-allow: single-invocation -- reference fold designs enforce <=256 rows (64 for NNDM), <=8 features, <=16 clusters, <=64 candidate partitions and <=1024 Lloyd iterations at construction.
         invocationCount: 1,
         bindings,
         declarations: `${declarations}\n${extraDeclarations}`,
         body
-      })
+      }),
+      ...finalNodes
     ]
   };
 }

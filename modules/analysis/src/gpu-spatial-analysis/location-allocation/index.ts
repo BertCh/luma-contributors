@@ -10,7 +10,7 @@ export {
   getGPULocationAllocationMaximumFacilityCount,
   getGPULocationAllocationMaximumSparseEntryCount,
   GPU_LOCATION_ALLOCATION_MAXIMUM_SWAP_ITERATIONS,
-  GPU_LOCATION_ALLOCATION_STATUS,
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT,
   GPU_LOCATION_ALLOCATION_SWAP_TOLERANCE
 } from './gpu-location-allocation';
 export type {
@@ -20,8 +20,14 @@ export type {
   GPULocationAllocationSparseCosts
 } from './gpu-location-allocation';
 
-export {GPUBoundedFacilityAllocation} from './gpu-bounded-facility-allocation';
-export type {GPUBoundedFacilityAllocationProps} from './gpu-bounded-facility-allocation';
+export {
+  GPUBoundedFacilityAllocation,
+  decodeGPUBoundedFacilityAllocationStatus
+} from './gpu-bounded-facility-allocation';
+export type {
+  GPUBoundedFacilityAllocationOutput,
+  GPUBoundedFacilityAllocationProps
+} from './gpu-bounded-facility-allocation';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {
@@ -35,3 +41,6 @@ export type {
 } from './cpu-location-allocation-operation';
 export {GPULocationAllocationGraphOperation} from './gpu-location-allocation-operation';
 export type {LocationAllocationOperationProps} from './gpu-location-allocation-operation';
+
+export {addNetworkLocationAllocationAdapter} from './network-location-allocation-adapter';
+export type {GPUNetworkLocationAllocationAdapterProps} from './network-location-allocation-adapter';

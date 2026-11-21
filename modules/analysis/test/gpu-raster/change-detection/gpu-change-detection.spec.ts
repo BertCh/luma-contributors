@@ -13,6 +13,7 @@ import {
 import {
   getGPUChangeDetectionParameterValues,
   GPUChangeDetection,
+  type GPUChangeDetectionOutput,
   type GPUChangeDetectionSettings
 } from '../../../src/raster-analysis/change-detection/index';
 import {
@@ -111,17 +112,54 @@ function createFixture(device: Device, scene: Scene, outputNames: OutputName[]):
   });
   const lengths: Record<string, number> = {};
   const outputBuffers: Record<string, Buffer> = {};
-  const output: Record<string, ReturnType<typeof importGraphBuffer>> = {};
-  for (const name of outputNames) {
+  const createOutput = (name: OutputName): GPUChangeDetectionOutput => {
     const isBandRow = name === 'difference' || name === 'logRatio' || name === 'percentChange';
     const length = isBandRow ? scene.cellCount * bandCount : scene.cellCount;
     lengths[name] = length;
     const buffer = createOutputBuffer(device, length);
     buffers.push(buffer);
     outputBuffers[name] = buffer;
-    const format = name === 'changeDirection' && bandCount > 2 ? 'uint32' : OUTPUT_FORMATS[name];
-    output[name] = importGraphBuffer(graph, `o-${name}`, buffer, format, length);
-  }
+    switch (name) {
+      case 'difference':
+        return {difference: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'logRatio':
+        return {logRatio: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'percentChange':
+        return {percentChange: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'tStatistic':
+        return {tStatistic: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'tDegreesOfFreedom':
+        return {
+          tDegreesOfFreedom: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)
+        };
+      case 'tPValue':
+        return {tPValue: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'senSlope':
+        return {senSlope: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'mannKendallS':
+        return {mannKendallS: importGraphBuffer(graph, `o-${name}`, buffer, 'sint32', length)};
+      case 'mannKendallZ':
+        return {mannKendallZ: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'mannKendallP':
+        return {mannKendallP: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'changeMagnitude':
+        return {changeMagnitude: importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)};
+      case 'changeDirection':
+        return {
+          changeDirection:
+            bandCount > 2
+              ? importGraphBuffer(graph, `o-${name}`, buffer, 'uint32', length)
+              : importGraphBuffer(graph, `o-${name}`, buffer, 'float32', length)
+        };
+      case 'significance':
+        return {significance: importGraphBuffer(graph, `o-${name}`, buffer, 'uint32', length)};
+    }
+  };
+  const [firstOutput, ...remainingOutputs] = outputNames;
+  if (firstOutput === undefined)
+    throw new Error('change fixture requires a requested terminal output');
+  const output = createOutput(firstOutput);
+  for (const name of remainingOutputs) Object.assign(output, createOutput(name));
   graph.add(
     new GPUChangeDetection({
       slices: importGraphBuffer(graph, 'slices', input(scene.slices), 'float32'),

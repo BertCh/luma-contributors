@@ -23,7 +23,11 @@ import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgs
 import type {GPUMultiscaleGeographicallyWeightedRegressionProps} from './gpu-multiscale-geographically-weighted-regression';
 import {createGoldenSectionSearchNodes} from './gwr-golden-section-nodes';
 import {getCandidateLoopWGSL} from './local-weighted-least-squares-wgsl';
-import {getRegressionTileLayout, getRowTileSumNodes} from './regression-row-tiles';
+import {
+  getRegressionTileLayout,
+  getRowTileSumNodes,
+  type RegressionTileLayout
+} from './regression-row-tiles';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_SEARCH_ITERATIONS,
@@ -31,6 +35,9 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH
 } from './geographically-weighted-regression-parameters';
+
+/** Maximum finite-grid candidates, enforced at MGWR construction. @internal */
+export const MGWR_MAXIMUM_CANDIDATE_COUNT = 32;
 
 type Selection = GPUMultiscaleGeographicallyWeightedRegressionProps['bandwidthSelection'];
 const OPERATION = 'GPUMultiscaleGeographicallyWeightedRegression';
@@ -122,7 +129,7 @@ export function createMultiscaleBandwidthWorkspace<Parameters>(
     selection?.maximumSearchIterations ??
     GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS;
   const tableRows = golden ? maximumIterations + 2 : candidateCount;
-  const layout = getRegressionTileLayout(rows);
+  const layout: RegressionTileLayout = getRegressionTileLayout(rows);
   validateGPUStorageBindingByteLength(
     graph.device,
     id,
@@ -417,7 +424,7 @@ table[slot] = bandwidth; table[slot + 1u] = score; table[slot + 2u] = 0.0;`
       id: `${id}-publish`,
       operation: OPERATION,
       variant: 'selection-publish',
-      // contract-allow: single-invocation: finite-grid comparison is bounded by 32 candidates.
+      // contract-allow: single-invocation: finite-grid comparison is bounded by MGWR_MAXIMUM_CANDIDATE_COUNT = 32 candidates, enforced at construction.
       invocationCount: 1,
       bindings: [
         read('table', table),

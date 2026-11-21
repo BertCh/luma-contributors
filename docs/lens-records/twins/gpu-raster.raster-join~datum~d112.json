@@ -14,7 +14,7 @@
     "value": "0"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of burned-cell points 112</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-join-snapshots-joinPointZones-0\" title=\"zone of each point: 0 inside the perimeter, 4294967295 outside\">joinPointZones</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of burned-cell points 112</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-join-snapshots-joinPointZones-0\" title=\"zone of each point: 0 inside the perimeter, 4294967295 outside only when joinIncomplete is 0\">joinPointZones</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -41,8 +41,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:20.607Z",
-    "runId": "run-b5fb9496",
+    "date": "2026-11-20T23:49:00.056Z",
+    "runId": "run-7a9e7bb7",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -50,7 +50,7 @@
     ]
   },
   "state": {
-    "runId": "run-b5fb9496",
+    "runId": "run-7a9e7bb7",
     "rung": "datum",
     "bindings": {
       "entity": 112

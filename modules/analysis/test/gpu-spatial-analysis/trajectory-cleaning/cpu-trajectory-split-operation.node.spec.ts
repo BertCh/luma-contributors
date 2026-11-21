@@ -73,6 +73,47 @@ it('matches hand-partitioned gap, stop and overlapping value-change runs on two 
   }
 });
 
+it.each([
+  [0, 0, 0],
+  [1, 0, 1],
+  [0, 1, 1]
+])('propagates stop split loss from staypoint flags %s and %s without setting capacity overflow', (overflow, candidateOverflow, expected) => {
+  const result = computeTrajectorySplitOnCPU(
+    {
+      ...INPUT,
+      staypointIds: new Uint32Array(10).fill(0xffffffff),
+      staypointStatus: {
+        overflow: Uint32Array.of(overflow),
+        candidateOverflow: Uint32Array.of(candidateOverflow)
+      }
+    },
+    {mode: 'stop', segmentCapacity: 2, rowCapacity: 10}
+  );
+  // With no excluded rows each input track forms one segment and both segments fit.
+  expect(result.segmentOffsets).toEqual(Uint32Array.of(0, 5, 10));
+  expect(result.count).toEqual(Uint32Array.of(2));
+  expect(result.candidateOverflow).toEqual(Uint32Array.of(expected));
+  expect(result.overflow).toEqual(Uint32Array.of(0));
+});
+
+it.each([
+  'overflow',
+  'candidateOverflow'
+] as const)('requires a single uint32 row for staypointStatus.%s', name => {
+  for (const flag of [new Uint32Array(0), Uint32Array.of(0, 1)]) {
+    expect(() =>
+      computeTrajectorySplitOnCPU(
+        {
+          ...INPUT,
+          staypointIds: new Uint32Array(10).fill(0xffffffff),
+          staypointStatus: {[name]: flag}
+        },
+        {mode: 'stop', segmentCapacity: 2, rowCapacity: 10}
+      )
+    ).toThrow(`staypointStatus.${name} must contain one uint32 row`);
+  }
+});
+
 it('preserves the independent row/segment overflow layout, even its nonmonotonic terminal offset', () => {
   const result = computeTrajectorySplitOnCPU(INPUT, {
     mode: 'gap',
@@ -97,7 +138,13 @@ it('subtracts Int64 words before conversion and copies both words unchanged', ()
     timestamps[row * 2 + 1] = Number(timestamp >> 32n);
   });
   const result = computeTrajectorySplitOnCPU(
-    {...INPUT, positions: new Float32Array(8), timestamps, trackOffsets: new Uint32Array([0, 99])},
+    {
+      ...INPUT,
+      storage: 'resident-capacity',
+      positions: new Float32Array(8),
+      timestamps,
+      trackOffsets: new Uint32Array([0, 99])
+    },
     {mode: 'gap', segmentCapacity: 2, rowCapacity: 4}
   );
   expect(Array.from(result.segmentOffsets)).toEqual([0, 2, 4]);
@@ -106,7 +153,7 @@ it('subtracts Int64 words before conversion and copies both words unchanged', ()
 
 it('drops singleton runs and rejects inconsistent input arrays', () => {
   const result = computeTrajectorySplitOnCPU(
-    {...INPUT, trackOffsets: new Uint32Array([0, 0, 1])},
+    {...INPUT, storage: 'resident-capacity', trackOffsets: new Uint32Array([0, 0, 1])},
     {mode: 'gap', segmentCapacity: 1, rowCapacity: 1}
   );
   expect(Array.from(result.segmentOffsets)).toEqual([0, 0xffffffff]);

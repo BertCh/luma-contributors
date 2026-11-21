@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.dot-density: positions, ringOffsets, featureOffs…",
   "description": "Result of gpu-spatial-analysis.dot-density: positions, ringOffsets, featureOffsets, polygonOffsets, population → points. points: 1,439. values read back from the GPU run. input positions: 199 polygons.",
-  "llms": "Result of gpu-spatial-analysis.dot-density: positions, ringOffsets, featureOffsets, polygonOffsets, population → points\n\n- points: 1,439\n- input positions: 199 polygons\n- input ringOffsets: 200 rows\n- input featureOffsets: 200 rows\n- input polygonOffsets: 200 rows\n- input population: 199 rows\n- Planar coordinates (m); uniform scale.\n- positions: 1 of 199 polygons shown; evenly sampled features and vertices\n- 1439 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.dot-density: positions, ringOffsets, featureOffsets, polygonOffsets, population → points\n\n- points: 1,439\n- input positions: 199 polygons\n- input ringOffsets: 200 rows\n- input featureOffsets: 200 rows\n- input polygonOffsets: 200 rows\n- input population: 199 rows\n- Planar coordinates (m); uniform scale.\n- positions: 1 of 199 polygons shown; evenly sampled features and vertices\n- 1439 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 200 categories; 5 largest coloured\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "1,439"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:36.907Z",
-    "runId": "run-1dc5b0a1",
+    "date": "2026-11-20T23:49:34.217Z",
+    "runId": "run-a3336a29",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-1dc5b0a1",
+    "runId": "run-a3336a29",
     "rung": "result",
     "bindings": {},
     "clauses": [],

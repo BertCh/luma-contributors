@@ -32,7 +32,8 @@ import {
   extentOracle,
   normalizeOracle
 } from './network-analytics-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
 
 type RunOptions = {
   nodeCount: number;
@@ -170,4 +171,32 @@ it('GPUNetworkAnalyticsColumns reports an exhausted component budget', async () 
   const full = await runColumns(device, {nodeCount, edges, iterations: 64});
   expect(full.converged).toBe(1);
   expect(full.components).toEqual(new Array(nodeCount).fill(0));
+});
+
+it('degree and in-degree publish extents without normalized columns (WRT-10)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createOptimizationHarness(device);
+  const degree = harness.output('uint32', 3);
+  const inDegree = harness.output('uint32', 3);
+  const degreeExtent = harness.output('uint32', 2);
+  const inDegreeExtent = harness.output('uint32', 2);
+  const contributor = new GPUNetworkAnalyticsColumns({
+    topology: {
+      offsets: harness.input('uint32', Uint32Array.of(0, 2, 2, 2)),
+      neighbors: harness.input('uint32', Uint32Array.of(1, 2))
+    },
+    reverseTopology: {
+      offsets: harness.input('uint32', Uint32Array.of(0, 0, 1, 2)),
+      neighbors: harness.input('uint32', Uint32Array.of(0, 0))
+    },
+    degree: {output: degree, extent: degreeExtent},
+    inDegree: {output: inDegree, extent: inDegreeExtent}
+  });
+  const read = await harness.run(contributor);
+  // Edges 0 -> 1 and 0 -> 2 give different outgoing and incoming maxima.
+  expect(read(degree)).toEqual([2, 0, 0]);
+  expect(read(inDegree)).toEqual([0, 1, 1]);
+  expect(read(degreeExtent)).toEqual([0, 2]);
+  expect(read(inDegreeExtent)).toEqual([0, 1]);
 });

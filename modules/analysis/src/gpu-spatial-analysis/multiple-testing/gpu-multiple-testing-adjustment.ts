@@ -19,6 +19,7 @@ import {
 import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -31,6 +32,12 @@ import {
 import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
+import {
+  MULTIPLE_TESTING_COUNT_OUTPUT_NAMES,
+  validateMultipleTestingCountPorts
+} from './multiple-testing-counts';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {MULTIPLE_TESTING_P_VALUE_WGSL} from './multiple-testing-p-value-wgsl';
 
 const OPERATION = 'GPUMultipleTestingAdjustment';
 
@@ -42,6 +49,9 @@ const UNTESTED_KEY = 0x3f800001;
 
 /** Sort key width: `UNTESTED_KEY` needs 30 bits. */
 const SORT_KEY_BITS = 30;
+
+/** Exact-sum terms per BY family; larger families use the Euler-Maclaurin branch on CPU and GPU. */
+export const MAXIMUM_MULTIPLE_TESTING_EXACT_HARMONIC_TERMS = 64;
 
 /**
  * Largest supported row count (exclusive): published GPUSort supports at most 2^31 rows.
@@ -57,7 +67,10 @@ const METHODS: readonly GPUMultipleTestingMethod[] = [
   'benjamini-yekutieli'
 ];
 
-/** Caller-owned outputs of {@link GPUMultipleTestingAdjustment}. */
+/**
+ * Caller-owned outputs of {@link GPUMultipleTestingAdjustment}.
+ * `finiteTestCount`, `effectiveFamilySize` and `adjustedPValues` use distinct writable storage.
+ */
 export type GPUMultipleTestingAdjustmentOutput = {
   /**
    * Same length as `pValues`, must not alias it. Adjusted p-value in `[0, 1]`
@@ -67,8 +80,10 @@ export type GPUMultipleTestingAdjustmentOutput = {
    * construction. Tied p-values receive identical adjusted values.
    */
   adjustedPValues: GraphDataView<'float32'>;
-  /** Optional one-row `uint32`: the family size `m` actually used. */
-  testedCount?: GraphDataView<'uint32'>;
+  /** Optional one-row uint32: number of finite p-values in [0, 1], before padding. */
+  finiteTestCount?: GraphDataView<'uint32'>;
+  /** Optional one-row uint32: max(finiteTestCount, minimumFamilySize), the denominator m. */
+  effectiveFamilySize?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -110,15 +125,23 @@ export type GPUMultipleTestingAdjustmentProps = {
   output: GPUMultipleTestingAdjustmentOutput;
 };
 
-/** Validates a method name (throws on an unknown one) and returns it; `undefined` becomes `'none'`. */
+/** Validates a method name. Optional APIs use none for undefined; required APIs pass requireMethod. */
 export function resolveGPUMultipleTestingMethod(
   id: string,
-  method: GPUMultipleTestingMethod | undefined
+  method: GPUMultipleTestingMethod | undefined,
+  requireMethod = false
 ): GPUMultipleTestingMethod {
+  validateRequirement(
+    id,
+    !requireMethod || (method !== undefined && method !== null),
+    `method is required; write none, bonferroni, holm, benjamini-hochberg or benjamini-yekutieli explicitly; received ${String(method)}`
+  );
   const value = method ?? 'none';
-  if (!METHODS.includes(value)) {
-    throw new Error(`${id} method must be one of ${METHODS.join(', ')}, got ${String(method)}`);
-  }
+  validateRequirement(
+    id,
+    METHODS.includes(value),
+    `method must be one of ${METHODS.join(', ')}, got ${String(method)}`
+  );
   return value;
 }
 
@@ -128,9 +151,9 @@ function validateMinimumFamilySize(id: string, minimumFamilySize: number | undef
   return value;
 }
 
-/** Binary64 harmonic number: at most 64 exact terms, then Euler-Maclaurin. */
-function getFamilyHarmonicNumber(familySize: number): number {
-  if (familySize <= 64) {
+/** Binary64 harmonic number shared with the floor calculation: at most 64 terms, then Euler-Maclaurin. @internal */
+export function getFamilyHarmonicNumber(familySize: number): number {
+  if (familySize <= MAXIMUM_MULTIPLE_TESTING_EXACT_HARMONIC_TERMS) {
     let harmonic = 0;
     for (let denominator = familySize; denominator >= 1; denominator--) {
       harmonic += 1 / denominator;
@@ -172,7 +195,7 @@ export function getMultipleTestingAdjustedPValues(
   method: GPUMultipleTestingMethod,
   minimumFamilySize: number = 0
 ): Float64Array {
-  resolveGPUMultipleTestingMethod('getMultipleTestingAdjustedPValues', method);
+  method = resolveGPUMultipleTestingMethod('getMultipleTestingAdjustedPValues', method, true);
   validateCapacity('getMultipleTestingAdjustedPValues', 'minimumFamilySize', minimumFamilySize, 0);
   const rows = pValues.length;
   const result = new Float64Array(rows).fill(Number.NaN);
@@ -247,10 +270,25 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
   readonly props: GPUMultipleTestingAdjustmentProps;
 
   constructor(props: GPUMultipleTestingAdjustmentProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'pValues',
+      'method',
+      'minimumFamilySize',
+      'output'
+    ]);
     const id = props.id ?? 'multiple-testing-adjustment';
+    validateMultipleTestingCountPorts(id, props.output);
+    props = Object.freeze({
+      ...props,
+      output: snapshotConstructionFields(props.output, [
+        'adjustedPValues',
+        ...MULTIPLE_TESTING_COUNT_OUTPUT_NAMES
+      ])
+    });
     this.id = id;
     this.props = props;
-    resolveGPUMultipleTestingMethod(id, props.method);
+    resolveGPUMultipleTestingMethod(id, props.method, true);
     validateMinimumFamilySize(id, props.minimumFamilySize);
     validateSinglePackedView(props.pValues, ['float32'], `${id} pValues`);
     validateSinglePackedView(
@@ -263,15 +301,18 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
     if (props.output.adjustedPValues.length !== rows) {
       throw new Error(`${id} adjustedPValues length must equal the pValues length`);
     }
-    if (props.output.testedCount) {
-      validatePackedUint32View(props.output.testedCount, `${id} output.testedCount`);
-      validateCapacity(id, 'output.testedCount length', props.output.testedCount.length);
+    for (const name of MULTIPLE_TESTING_COUNT_OUTPUT_NAMES) {
+      const view = props.output[name];
+      if (view) {
+        validatePackedUint32View(view, `${id} output.${name}`);
+        validateRequirement(
+          id,
+          view.length === 1,
+          `output.${name} must hold exactly one uint32 word. Received ${view.length}`
+        );
+      }
     }
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [props.output.adjustedPValues, props.output.testedCount],
-      [props.pValues]
-    );
+    validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [props.pValues]);
     validateDisjointWritableViews(id, props.output);
   }
 
@@ -280,21 +321,18 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.pValues,
-      props.output.adjustedPValues,
-      props.output.testedCount
-    ]);
+    validateGraphViewsBelongToGraph(id, graph, [props.pValues, ...Object.values(props.output)]);
     validateGraphChunkBindingRanges(
       graph,
       id,
       Object.fromEntries(
-        [props.pValues, props.output.adjustedPValues, props.output.testedCount].map(
-          (view, index) => [`binding ${index}`, view]
-        )
+        [props.pValues, ...Object.values(props.output)].map((view, index) => [
+          `binding ${index}`,
+          view
+        ])
       )
     );
-    for (const view of [props.pValues, props.output.adjustedPValues, props.output.testedCount]) {
+    for (const view of [props.pValues, ...Object.values(props.output)]) {
       if (view)
         validateGPUStorageBindingByteLength(
           graph.device,
@@ -318,12 +356,12 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [];
     const testedWGSL = `${GET_NAN_WGSL}
 ${SPATIAL_STATISTICS_COUNTS_WGSL}
-// A p-value is tested when it is in [0, 1]: +0..1.0 as positive bit patterns, or -0.
-fn isTestedBits(bits: u32) -> bool {
-  return bits <= 0x3f800000u || bits == 0x80000000u;
-}`;
+${MULTIPLE_TESTING_P_VALUE_WGSL}`;
 
-    if (method === 'none' && !props.output.testedCount) {
+    if (
+      method === 'none' &&
+      !MULTIPLE_TESTING_COUNT_OUTPUT_NAMES.some(name => props.output[name])
+    ) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-apply`,
@@ -406,27 +444,21 @@ const UNTESTED_KEY: u32 = ${UNTESTED_KEY}u;`,
       {name: 'family', view: family, type: 'u32', access: 'read_write'},
       {name: 'familyScale', view: familyScale, type: 'f32', access: 'read_write'}
     ];
-    if (props.output.testedCount) {
-      familyBindings.push({
-        name: 'testedCount',
-        view: props.output.testedCount,
-        type: 'u32',
-        access: 'read_write'
-      });
-    }
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-family`,
         operation: OPERATION,
         variant: 'family',
         bindings: familyBindings,
+        // contract-allow: single-invocation -- BY harmonic sum has at most MAXIMUM_MULTIPLE_TESTING_EXACT_HARMONIC_TERMS = 64 terms per family; larger families use Euler-Maclaurin, with no summation loop.
         invocationCount: 1,
         declarations: `const MINIMUM_FAMILY_SIZE: u32 = ${minimumFamilySize}u;
+const EXACT_SUM_MAXIMUM_TERMS: u32 = ${MAXIMUM_MULTIPLE_TESTING_EXACT_HARMONIC_TERMS}u;
 const EULER_MASCHERONI: f32 = 0.5772157;
 // Harmonic number c(m) = sum_{i=1..m} 1/i. Exact fixed-order sum (smallest terms first) for small
 // m; asymptotic series ln m + gamma + 1/(2m) - 1/(12 m^2) (error < 1/(120 m^4)) beyond.
 fn getHarmonicNumber(m: u32) -> f32 {
-  if (m <= 64u) {
+  if (m <= EXACT_SUM_MAXIMUM_TERMS) {
     var sum = 0.0;
     for (var i = m; i >= 1u; i--) {
       sum += 1.0 / f32(i);
@@ -441,9 +473,37 @@ fn getHarmonicNumber(m: u32) -> f32 {
   family[familyOffset] = tested;
   family[familyOffset + 1u] = m;
   familyScale[familyScaleOffset] = ${method === 'benjamini-yekutieli' ? 'getHarmonicNumber(m)' : '1.0'};
-  ${props.output.testedCount ? 'testedCount[testedCountOffset] = m;' : ''}`
+`
       })
     );
+
+    // Publish explicit counts separately from the harmonic calculation.
+    const explicitCounts = MULTIPLE_TESTING_COUNT_OUTPUT_NAMES.filter(name => props.output[name]);
+    if (explicitCounts.length) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish-counts`,
+          operation: OPERATION,
+          variant: 'publish-counts',
+          bindings: [
+            {name: 'family', view: family, type: 'u32', access: 'read'},
+            ...explicitCounts.map(name => ({
+              name,
+              view: props.output[name]!,
+              type: 'u32' as const,
+              access: 'read_write' as const
+            }))
+          ],
+          invocationCount: 1,
+          body: explicitCounts
+            .map(
+              name =>
+                `${name}[${name}Offset] = family[familyOffset${name === 'finiteTestCount' ? '' : ' + 1u'}];`
+            )
+            .join('\n')
+        })
+      );
+    }
 
     if (method === 'none' || method === 'bonferroni') {
       nodes.push(

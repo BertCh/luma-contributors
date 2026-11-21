@@ -11,6 +11,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -103,8 +104,26 @@ export function getGPUGridGeneratorParameterValues(
   return target;
 }
 
+function validateGridSizingType(
+  id: string,
+  gridType: string,
+  accepted: readonly GPUGridType[]
+): void {
+  validateRequirement(
+    id,
+    accepted.includes(gridType as GPUGridType),
+    `gridType must be ${accepted.join(' or ')}; received ${String(gridType)}`
+  );
+}
+
 /** Number of polygon vertices (or points) per cell of a grid type. */
 export function getGPUGridVerticesPerCell(gridType: GPUGridType): number {
+  validateGridSizingType('getGPUGridVerticesPerCell', gridType, [
+    'square',
+    'hex',
+    'triangle',
+    'point'
+  ]);
   switch (gridType) {
     case 'square':
       return 4;
@@ -121,7 +140,47 @@ export function getGPUGridVerticesPerCell(gridType: GPUGridType): number {
 
 /** Number of cells (polygons or points) a grid of `columns x rows` holds. */
 export function getGPUGridCellCount(gridType: GPUGridType, columns: number, rows: number): number {
+  validateGridSizingType('getGPUGridCellCount', gridType, ['square', 'hex', 'triangle', 'point']);
   return columns * rows * (gridType === 'triangle' ? 2 : 1);
+}
+
+/** Largest integer whose float32 conversion is exact. */
+const FLOAT32_EXACT_INTEGER_MAXIMUM = 2 ** 24;
+/** Maximum cells per axis for square/point center output: half-cell indices stay exact in f32. */
+export const MAXIMUM_GPU_GRID_CENTER_AXIS_CELL_COUNT = 2 ** 23;
+
+/**
+ * Largest `columns` and `rows` whose lattice indices the kernels convert to float32 exactly
+ * (`f32(i)` is exact only for `i <= 2^24`). Square vertices use `column + 1` and `row + 1`;
+ * square/point centers additionally require exact half-integers, hence at most 2^23 cells per axis.
+ * triangle grids use half-width steps up to `2 * columns + 2`; pointy hexagons use
+ * `2 * column + 3` and `3 * row + 4` half-cell lattice indices (flat hexagons swap the axes).
+ * Larger grids would repeat cell positions silently.
+ */
+function getGridIndexMaximums(
+  gridType: GPUGridType,
+  isFlatHex: boolean,
+  hasCenters: boolean
+): {columns: number; rows: number} {
+  const exact = FLOAT32_EXACT_INTEGER_MAXIMUM;
+  switch (gridType) {
+    case 'triangle':
+      return {columns: exact / 2 - 1, rows: exact};
+    case 'hex': {
+      const alongColumns = Math.floor((exact - 1) / 2);
+      const alongRows = Math.floor((exact - 1) / 3);
+      return isFlatHex
+        ? {columns: alongRows, rows: alongColumns}
+        : {columns: alongColumns, rows: alongRows};
+    }
+    default:
+      return hasCenters || gridType === 'point'
+        ? {
+            columns: MAXIMUM_GPU_GRID_CENTER_AXIS_CELL_COUNT,
+            rows: MAXIMUM_GPU_GRID_CENTER_AXIS_CELL_COUNT
+          }
+        : {columns: exact, rows: exact};
+  }
 }
 
 /** Number of unique vertices in a square or hexagonal grid, including its boundary. */
@@ -130,6 +189,7 @@ export function getGPUGridCornerCount(
   columns: number,
   rows: number
 ): number {
+  validateGridSizingType('getGPUGridCornerCount', gridType, ['square', 'hex']);
   return gridType === 'square' ? (columns + 1) * (rows + 1) : 2 * (columns * rows + columns + rows);
 }
 
@@ -171,9 +231,18 @@ export type GPUGridGeneratorProps = {
   id?: string;
   /** Kind of grid. */
   gridType: GPUGridType;
-  /** Cells per row (compile time). */
+  /**
+   * Cells per row (compile time). At most 8,388,608 for point grids and square grids with centers;
+   * square output without centers allows 2^24. At most 2^23 - 1 for triangle
+   * grids, 8,388,607 for pointy and 5,592,405 for flat hexagons: lattice indices must convert to
+   * float32 exactly.
+   */
   columns: number;
-  /** Number of rows (compile time). */
+  /**
+   * Number of rows (compile time). At most 8,388,608 for point grids and square grids with centers;
+   * square output without centers and triangle grids allow 2^24. At most 5,592,405
+   * for pointy and 8,388,607 for flat hexagons.
+   */
   rows: number;
   /**
    * Hexagon orientation for `gridType: 'hex'`. Defaults to `'pointy'` (a corner points up, odd rows
@@ -242,9 +311,46 @@ export type GPUGridGeneratorProps = {
  * its boundary, independently of the per-cell mask. Masks do not compact either output.
  *
  * Precision: f32 from the f32 origin and size; coordinates far from the origin lose absolute
- * precision like any f32 positions (use tile-local coordinates for fine grids).
+ * precision like any f32 positions (use tile-local coordinates for fine grids). Lattice indices
+ * are converted to f32, so `columns` and `rows` are limited at construction to the sizes whose
+ * indices stay exact (see {@link GPUGridGeneratorProps.columns}). Square grids requesting centers,
+ * and all point grids, allow at most 8,388,608 cells per axis so half-cell indices stay exact.
+ * Square output without centers retains the 16,777,216-cell integer-lattice limit per axis.
+ * These index limits do not guarantee distinct coordinates for arbitrary dynamic origins and sizes.
  */
 export class GPUGridGenerator implements GPUCommandNodeProducer {
+  /** Host admission plan; square/point center requests require exact half-cell indices. */
+  static getMaximumAxisCellCounts(settings: {
+    id?: string;
+    gridType: GPUGridType;
+    hexOrientation?: 'pointy' | 'flat';
+    centers?: boolean;
+  }): {columns: number; rows: number} {
+    const id = settings.id ?? 'grid-generator';
+    validateRequirement(
+      id,
+      ['square', 'hex', 'triangle', 'point'].includes(settings.gridType),
+      `gridType must be 'square', 'hex', 'triangle' or 'point'; received ${String(settings.gridType)}`
+    );
+    validateRequirement(
+      id,
+      settings.hexOrientation === undefined ||
+        settings.hexOrientation === 'pointy' ||
+        settings.hexOrientation === 'flat',
+      `hexOrientation must be 'pointy' or 'flat'; received ${String(settings.hexOrientation)}`
+    );
+    validateRequirement(
+      id,
+      settings.hexOrientation !== 'flat' || settings.gridType === 'hex',
+      `hexOrientation 'flat' needs gridType 'hex'; received ${settings.gridType}`
+    );
+    return getGridIndexMaximums(
+      settings.gridType,
+      settings.hexOrientation === 'flat',
+      settings.centers ?? false
+    );
+  }
+
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
@@ -263,9 +369,25 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     this.props = props;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    // The kernels place vertices with f32 lattice indices, exact only up to 2^24.
+    const maximum = GPUGridGenerator.getMaximumAxisCellCounts({
+      id,
+      gridType: props.gridType,
+      hexOrientation: props.hexOrientation,
+      centers: Boolean(props.output.centers)
+    });
+    if (props.gridType === 'point' || (props.gridType === 'square' && props.output.centers)) {
+      for (const axis of ['columns', 'rows'] as const) {
+        validateRequirement(
+          id,
+          props[axis] <= MAXIMUM_GPU_GRID_CENTER_AXIS_CELL_COUNT,
+          `${axis} for square/point centers must be at most ${MAXIMUM_GPU_GRID_CENTER_AXIS_CELL_COUNT}; received ${props[axis]}; split the grid into tiles, or use square output without centers for integer corners`
+        );
+      }
+    }
+    validateCapacity(id, 'columns', props.columns, 1, maximum.columns);
+    validateCapacity(id, 'rows', props.rows, 1, maximum.rows);
     this.verticesPerCell = getGPUGridVerticesPerCell(props.gridType);
-    validateCapacity(id, 'columns', props.columns, 1, Number.MAX_SAFE_INTEGER);
-    validateCapacity(id, 'rows', props.rows, 1, Number.MAX_SAFE_INTEGER);
     this.cellCount = getGPUGridCellCount(props.gridType, props.columns, props.rows);
     this.cornerCount =
       props.gridType === 'square' || props.gridType === 'hex'
@@ -322,16 +444,6 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
       }
     }
     const {intersects} = props.output;
-    if (
-      props.hexOrientation !== undefined &&
-      props.hexOrientation !== 'pointy' &&
-      props.hexOrientation !== 'flat'
-    ) {
-      throw new Error(`${id} hexOrientation must be 'pointy' or 'flat'`);
-    }
-    if (props.hexOrientation === 'flat' && props.gridType !== 'hex') {
-      throw new Error(`${id} hexOrientation 'flat' needs gridType 'hex'`);
-    }
     const {extent} = props;
     if (Boolean(intersects || cornerIntersects) !== Boolean(extent)) {
       throw new Error(`${id} extent needs an intersection output and vice versa`);

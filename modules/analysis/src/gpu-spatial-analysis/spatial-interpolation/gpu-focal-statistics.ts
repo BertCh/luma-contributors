@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 import {
@@ -38,7 +42,7 @@ const MAXIMUM_FOCAL_RADIUS = 64;
  * Caller-owned row-major outputs of {@link GPUFocalStatistics}, each at least
  * `grid.width * grid.height` rows. Provide any non-empty subset. Float outputs are NaN for nodata cells.
  */
-export type GPUFocalStatisticsOutput = {
+type FocalStatisticsOutputPorts = {
   /** Mean of valid window cells. */
   mean?: GraphDataView<'float32'>;
   /** Sum of valid window cells, accumulated in fixed row-major window order. */
@@ -54,6 +58,12 @@ export type GPUFocalStatisticsOutput = {
   /** Number of valid window cells, written for every cell (also nodata ones). */
   counts?: GraphDataView<'uint32'>;
 };
+
+/** At least one terminal statistic (including counts alone) must be selected. */
+export type GPUFocalStatisticsOutput = FocalStatisticsOutputPorts &
+  {
+    [Port in keyof FocalStatisticsOutputPorts]-?: Required<Pick<FocalStatisticsOutputPorts, Port>>;
+  }[keyof FocalStatisticsOutputPorts];
 
 /**
  * Properties for {@link GPUFocalStatistics}.
@@ -120,44 +130,54 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer, GPURasterHalo
 
   constructor(props: GPUFocalStatisticsProps) {
     this.id = props.id ?? 'focal-statistics';
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      ['grid', 'id', 'maximumRadius', 'noDataValue', 'output', 'parameters', 'validity', 'values'],
+      ['mean', 'sum', 'min', 'max', 'range', 'standardDeviation', 'counts']
+    );
     const {id} = this;
     this.cellCount = validateRasterGrid(id, props.grid);
     validateCapacity(id, 'maximumRadius', props.maximumRadius, 0, MAXIMUM_FOCAL_RADIUS);
     this.requiredHalo = props.maximumRadius;
-    if (props.noDataValue !== undefined && !Number.isFinite(props.noDataValue)) {
-      throw new Error(`${id} noDataValue must be finite (NaN cells are always nodata)`);
-    }
+    validateRequirement(
+      id,
+      !(props.noDataValue !== undefined && !Number.isFinite(props.noDataValue)),
+      `noDataValue must be finite (NaN cells are always nodata)`
+    );
     const {output} = props;
     const outputs = getOutputEntries(output);
-    if (outputs.length === 0) {
-      throw new Error(`${id} needs at least one output`);
-    }
+    validateRequirement(id, !(outputs.length === 0), `needs at least one output`);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
-    if (props.values.length < this.cellCount) {
-      throw new Error(`${id} values must hold grid.width * grid.height rows`);
-    }
+    validateRequirement(
+      id,
+      !(props.values.length < this.cellCount),
+      `values must hold grid.width * grid.height rows`
+    );
     if (props.validity) {
       validateSinglePackedView(props.validity, ['uint32'], `${id} validity`);
-      if (props.validity.length < this.cellCount) {
-        throw new Error(`${id} validity must hold grid.width * grid.height rows`);
-      }
-    }
-    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_FOCAL_STATISTICS_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_FOCAL_STATISTICS_PARAMETER_LENGTH} float32 values`
+      validateRequirement(
+        id,
+        !(props.validity.length < this.cellCount),
+        `validity must hold grid.width * grid.height rows`
       );
     }
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateRequirement(
+      id,
+      !(props.parameters.length < GPU_FOCAL_STATISTICS_PARAMETER_LENGTH),
+      `parameters must hold ${GPU_FOCAL_STATISTICS_PARAMETER_LENGTH} float32 values`
+    );
     for (const [name, view] of outputs) {
       if (name === 'counts') {
         validateSinglePackedView(view, ['uint32'], `${id} output.counts`);
       } else {
         validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
       }
-      if (view.length < this.cellCount) {
-        throw new Error(`${id} output.${name} must hold grid.width * grid.height rows`);
-      }
+      validateRequirement(
+        id,
+        !(view.length < this.cellCount),
+        `output.${name} must hold grid.width * grid.height rows`
+      );
     }
     if (props.noDataValue !== undefined) validateFiniteNumber(id, 'noDataValue', props.noDataValue);
     validateInterpolationOutputPasses(id, output, [

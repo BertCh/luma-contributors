@@ -23,13 +23,19 @@ import {
   getGraphOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUSpatialLag} from '../spatial-weights/gpu-spatial-lag';
+import {createSpatialWeightsSuppressionNodes} from '../spatial-weights/spatial-weights-suppression';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
 import {GPUClassAssignment, type GPUClassIntervalClosure} from './gpu-class-assignment';
-import {GPUTransitionMatrix, type GPUTransitionMatrixOutput} from './gpu-transition-matrix';
+import {
+  GPUTransitionMatrix,
+  validateTransitionMatrixOutput,
+  validateTransitionMatrixSettings,
+  type GPUTransitionMatrixOutput
+} from './gpu-transition-matrix';
 import {
   createPeriodPackNode,
   createPeriodUnpackNode,
@@ -40,6 +46,10 @@ import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph
 import {getLoadBalancedTileCount} from '../../analysis-core/kernels/load-balanced-for-each';
 import {validateMarkovClassBreakScratch} from './markov-binding-preflight';
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
+import {getGPUSpatialWeightsLossViews} from '../spatial-weights/gpu-chunked-spatial-weights';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {GPU_TRANSITION_HOMOGENEITY_LENGTH} from './gpu-transition-diagnostics';
 
 /** Caller-owned outputs of {@link GPUSpatialMarkov}. */
 export type GPUSpatialMarkovOutput = GPUTransitionMatrixOutput & {
@@ -136,6 +146,11 @@ export type GPUSpatialMarkovProps = {
  * - `stateSparsity`: how many `(lag class, from)` states have fewer than `minimumTransitions`
  *   (default 5) transitions, and how many have none.
  *
+ * Incomplete weights: when `weights.status.overflow` or `weights.status.candidateOverflow` is
+ * nonzero, the lag and lag edges are NaN, `counts`, `rowTotals`, `lagClassCount` and
+ * `status.converged` are 0 and the probabilities, homogeneity and steady states are NaN.
+ * `stateSparsity` describes the resulting empty counts; `ignored` counts rejected transitions.
+ *
  * Not included: giddy's `relative` rescaling by the period mean (divide the values per period
  * before classification), mean first passage times and the permutation test `x2_rpvalue`.
  */
@@ -149,11 +164,56 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
   readonly rowCount: number;
 
   constructor(props: GPUSpatialMarkovProps) {
+    const construction = snapshotConstructionFields(props, [
+      'id',
+      'values',
+      'classes',
+      'classCount',
+      'weights',
+      'periodCount',
+      'periodLag',
+      'normalize',
+      'maximumLagClassCount',
+      'lagParameters',
+      'lagMethods',
+      'lagIntervalClosure',
+      'mask',
+      'minimumTransitions',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(construction.output, [
+      'counts',
+      'probabilities',
+      'rowTotals',
+      'ignored',
+      'lagBreaks',
+      'lagClassCount',
+      'lagValues',
+      'lagClasses',
+      'homogeneity',
+      'steadyStates',
+      'stateSparsity',
+      'status'
+    ]);
+    props = {
+      ...construction,
+      weights: snapshotWeightsPort(construction.weights),
+      lagMethods: construction.lagMethods ? [...construction.lagMethods] : undefined,
+      output: {
+        ...output,
+        status: output.status ? snapshotConstructionFields(output.status, ['converged']) : undefined
+      }
+    };
     const id = props.id ?? 'spatial-markov';
     this.id = id;
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(id, props.weights);
     const total = this.rowCount * props.periodCount;
+    validateTransitionMatrixSettings(
+      id,
+      {...props, conditionCount: props.maximumLagClassCount},
+      this.rowCount
+    );
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validatePackedUint32View(props.classes, `${id} classes`);
     validateCapacity(id, 'periodCount', props.periodCount, 2);
@@ -172,12 +232,23 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal the weights row count`);
       }
     }
+    if (props.output.lagValues)
+      validateSinglePackedView(props.output.lagValues, ['float32'], `${id} output.lagValues`);
+    if (props.output.lagClasses)
+      validateSinglePackedView(props.output.lagClasses, ['uint32'], `${id} output.lagClasses`);
     if (props.output.lagValues && props.output.lagValues.length !== total) {
       throw new Error(`${id} output.lagValues length must equal rowCount * periodCount`);
     }
     if (props.output.lagClasses && props.output.lagClasses.length !== total) {
       throw new Error(`${id} output.lagClasses length must equal rowCount * periodCount`);
     }
+    validateTransitionMatrixOutput(
+      id,
+      props.output,
+      props.classCount,
+      props.maximumLagClassCount,
+      props.minimumTransitions
+    );
     const outputs = getGraphOutputViews({
       ...props.output,
       status: {converged: props.output.status?.converged}
@@ -189,7 +260,8 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
       props.mask,
       props.weights.offsets,
       props.weights.neighbors,
-      props.weights.weights
+      props.weights.weights,
+      ...getGPUSpatialWeightsLossViews(props.weights)
     ]);
     validateSpatialOutputViews(
       id,
@@ -238,12 +310,14 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount: rows} = this;
     const {output, periodCount: periods, mask} = props;
-    // The lag consumes the CSR and transform metadata, not distances or optional status views.
+    // The lag consumes the CSR, transform metadata and loss flags, not distances: with
+    // incomplete weights (status.overflow or status.candidateOverflow) the lag is NaN.
     const weights: GPUSpatialWeights = {
       offsets: props.weights.offsets,
       neighbors: props.weights.neighbors,
       weights: props.weights.weights,
-      information: props.weights.information
+      information: props.weights.information,
+      status: props.weights.status
     };
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
@@ -253,6 +327,7 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
       weights.offsets,
       weights.neighbors,
       weights.weights,
+      ...getGPUSpatialWeightsLossViews(weights),
       output.counts,
       output.probabilities,
       output.rowTotals,
@@ -275,6 +350,9 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
       offsets: weights.offsets,
       neighbors: weights.neighbors,
       weights: weights.weights,
+      ...Object.fromEntries(
+        getGPUSpatialWeightsLossViews(weights).map((view, index) => [`weights loss ${index}`, view])
+      ),
       ...Object.fromEntries(
         getGraphOutputViews({...output, status: {converged: output.status?.converged}}).map(
           (view, index) => [`output[${index}]`, view]
@@ -412,6 +490,43 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
         }
       }).getCommandNodes(graph)
     );
+    // Incomplete weights: zero counts and class count, NaN probabilities, edges and diagnostics,
+    // converged 0. The ordinary writers restore every value on the next complete submission.
+    const cellCount = props.maximumLagClassCount * props.classCount * props.classCount;
+    const logicalLengths = {
+      counts: cellCount,
+      probabilities: cellCount,
+      rowTotals: props.maximumLagClassCount * props.classCount,
+      lagBreaks: props.maximumLagClassCount + 1,
+      lagClassCount: 1,
+      homogeneity: GPU_TRANSITION_HOMOGENEITY_LENGTH,
+      steadyStates:
+        (props.maximumLagClassCount > 1 ? props.maximumLagClassCount + 1 : 1) * props.classCount,
+      converged: 1
+    };
+    for (const [name, view] of Object.entries({
+      counts: output.counts,
+      probabilities: output.probabilities,
+      rowTotals: output.rowTotals,
+      lagBreaks: output.lagBreaks,
+      lagClassCount: output.lagClassCount,
+      homogeneity: output.homogeneity,
+      steadyStates: output.steadyStates,
+      converged: output.status?.converged
+    })) {
+      if (view) {
+        nodes.push(
+          ...createSpatialWeightsSuppressionNodes(
+            graph,
+            `${id}-${name}`,
+            'GPUSpatialMarkov',
+            props.weights,
+            {output: view},
+            {output: logicalLengths[name as keyof typeof logicalLengths]}
+          )
+        );
+      }
+    }
     return nodes;
   }
 }

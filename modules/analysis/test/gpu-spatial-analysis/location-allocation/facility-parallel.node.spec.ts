@@ -47,6 +47,7 @@ it('p-center accepts device-sized demand matrices and rejects oversized storage 
       expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
       expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
     }
+    // A rejected second construction must report the device bound, not reserve a duplicate certificate.
     expect(() => make(maximumDemandCount + 1).getCommandNodes(graph)).toThrow(/demandCount/);
     expect(() => make(4097, 'capacitated-p-median')).toThrow(/demandCount/);
   } finally {

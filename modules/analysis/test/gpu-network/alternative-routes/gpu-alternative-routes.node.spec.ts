@@ -50,7 +50,7 @@ it('GPUAlternativeRoutes heap kernels fit core bindings and private memory at ma
   ]);
   const recordedKernelSources1 = getParsedKernelSources(nodes);
   for (const {id: name, source: source, constants} of recordedKernelSources1.configurations) {
-    expect(auditWGSLModule(source), name).toEqual([]);
+    expect(auditWGSLModule(source, constants), name).toEqual([]);
     expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
     expect(getPrivateMemoryBytes(source, constants), name).toBeLessThanOrEqual(8192);
   }

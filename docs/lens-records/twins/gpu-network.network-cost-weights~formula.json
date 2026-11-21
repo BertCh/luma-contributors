@@ -7,7 +7,7 @@
   "viewId": "formula-card",
   "caption": "Formula Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow a…",
   "description": "Formula Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow a…",
-  "llms": "Formula Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow ascending neighbor order within each row. The 'none' branch stores 1, 'power' stores max(cost, minimumCost)^-beta and 'gaussian' stores the truncated, rescaled (exp(-0.5 (c/L)^2) - exp(-0.5)) / (1 - exp(-0.5)); they are alternative branches of the same kernel.\n\n- bound symbols: 3/3\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow ascending neighbor order within each row. The 'none' branch stores 1, 'power' stores max(cost, minimumCost)^-beta and 'gaussian' stores the truncated, rescaled (exp(-0.5 (c/L)^2) - exp(-0.5)) / (1 - exp(-0.5)); they are alternative branches of the same kernel.\n\n- bound symbols: 3/3\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients weightComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
     "value": "3/3"
@@ -61,16 +61,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:15.714Z",
-    "runId": "run-739ba1bc",
+    "date": "2026-11-20T23:48:43.928Z",
+    "runId": "run-701d42f6",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased"
+      "lens twin: transients weightComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-739ba1bc",
+    "runId": "run-701d42f6",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

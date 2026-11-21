@@ -33,13 +33,15 @@ import {validateRegressionOutputDispatches} from './regression-output-dispatches
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getLocalKernelWeightWGSL} from './local-weighted-least-squares-wgsl';
+import {LOCAL_REGRESSION_PAIRS_WGSL} from './local-regression-pairs-wgsl';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH
 } from './geographically-weighted-regression-parameters';
 import {
   createSpaceTimePointNodes,
-  GPUGeographicallyTemporallyWeightedRegression,
+  snapshotGTWRProps,
+  createGTWRResidualCorrectionNodes,
   GPU_GTWR_MAXIMUM_PREDICTOR_COUNT,
   GPU_GTWR_MAXIMUM_ROW_COUNT,
   type GPUGeographicallyTemporallyWeightedRegressionProps,
@@ -154,7 +156,10 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
   readonly id: string;
   readonly rows: number;
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps) {
+  readonly props: GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps;
+  constructor(props: GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps) {
+    props = snapshotGTWRProps(props);
+    this.props = props;
     this.id = props.id ?? 'multiscale-geographically-temporally-weighted-regression';
     const {id} = this;
     const columns = props.predictorCount;
@@ -167,12 +172,12 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
     validateRequirement(
       id,
       gtwrOptions.gaussianCutoff === undefined,
-      'gaussianCutoff is not supported by multiscale GTWR'
+      'gaussianCutoff is not supported by multiscale GTWR: initialization and component fits share the exact Gaussian/bisquare kernel; omit gaussianCutoff or use GPUGeographicallyTemporallyWeightedRegression for truncated fits'
     );
     validateRequirement(
       id,
       gtwrOptions.searchStructure === undefined,
-      'searchStructure is not supported by multiscale GTWR'
+      'searchStructure is not supported by multiscale GTWR: component smoothing uses bounded exhaustive traversal; omit searchStructure or use GPUGeographicallyTemporallyWeightedRegression for indexed fits'
     );
     const searchIterations = validateGTWRBandwidthSearch(
       id,
@@ -180,14 +185,18 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       props.output.status
     );
     this.estimatedCommandNodeCount =
-      7 +
+      12 +
+      Number(props.response.length > 4096) +
       props.iterationCount * (columns + 2) +
       (searchIterations
-        ? getGTWRBandwidthSearchNodeCount(searchIterations, 2) +
+        ? getGTWRBandwidthSearchNodeCount(
+            searchIterations,
+            8 + Number(props.response.length > 4096)
+          ) +
           1 +
           props.iterationCount *
             (columns + 1) *
-            (1 + getGTWRBandwidthSearchNodeCount(searchIterations, 2))
+            (1 + getGTWRBandwidthSearchNodeCount(searchIterations, 3))
         : 0) +
       Number(Boolean(props.output.selectedParameters));
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -315,7 +324,7 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       graph.device,
       id,
       'component scratch',
-      rows * Math.max(3, size) * 4,
+      rows * Math.max(4, size * 2) * 4,
       'reduce rows or predictorCount'
     );
     const transient = <Format extends 'float32' | 'uint32'>(
@@ -340,10 +349,14 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       : props.parameters;
     const spaceTime = createSpaceTimePointNodes(graph, id, props, rows);
     const components = [
-      transient('components-a', 'float32', rows * size),
-      transient('components-b', 'float32', rows * size)
+      transient('components-a', 'float32', rows * size * 2),
+      transient('components-b', 'float32', rows * size * 2)
     ];
-    const errors = [transient('errors-a', 'float32', rows), transient('errors-b', 'float32', rows)];
+    const errors = [
+      transient('errors-a', 'float32', rows * 2),
+      transient('errors-b', 'float32', rows * 2)
+    ];
+    const initialResidualCorrections = transient('initial-residual-corrections', 'float32', rows);
     const iterationState = transient('iteration-state', 'uint32', 1);
     // Design column 0 is the intercept; column c is predictor c - 1.
     const designWGSL = `fn getDesign(row: u32, column: u32) -> f32 {
@@ -352,27 +365,31 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
 }`;
     const weightWGSL = getLocalKernelWeightWGSL();
     const nodes: GPUCommandNode<Parameters>[] = [
-      ...new GPUGeographicallyTemporallyWeightedRegression({
-        id: `${id}-initial`,
-        positions: props.positions,
-        times: props.times,
-        temporalContext: props.temporalContext,
-        spatialContext: props.spatialContext,
-        adaptive: props.adaptive,
-        bandwidthSearch: props.bandwidthSearch,
-        predictors: props.predictors,
-        predictorCount: columns,
-        response: props.response,
-        mask: props.mask,
-        kernel: props.kernel,
-        searchStructure: 'brute-force',
-        parameters: props.parameters,
-        output: {
-          ...initial,
-          selectedParameters: props.bandwidthSearch ? selectedParameters : undefined,
-          status: output.status
-        }
-      }).getCommandNodes(graph),
+      ...createGTWRResidualCorrectionNodes(
+        graph,
+        {
+          id: `${id}-initial`,
+          positions: props.positions,
+          times: props.times,
+          temporalContext: props.temporalContext,
+          spatialContext: props.spatialContext,
+          adaptive: props.adaptive,
+          bandwidthSearch: props.bandwidthSearch,
+          predictors: props.predictors,
+          predictorCount: columns,
+          response: props.response,
+          mask: props.mask,
+          kernel: props.kernel,
+          searchStructure: 'brute-force',
+          parameters: props.parameters,
+          output: {
+            ...initial,
+            selectedParameters: props.bandwidthSearch ? selectedParameters : undefined,
+            status: output.status
+          }
+        },
+        initialResidualCorrections
+      ),
       ...spaceTime.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-start`,
@@ -382,19 +399,17 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
         bindings: [
           {name: 'points', view: spaceTime.points, type: 'f32', access: 'read'},
           {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
-          {name: 'response', view: props.response, type: 'f32', access: 'read'},
           {name: 'initialCoefficients', view: initial.coefficients, type: 'f32', access: 'read'},
           {name: 'components', view: components[0], type: 'f32', access: 'read_write'},
-          {name: 'errors', view: errors[0], type: 'f32', access: 'read_write'},
           {name: 'iterationState', view: iterationState, type: 'u32', access: 'read_write'}
         ],
         declarations: `${IS_FINITE_BITS_WGSL}
+${LOCAL_REGRESSION_PAIRS_WGSL}
 ${designWGSL}`,
         // Components are beta_j x_j of the initial fit. A singular row starts from zero components
         // and the whole response as its error; an excluded row holds zeros.
         body: `if (index == 0u) { iterationState[iterationStateOffset] = 0u; }
   let included = isFiniteBits(points[pointsOffset + 3u * index]);
-  var total = 0.0;
   var finite = included;
   for (var column = 0u; column < ${size}u; column++) {
     let design = getDesign(index, column);
@@ -406,11 +421,50 @@ ${designWGSL}`,
     let value = initialCoefficients[initialCoefficientsOffset + index * ${size}u + column] * design;
     let component = select(0.0, value, finite);
     components[componentsOffset + index * ${size}u + column] = component;
-    total += component;
+    components[componentsOffset + ${rows * size}u + index * ${size}u + column] = select(0.0, getMultiplicationRoundingError(initialCoefficients[initialCoefficientsOffset + index * ${size}u + column], design, value), finite);
   }
-  errors[errorsOffset + index] = select(0.0, response[responseOffset + index] - total, included);`
+`
       })
     ];
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-initial-errors`,
+        operation: OPERATION,
+        invocationCount: rows,
+        bindings: [
+          {name: 'points', view: spaceTime.points, type: 'f32', access: 'read'},
+          {name: 'response', view: props.response, type: 'f32', access: 'read'},
+          {name: 'initialResiduals', view: initial.residuals, type: 'f32', access: 'read'},
+          {
+            name: 'initialCorrections',
+            view: initialResidualCorrections,
+            type: 'f32',
+            access: 'read'
+          },
+          {name: 'initialCoefficients', view: initial.coefficients, type: 'f32', access: 'read'},
+          {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
+          {name: 'errors', view: errors[0], type: 'f32', access: 'read_write'}
+        ],
+        declarations: `${IS_FINITE_BITS_WGSL}\n${LOCAL_REGRESSION_PAIRS_WGSL}\n${designWGSL}`,
+        body: `let included = isFiniteBits(points[pointsOffset + 3u * index]);
+  let residual = initialResiduals[initialResidualsOffset + index];
+  let usable = isFiniteBits(residual);
+  var error = vec2f(response[responseOffset + index], 0.0);
+  if (usable) {
+    let fitResidual = vec2f(residual, initialCorrections[initialCorrectionsOffset + index]);
+    let centeredPrediction = addRegressionPairs(vec2f(response[responseOffset + index], 0.0), -fitResidual);
+    var componentTotal = vec2f(0.0);
+    for (var column = 0u; column < ${size}u; column++) {
+      componentTotal = addRegressionPairs(componentTotal, multiplyRegressionPair(vec2f(initialCoefficients[initialCoefficientsOffset + index * ${size}u + column], 0.0), getDesign(index, column)));
+    }
+    // Retain the fit-time error, adjusting only for the separately rounded coefficient basis.
+    let representationCorrection = addRegressionPairs(centeredPrediction, -componentTotal);
+    error = addRegressionPairs(fitResidual, representationCorrection);
+  }
+  errors[errorsOffset + 2u * index] = select(0.0, error.x, included);
+  errors[errorsOffset + 2u * index + 1u] = select(0.0, error.y, included);`
+      })
+    );
     for (let iteration = 0; iteration < props.iterationCount; iteration++) {
       const previous = components[iteration % 2];
       const next = components[(iteration + 1) % 2];
@@ -418,6 +472,11 @@ ${designWGSL}`,
         const step = iteration * size + component;
         if (props.bandwidthSearch) {
           const partial = transient(`partial-${iteration}-${component}`, 'float32', rows);
+          const partialCorrections = transient(
+            `partial-low-${iteration}-${component}`,
+            'float32',
+            rows
+          );
           nodes.push(
             createWGSLKernelNode(graph, {
               id: `${id}-partial-${iteration}-${component}`,
@@ -426,9 +485,18 @@ ${designWGSL}`,
               bindings: [
                 {name: 'previous', view: previous, type: 'f32', access: 'read'},
                 {name: 'errors', view: errors[step % 2], type: 'f32', access: 'read'},
-                {name: 'partial', view: partial, type: 'f32', access: 'read_write'}
+                {name: 'partial', view: partial, type: 'f32', access: 'read_write'},
+                {
+                  name: 'partialCorrections',
+                  view: partialCorrections,
+                  type: 'f32',
+                  access: 'read_write'
+                }
               ],
-              body: `partial[partialOffset + index] = previous[previousOffset + index * ${size}u + ${component}u] + errors[errorsOffset + index];`
+              declarations: LOCAL_REGRESSION_PAIRS_WGSL,
+              body: `let value = addRegressionPairs(vec2f(previous[previousOffset + index * ${size}u + ${component}u], previous[previousOffset + ${rows * size}u + index * ${size}u + ${component}u]), vec2f(errors[errorsOffset + 2u * index], errors[errorsOffset + 2u * index + 1u]));
+  partial[partialOffset + index] = value.x;
+  partialCorrections[partialCorrectionsOffset + index] = value.y;`
             })
           );
           nodes.push(
@@ -450,6 +518,7 @@ ${designWGSL}`,
                   points: spaceTime.points,
                   predictors: props.predictors,
                   partial,
+                  partialCorrections,
                   parameters,
                   gate,
                   adaptive: props.adaptive ?? false,
@@ -479,19 +548,44 @@ ${designWGSL}`,
                 access: 'read_write'
               }
             ],
-            declarations: `${IS_FINITE_BITS_WGSL}\n${GET_NAN_WGSL}\n${weightWGSL}\n${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
+            declarations: `${IS_FINITE_BITS_WGSL}\n${GET_NAN_WGSL}\n${weightWGSL}\n${LOCAL_REGRESSION_PAIRS_WGSL}\n${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}
+fn readPartial(row: u32) -> vec2f {
+  return addRegressionPairs(vec2f(previous[previousOffset + row * ${size}u + ${component}u], previous[previousOffset + ${rows * size}u + row * ${size}u + ${component}u]), vec2f(errorsIn[errorsInOffset + 2u * row], errorsIn[errorsInOffset + 2u * row + 1u]));
+}`,
             body: `let timeScale = parameters[parametersOffset + ${3 + 2 * component}u];
   let bandwidth = ${props.adaptive ? `getAdaptiveBandwidth(index, parameters[parametersOffset + ${2 + 2 * component}u], timeScale)` : `parameters[parametersOffset + ${2 + 2 * component}u]`};
   let originX = points[pointsOffset + 3u * index];
   if (!isFiniteBits(originX)) {
     next[nextOffset + index * ${size}u + ${component}u] = 0.0;
-    errorsOut[errorsOutOffset + index] = 0.0;
+    next[nextOffset + ${rows * size}u + index * ${size}u + ${component}u] = 0.0;
+    errorsOut[errorsOutOffset + 2u * index] = 0.0;
+    errorsOut[errorsOutOffset + 2u * index + 1u] = 0.0;
     coefficients[coefficientsOffset + index * ${size}u + ${component}u] = getNaN();
   } else {
     let originY = points[pointsOffset + 3u * index + 1u];
     let originTime = points[pointsOffset + 3u * index + 2u];
-    var numerator = 0.0;
-    var denominator = 0.0;
+    var numeratorPair = vec2f(0.0);
+    var denominatorPair = vec2f(0.0);
+    ${
+      component === 0
+        ? `var partialMinimum = 3.402823466e+38;
+    var partialMaximum = -3.402823466e+38;
+    for (var row = 0u; row < ${rows}u; row++) {
+      let rowX = points[pointsOffset + 3u * row];
+      if (!isFiniteBits(rowX)) { continue; }
+      let deltaX = rowX - originX;
+      let deltaY = points[pointsOffset + 3u * row + 1u] - originY;
+      let deltaTime = points[pointsOffset + 3u * row + 2u] - originTime;
+      let distance = sqrt(deltaX * deltaX + deltaY * deltaY + timeScale * deltaTime * deltaTime);
+      if (!(getLocalKernelWeight(distance, bandwidth, ${props.kernel === 'bisquare' ? 'true' : 'false'}) > 0.0)) { continue; }
+      let partialValue = readPartial(row);
+      let value = partialValue.x;
+      partialMinimum = min(partialMinimum, value);
+      partialMaximum = max(partialMaximum, value);
+    }
+    let partialAnchor = getRegressionResponseOrigin(partialMinimum, partialMaximum);`
+        : 'let partialAnchor = 0.0;'
+    }
     for (var row = 0u; row < ${rows}u; row++) {
       let rowX = points[pointsOffset + 3u * row];
       if (!isFiniteBits(rowX)) { continue; }
@@ -506,22 +600,31 @@ ${designWGSL}`,
           ? 'let design = 1.0;'
           : `let design = predictors[predictorsOffset + row * ${columns}u + ${component - 1}u];`
       }
-      let partial = previous[previousOffset + row * ${size}u + ${component}u] + errorsIn[errorsInOffset + row];
-      numerator += weight * design * partial;
-      denominator += weight * design * design;
+      let partial = addRegressionPairs(readPartial(row), vec2f(-partialAnchor, 0.0));
+      numeratorPair = addRegressionPairs(numeratorPair, multiplyRegressionPair(multiplyRegressionPair(partial, design), weight));
+      denominatorPair = addRegressionPairs(denominatorPair, multiplyRegressionPair(multiplyRegressionPair(vec2f(design, 0.0), design), weight));
     }
     ${
       component === 0
         ? 'let ownDesign = 1.0;'
         : `let ownDesign = predictors[predictorsOffset + index * ${columns}u + ${component - 1}u];`
     }
-    let ownPartial = previous[previousOffset + index * ${size}u + ${component}u] + errorsIn[errorsInOffset + index];
+    let ownPartial = readPartial(index);
+    let numerator = numeratorPair.x + numeratorPair.y;
+    let denominator = denominatorPair.x + denominatorPair.y;
     let ok = bandwidth > 0.0 && isFiniteBits(bandwidth) && timeScale >= 0.0 && isFiniteBits(timeScale) && denominator > 0.0 && isFiniteBits(numerator) && isFiniteBits(denominator);
-    let beta = select(getNaN(), numerator / denominator, ok);
-    let smoothed = select(0.0, ownDesign * beta, ok);
-    next[nextOffset + index * ${size}u + ${component}u] = smoothed;
-    errorsOut[errorsOutOffset + index] = ownPartial - smoothed;
-    coefficients[coefficientsOffset + index * ${size}u + ${component}u] = beta;
+    var beta = vec2f(getNaN());
+    var smoothed = vec2f(0.0);
+    if (ok) {
+      beta = addRegressionPairs(vec2f(partialAnchor, 0.0), divideRegressionPair(numeratorPair, denominatorPair));
+      smoothed = multiplyRegressionPair(beta, ownDesign);
+    }
+    let error = addRegressionPairs(ownPartial, -smoothed);
+    next[nextOffset + index * ${size}u + ${component}u] = smoothed.x;
+    next[nextOffset + ${rows * size}u + index * ${size}u + ${component}u] = smoothed.y;
+    errorsOut[errorsOutOffset + 2u * index] = error.x;
+    errorsOut[errorsOutOffset + 2u * index + 1u] = error.y;
+    coefficients[coefficientsOffset + index * ${size}u + ${component}u] = beta.x + beta.y;
   }`
           })
         );
@@ -562,6 +665,7 @@ ${designWGSL}`,
       );
     }
     const final = components[props.iterationCount % 2];
+    const finalErrors = errors[(props.iterationCount * size) % 2];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-results`,
@@ -570,23 +674,23 @@ ${designWGSL}`,
         invocationCount: rows,
         bindings: [
           {name: 'points', view: spaceTime.points, type: 'f32', access: 'read'},
-          {name: 'response', view: props.response, type: 'f32', access: 'read'},
           {name: 'finalComponents', view: final, type: 'f32', access: 'read'},
+          {name: 'finalErrors', view: finalErrors, type: 'f32', access: 'read'},
           {name: 'coefficients', view: output.coefficients, type: 'f32', access: 'read'},
           {name: 'fitted', view: output.fitted, type: 'f32', access: 'read_write'},
           {name: 'residuals', view: output.residuals, type: 'f32', access: 'read_write'},
           {name: 'localStatus', view: output.localStatus, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${IS_FINITE_BITS_WGSL}\n${GET_NAN_WGSL}`,
+        declarations: `${IS_FINITE_BITS_WGSL}\n${GET_NAN_WGSL}\n${LOCAL_REGRESSION_PAIRS_WGSL}`,
         body: `let included = isFiniteBits(points[pointsOffset + 3u * index]);
-  var total = 0.0;
+  var total = vec2f(0.0);
   var finite = true;
   for (var column = 0u; column < ${size}u; column++) {
-    total += finalComponents[finalComponentsOffset + index * ${size}u + column];
+    total = addRegressionPairs(total, vec2f(finalComponents[finalComponentsOffset + index * ${size}u + column], finalComponents[finalComponentsOffset + ${rows * size}u + index * ${size}u + column]));
     finite = finite && isFiniteBits(coefficients[coefficientsOffset + index * ${size}u + column]);
   }
-  fitted[fittedOffset + index] = select(getNaN(), total, included);
-  residuals[residualsOffset + index] = select(getNaN(), response[responseOffset + index] - total, included);
+  fitted[fittedOffset + index] = select(getNaN(), total.x + total.y, included);
+  residuals[residualsOffset + index] = select(getNaN(), finalErrors[finalErrorsOffset + 2u * index] + finalErrors[finalErrorsOffset + 2u * index + 1u], included);
   localStatus[localStatusOffset + index] = select(${STATUS.EXCLUDED}u, select(${STATUS.SINGULAR}u, ${STATUS.OK}u, finite), included);`
       })
     );

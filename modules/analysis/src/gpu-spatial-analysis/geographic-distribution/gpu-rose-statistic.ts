@@ -122,6 +122,7 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPURoseStatisticProps) {
+    props = {...props, circular: {...props.circular}, output: {...props.output}};
     this.id = props.id ?? 'rose-statistic';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
@@ -465,7 +466,7 @@ for(var group=workgroupIndex;group<GROUP_COUNT;group+=INVOCATION_COUNT / LANES){
       var meanAngle = guardedAtan2(meanSine, meanCosine);
       if (meanAngle < 0.0) { meanAngle += 2.0 * PI; }
       ${axial ? 'meanAngle *= 0.5;' : ''}
-      let resultant = length(vec2<f32>(meanCosine,meanSine));
+      let resultant = clamp(length(vec2<f32>(meanCosine,meanSine)), 0.0, 1.0);
       let outputMean = ${props.circular.angleUnit === 'degrees' ? 'meanAngle * (180.0 / PI)' : 'meanAngle'};
       summary[base + 1u] = select(outputMean,0.0,outputMean>=${props.circular.angleUnit === 'degrees' ? (axial ? '180.0' : '360.0') : 'PERIOD'});
       summary[base + 2u] = resultant;

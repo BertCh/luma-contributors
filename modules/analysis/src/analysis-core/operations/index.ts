@@ -7,7 +7,8 @@
 export {
   GPUContributorOperation,
   GPU_CONTRIBUTOR_OPERATION_LOWERING,
-  GPU_CONTRIBUTOR_OPERATION_TYPE
+  GPU_CONTRIBUTOR_OPERATION_TYPE,
+  validateOperationGraphNames
 } from './gpu-contributor-operation';
 export type {
   GPUContributorOperationOutput,

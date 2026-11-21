@@ -126,6 +126,8 @@ defineLensScenario({
             captures['ratios'] = {view: result.ratios, role: 'output', keySpace: 'library'};
             captures['reachableFacilities'] = {
               view: result.reachableFacilities,
+              meaning:
+                'Reachable facility count; 0xffffffff means unknown due to incomplete weights, not a numeric count.',
               role: 'output',
               keySpace: 'tracts'
             };

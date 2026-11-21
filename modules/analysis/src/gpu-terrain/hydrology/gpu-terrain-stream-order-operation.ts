@@ -12,6 +12,9 @@ export type TerrainStreamOrderOperationProps = Omit<
   'flowDirections' | 'streams' | 'output'
 > & {
   flowDirections: string;
+  /** StreamOrder code table: 0 nonstream, 1..0xfffffffe membership, 0xffffffff unknown.
+   * Translate imported unresolved 0xfffffffe to 0xffffffff before supplying these rows.
+   */
   streams: string;
   output: {streamOrder: string; status?: TerrainDrainageOperationStatus};
 };

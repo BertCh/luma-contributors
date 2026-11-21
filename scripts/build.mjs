@@ -10,12 +10,19 @@ import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {existsSync, realpathSync} from 'node:fs';
 import {readdir, readFile, rm, stat} from 'node:fs/promises';
-import {relative, resolve} from 'node:path';
+import {resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {transformCommonJSModule} from './build-commonjs.mjs';
-import {getTypeScriptProjectInputs} from './typescript-project-inputs.mjs';
+import {
+  DECLARATION_FILE,
+  getTypeScriptProjectInputs,
+  getTypeScriptOutputPlan,
+  rewriteDeclarationImportTypes
+} from './typescript-project-inputs.mjs';
 import {mapWithConcurrency} from './verification-policy.mjs';
 import {
+  BUILD_TOOL_PREFIX,
+  DEPENDENCY_INPUT_PREFIX,
   captureBuildInputs,
   checkBuildRecord,
   validateBuildInputs,
@@ -36,7 +43,8 @@ export async function buildPackages(
   const projects = MODULES.map(moduleName => {
     const moduleDirectory = fileURLToPath(new URL(`modules/${moduleName}/`, repositoryRoot));
     const project = getTypeScriptProjectInputs(resolve(moduleDirectory, 'tsconfig.json'));
-    const compiledInputs = captureBuildInputs(moduleDirectory, project);
+    const outputPlan = getTypeScriptOutputPlan(project, moduleDirectory);
+    const compiledInputs = captureBuildInputs(moduleDirectory, project, compilerBinary);
     const distributionDirectory = new URL(`modules/${moduleName}/dist/`, repositoryRoot);
     return {
       moduleName,
@@ -45,17 +53,16 @@ export async function buildPackages(
       distributionDirectory,
       previousRecord: checkBuildRecord(moduleDirectory, project, compiledInputs),
       compiledInputs,
-      expected: getExpectedOutputs(project, moduleDirectory)
+      expected: new Set(
+        outputPlan.flatMap(entry => [...entry.compilerOutputs, ...entry.transformedOutputs])
+      ),
+      compilerOutputs: outputPlan.flatMap(entry => entry.compilerOutputs)
     };
   });
   // tsc's incremental cache may say "up to date" after somebody removed dist. Repair missing
   // emitted files without throwing away caches on the normal warm path. CJS is repaired below.
-  const missingOutput = projects.some(({distributionDirectory, expected}) =>
-    [...expected].some(
-      file =>
-        !(file.endsWith('.cjs') && expected.has(file.replace(/\.cjs$/, '.js'))) &&
-        !existsSync(new URL(file, distributionDirectory))
-    )
+  const missingOutput = projects.some(({distributionDirectory, compilerOutputs}) =>
+    compilerOutputs.some(file => !existsSync(new URL(file, distributionDirectory)))
   );
   const corruptOutput = projects.some(
     ({previousRecord}) => previousRecord.present && !previousRecord.outputsValid
@@ -63,7 +70,7 @@ export async function buildPackages(
 
   // Restored/backdated files can change content without making tsc's timestamp planner dirty.
   // Invalidate only affected caches; ordinary edits retain the compiler's incremental path.
-  for (const {moduleDirectory, project, previousRecord} of projects) {
+  for (const {moduleDirectory, project, previousRecord, expected} of projects) {
     const cache =
       project.options.tsBuildInfoFile ?? resolve(moduleDirectory, 'tsconfig.tsbuildinfo');
     const cacheTime = await stat(cache).then(
@@ -71,12 +78,21 @@ export async function buildPackages(
       () => undefined
     );
     if (cacheTime === undefined) continue;
-    // An unrecorded legacy cache has no trustworthy content baseline for existing outputs.
-    if (!previousRecord.present) {
+    // An unrecorded legacy cache has no trustworthy content baseline. A removed declaration
+    // can also change the resolution of an unchanged import type (for example, file to index).
+    const removedDeclaration = previousRecord.outputFiles.some(
+      file => DECLARATION_FILE.test(file) && !expected.has(file.slice('dist/'.length))
+    );
+    if (!previousRecord.present || removedDeclaration) {
       await rm(cache, {force: true});
       continue;
     }
     for (const file of previousRecord.changedInputs ?? []) {
+      // The solution planner need not inspect external inputs at all, even when newer.
+      if (file.startsWith(DEPENDENCY_INPUT_PREFIX) || file.startsWith(BUILD_TOOL_PREFIX)) {
+        await rm(cache, {force: true});
+        break;
+      }
       const inputTime = await stat(resolve(moduleDirectory, file)).then(
         information => information.mtime.getTime(),
         () => undefined
@@ -99,11 +115,49 @@ export async function buildPackages(
     }
   );
 
-  for (const {moduleName, distributionDirectory, expected, previousRecord} of projects) {
+  for (const {distributionDirectory, expected} of projects)
     await pruneRemovedOutputs(expected, distributionDirectory);
+
+  for (const {
+    moduleName,
+    project,
+    distributionDirectory,
+    expected,
+    compilerOutputs,
+    previousRecord
+  } of projects) {
+    const declarationPlugin = project.options.plugins?.find(
+      plugin =>
+        plugin.afterDeclarations &&
+        plugin.transform === '@vis.gl/ts-plugins/ts-transform-append-extension'
+    );
+    await mapWithConcurrency(
+      compilerOutputs.filter(file => DECLARATION_FILE.test(file)),
+      2,
+      async file => {
+        const declaration = fileURLToPath(new URL(file, distributionDirectory));
+        const source = await readFile(declaration, 'utf8');
+        if (
+          previousRecord.valid &&
+          previousRecord.outputHashes[`dist/${file}`] ===
+            createHash('sha256').update(source).digest('hex')
+        ) {
+          return;
+        }
+        const rewritten = rewriteDeclarationImportTypes(
+          source,
+          declaration,
+          declarationPlugin?.extensions
+        );
+        if (rewritten !== source) await writeFileAtomicAsync(declaration, rewritten);
+      }
+    );
     const count = await writeCommonJSModules(
       distributionDirectory,
-      !previousRecord.present || !previousRecord.outputsValid,
+      expected,
+      !previousRecord.present ||
+        !previousRecord.outputsValid ||
+        (previousRecord.changedInputs ?? []).some(file => file.startsWith(BUILD_TOOL_PREFIX)),
       previousRecord.outputHashes
     );
     process.stdout.write(`${moduleName}: wrote ${count} CommonJS modules\n`);
@@ -124,13 +178,17 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   await buildPackages();
 }
 
-async function writeCommonJSModules(directory, force = false, outputHashes = {}) {
+async function writeCommonJSModules(directory, expected, force = false, outputHashes = {}) {
   const files = (await readdir(directory, {recursive: true})).filter(file => file.endsWith('.js'));
   const transformTime = (await stat(new URL('./build-commonjs.mjs', import.meta.url))).mtimeMs;
   let writtenCount = 0;
   // Two transforms keep esbuild input/output buffers bounded independently of package size.
   await mapWithConcurrency(files, 2, async file => {
-    const target = new URL(file.replace(/\.js$/, '.cjs'), directory);
+    const targetFile = file.replace(/\.js$/, '.cjs');
+    const target = new URL(targetFile, directory);
+    const targetMap = expected.has(`${targetFile}.map`)
+      ? new URL(`${targetFile}.map`, directory)
+      : undefined;
     const sourceTime = (await stat(new URL(file, directory))).mtimeMs;
     const targetTime = await stat(target).then(
       information => information.mtimeMs,
@@ -141,40 +199,24 @@ async function writeCommonJSModules(directory, force = false, outputHashes = {})
     const sourceUnchanged = previousSourceHash
       ? previousSourceHash === createHash('sha256').update(source).digest('hex')
       : targetTime >= sourceTime;
-    if (!force && sourceUnchanged && targetTime >= transformTime) return;
-    const {code} = await transformCommonJSModule(source, fileURLToPath(new URL(file, directory)));
+    const sourceMap = targetMap
+      ? await readFile(new URL(`${file}.map`, directory), 'utf8')
+      : undefined;
+    const mapUnchanged =
+      sourceMap === undefined ||
+      (existsSync(targetMap) &&
+        outputHashes[`dist/${file}.map`] === createHash('sha256').update(sourceMap).digest('hex'));
+    if (!force && sourceUnchanged && mapUnchanged && targetTime >= transformTime) return;
+    const {code, map} = await transformCommonJSModule(
+      source,
+      fileURLToPath(new URL(file, directory)),
+      sourceMap
+    );
+    if (targetMap) await writeFileAtomicAsync(fileURLToPath(targetMap), map);
     await writeFileAtomicAsync(fileURLToPath(target), code);
     writtenCount++;
   });
   return writtenCount;
-}
-
-function getExpectedOutputs(project, moduleDirectory) {
-  const sourceDirectory = project.options.rootDir ?? resolve(moduleDirectory, 'src');
-  const expected = new Set();
-  for (const source of project.files) {
-    const path = relative(sourceDirectory, source);
-    if (path.startsWith('..') || /\.d\.[cm]?ts$/.test(path)) continue;
-    if (path.endsWith('.json')) expected.add(path);
-    else {
-      const base = path.replace(/\.(?:[cm]?[jt]s|[jt]sx)$/, '');
-      const javascriptSuffix = /\.[cm][jt]s$/.test(path)
-        ? path.match(/\.([cm])[jt]s$/)[1] === 'm'
-          ? '.mjs'
-          : '.cjs'
-        : /\.[jt]sx$/.test(path) && [1, 3].includes(project.options.jsx)
-          ? '.jsx'
-          : '.js';
-      const declarationSuffix =
-        javascriptSuffix === '.mjs' ? '.d.mts' : javascriptSuffix === '.cjs' ? '.d.cts' : '.d.ts';
-      expected.add(`${base}${javascriptSuffix}`);
-      expected.add(`${base}${declarationSuffix}`);
-      if (javascriptSuffix === '.js') expected.add(`${base}.cjs`);
-      if (project.options.sourceMap) expected.add(`${base}${javascriptSuffix}.map`);
-      if (project.options.declarationMap) expected.add(`${base}${declarationSuffix}.map`);
-    }
-  }
-  return expected;
 }
 
 async function pruneRemovedOutputs(expected, directory) {

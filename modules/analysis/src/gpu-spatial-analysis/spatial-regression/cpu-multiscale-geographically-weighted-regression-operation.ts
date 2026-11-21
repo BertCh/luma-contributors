@@ -498,7 +498,7 @@ export function computeMultiscaleGeographicallyWeightedRegressionOnCPU(
         usedRows.length > 0 &&
         degrees > 0 &&
         variance >= 0 &&
-        Number.isFinite(variance) &&
+        Number.isFinite(inference.summary[2]) &&
         Number.isFinite(traceSquared)
           ? 0
           : 2;

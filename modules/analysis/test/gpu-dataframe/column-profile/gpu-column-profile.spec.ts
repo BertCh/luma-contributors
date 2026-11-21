@@ -458,6 +458,31 @@ it('GPUColumnProfile handles all-masked columns', async () => {
   fixture.destroy();
 });
 
+it('review LUMA-102: GPUColumnProfile counts a finite domain whose float32 span overflows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // [-2^127, 0, 2^127, 1], two bins over [-2^127, 2^127]: hand count [1, 3] (0 is the edge, in
+  // the upper bin; 1 is above it; the maximum is in the last bin). Before the fix,
+  // fround(2^127 - -2^127) = Infinity disabled the domain and every row was skipped: [0, 0].
+  const half = 2 ** 127;
+  const scene: Scene = {
+    columns: [{kind: 'numeric', values: Float32Array.from([-half, 0, half, 1])}],
+    histogramBinCount: 2,
+    precision: 4,
+    topCategoryCount: 1
+  };
+  const fixture = createFixture(device, scene);
+  // Explicit and automatic domains resolve to the same endpoints.
+  for (const domains of [[[-half, half]], [undefined]] as Domains[]) {
+    const result = await fixture.run(domains);
+    expect(Array.from(result.histograms.subarray(0, 2))).toEqual([1, 3]);
+  }
+  // An ordinary domain on the same compiled graph: [-1, 1] holds 0 and 1, both in bin 1.
+  const ordinary = await fixture.run([[-1, 1]]);
+  expect(Array.from(ordinary.histograms.subarray(0, 2))).toEqual([0, 2]);
+  fixture.destroy();
+});
+
 it('GPUColumnProfile excludes Infinity from moments and keeps it in extremes and counts', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

@@ -269,7 +269,12 @@ test('point local Moran reuses fixed geographic weights, preserves primary outpu
       expect(resultWeights.offsets).toBe(binding.weights.offsets);
       expect((await readUint32(item.inferenceOverflow.buffer, 1))[0]).toBe(0);
       expect(item.result.parameterByteLength).toBe(item.variant.permutation ? 48 : 32);
-      expect(item.result.inference.significanceLevel).toBe(item.variant.significanceLevel);
+      // The permutation test reports the float32 threshold its kernel compares against.
+      expect(item.result.inference.significanceLevel).toBe(
+        'permutation' in item.variant && item.variant.permutation
+          ? Math.fround(item.variant.significanceLevel)
+          : item.variant.significanceLevel
+      );
       expect(item.result.inference.multipleTesting).toBe(item.variant.multipleTesting);
       expect(item.result.inferenceMethod).toBe(
         item.variant.permutation

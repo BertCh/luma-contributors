@@ -10,12 +10,18 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {getRowTileMergeNodes} from '../spatial-regression/regression-row-tiles';
+import {
+  createDetectorNormalizationNodes,
+  DETECTOR_NORMALIZATION_WGSL
+} from './geographical-detector-normalization';
 import {
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
   GPURegionPartitionEvaluation,
@@ -37,13 +43,18 @@ const LABEL_TILE = 256;
 export const GPU_GEOGRAPHICAL_DETECTOR_LAYOUT = {
   /**
    * The q statistic `1 - SSW / SST` (Wang et al. 2010): the share of the variance of `values`
-   * explained by the stratification, in [0, 1]. NaN when `SST` is 0 or no row is labelled.
+   * explained by the stratification, in [0, 1], evaluated as directly accumulated SSB / SST
+   * to retain small explained variation. Exactly 1 when SSW is zero and SSB is positive.
+   * NaN when mathematical SST is 0 or no row is labelled. Ratios use normalized moments for
+   * uniformly tiny responses even when the physical totalSumOfSquares rounds to zero.
    */
   q: 0,
   /**
    * `F = ((N - L) / (L - 1)) * q / (1 - q)`, distributed as a non-central F with `L - 1` and
    * `N - L` degrees of freedom and parameter `nonCentrality` under the stratified model.
-   * `+Infinity` when `q` is 1. NaN when `L < 2` or `N <= L`.
+   * Uses the partition's exponent-safe `((N-L)/(L-1)) * SSB/SSW` for positive SSW.
+   * `+Infinity` only when SSW is zero and between-stratum SS is positive.
+   * NaN when `L < 2`, `N <= L`, or a nonperfect F overflows float32.
    */
   fStatistic: 1,
   /**
@@ -85,6 +96,8 @@ export type GPUGeographicalDetectorProps = {
    * the row out.
    */
   labels: GraphDataView<'uint32'>;
+  /** Optional scalar solver certificate, nonzero when the supplied partition is complete. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /** Number of distinct label values `[0, labelCapacity)`. Defaults to the row count. */
   labelCapacity?: number;
   /** Caller-owned outputs. */
@@ -93,6 +106,8 @@ export type GPUGeographicalDetectorProps = {
 
 /** Caller-owned outputs of {@link GPUGeographicalDetector}. */
 export type GPUGeographicalDetectorOutput = {
+  /** Scalar copy of the optional input certificate; statistics still describe the incumbent. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /** Summary words, see {@link GPU_GEOGRAPHICAL_DETECTOR_LAYOUT}. */
   summary: GraphDataView<'float32'>;
 };
@@ -108,9 +123,14 @@ export type GPUGeographicalDetectorOutput = {
  * tiled pass reduces the strata means for the non-centrality parameter. Work is
  * `O(rows)` plus the sort and `O(labelCapacity)`; no float atomics are used, so results are
  * bitwise reproducible.
+ * Uniformly tiny responses (largest usable magnitude below 2^-32) are normalized with one
+ * shared power of two before moments are evaluated. Ratios retain variation before squaring;
+ * totalSumOfSquares is restored to response-squared units with bit-safe subnormal rounding.
  *
  * **Missing values.** A row whose value is NaN or infinite is left out of every statistic (it is
  * given no stratum before the partition evaluation), so it does not count in `N`.
+ * The label/response row limit is 16,777,216 at a 128 MiB storage binding limit. The
+ * partition stage also bounds `labelCapacity` to 33,554,431 at that binding size.
  *
  * **P-value.** The p-value `1 - F_ncf(F; L - 1, N - L, lambda)` needs a non-central F
  * distribution function and is computed on the host from the read-back summary with
@@ -134,14 +154,46 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
   readonly props: GPUGeographicalDetectorProps;
 
   constructor(props: GPUGeographicalDetectorProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'values',
+      'labels',
+      'labelsComplete',
+      'labelCapacity',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, ['summary', 'labelsComplete'])
+    });
     const id = props.id ?? 'geographical-detector';
     this.id = id;
     this.props = props;
     validateCapacity(id, 'labelCapacity', props.labelCapacity ?? props.labels.length);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.output.summary],
-      [props.values, props.labels]
+      [props.output.summary, props.output.labelsComplete],
+      [props.values, props.labels, props.labelsComplete]
+    );
+    validateRequirement(
+      id,
+      Boolean(props.labelsComplete) === Boolean(props.output.labelsComplete),
+      'labelsComplete input and output.labelsComplete must both be supplied to retain partition provenance'
+    );
+    for (const [name, view] of [
+      ['labelsComplete', props.labelsComplete],
+      ['output.labelsComplete', props.output.labelsComplete]
+    ] as const) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+        validateCapacity(id, `${name} length`, view.length, 1, 1);
+      }
+    }
+    validateRequirement(
+      id,
+      !props.output.labelsComplete ||
+        props.output.labelsComplete.buffer !== props.output.summary.buffer,
+      'output.labelsComplete and output.summary must use separate buffers'
     );
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
@@ -167,6 +219,8 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
       'label offsets scratch': ((props.labelCapacity ?? props.labels.length) + 1) * 4,
       'partition summary': GPU_REGION_PARTITION_EVALUATION_LAYOUT.length * 4,
       'analysis labels': props.labels.length * 4,
+      'normalization magnitudes': props.labels.length * 4,
+      'normalized responses': props.labels.length * 4,
       'mean tiles': Math.ceil((props.labelCapacity ?? props.labels.length) / LABEL_TILE) * 8
     });
     validateMaximumCount(
@@ -175,7 +229,13 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
       props.labels.length,
       getGPURegionPartitionEvaluationMaximumRowCount(graph.device)
     );
-    validateGraphViewsBelongToGraph(id, graph, [props.values, props.labels, props.output.summary]);
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.values,
+      props.labels,
+      props.labelsComplete,
+      props.output.summary,
+      props.output.labelsComplete
+    ]);
     const labelCapacity = props.labelCapacity ?? props.labels.length;
     const tileCount = Math.ceil(labelCapacity / LABEL_TILE);
     const evaluationSummary = createTransientView(
@@ -198,7 +258,35 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
     const declarations = `const LABELS: u32 = ${labelCapacity}u;
 const TILES: u32 = ${tileCount}u;
 const LABEL_TILE: u32 = ${LABEL_TILE}u;`;
+    const normalization = createDetectorNormalizationNodes(
+      graph,
+      id,
+      props.values,
+      props.labels,
+      labelCapacity
+    );
     return [
+      ...normalization.nodes,
+      ...(props.labelsComplete && props.output.labelsComplete
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-partition-provenance`,
+              operation: OPERATION,
+              variant: 'partition-provenance',
+              invocationCount: 1,
+              bindings: [
+                {name: 'labelsComplete', view: props.labelsComplete, type: 'u32', access: 'read'},
+                {
+                  name: 'complete',
+                  view: props.output.labelsComplete,
+                  type: 'u32',
+                  access: 'read_write'
+                }
+              ],
+              body: 'complete[completeOffset] = u32(labelsComplete[labelsCompleteOffset] != 0u);'
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-analysis-labels`,
         operation: OPERATION,
@@ -218,7 +306,7 @@ const LABEL_TILE: u32 = ${LABEL_TILE}u;`;
       }),
       ...new GPURegionPartitionEvaluation({
         id: `${id}-evaluation`,
-        values: props.values,
+        values: normalization.normalized,
         labels: analysisLabels,
         labelCapacity,
         output: {summary: evaluationSummary, regionSizes: sizes, regionMeans: means}
@@ -248,20 +336,26 @@ const LABEL_TILE: u32 = ${LABEL_TILE}u;`;
   tiles[tilesOffset + 2u * index] = squares;
   tiles[tilesOffset + 2u * index + 1u] = roots;`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-summary`,
-        operation: OPERATION,
-        variant: 'summary',
-        bindings: [
-          {name: 'evaluation', view: evaluationSummary, type: 'f32', access: 'read'},
-          {name: 'tiles', view: tiles, type: 'f32', access: 'read'},
-          {name: 'summary', view: props.output.summary, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: `${declarations}
+      ...getRowTileMergeNodes<Parameters>(
+        graph,
+        {
+          id: `${id}-summary`,
+          operation: OPERATION,
+          variant: 'summary',
+          bindings: [
+            {name: 'evaluation', view: evaluationSummary, type: 'f32', access: 'read'},
+            {name: 'magnitude', view: normalization.magnitude, type: 'u32', access: 'read'},
+            {name: 'tiles', view: tiles, type: 'f32', access: 'read'},
+            {name: 'summary', view: props.output.summary, type: 'f32', access: 'read_write'}
+          ],
+          // contract-allow: single-invocation -- REGRESSION_TILE_MERGE_GROUP_SIZE = 4096 bounds two-word partial merges; getRowTileMergeNodes adds parallel groups above that limit, with no input-row scan.
+          invocationCount: 1,
+          declarations: `${declarations}
 const ROWS: u32 = ${props.labels.length}u;
-${GET_NAN_WGSL}`,
-        body: `var squares = 0.0;
+${GET_NAN_WGSL}
+${IS_FINITE_FLOAT_WGSL}
+${DETECTOR_NORMALIZATION_WGSL}`,
+          body: `var squares = 0.0;
   var roots = 0.0;
   for (var tile = 0u; tile < TILES; tile++) {
     squares += tiles[tilesOffset + 2u * tile];
@@ -270,17 +364,20 @@ ${GET_NAN_WGSL}`,
   let strata = evaluation[evaluationOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.regionCount}u];
   let within = evaluation[evaluationOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.withinSumOfSquares}u];
   let total = evaluation[evaluationOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.totalSumOfSquares}u];
+  let between = evaluation[evaluationOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.betweenSumOfSquares}u];
   let observations = f32(ROWS) - evaluation[evaluationOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.ignoredRows}u];
   let nan = getNaN();
   let defined = observations > 0.0 && total > 0.0;
-  let q = select(nan, clamp(1.0 - within / total, 0.0, 1.0), defined);
+  let perfect = (bitcast<u32>(within) & 0x7fffffffu) == 0u && between > 0.0;
+  let q = select(nan, select(clamp(between / total, 0.0, 1.0), 1.0, perfect), defined);
   let degreesNumerator = strata - 1.0;
   let degreesDenominator = observations - strata;
   let fDefined = defined && strata >= 2.0 && degreesDenominator > 0.0;
   var infinityBits = 0x7f800000u;
   let infinity = bitcast<f32>(infinityBits);
-  let ratio = degreesDenominator * q / (degreesNumerator * (1.0 - q));
-  let fStatistic = select(nan, select(ratio, infinity, q >= 1.0), fDefined);
+  let ratio = evaluation[evaluationOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.pseudoF}u];
+  let finiteRatio = select(nan, ratio, isFiniteFloat(ratio));
+  let fStatistic = select(nan, select(finiteRatio, infinity, perfect), fDefined);
   let variance = total / max(observations, 1.0);
   let nonCentrality = select(nan, (squares - roots * roots / observations) / variance, defined);
   summary[summaryOffset + ${GPU_GEOGRAPHICAL_DETECTOR_LAYOUT.q}u] = q;
@@ -290,8 +387,10 @@ ${GET_NAN_WGSL}`,
   summary[summaryOffset + ${GPU_GEOGRAPHICAL_DETECTOR_LAYOUT.observationCount}u] = observations;
   summary[summaryOffset + ${GPU_GEOGRAPHICAL_DETECTOR_LAYOUT.numeratorDegreesOfFreedom}u] = degreesNumerator;
   summary[summaryOffset + ${GPU_GEOGRAPHICAL_DETECTOR_LAYOUT.denominatorDegreesOfFreedom}u] = degreesDenominator;
-  summary[summaryOffset + ${GPU_GEOGRAPHICAL_DETECTOR_LAYOUT.totalSumOfSquares}u] = total;`
-      })
+  summary[summaryOffset + ${GPU_GEOGRAPHICAL_DETECTOR_LAYOUT.totalSumOfSquares}u] = restoreDetectorSumOfSquares(total, detectorNormalizationShift(magnitude[magnitudeOffset]));`
+        },
+        {tileCount, partials: [{name: 'tiles', termCount: 2, countConstant: 'TILES'}]}
+      )
     ];
   }
 }

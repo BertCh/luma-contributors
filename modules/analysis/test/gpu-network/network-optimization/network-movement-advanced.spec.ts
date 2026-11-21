@@ -102,31 +102,31 @@ it('piecewise FIFO routing waits at the first sample, interpolates arrival, and 
 it('expanded restrictions preserve legal parallel histories across overlapping prohibited sequences', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const prepared = prepareGPUNetworkRestrictionStates(
-    4,
-    [
-      {source: 0, target: 1},
-      {source: 1, target: 2},
-      {source: 2, target: 3},
-      {source: 0, target: 1},
-      {source: 1, target: 3}
+  const prepared = prepareGPUNetworkRestrictionStates({
+    nodeCount: 4,
+    edges: [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [0, 1],
+      [1, 3]
     ],
-    [
+    restrictions: [
       [0, 1, 2],
       [3, 4]
     ]
-  );
+  });
   const harness = createOptimizationHarness(device);
   const output = {
-    arrivals: harness.output('float32', prepared.stateVertices.length),
-    predecessorTransitions: harness.output('uint32', prepared.stateVertices.length),
+    arrivals: harness.output('float32', prepared.stateCount),
+    predecessorTransitions: harness.output('uint32', prepared.stateCount),
     summary: harness.output('uint32', 4)
   };
   const baseCosts = [1, 1, 1, 2, 5];
   const result = await harness.run(
     new GPUNetworkTimeRouting({
-      stateVertices: harness.input('uint32', prepared.stateVertices),
-      transitions: harness.input('uint32x2', prepared.transitions),
+      stateVertices: harness.input(prepared.formats.stateVertices, prepared.stateVertices),
+      transitions: harness.input(prepared.formats.transitions, prepared.transitions),
       costs: harness.input(
         'float32x2',
         Float32Array.from(Array.from(prepared.originalEdges).flatMap(edge => [baseCosts[edge], 0]))
@@ -136,7 +136,10 @@ it('expanded restrictions preserve legal parallel histories across overlapping p
       output
     })
   );
-  expect(new Float32Array(Uint32Array.of(result(output.summary)[3]).buffer)[0]).toBe(4);
+  // Edges 3, 1, 2 cost 2 + 1 + 1 and clear the restriction history before the destination.
+  // Edges 0, 1, 2 are forbidden, and the other legal route (0, 4) costs 1 + 5.
+  // The empty-history state for vertex 3 is state 3. An unchanged sweep confirms convergence.
+  expect(result(output.summary)).toEqual([1, 1, 3, 0x40800000]); // Float32 bits of 4.
 });
 
 it('directed seeded Louvain handles incoming-only neighborhoods and asymmetric self loops', async () => {

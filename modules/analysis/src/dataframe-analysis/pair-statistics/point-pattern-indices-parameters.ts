@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUInferenceAlternative} from '../../analysis-core/contracts/inference';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {GPUAnalyticAlternative} from '../../analysis-core/contracts/inference';
 import {
   validatePairStatisticsBounds,
+  validatePositiveFloat32,
   type GPUPairStatisticsBounds
 } from './pair-statistics-parameters';
 
@@ -52,10 +54,11 @@ export type GPUPointPatternIndicesSettings = {
    */
   bounds: GPUPairStatisticsBounds;
   /**
-   * Size hint of the neighbor-search cells (cells are at least this wide). Results never depend on
-   * it, only speed: a value near the expected nearest-neighbor distance is fastest.
+   * Size hint in planar position units of the neighbor-search cells (cells are at least this wide).
+   * It changes search work, never distances. A value near the expected nearest-neighbor
+   * distance is fastest.
    */
-  maximumDistance: number;
+  indexCellSizeHint: number;
   /**
    * Clark-Evans edge correction. Defaults to `'donnelly'` (Donnelly 1978: expected mean distance
    * `0.5 sqrt(A / n) + (0.0514 + 0.041 / sqrt(n)) P / n`, variance
@@ -74,17 +77,21 @@ export type GPUPointPatternIndicesSettings = {
    * (Clark-Evans: regular; quadrat chi-square: clustered), `'lesser'` for one below it. The
    * permutation-only tails `'folded'` and `'directed'` throw.
    */
-  alternative?: GPUInferenceAlternative;
+  analyticAlternative?: GPUAnalyticAlternative;
 };
+
+/** Point-pattern settings with the required index cell size. */
+export type GPUPointPatternIndicesHintSettings = GPUPointPatternIndicesSettings;
 
 /**
  * Packs `GPUPointPatternIndices` parameters into the 8-element float32 layout
- * `[minX, minY, maxX, maxY, maximumDistance, clarkEvansCorrectionCode, alternativeCode, guardDistance]`.
+ * `[minX, minY, maxX, maxY, indexCellSizeHint, clarkEvansCorrectionCode, alternativeCode, guardDistance]`.
  *
  * @param@param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
- * @throws If a value is not finite, the bounds are inverted, `maximumDistance <= 0`, the correction
- * or alternative is unknown, or `target` is too short.
+ * @throws If a value is not finite, the bounds are inverted, `indexCellSizeHint <= 0`
+ * or the correction or analytic alternative is unknown,
+ * or `target` is too short.
  */
 export function getGPUPointPatternIndicesParameterValues(
   settings: GPUPointPatternIndicesSettings,
@@ -95,7 +102,19 @@ export function getGPUPointPatternIndicesParameterValues(
       `GPUPointPatternIndices target must hold ${GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH} elements`
     );
   }
-  validatePairStatisticsBounds('GPUPointPatternIndices', settings.bounds, settings.maximumDistance);
+  validateRequirement(
+    'GPUPointPatternIndices',
+    !('maximumDistance' in settings),
+    'maximumDistance was removed. Use indexCellSizeHint'
+  );
+  validateRequirement(
+    'GPUPointPatternIndices',
+    !('alternative' in settings),
+    'alternative was removed. Use analyticAlternative'
+  );
+  const {indexCellSizeHint} = settings;
+  validatePositiveFloat32('GPUPointPatternIndices', 'indexCellSizeHint', indexCellSizeHint);
+  validatePairStatisticsBounds('GPUPointPatternIndices', settings.bounds, indexCellSizeHint);
   if (settings.bounds === 'study-window') {
     if (settings.clarkEvansCorrection === undefined) {
       throw new Error(
@@ -122,15 +141,22 @@ export function getGPUPointPatternIndicesParameterValues(
       "GPUPointPatternIndices clarkEvansCorrection 'guard' needs a positive guardDistance"
     );
   }
-  const alternative = settings.alternative ?? 'two-sided';
+  if (correction === 'guard') {
+    validatePositiveFloat32(
+      'GPUPointPatternIndices',
+      "clarkEvansCorrection 'guard' guardDistance",
+      settings.guardDistance!
+    );
+  }
+  const alternative = settings.analyticAlternative ?? 'two-sided';
   if (!Object.prototype.hasOwnProperty.call(GPU_POINT_PATTERN_ALTERNATIVE, alternative)) {
     throw new Error(
-      `GPUPointPatternIndices alternative must be 'two-sided', 'greater' or 'lesser'`
+      `GPUPointPatternIndices analyticAlternative received ${alternative}; must be 'two-sided', 'greater' or 'lesser'`
     );
   }
   target.set([
     ...(settings.bounds === 'study-window' ? [NaN, NaN, NaN, NaN] : settings.bounds),
-    settings.maximumDistance,
+    indexCellSizeHint,
     GPU_CLARK_EVANS_CORRECTION[correction],
     GPU_POINT_PATTERN_ALTERNATIVE[alternative as keyof typeof GPU_POINT_PATTERN_ALTERNATIVE],
     settings.guardDistance ?? 0

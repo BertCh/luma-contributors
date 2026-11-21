@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  type RegionalizationWeightsStatus,
+  validateRegionalizationWeightsStatus
+} from './adjacency-loss-suppression';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {SpatialWeightsAlgebraGraphInput} from '../spatial-weights/gpu-spatial-weights-algebra-operation';
@@ -17,7 +22,7 @@ export type SkaterRegionsOperationProps = {
   rowCount: number;
   edgeCount: number;
   weights: SpatialWeightsAlgebraGraphInput & {
-    status?: {overflow?: string; candidateOverflow?: string};
+    status?: RegionalizationWeightsStatus<string>;
   };
   treeEdgeFlags: string;
   componentLabels: string;
@@ -49,6 +54,7 @@ export function snapshotSkaterOperationProps(
     'output'
   ]);
   const weights = snapshotWeightsPort(captured.weights);
+  validateRegionalizationWeightsStatus(captured.id ?? 'skater-regions', weights.status);
   for (const name of ['overflow', 'candidateOverflow'] as const) {
     const value = weights.status?.[name];
     validateRequirement(

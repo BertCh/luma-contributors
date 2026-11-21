@@ -34,8 +34,9 @@ try{
  }
  for(const reference of oracle.profiles){
   for(const [id,value]of Object.entries({date:reference.date,profileSpacing:reference.spacing,profileMethod:reference.method}))await select(id,value);
-  if(reference.method === 'bilinear') await select('profileNoData',reference.policy);
-  await ready();const text=await readout('profileEvidence');const match=text.match(/(\d+)\/(\d+) emitted · (\d+) finite · overflow (\d+) · .* · min ([\d.]+) \/ max ([\d.]+) · ([\d.]+) m/);assert.ok(match,text);assert.equal(Number(match[1]),reference.count);assert.equal(Number(match[2]),reference.count);assert.equal(Number(match[3]),reference.finite);assert.equal(Number(match[4]),0);closeTo(Number(match[5]),reference.minimum,.00003,'Profile minimum');closeTo(Number(match[6]),reference.maximum,.00003,'Profile maximum');closeTo(Number(match[7]),reference.length,.06,'Profile length');results.push({profile:true,...reference,effectivePolicy:reference.method === 'nearest' ? 'not-used-by-nearest' : reference.policy,text});
+  const selectedPolicy = reference.policy === 'strict' ? 'propagate' : reference.policy;
+  if(reference.method === 'bilinear') await select('profileNoData',selectedPolicy);
+  await ready();const text=await readout('profileEvidence');const match=text.match(/(\d+)\/(\d+) emitted · (\d+) finite · overflow (\d+) · .* · min ([\d.]+) \/ max ([\d.]+) · ([\d.]+) m/);assert.ok(match,text);assert.equal(Number(match[1]),reference.count);assert.equal(Number(match[2]),reference.count);assert.equal(Number(match[3]),reference.finite);assert.equal(Number(match[4]),0);closeTo(Number(match[5]),reference.minimum,.00003,'Profile minimum');closeTo(Number(match[6]),reference.maximum,.00003,'Profile maximum');closeTo(Number(match[7]),reference.length,.06,'Profile length');results.push({profile:true,...reference,effectivePolicy:reference.method === 'nearest' ? 'not-used-by-nearest' : selectedPolicy,text});
  }
  for(const reference of oracle.population){
   await select('date',reference.date);

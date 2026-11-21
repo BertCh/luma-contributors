@@ -8,5 +8,6 @@ export {
 } from './gpu-buffer-surface';
 export type {
   GPUBufferCapStyle,
+  GPUBufferSurfaceOutput,
   GPUBufferSurfaceProps
 } from './gpu-buffer-surface';

@@ -147,7 +147,7 @@ it('addChangeOfSupportRecipe rasterizes two zone systems and transfers values by
       target: toZones(target, 'target'),
       pairCapacity: capacity,
       sourceValues: fixture.input('source-values', sourceValues, 'float32', 4),
-      outputs: {
+      output: {
         extensiveWeights: {
           offsets: offsets.view,
           neighbors: neighbors.view,
@@ -294,7 +294,7 @@ it.each([
       target: zones(target, 'target'),
       pairCapacity: 2,
       sourceValues: fixture.input('source-values', Float32Array.of(100), 'float32', 1),
-      outputs: {sourceAreas: sourceAreas.view, extensiveValues: extensiveValues.view}
+      output: {sourceAreas: sourceAreas.view, extensiveValues: extensiveValues.view}
     });
     fixture.run();
     // Binary64 oracle: the WGS84 authalic radius and latitude-strip formula.

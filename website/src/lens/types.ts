@@ -187,9 +187,13 @@ export type LensSummary = {
   copies: number;
   gatedKernels: number;
   dependencies: {raw: number; war: number; waw: number};
-  buffers: number;
-  bufferBytes: number;
-  bufferBytesKind?: LensResourceBytesKind;
+  /** All recorded resource entries: buffers, textures and external textures. */
+  resourceCount: number;
+  /** False if any source graph omitted its inventory; count and bytes then sum only known data. */
+  inventoryKnown?: boolean;
+  /** Sum of observed resource sizes; precision/availability applies to the entire inventory. */
+  resourceBytes: number;
+  resourceBytesKind?: LensResourceBytesKind;
   snapshots: number;
   formulas: number;
   recordsWithFormulas: number;

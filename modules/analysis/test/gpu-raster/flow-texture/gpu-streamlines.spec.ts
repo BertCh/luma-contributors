@@ -243,8 +243,8 @@ const VORTEX_CONFIG: StreamlinesCPUConfig = {
 };
 
 const VORTEX_SETTINGS: GPUStreamlinesSettings = {
-  fieldExtent: [0, 0, 1, 1],
-  gridExtent: [0, 0, 32 / 48, 32 / 48],
+  fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+  gridPlacement: {origin: [0, 0], cellSize: [32 / 48, 32 / 48]},
   stepLength: 0.3,
   minimumSpeed: 0.05,
   seed: 5,
@@ -320,8 +320,8 @@ it('GPUStreamlines spaces straight lines on a uniform field and never shares a g
     pointCapacity: 256 * 129
   };
   const settings: GPUStreamlinesSettings = {
-    fieldExtent: [0, 0, 1, 1],
-    gridExtent: [0, 0, 0.5, 0.5],
+    fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+    gridPlacement: {origin: [0, 0], cellSize: [0.5, 0.5]},
     stepLength: 0.25,
     seed: 1,
     minimumPoints: 2
@@ -414,5 +414,38 @@ it('GPUStreamlines reports capacity overflow, non-convergence, replays and resee
     expect(actual.ids.every(seed => full.acceptedSeeds.includes(seed))).toBe(true);
   } finally {
     oneRound.destroy();
+  }
+});
+
+it('RT-124 GPUStreamlines ends a line whose second-order landing leaves the velocity field', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // One unit field cell [0, 1) with velocity [1, 0] inside an occupancy grid [0, 4) x [0, 1).
+  // Seed 8 starts seed 0 at x = 0.6033; a 0.75 step lands at 1.353, outside the field, and the
+  // backward step at -0.147. Seed 1 starts outside the field. No line reaches two points.
+  const field = createUniformField(1, 1, 1, 0);
+  const config: StreamlinesCPUConfig = {
+    seedColumns: 2,
+    seedRows: 1,
+    stepsPerDirection: 1,
+    gridWidth: 2,
+    gridHeight: 1,
+    lineCapacity: 2,
+    pointCapacity: 8
+  };
+  const fixture = createFixture(device, field, config, 8);
+  try {
+    const actual = await fixture.run({
+      fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+      gridPlacement: {origin: [0, 0], cellSize: [2, 1]},
+      stepLength: 0.75,
+      seed: 8,
+      minimumPoints: 2
+    });
+    expect(actual.count).toBe(0);
+    expect(actual.requiredCount).toBe(0);
+    expect(actual.pointCount).toBe(0);
+  } finally {
+    fixture.destroy();
   }
 });

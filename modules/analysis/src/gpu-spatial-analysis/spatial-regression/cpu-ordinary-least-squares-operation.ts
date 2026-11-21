@@ -18,6 +18,7 @@ import {
   type OrdinaryLeastSquaresOperationProps
 } from './gpu-ordinary-least-squares-operation';
 import {
+  resolveOrdinaryLeastSquaresPredictorCount,
   GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_STATUS_SINGULAR,
@@ -130,21 +131,28 @@ function fitCenteredRows(
  * - The shader-only 15-predictor cap is dropped. Numerical singularity uses a squared Cholesky
  *   pivot floor of 64 * Number.EPSILON relative to that column's correlation diagonal, instead of
  *   the GPU's pivot < 1e-3 rejection; some GPU status-1 fits succeed here.
- * - Conditioning uses one-sided Jacobi singular values until float64 orthogonality, without the
- *   GPU sweep cap. A singular unpenalized design in a successful ridge fit reports Belsley 3e38,
+ * - Conditioning uses one-sided Jacobi singular values until float64 orthogonality or numerical
+ *   stagnation, with a separate bounded host sweep count. A singular unpenalized design in a
+ *   successful ridge fit reports Belsley 3e38,
  *   matching the GPU sentinel. The precision-warning threshold still describes the GPU matrix.
- * - The public float64 chi-square survival function is called; its shared 200-iteration cap stays.
+ * - The public float64 chi-square function uses a converged shape-dependent host evaluation;
+ *   the GPU retains its 200-iteration budget for at most 15 degrees of freedom.
  * - Subnormals are retained. Non-finite parameter lambda means no ridge, as on the GPU.
  *
  * @throws If predictors, mask or parameters have inconsistent lengths, naming the argument.
  */
 export function computeOrdinaryLeastSquaresOnCPU(
   input: CPUOrdinaryLeastSquaresInput,
-  predictorCount: number
+  explicitPredictorCount?: number
 ): CPUOrdinaryLeastSquaresResult {
   const id = 'computeOrdinaryLeastSquaresOnCPU';
-  validateCapacity(id, 'predictorCount', predictorCount);
   const rowCount = input.response.length;
+  const predictorCount = resolveOrdinaryLeastSquaresPredictorCount(
+    id,
+    input.predictors.length,
+    rowCount,
+    explicitPredictorCount
+  );
   if (input.predictors.length !== rowCount * predictorCount)
     throw new Error(`${id} predictors length must equal response length * predictorCount`);
   if (input.mask && input.mask.length !== rowCount)
@@ -241,7 +249,9 @@ export function computeOrdinaryLeastSquaresOnCPU(
   const rSquared = totalSumSquares > 0 ? 1 - residualSumSquares / totalSumSquares : NaN;
   const meanSquare = residualSumSquares / usedCount;
   const logLikelihood =
-    -0.5 * usedCount * (Math.log(2 * Math.PI) + Math.log(Math.max(meanSquare, 1.17549435e-38)) + 1);
+    -0.5 *
+    usedCount *
+    (Math.log(2 * Math.PI) + Math.log(meanSquare === 0 ? 1.17549435e-38 : meanSquare) + 1);
   const skewness = meanSquare > 0 ? sumCubes / usedCount / meanSquare ** 1.5 : NaN;
   const kurtosis = meanSquare > 0 ? sumFourth / usedCount / meanSquare ** 2 : NaN;
   const jarqueBera = (usedCount / 6) * (skewness ** 2 + (kurtosis - 3) ** 2 / 4);
@@ -252,18 +262,20 @@ export function computeOrdinaryLeastSquaresOnCPU(
   );
   let koenkerBassett = NaN;
   let breuschPagan = NaN;
-  if (auxiliary && auxiliary.moments[predictorCount][predictorCount] > 0) {
+  if (auxiliary) {
     const explained = auxiliary.slopes.reduce(
       (sum, slope, column) => sum + slope * auxiliary.moments[column][predictorCount],
       0
     );
-    const auxiliaryRSquared = Math.min(
-      1,
-      Math.max(0, explained / auxiliary.moments[predictorCount][predictorCount])
-    );
-    koenkerBassett = usedCount * auxiliaryRSquared;
+    if (auxiliary.moments[predictorCount][predictorCount] > 0) {
+      const auxiliaryRSquared = Math.min(
+        1,
+        Math.max(0, explained / auxiliary.moments[predictorCount][predictorCount])
+      );
+      koenkerBassett = usedCount * auxiliaryRSquared;
+    }
     if (residualSumSquares > 0)
-      breuschPagan = Math.max(0.5 * auxiliaryRSquared * usedCount * (kurtosis - 1), 0);
+      breuschPagan = Math.max((0.5 * (explained / meanSquare)) / meanSquare, 0);
   }
   const [minimumSingular, maximumSingular] = getCPURegressionSingularValueRange(fit.factor);
   const correlationCondition = (maximumSingular / minimumSingular) ** 2;

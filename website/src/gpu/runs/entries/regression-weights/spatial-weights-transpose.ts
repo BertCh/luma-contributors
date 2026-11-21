@@ -14,6 +14,7 @@ import {
   addCardinality,
   addLinkSegments,
   allocateWeights,
+  getWeightsInput,
   createSeededRandom,
   getSegmentTargets,
   uploadWeightsBuffers,
@@ -34,7 +35,7 @@ export default defineOperationRun({
   build(builder, inputs, values) {
     const {seed, world} = inputs;
     const points = stretchPoints(
-      createClusteredPoints(createSeededRandom(seed), world, 180, 5, values.scatter),
+      createClusteredPoints(createSeededRandom(seed), world, 180, 5, values['scatter']),
       world
     );
     inputs.positions = points.positions;
@@ -43,7 +44,7 @@ export default defineOperationRun({
     const directed = uploadWeightsBuffers(
       builder,
       'directed',
-      createKnnWeights(points.positions, values.k)
+      createKnnWeights(points.positions, values['k'])
     );
     const transposed = allocateWeights(
       builder,
@@ -55,7 +56,7 @@ export default defineOperationRun({
     builder.graph.add(
       new GPUSpatialWeightsTranspose({
         weights: directed.input,
-        output: transposed.port
+        output: getWeightsInput(transposed)
       })
     );
     return {

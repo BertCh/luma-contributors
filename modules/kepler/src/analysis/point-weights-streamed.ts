@@ -288,8 +288,8 @@ export async function buildKeplerStreamedPointWeights(
         values: getGPUNeighborSearchParameterValues({
           spatialContext,
           bounds: getKeplerPointWeightBounds(settings),
-          radius: settings.radiusMeters,
-          weightKind: 'binary',
+          searchRadius: settings.radiusMeters,
+          weightType: 'binary',
           rowStandardize: false
         })
       });

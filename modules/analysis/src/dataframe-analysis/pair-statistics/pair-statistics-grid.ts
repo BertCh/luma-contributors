@@ -18,6 +18,7 @@ import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/poi
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -85,6 +86,8 @@ export type PairStatisticsInputProps = {
   gridSize: readonly [number, number];
   /** Legacy variograms keep finite inputs when the radius square or bounds extent overflows. */
   legacyLattice?: boolean;
+  /** A nearest-neighbor index cell-size hint is not a finite squared pair-search radius. */
+  cellSizeHintOnly?: boolean;
   /** Keep the point-pattern rectangle shaders byte-identical. */
   legacyIndex?: boolean;
   /** Optional values: rows with a non-finite value are excluded and moments are computed. */
@@ -133,30 +136,36 @@ export function validatePairStatisticsInputs(
   const rows = props.positions.length;
   // The device-dependent maximum is checked at declaration by validatePairStatisticsRowCount.
   validateCapacity(id, 'positions length', rows, 1, 2 ** 24 - 1);
-  if (props.parameters.length < props.parameterLength) {
-    throw new Error(`${id} parameters must hold ${props.parameterLength} float32 values`);
-  }
+  validateRequirement(
+    id,
+    props.parameters.length >= props.parameterLength,
+    `parameters length ${props.parameters.length} must hold at least ${props.parameterLength} float32 values`
+  );
   const [columns, gridRows] = props.gridSize;
-  if (
-    !Number.isInteger(columns) ||
-    !Number.isInteger(gridRows) ||
-    columns < 1 ||
-    gridRows < 1 ||
-    columns * gridRows >= 2 ** 24
-  ) {
-    throw new Error(`${id} gridSize must be two positive integers with columns * rows < 2^24`);
-  }
+  validateRequirement(
+    id,
+    Number.isInteger(columns) &&
+      Number.isInteger(gridRows) &&
+      columns >= 1 &&
+      gridRows >= 1 &&
+      columns * gridRows < 2 ** 24,
+    'gridSize must be two positive integers with columns * rows < 2^24 (16777216)'
+  );
   if (props.values) {
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
-    if (props.values.length !== rows) {
-      throw new Error(`${id} values length must equal positions length`);
-    }
+    validateRequirement(
+      id,
+      props.values.length === rows,
+      `values length ${props.values.length} must equal positions length (${rows})`
+    );
   }
   if (props.mask) {
     validatePackedUint32View(props.mask, `${id} mask`);
-    if (props.mask.length !== rows) {
-      throw new Error(`${id} mask length must equal positions length`);
-    }
+    validateRequirement(
+      id,
+      props.mask.length === rows,
+      `mask length ${props.mask.length} must equal positions length (${rows})`
+    );
   }
   return rows;
 }
@@ -200,10 +209,11 @@ fn getOrderedFloatValue(key: u32) -> f32 {
  */
 export function getPairStatisticsSharedWGSL(
   gridSize: readonly [number, number],
-  legacyLattice: boolean = false
+  legacyLattice: boolean = false,
+  cellSizeHintOnly: boolean = false
 ): string {
   // The default WGSL text, including whitespace and assignment order, is pinned by the legacy
-  // point-pattern kernel hashes. Keep variogram changes entirely inside the opt-in fragments.
+  // point-pattern kernel hashes. Keep route-specific changes inside the opt-in fragments.
   return /* wgsl */ `
 const COLUMNS: u32 = ${gridSize[0]}u;
 const ROWS: u32 = ${gridSize[1]}u;
@@ -242,8 +252,8 @@ fn readLattice() -> Lattice {
   let radius = readParameter(4u);
   let width = maximumX - minimumX;
   let height = maximumY - minimumY;
-  let radiusSquared = radius * radius;
-  let cellRadius = radius * CELL_MARGIN;
+  let radiusSquared = ${cellSizeHintOnly ? '0.0' : 'radius * radius'};
+  let cellRadius = ${cellSizeHintOnly ? 'radius' : 'radius * CELL_MARGIN'};
   lattice.valid =
     isFiniteValue(minimumX) && isFiniteValue(minimumY) && isFiniteValue(maximumX) &&
     ${
@@ -374,7 +384,11 @@ export function getPairStatisticsInputNodes<Parameters>(
   const {id, operation, positions, values, parameters, gridSize, mask, studyWindow} = props;
   const rows = positions.length;
   const cellCount = gridSize[0] * gridSize[1];
-  const sharedWGSL = getPairStatisticsSharedWGSL(gridSize, props.legacyLattice);
+  const sharedWGSL = getPairStatisticsSharedWGSL(
+    gridSize,
+    props.legacyLattice,
+    props.cellSizeHintOnly
+  );
   const nodes: GPUCommandNode<Parameters>[] = [];
 
   const cellKeys = createTransientView(graph, `${id}-cell-keys`, 'uint32', rows);

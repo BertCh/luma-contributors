@@ -12,6 +12,13 @@ import {
 } from '../../src/raster-analysis/raster-watershed/gpu-raster-watershed-segmentation-operation';
 import {runOperationGraph} from '../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
+import {checkWalkingWatershedTextures} from './walking-watershed-texture-fixture';
+
+for (const method of ['fifo', 'minimum-spanning-forest'] as const) {
+  it(`${method} buffer and texture inputs preserve raw nodata and masks on resubmission (RT-09)`, async () => {
+    await checkWalkingWatershedTextures(method);
+  });
+}
 
 for (const method of ['fifo', 'minimum-spanning-forest'] as const) {
   for (const noMarkers of [false, true]) {

@@ -104,7 +104,31 @@ describe('shared website analysis metadata', () => {
           : 'api/gpu-spatial-analysis/urban-morphology'
       );
       expect(recipe.lensScenarios).toEqual([`${entryPoint}.visibility-graph-recipe`]);
-      expect((recipe as unknown as {overloads?: unknown[]}).overloads).toHaveLength(2);
+      // The declared union overload is callable. The separate implementation with a body is excluded.
+      expect(
+        recipe.overloads?.map(
+          overload =>
+            overload.mode && {
+              ...overload.mode,
+              values: [...overload.mode.values].sort()
+            }
+        )
+      ).toEqual([
+        {values: ['csr'], optional: false},
+        {values: ['reference'], optional: true},
+        {values: ['csr', 'reference'], optional: true}
+      ]);
+      const csr = recipe.overloads?.find(
+        overload => overload.mode?.values.length === 1 && overload.mode.values.includes('csr')
+      );
+      expect(csr?.propsType).toBe(
+        entryPoint === 'gpu-network'
+          ? 'GPUNetworkVisibilityGraphCSRProps'
+          : 'GPUVisibilityGraphAdjacencyCSRProps'
+      );
+      expect(csr?.outputs.some(output => output.name === 'pivotNodes')).toBe(
+        entryPoint === 'gpu-network'
+      );
     }
   });
   it('does not silently discard the public centrality continuation factory', () => {
@@ -173,7 +197,7 @@ describe('shared website analysis metadata', () => {
       'GPUHotSpotAnalysis',
       'GPULocalMoran',
       'GPUQuantileLISA',
-      'GPUSpatialClustering',
+      'GPUDBSCAN',
       'GPUKriging',
       'GPUInverseDistanceWeighting',
       'GPUOrdinaryLeastSquares',

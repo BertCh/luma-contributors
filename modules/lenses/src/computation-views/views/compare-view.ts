@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getInterpretedCaptureValue, isUnknownCaptureValue} from './capture-missing-values';
 import {assert} from '@luma.gl/core';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
@@ -36,6 +37,8 @@ export type CompareViewModel = {
   firstKey: number;
   delta: number[];
   changedCount: number;
+  /** Rows with a scoped missing lane cannot be compared. */
+  unknownCount?: number;
   maxAbsDelta: number;
   equalCount: number;
   midpoint: 0;
@@ -58,12 +61,30 @@ function getRasterFrame(capture: GPUComputationCapture) {
   if (geometry?.kind !== 'raster') return undefined;
   const cellSize = geometry.cellSize ?? 1;
   const rowDirection = geometry.rowDirection ?? 'south';
+  const origin = geometry.origin ?? [
+    0,
+    rowDirection === 'north' ? 0 : geometry.shape[1] * cellSize
+  ];
+  const [columnX, rowX, originX, columnY, rowY, originY] = geometry.affine ?? [
+    cellSize,
+    0,
+    origin[0],
+    0,
+    rowDirection === 'north' ? cellSize : -cellSize,
+    origin[1]
+  ];
+  const shift = geometry.pixelInterpretation === 'point' ? 0 : 0.5;
   return [
     geometry.coordinateModel ?? 'unknown',
     geometry.unit ?? '',
-    cellSize,
-    rowDirection,
-    geometry.origin ?? [0, rowDirection === 'north' ? 0 : geometry.shape[1] * cellSize]
+    geometry.frameId ?? '',
+    geometry.crs ?? '',
+    columnX,
+    rowX,
+    originX + shift * (columnX + rowX),
+    columnY,
+    rowY,
+    originY + shift * (columnY + rowY)
   ];
 }
 function haveCompatibleLayouts(
@@ -173,17 +194,40 @@ export function buildCompareViewModel(context: ViewContext): CompareViewModel {
       getCaptureFirstKey(second) + getCaptureRowCount(second)
     ) - firstKey
   );
+  const recordFor = (capture: GPUComputationCapture) =>
+    capture === second && context.compare ? context.compare.record : context.record;
+  const readValue = (capture: GPUComputationCapture, key: number) =>
+    getInterpretedCaptureValue(recordFor(capture), capture, getCaptureValue(capture, key)!);
   const delta = Array.from(
     {length: count},
-    (_, index) =>
-      getCaptureValue(second, firstKey + index)! - getCaptureValue(first, firstKey + index)!
+    (_, index) => readValue(second, firstKey + index) - readValue(first, firstKey + index)
   );
   let equalCount = 0;
+  let unknownCount = 0;
   let maxAbsDelta = 0;
   for (let index = 0; index < count; index++) {
     const key = firstKey + index;
     const components = first.components ?? 1;
     let equal = true;
+    const unknown = Array.from(
+      {length: components},
+      (_, component) =>
+        isUnknownCaptureValue(
+          recordFor(first),
+          first,
+          Number(first.values[(key - getCaptureFirstKey(first)) * components + component])
+        ) ||
+        isUnknownCaptureValue(
+          recordFor(second),
+          second,
+          Number(second.values[(key - getCaptureFirstKey(second)) * components + component])
+        )
+    ).some(Boolean);
+    if (unknown) {
+      unknownCount++;
+      delta[index] = NaN;
+      continue;
+    }
     for (let component = 0; component < components; component++) {
       const firstValue = Number(
         first.values[(key - getCaptureFirstKey(first)) * components + component]
@@ -206,7 +250,8 @@ export function buildCompareViewModel(context: ViewContext): CompareViewModel {
     count,
     firstKey,
     delta,
-    changedCount: count - equalCount,
+    changedCount: count - equalCount - unknownCount,
+    unknownCount,
     maxAbsDelta,
     equalCount,
     midpoint: 0,
@@ -259,9 +304,14 @@ export function renderCompareView(model: CompareViewModel, context: ViewContext)
           }
         ]
       : [references.first, references.second].map((capture, index) => ({
-          values: Array.from(
-            {length: model.count},
-            (_, index) => getCaptureValue(capture, model.firstKey + index)!
+          values: Array.from({length: model.count}, (_, index) =>
+            getInterpretedCaptureValue(
+              capture === references.second && context.compare
+                ? context.compare.record
+                : context.record,
+              capture,
+              getCaptureValue(capture, model.firstKey + index)!
+            )
           ),
           provenance: getCaptureProvenance(capture),
           label: `${index === 0 ? model.labelA : model.labelB}${componentLabel}`,
@@ -292,7 +342,7 @@ export function renderCompareView(model: CompareViewModel, context: ViewContext)
     h(
       'p',
       null,
-      `${model.changedCount} keys changed · max |Δ| ${model.maxAbsDelta} · ${model.equalCount} equal`
+      `${model.unknownCount ? `${model.unknownCount} keys unknown · ` : ''}${model.changedCount} keys changed · max |Δ| ${model.maxAbsDelta} · ${model.equalCount} equal`
     ),
     h('p', null, getAdapterLabel(context.record))
   );

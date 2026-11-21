@@ -10,7 +10,7 @@
 //    virtual-module declarations, because website sources are not written for the root settings.
 import {spawnSync} from 'node:child_process';
 import {existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
-import {dirname, join, relative} from 'node:path';
+import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import typeScript from 'typescript';
 import {resolveNodeHeapOptions} from './verification-policy.mjs';
@@ -40,6 +40,27 @@ if (!rootConfiguration || configurationErrors.length)
   );
 // Tests execute through Vite, including those importing example source, glob and raw modules.
 const testTypes = [...new Set([...(rootConfiguration.options.types ?? []), 'vite/client'])];
+// Production aliases mirror package exports. Only test projects see workspace testing helpers.
+// Absolutize inherited targets before writing configurations into different directories.
+const testPaths = {
+  ...Object.fromEntries(
+    Object.entries(rootConfiguration.options.paths ?? {}).map(([key, targets]) => [
+      key,
+      targets.map(target =>
+        resolve(
+          rootConfiguration.options.baseUrl ??
+            rootConfiguration.options.pathsBasePath ??
+            rootDirectory,
+          target
+        )
+      )
+    ])
+  ),
+  '@luma-contributors/analysis/testing': [
+    join(rootDirectory, 'modules/analysis/src/testing/index.ts')
+  ],
+  '@luma-contributors/analysis/test/*': [join(rootDirectory, 'modules/analysis/test/*')]
+};
 const keplerComputeExampleSpecLists = JSON.parse(
   readFileSync(join(rootDirectory, 'test/kepler-compute-example-specs.json'), 'utf8')
 );
@@ -175,6 +196,7 @@ function createFamilyStages() {
               noEmit: true,
               incremental: true,
               types: testTypes,
+              paths: testPaths,
               tsBuildInfoFile: `./${key}.tsbuildinfo`
             },
             files: files.sort().map(file => `../../${file}`),
@@ -203,6 +225,7 @@ const exampleSpecsTsconfig = {
   compilerOptions: {
     noEmit: true,
     incremental: true,
+    paths: testPaths,
     tsBuildInfoFile: './example-specs.tsbuildinfo'
   },
   include: [
@@ -221,6 +244,7 @@ const websiteSpecsTsconfig = {
   compilerOptions: {
     noEmit: true,
     incremental: true,
+    paths: testPaths,
     tsBuildInfoFile: './website-specs.tsbuildinfo',
     noPropertyAccessFromIndexSignature: false,
     noImplicitOverride: false

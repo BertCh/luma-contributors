@@ -148,7 +148,11 @@ export async function buildTerrainProcessingScenario(
             meaning: 'Unique activation owner of each terrain cell'
           }),
           curves: table('curves', 12, 'Area and volume for each node and query stage'),
-          status: tableCategory('status', 3, 'Stored count, required count and hierarchy overflow')
+          status: {
+            count: scalar('count', 'Stored hierarchy node count'),
+            requiredCount: scalar('requiredCount', 'Node count required by the complete hierarchy'),
+            overflow: scalar('overflow', 'Capacity overflow invalidating the hierarchy')
+          }
         }
       });
       break;

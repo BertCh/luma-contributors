@@ -163,7 +163,10 @@ ${POSITION_WGSL}`,
   }
   let line = findLine(segment);
   let lineLength = vertexMeasures[vertexMeasuresOffset + lineOffsets[lineOffsetsOffset + line + 1u] - 1u];
-  let measure = vertexMeasures[vertexMeasuresOffset + segment] + fraction * sqrt(lengthSquared);
+  var measure = vertexMeasures[vertexMeasuresOffset + segment] + fraction * sqrt(lengthSquared);
+  if (fraction >= 1.0) {
+    measure = vertexMeasures[vertexMeasuresOffset + segment + 1u];
+  }
   results[base] = line;
   results[base + 1u] = segment - lineOffsets[lineOffsetsOffset + line];
   results[base + 2u] = bitcast<u32>(fraction);
@@ -934,6 +937,9 @@ fn getMeasure(row: u32) -> f32 {
     if (segmentMeasure > 0.0) {
       fraction = clamp((measure - getMeasure(segmentRow)) / segmentMeasure, 0.0, 1.0);
     }
+    if (total > 0.0 && measure == total) {
+      fraction = 1.0;
+    }
     ${
       spherical
         ? `let angle = geodesicCentralAngle(start, end);
@@ -979,7 +985,12 @@ fn getMeasure(row: u32) -> f32 {
       }
     }`
         : `let direction = end - start;
-    position = start + direction * fraction;
+    position = start;
+    if (fraction >= 1.0) {
+      position = end;
+    } else if (fraction > 0.0) {
+      position = start + direction * fraction;
+    }
     let directionLength = length(direction);
     if (directionLength > 0.0) {
       tangent = direction / directionLength;

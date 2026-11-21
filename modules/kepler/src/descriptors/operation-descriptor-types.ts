@@ -14,7 +14,7 @@ import type {
   GPUAnalysisRequirementSpec,
   GPUAnalysisRowSemantics,
   GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 // What a catalog binding means to a user, kept beside the binding and joined to it by id. The
 // binding says how an operation runs (inputs, parameters, engines); the descriptor says which

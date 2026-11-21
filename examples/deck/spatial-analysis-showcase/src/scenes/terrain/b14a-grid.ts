@@ -5,7 +5,7 @@
 import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '@luma-contributors/analysis/analysis-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
-import type {LoadedDataset} from '../../data/catalog';
+import type {LoadedDataset, RasterSpec} from '../../data/catalog';
 import {fetchBytes, getDataFileUrl} from '../../data/loaders';
 import {LocalMetricProjection} from '../../engine/projection';
 import {getLatitudeFromMercatorY, getMercatorY} from '../../engine/web-mercator';
@@ -13,6 +13,12 @@ import {toRadians} from '@math.gl/core';
 
 /** Circumference of the Web Mercator world in meters. */
 const WORLD_METERS = 2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
+
+/** Web Mercator georeferencing recorded in the Alps DEM manifests. */
+export type AlpsRasterSpec = RasterSpec & {
+  boundsMercator: [number, number, number, number];
+  cellSizeMercatorM: number;
+};
 
 /** A named observer of the alps-dem manifest. */
 export type AlpsObserver = {
@@ -83,9 +89,9 @@ export async function loadAlpsGrid(
 ): Promise<AlpsGrid> {
   const raster = dataset.raster;
   if (!raster) throw new Error('alps-dem has no raster');
-  const spec = raster.spec as Record<string, unknown>;
-  const boundsMercator = spec.boundsMercator as [number, number, number, number];
-  const mercatorCellSize = spec.cellSizeMercatorM as number;
+  const spec = raster.spec as AlpsRasterSpec;
+  const boundsMercator = spec.boundsMercator;
+  const mercatorCellSize = spec.cellSizeMercatorM;
   const bytes = await fetchBytes(getDataFileUrl(dataset.info.id, String(spec.file)), signal);
   const bitmap = await createImageBitmap(new Blob([bytes], {type: 'image/png'}), {
     premultiplyAlpha: 'none',

@@ -209,7 +209,7 @@ export const CELL_CHUNK_CASES: CellChunkCase[] = [
       new GPUS2CellMeasures({
         id,
         cells: fields.cells,
-        precision: 'fp64',
+        precision: 'double-single',
         output: {measures: fields.measures, status: fields.status}
       })
   },

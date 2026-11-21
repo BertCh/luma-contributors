@@ -19,6 +19,8 @@ import {
 } from './gpu-map-coloring';
 import {
   GPUMapColoringOperation,
+  getMapColoringOperationInputs,
+  snapshotMapColoringOperationProps,
   type MapColoringOperationProps
 } from './gpu-map-coloring-operation';
 
@@ -35,18 +37,20 @@ export type CPUMapColoringResult = {
  * Self slots are ignored in color selection but count toward the degree, as on the GPU.
  *
  * What differs from the GPU contributor:
- * - Completes sequential greedy coloring without a round budget; never leaves an uncolored row.
- * - `converged` is always 1; `iterationCount` is 1 completed greedy sweep. GPU rounds depend on
- *   invocation scheduling and are not comparable to this diagnostic.
+ * - Without an explicit round budget, completes one priority-ordered greedy sweep.
+ * - With a budget, visits rows in ascending order per round, retaining uncolored rows when
+ *   a higher-priority neighbor is still uncolored. GPU scheduling can finish different rows
+ *   within a round; both forms bind the supplied maximum and report actual convergence.
  * - The 1024-round GPU limit is dropped. Chunked CSR is not supported by either operation.
- * - On asymmetric adjacency the CPU follows the documented priority order; GPU scheduling can
+ * - On asymmetric adjacency the unbudgeted CPU sweep follows priority order; GPU scheduling can
  *   produce different colors and conflicts. Symmetric adjacency gives the same complete coloring.
  */
 export function computeMapColoringOnCPU(
   offsets: Uint32Array,
   neighbors: Uint32Array,
   parameters: Uint32Array,
-  priority: GPUMapColoringPriority = 'largest-degree-first'
+  priority: GPUMapColoringPriority = 'largest-degree-first',
+  maximumIterations?: number
 ): CPUMapColoringResult {
   const rowCount = offsets.length - 1;
   if (rowCount < 1 || offsets[0] !== 0) {
@@ -62,6 +66,8 @@ export function computeMapColoringOnCPU(
     ['largest-degree-first', 'random'].includes(priority),
     "priority must be 'largest-degree-first' or 'random'"
   );
+  if (maximumIterations !== undefined)
+    validateCapacity('computeMapColoringOnCPU', 'maximumIterations', maximumIterations);
   for (let row = 0; row < rowCount; row++) {
     if (offsets[row] > offsets[row + 1] || offsets[row + 1] > neighbors.length) {
       throw new Error('computeMapColoringOnCPU offsets must be monotone and fit neighbors length');
@@ -82,39 +88,64 @@ export function computeMapColoringOnCPU(
     return degreeDifference || hashes[second] - hashes[first] || first - second;
   });
   const colors = new Uint32Array(rowCount).fill(GPU_MAP_COLORING_UNCOLORED);
+  const ranks = new Uint32Array(rowCount);
+  order.forEach((row, rank) => {
+    ranks[row] = rank;
+  });
   let colorCount = 0;
-  for (const row of order) {
-    const usedColors = new Set<number>();
-    for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
-      const other = neighbors[slot];
-      if (other !== row && colors[other] !== GPU_MAP_COLORING_UNCOLORED)
-        usedColors.add(colors[other]);
+  let iterationCount = 0;
+  let converged = false;
+  for (let round = 0; round < (maximumIterations ?? 1); round++) {
+    iterationCount++;
+    for (let rowSlot = 0; rowSlot < rowCount; rowSlot++) {
+      const row = maximumIterations === undefined ? order[rowSlot] : rowSlot;
+      if (colors[row] !== GPU_MAP_COLORING_UNCOLORED) continue;
+      const usedColors = new Set<number>();
+      let blocked = false;
+      for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
+        const other = neighbors[slot];
+        if (other === row) continue;
+        if (colors[other] === GPU_MAP_COLORING_UNCOLORED) {
+          if (ranks[other] < ranks[row]) blocked = true;
+        } else usedColors.add(colors[other]);
+      }
+      if (blocked) continue;
+      let color = 0;
+      while (usedColors.has(color)) color++;
+      colors[row] = color;
+      colorCount = Math.max(colorCount, color + 1);
     }
-    let color = 0;
-    while (usedColors.has(color)) color++;
-    colors[row] = color;
-    colorCount = Math.max(colorCount, color + 1);
+    converged = colors.every(color => color !== GPU_MAP_COLORING_UNCOLORED);
+    if (converged) break;
   }
   let conflictCount = 0;
   for (let row = 0; row < rowCount; row++) {
     for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
       const other = neighbors[slot];
-      if (other > row && colors[row] === colors[other]) conflictCount++;
+      if (
+        other > row &&
+        colors[row] !== GPU_MAP_COLORING_UNCOLORED &&
+        colors[row] === colors[other]
+      )
+        conflictCount++;
     }
   }
   return {
     colors,
     colorCount: Uint32Array.of(colorCount),
     conflictCount: Uint32Array.of(conflictCount),
-    converged: Uint32Array.of(1),
-    iterationCount: Uint32Array.of(1)
+    converged: Uint32Array.of(Number(converged)),
+    iterationCount: Uint32Array.of(iterationCount)
   };
 }
 
-/** CPU twin. Optional iterationCount counts one CPU sweep, not GPU scheduling rounds. */
+/** CPU twin with ascending-row bounded rounds, or a complete greedy sweep without a budget. */
 export class CPUMapColoringOperation extends GPUCPUOperation {
   constructor(props: MapColoringOperationProps) {
+    props = snapshotMapColoringOperationProps(props);
     const id = props.id ?? 'map-coloring';
+    const maximumIterations = props.maximumIterations;
+    const rowCount = props.rowCount;
     validateCapacity(id, 'rowCount', props.rowCount);
     if (props.maximumIterations !== undefined)
       validateCapacity(id, 'maximumIterations', props.maximumIterations);
@@ -127,10 +158,10 @@ export class CPUMapColoringOperation extends GPUCPUOperation {
     const {output} = props;
     const scalarShape = {length: 1};
     // Reuse the graph-port shape and disjointness checks; this allocates no GPU resources.
-    new GPUMapColoringOperation(props);
+    new GPUMapColoringOperation({...props, maximumIterations: undefined});
     super({
       id,
-      inputs: {...props.weights, parameters: props.parameters},
+      inputs: getMapColoringOperationInputs(props),
       outputs: {
         [output.colors]: gpuGraph.vector('uint32', {length: props.rowCount}),
         ...(output.colorCount ? {[output.colorCount]: gpuGraph.vector('uint32', scalarShape)} : {}),
@@ -148,7 +179,7 @@ export class CPUMapColoringOperation extends GPUCPUOperation {
         const offsets = getCPUOperationUint32Rows(id, inputs, 'offsets');
         const neighbors = getCPUOperationUint32Rows(id, inputs, 'neighbors');
         const weights = getCPUOperationFloat32Rows(id, inputs, 'weights');
-        if (offsets.length !== props.rowCount + 1)
+        if (offsets.length !== rowCount + 1)
           throw new Error(`${id} offsets length must equal rowCount + 1`);
         if (weights.length !== neighbors.length)
           throw new Error(`${id} weights length must equal neighbors length`);
@@ -156,8 +187,25 @@ export class CPUMapColoringOperation extends GPUCPUOperation {
           offsets,
           neighbors,
           getCPUOperationUint32Rows(id, inputs, 'parameters'),
-          priority
+          priority,
+          maximumIterations
         );
+        const incomplete = (['overflow', 'candidateOverflow'] as const).some(name => {
+          if (!props.weights.status?.[name]) return false;
+          const words = getCPUOperationUint32Rows(id, inputs, name);
+          validateRequirement(
+            id,
+            words.length >= 1,
+            `weights.status.${name} must contain one uint32 word; received ${words.length}`
+          );
+          return words[0] !== 0;
+        });
+        if (incomplete) {
+          result.colors.fill(GPU_MAP_COLORING_UNCOLORED);
+          result.colorCount.fill(0);
+          result.conflictCount.fill(0);
+          result.converged.fill(0);
+        }
         return {
           [output.colors]: result.colors,
           ...(output.colorCount ? {[output.colorCount]: result.colorCount} : {}),

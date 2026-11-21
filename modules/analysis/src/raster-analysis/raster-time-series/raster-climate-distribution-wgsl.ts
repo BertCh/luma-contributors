@@ -3,56 +3,47 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GET_NAN_WGSL, IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../analysis-core/kernels/incomplete-gamma-wgsl';
-
-/** Term cap of the incomplete gamma series and continued fraction (float32 converges well before it). */
-const REGULARIZED_GAMMA_ITERATIONS = 256;
+import {
+  GPU_UPPER_INCOMPLETE_GAMMA_WGSL,
+  GPU_CENTERED_INCOMPLETE_GAMMA_WGSL
+} from '../../analysis-core/kernels/incomplete-gamma-wgsl';
 
 /**
- * WGSL for `getRegularizedGammaTails(a, x)`, `vec2(P(a, x), Q(a, x))`. Each returned tail is
- * computed directly from the series (`P`, for `x < a + 1`) or the continued fraction (`Q`, for
- * `x >= a + 1`) rather than as one minus the other, so both tails keep relative accuracy down to
- * the float32 range. Declares nothing that collides with `GPU_UPPER_INCOMPLETE_GAMMA_WGSL`, whose
- * `getLogGammaValue` it reuses.
- *
+ * Convergence-checked gamma tails `getConvergedRegularizedGammaTails(a,x) -> vec2(P,Q)`.
+ * Uses the centered prefactor and bounded series (2048 terms) / continued fraction (499 terms)
+ * of the shared exact gamma route. Exhaustion returns NaN in both tails, so evaluation publishes
+ * unavailable status rather than a partial CDF. The directly evaluated small tail keeps relative
+ * precision; its complement can lose relative precision near zero. No large-shape normal shortcut.
  * @internal
  */
 export const RASTER_REGULARIZED_GAMMA_TAILS_WGSL = `${GET_NAN_WGSL}
 ${IS_NAN_BITS_WGSL}
 ${GPU_UPPER_INCOMPLETE_GAMMA_WGSL}
-fn getRegularizedGammaTails(a: f32, x: f32) -> vec2<f32> {
-  if (!(x > 0.0)) { return vec2<f32>(0.0, 1.0); }
-  let logPrefactor = -x + a * log(x) - getLogGammaValue(a);
-  if (x < a + 1.0) {
-    var term = 1.0 / a;
-    var sum = term;
-    for (var iteration = 1u; iteration <= ${REGULARIZED_GAMMA_ITERATIONS}u; iteration++) {
-      term = term * x / (a + f32(iteration));
-      sum = sum + term;
-      if (abs(term) < abs(sum) * 1e-7) { break; }
-    }
-    let lower = clamp(sum * exp(logPrefactor), 0.0, 1.0);
-    return vec2<f32>(lower, 1.0 - lower);
-  }
-  let tiny = 1e-30;
-  var b = x + 1.0 - a;
-  var c = 1.0 / tiny;
-  var d = 1.0 / b;
-  var h = d;
-  for (var iteration = 1u; iteration <= ${REGULARIZED_GAMMA_ITERATIONS}u; iteration++) {
-    let stepIndex = f32(iteration);
-    let an = -stepIndex * (stepIndex - a);
-    b += 2.0;
-    d = an * d + b;
-    if (abs(d) < tiny) { d = tiny; }
-    c = b + an / c;
-    if (abs(c) < tiny) { c = tiny; }
-    d = 1.0 / d;
-    let delta = d * c;
-    h *= delta;
-    if (abs(delta - 1.0) < 2e-7) { break; }
-  }
-  let upper = clamp(exp(logPrefactor) * h, 0.0, 1.0);
-  return vec2<f32>(1.0 - upper, upper);
+${GPU_CENTERED_INCOMPLETE_GAMMA_WGSL}
+fn getConvergedRegularizedGammaTails(a: f32, x: f32) -> vec2<f32> {
+  return getCenteredGammaTails(a, x);
+}
+`;
+
+/** Original-value atom predicates use bit identity so FTZ cannot move a negative subnormal across the jump. @internal */
+export const RASTER_CLIMATE_ZERO_ATOM_WGSL = `
+fn isRasterClimateOriginalZero(value: f32) -> bool {
+  return (bitcast<u32>(value) & 0x7fffffffu) == 0u;
+}
+fn isRasterClimateOriginalNegative(value: f32) -> bool {
+  let bits = bitcast<u32>(value);
+  return (bits & 0x80000000u) != 0u && (bits & 0x7fffffffu) != 0u;
+}
+`;
+
+/** Requires getScaledQuotient; subtract bounded significands before restoring the common exponent. @internal */
+export const RASTER_CLIMATE_SHIFTED_RATIO_WGSL = `
+fn getRasterClimateShiftedRatio(value: f32, location: f32, scale: f32) -> f32 {
+  let valueParts = frexp(value);
+  let locationParts = frexp(location);
+  let exponent = max(valueParts.exp, locationParts.exp);
+  let difference = ldexp(valueParts.fract, valueParts.exp - exponent) -
+    ldexp(locationParts.fract, locationParts.exp - exponent);
+  return getScaledQuotient(difference, scale, 1.0, exponent);
 }
 `;

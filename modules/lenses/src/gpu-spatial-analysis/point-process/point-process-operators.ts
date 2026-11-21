@@ -103,7 +103,9 @@ export const POINT_PROCESS_OPERATORS: SpatialFamilyOperators = {
       clusterIntervals: 'rank',
       clusterSummary: 'category',
       labels: 'category',
-      status: 'category'
+      iterationCount: 'measure',
+      converged: 'category',
+      invalidCount: 'measure'
     },
     stages: ['neighbourhood', 'operator'],
     datumKinds: [{kind: 'point', label: 'event', indexSpace: '1d'}],

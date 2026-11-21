@@ -193,19 +193,19 @@ it('isolates two stationary points inside one GPU scan interval, and recognizes 
   expect(
     getCPUSpatialErrorLikelihoodCandidates(rows, rows, [], [1, 1, 1, 1], undefined, 4, 0.9)
   ).toEqual([{parameter: -0.9, atBoundary: true}]);
-  // A stationary maximum exactly at the upper bound follows the GPU's positive-to-zero
-  // crossing convention: it is converged, rather than an outward-pointing boundary solution.
-  expect(
-    getCPUSpatialErrorLikelihoodCandidates(
-      rows,
-      response.map((value, row) => [0, 2 * value + 2 * orthogonal[row]]),
-      [0, 0],
-      undefined,
-      undefined,
-      4,
-      0.25
-    )
-  ).toEqual([{parameter: 0.25, atBoundary: false}]);
+  // A stationary maximum at either endpoint is a boundary solution: only interior fits converge.
+  for (const sign of [1, -1])
+    expect(
+      getCPUSpatialErrorLikelihoodCandidates(
+        rows,
+        response.map((value, row) => [0, sign * (2 * value + 2 * orthogonal[row])]),
+        [0, 0],
+        undefined,
+        undefined,
+        4,
+        0.25
+      )
+    ).toEqual([{parameter: sign * 0.25, atBoundary: true}]);
 });
 
 it('matches a closed form on W=J-I, including the raw constant column and unfiltered residuals', () => {

@@ -92,10 +92,10 @@ it('GPUSpaceTimeHawkes estimates its command node count as an upper bound', () =
     const contributor = createContributor(graph, rowCount, {maximumIterations}, outputs);
     const nodeCount = contributor.getCommandNodes(graph).length;
     expect(nodeCount).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
-    // The unrolled iterations are three nodes each; the rest is the fixed prologue and the sort.
+    // 31 nodes per update: E-step, eight tiled Newton refinements, M-step and likelihood safeguard.
     const withoutIterations = createContributor(graph, rowCount, {maximumIterations: 1}, outputs);
     expect(nodeCount - withoutIterations.getCommandNodes(graph).length).toBe(
-      3 * (maximumIterations - 1)
+      31 * (maximumIterations - 1)
     );
   }
 });
@@ -188,9 +188,7 @@ it('the binary64 reference computes the E-step and M-step of a three event catal
   const lambda2 = 0.1 + term21;
   const lambda3 = 0.1 + term31 + term32;
   const triggered = term21 / lambda2 + (term31 + term32) / lambda3;
-  const lagSum = (term21 * 1) / lambda2 + (term31 * 2 + term32 * 1) / lambda3;
   const distanceSum = (term21 * 1) / lambda2 + (term32 * 1) / lambda3;
-  const edge = [1, 2, 3].reduce((sum, time) => sum + (1 - Math.exp(-(10 - time))), 0);
   const backgroundSum = 1 + 0.1 / lambda2 + 0.1 / lambda3;
   const events: HawkesEvent[] = [
     {x: 0, y: 0, time: 1},
@@ -211,8 +209,9 @@ it('the binary64 reference computes the E-step and M-step of a three event catal
     {maximumIterations: 1, tolerance: 1e-12}
   );
   expect(fit.estimates.background).toBeCloseTo(backgroundSum / (2 * 10), 12);
-  expect(fit.estimates.branchingRatio).toBeCloseTo(triggered / edge, 12);
-  expect(fit.estimates.decayRate).toBeCloseTo(triggered / lagSum, 12);
+  // Independent SciPy brentq solve of S/beta-L-S*M'(beta)/M(beta)=0.
+  expect(fit.estimates.branchingRatio).toBeCloseTo(0.12448504863168168, 8);
+  expect(fit.estimates.decayRate).toBeCloseTo(0.8068684568282242, 7);
   expect(fit.estimates.spatialStandardDeviation).toBeCloseTo(
     Math.sqrt(distanceSum / (2 * triggered)),
     12

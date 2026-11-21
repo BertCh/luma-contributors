@@ -1,7 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {validateGPUMultipartGeometryPort} from '../../analysis-core/contracts/ports';
 
 import {
   createTransientView,
@@ -185,9 +185,8 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       'leafCapacity',
       'output'
     ]);
-    const left = snapshotSinglePartGeometryPort(this.id, 'left', snapshot.left);
-    const right =
-      snapshot.right && snapshotSinglePartGeometryPort(this.id, 'right', snapshot.right);
+    const left = snapshotJoinGeometry(snapshot.left);
+    const right = snapshot.right && snapshotJoinGeometry(snapshot.right);
     const output = snapshotConstructionFields(snapshot.output, [
       'pairs',
       'status',
@@ -222,6 +221,14 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
         continue;
       }
       validateSinglePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
+      if (geometry.kind === 'lines' && geometry.featureOffsets) {
+        validateGPUMultipartGeometryPort(id, geometry);
+        validateSinglePackedView(
+          geometry.featureOffsets,
+          ['uint32'],
+          `${id} ${name}.featureOffsets`
+        );
+      }
       const offsetViews =
         geometry.kind === 'lines'
           ? [['lineOffsets', geometry.lineOffsets] as const]
@@ -315,6 +322,7 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
       views.push(geometry.positions);
       if (geometry.kind === 'lines') {
         views.push(geometry.lineOffsets);
+        if (geometry.featureOffsets) views.push(geometry.featureOffsets);
       } else {
         views.push(geometry.featureOffsets, geometry.polygonOffsets, geometry.ringOffsets);
       }

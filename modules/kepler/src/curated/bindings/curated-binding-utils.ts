@@ -3,9 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {
+  CatalogEngine,
   CatalogParameterSpec,
   CatalogParameterValue
 } from '../../analysis/catalog-binding-types';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {
   addCatalogDiagnostic,
   type CatalogCoordinateSystem,
@@ -21,8 +23,7 @@ import {
   readNumericProperty
 } from '../../analysis/catalog-platform3-b-common';
 
-// Shared pieces of the curated bindings. Everything here is CPU reference code; the curated
-// bindings declare `engine: 'cpu-reference'` and a GPU path is future work.
+// Shared host preparation, CPU reference inference and CPU/GPU publication diagnostics.
 
 /** Rows of an areal input the curated area bindings accept; the CPU contiguity search is quadratic in shared vertices. */
 export const MAXIMUM_CURATED_AREA_FEATURES = 5000;
@@ -454,25 +455,45 @@ export function runCanonicalMoranPermutationTest(
  * permutations the smallest pseudo p-value is `pMin = pValueMultiplier / (R + 1)`
  * (multiplier 1 for absolute-statistic inference, 2 for doubled-tail inference). Bonferroni and Holm flag the
  * smallest p-value when `m pMin <= alpha`, Sidak when `1 - (1 - pMin)^m <= alpha`, and
- * Benjamini-Hochberg when `pMin <= alpha`, but it then needs at least `m pMin / alpha` areas
- * tied at the minimum (`requiredTiedMinimumCount`). `permutationsNeeded` is the smallest count
+ * Benjamini-Hochberg can reject when `pMin <= alpha`. Its step-up rule selects the largest rank
+ * k with p_(k) <= k * alpha / m and rejects ranks 1 through k.
+ * `sufficientMinimumPValueTieCount` verifies a sufficient rank against the selected engine's
+ * arithmetic. Other ranks can allow rejection without floor ties, depending on the cutoff.
+ * `permutationsNeeded` is the smallest count
  * that makes the first flag possible, which can exceed the 9999 the bindings accept.
+ * Engine defaults to cpu-reference; gpu uses the stored float32 floor and cutoff and accounts
+ * for division, reciprocal multiplication and product reassociation in the sufficient-rank check.
  */
 export function getSignificanceAttainability(
   method: string,
   alpha: number,
   testedCount: number,
   permutations: number,
-  pValueMultiplier = 1
-): {attainable: boolean; permutationsNeeded: number; requiredTiedMinimumCount: number | null} {
-  const pMin = pValueMultiplier / (permutations + 1);
+  pValueMultiplier = 1,
+  engine: CatalogEngine = 'cpu-reference'
+): {
+  attainable: boolean;
+  permutationsNeeded: number;
+  /** Infinity when no floor-tie rank is verified; null for methods other than BH. */
+  sufficientMinimumPValueTieCount: number | null;
+} {
+  validateRequirement(
+    'getSignificanceAttainability',
+    ['cpu-reference', 'gpu'].includes(engine),
+    `engine must be one of cpu-reference, gpu; received ${String(engine)}`
+  );
+  const pMin =
+    engine === 'gpu'
+      ? Math.fround(pValueMultiplier / (permutations + 1))
+      : pValueMultiplier / (permutations + 1);
+  if (engine === 'gpu') alpha = Math.fround(alpha);
   const pNeeded =
     method === 'bonferroni' || method === 'holm'
       ? alpha / testedCount
       : method === 'sidak'
         ? -Math.expm1(Math.log1p(-alpha) / testedCount)
         : alpha;
-  const attainable = pMin <= pNeeded * (1 + 1e-12);
+  const attainable = pMin <= pNeeded;
   const reciprocal = pValueMultiplier / pNeeded;
   const nearestInteger = Math.round(reciprocal);
   // Snap only within the floating-point evaluation error; a fixed absolute slack loses meaning
@@ -482,12 +503,56 @@ export function getSignificanceAttainability(
     PERMUTATION_BOUNDARY_ROUNDING_FACTOR * Math.max(1, reciprocal)
       ? nearestInteger
       : Math.ceil(reciprocal);
+  let permutationsNeeded = Math.max(1, minimumDrawCount - 1);
+  if (
+    engine === 'gpu' &&
+    pNeeded > 0 &&
+    Number.isSafeInteger(minimumDrawCount) &&
+    minimumDrawCount <= Number.MAX_SAFE_INTEGER / 2
+  ) {
+    let lowerCount = 1;
+    let upperCount = Math.max(1, minimumDrawCount);
+    while (Math.fround(pValueMultiplier / (upperCount + 1)) > pNeeded) upperCount *= 2;
+    while (lowerCount < upperCount) {
+      const middleCount = Math.floor((lowerCount + upperCount) / 2);
+      if (Math.fround(pValueMultiplier / (middleCount + 1)) <= pNeeded) upperCount = middleCount;
+      else lowerCount = middleCount + 1;
+    }
+    permutationsNeeded = lowerCount;
+  }
+  const adjustedFloor = (rank: number): number => {
+    if (engine === 'cpu-reference') return Math.min(1, (pMin * testedCount) / rank);
+    const product = Math.fround(pMin * Math.fround(testedCount));
+    const reciprocalRank = Math.fround(1 / Math.fround(rank));
+    // Metal may lower division to reciprocal multiplication or reassociate products.
+    // A sufficient scenario must pass every such float32 evaluation, not just ideal division.
+    return Math.min(
+      1,
+      Math.max(
+        Math.fround(product / Math.fround(rank)),
+        Math.fround(product * reciprocalRank),
+        Math.fround(pMin * Math.fround(Math.fround(testedCount) / Math.fround(rank))),
+        Math.fround(pMin * Math.fround(Math.fround(testedCount) * reciprocalRank))
+      )
+    );
+  };
+  let sufficientMinimumPValueTieCount: number | null = null;
+  if (method === 'benjamini-hochberg') {
+    sufficientMinimumPValueTieCount = Infinity;
+    if (testedCount > 0 && adjustedFloor(testedCount) <= alpha) {
+      let lowerRank = 1;
+      let upperRank = testedCount;
+      while (lowerRank < upperRank) {
+        const middleRank = Math.floor((lowerRank + upperRank) / 2);
+        if (adjustedFloor(middleRank) <= alpha) upperRank = middleRank;
+        else lowerRank = middleRank + 1;
+      }
+      sufficientMinimumPValueTieCount = lowerRank;
+    }
+  }
   return {
     attainable,
-    permutationsNeeded: Math.max(1, minimumDrawCount - 1),
-    requiredTiedMinimumCount:
-      method === 'benjamini-hochberg'
-        ? Math.max(1, Math.ceil((testedCount * pMin) / alpha - 1e-9))
-        : null
+    permutationsNeeded,
+    sufficientMinimumPValueTieCount
   };
 }

@@ -418,7 +418,7 @@ export const LINES_OPERATORS: SpatialFamilyOperators = {
     datumKinds: [{kind: 'ring', label: 'Coverage ring sharing owned arcs', indexSpace: 'csr'}],
     guards: ['coordinate-model'],
     choices: [
-      {stage: 'representation', name: 'snapTolerance', unit: 'position units', sweepable: true},
+      {stage: 'representation', name: 'snapGridSize', unit: 'position units', sweepable: true},
       {stage: 'operator', name: 'tolerance', unit: 'position units', sweepable: true},
       {stage: 'operator', name: 'simplifyBoundary', alternatives: [true, false], sweepable: false},
       {stage: 'operator', name: 'maximumIterations', sweepable: true},
@@ -451,7 +451,7 @@ export const LINES_OPERATORS: SpatialFamilyOperators = {
     ],
     guards: ['coordinate-model'],
     choices: [
-      {stage: 'representation', name: 'snapTolerance', unit: 'position units', sweepable: true},
+      {stage: 'representation', name: 'snapGridSize', unit: 'position units', sweepable: true},
       {stage: 'operator', name: 'vertexTolerance', unit: 'position units', sweepable: true},
       {stage: 'operator', name: 'splitTouchingRings', alternatives: [false, true], sweepable: false}
     ],

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges
@@ -36,11 +40,19 @@ import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
+import {
+  getRectangleScanWGSL,
+  getRingScanWGSL,
+  getWrappedRectangleScanWGSL
+} from './grid-neighbor-scan';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} from './spatial-interpolation-parameters';
+import {
+  GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
+  getGPUInverseDistanceWeightingParameterValues,
+  type GPUInverseDistanceWeightingSettings
+} from './spatial-interpolation-parameters';
 import {
   GET_NAN_WGSL,
   IS_FINITE_VALUE_WGSL,
@@ -100,10 +112,15 @@ export type GPUInverseDistanceWeightingProps = {
    * `[longitude, latitude]` degrees, the grid index and output grid stay in degrees, and the
    * search radius is in meters (kilometers with `units: 'kilometers'`). Neighbors and radius tests
    * use the haversine term; f32 absolute lon/lat limits accuracy to about 1 m at Earth scale. The
-   * query box is conservative and does not wrap the antimeridian, and the nearest-k limit scans
+   * query box is conservative and defaults to clipping at the antimeridian (opt into wrapping with `longitudeSearch: 'wrapped'`), and the nearest-k limit scans
    * the whole box (no early stop). Other longitude/latitude metrics throw.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Great-circle candidate search: default 'clipped'; 'wrapped' includes both seam sides and
+   * polar caps and requires index-bound longitudes within [-180, 180]. Ignored for planar input.
+   */
+  longitudeSearch?: 'clipped' | 'wrapped';
   /** Packed sample positions in the same units as the grid and search radius. */
   positions: GraphDataView<'float32x2'>;
   /** Packed float32 sample values. NaN values are skipped. */
@@ -195,9 +212,38 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
 
   constructor(props: GPUInverseDistanceWeightingProps) {
     this.id = props.id ?? 'inverse-distance-weighting';
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'grid',
+        'id',
+        'indexBounds',
+        'indexGridSize',
+        'invocationTileSize',
+        'mask',
+        'maximumNeighborCount',
+        'output',
+        'parameters',
+        'positions',
+        'spatialContext',
+        'longitudeSearch',
+        'values'
+      ],
+      ['values', 'counts']
+    );
     const {id} = this;
-    this.separation = resolveInterpolationSeparation(id, props.spatialContext);
+    validateRequirement(
+      id,
+      props.longitudeSearch === undefined ||
+        props.longitudeSearch === 'clipped' ||
+        props.longitudeSearch === 'wrapped',
+      'longitudeSearch must be clipped or wrapped'
+    );
+    this.separation = resolveInterpolationSeparation(
+      id,
+      props.spatialContext,
+      props.longitudeSearch
+    );
     this.spatialContext = this.separation.context;
     if (this.separation.geographic) {
       validateFiniteNumber(
@@ -209,9 +255,11 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       );
     }
     this.cellCount = validateRasterGrid(id, props.grid);
-    if (props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0) {
-      throw new Error(`${id} needs an axis-aligned grid`);
-    }
+    validateRequirement(
+      id,
+      !(props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0),
+      `needs an axis-aligned grid`
+    );
     for (const [name, size] of [
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
@@ -228,14 +276,21 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       )
     );
     const [minX, minY, maxX, maxY] = props.indexBounds;
-    if (
-      props.indexBounds.length !== 4 ||
-      !props.indexBounds.every(Number.isFinite) ||
-      minX > maxX ||
-      minY > maxY
-    ) {
-      throw new Error(`${id} indexBounds must be finite and ordered`);
-    }
+    validateRequirement(
+      id,
+      !this.separation.wrappedLongitude || (minX >= -180 && maxX <= 180),
+      'longitudeSearch wrapped needs indexBounds longitudes in [-180, 180]'
+    );
+    validateRequirement(
+      id,
+      !(
+        props.indexBounds.length !== 4 ||
+        !props.indexBounds.every(Number.isFinite) ||
+        minX > maxX ||
+        minY > maxY
+      ),
+      `indexBounds must be finite and ordered`
+    );
     this.maximumNeighborCount = props.maximumNeighborCount ?? 0;
     validateCapacity(
       id,
@@ -277,33 +332,39 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     const sampleCount = props.values.length;
-    if (sampleCount < 1) {
-      throw new Error(`${id} needs at least one sample`);
-    }
-    if (props.positions.length !== sampleCount) {
-      throw new Error(`${id} positions length must equal values length`);
-    }
+    validateRequirement(id, !(sampleCount < 1), `needs at least one sample`);
+    validateRequirement(
+      id,
+      !(props.positions.length !== sampleCount),
+      `positions length must equal values length`
+    );
     if (props.mask) {
       validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
-      if (props.mask.length !== sampleCount) {
-        throw new Error(`${id} mask length must equal values length`);
-      }
-    }
-    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} float32 values`
+      validateRequirement(
+        id,
+        !(props.mask.length !== sampleCount),
+        `mask length must equal values length`
       );
     }
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateRequirement(
+      id,
+      !(props.parameters.length < GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH),
+      `parameters must hold ${GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH} float32 values`
+    );
     validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
-    if (props.output.values.length < this.cellCount) {
-      throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
-    }
+    validateRequirement(
+      id,
+      !(props.output.values.length < this.cellCount),
+      `output.values must hold grid.width * grid.height rows`
+    );
     if (props.output.counts) {
       validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
-      if (props.output.counts.length < this.cellCount) {
-        throw new Error(`${id} output.counts must hold grid.width * grid.height rows`);
-      }
+      validateRequirement(
+        id,
+        !(props.output.counts.length < this.cellCount),
+        `output.counts must hold grid.width * grid.height rows`
+      );
     }
     validateDisjointWritableViews(id, props.output);
     validateGraphOutputsDisjointFromInputs(
@@ -314,6 +375,22 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
   }
 
   /** Returns the grid index build, the in-cell sort, and the per-cell gather, in order. */
+  /** Pack settings against this instance's grid dimensions and nearest-neighbor allocation. */
+  getParameterValues(
+    settings: GPUInverseDistanceWeightingSettings,
+    grid: GPURasterMetadata = this.props.grid,
+    target?: Float32Array
+  ): Float32Array {
+    const neighborCount = settings.neighborCount ?? 0;
+    validateRequirement(
+      this.id,
+      grid.width === this.props.grid.width && grid.height === this.props.grid.height,
+      `grid width/height must match construction ${this.props.grid.width} x ${this.props.grid.height}; received ${grid.width} x ${grid.height}`
+    );
+    validateCapacity(this.id, 'neighborCount', neighborCount, 0, this.maximumNeighborCount);
+    return getGPUInverseDistanceWeightingParameterValues(settings, grid, target);
+  }
+
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -466,6 +543,7 @@ const CURSOR_WORD: u32 = ${tileSize * scratchStride}u;`;
       Boolean(output.counts),
       hasNeighborLimit,
       this.separation.geographic,
+      Boolean(this.separation.wrappedLongitude),
       storageBacked,
       Boolean(scratch)
     );
@@ -602,6 +680,7 @@ function getGatherBody(
   hasCounts: boolean,
   hasNeighborLimit: boolean,
   geographic: boolean,
+  wrappedLongitude: boolean,
   storageBacked: boolean,
   useScratch: boolean
 ): string {
@@ -731,7 +810,9 @@ function getGatherBody(
     } else {
       ${getRectangleScanWGSL(visit)}
     }`
-        : getRectangleScanWGSL(visit)
+        : wrappedLongitude
+          ? getWrappedRectangleScanWGSL(visit)
+          : getRectangleScanWGSL(visit)
     }
   }
   ${nearestFinish}

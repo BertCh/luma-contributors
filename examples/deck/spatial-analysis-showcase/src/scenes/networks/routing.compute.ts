@@ -49,11 +49,11 @@ export type RoutingOptions = {
   base: 'time' | 'delta' | 'hops' | 'none';
   showRoute: boolean;
   showTurnRoute: boolean;
-  angleCost: number;
+  turnCostPerRadian: number;
   leftTurnCost: number;
   rightTurnCost: number;
   uTurns: 'banned' | 'allowed';
-  straightAngle: number;
+  straightAngleRadians: number;
   banLeftTurns: 'none' | 'arterials';
   hops: number;
   localIterations: string;
@@ -402,11 +402,11 @@ export async function createRouting(
     const options = ctx.options;
     turnParameters.write(
       getGPUNetworkLineGraphParameterValues({
-        angleCost: options.angleCost,
+        turnCostPerRadian: options.turnCostPerRadian,
         leftTurnCost: options.leftTurnCost,
         rightTurnCost: options.rightTurnCost,
         uTurnCost: options.uTurns === 'banned' ? -1 : 90,
-        straightAngle: options.straightAngle,
+        straightAngleRadians: options.straightAngleRadians,
         bannedTurnCount:
           options.banLeftTurns === 'arterials' ? Math.min(bannedTurnTotal, BAN_CAPACITY) : 0
       })
@@ -1023,7 +1023,7 @@ export async function createRouting(
     let left = 0;
     let right = 0;
     let uTurns = 0;
-    const straight = ctx.options.straightAngle;
+    const straight = ctx.options.straightAngleRadians;
     for (let slot = first + 1; slot < last && slot < edges.length; slot++) {
       const from = edges[slot - 1];
       const to = edges[slot];
@@ -1257,11 +1257,11 @@ export async function createRouting(
           writeOriginAndMarkers();
           markAllDirty();
           break;
-        case 'angleCost':
+        case 'turnCostPerRadian':
         case 'leftTurnCost':
         case 'rightTurnCost':
         case 'uTurns':
-        case 'straightAngle':
+        case 'straightAngleRadians':
         case 'banLeftTurns':
           writeTurnParameters();
           turnDirty = Math.max(turnDirty, 1);

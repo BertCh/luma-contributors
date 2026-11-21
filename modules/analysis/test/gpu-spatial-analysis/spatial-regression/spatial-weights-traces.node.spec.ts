@@ -203,7 +203,9 @@ it('GPUSpatialWeightsTraces validates its inputs and declares its kernels', () =
     .map(node => node.id.replace('gram-traces-', ''));
   expect(withGram).toContain('transpose-slot-keys');
   expect(withGram).toContain('gram-moments-tiles');
-  expect(withGram.some(id => id.startsWith('gram-square-'))).toBe(true);
+  expect(withGram).toContain('gram-probe-vector-0');
+  expect(withGram).toContain('gram-probe-moments-0');
+  expect(withGram).toContain('gram-probe-merge-0');
   expect(withGram).toContain('approximation');
   device.destroy();
 });
@@ -453,7 +455,7 @@ it('log-determinant and multiplier series match numpy within the stated truncati
         logBound * (1 + 1e-9) + 1e-9
       );
       // The 1e-6 slack covers float32 row sums of 1 + 1e-7 (max row sum, not the spectral radius, bounds 1'W^q1).
-      const multiplierBound = getSpatialMultiplierTruncationBound(rho, Q, n, radius);
+      const multiplierBound = getSpatialMultiplierTruncationBound(rho, Q, n, result.infinityNorm);
       const traceError = Math.abs(
         getSpatialMultiplierTraceFromTraces(rho, result.powerTraces, n, result.infinityNorm) -
           reference.multiplierTrace[key as keyof typeof reference.multiplierTrace]

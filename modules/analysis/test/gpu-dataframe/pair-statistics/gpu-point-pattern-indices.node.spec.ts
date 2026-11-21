@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
+import {QUADRAT_INDEX_WGSL} from '../../../src/dataframe-analysis/pair-statistics/quadrat-index-wgsl';
 import {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
 import {
   ORACLE_RECTANGLE,
@@ -34,7 +35,12 @@ import {
   computeWindowPointPatternIndicesOnCPU,
   getChiSquarePValueOnCPU,
   getGammaTailsOnCPU,
-  getNormalPValueOnCPU
+  getNormalPValueOnCPU,
+  QUADRAT_ALIGNED_L_POSITIONS,
+  QUADRAT_ALIGNED_L_STATISTICS,
+  QUADRAT_ALIGNED_L_WINDOW,
+  QUADRAT_SPIKE_POSITIONS,
+  QUADRAT_SPIKE_WINDOW
 } from './point-pattern-indices-oracle';
 
 let serial = 0;
@@ -69,7 +75,9 @@ function expectThrows(overrides: (graph: GPUCommandGraph) => Overrides, message:
 
 it('getGPUPointPatternIndicesParameterValues packs and validates the layout', () => {
   expect(
-    Array.from(getGPUPointPatternIndicesParameterValues({bounds: [0, 1, 2, 3], maximumDistance: 4}))
+    Array.from(
+      getGPUPointPatternIndicesParameterValues({bounds: [0, 1, 2, 3], indexCellSizeHint: 4})
+    )
   ).toEqual([
     0,
     1,
@@ -83,44 +91,44 @@ it('getGPUPointPatternIndicesParameterValues packs and validates the layout', ()
   const bounds = [0, 0, 1, 1] as const;
   const packed = getGPUPointPatternIndicesParameterValues({
     bounds,
-    maximumDistance: 1,
+    indexCellSizeHint: 1,
     clarkEvansCorrection: 'none',
-    alternative: 'lesser'
+    analyticAlternative: 'lesser'
   });
   expect(packed[5]).toBe(GPU_CLARK_EVANS_CORRECTION.none);
   expect(packed[6]).toBe(GPU_POINT_PATTERN_ALTERNATIVE.lesser);
   expect(
     getGPUPointPatternIndicesParameterValues({
       bounds,
-      maximumDistance: 1,
-      alternative: 'greater'
+      indexCellSizeHint: 1,
+      analyticAlternative: 'greater'
     })[6]
   ).toBe(GPU_POINT_PATTERN_ALTERNATIVE.greater);
   expect(() =>
     getGPUPointPatternIndicesParameterValues({
       bounds,
-      maximumDistance: 1,
+      indexCellSizeHint: 1,
       clarkEvansCorrection: 'ripley' as never
     })
   ).toThrow(/clarkEvansCorrection/);
   expect(() =>
     getGPUPointPatternIndicesParameterValues({
       bounds,
-      maximumDistance: 1,
-      alternative: 'directed' as never
+      indexCellSizeHint: 1,
+      analyticAlternative: 'directed' as never
     })
-  ).toThrow(/alternative/);
-  expect(() => getGPUPointPatternIndicesParameterValues({bounds, maximumDistance: 0})).toThrow(
+  ).toThrow(/analyticAlternative/);
+  expect(() => getGPUPointPatternIndicesParameterValues({bounds, indexCellSizeHint: 0})).toThrow(
     /positive/
   );
-  expect(() => getGPUPointPatternIndicesParameterValues({bounds, maximumDistance: NaN})).toThrow(
+  expect(() => getGPUPointPatternIndicesParameterValues({bounds, indexCellSizeHint: NaN})).toThrow(
     /finite/
   );
   expect(() =>
-    getGPUPointPatternIndicesParameterValues({bounds: [1, 0, 0, 1], maximumDistance: 1})
+    getGPUPointPatternIndicesParameterValues({bounds: [1, 0, 0, 1], indexCellSizeHint: 1})
   ).toThrow(/minX/);
   expect(() =>
-    getGPUPointPatternIndicesParameterValues({bounds, maximumDistance: 1}, new Float32Array(4))
+    getGPUPointPatternIndicesParameterValues({bounds, indexCellSizeHint: 1}, new Float32Array(4))
   ).toThrow(/8/);
 });
 
@@ -212,7 +220,7 @@ it('computePointPatternIndicesOnCPU matches hand-computed values', () => {
   const positions = new Float32Array([1, 1, 2, 1, 8, 8, 9, 8]);
   const result = computePointPatternIndicesOnCPU(
     {positions},
-    {bounds: [0, 0, 10, 10], maximumDistance: 3, clarkEvansCorrection: 'none'},
+    {bounds: [0, 0, 10, 10], clarkEvansCorrection: 'none'},
     [2, 2]
   );
   expect(result.nearestNeighborDistances).toEqual([1, 1, 1, 1]);
@@ -239,12 +247,12 @@ it('computePointPatternIndicesOnCPU breaks nearest-neighbor ties to the smallest
   // Row 1 is equidistant from rows 0 and 2.
   const ties = computePointPatternIndicesOnCPU(
     {positions: new Float32Array([0, 0, 1, 0, 2, 0])},
-    {bounds: [0, 0, 4, 4], maximumDistance: 2}
+    {bounds: [0, 0, 4, 4]}
   );
   expect(ties.nearestNeighborIds[1]).toBe(0);
   const single = computePointPatternIndicesOnCPU(
     {positions: new Float32Array([1, 1, 20, 20])},
-    {bounds: [0, 0, 4, 4], maximumDistance: 2}
+    {bounds: [0, 0, 4, 4]}
   );
   expect(single.clarkEvans[0]).toBe(1);
   expect(single.clarkEvans.slice(1).every(Number.isNaN)).toBe(true);
@@ -259,7 +267,7 @@ it('computePointPatternIndicesOnCPU breaks nearest-neighbor ties to the smallest
 const ORACLE_POINTS = [
   1, 1.5, 2, 4, 3.5, 2.5, 4, 5.5, 5, 3, 6, 1, 6.5, 5, 7.5, 3.5, 8, 6, 9, 2, 2.5, 3, 5.5, 4.5
 ];
-const ORACLE_FRAME = {bounds: [0, 0, 10, 7] as const, maximumDistance: 3};
+const ORACLE_FRAME = {bounds: [0, 0, 10, 7] as const, indexCellSizeHint: 3};
 const ORACLE_OBSERVED = 1.5881953626373935;
 const ORACLE_CLARK_EVANS = {
   none: {
@@ -294,7 +302,7 @@ it('computePointPatternIndicesOnCPU matches pointpats / numpy Clark-Evans with a
     for (const [alternative, pValue] of cases) {
       const [n, observed, mean, ratio, standardError, z, p] = computePointPatternIndicesOnCPU(
         scene,
-        {...ORACLE_FRAME, clarkEvansCorrection: correction, alternative}
+        {...ORACLE_FRAME, clarkEvansCorrection: correction, analyticAlternative: alternative}
       ).clarkEvans;
       expect(n).toBe(12);
       expect(observed).toBeCloseTo(ORACLE_OBSERVED, 6);
@@ -344,7 +352,7 @@ it('computePointPatternIndicesOnCPU attaches the chi-square p-value to the quadr
   // Counts [2, 0, 0, 2]: chi-square 4 on 3 degrees of freedom (clark_evans.py, last line).
   const result = computePointPatternIndicesOnCPU(
     {positions: new Float32Array([1, 1, 2, 1, 8, 8, 9, 8])},
-    {bounds: [0, 0, 10, 10], maximumDistance: 3, alternative: 'greater'},
+    {bounds: [0, 0, 10, 10], analyticAlternative: 'greater'},
     [2, 2]
   );
   expect(result.quadratStatistics[6]).toBeCloseTo(0.26146412994911034, 9);
@@ -364,7 +372,7 @@ it('gpu-point-pattern-indices declares planar-only spatial support', () => {
 });
 
 it('point-pattern polygon packer requires explicit corrections and positive guard distances', () => {
-  const settings = {bounds: 'study-window' as const, maximumDistance: 100};
+  const settings = {bounds: 'study-window' as const, indexCellSizeHint: 100};
   expect(() => getGPUPointPatternIndicesParameterValues(settings)).toThrow(
     "GPUPointPatternIndices needs an explicit clarkEvansCorrection ('guard' or 'none') with a study window"
   );
@@ -393,7 +401,7 @@ it('point-pattern polygon packer requires explicit corrections and positive guar
 });
 
 it('point-pattern quadrat sampling and area views validate declared capacities', () => {
-  for (const quadratSamples of [0, -1, 1.5, Infinity, NaN, 4097]) {
+  for (const quadratSamples of [0, -1, 1.5, Infinity, NaN, 2049, 4097]) {
     expectThrows(
       graph => ({
         id: 'p',
@@ -401,7 +409,7 @@ it('point-pattern quadrat sampling and area views validate declared capacities',
         quadratSamples,
         output: {quadratAreas: createTransientView(graph, 'areas', 'float32', 4)}
       }),
-      /^p quadratSamples squared times the quadrat count must be at most 16777216$/
+      /^p quadratSamples must be a positive integer with quadratSamples squared times the quadrat count at most 16777216$/
     );
   }
   expectThrows(
@@ -411,7 +419,7 @@ it('point-pattern quadrat sampling and area views validate declared capacities',
         quadratAreas: createTransientView(graph, 'areas', 'float32', 3)
       }
     }),
-    /output.quadratAreas must hold columns \* rows rows/
+    /output.quadratAreas length 3 must equal quadratGrid columns \* rows \(4\)/
   );
 });
 
@@ -478,7 +486,7 @@ it('polygon rectangle oracle quadrats exactly preserve the equal-area formula', 
   };
   const frame = {
     bounds: getOracleWindowBounds(ORACLE_RECTANGLE),
-    maximumDistance: 100,
+    indexCellSizeHint: 100,
     clarkEvansCorrection: 'none' as const
   };
   const rectangle = computePointPatternIndicesOnCPU(scene, frame, [4, 2]);
@@ -491,7 +499,7 @@ it('guard oracle uses all neighbors, retains n, and returns NaN for no focus poi
   const scene = {positions: new Float32Array([100, 300, 300, 300, 600, 300, 1500, 200])};
   const frame = {
     bounds: getOracleWindowBounds(ORACLE_RECTANGLE),
-    maximumDistance: 100,
+    indexCellSizeHint: 100,
     clarkEvansCorrection: 'guard' as const,
     guardDistance: 250
   };
@@ -513,13 +521,63 @@ it('guard oracle uses all neighbors, retains n, and returns NaN for no focus poi
   ).toBe(true);
 });
 
+it('polygon quadrat oracle matches the independent clipped-area fixture (PTS-108)', () => {
+  const frame = {
+    bounds: getOracleWindowBounds(QUADRAT_ALIGNED_L_WINDOW),
+    indexCellSizeHint: 100,
+    clarkEvansCorrection: 'none' as const
+  };
+  const result = computeWindowPointPatternIndicesOnCPU(
+    {positions: QUADRAT_ALIGNED_L_POSITIONS},
+    frame,
+    [2, 2],
+    QUADRAT_ALIGNED_L_WINDOW
+  );
+  expect(result.quadratCounts).toEqual([5, 1, 3, 0]);
+  expect(result.quadratAreas).toEqual([937500, 750000, 750000, 0]);
+  for (const [index, value] of QUADRAT_ALIGNED_L_STATISTICS.entries()) {
+    expect(Number.isFinite(result.quadratStatistics[index]), `row ${index}`).toBe(true);
+    expect(result.quadratStatistics[index], `row ${index}`).toBeCloseTo(value, 10);
+  }
+});
+
+it('polygon quadrat oracle is undefined when a quadrat with points has no area sample (PTS-108)', () => {
+  const frame = {
+    bounds: getOracleWindowBounds(QUADRAT_SPIKE_WINDOW),
+    indexCellSizeHint: 100,
+    clarkEvansCorrection: 'none' as const
+  };
+  const result = computeWindowPointPatternIndicesOnCPU(
+    {positions: QUADRAT_SPIKE_POSITIONS},
+    frame,
+    [2, 2],
+    QUADRAT_SPIKE_WINDOW
+  );
+  expect(result.quadratCounts).toEqual([45, 10, 45, 0]);
+  expect(result.quadratAreas[1]).toBe(0);
+  expect(result.quadratStatistics[0]).toBe(2);
+  expect(result.quadratStatistics[5]).toBe(1);
+  for (const index of [1, 2, 3, 4, 6]) {
+    expect(result.quadratStatistics[index], `row ${index}`).toBeNaN();
+  }
+});
+
+it('quadrat oracle puts a point on an interior edge in the upper quadrat (PTS-109)', () => {
+  // Closed form: on [0, 100] with 10 columns, x = 10 k lies on the lower edge of column k.
+  const positions = new Float32Array(
+    Array.from({length: 9}, (_, index) => [10 * (index + 1), 5]).flat()
+  );
+  const result = computePointPatternIndicesOnCPU({positions}, {bounds: [0, 0, 100, 100]}, [10, 10]);
+  expect(result.quadratCounts.slice(0, 10)).toEqual([0, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+});
+
 it('polygon quadrat oracle drops empty cells and uses unequal expected counts', () => {
   const scene = {
     positions: new Float32Array([100, 100, 200, 100, 1100, 200, 300, 1700, 1300, 1800])
   };
   const frame = {
     bounds: getOracleWindowBounds(ORACLE_L_SHAPE),
-    maximumDistance: 100,
+    indexCellSizeHint: 100,
     clarkEvansCorrection: 'none' as const
   };
   const result = computeWindowPointPatternIndicesOnCPU(scene, frame, [2, 2], ORACLE_L_SHAPE);
@@ -536,11 +594,10 @@ it('polygon quadrat oracle drops empty cells and uses unequal expected counts', 
   expect(result.quadratStatistics[4]).toBeCloseTo(chiSquare, 12);
 });
 
-// SHA-256 fingerprints verified against the pre-W-3 kernels from HEAD, using this fixture, and
-// taken again on 2026-11-11 when the float test took its shared name: renaming `isFiniteValue`
-// back to `isFiniteFloat` and restoring the two multi-line helper declarations reproduces the
-// earlier fingerprints exactly, so the kernel bodies are unchanged.
-it('legacy rectangle WGSL stays byte-identical', () => {
+// Structural snapshots, not numerical oracles. t1 audited the 8d703cf4e..43358283 diff:
+// nearest lookup deliberately stops squaring the cell-size hint, and quadrats deliberately
+// use exact-product binary search instead of a quotient seed.
+it('rectangle WGSL pins the corrected cell hint and exact quadrat comparisons', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const props = createProps(graph, {
@@ -551,14 +608,24 @@ it('legacy rectangle WGSL stays byte-identical', () => {
     }
   });
   const expected = {
-    'legacy-nearest': 'bf04848737ef23840aa506d6b334bd2593c7b395f31414351b1d8513c02bce4b',
+    'legacy-nearest': 'baae915121d0b4bd44b1dfee0e1a55d7d6047a71a6840f6f66ae617fb6d0f72d',
     'legacy-nearest-terms': 'eb3501fafdb1c1a9e977531e1ea301d6598dc3e6e8fac7a1588562247956712c',
     'legacy-clark-evans': '8b3c888ea558c5ca4f945128c095affa921508e83af1f62f2491ac83f1bea030',
-    'legacy-quadrat-counts': 'aa73fad263b49392151b24143e3d97f36244feba63b964906b8e762a21b0c20b',
-    'legacy-quadrat-statistics': '5b70f4ecea17fd8501897f18687c563e3d7bd5f716dca511c171bd73e0fb9553'
+    // Changed on 2026-11-19 on purpose (PTS-109): the quadrat index is decided by products, so a
+    // point on an interior edge no longer depends on how the adapter compiles a division.
+    // Review round 1: intentional integer product comparison at rounded quadrat-edge ties.
+    'legacy-quadrat-counts': 'cca6152053f89f09946d64fad6bf560badeafe39c42af6715f1b92baf1dcf5b1',
+    // CORE-118 adds the log-gamma shift-bound comment to WGSL. Its arithmetic is unchanged.
+    'legacy-quadrat-statistics': 'f3151632b7aebf7dc0955ea86c11f95fd7fd148ff3633c3c605571f722a74b44'
   };
   const sources = getGPUCommandNodeKernelSources(
     new GPUPointPatternIndices(props).getCommandNodes(graph)
+  );
+  const nearest = sources.find(kernel => kernel.id === 'legacy-nearest')!.source;
+  expect(nearest).toContain('let radiusSquared = 0.0;');
+  expect(nearest).toContain('let cellRadius = radius;');
+  expect(sources.find(kernel => kernel.id === 'legacy-quadrat-counts')!.source).toContain(
+    QUADRAT_INDEX_WGSL
   );
   for (const [id, hash] of Object.entries(expected)) {
     const source = sources.find(kernel => kernel.id === id)!.source;

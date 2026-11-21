@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {
@@ -65,9 +66,9 @@ function splitStatistics(captures: readonly GPUComputationCapture[]): GPUComputa
 }
 
 /** Executes the recorded column profile once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-tracts');
+  const dataset = await loadDataFrameLensData('f-chicago-tracts', options?.datasetResolver);
   const toFloat32 = (values: readonly (number | null)[]) =>
     Float32Array.from(values, value => value ?? NaN);
   const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-column-profile');

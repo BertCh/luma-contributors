@@ -18,13 +18,21 @@ export type TerrainCatchmentSummaryOperationProps = Omit<
   basinIds: string;
   streams: string;
   flowDirections: string;
-  output: {statistics: string; hypsometry: string; profiles: string; profileStatus: string};
+  output: {
+    statistics: string;
+    hypsometry: string;
+    profiles: string;
+    profileStatus: string;
+    /** Independently optional one-row uint32 aggregate profile diagnostics. */
+    status?: {converged?: string; invalidCount?: string; iterationLimitReached?: string};
+  };
 };
 
 /** GPU summary as a vector operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUTerrainCatchmentSummaryOperation extends GPUContributorOperation {
   constructor(props: TerrainCatchmentSummaryOperationProps) {
     const count = props.grid.width * props.grid.height;
+    const statusOutputs = getTerrainCatchmentSummaryOperationStatusOutputs(props.output.status);
     super({
       id: props.id ?? 'terrain-catchment-summary',
       inputs: {
@@ -46,7 +54,13 @@ export class GPUTerrainCatchmentSummaryOperation extends GPUContributorOperation
           length: props.basinCount * props.histogramBins
         },
         profiles: {value: props.output.profiles, format: 'float32', length: count * 3},
-        profileStatus: {value: props.output.profileStatus, format: 'uint32', length: count}
+        profileStatus: {value: props.output.profileStatus, format: 'uint32', length: count},
+        ...Object.fromEntries(
+          statusOutputs.map(([port, value]) => [
+            port,
+            {value, format: 'uint32' as const, length: 1}
+          ])
+        )
       },
       createContributor: getView =>
         new GPUTerrainCatchmentSummary({
@@ -60,9 +74,24 @@ export class GPUTerrainCatchmentSummaryOperation extends GPUContributorOperation
             statistics: getView<'float32'>('statistics'),
             hypsometry: getView<'float32'>('hypsometry'),
             profiles: getView<'float32'>('profiles'),
-            profileStatus: getView<'uint32'>('profileStatus')
+            profileStatus: getView<'uint32'>('profileStatus'),
+            status: Object.fromEntries(
+              statusOutputs.map(([port]) => [port, getView<'uint32'>(port)])
+            )
           }
         })
     });
   }
+}
+
+/** Select supported optional status ports; wider structurally assignable objects may carry others. @internal */
+export function getTerrainCatchmentSummaryOperationStatusOutputs(
+  status: TerrainCatchmentSummaryOperationProps['output']['status']
+): ['converged' | 'invalidCount' | 'iterationLimitReached', string][] {
+  const outputs: ['converged' | 'invalidCount' | 'iterationLimitReached', string][] = [];
+  for (const port of ['converged', 'invalidCount', 'iterationLimitReached'] as const) {
+    const name = status?.[port];
+    if (name !== undefined) outputs.push([port, name]);
+  }
+  return outputs;
 }

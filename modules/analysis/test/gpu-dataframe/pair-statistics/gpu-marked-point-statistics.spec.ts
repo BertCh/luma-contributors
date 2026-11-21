@@ -20,7 +20,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 function createContext(device: Device) {
   const graph = new GPUCommandGraph(device);
@@ -77,6 +77,56 @@ const POSITIONS = [1, 1, 2, 1, 3, 1, 1, 3];
 const WINDOW = [0, 0, 4, 4] as const;
 const RADIUS = 1.5;
 const AREA = 16;
+
+it('PTS-144 distinct coincident marked rows enter shell zero while self pairs are excluded', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const searchStructure of ['grid', 'brute-force'] as const) {
+    const context = createContext(device);
+    try {
+      const statistics = context.output('float32', 8);
+      const pairCounts = context.output('uint32', 2);
+      const status = context.output('uint32', 2);
+      context.graph.add(
+        new GPUMarkedPointStatistics({
+          id: `coincident-${searchStructure}`,
+          searchStructure,
+          positions: context.input('float32x2', [1, 1, 1, 1, 2.5, 1]),
+          marks: context.input('float32', [1, 2, 3]),
+          parameters: context.input('float32', [0, 0, 4, 4, 2, 0]),
+          radiusCount: 2,
+          edgeCorrection: 'none',
+          output: {statistics: statistics.view, pairCounts: pairCounts.view, status: status.view}
+        })
+      );
+      // Ordered shell pairs: shell 0 has (0,1),(1,0), product sum 4, mean 2.
+      // Shell 1 has (0,2),(2,0),(1,2),(2,1), product sum 18, mean 4.5.
+      // Overall mark mean 2; mark correlations are 2/4=0.5 and 4.5/4=1.125.
+      // K cumulative = 16*[2,6]/(3*2); annular PCF=16*[2,4]/(6*pi*[1,3]).
+      context.run();
+      expect(await readUint32(pairCounts.buffer, 2)).toEqual([2, 6]);
+      expect(await readUint32(status.buffer, 2)).toEqual([0, 0]);
+      const actual = await readFloat32(statistics.buffer, 8);
+      expect(actual).toHaveLength(8);
+      const expected = [
+        16 / 3,
+        Math.sqrt(16 / 3 / Math.PI),
+        16 / 3 / Math.PI,
+        0.5,
+        16,
+        Math.sqrt(16 / Math.PI),
+        32 / 9 / Math.PI,
+        1.125
+      ];
+      for (let index = 0; index < expected.length; index++) {
+        expect(Number.isFinite(actual[index])).toBe(true);
+        expect(actual[index]).toBeCloseTo(expected[index], 5);
+      }
+    } finally {
+      context.destroy();
+    }
+  }
+});
 
 it('GPUMarkedPointStatistics same-type K uses A / (n (n - 1)), as GPURipley and spatstat Kest', async () => {
   const device = await getWebGPUTestDevice();

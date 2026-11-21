@@ -7,7 +7,12 @@ import {
   warnGPUShortLongitudeLatitudeDistance
 } from '../../analysis-core/contracts/spatial-context';
 
-import {defineGPUSpatialParameterSchema} from '../../analysis-core/contracts/index';
+import {
+  defineGPUSpatialParameterSchema,
+  type GPUSpatialParameterSchema
+} from '../../analysis-core/contracts/index';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {resolveKernelShapeName} from '../shared/kernel-shape-name';
 
 /** Number of float32 elements in a {@link GPUNeighborSearch} parameter view. */
 export const GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH = 12;
@@ -29,57 +34,59 @@ export const GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH = 15;
 export const GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR = 1e-6;
 
 /** Declarative layout of the packed neighbor-search view. */
-export const GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
-  id: 'neighbor-search',
-  format: 'float32',
-  wordLength: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-  fields: [
-    {name: 'minimumX', format: 'float32', wordOffset: 0, defaultValue: 0, dynamic: true},
-    {name: 'minimumY', format: 'float32', wordOffset: 1, defaultValue: 0, dynamic: true},
-    {name: 'maximumX', format: 'float32', wordOffset: 2, defaultValue: 0, dynamic: true},
-    {name: 'maximumY', format: 'float32', wordOffset: 3, defaultValue: 0, dynamic: true},
-    {
-      name: 'radius',
-      format: 'float32',
-      wordOffset: 4,
-      defaultValue: Infinity,
-      allowNonFinite: true,
-      units: 'position-units',
-      dynamic: true
-    },
-    {name: 'weightKind', format: 'float32', wordOffset: 5, defaultValue: 0, dynamic: true},
-    {name: 'power', format: 'float32', wordOffset: 6, defaultValue: 1, dynamic: true},
-    {
-      name: 'distanceFloor',
-      format: 'float32',
-      wordOffset: 7,
-      defaultValue: GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR,
-      minimum: 0,
-      units: 'position-units',
-      dynamic: true
-    },
-    {name: 'kernel', format: 'float32', wordOffset: 8, defaultValue: 1, dynamic: true},
-    {
-      name: 'rowStandardize',
-      format: 'float32',
-      wordOffset: 9,
-      defaultValue: 0,
-      minimum: 0,
-      maximum: 1,
-      dynamic: true
-    }
-  ]
-});
+export const GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA: GPUSpatialParameterSchema<'float32'> =
+  defineGPUSpatialParameterSchema({
+    id: 'neighbor-search',
+    format: 'float32',
+    wordLength: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+    renamedFields: {radius: 'maximumDistance', weightKind: 'weightType'},
+    fields: [
+      {name: 'minimumX', format: 'float32', wordOffset: 0, defaultValue: 0, dynamic: true},
+      {name: 'minimumY', format: 'float32', wordOffset: 1, defaultValue: 0, dynamic: true},
+      {name: 'maximumX', format: 'float32', wordOffset: 2, defaultValue: 0, dynamic: true},
+      {name: 'maximumY', format: 'float32', wordOffset: 3, defaultValue: 0, dynamic: true},
+      {
+        name: 'maximumDistance',
+        format: 'float32',
+        wordOffset: 4,
+        defaultValue: Infinity,
+        allowNonFinite: true,
+        units: 'position-units',
+        dynamic: true
+      },
+      {name: 'weightType', format: 'float32', wordOffset: 5, defaultValue: 0, dynamic: true},
+      {name: 'power', format: 'float32', wordOffset: 6, defaultValue: 1, dynamic: true},
+      {
+        name: 'distanceFloor',
+        format: 'float32',
+        wordOffset: 7,
+        defaultValue: GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR,
+        minimum: 0,
+        units: 'position-units',
+        dynamic: true
+      },
+      {name: 'kernel', format: 'float32', wordOffset: 8, defaultValue: 1, dynamic: true},
+      {
+        name: 'rowStandardize',
+        format: 'float32',
+        wordOffset: 9,
+        defaultValue: 0,
+        minimum: 0,
+        maximum: 1,
+        dynamic: true
+      }
+    ]
+  });
 
-/** Encoded `weightKind` values stored in parameter slot 5. */
-export const GPU_NEIGHBOR_SEARCH_WEIGHT_KIND = {
+/** Encoded `weightType` values stored in parameter slot 5. */
+export const GPU_NEIGHBOR_SEARCH_WEIGHT_TYPE = Object.freeze({
   /** `w = 1`. */
   binary: 0,
   /** `w = max(d, distanceFloor)^-power`. */
-  inverseDistance: 1,
+  'inverse-distance': 1,
   /** `w = K(d / bandwidth)` for the selected kernel. */
   kernel: 2
-} as const;
+} as const);
 
 /** Encoded `kernel` values stored in parameter slot 8. */
 export const GPU_NEIGHBOR_SEARCH_KERNEL = {
@@ -91,14 +98,16 @@ export const GPU_NEIGHBOR_SEARCH_KERNEL = {
   epanechnikov: 2,
   /** `15/16 (1 - z^2)^2`, PySAL's `quartic`. */
   bisquare: 3,
+  /** Alias of bisquare: `15/16 (1 - z^2)^2`. */
+  quartic: 3,
   /** `1/2`. */
   uniform: 4
 } as const;
 
-/** Weight function applied to each neighbor distance. */
-export type GPUNeighborSearchWeightKind = keyof typeof GPU_NEIGHBOR_SEARCH_WEIGHT_KIND;
+/** Shared weight-rule spelling; nearest-feature weights support its first two values. */
+export type GPUNeighborSearchWeightType = keyof typeof GPU_NEIGHBOR_SEARCH_WEIGHT_TYPE;
 
-/** Kernel profile used when `weightKind` is `'kernel'`. */
+/** Kernel profile used when `weightType` is `'kernel'`. */
 export type GPUNeighborSearchKernel = keyof typeof GPU_NEIGHBOR_SEARCH_KERNEL;
 
 /** Per-frame settings of {@link GPUNeighborSearch}, packed by {@link getGPUNeighborSearchParameterValues}. */
@@ -118,15 +127,12 @@ export type GPUNeighborSearchSettings = {
    * maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world).
    */
   bounds: readonly [number, number, number, number];
-  /**
-   * In the units of the spatial context (position units, or meters/kilometers of great-circle
-   * distance). Radius mode: the distance band (neighbors satisfy `d <= radius`); a non-positive or non-finite
-   * radius yields empty rows. kNN mode: an optional maximum distance; `Infinity` (the default) or
-   * any non-positive value means unbounded.
-   */
-  radius?: number;
-  /** Weight function. Defaults to `'binary'`. */
-  weightKind?: GPUNeighborSearchWeightKind;
+  /** Distance band in spatial-context length units; finite positive float32 in radius mode. */
+  searchRadius?: number;
+  /** Optional kNN distance cutoff in spatial-context length units; omitted means unbounded. */
+  maximumDistance?: number;
+  /** Weight rule, defaults to `'binary'`. */
+  weightType?: GPUNeighborSearchWeightType;
   /** Inverse-distance exponent. Defaults to 1. */
   power?: number;
   /**
@@ -139,7 +145,7 @@ export type GPUNeighborSearchSettings = {
    * floor on the scale of the data when positions repeat (see the class documentation).
    */
   distanceFloor?: number;
-  /** Kernel profile for `weightKind: 'kernel'`. Defaults to `'triangular'`. */
+  /** Kernel profile for `weightType: 'kernel'`. Defaults to `'triangular'`. */
   kernel?: GPUNeighborSearchKernel;
   /** Divides each row's weights by their sum (zero-sum rows stay zero). Defaults to false. */
   rowStandardize?: boolean;
@@ -157,34 +163,116 @@ export type GPUNeighborSearchSettings = {
   timeBounds?: readonly [number, number];
 };
 
+/** Mode-aware settings; the original settings-only overload remains available. */
+export type GPUNeighborSearchModeSettings = GPUNeighborSearchSettings &
+  (
+    | {mode: 'radius'; searchRadius: number; maximumDistance?: never}
+    | {mode: 'knn'; searchRadius?: never; maximumDistance?: number}
+  );
+
+/** Validates and defaults the weight rule. @internal */
+export function resolveNeighborSearchWeightType(
+  settings: Pick<GPUNeighborSearchSettings, 'weightType'>
+): GPUNeighborSearchWeightType {
+  const {weightType} = settings;
+  validateRequirement(
+    'GPUNeighborSearch',
+    !('weightKind' in settings),
+    'weightKind was renamed; use weightType'
+  );
+  validateRequirement(
+    'GPUNeighborSearch',
+    weightType === undefined ||
+      (typeof weightType === 'string' &&
+        Object.hasOwn(GPU_NEIGHBOR_SEARCH_WEIGHT_TYPE, weightType)),
+    `weightType received ${String(weightType)}; expected binary, inverse-distance or kernel`
+  );
+  return weightType ?? 'binary';
+}
+
 /**
  * The weight transform {@link GPUNeighborSearchSettings} select, for
  * `GPUNeighborSearchProps.weightTransform`: `'row'` with `rowStandardize`, else `'binary'`,
- * `'raw'` (inverse distance) or `'kernel'` from `weightKind`.
+ * `'raw'` (inverse distance) or `'kernel'` from the resolved `weightType`.
  */
 export function getGPUNeighborSearchWeightTransform(
-  settings: Pick<GPUNeighborSearchSettings, 'weightKind' | 'rowStandardize'>
+  settings: Pick<GPUNeighborSearchSettings, 'weightType' | 'rowStandardize'>
 ): 'binary' | 'raw' | 'kernel' | 'row' {
-  const weightKind = settings.weightKind ?? 'binary';
-  if (!(weightKind in GPU_NEIGHBOR_SEARCH_WEIGHT_KIND)) {
-    throw new Error(`GPUNeighborSearch unknown weightKind ${weightKind}`);
-  }
+  const weightType = resolveNeighborSearchWeightType(settings);
   if (settings.rowStandardize) {
     return 'row';
   }
-  return weightKind === 'inverseDistance' ? 'raw' : weightKind === 'kernel' ? 'kernel' : 'binary';
+  return weightType === 'inverse-distance' ? 'raw' : weightType === 'kernel' ? 'kernel' : 'binary';
 }
 
 /**
  * Packs {@link GPUNeighborSearchSettings} into the float32 layout read by the kernels.
  *
- * Layout: `[minX, minY, maxX, maxY, radius, weightKind, power, distanceFloor, kernel,
+ * Layout: `[minX, minY, maxX, maxY, maximumDistance, weightType, power, distanceFloor, kernel,
  * rowStandardize, 0, 0]`, followed by `[timeRadius, minimumTime, maximumTime]` when `timeRadius`
  * is given.
  */
 export function getGPUNeighborSearchParameterValues(
-  settings: GPUNeighborSearchSettings
+  settings: GPUNeighborSearchModeSettings
+): Float32Array;
+/** Legacy settings-only overload; use the mode-aware overload to validate the distance band. */
+export function getGPUNeighborSearchParameterValues(
+  settings: GPUNeighborSearchSettings & {mode?: never}
+): Float32Array;
+export function getGPUNeighborSearchParameterValues(
+  settings: GPUNeighborSearchSettings & {mode?: 'radius' | 'knn'}
 ): Float32Array {
+  const {mode, searchRadius, maximumDistance} = settings;
+  validateRequirement(
+    'GPUNeighborSearch',
+    !('radius' in settings),
+    mode === 'radius'
+      ? 'radius was renamed; use searchRadius'
+      : mode === 'knn'
+        ? 'radius was renamed; use maximumDistance'
+        : 'radius was renamed; use searchRadius in radius mode or maximumDistance in kNN mode'
+  );
+  validateRequirement(
+    'GPUNeighborSearch',
+    mode === undefined || mode === 'radius' || mode === 'knn',
+    `mode received ${String(mode)}; expected radius or knn`
+  );
+  validateRequirement(
+    'GPUNeighborSearch',
+    !(searchRadius !== undefined && maximumDistance !== undefined) &&
+      !(mode === 'radius' && maximumDistance !== undefined) &&
+      !(mode === 'knn' && searchRadius !== undefined),
+    `searchRadius ${String(searchRadius)} and maximumDistance ${String(maximumDistance)} must match mode ${String(mode)}`
+  );
+  const distance = searchRadius ?? maximumDistance ?? Infinity;
+  if (mode === 'radius' || searchRadius !== undefined) {
+    validateRequirement(
+      'GPUNeighborSearch',
+      Math.fround(distance) > 0 && Number.isFinite(Math.fround(distance)),
+      `searchRadius must pack as a finite positive float32; received ${String(distance)}; supply searchRadius in radius mode`
+    );
+  }
+  if (maximumDistance !== undefined) {
+    validateRequirement(
+      'GPUNeighborSearch',
+      maximumDistance === Infinity ||
+        (Math.fround(maximumDistance) > 0 && Number.isFinite(Math.fround(maximumDistance))),
+      `maximumDistance must be positive finite float32 or Infinity; received ${String(maximumDistance)}`
+    );
+  }
+  if (
+    settings.spatialContext?.coordinateSpace !== 'longitude-latitude' &&
+    Number.isFinite(distance) &&
+    distance > 0
+  ) {
+    const packedDistance = Math.fround(distance);
+    const prop = searchRadius !== undefined ? 'searchRadius' : 'maximumDistance';
+    validateRequirement(
+      'GPUNeighborSearch',
+      Number.isFinite(Math.fround(packedDistance * packedDistance)),
+      `${prop} square must remain finite in float32 for planar search; received ${distance}; use a smaller distance or rescale planar positions`
+    );
+  }
   if ((settings.timeRadius === undefined) !== (settings.timeBounds === undefined)) {
     throw new Error('GPUNeighborSearch timeRadius and timeBounds must be given together');
   }
@@ -199,25 +287,21 @@ export function getGPUNeighborSearchParameterValues(
     values[14] = settings.timeBounds[1];
   }
   const [minimumX, minimumY, maximumX, maximumY] = settings.bounds;
-  const weightKind = settings.weightKind ?? 'binary';
-  const kernel = settings.kernel ?? 'triangular';
-  if (!(weightKind in GPU_NEIGHBOR_SEARCH_WEIGHT_KIND)) {
-    throw new Error(`GPUNeighborSearch unknown weightKind ${weightKind}`);
-  }
-  if (!(kernel in GPU_NEIGHBOR_SEARCH_KERNEL)) {
-    throw new Error(`GPUNeighborSearch unknown kernel ${kernel}`);
-  }
-  warnGPUShortLongitudeLatitudeDistance(
-    'GPUNeighborSearch',
-    settings.spatialContext,
-    settings.radius
-  );
+  const weightType = resolveNeighborSearchWeightType(settings);
+  const kernel = resolveKernelShapeName('GPUNeighborSearch', settings.kernel ?? 'triangular', [
+    'gaussian',
+    'triangular',
+    'epanechnikov',
+    'quartic',
+    'uniform'
+  ] as const);
+  warnGPUShortLongitudeLatitudeDistance('GPUNeighborSearch', settings.spatialContext, distance);
   values[0] = minimumX;
   values[1] = minimumY;
   values[2] = maximumX;
   values[3] = maximumY;
-  values[4] = settings.radius ?? Infinity;
-  values[5] = GPU_NEIGHBOR_SEARCH_WEIGHT_KIND[weightKind];
+  values[4] = distance;
+  values[5] = GPU_NEIGHBOR_SEARCH_WEIGHT_TYPE[weightType];
   values[6] = settings.power ?? 1;
   values[7] = settings.distanceFloor ?? GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR;
   values[8] = GPU_NEIGHBOR_SEARCH_KERNEL[kernel];

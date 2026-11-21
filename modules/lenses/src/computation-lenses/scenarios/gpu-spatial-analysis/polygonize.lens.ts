@@ -82,7 +82,10 @@ defineLensScenario({
               polygonRequiredRingCount: {
                 view: status.requiredRingCount,
                 role: 'intermediate',
-                meaning: 'face rings needed (ring capacity to allocate)'
+                // Exact only without candidate loss: incomplete noding (polygonCandidateOverflow
+                // 1) makes it a lower bound on the rings to allocate (LENS-108).
+                meaning:
+                  'directed rings assembly needs, including holes and unbounded walks; the ring capacity to allocate when polygonCandidateOverflow is 0, only a lower bound when it is 1'
               },
               polygonOverflow: {view: status.overflow, role: 'intermediate'},
               polygonCandidateOverflow: {view: status.candidateOverflow, role: 'intermediate'},

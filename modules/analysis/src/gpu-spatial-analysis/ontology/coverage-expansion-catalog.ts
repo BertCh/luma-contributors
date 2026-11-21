@@ -6,9 +6,14 @@ import type {
   GPUSpatialAnalysisCapability,
   GPUSpatialAnalysisOperator
 } from './spatial-analysis-ontology';
+import {
+  freezeCatalog,
+  withCatalogStability,
+  type CatalogCapabilityDefinition
+} from './freeze-catalog';
 
 type CoverageFamily = {
-  capability: GPUSpatialAnalysisCapability;
+  capability: CatalogCapabilityDefinition;
   tests: string;
   documentation: string;
 };
@@ -292,7 +297,8 @@ const COVERAGE_FAMILIES: readonly CoverageFamily[] = [
   }
 ];
 
-export const COVERAGE_EXPANSION_CAPABILITIES = COVERAGE_FAMILIES.map(({capability}) => capability);
+export const COVERAGE_EXPANSION_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
+  freezeCatalog(COVERAGE_FAMILIES.map(({capability}) => withCatalogStability(capability)));
 
 type CoverageOperatorOverride = Pick<
   GPUSpatialAnalysisOperator,
@@ -307,6 +313,7 @@ type CoverageOperatorOverride = Pick<
       | 'semantics'
       | 'deterministic'
       | 'status'
+      | 'summary'
       | 'readback'
     >
   > & {
@@ -465,7 +472,9 @@ const GEOMETRY_OPERATOR_OVERRIDES: Readonly<Record<string, Partial<CoverageOpera
     semantics: 'approximate',
     deterministic: true,
     readback: 'none',
-    status: ['count', 'requiredCount', 'overflow'],
+    status: ['count', 'requiredCount', 'overflow', 'iterationLimitReached'],
+    summary:
+      'Node raw offsets, remove portions inside the source-distance band, select the requested side and compact multipart components. The iterationLimitReached status kind is packed status word 6 (zero-based, decoded as iterationLimit).',
     tests: `${TEST_ROOT}/geometry-refinement/geometry-advanced.spec.ts`
   },
   GPUVectorStraightSkeleton: {
@@ -501,6 +510,76 @@ const CONTINUOUS_SAMPLING_OPERATOR_OVERRIDES: Readonly<
   }
 };
 
+/**
+ * Status kinds audited against each contributor's output type and the members it writes
+ * (catalog CAT-101). Packed or per-row status code words are not catalog kinds and stay out.
+ */
+const COVERAGE_STATUS_OVERRIDES: Readonly<Record<string, Partial<CoverageOperatorOverride>>> = {
+  // Result-wide certificate for shared-path adjacency, not a stage or row mask.
+  addBuildingAdjacencyRecipe: {
+    status: ['complete'],
+    summary:
+      'Building adjacency from shared paths. Result status.complete certifies that the shared-path input is complete for the adjacency result.'
+  },
+  // Writes `candidateOverflow` as 0: no capacity-bounded candidate stage.
+  GPUFuzzyContiguity: {status: ['requiredCount', 'overflow']},
+  // CSR link scope: optional count is the emitted link count (offsets[rows]); requiredCount
+  // and overflow describe final capacity. Optional candidateOverflow is cleared on loss-free
+  // inputs and reduces inherited final/candidate loss; uncertainCount counts fallback rows.
+  GPUIslandAttachment: {
+    status: ['count', 'requiredCount', 'overflow', 'candidateOverflow', 'uncertainCount'],
+    summary:
+      'Attaches islands to spatial weights. Final-capacity status describes CSR links: optional count is the emitted link count, requiredCount and overflow describe final capacity, optional candidateOverflow forwards inherited final/candidate loss (zero on loss-free input), and uncertainCount counts islands resolved by bounded cooperative fallback.'
+  },
+  // Optional one-row destinations under `output.ports.status`.
+  GPUOPTICS: {
+    status: [
+      'candidateOverflow',
+      'converged',
+      'iterationLimitReached',
+      'iterationCount',
+      'invalidCount'
+    ]
+  },
+  GPURankMarkov: {status: ['converged']},
+  // candidateOverflow is one diagnostic per input line, never a scalar catalog status.
+  GPUSegmentSnap: {status: []},
+  // Delegated geometry/ring status plus noded-segment and directed-edge requiredCount ports.
+  GPUPolygonPrecisionReduction: {
+    status: [
+      'count',
+      'requiredCount',
+      'requiredRingCount',
+      'overflow',
+      'candidateOverflow',
+      'uncertainCount'
+    ]
+  },
+  GPURatioConcaveHull: {status: ['converged']},
+  GPUSpatialPanelErrorMaximumLikelihood: {status: ['converged']},
+  // Local recipe-level scalars plus reference per-overlay polygon/ring diagnostics.
+  addBuildingTessellationRecipe: {
+    // Both overloads read boundary segments, enclosure rings and segment-to-building IDs.
+    // The local overload also reads an optional per-frame parameters view.
+    inputs: ['lines', 'polygons', 'attributes', 'parameters'],
+    outputs: ['polygons', 'attributes', 'summary'],
+    status: [
+      'count',
+      'requiredCount',
+      'overflow',
+      'candidateOverflow',
+      'invalidCount',
+      'requiredRingCount',
+      'ringCount',
+      'uncertainCount',
+      'nodedSegmentRequiredCount'
+    ]
+  },
+  // `mode: 'boundary'` only; the reference route has no status.
+  addPatchProximityRecipe: {status: ['count', 'requiredCount', 'overflow', 'candidateOverflow']},
+  addSegregationCounterfactualRecipe: {status: ['invalidCount']}
+};
+
 /** Descriptor data imports no GPU constructors and does not promote incomplete oracle coverage. */
 export const COVERAGE_EXPANSION_OPERATOR_OVERRIDES: Readonly<
   Record<string, CoverageOperatorOverride>
@@ -519,7 +598,14 @@ export const COVERAGE_EXPANSION_OPERATOR_OVERRIDES: Readonly<
         ...GLOBAL_COORDINATE_OPERATOR_OVERRIDES[name],
         ...GEOMETRY_OPERATOR_OVERRIDES[name],
         ...CONTINUOUS_SAMPLING_OPERATOR_OVERRIDES[name],
-        ...(name === 'addPopulationSupportAlignmentRecipe' ? {status: ['invalidCount']} : {}),
+        ...COVERAGE_STATUS_OVERRIDES[name],
+        ...(name === 'addPopulationSupportAlignmentRecipe'
+          ? {
+              inputs: ['attributes'],
+              contract: 'GPUPopulationSupportAlignmentRecipeProps',
+              status: ['invalidCount', 'complete']
+            }
+          : {}),
         ...(name === 'addVisibilityGraphRecipe'
           ? {
               inputs: ['points', 'lines', 'polygons', 'parameters'],
@@ -528,7 +614,7 @@ export const COVERAGE_EXPANSION_OPERATOR_OVERRIDES: Readonly<
               readback: 'none',
               dimensionality: '2d',
               documentation: 'docs/api/gpu-spatial-analysis/urban-morphology.md',
-              contract: 'GPUVisibilityGraphProps | GPUVisibilityGraphCSRProps'
+              contract: 'GPUVisibilityGraphProps | GPUVisibilityGraphAdjacencyCSRProps'
             }
           : {}),
         ...(name === 'GPUSpatialPanelLagMaximumLikelihood'

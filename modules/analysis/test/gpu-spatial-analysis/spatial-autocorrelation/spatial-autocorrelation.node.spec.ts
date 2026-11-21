@@ -617,7 +617,7 @@ function getEdgeAssociationSources(
 ): {
   nodeIds: string[];
   sources: ReturnType<typeof getGPUCommandNodeKernelSources>;
-  workgroups: number[];
+  workgroups: Record<string, number>;
 } {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -643,46 +643,61 @@ function getEdgeAssociationSources(
   return {
     nodeIds: nodes.map(node => node.id),
     sources,
-    workgroups: nodes.map(node => node.workload?.maximumWorkgroupCount ?? 0)
+    workgroups: Object.fromEntries(
+      nodes.map(node => [node.id.split('-').at(-1)!, node.workload?.maximumWorkgroupCount ?? 0])
+    )
   };
 }
 
-it('Pearson and Gamma reduce edges in three fixed-order stages without atomics', () => {
+it('Pearson and Gamma reduce edges in four fixed-order stages without atomics', () => {
   for (const kind of ['pearson', 'gamma'] as const) {
     for (const withMask of [false, true]) {
       const {nodeIds, sources, workgroups} = getEdgeAssociationSources(kind, 70000, withMask);
       const prefix = kind === 'pearson' ? 'spatial-pearson' : 'gamma-statistic';
-      expect(nodeIds).toEqual([`${prefix}-moments`, `${prefix}-centered`, `${prefix}-statistic`]);
+      const stages = ['anchors', 'moments', 'centered', 'statistic'];
+      expect(nodeIds).toEqual(stages.map(stage => `${prefix}-${stage}`));
       expect(sources.map(({id}) => id)).toEqual(nodeIds);
-      for (const {id, source, constants} of sources) {
+      for (const stage of stages) {
+        const {id, source, constants} = sources.find(kernel => kernel.id === `${prefix}-${stage}`)!;
         expect(source, id).not.toContain('atomic');
-        expect(getStorageBindingCount(source), `${id} storage bindings`).toBeLessThanOrEqual(8);
+        expect(getStorageBindingCount(source), `${id} storage bindings`).toBe(
+          stage === 'statistic' ? 2 : (stage === 'anchors' ? 6 : 7) + Number(withMask)
+        );
+        const arrays = kind === 'pearson' && ['centered', 'statistic'].includes(stage) ? 7 : 3;
         expect(getWorkgroupMemoryBytes(source, constants), `${id} workgroup bytes`).toBe(
-          3 * 256 * 4
+          arrays * 256 * 4
         );
         expect(getWorkgroupMemoryBytes(source, constants)).toBeLessThanOrEqual(
           CORE_WORKGROUP_STORAGE_LIMIT_BYTES
         );
-        // 70000 rows / 256 lanes = 274 > 256: the workgroup count is capped.
         expect(source, id).toContain('const TOTAL_GROUPS: u32 = 256u;');
+        expect(workgroups[stage]).toBe(stage === 'statistic' ? 1 : 256);
+        if (stage === 'statistic') {
+          expect(source).not.toContain('valuesOffset + row');
+          expect(getStorageBindingCount(source)).toBe(2);
+        } else {
+          expect(source).toContain('isFiniteFloat(values[valuesOffset + row])');
+          expect(source.includes('maskOffset + row')).toBe(withMask);
+          expect(source).toContain('anchors: array<f32>');
+        }
       }
-      expect(workgroups).toEqual([256, 256, 1]);
-      // Row filtering stays in both row passes only; the final kernel reads partials.
-      expect(sources[0].source).toContain('isFiniteFloat(values[valuesOffset + row])');
-      expect(sources[1].source).toContain('isFiniteFloat(values[valuesOffset + row])');
-      expect(sources[2].source).not.toContain('valuesOffset + row');
-      expect(sources[0].source.includes('maskOffset + row')).toBe(withMask);
-      expect(getStorageBindingCount(sources[2].source)).toBe(2);
     }
   }
 });
 
 it('Pearson and Gamma use one workgroup for small inputs and size groups from the row count', () => {
-  const small = getEdgeAssociationSources('pearson', 100, false);
-  expect(small.workgroups).toEqual([1, 1, 1]);
-  const medium = getEdgeAssociationSources('pearson', 1000, false);
-  expect(medium.workgroups).toEqual([4, 4, 1]);
-  expect(medium.sources[0].source).toContain('GROUPS = getChunkParameter(38u);');
+  for (const kind of ['pearson', 'gamma'] as const) {
+    const small = getEdgeAssociationSources(kind, 100, false);
+    const medium = getEdgeAssociationSources(kind, 1000, false);
+    for (const stage of ['anchors', 'moments', 'centered', 'statistic']) {
+      expect(small.workgroups[stage]).toBe(1);
+      expect(medium.workgroups[stage]).toBe(stage === 'statistic' ? 1 : 4);
+      if (stage !== 'statistic')
+        expect(medium.sources.find(kernel => kernel.id.endsWith(`-${stage}`))!.source).toContain(
+          'GROUPS = getChunkParameter(38u);'
+        );
+    }
+  }
 });
 
 it('uint32 values add exactly one conversion node, float32 values add none', () => {

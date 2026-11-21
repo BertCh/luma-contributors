@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUAnalysisParameterComparisons} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUAnalysisParameterComparisons} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 import {describe, expect, it} from 'vitest';
 import {
@@ -15,7 +15,7 @@ import type {
   CatalogRunResult
 } from '../../src/analysis/catalog-binding-types';
 import type {CatalogFeature, CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
-import {validateGPUAnalysisResultEncoding} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {validateGPUAnalysisResultEncoding} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {KeplerOperationDescriptor} from '../../src/descriptors/operation-descriptor-types';
 import {GEOMETRY_B_OPERATION_DESCRIPTORS} from '../../src/descriptors/descriptors-geometry-b';
 import {evaluateKeplerOperationApplicability} from '../../src/descriptors/applicability';
@@ -1097,4 +1097,64 @@ describe('geometry-b unconditional overlap and dot capacity regressions', () => 
     expect(result.tables[0].rowCount).toBeGreaterThan(0);
     expect(result.tables[0].rowCount).toBeLessThanOrEqual(maximumDots);
   });
+});
+
+it('SEAM-106: descriptor publishes thin pairs independently of a distant feature and classifies hole fillers', async () => {
+  const descriptor = GEOMETRY_B_OPERATION_DESCRIPTORS.find(
+    candidate => candidate.bindingId === 'geometry-coverage-validity'
+  )!;
+  const binding = getCatalogBinding(descriptor.bindingId)!;
+  const rectangle = (west: number, south: number, east: number, north: number) => [
+    [west, south],
+    [east, south],
+    [east, north],
+    [west, north],
+    [west, south]
+  ];
+  const thinFirst = [rectangle(0, 0, 4, 2)];
+  const thinSecond = [rectangle(3.99975, 0, 7, 2)];
+  const shell = rectangle(0, 0, 12, 8);
+  const hole = rectangle(3, 2, 9, 6);
+  // Hand-worked intersection areas: thin pair = .00025 * 2 = .0005;
+  // duplicate donuts = 12*8 - 6*4 = 72, filler only shares the hole boundary.
+  for (const coordinates of [
+    [thinFirst, thinSecond],
+    [thinFirst, thinSecond, [rectangle(-1e9, -1e9, -1e9 + 1, -1e9 + 1)]],
+    [[shell, hole], [shell, hole], [hole]]
+  ]) {
+    const polygons = collection(
+      coordinates.map((rings, index) => ({
+        id: `polygon-${index}`,
+        properties: {},
+        geometry: {type: 'Polygon', coordinates: rings}
+      }))
+    );
+    const profile = profileKeplerFeatureCollection(polygons, {
+      datasetId: 'coverage-fixture',
+      label: 'Coverage fixture'
+    });
+    const parameters = resolveKeplerOperationParameters(binding, descriptor, {
+      polygons: profile
+    }).parameters;
+    const result = await runCatalogOperationAsync(binding, parameters, {polygons}, {engine: 'cpu'});
+    const pairsDescriptor = descriptor.outputs.find(
+      output => output.tableId === 'coverage-overlaps'
+    )!;
+    const pairs = result.tables.find(table => table.id === pairsDescriptor.tableId)!;
+    expect(pairsDescriptor.interpretation?.summary).toBe('row-count');
+    expect(pairs.rowCount).toBe(1);
+    expect(pairs.columns['first_id']).toEqual(['polygon-0']);
+    expect(pairs.columns['second_id']).toEqual(['polygon-1']);
+    const featuresDescriptor = descriptor.outputs.find(
+      output => output.tableId === 'coverage-features'
+    )!;
+    expect(featuresDescriptor.presentation).toEqual({column: 'status', scale: 'categorical'});
+    const features = result.tables.find(table => table.id === featuresDescriptor.tableId)!;
+    expect(features.columns[featuresDescriptor.presentation!.column]).toEqual(
+      coordinates.length === 2 ? ['overlaps', 'overlaps'] : ['overlaps', 'overlaps', 'valid']
+    );
+    expect(features.columns['overlap_count']).toEqual(
+      coordinates.length === 2 ? [1, 1] : [1, 1, 0]
+    );
+  }
 });

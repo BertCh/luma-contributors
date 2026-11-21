@@ -275,6 +275,7 @@ export function computeGeographicallyWeightedRegressionOnCPU(
     const squared = Array.from({length: p}, () => new Array<number>(p).fill(0));
     const b = new Array<number>(p).fill(0);
     const z = new Array<number>(p).fill(0);
+    let weightedResponseDeviation = 0;
     z[0] = 1;
     for (let other = 0; other < rowCount; other++) {
       if (!valid[other]) {
@@ -300,6 +301,7 @@ export function computeGeographicallyWeightedRegressionOnCPU(
           squared[r][c] += weight * weight * z[r] * z[c];
         }
       }
+      weightedResponseDeviation += weight * (response[other] - response[row]);
     }
     for (let r = 0; r < p; r++) {
       for (let c = r + 1; c < p; c++) {
@@ -312,7 +314,7 @@ export function computeGeographicallyWeightedRegressionOnCPU(
       beta: new Array<number>(p).fill(0),
       hat: 0,
       weightSum: a[0][0],
-      weightedResponse: b[0],
+      weightedResponse: weightedResponseDeviation,
       variance: new Array<number>(p).fill(Number.NaN)
     };
     if (!a.every((line, r) => line[r] > 0)) {
@@ -383,7 +385,7 @@ export function computeGeographicallyWeightedRegressionOnCPU(
       residualSum += (response[row] - fit.beta[0]) ** 2;
       traceSum += fit.hat;
     }
-    const count = includedCount - singular;
+    const count = includedCount - singular - invalid;
     const denominator = count - 2 - traceSum;
     let aicc = nan;
     if (invalid === 0 && count > 0 && denominator > 0) {
@@ -509,8 +511,8 @@ export function computeGeographicallyWeightedRegressionOnCPU(
     let lower = 0;
     let upper = 0;
     if (isAdaptive) {
-      lower = 40 + 2 * p;
       upper = Math.min(includedCount, maximumK);
+      lower = Math.min(40 + 2 * p, upper);
     } else {
       let nearest = Number.POSITIVE_INFINITY;
       let farthest = 0;
@@ -670,7 +672,7 @@ export function computeGeographicallyWeightedRegressionOnCPU(
                 predictors[row * predictorCount + column]);
           }
           residualSum += weight * (response[other] - prediction) ** 2;
-          totalSum += weight * (response[other] - weightedMean) ** 2;
+          totalSum += weight * (response[other] - response[row] - weightedMean) ** 2;
         }
         r2 = totalSum > 0 ? 1 - residualSum / totalSum : nan;
       }
@@ -687,8 +689,10 @@ export function computeGeographicallyWeightedRegressionOnCPU(
     hatDiagonal.push(hat);
     localStatus.push(status);
   }
-  const mean = okResponses.reduce((sum, value) => sum + value, 0) / Math.max(okResponses.length, 1);
-  const total = okResponses.reduce((sum, value) => sum + (value - mean) ** 2, 0);
+  const anchor = okResponses[0] ?? 0;
+  const mean =
+    okResponses.reduce((sum, value) => sum + (value - anchor), 0) / Math.max(okResponses.length, 1);
+  const total = okResponses.reduce((sum, value) => sum + (value - anchor - mean) ** 2, 0);
   return {
     coefficients,
     standardErrors,

@@ -10,7 +10,12 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import type {CPUNetworkReachabilityInput} from '../network-reachability/cpu-network-reachability-operation';
 import {GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS} from '../network-reachability/gpu-network-reachability';
-import {validateNetworkRoutingArrays} from '../../analysis-core/operations/cpu-network-routing';
+import {
+  validateNetworkRoutingArrays,
+  resolveNetworkRoutingCostPrecision,
+  addNetworkRoutingCosts,
+  type CPUNetworkRoutingCostPrecision
+} from '../../analysis-core/operations/cpu-network-routing';
 import {
   GPUNetworkCostTableOperation,
   snapshotNetworkCostTableOperationProps,
@@ -28,6 +33,8 @@ const LOCAL_FRONTIER_CAPACITY = 256;
 export type CPUNetworkCostTableInput = {
   topology: CPUNetworkReachabilityInput['topology'];
   costLimit: Float32Array;
+  /** Default float32-per-edge, preserving inclusive table membership for GPU consumers. */
+  costPrecision?: CPUNetworkRoutingCostPrecision;
 };
 /** Entry capacity, independent of the required count. */
 export type CPUNetworkCostTableOptions = {
@@ -37,6 +44,8 @@ export type CPUNetworkCostTableOptions = {
 };
 /** CSR outputs and one-word statuses. There is no separate count port in GPUNetworkCostTable. */
 export type CPUNetworkCostTableResult = {
+  /** Captured cutoff; bind this retained value as the matcher routeTable.costLimit. */
+  builtCostLimit: Float32Array;
   offsets: Uint32Array;
   targets: Uint32Array;
   costs: Float32Array;
@@ -51,15 +60,18 @@ export type CPUNetworkCostTableResult = {
  * Builds cutoff all-pairs CSR rows with ascending targets, including finite diagonal zeros.
  *
  * What differs from the GPU contributor:
- * - Each path addition rounds to float32, as on the GPU, before the inclusive cutoff test. This
- *   deliberately preserves table membership for mixed CPU-table/GPU-matcher graphs rather than
- *   using float64 paths. NaN costLimit disables the cutoff, as in the GPU comparisons.
+ * - costPrecision defaults to float32-per-edge, rounding each addition before the inclusive
+ *   cutoff to preserve membership for mixed CPU-table/GPU-matcher graphs. Explicit float64
+ *   uses wider paths and can change membership. NaN costLimit disables the cutoff, as on GPU.
  * - An explicit round budget applies; omitting maximumIterations searches to completion.
  *   localIterations defaults to 16. CPU workgroups visit
  *   source rows independently in a deterministic order; GPU scheduling and lane packing can change
  *   partial incumbents and convergence near the budget boundary. Completed paths agree up to rounding.
  *   GPU lane, command-node and device limits are dropped. Capacity still truncates rows.
  * - Unused target/cost capacity is zero-initialized; the GPU does not write unused capacity.
+ * - A finite float64 path outside the finite float32 output range is omitted from the CSR and
+ *   clears complete, even if the search converged and final capacity fits. requiredCount counts
+ *   representable entries; convergence and capacity overflow keep their independent meanings.
  *
  * @throws Error naming an inconsistent topology or costLimit argument.
  */
@@ -67,6 +79,11 @@ export function computeNetworkCostTableOnCPU(
   input: CPUNetworkCostTableInput,
   options: CPUNetworkCostTableOptions
 ): CPUNetworkCostTableResult {
+  const requestedCostPrecision = input.costPrecision;
+  const costPrecision = resolveNetworkRoutingCostPrecision(
+    'computeNetworkCostTableOnCPU',
+    requestedCostPrecision === undefined ? 'float32-per-edge' : requestedCostPrecision
+  );
   validateCapacity('computeNetworkCostTableOnCPU', 'capacity', options.capacity);
   const maximumIterations = options.maximumIterations ?? Infinity;
   const localIterations = options.localIterations ?? DEFAULT_LOCAL_ITERATIONS;
@@ -82,11 +99,14 @@ export function computeNetworkCostTableOnCPU(
   );
   const nodeCount = validateNetworkRoutingArrays(input.topology);
   if (input.costLimit.length !== 1) throw new Error('costLimit must contain exactly one row');
+  const builtCostLimit = Float32Array.of(input.costLimit[0]);
+  input = {topology: input.topology, costLimit: builtCostLimit, costPrecision};
   const offsets = new Uint32Array(nodeCount + 1);
   const targets = new Uint32Array(options.capacity);
   const costs = new Float32Array(options.capacity);
   let requiredCount = 0;
   let converged = true;
+  let representable = true;
   for (let source = 0; source < nodeCount; source++) {
     offsets[source] = Math.min(requiredCount, options.capacity);
     const search = computeBudgetedCosts(input, source, maximumIterations, localIterations);
@@ -94,15 +114,21 @@ export function computeNetworkCostTableOnCPU(
     converged &&= search.converged;
     for (let target = 0; target < nodeCount; target++) {
       if (!Number.isFinite(distances[target]) || distances[target] < 0) continue;
+      const storedCost = Math.fround(distances[target]);
+      if (!Number.isFinite(storedCost)) {
+        representable = false;
+        continue;
+      }
       if (requiredCount < options.capacity) {
         targets[requiredCount] = target;
-        costs[requiredCount] = distances[target];
+        costs[requiredCount] = storedCost;
       }
       requiredCount = Math.min(requiredCount + 1, 0xffffffff);
     }
   }
   offsets[nodeCount] = Math.min(requiredCount, options.capacity);
   return {
+    builtCostLimit,
     offsets,
     targets,
     costs,
@@ -110,7 +136,9 @@ export function computeNetworkCostTableOnCPU(
     overflow: Uint32Array.of(Number(requiredCount > options.capacity)),
     converged: Uint32Array.of(Number(converged)),
     iterationLimitReached: Uint32Array.of(Number(!converged)),
-    complete: Uint32Array.of(Number(converged && requiredCount <= options.capacity))
+    complete: Uint32Array.of(
+      Number(converged && representable && requiredCount <= options.capacity)
+    )
   };
 }
 
@@ -134,16 +162,19 @@ function computeBudgetedCosts(
       let localFrontier = frontier.slice(chunk, chunk + LOCAL_FRONTIER_CAPACITY);
       for (let hop = 0; hop < localIterations && localFrontier.length; hop++) {
         const nextLocalFrontier: number[] = [];
-        for (const node of localFrontier) {
+        const sources = localFrontier.map(node => ({node, sourceCost: distances[node]}));
+        for (const {node, sourceCost} of sources) {
           for (
             let edge = Math.min(offsets[node], neighbors.length);
             edge < Math.min(offsets[node + 1], neighbors.length);
             edge++
           ) {
             const target = neighbors[edge];
-            // A complete table certifies misses for GPU consumers, so cutoff membership must
-            // use the same per-edge rounding as the f32 reachability relaxation.
-            const candidate = Math.fround(distances[node] + weights[edge]);
+            const candidate = addNetworkRoutingCosts(
+              sourceCost,
+              weights[edge],
+              input.costPrecision!
+            );
             if (
               target < distances.length &&
               weights[edge] >= 0 &&
@@ -173,10 +204,14 @@ export class CPUNetworkCostTableOperation extends GPUCPUOperation {
   constructor(props: NetworkCostTableOperationProps) {
     props = snapshotNetworkCostTableOperationProps(props);
     const id = props.id ?? 'network-cost-table';
+    const costPrecision = resolveNetworkRoutingCostPrecision(
+      id,
+      props.costPrecision === undefined ? 'float32-per-edge' : props.costPrecision
+    );
     validateCapacity(id, 'nodeCount', props.nodeCount, 1, NETWORK_COST_TABLE_MAXIMUM_NODE_COUNT);
     validateCapacity(id, 'capacity', props.capacity);
     // The graph operation validates iteration props once for both execution forms.
-    const operation = new GPUNetworkCostTableOperation(props);
+    const operation = new GPUNetworkCostTableOperation({...props, costPrecision: undefined});
     super({
       id,
       inputs: operation.inputs,
@@ -205,7 +240,7 @@ export class CPUNetworkCostTableOperation extends GPUCPUOperation {
         if (topology.offsets.length !== props.nodeCount + 1)
           throw new Error(`${id} topology.offsets length must equal nodeCount + 1`);
         const result = computeNetworkCostTableOnCPU(
-          {topology, costLimit: getCPUOperationFloat32Rows(id, inputs, 'costLimit')},
+          {topology, costLimit: getCPUOperationFloat32Rows(id, inputs, 'costLimit'), costPrecision},
           {
             capacity: props.capacity,
             maximumIterations: props.maximumIterations,

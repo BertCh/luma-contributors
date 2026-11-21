@@ -207,8 +207,8 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
       searchParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: searchBounds,
-          radius: spatialThreshold,
-          weightKind: 'binary'
+          searchRadius: spatialThreshold,
+          weightType: 'binary'
         })
       );
       testParameters.write(

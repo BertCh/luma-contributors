@@ -42,7 +42,9 @@ export function validateRasterViews(
   outputs: GraphDataView[],
   dispatches?: readonly RasterWritableDispatch[]
 ): void {
-  for (const view of [...inputs, ...outputs]) validateSinglePackedView(view, [view.format], id);
+  // Generic layout-only check: producers validate their named port formats first.
+  for (const view of [...inputs, ...outputs])
+    validateSinglePackedView(view, ['float32', 'uint32', 'sint32'], id);
   validateRasterWritableDispatches(id, inputs, outputs, dispatches);
 }
 export function validateRasterGraph<Parameters>(

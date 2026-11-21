@@ -31,6 +31,14 @@ import {
 } from '../../analysis/catalog-raster-input';
 import type {KeplerCuratedAnalysis} from '../curated-analysis-types';
 
+/** Select the metrics published as coverage and conservation evidence. */
+export function isCanonicalDasymetricStageMetric(stage: string, metric: string): boolean {
+  if (stage === 'coverage-validation') return metric === 'complete' || metric === 'invalidCount';
+  if (stage === 'dasymetric-conservation')
+    return metric === 'complete' || metric === 'zeroEligibleCount';
+  return true;
+}
+
 /** Shared question/slot metadata for the registered GPU recipe and its reusable AX template. */
 export const CURATED_DASYMETRIC_REDISTRIBUTION_ANALYSIS: KeplerCuratedAnalysis = {
   id: 'dasymetric-redistribution',
@@ -403,7 +411,7 @@ export const CURATED_DASYMETRIC_REDISTRIBUTION_BINDING: CatalogOperationBinding 
         },
         denominator: prepared.denominator,
         pairCapacity: prepared.pairCapacity,
-        outputs: Object.fromEntries(
+        output: Object.fromEntries(
           Object.entries(outputs).map(([name, output]) => [name, output.view])
         )
       });
@@ -413,9 +421,12 @@ export const CURATED_DASYMETRIC_REDISTRIBUTION_BINDING: CatalogOperationBinding 
             ? []
             : [{stage: 'recipe', metric, view: view as typeof recipe.status.complete}]
         ),
-        ...recipe.status.stages.flatMap(({stage, status}) =>
-          Object.entries(status).map(([metric, view]) => ({stage, metric, view}))
-        )
+        ...recipe.status.stages.flatMap(({stage, status}) => {
+          const entries = Object.entries(status);
+          return entries
+            .filter(([metric]) => isCanonicalDasymetricStageMetric(stage, metric))
+            .map(([metric, view]) => ({stage, metric, view}));
+        })
       ].map(({stage, metric, view}, index) => {
         const output = session.output(`status-${index}`, 'uint32', 1);
         session.graph.add(

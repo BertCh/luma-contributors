@@ -185,8 +185,9 @@ export type GPUOffsetCurveOutput = {
  * line offsets and exact `status.requiredVertexCount`. This avoids a worst-case stride-sized
  * output allocation; scratch uses two uint32 words per input vertex, plus scan summaries.
  */
-export type GPUOffsetCurveCompactOutput = Omit<GPULineGeometryOutput, 'measures'> & {
+export type GPUOffsetCurveCompactOutput = Omit<GPULineGeometryOutput, 'measures' | 'status'> & {
   layout: 'compact';
+  status: Omit<GPULineGeometryOutput['status'], 'approximation'> & {approximation?: never};
 };
 
 /**

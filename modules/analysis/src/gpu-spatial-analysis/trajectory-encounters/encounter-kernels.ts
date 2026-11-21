@@ -109,8 +109,8 @@ ${getShapeConstants(props.shape)}`,
 }
 
 /**
- * One invocation per sample: scans the half shell (own cell plus four forward neighbours) of its
- * own bucket and appends a hit, as `(lower, higher)` track, for every track within the distance. Appended order is unspecified. @internal
+ * One invocation per sample: scans a conservatively rounded distance rectangle in its bucket.
+ * Only higher track IDs are emitted, so each unordered pair is visited once. @internal
  */
 export function createEncounterScanNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -147,7 +147,32 @@ ${SPATIAL_JOIN_WGSL_HELPERS}
 ${props.shape.geodesic ? GEODESIC_WGSL : ''}
 ${getShapeConstants(props.shape)}
 // Use the builder's public rule, including its extreme-domain overflow guard.
-${GPU_GRID_COORDINATE_WGSL}`,
+${GPU_GRID_COORDINATE_WGSL}
+// Expand the builder's cell by the search radius in cell units and a rounding bound.
+// No padding term depends on the absolute world coordinate. Wrapped cells are deduplicated below.
+fn getEncounterAxisRange(value: f32, reach: f32, minimum: f32, maximum: f32, size: u32) -> vec2u {
+  let center = getCoordinate(value, minimum, maximum, size);
+  var scaledValue = value;
+  var scaledMinimum = minimum;
+  var scaledMaximum = maximum;
+  var scaledReach = reach;
+  if (minimum < 0.0 && maximum > 3.402823466e+38 + minimum) {
+    let scale = max(abs(minimum), abs(maximum));
+    scaledValue = value / scale;
+    scaledMinimum = minimum / scale;
+    scaledMaximum = maximum / scale;
+    scaledReach = reach / scale;
+  }
+  let width = scaledMaximum - scaledMinimum;
+  // A conservative 64 f32 epsilons per cell count allow the optional rescaling divisions,
+  // subtraction, division (2.5 ULP) and multiplication across both coordinates and radius.
+  // Small grids need one padding cell, regardless of their origin or coordinate precision.
+  let padding = max(1u, u32(ceil(f32(size) * 0.00000762939453125)));
+  let radius = min(size, u32(min(f32(size), ceil(scaledReach / width * f32(size)))) + padding);
+  let outsideCells = max(scaledMinimum - scaledValue, scaledValue - scaledMaximum) / width * f32(size);
+  if (outsideCells > f32(radius)) { return vec2u(1u, 0u); }
+  return vec2u(center - min(center, radius), center + min(size - 1u - center, radius));
+}`,
     body: `let track = index / BUCKET_COUNT;
   let bucket = index % BUCKET_COUNT;
   let x = positions[positionsOffset + index * 3u];
@@ -157,38 +182,46 @@ ${GPU_GRID_COORDINATE_WGSL}`,
   let searchDistance = distance[distanceOffset];
   if (!(searchDistance >= 0.0)) { return; }
   let limit = min(searchDistance, CELL_SIZE);
-  let column = getCoordinate(x, MINIMUM_X, MAXIMUM_X, COLUMNS);
-  let row = getCoordinate(y, MINIMUM_Y, MAXIMUM_Y, ROWS);
-  // Half-shell traversal: the own cell plus the four forward neighbours (east, and the three
-  // cells of the next row at columns -1, 0, +1). Every unordered pair of adjacent cells is visited
-  // from exactly one side, so each pair is tested once instead of twice. Inside the own cell the
-  // higher track is the partner. A track has one sample per bucket, so another cell never holds
-  // the same track.
-  for (var shell = 0u; shell < 5u; shell++) {
-    var neighborColumn = column;
-    var neighborRow = row;
+  let reach = ${props.shape.geodesic ? getWGSLFloatLiteral(props.shape.cellSize) : 'limit'};
+  let candidateRows = getEncounterAxisRange(y, reach, MINIMUM_Y, MAXIMUM_Y, ROWS);
+  let primaryColumns = getEncounterAxisRange(x, reach, MINIMUM_X, MAXIMUM_X, COLUMNS);
+  ${
+    props.shape.geodesic?.wrapColumns
+      ? `let negativeColumns = getEncounterAxisRange(x - 360.0, reach, MINIMUM_X, MAXIMUM_X, COLUMNS);
+  let positiveColumns = getEncounterAxisRange(x + 360.0, reach, MINIMUM_X, MAXIMUM_X, COLUMNS);`
+      : ''
+  }
+  // Great-circle maximumDistance guarantees angular reach <= cellSize in both axes.
+  // The three longitude images cover periodic bounds; no image/cell is visited twice.
+  for (var image = 0u; image < ${props.shape.geodesic?.wrapColumns ? 3 : 1}u; image++) {
+    var candidateColumns = primaryColumns;
     ${
       props.shape.geodesic?.wrapColumns
-        ? `// The columns span all longitudes, so the east and west neighbours wrap across the
-    // antimeridian (the lattice has at least three columns, so no cell is visited twice).
-    if (shell == 1u) { neighborColumn = (column + 1u) % COLUMNS; }
-    else if (shell == 2u) { neighborColumn = (column + COLUMNS - 1u) % COLUMNS; neighborRow = row + 1u; }
-    else if (shell == 3u) { neighborRow = row + 1u; }
-    else if (shell == 4u) { neighborColumn = (column + 1u) % COLUMNS; neighborRow = row + 1u; }`
-        : `if (shell == 1u) { neighborColumn = column + 1u; }
-    else if (shell == 2u) { neighborColumn = column - 1u; neighborRow = row + 1u; }
-    else if (shell == 3u) { neighborRow = row + 1u; }
-    else if (shell == 4u) { neighborColumn = column + 1u; neighborRow = row + 1u; }
-    // Unsigned wrap of column - 1u at column 0 gives a value above COLUMNS, rejected here.`
+        ? `if (image == 1u) { candidateColumns = negativeColumns; }
+    if (image == 2u) { candidateColumns = positiveColumns; }`
+        : ''
     }
-    if (neighborColumn >= COLUMNS || neighborRow >= ROWS) { continue; }
+    for (var neighborRow = candidateRows.x; neighborRow <= candidateRows.y; neighborRow++) {
+      for (var neighborColumn = candidateColumns.x; neighborColumn <= candidateColumns.y; neighborColumn++) {
+    ${
+      props.shape.geodesic?.wrapColumns
+        ? `if (image > 0u && neighborColumn >= primaryColumns.x && neighborColumn <= primaryColumns.y) { continue; }
+    if (image > 1u && neighborColumn >= negativeColumns.x && neighborColumn <= negativeColumns.y) { continue; }`
+        : ''
+    }
     let cell = (bucket * ROWS + neighborRow) * COLUMNS + neighborColumn;
     let cellBegin = cellOffsets[cellOffsetsOffset + cell];
     let cellEnd = cellOffsets[cellOffsetsOffset + cell + 1u];
     for (var entry = cellBegin; entry < cellEnd; entry++) {
       let other = objectIds[objectIdsOffset + entry];
       let otherTrack = other / BUCKET_COUNT;
-      if (shell == 0u && otherTrack <= track) { continue; }
+      if (otherTrack <= track) { continue; }
+      ${
+        props.shape.geodesic && !props.shape.geodesic.wrapColumns
+          ? `// A partial-longitude domain excludes paths across the antimeridian.
+      if (abs(positions[positionsOffset + other * 3u] - x) > 180.0) { continue; }`
+          : ''
+      }
       ${
         props.shape.geodesic
           ? `let separation = geodesicHaversineDistance(
@@ -210,6 +243,8 @@ ${GPU_GRID_COORDINATE_WGSL}`,
           hitBuckets[hitBucketsOffset + slot] = bucket;
           hitDistances[hitDistancesOffset + slot] = separation;
         }
+      }
+    }
       }
     }
   }`

@@ -22,6 +22,9 @@ function roundTiesToEven(value: number): number {
 /** Maximum quantized magnitude the quantize kernel accepts. */
 export const MODEL_MAXIMUM_QUANTIZED = 2147483520;
 
+/** Largest absolute quantized magnitude (exclusive) of the origin-relative table. */
+const MODEL_ABSOLUTE_LIMIT = 2 ** 62;
+
 /** Modular 2D summed-area table over quantized elevations and counts. */
 export type ReliefSummedAreaModel = {
   width: number;
@@ -53,13 +56,27 @@ export function buildReliefSummedAreaModel(
       break;
     }
   }
+  // round(z / quantum) - anchor / quantum, exact (BigInt): power-of-two scaling does not round
+  // and the anchor lies on the quantum lattice.
+  const anchorScaled = Math.fround(anchor * Math.fround(1 / quantum));
+  const isAnchorQuantizable =
+    Number.isFinite(anchorScaled) && Math.abs(anchorScaled) < MODEL_ABSOLUTE_LIMIT;
   for (let index = 0; index < width * height; index++) {
-    const scaled = Math.fround(
-      Math.fround(Math.fround(elevation[index]) - anchor) * Math.fround(1 / quantum)
+    const rounded = roundTiesToEven(
+      Math.fround(Math.fround(elevation[index]) * Math.fround(1 / quantum))
     );
-    if (validity[index] && Number.isFinite(scaled) && Math.abs(scaled) <= MODEL_MAXIMUM_QUANTIZED) {
+    if (
+      !validity[index] ||
+      !isAnchorQuantizable ||
+      !Number.isFinite(rounded) ||
+      Math.abs(rounded) >= MODEL_ABSOLUTE_LIMIT
+    ) {
+      continue;
+    }
+    const offset = BigInt(rounded) - BigInt(anchorScaled);
+    if (offset >= -BigInt(MODEL_MAXIMUM_QUANTIZED) && offset <= BigInt(MODEL_MAXIMUM_QUANTIZED)) {
       isValid[index] = 1;
-      quantized[index] = roundTiesToEven(scaled);
+      quantized[index] = Number(offset);
     }
   }
   const sums = new Array<bigint>(width * height).fill(0n);
@@ -197,10 +214,10 @@ export function modelReliefDeviation(
       }
       const quantizedCentre = model.quantized[index];
       const difference64 = wrap64(BigInt(count) * BigInt(quantizedCentre) - sum);
-      const scaled = Math.fround(
-        Math.fround(Math.fround(elevation[index]) - model.anchor) * Math.fround(1 / quantum)
+      const scaled = Math.fround(Math.fround(elevation[index]) * Math.fround(1 / quantum));
+      const residual = Math.fround(
+        Math.fround(scaled - roundTiesToEven(scaled)) * Math.fround(quantum)
       );
-      const residual = Math.fround(Math.fround(scaled - quantizedCentre) * Math.fround(quantum));
       const term = Math.fround(
         Math.fround(
           Math.fround(signed64ToFloatModel(difference64) / Math.fround(count)) *

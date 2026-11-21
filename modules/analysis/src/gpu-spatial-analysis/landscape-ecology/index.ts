@@ -27,9 +27,10 @@ export {
 } from './segregation-counterfactual';
 export type {
   GPUPopulationSupportAlignmentOutput,
+  GPUPopulationSupportAlignmentProps,
+  GPUPopulationSupportAlignmentRecipeProps,
   GPUSegregationCounterfactualOutput,
-  GPUSegregationCounterfactualProps,
-  GPUPopulationSupportAlignmentProps
+  GPUSegregationCounterfactualProps
 } from './segregation-counterfactual';
 export {
   addRasterResistanceConnectivityRecipe,

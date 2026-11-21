@@ -179,13 +179,13 @@ it('local variability recipe rejects output aliases and invalid output lengths b
     weights: view('float32', 4)
   };
   const props = {weights, values, parameters: view('float32', 16)};
-  expect(() => addLocalVariabilityRecipe(graph, {...props, outputs: {losh: values}})).toThrow();
+  expect(() => addLocalVariabilityRecipe(graph, {...props, output: {losh: values}})).toThrow();
   const shared = view('float32', 4);
   expect(() =>
-    addLocalVariabilityRecipe(graph, {...props, outputs: {losh: shared, localI: shared}})
+    addLocalVariabilityRecipe(graph, {...props, output: {losh: shared, localI: shared}})
   ).toThrow();
   expect(() =>
-    addLocalVariabilityRecipe(graph, {...props, outputs: {losh: view('float32', 3)}})
+    addLocalVariabilityRecipe(graph, {...props, output: {losh: view('float32', 3)}})
   ).toThrow();
   device.destroy();
 });

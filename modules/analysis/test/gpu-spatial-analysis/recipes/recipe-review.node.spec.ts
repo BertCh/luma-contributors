@@ -46,12 +46,12 @@ it.each([
   const original = getRegisteredBufferIds(graph);
   try {
     expect(() =>
-      addSpatialRegressionRecipe(graph, {...props, outputs: {ols: {status: {code: flag}}}})
+      addSpatialRegressionRecipe(graph, {...props, output: {ols: {status: {code: flag}}}})
     ).toThrow(new RegExp(flagName));
     expect(getRegisteredBufferIds(graph)).toEqual(original);
     expect(getScheduledNodes(graph)).toEqual([]);
     expect(() =>
-      addSpatialRegressionRecipe(graph, {...props, outputs: {ols: {status: {code: separate}}}})
+      addSpatialRegressionRecipe(graph, {...props, output: {ols: {status: {code: separate}}}})
     ).not.toThrow();
   } finally {
     parameters.destroy();
@@ -67,7 +67,7 @@ it('G6 rejects a stop mask overlapping public durations before registration', ()
   const original = getRegisteredBufferIds(graph);
   try {
     expect(() =>
-      addFleetDwellRecipe(graph, {...props, outputs: {stops: {durations}}, scratch: {stopMask}})
+      addFleetDwellRecipe(graph, {...props, output: {stops: {durations}}, scratch: {stopMask}})
     ).toThrow(/logical/);
     expect(getRegisteredBufferIds(graph)).toEqual(original);
     expect(getScheduledNodes(graph)).toEqual([]);
@@ -126,7 +126,7 @@ it.each([
         });
   const original = getRegisteredBufferIds(graph);
   try {
-    expect(() => addSpaceTimeHotSpotsRecipe(graph, {...props, cells, outputs: {status}})).toThrow();
+    expect(() => addSpaceTimeHotSpotsRecipe(graph, {...props, cells, output: {status}})).toThrow();
     expect(getRegisteredBufferIds(graph)).toEqual(original);
     expect(getScheduledNodes(graph)).toEqual([]);
     expect(() => addSpaceTimeHotSpotsRecipe(graph, {...props, cells})).not.toThrow();
@@ -149,7 +149,7 @@ it('G4 captures an inherited changing status getter once', () => {
     }
   });
   try {
-    const result = addSpaceTimeHotSpotsRecipe(graph, {...props, outputs: {status}});
+    const result = addSpaceTimeHotSpotsRecipe(graph, {...props, output: {status}});
     expect(reads).toBe(1);
     expect(
       result.status.stages.find(stage => stage.stage === 'slice-range')?.status.invalidCount
@@ -219,7 +219,7 @@ it.each([
         }
       : {
           ...props,
-          outputs: {
+          output: {
             status: {
               skippedEventCount: graph.createDataView(positions!.buffer, {
                 format: 'uint32',
@@ -268,7 +268,7 @@ it('R2 preserves adjacent centroids and mask in one caller buffer', () => {
   const stopMask = graph.createDataView(storage, {format: 'uint32', length: 2, byteOffset: 16});
   try {
     expect(() =>
-      addFleetDwellRecipe(graph, {...props, outputs: {stops: {centroids}}, scratch: {stopMask}})
+      addFleetDwellRecipe(graph, {...props, output: {stops: {centroids}}, scratch: {stopMask}})
     ).not.toThrow();
   } finally {
     device.destroy();
@@ -284,7 +284,7 @@ it('F7 rejects logically overlapping public centroids and stop mask before sched
   const stopMask = graph.createDataView(storage, {format: 'uint32', length: 2});
   try {
     expect(() =>
-      addFleetDwellRecipe(graph, {...props, outputs: {stops: {centroids}}, scratch: {stopMask}})
+      addFleetDwellRecipe(graph, {...props, output: {stops: {centroids}}, scratch: {stopMask}})
     ).toThrow(/logical/);
     expect(getScheduledNodes(graph)).toEqual([]);
   } finally {
@@ -336,7 +336,7 @@ it('F3 preserves supplied weights loss and rejects aliasing its evidence before 
       addSpaceTimeHotSpotsRecipe(graph, {
         ...props,
         cells,
-        outputs: {status: {skippedEventCount: candidateOverflow}}
+        output: {status: {skippedEventCount: candidateOverflow}}
       })
     ).toThrow();
     expect(getScheduledNodes(graph)).toEqual([]);
@@ -358,7 +358,7 @@ it('F12 accepts spare offset group status words', () => {
   const groupOverflow = graph.createDataView(storage, {format: 'uint32', length: 2, byteOffset: 4});
   try {
     expect(() =>
-      addSpaceTimeHotSpotsRecipe(graph, {...props, outputs: {status: {groupOverflow}}})
+      addSpaceTimeHotSpotsRecipe(graph, {...props, output: {status: {groupOverflow}}})
     ).not.toThrow();
   } finally {
     props.parameters.destroy();
@@ -379,7 +379,7 @@ it.each([
     ...props,
     ...(invalid === 'parameters' ? {parameters: short} : {}),
     ...(invalid === 'output-length'
-      ? {outputs: {trendZ: createTransientView(graph, 'short-trend', 'float32', 1)}}
+      ? {output: {trendZ: createTransientView(graph, 'short-trend', 'float32', 1)}}
       : {}),
     ...(invalid === 'palette'
       ? {

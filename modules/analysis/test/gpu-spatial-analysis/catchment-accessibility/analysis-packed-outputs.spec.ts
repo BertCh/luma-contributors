@@ -151,7 +151,7 @@ it('catchment, Huff and geographic outputs work in disjoint packed ranges, inclu
         output: {
           accessibility: scalar(catchment, 0, 2),
           ratios: scalar(catchment, 256, 2),
-          validity: words(catchment, 264, 2),
+          demandValidity: words(catchment, 264, 2),
           reachableFacilities: words(catchment, 512, 2)
         }
       })
@@ -167,7 +167,7 @@ it('catchment, Huff and geographic outputs work in disjoint packed ranges, inclu
           tradeAreaProbability: scalar(huff, 256, 2),
           probabilities: scalar(huff, 264, 2),
           expectedDemand: scalar(huff, 272, 2),
-          validity: words(huff, 280, 2)
+          demandValidity: words(huff, 280, 2)
         }
       })
     );

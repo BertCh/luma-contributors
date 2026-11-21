@@ -14,6 +14,7 @@ import {
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialWeights} from './spatial-weights';
+import {snapshotWeightsFields, snapshotWeightsPort} from './weights-construction-snapshot';
 import {
   getSpatialWeightsTransposeNodes,
   planSpatialWeightsTranspose,
@@ -76,8 +77,14 @@ export type GPUSpatialWeightsTransposeProps = {
  * {@link GPUSpatialWeightsTranspose.outputWeights} is `output` with `information` and `status` attached.
  * The transpose of `W` is symmetric exactly when `W` is, so `symmetric` is carried over. A
  * `'row'` or `'variance'` transform state becomes `'unknown'` (the transpose is column, not row,
- * standardized); other states are unchanged. The input `status` (for example `overflow` of a
- * truncated `W`) is carried over, because a truncated `W` gives a truncated `W'`.
+ * standardized); `'double'` also becomes `'unknown'` because the source column domain is
+ * undeclared, so even square output may filter out-of-range columns and remove mass. The one
+ * exception is square output of weights declared `symmetric: true`: their neighbors index
+ * `[0, rows)`, every slot is kept and `'double'` is carried over.
+ * Other states are unchanged. Input loss status (for example `overflow` of a
+ * truncated `W`) is carried over, because a truncated `W` gives a truncated `W'`. Input `count`
+ * and `requiredCount` are omitted because columns may be dropped; read the terminal output offset.
+ * Destination status ports are refused, as are distances without source distances.
  */
 export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -93,6 +100,18 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsTransposeProps) {
+    props = snapshotWeightsFields(props, [
+      'id',
+      'weights',
+      'columnCount',
+      'output',
+      'symmetryTolerance'
+    ]);
+    props = Object.freeze({
+      ...props,
+      weights: snapshotWeightsPort(props.weights),
+      output: snapshotWeightsPort(props.output)
+    });
     this.id = props.id ?? 'spatial-weights-transpose';
     this.props = props;
     const tolerance = props.symmetryTolerance ?? 0;

@@ -162,17 +162,17 @@ it('GPURasterSampling matches the CPU oracle exactly on dyadic scenes as method,
   const extent = [0, 0, 32, 16] as const;
   const frames: {
     method: 'nearest' | 'bilinear' | 'bicubic';
-    noDataPolicy: 'strict' | 'renormalize';
+    noDataPolicy: 'propagate' | 'renormalize';
     activeCount: number;
   }[] = [
-    {method: 'nearest', noDataPolicy: 'strict', activeCount: 600},
-    {method: 'bilinear', noDataPolicy: 'strict', activeCount: 600},
+    {method: 'nearest', noDataPolicy: 'propagate', activeCount: 600},
+    {method: 'bilinear', noDataPolicy: 'propagate', activeCount: 600},
     {method: 'bilinear', noDataPolicy: 'renormalize', activeCount: 600},
-    {method: 'bicubic', noDataPolicy: 'strict', activeCount: 600},
+    {method: 'bicubic', noDataPolicy: 'propagate', activeCount: 600},
     {method: 'bicubic', noDataPolicy: 'renormalize', activeCount: 600},
     {method: 'bicubic', noDataPolicy: 'renormalize', activeCount: 250},
     {method: 'nearest', noDataPolicy: 'renormalize', activeCount: 0},
-    {method: 'bilinear', noDataPolicy: 'strict', activeCount: 1000}
+    {method: 'bilinear', noDataPolicy: 'propagate', activeCount: 1000}
   ];
   for (const frame of frames) {
     const settings: SamplingCase = {
@@ -230,7 +230,7 @@ it('GPURasterSampling agrees with the oracle on a non-dyadic georeference within
     return;
   }
   for (const method of ['nearest', 'bilinear', 'bicubic'] as const) {
-    for (const noDataPolicy of ['strict', 'renormalize'] as const) {
+    for (const noDataPolicy of ['propagate', 'renormalize'] as const) {
       const settings: SamplingCase = {width, height, extent, method, noDataPolicy};
       const result = await harness.run(settings);
       const expected = sampleRasterPointsOnCPU(scene.raster, packSamplingCase(settings), positions);
@@ -403,9 +403,9 @@ it('GPURasterSampling treats an infinity as nodata, like NaN (raster-fields-07)'
   const nearest = await harness.run({width, height, extent, method: 'nearest'});
   expect(toComparable(nearest.values)).toEqual(['nodata', 4, 'nodata', 4, 6]);
   expect(nearest.validity).toEqual([0, 1, 0, 1, 1]);
-  const strict = await harness.run({width, height, extent, method: 'bilinear'});
-  expect(toComparable(strict.values)).toEqual(['nodata', 4, 'nodata', 'nodata', 5]);
-  expect(strict.validity).toEqual([0, 1, 0, 0, 1]);
+  const propagate = await harness.run({width, height, extent, method: 'bilinear'});
+  expect(toComparable(propagate.values)).toEqual(['nodata', 4, 'nodata', 'nodata', 5]);
+  expect(propagate.validity).toEqual([0, 1, 0, 0, 1]);
   const renormalized = await harness.run({
     width,
     height,

@@ -16,6 +16,7 @@ import {
 } from './column-quantiles-parameters';
 import {
   GPUColumnQuantilesOperation,
+  snapshotColumnQuantilesOperationProps,
   type ColumnQuantilesOperationProps
 } from './gpu-column-quantiles-operation';
 
@@ -38,8 +39,9 @@ export type CPUColumnQuantilesResult = {
  * The parameter header and probability pairs have the contributor packers' layouts.
  *
  * What differs from the GPU contributor:
- * - Ranks, filter ranks and interpolation use float64, with one float32 output rounding. Float
- *   probabilities near integer ranks can select different rows; rational ranks use exact integers.
+ * - At most 16,777,216 valid rows: packed float ranks and filter products round to float32,
+ *   as on GPU. Above that GPU row limit, CPU rank products retain float64 precision.
+ *   Interpolation uses float64 with one float32 output rounding; rational ranks use exact integers.
  * - The GPU's 64-quantile and float32 row-count limits are dropped; uint32 output counts remain.
  * - Non-finite values are missing and zero is canonicalized to +0, as on the GPU. Subnormal values
  *   are retained; devices may flush them to zero. Unknown interpolation codes use lower, as the kernel does.
@@ -71,6 +73,9 @@ export function computeColumnQuantilesOnCPU(
   }
   sorted.sort((first, second) => first - second);
   const count = sorted.length;
+  // GPU float-rank/filter routes support at most 2^24 rows. Larger CPU samples retain
+  // wide products so even endpoint ranks cannot round down or beyond the sample.
+  const usePackedFloatRanks = count <= 2 ** 24;
   const quantiles = new Float32Array(quantileCount).fill(NaN);
   const filterBounds = new Float32Array([NaN, NaN]);
   const outputMask = new Uint32Array(values.length);
@@ -89,7 +94,8 @@ export function computeColumnQuantilesOnCPU(
     } else {
       const probability = parameters[GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH + index];
       if (!Number.isFinite(probability) || probability < 0 || probability > 1) continue;
-      const height = (count - 1) * probability;
+      const product = (count - 1) * probability;
+      const height = usePackedFloatRanks ? Math.fround(product) : product;
       lower = Math.floor(height);
       fraction = height - lower;
     }
@@ -107,8 +113,16 @@ export function computeColumnQuantilesOnCPU(
   if (count > 0) {
     const lowerFraction = Number.isNaN(rawLower) ? 0 : Math.max(0, Math.min(1, rawLower));
     const upperFraction = Number.isNaN(rawUpper) ? 1 : Math.max(0, Math.min(1, rawUpper));
-    const lowerIndex = Math.min(count - 1, Math.max(0, Math.floor(count * lowerFraction)));
-    const upperIndex = Math.min(count - 1, Math.max(0, Math.ceil(count * upperFraction) - 1));
+    const lowerProduct = count * lowerFraction;
+    const upperProduct = count * upperFraction;
+    const lowerIndex = Math.min(
+      count - 1,
+      Math.max(0, Math.floor(usePackedFloatRanks ? Math.fround(lowerProduct) : lowerProduct))
+    );
+    const upperIndex = Math.min(
+      count - 1,
+      Math.max(0, Math.ceil(usePackedFloatRanks ? Math.fround(upperProduct) : upperProduct) - 1)
+    );
     filterBounds.set([sorted[lowerIndex], sorted[upperIndex]]);
     for (let row = 0; row < values.length; row++) {
       outputMask[row] = Number(
@@ -124,7 +138,8 @@ export function computeColumnQuantilesOnCPU(
 
 /** CPU twin; drops the GPU radix slot and float32 rank limits. */
 export class CPUColumnQuantilesOperation extends GPUCPUOperation {
-  constructor(props: ColumnQuantilesOperationProps) {
+  constructor(inputProps: ColumnQuantilesOperationProps) {
+    const props = snapshotColumnQuantilesOperationProps(inputProps);
     const id = props.id ?? 'column-quantiles';
     validateCapacity(id, 'rowCount', props.rowCount, 1);
     validateCapacity(id, 'quantileCount', props.quantileCount, 1);

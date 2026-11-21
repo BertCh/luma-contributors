@@ -24,4 +24,4 @@ export {
 } from './gpu-raster-sieve-parameters';
 export type {GPURasterSieveSettings} from './gpu-raster-sieve-parameters';
 export {GPU_RASTER_PATCH_UNRESOLVED} from './patch-labels';
-export type {GPURasterPatchLabels} from './patch-labels';
+export type {GPURasterPatchLabels, GPURasterPatchLabelsStatus} from './patch-labels';

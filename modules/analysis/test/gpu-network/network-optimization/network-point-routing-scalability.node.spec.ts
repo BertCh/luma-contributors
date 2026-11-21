@@ -725,7 +725,9 @@ it('emits only representable numeric literals in routing WGSL at supported bound
   ]) {
     const {graph, contributor} = setupPointRouting({...options, queryCount: 1});
     const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph)).filter(
-      kernel => kernel.operation === 'GPUNetworkPointRouting'
+      kernel =>
+        kernel.operation === 'GPUNetworkPointRouting' ||
+        kernel.operation === 'GPUNetworkReachability'
     );
     for (const kernel of kernels) {
       const tokens = new WgslScanner(stripWGSLComments(kernel.source)).scanTokens();

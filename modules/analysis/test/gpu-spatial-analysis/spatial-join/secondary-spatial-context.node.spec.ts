@@ -80,7 +80,7 @@ function createContextFixture(
         spatialContext,
         points,
         features,
-        distance: createTransientView(graph, 'distance', 'float32', 1),
+        radius: createTransientView(graph, 'distance', 'float32', 1),
         candidateCapacity: 4,
         output: {outputMask: scalar('mask')}
       });

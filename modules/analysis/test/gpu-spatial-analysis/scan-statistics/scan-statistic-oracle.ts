@@ -27,8 +27,11 @@ export type ScanOracleInput = {
   controls?: Uint32Array;
   model?: ScanOracleModel;
   timeBuckets: number;
+  temporalMode?: 'retrospective' | 'prospective';
   /** Compile-time capacity (default: every zone). */
   maximumWindowZones?: number;
+  /** Per-frame zone limit, distinct from the compiled capacity. Defaults to all zones. */
+  frameMaximumWindowZones?: number;
   maximumPopulationFraction: number;
   /** Default: 50% of the study period, at least 1. */
   maximumTimeBuckets?: number;
@@ -137,6 +140,26 @@ export function computeScanOracle(input: ScanOracleInput) {
   const maximumBuckets = input.maximumTimeBuckets ?? Math.max(1, Math.floor(buckets / 2));
   const totalCases = cases.reduce((sum, value) => sum + value, 0);
 
+  if (model === 'poisson') {
+    const maximumExposure = input.baseline!.reduce((maximum, value) => Math.max(maximum, value), 0);
+    for (let cell = 0; cell < cells; cell++) {
+      const exposure = input.baseline![cell];
+      if (!Number.isFinite(exposure) || exposure < 0)
+        throw new Error(`scan oracle baseline[${cell}] must be finite and nonnegative`);
+      if (
+        exposure > 0 &&
+        Math.floor(Math.log2(exposure)) - Math.floor(Math.log2(maximumExposure)) < -126
+      )
+        throw new Error(
+          `scan oracle exposure scaling would lose cell ${cell}; GPU inference unavailable`
+        );
+      if (exposure === 0 && cases[cell] > 0)
+        throw new Error(
+          `scan oracle positive cases at zero exposure in cell ${cell}; inference unavailable`
+        );
+    }
+  }
+
   // Per-cell weight: Poisson baseline, Bernoulli population, or zone total * bucket total / C.
   const weights = new Float64Array(cells);
   const zoneTotals = new Array<number>(zones).fill(0);
@@ -154,6 +177,24 @@ export function computeScanOracle(input: ScanOracleInput) {
     }
   }
   const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+  const zonePopulation = Array.from({length: zones}, (_, zone) =>
+    model === 'space-time-permutation'
+      ? zoneTotals[zone]
+      : weights.slice(zone * buckets, (zone + 1) * buckets).reduce((sum, value) => sum + value, 0)
+  );
+  const fraction = Math.fround(input.maximumPopulationFraction);
+  const fractionBits = new Uint32Array(Float32Array.of(fraction).buffer)[0];
+  const exponent = (fractionBits >>> 23) & 255;
+  const significand = (fractionBits & 0x7fffff) | (exponent ? 0x800000 : 0);
+  const integerLimit = Number(
+    (BigInt(totalCases) * BigInt(significand)) >> BigInt(exponent ? 150 - exponent : 149)
+  );
+  const populationLimit =
+    model === 'space-time-permutation' ? integerLimit : fraction * totalWeight;
+  const frameLimit = Math.min(
+    0xffffffff,
+    Math.max(1, Math.floor(input.frameMaximumWindowZones ?? zones))
+  );
 
   const lists: {zone: number; distance: number}[][] = [];
   const slotLimits: number[] = [];
@@ -181,11 +222,9 @@ export function computeScanOracle(input: ScanOracleInput) {
     let populated = 0;
     let slots = 0;
     let exceeded = false;
-    for (let slot = 0; slot < usable; slot++) {
-      for (let bucket = 0; bucket < buckets; bucket++) {
-        populated += weights[list[slot].zone * buckets + bucket];
-      }
-      if (populated > input.maximumPopulationFraction * totalWeight) {
+    for (let slot = 0; slot < Math.min(usable, frameLimit); slot++) {
+      populated += zonePopulation[list[slot].zone];
+      if (fraction !== 1 && populated > populationLimit) {
         exceeded = true;
         break;
       }
@@ -193,10 +232,14 @@ export function computeScanOracle(input: ScanOracleInput) {
     }
     let truncated = false;
     if (!exceeded && usable < zones && slots === usable) {
-      for (let bucket = 0; bucket < buckets; bucket++) {
-        populated += weights[list[usable].zone * buckets + bucket];
+      let nextCount = usable + 1;
+      populated += zonePopulation[list[usable].zone];
+      if (input.windowShape === 'circle') {
+        const members = all.filter(entry => entry.distance <= list[usable].distance);
+        nextCount = members.length;
+        populated = members.reduce((sum, entry) => sum + zonePopulation[entry.zone], 0);
       }
-      truncated = populated <= input.maximumPopulationFraction * totalWeight;
+      truncated = (fraction === 1 || populated <= populationLimit) && nextCount <= frameLimit;
     }
     slotLimits.push(slots);
     truncatedCenters.push(truncated);
@@ -241,6 +284,7 @@ export function computeScanOracle(input: ScanOracleInput) {
         for (let last = first; last < Math.min(first + maximumBuckets, buckets); last++) {
           windowCases += caseSums[last];
           windowWeight += weightSums[last];
+          if (input.temporalMode === 'prospective' && last !== buckets - 1) continue;
           const ratio = getRatio(windowCases, windowWeight);
           if (ratio > best.ratio) {
             Object.assign(best, {

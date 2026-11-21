@@ -145,7 +145,7 @@ it('indexed robust ICP merges multiple moment blocks and rejects Tukey outliers'
         targetGrid: {origin: [-1, -1, -1], cellSize: 1, dimensions: [12, 12, 8]},
         robust: {method: 'tukey', scale: 0.5},
         maximumDistance: 60,
-        iterations: 4,
+        maximumIterations: 4,
         output: {
           transform: transform.view,
           history: history.view,
@@ -260,7 +260,7 @@ it('point-to-plane ICP recovers a rigid transform on three oriented faces and re
         targetNormals: normals.view,
         metric: 'point-to-plane',
         maximumDistance: 0.5,
-        iterations: 6,
+        maximumIterations: 6,
         output: {
           transform: transform.view,
           history: history.view,
@@ -746,7 +746,7 @@ it('indexed ICP supports a search radius spanning more than signed-int32 grid ce
         source: source.view,
         target: target.view,
         maximumDistance: 1,
-        iterations: 1,
+        maximumIterations: 1,
         targetGrid: {origin: [0, 0, 0], cellSize: 1e-10, dimensions: [2, 2, 2]},
         output: {
           transform: fixture.view('float32', new Float32Array(16)).view,

@@ -13,7 +13,8 @@ import {
   addResistanceConnectivityRecipe,
   addSegregationCounterfactualRecipe,
   addSegregationDecompositionRecipe,
-  addSparseResistanceConnectivityRecipe
+  addSparseResistanceConnectivityRecipe,
+  type GPUPopulationSupportAlignmentRecipeProps
 } from '../../../src/gpu-spatial-analysis/landscape-ecology/index';
 import {
   addBuildingAdjacencyRecipe,
@@ -23,12 +24,12 @@ import {
   addVisibilityGraphRecipe
 } from '../../../src/gpu-spatial-analysis/urban-morphology/index';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {mirrorViews, type Mirrored} from './urban-ecology-output-test-utils';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
 import reference from '../../oracles/fixtures/urban-ecology.json';
 import advancedReference from '../../oracles/fixtures/urban-ecology-advanced.json';
 
 type AnyView = GraphDataView;
-type Mirrored = {view: AnyView; buffer: ReturnType<RecipeTestFixture['output']>['buffer']};
 
 async function createFixture(name: string) {
   const device = await getWebGPUTestDevice();
@@ -48,32 +49,6 @@ function collectViews(value: unknown, path: string, into: Map<string, AnyView>) 
   } else if (value && typeof value === 'object') {
     for (const [key, entry] of Object.entries(value)) collectViews(entry, `${path}.${key}`, into);
   }
-}
-
-/** The same nested shape with a caller-owned fixture output in place of each view. */
-function mirrorViews(
-  fixture: RecipeTestFixture,
-  value: unknown,
-  path: string,
-  into: Map<string, Mirrored>
-): unknown {
-  if (value instanceof GraphDataView) {
-    const output = fixture.output(`caller${path}`, value.format as 'float32', value.length);
-    into.set(path, output as Mirrored);
-    return output.view;
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry, index) => mirrorViews(fixture, entry, `${path}[${index}]`, into));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        mirrorViews(fixture, entry, `${path}.${key}`, into)
-      ])
-    );
-  }
-  return value;
 }
 
 function publishView(fixture: RecipeTestFixture, name: string, source: AnyView) {
@@ -175,7 +150,10 @@ function getSharedWalls(fixture: RecipeTestFixture) {
       rightSourceIds: fixture.input('right', new Uint32Array([1]), 'uint32', 1),
       forward: fixture.input('forward', new Uint32Array([0]), 'uint32', 1)
     },
-    status: {count: fixture.input('count', new Uint32Array([1]), 'uint32', 1)}
+    status: {
+      count: fixture.input('count', new Uint32Array([1]), 'uint32', 1),
+      overflow: fixture.input('shared-path-loss', new Uint32Array([0]), 'uint32', 1)
+    }
   };
 }
 
@@ -190,7 +168,7 @@ it('isovists write every result into caller-owned views', async () => {
         maximumDistance: 10,
         output
       }).outputs,
-    expectWritten: ['.endpoints', '.distances', '.measures', '.angles', '.validity']
+    expectWritten: ['.endpoints', '.distances', '.localMeasures', '.angles', '.validity']
   });
 });
 
@@ -479,14 +457,33 @@ it('segregation counterfactual writes its populations and decomposition into cal
 it('population support alignment writes its populations and certificate into caller-owned views', async () => {
   await expectCallerOwnedOutputs({
     name: 'population-support-alignment',
-    build: (fixture, output) => {
+    build: (fixture, output: GPUPopulationSupportAlignmentRecipeProps['output']) => {
       const result = addPopulationSupportAlignmentRecipe(fixture.graph, {
         populations: fixture.input('populations', new Float32Array([2, 8, 6, 4]), 'float32x2', 2),
         sourceIds: fixture.input('source', new Uint32Array([20, 10]), 'uint32', 2),
         targetIds: fixture.input('target', new Uint32Array([10, 20, 30]), 'uint32', 3),
         output
       });
-      return {...result.outputs, status: result.packedStatus};
+      const [missing, ambiguous, excluded, alignment] = result.status.stages;
+      const complete = alignment.status.complete;
+      const status =
+        output?.status ??
+        fixture.graph.createDataView(complete.buffer, {
+          format: 'uint32x4',
+          length: 1,
+          byteOffset: complete.byteOffset
+        });
+      const words = [
+        complete,
+        missing.status.invalidCount,
+        ambiguous.status.invalidCount,
+        excluded.status.invalidCount
+      ];
+      for (const [index, word] of words.entries()) {
+        expect(word.buffer).toBe(status.buffer);
+        expect(word.byteOffset).toBe(status.byteOffset + index * Uint32Array.BYTES_PER_ELEMENT);
+      }
+      return {...result.outputs, status};
     },
     expectWritten: ['.populations', '.alignmentCode', '.matchedMask', '.status']
   });

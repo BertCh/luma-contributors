@@ -9,6 +9,7 @@ import {
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {Buffer} from '@luma.gl/core';
+import {createScanExactPopulationTotalNodes} from './scan-exact-population-total';
 import {
   createTransientView,
   getBoundedDispatchLayout,
@@ -22,11 +23,15 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
   createWGSLDispatchGate,
-  getAutomaticWGSLKernelWorkgroupSize
+  getAutomaticWGSLKernelWorkgroupSize,
+  type WGSLDispatchGate,
+  type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
+  validateRequirement,
+  validateViewLength,
   validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -70,9 +75,19 @@ import {
   type GPUScanNearestZoneSearch
 } from './scan-statistic-nearest-index';
 
+import {createScanOrderedPrefixNodes} from './scan-ordered-prefix';
 import {SCAN_DRAW_INTERVAL_WGSL} from './scan-draw-interval';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {UINT64_WGSL} from '../../analysis-core/kernels/uint64-wgsl';
 import {SCAN_BASELINE_SCALING_WGSL} from './scan-baseline-scaling';
+import {
+  SCAN_EXACT_POPULATION_ACCUMULATOR_WGSL,
+  SCAN_EXACT_POPULATION_LIMIT_WGSL
+} from './scan-statistic-nearest-zones';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUSpatialScanStatistic';
 /** Covers fixed model passes and published count-scan stages at the admitted cell limit. */
@@ -136,7 +151,12 @@ export type GPUSpatialScanStatisticOutput = {
   summary: GraphDataView<'uint32'>;
   /** Optional caller-owned float32, one row per zone: the best observed LLR of windows centered there. */
   zoneStatistics?: GraphDataView<'float32'>;
-  /** Optional scalar diagnostic: 1 when cases or Bernoulli population exceed MAXIMUM_COUNT. Statistics are NaN and no clusters are published then. */
+  /**
+   * Optional scalar diagnostic: the count of invalid Poisson cells (negative/non-finite baseline,
+   * positive cases at zero exposure, or positive exposure lost in normalization), and at least 1
+   * for case/population count overflow.
+   * Statistics are NaN and no clusters are published, even when this port is absent.
+   */
   status?: {invalidCount: GraphDataView<'uint32'>};
 };
 
@@ -176,7 +196,13 @@ export type GPUSpatialScanStatisticProps = {
   /**
    * Poisson model: baseline per (zone, time bucket) in the same layout: population at risk or
    * expected counts, finite and non-negative, with any total scale. The null model is a Poisson
-   * process with `E[cases_i] = baseline_i * C / sum(baseline)`, `C` the total case count.
+   * process with `E[cases_i] = baseline_i * C / sum(baseline)`, `C` the total case count. A frame
+   * with a negative or non-finite baseline, or positive cases at zero exposure (`-0` counts as
+   * zero), is invalid. `status.invalidCount` counts these cells (or reports at least 1 for count
+   * overflow). Positive baseline cells whose binary exponent is more than 126 below the maximum
+   * are counted as numerical losses because this route uses normal-float32 scaled exposures.
+   * Statistics are NaN, no clusters are published and summary replicates-run is zero for an
+   * invalid frame, even without that status port.
    */
   baseline?: GraphDataView<'float32'>;
   /**
@@ -192,7 +218,8 @@ export type GPUSpatialScanStatisticProps = {
    * center's nearest zones. The default is every zone while `zones * zones <= 2^24` (4096 zones),
    * so the population fraction governs the window size as in SaTScan; for more zones it is the
    * largest capacity that fits in the table budget. A center whose windows reach the capacity
-   * while the population fraction would allow larger ones is counted in `summary.overflow` and
+   * while the population fraction and requested per-frame limit allow a larger complete window
+   * is counted in `summary.overflow` and
    * flags its clusters with `truncatedByZoneCap`. The per-frame parameter may lower it.
    * Auto neighbor discovery indexes truncated lists of at most 65 rows (including lookahead).
    * Whole-domain or larger lists use full-scan radix selection and sorting. See `nearestZoneSearch` and
@@ -259,6 +286,9 @@ export type GPUSpatialScanStatisticProps = {
  * capacity cuts short is reported (`summary.overflow`, `truncatedByZoneCap`). With `timeBuckets > 1`
  * each window is a cylinder over every run of at most `maximumTimeBuckets` consecutive buckets,
  * 50% of the study period by default.
+ * Floating population totals, prefixes and complete-circle masses accumulate stored float32
+ * inputs exactly. Eligibility retains the exact packed-fraction product through comparison;
+ * scoring rounds both window and study masses once, so a whole-study window has no rounding signal.
  *
  * Statistic: for a window with `c` cases and null expectation `e` (total cases `C`), the Poisson
  * log-likelihood ratio `c ln(c/e) + (C - c) ln((C - c)/(C - e))`. Bernoulli: with window
@@ -306,7 +336,10 @@ export type GPUSpatialScanStatisticProps = {
  * `batch-evaluate`); the pipeline count does not grow with the batch count.
  *
  * Capacity: one `(R + 1) * zones * timeBuckets` word count table (at most 2^25 words), two
- * neighbor tables of `zones * (maximumWindowZones + 1)` words (at most 2^24 each), plus seven
+ * neighbor tables of `zones * listLength` entries (at most 2^24 each); bounded distance tables
+ * also hold two `zones`-word tails for complete-circle population and membership count; Poisson
+ * and Bernoulli add ten exact mass words per center (twelve tail words per center in total). The full
+ * distance length is preflighted before allocation. There are also seven
  * `zones`-word coordinate index buffers for short lists or two table-sized sort scratch buffers
  * for full-scan discovery (and the published sorts' own scratch), and
  * `P + 1` window maxima, and for the Poisson model one `zones * timeBuckets` word table of cell
@@ -339,6 +372,14 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
   readonly nearestZoneSearch: 'indexed' | 'full-scan';
   /** Upper bound on separation evaluations of full-scan discovery per frame, excluding radix sorting. */
   readonly estimatedFullScanSeparationCount: number;
+  /** Per-frame worst case: N² candidate separation evaluations. */
+  readonly estimatedIndexedCandidateSeparationCount: number;
+  /** Per-frame worst case: 2N(N+1) axis separation evaluations. */
+  readonly estimatedIndexedAxisSeparationCount: number;
+  /** Sum of indexed candidate and axis bounds; excludes sorting. */
+  readonly estimatedIndexedSeparationCount: number;
+  /** Two coordinate radix sorts per indexed frame. */
+  readonly indexedRadixSortCount: number;
   /** Conservative bound including discovery sorts, model preparation, replicate batches and cluster rounds. */
   readonly estimatedCommandNodeCount: number;
   /** Cluster capacity. */
@@ -354,6 +395,44 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
 
   constructor(props: GPUSpatialScanStatisticProps);
   constructor(props: GPUSpatialScanStatisticProps, batchReplicates?: number) {
+    const construction = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'model',
+      'positions',
+      'cases',
+      'baseline',
+      'controls',
+      'timeBuckets',
+      'maximumWindowZones',
+      'nearestZoneSearch',
+      'maximumPermutations',
+      'maximumClusters',
+      'parameters',
+      'output',
+      'parallelDraws',
+      'temporalMode'
+    ]);
+    const constructionOutput = snapshotConstructionFields(construction.output, [
+      'clusterIndices',
+      'clusterStatistics',
+      'statistics',
+      'summary',
+      'zoneStatistics',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...construction,
+      ...(construction.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(construction.spatialContext)}
+        : {}),
+      output: Object.freeze({
+        ...constructionOutput,
+        ...(constructionOutput.status
+          ? {status: snapshotConstructionFields(constructionOutput.status, ['invalidCount'])}
+          : {})
+      })
+    });
     const id = props.id ?? 'scan-statistic';
     this.id = id;
     this.props = props;
@@ -364,17 +443,33 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(props.cases, ['uint32'], `${id} cases`);
-    this.model = props.model ?? 'poisson';
-    if (!['poisson', 'bernoulli', 'space-time-permutation'].includes(this.model)) {
-      throw new Error(`${id} model must be 'poisson', 'bernoulli' or 'space-time-permutation'`);
-    }
+    this.model = props.model === undefined ? 'poisson' : props.model;
+    validateRequirement(
+      id,
+      ['poisson', 'bernoulli', 'space-time-permutation'].includes(this.model),
+      `model received ${String(this.model)}; expected poisson, bernoulli, space-time-permutation`,
+      {
+        code: 'INVALID_OPTION',
+        path: 'model',
+        received: this.model,
+        expected: {values: ['poisson', 'bernoulli', 'space-time-permutation']}
+      }
+    );
     if (this.model === 'poisson') {
-      if (!props.baseline) throw new Error(`${id} the poisson model needs a baseline`);
-      validateSinglePackedView(props.baseline, ['float32'], `${id} baseline`);
+      validateRequirement(
+        id,
+        Boolean(props.baseline),
+        `baseline received ${String(props.baseline)}; the poisson model needs a baseline`
+      );
+      validateSinglePackedView(props.baseline!, ['float32'], `${id} baseline`);
     }
     if (this.model === 'bernoulli') {
-      if (!props.controls) throw new Error(`${id} the bernoulli model needs controls`);
-      validateSinglePackedView(props.controls, ['uint32'], `${id} controls`);
+      validateRequirement(
+        id,
+        Boolean(props.controls),
+        `controls received ${String(props.controls)}; the bernoulli model needs controls`
+      );
+      validateSinglePackedView(props.controls!, ['uint32'], `${id} controls`);
     }
     validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     const {output} = props;
@@ -390,15 +485,8 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     this.timeBuckets = props.timeBuckets ?? 1;
     this.maximumClusters = props.maximumClusters ?? 8;
     const {maximumPermutations} = props;
-    if (
-      batchReplicates !== undefined &&
-      (!Number.isInteger(batchReplicates) || batchReplicates < 1)
-    ) {
-      throw new Error(`${id} batchReplicates must be a positive integer`);
-    }
-    if (this.zones < 1) {
-      throw new Error(`${id} needs at least one zone`);
-    }
+    if (batchReplicates !== undefined) validateCapacity(id, 'batchReplicates', batchReplicates);
+    validateCapacity(id, 'zones', this.zones);
     validateCapacity(
       id,
       'timeBuckets',
@@ -406,7 +494,7 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       1,
       GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_TIME_BUCKETS
     );
-    const layout = getGPUSpatialScanStatisticLayout(this.zones, props.maximumWindowZones);
+    const layout = getGPUSpatialScanStatisticLayout(this.zones, props.maximumWindowZones, id);
     this.usableZones = layout.usableZones;
     this.listLength = layout.listLength;
     const searchPlan = getScanNearestZoneSearchPlan(
@@ -417,6 +505,11 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     );
     this.nearestZoneSearch = searchPlan.nearestZoneSearch;
     this.estimatedFullScanSeparationCount = searchPlan.estimatedFullScanSeparationCount;
+    this.estimatedIndexedCandidateSeparationCount =
+      searchPlan.estimatedIndexedCandidateSeparationCount;
+    this.estimatedIndexedAxisSeparationCount = searchPlan.estimatedIndexedAxisSeparationCount;
+    this.estimatedIndexedSeparationCount = searchPlan.estimatedIndexedSeparationCount;
+    this.indexedRadixSortCount = searchPlan.indexedRadixSortCount;
     validateCapacity(
       id,
       'maximumClusters',
@@ -432,18 +525,16 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_PERMUTATIONS
     );
     const cells = this.zones * this.timeBuckets;
-    if (
-      props.cases.length !== cells ||
-      (this.model === 'poisson' && props.baseline!.length !== cells) ||
-      (this.model === 'bernoulli' && props.controls!.length !== cells)
-    ) {
-      throw new Error(`${id} cases, baseline and controls need zones * timeBuckets rows`);
-    }
+    validateViewLength(id, 'cases', props.cases, cells);
+    if (this.model === 'poisson') validateViewLength(id, 'baseline', props.baseline!, cells);
+    if (this.model === 'bernoulli') validateViewLength(id, 'controls', props.controls!, cells);
     // The count table holds the observed slot and one batch of replicates.
     const budgetReplicates = Math.floor(MAXIMUM_REPLICATE_WORDS / cells) - 1;
-    if (budgetReplicates < 1) {
-      throw new Error(`${id} zones * timeBuckets must be <= ${MAXIMUM_REPLICATE_WORDS / 2}`);
-    }
+    validateRequirement(
+      id,
+      budgetReplicates >= 1,
+      `zones * timeBuckets received ${cells}; must be <= ${MAXIMUM_REPLICATE_WORDS / 2}; reduce zones or timeBuckets`
+    );
     this.batchReplicates = Math.min(
       maximumPermutations,
       MAXIMUM_BATCH_REPLICATES,
@@ -452,53 +543,70 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     );
     this.batchCount = Math.ceil(maximumPermutations / this.batchReplicates);
     this.parallelDraws = (props.parallelDraws ?? false) && this.model !== 'poisson';
-    this.temporalMode = props.temporalMode ?? 'retrospective';
-    if (this.temporalMode !== 'retrospective' && this.temporalMode !== 'prospective') {
-      throw new Error(`${id} temporalMode must be 'retrospective' or 'prospective'`);
-    }
-    if (this.batchCount > MAXIMUM_BATCHES) {
-      throw new Error(
-        `${id} maximumPermutations needs ${this.batchCount} batches of ${this.batchReplicates} replicates, more than ${MAXIMUM_BATCHES}`
-      );
-    }
+    this.temporalMode = props.temporalMode === undefined ? 'retrospective' : props.temporalMode;
+    validateRequirement(
+      id,
+      this.temporalMode === 'retrospective' || this.temporalMode === 'prospective',
+      `temporalMode received ${String(this.temporalMode)}; expected retrospective, prospective`,
+      {
+        code: 'INVALID_OPTION',
+        path: 'temporalMode',
+        received: this.temporalMode,
+        expected: {values: ['retrospective', 'prospective']}
+      }
+    );
+    validateRequirement(
+      id,
+      this.batchCount <= MAXIMUM_BATCHES,
+      `maximumPermutations received ${maximumPermutations}; needs ${this.batchCount} batches of ${this.batchReplicates}, maximum ${MAXIMUM_BATCHES}; reduce maximumPermutations or cells`
+    );
     // Covers fixed model preparation and published count scans; indexed discovery adds its
     // separate two-sort allowance. Each batch and each cluster round add four nodes.
     this.estimatedCommandNodeCount =
       SCAN_MODEL_COMMAND_NODE_ALLOWANCE +
+      9 + // Exact population blocks plus at most eight pairwise merge levels (256 blocks).
       (this.nearestZoneSearch === 'indexed' ? SCAN_INDEX_BUILD_COMMAND_NODE_ALLOWANCE : 1) +
       4 * this.batchCount +
       4 * this.maximumClusters;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
-    if (props.parameters.length < GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters needs ${GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH} words`
-      );
-    }
-    if (
-      output.clusterIndices.length <
+    validateCapacity(
+      id,
+      'parameters.length',
+      props.parameters.length,
+      GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH
+    );
+    validateCapacity(
+      id,
+      'output.clusterIndices.length',
+      output.clusterIndices.length,
       this.maximumClusters * GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS
-    ) {
-      throw new Error(`${id} output.clusterIndices needs maximumClusters * 4 rows`);
-    }
-    if (
-      output.clusterStatistics.length <
+    );
+    validateCapacity(
+      id,
+      'output.clusterStatistics.length',
+      output.clusterStatistics.length,
       this.maximumClusters * GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS
-    ) {
-      throw new Error(`${id} output.clusterStatistics needs maximumClusters * 8 rows`);
-    }
-    if (output.statistics.length < maximumPermutations + 1) {
-      throw new Error(`${id} output.statistics needs maximumPermutations + 1 rows`);
-    }
-    if (output.summary.length < GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH) {
-      throw new Error(
-        `${id} output.summary needs ${GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH} rows`
-      );
-    }
+    );
+    validateCapacity(
+      id,
+      'output.statistics.length',
+      output.statistics.length,
+      maximumPermutations + 1
+    );
+    validateCapacity(
+      id,
+      'output.summary.length',
+      output.summary.length,
+      GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH
+    );
     if (output.zoneStatistics) {
       validateSinglePackedView(output.zoneStatistics, ['float32'], `${id} output.zoneStatistics`);
-      if (output.zoneStatistics.length < this.zones) {
-        throw new Error(`${id} output.zoneStatistics needs one row per zone`);
-      }
+      validateCapacity(
+        id,
+        'output.zoneStatistics.length',
+        output.zoneStatistics.length,
+        this.zones
+      );
     }
     const outputs = [
       output.clusterIndices,
@@ -514,9 +622,11 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       ...(props.controls ? [props.controls] : []),
       props.parameters
     ]);
-    if (new Set(outputs.map(output => output.buffer)).size !== outputs.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    validateRequirement(
+      id,
+      new Set(outputs.map(output => output.buffer)).size === outputs.length,
+      `outputs must use separate buffers; received ${new Set(outputs.map(output => output.buffer)).size} buffers for ${outputs.length} outputs`
+    );
     if (props.output.status) {
       validateSinglePackedView(
         props.output.status.invalidCount,
@@ -567,6 +677,7 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       permutationCount: Math.min(settings.permutationCount, this.props.maximumPermutations),
       seed: settings.seed,
       multipleTesting: 'none',
+      pValueConstruction: 'upper-tail-count',
       testedRowsDefinition:
         this.temporalMode === 'prospective'
           ? 'every prospective window: a center zone, its nearest zones within maximumPopulationFraction of the population, and a run of consecutive time buckets ending at the last bucket, within maximumTimeBuckets; p-values are Monte Carlo maxima over all those windows; no adjustment for earlier analyses'
@@ -594,155 +705,179 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, zones, timeBuckets, listLength, usableZones, maximumClusters, model} = this;
-    validateSpatialStatisticsBindings(graph, id, props, {
-      'cell scratch': zones * timeBuckets * 4,
-      'neighbor scratch': zones * listLength * 4,
-      'replicate table': (this.batchReplicates + 1) * zones * timeBuckets * 4,
-      'center records': zones * (CENTER_WORDS + 2) * 4
-    });
-    const prospective = this.temporalMode === 'prospective';
-    const separation: InterpolationSeparation = {
-      context: this.spatialContext,
-      geographic: this.spatialContext.coordinateSpace === 'longitude-latitude',
-      sphereRadius: getGPUSphereRadius(this.spatialContext)
-    };
-    const separationWGSL = getSeparationWGSL(separation);
-    const {positions, cases, parameters, maximumPermutations} = props;
-    const {clusterIndices, clusterStatistics, statistics, summary, zoneStatistics} = props.output;
-    validateGraphViewsBelongToGraph(id, graph, [
-      positions,
-      cases,
-      ...(props.baseline ? [props.baseline] : []),
-      ...(props.controls ? [props.controls] : []),
-      parameters,
-      clusterIndices,
-      clusterStatistics,
-      statistics,
-      summary,
-      ...(zoneStatistics ? [zoneStatistics] : [])
-    ]);
-    const cells = zones * timeBuckets;
-    const blocks = Math.min(MAXIMUM_BLOCKS, cells);
-    const cellsPerBlock = Math.ceil(cells / blocks);
-    const zoneBlocks = Math.min(MAXIMUM_BLOCKS, zones);
-    const zonesPerBlock = Math.ceil(zones / zoneBlocks);
-    const {batchReplicates, batchCount} = this;
-    // Table slot 0 holds the observed data, slots 1..R the replicates of the running batch.
-    const tableSlots = batchReplicates + 1;
-    const u32 = (name: string, length: number) =>
-      createTransientView(graph, `${id}-${name}`, 'uint32', length);
-    const f32 = (name: string, length: number) =>
-      createTransientView(graph, `${id}-${name}`, 'float32', length);
-    const neighbors = u32('neighbors', zones * listLength);
-    const distances = f32('distances', zones * listLength);
-    const members = u32('members', zones);
-    // Per-cell population of the window sums: the Poisson baseline, cases + controls (Bernoulli) or
-    // the expectation z_s * m_b / C of the space-time permutation model.
-    // Normalize Poisson baselines before any sum: their finite input scale may overflow a sum.
-    const weights = f32('weights', cells);
-    const baselineMaximum = model === 'poisson' ? u32('baseline-maximum', 1) : null;
-    const population = model === 'bernoulli' ? u32('population', cells) : null;
-    const zoneTotals = model === 'space-time-permutation' ? u32('zone-totals', zones) : null;
-    const bucketTotals =
-      model === 'space-time-permutation' ? u32('bucket-totals', timeBuckets) : null;
-    // Cumulative case totals per zone and per bucket: the draw index of a case to its zone and the
-    // time rank to its bucket (parallel draws of the space-time permutation model).
-    const zoneCumulative =
-      this.parallelDraws && model === 'space-time-permutation'
-        ? u32('zone-cumulative', zones)
-        : null;
-    const bucketCumulative =
-      this.parallelDraws && model === 'space-time-permutation'
-        ? u32('bucket-cumulative', timeBuckets)
-        : null;
-    const blockBaseline = f32('block-baseline', blocks);
-    const blockCases = u32('block-cases', blocks);
-    // Words: cases, baseline bits, weight total, next batch base, running batch base (replicates
-    // done before the running batch). The batch control kernels advance the two base words.
-    const totals = u32('totals', TOTALS_WORDS);
-    const cumulative = u32('cumulative', cells);
-    const counts = u32('counts', tableSlots * cells);
-    const evaluateGroups = Math.ceil(zones / EVALUATE_WORKGROUP_SIZE);
-    // Per-center best-window records, then (from WINDOW_INFO_START) two words per center written by
-    // `window-limit` for `evaluate`: the window slot count and the capacity-truncation flag. They
-    // share one buffer to keep `evaluate` within the 8 storage buffers per stage of core devices.
-    const centerBest = u32('center-best', zones * CENTER_WORDS + zones * 2);
-    const alive = u32('alive', zones);
-    const partials = u32('partials', zoneBlocks * 2);
-    const state = u32('state', 8);
-    // Rule 13: once no positive window is left, the remaining cluster rounds launch nothing.
-    // `select-init` arms one indirect dispatch per gated round kernel (`round-members`,
-    // `round-mask`, `round-partials`) and `round-select` disarms them all; `round-select` itself
-    // stays ungated because it writes the gate (a buffer is never both an indirect argument and
-    // storage-written in one dispatch).
-    const gatedInvocationCounts = [listLength, zones, zoneBlocks];
-    const gatedWorkgroupSizes = gatedInvocationCounts.map(getAutomaticWGSLKernelWorkgroupSize);
-    const gateLayouts = gatedInvocationCounts.map((count, slot) =>
-      getBoundedDispatchLayout(
-        OPERATION,
-        Math.max(count, 1),
-        gatedWorkgroupSizes[slot],
-        graph.device.limits.maxComputeWorkgroupsPerDimension
-      )
-    );
-    const roundGate = createTransientView(
-      graph,
-      `${id}-round-dispatch`,
-      'uint32',
-      3 * gateLayouts.length,
-      Buffer.STORAGE | Buffer.INDIRECT
-    );
-    const getRoundGate = (
-      slot: number
-    ): {
-      workgroupSize: number;
-      condition: GPUCommandGraphNodeCondition<Parameters>;
-      extraResources: GraphBufferUse[];
-    } => ({
-      workgroupSize: gatedWorkgroupSizes[slot],
-      condition: {
-        id: `${id}-round-gate-${slot}`,
-        source: 'gpu',
-        mode: 'indirect',
-        buffer: roundGate.buffer,
-        byteOffset: roundGate.byteOffset + slot * 12
-      },
-      extraResources: [{buffer: roundGate, usage: 'indirect'}]
-    });
-    const armRoundGateWGSL = gateLayouts
-      .map(
-        (layout, slot) => `roundDispatch[roundDispatchOffset + ${3 * slot}u] = ${layout.x}u;
+    const context = createSpatialScanCommandContext(this, graph);
+    appendScanPreparationNodes(context);
+    const createDrawNode = createScanDrawNodeFactory(context);
+    const createEvaluateNode = appendScanObservedSearchNodes(context);
+    appendScanReplicateNodes(context, createDrawNode, createEvaluateNode);
+    appendScanClusterNodes(context);
+    appendScanPublicationNodes(context);
+    return context.nodes;
+  }
+}
+
+/** Capture shared graph resources and shader definitions once, before any phase. @internal */
+function createSpatialScanCommandContext<Parameters>(
+  scan: GPUSpatialScanStatistic,
+  graph: GPUCommandGraph<Parameters>
+): SpatialScanCommandContext<Parameters> {
+  const {id, props, zones, timeBuckets, listLength, usableZones, maximumClusters, model} = scan;
+  const distanceTableLength =
+    zones * listLength +
+    (usableZones < zones ? (model === 'space-time-permutation' ? 2 : 12) * zones : 0);
+  validateSpatialStatisticsBindings(graph, id, props, {
+    'cell scratch': zones * timeBuckets * 4,
+    'neighbor scratch': zones * listLength * 4,
+    'distance scratch': distanceTableLength * 4,
+    'replicate table': (scan.batchReplicates + 1) * zones * timeBuckets * 4,
+    'center records': zones * (CENTER_WORDS + 2) * 4
+  });
+  const prospective = scan.temporalMode === 'prospective';
+  const separation: InterpolationSeparation = {
+    context: scan.spatialContext,
+    geographic: scan.spatialContext.coordinateSpace === 'longitude-latitude',
+    sphereRadius: getGPUSphereRadius(scan.spatialContext)
+  };
+  const separationWGSL = getSeparationWGSL(separation);
+  const {positions, cases, parameters, maximumPermutations} = props;
+  const {clusterIndices, clusterStatistics, statistics, summary, zoneStatistics} = props.output;
+  validateGraphViewsBelongToGraph(id, graph, [
+    positions,
+    cases,
+    ...(props.baseline ? [props.baseline] : []),
+    ...(props.controls ? [props.controls] : []),
+    parameters,
+    clusterIndices,
+    clusterStatistics,
+    statistics,
+    summary,
+    ...(zoneStatistics ? [zoneStatistics] : [])
+  ]);
+  const cells = zones * timeBuckets;
+  const blocks = Math.min(MAXIMUM_BLOCKS, cells);
+  const cellsPerBlock = Math.ceil(cells / blocks);
+  const zoneBlocks = Math.min(MAXIMUM_BLOCKS, zones);
+  const zonesPerBlock = Math.ceil(zones / zoneBlocks);
+  const {batchReplicates, batchCount} = scan;
+  // Table slot 0 holds the observed data, slots 1..R the replicates of the running batch.
+  const tableSlots = batchReplicates + 1;
+  const u32 = (name: string, length: number) =>
+    createTransientView(graph, `${id}-${name}`, 'uint32', length);
+  const f32 = (name: string, length: number) =>
+    createTransientView(graph, `${id}-${name}`, 'float32', length);
+  const neighbors = u32('neighbors', zones * listLength);
+  // Tails hold rounded population/count and exact floating-population limbs through the
+  // lookahead radius, including omitted ties. Integer space-time margins need only two words.
+  const distances = f32('distances', distanceTableLength);
+  const members = u32('members', zones);
+  // Per-cell population of the window sums: the Poisson baseline, cases + controls (Bernoulli) or
+  // the expectation z_s * m_b / C of the space-time permutation model.
+  // Normalize Poisson baselines before any sum: their finite input scale may overflow a sum.
+  const weights = f32('weights', cells);
+  // Poisson: word 0 the largest valid baseline magnitude bits, word 1 set when a cell is invalid.
+  const baselineMaximum = model === 'poisson' ? u32('baseline-maximum', 2) : null;
+  const population = model === 'bernoulli' ? u32('population', cells) : null;
+  const zoneTotals = model === 'space-time-permutation' ? u32('zone-totals', zones) : null;
+  const bucketTotals =
+    model === 'space-time-permutation' ? u32('bucket-totals', timeBuckets) : null;
+  // Cumulative case totals per zone and per bucket: the draw index of a case to its zone and the
+  // time rank to its bucket (parallel draws of the space-time permutation model).
+  const zoneCumulative =
+    scan.parallelDraws && model === 'space-time-permutation' ? u32('zone-cumulative', zones) : null;
+  const bucketCumulative =
+    scan.parallelDraws && model === 'space-time-permutation'
+      ? u32('bucket-cumulative', timeBuckets)
+      : null;
+  const bucketMarginPrefixes =
+    model === 'space-time-permutation' ? u32('bucket-margin-prefixes', cells) : null;
+  const blockBaseline = f32('block-baseline', blocks);
+  const blockCases = u32('block-cases', blocks);
+  // Words: cases, baseline bits, weight total, next batch base, running batch base (replicates
+  // done before the running batch). The batch control kernels advance the two base words.
+  // Floating-population models append ten exact study-mass limbs after the seven legacy words.
+  const totals = u32('totals', TOTALS_WORDS + (model === 'space-time-permutation' ? 0 : 10));
+  const cumulative = u32('cumulative', cells);
+  const counts = u32('counts', tableSlots * cells);
+  const evaluateGroups = Math.ceil(zones / EVALUATE_WORKGROUP_SIZE);
+  // Per-center best-window records, then (from WINDOW_INFO_START) two words per center written by
+  // `window-limit` for `evaluate`: the window slot count and the capacity-truncation flag. They
+  // share one buffer to keep `evaluate` within the 8 storage buffers per stage of core devices.
+  const centerBest = u32('center-best', zones * CENTER_WORDS + zones * 2);
+  const alive = u32('alive', zones);
+  const partials = u32('partials', zoneBlocks * 2);
+  const state = u32('state', 8);
+  // Rule 13: once no positive window is left, the remaining cluster rounds launch nothing.
+  // `select-init` arms one indirect dispatch per gated round kernel (`round-members`,
+  // `round-mask`, `round-partials`) and `round-select` disarms them all; `round-select` itself
+  // stays ungated because it writes the gate (a buffer is never both an indirect argument and
+  // storage-written in one dispatch).
+  const gatedInvocationCounts = [listLength, zones, zoneBlocks];
+  const gatedWorkgroupSizes = gatedInvocationCounts.map(getAutomaticWGSLKernelWorkgroupSize);
+  const gateLayouts = gatedInvocationCounts.map((count, slot) =>
+    getBoundedDispatchLayout(
+      OPERATION,
+      Math.max(count, 1),
+      gatedWorkgroupSizes[slot],
+      graph.device.limits.maxComputeWorkgroupsPerDimension
+    )
+  );
+  const roundGate = createTransientView(
+    graph,
+    `${id}-round-dispatch`,
+    'uint32',
+    3 * gateLayouts.length,
+    Buffer.STORAGE | Buffer.INDIRECT
+  );
+  const getRoundGate = (
+    slot: number
+  ): {
+    workgroupSize: number;
+    condition: GPUCommandGraphNodeCondition<Parameters>;
+    extraResources: GraphBufferUse[];
+  } => ({
+    workgroupSize: gatedWorkgroupSizes[slot],
+    condition: {
+      id: `${id}-round-gate-${slot}`,
+      source: 'gpu',
+      mode: 'indirect',
+      buffer: roundGate.buffer,
+      byteOffset: roundGate.byteOffset + slot * 12
+    },
+    extraResources: [{buffer: roundGate, usage: 'indirect'}]
+  });
+  const armRoundGateWGSL = gateLayouts
+    .map(
+      (layout, slot) => `roundDispatch[roundDispatchOffset + ${3 * slot}u] = ${layout.x}u;
     roundDispatch[roundDispatchOffset + ${3 * slot + 1}u] = ${layout.y}u;
     roundDispatch[roundDispatchOffset + ${3 * slot + 2}u] = ${layout.z}u;`
-      )
-      .join('\n    ');
-    const disarmRoundGateWGSL = gateLayouts
-      .map((_, slot) => `roundDispatch[roundDispatchOffset + ${3 * slot}u] = 0u;`)
-      .join(' ');
+    )
+    .join('\n    ');
+  const disarmRoundGateWGSL = gateLayouts
+    .map((_, slot) => `roundDispatch[roundDispatchOffset + ${3 * slot}u] = 0u;`)
+    .join(' ');
 
-    // Rule 13: a batch whose first replicate is past the per-frame count launches nothing. The
-    // cursor is the GPU word `totals[3]`, so the batch index never reaches the WGSL text (rule 12).
-    // `batch-control` is ungated because it writes the gate.
-    const parallelDraws = this.parallelDraws;
-    const drawInvocationCount = parallelDraws
-      ? batchReplicates * PARALLEL_DRAW_BLOCKS * PARALLEL_DRAW_WORKGROUP_SIZE
-      : model === 'poisson'
-        ? batchReplicates * CASE_BLOCKS
-        : batchReplicates;
-    const batchGate = createWGSLDispatchGate<Parameters>(graph, {
-      id: `${id}-batch-dispatch`,
-      operation: OPERATION,
-      shapes: [
-        [batchReplicates * cells],
-        parallelDraws
-          ? ([drawInvocationCount, PARALLEL_DRAW_WORKGROUP_SIZE] as const)
-          : ([drawInvocationCount] as const),
-        [batchReplicates * evaluateGroups * EVALUATE_WORKGROUP_SIZE, EVALUATE_WORKGROUP_SIZE]
-      ]
-    });
+  // Rule 13: a batch whose first replicate is past the per-frame count launches nothing. The
+  // cursor is the GPU word `totals[3]`, so the batch index never reaches the WGSL text (rule 12).
+  // `batch-control` is ungated because it writes the gate.
+  const parallelDraws = scan.parallelDraws;
+  const drawInvocationCount = parallelDraws
+    ? batchReplicates * PARALLEL_DRAW_BLOCKS * PARALLEL_DRAW_WORKGROUP_SIZE
+    : model === 'poisson'
+      ? batchReplicates * CASE_BLOCKS
+      : batchReplicates;
+  const batchGate = createWGSLDispatchGate<Parameters>(graph, {
+    id: `${id}-batch-dispatch`,
+    operation: OPERATION,
+    shapes: [
+      [batchReplicates * cells],
+      parallelDraws
+        ? ([drawInvocationCount, PARALLEL_DRAW_WORKGROUP_SIZE] as const)
+        : ([drawInvocationCount] as const),
+      [batchReplicates * evaluateGroups * EVALUATE_WORKGROUP_SIZE, EVALUATE_WORKGROUP_SIZE]
+    ]
+  });
 
-    const common = /* wgsl */ `${SCAN_TOTAL_WGSL}
+  const common = /* wgsl */ `${SCAN_TOTAL_WGSL}
 const MAXIMUM_COUNT: u32 = ${GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_COUNT}u;
 
 const ZONES: u32 = ${zones}u;
@@ -766,7 +901,7 @@ fn getCellWeight(cellBaseline: f32, totalBaseline: f32) -> u32 {
   }
   return u32(floor(cellBaseline / totalBaseline * 2147483648.0 + 0.5));
 }`;
-    const readers = /* wgsl */ `
+  const readers = /* wgsl */ `
 fn readSeedKey() -> vec2<u32> {
   return vec2<u32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
 }
@@ -793,8 +928,8 @@ fn readWindowShape() -> u32 {
 fn readRateDirection() -> u32 {
   return parameters[parametersOffset + 7u];
 }`;
-    const withParameters = `${common}${readers}`;
-    const direction = /* wgsl */ `${POISSON_OBSERVED_TERM_WGSL}
+  const withParameters = `${common}${readers}`;
+  const direction = /* wgsl */ `${POISSON_OBSERVED_TERM_WGSL}
 fn isDirected(observed: f32, expected: f32, direction: u32) -> bool {
   if (direction == 0u) {
     return observed > expected;
@@ -806,11 +941,12 @@ fn isDirected(observed: f32, expected: f32, direction: u32) -> bool {
 }
 // Poisson divides to a bounded baseline fraction before multiplying by the case total.
 fn getExpectedCases(windowWeight: f32, totalCases: f32, totalWeight: f32) -> f32 {
+  if (windowWeight == totalWeight) { return totalCases; }
   return ${model === 'poisson' ? '(windowWeight / totalWeight) * totalCases' : 'windowWeight * totalCases / totalWeight'};
 }`;
-    const likelihood =
-      model === 'bernoulli'
-        ? /* wgsl */ `${direction}
+  const likelihood =
+    model === 'bernoulli'
+      ? /* wgsl */ `${direction}
 // Kulldorff (1997) Bernoulli LLR as the sum of o ln(o/e) over the 2x2 table of
 // (cases, controls) x (inside, outside), with e = row total * column total / N.
 fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, totalWeight: f32, direction: u32) -> f32 {
@@ -829,7 +965,7 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
     getObservedTerm(max(totalControls - windowWeight + observed, 0.0), outside * totalControls / totalWeight);
   return max(ratio, 0.0);
 }`
-        : /* wgsl */ `${direction}
+      : /* wgsl */ `${direction}
 // Poisson LLR c ln(c/e) + (C - c) ln((C - c)/(C - e)); the space-time permutation model passes the
 // window's e = (zone totals * bucket totals / C) as the window weight of a total weight C.
 fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, totalWeight: f32, direction: u32) -> f32 {
@@ -845,139 +981,354 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
     getObservedTerm(max(totalCases - observed, 0.0), totalCases - expected);
   return max(ratio, 0.0);
 }`;
-    const cellWeight = (cell: string) =>
-      model === 'bernoulli'
-        ? `population[populationOffset + ${cell}]`
-        : `getCellWeight(baseline[baselineOffset + ${cell}], totalBaseline)`;
-    const cellWeightBinding = population
-      ? {name: 'population', view: population, type: 'u32' as const, access: 'read' as const}
-      : {name: 'baseline', view: weights, type: 'f32' as const, access: 'read' as const};
+  const cellWeight = (cell: string) =>
+    model === 'bernoulli'
+      ? `population[populationOffset + ${cell}]`
+      : `getCellWeight(baseline[baselineOffset + ${cell}], totalBaseline)`;
+  const cellWeightBinding = population
+    ? {name: 'population', view: population, type: 'u32' as const, access: 'read' as const}
+    : {name: 'baseline', view: weights, type: 'f32' as const, access: 'read' as const};
 
-    const nodes: GPUCommandNode<Parameters>[] = [
-      ...createScanNearestZoneNodes<Parameters>(graph, {
-        id: `${id}-nearest`,
-        operation: OPERATION,
-        positions,
-        neighbors,
-        distances,
-        zones,
-        listLength,
-        separationWGSL,
-        geographic: this.spatialContext.coordinateSpace === 'longitude-latitude',
-        nearestZoneSearch: this.nearestZoneSearch
-      })
-    ];
-
-    if (model === 'poisson') {
-      nodes.push(
-        createFillNode(graph, {
-          id: `${id}-baseline-maximum-clear`,
-          operation: OPERATION,
-          view: baselineMaximum!,
-          type: 'u32',
-          value: '0u'
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-baseline-block-maximum`,
-          operation: OPERATION,
-          variant: 'baseline-block-maximum',
-          bindings: [
-            {name: 'rawBaseline', view: props.baseline!, type: 'u32', access: 'read'},
-            {
-              name: 'baselineMaximum',
-              view: baselineMaximum!,
-              type: 'atomic<u32>',
-              access: 'read_write'
+  const createNearestNodes = () =>
+    createScanNearestZoneNodes<Parameters>(graph, {
+      id: `${id}-nearest`,
+      operation: OPERATION,
+      positions,
+      neighbors,
+      distances,
+      zones,
+      listLength,
+      separationWGSL,
+      geographic: scan.spatialContext.coordinateSpace === 'longitude-latitude',
+      nearestZoneSearch: scan.nearestZoneSearch,
+      ...(usableZones < zones
+        ? {
+            boundaryPopulation: {
+              view: zoneTotals ?? weights,
+              integer: model === 'space-time-permutation',
+              exact: model !== 'space-time-permutation',
+              buckets: model === 'space-time-permutation' ? 1 : timeBuckets
             }
-          ],
-          invocationCount: blocks,
-          declarations: common,
-          body: `var maximum = 0u;
+          }
+        : {})
+    });
+  const nodes: GPUCommandNode<Parameters>[] = usableZones < zones ? [] : createNearestNodes();
+
+  return {
+    graph,
+    id,
+    props,
+    zones,
+    timeBuckets,
+    listLength,
+    usableZones,
+    maximumClusters,
+    model,
+    prospective,
+    separationWGSL,
+    cases,
+    parameters,
+    clusterIndices,
+    clusterStatistics,
+    statistics,
+    summary,
+    zoneStatistics,
+    cells,
+    blocks,
+    zoneBlocks,
+    batchReplicates,
+    batchCount,
+    u32,
+    neighbors,
+    distances,
+    members,
+    weights,
+    baselineMaximum,
+    population,
+    zoneTotals,
+    bucketTotals,
+    zoneCumulative,
+    bucketCumulative,
+    bucketMarginPrefixes,
+    blockBaseline,
+    blockCases,
+    totals,
+    cumulative,
+    counts,
+    evaluateGroups,
+    centerBest,
+    alive,
+    partials,
+    state,
+    roundGate,
+    getRoundGate,
+    armRoundGateWGSL,
+    disarmRoundGateWGSL,
+    parallelDraws,
+    drawInvocationCount,
+    batchGate,
+    common,
+    withParameters,
+    likelihood,
+    cellWeight,
+    cellWeightBinding,
+    createNearestNodes,
+    nodes
+  };
+}
+/** Shared resources and captured configuration used by the scan phases. */
+type SpatialScanCommandContext<Parameters> = {
+  graph: GPUCommandGraph<Parameters>;
+  id: string;
+  props: GPUSpatialScanStatisticProps;
+  zones: number;
+  timeBuckets: number;
+  model: GPUSpatialScanModel;
+  cases: GraphDataView<'uint32'>;
+  cells: number;
+  blocks: number;
+  u32: (name: string, length: number) => GraphDataView<'uint32'>;
+  weights: GraphDataView<'float32'>;
+  baselineMaximum: GraphDataView<'uint32'> | null;
+  population: GraphDataView<'uint32'> | null;
+  zoneTotals: GraphDataView<'uint32'> | null;
+  bucketTotals: GraphDataView<'uint32'> | null;
+  zoneCumulative: GraphDataView<'uint32'> | null;
+  bucketCumulative: GraphDataView<'uint32'> | null;
+  bucketMarginPrefixes: GraphDataView<'uint32'> | null;
+  blockBaseline: GraphDataView<'float32'>;
+  blockCases: GraphDataView<'uint32'>;
+  totals: GraphDataView<'uint32'>;
+  cumulative: GraphDataView<'uint32'>;
+  common: string;
+  cellWeight: (cell: string) => string;
+  cellWeightBinding: WGSLKernelBinding;
+  nodes: GPUCommandNode<Parameters>[];
+  parameters: GraphDataView<'uint32'>;
+  counts: GraphDataView<'uint32'>;
+  parallelDraws: boolean;
+  drawInvocationCount: number;
+  batchGate: WGSLDispatchGate<Parameters>;
+  withParameters: string;
+  usableZones: number;
+  prospective: boolean;
+  separationWGSL: string;
+  statistics: GraphDataView<'float32'>;
+  batchReplicates: number;
+  neighbors: GraphDataView<'uint32'>;
+  distances: GraphDataView<'float32'>;
+  evaluateGroups: number;
+  centerBest: GraphDataView<'uint32'>;
+  likelihood: string;
+  createNearestNodes: () => GPUCommandNode<Parameters>[];
+  batchCount: number;
+  listLength: number;
+  maximumClusters: number;
+  clusterIndices: GraphDataView<'uint32'>;
+  clusterStatistics: GraphDataView<'float32'>;
+  zoneStatistics: GraphDataView<'float32'> | undefined;
+  zoneBlocks: number;
+  members: GraphDataView<'uint32'>;
+  alive: GraphDataView<'uint32'>;
+  partials: GraphDataView<'uint32'>;
+  state: GraphDataView<'uint32'>;
+  roundGate: GraphDataView<'uint32'>;
+  getRoundGate: (slot: number) => {
+    workgroupSize: number;
+    condition: GPUCommandGraphNodeCondition<Parameters>;
+    extraResources: GraphBufferUse[];
+  };
+  armRoundGateWGSL: string;
+  disarmRoundGateWGSL: string;
+  summary: GraphDataView<'uint32'>;
+};
+
+/** append Scan Preparation Nodes. @internal */
+function appendScanPreparationNodes<Parameters>(context: SpatialScanCommandContext<Parameters>) {
+  const {
+    graph,
+    id,
+    props,
+    zones,
+    timeBuckets,
+    model,
+    cases,
+    cells,
+    blocks,
+    u32,
+    weights,
+    baselineMaximum,
+    population,
+    zoneTotals,
+    bucketTotals,
+    zoneCumulative,
+    bucketCumulative,
+    bucketMarginPrefixes,
+    blockBaseline,
+    blockCases,
+    totals,
+    cumulative,
+    common,
+    cellWeight,
+    cellWeightBinding,
+    nodes
+  } = context;
+  if (model === 'poisson') {
+    nodes.push(
+      createFillNode(graph, {
+        id: `${id}-baseline-maximum-clear`,
+        operation: OPERATION,
+        view: baselineMaximum!,
+        type: 'u32',
+        value: '0u'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-baseline-block-maximum`,
+        operation: OPERATION,
+        variant: 'baseline-block-maximum',
+        bindings: [
+          {name: 'rawBaseline', view: props.baseline!, type: 'u32', access: 'read'},
+          {name: 'cases', view: cases, type: 'u32', access: 'read'},
+          {
+            name: 'baselineMaximum',
+            view: baselineMaximum!,
+            type: 'atomic<u32>',
+            access: 'read_write'
+          }
+        ],
+        invocationCount: blocks,
+        declarations: `${common}\n${SCAN_BASELINE_SCALING_WGSL}`,
+        body: `var maximum = 0u;
+  var invalid = 0u;
   let first = index * CELLS_PER_BLOCK;
   for (var cell = first; cell < min(first + CELLS_PER_BLOCK, CELLS); cell++) {
-    maximum = max(maximum, rawBaseline[rawBaselineOffset + cell] & 0x7fffffffu);
+    let bits = rawBaseline[rawBaselineOffset + cell];
+    if (isScanBaselineValid(bits)) {
+      maximum = max(maximum, bits & 0x7fffffffu);
+    } else {
+      invalid++;
+    }
+    // A positive observation at exactly zero exposure is impossible under the conditional null.
+    // Test raw magnitude bits so a positive subnormal is never mistaken for zero by Metal.
+    if ((bits & 0x7fffffffu) == 0u && cases[casesOffset + cell] > 0u) { invalid++; }
   }
   // Nonnegative float32 bits have the same order as uint32; at most 256 blocks contend.
-  atomicMax(&baselineMaximum[baselineMaximumOffset], maximum);`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-baseline-normalize`,
-          operation: OPERATION,
-          variant: 'baseline-normalize',
-          bindings: [
-            {name: 'rawBaseline', view: props.baseline!, type: 'u32', access: 'read'},
-            {name: 'baselineMaximum', view: baselineMaximum!, type: 'u32', access: 'read'},
-            {name: 'normalizedBaseline', view: weights, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: cells,
-          declarations: `${common}\n${SCAN_BASELINE_SCALING_WGSL}`,
-          body: `normalizedBaseline[normalizedBaselineOffset + index] = getScaledScanBaseline(
-    rawBaseline[rawBaselineOffset + index] & 0x7fffffffu, baselineMaximum[baselineMaximumOffset]);`
-        })
-      );
-    }
+  atomicMax(&baselineMaximum[baselineMaximumOffset], maximum);
+  if (invalid != 0u) {
+    atomicAdd(&baselineMaximum[baselineMaximumOffset + 1u], invalid);
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-baseline-normalize`,
+        operation: OPERATION,
+        variant: 'baseline-normalize',
+        bindings: [
+          {name: 'rawBaseline', view: props.baseline!, type: 'u32', access: 'read'},
+          {name: 'baselineMaximum', view: baselineMaximum!, type: 'u32', access: 'read'},
+          {name: 'normalizedBaseline', view: weights, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: cells,
+        declarations: `${common}\n${SCAN_BASELINE_SCALING_WGSL}`,
+        body: `let bits = rawBaseline[rawBaselineOffset + index];
+  // An invalid cell is left out of the normaliser and the sums; the frame is reported invalid.
+  normalizedBaseline[normalizedBaselineOffset + index] = select(0.0, getScaledScanBaseline(
+    bits & 0x7fffffffu, baselineMaximum[baselineMaximumOffset]), isScanBaselineValid(bits));`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-baseline-scaling-loss`,
+        operation: OPERATION,
+        variant: 'baseline-scaling-loss',
+        invocationCount: cells,
+        bindings: [
+          {name: 'rawBaseline', view: props.baseline!, type: 'u32', access: 'read'},
+          {
+            name: 'baselineMaximum',
+            view: baselineMaximum!,
+            type: 'atomic<u32>',
+            access: 'read_write'
+          }
+        ],
+        declarations: SCAN_BASELINE_SCALING_WGSL,
+        body: `if (hasScanBaselineScalingLoss(rawBaseline[rawBaselineOffset + index], atomicLoad(&baselineMaximum[baselineMaximumOffset]))) {
+    atomicAdd(&baselineMaximum[baselineMaximumOffset + 1u], 1u);
+  }`
+      })
+    );
+  }
 
-    if (model === 'bernoulli') {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-population`,
-          operation: OPERATION,
-          variant: 'population',
-          bindings: [
-            {name: 'cases', view: cases, type: 'u32', access: 'read'},
-            {name: 'controls', view: props.controls!, type: 'u32', access: 'read'},
-            {name: 'population', view: population!, type: 'u32', access: 'read_write'},
-            {name: 'weights', view: weights, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: cells,
-          declarations: common,
-          body: `let cellPopulation = getSaturatedScanSum(cases[casesOffset + index], controls[controlsOffset + index]);
+  if (model === 'bernoulli') {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-population`,
+        operation: OPERATION,
+        variant: 'population',
+        bindings: [
+          {name: 'cases', view: cases, type: 'u32', access: 'read'},
+          {name: 'controls', view: props.controls!, type: 'u32', access: 'read'},
+          {name: 'population', view: population!, type: 'u32', access: 'read_write'},
+          {name: 'weights', view: weights, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: cells,
+        declarations: common,
+        body: `let cellPopulation = getSaturatedScanSum(cases[casesOffset + index], controls[controlsOffset + index]);
   population[populationOffset + index] = cellPopulation;
   weights[weightsOffset + index] = f32(cellPopulation);`
-        })
-      );
-    }
-    if (model === 'space-time-permutation') {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-margins`,
-          operation: OPERATION,
-          variant: 'margins',
-          bindings: [
-            {name: 'cases', view: cases, type: 'u32', access: 'read'},
-            {name: 'zoneTotals', view: zoneTotals!, type: 'u32', access: 'read_write'},
-            {name: 'bucketTotals', view: bucketTotals!, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: Math.max(zones, timeBuckets),
-          declarations: common,
-          body: `if (index < ZONES) {
+      })
+    );
+  }
+  if (model === 'space-time-permutation') {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-margins`,
+        operation: OPERATION,
+        variant: 'margins',
+        bindings: [
+          {name: 'cases', view: cases, type: 'u32', access: 'read'},
+          {name: 'zoneTotals', view: zoneTotals!, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: zones,
+        declarations: common,
+        body: `if (index < ZONES) {
     var zoneSum = 0u;
     for (var bucket = 0u; bucket < BUCKETS; bucket++) {
       zoneSum = getSaturatedScanSum(zoneSum, cases[casesOffset + index * BUCKETS + bucket]);
     }
     zoneTotals[zoneTotalsOffset + index] = zoneSum;
   }
-  if (index < BUCKETS) {
-    var bucketSum = 0u;
-    for (var zone = 0u; zone < ZONES; zone++) {
-      bucketSum = getSaturatedScanSum(bucketSum, cases[casesOffset + zone * BUCKETS + index]);
-    }
-    bucketTotals[bucketTotalsOffset + index] = bucketSum;
-  }`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-weights`,
-          operation: OPERATION,
-          variant: 'weights',
-          bindings: [
-            {name: 'zoneTotals', view: zoneTotals!, type: 'u32', access: 'read'},
-            {name: 'bucketTotals', view: bucketTotals!, type: 'u32', access: 'read'},
-            {name: 'weights', view: weights, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: cells,
-          declarations: common,
-          // Expected cases of the cell under fixed margins: zone total * bucket total / C.
-          body: `let zone = index / BUCKETS;
+`
+      }),
+      ...createScanOrderedPrefixNodes(graph, {
+        id: `${id}-bucket-margin-prefix`,
+        operation: OPERATION,
+        input: cases,
+        output: bucketMarginPrefixes!,
+        rowCount: zones,
+        laneCount: timeBuckets
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-bucket-margins`,
+        operation: OPERATION,
+        variant: 'bucket-margins',
+        invocationCount: timeBuckets,
+        bindings: [
+          {name: 'prefixes', view: bucketMarginPrefixes!, type: 'u32', access: 'read'},
+          {name: 'bucketTotals', view: bucketTotals!, type: 'u32', access: 'read_write'}
+        ],
+        body: `bucketTotals[bucketTotalsOffset + index] = prefixes[prefixesOffset + ${(zones - 1) * timeBuckets}u + index];`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-weights`,
+        operation: OPERATION,
+        variant: 'weights',
+        bindings: [
+          {name: 'zoneTotals', view: zoneTotals!, type: 'u32', access: 'read'},
+          {name: 'bucketTotals', view: bucketTotals!, type: 'u32', access: 'read'},
+          {name: 'weights', view: weights, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: cells,
+        declarations: common,
+        // Expected cases of the cell under fixed margins: zone total * bucket total / C.
+        body: `let zone = index / BUCKETS;
   let bucket = index - zone * BUCKETS;
   var total = 0u;
   for (var other = 0u; other < BUCKETS; other++) {
@@ -988,52 +1339,42 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
     f32(zoneTotals[zoneTotalsOffset + zone]) * f32(bucketTotals[bucketTotalsOffset + bucket]) / f32(total),
     total > 0u
   );`
+      })
+    );
+    if (zoneCumulative && bucketCumulative) {
+      nodes.push(
+        ...createScanOrderedPrefixNodes(graph, {
+          id: `${id}-zone-cumulative`,
+          operation: OPERATION,
+          input: zoneTotals!,
+          output: zoneCumulative,
+          rowCount: zones
+        }),
+        ...createScanOrderedPrefixNodes(graph, {
+          id: `${id}-bucket-cumulative`,
+          operation: OPERATION,
+          input: bucketTotals!,
+          output: bucketCumulative,
+          rowCount: timeBuckets
         })
       );
-      if (zoneCumulative && bucketCumulative) {
-        nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
-            id: `${id}-margin-cumulative`,
-            operation: OPERATION,
-            variant: 'margin-cumulative',
-            bindings: [
-              {name: 'zoneTotals', view: zoneTotals!, type: 'u32', access: 'read'},
-              {name: 'bucketTotals', view: bucketTotals!, type: 'u32', access: 'read'},
-              {name: 'zoneCumulative', view: zoneCumulative, type: 'u32', access: 'read_write'},
-              {name: 'bucketCumulative', view: bucketCumulative, type: 'u32', access: 'read_write'}
-            ],
-            invocationCount: 1,
-            declarations: common,
-            // Two serial prefix sums, once per frame; the replicate draws binary-search them.
-            body: `var zoneRunning = 0u;
-  for (var zone = 0u; zone < ZONES; zone++) {
-    zoneRunning = getSaturatedScanSum(zoneRunning, zoneTotals[zoneTotalsOffset + zone]);
-    zoneCumulative[zoneCumulativeOffset + zone] = zoneRunning;
-  }
-  var bucketRunning = 0u;
-  for (var bucket = 0u; bucket < BUCKETS; bucket++) {
-    bucketRunning = getSaturatedScanSum(bucketRunning, bucketTotals[bucketTotalsOffset + bucket]);
-    bucketCumulative[bucketCumulativeOffset + bucket] = bucketRunning;
-  }`
-          })
-        );
-      }
     }
+  }
 
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-block-totals`,
-        operation: OPERATION,
-        variant: 'block-totals',
-        bindings: [
-          {name: 'baseline', view: weights, type: 'f32', access: 'read'},
-          {name: 'cases', view: cases, type: 'u32', access: 'read'},
-          {name: 'blockBaseline', view: blockBaseline, type: 'f32', access: 'read_write'},
-          {name: 'blockCases', view: blockCases, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: blocks,
-        declarations: common,
-        body: `var baselineSum = 0.0;
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-block-totals`,
+      operation: OPERATION,
+      variant: 'block-totals',
+      bindings: [
+        {name: 'baseline', view: weights, type: 'f32', access: 'read'},
+        {name: 'cases', view: cases, type: 'u32', access: 'read'},
+        {name: 'blockBaseline', view: blockBaseline, type: 'f32', access: 'read_write'},
+        {name: 'blockCases', view: blockCases, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: blocks,
+      declarations: common,
+      body: `var baselineSum = 0.0;
   var caseSum = 0u;
   let first = index * CELLS_PER_BLOCK;
   for (var cell = first; cell < min(first + CELLS_PER_BLOCK, CELLS); cell++) {
@@ -1042,19 +1383,21 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
   }
   blockBaseline[blockBaselineOffset + index] = baselineSum;
   blockCases[blockCasesOffset + index] = caseSum;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-totals`,
-        operation: OPERATION,
-        variant: 'totals',
-        bindings: [
-          {name: 'blockBaseline', view: blockBaseline, type: 'f32', access: 'read'},
-          {name: 'blockCases', view: blockCases, type: 'u32', access: 'read'},
-          {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: common,
-        body: `var baselineSum = 0.0;
+    }),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-totals`,
+      operation: OPERATION,
+      variant: 'totals',
+      bindings: [
+        {name: 'blockBaseline', view: blockBaseline, type: 'f32', access: 'read'},
+        {name: 'blockCases', view: blockCases, type: 'u32', access: 'read'},
+        {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
+      ],
+      // MAXIMUM_BLOCKS = 256 bounds the fixed-order totals merge.
+      // contract-allow: single-invocation
+      invocationCount: 1,
+      declarations: common,
+      body: `var baselineSum = 0.0;
   var caseSum = 0u;
   for (var blockIndex = 0u; blockIndex < BLOCKS; blockIndex++) {
     baselineSum += blockBaseline[blockBaselineOffset + blockIndex];
@@ -1067,122 +1410,144 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
   totals[totalsOffset + 2u] = 0u;
   totals[totalsOffset + 3u] = 0u;
   totals[totalsOffset + 4u] = 0u;`
+    })
+  );
+
+  // Preserve integer/status publication; replace only the population word with a total rounded
+  // once from exact limbs, matching complete-circle accumulation regardless of traversal order.
+  if (model !== 'space-time-permutation') {
+    nodes.push(
+      ...createScanExactPopulationTotalNodes(graph, {
+        id,
+        operation: OPERATION,
+        baseline: weights,
+        totals,
+        cells,
+        blocks
       })
     );
+  }
 
-    if (model !== 'space-time-permutation') {
-      // The integer cumulative table is the inclusive prefix sum of the cell weights. Bernoulli
-      // scans its population directly; Poisson first writes each cell's share of 2^31.
-      let cellWeights = population;
-      if (!cellWeights) {
-        cellWeights = u32('cell-weights', cells);
-        nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
-            id: `${id}-cell-weights`,
-            operation: OPERATION,
-            variant: 'cell-weights',
-            bindings: [
-              cellWeightBinding,
-              {name: 'totals', view: totals, type: 'u32', access: 'read'},
-              {name: 'cellWeights', view: cellWeights, type: 'u32', access: 'read_write'}
-            ],
-            invocationCount: cells,
-            declarations: common,
-            body: `let totalBaseline = bitcast<f32>(totals[totalsOffset + 1u]);
-  cellWeights[cellWeightsOffset + index] = ${cellWeight('index')};`
-          })
-        );
-      }
+  if (model !== 'space-time-permutation') {
+    // The integer cumulative table is the inclusive prefix sum of the cell weights. Bernoulli
+    // scans its population directly; Poisson first writes each cell's share of 2^31.
+    let cellWeights = population;
+    if (!cellWeights) {
+      cellWeights = u32('cell-weights', cells);
       nodes.push(
-        ...createSaturatedCountScanNodes(graph, {
-          id: `${id}-cumulative`,
-          operation: OPERATION,
-          counts: cellWeights,
-          offsets: cumulative,
-          total: totals,
-          totalRow: 2,
-          rowCount: cells
-        }),
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-cumulative-inclusive`,
+          id: `${id}-cell-weights`,
           operation: OPERATION,
-          variant: 'cumulative-inclusive',
+          variant: 'cell-weights',
+          bindings: [
+            cellWeightBinding,
+            {name: 'totals', view: totals, type: 'u32', access: 'read'},
+            {name: 'cellWeights', view: cellWeights, type: 'u32', access: 'read_write'}
+          ],
           invocationCount: cells,
-          bindings: [
-            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read_write'},
-            {name: 'cellWeights', view: cellWeights, type: 'u32', access: 'read'}
-          ],
-          declarations: SCAN_TOTAL_WGSL,
-          body: 'cumulative[cumulativeOffset + index] = getSaturatedScanSum(cumulative[cumulativeOffset + index], cellWeights[cellWeightsOffset + index]);'
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-weight-total`,
-          operation: OPERATION,
-          variant: 'weight-total',
-          bindings: [
-            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
-            {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: 1,
           declarations: common,
-          body: `let weightTotal = cumulative[cumulativeOffset + ${cells - 1}u];
-  totals[totalsOffset + 2u] = weightTotal;
-  if (weightTotal > MAXIMUM_COUNT) { totals[totalsOffset + 5u] = 1u; totals[totalsOffset] = 0u; }`
+          body: `let totalBaseline = bitcast<f32>(totals[totalsOffset + 1u]);
+  cellWeights[cellWeightsOffset + index] = ${cellWeight('index')};`
         })
       );
     }
-
-    // Slot 0 of the count table is the observed data; each batch clears and refills slots 1..R.
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-init-counts`,
+      ...createSaturatedCountScanNodes(graph, {
+        id: `${id}-cumulative`,
         operation: OPERATION,
-        variant: 'init-counts',
+        counts: cellWeights,
+        offsets: cumulative,
+        total: totals,
+        totalRow: 2,
+        rowCount: cells
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-cumulative-inclusive`,
+        operation: OPERATION,
+        variant: 'cumulative-inclusive',
+        invocationCount: cells,
         bindings: [
-          {name: 'cases', view: cases, type: 'u32', access: 'read'},
-          {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
-          {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'},
-          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read_write'}
+          {name: 'cumulative', view: cumulative, type: 'u32', access: 'read_write'},
+          {name: 'cellWeights', view: cellWeights, type: 'u32', access: 'read'}
         ],
-        invocationCount: Math.max(cells, statistics.length, zones * CENTER_WORDS),
-        declarations: `${common}
-const STATISTIC_WORDS: u32 = ${statistics.length}u;`,
-        // The same pass zeroes `statistics` (0 bits are 0.0), the target of the evaluate maxima.
-        body: `// Clear observed records on every encoding, including invalid frames.
-  if (index < ZONES * CENTER_WORDS) { centerBest[centerBestOffset + index] = 0u; }
-  if (index < CELLS) {
-    counts[countsOffset + index] = cases[casesOffset + index];
-  }
-  if (index < STATISTIC_WORDS) {
-    statistics[statisticsOffset + index] = 0u;
-  }`
+        declarations: SCAN_TOTAL_WGSL,
+        body: 'cumulative[cumulativeOffset + index] = getSaturatedScanSum(cumulative[cumulativeOffset + index], cellWeights[cellWeightsOffset + index]);'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-weight-total`,
+        operation: OPERATION,
+        variant: 'weight-total',
+        bindings: [
+          {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
+          ...(baselineMaximum
+            ? [
+                {
+                  name: 'baselineMaximum',
+                  view: baselineMaximum,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 1,
+        declarations: common,
+        // Invalid frame: the weight total overflows, or (Poisson) a baseline cell is negative or
+        // not finite (word 1 of baselineMaximum, set by the block-maximum pass).
+        body: `let weightTotal = cumulative[cumulativeOffset + ${cells - 1}u];
+  totals[totalsOffset + 2u] = weightTotal;
+  totals[totalsOffset + 5u] = max(totals[totalsOffset + 5u], max(u32(weightTotal > MAXIMUM_COUNT), ${baselineMaximum ? 'baselineMaximum[baselineMaximumOffset + 1u]' : '0u'}));
+  if (totals[totalsOffset + 5u] != 0u) { totals[totalsOffset] = 0u; }`
       })
     );
+  }
+}
 
-    // Draws the replicates of the running batch into table slots 1..R. A replicate is identified by
-    // its global index `totals[4] + local`, which keys its Philox stream, so the draws do not depend
-    // on the batch size.
-    let createDrawNode: (batch: number) => GPUCommandNode<Parameters>;
-    if (model === 'poisson') {
-      createDrawNode = batch =>
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-scatter-${batch}`,
-          ...batchGate.getGate(1),
-          operation: OPERATION,
-          variant: 'scatter',
-          bindings: [
-            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-            {name: 'totals', view: totals, type: 'u32', access: 'read'},
-            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
-            {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
-          ],
-          invocationCount: drawInvocationCount,
-          declarations: `${PERMUTATION_RANDOM_WGSL}
+/** create Scan Draw Node Factory. @internal */
+function createScanDrawNodeFactory<Parameters>(context: SpatialScanCommandContext<Parameters>) {
+  const {
+    graph,
+    id,
+    model,
+    parameters,
+    population,
+    zoneTotals,
+    bucketTotals,
+    zoneCumulative,
+    bucketCumulative,
+    totals,
+    cumulative,
+    counts,
+    parallelDraws,
+    drawInvocationCount,
+    batchGate,
+    withParameters
+  } = context;
+  // Draws the replicates of the running batch into table slots 1..R. A replicate is identified by
+  // its global index `totals[4] + local`, which keys its Philox stream, so the draws do not depend
+  // on the batch size.
+  let createDrawNode: (batch: number) => GPUCommandNode<Parameters>;
+  if (model === 'poisson') {
+    createDrawNode = batch =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-scatter-${batch}`,
+        ...batchGate.getGate(1),
+        operation: OPERATION,
+        variant: 'scatter',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
+          {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        invocationCount: drawInvocationCount,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
 ${SCAN_DRAW_INTERVAL_WGSL}
 ${withParameters}
 const CASE_BLOCKS: u32 = ${CASE_BLOCKS}u;
 const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
-          body: `let localReplicate = index / CASE_BLOCKS;
+        body: `let localReplicate = index / CASE_BLOCKS;
   let replicate = totals[totalsOffset + 4u] + localReplicate;
   let blockIndex = index - localReplicate * CASE_BLOCKS;
   let totalCases = totals[totalsOffset];
@@ -1211,35 +1576,35 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
     }
     atomicAdd(&counts[countsOffset + (localReplicate + 1u) * CELLS + low], 1u);
   }`
-        });
-    } else if (parallelDraws && model === 'bernoulli') {
-      createDrawNode = batch =>
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-draw-labels-parallel-${batch}`,
-          ...batchGate.getGate(1),
-          operation: OPERATION,
-          variant: 'draw-labels-parallel',
-          bindings: [
-            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-            {name: 'totals', view: totals, type: 'u32', access: 'read'},
-            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
-            {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
-          ],
-          workgroupSize: PARALLEL_DRAW_WORKGROUP_SIZE,
-          invocationCount: drawInvocationCount,
-          guardIndex: false,
-          declarations: `${PERMUTATION_RANDOM_WGSL}
+      });
+  } else if (parallelDraws && model === 'bernoulli') {
+    createDrawNode = batch =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-draw-labels-parallel-${batch}`,
+        ...batchGate.getGate(1),
+        operation: OPERATION,
+        variant: 'draw-labels-parallel',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
+          {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        workgroupSize: PARALLEL_DRAW_WORKGROUP_SIZE,
+        invocationCount: drawInvocationCount,
+        guardIndex: false,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
 ${getPermutationShuffleWGSL(SCAN_STREAM, PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS)}
 ${SCAN_DRAW_INTERVAL_WGSL}
 ${withParameters}
 const DRAW_BLOCKS: u32 = ${PARALLEL_DRAW_BLOCKS}u;
 const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
-          // One invocation per draw: draw `d` of a replicate selects individual shuffle(d) of the
-          // fixed population (a uniform sample without replacement of C individuals, the
-          // multivariate hypergeometric law) and adds one to the cell that owns it. A workgroup
-          // owns a contiguous chunk of the C draws of one replicate and loads the replicate's
-          // shuffle rounds once.
-          body: `let workgroup = index / DRAW_SIZE;
+        // One invocation per draw: draw `d` of a replicate selects individual shuffle(d) of the
+        // fixed population (a uniform sample without replacement of C individuals, the
+        // multivariate hypergeometric law) and adds one to the cell that owns it. A workgroup
+        // owns a contiguous chunk of the C draws of one replicate and loads the replicate's
+        // shuffle rounds once.
+        body: `let workgroup = index / DRAW_SIZE;
   let localReplicate = workgroup / DRAW_BLOCKS;
   let block = workgroup - localReplicate * DRAW_BLOCKS;
   let replicate = totals[totalsOffset + 4u] + localReplicate;
@@ -1270,34 +1635,34 @@ const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
     }
     atomicAdd(&counts[countsOffset + (localReplicate + 1u) * CELLS + low], 1u);
   }`
-        });
-    } else if (parallelDraws) {
-      createDrawNode = batch =>
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-draw-times-parallel-${batch}`,
-          ...batchGate.getGate(1),
-          operation: OPERATION,
-          variant: 'draw-times-parallel',
-          bindings: [
-            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-            {name: 'totals', view: totals, type: 'u32', access: 'read'},
-            {name: 'zoneCumulative', view: zoneCumulative!, type: 'u32', access: 'read'},
-            {name: 'bucketCumulative', view: bucketCumulative!, type: 'u32', access: 'read'},
-            {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
-          ],
-          workgroupSize: PARALLEL_DRAW_WORKGROUP_SIZE,
-          invocationCount: drawInvocationCount,
-          guardIndex: false,
-          declarations: `${PERMUTATION_RANDOM_WGSL}
+      });
+  } else if (parallelDraws) {
+    createDrawNode = batch =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-draw-times-parallel-${batch}`,
+        ...batchGate.getGate(1),
+        operation: OPERATION,
+        variant: 'draw-times-parallel',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'zoneCumulative', view: zoneCumulative!, type: 'u32', access: 'read'},
+          {name: 'bucketCumulative', view: bucketCumulative!, type: 'u32', access: 'read'},
+          {name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        workgroupSize: PARALLEL_DRAW_WORKGROUP_SIZE,
+        invocationCount: drawInvocationCount,
+        guardIndex: false,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
 ${getPermutationShuffleWGSL(SCAN_STREAM, PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS)}
 ${SCAN_DRAW_INTERVAL_WGSL}
 ${withParameters}
 const DRAW_BLOCKS: u32 = ${PARALLEL_DRAW_BLOCKS}u;
 const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
-          // One invocation per case: case `d` (cases are ordered by zone) takes the time of rank
-          // shuffle(d) in the ordered multiset of case times, which permutes the times over the
-          // case locations with both margins fixed.
-          body: `let workgroup = index / DRAW_SIZE;
+        // One invocation per case: case `d` (cases are ordered by zone) takes the time of rank
+        // shuffle(d) in the ordered multiset of case times, which permutes the times over the
+        // case locations with both margins fixed.
+        body: `let workgroup = index / DRAW_SIZE;
   let localReplicate = workgroup / DRAW_BLOCKS;
   let block = workgroup - localReplicate * DRAW_BLOCKS;
   let replicate = totals[totalsOffset + 4u] + localReplicate;
@@ -1337,33 +1702,33 @@ const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
     }
     atomicAdd(&counts[countsOffset + (localReplicate + 1u) * CELLS + zoneLow * BUCKETS + bucketLow], 1u);
   }`
-        });
-    } else if (model === 'bernoulli') {
-      createDrawNode = batch =>
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-draw-labels-${batch}`,
-          ...batchGate.getGate(1),
-          operation: OPERATION,
-          variant: 'draw-labels',
-          bindings: [
-            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-            {name: 'totals', view: totals, type: 'u32', access: 'read'},
-            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
-            {name: 'population', view: population!, type: 'u32', access: 'read'},
-            {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: drawInvocationCount,
-          declarations: `${PERMUTATION_RANDOM_WGSL}
+      });
+  } else if (model === 'bernoulli') {
+    createDrawNode = batch =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-draw-labels-${batch}`,
+        ...batchGate.getGate(1),
+        operation: OPERATION,
+        variant: 'draw-labels',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'cumulative', view: cumulative, type: 'u32', access: 'read'},
+          {name: 'population', view: population!, type: 'u32', access: 'read'},
+          {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: drawInvocationCount,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
 ${withParameters}
 const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
-          // One replicate per invocation: a random permutation of the case labels over the fixed
-          // population is a uniform draw of C individuals without replacement. A draw picks a cell
-          // in proportion to its population and accepts it with the share of its individuals not
-          // yet chosen, which makes the cell probabilities proportional to the remaining
-          // individuals (multivariate hypergeometric). When more than half the individuals are
-          // cases the controls are drawn instead and the counts complemented, so at least half of
-          // the draws are accepted.
-          body: `let localReplicate = index;
+        // One replicate per invocation: a random permutation of the case labels over the fixed
+        // population is a uniform draw of C individuals without replacement. A draw picks a cell
+        // in proportion to its population and accepts it with the share of its individuals not
+        // yet chosen, which makes the cell probabilities proportional to the remaining
+        // individuals (multivariate hypergeometric). When more than half the individuals are
+        // cases the controls are drawn instead and the counts complemented, so at least half of
+        // the draws are accepted.
+        body: `let localReplicate = index;
   let replicate = totals[totalsOffset + 4u] + localReplicate;
   let totalCases = totals[totalsOffset];
   let totalPopulation = totals[totalsOffset + 2u];
@@ -1399,29 +1764,29 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
       counts[row + cell] = population[populationOffset + cell] - counts[row + cell];
     }
   }`
-        });
-    } else {
-      createDrawNode = batch =>
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-draw-times-${batch}`,
-          ...batchGate.getGate(1),
-          operation: OPERATION,
-          variant: 'draw-times',
-          bindings: [
-            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-            {name: 'totals', view: totals, type: 'u32', access: 'read'},
-            {name: 'zoneTotals', view: zoneTotals!, type: 'u32', access: 'read'},
-            {name: 'bucketTotals', view: bucketTotals!, type: 'u32', access: 'read'},
-            {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: drawInvocationCount,
-          declarations: `${PERMUTATION_RANDOM_WGSL}
+      });
+  } else {
+    createDrawNode = batch =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-draw-times-${batch}`,
+        ...batchGate.getGate(1),
+        operation: OPERATION,
+        variant: 'draw-times',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'zoneTotals', view: zoneTotals!, type: 'u32', access: 'read'},
+          {name: 'bucketTotals', view: bucketTotals!, type: 'u32', access: 'read'},
+          {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: drawInvocationCount,
+        declarations: `${PERMUTATION_RANDOM_WGSL}
 ${withParameters}
 const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
-          // One replicate per invocation: the case times are permuted over the case locations. Each
-          // zone in index order takes its cases' times without replacement from the times left, so
-          // both margins stay fixed and the table is a multivariate hypergeometric draw.
-          body: `let localReplicate = index;
+        // One replicate per invocation: the case times are permuted over the case locations. Each
+        // zone in index order takes its cases' times without replacement from the times left, so
+        // both margins stay fixed and the table is a multivariate hypergeometric draw.
+        body: `let localReplicate = index;
   let replicate = totals[totalsOffset + 4u] + localReplicate;
   if (replicate >= readPermutations()) {
     return;
@@ -1451,38 +1816,129 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
       left -= 1u;
     }
   }`
-        });
-    }
+      });
+  }
 
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-window-limit`,
-        operation: OPERATION,
-        variant: 'window-limit',
-        bindings: [
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
-          {name: 'baseline', view: weights, type: 'f32', access: 'read'},
-          {name: 'totals', view: totals, type: 'u32', access: 'read'},
-          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: zones,
-        declarations: withParameters,
-        // Word 0: the number of nearest zones whose cumulative population stays within the limit
-        // (the population share governs; the per-frame zone limit may lower it). Word 1: 1 when the
-        // compile-time capacity ended the list while the next zone would still have fit.
-        body: `let totalBaseline = bitcast<f32>(totals[totalsOffset + 1u]);
-  let limit = readMaximumFraction() * totalBaseline;
+  return createDrawNode;
+}
+
+/** append Scan Observed Search Nodes. @internal */
+function appendScanObservedSearchNodes<Parameters>(context: SpatialScanCommandContext<Parameters>) {
+  const {
+    graph,
+    id,
+    zones,
+    usableZones,
+    model,
+    prospective,
+    separationWGSL,
+    cases,
+    parameters,
+    statistics,
+    cells,
+    batchReplicates,
+    neighbors,
+    distances,
+    weights,
+    zoneTotals,
+    totals,
+    counts,
+    evaluateGroups,
+    centerBest,
+    batchGate,
+    common,
+    withParameters,
+    likelihood,
+    createNearestNodes,
+    nodes
+  } = context;
+  // Slot 0 of the count table is the observed data; each batch clears and refills slots 1..R.
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-init-counts`,
+      operation: OPERATION,
+      variant: 'init-counts',
+      bindings: [
+        {name: 'cases', view: cases, type: 'u32', access: 'read'},
+        {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
+        {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'},
+        {name: 'centerBest', view: centerBest, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: Math.max(cells, statistics.length, zones * CENTER_WORDS),
+      declarations: `${common}
+const STATISTIC_WORDS: u32 = ${statistics.length}u;`,
+      // The same pass zeroes `statistics` (0 bits are 0.0), the target of the evaluate maxima.
+      body: `// Clear observed records on every encoding, including invalid frames.
+  if (index < ZONES * CENTER_WORDS) { centerBest[centerBestOffset + index] = 0u; }
+  if (index < CELLS) {
+    counts[countsOffset + index] = cases[casesOffset + index];
+  }
+  if (index < STATISTIC_WORDS) {
+    statistics[statisticsOffset + index] = 0u;
+  }`
+    })
+  );
+
+  if (usableZones < zones) nodes.push(...createNearestNodes());
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-window-limit`,
+      operation: OPERATION,
+      variant: 'window-limit',
+      bindings: [
+        {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+        {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
+        ...(usableZones < zones
+          ? [{name: 'distances', view: distances, type: 'u32' as const, access: 'read' as const}]
+          : []),
+        ...(model === 'space-time-permutation'
+          ? [
+              {
+                name: 'zoneTotals',
+                view: zoneTotals!,
+                type: 'u32' as const,
+                access: 'read' as const
+              }
+            ]
+          : [{name: 'baseline', view: weights, type: 'f32' as const, access: 'read' as const}]),
+        {name: 'totals', view: totals, type: 'u32', access: 'read'},
+        {name: 'centerBest', view: centerBest, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: zones,
+      declarations: `${withParameters}
+${UINT64_WGSL}
+${model === 'space-time-permutation' ? '' : SCAN_EXACT_POPULATION_ACCUMULATOR_WGSL + SCAN_EXACT_POPULATION_LIMIT_WGSL}`,
+      // Word 0: the number of nearest zones whose cumulative population stays within the limit
+      // (the population share governs; the per-frame zone limit may lower it). Word 1: 1 when the
+      // compile-time capacity ended the list while the next zone would still have fit.
+      body: `${
+        model === 'space-time-permutation'
+          ? `// floor(C * fraction), exactly for the packed float32 fraction and uint32 margins.
+  let fractionBits = bitcast<u32>(readMaximumFraction());
+  let exponent = (fractionBits >> 23u) & 255u;
+  let significand = (fractionBits & 0x7fffffu) | 0x800000u;
+  let product = multiplyUint32Wide(totals[totalsOffset], significand);
+  let scaled = shiftRightUint64(product, 150u - exponent);
+  let limit = scaled.y;`
+          : 'preparePopulationLimit(readMaximumFraction());'
+      }
   let maximumZones = readMaximumZones();
-  var populated = 0.0;
+  let requestedMaximumZones = max(1u, parameters[parametersOffset + 4u]);
+  let wholePopulation = readMaximumFraction() == 1.0;
+  var populated = ${model === 'space-time-permutation' ? '0u' : '0.0'};${model === 'space-time-permutation' ? '' : '\n  resetBoundaryPopulation();'}
   var slots = 0u;
   var exceeded = false;
   for (var slot = 0u; slot < maximumZones; slot++) {
     let zone = neighbors[neighborsOffset + index * LIST + slot];
-    for (var bucket = 0u; bucket < BUCKETS; bucket++) {
-      populated += baseline[baselineOffset + zone * BUCKETS + bucket];
+    ${
+      model === 'space-time-permutation'
+        ? 'populated += zoneTotals[zoneTotalsOffset + zone];'
+        : `for (var bucket = 0u; bucket < BUCKETS; bucket++) {
+      addBoundaryPopulationBits(bitcast<u32>(baseline[baselineOffset + zone * BUCKETS + bucket]));
     }
-    if (populated > limit) {
+    populated = readBoundaryPopulation();`
+    }
+    if (!wholePopulation && ${model === 'space-time-permutation' ? 'populated > limit' : '!isBoundaryPopulationEligible()'}) {
       exceeded = true;
       break;
     }
@@ -1490,55 +1946,77 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
   }
   var truncated = 0u;
   if (!exceeded && USABLE < ZONES && slots == USABLE && maximumZones == USABLE) {
+    var nextZoneCount = USABLE + 1u;
     let zone = neighbors[neighborsOffset + index * LIST + USABLE];
-    for (var bucket = 0u; bucket < BUCKETS; bucket++) {
-      populated += baseline[baselineOffset + zone * BUCKETS + bucket];
+    ${
+      model === 'space-time-permutation'
+        ? 'populated += zoneTotals[zoneTotalsOffset + zone];'
+        : `for (var bucket = 0u; bucket < BUCKETS; bucket++) {
+      addBoundaryPopulationBits(bitcast<u32>(baseline[baselineOffset + zone * BUCKETS + bucket]));
     }
-    truncated = select(0u, 1u, populated <= limit);
+    populated = readBoundaryPopulation();`
+    }
+    ${
+      usableZones < zones
+        ? `if (readWindowShape() == 0u) {
+      // Discovery includes every member of the lookahead distance tie in this population.
+      populated = ${model === 'space-time-permutation' ? '' : 'bitcast<f32>'}(distances[distancesOffset + ZONES * LIST + index]);
+      nextZoneCount = distances[distancesOffset + ZONES * (LIST + 1u) + index];
+      ${
+        model === 'space-time-permutation'
+          ? ''
+          : `for (var word = 0u; word < 10u; word++) {
+        boundaryPopulationWords[word] = distances[distancesOffset + ZONES * (LIST + 2u) + index * 10u + word];
+      }`
+      }
+    }`
+        : ''
+    }
+    truncated = select(0u, 1u, (wholePopulation || ${model === 'space-time-permutation' ? 'populated <= limit' : 'isBoundaryPopulationEligible()'}) && nextZoneCount <= requestedMaximumZones);
   }
   centerBest[centerBestOffset + WINDOW_INFO_START + index * 2u] = slots;
   centerBest[centerBestOffset + WINDOW_INFO_START + index * 2u + 1u] = truncated;`
-      })
-    );
+    })
+  );
 
-    // The observed slot is evaluated once and records each center's best window; a batch evaluates
-    // its replicates (global index `totals[4] + local`) and folds each replicate's maximum into
-    // its row of `statistics`. The window loops and the maximum are the same for both, and the
-    // maximum is order independent, so a replicate's value does not depend on the batch layout.
-    const createEvaluateNode = (observed: boolean, batch: number) =>
-      createWGSLKernelNode<Parameters>(graph, {
-        id: observed ? `${id}-evaluate` : `${id}-batch-evaluate-${batch}`,
-        operation: OPERATION,
-        variant: observed ? 'evaluate' : 'batch-evaluate',
-        ...(observed ? {} : batchGate.getGate(2)),
-        bindings: [
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
-          {name: 'distances', view: distances, type: 'f32', access: 'read'},
-          {name: 'counts', view: counts, type: 'u32', access: 'read'},
-          {name: 'baseline', view: weights, type: 'f32', access: 'read'},
-          {name: 'totals', view: totals, type: 'u32', access: 'read'},
-          {name: 'statistics', view: statistics, type: 'atomic<u32>', access: 'read_write'},
-          {
-            name: 'centerBest',
-            view: centerBest,
-            type: 'u32',
-            access: observed ? 'read_write' : 'read'
-          }
-        ],
-        // One workgroup per (replicate, 256 consecutive centers); every invocation reaches the
-        // barriers, so the body is unguarded.
-        invocationCount:
-          (observed ? 1 : batchReplicates) * evaluateGroups * EVALUATE_WORKGROUP_SIZE,
-        workgroupSize: EVALUATE_WORKGROUP_SIZE,
-        guardIndex: false,
-        declarations: `${withParameters}
+  // The observed slot is evaluated once and records each center's best window; a batch evaluates
+  // its replicates (global index `totals[4] + local`) and folds each replicate's maximum into
+  // its row of `statistics`. The window loops and the maximum are the same for both, and the
+  // maximum is order independent, so a replicate's value does not depend on the batch layout.
+  const createEvaluateNode = (observed: boolean, batch: number) =>
+    createWGSLKernelNode<Parameters>(graph, {
+      id: observed ? `${id}-evaluate` : `${id}-batch-evaluate-${batch}`,
+      operation: OPERATION,
+      variant: observed ? 'evaluate' : 'batch-evaluate',
+      ...(observed ? {} : batchGate.getGate(2)),
+      bindings: [
+        {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+        {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
+        {name: 'distances', view: distances, type: 'f32', access: 'read'},
+        {name: 'counts', view: counts, type: 'u32', access: 'read'},
+        {name: 'baseline', view: weights, type: 'f32', access: 'read'},
+        {name: 'totals', view: totals, type: 'u32', access: 'read'},
+        {name: 'statistics', view: statistics, type: 'atomic<u32>', access: 'read_write'},
+        {
+          name: 'centerBest',
+          view: centerBest,
+          type: 'u32',
+          access: observed ? 'read_write' : 'read'
+        }
+      ],
+      // One workgroup per (replicate, 256 consecutive centers); every invocation reaches the
+      // barriers, so the body is unguarded.
+      invocationCount: (observed ? 1 : batchReplicates) * evaluateGroups * EVALUATE_WORKGROUP_SIZE,
+      workgroupSize: EVALUATE_WORKGROUP_SIZE,
+      guardIndex: false,
+      declarations: `${withParameters}
 ${likelihood}
+${model === 'space-time-permutation' ? '' : SCAN_EXACT_POPULATION_ACCUMULATOR_WGSL}
 ${observed ? separationWGSL : ''}
 const EVALUATE_GROUPS: u32 = ${evaluateGroups}u;
 const EVALUATE_SIZE: u32 = ${EVALUATE_WORKGROUP_SIZE}u;
 var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
-        body: `let group = index / EVALUATE_SIZE;
+      body: `let group = index / EVALUATE_SIZE;
   let localReplicate = group / EVALUATE_GROUPS;
   let center = (group - localReplicate * EVALUATE_GROUPS) * EVALUATE_SIZE + localInvocationIndex;
   ${
@@ -1561,7 +2039,7 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
   let windowSlots = centerBest[centerBestOffset + WINDOW_INFO_START + center * 2u];
   let slotStart = slot * CELLS;
   var caseSums: array<u32, BUCKETS>;
-  var baselineSums: array<f32, BUCKETS>;
+  var baselineSums: ${model === 'space-time-permutation' ? 'array<f32, BUCKETS>' : 'array<array<u32, 10>, BUCKETS>'};
   var bestZones = 0u;
   var bestFirst = 0u;
   var bestLast = 0u;
@@ -1571,7 +2049,13 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
     let zone = neighbors[neighborsOffset + center * LIST + slotIndex];
     for (var bucket = 0u; bucket < BUCKETS; bucket++) {
       caseSums[bucket] = getSaturatedScanSum(caseSums[bucket], counts[countsOffset + slotStart + zone * BUCKETS + bucket]);
-      baselineSums[bucket] += baseline[baselineOffset + zone * BUCKETS + bucket];
+      ${
+        model === 'space-time-permutation'
+          ? 'baselineSums[bucket] += baseline[baselineOffset + zone * BUCKETS + bucket];'
+          : `for (var word = 0u; word < 10u; word++) { boundaryPopulationWords[word] = baselineSums[bucket][word]; }
+      addBoundaryPopulationBits(bitcast<u32>(baseline[baselineOffset + zone * BUCKETS + bucket]));
+      for (var word = 0u; word < 10u; word++) { baselineSums[bucket][word] = boundaryPopulationWords[word]; }`
+      }
     }
     // A circle never ends between two zones at the same distance.
     let separated = nearestShape || slotIndex + 1u >= ZONES ||
@@ -1582,9 +2066,15 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
     for (var first = ${prospective ? 'BUCKETS - min(maximumBuckets, BUCKETS)' : '0u'}; first < BUCKETS; first++) {
       var windowCases = 0u;
       var windowBaseline = 0.0;
+      ${model === 'space-time-permutation' ? '' : 'resetBoundaryPopulation();'}
       for (var last = first; last < min(first + maximumBuckets, BUCKETS); last++) {
         windowCases = getSaturatedScanSum(windowCases, caseSums[last]);
-        windowBaseline += baselineSums[last];
+        ${
+          model === 'space-time-permutation'
+            ? 'windowBaseline += baselineSums[last];'
+            : `for (var word = 0u; word < 10u; word++) { addBoundaryPopulationWord(word, baselineSums[last][word]); }
+        windowBaseline = readBoundaryPopulation();`
+        }
         ${prospective ? 'if (last != BUCKETS - 1u) { continue; }' : ''}
         let ratio = getLogLikelihoodRatio(f32(windowCases), windowBaseline, totalCases, totalBaseline, direction);
         if (ratio > best) {
@@ -1633,26 +2123,49 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
   if (localInvocationIndex == 0u && maxima[0] > 0.0) {
     atomicMax(&statistics[statisticsOffset + statisticRow], bitcast<u32>(maxima[0]));
   }`
-      });
+    });
 
-    nodes.push(createEvaluateNode(true, 0));
+  nodes.push(createEvaluateNode(true, 0));
 
-    for (let batch = 0; batch < batchCount; batch++) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-batch-control-${batch}`,
-          operation: OPERATION,
-          variant: 'batch-control',
-          bindings: [
-            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-            {name: 'totals', view: totals, type: 'u32', access: 'read_write'},
-            batchGate.binding
-          ],
-          invocationCount: 1,
-          declarations: withParameters,
-          // Replicates before this batch: the cursor advances on the GPU, so every batch shares one
-          // pipeline. A batch starting at or past the per-frame count is disarmed.
-          body: `let base = totals[totalsOffset + 3u];
+  return createEvaluateNode;
+}
+
+/** append Scan Replicate Nodes. @internal */
+function appendScanReplicateNodes<Parameters>(
+  context: SpatialScanCommandContext<Parameters>,
+  createDrawNode: (batch: number) => GPUCommandNode<Parameters>,
+  createEvaluateNode: (observed: boolean, batch: number) => GPUCommandNode<Parameters>
+) {
+  const {
+    graph,
+    id,
+    parameters,
+    cells,
+    batchReplicates,
+    batchCount,
+    totals,
+    counts,
+    batchGate,
+    common,
+    withParameters,
+    nodes
+  } = context;
+  for (let batch = 0; batch < batchCount; batch++) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-batch-control-${batch}`,
+        operation: OPERATION,
+        variant: 'batch-control',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read_write'},
+          batchGate.binding
+        ],
+        invocationCount: 1,
+        declarations: withParameters,
+        // Replicates before scan batch: the cursor advances on the GPU, so every batch shares one
+        // pipeline. A batch starting at or past the per-frame count is disarmed.
+        body: `let base = totals[totalsOffset + 3u];
   totals[totalsOffset + 4u] = base;
   totals[totalsOffset + 3u] = base + BATCH_REPLICATES;
   if (base < readPermutations() && totals[totalsOffset + 5u] == 0u) {
@@ -1660,51 +2173,81 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
   } else {
     ${batchGate.disarmWGSL}
   }`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-batch-clear-${batch}`,
-          operation: OPERATION,
-          variant: 'batch-clear',
-          ...batchGate.getGate(0),
-          bindings: [{name: 'counts', view: counts, type: 'u32', access: 'read_write'}],
-          invocationCount: batchReplicates * cells,
-          declarations: common,
-          // Slots 1..R; slot 0 keeps the observed counts.
-          body: `counts[countsOffset + CELLS + index] = 0u;`
-        }),
-        createDrawNode(batch),
-        createEvaluateNode(false, batch)
-      );
-    }
-
-    nodes.push(
+      }),
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-select-init`,
+        id: `${id}-batch-clear-${batch}`,
         operation: OPERATION,
-        variant: 'select-init',
-        bindings: [
-          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
-          {name: 'alive', view: alive, type: 'u32', access: 'read_write'},
-          {name: 'members', view: members, type: 'u32', access: 'read_write'},
-          {name: 'state', view: state, type: 'u32', access: 'read_write'},
-          {name: 'clusterIndices', view: clusterIndices, type: 'u32', access: 'read_write'},
-          {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'},
-          {name: 'roundDispatch', view: roundGate, type: 'u32', access: 'read_write'},
-          ...(zoneStatistics
-            ? [
-                {
-                  name: 'zoneStatistics',
-                  view: zoneStatistics,
-                  type: 'f32' as const,
-                  access: 'read_write' as const
-                }
-              ]
-            : [])
-        ],
-        invocationCount: Math.max(zones, maximumClusters, 8),
-        declarations: `${common}
+        variant: 'batch-clear',
+        ...batchGate.getGate(0),
+        bindings: [{name: 'counts', view: counts, type: 'u32', access: 'read_write'}],
+        invocationCount: batchReplicates * cells,
+        declarations: common,
+        // Slots 1..R; slot 0 keeps the observed counts.
+        body: `counts[countsOffset + CELLS + index] = 0u;`
+      }),
+      createDrawNode(batch),
+      createEvaluateNode(false, batch)
+    );
+  }
+}
+
+/** append Scan Cluster Nodes. @internal */
+function appendScanClusterNodes<Parameters>(context: SpatialScanCommandContext<Parameters>) {
+  const {
+    graph,
+    id,
+    zones,
+    listLength,
+    maximumClusters,
+    parameters,
+    clusterIndices,
+    clusterStatistics,
+    statistics,
+    zoneStatistics,
+    zoneBlocks,
+    neighbors,
+    members,
+    totals,
+    centerBest,
+    alive,
+    partials,
+    state,
+    roundGate,
+    getRoundGate,
+    armRoundGateWGSL,
+    disarmRoundGateWGSL,
+    common,
+    withParameters,
+    nodes
+  } = context;
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-select-init`,
+      operation: OPERATION,
+      variant: 'select-init',
+      bindings: [
+        {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
+        {name: 'alive', view: alive, type: 'u32', access: 'read_write'},
+        {name: 'members', view: members, type: 'u32', access: 'read_write'},
+        {name: 'state', view: state, type: 'u32', access: 'read_write'},
+        {name: 'clusterIndices', view: clusterIndices, type: 'u32', access: 'read_write'},
+        {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'},
+        {name: 'roundDispatch', view: roundGate, type: 'u32', access: 'read_write'},
+        ...(zoneStatistics
+          ? [
+              {
+                name: 'zoneStatistics',
+                view: zoneStatistics,
+                type: 'f32' as const,
+                access: 'read_write' as const
+              }
+            ]
+          : [])
+      ],
+      invocationCount: Math.max(zones, maximumClusters, 8),
+      declarations: `${common}
 const CLUSTERS: u32 = ${maximumClusters}u;`,
-        body: `if (index < ZONES) {
+      body: `if (index < ZONES) {
     let best = bitcast<f32>(centerBest[centerBestOffset + index * CENTER_WORDS]);
     alive[aliveOffset + index] = select(0u, 1u, best > 0.0);
     members[membersOffset + index] = 0u;
@@ -1724,67 +2267,67 @@ const CLUSTERS: u32 = ${maximumClusters}u;`,
       clusterStatistics[clusterStatisticsOffset + index * ${GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS}u + word] = 0.0;
     }
   }`
-      })
-    );
+    })
+  );
 
-    // Invalid totals cannot arm selection, even if a previous encoding found a cluster.
-    nodes.push(
-      createWGSLKernelNode(graph, {
-        id: `${id}-select-validity`,
-        operation: OPERATION,
-        variant: 'select-validity',
-        invocationCount: zones,
-        bindings: [
-          {name: 'totals', view: totals, type: 'u32', access: 'read'},
-          {name: 'alive', view: alive, type: 'u32', access: 'read_write'},
-          {name: 'state', view: state, type: 'u32', access: 'read_write'},
-          {name: 'roundDispatch', view: roundGate, type: 'u32', access: 'read_write'}
-        ],
-        body: `if (totals[totalsOffset + 5u] != 0u) {
+  // Invalid totals cannot arm selection, even if a previous encoding found a cluster.
+  nodes.push(
+    createWGSLKernelNode(graph, {
+      id: `${id}-select-validity`,
+      operation: OPERATION,
+      variant: 'select-validity',
+      invocationCount: zones,
+      bindings: [
+        {name: 'totals', view: totals, type: 'u32', access: 'read'},
+        {name: 'alive', view: alive, type: 'u32', access: 'read_write'},
+        {name: 'state', view: state, type: 'u32', access: 'read_write'},
+        {name: 'roundDispatch', view: roundGate, type: 'u32', access: 'read_write'}
+      ],
+      body: `if (totals[totalsOffset + 5u] != 0u) {
         alive[aliveOffset + index] = 0u;
         if (index == 0u) { state[stateOffset + 4u] = 1u; ${disarmRoundGateWGSL} }
       }`
-      })
-    );
+    })
+  );
 
-    for (let round = 0; round < maximumClusters; round++) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-round-members-${round}`,
-          operation: OPERATION,
-          variant: 'round-members',
-          ...getRoundGate(0),
-          bindings: [
-            {name: 'state', view: state, type: 'u32', access: 'read'},
-            {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
-            {name: 'members', view: members, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: listLength,
-          declarations: common,
-          // Marks the zones of the cluster selected last (clusters never overlap, so the marks of
-          // earlier clusters stay valid).
-          body: `if (state[stateOffset + 3u] == 0u || index >= state[stateOffset + 2u]) {
+  for (let round = 0; round < maximumClusters; round++) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-round-members-${round}`,
+        operation: OPERATION,
+        variant: 'round-members',
+        ...getRoundGate(0),
+        bindings: [
+          {name: 'state', view: state, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
+          {name: 'members', view: members, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: listLength,
+        declarations: common,
+        // Marks the zones of the cluster selected last (clusters never overlap, so the marks of
+        // earlier clusters stay valid).
+        body: `if (state[stateOffset + 3u] == 0u || index >= state[stateOffset + 2u]) {
     return;
   }
   let zone = neighbors[neighborsOffset + state[stateOffset + 1u] * LIST + index];
   members[membersOffset + zone] = 1u;`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-round-mask-${round}`,
-          operation: OPERATION,
-          variant: 'round-mask',
-          ...getRoundGate(1),
-          bindings: [
-            {name: 'state', view: state, type: 'u32', access: 'read'},
-            {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
-            {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
-            {name: 'members', view: members, type: 'u32', access: 'read'},
-            {name: 'alive', view: alive, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: zones,
-          declarations: common,
-          // A cluster blocks every later window sharing a zone with it.
-          body: `if (state[stateOffset + 3u] == 0u || alive[aliveOffset + index] == 0u) {
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-round-mask-${round}`,
+        operation: OPERATION,
+        variant: 'round-mask',
+        ...getRoundGate(1),
+        bindings: [
+          {name: 'state', view: state, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
+          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
+          {name: 'members', view: members, type: 'u32', access: 'read'},
+          {name: 'alive', view: alive, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: zones,
+        declarations: common,
+        // A cluster blocks every later window sharing a zone with it.
+        body: `if (state[stateOffset + 3u] == 0u || alive[aliveOffset + index] == 0u) {
     return;
   }
   let ownZones = centerBest[centerBestOffset + index * CENTER_WORDS + 1u];
@@ -1794,20 +2337,20 @@ const CLUSTERS: u32 = ${maximumClusters}u;`,
       return;
     }
   }`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-round-partials-${round}`,
-          operation: OPERATION,
-          variant: 'round-partials',
-          ...getRoundGate(2),
-          bindings: [
-            {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
-            {name: 'alive', view: alive, type: 'u32', access: 'read'},
-            {name: 'partials', view: partials, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: zoneBlocks,
-          declarations: common,
-          body: `var best = 0.0;
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-round-partials-${round}`,
+        operation: OPERATION,
+        variant: 'round-partials',
+        ...getRoundGate(2),
+        bindings: [
+          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
+          {name: 'alive', view: alive, type: 'u32', access: 'read'},
+          {name: 'partials', view: partials, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: zoneBlocks,
+        declarations: common,
+        body: `var best = 0.0;
   var bestCenter = NO_CENTER;
   let first = index * ZONES_PER_BLOCK;
   for (var center = first; center < min(first + ZONES_PER_BLOCK, ZONES); center++) {
@@ -1819,24 +2362,27 @@ const CLUSTERS: u32 = ${maximumClusters}u;`,
   }
   partials[partialsOffset + index * 2u] = bitcast<u32>(best);
   partials[partialsOffset + index * 2u + 1u] = bestCenter;`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-round-select-${round}`,
-          operation: OPERATION,
-          variant: 'round-select',
-          bindings: [
-            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-            {name: 'partials', view: partials, type: 'u32', access: 'read'},
-            {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
-            {name: 'roundDispatch', view: roundGate, type: 'u32', access: 'read_write'},
-            {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
-            {name: 'state', view: state, type: 'u32', access: 'read_write'},
-            {name: 'clusterIndices', view: clusterIndices, type: 'u32', access: 'read_write'},
-            {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: 1,
-          declarations: withParameters,
-          body: `if (state[stateOffset + 4u] == 1u) {
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-round-select-${round}`,
+        operation: OPERATION,
+        variant: 'round-select',
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'partials', view: partials, type: 'u32', access: 'read'},
+          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
+          {name: 'roundDispatch', view: roundGate, type: 'u32', access: 'read_write'},
+          {name: 'statistics', view: statistics, type: 'f32', access: 'read'},
+          {name: 'state', view: state, type: 'u32', access: 'read_write'},
+          {name: 'clusterIndices', view: clusterIndices, type: 'u32', access: 'read_write'},
+          {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'}
+        ],
+        // MAXIMUM_BLOCKS = 256 bounds zone partials;
+        // GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_PERMUTATIONS = 99999 bounds replicate maxima.
+        // contract-allow: single-invocation
+        invocationCount: 1,
+        declarations: withParameters,
+        body: `if (state[stateOffset + 4u] == 1u) {
     return;
   }
   var best = 0.0;
@@ -1884,81 +2430,118 @@ const CLUSTERS: u32 = ${maximumClusters}u;`,
   state[stateOffset + 1u] = bestCenter;
   state[stateOffset + 2u] = zoneCount;
   state[stateOffset + 3u] = 1u;`
-        })
-      );
-    }
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-summary`,
-        operation: OPERATION,
-        variant: 'summary',
-        bindings: [
-          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'state', view: state, type: 'u32', access: 'read'},
-          {name: 'totals', view: totals, type: 'u32', access: 'read'},
-          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
-          {name: 'summary', view: summary, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: withParameters,
-        body: `summary[summaryOffset] = state[stateOffset];
-  summary[summaryOffset + 1u] = totals[totalsOffset + 6u];
-  summary[summaryOffset + 2u] = readPermutations();
-  var overflow = 0u;
-  for (var center = 0u; center < ZONES; center++) {
-    overflow += centerBest[centerBestOffset + center * CENTER_WORDS + 6u];
-  }
-  summary[summaryOffset + 3u] = overflow;`
       })
     );
-    nodes.push(
-      createWGSLKernelNode(graph, {
-        id: `${id}-invalid-count-status`,
-        operation: OPERATION,
-        variant: 'invalid-count-status',
-        declarations: GET_NAN_WGSL,
-        invocationCount: Math.max(
-          statistics.length,
-          clusterStatistics.length,
-          zoneStatistics?.length ?? 0
-        ),
-        bindings: [
-          {name: 'totals', view: totals, type: 'u32', access: 'read'},
-          {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
-          {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'},
-          ...(zoneStatistics
-            ? [
-                {
-                  name: 'zoneStatistics',
-                  view: zoneStatistics,
-                  type: 'f32' as const,
-                  access: 'read_write' as const
-                }
-              ]
-            : []),
-          ...(props.output.status
-            ? [
-                {
-                  name: 'invalidCount',
-                  view: props.output.status.invalidCount,
-                  type: 'u32' as const,
-                  access: 'read_write' as const
-                }
-              ]
-            : [])
-        ],
-        body: `let invalid = totals[totalsOffset + 5u] != 0u;
-${props.output.status ? 'if (index == 0u) { invalidCount[invalidCountOffset] = u32(invalid); }' : ''}
+  }
+}
+
+/** append Scan Publication Nodes. @internal */
+function appendScanPublicationNodes<Parameters>(context: SpatialScanCommandContext<Parameters>) {
+  const {
+    graph,
+    id,
+    props,
+    zones,
+    parameters,
+    clusterStatistics,
+    statistics,
+    summary,
+    zoneStatistics,
+    u32,
+    totals,
+    centerBest,
+    state,
+    withParameters,
+    nodes
+  } = context;
+  const centerOverflow = u32('center-overflow', zones);
+  const overflowPrefixes = u32('center-overflow-prefix', zones);
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-center-overflow`,
+      operation: OPERATION,
+      variant: 'center-overflow',
+      invocationCount: zones,
+      bindings: [
+        {name: 'centerBest', view: centerBest, type: 'u32', access: 'read'},
+        {name: 'centerOverflow', view: centerOverflow, type: 'u32', access: 'read_write'}
+      ],
+      body: `centerOverflow[centerOverflowOffset + index] = centerBest[centerBestOffset + index * ${CENTER_WORDS}u + 6u];`
+    }),
+    ...createScanOrderedPrefixNodes(graph, {
+      id: `${id}-overflow-prefix`,
+      operation: OPERATION,
+      input: centerOverflow,
+      output: overflowPrefixes,
+      rowCount: zones
+    })
+  );
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-summary`,
+      operation: OPERATION,
+      variant: 'summary',
+      bindings: [
+        {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+        {name: 'state', view: state, type: 'u32', access: 'read'},
+        {name: 'totals', view: totals, type: 'u32', access: 'read'},
+        {name: 'overflowPrefixes', view: overflowPrefixes, type: 'u32', access: 'read'},
+        {name: 'summary', view: summary, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: 1,
+      declarations: withParameters,
+      body: `summary[summaryOffset] = state[stateOffset];
+  summary[summaryOffset + 1u] = totals[totalsOffset + 6u];
+  summary[summaryOffset + 2u] = select(readPermutations(), 0u, totals[totalsOffset + 5u] != 0u);
+  summary[summaryOffset + 3u] = overflowPrefixes[overflowPrefixesOffset + ZONES - 1u];`
+    })
+  );
+  nodes.push(
+    createWGSLKernelNode(graph, {
+      id: `${id}-invalid-count-status`,
+      operation: OPERATION,
+      variant: 'invalid-count-status',
+      declarations: GET_NAN_WGSL,
+      invocationCount: Math.max(
+        statistics.length,
+        clusterStatistics.length,
+        zoneStatistics?.length ?? 0
+      ),
+      bindings: [
+        {name: 'totals', view: totals, type: 'u32', access: 'read'},
+        {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
+        {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'},
+        ...(zoneStatistics
+          ? [
+              {
+                name: 'zoneStatistics',
+                view: zoneStatistics,
+                type: 'f32' as const,
+                access: 'read_write' as const
+              }
+            ]
+          : []),
+        ...(props.output.status
+          ? [
+              {
+                name: 'invalidCount',
+                view: props.output.status.invalidCount,
+                type: 'u32' as const,
+                access: 'read_write' as const
+              }
+            ]
+          : [])
+      ],
+      body: `let invalid = totals[totalsOffset + 5u] != 0u;
+${props.output.status ? 'if (index == 0u) { invalidCount[invalidCountOffset] = totals[totalsOffset + 5u]; }' : ''}
 if (invalid) {
  let missing = getNaN();
  if (index < ${statistics.length}u) { statistics[statisticsOffset + index] = missing; }
  if (index < ${clusterStatistics.length}u) { clusterStatistics[clusterStatisticsOffset + index] = missing; }
  ${zoneStatistics ? `if (index < ${zoneStatistics.length}u) { zoneStatistics[zoneStatisticsOffset + index] = missing; }` : ''}
 }`
-      })
-    );
-    return nodes;
-  }
+    })
+  );
 }
 
 /** Overrides batch size for deterministic batch-independence tests. @internal */

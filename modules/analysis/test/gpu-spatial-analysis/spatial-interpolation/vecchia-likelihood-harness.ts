@@ -17,7 +17,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 export type VecchiaLikelihoodScene = {
   /** f64 or f32 coordinates; uploaded as float32. */
@@ -261,6 +261,12 @@ export async function createVecchiaFisherHarness(scene: VecchiaLikelihoodScene) 
       const elapsedMilliseconds = performance.now() - start;
       return {...getVecchiaFisherEvaluation(totalValues, words), elapsedMilliseconds};
     },
+    async readSites() {
+      return {
+        siteTerms: await readFloat32(siteTerms, rowCount * GPU_VECCHIA_FISHER_CELL_COUNT),
+        siteStatus: await readUint32(siteStatus, rowCount)
+      };
+    },
     destroy() {
       compiled.destroy();
       for (const buffer of buffers) {
@@ -383,6 +389,13 @@ export async function createVecchiaSpaceTimeHarness(
         readUint32(status, 3)
       ]);
       return getVecchiaLogLikelihoodResult(total, words);
+    },
+    async readConditionals() {
+      return {
+        conditionals: await readFloat32(conditionals, rowCount * 4),
+        conditionalStatus: await readUint32(conditionalStatus, rowCount),
+        siteStatus: await readUint32(siteStatus, rowCount)
+      };
     },
     destroy() {
       compiled.destroy();

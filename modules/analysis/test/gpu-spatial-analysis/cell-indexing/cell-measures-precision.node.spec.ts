@@ -41,14 +41,17 @@ for (const family of ['h3', 's2', 'quadbin'] as const) {
       const ordinary = getSource();
       expect(ordinary).toBe(getSource('float32'));
       expect(ordinary).not.toContain('fn sum_fp64(');
-      const extended = getSource('fp64');
+      const extended = getSource('double-single');
+      for (const legacyPrecision of ['fp64', 'extended']) {
+        expect(() => getSource(legacyPrecision as never)).toThrow(/precision.*double-single/);
+      }
       expect(extended).toContain('fn fp64_two_sum_integer_bits(');
       expect(extended).not.toContain('fp64arithmetic.SPLIT');
       expect(extended).toContain('fn cellMeasuresInteger64(');
       // Parse the assembled shader, including the published module and all domain helpers.
       expect(() => new WgslReflect(extended)).not.toThrow();
       expect(() => getSource('double' as GPUCellMeasuresProps['precision'])).toThrow(
-        /cell-measures precision must be 'float32' or 'fp64'/
+        /cell-measures precision.*float32.*double-single/
       );
     } finally {
       device.destroy();
@@ -59,21 +62,29 @@ for (const family of ['h3', 's2', 'quadbin'] as const) {
 it('operation lowering forwards precision, and the CPU oracle keeps binary64 for either choice', () => {
   const props: CellMeasuresOperationProps = {
     family: 'h3',
-    precision: 'fp64',
+    precision: 'double-single',
     rowCount: 1,
     cells: 'cells',
     output: {areas: 'areas'}
   };
+  // Independent h3-js cellArea('8ebedac6ecdb89f', 'm2') = 7.1095521951539355,
+  // rounded once to float32 for the output layout: 7.109552383422852.
+  for (const precision of [undefined, 'float32', 'double-single'] as const) {
+    expect(() => new GPUCellMeasuresOperation({...props, precision})).not.toThrow();
+    const result = computeCellMeasuresOnCPU(Uint32Array.of(0x6ecdb89f, 0x08ebedac), {
+      family: 'h3',
+      precision
+    });
+    expect(Number.isFinite(result.areas[0])).toBe(true);
+    expect(result.areas[0]).toBe(7.109552383422852);
+  }
   const contributor = constructNetworkOperationContributor(new GPUCellMeasuresOperation(props), {
     cells: {format: 'uint32x2', length: 1}
   }) as GPUCellMeasures;
-  expect(contributor.props.precision).toBe('fp64');
+  expect(contributor.props.precision).toBe('double-single');
   const cells = Uint32Array.of(0xffffffff, 0x8009fff);
-  expect(computeCellMeasuresOnCPU(cells, {family: 'h3', precision: 'fp64'})).toEqual(
-    computeCellMeasuresOnCPU(cells, {family: 'h3', precision: 'float32'})
-  );
   expect(() =>
-    computeCellMeasuresOnCPU(cells, {family: 'h3', precision: 'double' as 'fp64'})
+    computeCellMeasuresOnCPU(cells, {family: 'h3', precision: 'double' as 'double-single'})
   ).toThrow(/cell-measures precision/);
 });
 
@@ -88,11 +99,17 @@ it('the unit-sphere S2 compatibility API uses the same fp64 geometry and validat
         status: createTransientView(graph, 'status', 'uint32', 1)
       }
     };
-    const contributor = new GPUS2CellMeasures({...props, precision: 'fp64'});
+    for (const precision of ['double-single'] as const) {
+      const selected = new GPUS2CellMeasures({...props, id: `precision-${precision}`, precision});
+      expect(
+        getGPUCommandNodeKernelSources(addCellChunkNodes(graph, selected))[0]!.source
+      ).toContain('fn fp64_two_sum_integer_bits(');
+    }
+    const contributor = new GPUS2CellMeasures({...props, precision: 'double-single'});
     const [kernel] = getGPUCommandNodeKernelSources(addCellChunkNodes(graph, contributor));
     expect(kernel!.source).toContain('fn fp64_two_sum_integer_bits(');
     expect(() => new WgslReflect(kernel!.source)).not.toThrow();
-    expect(() => new GPUS2CellMeasures({...props, precision: 'double' as 'fp64'})).toThrow(
+    expect(() => new GPUS2CellMeasures({...props, precision: 'double' as 'double-single'})).toThrow(
       /s2-cell-measures precision/
     );
   } finally {

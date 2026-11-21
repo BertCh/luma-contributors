@@ -374,12 +374,10 @@ export async function createTerrainFlow(
       particleParameters.write(
         getGPUParticleAdvectionParameterValues(
           {
-            fieldExtent: [
-              grid.bounds[0],
-              grid.bounds[1],
-              grid.displayCellSize[0],
-              grid.displayCellSize[1]
-            ],
+            fieldPlacement: {
+              origin: [grid.bounds[0], grid.bounds[1]],
+              cellSize: [grid.displayCellSize[0], grid.displayCellSize[1]]
+            },
             timeStep: options.timeStep,
             speedScale: options.speedScale,
             dropRate: options.dropRate,

@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPUKeyJoin} from './gpu-key-join';
+export {GPUKeyLookup} from './gpu-key-join';
 export type {
-  GPUKeyJoinAggregate,
-  GPUKeyJoinAggregateOperation,
-  GPUKeyJoinGather,
-  GPUKeyJoinKind,
-  GPUKeyJoinOutput,
-  GPUKeyJoinProps
+  GPUKeyLookupAggregate,
+  GPUKeyLookupAggregateOperation,
+  GPUKeyLookupGather,
+  GPUKeyLookupOutput,
+  GPUKeyLookupProps
 } from './gpu-key-join';

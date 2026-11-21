@@ -139,6 +139,9 @@ export function getLensElementId(name: string): string {
       .replace(/^GPUGraphAlgorithms/, 'GPUGraph')
       // Preserve captured scenario URLs across the upstream semantic graph rename.
       .replace(/^createGPUConjugateGradientGraph$/, 'createGPUConjugateGradientProgram')
+      .replace(/^GPUPycnophylacticInterpolation$/, 'pycnophylactic')
+      .replace(/^GPUDBSCAN$/, 'spatial-clustering')
+      .replace(/^GPUHDBSCAN$/, 'hierarchical-density-clustering')
       .replace(/^(?:GPU|add|createGPU|create)(?=[A-Z])/, '')
       .replace(/([a-z])([A-Z])/g, '$1-$2')
       // A digit splits only before a word (`FFT1D` stays `fft1d`).
@@ -175,6 +178,15 @@ export function listEntryElements(
   const cacheKey = `${path}#${contributorMethods.join(',')}`;
   const cached = entryElements.get(cacheKey);
   if (cached) return cached;
+  const result = createEntryElementDiscovery([barrelPath])(barrelPath, contributorMethods);
+  entryElements.set(cacheKey, result);
+  return result;
+}
+
+/** One compiler program for all audited barrels; each query still inspects its exact exports. */
+export function createEntryElementDiscovery(barrelPaths: readonly string[]) {
+  const paths = barrelPaths.map(path => resolve(REPOSITORY_ROOT, path));
+  const entryElements = new Map<string, EntryElements>();
   const configuration = typescript.readConfigFile(
     join(REPOSITORY_ROOT, 'tsconfig.json'),
     typescript.sys.readFile
@@ -188,39 +200,49 @@ export function listEntryElements(
   );
   // Invalid compiler options must not silently turn contributors into ordinary classes.
   assert(errors.length === 0);
-  const program = typescript.createProgram([path], {
+  const program = typescript.createProgram(paths, {
     ...options,
     noEmit: true,
     composite: false,
     incremental: false
   });
   const checker = program.getTypeChecker();
-  const source = program.getSourceFile(path);
-  const moduleSymbol = source && checker.getSymbolAtLocation(source);
-  // Missing barrels must fail instead of reporting an empty entry.
-  assert(moduleSymbol);
-  const result: EntryElements = {contributors: [], recipes: [], otherClasses: []};
-  for (const exportedSymbol of checker.getExportsOfModule(moduleSymbol)) {
-    const symbol =
-      exportedSymbol.flags & typescript.SymbolFlags.Alias
-        ? checker.getAliasedSymbol(exportedSymbol)
-        : exportedSymbol;
-    if (symbol.flags & typescript.SymbolFlags.Class) {
-      const instance = checker.getDeclaredTypeOfSymbol(symbol);
-      const names = contributorMethods.some(method => instance.getProperty(method))
-        ? result.contributors
-        : result.otherClasses;
-      names.push(exportedSymbol.name);
-    } else if (
-      symbol.flags & typescript.SymbolFlags.Function &&
-      /^add.*Recipe$/.test(exportedSymbol.name)
-    ) {
-      result.recipes.push(exportedSymbol.name);
+  return (
+    barrelPath: string,
+    contributorMethods: readonly string[] = ['getCommandNodes']
+  ): EntryElements => {
+    const path = resolve(REPOSITORY_ROOT, barrelPath);
+    assert(paths.includes(path), `Barrel was not included in discovery: ${barrelPath}`);
+    const cacheKey = `${path}#${contributorMethods.join(',')}`;
+    const cached = entryElements.get(cacheKey);
+    if (cached) return cached;
+    const source = program.getSourceFile(path);
+    const moduleSymbol = source && checker.getSymbolAtLocation(source);
+    // Missing barrels must fail instead of reporting an empty entry.
+    assert(moduleSymbol);
+    const result: EntryElements = {contributors: [], recipes: [], otherClasses: []};
+    for (const exportedSymbol of checker.getExportsOfModule(moduleSymbol)) {
+      const symbol =
+        exportedSymbol.flags & typescript.SymbolFlags.Alias
+          ? checker.getAliasedSymbol(exportedSymbol)
+          : exportedSymbol;
+      if (symbol.flags & typescript.SymbolFlags.Class) {
+        const instance = checker.getDeclaredTypeOfSymbol(symbol);
+        const names = contributorMethods.some(method => instance.getProperty(method))
+          ? result.contributors
+          : result.otherClasses;
+        names.push(exportedSymbol.name);
+      } else if (
+        symbol.flags & typescript.SymbolFlags.Function &&
+        /^add.*Recipe$/.test(exportedSymbol.name)
+      ) {
+        result.recipes.push(exportedSymbol.name);
+      }
     }
-  }
-  result.contributors.sort();
-  result.recipes.sort();
-  result.otherClasses.sort();
-  entryElements.set(cacheKey, result);
-  return result;
+    result.contributors.sort();
+    result.recipes.sort();
+    result.otherClasses.sort();
+    entryElements.set(cacheKey, result);
+    return result;
+  };
 }

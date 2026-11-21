@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 import {
   getCatalogBinding,
   runCatalogOperationAsync,
@@ -694,4 +694,293 @@ test('geographic-distribution runs on GPUGeographicDistribution', async () => {
   gpu.tables[1].columns['geometry'].forEach((text, row) =>
     expectGeometryClose(text, cpu.tables[1].columns['geometry'][row], 1e-5)
   );
+});
+
+test('UCO-03 planar chunking preserves a unit segment at twenty million', async () => {
+  const {runGpuLineChunk} = await import('../src/analysis/catalog-platform4-geometry-lines');
+  const result = await runGpuLineChunk(
+    {device: await getDevice()},
+    {
+      type: 'FeatureCollection',
+      features: [
+        {
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [20000000, 0],
+              [20000001, 0]
+            ]
+          },
+          properties: {}
+        }
+      ]
+    },
+    {maximumChunkLength: 2, coordinateSystem: 'planar'},
+    10
+  );
+  expect(result.tables[0].rowCount).toBe(1);
+  expect(JSON.parse(result.tables[0].columns['geometry'][0] as string).coordinates).toEqual([
+    [20000000, 0],
+    [20000001, 0]
+  ]);
+});
+
+test('GEO-124 default touching-hole route publishes twelve positive polygons', async () => {
+  const {runGpuPolygonTriangulation} = await import(
+    '../src/analysis/catalog-platform4-geometry-tessellation'
+  );
+  const result = await runGpuPolygonTriangulation(
+    {device: await getDevice()},
+    {
+      type: 'FeatureCollection',
+      features: [
+        {
+          id: 'touching',
+          properties: {},
+          geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [0, 0],
+                [10, 0],
+                [10, 10],
+                [0, 10],
+                [0, 0]
+              ],
+              [
+                [2, 2],
+                [2, 4],
+                [4, 4],
+                [4, 2],
+                [2, 2]
+              ],
+              [
+                [4, 4],
+                [4, 6],
+                [6, 6],
+                [6, 4],
+                [4, 4]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    'planar'
+  );
+  const table = result.tables[0];
+  expect(table.rowCount).toBe(12);
+  let area = 0;
+  let degenerateCount = 0;
+  for (let row = 0; row < table.rowCount; row++) {
+    const value = table.columns['area'][row] as number;
+    expect(Number.isFinite(value)).toBe(true);
+    area += value;
+    expect(table.columns['triangle_index'][row]).toBe(row);
+    expect(table.columns['triangle_id'][row]).toBe(`0:0:${row}`);
+    expect(table.columns['source_id'][row]).toBe('touching');
+    if (value > 0) {
+      const geometry = JSON.parse(table.columns['geometry'][row] as string);
+      expect(geometry.type).toBe('Polygon');
+      expect(geometry.coordinates[0]).toHaveLength(4);
+      expect(geometry.coordinates[0][0]).toEqual(geometry.coordinates[0][3]);
+      expect(geometry.coordinates[0].flat().every(Number.isFinite)).toBe(true);
+      expect(table.columns['degeneracy'][row]).toBe('none');
+    }
+    if (value === 0) {
+      degenerateCount++;
+      expect(JSON.parse(table.columns['geometry'][row] as string).type).toBe('LineString');
+      expect(table.columns['degeneracy'][row]).toBe('line');
+    }
+  }
+  // Square minus two disjoint-interior 2x2 holes.
+  expect(area).toBe(92);
+  expect(degenerateCount).toBe(0);
+});
+
+test('B1 translated triangle remains a positive Polygon on GPU', async () => {
+  const {runGpuPolygonTriangulation} = await import(
+    '../src/analysis/catalog-platform4-geometry-tessellation'
+  );
+  const result = await runGpuPolygonTriangulation(
+    {device: await getDevice()},
+    {
+      type: 'FeatureCollection',
+      features: [
+        {
+          geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [1e8, 1e8],
+                [1e8 + 1, 1e8],
+                [1e8, 1e8 + 1],
+                [1e8, 1e8]
+              ]
+            ]
+          },
+          properties: {}
+        }
+      ]
+    },
+    'planar'
+  );
+  const table = result.tables[0];
+  expect(table.columns['area']).toEqual([0.5]);
+  expect(table.columns['degeneracy']).toEqual(['none']);
+  const geometry = JSON.parse(table.columns['geometry'][0] as string);
+  expect(geometry.type).toBe('Polygon');
+  expect(geometry.coordinates[0]).toHaveLength(4);
+  expect(geometry.coordinates[0][0]).toEqual(geometry.coordinates[0][3]);
+});
+
+test.each([
+  0.25, 0.75
+])('B1 UCO-03 network noding preserves literal distant endpoint lengths %s', async firstLength => {
+  const {nodeCatalogLines} = await import('../src/analysis/catalog-gpu-network');
+  const input: CatalogFeatureCollection = {
+    type: 'FeatureCollection',
+    features: [
+      {
+        properties: {},
+        geometry: {
+          type: 'MultiLineString',
+          coordinates: [
+            [
+              [0, 0],
+              [firstLength, 0]
+            ],
+            [
+              [20000000, 0],
+              [20000002, 0]
+            ]
+          ]
+        }
+      }
+    ]
+  };
+  const result = await nodeCatalogLines({device: await getDevice()}, input, {
+    coordinateSystem: 'planar',
+    snapTolerance: 0
+  });
+  expect(result.pieces.features.map(feature => feature.geometry?.coordinates)).toEqual([
+    [
+      [0, 0],
+      [firstLength, 0]
+    ],
+    [
+      [20000000, 0],
+      [20000002, 0]
+    ]
+  ]);
+  expect(Array.from(result.lengths).every(Number.isFinite)).toBe(true);
+  expect(Array.from(result.lengths)).toEqual([firstLength, 2]);
+});
+
+test('R11 validity reports a bad later source without losing valid polygon rows', async () => {
+  const {runGpuGeometryValidity} = await import('../src/analysis/catalog-gpu-geometry');
+  const result = await runGpuGeometryValidity(
+    {device: await getDevice()},
+    {
+      type: 'FeatureCollection',
+      features: [
+        {
+          properties: {},
+          geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [0, 0],
+                [1, 0],
+                [0, 1],
+                [0, 0]
+              ]
+            ]
+          }
+        },
+        {
+          properties: {},
+          geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [NaN, 0],
+                [1, 0],
+                [0, 1],
+                [NaN, 0]
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  );
+  expect(result.tables[0].columns['source_index']).toEqual([0, 1]);
+  expect(result.tables[0].columns['status']).toEqual(['valid', 'invalid']);
+  expect(result.tables[0].columns['issues']).toEqual(['', 'non-finite-coordinate']);
+});
+
+test('N1 GPU validity retains the closure gap of a translated open ring', async () => {
+  const {runGpuGeometryValidity} = await import('../src/analysis/catalog-gpu-geometry');
+  const result = await runGpuGeometryValidity(
+    {device: await getDevice()},
+    {
+      type: 'FeatureCollection',
+      features: [
+        {
+          properties: {},
+          geometry: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [20000000, 0],
+                [20000002, 0],
+                [20000002, 2],
+                [20000000, 2],
+                [20000000.25, 0]
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  );
+  expect(result.tables[0].columns['status']).toEqual(['invalid']);
+  expect(result.tables[0].columns['issues'][0]).toContain('ring-not-closed');
+});
+
+// GPU publisher adoption is forwarded because catalog-platform4-geometry-tessellation.ts is not owned.
+test('B7 GPU triangle publication retains original part index after an empty part', async () => {
+  const {runGpuPolygonTriangulation} = await import(
+    '../src/analysis/catalog-platform4-geometry-tessellation'
+  );
+  const result = await runGpuPolygonTriangulation(
+    {device: await getDevice()},
+    {
+      type: 'FeatureCollection',
+      features: [
+        {
+          properties: {},
+          geometry: {
+            type: 'MultiPolygon',
+            coordinates: [
+              [],
+              [
+                [
+                  [0, 0],
+                  [1, 0],
+                  [0, 1],
+                  [0, 0]
+                ]
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    'planar'
+  );
+  expect(result.tables[0].columns['part_index']).toEqual([1]);
+  expect(result.tables[0].columns['triangle_id']).toEqual(['0:1:0']);
+  expect(result.tables[0].columns['area']).toEqual([0.5]);
 });

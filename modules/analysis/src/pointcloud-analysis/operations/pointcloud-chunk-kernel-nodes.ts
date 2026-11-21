@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Kernel} from '@luma.gl/graph';
-import {registerWGSLKernelNodeRecord} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {getPlatformInfo, Kernel} from '@luma.gl/graph';
+import {fp64arithmetic, WGSLShaderAssembler} from '@luma.gl/shaders';
+import {
+  registerWGSLKernelNodeRecord,
+  registerCompiledWGSLKernelNodeRecord,
+  type WGSLKernelNodeRecord
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -52,6 +57,8 @@ export function getPointCloudChunkKernelNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: PointCloudKernelProps & {
     plan: GraphChunkDispatchPlan;
+    /** Assemble coordinate norm refinement with published integer fp64 arithmetic. */
+    preciseNorms?: boolean;
     /** Fixed-size runtime data, such as an iteration or source-row offset. */
     runtimeWords?: readonly number[];
     /** Encode every binding offset in the slot, including differently padded packed views. */
@@ -102,7 +109,7 @@ export function getPointCloudChunkKernelNodes<Parameters>(
     ([name, view], bindingIndex) =>
       `@group(0) @binding(${bindingIndex + 1}) var<storage, ${bindingIndex < inputs.length ? 'read' : 'read_write'}> ${name}: array<${view.format === 'uint32' ? 'u32' : 'f32'}>;`
   );
-  const source = `@group(0) @binding(0) var<storage, read> chunkParameters: array<u32>;
+  let source = `@group(0) @binding(0) var<storage, read> chunkParameters: array<u32>;
 ${declarations.join('\n')}
 ${getPointCloudKernelDeclarations(props, offsets)}
 fn readDispatchParameter(row: u32) -> u32 { return chunkParameters[3u + row]; }
@@ -118,6 +125,18 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
   if (index >= chunkParameters[1]) { return; }
   ${props.body}
 }`;
+  if (props.preciseNorms) {
+    source = new WGSLShaderAssembler().assembleWGSLShader({
+      platformInfo: getPlatformInfo(graph.device),
+      source,
+      // The integer path uses the published WGSL without the classic path's uniform metadata.
+      modules: [{name: fp64arithmetic.name, source: fp64arithmetic.source}],
+      defines: {LUMA_FP64_INTEGER_ARITHMETIC: true},
+      shaderStage: 'compute',
+      computeEntryPoint: 'main',
+      scanVertexAttributes: false
+    }).source;
+  }
   const layouts = plan.chunks.map(chunk =>
     getBoundedDispatchLayout(
       id,
@@ -148,7 +167,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
           writable: bindingIndex >= inputs.length
         }));
         const layout = layouts[chunk.chunkIndex];
-        registerWGSLKernelNodeRecord(graph, {
+        const kernelRecord: WGSLKernelNodeRecord = {
           id: `${id}-chunk-${chunk.chunkIndex}`,
           operation: 'GPUPointCloud',
           source,
@@ -170,7 +189,8 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
               access: binding.writable ? ('read_write' as const) : ('read' as const)
             }))
           ]
-        });
+        };
+        registerWGSLKernelNodeRecord(graph, kernelRecord);
         return createGPUComputeCommandNode<Parameters>({
           id: `${id}-chunk-${chunk.chunkIndex}`,
           workload: {
@@ -186,7 +206,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
               usage: binding.writable ? ('storage-read-write' as const) : ('storage-read' as const)
             }))
           ],
-          compile: ({device}) => {
+          compile: function compileRecordedKernel({device}) {
             const kernel = new Kernel(device, {
               id: 'pointcloud-chunk',
               source,
@@ -202,6 +222,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
                 ]
               }
             });
+            registerCompiledWGSLKernelNodeRecord(graph, kernelRecord, compileRecordedKernel);
             return {
               encode: ({computePass, getBuffer}) =>
                 kernel.dispatch(computePass, {
@@ -280,7 +301,7 @@ function createPointCloudDispatchParameters<Parameters>(
 /** Packed dispatches whose row count, offsets or ordinal varies share one pipeline. */
 export function getPointCloudRuntimeKernelNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: PointCloudKernelProps & {runtimeWords?: readonly number[]}
+  props: PointCloudKernelProps & {runtimeWords?: readonly number[]; preciseNorms?: boolean}
 ): GPUCommandNode<Parameters>[] {
   // These inputs need not be row-aligned; every offset is encoded separately in the slot.
   validateGraphChunkBindingRanges(graph, props.id, {...props.inputs, ...props.outputs});

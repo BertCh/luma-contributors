@@ -3,19 +3,18 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {
-  validateCapacity,
-  validateRequirement
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   getInequalityOperationOutputs,
   type InequalityOperationProps
 } from './gpu-inequality-operation';
 import {
+  ATKINSON_WEIGHT_NORMALIZATION_THRESHOLD,
   GPU_INEQUALITY_GLOBAL_SUMMARY,
   GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
   GPU_INEQUALITY_PARAMETER_LENGTH
@@ -34,17 +33,13 @@ export type CPUInequalityInput = {
 
 /** Every supported output, at its exact logical length. */
 export type CPUInequalityResult = Record<
-  | 'gini'
-  | 'theilT'
-  | 'theilL'
-  | 'atkinson'
-  | 'hoover'
-  | 'palma'
-  | 'mean'
-  | 'lorenzKnots'
-  | 'globalSummary',
+  'theilT' | 'theilL' | 'atkinson' | 'hoover' | 'palma' | 'mean' | 'lorenzKnots' | 'globalSummary',
   Float32Array
-> & {counts: Uint32Array};
+> & {
+  /** Weighted Gini coefficient per zone. */
+  weightedGini: Float32Array;
+  counts: Uint32Array;
+};
 type IncomeEntry = {value: number; weight: number};
 
 function computeIncomeIndices(
@@ -57,9 +52,15 @@ function computeIncomeIndices(
   entries.sort((left, right) => left.value - right.value);
   let totalWeight = 0;
   let totalIncome = 0;
-  for (const entry of entries) {
+  // Build suffixes directly: totalWeight - cumulativeWeight can erase a small final weight.
+  // Traverse them from the opposite end while retaining the original forward totals order.
+  const suffixWeights = new Float64Array(entries.length + 1);
+  for (let row = 0; row < entries.length; row++) {
+    const entry = entries[row];
     totalWeight += entry.weight;
     totalIncome += entry.weight * entry.value;
+    const suffixRow = entries.length - 1 - row;
+    suffixWeights[suffixRow] = entries[suffixRow].weight + suffixWeights[suffixRow + 1];
   }
   const result = {
     gini: NaN,
@@ -77,27 +78,32 @@ function computeIncomeIndices(
     return result;
   }
   const mean = result.mean;
+  const normalizeLogWeights =
+    epsilon === 1 && totalWeight > ATKINSON_WEIGHT_NORMALIZATION_THRESHOLD;
   let cumulativeWeight = 0;
   let cumulativeIncome = 0;
-  let area = 0;
+  let weightedGapTotal = 0;
   let theilTotal = 0;
   let logarithmTotal = 0;
   let absoluteTotal = 0;
   let hasZero = false;
   const populationShares = [0];
   const incomeShares = [0];
-  for (const {value, weight} of entries) {
-    const previousIncome = cumulativeIncome;
+  for (let row = 0; row < entries.length; row++) {
+    const {value, weight} = entries[row];
     cumulativeWeight += weight;
     cumulativeIncome += weight * value;
-    area += (weight / totalWeight) * ((previousIncome + cumulativeIncome) / totalIncome);
+    if (row + 1 < entries.length)
+      weightedGapTotal +=
+        (entries[row + 1].value - value) * cumulativeWeight * suffixWeights[row + 1];
     populationShares.push(cumulativeWeight / totalWeight);
     incomeShares.push(cumulativeIncome / totalIncome);
     absoluteTotal += weight * Math.abs(value - mean);
     if (value > 0) {
       const logarithm = Math.log(value) - Math.log(mean);
       theilTotal += weight * (value / mean) * logarithm;
-      logarithmTotal += weight * logarithm;
+      const logWeight = normalizeLogWeights ? weight / totalWeight : weight;
+      logarithmTotal += logWeight * logarithm;
     } else {
       hasZero = true;
     }
@@ -118,16 +124,29 @@ function computeIncomeIndices(
           ((share - populationShares[lower]) / width) * (incomeShares[upper] - incomeShares[lower])
       : incomeShares[upper];
   };
-  result.gini = 1 - area;
+  result.gini = weightedGapTotal / (totalWeight * totalIncome);
   result.theilT = theilTotal / totalWeight;
-  result.theilL = hasZero ? NaN : -logarithmTotal / totalWeight;
-  if (epsilon === 0) {
+  const weightedLogMean = normalizeLogWeights ? logarithmTotal : logarithmTotal / totalWeight;
+  result.theilL = hasZero ? NaN : -weightedLogMean;
+  const power = 1 - epsilon;
+  if (hasZero && epsilon >= 1) {
+    // Continuous extension of the geometric/negative-power mean at positive-weight zero income.
+    result.atkinson = 1;
+  } else if (epsilon === 0) {
     result.atkinson = 0;
   } else if (epsilon === 1) {
-    result.atkinson = hasZero ? NaN : -Math.expm1(logarithmTotal / totalWeight);
+    result.atkinson = -Math.expm1(weightedLogMean);
+  } else if (Math.abs(power) <= 0.01 && totalWeight > ATKINSON_WEIGHT_NORMALIZATION_THRESHOLD) {
+    // With large weights near epsilon one, center before adding and dividing the logarithm by power.
+    let centeredMean = 0;
+    const logMean = Math.log(mean);
+    for (const {value, weight} of entries) {
+      const centeredTerm = value === 0 ? -1 : Math.expm1(power * (Math.log(value) - logMean));
+      centeredMean += (weight / totalWeight) * centeredTerm;
+    }
+    result.atkinson = -Math.expm1(Math.log1p(Math.max(-1, centeredMean)) / power);
   } else if (epsilon < 1 || !hasZero) {
     // Log-sum-exp prevents an intermediate power overflow at large epsilon or income ratios.
-    const power = 1 - epsilon;
     let largestTerm = -Infinity;
     for (const {value, weight} of entries) {
       if (value > 0)
@@ -162,7 +181,10 @@ function computeIncomeIndices(
  *
  * What differs from the GPU contributor:
  * - Float64 sums and transcendental functions replace float32; compare ordinary inputs at 2e-5.
- * - Atkinson uses log-sum-exp, so finite results survive intermediate powers that overflow on GPU.
+ * - Gini sums sorted income gaps times the population weights on each side, preserving small
+ *   weighted inequality without subtracting a rounded Lorenz area from one.
+ * - Atkinson uses log-sum-exp or a centered power mean, so finite results survive intermediate
+ *   powers that overflow on GPU.
  * - The GPU scratch-binding zone limit and 1025-knot cap are dropped; uint32 layout limits remain.
  * - Equal incomes retain input order; this cannot change the exact weighted statistics.
  * - Empty values and zoneIds are accepted: counts and pooled totals are zero; indices, mean and
@@ -211,7 +233,7 @@ export function computeInequalityOnCPU(input: CPUInequalityInput): CPUInequality
     computeIncomeIndices(entries, epsilon, palmaTop, palmaBottom, knotCount)
   );
   const result: CPUInequalityResult = {
-    gini: new Float32Array(zoneCount),
+    weightedGini: new Float32Array(zoneCount),
     theilT: new Float32Array(zoneCount),
     theilL: new Float32Array(zoneCount),
     atkinson: new Float32Array(zoneCount),
@@ -223,7 +245,8 @@ export function computeInequalityOnCPU(input: CPUInequalityInput): CPUInequality
     globalSummary: new Float32Array(GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH)
   };
   zoneResults.forEach((zoneResult, zone) => {
-    for (const name of ['gini', 'theilT', 'theilL', 'atkinson', 'hoover', 'palma', 'mean'] as const)
+    result.weightedGini[zone] = zoneResult.gini;
+    for (const name of ['theilT', 'theilL', 'atkinson', 'hoover', 'palma', 'mean'] as const)
       result[name][zone] = zoneResult[name];
     result.lorenzKnots.set(zoneResult.knots, zone * knotCount);
   });
@@ -254,28 +277,32 @@ export function computeInequalityOnCPU(input: CPUInequalityInput): CPUInequality
 export class CPUInequalityOperation extends GPUCPUOperation {
   constructor(props: InequalityOperationProps) {
     const id = props.id ?? 'inequality';
+    const {zoneCount, lorenzKnotCount} = props;
+    const hasWeights = props.weights !== undefined;
+    const hasMask = props.mask !== undefined;
     validateCapacity(id, 'zoneCount', props.zoneCount, 1, 0xfffffffe);
     validateCapacity(id, 'lorenzKnotCount', props.lorenzKnotCount ?? 11, 2);
     const outputs = getInequalityOperationOutputs(props);
-    validateRequirement(
-      id,
-      Object.keys(outputs).length > 0,
-      'output must contain at least one output'
-    );
     validateCapacity(
       id,
       'zoneCount x lorenzKnotCount',
       props.zoneCount * (props.lorenzKnotCount ?? 11)
     );
+    const inputs = {
+      values: props.values,
+      zoneIds: props.zoneIds,
+      parameters: props.parameters,
+      ...(props.weights !== undefined ? {weights: props.weights} : {}),
+      ...(props.mask !== undefined ? {mask: props.mask} : {})
+    };
+    validateOperationGraphNames(
+      id,
+      inputs,
+      Object.fromEntries(Object.entries(outputs).map(([name, output]) => [name, output.value]))
+    );
     super({
       id,
-      inputs: {
-        values: props.values,
-        zoneIds: props.zoneIds,
-        parameters: props.parameters,
-        ...(props.weights ? {weights: props.weights} : {}),
-        ...(props.mask ? {mask: props.mask} : {})
-      },
+      inputs,
       outputs: Object.fromEntries(
         Object.values(outputs).map(output => [
           output.value,
@@ -287,15 +314,15 @@ export class CPUInequalityOperation extends GPUCPUOperation {
           values: getCPUOperationFloat32Rows(id, inputs, 'values'),
           zoneIds: getCPUOperationUint32Rows(id, inputs, 'zoneIds'),
           parameters: getCPUOperationFloat32Rows(id, inputs, 'parameters'),
-          weights: props.weights ? getCPUOperationFloat32Rows(id, inputs, 'weights') : undefined,
-          mask: props.mask ? getCPUOperationUint32Rows(id, inputs, 'mask') : undefined,
-          zoneCount: props.zoneCount,
-          lorenzKnotCount: props.lorenzKnotCount
+          weights: hasWeights ? getCPUOperationFloat32Rows(id, inputs, 'weights') : undefined,
+          mask: hasMask ? getCPUOperationUint32Rows(id, inputs, 'mask') : undefined,
+          zoneCount,
+          lorenzKnotCount
         });
         return Object.fromEntries(
           Object.entries(outputs).map(([name, output]) => [
             output.value,
-            result[name as keyof CPUInequalityResult]
+            result[name === 'gini' ? 'weightedGini' : (name as keyof CPUInequalityResult)]
           ])
         );
       }

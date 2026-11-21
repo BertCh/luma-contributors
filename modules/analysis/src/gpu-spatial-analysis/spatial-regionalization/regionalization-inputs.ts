@@ -11,9 +11,12 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {getPairwiseSumWGSL} from '../spatial-regression/pairwise-sum-wgsl';
+import {REGIONAL_MOMENT_WGSL} from './regional-moment-wgsl';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateMaximumCount,
   validateGPUStorageBindingByteLength,
   validateSinglePackedView
@@ -119,7 +122,11 @@ export function validateRegionalizationParameters(
 ): void {
   validateSinglePackedView(parameters, ['uint32'], `${id} parameters`);
   if (parameters.length < length) {
-    throw new Error(`${id} parameters must hold ${length} words`);
+    validateRequirement(
+      id,
+      false,
+      `parameters must hold ${length} words; received parameters.length=${parameters.length}`
+    );
   }
 }
 
@@ -133,8 +140,14 @@ export function validateRegionalizationParameters(
  * away from every entry. This is the one standardizer of AZP, Ward, max-p and the minimum
  * spanning tree.
  *
- * One workgroup per column: each lane sums a strided share of the rows and a fixed binary tree
- * merges the lanes (deterministic order); the variance is a second pass about the mean.
+ * One workgroup per column: each lane accumulates a split sum over its strided share and a fixed
+ * binary tree merges the split sums (deterministic order). Subtraction, summation and mean-division
+ * residuals remain separate through variance and final scores; integer rounding-error recovery
+ * and runtime bit barriers prevent fast-math regrouping.
+ * Columns
+ * large enough to overflow, or small enough to underflow, the float32 variance are divided by
+ * a power of two near their largest finite magnitude before centering. This preserves the input
+ * significands and leaves their population z-scores unchanged.
  *
  * @internal
  */
@@ -156,7 +169,7 @@ export function createStandardizeColumnsNode<Parameters>(
     variant: 'standardize',
     bindings: [
       {name: 'values', view: props.values, type: 'f32', access: 'read'},
-      {name: 'scaled', view: props.scaled, type: 'f32', access: 'read_write'}
+      {name: 'scaled', view: props.scaled, type: 'atomic<u32>', access: 'read_write'}
     ],
     workgroupSize: STANDARDIZE_LANES,
     invocationCount: columnCount * STANDARDIZE_LANES,
@@ -165,7 +178,35 @@ export function createStandardizeColumnsNode<Parameters>(
 const COLUMNS: u32 = ${columnCount}u;
 const LANES: u32 = ${STANDARDIZE_LANES}u;
 ${IS_FINITE_FLOAT_WGSL}
+${REGIONAL_MOMENT_WGSL}
 var<workgroup> partials: array<f32, ${STANDARDIZE_LANES}>;
+var<workgroup> momentPartials: array<vec2<f32>, ${STANDARDIZE_LANES}>;
+
+fn reduceMomentLanes(lane: u32, value: vec2<f32>, zero: u32) -> vec2<f32> {
+  momentPartials[lane] = value;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) {
+      momentPartials[lane] = addRegionalMoment(momentPartials[lane], momentPartials[lane + stride], zero);
+    }
+    workgroupBarrier();
+  }
+  let total = momentPartials[0];
+  workgroupBarrier();
+  return total;
+}
+
+fn reduceMaximumLanes(lane: u32, value: f32) -> f32 {
+  partials[lane] = value;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) { partials[lane] = max(partials[lane], partials[lane + stride]); }
+    workgroupBarrier();
+  }
+  let maximum = partials[0];
+  workgroupBarrier();
+  return maximum;
+}
 
 // Sum of one value per lane over the workgroup, available to every lane.
 fn reduceLanes(lane: u32, value: f32) -> f32 {
@@ -183,6 +224,13 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
 }`,
     body: `let column = index / LANES;
   let lane = localInvocationIndex;
+  // Temporarily use this column's first output word as a storage-atomic runtime zero.
+  // All lanes capture it before any final output is written. Atomic loads keep this opaque
+  // to fast-math optimization; the rounded-difference barriers must not fold to plain algebra.
+  if (lane == 0u) { atomicStore(&scaled[scaledOffset + column], 0u); }
+  storageBarrier();
+  let runtimeZero = atomicLoad(&scaled[scaledOffset + column]);
+  storageBarrier();
   // Center before reducing: a rounded mean of a constant column can otherwise
   // create a nonzero deviation and normalize every row to +1 or -1. The origin is the first
   // finite entry; statistics skip non-finite entries, which stay as they are.
@@ -191,28 +239,58 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
     let candidate = values[valuesOffset + row * COLUMNS + column];
     if (isFiniteFloat(candidate)) { origin = candidate; break; }
   }
-  var sum = 0.0;
-  var count = 0.0;
+  var laneMaximum = 0.0;
   for (var row = lane; row < ROWS; row += LANES) {
     let value = values[valuesOffset + row * COLUMNS + column];
-    if (isFiniteFloat(value)) { sum += value - origin; count += 1.0; }
+    if (isFiniteFloat(value)) { laneMaximum = max(laneMaximum, abs(value)); }
   }
-  let finiteCount = max(reduceLanes(lane, count), 1.0);
-  let mean = reduceLanes(lane, sum) / finiteCount;
-  var squares = 0.0;
-  for (var row = lane; row < ROWS; row += LANES) {
+  let maximum = reduceMaximumLanes(lane, laneMaximum);
+  // Each centered deviation is at most twice the column range (4 * maximum). Reserve that
+  // factor before summing squares. Division by 1 preserves the existing safe-range arithmetic.
+  // A one-ULP difference among otherwise equal rows must also have a normal squared deviation
+  // after division by ROWS. Use the conservative relative spacing 2^-24 for that lower bound.
+  let safeMagnitude = sqrt(3.402823466e+38 / (16.0 * f32(ROWS)));
+  let minimumMagnitude = sqrt(1.175494351e-38 * f32(ROWS)) * 16777216.0;
+  let needsScaling = maximum > safeMagnitude || (maximum > 0.0 && maximum < minimumMagnitude);
+  // Clamp the exponent to normal, finite powers of two. Divide values directly: the reciprocal
+  // can be a flushed subnormal. Power-of-two division introduces no new significand rounding.
+  let magnitudeExponent = clamp((bitcast<u32>(maximum) >> 23u) & 255u, 1u, 253u);
+  let normalizer = select(1.0, bitcast<f32>(magnitudeExponent << 23u), needsScaling);
+  origin = origin / normalizer;
+  var count = 0.0;
+  let laneTermCount = (ROWS + LANES - 1u - lane) / LANES;
+  var sum = vec2<f32>(0.0);
+  for (var item = 0u; item < laneTermCount; item++) {
+    let row = lane + item * LANES;
     let value = values[valuesOffset + row * COLUMNS + column];
     if (isFiniteFloat(value)) {
-      let delta = (value - origin) - mean;
-      squares += delta * delta;
+      count += 1.0;
+      sum = addRegionalMoment(sum, subtractRegionalValue(value / normalizer, origin, runtimeZero), runtimeZero);
     }
   }
+  let finiteCount = max(reduceLanes(lane, count), 1.0);
+  // Carry the subtraction error as well as the sum error. Correcting a mean using already
+  // rounded residuals can move it past a genuine small positive residual.
+  let mean = divideRegionalMoment(reduceMomentLanes(lane, sum, runtimeZero), finiteCount, runtimeZero);
+  ${getPairwiseSumWGSL({
+    name: 'squares',
+    count: 'laneTermCount',
+    setup: `let row = lane + squaresItem * LANES;
+    let value = values[valuesOffset + row * COLUMNS + column];
+    let centered = subtractRegionalValue(value / normalizer, origin, runtimeZero);
+    let residual = addRegionalMoment(centered, -mean, runtimeZero);
+    let delta = residual.x + residual.y;`,
+    term: 'select(0.0, delta * delta, isFiniteFloat(value))'
+  })}
   let deviation = sqrt(reduceLanes(lane, squares) / finiteCount);
   let inverse = select(0.0, 1.0 / deviation, deviation > 1e-20);
   for (var row = lane; row < ROWS; row += LANES) {
     let value = values[valuesOffset + row * COLUMNS + column];
-    scaled[scaledOffset + row * COLUMNS + column] =
-      select(value, ((value - origin) - mean) * inverse, isFiniteFloat(value));
+    let centered = subtractRegionalValue(value / normalizer, origin, runtimeZero);
+    let residual = addRegionalMoment(centered, -mean, runtimeZero);
+    let corrected = residual.x + residual.y;
+    atomicStore(&scaled[scaledOffset + row * COLUMNS + column],
+      bitcast<u32>(select(value, corrected * inverse, isFiniteFloat(value))));
   }`
   });
 }

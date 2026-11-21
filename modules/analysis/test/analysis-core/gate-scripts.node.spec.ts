@@ -131,7 +131,7 @@ it('rejects a source file missing from an otherwise loadable build', () => {
   write(directory, 'modules/analysis/src/new.ts', 'export const added = 2;');
   const result = run(directory, 'verify-package-exports.mjs');
   expect(result.status, result.output).toBe(1);
-  expect(result.output).toContain('new');
+  expect(result.output).toContain('missing build output dist/new.js');
 });
 
 it('rejects a build older than the current source', () => {
@@ -141,13 +141,17 @@ it('rejects a build older than the current source', () => {
     new Date(),
     new Date(Date.now() + 10_000)
   );
-  expect(run(directory, 'verify-package-exports.mjs').status).toBe(1);
+  const result = run(directory, 'verify-package-exports.mjs');
+  expect(result.status, result.output).toBe(1);
+  expect(result.output).toContain('stale build output dist/index.js');
 });
 
 it('compares export names when ESM and CommonJS have equal counts', () => {
   const directory = packageFixture();
   write(directory, 'modules/analysis/dist/index.cjs', 'exports.wrong = 1;');
-  expect(run(directory, 'verify-package-exports.mjs').status).toBe(1);
+  const result = run(directory, 'verify-package-exports.mjs');
+  expect(result.status, result.output).toBe(1);
+  expect(result.output).toContain('CommonJS names [wrong] differ from ESM [value]');
 });
 
 it('checks a wildcard export instead of silently skipping it', () => {
@@ -186,7 +190,9 @@ it('checks string wildcard asset targets and rejects empty wildcard patterns', (
   };
   write(directory, 'modules/analysis/package.json', JSON.stringify(manifest));
   utimesSync(join(directory, 'modules/analysis/package.json'), new Date(0), new Date(0));
-  expect(run(directory, 'verify-package-exports.mjs').status).toBe(1);
+  const empty = run(directory, 'verify-package-exports.mjs');
+  expect(empty.status, empty.output).toBe(1);
+  expect(empty.output).toContain('wildcard ./data/* has no built targets');
   write(directory, 'modules/analysis/dist/data/fixture.json', '{}');
   const result = run(directory, 'verify-package-exports.mjs');
   expect(result.status, result.output).toBe(0);
@@ -195,10 +201,19 @@ it('checks string wildcard asset targets and rejects empty wildcard patterns', (
 
 it('rejects a missing promised declaration target', () => {
   const directory = packageFixture();
-  rmSync(join(directory, 'modules/analysis/dist/index.d.ts'));
+  // Keep the compiler's promised declaration intact so only export-target validation can fail.
+  const manifest = JSON.parse(
+    readFileSync(join(directory, 'modules/analysis/package.json'), 'utf8')
+  );
+  manifest.exports['.'].types = './dist/absent-entry.d.ts';
+  write(directory, 'modules/analysis/package.json', JSON.stringify(manifest));
+  utimesSync(join(directory, 'modules/analysis/package.json'), new Date(0), new Date(0));
+  expect(existsSync(join(directory, 'modules/analysis/dist/index.d.ts'))).toBe(true);
   const result = run(directory, 'verify-package-exports.mjs');
   expect(result.status, result.output).toBe(1);
-  expect(result.output).toContain('index.d.ts');
+  expect(result.output).toContain(
+    '@luma-contributors/analysis: missing target ./dist/absent-entry.d.ts'
+  );
 });
 
 it.each([
@@ -350,7 +365,7 @@ it.each([
   else utimesSync(join(directory, 'modules/analysis/dist/data/a.json'), new Date(0), new Date(0));
   const result = run(directory, 'verify-package-exports.mjs');
   expect(result.status, result.output).toBe(1);
-  expect(result.output).toContain('dist/data/a.json');
+  expect(result.output).toContain(`${condition} build output dist/data/a.json`);
 });
 
 it('rejects a stale JavaScript loader from an allowJs build input', () => {
@@ -388,6 +403,11 @@ it.each([
   utimesSync(join(directory, 'modules/analysis/package.json'), new Date(0), new Date(0));
   const result = run(directory, 'verify-package-exports.mjs');
   expect(result.status, result.output).toBe(1);
+  expect(result.output).toContain(
+    invalid === 'directory'
+      ? 'missing target ./dist'
+      : 'invalid package export target dist/index.js'
+  );
 });
 
 it('rejects an edit arriving while status waits for the requested heartbeat', async () => {
@@ -439,6 +459,39 @@ it('rejects a completed cycle when only an imported lens JSON changes under the 
     'modules/lenses/src/computation-lenses/data/n-chicago-loop-crashes.json',
     '{"changed":true}'
   );
+  const result = run(directory, 'typecheck-status.mjs');
+  expect(result.status, result.output).toBe(2);
+  expect(result.output).toContain('stale');
+});
+
+it('TOOL-108 rejects a completed cycle when only a resolved dependency declaration changes', async () => {
+  // One level below the package entry declaration, with its size and mtime restored, so only
+  // the bytes of a declaration the compiler reads through `@luma.gl/graph` differ.
+  const values = 'node_modules/@luma.gl/graph/dist/values.d.ts';
+  const files: Record<string, string> = {
+    'tsconfig.json': readFileSync(join(ROOT, 'tsconfig.json'), 'utf8'),
+    'tsconfig.check-src.json': readFileSync(join(ROOT, 'tsconfig.check-src.json'), 'utf8'),
+    'modules/analysis/src/index.ts':
+      "import type {GraphValue} from '@luma.gl/graph';\nexport type Value = GraphValue;\n",
+    'node_modules/@luma.gl/graph/package.json': JSON.stringify({
+      name: '@luma.gl/graph',
+      version: '1.0.0',
+      type: 'module',
+      exports: {'.': {types: './dist/index.d.ts', import: './dist/index.js'}}
+    }),
+    'node_modules/@luma.gl/graph/dist/index.d.ts': "export * from './values.js';\n",
+    [values]: 'export type GraphValue = number;\n'
+  };
+  const directory = await watchFixture('', files, false, directory => {
+    utimesSync(join(directory, values), 1_700_000_000, 1_700_000_000);
+  });
+  expect(run(directory, 'typecheck-status.mjs').status).toBe(0);
+  const file = join(directory, values);
+  const original = statSync(file);
+  writeFileSync(file, 'export type GraphValue = string;\n');
+  utimesSync(file, original.atimeMs / 1000, original.mtimeMs / 1000);
+  expect(statSync(file).size).toBe(original.size);
+  expect(statSync(file).mtimeMs).toBe(original.mtimeMs);
   const result = run(directory, 'typecheck-status.mjs');
   expect(result.status, result.output).toBe(2);
   expect(result.output).toContain('stale');

@@ -383,7 +383,7 @@ export const MORAN_TINY = {
 
 export const DBSCAN_PLANAR = {
   epsilon: 14.0,
-  minimumPoints: 5,
+  minimumSamples: 5,
   points: [
     [101.00584176874715, 98.94316109366959],
     [105.12338120354626, 100.83920093722432],
@@ -811,7 +811,7 @@ export const DBSCAN_PLANAR = {
 
 export const DBSCAN_GEOGRAPHIC = {
   epsilon: 100.0,
-  minimumPoints: 5,
+  minimumSamples: 5,
   longitudes: [
     -87.65360800521539, -87.65343759079917, -87.65276212757398, -87.65361416893676,
     -87.65329160927773, -87.65342236065169, -87.65325309908371, -87.65325845127117,

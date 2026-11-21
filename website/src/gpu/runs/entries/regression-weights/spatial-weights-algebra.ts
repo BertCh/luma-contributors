@@ -19,7 +19,7 @@ import {
   stretchPoints
 } from './shared/weights';
 
-const OPERATIONS = ['union', 'intersection', 'difference', 'symmetricDifference'] as const;
+const OPERATIONS = ['union', 'intersection', 'difference', 'symmetric-difference'] as const;
 
 export default defineOperationRun({
   parameters,

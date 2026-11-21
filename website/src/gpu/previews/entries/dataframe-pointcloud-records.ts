@@ -1055,9 +1055,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
     }
   },
 
-  // Two tables linked by key: right rows are gathered onto left rows; a left join keeps orphans.
+  // The right lookup stays aligned to left rows. Compaction adds a separate list of matched rows.
   'key-join': {
-    parameters: [createChoice('joinKind', 'Join kind', ['left', 'inner'])],
+    parameters: [
+      createChoice('compactMatchedLeftRows', 'Compact matched left rows', ['off', 'on'])
+    ],
     pointer: 'none',
     build: ({fork, p}) => {
       const random = fork('keys');
@@ -1068,7 +1070,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
       const result: SpriteItem[] = [];
       const links: PathItem[] = [];
       const orphans: SpriteItem[] = [];
-      const inner = p.joinKind >= 0.5;
+      const compactRows: SpriteItem[] = [];
+      const compactMatchedLeftRows = p['compactMatchedLeftRows'] >= 0.5;
       leftKeys.forEach((key, index) => {
         const y = getY(index, leftKeys.length);
         const rightIndex = rightKeys.indexOf(key);
@@ -1090,7 +1093,11 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
             )
           );
           result.push(createDotAt(76, y, 1.8, getRoleCycle(key), 0.9, index / 9));
-        } else if (!inner) {
+          if (compactMatchedLeftRows) {
+            const compactY = getY(compactRows.length, leftKeys.length);
+            compactRows.push(createDotAt(152, compactY, 1.8, getRoleCycle(key), 0.9, index / 9));
+          }
+        } else {
           orphans.push(createDotAt(76, y, 1.4, 'dim', 0.55));
           orphans.push(createDotAt(24, y, 4, 'hot', 0.25, index / 9));
         }
@@ -1115,7 +1122,8 @@ export const DATAFRAME_POINTCLOUD_RECORDS_PREVIEWS: Record<string, EntryPreview>
           'static'
         ),
         createSprites([...left, ...right, ...result], 0.3),
-        createSprites(orphans, 0.5)
+        createSprites(orphans, 0.5),
+        ...(compactRows.length ? [createSprites(compactRows, 0.3)] : [])
       ];
     }
   },

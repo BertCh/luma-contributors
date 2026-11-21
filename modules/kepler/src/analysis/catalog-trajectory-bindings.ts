@@ -14,6 +14,7 @@ import {
   enumParameter,
   stringParameter,
   prepareCatalogTrajectory,
+  validateTrajectoryPublication,
   type CatalogTrajectory,
   type TrajectoryValues
 } from './catalog-trajectory-common';
@@ -161,12 +162,15 @@ function binding(
     limitation:
       'Bounded local-frame trajectory analysis; distances away from the frame origin are approximate. CPU bindings use existing library operation twins, with their float64 threshold semantics and uncapped searches. No new numerical implementation. Native Trips publication has an explicit Float32 animation time error budget.',
     ...(run
-      ? {run: (inputs, values) => run(prepareCatalogTrajectory(inputs['tracks'], values), values)}
+      ? {
+          run: (inputs, values) =>
+            run(preparePublishedTrajectory(inputs['tracks'], values, outputs), values)
+        }
       : {}),
     ...(runGpu
       ? {
           runGpu: (context, inputs, values) =>
-            runGpu(context, prepareCatalogTrajectory(inputs['tracks'], values), values)
+            runGpu(context, preparePublishedTrajectory(inputs['tracks'], values, outputs), values)
         }
       : {})
   };
@@ -351,7 +355,8 @@ export const TRAJECTORY_BINDINGS: readonly CatalogOperationBinding[] = [
       ...SEGMENT_PARAMETERS,
       enumParameter('metric', 'Modal split metric', ['count', 'distance', 'duration']),
       {
-        name: 'modeSpeedBreaks',
+        name: 'modeSpeedUpperBoundsFloat32',
+        renamedFrom: 'modeSpeedBreaks',
         label: 'Mode speed upper bounds',
         kind: 'number-list',
         defaultValue: [1.5, 8, 50],
@@ -395,3 +400,14 @@ export const TRAJECTORY_BINDINGS: readonly CatalogOperationBinding[] = [
     ]
   )
 ];
+
+function preparePublishedTrajectory(
+  input: Parameters<typeof prepareCatalogTrajectory>[0],
+  values: TrajectoryValues,
+  outputs: readonly CatalogOutputSpec[]
+): CatalogTrajectory {
+  const trajectory = prepareCatalogTrajectory(input, values);
+  if (outputs.some(output => output.identityColumns.includes('track_id')))
+    validateTrajectoryPublication(trajectory);
+  return trajectory;
+}

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GWR_GRID_EXTENT_COMPONENT_COUNT} from './gwr-grid-layout';
 import {Buffer, type Device} from '@luma.gl/core';
 import {getViewBindingRange, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -30,30 +31,12 @@ export function validateGWRPositiveShaderFloat(id: string, name: string, value: 
   );
 }
 
-/**
- * The canonical status port and the original flat compatibility alias name the same scalar.
- * Reject conflicting aliases at construction, then flatten internally for binding validation.
- * @internal
- */
-export function validateGWRApproximationAliases(
-  id: string,
-  output: GPUApproximationStatusPort & {status?: GPUApproximationStatusPort}
-): void {
-  validateRequirement(
-    id,
-    !output.approximation ||
-      !output.status?.approximation ||
-      output.approximation === output.status.approximation,
-    'output.approximation compatibility alias must match output.status.approximation'
-  );
-}
-
-/** Normalize the documented compatibility alias without changing caller props. @internal */
-export function getGWRBindingOutputs<
-  Output extends GPUApproximationStatusPort & {status?: GPUApproximationStatusPort}
->(output: Output): Omit<Output, 'status'> & GPUApproximationStatusPort {
+/** Flatten the named status for internal binding and range validation. @internal */
+export function getGWRBindingOutputs<Output extends {status?: GPUApproximationStatusPort}>(
+  output: Output
+): Omit<Output, 'status'> & GPUApproximationStatusPort {
   const {status, ...fields} = output;
-  return {...fields, approximation: status?.approximation ?? fields.approximation};
+  return {...fields, approximation: status?.approximation};
 }
 
 /** Reject logical overlaps globally and aligned overlaps only for outputs bound together. @internal */
@@ -172,11 +155,20 @@ export function getGWRGridScratchSizes(
   if (!gridSize) return [];
   return [
     ['grid positions and normalized positions', rowCount * 8],
-    ['grid tile bounds', Math.ceil(Math.ceil(rowCount / 256) / 64) * 64 * 16],
-    ['grid bounds', 16],
+    [
+      'grid tile bounds',
+      Math.ceil(Math.ceil(rowCount / 256) / 64) *
+        64 *
+        GWR_GRID_EXTENT_COMPONENT_COUNT *
+        Float32Array.BYTES_PER_ELEMENT
+    ],
+    ['grid bounds', GWR_GRID_EXTENT_COMPONENT_COUNT * Float32Array.BYTES_PER_ELEMENT],
     ['grid cell counts, offsets and scan scratch', (gridSize[0] * gridSize[1] + 1) * 4],
     ['grid object IDs, cell keys, row IDs and sort ping-pong', rowCount * 4],
-    ['grid sorted IDs and extent', (rowCount + 4) * 4],
+    [
+      'grid sorted IDs and extent',
+      (rowCount + GWR_GRID_EXTENT_COMPONENT_COUNT) * Uint32Array.BYTES_PER_ELEMENT
+    ],
     ['grid radix histograms, offsets and scan scratch', Math.ceil(rowCount / 256) * 16 * 4]
   ];
 }

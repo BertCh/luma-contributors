@@ -77,7 +77,7 @@ export async function runExample(
     target: {...areas, crossingCapacity: 65536},
     pairCapacity: 2600,
     sourceValues: tractCounts,
-    outputs: {
+    output: {
       extensiveValues: areaCounts,
       intensiveValues: areaMeans,
       sourceAreas,

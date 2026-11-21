@@ -5,13 +5,18 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
+  getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
-import {POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL} from '../shared/point-neighbor-grid-index';
+import {POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL} from '../../analysis-core/kernels/point-neighbor-grid-index';
+import {
+  SPATIAL_CLUSTERING_MINIMUM_PLANAR_EPSILON,
+  SPATIAL_CLUSTERING_MAXIMUM_PLANAR_EPSILON
+} from './spatial-clustering-parameters';
 
-const OPERATION = 'GPUSpatialClustering';
+const OPERATION = 'GPUDBSCAN';
 
 /** Views shared by every kernel that walks the cell grid. @internal */
 export type SpatialClusteringGridViews = {
@@ -40,6 +45,9 @@ export type SpatialClusteringGridViews = {
  * Each encoding derives the active lattice from the per-frame bounds and epsilon so every cell is
  * at least epsilon wide (with a 2^-10 relative margin against rounding), which makes the 3x3 cell
  * neighborhood of a point always contain all of its epsilon-neighbors.
+ * Planar epsilon is in [2^-63, 2^63], inclusive, so its square is normal and two
+ * epsilon-sized squared components remain finite. Raw parameters outside this range
+ * make the planar lattice invalid, matching the parameter packer's rejection.
  *
  * With `geographicRadius` the positions are longitude/latitude degrees and epsilon is a
  * great-circle distance in the units of the radius. The neighbor test is the haversine term
@@ -89,7 +97,7 @@ struct Lattice {
   columns: u32,
   rows: u32,
   epsilonSquared: f32,
-  minimumPoints: u32${temporal ? ',\n  timeEpsilon: f32' : ''}
+  minimumSamples: u32${temporal ? ',\n  timeEpsilon: f32' : ''}
 }
 
 ${IS_FINITE_FLOAT_WGSL}
@@ -101,13 +109,13 @@ fn readLattice() -> Lattice {
   lattice.columns = 1u;
   lattice.rows = 1u;
   lattice.epsilonSquared = 0.0;
-  lattice.minimumPoints = 1u;${temporal ? '\n  lattice.timeEpsilon = 0.0;\n  let timeEpsilon = parameters[parametersOffset + 6u];' : ''}
+  lattice.minimumSamples = 1u;${temporal ? '\n  lattice.timeEpsilon = 0.0;\n  let timeEpsilon = parameters[parametersOffset + 6u];' : ''}
   let minimumX = parameters[parametersOffset];
   let minimumY = parameters[parametersOffset + 1u];
   let maximumX = parameters[parametersOffset + 2u];
   let maximumY = parameters[parametersOffset + 3u];
   let epsilon = parameters[parametersOffset + 4u];
-  let minimumPointsValue = parameters[parametersOffset + 5u];
+  let minimumSamplesValue = parameters[parametersOffset + 5u];
   let width = maximumX - minimumX;
   let height = maximumY - minimumY;
   // Planar: neighbors satisfy dx^2 + dy^2 <= epsilon^2, so a cell must be epsilon wide. Geographic:
@@ -115,7 +123,7 @@ fn readLattice() -> Lattice {
   var epsilonSquared = epsilon * epsilon;
   var cellStepX = epsilon * CELL_MARGIN;
   var cellStepY = cellStepX;
-  var inRange = true;
+  var inRange = epsilon >= ${getWGSLFloatLiteral(SPATIAL_CLUSTERING_MINIMUM_PLANAR_EPSILON)} && epsilon <= ${getWGSLFloatLiteral(SPATIAL_CLUSTERING_MAXIMUM_PLANAR_EPSILON)};
   if (GEOGRAPHIC) {
     let halfAngle = 0.5 * epsilon / SPHERE_RADIUS;
     let sinHalf = sin(halfAngle);
@@ -129,7 +137,7 @@ fn readLattice() -> Lattice {
   }
   lattice.valid = inRange &&
     isFiniteFloat(minimumX) && isFiniteFloat(minimumY) && isFiniteFloat(maximumX) &&
-    isFiniteFloat(maximumY) && isFiniteFloat(epsilon) && isFiniteFloat(minimumPointsValue) &&
+    isFiniteFloat(maximumY) && isFiniteFloat(epsilon) && isFiniteFloat(minimumSamplesValue) &&
     isFiniteFloat(width) && isFiniteFloat(height) && isFiniteFloat(epsilonSquared) &&
     isFiniteFloat(cellStepX) && isFiniteFloat(cellStepY) && epsilon > 0.0 && width >= 0.0 &&
     height >= 0.0${temporal ? ' &&\n    isFiniteFloat(timeEpsilon) && timeEpsilon > 0.0' : ''};
@@ -145,7 +153,7 @@ fn readLattice() -> Lattice {
   lattice.columns = min(COLUMNS - 1u, u32(floor(width / lattice.cellWidth))) + 1u;
   lattice.rows = min(ROWS - 1u, u32(floor(height / lattice.cellHeight))) + 1u;
   lattice.epsilonSquared = epsilonSquared;
-  lattice.minimumPoints = u32(max(minimumPointsValue, 0.0));${temporal ? '\n  lattice.timeEpsilon = timeEpsilon;' : ''}
+  lattice.minimumSamples = u32(max(minimumSamplesValue, 0.0));${temporal ? '\n  lattice.timeEpsilon = timeEpsilon;' : ''}
   return lattice;
 }
 ${
@@ -375,8 +383,8 @@ export function createSpatialClusteringCellGatherNode<Parameters>(
 }
 
 /**
- * Writes the core flag of every point: valid and at least `minimumPoints` neighbors. With
- * `boxCounts`, a point whose dense box already holds `minimumPoints` points is core without a
+ * Writes the core flag of every point: valid and at least `minimumSamples` neighbors. With
+ * `boxCounts`, a point whose dense box already holds `minimumSamples` points is core without a
  * neighbor scan (every point of a box is within epsilon of every other). @internal
  */
 export function createSpatialClusteringCoreNode<Parameters>(
@@ -416,14 +424,14 @@ export function createSpatialClusteringCoreNode<Parameters>(
   if (isPointValid(lattice, x, y)) {
     ${
       boxCounts
-        ? `if (boxCounts[boxCountsOffset + point] >= lattice.minimumPoints) {
+        ? `if (boxCounts[boxCountsOffset + point] >= lattice.minimumSamples) {
       isCore = 1u;
     } else {`
         : '{'
     }
       var neighborCount = 0u;
-      ${getNeighborLoopWGSL('neighborCount++;', 'neighborCount < lattice.minimumPoints', temporal)}
-      isCore = select(0u, 1u, neighborCount >= lattice.minimumPoints);
+      ${getNeighborLoopWGSL('neighborCount++;', 'neighborCount < lattice.minimumSamples', temporal)}
+      isCore = select(0u, 1u, neighborCount >= lattice.minimumSamples);
     }
   }
   coreFlags[coreFlagsOffset + point] = isCore;`

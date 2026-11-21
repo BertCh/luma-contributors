@@ -17,24 +17,26 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUComputationRecorder} from './computation-recorder';
 import {createGPUKernelAnnotation} from './create-kernel-annotation';
+import {validateOption} from '../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
 
 const TRANSFER_WORKGROUP_SIZE = 256;
 
 /** GPU-resident mapping from source keys to target keys; `0xffffffff` denotes no target. */
 export type GPUTransferMaskRelation =
-  | {layout: 'index'; targets: GraphDataView}
-  | {layout: 'csr'; offsets: GraphDataView; neighbors: GraphDataView};
+  | {layout: 'index'; targets: GraphDataView<'uint32'>}
+  | {layout: 'csr'; offsets: GraphDataView<'uint32'>; neighbors: GraphDataView<'uint32'>};
 
 /** Inputs for transferring selection across an index or CSR relation without readback. */
 export type GPUTransferMaskProps = {
   /** Prefix for the clear and scatter node ids. */
   id: string;
   /** Packed uint32 flags over the source key space; nonzero means selected. */
-  source: GraphDataView;
+  source: GraphDataView<'uint32'>;
   /** Packed uint32 target indices, optionally with CSR row offsets. */
   relation: GPUTransferMaskRelation;
   /** Packed uint32 output over the target key space; cleared before scattering. */
-  target: GraphDataView;
+  target: GraphDataView<'uint32'>;
   /** `any` writes one; `count` counts selected incoming relation entries. Defaults to `any`. */
   mode?: 'any' | 'count';
   /** Annotates the produced nodes for a computation record; omitted in production. */
@@ -47,19 +49,46 @@ export class GPUTransferMask implements GPUCommandNodeProducer {
 
   /** Validates packed uint32 formats, relation lengths and separate output storage. */
   constructor(props: GPUTransferMaskProps) {
-    this.props = {...props, relation: {...props.relation}};
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'source',
+      'target',
+      'relation',
+      'mode',
+      'recorder'
+    ]);
+    const {id, source, target} = snapshot;
+    const mode = snapshot.mode === undefined ? 'any' : snapshot.mode;
+    validateOption(id, 'mode', mode, ['any', 'count']);
+    const layout = snapshot.relation.layout;
+    validateOption(id, 'relation.layout', layout, ['index', 'csr']);
+    const relation: GPUTransferMaskRelation =
+      layout === 'index'
+        ? Object.freeze({
+            layout,
+            targets: (snapshot.relation as Extract<GPUTransferMaskRelation, {layout: 'index'}>)
+              .targets
+          })
+        : Object.freeze({
+            layout,
+            offsets: (snapshot.relation as Extract<GPUTransferMaskRelation, {layout: 'csr'}>)
+              .offsets,
+            neighbors: (snapshot.relation as Extract<GPUTransferMaskRelation, {layout: 'csr'}>)
+              .neighbors
+          });
+    this.props = Object.freeze({...snapshot, mode, relation});
     for (const [name, view] of Object.entries(this.getBindings())) {
-      validatePackedUint32View(view, `${props.id} ${name}`);
-      if (name !== 'targetMask' && view.buffer === props.target.buffer) {
-        throw new Error(`${props.id} target must use separate storage from source and relation`);
+      validatePackedUint32View(view, `${id} ${name}`);
+      if (name !== 'targetMask' && view.buffer === target.buffer) {
+        throw new Error(`${id} target must use separate storage from source and relation`);
       }
     }
-    if (props.relation.layout === 'index') {
-      if (props.relation.targets.length !== props.source.length) {
-        throw new Error(`${props.id} targets length must equal source length`);
+    if (relation.layout === 'index') {
+      if (relation.targets.length !== source.length) {
+        throw new Error(`${id} targets length must equal source length`);
       }
-    } else if (props.relation.offsets.length !== props.source.length + 1) {
-      throw new Error(`${props.id} offsets length must equal source length + 1`);
+    } else if (relation.offsets.length !== source.length + 1) {
+      throw new Error(`${id} offsets length must equal source length + 1`);
     }
   }
 
@@ -186,7 +215,7 @@ fn main(
     });
   }
 
-  private getBindings(): Record<string, GraphDataView> {
+  private getBindings(): Record<string, GraphDataView<'uint32'>> {
     const {source, relation, target} = this.props;
     return {
       sourceMask: source,

@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
-  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -73,7 +72,10 @@ export type CSRStageProps = {
   visit: (onItem: string) => string;
   /** Arrays to write. */
   attributes: readonly CSRStageAttribute[];
-  /** Sort each emitted row ascending by the first attribute (which must be the neighbor IDs). */
+  /**
+   * Sort each emitted row's first attribute (neighbor IDs). Other attributes must be constant
+   * within each row: only neighbor IDs are reordered. Used for binary higher-order frontiers.
+   */
   sortRows?: boolean;
   /**
    * Chunk of a chunked CSR: `rows` is then the chunk's row count. `ROWS` becomes `totalRows` (the
@@ -129,16 +131,8 @@ const NO_SLOT: u32 = ${NO_SLOT_WGSL};`;
     })
   );
   nodes.push(
-    ...new GPUScan({
+    ...createSaturatedCountScanNodes<Parameters>(graph, {
       id: `${id}-scan`,
-      input: counts,
-      output: starts,
-      mode: 'exclusive'
-    }).getCommandNodes(graph)
-  );
-  nodes.push(
-    ...createSaturatedScanTotalNodes<Parameters>(graph, {
-      id: id,
       operation,
       counts: counts,
       offsets: starts,
@@ -255,7 +249,7 @@ export type SpatialWeightsMergeOperation =
   | 'union'
   | 'intersection'
   | 'difference'
-  | 'symmetricDifference';
+  | 'symmetric-difference';
 
 /**
  * WGSL for the per-row two-pointer merge of `leftOffsets/leftNeighbors` and
@@ -274,7 +268,7 @@ export function getMergeVisitWGSL(
     union: 'true',
     intersection: 'leftSlot != NO_SLOT && rightSlot != NO_SLOT',
     difference: 'leftSlot != NO_SLOT && rightSlot == NO_SLOT',
-    symmetricDifference: '(leftSlot == NO_SLOT) != (rightSlot == NO_SLOT)'
+    'symmetric-difference': '(leftSlot == NO_SLOT) != (rightSlot == NO_SLOT)'
   }[operation];
   return `var leftNext = leftOffsets[leftOffsetsOffset + ${localRow}];
   let leftEnd = leftOffsets[leftOffsetsOffset + ${localRow} + 1u];

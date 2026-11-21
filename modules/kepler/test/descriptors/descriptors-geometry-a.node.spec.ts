@@ -4,12 +4,14 @@
 
 import {
   GPU_ANALYSIS_DEFAULT_RULES,
+  resolveGPUAnalysisDefault,
+  validateGPUAnalysisResultEncoding
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
+import {
   GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
   getGPUGeometryOrientationParameterValues,
-  getGPULineSimplificationParameterValues,
-  resolveGPUAnalysisDefault,
-  validateGPUAnalysisResultEncoding
+  getGPULineSimplificationParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {describe, expect, it} from 'vitest';
 import {

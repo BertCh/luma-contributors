@@ -33,7 +33,10 @@ export function createRandom(seed: number): () => number {
 }
 
 /** Returns the included rows, mirroring the GPU inclusion rule. */
-export function getIncludedRows(scene: PairStatisticsScene, frame: PairStatisticsFrame): number[] {
+export function getIncludedRows(
+  scene: PairStatisticsScene,
+  frame: Pick<PairStatisticsFrame, 'bounds'>
+): number[] {
   const [minX, minY, maxX, maxY] = frame.bounds.map(fround);
   const rows = scene.positions.length / 2;
   const included: number[] = [];

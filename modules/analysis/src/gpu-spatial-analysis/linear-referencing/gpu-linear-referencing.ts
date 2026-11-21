@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -18,6 +22,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateCommandNodeBudget,
   validateCapacity,
+  validateRequirement,
   validateMaximumCount,
   validateNonZeroFiniteNumber,
   validateSinglePackedView,
@@ -372,6 +377,49 @@ export class GPULinearReferencing<
       QueryRows
     >
   ) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'lineOffsets',
+      'queryPositions',
+      'radius',
+      'candidateCapacity',
+      'leafCapacity',
+      'spatialSort',
+      'output'
+    ]);
+    const outputFields = [
+      'lineIndices',
+      'segmentIndices',
+      'fractions',
+      'footPoints',
+      'distances',
+      'measures',
+      'normalizedMeasures',
+      'sides',
+      'signedOffsets',
+      'vertexMeasures',
+      'status'
+    ] as const;
+    const outputSnapshot = snapshotConstructionFields(props.output, [
+      ...new Set<keyof typeof props.output>([
+        ...outputFields,
+        ...(Object.keys(props.output) as (keyof typeof props.output)[])
+      ])
+    ]);
+    props = Object.freeze({
+      ...props,
+      spatialContext:
+        props.spatialContext && snapshotConstructionSpatialContext(props.spatialContext),
+      output: Object.freeze({
+        ...outputSnapshot,
+        status: snapshotConstructionFields(outputSnapshot.status, [
+          'candidateOverflow',
+          'requiredCandidateCount'
+        ])
+      })
+    });
     this.id = props.id ?? 'linear-referencing';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -385,7 +433,14 @@ export class GPULinearReferencing<
       this.coordinateSystem === 'spherical' ? getGPUSphereRadius(this.spatialContext) : 1;
     validateNonZeroFiniteNumber(this.id, 'spatialContext.sphereRadius', this.sphereRadius);
     const {id} = this;
+    const identity = {id, contributor: 'GPULinearReferencing'};
     const {output} = props;
+    validateSinglePackedView(props.radius, ['float32'], identity, 'radius');
+    validateRequirement(
+      identity,
+      props.radius.length === 1,
+      `radius must contain exactly 1 float32 row; received ${props.radius.length}`
+    );
     if (
       this.coordinateSystem === 'planar' &&
       !(Number.isInteger(props.candidateCapacity) && (props.candidateCapacity as number) > 0)
@@ -397,15 +452,15 @@ export class GPULinearReferencing<
       validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
     for (const chunk of getGraphViewChunks(props.queryPositions))
-      validateSinglePackedView(chunk, ['float32x2'], `${id} queryPositions`);
+      validateSinglePackedView(chunk, ['float32x2'], identity, 'queryPositions');
     if (props.queryPositions.length < 1) {
       throw new Error(`${id} needs at least one query`);
     }
-    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateSinglePackedView(props.positions, ['float32x2'], identity, 'positions');
     if (props.positions.length < 2) {
       throw new Error(`${id} needs at least two positions`);
     }
-    validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
+    validateSinglePackedView(props.lineOffsets, ['uint32'], identity, 'lineOffsets');
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
@@ -436,10 +491,10 @@ export class GPULinearReferencing<
         throw new Error(`${id} output.${name} is not a linear-referencing column`);
       }
       if (name === 'vertexMeasures')
-        validateSinglePackedView(view, ['float32'], `${id} output.vertexMeasures`);
+        validateSinglePackedView(view, ['float32'], identity, 'output.vertexMeasures');
       else
         for (const chunk of getGraphViewChunks(view))
-          validateSinglePackedView(chunk, [formats[name]], `${id} output.${name}`);
+          validateSinglePackedView(chunk, [formats[name]], identity, `output.${name}`);
       const length = name === 'vertexMeasures' ? props.positions.length : pointCount;
       if (view.length !== length) {
         throw new Error(`${id} output.${name} must hold ${length} rows`);
@@ -452,13 +507,15 @@ export class GPULinearReferencing<
     validateSinglePackedView(
       status.candidateOverflow,
       ['uint32'],
-      `${id} output.status.candidateOverflow`
+      identity,
+      'output.status.candidateOverflow'
     );
     if (status.requiredCandidateCount) {
       validateSinglePackedView(
         status.requiredCandidateCount,
         ['uint32'],
-        `${id} output.status.requiredCandidateCount`
+        identity,
+        'output.status.requiredCandidateCount'
       );
     }
     const {vertexMeasures: _vertexMeasures, ...rowColumns} = columns;

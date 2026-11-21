@@ -4,6 +4,10 @@
 
 import {Buffer} from '@luma.gl/core';
 import {
+  createSpatialPreparationRetryViews,
+  validateSpatialPreparationRetryView
+} from '../spatial-join/spatial-preparation-retry';
+import {
   createTransientView,
   GPUScan,
   type GPUCommandGraph,
@@ -13,7 +17,6 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
-  GPU_STUDY_WINDOW_FLAG_EMPTY,
   GPU_STUDY_WINDOW_FLAG_ORIENTATION_UNCERTAIN,
   GPU_STUDY_WINDOW_SUMMARY_LENGTH,
   resolveGPUSpatialContext,
@@ -33,7 +36,8 @@ import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateCapacity,
-  validateGPUStorageBindingByteLength
+  validateGPUStorageBindingByteLength,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getPolygonEdgeSlabNodes} from '../../analysis-core/kernels/polygon-edge-slabs';
@@ -42,8 +46,15 @@ import {
   getStudyWindowSampleCellWGSL,
   STUDY_WINDOW_BOUNDARY_CELL_BIT
 } from '../../analysis-core/kernels/study-window-wgsl';
-import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
-import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  getStudyWindowSummaryNodes,
+  STUDY_WINDOW_SUMMARY_PARTIAL_STRIDE,
+  STUDY_WINDOW_SUMMARY_RINGS_PER_PARTIAL
+} from './study-window-summary';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -97,6 +108,12 @@ export type GPUStudyWindowPreparationProps<Parameters = unknown> = GPUPolygonGeo
   output?: {summary?: GraphDataView<'float32'>};
 };
 
+/** Actual fresh-graph input handles selected after a failed declaration. Layouts are unchanged. */
+export type GPUStudyWindowPreparationRetryViews = GPUPolygonGeometryFields & {
+  /** Fresh equivalent destination for an originally supplied summary copy, when present. */
+  output?: {summary?: GraphDataView<'float32'>};
+};
+
 /**
  * Prepares one polygon or multipolygon study window: oriented edges with the interior on the
  * left, area, perimeter, finite-vertex bounds, edge slabs and a compact row-major sampling grid.
@@ -108,7 +125,10 @@ export type GPUStudyWindowPreparationProps<Parameters = unknown> = GPUPolygonGeo
  * longitude/latitude first with `GPULocalFrame.projectArray`.
  *
  * Ring determinants use coordinates relative to the first vertex and a fixed pairwise tree,
- * without float atomics. Flag 1 (`GPU_STUDY_WINDOW_FLAG_ORIENTATION_UNCERTAIN`) marks a ring whose
+ * without float atomics. Ring summaries initialize two rings per invocation, followed by pairwise
+ * compensated merges, with 11 float32 scratch words per ring pair (subject to the storage-binding
+ * byte limit); only the final root publishes the eight summary words. Flag 1
+ * (`GPU_STUDY_WINDOW_FLAG_ORIENTATION_UNCERTAIN`) marks a ring whose
  * doubled area is within `8 * epsilon_f32 * (1 + ceil(log2(vertexCount))) * sum(abs(products))`
  * of zero, or is non-finite. The conservative bound includes determinant cancellation and tree
  * rounding. Flag 2 (`GPU_STUDY_WINDOW_FLAG_EMPTY`) marks non-finite or non-positive total area.
@@ -122,12 +142,16 @@ export type GPUStudyWindowPreparationProps<Parameters = unknown> = GPUPolygonGeo
  * The first submitted encoding captures a persistent geometry snapshot. Invalidate or rebuildWhen
  * requests a new generation, committed only after the complete preparation executes. Discarded
  * encodings retry automatically. Public preparation stages replay against the retained geometry
- * every encoding; geometry refresh alone is GPU-gated, avoiding private dispatch APIs. This repeats
- * preparation work and adds one copy of each geometry view plus 24 generation-control bytes.
+ * every encoding: ring orientation, oriented edges, area/perimeter/bounds, edge slabs, sampling-grid
+ * classification/compaction and packed summaries. Positions and feature/polygon/ring offsets are
+ * retained; geometry refresh alone is GPU-gated, avoiding private dispatch APIs. This repeats
+ * preparation work and adds one copy of each geometry view plus 1072 generation-control bytes
+ * (a fixed 1024-byte lookup table, 32-byte request and 16-byte state).
  * It reuses geometry, it never caches results: consumers still evaluate their current inputs on
  * every encoding. Changed geometry needs `invalidate()` or `rebuildWhen`; otherwise consumers
  * deliberately keep using the previous build. Changing view lengths requires a new handle and
- * graph. One handle belongs to one graph, whose consumers may share it.
+ * graph. Add one handle once before its consumers; they share one preparation in that encoding.
+ * Separate encodings each replay the preparation. One handle belongs to one graph.
  */
 export class GPUStudyWindowPreparation<Parameters = unknown>
   implements GPUCommandNodeProducer<Parameters>, GPUPolygonStudyWindow
@@ -150,10 +174,39 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
   private graph: unknown;
   private views: GPUPolygonStudyWindowViews | undefined;
   private ownedBuffers: Buffer[] = [];
+  private failedDeclaration = false;
+  private retryViews:
+    | {graph: GPUCommandGraph<Parameters>; inputs: GPUStudyWindowPreparationRetryViews}
+    | undefined;
   private readonly rebuildGeneration = new Uint32Array([1, 0]);
   private encodingRequestPending = true;
 
   constructor(props: GPUStudyWindowPreparationProps<Parameters>) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'featureOffsets',
+      'polygonOffsets',
+      'ringOffsets',
+      'samplingGrid',
+      'crossingCapacity',
+      'slabEntryCapacity',
+      'rebuildWhen',
+      'output'
+    ]);
+    const samplingGrid = Object.freeze([...(props.samplingGrid ?? [256, 256])]) as readonly [
+      number,
+      number
+    ];
+    props = Object.freeze({
+      ...props,
+      samplingGrid,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(props.spatialContext)}
+        : {}),
+      ...(props.output ? {output: snapshotConstructionFields(props.output, ['summary'])} : {})
+    });
     this.id = props.id ?? 'study-window';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
@@ -162,7 +215,7 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
     );
     this.props = props;
     this.vertexCount = props.positions.length;
-    this.sampleGrid = props.samplingGrid ?? [256, 256];
+    this.sampleGrid = samplingGrid;
     const {id, sampleGrid} = this;
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     for (const name of ['featureOffsets', 'polygonOffsets', 'ringOffsets'] as const) {
@@ -225,6 +278,67 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
     return this.graph !== undefined && this.graph === graph;
   }
 
+  /**
+   * Releases a declaration after graph.add failed during registration of returned nodes. Discard
+   * that graph and call this before retrying on a fresh graph; the producer API cannot observe
+   * registration failures after getCommandNodes returns. Do not recover a submitted graph.
+   */
+  recoverFailedDeclaration(): void {
+    this.destroy();
+    this.failedDeclaration = true;
+  }
+
+  /**
+   * Select the actual producer views on a fresh graph after failed declaration, before graph.add.
+   * Each view must describe the original persistent physical range and layout. Supply this map
+   * when automatic import cannot reuse a DynamicBuffer/core Buffer or narrower-usage handle.
+   * Captures the map and optional summary destination; caller buffers remain caller-owned.
+   */
+  setRetryViews(
+    graph: GPUCommandGraph<Parameters>,
+    views: GPUStudyWindowPreparationRetryViews
+  ): void {
+    validateRequirement(
+      this.id,
+      this.failedDeclaration && !this.graph,
+      'setRetryViews requires a failed declaration and a fresh graph before graph.add'
+    );
+    const captured = snapshotConstructionFields(views, [
+      'positions',
+      'featureOffsets',
+      'polygonOffsets',
+      'ringOffsets',
+      'output'
+    ]);
+    const inputs = Object.freeze({
+      ...captured,
+      ...(captured.output ? {output: snapshotConstructionFields(captured.output, ['summary'])} : {})
+    });
+    for (const name of ['positions', 'featureOffsets', 'polygonOffsets', 'ringOffsets'] as const) {
+      validateRequirement(
+        this.id,
+        Boolean(inputs[name]),
+        `retry ${name} must supply the original view`
+      );
+      validateSpatialPreparationRetryView(graph, this.id, name, this.props[name], inputs[name]);
+    }
+    if (this.props.output?.summary) {
+      validateRequirement(
+        this.id,
+        Boolean(inputs.output?.summary),
+        'retry output.summary must supply the original caller-owned view'
+      );
+      validateSpatialPreparationRetryView(
+        graph,
+        this.id,
+        'output.summary',
+        this.props.output.summary,
+        inputs.output!.summary!
+      );
+    }
+    this.retryViews = {graph, inputs};
+  }
+
   /** Forces the next encoding to rebuild the window. Call it after the geometry changed. */
   invalidate(): void {
     advancePreparedGeometryGeneration(this.rebuildGeneration);
@@ -239,6 +353,7 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
     this.views = undefined;
     this.ownedBuffers = [];
     this.graph = undefined;
+    this.retryViews = undefined;
     this.rebuildGeneration.set([1, 0]);
     this.encodingRequestPending = true;
   }
@@ -258,10 +373,51 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
     return importGraphBuffer(graph, `${this.id}-${name}`, buffer, format, length);
   }
 
-  /** Returns gated geometry refresh, replayed preparation stages, and final GPU generation commit. */
+  /**
+   * Returns gated geometry refresh, replayed stages and final GPU generation commit.
+   * Node-construction failure releases buffers without publishing readiness. A later registration
+   * failure in graph.add requires recoverFailedDeclaration. The failed graph may retain
+   * imported IDs: retry on a fresh graph. Imported persistent inputs are reimported; transient
+   * inputs require recreating their producers and this handle.
+   */
   getCommandNodes(graph: GPUCommandGraph<Parameters>): readonly GPUCommandNode<Parameters>[] {
+    if (this.graph) throw new Error(`${this.id} is already added to a graph`);
+    try {
+      validateRequirement(
+        this.id,
+        !this.retryViews || this.retryViews.graph === graph,
+        'retry views must belong to the target graph selected by setRetryViews'
+      );
+      const nodes = this.createCommandNodes(graph);
+      this.graph = graph;
+      this.failedDeclaration = false;
+      this.retryViews = undefined;
+      return nodes;
+    } catch (error) {
+      // Imported IDs can remain in the failed graph. Rebuild that graph before retrying.
+      this.destroy();
+      this.failedDeclaration = true;
+      throw error;
+    }
+  }
+
+  private createCommandNodes(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {id, vertexCount, sampleGrid} = this;
-    let props = this.props;
+    let props = this.failedDeclaration
+      ? createSpatialPreparationRetryViews(graph, this.id, this.props, this.retryViews?.inputs)
+      : this.props;
+    if (this.failedDeclaration && props.output)
+      props = {
+        ...props,
+        output: createSpatialPreparationRetryViews(
+          graph,
+          `${this.id}-output`,
+          props.output,
+          this.retryViews?.inputs.output
+        )
+      };
     if (this.graph) {
       throw new Error(`${id} is already added to a graph`);
     }
@@ -303,6 +459,12 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
       ['ring terms', 9 * vertexCount * 4],
       ['edges', 4 * vertexCount * 4],
       ['rings', RING_STRIDE * ringCount * 4],
+      [
+        'ring summary partials',
+        STUDY_WINDOW_SUMMARY_PARTIAL_STRIDE *
+          Math.ceil(ringCount / STUDY_WINDOW_SUMMARY_RINGS_PER_PARTIAL) *
+          4
+      ],
       ['sample scan', (cellCount + 1) * 4],
       ['slab entries', (vertexCount + slabEntryCapacity) * 8],
       ['slab offsets', (slabCapacity + 1) * 4],
@@ -358,7 +520,6 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
       ]),
       ...snapshot.views
     };
-    this.graph = graph;
     const edges = this.createPersistentView(graph, 'edges', 'float32', 4 * vertexCount);
     const summary = this.createPersistentView(
       graph,
@@ -541,49 +702,12 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
   edges[base + 2u] = endPosition.x;
   edges[base + 3u] = endPosition.y;`
       }),
-      createWGSLKernelNode(graph, {
-        id: `${id}-summarize`,
+      ...getStudyWindowSummaryNodes(graph, {
+        id,
         operation: OPERATION,
-        variant: 'summarize',
-        bindings: [ringsBinding, {...summaryBinding, access: 'read_write'}],
-        invocationCount: 1,
-        declarations: `${IS_FINITE_BITS_WGSL}${GET_NAN_WGSL}${ADDITION_ROUNDING_ERROR_WGSL}`,
-        // The ring totals carry the exact rounding error of every addition, read off the integer
-        // significands: a float Kahan term is algebraically zero and a fast-math shader compiler
-        // removes it, which lost every small ring that followed a large one.
-        body: `var totals = vec3f(0.0);
-  var roundingErrors = vec3f(0.0);
-  var minimum = vec2f(3.402823466e38);
-  var maximum = vec2f(-3.402823466e38);
-  var flags = 0u;
-  for (var ring = 0u; ring < ${ringCount}u; ring++) {
-    let base = ringsOffset + ${RING_STRIDE}u * ring;
-    if (rings[base + 9u] == 0.0) { continue; }
-    let values = vec3f(rings[base], rings[base + 1u], rings[base + 2u]);
-    let nextTotals = totals + values;
-    roundingErrors += vec3f(
-      getAdditionRoundingError(totals.x, values.x, nextTotals.x),
-      getAdditionRoundingError(totals.y, values.y, nextTotals.y),
-      getAdditionRoundingError(totals.z, values.z, nextTotals.z)
-    );
-    totals = nextTotals;
-    flags |= u32(rings[base + 3u]);
-    if (values.z > 0.0) {
-      minimum = min(minimum, vec2f(rings[base + 4u], rings[base + 5u]));
-      maximum = max(maximum, vec2f(rings[base + 6u], rings[base + 7u]));
-    }
-  }
-  totals += roundingErrors;
-  if (!isFiniteBits(totals.x) || totals.x <= 0.0) { flags |= ${GPU_STUDY_WINDOW_FLAG_EMPTY}u; }
-  if (any(minimum > maximum)) { minimum = vec2f(getNaN()); maximum = minimum; }
-  summary[summaryOffset] = minimum.x;
-  summary[summaryOffset + 1u] = minimum.y;
-  summary[summaryOffset + 2u] = maximum.x;
-  summary[summaryOffset + 3u] = maximum.y;
-  summary[summaryOffset + 4u] = totals.x;
-  summary[summaryOffset + 5u] = totals.y;
-  summary[summaryOffset + 6u] = totals.z;
-  summary[summaryOffset + 7u] = f32(flags);`
+        rings,
+        ringStride: RING_STRIDE,
+        summary
       })
     );
     const {nodes: slabNodes, slabs: transientSlabs} = getPolygonEdgeSlabNodes(graph, {
@@ -653,7 +777,10 @@ export class GPUStudyWindowPreparation<Parameters = unknown>
         declarations: `fn readSummary(slot: u32) -> f32 { return summary[summaryOffset + slot]; }
 ${getStudyWindowSampleCellWGSL(sampleGrid, 'readSummary')}`,
         body: `let cell = getStudyWindowSampleCell(0u);
-  for (var slot = 0u; slot < 4u; slot++) { parameters[parametersOffset + slot] = cell[slot]; }`
+  parameters[parametersOffset] = cell.x;
+  parameters[parametersOffset + 1u] = cell.y;
+  parameters[parametersOffset + 2u] = cell.z;
+  parameters[parametersOffset + 3u] = cell.w;`
       }),
       ...new GPUPolygonRasterization({
         id: `${id}-raster`,

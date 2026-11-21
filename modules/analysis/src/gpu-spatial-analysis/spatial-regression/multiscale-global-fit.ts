@@ -150,7 +150,7 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
       id: `${id}-global-fit`,
       operation: 'GPUMultiscaleGeographicallyWeightedRegression',
       variant: 'global-fit',
-      // contract-allow: single-invocation; only the at-most-24-column dense solve, no row traversal.
+      // contract-allow: single-invocation; centered dense solve bounded by GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT = 24 predictors, excluding the intercept; no row traversal.
       invocationCount: 1,
       bindings: [
         ...props.bindings,

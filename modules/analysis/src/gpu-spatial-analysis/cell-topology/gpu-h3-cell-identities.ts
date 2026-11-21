@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileCopyrightText: Copyright 2020-2021 Uber Technologies, Inc.
 // Vertex ownership and orientation follow H3 vertex.c (Apache-2.0).
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -70,6 +71,8 @@ export class GPUH3CellIdentities implements GPUCommandNodeProducer {
   private readonly recordChunks: Readonly<Record<string, readonly GraphDataView[]>>;
 
   constructor(readonly props: GPUH3CellIdentitiesProps) {
+    props = snapshotCellConstruction(props, ['id', 'cells', 'operation', 'output']);
+    this.props = props;
     this.id = props.id ?? 'h3-cell-identities';
     const id = this.id;
     validateRequirement(

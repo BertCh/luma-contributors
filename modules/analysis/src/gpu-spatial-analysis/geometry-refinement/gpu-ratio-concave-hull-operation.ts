@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRefinementOperationProps} from './refinement-construction-snapshot';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {getDelaunayMaximumTriangleCount} from '../delaunay-tessellation/gpu-delaunay-tessellation';
 import {GPURatioConcaveHull, type GPURatioConcaveHullProps} from './gpu-ratio-concave-hull';
@@ -29,6 +31,7 @@ export type RatioConcaveHullOperationProps = Pick<
  */
 export class GPURatioConcaveHullOperation extends GPUContributorOperation {
   constructor(props: RatioConcaveHullOperationProps) {
+    props = snapshotRefinementOperationProps(props, 'hull');
     const capacity = getDelaunayMaximumTriangleCount(props.pointCount);
     super({
       id: props.id ?? 'ratio-concave-hull',

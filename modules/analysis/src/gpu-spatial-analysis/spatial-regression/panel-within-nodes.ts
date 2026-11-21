@@ -9,7 +9,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGPUStorageBindingByteLength,
+  validateCapacity
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {MULTIPLICATION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/multiplication-rounding-error-wgsl';
@@ -32,20 +35,27 @@ type PanelWithinProps = {
   entityCount: number;
   periodCount: number;
   predictorCount: number;
+  effects?: 'unit' | 'time';
   predictors: GraphDataView<'float32'>;
   response: GraphDataView<'float32'>;
   overflow?: GraphDataView<'uint32'>;
-  output: {predictors: GraphDataView<'float32'>; response: GraphDataView<'float32'>};
+  output: {
+    predictors: GraphDataView<'float32'>;
+    response: GraphDataView<'float32'>;
+    /** Optional split means, including the final runtime-zero word; exact scratch shape. */
+    means?: GraphDataView<'float32'>;
+  };
 };
 
 /** Actual mean-scratch shapes, also used before the parent declares any resources. */
 export function getPanelWithinScratchLengths(
   entityCount: number,
   periodCount: number,
-  predictorCount: number
+  predictorCount: number,
+  effects: 'unit' | 'time' = 'unit'
 ): {partialLength: number; meanLength: number; tileCount: number} {
-  const {tileCount} = getRegressionTileLayout(periodCount);
-  const meanCount = entityCount * (predictorCount + 1);
+  const {tileCount} = getRegressionTileLayout(effects === 'time' ? entityCount : periodCount);
+  const meanCount = (effects === 'time' ? periodCount : entityCount) * (predictorCount + 1);
   return {partialLength: meanCount * tileCount * 2, meanLength: meanCount * 2 + 1, tileCount};
 }
 
@@ -59,22 +69,27 @@ export function getPanelWithinNodes<Parameters>(
   props: PanelWithinProps
 ): GPUCommandNode<Parameters>[] {
   const {entityCount, periodCount, predictorCount, id} = props;
+  const timeEffects = props.effects === 'time';
+  const groupCount = timeEffects ? periodCount : entityCount;
+  const observationCount = timeEffects ? entityCount : periodCount;
   const {partialLength, meanLength, tileCount} = getPanelWithinScratchLengths(
     entityCount,
     periodCount,
-    predictorCount
+    predictorCount,
+    props.effects
   );
   validateGraphChunkBindingRanges(graph, id, {
     predictors: props.predictors,
     response: props.response,
     overflow: props.overflow,
     outputPredictors: props.output.predictors,
-    outputResponse: props.output.response
+    outputResponse: props.output.response,
+    outputMeans: props.output.means
   });
-  const {tileRowCount: tilePeriodCount} = getRegressionTileLayout(periodCount);
-  const scaleExponent = Math.ceil(Math.log2(periodCount));
+  const {tileRowCount: tilePeriodCount} = getRegressionTileLayout(observationCount);
+  const scaleExponent = Math.ceil(Math.log2(observationCount));
   const scale = 2 ** -scaleExponent;
-  const divisor = periodCount * scale;
+  const divisor = observationCount * scale;
   for (const [name, length] of [
     ['panel mean partials', partialLength],
     ['panel means', meanLength]
@@ -88,7 +103,10 @@ export function getPanelWithinNodes<Parameters>(
     );
   }
   const partial = createTransientView(graph, `${id}-mean-partials`, 'float32', partialLength);
-  const means = createTransientView(graph, `${id}-means`, 'float32', meanLength);
+  if (props.output.means)
+    validateCapacity(id, 'output.means.length', props.output.means.length, meanLength, meanLength);
+  const means =
+    props.output.means ?? createTransientView(graph, `${id}-means`, 'float32', meanLength);
   const sourceBindings = [
     {name: 'sourcePredictors', view: props.predictors, type: 'f32', access: 'read'},
     {name: 'sourceResponse', view: props.response, type: 'f32', access: 'read'}
@@ -96,7 +114,7 @@ export function getPanelWithinNodes<Parameters>(
   // A storage-written zero keeps rounded differences intact under fast math.
   const declarations = `${PANEL_CENTER_ARITHMETIC_WGSL}
 fn readPanelValue(entity: u32, period: u32, component: u32) -> f32 {
-  let row = period * ${entityCount}u + entity;
+  let row = ${timeEffects ? `entity * ${entityCount}u + period` : `period * ${entityCount}u + entity`};
   if (component == 0u) { return sourceResponse[sourceResponseOffset + row]; }
   return sourcePredictors[sourcePredictorsOffset + row * ${predictorCount}u + component - 1u];
 }`;
@@ -127,7 +145,7 @@ let entity = column / ${predictorCount + 1}u;
 let component = column % ${predictorCount + 1}u;
 let runtimeZero = bitcast<u32>(means[meansOffset + ${meanLength - 1}u]);
 var total = vec2<f32>(0.0);
-for (var period = tile * ${tilePeriodCount}u; period < min((tile + 1u) * ${tilePeriodCount}u, ${periodCount}u); period++) {
+for (var period = tile * ${tilePeriodCount}u; period < min((tile + 1u) * ${tilePeriodCount}u, ${observationCount}u); period++) {
   let value = getRoundedDifference(readPanelValue(entity, period, component) * ${scale}, 0.0, runtimeZero);
   total = addPanelCenters(total, vec2<f32>(value, 0.0));
 }
@@ -177,8 +195,8 @@ means[meansOffset + index * 2u + 1u] = remainder / ${divisor};`
     createWGSLKernelNode(graph, {
       id: `${id}-within`,
       operation: 'GPUSpatialPanelErrorMaximumLikelihood',
-      variant: 'unit-demean',
-      invocationCount: entityCount * periodCount,
+      variant: timeEffects ? 'time-demean' : 'unit-demean',
+      invocationCount: groupCount * observationCount,
       workgroupSize: 64,
       bindings: [
         ...sourceBindings,
@@ -190,8 +208,8 @@ means[meansOffset + index * 2u + 1u] = remainder / ${divisor};`
           : [])
       ],
       declarations: `${declarations}\n${GET_NAN_WGSL}`,
-      body: `let entity = index % ${entityCount}u;
-let period = index / ${entityCount}u;
+      body: `let entity = ${timeEffects ? `index / ${entityCount}u` : `index % ${entityCount}u`};
+let period = ${timeEffects ? `index % ${entityCount}u` : `index / ${entityCount}u`};
 let runtimeZero = bitcast<u32>(means[meansOffset + ${meanLength - 1}u]);
 for (var component = 0u; component < ${predictorCount + 1}u; component++) {
   let center = meansOffset + (entity * ${predictorCount + 1}u + component) * 2u;

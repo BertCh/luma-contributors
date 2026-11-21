@@ -2,8 +2,34 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from './terrain-output-selection';
+
+import {
+  getTerrainHorizonSectorOutput,
+  getTerrainHorizonAnisotropicWeightWGSL
+} from './terrain-horizon-output';
+export {
+  getTerrainHorizonSectorOutput,
+  type TerrainHorizonSectorOutputProps
+} from './terrain-horizon-output';
+import {
+  GPU_TERRAIN_HORIZON_PARAMETER_LENGTH,
+  GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH,
+  GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH
+} from './terrain-horizon-parameters';
+export {
+  GPU_TERRAIN_HORIZON_PARAMETER_LENGTH,
+  GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH,
+  GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH,
+  GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES,
+  GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL,
+  GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_MINIMUM_WEIGHT,
+  getGPUTerrainHorizonParameterValues,
+  type GPUTerrainHorizonSettings
+} from './terrain-horizon-parameters';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {clamp} from '@math.gl/core';
+import {getPackedUint32Values} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -34,10 +60,10 @@ import {
   getRasterBandViews,
   getRasterBufferBandNodes,
   validateRasterBandBelongsToGraph,
-  validateParameterTarget,
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters,
   validateRasterOutputTexture
 } from '../../raster-analysis/raster-band-utils';
@@ -50,7 +76,6 @@ import {
   validateTerrainHorizonFormat,
   validateTerrainHorizonView,
   validateTerrainIlluminationBindingSize,
-  validateTerrainIlluminationCellSize,
   validateTerrainIlluminationView,
   type GPUTerrainHorizonFormat
 } from './terrain-illumination-utils';
@@ -58,16 +83,13 @@ import {
   RASTER_PIXEL_DIRECTION_WGSL,
   type GPURasterCellSizeMode,
   type GPURasterRowDirection,
-  validateRasterCellSizeMode,
-  writeRasterGridParameterValues
+  validateRasterCellSizeMode
 } from '../../analysis-core/contracts/raster-grid';
 import {resolveTerrainRowDirection} from '../terrain-curvature/terrain-geomorphometry-utils';
 import {
   createTerrainHorizonSweepNode,
   getTerrainHorizonGroundCellSizeWGSL,
-  getTerrainSweepSourceParameterValues,
   createTerrainSweepSectorTable,
-  TERRAIN_SWEEP_GRID_SLOTS,
   TERRAIN_SWEEP_MAXIMUM_EXTENT,
   TERRAIN_SWEEP_SECTOR_WGSL
 } from './terrain-horizon-sweep';
@@ -99,35 +121,8 @@ export type {GPUTerrainHorizonFormat} from './terrain-illumination-utils';
  */
 export type GPUTerrainHorizonAlgorithm = 'march' | 'sweep';
 
-/** Number of float32 values read from `GPUTerrainHorizonProps.parameters`. */
-export const GPU_TERRAIN_HORIZON_PARAMETER_LENGTH = 8;
-
-/**
- * Number of float32 values read from `GPUTerrainHorizonProps.parameters` when
- * `anisotropicSkyViewFactor` is bound: the 8 base values plus
- * `[anisotropyAzimuthDegrees, anisotropyLevel, anisotropyMinimumWeight, 0]`.
- */
-export const GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH = 12;
-
-/** Explicit sweep layout: base/anisotropy, reference cells/origin phase, shared source georeference. */
-export const GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH = 24;
-
 // The extra march corner must remain a safe-integer halo accepted by the published assembler.
 const TERRAIN_HORIZON_MAXIMUM_MARCH_RADIUS = Number.MAX_SAFE_INTEGER - 1;
-
-/**
- * Default direction of maximum anisotropic sky-view weight in RVT's convention: RVT's default
- * `asvf_dir = 315`. RVT direction angles run counterclockwise from north (90 is west, 270 east),
- * so 315 is compass azimuth 45 (north-east). See
- * {@link GPUTerrainHorizonSettings.anisotropyAzimuthDegrees}.
- */
-export const GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES = 315;
-
-/** Default anisotropic sky-view exponent (RVT "low" preset: 4). */
-export const GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL = 4;
-
-/** Default anisotropic sky-view minimum weight (RVT "low" preset: 0.4). */
-export const GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_MINIMUM_WEIGHT = 0.4;
 
 /** Degrees per code step of the `'unorm16'` horizon format: `180 / 65534`. */
 export const GPU_TERRAIN_HORIZON_UNORM16_STEP_DEGREES = TERRAIN_HORIZON_UNORM16_STEP_DEGREES;
@@ -155,15 +150,35 @@ export function decodeGPUTerrainHorizonUnorm16(code: number): number {
 
 /**
  * Unpacks `elementCount` angles in degrees from packed `'unorm16'` words (element `e` lives in
- * word `e >> 1`, low half for even `e`). Invalid elements are NaN.
+ * word `floor(e / 2)`, low half for even `e`). Invalid elements are NaN. Numeric arrays are words;
+ * `Uint8Array`, `ArrayBuffer`, and `{bytes}` readbacks are little-endian bytes, respecting the
+ * supplied view's byte offset and length. Requires a nonnegative integral element count and at
+ * least `ceil(elementCount / 2)` whole words.
  */
 export function unpackGPUTerrainHorizonUnorm16(
-  words: ArrayLike<number>,
+  input: ArrayLike<number> | ArrayBuffer | {bytes: Uint8Array | ArrayBuffer},
   elementCount: number
 ): Float64Array {
+  const reader = 'unpackGPUTerrainHorizonUnorm16';
+  validateRequirement(
+    reader,
+    Number.isSafeInteger(elementCount) && elementCount >= 0,
+    `elementCount must be a nonnegative safe integer; received ${elementCount}`
+  );
+  const requiredWords = Math.ceil(elementCount / 2);
+  let words: Uint32Array;
+  try {
+    words = getPackedUint32Values('bytes' in input ? input.bytes : input, requiredWords);
+  } catch (error) {
+    validateRequirement(
+      reader,
+      false,
+      `input requires at least ${requiredWords} whole words: ${String(error)}`
+    );
+  }
   const angles = new Float64Array(elementCount);
   for (let element = 0; element < elementCount; element++) {
-    const word = words[element >> 1];
+    const word = words[Math.floor(element / 2)];
     angles[element] = decodeGPUTerrainHorizonUnorm16((word >>> ((element & 1) * 16)) & 0xffff);
   }
   return angles;
@@ -174,156 +189,6 @@ export const GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT = 4;
 
 /** Largest supported `GPUTerrainHorizonProps.directionCount`. */
 export const GPU_TERRAIN_HORIZON_MAXIMUM_DIRECTION_COUNT = 64;
-
-/** CPU-side description packed by {@link getGPUTerrainHorizonParameterValues}. */
-export type GPUTerrainHorizonSettings = {
-  /** Elevation multiplier. Defaults to 1. */
-  zFactor?: number;
-  /**
-   * Earth curvature and refraction drop in 1/meters: a sample at ground distance `d` is lowered by
-   * `c * d^2`. See `getGPUTerrainCurvatureCoefficient`. Defaults to 0.
-   */
-  curvatureCoefficient?: number;
-  /** Ground search radius in meters; `<= 0` searches the full pixel radius. Defaults to 0. */
-  maximumDistance?: number;
-  /**
-   * Shared ground metres per overview pixel `[x, y]` for sweep geometry and curvature decisions.
-   * Use the same positive finite pair for every window of a mosaic, including the whole-grid
-   * evaluation. Required for a seamless sweep halo in latitude-dependent cell-size modes.
-   * With `sweepSourceGrid`, packs the explicit 24-value sweep layout; this pair occupies 12..13.
-   */
-  sweepReferenceCellSize?: readonly [number, number];
-  /** Source-window origin in overview pixels, relative to `sweepSourceGrid`; per frame. Defaults to [0, 0]. */
-  sweepOrigin?: readonly [number, number];
-  /**
-   * Shared full overview grid for row spacing and distance cutoffs; required with sweep settings.
-   * Every window uses the same source grid per frame. Its height is at most 16777215 so global
-   * source rows can be combined exactly as integers before conversion to float32.
-   */
-  sweepSourceGrid?: GPURasterMetadata;
-  /**
-   * Direction of maximum weight for `anisotropicSkyViewFactor`, in RVT's convention: the same
-   * number as RVT's `asvf_dir` / `a_main_direction` means the same direction. RVT direction angles
-   * run counterclockwise from north (0 north, 90 west, 180 south, 270 east), so `A` is compass
-   * azimuth `(360 - A) mod 360`. Defaults to
-   * {@link GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES} (315, RVT's default, which is
-   * compass north-east). This is the only counterclockwise angle in gpu-terrain: sector azimuths,
-   * sun azimuths and aspect are compass azimuths, clockwise from north.
-   */
-  anisotropyAzimuthDegrees?: number;
-  /**
-   * Weight exponent of `anisotropicSkyViewFactor`: a non-negative integer, RVT's `a_poly_level`.
-   * RVT's presets are low (level 4, minimum weight 0.4) and high (level 8, minimum weight 0.1).
-   * The power is signed as in RVT, `cos((a - A) / 2)^level`, so an odd level gives a weight below
-   * the minimum weight on the far side of the main direction, exactly like RVT. Defaults to
-   * {@link GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL}.
-   */
-  anisotropyLevel?: number;
-  /**
-   * Weight floor of `anisotropicSkyViewFactor` in `[0, 1]` (RVT: low 0.4, high 0.1). Defaults to
-   * {@link GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_MINIMUM_WEIGHT}.
-   */
-  anisotropyMinimumWeight?: number;
-};
-
-/**
- * Packs settings into the float layout read by {@link GPUTerrainHorizon}:
- * `[cellSizeX, cellSizeY, zFactor, curvatureCoefficient, northEdge, southEdge, maximumDistance, 0]`
- * (cell size and row-edge world y taken from `grid`), followed by `[anisotropyAzimuthDegrees, anisotropyLevel, anisotropyMinimumWeight, 0]` (12 values,
- * see {@link GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH}) when any anisotropy field is
- * given or `target` holds at least 12 values. Otherwise exactly 8 values are written and returned.
- * Sweep settings explicitly select a 24-value layout: reference ground cell x/y at 12..13,
- * reduced origin x/y at 14..15, shared source cell size at 16..17, source north/south edges at
- * 18..19, source height and window row offset at 20..21, reserved zeros at 22..23. Both
- * `sweepReferenceCellSize` and `sweepSourceGrid` are required. The origin defaults to [0, 0]
- * relative to that source overview grid, and the window must lie inside it. Oversized targets
- * with ordinary settings retain the ordinary layout; padding never selects sweep semantics.
- *
- * @throws If the grid cell size is not finite and positive, an anisotropy field is out of range, or
- *   `target` is too short.
- */
-export function getGPUTerrainHorizonParameterValues(
-  settings: GPUTerrainHorizonSettings,
-  grid: GPURasterMetadata,
-  target?: Float32Array
-): Float32Array {
-  const wantsSweepReference =
-    settings.sweepReferenceCellSize !== undefined ||
-    settings.sweepOrigin !== undefined ||
-    settings.sweepSourceGrid !== undefined;
-  validateRequirement(
-    'getGPUTerrainHorizonParameterValues',
-    !wantsSweepReference ||
-      (settings.sweepReferenceCellSize !== undefined && settings.sweepSourceGrid !== undefined),
-    'sweepReferenceCellSize and sweepSourceGrid are required for sweep settings'
-  );
-  const hasAnisotropy =
-    settings.anisotropyAzimuthDegrees !== undefined ||
-    settings.anisotropyLevel !== undefined ||
-    settings.anisotropyMinimumWeight !== undefined;
-  const wantsAnisotropy =
-    wantsSweepReference || hasAnisotropy || (target !== undefined && target.length >= 12);
-  const values =
-    target ??
-    new Float32Array(
-      wantsSweepReference
-        ? GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH
-        : wantsAnisotropy
-          ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
-          : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
-    );
-  validateTerrainIlluminationCellSize('getGPUTerrainHorizonParameterValues', grid);
-  validateParameterTarget(
-    'getGPUTerrainHorizonParameterValues',
-    values,
-    wantsSweepReference
-      ? GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH
-      : hasAnisotropy
-        ? GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH
-        : GPU_TERRAIN_HORIZON_PARAMETER_LENGTH
-  );
-  const anisotropyAzimuth =
-    settings.anisotropyAzimuthDegrees ?? GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES;
-  const anisotropyLevel = settings.anisotropyLevel ?? GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL;
-  const anisotropyMinimumWeight =
-    settings.anisotropyMinimumWeight ?? GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_MINIMUM_WEIGHT;
-  if (wantsAnisotropy) {
-    if (!Number.isFinite(anisotropyAzimuth)) {
-      throw new Error('Terrain horizon anisotropy azimuth must be finite');
-    }
-    if (!Number.isSafeInteger(anisotropyLevel) || anisotropyLevel < 0) {
-      throw new Error('Terrain horizon anisotropy level must be a non-negative integer');
-    }
-    if (
-      !Number.isFinite(anisotropyMinimumWeight) ||
-      anisotropyMinimumWeight < 0 ||
-      anisotropyMinimumWeight > 1
-    ) {
-      throw new Error('Terrain horizon anisotropy minimum weight must be in [0, 1]');
-    }
-  }
-  values.set([
-    0,
-    0,
-    settings.zFactor ?? 1,
-    settings.curvatureCoefficient ?? 0,
-    0,
-    0,
-    settings.maximumDistance ?? 0,
-    0
-  ]);
-  writeRasterGridParameterValues(values, grid, TERRAIN_SWEEP_GRID_SLOTS);
-  if (wantsAnisotropy) {
-    values.set([anisotropyAzimuth, anisotropyLevel, anisotropyMinimumWeight, 0], 8);
-  }
-  if (settings.sweepReferenceCellSize) {
-    values.set(
-      getTerrainSweepSourceParameterValues('getGPUTerrainHorizonParameterValues', settings, grid),
-      12
-    );
-  }
-  return values;
-}
 
 /**
  * Returns the ray-march sample distances in pixels used by {@link GPUTerrainHorizon}.
@@ -401,7 +266,7 @@ export function getGPUTerrainHorizonDirection(
 /**
  * Caller-owned outputs of {@link GPUTerrainHorizon}; at least one is required.
  */
-export type GPUTerrainHorizonOutput = {
+export type GPUTerrainHorizonOutput = TerrainOutputSelection<{
   /**
    * Horizon angles in degrees, pixel-major: element `pixel * directionCount + sector`.
    * `float32` format: `width * height * directionCount` values. `unorm16` format: a `uint32` view of
@@ -445,7 +310,7 @@ export type GPUTerrainHorizonOutput = {
   outputValidity?: GraphDataView<'uint32'>;
   /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the sky-view factor. */
   skyViewFactorTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainHorizon}.
@@ -519,191 +384,6 @@ export type GPUTerrainHorizonProps = {
   horizonFormat?: GPUTerrainHorizonFormat;
 };
 
-/** Props of {@link getTerrainHorizonSectorOutput}. @internal */
-export type TerrainHorizonSectorOutputProps = {
-  /** Sector index in `[0, directionCount)`; ignored when {@link sectorWGSL} is set. */
-  sector: number;
-  /**
-   * WGSL `u32` expression of the sector, read at run time (library rule 12: the sector index then
-   * never reaches the WGSL text). Sector 0 still assigns the sums and later sectors add.
-   */
-  sectorWGSL?: string;
-  /** Number of sectors. */
-  directionCount: number;
-  /** Storage format of `horizon`. Defaults to `'float32'`. */
-  horizonFormat?: GPUTerrainHorizonFormat;
-  /** Horizon map written in `'zenith'` mode (`read_write`, binding name `horizon`). */
-  horizon?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Per-pixel sum of `sin(max(h, 0))` (binding `sineSum`), `'zenith'` mode. */
-  sineSum?: GraphDataView<'float32'>;
-  /** Per-pixel sum of `h` (binding `angleSum`), `'zenith'` mode. */
-  angleSum?: GraphDataView<'float32'>;
-  /**
-   * Per-pixel weighted sum of `sin(max(h, 0))` (binding `anisotropicSum`), `'zenith'` mode. The
-   * caller's kernel must bind `settings` (`array<f32>`, 12 values, slots 8 to 10 hold the RVT main direction,
-   * level and minimum weight) and declare {@link TERRAIN_ILLUMINATION_WGSL_CONSTANTS}.
-   */
-  anisotropicSum?: GraphDataView<'float32'>;
-  /** Per-pixel sum of the nadir angle `h_nadir` (binding `nadirSum`), `'nadir'` mode only. */
-  nadirSum?: GraphDataView<'float32'>;
-  /**
-   * `'zenith'` stores the horizon and accumulates the sine, angle and anisotropic sums. `'nadir'`
-   * only accumulates `nadirSum`, so a caller running zenith and nadir as separate nodes emits one
-   * helper per node.
-   */
-  mode: 'zenith' | 'nadir';
-  /** Storage bindings the caller adds besides the outputs. Defaults to 3 (values, validity, settings). */
-  reservedBindingCount?: number;
-  /** Device storage-buffer limit per stage. Defaults to 8. */
-  maximumBindingCount?: number;
-};
-
-/**
- * Generates the per-sector output of horizon kernels: horizon store (float32 or unorm16), the
- * sine, angle, anisotropic and nadir accumulations (sector 0 assigns, later sectors add). One
- * implementation serves the ray march and the sweep.
- *
- * `wgsl` consumes `pixel: u32` and `horizonAngle: f32` (degrees, NaN for an invalid center) and
- * is wrapped in its own block, so it may be emitted twice into one kernel (zenith and nadir) as
- * long as the nadir call sees the nadir angle as `horizonAngle` in an inner scope. `declarations`
- * are module-scope WGSL (empty unless `anisotropicSum` is bound or `horizonFormat` is
- * `'unorm16'`), `bindings` the `read_write` storage bindings to append after the caller's own.
- *
- * @throws If a mode-specific output is bound in the wrong mode, nothing is bound, or the kernel
- *   would exceed `maximumBindingCount` storage bindings.
- * @internal
- */
-export function getTerrainHorizonSectorOutput(props: TerrainHorizonSectorOutputProps): {
-  bindings: WGSLKernelBinding[];
-  declarations: string;
-  wgsl: string;
-} {
-  const {sector, directionCount, mode} = props;
-  const format = props.horizonFormat ?? 'float32';
-  if (mode === 'nadir') {
-    if (props.horizon || props.sineSum || props.angleSum || props.anisotropicSum) {
-      throw new Error('Terrain horizon nadir output only accumulates nadirSum');
-    }
-  } else if (props.nadirSum) {
-    throw new Error('Terrain horizon zenith output cannot write nadirSum');
-  }
-  const bindings: WGSLKernelBinding[] = [];
-  const statements: string[] = [];
-  let declarations = '';
-  const sectorExpression = props.sectorWGSL ? `(${props.sectorWGSL})` : `${sector}u`;
-  // Sector 0 assigns and later sectors add: `select` keeps exactly the bits of either form.
-  const accumulate = (target: string, term: string): string =>
-    props.sectorWGSL
-      ? `${target} = select(${target} + ${term}, ${term}, ${sectorExpression} == 0u);`
-      : `${target} ${sector === 0 ? '=' : '+='} ${term};`;
-  if (props.horizon) {
-    if (format === 'unorm16') {
-      bindings.push({name: 'horizon', view: props.horizon, type: 'u32', access: 'read_write'});
-      declarations += `fn encodeHorizonUnorm16(angle: f32) -> u32 {
-  if (!isFiniteValue(angle)) { return 0u; }
-  return 1u + u32(floor(clamp(angle, -90.0, 90.0) * ${getWGSLFloatLiteral(TERRAIN_HORIZON_UNORM16_SCALE)} + 32767.0 + 0.5));
-}
-`;
-      // One sector per dispatch and DIRECTION_COUNT >= 4, so distinct pixels never share a word.
-      statements.push(`let element = pixel * ${directionCount}u + ${sectorExpression};
-  let wordIndex = horizonOffset + (element >> 1u);
-  let shift = (element & 1u) * 16u;
-  horizon[wordIndex] = (horizon[wordIndex] & ~(0xffffu << shift)) |
-    (encodeHorizonUnorm16(horizonAngle) << shift);`);
-    } else {
-      bindings.push({name: 'horizon', view: props.horizon, type: 'f32', access: 'read_write'});
-      statements.push(
-        `horizon[horizonOffset + pixel * ${directionCount}u + ${sectorExpression}] = horizonAngle;`
-      );
-    }
-  }
-  if (props.sineSum) {
-    bindings.push({name: 'sineSum', view: props.sineSum, type: 'f32', access: 'read_write'});
-    statements.push(
-      accumulate(
-        'sineSum[sineSumOffset + pixel]',
-        'sin(max(horizonAngle, 0.0) * DEGREES_TO_RADIANS)'
-      )
-    );
-  }
-  if (props.angleSum) {
-    bindings.push({name: 'angleSum', view: props.angleSum, type: 'f32', access: 'read_write'});
-    statements.push(accumulate('angleSum[angleSumOffset + pixel]', 'horizonAngle'));
-  }
-  if (props.anisotropicSum) {
-    bindings.push({
-      name: 'anisotropicSum',
-      view: props.anisotropicSum,
-      type: 'f32',
-      access: 'read_write'
-    });
-    declarations += getTerrainHorizonAnisotropicWeightWGSL(directionCount);
-    statements.push(
-      accumulate(
-        'anisotropicSum[anisotropicSumOffset + pixel]',
-        `getAnisotropicWeight(${sectorExpression}) *
-    sin(max(horizonAngle, 0.0) * DEGREES_TO_RADIANS)`
-      )
-    );
-  }
-  if (props.nadirSum) {
-    bindings.push({name: 'nadirSum', view: props.nadirSum, type: 'f32', access: 'read_write'});
-    statements.push(accumulate('nadirSum[nadirSumOffset + pixel]', 'horizonAngle'));
-  }
-  if (bindings.length === 0) {
-    throw new Error('Terrain horizon sector output requires at least one output');
-  }
-  const total = bindings.length + (props.reservedBindingCount ?? 3);
-  const limit = props.maximumBindingCount ?? 8;
-  if (total > limit) {
-    throw new Error(
-      `Terrain horizon sector output needs ${total} storage bindings, more than the limit of ${limit}`
-    );
-  }
-  return {bindings, declarations, wgsl: `{\n  ${statements.join('\n  ')}\n  }`};
-}
-
-/**
- * WGSL `fn getAnisotropicWeight(sector: u32) -> f32` for `directionCount` sectors, reading the
- * RVT main direction, level and minimum weight from `settings[8..10]`.
- *
- * Convention, stated in compass terms so it does not depend on RVT: sector `d` looks along
- * compass azimuth `t = d * 360 / n` (clockwise from north) and gets the angle
- * `a = (360 - t) mod 360`, counterclockwise from north. Its weight is
- * `(1 - wMin) * cos((a - A) / 2)^level + wMin` with the signed power of an integer level
- * (`0^0 = 1`, as numpy). The weight is largest for the sector at compass azimuth
- * `(360 - A) mod 360`: `A = 315` weights the north-east sky, `A = 90` the west.
- *
- * This equals `rvt.vis.sky_view_factor_compute` of rvt-py 2.2.1, where direction `i` has angle
- * `i * 360 / n` and looks at the pixel offset `(-cos, -sin) * r` over (rows, columns) of a
- * north-up array: counterclockwise from north, so compass sector `d` is RVT direction
- * `(n - d) mod n`. RVT does not wrap `a - A`, and neither does this kernel, which matters for odd
- * levels. Checked against unmodified rvt-py on walls and ramps at the four compass sides and the
- * diagonals, on north-up and rows-north grids, with both presets and an odd level
- * (`test/oracles/terrain-sky-view-rvt.py`, `gpu-terrain-horizon-rvt.spec.ts`): where RVT and the
- * kernel read the same samples the factors agree to 3e-7.
- *
- * @internal
- */
-function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string {
-  return `fn getAnisotropicWeight(sector: u32) -> f32 {
-  let mainDirection = settings[settingsOffset + 8u];
-  let level = settings[settingsOffset + 9u];
-  let minimumWeight = settings[settingsOffset + 10u];
-  // Compass sector d is RVT direction (n - d) mod n; RVT angles run counterclockwise from north.
-  let rvtDirection = f32((${directionCount}u - sector) % ${directionCount}u) * ${getWGSLFloatLiteral(360 / directionCount)};
-  let cosine = cos((rvtDirection - mainDirection) * 0.5 * DEGREES_TO_RADIANS);
-  var power = 1.0;
-  if (level > 0.0) {
-    // pow is undefined for a zero or negative base; odd integer levels keep the sign like RVT.
-    power = select(0.0, pow(abs(cosine), level), abs(cosine) > 0.0);
-    if (cosine < 0.0 && fract(level * 0.5) != 0.0) { power = -power; }
-  }
-  return (1.0 - minimumWeight) * power + minimumWeight;
-}
-`;
-}
-
 /**
  * Computes horizon-angle maps for `directionCount` azimuth sectors by bounded ray marching, plus
  * sky-view factor, openness and anisotropic sky-view factor from the same rays.
@@ -732,7 +412,7 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  * - Anisotropic sky-view factor (Kokalj and Somrak 2019, RVT `asvf`), with RVT's weights and
  *   direction convention: sector weights `(1 - wMin) * cos((a - A) / 2)^level + wMin`, where `a` is
  *   the sector's RVT direction angle (counterclockwise from north, `(360 - t) mod 360` for compass
- *   azimuth `t`), `A` is `anisotropyAzimuthDegrees` exactly as RVT's `asvf_dir`, and the power is
+ *   azimuth `t`), `A` is `rvtDirectionDegrees` exactly as RVT's `asvf_dir`, and the power is
  *   signed with an integer level. The heaviest sector is at compass azimuth `(360 - A) mod 360`.
  *   The direction convention and the three reductions (sky-view factor, openness, anisotropic
  *   factor) are checked against rvt-py 2.2.1. RVT's numbers are reproduced only where it reads the
@@ -944,6 +624,8 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer {
     );
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,

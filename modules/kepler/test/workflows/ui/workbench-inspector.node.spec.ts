@@ -2132,7 +2132,7 @@ describe('source type selector', () => {
       /<select[^>]*data-testid="workflow-source-type"[^>]*>([\s\S]*?)<\/select>/
     )?.[1];
     expect(select).toBe(
-      '<option value="source-dataset">Dataset</option><option value="source-geojson" selected="">GeoJSON</option><option value="source-drawing">Drawn shapes</option>'
+      '<option value="source-dataset">Dataset</option><option value="source-geojson" selected="">GeoJSON</option><option value="source-drawing">Drawn shapes</option><option value="source-table">Table snapshot</option>'
     );
     expect(markup.indexOf('workflow-source-type')).toBeLessThan(
       markup.indexOf('workflow-step-label')

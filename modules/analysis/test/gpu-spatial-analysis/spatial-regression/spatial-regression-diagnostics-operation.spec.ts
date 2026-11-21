@@ -130,3 +130,53 @@ for (const scene of [
       expect(outputs[0]['tests'][test * 3 + 1]).toBe(outputs[1]['tests'][test * 3 + 1]);
   });
 }
+
+it('BC2 operation snapshots preserve complete suppression and recovery after caller maps mutate', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = fixtures[0];
+  for (const Operation of [
+    GPUSpatialRegressionDiagnosticsOperation,
+    CPUSpatialRegressionDiagnosticsOperation
+  ]) {
+    const props = {
+      rowCount: 30,
+      predictorCount: 2,
+      weights: {
+        offsets: 'offsets',
+        neighbors: 'neighbors',
+        weights: 'weights',
+        status: {complete: 'flag' as string | undefined}
+      },
+      predictors: 'predictors',
+      response: 'response',
+      residuals: 'residuals',
+      output: {tests: 'tests', summary: 'summary', status: {code: 'code'}}
+    };
+    const operation = new Operation(props);
+    delete props.weights.status.complete;
+    props.output.status.code = 'replacement';
+    for (const loss of [0, 1, 0]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          offsets: {format: 'uint32', values: Uint32Array.from(fixture.weights.offsets)},
+          neighbors: {format: 'uint32', values: Uint32Array.from(fixture.weights.neighbors)},
+          weights: {format: 'float32', values: Float32Array.from(fixture.weights.weights)},
+          predictors: {format: 'float32', values: Float32Array.from(fixture.predictors)},
+          response: {format: 'float32', values: Float32Array.from(fixture.response)},
+          residuals: {format: 'float32', values: Float32Array.from(fixture.residuals)},
+          flag: {format: 'uint32', values: Uint32Array.of(loss)}
+        },
+        operations: [operation],
+        outputs: ['code', 'tests']
+      });
+      expect(Array.from(result['code'])).toEqual([loss ? 0 : 3]);
+      if (!loss) {
+        for (let test = 0; test < 6; test++) {
+          expect(result['tests'][test * 3]).toBeNaN();
+          expect(result['tests'][test * 3 + 2]).toBeNaN();
+        }
+      } else expect(Number.isFinite(result['tests'][0])).toBe(true);
+    }
+  }
+});

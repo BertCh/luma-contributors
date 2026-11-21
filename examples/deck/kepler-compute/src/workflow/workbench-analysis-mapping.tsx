@@ -7,7 +7,7 @@ import styled from 'styled-components';
 import {
   GPU_ANALYSIS_ROW_SEMANTICS,
   type GPUAnalysisRowSemantics
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   getCatalogBinding,
   type CatalogParameterValue,

@@ -129,8 +129,15 @@ function createOperator(side: string, secondary?: GPUSpatialContext, omitSide = 
 }
 for (const side of ['polygons', 'right', 'other', 'zones']) {
   it(`${side} accepts absent and matching secondary contexts`, () => {
-    expect(createOperator(side).spatialContext).toBe(PRIMARY);
-    expect(createOperator(side, {...PRIMARY}).spatialContext).toBe(PRIMARY);
+    // Construction captures the declared metadata, including the nested planar frame.
+    for (const context of [
+      createOperator(side).spatialContext,
+      createOperator(side, {...PRIMARY}).spatialContext
+    ]) {
+      expect(context).toStrictEqual(PRIMARY);
+      expect(context).not.toBe(PRIMARY);
+      expect(context.frame).not.toBe(PRIMARY.frame);
+    }
   });
   it(`${side} rejects a secondary datum mismatch`, () => {
     expect(() => createOperator(side, {...PRIMARY, datum: 'EPSG:4267'})).toThrowError(
@@ -151,7 +158,10 @@ for (const side of ['polygons', 'right', 'other', 'zones']) {
 }
 for (const side of ['right', 'other']) {
   it(`${side} context requires its optional input`, () => {
-    expect(createOperator(side, undefined, true).spatialContext).toBe(PRIMARY);
+    const context = createOperator(side, undefined, true).spatialContext;
+    expect(context).toStrictEqual(PRIMARY);
+    expect(context).not.toBe(PRIMARY);
+    expect(context.frame).not.toBe(PRIMARY.frame);
     expect(() => createOperator(side, PRIMARY, true)).toThrowError(
       new Error(`planar ${side}SpatialContext needs ${side}`)
     );

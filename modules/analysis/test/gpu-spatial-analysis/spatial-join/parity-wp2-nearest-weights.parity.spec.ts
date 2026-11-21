@@ -61,7 +61,7 @@ for (const entry of fixture.cases) {
                     entry.features.length / 2
                   )
                 },
-                k: joinCount,
+                neighborCount: joinCount,
                 radius:
                   entry.radius === undefined
                     ? undefined
@@ -79,7 +79,7 @@ for (const entry of fixture.cases) {
                 neighborDistances: distances.view,
                 neighborCounts: counts.view,
                 slotCapacity: joinCount,
-                k: entry.k,
+                neighborCount: entry.k,
                 excludeSelf: entry.selfJoin,
                 weightType: rule.weightType,
                 power: rule.power,

@@ -23,7 +23,8 @@ import {
   MAXIMUM_KEPLER_KRIGING_GRID_DIMENSION,
   MAXIMUM_KEPLER_KRIGING_NEIGHBORS,
   parseKeplerKrigingSettings,
-  type KeplerKrigingSettings
+  type KeplerKrigingSettings,
+  type KeplerVariogramFit
 } from '@luma-contributors/kepler';
 import type {AnalysisRuntime} from './analysis-runtime';
 import type {KrigingVariogramSuggestion} from './kriging-diagnostics';
@@ -75,6 +76,7 @@ export function makeKrigingSheetDefaults(
 ) {
   return {
     ...makeInterpolationSheetDefaults(settings, initialization),
+    ...(settings?.longitudeSearch === undefined ? {} : {longitudeSearch: settings.longitudeSearch}),
     searchRadiusMeters: settings?.searchRadiusMeters ?? 10000,
     neighborCount: settings?.neighborCount ?? 8,
     minimumNeighbors: settings?.minimumNeighbors ?? 3,
@@ -118,6 +120,9 @@ export function getKrigingSheetSettings(
     coordinateSpace: 'longitude-latitude',
     metric: 'great-circle',
     units: 'meters',
+    ...(values['longitudeSearch'] === undefined
+      ? {}
+      : {longitudeSearch: values['longitudeSearch']}),
     grid: {
       bounds: ['west', 'south', 'east', 'north'].map(number),
       width: number('width'),
@@ -344,24 +349,7 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
                 .join(', ')}
               . Apply to use it.
             </p>
-            {fit.fit.diagnostics && (
-              <table aria-label="Variogram fit diagnostics">
-                <thead>
-                  <tr>
-                    <th>Diagnostic</th>
-                    <th>Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(fit.fit.diagnostics).map(([name, value]) => (
-                    <tr key={name}>
-                      <td>{name}</td>
-                      <td>{Number.isFinite(value) ? value.toPrecision(6) : 'Unavailable'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {renderKrigingFitDiagnostics(fit.fit)}
           </>
         )}
       </section>
@@ -388,8 +376,9 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
       <p className="hint">
         Selection changes contributing samples and may find replacement nearest neighbors. Missing
         and nonfinite inputs are excluded. Float32 precision limits small distances and can make
-        nearly singular neighborhoods unavailable. Radius-expanded grids must stay away from the
-        poles and antimeridian.
+        nearly singular neighborhoods unavailable. With clipped longitude search, radius-expanded
+        grids must stay away from the poles and antimeridian. Wrapped search retains neighbors
+        across those boundaries.
       </p>
       <p className="hint">
         The map displays predictions. The grid inspector and separate downloads expose predictions
@@ -414,5 +403,43 @@ export function KrigingPanel({analysis}: {analysis: AnalysisRuntime}) {
         />
       )}
     </details>
+  );
+}
+
+/** Diagnostics shown for a suggested variogram before it is applied. */
+export function renderKrigingFitDiagnostics(fit: KeplerVariogramFit) {
+  if (!fit.diagnostics && !fit.stopReason && !fit.nonconvergenceDiagnostic) return null;
+  return (
+    <table aria-label="Variogram fit diagnostics">
+      <thead>
+        <tr>
+          <th>Diagnostic</th>
+          <th>Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {fit.stopReason && (
+          <tr>
+            <td>Stop reason</td>
+            <td>
+              {fit.stopReason}
+              {fit.stallReason ? ` (${fit.stallReason})` : ''}
+            </td>
+          </tr>
+        )}
+        {fit.nonconvergenceDiagnostic && (
+          <tr>
+            <td>Nonconvergence</td>
+            <td>{fit.nonconvergenceDiagnostic}</td>
+          </tr>
+        )}
+        {Object.entries(fit.diagnostics ?? {}).map(([name, value]) => (
+          <tr key={name}>
+            <td>{name}</td>
+            <td>{Number.isFinite(value) ? value.toPrecision(6) : 'Unavailable'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

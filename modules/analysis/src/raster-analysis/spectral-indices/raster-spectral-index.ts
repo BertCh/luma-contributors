@@ -9,13 +9,25 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {GPURasterBandMath, type GPURasterBandMathOperation} from '@luma.gl/graph/gpu-raster';
-import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import {
+  GPURasterTextureToBuffer,
+  type GPURasterBand,
+  type GPURasterTextureBand,
+  type GPURasterBufferBand
+} from '@luma.gl/graph/gpu-raster';
 import {
   captureGraphCommandNodes,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
-import {snapshotRasterBand} from '../raster-band-utils';
+import {
+  snapshotRasterBand,
+  getRasterBandViews,
+  getRasterBufferBandNodes,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph
+} from '../raster-band-utils';
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 
 /** Capture the validated policy, output ports and named source descriptors once. @internal */
 export function snapshotSpectralIndexProps<Props extends SpectralIndexProps>(
@@ -34,10 +46,7 @@ export function snapshotSpectralIndexProps<Props extends SpectralIndexProps>(
   ]);
   const bands = fields
     .filter(field => !['method', 'soilAdjustment'].includes(String(field)))
-    .map(field => [
-      field,
-      Object.freeze(snapshotRasterBand(captured[field] as GPURasterBufferBand))
-    ]);
+    .map(field => [field, Object.freeze(snapshotRasterBand(captured[field] as GPURasterBand))]);
   return Object.freeze({
     ...captured,
     ...Object.fromEntries(bands),
@@ -63,7 +72,9 @@ export type SpectralIndexProps = {
 /** Common ownership and calibration validation, delegated to the underlying public primitive. */
 export abstract class RasterSpectralIndex<Properties extends SpectralIndexProps> {
   readonly id: string;
-  readonly props: Properties;
+  readonly props: Readonly<Properties>;
+  private readonly sourceBands: GPURasterBand[];
+  private readonly convertedBands = new WeakMap<object, Map<GPURasterBand, GPURasterBufferBand>>();
   private readonly commandNodes = new WeakMap<object, readonly GPUCommandNode[]>();
 
   /** Returns the ordered public band-math passes without scheduling them. */
@@ -72,6 +83,17 @@ export abstract class RasterSpectralIndex<Properties extends SpectralIndexProps>
   ): readonly GPUCommandNode<Parameters>[] {
     const cached = this.commandNodes.get(graph);
     if (cached) return cached as readonly GPUCommandNode<Parameters>[];
+    for (const band of this.sourceBands) validateRasterBandBelongsToGraph(this.id, graph, band, []);
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...this.sourceBands.flatMap(getRasterBandViews),
+        this.props.output,
+        this.props.outputValidity
+      ],
+      {'canonical band planes': this.props.width * this.props.height * 4}
+    );
     const nodes = Object.freeze(captureGraphCommandNodes(graph, () => this.addIndexNodes(graph)));
     this.commandNodes.set(graph, nodes as readonly GPUCommandNode[]);
     return nodes;
@@ -79,17 +101,39 @@ export abstract class RasterSpectralIndex<Properties extends SpectralIndexProps>
 
   protected abstract addIndexNodes<Parameters>(graph: GPUCommandGraph<Parameters>): void;
 
-  protected constructor(props: Properties, defaultId: string, bands: GPURasterBufferBand[]) {
+  protected constructor(props: Properties, defaultId: string, bands: GPURasterBand[]) {
     this.id = props.id ?? defaultId;
     this.props = props;
+    this.sourceBands = bands;
+    if (!Number.isFinite(Math.fround(props.epsilon ?? 0)) || (props.epsilon ?? 0) < 0)
+      throw new Error(`${this.id} epsilon must be finite and non-negative`);
+    if (
+      props.clamp &&
+      (props.clamp.length !== 2 ||
+        !props.clamp.every(value => Number.isFinite(Math.fround(value))) ||
+        props.clamp[0] > props.clamp[1])
+    )
+      throw new Error(`${this.id} clamp must contain an ordered finite range`);
     for (const band of bands) {
       // Validate every original source against both caller outputs before allocating transients.
       // In particular, the final divide alone cannot detect aliases with an earlier source.
-      new GPURasterBandMath({...props, id: this.id, left: band, right: band, operation: 'add'});
+      if (band.storage.kind === 'buffer') {
+        const input = band as GPURasterBufferBand;
+        new GPURasterBandMath({...props, id: this.id, left: input, right: input, operation: 'add'});
+      } else {
+        validateRasterTextureBand(this.id, band, this.getGrid());
+        new GPURasterTextureToBuffer({
+          id: this.id,
+          input: band as GPURasterTextureBand,
+          output: props.output,
+          outputValidity: props.outputValidity,
+          applyCalibration: true
+        });
+      }
       validateGraphOutputsDisjointFromInputs(
         this.id,
         {output: props.output, outputValidity: props.outputValidity},
-        {values: band.storage.values, validity: band.validity}
+        Object.fromEntries(getRasterBandViews(band).map((view, index) => [`input ${index}`, view]))
       );
     }
     validateGraphOutputsDisjointFromInputs(
@@ -99,11 +143,43 @@ export abstract class RasterSpectralIndex<Properties extends SpectralIndexProps>
     );
   }
 
+  private getGrid() {
+    return {
+      width: this.props.width,
+      height: this.props.height,
+      affine: [1, 0, 0, 0, 1, 0] as const,
+      pixelInterpretation: 'area' as const
+    };
+  }
+
+  private resolveBand<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    band: GPURasterBand
+  ): GPURasterBufferBand {
+    let converted = this.convertedBands.get(graph);
+    if (!converted) {
+      converted = new Map();
+      this.convertedBands.set(graph, converted);
+    }
+    const cached = converted.get(band);
+    if (cached) return cached;
+    const source = getRasterBufferBandNodes(
+      graph,
+      `${this.id}-source-${converted.size}`,
+      band,
+      this.getGrid(),
+      false
+    );
+    for (const node of source.nodes) graph.add(node);
+    converted.set(band, source.band);
+    return source.band;
+  }
+
   protected addStage<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     name: string,
-    left: GPURasterBufferBand,
-    right: GPURasterBufferBand,
+    left: GPURasterBand,
+    right: GPURasterBand,
     operation: GPURasterBandMathOperation
   ): GPURasterBufferBand<'float32'> {
     const id = `${this.id}-${name}`;
@@ -114,8 +190,8 @@ export abstract class RasterSpectralIndex<Properties extends SpectralIndexProps>
       id,
       width: this.props.width,
       height: this.props.height,
-      left,
-      right,
+      left: this.resolveBand(graph, left),
+      right: this.resolveBand(graph, right),
       operation,
       output: values,
       outputValidity: validity
@@ -125,10 +201,16 @@ export abstract class RasterSpectralIndex<Properties extends SpectralIndexProps>
 
   protected addOutput<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    left: GPURasterBufferBand,
-    right: GPURasterBufferBand,
+    left: GPURasterBand,
+    right: GPURasterBand,
     operation: 'divide' | 'normalized-difference'
   ): void {
-    new GPURasterBandMath({...this.props, id: this.id, left, right, operation}).addToGraph(graph);
+    new GPURasterBandMath({
+      ...this.props,
+      id: this.id,
+      left: this.resolveBand(graph, left),
+      right: this.resolveBand(graph, right),
+      operation
+    }).addToGraph(graph);
   }
 }

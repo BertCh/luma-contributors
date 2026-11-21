@@ -7,7 +7,7 @@ import {expect, it} from 'vitest';
 import {
   GPULocationAllocation,
   getGPULocationAllocationMaximumSparseEntryCount,
-  GPU_LOCATION_ALLOCATION_STATUS
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/location-allocation/index';
 import {
   createNullWebGPUDevice,
@@ -148,11 +148,11 @@ it('GPULocationAllocation validates maximumSwapIterations and declares swap node
       selectedFacilities: view('uint32', 3),
       assignments: view('uint32', 4),
       objective: view('float32', 1),
-      status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+      status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
     },
     ...extra
   });
-  expect(GPU_LOCATION_ALLOCATION_STATUS.length).toBe(7);
+  expect(GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length).toBe(7);
   expect(new GPULocationAllocation(make()).maximumSwapIterations).toBe(100);
   expect(new GPULocationAllocation(make({maximumSwapIterations: 0})).maximumSwapIterations).toBe(0);
   expect(() => new GPULocationAllocation(make({maximumSwapIterations: -1}))).toThrow(
@@ -187,9 +187,21 @@ it('GPULocationAllocation validates maximumSwapIterations and declares swap node
     .getCommandNodes(graph)
     .map(node => node.id);
   for (const iteration of [0, 1]) {
-    for (const stage of ['list', 'prepare', 'totals', 'score', 'choose', 'apply']) {
-      expect(ids).toContain(`swap-swap-${iteration}-${stage}`);
-    }
+    // Three facilities fit in one 256-lane compaction scan: dispatch, scan, then scatter
+    // publishes the selected list before preparation. No parent scan or offset pass is needed.
+    const iterationPrefix = `swap-swap-${iteration}-`;
+    expect(ids.filter(id => id.startsWith(iterationPrefix))).toEqual(
+      [
+        'list-dispatch',
+        'list-scan-0',
+        'list-scatter',
+        'prepare',
+        'totals',
+        'score',
+        'choose',
+        'apply'
+      ].map(stage => `${iterationPrefix}${stage}`)
+    );
   }
   expect(ids.indexOf('swap-swap-1-apply')).toBeLessThan(ids.indexOf('swap-assign'));
   expect(ids).not.toContain('swap-swap-2-apply');
@@ -446,7 +458,7 @@ function createSparseHarness() {
       selectedFacilities: view('uint32', facilityCount),
       assignments: view('uint32', demandCount),
       objective: view('float32', 1),
-      status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+      status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
     },
     ...extra
   });

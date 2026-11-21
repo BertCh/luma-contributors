@@ -194,7 +194,7 @@ export const COVERAGE_STATISTICS_CASES: KernelAuditCase[] = [
           method,
           ...(method === 'HAC' ? {kernel: weights(65536)} : {}),
           ...(method === 'CLUSTER' ? {clusters: view('uint32', 65536), clusterCount: 65536} : {}),
-          output: {covariance: view('float32', 256), status: view('uint32', 1)}
+          output: {covariance: view('float32', 256), status: {code: view('uint32', 1)}}
         })
       );
     }
@@ -338,14 +338,17 @@ export const COVERAGE_STATISTICS_CASES: KernelAuditCase[] = [
           weights: weights(256, 255),
           values: view('float32', 256 * 16),
           variableCount: 16,
-          maximumPermutations: 4096,
+          permutationCount: 4096,
           correction,
           tail: correction === 'none' ? 'esda-min-tail' : 'equal-tail',
           seed: [0xffffffff, 0xffffffff],
           mask: view('uint32', 256),
           output: {
             statistic: view('float32', 256),
-            pValues: view('float32', 256),
+            [correction === 'bonferroni' ? 'adjustedPValues' : 'pseudoPValues']: view(
+              'float32',
+              256
+            ),
             classes: view('uint32', 256),
             simulations: view('float32', 256 * 4096)
           }

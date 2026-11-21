@@ -4,10 +4,10 @@
 
 import {GPUOPTICS} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-optics';
 import {
-  GPUHierarchicalDensityClustering,
-  GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  GPUHDBSCAN,
+  GPU_HDBSCAN_MAXIMUM_ROW_COUNT,
+  GPUDBSCAN,
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/temporal-context';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
@@ -38,14 +38,14 @@ function compact({view}: KernelAuditContext, capacity: number) {
 export const SPACE_TIME_CLUSTERING_AUDIT_CASES: KernelAuditCase[] = [
   ...[
     {rows: 1025, minimumSamples: 1},
-    {rows: GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT, minimumSamples: 32}
+    {rows: GPU_HDBSCAN_MAXIMUM_ROW_COUNT, minimumSamples: 32}
   ].map(
     ({rows, minimumSamples}): KernelAuditCase => ({
-      exportName: 'GPUHierarchicalDensityClustering',
+      exportName: 'GPUHDBSCAN',
       name: `scaled space-time, ${rows} rows, ${minimumSamples} samples`,
       build: ({graph, view}) => {
         graph.add(
-          new GPUHierarchicalDensityClustering({
+          new GPUHDBSCAN({
             positions: view('float32x2', rows),
             times: view('float32', rows),
             temporalContext: TEMPORAL_CONTEXT,
@@ -65,18 +65,18 @@ export const SPACE_TIME_CLUSTERING_AUDIT_CASES: KernelAuditCase[] = [
   ...(['atomic', 'sorted'] as const).flatMap(sumOrder =>
     [false, true].map(
       (geographic): KernelAuditCase => ({
-        exportName: 'GPUSpatialClustering',
+        exportName: 'GPUDBSCAN',
         name: `space-time every output ${geographic ? 'geographic' : 'planar'} ${sumOrder}`,
         build: context => {
           const {graph, view} = context;
           const rows = 5000;
           const capacity = 512;
           graph.add(
-            new GPUSpatialClustering({
+            context.construct(GPUDBSCAN, {
               positions: view('float32x2', rows),
               times: view('float32', rows),
               temporalContext: TEMPORAL_CONTEXT,
-              parameters: view('float32', GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH),
+              parameters: view('float32', GPU_DBSCAN_PARAMETER_LENGTH),
               gridSize: [128, 128],
               sourceIds: view('uint32', rows),
               sumOrder,
@@ -87,7 +87,6 @@ export const SPACE_TIME_CLUSTERING_AUDIT_CASES: KernelAuditCase[] = [
                 coreFlags: view('uint32', rows),
                 clusterCount: view('uint32', 1),
                 clusters: compact(context, capacity),
-                drawInstanceCount: view('uint32', 1),
                 clusterSizes: view('uint32', capacity),
                 clusterCentroids: view('float32x2', capacity)
               }
@@ -121,7 +120,13 @@ export const SPACE_TIME_CLUSTERING_AUDIT_CASES: KernelAuditCase[] = [
                 reachability: view('float32', 4096),
                 predecessors: view('uint32', 4096),
                 labels: view('uint32', 4096),
-                status: view('uint32', 3),
+                ports: {
+                  status: {
+                    iterationCount: view('uint32', 1),
+                    converged: view('uint32', 1),
+                    invalidCount: view('uint32', 1)
+                  }
+                },
                 ...(extractionMethod === 'xi'
                   ? {
                       clusterIntervals: view('uint32x2', 4096),
@@ -158,7 +163,13 @@ export const SPACE_TIME_CLUSTERING_AUDIT_CASES: KernelAuditCase[] = [
               reachability: view('float32', 65536),
               predecessors: view('uint32', 65536),
               labels: view('uint32', 65536),
-              status: view('uint32', 3)
+              ports: {
+                status: {
+                  iterationCount: view('uint32', 1),
+                  converged: view('uint32', 1),
+                  invalidCount: view('uint32', 1)
+                }
+              }
             }
           })
         );

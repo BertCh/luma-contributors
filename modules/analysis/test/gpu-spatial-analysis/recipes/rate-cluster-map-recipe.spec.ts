@@ -26,6 +26,7 @@ import {
 import {RecipeTestFixture, isClose} from './recipe-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {RATE_CLUSTER_REFERENCE} from './rate-cluster-esda-reference';
+import {RATE_CLUSTER_ORACLE_OPTIONS} from './rate-cluster-oracle-options';
 
 const COLUMNS = 7;
 const ROWS = 6;
@@ -36,6 +37,79 @@ const ROWS = 6;
  * two significant polygons, so the gating is still exercised.
  */
 const PERMUTATIONS = 999;
+
+it('UST-02 restandardizes the surviving neighbor of a NaN rate from .5 to 1', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'row-handoff');
+  const layout = flattenPolygons(
+    [0, 1, 2].map(x => [
+      [
+        [x, 0],
+        [x + 1, 0],
+        [x + 1, 1],
+        [x, 1]
+      ]
+    ]) as OraclePolygons
+  );
+  try {
+    const lag = fixture.output('lag', 'float32', 3);
+    const localI = fixture.output('local-i', 'float32', 3);
+    const rates = fixture.output('rates', 'float32', 3);
+    const retainedCount = fixture.output('retained-count', 'uint32', 1);
+    const result = addRateClusterMapRecipe(fixture.graph, {
+      events: fixture.input('events', Float32Array.of(0, 10, NaN), 'float32', 3),
+      populations: fixture.input('populations', Float32Array.of(10, 10, 10), 'float32', 3),
+      polygons: {
+        kind: 'polygons',
+        positions: fixture.input(
+          'positions',
+          layout.positions,
+          'float32x2',
+          layout.positions.length / 2
+        ),
+        featureOffsets: fixture.input('features', Uint32Array.of(0, 1, 2, 3), 'uint32', 4),
+        polygonOffsets: fixture.input('polygons', layout.polygonOffsets, 'uint32', 4),
+        ringOffsets: fixture.input('rings', layout.ringOffsets, 'uint32', 4)
+      },
+      neighborCapacity: 4,
+      pairCapacity: 32,
+      criterion: 'rook',
+      multipleTesting: 'none',
+      parameters: fixture.parameterBuffer(
+        'parameters',
+        'float32',
+        GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+      ),
+      palette: fixture.input('palette', new Uint32Array(5), 'uint32', 5),
+      output: {standardizedRates: rates.view, localI: localI.view},
+      scratch: {spatialLag: lag.view, weights: {status: {count: retainedCount.view}}}
+    });
+    expect(result.weights.information?.transform).toBe('row');
+    expect(result.weights.status.count).toBe(retainedCount.view);
+    fixture.run();
+    // Three rook-adjacent squares have exactly four directed neighbor slots.
+    expect(await fixture.readUint32(retainedCount, 1)).toEqual([4]);
+    // Hand calculation: pooled rate .5, rate variance .25, prior variance .20;
+    // Assuncao-Reis denominator sqrt(.20 + .5/10) = .5, hence rates [-1,1,NaN].
+    const actualRates = await fixture.readFloat32(rates, 3);
+    expect(actualRates).toHaveLength(3);
+    expect(actualRates[0]).toBeCloseTo(-1, 5);
+    expect(actualRates[1]).toBeCloseTo(1, 5);
+    expect(actualRates[2]).toBeNaN();
+    const actualLag = await fixture.readFloat32(lag, 3);
+    expect(actualLag).toHaveLength(3);
+    expect(Number.isFinite(actualLag[1])).toBe(true);
+    expect(actualLag[1]).toBeCloseTo(-1, 5);
+    // I = (n-1) * centered * lag / sumSquares = 1 * 1 * -1 / 2.
+    const actualI = await fixture.readFloat32(localI, 3);
+    expect(actualI).toHaveLength(3);
+    expect(Number.isFinite(actualI[1])).toBe(true);
+    expect(actualI[1]).toBeCloseTo(-0.5, 5);
+  } finally {
+    fixture.destroy();
+  }
+});
 
 it('F13 distinguishes pair loss with fixed ample neighbor capacity', async () => {
   const device = await getWebGPUTestDevice();
@@ -90,7 +164,7 @@ it('F13 distinguishes pair loss with fixed ample neighbor capacity', async () =>
           'float32',
           GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
         ),
-        outputs: {
+        output: {
           status: {
             weightsOverflow: overflow.view,
             weightsCandidateOverflow: candidate.view,
@@ -229,7 +303,7 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
         alternative: 'two-sided'
       },
       palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 5),
-      outputs: {
+      output: {
         standardizedRates: standardized.view,
         zScores: zScores.view,
         quadrants: quadrants.view,
@@ -257,7 +331,10 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
       permutationCount: PERMUTATIONS,
       seed: permutationParameters.seed,
       multipleTesting: 'benjamini-hochberg',
-      significanceLevel: 0.05,
+      significanceLevel: 0.05000000074505806,
+      requestedPermutationCount: PERMUTATIONS,
+      stoppingRule: {method: 'fixed-count'},
+      pValueConstruction: 'doubled-minimum-tail',
       // The recipe asks the permutation node it built (see rate-cluster-map-recipe.node.spec.ts).
       testedRowsDefinition: expect.stringContaining('positive-weight neighbors')
     });
@@ -284,7 +361,7 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
 
     // Local Moran on the GPU rates with the oracle weights.
     const values = Float32Array.from(rates);
-    const moran = computeLocalMoranOracle({weights, values});
+    const moran = computeLocalMoranOracle({weights, values, ...RATE_CLUSTER_ORACLE_OPTIONS});
     const z = await fixture.readFloat32(zScores, rowCount);
     const gpuLag = await fixture.readFloat32(lag, rowCount);
     for (let row = 0; row < rowCount; row++) {
@@ -295,6 +372,7 @@ it('addRateClusterMapRecipe smooths rates, builds contiguity and colors signific
     // Permutation-gated quadrants.
     const finiteMask = Uint32Array.from(values, value => (Number.isFinite(value) ? 1 : 0));
     const permutation = computeLocalPermutationOracle({
+      ...RATE_CLUSTER_ORACLE_OPTIONS,
       weights,
       values,
       mask: finiteMask,
@@ -434,7 +512,7 @@ it('addRateClusterMapRecipe analytic path matches esda Moran_Local_Rate and corr
       neighborCapacity: rowCount * 4,
       parameters,
       palette: fixture.input('palette', Uint32Array.from(palette), 'uint32', 5),
-      outputs: {
+      output: {
         standardizedRates: standardized.view,
         localI: localI.view,
         quadrants: quadrants.view,

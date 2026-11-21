@@ -109,7 +109,7 @@ export default defineOperationRun<Inputs, Outputs>({
       new GPUColorScale({
         values: column.view,
         domain: breaks.view,
-        domainCount: classCount.view,
+        classCount: classCount.view,
         palette: palette.view,
         parameters: scaleParameters.view,
         maximumDomainCount: MAXIMUM_CLASS_COUNT + 1,

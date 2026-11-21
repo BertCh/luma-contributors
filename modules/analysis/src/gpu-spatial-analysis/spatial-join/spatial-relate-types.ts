@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /**
  * Cell order of a packed DE-9IM matrix, row-major: interior, boundary and exterior of the left
  * geometry against interior, boundary and exterior of the right geometry.
@@ -61,6 +63,10 @@ export function formatGPUSpatialRelate(packed: number): string {
 
 /** Number of `uint32` words that hold one pattern in a per-frame pattern view. */
 export const GPU_SPATIAL_RELATE_PATTERN_WORDS = 2;
+/** Maximum slot capacity whose two-word storage length fits uint32 addressing. */
+export const MAXIMUM_SPATIAL_RELATE_PATTERN_SLOT_COUNT = Math.floor(
+  0xffffffff / GPU_SPATIAL_RELATE_PATTERN_WORDS
+);
 
 /**
  * Packs patterns into the `uint32` words of a per-frame pattern view (`pattern` of
@@ -68,6 +74,10 @@ export const GPU_SPATIAL_RELATE_PATTERN_WORDS = 2;
  * pattern slot, the allowed-value mask of each cell in four bits (cells `0` to `7` in the first word,
  * cell `8` in the low bits of the second). Slots past the given patterns are zero, and a zero mask
  * matches nothing, so `slotCount` is the capacity of the view and fewer patterns are fine.
+ * `slotCount` must be a positive integer at most
+ * MAXIMUM_SPATIAL_RELATE_PATTERN_SLOT_COUNT = 2,147,483,647, with two uint32 words per slot.
+ * This host representability limit is independent of upload capacity: the complete pattern
+ * view must also fit the device storage-binding and buffer-size limits when uploaded/bound.
  *
  * Validates like the compile-time `pattern`: nine characters from `T`, `F`, `*`, `0`, `1`, `2`, and
  * no pattern that admits disjoint geometries (only bounding-box candidates are enumerated).
@@ -78,6 +88,13 @@ export function packGPUSpatialRelatePattern(
   pattern: GPUSpatialRelatePattern,
   slotCount: number
 ): Uint32Array {
+  validateCapacity(
+    'packGPUSpatialRelatePattern',
+    'slotCount (two uint32 words per slot)',
+    slotCount,
+    1,
+    MAXIMUM_SPATIAL_RELATE_PATTERN_SLOT_COUNT
+  );
   const patterns = getRelatePatterns(pattern);
   if (patterns.length === 0) {
     throw new Error('DE-9IM pattern must not be empty');

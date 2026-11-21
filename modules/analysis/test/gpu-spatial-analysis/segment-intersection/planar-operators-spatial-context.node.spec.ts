@@ -3,7 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
-import {GPU_PLANAR_SPATIAL_CONTEXT} from '../../../src/analysis-core/contracts/spatial-context';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPU_PLANAR_SPATIAL_CONTEXT,
+  type GPUSpatialContext
+} from '../../../src/analysis-core/contracts/spatial-context';
+import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {GPUAffineTransform} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-affine-transform';
 import {GPUGeometryCleanup} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-geometry-cleanup';
 import {GPUGeometryOrientation} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-geometry-orientation';
@@ -24,8 +29,8 @@ import {GPURectangleClip} from '../../../src/gpu-spatial-analysis/rectangle-clip
 import {GPUSegmentIntersection} from '../../../src/gpu-spatial-analysis/segment-intersection/gpu-segment-intersection';
 import {GPUVertexSnap} from '../../../src/gpu-spatial-analysis/vertex-snap/gpu-vertex-snap';
 
-// Every planar-only planar-sweep operator resolves its spatial context before it reads any other
-// property, so a context-only property bag is enough to observe the context check.
+// The matrix checks coordinate-space support. Constructors that capture nested ports before
+// validation need complete fixtures; the separate getter tests pin validation order explicitly.
 type PlanarConstructor = new (props: never) => {readonly spatialContext: unknown};
 // GPULineSimplification has a great-circle path; its context matrix is in line-simplification/.
 const PLANAR_OPERATORS: Record<string, unknown> = {
@@ -52,6 +57,114 @@ const PLANAR_OPERATORS: Record<string, unknown> = {
 
 // GPULineMerge and GPURectangleClip also accept longitude-latitude contexts (linear edges).
 const LONGITUDE_LATITUDE_OPERATORS = new Set(['GPULineMerge', 'GPURectangleClip']);
+
+const COMPLETE_FIXTURE_OPERATORS = [
+  'GPUCoverageSimplification',
+  'GPUGeometryPredicates',
+  'GPULineClipByPolygon',
+  'GPULineSplit',
+  'GPUPolygonOverlay',
+  'GPUVertexSnap'
+] as const;
+
+function createCompleteOperatorFactories(): Record<
+  string,
+  (spatialContext: GPUSpatialContext | undefined) => {readonly spatialContext: unknown}
+> {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let serial = 0;
+  const view = <Format extends 'float32' | 'float32x2' | 'float32x4' | 'uint32'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `context-fixture-${serial++}`, format, length);
+  const polygons = () => ({
+    kind: 'polygons' as const,
+    positions: view('float32x2', 4),
+    ringOffsets: view('uint32', 2),
+    polygonOffsets: view('uint32', 2),
+    featureOffsets: view('uint32', 2)
+  });
+  const lines = () => ({
+    kind: 'lines' as const,
+    positions: view('float32x2', 2),
+    lineOffsets: view('uint32', 2)
+  });
+  const status = () => ({
+    count: view('uint32', 1),
+    overflow: view('uint32', 1),
+    candidateOverflow: view('uint32', 1)
+  });
+  const pieces = () => ({geometry: lines(), sourceIds: view('uint32', 1), status: status()});
+  return {
+    GPUCoverageSimplification: spatialContext =>
+      new GPUCoverageSimplification({
+        ...polygons(),
+        spatialContext,
+        parameters: view('float32', 4),
+        output: {
+          positions: view('float32x2', 4),
+          ringOffsets: view('uint32', 2),
+          status: {overflow: view('uint32', 1)}
+        }
+      }),
+    GPUGeometryPredicates: spatialContext =>
+      new GPUGeometryPredicates({
+        spatialContext,
+        geometry: {kind: 'points', positions: view('float32x2', 1)},
+        output: {numCoordinates: view('uint32', 1)}
+      }),
+    GPULineClipByPolygon: spatialContext =>
+      new GPULineClipByPolygon({
+        spatialContext,
+        lines: lines(),
+        polygons: polygons(),
+        intersectionCapacity: 4,
+        candidateCapacity: 8,
+        output: {pieces: pieces()}
+      }),
+    GPULineSplit: spatialContext =>
+      new GPULineSplit({
+        spatialContext,
+        lines: lines(),
+        intersectionCapacity: 4,
+        output: {pieces: pieces()}
+      }),
+    GPUPolygonOverlay: spatialContext =>
+      new GPUPolygonOverlay({
+        spatialContext,
+        left: polygons(),
+        right: polygons(),
+        operation: 'intersection',
+        vertexTolerance: 1e-5,
+        capacity: {intersections: 8, nodedSegments: 16},
+        output: {
+          geometry: polygons(),
+          status: status(),
+          boundary: {
+            endpoints: view('float32x4', 8),
+            operandIds: view('uint32', 8),
+            sourceFeatureIds: view('uint32', 8),
+            status: {...status(), requiredCount: view('uint32', 1)}
+          }
+        }
+      }),
+    GPUVertexSnap: spatialContext =>
+      new GPUVertexSnap({
+        spatialContext,
+        positions: view('float32x2', 1),
+        referencePositions: view('float32x2', 1),
+        parameters: view('float32', 4),
+        output: {positions: view('float32x2', 1)}
+      })
+  };
+}
+
+it.each(COMPLETE_FIXTURE_OPERATORS)('%s context fixture is otherwise valid', name => {
+  const create = createCompleteOperatorFactories()[name];
+  // Constructor validation is independent of buffer contents. A valid planar control ensures
+  // longitude-latitude rejection is not being tested with a malformed property bag.
+  expect(() => create(GPU_PLANAR_SPATIAL_CONTEXT)).not.toThrow();
+});
 
 it('GPUPolygonTriangulation rejects unsupported contexts before evaluating output getters', () => {
   for (const metric of ['none', 'great-circle'] as const) {
@@ -125,9 +238,11 @@ for (const [name, operator] of Object.entries(PLANAR_OPERATORS)) {
   const acceptsLongitudeLatitude = LONGITUDE_LATITUDE_OPERATORS.has(name);
   it(`${name} ${acceptsLongitudeLatitude ? 'accepts planar and longitude-latitude' : 'rejects longitude-latitude'} spatial contexts${name === 'GPURectangleClip' ? ' and rejects the great-circle edge model' : ''}`, () => {
     const Operator = operator as PlanarConstructor;
+    const createComplete = createCompleteOperatorFactories()[name];
+    const createForContext = (spatialContext: GPUSpatialContext | undefined) =>
+      createComplete ? createComplete(spatialContext) : new Operator({spatialContext} as never);
     for (const metric of ['none', 'great-circle'] as const) {
-      const create = () =>
-        new Operator({spatialContext: {coordinateSpace: 'longitude-latitude', metric}} as never);
+      const create = () => createForContext({coordinateSpace: 'longitude-latitude', metric});
       if (acceptsLongitudeLatitude) {
         try {
           expect(create().spatialContext).toBeTruthy();
@@ -155,7 +270,7 @@ for (const [name, operator] of Object.entries(PLANAR_OPERATORS)) {
     // The planar context passes the context check; other property validation may still throw.
     for (const spatialContext of [undefined, GPU_PLANAR_SPATIAL_CONTEXT]) {
       try {
-        const instance = new Operator({spatialContext} as never);
+        const instance = createForContext(spatialContext);
         expect(instance.spatialContext).toBeTruthy();
       } catch (error) {
         expect(String((error as Error).message)).not.toMatch(/does not support|spatial context/);

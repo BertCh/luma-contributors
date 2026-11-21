@@ -11,6 +11,7 @@ import {
   getGPUNetworkCostWeightsParameterValues,
   type GPUNetworkCostWeightsSettings
 } from '../../../src/gpu-network/network-cost-weights/index';
+import {GPUNetworkCostMatrix} from '../../../src/gpu-network/network-accessibility/index';
 import {GPUCatchmentAccessibility} from '../../../src/gpu-spatial-analysis/catchment-accessibility/gpu-catchment-accessibility';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -22,7 +23,71 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import fixture from '../../oracles/fixtures/network-cost-weights-2sfca.json';
 import {getNetworkCostWeightsReference} from './network-cost-weights-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {createOracleContext} from '../adjacency-matrix/network-output-oracle-test-utils';
+
+it.each([
+  'rows',
+  'columns',
+  'complete'
+] as const)('weights handle alone retains provisional cost loss through %s orientation', async incompleteOrientation => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const context = createOracleContext(device);
+  const {graph, input, output, read} = context;
+  try {
+    const costs = input('costs', 'float32', [1, Infinity]);
+    const parameters = input('parameters', 'float32', [2, 0, 0, 1]);
+    const converters = (['rows', 'columns'] as const).map(orientation => {
+      const converter = new GPUNetworkCostWeights({
+        id: `weights-${orientation}`,
+        costs,
+        parameters,
+        rowCount: 1,
+        orientation,
+        costsComplete: input(`costs-complete-${orientation}`, 'uint32', [
+          orientation === incompleteOrientation ? 0 : 1
+        ]),
+        output: {
+          offsets: output(`${orientation}-offsets`, 'uint32', orientation === 'rows' ? 2 : 3),
+          neighbors: output(`${orientation}-neighbors`, 'uint32', 2),
+          weights: output(`${orientation}-values`, 'float32', 2),
+          status: {
+            overflow: output(`${orientation}-overflow`, 'uint32'),
+            complete: output(`${orientation}-complete`, 'uint32')
+          }
+        }
+      });
+      graph.add(converter);
+      return converter;
+    });
+    const accessibility = output('accessibility', 'float32', 2);
+    graph.add(
+      new GPUCatchmentAccessibility({
+        method: '2sfca',
+        supply: input('supply', 'float32', [2]),
+        demand: input('demand', 'float32', [1, 1]),
+        facilityWeights: converters[0].outputWeights,
+        demandWeights: converters[1].outputWeights,
+        output: {accessibility}
+      })
+    );
+    context.run();
+    for (const [index, converter] of converters.entries()) {
+      expect(await read(converter.outputWeights.status!.overflow!)).toEqual([0]);
+      expect(await read(converter.outputWeights.status!.complete!)).toEqual([
+        ['rows', 'columns'][index] === incompleteOrientation ? 0 : 1
+      ]);
+    }
+    // One demand has a provisional infinity. With no loss propagation 2SFCA returns [2,0],
+    // falsely treating missing support as absence; either failed handle must suppress both rows.
+    expect(await read(accessibility)).toEqual(
+      incompleteOrientation === 'complete' ? [2, 0] : [NaN, NaN]
+    );
+  } finally {
+    context.destroy();
+  }
+});
 
 /**
  * Weight tolerance. Weights are at most 1 for these decays (power uses `minimumCost` 1). WGSL `exp`
@@ -332,4 +397,149 @@ it('Gaussian network cost weights preserve ratios near float32 maximum', async (
   expect(Math.abs(result.weights[1])).toBeLessThan(WEIGHT_TOLERANCE);
   expect(result.overflow).toBe(0);
   expect(result.requiredCount).toBe(2);
+});
+
+it('GPUNetworkCostWeights status.complete needs a complete matrix and no capacity loss (NET-101)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // 2 x 3 matrix; with costLimit 4 the in-range entries are 0, 2 and 3 (three slots). Expected by
+  // hand: complete = costsComplete != 0 and 3 <= capacity.
+  const costs = Float32Array.of(0, 2, Infinity, 5, 3, Number.NaN);
+  for (const [costsComplete, capacity, expectedComplete] of [
+    [1, 6, 1],
+    [1, 3, 1],
+    [0, 6, 0],
+    [1, 2, 0]
+  ] as const) {
+    const graph = new GPUCommandGraph(device, {id: 'cost-weights-complete'});
+    const buffers: Buffer[] = [];
+    const input = (values: Float32Array | Uint32Array) => {
+      const buffer = createInputBuffer(device, values);
+      buffers.push(buffer);
+      return buffer;
+    };
+    const completeBuffer = createOutputBuffer(device, 1);
+    const overflowBuffer = createOutputBuffer(device, 1);
+    buffers.push(completeBuffer, overflowBuffer);
+    graph.add(
+      new GPUNetworkCostWeights({
+        id: 'weights',
+        costs: importGraphBuffer(graph, 'costs', input(costs), 'float32', costs.length),
+        costsComplete: importGraphBuffer(
+          graph,
+          'costs-complete',
+          input(Uint32Array.of(costsComplete)),
+          'uint32',
+          1
+        ),
+        rowCount: 2,
+        parameters: importGraphBuffer(
+          graph,
+          'parameters',
+          input(getGPUNetworkCostWeightsParameterValues({costLimit: 4})),
+          'float32',
+          4
+        ),
+        output: {
+          offsets: createTransientView(graph, 'offsets', 'uint32', 3),
+          neighbors: createTransientView(graph, 'neighbors', 'uint32', capacity),
+          weights: createTransientView(graph, 'weights', 'float32', capacity),
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+            complete: importGraphBuffer(graph, 'complete', completeBuffer, 'uint32', 1)
+          }
+        }
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const label = `costsComplete ${costsComplete}, capacity ${capacity}`;
+    expect((await readUint32(completeBuffer, 1))[0], label).toBe(expectedComplete);
+    expect((await readUint32(overflowBuffer, 1))[0], label).toBe(capacity < 3 ? 1 : 0);
+    compiled.destroy();
+    for (const buffer of buffers) {
+      buffer.destroy();
+    }
+  }
+});
+
+it('GPUNetworkCostWeights status.complete compares the matrix horizon with the requested cutoff (NET-124)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Directed unit chain 0 -> 1 -> 2 -> 3 -> 4 from node 0, weights cutoff 4, capacity 5. Both
+  // matrix searches converge. By hand: cutoff 1 gives costs [0, 1, inf, inf, inf], 2 in-range
+  // entries, complete 0; cutoff 4 gives [0, 1, 2, 3, 4], 5 entries, complete 1.
+  for (const [matrixCostLimit, expectedRequired, expectedComplete] of [
+    [1, 2, 0],
+    [4, 5, 1]
+  ] as const) {
+    const graph = new GPUCommandGraph(device, {id: 'cost-weights-horizon'});
+    const buffers: Buffer[] = [];
+    const input = <Format extends 'uint32' | 'float32'>(
+      id: string,
+      values: Float32Array | Uint32Array,
+      format: Format
+    ) => {
+      const buffer = createInputBuffer(device, values);
+      buffers.push(buffer);
+      return importGraphBuffer(graph, id, buffer, format, values.length);
+    };
+    const costLimit = input('matrix-cost-limit', Float32Array.of(matrixCostLimit), 'float32');
+    const matrix = createTransientView(graph, 'horizon-costs', 'float32', 5);
+    const convergedBuffer = createOutputBuffer(device, 1);
+    const requiredBuffer = createOutputBuffer(device, 1);
+    const completeBuffer = createOutputBuffer(device, 1);
+    buffers.push(convergedBuffer, requiredBuffer, completeBuffer);
+    const convergedView = importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1);
+    graph.add(
+      new GPUNetworkCostMatrix({
+        id: 'matrix',
+        topology: {
+          offsets: input('offsets', Uint32Array.of(0, 1, 2, 3, 4, 4), 'uint32'),
+          neighbors: input('neighbors', Uint32Array.of(1, 2, 3, 4), 'uint32'),
+          weights: input('edge-weights', Float32Array.of(1, 1, 1, 1), 'float32')
+        },
+        startNodes: input('start-nodes', Uint32Array.of(0), 'uint32'),
+        costLimit,
+        output: {
+          costs: matrix,
+          status: {converged: convergedView}
+        }
+      })
+    );
+    graph.add(
+      new GPUNetworkCostWeights({
+        id: 'weights',
+        costs: matrix,
+        costsComplete: convergedView,
+        costLimit,
+        rowCount: 1,
+        parameters: input(
+          'parameters',
+          getGPUNetworkCostWeightsParameterValues({costLimit: 4}),
+          'float32'
+        ),
+        output: {
+          // Distinct from the matrix topology ids 'offsets' and 'neighbors' in the same graph.
+          offsets: createTransientView(graph, 'weights-offsets', 'uint32', 2),
+          neighbors: createTransientView(graph, 'weights-neighbors', 'uint32', 5),
+          weights: createTransientView(graph, 'weights-values', 'float32', 5),
+          status: {
+            requiredCount: importGraphBuffer(graph, 'required', requiredBuffer, 'uint32', 1),
+            complete: importGraphBuffer(graph, 'complete', completeBuffer, 'uint32', 1)
+          }
+        }
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const label = `matrix costLimit ${matrixCostLimit}`;
+    expect((await readUint32(convergedBuffer, 1))[0], label).toBe(1);
+    expect((await readUint32(requiredBuffer, 1))[0], label).toBe(expectedRequired);
+    expect((await readUint32(completeBuffer, 1))[0], label).toBe(expectedComplete);
+    compiled.destroy();
+    for (const buffer of buffers) {
+      buffer.destroy();
+    }
+  }
 });

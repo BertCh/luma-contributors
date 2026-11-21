@@ -305,7 +305,7 @@ it('bounded rigid ICP matches independent NumPy SVD Kabsch and reports convergen
         source: source.view,
         target: target.view,
         maximumDistance: 1,
-        iterations: 4,
+        maximumIterations: 4,
         output: {
           transform: transform.view,
           history: history.view,
@@ -349,7 +349,7 @@ it('ICP reports insufficient correspondences rather than a zero-error success', 
         source: source.view,
         target: target.view,
         maximumDistance: 1,
-        iterations: 1,
+        maximumIterations: 1,
         output: {
           transform: transform.view,
           history: history.view,
@@ -453,7 +453,7 @@ it('ICP distinguishes iteration exhaustion, supplied alignment and underdetermin
           target: target.view,
           initialTransform: scenario.initialTransform,
           maximumDistance: 1,
-          iterations: 1,
+          maximumIterations: 1,
           output: {
             transform: transform.view,
             history: history.view,

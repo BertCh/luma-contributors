@@ -137,7 +137,16 @@ it('compares every measure for multiple unequal tracks, densification, matching 
   expect(rows['subsequence'][0]).toBeLessThan(1);
 });
 
-it('compares empty tracks, out-of-range pairs and inactive capacity rows', async () => {
+it.each([
+  {epsilon: 0, expectedStatus: [0, 1, 4, 4], expectedWithin: [1, 0, 0, 0]},
+  {epsilon: -1, expectedStatus: [16, 17, 4, 4], expectedWithin: [0, 0, 0, 0]}
+])('compares empty tracks, out-of-range pairs and inactive capacity rows (epsilon $epsilon)', async ({
+  epsilon,
+  expectedStatus,
+  expectedWithin
+}) => {
+  // The identical pair has distance zero. Mask 1 marks the empty track. Mask 4 alone marks
+  // an out-of-range or inactive pair. Negative epsilon adds mask 16 to the first two rows.
   const rows = await runComparison(
     {
       positions: {format: 'float32x2', values: Float32Array.of(0, 0, 2, 0)},
@@ -145,7 +154,7 @@ it('compares empty tracks, out-of-range pairs and inactive capacity rows', async
       pairA: {format: 'uint32', values: Uint32Array.of(1, 0, 9, 1)},
       pairB: {format: 'uint32', values: Uint32Array.of(1, 1, 1, 1)},
       active: {format: 'uint32', values: Uint32Array.of(3)},
-      epsilon: {format: 'float32', values: Float32Array.of(-1)}
+      epsilon: {format: 'float32', values: Float32Array.of(epsilon)}
     },
     {
       linesA: {positions: 'positions', lineOffsets: 'offsets'},
@@ -157,7 +166,9 @@ it('compares empty tracks, out-of-range pairs and inactive capacity rows', async
       output: OUTPUT
     }
   );
-  expect(Array.from(rows['status'])).toEqual([0, 1, 4, 4]);
+  expect(Array.from(rows['status'])).toEqual(expectedStatus);
+  expect(Array.from(rows['within'])).toEqual(expectedWithin);
+  expect(Array.from(rows['frechet'])).toEqual([0, NaN, NaN, NaN]);
 });
 
 it('both track similarity forms honor an explicit one-vertex dynamic-program cap', async () => {

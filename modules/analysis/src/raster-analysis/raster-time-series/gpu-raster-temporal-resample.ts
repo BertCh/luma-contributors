@@ -19,11 +19,14 @@ import {
   type RasterTimeSeriesChunkPlan
 } from './raster-time-series-chunks-b';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
+import {FIXED_POINT_WGSL} from '../../analysis-core/kernels/fixed-point-accumulator';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
@@ -52,6 +55,11 @@ export function getGPURasterTemporalResampleParameterValues(
   settings: GPURasterTemporalResampleSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRequirement(
+    'getGPURasterTemporalResampleParameterValues',
+    target.length >= GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH,
+    `target must hold at least ${GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH} float32 words; received ${target.length}`
+  );
   validateFiniteNumber(
     'getGPURasterTemporalResampleParameterValues',
     'gridStep',
@@ -71,6 +79,15 @@ export type GPURasterTemporalResampleProps<Rows extends RasterScalarView = Graph
   sliceCount: number;
   /** Output grid points per cell, in `[1, 4096]`. */
   gridCount: number;
+  /**
+   * Optional exact final grid coordinate in centred fractional years, captured at construction.
+   * Overrides the last step-derived coordinate and must not precede the prior grid point.
+   */
+  gridEnd?: number;
+  /** Optional strictly increasing Int64 targets, one uint32x2 (low, high) row per grid point,
+   * in the date axis unit and epoch. Preserves exact acquisition identity; overrides fractional
+   * grid coordinates. gridEnd cannot be supplied with targetTimes. */
+  targetTimes?: GraphDataView<'uint32x2'>;
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
   values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA; zero rejects the sample. */
@@ -93,7 +110,9 @@ export type GPURasterTemporalResampleProps<Rows extends RasterScalarView = Graph
  * filled by an earlier smoother reaches this node as a finite value, so a Whittaker or HANTS
  * output feeds a regular-time grid directly; nothing is extrapolated.
  *
- * Per-frame: `parameters`. Compile-time: `cellCount`, `sliceCount`, `gridCount`, and which optional views exist.
+ * The GPU route accepts 2–256 source slices and 1–4096 target points per cell.
+ *
+ * Per-frame: `parameters` and optional `targetTimes` contents. Compile-time: `cellCount`, `sliceCount`, `gridCount`, `gridEnd`, and which optional views exist.
  *
  * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
@@ -105,11 +124,34 @@ export class GPURasterTemporalResample<Rows extends RasterScalarView = GraphData
   readonly chunkPlan: RasterTimeSeriesChunkPlan;
   readonly estimatedCommandNodeCount: number;
   private readonly ticksPerYear: number;
+  private readonly gridEnd?: number;
 
   constructor(props: GPURasterTemporalResampleProps<Rows> & {values: Rows}) {
     this.props = props;
     const id = props.id ?? 'raster-temporal-resample';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      targetTimes: {required: false, viewType: 'data', formats: ['uint32x2']},
+      'dateAxis.acquisitionTimes': {required: true, viewType: 'data', formats: ['uint32x2']},
+      'output.values': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
+    // Capture constructor options/maps while preserving graph resource identities.
+    props = {
+      ...props,
+      output: {...props.output},
+      ...(props.dateAxis ? {dateAxis: {...props.dateAxis}} : {})
+    };
+    this.props = props;
+    this.gridEnd = props.gridEnd === undefined ? undefined : Math.fround(props.gridEnd);
+    validateRequirement(
+      id,
+      this.gridEnd === undefined || Number.isFinite(this.gridEnd),
+      'gridEnd must be finite float32 centred fractional years'
+    );
     validateCapacity(id, 'cellCount', props.cellCount);
     validateCapacity(id, 'sliceCount', props.sliceCount, 2, MAXIMUM_RESAMPLE_SLICE_COUNT);
     validateCapacity(id, 'gridCount', props.gridCount, 1, MAXIMUM_RESAMPLE_GRID_COUNT);
@@ -133,6 +175,16 @@ export class GPURasterTemporalResample<Rows extends RasterScalarView = GraphData
       props.parameters.length >= GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH,
       `parameters must hold ${GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH} entries`
     );
+    validateRequirement(
+      id,
+      !props.targetTimes || props.gridEnd === undefined,
+      'gridEnd cannot be used with targetTimes; write exact targetTimes only'
+    );
+    validateRequirement(
+      id,
+      !props.targetTimes || props.targetTimes.length >= props.gridCount,
+      'targetTimes must hold gridCount Int64 rows'
+    );
     this.ticksPerYear = resolveGPURasterIrregularDateAxis(id, props.dateAxis, props.sliceCount);
     this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
       values: {view: props.values, entriesPerCell: props.sliceCount},
@@ -153,6 +205,7 @@ export class GPURasterTemporalResample<Rows extends RasterScalarView = GraphData
       ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : []),
       values,
       parameters,
+      ...(this.props.targetTimes ? [this.props.targetTimes] : []),
       ...(mask ? [mask] : [])
     ];
   }
@@ -178,11 +231,39 @@ export class GPURasterTemporalResample<Rows extends RasterScalarView = GraphData
         rasterBinding('parameters', parameters),
         ...(mask ? [rasterBinding('mask', mask)] : []),
         getGPURasterDateAxisBinding(dateAxis),
+        ...(props.targetTimes
+          ? [
+              {
+                name: 'targetTimes',
+                view: props.targetTimes,
+                type: 'u32' as const,
+                access: 'read' as const
+              }
+            ]
+          : []),
         rasterBinding('resampled', output.values, true),
         rasterBinding('resampleStatus', output.status, true)
       ],
       declarations: `${RASTER_FINITE_WGSL}
 ${getGPURasterDateAxisDeclarations(this.ticksPerYear, slices)}
+${
+  props.targetTimes
+    ? ''
+    : `${FIXED_POINT_WGSL}
+// Integer subtraction forces each year coordinate to round BEFORE differencing. Without this
+// boundary Metal can fuse a year conversion with subtraction, changing a close bracket's span.
+fn rasterRoundedYearFraction(targetYear: f32, leftYear: f32, rightYear: f32) -> f32 {
+  let exponentBits = max(getFixedPointExponentBits(targetYear),
+    max(getFixedPointExponentBits(leftYear), getFixedPointExponentBits(rightYear)));
+  let coordinateUnit = getFixedPointUnitExponent(exponentBits, 2u);
+  let leftWords = quantizeFixedPoint(leftYear, coordinateUnit);
+  let spanWords = addFixedPoint(quantizeFixedPoint(rightYear, coordinateUnit), negateFixedPoint(leftWords));
+  let numeratorWords = addFixedPoint(quantizeFixedPoint(targetYear, coordinateUnit), negateFixedPoint(leftWords));
+  let roundedSpan = getFixedPointFloat(spanWords, coordinateUnit);
+  if (!(roundedSpan > 0.0)) { return 0.0; }
+  return clamp(getFixedPointFloat(numeratorWords, coordinateUnit) / roundedSpan, 0.0, 1.0);
+}`
+}
 fn isObserved(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
   return finite(values[valuesOffset + source]) ${mask ? '&& mask[maskOffset + source] != 0u' : ''};
@@ -198,26 +279,42 @@ let maximumGap = parameters[parametersOffset + 2u];
 var left = ${slices}u;
 var right = advanceObserved(index, 0u);
 for (var point = 0u; point < ${gridCount}u; point++) {
-  let gridYears = gridStart + f32(point) * gridStep;
-  while (right < ${slices}u && rasterSliceYears(right) <= gridYears) {
+  ${props.targetTimes ? 'let targetWords = vec2<u32>(targetTimes[targetTimesOffset + 2u * point], targetTimes[targetTimesOffset + 2u * point + 1u]);' : ''}
+  let gridYears = ${
+    this.gridEnd === undefined
+      ? 'gridStart + f32(point) * gridStep'
+      : `select(gridStart + f32(point) * gridStep, ${getWGSLFloatLiteral(this.gridEnd)}, point == ${gridCount - 1}u)`
+  };
+  while (right < ${slices}u && ${props.targetTimes ? 'timeWordsCompare(rasterAxisWords(right), targetWords) <= 0i' : 'rasterSliceYears(right) <= gridYears'}) {
     left = right;
     right = advanceObserved(index, right + 1u);
   }
   var value = missing();
   var code = 1u;
-  if (left < ${slices}u && right < ${slices}u) {
-    let leftYears = rasterSliceYears(left);
+  if (left < ${slices}u && ${props.targetTimes ? 'timeWordsCompare(rasterAxisWords(left), targetWords) == 0i' : 'rasterSliceYears(left) == gridYears'}) {
+    // An exact observation is usable even when the next observation is beyond maximumGap.
+    value = values[valuesOffset + index * ${slices}u + left];
+    code = 0u;
+  } else if (left < ${slices}u && right < ${slices}u) {
     let span = rasterYearsBetween(right, left);
     if (span > maximumGap) {
       code = 2u;
     } else {
-      let fraction = (gridYears - leftYears) / span;
+      ${
+        props.targetTimes
+          ? `let localSpan = timeWordsDifferenceToF32(rasterAxisWords(right), rasterAxisWords(left));
+      let numerator = timeWordsDifferenceToF32(targetWords, rasterAxisWords(left));`
+          : ''
+      }
+      ${
+        props.targetTimes
+          ? `var fraction = 0.0;
+      if (localSpan > 0.0) { fraction = clamp(numerator / localSpan, 0.0, 1.0); }`
+          : 'let fraction = rasterRoundedYearFraction(gridYears, rasterSliceYears(left), rasterSliceYears(right));'
+      }
       value = mix(values[valuesOffset + index * ${slices}u + left], values[valuesOffset + index * ${slices}u + right], fraction);
       code = 0u;
     }
-  } else if (left < ${slices}u && rasterSliceYears(left) == gridYears) {
-    value = values[valuesOffset + index * ${slices}u + left];
-    code = 0u;
   }
   resampled[resampledOffset + index * ${gridCount}u + point] = value;
   resampleStatus[resampleStatusOffset + index * ${gridCount}u + point] = code;

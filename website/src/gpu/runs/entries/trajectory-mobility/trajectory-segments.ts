@@ -35,6 +35,8 @@ type Outputs = {
   triplegEndRows: RunBuffer;
   triplegTripIds: RunBuffer;
   staypointCount: RunBuffer;
+  staypointOverflow: RunBuffer;
+  staypointCandidateOverflow: RunBuffer;
   centroids: RunBuffer;
   durations: RunBuffer;
 };
@@ -68,6 +70,8 @@ export default defineOperationRun({
       triplegEndRows: segments.triplegEndRows,
       triplegTripIds: segments.triplegTripIds,
       staypointCount: staypoints.count,
+      staypointOverflow: staypoints.overflow,
+      staypointCandidateOverflow: staypoints.candidateOverflow,
       centroids: staypoints.centroids,
       durations: staypoints.durations
     };
@@ -86,17 +90,28 @@ export default defineOperationRun({
   },
   // Triplegs are joined row to row and labeled with their trip; activities are gathered.
   async afterRun({inputs, outputs, values, upload}) {
-    const o = outputs;
-    const [triplegCount, starts, ends, tripIds, stayCount, centroids, durations] =
-      await Promise.all([
-        readUint32(o.triplegCount),
-        readUint32(o.triplegStartRows),
-        readUint32(o.triplegEndRows),
-        readUint32(o.triplegTripIds),
-        readUint32(o.staypointCount),
-        readFloat32(o.centroids),
-        readFloat32(o.durations)
-      ]);
+    const [
+      triplegCount,
+      starts,
+      ends,
+      tripIds,
+      stayCount,
+      centroids,
+      durations,
+      staypointOverflow,
+      staypointCandidateOverflow
+    ] = await Promise.all([
+      readUint32(outputs.triplegCount),
+      readUint32(outputs.triplegStartRows),
+      readUint32(outputs.triplegEndRows),
+      readUint32(outputs.triplegTripIds),
+      readUint32(outputs.staypointCount),
+      readFloat32(outputs.centroids),
+      readFloat32(outputs.durations),
+      readUint32(outputs.staypointOverflow),
+      readUint32(outputs.staypointCandidateOverflow)
+    ]);
+    if (staypointOverflow[0] || staypointCandidateOverflow[0]) return null;
     const labels = new Uint32Array(inputs.rowCount).fill(NONE);
     const edges: number[] = [];
     for (let tripleg = 0; tripleg < Math.min(triplegCount[0], starts.length); tripleg++) {
@@ -134,6 +149,11 @@ export default defineOperationRun({
       const ends = peek(outputs.triplegEndRows);
       const tripIds = peek(outputs.triplegTripIds);
       const trips = peek(outputs.tripCount);
+      const staypointOverflow = peek(outputs.staypointOverflow);
+      const staypointCandidateOverflow = peek(outputs.staypointCandidateOverflow);
+      if (!staypointOverflow || !staypointCandidateOverflow) return {};
+      if (staypointOverflow[0] || staypointCandidateOverflow[0])
+        return {readout: 'Trips and activities unavailable due to an incomplete staypoint result'};
       if (!count || !starts || !ends || !tripIds || !trips) return {};
       // The nearest drawn step that lies inside a tripleg.
       let best = -1;

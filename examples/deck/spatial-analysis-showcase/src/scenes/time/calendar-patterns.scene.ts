@@ -433,7 +433,7 @@ graph.add(new GPUCalendarBuckets({
 }));
 // 3. per-area statistics of the brushed observations (dense keys: one row per community area)
 graph.add(new GPUGroupStatistics({
-  keys: areaKeys, mask: brush, keyCount: 77, variance: '${state.variance}', percentiles: percentileFractions,
+  keys: areaKeys, mask: brush, keyCount: 77, variance: '${state.variance}', probabilities: percentileFractions,
   columns: [
     {values: hourFloat, statistics: ['count', 'mean', 'median', 'standardDeviation', 'percentiles', 'mode'], output: hourOutputs},
     {values: dayFloat, statistics: ['uniqueCount'], output: {uniqueCounts}},

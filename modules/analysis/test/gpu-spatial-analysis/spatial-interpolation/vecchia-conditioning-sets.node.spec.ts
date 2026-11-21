@@ -5,6 +5,8 @@
 import {describe, expect, it} from 'vitest';
 import {
   buildVecchiaConditioningSets,
+  buildVecchiaPredictionNeighborhoods,
+  uploadVecchiaNeighborhoods,
   getVecchiaMaxMinOrdering
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/vecchia-conditioning-sets';
 import {
@@ -14,6 +16,116 @@ import {
   VECCHIA_NUGGET_FLOOR_FRACTION
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/vecchia-parameters';
 import {createExperimentRandom} from './vecchia-likelihood-reference';
+
+describe('Vecchia ingress regressions', () => {
+  it('rejects malformed preflight before linking rows (ING-14)', () => {
+    const positions = [0, 0, 2, 0, 0.1, 0];
+    expect(() =>
+      buildVecchiaConditioningSets({positions, neighborCount: 1, times: [0, 1000, 1000]})
+    ).toThrow(/timeScale/);
+    expect(() => buildVecchiaConditioningSets({positions, neighborCount: 33})).toThrow(
+      /neighborCount/
+    );
+    expect(() => buildVecchiaConditioningSets({positions: [0, 0, 1], neighborCount: 1})).toThrow(
+      /positions/
+    );
+    expect(() =>
+      buildVecchiaConditioningSets({positions, neighborCount: 1, validity: [1]})
+    ).toThrow(/validity/);
+    expect(() =>
+      buildVecchiaConditioningSets({positions, neighborCount: 1, order: [1, 4, 0]})
+    ).toThrow(/order/);
+    expect(() =>
+      buildVecchiaConditioningSets({positions, neighborCount: 1, order: [0, 0, 1]})
+    ).toThrow(/order/);
+    expect(() =>
+      buildVecchiaConditioningSets({positions, neighborCount: 1, times: [0], timeScale: 1})
+    ).toThrow(/times/);
+    expect(() =>
+      buildVecchiaConditioningSets({positions, neighborCount: 1, times: [0, 1, 2], timeScale: NaN})
+    ).toThrow(/timeScale/);
+    expect(() =>
+      buildVecchiaConditioningSets({
+        positions: {length: 2 ** 32},
+        rowCount: 2 ** 31 - 2,
+        neighborCount: 32
+      })
+    ).toThrow(/rowCount \* neighborCount/);
+  });
+
+  it('preserves requested width and maps uint32 consumer ports (ING-18)', () => {
+    for (const result of [
+      buildVecchiaConditioningSets({positions: [2, 3], neighborCount: 7}),
+      buildVecchiaPredictionNeighborhoods({
+        positions: [2, 3],
+        queries: [0, 0, 1, 1],
+        neighborCount: 7
+      })
+    ]) {
+      expect(result.counts).toEqual({
+        rowCount: result.offsets.length - 1,
+        neighborCount: 7,
+        entryCount: result.neighbors.length
+      });
+      expect(result.formats).toEqual({offsets: 'uint32', neighbors: 'uint32'});
+      const uploaded = uploadVecchiaNeighborhoods(result, (values, format) => ({values, format}));
+      expect(uploaded.neighborCount).toBe(7);
+      expect(uploaded.neighborhoodOffsets).toEqual({values: result.offsets, format: 'uint32'});
+      expect(uploaded.neighborhoods).toEqual({values: result.neighbors, format: 'uint32'});
+    }
+  });
+
+  it('matches an independent scan on every exterior edge and corner (ING-01)', () => {
+    const positions = [0, 0, 2, 0, 0, 2, 2, 2, 1, 1, 1, 0, 1, 2, 2, 1];
+    const queries = [-10, 1, 10, 1, 1, -10, 1, 10, -10, -10, -10, 10, 10, -10, 10, 10];
+    const result = buildVecchiaPredictionNeighborhoods({positions, queries, neighborCount: 4});
+    const expected = Array.from({length: queries.length / 2}, (_, query) =>
+      Array.from({length: positions.length / 2}, (_, row) => row)
+        .sort((first, second) => {
+          const distance = (row: number) =>
+            (positions[row * 2] - queries[query * 2]) ** 2 +
+            (positions[row * 2 + 1] - queries[query * 2 + 1]) ** 2;
+          return distance(first) - distance(second) || first - second;
+        })
+        .slice(0, 4)
+    );
+    expect(getSets(result.offsets, result.neighbors)).toEqual(expected);
+  });
+
+  it('ignores masked NaNs while retaining source row IDs (ING-02)', () => {
+    const props = {positions: [0, 0, NaN, 0, 1, 1], validity: [1, 0, 1], neighborCount: 1};
+    const result = buildVecchiaConditioningSets(props);
+    expect(Array.from(result.offsets)).toEqual([0, 0, 0, 1]);
+    expect(Array.from(result.neighbors)).toEqual([0]);
+    expect(
+      Array.from(buildVecchiaPredictionNeighborhoods({...props, queries: [1, 1]}).neighbors)
+    ).toEqual([2]);
+  });
+
+  it('handles empty, singleton, all-masked and coincident inputs (ING-13)', () => {
+    for (const positions of [[], [2, 3], [2, 3, 2, 3]]) {
+      const result = buildVecchiaConditioningSets({positions, neighborCount: 1});
+      expect(Array.from(result.offsets)).toEqual(
+        positions.length === 4 ? [0, 0, 1] : positions.length === 2 ? [0, 0] : [0]
+      );
+      expect(Array.from(getVecchiaMaxMinOrdering(positions))).toEqual(
+        positions.length === 4 ? [0, 1] : positions.length === 2 ? [0] : []
+      );
+      expect(
+        Array.from(
+          buildVecchiaPredictionNeighborhoods({positions, queries: [2, 3], neighborCount: 1})
+            .neighbors
+        )
+      ).toEqual(positions.length ? [0] : []);
+    }
+    expect(
+      Array.from(
+        buildVecchiaConditioningSets({positions: [NaN, NaN], validity: [0], neighborCount: 1})
+          .offsets
+      )
+    ).toEqual([0, 0]);
+  });
+});
 
 function createPositions(rowCount: number, seed: number): Float64Array {
   const random = createExperimentRandom(seed);

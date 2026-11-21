@@ -41,7 +41,7 @@ it('both operations score one observed row in a family at the GPU size limit', a
               rowCount: 1,
               method,
               minimumFamilySize: familySize,
-              output: {adjustedPValues: 'adjusted', testedCount: 'family'}
+              output: {adjustedPValues: 'adjusted', effectiveFamilySize: 'family'}
             })
           ],
           outputs: ['adjusted', 'family']
@@ -77,7 +77,7 @@ for (const method of [
         rowCount: pValues.length,
         method,
         minimumFamilySize: 80,
-        output: {adjustedPValues: 'adjusted', testedCount: 'tested'}
+        output: {adjustedPValues: 'adjusted', effectiveFamilySize: 'tested'}
       };
       const results: Awaited<ReturnType<typeof runOperationGraph>>[] = [];
       for (const Operation of [

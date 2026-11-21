@@ -34,6 +34,8 @@ type Outputs = {
   staypointCount: RunBuffer;
   locationIds: RunBuffer;
   locationCount: RunBuffer;
+  iterationLimitReached: RunBuffer;
+  complete: RunBuffer;
   centers: RunBuffer;
 };
 
@@ -63,16 +65,26 @@ export default defineOperationRun({
     const parameterBuffer = builder.allocate('location-parameters', 'float32', 4);
     const locationIds = builder.allocate('location-ids', 'uint32', STAYPOINT_CAPACITY);
     const locationCount = builder.allocate('location-count', 'uint32', 1);
+    const iterationLimitReached = builder.allocate('iteration-limit-reached', 'uint32', 1);
+    const complete = builder.allocate('location-complete', 'uint32', 1);
     const centers = builder.allocate('location-centers', 'float32x2', STAYPOINT_CAPACITY);
     builder.graph.add(
       new GPUTrajectoryLocations({
         centroids: staypoints.centroids.view,
         tracks: staypoints.tracks.view,
         count: staypoints.count.view,
+        staypointStatus: {
+          overflow: staypoints.overflow.view,
+          candidateOverflow: staypoints.candidateOverflow.view
+        },
         parameters: parameterBuffer.view,
         output: {
           locationIds: locationIds.view,
-          status: {count: locationCount.view},
+          status: {
+            count: locationCount.view,
+            iterationLimitReached: iterationLimitReached.view,
+            complete: complete.view
+          },
           centers: centers.view
         }
       })
@@ -84,6 +96,8 @@ export default defineOperationRun({
       staypointCount: staypoints.count,
       locationIds,
       locationCount,
+      iterationLimitReached,
+      complete,
       centers
     };
     return {
@@ -96,14 +110,18 @@ export default defineOperationRun({
   },
   // Each staypoint is joined to the center of its location. The links are rebuilt from the run.
   async afterRun({outputs, upload}) {
-    const [count, locationTotal, ids, centroids, centers] = await Promise.all([
-      readUint32(outputs.staypointCount),
-      readUint32(outputs.locationCount),
-      readUint32(outputs.locationIds),
-      readFloat32(outputs.centroids),
-      readFloat32(outputs.centers)
-    ]);
-    const staypointCount = Math.min(count[0], STAYPOINT_CAPACITY);
+    const [count, locationTotal, ids, centroids, centers, iterationLimitReached, complete] =
+      await Promise.all([
+        readUint32(outputs.staypointCount),
+        readUint32(outputs.locationCount),
+        readUint32(outputs.locationIds),
+        readFloat32(outputs.centroids),
+        readFloat32(outputs.centers),
+        readUint32(outputs.iterationLimitReached),
+        readUint32(outputs.complete)
+      ]);
+    const settled = Boolean(complete[0] && !iterationLimitReached[0]);
+    const staypointCount = settled ? Math.min(count[0], STAYPOINT_CAPACITY) : 0;
     const links = new Float32Array(Math.max(1, staypointCount) * 4);
     for (let row = 0; row < staypointCount; row++) {
       const location = ids[row];
@@ -119,7 +137,7 @@ export default defineOperationRun({
     }
     return {
       staypointCount,
-      locationCount: locationTotal[0],
+      locationCount: settled ? locationTotal[0] : 0,
       links: upload('links', 'float32x4', links)
     };
   },
@@ -133,7 +151,9 @@ export default defineOperationRun({
       const centroids = peek(outputs.centroids);
       const count = peek(outputs.staypointCount);
       const locations = peek(outputs.locationCount);
-      if (!centroids || !count) return {};
+      const complete = peek(outputs.complete);
+      if (!centroids || !count || !complete) return {};
+      if (!complete[0]) return {readout: 'Locations unavailable due to an incomplete result'};
       let nearest = -1;
       let nearestDistance = Infinity;
       for (let row = 0; row < Math.min(count[0], STAYPOINT_CAPACITY); row++) {

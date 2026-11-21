@@ -80,7 +80,7 @@ export async function runExample(
     cells: {kind: 'lattice', positions: observations, spatialContext, width, height, bounds},
     settings: {radius: 1.5, temporalWindow: 1},
     parameters,
-    outputs
+    output: outputs
   });
   // category per cell: the 17 ArcGIS emerging hot spot classes from the month-by-cell cube
   // #endregion example

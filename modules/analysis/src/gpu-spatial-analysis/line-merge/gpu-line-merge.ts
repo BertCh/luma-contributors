@@ -28,6 +28,10 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
@@ -48,7 +52,7 @@ const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const)
 });
 
-/** Value written to per-line outputs for a line that is in no chain (fewer than two vertices). */
+/** Value written to lineChains and lineOrders for a line in no chain (fewer than two vertices). */
 export const GPU_LINE_MERGE_NONE = 0xffffffff;
 
 /**
@@ -60,7 +64,7 @@ export const GPU_LINE_MERGE_NONE = 0xffffffff;
 export type GPULineMergeOutput = {
   /**
    * Chain `c` owns `positions[chainOffsets[c] .. chainOffsets[c + 1])`. Rows past `status.count` repeat
-   * the final offset. Length `lineCount + 1`.
+   * the final offset. Length at least `lineCount + 1`.
    */
   chainOffsets: GraphDataView<'uint32'>;
   /** Chain vertices in chain order. Rows past the last chain are left untouched. */
@@ -81,9 +85,9 @@ export type GPULineMergeOutput = {
   sourceIds?: GraphDataView<'uint32'>;
   /** Optional chain index per input line, or {@link GPU_LINE_MERGE_NONE} for lines with under two vertices. */
   lineChains?: GraphDataView<'uint32'>;
-  /** Optional position of each input line within its chain (0 for the first line). */
+  /** Optional position of each input line within its chain (0 for the first line), or GPU_LINE_MERGE_NONE for lines with under two vertices. */
   lineOrders?: GraphDataView<'uint32'>;
-  /** Optional 1 when the chain traverses the line against its input direction, else 0. */
+  /** Optional 1 when the chain traverses the line against its input direction, else 0, including lines with fewer than two vertices. */
   lineReversed?: GraphDataView<'uint32'>;
 };
 
@@ -147,6 +151,38 @@ export class GPULineMerge implements GPUCommandNodeProducer {
   readonly lineCount: number;
 
   constructor(props: GPULineMergeProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'positions',
+      'lineOffsets',
+      'spatialContext',
+      'directed',
+      'output'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(captured.output, [
+      'chainOffsets',
+      'positions',
+      'status',
+      'sourceIds',
+      'lineChains',
+      'lineOrders',
+      'lineReversed'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      spatialContext:
+        captured.spatialContext && snapshotConstructionSpatialContext(captured.spatialContext),
+      output: Object.freeze({
+        ...outputSnapshot,
+        status: snapshotConstructionFields(outputSnapshot.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'vertexCount',
+          'requiredVertexCount'
+        ])
+      })
+    });
     this.id = props.id ?? 'line-merge';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
@@ -572,7 +608,7 @@ fn vertexCount(line: u32) -> u32 {
           write('chainOffsets', output.chainOffsets),
           write('count', output.status.count)
         ],
-        lineCount + 1,
+        output.chainOffsets.length,
         `let chainCount = flagScan[flagScanOffset + LINE_COUNT - 1u];
   let totalVertices = vertexScan[vertexScanOffset + LINE_COUNT - 1u];
   if (index == 0u) {
@@ -652,6 +688,15 @@ fn vertexCount(line: u32) -> u32 {
         );
       }
       if (output.lineOrders) {
+        nodes.push(
+          createFillNode<Parameters>(graph, {
+            id: `${id}-clear-line-orders`,
+            operation: OPERATION,
+            view: output.lineOrders,
+            type: 'u32',
+            value: '0xffffffffu'
+          })
+        );
         infoBindings.push(
           read('lineCountPrefix', rankCounts[rankFinal]),
           write('lineOrders', output.lineOrders)
@@ -660,6 +705,15 @@ fn vertexCount(line: u32) -> u32 {
   lineOrders[lineOrdersOffset + line] = lineCountPrefix[lineCountPrefixOffset + index] - 1u;`;
       }
       if (output.lineReversed) {
+        nodes.push(
+          createFillNode<Parameters>(graph, {
+            id: `${id}-clear-line-reversed`,
+            operation: OPERATION,
+            view: output.lineReversed,
+            type: 'u32',
+            value: '0u'
+          })
+        );
         infoBindings.push(write('lineReversed', output.lineReversed));
         infoBody += `
   lineReversed[lineReversedOffset + line] = select(1u, 0u, (index & 1u) == 1u);`;

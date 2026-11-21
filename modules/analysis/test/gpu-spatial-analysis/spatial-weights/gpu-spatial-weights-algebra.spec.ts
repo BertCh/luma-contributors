@@ -83,7 +83,12 @@ it('GPUSpatialWeightsAlgebra set operations match the oracle for every weight ru
   const left = createRandomWeights(ROWS, 0.12, 1);
   const right = createRandomWeights(ROWS, 0.12, 2);
   const rules: OracleCombineRule[] = ['left', 'right', 'sum', 'min', 'max', 'product', 'binary'];
-  for (const operation of ['union', 'intersection', 'difference', 'symmetricDifference'] as const) {
+  for (const operation of [
+    'union',
+    'intersection',
+    'difference',
+    'symmetric-difference'
+  ] as const) {
     for (const rule of operation === 'union' || operation === 'intersection'
       ? rules
       : ['left' as const, 'binary' as const]) {
@@ -116,7 +121,7 @@ it('GPUSpatialWeightsAlgebra identities hold on the GPU', async () => {
   const right = createRandomWeights(ROWS, 0.15, 4);
   const union = computeBinaryOracle('union', left, right);
   const intersection = computeBinaryOracle('intersection', left, right);
-  const run = async (operation: 'difference' | 'symmetricDifference', capacity: number) => {
+  const run = async (operation: 'difference' | 'symmetric-difference', capacity: number) => {
     const rig = new WeightsRig(device);
     const leftWeights = rig.uploadWeights(left);
     const rightWeights = rig.uploadWeights(right);
@@ -130,7 +135,7 @@ it('GPUSpatialWeightsAlgebra identities hold on the GPU', async () => {
     return result;
   };
   const difference = await run('difference', left.neighbors.length);
-  const symmetric = await run('symmetricDifference', union.neighbors.length);
+  const symmetric = await run('symmetric-difference', union.neighbors.length);
   // |A u B| = |A| + |B| - |A n B| and A xor B = (A u B) minus (A n B).
   expect(union.neighbors.length).toBe(
     left.neighbors.length + right.neighbors.length - intersection.neighbors.length

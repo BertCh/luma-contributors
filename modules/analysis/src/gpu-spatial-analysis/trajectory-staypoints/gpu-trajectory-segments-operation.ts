@@ -167,6 +167,7 @@ export class GPUTrajectorySegmentsOperation extends GPUContributorOperation {
     }
     super({
       id,
+      emptyOutputPorts: ['rowTriplegIds'],
       inputs: {
         positions: props.positions,
         timestamps: props.timestamps,

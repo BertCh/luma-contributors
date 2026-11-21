@@ -82,7 +82,8 @@ it('GPUGeomorphons validates radii, outputs, and buffers', () => {
   expect(() => create({searchRadius: 3, skipRadius: 2})).toThrow(/skipRadius \+ 2/);
   expect(() => create({searchRadius: 4, skipRadius: 2})).not.toThrow();
   expect(() => create({comparison: 'angle' as never})).toThrow(/comparison/);
-  expect(() => create({output: {}})).toThrow(/at least one output/);
+  // Intentional JavaScript-only empty selection; excluded by the public output type.
+  expect(() => Reflect.apply(create, undefined, [{output: {}}])).toThrow(/at least one output/);
   expect(() =>
     create({output: {forms: createTransientView(graph, 'short-forms', 'uint32', 119)}})
   ).toThrow(/one value per pixel/);

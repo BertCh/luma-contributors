@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUColumnQuantiles} from './gpu-column-quantiles';
 
 /** Graph-value props shared by the GPU and CPU quantile operations. */
@@ -12,7 +17,7 @@ export type ColumnQuantilesOperationProps = {
   /** Explicit length of values (and mask and outputMask when present). */
   rowCount: number;
   mask?: string;
-  /** Packed with getGPUColumnQuantilesParameterValues. */
+  /** Packed with getColumnQuantilesParameterValues (either backend) or its GPU-limited spelling. */
   parameters: string;
   rationalProbabilities?: string;
   quantileCount: number;
@@ -24,9 +29,37 @@ export type ColumnQuantilesOperationProps = {
   };
 };
 
+/** @internal Capture the declared shape and port names for both operation forms. */
+export function snapshotColumnQuantilesOperationProps(
+  inputProps: ColumnQuantilesOperationProps
+): ColumnQuantilesOperationProps {
+  const props = snapshotConstructionFields(inputProps, [
+    'id',
+    'values',
+    'rowCount',
+    'mask',
+    'parameters',
+    'rationalProbabilities',
+    'quantileCount',
+    'output'
+  ]);
+  return Object.freeze({
+    ...props,
+    output: snapshotConstructionFields(props.output, [
+      'quantiles',
+      'validCount',
+      'outputMask',
+      'filterBounds'
+    ])
+  });
+}
+
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUColumnQuantilesOperation extends GPUContributorOperation {
-  constructor(props: ColumnQuantilesOperationProps) {
+  constructor(inputProps: ColumnQuantilesOperationProps) {
+    const props = snapshotColumnQuantilesOperationProps(inputProps);
+    const id = props.id ?? 'column-quantiles';
+    validateCapacity(id, 'rowCount', props.rowCount, 1);
     super({
       id: props.id ?? 'column-quantiles',
       inputs: {
@@ -59,10 +92,18 @@ export class GPUColumnQuantilesOperation extends GPUContributorOperation {
             }
           : {})
       },
-      createContributor: getView =>
-        new GPUColumnQuantiles({
+      createContributor: getView => {
+        const values = getView<'float32'>('values');
+        // The CPU form rejects the same declaration when it runs; without an outputMask nothing
+        // else on this form reads rowCount.
+        validateRequirement(
+          id,
+          values.length === props.rowCount,
+          `values length must equal rowCount; values length ${values.length} must equal rowCount ${props.rowCount}`
+        );
+        return new GPUColumnQuantiles({
           id: props.id,
-          values: getView<'float32'>('values'),
+          values,
           parameters: getView<'float32'>('parameters'),
           mask: props.mask !== undefined ? getView<'uint32'>('mask') : undefined,
           rationalProbabilities:
@@ -80,7 +121,8 @@ export class GPUColumnQuantilesOperation extends GPUContributorOperation {
                 ? getView<'float32'>('filterBounds')
                 : undefined
           }
-        })
+        });
+      }
     });
   }
 }

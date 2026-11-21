@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {GPUOrdinaryLeastSquares} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-ordinary-least-squares';
 import type {GPUOrdinaryLeastSquaresProps} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-ordinary-least-squares';
 import {
@@ -126,6 +126,10 @@ it('GPUOrdinaryLeastSquares emits a deterministic node chain with stable IDs', (
   expect(contributor.tileCount).toBe(3);
   const nodes = contributor.getCommandNodes(graph);
   expect(nodes.map(node => node.id)).toEqual([
+    'ols-response-magnitudes',
+    'ols-response-maximum-level-0',
+    'ols-response-maximum-finalize',
+    'ols-response-normalize',
     'ols-means-origins',
     'ols-means-tiles',
     'ols-means-merge',
@@ -135,14 +139,18 @@ it('GPUOrdinaryLeastSquares emits a deterministic node chain with stable IDs', (
     'ols-residuals',
     'ols-residual-tiles',
     'ols-residual-merge',
+    'ols-standardized-residual-tiles',
+    'ols-standardized-residual-merge',
     'ols-finish',
+    'ols-scaled-likelihood',
     'ols-bp-means-origins',
     'ols-bp-means-tiles',
     'ols-bp-means-merge',
     'ols-bp-moments-tiles',
     'ols-bp-moments-merge',
     'ols-bp-solve',
-    'ols-bp-finish'
+    'ols-bp-finish',
+    'ols-response-restore-report'
   ]);
   device.destroy();
 });
@@ -265,4 +273,260 @@ it('oracle excludes masked and non-finite rows and applies ridge shrinkage', () 
   expect(Math.abs(ridge.coefficients[1])).toBeLessThan(Math.abs(fit.coefficients[1]));
   expect(ridge.summary[15]).toBe(5000);
   expect(ridge.summary[11]).toBeGreaterThan(fit.summary[11]);
+});
+
+it('DEF-11 infers only an exact nonempty predictor layout and preserves explicit counts', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph, {predictorCount: undefined});
+    const operation = new GPUOrdinaryLeastSquares(props);
+    expect(operation.props.predictorCount).toBe(2);
+    expect(
+      () =>
+        new GPUOrdinaryLeastSquares({
+          ...props,
+          predictors: createTransientView(graph, 'ambiguous', 'float32', 39)
+        })
+    ).toThrow(/predictorCount/);
+    expect(() => new GPUOrdinaryLeastSquares({...props, predictorCount: 1})).toThrow(
+      /predictors length/
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
+it('CMP-11 returns a single design column unchanged and validates ordered columns', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const first = createTransientView(graph, 'first-column', 'float32', 5);
+    const second = createTransientView(graph, 'second-column', 'float32', 5);
+    expect(GPUOrdinaryLeastSquares.createDesign(graph, [first])).toBe(first);
+    const predictors = GPUOrdinaryLeastSquares.createDesign(graph, [first, second]);
+    expect(predictors.length).toBe(10);
+    expect(predictors.format).toBe('float32');
+    expect(() => GPUOrdinaryLeastSquares.createDesign(graph, [])).toThrow(/columns/);
+    expect(() =>
+      GPUOrdinaryLeastSquares.createDesign(graph, [
+        first,
+        createTransientView(graph, 'short-column', 'float32', 4)
+      ])
+    ).toThrow(/length/);
+  } finally {
+    device.destroy();
+  }
+});
+
+import {describeOutputs} from '../../../src/gpu-spatial-analysis/ontology/all-entry-points/operator-output-declarations';
+
+it('UCO-17 audited OLS allocation plan matches active and maximum constructor lengths', () => {
+  const plan = describeOutputs(
+    {
+      package: '@luma-contributors/analysis/gpu-spatial-analysis',
+      exportName: 'GPUOrdinaryLeastSquares'
+    },
+    'default',
+    {rowCount: 10, predictorCount: 1}
+  );
+  expect(plan.declaration).toBe('declared');
+  for (const capacityKind of ['minimumCapacity', 'capacity'] as const) {
+    const device = createNullWebGPUDevice();
+    try {
+      const graph = new GPUCommandGraph(device);
+      const getView = <Format extends 'float32' | 'uint32'>(path: string, format: Format) => {
+        const declaration = plan.outputs.find(output => output.path === `output.${path}`);
+        if (!declaration) throw new Error(`Missing output ${path}`);
+        expect(declaration.format).toBe(format);
+        return createTransientView(graph, path, format, declaration[capacityKind]);
+      };
+      const output = {
+        coefficients: getView('coefficients', 'float32'),
+        standardErrors: getView('standardErrors', 'float32'),
+        tStatistics: getView('tStatistics', 'float32'),
+        summary: getView('summary', 'float32'),
+        status: {code: getView('status.code', 'uint32')},
+        fitted: getView('fitted', 'float32'),
+        residuals: getView('residuals', 'float32'),
+        predictions: getView('predictions', 'float32')
+      };
+      expect(
+        () =>
+          new GPUOrdinaryLeastSquares({
+            predictors: createTransientView(graph, 'x', 'float32', 10),
+            response: createTransientView(graph, 'y', 'float32', 10),
+            predictorCount: 1,
+            output
+          })
+      ).not.toThrow();
+    } finally {
+      device.destroy();
+    }
+  }
+  for (const name of ['coefficients', 'standardErrors', 'tStatistics']) {
+    expect(plan.outputs.find(output => output.path === `output.${name}`)).toMatchObject({
+      capacity: 16,
+      minimumCapacity: 2,
+      activeLength: 2,
+      format: 'float32',
+      status: ['output.status.code']
+    });
+  }
+  expect(plan.outputs.find(output => output.path === 'output.summary')).toMatchObject({
+    capacity: GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
+    format: 'float32'
+  });
+  expect(plan.outputs.find(output => output.path === 'output.status.code')).toMatchObject({
+    capacity: 1,
+    format: 'uint32'
+  });
+});
+
+it('W3-04 uses the shared tile default and preserves an explicit width', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    for (const [tileRowCount, expectedWidth, expectedCount] of [
+      [undefined, 64, 1],
+      [3, 3, 7],
+      [100, 100, 1]
+    ] as const) {
+      const fit = new GPUOrdinaryLeastSquares(createProps(graph, {tileRowCount}));
+      expect({tileRowCount: fit.tileRowCount, tileCount: fit.tileCount}).toEqual({
+        tileRowCount: expectedWidth,
+        tileCount: expectedCount
+      });
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('CMP-01 adds the completeness gate before OLS and preserves loss view identities', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph, {id: 'joined-fit'});
+    const matched = createTransientView(graph, 'matched', 'uint32', 20);
+    const complete = createTransientView(graph, 'complete', 'uint32', 1);
+    const candidateOverflow = createTransientView(graph, 'candidate-overflow', 'uint32', 1);
+    const joinedTable = {matched, status: {complete, candidateOverflow}};
+    const composition = GPUOrdinaryLeastSquares.addJoinedTableFit(graph, props, joinedTable);
+    expect(composition.fit.props.mask).toBe(composition.mask);
+    expect(composition.mask.length).toBe(20);
+    expect(composition.status.complete).toBe(complete);
+    expect(composition.status.candidateOverflow).toBe(candidateOverflow);
+    expect(composition.status).not.toBe(joinedTable.status);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('B1 composition kernels use the public graph add hook', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const add = vi.spyOn(graph, 'add');
+    const columns = [
+      createTransientView(graph, 'hook-x', 'float32', 20),
+      createTransientView(graph, 'hook-z', 'float32', 20)
+    ];
+    GPUOrdinaryLeastSquares.createDesign(graph, columns, 'hook-design');
+    expect(add.mock.calls.map(([node]) => ('id' in node ? node.id : undefined))).toContain(
+      'hook-design-row-indices'
+    );
+    const props = createProps(graph, {id: 'hook-fit'});
+    GPUOrdinaryLeastSquares.addJoinedTableFit(graph, props, {
+      matched: createTransientView(graph, 'hook-matched', 'uint32', 20),
+      status: {complete: createTransientView(graph, 'hook-complete', 'uint32', 1)}
+    });
+    expect(add.mock.calls.map(([node]) => ('id' in node ? node.id : undefined))).toContain(
+      'hook-fit-join-training-mask'
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
+for (const invalid of ['matched', 'output'] as const) {
+  it(`B3 rejected ${invalid} declaration can be corrected on the same graph and ID`, () => {
+    const device = createNullWebGPUDevice();
+    try {
+      const graph = new GPUCommandGraph(device);
+      const props = createProps(graph, {id: 'retry-fit'});
+      const joined = {
+        matched: createTransientView(graph, 'retry-matched', 'uint32', 20),
+        status: {complete: createTransientView(graph, 'retry-complete', 'uint32', 1)}
+      };
+      const badProps =
+        invalid === 'output'
+          ? {
+              ...props,
+              output: {
+                ...props.output,
+                coefficients: createTransientView(graph, 'retry-short', 'float32', 1)
+              }
+            }
+          : props;
+      const badJoined =
+        invalid === 'matched'
+          ? {...joined, matched: createTransientView(graph, 'retry-long', 'uint32', 21)}
+          : joined;
+      expect(() => GPUOrdinaryLeastSquares.addJoinedTableFit(graph, badProps, badJoined)).toThrow();
+      expect(() => GPUOrdinaryLeastSquares.addJoinedTableFit(graph, props, joined)).not.toThrow();
+    } finally {
+      device.destroy();
+    }
+  });
+}
+
+it('B4 joined fit captures inherited getters once', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const reads = {predictors: 0, response: 0, output: 0};
+    class InheritedProps {
+      get predictors() {
+        reads.predictors++;
+        return props.predictors;
+      }
+      get response() {
+        reads.response++;
+        return props.response;
+      }
+      get output() {
+        reads.output++;
+        return props.output;
+      }
+    }
+    const result = GPUOrdinaryLeastSquares.addJoinedTableFit(graph, new InheritedProps(), {
+      matched: createTransientView(graph, 'inherited-matched', 'uint32', 20),
+      status: {complete: createTransientView(graph, 'inherited-complete', 'uint32', 1)}
+    });
+    expect(result.fit.props.predictors).toBe(props.predictors);
+    expect(reads).toEqual({predictors: 1, response: 1, output: 1});
+  } finally {
+    device.destroy();
+  }
+});
+
+it('B5 normalizes the response before any centered subtraction and restores caller units last', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph, {id: 'scaled-response'});
+    const fit = new GPUOrdinaryLeastSquares(props);
+    const nodes = fit.getCommandNodes(graph);
+    const identifiers = nodes.map(node => node.id);
+    expect(identifiers).toContain('scaled-response-response-normalize');
+    expect(identifiers.indexOf('scaled-response-response-normalize')).toBeLessThan(
+      identifiers.indexOf('scaled-response-means-origins')
+    );
+    expect(identifiers.at(-1)).toBe('scaled-response-response-restore-report');
+    expect(nodes.length).toBe(fit.estimatedCommandNodeCount);
+  } finally {
+    device.destroy();
+  }
 });

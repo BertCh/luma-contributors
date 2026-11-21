@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {HASH_UINT32_WGSL} from '../shared/hash-uint32';
+import {validateRegionalizationWeightsCompleteness} from './adjacency-loss-suppression';
+import {GPU_WARD_MUTUAL_SELECTION_RADIX_BIN_COUNT} from './ward-mutual-selection';
+import {HASH_UINT32_WGSL} from '../../analysis-core/kernels/hash-uint32';
 import {clamp} from '@math.gl/core';
 import type {Device} from '@luma.gl/core';
 import {
@@ -22,6 +24,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
@@ -30,6 +33,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 import {
   createStandardizeColumnsNode,
   getRegionalizationSeedParameterValues,
@@ -53,7 +57,8 @@ import {
 export const GPU_WARD_MAXIMUM_COLUMNS = 8;
 /**
  * Largest region table of {@link GPUWardRegions} on `device`, in float32 words:
- * `rows * (columnCount + 1)` (each region's size and column sums) in one storage binding, so
+ * `rows * (columnCount + 1)` for standardized data, or `rows * (2 * columnCount + 2)` for raw
+ * data (size, representative-relative sums, representative values and a runtime-zero word), so
  * 33554432 on a default device (128 MiB bindings).
  *
  * @param device Device whose `maxStorageBufferBindingSize` applies.
@@ -83,7 +88,7 @@ export function getGPUWardRegionsParameterValues(
 }
 
 /** Words of {@link GPUWardRegionsOutput.status}. */
-export const GPU_WARD_STATUS = {
+export const GPU_WARD_STATUS_LAYOUT = {
   iterationCount: 0,
   converged: 1,
   iterationLimitReached: 2,
@@ -94,10 +99,10 @@ export const GPU_WARD_STATUS = {
 /**
  * Word of {@link GPUWardRegionsOutput.status} that receives the number of merge rounds executed by
  * the `'mutual-nearest'` {@link GPUWardRegionsProps.mergeSchedule}. It is optional: it is written
- * only when `output.status` holds more than {@link GPU_WARD_STATUS}`.length` words, and never by the
+ * only when `output.status` holds more than {@link GPU_WARD_STATUS_LAYOUT}`.length` words, and never by the
  * `'sequential'` schedule (whose rounds are its merges).
  */
-export const GPU_WARD_ROUND_COUNT_STATUS_WORD = GPU_WARD_STATUS.length;
+export const GPU_WARD_ROUND_COUNT_STATUS_WORD = GPU_WARD_STATUS_LAYOUT.length;
 
 /** Merge order of {@link GPUWardRegions}; see {@link GPUWardRegionsProps.mergeSchedule}. */
 export type GPUWardMergeSchedule = 'sequential' | 'mutual-nearest';
@@ -167,7 +172,7 @@ export type GPUWardRegionsOutput = {
   /** Within-region sum of squared deviations, or NaN when adjacency loss suppresses the partition. */
   objective: GraphDataView<'float32'>;
   /**
-   * Four words indexed by {@link GPU_WARD_STATUS}; `iterationCount` is the number of merges
+   * Four words indexed by {@link GPU_WARD_STATUS_LAYOUT}; `iterationCount` is the number of merges
    * applied in either schedule. A fifth word ({@link GPU_WARD_ROUND_COUNT_STATUS_WORD}) is
    * written when present and the schedule is `'mutual-nearest'`.
    */
@@ -193,6 +198,11 @@ export type GPUWardRegionsOutput = {
  * that condition without readback during execution. Once no merge is possible (no adjacent
  * region pair remains, the target is reached, or the input is invalid) the remaining unrolled
  * iterations are gated off on the GPU through indirect dispatches with zero workgroups.
+ * Both schedules accept 1–8 attribute columns and a target of 1 through the input row count.
+ * The iteration budget is at most the input row count minus the target. Mutual-nearest uses
+ * cooperative selection through 4,096 rows and distributed selection above that size. The
+ * estimated graph is limited to 32,768 command nodes. At a 128 MiB storage binding limit,
+ * the input CSR is capped at 16,777,216 slots and the region table at 33,554,432 words.
  */
 export class GPUWardRegions implements GPUCommandNodeProducer {
   /** Upper bound including the transitive active-graph and selection nodes. */
@@ -243,7 +253,9 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
               'requiredCount',
               'overflow',
               'candidateOverflow',
+              'complete',
               'uncertainCount',
+              'unresolvedCount',
               'invalidCount',
               'iterationCount',
               'converged',
@@ -274,6 +286,7 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
     this.id = props.id ?? 'ward-regions';
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(this.id, props.weights);
+    validateRegionalizationWeightsCompleteness(this.id, props.weights);
     this.columnCount = props.columnCount ?? 1;
     const {id, rowCount, columnCount} = this;
     const {output} = props;
@@ -297,24 +310,50 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
       props.mergeSchedule !== 'sequential' &&
       props.mergeSchedule !== 'mutual-nearest'
     ) {
-      throw new Error(`${id} mergeSchedule must be 'sequential' or 'mutual-nearest'`);
+      validateRequirement(
+        id,
+        false,
+        `mergeSchedule must be 'sequential' or 'mutual-nearest'; received mergeSchedule=${props.mergeSchedule}`,
+        {
+          code: 'INVALID_OPTION',
+          path: 'mergeSchedule',
+          received: props.mergeSchedule,
+          expected: ['sequential', 'mutual-nearest']
+        }
+      );
     }
     validateRegionalizationParameters(id, props.parameters, GPU_WARD_REGIONS_PARAMETER_LENGTH);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rowCount * columnCount) {
-      throw new Error(`${id} values length must equal rows * columnCount`);
+      validateRequirement(
+        id,
+        false,
+        `values length must equal rows * columnCount; received props.values.length=${props.values.length}`
+      );
     }
     validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
     if (output.labels.length !== rowCount) {
-      throw new Error(`${id} output.labels length must equal the weights row count`);
+      validateRequirement(
+        id,
+        false,
+        `output.labels length must equal the weights row count; received output.labels.length=${output.labels.length}`
+      );
     }
     validateSinglePackedView(output.objective, ['float32'], `${id} output.objective`);
     validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
     if (output.objective.length < 1) {
-      throw new Error(`${id} output.objective must hold one value`);
+      validateRequirement(
+        id,
+        false,
+        `output.objective must hold one value; received output.objective.length=${output.objective.length}`
+      );
     }
-    if (output.status.length < GPU_WARD_STATUS.length) {
-      throw new Error(`${id} output.status must hold ${GPU_WARD_STATUS.length} words`);
+    if (output.status.length < GPU_WARD_STATUS_LAYOUT.length) {
+      validateRequirement(
+        id,
+        false,
+        `output.status must hold ${GPU_WARD_STATUS_LAYOUT.length} words; received output.status.length=${output.status.length}, GPU_WARD_STATUS_LAYOUT.length=${GPU_WARD_STATUS_LAYOUT.length}`
+      );
     }
     validateGraphOutputsDisjointFromInputs(
       id,
@@ -353,13 +392,13 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
       props.weights,
       getGPURegionalizationMaximumSlotCount(graph.device)
     );
+    const regionStride = props.standardize === false ? 2 * columnCount + 2 : columnCount + 1;
     validateMaximumCount(
       id,
-      'rows x (columnCount + 1)',
-      rowCount * (columnCount + 1),
+      'rows x region statistic stride',
+      rowCount * regionStride,
       getGPUWardMaximumRegionTableWordCount(graph.device)
     );
-    const regionStride = columnCount + 1;
     const regions = createTransientView(graph, `${id}-regions`, 'float32', rowCount * regionStride);
     const mutual = props.mergeSchedule === 'mutual-nearest';
     const hasRoundCountWord = output.status.length > GPU_WARD_ROUND_COUNT_STATUS_WORD;
@@ -380,7 +419,12 @@ export class GPUWardRegions implements GPUCommandNodeProducer {
           regionOther: createTransientView(graph, `${id}-region-other`, 'uint32', rowCount),
           mergeFlag: createTransientView(graph, `${id}-merge-flag`, 'uint32', rowCount),
           selectionSummary: createTransientView(graph, `${id}-selection-summary`, 'uint32', 7),
-          selectionHistogram: createTransientView(graph, `${id}-selection-histogram`, 'uint32', 256)
+          selectionHistogram: createTransientView(
+            graph,
+            `${id}-selection-histogram`,
+            'uint32',
+            GPU_WARD_MUTUAL_SELECTION_RADIX_BIN_COUNT
+          )
         }
       : null;
     const candidateCostA = createTransientView(
@@ -579,8 +623,10 @@ fn pairKey(first: u32, second: u32) -> u32 {
   var invalidCount = 0u;
   for (var column = 0u; column < COLUMN_COUNT; column++) {
     invalidCount += select(0u, 1u, !isFiniteFloat(values[valuesOffset + index * COLUMN_COUNT + column]));
-    regions[regionBase + 1u + column] = table[tableOffset + index * COLUMN_COUNT + column];
+    regions[regionBase + 1u + column] = ${standardize ? 'table[tableOffset + index * COLUMN_COUNT + column]' : '0.0'};
+    ${standardize ? '' : 'regions[regionBase + 1u + COLUMN_COUNT + column] = table[tableOffset + index * COLUMN_COUNT + column];'}
   }
+  ${standardize ? '' : 'regions[regionBase + REGION_STRIDE - 1u] = 0.0;'}
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     invalidCount += select(0u, 1u, neighbors[neighborsOffset + slot] >= ROW_COUNT);
   }
@@ -589,7 +635,13 @@ fn pairKey(first: u32, second: u32) -> u32 {
     ];
 
     for (let iteration = 0; iteration < props.maximumIterations; iteration++) {
-      const contracted = activeGraph.getRoundNodes(iteration, gate!, regions, columnCount);
+      const contracted = activeGraph.getRoundNodes(
+        iteration,
+        gate!,
+        regions,
+        columnCount,
+        !standardize
+      );
       nodes.push(...contracted.nodes);
       const adjacency = contracted.adjacency;
       if (mutualBuffers) {
@@ -795,6 +847,7 @@ fn isBetter(slot: u32, other: u32) -> bool {
           id: `${id}-iteration-${iteration}-apply`,
           operation: 'GPUWardRegions',
           variant: 'apply-merge',
+          // contract-allow: single-invocation -- feature-column loop, columnCount <= GPU_WARD_MAXIMUM_COLUMNS (8), enforced at construction.
           invocationCount: 1,
           bindings: [
             {name: 'cost', view: sourceCost, type: 'f32', access: 'read'},
@@ -814,7 +867,8 @@ fn isBetter(slot: u32, other: u32) -> bool {
           declarations: `const COLUMN_COUNT: u32 = ${columnCount}u;
 const REGION_STRIDE: u32 = ${regionStride}u;
 const TARGET_REGION_COUNT: u32 = ${props.targetRegionCount}u;
-const NONE: u32 = 0xffffffffu;`,
+const NONE: u32 = 0xffffffffu;
+${standardize ? '' : ROUNDED_DIFFERENCE_WGSL}`,
           // A zero x in slot 0 means an earlier iteration disarmed the gate; the candidate buffers
           // then hold a stale winner that must not be applied again.
           body: `if (dispatch[dispatchOffset] == 0u) { return; }
@@ -823,10 +877,16 @@ const NONE: u32 = 0xffffffffu;`,
   if (firstRegion != NONE && state[stateOffset] > TARGET_REGION_COUNT && status[statusOffset + 3u] == 0u) {
     let firstBase = regionsOffset + firstRegion * REGION_STRIDE;
     let secondBase = regionsOffset + secondRegion * REGION_STRIDE;
+    ${standardize ? '' : 'let secondCount = regions[secondBase];\n    let runtimeZero = bitcast<u32>(regions[firstBase + REGION_STRIDE - 1u]);'}
     regions[firstBase] += regions[secondBase];
     regions[secondBase] = 0.0;
     for (var column = 0u; column < COLUMN_COUNT; column++) {
-      regions[firstBase + 1u + column] += regions[secondBase + 1u + column];
+      ${
+        standardize
+          ? 'regions[firstBase + 1u + column] += regions[secondBase + 1u + column];'
+          : `let originDifference = getRoundedDifference(regions[secondBase + 1u + COLUMN_COUNT + column], regions[firstBase + 1u + COLUMN_COUNT + column], runtimeZero);
+      regions[firstBase + 1u + column] += regions[secondBase + 1u + column] + secondCount * originDifference;`
+      }
       regions[secondBase + 1u + column] = 0.0;
     }
     objective[objectiveOffset] += cost[costOffset];
@@ -908,8 +968,8 @@ const MAXIMUM_ITERATIONS: u32 = ${props.maximumIterations}u;`,
     if (index == 0u) {
       var nanBits = 0x7fc00000u;
       objective[objectiveOffset] = bitcast<f32>(nanBits);
-      status[statusOffset + ${GPU_WARD_STATUS.converged}u] = 0u;
-      status[statusOffset + ${GPU_WARD_STATUS.iterationLimitReached}u] = 0u;
+      status[statusOffset + ${GPU_WARD_STATUS_LAYOUT.converged}u] = 0u;
+      status[statusOffset + ${GPU_WARD_STATUS_LAYOUT.iterationLimitReached}u] = 0u;
     }
   }`
       })
@@ -952,6 +1012,8 @@ const MAXIMUM_ITERATIONS: u32 = ${props.maximumIterations}u;`,
     }
   ): GPUCommandNode<Parameters>[] {
     const {id, props, rowCount, columnCount} = this;
+    const rawFeatures = props.standardize === false;
+    const regionStride = rawFeatures ? 2 * columnCount + 2 : columnCount + 1;
     const {output} = props;
     const {
       iteration,
@@ -1254,15 +1316,27 @@ fn reduceCount(lane: u32, laneCount: u32) -> u32 {
           regionOtherBinding('read'),
           mergeFlagBinding('read')
         ],
-        declarations: `const REGION_STRIDE: u32 = ${columnCount + 1}u;`,
+        declarations: `const REGION_STRIDE: u32 = ${regionStride}u;
+${rawFeatures ? ROUNDED_DIFFERENCE_WGSL : ''}`,
         // The accepted pairs are disjoint, so no thread writes a row another thread reads.
         body: `if (mergeFlag[mergeFlagOffset + index] == 0u) { return; }
   let firstBase = regionsOffset + index * REGION_STRIDE;
   let secondRegion = regionOther[regionOtherOffset + index];
   let secondBase = regionsOffset + secondRegion * REGION_STRIDE;
   changed[changedOffset + index] = 1u; changed[changedOffset + secondRegion] = 1u;
+  ${
+    rawFeatures
+      ? `let secondCount = regions[secondBase];
+  let runtimeZero = bitcast<u32>(regions[firstBase + REGION_STRIDE - 1u]);
+  for (var column = 0u; column < ${columnCount}u; column++) {
+    let originDifference = getRoundedDifference(regions[secondBase + ${columnCount + 1}u + column], regions[firstBase + ${columnCount + 1}u + column], runtimeZero);
+    regions[firstBase + 1u + column] += regions[secondBase + 1u + column] + secondCount * originDifference;
+  }
+  regions[firstBase] += secondCount;`
+      : `
   for (var word = 0u; word < REGION_STRIDE; word++) {
     regions[firstBase + word] += regions[secondBase + word];
+  }`
   }`
       }),
       // Only merged roots change parents. Dense row labels are published after all rounds.
@@ -1277,7 +1351,7 @@ fn reduceCount(lane: u32, laneCount: u32) -> u32 {
           mergeFlagBinding('read')
         ],
         declarations: `${noneDeclaration}
-const REGION_STRIDE: u32 = ${columnCount + 1}u;
+const REGION_STRIDE: u32 = ${regionStride}u;
 // First region of the pair whose second region is \`region\`, or NONE.
 fn getMergedInto(region: u32) -> u32 {
   let partner = regionOther[regionOtherOffset + region];

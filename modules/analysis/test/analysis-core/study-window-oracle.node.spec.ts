@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
-import {getGPUKernelDensityWindowMass} from '../../src/gpu-spatial-analysis/point-density/kernel-density-math';
+import {getGPUKernelDensityWindowOverlap} from '../../src/gpu-spatial-analysis/point-density/kernel-density-math';
 import {
   addOracleDegenerateSlots,
   ORACLE_RECTANGLE,
@@ -191,7 +191,7 @@ it('rectangle kernel mass agrees with the existing closed forms within their doc
     ] as const) {
       for (const bandwidth of [100, 500, 1200]) {
         const actual = getOracleKernelMassFan(ORACLE_RECTANGLE, centre, bandwidth, kernel);
-        const rectangle = getGPUKernelDensityWindowMass(
+        const rectangle = getGPUKernelDensityWindowOverlap(
           kernel,
           bandwidth,
           centre,

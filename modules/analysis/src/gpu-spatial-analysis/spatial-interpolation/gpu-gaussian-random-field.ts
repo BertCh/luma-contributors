@@ -3,6 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateWeightsLossSources,
+  createWeightsLossNodes
+} from '../spatial-weights/spatial-weights-loss';
+import type {InterpolationNeighborhoodWeights} from './interpolation-neighborhood-loss';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
+import {
   GPUFFT2D,
   GPUReduction,
   makeGPUFFT2DStats,
@@ -62,7 +70,10 @@ export type GPUGaussianRandomFieldOutput = {
   /** Nonzero for finite usable rows; padding and failed residual solves are zero. */
   validity: GraphDataView<'uint32'>;
   /** Scalar: finite modes, local conditioning, or a clipped FFT spectrum was used. */
-  status: GPUApproximationStatusPort & {approximation: GraphDataView<'uint32'>};
+  status: GPUApproximationStatusPort & {
+    approximation: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
+  };
   /** Scalar sum of max(-eigenvalue,0) / padded cell count, in variance units; zero for modes. */
   clippedEigenvalueMass: GraphDataView<'float32'>;
 };
@@ -90,10 +101,17 @@ export type GPUGaussianRandomFieldProps = {
     values: GraphDataView<'float32'>;
     mask?: GraphDataView<'uint32'>;
     neighborhoods: GraphDataView<'uint32'>;
+    /** Optional CSR offsets; omit for fixed-width candidate rows. */
+    neighborhoodOffsets?: GraphDataView<'uint32'>;
+    /** Live search loss; incomplete support suppresses all conditioned output rows. */
+    status?: InterpolationNeighborhoodWeights['status'];
     neighborCount: number;
   };
   output: GPUGaussianRandomFieldOutput;
-};
+} & (
+  | {grid: GPURasterMetadata; positions?: never}
+  | {positions: GraphDataView<'float32x2'>; grid?: never}
+);
 
 function binding(name: string, view: GraphDataView, write = false): WGSLKernelBinding {
   return {
@@ -143,7 +161,24 @@ export class GPUGaussianRandomField implements GPUCommandNodeProducer {
   private readonly paddedWidth: number;
   private readonly paddedHeight: number;
 
-  constructor(readonly props: GPUGaussianRandomFieldProps) {
+  readonly props: GPUGaussianRandomFieldProps;
+  constructor(props: GPUGaussianRandomFieldProps) {
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'conditioning',
+        'grid',
+        'id',
+        'method',
+        'modeCount',
+        'output',
+        'parameters',
+        'positions',
+        'spatialContext'
+      ],
+      ['values', 'validity', 'status', 'clippedEigenvalueMass'],
+      ['approximation', 'candidateOverflow']
+    );
     this.id = props.id ?? 'GPUGaussianRandomField';
     resolveGPUSpatialContext(this.id, props.spatialContext, {
       ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -159,7 +194,7 @@ export class GPUGaussianRandomField implements GPUCommandNodeProducer {
       ['auto', 'fft', 'spectral'].includes(props.method ?? 'auto'),
       'method must be auto, fft or spectral'
     );
-    if (props.grid) getRasterGridCorners(this.id, props.grid);
+    if (props.grid) getRasterGridCorners(this.id, props.grid, false);
     this.rowCount = props.grid ? props.grid.width * props.grid.height : props.positions!.length;
     validateCapacity(
       this.id,
@@ -219,7 +254,14 @@ export class GPUGaussianRandomField implements GPUCommandNodeProducer {
       props.parameters,
       props.positions,
       ...(props.conditioning
-        ? Object.values(props.conditioning).filter(value => typeof value !== 'number')
+        ? [
+            props.conditioning.indices,
+            props.conditioning.values,
+            props.conditioning.mask,
+            props.conditioning.neighborhoods,
+            props.conditioning.neighborhoodOffsets,
+            ...validateWeightsLossSources(this.id, [props.conditioning])
+          ]
         : [])
     ].filter(view => view !== undefined) as GraphDataView[];
     const outputs = getGraphOutputViews(props.output);
@@ -230,6 +272,8 @@ export class GPUGaussianRandomField implements GPUCommandNodeProducer {
       ['conditioning.values', props.conditioning?.values, 'float32'],
       ['conditioning.mask', props.conditioning?.mask, 'uint32'],
       ['conditioning.neighborhoods', props.conditioning?.neighborhoods, 'uint32'],
+      ['conditioning.neighborhoodOffsets', props.conditioning?.neighborhoodOffsets, 'uint32'],
+      ['output.status.candidateOverflow', props.output.status.candidateOverflow, 'uint32'],
       ['output.values', props.output.values, 'float32'],
       ['output.validity', props.output.validity, 'uint32'],
       ['output.status.approximation', props.output.status.approximation, 'uint32'],
@@ -287,8 +331,10 @@ export class GPUGaussianRandomField implements GPUCommandNodeProducer {
       );
       validateRequirement(
         this.id,
-        conditioning.neighborhoods.length === this.rowCount * conditioning.neighborCount,
-        'conditioning.neighborhoods length must equal rowCount * neighborCount'
+        conditioning.neighborhoodOffsets
+          ? conditioning.neighborhoodOffsets.length === this.rowCount + 1
+          : conditioning.neighborhoods.length === this.rowCount * conditioning.neighborCount,
+        'conditioning.neighborhoods length must equal rowCount * neighborCount, or supply neighborhoodOffsets of rowCount + 1 for CSR'
       );
     }
     // Published FFT stats are exact for packed views; each scalar reduction needs at most four
@@ -297,7 +343,25 @@ export class GPUGaussianRandomField implements GPUCommandNodeProducer {
       this.method === 'fft'
         ? 12 + 2 * makeGPUFFT2DStats(this.paddedWidth, this.paddedHeight).dispatchCountPerEncode
         : 6;
-    if (props.conditioning) this.estimatedCommandNodeCount += 3;
+    if (props.conditioning) {
+      const losses = validateWeightsLossSources(this.id, [props.conditioning]);
+      this.estimatedCommandNodeCount += 3 + losses.length * 2;
+    }
+    if (props.output.status.candidateOverflow) {
+      validateViewLength(
+        this.id,
+        'output.status.candidateOverflow',
+        props.output.status.candidateOverflow,
+        1
+      );
+      this.estimatedCommandNodeCount += Math.max(
+        1,
+        Math.ceil(
+          validateWeightsLossSources(this.id, props.conditioning ? [props.conditioning] : [])
+            .length / 7
+        )
+      );
+    }
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
 
@@ -314,7 +378,9 @@ export class GPUGaussianRandomField implements GPUCommandNodeProducer {
             props.conditioning.indices,
             props.conditioning.values,
             props.conditioning.mask,
-            props.conditioning.neighborhoods
+            props.conditioning.neighborhoods,
+            props.conditioning.neighborhoodOffsets,
+            ...validateWeightsLossSources(id, [props.conditioning])
           ]
         : [])
     ];
@@ -599,6 +665,8 @@ observations[observationsOffset + index * 4u + 3u] = select(0.0, 1.0, usable && 
           mode: 'simple',
           emptyNeighborhood: 'prior',
           neighborhoods: conditioning.neighborhoods,
+          neighborhoodOffsets: conditioning.neighborhoodOffsets,
+          neighborhoodStatus: conditioning.status,
           neighborhoodCapacity: conditioning.neighborCount,
           neighborCount: conditioning.neighborCount,
           output: {values: predictions, status: statuses}
@@ -662,6 +730,30 @@ if (validity[validityOffset + source] != 0u && isFiniteValue(value)) {
         `approximation[approximationOffset] = select(0u, 1u, ${this.method === 'spectral' || Boolean(props.conditioning) ? 'true' : 'mass[massOffset] > 0.0'});`
       )
     );
+    const lossViews = validateWeightsLossSources(
+      id,
+      props.conditioning ? [props.conditioning] : []
+    );
+    const candidateOverflow = props.output.status.candidateOverflow;
+    if (candidateOverflow)
+      nodes.push(
+        ...createWeightsLossNodes(graph, `${id}-conditioning-loss`, lossViews, candidateOverflow)
+      );
+    for (const [lossIndex, loss] of lossViews.entries())
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-conditioning-incomplete-${lossIndex}`,
+          operation: 'GaussianRandomFieldInputLoss',
+          invocationCount: props.output.values.length,
+          bindings: [
+            binding('loss', loss),
+            binding('values', props.output.values, true),
+            binding('validity', props.output.validity, true)
+          ],
+          declarations: GET_NAN_WGSL,
+          body: 'if (loss[lossOffset] != 0u) { values[valuesOffset + index] = getNaN(); validity[validityOffset + index] = 0u; }'
+        })
+      );
     return nodes;
   }
 }

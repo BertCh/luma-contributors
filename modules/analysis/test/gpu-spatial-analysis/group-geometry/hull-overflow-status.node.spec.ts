@@ -150,7 +150,7 @@ it('validates each optional diagnostic, aliasing and graph membership', () => {
         })
     ).toThrow(/must not overlap/);
     const boundsOutput = {
-      bounds: view('float32x4', 1),
+      sourceBounds: view('float32x4', 1),
       status: {overflow: view('uint32', 1), groupOverflow: props.labels}
     };
     expect(
@@ -183,7 +183,7 @@ it('validates each optional diagnostic, aliasing and graph membership', () => {
           labels: props.labels,
           groupCount: 1,
           output: {
-            bounds: view('float32x4', 1),
+            sourceBounds: view('float32x4', 1),
             hullSizes: shared,
             status: {overflow: view('uint32', 1), groupOverflow: shared}
           }

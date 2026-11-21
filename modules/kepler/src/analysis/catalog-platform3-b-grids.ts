@@ -10,10 +10,13 @@ import {
   GPUKriging,
   GPULineDensity,
   GPUPointDensity,
+  evaluateGPUKernelDensityKernel,
+  getGPUKernelDensitySupportRadius,
   getGPUInverseDistanceWeightingParameterValues,
   getGPUKernelDensityParameterValues,
   getGPUKrigingParameterValues,
-  getGPULineDensityParameterValues
+  getGPULineDensityParameterValues,
+  type GPUKernelDensityKernelName
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {CatalogGpuContext, CatalogRunOutput} from './catalog-binding-types';
@@ -47,6 +50,10 @@ import {
 } from './catalog-platform3-b-common';
 import {addLocalFrameDiagnostic, makeLocalFrame, type LocalFrame} from './catalog-local-frame';
 import {solveDenseLinearSystem} from './dense-linear-system';
+import {
+  POINT_DENSITY_WIDE_BOUND_MAGNITUDE,
+  validateKeplerPointDensityGpuBounds
+} from '../aggregation/point-density-bounds';
 
 /** Largest sample-times-cell work the CPU references accept before throwing. */
 const MAXIMUM_CPU_WORK = 6e7;
@@ -287,23 +294,27 @@ export async function computeIdwFieldGpu(
 
 export type KernelDensitySettings = {
   bandwidth: number;
-  kernel: 'gaussian' | 'quartic' | 'epanechnikov';
+  kernel: GPUKernelDensityKernelName;
 };
 
-function getKernelValue(
-  kernel: KernelDensitySettings['kernel'],
-  distanceSquared: number,
-  h: number
-) {
-  const t = distanceSquared / (h * h);
-  if (kernel === 'gaussian') {
-    // Truncated at five bandwidths, as GPUKernelDensity does.
-    if (distanceSquared > (5 * h) ** 2) return 0;
-    return Math.exp(-t / 2) / (2 * Math.PI * h * h);
-  }
-  if (t >= 1) return 0;
-  if (kernel === 'quartic') return ((3 / Math.PI) * (1 - t) ** 2) / (h * h);
-  return ((2 / Math.PI) * (1 - t)) / (h * h);
+/** Capture the public KDE support/normalization once, before the catalog's sample/cell loop. */
+function createCatalogKernelDensityEvaluator(settings: KernelDensitySettings) {
+  const {kernel, bandwidth} = settings;
+  const supportRadius = getGPUKernelDensitySupportRadius(kernel, bandwidth);
+  const supportSquared = supportRadius * supportRadius;
+  const bandwidthSquared = bandwidth * bandwidth;
+  const normalization = evaluateGPUKernelDensityKernel(kernel, bandwidth, 0);
+  if (kernel === 'gaussian')
+    return (distanceSquared: number) =>
+      distanceSquared >= supportSquared
+        ? 0
+        : normalization * Math.exp(-0.5 * (distanceSquared / bandwidthSquared));
+  const power = kernel === 'epanechnikov' ? 1 : 2;
+  return (distanceSquared: number) => {
+    if (distanceSquared >= supportSquared) return 0;
+    const remaining = 1 - distanceSquared / bandwidthSquared;
+    return normalization * (power === 1 ? remaining : remaining * remaining);
+  };
 }
 
 export function computeKernelDensityField(
@@ -311,6 +322,8 @@ export function computeKernelDensityField(
   grid: GridSpec,
   settings: KernelDensitySettings
 ): GridField {
+  // Resolve/reject the public kernel spelling even when the sample or grid is empty.
+  const evaluateKernel = createCatalogKernelDensityEvaluator(settings);
   const cells = grid.columns * grid.rows;
   assertCpuWork(cells, sample.count);
   const values = new Float64Array(cells);
@@ -321,13 +334,7 @@ export function computeKernelDensityField(
       for (let index = 0; index < sample.count; index++) {
         const weight = sample.value[index];
         if (weight < 0) continue;
-        sum +=
-          weight *
-          getKernelValue(
-            settings.kernel,
-            (sample.x[index] - cx) ** 2 + (sample.y[index] - cy) ** 2,
-            settings.bandwidth
-          );
+        sum += weight * evaluateKernel((sample.x[index] - cx) ** 2 + (sample.y[index] - cy) ** 2);
       }
       values[row * grid.columns + column] = sum;
     }
@@ -407,6 +414,8 @@ export async function computeKernelDensityFieldGpu(
 
 export type PointDensityStatistic = 'count' | 'sum' | 'mean';
 
+// Line-density cuts are made at physical origin + k * cellSize edges in float64.
+// Their midpoint lookup must retain that same lattice after the point upload fix.
 function getBinnedCell(grid: GridSpec, x: number, y: number): number {
   const column = Math.min(
     grid.columns - 1,
@@ -414,6 +423,34 @@ function getBinnedCell(grid: GridSpec, x: number, y: number): number {
   );
   const row = Math.min(grid.rows - 1, Math.max(0, Math.floor((y - grid.minY) / grid.cellSize)));
   return row * grid.columns + column;
+}
+
+/** Expresses a finite float32 as an integer multiple of its smallest subnormal. */
+function getPointDensityFloat32Units(bits: number): bigint {
+  const exponent = (bits >>> 23) & 0xff;
+  const significand = (bits & 0x7fffff) | (exponent === 0 ? 0 : 0x800000);
+  const magnitude = BigInt(significand) << BigInt(Math.max(exponent, 1) - 1);
+  return bits >>> 31 ? -magnitude : magnitude;
+}
+
+/** Uses exact edges for wide bounds and nominal float32 rounding for ordinary bounds. */
+function getPointDensityAxisCell(
+  value: number,
+  minimum: number,
+  maximum: number,
+  size: number
+): number {
+  if (maximum === minimum || value <= minimum) return 0;
+  if (value >= maximum) return size - 1;
+  const boundMagnitude = Math.max(Math.abs(minimum), Math.abs(maximum));
+  if (boundMagnitude >= POINT_DENSITY_WIDE_BOUND_MAGNITUDE && Number.isFinite(boundMagnitude)) {
+    const bits = new Uint32Array(Float32Array.of(value, minimum, maximum).buffer);
+    const offset = getPointDensityFloat32Units(bits[0]) - getPointDensityFloat32Units(bits[1]);
+    const width = getPointDensityFloat32Units(bits[2]) - getPointDensityFloat32Units(bits[1]);
+    return Number((offset * BigInt(size)) / width);
+  }
+  const fraction = Math.fround(Math.fround(value - minimum) / Math.fround(maximum - minimum));
+  return Math.min(Math.trunc(Math.fround(fraction * Math.fround(size))), size - 1);
 }
 
 export function computePointDensityField(
@@ -424,8 +461,22 @@ export function computePointDensityField(
   const cells = grid.columns * grid.rows;
   const counts = new Uint32Array(cells);
   const sums = new Float64Array(cells);
+  const [minimumX, minimumY, maximumX, maximumY] = getGridBounds(grid).map(Math.fround);
   for (let index = 0; index < sample.count; index++) {
-    const cell = getBinnedCell(grid, sample.x[index], sample.y[index]);
+    const horizontal = Math.fround(sample.x[index]);
+    const vertical = Math.fround(sample.y[index]);
+    if (
+      !Number.isFinite(horizontal) ||
+      !Number.isFinite(vertical) ||
+      horizontal < minimumX ||
+      horizontal > maximumX ||
+      vertical < minimumY ||
+      vertical > maximumY
+    )
+      continue;
+    const cell =
+      getPointDensityAxisCell(vertical, minimumY, maximumY, grid.rows) * grid.columns +
+      getPointDensityAxisCell(horizontal, minimumX, maximumX, grid.columns);
     counts[cell]++;
     sums[cell] += sample.value[index];
   }
@@ -449,6 +500,8 @@ export async function computePointDensityFieldGpu(
   statistic: PointDensityStatistic,
   weighted: boolean
 ): Promise<GridField> {
+  const bounds = getGridBounds(grid);
+  validateKeplerPointDensityGpuBounds('catalog-point-density', bounds);
   const cells = grid.columns * grid.rows;
   return withCatalogGpuSession(context.device, 'catalog-point-density', async session => {
     const weights = new Float32Array(sample.count);
@@ -460,7 +513,7 @@ export async function computePointDensityFieldGpu(
         id: 'catalog-point-density',
         positions: session.input('positions', toFloat32Positions(sample), 'float32x2'),
         ...(weighted ? {weights: session.input('weights', weights, 'float32')} : {}),
-        bounds: getGridBounds(grid),
+        bounds,
         gridSize: [grid.columns, grid.rows],
         statistic,
         output: {values: values.view, counts: counts.view}
@@ -628,7 +681,7 @@ export async function computeKrigingFieldGpu(
   sample: Sample,
   grid: GridSpec,
   settings: KrigingSettings
-): Promise<GridField & {singularCount: number}> {
+): Promise<GridField & {singularCount: number; invalidCount: number}> {
   // GPUKriging holds at most 16 neighbors per cell.
   if (settings.neighborCount > 16)
     throw new CatalogGpuUnsupportedError('GPU kriging keeps at most 16 neighbors');
@@ -684,9 +737,35 @@ export async function computeKrigingFieldGpu(
         await session.readFloat32(variances),
         value => value * varianceScale
       ),
-      singularCount: await session.readScalar(uncertain)
+      // GPUKriging uncertainCount: ill-conditioned systems or materially negative variance.
+      singularCount: await session.readScalar(uncertain),
+      // GPUKriging invalidCount: cells without data (no sample in range) or with invalid settings.
+      invalidCount: await session.readScalar(invalid)
     };
   });
+}
+
+/** Reports the two GPUKriging nodata causes separately, each under its published meaning. */
+export function addGpuKrigingStatusDiagnostics(
+  diagnostics: CatalogDiagnostic[],
+  counts: {uncertainCount: number; invalidCount: number}
+): void {
+  if (counts.uncertainCount)
+    addCatalogDiagnostic(
+      diagnostics,
+      'singular-kriging-system',
+      'warning',
+      'Cells whose kriging system is singular or ill-conditioned, or whose variance came out materially negative, are nodata.',
+      counts.uncertainCount
+    );
+  if (counts.invalidCount)
+    addCatalogDiagnostic(
+      diagnostics,
+      'kriging-cells-without-data',
+      'info',
+      'Cells with no sample within the search radius (or with invalid settings) are nodata.',
+      counts.invalidCount
+    );
 }
 
 /** Solves A x = b with the shared scaled-tolerance solver; null when singular. */

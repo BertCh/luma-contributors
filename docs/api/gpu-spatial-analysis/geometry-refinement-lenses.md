@@ -1,5 +1,7 @@
 # Geometry refinement computation lenses
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 These executable examples use small, explicitly synthetic coordinates in arbitrary planar units. Each lens captures the actual GPU command graph, input buffers and bounded outputs. Read active counts, validity masks and status before interpreting unused capacity. See [Geometry refinement](../gpu-geometry-refinement.md) for supported domains and limitations; these examples are not independent numerical validation or performance benchmarks.
 
 ## `GPUNormalizePolygons`
@@ -134,6 +136,14 @@ Compare normalized mixed geometry roots. This small synthetic example captures s
 ## `GPUVectorStraightSkeleton`
 
 Hole-aware event wavefront and inward offset. This small synthetic example captures status and all bounded geometry outputs.
+
+The ten-by-ten shell with square hole `[3,7] × [3,7]`, offset 0.25 and event budget 16 has
+12 live arcs and status `[12,12,8,0]` in the current CPU reference. The verified CPU provenance
+for terminal rows 8–11 is `[7,0], [1,6], [2,5], [3,4]` (original bounding-edge rows).
+The historical capture instead records `[6,7], [0,1], [1,2], [2,3]` for those arcs.
+Matching geometry and a zero flags word do not validate those source edges. The live GPU
+provenance regression and lens recapture remain pending; the embedded historical recording
+below is not evidence that its source-edge metadata matches the current implementation.
 
 {/* lens:GPUVectorStraightSkeleton */}
 

@@ -1,9 +1,8 @@
 # @luma-contributors/analysis
 
-GPU geospatial and analysis operations built on published [luma.gl](https://luma.gl)
-(`@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph`). Integration target: luma.gl `10.0.0-alpha.16`. The GPU
-infrastructure itself (command graphs, GPU Core operations, GPU tables, dataframes, graph algorithms)
-comes from luma.gl. This package holds only the analysis code.
+GPU geospatial and analysis operations built on published [luma.gl](https://luma.gl).
+The GPU infrastructure, including command graphs, GPU Core operations, GPU tables, dataframes
+and graph algorithms, comes from luma.gl.
 
 ## Run your first computation
 
@@ -12,22 +11,32 @@ Start with the [CPU variogram fit](https://github.com/visgl/luma-contributors/bl
 Continue with [point density from device to readback](https://github.com/visgl/luma-contributors/blob/master/docs/api/operation-forms-and-cpu-twins.md#point-density-from-device-to-readback)
 for a complete browser GPU computation using public APIs, including typed readback and cleanup.
 
+From the workspace root after `nvm use` and `yarn install`, execute the literal CPU
+walkthrough and display its fitted model and parameters:
+
+```bash
+yarn vitest run --project node modules/analysis/test/analysis-core/first-run-docs.node.spec.ts -t 'CPU variogram walkthrough'
+```
+
+Find an operation through the [API task chooser](https://github.com/visgl/luma-contributors/blob/master/docs/api/README.md#find-an-operation).
+
 ## Installation contract
 
-`apache-arrow >=17.0.0` is a required peer, including when importing only construction helpers
-or network contributors. The luma.gl peers accept `~10.0.0-alpha.16`, which permits later
-10.0.0 prereleases and stable 10.0.x versions below 10.1.0. This accepted range is broader than
-the integration target above. See the [alpha package contract](https://github.com/visgl/luma-contributors/blob/master/dev-docs/release-package.md)
+Compatibility testing targets luma.gl `10.0.0-alpha.16` and Apache Arrow 17. The required peer
+ranges are `~10.0.0-alpha.16` for `@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph`
+and `>=17.0.0` for `apache-arrow`. Install Arrow even when importing only construction helpers
+or network contributors. See the [alpha package contract](https://github.com/visgl/luma-contributors/blob/master/dev-docs/release-package.md)
 for release status and offline verification of the packed package.
 
-The package licence is `MIT AND Apache-2.0 AND BSD-3-Clause`. Individual source expressions
-and copyright holders remain in their files; the shipped [licence and notice inventory](THIRD-PARTY-NOTICES.md)
-links the applicable licence texts and lists the third-party adaptations.
+The package licence is `MIT AND Apache-2.0 AND BSD-3-Clause`. The shipped
+[licence and notice inventory](THIRD-PARTY-NOTICES.md) links the applicable licence texts and
+lists the third-party adaptations.
 
 ## Entry points
 
 | Import | Contents | Docs |
 | --- | --- | --- |
+| `@luma-contributors/analysis` | Root (`.`): alias of `computation-record` | [computation record](https://github.com/visgl/luma-contributors/blob/master/docs/api/computation-record.md) |
 | `@luma-contributors/analysis/gpu-spatial-analysis` | Spatial weights, autocorrelation, regression, interpolation, clustering, joins, density, geometry, accessibility, landscape ecology | [docs/api/gpu-spatial-analysis](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-spatial-analysis/README.md) |
 | `@luma-contributors/analysis/gpu-spatial-analysis/ontology` | Operator catalog and analysis ontology | [analysis catalog](https://github.com/visgl/luma-contributors/blob/master/docs/api/analysis-catalog.md) |
 | `@luma-contributors/analysis/gpu-network` | Network statistics, structure, routing, centrality and movement | [docs/api/gpu-network](https://github.com/visgl/luma-contributors/blob/master/docs/api/gpu-network/README.md) |

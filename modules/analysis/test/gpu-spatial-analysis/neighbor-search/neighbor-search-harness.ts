@@ -15,6 +15,7 @@ import {
   GPUNeighborSearch,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   type GPUNeighborSearchSettings,
+  type GPUNeighborSearchModeSettings,
   type GPUNeighborSearchStructure
 } from '../../../src/gpu-spatial-analysis/neighbor-search/index';
 import {
@@ -27,6 +28,14 @@ import {
 
 const GARBAGE = 0x7f7f7f7f;
 
+type HarnessSettings = GPUNeighborSearchSettings | GPUNeighborSearchModeSettings;
+
+function packParameters(settings: HarnessSettings): Float32Array {
+  return 'mode' in settings
+    ? getGPUNeighborSearchParameterValues(settings)
+    : getGPUNeighborSearchParameterValues(settings);
+}
+
 /** Options of {@link createNeighborSearchHarness}. */
 export type NeighborSearchHarnessOptions = {
   mode: 'knn' | 'radius';
@@ -34,10 +43,10 @@ export type NeighborSearchHarnessOptions = {
   queryPositions?: Float32Array;
   mask?: Uint32Array;
   queryMask?: Uint32Array;
-  k?: number;
+  neighborCount?: number;
   gridSize?: readonly [number, number];
   capacity: number;
-  parameters: GPUNeighborSearchSettings;
+  parameters: HarnessSettings;
   spatialContext?: GPUSpatialContext;
   /** Search structure; the library default (`'auto'`) when omitted. */
   searchStructure?: GPUNeighborSearchStructure;
@@ -60,7 +69,7 @@ export type NeighborSearchReadback = {
 /** A compiled neighbor-search graph resubmitted per frame. */
 export type NeighborSearchHarness = {
   readonly buildCount: number;
-  run(parameters?: GPUNeighborSearchSettings): Promise<NeighborSearchReadback>;
+  run(parameters?: HarnessSettings | Float32Array): Promise<NeighborSearchReadback>;
   writePositions(positions: Float32Array): void;
   writeMask(mask: Uint32Array): void;
   destroy(): void;
@@ -82,7 +91,7 @@ export function createNeighborSearchHarness(
     id: 'neighbor-search-parameters',
     format: 'float32',
     length: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-    values: getGPUNeighborSearchParameterValues(options.parameters)
+    values: packParameters(options.parameters)
   });
   const outputs: Record<
     'offsets' | 'neighbors' | 'distances' | 'weights' | 'overflow' | 'total' | 'counts' | 'invalid',
@@ -103,7 +112,7 @@ export function createNeighborSearchHarness(
     spatialContext: options.spatialContext,
     searchStructure: options.searchStructure,
     weightTransform: getGPUNeighborSearchWeightTransform(options.parameters),
-    k: options.k,
+    neighborCount: options.neighborCount,
     gridSize: options.gridSize ?? [16, 16],
     positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', targetRows),
     queryPositions:
@@ -142,7 +151,9 @@ export function createNeighborSearchHarness(
     },
     async run(parameters) {
       if (parameters) {
-        parameterBuffer.write(getGPUNeighborSearchParameterValues(parameters));
+        parameterBuffer.write(
+          parameters instanceof Float32Array ? parameters : packParameters(parameters)
+        );
       }
       for (const buffer of Object.values(outputs)) {
         buffer.write(new Uint32Array(buffer.byteLength / 4).fill(GARBAGE));

@@ -8,7 +8,7 @@ import {
   renderLensTwinHtml,
   validateLensTwin
 } from '../../../src/computation-views/twin/static-twin';
-import {toRecordedLensFile} from '../../../src/computation-lenses';
+import {toRecordedLensFile, fromRecordedLensFile} from '../../../src/computation-lenses';
 import {LENS_RUNG_IDS} from '../../../src/computation-views/types';
 import {makeV8ResultRecord} from '../fixtures/v8-result-record';
 import {makeScanRecord} from '../fixtures/scan-record';
@@ -22,6 +22,14 @@ function recording(record = makeV8ResultRecord()) {
 }
 
 describe('thumbnail twins', () => {
+  test.each([
+    'polygons',
+    'raster',
+    'graph',
+    'layout'
+  ] as const)('B2 %s fixture loads with full sidecar validation', kind => {
+    expect(() => fromRecordedLensFile(recording(makeV8ResultRecord(kind)))).not.toThrow();
+  });
   test('width 160, short caption, mandatory key number and omitted receipt/formula', () => {
     const recordFile = recording();
     const directive = {scenario: recordFile.scenarioId, rung: 'result'};

@@ -88,7 +88,9 @@ it('node ids carry the contributor prefix and grow with the iteration limit', ()
     'w-pointer-init',
     'w-pointer-reset',
     'w-pointer-gate-slots-write',
+    'w-pointer-round-0-snapshot',
     'w-pointer-round-0',
+    'w-pointer-round-1-snapshot',
     'w-pointer-round-1',
     'w-pointer-gate-0',
     'w-labels'

@@ -23,7 +23,7 @@ export type TerrainHydrologicIndicesExampleInput = {
   dem: GraphDataView<'float32'>;
   filledElevation: GraphDataView<'float32'>;
   accumulation: GraphDataView<'float32'>;
-  slope: GraphDataView<'float32'>;
+  descentTangent: GraphDataView<'float32'>;
   specificCatchmentArea: GraphDataView<'float32'>;
   wetnessIndex: GraphDataView<'float32'>;
   streamPowerIndex: GraphDataView<'float32'>;
@@ -32,7 +32,7 @@ export type TerrainHydrologicIndicesExampleInput = {
 /** Adds TWI and SPI of `dem` to `graph` on top of a GPUTerrainFlow; returns the parameter buffers to destroy. */
 export async function runExample(device: Device, input: TerrainHydrologicIndicesExampleInput) {
   const {graph, grid, dem, filledElevation, accumulation} = input;
-  const {slope, specificCatchmentArea, wetnessIndex, streamPowerIndex} = input;
+  const {descentTangent, specificCatchmentArea, wetnessIndex, streamPowerIndex} = input;
   // Prerequisite: filled D8 routing with contributing area in m² (see GPUTerrainFlow).
   const flowParameters = new GPUParameterBuffer(device, {
     id: 'indices-flow-parameters',
@@ -66,7 +66,7 @@ export async function runExample(device: Device, input: TerrainHydrologicIndices
       elevation: makeGPURasterBand(filledElevation, grid, {id: 'filled'}), // m
       accumulation, // upstream area, m²
       parameters: parameters.importToGraph(graph),
-      output: {slope, specificCatchmentArea, wetnessIndex, streamPowerIndex}
+      output: {descentTangent, specificCatchmentArea, wetnessIndex, streamPowerIndex}
     })
   );
   // #endregion example

@@ -12,16 +12,20 @@ import {
   readGeoArrowMultiPolygon
 } from './catalog-geoarrow';
 import {
+  iterateCatalogPositions,
   getLineParts,
+  validateCatalogGeometryPositions,
+  measureRingSignedArea,
   getPointPositions,
   getPolygonParts,
   type CatalogFeature,
   type CatalogFeatureCollection,
   type CatalogPosition
 } from './catalog-geojson';
+import {CatalogGpuUnsupportedError} from './catalog-gpu-session';
 import {makeLocalFrame} from './catalog-local-frame';
 
-/** Maps a longitude/latitude position to planar frame coordinates, or leaves planar input unchanged. */
+/** Maps a longitude/latitude position to planar frame coordinates, or translates planar input to a local origin. */
 export type CatalogFrame = {
   readonly kind: 'identity' | 'azimuthal-equidistant';
   project(position: CatalogPosition): [number, number];
@@ -58,38 +62,72 @@ export function getCatalogBounds(
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  for (const collection of collections)
-    for (const feature of collection.features) {
-      const positions: CatalogPosition[] = [
-        ...getPointPositions(feature.geometry),
-        ...getLineParts(feature.geometry).flat(),
-        ...getPolygonParts(feature.geometry).flat(2)
-      ];
-      for (const [x, y] of positions) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
+  for (const [x, y] of iterateCatalogPositions(collections)) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
   return Number.isFinite(minX) ? [minX, minY, maxX, maxY] : null;
 }
 
-/** Frame for the declared coordinate system: planar input is used as is, degrees use a local frame. */
+/** Planar frames prefer exact float32 coordinate round trips; degrees use a local metric frame. */
 export function createCatalogFrame(
   coordinateSystem: 'EPSG:4326' | 'planar',
   collections: readonly CatalogFeatureCollection[]
 ): CatalogFrame {
-  if (coordinateSystem === 'planar') return CATALOG_IDENTITY_FRAME;
+  if (coordinateSystem === 'planar') {
+    const positions = Array.from(iterateCatalogPositions(collections));
+    const centered = makeLocalFrame('planar', positions, {shift: 'center'});
+    // Try the shared center first, then raw coordinates and the data minimum. Never merge
+    // distinct positions merely because shifting moved them into a coarser float32 bin.
+    const candidates = [
+      centered,
+      {forward: CATALOG_IDENTITY_FRAME.project, inverse: CATALOG_IDENTITY_FRAME.unproject},
+      makeLocalFrame('planar', positions, {shift: 'minimum'})
+    ];
+    let usableFrame: CatalogFrame | undefined;
+    for (const frame of candidates) {
+      const originals = new Map<string, string>();
+      let usable = true;
+      let roundTrips = true;
+      for (const position of positions) {
+        const [x, y] = frame.forward(position);
+        const packedX = Math.fround(x),
+          packedY = Math.fround(y);
+        const key = `${packedX}|${packedY}`,
+          original = `${position[0]}|${position[1]}`;
+        if (
+          !Number.isFinite(packedX) ||
+          !Number.isFinite(packedY) ||
+          (originals.has(key) && originals.get(key) !== original)
+        ) {
+          usable = false;
+          break;
+        }
+        const restored = frame.inverse(packedX, packedY);
+        if (restored[0] !== position[0] || restored[1] !== position[1]) roundTrips = false;
+        originals.set(key, original);
+      }
+      if (usable) {
+        const candidate: CatalogFrame = {
+          kind: 'identity',
+          project: frame.forward,
+          unproject: frame.inverse
+        };
+        // A noncollapsing frame can still distort an edge. Prefer exact round trips when a
+        // candidate provides them, retaining the existing finite, noncollapsing fallback.
+        if (roundTrips) return candidate;
+        usableFrame ??= candidate;
+      }
+    }
+    if (usableFrame) return usableFrame;
+    throw new CatalogGpuUnsupportedError(
+      'Planar geometry input has distinct coordinates that coincide after float32 packing; use the CPU engine or split the extent'
+    );
+  }
   // The shared local frame picks an antimeridian aware origin at the data extent center.
-  const positions: CatalogPosition[] = [];
-  for (const collection of collections)
-    for (const feature of collection.features)
-      positions.push(
-        ...getPointPositions(feature.geometry),
-        ...getLineParts(feature.geometry).flat(),
-        ...getPolygonParts(feature.geometry).flat(2)
-      );
+  const positions = Array.from(iterateCatalogPositions(collections));
   const gpuFrame = makeLocalFrame(coordinateSystem, positions).gpuFrame!;
   return {
     kind: 'azimuthal-equidistant',
@@ -156,6 +194,7 @@ export function packCatalogPolygons(
   const rows: GeoArrowGeometryValue[] = [];
   const sourceIndices: number[] = [];
   features.forEach((feature, sourceIndex) => {
+    validateCatalogGeometryPositions(feature.geometry);
     const polygons = getPolygonParts(feature.geometry);
     if (!polygons.length) return;
     rows.push({
@@ -191,6 +230,7 @@ export function packCatalogLines(
   const lineSourceIndices: number[] = [];
   const linePartIndices: number[] = [];
   features.forEach((feature, sourceIndex) => {
+    validateCatalogGeometryPositions(feature.geometry);
     const parts = getLineParts(feature.geometry);
     if (!parts.length) return;
     rows.push({
@@ -225,6 +265,7 @@ export function packCatalogPoints(
   const rows: GeoArrowGeometryValue[] = [];
   const sourceIndices: number[] = [];
   features.forEach((feature, sourceIndex) => {
+    validateCatalogGeometryPositions(feature.geometry);
     const points = getPointPositions(feature.geometry);
     if (!points.length) return;
     rows.push({
@@ -247,34 +288,75 @@ export function closeCatalogRing(ring: CatalogPosition[]): CatalogPosition[] {
 
 /** Signed shoelace area of a ring (counterclockwise positive). */
 export function getCatalogRingArea(ring: readonly CatalogPosition[]): number {
-  let doubled = 0;
-  for (let index = 0; index < ring.length; index++) {
-    const next = ring[(index + 1) % ring.length];
-    doubled += ring[index][0] * next[1] - next[0] * ring[index][1];
-  }
-  return doubled / 2;
+  return measureRingSignedArea(ring, 'planar');
 }
 
 /**
  * Reads polygons from packed GeoArrow arrays. Rings are closed and unprojected; polygons whose
- * shell has fewer than three vertices are dropped, as are degenerate holes.
+ * shell is nonfinite, has fewer than three distinct corners or has zero planar area are dropped,
+ * as are unusable holes. Nested offsets must stay within the readable prefix. Byte inputs
+ * are interpreted as float32 XY and uint32 offsets, including their byte offsets.
  */
 export function readCatalogPolygons(
-  positions: ArrayLike<number>,
-  ringOffsets: ArrayLike<number>,
-  polygonOffsets: ArrayLike<number>,
+  positions: ArrayLike<number> | ArrayBuffer,
+  ringOffsets: ArrayLike<number> | ArrayBuffer,
+  polygonOffsets: ArrayLike<number> | ArrayBuffer,
   polygonRange: readonly [number, number],
   unproject: (x: number, y: number) => [number, number] = (x, y) => [x, y]
 ): CatalogPosition[][][] {
+  const readWords = (
+    values: ArrayLike<number> | ArrayBuffer,
+    floating: boolean
+  ): ArrayLike<number> => {
+    if (!(values instanceof Uint8Array) && !(values instanceof ArrayBuffer)) return values;
+    const bytes = values instanceof Uint8Array ? values : new Uint8Array(values);
+    if (bytes.byteLength % 4)
+      throw new Error('polygon-readback: byte length must contain whole 32-bit elements');
+    const aligned = bytes.byteOffset % 4 ? bytes.slice() : bytes;
+    return floating
+      ? new Float32Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 4)
+      : new Uint32Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 4);
+  };
+  positions = readWords(positions, true);
+  ringOffsets = readWords(ringOffsets, false);
+  polygonOffsets = readWords(polygonOffsets, false);
+  const offset = (values: ArrayLike<number>, index: number, maximum: number): number => {
+    const value = values[index];
+    if (!Number.isInteger(value) || value < 0 || value > maximum)
+      throw new Error('polygon-readback: offset exceeds readable prefix');
+    return value;
+  };
+  if (
+    positions.length % 2 ||
+    !Number.isInteger(polygonRange[0]) ||
+    !Number.isInteger(polygonRange[1]) ||
+    polygonRange[0] < 0 ||
+    polygonRange[1] < polygonRange[0] ||
+    polygonRange[1] >= polygonOffsets.length
+  )
+    throw new Error('polygon-readback: invalid XY length or polygon offset range');
   const polygons: CatalogPosition[][][] = [];
   for (let polygon = polygonRange[0]; polygon < polygonRange[1]; polygon++) {
     const rings: CatalogPosition[][] = [];
-    for (let ring = polygonOffsets[polygon]; ring < polygonOffsets[polygon + 1]; ring++) {
+    const firstRing = offset(polygonOffsets, polygon, ringOffsets.length - 1);
+    const endRing = offset(polygonOffsets, polygon + 1, ringOffsets.length - 1);
+    if (endRing < firstRing) throw new Error('polygon-readback: decreasing polygon offset');
+    for (let ring = firstRing; ring < endRing; ring++) {
       const vertices: CatalogPosition[] = [];
-      for (let vertex = ringOffsets[ring]; vertex < ringOffsets[ring + 1]; vertex++)
+      const firstVertex = offset(ringOffsets, ring, positions.length / 2);
+      const endVertex = offset(ringOffsets, ring + 1, positions.length / 2);
+      if (endVertex < firstVertex) throw new Error('polygon-readback: decreasing ring offset');
+      for (let vertex = firstVertex; vertex < endVertex; vertex++)
         vertices.push(unproject(positions[2 * vertex], positions[2 * vertex + 1]));
       const dropped = dropClosingPosition(vertices) as CatalogPosition[];
-      if (dropped.length >= 3) rings.push(closeCatalogRing([...dropped]));
+      const distinct = new Set(dropped.map(([x, y]) => `${x}|${y}`));
+      const usable =
+        distinct.size >= 3 &&
+        dropped.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) &&
+        Number.isFinite(getCatalogRingArea(dropped)) &&
+        getCatalogRingArea(dropped) !== 0;
+      if (!usable && ring === firstRing) break;
+      if (usable) rings.push(closeCatalogRing([...dropped]));
     }
     if (rings.length) polygons.push(rings);
   }
@@ -319,6 +401,10 @@ export function getCatalogRectangle(
   const xs = [...new Set(corners.map(corner => corner[0]))];
   const ys = [...new Set(corners.map(corner => corner[1]))];
   if (xs.length !== 2 || ys.length !== 2) return null;
+  for (let index = 0; index < corners.length; index++) {
+    const next = corners[(index + 1) % corners.length];
+    if (corners[index][0] !== next[0] && corners[index][1] !== next[1]) return null;
+  }
   // Four distinct corners with two x values and two y values: every edge is axis aligned.
   const distinct = new Set(corners.map(corner => `${corner[0]}|${corner[1]}`));
   if (distinct.size !== 4) return null;

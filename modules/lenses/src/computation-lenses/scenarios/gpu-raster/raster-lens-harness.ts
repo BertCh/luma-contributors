@@ -100,6 +100,10 @@ export type RunRasterLensProps = {
   coordinateModel: 'projected' | 'geographic';
   /** Horizontal unit of the grid, such as `m` or `deg`. */
   unit: string;
+  /** Optional local frame identity, retained on captures for spatial comparison. */
+  frameId?: string;
+  /** CRS identity when the dataset supplies it beside the grid. */
+  crs?: string;
   /** Dataset id and version stamped into the run id. */
   dataset: {id: string; version: string};
   /** Analyst choices the run actually used. */
@@ -249,7 +253,7 @@ export async function runRasterLens(props: RunRasterLensProps): Promise<LensScen
 }
 
 /** Applies roles and geometry to the end-of-run readbacks and files stamps. */
-function arrangeCaptures(
+export function arrangeCaptures(
   props: RunRasterLensProps,
   registered: readonly RegisteredCapture[],
   raw: readonly GPUComputationCapture[]
@@ -273,14 +277,10 @@ function arrangeCaptures(
       ...(capture.spec.geometry && {
         geometry:
           capture.spec.geometry === 'raster'
-            ? {
-                kind: 'raster',
-                shape: [props.grid.width, props.grid.height],
-                coordinateModel: props.coordinateModel,
-                cellSize: Math.abs(props.grid.affine[0]),
-                unit: props.unit
-              }
-            : capture.spec.geometry
+            ? getRasterLensGeometry(props)
+            : capture.spec.geometry.kind === 'raster'
+              ? getRasterLensGeometry(props, capture.spec.geometry)
+              : capture.spec.geometry
       })
     });
     const extreme = capture.spec.highlightExtreme;
@@ -334,4 +334,60 @@ function assertValid(
     .filter(issue => issue.level === 'error')
     .map(issue => `${issue.path}: ${issue.message}`);
   throw new Error(`${scenarioId}: invalid record\n${errors.join('\n')}`);
+}
+
+/** Records full ground placement; scalar-only renderers use pixel space for nonsquare grids. */
+export function getRasterLensGeometry(
+  props: Pick<RunRasterLensProps, 'grid' | 'coordinateModel' | 'unit' | 'frameId' | 'crs'>,
+  explicit?: Extract<GPUComputationCaptureGeometry, {kind: 'raster'}>
+): GPUComputationCaptureGeometry {
+  const [columnX, rowX, originX, columnY, rowY, originY] = props.grid.affine;
+  const square = columnX > 0 && rowX === 0 && columnY === 0 && Math.abs(rowY) === columnX;
+  const shift = props.grid.pixelInterpretation === 'point' ? -0.5 : 0;
+  const reference = props.grid.coordinateReferenceSystem;
+  const crs =
+    props.crs ??
+    reference?.authority ??
+    reference?.wellKnownText ??
+    (reference?.projectionJson
+      ? JSON.stringify(canonicalizeIdentity(reference.projectionJson))
+      : undefined);
+  if (explicit)
+    return {
+      ...explicit,
+      shape: [...explicit.shape] as const,
+      ...(explicit.affine ? {affine: [...explicit.affine] as const} : {}),
+      ...(explicit.origin ? {origin: [...explicit.origin] as const} : {}),
+      ...(explicit.crs === undefined && crs ? {crs} : {}),
+      ...(explicit.frameId === undefined && props.frameId ? {frameId: props.frameId} : {})
+    };
+  return {
+    kind: 'raster',
+    shape: [props.grid.width, props.grid.height],
+    affine: [...props.grid.affine],
+    pixelInterpretation: props.grid.pixelInterpretation,
+    coordinateModel: props.coordinateModel,
+    unit: props.unit,
+    ...(crs ? {crs} : {}),
+    ...(props.frameId ? {frameId: props.frameId} : {}),
+    ...(square
+      ? {
+          cellSize: columnX,
+          rowDirection: rowY > 0 ? 'north' : 'south',
+          origin: [originX + shift * columnX, originY + shift * rowY] as const
+        }
+      : {})
+  };
+}
+
+/** Object-key order carries no CRS meaning; array order still does. */
+function canonicalizeIdentity(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeIdentity);
+  if (value !== null && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([first], [second]) => first.localeCompare(second))
+        .map(([key, item]) => [key, canonicalizeIdentity(item)])
+    );
+  return value;
 }

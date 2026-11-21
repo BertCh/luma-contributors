@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   GPUPolygonTriangulationOperation,
+  snapshotPolygonTriangulationOperationProps,
   type PolygonTriangulationOperationProps
 } from '../../analysis-core/polygon-triangulation/gpu-polygon-triangulation-operation';
 import {GPUConstrainedDelaunayTriangulation} from './gpu-constrained-delaunay-triangulation';
@@ -27,6 +29,34 @@ export type ConstrainedDelaunayTriangulationOperationProps = Omit<
  */
 export class GPUConstrainedDelaunayTriangulationOperation extends GPUContributorOperation {
   constructor(props: ConstrainedDelaunayTriangulationOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'featureOffsets',
+      'polygonOffsets',
+      'ringOffsets',
+      'polygonCount',
+      'indexCapacity',
+      'maximumWork',
+      'useZOrderHash',
+      'largePolygonMethod',
+      'monotoneMinimumVertices',
+      'monotoneMaximumVertices',
+      'maximumFlips',
+      'flipMethod',
+      'maximumVerticesPerPolygon',
+      'output'
+    ]);
+    const snapshot = snapshotPolygonTriangulationOperationProps(props);
+    props = Object.freeze({
+      ...props,
+      ...snapshot,
+      output: Object.freeze({
+        ...snapshot.output,
+        status: snapshotConstructionFields(props.output.status, ['converged'])
+      })
+    });
     const id = props.id ?? 'constrained-delaunay';
     const polygon = new GPUPolygonTriangulationOperation({...props, id});
     super({

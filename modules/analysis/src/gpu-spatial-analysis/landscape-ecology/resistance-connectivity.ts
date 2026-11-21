@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {captureUrbanLandscapeDestinations} from './urban-landscape-destinations';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {validateProvidedRecipeViews} from './urban-landscape-recipe-validation';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
+  validateGraphViewsBelongToGraph,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -63,6 +67,9 @@ export function addResistanceConnectivityRecipe<Parameters>(
   props: GPUResistanceConnectivityProps
 ) {
   const id = props.id ?? 'resistance-connectivity';
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
+  validateSinglePackedView(props.edges, ['uint32x2'], id + ' edges');
+  validateSinglePackedView(props.conductances, ['float32'], id + ' conductances');
   const {vertexCount, source, sink} = props;
   const edgeCount = props.edges.length;
   const maximumIterations = props.maximumIterations ?? 256;
@@ -90,7 +97,19 @@ export function addResistanceConnectivityRecipe<Parameters>(
     Number.isFinite(tolerance) && tolerance > 0,
     'tolerance must be a positive finite number'
   );
-  const output = props.output;
+  const output = captureUrbanLandscapeDestinations(id, {output: props.output}, [
+    'potentials',
+    'currents',
+    'diagnostics',
+    'status'
+  ]);
+  validateGraphViewsBelongToGraph(id, graph, [props.edges, props.conductances]);
+  validateProvidedRecipeViews(graph, [
+    [`${id}-potentials`, 'float32', vertexCount, output?.potentials],
+    [`${id}-currents`, 'float32', edgeCount, output?.currents],
+    [`${id}-status`, 'uint32x4', 1, output?.status],
+    [`${id}-diagnostics`, 'float32x4', 1, output?.diagnostics]
+  ]);
   const potentials = getRecipeView(
     graph,
     `${id}-potentials`,

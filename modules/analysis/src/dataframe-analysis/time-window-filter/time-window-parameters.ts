@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {fp64ify} from '@luma.gl/shaders';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Number of float32 elements in a time-window parameter buffer. */
 export const GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH = 8;
@@ -42,7 +43,9 @@ export type GPUSplitTimestamps = {
  *
  * @param settings Time window to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
- * @throws If a value is not finite, a fade duration is negative, or `target` is too short.
+ * @throws If a split lane is not finite, an endpoint changes after packing, a fade is
+ * negative or not finite in float32, a positive fade rounds to zero, or `target` is too short.
+ * Exactly representable equal endpoints and reversed windows remain legal. Validation leaves `target` unchanged.
  */
 export function getGPUTimeWindowFilterParameterValues(
   settings: GPUTimeWindowFilterSettings,
@@ -65,7 +68,41 @@ export function getGPUTimeWindowFilterParameterValues(
   }
   const [startHigh, startLow] = fp64ify(settings.start);
   const [endHigh, endLow] = fp64ify(settings.end);
-  target.set([startHigh, startLow, endHigh, endLow, startFadeDuration, endFadeDuration, 0, 0]);
+  const packed = new Float32Array([
+    startHigh,
+    startLow,
+    endHigh,
+    endLow,
+    startFadeDuration,
+    endFadeDuration,
+    0,
+    0
+  ]);
+  if (!packed.subarray(0, 4).every(Number.isFinite)) {
+    throw new Error('Time window split lanes must be finite in float32');
+  }
+  // A rounded low lane can move an inclusive edge onto a representable row outside the
+  // requested window even when the start/end order survives. Reject any endpoint loss.
+  if (packed[1] !== startLow || packed[3] !== endLow) {
+    throw new Error('Time window endpoints must be exactly representable as two float32 lanes');
+  }
+  // Match the GPU's lexicographic double-single comparison, without adding away low lanes.
+  const originalOrder = Math.sign(settings.end - settings.start);
+  const packedOrder = Math.sign(packed[2] - packed[0]) || Math.sign(packed[3] - packed[1]);
+  if (originalOrder !== packedOrder) {
+    throw new Error('Time window endpoint order must survive float32 packing');
+  }
+  for (const [duration, rounded] of [
+    [startFadeDuration, packed[4]],
+    [endFadeDuration, packed[5]]
+  ]) {
+    if (!Number.isFinite(rounded) || (duration > 0 && !(rounded > 0))) {
+      throw new Error(
+        'Time window positive fade durations must remain finite and positive in float32'
+      );
+    }
+  }
+  target.set(packed);
   return target;
 }
 
@@ -73,13 +110,30 @@ export function getGPUTimeWindowFilterParameterValues(
  * Splits double-precision timestamps into float32 high and low parts for double-single comparison.
  *
  * `fp64ify` gives `high = Math.fround(value)` and `low = value - high`; the float32 arrays round the
- * low part. Values are not validated; a non-finite timestamp is never accepted by the filter.
+ * low part. By default values are not validated; membership is exact for the encoded pairs,
+ * not necessarily the original doubles. Set `requireExact` to reject the first row that cannot
+ * be represented exactly by two finite float32 lanes. Use Int64 words for integer timestamps.
  */
-export function splitTimestamps(values: ArrayLike<number>): GPUSplitTimestamps {
+export function splitTimestamps(
+  values: ArrayLike<number>,
+  options: {requireExact?: boolean} = {}
+): GPUSplitTimestamps {
   const high = new Float32Array(values.length);
   const low = new Float32Array(values.length);
   for (let index = 0; index < values.length; index++) {
-    [high[index], low[index]] = fp64ify(values[index]);
+    const [highPart, lowPart] = fp64ify(values[index]);
+    high[index] = highPart;
+    low[index] = lowPart;
+    if (
+      options.requireExact &&
+      (!Number.isFinite(high[index]) || !Number.isFinite(low[index]) || low[index] !== lowPart)
+    ) {
+      validateRequirement(
+        'splitTimestamps',
+        false,
+        `values row ${index} value ${values[index]} must be exactly representable as two finite float32 lanes`
+      );
+    }
   }
   return {high, low};
 }

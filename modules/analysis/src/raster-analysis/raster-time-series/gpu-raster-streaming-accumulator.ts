@@ -20,13 +20,28 @@ import {
 } from './raster-time-series-chunks-b';
 import {
   FIXED_POINT_WGSL,
-  getFixedPointHeadroomBits
+  FIXED_POINT_MOMENTS_WGSL,
+  getFixedPointMagnitudeUnitExponent
 } from '../../analysis-core/kernels/fixed-point-accumulator';
 import {
   validateCapacity,
-  validateFiniteNumber,
+  getPackedUint32Values,
+  type GPUPackedReadbackValues,
+  validateGraphPorts,
+  validateCommandNodeBudget,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getRasterStreamStatusWord,
+  validateRasterStreamFrame,
+  validateRasterStreamParameterTarget,
+  validateRasterStreamEncodingPlan,
+  validateRasterStreamHeadroom,
+  getRasterStreamPositiveFloat,
+  validateRasterStreamPlanFrame,
+  type GPURasterStreamFrameSettings
+} from './raster-stream-parameters';
+export type {GPURasterStreamFrameSettings} from './raster-stream-parameters';
 import {getRasterFixedPointStateWGSL} from './raster-fixed-point-state-wgsl';
 import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 
@@ -38,6 +53,17 @@ export const MAXIMUM_RASTER_STREAM_SLOT_COUNT = 366;
 export const GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH = 5;
 /** Default stream length bound for the fixed-point headroom (2^24 slices, over 45,000 years of days). */
 export const DEFAULT_MAXIMUM_RASTER_STREAM_SLICE_COUNT = 2 ** 24;
+/** Maximum representable valid observations per cell and slot, independently of frame size/headroom. */
+export const MAXIMUM_RASTER_STREAM_OBSERVATION_COUNT = 0xffffffff;
+
+/** Read one per-cell/slot loss certificate: overflow is sticky until reset. */
+export function decodeGPURasterStreamingAccumulatorStatus(input: GPUPackedReadbackValues): {
+  complete: boolean;
+  overflow: boolean;
+} {
+  const code = getRasterStreamStatusWord('decodeGPURasterStreamingAccumulatorStatus', input, 1);
+  return {complete: code === 0, overflow: code === 1};
+}
 
 /** Per-frame settings of a streaming raster contributor. */
 export type GPURasterStreamingAccumulatorSettings = {
@@ -55,51 +81,142 @@ export type GPURasterStreamingAccumulatorSettings = {
   maximumStreamSliceCount?: number;
 };
 
-/**
- * Packs the per-frame settings of {@link GPURasterStreamingAccumulator}.
- * Layout (float32): `[reset, activeSliceCount, sumUnitExponent, momentUnitExponent, maximumValueMagnitude]`.
+/** Immutable units and headroom of one retained stream; replace only when resetting state. */
+export type GPURasterStreamingAccumulatorEncodingPlan = Readonly<{
+  kind: 'raster-streaming-accumulator';
+  chunkSliceCount: number;
+  maximumValueMagnitude: number;
+  maximumStreamSliceCount: number;
+  sumUnitExponent: number;
+  momentUnitExponent: number;
+}>;
+
+/** Capture scale once, then reuse this plan for every frame and for readback decoding. */
+export function createGPURasterStreamingAccumulatorEncodingPlan(
+  settings: Pick<
+    GPURasterStreamingAccumulatorSettings,
+    'maximumValueMagnitude' | 'maximumStreamSliceCount'
+  >,
+  chunkSliceCount: number
+): GPURasterStreamingAccumulatorEncodingPlan {
+  const id = 'createGPURasterStreamingAccumulatorEncodingPlan';
+  validateRasterStreamFrame(id, chunkSliceCount, 0, MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT);
+  const maximumValueMagnitude = getRasterStreamPositiveFloat(
+    id,
+    'maximumValueMagnitude',
+    settings.maximumValueMagnitude
+  );
+  const maximumStreamSliceCount =
+    settings.maximumStreamSliceCount ?? DEFAULT_MAXIMUM_RASTER_STREAM_SLICE_COUNT;
+  validateRasterStreamHeadroom(id, maximumStreamSliceCount);
+  return Object.freeze({
+    kind: 'raster-streaming-accumulator',
+    chunkSliceCount,
+    maximumValueMagnitude,
+    maximumStreamSliceCount,
+    sumUnitExponent: getGPURasterFixedPointUnitExponent(
+      maximumValueMagnitude,
+      maximumStreamSliceCount
+    ),
+    momentUnitExponent: getGPURasterFixedPointUnitExponent(
+      4 * maximumValueMagnitude ** 2,
+      maximumStreamSliceCount
+    )
+  });
+}
+
+/** Packs `[reset, activeSliceCount, sumUnitExponent, momentUnitExponent, maximumValueMagnitude]`.
+ * Legacy settings calls must keep the scale and headroom fixed until reset; prefer the plan overload.
  */
 export function getGPURasterStreamingAccumulatorParameterValues(
   settings: GPURasterStreamingAccumulatorSettings,
   chunkSliceCount: number,
+  target?: Float32Array
+): Float32Array;
+export function getGPURasterStreamingAccumulatorParameterValues(
+  plan: GPURasterStreamingAccumulatorEncodingPlan,
+  frame: GPURasterStreamFrameSettings,
+  target?: Float32Array
+): Float32Array;
+export function getGPURasterStreamingAccumulatorParameterValues(
+  settings: GPURasterStreamingAccumulatorSettings | GPURasterStreamingAccumulatorEncodingPlan,
+  chunkOrFrame: number | GPURasterStreamFrameSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH)
 ): Float32Array {
-  validateFiniteNumber(
-    'getGPURasterStreamingAccumulatorParameterValues',
-    'maximumValueMagnitude',
-    settings.maximumValueMagnitude,
-    Number.MIN_VALUE
+  const id = 'getGPURasterStreamingAccumulatorParameterValues';
+  validateRasterStreamParameterTarget(
+    id,
+    target,
+    GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH
   );
-  const slices = settings.maximumStreamSliceCount ?? DEFAULT_MAXIMUM_RASTER_STREAM_SLICE_COUNT;
-  target[0] = settings.reset ? 1 : 0;
-  target[1] = settings.activeSliceCount ?? chunkSliceCount;
-  target[2] = getGPURasterFixedPointUnitExponent(settings.maximumValueMagnitude, slices);
-  target[3] = getGPURasterFixedPointUnitExponent(4 * settings.maximumValueMagnitude ** 2, slices);
-  target[4] = settings.maximumValueMagnitude;
+  const legacy = typeof chunkOrFrame === 'number';
+  const plan = legacy
+    ? createGPURasterStreamingAccumulatorEncodingPlan(
+        settings as GPURasterStreamingAccumulatorSettings,
+        chunkOrFrame
+      )
+    : (settings as GPURasterStreamingAccumulatorEncodingPlan);
+  if (!legacy)
+    validateRasterStreamEncodingPlan(id, plan, 'raster-streaming-accumulator', () =>
+      createGPURasterStreamingAccumulatorEncodingPlan(plan, plan.chunkSliceCount)
+    );
+  const frame =
+    typeof chunkOrFrame === 'number'
+      ? (settings as GPURasterStreamingAccumulatorSettings)
+      : chunkOrFrame;
+  validateRequirement(
+    id,
+    typeof frame.reset === 'boolean',
+    `reset must be boolean; received ${String(frame.reset)}`
+  );
+  if (typeof chunkOrFrame !== 'number') validateRasterStreamPlanFrame(id, plan, frame);
+  const activeSliceCount = frame.activeSliceCount ?? plan.chunkSliceCount;
+  validateRasterStreamFrame(
+    id,
+    plan.chunkSliceCount,
+    activeSliceCount,
+    MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT,
+    plan.maximumStreamSliceCount,
+    frame.reset
+  );
+  target.set([
+    frame.reset ? 1 : 0,
+    activeSliceCount,
+    plan.sumUnitExponent,
+    plan.momentUnitExponent,
+    plan.maximumValueMagnitude
+  ]);
   return target;
 }
 
 /**
  * Unit exponent of a streamed fixed-point sum whose terms stay below `maximumMagnitude`, with
- * headroom for `maximumTermCount` terms. Pass the value with the sum's readback to decode it.
+ * headroom for `maximumTermCount` terms. Bounds stay binary64, including squared observation bounds
+ * beyond float32 range. Reset retained state when adopting corrected units for an existing stream.
+ * Pass the value with the sum's readback to decode it.
  */
 export function getGPURasterFixedPointUnitExponent(
   maximumMagnitude: number,
   maximumTermCount: number
 ): number {
-  const biasedExponent = Math.max(
-    (new Uint32Array(new Float32Array([maximumMagnitude]).buffer)[0] >>> 23) & 0xff,
-    1
-  );
-  return biasedExponent - 127 + 1 + getFixedPointHeadroomBits(maximumTermCount) - 95;
+  return getFixedPointMagnitudeUnitExponent(maximumMagnitude, maximumTermCount);
 }
 
-/** Decodes the 96-bit two's complement fixed-point sums of a readback, three `uint32` words each. */
+/** Decodes 96-bit two's complement sums, three uint32 words each, in units of 2^unitExponent.
+ * Accepts numeric words or bounded Uint8Array/ArrayBuffer GPU readback bytes (little endian).
+ * Byte offset and length are honored; partial words and partial triples are rejected.
+ */
 export function getGPURasterFixedPointValues(
-  words: ArrayLike<number>,
+  input: GPUPackedReadbackValues,
   unitExponent: number
 ): Float64Array {
-  const values = new Float64Array(Math.floor(words.length / 3));
+  const words = getPackedUint32Values(input);
+  validateRequirement(
+    'getGPURasterFixedPointValues',
+    words.length % 3 === 0,
+    `words must contain a whole number of three-word values (expected a multiple of 3 words); received ${words.length}`
+  );
+  const values = new Float64Array(words.length / 3);
   for (let index = 0; index < values.length; index++) {
     const raw =
       BigInt(words[index * 3] >>> 0) |
@@ -119,6 +236,8 @@ export type GPURasterStreamingState<View extends RasterScalarView = GraphDataVie
   sums: RasterTimeSeriesView<'uint32', View>;
   /** Optional 96-bit fixed-point sum of squared deviations from the running mean (Welford), three words per slot. */
   moments?: RasterTimeSeriesView<'uint32', View>;
+  /** Optional sticky loss certificate per slot: 0 complete, 1 observation-count overflow. Supply this to detect count overflow; declared encoding headroom must still be honored. Reset clears it. */
+  status?: RasterTimeSeriesView<'uint32', View>;
   /** Optional `(minimum, maximum)` per slot. */
   extrema?: RasterTimeSeriesView<'float32', View>;
 };
@@ -132,7 +251,7 @@ export type GPURasterStreamingState<View extends RasterScalarView = GraphDataVie
 export type GPURasterStreamingAccumulatorProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
-  /** Slices of each chunk, in `[1, 256]`. The stream itself has no slice limit. */
+  /** Slices of each chunk, in `[1, 256]`. Stream headroom defaults to 2^24; counts hold at most 2^32 - 1 valid observations per cell and slot. */
   chunkSliceCount: number;
   /** Calendar slots per cell, for per-slot climatologies. Defaults to 1. */
   slotCount?: number;
@@ -154,8 +273,14 @@ export type GPURasterStreamingAccumulatorProps<Rows extends RasterScalarView = G
  * O(cells x slots). Sums are exact 96-bit fixed-point integers (the shared fixed-point
  * accumulator, because float32 compensated-sum tricks are optimized away by shader compilers), so
  * totals over tens of thousands of slices stay exact to the declared unit. Each cell is one thread with fixed-order loops, so results do not depend on
- * scheduling.
+ * scheduling. Squared deviations center in fixed-point units before float conversion and scale before
+ * multiplication, retaining the same three-word moment encoding in squared observation units.
  *
+ * At most 256 slices per submission; declared stream headroom defaults to 2^24 slices. Per-cell,
+ * per-slot counts saturate at 2^32 - 1 rather than wrap. Supply state.status to detect loss on replay;
+ * overflow preserves prior statistics and remains set until reset. Status adds one per-slot pass,
+ * keeping every kernel within eight storage bindings even with all optional statistics. Legacy counts alone cannot certify
+ * completeness. Keep the encoding plan fixed between resets, including magnitude and headroom.
  * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
 export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = GraphDataView>
@@ -167,9 +292,20 @@ export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = Graph
   readonly estimatedCommandNodeCount: number;
   readonly slotCount: number;
   constructor(props: GPURasterStreamingAccumulatorProps<Rows> & {values: Rows}) {
-    this.props = props;
+    this.props = {...props, state: {...props.state}};
     const id = props.id ?? 'raster-streaming-accumulator';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      slotIndices: {required: false, viewType: 'data', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'state.counts': {required: true, viewType: 'either', formats: ['uint32']},
+      'state.sums': {required: true, viewType: 'either', formats: ['uint32']},
+      'state.moments': {required: false, viewType: 'either', formats: ['uint32']},
+      'state.extrema': {required: false, viewType: 'either', formats: ['float32']},
+      'state.status': {required: false, viewType: 'either', formats: ['uint32']}
+    });
     const slotCount = props.slotCount ?? 1;
     this.slotCount = slotCount;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -212,8 +348,9 @@ export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = Graph
     validateRequirement(
       id,
       (!props.state.moments || props.state.moments.length >= entryCount * 3) &&
-        (!props.state.extrema || props.state.extrema.length >= entryCount * 2),
-      'state.moments must hold three entries per slot and state.extrema two'
+        (!props.state.extrema || props.state.extrema.length >= entryCount * 2) &&
+        (!props.state.status || props.state.status.length >= entryCount),
+      'state.moments must hold three entries per slot and state.extrema two; state.status needs one entry per slot'
     );
     this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
       values: {view: props.values, entriesPerCell: props.chunkSliceCount},
@@ -221,10 +358,25 @@ export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = Graph
       'state.counts': {view: props.state.counts, entriesPerCell: props.slotCount ?? 1},
       'state.sums': {view: props.state.sums, entriesPerCell: (props.slotCount ?? 1) * 3},
       'state.moments': {view: props.state.moments, entriesPerCell: (props.slotCount ?? 1) * 3},
-      'state.extrema': {view: props.state.extrema, entriesPerCell: (props.slotCount ?? 1) * 2}
+      'state.extrema': {view: props.state.extrema, entriesPerCell: (props.slotCount ?? 1) * 2},
+      'state.status': {view: props.state.status, entriesPerCell: props.slotCount ?? 1}
     });
-    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
-    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
+    this.estimatedCommandNodeCount =
+      this.chunkPlan.estimatedCommandNodeCount * (props.state.status ? 2 : 1);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    const inputs = this.getInputs();
+    const accumulationOutputs = [
+      props.state.counts,
+      props.state.sums,
+      ...(props.state.moments ? [props.state.moments] : []),
+      ...(props.state.extrema ? [props.state.extrema] : [])
+    ];
+    validateRasterViews(this.id, inputs, this.getOutputs(), this.chunkPlan, [
+      ...(props.state.status
+        ? [{inputs: [...inputs, props.state.counts], outputs: [props.state.status]}]
+        : []),
+      {inputs, outputs: accumulationOutputs}
+    ]);
   }
 
   private getInputs(): RasterScalarView[] {
@@ -238,8 +390,14 @@ export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = Graph
   }
 
   private getOutputs(): RasterScalarView[] {
-    const {counts, sums, moments, extrema} = this.props.state;
-    return [counts, sums, ...(moments ? [moments] : []), ...(extrema ? [extrema] : [])];
+    const {counts, sums, moments, extrema, status} = this.props.state;
+    return [
+      counts,
+      sums,
+      ...(moments ? [moments] : []),
+      ...(extrema ? [extrema] : []),
+      ...(status ? [status] : [])
+    ];
   }
 
   getCommandNodes<Parameters>(
@@ -249,7 +407,46 @@ export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = Graph
     const {values, mask, slotIndices, parameters, state, cellCount, chunkSliceCount} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const slotExpression = slotCount > 1 ? 'slotIndices[slotIndicesOffset + slice]' : '0u';
-    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+    // A separate per-slot pass preserves the eight-storage-binding route when every optional
+    // statistic is requested. It reads the prior count before the accumulation pass changes it.
+    const statusNodes = state.status
+      ? createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+          id: `${id}-status`,
+          operation: 'GPURasterStreamingAccumulatorStatus',
+          invocationCount: cellCount * slotCount,
+          workgroupSize: 64,
+          bindings: [
+            rasterBinding('values', values),
+            rasterBinding('parameters', parameters),
+            ...(mask ? [rasterBinding('mask', mask)] : []),
+            ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
+            rasterBinding('counts', state.counts),
+            rasterBinding('status', state.status, true)
+          ],
+          declarations: RASTER_FINITE_WGSL,
+          body: `let cell = index / ${slotCount}u;
+let outputSlot = index % ${slotCount}u;
+var count = 0u;
+var overflow = 0u;
+if (parameters[parametersOffset] == 0.0) {
+  count = counts[countsOffset + index];
+  overflow = status[statusOffset + index];
+}
+let activeSliceCount = u32(clamp(parameters[parametersOffset + 1u], 0.0, ${chunkSliceCount}.0));
+for (var slice = 0u; slice < activeSliceCount; slice++) {
+  let source = cell * ${chunkSliceCount}u + slice;
+  let value = values[valuesOffset + source];
+  if (!finite(value) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
+  if (abs(value) > parameters[parametersOffset + 4u]) { continue; }
+  let slot = ${slotExpression};
+  if (slot != outputSlot) { continue; }
+  if (count == ${MAXIMUM_RASTER_STREAM_OBSERVATION_COUNT}u) { overflow = 1u; }
+  else { count += 1u; }
+}
+status[statusOffset + index] = overflow;`
+        })
+      : [];
+    const accumulationNodes = createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
       id,
       operation: 'GPURasterStreamingAccumulator',
       invocationCount: cellCount,
@@ -266,6 +463,7 @@ export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = Graph
       ],
       declarations: `${RASTER_FINITE_WGSL}
 ${FIXED_POINT_WGSL}
+${state.moments ? FIXED_POINT_MOMENTS_WGSL : ''}
 ${getRasterFixedPointStateWGSL('sums')}
 ${state.moments ? getRasterFixedPointStateWGSL('moments') : ''}`,
       body: `let unitExponent = i32(parameters[parametersOffset + 2u]);
@@ -289,16 +487,15 @@ for (var slice = 0u; slice < activeSliceCount; slice++) {
   if (slot >= ${slotCount}u) { continue; }
   let entry = index * ${slotCount}u + slot;
   let priorCount = counts[countsOffset + entry];
+  if (priorCount == ${MAXIMUM_RASTER_STREAM_OBSERVATION_COUNT}u) { continue; }
   counts[countsOffset + entry] = priorCount + 1u;
   let priorSum = loadSums(entry);
-  let priorMean = getFixedPointFloat(priorSum, unitExponent) / f32(max(priorCount, 1u));
   let sum = addFixedPoint(priorSum, quantizeFixedPoint(value, unitExponent));
   storeSums(entry, sum);
   ${
     state.moments
-      ? `let updatedMean = getFixedPointFloat(sum, unitExponent) / f32(priorCount + 1u);
-  let deviation = select((value - priorMean) * (value - updatedMean), 0.0, priorCount == 0u);
-  storeMoments(entry, addFixedPoint(loadMoments(entry), quantizeFixedPoint(deviation, momentUnitExponent)));`
+      ? `let momentIncrement = getFixedPointMomentIncrement(priorSum, priorCount, value, unitExponent, momentUnitExponent);
+  storeMoments(entry, addFixedPoint(loadMoments(entry), momentIncrement));`
       : ''
   }
   ${
@@ -308,5 +505,6 @@ for (var slice = 0u; slice < activeSliceCount; slice++) {
   }
 }`
     });
+    return [...statusNodes, ...accumulationNodes];
   }
 }

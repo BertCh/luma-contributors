@@ -22,6 +22,8 @@ import {
   type GPUSpatialWeightsOutput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
+  validateRequirement,
+  validateViewLength,
   type GPUPolygonGeometryPort,
   type GPUPackedGeometryPort
 } from '@luma-contributors/analysis/analysis-core';
@@ -34,6 +36,8 @@ import {
 } from '../recipes/analysis-recipe';
 
 export type KeplerPolygonWeightsStatus = {
+  /** Retained CSR entries; bounds the readable compact prefix. */
+  count?: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
   /** A lower bound if candidateOverflow is nonzero. */
   requiredCount: GraphDataView<'uint32'>;
@@ -81,6 +85,7 @@ export function validateKeplerPolygonWeightsBinding<Parameters>(
 ): void {
   const settings = parseKeplerPolygonWeightsSettings(binding.settings);
   const expected = parseKeplerPolygonWeightsSettings(expectedSettings);
+  const statusViews = Object.values(binding.status).filter(view => view !== undefined);
   const capacity = getKeplerPolygonWeightsCapacity(settings, rowCount);
   if (
     !source.datasetId ||
@@ -115,19 +120,21 @@ export function validateKeplerPolygonWeightsBinding<Parameters>(
     binding.geometryMask,
     binding.weights.offsets,
     binding.weights.neighbors,
-    ...Object.values(binding.status)
+    ...statusViews
   ])
     validatePackedView(view, ['uint32'], 'Polygon weights integer view');
   validatePackedView(binding.weights.weights, ['float32'], 'Polygon weights values');
   for (const name of ['overflow', 'requiredCount', 'candidateOverflow', 'invalidCount'] as const)
     if (!binding.status[name] || binding.status[name].length !== 1)
       throw new Error('Polygon weights require scalar completeness diagnostics');
+  if (binding.status.count)
+    validateViewLength('kepler-polygon-weights', 'output.status.count', binding.status.count, 1);
   for (const view of [
     binding.geometryMask,
     binding.weights.offsets,
     binding.weights.neighbors,
     binding.weights.weights,
-    ...Object.values(binding.status)
+    ...statusViews
   ])
     if (view.buffer.graph !== graph)
       throw new Error('Polygon weights views must belong to the consumer graph');
@@ -185,6 +192,19 @@ export function addKeplerPolygonWeights<Parameters>(
       candidateOverflow: createTransientView(graph, `${id}-candidate-overflow`, 'uint32', 1),
       invalidCount: createTransientView(graph, `${id}-invalid-count`, 'uint32', 1)
     };
+  const supportedStatus = [
+    'count',
+    'overflow',
+    'requiredCount',
+    'candidateOverflow',
+    'invalidCount'
+  ];
+  for (const [name, view] of Object.entries(status))
+    validateRequirement(
+      id,
+      view === undefined || supportedStatus.includes(name),
+      `output.status.${name} is unsupported; accepted fields are ${supportedStatus.join(', ')}`
+    );
   const output: KeplerPolygonWeightsOutput = props.output ?? {
     offsets: createTransientView(graph, `${id}-offsets`, 'uint32', rowCount + 1),
     neighbors: createTransientView(graph, `${id}-neighbors`, 'uint32', capacity),
@@ -207,7 +227,12 @@ export function addKeplerPolygonWeights<Parameters>(
     status
   };
   validateKeplerPolygonWeightsBinding(graph, binding, props.source, rowCount);
-  const outputs = [output.offsets, output.neighbors, output.weights, ...Object.values(status)];
+  const outputs = [
+    output.offsets,
+    output.neighbors,
+    output.weights,
+    ...Object.values(status).filter(view => view !== undefined)
+  ];
   for (let index = 0; index < outputs.length; index++) {
     if (
       [...inputViews, ...outputs.slice(index + 1)].some(view =>
@@ -223,7 +248,8 @@ export function addKeplerPolygonWeights<Parameters>(
       output.weights,
       status.overflow,
       status.requiredCount,
-      status.candidateOverflow
+      status.candidateOverflow,
+      ...(status.count ? [status.count] : [])
     ])
       addFill(graph, `${id}-empty-${view.buffer.id}-${view.byteOffset}`, view, 0);
     addFill(graph, `${id}-empty-invalid`, status.invalidCount, rowCount);
@@ -235,7 +261,15 @@ export function addKeplerPolygonWeights<Parameters>(
         criterion: settings.criterion,
         snapTolerance: 0,
         pairCapacity: settings.pairCapacity,
-        output
+        output: {
+          ...output,
+          status: {
+            overflow: status.overflow,
+            requiredCount: status.requiredCount,
+            candidateOverflow: status.candidateOverflow,
+            ...(status.count ? {count: status.count} : {})
+          }
+        }
       })
     );
     const invalid = createTransientView(graph, `${id}-invalid-flags`, 'uint32', rowCount);

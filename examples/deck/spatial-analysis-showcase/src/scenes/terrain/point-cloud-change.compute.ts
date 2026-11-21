@@ -480,7 +480,7 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
         source: sourceView,
         target: targetView,
         maximumDistance: settings.maximumDistance,
-        iterations: ICP_ITERATIONS,
+        maximumIterations: ICP_ITERATIONS,
         ...(settings.robust === 'none' ? {} : {robust: {method: settings.robust, scale: 0.5}}),
         output: {
           transform: transformView,

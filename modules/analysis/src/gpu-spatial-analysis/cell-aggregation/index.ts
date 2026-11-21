@@ -24,3 +24,16 @@ export {
 export type {GPUCellTable} from './cell-table';
 export {GPU_CELL_MAXIMUM_RESOLUTION} from './cell-keys';
 export type {GPUCellAggregationFamily} from './cell-keys';
+export type {GPUCountedCellSource, GPUCellSourceInput} from './counted-cell-source';
+export {
+  MAXIMUM_CELL_PYRAMID_ROW_COUNT,
+  MAXIMUM_CELL_PYRAMID_TILE_ROW_COUNT
+} from './cell-pyramid-planning';
+export type {
+  GPUCellPyramidShape,
+  GPUCellPyramidLevelColumns,
+  GPUCellPyramidDeviceLimits,
+  GPUCellPyramidExecutionPlan
+} from './cell-pyramid-planning';
+
+export type {GPUCellCompactionInput} from '../cell-topology/gpu-cell-compaction';

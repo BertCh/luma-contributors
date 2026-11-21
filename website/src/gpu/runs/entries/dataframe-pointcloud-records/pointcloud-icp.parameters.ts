@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPUPointCloudICP's `iterations` and `maximumDistance` (compile-time), and the rotation
+// Bound to GPUPointCloudICP's `maximumIterations` and `maximumDistance` (compile-time), and the rotation
 // and shift that misalign the source cloud (per frame).
 export const parameters: GpuSceneParameter[] = [
   {id: 'iterations', label: 'iterations', min: 1, max: 20, step: 1, default: 12},

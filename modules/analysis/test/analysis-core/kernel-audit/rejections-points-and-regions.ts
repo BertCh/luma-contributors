@@ -72,14 +72,14 @@ export const POINTS_AND_REGIONS_REJECTIONS: readonly KernelAuditRejection[] = [
     rejects: /^Error: similar-locations columnCount must be an integer in \[1, 16777215\]$/
   },
   {
-    exportName: 'GPUSpatialClustering',
+    exportName: 'GPUDBSCAN',
     name: 'rows and clusters, index grid above the maximum atomic',
     kind: 'binding',
     limit: 33554431,
     rejects: /^Error: spatial-clustering gridSize cells must be at most 33554431$/
   },
   {
-    exportName: 'GPUSpatialClustering',
+    exportName: 'GPUDBSCAN',
     name: 'rows and clusters, index grid at the maximum sorted, clusters above the sorted maximum',
     kind: 'dispatch',
     limit: 16777215,
@@ -87,7 +87,7 @@ export const POINTS_AND_REGIONS_REJECTIONS: readonly KernelAuditRejection[] = [
       /^Error: spatial-clustering clusters\.ids rows with sorted centroid sums must be at most 16777215$/
   },
   {
-    exportName: 'GPUSpatialClustering',
+    exportName: 'GPUDBSCAN',
     name: 'rows and clusters, index grid above the maximum sorted, clusters above the sorted maximum',
     kind: 'dispatch',
     limit: 16777215,
@@ -96,7 +96,7 @@ export const POINTS_AND_REGIONS_REJECTIONS: readonly KernelAuditRejection[] = [
       /^Error: spatial-clustering clusters\.ids rows with sorted centroid sums must be at most 16777215$/
   },
   {
-    exportName: 'GPUSpatialClustering',
+    exportName: 'GPUDBSCAN',
     name: 'rows and clusters, index grid above the maximum sorted below the segment-sum dispatch limit',
     kind: 'dispatch',
     limit: 33554431,

@@ -276,7 +276,7 @@ for (const operator of ['rank', 'fill', 'reprojection', 'tiles', 'surface-recipe
           grid,
           input,
           maximumDistance: 1,
-          outputs: {
+          output: {
             originalValidity: importGraphBuffer(
               graph,
               'aliased-original',
@@ -301,7 +301,7 @@ for (const operator of ['rank', 'fill', 'reprojection', 'tiles', 'surface-recipe
           grid,
           input,
           maximumDistance: 1,
-          outputs: {
+          output: {
             originalValidity: graph.createDataView(originalValidity.buffer, {
               format: 'uint32',
               length: 1
@@ -315,7 +315,7 @@ for (const operator of ['rank', 'fill', 'reprojection', 'tiles', 'surface-recipe
         maximumDistance: 1,
         method: 'nearest',
         filter: {radius: 0},
-        outputs: {
+        output: {
           ...output,
           originalValidity,
           filled: importGraphBuffer(graph, 'filled', filledBuffer, 'uint32', 5),

@@ -34,6 +34,7 @@ import {
 } from '../../engine/web-mercator';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import {clamp, safeMod, toDegrees, toRadians} from '@math.gl/core';
+import type {AlpsRasterSpec} from './b14a-grid';
 
 /** Circumference of the Web Mercator world in meters (2 pi times the WGS84 semi-major axis). */
 export const WORLD_METERS = 2 * Math.PI * GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
@@ -116,9 +117,9 @@ function getMercatorY(latitude: number): number {
 export function prepareAlpsTerrain(dataset: LoadedDataset, stride = 1): AlpsTerrain {
   const raster = dataset.raster;
   if (!raster) throw new Error('alps-dem has no raster');
-  const spec = raster.spec as Record<string, unknown>;
-  const boundsMercator = spec.boundsMercator as [number, number, number, number];
-  const sourceCellSize = spec.cellSizeMercatorM as number;
+  const spec = raster.spec as AlpsRasterSpec;
+  const boundsMercator = spec.boundsMercator;
+  const sourceCellSize = spec.cellSizeMercatorM;
   const sourceWidth = raster.width;
   const sourceHeight = raster.height;
   const width = Math.floor(sourceWidth / stride);

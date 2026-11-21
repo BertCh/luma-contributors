@@ -37,7 +37,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
-import {runHierarchicalDensityClustering} from '../spatial-clustering/hierarchical-density-clustering-harness';
+import {runHDBSCAN} from '../spatial-clustering/hierarchical-density-clustering-harness';
 import {createSeededRandom} from './neighbor-search-oracle';
 
 const f32 = Math.fround;
@@ -56,7 +56,7 @@ type SearchOptions = {
   queryPositions?: Float32Array;
   times?: Float32Array;
   queryTimes?: Float32Array;
-  k?: number;
+  neighborCount?: number;
   radius?: number;
   timeRadius?: number;
   timeBounds?: [number, number];
@@ -113,7 +113,7 @@ async function runSearch(device: Device, options: SearchOptions): Promise<Search
       : GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
     values: getGPUNeighborSearchParameterValues({
       bounds: options.bounds ?? BOUNDS,
-      radius: options.radius,
+      searchRadius: options.radius,
       timeRadius: options.timeRadius,
       timeBounds: options.timeBounds
     })
@@ -129,7 +129,7 @@ async function runSearch(device: Device, options: SearchOptions): Promise<Search
     graph.add(
       new GPUNeighborSearch({
         mode: options.mode,
-        k: options.k,
+        neighborCount: options.neighborCount,
         spatialContext: options.spatialContext,
         gridSize: options.gridSize ?? [24, 24],
         searchStructure: options.searchStructure,
@@ -173,7 +173,7 @@ async function runSearch(device: Device, options: SearchOptions): Promise<Search
 
 /** Planar brute force in the float32 arithmetic the kernels use, rows ascending by ID. */
 function computeReference(options: SearchOptions): {offsets: number[]; neighbors: number[]} {
-  const {positions, times, mode, k = 0} = options;
+  const {positions, times, mode, neighborCount = 0} = options;
   const queryPositions = options.queryPositions ?? positions;
   const queryTimes = options.queryTimes ?? times;
   const selfJoin = !options.queryPositions;
@@ -213,7 +213,9 @@ function computeReference(options: SearchOptions): {offsets: number[]; neighbors
     }
     const selected =
       mode === 'knn'
-        ? row.sort((a, b) => a.distanceSquared - b.distanceSquared || a.id - b.id).slice(0, k)
+        ? row
+            .sort((a, b) => a.distanceSquared - b.distanceSquared || a.id - b.id)
+            .slice(0, neighborCount)
         : row;
     selected.sort((a, b) => a.id - b.id);
     neighbors.push(...selected.map(entry => entry.id));
@@ -256,17 +258,17 @@ describe('GPUNeighborSearch k above 32', () => {
     requireTestDevice(device);
     expect(GPU_NEIGHBOR_SEARCH_MAXIMUM_K).toBe(256);
     const positions = createPoints(11, 700);
-    for (const k of [48, GPU_NEIGHBOR_SEARCH_MAXIMUM_K]) {
+    for (const neighborCount of [48, GPU_NEIGHBOR_SEARCH_MAXIMUM_K]) {
       const options: SearchOptions = {
         mode: 'knn',
         positions,
-        k,
-        capacity: (positions.length / 2) * k
+        neighborCount,
+        capacity: (positions.length / 2) * neighborCount
       };
       const reference = computeReference(options);
       for (const searchStructure of ['grid', 'bvh'] as const) {
         const result = await runSearch(device, {...options, searchStructure});
-        expectSameRows(result, reference, `k ${k} ${searchStructure}`);
+        expectSameRows(result, reference, `k ${neighborCount} ${searchStructure}`);
       }
     }
   }, 120_000);
@@ -278,7 +280,7 @@ describe('GPUNeighborSearch k above 32', () => {
     const options: SearchOptions = {
       mode: 'knn',
       positions,
-      k: GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
+      neighborCount: GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
       capacity: 100 * GPU_NEIGHBOR_SEARCH_MAXIMUM_K
     };
     const result = await runSearch(device, options);
@@ -349,7 +351,7 @@ describe('GPUNeighborSearch time axis', () => {
         timeRadius: 6,
         timeBounds: TIME_BOUNDS,
         timeBucketCount,
-        k: 40,
+        neighborCount: 40,
         capacity: ROWS * 40
       };
       expectSameRows(await runSearch(device, options), computeReference(options), `knn ${label}`);
@@ -376,7 +378,7 @@ describe('GPUNeighborSearch time axis', () => {
         computeReference(radius),
         `cross radius ${label}`
       );
-      const knn: SearchOptions = {...base, mode: 'knn', k: 9, capacity: 400 * 9};
+      const knn: SearchOptions = {...base, mode: 'knn', neighborCount: 9, capacity: 400 * 9};
       expectSameRows(await runSearch(device, knn), computeReference(knn), `cross knn ${label}`);
     }, 60_000);
   }
@@ -423,7 +425,7 @@ describe('GPUNeighborSearch time axis', () => {
       const radiusResult = await runSearch(device, radius);
       expectSameRows(radiusResult, radiusReference, 'outside radius');
       expect(radiusResult.invalidCount).toBe(0);
-      const knn: SearchOptions = {...base, mode: 'knn', k: 9, capacity: 60 * 9};
+      const knn: SearchOptions = {...base, mode: 'knn', neighborCount: 9, capacity: 60 * 9};
       const knnResult = await runSearch(device, knn);
       expectSameRows(knnResult, computeReference(knn), 'outside knn');
       expect(knnResult.invalidCount).toBe(0);
@@ -566,11 +568,11 @@ describe('GPUNeighborSearch time axis', () => {
       );
     }
     // kNN from the same source: the full spatial ranking, cut to the k nearest inside the window.
-    const k = 7;
+    const neighborCount = 7;
     const ranking = await runSearch(device, {
       ...common,
       mode: 'knn',
-      k: rows - 1,
+      neighborCount: rows - 1,
       capacity: rows * rows
     });
     const knnOffsets = [0];
@@ -586,7 +588,7 @@ describe('GPUNeighborSearch time axis', () => {
       related.sort((a, b) => a.distance - b.distance || a.id - b.id);
       knnNeighbors.push(
         ...related
-          .slice(0, k)
+          .slice(0, neighborCount)
           .map(entry => entry.id)
           .sort((a, b) => a - b)
       );
@@ -596,12 +598,12 @@ describe('GPUNeighborSearch time axis', () => {
       const result = await runSearch(device, {
         ...common,
         mode: 'knn',
-        k,
+        neighborCount,
         times,
         timeRadius,
         timeBounds: TIME_BOUNDS,
         timeBucketCount,
-        capacity: rows * k
+        capacity: rows * neighborCount
       });
       expectSameRows(result, {offsets: knnOffsets, neighbors: knnNeighbors}, 'geodesic knn');
     }
@@ -625,9 +627,14 @@ describe('contributors on GPUNeighborSearch', () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const rows = 400;
-    const k = 48;
+    const neighborCount = 48;
     const positions = createPoints(51, rows);
-    const reference = computeReference({mode: 'knn', positions, k, capacity: rows * k});
+    const reference = computeReference({
+      mode: 'knn',
+      positions,
+      neighborCount,
+      capacity: rows * neighborCount
+    });
     const distance = (first: number, second: number) =>
       Math.hypot(
         positions[first * 2] - positions[second * 2],
@@ -684,15 +691,15 @@ describe('contributors on GPUNeighborSearch', () => {
     try {
       const search = new GPUNeighborSearch({
         mode: 'knn',
-        k,
+        neighborCount,
         gridSize: [16, 16],
         positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
         parameters: searchParameters.importToGraph(graph),
         output: {
           offsets: output('offsets', 'uint32', rows + 1).view,
-          neighbors: output('neighbors', 'uint32', rows * k).view,
-          weights: output('weights', 'float32', rows * k).view,
-          distances: output('distances', 'float32', rows * k).view,
+          neighbors: output('neighbors', 'uint32', rows * neighborCount).view,
+          weights: output('weights', 'float32', rows * neighborCount).view,
+          distances: output('distances', 'float32', rows * neighborCount).view,
           status: {overflow: output('overflow', 'uint32', 1).view}
         }
       });
@@ -734,7 +741,7 @@ describe('contributors on GPUNeighborSearch', () => {
     positions[3] = positions[1];
     positions[8] = Number.NaN;
     for (const minimumSamples of [1, 2, 7, 32]) {
-      const result = await runHierarchicalDensityClustering(device, positions, {
+      const result = await runHDBSCAN(device, positions, {
         minimumClusterSize: 5,
         minimumSamples
       });
@@ -790,8 +797,7 @@ describe('contributors on GPUNeighborSearch', () => {
             coreDistances: core.view,
             reachability: output('reachability', 'float32', rows).view,
             predecessors: output('predecessors', 'uint32', rows).view,
-            labels: output('labels', 'uint32', rows).view,
-            status: output('status', 'uint32', 3).view
+            labels: output('labels', 'uint32', rows).view
           }
         })
       );

@@ -33,6 +33,7 @@ import {
 } from './class-breaks-kernels';
 import {GPU_CLASS_BREAKS_METHOD_CODES} from './class-breaks-parameters';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
+import {NATURAL_BREAKS_COORDINATE_WGSL} from './natural-breaks-coordinate-wgsl';
 import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {ClassificationRows} from './column-classification-rows';
 
@@ -204,6 +205,31 @@ ${CLASS_BREAKS_BIN_WGSL}`;
   let maximum = decodeOrderedKey(extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.maximumKey}u]);
   let width = (maximum - minimum) * INVERSE_BIN_COUNT;`;
   const nodes: GPUCommandNode<Parameters>[] = [];
+  // Saved per-break widths and movement are interpreted in the scale of their last solve.
+  // The bulk histogram and every refinement plan select a fresh scale for their local range.
+  const coordinateScale = f32('coordinate-scale', maximumClassCount + 1);
+  const coordinateScaleBinding = {
+    name: 'coordinateScale',
+    view: coordinateScale,
+    type: 'f32',
+    access: 'read'
+  } as const;
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${prefix}-coordinate-scale`,
+      operation,
+      variant: 'natural-breaks-coordinate-scale',
+      bindings: [{...coordinateScaleBinding, access: 'read_write'}],
+      invocationCount: maximumClassCount + 1,
+      body: 'coordinateScale[coordinateScaleOffset + index] = 0.0;'
+    })
+  );
+  const scaledExtremesRead = `let rawMinimum = decodeOrderedKey(extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.minimumKey}u]);
+  let rawMaximum = decodeOrderedKey(extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.maximumKey}u]);
+  let scale = getNaturalCoordinateScale(rawMinimum, rawMaximum);
+  let minimum = rawMinimum * scale;
+  let maximum = rawMaximum * scale;
+  let width = (maximum - minimum) * INVERSE_BIN_COUNT;`;
 
   /**
    * The coarse stage: histogram, prefix sums and dynamic program layers, ending with the class
@@ -255,6 +281,7 @@ ${CLASS_BREAKS_BIN_WGSL}`;
           ],
           invocationCount: rowCount,
           declarations: `${binDeclarations}
+${NATURAL_BREAKS_COORDINATE_WGSL}
   ${CLASS_BREAKS_WIDE_WGSL}`,
           body: `if (${gate}) {
       return;
@@ -269,13 +296,13 @@ ${CLASS_BREAKS_BIN_WGSL}`;
     if (key < extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.minimumKey}u] || key > extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.maximumKey}u]) {
       return;
     }
-    ${extremesRead}
+    ${scaledExtremesRead}
     var bin = 0u;
     var offset = 0u;
     if (width > 0.0) {
-      bin = getBinIndex(value, minimum, width);
+      bin = getBinIndex(value * scale, minimum, width);
       // Position inside the bin in 1/${NATURAL_BREAKS_SUBBIN_COUNT} bins.
-      let remainder = (value - minimum) - f32(bin) * width;
+      let remainder = (value * scale - minimum) - f32(bin) * width;
       offset = u32(clamp(floor(remainder * (${NATURAL_BREAKS_SUBBIN_COUNT}.0 / width)), 0.0, ${NATURAL_BREAKS_SUBBIN_COUNT - 1}.0));
     }
     let position = bin * ${NATURAL_BREAKS_SUBBIN_COUNT}u + offset;
@@ -539,7 +566,9 @@ ${CLASS_BREAKS_BIN_WGSL}`;
       getCoarseNodes,
       gate,
       binDeclarations,
-      extremesRead
+      extremesRead,
+      scaledExtremesRead,
+      coordinateScaleBinding
     })
   );
   return nodes;
@@ -555,6 +584,8 @@ type RefinementContext<Parameters> = {
   gate: string;
   binDeclarations: string;
   extremesRead: string;
+  scaledExtremesRead: string;
+  coordinateScaleBinding: WGSLKernelBinding;
 };
 
 /**
@@ -568,7 +599,8 @@ function getRefinementNodes<Parameters>(
   const {operation, values, mask, maximumClassCount, binCount, edges, edgeState} = props;
   const valueChunks = getGraphViewChunks(values);
   const maskChunks = mask ? getGraphViewChunks(mask) : undefined;
-  const {prefix, gate, binDeclarations, extremesRead} = context;
+  const {prefix, gate, binDeclarations, extremesRead, scaledExtremesRead, coordinateScaleBinding} =
+    context;
   // A class count above the bin count cannot be produced; every kernel clamps it the same way.
   const classCountRead = `min(state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u], BIN_COUNT)`;
   const binCountConstant = `const BIN_COUNT: u32 = ${binCount}u;`;
@@ -583,14 +615,14 @@ function getRefinementNodes<Parameters>(
 
   // Per-class extents (smallest key, largest key, row count), per-break window state
   // [halfWidth, movement, zoomLevel] x (maximumClassCount + 1), per-break plan [anchor, cellWidth,
-  // inverseUnit] x (maximumClassCount + 1), and the cells of every break. The second coarse stage
+  // inverseUnit, scale] x (maximumClassCount + 1), and the cells of every break. The second coarse stage
   // keeps its cuts in `bulkEdges` and the state it overwrote in `backup`: [method, classCount,
   // minimumKey, maximumKey, bulk class, active, empty class count, unused].
   const extents = context.u32('extents', 3 * maximumClassCount);
   const bulkEdges = context.f32('bulk-edges', maximumClassCount + 1);
   const backup = context.u32('backup', 8);
   const breakState = context.u32('break-state', 3 * (maximumClassCount + 1));
-  const plan = context.f32('plan', 3 * (maximumClassCount + 1));
+  const plan = context.f32('plan', 4 * (maximumClassCount + 1));
   const cells = context.u32('cells', breakCount * elementCount * elementStride);
   // Indirect dispatch triples: 0 the extents pass, 5 the extents pass over the partition of the
   // second coarse stage, then per half-round 1 the plan, 2 the cell clear, 3 the row pass, 4 the
@@ -659,6 +691,33 @@ const ELEMENT_STRIDE: u32 = ${elementStride}u;
 const NO_MINIMUM: u32 = ${NO_MINIMUM_KEY};`;
   const quantization = 2 ** NATURAL_BREAKS_QUANTIZATION_BITS;
 
+  const createScaledEdgesNode = (id: string, destination: GraphDataView<'float32'>) =>
+    createWGSLKernelNode<Parameters>(graph, {
+      id,
+      operation,
+      variant: 'natural-breaks-scaled-edges',
+      bindings: [
+        stateRead,
+        {name: 'extremes', view: props.extremes, type: 'u32', access: 'read'},
+        {name: 'starts', view: context.starts, type: 'u32', access: 'read'},
+        {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
+      ],
+      invocationCount: maximumClassCount,
+      declarations: `${binDeclarations}
+${NATURAL_BREAKS_COORDINATE_WGSL}`,
+      body: `let cut = index + 1u;
+  let classCount = ${classCountRead};
+  if (${gate} || cut >= classCount) { return; }
+  ${scaledExtremesRead}
+  var end = BIN_COUNT - 1u;
+  var start = 0u;
+  for (var layer = classCount - 1u; layer >= cut; layer = layer - 1u) {
+    start = starts[startsOffset + layer * BIN_COUNT + end];
+    end = start - 1u;
+  }
+  destination[destinationOffset + cut] = (minimum + f32(start) * width) / scale;`
+    });
+
   // Backtrack the coarse starts into cut values (bin edges), reset the class extents and arm the
   // extents pass. The dispatch is written before the method gate so a stale arm never survives a
   // frame that uses another method.
@@ -702,6 +761,8 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
     })
   );
 
+  nodes.push(createScaledEdgesNode(`${prefix}-scaled-edges`, edges));
+
   if (maximumClassCount < 2) {
     return nodes;
   }
@@ -739,12 +800,13 @@ ${maximumClassCountConstant}`,
   }
   let classCount = ${classCountRead};
   let key = getOrderedKey(value);
+  let comparisonKey = getComparisonKey(value);
   // The class is the number of cuts e[1..classCount-1] at or below the key.
   var low = 1u;
   var high = classCount;
   while (low < high) {
     let middle = (low + high) >> 1u;
-    if (getOrderedKey(edges[edgesOffset + middle]) <= key) {
+    if (getComparisonKey(edges[edgesOffset + middle]) <= comparisonKey) {
       low = middle + 1u;
     } else {
       high = middle;
@@ -887,6 +949,7 @@ const NO_MINIMUM: u32 = ${NO_MINIMUM_KEY};`,
   }`
     })
   );
+  nodes.push(createScaledEdgesNode(`${prefix}-bulk-scaled-edges`, bulkEdges));
   // Restore the shared words, merge the cuts of the second stage into the partition (every
   // non-empty class contributes its smallest value, the split class its sub-classes too), clear
   // the extents and arm the extents pass over the merged partition. The dispatch is written first
@@ -1021,6 +1084,7 @@ ${breakStateLayout}`,
         operation,
         variant: 'natural-breaks-refine-plan',
         bindings: [
+          coordinateScaleBinding,
           stateRead,
           {name: 'edges', view: edges, type: 'f32', access: 'read'},
           {name: 'extents', view: extents, type: 'u32', access: 'read'},
@@ -1032,12 +1096,13 @@ ${breakStateLayout}`,
         ...getClassBreaksIndirectGate<Parameters>(`${halfId}-plan`, dispatch, 1),
         declarations: `${COLUMN_ORDERED_KEY_WGSL}
 ${maximumClassCountConstant}
+${NATURAL_BREAKS_COORDINATE_WGSL}
 ${breakStateLayout}`,
         body: `let cut = index + 1u;
   if (cut >= ${classCountRead}) {
     return;
   }
-  plan[planOffset + 3u * cut + 1u] = 0.0;
+  plan[planOffset + 4u * cut + 1u] = 0.0;
   if ((cut & 1u) != ${wantedParity}) {
     return;
   }
@@ -1048,10 +1113,12 @@ ${breakStateLayout}`,
     breakState[breakStateOffset + LEVEL_BASE + cut] = ${SETTLED_UNZOOMED_LEVEL}u;
     return;
   }
-  let lowValue = decodeOrderedKey(lowKey);
-  let highValue = decodeOrderedKey(highKey);
+  let scale = getNaturalCoordinateScale(decodeOrderedKey(lowKey), decodeOrderedKey(highKey));
+  plan[planOffset + 4u * cut + 3u] = scale;
+  let lowValue = decodeOrderedKey(lowKey) * scale;
+  let highValue = decodeOrderedKey(highKey) * scale;
   // A cut beside an empty class lies outside the data; centre the window inside the extent.
-  let anchor = min(max(edges[edgesOffset + cut], lowValue), highValue);
+  let anchor = min(max(edges[edgesOffset + cut] * scale, lowValue), highValue);
   let span = max(anchor - lowValue, highValue - anchor);
   if (!(span > 0.0)) {
     breakState[breakStateOffset + LEVEL_BASE + cut] = ${SETTLED_UNZOOMED_LEVEL}u;
@@ -1062,15 +1129,16 @@ ${breakStateLayout}`,
   var halfWidth = span;
   let stored = bitcast<f32>(breakState[breakStateOffset + HALF_WIDTH_BASE + cut]);
   if (stored > 0.0) {
+    let previousWidth = convertNaturalDistance(stored, coordinateScale[coordinateScaleOffset + cut], scale, span);
     let shift = max(
-      bitcast<f32>(breakState[breakStateOffset + MOVEMENT_BASE + cut - 1u]),
-      bitcast<f32>(breakState[breakStateOffset + MOVEMENT_BASE + cut + 1u])
+      convertNaturalDistance(bitcast<f32>(breakState[breakStateOffset + MOVEMENT_BASE + cut - 1u]), coordinateScale[coordinateScaleOffset + cut - 1u], scale, span),
+      convertNaturalDistance(bitcast<f32>(breakState[breakStateOffset + MOVEMENT_BASE + cut + 1u]), coordinateScale[coordinateScaleOffset + cut + 1u], scale, span)
     );
-    halfWidth = min(max(stored, 2.0 * min(shift, span)), span);
+    halfWidth = min(max(previousWidth, 2.0 * min(shift, span)), span);
   }
-  plan[planOffset + 3u * cut] = anchor;
-  plan[planOffset + 3u * cut + 1u] = halfWidth * ${getWGSLFloatLiteral(halfWidthPerCell)};
-  plan[planOffset + 3u * cut + 2u] = ${getWGSLFloatLiteral(quantization)} / span;`
+  plan[planOffset + 4u * cut] = anchor;
+  plan[planOffset + 4u * cut + 1u] = halfWidth * ${getWGSLFloatLiteral(halfWidthPerCell)};
+  plan[planOffset + 4u * cut + 2u] = ${getWGSLFloatLiteral(quantization)} / span;`
       })
     );
 
@@ -1132,12 +1200,13 @@ const QUANTIZATION: f32 = ${getWGSLFloatLiteral(quantization)};`,
   }
   let classCount = ${classCountRead};
   let key = getOrderedKey(value);
+  let comparisonKey = getComparisonKey(value);
   // The class of the row: the number of cuts e[1..classCount-1] at or below its key.
   var low = 1u;
   var high = classCount;
   while (low < high) {
     let middle = (low + high) >> 1u;
-    if (getOrderedKey(edges[edgesOffset + middle]) <= key) {
+    if (getComparisonKey(edges[edgesOffset + middle]) <= comparisonKey) {
       low = middle + 1u;
     } else {
       high = middle;
@@ -1155,11 +1224,11 @@ const QUANTIZATION: f32 = ${getWGSLFloatLiteral(quantization)};`,
   if (cut == 0u) {
     return;
   }
-  let cellWidth = plan[planOffset + 3u * cut + 1u];
+  let cellWidth = plan[planOffset + 4u * cut + 1u];
   if (!(cellWidth > 0.0)) {
     return;
   }
-  let offset = value - plan[planOffset + 3u * cut];
+  let offset = value * plan[planOffset + 4u * cut + 3u] - plan[planOffset + 4u * cut];
   // Cell of the row, with the current boundary at cell ${cellMidpoint}: rows of the class on the
   // right of the cut never fall left of it and the other way round.
   var cell = i32(floor(clamp(offset / cellWidth, -${2 * cellCount}.0, ${2 * cellCount}.0))) + ${cellMidpoint};
@@ -1175,7 +1244,7 @@ const QUANTIZATION: f32 = ${getWGSLFloatLiteral(quantization)};`,
   } else if (cell >= ${cellCount}) {
     element = ELEMENT_COUNT - 1u;
   }
-  let quantized = i32(round(clamp(offset * plan[planOffset + 3u * cut + 2u], -QUANTIZATION, QUANTIZATION)));
+  let quantized = i32(round(clamp(offset * plan[planOffset + 4u * cut + 2u], -QUANTIZATION, QUANTIZATION)));
   let magnitude = u32(abs(quantized));
   let square = multiplyWide(magnitude, magnitude);
   let base = cellsOffset + ((cut - 1u) * ELEMENT_COUNT + element) * ELEMENT_STRIDE;
@@ -1194,6 +1263,7 @@ const QUANTIZATION: f32 = ${getWGSLFloatLiteral(quantization)};`,
         operation,
         variant: 'natural-breaks-refine-solve',
         bindings: [
+          {...coordinateScaleBinding, access: 'read_write'},
           {name: 'state', view: props.state, type: 'atomic<u32>', access: 'read_write'},
           {name: 'edges', view: edges, type: 'f32', access: 'read_write'},
           {name: 'extents', view: extents, type: 'u32', access: 'read_write'},
@@ -1213,7 +1283,7 @@ ${cellLayout}`,
   if (cut >= min(atomicLoad(&state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]), BIN_COUNT)) {
     return;
   }
-  let cellWidth = plan[planOffset + 3u * cut + 1u];
+  let cellWidth = plan[planOffset + 4u * cut + 1u];
   if (!(cellWidth > 0.0)) {
     return;
   }
@@ -1288,12 +1358,14 @@ ${cellLayout}`,
   var movement = 0.0;
   if (rightMinimum != NO_MINIMUM) {
     let newCut = decodeOrderedKey(rightMinimum);
-    movement = abs(newCut - edges[edgesOffset + cut]);
+    let scale = plan[planOffset + 4u * cut + 3u];
+    movement = abs(newCut * scale - edges[edgesOffset + cut] * scale);
     edges[edgesOffset + cut] = newCut;
     if (movement > 0.0) {
       atomicOr(&state[stateOffset + ${CLASS_BREAKS_STATE.refinementMoved}u], 1u);
     }
   }
+  coordinateScale[coordinateScaleOffset + cut] = plan[planOffset + 4u * cut + 3u];
   breakState[breakStateOffset + MOVEMENT_BASE + cut] = bitcast<u32>(movement);
   // Zoom around the chosen boundary, unless a class beside the break was empty (the window must
   // cover the extent again) or the optimum sits at the window edge (the cut may continue).

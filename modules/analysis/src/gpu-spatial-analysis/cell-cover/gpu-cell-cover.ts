@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {
   validateCellDispatchBindings,
   validateCellDispatchOutputs
@@ -37,7 +38,11 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {createFillNode, createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createFillNode,
+  createPublishNode,
+  createWGSLKernelNode
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getPolygonEdgeSlabNodes} from '../spatial-join/polygon-edge-slabs';
 import {
   getStorageBindingElementLimit,
@@ -46,12 +51,14 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CELL_COVER_SCANLINE_AUTO_MINIMUM_CANDIDATE_CAPACITY,
   CELL_COVER_SCANLINE_MAXIMUM_SLOT_CAPACITY,
   getCellCoverRangesLength,
+  getCellCoverSaturatedScanNodes,
   getCellCoverScanlineNodes,
   type CellCoverScanlineSettings
 } from './cell-cover-scanline';
@@ -59,6 +66,7 @@ import {
   CELL_COVER_MINIMUM_SLAB_CANDIDATES,
   CELL_COVER_RANGE_STRIDE,
   createCoverCountNode,
+  createCoverCompletenessNode,
   createCoverFinalizeNode,
   createCoverTestNode,
   createCoverWriteNode,
@@ -92,7 +100,8 @@ export type GPUCellCoverContainment = 'center' | 'full' | 'intersects';
  *
  * `featureIds` and `cells` are parallel columns of the same capacity. `count` is clamped to that
  * capacity. `status.overflow` reports only final output truncation; `status.candidateOverflow`
- * independently reports an incomplete candidate stage.
+ * reports candidate capacity loss. Optional `complete` also reports clipped/rejected coverage;
+ * without it, non-capacity coverage loss suppresses `count` to zero.
  */
 export type GPUCellCoverOutput = {
   /** Source feature ID (or feature row when no `featureIds` input) per output cell. */
@@ -111,19 +120,23 @@ export type GPUCellCoverOutput = {
   core?: GraphDataView<'uint32'>;
   /** Count, completeness and diagnostic scalars. */
   status: {
-    /** One-row scalar receiving `min(requiredCount, capacity)`. */
+    /** One-row scalar receiving `min(requiredCount, capacity)`; suppressed on coverage loss without complete. */
     count: GraphDataView<'uint32'>;
     /** Optional unclamped accepted count; exact only when `candidateOverflow` is zero. */
     requiredCount?: GraphDataView<'uint32'>;
     /** One-row scalar receiving 1 when accepted cells exceeded the final output capacity. */
     overflow: GraphDataView<'uint32'>;
-    /** One-row scalar receiving 1 when `candidateCapacity` truncated candidate enumeration. */
+    /** One-row scalar receiving 1 when candidateCapacity truncated enumeration. */
     candidateOverflow: GraphDataView<'uint32'>;
+    /** H3/Quadbin only: 1 when coverage is whole (no capacity loss, clipping or rejected features).
+     * Omit to suppress count on clipping/rejection. Forward with counted source status. */
+    complete?: GraphDataView<'uint32'>;
     /**
      * Optional one-row scalar receiving the unclamped number of enumerated candidates, summed over
      * features (the bounding-box cells, or the cells of the scanline runs of
      * {@link GPUCellCoverProps.candidateEnumeration}). It is the work the exact test performs, so it
-     * measures what `'scanline'` saves; compare it with `candidateCapacity`.
+     * measures what `'scanline'` saves; compare it with `candidateCapacity`. Each feature counts
+     * at most `candidateCapacity + 1`, and the sum saturates at `0xffffffff`.
      */
     candidateCount?: GraphDataView<'uint32'>;
     /**
@@ -135,7 +148,8 @@ export type GPUCellCoverOutput = {
     /**
      * Optional one-row scalar receiving the number of covered features whose bounding box reaches
      * beyond the cover's latitude limit (89 degrees for H3, the Web Mercator limit of 85.051129
-     * for Quadbin), so cells there are missing or clipped.
+     * for Quadbin), so cells there are missing or clipped. This legacy diagnostic counts coverage
+     * loss, not resolved fallback. `complete` reports it; omitting complete suppresses count.
      */
     uncertainCount?: GraphDataView<'uint32'>;
   };
@@ -253,7 +267,10 @@ const EDGE_SLAB_DEFAULT_WORK = 4_000_000;
  * and inspect `candidateCount` and `candidateOverflow`. Empty rings contribute no bounds.
  * Features reaching beyond the latitude limit (H3 lattices are clamped to
  * 89 degrees, Quadbin to the Web Mercator limit) lose their polar cells and are counted in
- * `output.status.uncertainCount`. Pipeline: per-feature
+ * the optional legacy `output.status.uncertainCount`. Clipped or rejected features set optional
+ * `complete` to zero, or suppress count when complete is omitted. Capacity flags keep their
+ * separate final-output and candidate-capacity meanings, independent of diagnostics.
+ * Pipeline: per-feature
  * candidate count, optional scanline enumeration (see `candidateEnumeration`), exclusive scan,
  * per-candidate test, inclusive scan of accept flags, write. No atomic append is used, so output is
  * deterministic.
@@ -303,9 +320,52 @@ export class GPUCellCover implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount?: number;
 
   constructor(props: GPUCellCoverProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'family',
+      'spatialContext',
+      'resolution',
+      'containment',
+      'positions',
+      'ringOffsets',
+      'polygonOffsets',
+      'featureOffsets',
+      'featureIds',
+      'candidateCapacity',
+      'candidateEnumeration',
+      'scanlineSlotCapacity',
+      'edgeSlabs',
+      'edgeSlabEntryCapacity',
+      [
+        'output',
+        [
+          'featureIds',
+          'cells',
+          'core',
+          [
+            'status',
+            [
+              'count',
+              'requiredCount',
+              'overflow',
+              'candidateOverflow',
+              'complete',
+              'candidateCount',
+              'invalidCount',
+              'uncertainCount'
+            ]
+          ]
+        ]
+      ]
+    ]);
     this.id = props.id ?? DEFAULT_ID;
     this.props = props;
     const {id} = this;
+    validateRequirement(
+      id,
+      props.family !== 's2' || props.output.status.complete === undefined,
+      'output.status.complete is supported on H3/Quadbin; for S2 use its capacity flags and diagnostics'
+    );
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext ?? GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
@@ -375,13 +435,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         throw new Error(`${id} featureIds length must equal the feature count`);
       }
     }
+    // The candidate and scanline-cost scans saturate, so their totals need no product limit.
     validateCapacity(id, 'candidateCapacity', props.candidateCapacity);
-    if (
-      props.family !== 's2' &&
-      (this.featureCount + 1) * (props.candidateCapacity + 1) >= 0xffffffff
-    ) {
-      throw new Error(`${id} (featureCount + 1) * (candidateCapacity + 1) must be below 2^32`);
-    }
     this.candidateEnumeration = props.candidateEnumeration ?? 'auto';
     if (!['bounds', 'scanline', 'auto'].includes(this.candidateEnumeration)) {
       throw new Error(`${id} candidateEnumeration must be 'bounds', 'scanline' or 'auto'`);
@@ -440,6 +495,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       ['status.requiredCount', status.requiredCount],
       ['status.overflow', status.overflow],
       ['status.candidateOverflow', status.candidateOverflow],
+      ['status.complete', status.complete],
       ['status.candidateCount', status.candidateCount],
       ['status.invalidCount', status.invalidCount],
       ['status.uncertainCount', status.uncertainCount]
@@ -481,6 +537,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         status.requiredCount,
         status.overflow,
         status.candidateOverflow,
+        status.complete,
         status.candidateCount,
         status.invalidCount,
         status.uncertainCount
@@ -591,6 +648,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       output.status.requiredCount,
       output.status.overflow,
       output.status.candidateOverflow,
+      output.status.complete,
       output.status.candidateCount,
       output.status.invalidCount,
       output.status.uncertainCount
@@ -643,8 +701,18 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       polygonOffsets: props.polygonOffsets,
       ringOffsets: props.ringOffsets
     };
+    // Keep counters private: public disjoint words may share a physical status buffer.
+    const status = {
+      invalidCount: createTransientView(graph, `${id}-private-status-invalid-count`, 'uint32', 1),
+      uncertainCount: createTransientView(
+        graph,
+        `${id}-private-status-uncertain-count`,
+        'uint32',
+        1
+      )
+    };
     const statusNodes = (['invalidCount', 'uncertainCount'] as const).flatMap(name => {
-      const view = output.status[name];
+      const view = status[name];
       return view
         ? [
             createFillNode<Parameters>(graph, {
@@ -652,15 +720,12 @@ export class GPUCellCover implements GPUCommandNodeProducer {
               operation: 'GPUCellCover',
               view,
               type: 'u32',
-              value: '0u'
+              value: '0u',
+              componentCount: 1
             })
           ]
         : [];
     });
-    const status = {
-      invalidCount: output.status.invalidCount,
-      uncertainCount: output.status.uncertainCount
-    };
     return [
       ...statusNodes,
       createCoverCountNode<Parameters>(graph, context, counts, ranges, status),
@@ -673,12 +738,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
             {counts, ranges}
           )
         : []),
-      ...new GPUScan({
-        id: `${id}-candidate-scan`,
-        input: counts,
-        output: starts,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
+      ...getCellCoverSaturatedScanNodes<Parameters>(graph, `${id}-candidate-scan`, counts, starts),
       ...(edgeSlabIndex?.nodes ?? []),
       createCoverTestNode<Parameters>(graph, context, {
         ranges,
@@ -723,6 +783,32 @@ export class GPUCellCover implements GPUCommandNodeProducer {
           }
         },
         overflowSources: []
+      }),
+      createCoverCompletenessNode(graph, context, {
+        ...status,
+        starts,
+        total,
+        count: output.status.count,
+        complete: output.status.complete,
+        outputCapacity: output.cells.length
+      }),
+      ...(['invalidCount', 'uncertainCount'] as const).flatMap(name => {
+        const destination = output.status[name];
+        return destination
+          ? [
+              createWGSLKernelNode(graph, {
+                id: `${id}-publish-${name}-diagnostics`,
+                operation: 'GPUCellCover',
+                variant: 'diagnostics',
+                invocationCount: 1,
+                bindings: [
+                  {name: 'source', view: status[name], type: 'u32', access: 'read'},
+                  {name: 'destination', view: destination, type: 'u32', access: 'read_write'}
+                ],
+                body: 'destination[destinationOffset] = source[sourceOffset];'
+              })
+            ]
+          : [];
       })
     ];
   }

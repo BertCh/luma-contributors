@@ -67,7 +67,14 @@ export function toChromeTraceEvents(
     const timed = new Map<string, ChromeTraceEvent>();
     for (const node of graph.nodes) {
       const timing = measurement.nodes[node.id];
-      if (timing?.gpuBegin === undefined || timing.gpuEnd === undefined) continue;
+      if (
+        timing?.gpuBegin === undefined ||
+        timing.gpuEnd === undefined ||
+        !Number.isFinite(timing.gpuBegin) ||
+        !Number.isFinite(timing.gpuEnd) ||
+        timing.gpuEnd < timing.gpuBegin
+      )
+        continue;
       const event: ChromeTraceEvent = {
         name: node.label,
         ph: 'X',
@@ -95,8 +102,9 @@ export function toChromeTraceEvents(
             node.loop?.iteration === iteration &&
             (series.axis === 'iteration' || series.axis === node.loop.id)
           ) {
-            const timestamp = measurement.nodes[node.id]?.gpuBegin;
-            if (timestamp !== undefined) begin = Math.min(begin, timestamp * scale);
+            const timestamp = timed.get(node.id)?.ts;
+            if (timestamp !== undefined && Number.isFinite(timestamp))
+              begin = Math.min(begin, timestamp);
           }
         }
         traceEvents.push({

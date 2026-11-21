@@ -33,7 +33,26 @@ function createRandom(seed: number) {
   return {uniform, normal};
 }
 
+it('R3 constant packed decimal predictor suppresses all applicability distances', async () => {
+  const actual = await runGPU({
+    rows: 8,
+    queryRows: 1,
+    columns: 2,
+    training: Array.from({length: 8}, (_, row) => [0.1, row]).flat(),
+    query: [0.1, 0]
+  });
+  // Sample SD of eight identical float32(0.1) values is exactly zero.
+  expect(actual.status).toBe(6);
+  expect(actual.summary[2]).toBe(8);
+  expect(actual.summary[3]).toBe(0);
+  for (const index of [0, 1, 4, 5]) expect(actual.summary[index]).toBeNaN();
+  for (const value of [...actual.trainDissimilarity, ...actual.queryDissimilarity])
+    expect(value).toBeNaN();
+  expect(actual.applicable).toEqual([0]);
+});
+
 type Case = {
+  mutateConfiguration?: boolean;
   rows: number;
   queryRows: number;
   columns: number;
@@ -71,27 +90,33 @@ async function runGPU(testCase: Case) {
   const applicable = output(testCase.queryRows, 'uint32');
   const summary = output(6, 'float32');
   const status = output(1, 'uint32');
-  graph.add(
-    new GPUAreaOfApplicability({
-      training: input(testCase.training, 'float32') as never,
-      query: input(testCase.query, 'float32') as never,
-      predictorCount: testCase.columns,
-      weights: testCase.weights && (input(testCase.weights, 'float32') as never),
-      mask: testCase.mask && (input(testCase.mask, 'uint32') as never),
-      crossValidation: testCase.folds && {
-        folds: input(testCase.folds.testFolds, 'uint32') as never,
-        training: input(testCase.folds.trainingMasks, 'uint32') as never,
-        foldCount: testCase.folds.foldCount
-      },
-      output: {
-        trainDissimilarity: trainDissimilarity.view as never,
-        queryDissimilarity: queryDissimilarity.view as never,
-        applicable: applicable.view as never,
-        summary: summary.view as never,
-        status: status.view as never
-      }
-    })
-  );
+  const props = {
+    training: input(testCase.training, 'float32') as never,
+    query: input(testCase.query, 'float32') as never,
+    predictorCount: testCase.columns,
+    weights: testCase.weights && (input(testCase.weights, 'float32') as never),
+    mask: testCase.mask && (input(testCase.mask, 'uint32') as never),
+    crossValidation: testCase.folds && {
+      folds: input(testCase.folds.testFolds, 'uint32') as never,
+      training: input(testCase.folds.trainingMasks, 'uint32') as never,
+      foldCount: testCase.folds.foldCount
+    },
+    output: {
+      trainDissimilarity: trainDissimilarity.view as never,
+      queryDissimilarity: queryDissimilarity.view as never,
+      applicable: applicable.view as never,
+      summary: summary.view as never,
+      status: status.view as never
+    }
+  };
+  const contributor = new GPUAreaOfApplicability(props);
+  if (testCase.mutateConfiguration) {
+    props.predictorCount = 16;
+    if (props.crossValidation) props.crossValidation.foldCount = 64;
+    props.output.summary = output(1, 'float32').view as never;
+    props.output.queryDissimilarity = output(1, 'float32').view as never;
+  }
+  graph.add(contributor);
   const compiled = graph.compile();
   try {
     submitGraph(device, compiled, undefined);
@@ -362,4 +387,76 @@ it('worked example: the threshold is capped at the largest training index', asyn
   expect(result.queryDissimilarity[0]).toBeCloseTo(3 / 7.5, 6);
   // Distance 3 gives 0.4 > 0.2667 (outside); without the cap the threshold would be 0.4667 (inside).
   expect(result.applicable).toEqual([0, 1, 1]);
+});
+
+it('audit-validation matches every AOA port with tied, masked and neighborless training rows', async () => {
+  for (const [shift, scale] of [
+    [0, 1],
+    [32, 4]
+  ]) {
+    const result = await runGPU({
+      mutateConfiguration: true,
+      rows: 9,
+      queryRows: 3,
+      columns: 1,
+      training: [0, 1, 1, 2, 4, 6, 10, 12, 999].map(value => shift + scale * value),
+      query: [1.5, 20, NaN].map(value => shift + scale * value),
+      mask: [1, 1, 1, 1, 1, 1, 1, 1, 0],
+      folds: {
+        foldCount: 3,
+        testFolds: [0, 0, 1, 1, 0, 1, 2, 2, 0xffffffff],
+        trainingMasks: [
+          0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]
+      }
+    });
+    // NumPy/SciPy literals from area-of-applicability-audit.oracle.py. A 3e-6
+    // absolute tolerance covers sample scaling and distance accumulation in float32.
+    for (const [actual, expected] of [
+      [
+        result.trainDissimilarity,
+        [
+          0.1917808219178082,
+          0,
+          0,
+          0.1917808219178082,
+          0.3835616438356164,
+          0.3835616438356165,
+          NaN,
+          NaN,
+          NaN
+        ]
+      ],
+      [result.queryDissimilarity, [0.0958904109589041, 1.534246575342466, NaN]],
+      [
+        result.summary,
+        [1.1659497311248903, 0.3835616438356165, 8, 6, 0.04794520547945205, 0.3356164383561644]
+      ]
+    ]) {
+      expect(actual).toHaveLength(expected.length);
+      expected.forEach((value, index) => {
+        if (Number.isNaN(value)) expect(actual[index]).toBeNaN();
+        else {
+          expect(Number.isFinite(actual[index])).toBe(true);
+          expect(Math.abs(actual[index] - value)).toBeLessThan(3e-6);
+        }
+      });
+    }
+    expect(result.applicable).toEqual([1, 0, 0]);
+    expect(result.status).toBe(0);
+  }
+});
+
+it('audit-validation does not expose the AOA nearest-distance sentinel after squared-distance overflow', async () => {
+  const actual = await runGPU({
+    rows: 8,
+    queryRows: 1,
+    columns: 1,
+    training: [0, 1, 2, 3, 4, 5, 6, 7],
+    query: [1e20]
+  });
+  // Every standardized squared query distance exceeds float32 range. A finite
+  // search sentinel cannot stand in for an observed distance.
+  expect(actual.queryDissimilarity[0]).toBeNaN();
+  expect(actual.applicable).toEqual([0]);
 });

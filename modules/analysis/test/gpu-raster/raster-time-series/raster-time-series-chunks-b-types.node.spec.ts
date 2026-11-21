@@ -100,7 +100,7 @@ it('exposes omitted optional props and nested fields with their original packed 
       output: {index: floats(5), status: integers(5)}
     });
     expectTypeOf(standardized.props.mask).toEqualTypeOf<GraphDataView<'uint32'> | undefined>();
-    expectTypeOf(standardized.props.zeroInflated).toEqualTypeOf<boolean | undefined>();
+    expectTypeOf(standardized.props.zeroAtom).toEqualTypeOf<boolean | undefined>();
     const calibration = new GPURasterStandardizedIndexCalibration({
       cellCount: 1,
       chunkSliceCount: 5,
@@ -192,7 +192,6 @@ it('exposes omitted optional props and nested fields with their original packed 
       medoid.props.mask,
       phenology.props.dateAxis,
       rolling.props.mask,
-      standardized.props.zeroInflated,
       calibration.props.slotIndices,
       streaming.props.state.moments,
       resample.props.mask,
@@ -200,7 +199,8 @@ it('exposes omitted optional props and nested fields with their original packed 
       temporal.props.dateAxis,
       seasonal.props.output.diagnostics,
       change.props.output.tPValue
-    ]).toEqual(Array(12).fill(undefined));
+    ]).toEqual(Array(11).fill(undefined));
+    expect(standardized.props.zeroAtom).toBe(false);
 
     const vector = <Format extends 'float32' | 'uint32'>(view: GraphDataView<Format>) =>
       new GraphVectorView({

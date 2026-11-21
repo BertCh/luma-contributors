@@ -19,6 +19,7 @@ import {
   type RasterTimeSeriesChunkPlan
 } from '../raster-time-series/raster-time-series-chunks-b';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -78,6 +79,19 @@ export class GPURasterTemporal<Rows extends RasterScalarView = GraphDataView>
   readonly estimatedCommandNodeCount: number;
   private readonly ticksPerYear: number;
   constructor(props: GPURasterTemporalProps<Rows> & {values: Rows}) {
+    validateGraphPorts(props.id ?? 'raster-temporal', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      'dateAxis.acquisitionTimes': {
+        required: Boolean(props.dateAxis),
+        viewType: 'data',
+        formats: ['uint32x2']
+      },
+      'output.values': {required: true, viewType: 'either', formats: ['float32']},
+      'output.counts': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.chosenSlice': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
     this.props = props;
     this.id = props.id ?? 'raster-temporal';
     this.ticksPerYear = props.dateAxis

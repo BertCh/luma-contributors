@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, relative, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, it} from 'vitest';
 
@@ -103,7 +103,18 @@ describe('analysis release package', () => {
     for (const file of ['LICENSE', 'LICENSES/Apache-2.0.txt', 'LICENSES/BSD-3-Clause.txt']) {
       expect(readFileSync(join(PACKAGE_DIRECTORY, file), 'utf8').length).toBeGreaterThan(1000);
     }
-    const sources = packedFiles.filter(path => path.startsWith('src/'));
+    expect(packedFiles.filter(path => path.startsWith('src/'))).toEqual([]);
+    expect(packedFiles.filter(path => path.startsWith('dist/testing/'))).toEqual([]);
+    expect(packedFiles).not.toContain('dist/.build-record.json');
+    const sources = readdirSync(join(PACKAGE_DIRECTORY, 'src'), {
+      recursive: true,
+      withFileTypes: true
+    })
+      .filter(entry => entry.isFile())
+      .map(entry =>
+        relative(PACKAGE_DIRECTORY, join(entry.parentPath, entry.name)).split(sep).join('/')
+      )
+      .filter(path => !path.startsWith('src/testing/'));
     expect(sources.length).toBeGreaterThan(0);
     for (const source of sources) {
       const text = readFileSync(join(PACKAGE_DIRECTORY, source), 'utf8');

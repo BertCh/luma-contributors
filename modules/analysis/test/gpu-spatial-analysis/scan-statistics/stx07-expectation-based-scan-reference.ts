@@ -24,7 +24,18 @@ export type ExpectationBasedScanScene = {
 
 /** The expectation-based Poisson score `C ln(C/B) + B - C` for `C > B`, else 0. */
 export function getExpectationBasedScore(cases: number, baseline: number): number {
-  return cases > baseline ? cases * Math.log(cases / baseline) + baseline - cases : 0;
+  if (!(cases > baseline) || !(baseline > 0)) return 0;
+  const delta = (cases - baseline) / baseline;
+  // (1+d) log(1+d)-d = d²/2-d³/6+d⁴/12-d⁵/20+..., without cancellation near equality.
+  if (delta < 1e-3) {
+    return (
+      baseline *
+      delta *
+      delta *
+      (0.5 - delta / 6 + (delta * delta) / 12 - delta ** 3 / 20 + delta ** 4 / 30)
+    );
+  }
+  return cases * Math.log1p(delta) + baseline - cases;
 }
 
 function getNearestZones(scene: ExpectationBasedScanScene, center: number): number[] {
@@ -48,6 +59,11 @@ export function computeExpectationBasedScanReference(
   windowLimit: number
 ) {
   const zones = scene.positions.length / 2;
+  if (Math.min(zones, scene.maximumNeighbors) > 16) {
+    throw new Error(
+      'expectation scan exhaustive reference supports at most 16 neighbors; use an independent closed-form fixture for larger neighborhoods'
+    );
+  }
   const {timeBuckets, cases, baseline} = scene;
   const centerScores = new Float64Array(zones);
   let best = {
@@ -64,14 +80,16 @@ export function computeExpectationBasedScanReference(
       const caseSums = neighborhood.map(zone => {
         let sum = 0;
         for (let bucket = timeBuckets - windowLength; bucket < timeBuckets; bucket++) {
-          sum += cases[zone * timeBuckets + bucket];
+          const expected = baseline[zone * timeBuckets + bucket];
+          if (Number.isFinite(expected) && expected > 0) sum += cases[zone * timeBuckets + bucket];
         }
         return sum;
       });
       const baselineSums = neighborhood.map(zone => {
         let sum = 0;
         for (let bucket = timeBuckets - windowLength; bucket < timeBuckets; bucket++) {
-          sum += baseline[zone * timeBuckets + bucket];
+          const expected = baseline[zone * timeBuckets + bucket];
+          if (Number.isFinite(expected) && expected > 0) sum += expected;
         }
         return sum;
       });
@@ -92,7 +110,7 @@ export function computeExpectationBasedScanReference(
         if (!valid) continue;
         const score = getExpectationBasedScore(observed, expected);
         centerScores[center] = Math.max(centerScores[center], score);
-        if (score > best.score + 1e-9 * Math.max(1, best.score)) {
+        if (score > best.score) {
           best = {
             score,
             center,
@@ -113,7 +131,7 @@ export function computeExpectationBasedScanReference(
  * open-interval Philox uniform `(0, 1)` (the CPU mirror of `philoxOpenUnitFloat`).
  */
 function drawPoissonReference(stream: PhiloxStream, mean: number): number {
-  if (!(mean > 0)) return 0;
+  if (!(mean > 0) || !Number.isFinite(mean)) return 0;
   const limit = Math.fround(Math.exp(-mean));
   let product = 1;
   let count = 0;
@@ -159,8 +177,11 @@ export function computeReplicateMaximaReference(
             let observed = 0;
             let expected = 0;
             for (let back = 0; back < windowLength; back++) {
-              observed += counts[zone * maximumWindowLength + maximumWindowLength - 1 - back];
-              expected += baseline[zone * timeBuckets + timeBuckets - 1 - back];
+              const cellBaseline = baseline[zone * timeBuckets + timeBuckets - 1 - back];
+              if (Number.isFinite(cellBaseline) && cellBaseline > 0) {
+                observed += counts[zone * maximumWindowLength + maximumWindowLength - 1 - back];
+                expected += cellBaseline;
+              }
             }
             return {observed, expected};
           })

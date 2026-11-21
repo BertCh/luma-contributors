@@ -13,15 +13,18 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getGraphViewChunks,
+  isGraphDataView,
   validateCommandNodeBudget,
   validateMaximumCount,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
 import {GPU_COLOR_SCALE_PARAMETER_LENGTH} from './color-scale-parameters';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
   type ClassificationRows,
@@ -33,6 +36,8 @@ import {
   validateClassificationOutputs
 } from './column-classification-rows';
 
+import type {RequiredTerminalOutput} from './required-terminal-output';
+
 const OPERATION = 'GPUColorScale';
 /** Class counts use u32 atomics and must not wrap even when every row has one class. */
 const MAXIMUM_COUNTED_ROW_COUNT = 2 ** 32 - 1;
@@ -43,7 +48,7 @@ export type GPUColorScaleOutput<
     | GraphDataView<'float32'>
     | GraphDataView<'uint32'>
     | GraphDataView<'sint32'>
-> = {
+> = RequiredTerminalOutput<{
   /** Packed `rgba8` colour per row (`r | g << 8 | b << 16 | a << 24`). No-data rows get the no-data colour. */
   colors?: ClassificationRowView<'uint32', Rows>;
   /**
@@ -53,13 +58,13 @@ export type GPUColorScaleOutput<
   classIndices?: ClassificationRowView<'uint32', Rows>;
   /** Rows per class, `maximumPaletteCount` rows. Rewritten every encoding; no-data rows are not counted. */
   classCounts?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUColorScale}.
  *
  * Per-frame (no recompile): the contents of `parameters` (scale type, counts, interpolation,
- * clamp, no-data colour, log floor, exponent), `domain`, `palette`, `domainCount`, `mask` and
+ * clamp, no-data colour, log floor, exponent), `domain`, `palette`, `classCount`, `mask` and
  * `values`. Topology (needs a new graph): view lengths, `maximumDomainCount`,
  * `maximumPaletteCount`, the `values` format, and which optional views and outputs are present, and the ordered row chunk lengths.
  */
@@ -98,7 +103,7 @@ export type GPUColorScaleProps<
    * `maximumDomainCount`; `k = 0` makes every row no-data. When absent, the `domainCount`
    * parameter is the number of active domain entries.
    */
-  domainCount?: GraphDataView<'uint32'>;
+  classCount?: GraphDataView<'uint32'>;
   /** Packed `uint32` `rgba8` palette, at least `maximumPaletteCount` rows. */
   palette: GraphDataView<'uint32'>;
   /** Per-frame parameters written with `getGPUColorScaleParameterValues`. */
@@ -164,7 +169,29 @@ export class GPUColorScale<
   /** Upper bound for chunk dispatches, including the single counts reset. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUColorScaleProps<Rows>) {
+  constructor(inputProps: GPUColorScaleProps<Rows>) {
+    validateRequirement(
+      inputProps.id ?? 'color-scale',
+      !('domainCount' in inputProps && isGraphDataView(inputProps.domainCount)),
+      'domainCount was removed; use classCount for the resident class count'
+    );
+    const captured = snapshotConstructionFields(inputProps, [
+      'id',
+      'values',
+      'integerValues',
+      'mask',
+      'domain',
+      'classCount',
+      'palette',
+      'parameters',
+      'maximumDomainCount',
+      'maximumPaletteCount',
+      'output'
+    ]);
+    const props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, ['colors', 'classIndices', 'classCounts'])
+    });
     this.id = props.id ?? 'color-scale';
     this.props = props;
     const id = this.id;
@@ -212,10 +239,10 @@ export class GPUColorScale<
         `${id} parameters must hold ${GPU_COLOR_SCALE_PARAMETER_LENGTH} float32 values`
       );
     }
-    if (props.domainCount) {
-      validateSinglePackedView(props.domainCount, ['uint32'], `${id} domainCount`);
-      if (props.domainCount.length < 1) {
-        throw new Error(`${id} domainCount must contain one uint32 row`);
+    if (props.classCount) {
+      validateSinglePackedView(props.classCount, ['uint32'], `${id} classCount`);
+      if (props.classCount.length < 1) {
+        throw new Error(`${id} classCount must contain one uint32 row`);
       }
     }
     for (const name of ['colors', 'classIndices'] as const) {
@@ -239,7 +266,7 @@ export class GPUColorScale<
       props.values,
       props.mask,
       props.domain,
-      props.domainCount,
+      props.classCount,
       props.palette,
       props.parameters
     ]);
@@ -261,7 +288,7 @@ export class GPUColorScale<
       values: props.values,
       mask: props.mask,
       domain: props.domain,
-      domainCount: props.domainCount,
+      classCount: props.classCount,
       palette: props.palette,
       parameters: props.parameters,
       'output.colors': output.colors,
@@ -353,8 +380,8 @@ ${COLOR_SCALE_WGSL}`;
             ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
             // The ordinal body never reads the domain; an unused declared binding breaks the inferred layout.
             ...(isOrdinal ? [] : [read('domain', props.domain, 'f32')]),
-            ...(!isOrdinal && props.domainCount
-              ? [read('domainCountIn', props.domainCount, 'u32')]
+            ...(!isOrdinal && props.classCount
+              ? [read('classCountIn', props.classCount, 'u32')]
               : []),
             read('params', props.parameters, 'f32'),
             {name: 'classes', view: classes, type: 'u32', access: 'read_write'},
@@ -374,7 +401,7 @@ ${COLOR_SCALE_WGSL}`;
   if (paletteCount == 0u) {
     return;
   }
-    ${isOrdinal ? ORDINAL_BODY : getFloatBody(props, integerType !== undefined)}`
+    ${isOrdinal ? ORDINAL_BODY : getFloatBody(props.classCount, integerType !== undefined)}`
         })
       );
 
@@ -454,11 +481,11 @@ const ORDINAL_BODY = /* wgsl */ `let code = values[valuesOffset + index];
   }`;
 
 function getFloatBody(
-  props: GPUColorScaleProps<ClassificationRows<'float32' | 'uint32' | 'sint32'>>,
+  classCountView: GraphDataView<'uint32'> | undefined,
   isInteger: boolean
 ): string {
-  const domainCountSource = props.domainCount
-    ? `let classTotal = domainCountIn[domainCountInOffset];
+  const domainCountSource = classCountView
+    ? `let classTotal = classCountIn[classCountInOffset];
   domainCount = select(0u, min(classTotal, MAXIMUM_DOMAIN_COUNT) + 1u, classTotal > 0u);`
     : '';
   return `var domainCount = u32(max(params[paramsOffset + 1u], 0.0));

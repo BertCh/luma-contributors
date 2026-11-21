@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/// <reference path="../markdown-it.d.ts" />
+
 import {parseLensCatalogAttributes, renderReferenceLensCatalog} from './lens-catalog';
 import type MarkdownIt from 'markdown-it';
 import katex from 'katex';
@@ -191,40 +193,9 @@ export function renderLensTwinHtml(
   return `<figure class="lens-twin${twin ? '' : ' lens-twin--pending'}" id="lens-${escapeHtml(key.replaceAll('~', '-'))}" data-lens-key="${escapeHtml(key)}" data-rung="${escapeHtml(directive.rung)}"><ladder-lens scenario="${escapeHtml(directive.scenario)}" rung="${escapeHtml(directive.rung)}" bind="${escapeHtml(directive.bind)}"${selectors} recorded="${Boolean(twin)}" aria-label="${escapeHtml(description)}">${figure}</ladder-lens><figcaption class="lens-twin__caption"><span class="lens-twin__caption-text">${escapeHtml(caption)}</span><span class="lens-twin__key-number">${keyNumber}</span>${provenanceHtml}${verdictsHtml}</figcaption>${exampleHtml}${disabledHtml}${formulaHtml}${receiptHtml}<p class="lens-twin__live"><button type="button" class="lens-twin__live-button" data-lens-key="${escapeHtml(key)}" hidden>Run live on this GPU</button></p></figure>`;
 }
 
-// The showcase's minimal markdown-it typings omit block plugin state and token metadata.
-type LensBlockState = {
-  src: string;
-  bMarks: number[];
-  eMarks: number[];
-  tShift: number[];
-  sCount: number[];
-  blkIndent: number;
-  line: number;
-  push: (
-    type: string,
-    tag: string,
-    nesting: number
-  ) => {
-    block: boolean;
-    map: [number, number];
-    meta: unknown;
-  };
-};
-type LensBlockParser = {
-  ruler: {
-    before: (
-      beforeName: string,
-      ruleName: string,
-      rule: (state: LensBlockState, startLine: number, endLine: number, silent: boolean) => boolean,
-      options: {alt: string[]}
-    ) => void;
-  };
-};
-
 /** Installs the whole-line leaf directive and its non-throwing HTML renderer. */
 export function registerLensDirective(markdown: MarkdownIt): void {
-  const blockParser = (markdown as MarkdownIt & {block: LensBlockParser}).block;
-  blockParser.ruler.before(
+  markdown.block.ruler.before(
     'paragraph',
     'lens_directive',
     (state, startLine, endLine, silent) => {
@@ -262,11 +233,7 @@ export function registerLensDirective(markdown: MarkdownIt): void {
     index
   ) => {
     try {
-      const attributes = (
-        tokens[index] as (typeof tokens)[number] & {
-          meta: Record<string, unknown> | Error;
-        }
-      ).meta;
+      const attributes = tokens[index].meta as Record<string, unknown> | Error;
       if (attributes instanceof Error) throw attributes;
       if (tokens[index].type === 'lens_catalog') {
         return renderReferenceLensCatalog(TWINS, parseLensCatalogAttributes(attributes));

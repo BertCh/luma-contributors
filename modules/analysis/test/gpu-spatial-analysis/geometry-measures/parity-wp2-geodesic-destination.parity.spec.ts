@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {it} from 'vitest';
+import {expect, it} from 'vitest';
 import {GPUGeodesicDestination} from '../../../src/gpu-spatial-analysis/geometry-measures/gpu-geodesic-destination';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {compareParity} from '../../oracles/parity-wp2-assert';
 import {createParityGraph, compareGeodesicAngles} from '../../oracles/parity-wp2-geodesic-harness';
@@ -41,6 +41,38 @@ const fixtures: {reference: string; cases: DestinationCase[]}[] = [
   fixture9,
   fixture10
 ];
+
+it('inverts the spherical rhumb constant-latitude navigation example', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createParityGraph(device);
+  const {graph, input, output} = fixture;
+  try {
+    const destinations = output('destinations', 1, 'float32x2');
+    graph.add(
+      new GPUGeodesicDestination({
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', units: 'meters'},
+        origins: input('origins', [0, 60], 'float32x2').view,
+        bearings: input('bearings', [90], 'float32').view,
+        // R*cos(60 degrees)*(90 degrees in radians) = R*pi/4.
+        distances: input('distances', [5003778.610508981], 'float32').view,
+        output: {destinations: destinations.view}
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      const actual = await readFloat32(destinations.buffer, 2);
+      for (const value of actual) expect(Number.isFinite(value)).toBe(true);
+      expect(Math.abs(actual[0] - 90)).toBeLessThan(0.00003);
+      expect(Math.abs(actual[1] - 60)).toBeLessThan(0.00003);
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
 for (const fixture of fixtures)
   for (const entry of fixture.cases) {
     it(`GPUGeodesicDestination PROJ parity: ${entry.name}`, async () => {

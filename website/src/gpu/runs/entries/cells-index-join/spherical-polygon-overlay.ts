@@ -6,9 +6,19 @@
 // GeoArrow-style output and converted from unit vectors to longitude/latitude to draw.
 
 import {GPUSphericalPolygonOverlay} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {defineOperationRun} from '../../define-run';
+import {defineOperationRun, type RunLayer} from '../../define-run';
 import {findParameter, snapToParameter} from '../../interaction';
-import {addRingOffsetSegments, addSegmentFill, addUnitVectorsToLonLat} from './support/kernels';
+import {
+  addKernel,
+  addRingOffsetSegments,
+  addSegmentFill,
+  addUnitVectorsToLonLat
+} from './support/kernels';
+import {
+  getSphericalOverlayStatusLabel,
+  selectSphericalOverlayLayers,
+  SPHERICAL_OVERLAY_DISPLAY_COUNT_WGSL
+} from './spherical-polygon-overlay-status';
 import {getUnitVector, packUnitVectors} from './support/polygons';
 import {
   getLakeShore,
@@ -80,7 +90,7 @@ export default defineOperationRun({
           polygonOffsets: right.polygonOffsets.view,
           featureOffsets: right.featureOffsets.view
         },
-        operation: OPERATIONS[values.operation],
+        operation: OPERATIONS[values['operation']],
         chartCenter: getUnitVector(-88.2, 47.7),
         vertexTolerance: 2 ** -18,
         capacity: {intersections: 256, nodedSegments: 512},
@@ -114,12 +124,24 @@ export default defineOperationRun({
       })
     );
     const lonLat = addUnitVectorsToLonLat(builder, 'result', positions);
+    const displayCount = builder.allocate('complete-result-count', 'uint32', 1);
+    addKernel(builder, {
+      id: 'complete-result-count',
+      invocationCount: 1,
+      bindings: [
+        {name: 'count', buffer: count, access: 'read'},
+        {name: 'overflow', buffer: status[1], access: 'read'},
+        {name: 'candidateOverflow', buffer: status[2], access: 'read'},
+        {name: 'displayCount', buffer: displayCount, access: 'read_write'}
+      ],
+      body: SPHERICAL_OVERLAY_DISPLAY_COUNT_WGSL
+    });
     const result = addRingOffsetSegments(builder, 'result', {
       positions: lonLat,
       featureOffsets,
       polygonOffsets,
       ringOffsets,
-      count
+      count: displayCount
     });
     const operandOutlines = [
       builder.upload('left-outline', 'float32x4', getRingSegments(leftRings)),
@@ -131,18 +153,34 @@ export default defineOperationRun({
         fill: addSegmentFill(builder, 'result', result, SUPERIOR_WINDOW, FILL_COLUMNS, FILL_ROWS),
         operandOutlines,
         count,
+        overflow: status[1],
+        candidateOverflow: status[2],
         featureOffsets,
         polygonOffsets,
         ringOffsets
       },
       update: current => {
-        const ring = getSurveySwath(current.shift, current.shiftLatitude);
+        const ring = getSurveySwath(current['shift'], current['shiftLatitude']);
         rightPositions.write(packUnitVectors([ring]));
         operandOutlines[1].write(getRingSegments([ring]));
       }
     };
   },
   rebuildOn: ['operation'],
+  async afterRun({outputs}) {
+    const [overflow, candidateOverflow] = await Promise.all([
+      outputs.overflow.buffer.readAsync(),
+      outputs.candidateOverflow.buffer.readAsync()
+    ]);
+    return {
+      overflow: new Uint32Array(overflow.buffer, overflow.byteOffset, 1)[0],
+      candidateOverflow: new Uint32Array(
+        candidateOverflow.buffer,
+        candidateOverflow.byteOffset,
+        1
+      )[0]
+    };
+  },
   // Drag: the survey corridor is centered on the pointer's longitude and latitude.
   interaction: {
     kind: 'drag',
@@ -155,7 +193,12 @@ export default defineOperationRun({
       const featureOffsets = peek(outputs.featureOffsets);
       const polygonOffsets = peek(outputs.polygonOffsets);
       let shape = '…';
-      if (count && featureOffsets && polygonOffsets) {
+      const statusLabel = getSphericalOverlayStatusLabel({
+        overflow: peek(outputs.overflow)?.[0],
+        candidateOverflow: peek(outputs.candidateOverflow)?.[0]
+      });
+      if (statusLabel) shape = statusLabel;
+      else if (count && featureOffsets && polygonOffsets) {
         const polygons = featureOffsets[count[0]];
         const rings = polygonOffsets[polygons];
         const holes = rings - polygons;
@@ -164,35 +207,40 @@ export default defineOperationRun({
       return {
         values: {shift, shiftLatitude},
         glyphs: [{shape: 'crosshair', at: [shift, shiftLatitude]}],
-        readout: `${OPERATIONS[values.operation]} · ${shape}`
+        readout: `${OPERATIONS[values['operation']]} · ${shape}`
       };
     }
   },
-  draw: ({outputs, theme}) => [
-    // The result as an area: the hole and the cut-away corridor stay empty.
-    {
-      layer: 'raster',
-      values: outputs.fill,
-      columns: FILL_COLUMNS,
-      rows: FILL_ROWS,
-      ramp: 'sequential',
-      range: [0, 1],
-      alpha: 0.4
-    },
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.operandOutlines[0],
-      radius: 1.2,
-      color: [0.45, 0.65, 1, 0.85]
-    },
-    {
-      layer: 'lines',
-      context: true,
-      segments: outputs.operandOutlines[1],
-      radius: 1.2,
-      color: [1, 0.6, 0.35, 0.85]
-    },
-    {layer: 'lines', segments: outputs.result, radius: 3, color: [...theme.ink, 1]}
-  ]
+  draw: ({outputs, theme, extra}) =>
+    selectSphericalOverlayLayers<RunLayer>(
+      extra,
+      [
+        {
+          layer: 'lines',
+          context: true,
+          segments: outputs.operandOutlines[0],
+          radius: 1.2,
+          color: [0.45, 0.65, 1, 0.85]
+        },
+        {
+          layer: 'lines',
+          context: true,
+          segments: outputs.operandOutlines[1],
+          radius: 1.2,
+          color: [1, 0.6, 0.35, 0.85]
+        }
+      ],
+      [
+        {
+          layer: 'raster',
+          values: outputs.fill,
+          columns: FILL_COLUMNS,
+          rows: FILL_ROWS,
+          ramp: 'sequential',
+          range: [0, 1],
+          alpha: 0.4
+        },
+        {layer: 'lines', segments: outputs.result, radius: 3, color: [...theme.ink, 1]}
+      ]
+    )
 });

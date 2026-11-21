@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import type {GPUSolverStatusPort} from '../../analysis-core/contracts/inference';
 import {
   validateCapacity,
   validateRequirement
@@ -38,13 +36,6 @@ export const INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_INSTRUMENT_COUNT = 16;
 export const INSTRUMENTAL_VARIABLES_COVARIANCE_LEVERAGE_TOLERANCE = 1e-6;
 /** Certify V + tolerance * max(abs(V)) I positive definite, accepting zero/rank-deficient V. */
 export const INSTRUMENTAL_VARIABLES_COVARIANCE_PSD_TOLERANCE = 1e-5;
-
-/** Legacy scalar status is accepted; new callers should use the named solver port. @internal */
-export function getInstrumentalVariablesCovarianceStatusView(
-  status: GraphDataView<'uint32'> | Pick<GPUSolverStatusPort, 'code'>
-): GraphDataView<'uint32'> {
-  return 'code' in status ? status.code : status;
-}
 
 /** Shared construction checks; clusterCount is a capacity, not the number of occupied groups. @internal */
 export function validateInstrumentalVariablesCovarianceOptions(
@@ -103,7 +94,8 @@ export function getInstrumentalVariablesCovarianceAllocationLengths(
   const tileCount = Math.ceil(rows / Math.max(64, Math.ceil(rows / 4096)));
   const meatRows = options.clusterCount ?? rows;
   const meatTileCount = Math.ceil(meatRows / Math.max(64, Math.ceil(meatRows / 4096)));
-  const momentCount = (instruments * (instruments + 1)) / 2 + instruments * columns + columns;
+  const momentCount =
+    (instruments * (instruments + 1)) / 2 + instruments * columns + columns + columns + instruments;
   const meatCount = coefficients ** 2;
   return {
     'covariance workspace': columns + instruments + 1 + momentCount + meatCount + 3,

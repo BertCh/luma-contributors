@@ -174,9 +174,9 @@ export default defineScene<SamplingFramesOptions>({
       disabledWhen: state => state.design !== 'line' && state.design !== 'area',
       apply: 'compile',
       default: '65536',
-      help: 'Maximum lattice candidates examined per wave. A deliberately tiny budget should raise the candidate flag; incomplete output is never shown as a valid sample.',
+      help: 'Maximum lattice candidates examined per wave. On the line design a deliberately tiny budget raises the GPU candidate flag (4) at run time; incomplete output is never shown as a valid sample. The area design knows its lattice size from the polygon bounds, so a budget smaller than that lattice is refused when the design is built and the error is shown instead.',
       options: [
-        {value: '1', label: '1 · trigger flag'},
+        {value: '1', label: '1 · flag 4 on line, refused on area'},
         {value: '4096', label: '4,096'},
         {value: '65536', label: '65,536'}
       ]

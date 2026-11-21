@@ -26,6 +26,8 @@ import {
 } from './group-statistics-common';
 import type {GroupStructure} from './group-statistics-sort';
 
+import {getSumOverflowNodes} from '../key-join/sum-overflow-nodes';
+import {FINITE_MEAN_WGSL} from '../key-join/finite-mean-wgsl';
 import {getGroupMomentTreeNodes} from './group-statistics-moment-tree';
 
 /**
@@ -39,6 +41,7 @@ const MAXIMUM_SCALED_VALUE_EXPONENT = 30;
 export type GroupColumnReductionOutput = {
   counts?: GraphDataView<'uint32'>;
   sums?: GraphDataView<'uint32x2'>;
+  status?: {sumOverflow?: GraphDataView<'uint32'>};
   sumValues?: GraphDataView<'float32'>;
   means?: GraphDataView<'float32'>;
   minimums?: GraphDataView<'float32'>;
@@ -141,6 +144,7 @@ export function getColumnReductionNodes<Parameters>(
     needs: GroupColumnReductionNeeds;
     variance: 'sample' | 'population';
     sumScale: number;
+    scaleMode?: 'shared' | 'per-group';
     output: GroupColumnReductionOutput;
     /** Tiled moments retain the global shift mean but never allocate a global row tree. */
     getMomentNodes?: (
@@ -169,7 +173,10 @@ export function getColumnReductionNodes<Parameters>(
     Boolean(output.sumValues) || Boolean(output.means) || needs.moments || needs.zScore;
   const sumWords =
     needsSums && needsFloatSums
-      ? u32('sum-words', FIXED_POINT_WORD_COUNT * capacity + 1)
+      ? u32(
+          'sum-words',
+          FIXED_POINT_WORD_COUNT * capacity + (props.scaleMode === 'per-group' ? capacity : 1)
+        )
       : undefined;
   // The 64-bit words in units of `1 / sumScale` are accumulated only for `output.sums`, in place.
   const sums = output.sums;
@@ -216,6 +223,18 @@ ${FIXED_POINT_WGSL}`;
     })
   );
 
+  if (sumWords && props.scaleMode === 'per-group') {
+    nodes.push(
+      createGroupStatisticsKernelNode(graph, {
+        id: `${id}-clear-group-scales`,
+        operation,
+        variant: 'clear-group-scales',
+        bindings: [writeBinding('sumWords', sumWords)],
+        invocationCount: capacity,
+        body: `sumWords[sumWordsOffset + ${FIXED_POINT_WORD_COUNT * capacity}u + index] = 0u;`
+      })
+    );
+  }
   // 2. Scale of the fixed-point unit: the largest biased exponent of the values that step 3 adds
   // (the same predicate), one `atomicMax` per workgroup. Excluded rows (a masked sentinel such as
   // 1e30) do not raise the unit.
@@ -229,15 +248,28 @@ ${FIXED_POINT_WGSL}`;
           bindings: [
             readBinding('rowGroups', rowGroups ?? structure.rowGroups),
             readBinding('valueBits', valueBits),
-            atomicBinding('sumWords', sumWords)
+            atomicBinding('sumWords', sumWords),
+            ...(props.scaleMode === 'per-group'
+              ? [atomicBinding('finiteCounts', finiteCounts)]
+              : [])
           ],
           invocationCount: valueBits.length,
           rowOffset,
           guardIndex: false,
           declarations: `${fixedPointDeclarations}
 var<workgroup> workgroupExponentBits: atomic<u32>;`,
-          // No early return: every invocation of a workgroup must reach the barriers.
-          body: `if (localInvocationIndex == 0u) {
+          // All shared-scale invocations reach both barriers.
+          body:
+            props.scaleMode === 'per-group'
+              ? `if (index < INVOCATION_COUNT) {
+    let group = rowGroups[rowGroupsOffset + index + GROUP_ROW_OFFSET];
+    let bits = valueBits[valueBitsOffset + index];
+    if (group != ${GROUP_NONE}u && (bits & 0x7fffffffu) < 0x7f800000u) {
+      atomicAdd(&finiteCounts[finiteCountsOffset + group], 1u);
+      atomicMax(&sumWords[sumWordsOffset + SUM_SCALE_INDEX + group], getFixedPointExponentBits(bitcast<f32>(valueBits[valueBitsOffset + index])));
+    }
+  }`
+              : `if (localInvocationIndex == 0u) {
     atomicStore(&workgroupExponentBits, 0u);
   }
   workgroupBarrier();
@@ -265,10 +297,10 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
   const sumWordsDeclarations = sumWords
     ? `${fixedPointDeclarations}
 ${getFixedPointAtomicAddWGSL('sumWords')}
-fn getSumUnitExponent() -> i32 {
+fn getSumUnitExponent(group: u32) -> i32 {
   return getFixedPointUnitExponent(
-    atomicLoad(&sumWords[sumWordsOffset + SUM_SCALE_INDEX]),
-    FIXED_POINT_HEADROOM_BITS
+    atomicLoad(&sumWords[sumWordsOffset + SUM_SCALE_INDEX${props.scaleMode === 'per-group' ? ' + group' : ''}]),
+    ${props.scaleMode === 'per-group' ? 'firstLeadingBit(max(atomicLoad(&finiteCounts[finiteCountsOffset + group]), 1u)) + 1u' : 'FIXED_POINT_HEADROOM_BITS'}
   );
 }`
     : '';
@@ -332,7 +364,7 @@ ${maximumKeys ? `var<workgroup> localMaximums: array<atomic<u32>, ${capacity}>;`
       atomicAdd(&localCounts[group], 1u);
       ${
         sumWords
-          ? 'addFixedPointToLocalWords(group, quantizeFixedPoint(bitcast<f32>(bits), getSumUnitExponent()));'
+          ? 'addFixedPointToLocalWords(group, quantizeFixedPoint(bitcast<f32>(bits), getSumUnitExponent(group)));'
           : ''
       }
       ${
@@ -353,7 +385,7 @@ ${maximumKeys ? `var<workgroup> localMaximums: array<atomic<u32>, ${capacity}>;`
   for (var slot = localInvocationIndex; slot < GROUP_CAPACITY; slot += ${ACCUMULATE_WORKGROUP_SIZE}u) {
     let count = atomicLoad(&localCounts[slot]);
     if (count != 0u) {
-      atomicAdd(&finiteCounts[finiteCountsOffset + slot], count);
+      ${sumWords && props.scaleMode === 'per-group' ? '' : 'atomicAdd(&finiteCounts[finiteCountsOffset + slot], count);'}
       ${
         sumWords
           ? `addFixedPointToSumWords(slot, vec3<u32>(
@@ -390,10 +422,10 @@ ${sumWordsDeclarations}`,
   if (!isFiniteBits(bits)) {
     return;
   }
-  atomicAdd(&finiteCounts[finiteCountsOffset + group], 1u);
+  ${sumWords && props.scaleMode === 'per-group' ? '' : 'atomicAdd(&finiteCounts[finiteCountsOffset + group], 1u);'}
   ${
     sumWords
-      ? 'addFixedPointToSumWords(group, quantizeFixedPoint(bitcast<f32>(bits), getSumUnitExponent()));'
+      ? 'addFixedPointToSumWords(group, quantizeFixedPoint(bitcast<f32>(bits), getSumUnitExponent(group)));'
       : ''
   }
   ${
@@ -409,6 +441,23 @@ ${sumWordsDeclarations}`,
   ${minimumKeys ? 'atomicMin(&minimumKeys[minimumKeysOffset + group], getValueKey(bits));' : ''}
   ${maximumKeys ? 'atomicMax(&maximumKeys[maximumKeysOffset + group], getValueKey(bits));' : ''}`
             })
+      })
+    );
+  }
+
+  if (output.status?.sumOverflow) {
+    nodes.push(
+      ...getSumOverflowNodes(graph, {
+        id: `${id}-sum-overflow`,
+        capacity,
+        sumScale: props.sumScale,
+        useGroupDispatchUniforms: true,
+        chunks: valueChunks.map(chunk => ({
+          values: chunk.valueBits,
+          groups: chunk.rowGroups ?? structure.rowGroups,
+          rowOffset: chunk.rowOffset
+        })),
+        output: output.status.sumOverflow
       })
     );
   }
@@ -436,19 +485,23 @@ ${sumWordsDeclarations}`,
         ],
         invocationCount: capacity,
         declarations: `${ORDERED_KEY_WGSL}
-${sumWords ? fixedPointDeclarations : ''}`,
+${sumWords ? `${fixedPointDeclarations}\n${FINITE_MEAN_WGSL}` : ''}`,
         body: `let count = finiteCounts[finiteCountsOffset + index];
   ${output.counts ? 'countsOut[countsOutOffset + index] = count;' : ''}
   ${
     sumWords
       ? `let base = sumWordsOffset + ${FIXED_POINT_WORD_COUNT}u * index;
   // The exact integer sum, rounded once to the nearest float32.
-  let total = getFixedPointFloat(
-    vec3<u32>(sumWords[base], sumWords[base + 1u], sumWords[base + 2u]),
-    getFixedPointUnitExponent(sumWords[sumWordsOffset + SUM_SCALE_INDEX], FIXED_POINT_HEADROOM_BITS)
-  );
+  let words = vec3<u32>(sumWords[base], sumWords[base + 1u], sumWords[base + 2u]);
+  let unitExponent = getFixedPointUnitExponent(sumWords[sumWordsOffset + SUM_SCALE_INDEX${props.scaleMode === 'per-group' ? ' + index' : ''}], ${props.scaleMode === 'per-group' ? 'firstLeadingBit(max(count, 1u)) + 1u' : 'FIXED_POINT_HEADROOM_BITS'});
+  let total = getFixedPointFloat(words, unitExponent);
   ${output.sumValues ? 'sumValuesOut[sumValuesOutOffset + index] = total;' : ''}
-  ${needsMeans ? `let mean = select(getNaN(), total / f32(count), count > 0u);` : ''}
+  ${
+    needsMeans
+      ? `// Divide the exact integer total by the exact count before rounding to float32.
+  let mean = getFiniteFixedPointMean(words, unitExponent, count);`
+      : ''
+  }
   ${output.means ? 'meansOut[meansOutOffset + index] = mean;' : ''}
   ${
     meanScratch

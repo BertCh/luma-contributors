@@ -20,7 +20,7 @@ const BURN_DNBR_THRESHOLD = 0.27;
 export async function run(device: Device): Promise<LensScenarioResult> {
   const [
     {runExample},
-    {runRasterLens},
+    {runRasterLens, getRasterLensGeometry},
     {loadDixiePerimeter, loadDixieBands, T_DATA_VERSION},
     {getRasterOperatorEntries}
   ] = await Promise.all([
@@ -32,15 +32,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
   const [perimeter, bands] = await Promise.all([loadDixiePerimeter(), loadDixieBands()]);
   const entry = getRasterOperatorEntries()['GPURasterJoin'];
   const {grid} = perimeter;
-  const placement = {
-    kind: 'raster' as const,
-    shape: [grid.width, grid.height] as [number, number],
-    coordinateModel: perimeter.coordinateModel,
-    cellSize: grid.affine[0],
-    unit: perimeter.unit,
-    origin: [grid.affine[2], grid.affine[5]] as [number, number],
-    rowDirection: 'south' as const
-  };
+  const placement = getRasterLensGeometry(perimeter);
   // Cell centres (UTM 10N metres) of the burned cells, in row-major order.
   const getNormalizedBurnRatio = (nir: number, swir: number) =>
     nir > bands.noData && swir > bands.noData ? (nir - swir) / (nir + swir) : NaN;
@@ -62,7 +54,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
   for (const ring of perimeter.rings) ringStarts.push(ringStarts.at(-1)! + ring.length / 2);
   const ringPositions = Float32Array.from(perimeter.rings.flatMap(ring => [...ring]));
   const pointCount = burnedCells.length / 2;
-  return runRasterLens({
+  const result = await runRasterLens({
     device,
     scenarioId: SCENARIO_ID,
     domain: 'gpu-raster',
@@ -88,7 +80,8 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         {
           role: 'intermediate',
           keySpace: 'points',
-          meaning: 'zone of each point: 0 inside the perimeter, 4294967295 outside'
+          meaning:
+            'zone of each point: 0 inside the perimeter, 4294967295 outside only when joinIncomplete is 0'
         },
         pointCount
       );
@@ -120,6 +113,15 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         keySpace: 'cells',
         meaning: 'zone raster from GPUPolygonRasterization: 0 inside the perimeter, else no zone'
       });
+      const incomplete = session.output(
+        'joinIncomplete',
+        'uint32',
+        {
+          role: 'output',
+          meaning: '1 when rasterization failed; counts and assignments are uncertified sentinels'
+        },
+        1
+      );
       const overflow = session.output('joinRasterizationOverflow', 'uint32', false, 1);
       // The perimeter polygons: one feature of two polygons (an island, and the fire with its hole).
       const ringOffsets = session.input('joinRingOffsets', 'uint32', ringStarts, false);
@@ -149,6 +151,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         burnedCells: burnedCellView,
         zones,
         overflow,
+        incomplete,
         counts,
         outsideCount,
         pointZones
@@ -156,6 +159,13 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       session.track(parameters);
     }
   });
+  const status = result.captures?.snapshots.find(capture => capture.name === 'joinIncomplete');
+  if (!status || status.values.length !== 1 || status.values[0] !== 0) {
+    throw new Error(
+      `${SCENARIO_ID}: incomplete rasterization; refusing uncertified counts and assignments`
+    );
+  }
+  return result;
 }
 
 defineLensScenario({

@@ -18,10 +18,12 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateGPUStorageBindingByteLength
+  validateGPUStorageBindingByteLength,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
+import {validateSpatialStatisticsWritableDispatches} from './spatial-statistics-writable-dispatches';
 import {
   getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
@@ -33,6 +35,7 @@ import {
   validateGPUSpatialWeights,
   type GPUSpatialWeights
 } from './spatial-weights';
+import {snapshotWeightsPort} from './weights-construction-snapshot';
 
 /** Caller-owned output of {@link GPUSpatialWeightsTranspose}: the CSR of `W'`. */
 export type GPUSpatialWeightsTransposeOutput = GPUSpatialWeights & {
@@ -60,6 +63,19 @@ export type SpatialWeightsTransposePlan = {
   outputWeights: GPUSpatialWeights;
 };
 
+/** Input loss is inherited; input cardinalities do not describe retained output columns. @internal */
+export function getSpatialWeightsTransposeInputStatus(
+  status: GPUSpatialWeights['status']
+): GPUSpatialWeights['status'] {
+  return status
+    ? Object.fromEntries(
+        Object.entries(snapshotWeightsPort({status}).status!).filter(
+          ([field]) => field !== 'count' && field !== 'requiredCount'
+        )
+      )
+    : undefined;
+}
+
 /** Validates a transpose request and describes its output; shared by whole and chunked weights. @internal */
 export function planSpatialWeightsTranspose(
   id: string,
@@ -67,6 +83,11 @@ export function planSpatialWeightsTranspose(
   props: SpatialWeightsTransposeInputs
 ): SpatialWeightsTransposePlan {
   const {weights, output} = props;
+  validateRequirement(
+    id,
+    !output.status || Object.values(output.status).every(view => !view),
+    'output.status is unsupported for packed transpose because destination diagnostics are not written; omit output.status or use chunked output'
+  );
   const rows = validateGPUSpatialWeightsOrChunks(id, weights);
   const dispatches = getGPUSpatialWeightsChunkDispatches(weights);
   const columns = props.columnCount ?? rows;
@@ -95,30 +116,55 @@ export function planSpatialWeightsTranspose(
     }
   }
   if (output.distances) {
+    validateRequirement(
+      id,
+      dispatches.every(dispatch => Boolean(dispatch.weights.distances)),
+      'output.distances requires distances on every input chunk; omit output.distances otherwise'
+    );
     validateSinglePackedView(output.distances, ['float32'], `${id} output.distances`);
   }
   const inputTransform = weights.information?.transform ?? 'unknown';
+  // Double normalization survives only when no slot can be dropped. The handle declares no source
+  // column bound, so `columnCount === rows` alone does not establish it (neighbors [2, 0] with
+  // two columns lose half the mass). A declared symmetric W lists only neighbors in [0, rows), so a
+  // square transpose of it keeps every slot (W' = W).
+  const keepsEverySlot = columns === rows && weights.information?.symmetric === true;
   const outputWeights = describeGPUSpatialWeights(output, {
     spatialContext: weights.spatialContext,
     information: {
       rowCount: columns,
       transform:
-        inputTransform === 'row' || inputTransform === 'variance' ? 'unknown' : inputTransform,
+        inputTransform === 'row' ||
+        inputTransform === 'variance' ||
+        (inputTransform === 'double' && !keepsEverySlot)
+          ? 'unknown'
+          : inputTransform,
       symmetric: rows === columns ? (weights.information?.symmetric ?? 'unknown') : 'unknown',
       hasSelfWeights: weights.information?.hasSelfWeights,
       provenance: {...weights.information?.provenance, source: operation, criterion: 'transpose'}
     },
-    status: weights.status
+    status: getSpatialWeightsTransposeInputStatus(weights.status)
   });
   validateGraphOutputsDisjointFromInputs(
     id,
     [output.offsets, output.neighbors, output.weights, output.distances, output.asymmetricSlots],
     [
       typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined,
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...getGPUSpatialWeightsOrChunksViews(weights, true),
       ...Object.values(weights.status ?? {}),
       ...dispatches.flatMap(dispatch => Object.values(dispatch.weights.status ?? {}))
     ]
+  );
+  validateSpatialStatisticsWritableDispatches(
+    id,
+    {
+      offsets: output.offsets,
+      neighbors: output.neighbors,
+      weights: output.weights,
+      distances: output.distances,
+      asymmetricSlots: output.asymmetricSlots
+    },
+    [['neighbors', 'weights', 'distances']]
   );
   return {rowCount: rows, columnCount: columns, outputWeights};
 }
@@ -145,10 +191,16 @@ export function getSpatialWeightsTransposeNodes<Parameters>(
 ): readonly GPUCommandNode<Parameters>[] {
   const {weights, output} = props;
   const {rowCount: rows, columnCount: columns} = plan;
+  validateRequirement(
+    id,
+    !output.distances ||
+      getGPUSpatialWeightsChunkDispatches(weights).every(chunk => Boolean(chunk.weights.distances)),
+    'output.distances requires distances on every input chunk; restore the source distances or rebuild without the output port'
+  );
   const statusViews = range ? Object.values(range.status) : [];
   // Each input sort, output scan and optional symmetry reduction stays within one binding.
   const bindingViews = [
-    ...getGPUSpatialWeightsOrChunksViews(weights),
+    ...getGPUSpatialWeightsOrChunksViews(weights, true),
     output.offsets,
     output.neighbors,
     output.weights,
@@ -178,7 +230,7 @@ export function getSpatialWeightsTransposeNodes<Parameters>(
     );
   }
   validateGraphViewsBelongToGraph(id, graph, [
-    ...getGPUSpatialWeightsOrChunksViews(weights),
+    ...getGPUSpatialWeightsOrChunksViews(weights, true),
     output.offsets,
     output.neighbors,
     output.weights,

@@ -470,7 +470,7 @@ export async function createMissingObservations(
                 }
               }
             : {}),
-          outputs: preparationOutputs
+          output: preparationOutputs
         });
         if (scenario !== 'september') {
           addKernelPass(graph, {

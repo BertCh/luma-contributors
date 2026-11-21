@@ -5,7 +5,7 @@
 import type {
   GPUAnalysisColumnProfile,
   GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {WorkflowData} from '../workflows/workflow-types';
 import {
   applyKeplerDatasetProfileDeclarations,

@@ -113,6 +113,7 @@ it('network:F5 bounded frontier diagnostics separate repeated visits from final 
 it('network:F10 mapped identities retain separate rows for positional node and edge gathers', () => {
   const result = computeNetworkPathExtractionOnCPU({
     predecessors: Uint32Array.of(0xffffffff, 0, 1),
+    predecessorEdges: Uint32Array.of(0xffffffff, 0, 1),
     costs: Float32Array.of(0, 1, 2),
     targets: Uint32Array.of(2),
     capacity: 3,

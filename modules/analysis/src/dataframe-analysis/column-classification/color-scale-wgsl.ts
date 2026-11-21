@@ -3,23 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * WGSL helpers shared by the colour contributors: zero-normalised ordered keys, the d3 scale
- * transforms, and `rgba8` unpacking and blending. Requires `COLUMN_ORDERED_KEY_WGSL`.
+ * WGSL helpers shared by the colour contributors: the d3 scale transforms, and `rgba8` unpacking and blending. Requires `COLUMN_ORDERED_KEY_WGSL`.
  *
  * @internal
  */
 export const COLOR_SCALE_WGSL = /* wgsl */ `
 const NO_CLASS: u32 = 0xffffffffu;
-
-// -0 and +0 compare equal, like d3 bisectRight. The zero test is on bits because a compiler may
-// fold a float select on \`x == 0.0\` back to \`x\`.
-fn getComparisonKey(x: f32) -> u32 {
-  let bits = bitcast<u32>(x);
-  if ((bits & 0x7fffffffu) == 0u) {
-    return 0x80000000u;
-  }
-  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
-}
 
 fn signedPower(x: f32, exponent: f32) -> f32 {
   let magnitude = abs(x);

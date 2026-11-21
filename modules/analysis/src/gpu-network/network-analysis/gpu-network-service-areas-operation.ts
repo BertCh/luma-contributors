@@ -7,6 +7,12 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUNetworkServiceAreas} from './gpu-network-service-areas';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  resolveNetworkRoutingCostPrecision,
+  type CPUNetworkRoutingCostPrecision
+} from '../../analysis-core/operations/cpu-network-routing';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Graph-value properties; node and facility capacity counts are compile-time. */
 export type NetworkServiceAreasOperationProps = {
@@ -18,6 +24,8 @@ export type NetworkServiceAreasOperationProps = {
   facilityCosts?: string;
   facilityCount?: number | string;
   costLimit?: string;
+  /** CPU default float64; GPU supports only float32-per-edge (its default). */
+  costPrecision?: CPUNetworkRoutingCostPrecision;
   maximumIterations?: number;
   maximumLabelIterations?: number;
   localIterations?: number;
@@ -32,9 +40,67 @@ export type NetworkServiceAreasOperationProps = {
     status?: {converged?: string; iterationLimitReached?: string};
   };
 };
+
+/** Captures graph bindings and phase budgets once for both operation backends. @internal */
+export function snapshotNetworkServiceAreasOperationProps(
+  props: NetworkServiceAreasOperationProps
+): NetworkServiceAreasOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'nodeCount',
+    'facilityCapacity',
+    'topology',
+    'facilities',
+    'facilityCosts',
+    'facilityCount',
+    'costLimit',
+    'costPrecision',
+    'maximumIterations',
+    'maximumLabelIterations',
+    'localIterations',
+    'activeIterations',
+    'maximumTieIterations',
+    'output'
+  ]);
+  const output = snapshotConstructionFields(snapshot.output, [
+    'assignments',
+    'costs',
+    'predecessors',
+    'facilityNodeCounts',
+    'facilityCostSums',
+    'status'
+  ]);
+  return Object.freeze({
+    ...snapshot,
+    topology: snapshotConstructionFields(snapshot.topology, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'nodePositions'
+    ]),
+    output: Object.freeze({
+      ...output,
+      status:
+        output.status === undefined
+          ? undefined
+          : snapshotConstructionFields(output.status, ['converged', 'iterationLimitReached'])
+    })
+  });
+}
+
 /** Vector operation form. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNetworkServiceAreasOperation extends GPUContributorOperation {
   constructor(props: NetworkServiceAreasOperationProps) {
+    props = snapshotNetworkServiceAreasOperationProps(props);
+    const costPrecision = resolveNetworkRoutingCostPrecision(
+      props.id ?? 'network-service-areas',
+      props.costPrecision === undefined ? 'float32-per-edge' : props.costPrecision
+    );
+    validateRequirement(
+      props.id ?? 'network-service-areas',
+      costPrecision === 'float32-per-edge',
+      `costPrecision must be float32-per-edge on GPU; received ${costPrecision}; use CPUNetworkServiceAreasOperation for float64`
+    );
     const inputs: Record<string, string> = {
       offsets: props.topology.offsets,
       neighbors: props.topology.neighbors,

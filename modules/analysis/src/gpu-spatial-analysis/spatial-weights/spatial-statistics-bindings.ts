@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphDataView, GraphVectorView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GraphDataView, GraphVectorView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
+  isGraphDataView,
+  isGraphVectorView,
   getGraphViewChunks,
   validateGPUStorageBindingByteLength,
   validateRequirement
@@ -26,7 +28,7 @@ export function validateSpatialStatisticsBindings<Parameters>(
   const fields: Record<string, GraphDataView | GraphVectorView> = {};
   const seen = new Set<object>();
   const visit = (value: unknown, name: string): void => {
-    if (value instanceof GraphDataView || value instanceof GraphVectorView) {
+    if (isGraphDataView(value) || isGraphVectorView(value)) {
       fields[name] = value;
       return;
     }

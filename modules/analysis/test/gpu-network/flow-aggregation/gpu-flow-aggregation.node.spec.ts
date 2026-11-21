@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getResourceBuffer} from '../network-resource-buffers';
 import {Buffer, type ComputePass, type CommandEncoder} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
@@ -1016,4 +1017,93 @@ it('flow validates chunk row totals before declaring packed contribution scratch
     Object.defineProperty(weights, 'length', {value: 10});
     return {weights};
   }, /flow-aggregation weights length must equal its chunk total/);
+});
+
+it('NET-125 captures nested lattice settings, time ports and output destinations', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const bounds: [number, number, number, number] = [0, 0, 2, 2];
+  const gridSize: [number, number] = [2, 2];
+  let zoneKindReads = 0;
+  const zones = {kind: 'grid' as const, bounds, gridSize};
+  Object.defineProperty(zones, 'kind', {
+    get: () => {
+      zoneKindReads++;
+      return 'grid';
+    }
+  });
+  const props = createProps(graph, {
+    zones,
+    originZoneIds: undefined,
+    destinationZoneIds: undefined,
+    origins: createTransientView(graph, 'capture-origins', 'float32x2', 10),
+    destinations: createTransientView(graph, 'capture-destinations', 'float32x2', 10),
+    timeWindow: {
+      timestamps: createTransientView(graph, 'capture-times', 'float32', 10),
+      window: createTransientView(graph, 'capture-window', 'float32', 8)
+    }
+  });
+  try {
+    const contributor = new GPUFlowAggregation(props);
+    const originalCount = props.output.status.count;
+    const originalIds = props.output.ids;
+    const originalWindow = props.timeWindow!.window;
+    props.pairCapacity = 1024;
+    gridSize[0] = 100;
+    bounds[2] = 100;
+    props.output.ids = createTransientView(graph, 'redirect-ids', 'uint32', 4);
+    props.output.status.count = createTransientView(graph, 'redirect-count', 'uint32', 1);
+    props.timeWindow!.window = createTransientView(graph, 'redirect-window', 'float32', 8);
+    expect(zoneKindReads).toBe(1);
+    expect(contributor.props.pairCapacity).toBe(8);
+    expect(contributor.props.zones).toMatchObject({gridSize: [2, 2], bounds: [0, 0, 2, 2]});
+    expect(contributor.props.output.ids).toBe(originalIds);
+    expect(contributor.props.output.status.count).toBe(originalCount);
+    expect(contributor.props.timeWindow!.window).toBe(originalWindow);
+    expect(contributor.props.origins).toBe(props.origins);
+    const nodes = contributor.getCommandNodes(graph);
+    expect([contributor.rowCount, contributor.zoneCount]).toEqual([10, 4]);
+    const resources = nodes.flatMap(node => (node.resources ?? []).map(getResourceBuffer));
+    expect(resources).toContain(originalIds);
+    expect(resources).toContain(originalCount);
+    expect(resources).toContain(originalWindow);
+    expect(resources).not.toContain(props.output.ids);
+    expect(resources).not.toContain(props.output.status.count);
+    expect(nodes).toHaveLength(20);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('B1 captures only ID-zone fields and ignores inactive lattice getters', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const zones = {kind: 'ids' as const, zoneCount: 3};
+  for (const field of ['gridSize', 'bounds', 'radius', 'activeGridSize']) {
+    Object.defineProperty(zones, field, {
+      get: () => {
+        throw new Error(`inactive ${field}`);
+      }
+    });
+  }
+  try {
+    const contributor = new GPUFlowAggregation(createProps(graph, {zones}));
+    expect(contributor.zoneCount).toBe(3);
+    expect(contributor.getCommandNodes(graph)).toHaveLength(15);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('B1 preserves the contributor-prefixed diagnostic for an unknown zone kind', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const zones = {kind: 'unknown'} as unknown as GPUFlowAggregationProps['zones'];
+    expect(() => new GPUFlowAggregation(createProps(graph, {id: 'unknown-zones', zones}))).toThrow(
+      'unknown-zones zones.kind must be grid, hexagon, or ids'
+    );
+  } finally {
+    device.destroy();
+  }
 });

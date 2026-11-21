@@ -57,6 +57,7 @@ export class GPUKShortestPathsOperation extends GPUContributorOperation {
       };
     }
     super({
+      emptyOutputPorts: ['vertices', 'edges', 'lengths', 'costs', 'counts', 'complete'],
       id,
       inputs: {
         offsets: props.topology.offsets,

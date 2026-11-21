@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {
   createTransientView,
   GPUReduction,
@@ -32,6 +33,7 @@ import {
   validateParameterTarget,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -117,6 +119,7 @@ export function getGPUTerrainWeissLandformsParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainWeissLandformsParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainWeissLandformsParameterValues',
     target,
@@ -130,14 +133,14 @@ export function getGPUTerrainWeissLandformsParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUTerrainWeissLandforms}; at least one is required. */
-export type GPUTerrainWeissLandformsOutput = {
+export type GPUTerrainWeissLandformsOutput = TerrainAtLeastOne<{
   /** Optional class per pixel, 1 to 10 as in {@link GPU_TERRAIN_WEISS_LANDFORMS}; 0 when invalid. */
   landforms?: GraphDataView<'uint32'>;
   /** Optional standardized positions: two planes of `width * height` values, small then large. */
   standardizedPosition?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where the class is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainWeissLandforms}.
@@ -281,6 +284,8 @@ export class GPUTerrainWeissLandforms implements GPUCommandNodeProducer {
     }
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH);
     if (!output.landforms && !output.standardizedPosition && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);

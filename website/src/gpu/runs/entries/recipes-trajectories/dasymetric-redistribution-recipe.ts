@@ -88,7 +88,7 @@ export default defineOperationRun({
       },
       denominator: values.denominator === 1 ? 'overlap' : 'zone',
       pairCapacity: 4096,
-      outputs: {targetTotals: targetTotals.view}
+      output: {targetTotals: targetTotals.view}
     });
     return {
       outputs: {targetTotals, ancillary, targetMesh, sourceMesh},

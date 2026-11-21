@@ -71,6 +71,7 @@ it('matches clamp, empty, collapsed and nonfinite status conventions', () => {
     {
       positions: new Float32Array([1, 2, 1, 2, NaN, 0]),
       lineOffsets: new Uint32Array([0, 2, 2, 3, 99, 1]),
+      storage: 'resident-capacity',
       referencePositions: new Float32Array(0)
     },
     {tolerance: 0, maximumVerticesPerLine: 2}

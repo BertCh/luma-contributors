@@ -44,7 +44,7 @@ export default defineOperationRun({
         candidateCapacity: 1 << 14,
         output: {
           pointFeatureIds: pointFeatureIds.view,
-          featureCounts: featureCounts.view,
+          polygonAssignmentCounts: featureCounts.view,
           status: {overflow: overflow.view}
         }
       })

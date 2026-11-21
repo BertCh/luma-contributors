@@ -33,7 +33,26 @@ export {
   GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT,
   GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT
 } from './spherical-limits';
-export {GPU_SPHERICAL_UNIT_VECTOR_LENGTH_TOLERANCE} from './assert-unit-vector';
+export {
+  GPU_SPHERICAL_UNIT_VECTOR_LENGTH_TOLERANCE,
+  GPU_SPHERICAL_UNIT_VECTOR_SQUARED_LENGTH_TOLERANCE,
+  validateUnitVector
+} from './assert-unit-vector';
+export {
+  decodeGPUSphericalConvexContainsStatus,
+  decodeGPUSphericalPolygonContainsStatus,
+  decodeGPUSphericalConvexIntersectionStatus,
+  decodeGPUSphericalArcOverlayStatus,
+  decodeGPUSphericalConvexIntersectionCounts,
+  decodeGPUSphericalArcOverlayCounts,
+  decodeGPUSphericalConvexIntersectionReadback,
+  decodeGPUSphericalArcOverlayReadback
+} from './spherical-status';
+export type {
+  SphericalReadback,
+  GPUSphericalConvexIntersectionReadbackInput,
+  GPUSphericalArcOverlayReadbackInput
+} from './spherical-status';
 export {
   GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_VALID,
   GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_INVALID,

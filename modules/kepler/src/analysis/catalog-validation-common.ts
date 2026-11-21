@@ -16,6 +16,13 @@ import {
 } from './catalog-geojson';
 import {makeLocalFrame} from './catalog-local-frame';
 import {makeStringParameter, type Values} from './catalog-platform3-b-common';
+import type {CatalogTableInput} from './catalog-data-input';
+
+export type ValidationColumnInput = CatalogFeatureCollection | CatalogTableInput;
+
+export function getValidationRowCount(input: ValidationColumnInput): number {
+  return input.type === 'table' ? input.table.rowCount : input.features.length;
+}
 
 export const MAXIMUM_VALIDATION_ROWS = 2048;
 const MAXIMUM_PROPERTY_NAME_LENGTH = 64;
@@ -44,12 +51,15 @@ export function makeValidationPropertyList(
 
 /** Read once during graph setup; missing numeric values remain NaN for contributor statuses. */
 export function readValidationColumn(
-  collection: CatalogFeatureCollection,
+  collection: ValidationColumnInput,
   property: string
 ): Float32Array {
   if (!property.trim()) throw new Error('Catalog validation property must name a numeric column');
-  return Float32Array.from(collection.features, feature => {
-    const value = feature.properties?.[property];
+  return Float32Array.from({length: getValidationRowCount(collection)}, (_, index) => {
+    const value =
+      collection.type === 'table'
+        ? collection.table.columns[property]?.[index]
+        : collection.features[index].properties?.[property];
     return typeof value === 'number' ? value : NaN;
   });
 }
@@ -148,11 +158,23 @@ export function makeValidationBinding(
   };
 }
 
+/** Dual-route column bindings keep their public feature call while catalog dispatch uses typed data. */
+export function makeColumnValidationBinding(
+  binding: Omit<CatalogOperationBinding, 'engine' | 'cleanup' | 'gpuContributorNames'> &
+    Required<Pick<CatalogOperationBinding, 'runDataGpu'>>
+): CatalogOperationBinding {
+  const declared = makeValidationBinding(binding);
+  return {
+    ...declared,
+    runGpu: (context, inputs, values) => binding.runDataGpu(context, inputs, values)
+  };
+}
+
 /** All nonfinite results become native nulls. Status words preserve the reason, including unbounded intervals. */
 export function makeValidationResult(
   id: string,
   label: string,
-  collection: CatalogFeatureCollection,
+  collection: ValidationColumnInput,
   columns: Record<string, ArrayLike<number>>,
   metrics: Record<string, number>,
   contributors: readonly string[],
@@ -164,11 +186,12 @@ export function makeValidationResult(
     {
       feature_index: 'int32',
       ...Object.fromEntries(Object.keys(columns).map(name => [name, 'float64' as const])),
-      geometry: 'string'
+      ...(collection.type === 'table' ? {} : {geometry: 'string' as const})
     },
-    'geometry'
+    collection.type === 'table' ? undefined : 'geometry'
   );
-  collection.features.forEach((feature, index) =>
+  for (let index = 0; index < getValidationRowCount(collection); index++) {
+    const feature = collection.type === 'table' ? undefined : collection.features[index];
     appendCatalogRow(table, {
       feature_index: index,
       ...Object.fromEntries(
@@ -177,11 +200,15 @@ export function makeValidationResult(
           Number.isFinite(column[index]) ? column[index] : null
         ])
       ),
-      geometry: feature.geometry
-        ? makeCatalogGeometryText(feature.geometry.type, feature.geometry.coordinates)
-        : null
-    })
-  );
+      ...(feature
+        ? {
+            geometry: feature.geometry
+              ? makeCatalogGeometryText(feature.geometry.type, feature.geometry.coordinates)
+              : null
+          }
+        : {})
+    });
+  }
   const diagnosticTable = makeCatalogTable(`${id}-diagnostics`, `${label} diagnostics`, {
     metric: 'string',
     value: 'float64'

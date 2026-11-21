@@ -85,9 +85,11 @@ for (const kind of ['knox', 'mantel'] as const) {
       expect(() => build(kind, 99, {stopAfterExceedances: 5}).create()).toThrow(
         /stopAfterExceedances needs output.permutationCount/
       );
-      expect(() => build(kind, 99, {permutationCount: true}).create()).toThrow(
-        /output.permutationCount needs stopAfterExceedances/
-      );
+      if (kind === 'knox')
+        expect(() => build(kind, 99, {permutationCount: true}).create()).toThrow(
+          /output.permutationCount needs stopAfterExceedances/
+        );
+      else expect(() => build(kind, 99, {permutationCount: true}).create()).not.toThrow();
       expect(() =>
         build(kind, 99, {stopAfterExceedances: 99, permutationCount: true}).create()
       ).not.toThrow();
@@ -108,7 +110,7 @@ for (const kind of ['knox', 'mantel'] as const) {
         permutationCount: true
       });
       const four = getNodes(kind, 3 * batch, {stopAfterExceedances: 5, permutationCount: true});
-      expect(four.nodes.length - three.nodes.length).toBe(3);
+      expect(four.nodes.length - three.nodes.length).toBe(kind === 'mantel' ? 4 : 3);
       expect(countDistinctPipelines(four.nodes)).toBe(countDistinctPipelines(three.nodes));
       // Within one build, every batch shares a module per role (rule 12): the cursor is a GPU word.
       const pipelines = recordComputePipelines(four.nodes);

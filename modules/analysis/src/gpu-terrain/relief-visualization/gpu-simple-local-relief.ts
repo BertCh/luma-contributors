@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileCopyrightText: Copyright (c) Relief Visualization Toolbox (RVT) contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {usesReliefSummedArea} from './relief-visualization-utils';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
@@ -84,12 +85,12 @@ export function getGPUSimpleLocalReliefParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUSimpleLocalRelief}; at least one is required. */
-export type GPUSimpleLocalReliefOutput = {
+export type GPUSimpleLocalReliefOutput = TerrainAtLeastOne<{
   /** Optional relief per pixel, `verticalExaggeration * (z - mean_r(z))`, NaN where invalid. */
   relief?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where the center elevation is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUSimpleLocalRelief}.
@@ -119,8 +120,10 @@ export type GPUSimpleLocalReliefProps = {
   /**
    * Elevation quantum of the exact summed-area table, a power of two. Defaults to `2^-16`
    * (see `GPU_RELIEF_DEFAULT_QUANTUM`). It bounds the error of the window mean by `quantum / 2`.
-   * Used only for grids up to `getGPUTerrainSummedAreaMaximumCellCount` cells; elevations of
-   * offset magnitude from the GPU-selected first valid anchor of `2^31 * quantum` or more (32768 by default) are treated as invalid there.
+   * Used only for grids up to `getGPUTerrainSummedAreaMaximumCellCount` cells. The GPU selects a
+   * quantum-snapped first finite valid anchor and forms quantized integer offsets exactly in 64
+   * bits. Accepted offsets are inclusive `[-2147483520, 2147483520]` (elevation offsets
+   * `±32767.998046875` at the default quantum); absolute `|z / quantum| >= 2^62` is invalid.
    */
   quantum?: number;
   /** Caller-owned outputs. */
@@ -147,8 +150,10 @@ export type GPUSimpleLocalReliefProps = {
  * summed-area table of elevations quantized to `quantum`: O(1) work per pixel independent of the
  * radius, with an error of at most `quantum / 2` (zero for `|z| >= 128` at the default) plus a few
  * float32 ULP of the relief. `maximumRadius` is then at most 23170. Larger grids use the separable
- * O(radius) float filter, accurate to float32 rounding of the relief. Table-path pixels with
- * `|z - anchor| >= 2^31 * quantum` are invalid.
+ * O(radius) float filter, accurate to float32 rounding of the relief. On the table path,
+ * quantized offsets are formed by exact 64-bit subtraction from the quantum-snapped first finite
+ * valid anchor. Inclusive integer offsets `[-2147483520, 2147483520]` are accepted (elevation
+ * offsets `±32767.998046875` at the default quantum); absolute `|z / quantum| >= 2^62` is invalid.
  */
 export class GPUSimpleLocalRelief implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */

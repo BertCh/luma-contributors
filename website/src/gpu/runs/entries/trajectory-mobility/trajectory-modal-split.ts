@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // GPUModalSplit after GPUTrajectoryStaypoints and GPUTrajectorySegments on eight San Francisco Bay
-// vessel tracks. Each tripleg is given a mode from its average speed (modeSpeedBreaks: slow, medium,
+// vessel tracks. Each tripleg is given a mode from its average speed (modeSpeedUpperBoundsFloat32: slow, medium,
 // fast), and the bars add the chosen metric up per track and mode. The map is squeezed upward to
 // leave room for the bars; the operation reads the true positions.
 
@@ -86,7 +86,7 @@ export default defineOperationRun({
           }
         },
         // The breaks must be strictly ascending, so the fast break is kept above the slow one.
-        modeSpeedBreaks: [
+        modeSpeedUpperBoundsFloat32: [
           values.slowBreak,
           Math.max(values.fastBreak, values.slowBreak + 0.001),
           Infinity
@@ -173,7 +173,7 @@ export default defineOperationRun({
         readout:
           peek(outputs.triplegOverflow)?.[0] || peek(outputs.triplegCandidateOverflow)?.[0]
             ? 'Incomplete tripleg table; modal split unavailable'
-            : `modeSpeedBreaks [${formatSpeed(slowBreak, inputs.metersPerUnit)}, ${formatSpeed(fastBreak, inputs.metersPerUnit)}] · ${METRICS[values.metric]}`
+            : `modeSpeedUpperBoundsFloat32 [${formatSpeed(slowBreak, inputs.metersPerUnit)}, ${formatSpeed(fastBreak, inputs.metersPerUnit)}] · ${METRICS[values.metric]}`
       };
     }
   },

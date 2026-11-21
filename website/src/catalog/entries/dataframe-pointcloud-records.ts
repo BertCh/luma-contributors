@@ -287,7 +287,7 @@ parameters.write(getGPUClassBreaksParameterValues({method: 'natural-breaks', cla
         description: 'Packed rgba8 palette.'
       },
       {
-        name: 'domainCount',
+        name: 'classCount',
         type: "GraphDataView<'uint32'>",
         description: 'Optional one-row view with the active class count.'
       },
@@ -321,7 +321,7 @@ import {GPUColorScale, getGPUColorScaleParameterValues} from '@luma-contributors
 // values, breaks, classCount, palette, colors: views on graph
 const scale = new GPUParameterBuffer(device, {id: 'scale', format: 'float32', length: 9});
 graph.add(new GPUColorScale({
-  values, domain: breaks, domainCount: classCount, palette,
+  values, domain: breaks, classCount, palette,
   parameters: scale.importToGraph(graph),
   maximumDomainCount: 10, maximumPaletteCount: 9,
   output: {colors}
@@ -753,7 +753,7 @@ parameters.write(getGPUInequalityParameterValues({epsilon: 1}));`,
         description: 'Variance convention.'
       },
       {
-        name: 'percentiles',
+        name: 'probabilities',
         type: "GraphDataView<'float32'>",
         description: 'Per-frame quantile fractions in [0, 1].'
       },
@@ -790,12 +790,11 @@ graph.add(new GPUGroupStatistics({
   },
   {
     id: 'key-join',
-    symbol: 'GPUKeyJoin',
+    symbol: 'GPUKeyLookup',
     kind: 'class',
     importPath: '@luma-contributors/analysis/dataframe-analysis',
-    title: 'Key Join',
-    summary:
-      'Attribute join of a left table onto a right table by 32- or 64-bit key, entirely on the GPU.',
+    title: 'Key Lookup',
+    summary: 'Looks up each left row in a right table by 32- or 64-bit key, entirely on the GPU.',
     explanation:
       'Attaches attributes by id, such as census fields onto features. Gather copies the first match; aggregates reduce all matches (count, sum, mean, minimum, maximum).',
     dataTypes: {input: ['table'], output: ['table']},
@@ -816,15 +815,20 @@ graph.add(new GPUGroupStatistics({
       },
       {name: 'leftMask', type: "GraphDataView<'uint32'>", description: 'Zero rows never match.'},
       {name: 'rightMask', type: "GraphDataView<'uint32'>", description: 'Zero rows are ignored.'},
-      {name: 'kind', type: 'GPUKeyJoinKind', description: "Join kind: 'left' or 'inner'."},
+      {
+        name: 'compactMatchedLeftRows',
+        type: 'boolean',
+        description:
+          'Also publish compact matched left row indices in output.rows. Defaults to false.'
+      },
       {
         name: 'gather',
-        type: 'readonly GPUKeyJoinGather[]',
+        type: 'readonly GPUKeyLookupGather[]',
         description: '1:1 right columns copied to the left (first match).'
       },
       {
         name: 'aggregates',
-        type: 'readonly GPUKeyJoinAggregate[]',
+        type: 'readonly GPUKeyLookupAggregate[]',
         description: '1:n aggregates over all matching right rows.'
       }
     ],
@@ -845,12 +849,12 @@ graph.add(new GPUGroupStatistics({
         description: 'Number of right matches per left row.'
       }
     ],
-    example: `import {GPUKeyJoin} from '@luma-contributors/analysis/dataframe-analysis';
+    example: `import {GPUKeyLookup} from '@luma-contributors/analysis/dataframe-analysis';
 
 // leftKeys, rightKeys, rightPopulation, rightIncome, leftPopulation, leftIncomeSum,
 // matched, rightRows, matchCounts: views on graph
-graph.add(new GPUKeyJoin({
-  leftKeys, rightKeys, kind: 'left',
+graph.add(new GPUKeyLookup({
+  leftKeys, rightKeys, compactMatchedLeftRows: false,
   gather: [{column: rightPopulation, output: leftPopulation}],
   aggregates: [{operation: 'sum', column: rightIncome, output: leftIncomeSum}],
   output: {matched, rightRows, matchCounts}
@@ -1424,7 +1428,7 @@ parameters.write(getGPURipleyDistanceFunctionsParameterValues({
         name: 'parameters',
         type: "GraphDataView<'float32'>",
         required: true,
-        description: 'Bounds, maximumDistance, correction and alternative.'
+        description: 'Bounds, indexCellSizeHint, correction and analyticAlternative.'
       },
       {
         name: 'gridSize',
@@ -1470,7 +1474,7 @@ graph.add(new GPUPointPatternIndices({
   output: {clarkEvans, quadratCounts}
 }));
 parameters.write(getGPUPointPatternIndicesParameterValues({
-  bounds: [0, 0, 1000, 1000], maximumDistance: 200
+  bounds: [0, 0, 1000, 1000], indexCellSizeHint: 200
 }));`,
     preview: {
       kind: 'points',
@@ -1597,7 +1601,7 @@ graph.add(new GPUMarkedPointStatistics({
         name: 'parameters',
         type: "GraphDataView<'float32'>",
         required: true,
-        description: 'Bounds, maximumDistance and azimuthOffset.'
+        description: 'Bounds, maximumDistance and sectorOffsetRadians.'
       },
       {
         name: 'gridSize',
@@ -2665,7 +2669,7 @@ graph.add(new GPUPointCloudSMRF({
         type: "{ method: 'huber' | 'tukey'; scale: number; }",
         description: 'Huber or Tukey reweighting and its scale.'
       },
-      {name: 'iterations', type: 'number', description: 'Iteration budget.'},
+      {name: 'maximumIterations', type: 'number', description: 'Iteration budget.'},
       {
         name: 'output',
         type: 'GPUPointCloudICPOutput',
@@ -2699,7 +2703,7 @@ graph.add(new GPUPointCloudSMRF({
 
 // source, target (shared local frame), transform, history, inlierMask, status: views on graph
 graph.add(new GPUPointCloudICP({
-  source, target, maximumDistance: 1, iterations: 20,
+  source, target, maximumDistance: 1, maximumIterations: 20,
   output: {transform, history, inlierMask, status}
 }));
 const compiled = await graph.compileAsync();
@@ -2978,10 +2982,10 @@ graph.add(new GPUDatumGridTransform({
         description: 'Vertices per ring, at least 3.'
       },
       {
-        name: 'coordinateSystem',
-        type: "'geographic' | 'planar'",
+        name: 'spatialContext',
+        type: 'GPUSpatialContext',
         required: true,
-        description: "'geographic' or 'planar'."
+        description: 'Native planar or great-circle metre context.'
       }
     ],
     outputs: [
@@ -2996,7 +3000,7 @@ graph.add(new GPUDatumGridTransform({
 // points, parameters, offsets: views on graph
 graph.add(new GPUPointBuffer({
   points, parameters, offsets,
-  verticesPerRing: 32, coordinateSystem: 'geographic'
+  verticesPerRing: 32, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
 }));
 // 250 m radius
 const radiusValues = getGPUPointBufferParameterValues(250);`,
@@ -3014,7 +3018,7 @@ const radiusValues = getGPUPointBufferParameterValues(250);`,
     summary:
       'Records a command graph under construction, with scopes, nodes and sources, for a computation record.',
     explanation:
-      'Captures what a graph does so it can be drawn and replayed on the lens pages. Wrap node creation in withScope and describe the compiled graph afterwards.',
+      'Captures what a graph does so it can be drawn and replayed on the lens pages. Wrap node creation in withSynchronousScope and describe the compiled graph afterwards.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['summarize'],
     domains: ['data-engineering'],
@@ -3035,7 +3039,7 @@ const radiusValues = getGPUPointBufferParameterValues(250);`,
     example: `import {GPUComputationRecorder, createGPUComputationRecord, describeGPUCommandGraph, getGPUComputationAdapter} from '@luma-contributors/analysis/computation-record';
 
 const recorder = new GPUComputationRecorder({sourceText: true});
-recorder.withScope({namespace: 'solve', op: 'relax'}, () => {
+recorder.withSynchronousScope({namespace: 'solve', op: 'relax'}, () => {
   // add the real nodes here: recorder.addNode(graph, node)
 });
 const compiled = await graph.compileAsync();
@@ -3462,7 +3466,7 @@ graph.add(new GPUSnapshotTap({
       },
       {
         name: 'source',
-        type: 'GraphDataView<GPUVectorFormat>',
+        type: "GraphDataView<'uint32'>",
         required: true,
         description: 'uint32 flags over the source key space.'
       },
@@ -3474,7 +3478,7 @@ graph.add(new GPUSnapshotTap({
       },
       {
         name: 'target',
-        type: 'GraphDataView<GPUVectorFormat>',
+        type: "GraphDataView<'uint32'>",
         required: true,
         description: 'uint32 output over the target key space; cleared first.'
       },
@@ -3492,7 +3496,7 @@ graph.add(new GPUSnapshotTap({
     outputs: [
       {
         name: 'target',
-        type: 'GraphDataView<GPUVectorFormat>',
+        type: "GraphDataView<'uint32'>",
         description: 'Selection flags or counts per target key.'
       }
     ],

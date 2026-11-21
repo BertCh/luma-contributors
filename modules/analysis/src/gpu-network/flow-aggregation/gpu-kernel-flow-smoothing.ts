@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateNetworkViewBindings,
   validateNetworkOutputsDisjointFromInputs,
@@ -99,11 +100,24 @@ export type GPUKernelFlowSmoothingFlows =
       /** Weight of each pair (`flowWeights`). Non-finite weights count as 0. */
       weights: GraphDataView<'float32'>;
       /**
-       * One row: the number of valid pairs (`status.count` of `GPUFlowAggregation`). Pairs must be
+       * At least one row (word zero is read): the number of valid pairs (`status.count` of `GPUFlowAggregation`). Pairs must be
        * distinct, as the aggregation's are; a repeated pair keeps one of its weights. Pairs with a
        * zone at or above `zoneCount` are ignored.
        */
-      validPairCount: GraphDataView<'uint32'>;
+      count?: GraphDataView<'uint32'>;
+      completeness?: 'known-complete';
+      /** Producer evidence; count bounds the readable compact prefix. Candidate loss is unknown
+       * without candidateOverflow, pairOverflow, or an explicit no-candidate-loss guarantee.
+       */
+      status?: {
+        count: GraphDataView<'uint32'>;
+        overflow: GraphDataView<'uint32'>;
+        candidateOverflow?: GraphDataView<'uint32'>;
+        /** GPUFlowAggregation's original candidate-loss spelling. */
+        pairOverflow?: GraphDataView<'uint32'>;
+        /** Explicit guarantee for producers whose candidate construction cannot lose rows. */
+        completeness?: 'no-candidate-loss';
+      };
     };
 
 /** Properties for {@link GPUKernelFlowSmoothing}. */
@@ -127,6 +141,8 @@ export type GPUKernelFlowSmoothingProps = {
     smoothed: GraphDataView<'float32'>;
     /** Optional `zoneCount` rows: the neighbourhood radius of each zone. */
     radii?: GraphDataView<'float32'>;
+    /** Optional one-word completeness certificate. Without it, incomplete results become NaN. */
+    status?: {complete: GraphDataView<'uint32'>};
   };
 };
 
@@ -149,7 +165,9 @@ export type GPUKernelFlowSmoothingProps = {
  *    weights of the zones within `h_i` (zone `i` included) sum to at least `p`. Zones at distance
  *    exactly `h_i` belong to it. If all weights sum to less than `p`, `h_i` is the largest distance.
  * 2. Zone `k` of that neighbourhood has the Gaussian weight `K_ik = exp(-d_ik^2 / (2 sigma_i^2))`,
- *    `sigma_i = bandwidthRatio * h_i` (`K_ii = 1`); other zones have weight 0.
+ *    `sigma_i = bandwidthRatio * h_i` (`K_ii = 1`); other zones have weight 0. A zone at distance 0
+ *    has weight one before any division, and the others use `(d_ik / sigma_i)^2`, so a bandwidth
+ *    too small for float32 keeps each zone's own flow rather than giving NaN.
  * 3. `S_ij = sum_a sum_b K_ia K_jb M_ab / (sum_a K_ia * sum_b K_jb)`, a weighted mean of the
  *    flows `M_ab` over the pairs of neighbouring origins and neighbouring destinations. Pairs
  *    without a flow count as 0, so smoothing also spreads mass into empty pairs.
@@ -172,7 +190,66 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: Readonly<GPUKernelFlowSmoothingProps>;
 
-  constructor(props: GPUKernelFlowSmoothingProps) {
+  constructor(originalProps: GPUKernelFlowSmoothingProps) {
+    const settings = snapshotConstructionFields(originalProps, [
+      'id',
+      'spatialContext',
+      'positions',
+      'locationWeights',
+      'flows',
+      'parameters',
+      'output'
+    ]);
+    const flowSettings =
+      settings.flows.kind === 'matrix'
+        ? snapshotConstructionFields(settings.flows, ['kind', 'matrix'])
+        : snapshotConstructionFields(settings.flows, [
+            'kind',
+            'originZoneIds',
+            'destinationZoneIds',
+            'weights',
+            'count',
+            'completeness',
+            'status'
+          ]);
+    if (flowSettings.kind === 'pairs') {
+      validateRequirement(
+        settings.id ?? 'kernel-flow-smoothing',
+        !('validPairCount' in settings.flows),
+        "flows.validPairCount was removed; use flows.count with completeness: 'known-complete'"
+      );
+    }
+    const outputSettings = snapshotConstructionFields(settings.output, [
+      'smoothed',
+      'radii',
+      'status'
+    ]);
+    const props = {
+      ...settings,
+      flows: {
+        ...flowSettings,
+        ...(flowSettings.kind === 'pairs' &&
+        flowSettings.status &&
+        typeof flowSettings.status === 'object'
+          ? {
+              status: snapshotConstructionFields(flowSettings.status, [
+                'count',
+                'overflow',
+                'candidateOverflow',
+                'pairOverflow',
+                'completeness'
+              ])
+            }
+          : {})
+      },
+      output: {
+        ...outputSettings,
+        ...(outputSettings.status
+          ? {status: snapshotConstructionFields(outputSettings.status, ['complete'])}
+          : {})
+      }
+    };
+
     const id = props.id ?? 'kernel-flow-smoothing';
     this.spatialContext = resolveGPUSpatialContext(
       id,
@@ -205,7 +282,44 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
         `${id} flows.destinationZoneIds`
       );
       validateSinglePackedView(flows.weights, ['float32'], `${id} flows.weights`);
-      validateSinglePackedView(flows.validPairCount, ['uint32'], `${id} flows.validPairCount`);
+      validateRequirement(
+        id,
+        (flows.status !== null && typeof flows.status === 'object') ||
+          flows.completeness === 'known-complete',
+        "flows requires producer status or completeness: 'known-complete' with count"
+      );
+      validateRequirement(
+        id,
+        flows.completeness === undefined || flows.completeness === 'known-complete',
+        "flows.completeness must be 'known-complete'"
+      );
+      validateRequirement(
+        id,
+        !flows.status || (flows.completeness === undefined && flows.count === undefined),
+        'flows.status must not conflict with imported counts or completeness'
+      );
+      if (flows.status !== undefined) {
+        validateRequirement(
+          id,
+          flows.status !== null && typeof flows.status === 'object',
+          'flows.status must be a producer status object with count and overflow views'
+        );
+        validateRequirement(
+          id,
+          Boolean(flows.status?.count && flows.status?.overflow),
+          'flows.status requires count and overflow views'
+        );
+        validateRequirement(
+          id,
+          flows.status?.completeness === undefined ||
+            flows.status.completeness === 'no-candidate-loss',
+          "flows.status.completeness must be 'no-candidate-loss'"
+        );
+      }
+      for (const view of getSmoothingPairEvidence(flows)) {
+        validateSinglePackedView(view, ['uint32'], `${id} flows count/status`);
+        validateRequirement(id, view.length >= 1, 'flows count/status must have at least 1 row');
+      }
       validateViewLength(
         id,
         'flows.destinationZoneIds',
@@ -215,8 +329,8 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
       validateViewLength(id, 'flows.weights', flows.weights, flows.originZoneIds.length);
       validateRequirement(
         id,
-        flows.validPairCount.length >= 1,
-        'flows.validPairCount must contain one uint32 row'
+        Boolean(flows.status?.count ?? flows.count),
+        'flows.count must contain one uint32 row'
       );
     }
     validateSinglePackedView(output.smoothed, ['float32'], `${id} output.smoothed`);
@@ -225,17 +339,30 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
       validateSinglePackedView(output.radii, ['float32'], `${id} output.radii`);
       validateViewLength(id, 'output.radii', output.radii, this.zoneCount);
     }
-    validateNetworkWritableViews(id, props.output, []);
+    if (output.status) {
+      validateSinglePackedView(output.status.complete, ['uint32'], `${id} output.status.complete`);
+      validateViewLength(id, 'output.status.complete', output.status.complete, 1);
+    }
+    validateNetworkWritableViews(
+      id,
+      {...props.output, status: undefined, complete: output.status?.complete},
+      []
+    );
     validateNetworkOutputsDisjointFromInputs(
       id,
-      [output.smoothed, output.radii],
+      [output.smoothed, output.radii, output.status?.complete],
       [
         props.positions,
         props.locationWeights,
         props.parameters,
         ...(flows.kind === 'matrix'
           ? [flows.matrix]
-          : [flows.originZoneIds, flows.destinationZoneIds, flows.weights, flows.validPairCount])
+          : [
+              flows.originZoneIds,
+              flows.destinationZoneIds,
+              flows.weights,
+              ...getSmoothingPairEvidence(flows)
+            ])
       ]
     );
     this.id = id;
@@ -256,9 +383,15 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
         props.parameters,
         output.smoothed,
         output.radii,
+        output.status?.complete,
         ...(flows.kind === 'matrix'
           ? [flows.matrix]
-          : [flows.originZoneIds, flows.destinationZoneIds, flows.weights, flows.validPairCount])
+          : [
+              flows.originZoneIds,
+              flows.destinationZoneIds,
+              flows.weights,
+              ...getSmoothingPairEvidence(flows)
+            ])
       ],
       {
         radii: zoneCount * 4,
@@ -299,7 +432,12 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
               access: 'read'
             },
             {name: 'weights', view: flows.weights, type: 'f32', access: 'read'},
-            {name: 'pairCount', view: flows.validPairCount, type: 'u32', access: 'read'},
+            {
+              name: 'pairCount',
+              view: (flows.status?.count ?? flows.count)!,
+              type: 'u32',
+              access: 'read'
+            },
             {name: 'dense', view: matrix, type: 'f32', access: 'read_write'}
           ],
           body: /* wgsl */ `
@@ -371,8 +509,17 @@ const RADIUS_MEMBERSHIP_MARGIN: f32 = 1.000001;`,
   // The radius is a distance the radii kernel computed in another pipeline. A compiler may round
   // the same expression differently there (fused multiply-add), so the zone that defines the
   // radius is admitted with a margin of a few rounding steps instead of an exact comparison.
+  // The zone itself (and any coincident zone) has weight one before any division: a tiny
+  // positive sigma can square to zero in float32 (NET-112). The other weights use the scaled
+  // ratio distance / sigma, which overflows to infinity (weight 0) rather than dividing by zero;
+  // sigma 0 with a positive distance is the Gaussian's narrow limit, weight 0.
   if (distance <= radius * RADIUS_MEMBERSHIP_MARGIN) {
-    weight = select(1.0, exp(-distance * distance / (2.0 * sigma * sigma)), sigma > 0.0);
+    if (distance == 0.0) {
+      weight = 1.0;
+    } else if (sigma > 0.0) {
+      let scaled = distance / sigma;
+      weight = exp(-0.5 * scaled * scaled);
+    }
   }
   kernelWeights[kernelWeightsOffset + index] = weight;`
       }),
@@ -427,6 +574,71 @@ const RADIUS_MEMBERSHIP_MARGIN: f32 = 1.000001;`,
   smoothed[smoothedOffset + index] = sum / total;`
       })
     );
+    const evidence = flows.kind === 'pairs' ? getSmoothingPairEvidence(flows) : [];
+    const completeExpression =
+      flows.kind === 'matrix'
+        ? 'true'
+        : `count[countOffset] <= ${flows.originZoneIds.length}u${flows.status ? ' && overflow[overflowOffset] == 0u' : ''}${flows.status?.candidateOverflow ? ' && candidateOverflow[candidateOverflowOffset] == 0u' : ''}${flows.status?.pairOverflow ? ' && pairOverflow[pairOverflowOffset] == 0u' : ''}${flows.status && !flows.status.candidateOverflow && !flows.status.pairOverflow && flows.status.completeness !== 'no-candidate-loss' ? ' && false' : ''}`;
+    if (output.status || flows.kind === 'pairs')
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-completeness`,
+          operation: OPERATION,
+          variant: 'completeness',
+          invocationCount: output.status ? 1 : matrixLength,
+          bindings: [
+            ...evidence.map((view, index) => ({
+              name: [
+                'count',
+                'overflow',
+                ...(flows.kind === 'pairs' && flows.status?.candidateOverflow
+                  ? ['candidateOverflow']
+                  : []),
+                ...(flows.kind === 'pairs' && flows.status?.pairOverflow ? ['pairOverflow'] : [])
+              ][index],
+              view,
+              type: 'u32' as const,
+              access: 'read' as const
+            })),
+            ...(!output.status
+              ? [
+                  {
+                    name: 'smoothed',
+                    view: output.smoothed,
+                    type: 'f32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
+            ...(output.status
+              ? [
+                  {
+                    name: 'complete',
+                    view: output.status.complete,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          body: `let isComplete = ${completeExpression};
+${output.status ? 'if (index == 0u) { complete[completeOffset] = select(0u, 1u, isComplete); }' : 'if (!isComplete) { var missingBits = 0x7fc00000u; smoothed[smoothedOffset + index] = bitcast<f32>(missingBits); }'}`
+        })
+      );
     return nodes;
   }
+}
+
+function getSmoothingPairEvidence(
+  flows: Extract<GPUKernelFlowSmoothingFlows, {kind: 'pairs'}>
+): GraphDataView<'uint32'>[] {
+  if (flows.status)
+    return [
+      flows.status.count,
+      flows.status.overflow,
+      ...(flows.status.candidateOverflow ? [flows.status.candidateOverflow] : []),
+      ...(flows.status.pairOverflow ? [flows.status.pairOverflow] : [])
+    ];
+  const count = flows.count;
+  return count ? [count] : [];
 }

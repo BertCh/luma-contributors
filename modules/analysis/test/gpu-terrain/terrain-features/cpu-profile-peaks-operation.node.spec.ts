@@ -12,8 +12,48 @@ import {
   type ProfilePeaksOperationProps
 } from '../../../src/gpu-terrain/terrain-features/gpu-profile-peaks-operation';
 import {getGPUProfilePeaksParameterValues} from '../../../src/gpu-terrain/terrain-features/gpu-profile-peaks';
+import {expectSingleProfilePeak} from './terrain-terminal-assertions';
 
 const PARAMETERS = getGPUProfilePeaksParameterValues({minimumProminence: 1});
+
+it('TWN-09 accepts a prominence equal to the inclusive minimum at float32 precision', () => {
+  // Exact prominence is 1 - 2^-26, less than half an f32 ulp below 1, so it rounds to 1.
+  const result = computeProfilePeaksOnCPU(
+    Float32Array.of(2 ** -26, 1, 2 ** -26),
+    Uint32Array.of(0, 3),
+    PARAMETERS,
+    {window: 1, minimumSide: 1, capacity: 1}
+  );
+  expectSingleProfilePeak({...result, mask: result.peakMask}, [0, 1, 0]);
+});
+
+it('TWN-09 keeps the earliest row when prominence ties only after float32 rounding', () => {
+  // Row 1 has exact prominence 1 - 2^-26 and row 4 has 1. Both publish 1;
+  // symmetric neighbors leave their refined positions at 1 and 4, exactly radius 3 apart.
+  const result = computeProfilePeaksOnCPU(
+    Float32Array.of(2 ** -26, 1, 2 ** -26, 0, 1, 0),
+    Uint32Array.of(0, 6),
+    getGPUProfilePeaksParameterValues({minimumProminence: 0}),
+    {window: 1, minimumSide: 1, suppressionRadius: 3, capacity: 1}
+  );
+  expectSingleProfilePeak({...result, mask: result.peakMask}, [0, 1, 0, 0, 0, 0]);
+});
+
+it('N3 float64 refined positions can leave a pair outside a rounded float32 suppression radius', () => {
+  // Both prominences are exactly 2. Row 1 refines to 1; at row 5, the vertex offset
+  // is (0.5 * (0 - 2)) / (0 - 2*4 + 2) = 1/6. Their exact distance 4 + 1/6
+  // exceeds its binary32 rounding 4.166666507720947. The CPU therefore keeps both.
+  const result = computeProfilePeaksOnCPU(
+    Float32Array.of(0, 2, 0, 0, 0, 4, 2, 0),
+    Uint32Array.of(0, 8),
+    PARAMETERS,
+    {window: 1, minimumSide: 1, capacity: 2, suppressionRadius: Math.fround(4 + 1 / 6)}
+  );
+  expect(Array.from(result.peakMask)).toEqual([0, 1, 0, 0, 0, 1, 0, 0]);
+  expect(Array.from(result.count)).toEqual([2]);
+  expect(Array.from(result.ids)).toEqual([1, 5]);
+  expect(Array.from(result.prominence.filter(Number.isFinite))).toEqual([2, 2]);
+});
 
 it('normalizes a circular index that rounds to the profile length', () => {
   const result = computeProfilePeaksOnCPU(

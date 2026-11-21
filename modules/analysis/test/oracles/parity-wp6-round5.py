@@ -8,7 +8,7 @@ merge (pandas otherwise matches nulls), mask != 0, smallest right row gather,
 finite-only aggregates, and ascending compact left IDs. Exact fixed-point
 words use the API's np.rint(f32(value * 65536)) representation; the float sum
 and mean are pandas' sum and mean of the values themselves. No fanout rows
-are exposed by GPUKeyJoin; compare every first match, multiplicity, membership,
+are exposed by GPUKeyLookup; compare every first match, multiplicity, membership,
 gather and aggregate instead. All 3109 counties are right-side inputs.
 
 Pandas Series.between: closed instant windows, reversed window empty; f32

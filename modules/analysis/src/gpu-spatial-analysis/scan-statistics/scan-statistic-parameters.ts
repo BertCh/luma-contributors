@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateMaximumCount,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Number of uint32 elements in a scan statistic parameter view. */
 export const GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH = 8;
@@ -70,21 +74,21 @@ export type GPUSpatialScanStatisticLayout = {
  */
 export function getGPUSpatialScanStatisticLayout(
   zones: number,
-  maximumWindowZones?: number
+  maximumWindowZones?: number,
+  id = 'scan statistic'
 ): GPUSpatialScanStatisticLayout {
-  if (!Number.isInteger(zones) || zones < 1) {
-    throw new Error('scan statistic needs at least one zone');
-  }
+  validateCapacity(id, 'zones', zones);
   const words = GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_NEIGHBOR_WORDS;
   const defaultZones = zones * zones <= words ? zones : Math.max(1, Math.floor(words / zones) - 1);
   const usableZones = Math.min(maximumWindowZones ?? defaultZones, zones);
-  if (!Number.isInteger(usableZones) || usableZones < 1) {
-    throw new Error('scan statistic maximumWindowZones must be a positive integer');
-  }
+  validateCapacity(id, 'maximumWindowZones (effective)', usableZones);
   const listLength = usableZones < zones ? usableZones + 1 : zones;
-  if (listLength * zones > words) {
-    throw new Error(`scan statistic zones * (maximumWindowZones + 1) must be <= ${words}`);
-  }
+  validateMaximumCount(
+    id,
+    'zones * listLength (reduce maximumWindowZones)',
+    listLength * zones,
+    words
+  );
   return {usableZones, listLength};
 }
 
@@ -127,7 +131,7 @@ export const GPU_SPATIAL_SCAN_STATISTIC_SUMMARY = {
   clusterCount: 0,
   /** Total observed cases `C` over all zones and buckets. */
   totalCases: 1,
-  /** Monte Carlo replicates run. */
+  /** Monte Carlo replicates evaluated; zero for an invalid frame whose batches were suppressed. */
   permutationCount: 2,
   /**
    * `overflow`: centers whose windows were cut by the compile-time `maximumWindowZones` capacity
@@ -154,18 +158,19 @@ export type GPUSpatialScanStatisticSettings = {
   /** Monte Carlo replicates `P`, at most the contributor's `maximumPermutations`. */
   permutationCount: number;
   /**
-   * Largest spatial window as a fraction of the total baseline, in `(0, 1]`. A window grows until
+   * Largest spatial window as a fraction of the total population, remaining in `(0, 1]` after float32 conversion. A window grows until
    * adding the next zone would exceed it. Defaults to 0.5.
    */
   maximumPopulationFraction?: number;
   /**
-   * Largest number of zones per window, clamped to the contributor's compile-time capacity.
-   * Defaults to the capacity (every zone unless the neighbor tables are bounded), so the population
-   * fraction governs.
+   * Finite positive requested zone limit, rounded down (minimum 1); evaluated windows are also
+   * bounded by compile-time capacity. Omission leaves capacity as a storage constraint, with the
+   * population fraction governing eligible windows. An explicit limit also excludes larger
+   * windows from capacity loss diagnostics, even when it equals capacity.
    */
   maximumWindowZones?: number;
   /**
-   * Longest cylinder in time buckets, clamped to `timeBuckets`. Defaults to 50% of the study
+   * Finite positive cylinder length in buckets, rounded down (minimum 1) and clamped to `timeBuckets`. Defaults to 50% of the study
    * period, `max(1, floor(timeBuckets / 2))`, as in SaTScan.
    */
   maximumTimeBuckets?: number;
@@ -183,27 +188,57 @@ export type GPUSpatialScanStatisticSettings = {
 export function getGPUSpatialScanStatisticParameterValues(
   settings: GPUSpatialScanStatisticSettings
 ): Uint32Array {
-  const {seed, permutationCount} = settings;
-  if (!Number.isSafeInteger(seed) || seed < 0) {
-    throw new Error('scan statistic seed must be a non-negative safe integer');
-  }
+  const {
+    seed,
+    permutationCount,
+    maximumPopulationFraction,
+    maximumWindowZones,
+    maximumTimeBuckets,
+    windowShape,
+    rateDirection
+  } = settings;
+  validateCapacity('scan statistic', 'seed', seed, 0, Number.MAX_SAFE_INTEGER);
   validateCapacity('scan statistic', 'permutationCount', permutationCount, 1, 2 ** 31 - 1);
-  const fraction = settings.maximumPopulationFraction ?? 0.5;
-  if (!(fraction > 0 && fraction <= 1)) {
-    throw new Error('scan statistic maximumPopulationFraction must be in (0, 1]');
+  const fraction = maximumPopulationFraction ?? 0.5;
+  validateRequirement(
+    'scan statistic',
+    fraction > 0 && fraction <= 1 && Math.fround(fraction) > 0,
+    `maximumPopulationFraction received ${fraction}; must remain in (0, 1] after float32 conversion`
+  );
+  for (const [name, value] of [
+    ['maximumWindowZones', maximumWindowZones],
+    ['maximumTimeBuckets', maximumTimeBuckets]
+  ] as const) {
+    validateRequirement(
+      'scan statistic',
+      value === undefined || (Number.isFinite(value) && value > 0),
+      `${name} received ${String(value)}; must be finite and positive when supplied`
+    );
+  }
+  for (const [field, received, accepted] of [
+    ['windowShape', windowShape, ['circle', 'nearest']],
+    ['rateDirection', rateDirection, ['high', 'low', 'both']]
+  ] as const) {
+    validateRequirement(
+      'scan statistic',
+      received === undefined || accepted.some(value => value === received),
+      `${field} received ${String(received)}; expected ${accepted.join(', ')}`,
+      {code: 'INVALID_OPTION', path: field, received, expected: {values: accepted}}
+    );
   }
   const values = new Uint32Array(GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH);
   values[0] = seed % 2 ** 32;
   values[1] = Math.floor(seed / 2 ** 32);
   values[2] = permutationCount;
   values[3] = new Uint32Array(new Float32Array([fraction]).buffer)[0];
-  values[4] = Math.max(1, Math.floor(settings.maximumWindowZones ?? 2 ** 31));
+  // Preserve over-capacity requests for shader clamping instead of wrapping modulo 2^32.
+  values[4] = Math.min(0xffffffff, Math.max(1, Math.floor(maximumWindowZones ?? 2 ** 31)));
   values[5] =
-    settings.maximumTimeBuckets === undefined
+    maximumTimeBuckets === undefined
       ? 0
-      : Math.max(1, Math.floor(settings.maximumTimeBuckets));
-  values[6] = GPU_SPATIAL_SCAN_STATISTIC_WINDOW_SHAPE[settings.windowShape ?? 'circle'];
-  values[7] = GPU_SPATIAL_SCAN_STATISTIC_RATE_DIRECTION[settings.rateDirection ?? 'high'];
+      : Math.min(0xffffffff, Math.max(1, Math.floor(maximumTimeBuckets)));
+  values[6] = GPU_SPATIAL_SCAN_STATISTIC_WINDOW_SHAPE[windowShape ?? 'circle'];
+  values[7] = GPU_SPATIAL_SCAN_STATISTIC_RATE_DIRECTION[rateDirection ?? 'high'];
   return values;
 }
 
@@ -213,11 +248,15 @@ export function getGPUSpatialScanStatisticParameterValues(
  * when the analysis repeats every `analysisInterval`. Repeated analyses are not adjusted for.
  */
 export function getGPUScanRecurrenceInterval(pValue: number, analysisInterval = 1): number {
-  if (!(pValue > 0 && pValue <= 1)) {
-    throw new Error('scan recurrence interval needs a p-value in (0, 1]');
-  }
-  if (!(analysisInterval > 0)) {
-    throw new Error('scan recurrence interval needs a positive analysisInterval');
-  }
+  validateRequirement(
+    'scan recurrence interval',
+    pValue > 0 && pValue <= 1,
+    `pValue received ${pValue}; must be in (0, 1]`
+  );
+  validateRequirement(
+    'scan recurrence interval',
+    analysisInterval > 0,
+    `analysisInterval received ${analysisInterval}; must be positive`
+  );
   return analysisInterval / pValue;
 }

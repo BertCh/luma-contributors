@@ -510,8 +510,8 @@ export async function createHotSpotsCompute(
     searchParameters.write(
       getGPUNeighborSearchParameterValues({
         bounds,
-        radius: parameters.radiusMeters,
-        weightKind: 'binary'
+        searchRadius: parameters.radiusMeters,
+        weightType: 'binary'
       })
     );
     parameterBuffer.write(

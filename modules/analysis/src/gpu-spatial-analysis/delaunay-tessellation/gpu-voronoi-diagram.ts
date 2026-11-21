@@ -23,7 +23,7 @@ import {
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGPUStatusPort,
   type GPUBoundedResultStatusPort
@@ -49,10 +49,7 @@ function getVoronoiOutputViews(output: GPUVoronoiDiagramOutput) {
   return {
     segments: output.segments,
     siteIds: output.siteIds,
-    count: output.status.count,
-    requiredCount: output.status.requiredCount,
-    overflow: output.status.overflow,
-    invalidCount: output.status.invalidCount
+    ...output.status
   };
 }
 
@@ -60,8 +57,15 @@ function getVoronoiOutputViews(output: GPUVoronoiDiagramOutput) {
 export type GPUVoronoiDiagramOutput = {
   /** Segment endpoints `(startX, startY, endX, endY)`. */
   segments: GraphDataView<'float32x4'>;
-  /** The two Delaunay sites whose bisector owns each segment. */
+  /**
+   * The two Delaunay sites whose bisector owns each segment. To build positive-length
+   * adjacency, inspect only rows below status.count and retain a pair only when
+   * startX !== endX or startY !== endY in the corresponding segments row.
+   */
   siteIds: GraphDataView<'uint32x2'>;
+  /** `complete` (optional) is 1 only with no upstream, invalid-triangle or final capacity loss.
+   * `converged` reports upstream solver/triangle validity independently of final segment capacity.
+   * `unresolvedCount` is unsupported and rejected at construction. */
   status: GPUBoundedResultStatusPort & {requiredCount: GraphDataView<'uint32'>};
 };
 
@@ -76,9 +80,13 @@ export type GPUVoronoiDiagramProps = {
    */
   spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
-  /** Delaunay triples of either winding; only the prefix selected by `triangleCount` is read. */
+  /** Delaunay triples of either winding; only the readable prefix selected by `triangleCount` is read. */
   triangles: GraphDataView<'uint32x3'>;
+  /** Requested rows; exceeding triangles.length sets candidateOverflow and clears converged. */
   triangleCount: GraphDataView<'uint32'>;
+  /** Upstream completeness. Capacity loss or converged=0 suppresses segments. Only capacity loss sets
+   * output overflow/candidateOverflow; solver failure clears output converged and complete when supplied. */
+  triangleStatus?: {overflow?: GraphDataView<'uint32'>; converged?: GraphDataView<'uint32'>};
   /** One dynamic `[minimumX, minimumY, maximumX, maximumY]` row for hull-ray clipping. */
   clipBounds: GraphDataView<'float32x4'>;
   output: GPUVoronoiDiagramOutput;
@@ -113,6 +121,11 @@ export function getVoronoiMaximumSegmentCount(triangleCapacity: number): number 
  * `shapely.voronoi_polygons` returns. Callers that need those cases must build the bisectors of
  * consecutive sites themselves.
  *
+ * Upstream triangle capacity loss suppresses segments and sets overflow/candidateOverflow.
+ * Upstream solver nonconvergence also suppresses segments, but leaves both capacity words clear
+ * when storage suffices. Inspect optional converged or complete to distinguish this from a
+ * successful empty diagram. complete also accounts for local segment capacity and invalid triangles.
+ *
  * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
  * context throws at construction. Project first, for example with `createGPULocalFrame` and
  * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
@@ -124,10 +137,61 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUVoronoiDiagramProps) {
+    const {
+      id,
+      spatialContext,
+      positions,
+      triangles,
+      triangleCount,
+      triangleStatus,
+      clipBounds,
+      output
+    } = props;
+    const {segments, siteIds, status} = output;
+    props = {
+      id,
+      spatialContext,
+      positions,
+      triangles,
+      triangleCount,
+      clipBounds,
+      triangleStatus: triangleStatus && {
+        overflow: triangleStatus.overflow,
+        converged: triangleStatus.converged
+      },
+      output: {
+        segments,
+        siteIds,
+        status: {
+          complete: status.complete,
+          unresolvedCount: status.unresolvedCount,
+          count: status.count,
+          requiredCount: status.requiredCount,
+          overflow: status.overflow,
+          invalidCount: status.invalidCount,
+          candidateOverflow: status.candidateOverflow,
+          uncertainCount: status.uncertainCount,
+          iterationCount: status.iterationCount,
+          converged: status.converged,
+          iterationLimitReached: status.iterationLimitReached,
+          approximation: status.approximation
+        }
+      }
+    };
     this.id = props.id ?? 'voronoi-diagram';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    const {id} = this;
+    const contributorId = this.id;
+    this.validateProps(contributorId, props);
+  }
+
+  private validateProps(id: string, props: GPUVoronoiDiagramProps): void {
+    validateRequirement(
+      id,
+      props.output.status.unresolvedCount === undefined,
+      'output.status.unresolvedCount is unsupported; use output.status.converged or complete'
+    );
+    if (props.triangleStatus) validateGPUStatusPort(`${id} triangleStatus`, props.triangleStatus);
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(props.triangles, ['uint32x3'], `${id} triangles`);
     validateSinglePackedView(props.triangleCount, ['uint32'], `${id} triangleCount`);
@@ -175,11 +239,39 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
       segments: views.segments
     });
     validateDisjointWritableViews(id, {requiredCount: views.requiredCount, siteIds: views.siteIds});
+    validateDisjointWritableViews(id, {
+      invalidCount: props.output.status.invalidCount,
+      converged: props.output.status.converged
+    });
+    // Disjoint aligned ranges still cannot share read/read_write physical-buffer usages.
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      {
+        'output.status.count': props.output.status.count,
+        'output.status.overflow': props.output.status.overflow
+      },
+      {'output.status.requiredCount': props.output.status.requiredCount}
+    );
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      {'output.status.converged': props.output.status.converged},
+      {'output.status.invalidCount': props.output.status.invalidCount}
+    );
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      {'output.status.complete': props.output.status.complete},
+      {
+        'output.status.invalidCount': props.output.status.invalidCount,
+        'output.status.requiredCount': props.output.status.requiredCount
+      }
+    );
     validateGraphOutputsDisjointFromInputs(id, Object.values(views), [
       props.positions,
       props.triangles,
       props.triangleCount,
-      props.clipBounds
+      props.clipBounds,
+      props.triangleStatus?.overflow,
+      props.triangleStatus?.converged
     ]);
   }
 
@@ -193,6 +285,8 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
       triangles: props.triangles,
       triangleCount: props.triangleCount,
       clipBounds: props.clipBounds,
+      triangleOverflow: props.triangleStatus?.overflow,
+      triangleConverged: props.triangleStatus?.converged,
       ...getVoronoiOutputViews(output)
     });
     // Endpoint candidates are the largest derived binding. Centers, three edge-key columns,
@@ -205,6 +299,39 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
       'reduce triangles rows'
     );
     const triangleCapacity = props.triangles.length;
+    const inputControl = props.triangleStatus
+      ? createTransientView(graph, `${id}-input-control`, 'uint32', 2)
+      : undefined;
+    const readableTriangleCount = inputControl
+      ? graph.createDataView(inputControl.buffer, {
+          format: 'uint32',
+          length: 1,
+          byteOffset: inputControl.byteOffset
+        })
+      : props.triangleCount;
+    const upstreamIncomplete =
+      inputControl &&
+      graph.createDataView(inputControl.buffer, {
+        format: 'uint32',
+        length: 1,
+        byteOffset: inputControl.byteOffset + 4
+      });
+    const completenessBindings = upstreamIncomplete
+      ? [
+          {
+            name: 'upstreamIncomplete',
+            view: upstreamIncomplete,
+            type: 'u32' as const,
+            access: 'read' as const
+          }
+        ]
+      : [];
+    const incompleteExpression = upstreamIncomplete
+      ? 'upstreamIncomplete[upstreamIncompleteOffset] != 0u'
+      : 'false';
+    const capacityLossExpression = upstreamIncomplete
+      ? '(upstreamIncomplete[upstreamIncompleteOffset] & 1u) != 0u'
+      : 'false';
     const candidateCapacity = 3 * triangleCapacity;
     const centers = createTransientView(graph, `${id}-centers`, 'float32', 3 * triangleCapacity);
     const candidateIds = createTransientView(
@@ -262,6 +389,45 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
     const invalidCount =
       output.status.invalidCount ?? createTransientView(graph, `${id}-invalid-count`, 'uint32', 1);
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...(inputControl
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-prepare-input`,
+              operation: 'GPUVoronoiDiagram',
+              invocationCount: 1,
+              bindings: [
+                {name: 'requested', view: props.triangleCount, type: 'u32', access: 'read'},
+                ...(props.triangleStatus?.overflow
+                  ? [
+                      {
+                        name: 'upstreamOverflow',
+                        view: props.triangleStatus.overflow,
+                        type: 'u32' as const,
+                        access: 'read' as const
+                      }
+                    ]
+                  : []),
+                ...(props.triangleStatus?.converged
+                  ? [
+                      {
+                        name: 'upstreamConverged',
+                        view: props.triangleStatus.converged,
+                        type: 'u32' as const,
+                        access: 'read' as const
+                      }
+                    ]
+                  : []),
+                {name: 'control', view: inputControl, type: 'u32', access: 'read_write'}
+              ],
+              body: `let requestedCount = requested[requestedOffset];
+let capacityLoss = requestedCount > ${triangleCapacity}u ${props.triangleStatus?.overflow ? '|| upstreamOverflow[upstreamOverflowOffset] != 0u' : ''};
+let solverLoss = ${props.triangleStatus?.converged ? 'upstreamConverged[upstreamConvergedOffset] == 0u' : 'false'};
+let incomplete = capacityLoss || solverLoss;
+control[controlOffset] = select(requestedCount, 0u, incomplete);
+control[controlOffset + 1u] = select(0u, 1u, capacityLoss) | select(0u, 2u, solverLoss);`
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize`,
         operation: 'GPUVoronoiDiagram',
@@ -277,7 +443,7 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
           {name: 'triangles', view: props.triangles, type: 'u32', access: 'read'},
-          {name: 'triangleCountIn', view: props.triangleCount, type: 'u32', access: 'read'},
+          {name: 'triangleCountIn', view: readableTriangleCount, type: 'u32', access: 'read'},
           {name: 'centers', view: centers, type: 'f32', access: 'read_write'},
           {name: 'invalidCount', view: invalidCount, type: 'atomic<u32>', access: 'read_write'}
         ],
@@ -300,7 +466,7 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
         variant: 'parallel-edge-keys',
         bindings: [
           {name: 'triangles', view: props.triangles, type: 'u32', access: 'read'},
-          {name: 'triangleCountIn', view: props.triangleCount, type: 'u32', access: 'read'},
+          {name: 'triangleCountIn', view: readableTriangleCount, type: 'u32', access: 'read'},
           {name: 'candidateIds', view: candidateIds, type: 'u32', access: 'read_write'},
           {name: 'edgeMinimumKeys', view: edgeMinimumKeys, type: 'u32', access: 'read_write'},
           {name: 'edgeMaximumKeys', view: edgeMaximumKeys, type: 'u32', access: 'read_write'}
@@ -528,15 +694,82 @@ candidateSegments[slot] = start.x; candidateSegments[slot + 1u] = start.y; candi
             access: 'read'
           },
           {name: 'countOut', view: output.status.count, type: 'u32', access: 'read_write'},
-          {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'}
+          {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          ...completenessBindings
         ],
         invocationCount: 1,
         declarations: `const OUTPUT_CAPACITY: u32 = ${output.segments.length}u;`,
         body: `let requiredCount = requiredCountIn[requiredCountInOffset];
   countOut[countOutOffset] = min(requiredCount, OUTPUT_CAPACITY);
-  overflowOut[overflowOutOffset] = select(0u, 1u, requiredCount > OUTPUT_CAPACITY);`
+  overflowOut[overflowOutOffset] = select(0u, 1u, requiredCount > OUTPUT_CAPACITY || ${capacityLossExpression});`
       })
     );
+    for (const name of [
+      'uncertainCount',
+      'iterationCount',
+      'iterationLimitReached',
+      'approximation'
+    ] as const) {
+      const view = output.status[name];
+      if (view)
+        nodes.push(
+          createFillNode<Parameters>(graph, {
+            id: `${id}-publish-${name}`,
+            operation: 'GPUVoronoiDiagram',
+            view,
+            type: 'u32',
+            value: '0u',
+            componentCount: 1
+          })
+        );
+    }
+    if (output.status.candidateOverflow)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish-candidateOverflow`,
+          operation: 'GPUVoronoiDiagram',
+          bindings: [
+            {name: 'requested', view: props.triangleCount, type: 'u32', access: 'read'},
+            ...completenessBindings,
+            {
+              name: 'candidateOverflow',
+              view: output.status.candidateOverflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: 1,
+          body: `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, requested[requestedOffset] > ${triangleCapacity}u || ${capacityLossExpression});`
+        })
+      );
+    for (const field of ['converged', 'complete'] as const) {
+      const destination = output.status[field];
+      if (!destination) continue;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish-${field}`,
+          operation: 'GPUVoronoiDiagram',
+          bindings: [
+            {name: 'requested', view: props.triangleCount, type: 'u32', access: 'read'},
+            ...completenessBindings,
+            {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read'},
+            ...(field === 'complete'
+              ? [
+                  {
+                    name: 'required',
+                    view: output.status.requiredCount,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {name: 'converged', view: destination, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: `converged[convergedOffset] = select(0u, 1u, invalidCount[invalidCountOffset] == 0u && requested[requestedOffset] <= ${triangleCapacity}u && !(${incompleteExpression}) ${field === 'complete' ? `&& required[requiredOffset] <= ${output.segments.length}u` : ''});`
+        })
+      );
+    }
     return nodes;
   }
 }

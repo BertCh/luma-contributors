@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_ANALYSIS_QUESTIONS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_ANALYSIS_QUESTIONS} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogOperationBinding} from '../analysis/catalog-binding-types';
 import type {KeplerOperationDescriptor} from './operation-descriptor-types';
 

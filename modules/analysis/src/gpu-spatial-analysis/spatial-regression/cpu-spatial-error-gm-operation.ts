@@ -15,6 +15,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/contracts/model-result';
 import {fitCPURegressionWithQR} from './cpu-regression-linear-algebra';
+import {getCPUSpatialErrorResponseRelation} from './cpu-spatial-error-likelihood-polynomial';
 import {
   validateCPURegressionWeights,
   validateCompleteRegressionWeights,
@@ -39,7 +40,7 @@ import {
 } from './spatial-error-gm-parameters';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getSpatialWeightsTracesProbeValue
 } from './spatial-weights-traces-parameters';
@@ -359,6 +360,17 @@ export function computeSpatialErrorGMOnCPU(
   }
   const initialFit = fitCPURegressionWithQR(design, response);
   if (!initialFit) return fail(count <= width + 1 ? 2 : 1);
+  // Certify the raw dyadic inputs exactly; QR roundoff is not an innovation variance.
+  if (
+    getCPUSpatialErrorResponseRelation(
+      Array.from({length: count}, (_, row) => [
+        1,
+        ...input.predictors.subarray(row * predictorCount, (row + 1) * predictorCount)
+      ]),
+      Array.from(input.response)
+    ).exactFit
+  )
+    return fail(count <= width + 1 ? 2 : 3);
   const initialResiduals = response.map(
     (value, row) => value - getCPUErrorDot(design[row], initialFit.estimate)
   );
@@ -419,7 +431,7 @@ export function computeSpatialErrorGMOnCPU(
   const stochastic =
     homoskedastic &&
     (options.traceMode ??
-      (count <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic')) ===
+      (count <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic')) ===
       'stochastic';
   if (homoskedastic) {
     polynomial = getMomentPolynomial(residuals, multiply, trace, bound, true);

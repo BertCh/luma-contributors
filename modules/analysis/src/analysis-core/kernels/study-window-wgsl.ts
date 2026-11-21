@@ -10,6 +10,7 @@ import {
   type PolygonEdgeSlabs,
   type PolygonEdgeSlabStorage
 } from './polygon-edge-slabs';
+import {GUARDED_ATAN2_WGSL} from './wgsl-common';
 import type {WGSLKernelBinding} from './wgsl-kernel-nodes';
 
 /**
@@ -188,6 +189,7 @@ ${body}`
   return /* wgsl */ `
 ${getPolygonEdgeSlabQueryWGSL(options, storage)}
 const STUDY_WINDOW_TWO_PI: f32 = 6.283185307179586;
+${GUARDED_ATAN2_WGSL.replaceAll('guardedAtan2', 'studyWindowAtan2')}
 fn studyWindowSummaryValue(slot: u32) -> f32 {
   return bitcast<f32>(studyWindow[studyWindowOffset + ${layout.summary}u + slot]);
 }
@@ -264,7 +266,9 @@ fn studyWindowFanBase(centre: vec2f) -> f32 {
     let start = edge.xy - centre;
     let end = edge.zw - centre;
     let cross = studyWindowCross(start, end);
-    if (isFiniteBits(cross) && cross != 0.0) { angle += atan2(cross, dot(start, end)); }
+    // The dot product is -0.0 at a right angle with negative components, where atan2 flips sign on
+    // some backends (GUARDED_ATAN2_WGSL).
+    if (isFiniteBits(cross) && cross != 0.0) { angle += studyWindowAtan2(cross, dot(start, end)); }
   }
   return clamp(angle / STUDY_WINDOW_TWO_PI, 0.0, 1.0);
 }

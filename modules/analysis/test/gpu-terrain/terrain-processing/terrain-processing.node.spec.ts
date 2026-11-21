@@ -127,7 +127,11 @@ it('terrain roadmap kernels parse within portable binding limits', () => {
         levels: view('float32', 6),
         cellNodes: view('uint32', 3),
         curves: view('float32', 12),
-        status: view('uint32', 3)
+        status: {
+          count: view('uint32', 1),
+          requiredCount: view('uint32', 1),
+          overflow: view('uint32', 1)
+        }
       }
     }),
     new GPUTerrainTiledFlow({
@@ -194,6 +198,8 @@ it('terrain roadmap kernels parse within portable binding limits', () => {
       expect(commandNodes.map(node => node.id)).toContain(
         `${contributor.id}-activation-splice-round-0`
       );
+      expect(commandNodes.map(node => node.id)).toContain(`${contributor.id}-activation-status`);
+      expect(commandNodes.map(node => node.id)).not.toContain(`${contributor.id}-status-ports`);
     }
     const sources = getParsedKernelSources(commandNodes);
     expect(sources.size).toBeGreaterThan(0);
@@ -275,7 +281,11 @@ it('terrain outputs reject aliases and malformed capacity', () => {
           levels: view('float32', 4),
           cellNodes: view('uint32', 2),
           curves: view('float32', 8),
-          status: view('uint32', 3)
+          status: {
+            count: view('uint32', 1),
+            requiredCount: view('uint32', 1),
+            overflow: view('uint32', 1)
+          }
         }
       })
   ).toThrow();
@@ -500,6 +510,66 @@ it('breach rejects an excessive step graph before creating command nodes', () =>
   ).toThrow(/breach-budget.*estimated command node count.*32768/);
 });
 
+it('hierarchy requires three one-row status views and rejects the legacy output shape', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    let identifier = 0;
+    const view = <Format extends 'float32' | 'uint32'>(format: Format, length = 1) =>
+      createTransientView(graph, `hierarchy-status-${identifier++}`, format, length);
+    const props = {
+      id: 'hierarchy-status',
+      grid: {
+        width: 1,
+        height: 1,
+        affine: [1, 0, 0, 0, 1, 0] as const,
+        pixelInterpretation: 'area' as const
+      },
+      elevation: view('float32'),
+      outlets: view('uint32'),
+      stages: view('float32'),
+      nodeCapacity: 1,
+      output: {
+        nodes: view('uint32', 4),
+        levels: view('float32', 2),
+        cellNodes: view('uint32'),
+        curves: view('float32', 2),
+        status: {count: view('uint32'), requiredCount: view('uint32'), overflow: view('uint32')}
+      }
+    };
+    expect(
+      () =>
+        new GPUTerrainDepressionHierarchy({
+          ...props,
+          // @ts-expect-error Supply a map of one-row views instead of a packed status view.
+          output: {...props.output, status: view('uint32', 3)}
+        })
+    ).toThrow(/^hierarchy-status output\.status.*output\.status\.count.*requiredCount.*overflow/);
+    expect(
+      () =>
+        new GPUTerrainDepressionHierarchy({
+          ...props,
+          // @ts-expect-error The former optional status map has been removed.
+          output: {...props.output, ports: {status: {overflow: view('uint32')}}}
+        })
+    ).toThrow(/^hierarchy-status output\.ports.*output\.status\.count.*requiredCount.*overflow/);
+    for (const port of ['count', 'requiredCount', 'overflow'] as const) {
+      expect(
+        () =>
+          new GPUTerrainDepressionHierarchy({
+            ...props,
+            output: {
+              ...props.output,
+              status: {...props.output.status, [port]: view('uint32', 2)}
+            }
+          })
+      ).toThrow(new RegExp(`^hierarchy-status output\\.status\\.${port} must have 1 rows`));
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
 it('hierarchy rejects reconstruction scratch above the binding limit before allocating nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   let identifier = 0;
@@ -518,7 +588,11 @@ it('hierarchy rejects reconstruction scratch above the binding limit before allo
       levels: view('float32', 2),
       cellNodes: view('uint32', count),
       curves: view('float32', 2),
-      status: view('uint32', 3)
+      status: {
+        count: view('uint32', 1),
+        requiredCount: view('uint32', 1),
+        overflow: view('uint32', 1)
+      }
     }
   });
   expect(() => hierarchy.getCommandNodes(graph)).toThrow(
@@ -550,8 +624,11 @@ it('parallel terrain node estimates cover single cells, padding and 262144-cell 
         levels: view('float32', 2),
         cellNodes: view('uint32', count),
         curves: view('float32', 2),
-        status: view('uint32', 3),
-        ports: {status: {requiredCount: view('uint32', 1), overflow: view('uint32', 1)}}
+        status: {
+          count: view('uint32', 1),
+          requiredCount: view('uint32', 1),
+          overflow: view('uint32', 1)
+        }
       }
     });
     const hierarchyNodes = hierarchy.getCommandNodes(graph);

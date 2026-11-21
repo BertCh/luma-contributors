@@ -11,11 +11,11 @@ import {
   importGraphBuffer
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  getGPUSpatialClusteringParameterValues,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_NOISE,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  type GPUSpatialClusteringSettings
+  getGPUDBSCANParameterValues,
+  GPUDBSCAN,
+  GPU_DBSCAN_NOISE,
+  GPU_DBSCAN_PARAMETER_LENGTH,
+  type GPUDBSCANSettings
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {
   createInputBuffer,
@@ -32,7 +32,7 @@ import {
   createClusteredPoints,
   createSeededRandom,
   separateNearEpsilonPairs,
-  type SpatialClusteringOracleResult
+  type DBSCANOracleResult
 } from './spatial-clustering-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
@@ -40,7 +40,7 @@ const GARBAGE = 0x7f7f7f7f;
 
 type HarnessOptions = {
   positions: Float32Array;
-  parameters: GPUSpatialClusteringSettings;
+  parameters: GPUDBSCANSettings;
   gridSize?: readonly [number, number];
   capacity?: number;
   sourceIds?: Uint32Array;
@@ -57,7 +57,6 @@ type HarnessResult = {
   count: number;
   overflow: number;
   requiredCount: number;
-  drawInstanceCount: number;
   sizes: number[];
   centroids: number[];
 };
@@ -71,8 +70,8 @@ function createHarness(device: Device, options: HarnessOptions) {
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'spatial-clustering-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues(options.parameters)
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues(options.parameters)
   });
   const outputs: Record<
     | 'labels'
@@ -83,7 +82,6 @@ function createHarness(device: Device, options: HarnessOptions) {
     | 'count'
     | 'overflow'
     | 'requiredCount'
-    | 'drawInstanceCount'
     | 'sizes'
     | 'centroids',
     Buffer
@@ -96,12 +94,11 @@ function createHarness(device: Device, options: HarnessOptions) {
     count: createOutputBuffer(device, 1),
     overflow: createOutputBuffer(device, 1),
     requiredCount: createOutputBuffer(device, 1),
-    drawInstanceCount: createOutputBuffer(device, 1),
     sizes: createOutputBuffer(device, capacity),
     centroids: createOutputBuffer(device, capacity * 2)
   };
   const graph = new GPUCommandGraph(device, {id: 'spatial-clustering-test'});
-  const contributor = new GPUSpatialClustering({
+  const contributor = new GPUDBSCAN({
     positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
     parameters: parameterBuffer.importToGraph(graph),
     gridSize: options.gridSize ?? [32, 32],
@@ -122,13 +119,6 @@ function createHarness(device: Device, options: HarnessOptions) {
           requiredCount: importGraphBuffer(graph, 'total-count', outputs.requiredCount, 'uint32', 1)
         }
       },
-      drawInstanceCount: importGraphBuffer(
-        graph,
-        'draw-instance-count',
-        outputs.drawInstanceCount,
-        'uint32',
-        1
-      ),
       clusterSizes: importGraphBuffer(graph, 'sizes', outputs.sizes, 'uint32', capacity),
       clusterCentroids: importGraphBuffer(
         graph,
@@ -145,11 +135,9 @@ function createHarness(device: Device, options: HarnessOptions) {
   return {
     capacity,
     /** Writes `parameters` (a raw array when given as one), poisons every output, and runs. */
-    async run(parameters: GPUSpatialClusteringSettings | Float32Array): Promise<HarnessResult> {
+    async run(parameters: GPUDBSCANSettings | Float32Array): Promise<HarnessResult> {
       parameterBuffer.write(
-        parameters instanceof Float32Array
-          ? parameters
-          : getGPUSpatialClusteringParameterValues(parameters)
+        parameters instanceof Float32Array ? parameters : getGPUDBSCANParameterValues(parameters)
       );
       for (const buffer of Object.values(outputs)) {
         buffer.write(new Uint32Array(buffer.byteLength / 4).fill(GARBAGE));
@@ -165,7 +153,6 @@ function createHarness(device: Device, options: HarnessOptions) {
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
         requiredCount: (await readUint32(outputs.requiredCount, 1))[0],
-        drawInstanceCount: (await readUint32(outputs.drawInstanceCount, 1))[0],
         sizes: await readUint32(outputs.sizes, capacity),
         centroids: await readFloat32(outputs.centroids, capacity * 2)
       };
@@ -188,7 +175,7 @@ function createHarness(device: Device, options: HarnessOptions) {
 /** Asserts exact agreement with the oracle, including bounded cluster outputs. */
 function expectMatchesOracle(
   result: HarnessResult,
-  oracle: SpatialClusteringOracleResult,
+  oracle: DBSCANOracleResult,
   capacity: number
 ): void {
   expect(result.labels).toEqual(oracle.labels);
@@ -199,7 +186,6 @@ function expectMatchesOracle(
   expect(result.count).toBe(bounded);
   expect(result.requiredCount).toBe(oracle.clusterCount);
   expect(result.overflow).toBe(oracle.clusterCount > capacity ? 1 : 0);
-  expect(result.drawInstanceCount).toBe(result.count);
   expect(result.ids).toEqual(oracle.clusterRoots.slice(0, bounded));
   expect(result.sizes.slice(0, bounded)).toEqual(oracle.clusterSizes.slice(0, bounded));
   expect(result.sizes.slice(bounded)).toEqual(new Array(capacity - bounded).fill(0));
@@ -223,20 +209,20 @@ function getBlobProps(pointCount: number) {
   };
 }
 
-it('GPUSpatialClustering matches the oracle on random clustered points and frame changes', async () => {
+it('GPUDBSCAN matches the oracle on random clustered points and frame changes', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const bounds = [-10, -10, 110, 110] as const;
-  const frames: GPUSpatialClusteringSettings[] = [
-    {bounds, epsilon: 1.5, minimumPoints: 5},
+  const frames: GPUDBSCANSettings[] = [
+    {bounds, epsilon: 1.5, minimumSamples: 5},
     // Much smaller than bounds / gridSize (3.75): many more points per cell than the lattice implies.
-    {bounds, epsilon: 0.4, minimumPoints: 3},
+    {bounds, epsilon: 0.4, minimumSamples: 3},
     // Much larger than bounds / gridSize: the active lattice shrinks to fewer, wider cells.
-    {bounds, epsilon: 12, minimumPoints: 40},
-    {bounds, epsilon: 1.5, minimumPoints: 1},
-    {bounds, epsilon: 1.5, minimumPoints: 25},
-    {bounds: [20, 20, 80, 80], epsilon: 1.5, minimumPoints: 5},
-    {bounds, epsilon: 1.5, minimumPoints: 5}
+    {bounds, epsilon: 12, minimumSamples: 40},
+    {bounds, epsilon: 1.5, minimumSamples: 1},
+    {bounds, epsilon: 1.5, minimumSamples: 25},
+    {bounds: [20, 20, 80, 80], epsilon: 1.5, minimumSamples: 5},
+    {bounds, epsilon: 1.5, minimumSamples: 5}
   ];
   const epsilons = [...new Set(frames.map(frame => frame.epsilon))];
   const first = separateNearEpsilonPairs(
@@ -270,7 +256,7 @@ it('GPUSpatialClustering matches the oracle on random clustered points and frame
     // Invalid epsilon (bypassing the packer) excludes every point.
     const invalid = new Float32Array([...bounds, 0, 3, 0, 0]);
     const result = await harness.run(invalid);
-    expect(result.labels.every(label => label === GPU_SPATIAL_CLUSTERING_NOISE)).toBe(true);
+    expect(result.labels.every(label => label === GPU_DBSCAN_NOISE)).toBe(true);
     expect(result.coreFlags.every(flag => flag === 0)).toBe(true);
     expect(result.clusterCount).toBe(0);
     expect(result.count).toBe(0);
@@ -284,7 +270,7 @@ it('GPUSpatialClustering matches the oracle on random clustered points and frame
   }
 }, 120000);
 
-it('GPUSpatialClustering assigns a border point to the adjacent cluster with the smaller root', async () => {
+it('GPUDBSCAN assigns a border point to the adjacent cluster with the smaller root', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const clusterA = [0, 0, 1, 0, 2, 0, 0, 1, 1, 1, 2, 1];
@@ -293,7 +279,7 @@ it('GPUSpatialClustering assigns a border point to the adjacent cluster with the
   const parameters = {
     bounds: [-2, -2, 12, 4],
     epsilon: 2.5,
-    minimumPoints: 6
+    minimumSamples: 6
   } as const;
   for (const [name, rowsInOrder] of [
     ['B first', [...clusterB, ...border, ...clusterA]],
@@ -321,7 +307,7 @@ it('GPUSpatialClustering assigns a border point to the adjacent cluster with the
   }
 }, 60000);
 
-it('GPUSpatialClustering finds one cluster for a long shuffled chain', async () => {
+it('GPUDBSCAN finds one cluster for a long shuffled chain', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const count = 1000;
@@ -343,7 +329,7 @@ it('GPUSpatialClustering finds one cluster for a long shuffled chain', async () 
     const parameters = {
       bounds: [-1, -1, 1000, 2],
       epsilon: 1,
-      minimumPoints: 2
+      minimumSamples: 2
     } as const;
     const harness = createHarness(device, {positions, parameters, gridSize});
     try {
@@ -359,7 +345,7 @@ it('GPUSpatialClustering finds one cluster for a long shuffled chain', async () 
   }
 }, 60000);
 
-it('GPUSpatialClustering excludes NaN, infinite, and out-of-bounds points', async () => {
+it('GPUDBSCAN excludes NaN, infinite, and out-of-bounds points', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = Float32Array.from([
@@ -393,7 +379,7 @@ it('GPUSpatialClustering excludes NaN, infinite, and out-of-bounds points', asyn
   const parameters = {
     bounds: [0, 0, 10, 10],
     epsilon: 1,
-    minimumPoints: 3
+    minimumSamples: 3
   } as const;
   const harness = createHarness(device, {
     positions,
@@ -407,20 +393,20 @@ it('GPUSpatialClustering excludes NaN, infinite, and out-of-bounds points', asyn
     expect(result.clusterCount).toBe(1);
     expect(result.labels.slice(0, 4)).toEqual([0, 0, 0, 0]);
     expect(result.labels.slice(4)).toEqual(
-      new Array(positions.length / 2 - 4).fill(GPU_SPATIAL_CLUSTERING_NOISE)
+      new Array(positions.length / 2 - 4).fill(GPU_DBSCAN_NOISE)
     );
   } finally {
     harness.destroy();
   }
 }, 60000);
 
-it('GPUSpatialClustering reports cluster capacity overflow', async () => {
+it('GPUDBSCAN reports cluster capacity overflow', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const parameters = {
     bounds: [-10, -10, 110, 110],
     epsilon: 1.5,
-    minimumPoints: 5
+    minimumSamples: 5
   } as const;
   const positions = separateNearEpsilonPairs(
     createClusteredPoints(11, getBlobProps(1500)),
@@ -442,13 +428,13 @@ it('GPUSpatialClustering reports cluster capacity overflow', async () => {
   }
 }, 60000);
 
-it('GPUSpatialClustering handles empty, single-point, and all-noise inputs', async () => {
+it('GPUDBSCAN handles empty, single-point, and all-noise inputs', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const parameters = {
     bounds: [0, 0, 10, 10],
     epsilon: 1,
-    minimumPoints: 1
+    minimumSamples: 1
   } as const;
   const empty = createHarness(device, {
     positions: new Float32Array(0),
@@ -480,20 +466,20 @@ it('GPUSpatialClustering handles empty, single-point, and all-noise inputs', asy
     expect(one.clusterCount).toBe(1);
     expect(one.sizes[0]).toBe(1);
     expect(one.centroids.slice(0, 2)).toEqual([3, 4]);
-    const noise = await single.run({...parameters, minimumPoints: 2});
-    expectMatchesOracle(noise, clusterPointsOracle([3, 4], {...parameters, minimumPoints: 2}), 4);
-    expect(noise.labels).toEqual([GPU_SPATIAL_CLUSTERING_NOISE]);
+    const noise = await single.run({...parameters, minimumSamples: 2});
+    expectMatchesOracle(noise, clusterPointsOracle([3, 4], {...parameters, minimumSamples: 2}), 4);
+    expect(noise.labels).toEqual([GPU_DBSCAN_NOISE]);
     expect(noise.clusterCount).toBe(0);
   } finally {
     single.destroy();
   }
 
-  // Sparse points with minimumPoints larger than the point count: all noise.
+  // Sparse points with minimumSamples larger than the point count: all noise.
   const sparse = Float32Array.from([1, 1, 5, 5, 9, 9, 1, 9]);
   const sparseParameters = {
     bounds: [0, 0, 10, 10],
     epsilon: 1,
-    minimumPoints: 10
+    minimumSamples: 10
   } as const;
   const sparseHarness = createHarness(device, {
     positions: sparse,
@@ -508,7 +494,7 @@ it('GPUSpatialClustering handles empty, single-point, and all-noise inputs', asy
   }
 }, 60000);
 
-it('GPUSpatialClustering maps clusters.ids through sourceIds', async () => {
+it('GPUDBSCAN maps clusters.ids through sourceIds', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Two tight groups, the second listed first so root rows differ from label order.
@@ -517,7 +503,7 @@ it('GPUSpatialClustering maps clusters.ids through sourceIds', async () => {
   const parameters = {
     bounds: [0, 0, 10, 10],
     epsilon: 0.5,
-    minimumPoints: 3
+    minimumSamples: 3
   } as const;
   const harness = createHarness(device, {
     positions,
@@ -529,7 +515,7 @@ it('GPUSpatialClustering maps clusters.ids through sourceIds', async () => {
     const result = await harness.run(parameters);
     expectMatchesOracle(result, clusterPointsOracle(positions, parameters, sourceIds), 64);
     expect(result.ids).toEqual([900, 700]);
-    expect(result.labels).toEqual([0, 0, 0, 1, 1, 1, GPU_SPATIAL_CLUSTERING_NOISE]);
+    expect(result.labels).toEqual([0, 0, 0, 1, 1, 1, GPU_DBSCAN_NOISE]);
   } finally {
     harness.destroy();
   }
@@ -545,7 +531,7 @@ function getCentroidBits(centroids: number[]): number[] {
   });
 }
 
-it("GPUSpatialClustering sumOrder 'sorted' gives bitwise-identical centroids that match the oracle", async () => {
+it("GPUDBSCAN sumOrder 'sorted' gives bitwise-identical centroids that match the oracle", async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Large offset coordinates make f32 sums order-sensitive; few clusters make segments long.
@@ -562,7 +548,7 @@ it("GPUSpatialClustering sumOrder 'sorted' gives bitwise-identical centroids tha
   const parameters = {
     bounds: [offset - 10, offset - 10, offset + 110, offset + 110],
     epsilon: 0.6,
-    minimumPoints: 5
+    minimumSamples: 5
   } as const;
   const capacity = 8;
   const results: Record<string, HarnessResult[]> = {};
@@ -628,11 +614,11 @@ it("GPUSpatialClustering sumOrder 'sorted' gives bitwise-identical centroids tha
   }
 }, 240000);
 
-it("GPUSpatialClustering sumOrder 'sorted' matches the oracle with capacity overflow and noise", async () => {
+it("GPUDBSCAN sumOrder 'sorted' matches the oracle with capacity overflow and noise", async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const bounds = [-10, -10, 110, 110] as const;
-  const parameters = {bounds, epsilon: 1.5, minimumPoints: 5} as const;
+  const parameters = {bounds, epsilon: 1.5, minimumSamples: 5} as const;
   const positions = separateNearEpsilonPairs(
     createClusteredPoints(11, getBlobProps(1500)),
     [parameters.epsilon],
@@ -655,7 +641,7 @@ it("GPUSpatialClustering sumOrder 'sorted' matches the oracle with capacity over
   }
 }, 120000);
 
-it('GPUSpatialClustering clusters longitude/latitude points with a great-circle epsilon in meters', async () => {
+it('GPUDBSCAN clusters longitude/latitude points with a great-circle epsilon in meters', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // Blobs at latitudes 0, 45 and 70: the same metric epsilon spans very different longitude steps.
@@ -665,14 +651,14 @@ it('GPUSpatialClustering clusters longitude/latitude points with a great-circle 
     metric: 'great-circle',
     units: 'meters'
   };
-  for (const [epsilon, minimumPoints] of [
+  for (const [epsilon, minimumSamples] of [
     [150, 5],
     [400, 8],
     [60, 3]
   ]) {
-    const parameters = {bounds: [-180, -90, 180, 90] as const, epsilon, minimumPoints};
+    const parameters = {bounds: [-180, -90, 180, 90] as const, epsilon, minimumSamples};
     const harness = createHarness(device, {positions, parameters, spatialContext});
-    const result = await harness.run(getGPUSpatialClusteringParameterValues(parameters));
+    const result = await harness.run(getGPUDBSCANParameterValues(parameters));
     const expected = clusterGeographicPointsOracle(positions, parameters);
     // Points whose distance to a neighbor is within f32 error of epsilon could flip; the scene's
     // continuous offsets make that vanishingly unlikely, so labels must match exactly.
@@ -682,18 +668,18 @@ it('GPUSpatialClustering clusters longitude/latitude points with a great-circle 
     harness.destroy();
   }
   // Bounds restrict the valid set; a context outside [-180, 180] x [-90, 90] marks all noise.
-  const wide = {bounds: [-190, -90, 180, 90] as const, epsilon: 150, minimumPoints: 5};
+  const wide = {bounds: [-190, -90, 180, 90] as const, epsilon: 150, minimumSamples: 5};
   const harness = createHarness(device, {positions, parameters: wide, spatialContext});
-  const result = await harness.run(getGPUSpatialClusteringParameterValues(wide));
+  const result = await harness.run(getGPUDBSCANParameterValues(wide));
   expect(result.clusterCount).toBe(0);
   harness.destroy();
 });
 
-it('GPUSpatialClustering joins great-circle neighbours across the antimeridian', async () => {
+it('GPUDBSCAN joins great-circle neighbours across the antimeridian', async () => {
   // Math review point-process-clustering-05. At latitude 10 one degree of longitude is
   // 111.195 km * cos(10 deg) = 109.5 km, so 0.02 deg is 2.19 km. Rows 0..3 sit at longitudes
   // 179.97, 179.99, -179.99, -179.97: consecutive rows are 2.19 km apart (rows 1 and 2 across
-  // +-180), rows two apart 4.38 km, rows 0 and 3 6.57 km. With epsilon 5 km and minimumPoints 3
+  // +-180), rows two apart 4.38 km, rows 0 and 3 6.57 km. With epsilon 5 km and minimumSamples 3
   // (self included) every one of the four has at least three neighbours, so by hand they are one
   // cluster of four core points; row 4 at longitude 0 is noise. Without the wrap rows 0..1 and
   // 2..3 are two pairs with two neighbours each: no core point, no cluster.
@@ -707,15 +693,15 @@ it('GPUSpatialClustering joins great-circle neighbours across the antimeridian',
     units: 'meters'
   };
   const line = Float32Array.of(179.97, 10, 179.99, 10, -179.99, 10, -179.97, 10, 0, 10);
-  const lineParameters = {bounds: [-180, -75, 180, 75] as const, epsilon: 5000, minimumPoints: 3};
+  const lineParameters = {bounds: [-180, -75, 180, 75] as const, epsilon: 5000, minimumSamples: 3};
   const lineHarness = createHarness(device, {
     positions: line,
     parameters: lineParameters,
     spatialContext
   });
-  const lineResult = await lineHarness.run(getGPUSpatialClusteringParameterValues(lineParameters));
+  const lineResult = await lineHarness.run(getGPUDBSCANParameterValues(lineParameters));
   expect(lineResult.coreFlags).toEqual([1, 1, 1, 1, 0]);
-  expect(lineResult.labels).toEqual([0, 0, 0, 0, GPU_SPATIAL_CLUSTERING_NOISE]);
+  expect(lineResult.labels).toEqual([0, 0, 0, 0, GPU_DBSCAN_NOISE]);
   expect(lineResult.clusterCount).toBe(1);
   lineHarness.destroy();
 
@@ -737,15 +723,15 @@ it('GPUSpatialClustering joins great-circle neighbours across the antimeridian',
     points.push(-50 + random() * 20, -30 + random() * 20);
   }
   const positions = new Float32Array(points);
-  for (const [epsilon, minimumPoints] of [
+  for (const [epsilon, minimumSamples] of [
     [150, 5],
     [400, 8],
     [60, 3],
     [2000000, 4]
   ]) {
-    const parameters = {bounds: [-180, -75, 180, 75] as const, epsilon, minimumPoints};
+    const parameters = {bounds: [-180, -75, 180, 75] as const, epsilon, minimumSamples};
     const harness = createHarness(device, {positions, parameters, spatialContext});
-    const result = await harness.run(getGPUSpatialClusteringParameterValues(parameters));
+    const result = await harness.run(getGPUDBSCANParameterValues(parameters));
     const expected = clusterGeographicPointsOracle(positions, parameters);
     expect(result.labels, `epsilon ${epsilon}`).toEqual(expected.labels);
     expect(result.coreFlags, `epsilon ${epsilon}`).toEqual(expected.coreFlags);
@@ -754,15 +740,15 @@ it('GPUSpatialClustering joins great-circle neighbours across the antimeridian',
   }
 });
 
-it('GPUSpatialClustering matches the oracle whatever the input order (cell-ordered scans)', async () => {
+it('GPUDBSCAN matches the oracle whatever the input order (cell-ordered scans)', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   // The neighbor scans read cell-ordered copies of positions and core flags; results are written
   // by row and must stay canonical for a spatially coherent and a shuffled order of one point set.
-  const frame: GPUSpatialClusteringSettings = {
+  const frame: GPUDBSCANSettings = {
     bounds: [-10, -10, 110, 110],
     epsilon: 1.5,
-    minimumPoints: 5
+    minimumSamples: 5
   };
   const points = separateNearEpsilonPairs(
     createClusteredPoints(41, getBlobProps(2000)),

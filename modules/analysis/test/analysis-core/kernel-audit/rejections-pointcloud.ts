@@ -96,10 +96,10 @@ export const POINTCLOUD_REJECTIONS: readonly KernelAuditRejection[] = [
   },
   {
     exportName: 'GPUPointCloudICP',
-    name: 'iterations one above 100',
+    name: 'maximumIterations one above 100',
     kind: 'dispatch',
     limit: 100,
-    rejects: /^Error: gpu-pointcloud-icp iterations must be an integer in \[1, 100\]$/
+    rejects: /^Error: gpu-pointcloud-icp maximumIterations must be an integer in \[1, 100\]$/
   },
   {
     exportName: 'GPUPointCloudICP',

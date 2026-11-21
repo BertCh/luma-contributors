@@ -6,9 +6,10 @@
  * Tail extrapolation for the truncated trace series of the spatial maximum-likelihood estimators.
  *
  * The series `ln|I - rho W| = -sum_q t^q c_q / q` (`t = rho s`, `c_q = tr((W / s)^q)`) is truncated
- * after `Q` terms. For a row-standardized `W` the traces `c_q` converge to a constant (the number
- * of connected components) because the largest eigenvalue is 1, so the omitted tail is far smaller
- * than the worst case `n t^(Q+1) / (Q + 1)` that bounds the plain truncation. The extrapolation
+ * after `Q` terms. For an irreducible aperiodic row-standardized component the traces `c_q`
+ * converge to 1; periodic components can keep them oscillating. When the dominant modes have
+ * stabilized, the omitted tail can be far smaller
+ * than the worst case `n |t|^(Q+1) / ((Q + 1) (1 - |t|))` that bounds the plain truncation. The extrapolation
  * models the omitted traces as a geometric sequence `c_(Q+k) = level * ratio^k`, `k >= 1`, with
  * the level and ratio estimated from the last three stored traces, plus a second component
  * `alternatingLevel * alternatingRatio^k` with a negative ratio for the alternation that an

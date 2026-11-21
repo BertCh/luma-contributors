@@ -1,5 +1,11 @@
 # @luma-contributors/lenses
 
+This package stays private until its dataset licensing is resolved. The
+[dataset licence inventory](https://github.com/visgl/luma-contributors/blob/master/modules/lenses/src/computation-lenses/data/README.md)
+lists the terms and attribution for each extract. The
+[third-party data policy](https://github.com/visgl/luma-contributors/blob/master/THIRD-PARTY-DATA.md)
+records the publication restrictions.
+
 ## Public reader, host and author surfaces
 
 The entry barrels retain consumer-used names and the surface documented before this tranche.
@@ -12,7 +18,7 @@ spec also links independently transformed modules to check this browser loading 
 See the [authoring guide](../../docs/api/computation-views.md) for records, views and scenarios.
 Implementation helpers are imported internally from their defining files.
 The example checker uses a concrete local entry inventory, verified against both real package
-manifests and shipped source targets by `public-entry-inventory.node.spec.ts`. Installed public
+manifests and source targets by `public-entry-inventory.node.spec.ts`. Installed public
 `@luma.gl/core`, `@luma.gl/engine` and `@luma.gl/graph` entries use the same concrete check; invented
 deep paths and `_internal` entries are rejected. It distinguishes
 ESM imports from CommonJS requires and rejects missing wildcard targets. Loading the inventory
@@ -105,6 +111,16 @@ reports the scenario ID and `choices.<name>` for a missing value before adding o
 The decoded lens-envelope reader applies the core record validator before accepting sidecars,
 including finite scalar identity values; unmodified legacy recordings remain supported.
 
+The kernel inspector attributes explicit override constants only from the selected node. A shared
+shader source can retain another pipeline's overrides; absent node evidence leaves constants
+unspecified. The building tessellation reference example calls
+`addBuildingTessellationReferenceRecipe` directly, so extra `candidateRadius` fields on a supplied
+variable cannot change its polygon-overlay output layout. The separate local tessellation example calls
+`addLocalBuildingTessellationRecipe` and demonstrates the certified sample-cell-union layout.
+The local scenario explicitly selects `output-cells` for its result headline; sampling and loss
+certificates remain captured for inspection. An explicitly supplied `presentation: {}` selects
+the last output and survives serialization; omitting presentation permits a scenario default.
+
 - Scenario modules register themselves on import (`registerLensScenario`, `registerLensScenarios`),
   so `package.json` lists them in `sideEffects`. Import `computation-lenses/scenarios/index` for
   the full registry, including the core array-result view registration. Both source and built
@@ -120,8 +136,14 @@ including finite scalar identity values; unmodified legacy recordings remain sup
   assets when bundling a browser consumer; a variable options argument prevents that discovery.
   The CommonJS build preserves these attributes for native Node JSON
   loading. The package regression spec emits a small fixture with the production transform and
-  loads all datasets in both ESM and CommonJS; set `LENS_VERIFY_BUILT=1` on that spec to also check
-  the complete built package's links and public role loader after a build.
+  loads all datasets in both ESM and CommonJS. After `yarn build`, run the lens-local qualification
+  command `node modules/lenses/test/computation-docs/qualify-built-lenses.mjs`. It requires current
+  build records for analysis and lenses, enables `LENS_VERIFY_BUILT=1`, and requires the exact
+  case “checks emitted relative links and public role loading after a build” to pass. Missing or
+  stale or unrecorded extra output, a missing/skipped case, or a failed ESM/CommonJS role load
+  fails qualification. The emitted files, expected outputs and build records must agree exactly.
+  This private-lens qualification remains separate from the analysis release gate and does not
+  authorize publication of lenses or its datasets.
   The client-transform regression and headless dataset-loader spec separately check browser loading;
   Vite's Node/SSR module runner alone does not establish browser compatibility.
   The filename inventory in the data README is checked against the
@@ -129,8 +151,5 @@ including finite scalar identity values; unmodified legacy recordings remain sup
   separate dataset and derived-artifact review in `THIRD-PARTY-DATA.md`.
 - This package is private and exempt from the shipped-runtime validation guideline: registry
   errors use descriptive messages because they only surface in docs and test tooling.
-- `"license"` points at `src/computation-lenses/data/README.md` because recorded datasets carry
-  their own licences (for example CC BY-NC iNaturalist observations). Review it before removing
-  `"private"`.
 - `yarn tsc -p modules/lenses/tsconfig.test.json` type-checks sources and tests together.
   It also reports errors in the website and example code that tests import.

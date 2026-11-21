@@ -5,14 +5,16 @@
 import {expect, it} from 'vitest';
 import {
   addVisibilityGraphRecipe as addNetworkVisibilityGraphRecipe,
-  type GPUVisibilityGraphCSRProps as GPUVisibilityGraphNetworkProps
+  type GPUNetworkVisibilityGraphCSRProps as GPUVisibilityGraphNetworkProps
 } from '@luma-contributors/analysis/gpu-network';
 import {
+  addBuildingTessellationReferenceRecipe,
+  addLocalBuildingTessellationRecipe,
   getGPUBuildingTessellationLocalParameterValues,
   getGPUVisibilityGraphCSRParameterValues,
   GPU_VISIBILITY_GRAPH_CSR_PARAMETER_LENGTH,
   VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE,
-  type GPUVisibilityGraphCSRProps,
+  type GPUVisibilityGraphAdjacencyCSRProps,
   GPU_BUILDING_TESSELLATION_LOCAL_PARAMETER_LENGTH,
   type GPUBuildingTessellationLocalProps,
   type GPUBuildingTessellationLocalOutput,
@@ -41,7 +43,7 @@ it('the package entry exposes the sparse visibility parameter API', () => {
   ).toEqual([3, 0.125]);
   expect(GPU_VISIBILITY_GRAPH_CSR_PARAMETER_LENGTH).toBe(2);
   expect(Math.fround(4 * VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE)).toBe(3.4028234663852886e38);
-  const publicProps: GPUVisibilityGraphCSRProps | undefined = undefined;
+  const publicProps: GPUVisibilityGraphAdjacencyCSRProps | undefined = undefined;
   expect(publicProps).toBeUndefined();
 });
 
@@ -52,4 +54,9 @@ it('the gpu-network entry exposes the original visibility recipe name with pivot
     'pivotCount' | 'laneCount' | 'maximumIterations'
   > = {pivotCount: 4, laneCount: 2, maximumIterations: 8};
   expect(networkOnlyProps).toEqual({pivotCount: 4, laneCount: 2, maximumIterations: 8});
+});
+
+it('RCP-107 the package entry exposes both typed tessellation routes', () => {
+  expect(typeof addBuildingTessellationReferenceRecipe).toBe('function');
+  expect(typeof addLocalBuildingTessellationRecipe).toBe('function');
 });

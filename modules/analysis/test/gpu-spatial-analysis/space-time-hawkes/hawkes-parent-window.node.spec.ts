@@ -179,6 +179,7 @@ it.each([
       converged: scalar('converged'),
       iterationLimitReached: scalar('limit'),
       iterationCount: scalar('iterations'),
+      maximumIterations: scalar('budget'),
       candidateOverflow: scalar('cut'),
       invalidCount: scalar('invalid'),
       approximation: scalar('approximation')
@@ -223,6 +224,9 @@ it.each([
       expect(memory.readUint32(status[name])[0]).toBe(0);
     expect(memory.readUint32(status.invalidCount)[0]).toBe(4);
     expect(memory.readUint32(status.approximation)[0]).toBe(1);
+    // Budget is construction metadata, even for an unavailable fit.
+    executeCommandNodesOnCPU([nodes.find(node => node.id === 'hawkes-publish-budget')!], memory);
+    expect(memory.readUint32(status.maximumIterations)[0]).toBe(1);
     expect(Array.from(memory.readFloat32(backgroundProbability)).every(Number.isNaN)).toBe(true);
   } finally {
     device.destroy();

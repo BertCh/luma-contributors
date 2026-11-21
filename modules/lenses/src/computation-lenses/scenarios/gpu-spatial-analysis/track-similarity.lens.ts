@@ -97,7 +97,8 @@ defineLensScenario({
                 view: output.pairStatus,
                 role: 'intermediate',
                 keySpace: 'pair',
-                meaning: 'status bits: 1 empty track, 2 Frechet cap exceeded, 4 invalid pair'
+                meaning:
+                  'status bits: 1 empty track, 2 Frechet cap exceeded, 4 invalid pair, 8 invalidGeometry, 16 invalidDecisionThreshold. Geometry errors invalidate all distances; bit 2 invalidates dynamic-program distances only. Bit 16 leaves distance validity intact but invalidates decision validity; decisions also require valid geometry and no Frechet cap.'
               }
             };
           }

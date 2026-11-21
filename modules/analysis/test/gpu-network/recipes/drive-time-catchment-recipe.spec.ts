@@ -111,7 +111,7 @@ it('addDriveTimeCatchmentRecipe bands demand by drive time to the nearest facili
       maximumIterations: 64,
       costBreaks: fixture.input('band-breaks', Float32Array.from(BAND_BREAKS), 'float32', 4),
       bandCapacity: 8,
-      outputs: {
+      output: {
         assignments: outputs.assignments.view,
         nodeCosts: outputs.nodeCosts.view,
         demandTimes: outputs.times.view,
@@ -287,7 +287,7 @@ it('addDriveTimeCatchmentRecipe returns isochrone rings and joins demand against
       demand: fixture.input('demand', demand, 'float32x2', demandCount),
       maximumIterations: 64,
       costBreaks: fixture.input('band-breaks', Float32Array.from(BAND_BREAKS), 'float32', 4),
-      outputs: {
+      output: {
         nodeCosts: outputs.nodeCosts.view,
         isochroneDemand: {
           pointFeatureIds: outputs.inside.view,
@@ -506,7 +506,7 @@ it('addDriveTimeCatchmentRecipe snaps lon/lat great-circle and reports snapping 
       candidateCapacity: 64,
       maximumIterations: 64,
       costBreaks: fixture.input('band-breaks', Float32Array.from(BAND_BREAKS), 'float32', 4),
-      outputs: {
+      output: {
         demandTimes: outputs.times.view,
         snapping: {
           status: {

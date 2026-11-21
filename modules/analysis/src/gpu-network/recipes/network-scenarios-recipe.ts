@@ -15,7 +15,10 @@ import {
   getRecipeView as getOrCreateView,
   validateRecipeBoundary
 } from '../../gpu-spatial-analysis/recipes/recipe-utils';
-import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphOutputsDisjointFromInputs,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getGPUNetworkTopologyViews} from '../../analysis-core/contracts/network-topology';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -28,7 +31,7 @@ export type GPUNetworkDisruptionOutput = {
   baselineCosts: GraphDataView<'float32'>;
   scenarioCosts: GraphDataView<'float32'>;
   costDifferences: GraphDataView<'float32'>;
-  /** Per origin-target pair: 1 only when both searches converged and a reached target became unreachable. */
+  /** Per pair: 1 when complete source/search evidence shows a reached trip became unreachable within the common (smaller) horizon. */
   newlyUnreachable: GraphDataView<'uint32'>;
   baselineAccessibility: GraphDataView<'float32'>;
   scenarioAccessibility: GraphDataView<'float32'>;
@@ -43,28 +46,55 @@ export type GPUNetworkDisruptionRecipeProps = {
   replacementCosts?: GraphDataView<'float32'>;
   opportunityWeights: GraphDataView<'float32'>;
   parameters: GraphDataView<'float32'>;
-  /** Reuse a caller-retained baseline and its convergence word; caller owns invalidation. */
-  baseline?: {costs: GraphDataView<'float32'>; status: {converged: GraphDataView<'uint32'>}};
+  /**
+   * Reuse a retained baseline; caller owns invalidation. Supply its effective costLimit, or null
+   * for an unbounded baseline. Omission explicitly binds reuse to search.costLimit and the same
+   * search configuration, as in the original API.
+   * A retained noded baseline must also retain status.sourceComplete; its source evidence cannot
+   * be inferred from a current noding submission.
+   */
+  baseline?: {
+    costs: GraphDataView<'float32'>;
+    costLimit?: GraphDataView<'float32'> | null;
+    status: {converged: GraphDataView<'uint32'>; sourceComplete?: GraphDataView<'uint32'>};
+  };
   outputs?: Partial<GPUNetworkDisruptionOutput>;
+};
+
+/** Routing evidence and score certificates for a disruption comparison. */
+export type GPUNetworkDisruptionRecipeResult = GPURecipeResult<GPUNetworkDisruptionOutput> & {
+  status: GPURecipeResult<GPUNetworkDisruptionOutput>['status'] & {
+    baselineRoutingComplete: GraphDataView<'uint32'>;
+    scenarioRoutingComplete: GraphDataView<'uint32'>;
+    baselineAccessibilityComplete: GraphDataView<'uint32'>;
+    scenarioAccessibilityComplete: GraphDataView<'uint32'>;
+    accessibilityComplete: GraphDataView<'uint32'>;
+  };
 };
 
 /** Compare directed routing scenarios without compaction or Infinity - Infinity arithmetic. */
 export function addNetworkDisruptionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUNetworkDisruptionRecipeProps
-): GPURecipeResult<GPUNetworkDisruptionOutput> {
+): GPUNetworkDisruptionRecipeResult {
   return addPreparedRecipe(graph, props, declareNetworkDisruptionRecipe);
 }
 
 function declareNetworkDisruptionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUNetworkDisruptionRecipeProps
-): GPURecipeResult<GPUNetworkDisruptionOutput> {
+): GPUNetworkDisruptionRecipeResult {
   const id = props.id ?? 'network-disruption-recipe';
   const builder = new RecipeBuilder(graph);
   const columnCount = props.search.targetNodes?.length ?? props.search.topology.offsets.length - 1;
   const edgeCount = props.search.topology.weights.length;
   const pairCount = props.rowCount * columnCount;
+  const noded = props.search.nodedTopology;
+  validateRequirement(
+    id,
+    !noded || !props.baseline || Boolean(props.baseline.status.sourceComplete),
+    'baseline.status.sourceComplete is required when reusing a retained noded baseline; retain its source build certificate'
+  );
   if (
     !Number.isSafeInteger(props.rowCount) ||
     props.rowCount < 1 ||
@@ -140,7 +170,14 @@ function declareNetworkDisruptionRecipe<Parameters>(
     props.replacementCosts,
     props.opportunityWeights,
     props.parameters,
-    props.baseline?.status?.converged
+    props.baseline?.status?.converged,
+    props.baseline?.status?.sourceComplete,
+    noded?.nodes.status.count,
+    noded?.pieces.status.overflow,
+    noded?.pieces.status.candidateOverflow,
+    noded?.status?.overflow,
+    noded?.status?.uncertainCount,
+    props.baseline?.costLimit ?? undefined
   ]);
   if (props.baseline)
     validateGraphOutputsDisjointFromInputs(
@@ -156,12 +193,23 @@ function declareNetworkDisruptionRecipe<Parameters>(
     props.baseline?.status?.converged
   );
   const scenarioConverged = getOrCreateView(graph, `${id}-scenario-converged`, 'uint32', 1);
+  const baselineSourceComplete = props.baseline
+    ? props.baseline.status.sourceComplete
+    : noded
+      ? getOrCreateView(graph, `${id}-baseline-source-complete`, 'uint32', 1)
+      : undefined;
+  const scenarioSourceComplete = noded
+    ? getOrCreateView(graph, `${id}-scenario-source-complete`, 'uint32', 1)
+    : undefined;
   if (!props.baseline)
     builder.add(
       new GPUNetworkCostMatrix({
         ...props.search,
         id: `${id}-baseline`,
-        output: {costs: outputs.baselineCosts, status: {converged: baselineConverged}}
+        output: {
+          costs: outputs.baselineCosts,
+          status: {converged: baselineConverged, sourceComplete: baselineSourceComplete}
+        }
       })
     );
   const weights = getOrCreateView(graph, `${id}-weights`, 'float32', edgeCount);
@@ -186,17 +234,83 @@ function declareNetworkDisruptionRecipe<Parameters>(
       body: `destination[destinationOffset + index] = ${props.edgeMask ? 'select(-1.0, source[sourceOffset + index], mask[maskOffset + index] != 0u)' : 'source[sourceOffset + index]'};`
     })
   );
+  const scenarioTopology = {...props.search.topology, weights};
   builder.add(
     new GPUNetworkCostMatrix({
       ...props.search,
       id: `${id}-scenario`,
-      topology: {...props.search.topology, weights},
-      output: {costs: outputs.scenarioCosts, status: {converged: scenarioConverged}}
+      topology: scenarioTopology,
+      nodedTopology: noded && {...noded, topology: scenarioTopology},
+      output: {
+        costs: outputs.scenarioCosts,
+        status: {converged: scenarioConverged, sourceComplete: scenarioSourceComplete}
+      }
     })
   );
-  for (const [name, costs, cumulative] of [
-    ['baseline', outputs.baselineCosts, outputs.baselineAccessibility],
-    ['scenario', outputs.scenarioCosts, outputs.scenarioAccessibility]
+  const addRoutingComplete = (
+    name: string,
+    converged: GraphDataView<'uint32'>,
+    sourceComplete: GraphDataView<'uint32'> | undefined
+  ) => {
+    if (!sourceComplete) return converged;
+    const complete = getOrCreateView(graph, `${id}-${name}-routing-complete`, 'uint32', 1);
+    builder.addGlue(
+      `${name}-routing-complete`,
+      createWGSLKernelNode(graph, {
+        id: `${id}-${name}-routing-complete`,
+        operation: id,
+        invocationCount: 1,
+        bindings: [
+          {name: 'converged', view: converged, type: 'u32', access: 'read'},
+          {name: 'sourceComplete', view: sourceComplete, type: 'u32', access: 'read'},
+          {name: 'complete', view: complete, type: 'u32', access: 'read_write'}
+        ],
+        body: 'complete[completeOffset] = u32(converged[convergedOffset] != 0u && sourceComplete[sourceCompleteOffset] != 0u);'
+      })
+    );
+    return complete;
+  };
+  const baselineRoutingComplete = addRoutingComplete(
+    'baseline',
+    baselineConverged,
+    baselineSourceComplete
+  );
+  const scenarioRoutingComplete = addRoutingComplete(
+    'scenario',
+    scenarioConverged,
+    scenarioSourceComplete
+  );
+  const baselineLimit =
+    props.baseline?.costLimit !== undefined
+      ? (props.baseline.costLimit ?? undefined)
+      : props.search.costLimit;
+  const baselineAccessibilityComplete = getOrCreateView(
+    graph,
+    `${id}-baseline-accessibility-complete`,
+    'uint32',
+    1
+  );
+  const scenarioAccessibilityComplete = getOrCreateView(
+    graph,
+    `${id}-scenario-accessibility-complete`,
+    'uint32',
+    1
+  );
+  for (const [name, costs, cumulative, converged, complete] of [
+    [
+      'baseline',
+      outputs.baselineCosts,
+      outputs.baselineAccessibility,
+      baselineRoutingComplete,
+      baselineAccessibilityComplete
+    ],
+    [
+      'scenario',
+      outputs.scenarioCosts,
+      outputs.scenarioAccessibility,
+      scenarioRoutingComplete,
+      scenarioAccessibilityComplete
+    ]
   ] as const)
     builder.add(
       new GPUNetworkAccessibility({
@@ -205,7 +319,10 @@ function declareNetworkDisruptionRecipe<Parameters>(
         orientation: 'origin-rows',
         opportunityWeights: props.opportunityWeights,
         parameters: props.parameters,
-        cumulative
+        cumulative,
+        costsComplete: converged,
+        costLimit: name === 'baseline' ? baselineLimit : props.search.costLimit,
+        status: {complete}
       })
     );
   builder.addGlue(
@@ -218,17 +335,57 @@ function declareNetworkDisruptionRecipe<Parameters>(
       bindings: [
         {name: 'before', view: outputs.baselineCosts, type: 'f32', access: 'read'},
         {name: 'after', view: outputs.scenarioCosts, type: 'f32', access: 'read'},
-        {name: 'beforeConverged', view: baselineConverged, type: 'u32', access: 'read'},
-        {name: 'afterConverged', view: scenarioConverged, type: 'u32', access: 'read'},
+        {name: 'beforeConverged', view: baselineRoutingComplete, type: 'u32', access: 'read'},
+        {name: 'afterConverged', view: scenarioRoutingComplete, type: 'u32', access: 'read'},
         {name: 'difference', view: outputs.costDifferences, type: 'f32', access: 'read_write'},
-        {name: 'unreachable', view: outputs.newlyUnreachable, type: 'u32', access: 'read_write'}
+        {name: 'unreachable', view: outputs.newlyUnreachable, type: 'u32', access: 'read_write'},
+        ...(baselineLimit
+          ? [
+              {
+                name: 'beforeLimit',
+                view: baselineLimit,
+                type: 'f32' as const,
+                access: 'read' as const
+              }
+            ]
+          : []),
+        ...(props.search.costLimit
+          ? [
+              {
+                name: 'afterLimit',
+                view: props.search.costLimit,
+                type: 'f32' as const,
+                access: 'read' as const
+              }
+            ]
+          : [])
       ],
       body: `let valid = beforeConverged[beforeConvergedOffset] != 0u && afterConverged[afterConvergedOffset] != 0u;
 let first = before[beforeOffset + index]; let second = after[afterOffset + index];
 var delta = bitcast<f32>(0x7fc00000u | (index & 0u));
 if (valid && isFiniteValue(first) && isFiniteValue(second)) { delta = second - first; }
 difference[differenceOffset + index] = delta;
-unreachable[unreachableOffset + index] = select(0u, 1u, valid && isFiniteValue(first) && second == bitcast<f32>(0x7f800000u | (index & 0u)));`
+var commonLimit = bitcast<f32>(0x7f800000u | (index & 0u));
+var horizonsKnown = true;
+${baselineLimit ? 'let beforeHorizon = beforeLimit[beforeLimitOffset]; horizonsKnown = horizonsKnown && (bitcast<u32>(beforeHorizon) & 0x7fffffffu) <= 0x7f800000u; commonLimit = min(commonLimit, beforeHorizon);' : ''}
+${props.search.costLimit ? 'let afterHorizon = afterLimit[afterLimitOffset]; horizonsKnown = horizonsKnown && (bitcast<u32>(afterHorizon) & 0x7fffffffu) <= 0x7f800000u; commonLimit = min(commonLimit, afterHorizon);' : ''}
+let afterOutside = second == bitcast<f32>(0x7f800000u | (index & 0u)) || (isFiniteValue(second) && second > commonLimit);
+unreachable[unreachableOffset + index] = select(0u, 1u, valid && horizonsKnown && isFiniteValue(first) && first <= commonLimit && afterOutside);`
+    })
+  );
+  const accessibilityComplete = getOrCreateView(graph, `${id}-accessibility-complete`, 'uint32', 1);
+  builder.addGlue(
+    'accessibility-complete',
+    createWGSLKernelNode(graph, {
+      id: `${id}-accessibility-complete`,
+      operation: id,
+      invocationCount: 1,
+      bindings: [
+        {name: 'beforeComplete', view: baselineAccessibilityComplete, type: 'u32', access: 'read'},
+        {name: 'afterComplete', view: scenarioAccessibilityComplete, type: 'u32', access: 'read'},
+        {name: 'complete', view: accessibilityComplete, type: 'u32', access: 'read_write'}
+      ],
+      body: 'complete[completeOffset] = u32(beforeComplete[beforeCompleteOffset] != 0u && afterComplete[afterCompleteOffset] != 0u);'
     })
   );
   builder.addGlue(
@@ -247,11 +404,11 @@ unreachable[unreachableOffset + index] = select(0u, 1u, valid && isFiniteValue(f
           type: 'f32',
           access: 'read_write'
         },
-        {name: 'beforeConverged', view: baselineConverged, type: 'u32', access: 'read'},
-        {name: 'afterConverged', view: scenarioConverged, type: 'u32', access: 'read'}
+        {name: 'beforeComplete', view: baselineAccessibilityComplete, type: 'u32', access: 'read'},
+        {name: 'afterComplete', view: scenarioAccessibilityComplete, type: 'u32', access: 'read'}
       ],
       body: `var delta = bitcast<f32>(0x7fc00000u | (index & 0u)); let first = before[beforeOffset + index]; let second = after[afterOffset + index];
-if (beforeConverged[beforeConvergedOffset] != 0u && afterConverged[afterConvergedOffset] != 0u && isFiniteValue(first) && isFiniteValue(second)) { delta = second - first; }
+if (beforeComplete[beforeCompleteOffset] != 0u && afterComplete[afterCompleteOffset] != 0u && isFiniteValue(first) && isFiniteValue(second)) { delta = second - first; }
 difference[differenceOffset + index] = delta;`
     })
   );
@@ -265,9 +422,23 @@ difference[differenceOffset + index] = delta;`
       topology: props.search.topology
     },
     status: {
+      baselineRoutingComplete,
+      scenarioRoutingComplete,
+      baselineAccessibilityComplete,
+      scenarioAccessibilityComplete,
+      accessibilityComplete,
       stages: [
-        {stage: 'baseline-routing', status: {converged: baselineConverged}},
-        {stage: 'scenario-routing', status: {converged: scenarioConverged}}
+        {
+          stage: 'baseline-routing',
+          status: {converged: baselineConverged, complete: baselineRoutingComplete}
+        },
+        {
+          stage: 'scenario-routing',
+          status: {converged: scenarioConverged, complete: scenarioRoutingComplete}
+        },
+        {stage: 'baseline-accessibility', status: {complete: baselineAccessibilityComplete}},
+        {stage: 'scenario-accessibility', status: {complete: scenarioAccessibilityComplete}},
+        {stage: 'accessibility', status: {complete: accessibilityComplete}}
       ]
     }
   };

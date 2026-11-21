@@ -109,7 +109,7 @@ describe('GPUIslandAttachment batched cooperative fallback', () => {
               ['main']
             );
             expect(getWorkgroupMemoryBytes(fallback.source, fallback.constants)).toBe(3072);
-            expect(auditWGSLModule(fallback.source)).toEqual([]);
+            expect(auditWGSLModule(fallback.source, fallback.constants)).toEqual([]);
             expect(fallback.bindings.length).toBeLessThanOrEqual(8);
           }
           expect(sources.size).toBe(1);
@@ -126,7 +126,7 @@ describe('GPUIslandAttachment batched cooperative fallback', () => {
             1
           );
           for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
-            expect(auditWGSLModule(kernel.source), kernel.id).toEqual([]);
+            expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
             expectNoReservedIdentifiers(kernel.source);
           }
         } finally {
@@ -183,7 +183,7 @@ describe('GPUIslandAttachment batched cooperative fallback', () => {
         }
         for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
           expectNoReservedIdentifiers(kernel.source);
-          expect(auditWGSLModule(kernel.source), kernel.id).toEqual([]);
+          expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
         }
       } finally {
         device.destroy();

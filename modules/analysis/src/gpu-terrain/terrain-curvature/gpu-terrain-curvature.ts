@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   type GPUCommandGraph,
@@ -27,6 +28,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateParameterTarget,
   validateRasterParameters,
   type RasterBufferBandSource
@@ -158,6 +160,7 @@ export function getGPUTerrainCurvatureParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainCurvatureParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainCurvatureParameterValues',
     target,
@@ -178,24 +181,35 @@ export function getGPUTerrainCurvatureParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUTerrainCurvature}; at least one is required. */
-export type GPUTerrainCurvatureOutput = {
-  /**
-   * Optional float32 outputs, one value per pixel, NaN where invalid. Sign convention: a convex
-   * hill gives positive profile, plan, tangential and mean curvature (see
-   * {@link GPUTerrainCurvatureKind}).
-   */
-  curvatures?: Partial<Record<GPUTerrainCurvatureKind, GraphDataView<'float32'>>>;
-  /**
-   * Optional multi-radius ring curvature (mt-image): per ring of radius `r` cells, the sum of
-   * the centre-minus-sample differences of 8 samples (axis samples at `r`, diagonal samples at
-   * `max(1, round(r / sqrt(2)))`) divided by `8 r sqrt(cellX cellY)`, weighted by `ringGains` and
-   * multiplied by `zFactor`. Positive on convex ground. Any sample outside the raster or invalid
-   * makes the value invalid regardless of `borderMode`.
-   */
-  ringCurvature?: GraphDataView<'float32'>;
-  /** Optional per-pixel 1 where every requested output is valid, else 0. */
-  outputValidity?: GraphDataView<'uint32'>;
-};
+export type GPUTerrainCurvatureOutput =
+  | TerrainAtLeastOne<
+      {
+        /**
+         * Optional float32 outputs, one value per pixel, NaN where invalid. Sign convention: a convex
+         * hill gives positive profile, plan, tangential and mean curvature (see
+         * {@link GPUTerrainCurvatureKind}).
+         */
+        curvatures?: Partial<Record<GPUTerrainCurvatureKind, GraphDataView<'float32'>>>;
+        /**
+         * Optional multi-radius ring curvature (mt-image): per ring of radius `r` cells, the sum of
+         * the centre-minus-sample differences of 8 samples (axis samples at `r`, diagonal samples at
+         * `max(1, round(r / sqrt(2)))`) divided by `8 r sqrt(cellX cellY)`, weighted by `ringGains` and
+         * multiplied by `zFactor`. Positive on convex ground. Any sample outside the raster or invalid
+         * makes the value invalid regardless of `borderMode`.
+         */
+        ringCurvature?: GraphDataView<'float32'>;
+        /** Optional per-pixel 1 where every requested output is valid, else 0. */
+        outputValidity?: GraphDataView<'uint32'>;
+      },
+      'ringCurvature' | 'outputValidity'
+    >
+  | {
+      curvatures: TerrainAtLeastOne<
+        Partial<Record<GPUTerrainCurvatureKind, GraphDataView<'float32'>>>
+      >;
+      ringCurvature?: GraphDataView<'float32'>;
+      outputValidity?: GraphDataView<'uint32'>;
+    };
 
 /**
  * Properties for {@link GPUTerrainCurvature}.
@@ -322,6 +336,8 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer, GPURasterHal
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     if (!['one-sided', 'clamp', 'nodata'].includes(props.borderMode ?? 'one-sided')) {
       throw new Error(`${id} borderMode must be one-sided, clamp, or nodata`);

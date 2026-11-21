@@ -6,7 +6,7 @@ import {log} from '@luma.gl/core';
 import {afterEach, expect, it, vi} from 'vitest';
 import type {GPUSpatialContext} from '../../src/analysis-core/contracts/spatial-context';
 import {getGPUNeighborSearchParameterValues} from '../../src/gpu-spatial-analysis/neighbor-search/neighbor-search-parameters';
-import {getGPUSpatialClusteringParameterValues} from '../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-parameters';
+import {getGPUDBSCANParameterValues} from '../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-parameters';
 import {getGPUInverseDistanceWeightingParameterValues} from '../../src/gpu-spatial-analysis/spatial-interpolation/spatial-interpolation-parameters';
 import {getGPUKrigingParameterValues} from '../../src/gpu-spatial-analysis/spatial-interpolation/kriging-parameters';
 import {getGPULineSimplificationParameterValues} from '../../src/gpu-spatial-analysis/line-simplification/line-simplification-parameters';
@@ -38,16 +38,16 @@ const WRITERS: {
     operation: 'GPUNeighborSearch',
     field: 'radius',
     pack: spatialContext =>
-      getGPUNeighborSearchParameterValues({bounds: BOUNDS, radius: 5, spatialContext})
+      getGPUNeighborSearchParameterValues({bounds: BOUNDS, searchRadius: 5, spatialContext})
   },
   {
-    operation: 'GPUSpatialClustering',
+    operation: 'GPUDBSCAN',
     field: 'epsilon',
     pack: spatialContext =>
-      getGPUSpatialClusteringParameterValues({
+      getGPUDBSCANParameterValues({
         bounds: BOUNDS,
         epsilon: 5,
-        minimumPoints: 2,
+        minimumSamples: 2,
         spatialContext
       })
   },
@@ -123,7 +123,7 @@ it('does not warn for distanceFloor, Visvalingam areas or adaptive neighbor coun
   const warning = vi.spyOn(log, 'warn').mockReturnValue(() => {});
   getGPUNeighborSearchParameterValues({
     bounds: BOUNDS,
-    radius: 100,
+    searchRadius: 100,
     distanceFloor: 5,
     spatialContext: LONGITUDE_LATITUDE
   });

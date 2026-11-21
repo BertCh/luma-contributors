@@ -181,10 +181,10 @@ it('matches empty, failed, absent-state and GTH escape semantics', () => {
   expect(failed.converged[0]).toBe(0);
   const absent = computeTransitionDiagnosticsOnCPU(Uint32Array.of(4, 0, 0, 0), {classCount: 2});
   expectRows(absent.steadyStates, [1, 0]);
-  // Kernel behavior: state 1 escapes to absorbing state 0, so GTH succeeds despite reducibility.
+  // State 1 escapes to absorbing state 0, but the active support is reducible.
   const reducible = computeTransitionDiagnosticsOnCPU(Uint32Array.of(1, 0, 1, 0), {classCount: 2});
-  expectRows(reducible.steadyStates, [1, 0]);
-  expect(reducible.converged[0]).toBe(1);
+  expectRows(reducible.steadyStates, [NaN, NaN]);
+  expect(reducible.converged[0]).toBe(0);
   expect(() => computeTransitionDiagnosticsOnCPU(new Uint32Array(3), {classCount: 2})).toThrow(
     /counts length/
   );
@@ -203,6 +203,42 @@ it('drops the private-array cap and avoids aggregated uint32 overflow', () => {
   });
   expectRows(large.steadyStates, [0.5, 0.5]);
   expect(Array.from(large.stateSparsity)).toEqual([0, 0]);
+});
+
+it('accepts a safe-integer CPU sparsity threshold above uint32 in the helper and operation', async () => {
+  expect(
+    () =>
+      new GPUTransitionDiagnosticsOperation({
+        counts: 'counts',
+        classCount: 1,
+        minimumTransitions: 2 ** 32,
+        output: {stateSparsity: 'sparsity'}
+      })
+  ).toThrow(/minimumTransitions/);
+  const result = computeTransitionDiagnosticsOnCPU(Uint32Array.of(4), {
+    classCount: 1,
+    minimumTransitions: 2 ** 32
+  });
+  expect(Array.from(result.stateSparsity)).toEqual([1, 0]);
+  const operation = new CPUTransitionDiagnosticsOperation({
+    counts: 'counts',
+    classCount: 1,
+    minimumTransitions: 2 ** 32,
+    output: {stateSparsity: 'sparsity'}
+  });
+  const values = Uint32Array.of(4);
+  const actual = await operation.execute({
+    inputs: {
+      counts: {format: 'uint32', length: 1, chunks: [{values, length: 1}], pack: () => values}
+    }
+  });
+  expect(Array.from(actual['sparsity'] as Uint32Array)).toEqual([1, 0]);
+  expect(() =>
+    computeTransitionDiagnosticsOnCPU(Uint32Array.of(4), {
+      classCount: 1,
+      minimumTransitions: Number.MAX_SAFE_INTEGER + 1
+    })
+  ).toThrow(/minimumTransitions/);
 });
 
 it('validates both operation forms at construction and GPU contributor binding', () => {

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.point-in-polygon-join: observations, tractsVerti…",
   "description": "Result of gpu-spatial-analysis.point-in-polygon-join: observations, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, referenceTract → uncertainCount. rows: 1. values read back from the GPU…",
-  "llms": "Result of gpu-spatial-analysis.point-in-polygon-join: observations, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, referenceTract → uncertainCount\n\n- rows: 1\n- input observations: 2344 points\n- input tractsVertices: 2323 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input referenceTract: 2344 rows\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- tracts: 1 of 199 polygons shown; evenly sampled features and vertices\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.point-in-polygon-join: observations, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, referenceTract → uncertainCount\n\n- rows: 1\n- input observations: 2344 points\n- input tractsVertices: 2323 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input referenceTract: 2344 rows\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- tracts: 1 of 199 polygons shown; evenly sampled features and vertices\n- 152 categories; 5 largest coloured\n- 152 categories; 5 largest coloured\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 152 categories; 5 largest coloured\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "1"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:53.254Z",
-    "runId": "run-bebdbed0",
+    "date": "2026-11-20T23:50:29.284Z",
+    "runId": "run-ad18720d",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-bebdbed0",
+    "runId": "run-ad18720d",
     "rung": "result",
     "bindings": {},
     "clauses": [],

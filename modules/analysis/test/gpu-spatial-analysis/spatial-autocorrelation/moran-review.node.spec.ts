@@ -96,9 +96,13 @@ for (const mode of ['tiled', 'reference'] as const) {
     }
   });
 
-  it(`R5 global ${mode} accepts the search's overflow view with spare capacity`, () => {
+  it(`R5 global ${mode} accepts scalar search overflow views in allocations with spare capacity`, () => {
     const {device, graph, view, weights, values, output} = createScene();
     try {
+      const scalarWithSpareCapacity = () => {
+        const allocation = view('uint32', 2);
+        return graph.createDataView(allocation.buffer, {format: 'uint32', length: 1});
+      };
       const search = new GPUNeighborSearch({
         mode: 'radius',
         gridSize: [2, 2],
@@ -106,7 +110,10 @@ for (const mode of ['tiled', 'reference'] as const) {
         parameters: view('float32', 12),
         output: {
           ...weights,
-          status: {overflow: view('uint32', 2), candidateOverflow: view('uint32', 2)}
+          status: {
+            overflow: scalarWithSpareCapacity(),
+            candidateOverflow: scalarWithSpareCapacity()
+          }
         }
       });
       expect(() =>
@@ -275,6 +282,49 @@ it('R6 contiguity reports intermediate pair loss separately from final overflow'
         )
       )
     ).toBe(true);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('FST-04 rejects unknown quadrant gating before lowering', () => {
+  const {device, weights, values, parameters, output} = createScene();
+  try {
+    for (const quadrantGating of ['permutation', '', 'Analytic']) {
+      expect(
+        () =>
+          new GPULocalMoran({
+            weights,
+            values,
+            parameters,
+            output,
+            quadrantGating: quadrantGating as never
+          })
+      ).toThrow(/local-moran.*quadrantGating.*analytic.*none/);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('FST-04 retains supported gating and the correction conflict', () => {
+  const {device, weights, values, parameters, output} = createScene();
+  try {
+    expect(
+      () =>
+        new GPULocalMoran({
+          weights,
+          values,
+          parameters,
+          output,
+          quadrantGating: 'none',
+          multipleTesting: 'bonferroni'
+        })
+    ).toThrow(/cannot be combined/);
+    for (const quadrantGating of ['none', 'analytic'] as const)
+      expect(
+        () => new GPULocalMoran({weights, values, parameters, output, quadrantGating})
+      ).not.toThrow();
   } finally {
     device.destroy();
   }

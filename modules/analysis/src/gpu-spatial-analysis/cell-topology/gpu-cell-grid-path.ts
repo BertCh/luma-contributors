@@ -2,17 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createCellRowKernelNode} from '../cell-aggregation/cell-row-kernel';
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {
-  createGPUComputeCommandNode,
   getBoundedDispatchLayout,
-  getViewBinding,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
   type GraphVectorView,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {Kernel} from '@luma.gl/graph';
 import {
   createGraphChunkDispatchParameters,
   planGraphChunkDispatch,
@@ -51,8 +50,6 @@ import {H3_LOCAL_IJ_WGSL} from './h3-local-ij-wgsl';
 const CHUNK_WORKGROUP_SIZE = 256;
 /** Storage component indices of whole fixed-stride records cannot wrap uint32. */
 const MAXIMUM_CHUNK_COMPONENT_COUNT = 0xffffffff;
-/** Guard padded workgroups before multiplying their index into a uint32 invocation index. */
-const MAXIMUM_LINEAR_WORKGROUP_COUNT = 16777216;
 
 const OPERATION = 'GPUCellGridPath';
 
@@ -172,6 +169,17 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
   private readonly recordChunks: Readonly<Record<string, readonly GraphDataView[]>>;
 
   constructor(props: GPUCellGridPathProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'family',
+      'maximumSearchRadius',
+      'origins',
+      'destinations',
+      'wordOrder',
+      'mask',
+      'maximumPathLength',
+      ['output', ['cells', 'distances', 'counts']]
+    ]);
     this.id = props.id ?? 'cell-grid-path';
     this.props = props;
     const id = this.id;
@@ -338,20 +346,18 @@ export class GPUCellGridPath implements GPUCommandNodeProducer {
     validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
     validateGraphChunkBindingRanges(graph, id, {'output.cells': output.cells});
     const invocationsPerRow = 1;
-    const layouts = this.chunkPlan.chunks.map(chunk =>
+    for (const chunk of this.chunkPlan.chunks) {
       getBoundedDispatchLayout(
         id,
-        Math.max(chunk.length * invocationsPerRow, 1),
+        Math.max(chunk.length, 1),
         CHUNK_WORKGROUP_SIZE,
         graph.device.limits.maxComputeWorkgroupsPerDimension
-      )
-    );
+      );
+    }
     const {slots, nodes} = createGraphChunkDispatchParameters(graph, {
       id: `${id}-chunks`,
       plan: this.chunkPlan
     });
-    // Every chunk closes over the same source string, including assembled fp64 modules.
-    let sharedShaderSource: string | undefined;
     const chunkNodes = this.chunkPlan.chunks
       .filter(chunk => chunk.length > 0)
       .map(chunk => {
@@ -523,13 +529,7 @@ ${H3_LOCAL_IJ_WGSL}`,
   ${output.distances ? 'outDistances[outDistancesOffset + index] = pathDistance;' : ''}
   ${pathBody}`
         };
-        const storageDeclarations = kernelProps.bindings
-          .map(
-            (binding, location) =>
-              `@group(0) @binding(${location}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`
-          )
-          .join('\n');
-        const bindingComponentCounts: Record<string, number> = {
+        const components: Record<string, number> = {
           origins: 2,
           destinations: 2,
           rowMask: 1,
@@ -537,73 +537,18 @@ ${H3_LOCAL_IJ_WGSL}`,
           outCells: maximumPathLength * 2,
           outCounts: 1
         };
-        const bindingOffsets = kernelProps.bindings
-          .filter(binding => binding.name !== 'chunkParameters')
-          .map(
-            binding =>
-              `let ${binding.name}Offset = arrayLength(&${binding.name}) - rowCount * ${bindingComponentCounts[binding.name]}u;`
-          )
-          .join('\n  ');
-        const source =
-          sharedShaderSource ??
-          `${storageDeclarations}
-${kernelProps.declarations ?? ''}
-@compute @workgroup_size(${CHUNK_WORKGROUP_SIZE})
-fn main(@builtin(workgroup_id) workgroupId: vec3u,
-  @builtin(num_workgroups) workgroupCount: vec3u,
-  @builtin(local_invocation_index) localInvocationIndex: u32) {
-  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
-  if (workgroupIndex >= ${MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
-  let index = workgroupIndex * ${CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
-  let rowCount = chunkParameters[1];
-  if (index >= rowCount * ${invocationsPerRow}u) { return; }
-  ${bindingOffsets}
-  ${kernelProps.body}
-}`;
-        sharedShaderSource = source;
-        const kernelBindings = kernelProps.bindings;
-        const operationName = kernelProps.operation;
-        const layout = layouts[chunk.chunkIndex];
-        return createGPUComputeCommandNode<Parameters>({
+        return createCellRowKernelNode(graph, {
           id: `${kernelProps.id}-${chunk.chunkIndex}`,
-          resources: kernelProps.bindings.map(binding => ({
-            buffer: binding.view,
-            usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
-          })),
-          workload: {
-            operation: kernelProps.operation,
-            ...(kernelProps.variant ? {variant: kernelProps.variant} : {}),
-            commandCount: 1,
-            maximumWorkgroupCount: layout.x * layout.y * layout.z,
-            maximumInvocationCount: chunk.length * invocationsPerRow
-          },
-          compile: ({device}) => {
-            const kernel = new Kernel(device, {
-              id: operationName,
-              source,
-              shaderLayout: {
-                bindings: kernelBindings.map((binding, location) => ({
-                  name: binding.name,
-                  group: 0,
-                  location,
-                  type: binding.access === 'read' ? 'read-only-storage' : 'storage'
-                }))
-              }
-            });
-            return {
-              encode: ({computePass, getBuffer}) =>
-                kernel.dispatch(computePass, {
-                  bindings: Object.fromEntries(
-                    kernelBindings.map(binding => [
-                      binding.name,
-                      getViewBinding(binding.view, getBuffer)
-                    ])
-                  ),
-                  ...layout
-                }),
-              destroy: () => kernel.destroy()
-            };
-          }
+          kernelId: kernelProps.operation,
+          operation: kernelProps.operation,
+          variant: kernelProps.variant!,
+          length: chunk.length,
+          parameters: slots[chunk.chunkIndex],
+          declarations: kernelProps.declarations,
+          body: kernelProps.body,
+          bindings: kernelProps.bindings
+            .filter(binding => binding.name !== 'chunkParameters')
+            .map(binding => ({...binding, components: components[binding.name]}))
         });
       });
     return [...nodes, ...chunkNodes];

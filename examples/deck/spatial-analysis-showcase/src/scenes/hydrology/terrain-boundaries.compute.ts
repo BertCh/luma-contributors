@@ -741,7 +741,7 @@ summary[summaryOffset]=resolved;summary[summaryOffset+1u]=unresolved;summary[sum
       'catchment-summary'
     ].entries()) {
       const stage = stageStatus(name);
-      const scalar = stage.converged ?? stage.uncertainCount ?? stage.overflow;
+      const scalar = stage.converged ?? stage.unresolvedCount ?? stage.overflow;
       if (scalar) {
         addStorageCopyPass(
           graph,

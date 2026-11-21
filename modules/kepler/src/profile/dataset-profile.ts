@@ -17,7 +17,7 @@ import {
   type GPUAnalysisRowSemantics,
   type GPUAnalysisSpacingStatistics,
   type GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   CatalogColumnType,
   CatalogCoordinateSystem,
@@ -1080,6 +1080,8 @@ type SpatialFacts = {
   coveringExtent?: Extent;
   /** x, y pairs for the spacing statistics. */
   locations: Float64Array;
+  /** Point-column pairs rejected before the spacing helper sees the retained locations. */
+  invalidLocationCount?: number;
   /** Geometry anchors in a common longitude frame; point tables use locations for both models. */
   geographicLocations?: Float64Array;
   geometryFeatureCounts?: KeplerGeometryFeatureCounts;
@@ -1352,6 +1354,9 @@ function assembleProfile(
       maximumSampleSize: options.maximumSampleSize
     })
   };
+  for (const spacing of Object.values(spacingByModel))
+    if (spacing)
+      spacing.invalidCount = (spacing.invalidCount ?? 0) + (spatial.invalidLocationCount ?? 0);
   const modelNotes = {
     geographic: describeModelNotes(spatial.locations, spatial.extent, 'geographic'),
     planar: describeModelNotes(spatial.locations, spatial.extent, 'planar')
@@ -1608,7 +1613,12 @@ function describeRejection(
 function gatherColumnPoints(
   longitudes: ArrayLike<unknown>,
   latitudes: ArrayLike<unknown>
-): {locations: Float64Array; extent?: Extent; coveringExtent?: Extent} {
+): {
+  locations: Float64Array;
+  invalidLocationCount: number;
+  extent?: Extent;
+  coveringExtent?: Extent;
+} {
   const locations: number[] = [];
   const extentAccumulator = new AnalysisGeographicExtentAccumulator();
   for (let index = 0; index < longitudes.length; index++) {
@@ -1626,6 +1636,7 @@ function gatherColumnPoints(
   }
   return {
     locations: Float64Array.from(locations),
+    invalidLocationCount: longitudes.length - locations.length / 2,
     extent: extentAccumulator.getPlain(),
     coveringExtent: extentAccumulator.getCovering()
   };
@@ -1751,6 +1762,7 @@ export function profileKeplerColumnTable(
         extent: points.extent,
         coveringExtent: points.coveringExtent,
         locations: points.locations,
+        invalidLocationCount: points.invalidLocationCount,
         pointColumns: chosen.pointColumns,
         coordinateReason: chosen.reason,
         notes

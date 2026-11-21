@@ -7,6 +7,7 @@ import {expect, it} from 'vitest';
 import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {
   GPUContiguityWeights,
+  GPUChunkedSpatialWeightsTransform,
   GPULatticeWeights,
   GPUSpatialLag,
   GPUSpatialWeightsTransform,
@@ -700,7 +701,40 @@ const KERNELS: GPUSpatialWeightsKernel[] = [
   'uniform'
 ];
 
-it('GPUSpatialWeightsTransform row, binary, kernel and symmetrize match the oracle', async () => {
+it.each(['whole', 'chunked'] as const)('UST-15 preserves one-way support (%s)', async layout => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const weights = rig.uploadWeights({
+      offsets: [0, 1, 1],
+      neighbors: [1],
+      weights: [1],
+      distances: []
+    });
+    const output = rig.output('float32', 1);
+    const operation = 'average-reciprocal';
+    const producer =
+      layout === 'whole'
+        ? new GPUSpatialWeightsTransform({operation, weights, output: output.view})
+        : new GPUChunkedSpatialWeightsTransform({
+            operation,
+            weights: {rowCount: 2, chunks: [{rowStart: 0, rowCount: 2, weights}]},
+            output: [output.view]
+          });
+    const result = producer.outputWeights;
+    const resultCsr = 'chunks' in result ? result.chunks[0].weights : result;
+    rig.run(producer);
+    // The directed edge is averaged with zero and its missing reverse slot stays absent.
+    expect(await readUint32(rig.bufferOf(resultCsr.offsets), 3)).toEqual([0, 1, 1]);
+    expect(await readUint32(rig.bufferOf(resultCsr.neighbors), 1)).toEqual([1]);
+    expect(await readFloat32(output.buffer, 1)).toEqual([0.5]);
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('GPUSpatialWeightsTransform row, binary, kernel and average-reciprocal match the oracle', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const random = createSeededRandom(5);
@@ -710,8 +744,8 @@ it('GPUSpatialWeightsTransform row, binary, kernel and symmetrize match the orac
     weights: base.weights.map(() => (random() < 0.15 ? 0 : 0.25 + random() * 4))
   };
   for (const outOfPlace of [true, false]) {
-    for (const operation of ['row', 'binary', 'symmetrize'] as const) {
-      if (operation === 'symmetrize' && !outOfPlace) continue;
+    for (const operation of ['row', 'binary', 'average-reciprocal'] as const) {
+      if (operation === 'average-reciprocal' && !outOfPlace) continue;
       const rig = new WeightsRig(device);
       const upload = rig.uploadWeights(weighted, 3);
       const output = rig.output('float32', upload.neighbors.length);
@@ -721,11 +755,11 @@ it('GPUSpatialWeightsTransform row, binary, kernel and symmetrize match the orac
       const actual = await readFloat32(readBuffer, weighted.neighbors.length);
       const expected = computeTransformOracle(weighted, operation);
       expectClose(actual, expected, `${operation} outOfPlace=${outOfPlace}`);
-      if (operation === 'symmetrize') {
+      if (operation === 'average-reciprocal') {
         expect(isSymmetricPattern(weighted)).toBe(true);
         // Result is symmetric: w'_ij == w'_ji.
         const symmetric = {...weighted, weights: actual};
-        expectClose(computeTransformOracle(symmetric, 'symmetrize'), actual, 'idempotent');
+        expectClose(computeTransformOracle(symmetric, 'average-reciprocal'), actual, 'idempotent');
       }
       expect(actual.some(value => value !== 0)).toBe(true);
       rig.destroy();

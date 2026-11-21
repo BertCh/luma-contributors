@@ -69,7 +69,7 @@ export const TERRAIN_POINT_HORIZON_OPERATORS: RasterOperatorTable = {
       id: 'gpu-terrain.point-horizon-profile.maximum',
       tex: String.raw`\term{tangent}{t_*}=\max_{\term{distance}{d}\in L}\left(\frac{\term{relative}{h-h_0}}{d}-\term{curvature}{c}d\right),\quad\term{angle}{\alpha}=\frac{180}{\pi}\arctan(t_*)`,
       ascii:
-        'March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=-3.4028234663852886e38 and angle=-90 degrees; invalid observer or projection-tag mismatch gives NaN. Output index=observer*azimuthSpan+bin.',
+        'March the exact power-of-two distance lattice; keep tBest=max(hr/d-c*d) over valid bilinear relative heights, ending at the first out-of-grid footprint or distance cap. Skyline angle=atanAccurate(tBest)*180/pi. No valid samples give tangent=-3.4028234663852886e38 and angle=-90 degrees; invalid observer or projection-tag mismatch gives NaN. Output index=observer*azimuthBinCount+bin.',
       derivation: 'curated',
       symbols: [
         {

@@ -41,7 +41,8 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   GPUSnapshotArena: {
     readback: 'explicit-adapter',
     package: `${PACKAGE}/computation-record`,
-    summary: 'Copies frames into one bounded readback buffer, then maps that buffer once.',
+    summary:
+      'Copies frames into one bounded readback buffer, shares one in-flight read, caches successful bytes and allows retry after a failed read.',
     tests: 'modules/analysis/test/computation-record/gpu-snapshot-arena.node.spec.ts',
     documentation: 'docs/api/computation-record.md'
   },
@@ -363,7 +364,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
       'Traversal counts per network edge, and the busiest edge-to-edge movements, from map-matched traversed routes.',
     tests:
       'modules/analysis/test/gpu-network/flow-aggregation/gpu-map-matched-edge-volumes.spec.ts',
-    documentation: 'docs/api/gpu-network/map-matched-edge-volumes-mob05.md',
+    documentation: 'docs/api/gpu-network/map-matched-edge-volumes.md',
     dimensionality: '2d+time'
   },
   GPUNetworkPotentialPathArea: {
@@ -372,7 +373,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
       'Network potential path area of a space-time prism from a forward and a reverse shortest-path tree.',
     tests:
       'modules/analysis/test/gpu-network/network-time-geography/gpu-network-time-geography.spec.ts',
-    documentation: 'docs/api/gpu-network/network-time-geography-mob09.md',
+    documentation: 'docs/api/gpu-network/network-time-geography.md',
     dimensionality: '2d+time'
   },
   GPUNetworkTravelTimePercentiles: {
@@ -381,7 +382,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
       'Travel-time percentiles over a departure window on FIFO time-dependent routing (r5r time_window analogue).',
     tests:
       'modules/analysis/test/gpu-network/network-time-geography/gpu-network-time-geography.spec.ts',
-    documentation: 'docs/api/gpu-network/network-time-geography-mob09.md',
+    documentation: 'docs/api/gpu-network/network-time-geography.md',
     dimensionality: '2d+time'
   },
   GPUFlowAggregation: {
@@ -398,7 +399,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     summary:
       'Radiation model of human mobility (Simini et al. 2012): the expected flow between zones from populations and distances, with no fitted parameter.',
     tests: 'modules/analysis/test/gpu-network/flow-aggregation/flow-models-mob10.spec.ts',
-    documentation: 'docs/api/gpu-network/flow-models-mob10.md',
+    documentation: 'docs/api/gpu-network/origin-destination-flow-models.md',
     dimensionality: 'topology'
   },
   GPUKernelFlowSmoothing: {
@@ -406,7 +407,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     summary:
       'Kernel smoothing of origin-destination flows over neighbouring origins and destinations (after Guo and Zhu 2014), from a matrix or the pairs of GPUFlowAggregation.',
     tests: 'modules/analysis/test/gpu-network/flow-aggregation/flow-models-mob10.spec.ts',
-    documentation: 'docs/api/gpu-network/flow-models-mob10.md',
+    documentation: 'docs/api/gpu-network/origin-destination-flow-models.md',
     dimensionality: 'topology'
   },
   addTrackQualityRecipe: {
@@ -1106,7 +1107,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
       'Integrates a particle per seed through a time-varying planar or internally projected longitude-latitude vector field (two slices, linear in time) for FTLE, connectivity and residence time.',
     tests:
       'modules/analysis/test/gpu-raster/lagrangian-diagnostics/lagrangian-diagnostics-mob06.spec.ts',
-    documentation: 'docs/api/gpu-raster/lagrangian-diagnostics-mob06.md',
+    documentation: 'docs/api/gpu-raster/flow-map-and-particle-diagnostics.md',
     dimensionality: '2d+time'
   },
   GPUScalarFieldRidges: {
@@ -1115,7 +1116,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
       'Local height-ridge mask and downward curvature of utilization volumes or FTLE, using a 3 by 3 Hessian stencil and a half-open subcell Newton test (Peikert and Sadlo, 2008).',
     tests:
       'modules/analysis/test/gpu-raster/lagrangian-diagnostics/flow-field-extensions-mob06.spec.ts',
-    documentation: 'docs/api/gpu-raster/lagrangian-diagnostics-mob06.md',
+    documentation: 'docs/api/gpu-raster/flow-map-and-particle-diagnostics.md',
     dimensionality: '2d'
   },
   GPUFiniteTimeLyapunovExponent: {
@@ -1124,7 +1125,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
       'Finite-time Lyapunov exponent of a flow map on a regular seed grid, from the largest eigenvalue of the Cauchy-Green tensor.',
     tests:
       'modules/analysis/test/gpu-raster/lagrangian-diagnostics/lagrangian-diagnostics-mob06.spec.ts',
-    documentation: 'docs/api/gpu-raster/lagrangian-diagnostics-mob06.md',
+    documentation: 'docs/api/gpu-raster/flow-map-and-particle-diagnostics.md',
     dimensionality: '2d+time'
   },
   GPULineIntegralConvolution: {
@@ -1317,7 +1318,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   GPURasterStreamingAccumulator: {
     package: `${PACKAGE}/raster-analysis`,
     summary:
-      'Chunked per-cell, per-slot counts, fixed-point sums and moments over raster stacks with no slice limit.',
+      'Accumulates per-cell, per-slot counts, fixed-point sums and moments in chunks of at most 256 slices per dispatch. Stream encoding headroom defaults to 2^24 slices; valid-observation counts saturate at 2^32 - 1 per cell and slot, with optional sticky loss evidence in state.status until reset.',
     tests: 'modules/analysis/test/gpu-raster/raster-time-series/tc07-streaming-accumulator.spec.ts',
     documentation: 'docs/api/gpu-raster/raster-time-series.md',
     dimensionality: '2d+time'
@@ -1512,9 +1513,9 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     tests: 'modules/analysis/test/gpu-dataframe/group-statistics/gpu-group-statistics.spec.ts',
     documentation: 'docs/api/gpu-dataframe-analysis.md'
   },
-  GPUKeyJoin: {
+  GPUKeyLookup: {
     package: `${PACKAGE}/dataframe-analysis`,
-    summary: 'Attribute join of a left table onto a right table by key, entirely on the GPU.',
+    summary: 'Looks up each left row in a right table by key, entirely on the GPU.',
     tests: 'modules/analysis/test/gpu-dataframe/key-join/key-join.node.spec.ts',
     documentation: 'docs/api/gpu-dataframe-analysis.md'
   },
@@ -1754,6 +1755,14 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     tests: 'modules/analysis/test/gpu-pointcloud/gpu-pointcloud-advanced.spec.ts',
     documentation: 'docs/api/pointcloud-analysis.md',
     dimensionality: '3d'
+  },
+  GPUPointCloudCoverageValidity: {
+    package: `${PACKAGE}/pointcloud-analysis`,
+    summary:
+      'Converts point-cloud coverage bits to surface, terrain and canopy raster validity in the same 2D coverage-cell row domain: surface uses bit 1; terrain and canopy use bit 2, preserving valid zero ground elevations.',
+    tests: 'modules/analysis/test/gpu-pointcloud/pointcloud-coverage-validity-w3.spec.ts',
+    documentation: 'docs/api/pointcloud-analysis.md',
+    dimensionality: '2d'
   },
   GPUPointCloudHeight: {
     package: `${PACKAGE}/pointcloud-analysis`,

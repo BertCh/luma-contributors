@@ -55,7 +55,7 @@ it('addPeriodComparisonRecipe preserves a one-cell change at its selected sum sc
         positions: fixture.input('after-positions', new Float32Array([0, 0]), 'float32x2', 1),
         values: fixture.input('after-values', new Float32Array([2 ** -18]), 'float32', 1)
       },
-      outputs: {
+      output: {
         comparison: {delta: delta.view, status: {count: count.view, overflow: overflow.view}}
       },
       classBreaksParameters: fixture.parameters(
@@ -152,7 +152,7 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
           periods.after.length / 2
         )
       },
-      outputs: {
+      output: {
         comparison: {
           cells: cells.view,
           delta: delta.view,
@@ -249,3 +249,81 @@ it('addPeriodComparisonRecipe aggregates two periods, compares them and colors t
     fixture.destroy();
   }
 }, 120000);
+
+it('period comparison turns input-generated sum saturation into the no-data color (S4)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'period-saturated-sums');
+  const noDataColor = 0x1234abcd;
+  try {
+    const delta = fixture.output('delta', 'float32', 4);
+    const colors = fixture.output('colors', 'uint32', 4);
+    const mask = fixture.output('mask', 'uint32', 4);
+    const beforeFlag = fixture.output('before-flag', 'uint32', 1);
+    const afterFlag = fixture.output('after-flag', 'uint32', 1);
+    const comparisonFlag = fixture.output('comparison-flag', 'uint32', 1);
+    const count = fixture.output('count', 'uint32', 1);
+    addPeriodComparisonRecipe(fixture.graph, {
+      family: 'quadbin',
+      resolution: 0,
+      tableCapacity: 1,
+      unionCapacity: 4,
+      measure: 'sum',
+      // At scale 65536, 2^47 becomes 2^63 and clamps. The occupied comparison is undefined.
+      before: {
+        positions: fixture.input('before-points', Float32Array.of(0, 0), 'float32x2', 1),
+        values: fixture.input('before-values', Float32Array.of(0), 'float32', 1)
+      },
+      after: {
+        positions: fixture.input('after-points', Float32Array.of(0, 0), 'float32x2', 1),
+        values: fixture.input('after-values', Float32Array.of(2 ** 47), 'float32', 1)
+      },
+      scratch: {
+        mask: mask.view,
+        before: {status: {sumOverflow: beforeFlag.view}},
+        after: {status: {sumOverflow: afterFlag.view}}
+      },
+      output: {
+        comparison: {
+          delta: delta.view,
+          status: {count: count.view, sumOverflow: comparisonFlag.view}
+        },
+        colors: colors.view
+      },
+      classBreaksParameters: fixture.parameters(
+        'breaks-params',
+        'float32',
+        getGPUClassBreaksParameterValues({method: 'custom', customEdges: [-1, 0, 1]}, 2)
+      ),
+      maximumClassCount: 2,
+      methods: ['custom'],
+      palette: fixture.input('palette', Uint32Array.of(0xff0000ff, 0xff00ff00), 'uint32', 2),
+      colorScaleParameters: fixture.parameters(
+        'color-params',
+        'float32',
+        getGPUColorScaleParameterValues({
+          scale: 'threshold',
+          domainCount: 3,
+          paletteCount: 2,
+          noDataColor
+        })
+      ),
+      maximumPaletteCount: 2
+    });
+    fixture.run();
+    expect(await fixture.readUint32(beforeFlag, 1)).toEqual([0]);
+    expect(await fixture.readUint32(afterFlag, 1)).toEqual([1]);
+    expect(await fixture.readUint32(comparisonFlag, 1)).toEqual([1]);
+    expect(await fixture.readUint32(count, 1)).toEqual([1]);
+    expect(await fixture.readUint32(mask, 4)).toEqual([1, 0, 0, 0]);
+    expect(await fixture.readFloat32(delta, 4)).toEqual([NaN, NaN, NaN, NaN]);
+    expect(await fixture.readUint32(colors, 4)).toEqual([
+      noDataColor,
+      noDataColor,
+      noDataColor,
+      noDataColor
+    ]);
+  } finally {
+    fixture.destroy();
+  }
+});

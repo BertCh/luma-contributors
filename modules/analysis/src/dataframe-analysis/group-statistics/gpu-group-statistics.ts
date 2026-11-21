@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import type {DataframePropKeys} from '../calendar-buckets/dataframe-constructor-contracts';
 import {
   createTransientView,
   getViewBindingRange,
@@ -95,7 +97,7 @@ export function getGPUGroupStatisticsMaximumGroupCount(device: Device): number {
 }
 
 /**
- * Largest `capacity * percentiles.length` of {@link GPUGroupStatistics} on `device`: the per-group
+ * Largest `capacity * probabilities.length` of {@link GPUGroupStatistics} on `device`: the per-group
  * percentile table holds one float32 per group and fraction in one storage binding, so 33554432 on
  * a default device.
  */
@@ -134,9 +136,14 @@ export type GPUGroupStatisticsColumnOutput = {
    * cell-table semantics: the sum of `roundHalfEven(value * sumScale)`. Each value is rounded
    * to `1 / sumScale` first, so these words are exact only for values that are multiples of
    * that unit; a value below half a unit adds nothing. Use `sumValues` for the sum of a column
-   * of any magnitude.
+   * of any magnitude. Scaled rows clamp just below 2^62 and totals wrap at 64 bits; request
+   * `status.sumOverflow` to detect either loss.
    */
   sums?: GraphDataView<'uint32x2'>;
+  status?: {
+    /** One-row flag for retained-row clamping or a caller-scale total exceeding int64. Requires sums. */
+    sumOverflow?: GraphDataView<'uint32'>;
+  };
   /**
    * Sum of the finite values as f32 (`sum`): the exact sum in a 96-bit fixed-point accumulator
    * whose unit follows the largest value of the column, rounded once to float32. It does not
@@ -144,8 +151,10 @@ export type GPUGroupStatisticsColumnOutput = {
    */
   sumValues?: GraphDataView<'float32'>;
   /**
-   * `sumValues` divided by the finite count (`mean`), within a few float32 units in the last
-   * place of the true mean at any magnitude; NaN for empty groups.
+   * Exact fixed-point total divided by the exact integer finite count (`mean`), within a few float32 units in the last
+   * place of the true mean at any magnitude; NaN for empty groups. When the sum itself is past
+   * the float32 range (`sumValues` infinite), the mean is still taken from the exact accumulator
+   * and stays finite.
    */
   means?: GraphDataView<'float32'>;
   /** Minimum finite value (`minimum`); NaN for empty groups. `-0` is reported as `+0`. */
@@ -162,11 +171,8 @@ export type GPUGroupStatisticsColumnOutput = {
   kurtosis?: GraphDataView<'float32'>;
   /** Median, the linear-interpolated 0.5 quantile (`median`). */
   medians?: GraphDataView<'float32'>;
-  /**
-   * Quantiles for the `percentiles` fractions, group-major: group `g`, fraction `j` is at row
-   * `g * P + j` (`percentiles`). Length is `capacity * P`.
-   */
-  percentiles?: GraphDataView<'float32'>;
+  /** Group-major quantile values. Group g, probability j is at row g * P + j. */
+  quantiles?: GraphDataView<'float32'>;
   /** Most frequent finite value; ties resolve to the smallest value (`mode`). */
   modes?: GraphDataView<'float32'>;
   /** Number of distinct finite values (`uniqueCount`). */
@@ -213,8 +219,8 @@ export type GPUGroupStatisticsOutput<
  * Properties for {@link GPUGroupStatistics}.
  *
  * Per-frame (no recompile): the contents of `keys`, `mask`, every `values` column, and the
- * `percentiles` fractions. Topology (needs a new graph): view lengths and chunk boundaries, the
- * capacity, each column's statistic set, `variance`, `sumScale`, and the number of percentiles.
+ * `probabilities` fractions. Topology (needs a new graph): view lengths and chunk boundaries, the
+ * capacity, each column's statistic set, `variance`, `sumScale`, and the number of probabilities.
  */
 export type GPUGroupStatisticsProps<
   Keys extends GroupKeyRows = GraphDataView<'uint32' | 'uint32x2'>,
@@ -252,12 +258,14 @@ export type GPUGroupStatisticsProps<
    * `percentiles`. Typically a {@link GPUParameterBuffer} view; rewriting it needs no
    * rebuild.
    */
-  percentiles?: GraphDataView<'float32'>;
+  probabilities?: GraphDataView<'float32'>;
   /**
    * Fixed-point scale of the `sums` words only, a positive float32: one unit is `1 / sumScale`.
    * Defaults to 65536. `sumValues`, `means` and the moments do not use it.
    */
   sumScale?: number;
+  /** Isolate adaptive float sum/mean units and finite-count headroom per retained group. Defaults to shared. */
+  scaleMode?: 'shared' | 'per-group';
   /** Explicit reference route: all global order scratch must fit one device binding. */
   scratchMode?: 'auto' | 'packed';
   /** Optional power-of-two tile width. Exact order statistics and z-scores retain the packed route. */
@@ -281,7 +289,7 @@ const STATISTIC_OUTPUTS: Record<
   skewness: ['skewness'],
   kurtosis: ['kurtosis'],
   median: ['medians'],
-  percentiles: ['percentiles'],
+  percentiles: ['quantiles'],
   mode: ['modes'],
   uniqueCount: ['uniqueCounts'],
   zScore: ['zScores']
@@ -297,7 +305,7 @@ const FLOAT_OUTPUTS = [
   'skewness',
   'kurtosis',
   'medians',
-  'percentiles',
+  'quantiles',
   'modes',
   'zScores'
 ] as const;
@@ -356,6 +364,11 @@ const FLOAT_OUTPUTS = [
  * single packed views with disjoint logical ranges; fields bound together must also have
  * disjoint aligned binding ranges. Results are bitwise
  * identical to packed input on the packed scratch route. Not included: HyperLogLog-style approximate distinct counts.
+ *
+ * Adaptive sums and means default to one shared unit across retained groups: singleton 1 can
+ * round to zero when another group contains 2^100 (two rows give unit 256). Set scaleMode:
+ * 'per-group' to isolate units. Caller-scale sums and status.sumOverflow retain their separate
+ * row-clamp and signed-64 loss semantics.
  */
 export class GPUGroupStatistics<
   Props extends GPUGroupStatisticsProps<GroupKeyRows, GroupValueRows> = GPUGroupStatisticsProps
@@ -374,14 +387,135 @@ export class GPUGroupStatistics<
   /** Upper bound including published primitive allowances and the row-dependent moment tree. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: Props) {
+  constructor(
+    props: Props &
+      Record<
+        Exclude<
+          DataframePropKeys<Props>,
+          keyof GPUGroupStatisticsProps<GroupKeyRows, GroupValueRows>
+        >,
+        never
+      >
+  ) {
+    const allowed = [
+      'id',
+      'keys',
+      'mask',
+      'keyCount',
+      'columns',
+      'variance',
+      'probabilities',
+      'sumScale',
+      'scratchMode',
+      'scratchTileSize',
+      'scaleMode',
+      'output'
+    ];
+    const declaredProps = snapshotConstructionFields(props, allowed as (keyof typeof props)[]);
+    const instanceId = declaredProps.id ?? 'group-statistics';
+    validateRequirement(
+      instanceId,
+      !('percentiles' in props),
+      'percentiles was removed; use probabilities'
+    );
+    for (const field of Object.keys(props)) {
+      validateRequirement(
+        instanceId,
+        allowed.includes(field),
+        `unknown prop ${field}; accepted props: ${allowed.join(', ')}`
+      );
+    }
+    props = declaredProps;
+    const tableOutput = snapshotConstructionFields(props.output, ['keys', 'counts', 'status']);
+    props = {
+      ...props,
+      output: {
+        ...tableOutput,
+        status: snapshotConstructionFields(tableOutput.status, [
+          'count',
+          'overflow',
+          'requiredCount'
+        ])
+      }
+    } as typeof props;
+    props = {
+      ...props,
+      columns: props.columns.map((column, columnIndex) => {
+        column = snapshotConstructionFields(column, ['values', 'statistics', 'output']);
+        validateRequirement(
+          instanceId,
+          !('sumOverflow' in column.output),
+          `columns[${columnIndex}].output.sumOverflow was removed; use columns[${columnIndex}].output.status.sumOverflow`
+        );
+        validateRequirement(
+          instanceId,
+          !('percentiles' in column.output),
+          `columns[${columnIndex}].output.percentiles was removed; use columns[${columnIndex}].output.quantiles`
+        );
+        const {status: declaredStatus, ...output} = snapshotConstructionFields(column.output, [
+          'counts',
+          'sums',
+          'status',
+          'sumValues',
+          'means',
+          'minimums',
+          'maximums',
+          'variances',
+          'standardDeviations',
+          'skewness',
+          'kurtosis',
+          'medians',
+          'quantiles',
+          'modes',
+          'uniqueCounts',
+          'zScores'
+        ]);
+        const status =
+          declaredStatus && snapshotConstructionFields(declaredStatus, ['sumOverflow']);
+        return {
+          ...column,
+          statistics: [...column.statistics],
+          output: {
+            ...output,
+            ...(status ? {status} : {})
+          }
+        };
+      })
+    } as typeof props;
     this.id = props.id ?? 'group-statistics';
+    props = Object.freeze({
+      ...props,
+      output: Object.freeze({
+        ...snapshotConstructionFields(props.output, ['keys', 'counts', 'status']),
+        status: snapshotConstructionFields(props.output.status, [
+          'count',
+          'overflow',
+          'requiredCount'
+        ])
+      }),
+      columns: Object.freeze(
+        props.columns.map(column =>
+          Object.freeze({
+            ...column,
+            statistics: Object.freeze([...column.statistics]),
+            output: Object.freeze({...column.output})
+          })
+        )
+      )
+    }) as typeof props;
     this.props = props;
     const id = this.id;
     this.variance = props.variance ?? 'sample';
     if (this.variance !== 'sample' && this.variance !== 'population') {
       throw new Error(`${id} variance must be 'sample' or 'population'`);
     }
+    validateRequirement(
+      id,
+      props.scaleMode === undefined ||
+        props.scaleMode === 'shared' ||
+        props.scaleMode === 'per-group',
+      `scaleMode must be shared or per-group; received ${props.scaleMode}`
+    );
     this.sumScale = props.sumScale ?? GPU_CELL_DEFAULT_SUM_SCALE;
     validateSumScale(id, this.sumScale);
 
@@ -470,6 +604,7 @@ export class GPUGroupStatistics<
         }
       }
       for (const [field, view] of Object.entries(column.output)) {
+        if (field === 'status') continue;
         if (!view) {
           continue;
         }
@@ -493,6 +628,24 @@ export class GPUGroupStatistics<
           validateSinglePackedView(view, ['uint32'], `${id} ${name}.output.${field}`);
         }
       }
+      const sumOverflow = columnOutput.status?.sumOverflow;
+      if (sumOverflow) {
+        validateRequirement(
+          id,
+          Boolean(columnOutput.sums),
+          `${name}.output.status.sumOverflow requires output.sums`
+        );
+        validateSinglePackedView(
+          sumOverflow,
+          ['uint32'],
+          `${id} ${name}.output.status.sumOverflow`
+        );
+        validateRequirement(
+          id,
+          sumOverflow.length === 1,
+          `${name}.output.status.sumOverflow must hold one uint32 row`
+        );
+      }
       if (columnOutput.sums) {
         validateSinglePackedView(columnOutput.sums, ['uint32x2'], `${id} ${name}.output.sums`);
       }
@@ -502,7 +655,7 @@ export class GPUGroupStatistics<
           validateSinglePackedView(view, ['float32'], `${id} ${name}.output.${field}`);
         }
       }
-      const expectedLengths: [keyof GPUGroupStatisticsColumnOutput, number][] = [
+      const expectedLengths: [Exclude<keyof GPUGroupStatisticsColumnOutput, 'status'>, number][] = [
         ['zScores', rowCount]
       ];
       for (const field of [
@@ -534,39 +687,38 @@ export class GPUGroupStatistics<
       }
       if (requested.has('percentiles')) {
         percentileColumnCount++;
-        if (!props.percentiles) {
-          throw new Error(`${id} ${name} statistic 'percentiles' needs the percentiles view`);
+        if (!props.probabilities) {
+          throw new Error(`${id} ${name} statistic 'percentiles' needs the probabilities view`);
         }
-        const percentileOutput = columnOutput.percentiles;
-        if (percentileOutput && percentileOutput.length !== capacity * props.percentiles.length) {
+        const percentileOutput = columnOutput.quantiles;
+        if (percentileOutput && percentileOutput.length !== capacity * props.probabilities.length) {
           throw new Error(
-            `${id} ${name}.output.percentiles must hold output.keys.length * percentiles.length rows`
+            `${id} ${name}.output.quantiles must hold output.keys.length * probabilities.length rows`
           );
         }
       }
     }
-    if (props.percentiles) {
-      validateSinglePackedView(props.percentiles, ['float32'], `${id} percentiles`);
+    if (props.probabilities) {
+      validateSinglePackedView(props.probabilities, ['float32'], `${id} probabilities`);
       validateCapacity(
         id,
-        'percentiles.length',
-        props.percentiles.length,
+        'probabilities.length',
+        props.probabilities.length,
         1,
         MAXIMUM_PERCENTILE_COUNT
       );
       validateCapacity(
         id,
-        'output.keys.length * percentiles.length',
-        capacity * props.percentiles.length,
+        'output.keys.length * probabilities.length',
+        capacity * props.probabilities.length,
         1,
         MAXIMUM_PERCENTILE_TOTAL
       );
       if (percentileColumnCount === 0) {
-        throw new Error(`${id} percentiles is only used by the 'percentiles' statistic`);
+        throw new Error(`${id} probabilities is only used by the 'percentiles' statistic`);
       }
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
-    this.validateOutputViews();
     // Structure: at most two sorts, two gathers and one scan, plus 16 local nodes. A column's
     // order statistics add at most three sorts, four gathers and two scans. The other column
     // passes need fewer than 32 nodes, plus the logarithmic moment merge levels. Allow one
@@ -600,6 +752,7 @@ export class GPUGroupStatistics<
       (props.scratchTileSize !== undefined
         ? rowCount > this.scratchTileSize
         : rowCount * 4 > scratchByteLimit);
+    this.validateOutputViews();
     const tileCount = Math.ceil(rowCount / this.scratchTileSize);
     if (this.usesTiledScratch && props.keyCount === undefined) {
       validateTiledKeyUnionRowCount(id, tileCount * this.scratchTileSize);
@@ -638,39 +791,38 @@ export class GPUGroupStatistics<
   /** Checks logical separation globally and aligned ranges only for co-bound writable fields. */
   private validateOutputViews(): void {
     const {id, props} = this;
-    // Treat output fields as separate logical write chunks for the cross-dispatch check. The
-    // borrowed word views are metadata only; no resources or nodes are declared. This also lets
-    // the shared validator recognize two imported handles backed by the same physical buffer.
-    const chunks = this.getOutputViews().flatMap(view =>
-      view
-        ? [
-            (view.buffer.graph as GPUCommandGraph).createDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset
-            })
-          ]
-        : []
+    validateDisjointWritableViews(
+      id,
+      {
+        'output.keys': props.output.keys,
+        'output.counts': props.output.counts,
+        'output.status.count': props.output.status.count,
+        'output.status.overflow': props.output.status.overflow,
+        'output.status.requiredCount': props.output.status.requiredCount,
+        ...Object.fromEntries(
+          props.columns.flatMap((column, columnIndex) => [
+            [
+              `columns[${columnIndex}].output.status.sumOverflow`,
+              column.output.status?.sumOverflow
+            ],
+            ...Object.entries(column.output)
+              .filter(([name]) => name !== 'status')
+              .map(([name, view]) => [
+                `columns[${columnIndex}].output.${name}`,
+                view as GraphDataView
+              ])
+          ])
+        )
+      },
+      {separateDispatches: true}
     );
-    const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
-    validateDisjointWritableViews(id, {
-      'output fields': new GraphVectorView({
-        id: `${id}-output-fields`,
-        name: 'output fields',
-        format: 'uint32',
-        length,
-        valueLength: length,
-        stride: 1,
-        byteStride: 4,
-        rowByteLength: 4,
-        data: chunks
-      })
-    });
     // Keys and group counts share the group-table dispatch; status fields share publish.
-    validateDisjointWritableViews(id, {
-      'output.keys': props.output.keys,
-      'output.counts': props.output.counts
-    });
+    if (!this.usesTiledScratch) {
+      validateDisjointWritableViews(id, {
+        'output.keys': props.output.keys,
+        'output.counts': props.output.counts
+      });
+    }
     validateDisjointWritableViews(id, {
       'output.status.count': props.output.status.count,
       'output.status.overflow': props.output.status.overflow,
@@ -699,7 +851,7 @@ export class GPUGroupStatistics<
     return [
       props.keys,
       props.mask,
-      props.percentiles,
+      props.probabilities,
       ...props.columns.map(column => column.values)
     ];
   }
@@ -712,7 +864,12 @@ export class GPUGroupStatistics<
       output.status.count,
       output.status.overflow,
       output.status.requiredCount,
-      ...this.props.columns.flatMap(column => Object.values(column.output))
+      ...this.props.columns.flatMap(column => [
+        column.output.status?.sumOverflow,
+        ...Object.entries(column.output)
+          .filter(([name]) => name !== 'status')
+          .map(([, view]) => view as GraphDataView)
+      ])
     ];
   }
 
@@ -768,11 +925,11 @@ export class GPUGroupStatistics<
       capacity,
       getGPUGroupStatisticsMaximumGroupCount(graph.device)
     );
-    if (props.percentiles) {
+    if (props.probabilities) {
       validateMaximumCount(
         id,
-        'output.keys rows x percentiles',
-        capacity * props.percentiles.length,
+        'output.keys rows x probabilities',
+        capacity * props.probabilities.length,
         getGPUGroupStatisticsMaximumPercentileTotal(graph.device)
       );
     }
@@ -789,8 +946,13 @@ export class GPUGroupStatistics<
       );
       const needsFloatSums =
         Boolean(column.output.sumValues || column.output.means) || needsMoments;
+      if (column.output.status?.sumOverflow)
+        scratchLengths.push([`columns[${columnIndex}] sum overflow guards`, capacity + 1]);
       if (needsFloatSums)
-        scratchLengths.push([`columns[${columnIndex}] fixed-point words`, 3 * capacity + 1]);
+        scratchLengths.push([
+          `columns[${columnIndex}] fixed-point words`,
+          3 * capacity + (props.scaleMode === 'per-group' ? capacity : 1)
+        ]);
       if (needsMoments) {
         scratchLengths.push(
           [`columns[${columnIndex}] mean scratch`, 2 * capacity],
@@ -893,6 +1055,7 @@ export class GPUGroupStatistics<
         },
         variance: this.variance,
         sumScale: this.sumScale,
+        scaleMode: props.scaleMode,
         output: columnOutput
       });
       result.push(...reduction.nodes);
@@ -931,7 +1094,7 @@ export class GPUGroupStatistics<
             structure,
             valueBits,
             finiteCounts: reduction.finiteCounts,
-            percentiles: props.percentiles,
+            probabilities: props.probabilities,
             output: columnOutput
           })
         );

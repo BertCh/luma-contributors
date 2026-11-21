@@ -78,8 +78,8 @@ function makeReadback(): CuratedDrainageReadback {
       {stage: 'accumulation', converged: 1},
       {stage: 'stream-order', converged: 1},
       {stage: 'catchments', converged: 1},
-      {stage: 'downstream-distance', uncertainCount: 0},
-      {stage: 'stream-network', overflow: 0, uncertainCount: 0},
+      {stage: 'downstream-distance', unresolvedCount: 0},
+      {stage: 'stream-network', overflow: 0, unresolvedCount: 0},
       {stage: 'catchment-summary', overflow: 0}
     ]
   };
@@ -332,6 +332,10 @@ describe('curated drainage mapping and publication', () => {
       );
       expect(kernels.some(kernel => kernel.id === 'publish-positions')).toBe(true);
       expect(kernels.some(kernel => kernel.id === 'publish-stream-network-overflow')).toBe(true);
+      for (const stage of ['downstream-distance', 'stream-network']) {
+        expect(kernels.some(kernel => kernel.id === `publish-${stage}-unresolvedCount`)).toBe(true);
+        expect(kernels.some(kernel => kernel.id === `publish-${stage}-uncertainCount`)).toBe(false);
+      }
       // This is a construction/cleanup probe, not GPU numerical qualification.
       throw new Error('drainage construction reached submission');
     });
@@ -417,7 +421,7 @@ describe('curated drainage mapping and publication', () => {
     expect(output.summary).toMatchObject({
       converged: 1,
       overflow: 0,
-      uncertainCount: 0,
+      unresolvedCount: 0,
       accumulationUnit: 'cells',
       distanceUnit: 'coordinate-unit'
     });
@@ -476,12 +480,49 @@ describe('curated drainage mapping and publication', () => {
       {stage: 'catchments', converged: 0},
       {stage: 'stream-network', overflow: 1},
       {stage: 'catchment-summary', overflow: 1},
-      {stage: 'downstream-distance', uncertainCount: 3},
-      {stage: 'stream-network', uncertainCount: 2}
+      {stage: 'downstream-distance', unresolvedCount: 3},
+      {stage: 'stream-network', unresolvedCount: 2}
     ]) {
       expect(() =>
         publishCuratedDrainageNetwork(prepared, {...makeReadback(), stages: [status]})
       ).toThrow(new RegExp(status.stage));
+    }
+  });
+
+  it.each([
+    'downstream-distance',
+    'stream-network'
+  ])('gates canonical unresolved-only and overflow-only %s stages and recovers without adding aliases', stage => {
+    const prepared = prepareCuratedDrainageNetwork(createDrainageNetworkSample(), {});
+    const status = {stage, unresolvedCount: 0, overflow: 0};
+    const readback = {...makeReadback(), stages: [status]};
+    const publish = () => publishCuratedDrainageNetwork(prepared, readback);
+    expect(publish().summary['unresolvedCount']).toBe(0);
+    status.unresolvedCount = 3;
+    expect(publish).toThrow(/unresolvedCount.*3/);
+    status.unresolvedCount = 0;
+    status.overflow = 1;
+    expect(publish).toThrow(/overflow.*1/);
+    status.overflow = 0;
+    const recovered = publish();
+    expect(recovered.summary['unresolvedCount']).toBe(0);
+    expect(recovered.summary['recipeStatus']).toContain('"unresolvedCount":0');
+  });
+
+  it('preserves omitted unresolved evidence and publishes only supplied zeros (B6)', () => {
+    const prepared = prepareCuratedDrainageNetwork(createDrainageNetworkSample(), {});
+    for (const stage of ['downstream-distance', 'stream-network']) {
+      const publish = (evidence: {unresolvedCount?: number} | {uncertainCount: number}) =>
+        publishCuratedDrainageNetwork(prepared, {
+          ...makeReadback(),
+          stages: [{stage, overflow: 0, ...evidence}]
+        }).summary;
+      expect(publish({})['recipeStatus']).not.toContain('unresolvedCount');
+      expect(publish({})).not.toHaveProperty('unresolvedCount');
+      expect(() => publish({uncertainCount: 0})).toThrow(
+        /uncertainCount was removed; use unresolvedCount/
+      );
+      expect(publish({unresolvedCount: 0})['recipeStatus']).toContain('"unresolvedCount":0');
     }
   });
 });

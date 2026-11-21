@@ -6,29 +6,49 @@ The value band contains intensive cell observations. Statistical weights are cov
 
 This is RS01's bounded planar distribution contract. All computation, sorting and grouping stays
 inside the command graph. Construction does not submit GPU work or read data back to the CPU.
-The input buffers and all outputs belong to the caller.
+The input buffers or sampled textures and all outputs belong to the caller.
+`GPURasterFractionalZonalDistributionOperation` and `GPURasterFractionalZonalStatisticsOperation`
+keep their logical buffer-band contracts; gather a texture explicitly before those operation forms.
 
 ## Inputs and shapes
 
 | Property | Contract |
 | --- | --- |
 | `grid` | Raster dimensions and an invertible planar affine transform; area is the absolute affine determinant. The determinant and the maximum covered area must be representable in float32. |
-| `input` | A buffer raster band. Existing band canonicalization applies calibration, masks, nodata and finite-value filtering. |
+| `input` | A buffer or sampled texture raster band, with an explicit channel for multichannel textures. Public conversion applies native nodata and masks before calibration and finite-value filtering; texture contents are read on every submission. |
 | `zoneCount` | Dense source-zone rows, from 0 through 65,536. Empty zones retain their row. |
 | `coverage` | The complete existing fractional-coverage output object: `zoneIds`, `cellIds`, `fractions`, `zoneValidity`, and `status.count`, `status.requiredCount`, `status.overflow`. Tuple capacity is 1 through 65,536; the active count may be zero. |
 | `probabilities` | A float32 view of 1 through 32 probabilities. Values may change between encodings. Each must be finite and in `[0,1]`; invalid probabilities yield NaN and zero quantile validity. |
 | `observationWeights` | Optional packed float32 cell column. Finite nonnegative reliability weights; zero excludes a cell from distribution statistics but retains its valid area. Negative/nonfinite weights invalidate the zone. Default one. |
-| `cellAreas` | Optional packed float32 cell column. Positive finite areas supplied by the caller, including geographic/geodesic areas. Default absolute planar affine determinant, or ground area with `cellSizeMode`. Areas never silently become statistical weights. |
-| `cellSizeMode` | `'uniform'` (default, planar coordinate units), `'geographic'` (degrees) or `'web-mercator'` (EPSG:3857 meters). The latter two multiply the default cell area by the WGS84 ground area per world area of the cell's row (row edges evaluated at the row center), so `coveredArea` and `validArea` are ground square meters. The row edges are read from `parameters` (slots 1 and 5) on every encoding when it is given, else baked from `grid.affine`. Needs an axis-aligned grid; rejected together with `cellAreas`. The mode is compile-time. |
+| `cellAreas` | Optional packed float32 cell column. Positive finite areas in caller-declared units supplied by the caller, including geographic/geodesic areas. `coveredArea` and `validArea` use those same units; no automatic unit conversion occurs. Default absolute planar affine determinant, or ground area with `cellSizeMode`. Areas never silently become statistical weights. |
+| `cellSizeMode` | `'uniform'` (default, planar coordinate units), `'geographic'` (degrees) or `'web-mercator'` (EPSG:3857 meters). The latter two multiply the default cell area by the grid-derived WGS84 midpoint ground-area scale (the product of local ground scales at the row midpoint, rather than an integrated geodesic cell area), so `coveredArea` and `validArea` are ground square meters. The row edges are read from `parameters` (slots 1 and 5, plus word 9 when word 8 is `2`) on every encoding when it is given, else baked from `grid.affine`. Needs an axis-aligned grid; rejected together with `cellAreas`. The mode is compile-time. |
 | `parameters` | Optional. The per-frame georeference view given to `GPURasterFractionalCoverage` (`getGPURasterFractionalCoverageParameterValues`). Without `cellAreas`, the cell area is then read from it on every encoding as the absolute determinant, so the area outputs follow a georeference repacked for another cell size. With neither `cellAreas` nor `parameters` the cell area is the determinant of `grid.affine` fixed at compile time. |
 | `quantileMethod` | `'exactextract'` (default) distinct-value interpolation, or `'inverse-cdf'` without interpolation. Both sort the exact observed float32 values; neither bins a continuous range. |
 | `output` | Caller-owned, nonaliasing buffers described below. |
+
+For rebased geometry, pack
+`getGPURasterFractionalCoverageParameterValues(absoluteGrid, {localOrigin})` and subtract
+`localOrigin` from the original binary64 vertices **before** converting them to float32. Give the
+same ten-word view to coverage and distribution: words 0–6 are relative origins, axes and area
+determinant; word 7 remains ignored legacy padding; word 8 is `2`; word 9 restores absolute Y
+for geographic/Web Mercator row areas. The no-options eight-word legacy layout remains accepted.
+See the [shared clipping/area frame](./expansion.md#geometry-and-coverage).
+
+Public coverage and patch-metrics packets retain the signed physical determinant of the original
+affine in word 6. Clipping inverts the packed axes independently. The analysis-core resolver's
+coordinate packet instead carries its packed-axes determinant and exposes `affineDeterminant`
+separately.
 
 Tuple buffers have matching capacities and only their active prefix is read. Fractions must be
 finite and in `[0,1]`; zero contributes no observation. A `(zoneId, cellId)` pair must occur once.
 Duplicates are rejected, including a duplicate carrying zero weight. Negative/nonfinite observation weights, nonpositive/nonfinite cell areas, or overflowing combined weights also invalidate the zone. Different zones may refer to
 the same cell. Invalid source-cell IDs invalidate their zone; an out-of-range zone ID invalidates
 all zones because its intended destination cannot be recovered.
+
+The direct contributor and both operation forms capture documented fields by name, including
+inherited and non-enumerable getters, once at construction. Required destinations must be present;
+unknown quantile and cell-size options reject at construction. Changing the caller's descriptors
+later does not retarget the captured views or logical graph names.
 
 The input band, fractions, IDs, probabilities, counts, validity and overflow words are read again on
 every encoding. There is no prepared cache to invalidate. Sizes, calibration and the grid affine
@@ -100,8 +120,29 @@ The output buffers are allocated by the application. `coverage` is the output of
 `GPURasterFractionalCoverage` producer in the same graph.
 
 ```typescript
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterFractionalZonalDistributionProps} from '@luma-contributors/analysis/raster-analysis';
 import {GPURasterFractionalZonalDistribution} from '@luma-contributors/analysis/raster-analysis';
 
+declare const grid: GPURasterMetadata;
+declare const observationBand: GPURasterBand;
+declare const zoneCount: number;
+declare const coverage: GPURasterFractionalZonalDistributionProps['coverage'];
+declare const probabilities: GraphDataView<'float32'>;
+declare const means: GraphDataView<'float32'>;
+declare const populationVariances: GraphDataView<'float32'>;
+declare const sampleVariances: GraphDataView<'float32'>;
+declare const effectiveSampleSizes: GraphDataView<'float32'>;
+declare const weightSums: GraphDataView<'float32'>;
+declare const squaredWeightSums: GraphDataView<'float32'>;
+declare const coveredArea: GraphDataView<'float32'>;
+declare const validArea: GraphDataView<'float32'>;
+declare const quantiles: GraphDataView<'float32'>;
+declare const quantileValidity: GraphDataView<'uint32'>;
+declare const validity: GraphDataView<'uint32'>;
+declare const status: GraphDataView<'uint32'>;
+// Moment, area, validity and status outputs each have zoneCount rows.
 // probabilities contains [0.25, 0.5, 0.75]. Quantile outputs need zoneCount * 3 rows.
 graph.add(new GPURasterFractionalZonalDistribution({
   grid,

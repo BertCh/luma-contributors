@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUTerrainHydrologicIndices on the filled DEM and area accumulation of GPUTerrainFlow: slope,
+// GPUTerrainHydrologicIndices on the filled DEM and area accumulation of GPUTerrainFlow: descentTangent,
 // specific catchment area, wetness index and stream power. All four views are written; the
 // slider picks which one is drawn, and minimumSlope clamps flat cells before the division.
 
@@ -39,7 +39,7 @@ export default defineOperationRun({
     const flow = addTerrainFlow(builder, terrain, {accumulationUnits: 'area'});
     flow.writeStreamThreshold(25);
     const parameterBuffer = builder.allocate('index-parameters', 'float32', 8);
-    const slope = builder.allocate('slope', 'float32', terrain.cellCount);
+    const descentTangent = builder.allocate('descentTangent', 'float32', terrain.cellCount);
     const specificCatchmentArea = builder.allocate('catchment-area', 'float32', terrain.cellCount);
     const wetnessIndex = builder.allocate('wetness', 'float32', terrain.cellCount);
     const streamPowerIndex = builder.allocate('stream-power', 'float32', terrain.cellCount);
@@ -50,7 +50,7 @@ export default defineOperationRun({
         accumulation: flow.accumulation.view,
         parameters: parameterBuffer.view,
         output: {
-          slope: slope.view,
+          descentTangent: descentTangent.view,
           specificCatchmentArea: specificCatchmentArea.view,
           wetnessIndex: wetnessIndex.view,
           streamPowerIndex: streamPowerIndex.view
@@ -62,7 +62,7 @@ export default defineOperationRun({
     return {
       outputs: {
         filledElevation: flow.filledElevation,
-        indices: [wetnessIndex, streamPowerIndex, slope, specificCatchmentArea],
+        indices: [wetnessIndex, streamPowerIndex, descentTangent, specificCatchmentArea],
         highlighted
       },
       update: values =>

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getRefinementEmptyNodes} from './refinement-empty-nodes';
+
 import {
   resolveGeometryUint32StatusView,
   validateGeometryRetainedViews
@@ -277,7 +279,7 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
       this.id,
       'lineOffsets.length',
       props.lineOffsets.length,
-      2,
+      1,
       MAXIMUM_LINE_COUNT + 1
     );
     validateCapacity(
@@ -299,7 +301,7 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
       this.id,
       'lineCount * maximumVerticesPerLine',
       lines * props.maximumVerticesPerLine,
-      1,
+      0,
       MAXIMUM_POSITION_COUNT
     );
     if (
@@ -349,6 +351,17 @@ export class GPUSegmentSnap implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    // Select the route first: the zero-line and empty-source routes bind only the views they
+    // fill, so minimally backed zero-row inputs and outputs are not range-checked there.
+    if (props.lineOffsets.length === 1) return [];
+    if (props.positions.length === 0 && props.referencePositions.length === 0) {
+      return getRefinementEmptyNodes(graph, id, 'GPUSegmentSnap', {
+        counts: {view: props.output.counts, value: 0},
+        validity: {view: this.outputViews.validity, value: 1},
+        issueCode: {view: this.outputViews.issueCode, value: 0},
+        candidateOverflow: {view: this.outputViews.candidateOverflow, value: 0}
+      });
+    }
     validateGraphChunkBindingRanges(graph, id, {
       positions: props.positions,
       lineOffsets: props.lineOffsets,

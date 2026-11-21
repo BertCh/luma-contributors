@@ -112,6 +112,17 @@ export function getGPUShapeVertexCount(shape: GPUShapeType, segmentCount: number
   return shape === 'sector' ? segmentCount + 3 : segmentCount + 1;
 }
 
+/**
+ * Identity offsets `[0, 1, ..., featureCount]` for generated polygon hierarchy levels.
+ * Use independent copies as `featureOffsets` and `polygonOffsets`; use the generator's
+ * `output.offsets` as `ringOffsets`. Two four-segment rings have ring offsets `[0, 5, 10]`
+ * and both identity levels `[0, 1, 2]`. Upload these uint32 arrays for resident consumers.
+ */
+export function getGPUShapePolygonIdentityOffsets(featureCount: number): Uint32Array {
+  validateCapacity('GPUShapeGenerator', 'featureCount', featureCount, 0, 0xfffffffe);
+  return Uint32Array.from({length: featureCount + 1}, (_, index) => index);
+}
+
 /** Caller-owned outputs of {@link GPUShapeGenerator}. */
 export type GPUShapeGeneratorOutput = {
   /**
@@ -123,7 +134,8 @@ export type GPUShapeGeneratorOutput = {
   positions: GraphDataView<'float32x2'>;
   /**
    * GeoArrow-style ring offsets, `featureCount + 1` rows: `offsets[f] = f * V`. With one ring per
-   * feature these are both the ring and the polygon offsets.
+   * feature, use these as `ringOffsets`. Both `polygonOffsets` and `featureOffsets` instead
+   * use {@link getGPUShapePolygonIdentityOffsets}: `[0, 1, ..., featureCount]`.
    */
   offsets: GraphDataView<'uint32'>;
   /** Optional one-row total vertex count `featureCount * V` of the current frame. */

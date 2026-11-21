@@ -25,14 +25,14 @@
         "final-value",
         "wavefront"
       ],
-      "status": "pass",
-      "reason": "every gated loop reached its fixpoint"
+      "status": "unknown",
+      "reason": "no convergence word captured"
     }
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:15.554Z",
-    "runId": "run-28f392be",
+    "date": "2026-11-20T23:51:48.488Z",
+    "runId": "run-c55b74f6",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -40,7 +40,7 @@
     ]
   },
   "state": {
-    "runId": "run-28f392be",
+    "runId": "run-c55b74f6",
     "rung": "kernel",
     "bindings": {},
     "clauses": [],

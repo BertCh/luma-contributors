@@ -11,6 +11,8 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
+  GPURasterRollingMean,
+  GPURasterStandardizedIndex,
   GPURasterStandardizedIndexCalibration,
   GPURasterStreamingAccumulator,
   GPURasterClimateRunAccumulator,
@@ -31,6 +33,11 @@ import {
   makeRasterTimeSeriesFixtures,
   expectRasterTimeSeriesFixture
 } from './raster-timeseries-fixtures';
+
+vi.mock(
+  '@luma-contributors/analysis/raster-analysis',
+  () => import('../../analysis/src/raster-analysis')
+);
 
 // Real wrappers, views and contributor constructors; only GPU allocation/submission/readback are stubbed.
 const device = {
@@ -421,3 +428,271 @@ test.each([
   expect(guarded).toBe(true);
   expect(host.getLatest()).toBeUndefined();
 });
+
+test('W5-17 admits window one and preserves two-cell physical width with one active slice', async () => {
+  await runRasterTimeSeries(
+    device,
+    {
+      cellCount: 2,
+      sliceCount: 2,
+      bandCount: 1,
+      times: [0, 1],
+      // Cell 0/1 live samples at byte offsets 0/8; the other entries are padding.
+      values: Float32Array.of(12, -999, 22, -999)
+    },
+    'rolling-mean',
+    {windowLength: 1, activeSliceCount: 1}
+  );
+  const contributor = producers.find(
+    producer => producer instanceof GPURasterRollingMean
+  ) as GPURasterRollingMean;
+  expect(contributor.props.windowLength).toBe(1);
+  expect(contributor.props.chunkSliceCount).toBe(2);
+  expect(uploads.get(contributor.props.parameters)![1]).toBe(1);
+  expect(Array.from(uploads.get(contributor.props.values as GraphDataView)!)).toEqual([
+    12, -999, 22, -999
+  ]);
+  await expect(
+    runRasterTimeSeries(device, makeStack([12, 22]), 'rolling-mean', {windowLength: 129})
+  ).rejects.toThrow(/128/);
+});
+
+for (const [distribution, zeroAtom] of [
+  ['gamma', false],
+  ['fisk', true],
+  ['gamma', undefined],
+  ['fisk', undefined]
+] as const) {
+  test(`W5-18 shares ${distribution} zeroAtom=${zeroAtom} between calibration and evaluation`, async () => {
+    await runRasterTimeSeries(device, makeStack([0, 1, 2]), 'standardized-index', {
+      calibrationSliceCount: 3,
+      distribution,
+      ...(zeroAtom === undefined ? {} : {zeroAtom})
+    });
+    const calibration = producers.find(
+      producer => producer instanceof GPURasterStandardizedIndexCalibration
+    ) as GPURasterStandardizedIndexCalibration;
+    const evaluation = producers.find(
+      producer => producer instanceof GPURasterStandardizedIndex
+    ) as GPURasterStandardizedIndex;
+    expect(calibration.props.zeroAtom).toBe(zeroAtom ?? distribution === 'gamma');
+    expect(evaluation.props.zeroAtom).toBe(calibration.props.zeroAtom);
+  });
+}
+test('W5-18 rejects invalid atom choices and the removed zeroInflated prop', async () => {
+  for (const zeroAtom of ['yes', 1, null]) {
+    await expect(
+      runRasterTimeSeries(device, makeStack([0, 1, 2]), 'standardized-index', {
+        calibrationSliceCount: 3,
+        zeroAtom
+      } as never)
+    ).rejects.toThrow(/zeroAtom.*boolean/);
+  }
+  await expect(
+    runRasterTimeSeries(device, makeStack([0, 1, 2]), 'standardized-index', {
+      calibrationSliceCount: 3,
+      zeroAtom: true,
+      zeroInflated: false
+    })
+  ).rejects.toThrow(/zeroInflated was removed; use zeroAtom/);
+});
+
+test('SCL-06 retains sticky count status and suppresses only affected published slots', async () => {
+  vi.mocked(CatalogGpuSession.prototype.readUint32).mockImplementation(async output => {
+    const accumulator = producers.find(
+      producer => producer instanceof GPURasterStreamingAccumulator
+    ) as GPURasterStreamingAccumulator;
+    return output.view === accumulator.props.state.status
+      ? Uint32Array.of(1, 0)
+      : Uint32Array.of(3, 3);
+  });
+  const result = await runRasterTimeSeries(
+    device,
+    {
+      cellCount: 2,
+      sliceCount: 3,
+      bandCount: 1,
+      times: [0, 1, 2],
+      values: Float32Array.of(1, 2, 3, 4, 5, 6)
+    },
+    'climate-anomaly',
+    {calibrationSliceCount: 3}
+  );
+  const accumulator = producers.find(
+    producer => producer instanceof GPURasterStreamingAccumulator
+  ) as GPURasterStreamingAccumulator;
+  expect(accumulator.props.state.status).toBeDefined();
+  expect(result.streamingCountStatus).toEqual([
+    {complete: false, overflow: true},
+    {complete: true, overflow: false}
+  ]);
+  expect(Array.from(result.columns['streamingStatus'].values)).toEqual([1, 0]);
+  for (const name of ['mean', 'standardDeviation']) {
+    expect(Number.isNaN(result.columns[name].values[0])).toBe(true);
+    expect(result.columns[name].values[1]).toBe(1);
+  }
+  expect(Array.from(result.columns['anomaly'].values).map(Number.isNaN)).toEqual([
+    true,
+    true,
+    true,
+    false,
+    false,
+    false
+  ]);
+});
+
+test('SCL-06 maps a monthly count loss to its cell and UTC-month observations', async () => {
+  vi.mocked(CatalogGpuSession.prototype.readUint32).mockImplementation(async output => {
+    const accumulator = producers.find(
+      producer => producer instanceof GPURasterStreamingAccumulator
+    ) as GPURasterStreamingAccumulator;
+    const result = new Uint32Array(output.length);
+    if (output.view === accumulator.props.state.status) result[13] = 1; // cell 1, February
+    return result;
+  });
+  const result = await runRasterTimeSeries(
+    device,
+    {
+      cellCount: 2,
+      sliceCount: 3,
+      bandCount: 1,
+      times: [Date.UTC(2020, 0, 1), Date.UTC(2020, 1, 1), Date.UTC(2021, 1, 1)],
+      values: Float32Array.of(1, 2, 3, 4, 5, 6)
+    },
+    'climate-anomaly',
+    {slotCount: 12, calibrationSliceCount: 3}
+  );
+  expect(result.streamingCountStatus?.filter(status => !status.complete)).toHaveLength(1);
+  expect(Array.from(result.columns['anomaly'].values).map(Number.isNaN)).toEqual([
+    false,
+    false,
+    false,
+    false,
+    true,
+    true
+  ]);
+  expect(Number.isNaN(result.columns['mean'].values[13])).toBe(true);
+  expect(result.columns['mean'].values[1]).toBe(1);
+});
+
+for (const certificate of [Uint32Array.of(1), Uint32Array.of(0, 0, 0)]) {
+  test(`B3 refuses ${certificate.length} count certificates for two cells`, async () => {
+    vi.mocked(CatalogGpuSession.prototype.readUint32).mockImplementation(async output => {
+      const accumulator = producers.find(
+        producer => producer instanceof GPURasterStreamingAccumulator
+      ) as GPURasterStreamingAccumulator;
+      return output.view === accumulator.props.state.status ? certificate : Uint32Array.of(3, 3);
+    });
+    await expect(
+      runRasterTimeSeries(
+        device,
+        {
+          cellCount: 2,
+          sliceCount: 3,
+          bandCount: 1,
+          times: [0, 1, 2],
+          values: Float32Array.of(1, 2, 3, 4, 5, 6)
+        },
+        'climate-anomaly',
+        {calibrationSliceCount: 3}
+      )
+    ).rejects.toThrow(/streamingStatus.*2.*received/);
+  });
+}
+
+test('B4 validates only live rolling samples and still refuses an oversized live sample', async () => {
+  const stack = {
+    cellCount: 2,
+    sliceCount: 3,
+    bandCount: 1,
+    times: [0, 1, 2],
+    values: Float32Array.of(2, 6, 1e22, 20, 60, 1e22)
+  };
+  await runRasterTimeSeries(device, stack, 'rolling-mean', {windowLength: 1, activeSliceCount: 2});
+  const rolling = producers.find(
+    producer => producer instanceof GPURasterRollingMean
+  ) as GPURasterRollingMean;
+  expect(uploads.get(rolling.props.parameters)![1]).toBe(2);
+  const liveOversize = {...stack, values: Float32Array.of(1e22, 6, 0, 20, 60, 0)};
+  await expect(
+    runRasterTimeSeries(device, liveOversize, 'rolling-mean', {
+      windowLength: 1,
+      activeSliceCount: 2
+    })
+  ).rejects.toThrow(/magnitude exceeds 1e15/);
+  for (const activeSliceCount of [-1, 1.5, 4]) {
+    await expect(
+      runRasterTimeSeries(device, {...stack, values: new Float32Array(6)}, 'rolling-mean', {
+        windowLength: 1,
+        activeSliceCount
+      })
+    ).rejects.toThrow(/activeSliceCount/);
+  }
+});
+
+test('S1 suppression uses the submitted slot indices after caller dates change during readback', async () => {
+  const times = [Date.UTC(2020, 0, 1), Date.UTC(2020, 1, 1), Date.UTC(2021, 1, 1)];
+  vi.mocked(CatalogGpuSession.prototype.readUint32).mockImplementation(async output => {
+    const accumulator = producers.find(
+      producer => producer instanceof GPURasterStreamingAccumulator
+    ) as GPURasterStreamingAccumulator;
+    const result = new Uint32Array(output.length);
+    if (output.view === accumulator.props.state.status) {
+      result[1] = 1;
+      times[1] = Date.UTC(2020, 2, 1);
+    }
+    return result;
+  });
+  const result = await runRasterTimeSeries(
+    device,
+    {cellCount: 1, sliceCount: 3, bandCount: 1, times, values: Float32Array.of(1, 2, 3)},
+    'climate-anomaly',
+    {slotCount: 12, calibrationSliceCount: 3}
+  );
+  expect(Array.from(result.columns['anomaly'].values).map(Number.isNaN)).toEqual([
+    false,
+    true,
+    true
+  ]);
+});
+
+test('S2 reuses immutable decoded certificates for repeated complete and loss slots', async () => {
+  vi.mocked(CatalogGpuSession.prototype.readUint32).mockImplementation(async output => {
+    const accumulator = producers.find(
+      producer => producer instanceof GPURasterStreamingAccumulator
+    ) as GPURasterStreamingAccumulator;
+    return output.view === accumulator.props.state.status
+      ? Uint32Array.of(0, 0, 1, 1)
+      : new Uint32Array(output.length);
+  });
+  const result = await runRasterTimeSeries(
+    device,
+    {cellCount: 4, sliceCount: 2, bandCount: 1, times: [0, 1], values: new Float32Array(8)},
+    'streaming'
+  );
+  const statuses = result.streamingCountStatus!;
+  expect(statuses).toHaveLength(4);
+  expect(statuses[0]).toBe(statuses[1]);
+  expect(statuses[2]).toBe(statuses[3]);
+  expect(Object.isFrozen(statuses[0])).toBe(true);
+  expect(Object.isFrozen(statuses[2])).toBe(true);
+});
+
+for (const operation of [
+  'climate-anomaly',
+  'standardized-calibration',
+  'standardized-index'
+] as const) {
+  test(`EARLIER calibration default is bounded by a short ${operation} stack`, async () => {
+    await runRasterTimeSeries(device, makeStack([0, 1, 2]), operation, {zeroAtom: false});
+    const calibration = producers.find(
+      producer =>
+        producer instanceof GPURasterStandardizedIndexCalibration ||
+        producer instanceof GPURasterStreamingAccumulator
+    ) as GPURasterStandardizedIndexCalibration | GPURasterStreamingAccumulator;
+    expect(calibration.props.chunkSliceCount).toBe(3);
+    await expect(
+      runRasterTimeSeries(device, makeStack([0, 1, 2]), operation, {calibrationSliceCount: 4})
+    ).rejects.toThrow(/calibrationSliceCount/);
+  });
+}

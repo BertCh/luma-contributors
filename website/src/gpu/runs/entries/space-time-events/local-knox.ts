@@ -94,7 +94,7 @@ export default defineOperationRun<Inputs, Outputs>({
         searchParameters.write(
           getGPUNeighborSearchParameterValues({
             bounds: [0, 0, events.width, 1],
-            radius: current.radius / events.kilometersPerUnit
+            searchRadius: current.radius / events.kilometersPerUnit
           })
         );
         parameterBuffer.write(

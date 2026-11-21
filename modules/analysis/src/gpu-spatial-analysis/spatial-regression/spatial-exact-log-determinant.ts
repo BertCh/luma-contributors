@@ -57,7 +57,7 @@ function getSpatialScaledProductQuotient(first: number, second: number, divisor:
   return Math.sign(first) * Math.sign(second) * Math.sign(divisor) * magnitude;
 }
 
-/** Recover `log(abs(1 - first * second))` when the rounded product is one. */
+/** Recover `log(abs(1 - first * second))` throughout the unit-product cancellation region. */
 function getSpatialRoundedUnitProductLog(first: number, second: number): number {
   const firstParts = getSpatialFloat64Parts(first);
   const secondParts = getSpatialFloat64Parts(second);
@@ -69,7 +69,7 @@ function getSpatialRoundedUnitProductLog(first: number, second: number): number 
 }
 
 /**
- * Largest row count of `logDeterminant: 'exact'`. The eigenvalues of `W` come from a dense
+ * Largest supplied spectrum length of GPU `logDeterminant: 'exact'`. The eigenvalues of `W` come from a dense
  * symmetric eigen-decomposition on the CPU (`getSpatialWeightsEigenvalues`, about `(4/3) n^3`
  * operations and `n^2` float64 values of memory), which takes well under a second at 1024 rows
  * and grows cubically; above this threshold use the trace series.
@@ -165,7 +165,7 @@ export function getSpatialWeightsEigenvalues(
 /**
  * `ln|I - rho W| = sum ln|1 - rho lambda_i|`. Negative factors are permitted; a zero
  * factor returns `-Infinity`. Uses `log1p` for positive factors to retain small terms,
- * exact significands when a product rounds to one, and operand logs when a finite product
+ * exact significands near a unit product, and operand logs when a finite product
  * overflows. A true zero factor takes priority over every other factor.
  */
 export function getSpatialExactLogDeterminant(rho: number, eigenvalues: ArrayLike<number>): number {
@@ -173,7 +173,7 @@ export function getSpatialExactLogDeterminant(rho: number, eigenvalues: ArrayLik
   for (let index = 0; index < eigenvalues.length; index++) {
     const eigenvalue = eigenvalues[index];
     const product = rho * eigenvalue;
-    if (product === 1) {
+    if (product >= 0.5 && product <= 1.5) {
       const logarithm = getSpatialRoundedUnitProductLog(rho, eigenvalue);
       if (logarithm === -Infinity) return -Infinity;
       sum += logarithm;
@@ -297,7 +297,7 @@ export function validateExactLogDeterminant(
   }
   if (rows > GPU_SPATIAL_EXACT_LOG_DETERMINANT_MAXIMUM_ROW_COUNT) {
     throw new Error(
-      `${id} logDeterminant 'exact' supports at most ${GPU_SPATIAL_EXACT_LOG_DETERMINANT_MAXIMUM_ROW_COUNT} rows`
+      `${id} logDeterminant 'exact' received ${rows} spectrum values; supports at most ${GPU_SPATIAL_EXACT_LOG_DETERMINANT_MAXIMUM_ROW_COUNT}; use the trace series or a panel entity spectrum`
     );
   }
   if (!props.eigenvalues) {
@@ -307,7 +307,9 @@ export function validateExactLogDeterminant(
   }
   validateSinglePackedView(props.eigenvalues, ['float32'], `${id} eigenvalues`);
   if (props.eigenvalues.length !== rows) {
-    throw new Error(`${id} eigenvalues must hold one value per row`);
+    throw new Error(
+      `${id} eigenvalues length ${props.eigenvalues.length} must equal spectrum row count ${rows}`
+    );
   }
   return true;
 }
@@ -319,26 +321,46 @@ export function validateExactLogDeterminant(
  * `getLogDeterminantDerivative(rho) = -getTraceOne(rho)` and `getTraceTwo(rho) = sum (lambda /
  * (1 - rho lambda))^2`. Each is a fixed pairwise sum over the eigenvalues (`getPairwiseSumWGSL`).
  */
-export function getExactLogDeterminantWGSL(bindingName: string, rowCount: number): string {
+export function getExactLogDeterminantWGSL(
+  bindingName: string,
+  rowCount: number,
+  repetitionCount = 1
+): string {
   const sum = (term: string) => `${getPairwiseSumWGSL({
     count: `${rowCount}u`,
     name: 'total',
     setup: `let lambda = ${bindingName}[${bindingName}Offset + totalItem];
-    let ratio = lambda / (1.0 - rho * lambda);`,
+    let ratio = lambda / getSpatialExactFactor(rho, lambda);`,
     term: `(${term})`
   })}
-  return total;`;
+  return total * ${repetitionCount}.0;`;
   return /* wgsl */ `
 ${MULTIPLICATION_ROUNDING_ERROR_WGSL}
-fn getSpatialLogAbsoluteFactor(rho: f32, eigenvalue: f32) -> f32 {
+fn getSpatialExactFactor(rho: f32, eigenvalue: f32) -> f32 {
   let product = rho * eigenvalue;
-  if (product == 1.0) {
+  if (product >= 0.5 && product <= 1.5) {
     // Rebalance exact powers of two so even very unequal operands are normal and bounded.
     let first = frexp(rho);
     let second = frexp(eigenvalue);
     let residual = getMultiplicationRoundingError(
       ldexp(first.fract, first.exp + second.exp), second.fract, product);
-    if (residual != 0.0) { return log(abs(residual)); }
+    // Form 1-product in integer significand units. Metal fast math must not regroup the
+    // following correction as 1-(product+residual), which would discard the small factor.
+    let productBits = bitcast<u32>(product);
+    let exponent = i32((productBits >> 23u) & 0xffu) - 150;
+    let significand = (productBits & 0x7fffffu) | 0x800000u;
+    let unitSignificand = 1u << u32(-exponent);
+    let roundedFactor = ldexp(f32(i32(unitSignificand) - i32(significand)), exponent);
+    return roundedFactor - residual;
+  }
+  return 1.0 - product;
+}
+
+fn getSpatialLogAbsoluteFactor(rho: f32, eigenvalue: f32) -> f32 {
+  let product = rho * eigenvalue;
+  if (product >= 0.5 && product <= 1.5) {
+    let factor = getSpatialExactFactor(rho, eigenvalue);
+    if (factor != 0.0) { return log(abs(factor)); }
     // Nonfinite constant expressions are shader-creation errors in WGSL.
     var negativeInfinityBits = 0xff800000u;
     return bitcast<f32>(negativeInfinityBits);

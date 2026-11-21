@@ -4,6 +4,8 @@
 
 import type {NetworkCSR} from '../network-reachability/network-reachability-oracle';
 
+const COST_CEILING = Math.fround(3e38);
+
 export type IsochroneRasterSettings = {
   width: number;
   height: number;
@@ -17,8 +19,9 @@ export type IsochroneRasterSettings = {
 };
 
 /**
- * f64 mirror of the splat kernel: samples edges, applies the buffer, min or max per pixel. In max
- * mode the cost of a sample is the cheaper of the two directions of its road (the costliest valid
+ * Mirrors the splat kernel in f64 with a binary32 walking-cost input and cutoff. Samples edges,
+ * applies the buffer and takes the minimum or maximum cost per pixel. In max mode the cost of a
+ * sample is the cheaper of the two directions of its road (the costliest valid
  * reverse slot `target -> node` when the target is reached), so the maximum runs over samples and
  * roads only. Before review network-paths-01 the mirror, like the kernel, took the maximum over
  * the two directions too. The independent check of max mode is
@@ -35,33 +38,57 @@ export function splatIsochroneRasterOnCPU(
   const cellX = (maxX - minX) / width;
   const cellY = (maxY - minY) / height;
   const radius = Math.max(settings.bufferRadius, 0.5 * Math.hypot(cellX, cellY));
+  const walkCostPerUnit = Math.fround(settings.walkCostPerUnit);
   const reachX = Math.min(Math.ceil(radius / cellX), settings.maximumBufferPixels);
   const reachY = Math.min(Math.ceil(radius / cellY), settings.maximumBufferPixels);
   const values = new Float64Array(width * height).fill(NaN);
   const nodeCount = costs.length;
   for (let node = 0; node < nodeCount; node++) {
-    if (!Number.isFinite(costs[node])) {
+    if (!Number.isFinite(costs[node]) || costs[node] < 0 || costs[node] >= COST_CEILING) {
       continue;
     }
     for (let edge = csr.offsets[node]; edge < csr.offsets[node + 1]; edge++) {
       const target = csr.neighbors[edge];
       const weight = csr.weights[edge];
-      if (target >= nodeCount || !(weight >= 0)) {
+      if (
+        target >= nodeCount ||
+        !(weight >= 0) ||
+        !Number.isFinite(weight) ||
+        weight >= COST_CEILING
+      ) {
         continue;
       }
       const startX = positions[2 * node];
       const startY = positions[2 * node + 1];
       const endX = positions[2 * target];
       const endY = positions[2 * target + 1];
+      if (
+        ![startX, startY, endX, endY].every(
+          value => Number.isFinite(value) && Math.abs(value) < COST_CEILING
+        )
+      ) {
+        continue;
+      }
       const length = Math.hypot(endX - startX, endY - startY);
       const sampleCount = Math.min(
         Math.max(Math.ceil(length / (0.5 * radius)) + 1, 2),
         settings.maximumSamplesPerEdge
       );
       let reverseWeight = -1;
-      if (mode === 'max' && target !== node && Number.isFinite(costs[target])) {
+      if (
+        mode === 'max' &&
+        target !== node &&
+        Number.isFinite(costs[target]) &&
+        costs[target] >= 0 &&
+        costs[target] < COST_CEILING
+      ) {
         for (let slot = csr.offsets[target]; slot < csr.offsets[target + 1]; slot++) {
-          if (csr.neighbors[slot] === node && csr.weights[slot] >= 0) {
+          if (
+            csr.neighbors[slot] === node &&
+            csr.weights[slot] >= 0 &&
+            Number.isFinite(csr.weights[slot]) &&
+            csr.weights[slot] < COST_CEILING
+          ) {
             reverseWeight = Math.max(reverseWeight, csr.weights[slot]);
           }
         }
@@ -89,7 +116,9 @@ export function splatIsochroneRasterOnCPU(
             if (distance > radius) {
               continue;
             }
-            const cost = edgeCost + settings.walkCostPerUnit * distance;
+            const cost = edgeCost + walkCostPerUnit * distance;
+            const roundedMagnitude = Math.fround(Math.abs(cost));
+            if (!Number.isFinite(roundedMagnitude) || roundedMagnitude >= COST_CEILING) continue;
             const slot = row * width + column;
             const current = values[slot];
             values[slot] = Number.isNaN(current)

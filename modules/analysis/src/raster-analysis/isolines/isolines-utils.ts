@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphVectorView, validatePackedView, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  type GraphVectorView,
+  validatePackedView,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {isGraphVectorView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRasterAlgebraAliasing} from '../raster-algebra/raster-algebra-utils';
@@ -22,7 +27,7 @@ export function validateIsolinesView(
   if (!view) {
     return;
   }
-  if (view instanceof GraphVectorView) {
+  if (isGraphVectorView(view)) {
     throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
   }
   validatePackedView(view, [format], `${id} ${name}`);

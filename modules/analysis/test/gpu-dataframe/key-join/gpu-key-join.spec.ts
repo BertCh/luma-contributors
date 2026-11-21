@@ -7,7 +7,7 @@ import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {GPUKeyJoin, type GPUKeyJoinKind} from '../../../src/dataframe-analysis/key-join/index';
+import {GPUKeyLookup} from '../../../src/dataframe-analysis/key-join/index';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -16,12 +16,12 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {
   createRandom,
-  joinOnCPU,
+  lookupKeysOnCPU,
   NO_KEY_32,
   NO_KEY_64,
   packKeys,
   type OracleAggregateOperation,
-  type OracleJoinResult
+  type OracleLookupResult
 } from './key-join-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {RecipeTestFixture} from '../../gpu-spatial-analysis/recipes/recipe-harness';
@@ -41,10 +41,10 @@ it('final1b F1 candidate publication preserves left key 7 across two submissions
     overflow: overflow.view,
     candidateOverflow: candidate.view
   };
-  const contributor = new GPUKeyJoin({
+  const contributor = new GPUKeyLookup({
     leftKeys: leftKeys.view,
     rightKeys: fixture.input('right-keys', new Uint32Array([7]), 'uint32', 1),
-    kind: 'inner',
+    compactMatchedLeftRows: true,
     output: {
       rows: {
         ids: rows.view,
@@ -98,7 +98,7 @@ type Scene = {
   values2: Float32Array;
   words: Uint32Array;
   words2: Uint32Array;
-  kind: GPUKeyJoinKind;
+  compactMatchedLeftRows: boolean;
   capacity: number;
 };
 
@@ -108,7 +108,7 @@ function createScene(options: {
   leftCount: number;
   rightCount: number;
   keyRange: number;
-  kind?: GPUKeyJoinKind;
+  compactMatchedLeftRows?: boolean;
   capacity?: number;
   masks?: boolean;
 }): Scene {
@@ -150,7 +150,7 @@ function createScene(options: {
     values2: floats(options.rightCount),
     words: Uint32Array.from({length: options.rightCount}, () => Math.floor(random() * 2 ** 32)),
     words2: Uint32Array.from({length: options.rightCount}, (_, row) => row * 3),
-    kind: options.kind ?? 'left',
+    compactMatchedLeftRows: options.compactMatchedLeftRows ?? false,
     capacity: options.capacity ?? options.leftCount
   };
 }
@@ -229,12 +229,12 @@ function createJoin(fixture: Fixture, scene: Scene) {
     importGraphBuffer(graph, name, buffer, 'uint32', rightCount);
   const valuesView = rightF32('values', valuesBuffer);
   graph.add(
-    new GPUKeyJoin({
+    new GPUKeyLookup({
       leftKeys: importGraphBuffer(graph, 'left-keys', leftKeysBuffer, keyFormat, leftCount),
       rightKeys: importGraphBuffer(graph, 'right-keys', rightKeysBuffer, keyFormat, rightCount),
       leftMask: left('left-mask', leftMaskBuffer),
       rightMask: rightU32('right-mask', rightMaskBuffer),
-      kind: scene.kind,
+      compactMatchedLeftRows: scene.compactMatchedLeftRows,
       sumScale: SUM_SCALE,
       gather: [
         {
@@ -271,24 +271,23 @@ function createJoin(fixture: Fixture, scene: Scene) {
         matchCounts: left('match-counts', outputs.matchCounts),
         matched: left('matched', outputs.matched),
         rightMatched: rightU32('right-matched', outputs.rightMatched),
-        rows:
-          scene.kind === 'inner'
-            ? {
-                ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', scene.capacity),
-                status: {
-                  count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
-                  overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-                  requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
-                }
+        rows: scene.compactMatchedLeftRows
+          ? {
+              ids: importGraphBuffer(graph, 'ids', outputs.ids, 'uint32', scene.capacity),
+              status: {
+                count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', 1),
+                overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+                requiredCount: importGraphBuffer(graph, 'total', outputs.total, 'uint32', 1)
               }
-            : undefined
+            }
+          : undefined
       }
     })
   );
   const compiled = graph.compile();
   async function run(): Promise<Snapshot> {
     submitGraph(device, compiled, undefined);
-    const count = scene.kind === 'inner' ? (await readUint32(outputs.count, 1))[0] : 0;
+    const count = scene.compactMatchedLeftRows ? (await readUint32(outputs.count, 1))[0] : 0;
     return {
       rightRows: await readUint32(outputs.rightRows, leftCount),
       matchCounts: await readUint32(outputs.matchCounts, leftCount),
@@ -302,10 +301,10 @@ function createJoin(fixture: Fixture, scene: Scene) {
       aggregateSums: await Promise.all(
         outputs.sums.map(buffer => readUint32(buffer, 2 * leftCount))
       ),
-      rows: scene.kind === 'inner' ? await readUint32(outputs.ids, scene.capacity) : [],
+      rows: scene.compactMatchedLeftRows ? await readUint32(outputs.ids, scene.capacity) : [],
       count,
-      overflow: scene.kind === 'inner' ? (await readUint32(outputs.overflow, 1))[0] : 0,
-      total: scene.kind === 'inner' ? (await readUint32(outputs.total, 1))[0] : 0
+      overflow: scene.compactMatchedLeftRows ? (await readUint32(outputs.overflow, 1))[0] : 0,
+      total: scene.compactMatchedLeftRows ? (await readUint32(outputs.total, 1))[0] : 0
     };
   }
   return {
@@ -321,14 +320,14 @@ function createJoin(fixture: Fixture, scene: Scene) {
   };
 }
 
-function getOracle(scene: Scene): OracleJoinResult {
-  return joinOnCPU({
+function getOracle(scene: Scene): OracleLookupResult {
+  return lookupKeysOnCPU({
     keyBits: scene.keyBits,
     leftKeys: scene.leftKeys,
     rightKeys: scene.rightKeys,
     leftMask: scene.leftMask,
     rightMask: scene.rightMask,
-    kind: scene.kind,
+    compactMatchedLeftRows: scene.compactMatchedLeftRows,
     capacity: scene.capacity,
     sumScale: SUM_SCALE,
     gatherColumns: [
@@ -348,7 +347,12 @@ function getOracle(scene: Scene): OracleJoinResult {
 const f32Words = (value: number) => new Uint32Array(Float32Array.of(value).buffer)[0];
 
 /** Compares a GPU snapshot with the oracle: exact except mean and sum decodes (stated below). */
-function expectSnapshot(actual: Snapshot, expected: OracleJoinResult, scene: Scene, label: string) {
+function expectSnapshot(
+  actual: Snapshot,
+  expected: OracleLookupResult,
+  scene: Scene,
+  label: string
+) {
   expect(actual.rightRows, `${label} rightRows`).toEqual(expected.rightRows);
   expect(actual.matchCounts, `${label} matchCounts`).toEqual(expected.matchCounts);
   expect(actual.matched, `${label} matched`).toEqual(expected.matched);
@@ -359,6 +363,9 @@ function expectSnapshot(actual: Snapshot, expected: OracleJoinResult, scene: Sce
   for (const [index, aggregate] of AGGREGATES.entries()) {
     const expectedAggregate = expected.aggregates[index];
     const words = actual.aggregateValues[index];
+    expect(words, `${label} aggregate ${index} words`).toHaveLength(
+      expectedAggregate.values.length
+    );
     for (const [row, expectedValue] of expectedAggregate.values.entries()) {
       const actualValue = new Float32Array(Uint32Array.of(words[row]).buffer)[0];
       if (Number.isNaN(expectedValue)) {
@@ -376,6 +383,7 @@ function expectSnapshot(actual: Snapshot, expected: OracleJoinResult, scene: Sce
     }
     if (aggregate.sums) {
       const sums = actual.aggregateSums[index];
+      expect(sums, `${label} sums ${index} words`).toHaveLength(2 * expectedAggregate.sums.length);
       for (const [row, expectedSum] of expectedAggregate.sums.entries()) {
         const actualSum = BigInt.asIntN(
           64,
@@ -385,11 +393,11 @@ function expectSnapshot(actual: Snapshot, expected: OracleJoinResult, scene: Sce
       }
     }
   }
-  if (scene.kind === 'inner') {
-    expect(actual.total, `${label} total`).toBe(expected.innerTotal);
-    expect(actual.count, `${label} count`).toBe(Math.min(expected.innerTotal, scene.capacity));
-    expect(actual.overflow, `${label} overflow`).toBe(expected.innerOverflow);
-    expect(actual.rows.slice(0, actual.count), `${label} rows`).toEqual(expected.innerRows);
+  if (scene.compactMatchedLeftRows) {
+    expect(actual.total, `${label} total`).toBe(expected.compactTotal);
+    expect(actual.count, `${label} count`).toBe(Math.min(expected.compactTotal, scene.capacity));
+    expect(actual.overflow, `${label} overflow`).toBe(expected.compactOverflow);
+    expect(actual.rows.slice(0, actual.count), `${label} rows`).toEqual(expected.compactRows);
     expect(
       actual.rows.slice(actual.count).every(id => id === 0xffffffff),
       `${label} rows tail`
@@ -439,7 +447,7 @@ const SCENES: [string, Parameters<typeof createScene>[0]][] = [
 ];
 
 for (const [name, options] of SCENES) {
-  it(`GPUKeyJoin left join matches the CPU oracle: ${name}`, async () => {
+  it(`GPUKeyLookup left-aligned lookup matches the CPU oracle: ${name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const fixture = new Fixture(device);
@@ -456,7 +464,7 @@ for (const [name, options] of SCENES) {
   });
 }
 
-it('GPUKeyJoin sums and means of small-magnitude values are right to float32', async () => {
+it('GPUKeyLookup sums and means of small-magnitude values are right to float32', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = new Fixture(device);
@@ -477,7 +485,7 @@ it('GPUKeyJoin sums and means of small-magnitude values are right to float32', a
     values2: new Float32Array(rightCount),
     words: new Uint32Array(rightCount),
     words2: new Uint32Array(rightCount),
-    kind: 'left',
+    compactMatchedLeftRows: false,
     capacity: 4
   };
   const join = createJoin(fixture, scene);
@@ -518,7 +526,48 @@ it('GPUKeyJoin sums and means of small-magnitude values are right to float32', a
   }
 });
 
-it('GPUKeyJoin inner join compacts matched rows and reports overflow', async () => {
+it('review DPC-109: GPUKeyLookup keeps a finite mean when a key sum is past the float32 range', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  // Four values of 1e38 on key 1: the exact sum 4e38 rounds to Infinity in float32, and before the
+  // fix the mean was Infinity / 4 = Infinity. The mean of four equal values is the value
+  // (closed form): fround(1e38) = 9.999999680285692e37. Key 2 is an ordinary control; its values
+  // must keep their bits in the fixed-point unit, which follows the column's largest value (about
+  // 2^35 here), so 1 and 3 would quantize to 0. 2^120 and 3 * 2^120 are exact: mean 2^121.
+  const rightKeys = [1n, 1n, 1n, 1n, 2n, 2n];
+  const values = Float32Array.from([1e38, 1e38, 1e38, 1e38, 2 ** 120, 3 * 2 ** 120]);
+  const rightCount = rightKeys.length;
+  const scene: Scene = {
+    keyBits: 32,
+    leftKeys: [1n, 2n],
+    rightKeys,
+    values,
+    values2: new Float32Array(rightCount),
+    words: new Uint32Array(rightCount),
+    words2: new Uint32Array(rightCount),
+    compactMatchedLeftRows: false,
+    capacity: 2
+  };
+  const join = createJoin(fixture, scene);
+  try {
+    const actual = await join.run();
+    const decode = (index: number) =>
+      Array.from(new Float32Array(Uint32Array.from(actual.aggregateValues[index]).buffer));
+    const sums = decode(AGGREGATES.findIndex(aggregate => aggregate.operation === 'sum'));
+    const means = decode(AGGREGATES.findIndex(aggregate => aggregate.operation === 'mean'));
+    expect(sums[0]).toBe(Infinity);
+    expect(Number.isFinite(means[0]), `mean ${means[0]}`).toBe(true);
+    expect(means[0]).toBe(9.999999680285692e37);
+    expect(sums[1]).toBe(2 ** 122);
+    expect(means[1]).toBe(2 ** 121);
+  } finally {
+    join.compiled.destroy();
+    fixture.destroy();
+  }
+});
+
+it('GPUKeyLookup compacts matched rows and reports overflow', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   for (const [capacity, label] of [
@@ -534,14 +583,14 @@ it('GPUKeyJoin inner join compacts matched rows and reports overflow', async () 
       rightCount: 500,
       keyRange: 400,
       masks: true,
-      kind: 'inner',
+      compactMatchedLeftRows: true,
       capacity
     });
     const join = createJoin(fixture, scene);
     const expected = getOracle(scene);
     const actual = await join.run();
-    expect(expected.innerTotal).toBeGreaterThan(37);
-    expect(expected.innerOverflow).toBe(capacity < expected.innerTotal ? 1 : 0);
+    expect(expected.compactTotal).toBeGreaterThan(37);
+    expect(expected.compactOverflow).toBe(capacity < expected.compactTotal ? 1 : 0);
     expectSnapshot(actual, expected, scene, label);
     expect(await join.run()).toEqual(actual);
     join.compiled.destroy();
@@ -549,7 +598,7 @@ it('GPUKeyJoin inner join compacts matched rows and reports overflow', async () 
   }
 });
 
-it('GPUKeyJoin follows per-frame input rewrites without recompiling', async () => {
+it('GPUKeyLookup follows per-frame input rewrites without recompiling', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = new Fixture(device);
@@ -560,7 +609,7 @@ it('GPUKeyJoin follows per-frame input rewrites without recompiling', async () =
     rightCount: 600,
     keyRange: 90,
     masks: true,
-    kind: 'inner',
+    compactMatchedLeftRows: true,
     capacity: 100
   });
   const join = createJoin(fixture, scene);
@@ -574,7 +623,7 @@ it('GPUKeyJoin follows per-frame input rewrites without recompiling', async () =
       rightCount: 600,
       keyRange: 30 + 30 * seed,
       masks: true,
-      kind: 'inner',
+      compactMatchedLeftRows: true,
       capacity: 100
     });
     // Same buffers, new contents: keys, masks and values.
@@ -602,7 +651,7 @@ it('GPUKeyJoin follows per-frame input rewrites without recompiling', async () =
   fixture.destroy();
 });
 
-it('GPUKeyJoin handles keys with no valid right rows', async () => {
+it('GPUKeyLookup handles keys with no valid right rows', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = new Fixture(device);

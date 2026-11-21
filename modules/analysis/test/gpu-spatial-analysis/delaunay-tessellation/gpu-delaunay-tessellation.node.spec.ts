@@ -50,7 +50,10 @@ it('tessellation contributors stay within minimum WebGPU storage-binding limits'
   });
   const delaunayNodeIds = delaunay.getCommandNodes(graph).map(node => node.id);
   const stepCount = getDelaunayParallelStepCount(8);
-  expect(delaunayNodeIds[0]).toBe('delaunay-tessellation-initialize-status');
+  expect(delaunayNodeIds.slice(0, 2)).toEqual([
+    'delaunay-tessellation-initialize-state',
+    'delaunay-tessellation-initialize-status'
+  ]);
   expect(delaunayNodeIds).toContain('delaunay-tessellation-classify-sites');
   expect(delaunayNodeIds).toContain('delaunay-tessellation-flag-duplicate-sites');
   expect(delaunayNodeIds).toContain('delaunay-tessellation-initialize-triangles');

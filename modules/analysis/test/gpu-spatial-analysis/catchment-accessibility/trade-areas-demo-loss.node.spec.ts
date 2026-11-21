@@ -139,7 +139,19 @@ for (const path of DEMOS) {
           producer instanceof GPUHuffTradeAreas || producer instanceof GPUCatchmentAccessibility
       )) {
         for (const port of [consumer.props.demandWeights, consumer.props.facilityWeights]) {
-          expect(searches.some(search => search.outputWeights === port)).toBe(true);
+          // The constructor now captures a wrapper snapshot; resource identities remain borrowed.
+          expect(port).toBeDefined();
+          if (!port) throw new Error('Expected a described weights snapshot');
+          const producer = searches.find(search => search.outputWeights.offsets === port.offsets);
+          expect(producer).toBeDefined();
+          if (!producer) throw new Error('Expected the original weights producer');
+          expect(producer.outputWeights.neighbors === port.neighbors).toBe(true);
+          expect(producer.outputWeights.weights === port.weights).toBe(true);
+          for (const [name, view] of Object.entries(producer.outputWeights.status ?? {})) {
+            expect(port.status?.[name as keyof NonNullable<typeof port.status>] === view).toBe(
+              true
+            );
+          }
         }
       }
     } finally {

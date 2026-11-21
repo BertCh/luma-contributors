@@ -141,8 +141,11 @@ it('GPUTerrainCurvature validates its properties', () => {
       ...overrides
     });
 
-  expect(() => create({output: {curvatures: {}}})).toThrow(/at least one output/);
-  expect(() => create({output: {}})).toThrow(/at least one output/);
+  // Intentional JavaScript-only nested/root empties; excluded by the public output type.
+  expect(() => Reflect.apply(create, undefined, [{output: {curvatures: {}}}])).toThrow(
+    /at least one output/
+  );
+  expect(() => Reflect.apply(create, undefined, [{output: {}}])).toThrow(/at least one output/);
   expect(() => create({output: {curvatures: {mean: view(29)}}})).toThrow(/one value per pixel/);
   expect(() => create({output: {curvatures: {bogus: view()} as never}})).toThrow(
     /unknown curvature kind/
@@ -151,10 +154,14 @@ it('GPUTerrainCurvature validates its properties', () => {
   expect(() => create({parameters: view(11)})).toThrow(/parameters/);
   expect(() => create({method: 'horn' as never})).toThrow(/method/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
-  const rotatedGrid = {...GRID, affine: [2, 0.5, 0, 0, -3, 5] as const};
-  expect(() => create({grid: rotatedGrid, cellSizeMode: 'geographic'})).toThrow(
+  // Column axis (2, 0) and row axis (0.5, -3) are not perpendicular: a sheared grid.
+  const shearedGrid = {...GRID, affine: [2, 0.5, 0, 0, -3, 5] as const};
+  expect(() => create({grid: shearedGrid, cellSizeMode: 'geographic'})).toThrow(
     /geographic cell sizes need an axis-aligned grid/
   );
+  expect(() => create({grid: shearedGrid})).toThrow(/grid\.affine must have orthogonal pixel axes/);
+  // Column axis (2, 1) and row axis (1, -2) are perpendicular: rotated, accepted in uniform mode.
+  const rotatedGrid = {...GRID, affine: [2, 1, 0, 1, -2, 5] as const};
   expect(() => create({grid: rotatedGrid})).not.toThrow();
   expect(() => create({rowDirection: 'up' as never})).toThrow(/rowDirection/);
   expect(() => create({borderMode: 'reflect' as never})).toThrow(/borderMode/);
@@ -201,12 +208,15 @@ it('GPUTerrainCurvature reports kernels that exceed the storage binding limit', 
     elevation: createBand(graph, 'elevation', 30),
     parameters: createTransientView(graph, 'settings', 'float32', 12),
     output: {
-      curvatures: Object.fromEntries(
-        ORACLE_CURVATURE_KINDS.slice(0, 6).map(kind => [
-          kind,
-          createTransientView(graph, kind, 'float32', 30)
-        ])
-      )
+      curvatures: {
+        profile: createTransientView(graph, 'profile', 'float32', 30),
+        ...Object.fromEntries(
+          ORACLE_CURVATURE_KINDS.slice(1, 6).map(kind => [
+            kind,
+            createTransientView(graph, kind, 'float32', 30)
+          ])
+        )
+      }
     }
   });
   expect(() => contributor.getCommandNodes(graph)).toThrow(/storage buffers/);

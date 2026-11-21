@@ -429,3 +429,24 @@ it('prefixes every generated resource and node when two structures share one gra
     }
   }
 });
+
+it('auto SCC switches on slot capacity independently of vertex count (DOC-104)', () => {
+  for (const edgeCount of [65536, 65537]) {
+    const {device, graph, props} = createViews(4, edgeCount);
+    try {
+      const contributor = new GPUNetworkStructure({
+        topology: props.topology,
+        strongComponentsMaximumIterations: 1,
+        output: {strongComponents: props.output.strongComponents}
+      });
+      expect(contributor.mode).toBe('auto');
+      expect(contributor.strongComponentsMode).toBe(edgeCount === 65536 ? 'exact' : 'parallel');
+      const nodes = contributor.getCommandNodes(graph);
+      if (edgeCount === 65536) expect(nodes).toHaveLength(2);
+      else expect(nodes.length).toBeGreaterThan(2);
+      expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    } finally {
+      device.destroy();
+    }
+  }
+});

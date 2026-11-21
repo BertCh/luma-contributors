@@ -5,6 +5,7 @@
 import {extractLensExample, type LensExample} from '../../computation-lenses/lens-example';
 import {fromRecordedLensFile} from '../../computation-lenses/registry';
 import {getLensScenario, isLensScenarioId} from '../../computation-lenses/registry-implementation';
+import {getLensScenarioPresentation} from '../../computation-lenses/scenario-presentations';
 import type {DecodedLensFile, RecordedLensFile} from '../../computation-lenses/types';
 import {createDefaultViewRegistry} from '../registry/default-registry';
 import {createViewContext} from '../registry/view-registry';
@@ -135,7 +136,11 @@ export function buildDecodedLensTwin(
     renderTeX: options.renderTeX,
     width,
     options: {
-      ...getLensScenario(parsed.scenarioId)?.presentation,
+      // The recording's own presentation wins; older recordings use the code-side default, which
+      // does not depend on which scenario modules this reader imported (LENS-101).
+      ...(recording.presentation ??
+        getLensScenario(parsed.scenarioId)?.presentation ??
+        getLensScenarioPresentation(parsed.scenarioId)),
       ...(size === 'thumbnail' ? {size: 'thumbnail'} : {})
     }
   });

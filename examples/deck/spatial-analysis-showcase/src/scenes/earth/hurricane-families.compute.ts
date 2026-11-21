@@ -439,7 +439,7 @@ export async function createHurricaneFamilies(
       new GPUSpatialKMeans({
         id: 'families',
         positions: importGraphBuffer(graph, 'embedding', embeddingBuffer, 'float32x2', trackCount),
-        k,
+        clusterCount: k,
         maximumIterations: options.iterations,
         initialization: options.initialization,
         parameters: kmeansParameters.importToGraph(graph),

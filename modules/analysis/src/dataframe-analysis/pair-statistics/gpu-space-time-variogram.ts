@@ -23,6 +23,7 @@ import {validatePairStatisticsInputs} from './pair-statistics-grid';
 import {getEmpiricalVariogramNodes} from './empirical-variogram-nodes';
 import {
   validatePairStatisticsBounds,
+  validatePositiveFloat32,
   type GPUPairStatisticsBounds
 } from './pair-statistics-parameters';
 
@@ -60,6 +61,7 @@ export function getGPUSpaceTimeVariogramParameterValues(
   if (!Number.isFinite(settings.maximumTimeLag) || settings.maximumTimeLag <= 0) {
     throw new Error(`${OPERATION} maximumTimeLag must be positive and finite`);
   }
+  validatePositiveFloat32(OPERATION, 'maximumTimeLag', settings.maximumTimeLag);
   target.set([...settings.bounds, settings.maximumDistance, settings.maximumTimeLag, 0, 0]);
   return target;
 }
@@ -99,7 +101,9 @@ export type GPUSpaceTimeVariogramProps = {
     pairCounts: GraphDataView<'uint32'>;
     /**
      * Per bin: 0 valid, 1 empty or invalid parameters, 2 nonfinite arithmetic, 3 the exact
-     * integer accumulation overflowed.
+     * integer accumulation overflowed or the bin holds more than `2^32 - 1` pairs (`pairCounts`
+     * then saturates at `0xffffffff`; the semivariance is still written). Check for 3 before using
+     * `pairCounts` as fitting weights.
      */
     status: GraphDataView<'uint32'>;
   };

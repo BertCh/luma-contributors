@@ -321,6 +321,15 @@ export type WorkflowHistoryRecord = {
   engine: 'auto' | 'cpu';
 };
 
+function isWorkflowTableSnapshot(text: string): boolean {
+  try {
+    const input: unknown = JSON.parse(text);
+    return typeof input === 'object' && input !== null && 'type' in input && input.type === 'table';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Promotes saved catalog runs to a workflow: one step per run with its recorded parameters, one
  * source step per distinct input (identical inputs are shared), laid out left to right. Runs are
@@ -398,14 +407,14 @@ export function makeWorkflowFromCatalogHistory(
             ? `Dataset ${reference.datasetId}`
             : reference.mode === 'sample'
               ? `Sample: ${input.label}`
-              : `GeoJSON ${++pendingTextCount}`;
+              : `${isWorkflowTableSnapshot(text!) ? 'Table snapshot' : 'GeoJSON'} ${++pendingTextCount}`;
         sourceId = makeUniqueWorkflowId(label, taken);
         taken.add(sourceId);
         const parameters: WorkflowStep['parameters'] =
           reference.mode === 'native'
             ? {
                 dataset: {from: 'static', value: reference.datasetId},
-                geometryMode: {from: 'static', value: 'geojson-field'},
+                geometryMode: {from: 'static', value: reference.field ? 'geojson-field' : 'none'},
                 geometryField: {from: 'static', value: reference.field}
               }
             : {
@@ -421,7 +430,12 @@ export function makeWorkflowFromCatalogHistory(
               };
         additions.push({
           id: sourceId,
-          operationId: reference.mode === 'native' ? 'source-dataset' : 'source-geojson',
+          operationId:
+            reference.mode === 'native'
+              ? 'source-dataset'
+              : isWorkflowTableSnapshot(text!)
+                ? 'source-table'
+                : 'source-geojson',
           label,
           inputs: {},
           parameters,

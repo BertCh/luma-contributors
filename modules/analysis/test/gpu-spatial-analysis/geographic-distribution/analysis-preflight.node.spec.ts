@@ -410,7 +410,7 @@ it.each([
           output: {
             accessibility: packedScalar(256),
             ratios: packedScalar(512),
-            validity: packedWords(520),
+            demandValidity: packedWords(520),
             reachableFacilities: packedWords(528)
           }
         });
@@ -616,6 +616,28 @@ it.each([
     expectCompatibleStorageUses(graph, nodes);
     for (const kernel of getGPUCommandNodeKernelSources(nodes))
       expectSpatialAnalysisWGSL(kernel.source, kernel.id);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('review B7: declares counts with an oversized inactive lineEnds binding', () => {
+  const {device, graph} = context();
+  try {
+    Object.assign(device.limits, {maxStorageBufferBindingSize: 64, maxBufferSize: 256});
+    const backing = createTransientView(graph, 'unused-line-backing', 'float32x2', 24);
+    const lineEnds = graph.createDataView(backing.buffer, {
+      format: 'float32x2',
+      byteOffset: 128,
+      length: 6
+    });
+    const contributor = new GPUGeographicDistribution({
+      positions: createTransientView(graph, 'counts-positions', 'float32x2', 6),
+      parameters: createTransientView(graph, 'counts-parameters', 'float32', 8),
+      lineEnds,
+      output: {counts: createTransientView(graph, 'counts-only', 'uint32', 1)}
+    });
+    expect(() => contributor.getCommandNodes(graph)).not.toThrow();
   } finally {
     device.destroy();
   }

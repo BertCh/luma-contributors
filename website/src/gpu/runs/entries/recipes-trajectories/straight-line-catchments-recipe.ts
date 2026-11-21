@@ -38,7 +38,7 @@ export default defineOperationRun({
       facilities: {kind: 'points', positions: facilityPositions.view},
       facilityCount: facilityCount.view,
       values: catchmentValues.view,
-      outputs: {allocation: allocation.view, distances: distances.view}
+      output: {allocation: allocation.view, distances: distances.view}
     });
     return {
       outputs: {allocation, facilityPositions},

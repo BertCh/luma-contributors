@@ -15,6 +15,7 @@ import {
   getGPURasterStretchParameterValues,
   GPU_RASTER_STRETCH_PARAMETER_LENGTH,
   GPURasterStretch,
+  type GPURasterStretchOutput,
   type GPURasterStretchSettings
 } from '../../../src/raster-analysis/raster-stretch/index';
 import {
@@ -96,6 +97,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     histogram: binCount,
     statistics: 8
   };
+
   const formats: Record<OutputName, 'float32' | 'uint32'> = {
     stretched: 'float32',
     colors: 'uint32',
@@ -104,10 +106,41 @@ function createHarness(device: Device, options: HarnessOptions) {
     histogram: 'uint32',
     statistics: 'float32'
   };
+
   const outputBuffers = Object.fromEntries(
     outputs.map(name => [name, createOutputBuffer(device, lengths[name])])
   ) as Record<OutputName, ReturnType<typeof createOutputBuffer>>;
   const graph = new GPUCommandGraph(device, {id: 'stretch-graph'});
+  const createSelection = (name: OutputName): GPURasterStretchOutput => {
+    const buffer = outputBuffers[name];
+    switch (name) {
+      case 'stretched':
+        return {
+          stretched: importGraphBuffer(graph, `out-${name}`, buffer, 'float32', lengths[name])
+        };
+      case 'colors':
+        return {colors: importGraphBuffer(graph, `out-${name}`, buffer, 'uint32', lengths[name])};
+      case 'lut':
+        return {lut: importGraphBuffer(graph, `out-${name}`, buffer, 'float32', lengths[name])};
+      case 'lutColors':
+        return {
+          lutColors: importGraphBuffer(graph, `out-${name}`, buffer, 'uint32', lengths[name])
+        };
+      case 'histogram':
+        return {
+          histogram: importGraphBuffer(graph, `out-${name}`, buffer, 'uint32', lengths[name])
+        };
+      case 'statistics':
+        return {
+          statistics: importGraphBuffer(graph, `out-${name}`, buffer, 'float32', lengths[name])
+        };
+    }
+  };
+  const [firstOutput, ...remainingOutputs] = outputs;
+  if (firstOutput === undefined)
+    throw new Error('stretch fixture requires a requested terminal output');
+  const output = createSelection(firstOutput);
+  for (const name of remainingOutputs) Object.assign(output, createSelection(name));
   graph.add(
     new GPURasterStretch({
       id: 'stretch',
@@ -122,12 +155,7 @@ function createHarness(device: Device, options: HarnessOptions) {
       palette: paletteBuffer?.importToGraph(graph),
       binCount,
       lutSize,
-      output: Object.fromEntries(
-        outputs.map(name => [
-          name,
-          importGraphBuffer(graph, `out-${name}`, outputBuffers[name], formats[name], lengths[name])
-        ])
-      )
+      output
     })
   );
   let compileCount = 0;

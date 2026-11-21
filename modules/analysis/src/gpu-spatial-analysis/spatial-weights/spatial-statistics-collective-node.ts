@@ -8,6 +8,7 @@ import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
   getViewBinding,
+  getViewBindingRange,
   getViewElementOffset,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -22,7 +23,11 @@ import {
 } from '../../analysis-core/kernels/graph-chunk-groups';
 import {
   validateCapacity,
-  validateMaximumCount
+  validateMaximumCount,
+  validateRequirement,
+  validateSinglePackedView,
+  validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**
@@ -45,6 +50,41 @@ export function createSpatialStatisticsCollectiveNode<Parameters>(
     props.id,
     Object.fromEntries(props.bindings.map(binding => [binding.name, binding.view]))
   );
+  if (props.control) {
+    validateSinglePackedView(props.control, ['uint32'], `${props.id} control`);
+    validateCapacity(
+      props.id,
+      'control.length',
+      props.control.length,
+      GRAPH_CHUNK_GROUP_PARAMETER_WORD_COUNT
+    );
+    const range = getViewBindingRange(props.control);
+    validateRequirement(
+      props.id,
+      range.offset === props.control.byteOffset,
+      'control.byteOffset must start at an aligned uniform binding boundary; use an aligned 64-word control view'
+    );
+    validateMaximumCount(
+      props.id,
+      'control binding byteLength',
+      range.size,
+      graph.device.limits.maxUniformBufferBindingSize
+    );
+    validateMaximumCount(
+      props.id,
+      'control uniform bindings',
+      2,
+      graph.device.limits.maxUniformBuffersPerShaderStage
+    );
+    validateGraphViewsBelongToGraph(props.id, graph, [props.control]);
+    validateGraphOutputsDisjointFromInputs(
+      props.id,
+      props.bindings
+        .filter(binding => binding.access === 'read_write')
+        .map(binding => binding.view),
+      [props.control]
+    );
+  }
   validateCapacity(props.id, 'invocationCount', props.invocationCount);
   validateMaximumCount(
     props.id,

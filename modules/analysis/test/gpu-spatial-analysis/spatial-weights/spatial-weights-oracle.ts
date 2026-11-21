@@ -179,7 +179,15 @@ export function computeLatticeOracle(options: {
 
 /** Kernel profile, as PySAL `Kernel` (z = d / h, z = 0 when h <= 0). */
 export function getKernelWeight(kernel: string, distance: number, bandwidth: number): number {
+  if (
+    !['uniform', 'gaussian', 'triangular', 'epanechnikov', 'quartic', 'bisquare'].includes(kernel)
+  ) {
+    throw new Error(
+      `oracle kernel must be uniform, gaussian, triangular, epanechnikov, quartic or bisquare; received ${kernel}`
+    );
+  }
   const z = bandwidth > 0 ? distance / bandwidth : 0;
+  if (!Number.isFinite(z) || z < 0) return 0;
   let weight: number;
   switch (kernel) {
     case 'gaussian':
@@ -191,11 +199,15 @@ export function getKernelWeight(kernel: string, distance: number, bandwidth: num
     case 'epanechnikov':
       weight = 0.75 * Math.max(1 - z * z, 0);
       break;
+    case 'quartic':
     case 'bisquare':
       weight = 0.9375 * Math.max(1 - z * z, 0) ** 2;
       break;
-    default:
+    case 'uniform':
       weight = z <= 1 ? 0.5 : 0;
+      break;
+    default:
+      throw new Error(`unsupported oracle kernel ${kernel}`);
   }
   return Number.isFinite(weight) && weight >= 0 ? weight : 0;
 }
@@ -203,7 +215,7 @@ export function getKernelWeight(kernel: string, distance: number, bandwidth: num
 /** CPU transform of a CSR. Returns new weights aligned with `csr.neighbors`. */
 export function computeTransformOracle(
   csr: OracleCSR,
-  operation: 'row' | 'binary' | 'kernel' | 'symmetrize' | 'double' | 'variance',
+  operation: 'row' | 'binary' | 'kernel' | 'average-reciprocal' | 'double' | 'variance',
   options: {kernel?: string; bandwidth?: number | 'adaptive'; doubleSum?: 'one' | 'rows'} = {}
 ): number[] {
   const rows = csr.offsets.length - 1;

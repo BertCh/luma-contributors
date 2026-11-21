@@ -24,13 +24,14 @@ import {
   validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLKernelNode, createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
 } from '../../analysis-core/contracts/network-topology';
 import {
+  createReachabilityPredecessorEdgesNode,
   createReachabilityBandsNode,
   createReachabilityFinalizeNode,
   createReachabilityInitializeNode,
@@ -172,6 +173,8 @@ export type GPUNetworkReachabilityOutput = {
    * strict predecessor or to a start, so following predecessors always ends at a start.
    */
   predecessors?: GraphDataView<'uint32'>;
+  /** Per-node authoritative CSR slot; requires predecessors. Minimum passable parallel weight, then smallest slot. */
+  predecessorEdges?: GraphDataView<'uint32'>;
   /** Optional per-node band ID, or `GPU_NETWORK_REACHABILITY_NONE` beyond the last cost break. */
   bands?: GraphDataView<'uint32'>;
   /** Optional node count per band (composes `GPUHistogram`). */
@@ -262,6 +265,14 @@ export function getGPUNetworkReachabilityInflation(
  * one round covers many hops of a chain. Final costs are the unique fixpoint of the f32 relaxations,
  * so they are bit-identical for every `localIterations` and `maximumIterations` large enough to converge.
  *
+ * Search is bounded per encoding by `maximumIterations` (1..1024, default 64), with
+ * `localIterations` hops per workgroup per round (1..64, default 32). `activeIterations`
+ * clamps only the cost-search rounds. Requesting predecessors adds `maximumTieIterations`
+ * equal-cost level rounds (1..1024, default 4), independently of `activeIterations`.
+ * Optional scalar convergence flags aggregate the search and requested tie phase across all
+ * lanes; `iterationCount` counts cost-search rounds only. On a stop, finite costs may be
+ * overestimates and infinity may mean unfinished search. Parents/bands remain incumbent outputs.
+ *
  * Predecessors use a second, level-based phase so zero-weight (equal-cost) plateaus stay acyclic:
  * a node with a strictly-cheaper tight in-neighbor takes the smallest such neighbor; a node reached
  * only across equal-cost tight edges takes the smallest equal-cost in-neighbor one level closer to
@@ -285,6 +296,9 @@ export function getGPUNetworkReachabilityInflation(
  * in-neighbor, plus a level phase for equal-cost plateaus) also differs from the lowest-parent
  * rule of the single-source algorithm. A virtual super-source would need a per-frame graph rebuild
  * and would change predecessors and the cost limit semantics, so the two stay separate.
+ * With `output.predecessors`, the tie levels and final costs share one binding of
+ * `8 * nodeCount` bytes, subject to the same device storage-binding limit as the frontier queues
+ * (134,217,728 bytes on the default device).
  */
 export class GPUNetworkReachability implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -322,6 +336,10 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         outputs: {predecessors: writable.predecessors},
         inputs: {costs: writable.costs}
       },
+      {
+        outputs: {predecessorEdges: writable.predecessorEdges},
+        inputs: {predecessors: writable.predecessors}
+      },
       {outputs: {bands: writable.bands}, inputs: {costs: writable.costs}},
       {
         outputs: {unresolvedCount: writable.unresolvedCount},
@@ -346,6 +364,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       ['startNodes', props.startNodes],
       ['activeIterations', props.activeIterations],
       ['output.predecessors', output.predecessors],
+      ['output.predecessorEdges', output.predecessorEdges],
       ['output.bands', output.bands],
       ['output.bandCounts', output.bandCounts],
       ['output.status.converged', output.status?.converged],
@@ -417,6 +436,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['output.predecessors', output.predecessors],
+      ['output.predecessorEdges', output.predecessorEdges],
       ['output.bands', output.bands]
     ] as const) {
       if (view && view.length !== nodeCount) {
@@ -456,6 +476,8 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       1,
       GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS
     );
+    if (output.predecessorEdges && !output.predecessors)
+      throw new Error(`${id} output.predecessorEdges requires output.predecessors`);
     if (output.unresolvedCount && !output.predecessors) {
       throw new Error(`${id} output.unresolvedCount requires output.predecessors`);
     }
@@ -472,9 +494,10 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
 
   /**
    * Returns initialize, seed, one relax node per round, and optional output nodes. With
-   * `predecessors`, the strict predecessor pass is followed by the tie-level phase: tie-bit and
-   * level initialization, root marking, level seeding, `maximumTieIterations` level rounds, and a tie
-   * predecessor pass (`maximumTieIterations + 4` extra nodes beyond the strict pass).
+   * `predecessors`, the tie-level phase initializes levels and captures final costs. The strict
+   * predecessor and root passes mark level-zero nodes, followed by level seeding,
+   * `maximumTieIterations` level rounds, and a tie predecessor pass
+   * (`maximumTieIterations + 4` extra nodes beyond the strict pass).
    */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -525,7 +548,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         (layout.dispatchSlotCount + (hasTiePhase ? tieLayout.dispatchSlotCount : 0)) *
         FRONTIER_DISPATCH_SLOT_WORDS *
         4,
-      tieBits: hasTiePhase ? Math.max(1, Math.ceil(neighbors.length / 32)) * 4 : 4
+      tieLevelsAndCosts: hasTiePhase ? nodeCount * 8 : 4
     });
     const state = createFrontierState(graph, id, {
       nodeCount,
@@ -533,17 +556,8 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         phaseControlWordCount + (hasCounters ? NETWORK_REACHABILITY_COUNTER_WORD_COUNT : 0),
       dispatchSlotCount: layout.dispatchSlotCount + (hasTiePhase ? tieLayout.dispatchSlotCount : 0)
     });
-    const edgeCount = neighbors.length;
     const levels = hasTiePhase
-      ? createTransientView(graph, `${id}-tie-levels`, 'uint32', nodeCount)
-      : undefined;
-    const tieBits = hasTiePhase
-      ? createTransientView(
-          graph,
-          `${id}-tie-bits`,
-          'uint32',
-          Math.max(1, Math.ceil(edgeCount / 32))
-        )
+      ? createTransientView(graph, `${id}-tie-levels`, 'uint32', 2 * nodeCount)
       : undefined;
     const hasCostLimit = Boolean(props.costLimit);
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -604,15 +618,14 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         })
       );
     }
-    if (output.predecessors && levels && tieBits) {
+    if (output.predecessors && levels) {
+      const tie = {levels, costs: output.costs, weights};
       nodes.push(
         createReachabilityTieInitializeNode<Parameters>(graph, {
           id: `${id}-tie-initialize`,
-          nodeCount,
           state,
           tiePhase,
-          levels,
-          tieBits,
+          tie,
           unresolvedCount: output.unresolvedCount
         }),
         createReachabilityPredecessorsNode<Parameters>(graph, {
@@ -621,7 +634,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
           csr,
           costs: output.costs,
           predecessors: output.predecessors,
-          tieBits
+          levels
         })
       );
       if (props.startNodes.length > 0) {
@@ -643,46 +656,53 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       nodes.push(
         createReachabilityTieSeedNode<Parameters>(graph, {
           id: `${id}-tie-seed`,
-          nodeCount,
-          edgeCount,
           state,
           tiePhase,
-          offsets: offsets,
-          tieBits,
-          predecessors: output.predecessors,
-          levels
+          offsets,
+          neighbors,
+          tie
         })
       );
       for (let round = 0; round < this.maximumTieIterations; round++) {
         nodes.push(
           createReachabilityTieLevelNode<Parameters>(graph, {
             id: `${id}-tie-level-${round}`,
-            nodeCount,
-            edgeCount,
             state,
             tiePhase,
             round,
             localIterations,
-            offsets: offsets,
-            neighbors: neighbors,
-            tieBits,
-            levels
+            offsets,
+            neighbors,
+            tie
           })
         );
       }
       nodes.push(
         createReachabilityTiePredecessorsNode<Parameters>(graph, {
           id: `${id}-tie-predecessors`,
-          nodeCount,
-          edgeCount,
-          offsets: offsets,
-          neighbors: neighbors,
-          tieBits,
-          levels,
+          offsets,
+          neighbors,
+          tie,
           predecessors: output.predecessors
         })
       );
     }
+    if (output.predecessors && output.predecessorEdges)
+      nodes.push(
+        createFillNode(graph, {
+          id: `${id}-clear-predecessor-edges`,
+          operation: OPERATION,
+          view: output.predecessorEdges,
+          type: 'u32',
+          value: '0xffffffffu'
+        }),
+        createReachabilityPredecessorEdgesNode(graph, {
+          id: `${id}-predecessor-edges`,
+          topology: props.topology,
+          predecessors: output.predecessors,
+          predecessorEdges: output.predecessorEdges
+        })
+      );
     if (output.predecessors && levels && output.unresolvedCount) {
       nodes.push(
         createReachabilityUnresolvedCountNode<Parameters>(graph, {
@@ -792,6 +812,7 @@ function getNetworkOutputViews(
   return [
     output.costs,
     output.predecessors,
+    output.predecessorEdges,
     output.bands,
     output.bandCounts,
     output.status?.converged,

@@ -14,6 +14,8 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import type {SpatialLagImpactsOperationProps} from './gpu-spatial-lag-impacts-operation';
 import {getSpatialLagImpactsFromTraces} from './spatial-weights-traces-parameters';
+import {snapshotSpatialLagImpactsProps} from './spatial-lag-impacts-snapshot';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 
 /** Packed input rows, in the contributor's scalar float32 layout. */
 export type CPUSpatialLagImpactsInput = {
@@ -35,6 +37,9 @@ export type CPUSpatialLagImpactsOptions = Pick<
   | 'maximumPower'
   | 'rhoBound'
 >;
+
+/** Three float32 values [direct, indirect, total] per predictor row. */
+export type CPUSpatialLagImpactsResult = {impacts: Float32Array};
 
 function validateOptions(id: string, options: CPUSpatialLagImpactsOptions): void {
   validateCapacity(id, 'predictorCount', options.predictorCount);
@@ -70,7 +75,7 @@ function validateOptions(id: string, options: CPUSpatialLagImpactsOptions): void
 export function computeSpatialLagImpactsOnCPU(
   input: CPUSpatialLagImpactsInput,
   options: CPUSpatialLagImpactsOptions
-): {impacts: Float32Array} {
+): CPUSpatialLagImpactsResult {
   const id = 'computeSpatialLagImpactsOnCPU';
   validateOptions(id, options);
   const firstPredictorIndex = options.firstPredictorIndex ?? 1;
@@ -114,14 +119,17 @@ export function computeSpatialLagImpactsOnCPU(
 /** CPU twin; the shader power cap is dropped, with the same graph layouts and truncation. */
 export class CPUSpatialLagImpactsOperation extends GPUCPUOperation {
   constructor(props: SpatialLagImpactsOperationProps) {
+    props = snapshotSpatialLagImpactsProps(props);
     const id = props.id ?? 'spatial-lag-impacts';
     validateOptions(id, props);
-    validateRequirement(
+    validateOperationGraphNames(
       id,
-      ![props.coefficients, ...Object.values(props.traces), props.status].includes(
-        props.output.impacts
-      ),
-      'output.impacts must not name an input graph value'
+      {
+        coefficients: props.coefficients,
+        ...props.traces,
+        ...(props.status !== undefined ? {status: props.status} : {})
+      },
+      props.output
     );
     super({
       id,

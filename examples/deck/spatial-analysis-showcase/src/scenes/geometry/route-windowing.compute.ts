@@ -385,7 +385,7 @@ export async function createRouteWindowing(
       groupCount: 1,
       maximumHullVertices: 256,
       output: {
-        bounds: imp('minimum-bounds', bounds, 'float32x4', 1),
+        sourceBounds: imp('minimum-bounds', bounds, 'float32x4', 1),
         rectangleCorners: imp('minimum-rectangle-corners', rectangleCorners, 'float32x2', 4),
         rectangleSizes: imp('minimum-rectangle-sizes', rectangleSizes, 'float32x4', 1),
         longestLines: imp('minimum-longest-line', longestLine, 'float32x4', 1),

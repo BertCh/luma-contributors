@@ -57,13 +57,21 @@ it('uses closed-form face-center and whole-sphere covers with correct clamping a
   const full = computeS2CapCoveringOnCPU(Float32Array.of(1, 0, 0, Math.PI), {
     level: 12,
     capacity: 3,
-    refinement: 'level-synchronous',
-    frontierCapacity: 6
+    refinement: 'level-synchronous'
   });
   expect(Array.from(full.counts)).toEqual([3, 6 * 4 ** 12]);
   expect(full.status[0]).toBe(2);
   // First three leaf IDs of face zero; direct subtree counting still writes their exact IDs.
   expect(Array.from(full.cells)).toEqual([0, 16, 0, 48, 0, 80]);
+  const bounded = computeS2CapCoveringOnCPU(Float32Array.of(1, 0, 0, Math.PI), {
+    level: 12,
+    capacity: 3,
+    refinement: 'level-synchronous',
+    frontierCapacity: 6
+  });
+  expect(Array.from(bounded.counts)).toEqual([0, 0]);
+  expect(bounded.status[0]).toBe(4);
+  expect(Array.from(bounded.cells)).toEqual([0, 0, 0, 0, 0, 0]);
   expect(() =>
     computeS2CapCoveringOnCPU(Float32Array.of(1, 0, 0, Math.PI), {level: 30, capacity: 1})
   ).toThrow(/requiredCount/);
@@ -86,6 +94,27 @@ it('reports invalid caps as rows, and rejects incomplete packed arrays', () => {
   expect(result.counts.every(value => value === 0)).toBe(true);
   expect(() => computeS2CapCoveringOnCPU(new Float32Array(3), PROPS)).toThrow(/caps/);
   expect(computeS2CapCoveringOnCPU(new Float32Array(), PROPS).counts.length).toBe(0);
+});
+
+it('compares an interior radius with the encoded tolerance before frontier expansion', () => {
+  for (const radius of [0.000011, 0.000012]) {
+    const result = computeS2CapCoveringOnCPU(
+      Float32Array.of(Math.SQRT1_2, Math.SQRT1_2, 0, radius),
+      {
+        level: 1,
+        capacity: 6,
+        mode: 'interior',
+        refinement: 'level-synchronous',
+        frontierCapacity: 6,
+        tolerance: 0.000011
+      }
+    );
+    // Equal encoded radius/tolerance gives an empty interior. A positive residual
+    // keeps the two roots sharing (1,1,0), requiring eight children in six slots.
+    expect(Array.from(result.counts)).toEqual([0, 0]);
+    expect(Array.from(result.status)).toEqual([radius === 0.000011 ? 0 : 4]);
+    expect(Array.from(result.cells)).toEqual(Array(12).fill(0));
+  }
 });
 
 it('resolves the four cells around a face-center point at level twenty', () => {
@@ -113,7 +142,7 @@ it('resolves the four cells around a face-center point at level twenty', () => {
   expect(actual).toEqual(expected);
 });
 
-it('validates both constructions and drops only GPU traversal limits', () => {
+it('validates explicit budgets in both constructions while allowing CPU level thirty', () => {
   const shapes = {caps: {format: 'float32x4' as const, length: 2}};
   expect(() =>
     constructNetworkOperationContributor(new GPUS2CapCoveringOperation(PROPS), shapes)
@@ -130,9 +159,10 @@ it('validates both constructions and drops only GPU traversal limits', () => {
       constructNetworkOperationContributor(new GPUS2CapCoveringOperation({...PROPS, level}), shapes)
     ).toThrow(/cap-test.*level/);
   }
-  expect(
-    () => new CPUS2CapCoveringOperation({...PROPS, level: 30, frontierCapacity: 1})
-  ).not.toThrow();
+  expect(() => new CPUS2CapCoveringOperation({...PROPS, level: 30, frontierCapacity: 1})).toThrow(
+    /frontierCapacity/
+  );
+  expect(() => new CPUS2CapCoveringOperation({...PROPS, level: 30})).not.toThrow();
   expect(() => new CPUS2CapCoveringOperation({...PROPS, level: 31})).toThrow(/level/);
   for (const tolerance of [0, NaN, Infinity, 0.1]) {
     expect(() => new CPUS2CapCoveringOperation({...PROPS, tolerance})).toThrow(/tolerance/);
@@ -143,4 +173,21 @@ it('validates both constructions and drops only GPU traversal limits', () => {
       )
     ).toThrow(/tolerance/);
   }
+});
+
+it('rejects unknown string options in the pure cap form (W2-04)', () => {
+  expect(() =>
+    computeS2CapCoveringOnCPU(Float32Array.of(1, 0, 0, 0), {
+      level: 0,
+      capacity: 6,
+      mode: 'bad' as never
+    })
+  ).toThrow(/s2-cap-covering.*mode.*exterior.*interior.*bad/);
+  expect(() =>
+    computeS2CapCoveringOnCPU(Float32Array.of(1, 0, 0, 0), {
+      level: 0,
+      capacity: 6,
+      refinement: 'bad' as never
+    })
+  ).toThrow(/s2-cap-covering.*refinement.*uniform.*level-synchronous.*bad/);
 });

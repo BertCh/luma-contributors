@@ -7,6 +7,7 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -24,10 +25,16 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH} from './outlier-detection-parameters';
 
-import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GET_NAN_WGSL, IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 
 const OPERATION = 'GPULocalOutlierFactor';
 
@@ -71,6 +78,10 @@ export type GPULocalOutlierFactorProps = {
    * entries drops the tied points and changes the scores (scikit-learn does the same). Distances
    * are used as given; `GPUNeighborSearch` carries their `spatialContext` on the neighbors.
    * Neighbor IDs at or above the row count are skipped.
+   * Nonzero `status.overflow`, `status.candidateOverflow` or `status.iterationLimitReached`,
+   * a supplied zero `status.converged` or `status.complete`, or `status.requiredCount` above
+   * the physical neighbor-slot capacity, makes all distance, density and score outputs NaN
+   * and clears outlier flags/counts until the neighborhood is complete.
    */
   neighbors: GPUSpatialWeights;
   /** Context of the packed densityFloor, checked against neighbors.spatialContext when both exist. */
@@ -107,7 +118,8 @@ export type GPULocalOutlierFactorProps = {
  *
  * Coordinates: neighbors carry their own `spatialContext` from `GPUNeighborSearch`. LOF is a
  * unit-free ratio, but `densityFloor` is added to a distance: its optional `spatialContext`
- * is checked against the neighbors' context when both are supplied.
+ * is checked against the neighbors' effective distance units and metric parameters when both
+ * are supplied. Omitted great-circle units mean meters, and do not match a kilometer floor.
  *
  * Duplicates: `densityFloor` (default 1e-10, scikit-learn's value) keeps a cluster of coincident
  * points, whose mean reachability is 0, finite at density `1 / densityFloor`; points whose
@@ -128,11 +140,34 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
   readonly props: GPULocalOutlierFactorProps;
 
   constructor(props: GPULocalOutlierFactorProps) {
+    const construction = snapshotConstructionFields(props, [
+      'id',
+      'neighbors',
+      'spatialContext',
+      'parameters',
+      'output'
+    ]);
+    props = {
+      ...construction,
+      neighbors: snapshotWeightsPort(construction.neighbors),
+      spatialContext: construction.spatialContext
+        ? snapshotConstructionSpatialContext(construction.spatialContext)
+        : undefined,
+      output: snapshotConstructionFields(construction.output, [
+        'kDistance',
+        'localReachabilityDensity',
+        'lof',
+        'outlier',
+        'outlierCount'
+      ])
+    };
     const id = props.id ?? 'local-outlier-factor';
     this.id = id;
     this.props = props;
     if (props.neighbors.spatialContext && props.spatialContext) {
-      assertCompatibleGPUSpatialContexts(id, props.neighbors.spatialContext, props.spatialContext);
+      assertCompatibleGPUSpatialContexts(id, props.neighbors.spatialContext, props.spatialContext, {
+        purpose: 'metric-results'
+      });
     }
     const criterion = props.neighbors.information?.provenance?.criterion;
     if (criterion !== undefined && criterion !== 'knn') {
@@ -190,6 +225,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
         props.neighbors.offsets,
         props.neighbors.neighbors,
         props.neighbors.distances,
+        ...Object.values(props.neighbors.status ?? {}),
         props.parameters
       ]
     );
@@ -208,6 +244,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
       neighbors.offsets,
       neighbors.neighbors,
       distances,
+      ...Object.values(neighbors.status ?? {}),
       parameters,
       kDistance,
       localReachabilityDensity,
@@ -221,8 +258,35 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
       {name: 'neighbors', view: neighbors.neighbors, type: 'u32' as const, access: 'read' as const},
       {name: 'distances', view: distances, type: 'f32' as const, access: 'read' as const}
     ];
-    const declarations = `const ROWS: u32 = ${rows}u;`;
-    const nodes: GPUCommandNode<Parameters>[] = [
+    const declarations = `const ROWS: u32 = ${rows}u;
+const SLOTS: u32 = ${Math.min(neighbors.neighbors.length, distances.length)}u;`;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    const getPhysicalBuffer = (view: GraphDataView) =>
+      view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer;
+    const snapshotInput = (
+      name: string,
+      input: GraphDataView<'float32'>,
+      writable: readonly (GraphDataView | undefined)[]
+    ) => {
+      if (!writable.some(view => view && getPhysicalBuffer(view) === getPhysicalBuffer(input)))
+        return input;
+      const copy = createTransientView(graph, `${id}-${name}`, 'float32', rows);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-copy-${name}`,
+          operation: OPERATION,
+          variant: `copy-${name}`,
+          invocationCount: rows,
+          bindings: [
+            {name: 'input', view: input, type: 'f32', access: 'read'},
+            {name: 'copy', view: copy, type: 'f32', access: 'read_write'}
+          ],
+          body: 'copy[copyOffset + index] = input[inputOffset + index];'
+        })
+      );
+      return copy;
+    };
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-k-distance`,
         operation: OPERATION,
@@ -232,12 +296,20 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
           {name: 'kDistance', view: kDistance, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
+        declarations,
         body: `var largest = 0.0;
-  for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
-    largest = max(largest, distances[distancesOffset + slot]);
+  for (var slot = min(offsets[offsetsOffset + index], SLOTS); slot < min(offsets[offsetsOffset + index + 1u], SLOTS); slot++) {
+    if (neighbors[neighborsOffset + slot] < ROWS) {
+      largest = max(largest, distances[distancesOffset + slot]);
+    }
   }
   kDistance[kDistanceOffset + index] = largest;`
-      }),
+      })
+    );
+    const densityDistance = snapshotInput('density-distance', kDistance, [
+      localReachabilityDensity
+    ]);
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-density`,
         operation: OPERATION,
@@ -245,7 +317,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
         bindings: [
           ...tableBindings,
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-          {name: 'kDistance', view: kDistance, type: 'f32', access: 'read'},
+          {name: 'kDistance', view: densityDistance, type: 'f32', access: 'read'},
           {
             name: 'density',
             view: localReachabilityDensity,
@@ -257,7 +329,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
         declarations,
         body: `var sum = 0.0;
   var count = 0u;
-  for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
+  for (var slot = min(offsets[offsetsOffset + index], SLOTS); slot < min(offsets[offsetsOffset + index + 1u], SLOTS); slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
     if (neighbor < ROWS) {
       sum += max(kDistance[kDistanceOffset + neighbor], distances[distancesOffset + slot]);
@@ -266,7 +338,10 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
   }
   density[densityOffset + index] =
     select(0.0, 1.0 / (sum / f32(max(count, 1u)) + parameters[parametersOffset + 1u]), count > 0u);`
-      }),
+      })
+    );
+    const scoreDensity = snapshotInput('score-density', localReachabilityDensity, [lof]);
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-score`,
         operation: OPERATION,
@@ -274,14 +349,14 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
         bindings: [
           {name: 'offsets', view: neighbors.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: neighbors.neighbors, type: 'u32', access: 'read'},
-          {name: 'density', view: localReachabilityDensity, type: 'f32', access: 'read'},
+          {name: 'density', view: scoreDensity, type: 'f32', access: 'read'},
           {name: 'lof', view: lof, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations,
         body: `var sum = 0.0;
   var count = 0u;
-  for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
+  for (var slot = min(offsets[offsetsOffset + index], SLOTS); slot < min(offsets[offsetsOffset + index + 1u], SLOTS); slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
     if (neighbor < ROWS) {
       sum += density[densityOffset + neighbor];
@@ -292,8 +367,17 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
   lof[lofOffset + index] =
     select(1.0, sum / f32(max(count, 1u)) / own, count > 0u && own > 0.0);`
       })
-    ];
+    );
     if (output.outlier) {
+      const classificationDensity = snapshotInput(
+        'classification-density',
+        localReachabilityDensity,
+        [output.outlier, output.outlierCount]
+      );
+      const classificationScore = snapshotInput('classification-score', lof, [
+        output.outlier,
+        output.outlierCount
+      ]);
       if (output.outlierCount) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
@@ -315,7 +399,8 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
           variant: output.outlierCount ? 'mask-count' : 'mask',
           bindings: [
             {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-            {name: 'lof', view: lof, type: 'f32', access: 'read'},
+            {name: 'lof', view: classificationScore, type: 'f32', access: 'read'},
+            {name: 'density', view: classificationDensity, type: 'f32', access: 'read'},
             {name: 'outlier', view: output.outlier, type: 'u32', access: 'read_write'},
             ...(output.outlierCount
               ? [
@@ -334,13 +419,90 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
           // NaN comparisons may be folded away).
           body: `let threshold = parameters[parametersOffset];
   let hasThreshold = !isNanBits(threshold);
-  let flagged = hasThreshold && lof[lofOffset + index] > threshold;
+  let flagged = hasThreshold && !isNanBits(density[densityOffset + index]) && density[densityOffset + index] > 0.0 && lof[lofOffset + index] > threshold;
   outlier[outlierOffset + index] = select(0u, 1u, flagged);
   ${
     output.outlierCount
       ? 'if (flagged) {\n    atomicAdd(&outlierCount[outlierCountOffset], 1u);\n  }'
       : ''
   }`
+        })
+      );
+    }
+    // Any incomplete neighborhood invalidates all scores; ordinary writers restore them
+    // on the next complete submission. This includes loss and unfinished search iterations.
+    const status = neighbors.status;
+    const completeness = [
+      ['overflow', status?.overflow],
+      ['candidateOverflow', status?.candidateOverflow],
+      ['iterationLimitReached', status?.iterationLimitReached],
+      ['converged', status?.converged],
+      ['complete', status?.complete],
+      ['requiredCount', status?.requiredCount]
+    ] as const;
+    const flags = completeness.flatMap(([name, view]) => (view ? [[name, view] as const] : []));
+    if (flags.length > 0) {
+      const incomplete = createTransientView(graph, `${id}-incomplete`, 'uint32', 1);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-check-completeness`,
+          operation: OPERATION,
+          variant: 'input-completeness',
+          invocationCount: 1,
+          bindings: [
+            ...flags.map(([name, view]) => ({
+              name,
+              view,
+              type: 'u32' as const,
+              access: 'read' as const
+            })),
+            {name: 'incomplete', view: incomplete, type: 'u32', access: 'read_write'}
+          ],
+          body: `incomplete[incompleteOffset] = select(0u, 1u, ${flags
+            .map(([name]) =>
+              name === 'requiredCount'
+                ? `${name}[${name}Offset] > ${neighbors.neighbors.length}u`
+                : `${name}[${name}Offset] ${name === 'converged' || name === 'complete' ? '==' : '!='} 0u`
+            )
+            .join(' || ')});`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-suppress-incomplete`,
+          operation: OPERATION,
+          variant: 'suppress-incomplete',
+          invocationCount: rows,
+          bindings: [
+            {name: 'incomplete', view: incomplete, type: 'u32', access: 'read'},
+            {name: 'kDistance', view: kDistance, type: 'f32', access: 'read_write'},
+            {name: 'density', view: localReachabilityDensity, type: 'f32', access: 'read_write'},
+            {name: 'lof', view: lof, type: 'f32', access: 'read_write'},
+            ...(output.outlier
+              ? [
+                  {
+                    name: 'outlier',
+                    view: output.outlier,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
+            ...(output.outlierCount
+              ? [
+                  {
+                    name: 'outlierCount',
+                    view: output.outlierCount,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          declarations: GET_NAN_WGSL,
+          body: `if (incomplete[incompleteOffset] != 0u) {
+  kDistance[kDistanceOffset + index] = getNaN(); density[densityOffset + index] = getNaN(); lof[lofOffset + index] = getNaN();
+  ${output.outlier ? 'outlier[outlierOffset + index] = 0u;' : ''}
+  ${output.outlierCount ? 'if (index == 0u) { outlierCount[outlierCountOffset] = 0u; }' : ''}
+}`
         })
       );
     }

@@ -31,7 +31,7 @@ import {
   type OracleFeature,
   type OraclePredicate
 } from './spatial-predicate-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {registerLonLatPolygonStatusTests} from './lon-lat-polygon-status-fixtures';
 
 type JoinResult = {
@@ -54,6 +54,39 @@ type JoinOptions = {
   pairCapacity?: number;
   leafCapacity?: number;
 };
+
+it('FST-05 distinguishes candidate loss from final pair overflow for one point in two polygons', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Hand expectation: (1,1) is strictly inside both [0,2]^2 and [-1,3]^2.
+  const run = (candidateCapacity: number) =>
+    runJoin(
+      device,
+      'points',
+      [point(1, 1)],
+      'polygons',
+      [rectangle(0, 0, 2, 2), rectangle(-1, -1, 4, 4)],
+      'intersects',
+      {candidateCapacity, pairCapacity: 2}
+    );
+  const limited = await run(1);
+  expect({
+    count: limited.count,
+    requiredCount: limited.total,
+    overflow: limited.overflow,
+    candidateOverflow: limited.candidateOverflow,
+    uncertainCount: limited.uncertainCount
+  }).toEqual({count: 1, requiredCount: 1, overflow: 0, candidateOverflow: 1, uncertainCount: 0});
+  const complete = await run(2);
+  expect(complete.count).toBe(2);
+  expect(complete.total).toBe(2);
+  expect(complete.overflow).toBe(0);
+  expect(complete.candidateOverflow).toBe(0);
+  expect(complete.pairs).toEqual([
+    [0, 0],
+    [0, 1]
+  ]);
+});
 
 function createGeometry(
   device: Device,

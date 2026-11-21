@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer, type Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {cellToParent, getPentagons, getRes0Cells, latLngToCell, cellToChildren} from 'h3-js';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import {loadGuideFunction} from './family-guide-execution.test-utils';
 import {
   GPUCellAggregation,
   GPUCellLevelSelection,
@@ -16,9 +18,11 @@ import {
 import {getCellKeyLayout} from '../../../src/gpu-spatial-analysis/cell-aggregation/cell-keys';
 import {
   createNullWebGPUDevice,
-  getGPUCommandNodePipelineKeys
+  getGPUCommandNodePipelineKeys,
+  getParsedKernelSources
 } from '../../utils/gpu-contributor-test-utils';
 import {
+  aggregateCellsOnCPU,
   getQuadbinTileX,
   getQuadbinTileY,
   getQuadbinTileYFloat64,
@@ -155,6 +159,75 @@ it('fixed-point scaling rounds half to even and saturates', () => {
   expect(getScaledValue(-2.5, 1)).toBe(-2n);
   expect(getScaledValue(-0.25, 4)).toBe(-1n);
   expect(getScaledValue(3e38, 65536)).toBe(BigInt(Math.fround(2 ** 62 - 2 ** 38)));
+});
+
+it('the cell aggregation oracle saturates fixed-point sums instead of wrapping (DGGS-102)', () => {
+  // Independent expectation, BigInt arithmetic (numpy float32 for the products):
+  //   fround(fround(7e13) * 65536) = 4587520127238406144, three rows = 13762560381715218432,
+  //   above 2^63 - 1 = 9223372036854775807, so the sum saturates (the old oracle wrapped it to
+  //   -4684183691994333184, a sumValue of -7.147e13).
+  //   fround(1e14) * 65536 is above the largest scaled row fround(2^62 - 2^38) =
+  //   4611685743549480960, so the row saturates there.
+  const keys = [0, 0, 0, 1, 2, 2, 2, 3, 3].map(column => quadbinTileToCell(column, 0, 2));
+  const values = Float32Array.of(7e13, 7e13, 7e13, 1e14, -7e13, -7e13, -7e13, 1.5, 2.5);
+  const cells = aggregateCellsOnCPU({
+    family: 'quadbin',
+    resolution: 2,
+    keys,
+    values,
+    sumScale: 65536
+  });
+  expect(cells.map(cell => [cell.count, cell.sum, cell.sumOverflow])).toEqual([
+    [3, 9223372036854775807n, true],
+    [1, 4611685743549480960n, true],
+    [3, -9223372036854775807n, true],
+    [2, 262144n, false]
+  ]);
+});
+
+it('cell tables declare sum guards, saturation and sumOverflow on every path (DGGS-102, DGGS-107)', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'cell-sum-overflow'});
+  const withFlag = (table: GPUCellTable): GPUCellTable => ({
+    ...table,
+    status: {
+      ...table.status,
+      sumOverflow: createTransientView(graph, `flag-${serial++}`, 'uint32', 1)
+    }
+  });
+  const source = withFlag(createTable(graph, 16));
+  const contributors = [
+    new GPUCellAggregation(createProps(graph, {output: source})),
+    new GPUCellAggregation(
+      createProps(graph, {output: withFlag(createTable(graph, 16)), scratchTileSize: 4})
+    ),
+    new GPUCellRollup({
+      family: 'quadbin',
+      sourceResolution: 8,
+      resolution: 4,
+      source,
+      output: withFlag(createTable(graph, 8))
+    })
+  ];
+  for (const [index, contributor] of contributors.entries()) {
+    const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
+    const ids = [...sources.keys()];
+    const label = `contributor ${index}`;
+    expect(
+      ids.some(id => /saturate/.test(id)),
+      label
+    ).toBe(true);
+    expect(
+      ids.some(id => /sum-status/.test(id)),
+      label
+    ).toBe(true);
+    const finish = [...sources.entries()].filter(
+      ([id]) => /finish/.test(id) && /getScaledQuotient\(cellI64ToF32/.test(sources.get(id)!)
+    );
+    expect(finish.length, `${label} sumValues use the exponent-scaled quotient`).toBeGreaterThan(0);
+    for (const [id, wgsl] of sources) {
+      expect(/\/ SUM_SCALE/.test(wgsl), `${label} ${id} divides by SUM_SCALE`).toBe(false);
+    }
+  }
 });
 
 it('GPUCellAggregation validates props', () => {
@@ -365,4 +438,69 @@ it('cell operations declare their coordinate space', () => {
   expect(() => rollup(grid('h3', 6))).not.toThrow();
   expect(() => rollup(grid('quadbin', 6))).toThrow(/gridFamily must be h3/);
   expect(() => rollup(planar)).toThrow(/does not support planar coordinates/);
+});
+
+it('UCT-09 guide pyramid imports caller counts separately into both graphs', () => {
+  const device = createNullWebGPUDevice();
+  const imports = vi.spyOn(GPUCommandGraph.prototype, 'importBuffer');
+  const allocations = vi.spyOn(device, 'createBuffer');
+  const additions = vi.spyOn(GPUCommandGraph.prototype, 'add');
+  const declare = loadGuideFunction<
+    (device: Device) => {
+      countsBuffer: Buffer;
+      activeLevelBuffer: Buffer;
+      positionsBuffer: Buffer;
+    }
+  >('operators-cells', 'declareCellPyramid');
+  try {
+    const result = declare(device);
+    const counts = imports.mock.calls.flatMap(([descriptor, buffer], index) =>
+      descriptor.id === 'level-counts' ? [{buffer, graph: imports.mock.contexts[index]}] : []
+    );
+    expect(counts).toHaveLength(2);
+    expect(counts[0].buffer).toBe(counts[1].buffer);
+    expect(counts[0].buffer).toBe(result.countsBuffer);
+    expect(counts[0].graph).not.toBe(counts[1].graph);
+    expect(
+      allocations.mock.calls.some(
+        ([props]) =>
+          'data' in props &&
+          props.data instanceof Float32Array &&
+          Array.from(props.data).join(',') === '0,0,1,0,2,0'
+      )
+    ).toBe(true);
+    const positionImport = imports.mock.calls.findIndex(
+      ([descriptor]) => descriptor.id === 'positions'
+    );
+    expect(imports.mock.calls[positionImport][1]).toBe(result.positionsBuffer);
+    const pyramid = additions.mock.calls
+      .map(([producer]) => producer)
+      .find(producer => producer instanceof GPUCellPyramid);
+    if (!(pyramid instanceof GPUCellPyramid)) throw new Error('Guide did not add its pyramid');
+    expect(pyramid.props.positions).toMatchObject({
+      buffer: imports.mock.results[positionImport].value
+    });
+    result.countsBuffer.destroy();
+    result.activeLevelBuffer.destroy();
+    result.positionsBuffer.destroy();
+  } finally {
+    imports.mockRestore();
+    allocations.mockRestore();
+    additions.mockRestore();
+  }
+});
+
+it('UCT-09 reproduces rejection of a view reused across graph ownership', () => {
+  const device = createNullWebGPUDevice();
+  const producer = new GPUCommandGraph(device);
+  const selection = new GPUCommandGraph(device);
+  expect(() =>
+    selection.add(
+      new GPUCellLevelSelection({
+        levelCounts: createTransientView(producer, 'foreign-counts', 'uint32', 5),
+        activeLevel: createTransientView(selection, 'active', 'uint32', 1),
+        output: {status: {count: createTransientView(selection, 'count', 'uint32', 1)}}
+      })
+    )
+  ).toThrow(/views must belong to the target graph/);
 });

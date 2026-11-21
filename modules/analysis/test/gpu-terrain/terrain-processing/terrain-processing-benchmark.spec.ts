@@ -141,11 +141,15 @@ for (const mode of modes) {
             levels: output('float32', count * 2),
             cellNodes: output('uint32', count),
             curves: output('float32', count * 2),
-            status: output('uint32', 3)
+            status: {
+              count: output('uint32', 1),
+              requiredCount: output('uint32', 1),
+              overflow: output('uint32', 1)
+            }
           }
         });
         verify = values => {
-          expect(values[4][2]).toBe(0);
+          expect(values[6][0]).toBe(0);
           const root = values[4][0] - 1;
           expect(values[0][root * 4]).toBe(0xffffffff);
           expect(values[3][root * 2]).toBe(count);

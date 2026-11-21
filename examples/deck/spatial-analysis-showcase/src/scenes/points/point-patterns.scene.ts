@@ -647,7 +647,7 @@ distanceParameters.write(getGPURipleyDistanceFunctionsParameterValues({
 }));
 // n and area come from the last GPU summary; bootstrap once using the radius step.
 indicesParameters.write(getGPUPointPatternIndicesParameterValues({
-  bounds, maximumDistance: ${Math.min(state.maximumDistance, 400)}, clarkEvansCorrection: 'guard',
+  bounds, indexCellSizeHint: ${Math.min(state.maximumDistance, 400)}, clarkEvansCorrection: 'guard',
   guardDistance: Math.max(2 / Math.sqrt(n / area), ${state.maximumDistance / Number(state.radiusCount)})
 }));
 compiled.encode(commandEncoder, {parameters: undefined});

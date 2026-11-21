@@ -177,8 +177,9 @@ export type GPUTrajectoryEncountersProps = {
  *
  * Samples are indexed in a `GPUGridIndex` with three axes: planar `x` and `y` over `bounds`, and
  * the time bucket as an exact third axis, so only samples of one bucket share a cell. Every
- * sample scans the 3x3 planar cells of its bucket and appends a hit for each higher-index track
- * within `min(distance, cellSize)`. Hits are ordered with three stable `GPUSort` passes (bucket,
+ * sample scans a conservatively rounded distance rectangle of its bucket's cells and appends a
+ * hit for each higher-index track within `min(distance, cellSize)`. Hits are ordered with three
+ * stable `GPUSort` passes (bucket,
  * partner, track) so each `(track, partner)` pair forms one run whose first hit is the first
  * encounter; `GPUCompaction` finds the runs and reduction kernels write the minimum distance and
  * bucket count of each run. Pairs are therefore lowest-ID ordered (`track < partner`),

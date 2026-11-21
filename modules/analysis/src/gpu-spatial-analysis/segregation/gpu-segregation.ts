@@ -15,7 +15,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   type GPUSpatialWeights,
@@ -24,6 +25,8 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getGPUSegregationLayout} from './segregation-layout';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /**
  * WGSL accessors of one scale's `environment` table: `units * K` weighted group counts, then
@@ -49,9 +52,9 @@ import {
 } from './segregation-parameters';
 
 /** Fixed totals/cursor/finalize nodes plus conservative per-scale reductions and optional local outputs. */
-const SEGREGATION_FIXED_NODE_ALLOWANCE = 16;
-/** Each scale emits at most twelve environment, reduction and local-output kernels. */
-const SEGREGATION_NODES_PER_SCALE = 12;
+const SEGREGATION_FIXED_NODE_ALLOWANCE = 18;
+/** Each scale emits at most thirteen environment, reduction, local-output and suppression kernels. */
+const SEGREGATION_NODES_PER_SCALE = 13;
 
 const OPERATION = 'GPUSegregation';
 /** Lanes of the reduction workgroups (one workgroup per block of units, or per output column). */
@@ -67,6 +70,8 @@ export const GPU_SEGREGATION_MAXIMUM_GROUPS = 16;
  * (local) outputs, each holding one block per scale.
  */
 export type GPUSegregationOutput = {
+  /** Number of input units containing any negative or non-finite count, before applying policy. */
+  invalidUnitCount?: GraphDataView<'uint32'>;
   /**
    * `scales.length * layout.stride` global indices; scale `s` starts at `s * stride`. See
    * `getGPUSegregationLayout`.
@@ -113,11 +118,20 @@ export type GPUSegregationProps = {
    * `groupCounts.length / K`. Negative and non-finite entries count as 0.
    */
   groupCounts: GraphDataView<'float32'>;
+  /** 'zero' (legacy default) replaces each invalid count with zero. 'exclude-unit' omits the
+   * entire unit from every numerator, population total and local environment, at every scale. */
+  missingCountPolicy?: 'zero' | 'exclude-unit';
   /**
    * The scales of the profile. Each is a square {@link GPUSpatialWeights} over the units (a kernel
    * or distance band built by `GPUNeighborSearch` and reweighted with `GPUSpatialWeightsTransform`,
    * one per bandwidth) defining the local environment of every unit, or `null` for the aspatial
    * indices. Defaults to `[null]`. Entry `s` of the result is the multiscale profile at scale `s`.
+   * Nonzero weights status.overflow or status.candidateOverflow suppresses weight-dependent
+   * outputs for that scale to NaN until complete weights and cleared flags are submitted.
+   * Population diversity remains defined in the environment form; it depends on weights in
+   * the smoothed-population form and is suppressed there.
+   * Supplied complete, converged, iterationLimitReached, unresolvedCount and requiredCount views are
+   * rejected; verify that evidence before supplying a complete CSR with only supported flags.
    */
   scales?: readonly (GPUSpatialWeights | null)[];
   /**
@@ -164,7 +178,9 @@ export type GPUSegregationProps = {
  *   `1/2 sum_i |x_ig / X_g - (t_i - x_ig) / (T - X_g)|`):
  *   `D_g = sum_i t_i |pi_ig - P_g| / (2 T P_g (1 - P_g))`.
  * - Isolation `xPx_g = sum_i (x_ig / X_g) pi_ig` and interaction `xPy_gh = sum_i (x_ig / X_g) pi_ih`
- *   (PySAL `Isolation`, `Interaction`; Lieberson). `xPx_g + sum_{h != g} xPy_gh = 1`.
+ *   (PySAL `Isolation`, `Interaction`; Lieberson). `xPx_g + sum_{h != g} xPy_gh = 1` when every
+ *   unit with group-g population has a populated environment; otherwise the sum is the share
+ *   of group-g population in units with populated environments.
  * - Atkinson of group `g` (PySAL `Atkinson`, parameter `b`):
  *   `A_g = 1 - P_g / (1 - P_g) * | sum_i (1 - pi_ig)^(1 - b) pi_ig^b t_i / (P_g T) |^(1 / (1 - b))`.
  * Indices that are undefined are written as NaN, never 0 (0 means perfectly even): H and the
@@ -188,7 +204,7 @@ export type GPUSegregationProps = {
  * terms per barrier round) into one partial per (term, block of 256 units), and one fixed-order
  * tree per term over the block partials (bitwise reproducible). The `terms x units` table is never
  * materialized, so the sums cost one read of the environment instead of a write and a read of
- * `(2 + 2K + K^2)` columns. Cost per scale is O(nonzeros * K + units * K^2).
+ * `(3 + 2K + K^2)` columns. Cost per scale is O(nonzeros * K + units * K^2).
  * Precision is float32: indices are sums over units, so expect about 1e-5 relative error against
  * a float64 reference for moderate populations. Counts and totals are float32, so integer
  * populations are exact only up to 2^24 (16,777,216) in total; above that the totals `T` and
@@ -215,9 +231,66 @@ export class GPUSegregation implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSegregationProps) {
+    const construction = snapshotConstructionFields(props, [
+      'id',
+      'parameters',
+      'groupCount',
+      'groupCounts',
+      'missingCountPolicy',
+      'scales',
+      'selfWeight',
+      'spatialForm',
+      'atkinsonInequalityAversion',
+      'output'
+    ]);
+    const scalesSnapshot =
+      construction.scales &&
+      Object.freeze(
+        construction.scales.map(weights => (weights ? snapshotWeightsPort(weights) : null))
+      );
+    props = Object.freeze({
+      ...construction,
+      ...(scalesSnapshot ? {scales: scalesSnapshot} : {}),
+      output: snapshotConstructionFields(construction.output, [
+        'indices',
+        'invalidUnitCount',
+        'localEnvironment',
+        'localEntropy',
+        'localDissimilarity',
+        'localTheil'
+      ])
+    });
     const id = props.id ?? 'segregation';
     this.id = id;
     this.props = props;
+    validateRequirement(
+      id,
+      props.missingCountPolicy === undefined ||
+        props.missingCountPolicy === 'zero' ||
+        props.missingCountPolicy === 'exclude-unit',
+      `missingCountPolicy must be 'zero' or 'exclude-unit'; received ${String(props.missingCountPolicy)}`
+    );
+    validateRequirement(
+      id,
+      props.spatialForm === undefined ||
+        props.spatialForm === 'environment' ||
+        props.spatialForm === 'smoothed-population',
+      `spatialForm must be 'environment' or 'smoothed-population'; received ${String(props.spatialForm)}`
+    );
+    if (props.output.invalidUnitCount) {
+      validateSinglePackedView(
+        props.output.invalidUnitCount,
+        ['uint32'],
+        `${id} output.invalidUnitCount`
+      );
+      validateCapacity(
+        id,
+        'output.invalidUnitCount length',
+        props.output.invalidUnitCount.length,
+        1,
+        1
+      );
+    }
     this.parameterValues = getGPUSegregationParameterValues(props, id);
     if (props.parameters) {
       validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -237,6 +310,7 @@ export class GPUSegregation implements GPUCommandNodeProducer {
       throw new Error(`${id} scales must not be empty`);
     }
     this.scaleCount = scales.length;
+    // The per-scale allowance includes one combined loss-suppression kernel.
     this.estimatedCommandNodeCount =
       SEGREGATION_FIXED_NODE_ALLOWANCE + SEGREGATION_NODES_PER_SCALE * scales.length;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -252,6 +326,19 @@ export class GPUSegregation implements GPUCommandNodeProducer {
         validateGPUSpatialWeights(id, weights, `scales[${scaleIndex}]`) !== unitCount
       ) {
         throw new Error(`${id} scales[${scaleIndex}] must have one row per unit`);
+      }
+      for (const field of [
+        'complete',
+        'converged',
+        'iterationLimitReached',
+        'requiredCount',
+        'unresolvedCount'
+      ] as const) {
+        validateRequirement(
+          id,
+          weights?.status?.[field] === undefined,
+          `scales[${scaleIndex}].status.${field} cannot be qualified by GPUSegregation; verify the CSR is complete, then omit this view and retain overflow and candidateOverflow`
+        );
       }
     });
     const b = props.atkinsonInequalityAversion ?? 0.5;
@@ -295,7 +382,13 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     const views: (GraphDataView | undefined)[] = [this.props.groupCounts, this.props.parameters];
     for (const weights of this.props.scales ?? []) {
       if (weights) {
-        views.push(weights.offsets, weights.neighbors, weights.weights);
+        views.push(
+          weights.offsets,
+          weights.neighbors,
+          weights.weights,
+          weights.status?.overflow,
+          weights.status?.candidateOverflow
+        );
       }
     }
     return views;
@@ -305,6 +398,7 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     const {output} = this.props;
     return [
       output.indices,
+      output.invalidUnitCount,
       output.localEnvironment,
       output.localEntropy,
       output.localDissimilarity,
@@ -317,7 +411,7 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, unitCount} = this;
-    const terms = 2 + 2 * props.groupCount + props.groupCount * props.groupCount;
+    const terms = 3 + 2 * props.groupCount + props.groupCount * props.groupCount;
     validateSpatialStatisticsBindings(graph, id, props, {
       'environment table': (unitCount * (props.groupCount + 1) + 1) * 4,
       'term partials': terms * Math.ceil(unitCount / LANES) * 4,
@@ -326,7 +420,12 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     });
 
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    const {groupCount: K, groupCounts, output} = props;
+    const {groupCount: K, output} = props;
+    const sanitize =
+      props.missingCountPolicy === 'exclude-unit' || Boolean(output.invalidUnitCount);
+    const groupCounts = sanitize
+      ? createTransientView(graph, `${id}-usable-counts`, 'float32', props.groupCounts.length)
+      : props.groupCounts;
     const {indices} = output;
     const local = {
       environment: output.localEnvironment,
@@ -336,7 +435,7 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     };
     const scales = props.scales ?? [null];
     const layout = getGPUSegregationLayout(K);
-    const termCount = 2 + 2 * K + K * K;
+    const termCount = 3 + 2 * K + K * K;
     const runtime = createSpatialStatisticsParameterNodes(
       graph,
       `${id}-parameters`,
@@ -351,6 +450,60 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     const parameterBody =
       'SELF_WEIGHT = parameters[parametersOffset]; ATKINSON_B = parameters[parametersOffset + 1u];';
     const nodes: GPUCommandNode<Parameters>[] = [...runtime.nodes];
+    if (output.invalidUnitCount) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-clear-invalid-units`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            {
+              name: 'invalidUnitCount',
+              view: output.invalidUnitCount,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: 'invalidUnitCount[invalidUnitCountOffset] = 0u;'
+        })
+      );
+    }
+    if (sanitize) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-sanitize-counts`,
+          operation: OPERATION,
+          variant: 'sanitize-counts',
+          invocationCount: unitCount,
+          bindings: [
+            {name: 'rawCounts', view: props.groupCounts, type: 'f32', access: 'read'},
+            {name: 'groupCounts', view: groupCounts, type: 'f32', access: 'read_write'},
+            ...(output.invalidUnitCount
+              ? [
+                  {
+                    name: 'invalidUnitCount',
+                    view: output.invalidUnitCount,
+                    type: 'atomic<u32>' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          declarations: `const K: u32 = ${K}u;`,
+          body: `var invalid = false;
+  for (var group = 0u; group < K; group++) {
+    let bits = bitcast<u32>(rawCounts[rawCountsOffset + index * K + group]);
+    invalid = invalid || (bits & 0x7fffffffu) >= 0x7f800000u || ((bits & 0x80000000u) != 0u && (bits & 0x7fffffffu) != 0u);
+  }
+  ${output.invalidUnitCount ? 'if (invalid) { atomicAdd(&invalidUnitCount[invalidUnitCountOffset], 1u); }' : ''}
+  for (var group = 0u; group < K; group++) {
+    let value = rawCounts[rawCountsOffset + index * K + group];
+    let usable = (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u && value >= 0.0;
+    groupCounts[groupCountsOffset + index * K + group] = ${props.missingCountPolicy === 'exclude-unit' ? 'select(select(0.0, value, usable), -1.0, invalid)' : 'select(0.0, value, usable)'};
+  }`
+        })
+      );
+    }
 
     const declarations = `${GET_NAN_WGSL}
 const UNITS: u32 = ${unitCount}u;
@@ -592,6 +745,8 @@ fn getDiversity() -> f32 {
         body: 'scaleCursor[scaleCursorOffset] = 0xffffffffu;'
       })
     );
+    // Retain only a scalar until suppression so environment tables can reuse transient storage.
+    const scaleOrdinals: (GraphDataView<'uint32'> | undefined)[] = [];
     scales.forEach((weights, scaleIndex) => {
       const scaleId = `${id}-scale-${scaleIndex}`;
       // Layout: unitCount * K weighted group counts, unitCount totals, then the scale index.
@@ -601,6 +756,11 @@ fn getDiversity() -> f32 {
         'float32',
         unitCount * K + unitCount + 1
       );
+      const scaleOrdinal =
+        weights?.status?.overflow || weights?.status?.candidateOverflow
+          ? createTransientView(graph, `${scaleId}-ordinal`, 'uint32', 1)
+          : undefined;
+      scaleOrdinals.push(scaleOrdinal);
       const sums = createTransientView(graph, `${scaleId}-sums`, 'float32', termCount);
       const termPartials = createTransientView(
         graph,
@@ -641,7 +801,17 @@ fn getDiversity() -> f32 {
                 ]
               : []),
             {name: 'environment', view: environment, type: 'f32', access: 'read_write'},
-            {name: 'scaleCursor', view: scaleCursor, type: 'u32', access: 'read_write'}
+            {name: 'scaleCursor', view: scaleCursor, type: 'u32', access: 'read_write'},
+            ...(scaleOrdinal
+              ? [
+                  {
+                    name: 'scaleOrdinal',
+                    view: scaleOrdinal,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
           ],
           invocationCount: unitCount,
           // ROWS and CAPACITY are the constants of the shared neighbor loop. The capacity is not
@@ -658,6 +828,16 @@ const CAPACITY: u32 = 0xffffffffu;`
     let scale = scaleCursor[scaleCursorOffset] + 1u;
     scaleCursor[scaleCursorOffset] = scale;
     environment[environmentOffset + UNITS * K + UNITS] = f32(scale);
+    ${scaleOrdinal ? 'scaleOrdinal[scaleOrdinalOffset] = scale;' : ''}
+  }
+  ${
+    props.missingCountPolicy === 'exclude-unit'
+      ? `if (groupCounts[groupCountsOffset + index * K] < 0.0) {
+    for (var group = 0u; group < K; group++) { environment[environmentOffset + index * K + group] = 0.0; }
+    environment[environmentOffset + UNITS * K + index] = 0.0;
+    return;
+  }`
+      : ''
   }
   ${
     weights
@@ -718,6 +898,9 @@ const CAPACITY: u32 = 0xffffffffu;`
     }
     columnValues[0] = unitPopulation * entropy;
     columnValues[1] = unitPopulation * absolute;
+    // H sums t_i(E-E_i) only over units with a defined environment. The
+    // population of an empty environment must not reappear in the E term.
+    columnValues[TERM_COUNT - 1u] = unitPopulation;
   }
   reduceColumns(lane, group);`
         }),
@@ -824,7 +1007,8 @@ fn entropyTerm(share: f32) -> f32 {
   }
   let hasPopulation = populationTotal > 0.0;
   indices[indicesOffset + base + ${layout.entropy}u] = select(
-    getNaN(), 1.0 - allSums[allSumsOffset + sums] / (diversity * populationTotal), hasPopulation && diversity > 0.0);
+    getNaN(), allSums[allSumsOffset + sums + TERM_COUNT - 1u] / populationTotal -
+      allSums[allSumsOffset + sums] / (diversity * populationTotal), hasPopulation && diversity > 0.0);
   indices[indicesOffset + base + ${layout.multiGroupDissimilarity}u] = select(
     getNaN(), allSums[allSumsOffset + sums + 1u] / (2.0 * populationTotal * variance), hasPopulation && variance > 0.0);
   indices[indicesOffset + base + ${layout.diversity}u] = select(getNaN(), diversity, hasPopulation);
@@ -835,7 +1019,7 @@ fn entropyTerm(share: f32) -> f32 {
     let spread = 2.0 * populationTotal * share * (1.0 - share);
     indices[indicesOffset + base + ${layout.dissimilarity}u + group] = select(
       getNaN(), allSums[allSumsOffset + sums + 2u + group] / spread, isMixed);
-    let ratio = abs(allSums[allSumsOffset + sums + 2u + K + group] / max(share * populationTotal, 1e-30));
+    let ratio = abs(allSums[allSumsOffset + sums + 2u + K + group] / select(1.0, groupTotal, groupTotal > 0.0));
     let atkinson = 1.0 - share / (1.0 - share) * pow(ratio, 1.0 / (1.0 - ATKINSON_B));
     indices[indicesOffset + base + ${layout.atkinson}u + group] = select(getNaN(), atkinson, isMixed);
     for (var other = 0u; other < K; other++) {
@@ -849,6 +1033,52 @@ fn entropyTerm(share: f32) -> f32 {
   }`
       })
     );
+    // A capacity-bounded CSR is not a complete environment. Suppress only the affected
+    // scale, after both its local outputs and its global finalizer have run.
+    scales.forEach((weights, scaleIndex) => {
+      if (!weights?.status?.overflow && !weights?.status?.candidateOverflow) return;
+      const losses = [
+        ['overflow', weights.status.overflow],
+        ['candidateOverflow', weights.status.candidateOverflow]
+      ] as const;
+      const outputs = [
+        ['indices', indices, layout.stride],
+        ['localEnvironment', props.output.localEnvironment, unitCount * K],
+        ['localEntropy', props.output.localEntropy, unitCount],
+        ['localDissimilarity', props.output.localDissimilarity, unitCount * K],
+        ['localTheil', props.output.localTheil, unitCount]
+      ] as const;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-scale-${scaleIndex}-incomplete`,
+          operation: OPERATION,
+          variant: 'incomplete',
+          bindings: [
+            {name: 'scaleOrdinal', view: scaleOrdinals[scaleIndex]!, type: 'u32', access: 'read'},
+            ...losses.flatMap(([name, view]) =>
+              view ? [{name, view, type: 'u32' as const, access: 'read' as const}] : []
+            ),
+            ...outputs.flatMap(([name, view]) =>
+              view ? [{name, view, type: 'f32' as const, access: 'read_write' as const}] : []
+            )
+          ],
+          invocationCount: Math.max(layout.stride, unitCount * K),
+          declarations: `${GET_NAN_WGSL}
+fn getScaleIndex() -> u32 { return scaleOrdinal[scaleOrdinalOffset]; }`,
+          body: `if (!(${losses
+            .filter(([, view]) => view)
+            .map(([name]) => `${name}[${name}Offset] != 0u`)
+            .join(' || ')})) { return; }
+  ${outputs
+    .filter(([, view]) => view)
+    .map(
+      ([name, , length]) =>
+        `if (index < ${length}u${name === 'indices' && !smoothedPopulation ? ` && index != ${layout.diversity}u` : ''}) { ${name}[${name}Offset + getScaleIndex() * ${length}u + index] = getNaN(); }`
+    )
+    .join('\n  ')}`
+        })
+      );
+    });
     return nodes;
   }
 }

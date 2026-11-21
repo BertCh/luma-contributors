@@ -12,7 +12,7 @@ import {
   profileKeplerColumnTable,
   profileKeplerFeatureCollection
 } from '../../src/profile/dataset-profile';
-import {evaluateGPUAnalysisRequirement} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisRequirement} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 const PROFILE_OPTIONS = {datasetId: 'bounded-distinct', label: 'Bounded distinct'};
 

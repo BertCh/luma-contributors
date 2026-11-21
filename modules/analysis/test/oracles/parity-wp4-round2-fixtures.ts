@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPULineIntegralConvolutionSettings} from '../../src/raster-analysis/flow-texture/index';
+import type {SavedLICSettings} from '../gpu-raster/flow-texture/saved-flow-parameters';
 import licJSON from './fixtures/parity-wp4-lic.json';
 import dixieFourJSON from './fixtures/parity-wp4-components-dixie-4.json';
 import dixieEightJSON from './fixtures/parity-wp4-components-dixie-8.json';
@@ -18,7 +18,7 @@ export type LICCase = {
   fieldHeight: number;
   field: number[];
   stepCount: number;
-  settings: GPULineIntegralConvolutionSettings;
+  settings: SavedLICSettings;
   values: number[];
   speeds: number[];
   noise: number[];

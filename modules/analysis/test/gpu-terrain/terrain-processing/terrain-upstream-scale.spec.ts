@@ -295,7 +295,9 @@ it('matches SciPy sublevel connected-component areas and volumes for a nested 76
   const nodes = output(count * 4, 'uint32'),
     levels = output(count * 2, 'float32'),
     curves = output(count * fixture.stages.length * 2, 'float32'),
-    status = output(3, 'uint32');
+    storedCount = output(1, 'uint32'),
+    requiredCount = output(1, 'uint32'),
+    overflow = output(1, 'uint32');
   graph.add(
     new GPUTerrainDepressionHierarchy({
       grid: grid(fixture.width, fixture.height),
@@ -308,20 +310,24 @@ it('matches SciPy sublevel connected-component areas and volumes for a nested 76
         levels: levels.view,
         curves: curves.view,
         cellNodes: output(count, 'uint32').view,
-        status: status.view
+        status: {
+          count: storedCount.view,
+          requiredCount: requiredCount.view,
+          overflow: overflow.view
+        }
       }
     })
   );
   const destroy = run();
   try {
-    const actualStatus = await status.read(),
+    const [actualCount] = await storedCount.read(),
       actualLevels = await levels.read(),
       actualCurves = await curves.read();
-    expect(actualStatus[2]).toBe(0);
+    expect(await overflow.read()).toEqual([0]);
     for (let stageIndex = 0; stageIndex < fixture.stages.length; stageIndex++) {
       const stage = fixture.stages[stageIndex],
         actual = [];
-      for (let node = 0; node < actualStatus[0]; node++)
+      for (let node = 0; node < actualCount; node++)
         if (actualLevels[node * 2] <= stage && actualLevels[node * 2 + 1] > stage) {
           const offset = (node * fixture.stages.length + stageIndex) * 2;
           actual.push(actualCurves.slice(offset, offset + 2));
@@ -547,7 +553,9 @@ it('fits 16384-cell DEMs and builds 16384-cell hierarchies with sorted linear re
     {length: count},
     (_, cell) => ((cell % width) - 63) ** 2 + (Math.floor(cell / width) - 63) ** 2
   );
-  const treeStatus = output(3, 'uint32'),
+  const storedCount = output(1, 'uint32'),
+    requiredCount = output(1, 'uint32'),
+    overflow = output(1, 'uint32'),
     curves = output(count * 6, 'float32');
   graph.add(
     new GPUTerrainDepressionHierarchy({
@@ -561,7 +569,11 @@ it('fits 16384-cell DEMs and builds 16384-cell hierarchies with sorted linear re
         levels: output(count * 2, 'float32').view,
         cellNodes: output(count, 'uint32').view,
         curves: curves.view,
-        status: treeStatus.view
+        status: {
+          count: storedCount.view,
+          requiredCount: requiredCount.view,
+          overflow: overflow.view
+        }
       }
     })
   );
@@ -588,7 +600,9 @@ it('fits 16384-cell DEMs and builds 16384-cell hierarchies with sorted linear re
   const started = performance.now(),
     destroy = run();
   try {
-    expect(await treeStatus.read()).toEqual([1, 1, 0]);
+    expect(await storedCount.read()).toEqual([1]);
+    expect(await requiredCount.read()).toEqual([1]);
+    expect(await overflow.read()).toEqual([0]);
     const actualCurves = await curves.read();
     expect(actualCurves.slice(0, 4)).toEqual([1, 0, 5, 1]);
     expect(actualCurves[4]).toBe(count);

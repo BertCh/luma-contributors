@@ -4,11 +4,11 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {CPUNetworkPathExtractionOperation} from '../../../src/gpu-network/network-analysis/cpu-network-path-extraction-operation';
 import {
-  GPUNetworkPathExtractionOperation,
-  type NetworkPathExtractionOperationProps
-} from '../../../src/gpu-network/network-analysis/gpu-network-path-extraction-operation';
+  CPUNetworkPathExtractionOperation,
+  type CPUNetworkPathExtractionOperationProps
+} from '../../../src/gpu-network/network-analysis/cpu-network-path-extraction-operation';
+import {GPUNetworkPathExtractionOperation} from '../../../src/gpu-network/network-analysis/gpu-network-path-extraction-operation';
 import {runOperationGraph, type OperationGraphInput} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {GPUNetworkReachabilityOperation} from '../../../src/gpu-network/network-reachability/gpu-network-reachability-operation';
@@ -27,7 +27,7 @@ for (const fixture of [
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const empty = fixture === 'empty';
-    const props: NetworkPathExtractionOperationProps = {
+    const nodeProps = {
       nodeCount: 5,
       targetCapacity: empty ? 0 : 5,
       predecessors: 'predecessors',
@@ -50,31 +50,44 @@ for (const fixture of [
           overflow: 'overflow',
           candidateOverflow: 'candidate'
         }
-      },
-      edges: {
-        edgeCount: 4,
-        topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
-        edgeIds: 'edgeIds',
-        output: {
-          capacity: fixture === 'overflow' ? 2 : 3,
-          ids: 'edgeOutput',
-          edgeRows: 'edgeRows',
-          lineOffsets: 'edgeLines',
-          status: {
-            count: 'edgeCount',
-            requiredCount: 'edgeRequired',
-            overflow: 'edgeOverflow',
-            candidateOverflow: 'edgeCandidate'
-          }
-        }
       }
     };
+    // An out-of-range parent has no authoritative incoming edge. Exercise that broken chain
+    // through both node-only forms, where it must publish no paths.
+    const props: CPUNetworkPathExtractionOperationProps =
+      fixture === 'broken'
+        ? nodeProps
+        : {
+            ...nodeProps,
+            predecessorEdges: 'predecessorEdges',
+            edges: {
+              edgeCount: 4,
+              topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+              edgeIds: 'edgeIds',
+              output: {
+                capacity: fixture === 'overflow' ? 2 : 3,
+                ids: 'edgeOutput',
+                edgeRows: 'edgeRows',
+                lineOffsets: 'edgeLines',
+                status: {
+                  count: 'edgeCount',
+                  requiredCount: 'edgeRequired',
+                  overflow: 'edgeOverflow',
+                  candidateOverflow: 'edgeCandidate'
+                }
+              }
+            }
+          };
     const inputs: Record<string, OperationGraphInput> = {
       predecessors: {
         format: 'uint32',
         values: new Uint32Array(
           fixture === 'broken' ? [99, 0, 1, 0, 0xffffffff] : [0xffffffff, 0, 1, 0, 0xffffffff]
         )
+      },
+      predecessorEdges: {
+        format: 'uint32',
+        values: Uint32Array.of(0xffffffff, 1, 3, 2, 0xffffffff)
       },
       costs: {format: 'float32', values: new Float32Array([0, 2, 5, 7, Infinity])},
       targets: {format: 'uint32', values: new Uint32Array(empty ? [] : [2, 3, 0, 4, 99])},
@@ -89,18 +102,22 @@ for (const fixture of [
     const outputs = [
       'ids',
       'nodeRows',
-      'edgeRows',
       'lines',
       'count',
       'required',
       'overflow',
       'candidate',
-      'edgeOutput',
-      'edgeLines',
-      'edgeCount',
-      'edgeRequired',
-      'edgeOverflow',
-      'edgeCandidate',
+      ...(props.edges
+        ? [
+            'edgeRows',
+            'edgeOutput',
+            'edgeLines',
+            'edgeCount',
+            'edgeRequired',
+            'edgeOverflow',
+            'edgeCandidate'
+          ]
+        : []),
       ...(empty ? [] : ['pathCosts', 'found'])
     ];
     const results = [];
@@ -111,6 +128,10 @@ for (const fixture of [
     // IDs, flags, counts, offsets, input path costs and Infinity are exact: tolerance zero.
     // Fresh graph buffers have zero node padding. Production callers consume only count rows.
     for (const value of outputs) expect(results[0][value]).toEqual(results[1][value]);
+    if (fixture === 'broken') {
+      expect(results[0]['count']).toEqual(Uint32Array.of(0));
+      expect(results[0]['found']).toEqual(Uint32Array.of(0, 0, 0, 0, 0));
+    }
     if (fixture === 'ordinary') {
       expect(results[0]['nodeRows']).toEqual(Uint32Array.of(0, 1, 2, 0, 3, 0));
       expect(results[0]['ids']).toEqual(Uint32Array.of(10, 11, 12, 10, 13, 10));

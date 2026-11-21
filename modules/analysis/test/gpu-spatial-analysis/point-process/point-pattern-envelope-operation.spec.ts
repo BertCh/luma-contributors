@@ -10,7 +10,7 @@ import {
   type PointPatternEnvelopeOperationProps
 } from '../../../src/gpu-spatial-analysis/point-process/gpu-point-pattern-envelope-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 for (const statistic of [
   'maximum-deviation',
@@ -67,6 +67,12 @@ for (const statistic of [
         outputs,
         operations: [new CPUPointPatternEnvelopeOperation(props)]
       });
+      for (const port of outputs) {
+        const expectedLength =
+          port === 'statistics' ? 4 : port === 'status' ? 1 : port === 'interval' ? 2 : 3;
+        expect(cpu[port].length).toBe(expectedLength);
+        expect(gpu[port].length).toBe(expectedLength);
+      }
       for (const port of outputs)
         for (let index = 0; index < cpu[port].length; index++) {
           const expected = cpu[port][index];
@@ -86,3 +92,137 @@ for (const statistic of [
         }
     });
   }
+
+it('TWN-41 retains the residual through the independent exceedance decision', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  try {
+    const props: PointPatternEnvelopeOperationProps = {
+      observed: 'observed',
+      simulations: 'simulations',
+      reference: 'reference',
+      integrationWeights: 'weights',
+      curveRowCount: 2,
+      simulationCount: 19,
+      nullModel: 'specified null',
+      fittedParameters: 'none',
+      statistic: 'integrated-squared-deviation',
+      output: {lower: 'lower', upper: 'upper', statistics: 'statistics', status: 'status'}
+    };
+    for (const Operation of [GPUPointPatternEnvelopeOperation, CPUPointPatternEnvelopeOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          observed: {format: 'float32', values: Float32Array.of(1, 2 ** -13)},
+          simulations: {
+            format: 'float32',
+            values: Float32Array.from({length: 38}, (_, index) => (index % 2 ? 0 : 1))
+          },
+          reference: {format: 'float32', values: Float32Array.of(0, 0)},
+          weights: {format: 'float32', values: Float32Array.of(1, 1)}
+        },
+        outputs: ['statistics', 'status'],
+        operations: [new Operation(props)]
+      });
+      // 1+2^-26 exceeds all nineteen statistics of 1: zero exceedances, p=1/20.
+      expect([...result['statistics']]).toEqual([1, Math.fround(1 / 20), Math.fround(1 / 20), 19]);
+      expect([...result['status']]).toEqual([0]);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('DEF-12 maximum deviation ignores absent, zero and unit integration weights', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  try {
+    for (const weight of [undefined, 0, 1]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          observed: {format: 'float32', values: Float32Array.of(3)},
+          simulations: {format: 'float32', values: Float32Array.of(1, 2)},
+          reference: {format: 'float32', values: Float32Array.of(0)},
+          ...(weight === undefined
+            ? {}
+            : {weights: {format: 'float32' as const, values: Float32Array.of(weight)}})
+        },
+        outputs: ['statistics', 'status'],
+        operations: [
+          new GPUPointPatternEnvelopeOperation({
+            observed: 'observed',
+            simulations: 'simulations',
+            reference: 'reference',
+            ...(weight === undefined ? {} : {integrationWeights: 'weights'}),
+            curveRowCount: 1,
+            nullModel: 'specified null',
+            fittedParameters: 'none',
+            output: {lower: 'lower', upper: 'upper', statistics: 'statistics', status: 'status'}
+          })
+        ]
+      });
+      expect([...result['statistics']]).toEqual([3, Math.fround(1 / 3), Math.fround(1 / 3), 2]);
+      expect([...result['status']]).toEqual([0]);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('B2 compares exact products and tiny normal addends before Monte Carlo decisions', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  try {
+    for (const [observed, simulated] of [
+      [
+        [1 + 2 ** -13, 1 - 2 ** -13],
+        [1, 1]
+      ],
+      [
+        [2 ** -40, 2 ** -53],
+        [2 ** -40, 0]
+      ]
+    ]) {
+      // Exact excesses are respectively 2^-25 and 2^-106, both strictly positive.
+      // Nineteen identical simulated curves therefore give zero exceedances and p=1/20.
+      for (const Operation of [
+        GPUPointPatternEnvelopeOperation,
+        CPUPointPatternEnvelopeOperation
+      ]) {
+        const result = await runOperationGraph(device, {
+          inputs: {
+            observed: {format: 'float32', values: Float32Array.from(observed)},
+            simulations: {
+              format: 'float32',
+              values: Float32Array.from(Array.from({length: 19}, () => simulated).flat())
+            },
+            reference: {format: 'float32', values: Float32Array.of(0, 0)},
+            weights: {format: 'float32', values: Float32Array.of(1, 1)}
+          },
+          outputs: ['statistics', 'status'],
+          operations: [
+            new Operation({
+              observed: 'observed',
+              simulations: 'simulations',
+              reference: 'reference',
+              integrationWeights: 'weights',
+              curveRowCount: 2,
+              simulationCount: 19,
+              statistic: 'integrated-squared-deviation',
+              nullModel: 'specified',
+              fittedParameters: 'none',
+              output: {lower: 'lower', upper: 'upper', statistics: 'statistics', status: 'status'}
+            })
+          ]
+        });
+        expect(result['statistics'].length).toBe(4);
+        expect(Number.isFinite(result['statistics'][0])).toBe(true);
+        expect(result['statistics'][1]).toBe(Math.fround(1 / 20));
+        expect(result['statistics'][2]).toBe(Math.fround(1 / 20));
+        expect(result['statistics'][3]).toBe(19);
+        expect([...result['status']]).toEqual([0]);
+      }
+    }
+  } finally {
+    device.destroy();
+  }
+});

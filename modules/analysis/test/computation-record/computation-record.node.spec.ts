@@ -214,6 +214,51 @@ describe('record construction and references', () => {
       }).runId
     ).not.toBe(original.runId);
   });
+  it('SEAM-113: dependency revisions distinguish runs and preserve explicit IDs and legacy records', () => {
+    const inputs = {...props, graphs: []};
+    const first = createGPUComputationRecord({
+      ...inputs,
+      dependencyRevision: '@luma.gl/graph@10.0.0-alpha.16'
+    });
+    const same = createGPUComputationRecord({
+      ...inputs,
+      dependencyRevision: '@luma.gl/graph@10.0.0-alpha.16'
+    });
+    const changed = createGPUComputationRecord({
+      ...inputs,
+      dependencyRevision: '@luma.gl/graph@10.0.0-alpha.17'
+    });
+    expect(first.dependencyRevision).toBe('@luma.gl/graph@10.0.0-alpha.16');
+    expect(createGPUComputationRecord(inputs).dependencyRevision).toBe(first.dependencyRevision);
+    expect(same.runId).toBe(first.runId);
+    expect(same.executionId).not.toBe(first.executionId);
+    expect(changed.runId).not.toBe(first.runId);
+    expect(first.runId).toBe(
+      getGPUComputationRunId({...inputs, dependencyRevision: first.dependencyRevision})
+    );
+    expect(
+      getGPUComputationRunId({...inputs, dependencyRevision: changed.dependencyRevision})
+    ).not.toBe(first.runId);
+    expect(
+      createGPUComputationRecord({
+        ...inputs,
+        dependencyRevision: changed.dependencyRevision,
+        runId: 'explicit'
+      }).runId
+    ).toBe('explicit');
+    expect(validateGPUComputationRecord(first).valid).toBe(true);
+    const {dependencyRevision: omitted, ...legacy} = first;
+    expect(validateGPUComputationRecord(legacy).valid).toBe(true);
+    for (const value of ['', 16, null]) {
+      expect(validateGPUComputationRecord({...first, dependencyRevision: value}).valid).toBe(false);
+      expect(() =>
+        createGPUComputationRecord({...inputs, dependencyRevision: value} as never)
+      ).toThrow(/dependencyRevision/);
+      expect(() => getGPUComputationRunId({...inputs, dependencyRevision: value} as never)).toThrow(
+        /dependencyRevision/
+      );
+    }
+  });
   it('fills defaults and preserves explicit identity', () => {
     const built = createGPUComputationRecord({...props, graphs: []});
     expect(built.axes).toEqual({axes: [], keySpaces: [], relations: []});
@@ -244,6 +289,59 @@ describe('record construction and references', () => {
         sources: [source, {...source, text: `${sourceText} different`}]
       })
     ).toThrow('Conflicting source text');
+  });
+  it.each([
+    false,
+    true
+  ])('B3: bare and wrapped graphs retain original entry points (reverse=%s)', reverse => {
+    const source = {
+      id: 'wgsl:shared',
+      language: 'wgsl' as const,
+      moduleId: 'shared',
+      hash: 'shared',
+      entryPoint: 'left'
+    };
+    const text =
+      '@compute @workgroup_size(1) fn left() {} @compute @workgroup_size(1) fn right() {}';
+    const node = {
+      id: 'node',
+      label: 'node',
+      namespace: '',
+      kind: 'compute' as const,
+      source: source.id,
+      reads: [],
+      writes: [],
+      attrs: {}
+    };
+    const bare = {
+      id: 'bare',
+      form: 'compiled' as const,
+      domain: 'gpu-core',
+      nodes: [node],
+      edges: [],
+      resources: []
+    };
+    const wrapped = {
+      graph: {...bare, id: 'wrapped'},
+      sources: [{...source, text, entryPoint: 'right'}]
+    };
+    const built = createGPUComputationRecord({
+      ...props,
+      sources: [source],
+      graphs: reverse ? [wrapped, bare] : [bare, wrapped]
+    });
+    expect(built.refs.sources).toHaveLength(1);
+    expect(built.refs.sources[0].text).toBe(text);
+    const decoded = Object.fromEntries(
+      built.graphs.map(graph => [
+        graph.id,
+        graph.nodes[0].entryPoint ?? built.refs.sources[0].entryPoint
+      ])
+    );
+    expect(decoded).toEqual({bare: 'left', wrapped: 'right'});
+    expect(source.entryPoint).toBe('left');
+    expect(wrapped.sources[0].entryPoint).toBe('right');
+    expect(validateGPUComputationRecord(built).valid).toBe(true);
   });
   it('hashes structure, adapter, dataset and typed seed deterministically', () => {
     const runId = getGPUComputationRunId(props);
@@ -412,6 +510,54 @@ describe('metrics and captures', () => {
       stamps: [],
       replays: []
     });
+  });
+
+  it('ROAD-111: distinguishes duration-only, measured zero and unavailable timing', () => {
+    const build = (timing: Parameters<typeof createGPUComputationMetrics>[0]['timing']) =>
+      createGPUComputationMetrics({
+        runId: record.runId,
+        graph: 'compiled',
+        encoding: metrics.encoding,
+        timing
+      });
+    const measured = build({
+      nodes: [
+        {id: 'init', cpuEncodeTimeMilliseconds: 0, gpuTimeMilliseconds: 2},
+        {id: 'step:0', cpuEncodeTimeMilliseconds: 0, gpuTimeMilliseconds: 0},
+        {id: 'done', cpuEncodeTimeMilliseconds: 0}
+      ]
+    });
+    expect(measured.nodes['init']).toEqual({cpuEncodeMs: 0, gpuTimeMs: 2});
+    expect(measured.nodes['step:0']).toEqual({cpuEncodeMs: 0, gpuTimeMs: 0});
+    expect(measured.nodes['done']).toEqual({cpuEncodeMs: 0});
+    const endpoints = build({
+      nodes: [
+        {
+          id: 'init',
+          cpuEncodeTimeMilliseconds: 0,
+          gpuTimeMilliseconds: 2,
+          gpuStartTimeMilliseconds: 10,
+          gpuEndTimeMilliseconds: 12
+        }
+      ]
+    });
+    expect(endpoints.timebase).toBe('ms');
+    expect(endpoints.nodes['init']).toEqual({cpuEncodeMs: 0, gpuTimeMs: 2, gpuBegin: 0, gpuEnd: 2});
+    for (const duration of [0, 2]) {
+      const sidecar = {...metrics, nodes: {init: {cpuEncodeMs: 0, gpuTimeMs: duration}}};
+      expect(validateGPUComputationSidecars(record, {metrics: [sidecar]}).valid).toBe(true);
+    }
+    for (const duration of [-1, NaN, Infinity]) {
+      expect(
+        build({nodes: [{id: 'init', cpuEncodeTimeMilliseconds: 0, gpuTimeMilliseconds: duration}]})
+          .nodes['init']
+      ).not.toHaveProperty('gpuTimeMs');
+      expect(
+        validateGPUComputationSidecars(record, {
+          metrics: [{...metrics, nodes: {init: {cpuEncodeMs: 0, gpuTimeMs: duration}}}]
+        }).issues
+      ).toContainEqual(expect.objectContaining({path: 'metrics[0].nodes["init"].gpuTimeMs'}));
+    }
   });
 
   it('accepts published millisecond timings and externally inferred pass indices', () => {

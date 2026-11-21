@@ -19,10 +19,13 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {afterEach, expect, it} from 'vitest';
+import {CHECKED_TARBALL_BASE64} from './checked-release-archive-fixture';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const directories: string[] = [];
 const MODULES = ['analysis', 'lenses', 'kepler'];
+const PUBLICATION_ROLLBACK_DIAGNOSTIC =
+  /^release build failed: release promotion failed: injected final record EISDIR; rolled-back; journal: [^\r\n]+$/m;
 
 function write(directory: string, path: string, source: string) {
   mkdirSync(dirname(join(directory, path)), {recursive: true});
@@ -34,7 +37,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), 'release-build-'));
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'release-build-')));
   directories.push(directory);
   mkdirSync(join(directory, 'scripts'));
   copyFileSync(
@@ -42,6 +45,10 @@ function fixture() {
     join(directory, 'scripts/build-release.mjs')
   );
   copyFileSync(join(ROOT, 'scripts/build-record.mjs'), join(directory, 'scripts/build-record.mjs'));
+  copyFileSync(
+    join(ROOT, 'scripts/packed-file-inventory.mjs'),
+    join(directory, 'scripts/packed-file-inventory.mjs')
+  );
   copyFileSync(
     join(ROOT, 'scripts/verification-policy.mjs'),
     join(directory, 'scripts/verification-policy.mjs')
@@ -62,8 +69,12 @@ function fixture() {
     );
     write(directory, `modules/${moduleName}/tsconfig.json`, '{"include":["src/**/*"]}');
     write(directory, `modules/${moduleName}/README.md`, 'snapshot');
-    write(directory, `modules/${moduleName}/dist/index.js`, 'old verified output');
-    write(directory, `modules/${moduleName}/tsconfig.tsbuildinfo`, 'warm developer cache');
+    write(directory, `modules/${moduleName}/dist/index.js`, `${moduleName} old verified output`);
+    write(
+      directory,
+      `modules/${moduleName}/tsconfig.tsbuildinfo`,
+      `${moduleName} warm developer cache`
+    );
     write(directory, `modules/${moduleName}/test/large.json`, 'do not copy test fixtures');
   }
   write(
@@ -83,7 +94,20 @@ export async function buildPackages(rootDirectory) {
 }
 `
   );
-  write(directory, 'scripts/typescript-project-inputs.mjs', 'export {};');
+  // This deliberately fake build has no compiler-derived dependency freshness inputs.
+  write(
+    directory,
+    'scripts/typescript-project-inputs.mjs',
+    'export function listTypeScriptFreshnessInputs() { return []; }'
+  );
+  mkdirSync(join(directory, 'node_modules'), {recursive: true});
+  for (const dependency of ['typescript', 'esbuild']) {
+    symlinkSync(
+      join(ROOT, 'node_modules', dependency),
+      join(directory, 'node_modules', dependency),
+      'dir'
+    );
+  }
   const gate = `
 import {readFileSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
@@ -95,8 +119,14 @@ if (process.env.CHECK_CLI_HEAP) {
   process.stdout.write('release-child-heap-mib=' + heap + '\\n');
   if (heap >= 384) throw new Error('release wrapper dropped CLI heap');
 }
+const installed = resolve(process.cwd()) === resolve(original);
 for (const moduleName of ${JSON.stringify(MODULES)}) {
-  if (readFileSync(join(original, 'modules', moduleName, 'dist/index.js'), 'utf8') !== 'old verified output') throw new Error('promoted before all gates passed');
+  const output = readFileSync(join(original, 'modules', moduleName, 'dist/index.js'), 'utf8');
+  // Let only the intentional lenses mutation reach production's output digest check.
+  const expected = installed
+    ? process.env.MUTATE_STAGE_OUTPUT && moduleName === 'lenses' ? 'export const value = 99;' : 'export const value = 2;'
+    : moduleName + ' old verified output';
+  if (output !== expected) throw new Error('unexpected output at artifact gate');
 }
 if (process.env.FAIL_GATE && import.meta.url.includes(process.env.FAIL_GATE)) throw new Error('gate failed');
 if (process.env.MUTATE_INPUT) writeFileSync(join(original, 'modules/analysis/src/index.ts'), 'changed during verification');
@@ -105,7 +135,7 @@ if (process.argv.includes('--package-directory')) {
   if (process.env.MUTATE_STAGE_INPUT) writeFileSync(join(directory, 'src/index.ts'), 'changed staged source');
   if (process.env.MUTATE_STAGE_OUTPUT) writeFileSync(join(directory, '../lenses/dist/index.js'), 'export const value = 99;');
   if ((await import(pathToFileURL(join(directory, 'dist/index.js')).href)).value !== 2) throw new Error('checked original package instead of snapshot');
-  const tarball = join(process.env.TMPDIR, 'checked.tgz'); writeFileSync(tarball, 'checked bytes'); process.stdout.write('checked tarball: ' + tarball + '\\n');
+  const tarball = join(process.env.TMPDIR, 'checked.tgz'); writeFileSync(tarball, Buffer.from(${JSON.stringify(CHECKED_TARBALL_BASE64)}, 'base64')); process.stdout.write('checked tarball: ' + tarball + '\\n');
 }
 `;
   write(directory, 'scripts/verify-package-exports.mjs', gate);
@@ -126,13 +156,47 @@ function run(directory: string, arguments_: string[] = [], environment = {}) {
 function assertOldOutputs(directory: string) {
   for (const moduleName of MODULES) {
     expect(readFileSync(join(directory, `modules/${moduleName}/dist/index.js`), 'utf8')).toBe(
-      'old verified output'
+      `${moduleName} old verified output`
     );
     expect(
       readFileSync(join(directory, `modules/${moduleName}/tsconfig.tsbuildinfo`), 'utf8')
-    ).toBe('warm developer cache');
+    ).toBe(`${moduleName} warm developer cache`);
   }
 }
+
+it.each([
+  'dist/index.js',
+  'tsconfig.tsbuildinfo'
+])('S1 detects swapped lenses/kepler rollback bytes in %s', path => {
+  const directory = fixture();
+  const lensesPath = join(directory, 'modules/lenses', path);
+  const keplerPath = join(directory, 'modules/kepler', path);
+  const lensesBytes = readFileSync(lensesPath);
+  const keplerBytes = readFileSync(keplerPath);
+  writeFileSync(lensesPath, keplerBytes);
+  writeFileSync(keplerPath, lensesBytes);
+  expect(() => assertOldOutputs(directory)).toThrow();
+});
+
+it('B2 rejects a startup source echo as evidence of publication rollback', () => {
+  const directory = fixture();
+  const latest = join(directory, '.typecheck/release-build-latest.json');
+  write(directory, '.typecheck/release-build-latest.json', '{"status":"previous-success"}');
+  write(
+    directory,
+    'broken-preload.cjs',
+    "require('node:fs').writeFileSyncc('injected final record EISDIR');"
+  );
+  const result = run(directory, ['--promote'], {
+    NODE_OPTIONS: `--require=${join(directory, 'broken-preload.cjs')}`
+  });
+  expect(result.status, result.output).toBe(1);
+  expect(result.output).toContain('TypeError:');
+  expect(result.output).toContain('injected final record EISDIR');
+  expect(result.output).not.toMatch(PUBLICATION_ROLLBACK_DIAGNOSTIC);
+  assertOldOutputs(directory);
+  expect(readFileSync(latest, 'utf8')).toBe('{"status":"previous-success"}');
+});
 
 it('stages a clean source snapshot and verifies it without replacing existing outputs or caches', () => {
   const directory = fixture();
@@ -148,6 +212,68 @@ it('stages a clean source snapshot and verifies it without replacing existing ou
   ).toContain('value = 2');
 });
 
+it('TOOL-105 records the checked tarball by SHA-256 and byte length in both release records', () => {
+  const directory = fixture();
+  const result = run(directory);
+  expect(result.status, result.output).toBe(0);
+  const latest = JSON.parse(
+    readFileSync(join(directory, '.typecheck/release-build-latest.json'), 'utf8')
+  );
+  const stage = JSON.parse(readFileSync(join(latest.directory, 'build.json'), 'utf8'));
+  for (const record of [latest, stage]) {
+    expect(record.tarball).toBe(join(latest.directory, 'analysis.tgz'));
+    // SHA-256 and byte length of the fixed gzip/ustar fixture.
+    expect(record.tarballSha256).toBe(
+      'bba5a593cacca1cb5c321154c4d29c33c91f6f8cd1e1d14b04af301adc296874'
+    );
+    expect(record.tarballByteLength).toBe(129);
+  }
+});
+
+it('TOOL-105 refuses a retained tarball whose bytes differ from the checked tarball', () => {
+  const directory = fixture();
+  write(
+    directory,
+    'tamper-copy.cjs',
+    `const fileSystem = require('node:fs'); const originalCopy = fileSystem.cpSync; fileSystem.cpSync = (source, destination, ...rest) => { originalCopy(source, destination, ...rest); if (String(destination).endsWith('analysis.tgz')) fileSystem.writeFileSync(destination, 'tampered'); }; require('node:module').syncBuiltinESMExports();`
+  );
+  const result = run(directory, ['--promote'], {
+    NODE_OPTIONS: `--require=${join(directory, 'tamper-copy.cjs')}`
+  });
+  expect(result.status, result.output).toBe(1);
+  expect(result.output).toContain('differs from the checked tarball');
+  assertOldOutputs(directory);
+  expect(existsSync(join(directory, '.typecheck/release-build-latest.json'))).toBe(false);
+});
+
+it('TOOL-105 verifies the tarball digest before promotion installs any output', async () => {
+  const {promotePackages} = await import('../../../../scripts/build-release.mjs');
+  const directory = fixture();
+  const releaseDirectory = join(directory, 'release');
+  for (const moduleName of MODULES)
+    write(releaseDirectory, `workspace/modules/${moduleName}/dist/index.js`, 'new output');
+  write(releaseDirectory, 'analysis.tgz', 'tampered');
+  const moves: string[] = [];
+  expect(() =>
+    promotePackages(
+      directory,
+      releaseDirectory,
+      (source, destination) => {
+        moves.push(String(source));
+        renameSync(source, destination);
+      },
+      () => {},
+      {
+        path: join(releaseDirectory, 'analysis.tgz'),
+        sha256: 'bba5a593cacca1cb5c321154c4d29c33c91f6f8cd1e1d14b04af301adc296874',
+        byteLength: 129
+      }
+    )
+  ).toThrow('differs from the checked tarball');
+  expect(moves).toEqual([]);
+  assertOldOutputs(directory);
+});
+
 it('promotes all packages only after both artifact gates pass and retains prior outputs for recovery', () => {
   const directory = fixture();
   const result = run(directory, ['--promote']);
@@ -161,12 +287,12 @@ it('promotes all packages only after both artifact gates pass and retains prior 
       'value = 2'
     );
     expect(readFileSync(join(record.directory, 'previous', moduleName, 'index.js'), 'utf8')).toBe(
-      'old verified output'
+      `${moduleName} old verified output`
     );
     expect(existsSync(join(directory, `modules/${moduleName}/tsconfig.tsbuildinfo`))).toBe(false);
     expect(
       readFileSync(join(record.directory, 'previous', `${moduleName}.tsbuildinfo`), 'utf8')
-    ).toBe('warm developer cache');
+    ).toBe(`${moduleName} warm developer cache`);
   }
 });
 
@@ -218,6 +344,7 @@ it('R7 rolls outputs and caches back if final metadata publication fails, preser
     NODE_OPTIONS: `--require=${join(directory, 'fail-record.cjs')}`
   });
   expect(result.status, result.output).toBe(1);
+  expect(result.output).toMatch(PUBLICATION_ROLLBACK_DIAGNOSTIC);
   assertOldOutputs(directory);
   expect(readFileSync(latest, 'utf8')).toBe('{"status":"previous-success"}');
 });
@@ -228,7 +355,7 @@ it('final1 F4 rolls promotion back if the packed gate changes a previously verif
   write(directory, '.typecheck/release-build-latest.json', '{"status":"previous-success"}');
   const result = run(directory, ['--promote'], {MUTATE_STAGE_OUTPUT: 'true'});
   expect(result.status, result.output).toBe(1);
-  expect(result.output).toContain('verified output');
+  expect(result.output).toContain('verified output trees changed after export verification');
   assertOldOutputs(directory);
   expect(readFileSync(latest, 'utf8')).toBe('{"status":"previous-success"}');
 });
@@ -274,7 +401,7 @@ it('compiles a tiny three-package snapshot with real project references and load
   ]) {
     copyFileSync(join(ROOT, 'scripts', script), join(directory, 'scripts', script));
   }
-  for (const dependency of ['typescript', 'esbuild', '@vis.gl']) {
+  for (const dependency of ['@vis.gl']) {
     mkdirSync(join(directory, 'node_modules'), {recursive: true});
     symlinkSync(
       join(ROOT, 'node_modules', dependency),

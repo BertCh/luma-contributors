@@ -19,7 +19,7 @@ import {
   getGPURasterWhittakerSmootherParameterValues
 } from '@luma-contributors/analysis/raster-analysis';
 import type {GPUTemporalContext} from '@luma-contributors/analysis/analysis-core';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   createRasterTimeSeriesHarness,
   getMaximumAbsoluteDifference
@@ -342,3 +342,51 @@ it('RTS-05 phenology metrics read a GPURasterWhittakerSmoother output in one gra
   expect(result['metrics'][GPU_RASTER_PHENOLOGY_METRIC.peakTime]).toBeGreaterThan(22);
   expect(result['metrics'][GPU_RASTER_PHENOLOGY_METRIC.peakTime]).toBeLessThan(26);
 });
+
+for (const scale of [1, 1e-25, 1e20]) {
+  it(`URT-14 scaled multiband distances retain the unique medoid at ${scale}`, async () => {
+    const harness = createRasterTimeSeriesHarness(await getDevice());
+    const result = await harness.run(
+      new GPURasterMedoidComposite({
+        cellCount: 1,
+        sliceCount: 3,
+        bandCount: 2,
+        values: harness.floats([0, 0, scale, 0, 2 * scale, 0]),
+        output: {
+          composite: harness.output('value', 'float32', 2),
+          sliceIndex: harness.output('slice', 'uint32', 1),
+          status: harness.output('code', 'uint32', 1)
+        }
+      })
+    );
+    expect(result['slice']).toEqual([1]);
+    expect(result['code']).toEqual([0]);
+    expect(result['value']).toEqual([Math.fround(scale), 0]);
+  });
+}
+
+for (const scale of [1e-25, 1, 1e20]) {
+  it(`review S1 scales two varying coordinates independently of a constant offset ${scale}`, async () => {
+    const harness = createRasterTimeSeriesHarness(await getDevice());
+    const result = await harness.run(
+      new GPURasterMedoidComposite({
+        cellCount: 1,
+        sliceCount: 3,
+        bandCount: 3,
+        values: harness.floats([1e24, 0, 0, 1e24, scale, scale, 1e24, 2 * scale, 2 * scale]),
+        output: {
+          composite: harness.output('composite', 'float32', 3),
+          sliceIndex: harness.output('slice', 'uint32', 1),
+          status: harness.output('code', 'uint32', 1)
+        }
+      })
+    );
+    expect(result['slice']).toEqual([1]);
+    expect(result['code']).toEqual([0]);
+    expect(result['composite']).toEqual([
+      Math.fround(1e24),
+      Math.fround(scale),
+      Math.fround(scale)
+    ]);
+  });
+}

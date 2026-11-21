@@ -250,7 +250,7 @@ it('preflights aligned input/output ranges and every derived scratch before muta
       );
       expect(() => contributor.getCommandNodes(scene.graph)).toThrow(
         mode === 'scratch'
-          ? /packed input and fit records.*5140/
+          ? /packed input and fit records.*6168/
           : mode === 'output'
             ? /needs 2060 bytes/
             : /needs 16388 bytes/
@@ -297,13 +297,14 @@ it('executes summary publication against hand-computed residuals, variance and s
     recordWGSLKernelNodes(scene.graph);
     const memory = createCPUGraphMemory();
     const nodes = createGTWRIndexedSummaryNodes(scene.graph, 'hand', scene.props);
+    memory.write(scene.props.output.residuals!, [-1, 1, NaN, NaN]);
     const record = getWGSLKernelNodeRecord(scene.graph, nodes.at(-1)!.id)!;
     const bindings = record.bindings.filter(
       binding => !['partialSums', 'output0'].includes(binding.name)
     );
     for (const binding of bindings) {
       const values: Record<string, number> = {
-        residualSquares: 2,
+        residualSums: 2,
         hatTrace: 0.5,
         observationCount: 2,
         includedCount: 3
@@ -317,7 +318,7 @@ it('executes summary publication against hand-computed residuals, variance and s
     // The serial interpreter cannot synchronize barriers. Execute the unmodified publication
     // statements using independently calculated reductions; headless specs exercise both trees.
     const publication = record.body
-      .slice(record.body.indexOf('let observations ='))
+      .slice(record.body.indexOf('let count = observationCount['))
       .replace(/}\s*$/, '');
     const node = createWGSLKernelNode(scene.graph, {
       id: 'publish-probe',
@@ -404,6 +405,7 @@ for (const adaptive of [false, true])
         const body = `${fitRecord.body.slice(0, fitRecord.body.indexOf('    var scale:'))}
         fits[fitsOffset + index * RECORD_WORDS] = normalMatrix[0];
         fits[fitsOffset + index * RECORD_WORDS + 1u] = normalResponse[0];
+        fits[fitsOffset + index * RECORD_WORDS + 2u] = responseAnchor;
         return;
       }
       fits[fitsOffset + index * RECORD_WORDS] = getNaN();
@@ -438,6 +440,7 @@ for (const adaptive of [false, true])
             : 2.25;
           let expectedWeight = 0;
           let expectedResponse = 0;
+          const training = [] as {response: number; weight: number}[];
           for (let row = 0; row < 125; row++) {
             if (!mask[row] || !Number.isFinite(response[row])) continue;
             const squared =
@@ -446,8 +449,19 @@ for (const adaptive of [false, true])
               timeScale * (times[row] - times[focal]) ** 2;
             const weight = squared >= bandwidth ** 2 ? 0 : (1 - squared / bandwidth ** 2) ** 2;
             expectedWeight += weight;
-            expectedResponse += weight * response[row];
+            if (weight > 0) training.push({response: response[row], weight});
           }
+          // Check the shifted moment independently at the recorded conditioning origin.
+          // An adaptive boundary's near-zero weight can round to zero in WGSL but not f64;
+          // choosing a different origin there changes the RHS, not the fitted model.
+          const responseAnchor = moments[focal * 5 + 2];
+          expect(Number.isFinite(responseAnchor)).toBe(true);
+          expect(responseAnchor).toBeGreaterThanOrEqual(2);
+          expect(responseAnchor).toBeLessThanOrEqual(5);
+          for (const row of training)
+            expectedResponse += row.weight * (row.response - responseAnchor);
+          expect(Number.isFinite(moments[focal * 5])).toBe(true);
+          expect(Number.isFinite(moments[focal * 5 + 1])).toBe(true);
           expect(moments[focal * 5]).toBeCloseTo(expectedWeight, 4);
           expect(moments[focal * 5 + 1]).toBeCloseTo(expectedResponse, 4);
         }
@@ -600,7 +614,7 @@ it('keeps MGTWR initialization reference-only and its composed node estimate exa
       );
       const nodes = contributor.getCommandNodes(scene.graph);
       expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
-      expect(nodes.length).toBe(10);
+      expect(nodes.length).toBe(15 + Number(rows > 4096));
       expect(nodes.some(node => node.id.includes('-grid-'))).toBe(false);
     } finally {
       scene.device.destroy();
@@ -681,6 +695,8 @@ for (const rows of [10, 36])
           new Float32Array(rows).fill(Math.fround(observed + 0.125))
         );
         memory.write(scene.props.output.hatDiagonal, new Float32Array(rows).fill(0.25));
+        // Independent fit-time residual, even when observed + 0.125 rounds to observed.
+        memory.write(scene.props.output.residuals!, new Float32Array(rows).fill(-0.125));
         memory.write(scene.props.output.localStatus, new Uint32Array(rows));
         const anchor = statisticsPartial.bindings.find(
           binding => binding.name === 'responseAnchor'
@@ -729,7 +745,7 @@ ${Array.from({length: quantities}, (_, quantity) => `mappedValues[mappedValuesOf
         const [totalSquares] = mapRows(variancePartial, 'if (localStatus[', 1);
         expect(totalSquares).toBe(0);
         const body = publication.body
-          .slice(publication.body.indexOf('let observations ='))
+          .slice(publication.body.indexOf('let count = observationCount['))
           .replace(/}\s*$/, '');
         const probe = createWGSLKernelNode(scene.graph, {
           id: 'constant-publish-probe',
@@ -1120,7 +1136,7 @@ for (const multiscale of [false, true]) {
   });
 }
 for (const route of ['grid', 'brute-force', 'multiscale'] as const) {
-  it(`rejects read-only/writable output sharing across disjoint aligned ranges, ${route}`, () => {
+  it(`validates actual read-only/writable output dispatches across disjoint ranges, ${route}`, () => {
     const scene = createScene(2);
     const buffer = createOutputBuffer(scene.device, 128);
     try {
@@ -1153,7 +1169,8 @@ for (const route of ['grid', 'brute-force', 'multiscale'] as const) {
               searchStructure: route,
               output: {...scene.props.output, fitted: first, residuals: second}
             })
-        ).toThrow(/one physical buffer read-only and writable/);
+          // Both destinations are writable in publication; summaries now read only residuals.
+        ).not.toThrow();
       }
     } finally {
       buffer.destroy();

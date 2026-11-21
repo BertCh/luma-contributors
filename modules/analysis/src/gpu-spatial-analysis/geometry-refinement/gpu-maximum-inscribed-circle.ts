@@ -2,10 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateRefinementOutputLength,
+  validateRefinementNumber
+} from './refinement-output-validation';
+import {getRefinementEmptyNodes} from './refinement-empty-nodes';
+import {CLOSEST_SEGMENT_POINT_WGSL, getCirclePublicationNodes} from './circle-publication';
+import {snapshotRefinementSpatialContext} from './refinement-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
 import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
-import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -20,6 +27,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -54,6 +62,12 @@ export type GPUMaximumInscribedCircleProps = GPUPolygonGeometryFields & {
     witnesses: GraphDataView<'float32x2'>;
     /** GPU_MAXIMUM_INSCRIBED_CIRCLE_STATUS per feature. */
     status: GraphDataView<'uint32'>;
+    /** Clearance at the written center, in planar position units; NaN for empty/invalid rows. */
+    publishedCenterClearance?: GraphDataView<'float32'>;
+    /** One when center or absolute witness publication loses geometric precision. */
+    precisionLimited?: GraphDataView<'uint32'>;
+    /** Center-relative closest boundary vector, in planar position units. */
+    witnessOffsets?: GraphDataView<'float32x2'>;
   };
 };
 
@@ -73,30 +87,74 @@ export class GPUMaximumInscribedCircle implements GPUCommandNodeProducer {
 
   constructor(props: GPUMaximumInscribedCircleProps) {
     this.id = props.id ?? 'maximum-inscribed-circle';
+    props = {
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotRefinementSpatialContext(props.spatialContext)}
+        : {}),
+      // Capture the six documented ports by name, including inherited getters; a spread
+      // copies only own enumerable fields and would silently drop a requested destination.
+      output: snapshotConstructionFields(props.output, [
+        'circles',
+        'witnesses',
+        'status',
+        'publishedCenterClearance',
+        'precisionLimited',
+        'witnessOffsets'
+      ])
+    };
     this.props = props;
-    validateRefinementShaderNumber(this.id, 'tolerance', props.tolerance, true);
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPUMaximumInscribedCircle'},
+      'tolerance',
+      props.tolerance,
+      true
+    );
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.cellCapacity = props.cellCapacity ?? 256;
     this.maximumIterations = props.maximumIterations ?? 1024;
     validateCapacity(this.id, 'cellCapacity', this.cellCapacity, 1, 4096);
     validateCapacity(this.id, 'maximumIterations', this.maximumIterations, 0, 65536);
-    if (!(Number.isFinite(props.tolerance) && props.tolerance > 0)) {
-      throw new Error('Invalid circle tolerance');
-    }
-    validateSinglePackedView(props.positions, ['float32x2'], this.id);
-    for (const offsets of [props.ringOffsets, props.polygonOffsets, props.featureOffsets]) {
-      validateSinglePackedView(offsets, ['uint32'], this.id);
-      validateCapacity(this.id, 'offset length', offsets.length, 2);
+
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`, {
+      id: this.id,
+      contributor: 'GPUMaximumInscribedCircle'
+    });
+    for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
+      validateSinglePackedView(props[name], ['uint32'], `${this.id} ${name}`, {
+        id: this.id,
+        contributor: 'GPUMaximumInscribedCircle'
+      });
+      validateCapacity(this.id, `${name}.length`, props[name].length, 1);
     }
     for (const [name, format] of [
       ['circles', 'float32x4'],
       ['witnesses', 'float32x2'],
-      ['status', 'uint32']
+      ['status', 'uint32'],
+      ['publishedCenterClearance', 'float32'],
+      ['precisionLimited', 'uint32'],
+      ['witnessOffsets', 'float32x2']
     ] as const) {
-      validateSinglePackedView(props.output[name], [format], this.id);
-      if (props.output[name].length !== props.featureOffsets.length - 1) {
-        throw new Error('Circle output length mismatch');
+      const view = props.output[name];
+      if (view === undefined) {
+        validateRequirement(
+          this.id,
+          !['circles', 'witnesses', 'status'].includes(name),
+          `output.${name} must be supplied; received undefined`
+        );
+        continue;
       }
+      validateSinglePackedView(view, [format], `${this.id} output.${name}`, {
+        id: this.id,
+        contributor: 'GPUMaximumInscribedCircle'
+      });
+      validateRefinementOutputLength(
+        {id: this.id, contributor: 'GPUMaximumInscribedCircle'},
+        `output.${name}`,
+        view,
+        props.featureOffsets.length - 1,
+        'featureOffsets.length - 1'
+      );
     }
     validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
@@ -111,6 +169,17 @@ export class GPUMaximumInscribedCircle implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    if (props.positions.length === 0 || props.featureOffsets.length === 1) {
+      return getRefinementEmptyNodes(graph, id, 'GPUMaximumInscribedCircle', {
+        circles: {view: props.output.circles, value: NaN},
+        witnesses: {view: props.output.witnesses, value: NaN},
+        status: {view: props.output.status, value: 2},
+        publishedCenterClearance: {view: props.output.publishedCenterClearance, value: NaN},
+        precisionLimited: {view: props.output.precisionLimited, value: 0},
+        witnessOffsets: {view: props.output.witnessOffsets, value: NaN}
+      });
+    }
+    // The empty route binds only its fill outputs (validated by the fill helper above).
     validateGraphChunkBindingRanges(
       graph,
       id,
@@ -166,7 +235,8 @@ const VERTEX_COUNT: u32 = ${props.positions.length}u;
 const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
 const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
 ${getReadPointWGSL('point', 'positions')}
-fn signedDistance(query: vec2f, firstRing: u32, lastRing: u32) -> vec3f {
+${CLOSEST_SEGMENT_POINT_WGSL}
+fn signedDistance(query: vec2f, firstRing: u32, lastRing: u32, origin: vec2f) -> vec3f {
   var inside = false;
   var distanceSquared = 3.4028234663852886e38;
   var witness = query;
@@ -174,15 +244,14 @@ fn signedDistance(query: vec2f, firstRing: u32, lastRing: u32) -> vec3f {
     let firstVertex = min(ringOffsets[ringOffsetsOffset + ring], VERTEX_COUNT);
     let lastVertex = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
     if (lastVertex <= firstVertex) { continue; }
-    var previous = point(lastVertex - 1u);
+    var previous = point(lastVertex - 1u) - origin;
     for (var vertex = firstVertex; vertex < lastVertex; vertex++) {
-      let current = point(vertex);
+      let current = point(vertex) - origin;
       let edge = current - previous;
       let denominator = dot(edge, edge);
       if ((bitcast<u32>(denominator) & 0x7f800000u) == 0x7f800000u) { return vec3f(getQuietNaN()); }
-      var fraction = 0.0;
-      if (denominator > 0.0) { fraction = clamp(dot(query - previous, edge) / denominator, 0.0, 1.0); }
-      let candidate = previous + fraction * edge;
+      // Project from the nearer endpoint: a long edge's rounded fraction displaces the witness.
+      let candidate = closestSegmentPoint(query, previous, current);
       let candidateSquared = dot(query - candidate, query - candidate);
       if ((bitcast<u32>(candidateSquared) & 0x7f800000u) == 0x7f800000u) { return vec3f(getQuietNaN()); }
       if (candidateSquared < distanceSquared) { distanceSquared = candidateSquared; witness = candidate; }
@@ -220,10 +289,14 @@ if (invalid || vertexCount == 0u) {
   bestPoint = vec2f(nan); bestRadius = nan; bestWitness = vec2f(nan); error = nan;
   resultStatus = select(2u, 3u, invalid);
 } else {
+  // Search in a local frame so sub-ULP interior points survive until publication.
+  let searchOrigin = minimum;
+  maximum = maximum - searchOrigin; minimum = vec2f(0.0);
+  bestPoint = bestPoint - searchOrigin; bestWitness = bestPoint;
   let cellBase = index * CELL_CAPACITY * 4u;
   let center = 0.5 * minimum + 0.5 * maximum;
   let halfSize = 0.5 * max(maximum.x - minimum.x, maximum.y - minimum.y);
-  let seed = signedDistance(center, firstRing, lastRing);
+  let seed = signedDistance(center, firstRing, lastRing, searchOrigin);
   if (seed.z > bestRadius) { bestRadius = seed.z; bestPoint = center; bestWitness = seed.xy; }
   storeCell(cellBase, 0u, vec4f(center, halfSize, seed.z + 1.4142135623730951 * halfSize));
   var cellCount = 1u;
@@ -240,7 +313,7 @@ if (invalid || vertexCount == 0u) {
     let childHalfSize = parent.z * 0.5;
     for (var child = 0u; child < 4u; child++) {
       let childCenter = parent.xy + childHalfSize * vec2f(select(-1.0, 1.0, (child & 1u) != 0u), select(-1.0, 1.0, (child & 2u) != 0u));
-      let distance = signedDistance(childCenter, firstRing, lastRing);
+      let distance = signedDistance(childCenter, firstRing, lastRing, searchOrigin);
       if ((bitcast<u32>(distance.z) & 0x7f800000u) == 0x7f800000u) { resultStatus = 3u; break; }
       if (distance.z > bestRadius) { bestRadius = distance.z; bestPoint = childCenter; bestWitness = distance.xy; }
       storeCell(cellBase, cellCount, vec4f(childCenter, childHalfSize, distance.z + 1.4142135623730951 * childHalfSize)); cellCount++;
@@ -254,6 +327,7 @@ if (invalid || vertexCount == 0u) {
     if (kept == 0u) { error = 0.0; break; }
     cellCount = kept; iterations++;
   }
+  bestPoint = searchOrigin + bestPoint; bestWitness = searchOrigin + bestWitness;
 }
 // Arithmetic overflow cannot provide a geometric bound or a usable witness.
 if (resultStatus == 3u) { bestPoint = vec2f(nan); bestRadius = nan; bestWitness = vec2f(nan); error = nan; }
@@ -264,7 +338,8 @@ circles[circlesOffset + index * 4u + 3u] = error;
 witnesses[witnessesOffset + index * 2u] = bestWitness.x;
 witnesses[witnessesOffset + index * 2u + 1u] = bestWitness.y;
 status[statusOffset + index] = resultStatus;`
-      })
+      }),
+      ...getCirclePublicationNodes(graph, id, props)
     ];
   }
 }

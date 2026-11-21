@@ -6,7 +6,11 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {GPUMinimumBounds} from '../../../src/gpu-spatial-analysis/minimum-bounds/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 
 const LONGITUDE_LATITUDE: GPUSpatialContext = {
   coordinateSpace: 'longitude-latitude',
@@ -38,11 +42,32 @@ it('GPUMinimumBounds is planar only', () => {
       polygonOffsets: view(graph, 'uint32', 3),
       featureOffsets: view(graph, 'uint32', 3),
       output: {
-        bounds: view(graph, 'float32x4', 2),
+        sourceBounds: view(graph, 'float32x4', 2),
         status: {overflow: view(graph, 'uint32', 1)}
       }
     });
   expect(() => create(LONGITUDE_LATITUDE)).toThrow(UNSUPPORTED);
   expect(create().spatialContext.coordinateSpace).toBe('planar');
   expect(create(LOCAL_FRAME).spatialContext.frame?.id).toBe('test-frame');
+});
+
+// GEO-106: the circle kernel uses the scaled circumcircle shared with the hull and Voronoi
+// kernels, not the unscaled formula; the numeric 2^+-40 check is the headless case "circles are
+// the circumcircle at extents 2^40, 2^33, 2^-40 and 2^-45".
+it('GPUMinimumBounds circles use the shared scaled circumcircle', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'minimum-bounds-circle'});
+  const nodes = new GPUMinimumBounds({
+    positions: view(graph, 'float32x2', 8),
+    labels: view(graph, 'uint32', 8),
+    groupCount: 2,
+    output: {circles: view(graph, 'float32x3', 2), status: {overflow: view(graph, 'uint32', 1)}}
+  }).getCommandNodes(graph);
+  const circleSources = getGPUCommandNodeKernelSources(nodes).filter(({source}) =>
+    source.includes('fn getCircumcenter(')
+  );
+  expect(circleSources).toHaveLength(1);
+  const [{source, constants}] = circleSources;
+  expect(source).toContain('let circle = getTriangleCircumcircle(a, b, c);');
+  expect(source).not.toContain('(ac.y * abSquared - ab.y * acSquared) / determinant');
+  expect(auditWGSLModule(source, constants)).toEqual([]);
 });

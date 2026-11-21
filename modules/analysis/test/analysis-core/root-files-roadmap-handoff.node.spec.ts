@@ -4,6 +4,7 @@
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {expect, it} from 'vitest';
+import {findRoadmapRows} from './roadmap-rows.test-utils';
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, '../../../..');
 
@@ -11,12 +12,18 @@ function readRepositoryFile(path: string): string {
   return readFileSync(resolve(REPOSITORY_ROOT, path), 'utf8');
 }
 
-function readRoadmapRow(identity: string): string {
-  const row = readRepositoryFile('dev-docs/roadmap.md')
-    .split('\n')
-    .find(line => line.startsWith(`| ${identity} |`));
-  expect(row, `missing roadmap row ${identity}`).toBeDefined();
-  return row!;
+function readRoadmapRow(
+  identity: string,
+  markdown = readRepositoryFile('dev-docs/roadmap.md')
+): string {
+  const rows = findRoadmapRows(
+    markdown,
+    identity,
+    'Library review 2026-11-17 (LR)',
+    'implementation'
+  );
+  expect(rows, `exact LR implementation record ${identity}`).toHaveLength(1);
+  return rows[0].text;
 }
 
 function expectRoundedNumber(actual: string, expected: number): void {
@@ -36,7 +43,8 @@ it('X9 keeps LR-02 limited to the outstanding numerical oracle regeneration', ()
   expect(row).not.toContain('CORE-12');
 });
 
-it('X9 limits LR-17 to remaining root files and records the enforced tile ceiling separately', () => {
+// These source and baseline checks pin current declarations, not executable boundary behavior.
+it('X9 pins the root-file inventory and declared regression tile validation', () => {
   const baseline = JSON.parse(readRepositoryFile('scripts/contributor-contract-baseline.json')) as {
     'root-file': Record<string, unknown>;
   };
@@ -57,11 +65,18 @@ it('X9 limits LR-17 to remaining root files and records the enforced tile ceilin
     const source = readRepositoryFile(
       `modules/analysis/src/gpu-spatial-analysis/spatial-regression/${name}.ts`
     );
-    expect(source).toContain('const MAXIMUM_TILE_COUNT = 4096;');
+    expect(source).toContain('REGRESSION_TILE_MAXIMUM_TILE_COUNT');
     expect(source).toContain(
-      "validateMaximumCount(id, 'tileCount', this.tileCount, MAXIMUM_TILE_COUNT)"
+      "validateMaximumCount(id, 'tileCount', this.tileCount, REGRESSION_TILE_MAXIMUM_TILE_COUNT)"
     );
   }
+});
+
+// Roadmap assertions are editorial pins and do not qualify an enforced runtime bound.
+it('X9 records remaining root files and the hierarchical tile limit separately', () => {
+  const baseline = JSON.parse(readRepositoryFile('scripts/contributor-contract-baseline.json')) as {
+    'root-file': Record<string, unknown>;
+  };
   const rootFiles = readRoadmapRow('LR-17');
   const remainingFamilies = new Set(
     Object.keys(baseline['root-file']).map(path => path.split('/')[3])
@@ -74,7 +89,15 @@ it('X9 limits LR-17 to remaining root files and records the enforced tile ceilin
   expect(rootFiles).toContain('root-file');
   expect(rootFiles).not.toMatch(/point-cloud|pointcloud-analysis|geospatial|norm-merge|uncapped/i);
   const tileCeiling = readRoadmapRow('LR-26');
-  for (const phrase of ['Error GM', '2SLS', 'weights traces', '4096', 'tileRowCount', 'chunks']) {
+  for (const phrase of [
+    'Error GM',
+    '2SLS',
+    'weights traces',
+    'through 4096 tiles',
+    'up to 4096² tiles',
+    'tileRowCount',
+    'chunks'
+  ]) {
     expect(tileCeiling).toContain(phrase);
   }
 });
@@ -122,4 +145,25 @@ it('X9 keeps LR-19 timings consistent with the measured table and preserves open
   ]) {
     expect(row).toContain(qualification);
   }
+});
+
+it('W2-02 selects the exact implementation row after repeated summary and decision IDs', () => {
+  const markdown = `# Roadmap
+## High-priority summary
+| ID | Item |
+| --- | --- |
+| LR-19 | Summary |
+## Library review 2026-11-17 (LR)
+| ID | Item | Priority |
+| --- | --- | --- |
+| LR-190 | Prefix collision | H |
+| LR-19 / LR-20 | Compound record | H |
+| LR-19 | Implementation | M |
+### Decisions for the maintainer
+| ID | Item | Priority |
+| --- | --- | --- |
+| LR-19 | Decision | Decision |
+`;
+  expect(readRoadmapRow('LR-19', markdown)).toContain('Implementation');
+  expect(readRoadmapRow('LR-20 / LR-19', markdown)).toContain('Compound record');
 });

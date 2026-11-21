@@ -6,6 +6,7 @@ import {expect, test} from 'vitest';
 import type {Device} from '@luma.gl/core';
 import * as arrow from 'apache-arrow';
 import {POINT_CLOUD_BINDINGS} from '../src/analysis/catalog-pointcloud-bindings';
+import {resolvePointCloudIcpMaximumIterations} from '../src/analysis/catalog-pointcloud-registration';
 import {
   getCatalogBinding,
   getCatalogDefaultParameters,
@@ -50,6 +51,33 @@ function points(coordinates: number[][]): CatalogFeatureCollection {
 }
 const parameters = {coordinateSystem: 'planar'};
 
+test('ICP catalog uses maximumIterations for explicit budgets and defaults', () => {
+  const binding = getCatalogBinding('pointcloud-icp')!;
+  for (const maximumIterations of [4, '4']) {
+    const result = normalizeCatalogParameters(binding, {maximumIterations});
+    expect(result['maximumIterations']).toBe(4);
+    expect(result).not.toHaveProperty('iterations');
+  }
+  expect(normalizeCatalogParameters(binding, {})['maximumIterations']).toBe(10);
+  for (const retired of [{iterations: 4}, {maximumIterations: 4, iterations: 4}]) {
+    expect(() => normalizeCatalogParameters(binding, retired)).toThrow(
+      /iterations was removed; use maximumIterations/
+    );
+    expect(() => resolvePointCloudIcpMaximumIterations(retired)).toThrow(
+      /iterations was removed; use maximumIterations/
+    );
+    expect(() => normalizeCatalogParameters({parameters: binding.parameters}, retired)).toThrow(
+      /iterations was removed; use maximumIterations/
+    );
+  }
+  expect(resolvePointCloudIcpMaximumIterations({maximumIterations: 4})).toBe(4);
+  expect(resolvePointCloudIcpMaximumIterations({})).toBe(10);
+  expect(() => normalizeCatalogParameters(binding, {maximumIterations: 31})).toThrow('at most 30');
+  expect(() => binding.runGpu!({} as never, {}, {iterations: 4})).toThrow(
+    'iterations was removed; use maximumIterations'
+  );
+});
+
 for (const binding of POINT_CLOUD_BINDINGS) {
   test(`${binding.id}: registry, ontology and serialization agree`, async () => {
     expect(getCatalogBinding(binding.id)).toBe(binding);
@@ -58,7 +86,9 @@ for (const binding of POINT_CLOUD_BINDINGS) {
     expect(binding.gpuContributorNames.length).toBeGreaterThan(0);
     for (const contributor of binding.contributorNames) {
       const entry = listCatalogEntries().find(
-        candidate => candidate.contributorName === contributor
+        candidate =>
+          candidate.identity.package === '@luma-contributors/analysis/pointcloud-analysis' &&
+          candidate.identity.exportName === contributor
       )!;
       expect(entry.runnable).toBe('catalog-binding');
       expect(entry.bindingIds).toContain(binding.id);

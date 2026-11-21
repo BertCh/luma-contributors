@@ -17,7 +17,10 @@ for (const scenario of [
   'negative',
   'nonfinite',
   'not-standardized',
-  'bad-offset'
+  'bad-offset',
+  'leading-slot',
+  'overflow',
+  'candidate-overflow'
 ] as const) {
   it(`tiled spatial SUR weights preserve strict validation and ignore unused slots: ${scenario}`, async () => {
     const context = await createRegressionTestContext();
@@ -37,6 +40,11 @@ for (const scenario of [
       // Corrupt the partial final tile so an error cannot be lost at a tile boundary.
       const slot = (rowCount - 1) * 2;
       switch (scenario) {
+        case 'leading-slot':
+          neighbors.copyWithin(1, 0, rowCount * 2);
+          weights.copyWithin(1, 0, rowCount * 2);
+          for (let row = 0; row <= rowCount; row++) offsets[row]++;
+          break;
         case 'empty-row':
           offsets[rowCount] = slot;
           break;
@@ -94,7 +102,13 @@ for (const scenario of [
         weights: {
           offsets: sliceInput('uint32', offsets),
           neighbors: sliceInput('uint32', neighbors),
-          weights: sliceInput('float32', weights)
+          weights: sliceInput('float32', weights),
+          status:
+            scenario === 'overflow'
+              ? {overflow: sliceInput('uint32', Uint32Array.of(1))}
+              : scenario === 'candidate-overflow'
+                ? {candidateOverflow: sliceInput('uint32', Uint32Array.of(1))}
+                : undefined
         },
         output: invalidView
       }))

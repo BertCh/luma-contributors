@@ -215,3 +215,35 @@ it('getGPUOrdinaryLeastSquaresModelResult reports a failed fit without partial n
     })
   ).toThrow(/summary must hold/);
 });
+
+it('retains the padded n=10,p=1 active fit and validates every fitted prefix', () => {
+  const coefficients = new Float32Array(16).fill(NaN);
+  const standardErrors = new Float32Array(16).fill(NaN);
+  const tStatistics = new Float32Array(16).fill(NaN);
+  coefficients.set([1, 2]);
+  standardErrors.set([1, 1]);
+  tStatistics.set([1, 2]);
+  const summary = new Float32Array(22);
+  summary[0] = 10;
+  const readback = {
+    coefficients,
+    standardErrors,
+    tStatistics,
+    summary,
+    status: new Uint32Array([0])
+  };
+  const result = getGPUOrdinaryLeastSquaresModelResult(readback, {predictorCount: 1});
+  expect(result.parameterCount).toBe(2);
+  expect(result.degreesOfFreedom).toBe(8);
+  expect(result.coefficients.map(row => row.estimate)).toEqual([1, 2]);
+  expect(result.summary).toEqual(summary);
+  expect(result.summary).not.toBe(summary);
+  for (const name of ['coefficients', 'standardErrors', 'tStatistics']) {
+    expect(() =>
+      getGPUOrdinaryLeastSquaresModelResult(
+        {...readback, [name]: new Float32Array(1)},
+        {predictorCount: 1}
+      )
+    ).toThrow(/active entries/);
+  }
+});

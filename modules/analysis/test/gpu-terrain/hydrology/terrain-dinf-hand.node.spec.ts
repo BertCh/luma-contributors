@@ -22,6 +22,7 @@ import {
 } from '../../gpu-spatial-analysis/segment-intersection/wgsl-graph-executor';
 import reference from '../../oracles/terrain-dinf-hand.json';
 import {createTerrainFractionalHANDNodes} from '../../../src/gpu-terrain/hydrology/terrain-fractional-hand';
+import {executeHANDPublication} from './hand-publication-fixture';
 import {GPUTerrainFlowFractions} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-flow-fractions';
 import {
   getGPUTerrainFlowParameterValues,
@@ -71,7 +72,9 @@ it('accepts fractional routing alone and validates its input shape, routing choi
   for (const maximumIterations of [0, 1.5, NaN, 1025]) {
     expect(() => make({maximumIterations})).toThrow(/^hand maximumIterations.*1024/);
   }
-  expect(() => make({output: {heightAboveDrainage: props.flowFractions}})).toThrow();
+  expect(() => make({output: {heightAboveDrainage: props.flowFractions!}})).toThrow(
+    'hand output.heightAboveDrainage must contain one value per cell'
+  );
   // One input view with two different row layouts would still alias its output buffer.
   const sharesFractions = graph.createDataView(props.flowFractions!.buffer, {
     format: 'float32',
@@ -138,8 +141,26 @@ it('rejects foreign fractions and shares the same caller-owned status ports for 
     ...props,
     output: {drainageCells: view('uint32'), status: props.output.status}
   });
-  expect(labels.getCommandNodes(graph).at(-1)?.id).toBe('hand-average-finalize');
+  expect(labels.getCommandNodes(graph).at(-1)?.id).toBe('hand-average-publish');
   device.destroy();
+  for (const [stream, drainage, converged] of [
+    [0, 0xffffffff, 1],
+    [0xffffffff, 0xfffffffe, 0]
+  ]) {
+    const input = {
+      width: 1,
+      height: 1,
+      elevation: [5],
+      fractions: new Array(8).fill(0),
+      streams: [stream]
+    };
+    const result = executeHAND(input, 16, false, {drainageOnly: true});
+    expect(result.drainage).toEqual([drainage]);
+    expect(result.status).toEqual([converged, 0, 1]);
+    // Mutation control: removing the scalar writer must fail the same status expectation.
+    const omitted = executeHAND(input, 16, false, {drainageOnly: true, omitFinalize: true});
+    expect(omitted.status).not.toEqual([converged, 0, 1]);
+  }
 });
 
 // Executes the actual generated kernels and GPU-written gates in the existing WGSL interpreter.
@@ -155,7 +176,13 @@ function executeHAND(
     flowDirections?: number[];
   },
   maximumIterations = 16,
-  generateFractions = false
+  generateFractions = false,
+  settings: {
+    inheritedStatus?: boolean;
+    drainageOnly?: boolean;
+    streamFrames?: number[][];
+    omitFinalize?: boolean;
+  } = {}
 ) {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -177,6 +204,7 @@ function executeHAND(
   // and is covered on the GPU in the companion spec, including validity and calibration.
   const directions = createTransientView(graph, 'directions', 'uint32', count);
   const parameters = createTransientView(graph, 'parameters', 'float32', 8);
+  const diagnosticReads = {converged: 0, iterationLimitReached: 0, iterationCount: 0};
   const routingNodes = generateFractions
     ? new GPUTerrainFlowFractions({
         grid,
@@ -198,33 +226,90 @@ function executeHAND(
     streams,
     maximumIterations,
     output: {
-      heightAboveDrainage: height,
+      heightAboveDrainage: settings.drainageOnly ? undefined : height,
       drainageCells: drainage,
-      status: {converged, iterationLimitReached, iterationCount}
+      status: settings.inheritedStatus
+        ? Object.create({
+            get converged() {
+              diagnosticReads.converged++;
+              return converged;
+            },
+            get iterationLimitReached() {
+              diagnosticReads.iterationLimitReached++;
+              return iterationLimitReached;
+            },
+            get iterationCount() {
+              diagnosticReads.iterationCount++;
+              return iterationCount;
+            }
+          })
+        : {converged, iterationLimitReached, iterationCount}
     }
   });
   const memory = createCPUGraphMemory();
   memory.write(elevation, Float32Array.from(input.elevation));
   memory.write(fractions, Float32Array.from(input.fractions));
-  memory.write(streams, Uint32Array.from(input.streams));
+  for (const view of [converged, iterationLimitReached, iterationCount])
+    memory.write(view, Uint32Array.of(77));
   if (generateFractions) {
     memory.write(directions, Uint32Array.from(input.flowDirections!));
     memory.write(parameters, getGPUTerrainFlowParameterValues({}, grid));
   }
   try {
-    executeCommandNodesOnCPU([...routingNodes, ...nodes], memory);
-    return {
-      hand: Array.from(memory.readFloat32(height)),
-      drainage: Array.from(memory.readUint32(drainage)),
-      status: [converged, iterationLimitReached, iterationCount].map(
-        view => memory.readUint32(view)[0]
-      ),
-      workgroupCounts: memory.workgroupCounts
-    };
+    const frames = (settings.streamFrames ?? [input.streams]).map(frame => {
+      memory.write(streams, Uint32Array.from(frame));
+      executeCommandNodesOnCPU(
+        [
+          ...routingNodes,
+          ...nodes.filter(node => !settings.omitFinalize || !node.id.endsWith('-average-finalize'))
+        ],
+        memory
+      );
+      return {
+        hand: Array.from(memory.readFloat32(height)),
+        drainage: Array.from(memory.readUint32(drainage)),
+        status: [converged, iterationLimitReached, iterationCount].map(
+          view => memory.readUint32(view)[0]
+        ),
+        workgroupCounts: memory.workgroupCounts
+      };
+    });
+    return {...frames[frames.length - 1]!, frames, diagnosticReads};
   } finally {
     device.destroy();
   }
 }
+
+it('B1 inherited fractional diagnostics publish unknown-to-known replay into the same poisoned destinations', () => {
+  const fractions = new Array(24).fill(0);
+  fractions[0] = fractions[8] = 1;
+  const result = executeHAND(
+    {width: 3, height: 1, elevation: [15, 11, 3], fractions, streams: [0, 0, 0xffffffff]},
+    16,
+    false,
+    {
+      inheritedStatus: true,
+      streamFrames: [
+        [0, 0, 0xffffffff],
+        [0, 0, 1]
+      ]
+    }
+  );
+  // Two positive edges need two propagation rounds plus unchanged confirmation.
+  expect(result.frames.map(frame => frame.status)).toEqual([
+    [0, 0, 3],
+    [1, 0, 3]
+  ]);
+  expect(result.frames[0].drainage).toEqual([0xfffffffe, 0xfffffffe, 0xfffffffe]);
+  expect(result.frames[0].hand).toEqual([NaN, NaN, NaN]);
+  expect(result.frames[1].drainage).toEqual([2, 2, 2]);
+  expect(result.frames[1].hand).toEqual([12, 8, 0]); // [15,11,3] minus stream elevation 3.
+  expect(result.diagnosticReads).toEqual({
+    converged: 1,
+    iterationLimitReached: 1,
+    iterationCount: 1
+  });
+});
 
 it('executes the HAND WGSL and Tarboton composition against the independent NumPy oracle', () => {
   for (const fixture of reference) {
@@ -277,7 +362,7 @@ it('distinguishes unknown stream membership from other nonzero stream words', ()
     2,
     3
   ]);
-  expect(result.status.slice(0, 2)).toEqual([1, 0]);
+  expect(result.status.slice(0, 2)).toEqual([0, 0]);
   // Unlike the unknown-stream sentinel, this direction sentinel is an ordinary nonzero
   // stream membership word. The original headless fixture confused these two meanings.
   const known = executeHAND({
@@ -290,4 +375,30 @@ it('distinguishes unknown stream membership from other nonzero stream words', ()
   expect(known.hand).toEqual([3, 0, 0, 0]);
   expect(known.drainage).toEqual([1, 1, 2, 3]);
   expect(known.status.slice(0, 2)).toEqual([1, 0]);
+});
+
+it('W5-01 D8 and fractional outlets agree on unknown, known stream and known nonstream membership', () => {
+  for (const [stream, drainage, height, converged] of [
+    [0xffffffff, 0xfffffffe, NaN, 0],
+    [1, 0, 0, 1],
+    [0, 0xffffffff, NaN, 1]
+  ]) {
+    const fractional = executeHAND({
+      width: 1,
+      height: 1,
+      elevation: [5],
+      fractions: new Array(8).fill(0),
+      streams: [stream]
+    });
+    const d8 = executeHANDPublication({
+      directionEncoding: 'esri',
+      directions: [0],
+      pointer: [0],
+      streams: [stream]
+    });
+    expect(fractional.hand).toEqual([height]);
+    expect(fractional.drainage).toEqual([drainage]);
+    expect(fractional.status).toEqual([converged, 0, 1]);
+    expect(d8).toEqual({heights: [height], drainage: [drainage], converged});
+  }
 });

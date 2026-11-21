@@ -3,15 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUBrownianBridgeUtilization,
+  resolveBrownianBridgeTailPolicy,
   type GPUBrownianBridgeUtilizationProps
 } from './gpu-brownian-bridge-utilization';
 
 /** Graph-value names replacing contributor views; lengths and grid size are compile-time. */
 export type BrownianBridgeUtilizationOperationProps = Pick<
   GPUBrownianBridgeUtilizationProps,
-  'id' | 'spatialContext' | 'temporalContext' | 'gridSize' | 'subStepCount'
+  'id' | 'spatialContext' | 'temporalContext' | 'gridSize' | 'subStepCount' | 'tailPolicy'
 > & {
   positions: string;
   timestamps: string;
@@ -28,6 +30,15 @@ export type BrownianBridgeUtilizationOperationProps = Pick<
 export class GPUBrownianBridgeUtilizationOperation extends GPUContributorOperation {
   constructor(props: BrownianBridgeUtilizationOperationProps) {
     const id = props.id ?? 'brownian-bridge-utilization';
+    validateRequirement(
+      id,
+      props.timestampFormat === undefined ||
+        props.timestampFormat === 'float32' ||
+        props.timestampFormat === 'uint32x2',
+      `timestampFormat must be float32 or uint32x2; received ${props.timestampFormat}`
+    );
+    props = {...props, gridSize: [...props.gridSize], output: {...props.output}};
+    resolveBrownianBridgeTailPolicy(id, props.tailPolicy, 'truncate-at-seven-sigma');
     super({
       id,
       inputs: {
@@ -45,14 +56,21 @@ export class GPUBrownianBridgeUtilizationOperation extends GPUContributorOperati
           length: props.gridSize[0] * props.gridSize[1]
         }
       },
-      createContributor: getView =>
-        new GPUBrownianBridgeUtilization({
+      createContributor: getView => {
+        const positions = getView<'float32x2'>('positions');
+        validateRequirement(
+          id,
+          positions.length === props.rowCount,
+          `positions length must equal declared rowCount ${props.rowCount}; received ${positions.length}`
+        );
+        return new GPUBrownianBridgeUtilization({
           id,
           spatialContext: props.spatialContext,
           temporalContext: props.temporalContext,
           gridSize: props.gridSize,
           subStepCount: props.subStepCount,
-          positions: getView<'float32x2'>('positions'),
+          tailPolicy: props.tailPolicy,
+          positions,
           timestamps:
             props.timestampFormat === 'uint32x2'
               ? getView<'uint32x2'>('timestamps')
@@ -62,7 +80,8 @@ export class GPUBrownianBridgeUtilizationOperation extends GPUContributorOperati
           locationErrors: getView<'float32'>('locationErrors'),
           parameters: getView<'float32'>('parameters'),
           output: {density: getView<'float32'>('density')}
-        })
+        });
+      }
     });
   }
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../kernels/gpu-contributor-utils';
 import {projectionEngine} from '@math.gl/geospatial/projection';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from './earth';
 import {GPU_PLANAR_SPATIAL_CONTEXT, type GPUSpatialContext} from './spatial-context';
@@ -61,10 +62,16 @@ export type GPULocalFrame = {
   unproject(x: number, y: number): [number, number];
   /**
    * Projects rows of `[longitude, latitude, ...]` with `stride` numbers per row (default 2) to
-   * interleaved float32 `[x, y]` frame meters, two per row.
+   * interleaved float32 `[x, y]` frame meters, two per row. A supplied `target` must hold two
+   * elements per row (extra elements are left unchanged); partial input rows or a shorter target
+   * throw before any write. Overlapping views are supported through a source snapshot.
    */
   projectArray(lngLats: ArrayLike<number>, stride?: number, target?: Float32Array): Float32Array;
-  /** Unprojects interleaved `[x, y]` frame meters to interleaved binary64 longitude/latitude. */
+  /**
+   * Unprojects interleaved `[x, y]` frame meters to interleaved binary64 longitude/latitude. A
+   * supplied `target` must hold two elements per pair; partial input pairs or a shorter target
+   * throw before any write. Overlapping views are supported through a source snapshot.
+   */
   unprojectArray(xys: ArrayLike<number>, target?: Float64Array): Float64Array;
 };
 
@@ -92,6 +99,11 @@ export function createGPULocalFrame(props: GPULocalFrameProps): GPULocalFrame {
   if (props.datum !== undefined && (typeof props.datum !== 'string' || props.datum.trim() === '')) {
     throw new Error('createGPULocalFrame datum must be a non-empty string');
   }
+  validateRequirement(
+    'createGPULocalFrame',
+    kind === 'azimuthal-equidistant' || kind === 'lambert-equal-area',
+    `kind must be azimuthal-equidistant or lambert-equal-area; received ${kind}`
+  );
   const equidistant = kind === 'azimuthal-equidistant';
   const transform = equidistant
     ? createLocalFrameTransform(originLongitude, originLatitude, `+proj=aeqd +R=${sphereRadius}`)
@@ -126,8 +138,15 @@ export function createGPULocalFrame(props: GPULocalFrameProps): GPULocalFrame {
       if (!Number.isInteger(stride) || stride < 2) {
         throw new Error('createGPULocalFrame projectArray stride must be an integer >= 2');
       }
-      const rowCount = Math.floor(lngLats.length / stride);
+      validateRequirement(
+        'createGPULocalFrame projectArray',
+        lngLats.length % stride === 0,
+        `input length ${lngLats.length} must be divisible by stride ${stride}`
+      );
+      const rowCount = lngLats.length / stride;
+      validateLocalFrameTarget('projectArray', target, rowCount * 2);
       const output = target ?? new Float32Array(rowCount * 2);
+      lngLats = snapshotOverlappingInput(lngLats, output);
       const scratch = new Float64Array(2);
       for (let row = 0; row < rowCount; row++) {
         transform.projectTo(lngLats[row * stride], lngLats[row * stride + 1], scratch);
@@ -137,7 +156,14 @@ export function createGPULocalFrame(props: GPULocalFrameProps): GPULocalFrame {
       return output;
     },
     unprojectArray(xys: ArrayLike<number>, target?: Float64Array): Float64Array {
+      validateRequirement(
+        'createGPULocalFrame unprojectArray',
+        xys.length % 2 === 0,
+        `input length ${xys.length} must be divisible by stride 2`
+      );
+      validateLocalFrameTarget('unprojectArray', target, xys.length);
       const output = target ?? new Float64Array(xys.length);
+      xys = snapshotOverlappingInput(xys, output);
       const scratch = new Float64Array(2);
       for (let index = 0; index + 1 < xys.length; index += 2) {
         transform.unprojectTo(xys[index], xys[index + 1], scratch);
@@ -147,6 +173,19 @@ export function createGPULocalFrame(props: GPULocalFrameProps): GPULocalFrame {
       return output;
     }
   });
+}
+
+/** Rejects a supplied destination that cannot hold every converted row, before any write. */
+function validateLocalFrameTarget(
+  method: string,
+  target: ArrayLike<number> | undefined,
+  requiredLength: number
+): void {
+  if (target !== undefined && target.length < requiredLength) {
+    throw new Error(
+      `createGPULocalFrame ${method} target length ${target.length} is shorter than the ${requiredLength} required elements`
+    );
+  }
 }
 
 type LocalFrameTransform = {
@@ -201,4 +240,22 @@ function createLocalFrameTransform(
       }
     }
   };
+}
+
+/** Copy aliased input before any destination write, including offset views of other element types. */
+function snapshotOverlappingInput(
+  input: ArrayLike<number>,
+  output: Float32Array | Float64Array
+): ArrayLike<number> {
+  if (
+    ArrayBuffer.isView(input) &&
+    // SharedArrayBuffer clones have different JS identities but may alias the same memory.
+    (Object.prototype.toString.call(input.buffer) === '[object SharedArrayBuffer]' ||
+      (input.buffer === output.buffer &&
+        input.byteOffset < output.byteOffset + output.byteLength &&
+        output.byteOffset < input.byteOffset + input.byteLength))
+  ) {
+    return Array.from(input);
+  }
+  return input;
 }

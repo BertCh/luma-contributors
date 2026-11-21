@@ -12,6 +12,55 @@ import {
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 
+it('multipart loop removal operations preserve complete feature/part hierarchy', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: LineLoopRemovalOperationProps = {
+    id: 'multipart-loops',
+    lines: {
+      positions: 'inputPositions',
+      lineOffsets: 'inputOffsets',
+      featureOffsets: 'inputFeatures'
+    },
+    lineCount: 3,
+    featureCount: 3,
+    vertexCapacity: 7,
+    intersectionCapacity: 8,
+    output: {
+      positions: 'positions',
+      lineOffsets: 'lineOffsets',
+      featureOffsets: 'featureOffsets',
+      sourceEdges: 'sourceEdges',
+      status: 'status'
+    }
+  };
+  const inputs = {
+    inputPositions: {
+      format: 'float32x2' as const,
+      values: Float32Array.of(0, 0, 2, 2, 0, 2, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0)
+    },
+    inputOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 4, 6, 8)},
+    inputFeatures: {format: 'uint32' as const, values: Uint32Array.of(0, 0, 2, 3)}
+  };
+  // Exact crossing/chronological erasure derivation in the matching CPU test; no tolerance needed.
+  const expected = {
+    positions: [0, 0, 1, 1, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0],
+    lineOffsets: [0, 3, 5, 7],
+    featureOffsets: [0, 0, 2, 3],
+    sourceEdges: [0, 2, 2, 4, 4, 6, 6],
+    status: [7, 7, 0, 0]
+  };
+  for (const Operation of [GPULineLoopRemovalOperation, CPULineLoopRemovalOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs,
+      operations: [new Operation(props)],
+      outputs: Object.values(props.output)
+    });
+    for (const [name, values] of Object.entries(expected))
+      expect(Array.from(result[name]), name).toEqual(values);
+  }
+});
+
 for (const scene of ['ordinary', 'overflow', 'empty'] as const) {
   it(`loop removal compares every CPU/GPU output: ${scene}`, async () => {
     const device = await getWebGPUTestDevice();

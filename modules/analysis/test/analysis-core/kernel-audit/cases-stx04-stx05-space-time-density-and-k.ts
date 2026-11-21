@@ -23,7 +23,7 @@ const MAXIMUM_ROWS_16 = 8388608;
 const MAXIMUM_LOCAL_ROWS = 524288;
 
 function addDensity(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   options: {
     rows: number;
     width: number;
@@ -38,7 +38,7 @@ function addDensity(
 ): void {
   const {rows, width, height, sliceCount} = options;
   graph.add(
-    new GPUSpaceTimeKernelDensity({
+    construct(GPUSpaceTimeKernelDensity, {
       positions: view('float32x2', rows),
       times: view('float32', rows),
       weights: view('float32', rows),
@@ -62,7 +62,7 @@ function addDensity(
 }
 
 function addKFunction(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   options: {
     rows: number;
     distanceClassCount: number;
@@ -75,7 +75,7 @@ function addKFunction(
 ): void {
   const bins = options.distanceClassCount * options.timeClassCount;
   graph.add(
-    new GPUSpaceTimeKFunction({
+    construct(GPUSpaceTimeKFunction, {
       positions: view('float32x2', options.rows),
       times: view('float32', options.rows),
       intensities: options.intensities ? view('float32', options.rows) : undefined,
@@ -103,7 +103,7 @@ function addKFunction(
 }
 
 function addDiggleTest(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   options: {
     rows: number;
     distanceClassCount: number;
@@ -113,7 +113,7 @@ function addDiggleTest(
 ): void {
   const bins = options.distanceClassCount * options.timeClassCount;
   graph.add(
-    new GPUSpaceTimeDiggleTest({
+    construct(GPUSpaceTimeDiggleTest, {
       positions: view('float32x2', options.rows),
       times: view('float32', options.rows),
       mask: view('uint32', options.rows),

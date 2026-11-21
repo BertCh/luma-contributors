@@ -82,6 +82,7 @@ it('GPUTerrainHorizon validates props and schedules one node per sector', () => 
   expect(nodeIds.filter(id => /-horizon-march-\d$/.test(id))).toHaveLength(1);
   expect(nodeIds.filter(id => /-horizon-\d$/.test(id))).toHaveLength(0);
   expect(nodeIds.at(-1)).toBe('terrain-horizon-sky-view');
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   // A large tile exceeds the dispatch step budget, so the sectors split into several march chunks.
   const wide = create(
@@ -194,6 +195,7 @@ it('GPUSolarShadowMask validates props and uses the circular-segment disk fracti
       .getCommandNodes(graph)
       .map(node => node.id)
   ).toEqual(['solar-shadow-mask-shadow']);
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({directionCount: 2})).toThrow(/directionCount/);
   expect(() => create({horizon: createTransientView(graph, 'h-short', 'float32', 95)})).toThrow(
@@ -274,6 +276,7 @@ it('GPUReliefShading validates props and packs MDOW and custom lights', () => {
       .map(node => node.id)
       .at(-1)
   ).toBe('colored-compose');
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() =>
     create({}, {relief: createTransientView(graph, 'short-relief', 'float32', 29)})
@@ -366,6 +369,7 @@ it('GPUTextureShading validates props and approximates a fractional Laplacian', 
       .map(node => node.id)
       .at(-1)
   ).toBe('texture-shading-finalize');
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({levelCount: 9})).toThrow(/levelCount/);
   expect(() => create({baseSigma: 0})).toThrow(/baseSigma/);
@@ -510,6 +514,7 @@ it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness opti
       {anisotropicSkyViewFactor: createTransientView(graph, 'anisotropic-short', 'float32', 29)}
     )
   ).toThrow(/30 float32/);
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   // A negative-openness-only contributor is a valid output set.
   const everything = create(
@@ -537,7 +542,7 @@ it('GPUTerrainHorizon validates unorm16, anisotropic, and negative-openness opti
   // and row edges come from the grid (3 x 5 rows south of y = 0).
   expect(getGPUTerrainHorizonParameterValues({}, grid)).toHaveLength(8);
   const withAnisotropy = getGPUTerrainHorizonParameterValues(
-    {anisotropyAzimuthDegrees: 45, anisotropyLevel: 8, anisotropyMinimumWeight: 0.1},
+    {rvtDirectionDegrees: 45, anisotropyLevel: 8, anisotropyMinimumWeight: 0.1},
     grid
   );
   expect(Array.from(withAnisotropy)).toEqual([

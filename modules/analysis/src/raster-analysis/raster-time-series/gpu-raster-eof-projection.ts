@@ -18,10 +18,16 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {FIXED_POINT_WGSL} from '../../analysis-core/kernels/fixed-point-accumulator';
+import {
+  getRasterTemporalCenteringBody,
+  RASTER_TEMPORAL_CENTERING_WGSL
+} from './raster-temporal-centering';
 import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 import {
   GPU_RASTER_SNAPSHOT_COVARIANCE_PARAMETER_LENGTH,
@@ -68,7 +74,10 @@ export type GPURasterEOFProjectionProps<
  * Projects a field onto the temporal modes of the method of snapshots, giving spatial EOF maps:
  * `u[cell, mode] = sqrt(weight) * sum_t((x[cell, t] - mean[cell]) * v[t, mode]) / s[mode]`. Its
  * inputs come from `getGPURasterSnapshotEOFDecomposition`, the CPU eigen step after readback.
+ * Temporal centering shares covariance's exact-subtraction anchor choice and local 96-bit sum.
  * A spatial EOF has the sign of its temporal mode, so the sign convention is fixed on the CPU.
+ *
+ * The GPU projection accepts at most 256 slices and 32 modes per cell, with modeCount <= sliceCount.
  *
  * Cell-major fields accept packed views or matching vector chunks of complete cell records.
  * Shared date, model and parameter tables remain packed.
@@ -88,6 +97,19 @@ export class GPURasterEOFProjection<
   constructor(readonly props: GPURasterEOFProjectionProps<Rows>) {
     const id = props.id ?? 'raster-eof-projection';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      weights: {required: false, viewType: 'either', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      temporalModes: {required: true, viewType: 'data', formats: ['float32']},
+      singularValues: {required: true, viewType: 'data', formats: ['float32']},
+      'output.eofs': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
+    // Capture constructor options/maps while preserving graph resource identities.
+    props = {...props, output: {...props.output}};
+    this.props = props;
     this.componentSpace = props.componentSpace ?? 'weighted';
     const {cellCount, sliceCount, modeCount} = props;
     validateCapacity(id, 'cellCount', cellCount);
@@ -201,24 +223,19 @@ export class GPURasterEOFProjection<
           rasterBinding('eofs', output.eofs, true),
           rasterBinding('status', output.status, true)
         ],
-        declarations: RASTER_FINITE_WGSL,
+        declarations: `${RASTER_FINITE_WGSL}
+${FIXED_POINT_WGSL}
+${RASTER_TEMPORAL_CENTERING_WGSL}`,
         body: `let limit = parameters[parametersOffset + 1u];
 let weight = ${weights ? 'weights[weightsOffset + index]' : '1.0'};
 var kept = weight > 0.0 && weight <= 1.0;
-var total = 0.0;
-for (var slice = 0u; slice < ${slices}u; slice++) {
-  let source = index * ${slices}u + slice;
-  let value = values[valuesOffset + source];
-  if (!finite(value) || abs(value) > limit ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { kept = false; break; }
-  total += value;
-}
-let mean = total / ${slices}.0;
+${getRasterTemporalCenteringBody(slices, 'index', Boolean(mask))}
 for (var mode = 0u; mode < ${modes}u; mode++) {
   let singular = singularValues[singularValuesOffset + mode];
   var projected = missing();
   if (kept && singular > 0.0) {
     var sum = 0.0;
-    for (var slice = 0u; slice < ${slices}u; slice++) { sum += (values[valuesOffset + index * ${slices}u + slice] - mean) * temporalModes[temporalModesOffset + mode * ${slices}u + slice]; }
+    for (var slice = 0u; slice < ${slices}u; slice++) { sum += getRasterTemporalCenteredValue(values[valuesOffset + index * ${slices}u + slice], anchor, meanOffset, meanUnitExponent) * temporalModes[temporalModesOffset + mode * ${slices}u + slice]; }
     projected = (${scaleExpression}) * sum / singular;
   }
   eofs[eofsOffset + index * ${modes}u + mode] = projected;

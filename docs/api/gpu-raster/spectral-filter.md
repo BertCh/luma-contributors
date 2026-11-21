@@ -23,12 +23,20 @@ Notch distances wrap on the frequency torus (period 1 per axis), including Nyqui
 `parameters` is a packed float32 view with at least `GPU_RASTER_SPECTRAL_FILTER_PARAMETER_LENGTH` (8) rows. Use `getGPURasterSpectralFilterParameterValues(settings)` and a caller-owned `GPUParameterBuffer`. The layout is `[cutoff, lowerCutoff, upperCutoff, sigma, notchColumn, notchRow, notchRadius, 0]`. Defaults are `[0.25, 0, 0.25, 0.1, 0.25, 0, 0.05, 0]`. Radial settings lie in `[0, sqrt(0.5)]`, lower cutoff must not exceed upper cutoff, notch centers lie in `[-0.5, 0.5]`, and sigma lies in `[MINIMUM_RASTER_SPECTRAL_SIGMA, sqrt(0.5)]` (minimum approximately `1e-6`). The packer validates all settings, even those unused by the selected filter. Invalid settings written directly to the view produce invalid outputs on the GPU.
 
 ```ts
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
   GPURasterSpectralFilter,
   getGPURasterSpectralFilterParameterValues
 } from '@luma-contributors/analysis/raster-analysis';
 
+declare const grid: GPURasterMetadata; // power-of-two width and height
+declare const input: GPURasterBand;
+// Output values and validity cover the grid; invalidCount is a one-row scalar.
+declare const values: GraphDataView<'float32'>;
+declare const validity: GraphDataView<'uint32'>;
+declare const invalidCount: GraphDataView<'uint32'>;
 const parameters = new GPUParameterBuffer(device, {
   id: 'filter-settings', format: 'float32', length: 8,
   values: getGPURasterSpectralFilterParameterValues({cutoff: 0.125})
@@ -58,8 +66,9 @@ Compile-time properties are dimensions, band storage/calibration, filter and vie
 
 ### `GPURasterSpectralFilter` parameters
 
-- Packer: `getGPURasterSpectralFilterParameterValues(settings?, target?)`, writes `GPU_RASTER_SPECTRAL_FILTER_PARAMETER_LENGTH` (8) `float32` values.
-  - `target` (`unknown`)
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterSpectralFilter`.
+
+- Packer: `getGPURasterSpectralFilterParameterValues(settings?)`, writes `GPU_RASTER_SPECTRAL_FILTER_PARAMETER_LENGTH` (8) `float32` values.
 
 Settings of `getGPURasterSpectralFilterParameterValues`:
 

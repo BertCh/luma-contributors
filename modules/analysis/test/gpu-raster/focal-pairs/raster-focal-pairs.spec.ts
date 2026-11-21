@@ -19,7 +19,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import terraReference from '../../oracles/fixtures/raster-terra.json';
 import {
   FIXTURES,
@@ -32,6 +32,62 @@ import {
 
 const PREFIX_LENGTH = 4;
 type Results = Record<Metric, number[]> & {pairedCount: number[]; status: number[]};
+
+it('W3-11 clipped pairs fill the missing center with covariance 4 and slope 2', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const context = createFixture(device, {
+    name: 'missing-center',
+    width: 3,
+    height: 1,
+    radius: 1,
+    predictor: {values: [1, null, 3]},
+    response: {values: [2, null, 6]},
+    noDataPolicy: 'ignore',
+    borderMode: 'nodata',
+    propagateCenterNoData: false
+  });
+  try {
+    const actual = await context.run();
+    // x deviations [-1,1], y deviations [-2,2]: sample covariance 4/(2-1)=4, slope 4/2=2.
+    expect(actual.pairedCount[1]).toBe(2);
+    expect(actual.status[1]).toBe(0);
+    expect(Number.isFinite(actual.covariance[1])).toBe(true);
+    expect(actual.covariance[1]).toBe(4);
+    expect(Number.isFinite(actual.slope[1])).toBe(true);
+    expect(actual.slope[1]).toBe(2);
+  } finally {
+    context.destroy();
+  }
+});
+
+it('WGS-08 retains a unit slope when squared sums are 2^127', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const context = createFixture(device, {
+    width: 2,
+    height: 1,
+    radius: 1,
+    predictor: {values: [-(2 ** 63), 2 ** 63]},
+    response: {values: [-(2 ** 63), 2 ** 63]},
+    borderMode: 'nodata',
+    noDataPolicy: 'ignore',
+    covarianceNormalization: 'sample',
+    propagateCenterNoData: false,
+    minimumCount: 2,
+    name: 'WGS-08'
+  });
+  try {
+    const actual = await context.run();
+    // Centered squares and cross-products: 2 * (2^63)^2 = 2^127; y=x exactly.
+    expect(actual.status).toEqual([0, 0]);
+    expect(actual.slope).toEqual([1, 1]);
+    expect(actual.intercept).toEqual([0, 0]);
+    expect(actual.residualSumSquares).toEqual([0, 0]);
+  } finally {
+    context.destroy();
+  }
+});
 
 function createFixture(
   device: Device,

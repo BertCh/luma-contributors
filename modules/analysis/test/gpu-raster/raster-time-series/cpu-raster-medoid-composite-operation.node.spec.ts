@@ -29,7 +29,7 @@ it('agrees with the order-statistic median oracle in one dimension', () => {
   const result = computeRasterMedoidCompositeOnCPU(values, PROPS);
   expect(result.composite[0]).toBe(median);
   expect(result.sliceIndex[0]).toBe(2);
-  expect(result.status[0]).toBe(0);
+  expect(Array.from(result.status)).toEqual([0]);
 });
 
 it('selects a hand-computed multiband medoid and earliest ties, filtering whole observations', () => {
@@ -76,4 +76,79 @@ it('validates both constructors and CPU input lengths while dropping GPU caps', 
   expect(() =>
     computeRasterMedoidCompositeOnCPU(new Float32Array(5), PROPS, new Uint32Array(4))
   ).toThrow(/mask/);
+});
+
+it.each([
+  [0.1, 0.2, 0.3, 0.4],
+  [0.1, 0.3, 0.2, 0.4]
+])('TWN-41 selects earliest scalar median acquisition from %j', (...values) => {
+  const stored = Float32Array.from(values);
+  const result = computeRasterMedoidCompositeOnCPU(stored, {...PROPS, sliceCount: 4});
+  expect(Array.from(result.sliceIndex)).toEqual([1]);
+  expect(Array.from(result.composite)).toEqual([stored[1]]);
+  expect(Array.from(result.status)).toEqual([0]);
+});
+
+it.each([1, 1e-25, 1e20])('URT-14 keeps the unique scalar medoid at scale %s', scale => {
+  const result = computeRasterMedoidCompositeOnCPU(Float32Array.of(0, scale, 2 * scale), {
+    ...PROPS,
+    sliceCount: 3
+  });
+  expect(Array.from(result.sliceIndex)).toEqual([1]);
+  expect(Array.from(result.composite)).toEqual([Math.fround(scale)]);
+  expect(Array.from(result.status)).toEqual([0]);
+});
+
+it('W3-05 rejects ambiguous CPU graph names before keying outputs', () => {
+  for (const output of [
+    {...PROPS.output, composite: ''},
+    {...PROPS.output, status: 'composite'},
+    {...PROPS.output, sliceIndex: 'values'}
+  ])
+    expect(() => new CPURasterMedoidCompositeOperation({...PROPS, output})).toThrow(/^medoid /);
+  expect(() => new CPURasterMedoidCompositeOperation({...PROPS, values: ''})).toThrow(/^medoid /);
+});
+
+it.each([
+  {values: [7e-12, 1, 3, 5], bandCount: 1, expected: [1]},
+  {
+    values: [0.1, 0.875, 0.2, 0.875, 0.3, 0.875, 0.4, 0.875],
+    bandCount: 2,
+    expected: [Math.fround(0.2), 0.875]
+  },
+  {values: [1e24, 0, 1e24, 1, 1e24, 2], bandCount: 2, expected: [Math.fround(1e24), 1]}
+])('review B4 B5 S1 CPU selects the earliest minimizer with $bandCount bands', ({
+  values,
+  bandCount,
+  expected
+}) => {
+  const result = computeRasterMedoidCompositeOnCPU(Float32Array.from(values), {
+    cellCount: 1,
+    sliceCount: values.length / bandCount,
+    bandCount
+  });
+  expect(Array.from(result.composite)).toEqual(expected);
+  expect(Array.from(result.sliceIndex)).toEqual([1]);
+  expect(Array.from(result.status)).toEqual([0]);
+});
+
+it('review B6 validates only declared required medoid destinations', () => {
+  for (const key of ['composite', 'sliceIndex', 'status'] as const)
+    expect(
+      () =>
+        new CPURasterMedoidCompositeOperation({
+          ...PROPS,
+          output: {
+            ...PROPS.output,
+            [key]: undefined
+          } as unknown as RasterMedoidCompositeOperationProps['output']
+        })
+    ).toThrow();
+  expect(
+    () =>
+      new CPURasterMedoidCompositeOperation({
+        ...PROPS,
+        output: {...PROPS.output, other: PROPS.output.composite}
+      } as RasterMedoidCompositeOperationProps)
+  ).not.toThrow();
 });

@@ -10,7 +10,7 @@ import {
 import {getParallelMergeTreeNodes} from '../../analysis-core/kernels/parallel-merge-tree';
 import type {HierarchicalDensityShape} from './hierarchical-density-clustering-kernels';
 
-const OPERATION = 'GPUHierarchicalDensityClustering';
+const OPERATION = 'GPUHDBSCAN';
 type WordView = GraphDataView<'uint32'>;
 
 function readBinding(name: string, view: WordView): WGSLKernelBinding {

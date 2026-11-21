@@ -126,7 +126,7 @@ it('reports the missing target mass when a truncated blur cannot reach it', asyn
       source: [1, 0, 0],
       target: [0, 0, 1]
     },
-    {maximumIterations: 2, blurRadius: 1, tolerance: 1e-4}
+    {maximumIterations: 2, transportRadius: 1, tolerance: 1e-4}
   );
   expect(result.marginalError).toBe(1);
   expect(result.converged).toBe(0);
@@ -453,7 +453,7 @@ it('GPUSinkhornDivergence with a short blur window flags the approximation and s
   const windowed = await runSinkhornGPU(device, problem, {
     maximumIterations: 400,
     tolerance: 1e-6,
-    blurRadius: 12
+    transportRadius: 12
   });
   expect(exact.approximation).toBe(0);
   expect(windowed.approximation).toBe(1);
@@ -463,7 +463,7 @@ it('GPUSinkhornDivergence with a short blur window flags the approximation and s
   const narrow = await runSinkhornGPU(device, problem, {
     maximumIterations: 400,
     tolerance: 1e-6,
-    blurRadius: 3
+    transportRadius: 3
   });
   expect(Math.abs(narrow.divergence - exact.divergence)).toBeGreaterThan(
     1e-3 * exact.components[0]
@@ -537,7 +537,7 @@ it('GPUSinkhornDivergence sums a million cells to float32 accuracy (no compensat
   const result = await runSinkhornGPU(
     device,
     {width, height: width, cellWidth: 1, cellHeight: 1, epsilon, source: masses, target: masses},
-    {blurRadius: 1, maximumIterations: 4}
+    {transportRadius: 1, maximumIterations: 4}
   );
   expect(result.invalidCount).toBe(0);
   expect(result.converged).toBe(1);

@@ -107,6 +107,15 @@ it('GPURasterProfile builds segmented scans with the expected node order', () =>
   expect(ids.findIndex(id => id.startsWith('p-scan-'))).toBeLessThan(ids.indexOf('p-locate'));
 });
 
+it('WRT-11 preserves count kernels and omits sample kernels for status-only profiles', () => {
+  const {ids} = getProfileKernels({allOutputs: false});
+  expect(ids).toContain('p-sample-counts');
+  expect(ids).toContain('p-finish-counts');
+  expect(ids).not.toContain('p-locate');
+  expect(ids).not.toContain('p-sample');
+  expect(ids.some(id => id.startsWith('p-cumulative'))).toBe(false);
+});
+
 it('GPURasterProfile kernels have no per-line serial loop over samples or vertices', () => {
   for (const options of [{}, {allOutputs: false}, {vertexCount: 100000, capacity: 1000000}]) {
     const {kernels} = getProfileKernels(options);

@@ -153,6 +153,39 @@ function readValue(
   return Number(result.stdout);
 }
 
+it('TOOL-102 records rewritten declarations, reuses them warm and refreshes a removed target', () => {
+  const directory = fixture();
+  write(
+    directory,
+    'modules/analysis/src/index.ts',
+    'export function readValue() { return 1; }\nexport type Shape = import("./shape").Shape;'
+  );
+  write(directory, 'modules/analysis/src/shape.ts', 'export type Shape = "file";');
+  write(directory, 'modules/analysis/src/shape/index.ts', 'export type Shape = "directory";');
+  let result = run(directory);
+  expect(result.status, result.output).toBe(0);
+  const declaration = join(directory, 'modules/analysis/dist/index.d.ts');
+  const original = readFileSync(declaration, 'utf8');
+  expect(original).toContain('import("./shape.js")');
+  const modificationTime = statSync(declaration).mtimeMs;
+
+  result = run(directory);
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain('analysis: wrote 0 CommonJS modules');
+  expect(statSync(declaration).mtimeMs).toBe(modificationTime);
+  expect(readFileSync(declaration, 'utf8')).toBe(original);
+  let gate = run(directory, 'verify-package-exports.mjs');
+  expect(gate.status, gate.output).toBe(0);
+
+  rmSync(join(directory, 'modules/analysis/src/shape.ts'));
+  result = run(directory);
+  expect(result.status, result.output).toBe(0);
+  expect(readFileSync(declaration, 'utf8')).toContain('import("./shape/index.js")');
+  expect(existsSync(join(directory, 'modules/analysis/dist/shape.d.ts'))).toBe(false);
+  gate = run(directory, 'verify-package-exports.mjs');
+  expect(gate.status, gate.output).toBe(0);
+}, 30000);
+
 it('R3 accepts unchanged declarations and metadata-only rebuilds, but rejects stale source and corrupt output', () => {
   const directory = fixture();
   let result = run(directory);

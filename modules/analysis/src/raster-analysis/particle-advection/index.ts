@@ -15,6 +15,7 @@ export {
   GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH
 } from './particle-advection-parameters';
 export type {
+  GPUParticleAdvectionParameterSettings,
   GPUParticleAdvectionSettings,
   GPUParticleAdvectionUint32Settings
 } from './particle-advection-parameters';

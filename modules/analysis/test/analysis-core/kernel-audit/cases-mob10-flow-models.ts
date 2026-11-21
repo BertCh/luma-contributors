@@ -49,24 +49,37 @@ export const MOB10_FLOW_MODELS_AUDIT_CASES: readonly KernelAuditCase[] = [
         })
       )
   },
-  {
-    exportName: 'GPUKernelFlowSmoothing',
-    name: 'maximum zones, aggregation pairs, planar',
-    build: ({graph, view}) =>
-      graph.add(
-        new GPUKernelFlowSmoothing({
-          positions: view('float32x2', SMOOTHING_ZONES),
-          locationWeights: view('float32', SMOOTHING_ZONES),
-          flows: {
-            kind: 'pairs',
-            originZoneIds: view('uint32', 65536),
-            destinationZoneIds: view('uint32', 65536),
-            weights: view('float32', 65536),
-            validPairCount: view('uint32', 1)
-          },
-          parameters: view('float32', 4),
-          output: {smoothed: view('float32', SMOOTHING_ZONES * SMOOTHING_ZONES)}
-        })
-      )
-  }
+  ...(['producer', 'producer-without-candidate-word', 'legacy-import'] as const).map(
+    (mode): KernelAuditCase => ({
+      exportName: 'GPUKernelFlowSmoothing',
+      name: `maximum zones, aggregation pairs, planar ${mode}`,
+      build: ({graph, view}) =>
+        graph.add(
+          new GPUKernelFlowSmoothing({
+            positions: view('float32x2', SMOOTHING_ZONES),
+            locationWeights: view('float32', SMOOTHING_ZONES),
+            flows: {
+              kind: 'pairs',
+              originZoneIds: view('uint32', 65536),
+              destinationZoneIds: view('uint32', 65536),
+              weights: view('float32', 65536),
+              ...(mode === 'legacy-import'
+                ? {count: view('uint32', 1), completeness: 'known-complete' as const}
+                : {
+                    status: {
+                      count: view('uint32', 1),
+                      overflow: view('uint32', 1),
+                      ...(mode === 'producer' ? {candidateOverflow: view('uint32', 1)} : {})
+                    }
+                  })
+            },
+            parameters: view('float32', 4),
+            output: {
+              smoothed: view('float32', SMOOTHING_ZONES * SMOOTHING_ZONES),
+              status: {complete: view('uint32', 1)}
+            }
+          })
+        )
+    })
+  )
 ];

@@ -1108,7 +1108,7 @@ graph.add(new GPUTerrainHorizon({
 }));
 graph.add(new GPUReliefShading({
   grid, elevation, parameters: reliefSettings.importToGraph(graph),
-  imhofSwing: true, cellSizeMode: 'web-mercator', output: {hillshade, color}
+  cellSizeMode: 'web-mercator', output: {hillshade, color}
 }));
 graph.add(new GPUSimpleLocalRelief({
   grid, elevation, parameters: slrmSettings.importToGraph(graph),

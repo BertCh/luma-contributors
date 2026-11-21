@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from './terrain-output-selection';
+
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -96,7 +98,7 @@ export function getGPUSolarShadowMaskParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUSolarShadowMask}; at least one is required. */
-export type GPUSolarShadowMaskOutput = {
+export type GPUSolarShadowMaskOutput = TerrainOutputSelection<{
   /** Fraction of the solar disk above the local horizon per pixel, in `[0, 1]`. */
   sunVisibility?: GraphDataView<'float32'>;
   /** `ambient * svf + sun * sunVisibility * max(cos(incidence), 0)`. Requires slope and aspect. */
@@ -105,7 +107,7 @@ export type GPUSolarShadowMaskOutput = {
   sunVisibilityTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
   /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `illumination`. */
   illuminationTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUSolarShadowMask}.
@@ -134,7 +136,7 @@ export type GPUSolarShadowMaskProps = {
   horizon: GraphDataView<'float32'> | GraphDataView<'uint32'>;
   /** Per-frame parameters with at least 8 float32 values, see {@link getGPUSolarShadowMaskParameterValues}. */
   parameters: GraphDataView<'float32'>;
-  /** Optional slope in degrees, as written by `GPUTerrainDerivatives`. Required for `illumination`. */
+  /** Horn or compatible slope in degrees. Required for `illumination`. */
   slope?: GraphDataView<'float32'>;
   /** Optional aspect in degrees clockwise from north, -1 when flat. Required with `slope`. */
   aspect?: GraphDataView<'float32'>;

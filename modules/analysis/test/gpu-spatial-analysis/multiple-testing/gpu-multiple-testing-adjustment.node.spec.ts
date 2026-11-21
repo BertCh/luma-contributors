@@ -156,16 +156,16 @@ it('GPUMultipleTestingAdjustment validates its props and emits deterministic nod
     /minimumFamilySize/
   );
   expect(() => create({minimumFamilySize: 2.5})).toThrow(/minimumFamilySize/);
-  expect(() => create({}, {testedCount: view('uint32', 0)})).toThrow(/testedCount/);
-  expect(() => create({}, {testedCount: common.pValues as never})).toThrow();
+  expect(() => create({}, {effectiveFamilySize: view('uint32', 0)})).toThrow(/effectiveFamilySize/);
+  expect(() => create({}, {effectiveFamilySize: common.pValues as never})).toThrow();
   expect(() =>
-    create({}, {testedCount: view('uint32', 1), adjustedPValues: view('float32', 10)})
+    create({}, {effectiveFamilySize: view('uint32', 1), adjustedPValues: view('float32', 10)})
   ).not.toThrow();
 
   const otherGraph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'other-graph'});
   expect(() => create({id: 'foreign'}).getCommandNodes(otherGraph)).toThrow(/belong to the target/);
 
-  const ids = (method: GPUMultipleTestingMethod, withTestedCount = false) => {
+  const ids = (method: GPUMultipleTestingMethod, withFamilySize = false) => {
     const idsGraph = new GPUCommandGraph(createNullWebGPUDevice(), {id: `ids-${serial++}`});
     return new GPUMultipleTestingAdjustment({
       id: 'mt',
@@ -173,14 +173,22 @@ it('GPUMultipleTestingAdjustment validates its props and emits deterministic nod
       pValues: createTransientView(idsGraph, 'p', 'float32', 10),
       output: {
         adjustedPValues: createTransientView(idsGraph, 'a', 'float32', 10),
-        testedCount: withTestedCount ? createTransientView(idsGraph, 'n', 'uint32', 1) : undefined
+        effectiveFamilySize: withFamilySize
+          ? createTransientView(idsGraph, 'n', 'uint32', 1)
+          : undefined
       }
     })
       .getCommandNodes(idsGraph)
       .map(node => node.id);
   };
   expect(ids('none')).toEqual(['mt-apply']);
-  expect(ids('none', true)).toEqual(['mt-counters-clear', 'mt-count', 'mt-family', 'mt-apply']);
+  expect(ids('none', true)).toEqual([
+    'mt-counters-clear',
+    'mt-count',
+    'mt-family',
+    'mt-publish-counts',
+    'mt-apply'
+  ]);
   expect(ids('bonferroni')).toEqual(['mt-counters-clear', 'mt-count', 'mt-family', 'mt-apply']);
   const holm = ids('holm');
   expect(holm).toContain('mt-block-scan');

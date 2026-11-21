@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+import {validateRasterExpansionPorts, validateRasterExpansionBand} from './raster-expansion-utils';
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {
   validateRasterFractionalBindingByteLength,
   validateRasterFractionalWritableViews
@@ -19,7 +22,8 @@ import {
   validateCommandNodeBudget,
   validateMaximumCount,
   validateRequirement,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateOption
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
@@ -29,8 +33,9 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUPolygonGeometryFields} from '../analysis-core/contracts/index';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
+  resolveGPURasterContext,
   validateRasterCellSizeMode,
   type GPURasterCellSizeMode
 } from '../analysis-core/contracts/raster-grid';
@@ -50,6 +55,9 @@ import {
 } from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getRasterBandViews,
+  snapshotRasterBand,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph,
   getRasterBufferBandNodes,
   validateParameterTarget,
   validateRasterParameters,
@@ -88,34 +96,76 @@ const CANDIDATE_TILE_COMMAND_NODE_ALLOWANCE = 32;
 
 /** Number of float32 values read from {@link GPURasterFractionalCoverageProps.parameters}. */
 export const GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH = 8;
+/** Versioned local layout: legacy eight words, layout discriminator 2, absolute Y offset. */
+export const GPU_RASTER_FRACTIONAL_COVERAGE_LOCAL_PARAMETER_LENGTH = 10;
+
+/** Options for packing a common origin-relative polygon/grid frame. */
+export type GPURasterFractionalCoverageParameterOptions = {
+  /** Subtract this binary64 world origin from vertices before converting them to float32. */
+  localOrigin?: readonly [number, number];
+};
 
 /**
- * Packs the grid georeference read by {@link GPURasterFractionalCoverage}.
- *
- * Layout (float32): `[originX, originY, a, b, d, e, determinant, 0]`, where
- * `grid.affine = [a, b, originX, d, e, originY]` and `determinant = a * e - b * d`. Write the result
- * into a `GPUParameterBuffer` between encodings to move the same compiled graph to another
- * georeference of the same width and height without recompiling.
- *
- * @param grid Grid whose affine is packed; it must be invertible.
- * @param target Optional destination of at least 8 values. A new array is returned when omitted.
- * @throws If the affine is singular or not finite, or `target` is too short.
+ * Packs the legacy `[originX, originY, a, b, d, e, determinant, padding]` as float32.
+ * The options overload packs ten words, appending `[2, absoluteOriginYOffset]`; legacy padding
+ * remains zero and is ignored by readers. The explicit discriminator selects the local layout.
+ * Origins are relative to `localOrigin` (default `[0, 0]`); axes and determinant retain world
+ * units. Version 2 word 9 restores absolute row latitude for geographic/Web Mercator consumers.
+ * Rebase the original binary64 polygon vertices by the same origin before float32 upload.
+ * Repacking moves a graph to another affine of the same dimensions. Validation completes before
+ * any target word is written; singular packed axes are rejected even for nonsingular float64 axes.
+ * Word 6 retains the signed physical determinant of the original binary64 affine, rounded to
+ * finite nonzero float32; clipping inverts the packed axes independently. A legacy write clears
+ * a reused version-2 extension, and failed validation leaves the entire target unchanged.
  */
 export function getGPURasterFractionalCoverageParameterValues(
   grid: GPURasterMetadata,
-  target: Float32Array = new Float32Array(GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH)
+  target?: Float32Array
+): Float32Array;
+export function getGPURasterFractionalCoverageParameterValues(
+  grid: GPURasterMetadata,
+  options: GPURasterFractionalCoverageParameterOptions,
+  target?: Float32Array
+): Float32Array;
+export function getGPURasterFractionalCoverageParameterValues(
+  grid: GPURasterMetadata,
+  optionsOrTarget?: GPURasterFractionalCoverageParameterOptions | Float32Array,
+  destination?: Float32Array
 ): Float32Array {
   const id = 'getGPURasterFractionalCoverageParameterValues';
-  validateParameterTarget(id, target, GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH);
-  const [a, b, originX, d, e, originY] = grid.affine;
-  const determinant = a * e - b * d;
+  const isTarget = isCoverageFloat32Target(optionsOrTarget);
+  const options = isTarget ? undefined : optionsOrTarget;
+  const length = options
+    ? GPU_RASTER_FRACTIONAL_COVERAGE_LOCAL_PARAMETER_LENGTH
+    : GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH;
+  const target = isTarget ? optionsOrTarget : (destination ?? new Float32Array(length));
+  validateParameterTarget(id, target, length);
+  const resolved = resolveGPURasterContext(id, {grid, localOrigin: options?.localOrigin});
+  const absoluteOriginYOffset = Math.fround(resolved.localOrigin[1]);
   validateRequirement(
     id,
-    grid.affine.every(Number.isFinite) && determinant !== 0,
-    'grid.affine must be finite and invertible (nonzero determinant)'
+    Number.isFinite(absoluteOriginYOffset),
+    `localOrigin y must fit finite float32, received ${resolved.localOrigin[1]}`
   );
-  target.set([originX, originY, a, b, d, e, determinant, 0]);
+  const physicalDeterminant = Math.fround(resolved.affineDeterminant!);
+  validateRequirement(
+    id,
+    Number.isFinite(physicalDeterminant) && physicalDeterminant !== 0,
+    `grid.affine physical determinant must fit finite nonzero float32; received ${physicalDeterminant}`
+  );
+  resolved.parameterValues[6] = physicalDeterminant;
+  target.set(resolved.parameterValues);
+  if (options)
+    target.set([2, absoluteOriginYOffset], GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH);
+  else target.fill(0, GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH, Math.min(target.length, 10));
   return target;
+}
+
+/** Typed-array identity must survive iframe/VM realm boundaries. */
+function isCoverageFloat32Target(value: unknown): value is Float32Array {
+  return (
+    ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Float32Array]'
+  );
 }
 
 export type GPURasterFractionalCoverageProps = {
@@ -153,6 +203,30 @@ export type GPURasterFractionalCoverageProps = {
   };
 };
 
+/** Capture declared ports once so inherited status accessors participate in every preflight. */
+function snapshotFractionalCoverageOutput(
+  output: GPURasterFractionalCoverageProps['output']
+): GPURasterFractionalCoverageProps['output'] {
+  const captured = snapshotConstructionFields(output, [
+    'zoneIds',
+    'cellIds',
+    'fractions',
+    'zoneValidity',
+    'status'
+  ]);
+  return Object.freeze({
+    ...captured,
+    status: captured.status
+      ? snapshotConstructionFields(captured.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow'
+        ])
+      : captured.status
+  });
+}
+
 /**
  * Exact planar triangle/pixel clipping followed by compact (zone,cell,coverage) tuples. Polygon
  * triangulation supplies disjoint shell-minus-hole triangles, so holes and overlapping features
@@ -175,8 +249,47 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
   readonly candidateCapacity: number;
   readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterFractionalCoverageProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'zones',
+      'parameters',
+      'searchStructure',
+      'candidateCapacity',
+      'output'
+    ]);
+    props = {
+      ...captured,
+      zones: snapshotConstructionFields(captured.zones, [
+        'positions',
+        'featureOffsets',
+        'polygonOffsets',
+        'ringOffsets'
+      ]),
+      output: snapshotFractionalCoverageOutput(captured.output)
+    };
     this.id = props.id ?? 'raster-fractional-coverage';
     this.props = props;
+    validateRasterExpansionPorts(
+      this.id,
+      props,
+      {
+        'zones.positions': ['float32x2'],
+        'zones.featureOffsets': ['uint32'],
+        'zones.polygonOffsets': ['uint32'],
+        'zones.ringOffsets': ['uint32'],
+        parameters: ['float32'],
+        'output.zoneIds': ['uint32'],
+        'output.cellIds': ['uint32'],
+        'output.fractions': ['float32'],
+        'output.zoneValidity': ['uint32'],
+        'output.status.count': ['uint32'],
+        'output.status.requiredCount': ['uint32'],
+        'output.status.overflow': ['uint32'],
+        'output.status.candidateOverflow': ['uint32']
+      },
+      ['output.status.candidateOverflow']
+    );
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,
@@ -236,14 +349,6 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
         0,
       'grid.affine must be invertible (nonzero determinant)'
     );
-    for (const [name, view] of Object.entries({...props.output, ...props.output.status})) {
-      if (name === 'status' || !view) continue;
-      validateSinglePackedView(
-        view as GraphDataView,
-        [name === 'fractions' ? 'float32' : 'uint32'],
-        `${this.id} output.${name}`
-      );
-    }
     const capacity = props.output.zoneIds.length;
     requireRasterLength(props.output.cellIds, capacity, this.id, 'output.cellIds');
     requireRasterLength(props.output.fractions, capacity, this.id, 'output.fractions');
@@ -437,7 +542,7 @@ for(var polygon=features[featuresOffset+zone];polygon<features[featuresOffset+zo
 export type GPURasterFractionalZonalStatisticsProps = {
   id?: string;
   grid: GPURasterMetadata;
-  input: GPURasterBufferBand;
+  input: GPURasterBand;
   zoneCount: number;
   coverage: Pick<
     GPURasterFractionalCoverageProps['output'],
@@ -447,7 +552,7 @@ export type GPURasterFractionalZonalStatisticsProps = {
   quantity: 'extensive' | 'density' | 'intensive';
   /**
    * Area model: uniform (default) gives coordinate units squared; geographic and web-mercator
-   * give WGS84 ground square meters at the row center. Ground modes require an axis-aligned
+   * give square meters using the grid-derived WGS84 midpoint model (local ground-scale product). Ground modes require an axis-aligned
    * grid. Row placement follows parameters when supplied; nonzero per-frame cross-axis terms
    * suppress all zones (NaN aggregates, validity zero). Cannot be combined with cellAreas.
    */
@@ -479,13 +584,62 @@ export type GPURasterFractionalZonalStatisticsProps = {
   };
 };
 
-/** Area-aware fractional aggregation, preserving missing support and incomplete coverage. */
+/** Area-aware fractional aggregation of buffer or texture bands, preserving missing support and incomplete coverage. */
 export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterFractionalZonalStatisticsProps;
   constructor(props: GPURasterFractionalZonalStatisticsProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'zoneCount',
+      'coverage',
+      'quantity',
+      'cellSizeMode',
+      'cellAreas',
+      'parameters',
+      'output'
+    ]);
+    props = {
+      ...captured,
+      input: snapshotRasterBand(captured.input),
+      coverage: snapshotFractionalCoverageOutput(captured.coverage),
+      output: snapshotConstructionFields(captured.output, [
+        'totals',
+        'means',
+        'coveredArea',
+        'validArea',
+        'validity'
+      ])
+    };
     this.id = props.id ?? 'fractional-zonal-statistics';
     this.props = props;
+    validateOption(this.id, 'quantity', props.quantity, ['extensive', 'density', 'intensive']);
+    validateRasterExpansionBand(this.id, 'input', props.input);
+    validateRasterExpansionPorts(
+      this.id,
+      props,
+      {
+        'coverage.zoneIds': ['uint32'],
+        'coverage.cellIds': ['uint32'],
+        'coverage.fractions': ['float32'],
+        'coverage.zoneValidity': ['uint32'],
+        'coverage.status.count': ['uint32'],
+        'coverage.status.requiredCount': ['uint32'],
+        'coverage.status.overflow': ['uint32'],
+        'coverage.status.candidateOverflow': ['uint32'],
+        parameters: ['float32'],
+        cellAreas: ['float32'],
+        'output.totals': ['float32'],
+        'output.means': ['float32'],
+        'output.coveredArea': ['float32'],
+        'output.validArea': ['float32'],
+        'output.validity': ['uint32']
+      },
+      ['coverage.status.candidateOverflow', 'parameters', 'cellAreas']
+    );
+    validateRasterTextureBand(this.id, props.input, props.grid);
     validateRasterExpansionViews(
       this.id,
       props.grid,
@@ -588,7 +742,20 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateRasterBandBelongsToGraph(id, graph, props.input, []);
     const {coverage, output} = props;
+    validateRasterStorageBindings(
+      graph,
+      id,
+      [
+        ...getRasterBandViews(props.input),
+        ...getGraphOutputViews(coverage),
+        props.parameters,
+        props.cellAreas,
+        ...getGraphOutputViews(output)
+      ],
+      {'canonical band planes': props.grid.width * props.grid.height * 4}
+    );
     for (const view of [
       ...getRasterBandViews(props.input),
       ...getGraphOutputViews(coverage),

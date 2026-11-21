@@ -62,6 +62,7 @@ export async function runExample(
       parameters: parameters.importToGraph(graph),
       gridSize: [32, 32],
       referenceGrid: [53, 47], // coprime with the window, F's reference locations
+      hanischSearch: 'capped',
       radiusCount,
       output: {g, f, j, radii}
     })

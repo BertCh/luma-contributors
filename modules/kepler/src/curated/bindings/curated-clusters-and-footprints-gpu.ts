@@ -10,12 +10,12 @@ import {
 import {
   addClusterAndOutlineRecipe,
   getGPUGeographicDistributionParameterValues,
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPUGeometryMeasures,
   GPUGroupConvexHull,
   GPUGroupGeometry,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_NOISE
+  GPUDBSCAN,
+  GPU_DBSCAN_NOISE
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogGpuContext} from '../../analysis/catalog-binding-types';
 import {EARTH_RADIUS_METERS} from '../../analysis/catalog-geojson';
@@ -29,7 +29,7 @@ export const MAXIMUM_CURATED_CLUSTER_POINTS = 6000;
 
 // Constructor identity survives bundler name mangling; glue producers are deliberately absent.
 const CONTRIBUTOR_NAMES = new Map<object, string>([
-  [GPUSpatialClustering, 'GPUSpatialClustering'],
+  [GPUDBSCAN, 'GPUDBSCAN'],
   [GPUGroupGeometry, 'GPUGroupGeometry'],
   [GPUGroupConvexHull, 'GPUGroupConvexHull'],
   [GPUGeometryMeasures, 'GPUGeometryMeasures']
@@ -50,9 +50,9 @@ export type CuratedClustersGpuResult = {
 };
 
 /** Packs the existing catalog local frame once; no pair search or hull computation on the CPU. */
-export function prepareCuratedClustersGpu(sample: Sample, epsilon: number, minimumPoints: number) {
+export function prepareCuratedClustersGpu(sample: Sample, epsilon: number, minimumSamples: number) {
   validateCapacity(BINDING_ID, 'pointCount', sample.count, 1, MAXIMUM_CURATED_CLUSTER_POINTS);
-  validateCapacity(BINDING_ID, 'minimumPoints', minimumPoints, 1, 1000);
+  validateCapacity(BINDING_ID, 'minimumSamples', minimumSamples, 1, 1000);
   validateFiniteNumber(BINDING_ID, 'epsilon', epsilon, Number.MIN_VALUE, 1e9);
   const positions = new Float32Array(sample.count * 2);
   let minimumX = Infinity;
@@ -82,7 +82,7 @@ export function prepareCuratedClustersGpu(sample: Sample, epsilon: number, minim
   const side = Math.max(1, Math.min(256, Math.ceil(Math.sqrt(sample.count))));
   return {
     positions,
-    clusteringParameters: getGPUSpatialClusteringParameterValues({bounds, epsilon, minimumPoints}),
+    clusteringParameters: getGPUDBSCANParameterValues({bounds, epsilon, minimumSamples}),
     gridSize: [side, side] as const,
     maximumClusterCount: sample.count,
     maximumVerticesPerHull: Math.max(3, sample.count),
@@ -96,9 +96,9 @@ export async function runCuratedClustersGpu(
   sample: Sample,
   frame: LocalFrame,
   epsilon: number,
-  minimumPoints: number
+  minimumSamples: number
 ): Promise<CuratedClustersGpuResult> {
-  const prepared = prepareCuratedClustersGpu(sample, epsilon, minimumPoints);
+  const prepared = prepareCuratedClustersGpu(sample, epsilon, minimumSamples);
   const result = await withCatalogGpuSession(context.device, BINDING_ID, async session => {
     const labels = session.output('labels', 'uint32', sample.count);
     const coreFlags = session.output('core-flags', 'uint32', sample.count);
@@ -135,7 +135,7 @@ export async function runCuratedClustersGpu(
       maximumClusterCount: prepared.maximumClusterCount,
       maximumVerticesPerHull: prepared.maximumVerticesPerHull,
       hullCapacity: prepared.hullCapacity,
-      outputs: {
+      output: {
         labels: labels.view,
         coreFlags: coreFlags.view,
         clusterCount: clusterCount.view,
@@ -202,9 +202,7 @@ export async function runCuratedClustersGpu(
       }
     });
     return {
-      labels: Int32Array.from(rawLabels, label =>
-        label === GPU_SPATIAL_CLUSTERING_NOISE ? -1 : label
-      ),
+      labels: Int32Array.from(rawLabels, label => (label === GPU_DBSCAN_NOISE ? -1 : label)),
       coreFlags: rawCoreFlags,
       clusterCount: rawClusterCount,
       counts: rawCounts,

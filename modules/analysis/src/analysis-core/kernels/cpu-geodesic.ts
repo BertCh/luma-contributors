@@ -10,12 +10,14 @@ function roundEven(value: number): number {
   return fraction < 0.5 || (fraction === 0.5 && lower % 2 === 0) ? lower : lower + 1;
 }
 
-/** Binary64 mirror of geodesicWrapLongitudeDelta; half-turn ties use round-to-even. @internal */
+/** CPU longitude reduction; half-turn ties use round-to-even. @internal */
 export function wrapLongitude(delta: number): number {
-  return delta - 360 * roundEven(delta / 360);
+  // Retain turn parity: removing 720 degrees shifts the rounded quotient by an even integer.
+  const reduced = delta % 720;
+  return reduced - 360 * roundEven(reduced / 360);
 }
 
-/** Binary64 mirror of geodesicLongitudeDelta, shared by CPU geometry families. @internal */
+/** Endpoint-wise longitude reduction shared by CPU geometry families. @internal */
 export function computeLongitudeDelta(source: number, destination: number): number {
   // Same seam branch as geodesicLongitudeDelta. Float32 endpoints in these quadrants
   // are multiples of 2^-17, so these scaled differences are exact integers in binary64.
@@ -28,6 +30,9 @@ export function computeLongitudeDelta(source: number, destination: number): numb
   ) {
     return (destination * 131072 - source * 131072 + (source > 0 ? 47185920 : -47185920)) / 131072;
   }
+  // Reduce endpoints separately: subtracting huge coordinates first loses the remainder.
+  if (Math.abs(source) > 180) source %= 720;
+  if (Math.abs(destination) > 180) destination %= 720;
   const halfTurn = 180 * roundEven((destination - source) / 360);
   return destination - halfTurn - (source + halfTurn);
 }

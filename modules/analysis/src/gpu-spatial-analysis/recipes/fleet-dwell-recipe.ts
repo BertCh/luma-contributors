@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 
 import {
@@ -314,13 +316,14 @@ function declareFleetDwellRecipe<Parameters>(
   props: GPUFleetDwellRecipeProps
 ): GPUFleetDwellRecipeResult {
   const id = props.id ?? 'fleet-dwell';
+  const destinations = resolveRecipeDestinations(id, props);
   const spatialContext = resolveGPUSpatialContext(
     id,
     props.spatialContext,
     SPATIAL_CONTEXT_SUPPORT
   );
   const builder = new RecipeBuilder(graph);
-  const outputs = snapshotConstructionFields(props.outputs ?? {}, ['stops', 'table', 'status']);
+  const outputs = snapshotConstructionFields(destinations ?? {}, ['stops', 'table', 'status']);
   const scratch = snapshotConstructionFields(props.scratch ?? {}, ['stopMask', 'stopZones']);
   const capacity = props.stopCapacity;
   const zoneCount = props.zones.featureOffsets.length - 1;
@@ -661,7 +664,11 @@ type GPUFleetDwellZoneEventsRecipeViews = {
  *
  * Status: stages `zone-events` (event count, unclamped `requiredCount`, event overflow and
  * `candidateOverflow`; the unclamped candidate count is `status.candidateCount`),
- * `visit-table` (with `scratch.visitTable`) and `zone-statistics`.
+ * `visit-table` (with `scratch.visitTable`) and `zone-statistics`. The statistics stage's
+ * `candidateOverflow` reports candidate scratch loss only: its dwell statistics are incomplete
+ * then. Per-track and final event-list truncation leave dwell statistics exact.
+ * The optional visit-table stage publishes its supplied candidate-loss flag, or the same scratch
+ * flag when omitted, independently of visit-table output capacity.
  */
 export function addFleetDwellZoneEventsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -675,13 +682,14 @@ function declareFleetDwellZoneEventsRecipe<Parameters>(
   props: GPUFleetDwellZoneEventsRecipeProps
 ): GPUFleetDwellZoneEventsRecipeResult {
   const id = props.id ?? 'fleet-dwell-zone-events';
+  const destinations = resolveRecipeDestinations(id, props);
   const spatialContext = resolveGPUSpatialContext(
     id,
     props.spatialContext,
     SPATIAL_CONTEXT_SUPPORT
   );
   const builder = new RecipeBuilder(graph);
-  const outputs = props.outputs ?? {};
+  const outputs = destinations ?? {};
   const scratch = props.scratch ?? {};
   const {trajectories, zones} = props;
   validateRequirement(
@@ -857,13 +865,17 @@ function declareFleetDwellZoneEventsRecipe<Parameters>(
           ? [
               {
                 stage: 'visit-table',
-                status: scratch.visitTable.status
+                status: {
+                  ...scratch.visitTable.status,
+                  candidateOverflow:
+                    scratch.visitTable.status.candidateOverflow ?? diagnostics.candidateOverflow
+                }
               }
             ]
           : []),
         {
           stage: 'zone-statistics',
-          status: table.status
+          status: {...table.status, candidateOverflow: diagnostics.candidateOverflow}
         }
       ]
     }

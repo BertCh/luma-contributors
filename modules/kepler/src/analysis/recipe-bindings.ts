@@ -12,7 +12,7 @@ import {
 } from './point-weight-coordinates';
 import {
   createTransientView,
-  GraphVectorView,
+  type GraphVectorView,
   GPUMask,
   validatePackedView,
   type GPUCommandGraph,
@@ -27,6 +27,8 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUParameterBuffer,
+  isGraphVectorView,
+  validateRequirement,
   type GPUPackedGeometryPort,
   type GPUPolygonGeometryPort
 } from '@luma-contributors/analysis/analysis-core';
@@ -112,7 +114,7 @@ export type KeplerAnalysisBindings = {
     breaks?: GraphDataView<'float32'>;
     classCount?: GraphDataView<'uint32'>;
     classCounts?: GraphDataView<'uint32'>;
-    hotSpots?: GPUHotSpotAnalysisRecipeProps['outputs'];
+    hotSpots?: GPUHotSpotAnalysisRecipeProps['output'];
     /** Primary localI falls back to values when omitted here. */
     localMoran?: KeplerPointLocalMoranOutputs;
     /** Primary pseudoPValues falls back to values when omitted here. */
@@ -215,10 +217,25 @@ export function addKeplerAnalysisRecipe<Parameters>(
       ])
         if (view && view.buffer.graph !== graph)
           throw new Error('Point weights must be imported into the consumer graph');
+      for (const name of ['overflow', 'requiredCount', 'invalidCount'] as const) {
+        const view = supplied.weights.status?.[name];
+        const destination = supplied.status[name];
+        validateRequirement(
+          id,
+          view === undefined ||
+            view === destination ||
+            (view.buffer === destination.buffer &&
+              view.byteOffset === destination.byteOffset &&
+              view.byteStride === destination.byteStride &&
+              view.length === destination.length &&
+              view.format === destination.format),
+          `weights.status.${name} and pointWeights.status.${name} must share the same view; received ${view?.buffer.id} and ${destination.buffer.id}`
+        );
+      }
       const result = {
         ...supplied,
         settings: current,
-        weights: {...supplied.weights, status: supplied.status},
+        weights: {...supplied.weights, status: {...supplied.weights.status, ...supplied.status}},
         parameterByteLength: 0,
         destroyParameters() {}
       };
@@ -463,7 +480,7 @@ export function addKeplerAnalysisRecipe<Parameters>(
             seed: operation.seed,
             permutationCount: operation.permutationCount,
             significanceLevel: operation.significanceLevel,
-            inference: operation.inference,
+            alternative: operation.alternative,
             multipleTesting: operation.multipleTesting,
             islands: operation.islands,
             quantileMethod: operation.quantileMethod
@@ -512,7 +529,7 @@ export function addKeplerAnalysisRecipe<Parameters>(
             seed: operation.seed,
             permutationCount: operation.permutationCount,
             significanceLevel: operation.significanceLevel,
-            inference: operation.inference,
+            alternative: operation.alternative,
             multipleTesting: operation.multipleTesting,
             islands: operation.islands,
             quantileMethod: operation.quantileMethod
@@ -828,7 +845,7 @@ export function addKeplerAnalysisRecipe<Parameters>(
             selfWeight: operation.selfWeight,
             minimumNeighbors: operation.minimumNeighbors,
             multipleTesting: operation.multipleTesting,
-            outputs: bindings.outputs?.hotSpots
+            output: bindings.outputs?.hotSpots
           }
         });
         return {
@@ -1013,7 +1030,7 @@ export function addKeplerAnalysisRecipe<Parameters>(
 function packed<Format extends 'float32' | 'uint32'>(
   column: GraphDataView<Format> | GraphVectorView<Format>
 ): GraphDataView<Format> {
-  if (column instanceof GraphVectorView) {
+  if (isGraphVectorView(column)) {
     if (column.data.length !== 1)
       throw new Error('This analysis requires explicit packing before execution');
     return column.data[0];

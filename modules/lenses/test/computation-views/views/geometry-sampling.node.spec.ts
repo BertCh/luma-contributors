@@ -75,6 +75,121 @@ function getPathVertices(path: {attributes: Record<string, unknown>}): [number, 
   ]);
 }
 
+test.each([
+  'lines',
+  'polygons'
+] as const)('%s use the offsets feature origin independently of the vertex origin', kind => {
+  for (const first of [0, 2]) {
+    const record = makeGeometryRecord(kind, [[0, 0, 1, 0, 0, 1]]);
+    record.captures!.snapshots[1].meaning = `first:${first}`;
+    const geometry = record.captures!.snapshots[0].geometry!;
+    if (geometry.kind !== 'lines' && geometry.kind !== 'polygons') throw new Error('fixture');
+    geometry.valuesCapture = 'feature-values-id';
+    Object.freeze(record.captures!.snapshots);
+    record.captures!.snapshots = [
+      ...record.captures!.snapshots,
+      makeY2Capture('feature-values', [10, 20, 30], {keySpace: 'row'})
+    ];
+    record.axes.keySpaces[0].size = 3;
+    const {paths, tree} = renderGeometry(record, false, first);
+    expect(paths).toHaveLength(1);
+    expect(paths[0].attributes['data-key']).toBe(first);
+    expect(paths[0].attributes['data-feature-row']).toBe(first);
+    expect(paths[0].attributes['data-action']).toBe('pick');
+    expect(getViewNodeText(tree)).toContain(String(first === 2 ? 30 : 10));
+    if (first === 2) {
+      // Same value domain, but put the independently expected row-2 value (30) at row zero.
+      // Comparing the mark itself prevents a diagnostic table elsewhere from satisfying this.
+      const control = structuredClone(record);
+      const colorAttribute = kind === 'lines' ? 'stroke' : 'fill';
+      control.captures!.snapshots[1].meaning = 'first:0';
+      control.captures!.snapshots[2].values = [30, 20, 10];
+      expect(paths[0].attributes[colorAttribute]).toBe(
+        renderGeometry(control, false).paths[0].attributes[colorAttribute]
+      );
+      control.captures!.snapshots[2].values = [10, 20, 30];
+      expect(paths[0].attributes[colorAttribute]).not.toBe(
+        renderGeometry(control, false).paths[0].attributes[colorAttribute]
+      );
+    }
+    // Offsets refer to vertex keys, independent of the feature origin on that same capture.
+    record.captures!.snapshots[0].meaning = 'first:5';
+    record.captures!.snapshots[1].values = [5, 8];
+    const shifted = renderGeometry(record, false, first);
+    expect(shifted.paths[0].attributes['d']).toBe(paths[0].attributes['d']);
+    expect(shifted.paths[0].attributes['data-key']).toBe(first);
+    const coordinator = new LadderCoordinator();
+    const registry = new ViewRegistry();
+    registry.register(RESULT_VIEW);
+    const controller = new LensController({
+      record,
+      coordinator,
+      registry,
+      lensId: 'partial',
+      rung: 'result'
+    });
+    try {
+      controller.dispatch({
+        type: 'pick',
+        axis: 'entity',
+        keySpace: String(shifted.paths[0].attributes['data-key-space']),
+        keys: [Number(shifted.paths[0].attributes['data-key'])]
+      });
+      expect(coordinator.getClauses('selection')[0].predicate).toEqual({
+        kind: 'keys',
+        keys: [first]
+      });
+      coordinator.clearClauses('selection', 'partial');
+      expect(
+        findViewNodes(
+          controller.getFrame().tree,
+          node => node.tag === 'path' && node.attributes['data-state'] === 'highlight'
+        )
+      ).toHaveLength(0);
+      coordinator.pick('selection', {viewId: 'peer', keySpace: 'row'}, [first]);
+      expect(
+        findViewNodes(
+          controller.getFrame().tree,
+          node =>
+            node.tag === 'path' &&
+            node.attributes['data-key'] === first &&
+            node.attributes['data-state'] === 'highlight'
+        )
+      ).toHaveLength(1);
+    } finally {
+      controller.destroy();
+    }
+  }
+});
+
+test.each([
+  'lines',
+  'polygons'
+] as const)('AMG-65 %s playback retains changing feature keys', kind => {
+  const record = makeGeometryRecord(kind, [[0, 0, 1, 0, 0, 1]]);
+  const [coordinates, offsets] = record.captures!.snapshots;
+  if (coordinates.geometry?.kind !== kind) throw new Error('fixture');
+  coordinates.geometry.offsetsCapture = 'offsets';
+  record.captures!.snapshots = [
+    {...coordinates, id: 'coordinates-0', iteration: 0},
+    {...coordinates, id: 'coordinates-1', iteration: 1},
+    {...offsets, id: 'offsets-0', iteration: 0, meaning: 'first:0'},
+    {...offsets, id: 'offsets-id', iteration: 1, meaning: 'first:2'}
+  ];
+  record.axes.keySpaces[0].size = 3;
+  const {model, tree} = renderGeometry(record, false);
+  expect(model.frames).toHaveLength(2);
+  const frames = findViewNodes(tree, node => node.attributes['class'] === 'cv-frame');
+  expect(
+    frames.map(frame =>
+      findViewNodes(
+        frame,
+        node => node.tag === 'path' && node.attributes['data-role'] === 'output'
+      ).map(path => path.attributes['data-key'])
+    )
+  ).toEqual([[0], [2]]);
+});
+
 function getPolygonArea(vertices: [number, number][]): number {
   const [originX, originY] = vertices[0];
   return Math.abs(
@@ -549,8 +664,7 @@ test('each archived line or polygon result has drawable marks or an explicit fal
   expect(checkedOutputs).toBeGreaterThanOrEqual(88);
 });
 
-test('R8 archived result-view twins correspond to declared result directives', () => {
-  const root = new URL('../../../../../', import.meta.url);
+function getDeclaredResultTwinPaths(): Set<string> {
   const declared = new Set<string>();
   for (const file of listDocsMarkdownFiles()) {
     for (const {attributes} of scanLensDirectives(file)) {
@@ -565,6 +679,52 @@ test('R8 archived result-view twins correspond to declared result directives', (
         declared.add(`docs/lens-records/twins/${key}~thumbnail.json`);
     }
   }
+  return declared;
+}
+
+function getOutOfScopeResultTwinChanges(
+  before: ReadonlyMap<string, string>,
+  after: ReadonlyMap<string, string>,
+  permitted: ReadonlySet<string>
+): string[] {
+  return [...new Set([...before.keys(), ...after.keys()])]
+    .filter(path => {
+      if (before.get(path) === after.get(path)) return false;
+      return !permitted.has(path);
+    })
+    .sort();
+}
+
+test('R8 result-only refresh rejects changed kernel content outside authored directives', () => {
+  const root = new URL('../../../../../', import.meta.url);
+  const permitted = getDeclaredResultTwinPaths();
+  const scenario = 'gpu-spatial-analysis.local-frame-projection';
+  const resultPath = `docs/lens-records/twins/${scenario}~result.json`;
+  const kernelPath = `docs/lens-records/twins/${scenario}~kernel.json`;
+  expect(permitted.has(resultPath)).toBe(true);
+  expect(permitted.has(kernelPath)).toBe(false);
+  const before = new Map(
+    [resultPath, kernelPath].map(path => [path, readFileSync(new URL(path, root), 'utf8')])
+  );
+  const recorded = JSON.parse(
+    readFileSync(new URL(`docs/lens-records/${scenario}.json`, root), 'utf8')
+  );
+  const refreshed = buildLensTwin(recorded, {scenario, rung: 'result'});
+  const after = new Map(before);
+  // A result-only refresh can replace its result, and must preserve all unrelated bytes.
+  after.set(resultPath, JSON.stringify(refreshed));
+  expect(after.get(resultPath)).not.toBe(before.get(resultPath));
+  expect(getOutOfScopeResultTwinChanges(before, after, permitted)).toEqual([]);
+  const kernel = JSON.parse(before.get(kernelPath)!);
+  after.set(kernelPath, JSON.stringify({...kernel, html: `${kernel.html}<p>out of scope</p>`}));
+  expect(getOutOfScopeResultTwinChanges(before, after, permitted)).toEqual([kernelPath]);
+  after.delete(kernelPath);
+  expect(getOutOfScopeResultTwinChanges(before, after, permitted)).toEqual([kernelPath]);
+});
+
+test('R8 archived result-view twins correspond to declared result directives', () => {
+  const root = new URL('../../../../../', import.meta.url);
+  const declared = getDeclaredResultTwinPaths();
   // The committed directives and twins are the inventory; no local refresh log is needed.
   for (const path of declared) {
     expect(JSON.parse(readFileSync(new URL(path, root), 'utf8')).rung, path).toBe('result');
@@ -669,4 +829,30 @@ test('saved Local Moran twins contain polygon marks in both sizes', () => {
     expect(twin.figure.html).toMatch(/<path[^>]+data-feature-row=/);
     expect(twin.figure.html).toContain('of 791 polygons shown');
   }
+});
+
+test.each([
+  'lines',
+  'polygons'
+] as const)('B2 %s playback preserves missing-offset fallback', kind => {
+  const record = makeGeometryRecord(kind, [[0, 0, 1, 0, 0, 1]]);
+  const [coordinates] = record.captures!.snapshots;
+  record.captures!.snapshots = [
+    {...coordinates, id: 'first', iteration: 0},
+    {...coordinates, id: 'second', iteration: 1}
+  ];
+  const {model, tree} = renderGeometry(record, false);
+  expect(model.output.unknown).toContain('offsets');
+  expect(getViewNodeText(tree)).toContain('unknown');
+});
+
+test.each(['lines', 'polygons'] as const)('Earlier AMG-65 %s ignores unused vertex tails', kind => {
+  const record = makeGeometryRecord(kind, [[0, 0, 1, 0, 0, 1]]);
+  const [coordinates, offsets] = record.captures!.snapshots;
+  record.captures!.snapshots = [
+    {...coordinates, id: 'first', iteration: 0, values: [0, 0, 1, 0, 0, 1, 5, 5]},
+    {...coordinates, id: 'second', iteration: 1, values: [0, 0, 1, 0, 0, 1, 50, 50]},
+    offsets
+  ];
+  expect(renderGeometry(record, false).model.frames).toEqual([]);
 });

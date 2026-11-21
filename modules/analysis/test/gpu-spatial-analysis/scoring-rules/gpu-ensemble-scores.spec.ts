@@ -48,7 +48,7 @@ it('GPUEnsembleScores sample CRPS, energy and variogram scores match the referen
       `${entry.name} variogram`
     );
     const fair = await runEnsembleScores(device, entry, {
-      fair: true,
+      estimator: 'fair',
       crps: true,
       energyScore: true
     });
@@ -99,10 +99,32 @@ it('GPUEnsembleScores reproduces the hand-computed CRPS (5/9, fair 1/3)', async 
     observations: [hand.observation]
   };
   expect((await runEnsembleScores(device, entry, {crps: true})).crps![0]).toBeCloseTo(5 / 9, 6);
-  expect((await runEnsembleScores(device, entry, {crps: true, fair: true})).crps![0]).toBeCloseTo(
-    1 / 3,
-    6
+  expect(
+    (await runEnsembleScores(device, entry, {crps: true, estimator: 'fair'})).crps![0]
+  ).toBeCloseTo(1 / 3, 6);
+});
+
+it('ensemble scores obey translation and scale equivariance against the independent fixture', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const entry = SCORING_FIXTURE.ensembles.find(candidate => candidate.dimension === 8)!;
+  const transformed = {
+    ...entry,
+    ensemble: entry.ensemble.map(value => 2 * value + 16),
+    observations: entry.observations.map(value => 2 * value + 16)
+  };
+  const actual = await runEnsembleScores(device, transformed, {
+    crps: true,
+    energyScore: true,
+    variogramPairs: entry.variogramPairsAll,
+    variogramOrder: 0.5
+  });
+  // CRPS and energy scale by c. Variogram order p scales by c^(2p), here c.
+  entry.crps.forEach((expected, site) =>
+    expectRelative(actual.crps![site], 2 * expected, 3e-5, `scaled crps ${site}`)
   );
+  expectRelative(actual.energyScore!, 2 * entry.energyScore, 3e-5, 'scaled energy');
+  expectRelative(actual.variogramScore!, 2 * entry.variogramScoreAll, 3e-5, 'scaled variogram');
 });
 
 it('GPUEnsembleScores is bitwise repeatable and independent of workgroup scheduling', async () => {

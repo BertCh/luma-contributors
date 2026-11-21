@@ -9,6 +9,8 @@ import {GPUTerrainCatchmentSummaryOperation} from '../../../src/gpu-terrain/terr
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {
+  makeCatchmentStatusCases,
+  expectCatchmentStatusReadbacks,
   makeCatchmentInput,
   makeCatchmentProps
 } from './terrain-catchment-summary-operation-fixture';
@@ -79,7 +81,12 @@ it('compares every summary/profile output on multiple basins, bounds, cycles and
             flowDirections: {format: 'uint32', values: input.flowDirections}
           },
           operations: [new Operation(props)],
-          outputs: Object.values(props.output)
+          outputs: [
+            props.output.statistics,
+            props.output.hypsometry,
+            props.output.profiles,
+            props.output.profileStatus
+          ]
         })
       );
     expect(Array.from(results[0]['profileStatus'])).toEqual(
@@ -115,3 +122,46 @@ it('compares every summary/profile output on multiple basins, bounds, cycles and
     }
   }
 });
+
+for (const scene of makeCatchmentStatusCases()) {
+  it(`lowers aggregate catchment diagnostics: ${scene.name}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const base = makeCatchmentProps();
+    // Structurally wider reusable status objects must not replace ordinary output ports.
+    const status = {
+      converged: 'done',
+      invalidCount: 'invalid',
+      iterationLimitReached: 'limited',
+      statistics: 'side',
+      overflow: 'unsupported'
+    };
+    const props = {
+      ...base,
+      grid: {...base.grid, width: 4, height: 1},
+      maximumSteps: scene.maximumSteps,
+      output: {
+        ...base.output,
+        status
+      }
+    };
+    for (const Operation of [
+      GPUTerrainCatchmentSummaryOperation,
+      CPUTerrainCatchmentSummaryOperation
+    ]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          elevation: {format: 'float32', values: Float32Array.of(4, 3, 2, 1)},
+          validity: {format: 'uint32', values: new Uint32Array(4).fill(1)},
+          basinIds: {format: 'uint32', values: Uint32Array.from(scene.basins)},
+          streams: {format: 'uint32', values: Uint32Array.from(scene.streams)},
+          flowDirections: {format: 'uint32', values: Uint32Array.from(scene.directions)}
+        },
+        operations: [new Operation(props)],
+        outputs: ['done', 'invalid', 'limited', base.output.statistics]
+      });
+      expectCatchmentStatusReadbacks(result, scene.expected);
+      expect(result[base.output.statistics]).toHaveLength(base.basinCount * 6);
+    }
+  });
+}

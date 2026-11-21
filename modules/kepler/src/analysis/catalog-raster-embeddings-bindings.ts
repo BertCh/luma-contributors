@@ -7,6 +7,7 @@ import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-
 import {appendCatalogRow, makeCatalogTable} from './catalog-geojson';
 import {
   createKeplerEmbeddingFixture,
+  describeRasterEmbeddingStages,
   runKeplerRasterEmbedding,
   RASTER_EMBEDDING_OPERATIONS,
   type KeplerEmbeddingRaster,
@@ -71,6 +72,30 @@ export function createKeplerEmbeddingDemoOptions(
 
 /** Plain arrays for native table publication; nonfinite values and invalid labels become null. */
 export function makeRasterEmbeddingCatalogOutput(result: RasterEmbeddingResult): CatalogRunOutput {
+  const evidence = result.stages;
+  const prefixLength = result.contributors.length - (evidence?.length ?? 0);
+  const matchesEvidence =
+    evidence &&
+    prefixLength >= 0 &&
+    evidence.every(
+      (stage, index) => result.contributors[prefixLength + index] === stage.identity.exportName
+    );
+  // Legacy hosts prepend codec work after readback. Preserve explicit stage identities and
+  // execution locations; only reconcile known codec names before the evidence's matching suffix.
+  const codecPrefix = matchesEvidence
+    ? result.contributors
+        .slice(0, prefixLength)
+        .filter(
+          name => name === 'GPURasterEmbeddingQuantize' || name === 'GPURasterEmbeddingDequantize'
+        )
+    : [];
+  const stages =
+    evidence === undefined
+      ? describeRasterEmbeddingStages(result.contributors)
+      : [
+          ...describeRasterEmbeddingStages(codecPrefix),
+          ...evidence.map(stage => ({identity: {...stage.identity}, execution: stage.execution}))
+        ];
   const columnTypes = Object.fromEntries(
     Object.keys(result.columns).map(name => [name, 'float64' as const])
   );
@@ -99,7 +124,10 @@ export function makeRasterEmbeddingCatalogOutput(result: RasterEmbeddingResult):
       layout: result.layout,
       rowCount: result.rowCount
     },
-    dispatchedContributors: result.contributors
+    stages,
+    dispatchedContributors: stages
+      .filter(stage => stage.execution === 'gpu')
+      .map(stage => stage.identity.exportName)
   };
 }
 
@@ -113,7 +141,10 @@ const EMBEDDING_BINDINGS: readonly CatalogOperationBinding[] = RASTER_EMBEDDING_
       'Runs the embedding contributor on an 8 × 8 generated four-band unit-vector raster. Use Raster embedding tools for loaded multiband raster tiles.',
     capabilityIds: [],
     contributorNames: RASTER_EMBEDDING_CONTRIBUTORS[operation],
-    gpuContributorNames: RASTER_EMBEDDING_CONTRIBUTORS[operation],
+    stages: describeRasterEmbeddingStages(RASTER_EMBEDDING_CONTRIBUTORS[operation]),
+    gpuContributorNames: describeRasterEmbeddingStages(RASTER_EMBEDDING_CONTRIBUTORS[operation])
+      .filter(stage => stage.execution === 'gpu')
+      .map(stage => stage.identity.exportName),
     engine: 'gpu',
     inputs: [],
     parameters: [],
@@ -173,6 +204,8 @@ const LAGRANGIAN_BINDING: CatalogOperationBinding = {
       kind: 'number',
       minimum: -1,
       maximum: 1,
+      nonzero: true,
+      nonzeroFloat32Scale: 10,
       defaultValue: 0.1
     }
   ],

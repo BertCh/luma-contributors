@@ -59,8 +59,9 @@ import {
   GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS,
   GPU_EDGE_BUNDLING_MAXIMUM_POINTS_PER_EDGE
 } from '../../../src/gpu-network/index';
+import {GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT} from '../../../src/gpu-network/network-k-function/gpu-network-k-function';
 import {
-  GPU_LOCATION_ALLOCATION_STATUS,
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT,
   GPULocationAllocation
 } from '../../../src/gpu-spatial-analysis/index';
 import type {TextureFormat} from '@luma.gl/core';
@@ -355,7 +356,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUFlowAggregation({
+          context.construct(GPUFlowAggregation, {
             zones: {
               kind: 'grid',
               bounds: [0, 0, 100, 100],
@@ -389,7 +390,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
         build: context => {
           const {graph, view} = context;
           graph.add(
-            new GPUFlowAggregation({
+            context.construct(GPUFlowAggregation, {
               zones: {
                 kind: 'hexagon',
                 bounds: boundsFormat === 'float32x4' ? view('float32x4', 1) : view('float32', 4),
@@ -421,7 +422,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUFlowAggregation({
+        context.construct(GPUFlowAggregation, {
           zones: {kind: 'hexagon', bounds: [-180, -90, 180, 90], gridSize: [200, 100], radius: 1.5},
           origins: view('float32x2', FLOW_ROWS),
           destinations: view('float32x2', FLOW_ROWS),
@@ -438,7 +439,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUFlowAggregation({
+          context.construct(GPUFlowAggregation, {
             zones: {kind: 'ids', zoneCount: 65535},
             originZoneIds: view('uint32', FLOW_ROWS),
             destinationZoneIds: view('uint32', FLOW_ROWS),
@@ -466,7 +467,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
       const rows = maximumRows(8);
       const capacity = 2 ** 23;
       graph.add(
-        new GPUFlowAggregation({
+        context.construct(GPUFlowAggregation, {
           zones: {kind: 'ids', zoneCount: 65535},
           originZoneIds: view('uint32', rows),
           destinationZoneIds: view('uint32', rows),
@@ -488,7 +489,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const rows = maximumRows(8);
       graph.add(
-        new GPUFlowAggregation({
+        context.construct(GPUFlowAggregation, {
           zones: {kind: 'ids', zoneCount: 65535},
           originZoneIds: view('uint32', rows),
           destinationZoneIds: view('uint32', rows),
@@ -510,7 +511,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const rows = maximumRows(8);
       graph.add(
-        new GPUFlowAggregation({
+        context.construct(GPUFlowAggregation, {
           zones: {kind: 'ids', zoneCount: 65535},
           originZoneIds: view('uint32', rows),
           destinationZoneIds: view('uint32', rows),
@@ -532,7 +533,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const rows = maximumRows(8);
       graph.add(
-        new GPUFlowAggregation({
+        context.construct(GPUFlowAggregation, {
           zones: {kind: 'ids', zoneCount: 65535},
           originZoneIds: view('uint32', rows),
           destinationZoneIds: view('uint32', rows),
@@ -552,7 +553,7 @@ const FLOW_AGGREGATION_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const rows = maximumRows(8);
       graph.add(
-        new GPUFlowAggregation({
+        context.construct(GPUFlowAggregation, {
           zones: {kind: 'ids', zoneCount: 65535},
           originZoneIds: view('uint32', rows),
           destinationZoneIds: view('uint32', rows),
@@ -600,7 +601,7 @@ const MAP_MATCHING_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUMapMatching({
+          context.construct(GPUMapMatching, {
             spatialContext: spatialContext as GPUSpatialContext | undefined,
             positions: view('float32x2', 1000),
             trackOffsets: view('uint32', 21),
@@ -621,9 +622,9 @@ const MAP_MATCHING_CASES: KernelAuditCase[] = [
     (candidateCount): KernelAuditCase => ({
       exportName: 'GPUMapMatching',
       name: `${candidateCount} candidates, default budget, minimal output`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUMapMatching({
+          construct(GPUMapMatching, {
             positions: view('float32x2', 1000),
             trackOffsets: view('uint32', 21),
             topology: {
@@ -647,7 +648,7 @@ const MAP_MATCHING_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUMapMatching({
+          context.construct(GPUMapMatching, {
             positions: view('float32x2', 1000),
             trackOffsets: view('uint32', 21),
             topology: topology(context, NODES, EDGES, {weights: false}) as never,
@@ -678,7 +679,7 @@ const MAP_MATCHING_CASES: KernelAuditCase[] = [
       const points = maximumRows(288);
       const edges = Math.floor((maximumRows(4) - 256) / 16);
       graph.add(
-        new GPUMapMatching({
+        context.construct(GPUMapMatching, {
           positions: view('float32x2', points),
           trackOffsets: view('uint32', 4097),
           topology: {
@@ -704,7 +705,7 @@ const MAP_MATCHING_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const edges = getGPUMapMatchingMaximumEdgeCount(context.device);
       graph.add(
-        new GPUMapMatching({
+        context.construct(GPUMapMatching, {
           positions: view('float32x2', 1000),
           trackOffsets: view('uint32', 21),
           topology: {
@@ -734,7 +735,7 @@ function mapMatchingEdgesCase(
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUMapMatching({
+        context.construct(GPUMapMatching, {
           positions: view('float32x2', 1000),
           trackOffsets: view('uint32', 21),
           topology: {
@@ -797,7 +798,7 @@ const NETWORK_SNAPPING_CASES: KernelAuditCase[] = [
         build: context => {
           const {graph, view} = context;
           graph.add(
-            new GPUNetworkSnapping({
+            context.construct(GPUNetworkSnapping, {
               spatialContext,
               positions: view('float32x2', SNAPPING_POINTS),
               topology: topology(context, NODES, EDGES) as never,
@@ -818,7 +819,7 @@ const NETWORK_SNAPPING_CASES: KernelAuditCase[] = [
         build: context => {
           const {graph, view} = context;
           graph.add(
-            new GPUNetworkSnapping({
+            context.construct(GPUNetworkSnapping, {
               spatialContext,
               positions: view('float32x2', SNAPPING_POINTS),
               topology: topology(context, NODES, EDGES) as never,
@@ -839,7 +840,7 @@ const NETWORK_SNAPPING_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const points = 4;
       graph.add(
-        new GPUNetworkSnapping({
+        context.construct(GPUNetworkSnapping, {
           positions: view('float32x2', points),
           topology: topology(context, maximumRows(8), maximumRows(4), {weights: false}) as never,
           output: snappingOutput(context, points, false)
@@ -859,7 +860,7 @@ const NETWORK_SNAPPING_CASES: KernelAuditCase[] = [
         const edges = 8;
         const points = GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK / edges + overMaximum;
         graph.add(
-          new GPUNetworkSnapping({
+          context.construct(GPUNetworkSnapping, {
             positions: view('float32x2', points),
             topology: topology(context, maximumRows(8), edges, {weights: false}) as never,
             output: snappingOutput(context, points, false)
@@ -880,7 +881,7 @@ const NETWORK_SNAPPING_CASES: KernelAuditCase[] = [
         const {graph, view, maximumRows} = context;
         const points = maximumRows(8);
         graph.add(
-          new GPUNetworkSnapping({
+          context.construct(GPUNetworkSnapping, {
             positions: view('float32x2', points),
             topology: topology(
               context,
@@ -909,7 +910,7 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkCostMatrix({
+          context.construct(GPUNetworkCostMatrix, {
             topology: topology(context, NODES, EDGES, {positions: false}) as never,
             startNodes: view('uint32', 2 * COST_MATRIX_ROWS),
             startCosts: view('float32', 2 * COST_MATRIX_ROWS),
@@ -937,7 +938,7 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkCostMatrix({
+          context.construct(GPUNetworkCostMatrix, {
             topology: topology(context, NODES, EDGES, {positions: false}) as never,
             startNodes: view('uint32', 2 * COST_MATRIX_ROWS),
             startCosts: view('float32', 2 * COST_MATRIX_ROWS),
@@ -964,7 +965,7 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkCostMatrix({
+        context.construct(GPUNetworkCostMatrix, {
           topology: topology(context, NODES, EDGES, {positions: false}) as never,
           startNodes: view('uint32', COST_MATRIX_ROWS),
           laneCount: 1,
@@ -980,7 +981,7 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkCostMatrix({
+        context.construct(GPUNetworkCostMatrix, {
           topology: topology(context, NODES, EDGES, {positions: false}) as never,
           startNodes: view('uint32', COST_MATRIX_ROWS),
           output: {costs: view('float32', COST_MATRIX_ROWS * NODES)}
@@ -999,7 +1000,7 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
       const rows = Math.floor(maximumRows(4) / nodes);
       const laneCount = Math.floor(maximumRows(8) / nodes);
       graph.add(
-        new GPUNetworkCostMatrix({
+        context.construct(GPUNetworkCostMatrix, {
           topology: topology(context, nodes, maximumRows(4), {positions: false}) as never,
           // The expanded seeds hold startNodes.length words per batch.
           startNodes: view('uint32', Math.floor(maximumRows(4) / Math.ceil(rows / laneCount))),
@@ -1024,7 +1025,7 @@ const NETWORK_COST_MATRIX_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const nodes = maximumRows(8);
       graph.add(
-        new GPUNetworkCostMatrix({
+        context.construct(GPUNetworkCostMatrix, {
           topology: topology(context, nodes, maximumRows(4), {positions: false}) as never,
           startNodes: view('uint32', 1),
           output: {costs: view('float32', nodes)}
@@ -1135,12 +1136,14 @@ function reachabilityOutput({view}: KernelAuditContext, nodes: number, breaks: n
   return {
     costs: view('float32', nodes),
     predecessors: view('uint32', nodes),
+    predecessorEdges: view('uint32', nodes),
     bands: view('uint32', nodes),
     bandCounts: view('uint32', breaks),
     unresolvedCount: view('uint32', 1),
     status: {
       converged: view('uint32', 1),
       iterationCount: view('uint32', 1),
+      iterationLimitReached: view('uint32', 1),
       relaxationCount: view('uint32', 2),
       reachedEdgeCount: view('uint32', 2)
     }
@@ -1155,7 +1158,7 @@ const NETWORK_REACHABILITY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkReachability({
+          context.construct(GPUNetworkReachability, {
             topology: topology(context, REACHABILITY_NODES, EDGES * 4, {positions: false}) as never,
             startNodes: view('uint32', 256),
             startCosts: view('float32', 256),
@@ -1178,7 +1181,7 @@ const NETWORK_REACHABILITY_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkReachability({
+        context.construct(GPUNetworkReachability, {
           topology: topology(context, REACHABILITY_NODES, EDGES, {positions: false}) as never,
           startNodes: view('uint32', 8),
           startCount: 8,
@@ -1194,7 +1197,7 @@ const NETWORK_REACHABILITY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkReachability({
+          context.construct(GPUNetworkReachability, {
             topology: topology(context, REACHABILITY_NODES, EDGES, {positions: false}) as never,
             startNodes: view('uint32', 256),
             startCosts: view('float32', 256),
@@ -1230,7 +1233,7 @@ const NETWORK_REACHABILITY_CASES: KernelAuditCase[] = [
         const {graph, view, maximumRows} = context;
         const nodes = getGPUNetworkReachabilityMaximumNodeCount(context.device) + overMaximum;
         graph.add(
-          new GPUNetworkReachability({
+          context.construct(GPUNetworkReachability, {
             topology: topology(context, nodes, maximumRows(4), {positions: false}) as never,
             startNodes: view('uint32', maximumRows(4)),
             startCosts: view('float32', maximumRows(4)),
@@ -1416,38 +1419,46 @@ const NETWORK_SERVICE_AREAS_CASES: KernelAuditCase[] = [
       );
     }
   },
-  {
-    exportName: 'GPUNetworkServiceAreas',
-    // The reachability frontier queues take 8 bytes per node, so the nodes fit one binding up to
-    // maximumRows(8).
-    name: 'nodes at the frontier limit, edges and facilities at the binding limit, every output',
-    build: context => {
-      const {graph, view, maximumRows} = context;
-      const nodes = maximumRows(8);
-      graph.add(
-        new GPUNetworkServiceAreas({
-          topology: topology(context, nodes, maximumRows(4), {positions: false}) as never,
-          facilities: view('uint32', maximumRows(4)),
-          facilityCosts: view('float32', maximumRows(4)),
-          facilityCount: view('uint32', 1),
-          costLimit: view('float32', 1),
-          maximumIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
-          maximumLabelIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
-          localIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
-          activeIterations: view('uint32', 1),
-          maximumTieIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS,
-          output: {
-            assignments: view('uint32', nodes),
-            costs: view('float32', nodes),
-            predecessors: view('uint32', nodes),
-            facilityNodeCounts: view('uint32', maximumRows(4)),
-            facilityCostSums: view('float32', maximumRows(4)),
-            status: {converged: view('uint32', 1)}
-          }
-        })
-      );
-    }
-  }
+  ...[true, false].map(
+    (includePredecessors): KernelAuditCase => ({
+      exportName: 'GPUNetworkServiceAreas',
+      name: includePredecessors
+        ? 'nodes at the frontier limit, tie labels and weights at the binding limit, every output'
+        : 'nodes at the frontier limit, edges and facilities at the binding limit, no predecessors',
+      build: context => {
+        const {graph, view, maximumRows} = context;
+        const nodes = maximumRows(8);
+        // Predecessors pack one label per node and one weight per edge into one binding.
+        // Hold nodes at their frontier maximum and use the remaining words for edges.
+        const edges = maximumRows(4) - (includePredecessors ? nodes : 0);
+        graph.add(
+          new GPUNetworkServiceAreas({
+            topology: topology(context, nodes, edges, {positions: false}) as never,
+            facilities: view('uint32', maximumRows(4)),
+            facilityCosts: view('float32', maximumRows(4)),
+            facilityCount: view('uint32', 1),
+            costLimit: view('float32', 1),
+            maximumIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+            maximumLabelIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS,
+            localIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_LOCAL_ITERATIONS,
+            activeIterations: view('uint32', 1),
+            maximumTieIterations: GPU_NETWORK_REACHABILITY_MAXIMUM_TIE_ITERATIONS,
+            output: {
+              assignments: view('uint32', nodes),
+              costs: view('float32', nodes),
+              ...(includePredecessors ? {predecessors: view('uint32', nodes)} : {}),
+              facilityNodeCounts: view('uint32', maximumRows(4)),
+              facilityCostSums: view('float32', maximumRows(4)),
+              status: {
+                converged: view('uint32', 1),
+                iterationLimitReached: view('uint32', 1)
+              }
+            }
+          })
+        );
+      }
+    })
+  )
 ];
 
 const NEIGHBORHOOD_NODES = 1000;
@@ -1933,7 +1944,7 @@ const NETWORK_K_FUNCTION_CASES: KernelAuditCase[] = [
         build: context => {
           const {graph, view} = context;
           graph.add(
-            new GPUNetworkKFunction({
+            context.construct(GPUNetworkKFunction, {
               spatialContext,
               positions: view('float32x2', K_FUNCTION_EVENTS),
               topology: topology(context, K_FUNCTION_NODES, EDGES) as never,
@@ -1962,7 +1973,7 @@ const NETWORK_K_FUNCTION_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkKFunction({
+        context.construct(GPUNetworkKFunction, {
           positions: view('float32x2', K_FUNCTION_EVENTS),
           topology: topology(context, K_FUNCTION_NODES, EDGES) as never,
           maximumDistance: view('float32', 1),
@@ -1984,7 +1995,7 @@ const NETWORK_K_FUNCTION_CASES: KernelAuditCase[] = [
       const simulations = maximumRows(4 * bands) - 1;
       const nodes = 1000;
       graph.add(
-        new GPUNetworkKFunction({
+        context.construct(GPUNetworkKFunction, {
           positions: view('float32x2', 64),
           topology: topology(context, nodes, EDGES) as never,
           maximumSnapDistance: view('float32', 1),
@@ -2011,7 +2022,7 @@ const NETWORK_K_FUNCTION_CASES: KernelAuditCase[] = [
       const nodes = 16;
       const events = 1 << 16;
       graph.add(
-        new GPUNetworkKFunction({
+        context.construct(GPUNetworkKFunction, {
           positions: view('float32x2', events),
           topology: topology(context, nodes, 64) as never,
           maximumDistance: view('float32', 1),
@@ -2025,42 +2036,56 @@ const NETWORK_K_FUNCTION_CASES: KernelAuditCase[] = [
     }
   },
   {
-    // Events at the binding limit with rowsPerBlock * events above 2^32 - 1.
+    // Events at the uint32 pair-count limit (NET-110) with rowsPerBlock * events above 2^32 - 1.
     exportName: 'GPUNetworkKFunction',
-    name: 'events at the binding limit, row blocks past the invocation limit',
-    build: context => kFunctionEventsCase(context, 256)
+    name: 'events at the pair-count limit, row blocks past the invocation limit',
+    build: context =>
+      kFunctionEventsCase(
+        context,
+        Math.floor(0xffffffff / GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT) + 1
+      )
   },
   {
-    // Past the 2^32 - 1 invocation limit the blocks are narrower than the events, so at the binding
-    // limit the blocks alone emit far more command nodes than the budget allows.
+    // One-row blocks at the pair-count limit: 92,682 blocks alone emit far more command nodes than
+    // the budget allows.
     exportName: 'GPUNetworkKFunction',
-    name: 'events at the binding limit, row blocks at the invocation limit, over the command node budget',
-    build: context => kFunctionEventsCase(context, 255)
+    name: 'events at the pair-count limit, one-row blocks, over the command node budget',
+    build: context => kFunctionEventsCase(context, 1)
   },
   {
-    // A quarter of the largest event table, the widest row blocks the invocation limit allows and
-    // one round: about 4,100 blocks of four command nodes, inside the 32,768 budget.
+    // The largest event table the uint32 pair counts allow (NET-110), the widest row blocks the
+    // invocation limit allows and one round: two blocks, inside the 32,768 budget.
     exportName: 'GPUNetworkKFunction',
-    name: 'quarter of the events, widest row blocks at the invocation limit, one round',
-    build: context => {
-      const events = Math.floor(context.maximumRows(8) / 4);
-      kFunctionEventsCase(context, Math.floor(0xffffffff / events), 4, 1);
-    }
+    name: 'events at the pair-count limit, widest row blocks at the invocation limit, one round',
+    build: context =>
+      kFunctionEventsCase(
+        context,
+        Math.floor(0xffffffff / GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT),
+        GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT,
+        1
+      )
+  },
+  {
+    // One event above the pair-count limit: n (n - 1) / 2 would exceed 2^32 - 1.
+    exportName: 'GPUNetworkKFunction',
+    name: 'events above the pair-count limit',
+    build: context =>
+      kFunctionEventsCase(context, 64, GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT + 1)
   }
 ];
 
-/** One K function over the largest event table with `rowsPerBlock` rows per block. */
+/** One K function over `eventCount` events (default: the pair-count limit) in blocks of `rowsPerBlock` rows. */
 function kFunctionEventsCase(
   context: KernelAuditContext,
   rowsPerBlock: number,
-  eventDivisor: number = 1,
+  eventCount: number = GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT,
   maximumIterations: number = 8,
   edgeCount: number = 64
 ): void {
-  const {graph, view, maximumRows} = context;
+  const {graph, view} = context;
   graph.add(
-    new GPUNetworkKFunction({
-      positions: view('float32x2', Math.floor(maximumRows(8) / eventDivisor)),
+    context.construct(GPUNetworkKFunction, {
+      positions: view('float32x2', eventCount),
       topology: topology(context, 16, edgeCount) as never,
       maximumDistance: view('float32', 1),
       networkLength: view('float32', 1),
@@ -2113,7 +2138,7 @@ const NETWORK_COARSENING_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkCoarsening({
+          context.construct(GPUNetworkCoarsening, {
             topology: topology(context, COARSENING_NODES, EDGES) as never,
             directed,
             nodeMask: view('uint32', COARSENING_NODES),
@@ -2134,7 +2159,7 @@ const NETWORK_COARSENING_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkCoarsening({
+        context.construct(GPUNetworkCoarsening, {
           topology: topology(context, COARSENING_NODES, EDGES, {
             weights: false,
             positions: false
@@ -2174,7 +2199,7 @@ const NETWORK_COARSENING_CASES: KernelAuditCase[] = [
           Math.floor(context.device.limits.maxBufferSize / 40)
         );
         graph.add(
-          new GPUNetworkCoarsening({
+          context.construct(GPUNetworkCoarsening, {
             topology: topology(context, nodes, edges) as never,
             nodeMask: view('uint32', nodes),
             edgeMask: view('uint32', edges),
@@ -2303,7 +2328,7 @@ const NETWORK_LINE_GRAPH_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkLineGraph({
+          context.construct(GPUNetworkLineGraph, {
             spatialContext,
             topology: topology(context, LINE_GRAPH_NODES, EDGES) as never,
             parameters: view('float32', GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH),
@@ -2320,7 +2345,7 @@ const NETWORK_LINE_GRAPH_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkLineGraph({
+        context.construct(GPUNetworkLineGraph, {
           topology: topology(context, LINE_GRAPH_NODES, EDGES) as never,
           parameters: view('float32', GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH),
           output: {
@@ -2352,7 +2377,7 @@ const NETWORK_LINE_GRAPH_CASES: KernelAuditCase[] = [
           const {graph, view, maximumRows} = context;
           const edges = getMaximum(context.device) + overMaximum;
           graph.add(
-            new GPUNetworkLineGraph({
+            context.construct(GPUNetworkLineGraph, {
               spatialContext,
               topology: topology(context, maximumRows(8), edges) as never,
               parameters: view('float32', GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH),
@@ -2408,7 +2433,7 @@ function nodingOutput({view}: KernelAuditContext, pieces: number) {
 function nodingCapacityCase(context: KernelAuditContext, intersectionCapacity: number): void {
   const {graph, view} = context;
   graph.add(
-    new GPUNetworkNoding({
+    context.construct(GPUNetworkNoding, {
       lines: {
         kind: 'lines',
         positions: view('float32x2', 1000),
@@ -2429,7 +2454,7 @@ const NETWORK_NODING_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkNoding({
+          context.construct(GPUNetworkNoding, {
             lines: {
               kind: 'lines',
               positions: view('float32x2', 1000),
@@ -2452,7 +2477,7 @@ const NETWORK_NODING_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const pieces = 256;
       graph.add(
-        new GPUNetworkNoding({
+        context.construct(GPUNetworkNoding, {
           lines: {
             kind: 'lines',
             positions: view('float32x2', 1000),
@@ -2518,7 +2543,7 @@ const NETWORK_NODING_CASES: KernelAuditCase[] = [
       // The piece table takes 32 bytes per piece.
       const pieces = maximumRows(32) - 1;
       graph.add(
-        new GPUNetworkNoding({
+        context.construct(GPUNetworkNoding, {
           lines: {
             kind: 'lines',
             // The segment table takes 32 bytes per vertex and the piece table 32 bytes per
@@ -2857,7 +2882,7 @@ const DRIVE_TIME_CATCHMENT_RECIPE_CASES: KernelAuditCase[] = [
           maximumIterations: 1024,
           costBreaks: view('float32', 16),
           bandCapacity: 64,
-          outputs,
+          output: outputs,
           scratch
         } as never);
       }
@@ -2909,7 +2934,7 @@ const DRIVE_TIME_CATCHMENT_RECIPE_CASES: KernelAuditCase[] = [
               : {cellOutline: isochroneCellOutline(context, path, 4096, 1024, false)}),
             ...(isRaster ? {} : {joinDemand: {candidateCapacity: 4096}})
           },
-          outputs,
+          output: outputs,
           scratch
         } as never);
       }
@@ -2959,7 +2984,7 @@ const DRIVE_TIME_CATCHMENT_RECIPE_CASES: KernelAuditCase[] = [
         maximumIterations: 1024,
         costBreaks: view('float32', bands),
         bandCapacity: bands,
-        outputs,
+        output: outputs,
         scratch
       } as never);
     }
@@ -2974,7 +2999,7 @@ const NETWORK_COST_TABLE_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkCostTable({
+          context.construct(GPUNetworkCostTable, {
             topology: topology(context, NODES, EDGES, {positions: false}) as never,
             costLimit: view('float32', 1),
             localIterations,
@@ -3000,7 +3025,7 @@ const NETWORK_COST_TABLE_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkCostTable({
+        context.construct(GPUNetworkCostTable, {
           topology: topology(context, 600, EDGES, {positions: false}) as never,
           costLimit: view('float32', 1),
           laneCount: 1,
@@ -3019,7 +3044,7 @@ const NETWORK_COST_TABLE_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkCostTable({
+        context.construct(GPUNetworkCostTable, {
           topology: topology(context, NODES, EDGES, {positions: false}) as never,
           costLimit: view('float32', 1),
           laneCount: 1,
@@ -3042,7 +3067,7 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkCentrality({
+          context.construct(GPUNetworkCentrality, {
             topology: topology(context, REACHABILITY_NODES, EDGES, {positions: false}) as never,
             reverseTopology: topology(context, REACHABILITY_NODES, EDGES, {
               positions: false
@@ -3073,7 +3098,7 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUNetworkCentrality({
+          context.construct(GPUNetworkCentrality, {
             topology: topology(context, REACHABILITY_NODES, EDGES, {positions: false}) as never,
             reverseTopology: topology(context, REACHABILITY_NODES, EDGES, {
               positions: false
@@ -3100,10 +3125,10 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
     // Three command nodes per greedy step: 11,000 steps emit about 33,000 nodes.
     exportName: 'GPULocationAllocation',
     name: 'p-median, 11,000 greedy steps, over the command node budget',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const facilities = 11000;
       graph.add(
-        new GPULocationAllocation({
+        construct(GPULocationAllocation, {
           costs: view('float32', facilities * 2),
           facilityCount: facilities,
           operation: 'p-median',
@@ -3113,7 +3138,7 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
             selectedFacilities: view('uint32', facilities),
             assignments: view('uint32', 2),
             objective: view('float32', 1),
-            status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+            status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
           }
         })
       );
@@ -3125,7 +3150,7 @@ const NETWORK_CENTRALITY_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUNetworkCentrality({
+        context.construct(GPUNetworkCentrality, {
           topology: topology(context, REACHABILITY_NODES, EDGES, {positions: false}) as never,
           reverseTopology: topology(context, REACHABILITY_NODES, EDGES, {
             positions: false

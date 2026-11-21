@@ -34,6 +34,10 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {gateDorlingPhase} from './dorling-dispatch-gate';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {createDorlingRowTileNode} from './dorling-row-tile-node';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
@@ -133,6 +137,33 @@ export class GPUDorlingCartogram implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUDorlingCartogramProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'values',
+      'sourceIds',
+      'areaScale',
+      'maximumIterations',
+      'overlapTolerance',
+      'attraction',
+      'rowTileSize',
+      'neighborGrid',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      ...(snapshot.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(snapshot.spatialContext)}
+        : {}),
+      output: snapshotConstructionFields(snapshot.output, [
+        'positions',
+        'radii',
+        'sourceIds',
+        'metrics',
+        'status'
+      ])
+    });
     this.props = props;
     this.id = props.id ?? 'dorling-cartogram';
     this.spatialContext = resolveGPUSpatialContext(

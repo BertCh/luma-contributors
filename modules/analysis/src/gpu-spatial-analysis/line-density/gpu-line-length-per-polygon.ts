@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import type {
   GPUCandidateStatusPort,
   GPUOverflowStatusPort
@@ -24,7 +25,8 @@ import {
   validateGraphViewsBelongToGraph,
   getStorageBindingElementLimit,
   validateMaximumCount,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
@@ -36,15 +38,14 @@ import {
   resolveGPUSpatialContext,
   resolveGPUSecondarySpatialContext,
   GPU_LINEAR_EDGE_MODELS,
+  createGPUMultipartRowOwnersNode,
+  validateGPUMultipartGeometryPort,
   type GPULonLatPolygonStatusPort,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/index';
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {
-  EXACT_GEOMETRY_WGSL,
-  getExactRingWindingWGSL
-} from '../../analysis-core/kernels/exact-geometry-wgsl';
+import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {FIND_LINE_WGSL} from '../line-segmentize/line-segmentize-kernels';
@@ -77,12 +78,12 @@ export type GPULineLengthPerPolygonOutput = {
    * polygon feature, in the context's length unit (position units for planar, meters by default
    * for longitude/latitude).
    */
-  lengths: GraphDataView<'float32'>;
+  clippedLengths: GraphDataView<'float32'>;
   /** Optional `sum(length * lineWeight)` per polygon feature. Requires `lineWeights`. */
   weightedLengths?: GraphDataView<'float32'>;
   /**
-   * Optional number of segments with a positive length inside each polygon feature. A segment
-   * that only touches the polygon boundary is not counted.
+   * Optional number of segments with positive clipped length in each polygon feature, including
+   * boundary-coincident length. A segment touching at only a point is not counted.
    */
   segmentCounts?: GraphDataView<'uint32'>;
   /**
@@ -118,9 +119,11 @@ export function getGPULineLengthPerPolygonMaximumPairCapacity(device: Device): n
 
 /** Properties for {@link GPULineLengthPerPolygon}. */
 export type GPULineLengthPerPolygonProps = GPULineGeometryFields & {
+  /** Optional feature-to-linestring-part offsets. Every part contributes; empty features contribute zero. */
+  featureOffsets?: GraphDataView<'uint32'>;
   /** Prefix for generated node and transient IDs. Defaults to `'line-length-per-polygon'`. */
   id?: string;
-  /** Optional per-line value (`lineCount` rows) that multiplies the length for `weightedLengths`. */
+  /** Optional per-feature value that multiplies every part's length for weightedLengths. Without featureOffsets, one value per linestring. */
   lineWeights?: GraphDataView<'float32'>;
   /** Polygon or multipolygon features in the four-level layout; rows are features. */
   polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
@@ -163,21 +166,23 @@ export type GPULineLengthPerPolygonProps = GPULineGeometryFields & {
  * Every vertex row `i` that is not the last of its line defines one segment. The segments are
  * joined to the polygons with `GPUSpatialJoinCandidates` (bounding boxes, BVH probe). For each
  * candidate pair the segment is cut at every crossing with a polygon ring edge (at most
- * `maximumCrossingCount` kept, insertion-sorted by parameter `t`), and every piece between consecutive
+ * `maximumCrossingCount` kept, insertion-sorted by local dominant-axis coordinate), and every piece between consecutive
  * cuts is kept when its midpoint is inside the feature (even/odd fill over all rings, so holes and
  * multipolygon parts work, as in the spatial-join contributors). Piece lengths are summed per pair,
  * then per polygon by a stable sort and fixed-order segmented sum, so results are bitwise
  * reproducible. No float atomics (segment counts use integer atomics).
  *
- * Pieces lying exactly along a ring edge are ambiguous (midpoint on the boundary) and may count or
- * not. Lines are not unioned: overlapping lines count once each, as in QGIS. A longitude-latitude context clips
+ * Pieces lying exactly along an outer or hole ring edge contribute to that polygon's closed
+ * intersection. A shared edge contributes to both adjacent polygons. Lines are not unioned:
+ * overlapping lines count once each, as in QGIS. A longitude-latitude context clips
  * straight in longitude/latitude (as {@link GPULineDensity} does) and measures each piece as the
  * great-circle distance between its endpoints.
  *
  * Limits: `positions` has at most {@link getGPULineLengthPerPolygonMaximumPositionCount} rows (8388608 on a default device).
  *
- * Precision: f32 inputs and f32 clip parameters (relative length error about `1e-6` of the
- * segment length; a sliver piece near a boundary can flip its midpoint test).
+ * Precision: f32 inputs and local crossing coordinates. Keeping local crossing coordinates
+ * avoids collapsing narrow pieces into one rounded global segment fraction; input quantization
+ * and intersection arithmetic can still affect boundary-near pieces.
  */
 export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -197,10 +202,55 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
   /** Resolved crossing bound. */
   readonly maximumCrossingCount: number;
 
-  constructor(props: GPULineLengthPerPolygonProps) {
-    this.id = props.id ?? 'line-length-per-polygon';
+  constructor(inputProps: GPULineLengthPerPolygonProps) {
+    const captured = snapshotConstructionFields(inputProps, [
+      'id',
+      'positions',
+      'lineOffsets',
+      'featureOffsets',
+      'lineWeights',
+      'polygons',
+      'spatialContext',
+      'polygonsSpatialContext',
+      'pairCapacity',
+      'maximumCrossingCount',
+      'output'
+    ]);
+    const id = captured.id ?? 'line-length-per-polygon';
+    validateRequirement(
+      id,
+      !('lengths' in captured.output),
+      'output.lengths was removed; use output.clippedLengths'
+    );
+    const output = snapshotConstructionFields(captured.output, [
+      'clippedLengths',
+      'weightedLengths',
+      'segmentCounts',
+      'status'
+    ]);
+    validateRequirement(id, Boolean(output.clippedLengths), 'output.clippedLengths is required');
+    const props = Object.freeze({
+      ...captured,
+      polygons: snapshotConstructionFields(captured.polygons, [
+        'kind',
+        'positions',
+        'featureOffsets',
+        'polygonOffsets',
+        'ringOffsets',
+        'sourceIds'
+      ]),
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'overflow',
+          'candidateOverflow',
+          'antimeridianUncertainCount',
+          'poleUncertainCount'
+        ])
+      })
+    });
+    this.id = id;
     this.props = props;
-    const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
@@ -222,19 +272,31 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     validateCapacity(id, 'pairCapacity', this.pairCapacity);
     validateCapacity(id, 'maximumCrossingCount', this.maximumCrossingCount, 1, 1024);
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length < 2) {
+    if (props.positions.length < 2 && !props.featureOffsets) {
       throw new Error(`${id} needs at least two positions`);
     }
     validateSinglePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);
-    if (props.lineOffsets.length < 2) {
+    if (props.lineOffsets.length < (props.featureOffsets ? 1 : 2)) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
     if (props.lineWeights) {
       validateSinglePackedView(props.lineWeights, ['float32'], `${id} lineWeights`);
-      if (props.lineWeights.length !== props.lineOffsets.length - 1) {
-        throw new Error(`${id} lineWeights must hold one row per line`);
+      if (
+        props.lineWeights.length !==
+        (props.featureOffsets?.length ?? props.lineOffsets.length) - 1
+      ) {
+        throw new Error(
+          `${id} lineWeights must hold one row per ${props.featureOffsets ? 'multipart feature' : 'line'}`
+        );
       }
     }
+    if (props.featureOffsets)
+      validateGPUMultipartGeometryPort(id, {
+        kind: 'lines',
+        positions: props.positions,
+        lineOffsets: props.lineOffsets,
+        featureOffsets: props.featureOffsets
+      });
     if (props.polygons.kind !== 'polygons') {
       throw new Error(`${id} polygons must have kind 'polygons'`);
     }
@@ -250,11 +312,11 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     if (this.polygonCount < 1) {
       throw new Error(`${id} polygons must contain at least one feature`);
     }
-    const {lengths, weightedLengths, segmentCounts, status} = props.output;
+    const {clippedLengths, weightedLengths, segmentCounts, status} = props.output;
     const {overflow} = status;
-    validateSinglePackedView(lengths, ['float32'], `${id} output.lengths`);
-    if (lengths.length !== this.polygonCount) {
-      throw new Error(`${id} output.lengths must hold ${this.polygonCount} rows`);
+    validateSinglePackedView(clippedLengths, ['float32'], `${id} output.clippedLengths`);
+    if (clippedLengths.length !== this.polygonCount) {
+      throw new Error(`${id} output.clippedLengths must hold ${this.polygonCount} rows`);
     }
     if (weightedLengths) {
       if (!props.lineWeights) {
@@ -291,7 +353,7 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [
-        lengths,
+        clippedLengths,
         weightedLengths,
         segmentCounts,
         overflow,
@@ -302,6 +364,7 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       [
         props.positions,
         props.lineOffsets,
+        props.featureOffsets,
         props.lineWeights,
         props.polygons.positions,
         props.polygons.featureOffsets,
@@ -320,12 +383,13 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.lineOffsets,
+      props.featureOffsets,
       props.lineWeights,
       polygons.positions,
       polygons.featureOffsets,
       polygons.polygonOffsets,
       polygons.ringOffsets,
-      output.lengths,
+      output.clippedLengths,
       output.weightedLengths,
       output.segmentCounts,
       output.status.overflow,
@@ -347,6 +411,47 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
     const rowCount = props.positions.length;
     const lineCount = props.lineOffsets.length - 1;
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (props.featureOffsets && (rowCount < 2 || lineCount === 0)) {
+      for (const view of [
+        output.clippedLengths,
+        output.weightedLengths,
+        output.segmentCounts,
+        output.status.overflow,
+        output.status.candidateOverflow,
+        ...(this.spatialContext.coordinateSpace === 'longitude-latitude'
+          ? [output.status.antimeridianUncertainCount, output.status.poleUncertainCount]
+          : [])
+      ]) {
+        if (view)
+          nodes.push(
+            createFillNode(graph, {
+              id: `${id}-empty-${nodes.length}`,
+              operation: OPERATION,
+              view,
+              type: view.format === 'float32' ? 'f32' : 'u32',
+              value: view.format === 'float32' ? '0.0' : '0u'
+            })
+          );
+      }
+      return nodes;
+    }
+    const lineOwners = props.featureOffsets
+      ? createTransientView(graph, `${id}-line-owners`, 'uint32', lineCount)
+      : undefined;
+    if (lineOwners)
+      nodes.push(
+        createGPUMultipartRowOwnersNode(
+          graph,
+          `${id}-line-owners`,
+          {
+            kind: 'lines',
+            positions: props.positions,
+            lineOffsets: props.lineOffsets,
+            featureOffsets: props.featureOffsets!
+          },
+          lineOwners
+        )
+      );
     if (
       this.spatialContext.coordinateSpace === 'longitude-latitude' &&
       hasLonLatPolygonStatus(output.status)
@@ -400,9 +505,19 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
           {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
+          ...(lineOwners
+            ? [
+                {
+                  name: 'lineOwners',
+                  view: lineOwners,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           {
             name: 'lineWeights',
-            view: props.lineWeights ?? output.lengths,
+            view: props.lineWeights ?? output.clippedLengths,
             type: 'f32',
             access: 'read'
           },
@@ -414,7 +529,8 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
         declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const ROW_COUNT: u32 = ${rowCount}u;
 const HAS_WEIGHTS: bool = ${props.lineWeights ? 'true' : 'false'};
-${FIND_LINE_WGSL}`,
+${FIND_LINE_WGSL}
+fn isFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`,
         body: `segmentOffsets[segmentOffsetsOffset + index] = 2u * index;
   if (index < ROW_COUNT) {
     let line = findLine(index);
@@ -422,7 +538,13 @@ ${FIND_LINE_WGSL}`,
     var weight = 1.0;
     if (valid) {
       valid = index + 1u < min(lineOffsets[lineOffsetsOffset + line + 1u], ROW_COUNT);
-      if (HAS_WEIGHTS) { weight = lineWeights[lineWeightsOffset + line]; }
+      ${
+        lineOwners
+          ? `let owner = lineOwners[lineOwnersOffset + line];
+      valid = valid && owner < ${props.featureOffsets!.length - 1}u;
+      if (HAS_WEIGHTS && valid) { weight = lineWeights[lineWeightsOffset + owner]; }`
+          : 'if (HAS_WEIGHTS) { weight = lineWeights[lineWeightsOffset + line]; }'
+      }
     }
     var nanBits = 0x7fc00000u;
     let nan = bitcast<f32>(nanBits);
@@ -431,6 +553,7 @@ ${FIND_LINE_WGSL}`,
     if (valid) {
       a = vec2f(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
       b = vec2f(positions[positionsOffset + 2u * index + 2u], positions[positionsOffset + 2u * index + 3u]);
+      if (!isFinite(a.x) || !isFinite(a.y) || !isFinite(b.x) || !isFinite(b.y)) { a = vec2f(nan); b = vec2f(nan); valid = false; }
     }
     segmentPositions[segmentPositionsOffset + 4u * index] = a.x;
     segmentPositions[segmentPositionsOffset + 4u * index + 1u] = a.y;
@@ -523,93 +646,125 @@ fn getVertex(row: u32) -> vec2f {
 
 var<private> segmentOrigin: vec2f;
 
-fn getRelativeVertex(row: u32) -> vec2f {
-  return getVertex(row) - segmentOrigin;
-}
-
 fn cross2(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
-
-fn getPieceLength(a: vec2f, b: vec2f, t0: f32, t1: f32) -> f32 {
-  ${
-    spherical
-      ? 'return geodesicCentralAngle(mix(a, b, t0), mix(a, b, t1)) * RADIUS;'
-      : 'return (t1 - t0) * length(b - a);'
-  }
-}
-
-${getExactRingWindingWGSL('getRingWinding', 'getRelativeVertex')}
-// Even/odd fill over every ring of the feature, with the shared exact point-in-ring rule
-// (utils/exact-geometry-wgsl.ts). Called from one site.
-fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
-  let probe = ExactProbe(point, point, point, EXACT_PROBE_POINT);
-  var winding = 0;
-  for (var ring = ringStart; ring < ringEnd; ring++) {
-    let first = ringOffsets[ringOffsetsOffset + ring];
-    let last = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
-    winding += getRingWinding(probe, first, last).x;
-  }
-  return (winding & 1) != 0;
-}`,
+`,
         body: `var inside = 0.0;
   let segment = leftRows[leftRowsOffset + index];
   let feature = rightRows[rightRowsOffset + index];
   if (segment != NO_FEATURE && feature != NO_FEATURE) {
-    let a = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment], segmentPositions[segmentPositionsOffset + 4u * segment + 1u]);
-    let b = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment + 2u], segmentPositions[segmentPositionsOffset + 4u * segment + 3u]);
-    let delta = b - a;
-    segmentOrigin = a;
+    var a = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment], segmentPositions[segmentPositionsOffset + 4u * segment + 1u]);
+    var b = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment + 2u], segmentPositions[segmentPositionsOffset + 4u * segment + 3u]);
     let ringStart = featureRings[featureRingsOffset + 2u * feature];
     let ringEnd = featureRings[featureRingsOffset + 2u * feature + 1u];
+    // Anchor coordinates in the polygon, preserving a narrow cut even with two distant endpoints.
+    segmentOrigin = a;
+    if (ringStart < ringEnd) { segmentOrigin = getVertex(ringOffsets[ringOffsetsOffset + ringStart]); }
+    let delta = b - a;
+    let relativeA = a - segmentOrigin;
+    let relativeB = b - segmentOrigin;
+    let horizontal = abs(delta.x) >= abs(delta.y);
+    let firstCoordinate = select(relativeA.y, relativeA.x, horizontal);
+    let lastCoordinate = select(relativeB.y, relativeB.x, horizontal);
+    let slope = select(delta.x / delta.y, delta.y / delta.x, horizontal);
+    let intercept = select(relativeA.x - relativeA.y * slope, relativeA.y - relativeA.x * slope, horizontal);
     if (!isNanBits(a.x) && !isNanBits(a.y) && !isNanBits(b.x) && !isNanBits(b.y) && (delta.x != 0.0 || delta.y != 0.0)) {
       var crossings = array<f32, ${maximumCrossingCount}>();
       var crossingCount = 0u;
       var truncated = false;
-      for (var ring = ringStart; ring < ringEnd; ring++) {
-        let first = ringOffsets[ringOffsetsOffset + ring];
-        let last = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
-        if (last < first + 3u) { continue; }
-        var previous = getVertex(last - 1u);
-        for (var row = first; row < last; row++) {
-          let current = getVertex(row);
-          let edge = current - previous;
-          let denominator = cross2(delta, edge);
-          if (denominator != 0.0) {
-            let offset = previous - a;
-            let t = cross2(offset, edge) / denominator;
-            let u = cross2(offset, delta) / denominator;
-            // Extra breakpoints are harmless (pieces are tested by midpoint), so edges are
-            // inclusive with a small tolerance and a vertex crossing is never dropped.
-            if (t > 0.0 && t < 1.0 && u >= -EDGE_TOLERANCE && u <= 1.0 + EDGE_TOLERANCE) {
-              if (crossingCount < MAXIMUM_CROSSINGS) {
-                var slot = crossingCount;
-                crossingCount++;
-                loop {
-                  if (slot == 0u || crossings[slot - 1u] <= t) { break; }
-                  crossings[slot] = crossings[slot - 1u];
-                  slot--;
+      var start = min(firstCoordinate, lastCoordinate);
+      // Visit zero collects breakpoints; later visits classify their intervals. Both phases
+      // batch their orientation operands at the same call site, so the exact fallback is
+      // inlined once. The first visit grows crossingCount before the remaining visits run.
+      for (var visit = 0u; visit <= crossingCount + 1u; visit++) {
+        let collecting = visit == 0u;
+        let piece = select(visit - 1u, 0u, collecting);
+        let end = select(max(firstCoordinate, lastCoordinate), crossings[min(piece, MAXIMUM_CROSSINGS - 1u)], piece < crossingCount);
+        if (!collecting && end <= start) { continue; }
+        // Preserve local midpoint reconstruction: adding the world origin can round a
+        // genuine interior midpoint onto a hole edge.
+        let middle = 0.5 * start + 0.5 * end;
+        let localMiddle = select(vec2f(intercept + middle * slope, middle), vec2f(middle, intercept + middle * slope), horizontal);
+        var winding = 0;
+        var boundary = false;
+        for (var ring = ringStart; ring < ringEnd; ring++) {
+          let first = ringOffsets[ringOffsetsOffset + ring];
+          let last = min(ringOffsets[ringOffsetsOffset + ring + 1u], VERTEX_COUNT);
+          if (last < first + 3u) { continue; }
+          var previous = getVertex(last - 1u);
+          for (var row = first; row < last; row++) {
+            let current = getVertex(row);
+            let localPrevious = previous - segmentOrigin;
+            let localCurrent = current - segmentOrigin;
+            var orientationStarts = array<vec2f, 4>(localPrevious, localPrevious, localPrevious, localPrevious);
+            var orientationEnds = array<vec2f, 4>(localCurrent, localCurrent, localCurrent, localCurrent);
+            var orientationPoints = array<vec2f, 4>(localMiddle, localMiddle, localMiddle, localMiddle);
+            if (collecting) {
+              orientationStarts = array<vec2f, 4>(a, a, a, a);
+              orientationEnds = array<vec2f, 4>(b, b, b, b);
+              orientationPoints = array<vec2f, 4>(previous, current, previous, current);
+            }
+            var orientationSigns = vec4i(0);
+            for (var orientationIndex = 0u; orientationIndex < select(1u, 2u, collecting); orientationIndex++) {
+              var orientationSign = orientSign(orientationStarts[orientationIndex], orientationEnds[orientationIndex], orientationPoints[orientationIndex]);
+              // Membership retains exactOrientSigns' uncertain-sign fallback. Endpoint snaps
+              // retain the former raw orientSign rule: an uncertified sign never snaps.
+              if (!collecting && orientationSign == 2) {
+                let direction = orientationEnds[orientationIndex] - orientationStarts[orientationIndex];
+                let offset = orientationPoints[orientationIndex] - orientationStarts[orientationIndex];
+                orientationSign = i32(sign(cross2(direction, offset)));
+              }
+              orientationSigns[orientationIndex] = orientationSign;
+            }
+            if (collecting) {
+              let edge = current - previous;
+              let denominator = cross2(delta, edge);
+              if (denominator != 0.0) {
+                let offset = previous - a;
+                let edgeFraction = cross2(offset, delta) / denominator;
+                var crossing = previous - segmentOrigin + edgeFraction * edge;
+                if (orientationSigns.x == 0) { crossing = previous - segmentOrigin; }
+                else if (orientationSigns.y == 0) { crossing = current - segmentOrigin; }
+                let crossingCoordinate = select(crossing.y, crossing.x, horizontal);
+                // Extra breakpoints are harmless: each interval is tested by its midpoint.
+                if (crossingCoordinate > min(firstCoordinate, lastCoordinate) && crossingCoordinate < max(firstCoordinate, lastCoordinate) && edgeFraction >= -EDGE_TOLERANCE && edgeFraction <= 1.0 + EDGE_TOLERANCE) {
+                  if (crossingCount < MAXIMUM_CROSSINGS) {
+                    var slot = crossingCount;
+                    crossingCount++;
+                    loop {
+                      if (slot == 0u || crossings[slot - 1u] <= crossingCoordinate) { break; }
+                      crossings[slot] = crossings[slot - 1u];
+                      slot--;
+                    }
+                    crossings[slot] = crossingCoordinate;
+                  } else { truncated = true; }
                 }
-                crossings[slot] = t;
-              } else {
-                truncated = true;
+              }
+            } else if (isFiniteBits(localPrevious.x) && isFiniteBits(localPrevious.y) && isFiniteBits(localCurrent.x) && isFiniteBits(localCurrent.y)) {
+              let inBox = all(localMiddle >= min(localPrevious, localCurrent)) && all(localMiddle <= max(localPrevious, localCurrent));
+              boundary = boundary || (inBox && orientationSigns.x == 0);
+              if ((localPrevious.y >= localMiddle.y) != (localCurrent.y >= localMiddle.y)) {
+                let side = sosPointSide(orientationSigns.x, localPrevious, localCurrent);
+                if (localCurrent.y > localPrevious.y && side > 0) { winding++; }
+                if (localCurrent.y <= localPrevious.y && side < 0) { winding--; }
               }
             }
+            previous = current;
           }
-          previous = current;
         }
-      }
-      if (truncated) { atomicStore(&crossingOverflow[crossingOverflowOffset], 1u); }
-      var start = 0.0;
-      for (var piece = 0u; piece <= crossingCount; piece++) {
-        let end = select(1.0, crossings[min(piece, MAXIMUM_CROSSINGS - 1u)], piece < crossingCount);
-        if (end > start) {
-          // Classify in the segment's local frame. Adding the world origin can round a
-          // genuine interior midpoint onto a hole edge, losing a contributing segment.
-          if (isInside(delta * (0.5 * (start + end)), ringStart, ringEnd)) {
-            inside += getPieceLength(a, b, start, end);
+        if (!collecting) {
+          if (boundary || (winding & 1) != 0) {
+            ${
+              spherical
+                ? `let first = segmentOrigin + select(vec2f(intercept + start * slope, start), vec2f(start, intercept + start * slope), horizontal);
+            let last = segmentOrigin + select(vec2f(intercept + end * slope, end), vec2f(end, intercept + end * slope), horizontal);
+            inside += geodesicCentralAngle(first, last) * RADIUS;`
+                : 'inside += (end - start) * length(vec2f(1.0, slope));'
+            }
           }
           start = end;
         }
       }
+      if (truncated) { atomicStore(&crossingOverflow[crossingOverflowOffset], 1u); }
     }
   }
   insideLengths[insideLengthsOffset + index] = inside;`
@@ -677,7 +832,7 @@ const POLYGON_COUNT: u32 = ${polygonCount}u;`,
         segmentCount: polygonCount,
         segmentKeys: keys,
         sumContributions: insideLengths,
-        sums: output.lengths,
+        sums: output.clippedLengths,
         reductions: output.weightedLengths
           ? [{name: 'weighted', contributions: weighted, output: output.weightedLengths}]
           : []

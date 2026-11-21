@@ -12,9 +12,11 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
+  isGraphVectorView,
   validateCapacity,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 import {createDensityPointPass} from './density-point-passes';
 import {
@@ -38,7 +40,7 @@ export function createDensityScalarScratch<Parameters, Format extends 'float32' 
   format: Format,
   packed = false
 ): GraphDataView<Format> | GraphVectorView<Format> {
-  if (packed || !(template instanceof GraphVectorView)) {
+  if (packed || !isGraphVectorView(template)) {
     return createTransientView(graph, id, format, template.length);
   }
   const data = template.data.map((chunk, index) =>
@@ -55,6 +57,82 @@ export function createDensityScalarScratch<Parameters, Format extends 'float32' 
     rowByteLength: 4,
     data
   });
+}
+
+/** Finite scalar extrema across chunks. Runtime dispatch metadata keeps the reduction's shader
+ * and pipeline independent of chunk lengths and binding prefixes. Ordered integer keys select
+ * the original float32 value exactly, including negative coordinates; no moment arithmetic occurs.
+ */
+export function createDensityExtremumNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  input: GraphDataView<'float32'> | GraphVectorView<'float32'>,
+  output: GraphDataView<'float32'>,
+  operation: 'min' | 'max'
+): GPUCommandNode<Parameters>[] {
+  if (!isGraphVectorView(input)) {
+    return [...new GPUReduction({id, input, output, operation}).getCommandNodes(graph)];
+  }
+  const extremum = createTransientView(graph, `${id}-ordered-key`, 'uint32', 1);
+  const initial = operation === 'min' ? '0xffffffffu' : '0u';
+  return [
+    createWGSLKernelNode(graph, {
+      id: `${id}-clear`,
+      operation: 'GPUKernelDensity',
+      variant: `extremum-${operation}-clear`,
+      invocationCount: 1,
+      bindings: [{name: 'extremum', view: extremum, type: 'u32', access: 'read_write'}],
+      body: `extremum[extremumOffset] = ${initial};`
+    }),
+    ...getGraphViewChunks(input).flatMap((chunk, chunkIndex) =>
+      chunk.length === 0
+        ? []
+        : [
+            createDensityPointPass(graph, {
+              id: `${id}-${chunkIndex}`,
+              operation: 'GPUKernelDensity',
+              variant: `extremum-${operation}`,
+              invocationCount: chunk.length,
+              workgroupSize: POINT_DENSITY_WORKGROUP_SUM_SIZE,
+              guardIndex: false,
+              bindings: [
+                {name: 'terms', view: chunk, type: 'f32', access: 'read'},
+                {name: 'extremum', view: extremum, type: 'atomic<u32>', access: 'read_write'}
+              ],
+              declarations: `var<workgroup> extremumKeys: array<u32, ${POINT_DENSITY_WORKGROUP_SUM_SIZE}>;`,
+              body: `let lane = localInvocationIndex;
+  var key = ${initial};
+  if (index < INVOCATION_COUNT) {
+    let bits = bitcast<u32>(terms[termsOffset + index]);
+    key = select(bits | 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
+  }
+  extremumKeys[lane] = key;
+  workgroupBarrier();
+  var stride = ${POINT_DENSITY_WORKGROUP_SUM_SIZE / 2}u;
+  loop {
+    if (lane < stride) { extremumKeys[lane] = ${operation}(extremumKeys[lane], extremumKeys[lane + stride]); }
+    workgroupBarrier();
+    if (stride == 1u) { break; }
+    stride /= 2u;
+  }
+  if (lane == 0u) { atomic${operation === 'min' ? 'Min' : 'Max'}(&extremum[extremumOffset], extremumKeys[0]); }`
+            })
+          ]
+    ),
+    createWGSLKernelNode(graph, {
+      id: `${id}-decode`,
+      operation: 'GPUKernelDensity',
+      variant: 'extremum-decode',
+      invocationCount: 1,
+      bindings: [
+        {name: 'extremum', view: extremum, type: 'u32', access: 'read'},
+        {name: 'outputValue', view: output, type: 'f32', access: 'read_write'}
+      ],
+      body: `let key = extremum[extremumOffset];
+let bits = select(~key, key & 0x7fffffffu, (key & 0x80000000u) != 0u);
+outputValue[outputValueOffset] = bitcast<f32>(bits);`
+    })
+  ];
 }
 
 /** Preflights the widest per-point scratch binding and allocation before declarations. */
@@ -138,7 +216,7 @@ export function createDensityWeightSumNodes<Parameters>(
   output: GraphDataView<'float32'>
 ): GPUCommandNode<Parameters>[] {
   // Preserve the established packed reduction and its float32 rounding order.
-  if (!(input instanceof GraphVectorView)) {
+  if (!isGraphVectorView(input)) {
     return [...new GPUReduction({id, input, output, operation: 'sum'}).getCommandNodes(graph)];
   }
   const scale = createTransientView(graph, `${id}-scale`, 'uint32', 1);
@@ -255,7 +333,7 @@ export function createDensityInvalidCountNodes<Parameters>(
   excluded: GraphDataView<'uint32'> | GraphVectorView<'uint32'>,
   output: GraphDataView<'uint32'>
 ): GPUCommandNode<Parameters>[] {
-  if (!(excluded instanceof GraphVectorView)) {
+  if (!isGraphVectorView(excluded)) {
     return [
       ...new GPUReduction({id, input: excluded, output, operation: 'sum'}).getCommandNodes(graph)
     ];

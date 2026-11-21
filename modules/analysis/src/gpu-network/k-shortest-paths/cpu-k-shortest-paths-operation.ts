@@ -81,7 +81,7 @@ export function computeKShortestPathsOnCPU(
       throw new Error('topology.offsets must be nondecreasing and within neighbors.length');
     }
   }
-  validateCapacity(id, 'sources.length', input.sources.length);
+  validateCapacity(id, 'sources.length', input.sources.length, 0);
   validateViewLength(id, 'targets', input.targets, input.sources.length);
   const pathLength = options.maximumPathLength ?? 64;
   const routeCount = options.routeCount;
@@ -279,7 +279,7 @@ export class CPUKShortestPathsOperation extends GPUCPUOperation {
       output: props.output
     };
     const id = props.id ?? 'k-shortest-paths';
-    validateCapacity(id, 'queryCount', props.queryCount);
+    validateCapacity(id, 'queryCount', props.queryCount, 0);
     validateCapacity(id, 'routeCount', props.routeCount);
     validateCapacity(id, 'maximumPathLength', props.maximumPathLength ?? 64);
     validateCapacity(id, 'candidateCapacity', props.candidateCapacity ?? 256);

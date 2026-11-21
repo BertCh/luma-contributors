@@ -128,6 +128,11 @@ export function addKeplerPointDBSCAN<Parameters>(
     summary:
       provided.status?.summary ?? createTransientView(graph, `${id}-summary-output`, 'uint32', 3)
   };
+  const opticsStatus = {
+    iterationCount: createTransientView(graph, `${id}-optics-iteration-count`, 'uint32', 1),
+    converged: createTransientView(graph, `${id}-optics-converged`, 'uint32', 1),
+    invalidCount: createTransientView(graph, `${id}-optics-invalid-count`, 'uint32', 1)
+  };
   const positions = createTransientView(graph, `${id}-positions`, 'float32x2', rowCount);
   const effectiveMask = createTransientView(graph, `${id}-effective-mask`, 'uint32', rowCount);
   const spatialContext = {
@@ -144,7 +149,14 @@ export function addKeplerPointDBSCAN<Parameters>(
     extractionDistance: settings.epsilon,
     extractionMethod: 'dbscan',
     maximumIterations: rowCount,
-    output: {labels, coreDistances, reachability, predecessors, ordering, status: status.optics}
+    output: {
+      labels,
+      coreDistances,
+      reachability,
+      predecessors,
+      ordering,
+      ports: {status: opticsStatus}
+    }
   });
   addKernel(
     graph,
@@ -171,6 +183,20 @@ positions[positionsOffset + index * 2u + 1u] = select(missing, latitudeValue, in
 effectiveMask[effectiveMaskOffset + index] = select(0u, 1u, included);`
   );
   graph.add(contributor);
+  addKernel(
+    graph,
+    `${id}-pack-optics-status`,
+    1,
+    [
+      {name: 'iterationCount', view: opticsStatus.iterationCount},
+      {name: 'converged', view: opticsStatus.converged},
+      {name: 'invalidCount', view: opticsStatus.invalidCount},
+      {name: 'packedStatus', view: status.optics, write: true}
+    ],
+    `packedStatus[packedStatusOffset] = iterationCount[iterationCountOffset];
+packedStatus[packedStatusOffset + 1u] = converged[convergedOffset];
+packedStatus[packedStatusOffset + 2u] = invalidCount[invalidCountOffset];`
+  );
   addKernel(
     graph,
     `${id}-summary`,

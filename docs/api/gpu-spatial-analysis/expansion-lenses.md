@@ -1,5 +1,7 @@
 # Geospatial expansion computation lenses
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 These executable examples use small, explicitly synthetic inputs to inspect each contributor’s actual GPU command graph and captured outputs. They illustrate API contracts and status behavior; they are not performance benchmarks or observed geographic datasets. Statistical definitions and bounded algorithm contracts are documented in [Statistical expansion](./statistical-expansion.md), [Expansion recipes](./expansion-recipes.md), and the raster and network expansion references.
 
 ## `GPULocalSpatialHeteroscedasticity`
@@ -146,6 +148,15 @@ Integer H3 topology derives six canonical directed-edge or vertex keys, includin
 ## `GPUBoundedFacilityAllocation`
 
 Bounded facility-subset enumeration separates exact p-center certification from demand-order greedy capacitated allocation.
+
+`GPUBoundedFacilityAllocation` captures its construction choices (`id`, `operation`,
+`facilityCount`, `selectCount`) and input view bindings (`costs`, `demand`, `capacities`). It also
+copies the nested `output` mapping for `selectedFacilities`, `assignments`, `objective` and
+`status`. For example, after constructing a solver with `selectCount: 2`, assigning
+`props.selectCount = 3` or replacing `props.output.objective` does not alter that solver's
+validated enumeration or destination. Construct a new contributor to change those choices.
+Graph-view identities are retained: later writes to the original costs, demand or capacity
+buffers are visible when the compiled graph is resubmitted.
 
 {/* lens:GPUBoundedFacilityAllocation */}
 

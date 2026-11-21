@@ -9,13 +9,15 @@ export type {
   GPUNetworkSubgraphFilterProps
 } from './gpu-network-subgraph-filter';
 export {
-  decodeGPUNetworkSubgraphFilterCounts,
+  decodeGPUNetworkSubgraphFilterCountsWords,
+  decodeGPUNetworkSubgraphFilterCountsFromBytes,
   getGPUNetworkSubgraphFilterParameterLength,
   getGPUNetworkSubgraphFilterParameterValues,
   GPU_NETWORK_SUBGRAPH_FILTER_COUNT_LENGTH,
   GPU_NETWORK_SUBGRAPH_FILTER_COUNT_WORD,
   GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE
 } from './network-subgraph-filter-parameters';
+export type {NetworkReadbackBytes} from '../network-statistics/network-packed-readback';
 export type {
   GPUNetworkSubgraphFilterCounts,
   GPUNetworkSubgraphFilterParameterLayout,

@@ -13,7 +13,11 @@ import {
   isResidentSqlTimeColumn,
   readResidentSqlTimeColumn
 } from './resident-sql-time-columns';
-import {makeArrowTableFromGPUAnalyticsTable} from '@luma.gl/graph/arrow';
+import {
+  makeArrowTableFromGPUAnalyticsTable,
+  type ArrowTableFromGPUAnalyticsTableProps
+} from '@luma.gl/graph/arrow';
+import type {GPUTypeMap} from '@luma.gl/graph/gpu-tables';
 import {Buffer} from '@luma.gl/core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {
@@ -393,7 +397,10 @@ export class ResidentSqlGpuRuntime {
       columns[output.name] = source.info.columns[output.sourceColumn];
       const sourceVector = source.frame.table.gpuVectors[output.sourceColumn] as GPUVector;
       vectors[output.name] = asPlanningVector(sourceVector, output.name);
-      const sourceValidity = source.frame.validity[output.sourceColumn] as GPUVector<'uint32'>;
+      const sourceValidity = getOwnMetadata(
+        source.frame.validity,
+        output.sourceColumn
+      ) as GPUVector<'uint32'>;
       if (sourceValidity || sideMayBeNull(output.side)) {
         nullableColumns.add(output.name);
         validity[output.name] = asPlanningVector(
@@ -402,7 +409,7 @@ export class ResidentSqlGpuRuntime {
           'uint32'
         ) as GPUVector<'uint32'>;
       }
-      const dictionary = source.frame.dictionaries[output.sourceColumn];
+      const dictionary = getOwnMetadata(source.frame.dictionaries, output.sourceColumn);
       if (dictionary) dictionaries[output.name] = dictionary as readonly unknown[];
     }
     if (composed.compositeKey && composed.outerSql !== composed.exactOuterSql) {
@@ -455,7 +462,9 @@ export class ResidentSqlGpuRuntime {
           )!;
           return {
             vector: source.value.columns[column] as GPUVector,
-            validity: source.value.analytics.validity[column] as GPUVector<'uint32'> | undefined
+            validity: getOwnMetadata(source.value.analytics.validity, column) as
+              | GPUVector<'uint32'>
+              | undefined
           };
         }
       });
@@ -595,7 +604,7 @@ export class ResidentSqlGpuRuntime {
                 const keys = await findResidentSqlDistinctKeys({
                   device: this.session.device,
                   vector,
-                  validity: entryToResolve.frame.validity[columnName] as
+                  validity: getOwnMetadata(entryToResolve.frame.validity, columnName) as
                     | GPUVector<'uint32'>
                     | undefined,
                   format
@@ -852,7 +861,7 @@ export class ResidentSqlGpuRuntime {
         const keys = await findResidentSqlDistinctKeys({
           device: this.session.device,
           vector: frame.table.gpuVectors[key.column] as GPUVector,
-          validity: frame.validity[key.column] as GPUVector<'uint32'> | undefined,
+          validity: getOwnMetadata(frame.validity, key.column) as GPUVector<'uint32'> | undefined,
           format: 'uint32'
         });
         const groupCount = keys.reduce((largest, value) => Math.max(largest, value), 0) + 1;
@@ -972,7 +981,7 @@ export class ResidentSqlGpuRuntime {
       };
       const readbackArrow = async (reason: string): Promise<ResidentSqlExecution> => {
         // Explicit, bounded Arrow readback; the reason is surfaced to the host.
-        const table = await makeArrowTableFromGPUAnalyticsTable({
+        const table = await materializeResidentSqlArrow({
           table: compiled.table,
           validity: compiled.validity,
           dictionaries: compiled.dictionaries as Record<string, readonly string[]>
@@ -1054,15 +1063,16 @@ export class ResidentSqlGpuRuntime {
         const vector = compiled.table.gpuVectors[name];
         const dictionary = syntheticDictionaryColumns?.has(name)
           ? undefined
-          : compiled.dictionaries[name];
+          : getOwnMetadata(compiled.dictionaries, name);
         const labels = Array.isArray(dictionary)
           ? dictionary
           : (dictionary as {values?: readonly unknown[]} | undefined)?.values;
+        const metadata = columnMetadata && getOwnMetadata(columnMetadata, name);
         schema.push({
           name,
           format: vector!.format as KeplerResidentColumnSchema['format'],
           ...(labels ? {dictionary: labels.map(String)} : {}),
-          ...(columnMetadata?.[name] ? {metadata: columnMetadata[name]} : {})
+          ...(metadata ? {metadata} : {})
         });
       }
       const timeNames = schema
@@ -1172,7 +1182,7 @@ export class ResidentSqlGpuRuntime {
           'float32' | 'sint32' | 'uint32'
         >;
         columns[entry.name] = gatherInto(entry.name, source, entry.format);
-        const sourceValidity = compiled.validity[entry.name];
+        const sourceValidity = getOwnMetadata(compiled.validity, entry.name);
         if (sourceValidity)
           validity[entry.name] = gatherInto(`${entry.name}-validity`, sourceValidity, 'uint32');
       }
@@ -1259,9 +1269,9 @@ function makeSqlFrame(source: KeplerArrowDataset): GPUDataFrame | string {
       data: vector.data,
       ownsData: false
     });
-    const columnValidity = source.analytics.validity[name];
+    const columnValidity = getOwnMetadata(source.analytics.validity, name);
     if (columnValidity) validity[name] = columnValidity;
-    const dictionary = source.prepared.dictionaries[name];
+    const dictionary = getOwnMetadata(source.prepared.dictionaries, name);
     if (dictionary) dictionaries[name] = dictionary.values;
   }
   if (!Object.keys(vectors).length) return 'No scalar resident columns';
@@ -1272,7 +1282,7 @@ function makeSqlFrame(source: KeplerArrowDataset): GPUDataFrame | string {
 function makeSqlTableInfo(name: string, frame: GPUDataFrame): ResidentSqlTableInfo {
   const columns: Record<string, ResidentSqlTableInfo['columns'][string]> = Object.create(null);
   for (const columnName of frame.columnNames) {
-    const entry = frame.dictionaries[columnName] as
+    const entry = getOwnMetadata(frame.dictionaries, columnName) as
       | readonly unknown[]
       | {readonly values?: readonly unknown[]}
       | undefined;
@@ -1325,4 +1335,23 @@ export function getResidentSqlGpuRuntime(session: KeplerComputeSession): Residen
     SQL_RUNTIMES.set(session, runtime);
   }
   return runtime;
+}
+
+/** Preserve own metadata keys, including empty maps, at the published Arrow boundary. */
+export function materializeResidentSqlArrow<T extends GPUTypeMap>(
+  props: ArrowTableFromGPUAnalyticsTableProps<T>
+) {
+  return makeArrowTableFromGPUAnalyticsTable<T>({
+    ...props,
+    validity: Object.assign(Object.create(null), props.validity),
+    dictionaries: Object.assign(Object.create(null), props.dictionaries)
+  });
+}
+
+/** User field names must never resolve inherited object properties as metadata. */
+function getOwnMetadata<Value>(
+  map: Readonly<Record<string, Value>>,
+  name: string
+): Value | undefined {
+  return Object.hasOwn(map, name) ? map[name] : undefined;
 }

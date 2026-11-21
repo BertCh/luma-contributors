@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from '../terrain-illumination/terrain-output-selection';
+
 import {
   validateTerrainBindings,
   getTerrainPyramidParameterScratch
@@ -13,7 +15,10 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCommandNodeBudget,
+  validateGraphViewsBelongToGraph
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
   validateRasterBandBelongsToGraph,
@@ -38,6 +43,17 @@ import {
 
 /** Default number of rays per compute node of {@link GPUPointHorizonProfile}. */
 export const GPU_POINT_HORIZON_RAYS_PER_DISPATCH = 65536;
+
+/**
+ * Command nodes besides the per-chunk march and the pyramid levels: elevation canonicalization
+ * (up to two), the chunk start table and the derived skyline angle pass.
+ */
+const POINT_HORIZON_PROFILE_FIXED_NODE_ALLOWANCE = 4;
+
+/**
+ * Pyramid command nodes besides one per level: the fused level parameter upload (up to two).
+ */
+const POINT_HORIZON_PYRAMID_NODE_ALLOWANCE = 2;
 
 /**
  * Properties for {@link GPUPointHorizonProfile}.
@@ -80,24 +96,27 @@ export type GPUPointHorizonProfileProps = GPUPointHorizonModelOptions & {
 };
 
 /** Caller-owned outputs of {@link GPUPointHorizonProfile}, one value per ray. */
-export type GPUPointHorizonProfileOutput = {
-  /**
-   * Optional `observers.length * azimuthSpan` tangents `tBest = max((h - h_eye) / d - c d)`;
-   * `-3.4028234663852886e38` when no valid sample was seen, NaN for an invalid observer.
-   */
-  tangent?: GraphDataView<'float32'>;
-  /** Optional skyline elevation angles in degrees, `atan(tBest)`; -90 when no sample, NaN invalid. */
-  skylineAngle?: GraphDataView<'float32'>;
-  /** Optional distance of the skyline sample in meters; 0 when no sample, NaN invalid. */
-  distance?: GraphDataView<'float32'>;
-  /**
-   * Optional debug counter: the number of lattice samples whose bilinear height was evaluated per
-   * ray (`'march'` evaluates every sample up to the first out-of-grid one, `'pyramid'` omits the
-   * skipped ones). Spends a ninth binding when all three outputs are present, which is rejected:
-   * omit one output to use it.
-   */
-  samples?: GraphDataView<'uint32'>;
-};
+export type GPUPointHorizonProfileOutput = TerrainOutputSelection<
+  {
+    /**
+     * Optional `observers.length * azimuthBinCount` tangents `tBest = max((h - h_eye) / d - c d)`;
+     * `-3.4028234663852886e38` when no valid sample was seen, NaN for an invalid observer.
+     */
+    tangent?: GraphDataView<'float32'>;
+    /** Optional skyline elevation angles in degrees, `atan(tBest)`; -90 when no sample, NaN invalid. */
+    skylineAngle?: GraphDataView<'float32'>;
+    /** Optional distance of the skyline sample in meters; 0 when no sample, NaN invalid. */
+    distance?: GraphDataView<'float32'>;
+    /**
+     * Optional debug counter: the number of lattice samples whose bilinear height was evaluated per
+     * ray (`'march'` evaluates every sample up to the first out-of-grid one, `'pyramid'` omits the
+     * skipped ones). All four outputs are supported: when tangent and skylineAngle are both
+     * selected, a separate per-ray pass derives the angle to keep the march within eight bindings.
+     */
+    samples?: GraphDataView<'uint32'>;
+  },
+  'tangent' | 'skylineAngle' | 'distance'
+>;
 
 /**
  * Computes the skyline (horizon) profile seen from many observers over one terrain window.
@@ -127,8 +146,12 @@ export type GPUPointHorizonProfileOutput = {
  * final `atan(tBest)` uses a reduced-argument series. No builtin `sin`, `cos` or `atan` is used
  * where accuracy matters (their WGSL accuracy is 2^-11 absolute / about 4096 ULP).
  *
- * Output index: `observer * azimuthSpan + a`, azimuth `(firstAzimuth + a) * 360 / azimuthCount`
- * degrees clockwise from north. One compute node per chunk of at most `raysPerDispatch` rays.
+ * Output index: `observer * azimuthBinCount + a`, azimuth `(firstAzimuthIndex + a) * 360 / azimuthCount`
+ * degrees clockwise from grid north.
+ * One compute node per chunk of at most `raysPerDispatch` rays. Construction allows at most
+ * 32,768 estimated command nodes per contributor in total, including locally built preparation,
+ * pyramid, chunk-table and derived-angle work. This total is distinct from rays per dispatch;
+ * increase the chunk size or partition observers to stay within it.
  */
 export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -137,6 +160,14 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
   readonly props: GPUPointHorizonProfileProps;
   /** Resolved model: lattice, segments and pyramid layout. @internal */
   private readonly model: ResolvedPointHorizonModel;
+  /** Validated chunk size captured before caller-owned props can change. */
+  private readonly raysPerDispatch: number;
+  /**
+   * Upper bound on the command nodes `getCommandNodes` returns: one march node per chunk of
+   * `raysPerDispatch` rays plus canonicalization, pyramid, chunk-table and skyline-angle nodes.
+   * Construction rejects more than `GPU_MAXIMUM_COMMAND_NODE_COUNT`.
+   */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUPointHorizonProfileProps) {
     this.id = props.id ?? 'point-horizon-profile';
@@ -153,7 +184,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     if (props.observers.length < 1) {
       throw new Error(`${id} requires at least one observer`);
     }
-    const rayCount = props.observers.length * this.model.azimuthSpan;
+    const rayCount = props.observers.length * this.model.azimuthBinCount;
     for (const [name, view] of [
       ['tangent', output.tangent],
       ['skylineAngle', output.skylineAngle],
@@ -162,7 +193,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
       if (view) {
         validatePointHorizonRows(id, `output.${name}`, view, 'float32');
         if (view.length !== rayCount) {
-          throw new Error(`${id} output.${name} must contain observers * azimuthSpan values`);
+          throw new Error(`${id} output.${name} must contain observers * azimuthBinCount values`);
         }
       }
     }
@@ -170,6 +201,16 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
     if (!Number.isInteger(raysPerDispatch) || raysPerDispatch < 1) {
       throw new Error(`${id} raysPerDispatch must be a positive integer`);
     }
+    this.raysPerDispatch = raysPerDispatch;
+    // Same chunking as `createPointHorizonChunkStarts`.
+    const chunkSize = Math.min(raysPerDispatch, Math.max(rayCount, 1));
+    const chunkCount = Math.max(Math.ceil(rayCount / chunkSize), 1);
+    const builtPyramid = this.model.layout && !this.model.sharedPyramid ? this.model.layout : null;
+    this.estimatedCommandNodeCount =
+      chunkCount +
+      POINT_HORIZON_PROFILE_FIXED_NODE_ALLOWANCE +
+      (builtPyramid ? builtPyramid.levels.length + POINT_HORIZON_PYRAMID_NODE_ALLOWANCE : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRasterBuffersDistinct(
       id,
       [output.tangent, output.skylineAngle, output.distance, output.samples],
@@ -192,8 +233,7 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
         Math.max(
           1,
           Math.ceil(
-            (this.props.observers.length * this.model.azimuthSpan) /
-              (this.props.raysPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH)
+            (this.props.observers.length * this.model.azimuthBinCount) / this.raysPerDispatch
           )
         )
     });
@@ -257,8 +297,8 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
       throw new Error(`${id} needs more than 8 storage bindings`);
     }
     const march = getPointHorizonMarchWGSL(model, POINT_HORIZON_PROFILE_PROJECTION_SLOT);
-    const rayCount = props.observers.length * model.azimuthSpan;
-    const raysPerDispatch = props.raysPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH;
+    const rayCount = props.observers.length * model.azimuthBinCount;
+    const raysPerDispatch = this.raysPerDispatch;
     const writes = (value: string) =>
       [
         output.tangent

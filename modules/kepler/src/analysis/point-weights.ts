@@ -229,8 +229,8 @@ export function addKeplerPointWeights<Parameters>(
     values: getGPUNeighborSearchParameterValues({
       spatialContext,
       bounds: getKeplerPointWeightBounds(settings),
-      ...(settings.kind === 'distance-band' ? {radius: settings.radiusMeters} : {}),
-      weightKind: 'binary',
+      ...(settings.kind === 'distance-band' ? {searchRadius: settings.radiusMeters} : {}),
+      weightType: 'binary',
       rowStandardize: false
     })
   });
@@ -247,7 +247,7 @@ export function addKeplerPointWeights<Parameters>(
       ),
       ...(props.searchStructure ? {searchStructure: props.searchStructure} : {}),
       rowTileSize: KEPLER_ANALYSIS_ROW_TILE_SIZE,
-      ...(settings.kind === 'knn' ? {k: settings.k} : {}),
+      ...(settings.kind === 'knn' ? {neighborCount: settings.k} : {}),
       weightTransform: 'binary',
       rowStandardize: false,
       output

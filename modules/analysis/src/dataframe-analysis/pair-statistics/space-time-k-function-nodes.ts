@@ -10,9 +10,11 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {Device} from '@luma.gl/core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   getStorageBindingElementLimit,
-  validateMaximumCount
+  validateMaximumCount,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFillNode,
@@ -34,9 +36,11 @@ import {
   PAIR_STATISTICS_FLOAT_WGSL,
   type PairStatisticsInputs
 } from './pair-statistics-grid';
+import {validatePositiveFloat32} from './pair-statistics-parameters';
 import {
   GPU_SPACE_TIME_K_WEIGHT_CAP,
   SPACE_TIME_K_EDGE_WEIGHT_WGSL,
+  SPACE_TIME_K_CLASS_WGSL,
   SPACE_TIME_K_SPLANCS_TIE_WGSL,
   SPACE_TIME_K_WEIGHT_SCALE,
   type SpaceTimeKTieRule
@@ -103,12 +107,29 @@ export type GPUSpaceTimeKFunctionSettings = {
  * pair histogram).
  *
  * @throws If a value is not finite, the bounds or time window are inverted or empty, a maximum is
- * not positive, or a bandwidth is given and is not positive.
+ * not positive, or a bandwidth is given and is not positive; also when a value stops meeting those
+ * rules once rounded to float32 (for example bounds `[1e7, 0, 1e7 + 0.25, 1]`, whose X extent
+ * packs to 0: recenter on a local origin), or the packed width, height, duration, area or
+ * space-time volume is not finite and normal (at least 2^-126) in float32 even though its
+ * endpoints are finite. Subnormal intermediates may flush to zero on the current shader route.
  */
 export function getGPUSpaceTimeKFunctionParameterValues(
   settings: GPUSpaceTimeKFunctionSettings,
   target: Float32Array = new Float32Array(GPU_SPACE_TIME_K_FUNCTION_PARAMETER_LENGTH)
 ): Float32Array {
+  const captured = snapshotConstructionFields(settings, [
+    'bounds',
+    'timeWindow',
+    'maximumDistance',
+    'maximumTimeLag',
+    'spatialBandwidth',
+    'temporalBandwidth'
+  ]);
+  settings = {
+    ...captured,
+    bounds: [...captured.bounds] as GPUSpaceTimeKFunctionSettings['bounds'],
+    timeWindow: [...captured.timeWindow] as GPUSpaceTimeKFunctionSettings['timeWindow']
+  };
   const name = 'getGPUSpaceTimeKFunctionParameterValues';
   if (target.length < GPU_SPACE_TIME_K_FUNCTION_PARAMETER_LENGTH) {
     throw new Error(
@@ -147,6 +168,7 @@ export function getGPUSpaceTimeKFunctionParameterValues(
       throw new Error(`${name} ${label} must be non-negative and finite`);
     }
   }
+  validateSpaceTimeKFloat32Values(name, settings, spatialBandwidth, temporalBandwidth);
   target.set([
     ...bounds,
     maximumDistance + spatialBandwidth,
@@ -157,6 +179,76 @@ export function getGPUSpaceTimeKFunctionParameterValues(
     temporalBandwidth
   ]);
   return target;
+}
+
+/**
+ * Throws unless the already validated settings keep their meaning once packed as float32
+ * (`Math.fround`): every value finite, the bounds and the time window strictly ordered, and the
+ * maxima, the pair search radius and a given bandwidth positive.
+ */
+function validateSpaceTimeKFloat32Values(
+  name: string,
+  settings: GPUSpaceTimeKFunctionSettings,
+  spatialBandwidth: number,
+  temporalBandwidth: number
+): void {
+  const [minX, minY, maxX, maxY] = settings.bounds.map(Math.fround);
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) {
+    throw new Error(`${name} bounds must be finite in float32 (magnitude below 3.4e38)`);
+  }
+  if (!(minX < maxX && minY < maxY)) {
+    throw new Error(
+      `${name} bounds must keep positive area in float32, got [${settings.bounds.join(', ')}] which packs to [${[minX, minY, maxX, maxY].join(', ')}]; recenter the coordinates on a local origin`
+    );
+  }
+  const [start, end] = settings.timeWindow.map(Math.fround);
+  if (!(Number.isFinite(start) && Number.isFinite(end) && start < end)) {
+    throw new Error(
+      `${name} timeWindow must stay finite with start < end in float32, got [${settings.timeWindow.join(', ')}] which packs to [${start}, ${end}]; use times relative to a local origin`
+    );
+  }
+  for (const [label, difference] of [
+    ['bounds width', maxX - minX],
+    ['bounds height', maxY - minY],
+    ['timeWindow duration', end - start]
+  ] as const) {
+    const packedDifference = Math.fround(difference);
+    validateRequirement(
+      name,
+      Number.isFinite(packedDifference) && packedDifference >= 2 ** -126,
+      `${label} must be positive and finite in float32 and normal (at least 2^-126), received ${packedDifference}; rescale coordinates or time units`
+    );
+  }
+  const width = Math.fround(maxX - minX);
+  const height = Math.fround(maxY - minY);
+  const duration = Math.fround(end - start);
+  const area = Math.fround(width * height);
+  const volume = Math.fround(area * duration);
+  for (const [quantity, value] of [
+    ['bounds area', area],
+    ['space-time volume', volume]
+  ] as const) {
+    validateRequirement(
+      name,
+      Number.isFinite(value) && value >= 2 ** -126,
+      `${quantity} must be positive and finite in float32 and normal (at least 2^-126), received ${value}; rescale coordinates or time units`
+    );
+  }
+  validatePositiveFloat32(name, 'maximumDistance', settings.maximumDistance);
+  validatePositiveFloat32(name, 'maximumTimeLag', settings.maximumTimeLag);
+  for (const [label, value] of [
+    ['spatialBandwidth', spatialBandwidth],
+    ['temporalBandwidth', temporalBandwidth]
+  ] as const) {
+    if (value > 0) {
+      validatePositiveFloat32(name, label, value);
+    }
+  }
+  validatePositiveFloat32(
+    name,
+    'searchDistance (maximumDistance + spatialBandwidth)',
+    settings.maximumDistance + spatialBandwidth
+  );
 }
 
 /** Views and shape shared by the nodes of the space-time K family. @internal */
@@ -207,6 +299,9 @@ export type SpaceTimeKNodes<Parameters> = {
 /** Bit weight of one large-channel unit, see `PAIR_HISTOGRAM_LARGE_TERM_SHIFT`. */
 const LARGE_UNIT = 2 ** PAIR_HISTOGRAM_LARGE_TERM_SHIFT;
 
+/** `log2` of {@link SPACE_TIME_K_WEIGHT_SCALE}. */
+const WEIGHT_SCALE_EXPONENT = Math.log2(SPACE_TIME_K_WEIGHT_SCALE);
+
 /**
  * Returns the WGSL constants shared by the kernels of the family. `BINS` is the number of
  * `(distance, time)` classes.
@@ -218,10 +313,30 @@ const DISTANCE_CLASS_COUNT: u32 = ${distanceClassCount}u;
 const TIME_CLASS_COUNT: u32 = ${timeClassCount}u;
 const BINS: u32 = ${distanceClassCount * timeClassCount}u;
 const WEIGHT_SCALE: f32 = ${SPACE_TIME_K_WEIGHT_SCALE}.0;
+// PCF kernel products need their own extra 24 fixed-point bits. Positive terms below
+// half a scaled unit are reported as incomplete, rather than silently rounded away.
+const PAIR_CORRELATION_SCALE: f32 = 16777216.0;
 const WEIGHT_CAP: f32 = ${GPU_SPACE_TIME_K_WEIGHT_CAP}.0;
 const LARGE_UNIT: f32 = ${LARGE_UNIT}.0;
 const EDGE_ISOTROPIC: bool = ${config.edgeCorrection === 'isotropic'};
 const INHOMOGENEOUS: bool = ${Boolean(config.intensities)};
+
+// Fixed-point scale of the intensity-weighted K terms, from the
+// float32 bits of the smallest included 1 / lambda'. Every such term is at least the square of
+// that minimum (the edge weights are at least 1), so with the minimum in [2^e, 2^(e + 1)) the
+// scale 2^(${WEIGHT_SCALE_EXPONENT} - 2e) gives the smallest term 2^${WEIGHT_SCALE_EXPONENT} to 2^${WEIGHT_SCALE_EXPONENT + 2} units: rounding to a unit costs
+// at most 2^-${WEIGHT_SCALE_EXPONENT + 1} of a term (relative), within the supported exponent range. Larger terms take the
+// large channel of accumulateScaled. A power of two keeps the scale and its reciprocal exact.
+// The exponent is clamped to [-100, 100]; the row pass flags any required clamp as loss. No included row
+// (the word still holds the bits of +infinity) keeps WEIGHT_SCALE.
+fn getIntensityWeightScale(minimumInverseBits: u32) -> f32 {
+  if (minimumInverseBits == 0u || minimumInverseBits >= 0x7f800000u) {
+    return WEIGHT_SCALE;
+  }
+  let exponent = i32((minimumInverseBits >> 23u) & 0xffu) - 127;
+  let scaleExponent = clamp(${WEIGHT_SCALE_EXPONENT} - 2 * exponent, -100, 100);
+  return bitcast<f32>(u32(scaleExponent + 127) << 23u);
+}
 `;
 }
 
@@ -249,9 +364,8 @@ export function createSpaceTimeKNodes<Parameters>(
   const hasPairCorrelation = Boolean(config.pairCorrelation);
   const hasLocal = Boolean(config.local);
   const splancsTies = config.tieRule === 'splancs';
-  // Class of a pair and whether it is counted. The stpp rule is the scaled form of `GPURipley`
-  // with the last class closed; the splancs rule drops a pair at the largest distance or lag and
-  // decides the breaks with products (`getSpaceTimeSplancsClass`).
+  // Both routes use exact products at class breaks. stpp includes the maximum;
+  // splancs drops it. Never test inclusion using a rounded scaled quotient.
   const pairClassWGSL = splancsTies
     ? `let splancsDistanceClass = getSpaceTimeSplancsClass(pairDistance, maximumDistance, DISTANCE_CLASS_COUNT);
             let splancsLagClass = getSpaceTimeSplancsClass(timeLag, maximumTimeLag, TIME_CLASS_COUNT);
@@ -259,12 +373,10 @@ export function createSpaceTimeKNodes<Parameters>(
             let lagClass = min(splancsLagClass, TIME_CLASS_COUNT - 1u);
             let inDistance = splancsDistanceClass < DISTANCE_CLASS_COUNT;
             let inLag = splancsLagClass < TIME_CLASS_COUNT;`
-    : `let scaledDistance = pairDistance / maximumDistance * f32(DISTANCE_CLASS_COUNT);
-            let scaledLag = timeLag / maximumTimeLag * f32(TIME_CLASS_COUNT);
-            let distanceClass = min(u32(max(ceil(scaledDistance) - 1.0, 0.0)), DISTANCE_CLASS_COUNT - 1u);
-            let lagClass = min(u32(max(ceil(scaledLag) - 1.0, 0.0)), TIME_CLASS_COUNT - 1u);
-            let inDistance = scaledDistance <= f32(DISTANCE_CLASS_COUNT);
-            let inLag = scaledLag <= f32(TIME_CLASS_COUNT);`;
+    : `let distanceClass = getSpaceTimeKClass(pairDistance, maximumDistance, DISTANCE_CLASS_COUNT);
+            let lagClass = getSpaceTimeKClass(timeLag, maximumTimeLag, TIME_CLASS_COUNT);
+            let inDistance = pairDistance <= maximumDistance;
+            let inLag = timeLag <= maximumTimeLag;`;
   const nodes: GPUCommandNode<Parameters>[] = [];
 
   // Row filter: finite time inside the observation interval, finite positive intensity, mask.
@@ -307,8 +419,27 @@ export function createSpaceTimeKNodes<Parameters>(
   });
   nodes.push(...inputs.nodes);
 
-  // Per row: time, 1 / lambda', and the radius of the temporal isotropic weight.
+  // Per row: time, 1 / lambda', and the radius of the temporal isotropic weight. With
+  // intensities, also the smallest 1 / lambda' of the included rows (as float32 bits, which order
+  // like the values for positive numbers), which sets the fixed-point scale of the pair terms.
   const rowTable = createTransientView(graph, `${id}-row-table`, 'float32', 4 * rows);
+  const inverseMinimum = config.intensities
+    ? createTransientView(graph, `${id}-inverse-minimum`, 'uint32', 2)
+    : undefined;
+  if (inverseMinimum) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-inverse-minimum-clear`,
+        operation,
+        variant: 'inverse-minimum-clear',
+        bindings: [
+          {name: 'inverseMinimum', view: inverseMinimum, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: 2,
+        body: 'inverseMinimum[inverseMinimumOffset + index] = select(0u, 0x7f800000u, index == 0u);'
+      })
+    );
+  }
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-row-table`,
@@ -318,8 +449,17 @@ export function createSpaceTimeKNodes<Parameters>(
         {name: 'times', view: times, type: 'f32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
-        ...(config.intensities
-          ? [{name: 'intensities', view: config.intensities, type: 'f32', access: 'read'} as const]
+        ...(config.intensities && inverseMinimum
+          ? ([
+              {name: 'intensities', view: config.intensities, type: 'f32', access: 'read'},
+              {name: 'cellKeys', view: inputs.cellKeys, type: 'u32', access: 'read'},
+              {
+                name: 'inverseMinimum',
+                view: inverseMinimum,
+                type: 'atomic<u32>',
+                access: 'read_write'
+              }
+            ] as const)
           : []),
         {name: 'rowTable', view: rowTable, type: 'f32', access: 'read_write'}
       ],
@@ -334,7 +474,17 @@ export function createSpaceTimeKNodes<Parameters>(
   let area = (parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
     (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]);
   let lambdaBar = f32(cellOffsets[cellOffsetsOffset + CELL_COUNT]) / (area * (timeEnd - timeStart));
-  let inverse = lambdaBar / intensities[intensitiesOffset + index];`
+  let inverse = lambdaBar / intensities[intensitiesOffset + index];
+  if (cellKeys[cellKeysOffset + index] < CELL_COUNT) {
+    let bits = bitcast<u32>(inverse);
+    let exponent = i32((bits >> 23u) & 0xffu) - 127;
+    let requiredScale = ${WEIGHT_SCALE_EXPONENT} - 2 * exponent;
+    if (bits == 0u || bits >= 0x7f800000u || requiredScale < -100 || requiredScale > 100) {
+      atomicOr(&inverseMinimum[inverseMinimumOffset + 1u], 1u);
+    } else {
+      atomicMin(&inverseMinimum[inverseMinimumOffset], bits);
+    }
+  }`
       : 'let inverse = 1.0;'
   }
   rowTable[rowTableOffset + 4u * index] = time;
@@ -382,12 +532,15 @@ fn get${axis}PairKernel(offset: f32, bandwidth: f32) -> f32 {
     pairOrder: 'ordered',
     extraBindings: [
       {name: 'rowTable', view: rowTable, type: 'f32', access: 'read'},
+      ...(inverseMinimum
+        ? [{name: 'inverseMinimum', view: inverseMinimum, type: 'u32', access: 'read'} as const]
+        : []),
       ...(config.local
         ? [{name: 'local', view: config.local, type: 'f32', access: 'read_write'} as const]
         : [])
     ] satisfies WGSLKernelBinding[],
     declarations: `${constants}
-${SPACE_TIME_K_EDGE_WEIGHT_WGSL}${splancsTies ? SPACE_TIME_K_SPLANCS_TIE_WGSL : ''}
+${SPACE_TIME_K_EDGE_WEIGHT_WGSL}${splancsTies ? SPACE_TIME_K_SPLANCS_TIE_WGSL : SPACE_TIME_K_CLASS_WGSL}
 const HAS_MARGINAL: bool = ${hasMarginal};
 const HAS_PAIR_CORRELATION: bool = ${hasPairCorrelation};
 const HAS_LOCAL: bool = ${hasLocal};
@@ -407,6 +560,7 @@ ${getKernelWGSL('Temporal')}`,
     let bottom = y - lattice.minimumY;
     let right = lattice.maximumX - x;
     let top = lattice.maximumY - y;
+    let intensityWeightScale = ${inverseMinimum ? 'getIntensityWeightScale(inverseMinimum[inverseMinimumOffset])' : 'WEIGHT_SCALE'};
     var localBins: array<f32, ${hasLocal ? bins : 1}>;`,
     pairAction: `if (!focusUsable) { continue; }
             let otherBase = rowTableOffset + neighbor * 4u;
@@ -424,7 +578,7 @@ ${getKernelWGSL('Temporal')}`,
               let slot = distanceClass * TIME_CLASS_COUNT + lagClass;
               let weight = spatialWeight * temporalWeight * pairIntensity;
               accumulate(slot, 0u, 1u);
-              accumulateScaled(slot, 1u, 2u, weight * WEIGHT_SCALE);
+              accumulateScaled(slot, 1u, 2u, weight * intensityWeightScale);
               if (HAS_LOCAL) {
                 localBins[slot] += weight;
               }
@@ -442,7 +596,11 @@ ${getKernelWGSL('Temporal')}`,
                 let spatialTerm = getSpatialPairKernel(maximumDistance * f32(distanceIndex + 1) / f32(DISTANCE_CLASS_COUNT) - pairDistance, spatialBandwidth);
                 for (var lagIndex = firstLag; lagIndex <= lastLag; lagIndex++) {
                   let temporalTerm = getTemporalPairKernel(maximumTimeLag * f32(lagIndex + 1) / f32(TIME_CLASS_COUNT) - timeLag, temporalBandwidth);
-                  accumulateScaled(u32(distanceIndex) * TIME_CLASS_COUNT + u32(lagIndex), 3u, 4u, pairWeight * spatialTerm * temporalTerm * WEIGHT_SCALE);
+                  let scaledCorrelation = (pairWeight * intensityWeightScale) * spatialTerm * temporalTerm * PAIR_CORRELATION_SCALE;
+                  if (spatialTerm > 0.0 && temporalTerm > 0.0 && scaledCorrelation < 0.5) {
+                    atomicStore(&accumulators[accumulatorsOffset + ACCUMULATOR_COUNT * 2u], 1u);
+                  }
+                  accumulateScaled(u32(distanceIndex) * TIME_CLASS_COUNT + u32(lagIndex), 3u, 4u, scaledCorrelation);
                 }
               }
             }`,
@@ -545,6 +703,9 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
     {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
     {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
     {name: 'k', view: config.k, type: 'f32', access: 'read_write'},
+    ...(inverseMinimum
+      ? [{name: 'inverseMinimum', view: inverseMinimum, type: 'u32', access: 'read'} as const]
+      : []),
     ...(config.spatialK
       ? [{name: 'spatialK', view: config.spatialK, type: 'f32', access: 'read_write'} as const]
       : []),
@@ -567,10 +728,13 @@ const CELL_COUNT: u32 = ${cellCount}u;`,
   let area = (parameters[parametersOffset + 2u] - parameters[parametersOffset]) *
     (parameters[parametersOffset + 3u] - parameters[parametersOffset + 1u]);
   let duration = parameters[parametersOffset + 8u] - parameters[parametersOffset + 7u];
-  let defined = includedCount >= 2.0 && isFiniteValue(area) && area > 0.0 &&
+  let usableFrame = includedCount >= 2.0 && isFiniteValue(area) && area > 0.0 &&
     isFiniteValue(duration) && duration > 0.0 &&
     parameters[parametersOffset + 5u] > 0.0 && parameters[parametersOffset + 6u] > 0.0;
+  let inputLoss = ${inverseMinimum ? 'inverseMinimum[inverseMinimumOffset + 1u] != 0u' : 'false'};
+  let defined = usableFrame && !inputLoss && !readPairOverflow();
   let pairNormalizer = select(includedCount * (includedCount - 1.0), includedCount * includedCount, INHOMOGENEOUS);`;
+  const intensityWeightScaleWGSL = `let intensityWeightScale = ${inverseMinimum ? 'getIntensityWeightScale(inverseMinimum[inverseMinimumOffset])' : 'WEIGHT_SCALE'};`;
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-finish`,
@@ -584,6 +748,7 @@ const CELL_COUNT: u32 = ${cellCount}u;
 const HAS_MARGINAL: bool = ${hasMarginal};
 ${readAccumulatorsWGSL}`,
       body: `${scaleWGSL}
+  ${intensityWeightScaleWGSL}
   let distanceIndex = index / TIME_CLASS_COUNT;
   let lagIndex = index % TIME_CLASS_COUNT;
   var sum = 0.0;
@@ -593,7 +758,7 @@ ${readAccumulatorsWGSL}`,
       sum += readPairAccumulator(slot, 1u) + readPairAccumulator(slot, 2u) * LARGE_UNIT;
     }
   }
-  k[kOffset + index] = select(getQuietNaN(index), area * duration / pairNormalizer * sum / WEIGHT_SCALE, defined);
+  k[kOffset + index] = select(getQuietNaN(index), area * duration / pairNormalizer * sum / intensityWeightScale, defined);
   ${
     config.spatialK
       ? `if (index < DISTANCE_CLASS_COUNT) {
@@ -647,7 +812,15 @@ ${readAccumulatorsWGSL}`,
           {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
           {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-          {name: 'pairCorrelation', view: config.pairCorrelation, type: 'f32', access: 'read_write'}
+          {
+            name: 'pairCorrelation',
+            view: config.pairCorrelation,
+            type: 'f32',
+            access: 'read_write'
+          },
+          ...(inverseMinimum
+            ? [{name: 'inverseMinimum', view: inverseMinimum, type: 'u32', access: 'read'} as const]
+            : [])
         ],
         invocationCount: bins,
         declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
@@ -655,13 +828,14 @@ ${constants}
 const CELL_COUNT: u32 = ${cellCount}u;
 ${readAccumulatorsWGSL}`,
         body: `${scaleWGSL}
+  ${intensityWeightScaleWGSL}
   let spatialBandwidth = parameters[parametersOffset + 9u];
   let temporalBandwidth = parameters[parametersOffset + 10u];
   let distanceIndex = index / TIME_CLASS_COUNT;
   let radius = parameters[parametersOffset + 5u] * f32(distanceIndex + 1u) / f32(DISTANCE_CLASS_COUNT);
   let sum = readPairAccumulator(index, 3u) + readPairAccumulator(index, 4u) * LARGE_UNIT;
   // g = s / (4 pi u) * sum ks kt w / (lambda lambda'), with the kernels' bandwidths undone.
-  let value = area * duration / pairNormalizer * sum / WEIGHT_SCALE / (4.0 * 3.14159265358979 * radius * spatialBandwidth * temporalBandwidth);
+  let value = area * duration / pairNormalizer * (sum / PAIR_CORRELATION_SCALE) / intensityWeightScale / (4.0 * 3.14159265358979 * radius * spatialBandwidth * temporalBandwidth);
   pairCorrelation[pairCorrelationOffset + index] = select(getQuietNaN(index), value, defined && spatialBandwidth > 0.0 && temporalBandwidth > 0.0);`
       })
     );
@@ -677,7 +851,10 @@ ${readAccumulatorsWGSL}`,
           {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
           {name: 'cellOffsets', view: inputs.cellOffsets, type: 'u32', access: 'read'},
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
-          {name: 'status', view: config.status, type: 'u32', access: 'read_write'}
+          {name: 'status', view: config.status, type: 'u32', access: 'read_write'},
+          ...(inverseMinimum
+            ? [{name: 'inverseMinimum', view: inverseMinimum, type: 'u32', access: 'read'} as const]
+            : [])
         ],
         invocationCount: 1,
         declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
@@ -687,7 +864,26 @@ ${readAccumulatorsWGSL}`,
         body: `${scaleWGSL}
   // 0 valid, 1 undefined (fewer than two included rows or an invalid window or maximum),
   // 3 the exact integer accumulation overflowed.
-  status[statusOffset] = select(select(0u, 3u, readPairOverflow()), 1u, !defined);`
+  status[statusOffset] = select(select(0u, 3u, readPairOverflow() || inputLoss), 1u, !usableFrame);`
+      })
+    );
+  }
+  if (config.local) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-local-loss`,
+        operation,
+        variant: 'local-loss',
+        bindings: [
+          {name: 'accumulators', view: histogram.accumulators, type: 'u32', access: 'read'},
+          ...(inverseMinimum
+            ? [{name: 'inverseMinimum', view: inverseMinimum, type: 'u32', access: 'read'} as const]
+            : []),
+          {name: 'local', view: config.local, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: config.local.length,
+        declarations: `${PAIR_STATISTICS_FLOAT_WGSL}\n${readAccumulatorsWGSL}`,
+        body: `if (readPairOverflow() || ${inverseMinimum ? 'inverseMinimum[inverseMinimumOffset + 1u] != 0u' : 'false'}) { local[localOffset + index] = getQuietNaN(index); }`
       })
     );
   }
@@ -697,8 +893,8 @@ ${readAccumulatorsWGSL}`,
 /**
  * The temporal marginal `sum_i sum_{j != i} 1(|t_i - t_j| <= v_b) w^t_ij`, exact integers, for the
  * included rows sorted by time. For each sorted event and class it counts the partners inside the
- * lag by binary search on the sorted keys, with the class test of the pair pass (`lag / v * count
- * <= b + 1`), so the two paths agree on every boundary. The isotropic weight is 2 for partners
+ * lag by binary search on the sorted keys, with the exact product test of the pair pass
+ * (`lag * count <= v * (b + 1)`), so the two paths agree on every boundary. The isotropic weight is 2 for partners
  * beyond the event's edge radius and 1 inside, which gives `2 N(v) - N(min(v, radius))`.
  *
  * With `tieRule: 'splancs'` a partner at exactly `maximumTimeLag` is not counted and the weight is
@@ -737,6 +933,7 @@ function createTemporalMarginalNode<Parameters>(
     workgroupSize,
     guardIndex: false,
     declarations: `${DECODE_ORDERED_KEY_WGSL}
+${SPACE_TIME_K_CLASS_WGSL}
 const CELL_COUNT: u32 = ${props.cellCount}u;
 const TIME_CLASS_COUNT: u32 = ${V}u;
 const EDGE_ISOTROPIC: bool = ${props.edgeCorrection === 'isotropic'};
@@ -747,8 +944,8 @@ fn isInside(lag: f32, limit: f32, radius: f32, useRadius: bool, maximumTimeLag: 
   return ${
     splancsTies
       ? // The product test of getSpaceTimeSplancsClass: class <= b when lag * count <= maximum * (b + 1).
-        'lag * f32(TIME_CLASS_COUNT) <= maximumTimeLag * limit && lag < maximumTimeLag && (!useRadius || lag < radius)'
-      : 'lag / maximumTimeLag * f32(TIME_CLASS_COUNT) <= limit && (!useRadius || lag <= radius)'
+        'isSpaceTimeKClassIncluded(lag, maximumTimeLag, TIME_CLASS_COUNT, u32(limit)) && lag < maximumTimeLag && (!useRadius || lag < radius)'
+      : 'isSpaceTimeKClassIncluded(lag, maximumTimeLag, TIME_CLASS_COUNT, u32(limit)) && (!useRadius || lag <= radius)'
   };
 }
 

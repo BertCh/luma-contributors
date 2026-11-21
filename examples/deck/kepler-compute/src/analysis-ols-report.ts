@@ -20,6 +20,7 @@ export type OLSAnalysisSummary = {
   rowCount: number;
   /** Nominal rows minus coefficient count; not effective degrees of freedom for ridge. */
   degreesOfFreedom: number;
+  /** Applied float32 penalty; NaN when the producer did not report its convention. */
   ridgeLambda: number;
   rSquared: number | null;
   adjustedRSquared: number | null;
@@ -38,7 +39,9 @@ export type OLSAnalysisSummary = {
     string,
     {statistic: number | null; degreesOfFreedom: number; pValue: number | null}
   > | null;
-  inference: 'classical-homoskedastic' | 'penalized-descriptive';
+  inference: 'classical-homoskedastic' | 'penalized-descriptive' | 'unavailable';
+  /** Producer convention, including ridge-approximate, for coefficient-report context. */
+  inferenceMethod?: string;
 };
 
 /** The caller gates failed solver status before publishing this report. */
@@ -49,39 +52,41 @@ export function makeOLSAnalysisSummary(
   const model = getGPUOrdinaryLeastSquaresModelResult(readback, {
     predictorNames: settings.predictorColumns
   });
-  const penalized = settings.ridgeLambda > 0;
+  const penalized = model.regularization?.kind === 'ridge';
+  const inferenceAvailable = model.inferenceMethod !== undefined;
+  const suppressInference = penalized || !inferenceAvailable;
   return {
     coefficients: model.coefficients.map(coefficient => ({
       name: coefficient.role === 'intercept' ? 'Intercept' : coefficient.name,
       estimate: coefficient.estimate,
-      standardError: penalized ? null : finiteOrNull(coefficient.standardError),
-      tStatistic: penalized ? null : finiteOrNull(coefficient.statistic),
+      standardError: suppressInference ? null : finiteOrNull(coefficient.standardError),
+      tStatistic: suppressInference ? null : finiteOrNull(coefficient.statistic),
       pValue:
-        penalized || !Number.isFinite(coefficient.statistic)
+        suppressInference || !Number.isFinite(coefficient.statistic)
           ? null
           : finiteOrNull(coefficient.pValue)
     })),
     rowCount: model.rowCount,
     degreesOfFreedom: model.degreesOfFreedom,
-    ridgeLambda: settings.ridgeLambda,
+    ridgeLambda: model.regularization?.lambda ?? (inferenceAvailable ? 0 : NaN),
     rSquared: finiteOrNull(model.rSquared),
-    adjustedRSquared: penalized
+    adjustedRSquared: suppressInference
       ? null
       : finiteOrNull(readback.summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ADJUSTED_R_SQUARED]),
     residualSumOfSquares: model.residualSumOfSquares,
-    sigmaSquared: penalized ? null : finiteOrNull(model.sigmaSquared),
-    logLikelihood: penalized ? null : finiteOrNull(model.logLikelihood),
-    aic: penalized ? null : finiteOrNull(model.akaikeInformationCriterion),
-    bic: penalized ? null : finiteOrNull(model.schwarzCriterion),
+    sigmaSquared: suppressInference ? null : finiteOrNull(model.sigmaSquared),
+    logLikelihood: suppressInference ? null : finiteOrNull(model.logLikelihood),
+    aic: suppressInference ? null : finiteOrNull(model.akaikeInformationCriterion),
+    bic: suppressInference ? null : finiteOrNull(model.schwarzCriterion),
     conditioning: model.conditioning
       ? {
           ...model.conditioning,
-          maximumVarianceInflationFactor: penalized
+          maximumVarianceInflationFactor: suppressInference
             ? null
             : model.conditioning.maximumVarianceInflationFactor
         }
       : null,
-    tests: penalized
+    tests: suppressInference
       ? null
       : Object.fromEntries(
           Object.entries(model.tests).map(([name, result]) => [
@@ -93,7 +98,12 @@ export function makeOLSAnalysisSummary(
             }
           ])
         ),
-    inference: penalized ? 'penalized-descriptive' : 'classical-homoskedastic'
+    inference: penalized
+      ? 'penalized-descriptive'
+      : inferenceAvailable
+        ? 'classical-homoskedastic'
+        : 'unavailable',
+    ...(model.inferenceMethod ? {inferenceMethod: model.inferenceMethod} : {})
   };
 }
 

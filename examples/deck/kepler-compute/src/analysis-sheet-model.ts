@@ -12,7 +12,7 @@ import {
   type WorkflowParameterSpec,
   type KeplerDatasetProfile
 } from '@luma-contributors/kepler';
-import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   createAnalysisCatalogFormModel,
   describeAnalysisCatalogParameter

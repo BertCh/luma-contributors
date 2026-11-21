@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getSortedTimeRangeMaximumSearchSteps} from '../temporal-reduction/sorted-range-bounds';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {FLOAT_TIME_AT_LEAST_WGSL} from './time-window-classify-node';
+import {FLOAT_TIME_AT_LEAST_WGSL, FLOAT_TIME_BITS_AT_LEAST_WGSL} from './time-window-classify-node';
 import {TIME_WORDS_WGSL} from './time-words';
 
 /** Properties for {@link createSortedTimeWindowRangeNode}. @internal */
@@ -37,6 +38,8 @@ export type SortedTimeWindowRangeProps = {
  * pipeline-overridable size, so graphs that differ only in row count share one module, and not a
  * loop index (rule 12).
  *
+ * Each search takes at most SORTED_TIME_RANGE_MAXIMUM_SEARCH_STEPS = 32 midpoint steps
+ * for SORTED_TIME_RANGE_MAXIMUM_ROW_COUNT = 4294967295 rows.
  * @internal
  */
 export function createSortedTimeWindowRangeNode<Parameters>(
@@ -44,6 +47,7 @@ export function createSortedTimeWindowRangeNode<Parameters>(
   props: SortedTimeWindowRangeProps
 ): GPUCommandNode<Parameters> {
   const rows = props.timestamps.length;
+  getSortedTimeRangeMaximumSearchSteps(rows);
   const isWordMode = props.timestamps.format === 'uint32x2';
   const bindings: WGSLKernelBinding[] = [
     {name: 'params', view: props.window, type: isWordMode ? 'u32' : 'f32', access: 'read'}
@@ -236,10 +240,10 @@ export function createSortedTimeWindowOrderCheckNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   const isWordMode = props.timestamps.format === 'uint32x2';
   const bindings: WGSLKernelBinding[] = [
-    {name: 'rowTimes', view: props.timestamps, type: isWordMode ? 'u32' : 'f32', access: 'read'}
+    {name: 'rowTimes', view: props.timestamps, type: 'u32', access: 'read'}
   ];
   if (props.timestampsLow) {
-    bindings.push({name: 'rowTimesLow', view: props.timestampsLow, type: 'f32', access: 'read'});
+    bindings.push({name: 'rowTimesLow', view: props.timestampsLow, type: 'u32', access: 'read'});
   }
   bindings.push({
     name: 'violations',
@@ -254,7 +258,7 @@ export function createSortedTimeWindowOrderCheckNode<Parameters>(
     bindings,
     // One invocation per adjacent pair.
     invocationCount: Math.max(props.timestamps.length - 1, 1),
-    declarations: isWordMode ? TIME_WORDS_WGSL : FLOAT_TIME_AT_LEAST_WGSL,
+    declarations: isWordMode ? TIME_WORDS_WGSL : FLOAT_TIME_BITS_AT_LEAST_WGSL,
     body: isWordMode
       ? `if (index + 1u >= ${props.timestamps.length}u) {
     return;
@@ -271,9 +275,9 @@ export function createSortedTimeWindowOrderCheckNode<Parameters>(
     props.timestampsLow
       ? `let previousLow = rowTimesLow[rowTimesLowOffset + index];
   let nextLow = rowTimesLow[rowTimesLowOffset + index + 1u];`
-      : 'let previousLow = 0.0;\n  let nextLow = 0.0;'
+      : 'let previousLow = 0u;\n  let nextLow = 0u;'
   }
-  if (!isTimeAtLeast(rowTimes[rowTimesOffset + index + 1u], nextLow, rowTimes[rowTimesOffset + index], previousLow)) {
+  if (!isTimeBitsAtLeast(rowTimes[rowTimesOffset + index + 1u], nextLow, rowTimes[rowTimesOffset + index], previousLow)) {
     atomicAdd(&violations[violationsOffset], 1u);
   }`
   });

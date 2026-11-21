@@ -260,7 +260,7 @@ export const SIMILAR_LOCATIONS_REFERENCE = {
   cases: [
     {
       name: 'zscore single reference',
-      standardization: 'zscore' as const,
+      standardization: 'z-score' as const,
       selection: new Uint32Array([
         0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -337,7 +337,7 @@ export const SIMILAR_LOCATIONS_REFERENCE = {
     },
     {
       name: 'zscore mean of selection, weighted',
-      standardization: 'zscore' as const,
+      standardization: 'z-score' as const,
       selection: new Uint32Array([
         0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -414,7 +414,7 @@ export const SIMILAR_LOCATIONS_REFERENCE = {
     },
     {
       name: 'zscore least similar',
-      standardization: 'zscore' as const,
+      standardization: 'z-score' as const,
       selection: new Uint32Array([
         0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0

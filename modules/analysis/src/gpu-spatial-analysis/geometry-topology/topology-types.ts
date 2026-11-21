@@ -35,8 +35,15 @@ export type GPUTopologyPrecisionPolicy = {
   storage: 'float32';
 };
 
-/** Topology status always distinguishes final capacity from an incomplete candidate substrate. */
-export type GPUTopologyStatusPort = GPUBoundedResultStatusPort & {
+/**
+ * Topology status distinguishes final capacity from an incomplete candidate substrate.
+ * These fixed-pass contributors publish cardinality, capacity and uncertainty only; the
+ * generic validity, iteration and approximation status fields are not supported.
+ */
+export type GPUTopologyStatusPort = Pick<
+  GPUBoundedResultStatusPort,
+  'count' | 'requiredCount' | 'overflow' | 'candidateOverflow' | 'uncertainCount'
+> & {
   requiredCount: GraphDataView<'uint32'>;
   candidateOverflow: GraphDataView<'uint32'>;
   /**

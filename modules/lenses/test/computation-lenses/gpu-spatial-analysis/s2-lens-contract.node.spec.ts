@@ -49,7 +49,7 @@ export const S2_ELEMENTS = {
     'GPUCatchmentAccessibility',
     'GPUHuffTradeAreas',
     'GPUArealInterpolation',
-    'GPUPycnophylactic',
+    'GPUPycnophylacticInterpolation',
     'GPUSegregation'
   ],
   joins: [

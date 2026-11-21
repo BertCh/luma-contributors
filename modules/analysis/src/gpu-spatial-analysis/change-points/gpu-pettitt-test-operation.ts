@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validatePettittShape, validatePettittOperationPorts} from './change-point-shape';
+import {snapshotChangePointProps} from './change-point-construction';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import type {GPUSpaceTimeWeightsLayout} from '../spatial-weights/spatial-weights-space-time-stages';
 import {GPUPettittTest} from './gpu-pettitt-test';
@@ -20,7 +22,10 @@ export type PettittTestOperationProps = {
 /** Pettitt contributor operation. Compile with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. */
 export class GPUPettittTestOperation extends GPUContributorOperation {
   constructor(props: PettittTestOperationProps) {
+    props = snapshotChangePointProps(props);
     const id = props.id ?? 'pettitt-test';
+    validatePettittShape(id, props);
+    validatePettittOperationPorts(id, props);
     const length = props.cellCount;
     super({
       id,

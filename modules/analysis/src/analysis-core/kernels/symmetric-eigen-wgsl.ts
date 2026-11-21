@@ -26,7 +26,9 @@ import {DENSE_SOLVE_MAXIMUM_CAPACITY} from './dense-solve-wgsl';
  *   are the last iterate, sorted). `sweeps` is the number of sweeps run.
  *
  * Rotation angles use the small root `t = sign(theta) / (|theta| + sqrt(theta^2 + 1))`, with
- * `t = 1 / (2 theta)` once `theta^2` would overflow, so no `atan2` is evaluated. Requires
+ * `t = 1 / (2 theta)` once `theta^2` would overflow, so no `atan2` is evaluated. When a rotated
+ * entry exceeds `2^126`, `theta` is formed from operands scaled by a power of two, so the diagonal
+ * difference and twice the coupling cannot overflow. Requires
  * `isFiniteValue` from `wgsl-common.ts`.
  *
  * The CPU float64 reference is in `test/utils/symmetric-eigen-wgsl.spec.ts`.
@@ -110,7 +112,23 @@ fn getSymmetricEigen_${n}(
         if (coupling == 0.0) {
           continue;
         }
-        let theta = ((*matrix)[upper * ${n}u + upper] - (*matrix)[lower * ${n}u + lower]) / (2.0 * coupling);
+        let upperDiagonal = (*matrix)[upper * ${n}u + upper];
+        let lowerDiagonal = (*matrix)[lower * ${n}u + lower];
+        let magnitude = max(max(abs(upperDiagonal), abs(lowerDiagonal)), abs(coupling));
+        var theta = 1.0e30;
+        if (magnitude <= 0x1p126) {
+          theta = (upperDiagonal - lowerDiagonal) / (2.0 * coupling);
+        } else {
+          // Near the float32 limit the diagonal difference or twice the coupling can overflow (a
+          // zero tangent would then clear a genuine coupling unrotated). Scale the operands by a
+          // runtime power of two; the gate compares finite inputs, which fast math keeps. A
+          // coupling that underflows in this frame keeps theta = 1e30, a negligible rotation.
+          let exponent = frexp(magnitude).exp;
+          let scaledCoupling = ldexp(coupling, -exponent);
+          if (scaledCoupling != 0.0) {
+            theta = (ldexp(upperDiagonal, -exponent) - ldexp(lowerDiagonal, -exponent)) / (2.0 * scaledCoupling);
+          }
+        }
         let direction = select(-1.0, 1.0, theta >= 0.0);
         let tangent = select(direction / (abs(theta) + sqrt(theta * theta + 1.0)), 0.5 / theta, abs(theta) > 1.0e18);
         let cosine = 1.0 / sqrt(tangent * tangent + 1.0);

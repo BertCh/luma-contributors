@@ -36,6 +36,12 @@ A 3 × 3 lattice of unit conductances with one weak diagonal chord carries unit 
 
 A 6 × 5 resistance raster has a no-data wall in its fourth column with a one-cell gap, and a high-resistance cell beside the gap. Eight-neighbour conductances `2 / (R(a) + R(b)) / edgeLength` are built on the GPU, and unit current flows from a cell on the west edge to a cell on the east edge: the whole current crosses the wall through the gap (its node current is one), and the wall cells have no potential.
 
+Uniform mode uses the full affine for cardinal and diagonal distances, including rotation and
+shear. For per-frame geographic or Web Mercator updates, call
+`getRasterResistanceConnectivityParameterValues(grid, target, cellSizeMode)` with the recipe's
+fixed mode: these two modes require an axis-aligned grid on every frame. Existing one- and
+two-argument packer calls keep uniform shear support.
+
 {/* lens:addRasterResistanceConnectivityRecipe */}
 
 ::lens{scenario=gpu-spatial-analysis.raster-resistance-connectivity-recipe rung=result caption="Inspect the potentials, the current map and the edge conductances."}
@@ -63,7 +69,10 @@ Three collinear observers form a path graph. The middle observer has betweenness
 
 This scenario uses the dense reference mode. In CSR mode this spatial recipe provides
 adjacency and degree only; [the gpu-network visibility recipe](../gpu-network/visibility-graph.md)
-adds pivot betweenness, closeness and reached counts.
+adds pivot betweenness, closeness and reached counts. As in the dense mode, an invalid viewpoint
+(on or within tolerance of an obstacle, or non-finite) gets an empty CSR row and appears in no
+other row; the rest of the graph is still published and `status.invalidCount` counts the invalid
+viewpoints. An invalid `parameters` view invalidates every viewpoint, so the graph is empty.
 
 {/* lens:addVisibilityGraphRecipe */}
 
@@ -73,21 +82,58 @@ adds pivot betweenness, closeness and reached counts.
 
 ## `addBuildingTessellationRecipe`
 
-Local mode uses an adaptive candidate index and publishes convex-piece triangle unions for bounded
-simple nonconvex or holed enclosures (at most 32 rings). Reference mode retains dissolved rings, 64
-buildings and 128 samples. Device bindings and certification/overflow status still apply.
+The dispatcher selects reference mode explicitly with `mode: 'reference'`, local mode explicitly
+with `mode: 'local'`, and otherwise selects local when `candidateRadius` is present. The named
+[reference](#addbuildingtessellationreferencerecipe) and [local](#addlocalbuildingtessellationrecipe)
+entries below expose the route-specific result types and evidence.
 
-Eight boundary samples from two rectangular buildings are clipped to a rectangular enclosure and dissolved by building. The two complementary cells each have area twelve. Sampling, overlay counts and completeness accompany the variable-length geometry.
+The existing `gpu-spatial-analysis.building-tessellation-recipe` scenario is registered under this
+legacy name and calls `addBuildingTessellationReferenceRecipe` directly. It demonstrates the
+reference route described below.
 
-For these four rectangular fragments per building, the recording uses capacities of 64 intersections,
-32 noded segments, 16 output vertices and four rings per dissolve. These are fixture-specific
-capacities, not recipe limits. Every output geometry, boundary, count and loss flag remains captured.
+## `addBuildingTessellationReferenceRecipe`
+
+Eight boundary samples from two rectangular buildings are clipped to a rectangular enclosure and
+dissolved by building. The complementary cells each have area twelve. This is reference-route
+evidence: `outputs[i]` is a dissolved polygon with scalar `status.count`, `overflow`,
+`candidateOverflow` and `requiredRingCount`. Recipe-level `status` contains the packed `sampling`
+row and per-building `complete` view. Read both the per-output capacity/loss words and
+`status.complete[i]` before consuming geometry.
+
+For the four rectangular fragments per building, the scenario uses capacities of 64 intersections,
+32 noded segments, 16 output vertices and four rings per dissolve. These are fixture capacities;
+the route's limits are 64 buildings, 128 total samples and 32 total enclosure vertices per call.
+See the [reference output and dissolve contract](urban-morphology.md#addbuildingtessellationreferencerecipe).
 
 {/* lens:addBuildingTessellationRecipe */}
 
-::lens{scenario=gpu-spatial-analysis.building-tessellation-recipe rung=result caption="Inspect the actual synthetic recipe outputs and status."}
+{/* lens:addBuildingTessellationReferenceRecipe */}
 
-::lens{scenario=gpu-spatial-analysis.building-tessellation-recipe rung=graph caption="Follow the executable GPU stages and output capture copies."}
+::lens{scenario=gpu-spatial-analysis.building-tessellation-recipe rung=result caption="Inspect the reference route's dissolved polygons, sampling and completeness."}
+
+::lens{scenario=gpu-spatial-analysis.building-tessellation-recipe rung=graph caption="Follow reference sampling, clipping and per-building dissolve stages."}
+
+## `addLocalBuildingTessellationRecipe`
+
+The registered `gpu-spatial-analysis.local-building-tessellation-recipe` scenario calls the named
+local entry. Four boundary samples from one square building partition a square enclosure of area
+sixteen. It uses `candidateRadius: 16`, four own-sample and candidate slots, and sixteen vertices
+per piece. These fixture settings exercise the union of sample cells, with no per-building dissolve.
+
+Local output uses fixed `positions`, `cells` and `buildingStatus` slots. In general, a simple
+nonconvex or holed enclosure is triangulated and each building owns a union of convex pieces.
+Validity is per building; the scalar `count` counts usable buildings, not pieces. `overflow`
+reports vertex capacity loss, while `candidateOverflow` reports sampling, search-capacity,
+index-visit or radius-certification loss. A failed building's piece vertex counts are zero.
+Follow the [candidate-radius certificate, per-building validity and separate loss words](urban-morphology.md#local-certification-and-loss-evidence)
+before treating the output as complete. Local limits and the fixed row layout are in the
+[local route contract](urban-morphology.md#addlocalbuildingtessellationrecipe).
+
+{/* lens:addLocalBuildingTessellationRecipe */}
+
+::lens{scenario=gpu-spatial-analysis.local-building-tessellation-recipe rung=result caption="Inspect the local convex-piece union and per-building certification status."}
+
+::lens{scenario=gpu-spatial-analysis.local-building-tessellation-recipe rung=graph caption="Follow local sampling, indexed candidates and certified cell clipping."}
 
 ## `addLandscapeMetricsRecipe`
 
@@ -142,7 +188,9 @@ Empirical-quantile population counterfactuals and Shapley components. This execu
 
 ## `addPopulationSupportAlignmentRecipe`
 
-Explicit population support identifiers reordered with completeness evidence. This executes a synthetic fixture and preserves status independently from numerical output.
+The recipe reorders populations by explicit support ID. In `status.stages`, the `alignment` stage
+reports `complete` and the `missing-targets`, `ambiguous-targets`, and `excluded-sources` stages
+each report `invalidCount`.
 
 {/* lens:addPopulationSupportAlignmentRecipe */}
 

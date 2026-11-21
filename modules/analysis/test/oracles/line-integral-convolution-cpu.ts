@@ -43,7 +43,8 @@ export function getLineIntegralConvolutionWeight(
  *
  * Mirrors the WGSL control flow exactly; values differ from the GPU by transcendental and
  * normalisation rounding, which can occasionally move a streamline sample into a neighbouring
- * pixel near a pixel edge.
+ * pixel near a pixel edge. RK2 state stays in output-cell coordinates; velocity samples map
+ * those cells into the field grid, and noise lookup floors the output-cell landing.
  *
  * @param field Packed vector field.
  * @param width Output width in pixels.
@@ -61,16 +62,24 @@ export function convolveLineIntegralOnCPU(
   seed: number
 ): LineIntegralConvolutionCPUResult {
   const fround = Math.fround;
-  const fieldExtent = [parameters[0], parameters[1], parameters[2], parameters[3]].map(fround);
   const originX = fround(parameters[4]);
   const originY = fround(parameters[5]);
+  // Sample displacements from the output origin, never a rounded world centre.
+  const fieldExtent = [
+    fround(fround(parameters[0]) - originX),
+    fround(fround(parameters[1]) - originY),
+    fround(parameters[2]),
+    fround(parameters[3])
+  ];
   const cellWidth = fround(parameters[6]);
   const cellHeight = fround(parameters[7]);
   const stepLength = fround(parameters[8]);
-  // One positive scalar times the unit world direction, `stepLength` output pixels long.
+  // Convert the world direction to output cells, then normalize to stepLength pixels.
   const getStepVector = (direction: [number, number]): [number, number] => {
-    const scale = stepLength / Math.hypot(direction[0] / cellWidth, direction[1] / cellHeight);
-    return [scale * direction[0], scale * direction[1]];
+    const pixelX = fround(direction[0] / cellWidth);
+    const pixelY = fround(direction[1] / cellHeight);
+    const scale = fround(stepLength / getSpeed([pixelX, pixelY]));
+    return [fround(scale * pixelX), fround(scale * pixelY)];
   };
   const minimumSpeed = fround(parameters[9]);
   const phase = fround(parameters[10]);
@@ -83,29 +92,37 @@ export function convolveLineIntegralOnCPU(
   }
   const values = new Float32Array(width * height);
   const speeds = new Float32Array(width * height);
+  const getSpeed = (velocity: [number, number]): number =>
+    fround(
+      Math.sqrt(fround(fround(velocity[0] * velocity[0]) + fround(velocity[1] * velocity[1])))
+    );
+  const samplePixel = (x: number, y: number): [number, number] | undefined =>
+    sampleFieldOnCPU(field, fround(x * cellWidth), fround(y * cellHeight), fieldExtent);
   const getDirection = (x: number, y: number, sign: number): [number, number] | undefined => {
-    const sample = sampleFieldOnCPU(field, x, y, fieldExtent);
+    const sample = samplePixel(x, y);
     if (!sample) {
       return undefined;
     }
-    const speed = Math.hypot(sample[0], sample[1]);
+    // WGSL length and its threshold comparison operate on binary32 values. A
+    // binary64 norm can lie just below an equality boundary that the shader admits.
+    const speed = getSpeed(sample);
     if (!(speed > 0) || speed < minimumSpeed) {
       return undefined;
     }
-    return [(sign * sample[0]) / speed, (sign * sample[1]) / speed];
+    return [fround((sign * sample[0]) / speed), fround((sign * sample[1]) / speed)];
   };
   for (let row = 0; row < height; row++) {
     for (let column = 0; column < width; column++) {
       const pixel = row * width + column;
-      const centreX = fround(originX + fround((column + 0.5) * cellWidth));
-      const centreY = fround(originY + fround((row + 0.5) * cellHeight));
-      const centre = sampleFieldOnCPU(field, centreX, centreY, fieldExtent);
+      const centreX = fround(column + 0.5);
+      const centreY = fround(row + 0.5);
+      const centre = samplePixel(centreX, centreY);
       if (!centre) {
         values[pixel] = NaN;
         speeds[pixel] = NaN;
         continue;
       }
-      speeds[pixel] = Math.hypot(centre[0], centre[1]);
+      speeds[pixel] = getSpeed(centre);
       let weightSum = getLineIntegralConvolutionWeight(0, stepCount, phase, period);
       let sum = weightSum * noise[pixel];
       for (const sign of [1, -1]) {
@@ -128,8 +145,11 @@ export function convolveLineIntegralOnCPU(
           const middleStep = getStepVector(middle);
           x = fround(x + middleStep[0]);
           y = fround(y + middleStep[1]);
-          const sampleColumn = Math.floor((x - originX) / cellWidth);
-          const sampleRow = Math.floor((y - originY) / cellHeight);
+          if (!getDirection(x, y, sign)) {
+            break;
+          }
+          const sampleColumn = Math.floor(x);
+          const sampleRow = Math.floor(y);
           if (sampleColumn < 0 || sampleRow < 0 || sampleColumn >= width || sampleRow >= height) {
             break;
           }

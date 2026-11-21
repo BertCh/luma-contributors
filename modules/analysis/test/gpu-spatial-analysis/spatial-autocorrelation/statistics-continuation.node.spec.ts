@@ -258,12 +258,12 @@ it('multivariate conditional inference keeps chunk, row-tile and replicate-tile 
         values: view('float32', rows * 2),
         variableCount: 2,
         strategy: 'tiled',
-        maximumPermutations: 3,
+        permutationCount: 3,
         rowTileSize,
         permutationTileSize,
         output: {
           statistic: view('float32', rows),
-          pValues: view('float32', rows),
+          pseudoPValues: view('float32', rows),
           classes: view('uint32', rows)
         }
       }).getCommandNodes(graph);
@@ -352,14 +352,16 @@ it('chunk transforms reject logical output overlap while allowing consecutive un
 });
 
 it('pick masks and region status ports reject output aliases', () => {
-  const {device, view, rows} = createScene();
+  const {device, graph, view, rows} = createScene();
   try {
     const shared = view('uint32', rows);
+    // Status ports hold exactly one row, so alias the first row of the shared buffer.
+    const sharedStatus = graph.createDataView(shared.buffer, {format: 'uint32', length: 1});
     expect(
       () =>
         new GPUPickRegionMask({
           picks: view('uint32', 6),
-          output: {mask: shared, status: {overflow: shared}}
+          output: {mask: shared, status: {overflow: sharedStatus}}
         })
     ).toThrow(/overlap/);
     expect(
@@ -371,8 +373,8 @@ it('pick masks and region status ports reject output aliases', () => {
             mask: view('uint32', rows),
             status: {
               overflow: view('uint32', 1),
-              antimeridianUncertainCount: shared,
-              poleUncertainCount: shared
+              antimeridianUncertainCount: sharedStatus,
+              poleUncertainCount: sharedStatus
             }
           }
         })
@@ -452,8 +454,8 @@ it('multivariate inference and rate standardization reject writable output alias
           weights,
           values: view('float32', rows),
           variableCount: 1,
-          maximumPermutations: 3,
-          output: {statistic, pValues: statistic, classes: view('uint32', rows)}
+          permutationCount: 3,
+          output: {statistic, pseudoPValues: statistic, classes: view('uint32', rows)}
         })
     ).toThrow(/overlap/);
     const shared = view('float32', 16);
@@ -585,7 +587,7 @@ for (const kind of ['losh', 'geary', 'pick'] as const)
                 picks: view('uint32', 4),
                 output: {
                   mask: status,
-                  status: {overflow: count, antimeridianUncertainCount: status}
+                  status: {overflow: count}
                 }
               });
       expect(() => contributor.getCommandNodes(graph)).not.toThrow();
@@ -636,6 +638,8 @@ for (const emptyFirstBlock of [false, true])
         bindings: [{name: 'values', view: view('float32', 2), type: 'f32', access: 'read'}],
         declarations: `${GET_NAN_WGSL}\nfn included(row: u32) -> bool { return true; }`,
         variance: view('float32', 1),
+        // Only the merge kernel (nodes[1]) runs below; the block kernel still binds `centered`.
+        centered: view('float32', emptyFirstBlock ? 4097 : 2),
         count: view('uint32', 1)
       });
       const record = getWGSLKernelNodeRecord(graph, nodes[1].id)!;
@@ -682,6 +686,12 @@ it('lattice accepts disjoint packed writable stages and rejects candidate aliase
       byteOffset: 768
     });
     const offsets = view('uint32', rows + 1);
+    // Status ports hold one row: alias the first row of the `neighbors` range.
+    const neighborsRow = graph.createDataView(packed.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: 4
+    });
     const props = {
       width: rows,
       height: 1,
@@ -692,7 +702,7 @@ it('lattice accepts disjoint packed writable stages and rejects candidate aliase
       () =>
         new GPULatticeWeights({
           ...props,
-          output: {...props.output, status: {overflow, candidateOverflow: neighbors}}
+          output: {...props.output, status: {overflow, candidateOverflow: neighborsRow}}
         })
     ).toThrow(/neighbors and candidateOverflow logical byte ranges must not overlap/);
     expect(() => new GPULatticeWeights(props).getCommandNodes(graph)).not.toThrow();

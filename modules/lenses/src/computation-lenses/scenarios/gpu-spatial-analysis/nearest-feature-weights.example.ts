@@ -104,7 +104,7 @@ export async function runExample(
       queries: {kind: 'points', positions: input.observations},
       features: {kind: 'points', positions: input.libraries},
       spatialContext: input.spatialContext,
-      k: 3,
+      neighborCount: 3,
       output: {neighborIds, neighborRows, neighborDistances, neighborCounts, status: joinStatus}
     })
   );
@@ -115,7 +115,7 @@ export async function runExample(
       neighborCounts,
       neighborDistances,
       slotCapacity: 3,
-      k: 3,
+      neighborCount: 3,
       weightType: 'inverse-distance',
       power: 1,
       distanceFloor: 1,

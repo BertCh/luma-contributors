@@ -174,10 +174,14 @@ it('GPULineIntegralConvolution matches the CPU oracle and writes the texture', a
   const fixture = createFixture(device, field, 64, 64, 12);
   try {
     for (const settings of [
-      {fieldExtent: [0, 0, 1, 1], outputExtent: [0, 0, 0.5, 0.5], seed: 3},
       {
-        fieldExtent: [0, 0, 1, 1],
-        outputExtent: [0, 0, 0.5, 0.5],
+        fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+        outputPlacement: {origin: [0, 0], cellSize: [0.5, 0.5]},
+        seed: 3
+      },
+      {
+        fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+        outputPlacement: {origin: [0, 0], cellSize: [0.5, 0.5]},
         seed: 3,
         period: 6,
         phase: 0.25,
@@ -212,8 +216,8 @@ it('GPULineIntegralConvolution animates by phase without rebuilding and replays 
   const fixture = createFixture(device, field, 32, 32, 8);
   try {
     const base: GPULineIntegralConvolutionSettings = {
-      fieldExtent: [0, 0, 1, 1],
-      outputExtent: [0, 0, 0.5, 0.5],
+      fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+      outputPlacement: {origin: [0, 0], cellSize: [0.5, 0.5]},
       seed: 1,
       period: 4
     };
@@ -249,8 +253,8 @@ it('GPULineIntegralConvolution traces tangent to the field on non-square output 
   const fixture = createFixture(device, field, width, height, stepCount);
   try {
     const settings: GPULineIntegralConvolutionSettings = {
-      fieldExtent: [-16, -16, 16, 16],
-      outputExtent: [0, 0, 2, 1],
+      fieldPlacement: {origin: [-16, -16], cellSize: [16, 16]},
+      outputPlacement: {origin: [0, 0], cellSize: [2, 1]},
       stepLength,
       seed: 11
     };

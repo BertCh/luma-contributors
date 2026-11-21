@@ -67,9 +67,17 @@ export function findNonPublicImports(sourceText: string): string[] {
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
     let specifier: string | undefined;
+    const call = (token === 'import' || token === 'require') && tokens[index + 1] === '(';
     if (token === 'from' || token === 'import') specifier = tokens[index + 1];
-    if ((token === 'import' || token === 'require') && tokens[index + 1] === '(')
-      specifier = tokens[index + 2];
+    if (call) specifier = tokens[index + 2];
+    if (
+      call &&
+      (!specifier || !/^["'`]/.test(specifier) || ![')', ','].includes(tokens[index + 3]))
+    ) {
+      const prefix = specifier && /^["'`]/.test(specifier) ? `${specifier.slice(1, -1)} (` : '';
+      imports.push(`${prefix}module specifier must be a single literal${prefix ? ')' : ''}`);
+      continue;
+    }
     if (!specifier || !/^["'`]/.test(specifier)) continue;
     const name = specifier.slice(1, -1);
     const publicEntry = publicEntryMaps.some(entry =>

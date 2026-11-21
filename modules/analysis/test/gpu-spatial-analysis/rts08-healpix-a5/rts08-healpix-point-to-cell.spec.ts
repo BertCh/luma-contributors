@@ -161,3 +161,64 @@ describe('GPUHealpixPointToCell against healpix-geo', () => {
     ).toThrow(/healpix-point-to-cell order must be an integer in \[0, 29\]/);
   });
 });
+
+/**
+ * DGGS-104: just west of a 90 degree meridian at the belt edge (latitude asin(2/3) = 41.8103149),
+ * f32 rounds `0.5 + tt` up to 4.5, so a belt diagonal reached `5 nside`: the key was the far
+ * corner of face 4 in the north (order 4: 1194, 56 degrees away) and the invalid face 12 in the
+ * south. A point that close to the face corner may take any of the three cells meeting there.
+ * Allowed keys are ang2pix_nest (Gorski et al. 2005) in 60-digit mpmath at offsets of
+ * {0, +-1e-6, +-1e-4} degrees in longitude and +-{1e-5, 1e-4} in latitude around the corner; that
+ * transcription matches the healpix-geo fixture above on 6,035 sampled rows (every row except
+ * the exact vertex probe (90, 0)).
+ */
+const BELT_CORNER_KEYS: Record<number, {north: bigint[]; south: bigint[]}> = {
+  4: {north: [170n, 853n, 1279n], south: [1024n, 2218n, 2901n]},
+  12: {
+    north: [11184810n, 55924053n, 83886079n],
+    south: [67108864n, 145402538n, 190141781n]
+  }
+};
+
+describe('GPUHealpixPointToCell at the belt edge west of a 90 degree meridian', () => {
+  const longitude: number[] = [-1.54e-5, -4e-5];
+  const latitude: number[] = [41.8103142, -41.8102913];
+  // The sweep the review asked for: latitude 41.81028 to 41.81032 in 1e-6 steps, both signs.
+  for (let step = 0; step <= 40; step++) {
+    for (const sign of [1, -1]) {
+      longitude.push(-3e-5);
+      latitude.push(sign * (41.81028 + step * 1e-6));
+    }
+  }
+  for (const order of [4, 12]) {
+    it(`order ${order}: every key is one of the corner cells`, async () => {
+      const {keys, flags} = await runKeys(order, {longitude, latitude});
+      keys.forEach((key, row) => {
+        expect(flags[row]).toBe(1);
+        const allowed = BELT_CORNER_KEYS[order][latitude[row] > 0 ? 'north' : 'south'];
+        expect(allowed, `row ${row} (${longitude[row]}, ${latitude[row]}) key ${key}`).toContain(
+          key
+        );
+      });
+    });
+  }
+
+  it('reduces longitudes beyond 2^24 exactly modulo 360', async () => {
+    // Float32 longitudes 1e8, 2^30, -3e9, 1e30 and -3.4e38 (residues 280, 64, 240, 120 and 136
+    // from Fraction(float32) % 360); keys from the same mpmath ang2pix_nest.
+    const largeLongitude = [1e8, 2 ** 30, -3e9, 1e30, -3.4e38];
+    const largeLatitude = [10, 60, -30, 5, -70];
+    const expected: Record<number, bigint[]> = {
+      4: [1989n, 209n, 2682n, 1374n, 2319n],
+      12: [130380280n, 13738371n, 175793766n, 90086953n, 151992142n]
+    };
+    for (const order of [4, 12]) {
+      const {keys, flags} = await runKeys(order, {
+        longitude: largeLongitude,
+        latitude: largeLatitude
+      });
+      expect(flags).toEqual([1, 1, 1, 1, 1]);
+      expect(keys, `order ${order}`).toEqual(expected[order]);
+    }
+  });
+});

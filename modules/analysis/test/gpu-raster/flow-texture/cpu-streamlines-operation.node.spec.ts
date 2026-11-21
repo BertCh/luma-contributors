@@ -30,8 +30,8 @@ const options = {
   pointCapacity: 20
 };
 const parameters = getGPUStreamlinesParameterValues({
-  fieldExtent: [0, 0, 10, 10],
-  gridExtent: [0, 0, 10, 10],
+  fieldPlacement: {origin: [0, 0], cellSize: [10, 10]},
+  gridPlacement: {origin: [0, 0], cellSize: [10, 10]},
   stepLength: 0.125
 });
 const uint32Parameters = getGPUStreamlinesUint32ParameterValues({seed: 7});
@@ -49,7 +49,7 @@ it('selects the highest priority of four colliding horizontal traces and integra
   expect(result.count[0]).toBe(1);
   expect(result.requiredCount[0]).toBe(1);
   expect(result.ids[0]).toBe(winner);
-  expect(Array.from(result.lineOffsets.subarray(0, 2))).toEqual([0, 5]);
+  expect(Array.from(result.lineOffsets)).toEqual([0, 5, 5, 5, 5]);
   expect(result.positionCount[0]).toBe(5);
   const startX = (winner + getPhiloxUnitFloat(random[winner][0])) * 2.5;
   const startY = getPhiloxUnitFloat(random[winner][1]) * 10;
@@ -66,7 +66,7 @@ it('selects the highest priority of four colliding horizontal traces and integra
   expect(overflow.count[0]).toBe(0);
   expect(overflow.requiredCount[0]).toBe(1);
   expect(overflow.overflow[0]).toBe(1);
-  expect(overflow.lineOffsets[0]).toBe(0);
+  expect(Array.from(overflow.lineOffsets)).toEqual([0, 0, 0, 0, 0]);
 });
 
 it('rejects slow, missing and too-short traces, checks arrays and preserves inputs', () => {
@@ -135,8 +135,8 @@ it('follows the analytic parabola of a bilinearly sampled field (1, x)', () => {
         component % 2 === 0 ? 1 : (Math.floor(component / 2) % 4) + 0.5
       ),
       parameters: getGPUStreamlinesParameterValues({
-        fieldExtent: [0, 0, 1, 1],
-        gridExtent: [0, 0, 4, 4],
+        fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+        gridPlacement: {origin: [0, 0], cellSize: [4, 4]},
         stepLength: 0.05
       }),
       uint32Parameters: getGPUStreamlinesUint32ParameterValues({seed: 3})
@@ -179,8 +179,8 @@ it('rejects a seed whose final float32 x lies on the exclusive upper grid bounda
     {
       velocities: Float32Array.of(1, 0),
       parameters: getGPUStreamlinesParameterValues({
-        fieldExtent: [16777216, 0, 2, 2],
-        gridExtent: [16777216, 0, 2, 2],
+        fieldPlacement: {origin: [16777216, 0], cellSize: [2, 2]},
+        gridPlacement: {origin: [16777216, 0], cellSize: [2, 2]},
         stepLength: 0.125
       }),
       uint32Parameters: getGPUStreamlinesUint32ParameterValues({seed: 0, minimumPoints: 1})
@@ -220,8 +220,8 @@ it('truncates a step that rounds onto the upper boundary despite a downward-roun
     {
       velocities: Float32Array.of(1, 0),
       parameters: getGPUStreamlinesParameterValues({
-        fieldExtent: [0, 0, 25, 25],
-        gridExtent: [0, 0, 25, 25],
+        fieldPlacement: {origin: [0, 0], cellSize: [25, 25]},
+        gridPlacement: {origin: [0, 0], cellSize: [25, 25]},
         stepLength: 7.925207614898682
       }),
       uint32Parameters: getGPUStreamlinesUint32ParameterValues({seed: 3, minimumPoints: 1})

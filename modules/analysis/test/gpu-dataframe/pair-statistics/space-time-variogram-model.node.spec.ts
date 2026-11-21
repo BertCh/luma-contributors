@@ -159,6 +159,23 @@ describe('fitSpaceTimeVariogramModel', () => {
       )
     ).toThrow('two non-empty bins');
   });
+
+  it('rejects bin arrays of unequal length (PTS-105)', () => {
+    // Before the fix, a short timeLags array silently cut the fit to its length.
+    expect(() =>
+      fitSpaceTimeVariogramModel(
+        {
+          distances: [1, 2, 3, 1, 2, 3],
+          timeLags: [0, 0, 0, 1, 1],
+          semivariances: [0.2, 0.4, 0.6, 0.3, 0.5, 0.7],
+          pairCounts: [10, 10, 10, 10, 10, 10]
+        },
+        {type: 'metric'}
+      )
+    ).toThrow(
+      'fitSpaceTimeVariogramModel distances, timeLags, semivariances and pairCounts must have equal lengths, got 6, 5, 6 and 6'
+    );
+  });
 });
 
 describe('Matern in the variogram models', () => {

@@ -12,6 +12,32 @@ import {
   CORE_WORKGROUP_STORAGE_LIMIT_BYTES
 } from '../../utils/gpu-contributor-test-utils';
 
+it('snapshots Rose circular conventions before caller mutation can change output shapes', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const circular = {
+      mode: 'directional' as const,
+      angleUnit: 'radians' as const,
+      origin: 'positive-x-counter-clockwise' as const,
+      binCount: 4
+    };
+    const contributor = new GPURoseStatistic({
+      starts: createTransientView(graph, 'starts', 'float32x2', 8),
+      ends: createTransientView(graph, 'ends', 'float32x2', 8),
+      circular,
+      output: {
+        summary: createTransientView(graph, 'summary', 'float32', 5),
+        bins: createTransientView(graph, 'bins', 'float32', 4)
+      }
+    });
+    circular.binCount = 8;
+    expect(contributor.props.circular.binCount).toBe(4);
+  } finally {
+    device.destroy();
+  }
+});
+
 for (const mode of ['directional', 'axial'] as const) {
   it(`Rose ${mode} computes standard count-based Rayleigh z, independently of descriptive weights`, () => {
     const device = createNullWebGPUDevice();
@@ -27,6 +53,30 @@ for (const mode of ['directional', 'axial'] as const) {
       }
     }).getCommandNodes(graph);
     const [{source, constants}] = getGPUCommandNodeKernelSources(nodes);
+    const resultantExpression = source
+      .match(/let resultant = ([\s\S]*?);/)![1]
+      .replace('vec2<f32>', 'vector');
+    const evaluateResultant = new Function(
+      'meanCosine',
+      'meanSine',
+      'length',
+      'vector',
+      'clamp',
+      `return ${resultantExpression};`
+    );
+    const rounded = Math.fround;
+    const norm = rounded(Math.sqrt(24 * 24 + 29 * 29));
+    const length = ([first, second]: number[]) =>
+      rounded(Math.sqrt(rounded(rounded(first * first) + rounded(second * second))));
+    const resultant = evaluateResultant(
+      rounded(24 / norm),
+      rounded(29 / norm),
+      length,
+      (...values: number[]) => values,
+      (value: number, lower: number, upper: number) => Math.max(lower, Math.min(value, upper))
+    );
+    expect(resultant).toBeLessThanOrEqual(1);
+    expect(resultant).toBeGreaterThanOrEqual(0);
     device.destroy();
     expect(getWorkgroupMemoryBytes(source, constants)).toBeLessThanOrEqual(
       CORE_WORKGROUP_STORAGE_LIMIT_BYTES

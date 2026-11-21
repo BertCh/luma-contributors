@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   MATERN_3_2_RANGE_FACTOR,
@@ -85,25 +87,59 @@ export function getPredictionCovarianceModelCode(model: GPUPredictionCovariance)
         case 2.5:
           return 4;
         default:
-          throw new Error('Invalid Matern smoothness');
+          throw new Error(
+            'getPredictionCovarianceModelCode covariance.smoothness must be 0.5, 1.5 or 2.5 for matern'
+          );
       }
     default:
-      throw new Error('Invalid prediction covariance model');
+      throw new Error(
+        'getPredictionCovarianceModelCode covariance.model must be a supported covariance family'
+      );
   }
 }
 
 /** @internal */
-export function validatePredictionCovariance(model: GPUPredictionCovariance): void {
-  getPredictionCovarianceModelCode(model);
-  if (
-    !(model.range > 0) ||
-    !(model.sill >= 0) ||
-    !((model.nugget ?? 0) >= 0) ||
-    !(model.sill + (model.nugget ?? 0) > 0) ||
-    ![model.range, model.sill, model.nugget ?? 0].every(Number.isFinite)
-  ) {
-    throw new Error('Invalid prediction covariance');
-  }
+export function validatePredictionCovariance(
+  model: GPUPredictionCovariance,
+  id: string = 'PredictionCovariance',
+  field: string = 'covariance'
+): void {
+  validateRequirement(
+    id,
+    ['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2', 'matern'].includes(
+      model.model
+    ),
+    `${field}.model must be spherical, exponential, gaussian, matern-3/2, matern-5/2 or matern`
+  );
+  validateRequirement(
+    id,
+    model.model !== 'matern' || [0.5, 1.5, 2.5].includes(model.smoothness ?? -1),
+    `${field}.smoothness must be 0.5, 1.5 or 2.5 for matern`
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(model.range) &&
+      Number.isFinite(Math.fround(model.range)) &&
+      Math.fround(model.range) > 0,
+    `${field}.range must be finite and positive after float32 encoding; received ${model.range}`
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(model.sill) && Number.isFinite(Math.fround(model.sill)) && model.sill >= 0,
+    `${field}.sill must be finite and nonnegative after float32 encoding; received ${model.sill}`
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(model.nugget ?? 0) &&
+      Number.isFinite(Math.fround(model.nugget ?? 0)) &&
+      (model.nugget ?? 0) >= 0,
+    `${field}.nugget must be finite and nonnegative after float32 encoding; received ${model.nugget ?? 0}`
+  );
+  validateRequirement(
+    id,
+    model.sill + (model.nugget ?? 0) > 0,
+    `${field}.sill plus ${field}.nugget must be positive`
+  );
 }
 
 /** WGSL statements declaring `maternArgument`, and an expression in it for a Matern correlation. */
@@ -156,7 +192,7 @@ function getCorrelationWGSL(modelCode: number): {statements: string; expression:
         `(1.0 + maternArgument + maternArgument * maternArgument * ${getWGSLFloatLiteral(1 / 3)}) * exp(-maternArgument)`
       );
     default:
-      throw new Error('Invalid prediction covariance model code');
+      throw new Error('getCorrelationWGSL modelCode must be an integer in [0, 4]');
   }
 }
 
@@ -191,7 +227,7 @@ export function getGPULocalKrigingParameterLength(
 }
 
 /** Per-frame settings of {@link GPULocalKriging}. */
-export type GPULocalKrigingSettings = {
+type LocalKrigingSettingsOptions = {
   /** Covariance of the univariate modes and of the two-by-two `coregionalization` shortcut. */
   covariance?: GPUPredictionCovariance;
   /** Two-by-two row-major loading matrix `L`, with `B = L L^T`, as in the contributor props. */
@@ -204,6 +240,13 @@ export type GPULocalKrigingSettings = {
   /** Co-kriging variables, 2..4. Defaults to 2 when loadings are supplied. */
   variableCount?: number;
 };
+
+/** At least one covariance source is required; complete legacy option bags remain valid. */
+export type GPULocalKrigingSettings = LocalKrigingSettingsOptions &
+  (
+    | {covariance: GPUPredictionCovariance}
+    | {coregionalizationModels: NonNullable<LocalKrigingSettingsOptions['coregionalizationModels']>}
+  );
 
 /**
  * Packs per-frame {@link GPULocalKriging} covariance parameters, so a parameter sweep writes one
@@ -233,29 +276,47 @@ export function getGPULocalKrigingParameterValues(
       : settings.covariance
         ? [{covariance: settings.covariance, loadings: [1]}]
         : []);
+  validateRequirement(
+    'getGPULocalKrigingParameterValues',
+    structures.length > 0,
+    'supply covariance or coregionalizationModels'
+  );
   const hasLoadings = Boolean(settings.coregionalizationModels || settings.coregionalization);
   const variableCount = settings.variableCount ?? (hasLoadings ? 2 : 1);
   const length = getGPULocalKrigingParameterLength(structures.length, variableCount);
-  if (
-    structures.length < 1 ||
-    structures.length > 4 ||
-    !Number.isInteger(variableCount) ||
-    variableCount < (hasLoadings ? 2 : 1) ||
-    variableCount > (hasLoadings ? 4 : 1)
-  ) {
-    throw new Error('Invalid local kriging parameter settings');
-  }
-  const destination = target ?? new Float32Array(length);
-  if (destination.length < length) {
-    throw new Error(`Local kriging parameter target must hold ${length} elements`);
-  }
-  destination.fill(0);
+  validateRequirement(
+    'getGPULocalKrigingParameterValues',
+    !(
+      structures.length < 1 ||
+      structures.length > 4 ||
+      !Number.isInteger(variableCount) ||
+      variableCount < (hasLoadings ? 2 : 1) ||
+      variableCount > (hasLoadings ? 4 : 1)
+    ),
+    'coregionalizationModels must contain 1..4 structures; variableCount must be an integer in [2,4] with loadings, or 1 without'
+  );
+  const destination = new Float32Array(length);
+  const output = target ?? destination;
+  validateRequirement(
+    'getGPULocalKrigingParameterValues',
+    !(output.length < length),
+    `Local kriging parameter target must hold ${length} elements`
+  );
+
   let covarianceScale = 0;
   structures.forEach(({covariance, loadings}, structureIndex) => {
-    validatePredictionCovariance(covariance);
-    if (loadings.length !== variableCount ** 2 || !loadings.every(Number.isFinite)) {
-      throw new Error('Invalid local kriging loading dimensions');
-    }
+    validatePredictionCovariance(
+      covariance,
+      'getGPULocalKrigingParameterValues',
+      settings.coregionalizationModels
+        ? `coregionalizationModels[${structureIndex}].covariance`
+        : 'covariance'
+    );
+    validateRequirement(
+      'getGPULocalKrigingParameterValues',
+      !(loadings.length !== variableCount ** 2 || !loadings.every(Number.isFinite)),
+      'coregionalizationModels.loadings must contain variableCount squared finite entries'
+    );
     const structureOffset = 4 + structureIndex * 4;
     destination[structureOffset] = getPredictionCovarianceModelCode(covariance);
     destination[structureOffset + 1] = covariance.nugget ?? 0;
@@ -265,7 +326,14 @@ export function getGPULocalKrigingParameterValues(
     if (variableCount > 1) {
       const coefficientOffset = 4 + 4 * structures.length + structureIndex * variableCount ** 2;
       for (let pair = 0; pair < variableCount ** 2; pair++) {
-        const coefficient = getCoregionalizationCoefficient(loadings, variableCount, pair);
+        const coefficient = Math.fround(
+          getCoregionalizationCoefficient(loadings, variableCount, pair)
+        );
+        validateRequirement(
+          'getGPULocalKrigingParameterValues',
+          Number.isFinite(coefficient),
+          `coregionalizationModels[${structureIndex}] coefficient[${pair}] must be finite after float32 encoding; received ${coefficient}`
+        );
         destination[coefficientOffset + pair] = coefficient;
         loadingScale = Math.max(loadingScale, Math.abs(coefficient));
       }
@@ -278,8 +346,14 @@ export function getGPULocalKrigingParameterValues(
   // Zero loadings define a valid PSD process covariance. Reserve zero for an unwritten buffer,
   // including when an initialized scale rounds to zero in the float32 parameter layout.
   const normalizationScale = Math.fround(covarianceScale);
+  validateRequirement(
+    'getGPULocalKrigingParameterValues',
+    Number.isFinite(normalizationScale),
+    `normalizationScale must be finite after float32 encoding; received ${covarianceScale}`
+  );
   destination[0] = normalizationScale === 0 ? 1 : normalizationScale;
-  return destination;
+  output.set(destination);
+  return output;
 }
 
 /**
@@ -382,23 +456,33 @@ const SPACE_TIME_TYPE_CODES: Record<SpaceTimeVariogramModel['type'], number> = {
   gneiting: 4
 };
 
-function validateStructure(structure: SpaceTimeVariogramStructure): void {
-  validatePredictionCovariance({
-    model: structure.model,
-    nugget: structure.nugget,
-    sill: structure.sill,
-    range: structure.range
-  });
+function validateStructure(
+  structure: SpaceTimeVariogramStructure,
+  id: string,
+  field: string
+): void {
+  validatePredictionCovariance(
+    {
+      model: structure.model,
+      nugget: structure.nugget,
+      sill: structure.sill,
+      range: structure.range
+    },
+    id,
+    field
+  );
 }
 
 function getStructureTotal(structure: SpaceTimeVariogramStructure): number {
   return structure.nugget + structure.sill;
 }
 
-function assertFinitePositive(value: number, name: string): void {
-  if (!Number.isFinite(value) || !(value > 0)) {
-    throw new Error(`Space-time covariance ${name} must be positive and finite`);
-  }
+function validateSpaceTimeFinitePositive(id: string, name: string, value: number): void {
+  validateRequirement(
+    id,
+    Number.isFinite(value) && value > 0,
+    `${name} must be positive and finite`
+  );
 }
 
 /** Returns `C(0, 0)` of a validated model. */
@@ -422,7 +506,9 @@ function getSpaceTimeCovarianceScale(model: SpaceTimeVariogramModel): number {
     case 'gneiting':
       return model.nugget + model.sill;
     default:
-      throw new Error('Unknown space-time covariance');
+      throw new Error(
+        'getSpaceTimeCovarianceScale covariance.type must be separable, product-sum, metric, sum-metric or gneiting'
+      );
   }
 }
 
@@ -460,54 +546,60 @@ export function getGPUSpaceTimeKrigingParameterValues(
   settings: GPUSpaceTimeKrigingSettings,
   target: Float32Array = new Float32Array(GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH) {
-    throw new Error(
-      `Space-time kriging parameter target must hold ${GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH} elements`
-    );
-  }
+  const id = 'getGPUSpaceTimeKrigingParameterValues';
+  validateRequirement(
+    id,
+    !(target.length < GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH),
+    `Space-time kriging parameter target must hold ${GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH} elements`
+  );
   const {covariance} = settings;
-  target.fill(0);
+  const destination = target;
+  target = new Float32Array(GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH);
   target[1] = SPACE_TIME_TYPE_CODES[covariance.type];
   let modelAnisotropy: number | undefined;
   switch (covariance.type) {
     case 'separable': {
-      validateStructure(covariance.spatial);
-      validateStructure(covariance.temporal);
-      if (
-        Math.abs(getStructureTotal(covariance.spatial) - 1) > 1e-6 ||
-        Math.abs(getStructureTotal(covariance.temporal) - 1) > 1e-6
-      ) {
-        throw new Error('Separable space-time structures must be standardized to a total of 1');
-      }
-      assertFinitePositive(covariance.sill, 'sill');
+      validateStructure(covariance.spatial, id, 'covariance.spatial');
+      validateStructure(covariance.temporal, id, 'covariance.temporal');
+      validateRequirement(
+        id,
+        !(
+          Math.abs(getStructureTotal(covariance.spatial) - 1) > 1e-6 ||
+          Math.abs(getStructureTotal(covariance.temporal) - 1) > 1e-6
+        ),
+        'Separable space-time structures must be standardized to a total of 1'
+      );
+      validateSpaceTimeFinitePositive(id, 'covariance.sill', covariance.sill);
       target[3] = covariance.sill;
       writeStructure(target, 4, covariance.spatial);
       writeStructure(target, 8, covariance.temporal);
       break;
     }
     case 'product-sum': {
-      validateStructure(covariance.spatial);
-      validateStructure(covariance.temporal);
-      if (!Number.isFinite(covariance.k) || !(covariance.k >= 0)) {
-        throw new Error('Space-time covariance k must be non-negative and finite');
-      }
+      validateStructure(covariance.spatial, id, 'covariance.spatial');
+      validateStructure(covariance.temporal, id, 'covariance.temporal');
+      validateRequirement(
+        id,
+        !(!Number.isFinite(covariance.k) || !(covariance.k >= 0)),
+        'Space-time covariance k must be non-negative and finite'
+      );
       target[3] = covariance.k;
       writeStructure(target, 4, covariance.spatial);
       writeStructure(target, 8, covariance.temporal);
       break;
     }
     case 'metric': {
-      validateStructure(covariance.joint);
-      assertFinitePositive(covariance.anisotropy, 'anisotropy');
+      validateStructure(covariance.joint, id, 'covariance.joint');
+      validateSpaceTimeFinitePositive(id, 'covariance.anisotropy', covariance.anisotropy);
       modelAnisotropy = covariance.anisotropy;
       writeStructure(target, 12, covariance.joint);
       break;
     }
     case 'sum-metric': {
-      validateStructure(covariance.spatial);
-      validateStructure(covariance.temporal);
-      validateStructure(covariance.joint);
-      assertFinitePositive(covariance.anisotropy, 'anisotropy');
+      validateStructure(covariance.spatial, id, 'covariance.spatial');
+      validateStructure(covariance.temporal, id, 'covariance.temporal');
+      validateStructure(covariance.joint, id, 'covariance.joint');
+      validateSpaceTimeFinitePositive(id, 'covariance.anisotropy', covariance.anisotropy);
       modelAnisotropy = covariance.anisotropy;
       writeStructure(target, 4, covariance.spatial);
       writeStructure(target, 8, covariance.temporal);
@@ -515,19 +607,21 @@ export function getGPUSpaceTimeKrigingParameterValues(
       break;
     }
     case 'gneiting': {
-      assertFinitePositive(covariance.sill, 'sill');
-      assertFinitePositive(covariance.spatialRange, 'spatialRange');
-      assertFinitePositive(covariance.temporalRange, 'temporalRange');
-      if (
-        !(covariance.nugget >= 0) ||
-        !(covariance.alpha > 0 && covariance.alpha <= 1) ||
-        !(covariance.gamma > 0 && covariance.gamma <= 1) ||
-        !(covariance.beta >= 0 && covariance.beta <= 1) ||
-        !(covariance.tau >= covariance.beta) ||
-        !Number.isFinite(covariance.tau)
-      ) {
-        throw new Error('Invalid Gneiting covariance parameters');
-      }
+      validateSpaceTimeFinitePositive(id, 'covariance.sill', covariance.sill);
+      validateSpaceTimeFinitePositive(id, 'covariance.spatialRange', covariance.spatialRange);
+      validateSpaceTimeFinitePositive(id, 'covariance.temporalRange', covariance.temporalRange);
+      validateRequirement(
+        id,
+        !(
+          !(covariance.nugget >= 0) ||
+          !(covariance.alpha > 0 && covariance.alpha <= 1) ||
+          !(covariance.gamma > 0 && covariance.gamma <= 1) ||
+          !(covariance.beta >= 0 && covariance.beta <= 1) ||
+          !(covariance.tau >= covariance.beta) ||
+          !Number.isFinite(covariance.tau)
+        ),
+        'Gneiting covariance parameters require finite nugget >= 0, sill > 0, alpha/gamma in (0,1], beta in [0,1], finite tau >= beta'
+      );
       target[16] = covariance.sill;
       target[17] = covariance.nugget;
       target[18] = getGneitingTemporalScale(
@@ -540,25 +634,64 @@ export function getGPUSpaceTimeKrigingParameterValues(
       target[21] = covariance.gamma;
       target[22] = covariance.beta;
       target[23] = covariance.tau;
+      for (const [field, offset] of [
+        ['temporal coefficient a', 18],
+        ['spatial coefficient c', 19],
+        ['alpha', 20],
+        ['gamma', 21],
+        ['tau', 23]
+      ] as const) {
+        validateRequirement(
+          id,
+          Number.isFinite(target[offset]) && target[offset] > 0,
+          `Gneiting ${field} must be finite and positive after float32 encoding; received ${target[offset]}`
+        );
+      }
+      validateRequirement(
+        id,
+        Number.isFinite(target[16]) &&
+          Number.isFinite(target[17]) &&
+          Number.isFinite(target[22]) &&
+          target[22] >= 0 &&
+          target[22] <= 1 &&
+          target[23] >= target[22],
+        'Gneiting sill, nugget, beta and tau must remain finite and in their domains after float32 encoding'
+      );
       break;
     }
     default:
-      throw new Error('Unknown space-time covariance');
+      throw new Error(
+        'getGPUSpaceTimeKrigingParameterValues covariance.type must be separable, product-sum, metric, sum-metric or gneiting'
+      );
   }
   const searchAnisotropy = settings.searchAnisotropy ?? modelAnisotropy;
-  if (searchAnisotropy === undefined) {
-    throw new Error('searchAnisotropy is required for a model without an anisotropy');
-  }
-  assertFinitePositive(searchAnisotropy, 'searchAnisotropy');
+  validateRequirement(
+    id,
+    !(searchAnisotropy === undefined),
+    'searchAnisotropy is required for a model without an anisotropy'
+  );
+  validateSpaceTimeFinitePositive(id, 'searchAnisotropy', searchAnisotropy);
   const scale = getSpaceTimeCovarianceScale(covariance);
-  assertFinitePositive(scale, 'variance');
+  validateSpaceTimeFinitePositive(id, 'covariance total variance', scale);
   target[0] = scale;
   target[2] = modelAnisotropy ?? 0;
+  if (modelAnisotropy !== undefined)
+    validateRequirement(
+      id,
+      Number.isFinite(target[2]) && target[2] > 0,
+      `covariance.anisotropy must remain finite and positive after float32 encoding; received ${modelAnisotropy}`
+    );
   target[24] = settings.searchRadius ?? Infinity;
   target[25] = settings.maximumTimeLag ?? Infinity;
   target[26] = searchAnisotropy;
   target[27] = settings.mean ?? 0;
-  return target;
+  validateRequirement(
+    id,
+    Number.isFinite(target[0]) && target[0] > 0 && Number.isFinite(target[26]) && target[26] > 0,
+    `covariance normalization scale and searchAnisotropy must remain finite and positive after float32 encoding; received ${scale}, ${searchAnisotropy}`
+  );
+  destination.set(target);
+  return destination;
 }
 
 /**

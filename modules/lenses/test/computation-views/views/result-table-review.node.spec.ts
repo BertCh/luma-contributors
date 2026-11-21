@@ -27,6 +27,22 @@ function render(snapshots: Parameters<typeof makeY2Record>[0], options = {}) {
 }
 
 describe('result table review regressions', () => {
+  test('review full tables union usable windows instead of anchoring on an empty input', () => {
+    const {tree} = render([
+      makeY2Capture('empty', [], {role: 'input', keySpace: 'rows'}),
+      makeY2Capture('shifted', [120, 130], {role: 'input', keySpace: 'rows', meaning: 'first:12'}),
+      makeY2Capture('output', [], {role: 'output', keySpace: 'rows'})
+    ]);
+    const input = findViewNodes(tree, node => node.tag === 'table')[0];
+    expect(getViewNodeText(input)).toContain('2 rows');
+    expect(findViewNodes(input, node => node.tag === 'td').map(getViewNodeText)).toEqual([
+      '—',
+      '120',
+      '—',
+      '130'
+    ]);
+    expect(getViewNodeText(input)).not.toContain('more rows');
+  });
   test('R3: preferred array tables separate same-role columns from different domains', () => {
     const context = createViewContext(
       makeY2Record([
@@ -82,7 +98,7 @@ describe('result table review regressions', () => {
 
   test('R5: first:1 columns align with entity keys rather than array positions', () => {
     const {tree} = render([
-      makeY2Capture('left', [5, 6, 7], {role: 'input', keySpace: 'rows'}),
+      makeY2Capture('left', [5, 6, 7], {role: 'output', keySpace: 'rows'}),
       makeY2Capture('right', [20, 30], {role: 'output', keySpace: 'rows', meaning: 'first:1'})
     ]);
     const rows = findViewNodes(tree, node => node.tag === 'tr').slice(1);
@@ -136,6 +152,11 @@ describe('result table review regressions', () => {
   });
 
   test('R7: table thumbnails never mark uncaptured output rows as readbacks', () => {
+    const full = render([
+      makeY2Capture('input', [1, 2, 3], {role: 'input', keySpace: 'rows'}),
+      makeY2Capture('output', [], {role: 'output', keySpace: 'rows'})
+    ]);
+    expect(findViewNodes(full.tree, node => node.tag === 'table')).toHaveLength(2);
     const {tree} = render(
       [
         makeY2Capture('input', [1, 2, 3], {role: 'input', keySpace: 'rows'}),
@@ -154,6 +175,22 @@ describe('result table review regressions', () => {
           node.attributes['data-role'] === 'output' &&
           node.attributes['data-provenance'] === 'readback'
       )
+    ).toHaveLength(0);
+  });
+
+  test('W5-24 empty output at zero cannot hide input keys 9 and 10', () => {
+    const {tree} = render(
+      [
+        makeY2Capture('input', [90, 100], {role: 'input', keySpace: 'rows', meaning: 'first:9'}),
+        makeY2Capture('output', [], {role: 'output', keySpace: 'rows'})
+      ],
+      {size: 'thumbnail'}
+    );
+    expect(
+      findViewNodes(tree, node => node.tag === 'rect' && node.attributes['data-role'] === 'input')
+    ).toHaveLength(2);
+    expect(
+      findViewNodes(tree, node => node.tag === 'rect' && node.attributes['data-role'] === 'output')
     ).toHaveLength(0);
   });
 

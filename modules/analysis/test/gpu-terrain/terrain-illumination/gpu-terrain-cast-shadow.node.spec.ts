@@ -451,7 +451,7 @@ it('getGPUTerrainCastShadowParameterValues validates its input', () => {
       valid,
       makeGPURasterMetadata({width: 48, height: 40, cellSize: [0, 1]})
     )
-  ).toThrow(/cell size/);
+  ).toThrow(/cell size|pixel-axis lengths/);
   expect(() =>
     getGPUTerrainCastShadowParameterValues({...valid, angularRadiusDegrees: -1}, grid)
   ).toThrow(/angular radius/);
@@ -507,6 +507,7 @@ it('GPUTerrainCastShadow validates props and schedules one sweep node', () => {
   expect(nodes.some(node => node.id === 'terrain-cast-shadow-sweep')).toBe(true);
   expect(nodes.filter(node => node.id.includes('sweep'))).toHaveLength(1);
 
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({maximumRadius: 0})).toThrow(/maximumRadius/);
   expect(() => create({maximumRadius: 2.5})).toThrow(/maximumRadius/);

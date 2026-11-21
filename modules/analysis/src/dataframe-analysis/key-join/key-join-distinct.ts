@@ -29,7 +29,7 @@ const write = (name: string, view: GraphDataView): WGSLKernelBinding => ({
 });
 
 /** Exact distinct finite float32 values per right-key segment; +/-0 are the same value. @internal */
-export function createKeyJoinDistinctNodes<Parameters>(
+export function createKeyLookupDistinctNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
@@ -37,7 +37,7 @@ export function createKeyJoinDistinctNodes<Parameters>(
     sortedRows: GraphDataView<'uint32'>;
     rowUnique: GraphDataView<'uint32'>;
     leftUnique: GraphDataView<'uint32'>;
-    output: GraphDataView<'float32'>;
+    output: GraphDataView<'float32'> | GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const {id, column, sortedRows, rowUnique, leftUnique, output} = props;
@@ -50,7 +50,7 @@ export function createKeyJoinDistinctNodes<Parameters>(
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode(graph, {
       id: `${id}-keys`,
-      operation: 'GPUKeyJoin',
+      operation: 'GPUKeyLookup',
       variant: 'distinct-keys',
       invocationCount: rows,
       bindings: [
@@ -70,7 +70,7 @@ export function createKeyJoinDistinctNodes<Parameters>(
   ];
   const sorted = createStableLexicographicIndexSortNodes(graph, {
     id: `${id}-sort`,
-    operation: 'GPUKeyJoin',
+    operation: 'GPUKeyLookup',
     indices,
     indicesAreIdentity: true,
     keys: [{view: groups}, {view: valueKeys}]
@@ -79,7 +79,7 @@ export function createKeyJoinDistinctNodes<Parameters>(
     ...sorted.nodes,
     createFillNode(graph, {
       id: `${id}-clear`,
-      operation: 'GPUKeyJoin',
+      operation: 'GPUKeyLookup',
       view: counts,
       type: 'u32',
       value: '0u'
@@ -88,7 +88,7 @@ export function createKeyJoinDistinctNodes<Parameters>(
   nodes.push(
     createWGSLKernelNode(graph, {
       id: `${id}-heads`,
-      operation: 'GPUKeyJoin',
+      operation: 'GPUKeyLookup',
       variant: 'distinct-heads',
       invocationCount: rows,
       bindings: [
@@ -108,18 +108,23 @@ export function createKeyJoinDistinctNodes<Parameters>(
     }),
     createWGSLKernelNode(graph, {
       id: `${id}-finish`,
-      operation: 'GPUKeyJoin',
+      operation: 'GPUKeyLookup',
       variant: 'distinct-finish',
       invocationCount: leftUnique.length,
       bindings: [
         read('leftUnique', leftUnique),
         read('counts', counts),
-        {name: 'output', view: output, type: 'f32', access: 'read_write'}
+        {
+          name: 'output',
+          view: output,
+          type: output.format === 'uint32' ? 'u32' : 'f32',
+          access: 'read_write'
+        }
       ],
       body: `let group = leftUnique[leftUniqueOffset + index];
   var count = 0u;
   if (group != 0xffffffffu) { count = counts[countsOffset + group]; }
-  output[outputOffset + index] = f32(count);`
+  output[outputOffset + index] = ${output.format === 'uint32' ? 'count' : 'f32(count)'};`
     })
   );
   return nodes;

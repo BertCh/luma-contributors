@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useMemo, useState, useSyncExternalStore} from 'react';
-import {GPU_ANALYSIS_MEASUREMENT_LEVELS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_ANALYSIS_MEASUREMENT_LEVELS} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {analysisDatasetContext} from './analysis-dataset-context';
 import {makeCatalogPointColumns} from './analysis-catalog-input';
 import type {CatalogResidentDataset} from './analysis-catalog-resident-input';

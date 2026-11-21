@@ -8,7 +8,7 @@ import {
   getGPUSpatialKMeansParameterValues,
   GPUSpatialKMeans,
   GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
-  GPUSpatialClustering
+  GPUDBSCAN
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {getGPUSpatialKMeansRestartSeed} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-spatial-kmeans';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -30,12 +30,14 @@ it('GPUSpatialKMeans validates props and declares nodes', () => {
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   const make = () => ({
     positions: view('float32x2', 20),
-    k: 3,
+    clusterCount: 3,
     maximumIterations: 2,
     parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
     output: {labels: view('uint32', 20), centers: view('float32x2', 3)}
   });
   const base = make();
+  const oldProps = {...base, k: 3};
+  expect(() => new GPUSpatialKMeans(oldProps)).toThrow('kmeans: k was renamed; use clusterCount');
   const lambert = {
     coordinateSpace: 'planar',
     metric: 'native',
@@ -54,8 +56,8 @@ it('GPUSpatialKMeans validates props and declares nodes', () => {
   ).not.toThrow();
 
   const output = (extra: object) => ({...base, output: {...base.output, ...extra}});
-  expect(() => new GPUSpatialKMeans({...base, k: 0})).toThrow(/k must/);
-  expect(() => new GPUSpatialKMeans({...base, k: 300})).toThrow(/k must/);
+  expect(() => new GPUSpatialKMeans({...base, clusterCount: 0})).toThrow(/clusterCount must/);
+  expect(() => new GPUSpatialKMeans({...base, clusterCount: 300})).toThrow(/clusterCount must/);
   expect(() => new GPUSpatialKMeans({...base, maximumIterations: 0})).toThrow(/maximumIterations/);
   expect(() => new GPUSpatialKMeans({...base, initialization: 'random' as 'kmeans++'})).toThrow(
     /initialization/
@@ -79,7 +81,8 @@ it('GPUSpatialKMeans validates props and declares nodes', () => {
   expect(first).toContain('kmeans-initial-centers');
   expect(first).toContain('kmeans-iteration-1-update');
   expect(first).toContain('kmeans-iteration-1-converge');
-  expect(first.at(-1)).toMatch(/kmeans-final-sizes/);
+  expect(first.some(id => /kmeans-final-sizes/.test(id))).toBe(true);
+  expect(first.at(-1)).toBe('kmeans-publish-iteration-limit');
   const seeded = new GPUSpatialKMeans({...make(), id: 'seeded', initialization: 'kmeans++'})
     .getCommandNodes(graph)
     .map(node => node.id);
@@ -87,7 +90,7 @@ it('GPUSpatialKMeans validates props and declares nodes', () => {
   expect(seeded).not.toContain('seeded-initial-centers');
 });
 
-it('GPUSpatialClustering declares dense-box nodes only when requested', () => {
+it('GPUDBSCAN declares dense-box nodes only when requested', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'dense-box-nodes'});
   const props = (id: string, denseBoxShortcut?: boolean) => ({
     id,
@@ -97,12 +100,8 @@ it('GPUSpatialClustering declares dense-box nodes only when requested', () => {
     gridSize: [8, 8] as const,
     output: {labels: createTransientView(graph, `${id}-labels`, 'uint32', 16)}
   });
-  const plain = new GPUSpatialClustering(props('plain'))
-    .getCommandNodes(graph)
-    .map(node => node.id);
-  const dense = new GPUSpatialClustering(props('dense', true))
-    .getCommandNodes(graph)
-    .map(node => node.id);
+  const plain = new GPUDBSCAN(props('plain')).getCommandNodes(graph).map(node => node.id);
+  const dense = new GPUDBSCAN(props('dense', true)).getCommandNodes(graph).map(node => node.id);
   expect(plain.some(id => id.includes('box'))).toBe(false);
   expect(dense).toContain('dense-box-keys');
   expect(dense).toContain('dense-box-counts');
@@ -125,7 +124,7 @@ it("GPUSpatialKMeans defaults to 'kmeans++' and one restart, and validates resta
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   const make = (extra = {}, outputs = {}) => ({
     positions: view('float32x2', 20),
-    k: 3,
+    clusterCount: 3,
     maximumIterations: 2,
     parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
     output: {labels: view('uint32', 20), centers: view('float32x2', 3), ...outputs},
@@ -134,6 +133,8 @@ it("GPUSpatialKMeans defaults to 'kmeans++' and one restart, and validates resta
   const defaults = new GPUSpatialKMeans(make());
   expect(defaults.initialization).toBe('kmeans++');
   expect(defaults.restartCount).toBe(1);
+  expect(defaults.centerCoordinates).toBe(true);
+  expect(new GPUSpatialKMeans(make({centerCoordinates: false})).centerCoordinates).toBe(false);
   expect(() => new GPUSpatialKMeans(make({restartCount: 0}))).toThrow(/restartCount/);
   expect(() => new GPUSpatialKMeans(make({restartCount: 33}))).toThrow(/restartCount/);
   expect(() => new GPUSpatialKMeans(make({restartCount: 1.5}))).toThrow(/restartCount/);
@@ -214,9 +215,9 @@ it('best-of-restarts oracle picks a better optimum than a poor start', () => {
   );
 });
 
-// Oracle: scikit-learn 1.9.1 KMeans(n_clusters=4, n_init=10, random_state=0), run on the f32
-// scene dumped by fix/work/C/U7/dump.ts via fix/work/C/U7/kmeans-sklearn.py. Both 'k-means++'
-// and 'random' init reach the same inertia (the blobs are 565 apart), so it is init independent.
+// Oracle: clustering-fixture-oracles.py beside this spec regenerates the f32 LCG-12345
+// four-blob scene, promotes to f64 and runs scikit-learn 1.6.1 Lloyd from rows 0,60,120,180,
+// n_init=1, tol=0, max_iter=20. This independently reproduces the historical 1.9.1 inertia.
 const SKLEARN_SEPARATED_INERTIA = 3707.8660708989237;
 
 it('f64 Lloyd oracle reaches the scikit-learn inertia on a well-separated scene', () => {
@@ -297,7 +298,7 @@ it('GPUSpatialKMeans relocate kernel binds at most 8 storage buffers and runs on
   ) => createTransientView(graph, `view-${format}-${length}`, format, length);
   const nodes = new GPUSpatialKMeans({
     positions: view('float32x2', 20),
-    k: 3,
+    clusterCount: 3,
     maximumIterations: 4,
     initialization: 'first-valid',
     parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
@@ -309,5 +310,33 @@ it('GPUSpatialKMeans relocate kernel binds at most 8 storage buffers and runs on
     const prefix = `kmeans-iteration-${iteration}`;
     expect(nodes.indexOf(`${prefix}-update`)).toBeLessThan(nodes.indexOf(`${prefix}-relocate`));
     expect(nodes.indexOf(`${prefix}-relocate`)).toBeLessThan(nodes.indexOf(`${prefix}-converge`));
+  }
+});
+
+it('publishes graph-owned stopping views and honors explicit destinations', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const explicit of [false, true]) {
+      const graph = new GPUCommandGraph(device);
+      const converged = createTransientView(graph, 'converged', 'uint32', 1);
+      const solver = new GPUSpatialKMeans({
+        positions: createTransientView(graph, 'positions', 'float32x2', 2),
+        clusterCount: 1,
+        parameters: createTransientView(graph, 'parameters', 'uint32', 2),
+        maximumIterations: 1,
+        output: {
+          labels: createTransientView(graph, 'labels', 'uint32', 2),
+          centers: createTransientView(graph, 'centers', 'float32x2', 1),
+          ...(explicit ? {status: {converged}} : {})
+        }
+      });
+      const nodes = solver.getCommandNodes(graph);
+      expect(nodes.length).toBeLessThanOrEqual(solver.estimatedCommandNodeCount);
+      expect(solver.output.status?.converged?.length).toBe(1);
+      expect(solver.output.status?.iterationLimitReached?.length).toBe(1);
+      if (explicit) expect(solver.output.status?.converged).toBe(converged);
+    }
+  } finally {
+    device.destroy();
   }
 });

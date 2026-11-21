@@ -55,19 +55,26 @@ export function solveCPURegressionFactor(
 
 /**
  * One-sided Jacobi singular values of a small rectangular matrix. Scales before taking products
- * and iterates until columns are orthogonal to float64 precision, without the GPU sweep cap.
+ * and uses hypot norms with products of unit columns so small squared norms cannot underflow,
+ * and orthogonalizes the shorter dimension (transposing wide inputs). Stops at float64
+ * orthogonality, numerical stagnation, or max(32, 4 * columnCount) sweeps.
  * @internal
  */
 export function getCPURegressionSingularValueRange(matrix: readonly number[][]): [number, number] {
-  const columnCount = matrix[0].length;
+  const workingRows =
+    matrix[0].length > matrix.length
+      ? matrix[0].map((_, column) => matrix.map(row => row[column]))
+      : matrix;
+  const columnCount = workingRows[0].length;
   let maximumEntry = 0;
   for (const row of matrix) {
     for (const entry of row) maximumEntry = Math.max(maximumEntry, Math.abs(entry));
   }
   if (maximumEntry === 0) return [0, 0];
-  const working = matrix.map(row => row.map(entry => entry / maximumEntry));
+  const working = workingRows.map(row => row.map(entry => entry / maximumEntry));
   let changed = true;
-  while (changed) {
+  const maximumSweeps = Math.max(32, 4 * columnCount);
+  for (let sweep = 0; changed && sweep < maximumSweeps; sweep++) {
     changed = false;
     for (let first = 0; first < columnCount; first++) {
       for (let second = first + 1; second < columnCount; second++) {
@@ -75,23 +82,33 @@ export function getCPURegressionSingularValueRange(matrix: readonly number[][]):
         let secondNorm = 0;
         let product = 0;
         for (const row of working) {
-          firstNorm += row[first] ** 2;
-          secondNorm += row[second] ** 2;
-          product += row[first] * row[second];
+          firstNorm = Math.hypot(firstNorm, row[first]);
+          secondNorm = Math.hypot(secondNorm, row[second]);
         }
-        if (Math.abs(product) <= 16 * Number.EPSILON * Math.sqrt(firstNorm * secondNorm)) continue;
-        const difference = (secondNorm - firstNorm) / (2 * product);
+        if (!(firstNorm > 0) || !(secondNorm > 0)) continue;
+        // Unit-column products retain a small column even when its squared norm underflows.
+        for (const row of working) product += (row[first] / firstNorm) * (row[second] / secondNorm);
+        if (Math.abs(product) <= 16 * Number.EPSILON) continue;
+        const largest = Math.max(firstNorm, secondNorm);
+        const firstRelative = firstNorm / largest;
+        const secondRelative = secondNorm / largest;
+        const difference = (secondRelative - firstRelative) * (secondRelative + firstRelative);
+        const twiceProduct = 2 * firstRelative * secondRelative * product;
         const tangent =
-          (difference >= 0 ? 1 : -1) / (Math.abs(difference) + Math.hypot(1, difference));
+          twiceProduct /
+          (difference + (difference >= 0 ? 1 : -1) * Math.hypot(difference, twiceProduct));
         const cosine = 1 / Math.hypot(1, tangent);
         const sine = tangent * cosine;
+        if (sine === 0 || !Number.isFinite(sine)) continue;
+        let rotated = false;
         for (const row of working) {
           const firstEntry = row[first];
           const secondEntry = row[second];
           row[first] = cosine * firstEntry - sine * secondEntry;
           row[second] = sine * firstEntry + cosine * secondEntry;
+          rotated ||= row[first] !== firstEntry || row[second] !== secondEntry;
         }
-        changed = true;
+        changed ||= rotated;
       }
     }
   }

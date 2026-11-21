@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
 import {readFloat32Vector} from '../../../examples/deck/kepler-compute/src/kriging-diagnostics';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -15,8 +16,9 @@ import {
   getGPUVecchiaLogLikelihoodParameterValues,
   getGPUVecchiaSpaceTimeLogLikelihoodParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 import {getCatalogBinding, runCatalogOperationAsync} from '../src/analysis/catalog-bindings';
+import {makeCatalogTableInput, type CatalogDataInput} from '../src/analysis/catalog-data-input';
 import {
   parseCatalogFeatureCollection,
   type CatalogFeatureCollection,
@@ -28,11 +30,24 @@ import {getCatalogSampleInputs} from '../../../examples/deck/kepler-compute/src/
 import {getKeplerOperationDescriptor} from '../src/descriptors/operation-descriptors';
 import {planKeplerResultPresentation} from '../src/presentation/result-presentation';
 import {fitKeplerVecchiaVariogram} from '../src/analysis/kriging-variogram-fit';
+import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
+import {
+  restoreKeplerAnalysisRecipe,
+  serializeKeplerAnalysisRecipe,
+  type KeplerAnalysisRecipe
+} from '../src/recipes/analysis-recipe';
+import {
+  createInputBuffer,
+  createOutputBuffer,
+  importGraphBuffer,
+  readFloat32,
+  submitGraph
+} from '@luma-contributors/analysis/testing';
 
 async function runOperation(
   id: string,
   parameters: Record<string, unknown>,
-  inputs: Record<string, CatalogFeatureCollection>
+  inputs: Record<string, CatalogDataInput>
 ) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -51,6 +66,175 @@ function points(rows: Record<string, unknown>[]): CatalogFeatureCollection {
 function readMetric(table: CatalogOutputTable, name: string): number {
   return table.columns['value'][table.columns['metric'].indexOf(name)] as number;
 }
+
+test('column-only scores return the same indexed values for table and feature routes', async () => {
+  const rows = [
+    {observed: 1, predicted: 2, variance: 0, member1: 2, member2: 2, pvalue: 0.01},
+    {observed: 3, predicted: 3, variance: 0, member1: 3, member2: 3, pvalue: 0.2}
+  ];
+  const table: CatalogOutputTable = {
+    id: 'forecasts',
+    label: 'Forecasts',
+    rowCount: 2,
+    columns: Object.fromEntries(
+      Object.keys(rows[0]).map(name => [name, rows.map(row => row[name as keyof typeof row])])
+    ),
+    columnTypes: Object.fromEntries(Object.keys(rows[0]).map(name => [name, 'float64']))
+  };
+  const input = makeCatalogTableInput(table, {maximumRows: 2048});
+  for (const id of ['validation-gaussian-scores', 'validation-ensemble-scores', 'validation-fdr']) {
+    const parameters =
+      id === 'validation-ensemble-scores'
+        ? {memberProperties: 'member1,member2'}
+        : id === 'validation-fdr'
+          ? {method: 'bonferroni', alpha: 0.05}
+          : {};
+    const tableResult = await runOperation(id, parameters, {points: input});
+    const featureResult = await runOperation(id, parameters, {points: points(rows)});
+    const output = tableResult.tables[0];
+    expect(output.rowCount).toBe(2);
+    expect(featureResult.tables[0].rowCount).toBe(2);
+    expect(output.geometryColumn).toBeUndefined();
+    const featureGeometryColumn = featureResult.tables[0].geometryColumn;
+    expect(featureGeometryColumn).toBe('geometry');
+    expect(
+      featureResult.tables[0].columns[featureGeometryColumn!].map(value =>
+        JSON.parse(String(value))
+      )
+    ).toEqual([
+      {type: 'Point', coordinates: [0, 0]},
+      {type: 'Point', coordinates: [10, 1]}
+    ]);
+    expect(output.columns['feature_index']).toEqual([0, 1]);
+    for (const [name, values] of Object.entries(output.columns))
+      expect(values).toEqual(featureResult.tables[0].columns[name]);
+    // A zero-variance Gaussian and identical ensemble members are point forecasts:
+    // CRPS is |prediction - observation| = [1, 0]. Bonferroni doubles the two p-values.
+    const expected = id === 'validation-fdr' ? [0.02, 0.4] : [1, 0];
+    const actual = output.columns[id === 'validation-fdr' ? 'adjusted_pvalue' : 'crps'];
+    expect(actual).toHaveLength(2);
+    actual.forEach((value, index) => {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeCloseTo(expected[index], 6);
+    });
+    if (id === 'validation-fdr') expect(output.columns['significant']).toEqual([1, 0]);
+  }
+});
+
+test('B1 catalog variogram score counts both adjacent directions without cancellation', async () => {
+  const result = await runOperation(
+    'validation-ensemble-scores',
+    {
+      memberProperties: 'member1,member2',
+      variogramOrder: 1
+    },
+    {
+      points: points([
+        {observed: 0, member1: 0, member2: 0},
+        {observed: 10000001, member1: 10000000, member2: 10000000}
+      ])
+    }
+  );
+  // Each directed pair contributes (|10000001-0| - mean(|10000000-0|))^2 = 1.
+  // The binding explicitly lists (0,1) and (1,0), so the exact total is 2.
+  const score = readMetric(result.tables[1], 'variogram_score');
+  expect(Number.isFinite(score)).toBe(true);
+  expect(score).toBe(2);
+});
+
+test.each([
+  {
+    name: 'seam',
+    bounds: [179.5, -0.125, 179.75, 0.125] as const,
+    longitudes: [-179.875, -179.75, -179.625],
+    latitudes: [0, 0, 0]
+  },
+  {
+    name: 'pole',
+    bounds: [-0.125, 89.375, 0.125, 89.625] as const,
+    longitudes: [179.875, -90, 90],
+    latitudes: [89.5, 89.5, 89.5]
+  }
+])('wrapped interpolation binding replays a constant field across the $name', async fixture => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const kind of ['idw-points', 'kriging-points'] as const) {
+    const graph = new GPUCommandGraph(device);
+    const longitudeBuffer = createInputBuffer(device, Float32Array.from(fixture.longitudes));
+    const latitudeBuffer = createInputBuffer(device, Float32Array.from(fixture.latitudes));
+    const sourceBuffer = createInputBuffer(device, Float32Array.of(7, 7, 7));
+    const outputBuffer = createOutputBuffer(device, 1);
+    const common = {
+      longitudeColumn: 'longitude',
+      latitudeColumn: 'latitude',
+      coordinateSpace: 'longitude-latitude' as const,
+      metric: 'great-circle' as const,
+      units: 'meters' as const,
+      longitudeSearch: 'wrapped' as const,
+      grid: {bounds: fixture.bounds, width: 1, height: 1},
+      neighborCount: 3,
+      column: 'value'
+    };
+    const recipe: KeplerAnalysisRecipe = {
+      schemaVersion: 1,
+      algorithmVersion: 1,
+      id: `wrapped-${kind}`,
+      source: {datasetId: 'wrapped-source', revision: 1},
+      population: 'all',
+      backendPolicy: 'require-gpu',
+      operation:
+        kind === 'idw-points'
+          ? {
+              ...common,
+              kind,
+              searchRadius: 150000,
+              power: 2,
+              minimumNeighborCount: 3,
+              taper: 'none'
+            }
+          : {
+              ...common,
+              kind,
+              searchRadiusMeters: 150000,
+              minimumNeighbors: 3,
+              variogram: {model: 'exponential', nugget: 0, sill: 1, rangeMeters: 150000}
+            }
+    };
+    try {
+      const restored = restoreKeplerAnalysisRecipe(serializeKeplerAnalysisRecipe(recipe), {
+        resolveDatasetRevision: () => 1
+      });
+      const result = addKeplerAnalysisRecipe(graph, restored, {
+        source: recipe.source,
+        columns: {
+          longitude: importGraphBuffer(graph, 'longitude', longitudeBuffer, 'float32', 3),
+          latitude: importGraphBuffer(graph, 'latitude', latitudeBuffer, 'float32', 3),
+          value: importGraphBuffer(graph, 'value', sourceBuffer, 'float32', 3)
+        },
+        outputs: {values: importGraphBuffer(graph, 'prediction', outputBuffer, 'float32', 1)}
+      });
+      try {
+        const compiled = graph.compile();
+        try {
+          submitGraph(device, compiled, undefined);
+          const [prediction] = await readFloat32(outputBuffer, 1);
+          // IDW's normalized weights and ordinary kriging's sum-to-one constraint preserve 7.
+          expect(Number.isFinite(prediction)).toBe(true);
+          expect(prediction).toBeCloseTo(7, 4);
+        } finally {
+          compiled.destroy();
+        }
+      } finally {
+        result.destroyParameters();
+      }
+    } finally {
+      longitudeBuffer.destroy();
+      latitudeBuffer.destroy();
+      sourceBuffer.destroy();
+      outputBuffer.destroy();
+    }
+  }
+});
 
 for (const binding of VALIDATION_BINDINGS)
   test(`${binding.id} dispatches contributor and publishes declared result/diagnostic tables`, async () => {

@@ -69,7 +69,7 @@ it('statistics coverage kernels parse and preserve default storage binding limit
         residuals: view('float32', 24),
         method,
         ...(method === 'HAC' ? {kernel: weights} : {}),
-        output: {covariance: view('float32', 9), status: view('uint32', 1)}
+        output: {covariance: view('float32', 9), status: {code: view('uint32', 1)}}
       }).getCommandNodes(graph)
     );
     nodes.push(
@@ -82,7 +82,7 @@ it('statistics coverage kernels parse and preserve default storage binding limit
         robust: {
           method,
           ...(method === 'HAC' ? {kernel: weights} : {}),
-          output: {covariance: view('float32', 9), status: view('uint32', 1)}
+          output: {covariance: view('float32', 9), status: {code: view('uint32', 1)}}
         },
         output: {
           table: view('float32', 12),
@@ -144,12 +144,12 @@ it('statistics coverage kernels parse and preserve default storage binding limit
       weights,
       values: view('float32', 48),
       variableCount: 2,
-      maximumPermutations: 19,
+      permutationCount: 19,
       correction: 'bonferroni',
       mask: view('uint32', 24),
       output: {
         statistic: view('float32', 24),
-        pValues: view('float32', 24),
+        adjustedPValues: view('float32', 24),
         classes: view('uint32', 24)
       }
     }).getCommandNodes(graph)

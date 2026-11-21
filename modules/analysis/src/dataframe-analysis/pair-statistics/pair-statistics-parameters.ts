@@ -29,4 +29,38 @@ export function validatePairStatisticsBounds<Bounds extends GPUPairStatisticsBou
   if (maximumDistance <= 0) {
     throw new Error(`${name} maximumDistance must be positive`);
   }
+  // The packers return float32: rounding keeps the non-strict bound order but can overflow a
+  // finite value to infinity or flush a positive distance to zero.
+  if (bounds !== 'study-window' && !bounds.every(value => Number.isFinite(Math.fround(value)))) {
+    throw new Error(`${name} bounds must be finite in float32 (magnitude below 3.4e38)`);
+  }
+  validatePositiveFloat32(name, 'maximumDistance', maximumDistance);
+}
+
+/**
+ * Throws unless `value` stays positive and finite once rounded to float32 (`Math.fround`), the
+ * representation of every packed pair-statistics parameter.
+ *
+ * @internal
+ */
+export function validatePositiveFloat32(name: string, label: string, value: number): void {
+  const packed = Math.fround(value);
+  if (!(Number.isFinite(packed) && packed > 0)) {
+    throw new Error(
+      `${name} ${label} must be positive and finite in float32, got ${value} which packs to ${packed}`
+    );
+  }
+}
+
+/**
+ * Throws unless `value` stays finite once rounded to float32 (`Math.fround`).
+ *
+ * @internal
+ */
+export function validateFiniteFloat32(name: string, label: string, value: number): void {
+  if (!Number.isFinite(Math.fround(value))) {
+    throw new Error(
+      `${name} ${label} must be finite in float32 (magnitude below 3.4e38), got ${value}`
+    );
+  }
 }

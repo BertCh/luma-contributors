@@ -95,7 +95,9 @@ async function evaluateWindow(
   device: Device,
   window: OracleStudyWindow,
   kernel: StudyWindowKernel,
-  slabbed: boolean
+  slabbed: boolean,
+  queryPoints: readonly OraclePoint[] = QUERY_POINTS,
+  queryRadii: readonly number[] = QUERY_RADII
 ): Promise<number[]> {
   const graph = new GPUCommandGraph(device, {id: `window-${kernel}-${slabbed}`});
   const buffers: Buffer[] = [];
@@ -202,8 +204,8 @@ async function evaluateWindow(
     );
   }
   const queryValues: number[] = [];
-  for (const point of QUERY_POINTS) {
-    for (const radius of QUERY_RADII) {
+  for (const point of queryPoints) {
+    for (const radius of queryRadii) {
       queryValues.push(...point, radius, radius / 2);
     }
   }
@@ -358,3 +360,32 @@ for (const kernel of ['gaussian', 'quartic', 'epanechnikov'] as const) {
     }
   }, 120000);
 }
+
+// CORE-105: at the right-angle vertex of (0,0), (-1,0), (0,-1) the far edge's start and end vectors
+// (-1,0) and (0,-1) have a dot product of -0.0, and atan2(1, -0.0) is -pi/2 on the test GPU. The
+// angular baseline then summed to -pi/2 instead of pi/2. Closed form: a circle of radius 0.1 at a
+// right-angle vertex whose legs are 1 long and whose far edge is 1/sqrt(2) away covers a quarter
+// of its area, so the fraction is exactly 0.25. Translated and reflected copies (the reflection
+// has a +0.0 dot product) must agree. Not subdivided: subdivision removes the right angle.
+it('study-window circle fraction at a right-angle boundary vertex is a quarter (CORE-105)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const cases: {name: string; vertices: number[]; centre: OraclePoint}[] = [
+    {name: 'negative legs', vertices: [0, 0, -1, 0, 0, -1], centre: [0, 0]},
+    {name: 'translated', vertices: [3, 5, 2, 5, 3, 4], centre: [3, 5]},
+    {name: 'positive legs (+0 dot)', vertices: [0, 0, 1, 0, 0, 1], centre: [0, 0]}
+  ];
+  for (const {name, vertices, centre} of cases) {
+    const window: OracleStudyWindow = {
+      positions: new Float64Array(vertices),
+      polygonOffsets: new Uint32Array([0, 1]),
+      ringOffsets: new Uint32Array([0, 3])
+    };
+    for (const slabbed of [false, true]) {
+      const result = await evaluateWindow(device, window, 'quartic', slabbed, [centre], [0.1]);
+      const fraction = result[2];
+      expect(Number.isFinite(fraction), name).toBe(true);
+      expect(Math.abs(fraction - 0.25), `${name} slabbed=${slabbed}`).toBeLessThanOrEqual(1e-6);
+    }
+  }
+}, 60000);

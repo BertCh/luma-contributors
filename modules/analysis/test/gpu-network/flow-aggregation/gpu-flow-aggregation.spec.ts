@@ -16,8 +16,7 @@ import {
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUFlowAggregation,
-  GPU_FLOW_AGGREGATION_NO_ZONE,
-  type GPUFlowAggregationProps
+  GPU_FLOW_AGGREGATION_NO_ZONE
 } from '../../../src/gpu-network/flow-aggregation/index';
 import {getGPUPointDensityHexagonGridSize} from '../../../src/gpu-spatial-analysis/point-density/point-density-hexagon';
 import {
@@ -44,148 +43,17 @@ import {
   createSeededRandom,
   type FlowOracleResult
 } from './flow-aggregation-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {createOffsetFlowChunkViews} from './flow-offset-chunks-fixture';
+import {
+  createHarness,
+  createOrderSensitiveWeights,
+  createZoneIds,
+  type FlowResult
+} from './flow-aggregation-harness';
 
 const NO_ZONE = GPU_FLOW_AGGREGATION_NO_ZONE;
 const GARBAGE = 0xdeadbeef;
-
-type FlowResult = {
-  ids: number[];
-  count: number;
-  requiredCount: number;
-  overflow: number;
-  candidateOverflow: number;
-  pairOverflow: number;
-  drawInstanceCount: number;
-  originZones: number[];
-  destinationZones: number[];
-  counts: number[];
-  weights: number[];
-  zoneOutCounts: number[];
-  zoneInCounts: number[];
-  zoneOutWeights: number[];
-  zoneInWeights: number[];
-};
-
-type Harness = {
-  compiled: CompiledGPUCommandGraph<void>;
-  submit(): void;
-  read(): Promise<FlowResult>;
-  destroy(): void;
-};
-
-type HarnessOptions = {
-  id: string;
-  zoneCount: number;
-  topCount: number;
-  pairCapacity: number;
-  hasWeights: boolean;
-  maximumProbeCount?: number;
-  createProps: (
-    graph: GPUCommandGraph<void>
-  ) => Pick<GPUFlowAggregationProps, 'zones'> & Partial<GPUFlowAggregationProps>;
-};
-
-/** Builds one flow-aggregation graph with every output imported, scrambled before each submit. */
-function createHarness(device: Device, options: HarnessOptions): Harness {
-  const {topCount, zoneCount, hasWeights} = options;
-  const buffers: Buffer[] = [];
-  const outputs: {buffer: Buffer; length: number}[] = [];
-  const graph = new GPUCommandGraph<void>(device, {id: options.id});
-  const createOutput = <Format extends 'uint32' | 'float32'>(
-    name: string,
-    format: Format,
-    length: number
-  ) => {
-    const buffer = createOutputBuffer(device, length);
-    buffers.push(buffer);
-    outputs.push({buffer, length: Math.max(length, 1)});
-    return {
-      buffer,
-      view: importGraphBuffer(graph, `${options.id}-${name}`, buffer, format, length)
-    };
-  };
-  const ids = createOutput('ids', 'uint32', topCount);
-  const count = createOutput('count', 'uint32', 1);
-  const overflow = createOutput('overflow', 'uint32', 1);
-  const candidateOverflow = createOutput('candidate-overflow', 'uint32', 1);
-  const requiredCount = createOutput('total', 'uint32', 1);
-  const pairOverflow = createOutput('pair-overflow', 'uint32', 1);
-  const drawInstanceCount = createOutput('draw', 'uint32', 1);
-  const originZones = createOutput('origin-zones', 'uint32', topCount);
-  const destinationZones = createOutput('destination-zones', 'uint32', topCount);
-  const counts = createOutput('counts', 'uint32', topCount);
-  const weights = createOutput('weights', 'float32', topCount);
-  const zoneOutCounts = createOutput('zone-out-counts', 'uint32', zoneCount);
-  const zoneInCounts = createOutput('zone-in-counts', 'uint32', zoneCount);
-  const zoneOutWeights = createOutput('zone-out-weights', 'float32', zoneCount);
-  const zoneInWeights = createOutput('zone-in-weights', 'float32', zoneCount);
-
-  const contributor = new GPUFlowAggregation({
-    id: options.id,
-    pairCapacity: options.pairCapacity,
-    maximumProbeCount: options.maximumProbeCount,
-    ...options.createProps(graph),
-    output: {
-      ids: ids.view,
-      status: {
-        count: count.view,
-        overflow: overflow.view,
-        candidateOverflow: candidateOverflow.view,
-        requiredCount: requiredCount.view,
-        pairOverflow: pairOverflow.view
-      },
-      drawInstanceCount: drawInstanceCount.view,
-      flowOriginZoneIds: originZones.view,
-      flowDestinationZoneIds: destinationZones.view,
-      flowCounts: counts.view,
-      flowWeights: weights.view,
-      zoneOutCounts: zoneOutCounts.view,
-      zoneInCounts: zoneInCounts.view,
-      ...(hasWeights
-        ? {
-            zoneOutWeights: zoneOutWeights.view,
-            zoneInWeights: zoneInWeights.view
-          }
-        : {})
-    }
-  });
-  graph.add(contributor);
-  const compiled = graph.compile();
-  return {
-    compiled,
-    submit: () => {
-      for (const output of outputs) {
-        output.buffer.write(new Uint32Array(output.length).fill(GARBAGE));
-      }
-      submitGraph(device, compiled, undefined);
-    },
-    read: async () => ({
-      ids: await readUint32(ids.buffer, topCount),
-      count: (await readUint32(count.buffer, 1))[0],
-      requiredCount: (await readUint32(requiredCount.buffer, 1))[0],
-      overflow: (await readUint32(overflow.buffer, 1))[0],
-      candidateOverflow: (await readUint32(candidateOverflow.buffer, 1))[0],
-      pairOverflow: (await readUint32(pairOverflow.buffer, 1))[0],
-      drawInstanceCount: (await readUint32(drawInstanceCount.buffer, 1))[0],
-      originZones: await readUint32(originZones.buffer, topCount),
-      destinationZones: await readUint32(destinationZones.buffer, topCount),
-      counts: await readUint32(counts.buffer, topCount),
-      weights: await readFloat32(weights.buffer, topCount),
-      zoneOutCounts: await readUint32(zoneOutCounts.buffer, zoneCount),
-      zoneInCounts: await readUint32(zoneInCounts.buffer, zoneCount),
-      zoneOutWeights: await readFloat32(zoneOutWeights.buffer, zoneCount),
-      zoneInWeights: await readFloat32(zoneInWeights.buffer, zoneCount)
-    }),
-    destroy: () => {
-      compiled.destroy();
-      for (const buffer of buffers) {
-        buffer.destroy();
-      }
-    }
-  };
-}
 
 /** Compares every output against the oracle for a table that did not overflow. */
 function expectMatchesOracle(
@@ -232,18 +100,6 @@ function expectZoneTotals(result: FlowResult, oracle: FlowOracleResult, hasWeigh
     expect(result.zoneOutWeights).toEqual(oracle.zoneOutWeights);
     expect(result.zoneInWeights).toEqual(oracle.zoneInWeights);
   }
-}
-
-/** Seeded random OD zone IDs. */
-function createZoneIds(seed: number, rowCount: number, zoneCount: number, outOfRange = 0) {
-  const next = createSeededRandom(seed);
-  const origins: number[] = [];
-  const destinations: number[] = [];
-  for (let row = 0; row < rowCount; row++) {
-    origins.push(Math.floor(next() * (zoneCount + outOfRange)));
-    destinations.push(Math.floor(next() * (zoneCount + outOfRange)));
-  }
-  return {origins, destinations};
 }
 
 /** Integer weights 1..5 with a NaN every 17th row. */
@@ -808,18 +664,6 @@ it('GPUFlowAggregation gates rows exactly with Int64 word timestamps', async () 
   for (const buffer of buffers) buffer.destroy();
 });
 
-/** Weights that expose summation order: 1e8, 1, fractions, and non-finite values. */
-function createOrderSensitiveWeights(seed: number, rowCount: number): Float32Array {
-  const next = createSeededRandom(seed);
-  return Float32Array.from({length: rowCount}, (_, row) => {
-    if (row % 53 === 7) return Number.NaN;
-    const draw = next();
-    if (draw < 0.3) return 1e8;
-    if (draw < 0.6) return 1;
-    return Math.fround(next() * 3.3);
-  });
-}
-
 function getFloat32Bits(values: readonly number[]): number[] {
   return Array.from(new Uint32Array(Float32Array.from(values).buffer));
 }
@@ -1020,13 +864,20 @@ it('GPUFlowAggregation sorted sums with grid zones and a mask match the oracle',
   for (const buffer of buffers) buffer.destroy();
 });
 
-it('GPUFlowAggregation measures atomic versus sorted sum cost on 1M rows', async () => {
+it('GPUFlowAggregation atomic and sorted sums count every row of a 64-zone table', async () => {
+  // The 1M-row atomic versus sorted timing is in gpu-flow-aggregation-bench.spec.ts (TOOL-120).
+  // Counts are exact integers in either sum order, so both match the oracle zone counts.
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const rowCount = 1 << 20;
+  const rowCount = 1 << 16;
   const zoneCount = 64;
   const {origins, destinations} = createZoneIds(8, rowCount, zoneCount);
   const weightValues = createOrderSensitiveWeights(6, rowCount);
+  const oracle = computeFlowAggregation({
+    zones: {kind: 'ids', zoneCount},
+    originZoneIds: origins,
+    destinationZoneIds: destinations
+  });
   const buffers = [
     createInputBuffer(device, Uint32Array.from(origins)),
     createInputBuffer(device, Uint32Array.from(destinations)),
@@ -1034,7 +885,7 @@ it('GPUFlowAggregation measures atomic versus sorted sum cost on 1M rows', async
   ];
   for (const sumOrder of ['atomic', 'sorted'] as const) {
     const harness = createHarness(device, {
-      id: `flow-cost-${sumOrder}`,
+      id: `flow-sum-order-${sumOrder}`,
       zoneCount,
       topCount: 64,
       pairCapacity: 8192,
@@ -1055,17 +906,13 @@ it('GPUFlowAggregation measures atomic versus sorted sum cost on 1M rows', async
       })
     });
     harness.submit();
-    await harness.read();
-    const runCount = 3;
-    const startTime = performance.now();
-    for (let run = 0; run < runCount; run++) {
-      harness.submit();
-      await harness.read();
-    }
-    const milliseconds = (performance.now() - startTime) / runCount;
     const result = await harness.read();
-    expect(result.zoneOutCounts.reduce((sum, value) => sum + value, 0)).toBe(rowCount);
-    console.log(`flow cost 1M rows, ${sumOrder}: ${milliseconds.toFixed(1)} ms per submit+read`);
+    expect(
+      result.zoneOutCounts.reduce((sum, value) => sum + value, 0),
+      sumOrder
+    ).toBe(rowCount);
+    expect(result.zoneOutCounts, sumOrder).toEqual(oracle.zoneOutCounts);
+    expect(result.zoneInCounts, sumOrder).toEqual(oracle.zoneInCounts);
     harness.destroy();
   }
   for (const buffer of buffers) buffer.destroy();
@@ -1074,7 +921,6 @@ it('GPUFlowAggregation measures atomic versus sorted sum cost on 1M rows', async
 it('aggregates lexicographic flow keys above 65535 zones without uint32 collisions', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const origins = new Uint32Array([
     65536,
     0,
@@ -1171,7 +1017,6 @@ it('aggregates lexicographic flow keys above 65535 zones without uint32 collisio
 it('keeps pair-capacity overflow separate from top-K counts with large zone IDs', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const origins = createInputBuffer(device, new Uint32Array([0, 32768, 65536, 131071]));
   const destinations = createInputBuffer(device, new Uint32Array([1, 1, 1, 1]));
   const fixture = createHarness(device, {
@@ -1212,7 +1057,6 @@ it('keeps pair-capacity overflow separate from top-K counts with large zone IDs'
 it('flow chunk parameters preserve row bases, source offsets and unequal chunk boundaries', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const buffers: Buffer[] = [];
   const fixture = createHarness(device, {
     id: 'flow-chunk-parameters',
@@ -1406,7 +1250,6 @@ function createSparseFlowReviewHarness(
 it('large unsigned zone tuples cross local, workgroup and radix boundaries with stable ties', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   for (const runLengths of [
     [18, 13],
     [18, 240, 257, 7]
@@ -1488,7 +1331,6 @@ it('large unsigned zone tuples cross local, workgroup and radix boundaries with 
 it('flow shared output buffers reject adjacent slices and accept independent aligned bindings', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const origins = new Uint32Array([0x80000000, 0x80000000]);
   const destinations = new Uint32Array([0xfffffffd, 0xfffffffd]);
   const weights = new Float32Array([0.25, 0.5]);
@@ -1607,7 +1449,6 @@ it('packed and unequal empty flow chunks beyond 256-byte offsets match every CPU
 it('skewed flow chunks launch their own workgroups and preserve closed-form aggregates', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const lengths = [1000000, ...Array(1023).fill(1)];
   const rowCount = 1001023;
   const buffers: Buffer[] = [];
@@ -1683,7 +1524,6 @@ it('skewed flow chunks launch their own workgroups and preserve closed-form aggr
 it('finite float32 literal bounds compile and preserve a closed-form grid result', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const buffer = createInputBuffer(device, new Float32Array([0, 0, 0, 0]));
   const fixture = createHarness(device, {
     id: 'flow-f32-literal-limit',
@@ -1725,7 +1565,6 @@ it('finite float32 literal bounds compile and preserve a closed-form grid result
 it('hexagon signed cell clamp values remain outside the largest supported axis', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const graph = new GPUCommandGraph<void>(device);
   const positionsBuffer = createInputBuffer(device, new Float32Array([0, 0, 1e20, 0]));
   const positions = importGraphBuffer(

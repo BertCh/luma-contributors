@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, val…",
   "description": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, values → sums. rows: 77. values read back from the GPU run. input pointFeatureRows.geometry: 791 polygons.",
-  "llms": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, values → sums\n\n- rows: 77\n- input pointFeatureRows.geometry: 791 polygons\n- input values: 791 rows\n- Coordinate model unknown: drawn as planar x, y.\n- pointFeatureRows.geometry: 7 of 791 polygons shown; evenly sampled features and vertices\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, values → sums\n\n- rows: 77\n- input pointFeatureRows.geometry: 791 polygons\n- input values: 791 rows\n- Coordinate model unknown: drawn as planar x, y.\n- 77 categories; 5 largest coloured\n- pointFeatureRows.geometry: 7 of 791 polygons shown; evenly sampled features and vertices\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "77"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:13.675Z",
-    "runId": "run-2c5510fa",
+    "date": "2026-11-20T23:51:41.014Z",
+    "runId": "run-a40dcc28",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-2c5510fa",
+    "runId": "run-a40dcc28",
     "rung": "result",
     "bindings": {},
     "clauses": [],

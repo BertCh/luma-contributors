@@ -182,6 +182,7 @@ export function computeGeographicDistribution(
       let sumWeight = 0;
       let sumX = 0;
       let sumY = 0;
+      let coincidentWeight = 0;
       for (const r of state.rows) {
         const dx = r.x - state.x;
         const dy = r.y - state.y;
@@ -191,10 +192,14 @@ export function computeGeographicDistribution(
           sumWeight += inverseWeight;
           sumX += inverseWeight * dx;
           sumY += inverseWeight * dy;
+        } else {
+          coincidentWeight += r.w;
         }
       }
-      const stepX = sumWeight > 0 ? sumX / sumWeight : 0;
-      const stepY = sumWeight > 0 ? sumY / sumWeight : 0;
+      const pullLength = Math.hypot(sumX, sumY);
+      const correction = coincidentWeight > 0 ? Math.max(0, 1 - coincidentWeight / pullLength) : 1;
+      const stepX = sumWeight > 0 ? (correction * sumX) / sumWeight : 0;
+      const stepY = sumWeight > 0 ? (correction * sumY) / sumWeight : 0;
       state.x += stepX;
       state.y += stepY;
       state.lastMove = Math.hypot(stepX, stepY);

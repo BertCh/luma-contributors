@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from './raster-grid/raster-construction-snapshot';
 import {
   getGraphOutputViews,
   validateCapacity,
@@ -18,8 +20,14 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {getRasterBufferBandNodes, getRasterBandViews} from './raster-band-utils';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterBufferBandNodes,
+  getRasterBandViews,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph,
+  snapshotRasterBand
+} from './raster-band-utils';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -28,6 +36,8 @@ import {getRasterWatershedForestNodes} from './raster-watershed-forest';
 import {
   requireRasterLength,
   validateRasterExpansionViews,
+  validateRasterExpansionPorts,
+  validateRasterExpansionBand,
   validateRasterExpansionGraph
 } from './raster-expansion-utils';
 
@@ -43,7 +53,8 @@ const MAXIMUM_FOREST_ITERATIONS = 32;
 export type GPURasterWatershedSegmentationProps = {
   id?: string;
   grid: GPURasterMetadata;
-  input: GPURasterBufferBand;
+  /** Buffer or sampled-texture surface; raw nodata and validity are checked before calibration. */
+  input: GPURasterBand;
   /** Basin IDs 1..0xfffffffd; zero unmarked, larger reserved words act as barriers. */
   markers: GraphDataView<'uint32'>;
   connectivity?: 4 | 8;
@@ -100,8 +111,47 @@ export class GPURasterWatershedSegmentation implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterWatershedSegmentationProps;
   constructor(props: GPURasterWatershedSegmentationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'markers',
+      'connectivity',
+      'method',
+      'maximumSteps',
+      'maximumIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['labels', 'status']);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      input: Object.freeze(snapshotRasterBand(props.input)) as GPURasterBand,
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, ['converged', 'iterationLimitReached'])
+      })
+    });
     this.id = props.id ?? 'raster-watershed-segmentation';
     this.props = props;
+    validateRasterTextureBand(this.id, props.input, props.grid);
+    validateRasterExpansionBand(this.id, 'input', props.input);
+    validateRasterExpansionPorts(
+      this.id,
+      props,
+      {
+        markers: ['uint32'],
+        'output.labels': ['uint32'],
+        'output.status.converged': ['uint32'],
+        'output.status.iterationLimitReached': ['uint32']
+      },
+      ['output.status.iterationLimitReached']
+    );
+    validateRequirement(
+      this.id,
+      Boolean(props.output.status.converged),
+      'output.status.converged is required; provide a uint32 convergence view'
+    );
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,
@@ -155,6 +205,7 @@ export class GPURasterWatershedSegmentation implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateRasterBandBelongsToGraph(this.id, graph, this.props.input, []);
     const storageProps = this.props;
     const storageCellCount = storageProps.grid.width * storageProps.grid.height;
     validateRasterStorageBindings(

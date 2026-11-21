@@ -61,7 +61,7 @@ export class AnalysisHotspotOutputs {
   importToGraph(
     graph: GPUCommandGraph,
     zScores: GraphDataView<'float32'>
-  ): GPUHotSpotAnalysisRecipeProps['outputs'] {
+  ): GPUHotSpotAnalysisRecipeProps['output'] {
     const importOutput = <Format extends 'float32' | 'sint32' | 'uint32'>(
       id: string,
       vector: GPUVector<Format>

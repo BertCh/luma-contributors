@@ -43,6 +43,33 @@ function getBearingError(actual: number, expected: number): number {
   return Math.min(difference, 360 - difference);
 }
 
+/**
+ * Rows whose final bearing is missing, extra, nonfinite or more than 1e-3 degrees (wrapped) from
+ * the finite expectation. `getBearingError` is NaN for a NaN bearing, so the bound is written to
+ * fail on NaN (TOOL-109).
+ */
+function getFinalBearingFailures(
+  actual: ArrayLike<number>,
+  expected: number[],
+  labels: string[]
+): string[] {
+  const failures: string[] = [];
+  if (actual.length !== expected.length) {
+    failures.push(`length ${actual.length} != ${expected.length}`);
+  }
+  expected.forEach((target, index) => {
+    const value = actual[index];
+    if (
+      !Number.isFinite(value) ||
+      !Number.isFinite(target) ||
+      !(getBearingError(value, target) <= 1e-3)
+    ) {
+      failures.push(`row ${index} (${labels[index]}): GPU ${value}, CPU ${target}`);
+    }
+  });
+  return failures;
+}
+
 it('GPUGeodesicDestination Vincenty final bearing is correct for due east and west bearings', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -102,18 +129,15 @@ it('GPUGeodesicDestination Vincenty final bearing is correct for due east and we
   const actualFinal = await readFloat32(finalBearings, ROWS.length);
   compiled.destroy();
   for (const buffer of buffers) buffer.destroy();
-  const failures: string[] = [];
-  ROWS.forEach((row, index) => {
-    const expected = getVincentyDirect(
-      [origins[2 * index], origins[2 * index + 1]],
-      bearings[index],
-      distances[index]
-    );
-    if (getBearingError(actualFinal[index], expected.finalBearing) > 1e-3) {
-      failures.push(
-        `row ${index} (${row.origin}, ${row.bearing}, ${row.distance}): GPU ${actualFinal[index]}, CPU ${expected.finalBearing}`
-      );
-    }
-  });
+  const expectedFinal = ROWS.map(
+    (_, index) =>
+      getVincentyDirect(
+        [origins[2 * index], origins[2 * index + 1]],
+        bearings[index],
+        distances[index]
+      ).finalBearing
+  );
+  const labels = ROWS.map(row => `${row.origin}, ${row.bearing}, ${row.distance}`);
+  const failures = getFinalBearingFailures(actualFinal, expectedFinal, labels);
   expect(failures).toEqual([]);
 });

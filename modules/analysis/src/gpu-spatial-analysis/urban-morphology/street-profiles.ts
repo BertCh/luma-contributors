@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {captureUrbanLandscapeDestinations} from '../landscape-ecology/urban-landscape-destinations';
 import {
   createTransientView,
   GPUReduction,
@@ -10,7 +11,12 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validateSinglePackedView,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateProvidedRecipeViews} from '../landscape-ecology/urban-landscape-recipe-validation';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
@@ -110,9 +116,11 @@ export type GPUStreetProfilesOutput = {
   canyon: GraphDataView<'float32x4'>;
   /** `float32x2`, one row per building: left and right sampled frontage length. */
   frontage: GraphDataView<'float32x2'>;
-  /** `float32x2`, one row per segment, only with `streetSegment`: visible facade length per side. */
+  /** `float32x2`, one row per segment, only with `streetSegment`: visible facade length per side.
+   * Every row is NaN when any segment has an owner outside buildingHeights. */
   facadeLengths: GraphDataView<'float32x2'>;
-  /** `float32x2`, one row per building, only with `streetSegment`: exact facade frontage. */
+  /** `float32x2`, one row per building, only with `streetSegment`: exact facade frontage.
+   * Every row is NaN when any segment has an owner outside buildingHeights. */
   facadeFrontage: GraphDataView<'float32x2'>;
 };
 
@@ -158,6 +166,14 @@ export function addStreetProfilesRecipe<Parameters>(
   props: GPUStreetProfilesProps
 ) {
   const id = props.id ?? 'street-profiles';
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
+  validateSinglePackedView(props.positions, ['float32x2'], id + ' positions');
+  validateSinglePackedView(props.normals, ['float32x2'], id + ' normals');
+  validateSinglePackedView(props.segments, ['float32x4'], id + ' segments');
+  validateSinglePackedView(props.segmentBuildingIds, ['uint32'], id + ' segmentBuildingIds');
+  validateSinglePackedView(props.buildingHeights, ['float32'], id + ' buildingHeights');
+  if (props.streetSegment)
+    validateSinglePackedView(props.streetSegment, ['float32x4'], id + ' streetSegment');
   const count = props.positions.length;
   const segmentCount = props.segments.length;
   const buildingCount = props.buildingHeights.length;
@@ -198,7 +214,38 @@ export function addStreetProfilesRecipe<Parameters>(
       `segments must have at most ${STREET_PROFILES_MAXIMUM_FACADE_SEGMENT_COUNT} rows when streetSegment is given`
     );
   }
-  const output = props.output;
+  const output = captureUrbanLandscapeDestinations(id, {output: props.output}, [
+    'profiles',
+    'buildings',
+    'validity',
+    'canyon',
+    'frontage',
+    'facadeLengths',
+    'facadeFrontage'
+  ]);
+  // Inputs are otherwise first checked by the kernel that binds them, and the facade outputs
+  // only after the profile kernels: reject both before the first node.
+  validateGraphViewsBelongToGraph(id, graph, [
+    props.positions,
+    props.normals,
+    props.segments,
+    props.segmentBuildingIds,
+    props.buildingHeights,
+    props.streetSegment
+  ]);
+  validateProvidedRecipeViews(graph, [
+    [`${id}-profiles`, 'float32x4', count, output?.profiles],
+    [`${id}-buildings`, 'uint32x2', count, output?.buildings],
+    [`${id}-validity`, 'uint32', count, output?.validity],
+    [`${id}-canyon`, 'float32x4', count, output?.canyon],
+    [`${id}-frontage`, 'float32x2', buildingCount, output?.frontage]
+  ]);
+  if (props.streetSegment) {
+    validateProvidedRecipeViews(graph, [
+      [`${id}-facade-lengths`, 'float32x2', segmentCount, output?.facadeLengths],
+      [`${id}-facade-frontage`, 'float32x2', buildingCount, output?.facadeFrontage]
+    ]);
+  }
   const profiles = getRecipeView(graph, `${id}-profiles`, 'float32x4', count, output?.profiles);
   const buildings = getRecipeView(graph, `${id}-buildings`, 'uint32x2', count, output?.buildings);
   const validity = getRecipeView(graph, `${id}-validity`, 'uint32', count, output?.validity);
@@ -390,6 +437,21 @@ output[outputOffset+4u*index+3u]=select(missing,width,(flags&12u)==0u);`
     | {lengths: GraphDataView<'float32x2'>; frontage: GraphDataView<'float32x2'>}
     | undefined;
   if (props.streetSegment) {
+    // Keep the BVH facade dispatch within eight storage bindings by combining both failures.
+    const invalidFacades = createTransientView(graph, `${id}-invalid-facades`, 'uint32', 1);
+    graph.add(
+      createRecipeKernelNode(graph, {
+        id: `${id}-facade-input-validity`,
+        operation: id,
+        invocationCount: 1,
+        bindings: [
+          {name: 'nonFiniteCount', view: nonFiniteCount, type: 'u32', access: 'read'},
+          {name: 'badOwnerCount', view: badOwnerCount, type: 'u32', access: 'read'},
+          {name: 'output', view: invalidFacades, type: 'u32', access: 'read_write'}
+        ],
+        body: 'output[outputOffset+index]=u32(nonFiniteCount[nonFiniteCountOffset]!=0u||badOwnerCount[badOwnerCountOffset]!=0u);'
+      })
+    );
     const eventStride = 3 * segmentCount + FACADE_EVENT_FIXED_COUNT;
     const facadeEvents = getRecipeView(
       graph,
@@ -427,7 +489,7 @@ fn getEvent(row:u32,slot:u32)->f32{return facadeEvents[facadeEventsOffset+row*EV
         bindings: [
           {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
           {name: 'street', view: props.streetSegment, type: 'f32', access: 'read'},
-          {name: 'nonFiniteCount', view: nonFiniteCount, type: 'u32', access: 'read'},
+          {name: 'invalidFacades', view: invalidFacades, type: 'u32', access: 'read'},
           ...bvhBindings,
           {name: 'output', view: lengths, type: 'f32', access: 'read_write'},
           {name: 'facadeEvents', view: facadeEvents, type: 'f32', access: 'read_write'}
@@ -503,7 +565,7 @@ for(var event=1u;event<size;event++){
     total[side]+=(getEvent(index,event)-getEvent(index,event-1u))*facadeLength;
   }
 }
-let valid=isFiniteValue(streetLength)&&streetLength>${tolerance}&&nonFiniteCount[nonFiniteCountOffset]==0u;
+let valid=isFiniteValue(streetLength)&&streetLength>${tolerance}&&invalidFacades[invalidFacadesOffset]==0u;
 let missing=bitcast<f32>(0x7fc00000u | (index & 0u));
 output[outputOffset+2u*index]=select(missing,total.x,valid);
 output[outputOffset+2u*index+1u]=select(missing,total.y,valid);`
@@ -518,14 +580,17 @@ output[outputOffset+2u*index+1u]=select(missing,total.y,valid);`
         bindings: [
           {name: 'owners', view: props.segmentBuildingIds, type: 'u32', access: 'read'},
           {name: 'lengths', view: lengths, type: 'f32', access: 'read'},
+          {name: 'badOwnerCount', view: badOwnerCount, type: 'u32', access: 'read'},
           {name: 'output', view: facadeFrontage, type: 'f32', access: 'read_write'}
         ],
         body: `var total=vec2<f32>(0.0);
 for(var segment=0u;segment<${segmentCount}u;segment++){
   if(owners[ownersOffset+segment]==index){total+=vec2<f32>(lengths[lengthsOffset+2u*segment],lengths[lengthsOffset+2u*segment+1u]);}
 }
-output[outputOffset+2u*index]=total.x;
-output[outputOffset+2u*index+1u]=total.y;`
+let valid=badOwnerCount[badOwnerCountOffset]==0u;
+let missing=bitcast<f32>(0x7fc00000u | (index & 0u));
+output[outputOffset+2u*index]=select(missing,total.x,valid);
+output[outputOffset+2u*index+1u]=select(missing,total.y,valid);`
       })
     );
     facades = {lengths, frontage: facadeFrontage};

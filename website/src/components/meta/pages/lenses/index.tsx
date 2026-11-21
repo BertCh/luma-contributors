@@ -5,7 +5,7 @@ import {Link} from '@tanstack/react-router';
 import {useState} from 'react';
 import {catalog} from '../../../../catalog';
 import {FEATURED_LENS_SCENARIOS} from '../../../../lens/featured';
-import {formatCount, formatResourceBytes} from '../../../../lens/format';
+import {formatCount, formatResourceBytes, formatResourceCount} from '../../../../lens/format';
 import summary from '../../../../lens/summary.json';
 import type {LensSummary, LensViewModel} from '../../../../lens/types';
 import {Section} from '../../../ui/section';
@@ -29,7 +29,7 @@ import './lenses.css';
 // generate-view-models writes LensSummary; JSON imports widen its string literals.
 const totals: LensSummary = {
   ...summary,
-  bufferBytesKind: summary.bufferBytesKind as LensSummary['bufferBytesKind']
+  resourceBytesKind: summary.resourceBytesKind as LensSummary['resourceBytesKind']
 };
 
 const CARD_CAPTIONS: Record<string, string> = {
@@ -132,7 +132,7 @@ export function Page({topic, models, code}: TopicPageProps) {
                 <p className="snapshot-card__text">
                   {formatCount(model.recordedNodeCount)} graph nodes,{' '}
                   {formatResourceBytes(model.resources.totalBytes, model.resources.totalBytesKind)}{' '}
-                  of buffers
+                  of resources
                 </p>
                 {model.formulas[0] ? (
                   <p className="lenses-card-formula">
@@ -156,7 +156,7 @@ export function Page({topic, models, code}: TopicPageProps) {
         ) : null}
         <Prose>
           Over all records: <Term id="kernel">kernels</Term> and dependencies by{' '}
-          <Term id="hazard">hazard</Term> kind, buffers with sizes, and values.
+          <Term id="hazard">hazard</Term> kind, resources with sizes, and values.
         </Prose>
         <StatStrip
           stats={[
@@ -170,8 +170,11 @@ export function Page({topic, models, code}: TopicPageProps) {
               label: 'dependencies'
             },
             {
-              value: formatCount(totals.buffers),
-              label: `buffers, ${formatResourceBytes(totals.bufferBytes, totals.bufferBytesKind)}`
+              value: formatResourceCount({
+                count: totals.resourceCount,
+                inventoryKnown: totals.inventoryKnown
+              }),
+              label: formatResourceBytes(totals.resourceBytes, totals.resourceBytesKind)
             },
             {value: formatCount(totals.snapshots), label: 'captured values'},
             {

@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const choropleth = addPointsInPolygonsChoroplethRecipe(graph, {\n  spatialContext,\n  points: {kind: 'points', positions: observations},\n  polygons: {...tracts, candidateCapacity: 32768},\n  statistic: 'count',\n  color: {\n    classBreaksParameters: parameters[0].importToGraph(graph),\n    colorScaleParameters: parameters[1].importToGraph(graph),\n    palette: parameters[2].importToGraph(graph),\n    methods: ['quantile'],\n    maximumClassCount: classCount,\n    maximumPaletteCount: classCount\n  },\n  outputs: {\n    counts,\n    color: {breaks, colors, classIndices, classCount: output('classCount', 'uint32', 1)},\n    status: {overflow, uncertainCount}\n  }\n});\n// counts colour each tract; classIndices holds its quantile class",
+    "code": "const choropleth = addPointsInPolygonsChoroplethRecipe(graph, {\n  spatialContext,\n  points: {kind: 'points', positions: observations},\n  polygons: {...tracts, candidateCapacity: 32768},\n  statistic: 'count',\n  color: {\n    classBreaksParameters: parameters[0].importToGraph(graph),\n    colorScaleParameters: parameters[1].importToGraph(graph),\n    palette: parameters[2].importToGraph(graph),\n    methods: ['quantile'],\n    maximumClassCount: classCount,\n    maximumPaletteCount: classCount\n  },\n  output: {\n    counts,\n    color: {breaks, colors, classIndices, classCount: output('classCount', 'uint32', 1)},\n    status: {overflow, uncertainCount}\n  }\n});\n// counts colour each tract; classIndices holds its quantile class",
     "language": "ts",
     "lineCount": 20
   },
@@ -46,12 +46,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:53.511Z",
-    "runId": "run-52a5cdef",
+    "date": "2026-11-20T23:50:35.400Z",
+    "runId": "run-2429b7fb",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-52a5cdef",
+    "runId": "run-2429b7fb",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -7,6 +7,7 @@ import {
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {GRID_HALF_UP_ROUNDING_WGSL} from '../geometry-edit/half-up-rounding';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -39,6 +40,7 @@ export const COVERAGE_SNAP_MAXIMUM_STEPS = 2 ** 24;
  */
 export function getCoverageSnapKeyWGSL(snapTolerance: number, ringCount: number): string {
   return /* wgsl */ `
+${GRID_HALF_UP_ROUNDING_WGSL}
 const SNAP_TOLERANCE: f32 = ${getWGSLFloatLiteral(snapTolerance)};
 const SNAP_MAXIMUM_STEPS: f32 = ${getWGSLFloatLiteral(COVERAGE_SNAP_MAXIMUM_STEPS)};
 
@@ -54,8 +56,7 @@ fn quantise(value: f32, origin: f32) -> u32 {
   if (SNAP_TOLERANCE <= 0.0) {
     return bitcast<u32>(select(value, 0.0, value == 0.0));
   }
-  let steps = (value - origin) / SNAP_TOLERANCE;
-  let rounded = select(floor(steps + 0.5), steps, abs(steps) >= 8388608.0);
+  let rounded = roundGridHalfUp(value, origin, SNAP_TOLERANCE);
   return bitcast<u32>(i32(clamp(rounded, -2147483520.0, 2147483520.0))) ^ 0x80000000u;
 }
 

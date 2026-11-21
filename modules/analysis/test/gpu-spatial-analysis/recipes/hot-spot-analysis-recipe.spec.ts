@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createRecipeLossReadback} from './recipe-loss-readback';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {cellArea, gridDisk, latLngToCell, polygonToCells} from 'h3-js';
 import {expect, it} from 'vitest';
@@ -30,7 +31,7 @@ import {
 } from '../spatial-autocorrelation/spatial-autocorrelation-oracle';
 import {computeLocalPermutationOracle} from '../permutation-inference/permutation-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const RESOLUTION = 8;
 const CELL_CAPACITY = 256;
@@ -254,7 +255,7 @@ async function runQuadbinScene(
           weights: outputs.weightValues.view
         }
       },
-      outputs: {
+      output: {
         zScores: outputs.zScores.view,
         bins: outputs.bins.view,
         neighborCounts: outputs.neighborCounts.view,
@@ -602,7 +603,7 @@ it('addHotSpotAnalysisRecipe on H3 uses gridDisk(2) neighbors and cell-area dens
         values: values.view,
         weights: {offsets: offsets.view, neighbors: neighbors.view}
       },
-      outputs: {
+      output: {
         zScores: zScores.view,
         neighborCounts: neighborCounts.view,
         status: {invalidCount: invalidCount.view}
@@ -742,7 +743,7 @@ it('addHotSpotAnalysisRecipe analyses a dense lattice with queen weights', async
           GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
         ),
         minimumNeighbors,
-        outputs: {
+        output: {
           zScores: zScores.view,
           status: {weightsOverflow: overflow.view, invalidCount: invalid.view}
         }
@@ -786,3 +787,189 @@ it('hot-spot preparation preserves study cells, empty rows and point counts', as
     ).toBe(true);
   }
 }, 120000);
+
+for (const family of ['quadbin', 'h3'] as const) {
+  it(`weighted ${family} hot spots propagate saturation and recover on resubmission`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = new RecipeTestFixture(device, `hot-spot-sum-loss-${family}`);
+    const capacity = 128;
+    try {
+      const pointWeights = fixture.output('point-weights', 'float32', 4);
+      const pointPositions = fixture.output('point-positions', 'float32x2', 4);
+      const cells = fixture.output('cells', 'uint32x2', capacity);
+      const joinedLoss = fixture.output('joined-loss', 'uint32', 1);
+      const studyOverflow = fixture.output('study-overflow', 'uint32', 1);
+      const sumOverflow = fixture.output('sum-overflow', 'uint32', 1);
+      const pointCount = fixture.output('point-count', 'uint32', 1);
+      const pointOverflow = fixture.output('point-overflow', 'uint32', 1);
+      const pointRequired = fixture.output('point-required', 'uint32', 1);
+      const studyCount = fixture.output('study-count', 'uint32', 1);
+      const counts = fixture.output('counts', 'uint32', capacity);
+      const sums = fixture.output('sums', 'float32', capacity);
+      const mask = fixture.output('mask', 'uint32', capacity);
+      const values = fixture.output('values', 'float32', capacity);
+      const zScores = fixture.output('z-scores', 'float32', capacity);
+      const pValues = fixture.output('p-values', 'float32', capacity);
+      const recipe = addHotSpotAnalysisRecipe(fixture.graph, {
+        source: {
+          kind: 'points',
+          family,
+          resolution: family === 'h3' ? 3 : 7,
+          positions: pointPositions.view,
+          values: pointWeights.view,
+          studyArea: {
+            kind: 'polygons',
+            positions: fixture.input(
+              'polygon',
+              Float32Array.of(-101, 35, -92, 35, -92, 43, -101, 43),
+              'float32x2',
+              4
+            ),
+            featureOffsets: fixture.input('features', Uint32Array.of(0, 1), 'uint32', 2),
+            polygonOffsets: fixture.input('polygons', Uint32Array.of(0, 1), 'uint32', 2),
+            ringOffsets: fixture.input('rings', Uint32Array.of(0, 4), 'uint32', 2),
+            candidateCapacity: 32768
+          },
+          cellCapacity: capacity,
+          pointCellCapacity: 3
+        },
+        minimumNeighbors: 1,
+        multipleTesting: 'none',
+        settings: {fixedMoments: {count: family === 'quadbin' ? 12 : 53, mean: 0, variance: 1e-8}},
+        parameters: fixture.parameterBuffer(
+          'parameters',
+          'float32',
+          GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
+        ),
+        scratch: {
+          pointTable: {
+            status: {
+              sumOverflow: sumOverflow.view,
+              count: pointCount.view,
+              overflow: pointOverflow.view,
+              requiredCount: pointRequired.view
+            }
+          },
+          table: {
+            cells: cells.view,
+            status: {count: studyCount.view, overflow: studyOverflow.view}
+          },
+          mask: mask.view,
+          values: values.view
+        },
+        output: {zScores: zScores.view, pValues: pValues.view}
+      });
+      // Read the joined table through explicit caller buffers below: its rows are study cells.
+      // Recipe tables expose internally allocated columns; use separate copy nodes for readback.
+      for (const [name, source, target, type] of [
+        ['joined-counts-copy', recipe.table!.counts, counts.view, 'u32'],
+        ['joined-sums-copy', recipe.table!.sumValues!, sums.view, 'f32'],
+        ['joined-loss-copy', recipe.table!.status.candidateOverflow!, joinedLoss.view, 'u32']
+      ] as const) {
+        fixture.graph.add(createRecipeLossReadback(fixture.graph, name, source, target, type));
+      }
+      expect(recipe.table!.status.sumOverflow).toBe(sumOverflow.view);
+      expect(
+        recipe.status.stages.find(stage => stage.stage === 'point-aggregation')?.status.sumOverflow
+      ).toBe(sumOverflow.view);
+      // Independently enumerated centers: 12 Quadbin / 53 H3 study cells. Reference script in
+      // this stream's scratch uses Web Mercator centers and h3-js polygonToCells/gridDisk/cellArea.
+      // Fixed moments N=study count, mean=0, variance=1e-8 give the literal scores/p-values below.
+      const expectedRows = family === 'quadbin' ? 12 : 53;
+      const pointKeys =
+        family === 'quadbin'
+          ? [5220468564296728575n, 5220469388930449407n, 5220469114052542463n, 5220470488442077183n]
+          : ['8326e6fffffffff', '832609fffffffff', '8326eefffffffff', '8326c0fffffffff'].map(key =>
+              BigInt(`0x${key}`)
+            );
+      const expectedScores =
+        family === 'quadbin' ? [1.1091332077, 0.960537534] : [1.3013196444, 0.9337815385];
+      // p=2*scipy.special.ndtr(-abs(z)), computed independently with /usr/bin/python3.
+      const expectedPValues =
+        family === 'quadbin' ? [0.2673727211, 0.3367847499] : [0.1931490658, 0.3504165945];
+      for (const frame of ['saturated', 'truncated', 'recovered']) {
+        const saturated = frame === 'saturated';
+        const truncated = frame === 'truncated';
+        // Saturation uses two occupied cells with one spare slot. The next frame occupies
+        // four cells in capacity three, producing capacity loss with ordinary arithmetic.
+        pointPositions.buffer.write(
+          truncated
+            ? Float32Array.of(-98, 39, -96, 37, -94, 40, -99, 36)
+            : Float32Array.of(-98, 39, -98, 39, -98, 39, -94, 40)
+        );
+        pointWeights.buffer.write(
+          saturated ? Float32Array.of(7e13, 7e13, 7e13, 4) : Float32Array.of(1, 2, 3, 4)
+        );
+        fixture.run();
+        expect(await fixture.readUint32(sumOverflow, 1)).toEqual([saturated ? 1 : 0]);
+        expect(await fixture.readUint32(joinedLoss, 1)).toEqual([truncated ? 1 : 0]);
+        expect(await fixture.readUint32(studyOverflow, 1)).toEqual([0]);
+        expect(await fixture.readUint32(pointCount, 1)).toEqual([truncated ? 3 : 2]);
+        expect(await fixture.readUint32(pointRequired, 1)).toEqual([truncated ? 4 : 2]);
+        expect(await fixture.readUint32(pointOverflow, 1)).toEqual([truncated ? 1 : 0]);
+        expect(await fixture.readUint32(studyCount, 1)).toEqual([expectedRows]);
+        const words = await fixture.readUint32(cells, capacity * 2);
+        const keys = Array.from(
+          {length: expectedRows},
+          (_, row) => BigInt(words[2 * row]) | (BigInt(words[2 * row + 1]) << 32n)
+        );
+        const retained = [...pointKeys]
+          .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+          .slice(0, 3);
+        const pointSums: [bigint, number][] = truncated
+          ? [
+              [pointKeys[0], 1],
+              [pointKeys[2], 2],
+              [pointKeys[1], 3],
+              [pointKeys[3], 4]
+            ]
+          : [
+              [pointKeys[0], 6],
+              [pointKeys[1], 4]
+            ];
+        const expectedByKey = new Map(
+          pointSums.filter(([key]) => !truncated || retained.includes(key))
+        );
+        const actualCounts = await fixture.readUint32(counts, capacity);
+        expect(await fixture.readUint32(mask, capacity)).toEqual(
+          Array.from({length: capacity}, (_, row) => (row < expectedRows ? 1 : 0))
+        );
+        const actualSums = await fixture.readFloat32(sums, capacity);
+        const actualValues = await fixture.readFloat32(values, capacity);
+        const actualZ = await fixture.readFloat32(zScores, capacity);
+        const actualP = await fixture.readFloat32(pValues, capacity);
+        for (let row = 0; row < expectedRows; row++) {
+          const expectedSum = expectedByKey.get(keys[row]) ?? 0;
+          const expectedCount =
+            expectedSum === 0 ? 0 : truncated ? 1 : keys[row] === pointKeys[0] ? 3 : 1;
+          expect(actualCounts[row], `count of ${keys[row]}`).toBe(expectedCount);
+          if (saturated && expectedCount > 0) {
+            expect(actualSums[row]).toBeNaN();
+            expect(actualValues[row]).toBeNaN();
+          } else {
+            expect(Number.isFinite(actualSums[row])).toBe(true);
+            expect(actualSums[row]).toBe(expectedSum);
+          }
+          if (saturated || truncated) {
+            expect(actualZ[row]).toBeNaN();
+            expect(actualP[row]).toBeNaN();
+          } else {
+            expect(Number.isFinite(actualZ[row])).toBe(true);
+            expect(Number.isFinite(actualP[row])).toBe(true);
+          }
+        }
+        for (const [index, key] of pointKeys.slice(0, 2).entries()) {
+          const row = keys.indexOf(key);
+          expect(row).toBeGreaterThanOrEqual(0);
+          if (frame === 'recovered') {
+            expect(actualZ[row]).toBeCloseTo(expectedScores[index], 3);
+            expect(actualP[row]).toBeCloseTo(expectedPValues[index], 3);
+          }
+        }
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }, 120000);
+}

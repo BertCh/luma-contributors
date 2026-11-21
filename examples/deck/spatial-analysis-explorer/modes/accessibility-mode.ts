@@ -137,6 +137,8 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
     let matrixEncodeCount = 0;
     let scoreEncodeCount = 0;
     let scoreMaximum = 1;
+    let scoresReady = false;
+    let scoreGeneration = 0;
     let matrixTiming: CompiledGraphTiming | null = null;
     let scoreTiming: CompiledGraphTiming | null = null;
     let matrixTimingStale = true;
@@ -158,6 +160,7 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
     const matrix = resources.createBuffer('matrix', matrixLength * 4);
     const matrixConverged = resources.createBuffer('matrix-converged', 4);
     const demandBuffer = resources.createBuffer('demand', demand);
+    const scoresComplete = resources.createBuffer('scores-complete', 4);
     const cumulative = resources.createBuffer('cumulative', nodeCount * 4);
     const gravity = resources.createBuffer('gravity', nodeCount * 4);
     const twoStep = resources.createBuffer('two-step', nodeCount * 4);
@@ -176,7 +179,7 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
       new GPUReadbackRing(device, {id: 'accessibility-snap-summary', byteLength: snapSummaryBytes})
     );
     const scoreRing = resources.track(
-      new GPUReadbackRing(device, {id: 'accessibility-scores', byteLength: nodeCount * 4})
+      new GPUReadbackRing(device, {id: 'accessibility-scores', byteLength: nodeCount * 4 + 4})
     );
 
     // --- Matrix graph: snapping, then the many-to-all cost matrix ------------------------------
@@ -301,6 +304,17 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
       new GPUNetworkAccessibility({
         id: 'score',
         costs: importGraphBuffer(scoreGraph, 'matrix', matrix, 'float32', matrixLength),
+        costsComplete: importGraphBuffer(
+          scoreGraph,
+          'matrix-converged',
+          matrixConverged,
+          'uint32',
+          1
+        ),
+        costLimit: costLimit.importToGraph(scoreGraph),
+        status: {
+          complete: importGraphBuffer(scoreGraph, 'scores-complete', scoresComplete, 'uint32', 1)
+        },
         opportunityWeights: importGraphBuffer(
           scoreGraph,
           'opportunity-weights',
@@ -348,6 +362,11 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
         });
       }
       scoring.write(getGPUNetworkAccessibilityParameterValues(settings));
+      scoresReady = false;
+      reachedReadout.setValue('pending');
+      scoreRangeReadout.setValue('pending');
+      scoreGeneration++;
+      context.updateLayers();
       scoreDirty = true;
       scoreReadbackWanted = true;
       scheduleTiming();
@@ -455,6 +474,11 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
       snapSegments.write(segments);
       matrixDirty = true;
       matrixReadbackWanted = true;
+      scoresReady = false;
+      reachedReadout.setValue('pending');
+      scoreRangeReadout.setValue('pending');
+      scoreGeneration++;
+      context.updateLayers();
       scoreDirty = true;
       scoreReadbackWanted = true;
       scheduleTiming();
@@ -566,6 +590,7 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
     const readScores = async (
       commandEncoder: Parameters<SpatialAnalysisModeInstance['encode']>[0]
     ) => {
+      const generation = scoreGeneration;
       const ticket = scoreRing.tryAcquire();
       if (!ticket) return;
       commandEncoder.copyBufferToBuffer({
@@ -574,11 +599,26 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
         destinationOffset: 0,
         size: nodeCount * 4
       });
-      ticket.markEncoded({byteOffset: 0, byteLength: nodeCount * 4});
+      commandEncoder.copyBufferToBuffer({
+        sourceBuffer: scoresComplete,
+        destinationBuffer: ticket.buffer,
+        destinationOffset: nodeCount * 4,
+        size: 4
+      });
+      ticket.markEncoded({byteOffset: 0, byteLength: nodeCount * 4 + 4});
       scoreReadbackPending = true;
       try {
         const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
+        if (generation !== scoreGeneration) return;
+        scoresReady =
+          new DataView(bytes.buffer, bytes.byteOffset).getUint32(nodeCount * 4, true) === 1;
+        context.updateLayers();
+        if (!scoresReady) {
+          reachedReadout.setValue('withheld: incomplete routing or horizon');
+          scoreRangeReadout.setValue('withheld');
+          return;
+        }
         const scores = Float32Array.from(
           new Float32Array(bytes.buffer, bytes.byteOffset, nodeCount)
         );
@@ -650,7 +690,7 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
             id: 'accessibility-roads',
             coordinateOrigin,
             segments: segmentsBuffer,
-            instanceCount: segmentCount,
+            instanceCount: scoresReady ? segmentCount : 0,
             widthPixels: 2.5,
             values: getScoreBuffer(),
             valueFormat: 'float32',

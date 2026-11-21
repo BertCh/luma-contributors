@@ -12,7 +12,7 @@ import {
   GPUPeriodIndex,
   getGPUCellKeyFreeBits,
   getGPUCellPeriodKeyPeriodBits,
-  unpackGPUCellPeriodKey
+  unpackGPUCellPeriodKeyChecked
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';
 import {GPUPointToCell} from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -28,6 +28,7 @@ import {
 import {parameters} from './cell-period-keys.parameters';
 
 const PERIOD_COUNTS = [6, 18, 72];
+const KEY_LAYOUT = 'legacy-one-bit';
 /** Occupied cells shown as table rows (the first in key order). */
 const ROW_COUNT = 32;
 /** Enough for one group per flash: the extract has 4,096 flashes. */
@@ -84,7 +85,9 @@ function readGroups(
   const bins = new Map<number, {key: bigint; count: number}>();
   for (let group = 0; group < groupCount; group++) {
     const key = (BigInt(keys[group * 2 + 1]) << 32n) | BigInt(keys[group * 2]);
-    const {cellKey, period} = unpackGPUCellPeriodKey(key, periodCount, 'ones');
+    const unpacked = unpackGPUCellPeriodKeyChecked(key, periodCount, 'ones', KEY_LAYOUT);
+    if (!unpacked) continue;
+    const {cellKey, period} = unpacked;
     if (cells.at(-1) !== cellKey) cells.push(cellKey);
     bins.set((cells.length - 1) * periodCount + period, {key, count: counts[group]});
   }
@@ -131,6 +134,7 @@ export default defineOperationRun<Inputs, Outputs, {table: RunBuffer}>({
         periods: periods.view,
         periodCount,
         fill: 'ones',
+        layout: KEY_LAYOUT,
         mask: mask.view,
         output: {keys: keys.view, status: {invalidCount: invalidCount.view}}
       })
@@ -168,7 +172,7 @@ export default defineOperationRun<Inputs, Outputs, {table: RunBuffer}>({
   let low = keys[keysOffset + index * 2u];
   let high = keys[keysOffset + index * 2u + 1u];
   let isPacked = !(low == 0xffffffffu && high == 0xffffffffu);
-  colors[colorsOffset + index] = select(0xffffffffu, low & ${(1 << getGPUCellPeriodKeyPeriodBits(periodCount)) - 1}u, isPacked);`
+  colors[colorsOffset + index] = select(0xffffffffu, low & ${(1 << getGPUCellPeriodKeyPeriodBits(periodCount, KEY_LAYOUT)) - 1}u, isPacked);`
       })
     );
     return {
@@ -231,7 +235,7 @@ export default defineOperationRun<Inputs, Outputs, {table: RunBuffer}>({
       const invalid = peek(outputs.invalidCount)?.[0];
       const overflow = peek(outputs.groupOverflow)?.[0];
       const freeBits = getGPUCellKeyFreeBits('h3', values.resolution);
-      const bits = getGPUCellPeriodKeyPeriodBits(periodCount);
+      const bits = getGPUCellPeriodKeyPeriodBits(periodCount, KEY_LAYOUT);
       let summary = `res ${values.resolution} · ${bits} of ${freeBits} free bits${
         invalid === undefined ? '' : ` · invalidCount ${invalid}`
       }`;

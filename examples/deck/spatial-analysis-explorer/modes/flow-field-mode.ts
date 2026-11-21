@@ -122,7 +122,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
     const fieldCellCount = fieldWidth * fieldHeight;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'flow');
-    const fieldExtent = [bounds[0], bounds[1], cellSize[0], cellSize[1]] as const;
+    const fieldPlacement = {origin: [bounds[0], bounds[1]], cellSize} as const;
     const fields: Record<FieldKind, FieldDefinition> = {
       wind: {
         velocities: createWindField(terrain),
@@ -386,13 +386,11 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
     function writeLicParameters(phase: number): void {
       licParameters.write(
         getGPULineIntegralConvolutionParameterValues({
-          fieldExtent,
-          outputExtent: [
-            bounds[0],
-            bounds[1],
-            (bounds[2] - bounds[0]) / LIC_WIDTH,
-            (bounds[3] - bounds[1]) / LIC_HEIGHT
-          ],
+          fieldPlacement,
+          outputPlacement: {
+            origin: [bounds[0], bounds[1]],
+            cellSize: [(bounds[2] - bounds[0]) / LIC_WIDTH, (bounds[3] - bounds[1]) / LIC_HEIGHT]
+          },
           stepLength: LIC_STEP_PIXELS,
           minimumSpeed: 0.05,
           phase,
@@ -407,10 +405,13 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
       const gridHeightMeters = STREAMLINE_GRID_HEIGHT * cell;
       streamlineParameters.write(
         getGPUStreamlinesParameterValues({
-          fieldExtent,
+          fieldPlacement,
           // The grid cell is the separation distance: scaling it about the map center is a
           // parameter write (the grid and seed lattice sizes stay compiled).
-          gridExtent: [centerX - gridWidthMeters / 2, centerY - gridHeightMeters / 2, cell, cell],
+          gridPlacement: {
+            origin: [centerX - gridWidthMeters / 2, centerY - gridHeightMeters / 2],
+            cellSize: [cell, cell]
+          },
           stepLength: 0.4 * cell,
           minimumSpeed: 0.05
         })
@@ -668,7 +669,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
         particleParameters.write(
           getGPUParticleAdvectionParameterValues(
             {
-              fieldExtent,
+              fieldPlacement,
               timeStep,
               speedScale,
               dropRate,

@@ -104,9 +104,9 @@ describe('space-time tests at core limits', () => {
       [100000, 999],
       [100000, MAXIMUM_PERMUTATIONS]
     ] as const) {
-      // The Mantel partials table was 201,331,712 B (3 words x 256 blocks x 65537 slots) at the
-      // documented maximum of 65536 permutations, above the 128 MiB binding limit; the block count
-      // now shrinks with the permutation count so the table fits.
+      // Mantel now stores nine words per (draw, block), plus two spatial moments per block.
+      // At 65536 permutations the row-block count must shrink to keep every actual binding
+      // within 128 MiB, including the added draw-local anchor rows and stopping comparisons.
       it(`${kind} with ${rows} rows and ${permutations} permutations`, () => {
         const {nodes, device} = build(kind, rows, permutations, 4);
         expectCoreLimits(nodes, device);

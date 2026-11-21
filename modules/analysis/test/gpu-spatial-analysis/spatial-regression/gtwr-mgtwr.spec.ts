@@ -352,3 +352,63 @@ it('multiscale: masked rows are excluded and the scores stay finite', async () =
     })
   ).toThrow('bandwidth');
 });
+
+it('multiscale first backfit sweep matches independent estimates before convergence', async () => {
+  // Independent NumPy float64 reference, on these exact uploaded values:
+  // D=column_stack([ones(8),x]); W_h[i,j]=exp(-.5*((i-j)/h)**2).
+  // Initial beta_i=lstsq(sqrt(W_4[i])[:,None]*D,sqrt(W_4[i])*y); XB=D*beta.
+  // For j=0,1 in order: r=XB[:,j]+err; beta[:,j]=(W_h@(D[:,j]*r))/(W_h@D[:,j]**2);
+  // new=beta[:,j]*D[:,j]; err+=XB[:,j]-new; XB[:,j]=new, h=(.75,3).
+  // score=sqrt(sum((XB_new-XB_old)**2)/8/sum(XB_new.sum(axis=1)**2)).
+  const input: MultiscaleInput = {
+    rows: 8,
+    columns: 1,
+    kernel: 'gaussian',
+    initial: [4, 0],
+    bandwidths: [0.75, 3],
+    taus: [0, 0],
+    iterations: 1,
+    coords: Array.from({length: 8}, (_, row) => [row, 0]).flat(),
+    t: new Array<number>(8).fill(0),
+    x: [-2, -1, 0, 1, 2, -2, 1, 3],
+    y: [0, 2, 1, 4, 2, -1, 3, 8]
+  };
+  const expectedCoefficients = [
+    2.3068671958389624, 1.0798844636127893, 2.373646466354355, 1.0985241198635616,
+    1.840671349063036, 1.1275134907296904, 1.6723986677152878, 1.1661555910730113,
+    0.741984482263636, 1.2119102591421107, 1.2157923124218892, 1.2614249992161484,
+    2.0318298142417195, 1.3115474328097951, 3.0070691591458405, 1.3598278733021907
+  ];
+  const expectedFitted = [
+    0.1470982686133837, 1.2751223464907935, 1.840671349063036, 2.838554258788299,
+    3.1658050005478575, -1.3070576860104075, 3.3433772470515146, 7.086552779052413
+  ];
+  const first = await runMultiscaleGPU(input);
+  expect(first.localStatus).toHaveLength(8);
+  expect(first.coefficients).toHaveLength(16);
+  expect(first.fitted).toHaveLength(8);
+  expect(first.localStatus.every(code => code === 0)).toBe(true);
+  expectedCoefficients.forEach((expected, index) => {
+    expect(Number.isFinite(first.coefficients[index])).toBe(true);
+    expect(Math.abs(first.coefficients[index] - expected)).toBeLessThan(2e-4);
+  });
+  expectedFitted.forEach((expected, row) => {
+    expect(Number.isFinite(first.fitted[row])).toBe(true);
+    expect(Math.abs(first.fitted[row] - expected)).toBeLessThan(2e-4);
+  });
+  expect(Number.isFinite(first.scores[0])).toBe(true);
+  expect(Math.abs(first.scores[0] - 0.07315682360842546)).toBeLessThan(2e-5);
+  // iterationCount is a fixed backfit budget. No bandwidthSearch is requested; its optional
+  // search convergence status must not be interpreted as convergence of these component fits.
+  expect(first.scores).toHaveLength(1);
+  const second = await runMultiscaleGPU({...input, iterations: 2});
+  expect(second.localStatus).toHaveLength(8);
+  expect(second.scores).toHaveLength(2);
+  expect(second.localStatus.every(code => code === 0)).toBe(true);
+  expect(Number.isFinite(second.scores[1])).toBe(true);
+  expect(Math.abs(second.scores[1] - 0.012461856428517642)).toBeLessThan(2e-5);
+  expect(Number.isFinite(second.coefficients[14])).toBe(true);
+  expect(Math.abs(second.coefficients[14] - 3.234705305106167)).toBeLessThan(2e-4);
+  // The last intercept still moves by .227636 after the first sweep.
+  expect(Math.abs(second.coefficients[14] - first.coefficients[14])).toBeGreaterThan(0.2);
+});

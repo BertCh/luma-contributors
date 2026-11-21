@@ -15,7 +15,7 @@
  * first n of the ordered neighbors, which is exactly what a smaller k would return). Foot-point
  * links are drawn straight from the `neighborFootPoints` and `neighborIds` outputs. The ties mode and
  * the feature geometry are compile-time choices; polylines and polygons use a
- * `GPUSpatialJoinPrepared` index that is built once while the queries move.
+ * `GPUSpatialJoinPrepared` handle that retains geometry while preparation replays each encoding.
  *
  * `spatialSort` is a compile-time option (the toggle rebuilds the graph). "Shuffle road rows" applies
  * one seeded permutation to every per-segment buffer so the road table becomes spatially incoherent
@@ -79,7 +79,7 @@ const NEIGHBOR_DRIFT_METERS = 30;
 
 type JoinKind = 'snap' | 'neighbors';
 type NeighborFeatureKind = 'segments' | 'lines' | 'polygons';
-type NeighborTies = 'lowest-id' | 'all';
+type NeighborTies = 'lowest-row' | 'all';
 type WeightRule = 'binary' | 'inverse-distance';
 /** Selectable compiled `k` of the nearest-feature weights. */
 const WEIGHT_K_OPTIONS = [1, 3, 5];
@@ -369,7 +369,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
 
     let join: JoinKind = 'snap';
     let neighborFeatureKind: NeighborFeatureKind = 'segments';
-    let neighborTies: NeighborTies = 'lowest-id';
+    let neighborTies: NeighborTies = 'lowest-row';
     let shownNeighbors = 3;
     let weightK = 3;
     let weightRule: WeightRule = 'binary';
@@ -456,7 +456,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
                   polygonFeatures.ringOffsets.length
                 )
               };
-        // A static feature set: the BVH is built on the first encoding and reused while queries move.
+        // A static feature set: geometry is retained and BVH preparation replays every encoding.
         prepared = new GPUSpatialJoinPrepared({id: 'neighbor-features', geometry: features});
         graph.add(prepared);
       }
@@ -484,7 +484,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
             positions: view('queries', queryBuffer, 'float32x2', queryCount)
           },
           features,
-          k: NEIGHBOR_K,
+          neighborCount: NEIGHBOR_K,
           neighborCapacity: stride,
           ties: neighborTies,
           radius: neighborMaxDistance.importToGraph(graph),
@@ -521,7 +521,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
           neighborCounts: joinNeighborCounts,
           neighborDistances: joinNeighborDistances,
           slotCapacity: stride,
-          k: weightK,
+          neighborCount: weightK,
           weightType: weightRule,
           output: {
             offsets: view('weight-offsets', weightOffsets, 'uint32', queryCount + 1),
@@ -591,7 +591,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
               `${tied} of ${queryCount} queries have tied distances; ` +
                 (neighborTies === 'all'
                   ? `${extended} keep ties beyond k = ${NEIGHBOR_K}`
-                  : 'lowest-id cuts ties at k')
+                  : 'lowest feature row cuts ties at k')
             );
             const weightBase = queryCount + queryCount * stride + 1;
             const nonzeros = words[weightBase + queryCount];
@@ -604,7 +604,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
             );
             neighborBuildsReadout.setValue(
               build.prepared
-                ? `${build.prepared.encodedBuildCount} in ${formatCount(build.frames)} frames (reused)`
+                ? `${build.prepared.encodedBuildCount} in ${formatCount(build.frames)} frames (geometry retained; preparation replays)`
                 : 'rebuilt every encoding (segments cannot be prepared)'
             );
           }
@@ -670,7 +670,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
     context.controls.addSelect<NeighborTies>({
       label: 'k nearest: ties (compile-time: rebuilds graph)',
       options: [
-        {value: 'lowest-id', label: 'lowest-id (cut at k)'},
+        {value: 'lowest-row', label: 'lowest feature row (cut at k)'},
         {value: 'all', label: 'all (keep every tie, capacity 16)'}
       ],
       value: neighborTies,
@@ -844,11 +844,12 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
     const neighborOverflowReadout = context.controls.addReadout('k nearest: overflow', '...');
     const weightRowsReadout = context.controls.addReadout('k nearest: weights', '...');
     const neighborBuildsReadout = context.controls.addReadout(
-      'k nearest: feature index builds',
+      'k nearest: CPU geometry refresh requests',
       '...'
     );
     context.controls.addNote(
-      'Timed outside the frame: GPU timestamps when the device has timestamp-query, otherwise wall clock / 8 repetitions (upper bound). ' +
+      'CPU geometry refresh requests include discarded request encodings; bounds, sort, BVH and optional slab preparation kernels replay every encoding against retained geometry. ' +
+        'Timed outside the frame: GPU timestamps when the device has timestamp-query, otherwise wall clock / 8 repetitions (upper bound). ' +
         'Sorting helps most when road rows are spatially incoherent; try shuffling the rows.'
     );
     context.controls.addReadout('Data', `${pois.attribution}; ${roads.attribution}`);
@@ -872,7 +873,9 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
         const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 3);
-        matchedReadout.setValue(`${formatCount(words[0])} of ${formatCount(pointCount)}`);
+        matchedReadout.setValue(
+          `${words[1] ? 'at least ' : ''}${formatCount(words[0])} of ${formatCount(pointCount)}${words[1] ? ' (incomplete)' : ''}`
+        );
         overflowReadout.setValue(words[1] ? 'YES' : 'no');
         candidateReadout.setValue(formatCount(words[2]));
       } catch {

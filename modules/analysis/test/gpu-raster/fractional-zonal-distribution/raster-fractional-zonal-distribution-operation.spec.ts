@@ -8,7 +8,7 @@ import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis
 import {CPURasterFractionalZonalDistributionOperation} from '../../../src/raster-analysis/raster-zonal-statistics/cpu-raster-fractional-zonal-distribution-operation';
 import {GPURasterFractionalZonalDistributionOperation} from '../../../src/raster-analysis/raster-zonal-statistics/gpu-raster-fractional-zonal-distribution-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {runPreparedCoverageRecovery} from '../fractional-final1-fixture';
 import {
   createDistributionGraphInputs,
@@ -16,6 +16,36 @@ import {
   getDistributionGraphInputs,
   DISTRIBUTION_PROPS
 } from './raster-fractional-zonal-distribution-operation-fixture';
+
+it('W5-13 GPU operation writes the inherited means destination captured at construction', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  let destination = 'average';
+  let reads = 0;
+  const output = {...DISTRIBUTION_PROPS.output};
+  Reflect.deleteProperty(output, 'means');
+  Object.setPrototypeOf(output, {
+    get means() {
+      reads++;
+      return destination;
+    }
+  });
+  const operation = new GPURasterFractionalZonalDistributionOperation({
+    ...DISTRIBUTION_PROPS,
+    output
+  });
+  expect(operation.outputs['means']?.value).toBe('average');
+  destination = 'replaced';
+  const result = await runOperationGraph(device, {
+    inputs: createDistributionGraphInputs(),
+    operations: [operation],
+    outputs: Object.values(operation.outputs).map(descriptor => descriptor.value)
+  });
+  // Values 0,10,20 have reliability weights 1,2,1; their mean is 10.
+  expect(Array.from(result['average'])).toEqual([10]);
+  expect(result['replaced']).toBeUndefined();
+  expect(reads).toBe(1);
+});
 
 it('F1 distribution operations suppress candidate-only coverage and recover after both failure kinds', async () => {
   const device = await getWebGPUTestDevice();

@@ -3,13 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
+import {createLocalKrigingForTesting} from './local-kriging-test-assembly';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {
-  GPULocalKriging,
-  createLocalKrigingForTesting
-} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
+import {GPULocalKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -20,7 +18,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {createPaddedQueryFixture} from '../linear-referencing/gpu-linear-referencing-chunks.test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const QUERY_POINTS = [
   [0, 0],

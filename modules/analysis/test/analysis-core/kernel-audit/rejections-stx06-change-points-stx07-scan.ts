@@ -29,6 +29,7 @@ export const STX06_CHANGE_POINTS_STX07_SCAN_REJECTIONS: readonly KernelAuditReje
     name: 'one zone above the count table limit',
     kind: 'binding',
     limit: 16777216,
-    rejects: /^Error: expectation-based-scan zones \* maximumWindowLength must be at most 16777216$/
+    rejects:
+      /^Error: expectation-based-scan zones \* maximumWindowLength received 16777248; must be at most 16777216; reduce zones or maximumWindowLength$/
   }
 ];

@@ -3,7 +3,7 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPUGlobalSpatialStatistics's `alternative`, plus the band radius of its weights and the data it is computed from.
+// Bound to GPUGlobalSpatialStatistics's `analyticAlternative`, plus the band radius of its weights and the data it is computed from.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'alternative',

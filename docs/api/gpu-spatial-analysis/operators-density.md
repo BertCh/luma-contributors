@@ -24,6 +24,20 @@ may be GPU views; the field can be smoothed with a per-frame `GPUConvolution` ke
 `kernel`, pass a separable `separableKernel: {horizontal, vertical}` (one of the two is required), which smooths
 in two 1D passes.
 
+Grid bounds accept every validated finite float32 literal, including scientific notation such as
+`[-3e38, 0, 3e38, 1]`. For scientific-notation integer bounds, one initialization pass writes a
+`float32x4` bounds view consumed by the published grid builders, avoiding their literal formatter.
+The inclusive maximum belongs to the final column/row in both sum accumulation modes.
+Known limit (rectangular grid, every frame): when the float32 width or height of the bounds
+reaches `2^126` or overflows (for example x from `-3e38` to `3e38`), the counts and atomic sums come from the published
+luma.gl `GPUGridBinning` and `GPUGridAggregation`, which on Apple Metal with luma.gl
+`10.0.0-alpha.16` put `x = 0` in column 0 of 360 instead of column 180, while workgroup sums use
+this package's own grid keys. Counts, sums and means can then disagree. Keep each positive float32 bounds extent below `2^126` (about `8.51e37`) to keep its reciprocal
+from becoming subnormal. Rescale positions and bounds together if either extent reaches that limit.
+Bounds are captured once at construction. Literal tuples are copied, so later caller mutation
+does not change validation, node estimation or the emitted domain. A GPU bounds view retains
+its identity and its contents remain per-frame.
+
 **This is binned counting, not a kernel density estimate.** `output.values` is the count (or weight
 sum or mean) per cell, so it changes with `gridSize` and is not an intensity per unit area or a
 probability density. Optional `smoothing` convolves that field with a kernel whose radius and sigma
@@ -48,6 +62,14 @@ the largest (`h` is the bit length of the row count, so about `1e-15` at a milli
 the unit. `'atomic'` sums can differ from a CPU sum, and between runs, in the last bits.
 
 ```ts
+import {GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+declare const inputs: ConstructorParameters<typeof GPUPointDensity>[0];
+const {positions, weights} = inputs;
+const {values, extent, histogram, texture} = inputs.output;
+declare const viewport: GPUParameterBuffer<'float32'>;
+declare const kernel: GPUParameterBuffer<'float32'>;
+
 graph.add(new GPUPointDensity({
   positions, weights, bounds: viewport.importToGraph(graph), gridSize: [256, 256],
   statistic: 'mean',
@@ -83,7 +105,7 @@ columns.
 
 ### `GPUStudyWindowPreparation`
 
-Prepares a polygon study window once: oriented edges, bounds, area, perimeter and sampling cells for window-aware statistics.
+Prepares a reusable polygon study window: oriented edges, bounds, area, perimeter and sampling cells for window-aware statistics, replayed each encoding.
 
 ::lens{scenario=gpu-spatial-analysis.study-window-preparation rung=result caption="13 community areas prepared as one study window (blue outline) in an equal-area frame."}
 
@@ -97,12 +119,31 @@ CPU `rebuildWhen(parameters)` requests a new generation. Its applied generation 
 after the complete preparation executes, so discarded encodings and abandoned prefixes retry
 automatically. Published preparation stages replay against that snapshot every encoding; geometry
 refresh alone is GPU-gated. This repeats preparation work and adds one copy of each geometry view
-plus 24 generation-control bytes, with the same view lengths and storage binding limits.
+plus 1,072 fixed generation bytes per handle (1,024-byte immutable byte lookup,
+32-byte request and 16-byte state), excluding geometry copies and dispatch-gate storage.
+Each recorded encoding captures its own generation request without a queue write or a new allocation.
+Ring summaries initially process at most two rings per invocation, followed by compensated pairwise
+reductions. Scratch holds 11 float32 words per rounded-up ring pair:
+`11 * ceil(ringCount / 2) * 4` bytes. Each geometry copy and scratch plane must fit
+`min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize)`; exceeding the
+binding limit is rejected before allocation. These costs retain the same geometry view lengths.
 Changed geometry needs invalidation, otherwise consumers deliberately reuse the previous geometry.
 Consumers evaluate their
 current inputs on every encoding. Changing view lengths requires a new handle and graph.
 `destroy()` frees the handle's buffers and allows re-adding it; destroy compiled graphs using it
 first. `getViews(graph)` throws until this handle has been declared in that graph.
+
+If preparation node construction/allocation fails, owned allocations are cleaned up and
+`isDeclaredIn(graph)` stays false. A later failure while `graph.add(studyWindow)` registers the
+returned nodes cannot be observed by that callback: call
+`studyWindow.recoverFailedDeclaration()`, discard the partially registered graph, and retry on a
+fresh graph. Do not recover a successfully submitted graph. Failed graphs may retain imported
+IDs even after construction cleanup. Reuse persistent caller buffers through the fresh graph's
+public canonical `importGPUData` imports with `GPUData` wrappers covering the same original
+format/range, and pass equivalent fresh views to consumers. Recreate transient producers, views
+and preparation handles in the fresh graph. Caller-owned storage is retained; only owned
+allocations are freed. This failure/retry path is distinct from discarded encodings, whose
+unapplied generations retry automatically.
 
 The first encoding and first encoding after explicit invalidation bypass `rebuildWhen`; other
 encodings call it once. `encodedBuildCount` counts CPU refresh-request encodings, including
@@ -115,6 +156,11 @@ The default is `unknown`; `invalidate()` alone also works with a void graph. See
 needed after discarding an encoding. Use one active resumable execution per handle/graph.
 
 ```ts
+import {GPUStudyWindowPreparation} from '@luma-contributors/analysis/gpu-spatial-analysis';
+declare const inputs: ConstructorParameters<typeof GPUStudyWindowPreparation>[0];
+const {positions: windowPositions, featureOffsets: windowFeatureOffsets, polygonOffsets: windowPolygonOffsets, ringOffsets: windowRingOffsets, spatialContext} = inputs;
+declare const windowSummary: import('@luma.gl/graph/gpu-core').GraphDataView<'float32'>;
+
 const studyWindow = new GPUStudyWindowPreparation({
   positions: windowPositions,
   featureOffsets: windowFeatureOffsets, // exactly two entries: one feature
@@ -174,6 +220,19 @@ also depends on the grid and crossing capacity.
 ::lens{scenario=gpu-spatial-analysis.study-window-preparation rung=graph caption="Follow edge preparation, slab indexing and sampling-cell compaction."}
 
 
+### `GPULineDensity`
+
+Sums line length per grid cell, optionally dividing by cell area. Grid placement and cell sizes
+come from `getGPULineDensityParameterValues`; lengths use the spatial context's length unit.
+In longitude/latitude, segments follow straight lines in degree coordinates and each cell piece
+is measured by its great-circle endpoint distance. A segment from `(179, 0)` to `(-179, 0)`
+therefore follows the literal 358-degree route. Optional one-row uint32
+`output.status.antimeridianUncertainCount` counts segments with an absolute longitude jump
+larger than 180 degrees, including segments outside the grid, and resets on every encoding.
+The lengths retain that literal route; split or unwrap seam crossings before use when a short
+seam-crossing path is intended. Densify long segments along their intended path because total
+piece length can depend on the grid. `output.status.overflow` still reports dropped cell pieces.
+
 ### `GPUKernelDensity`
 
 Explicit method binned accepts aligned chunked positions and weights. Corrected-weight scalar
@@ -202,6 +261,14 @@ normalised in one dimension, `15/16 (1 - z^2)^2`, where the density kernel is no
 either name for `kernel`; both run the same kernel and `kernel` reads back as `'quartic'`.
 
 ```ts
+import {GPUKernelDensity, getGPUKernelDensityParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+declare const inputs: ConstructorParameters<typeof GPUKernelDensity>[0];
+const {positions, weights, grid} = inputs;
+const {values, weightSum} = inputs.output;
+declare const minX: number, minY: number, maxX: number, maxY: number;
+const {invalidCount} = inputs.output.status ?? {};
+
 const kdeParameters = new GPUParameterBuffer(device, {id: 'kde', format: 'float32', length: 9});
 graph.add(
   new GPUKernelDensity({
@@ -214,7 +281,9 @@ graph.add(
     kernel: 'quartic',
     edgeCorrection: 'uniform', // default
     normalization: 'intensity', // default
-    // bandwidthRule: 'scott', // optional: bandwidth computed on the GPU, output.bandwidth reads it
+    // bandwidthRule: 'scott', // optional automatic rule
+    // bandwidthPopulation: 'included', // opt in; omitted defaults to 'all-finite'
+    // Optional output.bandwidth: float32[1], output.bandwidthPopulationCount: uint32[1].
     output: {values, weightSum, status: {invalidCount}} // weightSum and status are optional
   })
 );
@@ -223,6 +292,33 @@ kdeParameters.write(
 );
 ```
 
+```ts
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUKernelDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  GPUClassBreaks,
+  GPUColorScale,
+  type GPUClassBreaksProps,
+  type GPUColorScaleProps
+} from '@luma-contributors/analysis/dataframe-analysis';
+
+declare const graph: GPUCommandGraph;
+declare const kde: GPUKernelDensity; // add this producer before the classification stages
+declare const breaksInputs: GPUClassBreaksProps;
+declare const colorInputs: GPUColorScaleProps;
+
+const values = kde.outputBand.storage.values;
+graph.add(new GPUClassBreaks({...breaksInputs, values}));
+graph.add(new GPUColorScale({
+  ...colorInputs,
+  values, // exactly the same bounded view used by GPUClassBreaks
+  domain: breaksInputs.output.breaks,
+  classCount: breaksInputs.output.classCount
+}));
+```
+
+The readable pixel count is `grid.width * grid.height`. `kde.outputBand.storage.values` borrows that exact prefix, preserving its byte offset and buffer identity. Pass the same bounded view to both classification stages; size row-aligned color outputs to that pixel count. Spare allocation tails in `output.values` are unspecified and must not enter classification. For example, two equal-interval classes over `[2,4,6,8]` have edges `[2,5,8]`; reading an extra allocation sentinel of 1000 changes the legend to `[2,501,1000]`. Fixed/adaptive KDE capture ordinary options, tuples and nested output/status routing at construction while preserving GPU resource identities; input buffer contents remain live between submissions.
+
 - **Grid.** `grid` is a `GPURasterMetadata`: its `width` and `height` size the kernels (compile-time)
   and the packer reads the placement from the same object, so pass the frame's grid to
   `getGPUKernelDensityParameterValues(settings, grid)`. It must be axis-aligned (a rotated or sheared grid
@@ -230,22 +326,14 @@ kdeParameters.write(
   north-up grid (`makeGPURasterMetadata` default, `affine[4] < 0`) and `minY` when rows advance north
   (`rowDirection: 'north'`). Cell `(x, y)` is evaluated at its center, from the outer corner of
   cell (0, 0), half a cell in with `pixelInterpretation: 'point'`.
-- **Units.** `normalization: 'intensity'` (default) is the sum of weights per unit area, position
-  units to the power -2: points per square meter in a meter frame, so the value does not change with
-  the raster resolution. Multiply by a cell area to get expected weight per cell. `'probability'`
-  divides by the sum of included weights (`output.weightSum`), giving a probability density that
-  integrates to about one over the window (exactly one only without edge correction and with the
-  whole kernel inside the window). Cells are evaluated at their centers, not averaged over the cell.
+- **Units and normalization.** `normalization: 'intensity'` (default) sums event weights per unit area: points per square meter in a meter frame. `'probability'` divides by total included event weight (`output.weightSum`); this normalization alone does not guarantee a window integral of one. Values sample density at cell centers. Multiplying by cell area is midpoint quadrature, not an exact cell integral: one centered unit event with quartic bandwidth `.1` in a unit-area cell gives midpoint mass `3 / (pi * .1^2) ≈ 95.493`, although the continuous cell integral is 1. Refine cells relative to bandwidth to approximate integrals.
 - **Edge correction** repairs the downward bias within one bandwidth of the study window, where kernel
   mass falls outside the data region. `'uniform'` (default) divides each cell by `e(u)`, the kernel
-  mass inside the window (Diggle 1985; spatstat `density.ppp(edge = TRUE)`). `'diggle'` instead
-  weights each point by `1 / e(x_i)` (Jones 1993; spatstat `diggle = TRUE`), which keeps the total
-  closer to the point count but is noisier at the edge. `'none'` is the plain sum. The window is
+  mass inside the window (Diggle 1985; spatstat `density.ppp(edge = TRUE)`). `'diggle'` instead weights each point by `1 / e(x_i)` (Jones 1993; spatstat `diggle = TRUE`): event-wise correction conserves continuous window mass for the untruncated kernel. Uniform correction does not conserve mass for arbitrary event locations. For a single corner Gaussian event with `h = 1` in `[0,10]^2`, its untruncated integral is about `(ln 2)^2 ≈ .480453`; the infinite-quadrant limit is exactly `(ln 2)^2`. A 400 × 400 midpoint raster with radial truncation at `5h` gives about `.480429` for uniform and `.999996` for Diggle. Gaussian radial truncation and midpoint quadrature introduce separate errors; allowing for both, prefer fixed KDE's event-wise `'diggle'` when conserving window mass matters. `'none'` is the plain sum. The window is
   `window` in `getGPUKernelDensityParameterValues` and defaults to the rectangle of the grid; with correction, points
   outside the window are excluded and cells whose centers are outside are NaN. `e(u)` is closed form,
   with no quadrature: normal-CDF differences for the gaussian, and an exact inclusion-exclusion of
-  four disk-clipped quadrant integrals for quartic and epanechnikov. `getGPUKernelDensityWindowMass`
-  is the float64 rectangle reference. For a polygon, pass a `GPUStudyWindowPreparation` as the
+  four disk-clipped quadrant integrals for quartic and epanechnikov. [`getGPUKernelDensityWindowOverlap`](./space-time-density-and-k-function.md#encoded-coordinates-time-slices-and-overlap) gives float64 rectangle overlap. For temporal overlap use [`getGPUSpaceTimeTemporalWindowOverlap`](./space-time-density-and-k-function.md#encoded-coordinates-time-slices-and-overlap). For a polygon, pass a `GPUStudyWindowPreparation` as the
   compile-time `studyWindow` prop (default `'rectangle'`) and add it to the graph before the KDE.
   Set `window: 'study-window'` in the parameter packer; slots 5–8 become NaN and polygon kernels
   read the prepared window instead. A rectangle-mode operator given this sentinel with edge
@@ -258,22 +346,10 @@ kdeParameters.write(
   `GPUGeometryValidity`) and in the same planar frame as the KDE. Window queries use absolute
   frame coordinates, without subtracting `gridStart`. Polygon plus `edgeCorrection: 'none'`
   throws `${id} studyWindow is ignored without edge correction; set edgeCorrection to 'uniform' or 'diggle'`.
-- **Bandwidth.** It is per-frame, in position units, and should reflect the question (a service
-  distance, a neighborhood). Pass `bandwidthRule: 'scott'` or `'silverman'` to have the GPU compute a
-  normal-reference bandwidth from the points every encoding, with no read-back: `h = n_eff^(-1/6)
-  sqrt((variance x + variance y) / 2)`, the pooled `isotropic` bandwidth of `scipy.stats.gaussian_kde`
-  with the unbiased weighted covariance (`numpy.cov(aweights = w)`) and `n_eff = (sum w)^2 / sum w^2`.
-  In two dimensions the two rules coincide (the IQR-based 1D Silverman rule is not used). Rows with a
-  non-finite position or a non-finite or negative weight are skipped; `indexBounds` and the window are
-  not applied. The moments are a two-stage hierarchical reduction (workgroup partials, then further
-  levels) in two passes (mean, then centered sums) relative to the grid's start corner, so large projected
-  coordinates do not cancel. `parameters` slot 4 is then ignored, and `output.bandwidth` (optional,
-  one float32 row) receives the value the kernels use (NaN, and an all-NaN raster, when undefined: fewer
-  than two rows, `n_eff <= 1`, or zero spread). A normal-reference rule oversmooths clustered data;
-  likelihood cross-validation and Diggle's selector are not provided.
-- **Exclusions.** A non-finite position or weight, a negative weight, and a position outside
-  `indexBounds` exclude the row; `output.status.invalidCount` is their
-  number. Zero-weight rows are included.
+- **Bandwidth.** Per-frame `h` is in position units: Gaussian standard deviation for `'gaussian'`, support radius for `'epanechnikov'` and `'quartic'` / `'bisquare'`. With `bandwidthRule: 'scott'` or `'silverman'`, each encoding computes `h = kernelFactor * n_eff^(-1/6) * sqrt((varianceX + varianceY) / 2)`, with unbiased weighted covariance and `n_eff = (sum w)^2 / sum(w^2)`. The two rules coincide in two dimensions; the IQR-based one-dimensional Silverman rule is not used. `kernelFactor` is 1 for Gaussian, `2.40187391` for Epanechnikov and `2.77919324` for quartic/bisquare.
+  `bandwidthPopulation: 'all-finite'` is the default: moments use finite positions and finite nonnegative weights even outside `indexBounds` or the active edge window. Set `bandwidthPopulation: 'included'` to use the density's inclusion population instead, applying index bounds and the active rectangular/polygon edge window. Two centered reduction passes use a shared per-axis minimum among eligible positive-weight rows as their numerical origin, independent of grid placement. Zero-weight rows are eligible for the population count but do not choose the origin or add moment weight.
+  `parameters` slot 4 is ignored with an automatic rule. Optional `output.bandwidth` is one float32 row containing the resolved h; optional `output.bandwidthPopulationCount` is one uint32 row counting selected eligible rows, including zero weights, and requires `bandwidthRule`. These differ from `output.weightSum` (density's total included weight, in original weight units) and `output.status.invalidCount` (excluded density rows). The Gaussian unit triangle `(0,0),(1,0),(0,1)` gives h≈`.4807498568`. Adding `(1000,1000)` outside the index leaves included h unchanged, but default all-finite h becomes `396.718156`; density weightSum and included population count remain 3, while invalidCount is 1. With an automatic rule, insufficient effective sample size or zero spread yields NaN h and an all-NaN raster. Normal-reference rules can oversmooth clustered data; likelihood cross-validation and Diggle's selector are not provided.
+- **Exclusions.** A non-finite position or weight, a negative weight, or a position outside `indexBounds` excludes the row. With active edge correction, a position outside the active rectangular or polygon study window is also excluded, even when finite, positively weighted and inside the index. `output.status.invalidCount` counts all these excluded density rows. Zero-weight rows satisfying the spatial inclusion rules remain included. These density diagnostics do not count the default all-finite bandwidth population: that population may still include a finite out-of-window event; choose `bandwidthPopulation: 'included'` to align the populations.
 - **Determinism and precision.** The index is rebuilt every encoding, IDs are put back in ascending
   row order inside each index cell by a stable sort of the rows by cell (linear in the row count, however many rows share a cell), and each cell sums in a fixed order (index row, column, ascending row), with no float
   atomics. Distances use offsets from the grid's start corner to limit f32 cancellation; the f32 inputs
@@ -287,7 +363,12 @@ kdeParameters.write(
   cost is a few passes over the grid whatever the bandwidth; every bandwidth-dependent filter parameter
   is computed on the GPU, so changing `h` never recompiles. Edge correction, normalization and NaN
   rules are the same as `'exact'`. `method: 'auto'` builds both and the GPU picks one every encoding:
-  exact while `5h` is at most 32 cells, binned above. Error versus `'exact'`, for `h >= 3` cells, in
+  exact while `5h` is at most 32 cells on the larger axis, binned above when padding suffices.
+  The binned error bound requires the frame's effective bandwidth `h` to span at least **3 cells
+  on both axes**, including unequal cell dimensions. Optional one-row uint32
+  `output.status.bandwidthBelowThreeCells` is 1 when a binned frame violates that condition and
+  0 otherwise (including an exact frame selected by `'auto'`). It is recomputed every encoding
+  from the GPU-selected bandwidth when `bandwidthRule` is supplied. Error versus `'exact'`, in
   units of `W / (2 pi h^2)` (`W` the included weight, the height of one point's kernel): at most
   `r^2 / 4 + 0.016 + 1.4e-5 + 6e-8 (13 / r + 210)` with `r = cell / h` (`getGPUKernelDensityBinnedErrorBound`):
   `r^2 / 4` from the linear binning, 0.016 from the filter shape, the rest from truncation and float32.
@@ -304,6 +385,27 @@ kdeParameters.write(
 Not provided: adaptive or space-time bandwidths, network KDE (see the network contributors), reflection
 boundaries.
 
+```ts
+import {GPUKernelDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+const deviceLimits = {
+  maxBufferSize: 128 * 1024 * 1024,
+  maxStorageBufferBindingSize: 128 * 1024 * 1024
+};
+const shape = {
+  pointCount: 3,
+  gridSize: [16, 16] as const,
+  indexGridSize: [1, 1] as const,
+  method: 'auto' as const,
+  cellSize: [1, 1] as const,
+  binnedPadding: 32
+};
+const exactPlan = GPUKernelDensity.getExecutionPlan({...shape, bandwidth: 6.4}, deviceLimits);
+const binnedPlan = GPUKernelDensity.getExecutionPlan({...shape, bandwidth: 6.40001}, deviceLimits);
+// exactPlan.route === 'exact'; binnedPlan.route === 'binned'.
+// Inspect .feasible and .constraints; physical view layouts are checked on construction/declaration.
+```
+
 #### How it computes
 
 {/* lens:GPUKernelDensity */}
@@ -319,6 +421,8 @@ boundaries.
 {/* parameters: GPUKernelDensity generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUKernelDensity` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUKernelDensity`.
 
 - Packer: `getGPUKernelDensityParameterValues(settings, grid)`, writes `GPU_KERNEL_DENSITY_PARAMETER_LENGTH` (9) `float32` values.
   - `grid` (`GPURasterMetadata`): The output grid: axis-aligned, with a nonzero finite cell size; its width and height must match the contributor's.
@@ -346,8 +450,15 @@ placement (the `grid` passed to the packer), search radius, power, nearest-neigh
 minimum neighbor count are per-frame; the grid's size is compile-time.
 
 ```ts
-graph.add(
-  new GPUInverseDistanceWeighting({
+import {GPUInverseDistanceWeighting} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+declare const inputs: ConstructorParameters<typeof GPUInverseDistanceWeighting>[0];
+const {positions, values, mask, grid} = inputs;
+const {values: surface, counts} = inputs.output;
+declare const minX: number, minY: number, maxX: number, maxY: number;
+const idwParameters = new GPUParameterBuffer(device, {id: 'idw', format: 'float32', length: 9});
+
+const idw = new GPUInverseDistanceWeighting({
     positions, // float32x2 per sample
     values, // float32 per sample, NaN skips
     mask, // optional uint32, 0 skips
@@ -357,10 +468,10 @@ graph.add(
     indexBounds: [minX, minY, maxX, maxY], // samples outside are ignored
     maximumNeighborCount: 16, // compile-time capacity for k; 0 compiles radius-only
     output: {values: surface, counts} // float32 (NaN = nodata), optional uint32
-  })
-);
+  });
+graph.add(idw);
 idwParameters.write(
-  getGPUInverseDistanceWeightingParameterValues(
+  idw.getParameterValues(
     {
       searchRadius: 250,
       power: 2,
@@ -380,22 +491,25 @@ idwParameters.write(
   output rows follow the grid's row order: row 0 is the top row of a north-up grid
   (`affine[4] < 0`) and `minY` when rows advance north.
 - Samples with `d^2 <= radius^2` contribute. With `neighborCount = k > 0` the `k` nearest are kept
-  by `(d^2, row)`, so equal distances keep the smallest row. `k` is clamped to
-  `maximumNeighborCount` (at most 64).
+  by `(d^2, row)`, so equal distances keep the smallest row. `idw.getParameterValues(settings, grid)` rejects `neighborCount` above the instance's
+  `maximumNeighborCount` (at most 64) and grid dimensions differing from construction.
+  `maximumNeighborCount: 0` compiles radius-only gathering and accepts only `neighborCount: 0`.
+  The free `getGPUInverseDistanceWeightingParameterValues(settings, grid)` cannot check instance
+  capacity; direct raw GPU words retain their clamp to the compiled capacity.
 - An exact hit (`d == 0`) returns that sample's value, the smallest row among several, regardless
   of `minimumNeighborCount`. Otherwise a cell with fewer than `max(minimumNeighborCount, 1)`
   contributors is nodata (NaN). `counts` holds the contributors after the `k` limit.
 - Negative or NaN radius, or a negative or non-finite power, produces an all-NaN raster.
   `searchRadius: Infinity` searches the whole index domain.
 - Units and coordinates: by default positions, grid and radius share one planar unit and
-  distances are differences of offsets from the grid's start corner, so large absolute coordinates (UTM
-  northings) do not quantize them. With `spatialContext: {coordinateSpace: 'longitude-latitude',
+  distances are differences of offsets from the grid's start corner, but float32 input quantization is already present at large absolute coordinates. Subtract the
+  same local origin from positions, grid placement and index bounds before upload when fine
+  resolution requires it; also recenter the window for KDE. Corner-based raster packers reject
+  collapsed float32 endpoints/spans/steps; apply a common origin to every spatial input. With `spatialContext: {coordinateSpace: 'longitude-latitude',
   metric: 'great-circle'}` positions are absolute lon/lat degrees, the index and output grid stay
   in degrees, and distances and `searchRadius` use the context's length unit (meters by default;
   kilometers with `units: 'kilometers'`), on a sphere of `sphereRadius` or the mean Earth radius in that unit. Neighbors and radius
-  tests order by the haversine term. The query box is conservative (longitude span widened by the
-  cosine of the highest latitude reached, full span near the poles) but does not wrap the
-  antimeridian, and the nearest-k limit scans the whole box instead of early-stopping.
+  tests order by the haversine term. The conservative query box widens longitude coverage with latitude. `longitudeSearch: 'clipped'` is the default and clips at the antimeridian. Opt into `longitudeSearch: 'wrapped'` to search both seam sides and polar caps; use `indexBounds: [-180, -90, 180, 90]` to include the full canonical longitude/latitude domain. Domain edges and radius tests are inclusive: candidates exactly on the seam, pole or radius are included when covered by the bounds. Wrapped mode requires index longitudes within `[-180,180]`; bounds still determine which observations are indexed. Nearest-k scans the whole query box without early stopping.
   Pass optional `spatialContext` to `getGPUInverseDistanceWeightingParameterValues(settings, grid)` to warn on short `searchRadius` values; see [Precision of longitude/latitude positions](./concepts.md#precision-of-longitudelatitude-positions).
   Other longitude/latitude metrics
   (rhumb, ellipsoidal, none) throw; project to a planar frame (for example `createGPULocalFrame`)
@@ -438,8 +552,12 @@ idwParameters.write(
 
 #### `GPUInverseDistanceWeighting` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUInverseDistanceWeighting`.
+
 - Packer: `getGPUInverseDistanceWeightingParameterValues(settings, grid)`, writes `GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH` (9) `float32` values.
   - `grid` (`GPURasterMetadata`): The output grid: axis-aligned; its width and height must match the contributor's.
+- Packer: `instance.getParameterValues(settings, grid?)`, writes the `float32` parameter view.
+  - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
 
 Settings of `getGPUInverseDistanceWeightingParameterValues`:
 
@@ -449,7 +567,7 @@ Settings of `getGPUInverseDistanceWeightingParameterValues`:
 | `searchRadius` | `number` | Search radius in position units. `Infinity` searches the whole index domain, except with the `'modified-shepard'` taper, which needs a finite radius. |
 | `power` (optional) | `number` | Distance power `p` in `w = 1 / d^p`. Zero gives an unweighted mean. Defaults to 2. |
 | `taper` (optional) | `GPUInverseDistanceWeightingTaper` | Weight taper at the search radius. Defaults to `'none'` (hard cutoff). |
-| `neighborCount` (optional) | `number` | Nearest-neighbor limit `k`; zero (default) uses every sample within the radius. Values above the contributor's compile-time `maximumNeighborCount` are clamped to it. |
+| `neighborCount` (optional) | `number` | Nearest-neighbor limit `k`; zero (default) uses every sample within the radius. Values above the contributor's compile-time `maximumNeighborCount` are clamped by raw GPU parameters; use the instance's `getParameterValues` method to reject requests beyond its capacity. |
 | `minimumNeighborCount` (optional) | `number` | Cells with fewer contributing samples (and no exact hit) are nodata. Defaults to 1. |
 
 {/* /parameters */}
@@ -470,6 +588,18 @@ normalized by its total sill and the prediction is relative to the nearest value
 the same internal `GPUGridIndex` as `GPUInverseDistanceWeighting`.
 
 ```ts
+import {GPUKriging, getGPUKrigingParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+declare const inputs: ConstructorParameters<typeof GPUKriging>[0];
+const {positions, values, grid, indexGridSize, indexBounds} = inputs;
+const {values: surface, variance, crossValidationPrediction, crossValidationVariance} = inputs.output;
+const {invalidCount, uncertainCount} = inputs.output.status ?? {};
+const krigingParameters = new GPUParameterBuffer(device, {
+  id: 'kriging', format: 'float32', length: 12,
+  values: getGPUKrigingParameterValues({searchRadius: 250, neighborCount: 16, minimumNeighborCount: 3,
+    variogram: {model: 'spherical', nugget: 0, sill: 1, range: 250}}, grid)
+});
+
 graph.add(
   new GPUKriging({
     positions, values, parameters: krigingParameters.importToGraph(graph),
@@ -489,7 +619,7 @@ graph.add(
   compile-time) and `output: {values, variance?}`.
 - Per frame: radius, `k`, minimum neighbors, the placement (the `grid` passed to
   `getGPUKrigingParameterValues(settings, grid)`, axis-aligned, same width and height as the props; output
-  rows follow its row order, row 0 at the top of a north-up grid and at `minY` when rows advance north), model (`'spherical'`, `'exponential'` or `'gaussian'`,
+  rows follow its row order, row 0 at the top of a north-up grid and at `minY` when rows advance north), model (`'spherical'`, `'exponential'`, `'gaussian'`, `'matern-3/2'` or `'matern-5/2'`,
   the `fitVariogramModel` convention) and nugget, sill and range. `range` is the effective range: the
   exponential model is `1 - exp(-3 h / range)` and the Gaussian model `1 - exp(-3 (h / range)^2)`, both
   at 95 percent of the sill at `range`. Converting to another library:
@@ -504,15 +634,15 @@ graph.add(
   hits, NaN at nodata.
 - Units and coordinates: by default positions, grid, radius and variogram range share one planar
   unit; distances are differences of offsets from the grid's start corner (cross-validation: from the
-  index domain minimum), so UTM-sized coordinates keep full f32 precision relative to the
-  neighborhood. With `spatialContext: {coordinateSpace: 'longitude-latitude', metric:
+  index domain minimum), but uploaded float32 absolute coordinates may already have lost local detail. Subtract a common
+  local origin from positions, grid placement and index bounds before upload for fine
+  neighborhoods. Corner-based raster packers reject collapsed float32 endpoints/spans/steps;
+  apply a common origin to every spatial input. With `spatialContext: {coordinateSpace: 'longitude-latitude', metric:
   'great-circle'}` positions are absolute lon/lat degrees, the index and grid stay in degrees,
   and the search radius, variogram range and all sample-sample and sample-cell distances are
   haversine meters (`sphereRadius`, else 6371008.8 m; kilometers with `units: 'kilometers'`).
   Neighbors are ordered by `(haversine term, row)`; exact hits and duplicate coalescing compare
-  degree positions exactly; leave-one-out uses the same metric. The query box is conservative and
-  does not wrap the antimeridian, and the ring scan's early stop is disabled (the whole box is
-  scanned, so an unbounded radius is `O(samples)` per cell).
+  degree positions exactly; leave-one-out uses the same metric. The conservative search defaults to `longitudeSearch: 'clipped'`, clipping at the antimeridian. Set `longitudeSearch: 'wrapped'` with `indexBounds: [-180, -90, 180, 90]` for both seam sides and polar caps, including covered domain/radius boundaries. Wrapped mode requires index-bound longitudes within `[-180,180]`; narrower latitude bounds still exclude observations outside them. The whole query box is scanned without the planar early stop, so unbounded radius is `O(samples)` per cell.
   Pass optional `spatialContext` to `getGPUKrigingParameterValues(settings, grid)` to warn on short `searchRadius` and `range` values; see [Precision of longitude/latitude positions](./concepts.md#precision-of-longitudelatitude-positions).
   Other longitude/latitude metrics throw. It measures distance, so `local-lambert-equal-area` frames throw.
 - Status: `invalidCount` counts cells that are NaN for lack of data or invalid settings (fewer than
@@ -572,6 +702,8 @@ graph.add(
 
 #### `GPUKriging` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUKriging`.
+
 - Packer: `getGPUKrigingParameterValues(settings, grid)`, writes `GPU_KRIGING_PARAMETER_LENGTH` (12) `float32` values.
   - `grid` (`GPURasterMetadata`): The output grid: axis-aligned; its width and height must match the contributor's.
 
@@ -583,7 +715,7 @@ Settings of `getGPUKrigingParameterValues`:
 | `searchRadius` | `number` | Search radius in position units. `Infinity` searches the whole index domain. |
 | `neighborCount` (optional) | `number` | Neighborhood size `k`. Clamped to the contributor's compile-time `maximumNeighborCount`. Defaults to that capacity. |
 | `minimumNeighborCount` (optional) | `number` | Cells with fewer contributing samples (and no exact hit) are nodata. Defaults to 3. |
-| `variogram` | `{ /** Model family. */ model: VariogramModelType; /** Nugget, at least 0. */ nugget: number; /** Partial sill, at least 0. */ sill: number; /** Effective range, positive. */ range: number; }` | Fitted variogram, for example the result of `fitVariogramModel`: `gamma(h) = nugget + sill * shape(h / range)` for `h > 0`, with the same effective-range convention. The nugget plus the partial sill must be positive. |
+| `variogram` | `{ model: VariogramModelType; nugget: number; sill: number; range: number; }` | Fitted variogram, for example the result of `fitVariogramModel`: `gamma(h) = nugget + sill * shape(h / range)` for `h > 0`, with the same effective-range convention. The nugget plus the partial sill must be positive. |
 
 {/* /parameters */}
 
@@ -592,9 +724,20 @@ Settings of `getGPUKrigingParameterValues`:
 
 Predicts values and latent variance at query points or quadrature supports by solving a local covariance system per query.
 
-Local kriging in simple, ordinary, universal, external-drift, block and co-kriging forms, with spherical, exponential, Gaussian or Matérn (smoothness 1/2, 3/2, 5/2) covariances. Unlike `GPUKriging`, which fills a raster from an indexed grid, it takes explicit query rows and scans the samples or a supplied neighborhood. Full reference: [Bounded GPU interpolation and simulation](./interpolation-expansion.md).
+Local kriging in simple, ordinary, universal, external-drift, block and co-kriging forms, with spherical, exponential, Gaussian or Matérn (smoothness 1/2, 3/2, 5/2) covariances. Unlike `GPUKriging`, which fills a raster from an indexed grid, it takes explicit query rows and scans the samples or a supplied neighborhood. Full reference: [Interpolation and simulation](./interpolation-expansion.md).
 
-- Covariance parameters are either compile-time (`covariance`, `coregionalization`, `coregionalizationModels`) or per-frame: supply `parameters` from `getGPULocalKrigingParameterValues` to change nugget, sill, range and model between frames without a recompile. Set `covarianceStructureCount` for per-frame co-kriging. The parameter view counts one more storage binding.
+- `observations.w` includes a sample only when it is greater than zero; zero, negative and NaN
+  validity values skip the sample.
+- With convenience `covariance`, `coregionalization` or `coregionalizationModels` props, call `kriging.setCovariance(settings)` between submitted frames to change values without recompiling; preserve `covarianceStructureCount` and `variableCount`. With caller-owned `parameters`, write its owning `GPUParameterBuffer` using `getGPULocalKrigingParameterValues(settings)` instead. The parameter view consumes one storage binding. Submit preceding encodings before updating either route.
+
+Conditional Gaussian simulations capture covariance at construction. By default, preparation is rebuilt every encoding. With `reusePreparation: true`, write changed geometry/input buffers and call `simulation.invalidatePreparation()` before the next encoding; retained preparation otherwise replays. Both routes require a new simulation and graph for new covariance. See [Interpolation and simulation](./interpolation-expansion.md) for prediction and conditional realization examples.
+
+- Without a supplied neighborhood, `sampleIndex: 'brute-force'` scans every sample for every query.
+  Construction checks the total sample count times the total query count against
+  `GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK` (2³², inclusive), before query chunking.
+  The default `'auto'` scans when there are at most 4,096 samples and the work fits that limit.
+  Otherwise it selects the grid if it fits the device’s binding limits, with a scan fallback
+  subject to the same work cap. Use `'grid'` to require indexing.
 - Matérn `range` is the effective range (correlation `exp(-3)` at `range`, like the exponential and Gaussian models); a Matérn 1/2 model equals the exponential model. Pinned to GSTools 1.7.0 correlation values and simple and ordinary kriging, predictions and variances, with `len_scale = sqrt(nu) * range / factor`.
 - A system whose pivot ratio is below `KRIGING_PIVOT_RATIO_TOLERANCE` (1e-4) reports status 2 and writes its pivot ratio to `values.z`. No nugget floor is applied; see [Conditioning of smooth covariances](./interpolation-expansion.md#conditioning-of-smooth-covariances).
 
@@ -602,15 +745,27 @@ Local kriging in simple, ordinary, universal, external-drift, block and co-krigi
 
 #### `GPULocalKriging` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULocalKriging`.
+
+- Packer: `getGPULocalKrigingParameterValues(settings)`, writes `GPU_LOCAL_KRIGING_PARAMETER_LENGTH` (8) `float32` values.
 - Packer: `getGPULocalKrigingParameterValues(settings)`, writes `GPU_LOCAL_KRIGING_PARAMETER_LENGTH` (8) `float32` values.
 
-Settings of `getGPULocalKrigingParameterValues`:
+Settings of `getGPULocalKrigingParameterValues(settings)` for `LocalKrigingSettingsOptions & { covariance: GPUPredictionCovariance; }`:
+
+| Field | Type | Description |
+|---|---|---|
+| `covariance` | `GPUPredictionCovariance` | Covariance of the univariate modes and of the two-by-two `coregionalization` shortcut. |
+| `coregionalization` (optional) | `readonly [number, number, number, number]` | Two-by-two row-major loading matrix `L`, with `B = L L^T`, as in the contributor props. |
+| `coregionalizationModels` (optional) | `readonly { covariance: GPUPredictionCovariance; loadings: readonly number[]; }[]` | One to four covariance structures with row-major square loading factors. |
+| `variableCount` (optional) | `number` | Co-kriging variables, 2..4. Defaults to 2 when loadings are supplied. |
+
+Settings of `getGPULocalKrigingParameterValues(settings)` for `LocalKrigingSettingsOptions & { coregionalizationModels: readonly { covariance: GPUPredictionCovariance; loadings: readonly number[]; }[]; }`:
 
 | Field | Type | Description |
 |---|---|---|
 | `covariance` (optional) | `GPUPredictionCovariance` | Covariance of the univariate modes and of the two-by-two `coregionalization` shortcut. |
 | `coregionalization` (optional) | `readonly [number, number, number, number]` | Two-by-two row-major loading matrix `L`, with `B = L L^T`, as in the contributor props. |
-| `coregionalizationModels` (optional) | `readonly { covariance: GPUPredictionCovariance; loadings: readonly number[]; }[]` | One to four covariance structures with row-major square loading factors. |
+| `coregionalizationModels` | `readonly { covariance: GPUPredictionCovariance; loadings: readonly number[]; }[]` | One to four covariance structures with row-major square loading factors. |
 | `variableCount` (optional) | `number` | Co-kriging variables, 2..4. Defaults to 2 when loadings are supplied. |
 
 {/* /parameters */}
@@ -621,15 +776,19 @@ Predicts values and latent variance at space-time query points by solving a loca
 
 Local simple or ordinary space-time kriging over the separable, product-sum, metric, sum-metric and Gneiting covariance families (gstat 2.1-6 definitions, and Gneiting 2002), with metric, octant or staged neighbor search. Full reference: [Space-time kriging](./interpolation-expansion.md#space-time-kriging).
 
+- `observations.w` includes a sample only when it is greater than zero; zero, negative and NaN
+  validity values skip the sample.
 - Every covariance parameter and the search radius, time window and anisotropy change per frame through `parameters` without a recompile.
 - Pass `temporalContext`, and `queryTemporalContext` for the query times; both must be `float32-relative`, with the same unit and epoch.
 - A system below `KRIGING_PIVOT_RATIO_TOLERANCE` (1e-4) reports status 2 and writes its pivot ratio to `values.z`.
-- Reference tier: every query scans every sample in one invocation, so `positions` is limited to 1,048,576 rows.
+- `sampleIndex` (construction-time, default `'auto'`): auto scans every sample through 4,096 samples, then uses the per-frame metric grid. Forced `'brute-force'` scans at most 1,048,576 samples; `'grid'` always indexes, with a structural sample-row ceiling of `GPU_SPACE_TIME_KRIGING_INDEX_MAXIMUM_SAMPLE_COUNT` (1,073,741,808). The usable indexed row count is constrained separately by the device and by every shared packed sample binding. For a 128 MiB storage binding, `observations` as `float32x4` (16 bytes per observation) holds at most 8,388,608 observations at byte offset zero, or 8,388,607 at byte offset 16. Query/output chunking does not split this shared observation binding. Other sample bindings, dispatch limits and scratch must also fit. Coincident samples, wide ties or restrictive filters can make an indexed query visit the whole index.
 - Verified against independent binary64 solves for every family, mode and search; GSTools 1.7.0 for the metric family. **gstat fixtures pending** (R not available).
 
 {/* parameters: GPUSpaceTimeKriging generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUSpaceTimeKriging` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUSpaceTimeKriging`.
 
 - Packer: `getGPUSpaceTimeKrigingParameterValues(settings)`, writes `GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH` (28) `float32` values.
 
@@ -670,6 +829,15 @@ only adds or removes dots; existing dots never move, so there is no flicker.
 `GPURandomPointsInPolygon` places an integer count of uniform random points per feature. Its internal triangulation limits the polygon layout to `getGPUPolygonTriangulationMaximumNodeCount(device)` scratch nodes (see `GPUPolygonTriangulation`).
 
 ```ts
+import {GPUDotDensity, getGPUDotDensityParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+declare const inputs: ConstructorParameters<typeof GPUDotDensity>[0];
+const {positions, featureOffsets, polygonOffsets, ringOffsets, values} = inputs;
+const {positions: dotPositions, categories} = inputs.output;
+const {ids, status: {count, overflow, requiredCount}} = inputs.output.dots;
+const {failedCount} = inputs.output.status ?? {};
+declare const peoplePerDot: number, x0: number, y0: number, cw: number, ch: number;
+
 const parameters = new GPUParameterBuffer(device, {id: 'dots', format: 'uint32', length: 8});
 graph.add(
   new GPUDotDensity({
@@ -677,17 +845,23 @@ graph.add(
     values, // float32, featureCount * categoryCount rows, feature-major
     categoryCount: 3,
     parameters: parameters.importToGraph(graph),
-    mask: {weights, width: 512, height: 512}, // optional, weights in [0, 1]
-    output: {positions, dots: {ids, status: {count, overflow, requiredCount}}, categories, status: {failedCount}}
+    ...(inputs.mask ? {mask: inputs.mask} : {}), // optional, weights in [0, 1]
+    output: {positions: dotPositions, dots: {ids, status: {count, overflow, requiredCount}}, categories, status: {failedCount}}
   })
 );
 parameters.write(
-  getGPUDotDensityParameterValues({seed: 1, dotsPerUnit: 1 / peoplePerDot, maskExtent: [x0, y0, cw, ch]})
+  getGPUDotDensityParameterValues({seed: 1, dotsPerUnit: 1 / peoplePerDot,
+    maskPlacement: {origin: [x0, y0], cellSize: [cw, ch]}})
 );
 ```
 
-- A slot (feature, category) draws `ceil(value * dotsPerUnit - u)` dots with a per-slot Philox
-  uniform `u`: `floor(x)` dots plus one more with probability `frac(x)`, monotone in `dotsPerUnit`.
+- A slot (feature, category) draws the integer part of float32 `x = value * dotsPerUnit`, plus
+  one if its seeded Philox uniform `u` is below `frac(x)`, monotone in `dotsPerUnit`.
+  Every exactly representable integer request remains exact before per-slot clamping and
+  empty-feature rejection; subtracting the random draw from a large integer is not used.
+  The fractional round-up probability is quantized by the 24-bit uniform draw, within one
+  `2^-24` quantum of the requested fraction (for example `2^-25` rounds up with probability
+  `2^-24`). This does not weaken the exact representable-integer guarantee.
 - Dot `j` of a slot is placed exactly, keyed by Philox `(seed, slot, j, attempt)` and independent of the
   dot value and of other slots, so coarser dot values give a stable prefix of the finer dots. Every
   polygon is triangulated on the GPU (`GPUPolygonTriangulation`; the first ring of a polygon is the
@@ -699,12 +873,23 @@ parameters.write(
 - Dots are ordered by feature, category and rank (offsets from a prefix scan). `dots.ids` holds the
   feature row of each dot and `dots.status.count` is safe as an instance count; rows past it are NaN /
   `0xffffffff`.
+- Both polygon samplers expose optional `slotStarts` and `slotCounts`, one uint32 row per
+  (feature, category) slot for dot density, or per feature for random polygon points.
+  `slotStarts` contains pre-clamp starts without a terminal. Read a slot's stored dot
+  interval as `[min(start, writtenCount), min(start + slotCounts[slot], writtenCount))`, where
+  `writtenCount = dots.status.count`. Multiply both ends by two for a flat XY array.
+  Requests `[2, 2]` with capacity three therefore delimit `[0, 2)` and `[2, 3)`.
+- `maskPlacement` names `{origin: [x, y], cellSize: [dx, dy]}` in polygon position units.
+  Signed steps are preserved, including negative Y; defaults are origin `[0,0]` and steps `[1,1]`.
 - Compact `status.overflow` reports final output capacity only. Optional `candidateOverflow`
   reports a per-slot/per-line count clamped before sampling; `requiredCount` counts retained
   requests and is then a lower bound. The uint32 prefix bound limits each slot to
   `min(capacity + 1, floor(0xffffffff / slotCount), 2^31)` requests. With 65,536 slots and capacity
   65,536, a slot requesting 65,536 retains 65,535 and sets candidateOverflow, while final overflow
   stays zero. Growing the output alone cannot remove the prefix bound.
+  For one line requesting three points at capacity 1, the retained request count is 2:
+  `[count, requiredCount, overflow, candidateOverflow] = [1, 2, 1, 1]`. Requesting
+  two instead gives `[1, 2, 1, 0]`: final overflow can occur without candidate loss.
   When that per-slot limit is at or below final capacity, construction requires
   `dots.status.candidateOverflow` (or `points.status.candidateOverflow` for line sampling),
   because clamping could otherwise leave a short result with no visible loss flag.
@@ -770,6 +955,8 @@ fractions to 2e-5 relative. Not provided: `cluster_poisson` sampling.
 
 #### `GPUDotDensity` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUDotDensity`.
+
 - Packer: `getGPUDotDensityParameterValues(settings)`, writes `GPU_DOT_DENSITY_PARAMETER_LENGTH` (8) `uint32` values.
 
 Settings of `getGPUDotDensityParameterValues`:
@@ -778,13 +965,15 @@ Settings of `getGPUDotDensityParameterValues`:
 |---|---|---|
 | `seed` | `number` | Random seed. Every dot position is a pure function of the seed and its (slot, rank). |
 | `dotsPerUnit` (optional) | `number` | Dots per unit of value (the reciprocal of "people per dot"), usually zoom dependent. Ignored by GPURandomPointsInPolygon . Zero or a non-finite value draws no dots. Defaults to 1. |
-| `maskExtent` (optional) | `readonly [number, number, number, number]` | Placement `[originX, originY, cellWidth, cellHeight]` of the optional dasymetric mask raster (row 0 has the smallest y). Defaults to `[0, 0, 1, 1]`; ignored without a mask. |
+| `maskPlacement` (optional) | `{ origin: readonly [number, number]; cellSize: readonly [number, number]; }` | Mask origin and signed cell steps in polygon position units. Defaults to origin [0,0], cellSize [1,1]. |
 
 {/* /parameters */}
 
 {/* parameters: GPURandomPointsOnLine generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPURandomPointsOnLine` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPURandomPointsOnLine`.
 
 - Packer: `getGPUDotDensityParameterValues(settings)`, writes `GPU_DOT_DENSITY_PARAMETER_LENGTH` (8) `uint32` values.
   - Input port: `parameters`.

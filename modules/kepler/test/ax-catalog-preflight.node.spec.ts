@@ -505,7 +505,9 @@ test('invalid edits remain editable and block Run; restored parameters count as 
   const invalid = createAnalysisCatalogFormModel(binding, profiles, {overrides: {cellSize: '-'}});
   expect(invalid.parameters['cellSize']).toBe('-');
   expect(invalid.runDisabled).toBe(true);
-  expect(invalid.problems.join(' ')).toContain('Cell size');
+  expect(invalid.problems.join(' ')).toContain(
+    'idw-grid: cellSize must be a finite number; received -'
+  );
   const initial = createAnalysisCatalogFormModel(binding, profiles);
   const restored = createAnalysisCatalogFormModel(binding, profiles, {
     overrides: initial.resolved.parameters

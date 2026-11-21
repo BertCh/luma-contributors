@@ -19,10 +19,12 @@ import {
   GPU_MAX_P_DEFAULT_MAXIMUM_ROUNDS,
   GPU_MAX_P_REGIONS_PARAMETER_LENGTH,
   getGPUMaxPRoundCounts,
-  GPU_MAX_P_STATUS
+  GPU_MAX_P_STATUS_LAYOUT,
+  GPU_MAX_P_EVIDENCE
 } from './gpu-max-p-regions';
 import {
   GPUMaxPRegionsOperation,
+  snapshotMaxPRegionsOperationProps,
   type MaxPRegionsOperationProps
 } from './gpu-max-p-regions-operation';
 import {computeAZPRegionsTableOnCPU} from './cpu-azp-regions-operation';
@@ -31,6 +33,7 @@ import {
   getCPURegionAdjacency,
   getCPURegionObjective,
   getCPURegionTable,
+  hasCPURegionInputLoss,
   validateCPURegionInput,
   type CPURegionInput
 } from './cpu-region-inputs';
@@ -44,12 +47,13 @@ export type CPUMaxPRegionsInput = CPURegionInput & {
 export type CPUMaxPRegionsOptions = Pick<
   MaxPRegionsOperationProps,
   'columnCount' | 'standardize' | 'startCount' | 'maximumGrowthSteps' | 'maximumIterations'
-> & {information?: GPUSpatialWeightsInformation};
-/** Exact graph port layouts, indexed by GPU_MAX_P_STATUS. */
+> & {id?: string; information?: GPUSpatialWeightsInformation};
+/** Exact graph port layouts, indexed by GPU_MAX_P_STATUS_LAYOUT. */
 export type CPUMaxPRegionsResult = {
   labels: Uint32Array;
   objective: Float32Array;
   status: Uint32Array;
+  evidence?: Uint32Array;
 };
 
 const NONE = 0xffffffff;
@@ -63,6 +67,7 @@ type StartResult = {
   regionCount: number;
   infeasibleRegionCount: number;
   squares: number;
+  constructionLimitReached: boolean;
 };
 
 function validateOptions(id: string, options: CPUMaxPRegionsOptions): void {
@@ -202,6 +207,7 @@ function constructStart(
     }
   }
   // Enclave distances deliberately use the frozen growth-phase means, as in the GPU.
+  const grownScore = squares.reduce((sum, value) => sum + value, 0);
   for (let enclaveRound = 0; enclaveRound < enclaveRounds; enclaveRound++) {
     const proposals = new Map<number, number>();
     for (let row = 0; row < rowCount; row++) {
@@ -225,17 +231,50 @@ function constructStart(
     if (proposals.size === 0) break;
     for (const [row, region] of proposals) labels[row] = region;
   }
+  const enclaveLimitReached = adjacency.some(
+    (neighbors, row) =>
+      (labels[row] === NONE || phases[labels[row]] !== COMPLETE) &&
+      neighbors.some(neighbor => labels[neighbor] !== NONE && phases[labels[neighbor]] === COMPLETE)
+  );
+  // Enclave propagation can remove an articulation. Split actual disconnected components only;
+  // a connected remainder retains its old region ID, even if its seed was absorbed.
+  const remainingLabels = labels.slice();
+  const visited = new Uint8Array(rowCount);
+  const components = new Map<number, number[][]>();
+  for (let row = 0; row < rowCount; row++) {
+    const original = remainingLabels[row];
+    if (visited[row] || original === NONE || phases[original] === COMPLETE) continue;
+    const members = [row];
+    visited[row] = 1;
+    for (let cursor = 0; cursor < members.length; cursor++)
+      for (const neighbor of adjacency[members[cursor]])
+        if (!visited[neighbor] && remainingLabels[neighbor] === original) {
+          visited[neighbor] = 1;
+          members.push(neighbor);
+        }
+    components.set(original, [...(components.get(original) ?? []), members]);
+  }
+  for (const [original, parts] of components) {
+    const preferred = parts.find(members => members.includes(original)) ?? parts[0];
+    for (const members of parts) {
+      const label = members === preferred ? original : members[0]; // BFS starts at the minimum row.
+      for (const row of members) labels[row] = label;
+      phases[label] = FAILED;
+    }
+  }
   for (let row = 0; row < rowCount; row++)
     if (labels[row] === NONE) {
       labels[row] = row;
-      phases[row] = FAILED;
+      // A short seed-wave budget can leave an individually feasible row untouched.
+      phases[row] = input.extensiveValues[row] >= threshold ? COMPLETE : FAILED;
     }
   const used = [...new Set(labels)].sort((first, second) => first - second);
   return {
     labels,
     regionCount: used.length,
     infeasibleRegionCount: used.filter(region => phases[region] !== COMPLETE).length,
-    squares: used.reduce((sum, region) => sum + squares[region], 0)
+    constructionLimitReached: growing > 0 || unassigned > 0 || enclaveLimitReached,
+    squares: grownScore
   };
 }
 
@@ -263,40 +302,78 @@ function constructStart(
  *   Nonfinite features, negative/nonfinite extensive values or threshold, and bad neighbor IDs
  *   follow the GPU invalid status path (singleton labels, zero objective and regionCount).
  *
+ * Nonzero input.status overflow or candidateOverflow suppresses both forms: missing labels
+ * (0xffffffff), NaN objective and zero status words.
+ * Unfinished enclave remainders retain each connected component together. All pre-enclave
+ * growth scores contribute once, even for fully absorbed regions. Final feasibility is
+ * recomputed after refinement from the returned memberships.
+ *
  * @throws Error naming inconsistent arrays, including malformed CSR offsets.
  */
 export function computeMaxPRegionsOnCPU(
   input: CPUMaxPRegionsInput,
   options: CPUMaxPRegionsOptions = {}
-): CPUMaxPRegionsResult {
-  validateOptions('computeMaxPRegionsOnCPU', options);
+): CPUMaxPRegionsResult & {evidence: Uint32Array} {
+  const id = options.id ?? 'computeMaxPRegionsOnCPU';
+  validateOptions(id, options);
   const columnCount = options.columnCount ?? 1;
-  const rowCount = validateCPURegionInput(input, columnCount, GPU_MAX_P_REGIONS_PARAMETER_LENGTH);
+  const rowCount = validateCPURegionInput(
+    input,
+    columnCount,
+    GPU_MAX_P_REGIONS_PARAMETER_LENGTH,
+    id
+  );
   validateRequirement(
-    'computeMaxPRegionsOnCPU',
+    id,
     (options.maximumIterations ?? 0) === 0 || rowCount >= 2,
-    'maximumIterations needs at least 2 rows'
+    'maximumIterations needs at least 2 rows',
+    {code: 'INTEGER_RANGE', path: 'rowCount', received: rowCount, expected: {minimum: 2}}
   );
-  validateSpatialWeightsOperationInformation(
-    'computeMaxPRegionsOnCPU',
-    'weights',
-    options.information,
-    rowCount
-  );
+  validateSpatialWeightsOperationInformation(id, 'weights', options.information, rowCount);
   if (input.extensiveValues.length !== rowCount)
-    throw new Error('extensiveValues length must equal rowCount');
-  if (input.threshold.length < 1) throw new Error('threshold must hold one value');
-  const status = new Uint32Array(GPU_MAX_P_STATUS.length);
+    validateRequirement(
+      id,
+      false,
+      `extensiveValues length must equal rowCount; received input.extensiveValues.length=${input.extensiveValues.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'extensiveValues.length',
+        received: input.extensiveValues.length,
+        expected: 'extensiveValues length must equal rowCount'
+      }
+    );
+  if (input.threshold.length < 1)
+    validateRequirement(
+      id,
+      false,
+      `threshold must hold one value; received input.threshold.length=${input.threshold.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'threshold.length',
+        received: input.threshold.length,
+        expected: 'threshold must hold one value'
+      }
+    );
+  const status = new Uint32Array(GPU_MAX_P_STATUS_LAYOUT.length);
+  const evidence = new Uint32Array(GPU_MAX_P_EVIDENCE.length);
+  if (hasCPURegionInputLoss(input, id))
+    return {
+      labels: new Uint32Array(rowCount).fill(NONE),
+      objective: Float32Array.of(NaN),
+      status,
+      evidence
+    };
   let invalidCount = countCPURegionInvalid(input);
   for (const value of [...input.extensiveValues, input.threshold[0]])
     if (!Number.isFinite(value) || value < 0) invalidCount++;
   if (invalidCount > 0) {
-    status[GPU_MAX_P_STATUS.invalidCount] = invalidCount;
-    status[GPU_MAX_P_STATUS.infeasibleRegionCount] = rowCount;
+    status[GPU_MAX_P_STATUS_LAYOUT.invalidCount] = invalidCount;
+    status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount] = rowCount;
     return {
       labels: Uint32Array.from({length: rowCount}, (_, row) => row),
       objective: new Float32Array(1),
-      status
+      status,
+      evidence
     };
   }
   const adjacency = getCPURegionAdjacency(input, options.information);
@@ -313,10 +390,12 @@ export function computeMaxPRegionsOnCPU(
           (candidate.regionCount === selected.regionCount && candidate.squares < selected.squares)))
     ) {
       selected = candidate;
-      status[GPU_MAX_P_STATUS.selectedStart] = start;
+      status[GPU_MAX_P_STATUS_LAYOUT.selectedStart] = start;
     }
   }
   const construction = selected!;
+  evidence[0] = Number(construction.constructionLimitReached);
+  evidence[1] = Number(!construction.constructionLimitReached);
   const ranks = new Map(
     [...new Set(construction.labels)]
       .sort((first, second) => first - second)
@@ -337,29 +416,46 @@ export function computeMaxPRegionsOnCPU(
       0,
       options.maximumIterations
     );
+    evidence[2] = 1;
+    evidence[3] = Number(improvement.invalidCount === 0 && improvement.converged);
+    evidence[4] = Number(improvement.invalidCount === 0 && !improvement.converged);
     labels = improvement.labels;
     invalidCount = improvement.invalidCount;
-    status[GPU_MAX_P_STATUS.improvementIterationCount] = improvement.iterationCount;
+    status[GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount] = improvement.iterationCount;
   }
-  status[GPU_MAX_P_STATUS.regionCount] = invalidCount > 0 ? 0 : construction.regionCount;
-  status[GPU_MAX_P_STATUS.feasible] = Number(
-    invalidCount === 0 && construction.infeasibleRegionCount === 0
+  status[GPU_MAX_P_STATUS_LAYOUT.regionCount] = invalidCount > 0 ? 0 : construction.regionCount;
+  let infeasibleRegionCount = construction.infeasibleRegionCount;
+  if ((options.maximumIterations ?? 0) > 0 && invalidCount === 0) {
+    const finalMasses = new Map<number, number>();
+    for (let row = 0; row < rowCount; row++)
+      finalMasses.set(
+        labels[row],
+        (finalMasses.get(labels[row]) ?? 0) + input.extensiveValues[row]
+      );
+    infeasibleRegionCount = [...finalMasses.values()].filter(
+      mass => mass < input.threshold[0]
+    ).length;
+  }
+  status[GPU_MAX_P_STATUS_LAYOUT.feasible] = Number(
+    invalidCount === 0 && infeasibleRegionCount === 0
   );
-  status[GPU_MAX_P_STATUS.infeasibleRegionCount] = construction.infeasibleRegionCount;
-  status[GPU_MAX_P_STATUS.invalidCount] = invalidCount;
+  status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount] = infeasibleRegionCount;
+  status[GPU_MAX_P_STATUS_LAYOUT.invalidCount] = invalidCount;
+  if (invalidCount > 0) evidence.fill(0);
   return {
     labels,
     objective: Float32Array.of(
       invalidCount > 0 ? 0 : getCPURegionObjective(table, labels, columnCount)
     ),
-    status
+    status,
+    evidence
   };
 }
 
 /** CPU twin with budgeted construction and optional budgeted two-hop AZP. */
 export class CPUMaxPRegionsOperation extends GPUCPUOperation {
   constructor(props: MaxPRegionsOperationProps) {
-    props = Object.freeze({...props});
+    props = snapshotMaxPRegionsOperationProps(props);
     const id = props.id ?? 'max-p-regions';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);
@@ -387,7 +483,17 @@ export class CPUMaxPRegionsOperation extends GPUCPUOperation {
       execute({inputs}) {
         const offsets = getCPUOperationUint32Rows(id, inputs, 'offsets');
         if (offsets.length !== props.rowCount + 1)
-          throw new Error(`${id} offsets length must equal rowCount + 1`);
+          validateRequirement(
+            id,
+            false,
+            `offsets length must equal rowCount + 1; received offsets.length=${offsets.length}`,
+            {
+              code: 'VIEW_LENGTH',
+              path: 'offsets.length',
+              received: offsets.length,
+              expected: 'offsets length must equal rowCount + 1'
+            }
+          );
         const result = computeMaxPRegionsOnCPU(
           {
             offsets,
@@ -400,14 +506,25 @@ export class CPUMaxPRegionsOperation extends GPUCPUOperation {
             values: getCPUOperationFloat32Rows(id, inputs, 'values'),
             extensiveValues: getCPUOperationFloat32Rows(id, inputs, 'extensiveValues'),
             threshold: getCPUOperationFloat32Rows(id, inputs, 'threshold'),
-            parameters: getCPUOperationUint32Rows(id, inputs, 'parameters')
+            parameters: getCPUOperationUint32Rows(id, inputs, 'parameters'),
+            status: {
+              overflow:
+                props.weights.status?.overflow === undefined
+                  ? undefined
+                  : getCPUOperationUint32Rows(id, inputs, 'weightsOverflow'),
+              candidateOverflow:
+                props.weights.status?.candidateOverflow === undefined
+                  ? undefined
+                  : getCPUOperationUint32Rows(id, inputs, 'weightsCandidateOverflow')
+            }
           },
-          {...props, information: props.weights.information}
+          {...props, id, information: props.weights.information}
         );
         return {
           [props.output.labels]: result.labels,
           [props.output.objective]: result.objective,
-          [props.output.status]: result.status
+          [props.output.status]: result.status,
+          ...(props.output.evidence === undefined ? {} : {[props.output.evidence]: result.evidence})
         };
       }
     });

@@ -389,7 +389,7 @@ export async function runCuratedRegressionOnGpu(device: Device, inputs: Inputs, 
         },
         parameters,
         settings: {significanceLevel: SIGNIFICANCE_LEVEL},
-        outputs: {
+        output: {
           ols: {
             coefficients: coefficients.view,
             fitted: fitted.view,

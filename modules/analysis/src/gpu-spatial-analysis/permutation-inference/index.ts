@@ -29,8 +29,20 @@ export type {
 export {
   getGPUPermutationMetadata,
   getGPUPermutationParameterValues,
-  GPU_PERMUTATION_PARAMETER_LENGTH
+  GPU_PERMUTATION_PARAMETER_LENGTH,
+  MAXIMUM_PERMUTATION_COUNT,
+  getPermutationSeedKey
 } from './permutation-parameters';
 export type {GPUPermutationSettings} from './permutation-parameters';
 export {createLocalPermutationReplay} from './gpu-local-permutation-replay';
 export type {LocalPermutationReplayProps} from './gpu-local-permutation-replay';
+export {
+  decodeGPUGlobalPermutationTestInferenceMetadata,
+  decodeGPULocalPermutationTestInferenceMetadata
+} from './permutation-inference-metadata';
+export type {GPUPermutationInferenceMetadata} from './permutation-inference-metadata';
+export type {GPUPermutationCauseStatus} from './permutation-cause-status';
+export {
+  GLOBAL_PERMUTATION_PAIR_BLOCK_ROWS,
+  MAXIMUM_GLOBAL_PERMUTATION_PAIR_BLOCK_COUNT
+} from './permutation-limits';

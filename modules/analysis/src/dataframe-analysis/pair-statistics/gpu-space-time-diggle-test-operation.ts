@@ -12,6 +12,14 @@ import {
   GPU_SPACE_TIME_DIGGLE_SUMMARY_LENGTH
 } from './gpu-space-time-diggle-test';
 import type {GPUSpaceTimeKEdgeCorrection} from './space-time-k-function-nodes';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Shared graph-value props. Parameters keep the space-time K and Diggle seed packer layouts. */
 export type SpaceTimeDiggleTestOperationProps = {
@@ -42,9 +50,76 @@ export type SpaceTimeDiggleTestOperationProps = {
   };
 };
 
+/** Captures declared descriptors, including nested frame and calendar-axis metadata. */
+export function snapshotSpaceTimeDiggleOperationProps(
+  input: SpaceTimeDiggleTestOperationProps
+): SpaceTimeDiggleTestOperationProps {
+  const props = snapshotConstructionFields(input, [
+    'id',
+    'spatialContext',
+    'temporalContext',
+    'positions',
+    'times',
+    'rowCount',
+    'mask',
+    'parameters',
+    'randomParameters',
+    'gridSize',
+    'distanceClassCount',
+    'timeClassCount',
+    'edgeCorrection',
+    'permutationCount',
+    'output'
+  ]);
+  const temporal =
+    props.temporalContext &&
+    snapshotConstructionFields(props.temporalContext, [
+      'unit',
+      'epoch',
+      'encoding',
+      'timeZone',
+      'axis'
+    ]);
+  let axis = temporal?.axis;
+  if (axis?.kind === 'regular') {
+    const captured = snapshotConstructionFields(axis, ['kind', 'step']);
+    axis = {
+      ...captured,
+      step:
+        typeof captured.step === 'object' && captured.step !== null
+          ? snapshotConstructionFields(captured.step, ['calendarUnit', 'interval'])
+          : captured.step
+    };
+  } else if (axis) {
+    axis = snapshotConstructionFields(axis, ['kind']);
+  }
+  return {
+    ...props,
+    gridSize: [...props.gridSize] as [number, number],
+    ...(props.spatialContext
+      ? {spatialContext: snapshotConstructionSpatialContext(props.spatialContext)}
+      : {}),
+    ...(temporal ? {temporalContext: {...temporal, axis: axis!}} : {}),
+    output: snapshotConstructionFields(props.output, [
+      'd',
+      'statistics',
+      'summary',
+      'permutationMean',
+      'permutationStandardDeviation',
+      'k',
+      'spatialK',
+      'temporalK',
+      'status'
+    ])
+  };
+}
+
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUSpaceTimeDiggleTestOperation extends GPUContributorOperation {
-  constructor(props: SpaceTimeDiggleTestOperationProps) {
+  constructor(inputProps: SpaceTimeDiggleTestOperationProps) {
+    const props = snapshotSpaceTimeDiggleOperationProps(inputProps);
+    const id = props.id ?? 'space-time-diggle-test';
+    validateCapacity(id, 'rowCount', props.rowCount);
     const outputs: Record<string, GPUContributorOperationOutput> = {};
     for (const [port, value] of Object.entries(props.output))
       if (value !== undefined)
@@ -74,10 +149,16 @@ export class GPUSpaceTimeDiggleTestOperation extends GPUContributorOperation {
         ...(props.mask === undefined ? {} : {mask: props.mask})
       },
       outputs,
-      createContributor: getView =>
-        new GPUSpaceTimeDiggleTest({
+      createContributor: getView => {
+        const positions = getView<'float32x2'>('positions');
+        validateRequirement(
+          id,
+          positions.length === props.rowCount,
+          'positions length must match rowCount'
+        );
+        return new GPUSpaceTimeDiggleTest({
           ...props,
-          positions: getView<'float32x2'>('positions'),
+          positions,
           times: getView<'float32'>('times'),
           parameters: getView<'float32'>('parameters'),
           randomParameters: getView<'uint32'>('randomParameters'),
@@ -101,7 +182,8 @@ export class GPUSpaceTimeDiggleTestOperation extends GPUContributorOperation {
               props.output.temporalK === undefined ? undefined : getView<'float32'>('temporalK'),
             status: props.output.status === undefined ? undefined : getView<'uint32'>('status')
           }
-        })
+        });
+      }
     });
   }
 }

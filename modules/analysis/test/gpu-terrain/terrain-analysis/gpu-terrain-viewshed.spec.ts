@@ -37,7 +37,7 @@ import {
   computeTerrainViewshedWithTolerance,
   createFractalTerrain
 } from './terrain-analysis-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 
 const WIDTH = 9;
@@ -150,10 +150,11 @@ it('GPUTerrainViewshed hides cells behind a wall and follows a per-frame observe
   fixture.destroy();
 });
 
-it('GPUTerrainViewshed skips invalid cells and applies curvature', async () => {
+it('GPUTerrainViewshed skips invalid cells and applies curvature', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || isSoftwareDevice(device)) {
-    return;
+  requireTestDevice(device);
+  if (isSoftwareDevice(device)) {
+    context.skip('the invalid-cell and curvature viewshed case requires a hardware-backed device');
   }
   const mask = new Uint32Array(PIXEL_COUNT).fill(1);
   mask[3 * WIDTH + 5] = 0;
@@ -196,10 +197,11 @@ it('GPUTerrainViewshed skips invalid cells and applies curvature', async () => {
   curved.destroy();
 });
 
-it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility texture', async () => {
+it('GPUTerrainViewshed calibrates uint32 elevation and writes a visibility texture', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || !device.getTextureFormatCapabilities('r32uint').store) {
-    return;
+  requireTestDevice(device);
+  if (!device.getTextureFormatCapabilities('r32uint').store) {
+    context.skip('r32uint storage textures are unsupported on this device');
   }
   const elevationBuffer = createInputBuffer(
     device,
@@ -498,10 +500,11 @@ it('GPUTerrainViewshed tolerance bands classify marginal cells and ignore the la
   }
 });
 
-it('GPUTerrainViewshed with tolerance matches the float64 oracle away from knife edges', async () => {
+it('GPUTerrainViewshed with tolerance matches the float64 oracle away from knife edges', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || isSoftwareDevice(device)) {
-    return;
+  requireTestDevice(device);
+  if (isSoftwareDevice(device)) {
+    context.skip('the fractal viewshed oracle comparison requires a hardware-backed device');
   }
   const terrain = createFractalTerrain(FRACTAL_WIDTH, FRACTAL_HEIGHT, 11, 90);
   const settings: GPUTerrainViewshedSettings = {
@@ -608,6 +611,103 @@ for (const cellSizeMode of ['geographic', 'web-mercator'] as const) {
       expect(march).toContain(V.hidden);
       expect(march).toContain(V.visible);
       expect(march).toContain(V.outOfRange);
+    }
+  });
+}
+
+for (const traversal of ['march', 'pyramid'] as const) {
+  it(`URT-02 positive-weight corners and participating missing-data controls: ${traversal}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // Literal geometry: integer target height 0, ridge slope 10 > target slope 0.
+    // A participating missing endpoint is noData; a participating missing interior is skipped.
+    const fixtures = [
+      {values: [0, 0, NaN], height: 1, target: 1, code: V.visible},
+      {values: [0, 10, 0, 0, 0, NaN], height: 2, target: 2, code: V.hidden},
+      {values: [0, NaN, 0], height: 1, target: 1, code: V.noData},
+      {values: [0, NaN, 0], height: 1, target: 2, code: V.visible}
+    ];
+    for (const fixture of fixtures) {
+      const grid = makeGPURasterMetadata({width: 3, height: fixture.height, cellSize: 1});
+      const settings = {observerHeight: 0, targetHeight: 0, curvatureCoefficient: 0};
+      // Exercise both the separate legacy march sampler and the shared tolerance sampler.
+      for (const tolerance of [undefined, {toleranceMeters: 0}]) {
+        const codes = await runViewshed(
+          device,
+          Float32Array.from(fixture.values),
+          grid,
+          {...settings, observer: [0, 0]},
+          {traversal, tolerance}
+        );
+        expect(codes).toHaveLength(3 * fixture.height);
+        expect(codes[fixture.target]).toBe(fixture.code);
+      }
+    }
+  });
+}
+
+for (const traversal of ['march', 'pyramid'] as const) {
+  it(`B1/B2 exact diagonal ridge, fractional missing corner and flat grazing ray: ${traversal}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const ridge = new Float32Array(900);
+    ridge[15 * 30 + 15] = 50;
+    ridge[15 * 30 + 14] = ridge[15 * 30 + 16] = NaN;
+    const fractional = ridge.slice();
+    fractional[14 * 30 + 15] = NaN;
+    const fixtures = [
+      {
+        values: ridge,
+        width: 30,
+        height: 30,
+        observer: [0, 0] as [number, number],
+        target: [29, 29] as [number, number],
+        targetHeight: 5,
+        code: V.hidden
+      },
+      {
+        values: fractional,
+        width: 30,
+        height: 30,
+        observer: [0, 0] as [number, number],
+        target: [29, 28] as [number, number],
+        targetHeight: 5,
+        code: V.visible
+      },
+      {
+        values: new Float32Array(8).fill(3),
+        width: 2,
+        height: 4,
+        observer: [0, 0.125] as [number, number],
+        target: [1, 3] as [number, number],
+        targetHeight: 0,
+        code: V.visible
+      }
+    ];
+    // Step 15 of the diagonal is exactly (15,15), with slope 50/(15*sqrt(2)) > 5/(29*sqrt(2)).
+    // On the fractional ray row 420/29 gives the NaN positive weight; on the flat every slope is 0.
+    for (const fixture of fixtures) {
+      const grid = makeGPURasterMetadata({
+        width: fixture.width,
+        height: fixture.height,
+        cellSize: 1
+      });
+      const settings = {
+        observerHeight: 0,
+        targetHeight: fixture.targetHeight,
+        curvatureCoefficient: 0
+      };
+      for (const tolerance of [undefined, {toleranceMeters: 0}]) {
+        const codes = await runViewshed(
+          device,
+          fixture.values,
+          grid,
+          {...settings, observer: fixture.observer},
+          {traversal, tolerance}
+        );
+        expect(codes).toHaveLength(fixture.values.length);
+        expect(codes[fixture.target[1] * fixture.width + fixture.target[0]]).toBe(fixture.code);
+      }
     }
   });
 }

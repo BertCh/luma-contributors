@@ -35,7 +35,7 @@ export type KeplerPointHotSpotsProps = KeplerAnalysisProvenance & {
   values: GraphDataView<'float32'>;
   mask: GraphDataView<'uint32'>;
   weights: KeplerPointWeightsStorage;
-  outputs?: GPUHotSpotAnalysisRecipeProps['outputs'];
+  outputs?: GPUHotSpotAnalysisRecipeProps['output'];
 };
 
 /** Gi* on the original point rows and explicit reusable neighbors; no cell aggregation occurs. */

@@ -1,7 +1,12 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotLineFeatureGeometry,
+  createLineFeatureProvenanceNode,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
   createTransientView,
@@ -9,8 +14,7 @@ import {
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GPUCommandNodeProducer,
-  type GraphDataView
+  type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
 import type {Device} from '@luma.gl/core';
 import {
@@ -30,8 +34,8 @@ import {
   GPU_LINE_SPLIT_SELF_CONTACT
 } from '../line-split/index';
 import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/index';
-import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 import {GPU_TOPOLOGY_NONE, type GPUNodedSegmentPort} from './topology-types';
+import {validateSupportedTopologyStatus} from './topology-status';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -50,11 +54,8 @@ export type GPULineNodingProps = {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
-  /** Arbitrary finite planar linework. */
-  lines: GPUPackedGeometryPort<GPULineGeometryPort> & {
-    /** Optional source feature ID per line, written to `output.sourceFeatureIds`. */
-    sourceIds?: GraphDataView<'uint32'>;
-  };
+  /** Finite planar line parts; optional featureOffsets groups parts. sourceIds, when present, has one ID per logical feature. */
+  lines: GPULineFeatureGeometry;
   /**
    * Capacity of the exact segment-intersection event list. The line count plus four times this
    * capacity is at most {@link getGPULineSplitMaximumPieceBound} (4194304 on a default
@@ -120,7 +121,39 @@ export class GPULineNoding implements GPUCommandNodeProducer {
   constructor(props: GPULineNodingProps) {
     this.id = props.id ?? 'line-noding';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'lines',
+      'intersectionCapacity',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(snapshot.output, [
+      'endpoints',
+      'sourceFeatureIds',
+      'sourceRingIds',
+      'sourceEdgeIds',
+      'sourceStartParameters',
+      'sourceEndParameters',
+      'status'
+    ]);
+    validateSupportedTopologyStatus(this.id, outputSnapshot.status, 'output.status');
+    props = Object.freeze({
+      ...snapshot,
+      lines: snapshotLineFeatureGeometry(this.id, snapshot.lines),
+      output: Object.freeze({
+        ...outputSnapshot,
+        status: snapshotConstructionFields(outputSnapshot.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow',
+          'uncertainCount'
+        ])
+      })
+    });
     this.props = props;
     const {id} = this;
     const {lines, output} = props;
@@ -180,6 +213,7 @@ export class GPULineNoding implements GPUCommandNodeProducer {
       lines.positions,
       lines.lineOffsets,
       lines.sourceIds,
+      lines.featureOffsets,
       output.endpoints,
       output.sourceFeatureIds,
       output.sourceRingIds,
@@ -218,7 +252,7 @@ export class GPULineNoding implements GPUCommandNodeProducer {
     nodes.push(
       ...new GPULineSplit({
         id: `${id}-split`,
-        lines,
+        lines: {kind: 'lines', positions: lines.positions, lineOffsets: lines.lineOffsets},
         intersectionCapacity: pairCapacity,
         spatialSort: props.spatialSort,
         leafCapacity: props.leafCapacity,
@@ -226,7 +260,13 @@ export class GPULineNoding implements GPUCommandNodeProducer {
           status: {uncertainCount: output.status.uncertainCount},
           pieces: {
             geometry: {kind: 'lines', positions: piecePositions, lineOffsets: pieceOffsets},
-            sourceIds: pieceSources,
+            sourceIds: createTransientView(
+              graph,
+              `${id}-piece-identities`,
+              'uint32',
+              pieceCapacity
+            ),
+            sourcePartRows: pieceSources,
             status: {
               count: pieceCount,
               requiredCount: pieceRequiredCount,
@@ -293,9 +333,10 @@ fn pieceOfVertex(vertex: u32) -> u32 {
     );
 
     const outputCapacity = output.endpoints.length;
-    const sourceIdBinding: WGSLKernelBinding[] = lines.sourceIds
-      ? [{name: 'inputSourceIds', view: lines.sourceIds, type: 'u32', access: 'read'}]
-      : [];
+    const sourceIdBinding: WGSLKernelBinding[] =
+      lines.sourceIds && !lines.featureOffsets
+        ? [{name: 'inputSourceIds', view: lines.sourceIds, type: 'u32', access: 'read'}]
+        : [];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize`,
@@ -385,13 +426,11 @@ const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;`,
   if (outputRow >= OUTPUT_CAPACITY) { return; }
   let piece = pieceOfVertex(index);
   let line = pieceSources[pieceSourcesOffset + piece];
-  sourceFeatureIds[sourceFeatureIdsOffset + outputRow] = ${lines.sourceIds ? 'inputSourceIds[inputSourceIdsOffset + line]' : 'line'};
+  sourceFeatureIds[sourceFeatureIdsOffset + outputRow] = ${lines.sourceIds && !lines.featureOffsets ? 'inputSourceIds[inputSourceIdsOffset + line]' : 'line'};
   sourceRingIds[sourceRingIdsOffset + outputRow] = line;`
       }),
-      // The edge is the input edge of least midpoint error, ties to the smaller index. The splitter
-      // reports the edge each segment lies on; when that edge and its neighbors are regular and it
-      // meets no other segment of its line, only the neighbors (and, for closed lines, the far
-      // end) can tie or beat it, so they are the only candidates. Otherwise every edge is scanned.
+      // The splitter records the original outgoing edge. Geometry-based reassignment loses
+      // traversal identity on retraces and on midpoints that round to a shared vertex.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-edge-provenance`,
         operation: OPERATION,
@@ -399,75 +438,14 @@ const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;`,
         bindings: [
           {name: 'flags', view: segmentFlags, type: 'u32', access: 'read'},
           {name: 'scan', view: segmentScan, type: 'u32', access: 'read'},
-          {name: 'piecePositions', view: piecePositions, type: 'f32', access: 'read'},
           {name: 'pieceSourceEdges', view: pieceSourceEdges, type: 'u32', access: 'read'},
-          {name: 'sourceRingIds', view: output.sourceRingIds, type: 'u32', access: 'read'},
-          {name: 'inputPositions', view: lines.positions, type: 'f32', access: 'read'},
-          {name: 'inputOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'},
           {name: 'sourceEdgeIds', view: output.sourceEdgeIds, type: 'u32', access: 'read_write'}
         ],
         invocationCount: pieceVertexCapacity,
-        declarations: `const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;
-const SELF_CONTACT: u32 = ${GPU_LINE_SPLIT_SELF_CONTACT}u;
-fn inputPoint(vertex: u32) -> vec2f {
-  return vec2f(inputPositions[inputPositionsOffset + vertex * 2u], inputPositions[inputPositionsOffset + vertex * 2u + 1u]);
-}
-fn piecePoint(vertex: u32) -> vec2f {
-  return vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
-}
-// Finite and non-zero length: the intersection treats such an edge's successor as adjacent.
-fn isRegularEdge(edge: u32) -> bool {
-  let delta = inputPoint(edge + 1u) - inputPoint(edge);
-  let lengthSquared = dot(delta, delta);
-  return lengthSquared > 0.0 && lengthSquared <= 3.4e38;
-}
-fn considerEdge(edge: u32, midpoint: vec2f, bestEdge: ptr<function, u32>, bestError: ptr<function, f32>) {
-  let p = inputPoint(edge);
-  let q = inputPoint(edge + 1u);
-  let delta = q - p;
-  let lengthSquared = dot(delta, delta);
-  if (lengthSquared == 0.0) { return; }
-  let parameter = clamp(dot(midpoint - p, delta) / lengthSquared, 0.0, 1.0);
-  let difference = midpoint - (p + parameter * delta);
-  let error = dot(difference, difference);
-  if (error < *bestError || (error == *bestError && edge < *bestEdge)) {
-    *bestError = error;
-    *bestEdge = edge;
-  }
-}`,
         body: `if (flags[flagsOffset + index] == 0u) { return; }
   let outputRow = scan[scanOffset + index] - 1u;
-  if (outputRow >= OUTPUT_CAPACITY) { return; }
-  let line = sourceRingIds[sourceRingIdsOffset + outputRow];
-  let midpoint = 0.5 * (piecePoint(index) + piecePoint(index + 1u));
-  let firstEdge = inputOffsets[inputOffsetsOffset + line];
-  let lastVertex = inputOffsets[inputOffsetsOffset + line + 1u];
-  let lastEdge = lastVertex - 2u;
-  let source = pieceSourceEdges[pieceSourceEdgesOffset + index];
-  let edge = source & ~SELF_CONTACT;
-  var bestEdge = ${GPU_TOPOLOGY_NONE}u;
-  var bestError = 3.4e38;
-  var scanAll = (source & SELF_CONTACT) != 0u || edge < firstEdge || edge > lastEdge;
-  if (!scanAll) {
-    scanAll = !isRegularEdge(edge) ||
-      (edge > firstEdge && !isRegularEdge(edge - 1u)) ||
-      (edge < lastEdge && !isRegularEdge(edge + 1u)) ||
-      (edge == firstEdge && !isRegularEdge(lastEdge)) ||
-      (edge == lastEdge && !isRegularEdge(firstEdge));
-  }
-  if (scanAll) {
-    for (var candidate = firstEdge; candidate + 1u < lastVertex; candidate++) {
-      considerEdge(candidate, midpoint, &bestEdge, &bestError);
-    }
-  } else {
-    // The minimum of (error, edge) does not depend on visiting order or repeats.
-    considerEdge(firstEdge, midpoint, &bestEdge, &bestError);
-    if (edge > firstEdge) { considerEdge(edge - 1u, midpoint, &bestEdge, &bestError); }
-    considerEdge(edge, midpoint, &bestEdge, &bestError);
-    if (edge < lastEdge) { considerEdge(edge + 1u, midpoint, &bestEdge, &bestError); }
-    considerEdge(lastEdge, midpoint, &bestEdge, &bestError);
-  }
-  sourceEdgeIds[sourceEdgeIdsOffset + outputRow] = bestEdge;`
+  if (outputRow >= ${outputCapacity}u) { return; }
+  sourceEdgeIds[sourceEdgeIdsOffset + outputRow] = pieceSourceEdges[pieceSourceEdgesOffset + index] & ~${GPU_LINE_SPLIT_SELF_CONTACT}u;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-parameters`,
@@ -499,6 +477,49 @@ fn inputPoint(vertex: u32) -> vec2f {
 }
 fn piecePoint(vertex: u32) -> vec2f {
   return vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
+}
+fn differenceExponent(delta: vec2f) -> u32 {
+  return max(bitcast<u32>(delta.x) & 0x7fffffffu, bitcast<u32>(delta.y) & 0x7fffffffu) >> 23u;
+}
+fn scaleDifference(value: vec2f, power: i32) -> vec2f {
+  return vec2f(ldexp(value.x, power), ldexp(value.y, power));
+}
+fn magnitudePower(magnitude: u32) -> i32 {
+  let exponent = magnitude >> 23u;
+  if (exponent != 0u) { return i32(exponent) - 127i; }
+  return i32(firstLeadingBit(magnitude)) - 149i;
+}
+const ZERO_PRODUCT_POWER: i32 = -512i;
+fn productPower(first: f32, second: f32) -> i32 {
+  let firstMagnitude = bitcast<u32>(first) & 0x7fffffffu;
+  let secondMagnitude = bitcast<u32>(second) & 0x7fffffffu;
+  if (firstMagnitude == 0u || secondMagnitude == 0u) { return ZERO_PRODUCT_POWER; }
+  return magnitudePower(firstMagnitude) + magnitudePower(secondMagnitude);
+}
+fn numeratorNeedsScaling(difference: vec2f, delta: vec2f) -> bool {
+  let power = max(productPower(difference.x, delta.x), productPower(difference.y, delta.y));
+  // A zero numerator is valid. Otherwise a dominant product whose exponent
+  // lower bound is below -126 can round to a subnormal or flush to zero.
+  return power != ZERO_PRODUCT_POWER && power < -126i;
+}
+fn dotMayLeaveNormalRange(first: vec2f, second: vec2f) -> bool {
+  if (max(differenceExponent(first), differenceExponent(second)) == 255u) { return true; }
+  let firstPower = productPower(first.x, second.x);
+  let secondPower = productPower(first.y, second.y);
+  let dominantPower = max(firstPower, secondPower);
+  // Each product is below 2^(power+2). Reserve one more bit when two
+  // nonzero products can add, and leave exact zeros on the original route.
+  let upperPower = select(126i, 125i, min(firstPower, secondPower) != ZERO_PRODUCT_POWER);
+  return dominantPower != ZERO_PRODUCT_POWER && (dominantPower < -126i || dominantPower > upperPower);
+}
+fn scaledProjection(difference: vec2f, delta: vec2f) -> f32 {
+  if (all(difference == delta)) { return 1.0; }
+  let power = 127i - i32(clamp(differenceExponent(delta), 1u, 253u));
+  let direction = scaleDifference(delta, power);
+  let offset = scaleDifference(difference, power);
+  if (direction.y == 0.0) { return clamp(offset.x / direction.x, 0.0, 1.0); }
+  if (direction.x == 0.0) { return clamp(offset.y / direction.y, 0.0, 1.0); }
+  return clamp(dot(offset, direction) / dot(direction, direction), 0.0, 1.0);
 }`,
         body: `if (flags[flagsOffset + index] == 0u) { return; }
   let outputRow = scan[scanOffset + index] - 1u;
@@ -509,10 +530,60 @@ fn piecePoint(vertex: u32) -> vec2f {
   if (bestEdge != ${GPU_TOPOLOGY_NONE}u) {
     let p = inputPoint(bestEdge);
     let q = inputPoint(bestEdge + 1u);
-    let delta = q - p;
-    let lengthSquared = dot(delta, delta);
-    startParameters[startParametersOffset + outputRow] = clamp(dot(a - p, delta) / lengthSquared, 0.0, 1.0);
-    endParameters[endParametersOffset + outputRow] = clamp(dot(b - p, delta) / lengthSquared, 0.0, 1.0);
+    var delta = q - p;
+    var firstDifference = a - p;
+    var secondDifference = b - p;
+    // Keep the pre-stream dot products and division within their original
+    // power-of-two bounds. Those bounds protect the denominator and guard
+    // against overflow, but a small split can still underflow its numerator.
+    let maximumDelta = max(abs(delta.x),abs(delta.y));
+    if (maximumDelta >= 1.0842021724855044e-19 && maximumDelta <= 9223372036854775808.0 &&
+        all(abs(firstDifference) <= vec2f(9223372036854775808.0)) &&
+        all(abs(secondDifference) <= vec2f(9223372036854775808.0))) {
+      let scaleFirst = numeratorNeedsScaling(firstDifference, delta);
+      let scaleSecond = numeratorNeedsScaling(secondDifference, delta);
+      let originalDenominator = dot(delta,delta);
+      if (!scaleFirst && !scaleSecond) {
+        let originalFirstNumerator = dot(firstDifference,delta);
+        let originalSecondNumerator = dot(secondDifference,delta);
+        startParameters[startParametersOffset + outputRow] = clamp(originalFirstNumerator / originalDenominator,0.0,1.0);
+        endParameters[endParametersOffset + outputRow] = clamp(originalSecondNumerator / originalDenominator,0.0,1.0);
+        return;
+      }
+      // A tiny split on one end does not change the arithmetic for the other.
+      if (scaleFirst) {
+        startParameters[startParametersOffset + outputRow] = scaledProjection(firstDifference, delta);
+      } else {
+        startParameters[startParametersOffset + outputRow] = clamp(dot(firstDifference,delta) / originalDenominator,0.0,1.0);
+      }
+      if (scaleSecond) {
+        endParameters[endParametersOffset + outputRow] = scaledProjection(secondDifference, delta);
+      } else {
+        endParameters[endParametersOffset + outputRow] = clamp(dot(secondDifference,delta) / originalDenominator,0.0,1.0);
+      }
+      return;
+    }
+    // The pre-stream bounds can select their normalized fallback even when
+    // the dot products fit. Keep that fallback's arithmetic in this overlap.
+    if (!dotMayLeaveNormalRange(delta, delta) &&
+        !dotMayLeaveNormalRange(firstDifference, delta) &&
+        !dotMayLeaveNormalRange(secondDifference, delta)) {
+      let scale = max(abs(delta.x), abs(delta.y));
+      let direction = delta / scale;
+      let denominator = dot(direction, direction);
+      startParameters[startParametersOffset + outputRow] = clamp(dot(firstDifference / scale, direction) / denominator, 0.0, 1.0);
+      endParameters[endParametersOffset + outputRow] = clamp(dot(secondDifference / scale, direction) / denominator, 0.0, 1.0);
+      return;
+    }
+    // Opposite finite endpoints can have an unrepresentable difference.
+    if (differenceExponent(delta) == 255u) {
+      let scaledStart = scaleDifference(p, -2);
+      delta = scaleDifference(q, -2) - scaledStart;
+      firstDifference = scaleDifference(a, -2) - scaledStart;
+      secondDifference = scaleDifference(b, -2) - scaledStart;
+    }
+    startParameters[startParametersOffset + outputRow] = scaledProjection(firstDifference, delta);
+    endParameters[endParametersOffset + outputRow] = scaledProjection(secondDifference, delta);
   }`
       })
     );
@@ -549,6 +620,16 @@ fn piecePoint(vertex: u32) -> vec2f {
   overflow[overflowOffset] = select(0u, 1u, required > OUTPUT_CAPACITY);`
       })
     );
+    if (lines.featureOffsets)
+      nodes.push(
+        createLineFeatureProvenanceNode(graph, {
+          id: `${id}-feature-provenance`,
+          geometry: lines,
+          partRows: output.sourceRingIds,
+          featureIds: output.sourceFeatureIds,
+          count: output.status.count
+        })
+      );
     return nodes;
   }
 }

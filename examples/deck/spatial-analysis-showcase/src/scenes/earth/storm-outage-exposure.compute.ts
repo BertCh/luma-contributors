@@ -277,6 +277,7 @@ export async function createStormOutageExposure(
   const pointCounty = resources.createBuffer('point-county', flashCount * 4);
   const flashTotals = resources.createBuffer('flash-totals', countyCount * 4);
   const zonalOverflow = resources.createBuffer('zonal-overflow', 4);
+  const zonalUncertainCount = resources.createBuffer('zonal-uncertain-count', 4);
   const fullEventTrackLengths = resources.createBuffer(
     'full-event-county-track-lengths',
     countyCount * 4
@@ -379,7 +380,14 @@ export async function createStormOutageExposure(
           flashCount
         ),
         status: {
-          overflow: importGraphBuffer(staticGraph, 'zonal-overflow', zonalOverflow, 'uint32', 1)
+          overflow: importGraphBuffer(staticGraph, 'zonal-overflow', zonalOverflow, 'uint32', 1),
+          uncertainCount: importGraphBuffer(
+            staticGraph,
+            'zonal-uncertain-count',
+            zonalUncertainCount,
+            'uint32',
+            1
+          )
         }
       }
     })
@@ -484,7 +492,7 @@ export async function createStormOutageExposure(
         )
       },
       output: {
-        lengths: importGraphBuffer(
+        clippedLengths: importGraphBuffer(
           staticGraph,
           'full-event-county-track-lengths',
           fullEventTrackLengths,
@@ -677,7 +685,7 @@ export async function createStormOutageExposure(
           )
         },
         output: {
-          lengths: trackLengthsView,
+          clippedLengths: trackLengthsView,
           weightedLengths: trackWeightedView,
           status: {overflow: importGraphBuffer(graph, 'line-overflow', lineOverflow, 'uint32', 1)}
         }
@@ -853,15 +861,22 @@ export async function createStormOutageExposure(
   let hoveredCounty = -1;
   const flashScale = 1 / flashes.sampleFraction;
   let staticOverflowed = false;
+  let staticUncertainCount: number | null = null;
+  let staticFlashOverflow: boolean | null = null;
   let exposureOverflowed = false;
 
   function updateOverflowReadout(): void {
-    ctx.setReadout(
-      'overflow',
+    const capacity =
       staticOverflowed || exposureOverflowed
         ? 'a fixed-capacity result overflowed'
-        : 'no capacity overflowed'
-    );
+        : 'no capacity overflowed';
+    const membership =
+      staticUncertainCount === null || staticFlashOverflow === null
+        ? 'static flash membership diagnostics pending'
+        : staticFlashOverflow || staticUncertainCount
+          ? `${staticUncertainCount} uncertain static flash memberships${staticFlashOverflow ? '; flash membership capacity loss' : ''}; county flash totals are not exact`
+          : 'no uncertain static flash memberships';
+    ctx.setReadout('overflow', `${capacity}; ${membership}`);
   }
 
   function updateValueRange(): void {
@@ -944,7 +959,8 @@ export async function createStormOutageExposure(
       {buffer: fullEventTrackLengths, size: countyCount * 4},
       {buffer: zonalOverflow, size: 4},
       {buffer: peakOverflow, size: 4},
-      {buffer: staticLineOverflow, size: 4}
+      {buffer: staticLineOverflow, size: 4},
+      {buffer: zonalUncertainCount, size: 4}
     ],
     bytes => {
       if (destroyed) return;
@@ -969,7 +985,9 @@ export async function createStormOutageExposure(
       fixedValueRanges.trackKm = [0, Math.max(1, maximumTrackKilometers)];
       fixedValueRanges.flashDensity = [0, Math.max(1, maximumFlashDensity)];
       updateValueRange();
-      const flags = new Uint32Array(bytes, countyCount * 12, 3);
+      const flags = new Uint32Array(bytes, countyCount * 12, 4);
+      staticUncertainCount = flags[3];
+      staticFlashOverflow = Boolean(flags[0]);
       staticOverflowed = Boolean(flags[0] || flags[1] || flags[2]);
       updateOverflowReadout();
       refreshStatistics();

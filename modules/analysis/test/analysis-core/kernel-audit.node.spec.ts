@@ -12,7 +12,8 @@ import * as publishedRaster from '@luma.gl/graph/gpu-raster';
 import {
   ANALYSIS_BARRELS,
   getAnalysisContributors,
-  getContributorNames
+  getContributorNames,
+  getKernelAuditCaseKey
 } from './kernel-audit/analysis-contributors';
 import {KERNEL_AUDIT_CASES} from './kernel-audit/kernel-audit-cases';
 import {KERNEL_AUDIT_REJECTIONS} from './kernel-audit/kernel-audit-rejections';
@@ -38,7 +39,10 @@ const SKIPPED_CONTRIBUTORS: Readonly<Record<string, string>> = {
   GPUChunkedSpatialWeightsAlgebra: CHUNKED_WEIGHTS_AUDIT,
   GPUChunkedSpatialWeightsTranspose: CHUNKED_WEIGHTS_AUDIT,
   GPUChunkedSpatialWeightsTransform: CHUNKED_WEIGHTS_AUDIT,
-  GPUChunkedSpatialWeightsValidation: CHUNKED_WEIGHTS_AUDIT
+  GPUChunkedSpatialWeightsValidation: CHUNKED_WEIGHTS_AUDIT,
+  // CORE-115: a copy-only producer has no shader module for the audit to check.
+  GPUSnapshotTap:
+    'copy-only: one copy-source node and no shader module; gpu-snapshot-tap.node.spec.ts checks its fields, dependency and view validation'
 };
 
 /**
@@ -309,6 +313,31 @@ describe('kernel audit coverage', () => {
     expect([...getContributorNames({fixture: {InheritedContributor, Helper}})]).toEqual([
       ['InheritedContributor', 'fixture']
     ]);
+    // TOOL-112: different functions under one name are separate contributors keyed by entry; one
+    // function re-exported by two entries stays one contributor.
+    const addSharedRecipe = () => {};
+    const addFirstRecipe = () => {};
+    const addSecondRecipe = () => {};
+    expect([
+      ...getContributorNames({
+        first: {addSharedRecipe, addDuplicateRecipe: addFirstRecipe},
+        second: {addSharedRecipe, addDuplicateRecipe: addSecondRecipe}
+      })
+    ]).toEqual([
+      ['addSharedRecipe', 'first'],
+      ['first/addDuplicateRecipe', 'first'],
+      ['second/addDuplicateRecipe', 'second']
+    ]);
+    expect(contributors.get('gpu-spatial-analysis/addVisibilityGraphRecipe')).toBe(
+      'gpu-spatial-analysis'
+    );
+    expect(contributors.get('gpu-network/addVisibilityGraphRecipe')).toBe('gpu-network');
+    expect(contributors.has('addVisibilityGraphRecipe')).toBe(false);
+    // CORE-115: the computation-record entry's producers are in the inventory.
+    expect(contributors.get('GPUTransferMask')).toBe('computation-record');
+    expect(contributors.get('GPUSnapshotTap')).toBe('computation-record');
+    expect(contributors.get('addStopValueCubeRecipe')).toBe('gpu-spatial-analysis');
+    expect(contributors.get('GPUPointCloudCoverageValidity')).toBe('pointcloud-analysis');
     const coreHelpers: Record<string, string> = {
       GPUParameterBuffer: 'owns parameter storage; does not produce command nodes',
       GPUContributorOperation: 'operation lowering adapter; not a command-node contributor'
@@ -337,7 +366,7 @@ describe('kernel audit coverage', () => {
   it('builds every public contributor or records why not', () => {
     expect(contributors.size, 'discovered public contributors').toBeGreaterThan(0);
     expect(cases.length, 'kernel-audit cases').toBeGreaterThan(0);
-    const covered = new Set(cases.map(auditCase => auditCase.exportName));
+    const covered = new Set(cases.map(getKernelAuditCaseKey));
     const missing = [...contributors.keys()].filter(
       name => !covered.has(name) && !(name in SKIPPED_CONTRIBUTORS)
     );
@@ -345,11 +374,13 @@ describe('kernel audit coverage', () => {
   });
 
   it('has no stale cases or skips', () => {
+    // A case naming an export that several entries define differently must name its entry.
     const stale = [
-      ...cases.map(auditCase => auditCase.exportName),
+      ...cases.map(getKernelAuditCaseKey),
       ...Object.keys(SKIPPED_CONTRIBUTORS)
     ].filter(name => !contributors.has(name) && !PUBLISHED_CONTRIBUTORS.has(name));
     expect([...new Set(stale)], 'cases or skips naming no public contributor').toEqual([]);
+    // Rejections match a case by export name and label, so labels stay unique across entries.
     const labels = cases.map(auditCase => `${auditCase.exportName} ${auditCase.name}`);
     expect(labels.length, 'duplicate case labels').toBe(new Set(labels).size);
     const staleRejections = KERNEL_AUDIT_REJECTIONS.map(

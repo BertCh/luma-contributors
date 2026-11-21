@@ -127,7 +127,7 @@ export function computePettittReference(values: ArrayLike<number>): {
   const length = series.length;
   let running = 0;
   let statistic = 0;
-  let largestRow = -1;
+  let largestRow = length >= 2 ? 0 : -1;
   for (let row = 0; row + 1 < length; row++) {
     for (let other = 0; other < length; other++) {
       running += Math.sign(series[other] - series[row]);
@@ -143,7 +143,7 @@ export function computePettittReference(values: ArrayLike<number>): {
     pValue:
       length >= 2
         ? Math.min(1, 2 * Math.exp((-6 * statistic * statistic) / (length ** 3 + length ** 2)))
-        : 1
+        : NaN
   };
 }
 

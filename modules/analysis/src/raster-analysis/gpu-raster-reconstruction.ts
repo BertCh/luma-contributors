@@ -12,7 +12,6 @@ import {
   getGraphOutputViews,
   validateCommandNodeBudget,
   validateRequirement,
-  validateSinglePackedView,
   getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -31,7 +30,7 @@ import {
   getRasterAlgebraInputBindingViews
 } from './raster-algebra/raster-algebra-input';
 import {validateRasterFractionalWritableViews} from './fractional-coverage/raster-fractional-tile-kernel';
-import {validateRasterGrid} from './raster-band-utils';
+import {snapshotRasterBand, validateRasterGrid} from './raster-band-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
@@ -40,6 +39,7 @@ import {
   requireRasterLength,
   validateRasterExpansionGraph,
   validateRasterExpansionViews,
+  validateRasterExpansionPorts,
   RASTER_BAND_CANONICALIZATION_NODE_COUNT,
   type RasterIterationStatusOutputs
 } from './raster-expansion-utils';
@@ -122,9 +122,24 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-reconstruction';
     this.props = props;
     const {id} = this;
+    validateRequirement(
+      id,
+      props.method === undefined || props.method === 'dilation' || props.method === 'erosion',
+      `method must be dilation or erosion; received ${props.method}`
+    );
     const count = validateRasterGrid(id, props.grid);
-    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
-    validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
+    validateRasterExpansionPorts(
+      id,
+      props,
+      {
+        'output.values': ['float32'],
+        'output.validity': ['uint32'],
+        'output.status.converged': ['uint32'],
+        'output.status.iterationLimitReached': ['uint32'],
+        'output.status.iterationCount': ['uint32']
+      },
+      ['output.status.iterationLimitReached', 'output.status.iterationCount']
+    );
     validateRasterAlgebraInput(id, 'marker', props.marker, props.grid, count);
     validateRasterAlgebraInput(id, 'mask', props.mask, props.grid, count);
     requireRasterLength(props.output.values, count, id, 'output.values');
@@ -332,6 +347,18 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-fill-holes';
     this.props = props;
     const {id} = this;
+    validateRasterExpansionPorts(
+      id,
+      props,
+      {
+        input: ['uint32'],
+        'output.values': ['uint32'],
+        'output.status.converged': ['uint32'],
+        'output.status.iterationLimitReached': ['uint32'],
+        'output.status.iterationCount': ['uint32']
+      },
+      ['output.status.iterationLimitReached', 'output.status.iterationCount']
+    );
     const count = validateRasterExpansionViews(
       id,
       props.grid,
@@ -429,18 +456,5 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
 function captureReconstructionInput(
   input: GraphDataView<'float32'> | GPURasterBand
 ): GraphDataView<'float32'> | GPURasterBand {
-  return isRasterAlgebraBand(input)
-    ? (Object.freeze({
-        ...snapshotConstructionFields(input, [
-          'id',
-          'format',
-          'storage',
-          'validity',
-          'noDataValue',
-          'scale',
-          'offset'
-        ]),
-        storage: Object.freeze({...input.storage})
-      }) as GPURasterBand)
-    : input;
+  return isRasterAlgebraBand(input) ? Object.freeze(snapshotRasterBand(input)) : input;
 }

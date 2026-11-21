@@ -129,14 +129,26 @@ export function getRasterEmbeddingPrincipalComponents(
 /**
  * Stretch ranges for the RGB view of {@link GPURasterEmbeddingProjection}: `+-sigmaCount`
  * standard deviations of each component, from {@link getRasterEmbeddingPrincipalComponents}.
+ *
+ * A component with zero variance or a spread that is zero or nonfinite after float32 conversion
+ * takes the widest usable spread of the other components, or `[-1, 1]` when none is usable.
+ * Constant components have zero scores and show as mid-grey 0.5. Every range is accepted by
+ * `getGPURasterEmbeddingProjectionParameterValues`.
  */
 export function getRasterEmbeddingStretchRanges(
   eigenvalues: ArrayLike<number>,
   sigmaCount: number = 2
 ): [number, number][] {
   validateFiniteNumber('getRasterEmbeddingStretchRanges', 'sigmaCount', sigmaCount, 1e-6, 100);
-  return Array.from(eigenvalues, value => {
-    const spread = sigmaCount * Math.sqrt(Math.max(value, 0));
-    return [-spread, spread] as [number, number];
+  const spreads = Array.from(eigenvalues, value => sigmaCount * Math.sqrt(Math.max(value, 0)));
+  const isDefinedSpread = (spread: number) =>
+    Number.isFinite(Math.fround(spread)) && Math.fround(spread) > 0;
+  const fallbackSpread = spreads.reduce(
+    (widest, spread) => (isDefinedSpread(spread) ? Math.max(widest, spread) : widest),
+    0
+  );
+  return spreads.map(spread => {
+    const definedSpread = isDefinedSpread(spread) ? spread : fallbackSpread || 1;
+    return [-definedSpread, definedSpread] as [number, number];
   });
 }

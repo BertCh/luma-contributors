@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getNetworkReadbackWords,
+  getNetworkReadbackBytes,
+  type NetworkReadbackBytes
+} from '../network-statistics/network-packed-readback';
+
 /** Floats per predicate record in the {@link GPUNetworkSubgraphFilter} `parameters` view. */
 export const GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE = 4;
 
@@ -33,12 +40,12 @@ export const GPU_NETWORK_SUBGRAPH_FILTER_COUNT_LENGTH = 4;
  * `GPUTimeWindowFilter` windows: `start <= time <= end`.
  */
 export type GPUNetworkSubgraphFilterState = {
-  /** One range per `nodeColumns` entry, in order. */
-  nodeRanges?: readonly (readonly [number, number] | null | undefined)[];
-  /** One range per `edgeColumns` entry, in order. */
-  edgeRanges?: readonly (readonly [number, number] | null | undefined)[];
-  /** Closed window over the f32 `edgeTimes` column. */
-  edgeTimeWindow?: readonly [number, number] | null;
+  /** Half-open ranges in each node column's units, in column order. */
+  nodeAttributeRanges?: readonly (readonly [number, number] | null | undefined)[];
+  /** Half-open ranges in each edge column's units, in column order. */
+  edgeAttributeRanges?: readonly (readonly [number, number] | null | undefined)[];
+  /** Closed window in the units of the float32 edgeTimes column. */
+  closedEdgeTimeWindow?: readonly [number, number] | null;
 };
 
 /** Shape needed to size and pack the parameter view. */
@@ -68,7 +75,9 @@ export function getGPUNetworkSubgraphFilterParameterLength(
  * node columns first, then edge columns, then the f32 edge time window. Write the result into the
  * caller-owned parameter buffer between encodings; nothing recompiles.
  *
- * Missing, `null` and `undefined` entries are disabled predicates.
+ * Missing, `null` and `undefined` entries are disabled predicates. Attribute endpoints round
+ * upward; closed time starts round upward and ends downward. Thus float32 rows obey the
+ * original JavaScript inequalities. Infinite endpoints are preserved.
  *
  * @throws If `target` is too short.
  */
@@ -81,18 +90,63 @@ export function getGPUNetworkSubgraphFilterParameterValues(
     throw new Error('GPUNetworkSubgraphFilter parameter target is too short');
   }
   const stride = GPU_NETWORK_SUBGRAPH_FILTER_PARAMETER_STRIDE;
-  target.fill(0, 0, getGPUNetworkSubgraphFilterParameterLength(layout));
+  const id = 'GPUNetworkSubgraphFilter';
+  for (const [removed, replacement] of [
+    ['nodeRanges', 'nodeAttributeRanges'],
+    ['edgeRanges', 'edgeAttributeRanges'],
+    ['edgeTimeWindow', 'closedEdgeTimeWindow']
+  ] as const) {
+    validateRequirement(id, !(removed in state), `${removed} was removed; use ${replacement}`);
+  }
+  const {nodeAttributeRanges, edgeAttributeRanges, closedEdgeTimeWindow} = state;
+  validateRanges('nodeAttributeRanges', nodeAttributeRanges, layout.nodeColumnCount);
+  validateRanges('edgeAttributeRanges', edgeAttributeRanges, layout.edgeColumnCount);
+  if (layout.hasEdgeTimes) validateRanges('closedEdgeTimeWindow', [closedEdgeTimeWindow], 1);
   const records: (readonly [number, number] | null | undefined)[] = [];
-  for (let i = 0; i < layout.nodeColumnCount; i++) records.push(state.nodeRanges?.[i]);
-  for (let i = 0; i < layout.edgeColumnCount; i++) records.push(state.edgeRanges?.[i]);
-  if (layout.hasEdgeTimes) records.push(state.edgeTimeWindow);
+  for (let column = 0; column < layout.nodeColumnCount; column++)
+    records.push(nodeAttributeRanges?.[column]);
+  for (let column = 0; column < layout.edgeColumnCount; column++)
+    records.push(edgeAttributeRanges?.[column]);
+  if (layout.hasEdgeTimes) records.push(closedEdgeTimeWindow);
+  target.fill(0, 0, getGPUNetworkSubgraphFilterParameterLength(layout));
   for (const [recordIndex, range] of records.entries()) {
     if (!range) continue;
-    target[recordIndex * stride] = range[0];
-    target[recordIndex * stride + 1] = range[1];
+    target[recordIndex * stride] = roundRangeBound(range[0], true);
+    target[recordIndex * stride + 1] = roundRangeBound(
+      range[1],
+      recordIndex < layout.nodeColumnCount + layout.edgeColumnCount
+    );
     target[recordIndex * stride + 2] = 1;
   }
   return target;
+}
+
+type Ranges = readonly (readonly [number, number] | null | undefined)[];
+
+function validateRanges(name: string, ranges: Ranges | undefined, activeCount: number): void {
+  for (let index = 0; index < activeCount; index++) {
+    const range = ranges?.[index];
+    if (!range) continue;
+    for (const [endpoint, value] of range.entries()) {
+      validateRequirement(
+        'GPUNetworkSubgraphFilter',
+        typeof value === 'number' && !Number.isNaN(value),
+        `${name}[${index}][${endpoint}] must be a number; received ${value}`
+      );
+    }
+  }
+}
+
+/** Directed IEEE binary32 rounding preserves comparisons against representable column values. */
+function roundRangeBound(value: number, upward: boolean): number {
+  const rounded = Math.fround(value);
+  if (upward ? rounded >= value : rounded <= value) return rounded;
+  const words = new Uint32Array(1);
+  const floats = new Float32Array(words.buffer);
+  floats[0] = rounded;
+  if (rounded === 0) return upward ? 2 ** -149 : -(2 ** -149);
+  words[0] += rounded > 0 === upward ? 1 : -1;
+  return floats[0];
 }
 
 /** Decoded `counts` output. */
@@ -103,10 +157,11 @@ export type GPUNetworkSubgraphFilterCounts = {
   liveEdgeCount: number;
 };
 
-/** Decodes the words read back from the `counts` output. */
-export function decodeGPUNetworkSubgraphFilterCounts(
-  words: ArrayLike<number>
+/** Checked numeric-word reader for the 4-word record. */
+export function decodeGPUNetworkSubgraphFilterCountsWords(
+  values: Uint32Array | readonly number[]
 ): GPUNetworkSubgraphFilterCounts {
+  const words = getNetworkReadbackWords('decodeGPUNetworkSubgraphFilterCountsWords', values, 4);
   const word = GPU_NETWORK_SUBGRAPH_FILTER_COUNT_WORD;
   return {
     liveNodeCount: words[word.liveNodeCount],
@@ -114,4 +169,13 @@ export function decodeGPUNetworkSubgraphFilterCounts(
     selfLoopSlotCount: words[word.selfLoopSlotCount],
     liveEdgeCount: words[word.liveEdgeCount]
   };
+}
+
+/** Little-endian byte reader, accepting `{bytes: await buffer.readAsync()}`. */
+export function decodeGPUNetworkSubgraphFilterCountsFromBytes(
+  values: NetworkReadbackBytes
+): GPUNetworkSubgraphFilterCounts {
+  return decodeGPUNetworkSubgraphFilterCountsWords(
+    getNetworkReadbackBytes('decodeGPUNetworkSubgraphFilterCountsFromBytes', values, 4)
+  );
 }

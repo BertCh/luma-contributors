@@ -4,8 +4,13 @@
 without submitting commands or reading results. Import them from `@luma-contributors/analysis/gpu-spatial-analysis`.
 Both return ordinary recipe results: `outputs.excessRisk` or `outputs.spatialRates`, contributors,
 intermediates and stage status. Excess risk reports `invalidCount` in an `excess-risk` stage;
-spatial rates preserve the supplied
-weights status in a `weights` stage. Pass `output` for a caller-owned readback-capable view;
+spatial rates preserve supplied weights loss in a `weights` stage. This stage folds both outer CSR and chunk-local `overflow`
+and `candidateOverflow` words into separate one-word causes. A chunk-only loss is not an island:
+nonzero loss suppresses dependent numeric rates as NaN. A later frame that fits the existing
+producer storage can clear the words and restore rates on the same compiled graph. To increase
+capacity, rebuild the producer with larger allocations and rebind affected consumers in a new graph
+before compiling/submitting it. Resubmitting the unchanged overflowing input does not grow storage.
+Pass `output` for a caller-owned readback-capable view;
 otherwise the terminal view is graph-owned. Imported buffers remain caller-owned. Inputs are packed
 `float32` or `uint32` graph views, with matching row counts; there is no implicit vector chunk packing.
 For uint32 counts, GPU conversion to float32 loses integer precision above 2^24.
@@ -19,6 +24,21 @@ validation; existing caller node-ID collisions, a graph already frozen by compil
 failures during final declaration are outside it. Supply unused recipe/resource IDs on a mutable graph.
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  addExcessRiskRecipe,
+  addSpatialRateRecipe,
+  type GPUSpatialWeights
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// Caller imports matching packed views into this mutable graph. For n rows, the square CSR
+// has n+1 offsets and equally many neighbor IDs and numeric weights.
+declare const graph: GPUCommandGraph;
+declare const events: GraphDataView<'float32'>;
+declare const populations: GraphDataView<'float32'>;
+declare const mask: GraphDataView<'uint32'>;
+declare const weights: GPUSpatialWeights;
+
 const risk = addExcessRiskRecipe(graph, {events, populations, mask});
 const spatial = addSpatialRateRecipe(graph, {
   events, populations, weights, mask, scale: 100000
@@ -32,13 +52,18 @@ pooled = sum(events) / sum(populations)
 risk[i] = events[i] / (populations[i] * pooled)
 ```
 
-The sums include exactly rows with finite events, finite positive population and nonzero optional
+The sums include exactly rows with finite nonnegative events, finite positive population and nonzero optional
 mask. This uses a pooled ratio, never the arithmetic mean of row rates. A nonpositive expected count
-produces NaN, including the all-zero event case. Excluded rows produce NaN. Finite negative events
-are accepted consistently with the existing empirical-Bayes input contract; callers needing count
-validation must provide it before upload. `GPUEmpiricalBayesRates` now exposes the same optional
+produces NaN, including the all-zero event case. Excluded rows, including negative-event rows,
+produce NaN. `GPUEmpiricalBayesRates` exposes the same optional
 `output.excessRisk`, reusing its fixed-order GPU reductions; its existing outputs and defaults are
 unchanged. The recipe computes the existing moments even when only risk is requested.
+
+Zero events are eligible. For events `[6,-2]`, populations `[30,10]`, nonzero masks and reciprocal
+unit edges, only row 0 is eligible: excess risk is `[1,NaN]` and its invalidCount is 1. The spatial
+contributor and recipe with `islandPolicy: 'own-rate'` return `[.2,NaN]`; the default recipe returns
+`[NaN,NaN]` because row 0 has no eligible donor. With events `[0,2]`, both spatial rates are `.05`
+and excess risk is `[0,4]`. All-zero eligible events give spatial rates zero but undefined excess risk.
 
 Spatial rates use the focus row and its included nonself neighbors:
 
@@ -48,18 +73,20 @@ spatial[i] = scale * (events[i] + sum(neighbor events)) /
 ```
 
 `scale` is a finite nonnegative compile-time multiplier, default 1. Excess risk has no scale option.
-`weights` is a square CSR structure: numeric weights are intentionally ignored (the GeoDa binary
-neighborhood convention), including nonunit or zero stored weights. Self edges are skipped to count
+`weights` is a square CSR structure: positive stored weights select active neighbor slots. Their
+magnitudes are ignored (the binary neighborhood convention); zero-weight slots are excluded.
+The bounded neighbor loop clips offsets to slot capacity. Self edges are skipped to count
 the focus row once. Duplicate nonself slots count repeatedly; supply unique slots for a simple
 adjacency graph. Out-of-range neighbors are skipped. Masked, nonfinite or nonpositive-population
-neighbors are excluded. A focus row excluded by those same rules produces NaN.
+neighbors are excluded, as are neighbors with negative events. A focus row excluded by those same
+rules produces NaN. Island detection uses exactly this donor eligibility.
 
 The default `islandPolicy: 'undefined'` produces NaN when there is no included nonself neighbor,
 including islands created by the mask. Set `'own-rate'` to return the focus rate in that case.
 The existing `GPUSpatialEmpiricalBayesRates.output.spatialRates` retains its own-rate island
 behavior. This recipe reuses that contributor and applies the explicit island/scale policy in a
 final GPU pass. It does not average rates or reinterpret CSR numeric weights as exposure weights.
-At most seven storage buffers are bound by the final pass, within default WebGPU limits. The
+At most eight storage buffers are bound by the final pass, including an optional mask, within default WebGPU limits. The
 existing spatial contributor can do extra moment calculations; there is no duplicate rate kernel.
 
 ## Reference audit and limits

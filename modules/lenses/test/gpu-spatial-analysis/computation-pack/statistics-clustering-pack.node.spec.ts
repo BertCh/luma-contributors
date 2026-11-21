@@ -12,16 +12,17 @@ const CLUSTERING_ROOT = `${SOURCE_ROOT}/spatial-clustering`;
 /** Element → the files whose WGSL generators contain the identifiers its curated formula binds. */
 const kernelSources: Record<string, string[]> = {
   GPURoseStatistic: [`${SOURCE_ROOT}/geographic-distribution/gpu-rose-statistic.ts`],
-  GPUSpatialClustering: [`${CLUSTERING_ROOT}/spatial-clustering-kernels.ts`],
+  GPUDBSCAN: [`${CLUSTERING_ROOT}/spatial-clustering-kernels.ts`],
   GPUSpatialKMeans: [`${CLUSTERING_ROOT}/gpu-spatial-kmeans.ts`],
-  GPUHierarchicalDensityClustering: [
-    `${CLUSTERING_ROOT}/hierarchical-density-clustering-kernels.ts`
-  ],
+  GPUHDBSCAN: [`${CLUSTERING_ROOT}/hierarchical-density-clustering-kernels.ts`],
   GPUGroupGeometry: [`${SOURCE_ROOT}/group-geometry/gpu-group-geometry.ts`],
   GPUGroupConvexHull: [`${SOURCE_ROOT}/group-geometry/gpu-group-convex-hull.ts`],
   GPUSimilarLocations: [`${SOURCE_ROOT}/similar-locations/gpu-similar-locations.ts`],
   GPULocalOutlierFactor: [`${SOURCE_ROOT}/outlier-detection/gpu-local-outlier-factor.ts`],
-  GPUEmergingHotSpots: [`${SOURCE_ROOT}/emerging-hot-spots/gpu-emerging-hot-spots.ts`],
+  GPUEmergingHotSpots: [
+    `${SOURCE_ROOT}/emerging-hot-spots/gpu-emerging-hot-spots.ts`,
+    `${SOURCE_ROOT}/emerging-hot-spots/emerging-hot-spot-trend-wgsl.ts`
+  ],
   addSpaceTimeHotSpotsRecipe: [
     `${SOURCE_ROOT}/recipes/space-time-hot-spots-recipe.ts`,
     'modules/analysis/src/dataframe-analysis/period-index/gpu-period-index.ts'

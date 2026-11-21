@@ -365,3 +365,25 @@ it('checks packed scratch maxBufferSize before declaring any buffer, view or nod
     limitedDevice.destroy();
   }
 });
+
+it('COMMON-W3 gathers foreign-prototype vectors including single and empty topology', () => {
+  for (const lengths of [[1], [], [0], [0, 1, 0]]) {
+    const graph = new GPUCommandGraph(device);
+    const chunks = lengths.map((length, index) =>
+      createTransientView(
+        graph,
+        `foreign-${index}`,
+        'uint32',
+        length,
+        Buffer.STORAGE | Buffer.COPY_SRC
+      )
+    );
+    const source = createVector('uint32', chunks);
+    // A separately loaded entry condition has the published shape, but a different prototype.
+    Object.setPrototypeOf(source, Object.prototype);
+    const gathered = createGraphChunkGather(graph, {id: 'foreign-gather', source});
+    expect(gathered.view).not.toBe(source);
+    expect(gathered.view.length).toBe(lengths.reduce((total, length) => total + length, 0));
+    expect(gathered.nodes).toHaveLength(lengths.filter(length => length > 0).length);
+  }
+});

@@ -21,17 +21,20 @@ import {
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY,
   GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH
 } from '../../../src/gpu-spatial-analysis/scan-statistics/index';
-import {createExpectationBasedSpaceTimeScanForTesting} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-expectation-based-space-time-scan';
+import {
+  GPUExpectationBasedSpaceTimeScan,
+  createExpectationBasedSpaceTimeScanForTesting
+} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-expectation-based-space-time-scan';
 import {EXPECTATION_BASED_SCAN_POISSON_WGSL} from '../../../src/gpu-spatial-analysis/scan-statistics/expectation-based-scan-poisson-wgsl';
+import {expectScanWindow} from './prospective-scan-assertions';
 import {getPhiloxOpenUnitFloat} from '../../../src/analysis-core/kernels/philox-random';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
 import {
   computeExpectationBasedScanReference,
   computeReplicateMaximaReference,
   type ExpectationBasedScanScene
 } from './stx07-expectation-based-scan-reference';
-import {getOracleLogLikelihoodRatio} from './scan-statistic-oracle';
 
 function createGrid(side: number): Float32Array {
   const positions = new Float32Array(side * side * 2);
@@ -50,6 +53,7 @@ async function runEB(
     batchReplicates?: number;
     windowLimit?: number;
     seed?: number;
+    publicForm?: boolean;
   }
 ) {
   const device = await getWebGPUTestDevice();
@@ -63,7 +67,10 @@ async function runEB(
   const summary = rig.output('uint32', GPU_EXPECTATION_BASED_SCAN_SUMMARY_LENGTH);
   const zoneStatistics = rig.output('float32', zones);
   rig.run(
-    createExpectationBasedSpaceTimeScanForTesting({
+    (options.publicForm
+      ? (props: ConstructorParameters<typeof GPUExpectationBasedSpaceTimeScan>[0]) =>
+          new GPUExpectationBasedSpaceTimeScan(props)
+      : createExpectationBasedSpaceTimeScanForTesting)({
       positions: rig.input(scene.positions, 'float32x2', zones),
       cases: rig.input(scene.cases, 'uint32'),
       baseline: rig.input(scene.baseline, 'float32'),
@@ -145,8 +152,8 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
       maximumWindowLength: 1
     };
     const result = await runEB(scene, {replicateCount: 9});
-    if (!result.zones) return;
     const expectedScores = [5.090355, 7.538682, 7.538682, 2.591674];
+    expect(result.zoneStatistics.length).toBe(expectedScores.length);
     result.zoneStatistics.forEach((score, zone) => {
       expect(score, `center ${zone}`).toBeCloseTo(expectedScores[zone], 4);
     });
@@ -159,7 +166,9 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
     const {observedCases, expectedCases, logLikelihoodRatio} = GPU_EXPECTATION_BASED_SCAN_CLUSTER;
     expect(result.cluster[observedCases]).toBe(14);
     expect(result.cluster[expectedCases]).toBeCloseTo(4, 6);
-    expect(result.cluster[logLikelihoodRatio]).toBeCloseTo(7.538682, 4);
+    expect(Number.isFinite(result.cluster[logLikelihoodRatio])).toBe(true);
+    // C=14, B=4 fixed independently of the case margins: 14*ln(3.5)+4-14.
+    expect(Math.abs(result.cluster[logLikelihoodRatio] - 7.538681558935153)).toBeLessThan(2e-5);
     expect(result.statistics[0]).toBeCloseTo(7.538682, 4);
   });
 
@@ -180,8 +189,8 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
     const scene = createScene();
     const reference = computeExpectationBasedScanReference(scene, 3);
     const result = await runEB(scene, {replicateCount: 19});
-    if (!result.zones) return;
     expect(result.statistics[0]).toBeCloseTo(reference.best.score, 2);
+    expect(result.zoneStatistics.length).toBe(reference.centerScores.length);
     result.zoneStatistics.forEach((score, zone) => {
       expect(Math.abs(score - reference.centerScores[zone])).toBeLessThan(
         2e-3 * Math.max(1, reference.centerScores[zone])
@@ -215,7 +224,6 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
       maximumReplicates: replicateCount,
       batchReplicates: 16
     });
-    if (!whole.zones || !batched.zones) return;
     expect(batched.statistics).toEqual(whole.statistics);
     const reference = computeReplicateMaximaReference(scene, 12345, replicateCount, 3);
     let close = 0;
@@ -247,7 +255,6 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
     }
     const replicateCount = 299;
     const result = await runEB(scene, {replicateCount, maximumReplicates: replicateCount});
-    if (!result.zones) return;
     const reference = computeReplicateMaximaReference(scene, 12345, replicateCount, 3);
     const exceedances = reference.reduce(
       (sum, maximum) => sum + (maximum >= result.statistics[0] ? 1 : 0),
@@ -273,7 +280,6 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
       };
       const replicateCount = 4000;
       const result = await runEB(scene, {replicateCount, maximumReplicates: replicateCount});
-      if (!result.zones) return;
       const replicates = result.statistics.slice(1);
       const observedMean = replicates.reduce((sum, value) => sum + value, 0) / replicateCount;
       let exactMean = 0;
@@ -295,7 +301,6 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
     const scene = createScene();
     const reference = computeExpectationBasedScanReference(scene, 1);
     const result = await runEB(scene, {replicateCount: 19, windowLimit: 1});
-    if (!result.zones) return;
     expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.windowLength]).toBe(1);
     expect(result.statistics[0]).toBeCloseTo(reference.best.score, 2);
   });
@@ -313,7 +318,6 @@ describe('GPUExpectationBasedSpaceTimeScan', () => {
       maximumWindowLength: 2
     };
     const result = await runEB(scene, {replicateCount: 9});
-    if (!result.zones) return;
     expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.found]).toBe(0);
     expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.memberCount]).toBe(0);
     expect(result.cluster).toEqual([0, 0, 0, 0]);
@@ -387,7 +391,6 @@ describe('the space-time permutation scan cannot see a uniform rise, the expecta
       {positions, cases, baseline, timeBuckets, maximumNeighbors: 25, maximumWindowLength: 3},
       {replicateCount: 99}
     );
-    if (!permutation?.cluster || !expectation.zones) return;
     expect(permutation.summary[GPU_SPATIAL_SCAN_STATISTIC_SUMMARY.clusterCount]).toBe(0);
     expect(permutation.statistics[0]).toBeLessThan(1e-3);
     expect(expectation.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.found]).toBe(1);
@@ -405,7 +408,6 @@ describe('the space-time permutation scan cannot see a uniform rise, the expecta
       {positions, cases, baseline, timeBuckets, maximumNeighbors: 25, maximumWindowLength: 3},
       {replicateCount: 99}
     );
-    if (!permutation?.cluster || !expectation.zones) return;
     if (permutation.summary[GPU_SPATIAL_SCAN_STATISTIC_SUMMARY.clusterCount] > 0) {
       expect(permutation.cluster[GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.pValue]).toBeGreaterThan(0.05);
     }
@@ -477,7 +479,8 @@ describe('GPUSpatialScanStatistic prospective mode', () => {
     const result = {
       indices: await rig.readUint(clusterIndices),
       clusters: await rig.readFloat(clusterStatistics),
-      statistics: await rig.readFloat(statistics)
+      statistics: await rig.readFloat(statistics),
+      summary: await rig.readUint(summary)
     };
     rig.destroy();
     return {...result, positions, cases, baseline};
@@ -515,7 +518,15 @@ describe('GPUSpatialScanStatistic prospective mode', () => {
               expected += baseline[zone * timeBuckets + bucket];
             }
           }
-          const llr = getOracleLogLikelihoodRatio(observed, expected, totalCases, totalBaseline);
+          // Conditional Poisson LLR: compare inside and outside rates directly in binary64.
+          const outsideCases = totalCases - observed;
+          const outsideBaseline = totalBaseline - expected;
+          const llr =
+            observed / expected <= outsideCases / outsideBaseline
+              ? 0
+              : observed * Math.log(observed / expected) +
+                (outsideCases > 0 ? outsideCases * Math.log(outsideCases / outsideBaseline) : 0) -
+                totalCases * Math.log(totalCases / totalBaseline);
           if (llr > best.llr + 1e-9) {
             best = {llr, center, zoneCount, firstBucket};
           }
@@ -528,10 +539,10 @@ describe('GPUSpatialScanStatistic prospective mode', () => {
   it('finds only windows ending at the last bucket and matches a brute-force prospective search', async () => {
     const retrospective = await runScan('retrospective');
     const prospective = await runScan('prospective');
-    if (!retrospective?.indices || !prospective?.indices) return;
     const {firstBucket, lastBucket, center, zoneCount} = GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX;
-    // The strongest retrospective cluster is the middle outbreak.
-    expect(retrospective.indices[lastBucket]).toBeLessThan(timeBuckets - 1);
+    // Pin both independently enumerated positive clusters, including the middle outbreak.
+    expectScanWindow(retrospective, 'retrospective');
+    expectScanWindow(prospective, 'prospective');
     expect(prospective.indices[lastBucket]).toBe(timeBuckets - 1);
     // Whatever the mode, a window may not end at the skipped late outbreak.
     for (let cluster = 0; cluster < 2; cluster++) {
@@ -539,6 +550,7 @@ describe('GPUSpatialScanStatistic prospective mode', () => {
         prospective.indices[cluster * GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS + lastBucket];
       const clusterRatio =
         prospective.clusters[cluster * GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS];
+      expect(Number.isFinite(clusterRatio)).toBe(true);
       if (clusterRatio > 0) {
         expect(clusterLast).toBe(timeBuckets - 1);
       }
@@ -548,19 +560,21 @@ describe('GPUSpatialScanStatistic prospective mode', () => {
       prospective.cases,
       prospective.baseline
     );
+    expect(reference.llr).toBeGreaterThan(0);
+    expect(prospective.summary[GPU_SPATIAL_SCAN_STATISTIC_SUMMARY.clusterCount]).toBeGreaterThan(0);
     expect(prospective.indices[center]).toBe(reference.center);
     expect(prospective.indices[zoneCount]).toBe(reference.zoneCount);
     expect(prospective.indices[firstBucket]).toBe(reference.firstBucket);
-    expect(prospective.clusters[GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.logLikelihoodRatio]).toBeCloseTo(
-      reference.llr,
-      1
-    );
+    const actual = prospective.clusters[GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.logLikelihoodRatio];
+    expect(Number.isFinite(actual)).toBe(true);
+    expect(actual).toBeGreaterThan(0);
+    // Float32 reductions and logs: explicit relative 2e-5 plus 0.002 absolute allowance.
+    expect(Math.abs(actual - reference.llr)).toBeLessThanOrEqual(0.002 + 2e-5 * reference.llr);
   });
 
   it('searches the same restricted windows in the replicates', async () => {
     const retrospective = await runScan('retrospective');
     const prospective = await runScan('prospective');
-    if (!retrospective?.statistics || !prospective?.statistics) return;
     // The same streams over a subset of the windows can only lower each replicate's maximum.
     let lower = 0;
     for (let replicate = 1; replicate < retrospective.statistics.length; replicate++) {
@@ -579,4 +593,85 @@ describe('GPUSpatialScanStatistic prospective mode', () => {
     expect(getGPUScanRecurrenceInterval(0.05, 7)).toBeCloseTo(140, 9);
     expect(() => getGPUScanRecurrenceInterval(0)).toThrow(/recurrence/);
   });
+});
+
+it('public one-zone scan keeps an extreme finite Poisson LLR (CORE-104 follow-up)', async () => {
+  const baseline = Float32Array.of(1e-30);
+  const result = await runEB(
+    {
+      positions: Float32Array.of(0, 0),
+      cases: Uint32Array.of(1000000000),
+      baseline,
+      timeBuckets: 1,
+      maximumNeighbors: 1,
+      maximumWindowLength: 1
+    },
+    {replicateCount: 1, publicForm: true}
+  );
+  // Binary64 log-domain formula, of the actual float32 baseline, avoiding C / B.
+  const expected = 1e9 * (Math.log(1e9) - Math.log(baseline[0])) - 1e9 + baseline[0];
+  const actual = result.cluster[GPU_EXPECTATION_BASED_SCAN_CLUSTER.logLikelihoodRatio];
+  expect(Number.isFinite(actual)).toBe(true);
+  expect(Math.abs(actual - expected)).toBeLessThan(2e-6 * expected);
+  expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.memberCount]).toBe(1);
+  expect(result.zones[0]).toBe(0);
+});
+
+it('orders distinct overflowed ratios and selects the high-ratio subset (CORE-104 ordering)', async () => {
+  const baseline = Float32Array.of(1e-33, 1e-36);
+  // Both float32 quotients overflow; binary64 ratios differ by a factor of one million.
+  expect(Math.fround(1e6 / baseline[0])).toBe(Infinity);
+  expect(Math.fround(1e9 / baseline[1])).toBe(Infinity);
+  const result = await runEB(
+    {
+      positions: Float32Array.of(0, 0, 1, 0),
+      cases: Uint32Array.of(1000000, 1000000000),
+      baseline,
+      timeBuckets: 1,
+      maximumNeighbors: 2,
+      maximumWindowLength: 1
+    },
+    {replicateCount: 1, publicForm: true}
+  );
+  // F({1}) > F({0,1}) > F({0}); the lower-ratio row must not hide singleton {1}.
+  const expected = 1e9 * (Math.log(1e9) - Math.log(baseline[1])) - 1e9 + baseline[1];
+  const actual = result.cluster[GPU_EXPECTATION_BASED_SCAN_CLUSTER.logLikelihoodRatio];
+  expect(Number.isFinite(actual)).toBe(true);
+  expect(Math.abs(actual - expected)).toBeLessThan(2e-6 * expected);
+  expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.memberCount]).toBe(1);
+  expect(result.zones[0]).toBe(1);
+  // Each center sees both candidates. Center 0's low-ratio nearest slot must not sort first.
+  expect(result.zoneStatistics.length).toBe(2);
+  for (const score of result.zoneStatistics) {
+    expect(Number.isFinite(score)).toBe(true);
+    expect(Math.abs(score - expected)).toBeLessThan(2e-6 * expected);
+  }
+  expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.centerZone]).toBe(0);
+});
+
+it('selects the higher overflowing-ratio singleton for the reviewer fixture (CORE-104)', async () => {
+  const result = await runEB(
+    {
+      positions: Float32Array.of(0, 0, 1, 0),
+      cases: Uint32Array.of(3000000, 300000000),
+      baseline: Float32Array.of(3e-33, 1e-36),
+      timeBuckets: 1,
+      maximumNeighbors: 2,
+      maximumWindowLength: 1
+    },
+    {replicateCount: 1, publicForm: true}
+  );
+  // Binary64 C * (ln C - ln B) - C + B of the actual float32 baseline, singleton row 1.
+  const expected = 30423706903.340096;
+  expect(Number.isFinite(result.cluster[0])).toBe(true);
+  expect(Math.abs(result.cluster[0] - expected)).toBeLessThan(2e-6 * expected);
+  expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.memberCount]).toBe(1);
+  expect(result.zones).toHaveLength(2);
+  expect(result.zones[0]).toBe(1);
+  expect(result.zoneStatistics).toHaveLength(2);
+  for (const score of result.zoneStatistics) {
+    expect(Number.isFinite(score)).toBe(true);
+    expect(Math.abs(score - expected)).toBeLessThan(2e-6 * expected);
+  }
+  expect(result.summary[GPU_EXPECTATION_BASED_SCAN_SUMMARY.centerZone]).toBe(0);
 });

@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of GPUTerrainWatersheds on the Dixie Fire DEM. nodes: 593. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of GPUTerrainWatersheds on the Dixie Fire DEM. nodes: 593. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of GPUTerrainWatersheds on the Dixie Fire DEM\n\n- nodes: 593\n- 24 visible units vs budget 24\n- 593 hidden nodes\n- Edges by kind: raw 2693, war 844\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of GPUTerrainWatersheds on the Dixie Fire DEM\n\n- nodes: 593\n- 24 visible units vs budget 24\n- 593 hidden nodes\n- Edges by kind: raw 2694, war 844\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "593"
@@ -31,8 +31,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:16.767Z",
-    "runId": "run-eba10aa6",
+    "date": "2026-11-20T23:51:54.518Z",
+    "runId": "run-84eb3820",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -40,7 +40,7 @@
     ]
   },
   "state": {
-    "runId": "run-eba10aa6",
+    "runId": "run-84eb3820",
     "rung": "graph",
     "bindings": {},
     "clauses": [],

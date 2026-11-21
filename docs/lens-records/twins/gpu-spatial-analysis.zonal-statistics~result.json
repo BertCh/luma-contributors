@@ -12,13 +12,13 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, values → sums. rows: 77. values read back from the GPU run. input pointFeatureRows.geometry: 791 polygons.",
   "description": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, values → sums. rows: 77. values read back from the GPU run. input pointFeatureRows.geometry: 791 polygons.",
-  "llms": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, values → sums\n\n- rows: 77\n- input pointFeatureRows.geometry: 791 polygons\n- input values: 791 rows\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- pointFeatureRows.geometry: 44 of 791 polygons shown; evenly sampled features and vertices\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.zonal-statistics: pointFeatureRows.geometry, values → sums\n\n- rows: 77\n- input pointFeatureRows.geometry: 791 polygons\n- input values: 791 rows\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 77 categories; 5 largest coloured\n- pointFeatureRows.geometry: 44 of 791 polygons shown; evenly sampled features and vertices\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "77"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"tract\"><caption>Chicago tract (tract) · 791 rows</caption><thead><tr><th scope=\"col\">values</th></tr></thead><tbody><tr><td data-provenance=\"readback\">1154</td></tr><tr><td data-provenance=\"readback\">3530</td></tr><tr><td data-provenance=\"readback\">893</td></tr><tr><td data-provenance=\"readback\">1136</td></tr><tr><td data-provenance=\"readback\">904</td></tr><tr><td data-provenance=\"readback\">972</td></tr><tr><td colspan=\"1\">… 785 more rows</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"zone\"><caption>Chicago community area (zone) · 77 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">sums</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">16207</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">22173</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">15724</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">6589</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2810</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">10837</td></tr><tr><td colspan=\"1\">… 71 more rows</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input pointFeatureRows.geometry, values · blue: output sums</p><p class=\"cv-note\">pointFeatureRows.geometry: 44 of 791 polygons shown; evenly sampled features and vertices</p></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"tract\"><caption>Chicago tract (tract) · 791 rows</caption><thead><tr><th scope=\"col\">values</th></tr></thead><tbody><tr><td data-provenance=\"readback\">1154</td></tr><tr><td data-provenance=\"readback\">3530</td></tr><tr><td data-provenance=\"readback\">893</td></tr><tr><td data-provenance=\"readback\">1136</td></tr><tr><td data-provenance=\"readback\">904</td></tr><tr><td data-provenance=\"readback\">972</td></tr><tr><td colspan=\"1\">… 785 more rows</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"zone\"><caption>Chicago community area (zone) · 77 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">sums</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">16207</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">22173</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">15724</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">6589</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2810</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">10837</td></tr><tr><td colspan=\"1\">… 71 more rows</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input pointFeatureRows.geometry, values · blue: output sums</p><p class=\"cv-note\">77 categories; 5 largest coloured · pointFeatureRows.geometry: 44 of 791 polygons shown; evenly sampled features and vertices</p></section>",
     "width": 640,
     "height": 0
   },
@@ -44,8 +44,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:13.675Z",
-    "runId": "run-2c5510fa",
+    "date": "2026-11-20T23:51:41.014Z",
+    "runId": "run-a40dcc28",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -53,7 +53,7 @@
     ]
   },
   "state": {
-    "runId": "run-2c5510fa",
+    "runId": "run-a40dcc28",
     "rung": "result",
     "bindings": {},
     "clauses": [],

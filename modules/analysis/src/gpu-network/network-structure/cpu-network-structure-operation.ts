@@ -65,10 +65,16 @@ export type CPUNetworkStructureResult = {
  * @throws If offsets or reverseEdgeSlots have inconsistent lengths or offsets are not valid CSR.
  */
 export function computeNetworkStructureOnCPU(
-  input: CPUNetworkStructureInput,
+  input:
+    | CPUNetworkStructureInput
+    | {
+        topology: Omit<CPUNetworkStructureInput, 'reverseEdgeSlots'>;
+        reverseEdgeSlots?: Uint32Array;
+      },
   options: {maximumIterations?: number} = {}
 ): CPUNetworkStructureResult {
-  const {offsets, neighbors, reverseEdgeSlots} = input;
+  const {offsets, neighbors} = 'topology' in input ? input.topology : input;
+  const {reverseEdgeSlots} = input;
   const nodeCount = offsets.length - 1;
   const edgeCount = neighbors.length;
   if (options.maximumIterations !== undefined) {

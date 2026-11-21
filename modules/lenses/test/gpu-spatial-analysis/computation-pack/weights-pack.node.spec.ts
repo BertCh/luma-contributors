@@ -18,6 +18,9 @@ const kernelSources: Record<string, string[]> = {
   GPUSpatialWeightsTransform: [
     `${SOURCE_DIRECTORY}/spatial-weights/gpu-spatial-weights-transform.ts`
   ],
+  GPUChunkedSpatialWeightsTransform: [
+    `${SOURCE_DIRECTORY}/spatial-weights/gpu-spatial-weights-transform.ts`
+  ],
   GPUSpatialLag: [`${SOURCE_DIRECTORY}/spatial-weights/gpu-spatial-lag.ts`],
   GPUNeighborSearch: [
     `${SOURCE_DIRECTORY}/neighbor-search/gpu-neighbor-search.ts`,
@@ -38,11 +41,31 @@ const EXPECTED_ELEMENTS = [
   'GPUSpatialWeightsSummary',
   'GPUSpatialWeightsTranspose',
   'GPUSpatialWeightsValidation',
-  'GPUMapColoring'
+  'GPUMapColoring',
+  'GPUChunkedSpatialWeightsValidation',
+  'GPUChunkedSpatialWeightsTranspose',
+  'GPUChunkedSpatialWeightsTransform'
 ];
 
-test('the weights pack covers exactly its twelve elements', () => {
+test('the weights pack covers exactly its fifteen elements', () => {
   expect(Object.keys(WEIGHTS_OPERATORS).sort()).toEqual([...EXPECTED_ELEMENTS].sort());
+});
+
+test('chunked validation and transpose explicitly have no formula', () => {
+  for (const name of ['GPUChunkedSpatialWeightsValidation', 'GPUChunkedSpatialWeightsTranspose'])
+    expect(WEIGHTS_OPERATORS[name].formula).toMatchObject({formula: 'none'});
+});
+
+test('weights algebra advertises the canonical XOR spelling', () => {
+  const choice = WEIGHTS_OPERATORS['GPUSpatialWeightsAlgebra'].choices.find(
+    choice => typeof choice !== 'string' && choice.name === 'operation'
+  );
+  expect(choice).toMatchObject({
+    alternatives: expect.arrayContaining(['symmetric-difference'])
+  });
+  expect(choice).not.toMatchObject({
+    alternatives: expect.arrayContaining(['symmetricDifference'])
+  });
 });
 
 for (const [name, entry] of Object.entries(WEIGHTS_OPERATORS)) {

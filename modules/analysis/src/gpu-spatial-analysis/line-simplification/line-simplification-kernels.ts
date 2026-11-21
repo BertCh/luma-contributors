@@ -269,6 +269,7 @@ export function createLineImportanceInitNode<Parameters>(
     ],
     invocationCount: props.importance.length,
     declarations: `const LINE_COUNT: u32 = ${lineCount}u;
+const ROW_COUNT: u32 = ${props.importance.length}u;
 const ENDPOINT_IMPORTANCE: u32 = ${LINE_ENDPOINT_IMPORTANCE_BITS}u;`,
     body: /* wgsl */ `let firstRow = lineOffsets[lineOffsetsOffset];
   let endRow = lineOffsets[lineOffsetsOffset + LINE_COUNT];
@@ -291,7 +292,7 @@ const ENDPOINT_IMPORTANCE: u32 = ${LINE_ENDPOINT_IMPORTANCE_BITS}u;`,
   }
   let line = low - 1u;
   let lineStart = lineOffsets[lineOffsetsOffset + line];
-  let lineLast = lineOffsets[lineOffsetsOffset + line + 1u] - 1u;
+  let lineLast = min(lineOffsets[lineOffsetsOffset + line + 1u], ROW_COUNT) - 1u;
   if (index == lineStart || index >= lineLast) {
     leftAnchors[leftAnchorsOffset + index] = index;
     rightAnchors[rightAnchorsOffset + index] = index;

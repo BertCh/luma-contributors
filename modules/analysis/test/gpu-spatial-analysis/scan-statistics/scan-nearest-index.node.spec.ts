@@ -9,6 +9,7 @@ import {
   createSpatialScanStatisticForTesting
 } from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic';
 import {GPUExpectationBasedSpaceTimeScan} from '../../../src/gpu-spatial-analysis/scan-statistics/gpu-expectation-based-space-time-scan';
+import {getScanBoundaryPopulationWGSL} from '../../../src/gpu-spatial-analysis/scan-statistics/scan-statistic-nearest-zones';
 import {
   getScanNearestZoneSearchPlan,
   type GPUScanNearestZoneSearch
@@ -20,6 +21,10 @@ import {
   getPrivateMemoryBytes,
   CORE_PRIVATE_MEMORY_LIMIT_BYTES
 } from '../../utils/gpu-contributor-test-utils';
+
+// The Poisson shader writes a rounded population, a boundary count and ten exact limbs
+// per zone after the separation keys. The interpreter requires space for every write.
+const POISSON_BOUNDARY_WORDS_PER_ZONE = 12;
 
 it('one-zone scan indexes short lists instead of evaluating every pair four times', () => {
   const device = createNullWebGPUDevice();
@@ -56,7 +61,8 @@ it('one-zone scan indexes short lists instead of evaluating every pair four time
     const memory: Record<string, Uint32Array | Float32Array> = {
       positions,
       neighbors: new Uint32Array(zones * 2),
-      distances: new Uint32Array(zones * 2),
+      distances: new Uint32Array(zones * (2 + POISSON_BOUNDARY_WORDS_PER_ZONE)),
+      population: new Float32Array(zones).fill(1),
       sortKeys: new Uint32Array(zones * 2),
       sortZones: new Uint32Array(zones * 2),
       sortedRowsX: Uint32Array.from({length: zones}, (_, row) => row),
@@ -108,6 +114,8 @@ ${kernel.source}`
     for (let row = 0; row < zones; row++) {
       expect(memory['neighbors'][row * 2]).toBe(row);
       expect(memory['neighbors'][row * 2 + 1]).toBe(row === 0 ? 1 : row - 1);
+      const boundaryPopulation = new Float32Array(memory['distances'].buffer)[zones * 2 + row];
+      expect(boundaryPopulation).toBe(row === 0 || row === zones - 1 ? 2 : 3);
     }
   } finally {
     device.destroy();
@@ -168,6 +176,10 @@ function createScene(
             summary: view('uint32', 4)
           }
         });
+    expect(scan.estimatedIndexedCandidateSeparationCount).toBe(zones * zones);
+    expect(scan.estimatedIndexedAxisSeparationCount).toBe(2 * zones * (zones + 1));
+    expect(scan.estimatedIndexedSeparationCount).toBe(zones * zones + 2 * zones * (zones + 1));
+    expect(scan.indexedRadixSortCount).toBe(2);
     const nodes = scan.getCommandNodes(graph);
     const sources = getGPUCommandNodeKernelSources(nodes);
     return {
@@ -188,7 +200,24 @@ function getPositionKey(value: number): number {
 }
 
 /** Execute production query WGSL with independently sorted inputs; headless tests exercise GPU sort wiring. */
-function interpretNearest(source: string, positions: Float32Array, listLength: number) {
+function interpretNearest(
+  source: string,
+  positions: Float32Array,
+  listLength: number,
+  population?: Float32Array,
+  countCandidates = false
+) {
+  if (countCandidates) {
+    source = `var<private> candidateEvaluationCount: u32;
+@group(0) @binding(8) var<storage, read_write> candidateCounts: array<u32>;
+${source}`
+      .replace(
+        'fn getZoneSeparationKey(zone: u32, centerX: f32, centerY: f32) -> u32 {',
+        'fn getZoneSeparationKey(zone: u32, centerX: f32, centerY: f32) -> u32 { candidateEvaluationCount++;'
+      )
+      .replace('let row = index * LIST;', 'let row = index * LIST; candidateEvaluationCount = 0u;')
+      .replace(/}\s*$/, 'candidateCounts[index] = candidateEvaluationCount; }');
+  }
   const zones = positions.length / 2;
   const rows = Array.from({length: zones}, (_, row) => row);
   const order = (axis: number) =>
@@ -201,13 +230,17 @@ function interpretNearest(source: string, positions: Float32Array, listLength: n
   const memory: Record<string, Uint32Array | Float32Array> = {
     positions,
     neighbors: new Uint32Array(zones * listLength),
-    distances: new Uint32Array(zones * listLength),
+    distances: new Uint32Array(
+      zones * (listLength + (population ? POISSON_BOUNDARY_WORDS_PER_ZONE : 0))
+    ),
+    ...(population ? {population} : {}),
     sortKeys: new Uint32Array(zones * listLength),
     sortZones: new Uint32Array(zones * listLength),
     sortedRowsX: Uint32Array.from(rowsX),
     sortedRowsY: Uint32Array.from(rowsY),
     sortedKeysX: Uint32Array.from(rowsX, row => getPositionKey(positions[row * 2])),
-    sortedKeysY: Uint32Array.from(rowsY, row => getPositionKey(positions[row * 2 + 1]))
+    sortedKeysY: Uint32Array.from(rowsY, row => getPositionKey(positions[row * 2 + 1])),
+    candidateCounts: new Uint32Array(zones)
   };
   const bindings: Record<number, Record<number, Uint32Array | Float32Array>> = {0: {}};
   for (const binding of new WgslReflect(source).storage) {
@@ -236,8 +269,73 @@ function interpretNearest(source: string, positions: Float32Array, listLength: n
         }
       }
     );
-  return {neighbors: Array.from(memory['neighbors']), keys: Array.from(memory['distances'])};
+  return {
+    neighbors: Array.from(memory['neighbors']),
+    candidateCounts: Array.from(memory['candidateCounts']),
+    keys: Array.from(memory['distances']).slice(0, zones * listLength),
+    boundaryPopulation: Array.from(
+      new Float32Array(memory['distances'].buffer).slice(
+        zones * listLength,
+        zones * (listLength + 1)
+      )
+    ),
+    boundaryCount: Array.from(
+      memory['distances'].slice(zones * (listLength + 1), zones * (listLength + 2))
+    )
+  };
 }
+
+it('R5: a shrinking search radius discards old outer ties and retains the complete new boundary group', () => {
+  // Zone 0 encounters the high-y pair first on the wider x axis. Its next circle
+  // eventually contains only rows 0,3,4: population 1+8+16=25, not the old far pair.
+  const positions = Float32Array.of(0, 0, -0.1, 10, 0.1, 10, -1, 0, 1, 0, 2, 0, 20, 0);
+  const population = Float32Array.of(1, 2, 4, 8, 16, 32, 64);
+  for (const nearestZoneSearch of ['indexed', 'full-scan'] as const) {
+    const {source} = createScene(7, 2, {nearestZoneSearch});
+    const actual = interpretNearest(source, positions, 2, population);
+    expect(actual.boundaryPopulation).toEqual([25, 6, 6, 9, 49, 48, 96]);
+    expect(actual.boundaryCount).toEqual([3, 2, 2, 2, 3, 2, 2]);
+  }
+});
+
+it('R12: boundary population rounds once from the exact positive float32 sum on either route', () => {
+  const positions = Float32Array.of(-1, 0, 0, 0, 1, 0);
+  // IEEE round-to-nearest of the exact sum, not a captured traversal result.
+  for (const [population, expected] of [
+    [Float32Array.of(0.2, 0.2, 1), 1.399999976158142],
+    [Float32Array.of(1, 2 ** -24, 2 ** -25), 1.0000001192092896]
+  ] as const) {
+    for (const nearestZoneSearch of ['indexed', 'full-scan'] as const) {
+      const {source} = createScene(3, 2, {nearestZoneSearch});
+      expect(interpretNearest(source, positions, 2, population).boundaryPopulation[1]).toBe(
+        expected
+      );
+    }
+  }
+});
+
+it('R12: exact boundary accumulator matches IEEE rounding independently of neighbor traversal', () => {
+  const device = createNullWebGPUDevice(),
+    graph = new GPUCommandGraph(device);
+  try {
+    const view = createTransientView(graph, 'sum-input', 'float32', 3);
+    const helpers = getScanBoundaryPopulationWGSL({view, integer: false, buckets: 1});
+    const source = `@group(0) @binding(0) var<storage,read> population:array<f32>;
+@group(0) @binding(1) var<storage,read_write> result:array<u32>;
+const populationOffset:u32=0u;
+${helpers}
+@compute @workgroup_size(1) fn main(){resetBoundaryPopulation();addZoneBoundaryPopulation(0u);addZoneBoundaryPopulation(1u);addZoneBoundaryPopulation(2u);
+for(var word=0u;word<10u;word++){result[word]=boundaryPopulationWords[word];} result[10]=bitcast<u32>(readBoundaryPopulation());}`;
+    const result = new Uint32Array(11);
+    new WgslExec(new WgslParser().parse(source)).dispatchWorkgroups('main', 1, {
+      0: {0: Float32Array.of(0.2, 0.2, 1), 1: result}
+    });
+    expect(Array.from(result.slice(0, 10))).toEqual([0, 0, 0, 0xd0000000, 0x2ccccc, 0, 0, 0, 0, 0]);
+    expect(new Float32Array(result.buffer)[10]).toBe(1.399999976158142);
+  } finally {
+    device.destroy();
+  }
+});
 
 for (const [name, coordinates, geographic] of [
   ['planar ties and duplicates', [0, 0, 1, 0, -1, 0, 0, 1, 0, -1, -0, 0, 20, 0], false],
@@ -390,4 +488,49 @@ it('command estimates cover all models, parallel draw modes, batches and cluster
           device.destroy();
         }
       }
+});
+
+it('bounds indexed candidate and axis evaluations separately from the two radix sorts (PTS-06)', () => {
+  // Each query visits each row at most once. At most N + 1 loop entries evaluate two bounds.
+  // Equal latitudes make every latitude bound zero, so all N squared candidates can be visited.
+  const plan = getScanNearestZoneSearchPlan('scan-budget', 100, 2);
+  expect(plan.estimatedIndexedCandidateSeparationCount).toBe(10000);
+  expect(plan.estimatedIndexedAxisSeparationCount).toBe(20200);
+  expect(plan.estimatedIndexedSeparationCount).toBe(30200);
+  expect(plan.indexedRadixSortCount).toBe(2);
+});
+
+it('equal-latitude geographic queries agree with independent great-circle enumeration (PTS-06)', () => {
+  const positions = Float32Array.of(-170, 30, -80, 30, 0, 30, 40, 30, 120, 30, 179, 30);
+  const listLength = 3;
+  const actual = interpretNearest(
+    createScene(6, listLength, {
+      geographic: true,
+      nearestZoneSearch: 'indexed',
+      expectationBased: true
+    }).source,
+    positions,
+    listLength,
+    undefined,
+    true
+  );
+  expect(actual.candidateCounts).toEqual([6, 6, 6, 6, 6, 6]);
+  for (let center = 0; center < 6; center++) {
+    // Spherical law of cosines; independent of the production haversine helper.
+    const distances = Array.from({length: 6}, (_, row) => {
+      const longitude = ((positions[row * 2] - positions[center * 2]) * Math.PI) / 180;
+      return {row, angle: Math.acos(Math.min(1, 0.25 + 0.75 * Math.cos(longitude)))};
+    }).sort((first, second) => first.angle - second.angle || first.row - second.row);
+    expect(actual.neighbors.slice(center * listLength, (center + 1) * listLength)).toEqual(
+      distances.slice(0, listLength).map(value => value.row)
+    );
+    for (let slot = 0; slot < listLength; slot++) {
+      const key = new Float32Array(
+        Uint32Array.of(actual.keys[center * listLength + slot]).buffer
+      )[0];
+      const angle = 2 * Math.asin(Math.sqrt(key));
+      expect(Number.isFinite(angle)).toBe(true);
+      expect(Math.abs(angle - distances[slot].angle)).toBeLessThan(2e-6);
+    }
+  }
 });

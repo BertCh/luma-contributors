@@ -3,9 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
+import {expectStraightSkeleton} from './straight-skeleton-expectations';
 import {commands} from 'vitest/browser';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {captureLensScenarioRecord, listLensScenarios} from '../../src/computation-lenses/index';
+import {
+  captureLensScenarioRecord,
+  listLensScenarios,
+  fromRecordedLensFile
+} from '../../src/computation-lenses/index';
 
 // Registers every lens scenario descriptor (each loads its GPU code only when run).
 import '../../src/computation-lenses/scenarios/index';
@@ -23,6 +28,13 @@ for (const scenario of scenarios) {
     expect(device, 'Record capture requires WebGPU').toBeTruthy();
     if (!device) throw new Error('Record capture requires WebGPU');
     const recorded = await captureLensScenarioRecord(scenario, device);
+    if (scenario.id === 'gpu-spatial-analysis.vector-straight-skeleton') {
+      const decoded = fromRecordedLensFile(recorded);
+      const snapshots = decoded.record.captures?.snapshots ?? [];
+      expectStraightSkeleton(name =>
+        Array.from(snapshots.find(snapshot => snapshot.name === name)?.values ?? [], Number)
+      );
+    }
     await commands.writeFile(
       `docs/lens-records/${scenario.id}.json`,
       `${JSON.stringify(recorded)}\n`

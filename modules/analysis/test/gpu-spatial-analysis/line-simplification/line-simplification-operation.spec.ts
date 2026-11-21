@@ -254,9 +254,13 @@ for (const method of ['douglas-peucker', 'visvalingam'] as const)
             outputs
           })
         );
+      expect(results[0]['ids']).toHaveLength(4);
+      expect(results[1]['ids']).toHaveLength(4);
       for (const port of outputs) {
         expect(results[0][port].length).toBe(results[1][port].length);
-        for (let index = 0; index < results[1][port].length; index++) {
+        // The result publishes only the first count IDs; GPU capacity beyond it is unspecified.
+        const readableLength = port === 'ids' ? results[1]['count'][0] : results[1][port].length;
+        for (let index = 0; index < readableLength; index++) {
           const expected = results[1][port][index];
           const actual = results[0][port][index];
           // Importance allows 3e-6 relative; integer fields and infinite/zero importance are exact.
@@ -268,3 +272,78 @@ for (const method of ['douglas-peucker', 'visvalingam'] as const)
       expect(results[1]['required'][0]).toBe(empty ? 0 : 5);
     });
   }
+
+for (const method of ['douglas-peucker', 'visvalingam'] as const) {
+  for (const zeroLines of [true, false]) {
+    it(`publishes ${zeroLines ? 'a zero-line window' : 'a clamped resident line'} (${method})`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const props: LineSimplificationOperationProps = {
+        positions: 'positions',
+        lineOffsets: 'offsets',
+        parameters: 'parameters',
+        importance: 'importance',
+        rowCount: 4,
+        lineCount: zeroLines ? 0 : 1,
+        capacity: 4,
+        method,
+        output: {
+          ids: 'ids',
+          outputMask: 'mask',
+          lineCounts: 'lineCounts',
+          lineStarts: 'lineStarts',
+          status: {
+            count: 'count',
+            requiredCount: 'required',
+            overflow: 'overflow',
+            candidateOverflow: 'candidateOverflow',
+            converged: 'converged',
+            iterationCount: 'iterations'
+          }
+        }
+      };
+      const keptCount = zeroLines ? 0 : 2;
+      const expected = {
+        importance: zeroLines ? new Float32Array(4) : Float32Array.of(0, 0, Infinity, Infinity),
+        mask: zeroLines ? new Uint32Array(4) : Uint32Array.of(0, 0, 1, 1),
+        lineCounts: zeroLines ? new Uint32Array() : Uint32Array.of(2),
+        lineStarts: zeroLines ? new Uint32Array() : Uint32Array.of(0),
+        count: Uint32Array.of(keptCount),
+        required: Uint32Array.of(keptCount),
+        overflow: Uint32Array.of(0),
+        candidateOverflow: Uint32Array.of(0),
+        converged: Uint32Array.of(1),
+        iterations: Uint32Array.of(1)
+      };
+      for (const operation of [
+        new GPULineSimplificationOperation(props),
+        new CPULineSimplificationOperation({
+          ...props,
+          storage: zeroLines ? undefined : 'resident-capacity'
+        })
+      ]) {
+        const result = await runOperationGraph(device, {
+          inputs: {
+            positions: {format: 'float32x2', values: Float32Array.of(99, 99, 88, 88, 0, 0, 1, 0)},
+            offsets: {
+              format: 'uint32',
+              values: zeroLines ? Uint32Array.of(2) : Uint32Array.of(2, 14)
+            },
+            parameters: {
+              format: 'float32',
+              values: getGPULineSimplificationParameterValues({method, tolerance: 0})
+            }
+          },
+          operations: [operation],
+          outputs: ['ids', ...Object.keys(expected)]
+        });
+        for (const [port, values] of Object.entries(expected)) expect(result[port]).toEqual(values);
+        expect(result['ids']).toHaveLength(4);
+        // Clamping [2, 14] gives the two-endpoint line [2, 4).
+        expect(result['ids'].slice(0, result['count'][0])).toEqual(
+          zeroLines ? new Uint32Array() : Uint32Array.of(2, 3)
+        );
+      }
+    });
+  }
+}

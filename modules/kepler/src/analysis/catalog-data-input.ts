@@ -83,3 +83,115 @@ export function getCatalogFeatureInputs(
     )
   );
 }
+
+/** Parse a bounded scalar-table snapshot without generating or renaming source columns. */
+export function parseCatalogTableInput(text: string, maximumRows: number): CatalogTableInput {
+  const id = 'catalog-table-input';
+  const parsed: unknown = JSON.parse(text, (_name, value: unknown) => {
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'catalogNumber' in value &&
+      Object.keys(value).length === 1
+    ) {
+      if (value.catalogNumber === '-0') return -0;
+      if (value.catalogNumber === 'NaN') return NaN;
+      if (value.catalogNumber === 'Infinity') return Infinity;
+      if (value.catalogNumber === '-Infinity') return -Infinity;
+    }
+    return value;
+  });
+  validateRequirement(
+    id,
+    typeof parsed === 'object' && parsed !== null,
+    'input must be a table object'
+  );
+  const input = parsed as Record<string, unknown>;
+  validateRequirement(
+    id,
+    input['type'] === 'table' && typeof input['table'] === 'object' && input['table'] !== null,
+    'input.type must be table and input.table must be an object'
+  );
+  const raw = input['table'] as Record<string, unknown>;
+  validateRequirement(
+    id,
+    typeof raw['id'] === 'string' &&
+      typeof raw['label'] === 'string' &&
+      typeof raw['rowCount'] === 'number',
+    'table must declare id, label and numeric rowCount'
+  );
+  validateRequirement(
+    id,
+    raw['geometryColumn'] === undefined && raw['raster'] === undefined,
+    'table must be geometry-free'
+  );
+  validateRequirement(
+    id,
+    typeof raw['columns'] === 'object' &&
+      raw['columns'] !== null &&
+      typeof raw['columnTypes'] === 'object' &&
+      raw['columnTypes'] !== null,
+    'table must declare columns and columnTypes'
+  );
+  const rawColumns = raw['columns'] as Record<string, unknown>;
+  const rawTypes = raw['columnTypes'] as Record<string, unknown>;
+  validateRequirement(
+    id,
+    Object.keys(rawColumns).length === Object.keys(rawTypes).length,
+    'columns and columnTypes must name the same columns'
+  );
+  const table: CatalogOutputTable = {
+    id: raw['id'],
+    label: raw['label'],
+    rowCount: raw['rowCount'],
+    columns: Object.create(null),
+    columnTypes: Object.create(null)
+  };
+  for (const [name, values] of Object.entries(rawColumns)) {
+    validateRequirement(id, Array.isArray(values), `columns.${name} must be an array`);
+    const type = rawTypes[name];
+    validateRequirement(
+      id,
+      type === 'string' || type === 'float64' || type === 'int32' || type === 'boolean',
+      `columnTypes.${name} must be a supported scalar type`
+    );
+    table.columnTypes[name] = type;
+    Object.defineProperty(table.columns, name, {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: values.map((value: unknown) => {
+        validateRequirement(
+          id,
+          value === null ||
+            typeof value === 'string' ||
+            typeof value === 'number' ||
+            typeof value === 'boolean',
+          `columns.${name} must contain scalar values`
+        );
+        return value;
+      })
+    });
+  }
+  validateRequirement(
+    id,
+    input['identityColumn'] === undefined || typeof input['identityColumn'] === 'string',
+    'identityColumn must be a string'
+  );
+  return makeCatalogTableInput(table, {
+    maximumRows,
+    ...(typeof input['identityColumn'] === 'string'
+      ? {identityColumn: input['identityColumn']}
+      : {})
+  });
+}
+
+/** Preserve nonfinite missing measurements and signed zero in scalar-table snapshots. */
+export function serializeCatalogTableInput(input: CatalogTableInput): string {
+  return JSON.stringify(input, (_name, value: unknown) => {
+    if (typeof value !== 'number') return value;
+    return !Number.isFinite(value) || Object.is(value, -0)
+      ? {catalogNumber: Object.is(value, -0) ? '-0' : String(value)}
+      : value;
+  });
+}

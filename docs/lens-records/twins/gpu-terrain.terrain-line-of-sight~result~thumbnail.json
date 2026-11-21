@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoor…",
   "description": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoordinates → sightLineClearanceGeometry. lines: 12. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoordinates → sightLineClearanceGeometry\n\n- lines: 12\n- input dem: 4096 cells\n- input sightLinePairs: 12 rows\n- input sightLineCoordinates: 12 lines\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- sightLineCoordinates: 6 of 12 lines shown; evenly sampled features and vertices; line endpoints retained\n- sightLineVisibilityGeometry: 6 of 12 lines shown; evenly sampled features and vertices; line endpoints retained\n- sightLineClearanceGeometry: 6 of 12 lines shown; evenly sampled features and vertices; line endpoints retained\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-line-of-sight: dem, sightLinePairs, sightLineCoordinates → sightLineClearanceGeometry\n\n- lines: 12\n- input dem: 4096 cells\n- input sightLinePairs: 12 rows\n- input sightLineCoordinates: 12 lines\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- sightLineCoordinates: 6 of 12 lines shown; evenly sampled features and vertices; line endpoints retained\n- sightLineVisibilityGeometry: 6 of 12 lines shown; evenly sampled features and vertices; line endpoints retained\n- sightLineClearanceGeometry: 6 of 12 lines shown; evenly sampled features and vertices; line endpoints retained\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "12"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:15.787Z",
-    "runId": "run-d970ae25",
+    "date": "2026-11-20T23:51:48.793Z",
+    "runId": "run-7de415b7",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-d970ae25",
+    "runId": "run-7de415b7",
     "rung": "result",
     "bindings": {},
     "clauses": [],

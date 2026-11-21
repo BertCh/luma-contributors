@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 import {
   snapshotWeightsFields,
@@ -39,7 +41,8 @@ export type GPULocalVariabilityRecipeProps = {
   minimumNeighbors?: number;
   /** Correction applies only to the Moran test family, never jointly with descriptive LOSH. */
   multipleTesting?: GPUMultipleTestingMethod;
-  outputs?: Partial<GPULocalVariabilityRecipeOutputs>;
+  /** Caller-owned terminal destinations. */
+  output?: Partial<GPULocalVariabilityRecipeOutputs>;
 };
 export type GPULocalVariabilityRecipeResult = GPURecipeResult<
   GPULocalVariabilityRecipeOutputs,
@@ -70,6 +73,7 @@ function declareLocalVariabilityRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPULocalVariabilityRecipeProps
 ): GPULocalVariabilityRecipeResult {
+  const destinations = resolveRecipeDestinations(props.id ?? 'local-variability', props);
   const captured = snapshotWeightsFields(props, [
     'id',
     'weights',
@@ -78,15 +82,14 @@ function declareLocalVariabilityRecipe<Parameters>(
     'parameters',
     'residualPower',
     'minimumNeighbors',
-    'multipleTesting',
-    'outputs'
+    'multipleTesting'
   ]);
   props = Object.freeze({
     ...captured,
     weights: snapshotWeightsPort(captured.weights),
-    ...(captured.outputs
+    ...(destinations
       ? {
-          outputs: snapshotWeightsFields(captured.outputs, [
+          output: snapshotWeightsFields(destinations, [
             'losh',
             'loshStatus',
             'localI',
@@ -101,7 +104,7 @@ function declareLocalVariabilityRecipe<Parameters>(
   });
   const id = props.id ?? 'local-variability';
   const rows = props.values.length;
-  const supplied = props.outputs;
+  const supplied = props.output;
   const floatView = (name: 'losh' | 'localI' | 'zScores' | 'pValues' | 'adjustedPValues') =>
     getOrCreateView(graph, `${id}-${name}`, 'float32', rows, supplied?.[name]);
   const integerView = (name: 'loshStatus' | 'quadrants' | 'moranStatus') =>

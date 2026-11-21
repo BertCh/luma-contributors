@@ -309,7 +309,8 @@ function addWeightedLocalMoran<Parameters>(
       });
       graph.add(permutationContributor);
       addQuadrantGate(graph, `${id}-permutation-gate`, ungatedQuadrants, significant, quadrants);
-      inference = permutationContributor.getInferenceMetadata(permutationSettings);
+      const plan = permutationContributor.getInferenceMetadata(permutationSettings);
+      inference = {...plan, permutationCount: plan.requestedPermutationCount};
     } else {
       addInferenceOverflowReset(graph, `${id}-inference-overflow-reset`, inferenceOverflow);
     }

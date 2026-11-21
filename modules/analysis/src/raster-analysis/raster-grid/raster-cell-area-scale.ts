@@ -46,7 +46,7 @@ export function getRasterEffectiveAxisAlignmentWGSL(
  * Ground area of one cell of `row`, relative to its area in world units, in float64: the product
  * of the two WGS84 ground scales at the row center (see {@link GPURasterCellSizeMode}). It is 1
  * for `'uniform'`. Row edges come from the grid affine, or, when `parameters` (the layout of
- * `getGPURasterFractionalCoverageParameterValues`) is given, from its origin y and row step y,
+ * `getGPURasterFractionalCoverageParameterValues`) is given, from its origin y plus version 2 word 9 absolute-latitude offset, and row step y,
  * like the contributors that read their `parameters` view. CPU twin of the WGSL function from
  * {@link getRasterRowAreaScaleWGSL}.
  */
@@ -69,7 +69,8 @@ export function getRasterRowAreaScale(
             grid.affine[2],
             grid.affine[3],
             parameters[GEOREFERENCE_ROW_Y_SLOT],
-            parameters[GEOREFERENCE_ORIGIN_Y_SLOT]
+            parameters[GEOREFERENCE_ORIGIN_Y_SLOT] +
+              (parameters.length >= 10 && parameters[8] === 2 ? parameters[9] : 0)
           ]
         }
       : grid
@@ -83,7 +84,7 @@ export function getRasterRowAreaScale(
  * Returns WGSL statements that define `let edge: f32`, the world y of the center of `row`
  * (a `u32` in scope): the north and south edges of `grid` interpolated at the row center. With a
  * `georeferenceName` the edges are computed from the origin y and the row step y of that `f32`
- * binding (layout of `getGPURasterFractionalCoverageParameterValues`, with `grid.height` and
+ * binding plus its version 2 word 9 absolute-latitude offset (layout of `getGPURasterFractionalCoverageParameterValues`, with `grid.height` and
  * `grid.pixelInterpretation` compile-time), so they follow a repacked georeference on every
  * encoding. Without it they are baked from `grid.affine`, as the planar cell area is when no
  * `parameters` view is given. Float32, like the terrain `getGroundCellSize`.
@@ -98,7 +99,14 @@ export function getRasterRowEdgeWGSL(grid: GPURasterMetadata, georeferenceName?:
   }
   const offset = `${georeferenceName}Offset`;
   return `${rowFraction}
-  let originY = ${georeferenceName}[${offset} + ${GEOREFERENCE_ORIGIN_Y_SLOT}u];
+  var absoluteOriginYOffset = 0.0;
+  // Legacy word 7 is padding. Only explicit layout 2 carries an absolute Y offset.
+  if (arrayLength(&${georeferenceName}) >= ${offset} + 10u) {
+    if (${georeferenceName}[${offset} + 8u] == 2.0) {
+      absoluteOriginYOffset = ${georeferenceName}[${offset} + 9u];
+    }
+  }
+  let originY = ${georeferenceName}[${offset} + ${GEOREFERENCE_ORIGIN_Y_SLOT}u] + absoluteOriginYOffset;
   let rowStepY = ${georeferenceName}[${offset} + ${GEOREFERENCE_ROW_Y_SLOT}u];
   let northEdge = originY + rowStepY * ${getWGSLFloatLiteral(rowShift)};
   let southEdge = originY + rowStepY * ${getWGSLFloatLiteral(grid.height + rowShift)};

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getOPTICSStatusValues, readOPTICSStatus} from './optics-status-test-utils';
 import type {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -67,11 +68,11 @@ async function runPairs(
     coreDistances: output('core', 'float32'),
     reachability: output('reachability', 'float32'),
     predecessors: output('predecessors', 'uint32'),
-    labels: output('labels', 'uint32'),
-    status: output('status', 'uint32', 3)
+    labels: output('labels', 'uint32')
   };
   const iterationCount = output('iteration-count', 'uint32', 1);
   const converged = output('converged', 'uint32', 1);
+  const invalidCount = output('invalid-count', 'uint32', 1);
   const iterationLimitReached = output('iteration-limit-reached', 'uint32', 1);
   const candidateOverflow = neighborIndex === 'grid' ? output('overflow', 'uint32', 1) : undefined;
   const optics = new GPUOPTICS({
@@ -87,11 +88,11 @@ async function runPairs(
       reachability: outputs.reachability.view,
       predecessors: outputs.predecessors.view,
       labels: outputs.labels.view,
-      status: outputs.status.view,
       ports: {
         status: {
           iterationCount: iterationCount.view,
           converged: converged.view,
+          invalidCount: invalidCount.view,
           iterationLimitReached: iterationLimitReached.view,
           candidateOverflow: candidateOverflow?.view
         }
@@ -112,7 +113,7 @@ async function runPairs(
       reachability: await readFloat32(outputs.reachability.buffer, rows),
       predecessors: await readUint32(outputs.predecessors.buffer, rows),
       labels: await readUint32(outputs.labels.buffer, rows),
-      status: await readUint32(outputs.status.buffer, 3)
+      status: await readOPTICSStatus({iterationCount, converged, invalidCount})
     };
     expect(await readUint32(iterationCount.buffer, 1)).toEqual([rows]);
     expect(await readUint32(converged.buffer, 1)).toEqual([1]);
@@ -134,7 +135,7 @@ it('batched indexed OPTICS agrees exactly with the exhaustive, parallel and CPU 
     reachability: Array.from(reference.reachability),
     predecessors: Array.from(reference.predecessors),
     labels: Array.from(reference.labels),
-    status: Array.from(reference.status)
+    status: getOPTICSStatusValues(reference)
   };
   expect(await runPairs(positions, 'grid', 'sequential', true)).toEqual(expected);
   expect(await runPairs(positions, 'grid', 'sequential', false, 64)).toEqual(expected);

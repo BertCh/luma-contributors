@@ -640,7 +640,7 @@ it('resident grid neighbor search feeds CSR RBF directly without CPU repacking o
         'float32'
       ),
       mode: 'knn',
-      k: 32,
+      neighborCount: 32,
       gridSize: [8, 8],
       output: {
         offsets: offsets.view,

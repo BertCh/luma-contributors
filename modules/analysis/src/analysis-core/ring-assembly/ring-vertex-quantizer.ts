@@ -4,93 +4,94 @@
 
 import {IS_FINITE_VALUE_WGSL} from '../kernels/wgsl-common';
 
-/**
- * The vertex cell size grows with the frame extent so that no cell index exceeds `2^22` in
- * magnitude (f32 holds integers exactly up to `2^23`): `cellSize = max(tolerance, extent * 2^-22)`
- * times {@link GPU_RING_CELL_SLACK}. A cell no smaller than `vertexTolerance` makes the 3 x 3 cell
- * lookup complete, because candidates are still compared by their true coordinate distance
- * against `vertexTolerance`.
- */
-export const GPU_RING_CELL_RESOLUTION_BITS = 22;
-/** Cells are stored as `u32` biased by this value so that negative offsets stay unsigned. */
-export const GPU_RING_CELL_BIAS = 8388608;
-/** Cell size margin that absorbs f32 rounding of `(v - origin) / cellSize` near cell edges. */
-export const GPU_RING_CELL_SLACK = 1.0625;
+const CELL_BIAS = 0x40000000;
+const SIGNIFICAND_BITS = 23;
+const EXPONENT_BIAS = 127;
+const MINIMUM_NORMAL = 2 ** -126;
+const GPU_RING_DEFAULT_TOLERANCE_SCALE = 2 ** -21;
 
 /** CPU mirror of the WGSL vertex quantizer used by `GPUSegmentRingAssembly`. */
 export type GPURingVertexCell = {
-  /** Biased `u32` cell index (`GPU_RING_CELL_BIAS` for the origin cell). */
+  /** Ordered `u32` cell index. */
   cell: number;
-  /** True for a non-finite coordinate (status `overflow`); such vertices are never clamped into a real cell. */
+  /** True for a non-finite coordinate. */
   overflow: boolean;
 };
 
 /**
- * Cell size of a frame: `max(tolerance, extent * 2^-22)` times the rounding slack, where `extent`
- * is the largest `|x - originX|` or `|y - originY|` of any endpoint.
+ * Cells near zero have a power-of-two width strictly greater than the float32 tolerance, with
+ * a minimum width of 2^-126 to accommodate flushed subnormal differences. Where the spacing
+ * of float32 coordinates reaches the cell width, put at most two consecutive coordinates in
+ * each cell. This keeps keys in the positive i32 range, including at float32 extremes.
+ * Matching coordinates are still at most one key apart on each axis.
  */
-export function getRingCellSize(tolerance: number, extent: number): number {
-  return Math.fround(
-    GPU_RING_CELL_SLACK *
-      Math.max(
-        Math.fround(tolerance),
-        Math.fround(Math.fround(extent) * 2 ** -GPU_RING_CELL_RESOLUTION_BITS),
-        Math.fround(1e-30)
-      )
-  );
-}
-
-/**
- * Quantizes one coordinate relative to a local origin exactly as the ring assembly kernels do
- * (f32 arithmetic): `floor((value - origin) / cellSize)`, biased into `u32`. Relative quantization
- * with an extent-adaptive cell keeps projected coordinates (UTM, Web Mercator) from saturating or
- * colliding. Non-finite input reports overflow.
- */
-export function quantizeRingVertexCoordinate(
-  value: number,
-  origin: number,
-  tolerance: number,
-  extent: number = Math.abs(value - origin)
-): GPURingVertexCell {
-  const offset = Math.fround(Math.fround(value) - Math.fround(origin));
-  if (!Number.isFinite(offset)) {
-    return {cell: GPU_RING_CELL_BIAS, overflow: true};
+export function quantizeRingVertexCoordinate(value: number, tolerance: number): GPURingVertexCell {
+  const floats = Float32Array.of(value, tolerance);
+  const bits = new Uint32Array(floats.buffer);
+  const coordinate = floats[0];
+  if (!Number.isFinite(coordinate)) return {cell: 0xffffffff, overflow: true};
+  const magnitude = bits[0] & 0x7fffffff;
+  const cellPower = ((bits[1] & 0x7fffffff) >>> SIGNIFICAND_BITS) + 1 - EXPONENT_BIAS;
+  const cellSize = Math.max(MINIMUM_NORMAL, 2 ** cellPower);
+  const sparseStart = cellSize * 2 ** SIGNIFICAND_BITS;
+  if (Math.abs(coordinate) >= sparseStart) {
+    const sparseBits = new Uint32Array(Float32Array.of(sparseStart).buffer)[0];
+    const sparseRank = magnitude - sparseBits + (coordinate < 0 ? 1 : 0);
+    const magnitudeCell = 2 ** SIGNIFICAND_BITS + (sparseRank >>> 1);
+    return {cell: CELL_BIAS + Math.sign(coordinate) * magnitudeCell, overflow: false};
   }
-  const cell = Math.floor(
-    Math.fround(offset * Math.fround(1 / getRingCellSize(tolerance, extent)))
-  );
-  return {cell: cell + GPU_RING_CELL_BIAS, overflow: false};
+  return {cell: CELL_BIAS + Math.floor(coordinate / cellSize), overflow: false};
 }
 
 /**
- * WGSL helpers shared by the hash, cancel and match kernels. They read the origin (the start
- * vertex of segment row 0) from the `endpoints` binding and the frame extent (f32 bits) from the
- * `counters` binding of the kernel they are declared in. `atomicCounters` says whether that kernel
- * binds `counters` as `array<atomic<u32>>`.
+ * WGSL helpers shared by the hash, cancel and match kernels. The frame extent in `counters`
+ * is needed only when the ring assembler derives the matching tolerance.
  */
 export function getRingQuantizerWGSL(
   toleranceLiteral: string,
   atomicCounters: boolean,
   extentIndex: number
 ): string {
+  const tolerance = Float32Array.of(Number(toleranceLiteral));
+  const toleranceBits = new Uint32Array(tolerance.buffer)[0] & 0x7fffffff;
   const load = atomicCounters
     ? `atomicLoad(&counters[countersOffset + ${extentIndex}u])`
     : `counters[countersOffset + ${extentIndex}u]`;
   return `${IS_FINITE_VALUE_WGSL}
-const TOLERANCE_CELL: f32 = ${toleranceLiteral};
-const CELL_SLACK: f32 = ${GPU_RING_CELL_SLACK};
-const CELL_BIAS: f32 = ${GPU_RING_CELL_BIAS}.0;
+const TOLERANCE_BITS: u32 = ${toleranceBits}u;
+const CELL_BIAS: u32 = ${CELL_BIAS}u;
+// Kept for the ring assembly and contact-peeling callers' shared signature.
 fn ringOrigin() -> vec2f { return vec2f(endpoints[endpointsOffset], endpoints[endpointsOffset + 1u]); }
-// Largest |x - originX| or |y - originY| of any endpoint, measured on the GPU.
 fn ringFrameExtent() -> f32 { return bitcast<f32>(${load}); }
-fn ringInverseCell() -> f32 {
-  // The 1e-30 floor keeps a zero extent with the derived (zero) tolerance finite.
-  return 1.0 / (CELL_SLACK * max(max(TOLERANCE_CELL, ringFrameExtent() * ${2 ** -GPU_RING_CELL_RESOLUTION_BITS}), 1.0e-30));
+fn ringCellToleranceBits() -> u32 {
+  if (TOLERANCE_BITS != 0u) { return TOLERANCE_BITS; }
+  return bitcast<u32>(ringFrameExtent() * ${GPU_RING_DEFAULT_TOLERANCE_SCALE});
 }
-fn ringQuantize(value: f32, origin: f32) -> u32 {
-  let offset = value - origin;
-  if (!isFiniteValue(offset)) { return u32(CELL_BIAS); }
-  return u32(floor(offset * ringInverseCell()) + CELL_BIAS);
+fn ringQuantize(value: f32, _origin: f32) -> u32 {
+  let bits = bitcast<u32>(value);
+  let magnitude = bits & 0x7fffffffu;
+  let exponent = magnitude >> 23u;
+  if (exponent == 255u) { return 0xffffffffu; }
+  let negative = (bits >> 31u) != 0u;
+  let cellExponent = (ringCellToleranceBits() >> 23u) + 1u;
+  let sparseExponent = cellExponent + 23u;
+  var magnitudeCell = 0u;
+  if (exponent >= sparseExponent) {
+    // Pack two consecutive coordinates per cell where the float32 step is wide.
+    // The negative boundary cell also contains the preceding dense coordinate.
+    let sparseRank = magnitude - (sparseExponent << 23u) + select(0u, 1u, negative);
+    magnitudeCell = 0x00800000u + (sparseRank >> 1u);
+  } else {
+    let significand = (magnitude & 0x007fffffu) | select(0u, 0x00800000u, exponent != 0u);
+    let shift = sparseExponent - max(exponent, 1u);
+    if (shift < 24u) {
+      magnitudeCell = significand >> shift;
+      if (negative && (magnitudeCell << shift) != significand) { magnitudeCell++; }
+    } else if (negative && significand != 0u) {
+      magnitudeCell = 1u;
+    }
+  }
+  return select(CELL_BIAS + magnitudeCell, CELL_BIAS - magnitudeCell, negative);
 }
 fn ringHash(qx: u32, qy: u32, group: u32) -> u32 {
   var h = qx * 0x9E3779B1u;

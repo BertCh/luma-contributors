@@ -6,6 +6,7 @@ import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUSpatialWeights} from './spatial-weights';
 import {validateGPUSpatialWeights} from './spatial-weights';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getWeightsLossSources} from './spatial-weights-loss';
 
 /**
  * One row range of a chunked CSR: focus rows `[rowStart, rowStart + rowCount)`. `weights.offsets`
@@ -85,16 +86,22 @@ export function validateGPUSpatialWeightsOrChunks(
 
 /** All views of either form, for graph-membership and disjointness checks. */
 export function getGPUSpatialWeightsOrChunksViews(
-  weights: GPUSpatialWeights | GPUChunkedSpatialWeights
+  weights: GPUSpatialWeights | GPUChunkedSpatialWeights,
+  readCompleteness = false
 ): (GraphDataView<'uint32'> | GraphDataView<'float32'> | undefined)[] {
   return [
+    (weights as {neighborCounts?: GraphDataView<'uint32'>}).neighborCounts,
     ...getGPUSpatialWeightsChunks(weights).flatMap(chunk => [
       chunk.weights.offsets,
       chunk.weights.neighbors,
       chunk.weights.weights,
-      chunk.weights.distances
+      chunk.weights.distances,
+      (chunk.weights as GPUSpatialWeights & {neighborCounts?: GraphDataView<'uint32'>})
+        .neighborCounts
     ]),
-    ...getGPUSpatialWeightsLossViews(weights)
+    ...(readCompleteness
+      ? Object.values(getWeightsLossSources([weights], 'spatial-weights', true)).flat()
+      : getGPUSpatialWeightsLossViews(weights))
   ];
 }
 
@@ -104,11 +111,38 @@ export function getGPUSpatialWeightsLossViews(
 ): GraphDataView<'uint32'>[] {
   return [
     ...new Set(
-      [weights, ...getGPUSpatialWeightsChunks(weights).map(chunk => chunk.weights)]
-        .flatMap(part => [part.status?.overflow, part.status?.candidateOverflow])
-        .filter((view): view is GraphDataView<'uint32'> => view !== undefined)
+      // Collect one port at a time to preserve this helper's established outer-first,
+      // per-port overflow/candidate ordering (the shared collector groups by cause).
+      [weights, ...getGPUSpatialWeightsChunks(weights).map(chunk => chunk.weights)].flatMap(
+        part => {
+          const sources = getWeightsLossSources([{status: part.status}]);
+          return [...sources.overflow, ...sources.candidateOverflow];
+        }
+      )
     )
   ];
+}
+
+/**
+ * Completeness-aware form of {@link getGPUSpatialWeightsLossViews}: `loss` lists the negative
+ * `overflow` and `candidateOverflow` views (nonzero means loss) in the same outer-first order, and
+ * `complete` lists the positive `status.complete` certificates (zero means loss) of the outer port
+ * and every chunk. The loss-only helper keeps refusing certificates, so a caller that cannot
+ * invert one never receives it. @internal
+ */
+export function getGPUSpatialWeightsLossAndCompletenessViews(
+  weights: GPUSpatialWeights | GPUChunkedSpatialWeights,
+  id = 'spatial-weights'
+): {loss: GraphDataView<'uint32'>[]; complete: GraphDataView<'uint32'>[]} {
+  const parts = [weights, ...getGPUSpatialWeightsChunks(weights).map(chunk => chunk.weights)];
+  const loss = new Set<GraphDataView<'uint32'>>();
+  const complete = new Set<GraphDataView<'uint32'>>();
+  for (const part of parts) {
+    const sources = getWeightsLossSources([{status: part.status}], id, true);
+    for (const view of [...sources.overflow, ...sources.candidateOverflow]) loss.add(view);
+    for (const view of sources.complete) complete.add(view);
+  }
+  return {loss: [...loss], complete: [...complete]};
 }
 
 /**

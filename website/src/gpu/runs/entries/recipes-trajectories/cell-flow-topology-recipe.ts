@@ -76,7 +76,7 @@ export default defineOperationRun({
       origins: builder.upload('origins', 'uint32', origins).view,
       destinations: builder.upload('destinations', 'uint32', destinations).view,
       values: flowValues.view,
-      outputs: {
+      output: {
         outgoingTotals: outgoingTotals.view,
         incomingTotals: incomingTotals.view,
         status: {invalidCount: invalid.view}

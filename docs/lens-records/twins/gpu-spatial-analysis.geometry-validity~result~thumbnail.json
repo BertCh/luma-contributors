@@ -13,18 +13,18 @@
     "value": "102"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-4807.16259765625,-7436.1552734375],[6488.47412109375,6691.91015625]]\" role=\"img\" aria-label=\"Result: resultParks\"><defs><pattern id=\"lens-gpu-spatial-analysis-geometry-validity-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-geometry-validity-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-geometry-validity-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><desc>resultParks: 2 of 102 polygons shown; evenly sampled features and vertices</desc><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#8abfdd\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M96.5,36.92 L106.62,76.48 L96.44,34.54 Z\" fill-rule=\"evenodd\" data-feature-row=\"0\" data-capture-id=\"gpu-spatial-analysis-geometry-validity-snapshots-resultParks-0\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"parks\"></path><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#8abfdd\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M92.53,27.61 L92.99,27.28 L92.61,27.59 Z\" fill-rule=\"evenodd\" data-feature-row=\"101\" data-capture-id=\"gpu-spatial-analysis-geometry-validity-snapshots-resultParks-0\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"101\" data-key-space=\"parks\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-4807.16259765625,-7436.1552734375],[6488.47412109375,6691.91015625]]\" role=\"img\" aria-label=\"Result: resultParks\"><defs><pattern id=\"lens-gpu-spatial-analysis-geometry-validity-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-geometry-validity-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-geometry-validity-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><desc>resultParks: 2 of 102 polygons shown; evenly sampled features and vertices</desc><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area cv-v cv-nom-1\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#e69f00\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M96.5,36.92 L106.62,76.48 L96.44,34.54 Z\" fill-rule=\"evenodd\" data-feature-row=\"0\" data-capture-id=\"gpu-spatial-analysis-geometry-validity-snapshots-resultParks-0\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"parks\"></path><path class=\"cv-mark cv-mark--output cv-area cv-v cv-nom-1\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#e69f00\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M92.53,27.61 L92.99,27.28 L92.61,27.59 Z\" fill-rule=\"evenodd\" data-feature-row=\"101\" data-capture-id=\"gpu-spatial-analysis-geometry-validity-snapshots-resultParks-0\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"101\" data-key-space=\"parks\"></path></g><g data-role=\"highlight\"></g></svg></section>",
     "width": 160,
     "height": 96
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:40.208Z",
-    "runId": "run-9963334c",
+    "date": "2026-11-20T23:49:44.170Z",
+    "runId": "run-b9d43148",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-9963334c",
+    "runId": "run-b9d43148",
     "rung": "result",
     "bindings": {},
     "clauses": [],

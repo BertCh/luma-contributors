@@ -9,15 +9,16 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   GPUGroupConvexHull,
   validateGroupConvexHullScratch
 } from '../group-geometry/gpu-group-convex-hull';
 import {
+  createConvexityNode,
   getPositionDeclarations,
   getRingBindings,
-  getRingDeclarations,
+  getRingOffsetDeclarations,
   type FeatureRingInputs
 } from './shape-descriptors-kernels';
 
@@ -50,6 +51,8 @@ export function validateMonotoneChainConvexityScratch(
  * feature index, hulls come from the sort-based monotone chain (`O(n log n)` work, parallel
  * prefilter, exact predicates), and a small kernel integrates each hull. This replaces the
  * `O(vertices * hull vertices)` per-feature gift wrapping when features are large or skewed.
+ * Unordered resident windows can overlap. A device check routes them to per-feature gift wrapping
+ * so every feature uses its full window.
  *
  * @internal
  */
@@ -68,7 +71,44 @@ export function getMonotoneChainConvexityNodes<Parameters>(
   const hullOffsets = createTransientView(graph, `${id}-hull-offsets`, 'uint32', featureCount + 1);
   const hullCounts = createTransientView(graph, `${id}-hull-counts`, 'uint32', featureCount);
   const hullOverflow = createTransientView(graph, `${id}-hull-overflow`, 'uint32', 1);
+  const unorderedWindows = createTransientView(graph, `${id}-unordered-windows`, 'uint32', 1);
+  const ringBindings = getRingBindings(props).filter(binding => binding.name !== 'positions');
+  const windowDeclarations = /* wgsl */ `const ROW_COUNT: u32 = ${rowCount}u;
+const FEATURE_COUNT: u32 = ${featureCount}u;
+${getRingOffsetDeclarations(props)}
+fn getFeatureRowStart(feature: u32) -> u32 { return getRingRowStart(getRingStart(feature)); }
+fn getFeatureRowEnd(feature: u32) -> u32 {
+  let firstRing = getRingStart(feature);
+  let lastRing = max(firstRing, getRingEnd(feature));
+  return max(getRingRowStart(firstRing), getRingRowStart(lastRing));
+}`;
   const nodes: GPUCommandNode<Parameters>[] = [
+    createFillNode(graph, {
+      id: `${id}-reset-window-order`,
+      operation,
+      view: unorderedWindows,
+      type: 'u32',
+      value: '0u'
+    }),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-check-window-order`,
+      operation,
+      variant: 'convexity-window-order',
+      bindings: [
+        ...ringBindings,
+        {
+          name: 'unorderedWindows',
+          view: unorderedWindows,
+          type: 'atomic<u32>',
+          access: 'read_write'
+        }
+      ],
+      invocationCount: featureCount,
+      declarations: windowDeclarations,
+      body: /* wgsl */ `if (index > 0u && getFeatureRowStart(index) < getFeatureRowEnd(index - 1u)) {
+    atomicStore(&unorderedWindows[unorderedWindowsOffset], 1u);
+  }`
+    }),
     // Label each vertex row with the feature that owns it; rows outside every feature are excluded
     // by the label `featureCount`.
     createWGSLKernelNode<Parameters>(graph, {
@@ -76,15 +116,17 @@ export function getMonotoneChainConvexityNodes<Parameters>(
       operation,
       variant: 'convexity-labels',
       bindings: [
-        ...getRingBindings(props),
+        ...ringBindings,
+        {name: 'unorderedWindows', view: unorderedWindows, type: 'u32', access: 'read'},
         {name: 'labels', view: labels, type: 'u32', access: 'read_write'}
       ],
       invocationCount: rowCount,
-      declarations: `${getRingDeclarations(props)}
-const FEATURE_COUNT: u32 = ${featureCount}u;
-fn getFeatureRowStart(feature: u32) -> u32 { return getRingRowStart(getRingStart(feature)); }
-fn getFeatureRowEnd(feature: u32) -> u32 { return max(getRingRowStart(getRingEnd(feature)), getFeatureRowStart(feature)); }`,
-      body: `// Last feature whose first row is at or before this row (skips empty features).
+      declarations: windowDeclarations,
+      body: /* wgsl */ `if (unorderedWindows[unorderedWindowsOffset] != 0u) {
+    labels[labelsOffset + index] = FEATURE_COUNT;
+    return;
+  }
+  // Last feature whose first row is at or before this row (skips empty features).
   var low = 0u;
   var high = FEATURE_COUNT - 1u;
   while (low < high) {
@@ -123,13 +165,15 @@ fn getFeatureRowEnd(feature: u32) -> u32 { return max(getRingRowStart(getRingEnd
         {name: 'hullIndices', view: hullIndices, type: 'u32', access: 'read'},
         {name: 'hullOffsets', view: hullOffsets, type: 'u32', access: 'read'},
         {name: 'hullCounts', view: hullCounts, type: 'u32', access: 'read'},
-        {name: 'convexities', view: props.convexities, type: 'f32', access: 'read_write'}
+        {name: 'convexities', view: props.convexities, type: 'f32', access: 'read_write'},
+        {name: 'unorderedWindows', view: unorderedWindows, type: 'u32', access: 'read'}
       ],
       invocationCount: featureCount,
       declarations: getPositionDeclarations(rowCount),
-      // A hull of three or more vertices implies three or more rows, so the feature's row range is
-      // not needed (the kernel is at the 8-binding limit with the offset views).
-      body: `let area = areas[areasOffset + index];
+      body: /* wgsl */ `if (unorderedWindows[unorderedWindowsOffset] != 0u) {
+    return;
+  }
+  let area = areas[areasOffset + index];
   let hullStart = hullOffsets[hullOffsetsOffset + index];
   let hullCount = hullCounts[hullCountsOffset + index];
   var hullArea = 0.0;
@@ -146,7 +190,8 @@ fn getFeatureRowEnd(feature: u32) -> u32 { return max(getRingRowStart(getRingEnd
     hullArea = 0.5 * twiceArea;
   }
   convexities[convexitiesOffset + index] = select(getNan(index), min(area / hullArea, 1.0), hullArea > 0.0);`
-    })
+    }),
+    createConvexityNode(graph, {...props, id: `${id}-unordered-hull`, unorderedWindows})
   ];
   return nodes;
 }

@@ -63,7 +63,10 @@ export type {
 export {GPULOSHResidualPermutationTest} from './gpu-losh-residual-permutation-test';
 export type {GPULOSHResidualPermutationTestProps} from './gpu-losh-residual-permutation-test';
 export {GPUMultivariateLocalGearyPermutationTest} from './gpu-multivariate-local-geary-permutation-test';
-export type {GPUMultivariateLocalGearyPermutationTestProps} from './gpu-multivariate-local-geary-permutation-test';
+export type {
+  GPUMultivariateLocalGearyPermutationTestProps,
+  GPUMultivariateLocalGearyPermutationTestOutput
+} from './gpu-multivariate-local-geary-permutation-test';
 export {
   EXACT_MULTIVARIATE_GEARY_MAXIMUM_ROWS,
   TILED_MULTIVARIATE_GEARY_MAXIMUM_PERMUTATIONS,

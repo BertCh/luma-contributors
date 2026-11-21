@@ -9,6 +9,9 @@ import {
   type WGSLDispatchGate
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
+/** Fixed byte-radix histogram size and increasing-digit selection bound. @internal */
+export const GPU_WARD_MUTUAL_SELECTION_RADIX_BIN_COUNT = 256;
+
 /** Distributed exact top-budget selection of reciprocal pairs in (cost, seeded key, root) order. */
 export function getWardMutualSelectionNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -63,8 +66,8 @@ fn getWord(region: u32, word: u32) -> u32 {
       id: `${id}-selection-reset`,
       operation: 'GPUWardRegions',
       variant: 'mutual-selection-reset',
-      invocationCount: 256,
-      workgroupSize: 256,
+      invocationCount: GPU_WARD_MUTUAL_SELECTION_RADIX_BIN_COUNT,
+      workgroupSize: GPU_WARD_MUTUAL_SELECTION_RADIX_BIN_COUNT,
       ...gate.getGate(1),
       bindings: [
         {name: 'summary', view: props.summary, type: 'u32', access: 'read_write'},
@@ -142,7 +145,7 @@ fn getWord(region: u32, word: u32) -> u32 {
         ],
         body: `let cursor = summary[summaryOffset + 6u]; let word = cursor / 4u; let shift = 24u - (cursor % 4u) * 8u;
   var remaining = summary[summaryOffset + 2u]; var selected = false;
-  for (var digit = 0u; digit < 256u; digit++) {
+  for (var digit = 0u; digit < ${GPU_WARD_MUTUAL_SELECTION_RADIX_BIN_COUNT}u; digit++) {
     let count = histogram[histogramOffset + digit]; histogram[histogramOffset + digit] = 0u;
     if (!selected) {
       if (remaining > count) { remaining -= count; }

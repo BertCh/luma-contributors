@@ -53,6 +53,11 @@ export function getGPURasterEmbeddingSimilarityParameterValues(
   settings: GPURasterEmbeddingSimilaritySettings,
   target: Float32Array = new Float32Array(GPU_RASTER_EMBEDDING_SIMILARITY_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRequirement(
+    'getGPURasterEmbeddingSimilarityParameterValues',
+    target.length >= 1,
+    'target must hold at least 1 float32 elements; received ' + target.length
+  );
   validateFiniteNumber(
     'getGPURasterEmbeddingSimilarityParameterValues',
     'matchThreshold',
@@ -67,11 +72,11 @@ export type GPURasterEmbeddingSimilarityOutput<
   FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
   UintRows extends RasterEmbeddingView<'uint32'> = GraphDataView<'uint32'>
 > = {
-  /** Similarity of every pixel to every query, `pixel * queryCount + query`; NaN for invalid pixels. */
+  /** Similarity of every pixel to every query, `pixel * queryCount + query`; NaN for invalid pixels or queries. */
   similarity?: FloatRows;
-  /** Largest similarity over the queries; NaN for invalid pixels. */
+  /** Largest eligible similarity over the queries; NaN for invalid pixels or no eligible query. */
   maximum?: FloatRows;
-  /** Index of the most similar query (the lowest on ties); `0xffffffff` for invalid pixels. */
+  /** Index of the most similar query (the lowest on ties); `0xffffffff` for invalid pixels or no eligible query. */
   bestQuery?: UintRows;
   /** 1 where `maximum >= matchThreshold`, else 0. Needs `parameters`. */
   matches?: UintRows;
@@ -114,13 +119,17 @@ export type GPURasterEmbeddingSimilarityProps<
  * {@link GPURasterEmbeddingNearestPixels}.
  *
  * Cosine follows the published `GPUSimilaritySearch`: two zero vectors have similarity one and
- * exactly one zero vector gives zero. Queries must be finite.
+ * exactly one zero vector gives zero. Non-finite queries have NaN scores and cannot win; no eligible query yields NaN maximum,
+ * no-label bestQuery and zero matches. Only finite computed scores can win; overflowed dot
+ * products remain infinite in the score table but are ineligible. Dot products accumulate in float32 band order; decisions
+ * within accumulation rounding error of a threshold or tie can depend on band order and backend.
  *
  * Pixel fields accept GraphVectorView chunks with matching complete-pixel boundaries; shared tables stay packed.
  * Each chunk has its own workgroup count and uses the same pipeline.
  *
  * Per-frame: `parameters` and the contents of the views. Compile-time: `pixelCount`,
  * `dimensions`, `queryCount`, `metric` and which optional views exist.
+ * Pixel vectors accept 1–1,024 dimensions per complete pixel chunk; queryCount is at most 64 per dispatch.
  */
 export class GPURasterEmbeddingSimilarity<
   FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
@@ -132,6 +141,8 @@ export class GPURasterEmbeddingSimilarity<
   readonly estimatedCommandNodeCount: number;
 
   constructor(readonly props: GPURasterEmbeddingSimilarityProps<FloatRows, UintRows>) {
+    props = {...props, output: {...props.output}};
+    this.props = props;
     const id = props.id ?? 'raster-embedding-similarity';
     this.id = id;
     validateRequirement(
@@ -186,7 +197,6 @@ export class GPURasterEmbeddingSimilarity<
       validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     const inputs = this.getInputs();
     const outputs = this.getOutputs();
-    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,
@@ -205,6 +215,7 @@ export class GPURasterEmbeddingSimilarity<
       'vectors',
       1
     );
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.estimatedCommandNodeCount =
       1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * 1;
   }
@@ -302,9 +313,17 @@ if (!isValid) {
   ${writeInvalid}
   return;
 }
-var best = -3.0e38;
-var bestIndex = 0u;
+var best = missing();
+var bestIndex = ${RASTER_EMBEDDING_NO_LABEL}u;
 for (var query = 0u; query < ${queryCount}u; query++) {
+  var queryValid = true;
+  for (var band = 0u; band < ${dimensions}u; band++) {
+    if (!finite(queries[queriesOffset + query * ${dimensions}u + band])) { queryValid = false; }
+  }
+  if (!queryValid) {
+    ${output.similarity ? `similarity[similarityOffset + index * ${queryCount}u + query] = missing();` : ''}
+    continue;
+  }
   var dotProduct = 0.0;
   var queryLength = 0.0;
   ${
@@ -328,11 +347,11 @@ for (var query = 0u; query < ${queryCount}u; query++) {
       : 'let similarityValue = dotProduct;'
   }
   ${output.similarity ? `similarity[similarityOffset + index * ${queryCount}u + query] = similarityValue;` : ''}
-  if (similarityValue > best) { best = similarityValue; bestIndex = query; }
+  if (finite(similarityValue) && (bestIndex == ${RASTER_EMBEDDING_NO_LABEL}u || similarityValue > best)) { best = similarityValue; bestIndex = query; }
 }
 ${output.maximum ? 'maximum[maximumOffset + index] = best;' : ''}
 ${output.bestQuery ? 'bestQuery[bestQueryOffset + index] = bestIndex;' : ''}
-${output.matches ? 'matches[matchesOffset + index] = select(0u, 1u, best >= parameters[parametersOffset]);' : ''}`
+${output.matches ? `matches[matchesOffset + index] = select(0u, 1u, bestIndex != ${RASTER_EMBEDDING_NO_LABEL}u && best >= parameters[parametersOffset]);` : ''}`
       }
     ];
   }

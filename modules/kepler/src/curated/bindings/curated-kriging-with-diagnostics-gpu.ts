@@ -162,7 +162,7 @@ export async function computeCuratedKrigingGpu(
           'float32'
         )
       },
-      outputs: {
+      output: {
         values: values.view,
         variance: variance.view,
         predictions: predictions.view,
@@ -230,7 +230,10 @@ export async function computeCuratedKrigingGpu(
       field: {
         values: Float64Array.from(cellValues, value => value * valueScale + valueOrigin),
         variances: Float64Array.from(cellVariances, value => value * varianceScale),
-        singularCount: status['kriging.uncertainCount']
+        // Keep the legacy field for callers; publication uses the producer-named counts.
+        singularCount: status['kriging.uncertainCount'],
+        uncertainCount: status['kriging.uncertainCount'],
+        invalidCount: status['kriging.invalidCount']
       },
       leaveOneOut: {
         predicted: Float64Array.from(predicted, value => value * valueScale + valueOrigin),

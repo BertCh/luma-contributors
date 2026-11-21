@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {runExample} from './key-join.example';
@@ -24,7 +25,7 @@ function addMatchedRightKeys(captures: readonly GPUComputationCapture[]): GPUCom
   const rightRows = captures.find(capture => capture.name === 'rightRows');
   const tractKeys = captures.find(capture => capture.name === 'tractKeys');
   // The scenario always captures both views it just built.
-  if (!rightRows || !tractKeys) throw new Error('key join captures are missing');
+  if (!rightRows || !tractKeys) throw new Error('key lookup captures are missing');
   const matchedKeys: GPUComputationCapture = {
     ...rightRows,
     id: `${rightRows.id}-right-key`,
@@ -38,12 +39,12 @@ function addMatchedRightKeys(captures: readonly GPUComputationCapture[]): GPUCom
   return [...captures, matchedKeys];
 }
 
-/** Executes the recorded key join once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+/** Executes the recorded key lookup once and reads inputs and outputs from GPU buffers. */
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
   const [tracts, nature] = await Promise.all([
-    loadDataFrameLensData('f-chicago-tracts'),
-    loadDataFrameLensData('f-chicago-nature')
+    loadDataFrameLensData('f-chicago-tracts', options?.datasetResolver),
+    loadDataFrameLensData('f-chicago-nature', options?.datasetResolver)
   ]);
   const poverty = Float32Array.from(tracts.columns.poverty150Pct, value => value ?? NaN);
   const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-key-join');
@@ -60,7 +61,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
     options?.signal?.throwIfAborted();
     return await runDataFrameContributorLens(device, {
       scenarioId: SCENARIO_ID,
-      element: 'GPUKeyJoin',
+      element: 'GPUKeyLookup',
       graph,
       specs: {
         leftKeys: {
@@ -111,7 +112,7 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         createDataFrameChoice('aggregate', 'aggregates', 'none'),
         createDataFrameChoice('aggregate', 'operation', 'disabled: gather only'),
         createDataFrameChoice('aggregate', 'sumScale', 'disabled: no aggregates'),
-        createDataFrameChoice('join', 'kind', 'left', {alternatives: ['left', 'inner']}),
+        createDataFrameChoice('join', 'compactMatchedLeftRows', false, {alternatives: [true]}),
         createDataFrameChoice('join', 'gather', 'poverty150Pct'),
         createDataFrameChoice('filter', 'rightMask', 'tracts with a poverty estimate')
       ],

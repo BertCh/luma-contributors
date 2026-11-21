@@ -249,7 +249,7 @@ describe('GPUSpatialScanStatistic spatial context', () => {
       metric: 'great-circle',
       units
     };
-    expect(constructScan(spatialContext).spatialContext).toBe(spatialContext);
+    expect(constructScan(spatialContext).spatialContext).toEqual(spatialContext);
   });
 
   test('rejects equal-area frames because scan windows measure distance', () => {
@@ -269,7 +269,7 @@ describe('GPUSpatialScanStatistic spatial context', () => {
       units: 'meters',
       frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
     };
-    expect(constructScan(spatialContext).spatialContext).toBe(spatialContext);
+    expect(constructScan(spatialContext).spatialContext).toEqual(spatialContext);
   });
 
   test('great-circle fixture keeps circular window boundaries away from rounding ties', () => {
@@ -336,4 +336,17 @@ describe('GPUSpatialScanStatistic spatial context', () => {
     const planar = computeScanOracle({...scene, spatialContext: undefined}).clusters[0];
     expect(planar.center).not.toBe(primary.center);
   });
+});
+
+test('rejects unknown scan selectors from untyped configurations (UPT-04)', () => {
+  for (const [field, received, accepted] of [
+    ['windowShape', 'knn', 'circle, nearest'],
+    ['windowShape', 'toString', 'circle, nearest'],
+    ['rateDirection', 'low-rate', 'high, low, both']
+  ]) {
+    const settings = {seed: 1, permutationCount: 1, [field]: received};
+    expect(() => getGPUSpatialScanStatisticParameterValues(settings)).toThrow(
+      new RegExp(`${field}.*${received}.*${accepted}`)
+    );
+  }
 });

@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {getGPUGeographicDistributionParameterValues} from '../../../src/gpu-spatial-analysis/geographic-distribution/index';
 import {addClusterAndOutlineRecipe} from '../../../src/gpu-spatial-analysis/recipes/cluster-and-outline-recipe';
-import {getGPUSpatialClusteringParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
+import {getGPUDBSCANParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {computeGroupConvexHullOracle} from '../group-geometry/group-geometry-oracle';
 import {
   clusterPointsOracle,
@@ -39,7 +39,7 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
   const parameters = {
     bounds: [0, 0, EXTENT, EXTENT] as const,
     epsilon: EPSILON,
-    minimumPoints: MINIMUM_POINTS
+    minimumSamples: MINIMUM_POINTS
   };
   const clustering = clusterPointsOracle(positions, parameters);
   const clusterCount = clustering.clusterCount;
@@ -71,7 +71,7 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
       clusteringParameters: fixture.parameters(
         'clustering-parameters',
         'float32',
-        getGPUSpatialClusteringParameterValues(parameters)
+        getGPUDBSCANParameterValues(parameters)
       ),
       gridSize: [32, 32],
       geometryParameters: fixture.parameters(
@@ -82,7 +82,7 @@ it('addClusterAndOutlineRecipe clusters points and outlines each cluster with it
       maximumClusterCount: MAXIMUM_CLUSTERS,
       maximumVerticesPerHull: 64,
       hullCapacity: 1024,
-      outputs: {
+      output: {
         labels: labels.view,
         clusterCount: count.view,
         hullOffsets: hullOffsets.view,
@@ -184,10 +184,10 @@ it('addClusterAndOutlineRecipe rejects non-great-circle longitude/latitude conte
         clusteringParameters: fixture.parameters(
           'clustering-parameters',
           'float32',
-          getGPUSpatialClusteringParameterValues({
+          getGPUDBSCANParameterValues({
             bounds: [0, 0, 1, 1],
             epsilon: 0.1,
-            minimumPoints: 2
+            minimumSamples: 2
           })
         ),
         gridSize: [4, 4],

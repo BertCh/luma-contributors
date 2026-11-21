@@ -53,6 +53,7 @@ import {
   type GPUTerrainWeissStandardization
 } from '@luma-contributors/analysis/gpu-terrain';
 import {GraphSwap} from '../graph-swap';
+import {createSingleCurvatureOutput} from '../../spatial-analysis-showcase/src/scenes/terrain/single-curvature-output';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import type {
@@ -415,9 +416,10 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
             elevation,
             parameters: settingsView,
             method: curvatureMethod,
-            output: isRing
-              ? {ringCurvature: curvature}
-              : {curvatures: {[curvatureChoice as GPUTerrainCurvatureKind]: curvature}},
+            output:
+              curvatureChoice === 'ring-multi-radius'
+                ? {ringCurvature: curvature}
+                : createSingleCurvatureOutput(curvatureChoice, curvature),
             ...(isRing ? {ringRadii: [ringRadius, ringRadius * 4]} : {}),
             cellSizeMode: 'uniform',
             rowDirection: 'south'

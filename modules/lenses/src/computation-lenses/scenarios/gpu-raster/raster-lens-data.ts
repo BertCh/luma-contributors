@@ -33,12 +33,15 @@ export type TLensGrid = {
 function toLensGrid(file: TGridFile): TLensGrid {
   const geographic = file.crs === 'EPSG:4326';
   return {
-    grid: makeGPURasterMetadata({
-      width: file.width,
-      height: file.height,
-      cellSize: file.cellSize,
-      origin: [file.origin[0], file.origin[1]]
-    }),
+    grid: {
+      ...makeGPURasterMetadata({
+        width: file.width,
+        height: file.height,
+        cellSize: file.cellSize,
+        origin: [file.origin[0], file.origin[1]]
+      }),
+      coordinateReferenceSystem: {authority: file.crs}
+    },
     coordinateModel: geographic ? 'geographic' : 'projected',
     unit: geographic ? 'deg' : 'm',
     crs: file.crs,

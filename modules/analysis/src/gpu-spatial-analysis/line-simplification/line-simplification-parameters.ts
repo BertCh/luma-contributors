@@ -6,6 +6,8 @@ import {
   type GPUSpatialContext,
   warnGPUShortLongitudeLatitudeDistance
 } from '../../analysis-core/contracts/spatial-context';
+import {validateGeometryFloat32Setting} from '../geometry-edit/float32-setting-validation';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPULineSimplificationMethod} from './gpu-line-simplification';
 
 /** Number of float32 elements in a line-simplification parameter buffer. */
@@ -54,9 +56,12 @@ export function getGPULineSimplificationParameterValues(
     );
   }
   const {tolerance} = settings;
-  if (!Number.isFinite(tolerance) || tolerance < 0) {
-    throw new Error('Line simplification tolerance must be finite and non-negative');
-  }
+  validateGeometryFloat32Setting('GPULineSimplification', 'tolerance', tolerance, true, true);
+  validateRequirement(
+    'GPULineSimplification',
+    settings.method === undefined || ['douglas-peucker', 'visvalingam'].includes(settings.method),
+    `method must be douglas-peucker or visvalingam; received ${settings.method}`
+  );
   if ((settings.method ?? 'douglas-peucker') === 'douglas-peucker') {
     warnGPUShortLongitudeLatitudeDistance(
       'GPULineSimplification',

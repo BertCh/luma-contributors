@@ -20,7 +20,13 @@ export async function runExample(
   const parkCount = parks.featureOffsets.length - 1;
   const output = {
     points: createTransientView(graph, 'labelPoints', 'float32x2', parkCount, usage),
-    distances: createTransientView(graph, 'inscribedRadii', 'float32', parkCount, usage),
+    publishedCenterClearance: createTransientView(
+      graph,
+      'inscribedRadii',
+      'float32',
+      parkCount,
+      usage
+    ),
     degenerate: createTransientView(graph, 'degenerate', 'uint32', parkCount, usage)
   };
   graph.add(
@@ -34,7 +40,7 @@ export async function runExample(
     })
   );
   // distances: radius in metres of the largest circle found around each label point
-  const {points: labelPoints, distances} = output;
+  const {points: labelPoints, publishedCenterClearance: distances} = output;
   // #endregion example
   return {...output, labelPoints, distances};
 }

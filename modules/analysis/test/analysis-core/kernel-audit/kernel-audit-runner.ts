@@ -3,12 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphBufferHandle, GraphDataView, GraphTextureHandle} from '@luma.gl/graph/gpu-core';
+import {AnalysisValidationError} from '../../../src/analysis-core/kernels/analysis-validation-error';
+import {isDeepStrictEqual} from 'node:util';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   createKernelAuditContext,
   getDeclaredNodes,
   recordShaderModules,
-  type KernelAuditCase
+  type KernelAuditCase,
+  type RejectionObservation
 } from './kernel-audit-context';
 import {
   GENERIC_REFUSAL_PATTERNS,
@@ -29,14 +32,31 @@ export function getExpectedRejection(auditCase: KernelAuditCase): KernelAuditRej
  * `rejects`, name the documented `limit`, and come from the contributor's own prop check rather
  * than a generic guard.
  */
-function getRefusalFindings(
-  message: string,
-  rejection: KernelAuditRejection | undefined
+export function getKernelAuditRefusalFindings(
+  error: unknown,
+  rejection: KernelAuditRejection | undefined,
+  observation?: RejectionObservation
 ): KernelAuditFinding[] {
+  // Preserve the representative legacy message matchers while asserting the stable class/fields.
+  const message =
+    error instanceof AnalysisValidationError ? `Error: ${error.message}` : String(error);
   if (!rejection) {
     return [{location: 'build', check: 'build throws', detail: message}];
   }
   const findings: KernelAuditFinding[] = [];
+  if (rejection.validation) {
+    if (!(error instanceof AnalysisValidationError))
+      findings.push({location: 'build', check: 'structured refusal class', detail: String(error)});
+    for (const [field, expected] of Object.entries(rejection.validation)) {
+      const received = (error as Record<string, unknown> | null)?.[field];
+      if (!isDeepStrictEqual(received, expected))
+        findings.push({
+          location: 'build',
+          check: 'structured refusal',
+          detail: `${field}: expected ${JSON.stringify(expected)}, received ${JSON.stringify(received)}`
+        });
+    }
+  }
   if (!rejection.rejects.test(message)) {
     findings.push({location: 'build', check: 'unexpected refusal', detail: message});
   }
@@ -45,6 +65,32 @@ function getRefusalFindings(
   }
   if (GENERIC_REFUSAL_PATTERNS.some(pattern => pattern.test(message))) {
     findings.push({location: 'build', check: 'generic refusal', detail: message});
+  }
+  const boundary = observation?.error === error ? observation : undefined;
+  if (!boundary) {
+    findings.push({
+      location: 'build',
+      check: 'missing refusal boundary',
+      detail:
+        'measure the escaping exception with context.construct or context.declare after fixture allocation'
+    });
+  } else {
+    if (rejection.phase && boundary.phase !== rejection.phase)
+      findings.push({
+        location: 'build',
+        check: 'refusal phase',
+        detail: `${boundary.phase}, expected ${rejection.phase}`
+      });
+    const {before, after} = boundary;
+    const changed = (Object.keys(after) as (keyof typeof after)[]).filter(
+      key => after[key] !== before[key]
+    );
+    if (changed.length)
+      findings.push({
+        location: 'build',
+        check: 'refusal mutated graph',
+        detail: JSON.stringify({before, after, changed})
+      });
   }
   return findings;
 }
@@ -155,6 +201,8 @@ export type KernelAuditResult = {
   findings: KernelAuditFinding[];
   /** Number of declared command nodes. */
   nodeCount: number;
+  /** Deltas immediately around the refused operation, after fixture allocation. */
+  rejectionObservation?: import('./kernel-audit-context').RejectionObservation;
   /** Number of recorded shader modules. */
   moduleCount: number;
   /** Whether the case was rejected at declaration as its `rejects` pattern expects. */
@@ -166,15 +214,26 @@ export type KernelAuditResult = {
  * returns every finding: a build or compile throw (a prop the constructor accepted but the graph
  * cannot run, such as `capacity x lanes > 2^32 - 1`), WGSL traps and core-limit violations.
  */
-export function auditKernelCase(auditCase: KernelAuditCase): KernelAuditResult {
+export function auditKernelCase(
+  auditCase: KernelAuditCase,
+  rejection = getExpectedRejection(auditCase)
+): KernelAuditResult {
   const context = createKernelAuditContext(auditCase.exportName);
-  const rejection = getExpectedRejection(auditCase);
   try {
     try {
       auditCase.build(context);
     } catch (error) {
-      const findings = getRefusalFindings(String(error), rejection);
-      return {findings, nodeCount: 0, moduleCount: 0, rejected: findings.length === 0};
+      const observation =
+        context.rejectionObservation?.error === error ? context.rejectionObservation : undefined;
+      const findings = getKernelAuditRefusalFindings(error, rejection, observation);
+      const nodeCount = getDeclaredNodes(context).length;
+      return {
+        findings,
+        nodeCount,
+        rejectionObservation: observation,
+        moduleCount: 0,
+        rejected: findings.length === 0
+      };
     }
     if (rejection) {
       return {
@@ -217,4 +276,19 @@ export function formatKernelAuditFindings(findings: readonly KernelAuditFinding[
   return findings
     .map(({location, check, detail}) => `${check}: ${detail} @ ${location}`)
     .join('\n');
+}
+
+/**
+ * Every finding of a registered case: resource budgets (workgroup, private, binding and buffer
+ * bytes, invocation counts), WGSL traps, build and compile throws and refusal checks alike. A
+ * case that is not refused must also record at least one shader module. No check name is
+ * filtered out: a resolved over-budget diagnostic is as blocking as an unresolved layout
+ * (CORE-114).
+ */
+export function getKernelAuditResultFailures(result: KernelAuditResult): KernelAuditFinding[] {
+  const failures = [...result.findings];
+  if (!result.rejected && result.moduleCount === 0) {
+    failures.push({location: 'compile', check: 'no shader module', detail: 'recorded 0 modules'});
+  }
+  return failures;
 }

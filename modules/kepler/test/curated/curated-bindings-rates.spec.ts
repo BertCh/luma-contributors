@@ -277,7 +277,8 @@ for (const dataset of ['sample', 'recipe-fixture'] as const) {
       );
     expect(table.rowCount).toBe(areas.features.length);
     expect(table.geometryColumn).toBe('geometry');
-    expect(result.summary['minimumPseudoPValue']).toBe(2 / 1000);
+    // The doubled smaller tail has a minimum of two counts, stored as Float32 by the recipe.
+    expect(result.summary['minimumPseudoPValue']).toBe(Math.fround(2 / 1000));
     expect(result.summary['permutationAlternative']).toBe('two-sided-doubled-tail');
     expect(result.diagnostics.find(item => item.code === 'gpu-inference-method')).toBeDefined();
     expect(result.diagnostics.find(item => item.code === 'pseudo-p-values')?.message).toContain(

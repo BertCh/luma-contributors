@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getPointCloudReadbackLaneReader} from './pointcloud-readback';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import type {
@@ -12,6 +14,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateMaximumCount,
   validateRequirement,
@@ -67,7 +70,9 @@ export type GPUPointCloudChangeProps = {
   normals: GraphDataView<'float32x3'>;
   /** Explicit aligned-frame certification, or a column-major comparison-to-reference rigid transform (for example ICP output). */
   alignment: 'already-aligned' | {transform: GraphDataView<'float32'>};
+  /** Cylinder radius in input coordinate units; its float32 square must be finite and positive. */
   radius: number;
+  /** Cylinder half depth in input coordinate units; must remain finite and strictly positive in float32. */
   halfDepth: number;
   minimumSupport?: number;
   /** Nonnegative registration uncertainty in coordinate units, added to the sampling standard error. */
@@ -76,7 +81,7 @@ export type GPUPointCloudChangeProps = {
   registrationCovariance?: readonly [number, number, number, number, number, number];
   /** Linear matches the M3C2 convention; quadrature combines independent Gaussian registration and sampling errors. */
   uncertaintyCombination?: 'linear' | 'quadrature';
-  /** Two-sided normal quantile, default1.96 (95%); caller specifies their confidence convention. */
+  /** Dimensionless two-sided normal quantile, default 1.96 (95%); must remain finite and strictly positive in float32. */
   confidenceMultiplier?: number;
   /** Optional known covariance of normal-direction measurement error: sigma² exp(-distance²/(2 length²)).
    * Uses all within-cylinder pairs exactly; variances are supplied separately from empirical roughness. */
@@ -112,6 +117,83 @@ export const GPU_POINT_CLOUD_CHANGE_STATUS_INVALID_CORE = 1;
 export const GPU_POINT_CLOUD_CHANGE_STATUS_INSUFFICIENT_SUPPORT = 2;
 /** `GPUPointCloudChange` status code: the uncertainty is not finite in float32. */
 export const GPU_POINT_CLOUD_CHANGE_STATUS_NONFINITE_UNCERTAINTY = 3;
+
+/** Decode the outcome independently of the grid-support qualification. */
+export function decodeGPUPointCloudChangeStatus(
+  value: number | Uint32Array | Uint8Array | ArrayBuffer
+) {
+  const word =
+    typeof value === 'number'
+      ? value
+      : getPointCloudReadbackLaneReader(
+          'decodeGPUPointCloudChangeStatus',
+          'status',
+          value,
+          'uint32',
+          1
+        )(0);
+  validateCapacity('decodeGPUPointCloudChangeStatus', 'word', word, 0);
+  const code = (word & ~GPU_POINT_CLOUD_CHANGE_STATUS_GRID_INCOMPLETE) >>> 0;
+  const outcomes = [
+    'valid',
+    'invalid-core',
+    'insufficient-support',
+    'nonfinite-uncertainty'
+  ] as const;
+  return {
+    word,
+    code,
+    outcome: outcomes[code] ?? 'unknown',
+    gridIncomplete: Boolean(word & GPU_POINT_CLOUD_CHANGE_STATUS_GRID_INCOMPLETE)
+  };
+}
+
+/** Readbacks of the four point-cloud change ports, in their original element types or raw bytes. */
+export type GPUPointCloudChangeReadback = {
+  changes: Float32Array | Uint8Array | ArrayBuffer;
+  roughness: Float32Array | Uint8Array | ArrayBuffer;
+  counts: Uint32Array | Uint8Array | ArrayBuffer;
+  status: Uint32Array | Uint8Array | ArrayBuffer;
+};
+
+/** Decode one core row. Displacement, bounds, roughness and detection limit use the input coordinate units. */
+export function decodeGPUPointCloudChangeRow(output: GPUPointCloudChangeReadback, row: number) {
+  const id = 'decodeGPUPointCloudChangeRow';
+  validateCapacity(id, 'row', row, 0, Math.floor(Number.MAX_SAFE_INTEGER / 3) - 1);
+  const changes = getPointCloudReadbackLaneReader(
+    id,
+    'changes',
+    output.changes,
+    'float32',
+    (row + 1) * 3
+  );
+  const roughness = getPointCloudReadbackLaneReader(
+    id,
+    'roughness',
+    output.roughness,
+    'float32',
+    (row + 1) * 3
+  );
+  const counts = getPointCloudReadbackLaneReader(
+    id,
+    'counts',
+    output.counts,
+    'uint32',
+    (row + 1) * 2
+  );
+  const status = getPointCloudReadbackLaneReader(id, 'status', output.status, 'uint32', row + 1);
+  return {
+    displacement: changes(row * 3),
+    lowerBound: changes(row * 3 + 1),
+    upperBound: changes(row * 3 + 2),
+    referenceRoughness: roughness(row * 3),
+    comparisonRoughness: roughness(row * 3 + 1),
+    detectionLimit: roughness(row * 3 + 2),
+    referenceCount: counts(row * 2),
+    comparisonCount: counts(row * 2 + 1),
+    status: decodeGPUPointCloudChangeStatus(status(row))
+  };
+}
 
 /** Twelve uint32 words: support followed by float32 bit patterns for uncertainty settings. */
 export const GPU_POINT_CLOUD_CHANGE_PARAMETER_LENGTH = 12;
@@ -159,9 +241,9 @@ function validatePointCloudChangeSettings(
   );
   validateRequirement(
     identifier,
-    (props.confidenceMultiplier ?? 1.96) > 0 &&
+    Math.fround(props.confidenceMultiplier ?? 1.96) > 0 &&
       Number.isFinite(Math.fround(props.confidenceMultiplier ?? 1.96)),
-    'confidenceMultiplier must be positive and finite in float32'
+    `confidenceMultiplier must be positive and finite in float32; received ${props.confidenceMultiplier ?? 1.96}, rounded ${Math.fround(props.confidenceMultiplier ?? 1.96)}`
   );
   if (props.samplingCovariance) {
     const covariance = props.samplingCovariance;
@@ -251,6 +333,27 @@ export class GPUPointCloudChange implements GPUCommandNodeProducer {
       'output'
     ]);
     this.id = props.id ?? 'gpu-pointcloud-change';
+    // Capture the nested descriptor before validating its handle, so later edits/getters cannot
+    // redirect the alignment stage to a different resource.
+    props = {
+      ...props,
+      alignment:
+        typeof props.alignment === 'object' && props.alignment !== null
+          ? snapshotConstructionFields(props.alignment, ['transform'])
+          : props.alignment
+    };
+    validateGraphPorts(this.id, props, {
+      reference: {required: true, viewType: 'data', formats: ['float32x3']},
+      comparison: {required: true, viewType: 'data', formats: ['float32x3']},
+      cores: {required: true, viewType: 'data', formats: ['float32x3']},
+      normals: {required: true, viewType: 'data', formats: ['float32x3']},
+      parameters: {required: false, viewType: 'data', formats: ['uint32']},
+      'alignment.transform': {required: false, viewType: 'data', formats: ['float32']},
+      'output.changes': {required: true, viewType: 'data', formats: ['float32x3']},
+      'output.roughness': {required: true, viewType: 'data', formats: ['float32x3']},
+      'output.counts': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     validateRequirement(
       this.id,
       props.output !== undefined && props.output !== null,
@@ -260,6 +363,23 @@ export class GPUPointCloudChange implements GPUCommandNodeProducer {
       ...props,
       output: snapshotConstructionFields(props.output, ['changes', 'roughness', 'counts', 'status'])
     });
+    validateRequirement(
+      this.id,
+      props.alignment === 'already-aligned' ||
+        (typeof props.alignment === 'object' &&
+          props.alignment !== null &&
+          Boolean(props.alignment.transform)),
+      "alignment must be 'already-aligned' or hold a float32 transform; received " +
+        String(props.alignment)
+    );
+    validateRequirement(
+      this.id,
+      props.uncertaintyCombination === undefined ||
+        props.uncertaintyCombination === 'linear' ||
+        props.uncertaintyCombination === 'quadrature',
+      "uncertaintyCombination must be 'linear' or 'quadrature'; received " +
+        String(props.uncertaintyCombination)
+    );
     validatePointCloudPackedViews(
       this.id,
       {
@@ -316,8 +436,8 @@ export class GPUPointCloudChange implements GPUCommandNodeProducer {
     );
     validateRequirement(
       this.id,
-      props.halfDepth > 0 && Number.isFinite(Math.fround(props.halfDepth)),
-      'halfDepth must be positive and finite in float32'
+      Math.fround(props.halfDepth) > 0 && Number.isFinite(Math.fround(props.halfDepth)),
+      `halfDepth must be positive and finite in float32; received ${props.halfDepth}, rounded ${Math.fround(props.halfDepth)}`
     );
     validatePointCloudChangeSettings(this.id, props);
     if (props.parameters) {
@@ -416,8 +536,8 @@ writeAligned(index,rotation*readComparison(index)+translation);`
         })
       );
     }
-    const halfDepth = Math.fround(this.props.halfDepth);
-    const radiusSquared = Math.fround(this.props.radius ** 2);
+    const halfDepth = getWGSLFloatLiteral(this.props.halfDepth);
+    const radiusSquared = getWGSLFloatLiteral(this.props.radius ** 2);
     const minimumSupport = parameters ? 'readParameters(0u)' : `${this.props.minimumSupport ?? 3}u`;
     const samplingCovariance = this.props.samplingCovariance;
     const registrationCovarianceSource = parameters
@@ -442,11 +562,11 @@ writeAligned(index,rotation*readComparison(index)+translation);`
             secondThirdCovariance,
             thirdVariance
           ]
-            .map(Math.fround)
+            .map(getWGSLFloatLiteral)
             .join(',');
         })();
     const registrationVarianceSource = `let registrationCovariance = mat3x3f(${registrationCovarianceSource});
-let registrationVariance = max(dot(normal,registrationCovariance*normal),0.0)+${parameters ? 'bitcast<f32>(readParameters(1u))' : Math.fround((this.props.registrationError ?? 0) ** 2)};`;
+let registrationVariance = max(dot(normal,registrationCovariance*normal),0.0)+${parameters ? 'bitcast<f32>(readParameters(1u))' : getWGSLFloatLiteral((this.props.registrationError ?? 0) ** 2)};`;
 
     // One kernel per cloud keeps each under the storage-binding limit of a shader stage (a grid adds
     // two bindings per cloud); the final kernel combines the two clouds' moments.
@@ -495,18 +615,18 @@ ${body}
       };
       const gridBounds = grid
         ? `// Bounding box of the cylinder: half-depth along the normal plus radius across it, one cell of margin.
-let halfExtent = vec3f(${halfDepth}) * abs(normal) + ${Math.fround(this.props.radius)} * sqrt(max(vec3f(1.0) - normal * normal, vec3f(0.0)));
-let displacement = core - vec3f(${grid.origin.map(Math.fround).join(',')});
+let halfExtent = vec3f(${halfDepth}) * abs(normal) + ${getWGSLFloatLiteral(this.props.radius)} * sqrt(max(vec3f(1.0) - normal * normal, vec3f(0.0)));
+let displacement = core - vec3f(${grid.origin.map(getWGSLFloatLiteral).join(',')});
 // Clamp in floating point before integer conversion so far-away cores cannot overflow cell coordinates.
-let lower = vec3i(clamp(floor(getPointCloudQuotient3(displacement - halfExtent, ${Math.fround(grid.cellSize)})) - vec3f(1.0), vec3f(0.0), vec3f(${grid.dimensions.map(value => `${value}.0`).join(',')})));
-let upper = vec3i(clamp(floor(getPointCloudQuotient3(displacement + halfExtent, ${Math.fround(grid.cellSize)})) + vec3f(1.0), vec3f(-1.0), vec3f(${grid.dimensions.map(value => `${value - 1}.0`).join(',')})));`
+let lower = vec3i(clamp(floor(getPointCloudQuotient3(displacement - halfExtent, ${getWGSLFloatLiteral(grid.cellSize)})) - vec3f(1.0), vec3f(0.0), vec3f(${grid.dimensions.map(value => `${value}.0`).join(',')})));
+let upper = vec3i(clamp(floor(getPointCloudQuotient3(displacement + halfExtent, ${getWGSLFloatLiteral(grid.cellSize)})) + vec3f(1.0), vec3f(-1.0), vec3f(${grid.dimensions.map(value => `${value - 1}.0`).join(',')})));`
         : '';
       const inCylinder = (prefix: string) =>
         `let ${prefix}Point=readPoints(${prefix});let ${prefix}Delta=${prefix}Point-core;let ${prefix}Normal=dot(${prefix}Delta,normal);let ${prefix}Radial=${prefix}Delta-normal*${prefix}Normal;
  if(!(abs(${prefix}Normal)<=${halfDepth})||!(dot(${prefix}Radial,${prefix}Radial)<=${radiusSquared})){continue;}`;
       let correlation = '';
       if (samplingCovariance) {
-        const kernel = `exp(-getScaledQuotient(dot(separation,separation),${parameters ? 'bitcast<f32>(readParameters(11u))' : Math.fround(2 * samplingCovariance.correlationLength ** 2)},1.0,0))`;
+        const kernel = `exp(-getScaledQuotient(dot(separation,separation),${parameters ? 'bitcast<f32>(readParameters(11u))' : getWGSLFloatLiteral(2 * samplingCovariance.correlationLength ** 2)},1.0,0))`;
         // Unindexed: pairs (first, second > first) counted twice. Indexed: every ordered pair
         // (first, second != first) counted once, which is the same sum.
         const inner = grid
@@ -566,10 +686,10 @@ ${correlation}`
     }
     const outsideBit = grid
       ? `// Cells the cylinder needs (without the search margin) that lie outside the grid.
-let outsideHalfExtent = vec3f(${halfDepth}) * abs(normal) + ${Math.fround(this.props.radius)} * sqrt(max(vec3f(1.0) - normal * normal, vec3f(0.0)));
-let outsideDisplacement = core - vec3f(${grid.origin.map(Math.fround).join(',')});
-let outsideLower = floor(getPointCloudQuotient3(outsideDisplacement - outsideHalfExtent, ${Math.fround(grid.cellSize)}));
-let outsideUpper = floor(getPointCloudQuotient3(outsideDisplacement + outsideHalfExtent, ${Math.fround(grid.cellSize)}));
+let outsideHalfExtent = vec3f(${halfDepth}) * abs(normal) + ${getWGSLFloatLiteral(this.props.radius)} * sqrt(max(vec3f(1.0) - normal * normal, vec3f(0.0)));
+let outsideDisplacement = core - vec3f(${grid.origin.map(getWGSLFloatLiteral).join(',')});
+let outsideLower = floor(getPointCloudQuotient3(outsideDisplacement - outsideHalfExtent, ${getWGSLFloatLiteral(grid.cellSize)}));
+let outsideUpper = floor(getPointCloudQuotient3(outsideDisplacement + outsideHalfExtent, ${getWGSLFloatLiteral(grid.cellSize)}));
 let outsideBit = select(0u, ${GPU_POINT_CLOUD_CHANGE_STATUS_GRID_INCOMPLETE}u, any(outsideLower < vec3f(0.0)) || any(outsideUpper > vec3f(${grid.dimensions.map(value => `${value - 1}.0`).join(',')})));`
       : 'let outsideBit = 0u;';
     const coreSettings = parameters
@@ -614,9 +734,9 @@ if (referenceCount < ${minimumSupport} || comparisonCount < ${minimumSupport}) {
 let referenceMean = readReferenceMoments(index*3u); let comparisonMean = readComparisonMoments(index*3u);
 let referenceVarianceValue = max(readReferenceMoments(index*3u+1u) / f32(referenceCount - 1u),0.0);
 let comparisonVarianceValue = max(readComparisonMoments(index*3u+1u) / f32(comparisonCount - 1u),0.0);
-let samplingVariance=${samplingCovariance ? `${parameters ? 'bitcast<f32>(readParameters(9u))' : Math.fround(samplingCovariance.referenceVariance)}*readReferenceMoments(index*3u+2u)/(f32(referenceCount)*f32(referenceCount))+${parameters ? 'bitcast<f32>(readParameters(10u))' : Math.fround(samplingCovariance.comparisonVariance)}*readComparisonMoments(index*3u+2u)/(f32(comparisonCount)*f32(comparisonCount))` : 'referenceVarianceValue/f32(referenceCount)+comparisonVarianceValue/f32(comparisonCount)'};
+let samplingVariance=${samplingCovariance ? `${parameters ? 'bitcast<f32>(readParameters(9u))' : getWGSLFloatLiteral(samplingCovariance.referenceVariance)}*readReferenceMoments(index*3u+2u)/(f32(referenceCount)*f32(referenceCount))+${parameters ? 'bitcast<f32>(readParameters(10u))' : getWGSLFloatLiteral(samplingCovariance.comparisonVariance)}*readComparisonMoments(index*3u+2u)/(f32(comparisonCount)*f32(comparisonCount))` : 'referenceVarianceValue/f32(referenceCount)+comparisonVarianceValue/f32(comparisonCount)'};
 ${coreSettings ? 'let registrationVariance = settings.x;' : registrationVarianceSource}
-let detection=${parameters ? 'bitcast<f32>(readParameters(2u))' : Math.fround(this.props.confidenceMultiplier ?? 1.96)}*${this.props.uncertaintyCombination === 'quadrature' ? 'sqrt(samplingVariance+registrationVariance)' : '(sqrt(samplingVariance)+sqrt(registrationVariance))'};
+let detection=${parameters ? 'bitcast<f32>(readParameters(2u))' : getWGSLFloatLiteral(this.props.confidenceMultiplier ?? 1.96)}*${this.props.uncertaintyCombination === 'quadrature' ? 'sqrt(samplingVariance+registrationVariance)' : '(sqrt(samplingVariance)+sqrt(registrationVariance))'};
 let difference = comparisonMean - referenceMean;
 // A finite input can still overflow an accumulated moment or published confidence interval.
 if (any((bitcast<vec4u>(vec4f(referenceVarianceValue,comparisonVarianceValue,samplingVariance,registrationVariance)) & vec4u(0x7f800000u)) == vec4u(0x7f800000u)) ||

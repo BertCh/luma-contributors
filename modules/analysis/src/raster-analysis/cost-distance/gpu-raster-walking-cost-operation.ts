@@ -3,9 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  snapshotRasterGrid,
+  snapshotRasterWalkingModel
+} from '../raster-grid/raster-construction-snapshot';
 import {GPURasterWalkingCost, type GPURasterWalkingCostProps} from '../gpu-raster-walking-cost';
 import {
   resolveRasterOperationBand,
+  snapshotRasterOperationBand,
+  validateRasterOperationOutputNames,
   type RasterOperationBand
 } from '../raster-grid/raster-operation-band';
 
@@ -33,9 +40,64 @@ export type RasterWalkingCostOperationProps = Pick<
 /** GPU directed walking cost as a vector operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPURasterWalkingCostOperation extends GPUContributorOperation {
   constructor(props: RasterWalkingCostOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'cellSizeMode',
+      'model',
+      'maximumIterations',
+      'elevation',
+      'friction',
+      'sources',
+      'parameters',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['costs', 'validity', 'status']);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      model: snapshotRasterWalkingModel(props.model, props.id ?? 'raster-walking-cost'),
+      elevation: snapshotRasterOperationBand(props.elevation),
+      friction: snapshotRasterOperationBand(props.friction),
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'converged',
+          'iterationLimitReached',
+          'iterationCount',
+          'invalidCount'
+        ])
+      })
+    });
+    const id = props.id ?? 'raster-walking-cost';
+    validateRasterOperationOutputNames(
+      id,
+      {
+        'output.costs': props.output.costs,
+        'output.validity': props.output.validity,
+        'output.status.converged': props.output.status.converged
+      },
+      {
+        'output.status.iterationLimitReached': props.output.status.iterationLimitReached,
+        'output.status.iterationCount': props.output.status.iterationCount,
+        'output.status.invalidCount': props.output.status.invalidCount
+      },
+      {
+        'elevation.storage.values': props.elevation.storage.values,
+        'friction.storage.values': props.friction.storage.values,
+        ...(props.elevation.validity !== undefined
+          ? {'elevation.validity': props.elevation.validity}
+          : {}),
+        ...(props.friction.validity !== undefined
+          ? {'friction.validity': props.friction.validity}
+          : {}),
+        sources: props.sources,
+        parameters: props.parameters
+      }
+    );
     const length = props.grid.width * props.grid.height;
     super({
-      id: props.id ?? 'raster-walking-cost',
+      id,
       inputs: {
         elevationValues: props.elevation.storage.values,
         frictionValues: props.friction.storage.values,
@@ -51,9 +113,10 @@ export class GPURasterWalkingCostOperation extends GPUContributorOperation {
       outputs: {
         costs: {value: props.output.costs, format: 'float32', length},
         validity: {value: props.output.validity, format: 'uint32', length},
+        converged: {value: props.output.status.converged, format: 'uint32', length: 1},
         ...Object.fromEntries(
           Object.entries(props.output.status)
-            .filter(([, value]) => value !== undefined)
+            .filter(([port, value]) => port !== 'converged' && value !== undefined)
             .map(([port, value]) => [port, {value: value!, format: 'uint32' as const, length: 1}])
         )
       },

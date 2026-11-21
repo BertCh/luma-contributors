@@ -27,7 +27,7 @@ import {makeExtentGrid} from './extent-grid';
 import {KRIGING_REFERENCE} from './kriging-reference';
 import {GREAT_CIRCLE_REFERENCE} from './great-circle-reference';
 import {KRIGING_ROBUSTNESS_REFERENCE} from './kriging-robustness-reference';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 /**
  * f32 solve of a 9 x 9 system against PyKrige float64. Values are compared relative to the data
@@ -212,6 +212,7 @@ type KrigingRunOptions = {
   variogram: VariogramFixture;
   crossValidation?: boolean;
   spatialContext?: GPUSpatialContext;
+  longitudeSearch?: 'clipped' | 'wrapped';
 };
 
 type KrigingRunResult = {
@@ -264,6 +265,7 @@ async function runKriging(device: Device, options: KrigingRunOptions): Promise<K
     new GPUKriging({
       id: 'kriging',
       spatialContext: options.spatialContext,
+      longitudeSearch: options.longitudeSearch,
       positions: importGraphBuffer(graph, 'positions', positionBuffer, 'float32x2', sampleCount),
       values: importGraphBuffer(graph, 'values', valueBuffer, 'float32', sampleCount),
       mask: maskBuffer
@@ -591,4 +593,127 @@ it('GPUKriging great-circle mode matches haversine ordinary kriging at 47 N', as
       expect(result.crossValidationPrediction!.every(Number.isFinite)).toBe(true);
     }
   }
+});
+
+it('PTS-117 characterizes raster kriging seam clipping at the supported minimum of three', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Independent NumPy solve: x=[-.125,-.25,.125,.25], q=-.0625 degrees on the equator;
+  // C_ij=exp(-3*6371008.8*pi/180*abs(x_i-x_j)/50000), ordinary constraint sum(w)=1.
+  // solve([[C,1],[1,0]], [C(x,q),1]) gives prediction 1.6560489592565397,
+  // variance .5554542636063746. Distances to q are 6949.6925,20849.0775,20849.0775,34748.4626 m.
+  // A clipped seam box retains only two distinct sites, below the default minimum of three.
+  for (const sign of [-1, 1]) {
+    for (const seam of [false, true]) {
+      const shift = seam ? 180 : 0;
+      const longitude = (x: number) => sign * (x + shift > 180 ? x + shift - 360 : x + shift);
+      const query = longitude(-0.0625);
+      const result = await runKriging(device, {
+        positions: [-0.125, -0.25, 0.125, 0.25].flatMap(x => [longitude(x), 0]),
+        values: [1, 2, 3, 4],
+        extent: [query - 0.015625, -0.015625, query + 0.015625, 0.015625],
+        width: 1,
+        height: 1,
+        indexGridSize: [8, 2],
+        indexBounds: seam ? [-180, -1, 180, 1] : [-1, -1, 1, 1],
+        maximumNeighborCount: 4,
+        neighborCount: 4,
+        searchRadius: 50000,
+        variogram: {model: 'exponential', nugget: 0, sill: 1, range: 50000},
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      });
+      expect(result.values).toHaveLength(1);
+      expect(result.variance).toHaveLength(1);
+      expect(result.uncertainCount).toBe(0);
+      expect(result.invalidCount).toBe(seam ? 1 : 0);
+      if (seam) {
+        expect(Number.isNaN(result.values[0])).toBe(true);
+      } else {
+        expect(Number.isFinite(result.values[0])).toBe(true);
+        expect(Number.isFinite(result.variance[0])).toBe(true);
+        expect(result.values[0]).toBeCloseTo(1.6560489592565397, 3);
+        expect(result.variance[0]).toBeCloseTo(0.5554542636063746, 3);
+      }
+    }
+  }
+});
+
+it('PTS-117 wraps raster kriging seam sides and translated controls', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Independent NumPy solve: x=[-.125,-.25,.125,.25], q=-.0625 degrees on the equator;
+  // C_ij=exp(-3*6371008.8*pi/180*abs(x_i-x_j)/50000), ordinary constraint sum(w)=1.
+  // solve([[C,1],[1,0]], [C(x,q),1]) gives prediction 1.6560489592565397,
+  // variance .5554542636063746. Distances to q are 6949.6925,20849.0775,20849.0775,34748.4626 m.
+  // A clipped seam box retains only two distinct sites, below the default minimum of three.
+  for (const sign of [-1, 1]) {
+    for (const seam of [false, true]) {
+      const shift = seam ? 180 : 0;
+      const longitude = (x: number) => sign * (x + shift > 180 ? x + shift - 360 : x + shift);
+      const query = longitude(-0.0625);
+      const result = await runKriging(device, {
+        positions: [-0.125, -0.25, 0.125, 0.25].flatMap(x => [longitude(x), 0]),
+        values: [1, 2, 3, 4],
+        extent: [query - 0.015625, -0.015625, query + 0.015625, 0.015625],
+        width: 1,
+        height: 1,
+        indexGridSize: [8, 2],
+        indexBounds: seam ? [-180, -1, 180, 1] : [-1, -1, 1, 1],
+        maximumNeighborCount: 4,
+        neighborCount: 4,
+        searchRadius: 50000,
+        variogram: {model: 'exponential', nugget: 0, sill: 1, range: 50000},
+        longitudeSearch: 'wrapped',
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      });
+      expect(result.values).toHaveLength(1);
+      expect(result.variance).toHaveLength(1);
+      expect(result.uncertainCount).toBe(0);
+      expect(result.invalidCount).toBe(0);
+      {
+        expect(Number.isFinite(result.values[0])).toBe(true);
+        expect(Number.isFinite(result.variance[0])).toBe(true);
+        expect(result.values[0]).toBeCloseTo(1.6560489592565397, 3);
+        expect(result.variance[0]).toBeCloseTo(0.5554542636063746, 3);
+      }
+    }
+  }
+});
+
+it('R1 B2 wrapped kriging finds exact-degree sites among zero-distance ties in both row orders', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const sign of [-1, 1])
+    for (const reverse of [false, true]) {
+      const longitudes = [-sign * 180, sign * 180];
+      const values = [7, 11];
+      if (reverse) {
+        longitudes.reverse();
+        values.reverse();
+      }
+      const query = sign * 180;
+      const result = await runKriging(device, {
+        positions: longitudes.flatMap(longitude => [longitude, 0]),
+        values,
+        extent: [query - 0.5, -0.5, query + 0.5, 0.5],
+        width: 1,
+        height: 1,
+        indexGridSize: [12, 1],
+        indexBounds: [-180, -1, 180, 1],
+        maximumNeighborCount: 4,
+        neighborCount: 4,
+        searchRadius: 2000,
+        variogram: {model: 'exponential', nugget: 0, sill: 1, range: 10000},
+        longitudeSearch: 'wrapped',
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      });
+      expect(result.values).toHaveLength(1);
+      expect(result.variance).toHaveLength(1);
+      expect(Number.isFinite(result.values[0])).toBe(true);
+      expect(Number.isFinite(result.variance[0])).toBe(true);
+      // The exact-degree observation is 11, with zero prediction variance, before the minimum gate.
+      expect(result.values[0]).toBe(11);
+      expect(result.variance[0]).toBe(0);
+      expect(result.invalidCount).toBe(0);
+    }
 });

@@ -9,6 +9,10 @@ import {
   type GPUOrdinaryLeastSquaresProps
 } from './gpu-ordinary-least-squares';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from './ordinary-least-squares-parameters';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Graph names replace views; rowCount explicitly supplies the response length. */
 export type OrdinaryLeastSquaresOperationProps = Pick<
@@ -68,6 +72,7 @@ export class GPUOrdinaryLeastSquaresOperation extends GPUContributorOperation {
   constructor(props: OrdinaryLeastSquaresOperationProps) {
     props = snapshotOrdinaryLeastSquaresOperationProps(props);
     const id = props.id ?? 'ordinary-least-squares';
+    validateCapacity(id, 'rowCount', props.rowCount);
     super({
       id,
       inputs: {
@@ -126,13 +131,19 @@ export class GPUOrdinaryLeastSquaresOperation extends GPUContributorOperation {
             }
           : {})
       },
-      createContributor: getView =>
-        new GPUOrdinaryLeastSquares({
+      createContributor: getView => {
+        const response = getView<'float32'>('response');
+        validateRequirement(
+          id,
+          response.length === props.rowCount,
+          'response length must equal rowCount'
+        );
+        return new GPUOrdinaryLeastSquares({
           id,
           predictorCount: props.predictorCount,
           tileRowCount: props.tileRowCount,
           predictors: getView<'float32'>('predictors'),
-          response: getView<'float32'>('response'),
+          response,
           mask: props.mask ? getView<'uint32'>('mask') : undefined,
           parameters: props.parameters ? getView<'float32'>('parameters') : undefined,
           output: {
@@ -145,7 +156,8 @@ export class GPUOrdinaryLeastSquaresOperation extends GPUContributorOperation {
             fitted: props.output.fitted ? getView<'float32'>('fitted') : undefined,
             predictions: props.output.predictions ? getView<'float32'>('predictions') : undefined
           }
-        })
+        });
+      }
     });
   }
 }

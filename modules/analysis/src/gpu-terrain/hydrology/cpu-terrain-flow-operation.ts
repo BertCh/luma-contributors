@@ -29,14 +29,18 @@ import {
   GPU_RASTER_D8_DIRECTIONS
 } from '../../raster-analysis/cost-distance/raster-grid-utils';
 import {getTerrainDrainageReceiver} from './cpu-terrain-drainage-utils';
+import {RASTER_RELAXATION_TILE_SIZE} from '../../raster-analysis/cost-distance/raster-relaxation';
+import {TERRAIN_FLOW_SWEEP_AFTER_ITERATION} from './terrain-flow-passes';
 import {
   GPU_TERRAIN_FLOW_CELL_CLASS as CELL_CLASS,
   GPU_TERRAIN_FLOW_NONE,
+  GPU_TERRAIN_FLOW_UNRESOLVED,
   GPU_TERRAIN_FLOW_PARAMETER_LENGTH,
   GPU_TERRAIN_FLOW_STREAM_UNRESOLVED
 } from './gpu-terrain-flow';
 import {
   GPUTerrainFlowOperation,
+  snapshotTerrainFlowOperationProps,
   type TerrainFlowOperationProps
 } from './gpu-terrain-flow-operation';
 
@@ -47,7 +51,7 @@ export type CPUTerrainFlowInput = {
   runoff?: Float32Array;
 };
 
-/** GPU iteration budgets are accepted but ignored by the exact CPU algorithms. */
+/** Explicit positive-epsilon fill and flat budgets bind tiled relaxations; accumulation is exact. */
 export type CPUTerrainFlowOptions = Pick<
   TerrainFlowOperationProps,
   | 'grid'
@@ -104,18 +108,24 @@ const TERRAIN_FLOW_NO_DATA_LIMITS = {
  *   near slope/facet ties, rounded flat heights and stream thresholds can change integer outputs.
  *   GPU float32 intermediate overflow can invalidate additional elevations or routings; the twin
  *   keeps finite float64 intermediates even when their published elevation overflows float32.
- * - Fill, flat resolution and DAG accumulation run to completion, ignoring all GPU iteration and
- *   1024-step walk budgets. Fill/flats convergence is 1; no budget-induced unresolved codes occur.
- * - Iteration-count words are 0 (no GPU relaxation, Boruvka or list-ranking rounds were executed).
+ * - Zero-epsilon spill filling and DAG accumulation complete without relaxation budgets.
+ *   Without explicit budgets, positive-epsilon filling and flat resolution run to completion.
+ * - An explicit maximumFillIterations bounds positive-epsilon tiled filling, including unchanged
+ *   confirmation. Exhaustion clears fillConverged/flatsConverged and suppresses dependent outputs.
+ * - An explicit maximumFlatIterations bounds each of the three tiled flat stages, including
+ *   unchanged confirmation. Plain tile halos read a round snapshot; after 96 rounds both bounded
+ *   fields cycle tiled/right/left/down/up, publishing each swept tile to the next on its line.
+ *   GPU workgroup scheduling can advance other lines sooner. Exhaustion clears flatsConverged and suppresses
+ *   dependent directions, classes, accumulation and streams with unresolved values.
+ * - Iteration-count words are 0 except explicit fill/flat budgets, which count executed stage rounds.
  *   Accumulation convergence describes DAG completion, not the GPU's conservative last-round flag.
- * - GPU-only upper iteration limits are dropped; positive integer budgets are still required.
+ * - Explicit flat budgets must be in [1,1024]. Other GPU-only upper iteration limits are dropped.
  *   Optional persistent flatContinuation and texture bands have no operation ports.
  * - Nonfinite calibrated elevations are missing; subnormals are retained. NaN slopes do not
  *   route, and non-positive/nonfinite epsilon and exponent use the contributor's defaults.
  *   A float64 accumulation that overflows float32 is published as infinity and its stream word
  *   is unresolved, as for any nonfinite GPU accumulation.
- * - Requested flat-status words are written even on filledElevation-only requests. The GPU
- *   contributor currently returns before writing those optional words in that configuration.
+ * - Both forms write requested flat statuses even on filledElevation-only requests.
  *
  * No-data metadata follows the scalar format: uint32 and sint32 require an integer in their
  * respective ranges; float32 accepts NaN or a value that stays finite after float32 rounding.
@@ -130,7 +140,7 @@ export function computeTerrainFlowOnCPU(
   options: CPUTerrainFlowOptions
 ): CPUTerrainFlowResult {
   const id = 'computeTerrainFlowOnCPU';
-  validateRasterOperationBand(id, input.elevation, options.grid);
+  validateRasterOperationBand(id, input.elevation, options.grid, 'elevation');
   validateFlowNoDataValue(id, input.elevation);
   validateFlowOptions(id, options);
   const {width, height} = options.grid;
@@ -164,9 +174,23 @@ export function computeTerrainFlowOnCPU(
   };
   const elevation = calibrateRasterOperationBand(input.elevation, count);
   const epsilon = Number.isFinite(fillEpsilon) && fillEpsilon >= 0 ? fillEpsilon : 0;
-  const surface = options.fillDepressions
-    ? fillSurface(elevation, epsilon, geometry.getNeighbor)
-    : elevation;
+  const fill =
+    options.fillDepressions && epsilon > 0 && options.maximumFillIterations !== undefined
+      ? fillSurfaceWithBudget(
+          elevation,
+          epsilon,
+          geometry.getNeighbor,
+          width,
+          options.maximumFillIterations
+        )
+      : {
+          surface: options.fillDepressions
+            ? fillSurface(elevation, epsilon, geometry.getNeighbor)
+            : elevation,
+          converged: true,
+          iterationCount: 0
+        };
+  const surface = fill.surface;
   const flowDirections = new Uint32Array(count);
   const cellClasses = new Uint32Array(count);
   const receivers = new Uint32Array(count).fill(GPU_TERRAIN_FLOW_NONE);
@@ -202,8 +226,17 @@ export function computeTerrainFlowOnCPU(
             ? CELL_CLASS.flat
             : CELL_CLASS.pit;
   }
-  if (options.resolveFlats)
-    resolveFlatReceivers(surface, flowDirections, cellClasses, receivers, geometry.getNeighbor);
+  const flatStatus = options.resolveFlats
+    ? resolveFlatReceivers(
+        surface,
+        flowDirections,
+        cellClasses,
+        receivers,
+        geometry.getNeighbor,
+        width,
+        options.maximumFlatIterations
+      )
+    : {converged: 1, iterationCount: 0};
 
   const fractions = new Float64Array(count * 8);
   for (let cell = 0; cell < count; cell++) {
@@ -264,18 +297,31 @@ export function computeTerrainFlowOnCPU(
         ? GPU_TERRAIN_FLOW_STREAM_UNRESOLVED
         : Number(value >= streamThreshold)
   );
+  const filledElevation = Float32Array.from(surface);
+  if (!fill.converged || !flatStatus.converged) {
+    for (let cell = 0; cell < count; cell++) {
+      if (!Number.isFinite(elevation[cell])) continue;
+      if (!fill.converged) filledElevation[cell] = NaN;
+      flowDirections[cell] = GPU_TERRAIN_FLOW_UNRESOLVED;
+      cellClasses[cell] = CELL_CLASS.unresolved;
+      accumulation[cell] = NaN;
+      streams[cell] = GPU_TERRAIN_FLOW_STREAM_UNRESOLVED;
+    }
+  }
   return {
-    filledElevation: Float32Array.from(surface),
+    filledElevation,
     flowDirections,
     cellClasses,
     accumulation,
     streams,
     status: {
-      fillConverged: Uint32Array.of(1),
-      flatsConverged: Uint32Array.of(1),
-      accumulationConverged: Uint32Array.of(Number(queue.length === validCount)),
-      fillIterationCount: Uint32Array.of(0),
-      flatsIterationCount: Uint32Array.of(0),
+      fillConverged: Uint32Array.of(Number(fill.converged)),
+      flatsConverged: Uint32Array.of(Number(fill.converged && flatStatus.converged)),
+      accumulationConverged: Uint32Array.of(
+        Number(fill.converged && flatStatus.converged && queue.length === validCount)
+      ),
+      fillIterationCount: Uint32Array.of(fill.iterationCount),
+      flatsIterationCount: Uint32Array.of(flatStatus.iterationCount),
       accumulationIterationCount: Uint32Array.of(0)
     }
   };
@@ -331,7 +377,14 @@ function validateFlowOptions(id: string, options: CPUTerrainFlowOptions): void {
     'maximumFlatIterations',
     'maximumAccumulationIterations'
   ] as const)
-    if (options[port] !== undefined) validateCapacity(id, port, options[port]!, 1);
+    if (options[port] !== undefined)
+      validateCapacity(
+        id,
+        port,
+        options[port]!,
+        1,
+        port === 'maximumFlatIterations' ? 1024 : Number.MAX_SAFE_INTEGER
+      );
 }
 
 /** Multi-source Dijkstra for the monotone transition max(elevation, previous + epsilon). */
@@ -397,14 +450,51 @@ function fillSurface(
   return filled;
 }
 
-/** Three unbounded graph traversals replace the lower, higher and component-max relaxations. */
+/** Positive-epsilon fill from boundary seeds with an explicit unchanged-confirmation budget. */
+function fillSurfaceWithBudget(
+  elevation: Float64Array,
+  epsilon: number,
+  getNeighbor: GetNeighbor,
+  width: number,
+  maximumIterations: number
+): {surface: Float64Array; converged: boolean; iterationCount: number} {
+  const surface = new Float64Array(elevation.length).fill(Infinity);
+  const eligible = Uint8Array.from(elevation, value => Number(Number.isFinite(value)));
+  for (let cell = 0; cell < elevation.length; cell++) {
+    if (!eligible[cell]) {
+      surface[cell] = NaN;
+      continue;
+    }
+    for (let direction = 0; direction < 8; direction++) {
+      const neighbor = getNeighbor(cell, direction);
+      if (neighbor === GPU_TERRAIN_FLOW_NONE || !eligible[neighbor]) {
+        surface[cell] = elevation[cell];
+        break;
+      }
+    }
+  }
+  const status = relaxTerrainField(
+    surface,
+    elevation,
+    eligible,
+    width,
+    maximumIterations,
+    epsilon,
+    true
+  );
+  return {surface, ...status};
+}
+
+/** Exact traversals by default, or bounded tiled hop relaxations for explicit flat budgets. */
 function resolveFlatReceivers(
   surface: Float64Array,
   directions: Uint32Array,
   classes: Uint32Array,
   receivers: Uint32Array,
-  getNeighbor: GetNeighbor
-): void {
+  getNeighbor: GetNeighbor,
+  width: number,
+  maximumIterations?: number
+): {converged: number; iterationCount: number} {
   const count = surface.length;
   const lower = new Float64Array(count).fill(Infinity);
   const higher = new Float64Array(count);
@@ -448,31 +538,73 @@ function resolveFlatReceivers(
       }
     }
   };
-  propagateHops(lowEdges, lower, Infinity);
-  propagateHops(highEdges, higher, 0);
   const componentMaximum = new Float64Array(count);
-  const visited = new Uint8Array(count);
-  for (let seed = 0; seed < count; seed++) {
-    if (!Number.isFinite(surface[seed]) || visited[seed]) continue;
-    const component = [seed];
-    visited[seed] = 1;
-    let maximum = 0;
-    for (let head = 0; head < component.length; head++) {
-      const cell = component[head];
-      maximum = Math.max(maximum, higher[cell]);
-      for (let direction = 0; direction < 8; direction++) {
-        const neighbor = getNeighbor(cell, direction);
-        if (
-          neighbor !== GPU_TERRAIN_FLOW_NONE &&
-          !visited[neighbor] &&
-          surface[neighbor] === surface[cell]
-        ) {
-          visited[neighbor] = 1;
-          component.push(neighbor);
+  let converged = 1;
+  let iterationCount = 0;
+  if (maximumIterations !== undefined) {
+    const lowerEligible = Uint8Array.from(classes, (value, cell) =>
+      Number(value === CELL_CLASS.flat || lower[cell] === 1)
+    );
+    const higherEligible = Uint8Array.from(classes, value => Number(value === CELL_CLASS.flat));
+    const higherValues = Float64Array.from(higher, value => (value === 1 ? 1 : Infinity));
+    const lowerStatus = relaxTerrainField(
+      lower,
+      surface,
+      lowerEligible,
+      width,
+      maximumIterations,
+      1
+    );
+    const higherStatus = relaxTerrainField(
+      higherValues,
+      surface,
+      higherEligible,
+      width,
+      maximumIterations,
+      1
+    );
+    const maximumValues = Float64Array.from(higherValues, value =>
+      Number.isFinite(value) ? -value : 0
+    );
+    const maximumStatus = relaxTerrainField(
+      maximumValues,
+      surface,
+      Uint8Array.from(surface, value => Number(Number.isFinite(value))),
+      width,
+      maximumIterations,
+      0
+    );
+    higher.set(Float64Array.from(higherValues, value => (Number.isFinite(value) ? value : 0)));
+    componentMaximum.set(Float64Array.from(maximumValues, value => -value));
+    converged = Number(lowerStatus.converged && higherStatus.converged && maximumStatus.converged);
+    iterationCount =
+      lowerStatus.iterationCount + higherStatus.iterationCount + maximumStatus.iterationCount;
+  } else {
+    propagateHops(lowEdges, lower, Infinity);
+    propagateHops(highEdges, higher, 0);
+    const visited = new Uint8Array(count);
+    for (let seed = 0; seed < count; seed++) {
+      if (!Number.isFinite(surface[seed]) || visited[seed]) continue;
+      const component = [seed];
+      visited[seed] = 1;
+      let maximum = 0;
+      for (let head = 0; head < component.length; head++) {
+        const cell = component[head];
+        maximum = Math.max(maximum, higher[cell]);
+        for (let direction = 0; direction < 8; direction++) {
+          const neighbor = getNeighbor(cell, direction);
+          if (
+            neighbor !== GPU_TERRAIN_FLOW_NONE &&
+            !visited[neighbor] &&
+            surface[neighbor] === surface[cell]
+          ) {
+            visited[neighbor] = 1;
+            component.push(neighbor);
+          }
         }
       }
+      for (const cell of component) componentMaximum[cell] = maximum;
     }
-    for (const cell of component) componentMaximum[cell] = maximum;
   }
   const mask = Float64Array.from(
     lower,
@@ -495,6 +627,123 @@ function resolveFlatReceivers(
       }
     }
   }
+  return {converged, iterationCount};
+}
+
+/** Bounded tiled relaxation, with directional tile sweeps on the GPU's logical round schedule. */
+function relaxTerrainField(
+  values: Float64Array,
+  surface: Float64Array,
+  eligible: Uint8Array,
+  width: number,
+  maximumIterations: number,
+  increment: number,
+  fillDepressions = false
+): {converged: boolean; iterationCount: number} {
+  for (let iteration = 0; iteration < maximumIterations; iteration++) {
+    if (
+      !relaxTerrainFieldRound(
+        values,
+        surface,
+        eligible,
+        width,
+        increment,
+        iteration,
+        fillDepressions
+      )
+    )
+      return {converged: true, iterationCount: iteration + 1};
+  }
+  return {converged: false, iterationCount: maximumIterations};
+}
+
+/** One production tiled/swept round; exposed internally for controlled visibility fixtures. @internal */
+export function relaxTerrainFieldRound(
+  values: Float64Array,
+  surface: Float64Array,
+  eligible: Uint8Array,
+  width: number,
+  increment: number,
+  iteration: number,
+  fillDepressions = false
+): boolean {
+  const tileSize = RASTER_RELAXATION_TILE_SIZE;
+  const haloSize = tileSize + 2;
+  const height = values.length / width;
+  const tilesX = Math.ceil(width / tileSize);
+  const tilesY = Math.ceil(height / tileSize);
+  const updated = values.slice();
+  let changed = false;
+  // Zero-based 96 is another tiled pass; 97/98/99/100 sweep right/left/down/up.
+  const phase =
+    iteration < TERRAIN_FLOW_SWEEP_AFTER_ITERATION
+      ? 0
+      : (iteration - TERRAIN_FLOW_SWEEP_AFTER_ITERATION) % 5;
+  const vertical = phase >= 3;
+  const reverse = phase === 2 || phase === 4;
+  const lineCount = vertical ? tilesX : tilesY;
+  const stepCount = vertical ? tilesY : tilesX;
+  for (let line = 0; line < lineCount; line++) {
+    for (let step = 0; step < stepCount; step++) {
+      const position = reverse ? stepCount - 1 - step : step;
+      const originRow = (vertical ? position : line) * tileSize;
+      const originColumn = (vertical ? line : position) * tileSize;
+      const cells = new Float64Array(haloSize * haloSize).fill(-1);
+      let tile = new Float64Array(cells.length).fill(Infinity);
+      for (let row = 0; row < haloSize; row++)
+        for (let column = 0; column < haloSize; column++) {
+          const globalRow = originRow + row - 1,
+            globalColumn = originColumn + column - 1;
+          if (globalRow < 0 || globalColumn < 0 || globalRow >= height || globalColumn >= width)
+            continue;
+          const local = row * haloSize + column;
+          cells[local] = globalRow * width + globalColumn;
+          // Sweeps publish each tile before the next visit, including across lines.
+          // Visiting complete lines sequentially is one legal GPU workgroup schedule.
+          tile[local] = phase !== 0 ? updated[cells[local]] : values[cells[local]];
+        }
+      for (let inner = 0; inner < 2 * tileSize; inner++) {
+        const next = tile.slice();
+        let tileChanged = false;
+        for (let row = 1; row <= tileSize; row++)
+          for (let column = 1; column <= tileSize; column++) {
+            const local = row * haloSize + column,
+              cell = cells[local];
+            if (cell < 0 || !eligible[cell]) continue;
+            for (const direction of GPU_RASTER_D8_DIRECTIONS) {
+              const neighborLocal = local + direction.rowOffset * haloSize + direction.columnOffset;
+              const neighbor = cells[neighborLocal];
+              if (
+                neighbor < 0 ||
+                !eligible[neighbor] ||
+                (!fillDepressions && surface[neighbor] !== surface[cell])
+              )
+                continue;
+              const candidate = fillDepressions
+                ? Math.max(surface[cell], tile[neighborLocal] + increment)
+                : tile[neighborLocal] + increment;
+              if (candidate < next[local]) {
+                next[local] = candidate;
+                tileChanged = true;
+              }
+            }
+          }
+        tile = next;
+        if (!tileChanged) break;
+      }
+      for (let row = 1; row <= tileSize; row++)
+        for (let column = 1; column <= tileSize; column++) {
+          const local = row * haloSize + column,
+            cell = cells[local];
+          if (cell >= 0 && tile[local] < values[cell]) {
+            updated[cell] = tile[local];
+            changed = true;
+          }
+        }
+    }
+  }
+  values.set(updated);
+  return changed;
 }
 
 /** Writes eight fractions; only positive fractions form DAG edges. */
@@ -624,12 +873,13 @@ function computeFlowFractions(
     fractions[offset + direction] = total > 0 ? fractions[offset + direction] / total : 0;
 }
 
-/** Exact buffer-band CPU twin; GPU iteration budgets do not truncate its computation. */
+/** Buffer-band CPU twin with bounded explicit fill/flat stages and exact DAG accumulation. */
 export class CPUTerrainFlowOperation extends GPUCPUOperation {
   constructor(props: TerrainFlowOperationProps) {
+    props = snapshotTerrainFlowOperationProps(props);
     const operation = new GPUTerrainFlowOperation(props);
     const {id} = operation;
-    validateRasterOperationBand(id, props.elevation, props.grid);
+    validateRasterOperationBand(id, props.elevation, props.grid, 'elevation');
     validateFlowNoDataValue(id, props.elevation);
     validateFlowOptions(id, props);
     const {output} = props;

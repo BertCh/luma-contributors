@@ -19,9 +19,16 @@ import {
   type RasterTimeSeriesChunkPlan
 } from './raster-time-series-chunks-b';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+export {
+  prepareRasterStackInput,
+  type PrepareRasterStackInputProps,
+  type PreparedRasterStackInput,
+  type RasterStackSourceLayout
+} from './raster-stack-input';
 import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 
 /**
@@ -64,8 +71,14 @@ export type GPURasterMedoidCompositeProps<Rows extends RasterScalarView = GraphD
  * all bands) to the other valid observations, as hdmedians `nanmedoid`. The result is a real
  * acquisition, so its slice is the provenance of every band. Ties go to the earliest slice.
  *
- * Distances and sums are float32; two observations whose sums differ by less than float32 rounding
- * can swap places against a binary64 reference.
+ * Multiband distances use a common per-cell power-of-two scale chosen from differences before
+ * squaring, independent of constant-band magnitudes. This preserves
+ * comparisons for tiny (e.g. 1e-25) and large (e.g. 1e20) finite spectra. With at most one varying band, CPU and GPU use the
+ * closed median interval and select its earliest acquisition exactly. Multiband distances and sums
+ * are float32; observations whose sums differ by less than float32 rounding can swap places
+ * against a binary64 reference.
+ *
+ * The GPU route accepts at most 64 slices and 16 bands per cell.
  *
  * Per-frame: the contents of the views. Compile-time: `cellCount`, `sliceCount`, `bandCount` and
  * whether `mask` exists.
@@ -83,6 +96,16 @@ export class GPURasterMedoidComposite<Rows extends RasterScalarView = GraphDataV
     this.props = props;
     const id = props.id ?? 'raster-medoid-composite';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      'output.composite': {required: true, viewType: 'either', formats: ['float32']},
+      'output.sliceIndex': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
+    // Capture constructor options/maps while preserving graph resource identities.
+    props = {...props, output: {...props.output}};
+    this.props = props;
     validateCapacity(id, 'cellCount', props.cellCount);
     validateCapacity(id, 'sliceCount', props.sliceCount, 1, MAXIMUM_MEDOID_COMPOSITE_SLICE_COUNT);
     validateCapacity(id, 'bandCount', props.bandCount, 1, MAXIMUM_MEDOID_COMPOSITE_BAND_COUNT);
@@ -153,21 +176,72 @@ for (var slice = 0u; slice < ${slices}u; slice++) {
   if (isObservationValid(index, slice)) { validMask[slice / 32u] |= 1u << (slice % 32u); }
 }
 var bestSlice = 0xffffffffu;
-var bestSum = 0.0;
-for (var candidate = 0u; candidate < ${slices}u; candidate++) {
-  if (((validMask[candidate / 32u] >> (candidate % 32u)) & 1u) == 0u) { continue; }
-  var sum = 0.0;
-  for (var other = 0u; other < ${slices}u; other++) {
-    if (other == candidate || ((validMask[other / 32u] >> (other % 32u)) & 1u) == 0u) { continue; }
-    var squared = 0.0;
-    for (var band = 0u; band < ${bands}u; band++) {
-      let difference = values[valuesOffset + (index * ${slices}u + candidate) * ${bands}u + band]
-        - values[valuesOffset + (index * ${slices}u + other) * ${bands}u + band];
-      squared += difference * difference;
+var validCount = 0u;
+var firstSlice = 0u;
+for (var slice = 0u; slice < ${slices}u; slice++) {
+  if (((validMask[slice / 32u] >> (slice % 32u)) & 1u) == 0u) { continue; }
+  if (validCount == 0u) { firstSlice = slice; }
+  validCount++;
+}
+var varyingBands: array<u32, ${bands}>;
+var varyingBandCount = 0u;
+var scalarBand = 0u;
+var magnitudeBits = 0u;
+if (validCount > 0u) {
+  for (var band = 0u; band < ${bands}u; band++) {
+    let firstValue = values[valuesOffset + (index * ${slices}u + firstSlice) * ${bands}u + band];
+    for (var slice = 0u; slice < ${slices}u; slice++) {
+      if (((validMask[slice / 32u] >> (slice % 32u)) & 1u) == 0u) { continue; }
+      let value = values[valuesOffset + (index * ${slices}u + slice) * ${bands}u + band];
+      if (value != firstValue) { varyingBands[band] = 1u; }
+      // Infinity from subtracting opposite extreme finite values has exponent 255, which
+      // requests one extra scale bit. No infinity literal or reciprocal is needed.
+      magnitudeBits = max(magnitudeBits, bitcast<u32>(value - firstValue) & 0x7fffffffu);
     }
-    sum += sqrt(squared);
+    if (varyingBands[band] != 0u) { varyingBandCount++; scalarBand = band; }
   }
-  if (bestSlice == 0xffffffffu || sum < bestSum) { bestSlice = candidate; bestSum = sum; }
+}
+if (varyingBandCount <= 1u) {
+  // Constant coordinates contribute zero distance. Use scalar ranks even in a multiband stack.
+  for (var candidate = 0u; candidate < ${slices}u; candidate++) {
+    if (((validMask[candidate / 32u] >> (candidate % 32u)) & 1u) == 0u) { continue; }
+    let value = values[valuesOffset + (index * ${slices}u + candidate) * ${bands}u + scalarBand];
+    var below = 0u;
+    var above = 0u;
+    for (var other = 0u; other < ${slices}u; other++) {
+      if (((validMask[other / 32u] >> (other % 32u)) & 1u) == 0u) { continue; }
+      let otherValue = values[valuesOffset + (index * ${slices}u + other) * ${bands}u + scalarBand];
+      below += select(0u, 1u, otherValue < value);
+      above += select(0u, 1u, otherValue > value);
+    }
+    if (below <= validCount / 2u && above <= validCount / 2u) { bestSlice = candidate; break; }
+  }
+} else {
+  // Choose a common scale from differences, independent of absolute or constant-band offsets.
+  let scaleExponent = 127 - i32((magnitudeBits >> 23u) & 255u);
+  let firstExponent = clamp(scaleExponent, -126, 126);
+  let firstScale = bitcast<f32>(u32(firstExponent + 127) << 23u);
+  let secondScale = bitcast<f32>(u32(scaleExponent - firstExponent + 127) << 23u);
+  var bestSum = 0.0;
+  for (var candidate = 0u; candidate < ${slices}u; candidate++) {
+    if (((validMask[candidate / 32u] >> (candidate % 32u)) & 1u) == 0u) { continue; }
+    var sum = 0.0;
+    for (var other = 0u; other < ${slices}u; other++) {
+      if (other == candidate || ((validMask[other / 32u] >> (other % 32u)) & 1u) == 0u) { continue; }
+      var squared = 0.0;
+      for (var band = 0u; band < ${bands}u; band++) {
+        if (varyingBands[band] == 0u) { continue; }
+        let firstValue = values[valuesOffset + (index * ${slices}u + candidate) * ${bands}u + band];
+        let secondValue = values[valuesOffset + (index * ${slices}u + other) * ${bands}u + band];
+        var difference = firstValue - secondValue;
+        if (finite(difference)) { difference = (difference * firstScale) * secondScale; }
+        else { difference = (firstValue * firstScale) * secondScale - (secondValue * firstScale) * secondScale; }
+        squared += difference * difference;
+      }
+      sum += sqrt(squared);
+    }
+    if (bestSlice == 0xffffffffu || sum < bestSum) { bestSlice = candidate; bestSum = sum; }
+  }
 }
 sliceIndex[sliceIndexOffset + index] = bestSlice;
 status[statusOffset + index] = select(0u, 1u, bestSlice == 0xffffffffu);

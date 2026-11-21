@@ -11,7 +11,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-staypoints-operation';
 import {getGPUTrajectoryStaypointsParameterValues} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-staypoints';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 it('both staypoint forms split an explicitly bounded stationary search', async () => {
   const device = await getWebGPUTestDevice();
@@ -139,6 +139,11 @@ for (const scenario of [
         } else expect(gpu[output][index]).toBe(cpu[output][index]);
       }
     }
+    if (scenario === 'half-turn') {
+      // The two canonical longitudes are 0 and -180, whose offset mean is -90.
+      expect(cpu['centroids'][0]).toBe(-90);
+      expect(gpu['centroids'][0]).toBe(-90);
+    }
   });
 }
 
@@ -238,9 +243,9 @@ for (const scenario of [
             scenario === 'equivalent-antimeridian'
               ? [-180, 0]
               : scenario === 'north-pole'
-                ? [90, 90]
+                ? [0, 90]
                 : scenario === 'south-pole'
-                  ? [90, -90]
+                  ? [0, -90]
                   : [0, 0],
           durations: [1],
           staypointIds: [0, 0],

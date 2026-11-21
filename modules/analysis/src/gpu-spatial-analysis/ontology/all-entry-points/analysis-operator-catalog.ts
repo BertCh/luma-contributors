@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPU_SPATIAL_ANALYSIS_CAPABILITIES} from '../spatial-analysis-catalog';
-import {GPU_SPATIAL_ANALYSIS_OPERATORS} from '../spatial-analysis-operators';
+import {GPU_SPATIAL_ANALYSIS_OPERATOR_DESCRIPTORS} from '../spatial-analysis-operators';
 import type {
   GPUAnalysisOperator,
   GPUAnalysisOperatorIdentity,
@@ -14,7 +14,8 @@ import type {
 import {FITTING_KERNEL_CAPABILITY, FITTING_KERNEL_OPERATORS} from '../fitting-kernel-catalog';
 import {ENTRY_POINT_CAPABILITIES} from './entry-point-capabilities';
 import {ENTRY_POINT_OPERATOR_DETAILS} from './entry-point-operator-details';
-import {OPERATOR_ANNOTATIONS} from './operator-annotations';
+import {resolveOperatorDescriptor} from './resolve-operator-descriptor';
+import type {OperatorDescriptor} from './resolve-operator-descriptor';
 import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../spatiotemporal-review-catalog';
 
 import {GPU_ANALYSIS_OPERATOR_KIND_RECORDS} from '../analysis-experience/analysis-operator-kind-records';
@@ -22,17 +23,37 @@ import {GPU_ANALYSIS_OPERATOR_KIND_RECORDS} from '../analysis-experience/analysi
 import {REUSED_ANALYSIS_OPERATORS} from '../reused-analysis-catalog';
 import {freezeCatalog} from '../freeze-catalog';
 
+import {BUILDING_TESSELLATION_OPERATORS} from './building-tessellation-catalog';
+import {SPATIAL_OPERATION_FORMS} from './spatial-operation-forms';
+import {OPERATOR_OUTPUT_MODES} from './operator-output-declarations';
+import {OPERATOR_ROUTES} from './operator-routes';
+import {OPERATOR_ROUTE_DETAILS} from './operator-route-details';
+import {
+  OPERATOR_FORM_RELATIONSHIPS,
+  PREPARED_TILED_FORM_RELATIONSHIPS
+} from './operator-form-relationships';
+import {RECIPE_OPERATION_FORMS} from './recipe-operation-forms';
+import {OPERATION_FORM_CONTRACTS} from './operation-form-contracts';
+import {getGPUAnalysisOperatorQuestions} from '../analysis-experience/analysis-operator-questions';
+import type {GPUAnalysisQuestion} from '../analysis-experience/analysis-experience-types';
+import {GPU_ANALYSIS_QUESTIONS} from '../analysis-experience/analysis-experience-types';
+export {describeOutputs} from './operator-output-declarations';
+
 const DOCUMENTATION_FALLBACK = 'docs/api/analysis-catalog.md';
+// Registry membership is independent of evaluating a source-owned planner's metadata.
+const ROUTED_OPERATOR_IDENTITIES = [
+  ...Object.entries(OPERATOR_ROUTES),
+  ...Object.entries(OPERATOR_ROUTE_DETAILS)
+].map(([identity]) => identity);
 
 function makeEntryPointOperator(
   capability: GPUSpatialAnalysisCapability,
   exportName: string
-): GPUAnalysisOperator {
+): OperatorDescriptor {
   const detail = ENTRY_POINT_OPERATOR_DETAILS[exportName];
   if (!detail) throw new Error(`${exportName} has no entry in ENTRY_POINT_OPERATOR_DETAILS`);
   const kinds = GPU_ANALYSIS_OPERATOR_KIND_RECORDS[exportName];
   if (!kinds) throw new Error(`${exportName} has no per-operator kind record`);
-  const annotation = OPERATOR_ANNOTATIONS[exportName] ?? {};
   return {
     exportName,
     primaryCapability: capability.id,
@@ -47,13 +68,11 @@ function makeEntryPointOperator(
     cardinality: capability.outputBound,
     semantics: 'unspecified',
     deterministic: 'unspecified',
-    status: detail.status ?? 'unknown',
+    status: detail.status,
     readback: detail.readback ?? 'unknown',
     summary: detail.summary,
-    role: annotation.role ?? 'operator',
-    tier: annotation.tier ?? 'unknown',
-    ...(annotation.limits ? {limits: annotation.limits} : {}),
-    ...(annotation.limitation ? {limitation: annotation.limitation} : {}),
+    role: 'operator',
+    tier: 'unknown',
     evidence: {
       status: 'partial',
       tests: detail.tests,
@@ -74,7 +93,7 @@ const CAPABILITY_FAMILIES: readonly GPUSpatialAnalysisCapability[] = [
 const ALL_OPERATORS: readonly GPUAnalysisOperator[] = freezeCatalog(
   (
     [
-      ...GPU_SPATIAL_ANALYSIS_OPERATORS,
+      ...GPU_SPATIAL_ANALYSIS_OPERATOR_DESCRIPTORS,
       ...REUSED_ANALYSIS_OPERATORS,
       ...ENTRY_POINT_CAPABILITIES.flatMap(capability =>
         capability.operators.map(exportName => makeEntryPointOperator(capability, exportName))
@@ -82,8 +101,9 @@ const ALL_OPERATORS: readonly GPUAnalysisOperator[] = freezeCatalog(
       // Operators of `gpu-spatial-analysis` added after the original 261; their families are original.
       ...SPATIOTEMPORAL_REVIEW_OPERATORS,
       ...FITTING_KERNEL_OPERATORS,
+      ...BUILDING_TESSELLATION_OPERATORS,
       {
-        ...GPU_SPATIAL_ANALYSIS_OPERATORS.find(
+        ...GPU_SPATIAL_ANALYSIS_OPERATOR_DESCRIPTORS.find(
           operator => operator.exportName === 'addVisibilityGraphRecipe'
         )!,
         package: '@luma-contributors/analysis/gpu-network',
@@ -110,17 +130,52 @@ const ALL_OPERATORS: readonly GPUAnalysisOperator[] = freezeCatalog(
           tests:
             'modules/analysis/test/gpu-spatial-analysis/urban-ecology/visibility-graph-metrics.spec.ts',
           documentation: 'docs/api/gpu-network/visibility-graph.md',
-          contract: 'GPUVisibilityGraphCSRProps | GPUVisibilityGraphProps'
+          contract: 'GPUNetworkVisibilityGraphCSRProps | GPUVisibilityGraphProps'
         }
       }
-    ] satisfies GPUAnalysisOperator[]
-  ).map(operator => {
-    // Every public assembly path passes through annotation application, including fitting helpers.
-    const annotation =
-      OPERATOR_ANNOTATIONS[`${operator.package}:${operator.exportName}`] ??
-      OPERATOR_ANNOTATIONS[operator.exportName];
-    if (!annotation) return operator;
-    return {...operator, ...annotation};
+    ] satisfies OperatorDescriptor[]
+  ).map(descriptor => {
+    const operator = resolveOperatorDescriptor(descriptor);
+    const key = `${operator.package}:${operator.exportName}`;
+    const baseForms = SPATIAL_OPERATION_FORMS[key];
+    const relationships =
+      PREPARED_TILED_FORM_RELATIONSHIPS[key] ?? OPERATOR_FORM_RELATIONSHIPS[key];
+    const recipeForms = RECIPE_OPERATION_FORMS[key];
+    const declaredForms =
+      baseForms || relationships || recipeForms
+        ? {...baseForms, ...relationships, ...recipeForms}
+        : undefined;
+    const withContract = <Form extends GPUAnalysisOperatorIdentity>(form: Form) => ({
+      ...form,
+      contract: OPERATION_FORM_CONTRACTS[`${form.package}:${form.exportName}`]
+    });
+    const forms = declaredForms
+      ? {
+          ...declaredForms,
+          ...(declaredForms.cpu ? {cpu: withContract(declaredForms.cpu)} : {}),
+          ...(declaredForms.gpu ? {gpu: withContract(declaredForms.gpu)} : {}),
+          ...(declaredForms.arrays ? {arrays: declaredForms.arrays.map(withContract)} : {}),
+          ...(declaredForms.variants ? {variants: declaredForms.variants.map(withContract)} : {})
+        }
+      : undefined;
+    const outputDeclarations = OPERATOR_OUTPUT_MODES[`${operator.package}:${operator.exportName}`];
+    const routeDetails = OPERATOR_ROUTE_DETAILS[key];
+    const routes =
+      OPERATOR_ROUTES[key] || routeDetails
+        ? [...(OPERATOR_ROUTES[key] ?? []), ...(routeDetails ?? [])]
+        : undefined;
+    return forms || outputDeclarations || ROUTED_OPERATOR_IDENTITIES.includes(key)
+      ? {
+          ...operator,
+          ...(forms ? {forms} : {}),
+          ...(routes ? {routes} : {}),
+          ...(outputDeclarations ? {outputDeclarations} : {}),
+          // Enrichment never changes identity, even when a static reader cannot evaluate
+          // a source-owned planner descriptor or optional metadata branch.
+          package: operator.package,
+          exportName: operator.exportName
+        }
+      : operator;
   })
 );
 
@@ -158,6 +213,7 @@ export function getGPUAnalysisCapabilityCatalog(): readonly GPUAnalysisCapabilit
 /**
  * Every contributor class and recipe of all nine entry points, with `tier` and `limits`.
  * `GPU_SPATIAL_ANALYSIS_OPERATORS` keeps returning the original `gpu-spatial-analysis` operators only.
+ * Unaudited status is `unknown`; `[]` requires an affirmative audit of the qualified identity.
  */
 export function getGPUAnalysisOperatorCatalog(): readonly GPUAnalysisOperator[] {
   return ALL_OPERATORS;
@@ -221,4 +277,88 @@ export function queryGPUAnalysisOperators(
       .toLowerCase()
       .includes(search);
   });
+}
+
+/** A task result retains its owner; upstream entries never join the analysis export census. */
+export type GPUAnalysisTaskResult = Readonly<{
+  questions: readonly GPUAnalysisQuestion[];
+  score: number;
+}> &
+  (
+    | Readonly<{owner: 'analysis'; identity: GPUAnalysisOperatorIdentity}>
+    | Readonly<{owner: 'upstream'; identity: Readonly<{package: string; exportName: string}>}>
+  );
+
+const TASK_ALIASES: Readonly<Record<string, readonly string[]>> = freezeCatalog({
+  GPURasterEmbeddingNearestPixels: ['find similar pixels', 'similar pixels', 'nearest pixels'],
+  GPUPettittTest: ['change point', 'find a change point', 'single change point'],
+  GPULocationChangePoints: ['change point', 'find a change point', 'multiple change points'],
+  GPURasterNDVI: ['NDVI', 'normalized difference vegetation index'],
+  GPURasterFillHoles: ['fillholes', 'fill holes']
+});
+
+function tokenizeTask(text: string): string[] {
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+/** Task discovery with approved GIS aliases, token matching and a question facet. */
+export function searchGPUAnalysisTasks(
+  task: string,
+  options: {question?: GPUAnalysisQuestion} = {}
+): readonly GPUAnalysisTaskResult[] {
+  if (options.question !== undefined && !GPU_ANALYSIS_QUESTIONS.includes(options.question)) {
+    throw new Error(
+      `searchGPUAnalysisTasks question must be ${GPU_ANALYSIS_QUESTIONS.join(', ')}; received ${options.question}`
+    );
+  }
+  const tokens = tokenizeTask(task);
+  if (tokens.length === 0) return [];
+  const normalized = tokens.join(' ');
+  const results: GPUAnalysisTaskResult[] = [];
+  const candidates = [
+    ...queryGPUAnalysisOperators().map(operator => ({
+      identity: {package: operator.package, exportName: operator.exportName},
+      owner: 'analysis' as const,
+      questions: getGPUAnalysisOperatorQuestions(operator),
+      text: [
+        operator.exportName,
+        operator.summary ?? '',
+        operator.primaryCapability,
+        ...operator.tags
+      ].join(' ')
+    })),
+    {
+      identity: {package: '@luma.gl/graph/gpu-raster', exportName: 'GPURasterNDVI'},
+      owner: 'upstream' as const,
+      questions: ['what-is-at-each-place'] as readonly GPUAnalysisQuestion[],
+      text: 'GPURasterNDVI NDVI normalized difference vegetation index'
+    }
+  ];
+  for (const candidate of candidates) {
+    if (options.question && !candidate.questions.includes(options.question)) continue;
+    const aliases = TASK_ALIASES[candidate.identity.exportName] ?? [];
+    const normalizedName = tokenizeTask(candidate.identity.exportName).join(' ');
+    const compactName = normalizedName.replace(/ /g, '').replace(/^gpu/, '');
+    const exact =
+      normalizedName === normalized ||
+      compactName === normalized.replace(/ /g, '') ||
+      aliases.some(alias => tokenizeTask(alias).join(' ') === normalized);
+    const indexed = new Set(tokenizeTask([candidate.text, ...aliases].join(' ')));
+    if (!exact && !tokens.every(token => indexed.has(token))) continue;
+    const {text: _text, ...result} = candidate;
+    results.push({...result, questions: candidate.questions, score: exact ? 100 : 10});
+  }
+  return freezeCatalog(
+    results.sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.identity.exportName.localeCompare(right.identity.exportName) ||
+        left.identity.package.localeCompare(right.identity.package)
+    )
+  );
 }

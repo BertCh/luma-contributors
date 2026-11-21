@@ -110,6 +110,7 @@ export type StatGraphProps = {
   rows: number;
   slots: number;
   weights: {offsets: Buffer; neighbors: Buffer; weights: Buffer};
+  weightsStatus?: {overflow: Buffer; candidateOverflow?: Buffer};
   values: Buffer;
   /** Uint32 per row: zero rows are excluded. */
   mask: Buffer;
@@ -135,6 +136,30 @@ export async function compileStatGraph(
     offsets: importGraphBuffer(graph, 'offsets', props.weights.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', props.weights.neighbors, 'uint32', slots),
     weights: importGraphBuffer(graph, 'weights', props.weights.weights, 'float32', slots),
+    ...(props.weightsStatus
+      ? {
+          status: {
+            overflow: importGraphBuffer(
+              graph,
+              'weights-overflow',
+              props.weightsStatus.overflow,
+              'uint32',
+              1
+            ),
+            ...(props.weightsStatus.candidateOverflow
+              ? {
+                  candidateOverflow: importGraphBuffer(
+                    graph,
+                    'weights-candidate-overflow',
+                    props.weightsStatus.candidateOverflow,
+                    'uint32',
+                    1
+                  )
+                }
+              : {})
+          }
+        }
+      : {}),
     information: getWeightsInfo(rows, variant.rowStandardized)
   };
   const values = importGraphBuffer(graph, 'values', props.values, 'float32', rows);

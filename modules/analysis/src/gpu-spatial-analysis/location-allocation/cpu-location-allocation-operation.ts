@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotLocationAllocationOperationProps} from './location-allocation-construction';
 import {
   validateCapacity,
   validateRequirement
@@ -13,7 +14,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPU_LOCATION_ALLOCATION_DEFAULT_MAXIMUM_SWAP_ITERATIONS,
-  GPU_LOCATION_ALLOCATION_STATUS,
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT,
   type GPULocationAllocationOperation as LocationAllocationObjective
 } from './gpu-location-allocation';
 import {
@@ -29,6 +30,10 @@ export type CPULocationAllocationInput = {
   sparseCosts?: {offsets: Uint32Array; facilities: Uint32Array; costs: Float32Array};
   demandWeights?: Float32Array;
   coverageDistance?: Float32Array;
+  /** Optional one-row matrix completeness word; see `GPULocationAllocationProps.costsComplete`. */
+  costsComplete?: Uint32Array;
+  /** Optional one-row matrix cost limit, evaluated independently of `costsComplete`. */
+  costLimit?: Float32Array;
 };
 /** Output layout is GPULocationAllocation's seven-word status contract. */
 export type CPULocationAllocationResult = {
@@ -40,6 +45,7 @@ export type CPULocationAllocationResult = {
 };
 /** Dimensions, greedy objective and the maximum number of applied swap iterations. */
 export type CPULocationAllocationOptions = {
+  id?: string;
   facilityCount: number;
   demandCount: number;
   maximumFacilityCount: number;
@@ -96,34 +102,62 @@ export function computeLocationAllocationOnCPU(
   input: CPULocationAllocationInput,
   options: CPULocationAllocationOptions
 ): CPULocationAllocationResult {
-  const id = 'location-allocation';
+  const id = options.id ?? 'location-allocation';
   validateOptions(id, options);
   const {facilityCount, demandCount, maximumFacilityCount, operation} = options;
-  if (Number(input.costs !== undefined) + Number(input.sparseCosts !== undefined) !== 1)
-    throw new Error('costs and sparseCosts require exactly one representation');
-  if (input.costs && input.costs.length !== demandCount * facilityCount)
-    throw new Error('costs length must equal demandCount * facilityCount');
-  if (input.demandWeights && input.demandWeights.length !== demandCount)
-    throw new Error('demandWeights length must equal demandCount');
-  if (operation !== 'p-median' && !input.coverageDistance?.length)
-    throw new Error('coverageDistance must hold at least one value');
+  validateRequirement(
+    id,
+    !(Number(input.costs !== undefined) + Number(input.sparseCosts !== undefined) !== 1),
+    'costs and sparseCosts require exactly one representation'
+  );
+  validateRequirement(
+    id,
+    !(input.costs && input.costs.length !== demandCount * facilityCount),
+    'costs length must equal demandCount * facilityCount'
+  );
+  validateRequirement(
+    id,
+    !(input.demandWeights && input.demandWeights.length !== demandCount),
+    'demandWeights length must equal demandCount'
+  );
+  validateRequirement(
+    id,
+    !(operation !== 'p-median' && !input.coverageDistance?.length),
+    'coverageDistance must hold at least one value'
+  );
+  validateRequirement(
+    id,
+    !(input.costsComplete && input.costsComplete.length !== 1),
+    'costsComplete must contain exactly one row'
+  );
+  validateRequirement(
+    id,
+    !(input.costLimit && input.costLimit.length !== 1),
+    'costLimit must contain exactly one row'
+  );
   const result: CPULocationAllocationResult = {
     selectedFacilities: new Uint32Array(facilityCount),
     assignments: new Uint32Array(demandCount).fill(NONE),
     assignedCosts: new Float32Array(demandCount).fill(Infinity),
     objective: new Float32Array(1),
-    status: new Uint32Array(GPU_LOCATION_ALLOCATION_STATUS.length)
+    status: new Uint32Array(GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
   };
   const status = result.status;
-  const fields = GPU_LOCATION_ALLOCATION_STATUS;
+  const fields = GPU_LOCATION_ALLOCATION_STATUS_LAYOUT;
   status[fields.uncoveredDemandCount] = demandCount;
   const isInvalid = (value: number) => Number.isNaN(value) || value < 0;
   const sparse = input.sparseCosts;
   if (sparse) {
-    if (sparse.offsets.length !== demandCount + 1)
-      throw new Error('sparseCosts.offsets length must equal demandCount + 1');
-    if (!sparse.costs.length || sparse.facilities.length !== sparse.costs.length)
-      throw new Error('sparseCosts.costs and facilities must have equal positive lengths');
+    validateRequirement(
+      id,
+      !(sparse.offsets.length !== demandCount + 1),
+      'sparseCosts.offsets length must equal demandCount + 1'
+    );
+    validateRequirement(
+      id,
+      !(!sparse.costs.length || sparse.facilities.length !== sparse.costs.length),
+      'sparseCosts.costs and facilities must have equal positive lengths'
+    );
     for (let row = 0; row <= demandCount; row++) {
       const offset = sparse.offsets[row];
       if (
@@ -297,12 +331,20 @@ export function computeLocationAllocationOnCPU(
       ? status[fields.uncoveredDemandCount] === 0
       : status[fields.selectedFacilityCount] === maximumFacilityCount
   );
+  if (input.costsComplete || input.costLimit) {
+    // The requested cutoff is coverageDistance, or +Infinity for p-median (NET-101).
+    const requested = operation === 'p-median' ? Infinity : input.coverageDistance![0];
+    const isWithinLimit = !input.costLimit || requested <= input.costLimit[0];
+    const isComplete = !input.costsComplete || input.costsComplete[0] !== 0;
+    if (!(isComplete && isWithinLimit)) status[fields.complete] = 0;
+  }
   return result;
 }
 
 /** CPU twin with budgeted, zero-tolerance best-swap improvement when the phase is enabled. */
 export class CPULocationAllocationOperation extends GPUCPUOperation {
   constructor(props: LocationAllocationOperationProps) {
+    props = snapshotLocationAllocationOperationProps(props);
     const id = props.id ?? 'location-allocation';
     validateOptions(id, props);
     validateRequirement(
@@ -347,7 +389,15 @@ export class CPULocationAllocationOperation extends GPUCPUOperation {
             coverageDistance:
               props.coverageDistance === undefined
                 ? undefined
-                : getCPUOperationFloat32Rows(id, inputs, 'coverageDistance')
+                : getCPUOperationFloat32Rows(id, inputs, 'coverageDistance'),
+            costsComplete:
+              props.costsComplete === undefined
+                ? undefined
+                : getCPUOperationUint32Rows(id, inputs, 'costsComplete'),
+            costLimit:
+              props.costLimit === undefined
+                ? undefined
+                : getCPUOperationFloat32Rows(id, inputs, 'costLimit')
           },
           props
         );

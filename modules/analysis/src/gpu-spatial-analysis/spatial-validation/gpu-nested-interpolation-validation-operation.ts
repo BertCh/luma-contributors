@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotNestedValidationProps} from './nested-validation-construction';
 import {
   GPUNestedInterpolationValidation,
   type GPUNestedInterpolationValidationProps
@@ -38,6 +39,7 @@ export type NestedInterpolationValidationOperationProps = Pick<
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNestedInterpolationValidationOperation extends GPUContributorOperation {
   constructor(props: NestedInterpolationValidationOperationProps) {
+    props = snapshotNestedValidationProps(props);
     const {rowCount, foldCount, output} = props;
     super({
       id: props.id ?? 'nested-interpolation-validation',

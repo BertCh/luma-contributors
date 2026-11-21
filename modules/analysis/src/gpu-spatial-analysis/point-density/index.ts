@@ -46,7 +46,7 @@ export {
   evaluateGPUKernelDensityKernel,
   getGPUKernelDensitySupportRadius,
   getGPUKernelDensityBinnedErrorBound,
-  getGPUKernelDensityWindowMass,
+  getGPUKernelDensityWindowOverlap,
   GPU_KERNEL_DENSITY_AUTO_SUPPORT_CELLS,
   GPU_KERNEL_DENSITY_BINNED_MARGIN_BANDWIDTHS,
   GPU_KERNEL_DENSITY_BINNED_MINIMUM_BANDWIDTH_CELLS,
@@ -74,12 +74,13 @@ export {
   evaluateGPUSpaceTimeTemporalKernel,
   getGPUSpaceTimeKernelDensityParameterValues,
   getGPUSpaceTimeTemporalSupportRadius,
-  getGPUSpaceTimeTemporalWindowMass,
+  getGPUSpaceTimeTemporalWindowOverlap,
   GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH
 } from './space-time-kernel-density-math';
 export type {
   GPUSpaceTimeKernelDensitySettings,
-  GPUSpaceTimeTemporalKernel
+  GPUSpaceTimeTemporalKernel,
+  GPUSpaceTimeTemporalKernelName
 } from './space-time-kernel-density-math';
 export {
   getGPUAdaptiveBandwidthKernelDensityParameterValues,
@@ -98,3 +99,9 @@ export type {
 export {GPU_POINT_DENSITY_MAXIMUM_POINT_COUNT} from './gpu-point-density';
 
 export {GPU_KERNEL_DENSITY_MAXIMUM_POINT_COUNT} from './gpu-kernel-density';
+
+export type {GPUKernelDensityBandwidthPopulation} from './kernel-density-bandwidth';
+
+export type {GPUDensityDeviceLimits, GPUDensityExecutionPlan} from './density-execution-plan';
+export type {GPUPointDensityExecutionShape} from './gpu-point-density';
+export type {GPUKernelDensityExecutionShape} from './gpu-kernel-density';

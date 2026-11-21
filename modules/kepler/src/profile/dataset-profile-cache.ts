@@ -8,7 +8,7 @@ import {
   type GPUAnalysisCoordinateModel,
   type GPUAnalysisMeasurementLevel,
   type GPUAnalysisRowSemantics
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import type {CatalogFeatureCollection} from '../analysis/catalog-geojson';
 import {

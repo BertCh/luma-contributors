@@ -96,7 +96,12 @@ export function estimateHyperLogLog(registers: ArrayLike<number>, precision: num
 export function getOracleBin(value: number, lo: number, hi: number, binCount: number): number {
   let difference = fround(value - lo);
   let range = fround(hi - lo);
-  if (range > COLUMN_PROFILE_LARGE_RANGE) {
+  if (!Number.isFinite(range)) {
+    // Finite endpoints whose float32 span overflows: scale (exactly) before subtracting.
+    const scale = COLUMN_PROFILE_LARGE_RANGE_SCALE;
+    difference = fround(fround(value * scale) - fround(lo * scale));
+    range = fround(fround(hi * scale) - fround(lo * scale));
+  } else if (range > COLUMN_PROFILE_LARGE_RANGE) {
     difference = fround(difference * COLUMN_PROFILE_LARGE_RANGE_SCALE);
     range = fround(range * COLUMN_PROFILE_LARGE_RANGE_SCALE);
   }
@@ -124,9 +129,15 @@ export function resolveOracleDomain(
   }
   const range = fround(hi - lo);
   const width = fround(range * fround(1 / binCount));
-  return Number.isFinite(range) && Number.isFinite(width) && width > 0
-    ? {lo, hi, width, mode: 1}
-    : {lo, hi, width, mode: 0};
+  if (!Number.isFinite(range)) {
+    // Finite ordered endpoints whose span overflows: the width is stored scaled by 2^-24.
+    const scale = COLUMN_PROFILE_LARGE_RANGE_SCALE;
+    const scaledWidth = fround(
+      fround(fround(hi * scale) - fround(lo * scale)) * fround(1 / binCount)
+    );
+    return {lo, hi, width: scaledWidth, mode: 1};
+  }
+  return Number.isFinite(width) && width > 0 ? {lo, hi, width, mode: 1} : {lo, hi, width, mode: 0};
 }
 
 /** f64 two-pass CPU profile of every column, written independently of the GPU algorithm. */

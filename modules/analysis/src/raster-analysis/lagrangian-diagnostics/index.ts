@@ -11,6 +11,7 @@ export {
   GPU_LAGRANGIAN_NO_REGION
 } from './gpu-lagrangian-flow-map';
 export type {
+  GPULagrangianFlowMapParameterSettings,
   GPULagrangianFlowMapOutput,
   GPULagrangianFlowMapProps,
   GPULagrangianFlowMapSettings

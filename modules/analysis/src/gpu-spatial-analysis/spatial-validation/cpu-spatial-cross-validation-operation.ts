@@ -3,7 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {
+  isWithinValidationRadiusOnCPU,
+  isWithinValidationNeighborOnCPU
+} from './validation-buffer-membership-wgsl';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  snapshotSpatialCrossValidationProps,
+  validateSpatialValidationDesignMode
+} from './spatial-validation-design';
 import {
   validateCapacity,
   validateMaximumCount,
@@ -71,13 +79,11 @@ function validateOptions(options: CPUSpatialCrossValidationOptions, rowCount: nu
   );
   const design = options.design;
   if (!design) return;
-  validateRequirement(
-    id,
-    ['groups', 'environmental', 'nndm', 'knndm'].includes(design.mode),
-    'design.mode must be groups, environmental, nndm or knndm'
-  );
+  validateSpatialValidationDesignMode(id, design.mode);
   if (design.mode === 'environmental') {
     validateCapacity(id, 'design.featureCount', design.featureCount);
+    if (design.maximumIterations !== undefined)
+      validateCapacity(id, 'design.maximumIterations', design.maximumIterations, 1);
     validateMaximumCount(id, 'rowCount times featureCount', rowCount * design.featureCount, NONE);
   }
   if (design.mode === 'nndm') {
@@ -134,7 +140,8 @@ function clusterFeatures(
   featureCount: number,
   clusterCount: number,
   seed: number,
-  standardize: boolean
+  standardize: boolean,
+  maximumIterations = Infinity
 ): ClusterResult {
   const rowCount = complete.length;
   const result: ClusterResult = {
@@ -145,6 +152,7 @@ function clusterFeatures(
   };
   const members = complete.flatMap((valid, row) => (valid ? [row] : []));
   if (members.length < clusterCount) return {...result, status: 1};
+  const scales = new Float64Array(featureCount).fill(1);
   if (standardize) {
     for (let column = 0; column < featureCount; column++) {
       let mean = 0;
@@ -154,10 +162,8 @@ function clusterFeatures(
         mean += difference / (index + 1);
         squaredDeviations += difference * (features[row * featureCount + column] - mean);
       }
-      const scale = squaredDeviations > 0 ? Math.sqrt(squaredDeviations / (members.length - 1)) : 1;
-      for (const row of members)
-        features[row * featureCount + column] =
-          (features[row * featureCount + column] - mean) / scale;
+      scales[column] =
+        squaredDeviations > 0 ? Math.sqrt(squaredDeviations / (members.length - 1)) : 1;
     }
   }
   let seedRow = seed % rowCount;
@@ -167,7 +173,9 @@ function clusterFeatures(
     let squared = 0;
     for (let column = 0; column < featureCount; column++)
       squared +=
-        (features[row * featureCount + column] - centers[cluster * featureCount + column]) ** 2;
+        ((features[row * featureCount + column] - centers[cluster * featureCount + column]) /
+          scales[column]) **
+        2;
     return squared;
   };
   for (let cluster = 0; cluster < clusterCount; cluster++) {
@@ -189,7 +197,7 @@ function clusterFeatures(
       cluster * featureCount
     );
   }
-  for (;;) {
+  for (let iteration = 0; iteration < maximumIterations; iteration++) {
     const counts = new Float64Array(clusterCount);
     const sums = new Float64Array(clusterCount * featureCount);
     let changed = false;
@@ -209,18 +217,20 @@ function clusterFeatures(
       objective += nearest;
       counts[selected]++;
       for (let column = 0; column < featureCount; column++)
-        sums[selected * featureCount + column] += features[row * featureCount + column];
+        sums[selected * featureCount + column] +=
+          features[row * featureCount + column] - centers[selected * featureCount + column];
     }
     if (counts.some(count => count === 0))
       return {...result, assignments: new Uint32Array(rowCount).fill(NONE), status: 2};
     for (let cluster = 0; cluster < clusterCount; cluster++)
       for (let column = 0; column < featureCount; column++)
-        centers[cluster * featureCount + column] =
+        centers[cluster * featureCount + column] +=
           sums[cluster * featureCount + column] / counts[cluster];
     result.iterations++;
     result.objective = objective;
     if (!changed) return result;
   }
+  return {...result, assignments: new Uint32Array(rowCount).fill(NONE), status: 3};
 }
 
 /**
@@ -234,13 +244,15 @@ function clusterFeatures(
  *
  * What differs from the GPU contributor:
  * - Float64 distances, standardization and objectives round only when diagnostics are written.
- *   Near distance or cluster ties, fold choices can differ; diagnostics use relative tolerance
+ *   Near cluster ties, fold choices can differ; planar buffer membership uses inclusive Euclidean
+ *   distance on stored coordinates; diagnostics use relative tolerance
  *   2e-5 (plus 2e-6 absolute for zero objectives).
  * - GPU-only row, fold, feature, prediction, cluster and candidate caps are removed; uint32
  *   output-length limits and a 2^24 candidate-count limit remain so float32 diagnostics preserve
  *   every selectable index exactly. Candidate count still defines the supplied/generated ladder.
- * - Environmental and generated kNNDM clustering run to stable assignments, ignoring the GPU
- *   maximumIterations budget; design status 3 (iteration limit) is never emitted.
+ * - Environmental clustering honors explicit maximumIterations; exhausted budgets emit design
+ *   status 3 and missing folds. Without a budget, CPU clustering retains convergence as its
+ *   default, including generated kNNDM restarts; the GPU has a bounded default of 100 steps.
  * - Float64 accepts finite distances/features beyond the GPU's arithmetic range and removes
  *   the GPU's 1e18 buffer/maximum-distance bound. Non-finite rows keep the GPU's missing rules.
  * - An exhausted NNDM neighborhood uses the GPU's finite no-distance sentinel in diagnostics;
@@ -254,6 +266,7 @@ export function computeSpatialCrossValidationOnCPU(
   input: CPUSpatialCrossValidationInput,
   options: CPUSpatialCrossValidationOptions
 ): CPUSpatialCrossValidationResult {
+  options = snapshotSpatialCrossValidationProps(options);
   const {positions, blocks, mask, features, predictionPositions, candidates} = input;
   const rowCount = blocks.length;
   if (positions.length !== rowCount * 2)
@@ -294,6 +307,7 @@ export function computeSpatialCrossValidationOnCPU(
   };
   // Keep all design state in float64 until the very end; masks must not read rounded radii.
   const diagnostics = new Float64Array(4 + (design?.mode === 'nndm' ? rowCount : 0));
+  const adaptiveNeighbors = new Uint32Array(design?.mode === 'nndm' ? rowCount : 0).fill(NONE);
   diagnostics[2] = diagnostics[3] = NaN;
   const getRowDistance = (first: number, second: number) =>
     Math.hypot(
@@ -332,7 +346,8 @@ export function computeSpatialCrossValidationOnCPU(
       design.featureCount,
       foldCount,
       options.seed ?? 0,
-      design.standardize !== false
+      design.standardize !== false,
+      design.maximumIterations
     );
     result.folds.set(clustered.assignments);
     diagnostics.set([clustered.status, clustered.iterations, clustered.objective, NaN]);
@@ -357,10 +372,29 @@ export function computeSpatialCrossValidationOnCPU(
         const neighborhoods = Array.from({length: rowCount}, (_, row) =>
           Array.from({length: rowCount}, (_, other) => other)
             .filter(other => other !== row)
-            .sort(
-              (first, second) =>
-                getRowDistance(row, first) - getRowDistance(row, second) || first - second
-            )
+            .sort((first, second) => {
+              const firstDistance = getRowDistance(row, first);
+              const secondDistance = getRowDistance(row, second);
+              if (firstDistance < secondDistance * (1 - 8 * Number.EPSILON)) return -1;
+              if (firstDistance > secondDistance * (1 + 8 * Number.EPSILON)) return 1;
+              const firstWithin = isWithinValidationNeighborOnCPU(
+                positions[first * 2],
+                positions[first * 2 + 1],
+                positions[row * 2],
+                positions[row * 2 + 1],
+                positions[second * 2],
+                positions[second * 2 + 1]
+              );
+              const secondWithin = isWithinValidationNeighborOnCPU(
+                positions[second * 2],
+                positions[second * 2 + 1],
+                positions[row * 2],
+                positions[row * 2 + 1],
+                positions[first * 2],
+                positions[first * 2 + 1]
+              );
+              return firstWithin === secondWithin ? first - second : firstWithin ? -1 : 1;
+            })
         );
         const nearest = Float64Array.from(neighborhoods, (members, row) =>
           getRowDistance(row, members[0])
@@ -391,6 +425,7 @@ export function computeSpatialCrossValidationOnCPU(
         for (let row = 0; row < rowCount; row++) {
           result.folds[row] = row;
           diagnostics[row + 4] = nearest[row];
+          adaptiveNeighbors[row] = neighborhoods[row][0] ?? NONE;
         }
       } else {
         const candidateCount = design.candidateCount ?? 8;
@@ -473,10 +508,24 @@ export function computeSpatialCrossValidationOnCPU(
       if (train)
         for (let other = 0; other < rowCount; other++)
           if (result.folds[other] === fold) {
-            const distance = getRowDistance(row, other);
             if (
-              distance <=
-              (design?.mode === 'nndm' ? diagnostics[fold + 4] : (options.bufferDistance ?? 0))
+              isWithinValidationRadiusOnCPU(
+                positions[row * 2],
+                positions[row * 2 + 1],
+                positions[other * 2],
+                positions[other * 2 + 1],
+                options.bufferDistance ?? 0
+              ) ||
+              (design?.mode === 'nndm' &&
+                (adaptiveNeighbors[other] === NONE ||
+                  isWithinValidationNeighborOnCPU(
+                    positions[row * 2],
+                    positions[row * 2 + 1],
+                    positions[other * 2],
+                    positions[other * 2 + 1],
+                    positions[adaptiveNeighbors[other] * 2],
+                    positions[adaptiveNeighbors[other] * 2 + 1]
+                  )))
             ) {
               train = false;
               break;
@@ -497,9 +546,19 @@ export function computeSpatialCrossValidationOnCPU(
   return result;
 }
 
-/** CPU twin; reference-tier work caps and Lloyd iteration budgets are removed. */
+/**
+ * CPU fold design. kNNDM accepts at most 16,777,216 candidates. Fold masks, fold counts,
+ * environmental feature cells and kNNDM candidate cells each cap at 4,294,967,295 entries.
+ * The explicit iteration budget still applies to environmental clustering.
+ */
 export class CPUSpatialCrossValidationOperation extends GPUCPUOperation {
   constructor(props: SpatialCrossValidationOperationProps) {
+    props = snapshotSpatialCrossValidationProps(props);
+    if (props.design)
+      validateSpatialValidationDesignMode(
+        props.id ?? 'spatial-cross-validation',
+        props.design.mode
+      );
     const id = props.id ?? 'spatial-cross-validation';
     validateOptions(props, props.rowCount);
     if (props.design?.mode === 'nndm' || props.design?.mode === 'knndm')

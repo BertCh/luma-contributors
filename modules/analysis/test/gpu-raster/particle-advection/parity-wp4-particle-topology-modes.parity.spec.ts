@@ -54,7 +54,7 @@ for (const {count, trailLength} of fixture.topologies) {
         parameters.write(
           getGPUParticleAdvectionParameterValues(
             {
-              fieldExtent: [0, 0, 1, 1],
+              fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
               timeStep: frame.timeStep,
               spawnBounds: frame.viewport ? [2, 2, 6, 6] : undefined
             },

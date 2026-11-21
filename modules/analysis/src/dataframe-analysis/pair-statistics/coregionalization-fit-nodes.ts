@@ -197,7 +197,7 @@ ${gate.armWGSL}`
       createWGSLKernelNode(graph, {
         id: `${id}-sweep-${iteration}`,
         operation: 'GPUCoregionalizationFit',
-        // contract-allow: single-invocation reference tier; four bounded order-four PSD projections.
+        // contract-allow: single-invocation reference tier; GPU_COREGIONALIZATION_MAXIMUM_STRUCTURE_COUNT = 4 PSD projections, each bounded by GPU_COREGIONALIZATION_MAXIMUM_VARIABLE_COUNT = 4 variables.
         invocationCount: 1,
         workgroupSize: 32,
         ...gate.getGate(0),

@@ -16,6 +16,9 @@ import {
   validateRasterGridAxisAligned
 } from '../../raster-analysis/raster-band-utils';
 import {
+  isGraphDataView,
+  validateGraphPorts,
+  validateRequirement,
   validateCapacity,
   validateCommandNodeBudget,
   validateMaximumCount,
@@ -40,11 +43,9 @@ import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
   checkTerrainGraph,
-  createTerrainStatusPortNodes,
   createTerrainValidityMask,
   getTerrainGroundMeasureWGSL,
   terrainBinding,
-  validateTerrainStatusPorts,
   validateTerrainValidityView,
   TERRAIN_FINITE_WGSL
 } from './terrain-processing-utils';
@@ -53,6 +54,26 @@ import {
 const MAXIMUM_ACTIVATION_CELL_COUNT = Math.floor(0xffffffff / 18);
 // Published radix sort and scan have no public node estimate. This allowance covers their passes.
 const ACTIVATION_PRIMITIVE_NODE_ALLOWANCE = 256;
+
+export type GPUTerrainDepressionHierarchyOutput = {
+  /** Four uints per node: parent (0xffffffff root), minimum cell, lowest-ID outlet, valid. */
+  nodes: GraphDataView<'uint32'>;
+  /** Two floats per node: birth elevation, spill/merge elevation (Infinity for closed roots). */
+  levels: GraphDataView<'float32'>;
+  /** Each valid cell is owned exactly once by its activation node; parent queries include descendants. */
+  cellNodes: GraphDataView<'uint32'>;
+  /** Node-major, stage-major pairs [inundated area, volume]. */
+  curves: GraphDataView<'float32'>;
+  /** Required one-row status views. Check overflow before using the hierarchy. */
+  status: {
+    /** Stored node count bounding the readable prefix of nodes, levels and curves. */
+    count: GraphDataView<'uint32'>;
+    /** Exact node count needed for the merge tree. */
+    requiredCount: GraphDataView<'uint32'>;
+    /** 1 when nodeCapacity is too small, invalidating the whole hierarchy. */
+    overflow: GraphDataView<'uint32'>;
+  };
+};
 
 export type GPUTerrainDepressionHierarchyProps = {
   id?: string;
@@ -72,47 +93,20 @@ export type GPUTerrainDepressionHierarchyProps = {
   /** Shared query stages in elevation units. */
   stages: GraphDataView<'float32'>;
   nodeCapacity: number;
-  output: {
-    /** Four uints per node: parent (0xffffffff root), minimum cell, lowest-ID outlet, valid. */
-    nodes: GraphDataView<'uint32'>;
-    /** Two floats per node: birth elevation, spill/merge elevation (Infinity for closed roots). */
-    levels: GraphDataView<'float32'>;
-    /** Each valid cell is owned exactly once by its activation node; parent queries include descendants. */
-    cellNodes: GraphDataView<'uint32'>;
-    /** Node-major, stage-major pairs [inundated area, volume]. */
-    curves: GraphDataView<'float32'>;
-    /** [stored node count, required node count, overflow]. Any overflow invalidates the whole hierarchy. */
-    status: GraphDataView<'uint32'>;
-    /**
-     * Optional named one-row copies of words of the loose `status` view. `output.status` stays the
-     * packed `[stored, required, overflow]` view, so the named ports sit under `ports.status`.
-     */
-    ports?: {
-      status: {
-        /** One-row copy of `status[1]`: the node count the merge tree needs. Equals `status[0]` unless `overflow`. */
-        requiredCount?: GraphDataView<'uint32'>;
-        /** One-row copy of `status[2]`: 1 when `nodeCapacity` was too small, which invalidates the whole hierarchy. */
-        overflow?: GraphDataView<'uint32'>;
-      };
-    };
-  };
+  output: GPUTerrainDepressionHierarchyOutput;
 };
 
 /** The views the output writes, with the named status ports flattened. */
-function getOutputViews(output: GPUTerrainDepressionHierarchyProps['output']): GraphDataView[] {
-  const views: GraphDataView[] = [
+function getOutputViews(output: GPUTerrainDepressionHierarchyOutput): GraphDataView[] {
+  return [
     output.nodes,
     output.levels,
     output.cellNodes,
     output.curves,
-    output.status
+    output.status.count,
+    output.status.requiredCount,
+    output.status.overflow
   ];
-  for (const port of [output.ports?.status.requiredCount, output.ports?.status.overflow]) {
-    if (port) {
-      views.push(port);
-    }
-  }
-  return views;
 }
 
 /**
@@ -124,8 +118,34 @@ function getOutputViews(output: GPUTerrainDepressionHierarchyProps['output']): G
 export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
   readonly id: string;
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPUTerrainDepressionHierarchyProps) {
+  readonly props: GPUTerrainDepressionHierarchyProps;
+  constructor(props: GPUTerrainDepressionHierarchyProps) {
     this.id = props.id ?? 'terrain-depression-hierarchy';
+    validateRequirement(
+      this.id,
+      !Object.hasOwn(props.output ?? {}, 'ports'),
+      'output.ports was removed; supply output.status.count, output.status.requiredCount and output.status.overflow as one-row uint32 views'
+    );
+    validateRequirement(
+      this.id,
+      !isGraphDataView(props.output?.status),
+      'output.status must be a map; supply output.status.count, output.status.requiredCount and output.status.overflow as one-row uint32 views'
+    );
+    validateGraphPorts(this.id, props, {
+      elevation: {required: true, viewType: 'data', formats: ['float32']},
+      validity: {required: false, viewType: 'data', formats: ['uint32']},
+      outlets: {required: true, viewType: 'data', formats: ['uint32']},
+      stages: {required: true, viewType: 'data', formats: ['float32']},
+      'output.nodes': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.levels': {required: true, viewType: 'data', formats: ['float32']},
+      'output.cellNodes': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.curves': {required: true, viewType: 'data', formats: ['float32']},
+      'output.status.count': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status.requiredCount': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status.overflow': {required: true, viewType: 'data', formats: ['uint32']}
+    });
+    const {output} = props;
+    const {count: storedCount, requiredCount, overflow} = output.status;
     const count = validateRasterGrid(this.id, props.grid);
     validateMaximumCount(this.id, 'grid cell count', count, MAXIMUM_ACTIVATION_CELL_COUNT);
     // Bounded splicing, three gated jump tables (edge contraction and two cell-sized passes),
@@ -152,15 +172,9 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
       props.output.curves,
       props.nodeCapacity * props.stages.length * 2
     );
-    validateViewLength(this.id, 'output.status', props.output.status, 3);
-    validateTerrainStatusPorts(
-      this.id,
-      {
-        requiredCount: props.output.ports?.status.requiredCount,
-        overflow: props.output.ports?.status.overflow
-      },
-      'output.ports.status'
-    );
+    validateViewLength(this.id, 'output.status.count', storedCount, 1);
+    validateViewLength(this.id, 'output.status.requiredCount', requiredCount, 1);
+    validateViewLength(this.id, 'output.status.overflow', overflow, 1);
     checkTerrainViews(
       this.id,
       [props.elevation, props.outlets, props.stages, ...(props.validity ? [props.validity] : [])],
@@ -168,9 +182,10 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
       [
         {
           reads: !props.validity ? [props.elevation] : [],
-          writes: [props.output.cellNodes, props.output.status]
+          writes: [output.cellNodes]
         },
-        {reads: [props.output.status], writes: [props.output.nodes, props.output.levels]},
+        {writes: [storedCount, requiredCount, overflow]},
+        {reads: [storedCount, overflow], writes: [output.nodes, output.levels]},
         ...(props.stages.length
           ? [
               {
@@ -179,21 +194,19 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
                   props.output.cellNodes,
                   props.output.nodes,
                   props.stages,
-                  props.output.status
+                  storedCount
                 ],
                 writes: [props.output.curves]
               }
             ]
-          : []),
-        {
-          reads: [props.output.status],
-          writes: [
-            props.output.ports?.status.requiredCount,
-            props.output.ports?.status.overflow
-          ].filter((view): view is GraphDataView<'uint32'> => Boolean(view))
-        }
+          : [])
       ]
     );
+    this.props = {
+      ...props,
+      grid: {...props.grid, affine: [...props.grid.affine]},
+      output: {...output, status: {count: storedCount, requiredCount, overflow}}
+    };
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -288,12 +301,13 @@ cells[cellsOffset + index] = index;`
         bindings: [
           terrainBinding('tree', tree),
           terrainBinding('sourceLevels', levels),
-          terrainBinding('status', props.output.status),
+          terrainBinding('storedCount', props.output.status.count),
+          terrainBinding('overflow', props.output.status.overflow),
           terrainBinding('nodes', props.output.nodes, 'read_write'),
           terrainBinding('levels', props.output.levels, 'read_write')
         ],
         declarations: TERRAIN_FINITE_WGSL,
-        body: `let valid = status[statusOffset + 2u] == 0u && index < status[statusOffset];
+        body: `let valid = overflow[overflowOffset] == 0u && index < storedCount[storedCountOffset];
 for (var component = 0u; component < 4u; component++) { nodes[nodesOffset + index * 4u + component] = 0xffffffffu; }
 levels[levelsOffset + index * 2u] = getNaN(); levels[levelsOffset + index * 2u + 1u] = getNaN();
 nodes[nodesOffset + index * 4u + 3u] = 0u;
@@ -303,25 +317,6 @@ if (valid) {
 }`
       })
     ];
-    nodes.push(
-      ...createTerrainStatusPortNodes(graph, {
-        id,
-        operation: 'GPUTerrainDepressionHierarchy',
-        source: props.output.status,
-        ports: [
-          {
-            name: 'requiredCount',
-            view: props.output.ports?.status.requiredCount,
-            expression: 'source[sourceOffset + 1u]'
-          },
-          {
-            name: 'overflow',
-            view: props.output.ports?.status.overflow,
-            expression: 'source[sourceOffset + 2u]'
-          }
-        ]
-      })
-    );
     if (props.stages.length > 0)
       nodes.push(
         createWGSLKernelNode(graph, {
@@ -350,14 +345,16 @@ fn addCurveSum(slot: u32, value: vec3<u32>) {
             terrainBinding('ownership', props.output.cellNodes),
             terrainBinding('nodes', props.output.nodes),
             terrainBinding('stages', props.stages),
-            terrainBinding('status', props.output.status),
+            terrainBinding('storedCount', props.output.status.count),
             {name: 'curves', view: props.output.curves, type: 'u32', access: 'read_write'},
             terrainBinding('sumsMiddle', curveSumsMiddle, 'read_write'),
             terrainBinding('sumsHigh', curveSumsHigh, 'read_write')
           ],
           body: `let stage = stages[stagesOffset + index];
-let valid = status[statusOffset + 2u] == 0u && isFiniteValue(stage);
-let nodeCount = status[statusOffset];
+let nodeCount = storedCount[storedCountOffset];
+// Publication clears all node validity on overflow. The first node's validity carries that
+// gate without a ninth storage binding; an empty tree needs no valid node.
+let valid = (nodeCount == 0u || nodes[nodesOffset + 3u] != 0u) && isFiniteValue(stage);
 for (var node = 0u; node < ${props.nodeCapacity}u; node++) {
  let slot = (node * ${props.stages.length}u + index) * 2u;
  // A zero sum for the nodes that exist, NaN for the others and for an invalid hierarchy or stage.

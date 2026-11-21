@@ -10,7 +10,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUParameterBuffer, validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUQuantileLISA,
   isGPUChunkedSpatialWeights,
@@ -20,6 +20,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS,
+  resolveKeplerQuantileLISAAlternative,
   type KeplerQuantileLISASettings
 } from '../recipes/analysis-recipe';
 import type {KeplerAnalysisProvenance} from './analysis-bindings';
@@ -73,6 +74,8 @@ export type WeightedQuantileLISAProps = KeplerAnalysisProvenance & {
  * including the all-ties value 1/(P+1), and has no two-sided error-control guarantee. No
  * multiple-testing correction is applied. Uniform Philox sampling does not reproduce GeoDa's
  * random stream or biased endpoint sampling; this adapter does not claim GeoDa parity.
+ * The greater and two-sided alternatives include ties and return 1 when all draws tie.
+ * The resolved alternative is forwarded unchanged and retained in settings and inference provenance.
  *
  * Read invalidQuantile and status.overflow before publishing results. Caller owns submission,
  * input/output lifetimes, and destruction of this adapter's two parameter buffers after GPU
@@ -84,7 +87,8 @@ export function addWeightedQuantileLISA<Parameters>(
 ) {
   validateInputs(graph, props);
   const id = props.id ?? 'kepler-weighted-quantile-lisa';
-  const settings = Object.freeze({...props.settings});
+  const alternative = resolveKeplerQuantileLISAAlternative(props.settings, id);
+  const settings = Object.freeze({...props.settings, alternative});
   const source = Object.freeze({...props.source});
   const {values, topology} = props;
   const rowCount = values.length;
@@ -152,11 +156,14 @@ export function addWeightedQuantileLISA<Parameters>(
       boundaries,
       validCount,
       islandCount,
-      invalidQuantile
+      invalidQuantile,
+      ...(provided.tested ? {tested: provided.tested} : {}),
+      ...(provided.analysisCount ? {analysisCount: provided.analysisCount} : {})
     };
-    const weights = {...topology.weights, status: topology.status};
+    const weights = {...topology.weights, status: {...topology.weights.status, ...topology.status}};
     const contributor = new GPUQuantileLISA({
       id,
+      alternative,
       values,
       mask: effectiveMask,
       weights,
@@ -204,15 +211,21 @@ export function addWeightedQuantileLISA<Parameters>(
       numericalPolicy: 'float32' as const,
       weightTransform: 'binary' as const,
       inference: {
-        method: settings.inference,
+        method: alternative === 'geoda-legacy' ? 'legacy-directed-pseudo' : alternative,
+        alternative,
         seed: settings.seed,
         permutationCount: settings.permutationCount,
         significanceLevel: settings.significanceLevel,
         multipleTesting: settings.multipleTesting,
         randomStream: 'philox' as const,
         sampling: 'uniform-without-replacement' as const,
-        tail: 'minimum-upper-strict-complement' as const,
-        twoSidedErrorControl: false,
+        tail:
+          alternative === 'geoda-legacy'
+            ? 'minimum-upper-strict-complement'
+            : alternative === 'greater'
+              ? 'inclusive-upper'
+              : 'inclusive-two-sided',
+        twoSidedErrorControl: alternative === 'two-sided',
         testedRowsDefinition:
           'included non-island rows with a positive observed selected-quantile join count'
       },
@@ -227,7 +240,7 @@ export function addWeightedQuantileLISA<Parameters>(
         weightsRequiredCount,
         weightsInvalidCount,
         stages: [
-          {stage: 'weights', status: topology.status},
+          {stage: 'weights', status: weights.status},
           {stage: 'quantile-membership', status: {invalidQuantile}},
           {stage: 'conditional-permutation', status: {overflow}}
         ]
@@ -250,6 +263,24 @@ function validateInputs<Parameters>(
   props: WeightedQuantileLISAProps
 ): void {
   const {source, values, mask, topology, settings} = props;
+  const id = props.id ?? 'kepler-weighted-quantile-lisa';
+  for (const [name, view] of Object.entries(topology.weights.status ?? {})) {
+    const destination = Object.entries(topology.status).find(([field]) => field === name)?.[1];
+    const sameDestination =
+      view === destination ||
+      (view !== undefined &&
+        destination !== undefined &&
+        view.buffer === destination.buffer &&
+        view.byteOffset === destination.byteOffset &&
+        view.byteStride === destination.byteStride &&
+        view.length === destination.length &&
+        view.format === destination.format);
+    validateRequirement(
+      id,
+      view === undefined || destination === undefined || sameDestination,
+      `weights.status.${name} and topology.status.${name} must share the same view; received ${view?.buffer.id} and ${destination?.buffer.id}`
+    );
+  }
   const rowCount = values.length;
   if (
     !source.datasetId ||
@@ -301,7 +332,6 @@ function validateInputs<Parameters>(
     !Number.isSafeInteger(settings.permutationCount) ||
     settings.permutationCount < 1 ||
     settings.permutationCount > MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS ||
-    settings.inference !== 'legacy-directed-pseudo' ||
     settings.multipleTesting !== 'none' ||
     settings.islands !== 'exclude' ||
     settings.quantileMethod !== 'type-5' ||
@@ -332,6 +362,8 @@ function validateInputs<Parameters>(
     provided.validCount,
     provided.islandCount,
     provided.invalidQuantile,
+    provided.tested,
+    provided.analysisCount,
     ...Object.values(provided.status ?? {})
   ];
   for (const view of [

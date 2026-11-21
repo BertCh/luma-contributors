@@ -527,7 +527,7 @@ export class PublishedSourceRuntime {
         // Share all-part fitting bounds with native metadata and zoom-to-layer. A tight Float32
         // envelope can put an original boundary coordinate just outside the fitted viewport.
         this.bounds =
-          getGeographicViewportBounds(preparedTrips.batches.map(batch => batch.positions)) ??
+          getPublishedTripViewportBounds(preparedTrips.batches.map(batch => batch.positions)) ??
           undefined;
       }
       if (h3Column) {
@@ -1129,4 +1129,41 @@ export function preparePublishedH3(
   // vertex streams, so both the column and the polygon branch render them.
   if (!prepared.validRowCount) throw new Error('The H3 cell ID column contains no valid cells');
   return prepared;
+}
+
+/** Kepler metadata requires ordered canonical bounds. Wrapped trips therefore use a world fit. */
+export function getPublishedTripViewportBounds(
+  positionBatches: readonly Float32Array[]
+): [number, number, number, number] | null {
+  let longitudeMagnitude = 0;
+  let west = Infinity;
+  let east = -Infinity;
+  const canonical = positionBatches.map(positions => {
+    const copy = positions.slice();
+    for (let offset = 0; offset < copy.length; offset += 3) {
+      const longitude = positions[offset];
+      longitudeMagnitude = Math.max(longitudeMagnitude, Math.abs(longitude));
+      // Preserve canonical endpoints, especially +180, and tiny Greenwich offsets.
+      const remainder = longitude % 360;
+      const canonicalLongitude =
+        longitude >= -180 && longitude <= 180
+          ? longitude
+          : remainder > 180
+            ? remainder - 360
+            : remainder < -180
+              ? remainder + 360
+              : remainder;
+      copy[offset] = canonicalLongitude;
+      west = Math.min(west, canonicalLongitude);
+      east = Math.max(east, canonicalLongitude);
+    }
+    return copy;
+  });
+  const bounds = getGeographicViewportBounds(canonical, 3);
+  if (!bounds) return null;
+  // Float32 rounding happened on the source branch, before normalization. Keep its allowance.
+  const margin = Math.max((east - west) * 0.05, longitudeMagnitude * 2 ** -23, 2 ** -149);
+  bounds[0] = Math.max(-180, west - margin);
+  bounds[2] = Math.min(180, east + margin);
+  return bounds;
 }

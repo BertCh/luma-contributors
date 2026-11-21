@@ -6,9 +6,9 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {Buffer} from '@luma.gl/core';
 import {
   addClusterAndOutlineRecipe,
-  GPUSpatialClustering
+  GPUDBSCAN
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
+import {createNullWebGPUDevice} from '../../../analysis/test/utils/gpu-contributor-test-utils';
 import {describe, expect, it, vi} from 'vitest';
 import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
 import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
@@ -64,9 +64,9 @@ describe('curated clusters GPU preparation and execution contract (no GPU submis
       expect(prepared.maximumClusterCount).toBe(sample.count);
       expect(prepared.hullCapacity).toBe(sample.count);
       expect(prepared.maximumVerticesPerHull).toBe(Math.max(3, sample.count));
-      const [minimumX, minimumY, maximumX, maximumY, epsilon, minimumPoints] =
+      const [minimumX, minimumY, maximumX, maximumY, epsilon, minimumSamples] =
         prepared.clusteringParameters;
-      expect([epsilon, minimumPoints]).toEqual([200, 4]);
+      expect([epsilon, minimumSamples]).toEqual([200, 4]);
       for (let index = 0; index < sample.count; index++) {
         expect(prepared.positions[2 * index]).toBeGreaterThanOrEqual(minimumX);
         expect(prepared.positions[2 * index]).toBeLessThanOrEqual(maximumX);
@@ -89,7 +89,7 @@ describe('curated clusters GPU preparation and execution contract (no GPU submis
       /curated-clusters-and-footprints epsilon/
     );
     expect(() => prepareCuratedClustersGpu(sample, 1, 1001)).toThrow(
-      /curated-clusters-and-footprints minimumPoints.*1000/
+      /curated-clusters-and-footprints minimumSamples.*1000/
     );
     expect(() =>
       prepareCuratedClustersGpu({...sample, x: new Float64Array([1e100])}, 1, 4)
@@ -109,11 +109,11 @@ describe('curated clusters GPU preparation and execution contract (no GPU submis
         maximumClusterCount: 3,
         maximumVerticesPerHull: 3,
         hullCapacity: 3,
-        outputs: {coreFlags}
+        output: {coreFlags}
       });
       const clustering = recipe.contributors.find(
-        contributor => contributor instanceof GPUSpatialClustering
-      ) as GPUSpatialClustering;
+        contributor => contributor instanceof GPUDBSCAN
+      ) as GPUDBSCAN;
       expect(clustering.props.output.coreFlags).toBe(coreFlags);
     } finally {
       device.destroy();
@@ -175,7 +175,7 @@ describe('curated clusters GPU preparation and execution contract (no GPU submis
         const parameters = {
           coordinateSystem,
           epsilon: coordinateSystem === 'planar' ? 2 : 200000,
-          minimumPoints: 1
+          minimumSamples: 1
         };
         const points = makePoints([0, 1, 0], [0, 0, 1]);
         const result = await runCatalogOperationAsync(
@@ -281,7 +281,7 @@ describe('GPU center overflow readback regression', () => {
       try {
         const result = await runCatalogOperationAsync(
           CURATED_CLUSTERS_AND_FOOTPRINTS_BINDING,
-          {coordinateSystem: 'planar', epsilon: 1, minimumPoints: 4},
+          {coordinateSystem: 'planar', epsilon: 1, minimumSamples: 4},
           {points},
           {device}
         );
@@ -380,7 +380,7 @@ describe('AX-87: differential hull measurement before removing the extra transla
   it('matches the previous measurements on every scikit-learn fixture cluster', () => {
     const points = getPoints();
     const {sample, frame} = readClusterSamples(points, 'planar');
-    const result = runPlanar(points, DBSCAN_PLANAR.epsilon, DBSCAN_PLANAR.minimumPoints);
+    const result = runPlanar(points, DBSCAN_PLANAR.epsilon, DBSCAN_PLANAR.minimumSamples);
     const members = getMembers(getNumbers(getResultTable(result, 'points'), 'cluster'));
     let maximumAreaDelta = 0;
     let maximumPerimeterDelta = 0;
@@ -455,7 +455,7 @@ describe('AX-87: differential hull measurement before removing the extra transla
     const footprints = getResultTable(
       runCuratedBinding(
         ID,
-        {coordinateSystem: 'EPSG:4326', epsilon: 30000, minimumPoints: 3},
+        {coordinateSystem: 'EPSG:4326', epsilon: 30000, minimumSamples: 3},
         {points}
       ),
       'footprints'
@@ -486,8 +486,8 @@ function getPoints(): CatalogFeatureCollection {
   );
 }
 
-function runPlanar(points: CatalogFeatureCollection, epsilon: number, minimumPoints: number) {
-  return runCuratedBinding(ID, {coordinateSystem: 'planar', epsilon, minimumPoints}, {points});
+function runPlanar(points: CatalogFeatureCollection, epsilon: number, minimumSamples: number) {
+  return runCuratedBinding(ID, {coordinateSystem: 'planar', epsilon, minimumSamples}, {points});
 }
 
 /** Groups point indices by label, in order of the smallest member. */
@@ -501,7 +501,7 @@ function getMembers(labels: readonly number[]): Map<number, number[]> {
 }
 
 describe('curated-clusters-and-footprints against scikit-learn and Shapely (planar)', () => {
-  const result = runPlanar(getPoints(), DBSCAN_PLANAR.epsilon, DBSCAN_PLANAR.minimumPoints);
+  const result = runPlanar(getPoints(), DBSCAN_PLANAR.epsilon, DBSCAN_PLANAR.minimumSamples);
   const pointTable = getResultTable(result, 'points');
   const footprints = getResultTable(result, 'footprints');
 
@@ -572,7 +572,7 @@ describe('curated-clusters-and-footprints against scikit-learn and Shapely (plan
   });
 
   it('is deterministic', () => {
-    expect(runPlanar(getPoints(), DBSCAN_PLANAR.epsilon, DBSCAN_PLANAR.minimumPoints)).toEqual(
+    expect(runPlanar(getPoints(), DBSCAN_PLANAR.epsilon, DBSCAN_PLANAR.minimumSamples)).toEqual(
       result
     );
   });
@@ -585,7 +585,7 @@ describe('curated-clusters-and-footprints on longitude and latitude', () => {
     {
       coordinateSystem: 'EPSG:4326',
       epsilon: DBSCAN_GEOGRAPHIC.epsilon,
-      minimumPoints: DBSCAN_GEOGRAPHIC.minimumPoints
+      minimumSamples: DBSCAN_GEOGRAPHIC.minimumSamples
     },
     {points}
   );
@@ -704,8 +704,12 @@ describe('curated-clusters-and-footprints declared behaviour', () => {
         }
       )
     ).toThrow(/geometry kind not accepted/);
-    expect(() => runPlanar(makePoints([0], [0]), 0, 3)).toThrow(/out of range/);
-    expect(() => runPlanar(makePoints([0], [0]), 1, 0)).toThrow(/out of range/);
+    expect(() => runPlanar(makePoints([0], [0]), 0, 3)).toThrow(
+      /epsilon must be at least 1e-9; received 0/
+    );
+    expect(() => runPlanar(makePoints([0], [0]), 1, 0)).toThrow(
+      /minimumSamples must be at least 1; received 0/
+    );
   });
 });
 
@@ -740,7 +744,7 @@ it('measures and represents a small dateline hull without a globe-spanning edge 
   const footprints = getResultTable(
     runCuratedBinding(
       ID,
-      {coordinateSystem: 'EPSG:4326', epsilon: 30000, minimumPoints: 1},
+      {coordinateSystem: 'EPSG:4326', epsilon: 30000, minimumSamples: 1},
       {points}
     ),
     'footprints'

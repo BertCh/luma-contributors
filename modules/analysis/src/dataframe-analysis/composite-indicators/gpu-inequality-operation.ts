@@ -6,6 +6,12 @@ import type {GPUContributorOperationOutput} from '../../analysis-core/operations
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUInequality, type GPUInequalityOutput} from './gpu-inequality';
 import {GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH} from './inequality-parameters';
+import type {RequiredTerminalOutput} from '../column-classification/required-terminal-output';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateInequalityOperationOutputNames} from './inequality-operation-output-names';
 
 /** Packed graph values shared by both inequality operations; no oversized output tails. */
 export type InequalityOperationProps = {
@@ -19,13 +25,32 @@ export type InequalityOperationProps = {
   /** Layout written by getGPUInequalityParameterValues. */
   parameters: string;
   lorenzKnotCount?: number;
-  output: Partial<Record<keyof GPUInequalityOutput, string>>;
+  output: RequiredTerminalOutput<Partial<Record<keyof GPUInequalityOutput, string>>>;
 };
 
 /** Declares only requested outputs at their exact logical lengths. @internal */
 export function getInequalityOperationOutputs(
   props: InequalityOperationProps
 ): Record<string, GPUContributorOperationOutput> {
+  const id = props.id ?? 'inequality';
+  validateCapacity(id, 'zoneCount', props.zoneCount, 1, 0xfffffffe);
+  validateCapacity(id, 'lorenzKnotCount', props.lorenzKnotCount ?? 11, 2);
+  validateCapacity(
+    id,
+    'zoneCount x lorenzKnotCount',
+    props.zoneCount * (props.lorenzKnotCount ?? 11)
+  );
+  validateRequirement(
+    id,
+    props.mode === undefined || props.mode === 'parallel' || props.mode === 'reference',
+    `mode must be parallel or reference; received ${String(props.mode)}`
+  );
+  validateInequalityOperationOutputNames(id, props.output);
+  validateRequirement(
+    id,
+    Object.values(props.output).some(value => value !== undefined),
+    'output must contain at least one defined output terminal; received no defined terminals'
+  );
   return Object.fromEntries(
     Object.entries(props.output)
       .filter(([, value]) => value !== undefined)
@@ -49,29 +74,33 @@ export function getInequalityOperationOutputs(
 export class GPUInequalityOperation extends GPUContributorOperation {
   constructor(props: InequalityOperationProps) {
     const id = props.id ?? 'inequality';
+    const outputs = getInequalityOperationOutputs(props);
+    const {mode, zoneCount, lorenzKnotCount} = props;
+    const hasWeights = props.weights !== undefined;
+    const hasMask = props.mask !== undefined;
     super({
       id,
       inputs: {
         values: props.values,
         zoneIds: props.zoneIds,
         parameters: props.parameters,
-        ...(props.weights ? {weights: props.weights} : {}),
-        ...(props.mask ? {mask: props.mask} : {})
+        ...(props.weights !== undefined ? {weights: props.weights} : {}),
+        ...(props.mask !== undefined ? {mask: props.mask} : {})
       },
-      outputs: getInequalityOperationOutputs(props),
+      outputs,
       createContributor: getView =>
         new GPUInequality({
           id,
-          mode: props.mode,
+          mode,
           values: getView<'float32'>('values'),
           zoneIds: getView<'uint32'>('zoneIds'),
           parameters: getView<'float32'>('parameters'),
-          weights: props.weights ? getView<'float32'>('weights') : undefined,
-          mask: props.mask ? getView<'uint32'>('mask') : undefined,
-          zoneCount: props.zoneCount,
-          lorenzKnotCount: props.lorenzKnotCount,
+          weights: hasWeights ? getView<'float32'>('weights') : undefined,
+          mask: hasMask ? getView<'uint32'>('mask') : undefined,
+          zoneCount,
+          lorenzKnotCount,
           output: Object.fromEntries(
-            Object.keys(getInequalityOperationOutputs(props)).map(name => [name, getView(name)])
+            Object.keys(outputs).map(name => [name, getView(name)])
           ) as GPUInequalityOutput
         })
     });

@@ -14,11 +14,14 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
+  readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
+import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
+import {GPUSpatialEmpiricalBayesRates} from '../../../src/gpu-spatial-analysis/rate-smoothing/index';
 
 it('GeoDa pooled risk and binary spatial rates handle masks, self edges, islands and replay', async () => {
   const device = await getWebGPUTestDevice();
@@ -180,5 +183,243 @@ it.each([
     }
   } finally {
     fixture.destroy();
+  }
+});
+
+it('W5-15 final and candidate loss independently suppress spatial rates and recover', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const overflow = rig.input(Uint32Array.of(0), 'uint32', 1);
+    const candidateOverflow = rig.input(Uint32Array.of(0), 'uint32', 1);
+    const output = rig.output('float32', 2);
+    const result = addSpatialRateRecipe(rig.graph, {
+      events: rig.input(Float32Array.of(1, 3), 'float32', 2),
+      populations: rig.input(Float32Array.of(10, 10), 'float32', 2),
+      weights: {
+        ...rig.uploadWeights({
+          offsets: [0, 1, 2],
+          neighbors: [1, 0],
+          weights: [1, 1],
+          distances: []
+        }),
+        status: {overflow, candidateOverflow}
+      },
+      output: output.view
+    });
+    expect(result.status.stages.map(stage => stage.stage)).toEqual(['weights']);
+    expect(result.status.stages[0].status.overflow).toBe(overflow);
+    expect(result.status.stages[0].status.candidateOverflow).toBe(candidateOverflow);
+    const compiled = rig.graph.compile();
+    try {
+      for (const [finalLoss, candidateLoss] of [
+        [1, 0],
+        [0, 0],
+        [0, 1],
+        [0, 0]
+      ]) {
+        rig.bufferOf(overflow).write(Uint32Array.of(finalLoss));
+        rig.bufferOf(candidateOverflow).write(Uint32Array.of(candidateLoss));
+        submitGraph(device, compiled, undefined);
+        const actual = await readFloat32(output.buffer, 2);
+        if (finalLoss || candidateLoss) expect(actual.every(Number.isNaN)).toBe(true);
+        else
+          for (const value of actual) {
+            // Hand pooling: (1 + 3)/(10 + 10) = .2 for either reciprocal neighborhood.
+            expect(Number.isFinite(value)).toBe(true);
+            expect(value).toBeCloseTo(0.2, 6);
+          }
+      }
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('W5-15 S1 a final-only producer keeps its generated candidate word clear during final loss', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const overflow = rig.input(Uint32Array.of(0), 'uint32', 1);
+    const output = rig.output('float32', 2);
+    const result = addSpatialRateRecipe(rig.graph, {
+      events: rig.input(Float32Array.of(1, 3), 'float32', 2),
+      populations: rig.input(Float32Array.of(10, 10), 'float32', 2),
+      weights: {
+        ...rig.uploadWeights({
+          offsets: [0, 1, 2],
+          neighbors: [1, 0],
+          weights: [1, 1],
+          distances: []
+        }),
+        status: {overflow}
+      },
+      output: output.view
+    });
+    const status = result.status.stages[0].status;
+    expect(status.overflow).toBe(overflow);
+    // The candidate word is generated: a fallback onto the final view would also be length one.
+    expect(status.candidateOverflow).toBeDefined();
+    expect(status.candidateOverflow).not.toBe(overflow);
+    const candidateWord = rig.output('uint32', 1);
+    rig.graph.add(
+      createWGSLKernelNode(rig.graph, {
+        id: 'retain-candidate-word',
+        operation: 'RateLossTest',
+        invocationCount: 1,
+        bindings: [
+          {name: 'input', view: status.candidateOverflow!, type: 'u32', access: 'read'},
+          {name: 'output', view: candidateWord.view, type: 'u32', access: 'read_write'}
+        ],
+        body: 'output[outputOffset] = input[inputOffset];'
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      for (const finalLoss of [1, 0, 1]) {
+        rig.bufferOf(overflow).write(Uint32Array.of(finalLoss));
+        submitGraph(device, compiled, undefined);
+        // Final loss is not candidate loss: the generated word stays zero on every submission.
+        expect(await readUint32(candidateWord.buffer, 1)).toEqual([0]);
+        const actual = await readFloat32(output.buffer, 2);
+        if (finalLoss) expect(actual.every(Number.isNaN)).toBe(true);
+        else
+          for (const value of actual) {
+            // Hand pooling: (1 + 3)/(10 + 10) = .2 for either reciprocal neighborhood.
+            expect(Number.isFinite(value)).toBe(true);
+            expect(value).toBeCloseTo(0.2, 6);
+          }
+      }
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('W5-19 negative donors create recipe islands while own rates and zero events remain defined', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const events = rig.input(Float32Array.of(6, -2), 'float32', 2);
+    const populations = rig.input(Float32Array.of(30, 10), 'float32', 2);
+    const mask = rig.input(Uint32Array.of(1, 1), 'uint32', 2);
+    const weights = rig.uploadWeights({
+      offsets: [0, 1, 2],
+      neighbors: [1, 0],
+      weights: [1, 1],
+      distances: []
+    });
+    const risk = rig.output('float32', 2);
+    const pooled = rig.output('float32', 2);
+    const excludedIslands = rig.output('float32', 2);
+    const own = rig.output('float32', 2);
+    const props = {events, populations, mask, weights};
+    const recipe = addExcessRiskRecipe(rig.graph, {...props, output: risk.view});
+    rig.graph.add(
+      new GPUSpatialEmpiricalBayesRates({...props, output: {spatialRates: pooled.view}})
+    );
+    addSpatialRateRecipe(rig.graph, {...props, output: excludedIslands.view});
+    addSpatialRateRecipe(rig.graph, {
+      ...props,
+      id: 'own-rate',
+      islandPolicy: 'own-rate',
+      output: own.view
+    });
+    const invalidCount = rig.output('uint32', 1);
+    rig.graph.add(
+      createWGSLKernelNode(rig.graph, {
+        id: 'retain-invalid-count',
+        operation: 'RateEligibilityTest',
+        invocationCount: 1,
+        bindings: [
+          {
+            name: 'input',
+            view: recipe.status.stages[0].status.invalidCount!,
+            type: 'u32',
+            access: 'read'
+          },
+          {name: 'output', view: invalidCount.view, type: 'u32', access: 'read_write'}
+        ],
+        body: 'output[outputOffset] = input[inputOffset];'
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      for (const fixture of [
+        // Hand arithmetic: negative row excluded; own 6/30=.2, pooled risk=6/(30*.2)=1.
+        {
+          events: [6, -2],
+          mask: [1, 1],
+          risk: [1, NaN],
+          rate: [0.2, NaN],
+          excluded: [NaN, NaN],
+          invalid: 1
+        },
+        // Zero is eligible: pooled 2/40=.05; row 1 excess risk=2/(10*.05)=4.
+        {
+          events: [0, 2],
+          mask: [1, 1],
+          risk: [0, 4],
+          rate: [0.05, 0.05],
+          excluded: [0.05, 0.05],
+          invalid: 0
+        },
+        {
+          events: [0, 0],
+          mask: [1, 1],
+          risk: [NaN, NaN],
+          rate: [0, 0],
+          excluded: [0, 0],
+          invalid: 2
+        },
+        {
+          events: [6, 2],
+          mask: [1, 0],
+          risk: [1, NaN],
+          rate: [0.2, NaN],
+          excluded: [NaN, NaN],
+          invalid: 0
+        },
+        {
+          events: [6, -2],
+          mask: [1, 1],
+          risk: [1, NaN],
+          rate: [0.2, NaN],
+          excluded: [NaN, NaN],
+          invalid: 1
+        }
+      ]) {
+        rig.bufferOf(events).write(Float32Array.from(fixture.events));
+        rig.bufferOf(mask).write(Uint32Array.from(fixture.mask));
+        submitGraph(device, compiled, undefined);
+        for (const [output, expected] of [
+          [risk, fixture.risk],
+          [pooled, fixture.rate],
+          [own, fixture.rate],
+          [excludedIslands, fixture.excluded]
+        ] as const) {
+          const actual = await readFloat32(output.buffer, 2);
+          expected.forEach((value, row) => {
+            if (Number.isNaN(value)) expect(actual[row]).toBeNaN();
+            else {
+              expect(Number.isFinite(actual[row])).toBe(true);
+              expect(actual[row]).toBeCloseTo(value, 6);
+            }
+          });
+        }
+        expect(await readUint32(invalidCount.buffer, 1)).toEqual([fixture.invalid]);
+      }
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
   }
 });

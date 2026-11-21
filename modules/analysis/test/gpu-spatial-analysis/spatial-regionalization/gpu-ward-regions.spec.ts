@@ -8,7 +8,7 @@ import {expect, it} from 'vitest';
 import {
   getGPUWardRegionsParameterValues,
   GPUWardRegions,
-  GPU_WARD_STATUS
+  GPU_WARD_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -143,7 +143,7 @@ it('GPUWardRegions merges the least-cost adjacent regions to its target', async 
   const outputs = {
     labels: createOutputBuffer(device, 4),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_WARD_STATUS.length)
+    status: createOutputBuffer(device, GPU_WARD_STATUS_LAYOUT.length)
   };
   const seed = 0;
   const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
@@ -169,7 +169,13 @@ it('GPUWardRegions merges the least-cost adjacent regions to its target', async 
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_WARD_STATUS_LAYOUT.length
+        )
       }
     })
   );
@@ -177,7 +183,7 @@ it('GPUWardRegions merges the least-cost adjacent regions to its target', async 
   submitGraph(device, compiled, undefined);
   expect(await readUint32(outputs.labels, 4)).toEqual([0, 0, 2, 2]);
   expect((await readFloat32(outputs.objective, 1))[0]).toBeCloseTo(1, 5);
-  expect(await readUint32(outputs.status, GPU_WARD_STATUS.length)).toEqual([2, 1, 0, 0]);
+  expect(await readUint32(outputs.status, GPU_WARD_STATUS_LAYOUT.length)).toEqual([2, 1, 0, 0]);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   parametersBuffer.destroy();
@@ -203,7 +209,7 @@ it('GPUWardRegions merges a 900-row lattice to its target with contiguous region
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_WARD_STATUS.length)
+    status: createOutputBuffer(device, GPU_WARD_STATUS_LAYOUT.length)
   };
   const seed = 0;
   const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
@@ -229,7 +235,13 @@ it('GPUWardRegions merges a 900-row lattice to its target with contiguous region
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_WARD_STATUS_LAYOUT.length
+        )
       }
     })
   );
@@ -237,11 +249,11 @@ it('GPUWardRegions merges a 900-row lattice to its target with contiguous region
   submitGraph(device, compiled, undefined);
   const labels = await readUint32(outputs.labels, rowCount);
   const [objective] = await readFloat32(outputs.objective, 1);
-  const status = await readUint32(outputs.status, GPU_WARD_STATUS.length);
+  const status = await readUint32(outputs.status, GPU_WARD_STATUS_LAYOUT.length);
   expect(labels.every(label => label < rowCount)).toBe(true);
   expect(new Set(labels).size).toBe(targetRegionCount);
-  expect(status[GPU_WARD_STATUS.invalidCount]).toBe(0);
-  expect(status[GPU_WARD_STATUS.converged]).toBe(1);
+  expect(status[GPU_WARD_STATUS_LAYOUT.invalidCount]).toBe(0);
+  expect(status[GPU_WARD_STATUS_LAYOUT.converged]).toBe(1);
   expect(findDisconnectedLabels(offsets, neighbors, labels)).toEqual([]);
   const finalObjective = evaluatePartition(values, 1, labels).withinSsd;
   expect(Math.abs(objective - finalObjective)).toBeLessThan(1e-3 * Math.max(finalObjective, 1));
@@ -270,7 +282,7 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
   const outputs = {
     labels: createOutputBuffer(device, 4),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_WARD_STATUS.length)
+    status: createOutputBuffer(device, GPU_WARD_STATUS_LAYOUT.length)
   };
   const seed = 7;
   const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
@@ -296,7 +308,13 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_WARD_STATUS_LAYOUT.length
+        )
       }
     })
   );
@@ -306,7 +324,7 @@ it('GPUWardRegions gates off merges once disconnected weights leave no adjacent 
     submitGraph(device, compiled, undefined);
     expect(await readUint32(outputs.labels, 4)).toEqual([0, 0, 2, 2]);
     expect((await readFloat32(outputs.objective, 1))[0]).toBeCloseTo(1, 5);
-    expect(await readUint32(outputs.status, GPU_WARD_STATUS.length)).toEqual([2, 0, 0, 0]);
+    expect(await readUint32(outputs.status, GPU_WARD_STATUS_LAYOUT.length)).toEqual([2, 0, 0, 0]);
   }
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
@@ -336,7 +354,7 @@ async function runWardChain(
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_WARD_STATUS.length)
+    status: createOutputBuffer(device, GPU_WARD_STATUS_LAYOUT.length)
   };
   const seed = 0;
   const parametersBuffer = createInputBuffer(device, getGPUWardRegionsParameterValues({seed}));
@@ -367,7 +385,13 @@ async function runWardChain(
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_WARD_STATUS.length)
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_WARD_STATUS_LAYOUT.length
+        )
       }
     })
   );
@@ -376,7 +400,7 @@ async function runWardChain(
   const result = {
     labels: await readUint32(outputs.labels, rowCount),
     objective: (await readFloat32(outputs.objective, 1))[0],
-    status: await readUint32(outputs.status, GPU_WARD_STATUS.length)
+    status: await readUint32(outputs.status, GPU_WARD_STATUS_LAYOUT.length)
   };
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());

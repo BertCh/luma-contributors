@@ -1459,7 +1459,7 @@ async function createGeneraliseView(env: Environment): Promise<View> {
         featureOffsets: imp('feature-offsets', featureOffsets, 'uint32', layout.featureCount + 1),
         polygonOffsets: imp('polygon-offsets', polygonOffsets, 'uint32', partCount + 1),
         ringOffsets: imp('ring-offsets', ringOffsets, 'uint32', ringCount + 1),
-        snapTolerance: Number(options.coverageSnap),
+        snapGridSize: Number(options.coverageSnap),
         parameters: parameters.importToGraph(graph),
         maximumIterations: Number(options.coverageRounds),
         topologyIterationCount: Number(options.topologyRounds),

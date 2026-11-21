@@ -71,13 +71,19 @@ async function runXiExtraction(
         'uint32',
         Uint32Array.from(reachabilityValues, value => (Number.isFinite(value) ? 0 : 0xffffffff))
       ),
-      status: input('status', 'uint32', Uint32Array.of(rows, 1, 0)),
       labels: labels.view,
       clusterIntervals: intervals.view,
       clusterSummary: summary.view
     }
   };
-  graph.add(createOPTICSXiNodes(graph, props, 'xi-dependencies'));
+  graph.add(
+    createOPTICSXiNodes(
+      graph,
+      props,
+      'xi-dependencies',
+      input('status', 'uint32', Uint32Array.of(rows, 1, 0))
+    )
+  );
   const compiled = graph.compile();
   try {
     submitGraph(device, compiled, undefined);

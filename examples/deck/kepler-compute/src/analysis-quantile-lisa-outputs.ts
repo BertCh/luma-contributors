@@ -65,7 +65,7 @@ export class AnalysisQuantileLisaOutputs {
       this.palette.write(
         new Uint32Array([
           packGPUColor(150, 150, 150), // 0: not significant or not tested
-          packGPUColor(215, 25, 28), // 1: significant under legacy directed pseudo p-values
+          packGPUColor(215, 25, 28), // 1: significant under the recipe's explicit p-value alternative
           packGPUColor(65, 65, 65), // 2: undefined
           packGPUColor(253, 174, 97) // 3: isolated
         ])

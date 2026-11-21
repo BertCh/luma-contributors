@@ -4,7 +4,7 @@
 
 import type {Device} from '@luma.gl/core';
 import {createAZPObjectiveReductionNode} from './azp-objective-reduction';
-import {HASH_UINT32_WGSL} from '../shared/hash-uint32';
+import {HASH_UINT32_WGSL} from '../../analysis-core/kernels/hash-uint32';
 import {
   createTransientView,
   GPUSort,
@@ -22,6 +22,7 @@ import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
@@ -44,6 +45,13 @@ import {
   validateSymmetricAdjacencyScratch
 } from './regionalization-inputs';
 import {estimateAZPCommandNodeCount} from './regionalization-command-budget';
+import {
+  createRegionalizationLossSuppressionNodes,
+  validateRegionalizationWeightsCompleteness
+} from './adjacency-loss-suppression';
+import {getGPUSpatialWeightsLossViews} from '../spatial-weights/gpu-chunked-spatial-weights';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Published auto sort uses a local workgroup through 256 rows, then 16 radix buckets. */
 const AZP_SORT_WORKGROUP_SIZE = 256;
@@ -136,7 +144,7 @@ export function getGPUAZPRegionsParameterValues(settings: GPUAZPRegionsSettings 
 }
 
 /** Words of {@link GPUAZPRegionsOutput.status}. */
-export const GPU_AZP_STATUS = {
+export const GPU_AZP_STATUS_LAYOUT = {
   iterationCount: 0,
   converged: 1,
   iterationLimitReached: 2,
@@ -200,7 +208,7 @@ export type GPUAZPRegionsOutput = {
   labels: GraphDataView<'uint32'>;
   /** One value: the within-region sum of squared deviations of `labels`. */
   objective: GraphDataView<'float32'>;
-  /** Four words indexed by {@link GPU_AZP_STATUS}. */
+  /** Four words indexed by {@link GPU_AZP_STATUS_LAYOUT}. */
   status: GraphDataView<'uint32'>;
 };
 
@@ -222,15 +230,17 @@ export type GPUAZPRegionsOutput = {
  * Contiguity is kept by a local articulation test instead of a search of the whole source region:
  * a row may leave region A only when its A-neighbors stay connected to each other through rows of
  * A within two steps of it (the row's A-neighbors and their A-neighbors, at most
- * `GPU_AZP_LOCAL_NEIGHBORHOOD_CAPACITY` rows, scanning neighbor lists of at most
- * `GPU_AZP_MAXIMUM_SCAN_DEGREE` entries). The test is sufficient, never necessary: it can never
+ * `GPU_AZP_LOCAL_NEIGHBORHOOD_CAPACITY` = 128 rows, scanning neighbor lists of at most
+ * `GPU_AZP_MAXIMUM_SCAN_DEGREE` = 64 entries). The test is sufficient, never necessary: it can never
  * disconnect a region, but it may refuse a safe move whose reconnecting path is longer, so the
  * result is a local optimum with respect to the moves that pass it, not necessarily to every
  * contiguity-preserving move. Destination connectivity holds because a row only moves to the
  * region of one of its neighbors. Private memory and per-round work per row are bounded by those
- * two constants and the row's neighbor count, independent of the row count, so there is no row
- * cap: only the `rows x columnCount` attribute table and the region table must each fit one
- * storage binding (`getGPUAZPMaximumTableWordCount` words).
+ * two constants and the row's neighbor count. AZP accepts 1–8 attribute columns,
+ * 1–256 move rounds, and a region capacity of 2 through the input row count. The attribute
+ * table and region table must each fit one storage binding (33,554,432 words at 128 MiB).
+ * Input CSR capacity is at most 16,777,216 slots at that binding size, and the estimated
+ * graph is limited to 32,768 command nodes.
  *
  * `output.objective` is the within-region sum of squares of the returned labels, in standardized
  * units unless `standardize` is false (the same quantity as `withinSumOfSquares` of
@@ -240,6 +250,8 @@ export type GPUAZPRegionsOutput = {
  *
  * Default change: columns are standardized (`standardize`, default true). Adjacency is the
  * undirected union of the weights and their transpose.
+ * Nonzero weights.status overflow or candidateOverflow suppresses the partition: missing labels
+ * (0xffffffff), NaN objective and zero status words. Clearing the flags permits reuse.
  */
 export class GPUAZPRegions implements GPUCommandNodeProducer {
   /** Upper bound including adjacency, contiguity, sort and objective nodes. */
@@ -250,10 +262,30 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
   readonly columnCount: number;
 
   constructor(props: GPUAZPRegionsProps) {
-    props = Object.freeze({...props});
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'weights',
+      'values',
+      'columnCount',
+      'standardize',
+      'extensiveValues',
+      'extensiveThreshold',
+      'initialLabels',
+      'regionCapacity',
+      'minimumRegionSize',
+      'maximumIterations',
+      'parameters',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      weights: snapshotWeightsPort(captured.weights),
+      output: snapshotConstructionFields(captured.output, ['labels', 'objective', 'status'])
+    });
     this.id = props.id ?? 'azp-regions';
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(this.id, props.weights);
+    validateRegionalizationWeightsCompleteness(this.id, props.weights);
     this.columnCount = props.columnCount ?? 1;
     const {id, rowCount, columnCount} = this;
     const {output} = props;
@@ -266,22 +298,40 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       1,
       GPU_AZP_MAXIMUM_ITERATIONS
     );
-    this.estimatedCommandNodeCount = estimateAZPCommandNodeCount(rowCount, props.maximumIterations);
+    this.estimatedCommandNodeCount =
+      estimateAZPCommandNodeCount(rowCount, props.maximumIterations) +
+      3 * getGPUSpatialWeightsLossViews(props.weights).length;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateCapacity(id, 'minimumRegionSize', props.minimumRegionSize ?? 1);
     validateRegionalizationParameters(id, props.parameters, GPU_AZP_REGIONS_PARAMETER_LENGTH);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rowCount * columnCount)
-      throw new Error(`${id} values length must equal rows * columnCount`);
+      validateRequirement(
+        id,
+        false,
+        `values length must equal rows * columnCount; received props.values.length=${props.values.length}`
+      );
     if (Boolean(props.extensiveValues) !== Boolean(props.extensiveThreshold))
-      throw new Error(`${id} extensiveValues and extensiveThreshold are required together`);
+      validateRequirement(
+        id,
+        false,
+        `extensiveValues and extensiveThreshold are required together`
+      );
     if (props.extensiveValues && props.extensiveThreshold) {
       validateSinglePackedView(props.extensiveValues, ['float32'], `${id} extensiveValues`);
       validateSinglePackedView(props.extensiveThreshold, ['float32'], `${id} extensiveThreshold`);
       if (props.extensiveValues.length !== rowCount)
-        throw new Error(`${id} extensiveValues length must equal the weights row count`);
+        validateRequirement(
+          id,
+          false,
+          `extensiveValues length must equal the weights row count; received props.extensiveValues.length=${props.extensiveValues.length}`
+        );
       if (props.extensiveThreshold.length < 1)
-        throw new Error(`${id} extensiveThreshold must hold one value`);
+        validateRequirement(
+          id,
+          false,
+          `extensiveThreshold must hold one value; received props.extensiveThreshold.length=${props.extensiveThreshold.length}`
+        );
     }
     for (const [name, view] of [
       ['initialLabels', props.initialLabels],
@@ -291,11 +341,24 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
     }
     if (props.initialLabels.length !== rowCount || output.labels.length !== rowCount)
-      throw new Error(`${id} label views must equal the weights row count`);
+      validateRequirement(
+        id,
+        false,
+        `label views must equal the weights row count; received props.initialLabels.length=${props.initialLabels.length}, output.labels.length=${output.labels.length}`
+      );
     validateSinglePackedView(output.objective, ['float32'], `${id} output.objective`);
-    if (output.objective.length < 1) throw new Error(`${id} output.objective must hold one value`);
-    if (output.status.length < GPU_AZP_STATUS.length)
-      throw new Error(`${id} output.status must hold ${GPU_AZP_STATUS.length} words`);
+    if (output.objective.length < 1)
+      validateRequirement(
+        id,
+        false,
+        `output.objective must hold one value; received output.objective.length=${output.objective.length}`
+      );
+    if (output.status.length < GPU_AZP_STATUS_LAYOUT.length)
+      validateRequirement(
+        id,
+        false,
+        `output.status must hold ${GPU_AZP_STATUS_LAYOUT.length} words; received output.status.length=${output.status.length}, GPU_AZP_STATUS_LAYOUT.length=${GPU_AZP_STATUS_LAYOUT.length}`
+      );
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.labels, output.objective, output.status],
@@ -307,7 +370,8 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
         props.values,
         props.initialLabels,
         props.extensiveValues,
-        props.extensiveThreshold
+        props.extensiveThreshold,
+        ...getGPUSpatialWeightsLossViews(props.weights)
       ]
     );
     validateSpatialOutputViews(id, output, [
@@ -334,7 +398,8 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       props.extensiveThreshold,
       output.labels,
       output.objective,
-      output.status
+      output.status,
+      ...getGPUSpatialWeightsLossViews(props.weights)
     ]);
     validateGraphChunkBindingRanges(graph, id, {
       parameters: props.parameters,
@@ -345,6 +410,12 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       initialLabels: props.initialLabels,
       extensiveValues: props.extensiveValues,
       extensiveThreshold: props.extensiveThreshold,
+      ...Object.fromEntries(
+        getGPUSpatialWeightsLossViews(props.weights).map((view, index) => [
+          `weights loss ${index}`,
+          view
+        ])
+      ),
       ...output
     });
     validateRegionalizationSlotCount(
@@ -1003,7 +1074,6 @@ fn isRemovalSafe(row: u32, source: u32) -> bool {
       : ''
   }
   var bestDelta = LARGE_DELTA;
-  var bestScale = 0.0;
   var bestDestination = NONE;
   // Cheap exact delta first: only an improving move pays for the removal test below.
   if (movable) {
@@ -1026,14 +1096,15 @@ fn isRemovalSafe(row: u32, source: u32) -> bool {
         delta += sourceBefore + destinationBefore - sourceAfter - destinationAfter;
         scale += sourceBefore + destinationBefore + sourceAfter + destinationAfter;
       }
-      if (delta < bestDelta || (delta == bestDelta && destination < bestDestination)) {
-        bestDelta = delta; bestScale = scale; bestDestination = destination;
+      if (delta < -NOISE_THRESHOLD * scale &&
+          (delta < bestDelta || (delta == bestDelta && destination < bestDestination))) {
+        bestDelta = delta; bestDestination = destination;
       }
     }
   }
   var gainBits = 0u;
   // delta is the gain's negative: the sum of squares after minus before.
-  if (bestDestination != NONE && bestDelta < -NOISE_THRESHOLD * bestScale && isRemovalSafe(row, source)) {
+  if (bestDestination != NONE && isRemovalSafe(row, source)) {
     gainBits = bitcast<u32>(-bestDelta);
   } else {
     bestDestination = NONE;
@@ -1223,6 +1294,13 @@ fn isRemovalSafe(row: u32, source: u32) -> bool {
   status[statusOffset + 1u] = select(0u, 1u, !invalid && state[stateOffset] != 0u);
   status[statusOffset + 2u] = select(0u, 1u, !invalid && state[stateOffset] == 0u && status[statusOffset] == MAXIMUM_ITERATIONS);`
       })
+    );
+    nodes.push(
+      ...createRegionalizationLossSuppressionNodes(graph, id, 'GPUAZPRegions', props.weights, [
+        {view: output.labels, length: rowCount, value: 'missing'},
+        {view: output.objective, length: 1, value: 'nan'},
+        {view: output.status, length: GPU_AZP_STATUS_LAYOUT.length, value: 'zero'}
+      ])
     );
     return nodes;
   }

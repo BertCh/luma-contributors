@@ -10,7 +10,7 @@ import {
   GPUOffsetCurve,
   GPUOffsetCurveComponents
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {defineOperationRun} from '../../define-run';
+import {defineOperationRun, type RunBuffer, type RunBuilder} from '../../define-run';
 import {findNearestOnPolyline} from '../../pick';
 import {createRiverBend} from '../../../data/hydrography';
 import {createIdentityIds} from './shared/polygon-set';
@@ -26,6 +26,50 @@ const DISTANCES = [0.03, 0.06, 0.09, 0.12, 0.15];
 /** The offset distance is this fraction of the pointer's distance from the river. */
 const DISTANCE_SCALE = 0.5;
 const COMPONENT_CAPACITY = 128;
+
+/** Links vertices in the readable component prefix and makes all other edges degenerate. */
+export function addOffsetCurveComponentEdges(
+  builder: RunBuilder,
+  components: RunBuffer<'uint32x4'>,
+  status: RunBuffer<'uint32x4'>,
+  edges: RunBuffer<'uint32x2'>,
+  categories: RunBuffer<'uint32'>
+): void {
+  addKernel(builder, {
+    id: 'component-edges',
+    invocationCount: edges.length,
+    bindings: [
+      {name: 'components', buffer: components, access: 'read'},
+      {name: 'status', buffer: status, access: 'read'},
+      {name: 'edges', buffer: edges, access: 'read_write'},
+      {name: 'categories', buffer: categories, access: 'read_write'}
+    ],
+    body: `let writtenComponents = status[statusOffset];
+  let writtenVertices = status[statusOffset + 1u];
+  let requiredComponents = status[statusOffset + 2u];
+  let requiredVertices = status[statusOffset + 3u];
+  let loss = status[statusOffset + 4u] | status[statusOffset + 5u] | status[statusOffset + 6u];
+  let complete = loss == 0u && writtenComponents == requiredComponents &&
+    writtenVertices == requiredVertices && writtenVertices <= ${edges.length}u;
+  let componentCount = select(0u, min(writtenComponents, ${components.length}u),
+    complete && index < writtenVertices);
+  var nextVertex = index;
+  var category = 0xffffffffu;
+  for (var component = 0u; component < componentCount; component++) {
+    let first = components[componentsOffset + component * 4u];
+    let count = components[componentsOffset + component * 4u + 1u];
+    if (first <= writtenVertices && count <= writtenVertices - first &&
+        index >= first && index - first < count) {
+      category = component;
+      if (index - first + 1u < count) { nextVertex = index + 1u; }
+      break;
+    }
+  }
+  edges[edgesOffset + index * 2u] = index;
+  edges[edgesOffset + index * 2u + 1u] = nextVertex;
+  categories[categoriesOffset + index] = category;`
+  });
+}
 
 export default defineOperationRun({
   parameters,
@@ -74,6 +118,7 @@ export default defineOperationRun({
     );
     const cleaned = builder.allocate('cleaned', 'float32x2', OUTPUT_VERTICES);
     const components = builder.allocate('components', 'uint32x4', COMPONENT_CAPACITY);
+    const status = builder.allocate('status', 'uint32x4', 2);
     builder.graph.add(
       new GPUOffsetCurveComponents({
         original: {positions: original.view, lineOffsets: originalOffsets.view},
@@ -87,36 +132,13 @@ export default defineOperationRun({
           positions: cleaned.view,
           sourceEdges: builder.allocate('source-edges', 'uint32', OUTPUT_VERTICES).view,
           components: components.view,
-          status: builder.allocate('status', 'uint32x4', 2).view
+          status: status.view
         }
       })
     );
-    // Components are (first vertex, vertex count, ...) rows: link consecutive vertices inside a
-    // component and color them by component.
     const edges = builder.allocate('component-edges', 'uint32x2', OUTPUT_VERTICES);
     const categories = builder.allocate('component-categories', 'uint32', OUTPUT_VERTICES);
-    addKernel(builder, {
-      id: 'component-edges',
-      invocationCount: OUTPUT_VERTICES,
-      bindings: [
-        {name: 'components', buffer: components, access: 'read'},
-        {name: 'edges', buffer: edges, access: 'read_write'},
-        {name: 'categories', buffer: categories, access: 'read_write'}
-      ],
-      body: `var nextVertex = index;
-  var category = 0xffffffffu;
-  for (var component = 0u; component < ${COMPONENT_CAPACITY}u; component++) {
-    let first = components[componentsOffset + component * 4u];
-    let count = components[componentsOffset + component * 4u + 1u];
-    if (count > 0u && index >= first && index < first + count) {
-      category = component;
-      if (index + 1u < first + count) { nextVertex = index + 1u; }
-    }
-  }
-  edges[edgesOffset + index * 2u] = index;
-  edges[edgesOffset + index * 2u + 1u] = nextVertex;
-  categories[categoriesOffset + index] = category;`
-    });
+    addOffsetCurveComponentEdges(builder, components, status, edges, categories);
     return {
       outputs: {
         original,

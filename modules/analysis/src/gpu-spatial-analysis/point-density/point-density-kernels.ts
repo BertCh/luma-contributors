@@ -15,6 +15,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {RECTANGULAR_GRID_COORDINATE_WGSL} from '../../analysis-core/kernels/rectangular-grid-coordinate';
 import {
   FIXED_POINT_WGSL,
   FIXED_POINT_WORD_COUNT,
@@ -238,9 +239,7 @@ export const POINT_DENSITY_WORKGROUP_SUM_SIZE = 256;
  * Writes one row-major grid cell key per position in `keys`, or `0xffffffff` for non-finite and
  * out-of-bounds rows.
  *
- * The public `GPU_GRID_COORDINATE_WGSL` keeps these keys paired with the counts written by
- * `GPUGridBinning`, including extreme-domain rescaling. The generated-source pin verifies
- * that the export is included verbatim and that no second coordinate function is declared.
+ * Uses the public grid edge rule with exact edge comparisons for very large finite bounds.
  *
  * @internal
  */
@@ -288,7 +287,8 @@ export function createPointDensityGridKeysNode<Parameters>(
     declarations: `const COLUMNS: u32 = ${props.gridSize[0]}u;
 const ROWS: u32 = ${props.gridSize[1]}u;
 ${IS_FINITE_BITS_WGSL}
-${GPU_GRID_COORDINATE_WGSL}`,
+${GPU_GRID_COORDINATE_WGSL}
+${RECTANGULAR_GRID_COORDINATE_WGSL}`,
     body: `${boundsSource}
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];
@@ -299,7 +299,8 @@ ${GPU_GRID_COORDINATE_WGSL}`,
   let inX = x >= minimumX && x <= maximumX && (maximumX != minimumX || x == minimumX);
   let inY = y >= minimumY && y <= maximumY && (maximumY != minimumY || y == minimumY);
   if (finiteBounds && maximumX >= minimumX && maximumY >= minimumY && finite && inX && inY) {
-    key = getCoordinate(y, minimumY, maximumY, ROWS) * COLUMNS + getCoordinate(x, minimumX, maximumX, COLUMNS);
+    key = getRectangularGridCoordinate(y, minimumY, maximumY, ROWS) * COLUMNS +
+      getRectangularGridCoordinate(x, minimumX, maximumX, COLUMNS);
   }
   keys[keysOffset + KEY_START + index] = key;`
   });

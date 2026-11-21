@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUAnalysisResultClasses} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUAnalysisResultClasses} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {getKeplerResultToneColor, getKeplerResultRampColors} from '@luma-contributors/kepler';
 import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import {createWGSLKernelNode} from '@luma-contributors/analysis/analysis-core';

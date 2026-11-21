@@ -30,17 +30,17 @@ export type RasterReconstructionOperationProps = Pick<
 /** GPU reconstruction as a vector operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPURasterReconstructionOperation extends GPUContributorOperation {
   constructor(props: RasterReconstructionOperationProps) {
-    props = captureRasterMorphologyOperationProps(props);
+    props = captureRasterMorphologyOperationProps(props, 'reconstruction');
     const length = props.grid.width * props.grid.height;
     super({
       id: props.id ?? 'raster-reconstruction',
       inputs: {
         marker: typeof props.marker === 'string' ? props.marker : props.marker.storage.values,
         mask: typeof props.mask === 'string' ? props.mask : props.mask.storage.values,
-        ...(typeof props.marker !== 'string' && props.marker.validity
+        ...(typeof props.marker !== 'string' && props.marker.validity !== undefined
           ? {markerValidity: props.marker.validity}
           : {}),
-        ...(typeof props.mask !== 'string' && props.mask.validity
+        ...(typeof props.mask !== 'string' && props.mask.validity !== undefined
           ? {maskValidity: props.mask.validity}
           : {})
       },

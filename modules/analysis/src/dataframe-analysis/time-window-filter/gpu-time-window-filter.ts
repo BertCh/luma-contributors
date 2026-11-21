@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SORTED_TIME_RANGE_MAXIMUM_ROW_COUNT} from '../temporal-reduction/sorted-range-bounds';
 import {
   createTransientView,
   GPUGroupAggregation,
@@ -27,6 +28,7 @@ import {
   createTransientUint32Rows
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  isGraphVectorView,
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewTopology,
@@ -36,6 +38,7 @@ import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createSortedFloatTimeWindowRangeNodes} from './time-window-float-range-nodes';
 import {getTimeWindowClassifyNodes} from './time-window-classify-node';
 import {
   createSortedTimeWindowIdsNode,
@@ -56,7 +59,7 @@ import {
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 /** Global compacted rows and counts are uint32; reject unaddressable totals before declaration. */
-const MAXIMUM_ROW_COUNT = 0xffffffff;
+const MAXIMUM_ROW_COUNT = SORTED_TIME_RANGE_MAXIMUM_ROW_COUNT;
 
 /**
  * Caller-owned outputs of {@link GPUTimeWindowFilter}: the bounded compact list of accepted rows
@@ -150,10 +153,17 @@ export type GPUTimeWindowFilterProps = {
   /**
    * Compile-time, default false. Declares that `timestamps` (with `timestampsLow`) is non-decreasing
    * in row order and has no NaN. The accepted rows are then one contiguous range found by two binary
-   * searches in a single small kernel, O(log n) per frame and no compaction, written to
+   * searches, O(log n) per frame and no compaction, written to
    * `output.rowRange`, `output.drawFirstInstance` and the status words; `output.rows` receives only
    * its first `min(count, capacity)` entries. Acceptance is identical to the mask path, which uses the
-   * same comparison helpers.
+   * same integer lane ordering, including float32 subnormal lanes. Float mode uses two parallel
+   * boundary invocations (at most 32 midpoint steps each) and a constant-work publication pass;
+   * Int64 words retain the single range-search kernel.
+   *
+   * Nullable Arrow words must use the unsorted route and pass their validity as a selection
+   * predicate in `additionalPredicates`. Zero words and sortedness never establish validity.
+   * Sorted input must be all-valid; if a caller establishes a contiguous valid slice, retain its
+   * source-row offset when interpreting the slice-local output rows.
    *
    * Restrictions, each a constructor error: instant timestamps only (no `endTimestamps`), no
    * `additionalPredicates`, `trackIds`, `output.trackVisibleCounts` or `output.clipFractions`, and
@@ -422,40 +432,17 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
             : []),
         ...(output.trackVisibleCounts ? [[output.trackVisibleCounts, output.outputMask]] : [])
       ];
-      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
-      const writableWordChunks = Object.values(writableOutputs)
-        .flatMap(view => (view ? getGraphViewChunks(view) : []))
-        .map(
-          view =>
-            new GraphDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset,
-              byteStride: 4,
-              rowByteLength: 4
-            })
-        );
-      const writableWordCount = writableWordChunks.reduce(
-        (total, chunk) => total + chunk.length,
-        0
-      );
-      validateDisjointWritableViews(id, {
-        outputs: new GraphVectorView({
-          id: `${id}-writable-ranges`,
-          name: 'outputs',
-          format: 'uint32',
-          length: writableWordCount,
-          valueLength: writableWordCount,
-          stride: 1,
-          byteStride: 4,
-          rowByteLength: 4,
-          data: writableWordChunks
-        })
-      });
+      validateDisjointWritableViews(id, writableOutputs, {separateDispatches: true});
       for (const fields of publicationPasses) {
         validateDisjointWritableViews(
           id,
-          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+          Object.fromEntries(
+            fields.map((view, index) => [
+              Object.entries(writableOutputs).find(([, candidate]) => candidate === view)?.[0] ??
+                String(index),
+              view
+            ])
+          )
         );
       }
     }
@@ -521,7 +508,7 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
       ['timestampsLow', props.timestampsLow],
       ['sourceIds', props.sourceIds]
     ] as const) {
-      if (view instanceof GraphVectorView) {
+      if (isGraphVectorView(view)) {
         throw new Error(`${id} sorted requires a single packed ${name} view`);
       }
     }
@@ -641,14 +628,29 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
     const compactIds = direct
       ? output.rows
       : createTransientView(graph, `${id}-compact-ids`, 'uint32', rows);
+    // Published workflows discriminate vectors by their own module's constructor. Rewrap only
+    // vector metadata at that boundary; the graph's packed chunk handles remain identical.
+    const upstreamTimeMask = normalizeTimeWindowRows(timeMask);
+    const upstreamFinalMask =
+      finalMask === timeMask
+        ? upstreamTimeMask
+        : finalMask
+          ? normalizeTimeWindowRows(finalMask)
+          : undefined;
     nodes.push(
       ...new GPUVisibilityWorkflow({
         id: `${id}-visibility`,
-        predicates: [{kind: 'time-range', mask: timeMask}, ...additionalPredicates],
+        predicates: [
+          {kind: 'time-range', mask: upstreamTimeMask},
+          ...additionalPredicates.map(predicate => ({
+            ...predicate,
+            mask: normalizeTimeWindowRows(predicate.mask)
+          }))
+        ],
         output: compactIds,
         count: total,
         // Passing the time mask itself as the output mask skips the redundant compose pass.
-        outputMask: finalMask
+        outputMask: upstreamFinalMask
       }).getCommandNodes(graph)
     );
 
@@ -656,8 +658,8 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
       nodes.push(
         ...new GPUGroupAggregation({
           id: `${id}-track-counts`,
-          keys: trackIds,
-          mask: finalMask,
+          keys: normalizeTimeWindowRows(trackIds),
+          mask: upstreamFinalMask,
           output: trackVisibleCounts
         }).getCommandNodes(graph)
       );
@@ -677,7 +679,7 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
   }
 
   /**
-   * Sorted mode: optional order check, the range search, optional mask and fade classify, the
+   * Sorted mode: optional order check, bounded range searches and publication, optional mask/fade, the
    * row kernel over the capacity, and the publish kernel (clamped count, overflow, draw count).
    */
   private getSortedCommandNodes<Parameters>(
@@ -714,16 +716,19 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
 
     const range = output.rowRange ?? createTransientView(graph, `${id}-range`, 'uint32', 2);
     const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
+    const rangeProps = {
+      id: `${id}-range-search`,
+      timestamps,
+      timestampsLow,
+      window: props.window,
+      range,
+      total,
+      firstInstance: output.drawFirstInstance
+    };
     nodes.push(
-      createSortedTimeWindowRangeNode<Parameters>(graph, {
-        id: `${id}-range-search`,
-        timestamps,
-        timestampsLow,
-        window: props.window,
-        range,
-        total,
-        firstInstance: output.drawFirstInstance
-      })
+      ...(timestamps.format === 'float32' && timestamps.length > 0
+        ? createSortedFloatTimeWindowRangeNodes<Parameters>(graph, rangeProps)
+        : [createSortedTimeWindowRangeNode<Parameters>(graph, rangeProps)])
     );
 
     if (output.outputMask || output.fadeWeights) {
@@ -771,9 +776,18 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
     if (!output.ids || output.rows.length === 0 || timestamps.length === 0) return [];
     return new GPUGather({
       id: `${this.id}-identities`,
-      source: sourceIds!,
+      source: normalizeTimeWindowRows(sourceIds!),
       indices: output.rows,
       output: output.ids
     }).getCommandNodes(graph);
   }
+}
+
+/** Keep upstream constructor checks local without copying/reordering a graph's chunks. */
+function normalizeTimeWindowRows<Format extends GraphDataView['format']>(
+  view: GraphDataView<Format> | GraphVectorView<Format>
+): GraphDataView<Format> | GraphVectorView<Format> {
+  return isGraphVectorView(view)
+    ? new GraphVectorView({...view, data: [...getGraphViewChunks(view)]})
+    : view;
 }

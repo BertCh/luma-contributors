@@ -117,13 +117,13 @@ function getLegends(
 }
 
 function getSnippet(state: GroupStatisticsOptions): string {
-  return `import {GPUGroupStatistics, GPUKeyJoin} from '@luma-contributors/analysis/dataframe-analysis';
+  return `import {GPUGroupStatistics, GPUKeyLookup} from '@luma-contributors/analysis/dataframe-analysis';
 
 // keys: community area index per record (0xffffffff = none); a dense table of 77 groups.
 // mask: one word per record, rewritten from the filters (group ${state.natureGroup}, hours ${state.hours[0]} to ${state.hours[1]}, identification ${state.gradeFilter}).
 graph.add(new GPUGroupStatistics({
   keys: observationArea, mask: filterMask, keyCount: 77,
-  variance: '${state.variance}', percentiles,        // fractions [${state.lowerFraction}, 0.5, ${state.upperFraction}] are a per-frame buffer
+  variance: '${state.variance}', probabilities,        // fractions [${state.lowerFraction}, 0.5, ${state.upperFraction}] are a per-frame buffer
   columns: [
     {values: hour, statistics: ['mean', 'median', 'standardDeviation', 'percentiles', 'mode'], output: hourOutput},
     {values: researchGrade, statistics: ['sum', 'mean'], output: gradeOutput},
@@ -141,7 +141,7 @@ graph.add(new GPUGroupStatistics({
 
 // 1:n join: sum what lives in the tracts of each area. Income is joined as income x residents,
 // so the area mean is weighted by people.
-graph.add(new GPUKeyJoin({
+graph.add(new GPUKeyLookup({
   leftKeys: areaIds, rightKeys: tractArea,
   aggregates: [
     {operation: 'sum', column: population, output: populationSum},
@@ -152,9 +152,9 @@ graph.add(new GPUKeyJoin({
   output: {}
 }));
 
-// Gather the area value onto every tract (${state.joinKind} join). Areas under ${state.minimumObservations} records are masked out.
-graph.add(new GPUKeyJoin({
-  kind: '${state.joinKind}', leftKeys: tractArea, rightKeys: areaIds,
+// Look up each tract's area value. Areas under ${state.minimumObservations} records are masked out.
+graph.add(new GPUKeyLookup({
+  compactMatchedLeftRows: ${state.joinKind === 'inner'}, leftKeys: tractArea, rightKeys: areaIds,
   rightMask: areaHasEnoughRecords,
   gather: [{column: areaValue, output: tractValue}],
   output: {matched${state.joinKind === 'inner' ? ',\n    rows: {ids, status: {count, overflow}}' : ''}}
@@ -167,8 +167,8 @@ export default defineScene<GroupStatisticsOptions>({
   chapter: 'statistics',
   order: 3,
   summary:
-    'Group iNaturalist records by community area on the GPU, divide them by the residents a key join adds up, withhold the small groups, and see how the answer changes with the filter and with the zoning.',
-  contributors: ['GPUGroupStatistics', 'GPUKeyJoin'],
+    'Group iNaturalist records by community area on the GPU, divide them by the residents a key lookup adds up, withhold the small groups, and see how the answer changes with the filter and with the zoning.',
+  contributors: ['GPUGroupStatistics', 'GPUKeyLookup'],
   datasets: [
     {
       id: 'chicago-nature',
@@ -342,16 +342,16 @@ export default defineScene<GroupStatisticsOptions>({
     {
       kind: 'select',
       id: 'joinKind',
-      label: 'Join kind (areas onto tracts)',
-      group: 'Key join',
+      label: 'Matched tracts',
+      group: 'Key lookup',
       apply: 'compile',
       display: 'segmented',
       default: 'left',
       expert: true,
-      help: 'Left keeps every tract aligned with its row; inner also compacts the matched tract rows into a list. Both gather the area statistic, and areas below the minimum are masked out. Compile-time.',
+      help: 'The area statistic stays aligned with each tract. Compaction also lists the matched tract rows. Areas below the minimum are masked out. Compile-time.',
       options: [
-        {value: 'left', label: 'Left'},
-        {value: 'inner', label: 'Inner'}
+        {value: 'left', label: 'Aligned'},
+        {value: 'inner', label: 'Also compact'}
       ]
     }
   ],
@@ -426,8 +426,8 @@ export default defineScene<GroupStatisticsOptions>({
     },
     {
       id: 'joinResult',
-      label: 'Key join result',
-      help: 'How many tracts the gather join matched to an area that passes the minimum (left join), or kept (inner join).'
+      label: 'Key lookup result',
+      help: 'Counts tracts that match an area with enough records. With compaction enabled, shows the length of the separate matched-tract list.'
     },
     {
       id: 'incomeScatter',
@@ -502,7 +502,7 @@ export default defineScene<GroupStatisticsOptions>({
   snippet: getSnippet,
 
   about: {
-    what: '`GPUGroupStatistics` groups rows by a 32- or 64-bit key and computes statistics per group on the GPU: counts, sums, means, deviations, median, percentiles, mode and distinct counts. Here the key is the community area of a record and the table is dense, so empty areas keep a row. `GPUKeyJoin` attaches a right table to a left table by key, as a 1:1 gather or a 1:n aggregate, left or inner: it adds up the residents and the income of the tracts of each area, and paints the area value back onto the tracts.',
+    what: '`GPUGroupStatistics` groups rows by a 32- or 64-bit key and computes statistics per group on the GPU: counts, sums, means, deviations, median, percentiles, mode and distinct counts. Here the key is the community area of a record and the table is dense, so empty areas keep a row. `GPUKeyLookup` attaches a right table to a left table by key, as a 1:1 gather or a 1:n aggregate, left or inner: it adds up the residents and the income of the tracts of each area, and paints the area value back onto the tracts.',
     why: 'Almost every dashboard is "group by, then join": records by area, rates by population, areas back onto tracts. Doing it on the GPU keeps the table next to the data, so a filter regroups every record in a frame and only a few kilobytes are read back.',
     howToRead:
       'Circles are counts, sized by area; fills are rates, classed. Hatched areas are withheld because too few records stand behind them. Class breaks are computed once from the unfiltered table, so colours change with a filter and classes do not. The hour is treated as a plain number, not a circle, which is fine for a daytime pastime and wrong for night-time groups. Population comes from the American Community Survey (estimates), the denominator of every rate: records follow observers, so a rate here measures how much a place is watched as well as what lives there. Matches pandas groupby and merge, numpy percentiles and d3 statistics.'
@@ -592,7 +592,7 @@ export default defineScene<GroupStatisticsOptions>({
       headline: 'Wealthier areas tend to log more per resident',
       textAlternative:
         'Chicago community areas in blue by population-weighted per-capita income, with a scatter plot of income against records per 1,000 residents, one dot per area.',
-      body: '`GPUKeyJoin` sums residents and income times residents over the tracts of each area, so income is weighted by people: a plain mean of tract incomes would count a tiny tract like a crowded one. Flip **Statistic** to compare maps, and raise **Minimum observations**. Rank correlation with the rate: **{{spearman}}**; the gather back onto tracts: **{{joinResult}}**.\n\n*An area average is not a person (ecological fallacy).*',
+      body: '`GPUKeyLookup` sums residents and income times residents over the tracts of each area, so income is weighted by people: a plain mean of tract incomes would count a tiny tract like a crowded one. Flip **Statistic** to compare maps, and raise **Minimum observations**. Rank correlation with the rate: **{{spearman}}**; the gather back onto tracts: **{{joinResult}}**.\n\n*An area average is not a person (ecological fallacy).*',
       options: {view: 'rates', metric: 'income', zoning: 'areas', minimumObservations: 30},
       optionsMode: 'fresh',
       controls: ['metric', 'minimumObservations'],

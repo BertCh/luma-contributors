@@ -8,9 +8,17 @@ import type {
   GPUPackedGeometryPort,
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
-import {GPUPolygonOverlay, type GPUPolygonOverlayOutput} from '../polygon-overlay/index';
+import {
+  GPUPolygonOverlay,
+  planGPUPolygonOverlay,
+  type GPUPolygonOverlayOutput
+} from '../polygon-overlay/index';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
-import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateProvidedRecipeViews} from '../landscape-ecology/urban-landscape-recipe-validation';
 
 /**
  * Most buildings with structures: every building adds a layout, a pack, a `GPUPolygonOverlay`
@@ -24,15 +32,18 @@ export type GPUBuildingStructureGeometry = {
   vertexTolerance: number;
   capacity: {intersections: number; nodedSegments: number; vertices: number; rings: number};
 };
-/** True component union, then exterior-only perimeter, including courtyard holes and overlaps. @internal */
-export function measureBuildingStructures<Parameters>(
+/**
+ * Every structures rejection that depends on the caller, without touching the graph, so
+ * `addBuildingAdjacencyRecipe` can run it before its first node. The per-building overlays apply
+ * the same vertexTolerance and capacity rules at construction. @internal
+ */
+export function validateBuildingStructures<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  components: GraphDataView<'uint32'>,
+  count: number,
   props: GPUBuildingStructureGeometry,
   perimetersOutput?: GraphDataView<'float32'>
-) {
-  const count = components.length;
+): void {
   validateRequirement(
     id,
     count <= BUILDING_STRUCTURES_MAXIMUM_BUILDING_COUNT,
@@ -43,6 +54,59 @@ export function measureBuildingStructures<Parameters>(
     props.geometry.featureOffsets.length === count + 1,
     'structures.geometry.featureOffsets must have one row per building plus one'
   );
+  validateRequirement(
+    id,
+    Number.isFinite(props.vertexTolerance) &&
+      props.vertexTolerance > 0 &&
+      Math.fround(props.vertexTolerance) >= 2 ** -126 &&
+      Math.fround(props.vertexTolerance) <= 2 ** 127,
+    'structures.vertexTolerance must be a positive finite float32 number'
+  );
+  validateRequirement(
+    id,
+    Object.values(props.capacity).every(
+      value => Number.isSafeInteger(value) && value > 0 && value <= 0xffffffff
+    ),
+    'structures.capacity entries (intersections, nodedSegments, vertices, rings) must be integers in [1, 4294967295]'
+  );
+  validateGraphViewsBelongToGraph(id, graph, [
+    props.geometry.positions,
+    props.geometry.featureOffsets,
+    props.geometry.polygonOffsets,
+    props.geometry.ringOffsets
+  ]);
+  validateProvidedRecipeViews(graph, [
+    [`${id}-structure-perimeters`, 'float32', count, perimetersOutput]
+  ]);
+  for (let building = 0; building < count; building++)
+    planGPUPolygonOverlay(graph.device, {
+      id: `${id}-structure-${building}-union`,
+      operation: 'dissolve',
+      fillRule: 'positive',
+      left: {
+        vertexCount: props.geometry.positions.length,
+        ringCount: props.geometry.ringOffsets.length - 1
+      },
+      capacity: props.capacity,
+      vertexTolerance: props.vertexTolerance,
+      output: {
+        vertexCapacity: props.capacity.vertices,
+        ringCapacity: props.capacity.rings,
+        boundaryCapacity: props.capacity.nodedSegments
+      }
+    });
+}
+
+/** True component union, then exterior-only perimeter, including courtyard holes and overlaps. @internal */
+export function measureBuildingStructures<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  components: GraphDataView<'uint32'>,
+  props: GPUBuildingStructureGeometry,
+  perimetersOutput?: GraphDataView<'float32'>
+) {
+  const count = components.length;
+  validateBuildingStructures(graph, id, count, props, perimetersOutput);
   const view = <Format extends VertexFormat>(name: string, format: Format, length: number) =>
     getRecipeView(graph, `${id}-${name}`, format, length);
   const perimeters = getRecipeView(
@@ -142,17 +206,17 @@ export function measureBuildingStructures<Parameters>(
         status: boundaryStatus('boundary')
       }
     };
-    graph.add(
-      new GPUPolygonOverlay({
-        id: `${id}-${prefix}-union`,
-        left: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
-        operation: 'dissolve',
-        fillRule: 'positive',
-        capacity: props.capacity,
-        vertexTolerance: props.vertexTolerance,
-        output: overlay
-      })
-    );
+    const dissolve = new GPUPolygonOverlay({
+      id: `${id}-${prefix}-union`,
+      left: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
+      operation: 'dissolve',
+      fillRule: 'positive',
+      capacity: props.capacity,
+      vertexTolerance: props.vertexTolerance,
+      output: overlay
+    });
+    dissolve.preflight(graph);
+    graph.add(dissolve);
     graph.add(
       createRecipeKernelNode(graph, {
         id: `${id}-${prefix}-exterior-measure`,

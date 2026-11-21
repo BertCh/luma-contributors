@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createWeightsCountNodes} from './spatial-weights-count';
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
 import {
   snapshotContiguityOperationProps,
@@ -41,13 +42,14 @@ import {
   type KeyGroups
 } from './key-pair-grouping';
 import {
+  validateGPUSpatialWeightsProducerStatus,
   describeGPUSpatialWeights,
   getGPUSpatialWeightsCapacityPlan,
   getGPUSpatialWeightsStatusViews,
   getGPUSpatialWeightsViews,
   type GPUSpatialWeights,
   type GPUSpatialWeightsCapacityPlan,
-  type GPUSpatialWeightsOutput,
+  type GPUSpatialWeightsProducerOutput as GPUSpatialWeightsOutput,
   validateGPUSpatialWeightsOutput
 } from './spatial-weights';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -128,7 +130,7 @@ export type GPUContiguityWeightsProps = {
   coordinateExtent?: number;
   /**
    * Caller-owned output CSR: `offsets` has `featureCount + 1` entries; the slot capacity is
-   * `neighbors.length`. Binary weights (1) and ascending neighbor IDs; `distances` is not written.
+   * `neighbors.length`. Binary weights (1) and ascending neighbor IDs; `output.distances` is rejected because topology supplies no measured distance.
    * `status.overflow` (required) is 1 only when final neighbors did not fit their capacity.
    * `status.requiredCount` (optional) is the unclamped distinct neighbor-slot total: exact unless
    * the intermediate pair list overflowed, which `status.candidateOverflow` (optional) reports;
@@ -139,7 +141,7 @@ export type GPUContiguityWeightsProps = {
    * Capacity of the intermediate directed feature-pair list, which holds duplicates when features
    * share several distinct vertices or edges before final deduplication. Repeated occurrences of
    * one feature in a single equal-key group are collapsed before pairs are emitted. Defaults to
-   * `GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR * output.neighbors.length`. Compile-time; larger
+   * `GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR * output.neighbors.length`, capped at `0xffffffff`. Compile-time; larger
    * values cost sort time and memory.
    */
   pairCapacity?: number;
@@ -191,16 +193,18 @@ export type GPUContiguityWeightsCapacityPlan = GPUContributorCapacityPlan & {
  * gives the CSR offsets). Output is deterministic. A point shared by `m` distinct features costs
  * `O(m^2)` pairs, which is fine for map data but not for thousands of features touching one point.
  *
- * Capacity grow loop: pass `output.status.requiredCount` and `candidateOverflow`, read them after
- * a frame and call {@link GPUContiguityWeights.getCapacityPlan}: when `overflow` is 1, reallocate
- * the slot views with `plan.slots.capacity` slots, pass `pairCapacity: plan.pairs.capacity` and
- * rebuild. The required count is exact once no pair overflow happens, so the loop converges after
- * at most a few rebuilds.
+ * Capacity grow loop: submit and read output.status.candidateOverflow before sizing final slots.
+ * Call getCapacityPlan({requiredCount, candidateOverflow: candidateOverflow !== 0}). On candidate
+ * loss, rebuild with pairCapacity: plan.pairs.capacity and rerun even when final overflow is zero.
+ * Only after candidate loss clears is requiredCount exact; if final overflow is then nonzero,
+ * reallocate plan.slots.capacity slots and rebuild. Inspect pair-plan limited separately and
+ * check device binding/allocation limits; a fitting final slot allocation cannot restore pairs.
  *
  * {@link GPUContiguityWeights.outputWeights} is the caller-owned `output` with `information`
  * (row count, `transform: 'binary'`, `symmetric: true`, provenance `{source:
  * 'GPUContiguityWeights', criterion}`) and `status` attached; pass it to consumers so they can
  * gate on truncation.
+ * Optional output.status.count is written from the terminal CSR offset; tails beyond it are unspecified.
  */
 export class GPUContiguityWeights implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -211,6 +215,7 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUContiguityWeightsProps) {
+    validateGPUSpatialWeightsProducerStatus(props.id ?? 'contiguity-weights', props.output.status);
     props = snapshotContiguityOperationProps(props);
     const id = props.id ?? 'contiguity-weights';
     this.id = id;
@@ -255,7 +260,12 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
         );
       }
     }
-    const featureCount = validateGPUSpatialWeightsOutput(id, props.output);
+    validateRequirement(
+      id,
+      props.output.distances === undefined,
+      'output.distances is unsupported for topology-only contiguity; omit it and attach a separately measured distance view to the returned weights'
+    );
+    const featureCount = validateGPUSpatialWeightsOutput(id, props.output, undefined, true);
     if (featureCount !== polygons.featureOffsets.length - 1) {
       throw new Error(`${id} output rows must equal the feature count`);
     }
@@ -276,7 +286,7 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
       id,
       [
         ...getGPUSpatialWeightsViews(props.output),
-        ...getGPUSpatialWeightsStatusViews(props.output)
+        ...getGPUSpatialWeightsStatusViews(props.output, true)
       ],
       [polygons.positions, polygons.ringOffsets, polygons.polygonOffsets, polygons.featureOffsets]
     );
@@ -306,14 +316,21 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
   getPairCapacity(): number {
     return (
       this.props.pairCapacity ??
-      Math.max(1, this.props.output.neighbors.length * GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR)
+      Math.min(
+        0xffffffff,
+        Math.max(
+          1,
+          this.props.output.neighbors.length * GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR
+        )
+      )
     );
   }
 
   /**
    * Plans the next allocation of the grow loop from a read-back observation (or, without one, the
    * current capacities). `slots` grows with `getGPUSpatialWeightsCapacityPlan`; `pairs` keeps the
-   * default ratio to the slots, and doubles when `candidateOverflow` was reported.
+   * default ratio to the slots, and doubles when `candidateOverflow` was reported. Pair growth
+   * saturates at uint32; the uncapped estimate remains visible with `limited: true`.
    * `estimatedPeakTransientBytes` counts every transient this contributor declares (from the same
    * per-vertex and per-pair word constants as `getCommandNodes`); the scratch of the luma.gl sort
    * and scan primitives, which depends on the device, is not included.
@@ -326,7 +343,11 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
     const slots = getGPUSpatialWeightsCapacityPlan({
       rowCount: this.getFeatureCount(),
       capacity,
-      requiredCount: observation.requiredCount,
+      requiredCount: observation.candidateOverflow
+        ? observation.requiredCount === undefined
+          ? {kind: 'unknown'}
+          : {kind: 'lower-bound', value: observation.requiredCount}
+        : observation.requiredCount,
       distances: Boolean(props.output.distances)
     });
     const currentPairs = this.getPairCapacity();
@@ -334,16 +355,17 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
       props.pairCapacity === undefined
         ? slots.capacity * GPU_CONTIGUITY_WEIGHTS_PAIR_CAPACITY_FACTOR
         : currentPairs;
-    const pairCapacity = observation.candidateOverflow
+    const requestedPairCapacity = observation.candidateOverflow
       ? Math.max(scaledPairs, currentPairs * 2)
       : scaledPairs;
+    const pairCapacity = Math.min(0xffffffff, requestedPairCapacity);
     const vertexCount = props.polygons.positions.length;
     const vertexWords = getContiguityVertexTransientWordCount(vertexCount, props.criterion);
     const pairWords = getContiguityPairTransientWordCount(pairCapacity);
     const pairs: GPUCapacityPlan = {
       capacity: pairCapacity,
-      estimatedRequiredCount: pairCapacity,
-      limited: false,
+      estimatedRequiredCount: requestedPairCapacity,
+      limited: pairCapacity < requestedPairCapacity,
       estimatedOutputBytes: 0,
       estimatedPeakTransientBytes: pairWords * Uint32Array.BYTES_PER_ELEMENT
     };
@@ -358,6 +380,15 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
 
   /** Returns the contiguity nodes in dependency order. */
   getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    return [
+      ...this.getWeightsCommandNodes(graph),
+      ...createWeightsCountNodes(graph, this.id, this.props.output)
+    ];
+  }
+
+  private getWeightsCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     validateSpatialStatisticsBindings(graph, this.id, this.props, {
@@ -377,7 +408,7 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
       polygonOffsets,
       featureOffsets,
       ...getGPUSpatialWeightsViews(output),
-      ...getGPUSpatialWeightsStatusViews(output)
+      ...getGPUSpatialWeightsStatusViews(output, true)
     ]);
     const vertexCount = positions.length;
     const featureCount = this.getFeatureCount();

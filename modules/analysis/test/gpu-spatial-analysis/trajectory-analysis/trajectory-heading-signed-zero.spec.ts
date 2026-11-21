@@ -37,6 +37,27 @@ const POSITIONS: [number, number][] = [
   [0, 1]
 ];
 
+/**
+ * Rows after the first whose step heading is missing, extra, nonfinite or more than 1e-6 from
+ * `Math.atan2` with a zero `deltaX` treated as +0. Written so that NaN fails (TOOL-109).
+ */
+function getHeadingFailures(positions: [number, number][], headings: ArrayLike<number>): string[] {
+  const failures: string[] = [];
+  if (headings.length !== positions.length) {
+    failures.push(`length ${headings.length} != ${positions.length}`);
+  }
+  for (let row = 1; row < positions.length; row++) {
+    const deltaX = Math.fround(positions[row][0]) - Math.fround(positions[row - 1][0]);
+    const deltaY = Math.fround(positions[row][1]) - Math.fround(positions[row - 1][1]);
+    const expected = Math.atan2(deltaY, deltaX === 0 ? 0 : deltaX);
+    const actual = headings[row];
+    if (!Number.isFinite(actual) || !(Math.abs(actual - expected) <= 1e-6)) {
+      failures.push(`row ${row}: GPU ${actual}, CPU ${expected}`);
+    }
+  }
+  return failures;
+}
+
 it('GPUTrajectoryMetrics planar heading is correct for due north and south steps across signed zeros', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -75,14 +96,6 @@ it('GPUTrajectoryMetrics planar heading is correct for due north and south steps
   for (const buffer of [positionsBuffer, timestampsBuffer, offsetsBuffer, headingsBuffer]) {
     buffer.destroy();
   }
-  const failures: string[] = [];
-  for (let row = 1; row < rowCount; row++) {
-    const deltaX = Math.fround(POSITIONS[row][0]) - Math.fround(POSITIONS[row - 1][0]);
-    const deltaY = Math.fround(POSITIONS[row][1]) - Math.fround(POSITIONS[row - 1][1]);
-    const expected = Math.atan2(deltaY, deltaX === 0 ? 0 : deltaX);
-    if (Math.abs(headings[row] - expected) > 1e-6) {
-      failures.push(`row ${row}: GPU ${headings[row]}, CPU ${expected}`);
-    }
-  }
+  const failures = getHeadingFailures(POSITIONS, headings);
   expect(failures).toEqual([]);
 });

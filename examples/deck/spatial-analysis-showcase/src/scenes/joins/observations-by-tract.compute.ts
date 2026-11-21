@@ -286,7 +286,7 @@ export async function createObservationsByTract(
             'uint32',
             pointCount
           ),
-          featureCounts: importGraphBuffer(
+          polygonAssignmentCounts: importGraphBuffer(
             graph,
             'assign-counts',
             assignCounts,
@@ -446,7 +446,7 @@ export async function createObservationsByTract(
         candidateCapacity: pointCount * CANDIDATES_PER_POINT,
         boundaryRule: state.boundaryRule
       },
-      outputs: {
+      output: {
         counts: importGraphBuffer(graph, 'recipe-counts', recipeCounts, 'uint32', featureCount),
         ...(statistic === 'count'
           ? {}
@@ -514,10 +514,13 @@ export async function createObservationsByTract(
         {buffer: zonalExtent, size: 8},
         {buffer: zonalOverflow, size: 4},
         {buffer: zonalUncertain, size: 4},
-        {buffer: zonalAreas, size: featureCount * 4}
+        {buffer: zonalAreas, size: featureCount * 4},
+        {buffer: assignOverflow, size: 4}
       ],
       bytes => {
         if (destroyed || zonal !== graph) return;
+        assignmentComplete = new Uint32Array(bytes, featureCount * 12 + 16, 1)[0] === 0;
+        if (!assignmentComplete) return;
         const statistics =
           graph.statisticFormat === 'uint32'
             ? Float32Array.from(new Uint32Array(bytes, 0, featureCount))
@@ -537,6 +540,7 @@ export async function createObservationsByTract(
     );
 
   let assignReader: SummaryReader | null = null;
+  let assignmentComplete = false;
   const assignSummary = new SummaryReader(
     resources,
     'observations-assign',
@@ -570,6 +574,31 @@ export async function createObservationsByTract(
         }
       }
       const tail = new Uint32Array(bytes.slice(pointCount * 4 + featureCount * 4));
+      assignmentComplete = tail[0] === 0;
+      if (!assignmentComplete) {
+        ctx.setReadout(
+          'joined',
+          `at least ${formatInteger(joined)} of ${formatInteger(pointCount)} (incomplete)`
+        );
+        for (const key of [
+          'outside',
+          'agreement',
+          'differenceNearEdge',
+          'top',
+          'unstableRates',
+          'tractParity',
+          'hottest',
+          'cityRate',
+          'classBreaks',
+          'classesUsed',
+          'selected'
+        ])
+          ctx.setReadout(key, 'unavailable: incomplete assignment');
+        ctx.setReadout('joinOverflow', 'YES (capacity)');
+        ctx.requestLayers();
+        return;
+      }
+
       ctx.setReadout('joined', `${formatInteger(joined)} of ${formatInteger(pointCount)}`);
       ctx.setReadout(
         'outside',
@@ -598,10 +627,12 @@ export async function createObservationsByTract(
     [
       {buffer: recipeBreaks, size: (MAXIMUM_CLASSES + 1) * 4},
       {buffer: recipeClassCount, size: 4},
-      {buffer: recipeOverflow, size: 4}
+      {buffer: recipeOverflow, size: 4},
+      {buffer: assignOverflow, size: 4}
     ],
     bytes => {
       if (destroyed) return;
+      if (new Uint32Array(bytes)[MAXIMUM_CLASSES + 3] !== 0) return;
       const edges = new Float32Array(bytes.slice(0, (MAXIMUM_CLASSES + 1) * 4));
       const usedClasses = new Uint32Array(
         bytes.slice((MAXIMUM_CLASSES + 1) * 4, (MAXIMUM_CLASSES + 2) * 4)
@@ -617,6 +648,7 @@ export async function createObservationsByTract(
 
   /** Fills the per-tract readouts that need the CPU copy of the statistic. */
   function updateReadoutsFromStatistics(gpuAreas: Float32Array): void {
+    if (!assignmentComplete) return;
     let hottest = -1;
     let hottestValue = -Infinity;
     let gpuAreaTotal = 0;
@@ -826,7 +858,7 @@ export async function createObservationsByTract(
           });
           if (destroyed) return;
           const builds = built.prepared
-            ? ` (index built ${built.prepared.encodedBuildCount}x)`
+            ? ` (CPU geometry refresh requests: ${built.prepared.encodedBuildCount})`
             : '';
           ctx.setReadout(variant.id, `${formatCompiledGraphTiming(timing)}${builds}`);
         } finally {
@@ -922,14 +954,15 @@ export async function createObservationsByTract(
       if (state.prepared && assign.prepared) {
         ctx.setReadout(
           'indexBuilds',
-          `${assign.prepared.encodedBuildCount} build${assign.prepared.encodedBuildCount === 1 ? '' : 's'} in ${formatInteger(encodings)} join runs`
+          `${assign.prepared.encodedBuildCount} CPU geometry refresh requests in ${formatInteger(encodings)} join runs`
         );
       } else {
-        ctx.setReadout('indexBuilds', `index rebuilt in all ${formatInteger(encodings)} join runs`);
+        ctx.setReadout('indexBuilds', 'not applicable (no prepared handle)');
       }
     },
 
     getLayers() {
+      if (!assignmentComplete) return [];
       const state = ctx.options;
       const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
       const layers: Layer[] = [];
@@ -1005,6 +1038,7 @@ export async function createObservationsByTract(
     },
 
     getTooltip(event) {
+      if (!assignmentComplete) return null;
       if (!event.coordinate) return null;
       const [x, y] = projection.project(event.coordinate[0], event.coordinate[1]);
       const row = findPolygonAt(tractSet, x, y);

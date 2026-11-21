@@ -36,6 +36,67 @@ function getInverseTable(): number[] {
 }
 
 /**
+ * WGSL `fn <name>(degrees: f32) -> f32` returning an angle congruent to `degrees` modulo 360,
+ * exactly. Below 2^24 in magnitude (and for non-finite bits) it returns the input: there the
+ * callers' f32 quadrant or turn reduction (`quadrant * 90` and `360 * floor(x / 360)` are exact
+ * integers) is already exact. From 2^24 up every f32 is an integer `mantissa * 2^shift`, and
+ * `quadrant * 90` would round by up to half an ulp of the input, degrees from 1e8 on; there the
+ * residue is `(mantissa mod 360) (2^shift mod 360) mod 360` in u32 (every product is below 2^17),
+ * returned with the sign of the input, so its magnitude is below 360.
+ *
+ * @internal
+ */
+export function getExactDegreeReductionWGSL(name: string): string {
+  return /* wgsl */ `
+fn ${name}(degrees: f32) -> f32 {
+  let bits = bitcast<u32>(degrees);
+  let biasedExponent = (bits >> 23u) & 0xffu;
+  if (biasedExponent < 151u || biasedExponent == 255u) {
+    return degrees;
+  }
+  // degrees = +-mantissa * 2^(biasedExponent - 150) with a 24-bit integer mantissa.
+  let mantissa = (bits & 0x7fffffu) | 0x800000u;
+  var power = 1u;
+  for (var step = 151u; step <= biasedExponent; step++) {
+    power = (power * 2u) % 360u;
+  }
+  let residue = f32(((mantissa % 360u) * power) % 360u);
+  return select(residue, -residue, (bits >> 31u) != 0u);
+}
+`;
+}
+
+/** Range-reduced degree trig, retaining the S2/H3 polynomial accuracy and symbols. @internal */
+export function getDegreeSinCosWGSL(name: string, reduceName: string, family: 's2' | 'h3'): string {
+  const quadrant = family === 's2' ? 'degrees / 90.0' : 'degrees * (1.0 / 90.0)';
+  const polynomial =
+    family === 's2'
+      ? `  let x = (degrees - quadrant * 90.0) * CELL_INDEX_S2_RADIANS_PER_DEGREE;
+  let x2 = x * x;
+  let sine = x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362880.0)))));
+  let cosine = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40320.0 + x2 * (-1.0 / 3628800.0)))));
+`
+      : `  let reduced = (degrees - quadrant * 90.0) * 0.017453292519943295;
+  let x2 = reduced * reduced;
+  let sine = reduced * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 +
+    x2 * (1.0 / 362880.0 + x2 * (-1.0 / 39916800.0))))));
+  let cosine = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 +
+    x2 * (1.0 / 40320.0 + x2 * (-1.0 / 3628800.0 + x2 * (1.0 / 479001600.0))))));
+`;
+  return `fn ${name}(angle: f32) -> vec2f {
+  let degrees = ${reduceName}(angle);
+  let quadrant = round(${quadrant});
+${polynomial}
+  let turn = u32(i32(quadrant)) & 3u;
+  if (turn == 1u) { return vec2f(cosine, -sine); }
+  if (turn == 2u) { return vec2f(-sine, -cosine); }
+  if (turn == 3u) { return vec2f(-cosine, sine); }
+  return vec2f(sine, cosine);
+}
+`;
+}
+
+/**
  * Quadkey (Web Mercator tile) forward indexing. Concatenate after `CELL_KEY_WGSL`; it includes
  * `QUADBIN_TILE_WGSL`.
  *
@@ -116,27 +177,12 @@ const CELL_INDEX_S2_IJ_TO_POSITION = array<u32, 16>(${getInverseTable()
   .join(', ')});
 const CELL_INDEX_S2_POSITION_TO_ORIENTATION = array<u32, 4>(${S2_POSITION_TO_ORIENTATION.map(value => `${value}u`).join(', ')});
 const CELL_INDEX_S2_RADIANS_PER_DEGREE: f32 = 0.017453292519943295;
-
-/** (sin, cos) of an angle in degrees, exact quadrant reduction plus polynomials on [-45, 45]. */
-fn cellIndexS2SinCosDegrees(degrees: f32) -> vec2f {
-  let quadrant = round(degrees / 90.0);
-  let x = (degrees - quadrant * 90.0) * CELL_INDEX_S2_RADIANS_PER_DEGREE;
-  let x2 = x * x;
-  let sine = x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362880.0)))));
-  let cosine = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40320.0 + x2 * (-1.0 / 3628800.0)))));
-  let turn = u32(i32(quadrant)) & 3u;
-  if (turn == 0u) {
-    return vec2f(sine, cosine);
-  }
-  if (turn == 1u) {
-    return vec2f(cosine, -sine);
-  }
-  if (turn == 2u) {
-    return vec2f(-sine, -cosine);
-  }
-  return vec2f(-cosine, sine);
-}
-
+${getExactDegreeReductionWGSL('cellIndexS2ReduceDegrees')}
+/**
+ * (sin, cos) of an angle in degrees, exact quadrant reduction plus polynomials on [-45, 45].
+ * Any finite angle: magnitudes from 2^24 up are first reduced modulo 360 exactly.
+ */
+${getDegreeSinCosWGSL('cellIndexS2SinCosDegrees', 'cellIndexS2ReduceDegrees', 's2')}
 fn cellIndexS2UvToSt(uv: f32) -> f32 {
   if (uv >= 0.0) {
     return 0.5 * sqrt(1.0 + 3.0 * uv);

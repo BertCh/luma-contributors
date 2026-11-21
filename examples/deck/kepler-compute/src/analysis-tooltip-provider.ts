@@ -4,6 +4,7 @@
 
 import type {AnalysisRuntime} from './analysis-runtime';
 import {readNeighborTooltipValues} from './analysis-neighbor-tooltip';
+import {getQuantileLisaPValueLabel} from './analysis-quantile-lisa-inference';
 import {getInterpolationCellIndex, makeInterpolationTooltipValues} from './interpolation-tooltip';
 import {
   registerTooltipComputedProvider,
@@ -69,10 +70,12 @@ export function makeAnalysisTooltipProvider(
     const row = await analysis.readRow(sourceRowIndex);
     if (!row) return null;
     const settings = analysis.settings;
+    const label =
+      row.kind === 'quantile-lisa-points' || row.kind === 'quantile-lisa-polygons'
+        ? getQuantileLisaPValueLabel(row.alternative)
+        : getAnalysisTooltipLabel(row.kind, settings.column);
     const values: Record<string, ResidentTooltipValue> = {
-      [getAnalysisTooltipLabel(row.kind, settings.column)]: Number.isFinite(row.value)
-        ? row.value
-        : null
+      [label]: Number.isFinite(row.value) ? row.value : null
     };
     const snapshot = analysis.getTableColumns?.();
     if (snapshot && analysis.resultColumn)

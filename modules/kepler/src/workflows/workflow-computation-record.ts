@@ -75,6 +75,7 @@ export function makeWorkflowComputationRecord(
     id: run.workflowId,
     runId: run.runId,
     executionId: run.executionId,
+    dependencyRevision: run.dependencyRevision,
     createdAt: new Date(run.startedAt).toISOString(),
     adapter: {backend: 'workflow', description: 'Step-level provenance; adapter was not recorded'},
     domains: ['kepler-workflow'],
@@ -99,5 +100,6 @@ export function makeWorkflowComputationRecord(
     }
   });
   if (run.executionId === undefined) delete record.executionId;
+  if (run.dependencyRevision === undefined) delete record.dependencyRevision;
   return record;
 }

@@ -32,7 +32,7 @@ export function getLocalRowWGSL(base: RowLocalStageBase): string {
 }
 
 /**
- * `union`, `intersection`, `difference` and `symmetricDifference` of two CSRs as CSR stages. The
+ * `union`, `intersection`, `difference` and `symmetric-difference` of two CSRs as CSR stages. The
  * one implementation behind {@link GPUSpatialWeightsAlgebra} and its chunked wrapper.
  *
  * @param combineExpression WGSL expression over `leftValue` and `rightValue` for a shared neighbor.

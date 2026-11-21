@@ -533,7 +533,7 @@ export async function createReliefVisualization(
               getGPUTerrainHorizonParameterValues(
                 {
                   zFactor: ctx.options.zFactor,
-                  anisotropyAzimuthDegrees: ctx.options.anisotropyAzimuth,
+                  rvtDirectionDegrees: ctx.options.anisotropyAzimuth,
                   anisotropyLevel: ctx.options.anisotropyLevel,
                   anisotropyMinimumWeight: ctx.options.anisotropyMinimumWeight
                 },
@@ -608,7 +608,6 @@ export async function createReliefVisualization(
             parameters: settings.view,
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
-            imhofSwing: true,
             output: {hillshade: builder.floats('hillshade')}
           })
         );
@@ -657,7 +656,6 @@ export async function createReliefVisualization(
             skyViewFactor: pixelFloats('horizon', 'svf'),
             textureShade: pixelFloats('texture', 'textureShade'),
             curvature: pixelFloats('curvature', 'curvature'),
-            imhofSwing: true,
             output: {hillshade: builder.floats('hillshade'), color: builder.words('color')}
           })
         );
@@ -706,7 +704,6 @@ export async function createReliefVisualization(
             parameters: settings.view,
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
-            imhofSwing: true,
             output: {hillshade: builder.floats('hillshade'), color: builder.words('color')}
           })
         );

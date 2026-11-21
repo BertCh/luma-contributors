@@ -26,7 +26,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
-import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {IS_FINITE_VALUE_WGSL, GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   getCellDispatchBuffer,
   validateCellDispatchOutputs
@@ -102,7 +102,12 @@ export type GPUCellTableCompareOutput = {
    * inherited loss. `requiredCount` is the retained-input union requirement, a lower bound on
    * the full union when `candidateOverflow` is nonzero.
    */
-  status: GPUCardinalityPort & GPUOverflowStatusPort & {candidateOverflow: GraphDataView<'uint32'>};
+  status: GPUCardinalityPort &
+    GPUOverflowStatusPort & {
+      candidateOverflow: GraphDataView<'uint32'>;
+      /** Either input reported sum saturation; independent of cell loss and union truncation. */
+      sumOverflow?: GraphDataView<'uint32'>;
+    };
 };
 
 /**
@@ -149,7 +154,9 @@ export type GPUCellTableCompareProps = {
  * square overflow for finite deltas. A second encoding is bitwise identical.
  *
  * The union keeps the smallest keys when it exceeds the output capacity. Input loss propagates
- * through `candidateOverflow`, separately from final `overflow`. Rows past `count` hold the empty key, presence 0,
+ * through `candidateOverflow`, separately from final `overflow`. Either input's sum saturation
+ * propagates to optional `sumOverflow`; for `measure: 'sum'` all numeric columns are NaN when
+ * an input reports saturation, including when the output flag is omitted. Rows past `count` hold the empty key, presence 0,
  * `before`/`after` 0 and NaN for derived columns. Keys that are the reserved all-ones key inside
  * `[0, count)` are not supported. Inputs must be single packed views.
  *
@@ -265,7 +272,13 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} needs output.cells.length rows`);
       }
     }
-    for (const name of ['count', 'overflow', 'candidateOverflow', 'requiredCount'] as const) {
+    for (const name of [
+      'count',
+      'overflow',
+      'candidateOverflow',
+      'requiredCount',
+      'sumOverflow'
+    ] as const) {
       const view = output.status[name];
       if (!view) {
         continue;
@@ -299,7 +312,8 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
         zScore: output.zScore
       },
       {count: status.count, overflow: status.overflow, requiredCount: status.requiredCount},
-      {candidateOverflow: status.candidateOverflow}
+      {candidateOverflow: status.candidateOverflow},
+      {sumOverflow: status.sumOverflow}
     ]);
     validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
       ...getCellTableViews(props.before),
@@ -327,6 +341,7 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
       views[`${name}.status.count`] = table.status.count;
       views[`${name}.status.overflow`] = table.status.overflow;
       views[`${name}.status.candidateOverflow`] = table.status.candidateOverflow;
+      views[`${name}.status.sumOverflow`] = table.status.sumOverflow;
     }
     for (const [name, view] of Object.entries(getOutputViews(output)))
       views[`output ${name}`] = view;
@@ -604,6 +619,52 @@ ${SCALED_QUOTIENT_WGSL}`,
       })
     );
 
+    // A table-wide saturation flag cannot identify trustworthy sum rows. Suppress all numeric
+    // sum measures before statistics/derived columns, preserving exact keys and membership.
+    const sumSources = [before.status.sumOverflow, after.status.sumOverflow].filter(
+      (view): view is GraphDataView<'uint32'> => Boolean(view)
+    );
+    const sumLoss =
+      sumSources.map((_, index) => `sumIn${index}[sumIn${index}Offset] != 0u`).join(' || ') ||
+      'false';
+    const sumBindings = sumSources.map((view, index) => read(`sumIn${index}`, view));
+    if (isSum && sumSources.length) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-sum-loss`,
+          operation: OPERATION,
+          variant: 'sum-loss',
+          bindings: [
+            ...sumBindings,
+            read('total', total),
+            write('beforeOut', beforeValues, 'f32'),
+            write('afterOut', afterValues, 'f32'),
+            write('deltaOut', deltaValues, 'f32')
+          ],
+          invocationCount: capacity,
+          declarations: GET_NAN_WGSL,
+          body: `if (index < total[totalOffset] && (${sumLoss})) {
+          let missing = getNaN();
+          beforeOut[beforeOutOffset + index] = missing;
+          afterOut[afterOutOffset + index] = missing;
+          deltaOut[deltaOutOffset + index] = missing;
+        }`
+        })
+      );
+    }
+    if (output.status.sumOverflow) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-sum-status`,
+          operation: OPERATION,
+          variant: 'sum-status',
+          bindings: [...sumBindings, write('sumOut', output.status.sumOverflow)],
+          invocationCount: 1,
+          body: `sumOut[sumOutOffset] = select(0u, 1u, ${sumLoss});`
+        })
+      );
+    }
+
     // 4. A published extent reduction supplies a common power-of-two normalization before the
     // three fixed-order statistics stages: per-workgroup partial sums,
     // per-workgroup partial squares around a mean every workgroup derives identically from the
@@ -801,6 +862,22 @@ fn getComparePercent(value: f32, divisor: f32) -> f32 {
       );
     }
 
+    // Statistics reductions may select their zero-deviation fallback for undefined inputs.
+    // Publish the sum-loss sentinel explicitly, independent of backend NaN arithmetic.
+    if (isSum && sumSources.length && output.zScore) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-sum-loss-z-score`,
+          operation: OPERATION,
+          variant: 'sum-loss-z-score',
+          bindings: [...sumBindings, read('total', total), write('scoreOut', output.zScore, 'f32')],
+          invocationCount: capacity,
+          declarations: GET_NAN_WGSL,
+          body: `if (index < total[totalOffset] && (${sumLoss})) { scoreOut[scoreOutOffset + index] = getNaN(); }`
+        })
+      );
+    }
+
     if (this.stageMeasures) {
       for (const [name, source, destination] of [
         ['before', beforeValues, output.before],
@@ -935,6 +1012,7 @@ function getOutputViews(output: GPUCellTableCompareOutput): (GraphDataView | und
     output.status.count,
     output.status.overflow,
     output.status.candidateOverflow,
+    output.status.sumOverflow,
     output.status.requiredCount
   ];
 }

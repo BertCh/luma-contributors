@@ -71,8 +71,12 @@ it('GPULabelPoint validates outputs and grid sizes', () => {
     ringOffsets: view(graph, 'uint32', 3)
   };
   const contributor = new GPULabelPoint({...props, output: {points: view(graph, 'float32x2', 2)}});
-  // One per-thread kernel for small features and one workgroup kernel for large ones.
-  expect(contributor.getCommandNodes(graph)).toHaveLength(2);
+  // Search on both size routes, then measure clearance at the published center.
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'label-point-search',
+    'label-point-search-workgroup',
+    'label-point-published-clearance'
+  ]);
   expect(
     () => new GPULabelPoint({...props, output: {points: view(graph, 'float32x2', 3)}})
   ).toThrow(/points/);
@@ -95,7 +99,10 @@ it('GPUShapeDescriptors requires an output and composes measures with kernels', 
     ringOffsets: view(graph, 'uint32', 3),
     parameters: view(graph, 'float32', 4)
   };
-  expect(() => new GPUShapeDescriptors({...props, output: {}})).toThrow(/output column/);
+  // Intentionally malformed JavaScript input: the public type requires a terminal selection.
+  expect(() => Reflect.construct(GPUShapeDescriptors, [{...props, output: {}}])).toThrow(
+    /output column/
+  );
   const contributor = new GPUShapeDescriptors({
     ...props,
     output: {

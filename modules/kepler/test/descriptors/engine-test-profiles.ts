@@ -7,7 +7,7 @@ import {
   type GPUAnalysisColumnProfile,
   type GPUAnalysisCoordinateModel,
   type GPUAnalysisRowSemantics
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   countCollectionVertices,
   type CatalogFeature,

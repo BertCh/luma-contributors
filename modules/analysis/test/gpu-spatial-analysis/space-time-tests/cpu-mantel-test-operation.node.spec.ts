@@ -202,13 +202,17 @@ it('defines constant and empty pair populations and zero-variance summaries', ()
     {...INPUT, times: new Float32Array(3)},
     {...PROPS, stopAfterExceedances: 2}
   );
-  expect(constant.statistics.every(value => value === 0)).toBe(true);
-  expect(constant.permutationCount[0]).toBe(2);
-  expect(constant.summary[GPU_SPACE_TIME_SUMMARY.pseudoPGreater]).toBe(1);
+  expect(constant.statistics.every(Number.isNaN)).toBe(true);
+  expect(constant.permutationCount[0]).toBe(0);
+  expect(constant.usablePermutationCount[0]).toBe(0);
+  expect(constant.summary[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(3);
+  expect(constant.summary[GPU_SPACE_TIME_SUMMARY.pseudoPGreater]).toBeNaN();
   expect(Number.isNaN(constant.summary[GPU_SPACE_TIME_SUMMARY.zScore])).toBe(true);
   const empty = computeMantelTestOnCPU({...INPUT, offsets: new Uint32Array(4)}, PROPS);
-  expect(empty.statistics.every(value => value === 0)).toBe(true);
+  expect(empty.statistics.every(Number.isNaN)).toBe(true);
   expect(empty.summary[GPU_SPACE_TIME_SUMMARY.pairCount]).toBe(0);
+  expect(empty.usablePermutationCount[0]).toBe(0);
+  expect(empty.permutationCount[0]).toBe(0);
 });
 
 it('rejects malformed arrays and validates CPU and deferred GPU construction', () => {
@@ -229,7 +233,7 @@ it('rejects malformed arrays and validates CPU and deferred GPU construction', (
     /mantel-operation-test.*permutationCount/
   );
   expect(() => new GPUMantelTestOperation({...PROPS, maximumPermutations: -1})).toThrow(
-    /mantel-operation-test.*length/
+    /mantel-operation-test.*maximumPermutations/
   );
   const shapes = {
     offsets: {format: 'uint32' as const, length: 4},

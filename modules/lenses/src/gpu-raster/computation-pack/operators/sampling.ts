@@ -32,7 +32,7 @@ export const RASTER_SAMPLING_OPERATORS: RasterOperatorTable = {
       {
         stage: 'operator',
         name: 'noDataPolicy',
-        alternatives: ['strict', 'renormalize'],
+        alternatives: ['propagate', 'renormalize'],
         sweepable: false
       },
       {stage: 'support', name: 'localOrigin', sweepable: false}
@@ -42,7 +42,7 @@ export const RASTER_SAMPLING_OPERATORS: RasterOperatorTable = {
       derivation: 'curated',
       tex: String.raw`\term{value}{z}=\sum_{i,j\in\{0,1\}}\bigl(1-|i-f_x|\bigr)\bigl(1-|j-f_y|\bigr)\,\term{raster}{r}_{\lfloor u\rfloor+i,\ \lfloor v\rfloor+j},\quad (u,v)=\left(\frac{\term{position}{p_x}-x_{\min}}{\term{cellSize}{\Delta_x}}-\tfrac12,\ \frac{p_y-y_0}{\Delta_y}-\tfrac12\right)`,
       ascii:
-        'Bilinear (the default method): u = (px - minX) / cellWidth - 0.5, v = (py - y0) / rowStep - 0.5 with y0 the y of the outer edge of row 0 and rowStep the signed row step (negative for north-up grids), so integer u, v are cell centres for either row direction; fx = u - floor(u), fy = v - floor(v); z = sum of the four surrounding centres weighted (1-|i-fx|)(1-|j-fy|), indices clamped to the edge cell. A centre takes part only when both its weights are nonzero, so a point on a cell centre returns that cell. Outside the closed extent or NaN position gives NaN. Under strict a nodata (NaN, sentinel or validity 0) participating centre gives NaN; renormalize divides the valid weights by their sum. nearest returns cell floor(u + 0.5), floor(v + 0.5) clamped to the raster (the cell containing the point; the maxX and maxY edge belong to the last cell); bicubic is Catmull-Rom over 4x4 and falls back to the bilinear rule next to nodata.',
+        'Bilinear (the default method): u = (px - minX) / cellWidth - 0.5, v = (py - y0) / rowStep - 0.5 with y0 the y of the outer edge of row 0 and rowStep the signed row step (negative for north-up grids), so integer u, v are cell centres for either row direction; fx = u - floor(u), fy = v - floor(v); z = sum of the four surrounding centres weighted (1-|i-fx|)(1-|j-fy|), indices clamped to the edge cell. A centre takes part only when both its weights are nonzero, so a point on a cell centre returns that cell. Outside the closed extent or NaN position gives NaN. Under propagate a nodata (NaN, sentinel or validity 0) participating centre gives NaN; renormalize divides the valid weights by their sum. nearest returns cell floor(u + 0.5), floor(v + 0.5) clamped to the raster (the cell containing the point; the maxX and maxY edge belong to the last cell); bicubic is Catmull-Rom over 4x4 and falls back to the bilinear rule next to nodata.',
       symbols: [
         {id: 'value', role: 'output', label: 'sampled value', binding: 'wgsl:valuesOut'},
         {id: 'raster', role: 'input', label: 'raster', binding: 'wgsl:raster'},

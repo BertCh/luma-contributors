@@ -211,6 +211,7 @@ type StatSnapshot = {
   significantCounts: Uint32Array;
   extent: [number, number];
   weightsOverflow: number;
+  weightsCandidateOverflow: number;
   tableCount: number;
   tableOverflow: number;
   zScores: Float32Array;
@@ -757,6 +758,7 @@ export async function createHotSpots(
       significantCounts,
       extent: [extent[0], extent[1]],
       weightsOverflow,
+      weightsCandidateOverflow: cells ? 0 : words(1)[0],
       tableCount,
       tableOverflow,
       zScores,
@@ -773,7 +775,8 @@ export async function createHotSpots(
     buffers: StatBuffers,
     rows: number,
     weightsOverflow: Buffer,
-    cells: {tableCount: Buffer; tableOverflow: Buffer; centers: Buffer; values: Buffer} | null
+    cells: {tableCount: Buffer; tableOverflow: Buffer; centers: Buffer; values: Buffer} | null,
+    weightsCandidateOverflow?: Buffer
   ) => [
     {buffer: buffers.counts, size: GI_BIN_COUNT * 4},
     {buffer: buffers.statistics, size: 16},
@@ -793,7 +796,8 @@ export async function createHotSpots(
           {buffer: cells.centers, size: rows * 8},
           {buffer: cells.values, size: rows * 4}
         ]
-      : [])
+      : []),
+    ...(weightsCandidateOverflow ? [{buffer: weightsCandidateOverflow, size: 4}] : [])
   ];
 
   /** Class labels of the active statistic, for tooltips. */
@@ -1144,7 +1148,7 @@ export async function createHotSpots(
         parameters,
         selfWeight: variant.selfWeight,
         multipleTesting: variant.falseDiscoveryRate ? 'benjamini-hochberg' : 'none',
-        outputs: {
+        output: {
           zScores: view('z-scores', buffers.zScores, 'float32', rows),
           bins: view('bins', buffers.base, 'sint32', rows),
           pValues: view('p-values', buffers.pValues, 'float32', rows),
@@ -1254,8 +1258,8 @@ export async function createHotSpots(
         getGPUNeighborSearchParameterValues({
           spatialContext: CELL_SPATIAL_CONTEXT,
           bounds: getCellAnalysisBounds(),
-          radius: o.radiusCells * getSpacing(),
-          weightKind: 'binary',
+          searchRadius: o.radiusCells * getSpacing(),
+          weightType: 'binary',
           rowStandardize: o.weightTransform === 'row'
         })
       );
@@ -1481,7 +1485,7 @@ export async function createHotSpots(
         snapTolerance: 0,
         bandFactor: o.bandFactor,
         knnCapFactor: 0,
-        weightKind: 'binary',
+        weightType: 'binary',
         kernel: 'triangular',
         power: 1,
         distanceFloor: 0,
@@ -1508,6 +1512,7 @@ export async function createHotSpots(
             rows,
             slots: core.slots,
             weights: core.csr,
+            weightsStatus: {overflow: core.overflow, candidateOverflow: core.candidateOverflow},
             values,
             mask,
             buffers,
@@ -1544,11 +1549,24 @@ export async function createHotSpots(
     const reader = makeReader(
       resources,
       `hotspots-${geography.id}`,
-      getReaderSources(buffers, rows, core.overflow, null),
+      getReaderSources(buffers, rows, core.overflow, null, core.candidateOverflow),
       rows,
       false,
       snapshot => {
         if (world !== created || switching || graphSwap.pending) return;
+        if (snapshot.weightsOverflow !== 0 || snapshot.weightsCandidateOverflow !== 0) {
+          created.snapshot = null;
+          publishPending('Incomplete weights: statistics and classification maps are withheld.');
+          ctx.setReadout(
+            'capacity',
+            snapshot.weightsCandidateOverflow ? 'candidate overflow' : 'neighbor overflow'
+          );
+          ctx.setAnnotations('hot-spots', null);
+          ctx.setAnnotations('band', null);
+          ctx.setLegendData('classCounts', undefined);
+          ctx.requestLayers();
+          return;
+        }
         created.snapshot = snapshot;
         updateReadouts();
         ctx.requestLayers();
@@ -1604,6 +1622,7 @@ export async function createHotSpots(
       getPassCount: () => statGraphs.get(getStatKey(getStatVariant()))?.stats.nodeOrder.length ?? 0,
       getLayers() {
         const o = ctx.options;
+        if (!created.snapshot && o.display !== 'values') return [];
         const ground = ctx.ground();
         const origin: [number, number, number] = [geography.origin[0], geography.origin[1], 0];
         const styles =
@@ -1657,6 +1676,7 @@ export async function createHotSpots(
         return layers;
       },
       getTooltip(event) {
+        if (!created.snapshot && ctx.options.display !== 'values') return clearHover();
         if (!event.coordinate) return clearHover();
         const row = geography.pick(event.coordinate[0], event.coordinate[1]);
         if (row < 0) return clearHover();

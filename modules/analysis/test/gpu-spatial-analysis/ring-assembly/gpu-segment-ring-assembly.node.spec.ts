@@ -8,11 +8,7 @@ import {
   GPUSegmentRingAssembly,
   type GPUSegmentRingAssemblyProps
 } from '../../../src/analysis-core/ring-assembly/index';
-import {
-  GPU_RING_CELL_BIAS,
-  getRingCellSize,
-  quantizeRingVertexCoordinate
-} from '../../../src/analysis-core/ring-assembly/ring-vertex-quantizer';
+import {quantizeRingVertexCoordinate} from '../../../src/analysis-core/ring-assembly/ring-vertex-quantizer';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
@@ -136,46 +132,48 @@ it('GPUSegmentRingAssembly selects cos(latitude) turn comparison with a longitud
   }
 });
 
-it('ring vertex quantizer separates UTM-scale vertices at the default tolerances', () => {
-  // The former i32 floor(v * k) saturated for |v| > 214,748, so every vertex of a UTM scene fell
-  // into one cell. Relative to the first vertex, with an extent-adaptive cell, they stay distinct.
+it('ring vertex quantizer separates UTM-scale vertices at several tolerances', () => {
   const originX = 500000.25;
   const originY = 4500000.5;
-  const extent = 38; // 20 vertices, 2 m apart
   for (const tolerance of [5e-5, 1e-4, 0.5]) {
     const cells = new Set<string>();
     for (let i = 0; i < 20; i++) {
       for (let j = 0; j < 20; j++) {
-        const x = quantizeRingVertexCoordinate(originX + i * 2, originX, tolerance, extent);
-        const y = quantizeRingVertexCoordinate(originY + j * 2, originY, tolerance, extent);
+        const x = quantizeRingVertexCoordinate(originX + i * 2, tolerance);
+        const y = quantizeRingVertexCoordinate(originY + j * 2, tolerance);
         expect(x.overflow || y.overflow).toBe(false);
         cells.add(`${x.cell},${y.cell}`);
       }
     }
     expect(cells.size, `tolerance ${tolerance}`).toBe(400);
   }
-  expect(quantizeRingVertexCoordinate(originX, originX, 0.5, extent).cell).toBe(GPU_RING_CELL_BIAS);
 });
 
-it('ring vertex cells stay in f32-exact range and match within the tolerance for any extent', () => {
-  for (const extent of [1, 1e3, 3e5, 2e7, 1e9]) {
-    const tolerance = 1e-4;
-    const size = getRingCellSize(tolerance, extent);
-    expect(size).toBeGreaterThanOrEqual(tolerance);
-    expect(extent / size).toBeLessThanOrEqual(2 ** 22);
-    // Two vertices within the tolerance fall in the same or adjacent cells.
-    const a = quantizeRingVertexCoordinate(extent, 0, tolerance, extent);
-    const b = quantizeRingVertexCoordinate(extent - tolerance, 0, tolerance, extent);
-    expect(Math.abs(a.cell - b.cell)).toBeLessThanOrEqual(1);
-    expect(a.overflow).toBe(false);
+it('ring vertex keys are ordered across signed zero and the dense-cell boundary', () => {
+  // At tolerance 1/64 the width is 1/32. At 2^18 float32 spacing first reaches 1/32.
+  const tolerance = 1 / 64;
+  const boundary = 2 ** 18;
+  const cell = (coordinate: number) => quantizeRingVertexCoordinate(coordinate, tolerance).cell;
+  const maximumFloat32 = 3.4028234663852886e38;
+  expect(cell(-maximumFloat32)).toBeGreaterThan(0);
+  expect(cell(maximumFloat32)).toBeLessThan(0x7fffffff);
+  expect(cell(-0)).toBe(cell(0));
+  expect(cell(-boundary + tolerance)).toBe(cell(-boundary));
+  expect(cell(-boundary - 1 / 32)).toBe(cell(-boundary) - 1);
+  for (const [first, second] of [
+    [-tolerance / 2, tolerance / 2],
+    [1 - tolerance / 2, 1 + tolerance / 2],
+    [boundary - tolerance, boundary]
+  ]) {
+    expect(cell(second) - cell(first)).toBe(1);
   }
+  expect(cell(boundary + 4 / 32) - cell(boundary)).toBe(2);
 });
 
 it('ring vertex quantizer reports non-finite coordinates as overflow', () => {
-  expect(quantizeRingVertexCoordinate(Number.NaN, 0, 1e-4, 10).overflow).toBe(true);
-  expect(quantizeRingVertexCoordinate(Number.POSITIVE_INFINITY, 0, 1e-4, 10).overflow).toBe(true);
-  expect(quantizeRingVertexCoordinate(5, Number.NaN, 1e-4, 10).overflow).toBe(true);
-  expect(quantizeRingVertexCoordinate(5, 0, 1e-4, 10).overflow).toBe(false);
+  expect(quantizeRingVertexCoordinate(Number.NaN, 1e-4).overflow).toBe(true);
+  expect(quantizeRingVertexCoordinate(Number.POSITIVE_INFINITY, 1e-4).overflow).toBe(true);
+  expect(quantizeRingVertexCoordinate(5, 1e-4).overflow).toBe(false);
 });
 
 it('GPUSegmentRingAssembly measures the frame extent before hashing', () => {
@@ -188,3 +186,61 @@ it('GPUSegmentRingAssembly measures the frame extent before hashing', () => {
   expect(extent).toBeGreaterThanOrEqual(0);
   expect(extent).toBeLessThan(ids.findIndex(id => id.endsWith('-hash')));
 });
+
+it('CPL-12 captures counted segment provenance and rejects conflicting live counts', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph);
+  const scalar = (name: string) => createTransientView(graph, name, 'uint32', 1);
+  const segmentStatus = {
+    count: scalar('source-count'),
+    overflow: scalar('source-loss'),
+    candidateOverflow: scalar('source-candidate')
+  };
+  const contributor = new GPUSegmentRingAssembly({...props, segmentStatus});
+  expect(contributor.props.count).toBe(segmentStatus.count);
+  expect(contributor.props.segmentStatus).not.toBe(segmentStatus);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toContain(
+    'segment-ring-assembly-suppress-incomplete-0'
+  );
+  expect(
+    () => new GPUSegmentRingAssembly({...props, segmentStatus, count: scalar('other-count')})
+  ).toThrow(/count.*segmentStatus.count/);
+  device.destroy();
+});
+
+for (const dispatch of ['complete', 'conflict', 'polygon-count'] as const) {
+  it(`S1 rejects disjoint slices sharing a read/write buffer in ${dispatch}`, () => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const backing = createTransientView(graph, `shared-${dispatch}`, 'uint32', 192);
+    const slice = (byteOffset: number, length = 1) =>
+      graph.createDataView(backing.buffer, {format: 'uint32', byteOffset, length});
+    const output = {...props.output, status: {...props.output.status}};
+    if (dispatch === 'complete')
+      Object.assign(output.status, {
+        overflow: slice(0),
+        candidateOverflow: slice(256),
+        complete: slice(512)
+      });
+    if (dispatch === 'conflict')
+      Object.assign(output, {
+        segmentFlags: slice(0, 16),
+        status: {...output.status, candidateOverflow: slice(256)}
+      });
+    if (dispatch === 'polygon-count')
+      Object.assign(output, {
+        polygons: {
+          kind: 'polygons',
+          positions: createTransientView(graph, 'polygon-position', 'float32x2', 32),
+          ringOffsets: createTransientView(graph, 'ring-offset', 'uint32', 5),
+          polygonOffsets: createTransientView(graph, 'polygon-offset', 'uint32', 5),
+          featureOffsets: slice(0, 5)
+        },
+        status: {...output.status, polygonCount: slice(256)}
+      });
+    expect(() => new GPUSegmentRingAssembly({...props, output})).toThrow(/buffer/);
+    device.destroy();
+  });
+}

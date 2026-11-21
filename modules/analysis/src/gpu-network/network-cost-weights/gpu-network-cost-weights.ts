@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
@@ -21,6 +22,7 @@ import {
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -58,13 +60,17 @@ export type GPUNetworkCostWeightsSettings = {
    * `<= costLimit`. `Infinity` keeps every reached entry (not allowed with `'gaussian'`).
    */
   costLimit: number;
-  /** Decay that turns a cost into a weight. Defaults to `'none'`. */
-  decay?: GPUNetworkCostWeightsDecay;
-  /** Rate of the `'exponential'` and `'power'` decays, finite and non-negative. Defaults to 0. */
-  beta?: number;
   /** Floor of the `'power'` decay so a zero cost stays finite, positive and finite. Defaults to 1. */
   minimumCost?: number;
-};
+} & (
+  | {decay?: 'none' | 'gaussian'; beta?: number}
+  | {
+      /** Exponential and power decay require beta; binary and Gaussian accept its omission. */
+      decay: GPUNetworkCostWeightsDecay;
+      /** Finite nonnegative rate, also finite after float32 conversion, in inverse cost units (exponential) or exponent (power). Zero explicitly selects constant weights. */
+      beta: number;
+    }
+);
 
 const DECAY_CODES: Record<GPUNetworkCostWeightsDecay, number> = {
   none: 0,
@@ -78,31 +84,43 @@ const DECAY_CODES: Record<GPUNetworkCostWeightsDecay, number> = {
  * `float32` words read by {@link GPUNetworkCostWeights}: cost limit, decay code, beta, minimum cost.
  *
  * @throws If `costLimit` is NaN or negative, `'gaussian'` has no finite positive `costLimit`, the
- * decay is unknown, `beta` is negative or not finite, or `minimumCost` is not positive and finite.
+ * decay is unknown, a rate-dependent decay omits `beta`, `beta` is negative or not finite, or `minimumCost` is not positive and finite.
  */
 export function getGPUNetworkCostWeightsParameterValues(
   settings: GPUNetworkCostWeightsSettings
 ): Float32Array {
   const decay = settings.decay ?? 'none';
-  const beta = settings.beta ?? 0;
+  const suppliedBeta = settings.beta;
+  const beta =
+    suppliedBeta === undefined && (decay === 'none' || decay === 'gaussian') ? 0 : suppliedBeta;
   const minimumCost = settings.minimumCost ?? 1;
   const {costLimit} = settings;
-  if (!(costLimit >= 0)) {
-    throw new Error(`${OPERATION} costLimit must be a non-negative number`);
-  }
-  if (!(decay in DECAY_CODES)) {
-    throw new Error(`${OPERATION} decay must be 'none', 'exponential', 'power' or 'gaussian'`);
-  }
-  if (decay === 'gaussian' && !(Number.isFinite(costLimit) && costLimit > 0)) {
-    throw new Error(`${OPERATION} 'gaussian' decay needs a finite positive costLimit`);
-  }
-  if (!Number.isFinite(beta) || beta < 0) {
-    throw new Error(`${OPERATION} beta must be a non-negative finite number`);
-  }
-  if (!Number.isFinite(minimumCost) || !(minimumCost > 0)) {
-    throw new Error(`${OPERATION} minimumCost must be a positive finite number`);
-  }
-  return Float32Array.from([costLimit, DECAY_CODES[decay], beta, minimumCost]);
+  validateRequirement(
+    OPERATION,
+    costLimit >= 0,
+    `costLimit must be a non-negative number; received ${costLimit}`
+  );
+  validateRequirement(
+    OPERATION,
+    Object.hasOwn(DECAY_CODES, decay),
+    `decay must be 'none', 'exponential', 'power' or 'gaussian'; received ${String(decay)}`
+  );
+  validateRequirement(
+    OPERATION,
+    decay !== 'gaussian' || (Number.isFinite(costLimit) && costLimit > 0),
+    `'gaussian' decay needs a finite positive costLimit; received ${costLimit}`
+  );
+  validateRequirement(
+    OPERATION,
+    beta !== undefined && Number.isFinite(beta) && Number.isFinite(Math.fround(beta)) && beta >= 0,
+    `beta must be a non-negative finite number after float32 conversion for decay '${decay}'; received ${String(suppliedBeta)}; write beta: 0 for constant weights`
+  );
+  validateRequirement(
+    OPERATION,
+    Number.isFinite(minimumCost) && minimumCost > 0,
+    `minimumCost must be a positive finite number; received ${minimumCost}`
+  );
+  return Float32Array.from([costLimit, DECAY_CODES[decay], beta!, minimumCost]);
 }
 
 /**
@@ -124,6 +142,13 @@ export type GPUNetworkCostWeightsOutput = {
     overflow?: GraphDataView<'uint32'>;
     /** Optional one-row exact (unclamped) number of in-range entries. */
     requiredCount?: GraphDataView<'uint32'>;
+    /**
+     * Optional one-row flag: 1 when `costsComplete` is nonzero, no in-range entry was dropped for
+     * capacity and the requested `costLimit` parameter does not exceed the matrix `costLimit` view
+     * (when given), so the weights hold every entry within the requested cost; otherwise 0.
+     * Requires `costsComplete`.
+     */
+    complete?: GraphDataView<'uint32'>;
   };
 };
 
@@ -142,6 +167,21 @@ export type GPUNetworkCostWeightsProps = {
    * or of `GPUNetworkReachability` (one row per lane).
    */
   costs: GraphDataView<'float32'>;
+  /**
+   * Optional one-row completeness word of `costs`, for example the `output.status.converged` of
+   * `GPUNetworkCostMatrix` or `GPUNetworkReachability`: nonzero means every entry is final. A
+   * search stopped at its round budget leaves `+Infinity` (or an overestimate) where it did not
+   * finish, which these weights cannot tell from unreached. Required by `output.status.complete`.
+   */
+  costsComplete?: GraphDataView<'uint32'>;
+  /**
+   * Optional one-row cost limit the matrix was built with (the `costLimit` view of
+   * `GPUNetworkCostMatrix` or `GPUNetworkReachability`). Read only by `output.status.complete`,
+   * which is 0 when the per-frame weights `costLimit` exceeds it: a converged search with a
+   * smaller horizon leaves `+Infinity` where an entry within the requested cost lies (NET-124).
+   * Pass it whenever the producer ran with a cost limit; omit it only when it ran without one.
+   */
+  costLimit?: GraphDataView<'float32'>;
   /** Number of matrix rows; the column count is `costs.length / rowCount`. Defaults to 1. */
   rowCount?: number;
   /**
@@ -213,6 +253,37 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
    * orientation is unknown, or an output shares a buffer with an input.
    */
   constructor(props: GPUNetworkCostWeightsProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'costs',
+      'costsComplete',
+      'costLimit',
+      'rowCount',
+      'columns',
+      'orientation',
+      'parameters',
+      'output'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(captured.output, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'distances',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      output: Object.freeze({
+        ...outputSnapshot,
+        status:
+          outputSnapshot.status &&
+          snapshotConstructionFields(outputSnapshot.status, [
+            'overflow',
+            'requiredCount',
+            'complete'
+          ])
+      })
+    });
     const id = props.id ?? 'network-cost-weights';
     this.id = id;
     this.props = props;
@@ -274,6 +345,28 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
       overflow: output.status?.overflow,
       requiredCount: output.status?.requiredCount
     });
+    for (const [name, view, format] of [
+      ['costsComplete', props.costsComplete, 'uint32'],
+      ['costLimit', props.costLimit, 'float32'],
+      ['output.status.complete', output.status?.complete, 'uint32']
+    ] as const) {
+      if (view) {
+        validateSinglePackedView(view, [format], `${id} ${name}`);
+        if (view.length !== 1) {
+          throw new Error(`${id} ${name} must contain exactly one row`);
+        }
+      }
+    }
+    if (output.status?.complete && !props.costsComplete) {
+      throw new Error(
+        `${id} output.status.complete requires costsComplete, the matrix completeness word`
+      );
+    }
+    validateRequirement(
+      id,
+      !(props.costsComplete || props.costLimit) || Boolean(output.status?.complete),
+      'costsComplete or costLimit requires output.status.complete so outputWeights retains the computed certificate'
+    );
     validateGraphOutputsDisjointFromInputs(id, getOutputs(props), getInputs(props));
 
     this.outputWeights = describeGPUSpatialWeights(
@@ -290,7 +383,11 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
           symmetric: 'unknown',
           provenance: {source: OPERATION, criterion: 'network-cost'}
         },
-        status: {overflow: output.status?.overflow, requiredCount: output.status?.requiredCount}
+        status: {
+          overflow: output.status?.overflow,
+          requiredCount: output.status?.requiredCount,
+          complete: output.status?.complete
+        }
       }
     );
   }
@@ -467,11 +564,30 @@ fn getDecayWeight(cost: f32, costLimit: f32, decay: u32, beta: f32, minimumCost:
         access: 'read_write'
       });
     }
+    // The constructor requires costsComplete whenever output.status.complete is requested.
+    const complete = output.status?.complete;
+    if (complete && props.costsComplete) {
+      finalizeBindings.push(
+        {name: 'costsComplete', view: props.costsComplete, type: 'u32', access: 'read'},
+        {name: 'complete', view: complete, type: 'u32', access: 'read_write'}
+      );
+      if (props.costLimit) {
+        finalizeBindings.push(
+          {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+          {name: 'costLimit', view: props.costLimit, type: 'f32', access: 'read'}
+        );
+      }
+    }
+    // The requested cutoff must lie within the matrix horizon (NET-124). `<=` is false for a NaN
+    // limit, and +Infinity <= +Infinity is true.
+    const withinLimit = props.costLimit
+      ? ' && parameters[parametersOffset] <= costLimit[costLimitOffset]'
+      : '';
     // Each invocation touches only its own offset, so clamping cannot race with reading the total.
     const finalizeNode = createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-finalize`,
       operation: OPERATION,
-      variant: 'finalize',
+      variant: complete && props.costLimit ? 'finalize-limit' : 'finalize',
       bindings: finalizeBindings,
       invocationCount: this.weightsRowCount + 1,
       declarations: `const WEIGHTS_ROWS: u32 = ${this.weightsRowCount}u;
@@ -481,6 +597,7 @@ const CAPACITY: u32 = ${this.capacity}u;`,
     let total = scanTotal[scanTotalOffset];
     ${output.status?.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);' : ''}
     ${output.status?.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
+    ${complete ? `complete[completeOffset] = select(0u, 1u, costsComplete[costsCompleteOffset] != 0u && total <= CAPACITY${withinLimit});` : ''}
   }
   offsets[offsetsOffset + index] = min(value, CAPACITY);`
     });
@@ -530,7 +647,7 @@ fn isWithinCostLimit(cost: f32, costLimit: f32) -> bool {
 
 /** Returns every read-only view of a cost-weights contributor. */
 function getInputs(props: GPUNetworkCostWeightsProps): (GraphDataView | undefined)[] {
-  return [props.costs, props.parameters, props.columns];
+  return [props.costs, props.parameters, props.columns, props.costsComplete, props.costLimit];
 }
 
 /** Returns every written view of a cost-weights contributor. */
@@ -542,6 +659,7 @@ function getOutputs(props: GPUNetworkCostWeightsProps): (GraphDataView | undefin
     output.weights,
     output.distances,
     output.status?.overflow,
-    output.status?.requiredCount
+    output.status?.requiredCount,
+    output.status?.complete
   ];
 }

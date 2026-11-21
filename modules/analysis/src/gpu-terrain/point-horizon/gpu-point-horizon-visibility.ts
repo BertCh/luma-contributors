@@ -18,6 +18,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  validateCommandNodeBudget,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -48,8 +49,8 @@ import {
  * Properties for {@link GPUPointHorizonVisibility}.
  *
  * Model options (projection, cell-size model, curvature convention, lattice) are those of
- * {@link GPUPointHorizonModelOptions}; `azimuthCount`, `firstAzimuth` and `azimuthSpan` are
- * ignored because the ray direction is the exact bearing to each target.
+ * {@link GPUPointHorizonModelOptions}; `azimuthCount`, `firstAzimuthIndex` and `azimuthBinCount`
+ * are ignored because the ray direction is the exact bearing to each target.
  */
 export type GPUPointHorizonVisibilityProps = GPUPointHorizonModelOptions & {
   /** Prefix for node and transient IDs. Defaults to `'point-horizon-visibility'`. */
@@ -105,6 +106,10 @@ export type GPUPointHorizonVisibilityOutput = {
  * `visible`. The three classes are ordered with no gap: a target exactly `tol` below the occluder
  * is `marginal`, as in the tolerance band of `GPUTerrainLineOfSight`. `onSkyline`
  * is `(visible or marginal) and αP >= αSky - skylineToleranceDegrees`.
+ *
+ * Construction limits the total estimated command nodes per contributor to 32,768, including
+ * at least one target chunk, its chunk-table writer, elevation preparation and any locally
+ * built pyramid. Increase `targetsPerDispatch` or partition targets when the budget is exceeded.
  */
 export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -113,18 +118,18 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
   readonly props: GPUPointHorizonVisibilityProps;
   /** Resolved model: lattice, segments and pyramid layout. @internal */
   private readonly model: ResolvedPointHorizonModel;
+  /** Validated chunk size captured before caller-owned props can change. */
+  private readonly targetsPerDispatch: number;
+
+  /** Upper bound on all command nodes returned by getCommandNodes; maximum 32,768. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUPointHorizonVisibilityProps) {
     this.id = props.id ?? 'point-horizon-visibility';
     this.props = props;
     const {id} = this;
     const {output} = props;
-    this.model = resolvePointHorizonModel(id, props.grid, {
-      ...props,
-      azimuthCount: 720,
-      firstAzimuth: 0,
-      azimuthSpan: 720
-    });
+    this.model = resolvePointHorizonModel(id, props.grid, props, {});
     validatePointHorizonVerticalDatum(id, props, props.elevation, this.model.heightReference);
     validateRasterParameters(id, props.parameters, GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH);
     validatePointHorizonRows(id, 'observers', props.observers, 'float32x4');
@@ -146,6 +151,16 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
     if (!Number.isInteger(targetsPerDispatch) || targetsPerDispatch < 1) {
       throw new Error(`${id} targetsPerDispatch must be a positive integer`);
     }
+    this.targetsPerDispatch = targetsPerDispatch;
+    // Match createPointHorizonChunkStarts, including its minimum-one-chunk rule.
+    const chunkSize = Math.min(targetsPerDispatch, Math.max(props.targets.length, 1));
+    const chunkCount = Math.max(Math.ceil(props.targets.length / chunkSize), 1);
+    const builtPyramid = this.model.layout && !this.model.sharedPyramid ? this.model.layout : null;
+    // Up to two elevation preparation nodes and one chunk-table writer. A built pyramid
+    // contributes at most one node per level plus up to two parameter preparation nodes.
+    this.estimatedCommandNodeCount =
+      chunkCount + 3 + (builtPyramid ? builtPyramid.levels.length + 2 : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRasterBuffersDistinct(
       id,
       [output.visibility, output.details],
@@ -164,14 +179,7 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
       ),
       pyramid: this.model.layout && !this.props.pyramid ? 8 * this.model.layout.length : 0,
       'chunk table':
-        256 *
-        Math.max(
-          1,
-          Math.ceil(
-            this.props.targets.length /
-              (this.props.targetsPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH)
-          )
-        )
+        256 * Math.max(1, Math.ceil(this.props.targets.length / this.targetsPerDispatch))
     });
     const {id, props, model} = this;
     const {output} = props;
@@ -243,7 +251,7 @@ export class GPUPointHorizonVisibility implements GPUCommandNodeProducer {
       id,
       operation: 'GPUPointHorizonVisibility',
       itemCount: targets.length,
-      maximumChunkSize: props.targetsPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH
+      maximumChunkSize: this.targetsPerDispatch
     });
     nodes.push(chunks.writeNode);
     const detailsWrite = output.details

@@ -46,7 +46,7 @@ function createSmallFitProps(context: KernelAuditContext): GPUCoregionalizationF
   };
 }
 
-it('R1 distinguishes a runnable lens capture from a published result and graph embed', async () => {
+it('R1 distinguishes a runnable lens capture from published result and graph links', async () => {
   const familyPath = 'docs/api/gpu-dataframe-analysis.md';
   const section = readRepositoryFile(familyPath)
     .split('## `GPUCoregionalizationFit`')[1]
@@ -66,25 +66,19 @@ it('R1 distinguishes a runnable lens capture from a published result and graph e
   const rendered = JSON.parse(result.code.replace(/^export default /, '').replace(/;$/, '')) as {
     html: string;
   };
-  const recordExists = existsSync(
-    resolve(REPOSITORY_ROOT, `docs/lens-records/${SCENARIO_ID}.json`)
-  );
-  const figures = rendered.html.match(/<figure\b[\s\S]*?<\/figure>/g) ?? [];
-  const literalDirectiveCount = (
-    rendered.html.match(/::lens\{scenario=gpu-dataframe[.]coregionalization-fit\b/g) ?? []
-  ).length;
+  const recordPath = `docs/lens-records/${SCENARIO_ID}.json`;
+  const recordingPath = `/lens/${SCENARIO_ID}`;
+  const recordingRungs = [...rendered.html.matchAll(/<a href="([^"]+)">[^<]+ \(([^)]+)\)<\/a>/g)]
+    .filter(([, href]) => href === recordingPath)
+    .map(([, , rung]) => rung);
+  expect(recordingRungs).toEqual(['result', 'graph']);
+  expect(rendered.html).not.toContain(`::lens{scenario=${SCENARIO_ID}`);
+  expect(rendered.html).not.toMatch(/<figure\b/);
+  expect(existsSync(resolve(REPOSITORY_ROOT, recordPath))).toBe(true);
   const lensStep = readAuthoringStep(10);
-  expect(lensStep.includes('renders them as literal text')).toBe(literalDirectiveCount === 2);
-  if (lensStep.includes('The API page embeds result and graph rungs')) {
-    expect(recordExists, 'a published embed needs its committed scenario record').toBe(true);
-    expect(figures, 'both result and graph directives must render figures').toHaveLength(2);
-  }
-  if (rendered.html.includes(`::lens{scenario=${SCENARIO_ID}`)) {
-    expect(lensStep).toContain('literal text');
-    expect(lensStep).toContain('website/build/markdown-plugin.ts');
-  }
-  expect(lensStep.includes('is absent from this checkout')).toBe(!recordExists);
-  if (!recordExists) expect(lensStep).toContain(`docs/lens-records/${SCENARIO_ID}.json`);
+  expect(lensStep).toContain('result and graph directives both link');
+  expect(lensStep).toContain('website/build/markdown-plugin.ts');
+  expect(lensStep).toContain(recordPath);
   expect(lensStep).toContain(
     'modules/lenses/test/computation-lenses/coregionalization-fit.spec.ts'
   );

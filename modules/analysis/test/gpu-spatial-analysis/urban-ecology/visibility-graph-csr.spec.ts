@@ -11,7 +11,7 @@ import {
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {addVisibilityGraphRecipe} from '@luma-contributors/analysis/gpu-network';
-import type {GPUVisibilityGraphCSRProps} from '@luma-contributors/analysis/gpu-network';
+import type {GPUNetworkVisibilityGraphCSRProps} from '@luma-contributors/analysis/gpu-network';
 import {
   addUrbanPointGrid,
   getUrbanPointGridDeclarations
@@ -32,7 +32,7 @@ function capture(fixture: RecipeTestFixture, name: string, result: ReturnType<ty
     ])
   );
 }
-function addCSR(fixture: RecipeTestFixture, props: GPUVisibilityGraphCSRProps) {
+function addCSR(fixture: RecipeTestFixture, props: GPUNetworkVisibilityGraphCSRProps) {
   return addVisibilityGraphRecipe(fixture.graph, props);
 }
 async function read(fixture: RecipeTestFixture, captured: ReturnType<typeof capture>) {

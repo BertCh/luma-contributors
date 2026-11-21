@@ -72,7 +72,7 @@ export default defineOperationRun({
           ringOffsets: getViewBuffer(output.geometry.ringOffsets)
         },
         getViewBuffer(output.status.count),
-        {closed: true}
+        {closed: true, status: output.status}
       )
     );
     const walls = builder.allocate('wall-segments', 'float32x4', buildings.segments.length / 4);

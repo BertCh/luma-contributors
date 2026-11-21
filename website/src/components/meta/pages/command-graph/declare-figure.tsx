@@ -130,7 +130,7 @@ export function DeclareFigure({model}: {model: LensViewModel}) {
         <span className="meta-panel__title">{model.title}: declared reads and writes</span>
         <ul className="meta-stats">
           <li>
-            <strong>{model.nodes.length}</strong> kernels
+            <strong>{model.recordedNodeCount}</strong> graph nodes
           </li>
           <li>
             <strong>{instances.length}</strong> derived edges
@@ -140,7 +140,7 @@ export function DeclareFigure({model}: {model: LensViewModel}) {
           </li>
         </ul>
       </div>
-      <div className="command-graph-picker" role="group" aria-label="Select a kernel">
+      <div className="command-graph-picker" role="group" aria-label="Select a graph node">
         {rows.map((row, index) => (
           <button
             key={row.node.id}
@@ -158,10 +158,10 @@ export function DeclareFigure({model}: {model: LensViewModel}) {
           viewBox={`0 0 ${width} ${height}`}
           style={{minWidth: Math.round(width * 0.9)}}
           role="img"
-          aria-label={`${model.nodes.length} kernels in schedule order with their read and write buffers. ${selectedRow.label} reads ${sources.length} buffers; ${fromInside.length} were written by earlier kernels, so ${instances.filter(instance => instance.to === selected).length} edges lead into it.`}
+          aria-label={`${model.recordedNodeCount} graph nodes in schedule order with their read and write buffers. ${selectedRow.label} reads ${sources.length} buffers; ${fromInside.length} were written by earlier nodes, so ${instances.filter(instance => instance.to === selected).length} edges lead into it.`}
         >
           <text className="command-graph-head" x={KERNEL_X} y={16}>
-            kernel, in schedule order
+            graph node, in schedule order
           </text>
           <text className="command-graph-head" x={readsX} y={16}>
             reads

@@ -1,5 +1,7 @@
 # Terrain processing
 
+Import from `@luma-contributors/analysis/gpu-terrain`.
+
 These contributors emit WebGPU command-graph nodes. All numeric inputs and outputs remain on the GPU; there is no host convergence read or CPU algorithm fallback. Callers own outputs. Every invocation rewrites output statuses. Inputs must be packed graph views, and outputs must not alias inputs or one another. The native GPU tests are in `modules/analysis/test/gpu-terrain/terrain-processing/terrain-processing.spec.ts`.
 
 ## Breaching and explicit burning
@@ -33,17 +35,53 @@ Distances use explicit `edgeLengths` (in whatever unit the caller chose) or leng
 
 `nodes` stores parent, minimum cell, lowest-ID explicit outlet in the component, and validity. `levels` stores birth and parent-merge elevation; roots have infinite merge elevation. The outlet field distinguishes externally draining roots from real closed components. Root infinity is a topological sentinel, not an infinite physical storage claim. Nodata barriers are never converted to ocean. Curves count cells at or below each query stage and sum positive stage-minus-elevation depth times cell area: squared affine units by default, or square meters under `cellSizeMode` (per-cell ground area at its row). An optional `validity` view (uint32, nonzero valid) marks `elevation` NaN where zero, so the cell is a barrier. They are geometric stage-area-volume curves for a node's owned region; they do not simulate draining through outlets or dynamically fill/spill/merge.
 
-Internal capacity is at most one node per cell. Caller capacity may be smaller: exact required count and overflow are returned (in `output.status` and as the optional named one-row ports `output.ports.status.requiredCount` and `output.ports.status.overflow`; `output.status` is the packed view, so the named ports sit under `ports.status`), all published nodes are invalid, and all curves are NaN on overflow. Cell ownership is inspectable internal node identity even on overflow and must not be consumed then. Stable GPU sorting establishes activation order. A parallel ranked-edge reconstruction forest inserts D8 edges at their later endpoint's activation rank. Splicing resumes unfinished endpoint pairs in GPU-gated rounds. Each endpoint makes at most 2,048 atomic attempts per round (4,096 per edge lane); an unfinished attempt strictly increases the lower reconstruction-node ID, so `ceil(9 * cellCount / 2048)` rounds always suffice without publishing a partial tree. This bounds work per invocation; adversarial schedules can still require quadratic total work across rounds. Gated pointer doubling then contracts edges belonging to the same cell activation and skips single-child activations. An exclusive scan assigns the original compact node IDs in activation order; parallel minimum reductions preserve minimum-cell and outlet metadata. This preserves the serial tree, ownership and tie rules, including multifurcating merges at one activation. Stage queries first reduce exclusive cell contributions, then propagate each child once in creation order: `O(stageCount * (cellCount + nodeCount))` work rather than a scan for every ancestor query. Stage areas and volumes are fixed-point integer sums (three uint32 words per curve value, in a unit set by the largest term of the stage), so they are the float32 nearest the exact sum of the float32 terms whatever the number of cells, and shader fast-math has no float identity to fold. The curve sum scratch is two views of the output curve size (the middle and high words; the low words use the output itself until a value is decoded), so no scratch binding is larger than the caller's curves; sorting and tree scratch are linear in cell count. Native scale coverage includes 16,384 cells.
+Internal capacity is at most one node per cell. Supply three one-row uint32 views in `output.status`.
+
+- `count` is the stored node count, capped at `nodeCapacity`. When `overflow` is zero, it bounds the readable prefix of `nodes`, `levels` and `curves`.
+- `requiredCount` is the exact node count the merge tree needs.
+- `overflow` is 1 when `requiredCount` exceeds `nodeCapacity`. This invalidates the entire hierarchy. All published nodes are invalid, and all levels and curves are NaN. Cell ownership still exposes internal node IDs for inspection.
+
+Use separate buffers for the three views, or give each view a disjoint writable storage binding range in a shared buffer. Byte offsets 0, 256 and 512 work in a buffer of at least 516 bytes. Offsets 0, 4 and 8 in the old packed allocation overlap after storage binding alignment, so construction rejects them.
+
+Both operation forms take graph value names in `output.status.{count, requiredCount, overflow}` and produce three separate one-row values. Their `stageCount` is a positive integer giving the number of query stages. `computeTerrainDepressionHierarchyOnCPU` returns the same one-row arrays as `count`, `requiredCount` and `overflow`.
+
+Stable GPU sorting establishes activation order. A parallel ranked-edge reconstruction forest inserts D8 edges at their later endpoint's activation rank. Splicing resumes unfinished endpoint pairs in GPU-gated rounds. Each endpoint makes at most 2,048 atomic attempts per round (4,096 per edge lane); an unfinished attempt strictly increases the lower reconstruction-node ID, so `ceil(9 * cellCount / 2048)` rounds always suffice without publishing a partial tree. This bounds work per invocation; adversarial schedules can still require quadratic total work across rounds. Gated pointer doubling then contracts edges belonging to the same cell activation and skips single-child activations. An exclusive scan assigns the original compact node IDs in activation order; parallel minimum reductions preserve minimum-cell and outlet metadata. This preserves the serial tree, ownership and tie rules, including multifurcating merges at one activation. Stage queries first reduce exclusive cell contributions, then propagate each child once in creation order: `O(stageCount * (cellCount + nodeCount))` work rather than a scan for every ancestor query. Stage areas and volumes are fixed-point integer sums (three uint32 words per curve value, in a unit set by the largest term of the stage), so they are the float32 nearest the exact sum of the float32 terms whatever the number of cells, and shader fast-math has no float identity to fold. The curve sum scratch is two views of the output curve size (the middle and high words; the low words use the output itself until a value is decoded), so no scratch binding is larger than the caller's curves; sorting and tree scratch are linear in cell count. Native scale coverage includes 16,384 cells.
 
 **Limits.** Activation scratch is linear in cell count. Its largest binding is the reconstruction forest's two-child table, `72 * cellCount` bytes; `getCommandNodes` checks it against the device storage binding limit before creating nodes (at most 1,864,135 cells with a 128 MiB binding). Construction also checks 32-bit scratch indices and the shared command-node budget. `estimatedCommandNodeCount` includes a 256-node allowance for the published sort and scan, two nodes per bounded splicing round, and all logarithmic gated jump rounds. The two resumed-endpoint scratch bindings each hold `64 * cellCount` bytes, below the child-table limit. Stage-curve reductions retain their fixed serial order per query stage; the parallel activation pass does not change curve arithmetic.
 
 ## Basin summaries and profiles
 
-`GPUTerrainCatchmentSummary` computes valid area, mean/minimum/maximum elevation, stream length, drainage density, cumulative normalized-elevation bins and directed stream profiles. Finite elevation is the validity mask; out-of-range basin IDs are excluded. A stream cell is any nonzero `streams` word other than the unresolved sentinels (0xffffffff, 0xfffffffe), the same rule as stream order, stream network, flow distance and height above drainage, so a mask of Strahler orders counts every stream edge. `flowDirections` are ESRI codes unless `directionEncoding` names `'whitebox'` or `'taudem'`. Each stream edge is counted once in its source basin, including an edge crossing a basin boundary. Nonstream receivers end a stream profile. Cycles and invalid directions remain unresolved. Empty basins have zero area/length and NaN mean/extrema/density.
+`GPUTerrainCatchmentSummary` computes valid area, mean/minimum/maximum elevation, stream length, drainage density, cumulative normalized-elevation bins and directed stream profiles. Finite elevation is the validity mask; out-of-range basin IDs are excluded. A stream cell is any nonzero `streams` word other than the unresolved sentinels (0xffffffff, 0xfffffffe), so a mask of resolved Strahler orders counts every stream edge. `flowDirections` are ESRI codes unless `directionEncoding` names `'whitebox'` or `'taudem'`. Each stream edge is counted once in its source basin, including an edge crossing a basin boundary. Nonstream receivers end a stream profile. Cycles and invalid directions remain unresolved. Empty basins have zero area/length and NaN mean/extrema/density.
+
+Stream-mask words have the following existing meanings in both contributor and operation forms, for an otherwise eligible cell with a known valid direction. These are stream-port codes; direction-port codes are separate. Direction validity takes precedence over a stream stop or membership: StreamOrder gives 0 for direction `0xffffffff` even with stream `0xffffffff`; FlowDistance gives NaN, validity 0 and terminal `0xfffffffe` for direction `0xfffffffe` even with stream 1. A nonzero FlowDistance direction without a receiver is likewise unresolved.
+
+| `streams` word | StreamOrder | CatchmentSummary | StreamNetwork | FlowDistance |
+| --- | --- | --- | --- | --- |
+| `0` | Nonstream | Nonstream (profile status 0) | Nonstream | Continue tracing |
+| `1..0xfffffffd` | Membership | Membership | Membership | Stream stop |
+| `0xfffffffe` | Membership | Unknown (profile status 2) | Unknown, counted unresolved | Unknown, invalid distance |
+| `0xffffffff` | Unknown order | Unknown (profile status 2) | Unknown, counted unresolved | Unknown, invalid distance |
+
+The normal unresolved word from `GPUTerrainFlow.streams` is `0xffffffff`, which every listed consumer recognizes. For an imported mask that uses `0xfffffffe` as unresolved, translate it to StreamOrder's existing unknown word before supplying that port. For host rows, for example:
+
+```ts
+declare const importedStreams: Uint32Array; // host rows before graph upload
+const streamOrderMask = Uint32Array.from(importedStreams, word =>
+  word === 0xfffffffe ? 0xffffffff : word
+);
+```
+
+For an otherwise eligible one-cell terminal with `streams = [0xfffffffe]`, StreamOrder returns order 1 (one member without donors), while CatchmentSummary returns profile status 2. The translated `[0xffffffff]` gives StreamOrder's unknown order `0xffffffff`; no existing code meaning changes. StreamOrder's convergence flag describes computation progress: this unknown order can coexist with `converged = 1`. Receiver cycles instead clear convergence; the fixed-bound Euler-tour route always reports iteration limit 0, including odd cycles that keep changing during ranking.
+
+In CatchmentSummary, basin exclusion (an out-of-range basin ID), nonfinite elevation or zero validity wins over unknown stream membership: an excluded row has `profileStatus = 0`, even with an unknown stream word. An entirely excluded domain reports `invalidCount = cellCount`, `converged = 1` and `iterationLimitReached = 0`. Profile state 2 for unknown membership applies only to an otherwise eligible row.
+
+StreamNetwork cannot certify junctions from unknown donor membership or unknown donor directions. It suppresses reaches starting at or passing through such a junction, counts those stream paths as unresolved and retains separate definite reaches. An unresolved stream word with a known receiver makes that receiver's junction uncertain; an unresolved direction on a possible stream donor makes each adjacent junction uncertain.
 
 All physical quantities use the supplied planar affine coordinate units by default: lengths in coordinate units and areas in squared units, so geographic degrees are not converted to meters. With `cellSizeMode: 'web-mercator'` or `'geographic'` (axis-aligned grids only) areas are square meters at each cell's row, and stream lengths, profile distances and gradients use the ground length of each D8 move at its midpoint row, the same rule as `getD8Distance`. Elevation statistics keep the elevation's units. An optional `validity` view (uint32, nonzero valid) marks `elevation` NaN where zero. A rotated affine is supported. The executed reference is explicitly composed pysheds catchment membership plus independent NumPy reductions, not a claim that one upstream toolbox exposes this exact API. Basin IDs are stably sorted once and converted to contiguous ranges. Statistics and each histogram bin reduce consecutive tiles of at most 256 sorted cells per invocation, so even a single dominant basin spreads over many GPU threads. Each tile emits one partial per basin run; exact fixed-point atomic additions combine the partials, preserving signed cancellation and the existing per-basin units. Histogram lanes run independently; no invocation walks a whole basin or all histogram bins. The per-basin sums (elevation for the mean, ground areas and hypsometry areas under `cellSizeMode`, stream length) are fixed-point integer sums in a unit set by the basin's largest term, so they do not lose accuracy with basin size: a serial float32 sum reported a mean of 2015.58 for a million cells at a constant 2000, and an area 0.6 % off. This removes basin-count times raster-size scanning. Directed profiles use pointer jumping in `ceil(log2(cellCount))` rounds; their edge-count sidecar preserves the exact `maximumSteps` contract, including the terminal inspection step. Cycles remain unresolved. Native scale coverage includes 65,536 cells, 256 basins and all per-cell profiles; each ping-pong profile state uses 16 bytes per cell. Reduction scratch uses 56 bytes per basin plus 12 bytes per basin/bin, in addition to the existing sort/range views. Construction checks uint32 index products, and graph declaration checks each reduction binding and profile state against the device storage-binding limit.
 
 Optional scalar diagnostics live at `output.status`: `converged` is one when no profile has state 2. `iterationLimitReached` is one when a valid profile exhausts `maximumSteps` or remains cyclic after the pointer-jump round budget; a failed/invalid dependency alone does not set it. `invalidCount` counts state 0: cells excluded by basin/validity or without a stream profile. Excluded cells do not prevent convergence; an entirely excluded domain reports convergence and its excluded cell count. These diagnostics summarize profiles; the basin statistics still publish every valid basin member. The existing per-cell `profileStatus` remains available. Ports are caller-owned packed one-row uint32 views, checked for shape, aliasing and graph ownership.
+
+`GPUTerrainCatchmentSummaryOperation` and `CPUTerrainCatchmentSummaryOperation` accept these three independently optional `output.status` names and publish one uint32 row for each requested name. Names must be nonempty, distinct and disjoint from input names and other outputs. The pure CPU result also exposes `converged`, `invalidCount` and `iterationLimitReached` as one-row arrays. Cycles and exhausted path budgets set the limit flag; unknown input alone does not. Both operations use the same output declaration and bind only requested status names.
 
 ## DEM comparison
 
@@ -144,6 +182,9 @@ This keeps private gate ports out of the public class without changing status wo
 
 ### GPUTerrainFlowFractions
 
+Materializes eight fractions and eight edge lengths per cell from elevation, D8 fallback directions
+and routing parameters; unresolved receivers retain NaN fractions. See [inputs, outputs and units](#branching-consumers).
+
 {/* lens:GPUTerrainFlowFractions */}
 
 ::lens{scenario=gpu-terrain.terrain-flow-fractions rung=result}
@@ -151,6 +192,9 @@ This keeps private gate ports out of the public class without changing status wo
 ::lens{scenario=gpu-terrain.terrain-flow-fractions rung=graph}
 
 ### GPUTerrainDepressionHierarchy
+
+Builds a sublevel-set merge tree and stage curves from elevation and explicit outlets; inspect
+capacity overflow before using the hierarchy. See [inputs, outputs and limits](#depression-hierarchy-and-stage-curves).
 
 {/* lens:GPUTerrainDepressionHierarchy */}
 
@@ -160,6 +204,9 @@ This keeps private gate ports out of the public class without changing status wo
 
 ### GPUTerrainCatchmentSummary
 
+Aggregates basin statistics and directed stream profiles, with separate per-cell profile status and
+optional scalar resolution diagnostics. See [inputs, outputs and limits](#basin-summaries-and-profiles).
+
 {/* lens:GPUTerrainCatchmentSummary */}
 
 ::lens{scenario=gpu-terrain.terrain-catchment-summary rung=result}
@@ -167,6 +214,9 @@ This keeps private gate ports out of the public class without changing status wo
 ::lens{scenario=gpu-terrain.terrain-catchment-summary rung=graph}
 
 ### GPUTerrainDEMCoregistration
+
+Fits a median vertical shift on stable cells and reports residual NMAD and volume uncertainty under
+the supplied variance/correlation model. See [inputs, outputs and limits](#dem-comparison).
 
 {/* lens:GPUTerrainDEMCoregistration */}
 
@@ -176,11 +226,30 @@ This keeps private gate ports out of the public class without changing status wo
 
 ### GPUTerrainTiledFlow
 
-execution auto selects resident flow or bounded D8 tile/boundary reconciliation; execution resident
-retains the reference route and execution tiled requires D8. Grid addressing is bounded by
-536,870,911 cells and graph expansion by 32,768 command nodes. Tiled D8 keeps maximum-tile scratch
-plus a coarse boundary forest; caller inputs/outputs remain resident. Host paging and branching
-reconciliation remain open.
+`execution: 'auto'` selects resident flow when the global eight-fraction plane fits the views'
+graph device, otherwise bounded D8 tile/boundary reconciliation. `execution: 'resident'` and all
+branching routing use the resident route; `execution: 'tiled'` requires D8.
+`getExecutionPlan(device)` returns the requested and selected execution, fraction-plane bytes and
+command-node estimate without declaring resources. `selectedExecution` and `estimatedCommandNodeCount`
+describe the views' graph device; `worstCaseCommandNodeCount` retains the conservative cross-device
+bound. Admission and declaration use the same selector. The selected estimate, including optional
+status allowances, must be at most **32,768 command nodes**. Sequence nodes can expand into multiple
+GPU commands, so this bound does not cap the number of dispatches or submitted commands.
+
+Resident routing accepts at most **536,870,911 global cells** (`floor((2^32 - 1) / 8)`), because its
+eight-fraction plane is uint32 indexed. Tiled D8 accepts at most **4,294,967,295 global cells**
+(`2^32 - 1`); each grid axis is at most **2,147,483,646**. A **32768 × 16384** grid has 536,870,912
+cells and belongs on the tiled side: 512 disjoint 1024 × 1024 owned cores have a conservative
+3,072-command-node estimate. This is a host plan, subject to the actual device binding checks.
+
+On tiled D8, each owned tile forest and the combined coarse boundary forest contain at most
+**536,870,911 cells**. Tile index arrays have at most **4,294,967,295 scalar uint32 words**.
+The dominant tile and boundary tour-sum planes each use **32 bytes per forest cell**; these and
+each rectangle/row-band/column-band index binding must fit both `maxStorageBufferBindingSize`
+and `maxBufferSize` on the actual device. Caller views must also satisfy their binding limits.
+These constraints apply together; the global cell ceiling alone does not certify a request.
+Tiled D8 keeps maximum-tile scratch plus a coarse boundary forest; caller inputs/outputs remain
+resident. Host paging and branching reconciliation remain open.
 
 {/* lens:GPUTerrainTiledFlow */}
 

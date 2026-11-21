@@ -58,6 +58,7 @@ export type GPUSphericalConvexIntersectionProps = {
   /** One polygon per paired row, each with 3–32 vertices. */
   firstOffsets: GraphDataView<'uint32'>;
   secondOffsets: GraphDataView<'uint32'>;
+  /** Maximum output vertices per paired polygon row, inclusive range 1–64; fixed row stride. */
   capacity: number;
   /** Angular predicate/deduplication tolerance in radians, default 1e-6. */
   tolerance?: number;
@@ -80,6 +81,8 @@ export type GPUSphericalConvexIntersectionProps = {
 /** Intersection of paired convex spherical polygons contained strictly in an open hemisphere.
  * Uses oriented 3D great-circle planes, so poles and antimeridian need no longitude seam.
  * Empty intersections have zero counts; boundary contacts may contain one or two vertices.
+ * Each input polygon has 3–32 vertices; `capacity` is 1–64 output vertices per paired row.
+ * Buffer vectors require finite `abs(dot(v,v)-1) <= 1e-4` in f32, a squared-length bound.
  */
 export class GPUSphericalConvexIntersection implements GPUCommandNodeProducer {
   readonly id: string;

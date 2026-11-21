@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {runExample} from './spatial-correlogram.example';
 import {
@@ -18,9 +19,9 @@ const BAND_COUNT = 8;
 const MAXIMUM_DISTANCE = 200_000;
 
 /** Runs the rainfall correlogram once and reads the inputs and every band back from the GPU. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-ghcn-stations');
+  const dataset = await loadDataFrameLensData('f-ghcn-stations', options?.datasetResolver);
   const {x, y, prcp} = dataset.columns;
   const positions = new Float32Array(x.length * 2);
   x.forEach((value, index) => {

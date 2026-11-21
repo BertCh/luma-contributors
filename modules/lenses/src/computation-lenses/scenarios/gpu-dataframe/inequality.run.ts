@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {
   GPU_INEQUALITY_DEFAULT_PALMA_BOTTOM_SHARE,
@@ -18,9 +19,9 @@ import {
 const SCENARIO_ID = 'gpu-dataframe.inequality';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
 /** Executes the recorded inequality indices once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-tracts');
+  const dataset = await loadDataFrameLensData('f-chicago-tracts', options?.datasetResolver);
   const {perCapitaIncome, population, communityArea} = dataset.columns;
   const income = Float32Array.from(perCapitaIncome, value => value ?? NaN);
   // Zone ids are zero based, so community area 1 is zone 0.

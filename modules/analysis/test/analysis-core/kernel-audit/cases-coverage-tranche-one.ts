@@ -328,7 +328,7 @@ for (const denominator of ['zone', 'overlap'] as const) {
           mask: context.view('uint32', 16384),
           denominator,
           pairCapacity: tupleCapacity,
-          outputs: {
+          output: {
             targetTotals: context.view('float32', targetCount),
             targetSupportWeights: context.view('float32', targetCount),
             sourceEligibleWeights: context.view('float32', sourceCount),

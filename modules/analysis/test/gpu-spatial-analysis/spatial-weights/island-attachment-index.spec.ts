@@ -10,7 +10,7 @@ import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {describe, expect, it} from 'vitest';
 import {
-  GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT,
+  GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS,
   type GPUIslandAttachmentNearestSearch
 } from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-island-attachment';
 import {
@@ -431,6 +431,6 @@ describe('GPUIslandAttachment grid path equals the scan', () => {
   }, 300_000);
 
   it('the cut-over constant matches the other indexed contributors', () => {
-    expect(GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT).toBe(4096);
+    expect(GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS).toBe(4096);
   });
 });

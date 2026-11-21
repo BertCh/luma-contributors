@@ -344,7 +344,7 @@ graph.add(new GPUHuffTradeAreas({
 }));
 
 parameters.write(getGPUNeighborSearchParameterValues({
-  bounds, radius: ${state.bandwidth}, weightKind: '${state.decay === 'binary' ? 'binary' : state.decay === 'inverse' ? 'inverseDistance' : 'kernel'}'${state.decay === 'inverse' ? `, power: ${state.power}, distanceFloor: 100` : state.decay === 'binary' ? '' : `, kernel: '${state.decay}'`}
+  bounds, searchRadius: ${state.bandwidth}, weightType: '${state.decay === 'binary' ? 'binary' : state.decay === 'inverse' ? 'inverse-distance' : 'kernel'}'${state.decay === 'inverse' ? `, power: ${state.power}, distanceFloor: 100` : state.decay === 'binary' ? '' : `, kernel: '${state.decay}'`}
 }));`,
 
   about: {

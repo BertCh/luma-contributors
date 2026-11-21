@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.minimum-clearance: parksVertices, parksFeatureOf…",
   "description": "Result of gpu-spatial-analysis.minimum-clearance: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks → vertexIds. rows: 102. values read back from the GPU run. input parksVertices: 1431 rows.",
-  "llms": "Result of gpu-spatial-analysis.minimum-clearance: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks → vertexIds\n\n- rows: 102\n- input parksVertices: 1431 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- Coordinate model unknown: drawn as planar x, y.\n- parks: 2 of 102 polygons shown; evenly sampled features and vertices\n- resultParks: 2 of 102 polygons shown; evenly sampled features and vertices\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.minimum-clearance: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks → vertexIds\n\n- rows: 102\n- input parksVertices: 1431 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- Coordinate model unknown: drawn as planar x, y.\n- parks: 2 of 102 polygons shown; evenly sampled features and vertices\n- resultParks: 2 of 102 polygons shown; evenly sampled features and vertices\n- 102 categories; 5 largest coloured\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "102"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:49.629Z",
-    "runId": "run-3f1f7dcf",
+    "date": "2026-11-20T23:50:13.782Z",
+    "runId": "run-c4351457",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-3f1f7dcf",
+    "runId": "run-c4351457",
     "rung": "result",
     "bindings": {},
     "clauses": [],

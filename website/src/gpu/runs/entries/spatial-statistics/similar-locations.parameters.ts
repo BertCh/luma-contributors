@@ -13,7 +13,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 1,
     step: 1,
     default: 0,
-    options: ['zscore', 'rank']
+    options: ['z-score', 'rank']
   },
   {id: 'firstWeight', label: 'weights[0]', min: 0, max: 3, step: 0.1, default: 1},
   {id: 'secondWeight', label: 'weights[1]', min: 0, max: 3, step: 0.1, default: 1},

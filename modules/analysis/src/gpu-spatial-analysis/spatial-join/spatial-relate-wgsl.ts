@@ -20,24 +20,17 @@ const EXTERIOR = '2u';
 /** Emits a loop over every vertex of `feature`, binding `v` and the OGC part class `vc`. */
 function forEachVertex(side: SpatialPredicateSide, feature: string, body: string): string {
   const p = side.prefix;
-  const lineClosed =
-    side.kind === 'lines'
-      ? `let ${p}first = ${p}Vertex(${p}vs);
-    let ${p}last = ${p}Vertex(${p}ve - 1u);
-    let ${p}closed = ${p}first.x == ${p}last.x && ${p}first.y == ${p}last.y;`
-      : '';
   const partClass =
     side.kind === 'points'
       ? INTERIOR
       : side.kind === 'polygons'
         ? BOUNDARY
-        : `select(0u, 1u, !${p}closed && ((v.x == ${p}first.x && v.y == ${p}first.y) || (v.x == ${p}last.x && v.y == ${p}last.y)))`;
+        : `select(0u, 1u, ${p}IsBoundary(v, ${feature}))`;
   return `for (var ${p}r = ${p}RingStart(${feature}); ${p}r < ${p}RingEnd(${feature}); ${p}r++) {
     let ${p}vs = ${p}RingVertexStart(${p}r);
     let ${p}ve = ${p}RingVertexEnd(${p}r);
     if (${p}ve <= ${p}vs || ${p}ve - ${p}vs < ${getMinimumRingVertices(side.kind)}u) { continue; }
     let ${p}n = ${p}ve - ${p}vs;
-    ${lineClosed}
     for (var ${p}k = relateLane; ${p}k < ${p}n; ${p}k += relateStride) {
       let v = ${p}Vertex(${p}vs + ${p}k);
       let vc = ${partClass};
@@ -51,15 +44,44 @@ function forEachVertex(side: SpatialPredicateSide, feature: string, body: string
  * That point belongs to the line boundary (the vertex passes record it), not to the interior,
  * even when the line passes over it again. False for other kinds.
  */
-function endpointCrossing(side: SpatialPredicateSide): string {
+function endpointCrossing(side: SpatialPredicateSide, feature: string): string {
   if (side.kind !== 'lines') {
     return 'false';
   }
-  const p = side.prefix;
-  const endpoint = (vertex: string) => `(onSegment(a, b, ${vertex}) && onSegment(c, d, ${vertex}))`;
-  const first = `${p}Vertex(${p}vs)`;
-  const last = `${p}Vertex(${p}ve - 1u)`;
-  return `(!(${first}.x == ${last}.x && ${first}.y == ${last}.y) && (${endpoint(first)} || ${endpoint(last)}))`;
+  return `${side.prefix}CrossingOnBoundary(a, b, c, d, ${feature})`;
+}
+
+/** A crossing can coincide with an endpoint of another part; use the whole mod-2 boundary. */
+function getCrossingBoundaryWGSL(side: SpatialPredicateSide): string {
+  if (side.kind !== 'lines') return '';
+  const prefix = side.prefix;
+  return `fn ${prefix}IsBoundary(query: vec2f, feature: u32) -> bool {
+  var endpoints = 0u;
+  for (var part = ${prefix}RingStart(feature); part < ${prefix}RingEnd(feature); part++) {
+    let start = ${prefix}RingVertexStart(part);
+    let end = ${prefix}RingVertexEnd(part);
+    if (end <= start || end - start < 2u) { continue; }
+    let first = ${prefix}Vertex(start);
+    let last = ${prefix}Vertex(end - 1u);
+    if (first.x == last.x && first.y == last.y) { continue; }
+    if (query.x == first.x && query.y == first.y) { endpoints++; }
+    if (query.x == last.x && query.y == last.y) { endpoints++; }
+  }
+  return (endpoints & 1u) != 0u;
+}
+fn ${prefix}CrossingOnBoundary(firstStart: vec2f, firstEnd: vec2f, secondStart: vec2f, secondEnd: vec2f, feature: u32) -> bool {
+  for (var part = ${prefix}RingStart(feature); part < ${prefix}RingEnd(feature); part++) {
+    let start = ${prefix}RingVertexStart(part);
+    let end = ${prefix}RingVertexEnd(part);
+    if (end <= start || end - start < 2u) { continue; }
+    let first = ${prefix}Vertex(start);
+    let last = ${prefix}Vertex(end - 1u);
+    if (first.x == last.x && first.y == last.y) { continue; }
+    if (onSegment(firstStart, firstEnd, first) && onSegment(secondStart, secondEnd, first) && ${prefix}IsBoundary(first, feature)) { return true; }
+    if (onSegment(firstStart, firstEnd, last) && onSegment(secondStart, secondEnd, last) && ${prefix}IsBoundary(last, feature)) { return true; }
+  }
+  return false;
+}`;
 }
 
 /**
@@ -274,6 +296,20 @@ function getDirectionWGSL(
       : `raise(${yClass}, ${xClass}, ${dimension}u);`;
   const xEdgeClass = x.kind === 'polygons' ? BOUNDARY : INTERIOR;
   const yEdgeClass = y.kind === 'polygons' ? BOUNDARY : INTERIOR;
+  const probeAreas = (query: string, forward: string): string =>
+    x.kind === 'polygons' && y.kind === 'polygons'
+      ? `{
+    let query = ${query};
+    for (var side = 0u; side < 2u; side++) {
+      let normalSide = select(1i, -1i, side == 1u);
+      let inX = ${x.prefix}ProjectiveLocate(query, a, b, ${forward}, normalSide, ${fx}) == 1u;
+      let inY = ${y.prefix}ProjectiveLocate(query, a, b, ${forward}, normalSide, ${fy}) == 1u;
+      if (inX && inY) { ${raiseXY(INTERIOR, INTERIOR, 2)} }
+      else if (inX) { ${raiseXY(INTERIOR, EXTERIOR, 2)} }
+      else if (inY) { ${raiseXY(EXTERIOR, INTERIOR, 2)} }
+    }
+  }`
+      : '';
   const parts: string[] = [];
 
   parts.push(
@@ -302,15 +338,14 @@ function getDirectionWGSL(
       let o4 = orient(c, d, b);
       if (((o1 > 0.0 && o2 < 0.0) || (o1 < 0.0 && o2 > 0.0)) &&
           ((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0)) &&
-          !(${endpointCrossing(x)} || ${endpointCrossing(y)})) {
+          !(${endpointCrossing(x, fx)} || ${endpointCrossing(y, fy)})) {
         ${raiseXY(xEdgeClass, yEdgeClass, 0)}
       }
       if (o1 == 0.0 && o2 == 0.0) {
-        let ab = b - a;
-        let sc = dot(c - a, ab);
-        let sd = dot(d - a, ab);
-        let low = max(min(sc, sd), 0.0);
-        let high = min(max(sc, sd), dot(ab, ab));
+        // Supplied coordinates order a collinear overlap exactly, even on an oblique edge.
+        let useX = a.x != b.x;
+        let low = max(select(min(a.y, b.y), min(a.x, b.x), useX), select(min(c.y, d.y), min(c.x, d.x), useX));
+        let high = min(select(max(a.y, b.y), max(a.x, b.x), useX), select(max(c.y, d.y), max(c.x, d.x), useX));
         if (high > low) { ${raiseXY(xEdgeClass, yEdgeClass, 1)} }
       }`,
           withSlabIndex
@@ -320,7 +355,26 @@ function getDirectionWGSL(
     );
   }
 
-  if (x.kind !== 'points') {
+  if (x.kind !== 'points' && y.kind !== 'polygons') {
+    // Exterior means outside the UNION of all parts. Part-pair exterior maxima are wrong.
+    // A non-degenerate edge has exterior dimension 1 exactly when interval-union coverage
+    // fails. SegmentWithin merges supplied endpoint coordinates without projected fractions.
+    parts.push(
+      forEachEdge(
+        x,
+        fx,
+        'a',
+        'b',
+        `
+      if (a.x == b.x && a.y == b.y) { continue; }
+      ${y.kind === 'points' ? raiseXY(xEdgeClass, EXTERIOR, 1) : `if ((${y.prefix}SegmentWithin(a, b, ${fy}) & 1u) == 0u) { ${raiseXY(xEdgeClass, EXTERIOR, 1)} }`}
+    `,
+        true
+      )
+    );
+  }
+
+  if (x.kind !== 'points' && y.kind === 'polygons') {
     const bothPolygons = x.kind === 'polygons' && y.kind === 'polygons';
     const areaCases = bothPolygons
       ? `if (code == 2u) {
@@ -329,15 +383,13 @@ function getDirectionWGSL(
       }
       if (code == 0u) { ${raiseXY(INTERIOR, EXTERIOR, 2)} }
       ${xIsLeft ? 'if (code == 1u) {' : 'if (false) {'}
-        // Shared boundary piece: probe both sides along the normal, closer than any other edge.
-        // Every shared segment lies on an edge of the left polygon, so the left pass sees all of them.
-        let middle = a + ab * (0.5 * (t + next));
-        let normal = vec2f(-ab.y, ab.x) / length(ab);
-        let reach = relateProbeReach(middle, a, b, l, r);
+        // Symbolic side probes on an exact rational midpoint. No finite offset can be
+        // guaranteed representable for a polygon only one ulp wide after translation.
+        let query = spatialParameterQuery(a, b, t, next);
         for (var side = 0u; side < 2u; side++) {
-          let probe = middle + normal * select(reach, -reach, side == 1u);
-          let inX = ${x.prefix}RelateLocate(probe, ${fx}) == 1u;
-          let inY = ${y.prefix}RelateLocate(probe, ${fy}) == 1u;
+          let normalSide = select(1i, -1i, side == 1u);
+          let inX = ${x.prefix}ProjectiveLocate(query, a, b, true, normalSide, ${fx}) == 1u;
+          let inY = ${y.prefix}ProjectiveLocate(query, a, b, true, normalSide, ${fy}) == 1u;
           if (inX && inY) { ${raiseXY(INTERIOR, INTERIOR, 2)} }
           else if (inX) { ${raiseXY(INTERIOR, EXTERIOR, 2)} }
           else if (inY) { ${raiseXY(EXTERIOR, INTERIOR, 2)} }
@@ -352,6 +404,29 @@ function getDirectionWGSL(
         'b',
         `let ab = b - a;
     if (dot(ab, ab) == 0.0) { continue; }
+    if (${y.prefix}NeedsExactPieces(a, b, ${fy})) {
+      let cells = ${y.prefix}ExactSegmentCells(a, b, ${fy});
+      if ((cells & 1u) != 0u) { ${raiseXY(xEdgeClass, EXTERIOR, 1)} }
+      if ((cells & 2u) != 0u) { ${raiseXY(xEdgeClass, INTERIOR, 1)} }
+      if ((cells & 4u) != 0u) { ${raiseXY(xEdgeClass, BOUNDARY, 1)} }
+      ${probeAreas('spatialEndpointQuery(a)', 'true')}
+      ${
+        bothPolygons
+          ? forEachEdge(
+              y,
+              fy,
+              'c',
+              'd',
+              `
+        if (orient(c, d, a) * orient(c, d, b) >= 0.0 || !segmentsIntersect(a, b, c, d)) { continue; }
+        ${probeAreas('spatialCrossingQuery(a, b, c, d)', 'false')}
+        ${probeAreas('spatialCrossingQuery(a, b, c, d)', 'true')}
+      `
+            )
+          : ''
+      }
+      continue;
+    }
     var t = 0.0;
     let breakCount = ${y.prefix}RelateCollectBreaks(a, b, ${fy});
     var breakCursor = 0u;
@@ -529,7 +604,8 @@ fn ${p}SlabLocate(q: vec2f, f: u32) -> u32 {
  * orientation sign is exact (shared `orientSign`), so the uncertain bit is set only for input with
  * no sign (non-finite coordinates, product exponents spanning more than 200 bits). A piece is
  * located from an exactly located endpoint and the exact crossings between it and the piece, not
- * from its rounded midpoint; only the break parameters that order crossings along an edge are f32.
+ * from its rounded midpoint. Colliding/adjacent f32 breaks use exact projective ordering and
+ * symbolic locations; shared-boundary area cells use symbolic normal probes.
  *
  * @internal
  */
@@ -538,42 +614,13 @@ export function getSpatialRelateWGSL(
   right: SpatialPredicateSide,
   withSlabIndex = false
 ): string {
-  const bothPolygons = left.kind === 'polygons' && right.kind === 'polygons';
-  const probeReach = bothPolygons
-    ? `
-// Squared distance from q to the bounding box of segment c-d, a lower bound of its distance.
-fn boxDistanceSq(q: vec2f, c: vec2f, d: vec2f) -> f32 {
-  let gap = max(max(min(c, d) - q, q - max(c, d)), vec2f(0.0));
-  return dot(gap, gap);
-}
-// Distance to probe from a shared piece: half the distance to the nearest non-collinear edge.
-fn relateProbeReach(middle: vec2f, a: vec2f, b: vec2f, l: u32, r: u32) -> f32 {
-  // The result is capped at length(b - a), so edges farther than twice that cannot change it.
-  var best = 4.0 * dot(b - a, b - a);
-  ${forEachEdge(
-    left,
-    'l',
-    'c',
-    'd',
-    `if (boxDistanceSq(middle, c, d) >= best) { continue; }
-    if (!(orient(a, b, c) == 0.0 && orient(a, b, d) == 0.0)) { best = min(best, pointSegmentDistanceSq(middle, c, d)); }`
-  )}
-  ${forEachEdge(
-    right,
-    'r',
-    'c',
-    'd',
-    `if (boxDistanceSq(middle, c, d) >= best) { continue; }
-    if (!(orient(a, b, c) == 0.0 && orient(a, b, d) == 0.0)) { best = min(best, pointSegmentDistanceSq(middle, c, d)); }`
-  )}
-  return min(0.5 * sqrt(best), length(b - a));
-}`
-    : '';
   return `${getSpatialPredicateCommonWGSL(true)}
 const RELATE_BREAK_CAPACITY: u32 = 24u;
 const RELATE_BREAK_OVERFLOW: u32 = 0xffffffffu;
 ${getSideWGSL(left)}
 ${getSideWGSL(right)}
+${getCrossingBoundaryWGSL(left)}
+${getCrossingBoundaryWGSL(right)}
 ${getPieceHelpersWGSL(left, withSlabIndex)}
 ${getPieceHelpersWGSL(right, withSlabIndex)}
 var<private> relateMatrix: u32 = 0u;
@@ -588,7 +635,7 @@ fn raise(a: u32, b: u32, dimension: u32) {
 // Maps an OGC point location (0 exterior, 1 interior, 2 boundary) to a matrix part (I=0, B=1, E=2).
 fn locationClass(location: u32) -> u32 {
   return select(select(1u, 0u, location == 1u), 2u, location == 0u);
-}${probeReach}
+}
 ${
   withSlabIndex
     ? [left, right]

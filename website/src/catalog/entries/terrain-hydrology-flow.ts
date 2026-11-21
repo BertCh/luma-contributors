@@ -357,7 +357,7 @@ device.submit();`,
     importPath: TERRAIN,
     title: 'Wetness and stream power indices',
     summary:
-      'Derives slope, specific catchment area, the topographic wetness index and stream power from accumulation.',
+      'Derives the descent tangent, specific catchment area, the topographic wetness index and stream power from accumulation.',
     explanation:
       'Finds where soil stays wet or where flow can erode. It combines upslope area with local slope: wetness is `ln(a / tan(beta))`, stream power is `a * tan(beta)`.',
     dataTypes: {input: ['terrain', 'raster'], output: ['raster']},
@@ -369,7 +369,7 @@ device.submit();`,
         name: 'elevation',
         type: 'GPURasterBand',
         required: true,
-        description: 'Routing surface the slope is measured on.'
+        description: 'Routing surface the descent tangent is measured on.'
       },
       {
         name: 'accumulation',
@@ -393,9 +393,10 @@ device.submit();`,
     ],
     outputs: [
       {
-        name: 'slope',
+        name: 'descentTangent',
         type: 'GraphDataView<"float32">',
-        description: 'tan(beta) after the minimumSlope clamp.'
+        description:
+          'Tangent of the steepest D8 descent (rise over run, dimensionless), clamped to minimumSlope.'
       },
       {
         name: 'specificCatchmentArea',
@@ -1079,9 +1080,20 @@ device.submit();`,
         description: 'Inundated area and volume per node and stage.'
       },
       {
-        name: 'status',
+        name: 'status.count',
         type: 'GraphDataView<"uint32">',
-        description: 'Stored count, required count and overflow flag.'
+        description: 'One-row stored count bounding the readable node prefix when overflow is zero.'
+      },
+      {
+        name: 'status.requiredCount',
+        type: 'GraphDataView<"uint32">',
+        description: 'One-row exact node count the merge tree needs.'
+      },
+      {
+        name: 'status.overflow',
+        type: 'GraphDataView<"uint32">',
+        description:
+          'One-row flag set to 1 when capacity is too small, invalidating the entire hierarchy.'
       }
     ],
     example: `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -1090,10 +1102,11 @@ import {GPUTerrainDepressionHierarchy} from '@luma-contributors/analysis/gpu-ter
 const graph = new GPUCommandGraph(device, {id: 'depressions'});
 
 // outlets: boundary or ocean cells; stages: e.g. 10 m steps above the minimum
+// count, requiredCount and overflow: separate one-row uint32 views
 graph.add(new GPUTerrainDepressionHierarchy({
   grid, elevation, outlets, stages,
   nodeCapacity: grid.width * grid.height,
-  output: {nodes, levels, cellNodes, curves, status}
+  output: {nodes, levels, cellNodes, curves, status: {count, requiredCount, overflow}}
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
@@ -1900,7 +1913,7 @@ graph.add(new GPUStreamlines({
   output: {lines, lineOffsets, positions, positionCount}
 }));
 const compiled = await graph.compileAsync();
-// then write both packers with fieldExtent, gridExtent and stepLength, and encode
+// then write both packers with fieldPlacement, gridPlacement and stepLength, and encode
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {kind: 'flows', seed: 322, caption: 'Evenly spaced lines follow the vector field.'},
@@ -1976,7 +1989,7 @@ graph.add(new GPULineIntegralConvolution({
   output: {values, speeds}
 }));
 const compiled = await graph.compileAsync();
-// write fieldExtent and outputExtent through the two packers; bump phase per frame
+// write fieldPlacement and outputPlacement through the two packers; bump phase per frame
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {
@@ -2055,7 +2068,7 @@ graph.add(new GPUParticleAdvection({
   output: {previousPositions, speeds}
 }));
 const compiled = await graph.compileAsync();
-// each frame: write {fieldExtent, timeStep, dropRate} and {seed, frame, maximumAge}, then encode
+// each frame: write {fieldPlacement, timeStep, dropRate} and {seed, frame, maximumAge}, then encode
 compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();`,
     preview: {

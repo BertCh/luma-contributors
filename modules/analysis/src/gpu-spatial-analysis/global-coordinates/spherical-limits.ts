@@ -37,13 +37,14 @@ export const GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY = 64;
 
 /**
  * Largest total vertex count of the two operands of `GPUSphericalArcOverlay`. The arrangement
- * runs in one invocation with O(n^3) work and private scratch arrays sized for this many vertices.
+ * runs as a bounded serial reference arrangement. Segment storage is a graph transient with
+ * max(1,L+R+4LR) seven-float records for L left and R right vertices, at most 16512 records.
  */
 export const GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES = 128;
 
 /**
- * Largest output vertex capacity of `GPUSphericalArcOverlay`: the private segment scratch holds
- * seven floats per output vertex and is allocated per kernel.
+ * Largest assembled output vertex capacity of `GPUSphericalArcOverlay`: bounds serial ring
+ * assembly and output vertex clearing. Segment scratch depends on input vertices, not this cap.
  */
 export const GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES = 1024;
 

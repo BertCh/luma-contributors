@@ -11,7 +11,15 @@ import {requireTestDevice} from '../../utils/require-test-device';
 import {expectRegressionRowsClose} from './regression-operation-test-utils';
 import fixture from './probit-regression-operation-fixtures.json';
 
-for (const scene of ['ordinary', 'excluded', 'budget', 'separated', 'zeroWeights'] as const) {
+for (const scene of [
+  'ordinary',
+  'excluded',
+  'budget',
+  'separated',
+  'zeroWeights',
+  'negativeWeights',
+  'invalidOrigin'
+] as const) {
   it(`probit operations agree on every output: ${scene}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
@@ -42,14 +50,21 @@ for (const scene of ['ordinary', 'excluded', 'budget', 'separated', 'zeroWeights
               format: 'uint32',
               values: scene === 'excluded' ? new Uint32Array(96) : Uint32Array.from(fixture.mask)
             },
-            offsets: {format: 'uint32', values: Uint32Array.from(fixture.offsets)},
+            offsets: {
+              format: 'uint32',
+              values: Uint32Array.from(fixture.offsets, (value, index) =>
+                scene === 'invalidOrigin' && index === 0 ? 1 : value
+              )
+            },
             neighbors: {format: 'uint32', values: Uint32Array.from(fixture.neighbors)},
             weights: {
               format: 'float32',
               values:
                 scene === 'zeroWeights'
                   ? new Float32Array(fixture.weights.length)
-                  : Float32Array.from(fixture.weights)
+                  : Float32Array.from(fixture.weights, value =>
+                      scene === 'negativeWeights' ? -value : value
+                    )
             }
           },
           operations: [
@@ -77,6 +92,33 @@ for (const scene of ['ordinary', 'excluded', 'budget', 'separated', 'zeroWeights
           outputs: outputNames
         })
       );
+    }
+    if (scene === 'ordinary') {
+      // Independent SciPy optimization and dense matrix formulas, not CPU/GPU agreement.
+      for (const name of [
+        'coefficients',
+        'standardErrors',
+        'fitted',
+        'marginalEffects',
+        'tests'
+      ] as const) {
+        expectRegressionRowsClose(
+          results[0][name],
+          fixture.expected[name].map(value => (value === null ? NaN : value)),
+          5e-4
+        );
+      }
+      expectRegressionRowsClose(
+        results[0]['summary'].subarray(0, 3),
+        [93, fixture.expected.logLikelihood, -2 * fixture.expected.logLikelihood],
+        5e-4
+      );
+      expect(results[0]['status'][0]).toBe(0);
+      expect(results[0]['diagnosticStatus'][0]).toBe(0);
+    }
+    if (scene === 'negativeWeights' || scene === 'invalidOrigin') {
+      expect(results[0]['diagnosticStatus'][0]).toBe(2);
+      expect(results[0]['tests'].every(Number.isNaN)).toBe(true);
     }
     for (const name of ['status', 'diagnosticStatus'])
       expect(Array.from(results[0][name])).toEqual(Array.from(results[1][name]));

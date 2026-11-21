@@ -20,6 +20,8 @@ import {
   type RasterTimeSeriesChunkPlan
 } from '../raster-time-series/raster-time-series-chunks-b';
 import {
+  validateOption,
+  validateGraphPorts,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -103,8 +105,30 @@ export class GPURasterSeasonalBreak<Rows extends RasterTimeSeriesScalarView = Gr
   readonly estimatedCommandNodeCount: number;
   private readonly ticksPerYear: number;
   constructor(props: GPURasterSeasonalBreakProps<Rows> & {values: Rows}) {
+    validateGraphPorts(props.id ?? 'raster-seasonal-break', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      'dateAxis.acquisitionTimes': {
+        required: Boolean(props.dateAxis),
+        viewType: 'data',
+        formats: ['uint32x2']
+      },
+      'output.coefficients': {required: true, viewType: 'either', formats: ['float32']},
+      'output.components': {required: true, viewType: 'either', formats: ['float32']},
+      'output.breakIndex': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.improvement': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.diagnostics': {required: false, viewType: 'either', formats: ['float32']}
+    });
     this.props = props;
     this.id = props.id ?? 'raster-seasonal-break';
+    validateOption(this.id, 'seasonality', props.seasonality ?? 'harmonic', ['harmonic', 'dummy']);
+    validateOption(this.id, 'fitMethod', props.fitMethod ?? 'joint', ['joint', 'iterative']);
+    validateOption(this.id, 'missingPolicy', props.missingPolicy ?? 'omit', [
+      'omit',
+      'reject',
+      'interpolate'
+    ]);
     this.ticksPerYear = props.dateAxis
       ? resolveGPURasterIrregularDateAxis(this.id, props.dateAxis, props.sliceCount)
       : 0;

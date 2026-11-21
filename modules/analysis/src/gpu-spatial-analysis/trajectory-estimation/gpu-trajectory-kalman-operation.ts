@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUTrajectoryKalman, type GPUTrajectoryKalmanProps} from './gpu-trajectory-kalman';
 
 /** Graph-value names replacing Kalman views. Output lengths are explicit observation counts. */
@@ -33,6 +34,13 @@ export type TrajectoryKalmanOperationProps = Omit<
  */
 export class GPUTrajectoryKalmanOperation extends GPUContributorOperation {
   constructor(props: TrajectoryKalmanOperationProps) {
+    validateRequirement(
+      props.id ?? 'trajectory-kalman',
+      props.covarianceMode === undefined ||
+        props.covarianceMode === 'isotropic' ||
+        props.covarianceMode === 'full',
+      `covarianceMode must be isotropic or full; received ${props.covarianceMode}`
+    );
     const covarianceLength = props.rowCount * (props.covarianceMode === 'full' ? 4 : 1);
     super({
       id: props.id ?? 'trajectory-kalman',

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {captureUrbanLandscapeDestinations} from '../landscape-ecology/urban-landscape-destinations';
 import {
   createTransientView,
   GPUReduction,
@@ -16,6 +18,8 @@ import {
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
+import {getPackedUint32Values} from '../../analysis-core/kernels/packed-readback';
+import type {GPUSpatialWeightsRequirementObservation} from '../spatial-weights/spatial-weights';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -72,7 +76,7 @@ export function getGPUVisibilityGraphCSRParameterValues(values: {
   return new Float32Array([values.maximumDistance, values.tolerance ?? 1e-6]);
 }
 
-export type GPUVisibilityGraphCSRStatus = {
+export type GPUVisibilityGraphAdjacencyCSRStatus = {
   /** Directed CSR slots, or zero when the graph cannot be published symmetrically. */
   count: GraphDataView<'uint32'>;
   /** Directed slot requirement, saturated at uint32 maximum. Unknown on candidateOverflow (0xffffffff). */
@@ -83,7 +87,7 @@ export type GPUVisibilityGraphCSRStatus = {
   invalidCount: GraphDataView<'uint32'>;
 };
 
-export type GPUVisibilityGraphCSROutput = {
+export type GPUVisibilityGraphAdjacencyCSROutput = {
   offsets: GraphDataView<'uint32'>;
   neighbors: GraphDataView<'uint32'>;
   /** Unit hop costs; unused capacity slots have NaN weights and 0xffffffff neighbors. */
@@ -92,10 +96,10 @@ export type GPUVisibilityGraphCSROutput = {
   /** Candidate rows examined by the count query, at most maximumGridVisits. */
   gridVisits: GraphDataView<'uint32'>;
   viewpointClassifications: GraphDataView<'uint32'>;
-  status: GPUVisibilityGraphCSRStatus;
+  status: GPUVisibilityGraphAdjacencyCSRStatus;
 };
 
-export type GPUVisibilityGraphCSRProps = {
+export type GPUVisibilityGraphAdjacencyCSRProps = {
   id?: string;
   mode: 'csr';
   /** Single packed planar views. Input contents and optional parameters may change each execution. */
@@ -113,17 +117,70 @@ export type GPUVisibilityGraphCSRProps = {
   /** Dispatch partition only, rounded up to a multiple of 64 for aligned runtime parameter views. No shader specialization. */
   queryChunkSize?: number;
   region?: UrbanFreeSpaceRegion;
-  output?: Partial<Omit<GPUVisibilityGraphCSROutput, 'status'>> & {
-    status?: Partial<GPUVisibilityGraphCSRStatus>;
+  output?: Partial<Omit<GPUVisibilityGraphAdjacencyCSROutput, 'status'>> & {
+    status?: Partial<GPUVisibilityGraphAdjacencyCSRStatus>;
   };
 };
+
+/**
+ * Decode host-packed scalar reads in [count, requiredCount, overflow, candidateOverflow,
+ * invalidCount] order. These five ports remain separate GPU views.
+ *
+ * Retry in two steps: first increase maximumGridVisits until candidateOverflow clears; only
+ * then use an exact directed-slot requirement to size edgeCapacity. The producer's
+ * 0xffffffff sentinel with candidateOverflow means unknown, never an allocation request.
+ */
+export function decodeGPUVisibilityGraphAdjacencyCSRStatus(
+  values: Uint32Array | Uint8Array | ArrayBuffer
+) {
+  const words = getPackedUint32Values(values, 5);
+  const [count, requiredCount, overflow, candidateOverflow, invalidCount] = words;
+  const requirement = (
+    candidateOverflow !== 0
+      ? {kind: 'unknown' as const}
+      : requiredCount === 0xffffffff
+        ? {kind: 'saturated' as const, value: requiredCount}
+        : {kind: 'exact' as const, value: requiredCount}
+  ) satisfies GPUSpatialWeightsRequirementObservation;
+  return {count, requiredCount, overflow, candidateOverflow, invalidCount, requirement};
+}
 
 /** Sparse symmetric adjacency and degree only. For sampled centrality use addVisibilityGraphRecipe from @luma-contributors/analysis/gpu-network. @internal */
 export function prepareVisibilityGraphCSRRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPUVisibilityGraphCSRProps
+  props: GPUVisibilityGraphAdjacencyCSRProps
 ) {
+  const hasRemovedOutputs = 'outputs' in props;
+  props = snapshotConstructionFields(props, [
+    'id',
+    'mode',
+    'positions',
+    'segments',
+    'spatialContext',
+    'maximumDistance',
+    'tolerance',
+    'parameters',
+    'edgeCapacity',
+    'maximumGridVisits',
+    'queryChunkSize',
+    'region',
+    'output'
+  ]);
+
   const id = props.id ?? 'visibility-graph';
+  validateRequirement(id, !hasRemovedOutputs, 'outputs was removed; use output');
+  props = {
+    ...props,
+    output: captureUrbanLandscapeDestinations(id, {output: props.output}, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'degree',
+      'gridVisits',
+      'viewpointClassifications',
+      'status'
+    ])
+  };
   const count = props.positions.length;
   validateCapacity(id, 'positions.length', count, 1, VISIBILITY_GRAPH_CSR_MAXIMUM_POINT_COUNT);
   const tolerance = props.tolerance ?? 1e-6;
@@ -272,9 +329,9 @@ export function prepareVisibilityGraphCSRRecipe<Parameters>(
         count,
         output?.viewpointClassifications
       );
-      const scalar = (name: keyof GPUVisibilityGraphCSRStatus) =>
+      const scalar = (name: keyof GPUVisibilityGraphAdjacencyCSRStatus) =>
         getView(name, 'uint32', 1, output?.status?.[name]);
-      const status: GPUVisibilityGraphCSRStatus = {
+      const status: GPUVisibilityGraphAdjacencyCSRStatus = {
         count: scalar('count'),
         requiredCount: scalar('requiredCount'),
         overflow: scalar('overflow'),
@@ -473,11 +530,24 @@ records[recordsOffset+3u*index]=counted.x;records[recordsOffset+3u*index+1u]=cou
               type: 'u32',
               access: 'read'
             },
-            {name: 'invalidCount', view: status.invalidCount, type: 'u32', access: 'read'},
+            // Invalid viewpoints (classified, non-finite or a parameter mismatch) have NaN prepared
+            // positions, so the count and scatter passes give them empty rows and no other row
+            // lists them, as the dense reference marks only their adjacency rows (URB-103). Only a
+            // composition's own invalid count (invalid pivots) withholds the whole graph.
+            ...(additionalInvalidCount
+              ? [
+                  {
+                    name: 'additionalInvalidCount',
+                    view: additionalInvalidCount,
+                    type: 'u32',
+                    access: 'read'
+                  } as const
+                ]
+              : []),
             {name: 'offsets', view: offsets, type: 'u32', access: 'read_write'},
             {name: 'queryState', view: queryState, type: 'u32', access: 'read_write'}
           ],
-          body: `let usable=candidateOverflow[candidateOverflowOffset]==0u&&invalidCount[invalidCountOffset]==0u&&total[totalOffset]<=${props.edgeCapacity}u;
+          body: `let usable=candidateOverflow[candidateOverflowOffset]==0u${additionalInvalidCount ? '&&additionalInvalidCount[additionalInvalidCountOffset]==0u' : ''}&&total[totalOffset]<=${props.edgeCapacity}u;
 var row=total[totalOffset];if(index<${count}u){row=scanOffsets[scanOffsetsOffset+index];}
 offsets[offsetsOffset+index]=select(0u,row,usable);
 if(index<${count}u){let chunk=index/${queryChunkSize}u;let localRow=index%${queryChunkSize}u;queryState[queryStateOffset+chunk*${queryChunkStride}u+4u+localRow]=row;}
@@ -510,6 +580,7 @@ if(index<${queryChunkCount}u){queryState[queryStateOffset+index*${queryChunkStri
           ],
           body: `if(queryState[queryStateOffset+1u]==0u){return;}
 radiusValue=bitcast<f32>(queryState[queryStateOffset]);let center=readPoint(index);var written=0u;
+if(!isFiniteValue(center.x)||!isFiniteValue(center.y)){return;}
 ${getUrbanPointGridRadiusWalk(grid, 'center', 'radiusValue', 'other', `if(isVisible(index,other)){neighbors[neighborsOffset+queryState[queryStateOffset+4u+localIndex]+written]=other;written++;}`)}`
         })
       );
@@ -581,7 +652,7 @@ overflow[overflowOffset]=u32(!candidates&&total[totalOffset]>${props.edgeCapacit
 /** Declares spatial adjacency and degree; centrality is composed by the gpu-network entry. @internal */
 export function addVisibilityGraphCSRRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPUVisibilityGraphCSRProps
+  props: GPUVisibilityGraphAdjacencyCSRProps
 ) {
   return prepareVisibilityGraphCSRRecipe(graph, props).addNodes();
 }

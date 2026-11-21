@@ -1439,57 +1439,45 @@ async function createClipView(env: ViewEnvironment): Promise<View> {
       vertexCapacity,
       pathCapacity
     );
-    const pathValues = lines ? resources.createBuffer('clip-path-values', pathCapacity * 4) : null;
     const graph = new GPUCommandGraph<void>(device, {id: `clip-${geometry}`});
     const imp = createGraphImporter(graph);
-    const outputViews = importPathOutput(graph, output, {
-      sourceLineIndices: lines
-    });
+    const {positions, lineOffsets, status} = importPathOutput(graph, output);
+    const clipOutput = {positions, lineOffsets, status};
     const clipPositions = imp(
       'positions',
       lines ? streetPositions : areaPositions,
       'float32x2',
       vertexCount
     );
-    const clipGeometry = lines
-      ? {
-          geometryType: 'lines' as const,
+    const clipProps = {
+      spatialContext: city.projection.spatialContext,
+      id: 'clip',
+      parameters: parameters.importToGraph(graph)
+    };
+    let pathValues: Buffer | null = null;
+    if (lines) {
+      const sourceLineIndices = imp(
+        'out-source-paths',
+        output.sourceLineIndices,
+        'uint32',
+        pathCapacity
+      );
+      graph.add(
+        new GPURectangleClip({
+          ...clipProps,
+          geometryType: 'lines',
           positions: clipPositions,
-          lineOffsets: imp('offsets', streetOffsets, 'uint32', pathCount + 1)
-        }
-      : {
-          geometryType: 'polygons' as const,
-          positions: clipPositions,
-          featureOffsets: imp(
-            'feature-offsets',
-            areaFeatureOffsets,
-            'uint32',
-            city.areas.featureCount + 1
-          ),
-          polygonOffsets: imp(
-            'polygon-offsets',
-            areaPolygonOffsets,
-            'uint32',
-            city.areas.partCount + 1
-          ),
-          ringOffsets: imp('offsets', areaOffsets, 'uint32', pathCount + 1)
-        };
-    graph.add(
-      new GPURectangleClip({
-        spatialContext: city.projection.spatialContext,
-        id: 'clip',
-        ...clipGeometry,
-        parameters: parameters.importToGraph(graph),
-        output: outputViews
-      })
-    );
-    if (lines && pathValues) {
+          lineOffsets: imp('offsets', streetOffsets, 'uint32', pathCount + 1),
+          output: {...clipOutput, sourceLineIndices}
+        })
+      );
+      pathValues = resources.createBuffer('clip-path-values', pathCapacity * 4);
       // Color each output piece by the class of the street it was cut from.
       addKernelPass(graph, {
         id: 'source-classes',
         invocationCount: pathCapacity,
         bindings: [
-          {name: 'sources', view: outputViews.sourceLineIndices!, type: 'u32', access: 'read'},
+          {name: 'sources', view: sourceLineIndices, type: 'u32', access: 'read'},
           {
             name: 'classes',
             view: imp('classes', streetClasses, 'float32', pathCount),
@@ -1513,6 +1501,28 @@ async function createClipView(env: ViewEnvironment): Promise<View> {
   }
   values[valuesOffset + index] = value;`
       });
+    } else {
+      graph.add(
+        new GPURectangleClip({
+          ...clipProps,
+          geometryType: 'polygons',
+          positions: clipPositions,
+          featureOffsets: imp(
+            'feature-offsets',
+            areaFeatureOffsets,
+            'uint32',
+            city.areas.featureCount + 1
+          ),
+          polygonOffsets: imp(
+            'polygon-offsets',
+            areaPolygonOffsets,
+            'uint32',
+            city.areas.partCount + 1
+          ),
+          ringOffsets: imp('offsets', areaOffsets, 'uint32', pathCount + 1),
+          output: clipOutput
+        })
+      );
     }
     const reader = new SummaryReader(
       resources,

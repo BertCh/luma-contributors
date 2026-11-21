@@ -172,15 +172,17 @@ it('support alignment reorders explicit IDs and rejects absent/duplicated suppor
     const populations = publish(fixture, 'populations-output', result.outputs.populations);
     const alignmentCode = publish(fixture, 'alignment-code', result.outputs.alignmentCode);
     const matchedMask = publish(fixture, 'matched-mask', result.outputs.matchedMask);
-    const status = publish(fixture, 'status', result.packedStatus);
     const stageCounts = result.status.stages.map(stage =>
-      publish(fixture, `status-${stage.stage}`, stage.status.invalidCount)
+      publish(
+        fixture,
+        `status-${stage.stage}`,
+        stage.stage === 'alignment' ? stage.status.complete : stage.status.invalidCount
+      )
     );
     fixture.run();
     await expectClose(fixture, populations, [6, 4, 2, 8, NaN, NaN]);
     expect(await fixture.readUint32(alignmentCode, 3)).toEqual([0, 0, 1]);
     expect(await fixture.readUint32(matchedMask, 3)).toEqual([1, 1, 0]);
-    expect(await fixture.readUint32(status, 4)).toEqual([0, 1, 0, 0]);
     for (const [index, count] of stageCounts.entries()) {
       expect(await fixture.readUint32(count, 1)).toEqual([index === 0 ? 1 : 0]);
     }

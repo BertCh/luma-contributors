@@ -34,13 +34,13 @@ export const POINT_NEIGHBOR_GRID_UNIFICATION_AUDIT_CASES: KernelAuditCase[] = (
           (timeBucketCount): KernelAuditCase => ({
             exportName: 'GPUNeighborSearch',
             name: `times ${mode} ${spatialContext ? 'great-circle' : 'planar'} ${cross ? 'cross' : 'self'} join buckets ${timeBucketCount}`,
-            build: ({graph, view}) => {
+            build: ({graph, view, construct}) => {
               const queryRows = cross ? QUERY_ROWS : ROWS;
               const slots = mode === 'knn' ? queryRows * GPU_NEIGHBOR_SEARCH_MAXIMUM_K : 4096;
               graph.add(
-                new GPUNeighborSearch({
+                construct(GPUNeighborSearch, {
                   mode,
-                  k: mode === 'knn' ? GPU_NEIGHBOR_SEARCH_MAXIMUM_K : undefined,
+                  neighborCount: mode === 'knn' ? GPU_NEIGHBOR_SEARCH_MAXIMUM_K : undefined,
                   spatialContext,
                   positions: view('float32x2', ROWS),
                   times: view('float32', ROWS),

@@ -44,7 +44,7 @@ const scenario: NetworkElementScenario = {
   choices: [
     {
       stage: 'impedance',
-      name: 'angleCost',
+      name: 'turnCostPerRadian',
       value: ANGLE_COST,
       alternatives: [0, 5],
       sweepable: true,
@@ -77,7 +77,7 @@ const scenario: NetworkElementScenario = {
     const parameters = context.upload(
       'parameters',
       getGPUNetworkLineGraphParameterValues({
-        angleCost: ANGLE_COST,
+        turnCostPerRadian: ANGLE_COST,
         leftTurnCost: LEFT_TURN_COST
       }),
       'float32'

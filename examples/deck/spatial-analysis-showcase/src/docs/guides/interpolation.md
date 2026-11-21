@@ -47,7 +47,7 @@ Options that matter:
 - **Denominator** (`'zone'` or `'overlap'`, set per kind): whether mass that falls outside the other system is lost (tobler) or conserved over the shared extent. The library default is `'zone'` for extensive variables and `'overlap'` for intensive ones, so a rate or mean is never diluted where a target is only partly covered. Per-source diagnostics report how much of each source reached the targets.
 - **Target grid**: `GPUGridGenerator` makes hexagons, squares or triangles; the cell width and offset are per-frame parameters. Shift the grid and the numbers change though the data did not: the modifiable areal unit problem.
 
-`GPUPycnophylactic` is the other route: instead of zones it builds a smooth density surface that preserves every source total (Tobler 1979). The maximum number of iterations and the smoothing kernel are compile-time.
+`GPUPycnophylacticInterpolation` is the other route: instead of zones it builds a smooth density surface that preserves every source total (Tobler 1979). The maximum number of iterations and the smoothing kernel are compile-time.
 
 Accuracy is bounded by the raster. Cell centres decide membership, so a boundary is accurate to about one cell, and slivers smaller than a cell can be missed. Choose a raster whose cells are small against the smallest zone of either system, and read the Resolution readout in the story.
 
@@ -66,7 +66,7 @@ A dot is not a person's location: read the mixture and the density, not a single
 | A raster | Smoother, peaks, roughness | `GPUFocalStatistics` |
 | Counts per zone | The same counts in other zones | `addChangeOfSupportRecipe` (extensive) |
 | Rates or means per zone | The same in other zones | Transfer numerator and denominator, or the intensive rule |
-| Counts per zone | A smooth density surface that keeps the totals | `GPUPycnophylactic` |
+| Counts per zone | A smooth density surface that keeps the totals | `GPUPycnophylacticInterpolation` |
 | Counts by category per zone | A picture of density and mix | `GPUDotDensity` |
 | Polygons | Random points in them | `GPURandomPointsInPolygon` |
 

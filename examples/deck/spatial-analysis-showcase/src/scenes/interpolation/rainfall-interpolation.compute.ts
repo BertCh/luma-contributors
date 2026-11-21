@@ -682,7 +682,7 @@ export async function createRainfallInterpolation(
       indexBounds,
       maximumNeighborCount: MAXIMUM_KRIGING_NEIGHBORS
     },
-    outputs: {
+    output: {
       predictions: importGraphBuffer(
         leaveOneOutGraph,
         'leave-one-out-predictions',
@@ -1061,7 +1061,7 @@ summaryOutput[summaryOutputOffset] = summaryInvalid[summaryInvalidOffset];`
       getGPUVariogramParameterValues({
         bounds: indexBounds,
         maximumDistance: ctx.options.maximumLagKm * 1000,
-        azimuthOffset: toRadians(ctx.options.azimuth)
+        sectorOffsetRadians: toRadians(ctx.options.azimuth)
       })
     );
   }

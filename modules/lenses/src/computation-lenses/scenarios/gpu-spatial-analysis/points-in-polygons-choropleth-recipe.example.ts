@@ -98,7 +98,7 @@ export async function runExample(
       maximumClassCount: classCount,
       maximumPaletteCount: classCount
     },
-    outputs: {
+    output: {
       counts,
       color: {breaks, colors, classIndices, classCount: output('classCount', 'uint32', 1)},
       status: {overflow, uncertainCount}

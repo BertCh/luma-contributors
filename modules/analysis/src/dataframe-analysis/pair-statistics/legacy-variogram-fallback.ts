@@ -12,6 +12,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getPairStatisticsSegmentTotalNodes} from './pair-statistics-cell-neighbors';
 import {getPairStatisticsSharedWGSL} from './pair-statistics-grid';
+import {PAIR_LAG_INDEX_WGSL} from './pair-lag-index-wgsl';
 import type {GPUSpaceTimeVariogramProps} from './gpu-space-time-variogram';
 
 /**
@@ -85,7 +86,7 @@ rowTable[rowTableOffset + index * 3u + 2u] = ${props.times ? 'times[timesOffset 
         {name: 'sums', view: sums, type: 'f32', access: 'read_write'},
         {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
       ],
-      declarations: `${getPairStatisticsSharedWGSL(props.gridSize, true)}\n${IS_FINITE_BITS_WGSL}
+      declarations: `${getPairStatisticsSharedWGSL(props.gridSize, true)}\n${IS_FINITE_BITS_WGSL}\n${PAIR_LAG_INDEX_WGSL}
 const BINS: u32 = ${bins}u;`,
       body: `var localSums: array<f32, BINS>;
 var localCounts: array<u32, BINS>;
@@ -106,8 +107,8 @@ let delta = vec2f(positions[positionsOffset + 2u * focus] - positions[positionsO
 let distance = length(delta);
 let time = abs(rowTable[rowTableOffset + focus * 3u + 2u] - rowTable[rowTableOffset + neighbor * 3u + 2u]);
 if (!isFiniteBits(distance) || distance > maximumDistance || time > maximumTime) { continue; }
-let spatialBin = min(u32(distance / maximumDistance * ${props.lagCount}.0), ${props.lagCount - 1}u);
-let temporalBin = min(u32(time / maximumTime * ${props.temporalLagCount}.0), ${props.temporalLagCount - 1}u);
+let spatialBin = getPairLagIndex(distance, maximumDistance, ${props.lagCount}u);
+let temporalBin = getPairLagIndex(time, maximumTime, ${props.temporalLagCount}u);
 let bin = spatialBin * ${props.temporalLagCount}u + temporalBin;
 let difference = rowTable[rowTableOffset + focus * 3u] - rowTable[rowTableOffset + neighbor * 3u];
 let secondDifference = rowTable[rowTableOffset + focus * 3u + 1u] - rowTable[rowTableOffset + neighbor * 3u + 1u];

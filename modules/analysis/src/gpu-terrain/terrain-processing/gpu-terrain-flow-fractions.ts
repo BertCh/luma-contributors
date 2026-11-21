@@ -21,7 +21,11 @@ import {
   type GPURasterCellSizeMode
 } from '../../analysis-core/contracts/raster-grid';
 import {getRasterGridWGSL} from '../../raster-analysis/cost-distance/raster-grid-utils';
-import {validateViewLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateOption,
+  validateGraphPorts,
+  validateViewLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getFlowFractionWGSL,
@@ -68,7 +72,16 @@ export type GPUTerrainFlowFractionsProps = {
 export class GPUTerrainFlowFractions implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUTerrainFlowFractionsProps) {
+    validateGraphPorts(props.id ?? 'terrain-flow-fractions', props, {
+      elevation: {required: true, viewType: 'data', formats: ['float32']},
+      validity: {required: false, viewType: 'data', formats: ['uint32']},
+      flowDirections: {required: true, viewType: 'data', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'output.fractions': {required: true, viewType: 'data', formats: ['float32']},
+      'output.edgeLengths': {required: true, viewType: 'data', formats: ['float32']}
+    });
     this.id = props.id ?? 'terrain-flow-fractions';
+    validateOption(this.id, 'routing', props.routing, ['d-infinity', 'mfd-freeman', 'mfd-quinn']);
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
     validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);

@@ -23,7 +23,10 @@ import {
   type KernelAuditContext
 } from '../../analysis-core/kernel-audit/kernel-audit-context';
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
-import {getGPUCommandNodeKernelSources} from '../../utils/gpu-contributor-test-utils';
+import {
+  createVectorView,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 type FieldFactory = <Format extends 'float32' | 'uint32'>(
   name: string,
@@ -216,7 +219,13 @@ const cases: BindingCase[] = [
                 zoneIds: field('tuples.zoneIds', 'uint32', 2),
                 cellIds: field('tuples.cellIds', 'uint32', 2),
                 fractions: field('tuples.fractions', 'float32', 2),
-                status: {count: field('tuples.status.count', 'uint32', 1)}
+                status: {
+                  count: field('tuples.status.count', 'uint32', 1),
+                  requiredCount: field('tuples.status.requiredCount', 'uint32', 1),
+                  overflow: field('tuples.status.overflow', 'uint32', 1),
+                  candidateOverflow: field('tuples.status.candidateOverflow', 'uint32', 1)
+                },
+                zoneValidity: field('tuples.zoneValidity', 'uint32', 1)
               }
             }
           : {zoneRaster: field('zoneRaster', 'uint32', 2)}),
@@ -277,6 +286,74 @@ function expectUnchangedFailure(
 }
 
 for (const bindingCase of cases) {
+  if (
+    [
+      'quantize',
+      'dequantize',
+      'change',
+      'linear-probe',
+      'projection',
+      'classifier',
+      'similarity'
+    ].includes(bindingCase.name)
+  ) {
+    it(`S1 ${bindingCase.name} checks named row topology before pairwise aliases`, () => {
+      const context = createKernelAuditContext(`embedding-topology-${bindingCase.name}`);
+      try {
+        const inventory = createFields(context);
+        const contributor = bindingCase.create(inventory.field);
+        const outputName =
+          bindingCase.name === 'dequantize'
+            ? 'output.validity'
+            : [...inventory.fields.keys()].find(name => name.startsWith('output.'))!;
+        const sharedNames = [
+          'parameters',
+          'queries',
+          'weights',
+          'bias',
+          'mean',
+          'components',
+          'trainingVectors',
+          'trainingLabels'
+        ];
+        const field: FieldFactory = (name, format, length) => {
+          if (sharedNames.includes(name)) return context.view(format, length);
+          const lengths = name === outputName ? [length - 1, 1] : [length];
+          return createVectorView(
+            `topology-${name}`,
+            format,
+            lengths.map(count => context.view(format, count))
+          ) as unknown as GraphDataView<typeof format>;
+        };
+        expect(() => bindingCase.create(field), outputName).toThrowError(
+          expect.objectContaining({
+            id: contributor.id,
+            path: outputName,
+            message: expect.stringContaining(`${outputName} must match`)
+          })
+        );
+      } finally {
+        context.device.destroy();
+      }
+    });
+    it(`CCK-02 ${bindingCase.name} validates every row and shared port against its declared format`, () => {
+      const context = createKernelAuditContext(`embedding-formats-${bindingCase.name}`);
+      try {
+        const inventory = createFields(context);
+        bindingCase.create(inventory.field);
+        for (const name of inventory.fields.keys()) {
+          const field: FieldFactory = (fieldName, format, length) => {
+            const suppliedFormat =
+              fieldName === name ? (format === 'float32' ? 'uint32' : 'float32') : format;
+            return context.view(suppliedFormat, length) as GraphDataView<typeof format>;
+          };
+          expect(() => bindingCase.create(field), name).toThrow(/float32|uint32/);
+        }
+      } finally {
+        context.device.destroy();
+      }
+    });
+  }
   for (const failure of ['prefix', 'usage'] as const) {
     it(`${bindingCase.name} checks every caller ${failure} before declaring scratch, views or nodes`, () => {
       const inventory = createKernelAuditContext(`embedding-inventory-${bindingCase.name}`);
@@ -368,7 +445,7 @@ for (const bindingCase of cases) {
       const nodes = contributor.getCommandNodes(context.graph);
       expectNoMixedStorageScopes(nodes);
       for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
-        expect(auditWGSLModule(kernel.source)).toEqual([]);
+        expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
       }
     } finally {
       physical.destroy();
@@ -492,7 +569,9 @@ it('unused threshold and stretch parameters do not impose binding or alias restr
 it('covariance preflights partial sums and partial covariance independently before its usable mask', () => {
   for (const [dimensions, bindingLimit, scratch] of [
     [2, 1024, 'partialSums'],
-    [4, 4096, 'partialCovariance']
+    // Eight dimensions: partial sums occupy 256 * 8 * 4 words * 4 = 32768 bytes;
+    // partial covariance occupies 256 * 8 * 8 * 4 = 65536 bytes, independently too large.
+    [8, 32768, 'partialCovariance']
   ] as const) {
     const context = createKernelAuditContext(`embedding-covariance-${scratch}`);
     try {
@@ -551,7 +630,7 @@ it('new preflights accept fitting layouts and preserve audited kernels', () => {
       for (const kernel of getGPUCommandNodeKernelSources(
         contributor.getCommandNodes(context.graph)
       )) {
-        expect(auditWGSLModule(kernel.source)).toEqual([]);
+        expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
       }
     } finally {
       context.device.destroy();

@@ -7,7 +7,8 @@ import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUEnsembleScores,
-  GPUGaussianPredictiveScores
+  GPUGaussianPredictiveScores,
+  type GPUEnsembleScoresProps
 } from '../../../src/gpu-spatial-analysis/scoring-rules/index';
 import {
   createInputBuffer,
@@ -65,7 +66,7 @@ export async function runEnsembleScores(
   device: Device,
   entry: Pick<EnsembleCase, 'memberCount' | 'dimension' | 'ensemble' | 'observations'>,
   options: {
-    fair?: boolean;
+    estimator?: GPUEnsembleScoresProps['estimator'];
     crps?: boolean;
     energyScore?: boolean;
     variogramPairs?: readonly (readonly number[])[];
@@ -107,7 +108,7 @@ export async function runEnsembleScores(
       ),
       memberCount: entry.memberCount,
       dimension: entry.dimension,
-      fair: options.fair,
+      estimator: options.estimator,
       variogramOrder: options.variogramOrder,
       variogramPairs: pairs
         ? importGraphBuffer(graph, 'pairs', input(pairs), 'uint32x2')

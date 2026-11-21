@@ -26,7 +26,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeInequalityOnCPU, type InequalityOracleResult} from './inequality-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type Scene = {
   values: Float32Array;
@@ -278,9 +278,9 @@ for (const withWeights of [false, true]) {
         const result = await fixture.run(settings);
         const oracle = computeInequalityOnCPU({...scene, settings, lorenzKnotCount: KNOT_COUNT});
         compare(result, oracle, `epsilon ${settings.epsilon}`);
-        // Zero-value zone: Theil L and epsilon >= 1 are NaN, empty zone is NaN, equal zone is 0.
+        // Positive-mean zero-income zone: Theil L is NaN, Atkinson at epsilon >= 1 is 1.
         if (settings.epsilon !== 0.5 && settings.epsilon !== 0) {
-          expect(result.atkinson[3]).toBeNaN();
+          expect(result.atkinson[3]).toBe(1);
         }
         expect(result.theilL[3]).toBeNaN();
         expect(result.gini[6]).toBeNaN();

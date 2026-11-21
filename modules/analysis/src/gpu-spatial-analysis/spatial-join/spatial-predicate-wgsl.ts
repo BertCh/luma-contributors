@@ -7,6 +7,8 @@ import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientat
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {SPATIAL_GEODESIC_MAXIMUM_ANGLE, SPATIAL_GEODESIC_WGSL} from './spatial-geodesic-wgsl';
 import {SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
+import {SPATIAL_PROJECTIVE_WGSL} from './spatial-projective-wgsl';
+import {SPATIAL_DISTANCE_COMPARE_WGSL} from './spatial-distance-compare-wgsl';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
 
 /** One side of a predicate join as seen by generated WGSL. @internal */
@@ -36,8 +38,8 @@ export type SpatialDistanceMetric = {kind: 'planar'} | {kind: 'great-circle'; ra
 const PLANAR_METRIC: SpatialDistanceMetric = {kind: 'planar'};
 
 /**
- * Largest planar threshold using squared comparisons: 2^63 leaves room below f32 overflow for
- * the workgroup box-pruning margin. Larger thresholds compare scaled linear distances. @internal
+ * Largest planar threshold using squared box pruning: 2^63 leaves room below f32 overflow for
+ * the workgroup margin. Larger thresholds skip that pruning; exact comparisons are unchanged. @internal
  */
 export const SPATIAL_PLANAR_MAXIMUM_SQUAREABLE_DISTANCE = 2 ** 63;
 
@@ -116,14 +118,21 @@ fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
   let ab = b - a;
   let lengthSq = dot(ab, ab);
   if (lengthSq == 0.0) { let d = p - a; return dot(d, d); }
-  let t = clamp(dot(p - a, ab) / lengthSq, 0.0, 1.0);
-  let d = p - (a + ab * t);
-  return dot(d, d);
+  let fromStart = p - a;
+  if (dot(fromStart, ab) <= 0.0) { return dot(fromStart, fromStart); }
+  let fromEnd = p - b;
+  if (dot(fromEnd, ab) >= 0.0) { return dot(fromEnd, fromEnd); }
+  // Keep the perpendicular residual local: reconstructing a projected world-coordinate
+  // point can round it onto p after a large translation.
+  let perpendicular = ab.x * fromStart.y - ab.y * fromStart.x;
+  return (perpendicular * perpendicular) / lengthSq;
 }`;
   return /* wgsl */ `${SPATIAL_JOIN_WGSL_HELPERS}
 const PLANAR_MAXIMUM_SQUAREABLE_DISTANCE: f32 = ${getWGSLFloatLiteral(SPATIAL_PLANAR_MAXIMUM_SQUAREABLE_DISTANCE)};
 ${metric.kind === 'great-circle' ? SPATIAL_GEODESIC_WGSL : SCALED_PLANAR_DISTANCE_WGSL}
 ${orient}
+${SPATIAL_PROJECTIVE_WGSL}
+${metric.kind === 'planar' ? SPATIAL_DISTANCE_COMPARE_WGSL : ''}
 // Differs from nearest-wgsl: range test first, orient() may flag an uncertain sign.
 fn onSegment(a: vec2f, b: vec2f, q: vec2f) -> bool {
   // The range test comes first so a sign that cannot matter is never reported as uncertain.
@@ -347,6 +356,91 @@ export function forEachEdge(
   }`;
 }
 
+/** Exact fallback for polygon pieces whose distinct crossings collapse to the same f32 value. */
+function getProjectivePolygonWGSL(side: SpatialPredicateSide): string {
+  const prefix = side.prefix;
+  return `
+// Locate query + epsilon*direction + epsilon^2*normal without constructing either point.
+fn ${prefix}ProjectiveLocate(query: SpatialQuery, a: vec2f, b: vec2f, forward: bool, normalSide: i32, feature: u32) -> u32 {
+  let baseDirectionX = spatialSubtract(spatialInteger(b.x), spatialInteger(a.x));
+  let baseDirectionY = spatialSubtract(spatialInteger(b.y), spatialInteger(a.y));
+  let normalX = spatialApplySign(spatialEnabled(baseDirectionY, normalSide != 0i), normalSide > 0i);
+  let normalY = spatialApplySign(spatialEnabled(baseDirectionX, normalSide != 0i), normalSide < 0i);
+  let directionX = spatialApplySign(baseDirectionX, !forward);
+  let directionY = spatialApplySign(baseDirectionY, !forward);
+  var inside = false;
+  ${forEachEdge(
+    side,
+    'feature',
+    'edgeStart',
+    'edgeEnd',
+    `
+    let startX = spatialInteger(edgeStart.x); let startY = spatialInteger(edgeStart.y);
+    let endX = spatialInteger(edgeEnd.x); let endY = spatialInteger(edgeEnd.y);
+    let offsetX = spatialSubtract(query.x, spatialMultiply(startX, query.denominator));
+    let offsetY = spatialSubtract(query.y, spatialMultiply(startY, query.denominator));
+    let edgeX = spatialSubtract(endX, startX); let edgeY = spatialSubtract(endY, startY);
+    let orientation = spatialOffsetSign(spatialCross(edgeX, edgeY, offsetX, offsetY), spatialCross(edgeX, edgeY, directionX, directionY), spatialCross(edgeX, edgeY, normalX, normalY));
+    let startAbove = spatialOffsetSign(offsetY, directionY, normalY);
+    let endAbove = spatialOffsetSign(spatialSubtract(query.y, spatialMultiply(endY, query.denominator)), directionY, normalY);
+    if (orientation == 0i) {
+      let startSide = spatialOffsetSign(offsetX, directionX, normalX);
+      let endSide = spatialOffsetSign(spatialSubtract(query.x, spatialMultiply(endX, query.denominator)), directionX, normalX);
+      if (startSide * endSide <= 0i && startAbove * endAbove <= 0i) { return 2u; }
+    }
+    if ((startAbove < 0i) != (endAbove < 0i) && ((edgeEnd.y > edgeStart.y) == (orientation > 0i))) { inside = !inside; }
+  `
+  )}
+  return select(0u, 1u, inside);
+}
+fn ${prefix}NeedsExactPieces(a: vec2f, b: vec2f, feature: u32) -> bool {
+  var parameters: array<f32, 24>;
+  var starts: array<vec2f, 24>;
+  var ends: array<vec2f, 24>;
+  var count = 0u;
+  ${forEachEdge(
+    side,
+    'feature',
+    'c',
+    'd',
+    `
+    if (orient(c, d, a) * orient(c, d, b) >= 0.0 || !segmentsIntersect(a, b, c, d)) { continue; }
+    let firstArea = crossProduct(d - c, a - c);
+    let lastArea = crossProduct(d - c, b - c);
+    if (!(isFiniteValue(firstArea) && isFiniteValue(lastArea)) || firstArea * lastArea >= 0.0) { return true; }
+    let first = crossingParameter(a, b, c, d);
+    if (first <= 0.0 || first >= 1.0) { return true; }
+    for (var index = 0u; index < count; index++) {
+      let firstBits = bitcast<u32>(first);
+      let previousBits = bitcast<u32>(parameters[index]);
+      if (max(firstBits, previousBits) - min(firstBits, previousBits) <= 1u && spatialCrossingOrder(a, b, c, d, starts[index], ends[index]) != 0i) { return true; }
+    }
+    if (count == 24u) { return true; }
+    parameters[count] = first; starts[count] = c; ends[count] = d; count++;
+  `
+  )}
+  return false;
+}
+// Bits: exterior=1, interior=2, boundary=4 for positive-length open intervals.
+fn ${prefix}ExactSegmentCells(a: vec2f, b: vec2f, feature: u32) -> u32 {
+  let first = ${prefix}ProjectiveLocate(spatialEndpointQuery(a), a, b, true, 0i, feature);
+  var cells = 1u << first;
+  ${forEachEdge(
+    side,
+    'feature',
+    'c',
+    'd',
+    `
+    if (orient(c, d, a) * orient(c, d, b) >= 0.0 || !segmentsIntersect(a, b, c, d)) { continue; }
+    let query = spatialCrossingQuery(a, b, c, d);
+    cells |= 1u << ${prefix}ProjectiveLocate(query, a, b, false, 0i, feature);
+    cells |= 1u << ${prefix}ProjectiveLocate(query, a, b, true, 0i, feature);
+  `
+  )}
+  return cells;
+}`;
+}
+
 /** Declares the per-side accessors and geometry queries used by the predicate functions. */
 export function getSideWGSL(side: SpatialPredicateSide): string {
   const p = side.prefix;
@@ -446,7 +540,7 @@ fn ${p}SegmentWithin(a: vec2f, b: vec2f, f: u32) -> u32 {
   return select(0u, 3u, reach >= limit);
 }`;
   } else if (kind === 'polygons') {
-    segmentWithin = `
+    segmentWithin = `${getProjectivePolygonWGSL(side)}
 fn ${p}CollinearCovers(a: vec2f, b: vec2f, f: u32, tm: f32) -> bool {
   let ab = b - a;
   let lengthSq = dot(ab, ab);
@@ -492,6 +586,10 @@ fn ${p}SegmentWithin(a: vec2f, b: vec2f, f: u32) -> u32 {
     let location = ${p}Locate(a, f);
     return select(0u, select(1u, 3u, location == 1u), location != 0u);
   }
+  if (${p}NeedsExactPieces(a, b, f)) {
+    let cells = ${p}ExactSegmentCells(a, b, f);
+    return select(0u, 1u | select(0u, 2u, (cells & 2u) != 0u), (cells & 1u) == 0u);
+  }
   var interior = false;
   var code = ${p}PieceCode(a, b, f, 0.0);
   if (code == 0u) { return 0u; }
@@ -526,17 +624,22 @@ fn ${p}RingVertexEnd(r: u32) -> u32 { return ${vertexEnd}; }
 fn ${p}Vertex(i: u32) -> vec2f {
   return vec2f(${p}Positions[${p}PositionsOffset + i * 2u], ${p}Positions[${p}PositionsOffset + i * 2u + 1u]);
 }
-// (x, y, valid): first vertex of the first usable ring; valid is 0 for an empty feature.
+// (x, y, valid): first usable vertex; valid is 0 if empty or any part is non-finite.
 fn ${p}First(f: u32) -> vec3f {
+  var first = vec3f(0.0);
   for (var r = ${p}RingStart(f); r < ${p}RingEnd(f); r++) {
     let vs = ${p}RingVertexStart(r);
     let ve = ${p}RingVertexEnd(r);
-    if (ve > vs && ve - vs >= ${getMinimumRingVertices(kind)}u) {
+    for (var vertex = vs; vertex < ve; vertex++) {
+      let position = ${p}Vertex(vertex);
+      if (!(isFiniteValue(position.x) && isFiniteValue(position.y))) { return vec3f(0.0); }
+    }
+    if (first.z == 0.0 && ve > vs && ve - vs >= ${getMinimumRingVertices(kind)}u) {
       let v = ${p}Vertex(vs);
-      return vec3f(v, select(0.0, 1.0, isFiniteValue(v.x) && isFiniteValue(v.y)));
+      first = vec3f(v, 1.0);
     }
   }
-  return vec3f(0.0);
+  return first;
 }
 // 0: exterior, 1: interior, 2: boundary (OGC point location).
 fn ${p}Locate(q: vec2f, f: u32) -> u32 {
@@ -671,14 +774,17 @@ function getContainsWGSL(
   } else if (outer.kind === 'points' || (outer.kind === 'lines' && inner.kind === 'polygons')) {
     body = 'return false;';
   } else if (outer.kind === 'lines') {
-    body = `${forEachEdge(
-      inner,
-      'inner',
-      'ia',
-      'ib',
-      `if ((${o}SegmentWithin(ia, ib, outer) & 1u) == 0u) { return false; }`
-    )}
-  return true;`;
+    body = `var interior = false;
+  ${forEachEdge(
+    inner,
+    'inner',
+    'ia',
+    'ib',
+    `let within = ${o}SegmentWithin(ia, ib, outer);
+    if ((within & 1u) == 0u) { return false; }
+    interior = interior || (within & 2u) != 0u;`
+  )}
+  return ${includeBoundary ? 'true' : 'interior'};`;
   } else if (inner.kind === 'lines') {
     body = `var interior = false;
   ${forEachEdge(
@@ -820,15 +926,33 @@ fn pairMatches(l: u32, r: u32) -> bool { return pairContains(r, l); }`;
       predicateWGSL = `${getIntersectsWGSL(left, right)}
 ${getDistanceWGSL(left)}
 ${getDistanceLimitWGSL(distance, metric)}
+${
+  metric.kind === 'planar'
+    ? `
+fn pairWithinDistance(l: u32, r: u32, radius: f32) -> bool {
+  if (radius < 0.0 || leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0) { return false; }
+  if (pairIntersects(l, r)) { return true; }
+  ${forEachEdge(
+    left,
+    'l',
+    'la',
+    'lb',
+    forEachEdge(
+      right,
+      'r',
+      'ra',
+      'rb',
+      'if (segmentWithinDistance(la, lb, ra, rb, radius)) { return true; }'
+    )
+  )}
+  return false;
+}`
+    : ''
+}
 fn pairMatches(l: u32, r: u32) -> bool {
-  ${
-    metric.kind === 'planar'
-      ? `if (distanceLimit() > PLANAR_MAXIMUM_SQUAREABLE_DISTANCE) {
-    return pairDistance(l, r) <= distanceLimit();
-  }`
-      : ''
-  }
-  return pairDistanceSq(l, r) <= distanceLimitSq();
+  ${metric.kind === 'planar' ? 'if (distanceLimit() == 0.0) { return pairIntersects(l, r); }' : ''}
+  ${metric.kind === 'planar' ? 'return pairWithinDistance(l, r, distanceLimit());' : ''}
+  ${metric.kind === 'great-circle' ? 'return pairDistanceSq(l, r) <= distanceLimitSq();' : ''}
 }`;
       break;
     }

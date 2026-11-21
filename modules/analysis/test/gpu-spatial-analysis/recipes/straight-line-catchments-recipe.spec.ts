@@ -103,7 +103,7 @@ it('addStraightLineCatchmentsRecipe allocates cells to the nearest facility and 
       },
       values: fixture.input('values', values, 'float32', values.length),
       sumOrder: 'sorted',
-      outputs: {
+      output: {
         allocation: outputs.allocation.view,
         distances: outputs.distances.view,
         statistics: {

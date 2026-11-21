@@ -18,18 +18,21 @@ import {
   evaluateVariogramModel,
   fitVariogramModelWithDiagnostics,
   getVariogramModelSearchOptions,
-  getVariogramModelShape,
   type VariogramModelInput,
   type VariogramModelType,
   type VariogramModelWeighting
 } from './variogram-model';
+import {validateVariogramModelFitChoices} from './variogram-model-fit-requirements';
 
 function validateVariogramModelFitBins(id: string, input: VariogramModelInput): void {
-  if (
-    input.semivariances.length !== input.distances.length ||
-    input.pairCounts.length !== input.distances.length
-  ) {
-    throw new Error(`${id} invalid model or bin topology`);
+  // The message keeps the GPU contributor's wording as its prefix and names the offending array.
+  for (const name of ['semivariances', 'pairCounts'] as const) {
+    if (input[name].length !== input.distances.length) {
+      throw new Error(
+        `${id} invalid model or bin topology: ${name} has ${input[name].length} bins but distances ` +
+          `has ${input.distances.length}; every bin array must hold one entry per distance bin`
+      );
+    }
   }
 }
 
@@ -66,7 +69,8 @@ export type CPUVariogramModelFitResult = {
  *   bind both searches. CPU refines up to its budget in float64; GPU may stop at bracket 1e-5.
  * - The bracket diagnostic is the measured final log-range bracket. Both forms set status 3
  *   for an endpoint ladder optimum or a final bracket wider than 1e-5.
- * - Cressie weights have no floor other than the smallest float64.
+ * - Cressie weights have no floor other than the smallest float64. An exact zero field keeps
+ *   its initial finite pair weights instead of reweighting the already exact zero fit.
  *
  * @param input Empirical bins. Bins with no pairs, a non-finite value or a non-positive lag are
  *   skipped.
@@ -82,6 +86,7 @@ export function computeVariogramModelFitOnCPU(
   const searchOptions = getVariogramModelSearchOptions(options, 'variogram-model-fit');
   const models = options.models ?? VARIOGRAM_MODEL_FIT_DEFAULT_MODELS;
   const weighting = options.weighting ?? 'cressie';
+  validateVariogramModelFitChoices('variogram-model-fit', models, weighting);
   const distances: number[] = [];
   const semivariances: number[] = [];
   const pairCounts: number[] = [];
@@ -115,8 +120,6 @@ export function computeVariogramModelFitOnCPU(
   const diagnostics = new Float32Array(models.length * 4).fill(Number.NaN);
   const status = new Uint32Array(models.length);
   models.forEach((model, modelIndex) => {
-    // Throws for an unknown family before any row is written.
-    getVariogramModelShape(model, 0);
     if (!isFittable) {
       status[modelIndex] = 1;
       return;
@@ -164,7 +167,7 @@ export function computeVariogramModelFitOnCPU(
  * Explicit `rangeSteps` and `maximumIterations` bind every weighting pass just as on GPU.
  * CPU defaults remain 200 ladder points and 60 refinements when those props are omitted.
  * Unequal bin lengths throw the GPU contributor's `invalid model or bin topology` error,
- * prefixed by this operation's ID.
+ * prefixed by this operation's ID and followed by the offending array and both lengths.
  */
 export class CPUVariogramModelFitOperation extends GPUCPUOperation {
   constructor(props: VariogramModelFitOperationProps) {
@@ -178,14 +181,7 @@ export class CPUVariogramModelFitOperation extends GPUCPUOperation {
       models.length >= 1 && models.length <= 5,
       'models must name one to five model families'
     );
-    for (const model of models) {
-      getVariogramModelShape(model, 0);
-    }
-    validateRequirement(
-      id,
-      ['pairs', 'none', 'cressie'].includes(weighting),
-      "weighting must be 'cressie', 'pairs' or 'none'"
-    );
+    validateVariogramModelFitChoices(id, models, weighting);
     const inputs = {
       distances: props.distances,
       semivariances: props.semivariances,

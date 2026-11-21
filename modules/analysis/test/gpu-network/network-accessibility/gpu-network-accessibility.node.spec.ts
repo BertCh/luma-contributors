@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {addNetworkCatchmentAdapter} from '../../../src/gpu-network/network-accessibility/gpu-network-accessibility';
 import {
   GPUNetworkAccessibility,
   GPUNetworkCostMatrix,
@@ -13,7 +14,10 @@ import {
   type GPUNetworkCostMatrixProps,
   type GPUNetworkSnappingProps
 } from '../../../src/gpu-network/network-accessibility/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 let viewCount = 0;
 
@@ -136,8 +140,98 @@ function createAccessibilityProps(
     opportunityWeights: createView(graph, 'float32', 4),
     parameters: createView(graph, 'float32', 4),
     ...overrides
-  };
+  } as GPUNetworkAccessibilityProps;
 }
+
+it('accessibility props require at least one result selection, including combinations', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const common = {
+    costs: createView(graph, 'float32', 4),
+    opportunityWeights: createView(graph, 'float32', 2),
+    parameters: createView(graph, 'float32', 4)
+  };
+  const cumulative = createView(graph, 'float32', 2);
+  const gravity = createView(graph, 'float32', 2);
+  const catchment = {
+    demand: createView(graph, 'float32', 2),
+    output: createView(graph, 'float32', 2)
+  };
+  const accept = (_props: GPUNetworkAccessibilityProps) => {};
+  for (const selection of [
+    {cumulative},
+    {gravity},
+    {catchment},
+    {cumulative, gravity},
+    {cumulative, catchment},
+    {gravity, catchment},
+    {cumulative, gravity, catchment}
+  ])
+    accept({...common, ...selection});
+  // @ts-expect-error At least one public score output is required.
+  accept(common);
+  // @ts-expect-error Explicit undefined selections do not request a score.
+  accept({...common, cumulative: undefined, gravity: undefined, catchment: undefined});
+});
+
+it('catchment adapter preserves trip direction and only transposes storage axes', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const matrix = new GPUNetworkCostMatrix(
+    createMatrixProps(
+      graph,
+      {direction: 'start-to-target'},
+      {},
+      {status: {converged: createView(graph, 'uint32', 1)}}
+    )
+  );
+  const common = {
+    matrix: matrix.result,
+    facilityAxis: 'columns' as const,
+    trips: 'demand-to-facility' as const,
+    supply: createView(graph, 'float32', 8),
+    demand: createView(graph, 'float32', 5),
+    parameters: createView(graph, 'float32', 4),
+    output: createView(graph, 'float32', 5),
+    complete: createView(graph, 'uint32', 1)
+  };
+  const adapted = addNetworkCatchmentAdapter(graph, common);
+  expect(adapted.matrix.values).toBe(common.matrix.values);
+  expect(adapted.matrix.direction).toBe('start-to-target');
+  expect(adapted.contributor.props.costs === matrix.result.values).toBe(false);
+  expect(adapted.contributor.rowCount).toBe(8);
+  expect(adapted.contributor.nodeCount).toBe(5);
+  expect(() =>
+    addNetworkCatchmentAdapter(graph, {...common, id: 'wrong-trip', trips: 'facility-to-demand'})
+  ).toThrow(/transposing storage does not reverse trips/);
+});
+
+it.each([
+  'method',
+  'parameters'
+])('preflights invalid catchment %s before mutating the graph (S1)', invalid => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const matrix = new GPUNetworkCostMatrix(
+    createMatrixProps(graph, {}, {}, {status: {converged: createView(graph, 'uint32', 1)}})
+  );
+  const props = {
+    matrix: matrix.result,
+    facilityAxis: 'columns' as const,
+    trips: 'demand-to-facility' as const,
+    supply: createView(graph, 'float32', 8),
+    demand: createView(graph, 'float32', 5),
+    parameters: createView(graph, 'float32', 4),
+    output: createView(graph, 'float32', 5),
+    complete: createView(graph, 'uint32', 1)
+  };
+  expect(() =>
+    addNetworkCatchmentAdapter(graph, {
+      ...props,
+      ...(invalid === 'method'
+        ? {method: 'unknown' as never}
+        : {parameters: createView(graph, 'float32', 2)})
+    })
+  ).toThrow(new RegExp(invalid));
+  expect(() => addNetworkCatchmentAdapter(graph, props)).not.toThrow();
+});
 
 it('GPUNetworkAccessibility schedules scores and catchment nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
@@ -234,6 +328,80 @@ it('GPUNetworkAccessibility validates orientation, outputs, and parameters', () 
   ).toThrow(/multiple/);
 });
 
+it('GPUNetworkAccessibility carries matrix completeness and the cost-limit rule into status.complete (NET-101, NET-103)', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const gravity = createView(graph, 'float32', 10);
+  expect(
+    () =>
+      new GPUNetworkAccessibility(
+        createAccessibilityProps(graph, {
+          gravity,
+          status: {complete: createView(graph, 'uint32', 1)}
+        })
+      )
+  ).toThrow(/status\.complete requires costsComplete/);
+  for (const [name, overrides] of [
+    ['costsComplete', {costsComplete: createView(graph, 'uint32', 2)}],
+    ['costLimit', {costLimit: createView(graph, 'float32', 2)}],
+    [
+      'status.complete',
+      {
+        costsComplete: createView(graph, 'uint32', 1),
+        status: {complete: createView(graph, 'uint32', 2)}
+      }
+    ]
+  ] as const) {
+    expect(
+      () => new GPUNetworkAccessibility(createAccessibilityProps(graph, {gravity, ...overrides})),
+      name
+    ).toThrow(new RegExp(`${name.replace('.', '\\.')} must contain exactly one row`));
+  }
+  const limited = new GPUNetworkAccessibility(
+    createAccessibilityProps(graph, {
+      id: 'limited',
+      gravity,
+      costsComplete: createView(graph, 'uint32', 1),
+      costLimit: createView(graph, 'float32', 1),
+      status: {complete: createView(graph, 'uint32', 1)},
+      catchment: {
+        demand: createView(graph, 'float32', 10),
+        output: createView(graph, 'float32', 10)
+      }
+    })
+  );
+  const limitedNodes = limited.getCommandNodes(graph);
+  expect(limitedNodes.at(-1)?.id).toBe('limited-complete');
+  expect(getParsedKernelSources(limitedNodes).get('limited-complete')).toContain(
+    'let isComplete = costsComplete[costsCompleteOffset] != 0u && parameters[parametersOffset] <= costLimit[costLimitOffset];'
+  );
+  const unlimited = new GPUNetworkAccessibility(
+    createAccessibilityProps(graph, {
+      id: 'unlimited',
+      gravity: createView(graph, 'float32', 10),
+      costsComplete: createView(graph, 'uint32', 1),
+      status: {complete: createView(graph, 'uint32', 1)}
+    })
+  );
+  const unlimitedSource = getParsedKernelSources(unlimited.getCommandNodes(graph)).get(
+    'unlimited-complete'
+  );
+  expect(unlimitedSource).toContain('let isComplete = costsComplete[costsCompleteOffset] != 0u;');
+  expect(unlimitedSource).not.toContain('parameters');
+  // Without public status.complete, supplied loss is certified internally and suppresses gravity.
+  const plain = new GPUNetworkAccessibility(
+    createAccessibilityProps(graph, {
+      id: 'plain',
+      gravity: createView(graph, 'float32', 10),
+      costsComplete: createView(graph, 'uint32', 1)
+    })
+  );
+  expect(plain.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'plain-input-complete',
+    'plain-scores',
+    'plain-suppress-gravity'
+  ]);
+});
+
 it('getGPUNetworkAccessibilityParameterValues packs threshold, decay code, beta, minimum cost', () => {
   expect(Array.from(getGPUNetworkAccessibilityParameterValues({threshold: 30}))).toEqual([
     30, 0, 0, 1
@@ -251,7 +419,8 @@ it('getGPUNetworkAccessibilityParameterValues packs threshold, decay code, beta,
   expect(
     getGPUNetworkAccessibilityParameterValues({
       threshold: 1,
-      decay: 'exponential'
+      decay: 'exponential',
+      beta: 1
     })[1]
   ).toBe(1);
 });

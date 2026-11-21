@@ -2153,6 +2153,51 @@ describe('workbench host ownership and replay regressions', () => {
     expect(result).toEqual({datasetId: PUBLICATION_ID, label: 'Review points'});
   });
 
+  test('W5-02 Decimal precision failures name the field and preserve Select columns recovery', async () => {
+    const decimal = new arrow.Decimal(-50, 24, 128);
+    const table = new arrow.Table({
+      d: new arrow.Vector([
+        arrow.makeData({type: decimal, length: 1, data: new Uint32Array([1, 0, 0, 0])})
+      ])
+    });
+    hostState.publish = async (_table, normalization) => {
+      // Literal Decimal value 1 × 10^50 exceeds Float32; use the actual host policy.
+      prepareArrowTableForGPUAnalytics(table, {...normalization, columns: ['d']});
+    };
+    await expect(
+      createWorkbenchHost().publishOutput!(makePublishRequest(), new AbortController().signal)
+    ).rejects.toMatchObject({
+      code: 'publish-failed',
+      message:
+        'Review points: Column "d" cannot be shown at 32-bit precision; remove it with Select columns before displaying.'
+    });
+  });
+
+  test.each([
+    'Float64',
+    'Int64',
+    'Uint64'
+  ])('W5-02 %s precision policy failures preserve recovery', async type => {
+    hostState.publish = async () => {
+      throw new Error(`${type} column "wide field" exceeds its precision policy`);
+    };
+    await expect(
+      createWorkbenchHost().publishOutput!(makePublishRequest(), new AbortController().signal)
+    ).rejects.toMatchObject({
+      message:
+        'Review points: Column "wide field" cannot be shown at 32-bit precision; remove it with Select columns before displaying.'
+    });
+  });
+
+  test('W5-02 unrelated publication failures retain their original reason', async () => {
+    hostState.publish = async () => {
+      throw new Error('Storage unavailable');
+    };
+    await expect(
+      createWorkbenchHost().publishOutput!(makePublishRequest(), new AbortController().signal)
+    ).rejects.toMatchObject({message: 'Review points: Publication failed: Storage unavailable'});
+  });
+
   test('display publication refuses Float32 overflow with an actionable column message and no pending id', async () => {
     const owner = hostState.runtime!;
     const request = makePublishRequest();

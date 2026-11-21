@@ -16,7 +16,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/distribution-dynamics/gpu-classification-fit';
 import {MAPCLASSIFY_FIT_CASES, MAPCLASSIFY_FIT_VALUES} from './mapclassify-fit-fixture';
 import {AnalysisRig, createSeededRandom} from '../catchment-accessibility/rig';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const NO_CLASS = 0xffffffff;
 
@@ -233,4 +233,23 @@ it('GPUClassificationFit reduces a heavily skewed class split across many lanes'
   expectClose(actual.squared, oracle.squared, 'squared', 1e-3);
   expectClose([actual.summary[GPU_CLASSIFICATION_FIT_GADF]], [oracle.gadf], 'gadf', 1e-3);
   rig.destroy();
+});
+
+it('keeps class and pooled medians exactly zero for opposite finite extreme endpoints', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Keep both observations: dropping them would also produce the empty-slot median zero.
+  for (const [upper, expectedMedian] of [
+    [2 ** 127, 0],
+    [2 ** 126, -(2 ** 125)]
+  ]) {
+    const rig = new AnalysisRig(device);
+    try {
+      const result = await runFit(rig, [-(2 ** 127), upper], [0, 0], 1);
+      expect(result.counts).toEqual([2, 2]);
+      expect(result.medians).toEqual([expectedMedian, expectedMedian]);
+    } finally {
+      rig.destroy();
+    }
+  }
 });

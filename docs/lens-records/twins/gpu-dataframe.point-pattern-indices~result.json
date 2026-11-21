@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const parameters = new GPUParameterBuffer(device, {\n  id: 'point-pattern-parameters',\n  format: 'float32',\n  length: GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,\n  values: getGPUPointPatternIndicesParameterValues({bounds: studyWindow, maximumDistance: 500})\n});\ngraph.add(\n  new GPUPointPatternIndices({\n    positions,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [32, 32],\n    quadratGrid, // 8 x 10 quadrats\n    output: {\n      nearestNeighborDistances,\n      nearestNeighborIds,\n      clarkEvans,\n      quadratCounts,\n      quadratStatistics\n    }\n  })\n);\n// clarkEvans: [n, observed, expected, ratio, standardError, z, p], Donnelly edge correction",
+    "code": "const parameters = new GPUParameterBuffer(device, {\n  id: 'point-pattern-parameters',\n  format: 'float32',\n  length: GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,\n  values: getGPUPointPatternIndicesParameterValues({bounds: studyWindow, indexCellSizeHint: 500})\n});\ngraph.add(\n  new GPUPointPatternIndices({\n    positions,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [32, 32],\n    quadratGrid, // 8 x 10 quadrats\n    output: {\n      nearestNeighborDistances,\n      nearestNeighborIds,\n      clarkEvans,\n      quadratCounts,\n      quadratStatistics\n    }\n  })\n);\n// clarkEvans: [n, observed, expected, ratio, standardError, z, p], Donnelly edge correction",
     "language": "ts",
     "lineCount": 22
   },
@@ -46,12 +46,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:12.213Z",
-    "runId": "run-057d54d6",
+    "date": "2026-11-20T23:48:35.727Z",
+    "runId": "run-92644d90",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-057d54d6",
+    "runId": "run-92644d90",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {AnalysisValidationError} from '../../../src/analysis-core/kernels/analysis-validation-error';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {
   createNullWebGPUDevice,
@@ -21,6 +22,17 @@ import {
 
 const LAGS = Array.from({length: 24}, (_, index) => (index + 1) * 0.25);
 const PAIR_COUNTS = LAGS.map((_, index) => 50 + 3 * index);
+
+function expectCollisionError(construct: () => unknown, message: string, path: string): void {
+  let caught: unknown;
+  try {
+    construct();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(AnalysisValidationError);
+  expect(caught).toMatchObject({message, id: 'fit-collision', code: 'REQUIREMENT', path});
+}
 
 it('final1b five-bin three-step variogram probe distinguishes budgets and rejects negative on both forms', async () => {
   const distances = Float32Array.of(1, 2, 3, 4, 5);
@@ -502,6 +514,79 @@ it('the CPU fit reports status 1 and NaN rows without two usable bins at two lag
   }
 });
 
+it('B7-VAR-01 computes the CPU lag extrema for 262,144 usable bins', () => {
+  const binCount = 262144;
+  const result = computeVariogramModelFitOnCPU(
+    {
+      distances: Float32Array.from({length: binCount}, (_, index) => 1 + (index % 2)),
+      semivariances: new Float32Array(binCount).fill(4),
+      pairCounts: new Uint32Array(binCount).fill(1)
+    },
+    {models: ['spherical'], weighting: 'pairs', rangeSteps: 8, maximumIterations: 0}
+  );
+  // Constant height 4 is an exact fit, and the lowest ladder range is minLag / 10.
+  expect(result.parameters).toEqual(Float32Array.of(4, 0, 0.1, 0));
+  expect(result.diagnostics.slice(0, 2)).toEqual(Float32Array.of(binCount, 0));
+  expect(Array.from(result.diagnostics).every(Number.isFinite)).toBe(true);
+  expect(result.status).toEqual(Uint32Array.of(3));
+});
+
+it.each([
+  'pairs',
+  'cressie'
+] as const)('B7-VAR-02 CPU flat variograms select the first tied range with %s weighting', weighting => {
+  const models = ['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2'] as const;
+  const result = computeVariogramModelFitOnCPU(
+    {distances: [3, 6], semivariances: [4, 4], pairCounts: [1, 1]},
+    {models, weighting, rangeSteps: 8}
+  );
+  // Nugget 4 and sill 0 give zero residual at every range for every model.
+  // The first tied candidate is 3 / 10, an endpoint of the range ladder.
+  expect(result.status).toEqual(new Uint32Array(models.length).fill(3));
+  for (const modelIndex of models.keys()) {
+    const offset = modelIndex * 4;
+    expect(result.parameters.slice(offset, offset + 4)).toEqual(Float32Array.of(4, 0, 0.3, 0));
+    expect(result.diagnostics.slice(offset, offset + 2)).toEqual(Float32Array.of(2, 0));
+  }
+});
+
+it.each([
+  {
+    caseName: 'sill-only projection',
+    distances: [1, 2, 3],
+    semivariances: [7 / 3, 5, 1],
+    pairCounts: [5, 3, 6],
+    expected: [0, 2.3333332538604736, 0.1, 32]
+  },
+  {
+    caseName: 'nugget-only projection at an exact weighted mean',
+    distances: [1, 2, 3],
+    semivariances: [2.875, 4, 1],
+    pairCounts: [5, 5, 3],
+    expected: [2.875, 0, 0.1, 16.875]
+  },
+  {
+    caseName: 'nugget-only projection with nonuniform lags',
+    distances: [1.0249482393, 1.3641827106, 1.6332162619],
+    semivariances: [2.6534891129, 2.8887352943, 2.5778741837],
+    pairCounts: [25, 9, 28],
+    expected: [2.653489112854004, 0, 0.10249482095241547, 0.6581602096557617]
+  }
+])('review round 2 B1 selects the exact $caseName when rounded residuals tie', fixture => {
+  const result = computeVariogramModelFitOnCPU(
+    {
+      distances: Float32Array.from(fixture.distances),
+      semivariances: Float32Array.from(fixture.semivariances),
+      pairCounts: Uint32Array.from(fixture.pairCounts)
+    },
+    {models: ['exponential'], weighting: 'pairs', rangeSteps: 8, maximumIterations: 24}
+  );
+  // Python fractions.Fraction on the binary64 boundary shapes gives sill-minus-nugget
+  // squared errors of -1.116e-19, +2.228e-25, and +4.775e-19, respectively.
+  expect(result.parameters).toEqual(Float32Array.from(fixture.expected));
+  expect(result.status).toEqual(Uint32Array.of(3));
+});
+
 it('the CPU fit reports status 3 when the range runs to the end of the search domain', () => {
   // Semivariance still rising linearly at the largest lag: no sill inside three times that lag.
   const bins = {
@@ -536,7 +621,9 @@ it('both operations reject unknown models and weightings at construction, naming
   );
   expect(
     () => new CPUVariogramModelFitOperation({...props, weighting: 'inverse' as 'pairs'})
-  ).toThrow("fit weighting must be 'cressie', 'pairs' or 'none'");
+  ).toThrow(
+    'fit invalid model or bin topology: weighting inverse must be one of pairs, none, cressie'
+  );
   expect(
     () => new CPUVariogramModelFitOperation({...props, models: ['cubic' as 'spherical']})
   ).toThrow();
@@ -618,7 +705,7 @@ it.each([
   };
   const message = `fit-collision outputs.${second} must name a graph value ("x") that no other port uses`;
   for (const Operation of [GPUVariogramModelFitOperation, CPUVariogramModelFitOperation]) {
-    expect(() => new Operation(props)).toThrowError(new Error(message));
+    expectCollisionError(() => new Operation(props), message, `outputs.${second}`);
   }
 });
 
@@ -642,7 +729,7 @@ for (const output of ['parameters', 'diagnostics', 'status'] as const) {
     };
     const message = `fit-collision outputs.${output} must name a graph value ("${input}") that no other port uses`;
     for (const Operation of [GPUVariogramModelFitOperation, CPUVariogramModelFitOperation]) {
-      expect(() => new Operation(props)).toThrowError(new Error(message));
+      expectCollisionError(() => new Operation(props), message, `outputs.${output}`);
     }
   });
 }

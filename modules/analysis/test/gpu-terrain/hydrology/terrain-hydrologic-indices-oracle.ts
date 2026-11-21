@@ -27,7 +27,7 @@ export type HydrologicIndicesOracleInput = {
 
 /** Outputs of {@link computeHydrologicIndices}, float64. */
 export type HydrologicIndicesOracleResult = {
-  slope: Float64Array;
+  descentTangent: Float64Array;
   specificCatchmentArea: Float64Array;
   wetnessIndex: Float64Array;
   streamPowerIndex: Float64Array;
@@ -55,7 +55,7 @@ export function computeHydrologicIndices(
   }
   const cellCount = width * height;
   const result: HydrologicIndicesOracleResult = {
-    slope: new Float64Array(cellCount).fill(NaN),
+    descentTangent: new Float64Array(cellCount).fill(NaN),
     specificCatchmentArea: new Float64Array(cellCount).fill(NaN),
     wetnessIndex: new Float64Array(cellCount).fill(NaN),
     streamPowerIndex: new Float64Array(cellCount).fill(NaN)
@@ -96,7 +96,7 @@ export function computeHydrologicIndices(
       height
     );
     const catchment = area / Math.sqrt(groundX * groundY);
-    result.slope[cell] = tangent;
+    result.descentTangent[cell] = tangent;
     result.specificCatchmentArea[cell] = catchment;
     result.wetnessIndex[cell] =
       catchment <= 0 ? -Infinity : tangent > 0 ? Math.log(catchment / tangent) : Infinity;

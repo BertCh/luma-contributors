@@ -62,7 +62,11 @@ it('counts supplied-mode empty triplegs and gives them zero distance without rea
       /triplegs.startRows/
     );
     expect(() =>
-      computeModalSplitOnCPU(input, {modeCount: 1, metric: 'count', modeSpeedBreaks: [1]})
+      computeModalSplitOnCPU(input, {
+        modeCount: 1,
+        metric: 'count',
+        modeSpeedUpperBoundsFloat32: [1]
+      })
     ).toThrow(/triplegs.startRows/);
   }
 });
@@ -77,13 +81,13 @@ it('matches hand-counted modes, lengths and durations, excluding a missing speed
     const predicted = computeModalSplitOnCPU(input, {
       metric,
       modeCount: 3,
-      modeSpeedBreaks: [2, 10, Infinity]
+      modeSpeedUpperBoundsFloat32: [2, 10, Infinity]
     });
     expect(Array.from(predicted.modalSplit)).toEqual(predictedExpected);
     expect(Array.from(predicted.predictedModes)).toEqual([0, 1, 0xffffffff, 1, 2, 0]);
     const supplied = computeModalSplitOnCPU(input, {metric, modeCount: 3});
     expect(Array.from(supplied.modalSplit)).toEqual(suppliedExpected);
-    expect(Array.from(supplied.predictedModes)).toEqual(new Array(6).fill(0));
+    expect(Array.from(supplied.predictedModes)).toEqual(new Array(6).fill(0xffffffff));
     expect(Array.from(input.modes)).toEqual([9, 0xffffffff, 0, 1, 1, 99]);
   }
 });
@@ -93,12 +97,12 @@ it('uses exclusive speed breaks and leaves the final speed class unbounded', () 
   const result = computeModalSplitOnCPU(input, {
     metric: 'count',
     modeCount: 3,
-    modeSpeedBreaks: [1, 6, 7]
+    modeSpeedUpperBoundsFloat32: [1, 6, 7]
   });
   expect(Array.from(result.predictedModes)).toEqual([1, 2, 0xffffffff, 1, 2, 0]);
   const empty = computeModalSplitOnCPU(
     {...input, triplegs: {...input.triplegs, count: Uint32Array.of(0)}},
-    {metric: 'distance', modeCount: 3, modeSpeedBreaks: [2, 10, Infinity]}
+    {metric: 'distance', modeCount: 3, modeSpeedUpperBoundsFloat32: [2, 10, Infinity]}
   );
   expect(empty.modalSplit.every(value => value === 0)).toBe(true);
   expect(empty.predictedModes.every(value => value === 0)).toBe(true);
@@ -157,6 +161,10 @@ it('checks malformed arrays and both operation constructors', () => {
   ).toThrow(/triplegs.startRows/);
   const props = getModalProps('count', true);
   for (const Operation of [GPUModalSplitOperation, CPUModalSplitOperation]) {
+    const retired = {...props, modeSpeedBreaks: props.modeSpeedUpperBoundsFloat32};
+    expect(() => new Operation(retired)).toThrow(
+      /^modal-test modeSpeedBreaks was removed.*modeSpeedUpperBoundsFloat32/
+    );
     expect(() => new Operation({...props, modeCount: 0})).toThrow(/^modal-test /);
     expect(
       () => new Operation({...props, output: {...props.output, modalSplit: 'positions'}})
@@ -164,9 +172,11 @@ it('checks malformed arrays and both operation constructors', () => {
   }
   expect(
     () =>
-      new CPUModalSplitOperation({...props, modes: undefined, modeSpeedBreaks: [2, 1, Infinity]})
-  ).toThrow(/^modal-test modeSpeedBreaks/);
-  expect(() => new CPUModalSplitOperation({...props, trackCount: 0})).toThrow(
-    /^modal-test trackCount/
-  );
+      new CPUModalSplitOperation({
+        ...props,
+        modes: undefined,
+        modeSpeedUpperBoundsFloat32: [2, 1, Infinity]
+      })
+  ).toThrow(/^modal-test modeSpeed/);
+  expect(() => new CPUModalSplitOperation({...props, trackCount: 0})).not.toThrow();
 });

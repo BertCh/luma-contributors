@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validatePointProcessView} from './point-process-utils';
+import {getSamplingReplayParameters, validateSamplingSeed} from './sampling-seed';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotContinuousSampleFrame} from './continuous-sample-frame-construction';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 import type {
@@ -40,6 +44,18 @@ const DEFAULT_MAXIMUM_CANDIDATES = 65536;
 const MAXIMUM_CANDIDATE_COUNT = 1048576;
 /** Most fixed legacy sites: each candidate is tested against all of them. */
 const MAXIMUM_LEGACY_SITE_COUNT = 256;
+/**
+ * Most serial inner-loop iterations of one wave invocation (see `getWaveWork`). Each wave is a
+ * single invocation, so without this bound the separate maxima above allow about 1.7e9 iterations
+ * and a lost device. 2^24 is the scalar work budget the bounded reference kernels already use
+ * (`MAXIMUM_SEGMENT_SNAP_EXHAUSTIVE_WORK` and the `GPUPointPatternEnvelope` rank comparisons, both
+ * 16777216). In this family `GPUInhomogeneousPointPattern` bounds one invocation's overlap loop at
+ * 1048576 edge pairs, each a triangle clip costing several of this loop's point-in-triangle or
+ * segment steps, which is of the same order. It admits the default 65536 candidates against
+ * about 250 frame primitives without legacy sites (more with a smaller budget or a smaller area
+ * lattice).
+ */
+const MAXIMUM_WAVE_WORK = 16777216;
 
 export type GPUContinuousSpatialFrame =
   | {
@@ -65,14 +81,19 @@ export type GPUContinuousSpatialSampleProps = {
   frame: GPUContinuousSpatialFrame;
   /** Positive spacing; Euclidean for area, arc length for line. Legacy exclusion uses the same metric. */
   spacing: number;
-  seed: number;
+  /** Scalar seed, required only without parameters. Resident words override this hint. */
+  seed?: number;
   /** First stream index; independent replacement waves increment this value. */
   replicate?: number;
   /** Primary wave followed by independently randomized complete replacement waves; default 1. */
   waves?: number;
   /** Fixed output slots per wave, including legacy rows. */
   capacity: number;
-  /** Maximum examined lattice candidates per wave, default 65536. */
+  /**
+   * Maximum examined lattice candidates per wave, default 65536. An area frame must cover its whole
+   * `bounds` lattice, so a smaller value throws at construction; a line frame reports flag 4. The
+   * serial work of one wave, which grows with this budget, is bounded at 2^24 iterations.
+   */
   maximumCandidates?: number;
   /** Resident [seed, first replicate] overrides; permits replay and changed inputs without recompilation. */
   parameters?: GraphDataView<'uint32'>;
@@ -107,12 +128,44 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
     randomPhaseBits: 24;
     replacement: 'independent-complete-waves';
     generator: 'Philox4x32-10';
+    parameterSource: 'constructor' | 'resident-view';
+    effectiveSeedSource: 'scalar' | 'resident-parameters';
   }>;
-  constructor(readonly props: GPUContinuousSpatialSampleProps) {
-    const id = props.id ?? 'continuous-spatial-sample';
+  readonly props: GPUContinuousSpatialSampleProps;
+  constructor(props: GPUContinuousSpatialSampleProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'frame',
+      'spacing',
+      'seed',
+      'replicate',
+      'waves',
+      'capacity',
+      'maximumCandidates',
+      'parameters',
+      'output'
+    ]);
+    const id = captured.id ?? 'continuous-spatial-sample';
+    props = Object.freeze({
+      ...captured,
+      frame: snapshotContinuousSampleFrame(id, captured.frame),
+      output: snapshotConstructionFields(captured.output, [
+        'positions',
+        'designWeights',
+        'provenance',
+        'status'
+      ])
+    });
+    this.props = props;
     this.id = id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     const {frame} = props;
+    validateRequirement(
+      id,
+      ['line', 'area'].includes(frame.type),
+      `frame.type must be line or area; received ${frame.type}`
+    );
     validateSinglePackedView(frame.positions, ['float32x2'], id);
     validateCapacity(
       id,
@@ -137,14 +190,9 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
     const waves = props.waves ?? 1;
     validateCapacity(id, 'waves', waves, 1, MAXIMUM_WAVE_COUNT);
     validateCapacity(id, 'capacity', props.capacity, 1, MAXIMUM_WAVE_CAPACITY);
-    validateCapacity(
-      id,
-      'maximumCandidates',
-      props.maximumCandidates ?? DEFAULT_MAXIMUM_CANDIDATES,
-      1,
-      MAXIMUM_CANDIDATE_COUNT
-    );
-    validateCapacity(id, 'seed', props.seed, 0, 0xffffffff);
+    const maximumCandidates = props.maximumCandidates ?? DEFAULT_MAXIMUM_CANDIDATES;
+    validateCapacity(id, 'maximumCandidates', maximumCandidates, 1, MAXIMUM_CANDIDATE_COUNT);
+    validateSamplingSeed(id, props.seed, props.parameters !== undefined);
     validateCapacity(id, 'replicate', props.replicate ?? 0, 0, 0xffffffff - waves + 1);
     if (frame.legacySites) {
       validateSinglePackedView(
@@ -160,6 +208,8 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
         MAXIMUM_LEGACY_SITE_COUNT
       );
     }
+    // Line frames examine up to maximumCandidates; their arc length is per-frame data.
+    let candidates = maximumCandidates;
     if (frame.type === 'area') {
       validateRequirement(
         id,
@@ -178,26 +228,38 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
         Number.isSafeInteger(columns * rows) && columns * rows < 0xffffffff,
         'frame.bounds divided by spacing must give fewer than 2^32 lattice cells'
       );
+      // Bounds, spacing and the budget are compile-time, so a lattice the budget cannot cover
+      // would always end in flag 4. Reject it here; flag 4 remains for line frames.
+      candidates = columns * rows;
+      validateRequirement(
+        id,
+        candidates <= maximumCandidates,
+        `maximumCandidates (${maximumCandidates}) must be at least the area lattice of ${columns} x ${rows} = ${candidates} cells given by frame.bounds and spacing (largest maximumCandidates ${MAXIMUM_CANDIDATE_COUNT}); raise maximumCandidates or spacing`
+      );
     }
+    const waveWork = getWaveWork(
+      frame.type,
+      frame.positions.length,
+      frame.legacySites?.length ?? 0,
+      candidates,
+      props.capacity
+    );
+    validateRequirement(
+      id,
+      waveWork <= MAXIMUM_WAVE_WORK,
+      `serial work per wave, (candidates + legacy sites) * (frame primitives + legacy sites * legacy-site cost + 1) + frame rows + capacity = ${waveWork}, must be at most ${MAXIMUM_WAVE_WORK}; lower maximumCandidates, frame rows or legacy sites, or raise an area frame's spacing`
+    );
     if (props.parameters) {
       validateSinglePackedView(props.parameters, ['uint32'], id);
       validateViewLength(id, 'parameters', props.parameters, 2);
     }
-    for (const [view, format] of [
-      [props.output.positions, 'float32x2'],
-      [props.output.designWeights, 'float32'],
-      [props.output.provenance, 'uint32x4'],
-      [props.output.status, 'uint32x4']
+    for (const [path, view, format, expectedRows] of [
+      ['output.positions', props.output.positions, 'float32x2', waves * props.capacity],
+      ['output.designWeights', props.output.designWeights, 'float32', waves * props.capacity],
+      ['output.provenance', props.output.provenance, 'uint32x4', waves * props.capacity],
+      ['output.status', props.output.status, 'uint32x4', waves]
     ] as const)
-      validateSinglePackedView(view, [format], id);
-    validateRequirement(
-      id,
-      props.output.positions.length === waves * props.capacity &&
-        props.output.designWeights.length === waves * props.capacity &&
-        props.output.provenance.length === waves * props.capacity &&
-        props.output.status.length === waves,
-      'output views must hold waves times capacity rows (status: waves rows)'
-    );
+      validatePointProcessView(id, path, view, [format], expectedRows);
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
       frame.positions,
       frame.legacySites,
@@ -216,8 +278,20 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
       separationMetric: frame.type === 'line' ? 'arc-length' : 'euclidean',
       randomPhaseBits: 24,
       replacement: 'independent-complete-waves',
-      generator: 'Philox4x32-10'
+      generator: 'Philox4x32-10',
+      parameterSource: props.parameters ? 'resident-view' : 'constructor',
+      effectiveSeedSource: props.parameters ? 'resident-parameters' : 'scalar'
     });
+  }
+  /** Record the uploaded resident words from this encoding, or the active scalar defaults. */
+  getReplayParameters(words?: Uint32Array): Uint32Array {
+    return getSamplingReplayParameters(
+      this.id,
+      this.props.seed,
+      this.props.replicate,
+      this.props.parameters !== undefined,
+      words
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -350,3 +424,29 @@ status[statusOffset+index*4u]=written;status[statusOffset+index*4u+1u]=required;
     ];
   }
 }
+
+/**
+ * Upper bound on the serial inner-loop iterations of one wave invocation. A candidate scans every
+ * frame primitive (triangles, or segments to locate a line position) and every legacy site; a line
+ * legacy site is located by scanning the segments, an area site is read directly. Legacy
+ * validation and writes cost at most one candidate's work per site. Vertex checks and slot padding
+ * add the frame rows and the capacity.
+ */
+function getWaveWork(
+  type: 'line' | 'area',
+  frameRowCount: number,
+  legacySiteCount: number,
+  candidateCount: number,
+  capacity: number
+): number {
+  const primitiveCount = type === 'area' ? frameRowCount / 3 : frameRowCount - 1;
+  const legacySiteCost = type === 'area' ? 1 : primitiveCount;
+  return (
+    (candidateCount + legacySiteCount) * (primitiveCount + legacySiteCount * legacySiteCost + 1) +
+    frameRowCount +
+    capacity
+  );
+}
+
+/** Caller-owned output map for {@link GPUContinuousSpatialSample}. */
+export type GPUContinuousSpatialSampleOutput = GPUContinuousSpatialSampleProps['output'];

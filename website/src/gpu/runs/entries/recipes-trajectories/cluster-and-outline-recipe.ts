@@ -7,8 +7,8 @@
 import {
   addClusterAndOutlineRecipe,
   getGPUGeographicDistributionParameterValues,
-  getGPUSpatialClusteringParameterValues,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  getGPUDBSCANParameterValues,
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {findParameter, snapToParameter} from '../../interaction';
@@ -32,7 +32,7 @@ export default defineOperationRun({
     const parameterBuffer = builder.allocate(
       'clustering-parameters',
       'float32',
-      GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+      GPU_DBSCAN_PARAMETER_LENGTH
     );
     const geometryBuffer = builder.upload(
       'geometry-parameters',
@@ -63,7 +63,7 @@ export default defineOperationRun({
       maximumClusterCount: MAXIMUM_CLUSTERS,
       maximumVerticesPerHull: 64,
       hullCapacity: HULL_CAPACITY,
-      outputs: {
+      output: {
         labels: labels.view,
         clusterCount: clusterCount.view,
         hullOffsets: hullOffsets.view,
@@ -93,10 +93,10 @@ export default defineOperationRun({
       },
       update: current =>
         parameterBuffer.write(
-          getGPUSpatialClusteringParameterValues({
+          getGPUDBSCANParameterValues({
             bounds: [0, 0, world.width, 1],
             epsilon: current.epsilon / 100,
-            minimumPoints: current.minimumPoints
+            minimumSamples: current.minimumSamples
           })
         )
     };
@@ -145,7 +145,7 @@ export default defineOperationRun({
           {shape: 'line', from: inputs.anchor, to: [pointer.x, pointer.y], dashed: true},
           {shape: 'dot', at: inputs.anchor}
         ],
-        readout: `epsilon ${epsilon} % · ${clusters ? clusters[0] : '...'} clusters · minimumPoints ${values.minimumPoints}`
+        readout: `epsilon ${epsilon} % · ${clusters ? clusters[0] : '...'} clusters · minimumSamples ${values.minimumSamples}`
       };
     }
   },

@@ -81,7 +81,7 @@ it('GPUNeighborSearch grid versus bvh versus auto on clustered and uniform point
       length: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
       values: getGPUNeighborSearchParameterValues({
         bounds: [0, 0, DOMAIN_SIZE, DOMAIN_SIZE],
-        radius: mode === 'radius' ? radius : undefined
+        searchRadius: mode === 'radius' ? radius : undefined
       })
     });
     const offsets = createOutputBuffer(device!, count + 1);
@@ -95,7 +95,7 @@ it('GPUNeighborSearch grid versus bvh versus auto on clustered and uniform point
       graph.add(
         new GPUNeighborSearch({
           mode,
-          k: mode === 'knn' ? 8 : undefined,
+          neighborCount: mode === 'knn' ? 8 : undefined,
           gridSize,
           searchStructure: structure,
           positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', count),

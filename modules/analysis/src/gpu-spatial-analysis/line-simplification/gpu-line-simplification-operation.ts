@@ -5,6 +5,13 @@
 import type {GPUContributorOperationOutput} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPULineSimplification, type GPULineSimplificationProps} from './gpu-line-simplification';
+import {
+  LINE_SIMPLIFICATION_STATUS_FIELDS,
+  snapshotLineSimplificationOperationProps
+} from './line-simplification-snapshot';
+
+import {createEmptyLineSimplification} from './empty-line-simplification';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Graph value names replace packed views; lengths are explicit. */
 export type LineSimplificationOperationProps = Pick<
@@ -34,6 +41,7 @@ export type LineSimplificationOperationProps = Pick<
     status?: {
       count?: string;
       overflow?: string;
+      candidateOverflow?: string;
       requiredCount?: string;
       converged?: string;
       iterationCount?: string;
@@ -44,6 +52,12 @@ export type LineSimplificationOperationProps = Pick<
 /** GPU line simplification operation. Importance is either an input or an output, never both. */
 export class GPULineSimplificationOperation extends GPUContributorOperation {
   constructor(props: LineSimplificationOperationProps) {
+    props = snapshotLineSimplificationOperationProps(props);
+    const id = props.id ?? 'line-simplification';
+    validateCapacity(id, 'rowCount', props.rowCount, 0);
+    validateCapacity(id, 'lineCount', props.lineCount, 0);
+    if (props.output?.ids !== undefined)
+      validateCapacity(id, 'capacity', props.capacity ?? props.rowCount, 0);
     const inputs: Record<string, string> = {
       positions: props.positions,
       lineOffsets: props.lineOffsets
@@ -68,68 +82,78 @@ export class GPULineSimplificationOperation extends GPUContributorOperation {
                 : props.lineCount
         };
     }
-    for (const [port, value] of Object.entries(props.output?.status ?? {}))
+    for (const port of LINE_SIMPLIFICATION_STATUS_FIELDS) {
+      const value = props.output?.status?.[port];
       if (value !== undefined) outputs[port] = {value, format: 'uint32', length: 1};
+    }
     super({
       id: props.id ?? 'line-simplification',
       inputs,
       outputs,
       createContributor: getView =>
-        new GPULineSimplification({
-          id: props.id,
-          spatialContext: props.spatialContext,
-          method: props.method,
-          metric: props.metric,
-          neighborhoodRadius: props.neighborhoodRadius,
-          maximumIterations: props.maximumIterations,
-          finishSpanLimit: props.finishSpanLimit,
-          computeImportance: props.computeImportance,
-          positions: getView<'float32x2'>('positions'),
-          lineOffsets: getView<'uint32'>('lineOffsets'),
-          importance: getView<'float32'>('importance'),
-          timestamps: props.timestamps !== undefined ? getView<'float32'>('timestamps') : undefined,
-          parameters: props.parameters !== undefined ? getView<'float32'>('parameters') : undefined,
-          output: {
-            ...(props.output?.ids !== undefined
-              ? {
-                  ids: getView<'uint32'>('ids'),
-                  outputMask:
-                    props.output.outputMask !== undefined
-                      ? getView<'uint32'>('outputMask')
+        props.rowCount === 0 || props.lineCount === 0
+          ? createEmptyLineSimplification(props, getView)
+          : new GPULineSimplification({
+              id: props.id,
+              spatialContext: props.spatialContext,
+              method: props.method,
+              metric: props.metric,
+              neighborhoodRadius: props.neighborhoodRadius,
+              maximumIterations: props.maximumIterations,
+              finishSpanLimit: props.finishSpanLimit,
+              computeImportance: props.computeImportance,
+              positions: getView<'float32x2'>('positions'),
+              lineOffsets: getView<'uint32'>('lineOffsets'),
+              importance: getView<'float32'>('importance'),
+              timestamps:
+                props.timestamps !== undefined ? getView<'float32'>('timestamps') : undefined,
+              parameters:
+                props.parameters !== undefined ? getView<'float32'>('parameters') : undefined,
+              output: {
+                ...(props.output?.ids !== undefined
+                  ? {
+                      ids: getView<'uint32'>('ids'),
+                      outputMask:
+                        props.output.outputMask !== undefined
+                          ? getView<'uint32'>('outputMask')
+                          : undefined,
+                      lineCounts:
+                        props.output.lineCounts !== undefined
+                          ? getView<'uint32'>('lineCounts')
+                          : undefined,
+                      lineStarts:
+                        props.output.lineStarts !== undefined
+                          ? getView<'uint32'>('lineStarts')
+                          : undefined
+                    }
+                  : {}),
+                status: {
+                  ...(props.output?.ids !== undefined
+                    ? {
+                        count: getView<'uint32'>('count'),
+                        overflow: getView<'uint32'>('overflow'),
+                        candidateOverflow:
+                          props.output.status?.candidateOverflow !== undefined
+                            ? getView<'uint32'>('candidateOverflow')
+                            : undefined,
+                        requiredCount:
+                          props.output.status?.requiredCount !== undefined
+                            ? getView<'uint32'>('requiredCount')
+                            : undefined
+                      }
+                    : {}),
+                  converged:
+                    props.output?.status?.converged !== undefined
+                      ? getView<'uint32'>('converged')
                       : undefined,
-                  lineCounts:
-                    props.output.lineCounts !== undefined
-                      ? getView<'uint32'>('lineCounts')
-                      : undefined,
-                  lineStarts:
-                    props.output.lineStarts !== undefined
-                      ? getView<'uint32'>('lineStarts')
+                  iterationCount:
+                    props.output?.status?.iterationCount !== undefined
+                      ? getView<'uint32'>('iterationCount')
                       : undefined
                 }
-              : {}),
-            status: {
-              ...(props.output?.ids !== undefined
-                ? {
-                    count: getView<'uint32'>('count'),
-                    overflow: getView<'uint32'>('overflow'),
-                    requiredCount:
-                      props.output.status?.requiredCount !== undefined
-                        ? getView<'uint32'>('requiredCount')
-                        : undefined
-                  }
-                : {}),
-              converged:
-                props.output?.status?.converged !== undefined
-                  ? getView<'uint32'>('converged')
-                  : undefined,
-              iterationCount:
-                props.output?.status?.iterationCount !== undefined
-                  ? getView<'uint32'>('iterationCount')
-                  : undefined
-            }
-          } as GPULineSimplificationProps['output']
-        }),
-      emptyOutputPorts: ['ids']
+              } as GPULineSimplificationProps['output']
+            }),
+      emptyOutputPorts: ['importance', 'ids', 'outputMask', 'lineCounts', 'lineStarts']
     });
   }
 }

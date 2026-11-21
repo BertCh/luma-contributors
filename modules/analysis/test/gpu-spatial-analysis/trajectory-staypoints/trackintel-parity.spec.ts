@@ -42,6 +42,7 @@ describe('trackintel parity', () => {
       const capacity = 32;
       const staypointIds = harness.output('staypoint-ids', 'uint32', capacity);
       const stayCount = harness.output('stay-count', 'uint32', 1);
+      const stayCandidateOverflow = harness.output('stay-candidate-overflow', 'uint32', 1);
       const stayOverflow = harness.output('stay-overflow', 'uint32', 1);
       const stayStarts = harness.output('stay-starts', 'uint32', capacity);
       const stayEnds = harness.output('stay-ends', 'uint32', capacity);
@@ -68,7 +69,11 @@ describe('trackintel parity', () => {
           ),
           output: {
             ids: staypointIds.view,
-            status: {count: stayCount.view, overflow: stayOverflow.view},
+            status: {
+              count: stayCount.view,
+              candidateOverflow: stayCandidateOverflow.view,
+              overflow: stayOverflow.view
+            },
             startRows: stayStarts.view,
             endRows: stayEnds.view,
             finishRows: stayFinishes.view,
@@ -87,6 +92,10 @@ describe('trackintel parity', () => {
           centroids: centroids.view,
           tracks: staypointIds.view,
           count: stayCount.view,
+          staypointStatus: {
+            overflow: stayOverflow.view,
+            candidateOverflow: stayCandidateOverflow.view
+          },
           spatialContext: CONTEXT,
           parameters: harness.input(
             'location-parameters',
@@ -96,7 +105,11 @@ describe('trackintel parity', () => {
           ),
           output: {
             locationIds: locationIds.view,
-            status: {count: locationCount.view, converged: converged.view},
+            status: {
+              count: locationCount.view,
+              iterationLimitReached: harness.output('iterationLimitReached', 'uint32', 1).view,
+              converged: converged.view
+            },
             centers: centers.view
           }
         })
@@ -126,7 +139,11 @@ describe('trackintel parity', () => {
             startRows: stayStarts.view,
             finishRows: stayFinishes.view,
             durations: durations.view,
-            status: {count: stayCount.view}
+            status: {
+              count: stayCount.view,
+              overflow: stayOverflow.view,
+              candidateOverflow: stayCandidateOverflow.view
+            }
           },
           parameters: harness.input(
             'segment-parameters',
@@ -140,7 +157,11 @@ describe('trackintel parity', () => {
           output: {
             triplegs: {
               ids: triplegIds.view,
-              status: {count: triplegCount.view, overflow: triplegOverflow.view},
+              status: {
+                count: triplegCount.view,
+                overflow: triplegOverflow.view,
+                candidateOverflow: harness.output('tripleg-candidate-overflow', 'uint32', 1).view
+              },
               startRows: triplegStarts.view,
               endRows: triplegEnds.view,
               rowTriplegIds: rowTriplegIds.view
@@ -165,6 +186,7 @@ describe('trackintel parity', () => {
         const stays = (await readUint32(stayCount.buffer, 1))[0];
         expect(stays).toBe(testCase.staypoints.length);
         expect((await readUint32(stayOverflow.buffer, 1))[0]).toBe(0);
+        expect((await readUint32(stayCandidateOverflow.buffer, 1))[0]).toBe(0);
         expect(await readUint32(rowStaypointIds.buffer, rowCount)).toEqual(
           toSentinel(testCase.rowStaypointIds)
         );

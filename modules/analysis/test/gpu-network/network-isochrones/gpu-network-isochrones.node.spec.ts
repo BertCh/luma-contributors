@@ -187,6 +187,37 @@ it('getGPUNetworkIsochronesParameterValues packs and validates', () => {
   ).toThrow(/GPUNetworkIsochrones breakCount/);
 });
 
+it('getGPUNetworkIsochronesParameterValues validates the float32 extent it packs (NET-108)', () => {
+  // Math.fround(10000000.25) === 10000000: float32 spacing at 1e7 is 1, so the packed width is zero.
+  expect(Math.fround(10000000.25)).toBe(10000000);
+  expect(() =>
+    getGPUNetworkIsochronesParameterValues({breakCount: 1, extent: [10000000, 0, 10000000.25, 1]})
+  ).toThrow(/^GPUNetworkIsochrones extent .*float32/);
+  expect(() =>
+    getGPUNetworkIsochronesParameterValues({breakCount: 1, extent: [0, 0, 1, 1e100]})
+  ).toThrow(/^GPUNetworkIsochrones extent .*float32/);
+  expect(() =>
+    getGPUNetworkIsochronesParameterValues({
+      breakCount: 1,
+      extent: [0, 0, 1, 1],
+      bufferRadius: 1e100
+    })
+  ).toThrow(/^GPUNetworkIsochrones bufferRadius/);
+  expect(() =>
+    getGPUNetworkIsochronesParameterValues({
+      breakCount: 1,
+      extent: [0, 0, 1, 1],
+      walkCostPerUnit: 1e100
+    })
+  ).toThrow(/^GPUNetworkIsochrones walkCostPerUnit/);
+  // One float32 step at 1e7 is a representable positive width and is still accepted.
+  const values = getGPUNetworkIsochronesParameterValues({
+    breakCount: 1,
+    extent: [10000000, 0, 10000001, 1]
+  });
+  expect(values[3] - values[1]).toBe(1);
+});
+
 it('GPUNetworkIsochrones bakes a numeric startCount without a binding', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'isochrones-count'});
   const startNodes = createTransientView(graph, `sources-${serial++}`, 'uint32', 3);

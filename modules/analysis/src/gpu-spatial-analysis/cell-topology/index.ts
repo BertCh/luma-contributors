@@ -56,6 +56,7 @@ export {GPUH3CellIdentities} from './gpu-h3-cell-identities';
 export type {GPUH3CellIdentitiesProps} from './gpu-h3-cell-identities';
 export {
   GPUS2PolygonCovering,
+  MAXIMUM_S2_COVERING_INPUT_EDGES_PER_INVOCATION,
   GPU_S2_POLYGON_COVERING_MAXIMUM_LEVEL,
   GPU_S2_POLYGON_COVERING_MINIMUM_VISITED_CELLS,
   GPU_S2_POLYGON_COVERING_MAXIMUM_VISITED_CELLS,

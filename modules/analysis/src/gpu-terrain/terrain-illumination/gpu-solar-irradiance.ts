@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from './terrain-output-selection';
+
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {toRadians} from '@math.gl/core';
 import {
   createTransientView,
+  getViewElementOffset,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
@@ -19,6 +22,8 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
+  validateFiniteNumber,
+  validateRequirement,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -33,7 +38,7 @@ import {
   GPU_TERRAIN_HORIZON_MINIMUM_DIRECTION_COUNT
 } from './gpu-terrain-horizon';
 import {GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES} from './gpu-solar-shadow-mask';
-import {getSolarPosition} from './solar-position';
+import {getSolarPosition, validateSolarPositionLocation} from './solar-position';
 import {
   getTerrainSolarVisibilityWGSL,
   TERRAIN_ILLUMINATION_WGSL_CONSTANTS,
@@ -48,6 +53,9 @@ export const GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH = 8;
 
 /** Float32 values per sun table row: azimuth, altitude, duration, direct normal irradiance. */
 export const GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE = 4;
+
+/** Largest exact float32 row count whose final scalar lane fits uint32 at binding offset zero. */
+export const MAXIMUM_GPU_SOLAR_IRRADIANCE_SAMPLE_COUNT = 1073741824;
 
 /** Solar constant used by the Meinel clear-sky model in W/m^2. */
 const SOLAR_CONSTANT = 1353;
@@ -101,14 +109,23 @@ export type GPUSolarIrradianceSunTableOptions = {
  * clockwise from north, see `getSolarPosition`). The CPU float64 solar position keeps sunrise and
  * sunset timing exact; the table is then plain float32 data that one buffer write replaces.
  *
- * @returns The packed rows and their number. `values` has `sampleCount * 4` entries (the `target`
- * when it was passed).
+ * @returns The packed rows and their number. `values` preserves a supplied target, including its
+ * padding. `counts.sampleCount` is the active row count; `counts.sampleCapacity` is the number of
+ * complete allocated four-float rows. `formats.sunTable` names the consumer's scalar view format:
+ * import `sampleCapacity * GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE` float32 values. Tails are unchanged.
  * @throws If a time is not finite, `end <= start`, the step is not positive, or `target` is short.
  */
 export function getGPUSolarIrradianceSunTable(options: GPUSolarIrradianceSunTableOptions): {
   values: Float32Array;
   sampleCount: number;
+  counts: {sampleCount: number; sampleCapacity: number};
+  formats: {sunTable: 'float32'};
 } {
+  validateSolarPositionLocation(
+    'getGPUSolarIrradianceSunTable',
+    options.longitude,
+    options.latitude
+  );
   const startMilliseconds =
     typeof options.start === 'number' ? options.start : options.start.getTime();
   const endMilliseconds = typeof options.end === 'number' ? options.end : options.end.getTime();
@@ -124,14 +141,30 @@ export function getGPUSolarIrradianceSunTable(options: GPUSolarIrradianceSunTabl
   }
   const stepMilliseconds = stepMinutes * 60000;
   const sampleCount = Math.ceil((endMilliseconds - startMilliseconds) / stepMilliseconds - 1e-9);
+  validateSolarIrradianceSampleCount('getGPUSolarIrradianceSunTable', sampleCount);
   const stride = GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE;
+  const directNormal = options.directNormalIrradiance ?? 'meinel';
+  validateRequirement(
+    'getGPUSolarIrradianceSunTable',
+    directNormal === 'meinel' || typeof directNormal === 'number',
+    `directNormalIrradiance must be meinel or a finite nonnegative number; received ${directNormal}`
+  );
+  if (directNormal !== 'meinel') {
+    validateRequirement(
+      'getGPUSolarIrradianceSunTable',
+      directNormal >= 0,
+      `directNormalIrradiance must be nonnegative; received ${directNormal}`
+    );
+    validateFiniteNumber(
+      'getGPUSolarIrradianceSunTable',
+      'directNormalIrradiance',
+      directNormal,
+      0
+    );
+  }
   const values = options.target ?? new Float32Array(sampleCount * stride);
   if (values.length < sampleCount * stride) {
     throw new Error(`Solar irradiance sun table target must hold ${sampleCount * stride} values`);
-  }
-  const directNormal = options.directNormalIrradiance ?? 'meinel';
-  if (directNormal !== 'meinel' && !(Number.isFinite(directNormal) && directNormal >= 0)) {
-    throw new Error('Solar irradiance directNormalIrradiance must be meinel or non-negative');
   }
   for (let sample = 0; sample < sampleCount; sample++) {
     const intervalStart = startMilliseconds + sample * stepMilliseconds;
@@ -158,12 +191,17 @@ export function getGPUSolarIrradianceSunTable(options: GPUSolarIrradianceSunTabl
       sample * stride
     );
   }
-  return {values, sampleCount};
+  return {
+    values,
+    sampleCount,
+    counts: {sampleCount, sampleCapacity: Math.floor(values.length / stride)},
+    formats: {sunTable: 'float32'}
+  };
 }
 
 /** CPU-side description packed by {@link getGPUSolarIrradianceParameterValues}. */
 export type GPUSolarIrradianceSettings = {
-  /** Number of valid sun table rows, an integer in `[0, sampleCapacity]`. */
+  /** Active rows in `[0, sampleCapacity]`, exactly representable in float32 and at most 1073741824. */
   sampleCount: number;
   /**
    * Angular radius of the solar disk in degrees: 0 gives hard shadows. Defaults to
@@ -194,24 +232,45 @@ export function getGPUSolarIrradianceParameterValues(
     target,
     GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH
   );
-  if (!Number.isSafeInteger(settings.sampleCount) || settings.sampleCount < 0) {
-    throw new Error('Solar irradiance sampleCount must be a non-negative integer');
-  }
+  validateSolarIrradianceSampleCount('getGPUSolarIrradianceParameterValues', settings.sampleCount);
   const angularRadius = settings.angularRadiusDegrees ?? GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES;
-  if (!Number.isFinite(angularRadius) || angularRadius < 0) {
-    throw new Error('Solar irradiance angular radius must be finite and non-negative');
-  }
+  validateRequirement(
+    'getGPUSolarIrradianceParameterValues',
+    angularRadius >= 0,
+    `angularRadiusDegrees must be nonnegative; received ${angularRadius}`
+  );
+  validateFiniteNumber(
+    'getGPUSolarIrradianceParameterValues',
+    'angularRadiusDegrees',
+    angularRadius,
+    0
+  );
   const diffuse = settings.diffuseIrradiance ?? 0;
-  if (!Number.isFinite(diffuse) || diffuse < 0) {
-    throw new Error('Solar irradiance diffuseIrradiance must be finite and non-negative');
-  }
+  validateRequirement(
+    'getGPUSolarIrradianceParameterValues',
+    diffuse >= 0,
+    `diffuseIrradiance must be nonnegative; received ${diffuse}`
+  );
+  validateFiniteNumber('getGPUSolarIrradianceParameterValues', 'diffuseIrradiance', diffuse, 0);
   target.fill(0, 0, GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH);
   target.set([settings.sampleCount, angularRadius, diffuse]);
   return target;
 }
 
+/** Exact float32 row counts whose four-lane table offsets fit the uint32 consumer. @internal */
+function validateSolarIrradianceSampleCount(id: string, sampleCount: number): void {
+  validateRequirement(
+    id,
+    Number.isSafeInteger(sampleCount) &&
+      sampleCount >= 0 &&
+      Math.fround(sampleCount) === sampleCount &&
+      sampleCount <= MAXIMUM_GPU_SOLAR_IRRADIANCE_SAMPLE_COUNT,
+    `sampleCount must be a nonnegative exact float32 integer at most MAXIMUM_GPU_SOLAR_IRRADIANCE_SAMPLE_COUNT = ${MAXIMUM_GPU_SOLAR_IRRADIANCE_SAMPLE_COUNT}; received ${sampleCount}`
+  );
+}
+
 /** Caller-owned outputs of {@link GPUSolarIrradiance}; at least one is required. */
-export type GPUSolarIrradianceOutput = {
+export type GPUSolarIrradianceOutput = TerrainOutputSelection<{
   /** Hours the solar disk is visible, summed over the sun table. */
   sunHours?: GraphDataView<'float32'>;
   /** Energy in Wh/m^2 on the (inclined) surface summed over the sun table. */
@@ -222,7 +281,7 @@ export type GPUSolarIrradianceOutput = {
   sunHoursTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
   /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving `insolation`. */
   insolationTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUSolarIrradiance}.
@@ -231,6 +290,8 @@ export type GPUSolarIrradianceOutput = {
  * which inputs and outputs exist. Per-frame: `parameters`, the contents of `sunTable`, and input
  * contents. The contributor works in pixel space and never reads cell sizes: all terrain geometry is
  * already in the horizon map, slope, and aspect.
+ * The float32 parameter layout requires an exact active `sampleCount`, at most 1073741824 total
+ * rows, so its four-float table prefix fits uint32 indexing; per-node chunking does not raise it.
  */
 export type GPUSolarIrradianceProps = {
   /** Prefix for node and transient IDs. Defaults to `'solar-irradiance'`. */
@@ -263,7 +324,7 @@ export type GPUSolarIrradianceProps = {
   samplesPerNode?: number;
   /** Per-frame parameters with at least 8 float32 values, see {@link getGPUSolarIrradianceParameterValues}. */
   parameters: GraphDataView<'float32'>;
-  /** Optional slope in degrees, as written by `GPUTerrainDerivatives`. Used with `aspect` for `insolation`. */
+  /** Horn or compatible slope in degrees. Used with `aspect` for `insolation`. */
   slope?: GraphDataView<'float32'>;
   /** Optional aspect in degrees clockwise from north, -1 when flat. Required with `slope`. */
   aspect?: GraphDataView<'float32'>;
@@ -313,6 +374,10 @@ export type GPUSolarIrradianceProps = {
  *
  * One invocation per pixel loops over its chunk of table rows, so a day at 5 minute steps is 288
  * iterations with two horizon reads each; `samplesPerNode` splits long tables across nodes.
+ * The active total row count must be exactly representable in float32 and at most
+ * `MAXIMUM_GPU_SOLAR_IRRADIANCE_SAMPLE_COUNT = 1073741824` for a zero-offset storage binding;
+ * the final lane including the binding's scalar offset must fit uint32. Chunking does not increase
+ * this layout limit. Device buffer limits can require smaller tables.
  */
 export class GPUSolarIrradiance implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -373,6 +438,15 @@ export class GPUSolarIrradiance implements GPUCommandNodeProducer {
       props.sunTable,
       'float32',
       sampleCapacity * GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE
+    );
+    const lastTableLane =
+      getViewElementOffset(props.sunTable) +
+      sampleCapacity * GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE -
+      1;
+    validateRequirement(
+      id,
+      Number.isSafeInteger(lastTableLane) && lastTableLane <= 0xffffffff,
+      `sunTable last scalar lane must fit uint32 indexing (at most 4294967295); received ${lastTableLane}`
     );
     for (const [name, view] of [
       ['slope', props.slope],

@@ -5,14 +5,14 @@ import {formatResourceBytes, formatResourceCount} from '../../lens/format';
 import type {LensViewModel} from '../../lens/types';
 import './meta.css';
 
-/** The largest buffers of a recorded run, as proportional bars. */
+/** The largest resources of a recorded run, as proportional bars. */
 export function ResourceBars({model, limit = 6}: {model: LensViewModel; limit?: number}) {
   const rows = model.resources.largest.slice(0, limit);
   const maximum = Math.max(1, ...rows.map(row => row.bytes));
   return (
     <div className="meta-panel">
       <div className="meta-panel__bar">
-        <span className="meta-panel__title">{model.title}: largest buffers</span>
+        <span className="meta-panel__title">{model.title}: largest resources</span>
         <ul className="meta-stats">
           <li>
             <strong>

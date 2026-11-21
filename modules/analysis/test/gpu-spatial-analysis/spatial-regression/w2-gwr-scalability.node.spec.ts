@@ -76,7 +76,7 @@ function createFixture(rowCount: number, maximumPermutations = 64) {
       standardErrors: view('float32', rowCount * 2),
       tValues: view('float32', rowCount * 2),
       significant: view('uint32', rowCount * 2),
-      approximation: view('uint32', 1)
+      status: {approximation: view('uint32', 1)}
     }
   };
   const testProps = {
@@ -95,7 +95,7 @@ function createFixture(rowCount: number, maximumPermutations = 64) {
     output: {
       table: view('float32', 12),
       summary: view('float32', 4),
-      approximation: view('uint32', 1)
+      status: {approximation: view('uint32', 1)}
     }
   };
   const transients: GraphBufferHandle[] = [];
@@ -490,51 +490,21 @@ it('permits adjacent outputs across separate dispatches while rejecting logical 
   fixture.device.destroy();
 });
 
-it('publishes canonical approximation status and retains the flat compatibility alias', () => {
+it('publishes the named approximation status in both GWR contributors', () => {
   const fixture = createFixture(32, 1);
-  const {approximation, ...outputs} = fixture.props.output;
-  const {approximation: testApproximation, ...testOutputs} = fixture.testProps.output;
-  const regression = new GPUGeographicallyWeightedRegression({
-    ...fixture.props,
-    output: {...outputs, status: {approximation}}
-  });
-  const test = new GPUGeographicallyWeightedRegressionNonstationarityTest({
-    ...fixture.testProps,
-    output: {...testOutputs, status: {approximation: testApproximation}}
-  });
+  const regression = new GPUGeographicallyWeightedRegression(fixture.props);
+  const test = new GPUGeographicallyWeightedRegressionNonstationarityTest(fixture.testProps);
   for (const contributor of [regression, test]) {
     const nodes = contributor.getCommandNodes(fixture.graph);
     const status = nodes.find(node => node.id.endsWith('-approximation'));
     expect(status).toBeDefined();
-    const view = contributor === regression ? approximation : testApproximation;
+    const view = contributor.props.output.status!.approximation;
     expect(
       (status as {resources: {buffer: unknown}[]}).resources.some(
         resource => resource.buffer === view
       )
     ).toBe(true);
   }
-  expect(
-    () =>
-      new GPUGeographicallyWeightedRegression({
-        ...fixture.props,
-        output: {...fixture.props.output, status: {approximation: fixture.view('uint32', 1)}}
-      })
-  ).toThrow(/compatibility alias must match/);
-  expect(
-    () =>
-      new GPUGeographicallyWeightedRegressionNonstationarityTest({
-        ...fixture.testProps,
-        output: {...fixture.testProps.output, status: {approximation: fixture.view('uint32', 1)}}
-      })
-  ).toThrow(/compatibility alias must match/);
-  // Identical aliases are one writable binding, rather than two overlapping outputs.
-  expect(
-    () =>
-      new GPUGeographicallyWeightedRegression({
-        ...fixture.props,
-        output: {...fixture.props.output, status: {approximation}}
-      })
-  ).not.toThrow();
   fixture.device.destroy();
 });
 

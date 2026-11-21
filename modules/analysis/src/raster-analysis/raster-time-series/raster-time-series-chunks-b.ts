@@ -3,14 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
+  type GraphVectorView,
   validatePackedView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  isGraphVectorView,
   getGraphViewChunks,
+  type GPUGraphPortDescriptor,
   validateCapacity,
   validateCommandNodeBudget,
   validateGraphViewsBelongToGraph,
@@ -24,7 +26,11 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 import {createRasterTimeSeriesKernelNode} from './raster-time-series-chunks';
-import {planRasterTimeSeriesCellTopology} from './raster-time-series-cell-topology';
+import {
+  planRasterTimeSeriesCellTopology,
+  validateRasterTimeSeriesPorts,
+  lowerRasterTimeSeriesCellChunks
+} from './raster-time-series-cell-topology';
 import {
   validateRasterWritableDispatches,
   type RasterWritableDispatch
@@ -51,6 +57,8 @@ export type RasterTimeSeriesField = {
 };
 export type RasterTimeSeriesChunkPlan = {
   readonly cellCount: number;
+  /** Original cell-field identities, including zero-chunk vectors. */
+  readonly cellViews?: ReadonlySet<RasterTimeSeriesScalarView>;
   readonly chunked: boolean;
   readonly chunks: readonly {
     cellCount: number;
@@ -63,8 +71,14 @@ export type RasterTimeSeriesChunkPlan = {
 export function planRasterTimeSeriesChunks(
   id: string,
   cellCount: number,
-  fields: Readonly<Record<string, RasterTimeSeriesField>>
+  fields: Readonly<Record<string, RasterTimeSeriesField>>,
+  ports: Readonly<Record<string, GPUGraphPortDescriptor>> = {}
 ): RasterTimeSeriesChunkPlan {
+  validateRasterTimeSeriesPorts(
+    id,
+    Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, field.view])),
+    ports
+  );
   const present = Object.entries(fields).filter(
     (entry): entry is [string, RasterTimeSeriesField & {view: RasterTimeSeriesScalarView}] =>
       entry[1].view !== undefined
@@ -74,15 +88,19 @@ export function planRasterTimeSeriesChunks(
     cellCount,
     fields
   );
-  const chunks = cells.map((count, chunkIndex) => ({
-    cellCount: count,
-    views: new Map(
-      present.map(([, field]) => [field.view, getGraphViewChunks(field.view)[chunkIndex]])
-    )
-  }));
+  const chunks = lowerRasterTimeSeriesCellChunks(
+    cells,
+    present.map(([, field]) => field.view)
+  );
   const estimatedCommandNodeCount = chunks.filter(chunk => chunk.cellCount > 0).length;
   validateCommandNodeBudget(id, estimatedCommandNodeCount);
-  return {cellCount, chunked: vectorMode, chunks, estimatedCommandNodeCount};
+  return {
+    cellCount,
+    cellViews: new Set(present.map(([, field]) => field.view)),
+    chunked: vectorMode,
+    chunks,
+    estimatedCommandNodeCount
+  };
 }
 
 /** Construction checks shared tables, every chunk, and writable aligned/logical separation. */
@@ -93,16 +111,14 @@ export function validateRasterTimeSeriesViews(
   plan: RasterTimeSeriesChunkPlan,
   dispatches?: readonly RasterWritableDispatch[]
 ): void {
-  const cellViews = plan.chunks[0]?.views;
+  const cellViews = plan.cellViews ?? plan.chunks[0]?.views;
+  // Generic layout-only check: producers validate named port formats before planning.
   for (const view of [...inputs, ...outputs]) {
     if (!cellViews?.has(view)) {
-      validateRequirement(
-        id,
-        !(view instanceof GraphVectorView),
-        'shared tables must be one packed view'
-      );
+      validateRequirement(id, !isGraphVectorView(view), 'shared tables must be one packed view');
     }
-    for (const chunk of getGraphViewChunks(view)) validatePackedView(chunk, [view.format], id);
+    for (const chunk of getGraphViewChunks(view))
+      validatePackedView(chunk, ['float32', 'uint32', 'sint32', 'uint32x2'], id);
   }
   // This lowering binds all listed fields in one statistic's dispatch per cell chunk.
   // Multi-statistic routes supply their narrower binding lists explicitly.
@@ -129,7 +145,7 @@ export function validateRasterTimeSeriesGraph<Parameters>(
       )
     )
   );
-  if (views.some(view => view instanceof GraphVectorView)) {
+  if (views.some(view => isGraphVectorView(view))) {
     validateCapacity(
       id,
       'chunk dispatch uniform byteLength (maxUniformBufferBindingSize)',

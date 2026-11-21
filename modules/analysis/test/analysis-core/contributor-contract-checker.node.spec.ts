@@ -76,6 +76,693 @@ afterEach(() => {
 });
 
 describe('contributor contract checker', () => {
+  it.each([
+    '--update-baseline',
+    '--migrate-baseline'
+  ])('B2 rejects partial %s without erasing reviewed allowances', mode => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: kernel('for(var row=0u;row<count;row++){}')
+    });
+    expect(
+      runChecker(
+        directory,
+        '--update-baseline',
+        '--reason',
+        'Reviewed loop, unchanged by selected rules'
+      ).exitCode
+    ).toBe(0);
+    if (mode === '--migrate-baseline')
+      writeFileSync(
+        join(directory, BASELINE_PATH),
+        JSON.stringify({
+          'single-invocation-data-loop': {[CONTRIBUTOR_PATH]: 1},
+          _reasons: {
+            'single-invocation-data-loop': {[CONTRIBUTOR_PATH]: 'Reviewed legacy loop retained'}
+          }
+        })
+      );
+    const original = readFileSync(join(directory, BASELINE_PATH), 'utf8');
+    expect(JSON.parse(original)['single-invocation-data-loop'][CONTRIBUTOR_PATH]).toBeTruthy();
+    const result = runChecker(directory, '--rule', 'bare-assert', mode);
+    expect(result.exitCode, result.output).toBe(2);
+    expect(result.output).toContain('--rule cannot be combined');
+    expect(readFileSync(join(directory, BASELINE_PATH), 'utf8')).toBe(original);
+  });
+
+  it('B2 rejects a missing rule value without touching the baseline', () => {
+    const directory = createFixture({[CONTRIBUTOR_PATH]: ''});
+    const before = readFileSync(join(directory, BASELINE_PATH), 'utf8');
+    for (const mode of ['--update-baseline', '--migrate-baseline']) {
+      const result = runChecker(directory, mode, '--rule');
+      expect(result.exitCode, result.output).toBe(2);
+      expect(result.output).toContain('--rule cannot be combined');
+      expect(readFileSync(join(directory, BASELINE_PATH), 'utf8')).toBe(before);
+    }
+  });
+
+  it('B4 invalidates checked bindings after writes and accepts dominating rejecting guards', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      function assigned(view, replacement) {
+        validateSinglePackedView(view, ['float32'], 'checked');
+        view = replacement;
+        validateSinglePackedView(view, [view.format], 'assigned');
+      }
+      function guarded(view) {
+        if (view.format !== 'float32') throw new Error('format');
+        validateSinglePackedView(view, [view.format], 'guarded');
+      }
+    `
+    });
+    const result = runChecker(directory, '--rule', 'self-format-validation');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toMatch(/^self-format-validation\s+1\s+1$/m);
+    const source = readFileSync(join(directory, CONTRIBUTOR_PATH), 'utf8');
+    expect(result.output).toContain(
+      `${CONTRIBUTOR_PATH}:${source.slice(0, source.indexOf("validateSinglePackedView(view, [view.format], 'assigned')")).split('\n').length}`
+    );
+  });
+
+  it('B4 accepts checked collections and rejects a replaced member', () => {
+    const file = [
+      'function layouts(id, inputs, outputs) {',
+      ' for (const view of [...inputs, ...outputs]) validateSinglePackedView(view, [view.format], id);',
+      '}',
+      'function fixed(props: {values: GraphDataView; output: {status: GraphDataView}}) {',
+      " for (const [view, format] of [[props.values, 'float32'], [props.output.status, 'uint32']] as const) {",
+      '  validateSinglePackedView(view, [format], props.id);',
+      ' }',
+      ' layouts(props.id, [props.values], Object.values(props.output));',
+      '}'
+    ].join('\n');
+    const directory = createFixture({[CONTRIBUTOR_PATH]: file});
+    const valid = runChecker(directory, '--rule', 'self-format-validation');
+    expect(valid.exitCode, valid.output).toBe(0);
+    writeFileSync(
+      join(directory, CONTRIBUTOR_PATH),
+      file.replace(' layouts(props.id', ' props.values = replacement;\n layouts(props.id')
+    );
+    const invalid = runChecker(directory, '--rule', 'self-format-validation');
+    expect(invalid.exitCode, invalid.output).toBe(1);
+  });
+
+  it('B4 tracks property writes and shadowed bindings independently', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      function changed(props, replacement) {
+        validateSinglePackedView(props.values, ['float32'], 'old');
+        props.values = replacement;
+        validateSinglePackedView(props.values, [props.values.format], 'changed');
+      }
+      function shadowed(view, replacement) {
+        validateSinglePackedView(view, ['float32'], 'outer');
+        { const view = replacement; validateSinglePackedView(view, [view.format], 'inner'); }
+      }
+    `
+    });
+    const result = runChecker(directory, '--rule', 'self-format-validation');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toMatch(/^self-format-validation\s+2\s+1$/m);
+  });
+
+  it('B4 refuses cyclic collection proofs without recursing indefinitely', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      function layouts(inputs) {
+        for (const view of inputs) validateSinglePackedView(view, [view.format], 'cyclic');
+        layouts(inputs);
+      }
+    `
+    });
+    const result = runChecker(directory, '--rule', 'self-format-validation');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain('NEW self-format-validation');
+    expect(result.output).not.toContain('RangeError');
+  });
+
+  it('B5 treats source-chunk format checks as self checks and keeps independent formats valid', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      function unchecked(view) {
+        for (const chunk of getGraphViewChunks(view)) validatePackedView(chunk, [view.format], 'unchecked');
+      }
+      function checked(view) {
+        for (const chunk of getGraphViewChunks(view)) validatePackedView(chunk, ['float32'], 'checked');
+      }
+    `
+    });
+    const result = runChecker(directory, '--rule', 'self-format-validation');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toMatch(/^self-format-validation\s+1\s+1$/m);
+  });
+
+  it('VAL-01 flags self-format validation at fixed ports without baselining it', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      function fixed(props) { validateSinglePackedView(props.values, [props.values.format], 'demo values'); }
+    `
+    });
+    const result = runChecker(directory, '--rule', 'self-format-validation');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain('NEW self-format-validation');
+    expect(result.output).toContain(CONTRIBUTOR_PATH);
+    const baseline = runChecker(
+      directory,
+      '--update-baseline',
+      '--reason',
+      'cannot excuse fixed ports'
+    );
+    expect(baseline.exitCode, baseline.output).toBe(1);
+    expect(baseline.output).toContain('self-format-validation');
+  });
+
+  it('VAL-01 accepts layout helpers only after a real format check on every call', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      function layout(view) { validateSinglePackedView(view, [view.format], 'demo values'); }
+      function fixed(props) {
+        validateSinglePackedView(props.values, ['float32'], 'demo values');
+        layout(props.values);
+      }
+      function dynamic(view) {
+        validateRequirement('demo', /^(float32|uint32)$/.test(view.format), 'view format');
+        validateSinglePackedView(view, [view.format], 'demo view');
+      }
+    `
+    });
+    const result = runChecker(directory, '--rule', 'self-format-validation');
+    expect(result.exitCode, result.output).toBe(0);
+    writeFileSync(
+      join(directory, CONTRIBUTOR_PATH),
+      `
+      function layout(view) { validateSinglePackedView(view, [view.format], 'demo values'); }
+      function fixed(props) {
+        validateSinglePackedView(props.values, ['float32'], 'demo values');
+        layout(props.values);
+      }
+      function unchecked(props) { layout(props.values); }
+    `
+    );
+    const unchecked = runChecker(directory, '--rule', 'self-format-validation');
+    expect(unchecked.exitCode, unchecked.output).toBe(1);
+    expect(unchecked.output).toContain('NEW self-format-validation');
+  });
+
+  it('VAL-01 does not confuse a conditional or unrelated check with a format preflight', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      function conditional(view, other, enabled) {
+        if (enabled) validateSinglePackedView(view, ['float32'], 'demo view');
+        validateSinglePackedView(other, ['float32'], 'demo other');
+        validateRequirement('demo', true, 'view.format');
+        validateSinglePackedView(view, [view.format], 'demo view');
+      }
+    `
+    });
+    const result = runChecker(directory, '--rule', 'self-format-validation');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain('NEW self-format-validation');
+  });
+
+  it('keeps catalog admission entry-qualified for shared and same-name declarations (ERG-106)', () => {
+    const directory = createFixture({
+      'modules/analysis/package.json': JSON.stringify({
+        name: '@luma-contributors/analysis',
+        exports: {
+          './first': './dist/analysis-core/first/index.js',
+          './second': './dist/analysis-core/second/index.js'
+        }
+      }),
+      [`${SOURCE_ROOT}/analysis-core/fixture/shared.ts`]: 'export function addSharedRecipe() {}',
+      [`${SOURCE_ROOT}/analysis-core/first/index.ts`]:
+        "export {addSharedRecipe} from '../fixture/shared';\nexport function addDuplicateRecipe() {}",
+      [`${SOURCE_ROOT}/analysis-core/second/index.ts`]:
+        "export {addSharedRecipe} from '../fixture/shared';\nexport function addDuplicateRecipe() {}",
+      [`${SOURCE_ROOT}/gpu-spatial-analysis/ontology/index.ts`]: `export const ALL_OPERATORS = [
+        {package: '@luma-contributors/analysis/first', exportName: 'addSharedRecipe'},
+        {package: '@luma-contributors/analysis/first', exportName: 'addDuplicateRecipe'}
+      ];`
+    });
+    const missing = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(missing.exitCode, missing.output).toBe(1);
+    expect(missing.output).toContain('(@luma-contributors/analysis/second) addSharedRecipe');
+    expect(missing.output).toContain('(@luma-contributors/analysis/second) addDuplicateRecipe');
+    // Use literal public records: the catalog evaluator intentionally does not execute callbacks.
+    writeFileSync(
+      join(directory, SOURCE_ROOT, 'gpu-spatial-analysis/ontology/index.ts'),
+      'export const ALL_OPERATORS = ' +
+        JSON.stringify(
+          ['first', 'second'].flatMap(entry =>
+            ['addSharedRecipe', 'addDuplicateRecipe'].map(exportName => ({
+              package: '@luma-contributors/analysis/' + entry,
+              exportName
+            }))
+          )
+        ) +
+        ';'
+    );
+    const complete = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(complete.exitCode, complete.output).toBe(0);
+  });
+
+  it('round 1 [B1] terminates on an external namespace without modifying local exports', () => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/index.ts`]:
+        "export const version = 1;\nexport * as arrow from 'apache-arrow';"
+    });
+    const result = spawnSync(
+      process.execPath,
+      ['--max-old-space-size=128', CHECKER_PATH, '--rule', 'internal-export'],
+      {cwd: directory, encoding: 'utf8', timeout: 2000}
+    );
+    expect(result.status, `${result.error}\n${result.stdout}${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain('internal-export                    0    0');
+    // The unrelated public local declaration must keep its own origin as well.
+    writeFileSync(
+      join(directory, SOURCE_ROOT, 'index.ts'),
+      "/** @internal */\nexport const version = 1;\nexport * as arrow from 'apache-arrow';"
+    );
+    const internal = runChecker(directory, '--rule', 'internal-export');
+    expect(internal.output).toContain(' version');
+    expect(internal.output).not.toContain('arrow.version');
+  });
+
+  it.each([
+    false,
+    true
+  ])('round 1 [B2] registers only emitted records, original spread = %s', spread => {
+    const originals = [
+      {exportName: 'addSourceRecipe', package: '@luma-contributors/analysis/gpu-spatial-analysis'}
+    ];
+    const expression = `[${spread ? '...GPU_SPATIAL_ANALYSIS_OPERATORS,' : ''} {...GPU_SPATIAL_ANALYSIS_OPERATORS.find(operator => operator.exportName === 'addSourceRecipe'), package: '@luma-contributors/analysis/analysis-core', exportName: 'addFixtureRecipe'}]`;
+    // This same expression is used by JavaScript and by the checker fixture. A find reads one
+    // source record; only the explicit spread emits the original spatial identity.
+    const actual = new Function('GPU_SPATIAL_ANALYSIS_OPERATORS', `return ${expression};`)(
+      originals
+    ) as typeof originals;
+    expect(actual.map(record => record.exportName)).toEqual(
+      spread ? ['addSourceRecipe', 'addFixtureRecipe'] : ['addFixtureRecipe']
+    );
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: 'export function addFixtureRecipe() {}',
+      [`${SOURCE_ROOT}/gpu-spatial-analysis/fixture/source.ts`]:
+        'export function addSourceRecipe() {}',
+      [`${SOURCE_ROOT}/gpu-spatial-analysis/index.ts`]:
+        "export {addSourceRecipe} from './fixture/source';",
+      [`${SOURCE_ROOT}/gpu-spatial-analysis/ontology/index.ts`]: `const GPU_SPATIAL_ANALYSIS_OPERATORS = ${JSON.stringify(originals)}; export const ALL_OPERATORS = ${expression};`
+    });
+    const result = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(result.exitCode, result.output).toBe(spread ? 0 : 1);
+    expect(result.output.includes(' addSourceRecipe')).toBe(!spread);
+    expect(result.output).not.toContain(' addFixtureRecipe');
+  });
+
+  it('round 1 [B3] ignores private ALL_OPERATORS when the public getter returns an empty array', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: 'export function addFixtureRecipe() {}',
+      [`${SOURCE_ROOT}/gpu-spatial-analysis/ontology/index.ts`]:
+        "const ALL_OPERATORS = [{exportName: 'addFixtureRecipe', package: '@luma-contributors/analysis/analysis-core'}]; export function getGPUAnalysisOperatorCatalog() {return [];}"
+    });
+    const result = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(result.exitCode, result.output).toBe(1);
+  });
+
+  it('round 1 [B3] resolves a record variable emitted by the public catalog', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: 'export function addFixtureRecipe() {}',
+      [`${SOURCE_ROOT}/gpu-spatial-analysis/ontology/index.ts`]:
+        "const operator = {exportName: 'addFixtureRecipe', package: '@luma-contributors/analysis/analysis-core'}; const rows = [operator]; export function getGPUAnalysisOperatorCatalog() {return rows;}"
+    });
+    const result = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(result.exitCode, result.output).toBe(0);
+  });
+
+  it.each([
+    null,
+    './dist/analysis-core/api/public.js'
+  ])('round 1 [B4] honors the winning exact export target %s', target => {
+    const directory = createFixture({
+      'modules/analysis/package.json': JSON.stringify({
+        exports: {'./api/*': './dist/analysis-core/api/*.js', './api/private': target}
+      }),
+      [`${SOURCE_ROOT}/analysis-core/api/private.ts`]: '/** @internal */\nexport const secret = 1;',
+      [`${SOURCE_ROOT}/analysis-core/api/public.ts`]: 'export const visible = 1;'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(0);
+  });
+
+  it('round 1 [B4] honors a more-specific wildcard redirect', () => {
+    const directory = createFixture({
+      'modules/analysis/package.json': JSON.stringify({
+        exports: {
+          './api/*': './dist/analysis-core/api/*.js',
+          './api/private/*': './dist/analysis-core/public/*.js'
+        }
+      }),
+      [`${SOURCE_ROOT}/analysis-core/api/private/data.ts`]:
+        '/** @internal */\nexport const secret = 1;',
+      [`${SOURCE_ROOT}/analysis-core/public/data.ts`]: 'export const visible = 1;'
+    });
+    expect(runChecker(directory, '--rule', 'internal-export').exitCode).toBe(0);
+  });
+
+  it('round 1 [B5] resolves a cjs import to cts ahead of a ts sibling', () => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/index.ts`]: "export * as sub from './analysis-core/fixture/data.cjs';",
+      [`${SOURCE_ROOT}/analysis-core/fixture/data.ts`]: 'export const visible = 1;',
+      [`${SOURCE_ROOT}/analysis-core/fixture/data.cts`]:
+        '/** @internal */\nexport const secret = 1;'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain('sub.secret');
+  });
+
+  it.each([
+    'cjs',
+    'mjs'
+  ])('round 1 [B5] preserves manifest module format for %s targets', extension => {
+    const ownExtension = extension === 'cjs' ? 'cts' : 'mts';
+    const otherExtension = extension === 'cjs' ? 'mts' : 'cts';
+    const directory = createFixture({
+      'modules/analysis/package.json': JSON.stringify({
+        exports: {'./api': `./dist/analysis-core/fixture/main.${extension}`}
+      }),
+      [`${SOURCE_ROOT}/analysis-core/fixture/main.${ownExtension}`]: 'export const visible = 1;',
+      [`${SOURCE_ROOT}/analysis-core/fixture/main.${otherExtension}`]:
+        '/** @internal */\nexport const secret = 1;'
+    });
+    expect(runChecker(directory, '--rule', 'internal-export').exitCode).toBe(0);
+  });
+
+  it('round 1 [B5] checks an authored declaration-only public types target', () => {
+    const file = `${SOURCE_ROOT}/analysis-core/fixture/public.d.ts`;
+    const directory = createFixture({
+      'modules/analysis/package.json': JSON.stringify({
+        exports: {'./api': {types: './dist/analysis-core/fixture/public.d.ts'}}
+      }),
+      [file]: '/** @internal */\nexport declare const secret: number;'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`NEW internal-export ${file}`);
+  });
+
+  it.each([
+    '(secret)',
+    'api.secret',
+    "api['secret']"
+  ])('round 1 [B6] follows default expression %s', expression => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/index.ts`]: `import {secret} from './analysis-core/fixture/data'; import * as api from './analysis-core/fixture/data'; export default ${expression};`,
+      [`${SOURCE_ROOT}/analysis-core/fixture/data.ts`]: '/** @internal */\nexport const secret = 1;'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(' default');
+  });
+
+  it('round 1 [B6] finds the tag on a default function exposed through a namespace', () => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/index.ts`]: "export * as api from './analysis-core/fixture/data';",
+      [`${SOURCE_ROOT}/analysis-core/fixture/data.ts`]:
+        '/** @internal */\nexport default function reader() {}'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(' api.default');
+  });
+
+  it('round 1 [NOTE declaration] keeps a nested internal declaration separate from its public namesake', () => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/index.ts`]:
+        'export const foo = 1;\nfunction helper() {\n/** @internal */\nconst foo = 2;\nreturn foo;\n}'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(0);
+  });
+
+  it('round 1 [B7] follows indexed props through a default type import', () => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/analysis-core/index.ts`]:
+        "import type Entry from './fixture/data'; export type PublicProps = Entry['visible'];",
+      [`${SOURCE_ROOT}/analysis-core/fixture/data.ts`]:
+        'export default interface Entry {visible: {\n/** @internal */\nsecret?: number;\n}}'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain('PublicProps.secret');
+  });
+
+  it.each([
+    [
+      'method',
+      "interface Group {transform(options: Options): number;} export type PublicProps = Group['transform'];",
+      true
+    ],
+    [
+      'instance',
+      "class Group {a = 1; static a: Options;} export type PublicProps = Group['a'];",
+      false
+    ],
+    ['record', "export type PublicProps = Record<'palette', Options>['palette'];", true]
+  ] as const)('round 1 [B8] selects the %s value and its full signature', (_, body, internal) => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/analysis-core/index.ts`]:
+        'interface Options {\n/** @internal */\nsecret?: number;\n}\n' + body
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(internal ? 1 : 0);
+    if (internal) expect(result.output).toContain('secret');
+  });
+
+  it.each([
+    [
+      "import {assert as check} from '@luma.gl/core'; for (const check of [Boolean]) check(4);",
+      false
+    ],
+    ["import {assert as check} from '@luma.gl/core'; type check = number; check(true);", true],
+    ["import * as core from '@luma.gl/core'; core['assert'](true);", true]
+  ] as const)('round 1 [B9] resolves value-namespace assert calls: %s', (text, violation) => {
+    const result = runChecker(createFixture({[CONTRIBUTOR_PATH]: text}), '--rule', 'bare-assert');
+    expect(result.exitCode, result.output).toBe(violation ? 1 : 0);
+  });
+
+  it.each([
+    [
+      "import * as luma from '@luma.gl/core'; const graphics = luma; export default graphics.Device;",
+      true
+    ],
+    [
+      "import {Device as DEVICE} from '@luma.gl/core'; export const ANALYSIS_DEVICE = DEVICE;",
+      true
+    ],
+    [
+      "import {GPU_FFT2D_MAX_DIMENSION as limit} from '@luma.gl/graph/gpu-core'; export const ANALYSIS_LIMIT = (limit);",
+      false
+    ]
+  ] as const)('round 1 [B10] retains originating names and namespace identity: %s', (text, violation) => {
+    const result = runChecker(createFixture({[CONTRIBUTOR_PATH]: text}), '--rule', 'luma-reexport');
+    expect(result.exitCode, result.output).toBe(violation ? 1 : 0);
+  });
+
+  it('round 1 [NOTE allowance] requires a stated bound rather than arbitrary explanation text', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]:
+        '// contract-allow: single-invocation -- TODO review later\n' +
+        kernel('for(var row=0u;row<rowCount;row++){}')
+    });
+    const result = runChecker(directory, '--rule', 'single-invocation-data-loop');
+    expect(result.exitCode, result.output).toBe(1);
+  });
+  it('checks a conditional native CommonJS source target (CORE-119)', () => {
+    const file = `${SOURCE_ROOT}/analysis-core/nested/entry.cts`;
+    const directory = createFixture({
+      'modules/analysis/package.json': JSON.stringify({
+        exports: {'./nested': {require: './dist/analysis-core/nested/entry.cjs'}}
+      }),
+      [file]: '/** @internal */\nexport const hidden = 1;'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`NEW internal-export ${file}`);
+  });
+
+  it.each([
+    [
+      './nested',
+      {
+        import: {
+          types: './dist/analysis-core/nested/entry.d.ts',
+          default: './dist/analysis-core/nested/entry.js'
+        }
+      }
+    ],
+    ['./nested/*', {import: './dist/analysis-core/*/entry.js'}]
+  ])('checks internal exports from manifest target %s (CORE-119)', (entry, target) => {
+    const file = `${SOURCE_ROOT}/analysis-core/nested/entry.ts`;
+    const directory = createFixture({
+      'modules/analysis/package.json': JSON.stringify({exports: {[entry]: target}}),
+      [file]: '/** @internal */\nexport const hidden = 1;',
+      [`${SOURCE_ROOT}/analysis-core/private/index.ts`]:
+        '/** @internal */\nexport const privateControl = 2;'
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`NEW internal-export ${file}`);
+    expect(result.output).toContain('hidden');
+    expect(result.output).not.toContain('privateControl');
+  });
+
+  it.each([
+    "import {Device as Renamed} from '@luma.gl/core'; export {Renamed};",
+    "import * as core from '@luma.gl/core'; export const Renamed = core.Device;",
+    "import {Device} from '@luma.gl/core'; export default Device;",
+    "import {Device} from '@luma.gl/core'; const First = Device; const Second = First; export {Second};"
+  ])('resolves luma re-export binding origins: %s (CORE-119)', text => {
+    const result = runChecker(createFixture({[CONTRIBUTOR_PATH]: text}), '--rule', 'luma-reexport');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`NEW luma-reexport ${CONTRIBUTOR_PATH}`);
+  });
+
+  it('permits domain type aliases and named domain limits (CORE-119)', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+      import type {Device} from '@luma.gl/core';
+      import {GPU_FFT2D_MAX_DIMENSION} from '@luma.gl/graph/gpu-core';
+      export type FixtureDevice = Device;
+      export const MAXIMUM_SPECTRAL_DIMENSION = GPU_FFT2D_MAX_DIMENSION;
+    `
+    });
+    expect(runChecker(directory, '--rule', 'luma-reexport').exitCode).toBe(0);
+  });
+
+  it.each([
+    "import {assert as check} from '@luma.gl/core';\nconst description = 'check(true)';",
+    "import {assert as check} from '@luma.gl/core';\nfunction local(check: (value: boolean) => void) {check(true);}",
+    "import {assert as check} from '@luma.gl/core';\nfunction local() {function check(value: boolean) {return value;} check(true);}",
+    "import * as core from '@luma.gl/core';\nfunction local(core: {assert(value: boolean): void}) {core.assert(true);}"
+  ])('ignores text and shadowed assert bindings: %s (CORE-119)', text => {
+    const result = runChecker(createFixture({[CONTRIBUTOR_PATH]: text}), '--rule', 'bare-assert');
+    expect(result.exitCode, result.output).toBe(0);
+  });
+
+  it('reports the callee source line of a multiline imported assert call (CORE-119)', () => {
+    const result = runChecker(
+      createFixture({
+        [CONTRIBUTOR_PATH]: "import {assert as check} from '@luma.gl/core';\ncheck\n(\n  true\n);"
+      }),
+      '--rule',
+      'bare-assert'
+    );
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`${CONTRIBUTOR_PATH}:2`);
+  });
+
+  it.each([
+    'default',
+    'namespace'
+  ])('follows %s exports to internal and public declarations (TOOL-117)', route => {
+    const module = `${SOURCE_ROOT}/analysis-core/fixture/hidden.ts`;
+    const index = `${SOURCE_ROOT}/index.ts`;
+    const text = '/** @internal */\nexport const hidden = 1;\nexport const visible = 2;';
+    const internalRoute =
+      route === 'default'
+        ? "import {hidden} from './analysis-core/fixture/hidden'; export default hidden;"
+        : "export * as exposed from './analysis-core/fixture/hidden';";
+    const directory = createFixture({[module]: text, [index]: internalRoute});
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`NEW internal-export ${index}`);
+    if (route === 'namespace') expect(result.output).toContain(' exposed.hidden');
+    expect(result.output).not.toContain('exposed.visible');
+    writeFileSync(
+      join(directory, index),
+      route === 'default'
+        ? "import {visible} from './analysis-core/fixture/hidden'; export default visible;"
+        : "export * as exposed from './analysis-core/fixture/public';"
+    );
+    writeFileSync(
+      join(directory, SOURCE_ROOT, 'analysis-core/fixture/public.ts'),
+      'export const visible = 2;'
+    );
+    expect(runChecker(directory, '--rule', 'internal-export').exitCode).toBe(0);
+  });
+
+  it.each([
+    'local',
+    'imported'
+  ])('follows selected indexed-access props through %s aliases (TOOL-117)', route => {
+    const types = `
+      type Key = 'options';
+      interface Branches {options: {
+        /** @internal */ hidden?: number
+      }; public: {visible: number};}
+      export type Selected<T extends Branches = Branches> = T[Key];
+      export type PublicSelected = Branches['public'];
+    `;
+    const entry = `${SOURCE_ROOT}/analysis-core/index.ts`;
+    const directory = createFixture({
+      [entry]:
+        (route === 'local'
+          ? types
+          : "import type {Selected, PublicSelected} from './fixture/types';") +
+        '\nexport type PublicProps = Selected;',
+      [`${SOURCE_ROOT}/analysis-core/fixture/types.ts`]: types
+    });
+    const result = runChecker(directory, '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain('PublicProps.hidden');
+    writeFileSync(
+      join(directory, entry),
+      (route === 'local' ? types : "import type {PublicSelected} from './fixture/types';") +
+        '\nexport type PublicProps = PublicSelected;'
+    );
+    expect(runChecker(directory, '--rule', 'internal-export').exitCode).toBe(0);
+  });
+
+  it('credits only catalog records connected to the exported construction (TOOL-117)', () => {
+    const catalog = `${SOURCE_ROOT}/gpu-spatial-analysis/ontology/index.ts`;
+    const orphan =
+      "const REUSED_ANALYSIS_OPERATORS = [{exportName: 'addFixtureRecipe', package: '@luma-contributors/analysis/analysis-core'}];";
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: 'export function addFixtureRecipe() {}',
+      [catalog]: orphan + '\nexport const ALL_OPERATORS = [];'
+    });
+    const missing = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(missing.exitCode, missing.output).toBe(1);
+    writeFileSync(
+      join(directory, catalog),
+      orphan +
+        '\nconst family = [...REUSED_ANALYSIS_OPERATORS];\nexport const ALL_OPERATORS = [...family];'
+    );
+    const connected = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(connected.exitCode, connected.output).toBe(0);
+  });
+  it.each([
+    'GPU_SPATIAL_ANALYSIS_OPERATORS',
+    'GPU_SPATIAL_ANALYSIS_OPERATOR_DESCRIPTORS'
+  ])('traces imported families, spreads and cloned %s records (TOOL-117)', collection => {
+    const catalog = `${SOURCE_ROOT}/gpu-spatial-analysis/ontology/index.ts`;
+    const family = `${SOURCE_ROOT}/gpu-spatial-analysis/ontology/family.ts`;
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: 'export function addFixtureRecipe() {}',
+      [family]: `export const ${collection} = [{exportName: 'addSourceRecipe', package: '@luma-contributors/analysis/gpu-spatial-analysis'}];`,
+      [catalog]: `import {${collection}} from './family';
+          const family = [...${collection}];
+          export const ALL_OPERATORS = [...family, {
+            ...${collection}.find(operator => operator.exportName === 'addSourceRecipe')!,
+            package: '@luma-contributors/analysis/analysis-core', exportName: 'addFixtureRecipe'
+          }];`
+    });
+    const connected = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(connected.exitCode, connected.output).toBe(0);
+    writeFileSync(join(directory, family), `export const ${collection} = [];`);
+    const missing = runChecker(directory, '--rule', 'unregistered-contributor');
+    expect(missing.exitCode, missing.output).toBe(1);
+  });
+
   it('keeps internal site IDs and acceptance independent of directory enumeration order', () => {
     const file = `${SOURCE_ROOT}/analysis-core/shared/base.ts`;
     const directory = createFixture({
@@ -137,7 +824,8 @@ fs.readdirSync = function(directory, ...arguments_) {
     const network = `${SOURCE_ROOT}/gpu-network/visibility/recipe.ts`;
     const catalog = `${SOURCE_ROOT}/gpu-spatial-analysis/ontology/index.ts`;
     const spatialRegistration =
-      "export const GPU_SPATIAL_ANALYSIS_CAPABILITIES = [{operators: ['addVisibilityGraphRecipe']}];";
+      "export const GPU_SPATIAL_ANALYSIS_CAPABILITIES = [{operators: ['addVisibilityGraphRecipe']}];" +
+      "const GPU_SPATIAL_ANALYSIS_OPERATORS = GPU_SPATIAL_ANALYSIS_CAPABILITIES.flatMap(capability => capability.operators.map(exportName => ({exportName, package: '@luma-contributors/analysis/gpu-spatial-analysis'})));";
     const directory = createFixture({
       [spatial]: 'export function addVisibilityGraphRecipe() {}',
       [network]: 'export function addVisibilityGraphRecipe() {}',
@@ -155,7 +843,7 @@ fs.readdirSync = function(directory, ...arguments_) {
     writeFileSync(
       join(directory, catalog),
       spatialRegistration +
-        "\nexport const ALL_OPERATORS = [{...GPU_SPATIAL_ANALYSIS_OPERATORS.find(operator => operator.exportName === 'addVisibilityGraphRecipe')!, package: '@luma-contributors/analysis/gpu-network'}];"
+        "\nexport const ALL_OPERATORS = [...GPU_SPATIAL_ANALYSIS_OPERATORS, {...GPU_SPATIAL_ANALYSIS_OPERATORS.find(operator => operator.exportName === 'addVisibilityGraphRecipe')!, package: '@luma-contributors/analysis/gpu-network'}];"
     );
     const complete = runChecker(directory, '--rule', 'unregistered-contributor');
     expect(complete.exitCode, complete.output).toBe(0);
@@ -168,7 +856,8 @@ fs.readdirSync = function(directory, ...arguments_) {
     ]) {
       writeFileSync(
         join(directory, catalog),
-        spatialRegistration + `\nexport const ALL_OPERATORS = [{${properties}}];`
+        spatialRegistration +
+          `\nexport const ALL_OPERATORS = [...GPU_SPATIAL_ANALYSIS_OPERATORS, {${properties}}];`
       );
       const overwritten = runChecker(directory, '--rule', 'unregistered-contributor');
       expect(overwritten.exitCode, overwritten.output).toBe(1);
@@ -178,7 +867,7 @@ fs.readdirSync = function(directory, ...arguments_) {
     writeFileSync(
       join(directory, catalog),
       spatialRegistration +
-        `\nexport const ALL_OPERATORS = [{exportName: 'addOtherRecipe', ${copy}, package: '@luma-contributors/analysis/gpu-network'}];`
+        `\nexport const ALL_OPERATORS = [...GPU_SPATIAL_ANALYSIS_OPERATORS, {exportName: 'addOtherRecipe', ${copy}, package: '@luma-contributors/analysis/gpu-network'}];`
     );
     const restored = runChecker(directory, '--rule', 'unregistered-contributor');
     expect(restored.exitCode, restored.output).toBe(0);
@@ -189,7 +878,7 @@ fs.readdirSync = function(directory, ...arguments_) {
     writeFileSync(
       join(directory, catalog),
       spatialRegistration +
-        `\nexport const ALL_OPERATORS = [{${copy}, package: '@luma-contributors/analysis/gpu-network', exportName: 'addOtherRecipe'}];`
+        `\nexport const ALL_OPERATORS = [...GPU_SPATIAL_ANALYSIS_OPERATORS, {${copy}, package: '@luma-contributors/analysis/gpu-network', exportName: 'addOtherRecipe'}];`
     );
     const renamed = runChecker(directory, '--rule', 'unregistered-contributor');
     expect(renamed.exitCode, renamed.output).toBe(0);
@@ -242,7 +931,8 @@ fs.readdirSync = function(directory, ...arguments_) {
         "export {addVisibilityGraphRecipe} from './visibility/recipe';",
       [catalog]:
         "export const GPU_SPATIAL_ANALYSIS_CAPABILITIES = [{operators: ['addVisibilityGraphRecipe']}];" +
-        `\nexport const ALL_OPERATORS = [{${properties}}];`
+        "const GPU_SPATIAL_ANALYSIS_OPERATORS = GPU_SPATIAL_ANALYSIS_CAPABILITIES.flatMap(capability => capability.operators.map(exportName => ({exportName, package: '@luma-contributors/analysis/gpu-spatial-analysis'})));" +
+        `\nexport const ALL_OPERATORS = [...GPU_SPATIAL_ANALYSIS_OPERATORS, {${properties}}];`
     });
     const result = runChecker(directory, '--rule', 'unregistered-contributor');
     expect(result.exitCode, result.output).toBe(expected ? 0 : 1);
@@ -686,6 +1376,135 @@ fs.readdirSync = function(directory, ...arguments_) {
     expect(result.output).toContain('NEW single-invocation-data-loop');
   });
 
+  it('invalidates a loop allowance when only the host bound its reason cites changes (CORE-118)', () => {
+    const source = (bound: string) =>
+      `export ${bound};\n${kernel('for(var row=0u;row<rowCount;row++){}')}`;
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: source('const MAXIMUM_FIXTURE_ROW_COUNT = 64')
+    });
+    expect(
+      runChecker(
+        directory,
+        '--update-baseline',
+        '--reason',
+        'Rows capped by MAXIMUM_FIXTURE_ROW_COUNT = 64 at construction.'
+      ).exitCode
+    ).toBe(0);
+    const accepted = runChecker(directory);
+    expect(accepted.exitCode, accepted.output).toBe(0);
+    // The shader and site identity are unchanged; only the host bound moves.
+    writeFileSync(
+      join(directory, CONTRIBUTOR_PATH),
+      source('const MAXIMUM_FIXTURE_ROW_COUNT = 65536')
+    );
+    const raised = runChecker(directory);
+    expect(raised.exitCode, raised.output).toBe(1);
+    expect(raised.output).toContain('NEW single-invocation-data-loop');
+    expect(raised.output).toContain(
+      'cites MAXIMUM_FIXTURE_ROW_COUNT = 64, but the source value is 65536'
+    );
+    writeFileSync(join(directory, CONTRIBUTOR_PATH), source('const MAXIMUM_ROW_LIMIT = 64'));
+    const renamed = runChecker(directory);
+    expect(renamed.exitCode, renamed.output).toBe(1);
+    expect(renamed.output).toContain('cites MAXIMUM_FIXTURE_ROW_COUNT, which no analysis source');
+  });
+
+  it.each([
+    ['MGWR_INFERENCE_MAXIMUM_ROW_COUNT', 128, 129],
+    ['MGWR_INFERENCE_MAXIMUM_WORK', 268435456, 268435457]
+  ] as const)('W2-03 reports a new gate finding when %s changes', (name, before, after) => {
+    const repository = resolve(dirname(CHECKER_PATH), '..');
+    const inferencePath = `${SOURCE_ROOT}/gpu-spatial-analysis/spatial-regression/multiscale-inference.ts`;
+    const baseline = readFileSync(join(repository, BASELINE_PATH), 'utf8');
+    const source = readFileSync(join(repository, inferencePath), 'utf8');
+    const directory = createFixture({[inferencePath]: source, [BASELINE_PATH]: baseline});
+    const accepted = runChecker(directory, '--rule', 'single-invocation-data-loop');
+    expect(accepted.exitCode, accepted.output).toBe(0);
+
+    const declaration = `export const ${name} = ${before};`;
+    expect(source).toContain(declaration);
+    writeFileSync(
+      join(directory, inferencePath),
+      source.replace(declaration, `export const ${name} = ${after};`)
+    );
+    const raised = runChecker(directory, '--rule', 'single-invocation-data-loop');
+    expect(raised.exitCode, raised.output).toBe(1);
+    expect(raised.output).toMatch(/^single-invocation-data-loop\s+1\s+1$/m);
+    expect(raised.output).toContain(`NEW single-invocation-data-loop ${inferencePath}`);
+  });
+
+  it('resolves an unshadowed constant Math.floor bound and rejects its changed value (review numeric policy)', () => {
+    const source = (expression: string) =>
+      `export const MAXIMUM_FIXTURE_ROW_COUNT = ${expression};\n// contract-allow: single-invocation -- MAXIMUM_FIXTURE_ROW_COUNT = 1073741823 rows\n${kernel('for(var row=0u;row<rowCount;row++){}')}`;
+    const directory = createFixture({[CONTRIBUTOR_PATH]: source('Math.floor(0xffffffff / 4)')});
+    const original = runChecker(directory, '--rule', 'single-invocation-data-loop');
+    expect(original.exitCode, original.output).toBe(0);
+    writeFileSync(join(directory, CONTRIBUTOR_PATH), source('Math.floor((0xffffffff - 4) / 4)'));
+    const changed = runChecker(directory, '--rule', 'single-invocation-data-loop');
+    expect(changed.exitCode, changed.output).toBe(1);
+    writeFileSync(
+      join(directory, CONTRIBUTOR_PATH),
+      'const Math = {floor: (value: number) => value};\n' + source('Math.floor(0xffffffff / 4)')
+    );
+    const shadowed = runChecker(directory, '--rule', 'single-invocation-data-loop');
+    expect(shadowed.exitCode, shadowed.output).toBe(1);
+  });
+
+  it('rejects an unevaluable numeric host citation instead of certifying it (review earlier numeric policy)', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]:
+        'export const MAXIMUM_FIXTURE_ROW_COUNT = 2 ** 16;\n' +
+        kernel('for(var row=0u;row<rowCount;row++){}')
+    });
+    expect(
+      runChecker(
+        directory,
+        '--update-baseline',
+        '--reason',
+        'MAXIMUM_FIXTURE_ROW_COUNT = 65536 rows.'
+      ).exitCode
+    ).toBe(0);
+    writeFileSync(
+      join(directory, CONTRIBUTOR_PATH),
+      'export const MAXIMUM_FIXTURE_ROW_COUNT = 1 << 18;\n' +
+        kernel('for(var row=0u;row<rowCount;row++){}')
+    );
+    const changed = runChecker(directory, '--rule', 'single-invocation-data-loop');
+    expect(changed.exitCode, changed.output).toBe(1);
+    expect(changed.output).toContain('cannot statically resolve');
+  });
+
+  it('accepts an inline loop allowance only with a stated bound that still holds (CORE-118)', () => {
+    const loop = kernel('for(var row=0u;row<rowCount;row++){}');
+    const check = (allowance: string) => {
+      const directory = createFixture({
+        [CONTRIBUTOR_PATH]: `export const MAXIMUM_FIXTURE_ROW_COUNT = 64;\n${allowance}\n${loop}`
+      });
+      return runChecker(directory, '--rule', 'single-invocation-data-loop');
+    };
+    const counted = (allowance: string) =>
+      /^single-invocation-data-loop\s+(\d+)/m.exec(check(allowance).output)?.[1];
+    expect(counted('// contract-allow: single-invocation')).toBe('1');
+    expect(counted('// contract-allow: single-invocation --')).toBe('1');
+    expect(counted('// contract-allow: single-invocation -- at most 64 rows')).toBe('0');
+    expect(
+      counted('// contract-allow: single-invocation -- exactly eight fixed summary words')
+    ).toBe('0');
+    expect(
+      counted('// contract-allow: single-invocation -- four bounded order-four PSD projections')
+    ).toBe('0');
+    expect(counted('// At most 64 rows.\n// contract-allow: single-invocation')).toBe('0');
+    expect(
+      counted('// contract-allow: single-invocation -- MAXIMUM_FIXTURE_ROW_COUNT = 64 rows')
+    ).toBe('0');
+    expect(
+      counted('// contract-allow: single-invocation -- MAXIMUM_FIXTURE_ROW_COUNT = 32 rows')
+    ).toBe('1');
+    expect(counted('// contract-allow: single-invocation -- MAXIMUM_REMOVED_ROW_COUNT rows')).toBe(
+      '1'
+    );
+  });
+
   it('reports stale baseline entries without rewriting them', () => {
     const directory = createFixture({
       [CONTRIBUTOR_PATH]: kernel('for(var row=0u;row<rowCount;row++){}')
@@ -732,6 +1551,54 @@ fs.readdirSync = function(directory, ...arguments_) {
     expect(update.exitCode, update.output).toBe(1);
     expect(update.output).toContain('cannot be baselined');
     expect(readFileSync(join(directory, BASELINE_PATH), 'utf8')).toBe(baselineBefore);
+  });
+
+  it.each([
+    ['aliased', "import {assert as check} from '@luma.gl/core';\ncheck(true);"],
+    ['namespace', "import * as core from '@luma.gl/core';\ncore.assert(true);"],
+    ['multiline', "import {\n  type Device,\n  assert\n} from '@luma.gl/core';\nassert(true);"]
+  ])('rejects a bare assert imported %s (TOOL-117)', (_, text) => {
+    const directory = createFixture({[CONTRIBUTOR_PATH]: text});
+    const result = runChecker(directory, '--rule', 'bare-assert');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`NEW bare-assert ${CONTRIBUTOR_PATH}:`);
+  });
+
+  it('accepts a local assert and a luma.gl import without assert', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]:
+        "import {log} from '@luma.gl/core';\nconst assert = (value: boolean) => value;\nassert(true);\nlog.assert(true);"
+    });
+    expect(runChecker(directory, '--rule', 'bare-assert').exitCode).toBe(0);
+  });
+
+  it.each([
+    [
+      'an imported internal re-exported by name',
+      {
+        [`${SOURCE_ROOT}/analysis-core/fixture/hidden.ts`]:
+          '/** @internal */\nexport const hidden = 1;\n',
+        [`${SOURCE_ROOT}/index.ts`]:
+          "import {hidden} from './analysis-core/fixture/hidden';\nexport {hidden};\n"
+      }
+    ],
+    [
+      'a renamed imported internal',
+      {
+        [`${SOURCE_ROOT}/analysis-core/fixture/hidden.ts`]:
+          '/** @internal */\nexport const hidden = 1;\n',
+        [`${SOURCE_ROOT}/index.ts`]:
+          "import {hidden as visible} from './analysis-core/fixture/hidden';\nexport {visible as shown};\n"
+      }
+    ],
+    [
+      'a local internal exported by a clause',
+      {[`${SOURCE_ROOT}/index.ts`]: '/** @internal */\nconst hidden = 1;\nexport {hidden};\n'}
+    ]
+  ])('rejects %s (TOOL-117)', (_, files) => {
+    const result = runChecker(createFixture(files), '--rule', 'internal-export');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`NEW internal-export ${SOURCE_ROOT}/index.ts`);
   });
 
   it('retains explicitly reviewed legacy internal sites without accepting new members', () => {
@@ -915,7 +1782,7 @@ fs.readdirSync = function(directory, ...arguments_) {
         if (!enabled) build(enabled, 1, body);
         build(true, 1, 'scan();', 'fn scan() {}');
         build(true, 1, 'scan();');
-        // contract-allow: single-invocation -- reviewed fixed-capacity scan
+        // contract-allow: single-invocation -- reviewed scan of at most 64 rows
         build(true, 1, body);
         function other() {
           const build = (enabled, count, body) => unrelated(count, body);
@@ -992,7 +1859,7 @@ fs.readdirSync = function(directory, ...arguments_) {
         changingCount = 16;
         ${kernel('for(var row=0u;row<count;row++){}', 'invocationCount: changingCount,')}
         createWGSLKernelNode(graph, {
-          // contract-allow: single-invocation -- bounded dense system
+          // contract-allow: single-invocation -- bounded dense system of at most 4 rows
           invocationCount: 1,
           body: 'for(var row=0u;row<4u;row++){}'
         });

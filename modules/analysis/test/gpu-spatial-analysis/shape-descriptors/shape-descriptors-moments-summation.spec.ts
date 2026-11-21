@@ -15,7 +15,7 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 // Math correctness review 2026-11-10, follow-up on compensated sums. The moments kernel keeps
 // (sum, compensation) pairs. Written as the float Neumaier term `(sum - total) + value`, the
@@ -109,4 +109,56 @@ for (const method of ['serial', 'tiled'] as const) {
       }
     }
   }, 120000);
+}
+
+for (const method of ['serial', 'tiled'] as const) {
+  it(`B4 shape descriptor ${method} preserves unit cross products in one tile`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const graph = new GPUCommandGraph(device);
+    const buffers: Buffer[] = [];
+    const track = (buffer: Buffer) => {
+      buffers.push(buffer);
+      return buffer;
+    };
+    const positions = track(
+      createInputBuffer(device, Float32Array.of(0, 0, 4096, 0, 0, 4096, -1 / 4096, 0, 0, -4096))
+    );
+    const centroid = track(createInputBuffer(device, Float32Array.of(0, 0)));
+    const moments = track(createOutputBuffer(device, 4));
+    const offsets = (name: string, end: number) =>
+      importGraphBuffer(
+        graph,
+        name,
+        track(createInputBuffer(device, Uint32Array.of(0, end))),
+        'uint32',
+        2
+      );
+    graph.add(
+      (method === 'serial' ? createMomentsNode : getShapeMomentTileNodes)(graph, {
+        id: 'single-tile',
+        operation: 'GPUShapeDescriptors',
+        featureCount: 1,
+        positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', 5),
+        centroids: importGraphBuffer(graph, 'centroid', centroid, 'float32x2', 1),
+        moments: importGraphBuffer(graph, 'moments', moments, 'float32x4', 1),
+        ringOffsets: offsets('rings', 5),
+        polygonOffsets: offsets('polygons', 1),
+        featureOffsets: offsets('features', 1)
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      const actual = await readFloat32(moments, 4);
+      expect(actual).toHaveLength(4);
+      expect(actual.every(Number.isFinite)).toBe(true);
+      // Only nonzero crosses are 4096^2, 4096/4096 and (-1/4096)*(-4096).
+      // Exact first-ring area = (2^24 + 1 + 1)/2; one tile prevents reductions masking loss.
+      expect(actual[3]).toBe(8388609);
+    } finally {
+      compiled.destroy();
+      for (const buffer of buffers) buffer.destroy();
+    }
+  });
 }

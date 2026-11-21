@@ -68,7 +68,7 @@ export default defineOperationRun({
         format: 'float32',
         length: GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
       }),
-      outputs: {trendZ: trendZ.view, category: category.view}
+      output: {trendZ: trendZ.view, category: category.view}
     });
     return {
       outputs: {trendZ, dots: builder.upload('events', 'float32x2', dots)},

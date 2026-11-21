@@ -100,6 +100,58 @@ fn quantizeElevation(elevation: f32) -> i32 {
   return i32(round(elevation * INVERSE_QUANTUM));
 }`;
 
+/** Absolute quantization: `q = round(z / quantum)`. */
+const ABSOLUTE_QUANTIZE_WGSL = /* wgsl */ `let elevation = elevationValues[elevationValuesOffset + index];
+  let isValid = elevationValidity[elevationValidityOffset + index] != 0u && isQuantizable(elevation);
+  var quantized = 0i;
+  if (isValid) {
+    quantized = quantizeElevation(elevation);
+  }`;
+
+/**
+ * Largest absolute quantized magnitude `|round(z / quantum)|` of the origin-relative table,
+ * `2^62`, so that the 64-bit difference from the anchor cannot wrap.
+ */
+const TERRAIN_SUMMED_AREA_ABSOLUTE_LIMIT = 2 ** 62;
+
+/**
+ * Exact signed 64-bit words of an integer-valued float32. The magnitude has at most 24 significant
+ * bits, so its high part (scaled by the power of two `2^-32` and floored) and the remaining low
+ * part are both exact; the low part is below `2^32`.
+ */
+const ORIGIN_RELATIVE_QUANTIZE_HELPERS_WGSL = /* wgsl */ `
+const ABSOLUTE_LIMIT: f32 = ${getWGSLFloatLiteral(TERRAIN_SUMMED_AREA_ABSOLUTE_LIMIT)};
+fn getSigned64FromInteger(integer: f32) -> vec2<u32> {
+  let magnitude = abs(integer);
+  let high = floor(magnitude * ${getWGSLFloatLiteral(2 ** -32)});
+  let words = vec2<u32>(u32(magnitude - high * 4294967296.0), u32(high));
+  return select(words, negate64(words), integer < 0.0);
+}`;
+
+/**
+ * Origin-relative quantization `q = round(z / quantum) - anchor / quantum`, formed exactly in
+ * 64 bits. The anchor lies on the quantum lattice, so `q` is the absolute quantized elevation
+ * shifted by a constant, and every box difference equals the absolute one: a distant first valid
+ * elevation cannot change the rounding of local samples (no float32 `z - anchor` subtraction).
+ * Cells whose `q` leaves the accepted signed 32-bit range are invalid.
+ */
+const ORIGIN_RELATIVE_QUANTIZE_WGSL = /* wgsl */ `let scaled = elevationValues[elevationValuesOffset + index] * INVERSE_QUANTUM;
+  let rounded = round(scaled);
+  let anchorScaled = anchor[anchorOffset] * INVERSE_QUANTUM;
+  var isValid = elevationValidity[elevationValidityOffset + index] != 0u &&
+    isFiniteValue(scaled) && abs(rounded) < ABSOLUTE_LIMIT &&
+    isFiniteValue(anchorScaled) && abs(anchorScaled) < ABSOLUTE_LIMIT;
+  var quantized = 0i;
+  if (isValid) {
+    let offset = subtract64(getSigned64FromInteger(rounded), getSigned64FromInteger(anchorScaled));
+    let low = bitcast<i32>(offset.x);
+    isValid = offset.y == select(0u, 0xffffffffu, low < 0i) &&
+      low >= -${TERRAIN_SUMMED_AREA_MAXIMUM_QUANTIZED}i && low <= ${TERRAIN_SUMMED_AREA_MAXIMUM_QUANTIZED}i;
+    if (isValid) {
+      quantized = low;
+    }
+  }`;
+
 /** Result of {@link addTerrainSummedAreaTableNodes}. @internal */
 export type TerrainSummedAreaTable<Parameters> = {
   /**
@@ -119,8 +171,11 @@ export type TerrainSummedAreaTable<Parameters> = {
 /**
  * Adds the nodes that build an exact modular summed-area table of quantized elevations.
  *
- * Elevations are quantized to signed integers `q = round((z - anchor) / quantum)`; anchor is zero
- * unless originRelative selects the first finite valid value on the GPU. A quantize kernel writes
+ * Elevations are quantized to signed integers `q = round(z / quantum)`. With originRelative the
+ * GPU selects the first finite valid value as a quantum-snapped anchor and the table holds
+ * `round(z / quantum) - anchor / quantum`, formed exactly in 64 bits, so box differences never
+ * depend on the anchor; only the accepted range (`|q| <= 2147483520`, and absolute quantized
+ * magnitudes below `2^62`) is relative to it. A quantize kernel writes
  * `q` (sign-extended to 64 bits), `q²` (64 bits), and a valid-cell flag; invalid cells contribute
  * zero. One global row-major inclusive scan (`GPUScanUint64` / `GPUScan`), a `GPUTranspose`, and a
  * second global scan over the column-major data produce the table. No segment restarts are needed:
@@ -264,13 +319,8 @@ export function addTerrainSummedAreaTableNodes<Parameters>(
       invocationCount: pixelCount,
       declarations: `const PIXEL_COUNT: u32 = ${pixelCount}u;
 const INVERSE_QUANTUM: f32 = ${getWGSLFloatLiteral(1 / props.quantum)};
-${TERRAIN_SUMMED_AREA_WGSL_HELPERS}`,
-      body: `let elevation = elevationValues[elevationValuesOffset + index]${anchor ? ' - anchor[anchorOffset]' : ''};
-  let isValid = elevationValidity[elevationValidityOffset + index] != 0u && isQuantizable(elevation);
-  var quantized = 0i;
-  if (isValid) {
-    quantized = quantizeElevation(elevation);
-  }
+${TERRAIN_SUMMED_AREA_WGSL_HELPERS}${anchor ? ORIGIN_RELATIVE_QUANTIZE_HELPERS_WGSL : ''}`,
+      body: `${anchor ? ORIGIN_RELATIVE_QUANTIZE_WGSL : ABSOLUTE_QUANTIZE_WGSL}
   lowPlanes[lowPlanesOffset + index] = bitcast<u32>(quantized);
   lowPlanes[lowPlanesOffset + ${countPlane}u * PIXEL_COUNT + index] = select(0u, 1u, isValid);
   highPlanes[highPlanesOffset + index] = select(0u, 0xffffffffu, quantized < 0i);${

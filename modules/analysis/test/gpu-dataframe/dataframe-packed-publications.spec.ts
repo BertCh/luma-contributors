@@ -9,7 +9,7 @@ import {expect, it} from 'vitest';
 import {GPUTimeWindowFilter} from '../../src/dataframe-analysis/time-window-filter/gpu-time-window-filter';
 import {getGPUTimeWindowFilterParameterValues} from '../../src/dataframe-analysis/time-window-filter/time-window-parameters';
 import {GPUValueCube} from '../../src/dataframe-analysis/value-cube/gpu-value-cube';
-import {GPUKeyJoin} from '../../src/dataframe-analysis/key-join/gpu-key-join';
+import {GPUKeyLookup} from '../../src/dataframe-analysis/key-join/gpu-key-join';
 import {GPUColumnProfile} from '../../src/dataframe-analysis/column-profile/gpu-column-profile';
 import {
   GPU_COLUMN_PROFILE_STATISTIC,
@@ -28,7 +28,7 @@ import {requireTestDevice} from '../utils/require-test-device';
 
 it.each([
   'value cube',
-  'inner key join',
+  'compact key lookup',
   'column profile',
   'temporal reduction',
   'time window'
@@ -73,10 +73,10 @@ it.each([
         }
       })
     );
-  } else if (family === 'inner key join') {
+  } else if (family === 'compact key lookup') {
     graph.add(
-      new GPUKeyJoin({
-        kind: 'inner',
+      new GPUKeyLookup({
+        compactMatchedLeftRows: true,
         leftKeys: input('uint32', [1]),
         rightKeys: input('uint32', [1, 2]),
         gather: [{column: input('float32', [7, 9]), output: field('float32', 1280)}],
@@ -154,7 +154,7 @@ it.each([
       expect(words[0]).toBe(2);
       expect(floats[64]).toBe(4);
       expect(floats[128]).toBe(2);
-    } else if (family === 'inner key join') {
+    } else if (family === 'compact key lookup') {
       expect([words[0], words[64], words[128], words[192], words[256]]).toEqual([0, 1, 0, 1, 0]);
       expect(floats[320]).toBe(7);
     } else if (family === 'column profile') {

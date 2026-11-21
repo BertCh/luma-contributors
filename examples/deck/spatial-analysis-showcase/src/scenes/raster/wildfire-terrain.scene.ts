@@ -471,9 +471,12 @@ export default defineScene<WildfireTerrainOptions>({
   GPUDistanceField, GPUPolygonRasterization, GPURasterZonalStatistics, makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {GPUTerrainDerivatives} from '@luma-contributors/analysis/gpu-terrain';
+import {addKernelPass} from '../../engine/mode-kernels';
+import {importGraphBuffer} from '../../engine/graph-buffers';
+import {SummaryReader} from '../../engine/summary-reader';
 
 // Polygons in raster space: x east from the grid edge, y south from its north edge (row order).
-const rasterGrid = makeGPURasterMetadata({width, height, extent});   // extent: [0, 0, cell, cell]
+const rasterGrid = makeGPURasterMetadata({width, height, cellSize, origin: [0, 0], rowDirection: 'north'});
 extentParameters.write(getGPUPolygonRasterizationParameterValues(rasterGrid));
 distanceSettings.write(getGPUDistanceFieldParameterValues({maximumDistance: 1e7}, rasterGrid));
 graph.add(new GPUPolygonRasterization({
@@ -494,13 +497,69 @@ graph.add(new GPUTerrainDerivatives({
   cellSizeMode: 'web-mercator', rowDirection: 'south', slopeUnits: 'degrees',
   borderMode: '${state.borderMode}'
 }));
-// ring zone = nearest fire where ${state.ringInner} km <= distance <= ${state.ringOuter} km (a kernel)
+// Independent zoneFire output: preserve the rasterizer's zones as the inside source.
+// stageParameters holds [inner metres, outer metres, north Mercator Y, cell metres, ...].
+addKernelPass(graph, {
+  id: 'assign-fire-and-ring', invocationCount: width * height,
+  declarations: 'const WIDTH: u32 = ' + width + 'u;',
+  bindings: [
+    {name: 'zones', view: zones, type: 'u32', access: 'read'},
+    {name: 'alloc', view: allocation, type: 'u32', access: 'read'},
+    {name: 'dist', view: distances, type: 'f32', access: 'read'},
+    {name: 'params', view: stageParameters.importToGraph(graph), type: 'f32', access: 'read'},
+    {name: 'enabled', view: enabledFires, type: 'u32', access: 'read'},
+    {name: 'outZone', view: zoneFire, type: 'u32', access: 'read_write'}
+  ],
+  body: \`let row = index / WIDTH;
+    let mercatorY = params[paramsOffset + 2u] - (f32(row) + 0.5) * params[paramsOffset + 3u];
+    let groundScale = cos(2.0 * atan(exp(mercatorY / 6378137.0)) - 1.5707963);
+    let zone = zones[zonesOffset + index];
+    var assigned = 0xffffffffu;
+    if (zone != 0xffffffffu) {
+      if (enabled[enabledOffset + zone] != 0u) { assigned = zone * 2u; }
+    } else {
+      let nearest = alloc[allocOffset + index];
+      if (nearest != 0xffffffffu && enabled[enabledOffset + nearest] != 0u) {
+        let ground = dist[distOffset + index] * groundScale;
+        if (ground >= params[paramsOffset] && ground <= params[paramsOffset + 1u]) {
+          assigned = nearest * 2u + 1u;
+        }
+      }
+    }
+    outZone[outZoneOffset + index] = assigned;\`
+});
+const incompleteBuffer = resources.createBuffer('zonal-incomplete', 4);
+const incomplete = importGraphBuffer(graph, 'zonal-incomplete', incompleteBuffer, 'uint32', 1);
 graph.add(new GPURasterZonalStatistics({
-  grid: mercatorGrid, zones: zoneId,     // 2 * fire (+1 for the ring)
+  grid: mercatorGrid, zones: zoneFire,   // 2 * fire (+1 for the ring)
+  producerOverflow: overflow,          // exact view written by GPUPolygonRasterization
   values: slopeBand, zoneCapacity: 2 * fireCount,
   sumOrder: '${state.sumOrder}',
-  output: {cellCounts, valueCounts, sums, maximums}
-}));`,
+  output: {cellCounts, valueCounts, sums, maximums, status: {incomplete}}
+}));
+// The live scene applies this guard separately to slope, southness, steepness,
+// elevation and rose reductions; all five incomplete words are read before publication.
+const statsCompiled = await graph.compileAsync();
+const slopeSummaryReader = new SummaryReader(resources, 'wildfire-slope-summary', [
+  {buffer: incompleteBuffer, size: 4},
+  {buffer: valueCountsBuffer, size: 2 * fireCount * 4},
+  {buffer: sumsBuffer, size: 2 * fireCount * 4}
+], bytes => {
+  // Status and both columns were copied into the same ticket in the same submission.
+  if (new Uint32Array(bytes, 0, 1)[0] !== 0) {
+    clearTerrainSummary('unavailable: rasterizer loss');
+  } else {
+    publishTerrainSummary(
+      new Uint32Array(bytes, 4, 2 * fireCount),
+      new Float32Array(bytes, 4 + 2 * fireCount * 4, 2 * fireCount)
+    );
+  }
+});
+function encodeSlopeSummary(commandEncoder) {
+  clearTerrainSummary('pending');
+  statsCompiled.encode(commandEncoder, {parameters: undefined});
+  slopeSummaryReader.request(commandEncoder);
+} // Submit this encoder after encodeSlopeSummary; flush the reader each subsequent frame.`,
 
   about: {
     what: '`GPUPolygonRasterization` turns polygons into a dense zone raster, `GPUDistanceField` gives every cell its distance to and the id of the nearest burned cell, `GPUTerrainDerivatives` computes slope, aspect and hillshade, and `GPURasterZonalStatistics` summarises any band per zone. Together they answer a vector-raster question without leaving the GPU.',

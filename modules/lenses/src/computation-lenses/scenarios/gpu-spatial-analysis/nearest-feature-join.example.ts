@@ -57,7 +57,7 @@ export async function runExample(
       queries: {kind: 'points', positions: input.observations},
       features: {kind: 'points', positions: input.libraries},
       spatialContext: input.spatialContext,
-      k: 1,
+      neighborCount: 1,
       output: {neighborIds, neighborDistances, neighborCounts, status: {overflow: joinOverflow}}
     })
   );

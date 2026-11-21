@@ -223,7 +223,7 @@ it('accepts 30 million rows with device-sized bindings and skips empty chunks', 
 
 it.each([
   'float32',
-  'fp64'
+  'double-single'
 ] as const)('keeps one shader and pipeline for growing unequal unaligned chunks (%s)', precision => {
   const keys = new Set<string>();
   for (const chunkCount of [1, 3, 20]) {
@@ -261,7 +261,7 @@ it.each([
   's2',
   'quadbin'
 ] as const)('checks every generated %s shader identifier against the full reserved list', family => {
-  for (const precision of ['float32', 'fp64'] as const) {
+  for (const precision of ['float32', 'double-single'] as const) {
     const graph = new GPUCommandGraph(device);
     const nodes = addCellChunkNodes(
       graph,

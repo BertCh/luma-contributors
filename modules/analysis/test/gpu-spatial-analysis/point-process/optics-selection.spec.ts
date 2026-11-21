@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createOPTICSStatusFields,
+  getOPTICSStatusViews,
+  readOPTICSStatus
+} from '../spatial-clustering/optics-status-test-utils';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -155,7 +160,7 @@ for (const testCase of cases) {
       reachability: output('float32'),
       predecessors: output('uint32'),
       labels: output('uint32'),
-      status: output('uint32', 3)
+      status: createOPTICSStatusFields(() => output('uint32', 1))
     };
     const referenceCoreDistances = output('float32');
     const positions = importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount);
@@ -218,7 +223,7 @@ fn validPoint(row: u32) -> bool {
           reachability: outputs.reachability.view,
           predecessors: outputs.predecessors.view,
           labels: outputs.labels.view,
-          status: outputs.status.view
+          ports: {status: getOPTICSStatusViews(outputs.status)}
         }
       })
     );
@@ -237,11 +242,12 @@ fn validPoint(row: u32) -> bool {
           extractionDistance,
           testCase.maximumIterations
         );
-        for (const field of ['ordering', 'predecessors', 'labels', 'status'] as const) {
+        for (const field of ['ordering', 'predecessors', 'labels'] as const) {
           expect(await readUint32(outputs[field].buffer, outputs[field].view.length)).toEqual(
             reference[field]
           );
         }
+        expect(await readOPTICSStatus(outputs.status)).toEqual(reference.status);
         expect(await readFloat32(outputs.coreDistances.buffer, rowCount)).toEqual(
           await readFloat32(referenceCoreDistances.buffer, rowCount)
         );

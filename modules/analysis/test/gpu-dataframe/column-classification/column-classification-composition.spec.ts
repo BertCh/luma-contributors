@@ -21,7 +21,6 @@ import {
   GPU_COLOR_SCALE_PARAMETER_LENGTH,
   packGPUColor
 } from '../../../src/dataframe-analysis/column-classification/color-scale-parameters';
-import {getOrderedFloat32Key} from '../../../src/dataframe-analysis/column-classification/column-classification-shared';
 import {
   getGPUColumnQuantilesParameterLength,
   getGPUColumnQuantilesParameterValues
@@ -57,17 +56,20 @@ function createRandom(seed: number): () => number {
   };
 }
 
-/** Class by the stream rule: the number of inner edges whose key is at or below the value's key. */
+/** Independent numeric membership: -0 is equal to a +0 cut. */
 function classify(value: number, breaks: number[], classCount: number): number {
-  const key = getOrderedFloat32Key(value);
   let classIndex = 0;
   for (let edge = 1; edge < classCount; edge++) {
-    if (getOrderedFloat32Key(breaks[edge]) <= key) {
+    if (breaks[edge] <= value) {
       classIndex++;
     }
   }
   return classIndex;
 }
+
+it('DPC-110 composition membership selects negative zero at a positive zero cut', () => {
+  expect(classify(-0, [-1, +0, 1], 2)).toBe(1);
+});
 
 it('quantile filter, class breaks, colour scale and bivariate classes compose in one graph without readback', async () => {
   const device = await getWebGPUTestDevice();
@@ -76,6 +78,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
   const valuesX = new Float32Array(ROWS).map(() =>
     random() < 0.01 ? NaN : 10 / (0.02 + random())
   );
+  valuesX[0] = -0;
   const valuesY = new Float32Array(ROWS).map(() => random() * 100 - 20);
   const palette = new Uint32Array(MAXIMUM_CLASS_COUNT).map((_, index) =>
     packGPUColor(index * 20, 255 - index * 20, index * 7, 255)
@@ -195,7 +198,14 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
       mask: outputMask,
       parameters: parameterBuffers.breaks.importToGraph(graph),
       maximumClassCount: MAXIMUM_CLASS_COUNT,
-      methods: ['quantile', 'natural-breaks', 'head-tail', 'equal-interval', 'standard-deviation'],
+      methods: [
+        'quantile',
+        'natural-breaks',
+        'head-tail',
+        'equal-interval',
+        'standard-deviation',
+        'custom'
+      ],
       naturalBreaksBinCount: 512,
       output: {
         breaks: breaksView,
@@ -210,7 +220,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
       values: x,
       mask: outputMask,
       domain: breaksView,
-      domainCount: classCountView,
+      classCount: classCountView,
       palette: importGraphBuffer(
         graph,
         'palette',
@@ -269,6 +279,7 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
   try {
     const frames: {filterRange: [number, number]; breaks: GPUClassBreaksSettings}[] = [
       {filterRange: [0, 1], breaks: {method: 'quantile', classCount: 5}},
+      {filterRange: [0, 1], breaks: {method: 'custom', customEdges: [-1, +0, 10, 50, 1000]}},
       {filterRange: [0.05, 0.95], breaks: {method: 'natural-breaks', classCount: 6}},
       {filterRange: [0.1, 0.8], breaks: {method: 'head-tail', classCount: 9}},
       {filterRange: [0, 0.5], breaks: {method: 'equal-interval', classCount: 4}},
@@ -295,6 +306,12 @@ it('quantile filter, class breaks, colour scale and bivariate classes compose in
       expect(classCount, label).toBeGreaterThan(1);
       const classIndices = await readUint32(outputs.classIndices, ROWS);
       const colors = await readUint32(outputs.colors, ROWS);
+      if (frame.breaks.method === 'custom') {
+        expect(oracle.outputMask[0]).toBe(1);
+        expect(Object.is(valuesX[0], -0)).toBe(true);
+        expect(Object.is(breaks[1], +0)).toBe(true);
+        expect(classIndices[0]).toBe(1);
+      }
       const expectedCounts = new Array(MAXIMUM_CLASS_COUNT).fill(0);
       for (let row = 0; row < ROWS; row++) {
         if (oracle.outputMask[row] === 0) {

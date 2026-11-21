@@ -3,25 +3,36 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {EMERGING_HOT_SPOTS_LIMITS} from '../curated/bindings/curated-emerging-hot-spots-binding';
-import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 import {
   guessGPUAnalysisMeasurementLevel,
-  getVecchiaNuggetFloor,
-  VECCHIA_NUGGET_FLOOR_FRACTION,
   resolveGPUAnalysisDefault,
   type GPUAnalysisColumnProfile,
   type GPUAnalysisCoordinateModel,
   type GPUAnalysisDefaultResolution,
   type GPUAnalysisDefaultRule,
   type GPUAnalysisMeasurementLevel
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
+import {
+  getVecchiaNuggetFloor,
+  VECCHIA_NUGGET_FLOOR_FRACTION
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {
   CatalogOperationBinding,
   CatalogParameterSpec,
   CatalogParameterValue
 } from '../analysis/catalog-binding-types';
-import {normalizeCatalogParameters} from '../analysis/catalog-bindings';
+import {
+  getCatalogDefaultParameters,
+  normalizeCatalogParameters
+} from '../analysis/catalog-bindings';
+import {
+  getCatalogParameterRenameMessage,
+  getCatalogValidationIdentity,
+  resolveCatalogParameterAliases
+} from '../analysis/catalog-parameter-constraints';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {makeLocalFrame} from '../analysis/catalog-local-frame';
 import {applyKeplerDatasetProfileDeclarations} from '../profile/dataset-profile';
 import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';
@@ -310,14 +321,8 @@ export const KEPLER_CPU_WORK_CAPS: Readonly<Record<string, KeplerCpuWorkCap>> = 
     limit: 6e7,
     source: 'catalog-platform3-b-grids.ts:45,137,545'
   },
-  // catalog-platform3-b-clusters.ts:33 (MAXIMUM_PAIR_WORK = 4e7), assertPairWork at :36-39, called
-  // by computeDbscanLabels (:63) and getDistanceMatrix (:272, used by OPTICS, hierarchical density
-  // clustering, local outlier factor and similar locations).
-  'density-clustering': {
-    kind: 'rows-squared',
-    limit: 4e7,
-    source: 'catalog-platform3-b-clusters.ts:33,36-39,63'
-  },
+  // Matrix-based routes use MAXIMUM_PAIR_WORK = 4e7. Bucketed DBSCAN has its own
+  // shared point-count predicate, checked by both applicability and execution.
   'optics-ordering': {
     kind: 'rows-squared',
     limit: 4e7,
@@ -333,12 +338,8 @@ export const KEPLER_CPU_WORK_CAPS: Readonly<Record<string, KeplerCpuWorkCap>> = 
     limit: 4e7,
     source: 'catalog-platform3-b-clusters.ts:33,36-39,272'
   },
-  'curated-clusters-and-footprints': {
-    kind: 'rows-squared',
-    limit: 4e7,
-    source:
-      'catalog-platform3-b-clusters.ts:33,36-39,63 (the fused binding calls computeDbscanLabels)'
-  },
+  // Curated clusters uses the same bucketed DBSCAN, then sorted monotone-chain hulls
+  // and linear measurements; its separate 6000-point recipe input cap remains in force.
   // catalog-platform3-b-statistics.ts:81,146: distance and nearest-neighbour weights need
   // count * count <= MAXIMUM_PAIR_WORK (4e7, :81); queen and rook contiguity need no pair work.
   ...Object.fromEntries(
@@ -554,7 +555,19 @@ export function resolveKeplerOperationParameters(
       ? KEPLER_GRID_CELL_CAPS[binding.id]?.maximumCellCount
       : undefined);
   const fieldBindings = options.fieldBindings ?? {};
-  const overrides = options.overrides ?? {};
+  for (const name of Object.keys(options.overrides ?? {})) {
+    const message = getCatalogParameterRenameMessage(binding.parameters, name);
+    if (message) validateRequirement(getCatalogValidationIdentity(binding.id), false, message);
+  }
+  const staticDefaults = getCatalogDefaultParameters(binding);
+  const overrides = resolveCatalogParameterAliases(
+    binding.parameters,
+    options.overrides ?? {},
+    (name, problem) => {
+      validateRequirement(getCatalogValidationIdentity(binding.id), false, `${name} ${problem}`);
+      throw new Error('unreachable');
+    }
+  );
   const specificationsByName = new Map(
     binding.parameters.map(parameter => [parameter.name, parameter])
   );
@@ -648,14 +661,18 @@ export function resolveKeplerOperationParameters(
     visit(specification.name);
   }
 
-  const resolveOne = (specification: CatalogParameterSpec): void => {
+  const resolveOne = (declaredSpecification: CatalogParameterSpec): void => {
+    const specification = {
+      ...declaredSpecification,
+      defaultValue: staticDefaults[declaredSpecification.name]
+    };
     const name = specification.name;
     const policy = policiesByName.get(name);
     const set = (
       value: CatalogParameterValue | undefined,
       resolution: Omit<KeplerParameterResolution, 'parameter' | 'active'>
     ) => {
-      if (value !== undefined) parameters[name] = value;
+      if (value !== undefined) parameters[name] = Array.isArray(value) ? [...value] : value;
       resolutionsByName.set(name, {parameter: name, active: true, ...resolution});
     };
     const fallBack = (reason: string, ruleResolution?: GPUAnalysisDefaultResolution) =>

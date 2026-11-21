@@ -260,11 +260,17 @@ async function runScene(device: Device, scene: NonstationarityScene, options: Op
   }
 }
 
-function expectNumber(actual: number, expected: number, absolute = 1e-4, relative = 1e-5) {
+function expectNumber(
+  actual: number,
+  expected: number,
+  absolute = 1e-4,
+  relative = 1e-5,
+  message?: string
+) {
   if (Number.isNaN(expected)) expect(Number.isNaN(actual)).toBe(true);
   else {
     expect(Number.isFinite(actual)).toBe(true);
-    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(
+    expect(Math.abs(actual - expected), message).toBeLessThanOrEqual(
       absolute + relative * Math.abs(expected)
     );
   }
@@ -437,7 +443,18 @@ function assertBoundaryResult(
     expect(result.candidateTable[candidate * 7 + 5]).toBe(score.count);
     expect(result.candidateTable[candidate * 7 + 6]).toBe(rowCount);
     expect(result.candidateTable[candidate * 7 + 2]).toBe(score.singular);
-    expectNumber(result.candidateTable[candidate * 7 + 1], score.aicc, 1.5, 0);
+    const candidateRow = result.candidateTable.subarray(candidate * 7, candidate * 7 + 7);
+    // AICc derivatives at fixed n are n/RSS and n*(2*n-2)/(n-trace-2)^2. For the
+    // million-row candidates at bandwidth .25 and .61287 the RSS/trace/output half-ULP
+    // budget is about .26 and .25, respectively. The 1.5 bound leaves over 1.2 units
+    // for local-fit, reduction and score arithmetic rather than requiring exact float32 sums.
+    expectNumber(
+      candidateRow[1],
+      score.aicc,
+      1.5,
+      0,
+      `candidate ${candidate}: [${candidateRow}], reference RSS=${score.residualSum}, trace=${score.trace}, AICc=${score.aicc}`
+    );
     expectNumber(result.candidateTable[candidate * 7 + 3], score.residualSum, 0.5, 2e-6);
     expectNumber(result.candidateTable[candidate * 7 + 4], score.trace, 0.5, 2e-6);
     if (candidate < 2) {

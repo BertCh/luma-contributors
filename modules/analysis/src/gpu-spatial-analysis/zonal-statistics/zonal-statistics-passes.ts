@@ -22,7 +22,10 @@ import {
   validateGraphChunkDispatchBindings
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createCellRowKernelNode} from '../cell-aggregation/cell-row-kernel';
-import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getGraphViewChunks,
+  isGraphVectorView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
@@ -138,7 +141,7 @@ export function createTransientFloat32Rows<Parameters>(
   id: string,
   template: GraphDataView<'float32'> | GraphVectorView<'float32'>
 ): GraphDataView<'float32'> | GraphVectorView<'float32'> {
-  return template instanceof GraphVectorView
+  return isGraphVectorView(template)
     ? createTransientVectorView(graph, id, template)
     : createTransientView(graph, id, 'float32', template.length);
 }
@@ -186,7 +189,7 @@ export function createZonalStatisticsPrepareNodes<Parameters>(
   const weightContributionChunks = props.weightContributions
     ? getGraphViewChunks(props.weightContributions)
     : [];
-  const isVector = props.values instanceof GraphVectorView;
+  const isVector = isGraphVectorView(props.values);
   const chunkPlan = isVector
     ? planGraphChunkDispatch(props.id, {
         values: props.values,
@@ -535,8 +538,10 @@ export function createZonalStatisticsWeightedDensityNode<Parameters>(
 }
 
 /**
- * Writes the per-point terms of the second variance pass: `w * (v - mean)^2` and, with weights,
- * `w^2`, for valid rows assigned to a feature, else 0. Packed views only. @internal
+ * Writes the per-point deviation terms of a variance pass around per-feature `means`, for valid
+ * rows assigned to a feature, else 0: `w * (v - mean)` (`linearDeviations`), `w * (v - mean)^2`
+ * (`squaredDeviations`) and, with weights, `w^2` (`weightSquares`). Each output is optional;
+ * only the bindings of the requested outputs are declared. Packed views only. @internal
  */
 export function createZonalStatisticsDeviationNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -548,7 +553,8 @@ export function createZonalStatisticsDeviationNode<Parameters>(
     valueMask: GraphDataView<'uint32'>;
     pointFeatureRows: GraphDataView<'uint32'>;
     means: GraphDataView<'float32'>;
-    deviations: GraphDataView<'float32'>;
+    squaredDeviations?: GraphDataView<'float32'>;
+    linearDeviations?: GraphDataView<'float32'>;
     weightSquares?: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -561,9 +567,24 @@ export function createZonalStatisticsDeviationNode<Parameters>(
   bindings.push(
     {name: 'valueMask', view: props.valueMask, type: 'u32', access: 'read'},
     {name: 'pointFeatureRows', view: props.pointFeatureRows, type: 'u32', access: 'read'},
-    {name: 'means', view: props.means, type: 'f32', access: 'read'},
-    {name: 'deviations', view: props.deviations, type: 'f32', access: 'read_write'}
+    {name: 'means', view: props.means, type: 'f32', access: 'read'}
   );
+  if (props.squaredDeviations) {
+    bindings.push({
+      name: 'squaredDeviations',
+      view: props.squaredDeviations,
+      type: 'f32',
+      access: 'read_write'
+    });
+  }
+  if (props.linearDeviations) {
+    bindings.push({
+      name: 'linearDeviations',
+      view: props.linearDeviations,
+      type: 'f32',
+      access: 'read_write'
+    });
+  }
   if (props.weightSquares) {
     bindings.push({
       name: 'weightSquares',
@@ -575,7 +596,14 @@ export function createZonalStatisticsDeviationNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: 'deviations',
+    variant: [
+      'deviations',
+      props.squaredDeviations ? 'squared' : '',
+      props.linearDeviations ? 'linear' : '',
+      props.weightSquares ? 'weight-squares' : ''
+    ]
+      .filter(Boolean)
+      .join('-'),
     bindings,
     invocationCount: props.values.length,
     declarations: `${FINITE_HELPERS}
@@ -584,18 +612,85 @@ const FEATURE_COUNT: u32 = ${props.featureCount}u;`,
   let valid = row < FEATURE_COUNT && valueMask[valueMaskOffset + index] != 0u;
   ${props.weights ? 'let weight = weights[weightsOffset + index];' : 'let weight = 1.0;'}
   let deviation = values[valuesOffset + index] - means[meansOffset + select(0u, row, valid)];
-  let term = weight * deviation * deviation;
   // Terms that overflow float32 are dropped, as products are in the sums.
-  deviations[deviationsOffset + index] = select(0.0, term, valid && isFiniteValue(term));
+  ${
+    props.squaredDeviations
+      ? `let squaredTerm = weight * deviation * deviation;
+  squaredDeviations[squaredDeviationsOffset + index] = select(0.0, squaredTerm, valid && isFiniteValue(squaredTerm));`
+      : ''
+  }
+  ${
+    props.linearDeviations
+      ? `let linearTerm = weight * deviation;
+  linearDeviations[linearDeviationsOffset + index] = select(0.0, linearTerm, valid && isFiniteValue(linearTerm));`
+      : ''
+  }
   ${props.weightSquares ? 'weightSquares[weightSquaresOffset + index] = select(0.0, weight * weight, valid);' : ''}`
+  });
+}
+
+/**
+ * Refines float32 per-feature means with the sums of the deviations around them:
+ * `mean + sum w (v - mean) / V1`, `V1 = sum w` or the valid-row count. A float32 sum of values
+ * near 1e7 over many rows can leave the first mean several units off; the deviations are small,
+ * so their sum is accurate and the refined mean is close to the float64 mean. Means that are not
+ * finite, or whose correction is not finite, are kept. @internal
+ */
+export function createZonalStatisticsRefinedMeanNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    featureCount: number;
+    means: GraphDataView<'float32'>;
+    linearDeviationSums: GraphDataView<'float32'>;
+    valueCounts?: GraphDataView<'uint32'>;
+    weightSums?: GraphDataView<'float32'>;
+    refinedMeans: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const weighted = Boolean(props.weightSums);
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'means', view: props.means, type: 'f32', access: 'read'},
+    {name: 'linearDeviationSums', view: props.linearDeviationSums, type: 'f32', access: 'read'}
+  ];
+  if (props.weightSums) {
+    bindings.push({name: 'weightSums', view: props.weightSums, type: 'f32', access: 'read'});
+  } else {
+    bindings.push({name: 'valueCounts', view: props.valueCounts!, type: 'u32', access: 'read'});
+  }
+  bindings.push({
+    name: 'refinedMeans',
+    view: props.refinedMeans,
+    type: 'f32',
+    access: 'read_write'
+  });
+  return createWGSLKernelNode<Parameters>(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: weighted ? 'refined-means-weighted' : 'refined-means',
+    bindings,
+    invocationCount: props.featureCount,
+    declarations: QUOTIENT_HELPERS,
+    body: `let mean = means[meansOffset + index];
+  let total = ${weighted ? 'weightSums[weightSumsOffset + index]' : 'f32(valueCounts[valueCountsOffset + index])'};
+  var refined = mean;
+  if (isFiniteValue(mean) && total != 0.0) {
+    let candidate = mean + getZonalQuotient(linearDeviationSums[linearDeviationSumsOffset + index], total);
+    refined = select(mean, candidate, isFiniteValue(candidate));
+  }
+  refinedMeans[refinedMeansOffset + index] = refined;`
   });
 }
 
 /**
  * Writes unbiased variances and standard deviations from the squared-deviation sums. Unweighted:
  * `ssd / (n - 1)`. With reliability weights: `ssd / (V1 - V2 / V1)` with `V1 = sum w` and
- * `V2 = sum w^2` (numpy `cov(aweights=w, ddof=1)`). NaN with fewer than two valid rows or a
- * non-positive denominator. @internal
+ * `V2 = sum w^2` (numpy `cov(aweights=w, ddof=1)`). With `linearDeviationSums` (`lds`, the sum of
+ * `w * (v - m)` around the same means `m`), `ssd` is replaced by the corrected two-pass term
+ * `ssd - (lds / V1) * lds`, clamped to zero only for unweighted or certified nonnegative weights.
+ * Signed weights retain negative corrected sums. The correction removes the error of a mean that is not exactly the
+ * float64 mean (with `V1` the valid-row count when unweighted). NaN with fewer than two valid rows
+ * or a non-positive denominator. @internal
  */
 export function createZonalStatisticsVarianceNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -604,8 +699,10 @@ export function createZonalStatisticsVarianceNode<Parameters>(
     featureCount: number;
     valueCounts: GraphDataView<'uint32'>;
     squaredDeviationSums: GraphDataView<'float32'>;
+    linearDeviationSums?: GraphDataView<'float32'>;
     weightSums?: GraphDataView<'float32'>;
     weightSquareSums?: GraphDataView<'float32'>;
+    minimumWeights?: GraphDataView<'float32'>;
     variances?: GraphDataView<'float32'>;
     standardDeviations?: GraphDataView<'float32'>;
   }
@@ -615,11 +712,27 @@ export function createZonalStatisticsVarianceNode<Parameters>(
     {name: 'valueCounts', view: props.valueCounts, type: 'u32', access: 'read'},
     {name: 'squaredDeviationSums', view: props.squaredDeviationSums, type: 'f32', access: 'read'}
   ];
+  if (props.linearDeviationSums) {
+    bindings.push({
+      name: 'linearDeviationSums',
+      view: props.linearDeviationSums,
+      type: 'f32',
+      access: 'read'
+    });
+  }
   if (weighted) {
     bindings.push(
       {name: 'weightSums', view: props.weightSums!, type: 'f32', access: 'read'},
       {name: 'weightSquareSums', view: props.weightSquareSums!, type: 'f32', access: 'read'}
     );
+  }
+  if (weighted && props.minimumWeights) {
+    bindings.push({
+      name: 'minimumWeights',
+      view: props.minimumWeights,
+      type: 'f32',
+      access: 'read'
+    });
   }
   if (props.variances) {
     bindings.push({name: 'variances', view: props.variances, type: 'u32', access: 'read_write'});
@@ -635,7 +748,7 @@ export function createZonalStatisticsVarianceNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
-    variant: weighted ? 'variances-weighted' : 'variances',
+    variant: `${weighted ? 'variances-weighted' : 'variances'}${props.linearDeviationSums ? '-corrected' : ''}`,
     bindings,
     invocationCount: props.featureCount,
     declarations: QUOTIENT_HELPERS,
@@ -651,10 +764,31 @@ export function createZonalStatisticsVarianceNode<Parameters>(
   }`
       : 'denominator = f32(valueCount) - 1.0;'
   }
+  var squaredDeviationSum = squaredDeviationSums[squaredDeviationSumsOffset + index];
+  ${
+    props.linearDeviationSums
+      ? `let linearDeviationSum = linearDeviationSums[linearDeviationSumsOffset + index];
+  let total = ${weighted ? 'weightSums[weightSumsOffset + index]' : 'f32(valueCount)'};
+  if (total != 0.0) {
+    let correction = getZonalQuotient(linearDeviationSum, total) * linearDeviationSum;
+    if (isFiniteValue(correction)) {
+      squaredDeviationSum = squaredDeviationSum - correction;
+      ${
+        weighted
+          ? props.minimumWeights
+            ? 'if (minimumWeights[minimumWeightsOffset + index] >= 0.0) { squaredDeviationSum = max(0.0, squaredDeviationSum); }'
+            : '// Without a weight-sign certificate, preserve signed-weight results.'
+          : 'squaredDeviationSum = max(0.0, squaredDeviationSum);'
+      }
+    }
+  }`
+      : ''
+  }
   if (valueCount >= 2u && denominator > 0.0) {
-    let result = getZonalQuotient(squaredDeviationSums[squaredDeviationSumsOffset + index], denominator);
+    let result = getZonalQuotient(squaredDeviationSum, denominator);
     variance = bitcast<u32>(result);
-    deviation = bitcast<u32>(sqrt(result));
+    // sqrt of a negative runtime input is indeterminate in WGSL; retain the explicit NaN.
+    if (result >= 0.0) { deviation = bitcast<u32>(sqrt(result)); }
   }
   ${props.variances ? 'variances[variancesOffset + index] = variance;' : ''}
   ${props.standardDeviations ? 'standardDeviations[standardDeviationsOffset + index] = deviation;' : ''}`

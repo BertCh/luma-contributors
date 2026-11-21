@@ -6,7 +6,10 @@ import type {
   GPUTemporalCalendarStep,
   GPUTemporalCalendarUnit
 } from '../../analysis-core/contracts/temporal-context';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**
  * Local calendar time written as fields. Unset fields default to the start of the step: month 1,
@@ -23,11 +26,36 @@ export type GPUPeriodIndexCalendarFields = {
   hour?: number;
 };
 
+/** Validates a proleptic-Gregorian civil date, including astronomical year zero. @internal */
+export function validateGPUPeriodIndexCivilDate(
+  id: string,
+  prop: string,
+  year: number,
+  month: number,
+  day: number
+): void {
+  validateRequirement(
+    id,
+    Number.isInteger(year),
+    `${prop}.year must be an integer; received ${year}`
+  );
+  validateCapacity(id, `${prop}.month`, month, 1, 12);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const maximumDay = month === 2 ? (leap ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
+  const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  validateRequirement(
+    id,
+    Number.isInteger(day) && day >= 1 && day <= maximumDay,
+    `${prop}.day must be in 1..${maximumDay} for ${date}; received ${day}`
+  );
+}
+
 /**
  * Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's `days_from_civil`), in integer
  * arithmetic with truncating division, the same formula the {@link GPUPeriodIndex} kernel evaluates.
  */
 export function getGPUPeriodIndexDaysFromCivil(year: number, month: number, day: number): number {
+  validateGPUPeriodIndexCivilDate('period-index-calendar', 'fields', year, month, day);
   const adjustedYear = month <= 2 ? year - 1 : year;
   const era = Math.trunc((adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400);
   const yearOfEra = adjustedYear - era * 400;
@@ -88,6 +116,15 @@ export function validateGPUPeriodIndexOriginStep(
   calendarUnit: GPUTemporalCalendarUnit,
   origin: GPUPeriodIndexCalendarFields
 ): void {
+  if (['day', 'week', 'hour'].includes(calendarUnit)) {
+    validateGPUPeriodIndexCivilDate(
+      id,
+      'periods.origin',
+      origin.year,
+      origin.month ?? 1,
+      origin.day ?? 1
+    );
+  }
   validateCapacity(
     id,
     'periods.origin step index (MINIMUM_CALENDAR_STEP_INDEX..MAXIMUM_CALENDAR_STEP_INDEX)',
@@ -108,6 +145,10 @@ export function getGPUPeriodIndexCalendarPeriod(
   count: number,
   fields: GPUPeriodIndexCalendarFields
 ): number {
+  validateGPUPeriodIndexOriginStep('period-index-calendar', step.calendarUnit, origin);
+  // GPUCalendarBuckets marks every missing/undecodable row with this signed-year sentinel.
+  // Match the GPU kernel's exclusion before inspecting the row's other sentinel fields.
+  if (fields.year === -0x80000000) return -1;
   const difference =
     getGPUPeriodIndexStepIndex(step.calendarUnit, fields) -
     getGPUPeriodIndexStepIndex(step.calendarUnit, origin);

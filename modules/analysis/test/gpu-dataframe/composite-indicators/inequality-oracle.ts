@@ -107,21 +107,21 @@ function computeIndices(
   }
   const mean = result.mean;
   const hasZero = sorted.some(entry => entry.x === 0);
-  let area = 0;
+  const suffixWeights = new Float64Array(sorted.length + 1);
+  for (let row = sorted.length - 1; row >= 0; row--)
+    suffixWeights[row] = sorted[row].w + suffixWeights[row + 1];
+  let weightedGapTotal = 0;
   let cumulativeWeight = 0;
-  let cumulativeIncome = 0;
   let theilT = 0;
   let sumLog = 0;
   let sumPower = 0;
   let sumAbsolute = 0;
   const power = 1 - epsilon;
-  for (const entry of sorted) {
-    const previousP = cumulativeWeight / totalWeight;
-    const previousL = cumulativeIncome / totalIncome;
+  for (let row = 0; row < sorted.length; row++) {
+    const entry = sorted[row];
     cumulativeWeight += entry.w;
-    cumulativeIncome += entry.w * entry.x;
-    area +=
-      (cumulativeWeight / totalWeight - previousP) * (previousL + cumulativeIncome / totalIncome);
+    if (row + 1 < sorted.length)
+      weightedGapTotal += (sorted[row + 1].x - entry.x) * cumulativeWeight * suffixWeights[row + 1];
     sumAbsolute += entry.w * Math.abs(entry.x - mean);
     if (entry.x > 0) {
       const ratio = entry.x / mean;
@@ -130,11 +130,13 @@ function computeIndices(
       sumPower += entry.w * Math.pow(ratio, power);
     }
   }
-  result.gini = 1 - area;
+  result.gini = weightedGapTotal / (totalWeight * totalIncome);
   result.theilT = theilT / totalWeight;
   result.theilL = hasZero ? nan : -sumLog / totalWeight;
-  if (epsilon === 1) {
-    result.atkinson = hasZero ? nan : 1 - Math.exp(sumLog / totalWeight);
+  if (hasZero && epsilon >= 1) {
+    result.atkinson = 1;
+  } else if (epsilon === 1) {
+    result.atkinson = 1 - Math.exp(sumLog / totalWeight);
   } else if (power > 0 || !hasZero) {
     const atkinson = 1 - Math.pow(sumPower / totalWeight, 1 / power);
     result.atkinson = Number.isFinite(atkinson) ? atkinson : nan;

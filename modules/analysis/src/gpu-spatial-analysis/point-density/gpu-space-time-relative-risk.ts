@@ -25,13 +25,15 @@ import {
   validateSpaceTimeKernelDensityBindings,
   type GPUSpaceTimeKernelDensityEdgeCorrection
 } from './gpu-space-time-kernel-density';
-import type {GPUSpaceTimeTemporalKernel} from './space-time-kernel-density-math';
+import type {GPUSpaceTimeTemporalKernelName} from './space-time-kernel-density-math';
 
 import {
   stageDensityOutputViews,
   validateDensityViewBindings,
   validateDensityWritableViews
 } from './density-point-passes';
+
+import {snapshotDensityConstructionProps} from './density-construction-snapshot';
 
 const OPERATION = 'GPUSpaceTimeRelativeRisk';
 
@@ -94,7 +96,7 @@ export type GPUSpaceTimeRelativeRiskProps = {
   /** Spatial kernel. Defaults to `'gaussian'`. */
   spatialKernel?: GPUKernelDensityKernelName;
   /** Temporal kernel. Defaults to `'gaussian'`. */
-  temporalKernel?: GPUSpaceTimeTemporalKernel;
+  temporalKernel?: GPUSpaceTimeTemporalKernelName;
   /** Spatial edge correction. Defaults to `'uniform'`. */
   spatialEdgeCorrection?: GPUSpaceTimeKernelDensityEdgeCorrection;
   /** Temporal edge correction. Defaults to `'uniform'`. */
@@ -128,6 +130,33 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
   readonly scale: 'log' | 'ratio';
 
   constructor(props: GPUSpaceTimeRelativeRiskProps) {
+    props = snapshotDensityConstructionProps(
+      props,
+      [
+        'casePositions',
+        'caseTimes',
+        'caseWeights',
+        'controlPositions',
+        'controlTimes',
+        'controlWeights',
+        'grid',
+        'id',
+        'indexBounds',
+        'indexGridSize',
+        'output',
+        'parameters',
+        'scale',
+        'sliceCount',
+        'spatialContext',
+        'spatialEdgeCorrection',
+        'spatialKernel',
+        'temporalContext',
+        'temporalEdgeCorrection',
+        'temporalKernel'
+      ],
+      ['values', 'caseDensity', 'controlDensity', 'status'],
+      ['caseInvalidCount', 'controlInvalidCount']
+    );
     this.id = props.id ?? 'space-time-relative-risk';
     this.props = props;
     const {id} = this;
@@ -154,6 +183,12 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
       props.output.status?.controlInvalidCount
     );
     validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
+    const voxelCount = props.grid.width * props.grid.height * props.sliceCount;
+    validateRequirement(
+      id,
+      props.output.values.length >= voxelCount,
+      `output.values must hold grid.width * grid.height * sliceCount rows (${voxelCount})`
+    );
     for (const [name, view] of [
       ['output.caseDensity', props.output.caseDensity],
       ['output.controlDensity', props.output.controlDensity]

@@ -4,6 +4,11 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslExec, WgslParser} from 'wgsl_reflect';
+import {
+  getWGSLKernelNodeRecord,
+  recordWGSLKernelNodes
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {
   GPUNetworkCostWeights,
   GPU_NETWORK_COST_WEIGHTS_PARAMETER_LENGTH,
@@ -82,7 +87,7 @@ it('getGPUNetworkCostWeightsParameterValues packs limit, decay, beta and floor',
   ).toThrow(/gaussian/);
   expect(() => getGPUNetworkCostWeightsParameterValues({costLimit: 1, beta: -1})).toThrow(/beta/);
   expect(() =>
-    getGPUNetworkCostWeightsParameterValues({costLimit: 1, decay: 'power', minimumCost: 0})
+    getGPUNetworkCostWeightsParameterValues({costLimit: 1, decay: 'power', beta: 1, minimumCost: 0})
   ).toThrow(/minimumCost/);
   expect(() =>
     getGPUNetworkCostWeightsParameterValues({
@@ -166,10 +171,8 @@ it('GPUNetworkCostWeights schedules count, scan, fill and finalize kernels withi
   expect(ids.at(-1)).toBe('cost-weights-finalize');
   const sources = getParsedKernelSources(nodes);
   for (const id of ['cost-weights-count', 'cost-weights-fill', 'cost-weights-finalize']) {
-    const source = sources.get(id);
-    expect(source, id).toBeDefined();
-    expect(getStorageBindingCount(source!)).toBeLessThanOrEqual(8);
     for (const kernel of sources.getConfigurations(id)) {
+      expect(getStorageBindingCount(kernel.source)).toBeLessThanOrEqual(8);
       expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBeLessThanOrEqual(
         CORE_WORKGROUP_STORAGE_LIMIT_BYTES
       );
@@ -242,4 +245,114 @@ it('GPUNetworkTopology is structurally a GPUSpatialWeights CSR', () => {
   // Compile-time check (the test-tree typecheck): a topology is accepted where weights are read.
   const weights: GPUSpatialWeights = topology;
   expect(weights.neighbors).toBe(topology.neighbors);
+});
+
+it('GPUNetworkCostWeights carries the matrix completeness word into status.complete (NET-101)', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const base = createProps(graph);
+  const costsComplete = createView(graph, 'uint32', 1);
+  const complete = createView(graph, 'uint32', 1);
+  // Without the matrix word the weights cannot certify completeness.
+  expect(
+    () =>
+      new GPUNetworkCostWeights({
+        ...base,
+        output: {...base.output, status: {...base.output.status, complete}}
+      })
+  ).toThrow(/status\.complete requires costsComplete/);
+  expect(
+    () => new GPUNetworkCostWeights({...base, costsComplete: createView(graph, 'uint32', 2)})
+  ).toThrow(/costsComplete must contain exactly one row/);
+  expect(
+    () =>
+      new GPUNetworkCostWeights({
+        ...base,
+        costsComplete,
+        output: {
+          ...base.output,
+          status: {...base.output.status, complete: createView(graph, 'uint32', 2)}
+        }
+      })
+  ).toThrow(/output\.status\.complete must contain exactly one row/);
+  const contributor = new GPUNetworkCostWeights({
+    ...base,
+    costsComplete,
+    output: {...base.output, status: {...base.output.status, complete}}
+  });
+  const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
+  expect(sources.get('cost-weights-finalize')).toContain(
+    'complete[completeOffset] = select(0u, 1u, costsComplete[costsCompleteOffset] != 0u && total <= CAPACITY);'
+  );
+  // Without status.complete the finalize kernel does not bind the word.
+  const plainGraph = new GPUCommandGraph(createNullWebGPUDevice());
+  expect(contributor.outputWeights.status?.complete).toBe(complete);
+  expect(
+    () =>
+      new GPUNetworkCostWeights({
+        ...createProps(plainGraph),
+        costsComplete: createView(plainGraph, 'uint32', 1)
+      })
+  ).toThrow(/output.status.complete/);
+});
+
+it('GPUNetworkCostWeights status.complete is 0 when the matrix horizon is below the requested cutoff (NET-124)', () => {
+  // Five-node unit chain 0 -> 1 -> 2 -> 3 -> 4 from node 0, one matrix row, weights cutoff 4,
+  // capacity 5. A converged matrix built with cutoff 1 holds [0, 1, inf, inf, inf] (2 in-range
+  // entries); with cutoff 4 it holds [0, 1, 2, 3, 4] (5). Both searches converge and neither
+  // overflows, so only the horizon comparison can tell them apart: expected complete words 0
+  // and 1. The finalize kernel is executed with the WGSL interpreter on the recorded source.
+  const runFinalize = (matrixCostLimit: number, requestedCostLimit: number, total: number) => {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    recordWGSLKernelNodes(graph);
+    const contributor = new GPUNetworkCostWeights({
+      id: 'horizon',
+      costs: createView(graph, 'float32', 5),
+      rowCount: 1,
+      parameters: createView(graph, 'float32', GPU_NETWORK_COST_WEIGHTS_PARAMETER_LENGTH),
+      costsComplete: createView(graph, 'uint32', 1),
+      costLimit: createView(graph, 'float32', 1),
+      output: {
+        offsets: createView(graph, 'uint32', 2),
+        neighbors: createView(graph, 'uint32', 5),
+        weights: createView(graph, 'float32', 5),
+        status: {complete: createView(graph, 'uint32', 1)}
+      }
+    });
+    contributor.getCommandNodes(graph);
+    const record = getWGSLKernelNodeRecord(graph, 'horizon-finalize')!;
+    const storage: Record<string, Uint32Array | Float32Array> = {
+      scanTotal: Uint32Array.of(total),
+      offsets: Uint32Array.of(0, total),
+      costsComplete: Uint32Array.of(1),
+      complete: Uint32Array.of(99),
+      parameters: getGPUNetworkCostWeightsParameterValues({costLimit: requestedCostLimit}),
+      costLimit: Float32Array.of(matrixCostLimit)
+    };
+    const bindings = Object.fromEntries(
+      record.bindings.map((binding, index) => [index, storage[binding.name]])
+    );
+    new WgslExec(
+      new WgslParser().parse(record.source.replace(/^\s*_\s*=[^;]*;/gm, ''))
+    ).dispatchWorkgroups('main', [1, 1, 1], {0: bindings}, {constants: record.constants});
+    return storage['complete'][0];
+  };
+  expect(runFinalize(1, 4, 2)).toBe(0);
+  expect(runFinalize(4, 4, 5)).toBe(1);
+  expect(runFinalize(5, 4, 5)).toBe(1);
+  expect(runFinalize(4, Infinity, 5)).toBe(0);
+  expect(runFinalize(Infinity, Infinity, 5)).toBe(1);
+  expect(runFinalize(Number.NaN, 4, 5)).toBe(0);
+  // Without the matrix limit the word keeps the convergence and capacity rule only.
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const base = createProps(graph);
+  expect(
+    () => new GPUNetworkCostWeights({...base, costLimit: createView(graph, 'float32', 2)})
+  ).toThrow(/costLimit must contain exactly one row/);
+  expect(
+    () =>
+      new GPUNetworkCostWeights({
+        ...base,
+        costLimit: createView(graph, 'uint32', 1) as never
+      })
+  ).toThrow(/costLimit/);
 });

@@ -124,8 +124,8 @@ const scene: GpuScene = async context => {
       neighborParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds,
-          radius: settings.radius / 100,
-          weightKind: 'binary'
+          searchRadius: settings.radius / 100,
+          weightType: 'binary'
         })
       );
       statisticParameters.write(getGPUSpatialAutocorrelationParameterValues({}));

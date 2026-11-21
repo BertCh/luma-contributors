@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RequireTrajectoryOutput} from './trajectory-output-choice';
 import {
   validateTrajectoryBindings,
   validateTrajectoryWritableDispatches,
@@ -83,7 +84,7 @@ export type GPUTrajectoryStopOutput = GPUCompactOutput & {
  * Lengths use the context's length unit; speeds use that unit per timestamp unit.
  * Status: the stop list reports capacity overflow through `stops.overflow`.
  */
-export type GPUTrajectoryMetricsOutput = {
+export type GPUTrajectoryMetricsOutput = RequireTrajectoryOutput<{
   /** Optional per-track path length in the context's length unit, `trackCount` rows. */
   trackLengths?: GraphDataView<'float32'>;
   /** Optional per-track duration `t[last] - t[first]`, `trackCount` rows. */
@@ -121,7 +122,7 @@ export type GPUTrajectoryMetricsOutput = {
   trackStopCounts?: GraphDataView<'uint32'>;
   /** Optional bounded stop list. */
   stops?: GPUTrajectoryStopOutput;
-};
+}>;
 
 /**
  * Properties for {@link GPUTrajectoryMetrics}: the trajectory layout ({@link GPUTrajectoryGeometryFields}:

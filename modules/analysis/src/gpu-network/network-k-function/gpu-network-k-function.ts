@@ -48,7 +48,11 @@ import {GPUNetworkSnapping} from '../network-accessibility/index';
 import {recommendLaneCount} from '../network-accessibility/network-accessibility-lanes';
 import {ACCESSIBILITY_NONE} from '../network-accessibility/network-accessibility-passes';
 import {GPUNetworkReachability} from '../network-reachability/index';
-import {GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH} from './network-k-function-parameters';
+import {
+  GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH,
+  getGPUNetworkKFunctionParameterValues,
+  type GPUNetworkKFunctionSettings
+} from './network-k-function-parameters';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {alignElementCount, getSubView} from '../network-view-utils';
 
@@ -96,6 +100,14 @@ export function getNetworkKFunctionChunkCount(edgeCount: number): number {
 
 /** Largest accepted `bandCount`. */
 export const GPU_NETWORK_K_FUNCTION_MAXIMUM_BAND_COUNT = 1024;
+
+/**
+ * Largest accepted event count: the largest `n` whose `n (n - 1) / 2` unordered pairs fit the
+ * uint32 pair histogram, its cumulative band sum and `output.pairCounts` (92,682 gives
+ * 4,294,930,221 pairs; 92,683 would give 4,295,022,903 > 2^32 - 1). Above it a count could wrap
+ * and give a finite-looking K (NET-110).
+ */
+export const GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT = 92682;
 
 /**
  * Largest expanded seed table of {@link GPUNetworkKFunction}, in uint32 words: one 256-byte-aligned
@@ -365,6 +377,12 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
     if (this.eventCount < 2) {
       throw new Error(`${id} requires at least two events`);
     }
+    validateMaximumCount(
+      id,
+      'eventCount',
+      this.eventCount,
+      GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT
+    );
     if (this.edgeCount < 1) {
       throw new Error(`${id} requires at least one edge`);
     }
@@ -454,6 +472,11 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
     if (new Set(outputBuffers).size !== outputBuffers.length) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
+  }
+
+  /** Pack per-frame settings with this instance's compiled simulationCount limit. */
+  getParameterValues(settings: GPUNetworkKFunctionSettings, target?: Uint32Array): Uint32Array {
+    return getGPUNetworkKFunctionParameterValues(settings, target, this.simulationCount, this.id);
   }
 
   /**

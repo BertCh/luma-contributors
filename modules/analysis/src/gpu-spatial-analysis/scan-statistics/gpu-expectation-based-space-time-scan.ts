@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
+import type {GPUAnalysisRoute} from '../ontology/spatial-analysis-ontology';
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
@@ -40,10 +42,16 @@ import {
 import {
   createScanNearestZoneNodes,
   getScanNearestZoneSearchPlan,
+  getScanIndexedRadixBindingByteLength,
   SCAN_INDEX_BUILD_COMMAND_NODE_ALLOWANCE,
   type GPUScanNearestZoneSearch
 } from './scan-statistic-nearest-index';
+import {EXPECTATION_BASED_SCAN_RATIO_WGSL} from './expectation-based-scan-ratio-wgsl';
 import {EXPECTATION_BASED_SCAN_POISSON_WGSL} from './expectation-based-scan-poisson-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUExpectationBasedSpaceTimeScan';
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -94,13 +102,130 @@ export const GPU_EXPECTATION_BASED_SCAN_SUMMARY = {
   replicateCount: 4
 } as const;
 
+/** Shape-only inputs to the allocation-free execution planner. */
+export type GPUExpectationBasedSpaceTimeScanShape = {
+  zones: number;
+  timeBuckets: number;
+  maximumNeighbors: number;
+  maximumWindowLength: number;
+  maximumReplicates: number;
+  nearestZoneSearch?: GPUScanNearestZoneSearch;
+};
+/** Binding limits used by the execution planner, in bytes. */
+export type GPUExpectationBasedSpaceTimeScanDeviceLimits = Pick<
+  Device['limits'],
+  'maxBufferSize' | 'maxStorageBufferBindingSize'
+>;
+const EXPECTATION_SCAN_SOURCE =
+  'modules/analysis/src/gpu-spatial-analysis/scan-statistics/gpu-expectation-based-space-time-scan.ts';
+const EXPECTATION_SCAN_PLANNER = {
+  package: '@luma-contributors/analysis/gpu-spatial-analysis',
+  exportName: 'GPUExpectationBasedSpaceTimeScan'
+} as const;
+const EXPECTATION_SCAN_ACCURACY =
+  'Both discovery routes preserve exact separation-key and zone-row ordering. Axis-degenerate indexed queries can still visit every zone.';
+/** Numeric route and allocation contracts; all sizes are per frame, not per replicate total. */
+export const GPU_EXPECTATION_BASED_SCAN_LIMITS: readonly GPUAnalysisRoute[] = Object.freeze([
+  {
+    name: 'neighbor route',
+    kind: 'auto-crossover',
+    quantity: 'maximumNeighbors',
+    unit: 'rows',
+    appliesWhen: 'all shapes',
+    conditionExpression: 'auto uses indexed when maximumNeighbors < zones, otherwise full-scan',
+    scope: 'domain',
+    alternative: 'full-scan',
+    accuracyImplications: EXPECTATION_SCAN_ACCURACY,
+    planner: EXPECTATION_SCAN_PLANNER,
+    source: EXPECTATION_SCAN_SOURCE
+  },
+  {
+    name: 'neighbors',
+    kind: 'hard-limit',
+    quantity: 'maximumNeighbors',
+    unit: 'rows',
+    maximum: GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS,
+    appliesWhen: 'every neighborhood on both routes; also <= zones',
+    scope: 'domain',
+    alternative: 'reduce maximumNeighbors',
+    accuracyImplications: 'A smaller neighborhood changes the search domain.',
+    planner: EXPECTATION_SCAN_PLANNER,
+    source: EXPECTATION_SCAN_SOURCE
+  },
+  {
+    name: 'window length',
+    kind: 'hard-limit',
+    quantity: 'maximumWindowLength',
+    unit: 'elements',
+    maximum: GPU_EXPECTATION_BASED_SCAN_MAXIMUM_WINDOW_LENGTH,
+    appliesWhen: 'both routes; also <= timeBuckets',
+    scope: 'domain',
+    alternative: 'reduce maximumWindowLength',
+    accuracyImplications: 'A shorter window changes the search domain.',
+    planner: EXPECTATION_SCAN_PLANNER,
+    source: EXPECTATION_SCAN_SOURCE
+  },
+  {
+    name: 'replicates',
+    kind: 'hard-limit',
+    quantity: 'maximumReplicates',
+    unit: 'elements',
+    maximum: GPU_EXPECTATION_BASED_SCAN_MAXIMUM_REPLICATES,
+    appliesWhen: 'both routes, total replicates across batches',
+    scope: 'domain',
+    alternative: 'reduce maximumReplicates',
+    accuracyImplications: 'Fewer draws increase the minimum attainable p-value.',
+    planner: EXPECTATION_SCAN_PLANNER,
+    source: EXPECTATION_SCAN_SOURCE
+  },
+  ...(
+    [
+      ['case cube', 'zones * timeBuckets * 4'],
+      ['neighbor table', 'zones * maximumNeighbors * 4'],
+      ['count table', '(batchReplicates + 1) * zones * maximumWindowLength * 4'],
+      ['center records', 'zones * 3 * 4'],
+      ['replicate statistics', '(maximumReplicates + 1) * 4'],
+      ['fixed control and publication', '6 * 4']
+    ] as const
+  ).map(([name, quantity]) => ({
+    name,
+    kind: 'allocation' as const,
+    quantity,
+    unit: 'bytes' as const,
+    appliesWhen:
+      'both routes, each individual binding; count table includes observation and one replicate batch',
+    scope: 'binding' as const,
+    ...(name === 'count table' ? {maximum: MAXIMUM_TABLE_WORDS * 4} : {}),
+    byteExpression: `${quantity} <= min(${name === 'count table' ? `${MAXIMUM_TABLE_WORDS * 4}, ` : ''}maxStorageBufferBindingSize, maxBufferSize)`,
+    alternative: 'reduce zones, window length or replicate capacity',
+    accuracyImplications: 'Reducing the search domain or replicate count changes the analysis.',
+    planner: EXPECTATION_SCAN_PLANNER,
+    source: EXPECTATION_SCAN_SOURCE
+  })),
+  {
+    name: 'indexed radix bindings',
+    kind: 'allocation',
+    quantity: '(zones < 2 ? zones : max(zones, 16 * ceil(zones / 256))) * 4',
+    unit: 'bytes',
+    appliesWhen:
+      'indexed route; per key/value, digit histogram/offset and smaller scan-partial binding',
+    scope: 'binding',
+    byteExpression:
+      '(zones < 2 ? zones : max(zones, 16 * ceil(zones / 256))) * 4 <= min(maxBufferSize, maxStorageBufferBindingSize)',
+    alternative: 'use nearestZoneSearch full-scan',
+    accuracyImplications: EXPECTATION_SCAN_ACCURACY,
+    planner: EXPECTATION_SCAN_PLANNER,
+    source: EXPECTATION_SCAN_SOURCE
+  }
+]);
+
 /** Per-frame settings of {@link GPUExpectationBasedSpaceTimeScan}. */
 export type GPUExpectationBasedScanSettings = {
   /** Integer in `[0, 2^53)`. */
   seed: number;
   /** Monte Carlo replicates, at most the contributor's `maximumReplicates`. */
   replicateCount: number;
-  /** Longest window in buckets, at most the compile-time capacity. Defaults to the capacity. */
+  /** Finite positive window length in buckets, rounded down (minimum 1) and clamped to compile-time capacity. Defaults to the capacity. */
   maximumWindowLength?: number;
 };
 
@@ -108,21 +233,27 @@ export type GPUExpectationBasedScanSettings = {
 export function getGPUExpectationBasedScanParameterValues(
   settings: GPUExpectationBasedScanSettings
 ): Uint32Array {
-  const {seed, replicateCount} = settings;
+  const {seed, replicateCount, maximumWindowLength} = settings;
   validateRequirement(
     'expectation-based scan',
     Number.isSafeInteger(seed) && seed >= 0,
-    'seed must be a non-negative safe integer'
+    `seed received ${seed}; must be a non-negative safe integer`
   );
   validateCapacity('expectation-based scan', 'replicateCount', replicateCount, 1, 2 ** 31 - 1);
+  validateRequirement(
+    'expectation-based scan',
+    maximumWindowLength === undefined ||
+      (Number.isFinite(maximumWindowLength) && maximumWindowLength > 0),
+    `maximumWindowLength received ${String(maximumWindowLength)}; must be finite and positive when supplied`
+  );
   const values = new Uint32Array(GPU_EXPECTATION_BASED_SCAN_PARAMETER_LENGTH);
   values[0] = seed % 2 ** 32;
   values[1] = Math.floor(seed / 2 ** 32);
   values[2] = replicateCount;
   values[3] =
-    settings.maximumWindowLength === undefined
+    maximumWindowLength === undefined
       ? 0
-      : Math.max(1, Math.floor(settings.maximumWindowLength));
+      : Math.min(0xffffffff, Math.max(1, Math.floor(maximumWindowLength)));
   return values;
 }
 
@@ -152,7 +283,8 @@ export type GPUExpectationBasedSpaceTimeScanProps = {
   cases: GraphDataView<'uint32'>;
   /**
    * Expected counts `zones * timeBuckets` float32 rows in the same layout: the baseline, for
-   * example a moving average of earlier buckets. A cell with a non-positive baseline is excluded.
+   * example a moving average of earlier buckets. Cells with non-positive or non-finite baselines
+   * contribute neither cases nor baseline to any window; remaining cells are summed per zone.
    */
   baseline: GraphDataView<'float32'>;
   /** Compile-time time buckets per zone. */
@@ -187,7 +319,8 @@ export type GPUExpectationBasedSpaceTimeScanProps = {
  * linear-time subset scanning property the best subset of a neighborhood is a prefix of the zones
  * sorted by `C_i / B_i`, so an exact search over all subsets of the neighborhood is one fixed
  * sorting network and one prefix scan. The subset need not contain the center. A zone with a
- * non-positive baseline over the window is excluded. Work is `(replicates + 1) * zones * maximumWindowLength * k log^2 k`.
+ * non-positive baseline over the window is excluded after removing individual cells with
+ * non-positive or non-finite baselines. Work is `(replicates + 1) * zones * maximumWindowLength * k log^2 k`.
  *
  * Inference: Monte Carlo replicates draw independent Poisson counts from the baseline with
  * Philox per (replicate, cell); each replicate repeats the same search, and the p-value is
@@ -195,11 +328,101 @@ export type GPUExpectationBasedSpaceTimeScanProps = {
  * results do not depend on the batch size. No adjustment for earlier analyses is applied;
  * convert with `getGPUScanRecurrenceInterval`. Secondary clusters are not computed.
  *
+ * Both discovery routes admit at most GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS = 64
+ * members per center, GPU_EXPECTATION_BASED_SCAN_MAXIMUM_WINDOW_LENGTH = 32 buckets per window,
+ * and GPU_EXPECTATION_BASED_SCAN_MAXIMUM_REPLICATES = 99999 replicates total. The per-batch
+ * count table is at most MAXIMUM_TABLE_WORDS = 33554432 uint32 words, including the observed
+ * slot, with MAXIMUM_BATCH_REPLICATES = 4096 replicates per batch and MAXIMUM_BATCHES = 1024
+ * batches total. Every binding must also fit the device byte limit; use limits/getExecutionPlan.
+ *
  * Compile-time: the zone count, `timeBuckets`, `maximumNeighbors`, `maximumWindowLength`,
  * `maximumReplicates`, `nearestZoneSearch` and `spatialContext`. Per-frame: the contents of `positions`, `cases`,
  * `baseline` and `parameters`.
  */
 export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer {
+  /** Route descriptions and enforced numeric constraints, available before allocating buffers. */
+  static readonly limits = GPU_EXPECTATION_BASED_SCAN_LIMITS;
+
+  /** Plan the actual route and per-binding sizes without graph resources or GPU allocations. */
+  static getExecutionPlan(
+    shape: GPUExpectationBasedSpaceTimeScanShape,
+    limits: GPUExpectationBasedSpaceTimeScanDeviceLimits
+  ) {
+    const id = 'GPUExpectationBasedSpaceTimeScan.getExecutionPlan';
+    validateCapacity(id, 'zones', shape.zones);
+    validateCapacity(id, 'timeBuckets', shape.timeBuckets);
+    validateCapacity(
+      id,
+      'maximumNeighbors',
+      shape.maximumNeighbors,
+      1,
+      Math.min(shape.zones, GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS)
+    );
+    validateCapacity(
+      id,
+      'maximumWindowLength',
+      shape.maximumWindowLength,
+      1,
+      Math.min(shape.timeBuckets, GPU_EXPECTATION_BASED_SCAN_MAXIMUM_WINDOW_LENGTH)
+    );
+    validateCapacity(
+      id,
+      'maximumReplicates',
+      shape.maximumReplicates,
+      1,
+      GPU_EXPECTATION_BASED_SCAN_MAXIMUM_REPLICATES
+    );
+    const search = getScanNearestZoneSearchPlan(
+      id,
+      shape.zones,
+      shape.maximumNeighbors,
+      shape.nearestZoneSearch
+    );
+    const windowCells = shape.zones * shape.maximumWindowLength;
+    const budgetReplicates = Math.floor(MAXIMUM_TABLE_WORDS / windowCells) - 1;
+    validateRequirement(
+      id,
+      budgetReplicates >= 1,
+      `zones * maximumWindowLength received ${windowCells}; must be <= ${MAXIMUM_TABLE_WORDS / 2}; reduce zones or maximumWindowLength`
+    );
+    const batchReplicates = Math.min(
+      shape.maximumReplicates,
+      MAXIMUM_BATCH_REPLICATES,
+      budgetReplicates
+    );
+    const batchCount = Math.ceil(shape.maximumReplicates / batchReplicates);
+    validateCapacity(id, 'batchCount', batchCount, 1, MAXIMUM_BATCHES);
+    const maximum = Math.min(limits.maxBufferSize, limits.maxStorageBufferBindingSize);
+    validateCapacity(id, 'device binding bytes', maximum, 1, Number.MAX_SAFE_INTEGER);
+    const sizes: Record<string, number> = {
+      'case cube': shape.zones * shape.timeBuckets * 4,
+      'neighbor table': shape.zones * shape.maximumNeighbors * 4,
+      'count table': (batchReplicates + 1) * windowCells * 4,
+      'center records': shape.zones * 12,
+      'replicate statistics': (shape.maximumReplicates + 1) * 4,
+      'fixed control and publication': 24,
+      'indexed radix bindings': getScanIndexedRadixBindingByteLength(shape.zones)
+    };
+    const constraints = GPU_EXPECTATION_BASED_SCAN_LIMITS.filter(
+      constraint =>
+        constraint.kind === 'allocation' &&
+        (constraint.name !== 'indexed radix bindings' || search.nearestZoneSearch === 'indexed')
+    ).map(constraint => {
+      const bound = Math.min(maximum, constraint.maximum ?? maximum);
+      const received = sizes[constraint.name];
+      return {...constraint, maximum: bound, received, satisfied: received <= bound};
+    });
+    return {
+      route: search.nearestZoneSearch,
+      feasible: constraints.every(constraint => constraint.satisfied),
+      constraints,
+      accuracyImplications: [EXPECTATION_SCAN_ACCURACY],
+      batchReplicates,
+      batchCount,
+      ...search
+    };
+  }
+
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -212,6 +435,14 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
   readonly nearestZoneSearch: 'indexed' | 'full-scan';
   /** Upper bound on separation evaluations of full-scan discovery per frame, excluding radix sorting. */
   readonly estimatedFullScanSeparationCount: number;
+  /** Per-frame worst case: N² candidate separation evaluations. */
+  readonly estimatedIndexedCandidateSeparationCount: number;
+  /** Per-frame worst case: 2N(N+1) axis separation evaluations. */
+  readonly estimatedIndexedAxisSeparationCount: number;
+  /** Sum of indexed candidate and axis bounds; excludes sorting. */
+  readonly estimatedIndexedSeparationCount: number;
+  /** Two coordinate radix sorts per indexed frame. */
+  readonly indexedRadixSortCount: number;
   /** Replicates per batch, derived from the count table budget. */
   readonly batchReplicates: number;
   /** Unrolled batches. */
@@ -221,6 +452,33 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
 
   constructor(props: GPUExpectationBasedSpaceTimeScanProps);
   constructor(props: GPUExpectationBasedSpaceTimeScanProps, batchReplicates?: number) {
+    const construction = snapshotConstructionFields(props, [
+      'id',
+      'positions',
+      'spatialContext',
+      'cases',
+      'baseline',
+      'timeBuckets',
+      'maximumNeighbors',
+      'nearestZoneSearch',
+      'maximumWindowLength',
+      'maximumReplicates',
+      'parameters',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...construction,
+      ...(construction.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(construction.spatialContext)}
+        : {}),
+      output: snapshotConstructionFields(construction.output, [
+        'clusterZones',
+        'clusterStatistics',
+        'statistics',
+        'summary',
+        'zoneStatistics'
+      ])
+    });
     const id = props.id ?? 'expectation-based-scan';
     this.id = id;
     this.props = props;
@@ -251,6 +509,11 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
     );
     this.nearestZoneSearch = searchPlan.nearestZoneSearch;
     this.estimatedFullScanSeparationCount = searchPlan.estimatedFullScanSeparationCount;
+    this.estimatedIndexedCandidateSeparationCount =
+      searchPlan.estimatedIndexedCandidateSeparationCount;
+    this.estimatedIndexedAxisSeparationCount = searchPlan.estimatedIndexedAxisSeparationCount;
+    this.estimatedIndexedSeparationCount = searchPlan.estimatedIndexedSeparationCount;
+    this.indexedRadixSortCount = searchPlan.indexedRadixSortCount;
     validateCapacity(
       id,
       'maximumWindowLength',
@@ -274,15 +537,16 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
     validateRequirement(
       id,
       parameters.length >= GPU_EXPECTATION_BASED_SCAN_PARAMETER_LENGTH,
-      `parameters needs ${GPU_EXPECTATION_BASED_SCAN_PARAMETER_LENGTH} rows`
+      `parameters.length received ${parameters.length}; needs at least ${GPU_EXPECTATION_BASED_SCAN_PARAMETER_LENGTH} rows`
     );
     const budgetReplicates =
       Math.floor(MAXIMUM_TABLE_WORDS / (this.zones * maximumWindowLength)) - 1;
     validateRequirement(
       id,
       budgetReplicates >= 1,
-      `zones * maximumWindowLength must be at most ${MAXIMUM_TABLE_WORDS / 2}`
+      `zones * maximumWindowLength received ${this.zones * maximumWindowLength}; must be at most ${MAXIMUM_TABLE_WORDS / 2}; reduce zones or maximumWindowLength`
     );
+    if (batchReplicates !== undefined) validateCapacity(id, 'batchReplicates', batchReplicates);
     this.batchReplicates = Math.min(
       maximumReplicates,
       MAXIMUM_BATCH_REPLICATES,
@@ -293,7 +557,7 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
     validateRequirement(
       id,
       this.batchCount <= MAXIMUM_BATCHES,
-      `maximumReplicates needs ${this.batchCount} batches, more than ${MAXIMUM_BATCHES}`
+      `maximumReplicates received ${maximumReplicates}; needs ${this.batchCount} batches, maximum ${MAXIMUM_BATCHES}; reduce maximumReplicates or window cells`
     );
     // Two published radix sorts: a conservative allowance including their scans and scratch stages.
     this.estimatedCommandNodeCount =
@@ -346,6 +610,7 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
       permutationCount: Math.min(settings.replicateCount, this.props.maximumReplicates),
       seed: settings.seed,
       multipleTesting: 'none',
+      pValueConstruction: 'upper-tail-count',
       testedRowsDefinition:
         'every center, every subset of the center and its nearest zones, and every window of the last buckets; p-values are Monte Carlo maxima over all of them; no adjustment for earlier analyses'
     };
@@ -653,7 +918,10 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'}
         ],
-        // The sort and prefix walk of the one best neighborhood, bounded by the capacity.
+        // Fixed statistics layout: GPU_EXPECTATION_BASED_SCAN_STATISTIC_WORDS = 4.
+        // Reconstruction visits at most GPU_EXPECTATION_BASED_SCAN_MAXIMUM_WINDOW_LENGTH = 32
+        // buckets, each with GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS = 64 members;
+        // the merge-exchange sort and final prefix walk use the same 64-member limit.
         // contract-allow: single-invocation
         invocationCount: 1,
         declarations: `${common}
@@ -687,7 +955,10 @@ ${search}`,
           {name: 'clusterZones', view: clusterZones, type: 'u32', access: 'read_write'},
           {name: 'summary', view: summary, type: 'u32', access: 'read_write'}
         ],
-        // Writes the member list of the one best neighborhood, bounded by the capacity.
+        // Member publication: GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS = 64 rows;
+        // summary has GPU_EXPECTATION_BASED_SCAN_SUMMARY_LENGTH = 5 words. Reconstructing
+        // the order visits GPU_EXPECTATION_BASED_SCAN_MAXIMUM_WINDOW_LENGTH = 32 buckets,
+        // each with the same enforced 64-member bound, followed by that bounded sort.
         // contract-allow: single-invocation
         invocationCount: 1,
         declarations: `${common}
@@ -752,6 +1023,7 @@ export function createExpectationBasedSpaceTimeScanForTesting(
 function getSearchWGSL(neighborCount: number): string {
   const highestBit = neighborCount > 1 ? 1 << Math.ceil(Math.log2(neighborCount) - 1) : 0;
   return /* wgsl */ `
+${EXPECTATION_BASED_SCAN_RATIO_WGSL}
 struct SearchResult {
   score: f32,
   windowLength: u32,
@@ -767,16 +1039,18 @@ fn addWindowBucket(center: u32, slot: u32, windowLength: u32, sums: ptr<function
   let bucket = BUCKETS - 1u - bucketFromEnd;
   for (var neighbor = 0u; neighbor < NEIGHBORS; neighbor++) {
     let zone = neighbors[neighborsOffset + center * NEIGHBORS + neighbor];
-    (*sums).caseSums[neighbor] += f32(counts[countsOffset + slot * WINDOW_CELLS + zone * WINDOW_CAPACITY + windowBucket]);
-    (*sums).baselineSums[neighbor] += baseline[baselineOffset + zone * BUCKETS + bucket];
+    let cellBaseline = baseline[baselineOffset + zone * BUCKETS + bucket];
+    let finite = (bitcast<u32>(cellBaseline) & 0x7f800000u) != 0x7f800000u;
+    if (finite && cellBaseline > 0.0) {
+      (*sums).caseSums[neighbor] += f32(counts[countsOffset + slot * WINDOW_CELLS + zone * WINDOW_CAPACITY + windowBucket]);
+      (*sums).baselineSums[neighbor] += cellBaseline;
+    }
   }
 }
 fn getOrder(sums: ptr<function, NeighborhoodSums>) -> array<u32, NEIGHBORS> {
-  var keys: array<f32, NEIGHBORS>;
   var order: array<u32, NEIGHBORS>;
   for (var neighbor = 0u; neighbor < NEIGHBORS; neighbor++) {
     order[neighbor] = neighbor;
-    keys[neighbor] = select(-1.0, (*sums).caseSums[neighbor] / (*sums).baselineSums[neighbor], (*sums).baselineSums[neighbor] > 0.0);
   }
   ${neighborCount > 1 ? getMergeExchangeSortWGSL(highestBit) : ''}
   return order;
@@ -845,7 +1119,8 @@ function getMergeExchangeSortWGSL(highestBit: number): string {
         if ((first & increment) == mergeBit) {
           let left = order[first];
           let right = order[first + gapWidth];
-          if (keys[left] < keys[right] || (keys[left] == keys[right] && left > right)) {
+          let comparison = compareScanRatios((*sums).caseSums[left], (*sums).baselineSums[left], (*sums).caseSums[right], (*sums).baselineSums[right]);
+          if (comparison < 0i || (comparison == 0i && left > right)) {
             order[first] = right;
             order[first + gapWidth] = left;
           }

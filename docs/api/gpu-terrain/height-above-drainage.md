@@ -1,5 +1,7 @@
 # Height above drainage over D-infinity flow
 
+Import from `@luma-contributors/analysis/gpu-terrain`.
+
 See also the [terrain hydrology API](operators.md#gputerrainheightabovedrainage-gputerrainwatersheds-gputerrainstreamorder-and-gputerrainhydrologicindices).
 
 ### GPUTerrainHeightAboveDrainage
@@ -11,6 +13,12 @@ For Tarboton D-infinity routing, generate `flowFractions` with
 surface, validity, grid and ground-distance model as the flow computation. Pass
 its `output.fractions` to HAND together with the elevation raster band and stream
 mask. D8 callers keep their current behavior and direction encodings.
+
+D8 publication checks that a stable pointer reaches a genuine terminal or stream. A receiver
+cycle can collapse to self-pointers; it remains `GPU_TERRAIN_DRAINAGE_UNRESOLVED`, with NaN
+HAND and convergence 0. For directions `[1,16]`, streams `[0,0]` leave both cells unresolved;
+streams `[1,0]` stop the cycle at cell 0 and give drainage cells `[0,0]` and convergence 1.
+The pointer loop can stop unchanged before its budget, so a cycle can have iteration-limit flag 0.
 
 The fractional result is the downslope weighted average vertical drop to the
 first stream along each branch:
@@ -40,10 +48,16 @@ Fractional routing uses synchronous GPU dependency sweeps with eight neighbors
 per invocation. `maximumIterations` defaults to 128 in fractional mode and 32 in
 D8 mode, and must be in [1, 1024]. A path with D edges needs D sweeps plus one to
 certify convergence. Completed cells remain available at the budget; unfinished
-cells are NaN/unresolved. Cycles exhaust the budget. Optional scalar status ports
+cells are NaN/unresolved. Fractional-routing cycles exhaust the budget. In D8 mode a path that enters a receiver cycle (possible only with caller-supplied directions) is also `GPU_TERRAIN_DRAINAGE_UNRESOLVED`, and `status.converged` is 0. A D8 cycle can stabilize during pointer doubling and then fail the original-receiver check with `iterationLimitReached = 0`; it need not exhaust the budget. Optional scalar status ports
 are `converged`, `iterationLimitReached` and `iterationCount`; convergence means
-the dependency computation finished, and does not certify that all input routing
-or drainage is known. No status is read back inside the contributor.
+the dependency computation finished without unresolved drainage. Unknown stream
+membership (`0xffffffff`) clears convergence in both D8 and fractional routing,
+including every dependent cell whose drainage remains unknown. A known outlet
+without a stream remains complete (NaN height, no drainage); unknown membership
+alone does not set `iterationLimitReached`. Fractional cycles and unfinished
+dependencies still exhaust the budget, and `iterationCount` still counts executed
+rounds. Missing drainage retains precedence over an unknown branch. No status is
+read back inside the contributor.
 
 The routing input choice, grid size, iteration budget, elevation format and
 calibration, and optional output presence are compile-time. View contents change

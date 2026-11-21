@@ -26,6 +26,7 @@ import {
 } from './cpu-terrain-operation-grid';
 import {
   GPUTerrainCatchmentSummaryOperation,
+  getTerrainCatchmentSummaryOperationStatusOutputs,
   type TerrainCatchmentSummaryOperationProps
 } from './gpu-terrain-catchment-summary-operation';
 
@@ -33,6 +34,10 @@ export type CPUTerrainCatchmentSummaryInput = {
   elevation: Float32Array;
   validity?: Uint32Array;
   basinIds: Uint32Array;
+  /** 0 nonstream, 1..0xfffffffd membership, 0xfffffffe/0xffffffff unknown (profile status 2).
+   * StreamOrder instead treats 0xfffffffe as membership; translate imported unknowns to
+   * 0xffffffff before sending the same rows to that consumer.
+   */
   streams: Uint32Array;
   flowDirections: Uint32Array;
 };
@@ -45,7 +50,13 @@ export type CPUTerrainCatchmentSummaryResult = {
   hypsometry: Float32Array;
   profiles: Float32Array;
   profileStatus: Uint32Array;
+  converged: Uint32Array;
+  invalidCount: Uint32Array;
+  iterationLimitReached: Uint32Array;
 };
+
+/** Optional named CPU diagnostics, matching the contributor's aggregate profile status ports. */
+export type CPUTerrainCatchmentSummaryOperationProps = TerrainCatchmentSummaryOperationProps;
 
 /**
  * Aggregates basin statistics and cumulative upper-edge histograms, then memoizes stream paths.
@@ -71,9 +82,15 @@ export function computeTerrainCatchmentSummaryOnCPU(
   options: CPUTerrainCatchmentSummaryOptions
 ): CPUTerrainCatchmentSummaryResult {
   const count = validateSummaryOptions('computeTerrainCatchmentSummaryOnCPU', options);
-  for (const [name, array] of Object.entries(input))
-    if (array !== undefined && array.length !== count)
-      throw new Error(`${name} must contain one value per grid cell`);
+  for (const name of ['elevation', 'streams', 'basinIds', 'flowDirections', 'validity'] as const) {
+    const array = input[name];
+    if (name === 'validity' && array === undefined) continue;
+    validateRequirement(
+      'computeTerrainCatchmentSummaryOnCPU',
+      array?.length === count,
+      `${name} must contain one value per grid cell (${count}); received ${array?.length}`
+    );
+  }
   const {grid, basinCount, histogramBins} = options;
   const elevation = Float64Array.from(input.elevation, (value, cell) =>
     (input.validity?.[cell] ?? 1) !== 0 ? value : NaN
@@ -164,6 +181,7 @@ export function computeTerrainCatchmentSummaryOnCPU(
   const distances = new Float64Array(count);
   const steps = new Float64Array(count);
   const complete = new Uint8Array(count);
+  const cyclic = new Uint8Array(count);
   const state = new Uint8Array(count);
   for (let cell = 0; cell < count; cell++) {
     state[cell] = 2;
@@ -198,6 +216,7 @@ export function computeTerrainCatchmentSummaryOnCPU(
       cell = pathReceivers[cell];
     }
     const resolved = state[cell] === 2 && complete[cell] !== 0;
+    const reachesCycle = state[cell] === 1 || cyclic[cell] !== 0;
     let distance = resolved ? distances[cell] : 0;
     let length = resolved ? steps[cell] : 0;
     for (let position = path.length - 1; position >= 0; position--) {
@@ -207,20 +226,25 @@ export function computeTerrainCatchmentSummaryOnCPU(
       distances[member] = distance;
       steps[member] = length;
       complete[member] = Number(resolved);
+      cyclic[member] = Number(reachesCycle);
       state[member] = 2;
     }
   }
   const profiles = new Float32Array(count * 3).fill(NaN);
   const profileStatus = new Uint32Array(count);
+  let iterationLimitReached = false;
   for (let cell = 0; cell < count; cell++) {
     profiles[cell * 3 + 1] = elevation[cell];
+    if (!Number.isFinite(elevation[cell]) || input.basinIds[cell] >= basinCount) continue;
     if (input.streams[cell] >= TERRAIN_DRAINAGE_UNRESOLVED) {
       profileStatus[cell] = 2;
       continue;
     }
-    if (!Number.isFinite(elevation[cell]) || input.basinIds[cell] >= basinCount || !isStream(cell))
-      continue;
+    if (!isStream(cell)) continue;
     profileStatus[cell] = 2;
+    iterationLimitReached ||=
+      cyclic[cell] !== 0 ||
+      (complete[cell] !== 0 && steps[cell] >= (options.maximumSteps ?? count));
     if (
       !complete[cell] ||
       steps[cell] >= (options.maximumSteps ?? count) ||
@@ -236,7 +260,17 @@ export function computeTerrainCatchmentSummaryOnCPU(
     profiles[cell * 3] = distances[cell];
     profiles[cell * 3 + 2] = gradient;
   }
-  return {statistics, hypsometry, profiles, profileStatus};
+  return {
+    statistics,
+    hypsometry,
+    profiles,
+    profileStatus,
+    converged: Uint32Array.of(Number(!profileStatus.includes(2))),
+    invalidCount: Uint32Array.of(
+      profileStatus.reduce((total, status) => total + Number(status === 0), 0)
+    ),
+    iterationLimitReached: Uint32Array.of(Number(iterationLimitReached))
+  };
 }
 
 function validateSummaryOptions(id: string, options: CPUTerrainCatchmentSummaryOptions): number {
@@ -270,10 +304,11 @@ function validateSummaryOptions(id: string, options: CPUTerrainCatchmentSummaryO
 
 /** CPU summary twin; all output layouts and the exclusive maximumSteps definition are retained. */
 export class CPUTerrainCatchmentSummaryOperation extends GPUCPUOperation {
-  constructor(props: TerrainCatchmentSummaryOperationProps) {
+  constructor(props: CPUTerrainCatchmentSummaryOperationProps) {
     const id = props.id ?? 'terrain-catchment-summary';
     validateSummaryOptions(id, props);
     const operation = new GPUTerrainCatchmentSummaryOperation(props);
+    const statusOutputs = getTerrainCatchmentSummaryOperationStatusOutputs(props.output.status);
     super({
       id,
       inputs: operation.inputs,
@@ -301,7 +336,8 @@ export class CPUTerrainCatchmentSummaryOperation extends GPUCPUOperation {
           [props.output.statistics]: result.statistics,
           [props.output.hypsometry]: result.hypsometry,
           [props.output.profiles]: result.profiles,
-          [props.output.profileStatus]: result.profileStatus
+          [props.output.profileStatus]: result.profileStatus,
+          ...Object.fromEntries(statusOutputs.map(([port, name]) => [name, result[port]]))
         };
       }
     });

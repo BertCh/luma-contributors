@@ -12,7 +12,6 @@ defineLensScenario({
   title: 'Helene rainfall ordinary kriging',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.heleneRain,
-  presentation: {primaryOutputCaptureId: 'gpu-spatial-analysis-kriging-snapshots-rainfall-0'},
   load: async () => {
     const [
       {runS2Lens, projectS2Positions, snapS2Extent},

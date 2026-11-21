@@ -532,7 +532,7 @@ describe('SC3-RTS-B reviewer headless regressions', () => {
           chunkSliceCount: 4,
           slotCount: 2,
           distribution: 'fisk',
-          zeroInflated: true,
+          zeroAtom: true,
           values: fields.field(`values-${update}`, 'float32', 4, (cell, slice) =>
             value(update, cell, slice)
           ),

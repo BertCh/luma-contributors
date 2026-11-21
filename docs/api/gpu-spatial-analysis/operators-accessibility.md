@@ -18,18 +18,23 @@ Floating catchment accessibility on any `GPUSpatialWeights` (the `access` packag
 `method: '2sfca'` or `'3sfca'`, with `supply`, `demand`, `facilityWeights` (row `j` lists the demand
 points `i` with weight `f(cost)`), optional `demandWeights` (row `i` lists facilities; it defaults to
 `facilityWeights`, which is only valid for symmetric self-join weights and is not checked) and the
-caller-owned `output: {accessibility, ratios?, reachableFacilities?, validity?}` (`GPUCatchmentAccessibilityOutput`).
+caller-owned `output: {accessibility, ratios?, reachableFacilities?, demandValidity?}` (`GPUCatchmentAccessibilityOutput`).
 A demand row whose `demand` is NaN or infinite is missing: it adds nothing to any facility's ratio, and
-the optional `validity` output (`uint32` per demand row) is 0 for it and 1 otherwise, as in
+the optional `demandValidity` output (`uint32` per demand row) is 0 for it and 1 otherwise, as in
 `GPUHuffTradeAreas`. Its own accessibility does not read its demand and stays valid.
 
 Pass a weights producer's `outputWeights` port to retain its status and metadata. Supplied nonzero
-`overflow` or `candidateOverflow` on either weights table suppresses all accessibility scores to
-NaN. Facility-weights loss suppresses the ratios too; demand-weights loss suppresses ratios only
+`overflow` or `candidateOverflow`, or supplied zero `status.complete`, on either weights table
+suppresses all accessibility scores to NaN. These are independent positive certificates: a zero
+`complete` suppresses results even when both negative loss flags are zero. Optional explicit
+`costsComplete` (one `uint32`, nonzero means complete) independently certifies the costs behind
+both tables; zero suppresses all scores and ratios to NaN and all reachable counts to
+`0xffffffff`. Keep inherited certificates on both orientations when also supplying this word. Facility-weights loss suppresses the ratios too; demand-weights loss suppresses ratios only
 for 3SFCA, whose selection totals depend on those rows. Demand-weights loss sets every
 `reachableFacilities` entry to `0xffffffff` (unknown), while facility-weights loss alone leaves
-the complete forward count usable. `validity` continues to report finite demand only. After the
-producer rebuilds complete weights and clears the flags, the next submission restores the ordinary
+the complete forward count usable. `demandValidity` continues to report finite demand only. After the
+producer rebuilds complete weights, clears negative loss flags and sets all supplied positive
+certificates nonzero, the next submission restores the ordinary
 scores/counts without recompilation. Both trade-area demos forward described search ports and
 display unavailable summaries instead of totals computed from suppressed outputs.
 
@@ -50,6 +55,49 @@ display unavailable summaries instead of totals computed from suppressed outputs
   demand in range, which is not allocated to anyone. Sums are f32, so the identity holds to rounding. The
   default `demandWeights = facilityWeights` satisfies the condition for symmetric self-join weights.
   3SFCA differs in what `A_i` means, a selection-weighted average of the `R_j`, not in conservation.
+
+`demandValidity` describes finite demand. A row with missing demand is excluded from facility
+ratio denominators and can still have a finite accessibility score from other demand rows. Use the inherited completeness evidence
+to decide whether that score is available.
+
+```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCatchmentAccessibility, type GPUCatchmentAccessibilityProps
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addCatchmentExample(
+  graph: GPUCommandGraph,
+  inputs: Omit<GPUCatchmentAccessibilityProps,
+    'facilityWeights' | 'demandWeights' | 'costsComplete' | 'method'>,
+  facilityWeights: GPUCatchmentAccessibilityProps['facilityWeights'],
+  demandWeights: GPUCatchmentAccessibilityProps['facilityWeights'],
+  costsComplete: GraphDataView<'uint32'>
+) {
+  // Public producer handles keep status.complete optional in their static type.
+  if (!facilityWeights.status?.complete) {
+    throw new Error('addCatchmentExample facilityWeights.status.complete must be supplied');
+  }
+  if (!demandWeights.status?.complete) {
+    throw new Error('addCatchmentExample demandWeights.status.complete must be supplied');
+  }
+  // Check handle presence only; a zero GPU word must reach the consumer for suppression.
+  // supply/ratios: F rows; demand/accessibility/demandValidity/reachableFacilities: D rows.
+  // facilityWeights: F rows into D; demandWeights: D rows into F; each complete is one word.
+  graph.add(new GPUCatchmentAccessibility({
+    ...inputs, method: '2sfca', facilityWeights, demandWeights, costsComplete
+  }));
+}
+```
+
+Pass producer `outputWeights` handles without rebuilding their CSR/status maps. This example
+accepts their public weights type, then checks that both inherited certificate handles exist
+to make the dependency explicit; the library keeps them optional. The original handles are passed
+through unchanged, including zero certificate contents. Retain caller-owned output buffers for readback and read exactly F facility or D demand
+rows, rather than spare allocation capacity. With one facility, two unit demands and only the
+first edge retained, complete=0 suppresses both scores instead of publishing the misleading
+partial `[1, 0]`. Completing both orientations and restoring their certificates yields `[0.5, 0.5]`
+for unit supply. Clearing a loss word without restoring missing edges is not recovery.
 
 A non-finite demand, or a non-finite ratio from a non-finite supply, is a missing value and adds nothing.
 The operator reads weights, not positions, so it has no `spatialContext`; distance units and the coordinate
@@ -90,14 +138,19 @@ outputs are `probabilities` (one per `demandWeights` slot, aligned with `demandW
 `tradeAreaProbability` (per demand row) and `expectedDemand`, `expectedDemand_j = sum_i P_i p_ij`, which
 needs `facilityWeights` (the transpose of `demandWeights`) and `demand`. A demand row whose `demand` is
 NaN or infinite is missing: as in `GPUCatchmentAccessibility` it adds nothing to `expectedDemand`, and
-the optional `validity` output (`uint32` per demand row, needs `demand`) is 0 for it and 1 otherwise.
+the optional `demandValidity` output (`uint32` per demand row, needs `demand`) is 0 for it and 1 otherwise.
+A reachable facility at row 0 is a valid trade area even when demand is NaN:
+with that sole facility, `tradeArea = 0`, `tradeAreaProbability = 1`, `demandValidity = 0` and
+its expected-demand contribution is zero. Facility row 0 is not a missing-value sentinel.
 Like `GPUCatchmentAccessibility` it reads weights only and has no
 `spatialContext`. When both `demandWeights` and `facilityWeights` carry `spatialContext`, the contexts
 must be compatible; otherwise construction throws.
 
 Each submission writes zero to probability slots past the terminal CSR offset, including when a
 reused weights table shrinks or becomes empty. Zero attractiveness or zero weight contributes no
-probability. Normalization uses row-centred log scores before exponentiation; changing the common
+probability. Attractiveness and weights must be finite to count: a negative, NaN or infinite
+attractiveness or weight excludes that slot in the same way (probability 0, never the trade area,
+no captured demand), and the remaining facilities share the row. Normalization uses row-centred log scores before exponentiation; changing the common
 scale of positive attractiveness leaves probabilities, the winning facility and expected demand
 unchanged within float32 rounding, even when the unnormalized powers overflow or underflow.
 Relative scores use the original binary mantissas, retaining differences between adjacent float32
@@ -106,12 +159,69 @@ Expected-demand contributions combine the demand's binary exponent before roundi
 rounds to zero may still make a representable contribution when demand is large. Signed finite
 demand keeps its sign; non-finite demand remains missing.
 
-Supplied nonzero `demandWeights.status.overflow` or `candidateOverflow` suppresses every trade area
+Supplied nonzero `demandWeights.status.overflow` or `candidateOverflow`, or supplied zero
+`demandWeights.status.complete`, suppresses every trade area
 to `GPU_HUFF_NO_TRADE_AREA` and every probability (including padding and winning probabilities) to
 NaN. Either forward or reverse weights loss suppresses every `expectedDemand` value to NaN;
-reverse weights loss leaves forward probabilities usable. The optional demand `validity` still
-reports finite demand only. Clear the input flags after rebuilding complete weights to restore
-ordinary results on the next submission of the same compiled graph.
+reverse weights loss leaves forward probabilities usable. Each orientation's positive `complete`
+word is checked independently of its negative flags. The optional `demandValidity` still reports
+finite demand only. Clear negative input flags and restore every supplied positive certificate
+after rebuilding complete weights to recover ordinary results on the next submission of the same graph.
+
+For network costs, pass explicit `costsComplete` and any matrix horizon to both
+`GPUNetworkCostWeights` orientations, requesting each `output.status.complete`. Huff consumes
+those inherited certificates; it has no direct `costsComplete` prop. A finite matrix horizon
+must reach the requested weights cutoff even when the search converged. The converter refuses
+completeness evidence without its publication destination, preventing silent loss of that evidence.
+
+```ts
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUNetworkCostWeights, type GPUNetworkCostWeightsProps
+} from '@luma-contributors/analysis/gpu-network';
+import {
+  GPUHuffTradeAreas, type GPUHuffTradeAreasProps
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+type CertifiedMatrix = Pick<GPUNetworkCostWeightsProps,
+  'costs' | 'rowCount' | 'columns' | 'parameters' | 'costLimit'> &
+  Required<Pick<GPUNetworkCostWeightsProps, 'costsComplete'>>;
+type CertifiedOutput = GPUNetworkCostWeightsProps['output'] & {
+  status: Required<Pick<NonNullable<GPUNetworkCostWeightsProps['output']['status']>, 'complete'>>;
+};
+
+export function addHuffExample(
+  graph: GPUCommandGraph, matrix: CertifiedMatrix,
+  facilityOutput: CertifiedOutput, demandOutput: CertifiedOutput,
+  inputs: Omit<GPUHuffTradeAreasProps, 'facilityWeights' | 'demandWeights'>
+) {
+  // Matrix: F facility rows x D demand columns, in caller-declared network cost units.
+  // matrix.parameters: four float32 decay words; costsComplete/costLimit: one word each.
+  // facilityOutput.offsets: F+1; demandOutput.offsets: D+1; neighbors/weights: slot capacities.
+  const facilityWeights = new GPUNetworkCostWeights({
+    ...matrix, id: 'huff-facility-weights', orientation: 'rows', output: facilityOutput
+  });
+  const demandWeights = new GPUNetworkCostWeights({
+    ...matrix, id: 'huff-demand-weights', orientation: 'columns', output: demandOutput
+  });
+  graph.add(facilityWeights);
+  graph.add(demandWeights);
+  graph.add(new GPUHuffTradeAreas({
+    ...inputs, facilityWeights: facilityWeights.outputWeights,
+    demandWeights: demandWeights.outputWeights
+  }));
+  // attractiveness/expectedDemand: F; demand/tradeArea/winning probability/demandValidity: D.
+  // probabilities: demand slot capacity; retain all input/output buffer owners for reads/writes.
+  return {facilityWeights, demandWeights};
+}
+```
+
+With complete unit weights, one facility and two unit demands, winning probabilities are `[1, 1]`
+and expected demand is `[2]`. Writing matrix `costsComplete = 0` suppresses trade areas and
+probabilities and makes expected demand NaN through both converters. Finishing costs, restoring
+that word and clearing capacity loss restores `[1, 1]` and `[2]`. If just the facility orientation
+is incomplete, forward probabilities stay usable but expected demand is NaN. Do not replace an
+inherited zero certificate with an unrelated positive word.
 
 #### How it computes
 
@@ -129,6 +239,8 @@ ordinary results on the next submission of the same compiled graph.
 
 #### `GPUHuffTradeAreas` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUHuffTradeAreas`.
+
 - Packer: `getGPUHuffTradeAreasParameterValues(settings?)`, writes `GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH` (1) `float32` values.
 
 Settings of `getGPUHuffTradeAreasParameterValues`:
@@ -138,6 +250,32 @@ Settings of `getGPUHuffTradeAreasParameterValues`:
 | `exponent` (optional) | `number` | Attractiveness exponent `alpha`, positive and finite. Defaults to 1. |
 
 {/* /parameters */}
+
+### `GPULocationAllocation` command-node budget
+
+The command-node ceiling for one `GPULocationAllocation` graph is 32,768
+(`GPU_MAXIMUM_COMMAND_NODE_COUNT`), for both dense `costs` and sparse `sparseCosts`.
+The estimate starts at four nodes for dense costs or 73 for sparse costs. Sparse costs add
+one validation node when weights are supplied or the operation is not p-median. Either
+route adds one node when `costsComplete` or `costLimit` is supplied, and one node for p-median
+or a weighted swap phase. Each requested selection adds three nodes. An enabled swap phase
+adds one setup node and `(6 + 2 × L) × maximumSwapIterations` nodes, where `L` starts with the
+facility scan and includes each level obtained by dividing the previous length by 256 and
+rounding up, through the first length of 256 or fewer. The sparse estimate reserves 64
+nodes for the transpose sort. Set covering has no swap phase.
+
+Construction rejects larger graphs even when all buffers fit the device. For example, a
+dense p-median request with a 512 MiB binding limit, 8,000 candidate facilities, 7,800
+selections, one demand row and 1,000 swap iterations needs
+`4 + 1 + 3 × 7800 + 1 + (6 + 2 × 2) × 1000 = 33,406` nodes.
+Lower `maximumSwapIterations` or, if the problem permits, `maximumFacilityCount`.
+
+See the full location-allocation inputs, outputs and device limits in the
+[spatial statistics guide](./operators-statistics.md#gpulocationallocation).
+
+For `GPUBoundedFacilityAllocation`, the one-word `contributor.status.complete` certifies
+valid enumeration on complete supplied costs. Supply a one-row `uint32` view as
+`output.ports.status.complete` to choose the destination.
 
 ### `GPUArealInterpolation`
 
@@ -163,6 +301,23 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
   capacity is the maximum number of pairs), `status.overflow`, and the optional `status.requiredPairCount`,
   `alternateWeights` (the other normalization, from the same run), `areas` (raw overlap area per slot),
   the diagnostics below and `categoryShares` (`T x K`, required with `categories`).
+  If `weights.status.overflow` is supplied, it must reference the same buffer and byte offset as
+  `output.status.overflow`, so downstream consumers such as `GPUSpatialLag` suppress incomplete
+  weights. Independent nested overflow storage is rejected at construction. Optional nested
+  `weights.status.count` reports the readable entry count, `requiredCount` reports the unclamped pair
+  count, and `candidateOverflow` is set to zero on every submission because this route has no
+  candidate truncation. Unsupported nested diagnostics (`uncertainCount`, `invalidCount`,
+  `unresolvedCount`, `complete`, `iterationCount`, `converged`, `iterationLimitReached`, `approximation`) are rejected at construction
+  with their full paths. `weights.distances` is not produced by this operation.
+  The change-of-support recipe uses a supplied `output.extensiveWeights.status.overflow` as
+  its canonical word when `output.status.overflow` is absent. If both overrides are supplied,
+  they must reference the same buffer and byte offset. The supplied destination is written and
+  returned, so downstream lag suppression and caller readback observe the same capacity flag.
+  A nested `count` destination must use a different physical buffer from CSR `offsets`: its copy
+  dispatch reads offsets and writes count. If nested `requiredCount` and outer `requiredPairCount`
+  are distinct destinations, they must also use different physical buffers. Identical required-count
+  aliases may share one word. Disjoint byte slices of the same physical buffer do not satisfy these
+  read/write restrictions.
 - The cell weight `m` (1, or `cellWeights`) summed per source `s` and target `t` gives `a_st`. Extensive:
   `w_ts = a_st / A_s`. Intensive: `w_ts = a_st / B_t`. `A_s` and `B_t` are the zone or overlap areas.
   Rows are targets and neighbors are sources, so the CSR invariants hold; it is a cross weights matrix.
@@ -201,8 +356,15 @@ raster) and pass the two zone views, so H3 or hexagon rasters work too.
   covered by any source, so it sums to 1 where covered.
 - On overflow the offsets clamp to capacity, `status.overflow` is 1 and `status.requiredPairCount` gives the size
   needed.
+- Readable entries end at the last CSR offset, `offsets[targetZoneCount]` (also the optional nested
+  `weights.status.count`). Read `neighbors`, `weights`, `areas` and `alternateWeights` only through that
+  prefix. Compact pair readbacks end at their published `count`. Later bytes are unspecified across
+  routes and submissions.
 - `unweightedFastPath` (default on, used when there are no `cellWeights`) takes pair areas from run lengths
-  and zone areas from counts instead of per-cell accumulation. Results are bitwise identical; it was 1.4x
+  and zone areas from counts instead of per-cell accumulation. Results in the readable prefix are
+  bitwise identical when each pair and zone count is at most 2^24, the exact float32 integer range.
+  Larger counts can round differently: with 33,554,435 unit cells in one pair, run-length conversion
+  gives 33,554,436 whereas a 256-lane float32 segmented reduction can give 33,554,432. The fast path was 1.4x
   faster on the explorer's graph, about 35 percent on 384 by 384 zone denominators and about equal for the
   overlap denominator, where the two radix sorts dominate.
 - Cell centers decide membership, so every area is a cell count and accuracy is about one cell along every
@@ -214,12 +376,30 @@ count, `sourceZoneCount`; `columnCount` transfers several variables at once). Th
 grid-aligned zones when `allocate_total` is set to match the denominator (`False` for `'zone'`, `True` for `'overlap'`).
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUArealInterpolation, GPUSpatialLag} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const graph: GPUCommandGraph;
+declare const grid: GPURasterMetadata;
+declare const sourceZoneCount: number;
+declare const targetZoneCount: number;
+declare const sourceZones: GraphDataView<'uint32'>;
+declare const targetZones: GraphDataView<'uint32'>;
+declare const offsets: GraphDataView<'uint32'>; // targetZoneCount + 1 entries
+declare const neighbors: GraphDataView<'uint32'>; // pair capacity
+declare const weights: GraphDataView<'float32'>; // pair capacity
+declare const alternateWeights: GraphDataView<'float32'>; // pair capacity
+declare const overflow: GraphDataView<'uint32'>; // one shared status word
+declare const population: GraphDataView<'float32'>; // sourceZoneCount rows
+declare const populationOnTargets: GraphDataView<'float32'>; // targetZoneCount rows
+
 graph.add(new GPUArealInterpolation({
   grid, sourceZones, targetZones, sourceZoneCount, targetZoneCount,
-  output: {weights: {offsets, neighbors, weights}, alternateWeights, status: {overflow}}
+  output: {weights: {offsets, neighbors, weights, status: {overflow}}, alternateWeights, status: {overflow}}
 }));
 graph.add(new GPUSpatialLag({
-  weights: {offsets, neighbors, weights}, values: population, output: populationOnTargets
+  weights: {offsets, neighbors, weights, status: {overflow}}, values: population, output: populationOnTargets
 }));
 ```
 
@@ -235,7 +415,7 @@ graph.add(new GPUSpatialLag({
 
 ::lens{scenario=gpu-spatial-analysis.areal-interpolation rung=graph caption="Follow rasterization, pair sorting and run detection, then the transfer."}
 
-### `GPUPycnophylactic`
+### `GPUPycnophylacticInterpolation`
 
 Smooths zone totals into a non-negative raster surface whose cells sum back to each zone total.
 
@@ -244,7 +424,7 @@ Smooths zone totals into a non-negative raster surface whose cells sum back to e
 Tobler pycnophylactic interpolation on a raster. Props: `grid` (`GPURasterMetadata`), `zones` (`uint32`; a value at or
 above `zoneCount` is outside), `zoneCount`, `totals` (per zone), `maximumIterations` (0 to 512,
 compile-time), `kernel` (`'rook'`, the default 4-neighbor mean, or `'box'`, a 3x3 mean including the cell)
-and the caller-owned `output` (`GPUPycnophylacticOutput`) whose `mass` is the mass per cell. Each cell starts at `total / area(zone)`. Each iteration takes the focal mean over in-area
+and the caller-owned `output` (`GPUPycnophylacticInterpolationOutput`) whose `mass` is the mass per cell. Each cell starts at `total / area(zone)`. Each iteration takes the focal mean over in-area
 neighbors, restores the zone total additively, clamps negatives to 0 and rescales multiplicatively to the
 total; zero-sum zones fill uniformly. Totals hold to f32 accuracy and values are non-negative after every
 iteration. Zone sums are fixed-order segmented sums over cells sorted once by zone. There is no ancillary
@@ -260,9 +440,15 @@ is smoother. Reference: Tobler (1979), JASA 74(367).
   iteration, the largest `|new - old| / (total / area(zone))` over all cells with it. Once at or below
   the tolerance the surface is final: the per-cell kernels of every remaining compiled iteration are
   skipped through a GPU-written indirect dispatch, and the surface is not copied forward (one settle pass
-  copies the scratch raster only when the last iteration that ran wrote it). Deterministic.
+  copies the scratch raster only when the last iteration that ran wrote it, including when an odd
+  number of budgeted iterations remain unused). The published surface preserves each represented
+  zone's total. Deterministic.
   `output.status.converged` and `output.status.iterationCount` (one `uint32` each; they need `tolerance`) report
   whether it converged and how many iterations ran; with 0 iterations both are 0. A NaN or negative tolerance never converges.
+  The comparison is inclusive and relative to the zone mean. For a three-cell rook grid with
+  zones `[0,0,1]` and totals `[4,8,3]`, step two gives masses `[13/8,19/8,8]`:
+  absolute change `9/8` divided by mean 2 equals tolerance `9/16`, so a two-step budget
+  publishes `[converged, iterationCount, invalidCount] = [1,2,1]`.
 - Zones without cells. A zone smaller than a cell has no raster cell and its total used to vanish
   silently. `zoneAnchorCells` (`zoneCount` cell indices) lets such a zone claim a fallback cell (see
   `GPUArealInterpolation.sourceAnchorCells`; ascending zone order, the cell's owner must keep one cell),
@@ -282,7 +468,7 @@ is smoother. Reference: Tobler (1979), JASA 74(367).
 
 #### How it computes
 
-{/* lens:GPUPycnophylactic */}
+{/* lens:GPUPycnophylacticInterpolation */}
 
 ::lens{scenario=gpu-spatial-analysis.pycnophylactic rung=datum datum=3576 caption="Inspect the cell containing the centroid of tract 17031020802."}
 
@@ -307,7 +493,32 @@ Segregation indices from a unit-by-group count table, aspatial or spatial (PySAL
   `(0, 1)`), `spatialForm` and `output`: `indices` (`scales * stride` floats, layout from `getGPUSegregationLayout(K)`: entropy,
   multi-group dissimilarity, diversity, dissimilarity `[K]`, isolation `[K]`, Atkinson `[K]`, interaction
   `[K * K]`) and optional per-unit views (`localEnvironment`, `localEntropy`, `localDissimilarity`,
-  `localTheil`, per scale; they sum to the global indices).
+  `localTheil`, per scale; sum defined contributions with a NaN-skipping sum).
+- `missingCountPolicy: 'zero'` (default) replaces each negative or non-finite group count with
+  zero independently. `missingCountPolicy: 'exclude-unit'` removes the entire unit when any
+  group count is negative or non-finite, from every numerator and group/population total at
+  every scale. An observed zero is a valid count under both policies.
+  Excluded source units contribute nothing to any local environment. Excluded target units
+  have empty environments and NaN local results, including in `smoothed-population` form;
+  the remaining smoothed group/population totals omit those targets as well.
+- Optional `output.invalidUnitCount` is one uint32 word, overwritten each submission. It counts
+  input units with at least one negative or non-finite count before applying either policy.
+  For aspatial rows `[[8, NaN], [2, 8]]`, exclusion gives dissimilarity 0 and invalidUnitCount 1.
+  Replacing NaN with observed 0 gives dissimilarity .8 and invalidUnitCount 0; replacing it with
+  observed 2 gives .6 and invalidUnitCount 0. The default per-entry policy gives .8 for NaN.
+- Construction captures group count, scale membership, CSR-port maps, numeric defaults and output
+  maps. Later caller-prop mutations do not alter the validated graph. Counts, CSR buffer contents
+  and an optional parameters view remain per-frame inputs.
+- A nonzero `scales[s].status.overflow` or `candidateOverflow` means the CSR lost neighbors.
+  Weight-dependent global and local outputs for scale `s` are then NaN; other scales remain usable.
+  Global diversity remains defined from the original group totals in the `environment` form.
+  It is also suppressed in `smoothed-population`, where those totals depend on the weights.
+  Restoring complete weights and clearing the flags restores that scale on the next submission.
+  Carry the producer's `overflow` and `candidateOverflow` views alongside its CSR. Verify
+  completeness and omit `complete`, `requiredCount`, `converged`, `iterationLimitReached` and
+  `unresolvedCount` before passing the scale. When search and analysis use separate graphs, import
+  the same physical overflow buffer into each consuming graph; displaying that flag separately
+  does not qualify otherwise finite indices.
 - `spatialForm: 'environment'` (default) is the Reardon and O'Sullivan (2004) form: `pi_im = x~_im / t~_i`
   with `x~_im = selfWeight x_im + sum_j w_ij x_jm` (`j` over the active slots: positive weight, another
   unit; a self slot in the weights is not read, so a unit is never counted twice) replaces `p_im`, and the sums keep the unit populations
@@ -317,7 +528,9 @@ Segregation indices from a unit-by-group count table, aspatial or spatial (PySAL
   `H = sum_i t_i (E - E_i) / (E T)`; multi-group `D = sum_i sum_m t_i |pi_im - P_m| / (2 T I)`;
   `D_g = sum_i t_i |pi_ig - P_g| / (2 T P_g (1 - P_g))`; isolation `xPx_g = sum_i (x_ig / X_g) pi_ig`;
   interaction `xPy_gh = sum_i (x_ig / X_g) pi_ih`; Atkinson
-  `A_g = 1 - P / (1 - P) |sum_i (1 - pi_ig)^(1 - b) pi_ig^b t_i / (P T)|^(1 / (1 - b))`. Undefined indices
+  `A_g = 1 - P / (1 - P) |sum_i (1 - pi_ig)^(1 - b) pi_ig^b t_i / (P T)|^(1 / (1 - b))`.
+  The Atkinson divisor is the actual positive group total `X_g = P T`, preserving scale invariance
+  for small normal float32 populations. Undefined indices
   are NaN, never 0 (0 means perfectly even): H and the diversity with an empty total, H also with a single
   present group (`E = 0`, while `E` itself is the defined 0), D with an empty total or `I = 0`, `D_g` and
   `A_g` for a group with zero or all of the population, and isolation and interaction of a group with no
@@ -325,6 +538,12 @@ Segregation indices from a unit-by-group count table, aspatial or spatial (PySAL
   and contributes nothing to the sums, so use a NaN-skipping sum to add the local outputs up to the global
   indices; unit contributions to `D_g` and H are also NaN when that global index is undefined. Behavior
   change: these were 0.
+- With `selfWeight: 0`, a populated island can have an empty environment. Its population stays in
+  `T` and the group totals, but its undefined local entropy contribution is omitted from global H.
+  Thus H is the NaN-skipping sum of `localTheil`, including in this case. Earlier versions
+  incorrectly added the island's population share to H. Isolation plus exposures to the other
+  groups then sum to the share of that group's population with defined environments, which can
+  be less than 1.
 - Small-sample bias: the indices are not bias corrected. `D` and `H` are biased upward when units hold
   few people, because sampling noise alone makes unit compositions differ from the global one even under
   random allocation (Cortese, Falk and Cohen 1976; Winship 1977; Carrington and Troske 1997). Compare
@@ -337,7 +556,46 @@ Segregation indices from a unit-by-group count table, aspatial or spatial (PySAL
   provided: PySAL's evenness null redraws every person's unit from the unit sizes (a binomial or
   multinomial draw per unit) and reruns the whole index pipeline per simulation, whereas the permutation
   operators here shuffle values across rows of an existing weights structure, so it needs its own
-  count-table resampling kernel. `atkinsonInequalityAversion` and `selfWeight` are compile-time.
+  count-table resampling kernel. `atkinsonInequalityAversion` and `selfWeight` supply construction
+  defaults; an optional `parameters` view packed by `getGPUSegregationParameterValues` overrides
+  them per frame.
+
+```ts
+import {createTransientView, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUSegregation,
+  getGPUSegregationLayout,
+  type GPUSegregationOutput,
+  type GPUSpatialWeights
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+function addTwoGroupSegregation(
+  graph: GPUCommandGraph,
+  groupCounts: GraphDataView<'float32'>,
+  scales: readonly (GPUSpatialWeights | null)[]
+): GPUSegregationOutput {
+  const unitCount = groupCounts.length / 2;
+  const layout = getGPUSegregationLayout(2); // stride 13 float32 indices per scale
+  const output: GPUSegregationOutput = {
+    indices: createTransientView(graph, 'segregation-indices', 'float32', scales.length * layout.stride),
+    invalidUnitCount: createTransientView(graph, 'segregation-invalid-units', 'uint32', 1),
+    localEnvironment: createTransientView(graph, 'segregation-environment', 'float32', scales.length * unitCount * 2),
+    localEntropy: createTransientView(graph, 'segregation-local-entropy', 'float32', scales.length * unitCount),
+    localDissimilarity: createTransientView(graph, 'segregation-local-dissimilarity', 'float32', scales.length * unitCount * 2),
+    localTheil: createTransientView(graph, 'segregation-local-theil', 'float32', scales.length * unitCount)
+  };
+  graph.add(new GPUSegregation({
+    groupCount: 2, groupCounts, scales, missingCountPolicy: 'exclude-unit', output
+  }));
+  return output;
+}
+```
+
+Counts are people per unit and group. Each scale's global indices occupy 13 words, beginning
+at `scale * layout.stride`. Local compositions are dimensionless fractions, local entropy is
+in nats, and local dissimilarity and Theil values are dimensionless contributions. Local
+two-group views use `(scale * unitCount + unit) * 2 + group`; scalar-per-unit views use
+`scale * unitCount + unit`. The invalid-unit count is shared by all scales.
 
 #### How it computes
 
@@ -354,6 +612,8 @@ Segregation indices from a unit-by-group count table, aspatial or spatial (PySAL
 {/* parameters: GPUSegregation generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUSegregation` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUSegregation`.
 
 - Packer: `getGPUSegregationParameterValues(settings?, id?)`, writes `GPU_SEGREGATION_PARAMETER_LENGTH` (2) `float32` values.
   - `id` (`unknown`)

@@ -25,6 +25,26 @@ S(a, b)  = OT(a, b) - OT(a, a) / 2 - OT(b, b) / 2
 ## `GPUSinkhornDivergence`
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUSinkhornDivergence, getGPUSinkhornDivergenceParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const graph: GPUCommandGraph;
+declare const grid: GPURasterMetadata;
+declare const source: GraphDataView<'float32'>;
+declare const target: GraphDataView<'float32'>;
+declare const parameterBuffer: GPUParameterBuffer<'float32'>;
+const parameters = parameterBuffer.importToGraph(graph);
+declare const divergence: GraphDataView<'float32'>;
+declare const components: GraphDataView<'float32'>;
+declare const marginalError: GraphDataView<'float32'>;
+declare const converged: GraphDataView<'uint32'>;
+declare const iterationLimitReached: GraphDataView<'uint32'>;
+declare const iterationCount: GraphDataView<'uint32'>;
+declare const invalidCount: GraphDataView<'uint32'>;
+declare const approximation: GraphDataView<'uint32'>;
+
 const sinkhorn = new GPUSinkhornDivergence({
   grid,             // GPURasterMetadata: only width and height are used
   source,           // GraphDataView<'float32'>, width * height masses in raster row order
@@ -40,17 +60,17 @@ const sinkhorn = new GPUSinkhornDivergence({
 });
 graph.add(sinkhorn);
 
-getGPUSinkhornDivergenceParameterValues({
+parameterBuffer.write(sinkhorn.getParameterValues({
   cellWidth: 1,
   cellHeight: 1,
   epsilon: 2,
   tolerance: 1e-4,
   epsilonStart: 16,
   scalingFactor: 0.8
-});
+}));
 ```
 
-Per-frame (no recompile): the contents of `parameters` (cell width and height, `epsilon`, `tolerance`, `epsilonStart`, `scalingFactor`) and of both mass fields. Compile-time (a new graph): the grid size, `maximumIterations`, `blurRadius`, and which optional outputs exist. Extra prop: `id`, `spatialContext` (planar/native only).
+Per-frame (no recompile): the contents of `parameters` (cell width and height, `epsilon`, `tolerance`, `epsilonStart`, `scalingFactor`) and of both mass fields. Compile-time (a new graph): the grid size, `maximumIterations`, `transportRadius`, and which optional outputs exist. Extra prop: `id`, `spatialContext` (planar/native only).
 
 - `parameters` is `[cellWidth, cellHeight, epsilon, tolerance, epsilonStart, scalingFactor]` (`GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH` is 6). `epsilon` is in squared position units. Iteration `k` uses `max(epsilon, epsilonStart * scalingFactor^k)`; the defaults (`epsilonStart = epsilon`, `scalingFactor = 1`) are no schedule. `tolerance` defaults to `GPU_SINKHORN_DIVERGENCE_DEFAULT_TOLERANCE` (1e-4). The packer throws on a value that is not positive and finite, on `epsilonStart < epsilon` and on `scalingFactor` outside `(0, 1]`.
 - Masses must be non-negative and finite. A negative or non-finite cell is counted in `status.invalidCount` and treated as zero. If either field has no mass, or the parameters are unusable, `divergence` and the other values are NaN, `iterationCount` is 0 and neither `converged` nor `iterationLimitReached` is set.
@@ -58,9 +78,21 @@ Per-frame (no recompile): the contents of `parameters` (cell width and height, `
 - `components` are reported because the divergence is a difference of them and carries their rounding.
 - `marginalError` is the L1 distance between the cross plan's target marginal and the normalized target masses, measured before the last target-side update. `converged` is one only when the cross plan and both symmetric self plans each have L1 marginal error at most `tolerance` before their updates, with the regularization at its final value. The symmetric plans have equal row and column residuals. A small `marginalError` alone does not certify convergence. `iterationLimitReached` is one when `maximumIterations` (1 to `GPU_SINKHORN_DIVERGENCE_MAXIMUM_ITERATIONS`, 1000; default `GPU_SINKHORN_DIVERGENCE_DEFAULT_MAXIMUM_ITERATIONS`, 100) ran out first, in which case the latest potentials are still used.
 - The residual pass must use the exact packed final `epsilon`. A distinct `epsilonStart` with `scalingFactor = 1` never reaches it and exhausts the budget, even if it differs by only one float32 step. The website scene displays `iteration limit reached (estimate)` alongside its distance and cost readout when this flag is set; it clears the indication after a converged run.
-- `blurRadius` (compile-time, default the longer side minus one, which is exact) limits each 1D blur window. A smaller radius drops Gibbs kernel terms beyond it. It is exact when the dropped terms are negligible against the nearest mass and sets `status.approximation`; a cell with no mass in its window gets a huge potential, so keep the window large against the gaps between masses.
-- A positive-mass cell unreachable through the blur window contributes its entire normalized mass to the residual. Repeated unreachable potentials do not count as convergence. For example, `[1, 0, 0]` to `[0, 0, 1]` on a `3 x 1` grid with `blurRadius = 1` has cross marginal error `1` and reaches the iteration limit for tolerance below `1`.
+- `transportRadius` (in grid cells; GPU integer range `[0, 2048]`, compile-time, default the longer side minus one, which is exact) limits each 1D blur window. A smaller radius drops Gibbs kernel terms beyond it. It is exact when the dropped terms are negligible against the nearest mass and sets `status.approximation`; a cell with no mass in its window gets a huge potential, so keep the window large against the gaps between masses.
+- A positive-mass cell unreachable through the blur window contributes its entire normalized mass to the residual. Repeated unreachable potentials do not count as convergence. For example, `[1, 0, 0]` to `[0, 0, 1]` on a `3 x 1` grid with `transportRadius = 1` has cross marginal error `1` and reaches the iteration limit for tolerance below `1`.
 - Grid sides are limited to `GPU_SINKHORN_DIVERGENCE_MAXIMUM_GRID_SIDE` (2048) because one blur invocation walks a row or a column; cells to 2^24 (float32 counts). `estimatedCommandNodeCount` is `10 + 7 * maximumIterations`, an upper bound including both optional publication passes. The two additional fixed nodes find the per-field maxima before the rescaled mass sums.
+
+The direct class publishes resolved destinations at `sinkhorn.output` after `graph.add(sinkhorn)`.
+Omitted `marginalError` and status destinations receive graph-owned views; explicit destinations are
+preserved. `status.approximation` describes the configured support, including invalid or empty
+frames that perform zero iterations. Bind these views to readback or downstream nodes before compiling the graph. Read `output.status.converged` and `output.status.iterationLimitReached` alongside the
+retained iterate. `transportRadius: 0` requests diagonal-only support. Omit `transportRadius`
+to use full support. Named operations capture the radius at construction. A truncated window
+sets `approximation` on both backends.
+
+Use `sinkhorn.getParameterValues(settings)` for checked uploads: when encoded `epsilonStart > epsilon`,
+the encoded scaling factor must be below one. An omitted factor or one rounded to one is rejected.
+The free packer retains the raw layout for applications testing solver exhaustion explicitly.
 
 {/* lens:GPUSinkhornDivergence */}
 
@@ -68,7 +100,10 @@ Per-frame (no recompile): the contents of `parameters` (cell width and height, `
 
 ### `GPUSinkhornDivergence` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUSinkhornDivergence`.
+
 - Packer: `getGPUSinkhornDivergenceParameterValues(settings)`, writes `GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH` (6) `float32` values.
+- Packer: `instance.getParameterValues(settings)`, writes the `float32` parameter view.
 
 Settings of `getGPUSinkhornDivergenceParameterValues`:
 
@@ -87,7 +122,7 @@ Settings of `getGPUSinkhornDivergenceParameterValues`:
 
 In the log domain the dual iteration is `g_j = -epsilon * LSE_i(f_i / epsilon + log a_i - C_ij / epsilon)` and the same for `f`. The Gibbs kernel `exp(-C / epsilon)` is separable in the two grid axes, so each log-sum-exp over all cells is two 1D passes, one along rows and one along columns: the raster convolution pattern in the log semiring, at `O(cells * (width + height))` per update instead of `O(cells^2)`. The three problems `(a, b)`, `(a, a)` and `(b, b)` run in one batch, the symmetric ones with the averaged update `f <- (f + T f) / 2`. Each first half-iteration measures all three marginal errors before applying the updates, using `mass * |exp((old - T(old)) / epsilon) - 1|`. A tiled reduction sums each plan's residual separately. A one-thread node requires all three to meet tolerance at the final epsilon, applies the schedule and disarms a GPU dispatch gate, so finished iterations launch nothing; zero-mass cells are masked rather than given a log of minus infinity. The divergence is `sum a (f_ab - f_aa) + sum b (g_ab - g_bb)`, with the differences formed before the tiled sum (plain float32 inside tiles of a few hundred cells, then a fixed pairwise merge; not a compensated float sum, which the test GPU's shader compiler removes).
 
-`GPUSinkhornDivergenceOperation` and `CPUSinkhornDivergenceOperation` use the same three-plan stopping rule and explicit iteration budget. The CPU twin evaluates the full kernel in float64; near the tolerance, rounding can change the stopping iteration between the two forms.
+`GPUSinkhornDivergenceOperation` and `CPUSinkhornDivergenceOperation` use the same three-plan stopping rule and explicit iteration budget. The CPU twin evaluates the same optional bounded transport windows in float64; near the tolerance, rounding can change the stopping iteration between the two forms.
 
 ## Single precision
 

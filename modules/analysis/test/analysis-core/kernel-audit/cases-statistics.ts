@@ -621,7 +621,7 @@ function buildGlobalStatistics(
       mask: view('uint32', rows),
       statistics,
       islands,
-      alternative,
+      analyticAlternative: alternative,
       output: {
         summary: view('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length),
         joinCounts: view('uint32', 3)
@@ -667,17 +667,17 @@ const GLOBAL_CASES: KernelAuditCase[] = [
 ];
 
 function buildMultipleTesting(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   method: GPUMultipleTestingMethod,
   rows: number
 ) {
   graph.add(
-    new GPUMultipleTestingAdjustment({
+    construct(GPUMultipleTestingAdjustment, {
       pValues: view('float32', rows),
       method,
       // Exercise the full integer family-size range independently of row-buffer capacity.
       minimumFamilySize: GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1,
-      output: {adjustedPValues: view('float32', rows), testedCount: view('uint32', 1)}
+      output: {adjustedPValues: view('float32', rows), effectiveFamilySize: view('uint32', 1)}
     })
   );
 }
@@ -901,7 +901,7 @@ const GLOBAL_PERMUTATION_STATISTICS: GPUGlobalPermutationStatistic[] = [
 ];
 
 function buildGlobalPermutation(
-  {graph, view, weights}: KernelAuditContext,
+  {graph, view, weights, construct}: KernelAuditContext,
   statistic: GPUGlobalPermutationStatistic,
   rows: number,
   maximumPermutations: number,
@@ -911,7 +911,7 @@ function buildGlobalPermutation(
 ) {
   const needsSecond = statistic === 'bivariateMoran' || statistic === 'leesL';
   graph.add(
-    new GPUGlobalPermutationTest({
+    construct(GPUGlobalPermutationTest, {
       weights: weights(rows, SLOTS),
       values: view('float32', rows),
       mask: view('uint32', rows),
@@ -1652,7 +1652,7 @@ function buildRegressionDiagnostics(
   const {graph, view, weights} = context;
   const k = 15;
   graph.add(
-    new GPUSpatialRegressionDiagnostics({
+    context.construct(GPUSpatialRegressionDiagnostics, {
       weights: weights(rows, SLOTS),
       predictors: view('float32', rows * k),
       response: view('float32', rows),
@@ -1784,7 +1784,7 @@ function buildWeightsTraces(
 ) {
   const {graph, view, weights} = context;
   graph.add(
-    new GPUSpatialWeightsTraces({
+    context.construct(GPUSpatialWeightsTraces, {
       weights: weights(rows, SLOTS),
       maximumPower: POWER,
       mode,
@@ -2091,10 +2091,39 @@ const REGRESSION_CASES: KernelAuditCase[] = [
       },
       {
         exportName: 'GPUSpatialWeightsTraces',
-        name: `${mode} gram ${includeGramTraces} rows at the binding limit`,
+        name: `${mode} gram ${includeGramTraces} rows at the ${mode === 'exact' ? 'command' : 'binding'} limit`,
         build: context =>
-          buildWeightsTraces(context, traceRows(context, mode, SLOTS), mode, includeGramTraces)
-      }
+          // For one chunk, POWER=256 and batches of 16: 263 + 256*batches without
+          // Gram, 776 + 263*batches with protected Gram. At most 32768 commands admits
+          // 126/121 full batches (2016/1936 rows); the next batch must refuse.
+          buildWeightsTraces(
+            context,
+            mode === 'exact' ? (includeGramTraces ? 1936 : 2016) : traceRows(context, mode, SLOTS),
+            mode,
+            includeGramTraces
+          )
+      },
+      ...(mode === 'exact'
+        ? [
+            {
+              exportName: 'GPUSpatialWeightsTraces',
+              name: `exact gram ${includeGramTraces} next batch above the command limit`,
+              build: (context: KernelAuditContext) =>
+                buildWeightsTraces(
+                  context,
+                  includeGramTraces ? 1952 : 2032,
+                  mode,
+                  includeGramTraces
+                )
+            },
+            {
+              exportName: 'GPUSpatialWeightsTraces',
+              name: `exact gram ${includeGramTraces} binding-limited rows exceed the command limit`,
+              build: (context: KernelAuditContext) =>
+                buildWeightsTraces(context, 16384, mode, includeGramTraces)
+            }
+          ]
+        : [])
     ])
   ),
   ...[true, false].flatMap((greatCircle): KernelAuditCase[] => [
@@ -2176,7 +2205,7 @@ const WEIGHT_ROWS = 1000;
 const TRANSFORM_OPERATIONS: GPUSpatialWeightsTransformOperation[] = [
   'row',
   'binary',
-  'symmetrize',
+  'average-reciprocal',
   'double',
   'variance'
 ];
@@ -2461,7 +2490,7 @@ const WEIGHT_CASES: KernelAuditCase[] = [
       }
     })
   ),
-  ...(['row', 'binary', 'double', 'variance', 'symmetrize'] as const).map(
+  ...(['row', 'binary', 'double', 'variance', 'average-reciprocal'] as const).map(
     (operation): KernelAuditCase => ({
       exportName: 'GPUChunkedSpatialWeightsTransform',
       name: `two chunks ${operation}`,
@@ -2479,7 +2508,7 @@ const WEIGHT_CASES: KernelAuditCase[] = [
       }
     })
   ),
-  ...(['union', 'intersection', 'difference', 'symmetricDifference'] as const).map(
+  ...(['union', 'intersection', 'difference', 'symmetric-difference'] as const).map(
     (operation): KernelAuditCase => ({
       exportName: 'GPUChunkedSpatialWeightsAlgebra',
       name: `two chunks ${operation} sum rule`,
@@ -2554,7 +2583,7 @@ const WEIGHT_CASES: KernelAuditCase[] = [
       );
     }
   },
-  ...(['union', 'intersection', 'difference', 'symmetricDifference'] as const).flatMap(operation =>
+  ...(['union', 'intersection', 'difference', 'symmetric-difference'] as const).flatMap(operation =>
     (['left', 'right', 'sum', 'min', 'max', 'product', 'binary'] as const).map(
       (weightRule): KernelAuditCase => ({
         exportName: 'GPUSpatialWeightsAlgebra',

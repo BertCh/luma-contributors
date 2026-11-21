@@ -2,17 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {
-  validateCapacity,
-  validateRequirement
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {GPUCPUOperation, gpuGraph, type GPUCPUResult} from '@luma.gl/graph/gpu-core';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {
-  GPUNetworkTimeRoutingOperation,
+  getNetworkTimeRoutingOperationDescriptors,
   type NetworkTimeRoutingOperationProps
 } from './gpu-network-time-routing-operation';
 
@@ -20,6 +17,13 @@ import {
   getNetworkOptimizationCPUStatus,
   type NetworkOptimizationCPUStatus
 } from './network-optimization-status';
+
+import {
+  validateNetworkTimeRoutingOptions,
+  snapshotNetworkTimeRoutingOperationProps
+} from './network-time-routing-parameters';
+
+import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 
 const NONE = 0xffffffff;
 
@@ -38,6 +42,7 @@ export type CPUNetworkTimeRoutingInput = Pick<
 /** Retained float64 labels for consumers that must round only their final output. @internal */
 export type NetworkTimeRoutingFloat64Result = {
   arrivals: Float64Array;
+  elapsedTimes: Float64Array;
   predecessorTransitions: Uint32Array;
   valid: number;
   converged: number;
@@ -61,26 +66,9 @@ export function validateNetworkTimeRoutingOperationProps(
 ): void {
   validateCapacity(id, 'stateCount', props.stateCount);
   validateCapacity(id, 'transitionCount', props.transitionCount, 0);
-  validateRequirement(
-    id,
-    props.costModel === undefined ||
-      props.costModel === 'affine-duration' ||
-      props.costModel === 'piecewise-arrival',
-    "costModel must be 'affine-duration' or 'piecewise-arrival'"
-  );
-  if (props.costModel === 'piecewise-arrival') {
+  validateNetworkTimeRoutingOptions(id, props);
+  if (props.costModel === 'piecewise-arrival')
     validateCapacity(id, 'samplesPerTransition', props.samplesPerTransition as number, 2);
-    validateRequirement(
-      id,
-      props.waitingPolicy === undefined || props.waitingPolicy === 'wait-until-first-sample',
-      "waitingPolicy must be 'wait-until-first-sample'"
-    );
-  } else
-    validateRequirement(
-      id,
-      props.samplesPerTransition === undefined && props.waitingPolicy === undefined,
-      'samplesPerTransition and waitingPolicy require costModel piecewise-arrival'
-    );
   if (props.maximumRelaxations !== undefined)
     validateCapacity(id, 'maximumRelaxations', props.maximumRelaxations, 0);
 }
@@ -94,6 +82,7 @@ export function computeNetworkTimeRoutingFloat64(
   input: CPUNetworkTimeRoutingInput,
   departureTime: number = input.departure[0]
 ): NetworkTimeRoutingFloat64Result {
+  validateNetworkTimeRoutingOptions('network-time-routing', input);
   const {stateVertices, transitions, costs, endpoints, departure} = input;
   const stateCount = stateVertices.length;
   const maximumRelaxations = input.maximumRelaxations ?? stateCount;
@@ -113,9 +102,11 @@ export function computeNetworkTimeRoutingFloat64(
     throw new Error('endpoints must hold initial state and destination vertex');
   if (departure.length !== 1) throw new Error('departure must hold one row');
   const arrivals = new Float64Array(stateCount).fill(Infinity);
+  const elapsedTimes = new Float64Array(stateCount).fill(Infinity);
   const predecessorTransitions = new Uint32Array(stateCount).fill(NONE);
   const result: NetworkTimeRoutingFloat64Result = {
     arrivals,
+    elapsedTimes,
     predecessorTransitions,
     valid: 0,
     converged: 0,
@@ -156,40 +147,48 @@ export function computeNetworkTimeRoutingFloat64(
   }
   result.valid = 1;
   arrivals[initial] = departureTime;
+  elapsedTimes[initial] = 0;
   for (let round = 0; round < maximumRelaxations; round++) {
     result.iterationCount++;
     let changed = false;
     for (let edge = 0; edge < transitionCount; edge++) {
       const source = transitions[edge * 2];
       const destination = transitions[edge * 2 + 1];
-      const time = arrivals[source];
+      const time = elapsedTimes[source];
       if (!Number.isFinite(time)) continue;
       let candidate: number;
       if (input.costModel === 'piecewise-arrival') {
         const base = edge * sampleCount * 2;
-        if (time <= costs[base]) candidate = costs[base + 1];
+        if (time <= costs[base] - departureTime) candidate = costs[base + 1] - departureTime;
         else {
           const last = base + (sampleCount - 1) * 2;
           candidate = time + Math.max(0, costs[last + 1] - costs[last]);
           for (let sample = 1; sample < sampleCount; sample++) {
             const right = base + sample * 2;
-            if (time <= costs[right]) {
-              const fraction = (time - costs[right - 2]) / (costs[right] - costs[right - 2]);
+            if (time <= costs[right] - departureTime) {
+              const fraction =
+                (time - (costs[right - 2] - departureTime)) / (costs[right] - costs[right - 2]);
               candidate = Math.max(
                 time,
-                costs[right - 1] + (costs[right + 1] - costs[right - 1]) * fraction
+                time +
+                  (costs[right - 1] - costs[right - 2]) +
+                  (costs[right + 1] - costs[right] - (costs[right - 1] - costs[right - 2])) *
+                    fraction
               );
               break;
             }
           }
         }
-      } else candidate = time + costs[edge * 2] + costs[edge * 2 + 1] * time;
+      } else
+        candidate =
+          time + costs[edge * 2] + costs[edge * 2 + 1] * departureTime + costs[edge * 2 + 1] * time;
       if (!Number.isFinite(candidate)) {
         result.valid = 0;
         return result;
       }
-      if (candidate < arrivals[destination]) {
-        arrivals[destination] = candidate;
+      if (candidate < elapsedTimes[destination]) {
+        elapsedTimes[destination] = candidate;
+        arrivals[destination] = departureTime + candidate;
         predecessorTransitions[destination] = edge;
         changed = true;
       }
@@ -199,14 +198,28 @@ export function computeNetworkTimeRoutingFloat64(
       break;
     }
   }
+  let bestElapsed = Infinity;
   for (let state = 0; state < stateCount; state++) {
-    if (stateVertices[state] === endpoints[1] && arrivals[state] < result.arrivalTime) {
+    if (stateVertices[state] === endpoints[1] && elapsedTimes[state] < bestElapsed) {
+      bestElapsed = elapsedTimes[state];
       result.targetState = state;
       result.arrivalTime = arrivals[state];
     }
   }
   return result;
 }
+
+/** CPU routing payload and row-scoped float32 representability evidence. */
+export type CPUNetworkTimeRoutingResult = {
+  arrivals: Float32Array;
+  /** Relative seconds since departure, one per expanded state. */
+  elapsedTimes?: Float32Array;
+  predecessorTransitions: Uint32Array;
+  summary: Uint32Array;
+  status: NetworkOptimizationCPUStatus;
+  /** One per state: finite float64 arrival rounded to a nonfinite float32 value. */
+  unrepresentable: Uint32Array;
+};
 
 /**
  * Computes FIFO earliest arrivals and predecessor transitions in float64, then rounds once.
@@ -221,12 +234,9 @@ export function computeNetworkTimeRoutingFloat64(
  *
  * @throws If transitions, costs, endpoints or departure have inconsistent array lengths.
  */
-export function computeNetworkTimeRoutingOnCPU(input: CPUNetworkTimeRoutingInput): {
-  arrivals: Float32Array;
-  predecessorTransitions: Uint32Array;
-  summary: Uint32Array;
-  status: NetworkOptimizationCPUStatus;
-} {
+export function computeNetworkTimeRoutingOnCPU(
+  input: CPUNetworkTimeRoutingInput
+): CPUNetworkTimeRoutingResult {
   const result = computeNetworkTimeRoutingFloat64(input);
   const arrivalBits = new Uint32Array(new Float32Array([result.arrivalTime]).buffer)[0];
   const summary = new Uint32Array([
@@ -237,6 +247,10 @@ export function computeNetworkTimeRoutingOnCPU(input: CPUNetworkTimeRoutingInput
   ]);
   return {
     arrivals: Float32Array.from(result.arrivals),
+    elapsedTimes: Float32Array.from(result.elapsedTimes),
+    unrepresentable: Uint32Array.from(result.arrivals, value =>
+      Number.isFinite(value) && !Number.isFinite(Math.fround(value)) ? 1 : 0
+    ),
     predecessorTransitions: result.predecessorTransitions,
     summary,
     status: getNetworkOptimizationCPUStatus(summary, result.iterationCount)
@@ -245,10 +259,17 @@ export function computeNetworkTimeRoutingOnCPU(input: CPUNetworkTimeRoutingInput
 
 /** CPU twin, preferred for exact reference routing. GPU shape caps are dropped; budgets bind. */
 export class CPUNetworkTimeRoutingOperation extends GPUCPUOperation {
-  constructor(props: NetworkTimeRoutingOperationProps) {
+  constructor(originalProps: NetworkTimeRoutingOperationProps) {
+    const props = snapshotNetworkTimeRoutingOperationProps(originalProps);
     const id = props.id ?? 'network-time-routing';
     validateNetworkTimeRoutingOperationProps(id, props);
-    const operation = new GPUNetworkTimeRoutingOperation(props);
+    // Validate graph names and output aliases independently of the GPU routing limits.
+    const operation = new GPUContributorOperation({
+      ...getNetworkTimeRoutingOperationDescriptors(props),
+      createContributor: () => {
+        throw new Error(`${id}: CPU descriptors do not lower a contributor`);
+      }
+    });
     super({
       id,
       inputs: operation.inputs,
@@ -278,11 +299,14 @@ export class CPUNetworkTimeRoutingOperation extends GPUCPUOperation {
         });
         const {status, ...primaryRows} = result;
         const outputRows = {...primaryRows, ...status};
-        return Object.fromEntries(
-          Object.entries(operation.outputs).map(([port, output]) => [
-            output.value,
-            outputRows[port as keyof typeof outputRows]
-          ])
+        return Object.fromEntries<GPUCPUResult>(
+          Object.entries(operation.outputs).map(([port, output]) => {
+            const rows = outputRows[port as keyof typeof outputRows];
+            if (rows === undefined) {
+              throw new Error(`${id} output.${port} has no CPU result`);
+            }
+            return [output.value, rows] as const;
+          })
         );
       }
     });

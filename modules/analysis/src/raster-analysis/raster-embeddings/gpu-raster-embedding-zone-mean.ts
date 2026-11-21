@@ -52,15 +52,37 @@ export type GPURasterEmbeddingZoneTuples = {
   cellIds: GraphDataView<'uint32'>;
   /** Coverage weight of each tuple, in `(0, 1]`. */
   fractions: GraphDataView<'float32'>;
-  /** The `status` of `GPURasterFractionalCoverage`: `count` is the number of tuples written, at most the tuple capacity. */
-  status: {count: GraphDataView<'uint32'>};
+  /**
+   * The `status` of `GPURasterFractionalCoverage`: `count` is the number of tuples written, at most
+   * the tuple capacity. Pass the producer's whole status: when `requiredCount`, `overflow` or
+   * `candidateOverflow` are given, a frame where `requiredCount != count`, `overflow != 0` or
+   * `candidateOverflow != 0` (the tuple list is a truncated prefix) suppresses every zone. A
+   * `count` above the tuple capacity always suppresses every zone.
+   */
+  status: {
+    count: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
+    overflow?: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
+  };
+  /**
+   * The `zoneValidity` of `GPURasterFractionalCoverage`, at least `zoneCount` entries: a zone
+   * whose entry is zero (failed triangulation or unknown support) is suppressed.
+   */
+  zoneValidity?: GraphDataView<'uint32'>;
 };
 
 /** Caller-owned outputs of {@link GPURasterEmbeddingZoneMean}. */
 export type GPURasterEmbeddingZoneMeanOutput = {
-  /** Mean vector of each zone, `zone * dimensions + band`; NaN for a zone without usable pixels. */
+  /**
+   * Mean vector of each zone, `zone * dimensions + band`; NaN for a zone without usable pixels
+   * and for a zone suppressed by incomplete tuples (see {@link GPURasterEmbeddingZoneTuples}).
+   */
   means: GraphDataView<'float32'>;
-  /** Total coverage weight of the usable pixels of each zone. */
+  /**
+   * Total coverage weight of the usable pixels of each zone: 0 for a zone without usable pixels,
+   * NaN for a zone suppressed by incomplete tuples.
+   */
   weights?: GraphDataView<'float32'>;
   /**
    * Length of the weighted mean before renormalization, in `[0, 1]` for unit vectors: 1 when every
@@ -103,7 +125,10 @@ export type GPURasterEmbeddingZoneMeanProps = {
  *
  * Sums are 96-bit fixed-point integers added with atomics, so the result does not depend on the
  * order of threads; the only rounding is the final conversion to float32. A zone whose usable
- * weight is zero gets NaN.
+ * weight is zero gets NaN. With tuples, the producer's completeness status and zone validity are
+ * honoured when given: a truncated tuple prefix suppresses every zone (NaN means, weights and
+ * mean lengths) instead of publishing a partial mean. Normalization scales each mean by its
+ * largest component before squaring, so a tiny nonzero mean still normalizes.
  *
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `zoneCount`,
  * the tuple capacity, `normalize` and which optional views exist.
@@ -137,13 +162,26 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
       'zoneRaster must hold pixelCount entries'
     );
     if (props.tuples) {
-      const {zoneIds, cellIds, fractions, status} = props.tuples;
+      const {zoneIds, cellIds, fractions, status, zoneValidity} = props.tuples;
       validateRequirement(
         id,
         zoneIds.length === cellIds.length &&
           zoneIds.length === fractions.length &&
           status.count.length >= 1,
         'tuples zoneIds, cellIds and fractions must have equal length and status.count one entry'
+      );
+      for (const name of ['requiredCount', 'overflow', 'candidateOverflow'] as const) {
+        const view = status[name];
+        validateRequirement(
+          id,
+          !view || view.length >= 1,
+          `tuples.status.${name} must hold one entry`
+        );
+      }
+      validateRequirement(
+        id,
+        !zoneValidity || zoneValidity.length >= zoneCount,
+        `tuples.zoneValidity must hold at least zoneCount (${zoneCount}) entries`
       );
       validateCapacity(id, 'tuple capacity', zoneIds.length);
       validateRequirement(
@@ -171,7 +209,10 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
       props.tuples ? props.tuples.zoneIds.length : pixelCount
     );
     validateRasterViews(id, this.getInputs(), this.getOutputs(), [
-      {inputs: [], outputs: [output.means, ...(output.weights ? [output.weights] : [])]},
+      {
+        inputs: props.tuples?.zoneValidity ? [props.tuples.zoneValidity] : [],
+        outputs: [output.means, ...(output.weights ? [output.weights] : [])]
+      },
       {inputs: [], outputs: [output.means, ...(output.meanLengths ? [output.meanLengths] : [])]}
     ]);
   }
@@ -182,7 +223,9 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
       vectors,
       ...(mask ? [mask] : []),
       ...(zoneRaster ? [zoneRaster] : []),
-      ...(tuples ? [tuples.zoneIds, tuples.cellIds, tuples.fractions, tuples.status.count] : [])
+      ...(tuples
+        ? [tuples.zoneIds, tuples.cellIds, tuples.fractions, ...getTupleCompletenessViews(tuples)]
+        : [])
     ];
   }
 
@@ -205,6 +248,10 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
       'tuples.cellIds': tuples?.cellIds,
       'tuples.fractions': tuples?.fractions,
       'tuples.status.count': tuples?.status.count,
+      'tuples.status.requiredCount': tuples?.status.requiredCount,
+      'tuples.status.overflow': tuples?.status.overflow,
+      'tuples.status.candidateOverflow': tuples?.status.candidateOverflow,
+      'tuples.zoneValidity': tuples?.zoneValidity,
       'output.means': output.means,
       'output.weights': output.weights,
       'output.meanLengths': output.meanLengths
@@ -236,6 +283,39 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
     });
     const rawMeans = output.means;
     const termCount = tuples ? tuples.zoneIds.length : pixelCount;
+    // One word: 1 when the tuple list is the producer's complete list for this frame.
+    const complete = tuples ? createTransientView(graph, `${id}-complete`, 'uint32', 1) : null;
+    const completeNode =
+      tuples && complete
+        ? createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-complete`,
+            operation,
+            variant: 'tuple-completeness',
+            invocationCount: 1,
+            bindings: [
+              rasterBinding('tupleCount', tuples.status.count),
+              ...(tuples.status.requiredCount
+                ? [rasterBinding('requiredCount', tuples.status.requiredCount)]
+                : []),
+              ...(tuples.status.overflow
+                ? [rasterBinding('overflow', tuples.status.overflow)]
+                : []),
+              ...(tuples.status.candidateOverflow
+                ? [rasterBinding('candidateOverflow', tuples.status.candidateOverflow)]
+                : []),
+              rasterBinding('complete', complete, true)
+            ],
+            body: `let count = tupleCount[tupleCountOffset];
+complete[completeOffset] = u32(count <= ${termCount}u${
+              tuples.status.requiredCount ? ' && requiredCount[requiredCountOffset] == count' : ''
+            }${tuples.status.overflow ? ' && overflow[overflowOffset] == 0u' : ''}${
+              tuples.status.candidateOverflow
+                ? ' && candidateOverflow[candidateOverflowOffset] == 0u'
+                : ''
+            });`
+          })
+        : null;
+    const zoneValidity = tuples?.zoneValidity;
     const accumulate = tuples
       ? createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-accumulate`,
@@ -297,24 +377,30 @@ if (band == 0u) {
         value: '0u'
       }),
       accumulate,
+      ...(completeNode ? [completeNode] : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-means`,
         operation,
-        variant: 'means',
+        variant: complete ? 'means-guarded' : 'means',
         invocationCount: zoneCount * dimensions,
         workgroupSize: 64,
         bindings: [
           rasterBinding('sums', accumulator),
+          ...(complete ? [rasterBinding('complete', complete)] : []),
+          ...(zoneValidity ? [rasterBinding('zoneValidity', zoneValidity)] : []),
           rasterBinding('means', rawMeans, true),
           ...(output.weights ? [rasterBinding('weights', output.weights, true)] : [])
         ],
         declarations: `${RASTER_FINITE_WGSL}${FIXED_POINT_WGSL}${getRasterFixedPointStateWGSL('sums', false)}`,
         body: `let zone = index / ${dimensions}u;
 let band = index % ${dimensions}u;
+let supported = ${complete ? 'complete[completeOffset] != 0u' : 'true'}${
+          zoneValidity ? ' && zoneValidity[zoneValidityOffset + zone] != 0u' : ''
+        };
 let weight = getFixedPointFloat(loadSums(zone * ${dimensions + 1}u + ${dimensions}u), ${unitExponent});
 let total = getFixedPointFloat(loadSums(zone * ${dimensions + 1}u + band), ${unitExponent});
-means[meansOffset + index] = select(missing(), total / weight, weight > 0.0);
-${output.weights ? `if (band == 0u) { weights[weightsOffset + zone] = weight; }` : ''}`
+means[meansOffset + index] = select(missing(), total / weight, supported && weight > 0.0);
+${output.weights ? `if (band == 0u) { weights[weightsOffset + zone] = select(missing(), weight, supported); }` : ''}`
       })
     ];
     if (props.normalize !== false || output.meanLengths) {
@@ -330,18 +416,32 @@ ${output.weights ? `if (band == 0u) { weights[weightsOffset + zone] = weight; }`
             ...(output.meanLengths ? [rasterBinding('meanLengths', output.meanLengths, true)] : [])
           ],
           declarations: RASTER_FINITE_WGSL,
-          body: `var squaredLength = 0.0;
+          // Scale by the largest component before squaring: the square of a tiny nonzero mean
+          // underflows float32, which would leave it unnormalized with a zero length.
+          body: `var largest = 0.0;
+var finiteMean = true;
 for (var band = 0u; band < ${dimensions}u; band++) {
   let value = means[meansOffset + index * ${dimensions}u + band];
-  squaredLength += value * value;
+  finiteMean = finiteMean && finite(value);
+  largest = max(largest, abs(select(0.0, value, finite(value))));
 }
-let meanLength = sqrt(squaredLength);
-${output.meanLengths ? 'meanLengths[meanLengthsOffset + index] = select(missing(), meanLength, finite(meanLength));' : ''}
+var squaredScaledLength = 0.0;
+if (finiteMean && largest > 0.0) {
+  for (var band = 0u; band < ${dimensions}u; band++) {
+    let scaled = means[meansOffset + index * ${dimensions}u + band] / largest;
+    squaredScaledLength += scaled * scaled;
+  }
+}
+let scaledLength = sqrt(squaredScaledLength);
+let meanLength = largest * scaledLength;
+let definedLength = finiteMean && finite(meanLength);
+${output.meanLengths ? 'meanLengths[meanLengthsOffset + index] = select(missing(), meanLength, definedLength);' : ''}
 ${
   props.normalize !== false
-    ? `if (finite(meanLength) && meanLength > 0.0) {
+    ? `if (definedLength && largest > 0.0) {
   for (var band = 0u; band < ${dimensions}u; band++) {
-    means[meansOffset + index * ${dimensions}u + band] /= meanLength;
+    let offset = meansOffset + index * ${dimensions}u + band;
+    means[offset] = (means[offset] / largest) / scaledLength;
   }
 }`
     : ''
@@ -351,4 +451,14 @@ ${
     }
     return nodes;
   }
+}
+
+/** Tuple views that carry the producer's count, completeness and zone validity. */
+function getTupleCompletenessViews(
+  tuples: GPURasterEmbeddingZoneTuples
+): GraphDataView<'uint32'>[] {
+  const {count, requiredCount, overflow, candidateOverflow} = tuples.status;
+  return [count, requiredCount, overflow, candidateOverflow, tuples.zoneValidity].filter(
+    (view): view is GraphDataView<'uint32'> => view !== undefined
+  );
 }

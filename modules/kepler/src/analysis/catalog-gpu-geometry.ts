@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCatalogClipOperand} from './catalog-geometry';
+import {
+  iterateCatalogPositions,
+  validateCatalogGeometryPositions,
+  getCatalogFloat32CoordinateDiagnostic
+} from './catalog-geojson';
+import {projectCatalogPosition} from './catalog-geoarrow';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {
   EARTH_RADIUS_METERS,
@@ -55,7 +62,10 @@ import {
   type GPUPolygonOverlayOperation,
   type GPUPolygonOverlayOutput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
+import {
+  type GPUSpatialContext,
+  validateRequirement
+} from '@luma-contributors/analysis/analysis-core';
 
 type FeatureKind = 'polygon' | 'line' | 'point' | 'none';
 
@@ -320,9 +330,22 @@ export function describeValidityMask(mask: number): {errors: string[]; warnings:
 export async function runGpuGeometryValidity(
   context: CatalogGpuContext,
   polygons: CatalogFeatureCollection
-): Promise<CatalogRunOutput> {
-  const packed = packCatalogPolygons(polygons.features, {closing: 'keep'});
+): Promise<CatalogRunOutput & {engine: 'cpu-reference' | 'gpu'}> {
   const masks = new Map<number, number>();
+  const admittedSourceIndices: number[] = [];
+  const admittedFeatures = polygons.features.filter((feature, sourceIndex) => {
+    if (getCatalogFloat32CoordinateDiagnostic(feature.geometry)) {
+      masks.set(sourceIndex, GPU_GEOMETRY_VALIDITY_BIT.nonFinite);
+      return false;
+    }
+    admittedSourceIndices.push(sourceIndex);
+    return true;
+  });
+  const admitted = {type: 'FeatureCollection' as const, features: admittedFeatures};
+  // Validity is translation invariant; preserve closure gaps before narrowing to float32.
+  const frame = createCatalogFrame('planar', [admitted]);
+  const packed = packCatalogPolygons(admittedFeatures, {closing: 'keep', project: frame.project});
+  const dispatched = packed.sourceIndices.length > 0;
   let overflowed = false;
   if (packed.sourceIndices.length) {
     // Valid polygons produce almost no same-feature intersections; grow once on overflow.
@@ -358,7 +381,9 @@ export async function runGpuGeometryValidity(
         }
       );
       overflowed = result.overflow !== 0;
-      packed.sourceIndices.forEach((sourceIndex, row) => masks.set(sourceIndex, result.mask[row]));
+      packed.sourceIndices.forEach((sourceIndex, row) =>
+        masks.set(admittedSourceIndices[sourceIndex], result.mask[row])
+      );
       if (!overflowed) break;
       intersectionCapacity *= 8;
     }
@@ -412,15 +437,18 @@ export async function runGpuGeometryValidity(
     );
   addCatalogDiagnostic(
     diagnostics,
-    'gpu-validity-scope',
+    dispatched ? 'gpu-validity-scope' : 'host-validity-scope',
     'info',
-    'GPU validity checks closure, short rings, repeated vertices, orientation, self-intersection, ring crossings and holes outside shells; zero-area rings are not a separate flag.'
+    dispatched
+      ? 'GPU validity checks closure, short rings, repeated vertices, orientation, self-intersection, ring crossings and holes outside shells; zero-area rings are not a separate flag.'
+      : 'Validity rows were diagnosed on the host; no polygon reached GPU validity.'
   );
   return {
     tables: [table],
     diagnostics,
     summary: {featureCount: polygons.features.length, invalidCount, skippedCount: 0},
-    dispatchedContributors: ['GPUGeometryValidity']
+    engine: dispatched ? 'gpu' : 'cpu-reference',
+    dispatchedContributors: dispatched ? ['GPUGeometryValidity'] : []
   };
 }
 
@@ -585,12 +613,24 @@ export async function runGpuRectangleClip(
   features: CatalogFeatureCollection,
   clipCollection: CatalogFeatureCollection
 ): Promise<CatalogRunOutput> {
-  const clipRing = getPolygonParts(clipCollection.features[0]?.geometry ?? null)[0]?.[0];
+  const clipRing = validateCatalogClipOperand(clipCollection);
   const rectangle = clipRing ? getCatalogRectangle(clipRing) : null;
   if (!rectangle || clipCollection.features.length !== 1)
     throw new CatalogGpuUnsupportedError(
       'GPURectangleClip needs an axis-aligned rectangle; the CPU engine clips by any convex polygon'
     );
+  // This shortcut runs in the declared coordinates. Refuse narrowing that changes topology;
+  // the host's ordinary unsupported-route handling dispatches the binary64 CPU clip instead.
+  const packedPositions = new Map<string, string>();
+  for (const position of iterateCatalogPositions([features, clipCollection])) {
+    const key = `${Math.fround(position[0])}|${Math.fround(position[1])}`;
+    const original = `${position[0]}|${position[1]}`;
+    if (packedPositions.has(key) && packedPositions.get(key) !== original)
+      throw new CatalogGpuUnsupportedError(
+        'GPURectangleClip input has distinct coordinates that coincide in float32; use the CPU clip route'
+      );
+    packedPositions.set(key, original);
+  }
   const parameters = (session: CatalogGpuSession) =>
     session.input('rectangle', getGPURectangleClipParameterValues(rectangle), 'float32');
   const table = makeCatalogTable(
@@ -969,14 +1009,33 @@ export type CatalogBufferParameters = {
 
 const MAXIMUM_UNDISSOLVED_BUFFER_FEATURES = 256;
 
-/** Buffers lines or polygons with GPUBufferSurface (planar; degrees go through a local azimuthal frame). */
+/**
+ * Buffers lines or polygons with GPUBufferSurface (planar; degrees use a local azimuthal frame).
+ * Both routes require finite float32 source XY before projection, even when translating an
+ * out-of-range coordinate would make it fit. Projected XY must also remain finite float32.
+ */
 export async function runGpuBuffer(
   context: CatalogGpuContext,
   geometryKind: 'line' | 'polygon',
   collection: CatalogFeatureCollection,
   parameters: CatalogBufferParameters
 ): Promise<CatalogRunOutput> {
+  // Admit every source before computing collection-wide tolerance or allocating a workspace.
+  // Keep raw-shape validation before the coordinate readers can filter malformed vertices.
+  collection.features.forEach((feature, sourceIndex) => {
+    validateCatalogGeometryPositions(feature.geometry, `catalog-buffer source row ${sourceIndex}`);
+    for (const position of iterateCatalogPositions([
+      {type: 'FeatureCollection', features: [feature]}
+    ]))
+      validateRequirement(
+        'catalog-buffer',
+        Number.isFinite(Math.fround(position[0])) && Number.isFinite(Math.fround(position[1])),
+        `input source row ${sourceIndex} coordinates must be finite float32 before projection; received ${position[0]}, ${position[1]}; use CPU buffering or supply local coordinates`
+      );
+  });
   const frame = createCatalogFrame(parameters.coordinateSystem, [collection]);
+  for (const position of iterateCatalogPositions([collection]))
+    projectCatalogPosition(position, frame.project);
   const diagnostics: CatalogDiagnostic[] = [];
   const table = makeCatalogTable(
     'buffers',

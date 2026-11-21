@@ -17,6 +17,7 @@ import {
   validateRasterGridAxisAligned
 } from '../../raster-analysis/raster-band-utils';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateRequirement,
   validateViewLength
@@ -82,7 +83,9 @@ export type GPUTerrainCatchmentSummaryProps = {
   /**
    * Stream mask: a nonzero word is a stream cell (so a mask of Strahler orders works), 0 is not.
    * The unresolved sentinels `0xffffffff` and `0xfffffffe` are not stream cells: they add no
-   * stream length and their profile status is 2.
+   * stream length and their profile status is 2. Thus membership is 1..0xfffffffd, unlike
+   * StreamOrder, where 0xfffffffe is also membership. Translate imported unresolved 0xfffffffe
+   * to StreamOrder's unknown 0xffffffff when sharing an imported mask with that consumer.
    */
   streams: GraphDataView<'uint32'>;
   /**
@@ -132,6 +135,8 @@ function getOutputViews(output: GPUTerrainCatchmentSummaryProps['output']): Grap
  * source cell's basin. Statistics and hypsometry reduce sorted runs in tiles of at most 256
  * cells per invocation, then join partials with exact fixed-point atomic additions. No invocation
  * walks a whole basin; a dominant basin spreads over as many tiles as it needs.
+ * Excluded rows (invalid elevation/validity or out-of-range basin) have profile status 0,
+ * even when their stream membership is unknown; an entirely excluded domain converges.
  *
  * The per-basin sums (elevation for the mean, ground area and hypsometry areas under
  * `cellSizeMode`, stream length) are fixed-point sums (`fixed-point-accumulator.ts`): every term
@@ -142,6 +147,24 @@ function getOutputViews(output: GPUTerrainCatchmentSummaryProps['output']): Grap
 export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUTerrainCatchmentSummaryProps) {
+    validateGraphPorts(props.id ?? 'terrain-catchment-summary', props, {
+      elevation: {required: true, viewType: 'data', formats: ['float32']},
+      validity: {required: false, viewType: 'data', formats: ['uint32']},
+      basinIds: {required: true, viewType: 'data', formats: ['uint32']},
+      streams: {required: true, viewType: 'data', formats: ['uint32']},
+      flowDirections: {required: true, viewType: 'data', formats: ['uint32']},
+      'output.statistics': {required: true, viewType: 'data', formats: ['float32']},
+      'output.hypsometry': {required: true, viewType: 'data', formats: ['float32']},
+      'output.profiles': {required: true, viewType: 'data', formats: ['float32']},
+      'output.profileStatus': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status.converged': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.invalidCount': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.iterationLimitReached': {
+        required: false,
+        viewType: 'data',
+        formats: ['uint32']
+      }
+    });
     this.id = props.id ?? 'terrain-catchment-summary';
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
@@ -235,8 +258,8 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
         props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]
       )
     );
-    // A stream cell is any nonzero word except the two unresolved sentinels, the test of stream
-    // order, stream network, flow distance and height above drainage.
+    // Catchment profiles reserve both high stream words. StreamOrder and D8 HAND instead
+    // reserve only 0xffffffff at their stream ports; their direction-port codes are separate.
     const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height, props.directionEncoding)}\n${TERRAIN_FINITE_WGSL}
 ${getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}
 fn edgeLength(cell: u32, receiver: u32) -> f32 { return getGroundEdgeLength(cell, receiver); }
@@ -373,7 +396,8 @@ if (parent != 0xffffffffu) {
         body: `let center = elevation[elevationOffset + index]; let offset = stateOffset + index * 4u;
 let distance = bitcast<f32>(state[offset + 1u]); var gradient = 0.0;
 var result = select(2u, 1u, state[offset] == NO_CELL && state[offset + 3u] == 1u && state[offset + 2u] < ${props.maximumSteps ?? count}u && isFiniteValue(distance));
-if (!isFiniteValue(center) || basins[basinsOffset + index] >= ${props.basinCount}u || !isStreamWord(streams[streamsOffset + index])) { result = select(0u, 2u, streams[streamsOffset + index] >= UNRESOLVED_DIRECTION); }
+if (!isFiniteValue(center) || basins[basinsOffset + index] >= ${props.basinCount}u) { result = 0u; }
+else if (!isStreamWord(streams[streamsOffset + index])) { result = select(0u, 2u, streams[streamsOffset + index] >= UNRESOLVED_DIRECTION); }
 let receiver = getCellReceiver(index);
 if (receiver != NO_CELL && isStreamWord(streams[streamsOffset + receiver])) { gradient = (center - elevation[elevationOffset + receiver]) / edgeLength(index, receiver); }
 status[statusOffset + index] = result;

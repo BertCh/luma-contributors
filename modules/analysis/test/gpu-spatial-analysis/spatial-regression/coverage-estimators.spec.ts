@@ -299,7 +299,7 @@ it('multivariate Geary replays whole-row draws, including cross-variable depende
       new GPUMultivariateLocalGearyPermutationTest({
         values: input('float32', values.flat()),
         variableCount: 2,
-        maximumPermutations: permutations,
+        permutationCount: permutations,
         seed: [19, 23],
         weights: {
           offsets: input('uint32', [0, 2, 4, 6, 8]),
@@ -308,7 +308,7 @@ it('multivariate Geary replays whole-row draws, including cross-variable depende
         },
         output: {
           statistic: statistic.view,
-          pValues: pValues.view,
+          pseudoPValues: pValues.view,
           classes: classes.view,
           simulations: simulations.view
         }

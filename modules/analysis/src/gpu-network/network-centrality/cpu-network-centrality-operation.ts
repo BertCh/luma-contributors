@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {computeBudgetedNetworkDistances} from '../network-accessibility/network-budgeted-search';
 import {
   validateCapacity,
   validateFiniteNumber,
@@ -23,12 +25,14 @@ type CentralityTopology = {offsets: Uint32Array; neighbors: Uint32Array; weights
 export type CPUNetworkCentralityInput = {
   topology: CentralityTopology;
   /** Exact transpose, including repeated edges and their weights. */
-  reverseTopology: CentralityTopology;
+  reverseTopology?: CentralityTopology;
   pivotNodes: Uint32Array;
   costLimit?: Float32Array;
 };
 
 export type CPUNetworkCentralityOptions = {
+  maximumIterations?: number;
+  localIterations?: number;
   betweennessScale?: number;
   sampling?: 'exact' | 'sampled';
   /** False for closeness-only calls: zero-weight cycles then do not affect convergence. */
@@ -58,9 +62,10 @@ export type CPUNetworkCentralityResult = {
  * - Distances, tight-edge tests and dependencies use float64, rounded only at output. Small
  *   positive edges absorbed by float32 can therefore participate in shortest paths on CPU.
  *   Compare well-conditioned centralities with relative tolerance 2e-5.
- * - GPU round, command-node and lane-storage limits are dropped. maximumIterations,
- *   localIterations and laneCount do not limit the CPU search; converged is zero only for a
- *   reached zero-weight tight cycle when betweenness is requested; iterationLimitReached is always 0.
+ * - Explicit maximumIterations bounds search rounds (localIterations defaults to 16, with
+ *   256-entry local queues), and independently bounds each dependency phase to one edge per
+ *   round. Omitted maximumIterations runs to completion. GPU scheduling can change partial
+ *   results for competing discoveries; command-node and lane-storage limits are dropped.
  * - Path counts use scaled float64 mantissas and exponents to avoid overflow; sums are independent
  *   of laneCount. Zero-cycle partial node and edge dependencies retain the GPU frontier convention.
  * - Float32 distance/sum overflow is avoided internally. Subnormals are retained; undefined GPU
@@ -72,7 +77,29 @@ export function computeNetworkCentralityOnCPU(
   input: CPUNetworkCentralityInput,
   options: CPUNetworkCentralityOptions = {}
 ): CPUNetworkCentralityResult {
-  const {topology, reverseTopology, pivotNodes, costLimit} = input;
+  options = snapshotConstructionFields(options, [
+    'maximumIterations',
+    'localIterations',
+    'betweennessScale',
+    'sampling',
+    'computeBetweenness'
+  ]);
+  if (options.maximumIterations !== undefined)
+    validateCapacity(
+      'computeNetworkCentralityOnCPU',
+      'maximumIterations',
+      options.maximumIterations
+    );
+  const localIterations = options.localIterations ?? 16;
+  validateCapacity('computeNetworkCentralityOnCPU', 'localIterations', localIterations);
+  const maximumRounds = options.maximumIterations ?? Infinity;
+  const {topology, pivotNodes, costLimit} = input;
+  validateRequirement(
+    'computeNetworkCentralityOnCPU',
+    options.computeBetweenness === false || Boolean(input.reverseTopology),
+    'reverseTopology is required for betweenness; supply the transpose or set computeBetweenness: false'
+  );
+  const reverseTopology = input.reverseTopology ?? topology;
   const nodeCount = topology.offsets.length - 1;
   for (const [name, network] of [
     ['topology', topology],
@@ -100,29 +127,40 @@ export function computeNetworkCentralityOnCPU(
   const harmonicCloseness = new Float32Array(pivotNodes.length);
   const reachedCounts = new Uint32Array(pivotNodes.length);
   let anyCycle = false;
+  let anyLimitReached = false;
   for (let pivotRow = 0; pivotRow < pivotNodes.length; pivotRow++) {
     const pivot = pivotNodes[pivotRow];
     if (pivot >= nodeCount || (costLimit && 0 > costLimit[0])) continue;
     const distances = new Float64Array(nodeCount).fill(Infinity);
-    distances[pivot] = 0;
-    const heap: [number, number][] = [];
-    pushDistance(heap, [0, pivot]);
-    while (heap.length) {
-      const [distance, source] = popDistance(heap);
-      if (distance !== distances[source]) continue;
-      for (
-        let edge = Math.min(topology.offsets[source], topology.neighbors.length);
-        edge < Math.min(topology.offsets[source + 1], topology.neighbors.length);
-        edge++
-      ) {
-        const target = topology.neighbors[edge];
-        const weight = topology.weights[edge];
-        if (target >= nodeCount || !(weight >= 0)) continue;
-        const candidate = distance + weight;
-        if (costLimit && candidate > costLimit[0]) continue;
-        if (candidate < distances[target]) {
-          distances[target] = candidate;
-          pushDistance(heap, [candidate, target]);
+    if (options.maximumIterations !== undefined) {
+      const search = computeBudgetedNetworkDistances(
+        {topology, startNodes: Uint32Array.of(pivot), costLimit},
+        options.maximumIterations,
+        localIterations
+      );
+      distances.set(search.distances);
+      anyLimitReached ||= !search.converged;
+    } else {
+      distances[pivot] = 0;
+      const heap: [number, number][] = [];
+      pushDistance(heap, [0, pivot]);
+      while (heap.length) {
+        const [distance, source] = popDistance(heap);
+        if (distance !== distances[source]) continue;
+        for (
+          let edge = Math.min(topology.offsets[source], topology.neighbors.length);
+          edge < Math.min(topology.offsets[source + 1], topology.neighbors.length);
+          edge++
+        ) {
+          const target = topology.neighbors[edge];
+          const weight = topology.weights[edge];
+          if (target >= nodeCount || !(weight >= 0)) continue;
+          const candidate = distance + weight;
+          if (costLimit && candidate > costLimit[0]) continue;
+          if (candidate < distances[target]) {
+            distances[target] = candidate;
+            pushDistance(heap, [candidate, target]);
+          }
         }
       }
     }
@@ -175,46 +213,57 @@ export function computeNetworkCentralityOnCPU(
     const remaining = predecessors.map(rows => rows.length);
     const mantissas = new Float64Array(nodeCount);
     const exponents = new Float64Array(nodeCount);
-    const queue: number[] = [];
+    let queue: number[] = [];
     for (let node = 0; node < nodeCount; node++) {
       if (remaining[node] === 0 && Number.isFinite(distances[node])) {
         queue.push(node);
         mantissas[node] = 1;
       }
     }
-    for (let cursor = 0; cursor < queue.length; cursor++) {
-      const node = queue[cursor];
-      if (predecessors[node].length) {
-        let largestExponent = -Infinity;
-        for (const predecessor of predecessors[node])
-          largestExponent = Math.max(largestExponent, exponents[predecessor]);
-        let sum = 0;
-        for (const predecessor of predecessors[node])
-          sum += mantissas[predecessor] * 2 ** (exponents[predecessor] - largestExponent);
-        const shift = Math.floor(Math.log2(sum));
-        mantissas[node] = sum / 2 ** shift;
-        exponents[node] = largestExponent + shift;
+    for (let round = 0; round < maximumRounds && queue.length; round++) {
+      const next: number[] = [];
+      for (const node of queue) {
+        if (predecessors[node].length) {
+          let largestExponent = -Infinity;
+          for (const predecessor of predecessors[node])
+            largestExponent = Math.max(largestExponent, exponents[predecessor]);
+          let sum = 0;
+          for (const predecessor of predecessors[node])
+            sum += mantissas[predecessor] * 2 ** (exponents[predecessor] - largestExponent);
+          const shift = Math.floor(Math.log2(sum));
+          mantissas[node] = sum / 2 ** shift;
+          exponents[node] = largestExponent + shift;
+        }
+        for (const {target} of successors[node]) if (--remaining[target] === 0) next.push(target);
       }
-      for (const {target} of successors[node]) if (--remaining[target] === 0) queue.push(target);
+      queue = next;
     }
-    anyCycle ||= remaining.some((count, node) => count > 0 && Number.isFinite(distances[node]));
+    const sigmaTruncated = queue.length > 0;
+    anyLimitReached ||= sigmaTruncated;
+    anyCycle ||=
+      !sigmaTruncated &&
+      remaining.some((count, node) => count > 0 && Number.isFinite(distances[node]));
     // The GPU's delta frontier starts at every tight sink, including sinks after a cycle.
     const pending = successors.map(rows => rows.length);
     const delta = new Float64Array(nodeCount);
-    const sinks: number[] = [];
+    let sinks: number[] = [];
     for (let node = 0; node < nodeCount; node++)
       if (pending[node] === 0 && Number.isFinite(distances[node])) sinks.push(node);
     const getRatio = (source: number, target: number) =>
       mantissas[target] > 0
         ? (mantissas[source] / mantissas[target]) * 2 ** (exponents[source] - exponents[target])
         : 0;
-    for (let cursor = 0; cursor < sinks.length; cursor++) {
-      const node = sinks[cursor];
-      for (const {target} of successors[node])
-        delta[node] += getRatio(node, target) * (1 + delta[target]);
-      for (const predecessor of predecessors[node])
-        if (--pending[predecessor] === 0) sinks.push(predecessor);
+    for (let round = 0; round < maximumRounds && sinks.length; round++) {
+      const next: number[] = [];
+      for (const node of sinks) {
+        for (const {target} of successors[node])
+          delta[node] += getRatio(node, target) * (1 + delta[target]);
+        for (const predecessor of predecessors[node])
+          if (--pending[predecessor] === 0) next.push(predecessor);
+      }
+      sinks = next;
     }
+    anyLimitReached ||= sinks.length > 0;
     for (let node = 0; node < nodeCount; node++) {
       if (node !== pivot) nodeTotals[node] += scale * delta[node];
       for (const {target, edge} of successors[node])
@@ -228,9 +277,9 @@ export function computeNetworkCentralityOnCPU(
     harmonicCloseness,
     reachedCounts,
     approximation: Uint32Array.of(Number(options.sampling === 'sampled')),
-    converged: Uint32Array.of(Number(!anyCycle)),
+    converged: Uint32Array.of(Number(!anyCycle && !anyLimitReached)),
     zeroWeightCycle: Uint32Array.of(Number(anyCycle)),
-    iterationLimitReached: Uint32Array.of(0)
+    iterationLimitReached: Uint32Array.of(Number(anyLimitReached))
   };
 }
 
@@ -263,13 +312,14 @@ function popDistance(heap: [number, number][]): [number, number] {
   return result;
 }
 
-/** CPU centrality twin without GPU iteration, dispatch-count or lane-storage caps. */
+/** CPU centrality twin retaining explicit search/dependency budgets without GPU storage caps. */
 export class CPUNetworkCentralityOperation extends GPUCPUOperation {
   constructor(props: NetworkCentralityOperationProps) {
     const id = props.id ?? 'network-centrality';
     validateCapacity(id, 'nodeCount', props.nodeCount);
     validateCapacity(id, 'edgeCount', props.edgeCount, 0);
-    validateCapacity(id, 'reverseEdgeCount', props.reverseEdgeCount, 0);
+    if (props.reverseEdgeCount !== undefined)
+      validateCapacity(id, 'reverseEdgeCount', props.reverseEdgeCount, 0);
     validateCapacity(id, 'pivotCount', props.pivotCount);
     validateFiniteNumber(id, 'betweennessScale', props.betweennessScale ?? 1);
     validateRequirement(
@@ -292,6 +342,17 @@ export class CPUNetworkCentralityOperation extends GPUCPUOperation {
       "sampling must be 'exact' or 'sampled'"
     );
     const operation = new GPUNetworkCentralityOperation(props);
+    if (props.maximumIterations !== undefined)
+      validateCapacity(id, 'maximumIterations', props.maximumIterations);
+    validateCapacity(id, 'localIterations', props.localIterations ?? 16);
+    const options = Object.freeze({
+      maximumIterations: props.maximumIterations,
+      localIterations: props.localIterations,
+      betweennessScale: props.betweennessScale,
+      sampling: props.sampling,
+      computeBetweenness:
+        props.output.betweenness !== undefined || props.output.edgeBetweenness !== undefined
+    });
     super({
       id,
       inputs: operation.inputs,
@@ -317,7 +378,7 @@ export class CPUNetworkCentralityOperation extends GPUCPUOperation {
           )
             throw new Error(`${id} ${prefix} arrays must match nodeCount and edgeCount`);
           if (
-            props[prefix].nodePositions !== undefined &&
+            props[prefix]?.nodePositions !== undefined &&
             getCPUOperationFloat32Rows(id, inputs, `${prefix}.nodePositions`, 'float32x2')
               .length !==
               props.nodeCount * 2
@@ -331,19 +392,20 @@ export class CPUNetworkCentralityOperation extends GPUCPUOperation {
         const result = computeNetworkCentralityOnCPU(
           {
             topology: getTopology('topology', props.edgeCount),
-            reverseTopology: getTopology('reverseTopology', props.reverseEdgeCount),
+            reverseTopology: props.reverseTopology
+              ? getTopology(
+                  'reverseTopology',
+                  props.reverseEdgeCount ??
+                    getCPUOperationUint32Rows(id, inputs, 'reverseTopology.neighbors').length
+                )
+              : undefined,
             pivotNodes,
             costLimit:
               props.costLimit === undefined
                 ? undefined
                 : getCPUOperationFloat32Rows(id, inputs, 'costLimit')
           },
-          {
-            betweennessScale: props.betweennessScale,
-            sampling: props.sampling,
-            computeBetweenness:
-              props.output.betweenness !== undefined || props.output.edgeBetweenness !== undefined
-          }
+          options
         );
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [

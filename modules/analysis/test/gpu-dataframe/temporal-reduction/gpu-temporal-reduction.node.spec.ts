@@ -237,3 +237,58 @@ it('reduceTemporalBucketsOnCPU puts fround(k * width) exactly in bucket k', () =
     }
   }
 });
+
+it('ROAD-103 word slot declarations isolate the eight-byte storage binding boundary', () => {
+  const slotCount = 512;
+  for (const bindingBytes of [8 * slotCount, 8 * slotCount - 1]) {
+    const device = createNullWebGPUDevice();
+    // Same logical layout on both devices. Only the eight-byte time-key slot binding binds:
+    // row times=8 bytes, other slot columns=2048 bytes, maxBufferSize=1 GiB.
+    Object.assign(device.limits, {
+      maxStorageBufferBindingSize: bindingBytes,
+      maxBufferSize: 2 ** 30
+    });
+    try {
+      const graph = new GPUCommandGraph(device);
+      const view = <Format extends 'uint32' | 'uint32x2' | 'float32'>(
+        format: Format,
+        length: number
+      ) => createTransientView(graph, `boundary-${serial++}`, format, length);
+      const contributor = new GPUTemporalReduction({
+        cellIds: view('uint32', 1),
+        timestamps: view('uint32x2', 1),
+        values: view('float32', 1),
+        parameters: view('uint32', 4),
+        cellCount: 8,
+        bucketCount: 64,
+        output: {
+          counts: view('uint32', slotCount),
+          minimums: view('float32', slotCount),
+          maximums: view('float32', slotCount),
+          first: view('float32', slotCount),
+          last: view('float32', slotCount),
+          occupiedSlots: {
+            ids: view('uint32', slotCount),
+            status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+          }
+        }
+      });
+      expect(contributor.slotCount).toBe(slotCount);
+      if (bindingBytes === 8 * slotCount)
+        expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+      else
+        expect(() => contributor.getCommandNodes(graph)).toThrow(
+          /^temporal-reduction cellCount \* bucketCount must be at most 511 with uint32x2 times$/
+        );
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('ROAD-103 rejects logical slot products above 0xfffffffe at construction', () => {
+  expectThrows(
+    () => ({cellCount: 0xffffffff, bucketCount: 1}),
+    /^temporal-reduction cellCount \* bucketCount must not exceed 4294967294$/
+  );
+});

@@ -14,6 +14,7 @@ import {
   GPUEnsembleScoresOperation,
   type EnsembleScoresOperationProps
 } from '../../../src/gpu-spatial-analysis/scoring-rules/gpu-ensemble-scores-operation';
+import {SCORING_FIXTURE} from './scoring-rules-harness';
 
 // Integral of the squared empirical CDF error; an independent CRPS algorithm.
 function integrateCdfError(sample: number[], observed: number): number {
@@ -50,7 +51,7 @@ it('agrees with CDF integration and the hand-computed 3-4-5 triangle', () => {
     const result = computeEnsembleScoresOnCPU(INPUT, {
       memberCount: 3,
       dimension: 2,
-      fair,
+      estimator: fair ? 'fair' : 'empirical',
       variogramOrder: 1
     });
     expect(result.energyScore![0]).toBeCloseTo(fair ? 1 / 3 : 1, 6);
@@ -72,7 +73,38 @@ it('agrees with CDF integration and the hand-computed 3-4-5 triangle', () => {
       ),
       6
     );
-  expect(result.energyScore).toBeUndefined();
+  expect(result).not.toHaveProperty('energyScore');
+});
+
+it('every CPU score matches the independent Python fixtures for empirical and fair ensembles', () => {
+  const differences = {crps: 0, energyScore: 0, variogramScore: 0};
+  for (const entry of SCORING_FIXTURE.ensembles) {
+    for (const fair of [false, true]) {
+      const actual = computeEnsembleScoresOnCPU(
+        {
+          ensemble: Float32Array.from(entry.ensemble),
+          observations: Float32Array.from(entry.observations),
+          variogramPairs: Uint32Array.from(entry.variogramPairsAll.flat())
+        },
+        {...entry, estimator: fair ? 'fair' : 'empirical'}
+      );
+      const expected = {
+        crps: fair ? entry.crpsFair : entry.crps,
+        energyScore: [fair ? entry.energyScoreFair : entry.energyScore],
+        variogramScore: [entry.variogramScoreAll]
+      };
+      for (const name of ['crps', 'energyScore', 'variogramScore'] as const) {
+        expect(actual[name]!.length, `${name} output length`).toBe(expected[name].length);
+        expected[name].forEach((value, index) => {
+          expect(Number.isFinite(actual[name]![index])).toBe(true);
+          const difference = Math.abs(actual[name]![index] - value);
+          expect(difference).toBeLessThanOrEqual(2e-6 * Math.max(1, Math.abs(value)));
+          differences[name] = Math.max(differences[name], difference);
+        });
+      }
+    }
+  }
+  console.info('Scoring audit maximum absolute differences', differences);
 });
 
 it('delegates GPU limits to contributor construction and drops that GPU-only cap on CPU', () => {
@@ -139,14 +171,15 @@ it('checks arrays and operation construction', () => {
   expect(() => new GPUEnsembleScoresOperation({...PROPS, output: {crps: 'ensemble'}})).toThrow(
     /^scores-check/
   );
-  for (const replacement of [
+  const invalidProps = [
     {memberCount: 0},
-    {memberCount: 1, fair: true},
+    {memberCount: 1, estimator: 'fair'},
     {dimension: 0},
     {variogramOrder: 0},
     {variogramOrder: Infinity},
     {output: {}}
-  ]) {
+  ] satisfies Partial<EnsembleScoresOperationProps>[];
+  for (const replacement of invalidProps) {
     expect(() => new CPUEnsembleScoresOperation({...PROPS, ...replacement})).toThrow(
       /^scores-check/
     );

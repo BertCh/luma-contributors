@@ -136,6 +136,8 @@ class after float32 rounding; subnormal-sensitive GPU behavior is outside parity
 
 #### `GPUForestInference` parameters
 
+Import from `@luma-contributors/analysis/dataframe-analysis`: `GPUForestInference`.
+
 - Packer: `getGPUForestInferenceParameterValues(settings)`, writes `getGPUForestInferenceParameterLength(...)` `float32` values.
 
 Settings of `getGPUForestInferenceParameterValues`:

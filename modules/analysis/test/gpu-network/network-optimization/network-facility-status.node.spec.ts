@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {readFileSync} from 'node:fs';
 import {expect, it} from 'vitest';
 import {Buffer} from '@luma.gl/core';
 import {
@@ -276,5 +277,120 @@ it('shared facility reductions retain one pipeline and dispatch each level at it
     } finally {
       device.destroy();
     }
+  }
+});
+
+it('NET-125 captures facility controls and nested destinations before declaration', () => {
+  const {device, graph, props, view} = createFixture(1);
+  try {
+    recordWGSLKernelNodes(graph);
+    const contributor = new GPUNetworkFacilityOptimization(props);
+    const originalSummary = props.output.summary;
+    const originalInvalid = props.output.status!.invalidCount;
+    props.facilityCount = 16;
+    props.maximumCandidates = 1048576;
+    props.output.summary = view('uint32', 4);
+    props.output.status!.invalidCount = view('uint32', 1);
+    expect(contributor.props.facilityCount).toBe(4);
+    expect(contributor.props.maximumCandidates).toBe(1);
+    expect(contributor.props.output.summary).toBe(originalSummary);
+    expect(contributor.props.output.status!.invalidCount).toBe(originalInvalid);
+    expect(contributor.props.costs).toBe(props.costs);
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes).toHaveLength(5);
+    expect(nodes).toHaveLength(contributor.estimatedCommandNodeCount);
+    const bindings = nodes.flatMap(
+      node => getWGSLKernelNodeRecord(graph, node.id)?.bindings.map(binding => binding.view) ?? []
+    );
+    expect(bindings).toContain(originalSummary);
+    expect(bindings).toContain(originalInvalid);
+    expect(bindings).not.toContain(props.output.summary);
+    expect(bindings).not.toContain(props.output.status!.invalidCount);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('NET-105 enforces demand and candidate bounds together even with a shortened prefix', () => {
+  const {device, props, view} = createFixture(0);
+  try {
+    for (const [facilityCount, acceptedRows] of [
+      [1, 64],
+      [2, 20],
+      [4, 10],
+      [16, 5]
+    ]) {
+      for (const demandRows of [acceptedRows, acceptedRows + 1]) {
+        const candidate = {
+          ...props,
+          facilityCount,
+          selectCount: 1,
+          maximumCandidates: 0,
+          demand: view('float32', demandRows),
+          costs: view('float32', demandRows * facilityCount),
+          capacities: view('float32', facilityCount),
+          output: {
+            ...props.output,
+            selectedFacilities: view('uint32', facilityCount),
+            assignments: view('uint32', demandRows)
+          }
+        };
+        if (demandRows === acceptedRows)
+          expect(() => new GPUNetworkFacilityOptimization(candidate)).not.toThrow();
+        else
+          expect(() => new GPUNetworkFacilityOptimization(candidate)).toThrow(
+            facilityCount === 1 ? /demand rows/ : /candidate count/
+          );
+      }
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('B4 documents the full-search declaration bound including all parameter uploads', () => {
+  // 2 fixed commands + 16 batches * (upload + score + 3 * (upload + reduction)) = 130.
+  for (const withStatus of [false, true]) {
+    const {device, graph, props} = createFixture(1048576, withStatus);
+    try {
+      const contributor = new GPUNetworkFacilityOptimization(props);
+      expect(contributor.estimatedCommandNodeCount).toBe(withStatus ? 131 : 130);
+      expect(contributor.getCommandNodes(graph)).toHaveLength(withStatus ? 131 : 130);
+    } finally {
+      device.destroy();
+    }
+  }
+  const guide = readFileSync('docs/api/gpu-network/network-movement-coverage.md', 'utf8').replace(
+    /\s+/g,
+    ' '
+  );
+  expect(
+    guide.includes('130 commands without named status ports and 131 with named status ports')
+  ).toBe(true);
+});
+
+it('declares cost completeness separately while preserving solver diagnostics', () => {
+  const {device, graph, props, view} = createFixture(1);
+  const complete = view('uint32', 1);
+  const contributor = new GPUNetworkFacilityOptimization({
+    ...props,
+    costsComplete: view('uint32', 1),
+    costLimit: view('float32', 1),
+    output: {...props.output, status: {...props.output.status, complete}}
+  });
+  try {
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
+    const kernels = getGPUCommandNodeKernelSources(nodes);
+    for (const kernel of kernels) {
+      expect(() => new WgslReflect(kernel.source)).not.toThrow();
+      expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
+    }
+    const completion = kernels.find(kernel => kernel.id === 'facility-status-cost-completion');
+    expect(completion).toBeDefined();
+    expect(completion!.source).toContain('costsComplete[costsCompleteOffset] != 0u');
+    expect(completion!.source).toContain('bitcast<u32>(costLimit[costLimitOffset]) == 0x7f800000u');
+  } finally {
+    device.destroy();
   }
 });

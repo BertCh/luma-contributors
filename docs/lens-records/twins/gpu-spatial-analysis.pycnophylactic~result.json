@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "// zones: tracts rasterized to the grid by GPUPolygonRasterization; stops early at tolerance 0.001\ngraph.add(\n  new GPUPycnophylactic({\n    grid,\n    zones,\n    zoneCount: tracts.featureOffsets.length - 1,\n    totals: population,\n    spatialContext,\n    maximumIterations: 30,\n    tolerance: tolerance.importToGraph(graph),\n    output: {mass, status: {converged, iterationCount, invalidCount}}\n  })\n);\n// mass: residents per cell; the cells of each tract sum back to its population",
+    "code": "// zones: tracts rasterized to the grid by GPUPolygonRasterization; stops early at tolerance 0.001\ngraph.add(\n  new GPUPycnophylacticInterpolation({\n    grid,\n    zones,\n    zoneCount: tracts.featureOffsets.length - 1,\n    totals: population,\n    spatialContext,\n    maximumIterations: 30,\n    tolerance: tolerance.importToGraph(graph),\n    output: {mass, status: {converged, iterationCount, invalidCount}}\n  })\n);\n// mass: residents per cell; the cells of each tract sum back to its population",
     "language": "ts",
     "lineCount": 14
   },
@@ -46,12 +46,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:57.576Z",
-    "runId": "run-a0244b46",
+    "date": "2026-11-20T23:50:39.513Z",
+    "runId": "run-64f30fe4",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-a0244b46",
+    "runId": "run-64f30fe4",
     "rung": "result",
     "bindings": {},
     "clauses": [],

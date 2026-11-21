@@ -82,7 +82,12 @@ it('neighbor search oracle equals libpysal KNN and DistanceBand, binary and row 
   const parameters = {bounds: knn.bounds};
   const distanceTolerance = TOLERANCES.distance.relative;
 
-  const nearest = computeNeighborSearchOracle({mode: 'knn', k: knn.k, positions, parameters});
+  const nearest = computeNeighborSearchOracle({
+    mode: 'knn',
+    neighborCount: knn.k,
+    positions,
+    parameters
+  });
   expectSameNeighbors(nearest, knn, 'KNN');
   expect(nearest.weights, 'KNN weights').toEqual(toCSR(knn).weights);
   expectWeightsClose(nearest.distances, knn.distances.flat(), distanceTolerance, 'KNN distances');
@@ -90,7 +95,7 @@ it('neighbor search oracle equals libpysal KNN and DistanceBand, binary and row 
   const band = computeNeighborSearchOracle({
     mode: 'radius',
     positions,
-    parameters: {...parameters, radius: distanceBand.threshold}
+    parameters: {...parameters, searchRadius: distanceBand.threshold}
   });
   expectSameNeighbors(band, distanceBand, 'DistanceBand');
   expect(band.weights, 'DistanceBand weights').toEqual(toCSR(distanceBand).weights);
@@ -108,7 +113,7 @@ it('neighbor search oracle equals libpysal KNN and DistanceBand, binary and row 
   const expectedKnn = rowStandardized.knn;
   const standardized = computeNeighborSearchOracle({
     mode: 'knn',
-    k: knn.k,
+    neighborCount: knn.k,
     positions,
     parameters: {...parameters, rowStandardize: true}
   });

@@ -171,7 +171,6 @@ export class GPURasterEmbeddingDequantize<
     }
     const inputs = this.getInputs();
     const outputs = this.getOutputs();
-    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,
@@ -190,6 +189,7 @@ export class GPURasterEmbeddingDequantize<
       'output.vectors',
       1
     );
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.estimatedCommandNodeCount =
       1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * 1;
   }

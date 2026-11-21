@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotThinningOutput} from './thinning-output-aliases';
 import {
   validateTrajectoryBindings,
   validateTrajectoryWritableDispatches,
@@ -98,14 +99,14 @@ export function getGPUTrajectoryThinningParameterValues(
 
 /** Caller-owned outputs of {@link GPUTrajectoryThinning}. */
 export type GPUTrajectoryThinningOutput = {
-  /** Kept row indices in row order, rows past the count hold the sentinel. Capacity rows. */
-  rowIds: GraphDataView<'uint32'>;
-  /** New per-track offsets into `rowIds`, `trackCount + 1` rows. */
+  /** Compact original-position row indices; read [0, status.count). */
+  sourceRows: GraphDataView<'uint32'>;
+  /** Original-position row selection, before capacity clamping; may select rows beyond the compact prefix. */
+  sourceSelectionMask?: GraphDataView<'uint32'>;
+  /** New per-track offsets into `sourceRows`, `trackCount + 1` rows. */
   trackOffsets: GraphDataView<'uint32'>;
   /** Kept row count, overflow, and `candidateOverflow` when a search hit `maximumSearchRows`. */
-  status: GPUCardinalityPort & GPUOverflowStatusPort & GPUCandidateStatusPort;
-  /** Optional `1`/`0` validity of the rows: `1` for a kept row, `positions.length` rows. */
-  validity?: GraphDataView<'uint32'>;
+  status: GPUCardinalityPort & GPUOverflowStatusPort & Required<GPUCandidateStatusPort>;
   /** Optional copied positions of the kept rows, capacity rows. */
   positions?: GraphDataView<'float32x2'>;
   /** Optional copied timestamps of the kept rows, capacity rows, the input format. */
@@ -131,7 +132,8 @@ export type GPUTrajectoryThinningProps = GPUTrajectoryGeometryFields & {
  * bounded number of passes: the first and last rows of a track are always kept, and each kept row
  * is followed by the first later row at or beyond the tolerance. Like staypoints, the sequential
  * rule becomes a bounded forward search per row plus pointer doubling to the chain from each
- * track start; a search that hits `maximumSearchRows` reports `status.candidateOverflow`.
+ * track start. The required one-row uint32 `output.status.candidateOverflow` is 1 when an
+ * anchor hits `maximumSearchRows` (default 4096, at most 16,777,216) before deciding.
  */
 export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
   readonly id: string;
@@ -143,14 +145,30 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
   constructor(input: GPUTrajectoryThinningProps) {
     this.id = input.id ?? 'trajectory-thinning';
     const id = this.id;
-    const props = input;
+    const output = snapshotThinningOutput(id, input.output);
+    const props = {...input, output};
     this.props = props;
+    validateRequirement(
+      id,
+      Boolean(props.output.status?.candidateOverflow),
+      'output.status.candidateOverflow is required; pass a one-row uint32 view'
+    );
+    validateSinglePackedView(
+      props.output.status.candidateOverflow,
+      ['uint32'],
+      `${id} output.status.candidateOverflow`
+    );
+    validateRequirement(
+      id,
+      props.output.status.candidateOverflow.length === 1,
+      `output.status.candidateOverflow must contain one uint32 row, received ${props.output.status.candidateOverflow.length} rows`
+    );
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
-    const {positions, timestamps, trackOffsets, parameters, output, mode} = props;
+    const {positions, timestamps, trackOffsets, parameters, mode} = props;
     validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
@@ -159,8 +177,8 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
       id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     validateRequirement(
       id,
@@ -180,14 +198,23 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
       this.maximumSearchRows,
       GPU_TRAJECTORY_THINNING_MAXIMUM_SEARCH_ROWS
     );
-    validateSinglePackedView(output.rowIds, ['uint32'], `${id} output.rowIds`);
+    validateSinglePackedView(output.sourceRows, ['uint32'], `${id} output.sourceRows`);
     validateSinglePackedView(output.trackOffsets, ['uint32'], `${id} output.trackOffsets`);
-    validateCapacity(id, 'output.rowIds', output.rowIds.length);
-    this.capacity = output.rowIds.length;
+    validateCapacity(id, 'output.sourceRows', output.sourceRows.length);
+    this.capacity = output.sourceRows.length;
     validateViewLength(id, 'output.trackOffsets', output.trackOffsets, trackOffsets.length);
-    if (output.validity) {
-      validateSinglePackedView(output.validity, ['uint32'], `${id} output.validity`);
-      validateViewLength(id, 'output.validity', output.validity, positions.length);
+    if (output.sourceSelectionMask) {
+      validateSinglePackedView(
+        output.sourceSelectionMask,
+        ['uint32'],
+        `${id} output.sourceSelectionMask`
+      );
+      validateViewLength(
+        id,
+        'output.sourceSelectionMask',
+        output.sourceSelectionMask,
+        positions.length
+      );
     }
     if (output.positions) {
       validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
@@ -197,7 +224,14 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
       validateSinglePackedView(output.timestamps, [timestamps.format], `${id} output.timestamps`);
       validateViewLength(id, 'output.timestamps', output.timestamps, this.capacity);
     }
-    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryOutputRanges(this.id, {
+      sourceRows: output.sourceRows,
+      trackOffsets: output.trackOffsets,
+      status: output.status,
+      sourceSelectionMask: output.sourceSelectionMask,
+      positions: output.positions,
+      timestamps: output.timestamps
+    });
     validateTrajectoryWritableDispatches(this.id, [
       {positions: output.positions, timestamps: output.timestamps},
       {
@@ -209,7 +243,7 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.positions, output.timestamps],
-      [output.rowIds]
+      [output.sourceRows]
     );
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), [
       positions,
@@ -222,13 +256,13 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
   private getOutputViews(): (GraphDataView | undefined)[] {
     const {output} = this.props;
     return [
-      output.rowIds,
+      output.sourceRows,
       output.trackOffsets,
       output.status.count,
       output.status.overflow,
       output.status.requiredCount,
       output.status.candidateOverflow,
-      output.validity,
+      output.sourceSelectionMask,
       output.positions,
       output.timestamps
     ];
@@ -263,7 +297,8 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
     const rowTracks = createTransientView(graph, `${id}-row-tracks`, 'uint32', rowCount);
     const next = createTransientView(graph, `${id}-next`, 'uint32', rowCount);
     const reach = createTransientView(graph, `${id}-reach`, 'uint32', rowCount);
-    const keep = output.validity ?? createTransientView(graph, `${id}-keep`, 'uint32', rowCount);
+    const keep =
+      output.sourceSelectionMask ?? createTransientView(graph, `${id}-keep`, 'uint32', rowCount);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rowCount);
     const keptRows = createTransientView(graph, `${id}-kept-rows`, 'uint32', rowCount);
     const keptTotal = createTransientView(graph, `${id}-kept-total`, 'uint32', 1);
@@ -349,7 +384,7 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
         bindings: [
           {name: 'keptRows', view: keptRows, type: 'u32', access: 'read'},
           {name: 'keptTotal', view: keptTotal, type: 'u32', access: 'read'},
-          {name: 'rowIds', view: output.rowIds, type: 'u32', access: 'read_write'}
+          {name: 'rowIds', view: output.sourceRows, type: 'u32', access: 'read_write'}
         ],
         body: `rowIds[rowIdsOffset + index] = select(${MOVEMENT_SENTINEL_WGSL}, keptRows[keptRowsOffset + index], index < keptTotal[keptTotalOffset]);`
       }),
@@ -380,7 +415,7 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
         operation: OPERATION,
         requiredCount: keptTotal,
         output: {
-          ids: output.rowIds,
+          ids: output.sourceRows,
           status: {
             count: output.status.count,
             overflow: output.status.overflow,
@@ -424,7 +459,7 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
           operation: OPERATION,
           invocationCount: capacity,
           bindings: [
-            {name: 'rowIds', view: output.rowIds, type: 'u32', access: 'read'},
+            {name: 'rowIds', view: output.sourceRows, type: 'u32', access: 'read'},
             {name: 'keptTotal', view: keptTotal, type: 'u32', access: 'read'},
             ...(output.positions
               ? [

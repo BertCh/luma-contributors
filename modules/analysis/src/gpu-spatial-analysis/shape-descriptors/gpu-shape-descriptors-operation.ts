@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RequiredGeometryOutput} from '../group-geometry/required-geometry-output';
+import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {validateShapeDescriptorMeasurements} from './shape-descriptors-measurement-validation';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPUShapeDescriptors,
   type GPUShapeDescriptorsProps,
@@ -15,20 +20,72 @@ export type ShapeDescriptorsOperationProps = Pick<
   GPUShapeDescriptorsProps,
   'id' | 'spatialContext' | 'convexityMethod' | 'maximumVerticesPerFeature' | 'momentMethod'
 > & {
+  /** CPU host interpretation, defaulting to resident-capacity for graph inputs. */
+  storage?: 'compact' | 'resident-capacity';
   positions: string;
   ringOffsets: string;
   polygonOffsets: string;
   featureOffsets: string;
   parameters: string;
   featureCount: number;
-  output: {[Column in keyof GPUShapeDescriptorsOutput]?: string};
+  output: RequiredGeometryOutput<{[Column in keyof GPUShapeDescriptorsOutput]?: string}>;
 };
+
+/** @internal Capture supported columns by name for both operation backends. */
+export function snapshotShapeDescriptorsOperation(
+  props: ShapeDescriptorsOperationProps
+): ShapeDescriptorsOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'spatialContext',
+    'convexityMethod',
+    'maximumVerticesPerFeature',
+    'momentMethod',
+    'storage',
+    'positions',
+    'ringOffsets',
+    'polygonOffsets',
+    'featureOffsets',
+    'parameters',
+    'featureCount',
+    'output'
+  ]);
+  const output = snapshotConstructionFields(snapshot.output, [
+    'areas',
+    'perimeters',
+    'polsbyPopper',
+    'schwartzberg',
+    'elongation',
+    'orientation',
+    'convexity',
+    'clockwise',
+    'sliver'
+  ]);
+  validateRequirement(
+    snapshot.id ?? 'shape-descriptors',
+    Object.values(output).some(value => value !== undefined),
+    'output must name at least one terminal column'
+  );
+  validateRequirement(
+    snapshot.id ?? 'shape-descriptors',
+    snapshot.storage === undefined || ['compact', 'resident-capacity'].includes(snapshot.storage),
+    `storage must be compact or resident-capacity; received ${snapshot.storage}`
+  );
+  const spatialContext = resolveGPUSpatialContext(
+    snapshot.id ?? 'shape-descriptors',
+    snapshot.spatialContext
+  );
+  validateShapeDescriptorMeasurements(snapshot.id ?? 'shape-descriptors', spatialContext, output);
+  return Object.freeze({...snapshot, spatialContext, output});
+}
 
 /** Operation form of GPUShapeDescriptors; uses GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUShapeDescriptorsOperation extends GPUContributorOperation {
   constructor(props: ShapeDescriptorsOperationProps) {
+    props = snapshotShapeDescriptorsOperation(props);
     const id = props.id ?? 'shape-descriptors';
     super({
+      emptyOutputPorts: Object.keys(props.output),
       id,
       inputs: {
         positions: props.positions,
@@ -65,7 +122,7 @@ export class GPUShapeDescriptorsOperation extends GPUContributorOperation {
                 port,
                 getView(port) as GraphDataView<'float32'> | GraphDataView<'uint32'>
               ])
-          )
+          ) as GPUShapeDescriptorsOutput
         })
     });
   }

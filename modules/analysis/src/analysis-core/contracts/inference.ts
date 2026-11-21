@@ -12,7 +12,16 @@ import type {GPUIterationStatusPort} from './status';
  */
 export type GPUInferenceAlternative = 'two-sided' | 'greater' | 'lesser' | 'folded' | 'directed';
 
-/** Default tail of every test that takes an `alternative`. */
+/** Alternatives supported by analytic inference; permutation-only rules remain in the wider union. */
+export type GPUAnalyticAlternative = 'two-sided' | 'greater' | 'lesser';
+
+/**
+ * Quantile LISA's inclusive upper and two-sided rules, or its explicitly selected GeoDa legacy
+ * rule. `'geoda-legacy'` uses the historical minimum-tail count and is not an inclusive tail.
+ */
+export type GPUQuantileLISAAlternative = 'greater' | 'two-sided' | 'geoda-legacy';
+
+/** Shared inference default; producer-specific rules may require an explicit alternative. */
 export const GPU_DEFAULT_INFERENCE_ALTERNATIVE = 'two-sided' satisfies GPUInferenceAlternative;
 
 /**
@@ -28,8 +37,10 @@ export type GPUMultipleTestingMethod =
   | 'benjamini-yekutieli';
 
 /** CPU-side description of how a result's p-values were produced, enough to build a legend. */
-export type GPUInferenceMetadata = {
-  alternative: GPUInferenceAlternative;
+export type GPUInferenceMetadata<
+  Alternative extends GPUInferenceAlternative | GPUQuantileLISAAlternative = GPUInferenceAlternative
+> = {
+  alternative: Alternative;
   /** Number of permutations, or 0 for analytic inference. */
   permutationCount: number;
   /** Seed of the permutation streams; omitted for analytic inference. */
@@ -39,6 +50,13 @@ export type GPUInferenceMetadata = {
   significanceLevel?: number;
   /** Which rows form the tested family, for example `'rows with at least one neighbor'`. */
   testedRowsDefinition: string;
+  /**
+   * Counting formula, independent of scientific sidedness: a two-sided question using one
+   * maximum statistic can use `'upper-tail-count'`. With zero exceedances and P permutations,
+   * its add-one floor is `1 / (P + 1)`; `'doubled-minimum-tail'` has floor `2 / (P + 1)`
+   * (capped at 1). Omission leaves the producer's existing convention unspecified here.
+   */
+  pValueConstruction?: 'upper-tail-count' | 'doubled-minimum-tail';
 };
 
 /** Non-owning result columns shared by local and global spatial statistics. */

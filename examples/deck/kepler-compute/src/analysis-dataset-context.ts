@@ -15,7 +15,7 @@ import {
 import {
   guessGPUAnalysisCoordinateModel,
   matchGPUAnalysisFieldRole
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   getCatalogResidentFields,
   MAXIMUM_CATALOG_RESIDENT_READBACK_BYTES,

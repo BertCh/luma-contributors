@@ -35,7 +35,8 @@ import {
   getRasterJacobiLoopNodeCount,
   requireRasterLength,
   validateRasterExpansionGraph,
-  validateRasterExpansionViews
+  validateRasterExpansionViews,
+  validateRasterExpansionPorts
 } from '../../raster-analysis/raster-expansion-utils';
 import {
   getTerrainGroundMeasureWGSL,
@@ -62,9 +63,8 @@ export type GPUTerrainFlowDistanceProps = {
    */
   streams?: GraphDataView<'uint32'>;
   /**
-   * Cost of each cell's outgoing edge, in explicit caller units. Otherwise the length of the
-   * edge: affine units by default (geographic degrees are not ground meters), or ground meters
-   * under `cellSizeMode`. `output.distance` is in the same units.
+   * Cost of each cell's outgoing edge, in caller units. Defaults to the edge length derived
+   * from the grid and `cellSizeMode`.
    */
   transitionCosts?: GraphDataView<'float32'>;
   /** Ground model for the default edge length. Default `'uniform'` (affine units). `'web-mercator'` and `'geographic'` need an axis-aligned grid. Compile-time. */
@@ -76,6 +76,10 @@ export type GPUTerrainFlowDistanceProps = {
    */
   maximumSteps?: number;
   output: {
+    /**
+     * Downstream distance in affine units by default, ground metres in geographic and Web
+     * Mercator modes, or caller units when `transitionCosts` is supplied.
+     */
     distance: GraphDataView<'float32'>;
     validity: GraphDataView<'uint32'>;
     /** Terminal cell, 0xffffffff invalid, 0xfffffffe unresolved. */
@@ -97,6 +101,19 @@ export class GPUTerrainFlowDistance implements GPUCommandNodeProducer {
   constructor(props: GPUTerrainFlowDistanceProps) {
     this.id = props.id ?? 'terrain-flow-distance';
     this.props = props;
+    validateRasterExpansionPorts(
+      this.id,
+      props,
+      {
+        flowDirections: ['uint32'],
+        streams: ['uint32'],
+        transitionCosts: ['float32'],
+        'output.distance': ['float32'],
+        'output.validity': ['uint32'],
+        'output.terminalCells': ['uint32']
+      },
+      ['streams', 'transitionCosts']
+    );
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,

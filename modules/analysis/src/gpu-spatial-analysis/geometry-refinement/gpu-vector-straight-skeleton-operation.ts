@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRefinementOperationProps} from './refinement-construction-snapshot';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   GPUVectorStraightSkeleton,
@@ -42,6 +44,7 @@ export type VectorStraightSkeletonOperationProps = Pick<
 /** GPU linked wavefront; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUVectorStraightSkeletonOperation extends GPUContributorOperation {
   constructor(props: VectorStraightSkeletonOperationProps) {
+    props = snapshotRefinementOperationProps(props, 'vector');
     const slots = (props.maximumVertices ?? 128) + 2 * (props.maximumEvents ?? 128);
     super({
       id: props.id ?? 'vector-straight-skeleton',

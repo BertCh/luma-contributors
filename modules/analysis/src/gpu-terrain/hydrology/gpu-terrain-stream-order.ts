@@ -24,6 +24,7 @@ import {
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLDispatchGate,
+  createFillNode,
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -57,14 +58,15 @@ const OPERATION = 'GPUTerrainStreamOrder';
 /** One-row status words of {@link GPUTerrainStreamOrder}. */
 export type GPUTerrainStreamOrderStatus = {
   /**
-   * One row set to 1 when every stream cell resolved. Conservative on the pull fallback: can be 0
-   * when the last round finished everything. On the Euler-tour path it is 1 unless a receiver cycle
-   * was found (a cycle is not an iteration limit).
+   * One row set to 1 when the dependency computation finished; unknown inputs may still leave
+   * unknown orders. Conservative on the pull fallback: can be 0 when the last round finished
+   * everything. On the Euler-tour path it is 1 unless a receiver cycle was found (a cycle is not
+   * an iteration limit).
    */
   converged?: GraphDataView<'uint32'>;
   /**
    * One row set to 1 only when the iteration budget ran out before the loop converged (the pull
-   * fallback). The Euler-tour path ranks in a fixed number of rounds that always suffices, so it
+   * fallback). The Euler-tour path has a fixed bound sufficient for acyclic forests, so this
    * stays 0 there, also when a receiver cycle clears `converged`.
    */
   iterationLimitReached?: GraphDataView<'uint32'>;
@@ -79,8 +81,8 @@ export type GPUTerrainStreamOrderOutput = {
    * Cells that remain unresolved when the iteration limit is hit read `0xffffffff`, and so do
    * cells whose stream word is `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` or whose direction is
    * `GPU_TERRAIN_FLOW_UNRESOLVED`, and the stream cells they drain into: their order is unknown.
-   * `0xffffffff` is not an order a converged run can produce. `status.converged` only reports the
-   * pull rounds.
+   * `status.converged` reports computation progress, not knownness of every order: a terminal
+   * with unknown stream membership can retain `0xffffffff` even when convergence is 1.
    */
   streamOrder: GraphDataView<'uint32'>;
   /** One-row status words. */
@@ -119,9 +121,12 @@ export type GPUTerrainStreamOrderProps = {
    */
   directionEncoding?: GPUTerrainFlowDirectionEncoding;
   /**
-   * Stream mask, one word per cell, non-zero for stream cells. Typically `GPUTerrainFlow.streams`,
-   * whose `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` word (accumulation round limit hit) marks a cell of
-   * unknown stream status. Per-frame.
+   * Stream mask, one word per cell: 0 is nonstream, 1..0xfffffffe are stream membership,
+   * and `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` (0xffffffff, the flow producer's accumulation
+   * round-limit word) is unknown stream status. In particular, imported 0xfffffffe is ordinary
+   * membership here; CatchmentSummary, StreamNetwork and FlowDistance reserve it as unknown.
+   * Translate an imported unresolved 0xfffffffe to 0xffffffff before this port. The direction
+   * port has its own code table: 0xfffffffe there is always unknown. Per-frame.
    */
   streams: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
@@ -293,15 +298,16 @@ ${TERRAIN_FLOW_TOUR_RESOLVED_WGSL}`;
   member[memberOffset + index] = select(0u, 1u, isStream);`
       }),
       ...tour.nodes,
-      // Read straight after the ranking rounds: the unknown-order gather below clears the converged
-      // word when it finds a receiver cycle, which is not an iteration limit.
+      // The tour has a fixed sufficient bound for forests, not a caller iteration budget.
+      // Odd receiver cycles may still change at that bound; they are structural failures.
       ...(output.status?.iterationLimitReached
         ? [
-            createTerrainIterationLimitNode<Parameters>(graph, {
+            createFillNode<Parameters>(graph, {
               id: `${id}-order-limit`,
               operation: OPERATION,
-              state: tour.state,
-              iterationLimitReached: output.status.iterationLimitReached
+              view: output.status.iterationLimitReached,
+              type: 'u32',
+              value: '0u'
             })
           ]
         : []),
@@ -633,7 +639,12 @@ fn tryFinalize(cell: u32) -> bool {
   if (maximumCount > 0u) {
     result = maximumOrder + select(0u, 1u, maximumCount >= 2u);
   }
-  return atomicCompareExchangeWeak(&order[orderOffset + cell], SENTINEL, result).exchanged;
+  // A weak exchange may fail without another owner. Retry within this logical round.
+  loop {
+    let exchange = atomicCompareExchangeWeak(&order[orderOffset + cell], SENTINEL, result);
+    if (exchange.exchanged) { return true; }
+    if (exchange.old_value != SENTINEL) { return false; }
+  }
 }`;
     const getBody = (
       markChangedWGSL: string

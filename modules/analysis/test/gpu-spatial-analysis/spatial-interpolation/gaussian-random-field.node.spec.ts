@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, expectTypeOf, it} from 'vitest';
 import {
   GPUGaussianRandomField,
   getGPUGaussianRandomFieldParameterValues,
@@ -74,9 +74,9 @@ it('rejects unsupported shapes, limits, aliases and coordinate contexts at const
           }
         })
     ).toThrow(/outputs must not share buffers with inputs/);
-    expect(() => new GPUGaussianRandomField({...props, positions: undefined})).toThrow(
-      /exclusively/
-    );
+    const missingDomain = {...props, positions: undefined};
+    expectTypeOf(missingDomain).not.toExtend<GPUGaussianRandomFieldProps>();
+    expect(() => Reflect.construct(GPUGaussianRandomField, [missingDomain])).toThrow(/exclusively/);
     const grid = {
       width: 1025,
       height: 1,

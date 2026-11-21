@@ -4,8 +4,10 @@
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {validateGPUFeatureGeometryPort} from '../../analysis-core/contracts/index';
+import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   validateRequirement,
+  validateCapacity,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -20,6 +22,78 @@ import type {
 } from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUSpatialPredicateJoin';
+
+import {
+  getPackedFloat32Values,
+  getPackedUint32Values
+} from '../../analysis-core/kernels/packed-readback';
+import type {CPUSpatialJoinGeometry} from './cpu-feature-join';
+
+/** Readback of allocated geometry; byte views are interpreted as float32/uint32 elements. */
+export type GPUSpatialJoinGeometryReadback = {
+  kind: 'points' | 'lines' | 'polygons';
+  positions: Float32Array | Uint8Array | ArrayBuffer;
+  featureOffsets?: Uint32Array | Uint8Array | ArrayBuffer;
+  lineOffsets?: Uint32Array | Uint8Array | ArrayBuffer;
+  polygonOffsets?: Uint32Array | Uint8Array | ArrayBuffer;
+  ringOffsets?: Uint32Array | Uint8Array | ArrayBuffer;
+  sourceIds?: Uint32Array | Uint8Array | ArrayBuffer;
+};
+
+/**
+ * Decodes a live feature prefix, following its terminal offsets through parts, polygons, rings
+ * and finally positions. Equal offsets inside that prefix retain genuine empty features.
+ * Tails beyond the live prefix are unspecified and are omitted. No completeness is inferred.
+ */
+export function decodeGPUSpatialJoinGeometry(
+  geometry: GPUSpatialJoinGeometryReadback,
+  featureCount: number | Uint32Array | Uint8Array | ArrayBuffer
+): CPUSpatialJoinGeometry {
+  const id = 'decodeGPUSpatialJoinGeometry';
+  validateRequirement(
+    id,
+    ['points', 'lines', 'polygons'].includes(geometry.kind),
+    `kind must be points, lines or polygons; received ${geometry.kind}`
+  );
+  const count =
+    typeof featureCount === 'number' ? featureCount : getPackedUint32Values(featureCount, 1)[0];
+  validateCapacity(id, 'featureCount', count, 0);
+  const positions = getPackedFloat32Values(geometry.positions);
+  validateRequirement(id, positions.length % 2 === 0, 'positions needs whole float32x2 rows');
+  let childCount = count;
+  const result: CPUSpatialJoinGeometry = {kind: geometry.kind, positions};
+  const readOffsets = (
+    name: 'featureOffsets' | 'lineOffsets' | 'polygonOffsets' | 'ringOffsets'
+  ) => {
+    const input = geometry[name];
+    validateRequirement(id, input !== undefined, `${name} is required for ${geometry.kind}`);
+    const offsets = getPackedUint32Values(input!, childCount + 1).slice(0, childCount + 1);
+    validateRequirement(id, offsets[0] === 0, `${name} must start at zero`);
+    for (let row = 1; row < offsets.length; row++) {
+      validateRequirement(
+        id,
+        offsets[row] >= offsets[row - 1],
+        `${name} must be nondecreasing at row ${row}`
+      );
+    }
+    childCount = offsets[offsets.length - 1];
+    result[name] = offsets;
+  };
+  if (geometry.kind === 'polygons' || geometry.featureOffsets) readOffsets('featureOffsets');
+  if (geometry.kind === 'polygons') {
+    readOffsets('polygonOffsets');
+    readOffsets('ringOffsets');
+  } else if (geometry.kind === 'lines') readOffsets('lineOffsets');
+  validateRequirement(
+    id,
+    childCount <= positions.length / 2,
+    `positions needs ${childCount} rows, received ${positions.length / 2}`
+  );
+  result.positions = positions.slice(0, childCount * 2);
+  if (geometry.sourceIds)
+    result.sourceIds = getPackedUint32Values(geometry.sourceIds, count).slice(0, count);
+  return result;
+}
 
 /** @internal Whether feature rows group point or linestring parts. */
 export function isMultipartJoinGeometry(
@@ -96,7 +170,7 @@ export function validateSpatialJoinGeometry(
   if (!options.allowMultipart) validateSpatialJoinMultipartGeometry(id, name, geometry);
   for (const view of [...getSpatialJoinGeometryViews(geometry), geometry.sourceIds]) {
     if (view) {
-      validateSinglePackedView(view, [view.format as 'float32x2' | 'uint32'], `${id} ${name}`);
+      validateSinglePackedView(view, ['float32x2', 'uint32'], `${id} ${name}`);
     }
   }
   validateGPUFeatureGeometryPort(`${id} ${name}`, geometry);
@@ -132,7 +206,22 @@ export function isSameSpatialJoinGeometry(
   const secondViews = getSpatialJoinGeometryViews(second);
   return (
     firstViews.length === secondViews.length &&
-    firstViews.every((view, index) => view === secondViews[index])
+    firstViews.every((view, index) => {
+      const other = secondViews[index];
+      const physical = view.buffer.defaultBuffer
+        ? getCoreDefaultBuffer(view.buffer.defaultBuffer)
+        : view.buffer;
+      const otherPhysical = other.buffer.defaultBuffer
+        ? getCoreDefaultBuffer(other.buffer.defaultBuffer)
+        : other.buffer;
+      return (
+        physical === otherPhysical &&
+        view.format === other.format &&
+        view.length === other.length &&
+        view.byteOffset === other.byteOffset &&
+        view.byteStride === other.byteStride
+      );
+    })
   );
 }
 
@@ -185,6 +274,8 @@ export function createBoundsNode<Parameters>(
     featureRings?: GraphDataView<'uint32x2'>;
     minima: GraphDataView<'float32x2'>;
     maxima: GraphDataView<'float32x2'>;
+    /** Reject the whole predicate feature rather than retaining its finite parts. */
+    rejectNonFiniteFeature?: boolean;
   }
 ): GPUCommandNode<Parameters> {
   const {geometry} = props;
@@ -261,13 +352,15 @@ const VERTEX_COUNT: u32 = ${geometry.positions.length}u;`,
     body: `${range}
   var minimum = vec2f(FLOAT32_MAXIMUM);
   var maximum = vec2f(-FLOAT32_MAXIMUM);
+  ${props.rejectNonFiniteFeature ? 'var invalid = false;' : ''}
   for (var vertex = vertexStart; vertex < vertexEnd; vertex++) {
     let position = vec2f(positions[positionsOffset + vertex * 2u], positions[positionsOffset + vertex * 2u + 1u]);
     if (isFiniteValue(position.x) && isFiniteValue(position.y)) {
       minimum = min(minimum, position);
       maximum = max(maximum, position);
-    }
+    } ${props.rejectNonFiniteFeature ? 'else { invalid = true; }' : ''}
   }
+  ${props.rejectNonFiniteFeature ? 'if (invalid) { minimum = vec2f(FLOAT32_MAXIMUM); maximum = vec2f(-FLOAT32_MAXIMUM); }' : ''}
   featureMinima[featureMinimaOffset + index * 2u] = minimum.x;
   featureMinima[featureMinimaOffset + index * 2u + 1u] = minimum.y;
   featureMaxima[featureMaximaOffset + index * 2u] = maximum.x;

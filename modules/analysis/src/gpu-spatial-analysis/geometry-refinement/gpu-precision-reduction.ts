@@ -4,12 +4,13 @@
 
 import {validateGeometryReadWriteViews} from '../geometry-edit/geometry-storage-validation';
 
+import {
+  validateRefinementOutputLength,
+  validateRefinementNumber
+} from './refinement-output-validation';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
-import {
-  validateRefinementScratchByteLengths,
-  validateRefinementShaderNumber
-} from './refinement-storage-validation';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -20,10 +21,17 @@ import {getGPUSnapRoundedNodingMaximumVertexCount} from '../geometry-topology/gp
 import {createTransientView, GPUScan} from '@luma.gl/graph/gpu-core';
 import {GPUMakeValid, type GPUMakeValidProps} from '../geometry-topology/gpu-make-valid';
 import {
+  snapshotTopologyStatus,
+  validatePolygonizeStatus,
+  validateSupportedTopologyStatus
+} from '../geometry-topology/topology-status';
+import {
   validateSinglePackedView,
+  validateOption,
   getGraphOutputViews,
   validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
+  validateRequirement,
   getNextPowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -35,6 +43,9 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
+import {GRID_HALF_UP_ROUNDING_WGSL} from '../geometry-edit/half-up-rounding';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRefinementSpatialContext} from './refinement-construction-snapshot';
 
 /** Polygon precision uses the existing bounded topology output and diagnostics. */
 export type GPUPolygonPrecisionReductionProps = Omit<
@@ -50,13 +61,37 @@ export type GPUPolygonPrecisionReductionProps = Omit<
 };
 
 /**
+ * Quotient of an original coordinate by a grid step whose half-up cell is certified from the
+ * original operands. The continuous quotient is kept when division chose the right cell; otherwise
+ * it moves just inside the certified cell, or onto the certified integer when that boundary is not
+ * representable (cells of 2^23 and above). @internal
+ */
+export const POLYGON_PRECISION_COORDINATE_WGSL = /* wgsl */ `${GRID_HALF_UP_ROUNDING_WGSL}
+fn normalizePrecisionCoordinate(value: f32, step: f32) -> f32 {
+  let quotient = bitcast<f32>(bitcast<u32>(value / step));
+  let certified = roundGridHalfUp(value, 0.0, step);
+  let candidate = roundHalfUp(quotient);
+  if (candidate == certified) { return quotient; }
+  let increase = certified > candidate;
+  let boundary = select(certified + 0.5, certified - 0.5, increase);
+  let bits = bitcast<u32>(boundary);
+  let nudged = bitcast<f32>(select(bits - 1u, bits + 1u, increase == (boundary > 0.0)));
+  // Where the half boundary rounds onto an integer, one step past it leaves the certified cell.
+  if (roundHalfUp(nudged) != certified) { return certified; }
+  return nudged;
+}
+`;
+
+/**
  * Hot-pixel noding plus even-odd polygon reconstruction. This is topology precision
  * reduction, not independent coordinate rounding. Crossing and surviving original
  * vertices share an explicit lattice; collapsed rings are dropped, remnants remain
  * in topology diagnostics. Implicit ring closures are materialized before noding. The supported grid
  * is any positive float32 grid size; grid_size=0 (double-precision identity) is excluded.
  *
- * Coordinates are divided by `gridSize` and multiplied back in f32. For power-of-two grid sizes this
+ * Endpoint cells are certified against the original float32 coordinate and grid step with
+ * exact dyadic comparisons, including positive and negative half ties. Coordinates are divided
+ * by `gridSize` and multiplied back in f32. For power-of-two grid sizes this
  * is exact; for other sizes the result is the nearest f32 to the grid point, which may differ by one
  * ulp from GEOS `set_precision`, and when `|x| / gridSize` exceeds 2^22 (the lattice limit of
  * `GPUSnapRoundedNoding`) the requested grid is no longer resolvable in f32.
@@ -65,16 +100,134 @@ export class GPUPolygonPrecisionReduction implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUPolygonPrecisionReductionProps;
   constructor(props: GPUPolygonPrecisionReductionProps) {
-    this.id = props.id ?? 'polygon-precision-reduction';
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'polygons',
+      'intersectionCapacity',
+      'gridSize',
+      'lattice',
+      'mode',
+      'spatialSort',
+      'leafCapacity',
+      'output'
+    ]);
+    this.id = snapshot.id ?? 'polygon-precision-reduction';
+    const output = snapshotConstructionFields(snapshot.output, [
+      'nodedSegments',
+      'directedEdges',
+      'polygons',
+      'diagnostics',
+      'status'
+    ]);
+    const noded = snapshotConstructionFields(output.nodedSegments, [
+      'endpoints',
+      'sourceFeatureIds',
+      'sourceRingIds',
+      'sourceEdgeIds',
+      'sourceStartParameters',
+      'sourceEndParameters',
+      'status'
+    ]);
+    const directed = snapshotConstructionFields(output.directedEdges, [
+      'endpoints',
+      'sourceSegmentIds',
+      'sourceFeatureIds',
+      'twinIds',
+      'ringIds',
+      'flags',
+      'status'
+    ]);
+    // Validate the captured records: a snapshot reads every declared field once, including
+    // inherited, non-enumerable and proxy-supplied destinations that report no membership.
+    const nodedStatus = snapshotTopologyStatus(noded.status);
+    const directedStatus = snapshotTopologyStatus(directed.status);
+    for (const [name, status] of [
+      ['nodedSegments.status', nodedStatus],
+      ['directedEdges.status', directedStatus]
+    ] as const) {
+      validateRequirement(
+        this.id,
+        !('requiredRingCount' in status),
+        `output.${name}.requiredRingCount is final-only; use output.${name}.requiredCount for segments or output.status.requiredRingCount for final rings`
+      );
+    }
+    const finalStatus = snapshotTopologyStatus(output.status);
+    for (const [name, status] of [
+      ['nodedSegments.status', nodedStatus],
+      ['directedEdges.status', directedStatus],
+      ['status', finalStatus]
+    ] as const) {
+      validateSupportedTopologyStatus(this.id, status, `output.${name}`);
+    }
+    validatePolygonizeStatus(this.id, finalStatus);
+    props = Object.freeze({
+      ...snapshot,
+      ...(snapshot.spatialContext
+        ? {spatialContext: snapshotRefinementSpatialContext(snapshot.spatialContext)}
+        : {}),
+      polygons: snapshotConstructionFields(snapshot.polygons, [
+        'kind',
+        'positions',
+        'ringOffsets',
+        'polygonOffsets',
+        'featureOffsets',
+        'sourceIds'
+      ]),
+      output: Object.freeze({
+        ...output,
+        nodedSegments: Object.freeze({
+          ...noded,
+          status: nodedStatus
+        }),
+        directedEdges: Object.freeze({
+          ...directed,
+          status: directedStatus
+        }),
+        polygons: snapshotConstructionFields(output.polygons, [
+          'kind',
+          'positions',
+          'ringOffsets',
+          'polygonOffsets',
+          'featureOffsets',
+          'sourceIds'
+        ]),
+        diagnostics: snapshotConstructionFields(output.diagnostics, [
+          'edgeClasses',
+          'closedRingCount',
+          'openChainCount',
+          'cutEdgeCount',
+          'dangleCount',
+          'unusedEdgeCount'
+        ]),
+        status: finalStatus
+      })
+    });
     this.props = props;
-    validateRefinementShaderNumber(this.id, 'gridSize', props.gridSize, true);
-    if (!(Number.isFinite(Math.fround(props.gridSize)) && Math.fround(props.gridSize) > 0)) {
-      throw new Error('Precision grid must be finite and positive');
-    }
-    validateSinglePackedView(props.lattice, ['float32'], this.id);
-    if (props.lattice.length !== 4) {
-      throw new Error('Precision lattice needs four scalars');
-    }
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPUPolygonPrecisionReduction'},
+      'gridSize',
+      props.gridSize,
+      true
+    );
+    validateOption(
+      {id: this.id, contributor: 'GPUPolygonPrecisionReduction'},
+      'mode',
+      props.mode === undefined ? 'valid-output' : props.mode,
+      ['valid-output', 'keep-collapsed']
+    );
+
+    validateSinglePackedView(props.lattice, ['float32'], `${this.id} lattice`, {
+      id: this.id,
+      contributor: 'GPUPolygonPrecisionReduction'
+    });
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPUPolygonPrecisionReduction'},
+      'lattice',
+      props.lattice,
+      4,
+      '[originX, originY, actualGridSize, 0]'
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [props.lattice, ...getGraphOutputViews(props.output)],
@@ -152,6 +305,7 @@ export class GPUPolygonPrecisionReduction implements GPUCommandNodeProducer {
       'uint32',
       ringCount + 1
     );
+    const nonempty = createTransientView(graph, `${id}-nonempty`, 'uint32', 1);
     const gridLiteral = getWGSLFloatLiteral(props.gridSize);
     // Closed length per ring, a prefix sum for ring offsets, then a parallel per-ring copy.
     const closeRings = [
@@ -191,27 +345,126 @@ lengths[lengthsOffset + index] = length;`
           {name: 'outPositions', view: positions, type: 'f32', access: 'read_write'},
           {name: 'outOffsets', view: ringOffsets, type: 'u32', access: 'read'}
         ],
+        // Bounds and the lattice origin see certified quotients at the requested grid, so the
+        // minimum certified cell is inside the lattice even when division rounds above it.
         declarations: `${getReadPointWGSL('point', 'positions')}
-fn writePoint(vertex: u32, value: vec2f) { outPositions[outPositionsOffset + vertex * 2u] = value.x / ${gridLiteral}; outPositions[outPositionsOffset + vertex * 2u + 1u] = value.y / ${gridLiteral}; }`,
+${POLYGON_PRECISION_COORDINATE_WGSL}
+fn writePoint(vertex: u32, value: vec2f) { outPositions[outPositionsOffset + vertex * 2u] = normalizePrecisionCoordinate(value.x, ${gridLiteral}); outPositions[outPositionsOffset + vertex * 2u + 1u] = normalizePrecisionCoordinate(value.y, ${gridLiteral}); }`,
         body: `var written = outOffsets[outOffsetsOffset + index];
 let first = offsets[offsetsOffset + index]; let last = offsets[offsetsOffset + index + 1u];
 for (var vertex = first; vertex < last; vertex++) { writePoint(written, point(vertex)); written++; }
 if (last > first && any(point(first) != point(last - 1u))) { writePoint(written, point(first)); }`
       })
     ];
+    const topologyNodes = new GPUMakeValid({
+      ...props,
+      id,
+      polygons: {...props.polygons, positions, ringOffsets},
+      precision: {vertexTolerance: 0.25, storage: 'float32', predicates: 'exact-or-uncertain'},
+      snapRounding: {gridSize: 1, lattice: props.lattice}
+    }).getCommandNodes(graph);
+    // Bounds and lattice sizing see the requested-grid quotient, corrected only when division
+    // put it in the wrong cell. Correct the snap input again after sizing, using the original
+    // stored coordinate and the actual step (the lattice cell may be coarser than the grid).
+    const snapIndex = topologyNodes.findIndex(
+      node => node.id === `${id}-polygonize-noding-snap-vertices`
+    );
+    const snapPositions = topologyNodes[snapIndex]?.resources?.find(
+      resource =>
+        'buffer' in resource &&
+        'format' in resource.buffer &&
+        resource.buffer.buffer.id === `${id}-ring-closure-positions`
+    );
+    if (!snapPositions || !('buffer' in snapPositions) || !('format' in snapPositions.buffer)) {
+      throw new Error(`${id} precision snap input is missing from make-valid topology`);
+    }
+    const correctSnapInput = createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-correct-snap-input`,
+      operation: 'GPUPolygonPrecisionReduction',
+      variant: 'correct-snap-input',
+      invocationCount: nestedVertexCount,
+      bindings: [
+        {name: 'positions', view: props.polygons.positions, type: 'f32', access: 'read'},
+        {name: 'originalOffsets', view: props.polygons.ringOffsets, type: 'u32', access: 'read'},
+        {name: 'closedOffsets', view: ringOffsets, type: 'u32', access: 'read'},
+        {name: 'lattice', view: props.lattice, type: 'f32', access: 'read'},
+        {name: 'snapPositions', view: snapPositions.buffer, type: 'f32', access: 'read_write'}
+      ],
+      declarations: `${getReadPointWGSL('point', 'positions')}
+${POLYGON_PRECISION_COORDINATE_WGSL}`,
+      body: `var ring = 0u; var high = ${ringCount}u;
+while (ring + 1u < high) {
+  let middle = (ring + high) / 2u;
+  if (closedOffsets[closedOffsetsOffset + middle] + middle <= index) { ring = middle; } else { high = middle; }
+}
+let first = closedOffsets[closedOffsetsOffset + ring]; let last = closedOffsets[closedOffsetsOffset + ring + 1u];
+var closedRow = index - ring;
+if (index < first + ring || closedRow >= last) { closedRow = first; }
+let originalFirst = originalOffsets[originalOffsetsOffset + ring]; let originalLast = originalOffsets[originalOffsetsOffset + ring + 1u];
+var originalRow = originalFirst + closedRow - first;
+if (originalRow >= originalLast) { originalRow = originalFirst; }
+if (originalLast <= originalFirst) { return; }
+let value = point(originalRow);
+let cell = lattice[latticeOffset + 2u]; let step = ${gridLiteral} * cell;
+snapPositions[snapPositionsOffset + index * 2u] = normalizePrecisionCoordinate(value.x, step) * cell;
+snapPositions[snapPositionsOffset + index * 2u + 1u] = normalizePrecisionCoordinate(value.y, step) * cell;`
+    });
     return [
       ...closeRings,
-      ...new GPUMakeValid({
-        ...props,
-        id,
-        polygons: {...props.polygons, positions, ringOffsets},
-        precision: {
-          vertexTolerance: 0.25,
-          storage: 'float32',
-          predicates: 'exact-or-uncertain'
-        },
-        snapRounding: {gridSize: 1, lattice: props.lattice}
-      }).getCommandNodes(graph),
+      ...topologyNodes.slice(0, snapIndex),
+      correctSnapInput,
+      ...topologyNodes.slice(snapIndex),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-original-edge-rows`,
+        operation: 'GPUPolygonPrecisionReduction',
+        variant: 'original-edge-rows',
+        invocationCount: segmentCapacity,
+        bindings: [
+          {
+            name: 'count',
+            view: props.output.nodedSegments.status.count,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'sourceRings',
+            view: props.output.nodedSegments.sourceRingIds,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'sourceEdges',
+            view: props.output.nodedSegments.sourceEdgeIds,
+            type: 'u32',
+            access: 'read_write'
+          },
+          {name: 'closedOffsets', view: ringOffsets, type: 'u32', access: 'read'},
+          {name: 'originalOffsets', view: props.polygons.ringOffsets, type: 'u32', access: 'read'}
+        ],
+        // Make-valid maps its own closure copy back to the precision wrapper's closed input.
+        // Undo this wrapper's packing too, including arbitrary unused input prefix rows.
+        body: `if (index >= count[countOffset]) { return; }
+let ring = sourceRings[sourceRingsOffset + index];
+if (ring >= ${ringCount}u) { return; }
+sourceEdges[sourceEdgesOffset + index] = sourceEdges[sourceEdgesOffset + index] - closedOffsets[closedOffsetsOffset + ring] + originalOffsets[originalOffsetsOffset + ring];`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-clear-nonempty`,
+        operation: 'GPUPolygonPrecisionReduction',
+        invocationCount: 1,
+        bindings: [{name: 'nonempty', view: nonempty, type: 'u32', access: 'read_write'}],
+        body: 'nonempty[nonemptyOffset]=0u;'
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-flag-nonempty`,
+        operation: 'GPUPolygonPrecisionReduction',
+        invocationCount: ringCount,
+        bindings: [
+          {name: 'offsets', view: props.polygons.ringOffsets, type: 'u32', access: 'read'},
+          {name: 'nonempty', view: nonempty, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        body: 'if(offsets[offsetsOffset+index]!=offsets[offsetsOffset+index+1u]) {atomicOr(&nonempty[nonemptyOffset],1u);}'
+      }),
       ...[
         props.output.status,
         props.output.nodedSegments.status,
@@ -223,7 +476,7 @@ if (last > first && any(point(first) != point(last - 1u))) { writePoint(written,
           operation: 'GPUPolygonPrecisionReduction',
           invocationCount: 1,
           bindings: [
-            {name: 'offsets', view: props.polygons.ringOffsets, type: 'u32', access: 'read'},
+            {name: 'nonempty', view: nonempty, type: 'u32', access: 'read'},
             {name: 'emptyLattice', view: props.lattice, type: 'f32', access: 'read_write'},
             ...views.map((view, viewIndex) => ({
               name: `status${viewIndex}`,
@@ -232,7 +485,7 @@ if (last > first && any(point(first) != point(last - 1u))) { writePoint(written,
               access: 'read_write' as const
             }))
           ],
-          body: `for (var ring = 0u; ring < ${ringCount}u; ring++) { if (offsets[offsetsOffset + ring] != offsets[offsetsOffset + ring + 1u]) { return; } }
+          body: `if(nonempty[nonemptyOffset]!=0u) {return;}
 emptyLattice[emptyLatticeOffset] = 0.0; emptyLattice[emptyLatticeOffset + 1u] = 0.0; emptyLattice[emptyLatticeOffset + 2u] = 1.0; emptyLattice[emptyLatticeOffset + 3u] = 0.0;
 ${views.map((_, viewIndex) => `status${viewIndex}[status${viewIndex}Offset] = 0u;`).join('\n')}`
         });
@@ -261,6 +514,39 @@ ${views.map((_, viewIndex) => `status${viewIndex}[status${viewIndex}Offset] = 0u
   }
 }
 
+/**
+ * Line-route grid rounding. Below 2^24 cells the half-up cell is certified from the original
+ * operands. From 2^24 cells, where the certification helper falls back to the division candidate,
+ * an input that is already an exact grid multiple is returned unchanged: with odd significands
+ * `mv`, `mg`, `value / step = (mv / mg) * 2^(ev - eg)` is an integer exactly when `mg` divides `mv`
+ * and `ev >= eg`. Other inputs beyond 2^24 cells keep the uncertified candidate. @internal
+ */
+export const LINE_PRECISION_COORDINATE_WGSL = /* wgsl */ `${GRID_HALF_UP_ROUNDING_WGSL}
+fn oddFloatSignificand(value: f32) -> vec2i {
+  let bits = bitcast<u32>(value);
+  let biased = (bits >> 23u) & 255u;
+  var significand = (bits & 8388607u) | select(8388608u, 0u, biased == 0u);
+  var exponent = select(i32(biased) - 150, -149, biased == 0u);
+  for (var shift = 0u; shift < 24u && significand != 0u && (significand & 1u) == 0u; shift++) {
+    significand = significand >> 1u; exponent++;
+  }
+  return vec2i(i32(significand), exponent);
+}
+fn isExactGridMultiple(value: f32, step: f32) -> bool {
+  if (value == 0.0) { return true; }
+  let numerator = oddFloatSignificand(value);
+  let denominator = oddFloatSignificand(step);
+  return u32(numerator.x) % u32(denominator.x) == 0u && numerator.y >= denominator.y;
+}
+fn roundLineGridCoordinate(value: f32, step: f32) -> f32 {
+  let large = (bitcast<u32>(value / step) & 0x7fffffffu) >= 0x4b800000u;
+  if (large && (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u && isExactGridMultiple(value, step)) {
+    return value;
+  }
+  return roundGridHalfUp(value, 0.0, step) * step;
+}
+`;
+
 export type GPULinePrecisionReductionProps = {
   id?: string;
   spatialContext?: GPUSpatialContext;
@@ -283,25 +569,67 @@ export class GPULinePrecisionReduction implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   constructor(props: GPULinePrecisionReductionProps) {
     this.id = props.id ?? 'line-precision-reduction';
+    props = {
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotRefinementSpatialContext(props.spatialContext)}
+        : {}),
+      output: {...props.output}
+    };
     this.props = props;
-    validateRefinementShaderNumber(this.id, 'gridSize', props.gridSize, true);
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPULinePrecisionReduction'},
+      'gridSize',
+      props.gridSize,
+      true
+    );
+    validateOption({id: this.id, contributor: 'GPULinePrecisionReduction'}, 'mode', props.mode, [
+      'valid-output',
+      'keep-collapsed'
+    ]);
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    if (!(Number.isFinite(Math.fround(props.gridSize)) && Math.fround(props.gridSize) > 0)) {
-      throw new Error('Invalid precision grid');
+
+    for (const [path, view] of [
+      ['positions', props.positions],
+      ['output.positions', props.output.positions]
+    ] as const) {
+      validateSinglePackedView(view, ['float32x2'], `${this.id} ${path}`, {
+        id: this.id,
+        contributor: 'GPULinePrecisionReduction'
+      });
     }
-    for (const view of [props.positions, props.output.positions]) {
-      validateSinglePackedView(view, ['float32x2'], this.id);
+    for (const [path, view] of [
+      ['lineOffsets', props.lineOffsets],
+      ['output.lineOffsets', props.output.lineOffsets],
+      ['output.status', props.output.status]
+    ] as const) {
+      validateSinglePackedView(view, ['uint32'], `${this.id} ${path}`, {
+        id: this.id,
+        contributor: 'GPULinePrecisionReduction'
+      });
     }
-    for (const view of [props.lineOffsets, props.output.lineOffsets, props.output.status]) {
-      validateSinglePackedView(view, ['uint32'], this.id);
-    }
-    if (
-      props.output.positions.length < props.positions.length ||
-      props.output.lineOffsets.length !== props.lineOffsets.length ||
-      props.output.status.length !== props.lineOffsets.length - 1
-    ) {
-      throw new Error('Precision output length mismatch');
-    }
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPULinePrecisionReduction'},
+      'output.positions',
+      props.output.positions,
+      props.positions.length,
+      'positions.length',
+      true
+    );
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPULinePrecisionReduction'},
+      'output.lineOffsets',
+      props.output.lineOffsets,
+      props.lineOffsets.length,
+      'lineOffsets.length'
+    );
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPULinePrecisionReduction'},
+      'output.status',
+      props.output.status,
+      props.lineOffsets.length - 1,
+      'lineOffsets.length - 1'
+    );
     validateOutlineOutputPasses(this.id, props.output, [['positions', 'lineOffsets'], ['status']]);
     validateGeometryReadWriteViews(this.id, [props.output.lineOffsets], [props.output.positions]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
@@ -350,7 +678,8 @@ export class GPULinePrecisionReduction implements GPUCommandNodeProducer {
           {name: 'keptCounts', view: keptCounts, type: 'u32', access: 'read_write'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
-        declarations: `const GRID: f32 = ${getWGSLFloatLiteral(props.gridSize)};
+        declarations: `${LINE_PRECISION_COORDINATE_WGSL}
+const GRID: f32 = ${getWGSLFloatLiteral(props.gridSize)};
 ${getReadPointWGSL('point', 'positions')}
 fn writePoint(vertex: u32, value: vec2f) { outPositions[outPositionsOffset + vertex * 2u] = value.x; outPositions[outPositionsOffset + vertex * 2u + 1u] = value.y; }`,
         body: `if (index == ${lineCount}u) { keptCounts[keptCountsOffset + index] = 0u; return; }
@@ -363,9 +692,7 @@ for (var vertex = first; vertex < last; vertex++) {
   if (any((bitcast<vec2u>(value) & vec2u(0x7f800000u)) == vec2u(0x7f800000u))) { invalid = true; }
   // Round half up from the exact fraction. floor(scaled + 0.5) is wrong in f32 wherever the sum
   // is inexact: odd integers from 2^23 move to the even neighbour, and 0.49999997 rounds to 1.
-  let scaled = value / GRID;
-  let lower = floor(scaled);
-  let rounded = (lower + step(vec2f(0.5), scaled - lower)) * GRID;
+  let rounded = vec2f(roundLineGridCoordinate(value.x, GRID), roundLineGridCoordinate(value.y, GRID));
   if (any((bitcast<vec2u>(rounded) & vec2u(0x7f800000u)) == vec2u(0x7f800000u))) { invalid = true; }
   if (kept == 0u || any(rounded != previous)) { writePoint(first + kept, rounded); previous = rounded; kept++; }
 }

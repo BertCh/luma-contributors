@@ -187,7 +187,7 @@ it('keeps shader and pipeline counts constant with uneven chunks, offsets and tr
       for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
         expect(kernel.constants).toEqual({});
         expect(kernel.source).not.toContain('${');
-        expect(auditWGSLModule(kernel.source)).toEqual([]);
+        expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
         const identifiers = stripWGSLComments(kernel.source).match(/[A-Za-z_][A-Za-z_0-9]*/g) ?? [];
         expect(identifiers.filter(identifier => WGSL_RESERVED_WORDS.has(identifier))).toEqual([]);
       }
@@ -226,7 +226,7 @@ for (const dimensions of [192, 256, 384, 1024]) {
       for (const kernel of getGPUCommandNodeKernelSources(
         contributor.getCommandNodes(fixture.graph)
       )) {
-        expect(auditWGSLModule(kernel.source)).toEqual([]);
+        expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
         expect(kernel.source).not.toMatch(
           new RegExp(`var (?:vector|values|centered): array<f32, ${dimensions}>`)
         );
@@ -367,7 +367,7 @@ it('retains the explicit 4096-row reference cap and budgets tiled command growth
     searchStructure: 'brute-force'
   });
   for (const kernel of getGPUCommandNodeKernelSources(reference.getCommandNodes(fixture.graph)))
-    expect(auditWGSLModule(kernel.source)).toEqual([]);
+    expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
 });
 
 it('preserves packed public output types for existing callers', () => {
@@ -434,7 +434,7 @@ it('checks full WGSL reserved words and numeric literals across codec and classi
   const defaults = fixture.createContributors(257);
   const validateSource = (nodes: readonly unknown[]) => {
     for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
-      expect(auditWGSLModule(kernel.source)).toEqual([]);
+      expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
       const identifiers = stripWGSLComments(kernel.source).match(/[A-Za-z_][A-Za-z_0-9]*/g) ?? [];
       expect(identifiers.filter(identifier => WGSL_RESERVED_WORDS.has(identifier))).toEqual([]);
       expect(kernel.constants).toEqual({});

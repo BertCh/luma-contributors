@@ -179,7 +179,12 @@ it('delegates topology grow plans without claiming the truncated required count 
     expect(current.slots.capacity).toBeGreaterThanOrEqual(16);
     expect(current.pairs.capacity).toBe(64);
     const grown = contributor.getWeightsCapacityPlan({requiredCount: 100, candidateOverflow: true});
-    expect(grown.slots.capacity).toBeGreaterThanOrEqual(100);
+    expect(grown.slots.capacity).toBe(current.slots.capacity);
+    expect(grown.slots).toMatchObject({
+      retryStage: 'candidates',
+      requirement: {kind: 'lower-bound', value: 100},
+      limited: false
+    });
     expect(grown.pairs.capacity).toBeGreaterThanOrEqual(128);
     const explicit = new GPUAnalysisContiguityStatistics({...contributor.props, pairCapacity: 7});
     expect(explicit.getWeightsCapacityPlan().pairs.capacity).toBe(7);
@@ -231,6 +236,25 @@ it('refuses an exact summary for candidate-only truncation even with a stale suc
   ).toEqual({exact: false, overflow: false, candidateOverflow: true});
 });
 
+it('evaluates each supplied flat loss flag alongside the nested status', () => {
+  const profile = {
+    counts: [2, 0, 1, 0, 1, 1],
+    median: [1],
+    validity: [1],
+    weights: {status: {overflow: [0], candidateOverflow: [0]}}
+  };
+  for (const name of ['overflow', 'candidateOverflow'] as const) {
+    expect(decodeGPUAnalysisContiguityStatistics({...profile, [name]: [1]})).toEqual({
+      exact: false,
+      overflow: name === 'overflow',
+      candidateOverflow: name === 'candidateOverflow'
+    });
+    expect(() => decodeGPUAnalysisContiguityStatistics({...profile, [name]: []})).toThrow(
+      new RegExp(`${name}\\.length`)
+    );
+  }
+});
+
 it('decodes hand-counted chain and island profiles and refuses every overflow combination', () => {
   // A--B--C and an island: cardinalities [1,2,1,0], sorted [0,1,1,2].
   const values = {
@@ -251,9 +275,6 @@ it('decodes hand-counted chain and island profiles and refuses every overflow co
     maximum: 2
   });
   // An even profile's median interpolates the middle two cardinalities, not a rounded rank.
-  expect(decodeGPUAnalysisContiguityStatistics({...values, validity: [2]})).toEqual(
-    decodeGPUAnalysisContiguityStatistics(values)
-  );
   expect(
     decodeGPUAnalysisContiguityStatistics({...values, counts: [6, 0, 0, 1, 2, 0], median: [1.5]})
   ).toMatchObject({exact: true, median: 1.5});
@@ -263,7 +284,7 @@ it('decodes hand-counted chain and island profiles and refuses every overflow co
   for (const overflow of [0, 1]) {
     for (const candidateOverflow of [0, 1]) {
       for (const validity of [0, 1, 2]) {
-        if (!overflow && !candidateOverflow && validity) continue;
+        if (!overflow && !candidateOverflow && validity === 1) continue;
         expect(
           decodeGPUAnalysisContiguityStatistics({
             ...values,
@@ -295,4 +316,56 @@ it('catalogues the profile as topological with an explicit limit and pending GPU
     evidence: {status: 'partial'},
     limits: [{name: 'featureCount', maximum: 2 ** 24}]
   });
+});
+
+it('OUT-02 decodes logical byte slices and requires validity exactly one', () => {
+  const counts = Uint32Array.of(300, 0, 1, 2, 3, 0);
+  const median = Float32Array.of(2.5);
+  const bytes = (values: Uint32Array | Float32Array) => {
+    // Unaligned reads must honor the logical slice rather than the backing allocation.
+    const storage = new Uint8Array(values.byteLength + 7).fill(255);
+    storage.set(new Uint8Array(values.buffer, values.byteOffset, values.byteLength), 3);
+    return storage.subarray(3, 3 + values.byteLength);
+  };
+  const numeric = {counts, median, validity: [1], overflow: [0], candidateOverflow: [0]};
+  const expected = {
+    exact: true,
+    slots: 300,
+    islands: 1,
+    minimum: 2,
+    maximum: 3,
+    median: 2.5,
+    overflow: false,
+    candidateOverflow: false
+  };
+  expect(decodeGPUAnalysisContiguityStatistics(numeric)).toEqual(expected);
+  const ports = {
+    counts: bytes(counts),
+    median: bytes(median),
+    validity: bytes(Uint32Array.of(1)),
+    weights: {
+      status: {overflow: bytes(Uint32Array.of(0)), candidateOverflow: bytes(Uint32Array.of(0))}
+    }
+  };
+  expect(decodeGPUAnalysisContiguityStatistics(ports as never)).toEqual(expected);
+  expect(decodeGPUAnalysisContiguityStatistics({bytes: ports} as never)).toEqual(expected);
+  expect(
+    decodeGPUAnalysisContiguityStatistics({
+      ...ports,
+      validity: bytes(Uint32Array.of(0xffffffff))
+    })
+  ).toEqual({exact: false, overflow: false, candidateOverflow: false});
+  for (const validity of [1.5, Number.NaN, 0x100000001])
+    expect(() => decodeGPUAnalysisContiguityStatistics({...numeric, validity: [validity]})).toThrow(
+      /uint32 word/
+    );
+  for (const name of ['counts', 'median', 'validity', 'overflow', 'candidateOverflow'] as const) {
+    expect(() => decodeGPUAnalysisContiguityStatistics({...numeric, [name]: []})).toThrow();
+    expect(() =>
+      decodeGPUAnalysisContiguityStatistics({
+        ...numeric,
+        [name]: {bytes: new Uint8Array(name === 'counts' ? 23 : 3)}
+      } as never)
+    ).toThrow();
+  }
 });

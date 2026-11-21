@@ -19,7 +19,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {compareParity} from '../../oracles/parity-wp2-assert';
 import {decodeOracleFixture} from '../../oracles/oracle-fixture';
 import fixtureJson from '../../oracles/fixtures/parity-wp2-prepared-nearest.json';
@@ -48,7 +48,7 @@ function createRun(
   entry: JoinCase,
   pairCapacity: number,
   neighborCapacity: number,
-  ties: 'all' | 'lowest-id'
+  ties: 'all' | 'lowest-row'
 ) {
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
@@ -118,6 +118,7 @@ function createRun(
   );
   const slotCount = queryCount * neighborCapacity;
   const neighborIds = output('neighbor-ids', slotCount, 'uint32');
+  const neighborRows = output('neighbor-rows', slotCount, 'uint32');
   const neighborDistances = output('neighbor-distances', slotCount, 'float32');
   const neighborFootPoints = output('neighbor-foot', slotCount, 'float32x2');
   const neighborCounts = output('neighbor-counts', queryCount, 'uint32');
@@ -127,12 +128,13 @@ function createRun(
       queries: left,
       features: {...right, sourceIds: sourceIds.view},
       prepared,
-      k: 1,
+      neighborCount: 1,
       neighborCapacity,
       ties,
       radius: radius.view,
       output: {
         neighborIds: neighborIds.view,
+        neighborRows: neighborRows.view,
         neighborDistances: neighborDistances.view,
         neighborFootPoints: neighborFootPoints.view,
         neighborCounts: neighborCounts.view,
@@ -155,6 +157,7 @@ function createRun(
         pairLeft: await readUint32(pairLeft.buffer, pairCapacity),
         pairRight: await readUint32(pairRight.buffer, pairCapacity),
         neighborIds: await readUint32(neighborIds.buffer, slotCount),
+        neighborRows: await readUint32(neighborRows.buffer, slotCount),
         neighborDistances: await readFloat32(neighborDistances.buffer, slotCount),
         neighborFootPoints: await readFloat32(neighborFootPoints.buffer, slotCount * 2),
         neighborCounts: await readUint32(neighborCounts.buffer, queryCount),
@@ -168,6 +171,54 @@ function createRun(
     }
   };
 }
+
+it('NAM-03 prepared parity retains row 0 ID 99 for an equidistant tie', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const frame: Frame = {
+    name: 'identity-tie',
+    positions: [-1, 0, -1, 0, 1, 0, 1, 0],
+    queries: [0, 0],
+    candidates: [
+      [0, 0],
+      [0, 1]
+    ],
+    dwithin: [
+      [0, 0],
+      [0, 1]
+    ],
+    neighbors: [
+      [
+        {row: 0, id: 99, distance: 1, foot: [-1, 0]},
+        {row: 1, id: 1, distance: 1, foot: [1, 0]}
+      ]
+    ]
+  };
+  const entry: JoinCase = {
+    name: 'identity-tie',
+    radius: 2,
+    lineOffsets: [0, 2, 4],
+    sourceIds: [99, 1],
+    absolute: 0,
+    frames: [frame]
+  };
+  const run = createRun(device, entry, 4, 1, 'lowest-row');
+  try {
+    const actual = await run.run(frame, false);
+    // Both degenerate segments are exactly one unit from the origin: lowest row wins.
+    compareParity(
+      'GPUNearestFeatureJoin',
+      entry.name,
+      'hand-worked Euclidean distances',
+      'row and ID',
+      [actual.neighborRows[0], actual.neighborIds[0]],
+      [0, 99],
+      0
+    );
+  } finally {
+    run.destroy();
+  }
+});
 
 for (const entry of fixture.cases) {
   it(`prepared candidates and nearest Shapely parity: ${entry.name}`, async () => {
@@ -185,7 +236,7 @@ for (const entry of fixture.cases) {
         ties: 'all' as const
       },
       {pairCapacity: 1, neighborCapacity: 1, ties: 'all' as const},
-      {pairCapacity: fullPairCapacity, neighborCapacity: 1, ties: 'lowest-id' as const}
+      {pairCapacity: fullPairCapacity, neighborCapacity: 1, ties: 'lowest-row' as const}
     ];
     try {
       for (const configuration of configurations) {
@@ -256,7 +307,7 @@ for (const entry of fixture.cases) {
             const expectedDistances: number[] = [];
             const expectedFeet: number[] = [];
             for (const neighbors of frame.neighbors) {
-              const selected = neighbors.slice(0, ties === 'lowest-id' ? 1 : neighborCapacity);
+              const selected = neighbors.slice(0, ties === 'lowest-row' ? 1 : neighborCapacity);
               expectedCounts.push(selected.length);
               for (let slot = 0; slot < neighborCapacity; slot++) {
                 const neighbor = selected[slot];

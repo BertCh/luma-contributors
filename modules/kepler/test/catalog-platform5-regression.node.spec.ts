@@ -73,6 +73,87 @@ test('GWR CPU oracle recovers a global line exactly with a wide kernel', () => {
     expect(value).toBeCloseTo(2, 6);
 });
 
+test('GWR CPU centers and equilibrates translated full-rank local systems', () => {
+  const binding = BINDINGS.find(item => item.id === 'regression-gwr')!;
+  // All weights are 1. Centered X'X = diag(16, 4), X'(y - 1e6) = [1/4, 4].
+  // Thus slope=1, intercept=1/64. Both numbers survive the float32 input rounding.
+  const data = points(
+    Array.from({length: 16}, (_, index) => {
+      const predictor = 1e6 + (index < 2 ? -1 : index < 4 ? 1 : 0);
+      return {
+        coordinates: [0, 0],
+        properties: {a: predictor, y: predictor + (index >= 12 ? 1 / 16 : 0)}
+      };
+    })
+  );
+  const parameters = {
+    responseProperty: 'y',
+    predictorProperties: 'a',
+    kernel: 'gaussian',
+    bandwidth: 1,
+    coordinateSystem: 'planar'
+  };
+  const result = runCatalogOperation(binding, parameters, {points: data});
+  for (const column of ['coef_intercept', 'coef_a', 'se_a'])
+    expect(result.tables[0].columns[column]).toHaveLength(16);
+  for (const value of result.tables[0].columns['coef_intercept'] as number[]) {
+    expect(Number.isFinite(value)).toBe(true);
+    expect(value).toBeCloseTo(1 / 64, 9);
+  }
+  for (const value of result.tables[0].columns['coef_a'] as number[])
+    expect(value).toBeCloseTo(1, 12);
+  // RSS = 12*(-1/64)^2 + 4*(3/64)^2 = 3/256, tr(S)=2; slope variance = RSS/14/4.
+  expect(result.summary['residualSumOfSquares']).toBeCloseTo(3 / 256, 12);
+  expect(result.summary['effectiveParameters']).toBeCloseTo(2, 12);
+  for (const value of result.tables[0].columns['se_a'] as number[]) {
+    expect(Number.isFinite(value)).toBe(true);
+    expect(value).toBeCloseTo(Math.sqrt(3 / 14336), 12);
+  }
+  const singular = points(
+    Array.from({length: 16}, (_, index) => ({coordinates: [0, 0], properties: {a: 1e6, y: index}}))
+  );
+  expect(() => runCatalogOperation(binding, parameters, {points: singular})).toThrow(/singular/);
+});
+
+test('GWR covariance retains representable distant observation influences before squaring', () => {
+  const binding = BINDINGS.find(item => item.id === 'regression-gwr')!;
+  const data = points(
+    Array.from({length: 8}, (_, index) => {
+      const group = Math.floor(index / 4);
+      return {
+        coordinates: [28 * group, 0],
+        properties: {a: group, y: 2 + 3 * group + (index % 2 ? 1 : -1)}
+      };
+    })
+  );
+  const result = runCatalogOperation(
+    binding,
+    {
+      responseProperty: 'y',
+      predictorProperties: 'a',
+      kernel: 'gaussian',
+      bandwidth: 1,
+      coordinateSystem: 'planar'
+    },
+    {points: data}
+  );
+  // Each group mean uses four observations, irrespective of its positive local weight.
+  // RSS=8, trace=2, sigma^2=8/6. Intercept variance=sigma^2/4; slope variance=sigma^2/2.
+  for (const [column, expected] of [
+    ['coef_intercept', 2],
+    ['coef_a', 3],
+    ['se_intercept', Math.sqrt(1 / 3)],
+    ['se_a', Math.sqrt(2 / 3)]
+  ] as const) {
+    const values = result.tables[0].columns[column] as number[];
+    expect(values).toHaveLength(8);
+    for (const value of values) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeCloseTo(expected, 10);
+    }
+  }
+});
+
 test('probit CPU oracle refuses non binary responses and separation', () => {
   const binding = BINDINGS.find(item => item.id === 'regression-probit')!;
   const parameters = {responseProperty: 'y', predictorProperties: 'a', coordinateSystem: 'planar'};

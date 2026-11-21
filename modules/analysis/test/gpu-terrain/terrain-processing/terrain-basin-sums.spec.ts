@@ -215,7 +215,9 @@ it('stage area and volume of a 262,144-cell depression match float64', async () 
   };
   const stage = 2000.37;
   const curves = output(2, 'float32'),
-    status = output(3, 'uint32');
+    storedCount = output(1, 'uint32'),
+    requiredCount = output(1, 'uint32'),
+    overflow = output(1, 'uint32');
   graph.add(
     new GPUTerrainDepressionHierarchy({
       grid,
@@ -228,14 +230,20 @@ it('stage area and volume of a 262,144-cell depression match float64', async () 
         levels: output(2, 'float32').view,
         cellNodes: output(count, 'uint32').view,
         curves: curves.view,
-        status: status.view
+        status: {
+          count: storedCount.view,
+          requiredCount: requiredCount.view,
+          overflow: overflow.view
+        }
       }
     })
   );
   const destroy = run();
   try {
     // One node holds every cell: [stored, required, overflow].
-    expect(await status.read()).toEqual([1, 1, 0]);
+    expect(await storedCount.read()).toEqual([1]);
+    expect(await requiredCount.read()).toEqual([1]);
+    expect(await overflow.read()).toEqual([0]);
     const cellArea = Math.fround(0.7);
     const expectedArea = count * cellArea;
     const expectedVolume = count * Math.fround(Math.fround(stage) * cellArea);

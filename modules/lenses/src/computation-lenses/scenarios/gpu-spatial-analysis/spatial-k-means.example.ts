@@ -47,9 +47,10 @@ export async function runExample(
     new GPUSpatialKMeans({
       spatialContext,
       positions: observations,
-      k: 6,
+      clusterCount: 6,
       maximumIterations: 20,
       initialization: 'kmeans++',
+      centerCoordinates: true,
       parameters,
       output: {
         labels,

@@ -9,7 +9,7 @@ import {
   type CPUAZPRegionsInput
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/cpu-azp-regions-operation';
 import {GPUAZPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-azp-regions-operation';
-import {GPU_AZP_STATUS} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-azp-regions';
+import {GPU_AZP_STATUS_LAYOUT} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-azp-regions';
 import {getCSRFromAdjacency} from './azp-batched-mirror';
 import {
   constructRegionalizationGPU,
@@ -216,7 +216,7 @@ it('preserves the explicit GPU gain threshold even under a large column translat
   const result = computeAZPRegionsOnCPU({...input, values: shifted}, createAZPProps());
   expect(result.labels).toEqual(input.initialLabels);
   expect(result.objective[0]).toBe(getPairwiseObjective(shifted, input.initialLabels, 2));
-  expect(result.status[GPU_AZP_STATUS.converged]).toBe(1);
+  expect(result.status[GPU_AZP_STATUS_LAYOUT.converged]).toBe(1);
 });
 
 it('counts extra components, invalid labels, bad used slots and nonfinite entries', () => {

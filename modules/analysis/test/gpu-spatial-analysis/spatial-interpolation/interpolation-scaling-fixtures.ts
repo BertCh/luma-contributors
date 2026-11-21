@@ -146,7 +146,7 @@ export function createInterpolationScalingCases(): InterpolationBenchmarkCase[] 
             positions: positionsView,
             queryPositions: queriesView,
             mode: 'knn',
-            k: 32,
+            neighborCount: 32,
             gridSize: [32, 32],
             parameters: scope.input(
               'parameters',

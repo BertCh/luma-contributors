@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  QUAKE_DISTANCE_CELL_WGSL,
+  QUAKE_EVENT_DISTANCE_WGSL,
+  QUAKE_LINKS_WGSL
+} from './quake-distance-cell';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {GPUGroupStatistics} from '@luma-contributors/analysis/dataframe-analysis';
@@ -254,7 +259,7 @@ export async function createQuakePlateBoundaries(
         mask,
         keyCount: BIN_COUNT,
         variance,
-        percentiles: percentileParameters.importToGraph(statisticsGraph),
+        probabilities: percentileParameters.importToGraph(statisticsGraph),
         columns: [
           {
             values: s('depth', depth, 'float32', count),
@@ -262,7 +267,7 @@ export async function createQuakePlateBoundaries(
             output: {
               means: s('depth-means', depthMeans, 'float32', BIN_COUNT),
               standardDeviations: s('depth-deviations', depthDeviations, 'float32', BIN_COUNT),
-              percentiles: s(
+              quantiles: s(
                 'depth-percentiles',
                 depthPercentiles,
                 'float32',
@@ -383,6 +388,7 @@ export async function createQuakePlateBoundaries(
     // Sample the distance grid at every event: kilometers, or -1 outside the grid or the cap.
     addKernelPass(graph, {
       id: `${variant.key}-event-distance`,
+      declarations: QUAKE_DISTANCE_CELL_WGSL,
       invocationCount: count,
       bindings: [
         {name: 'positions', view: positionsView, type: 'f32', access: 'read'},
@@ -390,17 +396,7 @@ export async function createQuakePlateBoundaries(
         {name: 'distances', view: distancesView, type: 'f32', access: 'read'},
         {name: 'distanceKm', view: distanceKmView, type: 'f32', access: 'read_write'}
       ],
-      body: /* wgsl */ `
-  let cellX = floor((positions[positionsOffset + index * 2u] - parameters[parametersOffset + 8u]) * parameters[parametersOffset + 10u]);
-  let cellY = floor((positions[positionsOffset + index * 2u + 1u] - parameters[parametersOffset + 9u]) * parameters[parametersOffset + 10u]);
-  var kilometers = -1.0;
-  if (cellX >= 0.0 && cellY >= 0.0 && cellX < parameters[parametersOffset + 12u] && cellY < parameters[parametersOffset + 13u]) {
-    let meters = distances[distancesOffset + u32(cellY) * u32(parameters[parametersOffset + 12u]) + u32(cellX)];
-    if (meters < 3.0e38) {
-      kilometers = meters * 0.001;
-    }
-  }
-  distanceKm[distanceKmOffset + index] = kilometers;`
+      body: QUAKE_EVENT_DISTANCE_WGSL
     });
     // Group keys from the distance: bin, (depth class, bin), magnitude bin for the chosen subset.
     addKernelPass(graph, {
@@ -475,7 +471,7 @@ export async function createQuakePlateBoundaries(
     addKernelPass(graph, {
       id: `${variant.key}-links`,
       invocationCount: count,
-      declarations: `const NONE: u32 = ${NO_KEY}u;`,
+      declarations: QUAKE_DISTANCE_CELL_WGSL,
       bindings: [
         {name: 'positions', view: positionsView, type: 'f32', access: 'read'},
         {name: 'distanceKm', view: distanceKmView, type: 'f32', access: 'read'},
@@ -495,33 +491,7 @@ export async function createQuakePlateBoundaries(
           access: 'read_write'
         }
       ],
-      body: /* wgsl */ `
-  linkFade[linkFadeOffset + index] = 0.0;
-  linkSegments[linkSegmentsOffset + index * 4u] = 0.0;
-  linkSegments[linkSegmentsOffset + index * 4u + 1u] = 0.0;
-  linkSegments[linkSegmentsOffset + index * 4u + 2u] = 0.0;
-  linkSegments[linkSegmentsOffset + index * 4u + 3u] = 0.0;
-  if (parameters[parametersOffset + 6u] < 0.5 || distanceKm[distanceKmOffset + index] < 0.0) {
-    return;
-  }
-  if (depth[depthOffset + index] < parameters[parametersOffset + 7u]) {
-    return;
-  }
-  let x = positions[positionsOffset + index * 2u];
-  let y = positions[positionsOffset + index * 2u + 1u];
-  let cellX = u32(floor((x - parameters[parametersOffset + 8u]) * parameters[parametersOffset + 10u]));
-  let cellY = u32(floor((y - parameters[parametersOffset + 9u]) * parameters[parametersOffset + 10u]));
-  let width = u32(parameters[parametersOffset + 12u]);
-  let nearest = nearestCells[nearestCellsOffset + cellY * width + cellX];
-  if (nearest == NONE) {
-    return;
-  }
-  let size = parameters[parametersOffset + 11u];
-  linkSegments[linkSegmentsOffset + index * 4u] = x;
-  linkSegments[linkSegmentsOffset + index * 4u + 1u] = y;
-  linkSegments[linkSegmentsOffset + index * 4u + 2u] = parameters[parametersOffset + 8u] + (f32(nearest % width) + 0.5) * size;
-  linkSegments[linkSegmentsOffset + index * 4u + 3u] = parameters[parametersOffset + 9u] + (f32(nearest / width) + 0.5) * size;
-  linkFade[linkFadeOffset + index] = 1.0;`
+      body: QUAKE_LINKS_WGSL
     });
     return {compiled: resources.track(await graph.compileAsync())};
   }

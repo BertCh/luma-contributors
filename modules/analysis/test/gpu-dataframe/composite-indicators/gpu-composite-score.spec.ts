@@ -26,7 +26,7 @@ import {
   computeCompositeScoreOnCPU,
   type CompositeScoreOracleResult
 } from './composite-score-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type Scene = {indicators: Float32Array; indicatorCount: number; mask?: Uint32Array};
 
@@ -406,6 +406,114 @@ it('GPUCompositeScore writes NaN for every row when nothing is included', async 
     const result = await fixture.run({weights: [1, 1]});
     expect(result.score.every(Number.isNaN)).toBe(true);
     expect(result.columnStatistics.every(Number.isNaN)).toBe(true);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+// DPC-103. A float32 replay of the tile sum of 256 copies of 1e7 gives the mean 9999980 and the
+// deviation 20, so every z-score was 1. A constant column has deviation 0 and z-score 0 exactly.
+it('GPUCompositeScore standardizes a constant large-offset indicator to zero', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const rows of [255, 256, 257]) {
+    const scene: Scene = {indicators: new Float32Array(rows).fill(1e7), indicatorCount: 1};
+    const fixture = createFixture(device, scene);
+    try {
+      const result = await fixture.run({scaler: 'z-score', weights: [1]});
+      expect(result.score).toHaveLength(rows);
+      expect(result.scaled).toHaveLength(rows);
+      expect(result.columnStatistics, `${rows} rows statistics`).toEqual([1e7, 1e7, 1e7, 0]);
+      for (let row = 0; row < rows; row++) {
+        expect(Number.isFinite(result.score[row]), `${rows} rows score[${row}]`).toBe(true);
+        expect(result.score[row], `${rows} rows score[${row}]`).toBe(0);
+        expect(result.scaled[row], `${rows} rows scaled[${row}]`).toBe(0);
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
+// DPC-103 follow-up: equal halves at offset +/- 1 have mean offset, population variance 1,
+// and z-scores -1/+1. Block ordering exposes float32 drift that alternating pairs can hide.
+it('GPUCompositeScore preserves varying large-offset columns across tiles', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const rows of [256, 258, 512, 514]) {
+    for (const offset of [0, 1e7]) {
+      const indicators = Float32Array.from(
+        {length: rows},
+        (_, row) => offset + (row < rows / 2 ? -1 : 1)
+      );
+      const fixture = createFixture(device, {indicators, indicatorCount: 1});
+      try {
+        const result = await fixture.run({scaler: 'z-score', weights: [1]});
+        expect(result.score).toHaveLength(rows);
+        expect(result.scaled).toHaveLength(rows);
+        expect(result.columnStatistics).toEqual([offset - 1, offset + 1, offset, 1]);
+        for (let row = 0; row < rows; row++) {
+          const expected = row < rows / 2 ? -1 : 1;
+          expect(Number.isFinite(result.scaled[row])).toBe(true);
+          expect(Number.isFinite(result.score[row])).toBe(true);
+          expect(result.scaled[row]).toBe(expected);
+          expect(result.score[row]).toBe(expected);
+        }
+      } finally {
+        fixture.destroy();
+      }
+    }
+  }
+});
+
+it('B1 composite scores retain half-unit variation below the rounded public mean', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const offset of [0, 1e7]) {
+    const fixture = createFixture(device, {
+      indicators: Float32Array.from([offset, offset + 1]),
+      indicatorCount: 1
+    });
+    try {
+      const result = await fixture.run({scaler: 'z-score', weights: [1]});
+      // True mean offset+1/2 rounds to offset at 1e7. Variance=1/4 and z-scores +/-1
+      // remain exactly representable and must not be derived from that rounded public word.
+      expect(result.columnStatistics).toEqual([offset, offset + 1, Math.fround(offset + 0.5), 0.5]);
+      expect(result.scaled).toEqual([-1, 1]);
+      expect(result.score).toEqual([-1, 1]);
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
+it('B2 composite mean preserves a sparse total across 256 tiles', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rows = 65536;
+  const indicators = new Float32Array(rows);
+  indicators[rows - 1] = 10000000;
+  const fixture = createFixture(device, {indicators, indicatorCount: 1});
+  try {
+    const result = await fixture.run({scaler: 'z-score', weights: [1]});
+    expect(result.score).toHaveLength(rows);
+    expect(result.scaled).toHaveLength(rows);
+    // Mean=A/n; sd=A*sqrt(n-1)/n; zero z=-1/sqrt(n-1), outlier z=sqrt(n-1).
+    // /usr/bin/python3: n=65536; A=10000000; math.sqrt(A*A*(n-1)/(n*n)).
+    expect(result.columnStatistics.slice(0, 3)).toEqual([0, 10000000, 152.587890625]);
+    expect(Number.isFinite(result.columnStatistics[3])).toBe(true);
+    expect(result.columnStatistics[3]).toBeCloseTo(39062.20197563925, 0);
+    for (const row of [0, 65534, 65535]) {
+      const expected = row === 65535 ? 255.99804686754936 : -0.0039062798026634525;
+      expect(Number.isFinite(result.scaled[row])).toBe(true);
+      expect(Number.isFinite(result.score[row])).toBe(true);
+      expect(Math.abs(result.scaled[row] - expected)).toBeLessThan(
+        1e-5 * Math.max(1, Math.abs(expected))
+      );
+      expect(Math.abs(result.score[row] - expected)).toBeLessThan(
+        1e-5 * Math.max(1, Math.abs(expected))
+      );
+    }
   } finally {
     fixture.destroy();
   }

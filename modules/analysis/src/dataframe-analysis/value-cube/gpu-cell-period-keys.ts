@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  captureDataframeConstructorProps,
+  type DataframePropKeys
+} from '../calendar-buckets/dataframe-constructor-contracts';
+
+import {
   createGraphChunkGroupKernelNode,
   validateGraphChunkGroupKernelSupport,
   GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET
@@ -43,6 +48,7 @@ import {
 import {
   getGPUCellPeriodKeyPeriodBits,
   GPU_CELL_PERIOD_KEY_MAXIMUM_PERIOD_BITS,
+  type GPUCellPeriodKeyLayout,
   type GPUCellPeriodKeyFill
 } from './cell-period-key-packing';
 
@@ -69,7 +75,8 @@ export type GPUCellPeriodKeysOutput<Rows extends GraphDataView | GraphVectorView
     /**
      * `status.invalidCount`: rows that passed the mask and carry a period and a cell key, but were not
      * packed because the period is out of range or the low bits of the cell key do not hold the
-     * `fill` pattern (a cell finer than the chosen resolution). Never a silent collision.
+     * `fill` pattern (a cell finer than the chosen resolution), or the encoded key would be the
+     * reserved all-ones missing sentinel. Never a silent collision.
      */
     status?: GPUInvalidStatusPort;
   };
@@ -94,13 +101,15 @@ export type GPUCellPeriodKeysProps<Rows extends GraphDataView | GraphVectorView 
    * upstream) is skipped silently; a period at or above `periodCount` is skipped and counted.
    */
   periods: GPUCellPeriodKeysRowView<'uint32', Rows>;
-  /** Number of periods, 1 to `2^32 - 3` (the period needs `ceil(log2(periodCount))` key bits, at most 32). */
+  /** Number of periods, 1 to `2^32 - 3`. The layout uses at most 32 period bits. */
   periodCount: number;
   /**
-   * What the low `ceil(log2(periodCount))` bits of every cell key must hold: `'ones'` for H3 and
+   * What the low bits reserved by the layout must hold: `'ones'` for H3 and
    * Quadbin, `'zeros'` for S2. See {@link GPUCellPeriodKeyFill}.
    */
   fill: GPUCellPeriodKeyFill;
+  /** Explicit key layout. Identity requires periodCount = 1. */
+  layout: GPUCellPeriodKeyLayout;
   /** Optional `uint32` row mask; zero skips the row silently. */
   mask?: GPUCellPeriodKeysRowView<'uint32', Rows>;
   /** Caller-owned outputs. */
@@ -113,14 +122,19 @@ export type GPUCellPeriodKeysProps<Rows extends GraphDataView | GraphVectorView 
  * cube: count, sum, mean, minimum, maximum, variance and percentiles per (cell, period) in a
  * capacity-bounded table sorted by cell, then period.
  *
- * Packing: with `b = ceil(log2(periodCount))` period bits, the key is `(cellKey & ~(2^b - 1)) |
+ * Packing: explicitly select `layout: 'zero-period-bit-identity'` for one period to preserve every
+ * cell bit (`b = 0`). Use `layout: 'legacy-one-bit'` for multiple periods or to match persisted
+ * one-bit keys, such as cell 3 and period 0 stored as key 2 with 'ones' fill. Identity with more
+ * than one period is rejected at construction. With `b = max(1, ceil(log2(periodCount)))` legacy
+ * period bits, the key is `(cellKey & ~(2^b - 1)) |
  * period`. The period replaces the low `b` bits of the cell key. Those bits are not free in
  * general, so the contributor requires them to equal the `fill` pattern (all ones for H3 and
  * Quadbin, zeros for S2), which holds exactly for cells coarser than the resolution that leaves `b`
  * free bits: H3 `3 * (15 - resolution) >= b`, Quadbin `52 - 2 * zoom >= b`, S2 `60 - 2 * level >=
  * b`. Within that limit the packing is lossless and reversible
- * (`unpackGPUCellPeriodKey`): no information of the cell is dropped and no two (cell, period)
- * pairs share a key. A row is rejected exactly when the low `b` bits of its cell key differ from
+ * (`unpackGPUCellPeriodKeyChecked`): no information of the cell is dropped and no two (cell, period)
+ * pairs share a key. A row is rejected when its encoded key would be the reserved all-ones
+ * sentinel or the low `b` bits of its cell key differ from
  * the `fill` pattern, which is what a cell finer than the limit has in nearly every case: the row
  * is not packed (its key is all ones, so `GPUGroupStatistics` skips it) and is counted in
  * `output.status.invalidCount`. A finer cell whose extra bits happen to equal the fill pattern is
@@ -132,7 +146,7 @@ export type GPUCellPeriodKeysProps<Rows extends GraphDataView | GraphVectorView 
  *
  * The packed key sorts by cell and then period (the cell bits are the high bits), so the group
  * table of `GPUGroupStatistics` is in cell-major order. A packed key is not a valid cell id; unpack
- * the group table keys with `unpackGPUCellPeriodKey`.
+ * the group table keys with `unpackGPUCellPeriodKeyChecked`.
  *
  * Row inputs and keys may be chunked with matching ordered chunk lengths. Each chunk must fit
  * one storage binding; total rows fit the shared uint32 chunk limit. Status stays packed.
@@ -158,13 +172,42 @@ export class GPUCellPeriodKeys<
   readonly estimatedCommandNodeCount: number;
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: Props) {
+  constructor(
+    input: Props &
+      Record<
+        Exclude<
+          DataframePropKeys<Props>,
+          DataframePropKeys<GPUCellPeriodKeysProps<GraphDataView | GraphVectorView>>
+        >,
+        never
+      >
+  ) {
+    const props = captureDataframeConstructorProps(input.id ?? 'cell-period-keys', input, [
+      'id',
+      'cells',
+      'periods',
+      'periodCount',
+      'fill',
+      'layout',
+      'mask',
+      'output'
+    ]);
     this.id = props.id ?? 'cell-period-keys';
     this.props = props as Props & GPUCellPeriodKeysProps<Props['cells']>;
     const id = this.id;
     const {cells, periods, mask, output} = props;
     validateCapacity(id, 'periodCount', props.periodCount, 1, MAXIMUM_PERIOD_COUNT);
-    this.periodBits = getGPUCellPeriodKeyPeriodBits(props.periodCount);
+    validateRequirement(
+      id,
+      props.layout === 'legacy-one-bit' || props.layout === 'zero-period-bit-identity',
+      `layout must be 'legacy-one-bit' or 'zero-period-bit-identity'; received ${props.layout}`
+    );
+    validateRequirement(
+      id,
+      props.layout !== 'zero-period-bit-identity' || props.periodCount === 1,
+      `layout 'zero-period-bit-identity' requires periodCount = 1; received ${props.periodCount}`
+    );
+    this.periodBits = getGPUCellPeriodKeyPeriodBits(props.periodCount, props.layout);
     // Always true while the periodCount limit holds; stated because the kernel reads the low word only.
     validateRequirement(
       id,
@@ -240,6 +283,7 @@ export class GPUCellPeriodKeys<
           id: `${id}-clear-invalid-count`,
           operation: OPERATION,
           view: invalidCount,
+          componentCount: 1,
           type: 'u32',
           value: '0u'
         })
@@ -296,7 +340,9 @@ export class GPUCellPeriodKeys<
   var keyHigh = 0xffffffffu;
   let isCell = !(low == 0xffffffffu && high == 0xffffffffu);
   if (isCell && period != 0xffffffffu && ${mask ? 'rowMask[rowMaskBase + index] != 0u' : 'true'}) {
-    if (period < periodCount && (low & periodMask) == expectedFill) {
+    let packedLow = (low & ~periodMask) | period;
+    let isPackedMissing = packedLow == 0xffffffffu && high == 0xffffffffu;
+    if (period < periodCount && (low & periodMask) == expectedFill && !isPackedMissing) {
       keyLow = (low & ~periodMask) | period;
       keyHigh = high;
     }${

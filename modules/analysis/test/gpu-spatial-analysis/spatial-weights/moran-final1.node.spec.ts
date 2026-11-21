@@ -25,6 +25,10 @@ import {GPUContiguityWeights} from '../../../src/gpu-spatial-analysis/spatial-we
 import {GPUNeighborSearch} from '../../../src/gpu-spatial-analysis/neighbor-search/gpu-neighbor-search';
 import {computeContiguityWeightsOnCPU} from '../../../src/gpu-spatial-analysis/spatial-weights/cpu-contiguity-weights-operation';
 import {decodeGPUAnalysisContiguityStatistics} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-analysis-contiguity-statistics';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
 
 function scene() {
   const device = createNullWebGPUDevice();
@@ -91,25 +95,35 @@ it('core:F3 minimum spanning forest suppresses status-bearing weights instead of
   }
 });
 
-it('spatial-1:F1 chunk transpose refuses chunk-local loss flags', () => {
-  const {device, view, weights, output} = scene();
+it('spatial-1:F1 packed chunk transpose publishes inherited chunk-local loss flags', () => {
+  const {device, graph, view, weights} = scene();
   try {
-    expect(
-      () =>
-        new GPUChunkedSpatialWeightsTranspose({
-          weights: {
+    const candidate = view('uint32', 1);
+    const transpose = new GPUChunkedSpatialWeightsTranspose({
+      weights: {
+        rowCount: 4,
+        chunks: [
+          {
+            rowStart: 0,
             rowCount: 4,
-            chunks: [
-              {
-                rowStart: 0,
-                rowCount: 4,
-                weights: {...weights(), status: {candidateOverflow: view('uint32', 1)}}
-              }
-            ]
-          },
-          output: output()
-        })
-    ).toThrow(/chunk.*status.*outer/);
+            weights: {...weights(), status: {candidateOverflow: candidate}}
+          }
+        ]
+      },
+      output: weights()
+    });
+    const nodes = transpose
+      .getCommandNodes(graph)
+      .filter(node => node.id.includes('-packed-inherited-loss'));
+    expect(nodes.length).toBeGreaterThan(0);
+    const memory = createCPUGraphMemory();
+    for (const flag of [1, 0]) {
+      memory.write(candidate, Uint32Array.of(flag));
+      executeCommandNodesOnCPU(nodes, memory);
+      expect(
+        Array.from(memory.readUint32(transpose.outputWeights.status!.candidateOverflow!))
+      ).toEqual([flag]);
+    }
   } finally {
     device.destroy();
   }
@@ -271,8 +285,8 @@ it('spatial-4:F3 algebra CPU and operation ports preserve distinct operand loss 
       {weights},
       {operation: 'selfWeight', selfWeight: 0, capacity: 4}
     );
-    expect(Array.from(result.overflow)).toEqual([0]);
-    expect(Array.from(result.candidateOverflow)).toEqual([
+    expect(Array.from(result.status.overflow)).toEqual([0]);
+    expect(Array.from(result.status.candidateOverflow)).toEqual([
       Number(Boolean(overflow || candidateOverflow))
     ]);
   }
@@ -358,8 +372,8 @@ it('spatial-4:F8 the CPU contiguity twin binds an explicit pair budget', () => {
       typeof computeContiguityWeightsOnCPU
     >[1]
   );
-  expect(Array.from(result.candidateOverflow)).toEqual([1]);
-  expect(Array.from(result.overflow)).toEqual([0]);
+  expect(Array.from(result.status.candidateOverflow)).toEqual([1]);
+  expect(Array.from(result.status.overflow)).toEqual([0]);
 });
 
 it('spatial-4:F13 chunked algebra exposes aggregate status consumable by global Moran', () => {
@@ -386,14 +400,30 @@ it('spatial-4:F13 chunked algebra exposes aggregate status consumable by global 
   }
 });
 
-it('spatial-4:F16 contiguity decoder accepts any nonzero usable validity', () => {
-  expect(
-    decodeGPUAnalysisContiguityStatistics({
-      counts: [2, 0, 1, 1, 2, 0],
-      median: [1],
-      validity: [2],
-      overflow: [0],
-      candidateOverflow: [0]
-    }).exact
-  ).toBe(true);
+it('spatial-4:F16 contiguity decoder requires the exact validity certificate', () => {
+  const readback = {
+    // Three rows with 0<->1 and island 2: degrees [1,1,0], median 1.
+    counts: [2, 0, 1, 0, 1, 1],
+    median: [1],
+    validity: [1],
+    overflow: [0],
+    candidateOverflow: [0]
+  };
+  expect(decodeGPUAnalysisContiguityStatistics(readback)).toEqual({
+    exact: true,
+    overflow: false,
+    candidateOverflow: false,
+    slots: 2,
+    islands: 1,
+    minimum: 0,
+    median: 1,
+    maximum: 1
+  });
+  for (const validity of [0, 2, 0xffffffff]) {
+    expect(decodeGPUAnalysisContiguityStatistics({...readback, validity: [validity]})).toEqual({
+      exact: false,
+      overflow: false,
+      candidateOverflow: false
+    });
+  }
 });

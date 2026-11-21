@@ -194,7 +194,7 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
   const contributor = new GPUNearestFeatureJoin({
     queries,
     features: {...features, sourceIds: featureIds},
-    k: input.k,
+    neighborCount: input.k,
     ties: input.ties,
     neighborCapacity: capacity,
     spatialSort: prepared ? undefined : input.spatialSort,
@@ -244,7 +244,7 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
               queryCount,
               features,
               featureCount,
-              k: input.k,
+              neighborCount: input.k,
               capacity,
               ties: input.ties,
               leafCapacity: contributor.leafCapacity,
@@ -428,7 +428,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
       features: {kind: 'points', features: randomIntegerPoints(random, 90, 20)},
       k: 4
     };
-    const oracle = nearestNeighborsOracle(input.queries, input.features, {k: 4});
+    const oracle = nearestNeighborsOracle(input.queries, input.features, {neighborCount: 4});
     const result = await runNeighbors(device, input);
     expect(result.counts.every(count => count === 4)).toBe(true);
     expectMatchesOracle(result, oracle, 4, {exactIds: true, checkFoot: true});
@@ -468,7 +468,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     const run = createNeighborRun(device, input);
     let result = await run.run();
     let oracle = nearestNeighborsOracle(input.queries, input.features, {
-      k: 3,
+      neighborCount: 3,
       maxDistance: 12,
       featureIds
     });
@@ -487,7 +487,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
 
     run.setMaxDistance(1000);
     result = await run.run();
-    oracle = nearestNeighborsOracle(input.queries, input.features, {k: 3, featureIds});
+    oracle = nearestNeighborsOracle(input.queries, input.features, {neighborCount: 3, featureIds});
     expect(result.counts).toEqual([3, 3, 3]);
     expectMatchesOracle(result, oracle, 3, {exactIds: true});
     run.destroy();
@@ -522,7 +522,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     expect(result.overflow).toBe(0);
     expectMatchesOracle(
       result,
-      nearestNeighborsOracle(base.queries, base.features, {k: 1, ties: 'all'}),
+      nearestNeighborsOracle(base.queries, base.features, {neighborCount: 1, ties: 'all'}),
       6,
       {exactIds: true, checkFoot: true}
     );
@@ -533,8 +533,8 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     expect(truncated.ids[0]).toEqual([0, 1]);
     expect(truncated.overflow).toBe(1);
 
-    // lowest-id mode with k = 1 keeps only the lowest row and never overflows.
-    const lowest = await runNeighbors(device, {...base, ties: 'lowest-id', capacity: undefined});
+    // lowest-row mode with k = 1 keeps only the lowest row and never overflows.
+    const lowest = await runNeighbors(device, {...base, ties: 'lowest-row', capacity: undefined});
     expect(lowest.counts).toEqual([1, 1]);
     expect(lowest.ids.map(row => row[0])).toEqual([0, 4]);
     expect(lowest.overflow).toBe(0);
@@ -582,10 +582,15 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     expect(result.foot[1][0][0]).toBeCloseTo(10, 4);
     expect(result.foot[1][0][1]).toBeCloseTo(6, 4);
     expect(result.segments[1][0]).toBe(1);
-    expectMatchesOracle(result, nearestNeighborsOracle(input.queries, input.features, {k: 2}), 2, {
-      exactIds: true,
-      checkFoot: true
-    });
+    expectMatchesOracle(
+      result,
+      nearestNeighborsOracle(input.queries, input.features, {neighborCount: 2}),
+      2,
+      {
+        exactIds: true,
+        checkFoot: true
+      }
+    );
   });
 
   it('matches the oracle for point, line and polygon queries against lines and polygons', async () => {
@@ -611,7 +616,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     ];
     for (const [name, queries, features] of cases) {
       const input: NeighborCase = {queries, features, k: 3, spatialSort: name.includes('lines')};
-      const wide = nearestNeighborsOracle(queries, features, {k: 4});
+      const wide = nearestNeighborsOracle(queries, features, {neighborCount: 4});
       const oracle = wide.map(row => row.slice(0, 3));
       const result = await runNeighbors(device, input);
       expect(result.overflow, name).toBe(0);
@@ -668,7 +673,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     expect(result.segments[0][0]).toBe(GPU_NEAREST_NO_SEGMENT);
     expect(result.distances[1][0]).toBeCloseTo(2, 5);
     expect(result.distances[2][0]).toBeCloseTo(10, 5);
-    expectMatchesOracle(result, nearestNeighborsOracle(queries, features, {k: 2}), 2, {
+    expectMatchesOracle(result, nearestNeighborsOracle(queries, features, {neighborCount: 2}), 2, {
       exactIds: true,
       checkFoot: true,
       footSlots: 1
@@ -685,7 +690,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
     expect(polygonResult.segments.map(row => row[0])[0]).toBe(GPU_NEAREST_NO_SEGMENT);
     expectMatchesOracle(
       polygonResult,
-      nearestNeighborsOracle(polygonQueries, features, {k: 2}),
+      nearestNeighborsOracle(polygonQueries, features, {neighborCount: 2}),
       2,
       {exactIds: true}
     );
@@ -745,7 +750,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
         k: 3,
         prepared: true
       };
-      const oracle = nearestNeighborsOracle(input.queries, input.features, {k: 3});
+      const oracle = nearestNeighborsOracle(input.queries, input.features, {neighborCount: 3});
       const run = createNeighborRun(device, input);
       const first = await run.run();
       expectMatchesOracle(first, oracle, 3);
@@ -886,7 +891,7 @@ describe('GPUNearestFeatureJoin neighbors mode', () => {
       )
     };
     const result = await runNeighbors(device, input);
-    const oracle = nearestNeighborsOracle(input.queries, input.features, {k: 16});
+    const oracle = nearestNeighborsOracle(input.queries, input.features, {neighborCount: 16});
     expectMatchesOracle(result, oracle, 16);
     expect(result.counts.every(count => count === 16)).toBe(true);
   });
@@ -917,7 +922,9 @@ describe('GPUNearestFeatureJoin neighbors mode validation', () => {
       output: {...base.output, ...output}
     });
     expect(() => new GPUNearestFeatureJoin(base)).not.toThrow();
-    expect(() => new GPUNearestFeatureJoin({...base, k: 0})).toThrow(/k must be/);
+    expect(() => new GPUNearestFeatureJoin({...base, neighborCount: 0})).toThrow(
+      /neighborCount must be/
+    );
     expect(() => new GPUNearestFeatureJoin({...base, neighborCapacity: 2})).toThrow(/ties/);
     expect(() => new GPUNearestFeatureJoin(withOutput({neighborCounts: undefined}))).toThrow(
       /neighborCounts/
@@ -964,7 +971,7 @@ it('nearest storage top-k matches a CPU full sort for 65, 256 and 1024 neighbors
       querySort: true
     };
     const result = await runNeighbors(device, input);
-    const oracle = nearestNeighborsOracle(input.queries, input.features, {k});
+    const oracle = nearestNeighborsOracle(input.queries, input.features, {neighborCount: k});
     expectMatchesOracle(result, oracle, k, {exactIds: true, checkFoot: true});
     expect(result.ids[0]).toEqual(Array.from({length: k}, (_, row) => row));
     expect(result.overflow).toBe(0);
@@ -980,8 +987,8 @@ it('nearest storage top-k matches a CPU full sort for 65, 256 and 1024 neighbors
   const result = await runNeighbors(device, input);
   expectMatchesOracle(
     result,
-    nearestNeighborsOracle(input.queries, input.features, {k: 65, ties: 'all'}).map(row =>
-      row.slice(0, 256)
+    nearestNeighborsOracle(input.queries, input.features, {neighborCount: 65, ties: 'all'}).map(
+      row => row.slice(0, 256)
     ),
     256,
     {exactIds: true}
@@ -1016,7 +1023,7 @@ it('nearest forced storage batches cover [65, 0, 64] query chunks for large k an
         scratchChunkQueryCount: 64
       };
       const result = await runNeighbors(device, input);
-      const expected = nearestNeighborsOracle(queries, features, {k});
+      const expected = nearestNeighborsOracle(queries, features, {neighborCount: k});
       expectMatchesOracle(result, expected, k, {exactIds: true, checkFoot: true});
       result.queryFoot.forEach((row, query) =>
         row.forEach(point => {
@@ -1041,7 +1048,7 @@ it('profiles GPU execution over many short query chunks against an independent o
     kind: 'points',
     features: Array.from({length: 80}, (_, row) => [20 + row, row % 4])
   };
-  const expected = nearestNeighborsOracle(queries, features, {k: 65});
+  const expected = nearestNeighborsOracle(queries, features, {neighborCount: 65});
   for (const querySort of [false, true]) {
     const run = createNeighborRun(device, {
       queries,

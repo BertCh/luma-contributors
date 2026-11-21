@@ -2,16 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {captureUrbanLandscapeDestinations} from './urban-landscape-destinations';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createRecipeKernelNode,
   getRecipeView,
   validateRecipeBoundary
 } from '../recipes/expansion-recipe-utils';
+import {validateProvidedRecipeViews} from './urban-landscape-recipe-validation';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
+  validateGraphViewsBelongToGraph,
   validateCommandNodeBudget,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -129,6 +133,9 @@ export function addSparseResistanceConnectivityRecipe<Parameters>(
   props: GPUSparseResistanceConnectivityProps
 ) {
   const id = props.id ?? 'sparse-resistance-connectivity';
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
+  validateSinglePackedView(props.edges, ['uint32x2'], id + ' edges');
+  validateSinglePackedView(props.conductances, ['float32'], id + ' conductances');
   const {edges, conductances, vertexCount, source, sink} = props;
   const edgeCount = edges.length;
   const maximumIterations = props.maximumIterations ?? 1024;
@@ -164,7 +171,21 @@ export function addSparseResistanceConnectivityRecipe<Parameters>(
     connectivityIterations
   );
   validateCommandNodeBudget(id, estimatedCommandNodeCount);
-  const output = props.output;
+  const output = captureUrbanLandscapeDestinations(id, {output: props.output}, [
+    'potentials',
+    'currents',
+    'vertexCurrents',
+    'diagnostics',
+    'status'
+  ]);
+  validateGraphViewsBelongToGraph(id, graph, [props.edges, props.conductances]);
+  validateProvidedRecipeViews(graph, [
+    [`${id}-potentials`, 'float32', vertexCount, output?.potentials],
+    [`${id}-currents`, 'float32', edgeCount, output?.currents],
+    [`${id}-vertex-currents`, 'float32', vertexCount, output?.vertexCurrents],
+    [`${id}-status`, 'uint32x4', 1, output?.status],
+    [`${id}-diagnostics`, 'float32x4', 1, output?.diagnostics]
+  ]);
 
   const potentials = getRecipeView(
     graph,

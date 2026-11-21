@@ -6,6 +6,7 @@ import type {LensRecord} from '../registry/view-registration';
 import type {ViewRegistry} from '../registry/view-registry';
 import {createDefaultViewRegistry} from '../registry/default-registry';
 import {getLensScenario} from '../../computation-lenses/registry-implementation';
+import {getLensScenarioPresentation} from '../../computation-lenses/scenario-presentations';
 import {getPageCoordinator, type LadderCoordinator} from '../coordinator/ladder-coordinator';
 import {LENS_RUNG_IDS, type LensRungId} from '../types';
 import {viewNodeToDom} from '../view-node';
@@ -74,7 +75,10 @@ export function mountLadderLens(
     ...options,
     presentation:
       options.presentation ??
-      (options.scenarioId ? getLensScenario(options.scenarioId)?.presentation : undefined),
+      (options.scenarioId
+        ? (getLensScenario(options.scenarioId)?.presentation ??
+          getLensScenarioPresentation(options.scenarioId))
+        : undefined),
     registry,
     guards:
       options.guards ??

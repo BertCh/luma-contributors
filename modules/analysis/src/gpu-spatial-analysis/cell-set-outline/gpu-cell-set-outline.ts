@@ -3,6 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveCountedCellSource,
+  getCountedCellSourceLossNodes,
+  validateCountedCellSourceLossBindings,
+  type GPUCellSourceInput
+} from '../cell-aggregation/counted-cell-source';
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
+import {
   createTransientView,
   GPUScan,
   validatePackedUint32View,
@@ -89,16 +96,25 @@ export type GPUCellSetOutlineOutput = {
     count: GraphDataView<'uint32'>;
     /** One-row scalar receiving 1 when more segments existed than the capacity. */
     overflow: GraphDataView<'uint32'>;
-    /** Optional one-row scalar receiving the unclamped segment count. */
+    /** Source cells were lost before this operation; requiredCount sizes only the retained input. */
+    candidateOverflow?: GraphDataView<'uint32'>;
+    /** Optional one-row scalar receiving the unclamped segment count for the retained input.
+     * This can exceed or fall below the requirement for the complete source cell set. */
     requiredCount?: GraphDataView<'uint32'>;
   };
 };
 
 /**
- * Properties for {@link GPUCellSetOutline}.
+ * Bare-cell properties for {@link GPUCellSetOutline}; this legacy type retains required cells.
+ * Use {@link GPUCellSetOutlineInput} to annotate either constructor form.
  *
  * Per-frame (no recompile): the contents of `cells`, `count` and `groups`. Compile-time: `family`,
- * view lengths, and which optional views exist.
+ * view lengths, and which optional views exist. Pass `source: {cells, status}` for a bounded
+ * producer: `status` contains count, overflow and optional candidateOverflow. Either source flag
+ * sets output.status.candidateOverflow; without that optional output the segment count is
+ * suppressed to zero. Local overflow/requiredCount still describe the retained input prefix.
+ * Nested rings are suppressed on either source loss or local segment overflow, and recover on
+ * the next complete submission.
  */
 export type GPUCellSetOutlineProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-set-outline'`. */
@@ -114,6 +130,8 @@ export type GPUCellSetOutlineProps = {
   cells: GraphDataView<'uint32x2'>;
   /** Optional one-row count of valid rows in `cells`. Defaults to every row. */
   count?: GraphDataView<'uint32'>;
+  /** Counted source alternative to cells/count; the constructor accepts source alone. */
+  source?: GPUCellSourceInput['source'];
   /**
    * Optional group label per row. An edge is then emitted when the neighbor is absent or has a
    * different label, which yields the region borders between groups (an edge between two groups
@@ -126,11 +144,16 @@ export type GPUCellSetOutlineProps = {
    * Optional ring assembly of the emitted segments (`GPUSegmentRingAssembly` composed after the
    * outline): closed rings in GeoArrow-style offsets plus positions, with shell and hole
    * classification. `output.status.count` and `output.endpoints` (and `output.groups` when present) are the
-   * assembly's inputs. The interior side is set from the family; `normalizeWinding` makes shells
-   * counter-clockwise for both families.
+   * assembly's inputs when the outline fits. Any outline overflow suppresses nested rings until
+   * a complete outline is available again. The interior side is set from the family; `normalizeWinding` makes shells
+   * counter-clockwise for every family.
    */
   rings?: GPUCellSetOutlineRings;
 };
+
+/** Constructor declaration accepting either bare cells/count or a counted source. */
+export type GPUCellSetOutlineInput = Omit<GPUCellSetOutlineProps, 'cells' | 'count' | 'source'> &
+  GPUCellSourceInput;
 
 /**
  * Default ring vertex tolerance of {@link GPUCellSetOutline}, in degrees: a named preset (the ring
@@ -152,7 +175,7 @@ export type GPUCellSetOutlineRings = {
    * themselves are not distinct and outlines of such cells are not supported.
    */
   vertexTolerance?: number;
-  /** Orient rings of either family: shells counter-clockwise, holes clockwise. Default false. */
+  /** Orient rings of every family: shells counter-clockwise, holes clockwise. Default false. */
   normalizeWinding?: boolean;
   /** Caller-owned ring output. */
   output: GPUSegmentRingAssemblyOutput;
@@ -170,8 +193,8 @@ export type GPUCellSetOutlineRings = {
  * per cell, not one per candidate edge slot.
  *
  * The neighbor across an H3 edge is the neighbor (H3 neighbor stepping, exact across faces and
- * pentagons) whose center is nearest the edge midpoint (longitude differences wrapped and scaled
- * by `cos(latitude)`). Quadbin edges map to tiles directly: columns wrap across the antimeridian,
+ * pentagons) whose center is nearest the edge midpoint on the sphere (squared chord length between
+ * unit vectors, so the rule holds near the poles and on coarse cells). Quadbin edges map to tiles directly: columns wrap across the antimeridian,
  * rows beyond the poles are absent, so the map edge is an outline edge. Boundary vertices come from
  * the same f32 decoders as `GPUCellGeometry`, so segment endpoints are f32 accurate and shared
  * endpoints of neighboring cells agree to within f32 round-off. H3 cells that straddle the
@@ -181,7 +204,7 @@ export type GPUCellSetOutlineRings = {
  * Draw `output.endpoints` as line segments (`output.status.count` rows), or set `rings` to chain them into closed
  * rings (`GPUSegmentRingAssembly`).
  *
- * Consumes H3 or Quadbin cell keys only, so it takes no `spatialContext`. Its output segments are
+ * Consumes H3, S2 or Quadbin cell keys, so it takes no `spatialContext`. Its output segments are
  * longitude/latitude degrees, with great-circle edges for H3/S2 and linear edges for Quadbin,
  * declared by `edgeModel` and `outputSpatialContext`. Prepare global or antimeridian-crossing
  * rings with `GPULonLatPolygonPreparation` before linear consumers. The cells are not positions,
@@ -194,7 +217,7 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
   readonly props: GPUCellSetOutlineProps;
   /** Candidate edge slots per cell: {@link GPU_CELL_SET_OUTLINE_MAXIMUM_EDGES} for the family. */
   readonly edgeSlots: number;
-  /** Boundary edges: great-circle arcs for H3; linear in degrees for Quadbin. */
+  /** Boundary edges: great-circle arcs for H3/S2; linear in degrees for Quadbin. */
   readonly edgeModel: GPUSpatialEdgeModel;
   /** Longitude/latitude context of output segments and rings, including the family's edge model. */
   readonly outputSpatialContext: GPUSpatialContext;
@@ -206,9 +229,73 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
 
   private readonly ringAssembly?: GPUSegmentRingAssembly;
 
-  constructor(props: GPUCellSetOutlineProps) {
+  constructor(inputProps: GPUCellSetOutlineInput) {
+    const captured = snapshotCellConstruction(inputProps, [
+      'id',
+      'family',
+      'cells',
+      'count',
+      'source',
+      'groups',
+      [
+        'output',
+        [
+          'rows',
+          'cells',
+          'edgeIndices',
+          'endpoints',
+          'groups',
+          ['status', ['count', 'requiredCount', 'overflow', 'candidateOverflow']]
+        ]
+      ],
+      [
+        'rings',
+        [
+          'vertexTolerance',
+          'normalizeWinding',
+          [
+            'output',
+            [
+              'positions',
+              'ringOffsets',
+              'ringAreas',
+              'ringIsHole',
+              'ringShells',
+              'ringGroups',
+              'segmentRings',
+              'segmentVertices',
+              'segmentFlags',
+              [
+                'polygons',
+                [
+                  'kind',
+                  'positions',
+                  'ringOffsets',
+                  'polygonOffsets',
+                  'featureOffsets',
+                  'sourceIds'
+                ]
+              ],
+              [
+                'status',
+                [
+                  'count',
+                  'requiredCount',
+                  'overflow',
+                  'openSegmentCount',
+                  'touchingSegmentCount',
+                  'candidateOverflow',
+                  'complete',
+                  'polygonCount'
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    ]);
+    const props = resolveCountedCellSource(captured.id ?? 'cell-set-outline', captured);
     this.id = props.id ?? 'cell-set-outline';
-    this.props = props;
     const id = this.id;
     if (!['h3', 'quadbin', 's2'].includes(props.family)) {
       throw new Error(`${id} family must be 'h3', 'quadbin' or 's2'`);
@@ -235,6 +322,10 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     );
     for (const [name, view] of [
       ['count', props.count],
+      ['source.status.overflow', props.source?.status.overflow],
+      ['source.status.candidateOverflow', props.source?.status.candidateOverflow],
+      ['source.status.complete', props.source?.status.complete],
+      ['output.status.candidateOverflow', output.status.candidateOverflow],
       ['output.status.count', output.status.count],
       ['output.status.overflow', output.status.overflow],
       ['output.status.requiredCount', output.status.requiredCount]
@@ -295,14 +386,23 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
           edgeIndices: output.edgeIndices,
           endpoints: output.endpoints
         },
-        {...output.status}
+        {
+          count: output.status.count,
+          overflow: output.status.overflow,
+          requiredCount: output.status.requiredCount
+        },
+        {candidateOverflow: output.status.candidateOverflow}
       ]
     );
     // The optional group gather reads emitted row indices while writing the group column.
     validateCellReadWriteDispatch(id, {rows: output.rows}, {groups: output.groups});
+    validateCountedCellSourceLossBindings(id, props.source, output.status);
     validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
       props.cells,
       props.count,
+      props.source?.status.overflow,
+      props.source?.status.candidateOverflow,
+      props.source?.status.complete,
       props.groups
     ]);
     this.ringAssembly = props.rings
@@ -319,6 +419,17 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
           output: props.rings.output
         })
       : undefined;
+    // Ring assembly snapshots all nested output records, including polygon
+    // layout and status views. Reuse that snapshot for every outline stage.
+    this.props = Object.freeze({
+      ...props,
+      rings:
+        props.rings &&
+        Object.freeze({
+          ...props.rings,
+          output: this.ringAssembly!.props.output
+        })
+    });
   }
 
   /** Returns the edge classification, accept scan, write, total and publish nodes. */
@@ -336,6 +447,8 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
       const rings = props.rings.output;
       const ringCapacity = rings.ringOffsets.length - 1;
       scratch.push(
+        ['ring input count', 4],
+        ['ring input completeness', 4],
         ['ring segment sort scratch', 2 ** Math.ceil(Math.log2(output.rows.length)) * 4],
         ['ring counter scratch', 24],
         ['ring statistics scratch', ringCapacity * 4]
@@ -355,6 +468,9 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
       {
         cells: props.cells,
         count: props.count,
+        sourceOverflow: props.source?.status.overflow,
+        sourceCandidateOverflow: props.source?.status.candidateOverflow,
+        sourceComplete: props.source?.status.complete,
         groups: props.groups,
         ...getCellPackedFields(output, 'output'),
         ...getCellPackedFields(props.rings?.output ?? {}, 'rings')
@@ -364,6 +480,9 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.cells,
       props.count,
+      props.source?.status.overflow,
+      props.source?.status.candidateOverflow,
+      props.source?.status.complete,
       props.groups,
       ...getOutputViews(output)
     ]);
@@ -509,7 +628,78 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
       body: 'total[totalOffset] = accepted[acceptedOffset + ROW_COUNT - 1u];'
     });
 
-    const ringNodes = this.ringAssembly?.getCommandNodes(graph) ?? [];
+    let ringNodes: readonly GPUCommandNode<Parameters>[] = [];
+    if (this.ringAssembly) {
+      // A truncated prefix can itself be closed while omitting whole components.
+      // Feed no segments to assembly until the entire outline fits again.
+      const ringInputCount = createTransientView(graph, `${id}-rings-input-count`, 'uint32', 1);
+      const ringInputLoss = createTransientView(graph, `${id}-rings-input-loss`, 'uint32', 1);
+      ringNodes = [
+        // The assembly's inputs must not alias any ring output buffer. Caller
+        // outline/ring status words may be disjoint slices of one allocation.
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-rings-capture-loss`,
+          operation: OPERATION,
+          variant: 'rings-capture-loss',
+          bindings: [
+            {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read'},
+            ...(props.source?.status.complete
+              ? [
+                  {
+                    name: 'sourceComplete',
+                    view: props.source.status.complete,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            ...(props.source
+              ? [
+                  {
+                    name: 'sourceOverflow',
+                    view: props.source.status.overflow,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  },
+                  ...(props.source.status.candidateOverflow
+                    ? [
+                        {
+                          name: 'sourceCandidate',
+                          view: props.source.status.candidateOverflow,
+                          type: 'u32' as const,
+                          access: 'read' as const
+                        }
+                      ]
+                    : [])
+                ]
+              : []),
+            {name: 'ringInputLoss', view: ringInputLoss, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: `ringInputLoss[ringInputLossOffset] = select(0u, 1u, overflow[overflowOffset] != 0u${props.source ? ' || sourceOverflow[sourceOverflowOffset] != 0u' : ''}${props.source?.status.candidateOverflow ? ' || sourceCandidate[sourceCandidateOffset] != 0u' : ''}${props.source?.status.complete ? ' || sourceComplete[sourceCompleteOffset] == 0u' : ''});`
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-rings-prepare-count`,
+          operation: OPERATION,
+          variant: 'rings-prepare-count',
+          bindings: [
+            {name: 'count', view: output.status.count, type: 'u32', access: 'read'},
+            {name: 'overflow', view: ringInputLoss, type: 'u32', access: 'read'},
+            {name: 'ringInputCount', view: ringInputCount, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: 'ringInputCount[ringInputCountOffset] = select(count[countOffset], 0u, overflow[overflowOffset] != 0u);'
+        }),
+        ...new GPUSegmentRingAssembly({
+          ...this.ringAssembly.props,
+          count: ringInputCount,
+          segmentStatus: {
+            count: ringInputCount,
+            overflow: ringInputLoss
+          }
+        }).getCommandNodes<Parameters>(graph)
+      ];
+    }
     return [
       classify,
       // Why not `GPUFlagOffsets`: it yields exclusive offsets, while the write kernel indexes the
@@ -536,6 +726,7 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
           }
         }
       }),
+      ...getCountedCellSourceLossNodes(graph, id, OPERATION, props.source, output.status),
       ...ringNodes
     ];
   }
@@ -550,7 +741,8 @@ function getOutputViews(output: GPUCellSetOutlineOutput) {
     output.groups,
     output.status.count,
     output.status.overflow,
-    output.status.requiredCount
+    output.status.requiredCount,
+    output.status.candidateOverflow
   ];
 }
 
@@ -607,6 +799,14 @@ fn outlineEmit(row: u32, edge: u32, a: vec2f, b: vec2f) {
 `;
 
 const H3_CLASSIFY_WGSL = /* wgsl */ `
+/** Unit vector of a (longitude, latitude) point in degrees. */
+fn outlineGetUnitVector(point: vec2f) -> vec3f {
+  let longitude = radians(point.x);
+  let latitude = radians(point.y);
+  let cosineLatitude = cos(latitude);
+  return vec3f(cosineLatitude * cos(longitude), cosineLatitude * sin(longitude), sin(latitude));
+}
+
 fn outlineClassifyRow(row: u32, validRows: u32) {
   let key = outlineGetKey(row);
   if (!dggs_h3_is_valid_cell_id(key)) {
@@ -614,21 +814,22 @@ fn outlineClassifyRow(row: u32, validRows: u32) {
   }
   let boundary = cellIndexH3GetBoundary(key);
   var neighbors: array<vec2u, 6>;
-  var centers: array<vec2f, 6>;
+  var centers: array<vec3f, 6>;
   for (var direction = 1u; direction <= 6u; direction++) {
     let neighbor = cellTopologyH3Neighbor(key, direction);
     neighbors[direction - 1u] = neighbor;
     if (neighbor.x != 0u || neighbor.y != 0u) {
-      centers[direction - 1u] = dggs_h3_get_center_lnglat(neighbor);
+      centers[direction - 1u] = outlineGetUnitVector(dggs_h3_get_center_lnglat(neighbor));
     }
   }
   for (var edge = 0u; edge < boundary.count; edge++) {
     let a = boundary.points[edge];
     let b = boundary.points[select(edge + 1u, 0u, edge + 1u == boundary.count)];
-    // Wrap the second longitude next to the first so the midpoint is on the short arc.
-    let wrappedB = vec2f(a.x + (b.x - a.x) - 360.0 * round((b.x - a.x) / 360.0), b.y);
-    let midpoint = 0.5 * (a + wrappedB);
-    let cosine = max(cos(radians(midpoint.y)), 0.01);
+    // The neighbor across the edge is the one whose center is nearest the edge midpoint on the
+    // sphere. Compare squared chord lengths between unit vectors: unlike planar longitude/latitude
+    // distances they hold near the poles and on coarse cells, and unlike a dot product (1 - 1e-9
+    // at resolution 8) the f32 differences keep their precision on fine cells.
+    let midpoint = normalize(outlineGetUnitVector(a) + outlineGetUnitVector(b));
     var best = 1e30;
     var bestNeighbor = vec2u(0u);
     for (var slot = 0u; slot < 6u; slot++) {
@@ -636,8 +837,7 @@ fn outlineClassifyRow(row: u32, validRows: u32) {
         continue;
       }
       let delta = centers[slot] - midpoint;
-      let dx = (delta.x - 360.0 * round(delta.x / 360.0)) * cosine;
-      let distance = dx * dx + delta.y * delta.y;
+      let distance = dot(delta, delta);
       if (distance < best) {
         best = distance;
         bestNeighbor = neighbors[slot];

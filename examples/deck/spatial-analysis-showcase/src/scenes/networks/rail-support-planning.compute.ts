@@ -109,6 +109,12 @@ export async function createRailSupportPlanning(
   );
   const weightedReachBuffer = resources.createBuffer('weighted-reach', nodeCount * 4);
   const weightStatusBuffer = resources.createBuffer('weight-status', 8);
+  const weightCompleteBuffer = resources.createBuffer('weight-complete', 4);
+  // The matrix has no cutoff (default +Infinity); weights consume costs converted to minutes.
+  const matrixHorizonMinutesBuffer = resources.createBuffer(
+    'matrix-horizon-minutes',
+    Float32Array.of(Infinity)
+  );
   const serviceLimitBuffer = resources.createBuffer(
     'service-cost-limit',
     Float32Array.of(ctx.options.costLimitMinutes * 60)
@@ -204,6 +210,8 @@ export async function createRailSupportPlanning(
       new GPUNetworkCostWeights({
         id: 'candidate-desk-decay-weights',
         costs: view(minuteMatrixBuffer, 'float32', HUB_NAMES.length * nodeCount),
+        costsComplete: view(matrixStatusBuffer, 'uint32', 1),
+        costLimit: view(matrixHorizonMinutesBuffer, 'float32', 1),
         rowCount: HUB_NAMES.length,
         orientation: 'columns',
         parameters: view(
@@ -215,7 +223,10 @@ export async function createRailSupportPlanning(
           offsets: view(weightOffsetsBuffer, 'uint32', nodeCount + 1),
           neighbors: view(weightNeighborsBuffer, 'uint32', HUB_NAMES.length * nodeCount),
           weights: view(weightValuesBuffer, 'float32', HUB_NAMES.length * nodeCount),
-          status: {overflow: view(weightStatusBuffer, 'uint32', 1)}
+          status: {
+            overflow: view(weightStatusBuffer, 'uint32', 1),
+            complete: view(weightCompleteBuffer, 'uint32', 1)
+          }
         }
       })
     );
@@ -272,6 +283,7 @@ export async function createRailSupportPlanning(
       {buffer: matrixStatusBuffer, size: 4},
       {buffer: weightOffsetsBuffer, size: (nodeCount + 1) * 4},
       {buffer: weightStatusBuffer, size: 4},
+      {buffer: weightCompleteBuffer, size: 4},
       {buffer: weightedReachBuffer, size: nodeCount * 4}
     ],
     bytes => {
@@ -288,9 +300,11 @@ export async function createRailSupportPlanning(
       const weightStart = nodeCount * 2 + 2 + HUB_NAMES.length;
       const offsets = words.slice(weightStart, weightStart + nodeCount + 1);
       const weightOverflow = words[weightStart + nodeCount + 1];
-      const weightedReachStart = weightStart + nodeCount + 2;
+      const weightsComplete = words[weightStart + nodeCount + 2] === 1;
+      const weightedReachStart = weightStart + nodeCount + 3;
       const assignedCount = counts.reduce((sum, count) => sum + count, 0);
-      const converged = serviceStatus === 1 && matrixStatus === 1 && !weightOverflow;
+      const converged =
+        serviceStatus === 1 && matrixStatus === 1 && !weightOverflow && weightsComplete;
       outputReady = converged;
       lastWeightedReach = converged
         ? floats.slice(weightedReachStart, weightedReachStart + nodeCount)

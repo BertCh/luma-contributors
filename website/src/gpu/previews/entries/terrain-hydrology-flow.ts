@@ -1001,13 +1001,13 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
     }
   },
 
-  // Wetness, stream power or slope derived from accumulation and slope.
+  // Wetness, stream power or descent tangent.
   'terrain-hydrologic-indices': {
-    parameters: [createChoice('index', 'Index', ['Wetness', 'Stream power', 'Slope'])],
+    parameters: [createChoice('index', 'Index', ['Wetness', 'Stream power', 'Descent tangent'])],
     pointer: 'none',
     build: context => {
       const terrain = createTerrain(context);
-      const slope = new Float32Array(GRID_COUNT);
+      const descentTangent = new Float32Array(GRID_COUNT);
       const values = new Float32Array(GRID_COUNT);
       const mode = Math.round(context.p.index);
       for (let cell = 0; cell < GRID_COUNT; cell++) {
@@ -1020,14 +1020,14 @@ export const TERRAIN_HYDROLOGY_FLOW_PREVIEWS: Record<string, EntryPreview> = {
             (terrain.filled[cell] - terrain.filled[neighbor]) / NEIGHBOR_OFFSETS[index][2]
           );
         }
-        slope[cell] = Math.max(steepest, 0.004);
+        descentTangent[cell] = Math.max(steepest, 0.004);
         const area = terrain.accumulation[cell];
         values[cell] =
           mode === 0
-            ? Math.log(area / slope[cell])
+            ? Math.log(area / descentTangent[cell])
             : mode === 1
-              ? Math.log(1 + area * slope[cell] * 40)
-              : Math.sqrt(slope[cell]);
+              ? Math.log(1 + area * descentTangent[cell] * 40)
+              : Math.sqrt(descentTangent[cell]);
       }
       const normalized = normalizeValues(settleBorder(values));
       const mask = getStreamMask(terrain, 10);

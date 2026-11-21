@@ -62,6 +62,7 @@ it('handles no active stays and clamps counts above the table capacity', () => {
 });
 
 it('keeps equivalent dateline/pole fixes connected and rewraps after output rounding', () => {
+  // Canonical pole votes have longitude zero; seam-equivalent fixes vote once.
   const spatialContext = {
     coordinateSpace: 'longitude-latitude',
     metric: 'great-circle',
@@ -70,7 +71,7 @@ it('keeps equivalent dateline/pole fixes connected and rewraps after output roun
   } as const;
   for (const [centroids, expectedLongitude, epsilon] of [
     [[-180, 0, 180, 0], -180, 1e-10],
-    [[0, 90, 180, 90], 90, 1e-10],
+    [[0, 90, 180, 90], 0, 1e-10],
     [[179, 0, -179, 0], -180, 1],
     [[179.99998474121094, 0, 180, 0], -180, 1]
   ] as const) {
@@ -112,7 +113,10 @@ it('rejects malformed arrays and validates construction in both operation classe
     count: 'count',
     parameters: 'parameters',
     capacity: 10,
-    output: {locationIds: 'locationIds', status: {count: 'locationCount'}}
+    output: {
+      locationIds: 'locationIds',
+      status: {count: 'locationCount', iterationLimitReached: 'iterationLimitReached'}
+    }
   };
   for (const Operation of [GPUTrajectoryLocationsOperation, CPUTrajectoryLocationsOperation]) {
     expect(() => new Operation({...props, capacity: 0})).toThrow(/^locations-test /);
@@ -120,7 +124,7 @@ it('rejects malformed arrays and validates construction in both operation classe
       () => new Operation({...props, output: {...props.output, locationIds: 'centroids'}})
     ).toThrow(/^locations-test /);
   }
-  expect(
-    () => new CPUTrajectoryLocationsOperation({...props, maximumIterations: 1e9})
-  ).not.toThrow();
+  expect(() => new CPUTrajectoryLocationsOperation({...props, maximumIterations: 1e9})).toThrow(
+    /maximumIterations/
+  );
 });

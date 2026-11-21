@@ -15,6 +15,7 @@ import {
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /**
  * Most folds of a conformal calibration set: the interval kernel visits every fold in a fixed
@@ -27,7 +28,7 @@ export const GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH = 4;
 
 /** Per-frame settings packed for the conformal interval contributors. */
 export type GPUConformalPredictionSettings = {
-  /** Target miscoverage `alpha` in the open interval (0, 1): intervals cover at least `1 - alpha`. */
+  /** Target miscoverage `alpha` in the open interval (0, 1); coverage depends on the fold, fitting and exchangeability assumptions documented by the contributor. */
   miscoverage: number;
   /**
    * Localized intervals only: weight of the query location itself in the weighted quantile, the
@@ -101,6 +102,70 @@ export type GPUConformalQuery = {
   /** Optional scale per query row, matching `calibration.scales`. Default 1. */
   scales?: GraphDataView<'float32'>;
 };
+
+/** @internal Capture conformal configuration maps, keeping GPU views live. */
+export function snapshotConformalPredictionProps<
+  Props extends {
+    calibration: GPUConformalCalibration;
+    query: GPUConformalQuery;
+    output: object;
+    neighbors?: {status?: object};
+  }
+>(input: Props): Props {
+  const props = snapshotConstructionFields(input, [
+    'id',
+    'foldCount',
+    'calibration',
+    'query',
+    'neighbors',
+    'parameters',
+    'output'
+  ] as readonly (keyof Props)[]);
+  const neighbors =
+    props.neighbors &&
+    snapshotConstructionFields(props.neighbors, [
+      'offsets',
+      'indices',
+      'weights',
+      'status'
+    ] as never[]);
+  return Object.freeze({
+    ...props,
+    calibration: snapshotConstructionFields(props.calibration, [
+      'observations',
+      'predictions',
+      'folds',
+      'scales',
+      'mask'
+    ]),
+    query: snapshotConstructionFields(props.query, ['predictions', 'scales']),
+    output: snapshotConstructionFields(props.output, [
+      'intervals',
+      'status',
+      'calibrationCount'
+    ] as never[]),
+    ...(neighbors
+      ? {
+          neighbors: Object.freeze({
+            ...neighbors,
+            ...(neighbors.status
+              ? {
+                  status: snapshotConstructionFields(neighbors.status, [
+                    'overflow',
+                    'candidateOverflow',
+                    'complete',
+                    'requiredCount',
+                    'converged',
+                    'iterationLimitReached',
+                    'unresolvedCount'
+                  ] as never[])
+                }
+              : {})
+          })
+        }
+      : {})
+  });
+}
 
 /** Validates calibration and query views and returns `[calibrationRows, queryRows]`. @internal */
 export function validateConformalInputs(

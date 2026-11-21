@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  REVERSE_RESIDUAL_SCENE,
+  expectEnumeratedIntegralFlow
+} from './network-flow-integral-enumeration.test-utils';
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -1084,3 +1088,29 @@ for (const fixture of movementOracle.flow) {
     }
   });
 }
+
+for (const solver of ['reference', 'parallel'] as const)
+  for (const mode of solver === 'reference'
+    ? [undefined]
+    : (['successive-shortest-path', 'primal-dual'] as const))
+    for (const required of [1, 0xffffffff])
+      it(`independent integral enumeration checks ${solver} ${mode} request ${required}`, async () => {
+        const device = await getWebGPUTestDevice();
+        requireTestDevice(device);
+        const result = await runScene(
+          device,
+          {
+            ...REVERSE_RESIDUAL_SCENE,
+            edges: Uint32Array.from(REVERSE_RESIDUAL_SCENE.edges),
+            capacities: Uint32Array.from(REVERSE_RESIDUAL_SCENE.capacities),
+            costs: Uint32Array.from(REVERSE_RESIDUAL_SCENE.costs),
+            mode,
+            required,
+            maximumAugmentations: 8,
+            maximumRelaxationRounds: solver === 'parallel' ? 6 : undefined,
+            maximumCostPhases: mode === 'primal-dual' ? 6 : undefined
+          },
+          solver
+        );
+        expectEnumeratedIntegralFlow(result, required);
+      });

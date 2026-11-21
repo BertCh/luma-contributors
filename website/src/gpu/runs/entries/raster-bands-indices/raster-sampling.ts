@@ -3,7 +3,7 @@
 
 // GPURasterSampling: a coarse raster with nodata holes is sampled at scattered points. Dots take
 // the sampled value; nearest reproduces cell blocks, bilinear and bicubic interpolate, and the
-// nodata policy decides what happens next to a hole (strict drops the sample, renormalize
+// nodata policy decides what happens next to a hole (propagate drops the sample, renormalize
 // reweights the valid neighbours). Method and policy are per-frame parameters. The pointer places
 // the first sample point, a pointer-owned input; its support cells are outlined.
 
@@ -68,7 +68,7 @@ export default defineOperationRun({
           getGPURasterSamplingParameterValues(
             {
               method: METHODS[Math.round(current.method)],
-              noDataPolicy: current.noDataPolicy === 1 ? 'renormalize' : 'strict'
+              noDataPolicy: current.noDataPolicy === 1 ? 'renormalize' : 'propagate'
             },
             grid
           )

@@ -124,3 +124,76 @@ scatter WGSL in the node interpreter and check the corresponding headless GPU an
 operations against hand-derived equality bridges, on both axes and with even/odd shared
 origins near sample 2^24. These binary-exact cases require exact coordinate equality.
 Headless execution must be run by the landing lead.
+
+## Reading stitched geometry on the host
+
+`decodeGPUIsolinesPolylines({polylines, status}, {levels, localOrigin})` reads retained
+polylines from typed arrays, `Uint8Array` buffer readbacks (including offset byte views), or
+`ArrayBuffer` readbacks. The stitched decoder accepts Float32Array coordinate/level columns and
+Uint32Array count/index/status columns, or Uint8Array/Buffer/ArrayBuffer byte readbacks. Other
+typed-array brands are rejected rather than reinterpreted as successful geometry; cross-realm
+arrays work. It validates whole elements, scalar status words, live counts, increasing
+vertex offsets and level indices before returning geometry. Only `polylineCount` lines and
+`vertexCount` XY rows are readable; allocated tails are ignored. `levelIndex` indexes the supplied
+`levels`; `levelValue` is that level's raster-value unit. `closed` identifies a ring, whose final
+vertex repeats its first. Coordinates include `localOrigin` in the extent's world units and are
+not reprojected.
+
+`segmentComplete` means no raw segments were dropped. `polylineComplete` reflects the combined
+`polylineOverflow` word: it is false if segments or complete polylines were dropped. Check
+`complete` before treating the returned lines as the whole contour dataset. Even without
+stitching, a requested `status.polylineOverflow` always receives segment loss (1) or completeness
+(0), including on repeated submissions with empty output.
+
+The CPU twin has the same column layout. Supply a positive `vertexCapacity` to request stitching;
+the decoder rejects its segment-only result, which has no allocated polyline vertex rows.
+This self-contained example uses EPSG:3857 XY in meters. It packs and decodes with the same
+`localOrigin`, then explicitly transforms projected coordinates to longitude/latitude degrees.
+For another projection, replace the typed transform with the appropriate projection transform.
+A degenerate one-vertex chain can arise at an exact-level corner and is omitted from LineString
+export. For GPU output, pass the corresponding readbacks of every polylines/status view.
+
+```ts
+import {
+  computeIsolinesOnCPU,
+  decodeGPUIsolinesPolylines,
+  getGPUIsolinesParameterValues,
+  makeGPURasterMetadata
+} from '@luma-contributors/analysis/raster-analysis';
+
+const localOrigin = [500000, 4600000] as const;
+const grid = makeGPURasterMetadata({
+  width: 3, height: 3, origin: localOrigin, cellSize: 1, rowDirection: 'north'
+});
+const input = {
+  values: Float32Array.of(0, 1, 2, 0, 1, 2, 0, 1, 2),
+  levels: Float32Array.of(0.5, 1.5),
+  parameters: getGPUIsolinesParameterValues({
+    levelCount: 2, extent: [500000, 4600000, 500003, 4600003], localOrigin
+  }, grid)
+};
+const result = computeIsolinesOnCPU(input, {grid, segmentCapacity: 8, vertexCapacity: 12});
+const decoded = decodeGPUIsolinesPolylines(
+  {polylines: result, status: result}, {levels: input.levels, localOrigin}
+);
+const toLongitudeLatitude = (x: number, y: number): [number, number] => {
+  const radiusMeters = 6378137;
+  return [
+    (x / radiusMeters) * 180 / Math.PI,
+    (2 * Math.atan(Math.exp(y / radiusMeters)) - Math.PI / 2) * 180 / Math.PI
+  ];
+};
+if (!decoded.complete) throw new Error('Contour output is incomplete; increase capacity');
+const geojson = {
+  type: 'FeatureCollection',
+  features: decoded.polylines.filter(line => line.coordinates.length >= 2).map(line => ({
+    type: 'Feature',
+    properties: {levelIndex: line.levelIndex, level: line.levelValue, closed: line.closed},
+    geometry: {
+      type: 'LineString',
+      coordinates: line.coordinates.map(([x, y]) => toLongitudeLatitude(x, y))
+    }
+  }))
+};
+console.log(geojson);
+```

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUAnalysisRowSemantics} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUAnalysisRowSemantics} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   KeplerOperationDescriptor,
   KeplerOperationParameterDescriptor,
@@ -168,7 +168,7 @@ export const CLUSTERING_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       // plot often has no clear knee; the distinct-location spacing fallback then follows scale.
       describeKneeDistance('epsilon', KNEE_MARGIN, 'basic'),
       // 4 for two-dimensional data (Ester et al. 1996); a count, so constant.
-      describeConstant('minimumPoints', 'basic'),
+      describeConstant('minimumSamples', 'basic'),
       describeConstant('coordinateSystem', 'advanced')
     ],
     requirements: describePointClusterRequirements(20000, [
@@ -201,7 +201,7 @@ export const CLUSTERING_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       }
     ],
     notes: [
-      'The input cap of 20,000 points is the GPU engine’s. The CPU reference compares every pair and throws “Work capacity exceeded” above 6,324 points (count times count above 40 million: `catalog-platform3-b-clusters.ts` lines 33 and 36 to 40, checked by `computeDbscanLabels` at line 63).',
+      'The density-clustering binding admits at most 20,000 total points on the GPU route. Its bucketed CPU DBSCAN route also admits at most 20,000 total points. The separate curated clusters-and-footprints recipe admits at most 6,000 total points on either route.',
       'Results with noise outside 1 to 30 percent of the points, or one cluster holding most of them, mean the radius is off: lower it, or use OPTICS or the density cut.'
     ]
   },

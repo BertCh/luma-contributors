@@ -80,7 +80,7 @@ export async function runExample(
     (values: Uint32Array): GraphDataView<'uint32'>;
   };
   // #region example
-  const searchValues = getGPUNeighborSearchParameterValues({bounds, radius: 250});
+  const searchValues = getGPUNeighborSearchParameterValues({bounds, searchRadius: 250});
   const knoxValues = getGPUSpaceTimeParameterValues({
     seed: 1,
     permutationCount: 199,

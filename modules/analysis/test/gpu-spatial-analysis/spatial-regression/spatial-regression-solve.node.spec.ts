@@ -22,6 +22,18 @@ const DESIGN = [
 ];
 const SPREG_CONDITION_INDEX = 17.048096533339308;
 
+it('keeps the internal shader generators out of the regression and spatial entry points', async () => {
+  const entries = await Promise.all([
+    import('../../../src/gpu-spatial-analysis/spatial-regression/index'),
+    import('@luma-contributors/analysis/gpu-spatial-analysis')
+  ]);
+  for (const entry of entries) {
+    expect(entry).not.toHaveProperty('getCholeskyWGSL');
+    expect(entry).not.toHaveProperty('getSymmetricEigenvalueRangeWGSL');
+    expect(entry).not.toHaveProperty('getSpatialWeightsTracesProbeWGSL');
+  }
+});
+
 it('getSymmetricEigenvalueRangeOnCPU matches numpy extreme eigenvalues', () => {
   const matrix = [4, 1, 0.5, 1, 3, 0.25, 0.5, 0.25, 2];
   const [smallest, largest] = getSymmetricEigenvalueRangeOnCPU(matrix, 3);

@@ -108,6 +108,9 @@ export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SERIES_LIMITED = 17;
 /**
  * `summary` slot: worst-case log-determinant truncation error at the estimate,
  * `getSpatialLogDeterminantTruncationBound(parameter, Q, n, ||W||_inf)`, in log-likelihood units.
+ * Tail extrapolation adds the absolute applied correction to this plain-series remainder bound.
+ * Sampling error in retained stochastic traces is separate and is not bounded by this slot;
+ * powerTraceStandardErrors describe that uncertainty and are not deterministic error bounds.
  */
 export const GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND = 18;
 /** `summary` slot: 1 when the information matrix was positive definite (standard errors defined). */

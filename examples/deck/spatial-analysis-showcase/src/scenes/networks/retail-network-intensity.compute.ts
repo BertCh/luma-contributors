@@ -433,6 +433,7 @@ export async function createRetailNetworkIntensity(
     EVENT_COUNT * network.nodeCount * 4
   );
   const converged = resources.createBuffer('complete-distance-convergence', 4);
+  const costsComplete = view(converged, 'uint32', 1);
   const costMatrix = new GPUNetworkCostMatrix({
     id: 'retail-intensity-complete-event-costs',
     topology: {
@@ -447,7 +448,7 @@ export async function createRetailNetworkIntensity(
     localIterations: 16,
     output: {
       costs: view(eventCosts, 'float32', EVENT_COUNT * network.nodeCount),
-      status: {converged: view(converged, 'uint32', 1)}
+      status: {converged: costsComplete}
     }
   });
   graph.add(costMatrix);
@@ -478,7 +479,7 @@ export async function createRetailNetworkIntensity(
   });
   const baseVariants = new Map<
     number,
-    {density: Buffer; scaled: Buffer; mass: Buffer; densityStatus: Buffer; eventIntensity: Buffer}
+    {density: Buffer; scaled: Buffer; mass: Buffer; densityValidity: Buffer; eventIntensity: Buffer}
   >();
   for (const bandwidth of BANDWIDTHS) {
     const density = resources.createBuffer(
@@ -487,8 +488,8 @@ export async function createRetailNetworkIntensity(
     );
     const scaled = resources.createBuffer(`density-${bandwidth}m-per-km`, network.nodeCount * 4);
     const mass = resources.createBuffer(`density-${bandwidth}m-event-kernel-mass`, EVENT_COUNT * 4);
-    const densityStatus = resources.createBuffer(
-      `density-${bandwidth}m-query-status`,
+    const densityValidity = resources.createBuffer(
+      `density-${bandwidth}m-query-validity`,
       queryCount * 4
     );
     const eventIntensity = resources.createBuffer(
@@ -498,6 +499,7 @@ export async function createRetailNetworkIntensity(
     const densityProducer = new GPUNetworkKernelDensity({
       id: `network-kernel-density-${bandwidth}m`,
       distances: view(queryDistances, 'float32', EVENT_COUNT * queryCount),
+      costsComplete,
       eventCount: EVENT_COUNT,
       quadratureLengths: view(queryQuadratureBuffer, 'float32', queryCount),
       bandwidth,
@@ -505,7 +507,7 @@ export async function createRetailNetworkIntensity(
       output: {
         intensity: view(density, 'float32', queryCount),
         kernelMass: view(mass, 'float32', EVENT_COUNT),
-        status: view(densityStatus, 'uint32', queryCount)
+        validity: view(densityValidity, 'uint32', queryCount)
       }
     });
     graph.add(densityProducer);
@@ -537,7 +539,7 @@ export async function createRetailNetworkIntensity(
       invocationCount: EVENT_COUNT,
       body: `eventIntensity[eventIntensityOffset + index] = density[densityOffset + ${network.nodeCount}u + index];`
     });
-    baseVariants.set(bandwidth, {density, scaled, mass, densityStatus, eventIntensity});
+    baseVariants.set(bandwidth, {density, scaled, mass, densityValidity, eventIntensity});
   }
   const compiledBase = resources.track(await graph.compileAsync());
   const radii = new Float32Array(RADIUS_COUNT);
@@ -595,19 +597,20 @@ export async function createRetailNetworkIntensity(
     const allDensityValues = readFloats(queryCount);
     const densityValues = allDensityValues.subarray(0, network.nodeCount);
     const kernelMass = readFloats(EVENT_COUNT);
-    const densityStatus = readWords(queryCount);
+    const densityValidity = readWords(queryCount);
     const eventIntensity = readFloats(EVENT_COUNT);
     const kValues = readFloats(RADIUS_COUNT);
     const normalizationValues = readFloats(3);
     const kStatus = readWords(RADIUS_COUNT);
-    const nodeDensityStatus = densityStatus.subarray(0, network.nodeCount);
+    const nodeDensityValidity = densityValidity.subarray(0, network.nodeCount);
+    const eventDensityValidity = densityValidity.subarray(network.nodeCount);
     const densityValid =
       costConvergence !== 0 &&
-      nodeDensityStatus.every(flag => flag === 0) &&
+      nodeDensityValidity.every(word => word !== 0) &&
       kernelMass.every(value => Number.isFinite(value) && value > 0) &&
       densityValues.every(Number.isFinite);
     const positiveEventIntensity = eventIntensity.filter(
-      value => Number.isFinite(value) && value > 0
+      (value, index) => eventDensityValidity[index] !== 0 && Number.isFinite(value) && value > 0
     );
     const eventIntensityValid = positiveEventIntensity.length === EVENT_COUNT;
     const kValid =
@@ -621,7 +624,7 @@ export async function createRetailNetworkIntensity(
     statusText = !costConvergence
       ? 'complete network cost matrix did not converge'
       : !densityValid
-        ? `network density withheld · ${nodeDensityStatus.filter(Boolean).length} node flags`
+        ? `network density withheld · ${nodeDensityValidity.filter(word => word === 0).length} invalid nodes`
         : !kValid
           ? `${positiveEventIntensity.length}/${EVENT_COUNT} leave-one-out intensities positive · K withheld`
           : 'complete distances · positive leave-one-out intensity · all K radii valid';
@@ -732,7 +735,7 @@ export async function createRetailNetworkIntensity(
       converged,
       baseVariants.get(bandwidth)!.density,
       baseVariants.get(bandwidth)!.mass,
-      baseVariants.get(bandwidth)!.densityStatus,
+      baseVariants.get(bandwidth)!.densityValidity,
       baseVariants.get(bandwidth)!.eventIntensity,
       k,
       normalization,

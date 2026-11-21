@@ -1,5 +1,7 @@
 # Focal cross-band statistics
 
+Import from `@luma-contributors/analysis/raster-analysis`.
+
 `GPURasterFocalPairs` computes unweighted covariance, Pearson correlation and simple ordinary
 least-squares regression in square raster neighborhoods. The regression is
 `response = intercept + slope * predictor`; its fit statistics are descriptive. There are no
@@ -7,7 +9,7 @@ p-values, uncertainty estimates, weights, multiple predictors or geographic wrap
 
 ## Inputs and outputs
 
-Provide `grid`, aligned `predictor` and `response` raster bands, `radius`, and caller-owned
+For `GPURasterFocalPairs`, provide `grid`, aligned `predictor` and `response` raster bands, `radius`, and caller-owned
 `output` views. Both bands must already occupy the same grid. Buffer and texture inputs use
 existing raster canonicalization: native nodata and validity are checked before scale/offset,
 and nonfinite calibrated values are invalid. Only observations valid in **both** bands enter
@@ -38,9 +40,27 @@ outputs owned by the caller.
 
 `noDataPolicy: 'ignore'` (default) drops a pair when either band is invalid.
 `'propagate'` makes every float result undefined if any footprint position is invalid.
+The accepted policies are `'ignore'`, `'propagate'` and the deprecated spelling `'strict'`,
+which is an alias of `'propagate'`. Unknown policy, border or covariance-normalization values
+reject at construction; borders accept `'nodata'` (default), `'clamp'` or `'reflect'`, and
+normalization accepts `'sample'` (default) or `'population'`.
 `propagateCenterNoData: true` additionally invalidates results when either center observation is
 invalid; the default is false. `pairedCount` is always the number of participating valid pairs,
 even when propagation or insufficient support makes all metrics undefined.
+
+A missing center is a separate choice from dropping invalid neighbors. On a 3 × 1 grid with
+predictor `[1, NaN, 3]`, response `[2, NaN, 6]`, radius 1 pixel, `borderMode: 'nodata'`,
+`noDataPolicy: 'ignore'` and the default `propagateCenterNoData: false`, the center has paired
+count 2, sample covariance 4 and slope 2. The surviving deviations are `[-1, 1]` and `[-2, 2]`,
+so covariance is `(2 + 2) / (2 - 1) = 4` and slope is `4 / (1 + 1) = 2`.
+Setting `propagateCenterNoData: true` makes that center's float results NaN with `missingPair`
+while leaving paired count 2. In contrast, `GPURasterRankFilter` always keeps a missing center
+invalid, even with its `'ignore'` policy. The filter preserves center validity as a policy and
+selects a quantile from sorted neighbors. Only the optional `changed` output compares the selected
+result with the center.
+Rank accepts `'propagate'` (default), deprecated `'strict'` (same meaning), or `'ignore'`,
+and borders `'clamp'` (default) or `'nodata'`. Radius and required halo are measured in pixels;
+`pairedCount` counts paired observations, including repeated border samples.
 
 `borderMode` defaults to `'nodata'`: positions outside the grid are invalid, so `'ignore'`
 clips the window and `'propagate'` invalidates edge windows. `'clamp'` repeats the nearest edge
@@ -80,6 +100,8 @@ a rounded large centroid. It avoids subtracting raw squared moments and avoids d
 residual squares by subtracting explained variance from total variance. Pearson correlation and R² are clamped to their
 mathematical ranges to absorb float32 rounding.
 
+Finite OLS ratios use exponent-scaled division, preserving slope 1 for predictor = response =
+`[-2^63, 2^63]` even when centered squared sums are `2^127`.
 Arithmetic and calibration are float32. Input differences lost to float32 rounding cannot be
 recovered; squared sums can underflow to zero or overflow. Zero centered predictor variance is
 treated as singular, with no implicit ridge or pseudoinverse. No near-singularity threshold or
@@ -118,6 +140,8 @@ overflow, integer inputs, ownership and whole-domain versus halo-expanded tile r
 These examples use explicit synthetic inputs and expose real GPU graph captures.
 
 ### GPURasterFocalPairs
+
+Construct `GPURasterFocalPairs` using the [Inputs, outputs and limits](#inputs-and-outputs).
 
 {/* lens:GPURasterFocalPairs */}
 

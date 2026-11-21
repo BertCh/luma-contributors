@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RequiredGeometryOutput} from './required-geometry-output';
+
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+
+import {
+  captureGeometryPartitionProvenance,
+  getGeometryPartitionProvenanceNodes
+} from './partition-provenance';
+
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
@@ -54,40 +66,55 @@ export const GPU_GROUP_GEOMETRY_NO_MEDOID = 0xffffffff;
 
 /**
  * Caller-owned outputs of {@link GPUGroupGeometry}. Which views are present is compile-time; at
- * least one is required. Every output is rewritten on every encoding and holds one row per group.
- * An empty group has `counts` 0, NaN in every float output and
- * {@link GPU_GROUP_GEOMETRY_NO_MEDOID} in `medoidIndices`.
+ * least one is required. Every requested output is rewritten on every encoding. Per-group outputs
+ * hold one row per group, except `ellipses`, which uses three float32 scalar rows per group.
+ * `status.overflow` uses one uint32 scalar overall.
+ * An empty group has zero in requested `counts` and `weightSums`, NaN in every other requested
+ * float output and {@link GPU_GROUP_GEOMETRY_NO_MEDOID} in requested `medoidIndices`.
  */
-export type GPUGroupGeometryOutput = {
-  /** Included rows per group (finite position and a label in `[0, groupCount)`). */
-  counts?: GraphDataView<'uint32'>;
-  /** Bounding box `[minX, minY, maxX, maxY]` per group, exact, in the caller's coordinates. */
-  bounds?: GraphDataView<'float32x4'>;
-  /** Unweighted mean center `[x, y]` per group. */
-  meanCenters?: GraphDataView<'float32x2'>;
-  /** Weighted mean center `[x, y]` per group. Requires `weights`. */
-  weightedCenters?: GraphDataView<'float32x2'>;
-  /** Sum of the positive finite weights per group. Requires `weights`. */
-  weightSums?: GraphDataView<'float32'>;
-  /**
-   * Original row index of the medoid per group: the included row minimizing the summed Euclidean
-   * distance to every included row of the group, lowest row index on ties. A group larger than
-   * `medoidMaximumGroupSize` gets {@link GPU_GROUP_GEOMETRY_NO_MEDOID} and sets `status.overflow`.
-   */
-  medoidIndices?: GraphDataView<'uint32'>;
-  /**
-   * Standard deviational ellipse per group, 3 floats `[angle, sigmaX, sigmaY]` with the
-   * `GPUGeographicDistribution` definition. Weighted when `weights` is present.
-   */
-  ellipses?: GraphDataView<'float32'>;
-  /** Standard distance per group; weighted when `weights` is present. */
-  standardDistances?: GraphDataView<'float32'>;
-  /** Completeness scalars. */
-  status?: {
-    /** One row. `1` when some group exceeded `medoidMaximumGroupSize` and has no medoid, else `0`. */
-    overflow?: GraphDataView<'uint32'>;
-  };
-};
+export type GPUGroupGeometryOutput = RequiredGeometryOutput<
+  {
+    /** Optional one-word partition completion; geometry remains available for provisional labels. */
+    labelsComplete?: GraphDataView<'uint32'>;
+    /** Included rows per group (finite position and a label in `[0, groupCount)`). */
+    counts?: GraphDataView<'uint32'>;
+    /** Bounding box `[minX, minY, maxX, maxY]` per group, exact, in the caller's coordinates. */
+    bounds?: GraphDataView<'float32x4'>;
+    /** Unweighted mean center `[x, y]` per group. */
+    meanCenters?: GraphDataView<'float32x2'>;
+    /** Weighted mean center `[x, y]` per group. Requires `weights`. */
+    weightedCenters?: GraphDataView<'float32x2'>;
+    /** Sum of the positive finite weights per group. Requires `weights`. */
+    weightSums?: GraphDataView<'float32'>;
+    /**
+     * Original row index of the medoid per group: the included row minimizing the summed Euclidean
+     * distance to every included row of the group, lowest row index on ties. A group larger than
+     * `medoidMaximumGroupSize` gets {@link GPU_GROUP_GEOMETRY_NO_MEDOID} and sets `status.overflow`.
+     */
+    medoidIndices?: GraphDataView<'uint32'>;
+    /**
+     * Standard deviational ellipse per group, 3 floats `[angle, sigmaX, sigmaY]` with the
+     * `GPUGeographicDistribution` definition. Uses three scalar rows per group. Weighted when
+     * `weights` is present.
+     */
+    ellipses?: GraphDataView<'float32'>;
+    /** Standard distance per group; weighted when `weights` is present. */
+    standardDistances?: GraphDataView<'float32'>;
+    /** Completeness scalars. */
+    status?: {
+      /** One row. `1` when some group exceeded `medoidMaximumGroupSize` and has no medoid, else `0`. */
+      overflow?: GraphDataView<'uint32'>;
+    };
+  },
+  | 'counts'
+  | 'bounds'
+  | 'meanCenters'
+  | 'weightedCenters'
+  | 'weightSums'
+  | 'medoidIndices'
+  | 'ellipses'
+  | 'standardDistances'
+>;
 
 /**
  * Properties for {@link GPUGroupGeometry}.
@@ -97,6 +124,8 @@ export type GPUGroupGeometryOutput = {
  * which inputs and outputs are present.
  */
 export type GPUGroupGeometryProps = {
+  /** Optional solver completion word; omission denotes ordinary categorical labels. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /** Prefix for generated node and transient IDs. Defaults to `'group-geometry'`. */
   id?: string;
   /**
@@ -141,7 +170,7 @@ export type GPUGroupGeometryProps = {
 /**
  * Per-label geometry summaries over a `uint32` label column: bounds, mean and weighted center,
  * medoid, standard deviational ellipse, count. It is the "cluster, then describe it" step after
- * `GPUSpatialClustering` or any classifier.
+ * `GPUDBSCAN` or any classifier.
  *
  * ## Composition
  *
@@ -170,6 +199,8 @@ export type GPUGroupGeometryProps = {
 export class GPUGroupGeometry implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  /** Solver provenance independent of hull/medoid limits; absent means categorical labels. */
+  readonly partitionProvenance: Readonly<{labelsComplete?: GraphDataView<'uint32'>}>;
   /** Validated properties. */
   readonly props: GPUGroupGeometryProps;
   /** Resolved spatial context (planar). */
@@ -180,8 +211,50 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
   readonly medoidMaximumGroupSize: number;
 
   constructor(props: GPUGroupGeometryProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'labels',
+      'labelsComplete',
+      'groupCount',
+      'noiseLabel',
+      'weights',
+      'parameters',
+      'medoidMaximumGroupSize',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(captured.output, [
+      'labelsComplete',
+      'counts',
+      'bounds',
+      'meanCenters',
+      'weightedCenters',
+      'weightSums',
+      'medoidIndices',
+      'ellipses',
+      'standardDistances',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      ...(captured.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+        : {}),
+      output: Object.freeze({
+        ...capturedOutput,
+        ...(capturedOutput.status
+          ? {status: snapshotConstructionFields(capturedOutput.status, ['overflow'])}
+          : {})
+      })
+    });
     this.id = props.id ?? 'group-geometry';
     this.props = props;
+    this.partitionProvenance = captureGeometryPartitionProvenance(
+      this.id,
+      props.labelsComplete,
+      props.output.labelsComplete
+    );
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
@@ -222,6 +295,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     validateCapacity(id, 'medoidMaximumGroupSize', this.medoidMaximumGroupSize);
     const groups = this.groupCount;
     const checks = [
+      ['labelsComplete', output.labelsComplete, ['uint32'], 1],
       ['counts', output.counts, ['uint32'], groups],
       ['bounds', output.bounds, ['float32x4'], groups],
       ['meanCenters', output.meanCenters, ['float32x2'], groups],
@@ -237,7 +311,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      outputCount++;
+      if (name !== 'labelsComplete') outputCount++;
       validateSinglePackedView(view, formats, `${id} output.${name}`);
       if (view.length < length) {
         throw new Error(`${id} output.${name} must hold at least ${length} rows`);
@@ -255,7 +329,7 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       checks.map(([, view]) => view),
-      [props.positions, props.labels, props.weights, props.parameters]
+      [props.positions, props.labels, props.weights, props.parameters, props.labelsComplete]
     );
     validateGeographicDistributionViews(
       id,
@@ -358,7 +432,12 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
         declarations: `const GROUP_COUNT: u32 = ${groupCount}u;\n${declarations}`,
         body
       });
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = getGeometryPartitionProvenanceNodes(
+      graph,
+      id,
+      props.labelsComplete,
+      output.labelsComplete
+    );
 
     // 1. Group keys: invalid rows get the excluded key GROUP_COUNT.
     const groupKeys = u32('group-keys', rows);

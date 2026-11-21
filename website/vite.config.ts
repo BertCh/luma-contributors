@@ -8,7 +8,11 @@ import react from '@vitejs/plugin-react';
 import {defineConfig} from 'vite';
 import {demoDataPlugin} from './build/demo-data-plugin';
 import {catalogPlugin} from './build/catalog-plugin';
-import {listDocPagePaths, markdownPlugin} from './build/markdown-plugin';
+import {
+  listDocPagePaths,
+  listLensRecordingPagePaths,
+  markdownPlugin
+} from './build/markdown-plugin';
 import {listCatalogPagePaths} from './src/catalog/routes';
 import {TOPIC_SLUGS} from './src/components/meta/topic-slugs';
 
@@ -24,6 +28,7 @@ const pages = [
   '/docs',
   ...listDocPagePaths(docsDirectory),
   ...listCatalogPagePaths(),
+  ...(await listLensRecordingPagePaths()),
   '/how-it-works',
   ...TOPIC_SLUGS.map(slug => `/how-it-works/${slug}`)
 ].map(pagePath => ({path: pagePath}));

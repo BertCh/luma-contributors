@@ -5,6 +5,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {createPublishNode} from '../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {createGeometryFixture} from '../gpu-spatial-analysis/outline-geometry/geometry-fixture';
+import {expectCompactPublicationReuse} from './compact-publisher-status-fixture';
 import {requireTestDevice} from './require-test-device';
 
 it('compact publisher separates candidate loss, final truncation and cleared status on reuse', async () => {
@@ -57,6 +58,7 @@ it('compact publisher separates candidate loss, final truncation and cleared sta
     expect(truncated['requiredCount']).toEqual([3]);
     expect(truncated['overflow']).toEqual([1]);
     expect(truncated['candidateOverflow']).toEqual([0]);
+    await expectCompactPublicationReuse(fixture);
     expect(fixture.getCompileCount()).toBe(0);
   } finally {
     fixture.destroy();

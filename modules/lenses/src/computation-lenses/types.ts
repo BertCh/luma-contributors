@@ -15,6 +15,18 @@ export type LensScenarioId = string;
 /** One real execution with optional measurement and capture sidecars. */
 export type LensScenarioResult = GPUComputationRecordWithSidecars;
 
+/** A run-scoped mapping of an embedded dataset; GPU resource identities are unchanged. */
+export type LensDatasetResolver = <Dataset extends {id: string; rowCount: number; columns: object}>(
+  dataset: Dataset
+) => Dataset;
+export type LensScenarioRunOptions = {signal?: AbortSignal; datasetResolver?: LensDatasetResolver};
+export type LensScenarioInputBinding = {
+  port: string;
+  role: string;
+  required: boolean;
+  missing: 'exclude';
+};
+
 /** Lazily loaded GPU scenario. Register descriptors with registerLensScenario at module scope. */
 export type LensScenarioDescriptor = {
   /** `<entry>.<element-kebab>[.<variant>]`, e.g. `gpu-spatial-analysis.local-moran`. */
@@ -33,16 +45,23 @@ export type LensScenarioDescriptor = {
   /** Defaults to getLensExamplePath(id); required by the coverage spec once scenarios exist. */
   example?: {path: string};
   dataset?: {id: string; licence: string; source: string};
-  /** Result presentation shared by live hosts and static twins. */
-  presentation?: {
-    /** Final output capture ID used for the headline and result grammar; absent selects the last output. */
-    primaryOutputCaptureId?: string;
-  };
+  /**
+   * Result presentation shared by live hosts and static twins. Defaults to the side-effect-free
+   * table in `scenario-presentations.ts`, so record readers need not import scenario code.
+   */
+  presentation?: LensScenarioPresentation;
+  inputBindings?: readonly LensScenarioInputBinding[];
   /** Imports GPU code only when explicitly activated; never during a docs build. */
   load(): Promise<{
-    run(device: Device, options?: {signal?: AbortSignal}): Promise<LensScenarioResult>;
+    run(device: Device, options?: LensScenarioRunOptions): Promise<LensScenarioResult>;
     describeStructure?(device: Device): Promise<GPUComputationRecord>;
   }>;
+};
+
+/** Result presentation of a scenario or recording. */
+export type LensScenarioPresentation = {
+  /** Final output capture ID used for the headline and result grammar; absent selects the last output. */
+  primaryOutputCaptureId?: string;
 };
 
 /** Provenance shared by encoded files and decoded recordings. */
@@ -52,6 +71,11 @@ export type LensRecordingMetadata = {
   recordedAt: string;
   adapterLabel: string;
   variant?: string;
+  /**
+   * Presentation in effect when the record was captured, so an isolated reader selects the same
+   * headline. Older recordings omit it; readers then use the scenario's code-side default.
+   */
+  presentation?: LensScenarioPresentation;
 };
 
 /**

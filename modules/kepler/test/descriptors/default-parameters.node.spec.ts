@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {prepareEmergingHotSpots} from '../../src/curated/bindings/curated-emerging-hot-spots-binding';
-import {GPU_ANALYSIS_DEFAULT_RULES} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_ANALYSIS_DEFAULT_RULES} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import type {CatalogOperationBinding} from '../../src/analysis/catalog-binding-types';
 import {

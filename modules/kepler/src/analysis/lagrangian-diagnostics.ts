@@ -10,6 +10,7 @@ import {
   getGPUFiniteTimeLyapunovExponentParameterValues
 } from '@luma-contributors/analysis/raster-analysis';
 import {withCatalogGpuSession} from './catalog-gpu-session';
+import {getCatalogNumberProblem} from './catalog-parameter-constraints';
 
 /** Cell-centered planar velocity field in metres/second; row zero south. Host owns reprojection. */
 export type KeplerLagrangianField = {
@@ -27,8 +28,11 @@ export async function runKeplerLagrangianDiagnostics(
   options: {
     timeStep: number;
     stepCount: number;
+    /** Absolute integration start in the slice time unit; defaults to absolute 0 for forward integration or -duration for backward integration. */
     startTime?: number;
+    /** Absolute slice times (seconds for metre/second fields), rebased internally before float32 packing. */
     sliceStartTime?: number;
+    /** Absolute end of the second slice; defaults to Math.abs(stepCount * timeStep). */
     sliceEndTime?: number;
   }
 ) {
@@ -37,8 +41,10 @@ export async function runKeplerLagrangianDiagnostics(
   const sliceStartTime = options.sliceStartTime ?? 0;
   const sliceEndTime = options.sliceEndTime ?? Math.abs(duration);
   if (
-    !Number.isFinite(options.timeStep) ||
-    options.timeStep === 0 ||
+    getCatalogNumberProblem(
+      {nonzero: true, nonzeroFloat32Scale: options.stepCount},
+      options.timeStep
+    ) !== null ||
     !Number.isInteger(options.stepCount) ||
     options.stepCount < 1 ||
     options.stepCount > 8192 ||
@@ -91,11 +97,12 @@ export async function runKeplerLagrangianDiagnostics(
         parameters: session.input(
           'flow-parameters',
           getGPULagrangianFlowMapParameterValues({
-            fieldExtent: extent,
+            fieldPlacement: {origin: [extent[0], extent[1]], cellSize: [extent[2], extent[3]]},
             startTime,
             timeStep: options.timeStep,
             sliceStartTime,
-            sliceEndTime
+            sliceEndTime,
+            timeOrigin: sliceStartTime
           }),
           'float32'
         ),

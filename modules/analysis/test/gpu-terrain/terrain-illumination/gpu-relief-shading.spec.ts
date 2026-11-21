@@ -332,7 +332,6 @@ it('GPUReliefShading imhof swing, curvature, and contrast match the oracle with 
       skyViewFactor: float('svf', inputs[1]),
       textureShade: float('texture-shade', inputs[2]),
       curvature: float('curvature', inputs[3]),
-      imhofSwing: true,
       output: {
         hillshade: float('hillshade', outputs[0]),
         relief: float('relief', outputs[1]),
@@ -418,7 +417,6 @@ it('GPUReliefShading imhof swing lights east-facing slopes and swing 0 equals fi
         }
       },
       parameters: settings.importToGraph(graph),
-      imhofSwing: true,
       output: {
         hillshade: importGraphBuffer(graph, 'hillshade', outputs[0], 'float32', pixelCount),
         relief: importGraphBuffer(graph, 'relief', outputs[1], 'float32', pixelCount)

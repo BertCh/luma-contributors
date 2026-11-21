@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {GPU_COLOR_SCALE_CODES} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './color-scale.example';
@@ -17,9 +18,9 @@ const SCENARIO_ID = 'gpu-dataframe.color-scale';
 const PALETTE_COUNT = 5;
 
 /** Executes the recorded colour scale once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-tracts');
+  const dataset = await loadDataFrameLensData('f-chicago-tracts', options?.datasetResolver);
   const poverty = Float32Array.from(dataset.columns.poverty150Pct, value => value ?? NaN);
   const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-color-scale');
   const example = await runExample(device, {graph, tracts: {poverty150Pct: poverty}});

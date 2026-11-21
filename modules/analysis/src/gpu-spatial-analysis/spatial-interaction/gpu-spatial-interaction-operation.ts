@@ -30,6 +30,7 @@ export type SpatialInteractionOperationProps = Pick<
     predictions: string;
     summary: string;
     status: string;
+    coefficientStatus?: string;
     candidates: string;
     calibration?: string;
     originResiduals?: string;
@@ -40,6 +41,7 @@ export type SpatialInteractionOperationProps = Pick<
 /** GPU gravity operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING; all props compile-time. */
 export class GPUSpatialInteractionOperation extends GPUContributorOperation {
   constructor(props: SpatialInteractionOperationProps) {
+    props = {...props, coefficients: [...props.coefficients], output: {...props.output}};
     const id = props.id ?? 'spatial-interaction';
     super({
       id,
@@ -59,6 +61,15 @@ export class GPUSpatialInteractionOperation extends GPUContributorOperation {
           format: 'float32',
           length: props.coefficients.length * 4
         },
+        ...(props.output.coefficientStatus
+          ? {
+              coefficientStatus: {
+                value: props.output.coefficientStatus,
+                format: 'uint32' as const,
+                length: 1
+              }
+            }
+          : {}),
         ...(props.output.calibration
           ? {calibration: {value: props.output.calibration, format: 'float32' as const, length: 4}}
           : {}),
@@ -94,6 +105,9 @@ export class GPUSpatialInteractionOperation extends GPUContributorOperation {
             predictions: getView<'float32'>('predictions'),
             summary: getView<'float32'>('summary'),
             status: getView<'uint32'>('status'),
+            coefficientStatus: props.output.coefficientStatus
+              ? getView<'uint32'>('coefficientStatus')
+              : undefined,
             candidates: getView<'float32'>('candidates'),
             calibration: props.output.calibration ? getView<'float32'>('calibration') : undefined,
             originResiduals: props.output.originResiduals

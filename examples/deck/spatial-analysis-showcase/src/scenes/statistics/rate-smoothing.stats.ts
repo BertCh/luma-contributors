@@ -52,12 +52,16 @@ export type LocalPooling = {
   pooledRates: Float32Array;
   /** Weight on the county's own rate under the neighbourhood prior. */
   weights: Float32Array;
+  /** Eligible listed donors per focal county; excludes the focal county itself. Zero for an ineligible focus. */
+  eligibleNeighborCounts: Uint32Array;
 };
 
 /**
  * `GPUSpatialEmpiricalBayesRates` on the CPU for display: the neighbourhood of a county is the
  * county plus its listed neighbours; `m = E / B`, `s2 = sum b (e / b - m)^2 / B`,
  * `a = max(s2 - m / (B / n), 0)` and `w = a / (a + m / b)`.
+ * Focal rows and donors require finite nonnegative events and finite positive woman-years.
+ * Ineligible focal rows have unavailable rates and weights; ineligible donors do not count as members.
  */
 export function getLocalPooling(
   events: ArrayLike<number>,
@@ -68,20 +72,34 @@ export function getLocalPooling(
   const count = events.length;
   const pooledRates = new Float32Array(count);
   const weights = new Float32Array(count);
+  const eligibleNeighborCounts = new Uint32Array(count);
+  const isEligible = (row: number) =>
+    Number.isFinite(events[row]) &&
+    events[row] >= 0 &&
+    Number.isFinite(womenYears[row]) &&
+    womenYears[row] > 0;
+  pooledRates.fill(NaN);
+  weights.fill(NaN);
   for (let row = 0; row < count; row++) {
+    if (!isEligible(row)) continue;
     const first = offsets[row];
     const end = offsets[row + 1];
     let eventSum = events[row];
     let populationSum = womenYears[row];
+    let members = 1;
     for (let slot = first; slot < end; slot++) {
-      eventSum += events[neighbors[slot]];
-      populationSum += womenYears[neighbors[slot]];
+      const member = neighbors[slot];
+      if (!isEligible(member)) continue;
+      eventSum += events[member];
+      populationSum += womenYears[member];
+      members++;
     }
-    const members = end - first + 1;
     const pooled = populationSum > 0 ? eventSum / populationSum : 0;
+    eligibleNeighborCounts[row] = members - 1;
     let weightedVariance = womenYears[row] * (events[row] / womenYears[row] - pooled) ** 2;
     for (let slot = first; slot < end; slot++) {
       const member = neighbors[slot];
+      if (!isEligible(member)) continue;
       weightedVariance += womenYears[member] * (events[member] / womenYears[member] - pooled) ** 2;
     }
     const variance = Math.max(
@@ -92,7 +110,7 @@ export function getLocalPooling(
     pooledRates[row] = pooled;
     weights[row] = variance + noise > 0 ? variance / (variance + noise) : 0;
   }
-  return {pooledRates, weights};
+  return {pooledRates, weights, eligibleNeighborCounts};
 }
 
 /** Counts of a value per class of `breaks` (the number of breaks `<= value` is the class). */

@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   getGPURasterSieveParameterValues,
+  getGPURasterPatchMetricsParameterValues,
   GPU_RASTER_PATCH_UNRESOLVED,
   GPURasterPatchMetrics,
   GPURasterSieve
@@ -117,4 +118,28 @@ it('review C-09 and rule 14: patch outputs are marked unresolved, sieve counts r
   expect(
     pipelines.some(pipeline => pipeline.source.includes(`= ${GPU_RASTER_PATCH_UNRESOLVED}u;`))
   ).toBe(true);
+});
+
+it('RT-102 patch metrics retain the full affine for a uniform one-cell parallelogram', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const grid = {
+    ...makeGPURasterMetadata({width: 1, height: 1}),
+    affine: [3, 2, 0, 4, -2, 0] as const
+  };
+  const words = getGPURasterPatchMetricsParameterValues(grid);
+  // Hand calculation: det = 3*(-2)-2*4 = -14, column length = 5, row length = sqrt(8).
+  expect(Array.from(words)).toEqual([0, 0, 3, 2, 4, -2, -14, 0]);
+  const props = {
+    grid,
+    labels: createTransientView(graph, 'shear-labels', 'uint32', 1),
+    parameters: createTransientView(graph, 'shear-parameters', 'float32', 8),
+    output: {
+      areas: createTransientView(graph, 'shear-areas', 'float32', 1),
+      perimeters: createTransientView(graph, 'shear-perimeters', 'float32', 1)
+    }
+  };
+  expect(() => new GPURasterPatchMetrics(props).getCommandNodes(graph)).not.toThrow();
+  for (const cellSizeMode of ['geographic', 'web-mercator'] as const) {
+    expect(() => new GPURasterPatchMetrics({...props, cellSizeMode})).toThrow(/axis-aligned/);
+  }
 });

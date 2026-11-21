@@ -87,22 +87,35 @@ export async function runSpacetimeSeries(
         pValues: await session.readFloat32(pValues)
       };
     });
+    const tested = Array.from(
+      result.changeSlice,
+      (slice, cell) => slice < periodCount && Number.isFinite(result.pValues[cell])
+    );
+    const testedPValues = Array.from(result.pValues).filter((_, cell) => tested[cell]);
+    const testedStatistics = Array.from(result.statistic).filter((_, cell) => tested[cell]);
+    const hasChange = (cell: number) =>
+      tested[cell] && result.statistic[cell] > 0 && result.changeSlice[cell] < periodCount;
     Object.assign(summary, {
-      statisticMaximum: Math.max(...result.statistic),
-      pValueMinimum: Math.min(...result.pValues),
+      testedLocations: testedPValues.length,
+      statisticMaximum: testedStatistics.length ? Math.max(...testedStatistics) : 'unavailable',
+      pValueMinimum: testedPValues.length ? Math.min(...testedPValues) : 'unavailable',
       inference: 'Pettitt asymptotic two-sided p-values; no multiple testing correction'
     });
     return {
       tables: [
         makeSpacetimePointTable(points, {
-          statistic: expand(result.statistic),
-          change_slice: expand(result.changeSlice),
-          change_time: series.sourceCells.map(
-            cell => series.periods[result.changeSlice[cell]] ?? null
+          statistic: series.sourceCells.map(cell => (tested[cell] ? result.statistic[cell] : null)),
+          change_slice: series.sourceCells.map(cell =>
+            hasChange(cell) ? result.changeSlice[cell] : null
           ),
-          p_value: expand(result.pValues),
+          change_time: series.sourceCells.map(cell =>
+            hasChange(cell) ? (series.periods[result.changeSlice[cell]] ?? null) : null
+          ),
+          p_value: series.sourceCells.map(cell => (tested[cell] ? result.pValues[cell] : null)),
           segment: series.sourceCells.map((cell, source) =>
-            series.sourcePeriods[source] >= result.changeSlice[cell] ? 1 : 0
+            hasChange(cell)
+              ? Number(series.sourcePeriods[source] >= result.changeSlice[cell])
+              : null
           )
         })
       ],

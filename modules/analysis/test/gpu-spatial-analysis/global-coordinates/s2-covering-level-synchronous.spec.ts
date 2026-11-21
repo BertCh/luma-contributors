@@ -10,7 +10,7 @@ import {GPUS2PolygonCovering} from '../../../src/gpu-spatial-analysis/cell-topol
 import type {GPUS2PolygonCoveringRefinement} from '../../../src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import recorded from './fixtures/s2-covering-ordered-parity.json';
 
 type Snapshot = {cells: number[]; counts: number[]; status: number[]; visited: number[]};
@@ -85,6 +85,9 @@ async function executeCase(
   const snapshots: Snapshot[] = [];
   try {
     for (const values of [initial, rotated, invalid, initial]) {
+      // Prefill every frame, including the first: zero-initialized allocation cannot prove that
+      // unused slots (or an exhausted route's entire output) were actively cleared.
+      cells.write(new Uint32Array(reference.capacity * 2).fill(0xdeadbeef));
       positions.write(values);
       submitGraph(device, compiled, undefined);
       snapshots.push({
@@ -235,3 +238,98 @@ function normalizeRows(values: number[]): number[] {
   }
   return result;
 }
+
+it('CORE-118 pins ordered face children, counts, zero tail and route-specific budget exhaustion', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // This small triangle contains face 0's center in its interior and no other face.
+  // At level 1 it intersects all four children of face 0. S2 IDs are the face marker
+  // 0x10000000 plus [-3,-1,1,3] * 0x04000000 in the high word, low word zero.
+  // DFS visits face 0, its four children, then faces 1..5: ten total. A six-visit
+  // budget retains four children in DFS, but the level route suppresses its incomplete cover.
+  const positions = normalizeRows([1, 0.2, 0, 1, -0.1, 0.2, 1, -0.1, -0.2]);
+  const ordered = [0, 0x04000000, 0, 0x0c000000, 0, 0x14000000, 0, 0x1c000000];
+  for (const refinement of ['serial', 'level-synchronous'] as const) {
+    for (const [capacity, maximumVisitedCells] of [
+      [8, 64],
+      [2, 64],
+      [8, 6]
+    ] as const) {
+      const [actual] = await executeCase(
+        device,
+        {
+          name: `literal-children-${refinement}-${capacity}-${maximumVisitedCells}`,
+          positions,
+          offsets: [0, 3],
+          mode: 'exterior',
+          complement: false,
+          minimumLevel: 1,
+          maximumLevel: 1,
+          capacity,
+          maximumVisitedCells
+        },
+        refinement
+      );
+      const exhausted = maximumVisitedCells === 6;
+      const suppressed = exhausted && refinement === 'level-synchronous';
+      const written = suppressed ? 0 : Math.min(capacity, 4);
+      expect(actual!.counts).toEqual([written, suppressed ? 0 : 4]);
+      expect(actual!.status).toEqual([exhausted ? 4 : capacity < 4 ? 2 : 0]);
+      expect(actual!.visited).toEqual([exhausted ? 6 : 10]);
+      expect(actual!.cells.slice(0, written * 2)).toEqual(ordered.slice(0, written * 2));
+      expect(actual!.cells.slice(written * 2)).toEqual(new Array((capacity - written) * 2).fill(0));
+    }
+  }
+});
+
+it('CORE-118 pins 4096 and 8192 vertex covers and exhausted prefixes over poisoned tails on both routes', {
+  timeout: 300000
+}, async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Closed-form region: a small circle about +x lies strictly in face 0 and crosses all four
+  // of its children. The ten DFS visits are root 0, its children, then the other five roots.
+  for (const count of [4096, 8192]) {
+    const positions = createCircleRing(count, Math.atan(0.2), [1, 0, 0]);
+    const ordered = [0, 0x04000000, 0, 0x0c000000, 0, 0x14000000, 0, 0x1c000000];
+    for (const refinement of ['serial', 'level-synchronous'] as const)
+      for (const maximumVisitedCells of [64, 6]) {
+        const snapshots = await executeCase(
+          device,
+          {
+            name: `large-ring-${refinement}-${maximumVisitedCells}`,
+            positions,
+            offsets: [0, count],
+            mode: 'exterior',
+            complement: false,
+            minimumLevel: 1,
+            maximumLevel: 1,
+            capacity: 8,
+            maximumVisitedCells
+          },
+          refinement
+        );
+        const exhausted = maximumVisitedCells === 6;
+        const suppressed = exhausted && refinement === 'level-synchronous';
+        for (const actual of [snapshots[0], snapshots[3]]) {
+          expect(actual.status).toEqual([exhausted ? 4 : 0]);
+          expect(actual.counts).toEqual(suppressed ? [0, 0] : [4, 4]);
+          expect(actual.visited).toEqual([exhausted ? 6 : 10]);
+          expect(actual.cells).toEqual(
+            suppressed ? new Array(16).fill(0) : [...ordered, ...new Array(8).fill(0)]
+          );
+        }
+        const rotatedOrdered = [0, 0x24000000, 0, 0x2c000000, 0, 0x34000000, 0, 0x3c000000];
+        expect(snapshots[1].status).toEqual([exhausted ? 4 : 0]);
+        expect(snapshots[1].counts).toEqual(suppressed ? [0, 0] : [4, 4]);
+        expect(snapshots[1].visited).toEqual([exhausted ? 6 : 10]);
+        expect(snapshots[1].cells).toEqual(
+          suppressed ? new Array(16).fill(0) : [...rotatedOrdered, ...new Array(8).fill(0)]
+        );
+        expect(snapshots[2].status).toEqual([1]);
+        expect(snapshots[2].counts).toEqual([0, 0]);
+        expect(snapshots[2].visited).toEqual([0]);
+        expect(snapshots[2].cells).toEqual(new Array(16).fill(0));
+      }
+  }
+});

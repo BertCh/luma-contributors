@@ -5,6 +5,10 @@
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUTerrainWatersheds, type GPUTerrainWatershedsProps} from './gpu-terrain-watersheds';
 import type {TerrainDrainageOperationStatus} from './cpu-terrain-drainage-utils';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../../raster-analysis/raster-grid/raster-construction-snapshot';
+import {validateTerrainFlowDirectionEncoding} from './terrain-flow-tracing';
 
 /** Watershed graph names in place of views. Grid dimensions explicitly size the output. */
 export type TerrainWatershedsOperationProps = Omit<
@@ -16,10 +20,45 @@ export type TerrainWatershedsOperationProps = Omit<
   output: {labels: string; status?: TerrainDrainageOperationStatus};
 };
 
+/** @internal Shared named-field capture for GPU declaration and CPU execution. */
+export function snapshotTerrainWatershedsOperationProps(
+  props: TerrainWatershedsOperationProps
+): TerrainWatershedsOperationProps {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'grid',
+    'directionEncoding',
+    'maximumIterations',
+    'flowDirections',
+    'pourPoints',
+    'output'
+  ]);
+  const capturedGrid = snapshotRasterGrid(captured.grid);
+  const output = snapshotConstructionFields(captured.output, ['labels', 'status']);
+  return Object.freeze({
+    ...captured,
+    grid: capturedGrid,
+    output: {
+      ...output,
+      status:
+        output.status &&
+        snapshotConstructionFields(output.status, [
+          'converged',
+          'iterationLimitReached',
+          'iterationCount'
+        ])
+    }
+  });
+}
+
 /** Vector operation form. Grid and options are compile-time; direction and point rows are per-frame. */
 export class GPUTerrainWatershedsOperation extends GPUContributorOperation {
   constructor(props: TerrainWatershedsOperationProps) {
+    props = snapshotTerrainWatershedsOperationProps(props);
     const id = props.id ?? 'terrain-watersheds';
+    validateTerrainFlowDirectionEncoding(id, props.directionEncoding);
+    if (props.maximumIterations !== undefined)
+      validateCapacity(id, 'maximumIterations', props.maximumIterations, 1, 1024);
     super({
       id,
       inputs: {

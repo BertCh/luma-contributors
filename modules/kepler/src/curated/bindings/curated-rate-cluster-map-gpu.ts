@@ -341,7 +341,7 @@ export async function runGpuRateClusterMap(
         },
         // Colors are graph intermediates; the host publishes the named class column.
         palette: session.input('palette', new Uint32Array(5), 'uint32'),
-        outputs: {
+        output: {
           smoothedRates: smoothedRates.view,
           localI: localI.view,
           quadrants: quadrants.view,

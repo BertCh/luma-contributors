@@ -6,6 +6,51 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {addNetworkCatchmentAdapter} from '../../../src/gpu-network/network-accessibility/gpu-network-accessibility';
+import {createOracleContext} from '../adjacency-matrix/network-output-oracle-test-utils';
+
+it('catchment adapter scores demand-major and facility-major costs without reversing directed trips', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const facilityRows of [false, true]) {
+    const context = createOracleContext(device);
+    const {graph, input, output, read} = context;
+    try {
+      const scores = output('scores', 'float32', 2);
+      const ratios = output('ratios', 'float32', 2);
+      const complete = output('complete', 'uint32');
+      addNetworkCatchmentAdapter(graph, {
+        matrix: {
+          values: input('costs', 'float32', facilityRows ? [3, 1, 10, 1] : [3, 10, 1, 1]),
+          rowCount: 2,
+          columnCount: 2,
+          startNodes: input('starts', 'uint32', facilityRows ? [2, 3] : [0, 1]),
+          targetNodes: input('targets', 'uint32', facilityRows ? [0, 1] : [2, 3]),
+          startsPerRow: 1,
+          direction: facilityRows ? 'target-to-start' : 'start-to-target',
+          converged: input('converged', 'uint32', [1])
+        },
+        facilityAxis: facilityRows ? 'rows' : 'columns',
+        trips: 'demand-to-facility',
+        supply: input('supply', 'float32', [2, 8]),
+        demand: input('demand', 'float32', [1, 1]),
+        parameters: input('parameters', 'float32', [5, 0, 0, 1]),
+        output: scores,
+        ratios,
+        complete
+      });
+      context.run();
+      // At cutoff 5 facility 0 serves both demands (ratio 2/2=1); facility 1
+      // serves only demand 1 (ratio 8/1=8). Thus A=[1,1+8], independently of storage.
+      expect(await read(ratios)).toEqual([1, 8]);
+      expect(await read(scores)).toEqual([1, 9]);
+      expect(await read(complete)).toEqual([1]);
+    } finally {
+      context.destroy();
+    }
+  }
+});
 import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 import {
   GPUParameterBuffer,
@@ -38,7 +83,98 @@ import {
   type AccessibilitySeed,
   type OracleParameters
 } from './network-accessibility-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
+
+it('nested catchment retains certified incumbents or suppresses unreported route loss and recovers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const method of ['2sfca', '3sfca'] as const) {
+    for (const publicStatus of [false, true]) {
+      const harness = createOptimizationHarness(device);
+      const costs = harness.input('float32', Float32Array.of(2, 7));
+      const costsComplete = harness.input('uint32', Uint32Array.of(1));
+      const costLimit = harness.input('float32', Float32Array.of(2));
+      const output = harness.output('float32', 2);
+      const ratios = harness.output('float32', 1);
+      const cumulative = harness.output('float32', 2);
+      const gravity = harness.output('float32', 2);
+      const complete = publicStatus ? harness.output('uint32', 1) : undefined;
+      const read = await harness.run(
+        new GPUNetworkAccessibility({
+          costs,
+          costsComplete,
+          costLimit,
+          opportunityWeights: harness.input('float32', Float32Array.of(12)),
+          parameters: harness.input(
+            'float32',
+            getGPUNetworkAccessibilityParameterValues({threshold: 5})
+          ),
+          cumulative,
+          gravity,
+          catchment: {
+            method,
+            demand: harness.input('float32', Float32Array.of(3, 4)),
+            output,
+            ratios
+          },
+          status: complete ? {complete} : undefined
+        }),
+        (read, encoding) => {
+          // Only population 3 is within cutoff 5: R=12/3=4 and A=[4,0].
+          expect(read(output)).toEqual(publicStatus ? [4, 0] : [NaN, NaN]);
+          expect(read(ratios)).toEqual(publicStatus ? [4] : [NaN]);
+          expect(read(cumulative)).toEqual(publicStatus ? [12, 0] : [NaN, NaN]);
+          expect(read(gravity)).toEqual(publicStatus ? [12, 0] : [NaN, NaN]);
+          if (complete) expect(read(complete)).toEqual([0]);
+          harness.rewrite(costLimit, Float32Array.of(5));
+          harness.rewrite(costsComplete, Uint32Array.of(encoding === 0 ? 0 : 1));
+        },
+        3
+      );
+      expect(read(output)).toEqual([4, 0]);
+      expect(read(ratios)).toEqual([4]);
+      expect(read(cumulative)).toEqual([12, 0]);
+      expect(read(gravity)).toEqual([12, 0]);
+      if (complete) expect(read(complete)).toEqual([1]);
+    }
+  }
+});
+
+for (const evidence of ['costsComplete', 'costLimit'] as const) {
+  it(`score-only graph suppresses supplied ${evidence} loss without a public certificate`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const harness = createOptimizationHarness(device);
+    const costsComplete =
+      evidence === 'costsComplete' ? harness.input('uint32', Uint32Array.of(0)) : undefined;
+    const costLimit =
+      evidence === 'costLimit' ? harness.input('float32', Float32Array.of(2)) : undefined;
+    const cumulative = harness.output('float32', 2);
+    const gravity = harness.output('float32', 2);
+    const read = await harness.run(
+      new GPUNetworkAccessibility({
+        costs: harness.input('float32', Float32Array.of(2, 7)),
+        opportunityWeights: harness.input('float32', Float32Array.of(12)),
+        parameters: harness.input(
+          'float32',
+          getGPUNetworkAccessibilityParameterValues({threshold: 5})
+        ),
+        costsComplete,
+        costLimit,
+        cumulative,
+        gravity
+      }),
+      read => {
+        expect(read(cumulative)).toEqual([NaN, NaN]);
+        expect(read(gravity)).toEqual([NaN, NaN]);
+        if (costsComplete) harness.rewrite(costsComplete, Uint32Array.of(1));
+        if (costLimit) harness.rewrite(costLimit, Float32Array.of(5));
+      }
+    );
+    expect(read(cumulative)).toEqual([12, 0]);
+    expect(read(gravity)).toEqual([12, 0]);
+  });
+}
 
 function toOracleParameters(parameters: GPUNetworkAccessibilitySettings): OracleParameters {
   return {
@@ -411,6 +547,166 @@ it('GPUNetworkAccessibility end to end: snapped opportunities, lane-batched matr
 
   compiled.destroy();
   parameters.destroy();
+  for (const buffer of buffers) {
+    buffer.destroy();
+  }
+});
+
+/** Runs `GPUNetworkAccessibility` once on caller values and reads cumulative and status.complete. */
+async function runAccessibilityStatus(
+  device: Device,
+  props: {
+    costs: number[];
+    weights: number[];
+    costsComplete: number;
+    costLimit?: number;
+    threshold: number;
+  }
+): Promise<{cumulative: number[]; complete: number}> {
+  const graph = new GPUCommandGraph(device, {id: 'accessibility-status'});
+  const buffers: Buffer[] = [];
+  const input = <Format extends 'uint32' | 'float32'>(
+    id: string,
+    values: Float32Array | Uint32Array,
+    format: Format
+  ) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return importGraphBuffer(graph, id, buffer, format, values.length);
+  };
+  const rowCount = props.costs.length / props.weights.length;
+  const cumulativeBuffer = createOutputBuffer(device, rowCount);
+  const completeBuffer = createOutputBuffer(device, 1);
+  buffers.push(cumulativeBuffer, completeBuffer);
+  graph.add(
+    new GPUNetworkAccessibility({
+      id: 'accessibility',
+      costs: input('costs', Float32Array.from(props.costs), 'float32'),
+      orientation: 'origin-rows',
+      opportunityWeights: input('weights', Float32Array.from(props.weights), 'float32'),
+      parameters: input(
+        'parameters',
+        getGPUNetworkAccessibilityParameterValues({threshold: props.threshold}),
+        'float32'
+      ),
+      costsComplete: input('costs-complete', Uint32Array.of(props.costsComplete), 'uint32'),
+      costLimit:
+        props.costLimit === undefined
+          ? undefined
+          : input('cost-limit', Float32Array.of(props.costLimit), 'float32'),
+      cumulative: importGraphBuffer(graph, 'cumulative', cumulativeBuffer, 'float32', rowCount),
+      status: {complete: importGraphBuffer(graph, 'complete', completeBuffer, 'uint32', 1)}
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const result = {
+    cumulative: await readFloat32(cumulativeBuffer, rowCount),
+    complete: (await readUint32(completeBuffer, 1))[0]
+  };
+  compiled.destroy();
+  for (const buffer of buffers) {
+    buffer.destroy();
+  }
+  return result;
+}
+
+it('GPUNetworkAccessibility status.complete follows the matrix word and the cost limit (NET-101, NET-103)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // One origin row: costs 1, 5 and unreached. Expected by hand: complete = costsComplete != 0 and
+  // threshold <= costLimit; cumulative counts the finite costs within the threshold.
+  const costs = [1, 5, Infinity];
+  const weights = [1, 1, 1];
+  for (const [costsComplete, costLimit, threshold, expectedComplete, expectedCumulative] of [
+    [1, 10, 5, 1, 2],
+    [1, 10, 10, 1, 2],
+    [0, 10, 10, 0, 2],
+    [1, 10, 20, 0, 2],
+    [1, 10, Infinity, 0, 2],
+    [1, Infinity, Infinity, 1, 2],
+    [1, undefined, Infinity, 1, 2],
+    [0, undefined, 1, 0, 1]
+  ] as const) {
+    const result = await runAccessibilityStatus(device, {
+      costs,
+      weights,
+      costsComplete,
+      costLimit,
+      threshold
+    });
+    const label = `costsComplete ${costsComplete}, costLimit ${costLimit}, threshold ${threshold}`;
+    expect(result.complete, label).toBe(expectedComplete);
+    expect(result.cumulative, label).toEqual([expectedCumulative]);
+  }
+});
+
+it('GPUNetworkAccessibility reports an exhausted cost matrix as incomplete (NET-101)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A 512-node directed path with unit weights, searched from node 0 for one relaxation round of
+  // one hop: the search cannot reach node 511 (cost 511), so the matrix is truncated. Before the
+  // fix the cumulative count below 512 had no completeness signal.
+  const nodeCount = 512;
+  const offsets = Uint32Array.from({length: nodeCount + 1}, (_, node) =>
+    Math.min(node, nodeCount - 1)
+  );
+  const neighbors = Uint32Array.from({length: nodeCount - 1}, (_, edge) => edge + 1);
+  const edgeWeights = new Float32Array(nodeCount - 1).fill(1);
+  const graph = new GPUCommandGraph(device, {id: 'exhausted-matrix'});
+  const buffers: Buffer[] = [];
+  const input = <Format extends 'uint32' | 'float32'>(
+    id: string,
+    values: Float32Array | Uint32Array,
+    format: Format
+  ) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return importGraphBuffer(graph, id, buffer, format, values.length);
+  };
+  const converged = createTransientView(graph, 'exhausted-converged', 'uint32', 1);
+  const matrix = createTransientView(graph, 'exhausted-costs', 'float32', nodeCount);
+  const cumulativeBuffer = createOutputBuffer(device, 1);
+  const completeBuffer = createOutputBuffer(device, 1);
+  buffers.push(cumulativeBuffer, completeBuffer);
+  graph.add(
+    new GPUNetworkCostMatrix({
+      id: 'matrix',
+      topology: {
+        offsets: input('offsets', offsets, 'uint32'),
+        neighbors: input('neighbors', neighbors, 'uint32'),
+        weights: input('edge-weights', edgeWeights, 'float32')
+      },
+      startNodes: input('start-nodes', Uint32Array.of(0), 'uint32'),
+      maximumIterations: 1,
+      localIterations: 1,
+      output: {costs: matrix, status: {converged}}
+    })
+  );
+  graph.add(
+    new GPUNetworkAccessibility({
+      id: 'accessibility',
+      costs: matrix,
+      orientation: 'origin-rows',
+      opportunityWeights: input('weights', new Float32Array(nodeCount).fill(1), 'float32'),
+      parameters: input(
+        'parameters',
+        getGPUNetworkAccessibilityParameterValues({threshold: Infinity}),
+        'float32'
+      ),
+      costsComplete: converged,
+      cumulative: importGraphBuffer(graph, 'cumulative', cumulativeBuffer, 'float32', 1),
+      status: {complete: importGraphBuffer(graph, 'complete', completeBuffer, 'uint32', 1)}
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const [cumulative] = await readFloat32(cumulativeBuffer, 1);
+  expect(Number.isFinite(cumulative)).toBe(true);
+  expect(cumulative).toBeGreaterThanOrEqual(1);
+  expect(cumulative).toBeLessThan(nodeCount);
+  expect((await readUint32(completeBuffer, 1))[0]).toBe(0);
+  compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();
   }

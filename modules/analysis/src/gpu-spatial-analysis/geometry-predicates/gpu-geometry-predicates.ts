@@ -17,21 +17,30 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateMaximumCount,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSegmentIntersectionMaximumVertexCount,
-  GPUSegmentIntersection,
   type GPUSegmentGeometry
 } from '../segment-intersection/index';
+import {createSegmentPairNodes} from '../segment-intersection/segment-pair-nodes';
 import {SEGMENT_PREDICATES_WGSL} from '../segment-intersection/segment-intersection-wgsl';
 import type {GPUSpatialJoinGeometry} from '../spatial-join/index';
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {validateGPUMultipartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {GEOMETRY_EQUALITY_DISTANCE_WGSL} from './geometry-equality-distance-wgsl';
+import {createAlignedRelateNodes} from './aligned-relate';
+import {snapshotJoinGeometry} from '../spatial-join/spatial-join-construction-snapshot';
 
-/** Geometry predicates currently support single point/line features and polygon hierarchies. */
-export type GPUGeometryPredicatesGeometry = GPUSpatialJoinGeometry &
-  ({kind: 'polygons'} | {featureOffsets?: never});
+/** Point, multipoint, line, multiline and polygon hierarchies accepted by geometry predicates. */
+export type GPUGeometryPredicatesGeometry = GPUSpatialJoinGeometry;
 import {
   getPredicateFeatureCount,
   getPredicateGeometryBindings,
@@ -64,13 +73,14 @@ export type GPUGeometryPredicatesOutput = {
    * Shapely `is_simple`: 1 when the feature has no self-intersection. Linestrings use
    * {@link GPUSegmentIntersection} in self mode (a closed linestring may meet itself only at its
    * ends). Polygons are simple when no ring crosses or touches itself; rings that meet each other
-   * are not checked (`GPUGeometryValidity` does that). Points are always simple. Needs `overflow`
+   * are not checked (`GPUGeometryValidity` does that). Multipoints are simple iff no point repeats;
+   * multiline parts may meet only at endpoints of two open parts. Single points are always simple. Needs `overflow`
    * and `intersectionCapacity`.
    */
   isSimple?: GraphDataView<'uint32'>;
-  /** Shapely `is_ring` for linestrings: closed and simple. Always 0 for points and polygons. */
+  /** Shapely `is_ring` for single linestrings: closed and simple. Always 0 for multipart features, points and polygons. */
   isRing?: GraphDataView<'uint32'>;
-  /** Shapely `is_closed` for linestrings: two or more vertices, the last equal to the first. Always 0 otherwise. */
+  /** Shapely `is_closed`: a line has two or more vertices with coincident ends; a multiline is nonempty with every part closed. Always 0 for points and polygons. */
   isClosed?: GraphDataView<'uint32'>;
   /**
    * Shapely `is_ccw` for linestrings, evaluated like GEOS 3.13 `Orientation::isCCW` on the vertex
@@ -78,7 +88,7 @@ export type GPUGeometryPredicatesOutput = {
    * without its last vertex). Always 0 for points and polygons, like Shapely.
    */
   isCcw?: GraphDataView<'uint32'>;
-  /** Shapely `get_num_points`: vertex count of a linestring, `0` for points and polygons. */
+  /** Shapely `get_num_points`: vertex count of a single linestring, `0` for multipart features, points and polygons. */
   numPoints?: GraphDataView<'uint32'>;
   /** Shapely `count_coordinates` per feature: stored vertex count, including closing duplicates. */
   numCoordinates?: GraphDataView<'uint32'>;
@@ -89,7 +99,7 @@ export type GPUGeometryPredicatesOutput = {
   numInteriorRings?: GraphDataView<'uint32'>;
   /**
    * Shapely `get_num_geometries`: polygon count of a polygon feature (0 when it has none), `1` for
-   * points and linestrings.
+   * single points and linestrings. Multipart points/lines report their part count (0 when empty).
    */
   numGeometries?: GraphDataView<'uint32'>;
   /**
@@ -103,6 +113,24 @@ export type GPUGeometryPredicatesOutput = {
    * `0` equals `-0` and NaN equals NaN. Needs `other`.
    */
   equalsIdentical?: GraphDataView<'uint32'>;
+  /** Optional aligned DE-9IM matrix, in the join's packed format (bit 31 marks uncertainty). Valid empty operands retain their exterior cells; invalid pairs are suppressed to zero. */
+  relate?: GraphDataView<'uint32'>;
+  /** Opt-in feature-level topological predicates, evaluated from the aligned matrix. */
+  topological?: Partial<
+    Record<
+      | 'equals'
+      | 'intersects'
+      | 'contains'
+      | 'within'
+      | 'covers'
+      | 'coveredBy'
+      | 'touches'
+      | 'crosses'
+      | 'overlaps'
+      | 'containsProperly',
+      GraphDataView<'uint32'>
+    >
+  >;
   /**
    * Shapely `extract_unique_points`: the distinct vertices of every feature in first-occurrence
    * order, compacted. Capacity must be at least the vertex count so nothing can overflow.
@@ -115,9 +143,9 @@ export type GPUGeometryPredicatesOutput = {
    * Required with `uniquePositions`.
    */
   uniqueOffsets?: GraphDataView<'uint32'>;
-  /** Completeness scalars; `overflow` is required with `isSimple` or `isRing`. */
+  /** Independently requestable intersection scalars; `overflow` is required with `isSimple` or `isRing`. */
   status?: {
-    /** One-row flag set to 1 when the intersection list or BVH overflowed; `isSimple` may then be 1 for some non-simple features. */
+    /** One-row flag set to 1 when the intersection list or BVH overflowed; dependent simplicity and ring outputs are then 0 for every feature. */
     overflow?: GraphDataView<'uint32'>;
     /** Optional one-row unclamped number of same-feature segment intersections, for sizing `intersectionCapacity`. */
     intersectionCount?: GraphDataView<'uint32'>;
@@ -148,23 +176,25 @@ export type GPUGeometryPredicatesProps = {
    */
   otherSpatialContext?: GPUSpatialContext;
   /**
-   * Single point, single linestring or polygon/multipolygon features in the GeoArrow layout of
+   * Point, multipoint, linestring, multilinestring or polygon/multipolygon features in the GeoArrow layout of
    * `GPUSpatialPredicateJoin`. Each output column has one `uint32` row per feature, holding `0` or
-   * `1` for the boolean columns. Point/line featureOffsets (multipart grouping) are unsupported
-   * on both geometry and other and are refused at construction.
+   * `1` for the boolean columns. Optional point/line featureOffsets groups parts into features.
    */
   geometry: GPUGeometryPredicatesGeometry;
   /**
-   * Capacity of the internal list of same-feature segment intersections. With `isSimple` or
-   * `isRing`, `geometry.positions` has at most
-   * {@link getGPUSegmentIntersectionMaximumVertexCount} rows (4194304 on a default device). Required with `output.isSimple` or `output.isRing`.
+   * Capacity of the internal list of same-feature segment intersections. Required for every geometry
+   * kind when requesting `isSimple`, `isRing` or either intersection status word. `isSimple` and
+   * `isRing` additionally require `output.status.overflow`, including points. Non-point requests
+   * limit `geometry.positions` to {@link getGPUSegmentIntersectionMaximumVertexCount} rows
+   * (4194304 on a default device). Point-only status writers use no segment tree or tree vertex limit.
    */
   intersectionCapacity?: number;
   /** Power-of-two BVH leaf slots over segments. Defaults to the next power of two of the vertex count. */
   leafCapacity?: number;
   /**
    * Second geometry for element-wise comparison: feature `i` of `geometry` against feature `i` of
-   * `other`. Must have the same kind and feature count. Used by `output.equalsExact` and `output.equalsIdentical`.
+   * `other`. Must have the same feature count. Structural `equalsExact` and `equalsIdentical`
+   * also require the same kind; aligned `relate` and `topological` outputs permit different kinds.
    */
   other?: GPUGeometryPredicatesGeometry;
   /**
@@ -208,33 +238,158 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
   readonly vertexCount: number;
 
   constructor(props: GPUGeometryPredicatesProps) {
+    const contextFields = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'otherSpatialContext'
+    ]);
+    for (const field of ['spatialContext', 'otherSpatialContext'] as const) {
+      const context = contextFields[field];
+      validateRequirement(
+        contextFields.id ?? 'geometry-predicates',
+        context === undefined ||
+          (context !== null && typeof context === 'object' && !Array.isArray(context)),
+        `${field} must be an object descriptor; received ${typeof context === 'string' ? context : typeof context}`
+      );
+    }
+    const resolvedPrimaryContext = resolveGPUSpatialContext(
+      contextFields.id ?? 'geometry-predicates',
+      contextFields.spatialContext
+    );
+    const snapshot = Object.freeze({
+      ...snapshotConstructionFields(props, [
+        'geometry',
+        'other',
+        'intersectionCapacity',
+        'leafCapacity',
+        'parameters',
+        'output'
+      ]),
+      ...contextFields,
+      spatialContext: resolvedPrimaryContext,
+      otherSpatialContext:
+        contextFields.otherSpatialContext !== undefined &&
+        contextFields.otherSpatialContext === contextFields.spatialContext
+          ? resolvedPrimaryContext
+          : contextFields.otherSpatialContext
+    });
+    const output = snapshotConstructionFields(snapshot.output, [
+      'isSimple',
+      'isRing',
+      'isClosed',
+      'isCcw',
+      'numPoints',
+      'numCoordinates',
+      'numInteriorRings',
+      'numGeometries',
+      'equalsExact',
+      'equalsIdentical',
+      'relate',
+      'topological',
+      'uniquePositions',
+      'uniqueOffsets',
+      'status'
+    ]);
+    const spatialContext =
+      snapshot.spatialContext && snapshotConstructionSpatialContext(snapshot.spatialContext);
+    const otherSpatialContext =
+      snapshot.otherSpatialContext === snapshot.spatialContext
+        ? spatialContext
+        : snapshot.otherSpatialContext &&
+          snapshotConstructionSpatialContext(snapshot.otherSpatialContext);
+    const geometrySnapshot = snapshotJoinGeometry(snapshot.geometry);
+    props = Object.freeze({
+      ...snapshot,
+      spatialContext,
+      otherSpatialContext,
+      geometry: geometrySnapshot,
+      other:
+        snapshot.other === snapshot.geometry
+          ? geometrySnapshot
+          : snapshot.other && snapshotJoinGeometry(snapshot.other),
+      output: Object.freeze({
+        ...output,
+        topological:
+          output.topological &&
+          snapshotConstructionFields(output.topological, [
+            'equals',
+            'intersects',
+            'contains',
+            'within',
+            'covers',
+            'coveredBy',
+            'touches',
+            'crosses',
+            'overlaps',
+            'containsProperly'
+          ]),
+        status:
+          output.status &&
+          snapshotConstructionFields(output.status, ['overflow', 'intersectionCount'])
+      })
+    });
     this.id = props.id ?? 'geometry-predicates';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolvedPrimaryContext;
     if (props.otherSpatialContext !== undefined && !props.other) {
       throw new Error(`${this.id} otherSpatialContext needs other`);
     }
-    resolveGPUSecondarySpatialContext(
+    const resolvedOtherContext = resolveGPUSecondarySpatialContext(
       this.id,
       'other',
       props.otherSpatialContext,
       this.spatialContext
     );
-    props = {
+    props = Object.freeze({
       ...props,
-      geometry: snapshotSinglePartGeometryPort(this.id, 'geometry', props.geometry),
-      other: props.other && snapshotSinglePartGeometryPort(this.id, 'other', props.other)
-    };
+      spatialContext: this.spatialContext,
+      ...(props.otherSpatialContext !== undefined
+        ? {otherSpatialContext: resolvedOtherContext}
+        : {})
+    });
     this.props = props;
     const {id} = this;
+    const {topological, status, ...columns} = props.output;
+    const writable = Object.entries({
+      ...columns,
+      ...Object.fromEntries(
+        Object.entries(topological ?? {}).map(([name, view]) => [
+          `output.topological.${name}`,
+          view
+        ])
+      ),
+      ...Object.fromEntries(
+        Object.entries(status ?? {}).map(([name, view]) => [`output.status.${name}`, view])
+      )
+    });
+    const usesSegmentTree = props.geometry.kind !== 'points' && props.geometry.positions.length > 0;
+    validateOutlineOutputPasses(id, Object.fromEntries(writable), [
+      ['equalsExact', 'equalsIdentical'],
+      ...(usesSegmentTree ? [['output.status.overflow', 'output.status.intersectionCount']] : [])
+    ]);
+    // Public outputs reused as inputs must also respect each dispatch's read/write separation.
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      {isRing: props.geometry.kind !== 'points' ? props.output.isRing : undefined},
+      {isSimple: props.output.isSimple}
+    );
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      {isSimple: props.output.isSimple},
+      {
+        overflow: usesSegmentTree ? status?.overflow : undefined,
+        uniqueOffsets:
+          props.geometry.kind === 'points' && props.geometry.featureOffsets
+            ? props.output.uniqueOffsets
+            : undefined
+      }
+    );
+    validateGraphOutputsDisjointFromInputs(id, topological ?? {}, {relate: props.output.relate});
     const {geometry} = props;
     this.featureCount = getPredicateFeatureCount(geometry);
     this.vertexCount = geometry.positions.length;
     this.validateGeometry('geometry', geometry);
     if (this.featureCount < 1) {
       throw new Error(`${id} geometry must contain at least one feature`);
-    }
-    if (this.vertexCount < 1) {
-      throw new Error(`${id} geometry must contain at least one vertex`);
     }
     for (const [name, view] of [
       ['isSimple', props.output.isSimple],
@@ -256,12 +411,23 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       }
     }
     if (props.output.isSimple || props.output.isRing) {
-      if (!props.output.status?.overflow || !props.intersectionCapacity) {
+      if (!props.output.status?.overflow) {
         throw new Error(
           `${id} isSimple and isRing require status.overflow and intersectionCapacity`
         );
       }
-      validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
+    }
+    if (this.requiresIntersections() && props.geometry.kind !== 'points') {
+      validateRequirement(
+        id,
+        props.leafCapacity === undefined ||
+          props.leafCapacity >= this.vertexCount ||
+          Boolean(props.output.status?.overflow),
+        `leafCapacity ${String(props.leafCapacity)} below the right segment slot count ${this.vertexCount} requires output.status.overflow; use a complete tree for an intersectionCount-only request`
+      );
+    }
+    if (this.requiresIntersections()) {
+      validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity as number);
     }
     for (const [name, view] of [
       ['overflow', props.output.status?.overflow],
@@ -283,6 +449,26 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       if (other.kind !== geometry.kind || getPredicateFeatureCount(other) !== this.featureCount) {
         throw new Error(`${id} other must have the kind and feature count of geometry`);
       }
+    }
+    if (props.output.relate || Object.values(props.output.topological ?? {}).some(Boolean)) {
+      if (!props.other) throw new Error(`${id} output.relate and output.topological require other`);
+      this.validateGeometry('other', props.other);
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [props.output.relate, ...Object.values(props.output.topological ?? {})],
+        [...getPredicateGeometryViews(props.geometry), ...getPredicateGeometryViews(props.other)]
+      );
+      if (getPredicateFeatureCount(props.other) !== this.featureCount)
+        throw new Error(`${id} other must have the same feature count for aligned topology`);
+      for (const [name, view] of Object.entries({
+        relate: props.output.relate,
+        ...props.output.topological
+      }))
+        if (view) {
+          validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
+          if (view.length !== this.featureCount)
+            throw new Error(`${id} output.${name} length must equal feature count`);
+        }
     }
     if (props.output.equalsExact) {
       if (!props.parameters) {
@@ -317,6 +503,9 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
   private validateGeometry(name: string, geometry: GPUSpatialJoinGeometry): void {
     const {id} = this;
     validateSinglePackedView(geometry.positions, ['float32x2'], `${id} ${name}.positions`);
+    if (geometry.kind !== 'polygons' && geometry.featureOffsets) {
+      validateGPUMultipartGeometryPort(id, geometry);
+    }
     for (const view of getPredicateGeometryViews(geometry).slice(1)) {
       validateSinglePackedView(view, ['uint32'], `${id} ${name} offsets`);
       if (view.length < 1) {
@@ -325,11 +514,25 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     }
   }
 
+  private requiresIntersections(): boolean {
+    const {output} = this.props;
+    return Boolean(
+      output.isSimple ||
+        output.isRing ||
+        output.status?.intersectionCount ||
+        output.status?.overflow
+    );
+  }
+
   private getViews(): (GraphDataView | undefined)[] {
     const {props} = this;
     return [
       ...getPredicateGeometryViews(props.geometry),
-      ...((props.output.equalsExact || props.output.equalsIdentical) && props.other
+      ...((props.output.equalsExact ||
+        props.output.equalsIdentical ||
+        props.output.relate ||
+        props.output.topological) &&
+      props.other
         ? getPredicateGeometryViews(props.other)
         : []),
       props.output.isSimple,
@@ -340,12 +543,13 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       props.output.numCoordinates,
       props.output.numInteriorRings,
       props.output.numGeometries,
-      ...(props.geometry.kind !== 'points' && (props.output.isSimple || props.output.isRing)
-        ? [props.output.status?.overflow, props.output.status?.intersectionCount]
-        : []),
+      props.output.status?.overflow,
+      props.output.status?.intersectionCount,
       props.output.equalsExact ? props.parameters : undefined,
       props.output.equalsExact,
       props.output.equalsIdentical,
+      props.output.relate,
+      ...Object.values(props.output.topological ?? {}),
       props.output.uniquePositions,
       props.output.uniqueOffsets
     ];
@@ -361,7 +565,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       id,
       Object.fromEntries(this.getViews().map((view, index) => [String(index), view]))
     );
-    if (props.output.isSimple || props.output.isRing) {
+    if (this.requiresIntersections() && props.geometry.kind !== 'points') {
       // The simplicity and ring tests build a segment table over every vertex.
       validateMaximumCount(
         id,
@@ -370,7 +574,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         getGPUSegmentIntersectionMaximumVertexCount(graph.device)
       );
     }
-    if ((props.output.isSimple || props.output.isRing) && props.geometry.kind !== 'points')
+    if (this.vertexCount > 0 && this.requiresIntersections() && props.geometry.kind !== 'points')
       validateSegmentIntersectionScratch(
         graph,
         id,
@@ -382,13 +586,25 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     validateGeometryScratchByteLengths(graph, id, {
       featureColumns:
         featureCount * (props.output.equalsExact || props.output.equalsIdentical ? 12 : 4),
-      ...(props.output.uniquePositions ? getGeometrySortScratchByteLengths(this.vertexCount) : {})
+      ...(props.output.relate || props.output.topological
+        ? {
+            alignedMatrices: featureCount * 4,
+            ...(props.geometry.kind === 'polygons' || props.other?.kind === 'polygons'
+              ? {alignedPolygonRanges: featureCount * 8}
+              : {})
+          }
+        : {}),
+      ...(props.output.uniquePositions ||
+      (props.geometry.kind === 'points' && props.geometry.featureOffsets && props.output.isSimple)
+        ? getGeometrySortScratchByteLengths(this.vertexCount)
+        : {})
     });
     const {geometry} = props;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const geometryBindings = getPredicateGeometryBindings('g', geometry);
     const geometryWGSL = `${COMMON_WGSL}\n${getPredicateGeometryWGSL('g', geometry)}`;
     const isLines = geometry.kind === 'lines';
+    const isMultiLines = isLines && Boolean(geometry.featureOffsets);
 
     const addColumn = (
       name: string,
@@ -428,14 +644,26 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       addColumn(
         'is-closed',
         props.output.isClosed,
-        isLines ? `${vertexRange}\n  ${write(CLOSED_EXPRESSION)}` : write('0u')
+        isMultiLines
+          ? `let first = gFeatureOffsets[gFeatureOffsetsOffset + index];
+  let last = gFeatureOffsets[gFeatureOffsetsOffset + index + 1u];
+  var closed = first < last;
+  for (var line = first; line < last; line++) {
+    let start = gLineOffsets[gLineOffsetsOffset + line];
+    let end = gLineOffsets[gLineOffsetsOffset + line + 1u];
+    if (${CLOSED_EXPRESSION} == 0u) { closed = false; }
+  }
+  ${write('select(0u, 1u, closed)')}`
+          : isLines
+            ? `${vertexRange}\n  ${write(CLOSED_EXPRESSION)}`
+            : write('0u')
       );
     }
     if (props.output.numPoints) {
       addColumn(
         'num-points',
         props.output.numPoints,
-        isLines ? `${vertexRange}\n  ${write('end - start')}` : write('0u')
+        isLines && !isMultiLines ? `${vertexRange}\n  ${write('end - start')}` : write('0u')
       );
     }
     if (props.output.numCoordinates) {
@@ -465,7 +693,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       addColumn(
         'num-geometries',
         props.output.numGeometries,
-        geometry.kind === 'polygons'
+        geometry.featureOffsets
           ? write(
               'gFeatureOffsets[gFeatureOffsetsOffset + index + 1u] - gFeatureOffsets[gFeatureOffsetsOffset + index]'
             )
@@ -476,13 +704,15 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       addColumn(
         'is-ccw',
         props.output.isCcw,
-        isLines ? `${vertexRange}\n  ${write('getLineIsCcw(start, end - start)')}` : write('0u'),
+        isLines && !isMultiLines
+          ? `${vertexRange}\n  ${write('getLineIsCcw(start, end - start)')}`
+          : write('0u'),
         {declarations: `${SEGMENT_PREDICATES_WGSL}\n${CCW_WGSL}`}
       );
     }
 
     // Simplicity: segment intersections within each feature, folded into an AND per feature.
-    if ((props.output.isSimple || props.output.isRing) && geometry.kind !== 'points') {
+    if (this.requiresIntersections() && geometry.kind !== 'points') {
       const simple =
         props.output.isSimple ?? createTransientView(graph, `${id}-simple`, 'uint32', featureCount);
       nodes.push(...this.getSimplicityNodes(graph, geometry, simple));
@@ -490,26 +720,67 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         addColumn(
           'is-ring',
           props.output.isRing,
-          isLines
+          isLines && !isMultiLines
             ? `${vertexRange}\n  ${write(`select(0u, simple[simpleOffset + index], ${CLOSED_EXPRESSION} == 1u)`)}`
             : write('0u'),
           {bindings: [{name: 'simple', view: simple, type: 'u32', access: 'read'}]}
         );
       }
     } else {
-      if (props.output.isSimple) {
+      if (props.output.isSimple && !geometry.featureOffsets) {
         addColumn('is-simple', props.output.isSimple, write('1u'));
       }
       if (props.output.isRing) {
         addColumn('is-ring', props.output.isRing, write('0u'));
+      }
+      if (this.requiresIntersections()) {
+        for (const [name, view] of Object.entries(props.output.status ?? {})) {
+          if (view)
+            nodes.push(
+              createWGSLKernelNode(graph, {
+                id: `${id}-${name}-clear`,
+                operation: OPERATION,
+                bindings: [{name: 'output', view, type: 'u32', access: 'read_write'}],
+                invocationCount: 1,
+                body: 'output[outputOffset] = 0u;'
+              })
+            );
+        }
       }
     }
 
     if (props.output.equalsExact || props.output.equalsIdentical) {
       nodes.push(...this.getPairNodes(graph));
     }
-    if (props.output.uniquePositions && props.output.uniqueOffsets) {
-      nodes.push(...this.getUniquePointNodes(graph, geometryBindings, geometryWGSL));
+    if (props.output.relate || Object.values(props.output.topological ?? {}).some(Boolean))
+      nodes.push(...createAlignedRelateNodes(graph, id, props, featureCount));
+    const needsPointSimplicity =
+      geometry.kind === 'points' &&
+      Boolean(geometry.featureOffsets) &&
+      Boolean(props.output.isSimple);
+    if (props.output.uniquePositions || needsPointSimplicity) {
+      const uniquePositions =
+        props.output.uniquePositions ??
+        createTransientView(graph, `${id}-unique-positions`, 'float32x2', this.vertexCount);
+      const uniqueOffsets =
+        props.output.uniqueOffsets ??
+        createTransientView(graph, `${id}-unique-offsets`, 'uint32', featureCount + 1);
+      nodes.push(
+        ...this.getUniquePointNodes(
+          graph,
+          geometryBindings,
+          geometryWGSL,
+          uniquePositions,
+          uniqueOffsets
+        )
+      );
+      if (needsPointSimplicity && props.output.isSimple)
+        addColumn(
+          'is-simple',
+          props.output.isSimple,
+          `${vertexRange}\n  ${write('select(0u, 1u, uniqueOffsets[uniqueOffsetsOffset + index + 1u] - uniqueOffsets[uniqueOffsetsOffset + index] == end - start)')}`,
+          {bindings: [{name: 'uniqueOffsets', view: uniqueOffsets, type: 'u32', access: 'read'}]}
+        );
     }
     return nodes;
   }
@@ -532,6 +803,22 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         body: 'output[outputOffset + index] = 1u;'
       })
     );
+    if (this.vertexCount === 0) {
+      for (const [name, view] of Object.entries(props.output.status ?? {}))
+        if (view)
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}-${name}-empty`,
+              operation: OPERATION,
+              invocationCount: 1,
+              bindings: [{name: 'output', view, type: 'u32', access: 'read_write'}],
+              body: 'output[outputOffset]=0u;'
+            })
+          );
+      return nodes;
+    }
+    const overflow =
+      props.output.status?.overflow ?? createTransientView(graph, `${id}-overflow`, 'uint32', 1);
     const pairLeft = createTransientView(graph, `${id}-pair-left`, 'uint32', capacity);
     const pairRight = createTransientView(graph, `${id}-pair-right`, 'uint32', capacity);
     const pairCount = createTransientView(graph, `${id}-pair-count`, 'uint32', 1);
@@ -539,7 +826,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     const leftRings = createTransientView(graph, `${id}-left-rings`, 'uint32', capacity);
     const rightRings = createTransientView(graph, `${id}-right-rings`, 'uint32', capacity);
     nodes.push(
-      ...new GPUSegmentIntersection({
+      ...createSegmentPairNodes(graph, {
         id: `${id}-intersection`,
         left: geometry,
         sameFeatureOnly: true,
@@ -550,7 +837,7 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
             rightRows: pairRight,
             status: {
               count: pairCount,
-              overflow: props.output.status?.overflow as GraphDataView<'uint32'>,
+              overflow,
               requiredCount: props.output.status?.intersectionCount
             }
           },
@@ -558,26 +845,72 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
           leftRings,
           rightRings
         }
-      }).getCommandNodes(graph)
+      })
     );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-simple-fold`,
         operation: OPERATION,
         variant: 'simple-fold',
-        bindings: [
-          {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
-          {name: 'leftFeatures', view: leftFeatures, type: 'u32', access: 'read'},
-          {name: 'leftRings', view: leftRings, type: 'u32', access: 'read'},
-          {name: 'rightRings', view: rightRings, type: 'u32', access: 'read'},
-          {name: 'simple', view: simple, type: 'atomic<u32>', access: 'read_write'}
-        ],
+        bindings:
+          geometry.kind === 'lines' && geometry.featureOffsets
+            ? [
+                ...getPredicateGeometryBindings('g', geometry),
+                {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
+                {name: 'pairLeft', view: pairLeft, type: 'u32', access: 'read'},
+                {name: 'pairRight', view: pairRight, type: 'u32', access: 'read'},
+                {name: 'simple', view: simple, type: 'atomic<u32>', access: 'read_write'}
+              ]
+            : [
+                {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
+                {name: 'leftFeatures', view: leftFeatures, type: 'u32', access: 'read'},
+                {name: 'leftRings', view: leftRings, type: 'u32', access: 'read'},
+                {name: 'rightRings', view: rightRings, type: 'u32', access: 'read'},
+                {name: 'simple', view: simple, type: 'atomic<u32>', access: 'read_write'}
+              ],
         invocationCount: capacity,
-        declarations: `const SAME_RING_ONLY: bool = ${geometry.kind === 'polygons'};`,
+        declarations:
+          geometry.kind === 'lines' && geometry.featureOffsets
+            ? `${COMMON_WGSL}\n${SEGMENT_PREDICATES_WGSL}\n${getPredicateGeometryWGSL('g', geometry)}
+fn isOpenPartEndpoint(line: u32, point: vec2f) -> bool {
+  let start = gLineOffsets[gLineOffsetsOffset + line];
+  let end = gLineOffsets[gLineOffsetsOffset + line + 1u];
+  if (end - start < 2u) { return false; }
+  let first = gVertex(start);
+  let last = gVertex(end - 1u);
+  return !samePoint(first, last) && (samePoint(point, first) || samePoint(point, last));
+}`
+            : `const SAME_RING_ONLY: bool = ${geometry.kind === 'polygons'};`,
         // Polygons only count a ring meeting itself; lines count every same-feature pair.
-        body: `if (index >= pairCount[pairCountOffset]) { return; }
+        body:
+          geometry.kind === 'lines' && geometry.featureOffsets
+            ? `if (index >= pairCount[pairCountOffset]) { return; }
+  let left = pairLeft[pairLeftOffset + index];
+  let right = pairRight[pairRightOffset + index];
+  let leftLine = gLastLine(${geometry.lineOffsets.length - 1}u, left);
+  let rightLine = gLastLine(${geometry.lineOffsets.length - 1}u, right);
+  if (leftLine != rightLine) {
+    let hit = classifySegments(gVertex(left), gVertex(left + 1u), gVertex(right), gVertex(right + 1u), false);
+    if ((hit.kind == KIND_TOUCH || hit.kind == KIND_COLLINEAR_TOUCH) &&
+        isOpenPartEndpoint(leftLine, hit.point) && isOpenPartEndpoint(rightLine, hit.point)) { return; }
+  }
+  atomicAnd(&simple[simpleOffset + gFeatureOfVertex(left)], 0u);`
+            : `if (index >= pairCount[pairCountOffset]) { return; }
   if (SAME_RING_ONLY && leftRings[leftRingsOffset + index] != rightRings[rightRingsOffset + index]) { return; }
   atomicAnd(&simple[simpleOffset + leftFeatures[leftFeaturesOffset + index]], 0u);`
+      })
+    );
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-simple-complete`,
+        operation: OPERATION,
+        variant: 'simple-complete',
+        bindings: [
+          {name: 'overflow', view: overflow, type: 'u32', access: 'read'},
+          {name: 'simple', view: simple, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: featureCount,
+        body: 'if (overflow[overflowOffset] != 0u) { simple[simpleOffset + index] = 0u; }'
       })
     );
     return nodes;
@@ -611,9 +944,29 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       if (countA != countB) { matches = false; break; }
     }
   }`;
+    } else if (
+      geometry.kind === 'lines' &&
+      other.kind === 'lines' &&
+      (geometry.featureOffsets || other.featureOffsets)
+    ) {
+      const first = (prefix: string, multipart: boolean) =>
+        multipart ? `${prefix}FeatureOffsets[${prefix}FeatureOffsetsOffset + index]` : 'index';
+      const last = (prefix: string, multipart: boolean) =>
+        multipart
+          ? `${prefix}FeatureOffsets[${prefix}FeatureOffsetsOffset + index + 1u]`
+          : 'index + 1u';
+      structureBody = `let firstA = ${first('a', Boolean(geometry.featureOffsets))};
+  let firstB = ${first('b', Boolean(other.featureOffsets))};
+  let lastA = ${last('a', Boolean(geometry.featureOffsets))};
+  let lastB = ${last('b', Boolean(other.featureOffsets))};
+  var matches = ${Boolean(geometry.featureOffsets) === Boolean(other.featureOffsets)} && lastA - firstA == lastB - firstB;
+  for (var part = 0u; matches && part < lastA - firstA; part++) {
+    let countA = aLineOffsets[aLineOffsetsOffset + firstA + part + 1u] - aLineOffsets[aLineOffsetsOffset + firstA + part];
+    let countB = bLineOffsets[bLineOffsetsOffset + firstB + part + 1u] - bLineOffsets[bLineOffsetsOffset + firstB + part];
+    if (countA != countB) { matches = false; }
+  }`;
     } else {
-      structureBody =
-        'let matches = (aVertexStart(index + 1u) - aVertexStart(index)) == (bVertexStart(index + 1u) - bVertexStart(index));';
+      structureBody = `let matches = ${Boolean(geometry.featureOffsets) === Boolean(other.featureOffsets)} && (aVertexStart(index + 1u) - aVertexStart(index)) == (bVertexStart(index + 1u) - bVertexStart(index));`;
     }
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -638,8 +991,12 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     const {parameters} = props;
     const {equalsExact, equalsIdentical} = props.output;
     const bindings: WGSLKernelBinding[] = [
-      {name: 'aPositions', view: geometry.positions, type: 'f32', access: 'read'},
-      {name: 'bPositions', view: other.positions, type: 'f32', access: 'read'},
+      ...(geometry.positions.length
+        ? [{name: 'aPositions', view: geometry.positions, type: 'f32', access: 'read'} as const]
+        : []),
+      ...(other.positions.length
+        ? [{name: 'bPositions', view: other.positions, type: 'f32', access: 'read'} as const]
+        : []),
       {name: 'pairLayout', view: layout, type: 'u32', access: 'read'}
     ];
     if (equalsExact && parameters) {
@@ -667,8 +1024,8 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
 const STRUCTURE_MISMATCH: u32 = ${STRUCTURE_MISMATCH}u;
 const WRITE_EXACT: bool = ${Boolean(equalsExact)};
 const WRITE_IDENTICAL: bool = ${Boolean(equalsIdentical)};
-fn readA(vertex: u32) -> vec2f { return vec2f(aPositions[aPositionsOffset + vertex * 2u], aPositions[aPositionsOffset + vertex * 2u + 1u]); }
-fn readB(vertex: u32) -> vec2f { return vec2f(bPositions[bPositionsOffset + vertex * 2u], bPositions[bPositionsOffset + vertex * 2u + 1u]); }`,
+fn readA(vertex: u32) -> vec2f { return ${geometry.positions.length ? 'vec2f(aPositions[aPositionsOffset + vertex * 2u], aPositions[aPositionsOffset + vertex * 2u + 1u])' : 'vec2f(0.0)'}; }
+fn readB(vertex: u32) -> vec2f { return ${other.positions.length ? 'vec2f(bPositions[bPositionsOffset + vertex * 2u], bPositions[bPositionsOffset + vertex * 2u + 1u])' : 'vec2f(0.0)'}; }`,
         body: `let count = pairLayout[pairLayoutOffset + index * 3u + 2u];
   var exactMatch = count != STRUCTURE_MISMATCH;
   var identicalMatch = exactMatch;
@@ -694,12 +1051,22 @@ fn readB(vertex: u32) -> vec2f { return vec2f(bPositions[bPositionsOffset + vert
   private getUniquePointNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     geometryBindings: WGSLKernelBinding[],
-    geometryWGSL: string
+    geometryWGSL: string,
+    uniquePositions: GraphDataView<'float32x2'>,
+    uniqueOffsets: GraphDataView<'uint32'>
   ): GPUCommandNode<Parameters>[] {
-    const {id, props, featureCount, vertexCount} = this;
-    const uniquePositions = props.output.uniquePositions as GraphDataView<'float32x2'>;
-    const uniqueOffsets = props.output.uniqueOffsets as GraphDataView<'uint32'>;
+    const {id, featureCount, vertexCount} = this;
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (vertexCount === 0)
+      return [
+        createWGSLKernelNode(graph, {
+          id: `${id}-unique-empty-offsets`,
+          operation: OPERATION,
+          invocationCount: featureCount + 1,
+          bindings: [{name: 'output', view: uniqueOffsets, type: 'u32', access: 'read_write'}],
+          body: 'output[outputOffset+index]=0u;'
+        })
+      ];
     const rows = (name: string) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', vertexCount);
     const keysY = rows('keys-y');
@@ -844,14 +1211,9 @@ fn identicalValue(first: f32, second: f32) -> bool {
 fn identicalPosition(first: vec2f, second: vec2f) -> bool {
   return identicalValue(first.x, second.x) && identicalValue(first.y, second.y);
 }
-// Distance at most tolerance, scaled so that tiny and huge offsets neither underflow nor overflow.
-fn withinTolerance(first: vec2f, second: vec2f, tolerance: f32) -> bool {
-  if (isNaNBits(first.x) || isNaNBits(first.y) || isNaNBits(second.x) || isNaNBits(second.y)) { return false; }
-  let delta = first - second;
-  let scale = max(abs(delta.x), abs(delta.y));
-  if (scale == 0.0) { return true; }
-  let scaled = delta / scale;
-  return scale * sqrt(scaled.x * scaled.x + scaled.y * scaled.y) <= tolerance;
+${GEOMETRY_EQUALITY_DISTANCE_WGSL}
+fn withinTolerance(first:vec2f,second:vec2f,tolerance:f32)->bool {
+ return geometryWithinTolerance(first,second,tolerance);
 }
 `;
 

@@ -14,7 +14,7 @@ import {
   GPU_RASTER_SECONDS_PER_YEAR
 } from '@luma-contributors/analysis/raster-analysis';
 import type {GPUTemporalContext} from '@luma-contributors/analysis/analysis-core';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   createRasterTimeSeriesHarness,
   getMaximumAbsoluteDifference
@@ -214,4 +214,218 @@ it('RTS-02 temporal resample fills a regular grid and flags extrapolation and ov
   for (const [wanted, actual] of finitePairs) {
     expect(actual).toBeCloseTo(wanted, 3);
   }
+});
+
+it('RT-130 interpolates in the same rounded coordinates used to bracket the grid', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  // Midpoint = 315569520 seconds. Float32 centred years are [-10.000000953674316,
+  // -9.999999046325684, 10.000000953674316] with separately rounded division.
+  // The common-coordinate midpoint fraction is 1/2 (value 50); exact elapsed spans
+  // instead give fraction about 30.095 and overshoot. Metal may use reciprocal division,
+  // so pin the interval independently of that permitted rounding choice.
+  const result = await harness.run(
+    new GPURasterTemporalResample({
+      cellCount: 1,
+      sliceCount: 3,
+      gridCount: 1,
+      values: harness.floats([0, 100, 200]),
+      parameters: harness.floats(
+        getGPURasterTemporalResampleParameterValues({gridStart: -10, gridStep: 1, maximumGap: 100})
+      ),
+      dateAxis: {
+        acquisitionTimes: harness.words(BigInt64Array.from([0, 1, 631139040], BigInt)),
+        temporalContext: CONTEXT
+      },
+      output: {
+        values: harness.output('values', 'float32', 1),
+        status: harness.output('status', 'uint32', 1)
+      }
+    })
+  );
+  expect(result['status']).toEqual([0]);
+  expect(Number.isFinite(result['values'][0])).toBe(true);
+  expect(result['values'][0]).toBeGreaterThanOrEqual(0);
+  expect(result['values'][0]).toBeLessThanOrEqual(100);
+});
+
+it('RT-131 returns an exact observation before checking its neighboring gap', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  // One exact year, midpoint half a year: grid [-.5, 0] is [exact first, interpolation].
+  const result = await harness.run(
+    new GPURasterTemporalResample({
+      cellCount: 1,
+      sliceCount: 2,
+      gridCount: 2,
+      values: harness.floats([7, 9]),
+      parameters: harness.floats(
+        getGPURasterTemporalResampleParameterValues({
+          gridStart: -0.5,
+          gridStep: 0.5,
+          maximumGap: 0.1
+        })
+      ),
+      dateAxis: {
+        acquisitionTimes: harness.words(BigInt64Array.from([0, 31556952], BigInt)),
+        temporalContext: CONTEXT
+      },
+      output: {
+        values: harness.output('values', 'float32', 2),
+        status: harness.output('status', 'uint32', 2)
+      }
+    })
+  );
+  expect(result['values'][0]).toBe(7);
+  expect(result['status']).toEqual([0, 2]);
+  expect(result['values'][1]).toBeNaN();
+});
+
+it('RT-130 B3 common-coordinate midpoint is 50 even when clamping would admit the wrong fraction', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  // Both direct float32 division and reciprocal multiplication give observations
+  // [-10.000000953674316, -9.99999713897705, 10.000000953674316]. The grid is their
+  // first midpoint: common-coordinate fraction .5 => 50. The exact 65-second divisor
+  // instead gives about .9260017 => 92.60017, which clamping cannot repair.
+  const result = await harness.run(
+    new GPURasterTemporalResample({
+      cellCount: 1,
+      sliceCount: 3,
+      gridCount: 1,
+      values: harness.floats([0, 100, 200]),
+      parameters: harness.floats(
+        getGPURasterTemporalResampleParameterValues({
+          gridStart: -9.999999046325684,
+          gridStep: 1,
+          maximumGap: 100
+        })
+      ),
+      dateAxis: {
+        acquisitionTimes: harness.words(BigInt64Array.from([0, 65, 631139040], BigInt)),
+        temporalContext: CONTEXT
+      },
+      output: {
+        values: harness.output('values', 'float32', 1),
+        status: harness.output('status', 'uint32', 1)
+      }
+    })
+  );
+  expect(result['status']).toEqual([0]);
+  expect(result['values']).toHaveLength(1);
+  expect(Number.isFinite(result['values'][0])).toBe(true);
+  expect(result['values'][0]).toBeCloseTo(50, 5);
+});
+
+it('FLT-13 preserves exact Int64 target acquisitions and returns a retained hit before gap gating', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  const first = 1700000000000n;
+  const result = await harness.run(
+    new GPURasterTemporalResample({
+      cellCount: 1,
+      sliceCount: 3,
+      gridCount: 1,
+      values: harness.floats([7, 11, 13]),
+      parameters: harness.floats(
+        getGPURasterTemporalResampleParameterValues({gridStart: -1, gridStep: 1, maximumGap: 1e-10})
+      ),
+      dateAxis: {
+        acquisitionTimes: harness.words(
+          BigInt64Array.of(first, first + 1000n, first + 2n * 31556952000n)
+        ),
+        temporalContext: {...CONTEXT, unit: 'millisecond'}
+      },
+      targetTimes: harness.words(BigInt64Array.of(first)),
+      output: {
+        values: harness.output('exact', 'float32', 1),
+        status: harness.output('code', 'uint32', 1)
+      }
+    })
+  );
+  expect(result['exact']).toEqual([7]);
+  expect(result['code']).toEqual([0]);
+});
+
+it('FLT-13 RT-130 interpolates inside rounded fractional-year brackets', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  const result = await harness.run(
+    new GPURasterTemporalResample({
+      cellCount: 1,
+      sliceCount: 3,
+      gridCount: 1,
+      values: harness.floats([0, 100, 200]),
+      parameters: harness.floats(
+        getGPURasterTemporalResampleParameterValues({gridStart: -9.999999046325684, gridStep: 1})
+      ),
+      dateAxis: {
+        acquisitionTimes: harness.words(BigInt64Array.of(0n, 65n, 631139040n)),
+        temporalContext: CONTEXT
+      },
+      output: {
+        values: harness.output('half', 'float32', 1),
+        status: harness.output('code', 'uint32', 1)
+      }
+    })
+  );
+  // The target is the midpoint of the first two represented fractional-year coordinates.
+  expect(result['half']).toEqual([50]);
+  expect(result['code']).toEqual([0]);
+});
+
+it('review B1 interpolates an interior Int64 target across a low-word rollover', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  const result = await harness.run(
+    new GPURasterTemporalResample({
+      cellCount: 1,
+      sliceCount: 2,
+      gridCount: 1,
+      values: harness.floats([0, 100]),
+      parameters: harness.floats(
+        getGPURasterTemporalResampleParameterValues({gridStart: 0, gridStep: 1})
+      ),
+      dateAxis: {
+        acquisitionTimes: harness.words(BigInt64Array.of(4294967294n, 4294967298n)),
+        temporalContext: {...CONTEXT, unit: 'millisecond'}
+      },
+      targetTimes: harness.words(BigInt64Array.of(4294967296n)),
+      output: {
+        values: harness.output('interior', 'float32', 1),
+        status: harness.output('code', 'uint32', 1)
+      }
+    })
+  );
+  // Exact elapsed numerator 2 / denominator 4; the target has low word 0, high word 1.
+  expect(result['interior']).toEqual([50]);
+  expect(result['code']).toEqual([0]);
+});
+
+it('review earlier-date note keeps both 419-day helper endpoints inside support', async () => {
+  const {getGPURasterCentredFractionalYears} = await import(
+    '../../../src/raster-analysis/raster-time-series/raster-irregular-date-axis'
+  );
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  const times = BigInt64Array.of(0n, 36201600000n);
+  const years = getGPURasterCentredFractionalYears(times, 'millisecond');
+  const result = await harness.run(
+    new GPURasterTemporalResample({
+      cellCount: 1,
+      sliceCount: 2,
+      gridCount: 2,
+      gridEnd: years[1],
+      values: harness.floats([7, 11]),
+      parameters: harness.floats(
+        getGPURasterTemporalResampleParameterValues({
+          gridStart: years[0],
+          gridStep: years[1] - years[0]
+        })
+      ),
+      dateAxis: {
+        acquisitionTimes: harness.words(times),
+        temporalContext: {...CONTEXT, unit: 'millisecond'}
+      },
+      output: {
+        values: harness.output('endpoints', 'float32', 2),
+        status: harness.output('code', 'uint32', 2)
+      }
+    })
+  );
+  expect(result['endpoints']).toEqual([7, 11]);
+  expect(result['code']).toEqual([0, 0]);
 });

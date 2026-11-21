@@ -108,9 +108,10 @@ fn readItem(row: u32) -> vec4f {
     );
   }
   const boundsWGSL = bounds
-    ? `for (var word = 0u; word < 4u; word++) {
-    parameters[parametersOffset + word] = bounds[boundsOffset + word];
-  }`
+    ? `parameters[parametersOffset] = bounds[boundsOffset];
+  parameters[parametersOffset + 1u] = bounds[boundsOffset + 1u];
+  parameters[parametersOffset + 2u] = bounds[boundsOffset + 2u];
+  parameters[parametersOffset + 3u] = bounds[boundsOffset + 3u];`
     : `parameters[parametersOffset] = -180.0;
   parameters[parametersOffset + 1u] = -90.0;
   parameters[parametersOffset + 2u] = 180.0;

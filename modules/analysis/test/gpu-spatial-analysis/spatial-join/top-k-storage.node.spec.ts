@@ -202,7 +202,7 @@ it.each([
       queryCount,
       features: {kind: 'points', positions: view('float32x2', 1100)},
       featureCount: 1100,
-      k: 256,
+      neighborCount: 256,
       capacity: 256,
       leafCapacity: 2048,
       spatialSort: false,
@@ -294,7 +294,7 @@ it('rejects aligned nearest output ranges before declaring graph resources', () 
   const contributor = new GPUNearestFeatureJoin({
     queries: {kind: 'points', positions: view('float32x2', queryCount)},
     features: {kind: 'points', positions: view('float32x2', 8)},
-    k: capacity,
+    neighborCount: capacity,
     output: {
       neighborIds,
       neighborCounts: view('uint32', queryCount),
@@ -348,7 +348,7 @@ it('fits 63 large-k scratch rows when fewer than 64 rows fit a binding', () => {
     id: 'large-selection',
     queries: {kind: 'points', positions: view('float32x2', 64)},
     features: {kind: 'points', positions: view('float32x2', 3)},
-    k: 262144,
+    neighborCount: 262144,
     querySort: false,
     spatialSort: false,
     output: {
@@ -384,7 +384,7 @@ it.each([
     queryCount,
     features: {kind: 'points', positions: view('float32x2', 3)},
     featureCount: 3,
-    k: 65,
+    neighborCount: 65,
     capacity: 65,
     leafCapacity: 4,
     spatialSort: false,
@@ -501,9 +501,7 @@ it.each([
   const declare = vi.spyOn(graph, 'createTransientBuffer');
   try {
     expect(() => new GPUNearestFeatureWeights(props)).toThrowError(
-      new Error(
-        'nearest-feature-weights one physical buffer must not be bound read-only and writable in the same dispatch'
-      )
+      'nearest-feature-weights one physical buffer must not be bound read-only and writable in the same dispatch'
     );
     expect(declare).not.toHaveBeenCalled();
   } finally {
@@ -522,7 +520,7 @@ it('nearest rejects aligned writable aliases across fields and chunks', () => {
       new GPUNearestFeatureJoin({
         queries: {kind: 'points', positions: view('float32x2', 1)},
         features: {kind: 'points', positions: view('float32x2', 1)},
-        k: 65,
+        neighborCount: 65,
         output: {
           neighborIds: graph.createDataView(backing.buffer, {format: 'uint32', length: 65}),
           neighborCounts: graph.createDataView(backing.buffer, {

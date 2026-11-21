@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
@@ -295,6 +296,16 @@ export class CPUCoregionalizationFitOperation extends GPUCPUOperation {
       loadings: props.output.loadings,
       diagnostics: props.output.diagnostics
     };
+    validateOperationGraphNames(
+      id,
+      {
+        distances: props.distances,
+        semivariances: props.semivariances,
+        pairCounts: props.pairCounts,
+        parameters: props.parameters
+      },
+      outputNames
+    );
     super({
       id,
       inputs: {

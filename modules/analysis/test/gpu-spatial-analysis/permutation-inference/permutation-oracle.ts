@@ -8,7 +8,11 @@ import type {
   GPUMultipleTestingMethod
 } from '../../../src/analysis-core/contracts/index';
 import {getMultipleTestingAdjustedPValues} from '../../../src/gpu-spatial-analysis/multiple-testing/index';
-import {getPermutationPValue} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-alternative';
+import {
+  getPermutationPValue,
+  getSequentialPermutationPValue,
+  resolveStopAfterExceedances
+} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-alternative';
 import {PhiloxStream} from '../../../src/analysis-core/kernels/permutation-random';
 import {
   getSwapOrNotPermutationIndex,
@@ -22,6 +26,7 @@ import {
   type GPULocalPermutationStatistic
 } from '../../../src/gpu-spatial-analysis/permutation-inference/gpu-local-permutation-test';
 import {getPermutationSeedKey} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-parameters';
+import {isPermutationRatioSignificant} from '../../../src/gpu-spatial-analysis/permutation-inference/permutation-significance';
 
 const f32 = Math.fround;
 
@@ -29,14 +34,21 @@ const f32 = Math.fround;
 export type OracleAlternative = GPUInferenceAlternative;
 
 /** Exceedance count `M` and p-value multiplier for the alternative (see `getPermutationPValue`). */
-export function getOracleExceedance(
-  alternative: OracleAlternative,
+export function getOracleExceedance<Alternative extends OracleAlternative>(
+  alternative: Alternative,
   greater: number,
   lesser: number,
   permutations: number,
-  folded = 0
+  ...folded: 'folded' extends NoInfer<Alternative> ? [folded: number] : [folded?: number]
 ): {count: number; multiplier: number} {
-  const {exceedances} = getPermutationPValue(alternative, {greater, lesser, folded}, permutations);
+  const {exceedances} =
+    alternative === 'folded'
+      ? getPermutationPValue('folded', {greater, lesser, folded: folded[0] as number}, permutations)
+      : getPermutationPValue(
+          alternative as Exclude<OracleAlternative, 'folded'>,
+          {greater, lesser},
+          permutations
+        );
   return {count: exceedances, multiplier: alternative === 'two-sided' ? 2 : 1};
 }
 
@@ -377,8 +389,17 @@ export function computeLocalPermutationOracle(input: {
     overflow: countIsValid ? 0 : 1,
     islandCount: compacted.islandCount
   };
-  const multiplier = getOracleExceedance(alternative, 0, 0, permutations).multiplier;
-  const stopAfter = input.stopAfterExceedances;
+  const rejectedNegative =
+    (statistic === 'localG' || statistic === 'localGStar') &&
+    compacted.rows.some(row => values[row] < 0);
+  if (rejectedNegative) result.overflow = 1;
+  const multiplier = alternative === 'two-sided' ? 2 : 1;
+  const stopAfter = resolveStopAfterExceedances(
+    'computeLocalPermutationOracle',
+    input.stopAfterExceedances,
+    alternative,
+    input.maximumPermutations ?? 2 ** 20
+  );
   /** Stopping index of each row that reached the target. */
   const stoppedAt = new Map<number, number>();
   for (let row = 0; row < rowCount; row++) {
@@ -387,7 +408,7 @@ export function computeLocalPermutationOracle(input: {
     if (position >= 0 && countIsValid && slots.length > input.maximumNeighbors) {
       result.overflow = 1;
     }
-    if (position < 0 || slots.length > input.maximumNeighbors) {
+    if (rejectedNegative || position < 0 || slots.length > input.maximumNeighbors) {
       result.exceedances.push(0xffffffff);
       result.observed.push(NaN);
       result.quadrants.push(0);
@@ -413,22 +434,28 @@ export function computeLocalPermutationOracle(input: {
       lagB = f32(lagB + f32(slotWeight(slot) * drawnB(dy)));
     }
     const observed = term(fx, fy, lagA, lagB);
-    const x = values[row];
+    // Only local G needs a focus-excluding reduction. An eagerly evaluated object
+    // entry made every other statistic quadratic even on a one-neighbor cycle.
+    const complement =
+      statistic === 'localG'
+        ? compacted.rows.reduce((sum, other) => sum + (other === row ? 0 : values[other]), 0)
+        : 1;
     const scaled = {
       localMoran: ((count - 1) * observed) / sumSquares,
       localGeary: (observed * count) / sumSquares,
-      localG: lagA / (sumX - x),
+      localG: lagA / complement,
       localGStar: observed / sumX,
       localBivariateMoran: ((count - 1) * observed) / Math.sqrt(sumSquares * sumSquaresY),
       localLeeL: (count * observed) / Math.sqrt(sumSquares * sumSquaresY),
       localJoinCount: observed,
       localBivariateJoinCount: observed
     }[statistic];
-    result.observed.push(scaled);
+    result.observed.push(Number.isFinite(scaled) ? scaled : NaN);
     result.quadrants.push(lagA > 0 ? (fx > 0 ? 1 : 2) : fx > 0 ? 4 : 3);
     const others = count - 1;
     if (
       !countIsValid ||
+      !Number.isFinite(scaled) ||
       slots.length === 0 ||
       slots.length > others ||
       (spec.joinCount && observed === 0)
@@ -463,6 +490,7 @@ export function computeLocalPermutationOracle(input: {
       simulatedValues.push(simulated);
       if (
         stopAfter !== undefined &&
+        alternative !== 'folded' &&
         getPermutationPValue(alternative, {greater, lesser}, permutations).exceedances >= stopAfter
       ) {
         stoppedAt.set(row, permutation + 1);
@@ -491,7 +519,7 @@ export function computeLocalPermutationOracle(input: {
   const method = input.multipleTesting ?? 'none';
   const adjusted = getMultipleTestingAdjustedPValues(result.pseudoPValues, method);
   const level = f32(input.significanceLevel);
-  const scale = f32(permutations + 1);
+  const scale = permutations + 1;
   for (const [row, exceedance] of result.exceedances.entries()) {
     const tested = exceedance !== 0xffffffff;
     result.adjustedPValues.push(tested ? adjusted[row] : NaN);
@@ -499,9 +527,16 @@ export function computeLocalPermutationOracle(input: {
       tested &&
         (method === 'none'
           ? stoppedAt.has(row)
-            ? f32(Math.min(multiplier * exceedance, stoppedAt.get(row)!)) <=
-              f32(level * f32(stoppedAt.get(row)!))
-            : f32(Math.min(multiplier * (exceedance + 1), permutations + 1)) <= f32(level * scale)
+            ? isPermutationRatioSignificant(
+                Math.min(multiplier * exceedance, stoppedAt.get(row)!),
+                stoppedAt.get(row)!,
+                level
+              )
+            : isPermutationRatioSignificant(
+                Math.min(multiplier * (exceedance + 1), permutations + 1),
+                scale,
+                level
+              )
           : adjusted[row] <= level)
         ? 1
         : 0
@@ -642,14 +677,69 @@ export function computeGlobalPermutationOracle(input: {
   const scale = {
     moran: count / (s0 * sumSquares),
     geary: (count - 1) / (2 * s0 * sumSquares),
-    getisOrdG: 1 / (count * (count - 1) * meanX * meanX - sumSquares),
+    // Pair products with an accumulated prefix avoid subtraction of nearly equal moments.
+    getisOrdG:
+      1 /
+      rows.reduce(
+        (state, row) => ({
+          sum: state.sum + values[row],
+          pairs: state.pairs + 2 * values[row] * state.sum
+        }),
+        {sum: 0, pairs: 0}
+      ).pairs,
     bivariateMoran: count / (s0 * Math.sqrt(sumSquares * sumSquaresY)),
     leesL: count / (s0Squared * Math.sqrt(sumSquares * sumSquaresY))
   }[statistic];
-  const simulated = pairSums.slice(1).map(sum => scale * sum);
-  const greater = pairSums.slice(1).filter(sum => sum >= pairSums[0]).length;
-  const lesser = pairSums.slice(1).filter(sum => sum <= pairSums[0]).length;
-  const mean = simulated.reduce((a, b) => a + b, 0) / permutations;
+  if (
+    !(scale > 0) ||
+    !Number.isFinite(scale) ||
+    !Number.isFinite(scale * pairSums[0]) ||
+    (statistic === 'getisOrdG' && rows.some(row => values[row] < 0))
+  ) {
+    return {
+      observed: NaN,
+      simulated: new Array(permutations).fill(NaN),
+      pairSums: new Array(permutations + 1).fill(NaN),
+      exceedances: NaN,
+      pseudoPValue: NaN,
+      greater: NaN,
+      lesser: NaN,
+      simulatedMean: NaN,
+      simulatedStandardDeviation: NaN,
+      zSimulated: NaN,
+      islandCount: compacted.islandCount,
+      analysisCount: count
+    };
+  }
+  if (permutations === 0)
+    return {
+      observed: scale * pairSums[0],
+      simulated: [],
+      pairSums,
+      exceedances: NaN,
+      pseudoPValue: NaN,
+      greater: NaN,
+      lesser: NaN,
+      simulatedMean: NaN,
+      simulatedStandardDeviation: NaN,
+      zSimulated: NaN,
+      islandCount: compacted.islandCount,
+      analysisCount: count
+    };
+  const sequential =
+    input.stopAfterExceedances === undefined
+      ? undefined
+      : getSequentialPermutationPValue(
+          alternative,
+          pairSums.slice(1).map(sum => ({greater: sum >= pairSums[0], lesser: sum <= pairSums[0]})),
+          input.stopAfterExceedances
+        );
+  const used = sequential?.permutations ?? permutations;
+  const usedPairSums = pairSums.slice(0, used + 1);
+  const simulated = usedPairSums.slice(1).map(sum => scale * sum);
+  const greater = usedPairSums.slice(1).filter(sum => sum >= pairSums[0]).length;
+  const lesser = usedPairSums.slice(1).filter(sum => sum <= pairSums[0]).length;
+  const mean = simulated.reduce((a, b) => a + b, 0) / used;
   const observedStatistic = scale * pairSums[0];
   const folded = simulated.filter(
     value => Math.abs(value - mean) >= Math.abs(observedStatistic - mean)
@@ -657,18 +747,18 @@ export function computeGlobalPermutationOracle(input: {
   const {exceedances: larger, pValue} = getPermutationPValue(
     alternative,
     {greater, lesser, folded},
-    permutations
+    used
   );
   const standardDeviation = Math.sqrt(
-    simulated.reduce((total, value) => total + (value - mean) ** 2, 0) / permutations
+    simulated.reduce((total, value) => total + (value - mean) ** 2, 0) / used
   );
   const observed = scale * pairSums[0];
   return {
     observed,
     simulated,
-    pairSums,
+    pairSums: usedPairSums,
     exceedances: larger,
-    pseudoPValue: pValue,
+    pseudoPValue: sequential?.pValue ?? pValue,
     greater,
     lesser,
     simulatedMean: mean,

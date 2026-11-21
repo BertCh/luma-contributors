@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateParameterTarget} from '../raster-band-utils';
 import type {
   GraphDataView,
   GraphVectorView,
@@ -18,6 +19,7 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
@@ -59,6 +61,11 @@ export function getGPURasterHANTSParameterValues(
   settings: GPURasterHANTSSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_HANTS_PARAMETER_LENGTH)
 ): Float32Array {
+  validateParameterTarget(
+    'getGPURasterHANTSParameterValues',
+    target,
+    GPU_RASTER_HANTS_PARAMETER_LENGTH
+  );
   validateFiniteNumber('getGPURasterHANTSParameterValues', 'period', settings.period, 0);
   target[0] = settings.period;
   target[1] = settings.fitErrorTolerance;
@@ -134,6 +141,20 @@ export class GPURasterHANTS<
   private readonly ticksPerYear: number;
 
   constructor(readonly props: GPURasterHANTSProps<Rows>) {
+    validateGraphPorts(props.id ?? 'raster-hants', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'dateAxis.acquisitionTimes': {
+        required: Boolean(props.dateAxis),
+        viewType: 'data',
+        formats: ['uint32x2']
+      },
+      'output.smoothed': {required: true, viewType: 'either', formats: ['float32']},
+      'output.coefficients': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.diagnostics': {required: false, viewType: 'either', formats: ['uint32']}
+    });
     const id = props.id ?? 'raster-hants';
     this.id = id;
     const passCount = props.rejectionPassCount ?? 8;

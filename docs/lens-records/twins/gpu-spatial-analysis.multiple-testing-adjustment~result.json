@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const queen = new GPUContiguityWeights({\n  polygons: tracts,\n  criterion: 'queen',\n  output: weightOutput\n});\ngraph.add(queen);\n// Hot spot z-scores supply one unadjusted p-value per tract; the family is every tested tract.\ngraph.add(\n  new GPUHotSpotAnalysis({\n    weights: queen.outputWeights,\n    values,\n    parameters,\n    minimumNeighbors: 4,\n    output: {zScores, pValues}\n  })\n);\ngraph.add(\n  new GPUMultipleTestingAdjustment({\n    pValues,\n    method: 'benjamini-hochberg',\n    output: {adjustedPValues, testedCount}\n  })\n);",
+    "code": "const queen = new GPUContiguityWeights({\n  polygons: tracts,\n  criterion: 'queen',\n  output: weightOutput\n});\ngraph.add(queen);\n// Hot spot z-scores supply one unadjusted p-value per tract; the family is every tested tract.\ngraph.add(\n  new GPUHotSpotAnalysis({\n    weights: queen.outputWeights,\n    values,\n    parameters,\n    minimumNeighbors: 4,\n    output: {zScores, pValues}\n  })\n);\ngraph.add(\n  new GPUMultipleTestingAdjustment({\n    pValues,\n    method: 'benjamini-hochberg',\n    output: {adjustedPValues, effectiveFamilySize: testedCount}\n  })\n);",
     "language": "ts",
     "lineCount": 23
   },
@@ -35,8 +35,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:49.716Z",
-    "runId": "run-89077f38",
+    "date": "2026-11-20T23:50:13.928Z",
+    "runId": "run-eea60799",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -44,7 +44,7 @@
     ]
   },
   "state": {
-    "runId": "run-89077f38",
+    "runId": "run-eea60799",
     "rung": "result",
     "bindings": {},
     "clauses": [],

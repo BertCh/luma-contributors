@@ -11,6 +11,7 @@ import {getChunkDispatches} from './chunk-dispatch-test-utils';
 import {expect, expectTypeOf, it, vi} from 'vitest';
 import {WgslExec, WgslParser, WgslReflect} from 'wgsl_reflect';
 import type {GPUUint32Rows} from '../../../src/analysis-core/kernels/gpu-contributor-types';
+import type {GPUPointGeometryPort} from '../../../src/analysis-core/contracts/index';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUPointInPolygonJoin,
@@ -39,7 +40,8 @@ function createFixture(lengths: number[]) {
   const flagChunks = lengths.map((length, index) =>
     createTransientView(graph, `flags-${index}`, 'uint32', length)
   );
-  const props: GPUPointInPolygonJoinProps<GPUUint32Rows> = {
+  // This fixture intentionally creates single-point chunks, also consumed by the nearest join.
+  const props: GPUPointInPolygonJoinProps<GPUUint32Rows, unknown, GPUPointGeometryPort> = {
     id: 'join-test',
     points: {kind: 'points', positions: createVectorView('points', 'float32x2', pointChunks)},
     polygons: {
@@ -53,7 +55,7 @@ function createFixture(lengths: number[]) {
     output: {
       pointFeatureIds: createVectorView('assignments', 'uint32', outputChunks),
       candidateTruncated: createVectorView('flags', 'uint32', flagChunks),
-      featureCounts: createTransientView(graph, 'feature-counts', 'uint32', 1),
+      polygonAssignmentCounts: createTransientView(graph, 'feature-counts', 'uint32', 1),
       matches: {
         ids: createTransientView(graph, 'match-ids', 'uint32', 3),
         status: {
@@ -291,7 +293,7 @@ it('the other counted-probe caller uses saturated offsets and valid WGSL', () =>
         nearestFeatureIds: props.output.pointFeatureIds,
         candidateTruncated: createTransientView(graph, 'nearest-flags', 'uint32', 10),
         matches: props.output.matches,
-        featureCounts: props.output.featureCounts,
+        featureCounts: props.output.polygonAssignmentCounts,
         status: {
           overflow: props.output.status.overflow,
           candidateOverflow: props.output.status.candidateOverflow
@@ -351,7 +353,7 @@ it('GPUPointInPolygonJoin rejects co-bound output alignment overlap but allows c
       () =>
         new GPUPointInPolygonJoin({
           ...props,
-          output: {...props.output, pointFeatureIds, featureCounts: chunks[0]}
+          output: {...props.output, pointFeatureIds, polygonAssignmentCounts: chunks[0]}
         })
     ).toThrow(/join-test.*must not overlap/);
     // Logical [0,4) and [4,8) are disjoint, but the aligned assignment binding is [0,8).
@@ -364,7 +366,11 @@ it('GPUPointInPolygonJoin rejects co-bound output alignment overlap but allows c
       () =>
         new GPUPointInPolygonJoin({
           ...props,
-          output: {...props.output, pointFeatureIds: alignedAssignments, featureCounts: chunks[0]}
+          output: {
+            ...props.output,
+            pointFeatureIds: alignedAssignments,
+            polygonAssignmentCounts: chunks[0]
+          }
         })
     ).toThrow(/join-test.*aligned binding byte ranges.*must not overlap/);
   } finally {
@@ -646,7 +652,7 @@ it('point joins accept aligned packed outputs and ignore untouched planar status
       ...props,
       output: {
         pointFeatureIds,
-        featureCounts,
+        polygonAssignmentCounts: featureCounts,
         status: {
           overflow,
           antimeridianUncertainCount: overflow,
@@ -721,7 +727,7 @@ it('point joins preflight nested prepared edge-slab STORAGE usage before allocat
 it('point joins permit unused empty assignment views to alias live feature-count storage', () => {
   const {device, graph, props} = createFixture([0]);
   try {
-    const pointFeatureIds = graph.createDataView(props.output.featureCounts!.buffer, {
+    const pointFeatureIds = graph.createDataView(props.output.polygonAssignmentCounts!.buffer, {
       format: 'uint32',
       length: 0
     });
@@ -756,10 +762,10 @@ it('point joins reject mixed physical feature-ID bindings while ignoring them fo
         output: {
           ...props.output,
           pointFeatureIds,
-          featureCounts:
+          polygonAssignmentCounts:
             pointCount === 0
               ? graph.createDataView(storage.buffer, {format: 'uint32', length: 1})
-              : props.output.featureCounts
+              : props.output.polygonAssignmentCounts
         }
       });
     try {

@@ -313,7 +313,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     outputs: [
-      {name: 'lengths', type: F32, description: 'Line length per polygon.'},
+      {name: 'clippedLengths', type: F32, description: 'Line length per polygon.'},
       {name: 'weightedLengths', type: F32, description: 'Optional weight-multiplied length.'},
       {name: 'segmentCounts', type: U32, description: 'Optional segments counted per polygon.'},
       {
@@ -333,7 +333,7 @@ graph.add(
     lineOffsets: roadOffsets,
     polygons: {kind: 'polygons', positions: tractPositions,
       featureOffsets, polygonOffsets, ringOffsets},
-    output: {lengths, status: {overflow}}
+    output: {clippedLengths: lengths, status: {overflow}}
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
@@ -1114,7 +1114,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
   },
   {
     id: 'pycnophylactic',
-    symbol: 'GPUPycnophylactic',
+    symbol: 'GPUPycnophylacticInterpolation',
     kind: 'class',
     importPath: ANALYSIS,
     title: 'Pycnophylactic interpolation',
@@ -1135,7 +1135,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'kernel', type: "'rook' | 'box'", description: 'Smoothing neighborhood.'},
       {
         name: 'output',
-        type: 'GPUPycnophylacticOutput',
+        type: 'GPUPycnophylacticInterpolationOutput',
         required: true,
         description: 'Destination views.'
       }
@@ -1150,12 +1150,12 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       }
     ],
     example: `import {GPUCommandGraph} from '${GRAPH}';
-import {GPUPycnophylactic} from '${ANALYSIS}';
+import {GPUPycnophylacticInterpolation} from '${ANALYSIS}';
 
 const graph = new GPUCommandGraph(device, {id: 'pycno'});
 // zones, totals, tolerance, outputs: graph views; grid is GPURasterMetadata
 graph.add(
-  new GPUPycnophylactic({
+  new GPUPycnophylacticInterpolation({
     grid,
     zones,
     zoneCount: 64,
@@ -2284,7 +2284,7 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
       {name: 'batchIndex', type: 'number', description: 'Only objects from this batch.'},
       {
         name: 'output',
-        type: 'GPURegionMaskOutput',
+        type: 'GPUPickRegionMaskOutput',
         required: true,
         description: 'Destination views.'
       }
@@ -2297,12 +2297,12 @@ graph.compile().encode(device.commandEncoder, {parameters: undefined});`,
 import {GPUPickRegionMask} from '${ANALYSIS}';
 
 const graph = new GPUCommandGraph(device, {id: 'pick-mask'});
-// picks: output of GPUIndexPickingTarget.addRegionPass; mask, status: graph views
+// picks: output of GPUIndexPickingTarget.addRegionPass; mask and overflow: graph views
 graph.add(
   new GPUPickRegionMask({
     picks,
     batchIndex: 0,
-    output: {mask, status}
+    output: {mask, status: {overflow}}
   })
 );
 graph.compile().encode(device.commandEncoder, {parameters: undefined});`,

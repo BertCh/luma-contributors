@@ -313,11 +313,11 @@ it('GPUTerrainSpikeRepair converges on a serpentine component and fails closed o
   expect(failed.statistics[S.shiftedComponentCount]).toBe(0);
   expect(failed.statistics[S.remainingJumpCount]).toBe(failed.statistics[S.jumpCount]);
   // Review C-09: an unconverged labelling marks every valid pixel instead of copying the input
-  // (a copy reads as "nothing to repair"): value +Infinity, validity and label UNRESOLVED.
+  // (a copy reads as "nothing to repair"): value +Infinity, validity 0 and label UNRESOLVED.
   for (let index = 0; index < size * size; index++) {
     if (validity[index] !== 0) {
       expect(failed.values[index]).toBe(Infinity);
-      expect(failed.validity[index]).toBe(GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED);
+      expect(failed.validity[index]).toBe(0);
       expect(failed.labels[index]).toBe(GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED);
     } else {
       expect(failed.values[index]).toBeNaN();

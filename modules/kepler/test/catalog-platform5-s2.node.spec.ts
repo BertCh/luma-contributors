@@ -2,11 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test} from 'vitest';
+import {expect, test, vi} from 'vitest';
+import {CatalogGpuSession} from '../src/analysis/catalog-gpu-session';
+import {createNullWebGPUDevice} from '../../analysis/test/utils/gpu-contributor-test-utils';
+import {S2_CONCAVE_INTERIOR_COORDINATES} from './s2-concave-interior-fixture';
 import {runCatalogOperation, type CatalogRunResult} from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
-import {getDggsCpuBoundary} from '../src/analysis/catalog-platform4-dggs-cells';
+import {getDggsCpuBoundary, readS2Cell} from '../src/analysis/catalog-platform4-dggs-cells';
 import {PLATFORM5_S2_BINDINGS} from '../src/analysis/catalog-platform5-s2';
+import {
+  FINE_S2_RECTANGLES,
+  FINE_S2_COVER_PARAMETERS,
+  getFineS2RectangleRing
+} from './s2-catalog-cover-fixtures';
 
 function getBinding(id: string) {
   const binding = PLATFORM5_S2_BINDINGS.find(candidate => candidate.id === id);
@@ -39,12 +47,91 @@ function polygon(ring: number[][]): CatalogFeatureCollection {
   };
 }
 
+test('B5 catalog refuses zero-area equatorial rings before covering', () => {
+  const result = run(
+    's2-polygon-covering',
+    {minimumLevel: 0, maximumLevel: 0},
+    {
+      polygons: polygon([
+        [0, 0],
+        [2, 0],
+        [4, 0],
+        [0, 0]
+      ])
+    }
+  );
+  expect(result.tables[0].rowCount).toBe(0);
+  expect(result.diagnostics.map(diagnostic => diagnostic.code)).toEqual([
+    'invalid-spherical-polygon'
+  ]);
+});
+
+test('B5 catalog adapter refuses producer status one after GPU declaration', async () => {
+  const device = createNullWebGPUDevice();
+  const runSpy = vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(() => {});
+  const readSpy = vi
+    .spyOn(CatalogGpuSession.prototype, 'readUint32')
+    .mockImplementation(async (output, rows) => {
+      if (output.buffer.id.endsWith('-status')) return Uint32Array.of(1);
+      return new Uint32Array((rows ?? output.length) * output.components);
+    });
+  try {
+    await expect(
+      getBinding('s2-polygon-covering').runGpu!(
+        {device},
+        {
+          polygons: polygon([
+            [0, 0],
+            [2, 0],
+            [0, 2]
+          ])
+        },
+        {
+          mode: 'exterior',
+          minimumLevel: 0,
+          maximumLevel: 0,
+          maximumCells: 6,
+          maximumVisitedCells: 6
+        }
+      )
+    ).rejects.toThrow('S2 polygon covering rejected a polygon');
+    expect(runSpy).toHaveBeenCalledOnce();
+    expect(readSpy.mock.calls.some(([output]) => output.buffer.id.endsWith('-status'))).toBe(true);
+  } finally {
+    readSpy.mockRestore();
+    runSpy.mockRestore();
+    device.destroy();
+  }
+});
+
 function column(
   result: CatalogRunResult,
   name: string
 ): readonly (string | number | boolean | null)[] {
   return result.tables[0].columns[name];
 }
+
+test.each(
+  FINE_S2_RECTANGLES
+)('W5-27 CPU catalog fine interior $cellId is complete and crossed ring is refused', scene => {
+  const ring = getFineS2RectangleRing(scene.first, scene.second);
+  for (const vertices of [ring, [...ring].reverse()]) {
+    const result = run('s2-polygon-covering', FINE_S2_COVER_PARAMETERS, {
+      polygons: polygon(vertices)
+    });
+    expect(column(result, 'cell_id')).toEqual([scene.cellId]);
+    expect(result.summary['cellCount']).toBe(1);
+    expect(result.summary['truncatedCount']).toBe(0);
+    expect(result.diagnostics).toEqual([]);
+  }
+  const invalid = run('s2-polygon-covering', FINE_S2_COVER_PARAMETERS, {
+    polygons: polygon([ring[0], ring[2], ring[1], ring[3]])
+  });
+  expect(column(invalid, 'cell_id')).toEqual([]);
+  expect(invalid.diagnostics.map(diagnostic => diagnostic.code)).toEqual([
+    'invalid-spherical-polygon'
+  ]);
+});
 
 // One point per cube face plus seam and polar probes.
 const FACE_POINTS = [
@@ -311,4 +398,37 @@ test('polygon covering skips self-crossing rings and accepts clockwise input', (
   const first = run('s2-polygon-covering', {maximumLevel: 4}, {polygons: counterClockwise});
   const second = run('s2-polygon-covering', {maximumLevel: 4}, {polygons: clockwise});
   expect(column(second, 'cell_id')).toEqual(column(first, 'cell_id'));
+});
+
+test('W2-01: concave S2 interior is independent of winding when vertex mean is outside', () => {
+  const ring = [
+    [-4, -4],
+    [4, -4],
+    [4, 4],
+    [1, 4],
+    [1, -1],
+    [-1, -1],
+    [-1, 4],
+    [-4, 4]
+  ];
+  const covers = [ring, [...ring].reverse()].map(vertices =>
+    run('s2-polygon-covering', {maximumLevel: 6, mode: 'interior'}, {polygons: polygon(vertices)})
+  );
+  // Independent Shapely enumeration: map ring vertices to (tan(lon),tan(lat)/cos(lon)).
+  // Great-circle edges are straight in that face-0 chart. Enumerate i,j=0..63 cells with
+  // u(s)=(4*s*s-1)/3 for s>=.5, (1-4*(1-s)^2)/3 otherwise, at corners s=i/64,j/64.
+  // Polygon.covers(cell) selects 28 cells: i=29,30,33,34 each j=29..34;
+  // i=31,32 each j=29,30. The vertex mean lies in the U's notch.
+  for (const cover of covers) {
+    expect(cover.tables[0].rowCount).toBe(28);
+    expect(
+      column(cover, 'cell_id')
+        .map(cell => {
+          const {face, level, i, j} = readS2Cell(BigInt(`0x${cell}`));
+          return `${face}/${level}/${i}/${j}`;
+        })
+        .sort()
+    ).toEqual([...S2_CONCAVE_INTERIOR_COORDINATES].sort());
+  }
+  expect(column(covers[0], 'cell_id')).toEqual(column(covers[1], 'cell_id'));
 });

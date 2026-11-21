@@ -525,7 +525,7 @@ export async function createRegionalization(
       new GPUSpatialKMeans({
         id: 'kmeans',
         positions: importGraphBuffer(graph, 'principal-plane', planeBuffer, 'float32x2', rowCount),
-        k: clusters,
+        clusterCount: clusters,
         maximumIterations: KMEANS_ITERATIONS,
         initialization: 'kmeans++',
         parameters: kParameters.importToGraph(graph),

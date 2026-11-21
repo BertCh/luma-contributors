@@ -167,7 +167,7 @@ export type CuratedDrainageReadback = {
     stage: string;
     converged?: number;
     overflow?: number;
-    uncertainCount?: number;
+    unresolvedCount?: number;
   }[];
 };
 
@@ -176,9 +176,17 @@ export function publishCuratedDrainageNetwork(
   prepared: ReturnType<typeof prepareCuratedDrainageNetwork>,
   result: CuratedDrainageReadback
 ): CatalogRunOutput {
-  const failedStages = result.stages.filter(
+  const {stages} = result;
+  for (const status of stages) {
+    validateRequirement(
+      BINDING_ID,
+      !('uncertainCount' in status),
+      `${status.stage}.uncertainCount was removed; use unresolvedCount`
+    );
+  }
+  const failedStages = stages.filter(
     stage =>
-      stage.converged === 0 || (stage.overflow ?? 0) !== 0 || (stage.uncertainCount ?? 0) !== 0
+      stage.converged === 0 || (stage.overflow ?? 0) !== 0 || (stage.unresolvedCount ?? 0) !== 0
   );
   validateRequirement(
     BINDING_ID,
@@ -356,7 +364,8 @@ export function publishCuratedDrainageNetwork(
       resolveFlats: Number(prepared.resolveFlats),
       converged: 1,
       overflow: 0,
-      uncertainCount: 0
+      ...(stages.some(stage => stage.unresolvedCount !== undefined) ? {unresolvedCount: 0} : {}),
+      recipeStatus: JSON.stringify(stages)
     },
     dispatchedContributors: CURATED_DRAINAGE_NETWORK_BINDING.gpuContributorNames
   };
@@ -472,7 +481,7 @@ export const CURATED_DRAINAGE_NETWORK_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     'Requires a complete, axis-aligned planar domain; no implicit reprojection or resampling.',
     'No-data is classified in the source sample domain before conversion. Integer bands retain exact 32-bit storage; terrain calculations use float32.',
-    'Nonconvergence, unresolved paths or overflow rejects publication with the failing stage status.'
+    'Nonconvergence, unresolved paths or overflow rejects publication with the failing stage status. Downstream-distance and stream-network report unresolvedCount. Successful recipeStatus retains the named stage evidence. Omitted optional unresolved evidence remains omitted; a canonical zero is reported only when a count was supplied.'
   ],
   limitation:
     'No tiled/global watershed stitching. Distances use declared planar units. Catchment polygons are individual cells, not dissolved basin boundaries.',
@@ -597,7 +606,7 @@ export const CURATED_DRAINAGE_NETWORK_BINDING: CatalogOperationBinding = {
       const stages = recipe.status.stages.map(({stage, status}) => ({
         stage,
         flags: Object.entries(status)
-          .filter(([name]) => ['converged', 'overflow', 'uncertainCount'].includes(name))
+          .filter(([name]) => ['converged', 'overflow', 'unresolvedCount'].includes(name))
           .map(([name, view]) => ({
             name,
             captured: capture(`${stage}-${name}`, view as GraphDataView<'uint32'>)

@@ -81,7 +81,7 @@ it('GPUCoverageValidity and GPUCoverageDissolve validate props and declare nodes
   expect(() => new GPUCoverageDissolve({...dissolve, labels: view('uint32', 4)})).toThrow(
     /labels length/
   );
-  expect(() => new GPUCoverageDissolve({...dissolve, snapTolerance: -1})).toThrow(/snapTolerance/);
+  expect(() => new GPUCoverageDissolve({...dissolve, snapGridSize: -1})).toThrow(/snapGridSize/);
   expect(() => new GPUCoverageDissolve({...dissolve, vertexTolerance: 0})).toThrow(
     /vertexTolerance/
   );

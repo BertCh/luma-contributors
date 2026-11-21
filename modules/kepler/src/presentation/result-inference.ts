@@ -3,10 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateFiniteNumber, validateRequirement} from '@luma-contributors/analysis/analysis-core';
-import {
-  getMultipleTestingAdjustedPValues,
-  summarizeGPUAnalysisResult
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getMultipleTestingAdjustedPValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {summarizeGPUAnalysisResult} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogOperationBinding, CatalogRunResult} from '../analysis/catalog-binding-types';
 import type {KeplerOperationDescriptor} from '../descriptors/operation-descriptor-types';
 import {getKeplerBindingResultPresentations, getKeplerResultToneColor} from './result-presentation';

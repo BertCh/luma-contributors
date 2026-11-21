@@ -2,24 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotCellConstruction} from './cell-construction-snapshot';
 import {
   GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
   type GPUSpatialContext,
   type GPUSpatialEdgeModel
 } from '../../analysis-core/contracts/spatial-context';
 import {
-  createGPUComputeCommandNode,
   getBoundedDispatchLayout,
-  getViewBinding,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
   type GraphVectorView,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {Kernel} from '@luma.gl/graph';
 import {dggs} from '@luma.gl/shaders';
 
+import {createCellRowKernelNode} from '../cell-aggregation/cell-row-kernel';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   createGraphChunkDispatchParameters,
@@ -73,8 +72,6 @@ const MAXIMUM_VERTEX_COUNT_LIMIT = 16;
 const MAXIMUM_CHUNK_COMPONENT_COUNT = 0xffffffff;
 /** Fixed workgroup size keeps the shader and pipeline independent of chunk lengths. */
 const CHUNK_WORKGROUP_SIZE = 256;
-/** Guard before multiplying the workgroup index, so padded 3D dispatches cannot wrap uint32. */
-const MAXIMUM_LINEAR_WORKGROUP_COUNT = 16777216;
 
 /** Caller-owned outputs of {@link GPUCellGeometry}, all row-aligned with the input cells. */
 export type GPUCellGeometryOutput = {
@@ -184,6 +181,14 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
   private readonly boundaryChunks: readonly GraphDataView[];
 
   constructor(props: GPUCellGeometryProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'family',
+      'cells',
+      'wordOrder',
+      'maximumVertexCount',
+      ['output', ['centers', 'boundaries', 'vertexCounts', 'validity']]
+    ]);
     this.id = props.id ?? 'cell-geometry';
     this.props = props;
     const id = this.id;
@@ -315,20 +320,18 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
     validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
     validateGraphChunkBindingRanges(graph, id, {boundaries: output.boundaries});
     // Resolve every dispatch before the upload helper declares its parameter scratch.
-    const layouts = this.chunkPlan.chunks.map(chunk =>
+    for (const chunk of this.chunkPlan.chunks) {
       getBoundedDispatchLayout(
         id,
         Math.max(chunk.length, 1),
         CHUNK_WORKGROUP_SIZE,
         graph.device.limits.maxComputeWorkgroupsPerDimension
-      )
-    );
+      );
+    }
     const {slots, nodes} = createGraphChunkDispatchParameters(graph, {
       id: `${id}-chunks`,
       plan: this.chunkPlan
     });
-    // Every chunk closes over the same source string, including assembled fp64 modules.
-    let sharedShaderSource: string | undefined;
     const chunkNodes = this.chunkPlan.chunks
       .filter(chunk => chunk.length > 0)
       .map(chunk => {
@@ -385,18 +388,24 @@ export class GPUCellGeometry implements GPUCommandNodeProducer {
   }
   ${output.vertexCounts ? 'vertexCountsOut[vertexCountsOutOffset + index] = vertexCount;' : ''}`
           : '';
-        const declarations = bindings
-          .map(
-            (binding, location) =>
-              `@group(0) @binding(${location}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`
-          )
-          .join('\n');
-        // getViewBinding exposes exactly prefix + logical components. Subtracting the chunk's
-        // logical size recovers any uint32-aligned view offset without specializing the shader.
-        const source =
-          sharedShaderSource ??
-          `${declarations}
-const MAXIMUM_VERTEX_COUNT: u32 = ${maximumVertexCount}u;
+        const components: Record<string, number> = {
+          cells: 2,
+          centersOut: 2,
+          boundariesOut: maximumVertexCount * 2,
+          vertexCountsOut: 1,
+          validityOut: 1
+        };
+        return createCellRowKernelNode(graph, {
+          id: `${id}-geometry-${chunk.chunkIndex}`,
+          kernelId: `${OPERATION}-${family}-geometry`,
+          operation: OPERATION,
+          variant: family,
+          length: chunk.length,
+          parameters: slots[chunk.chunkIndex],
+          bindings: bindings
+            .filter(binding => binding.name !== 'chunkParameters')
+            .map(binding => ({...binding, components: components[binding.name]})),
+          declarations: `const MAXIMUM_VERTEX_COUNT: u32 = ${maximumVertexCount}u;
 fn getNotANumber(runtimeZero: u32) -> f32 {
   return bitcast<f32>(0x7fc00000u | (runtimeZero & 0u));
 }
@@ -405,68 +414,13 @@ ${CELL_KEY_WGSL}
 ${CELL_GEOMETRY_COMMON_WGSL}
 ${FAMILY_GEOMETRY_WGSL[family]}
 ${family === 'h3' ? '' : GENERIC_FILL_BOUNDARY_WGSL}
-@compute @workgroup_size(${CHUNK_WORKGROUP_SIZE})
-fn main(
-  @builtin(workgroup_id) workgroupId: vec3u,
-  @builtin(num_workgroups) workgroupCount: vec3u,
-  @builtin(local_invocation_index) localInvocationIndex: u32
-) {
-  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
-  if (workgroupIndex >= ${MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
-  let index = workgroupIndex * ${CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
-  let rowCount = chunkParameters[1];
-  if (index >= rowCount) { return; }
-  let cellsOffset = arrayLength(&cells) - rowCount * 2u;
-  ${output.centers ? 'let centersOutOffset = arrayLength(&centersOut) - rowCount * 2u;' : ''}
-  ${output.boundaries ? 'let boundariesOutOffset = arrayLength(&boundariesOut) - rowCount * MAXIMUM_VERTEX_COUNT * 2u;' : ''}
-  ${output.vertexCounts ? 'let vertexCountsOutOffset = arrayLength(&vertexCountsOut) - rowCount;' : ''}
-  ${output.validity ? 'let validityOutOffset = arrayLength(&validityOut) - rowCount;' : ''}
-  let words = vec2u(cells[cellsOffset + 2u * index], cells[cellsOffset + 2u * index + 1u]);
+`,
+          body: `  let words = vec2u(cells[cellsOffset + 2u * index], cells[cellsOffset + 2u * index + 1u]);
   let key = ${props.wordOrder === 'high-low' ? 'words' : 'words.yx'};
   let isValid = geometryIsValid(key);
   ${output.validity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isValid);' : ''}
   ${centerBody}
-  ${boundaryBody}
-}`;
-        sharedShaderSource = source;
-        const layout = layouts[chunk.chunkIndex];
-        return createGPUComputeCommandNode<Parameters>({
-          id: `${id}-geometry-${chunk.chunkIndex}`,
-          resources: bindings.map(binding => ({
-            buffer: binding.view,
-            usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
-          })),
-          workload: {
-            operation: OPERATION,
-            variant: family,
-            commandCount: 1,
-            maximumWorkgroupCount: layout.x * layout.y * layout.z,
-            maximumInvocationCount: chunk.length
-          },
-          compile: ({device}) => {
-            const kernel = new Kernel(device, {
-              id: `${OPERATION}-${family}-geometry`,
-              source,
-              shaderLayout: {
-                bindings: bindings.map((binding, location) => ({
-                  name: binding.name,
-                  group: 0,
-                  location,
-                  type: binding.access === 'read' ? 'read-only-storage' : 'storage'
-                }))
-              }
-            });
-            return {
-              encode: ({computePass, getBuffer}) =>
-                kernel.dispatch(computePass, {
-                  bindings: Object.fromEntries(
-                    bindings.map(binding => [binding.name, getViewBinding(binding.view, getBuffer)])
-                  ),
-                  ...layout
-                }),
-              destroy: () => kernel.destroy()
-            };
-          }
+  ${boundaryBody}`
         });
       });
     return [...nodes, ...chunkNodes];

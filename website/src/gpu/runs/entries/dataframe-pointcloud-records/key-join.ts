@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUKeyJoin of block points (left, keyed by tract) to a tract table (right). Matched blocks take
+// GPUKeyLookup of block points (left, keyed by tract) to a tract table (right). Matched blocks take
 // the tract's gathered value; blocks whose key is missing from the right table stay muted gray.
 
-import {GPUKeyJoin} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUKeyLookup} from '@luma-contributors/analysis/dataframe-analysis';
 import {defineOperationRun, type RunBuffer} from '../../define-run';
 import type {RunGlyph} from '../../interaction';
 import {chooseSticky, createPointIndex} from '../../pick';
@@ -47,7 +47,7 @@ export default defineOperationRun<Inputs, Outputs>({
     const leftMask = builder.allocate('left-mask', 'uint32', inputs.jobs.length);
     const joined = builder.allocate('joined-value', 'float32', inputs.jobs.length);
     builder.graph.add(
-      new GPUKeyJoin({
+      new GPUKeyLookup({
         leftKeys: builder.upload('left-keys', 'uint32', inputs.keys).view,
         rightKeys: builder.upload(
           'right-keys',
@@ -56,7 +56,7 @@ export default defineOperationRun<Inputs, Outputs>({
         ).view,
         leftMask: leftMask.view,
         rightMask: rightMask.view,
-        kind: 'left',
+        compactMatchedLeftRows: false,
         gather: [
           {
             column: builder.upload('right-value', 'float32', Float32Array.from(tracts.values)).view,
@@ -102,7 +102,7 @@ export default defineOperationRun<Inputs, Outputs>({
   },
   rebuildOn: [],
   // The pointer is a block or a tract: the blocks keyed to the tract are linked to its right-table
-  // row (the tract center), and the readout says whether the join matched.
+  // row (the tract center), and the readout says whether the lookup matched.
   interaction: {
     kind: 'probe',
     hint: 'hover a block or tract',

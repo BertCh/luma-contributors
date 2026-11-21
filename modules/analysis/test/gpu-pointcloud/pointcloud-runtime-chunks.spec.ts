@@ -275,11 +275,14 @@ for (const strategy of ['serial', 'cooperative'] as const) {
               : [];
             expectedCounts.push(matches.length);
             expectedStatus.push(
-              (query ? 0 : 1) | (matches.length > 2 ? 2 : 0) | (supported ? 0 : 4)
+              // An out-of-range row has no query sphere to certify: status is invalidQuery only.
+              query ? (matches.length > 2 ? 2 : 0) | (supported ? 0 : 4) : 1
             );
             for (let slot = 0; slot < 2; slot++) {
               expectedIds.push(matches[slot]?.row ?? 0xffffffff);
-              expectedDistances.push(matches[slot]?.distance ?? Math.fround(3.402823e38));
+              expectedDistances.push(
+                matches[slot]?.distance ?? new Float32Array(new Uint32Array([0x7f7fffff]).buffer)[0]
+              );
             }
           }
           expect(await readIntegers(indices.buffer, 4)).toEqual(expectedIds);
@@ -609,7 +612,7 @@ for (const metric of ['point-to-point', 'point-to-plane'] as const) {
           targetNormals: fixture.view('float32x3', new Float32Array(normals.flat())).view,
           metric,
           maximumDistance: 0.5,
-          iterations: 1,
+          maximumIterations: 1,
           translationTolerance: 1,
           rotationTolerance: 1,
           output: {

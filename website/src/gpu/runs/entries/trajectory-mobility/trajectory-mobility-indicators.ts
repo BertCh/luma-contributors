@@ -42,6 +42,8 @@ type Outputs = {
   staypointOverflow: RunBuffer;
   staypointCandidateOverflow: RunBuffer;
   locationIds: RunBuffer;
+  locationIterationLimitReached: RunBuffer;
+  excludedLocationCount: RunBuffer;
   radiusOfGyration: RunBuffer;
   realEntropy: RunBuffer;
   randomEntropy: RunBuffer;
@@ -93,13 +95,28 @@ export default defineOperationRun({
     const locationParameters = builder.allocate('location-parameters', 'float32', 4);
     const locationIds = builder.allocate('location-ids', 'uint32', STAYPOINT_CAPACITY);
     const locationCount = builder.allocate('location-count', 'uint32', 1);
+    const locationIterationLimitReached = builder.allocate(
+      'location-iteration-limit-reached',
+      'uint32',
+      1
+    );
     builder.graph.add(
       new GPUTrajectoryLocations({
         centroids: staypoints.centroids.view,
         tracks: staypoints.tracks.view,
         count: staypoints.count.view,
+        staypointStatus: {
+          overflow: staypoints.overflow.view,
+          candidateOverflow: staypoints.candidateOverflow.view
+        },
         parameters: locationParameters.view,
-        output: {locationIds: locationIds.view, status: {count: locationCount.view}}
+        output: {
+          locationIds: locationIds.view,
+          status: {
+            count: locationCount.view,
+            iterationLimitReached: locationIterationLimitReached.view
+          }
+        }
       })
     );
     const trackCount = fleet.trackCount;
@@ -110,6 +127,7 @@ export default defineOperationRun({
     const trackingQuality = builder.allocate('tracking-quality', 'float32', trackCount);
     const jumpLengths = builder.allocate('jump-lengths', 'float32', STAYPOINT_CAPACITY);
     const waitingTimes = builder.allocate('waiting-times', 'float32', STAYPOINT_CAPACITY);
+    const excludedLocationCount = builder.allocate('excluded-location-count', 'uint32', 1);
     builder.graph.add(
       new GPUMobilityIndicators({
         trackCount,
@@ -123,6 +141,7 @@ export default defineOperationRun({
           status: {
             count: staypoints.count.view,
             overflow: staypoints.overflow.view,
+            locationIterationLimitReached: locationIterationLimitReached.view,
             candidateOverflow: staypoints.candidateOverflow.view
           }
         },
@@ -144,7 +163,8 @@ export default defineOperationRun({
           randomEntropy: randomEntropy.view,
           realEntropy: realEntropy.view,
           homeLocations: homeLocations.view,
-          trackingQuality: trackingQuality.view
+          trackingQuality: trackingQuality.view,
+          status: {excludedLocationCount: excludedLocationCount.view}
         }
       })
     );
@@ -157,6 +177,8 @@ export default defineOperationRun({
       staypointOverflow: staypoints.overflow,
       staypointCandidateOverflow: staypoints.candidateOverflow,
       locationIds,
+      locationIterationLimitReached,
+      excludedLocationCount,
       radiusOfGyration,
       realEntropy,
       randomEntropy,
@@ -180,19 +202,26 @@ export default defineOperationRun({
   },
   // The stays, in map coordinates, are read back to draw them.
   async afterRun({inputs, outputs, upload}) {
-    const [count, centroids, overflow, candidateOverflow] = await Promise.all([
-      readUint32(outputs.staypointCount),
-      readFloat32(outputs.centroids),
-      readUint32(outputs.staypointOverflow),
-      readUint32(outputs.staypointCandidateOverflow)
-    ]);
+    const [count, centroids, overflow, candidateOverflow, locationIterationLimitReached] =
+      await Promise.all([
+        readUint32(outputs.staypointCount),
+        readFloat32(outputs.centroids),
+        readUint32(outputs.staypointOverflow),
+        readUint32(outputs.staypointCandidateOverflow),
+        readUint32(outputs.locationIterationLimitReached)
+      ]);
     const incomplete = Boolean(overflow[0] || candidateOverflow[0]);
     const stays = incomplete ? 0 : Math.min(count[0], STAYPOINT_CAPACITY);
     const positions = new Float32Array(Math.max(1, stays) * 2);
     for (let stay = 0; stay < stays; stay++) {
       positions.set(inputs.toDisplay(centroids[stay * 2], centroids[stay * 2 + 1]), stay * 2);
     }
-    return {stays, incomplete, positions: upload('display-stays', 'float32x2', positions)};
+    return {
+      stays,
+      incomplete,
+      locationIterationLimitReached: Boolean(locationIterationLimitReached[0]),
+      positions: upload('display-stays', 'float32x2', positions)
+    };
   },
   // Probe: the nearest track. Its bar lights up, its stays are gathered, and the ring is the radius
   // of gyration around the mean of those stays.
@@ -248,6 +277,10 @@ export default defineOperationRun({
       selected[track] = radius[track];
       outputs.selected.write(selected);
       const center = stays ? inputs.toDisplay(sumX / stays, sumY / stays) : null;
+      const excludedLocationCount = peek(outputs.excludedLocationCount)?.[0] ?? 0;
+      const excludedLocations = excludedLocationCount
+        ? ` · ${excludedLocationCount} stays excluded from location measures across all tracks`
+        : '';
       return {
         glyphs: [
           ...glyphs,
@@ -258,7 +291,7 @@ export default defineOperationRun({
               ]
             : [])
         ],
-        readout: `track ${track} · gyration ${formatDistance(radius[track], inputs.metersPerUnit)} · ${stays} stays · entropy ${real[track].toFixed(1)} bits · ${Number.isFinite(quality[track]) ? `tracked ${Math.round(quality[track] * 100)}%` : 'tracking quality unavailable: incomplete tripleg table'}`
+        readout: `track ${track} · gyration ${formatDistance(radius[track], inputs.metersPerUnit)} · ${stays} stays · ${Number.isFinite(real[track]) ? `entropy ${real[track].toFixed(1)} bits` : 'entropy unavailable'} · ${Number.isFinite(quality[track]) ? `tracked ${Math.round(quality[track] * 100)}%` : 'tracking quality unavailable: incomplete tripleg table'}${excludedLocations}`
       };
     }
   },
@@ -282,14 +315,18 @@ export default defineOperationRun({
                 }
               ]
             : []),
-          {
-            layer: 'chart',
-            kind: 'bars',
-            values: outputs.realEntropy,
-            range: [0, 4],
-            rectangle: ENTROPY_BARS,
-            color: [...theme.categories[1], 1]
-          },
+          ...(extra && !extra.locationIterationLimitReached
+            ? [
+                {
+                  layer: 'chart' as const,
+                  kind: 'bars' as const,
+                  values: outputs.realEntropy,
+                  range: [0, 4] as const,
+                  rectangle: ENTROPY_BARS,
+                  color: [...theme.categories[1], 1] as const
+                }
+              ]
+            : []),
           {
             layer: 'chart',
             kind: 'bars',

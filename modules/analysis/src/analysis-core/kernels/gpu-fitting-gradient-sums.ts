@@ -48,8 +48,10 @@ export type GPUFittingGradientSumsProps = {
 };
 
 /**
- * Fixed-order minibatch gradient sums, also usable for row losses. Compile-time: shapes and mask
- * presence. Per-frame: gradient and mask contents. Each invocation walks at most 256 rows for one
+ * Fixed-order minibatch gradient sums, also usable for row losses. Total source rowCount is at
+ * most 2^24 (16,777,216), including masked rows; parameterCount is at most 100,000. Each packed
+ * binding is at most 128 MiB and must also fit the device binding limit. Compile-time: shapes
+ * and mask presence. Per-frame: gradient and mask contents. Each invocation walks at most 256 rows for one
  * term; tile partials merge in a fixed binary tree. No floating atomics or row-sized serial merge.
  * Repeatable on one device/compiler; cross-device bit identity is not promised. Non-finite retained
  * terms propagate; callers should produce finite derivatives. Divide by the retained batch size

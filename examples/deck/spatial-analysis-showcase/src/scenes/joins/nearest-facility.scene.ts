@@ -158,11 +158,11 @@ export default defineScene<NearestFacilityOptions>({
       label: 'Ties at the k-th distance',
       group: 'Join',
       apply: 'compile',
-      default: 'lowest-id',
+      default: 'lowest-row',
       disabledWhen: state => state.mode !== 'neighbors',
-      help: 'Lowest id keeps exactly k neighbours. All keeps every feature at the k-th distance (pandas sjoin_nearest semantics) and needs spare slots.',
+      help: 'Lowest feature row keeps exactly k neighbours. All keeps every feature at the k-th distance (pandas sjoin_nearest semantics) and needs spare slots.',
       options: [
-        {value: 'lowest-id', label: 'Keep the lowest feature rows'},
+        {value: 'lowest-row', label: 'Keep the lowest feature rows'},
         {value: 'all', label: 'Keep all tied features'}
       ]
     },
@@ -450,7 +450,7 @@ graph.add(
   new GPUNearestFeatureJoin({spatialContext: projection.spatialContext,
     queries: {kind: 'points', positions: places},
     features: ${state.featureSet === 'rail-lines' ? "{kind: 'lines', positions, lineOffsets}" : "{kind: 'points', positions: facilities}"},
-    k: 8, neighborCapacity: ${state.ties === 'all' ? 16 : 8}, ties: '${state.ties}',
+    neighborCount: 8, neighborCapacity: ${state.ties === 'all' ? 16 : 8}, ties: '${state.ties}',
     radius: maxDistance.importToGraph(graph),  // per frame
     spatialSort: ${state.spatialSort},
     output: {
@@ -464,13 +464,13 @@ graph.add(
           : state.mode === 'weights'
             ? `graph.add(new GPUNearestFeatureJoin({spatialContext: projection.spatialContext,
   queries: {kind: 'points', positions: facilities}, features: {kind: 'points', positions: facilities},
-  k: ${state.weightK + 1},
+  neighborCount: ${state.weightK + 1},
   output: {neighborIds, neighborRows, neighborCounts, neighborDistances, status: {overflow}}
 }));
 graph.add(
   new GPUNearestFeatureWeights({spatialContext: projection.spatialContext,
     neighborRows, neighborCounts, neighborDistances, neighborStatus: {overflow},
-    slotCapacity: ${state.weightK + 1}, k: ${state.weightK},
+    slotCapacity: ${state.weightK + 1}, neighborCount: ${state.weightK},
     excludeSelf: true,                       // libpysal KNN never lists a row as its own neighbour
     weightType: '${state.weightType}'${state.weightType === 'inverse-distance' ? `, power: ${state.weightPower}` : ''},
     output: {offsets, neighbors, weights, distances, status: {overflow: csrOverflow, candidateOverflow}}   // CSR

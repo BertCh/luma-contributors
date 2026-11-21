@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+// biome-ignore-all format: Preserve the literal published Markdown fence.
+
+// BEGIN LITERAL FENCES
 import {Buffer, luma} from '@luma.gl/core';
 import {webgpuAdapter} from '@luma.gl/core/webgpu';
 import {GPUCommandGraph} from '@luma.gl/graph';
@@ -22,23 +25,27 @@ export async function runPointDensityExample() {
         usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST
       });
       buffers.push(buffer);
-      return graph.importBuffer({id, byteLength: buffer.byteLength, usage: buffer.usage}, buffer);
+      const handle = graph.importBuffer(
+        {id, byteLength: buffer.byteLength, usage: buffer.usage},
+        buffer
+      );
+      return {buffer, handle};
     };
     const positions = graph.createDataView(
       createBuffer(
         'positions',
         Float32Array.of(0.25, 0.25, 0.75, 0.75, 0.25, 1.25, 1.25, 1.25, 3, 3)
-      ),
+      ).handle,
       {format: 'float32x2', length: 5}
     );
-    const bounds = graph.createDataView(createBuffer('bounds', Float32Array.of(0, 0, 2, 2)), {
+    const bounds = graph.createDataView(createBuffer('bounds', Float32Array.of(0, 0, 2, 2)).handle, {
       format: 'float32',
       length: 4
     });
-    const valuesHandle = createBuffer('values', new Float32Array(4));
-    const overflowHandle = createBuffer('overflow', new Uint32Array(1));
-    const values = graph.createDataView(valuesHandle, {format: 'float32', length: 4});
-    const overflow = graph.createDataView(overflowHandle, {format: 'uint32', length: 1});
+    const valuesAllocation = createBuffer('values', new Float32Array(4));
+    const overflowAllocation = createBuffer('overflow', new Uint32Array(1));
+    const values = graph.createDataView(valuesAllocation.handle, {format: 'float32', length: 4});
+    const overflow = graph.createDataView(overflowAllocation.handle, {format: 'uint32', length: 1});
     graph.add(
       new GPUPointDensity({
         positions,
@@ -52,8 +59,8 @@ export async function runPointDensityExample() {
     const commandEncoder = device.createCommandEncoder();
     compiled.encode(commandEncoder, {parameters: undefined});
     device.submit(commandEncoder.finish());
-    const valueBytes = await buffers[2].readAsync();
-    const overflowBytes = await buffers[3].readAsync();
+    const valueBytes = await valuesAllocation.buffer.readAsync();
+    const overflowBytes = await overflowAllocation.buffer.readAsync();
     const result = {
       values: new Float32Array(valueBytes.buffer, valueBytes.byteOffset, 4).slice(),
       overflow: new Uint32Array(overflowBytes.buffer, overflowBytes.byteOffset, 1)[0]
@@ -69,4 +76,3 @@ export async function runPointDensityExample() {
 
 const density = await runPointDensityExample();
 console.log(Array.from(density.values), density.overflow);
-// [2, 0, 1, 1] 0

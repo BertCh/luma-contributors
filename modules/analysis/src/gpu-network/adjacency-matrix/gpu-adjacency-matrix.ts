@@ -26,6 +26,7 @@ import {
   captureGraphCommandNodes,
   validateCapacity,
   validateFiniteNumber,
+  validateRequirement,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -110,7 +111,10 @@ export type GPUAdjacencyMatrixProps = {
   id?: string;
   /**
    * Forward CSR network. Neighbor indices `>= nodeCount` are dead slots. `weights` are required
-   * for weight outputs.
+   * for weight outputs. Every row offset must lie within the stored neighbor capacity. For
+   * `GPUNetworkSubgraphFilter.output.inducedTopology`, first submit the filter and verify its
+   * `status.overflow` is zero before binding this topology: on overflow its offsets describe
+   * required slots beyond the stored neighbors. Recheck after every filter submission.
    */
   topology: GPUNetworkAdjacency;
   /** Treat slots as directed edges (row = source, column = target). Default false. */
@@ -148,11 +152,11 @@ export type GPUAdjacencyMatrixProps = {
     weightSums?: GraphDataView<'uint32'>;
     /** Optional one-row scalar receiving the maximum of `counts`. */
     maximumCount?: GraphDataView<'uint32'>;
-    /** Optional one-row scalar receiving the maximum of `weightSums`. */
+    /** Optional one-row scalar receiving the maximum fixed-point weight sum; public weightSums are optional. */
     maximumWeightSum?: GraphDataView<'uint32'>;
     /** Optional `r32float` `R x R` storage texture; row = y, column = x. */
     texture?: GraphTextureView<'r32float'>;
-    /** Texture contents: raw counts (default) or `weightSums / weightScale`. */
+    /** Texture contents: raw counts (default) or weight sums / weightScale. Weighted bins are transient if weightSums is omitted. */
     textureStatistic?: 'count' | 'weightSum';
   };
 };
@@ -249,6 +253,13 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       }
     }
     const {output} = props;
+    validateRequirement(
+      id,
+      output.textureStatistic === undefined ||
+        output.textureStatistic === 'count' ||
+        output.textureStatistic === 'weightSum',
+      `output.textureStatistic must be 'count' or 'weightSum'; received ${output.textureStatistic}`
+    );
     const cellCount = props.resolution * props.resolution;
     for (const [name, view, length] of [
       ['counts', output.counts, cellCount],
@@ -275,12 +286,6 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
       !props.topology.weights
     ) {
       throw new Error(`${id} weight outputs require weights`);
-    }
-    if (output.maximumWeightSum && !output.weightSums) {
-      throw new Error(`${id} output.maximumWeightSum requires output.weightSums`);
-    }
-    if (output.textureStatistic === 'weightSum' && !output.weightSums) {
-      throw new Error(`${id} textureStatistic 'weightSum' requires output.weightSums`);
     }
     if (
       output.texture &&
@@ -323,12 +328,24 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     if (output.texture && output.texture.texture.graph !== graph) {
       throw new Error(`${id} views must belong to the target graph`);
     }
-    validateNetworkViewBindings(id, graph, [], {textureConversion: resolution * resolution * 4});
+    validateNetworkViewBindings(id, graph, [], {
+      textureConversion: output.texture ? resolution * resolution * 4 : 0,
+      weightedBins: needsWeightBins(props) && !output.weightSums ? resolution * resolution * 4 : 0
+    });
+    const weightSums =
+      output.weightSums ??
+      (needsWeightBins(props)
+        ? createTransientView(graph, `${id}-weight-sums-scratch`, 'uint32', resolution * resolution)
+        : undefined);
     const operation = 'GPUAdjacencyMatrix';
     const directed = Boolean(props.directed);
     const mirror = !directed && Boolean(props.mirrorSlots);
     const nodes: GPUCommandNode<Parameters>[] = [];
-    const fill = (step: string, view: GraphDataView<'uint32'> | undefined) => {
+    const fill = (
+      step: string,
+      view: GraphDataView<'uint32'> | undefined,
+      componentCount?: number
+    ) => {
       if (view) {
         nodes.push(
           createFillNode<Parameters>(graph, {
@@ -336,15 +353,16 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
             operation,
             view,
             type: 'u32',
-            value: '0u'
+            value: '0u',
+            componentCount
           })
         );
       }
     };
     fill('zero-counts', output.counts);
-    fill('zero-weight-sums', output.weightSums);
-    fill('zero-max-count', output.maximumCount);
-    fill('zero-max-weight-sum', output.maximumWeightSum);
+    fill('zero-weight-sums', weightSums);
+    fill('zero-max-count', output.maximumCount, 1);
+    fill('zero-max-weight-sum', output.maximumWeightSum, 1);
 
     const windowBinding: WGSLKernelBinding[] = props.parameters
       ? [
@@ -505,8 +523,8 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
     const binTargets: {kind: 'count' | 'weight'; view: GraphDataView<'uint32'>}[] = [
       {kind: 'count', view: output.counts}
     ];
-    if (output.weightSums) {
-      binTargets.push({kind: 'weight', view: output.weightSums});
+    if (weightSums) {
+      binTargets.push({kind: 'weight', view: weightSums});
     }
     const fusedBindingCount = getFusedBinBindingCount(props);
     if (
@@ -548,7 +566,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
         bindings.push(
           {
             name: 'sums',
-            view: output.weightSums!,
+            view: weightSums!,
             type: 'u32',
             access: 'read'
           },
@@ -590,7 +608,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
     }
 
     if (output.texture) {
-      const source = output.textureStatistic === 'weightSum' ? output.weightSums! : output.counts;
+      const source = output.textureStatistic === 'weightSum' ? weightSums! : output.counts;
       const asFloat = createTransientView(
         graph,
         `${id}-texture-values`,
@@ -644,6 +662,14 @@ function getFusedBinBindingCount(props: GPUAdjacencyMatrixProps): number {
     Number(Boolean(props.order)) +
     Number(Boolean(props.nodeMask)) +
     Number(Boolean(props.edgeMask)) +
-    2 * Number(Boolean(props.output.weightSums))
+    2 * Number(needsWeightBins(props))
+  );
+}
+
+function needsWeightBins(props: GPUAdjacencyMatrixProps): boolean {
+  return Boolean(
+    props.output.weightSums ||
+      props.output.maximumWeightSum ||
+      (props.output.texture && props.output.textureStatistic === 'weightSum')
   );
 }

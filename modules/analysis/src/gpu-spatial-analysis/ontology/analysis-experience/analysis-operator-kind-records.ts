@@ -624,7 +624,7 @@ export const GPU_ANALYSIS_OPERATOR_KIND_RECORDS: Readonly<
   // dataframe-analysis/group-statistics/gpu-group-statistics.ts
   GPUGroupStatistics: {inputs: ['attributes'], outputs: ['attributes', 'summary']},
   // dataframe-analysis/key-join/gpu-key-join.ts
-  GPUKeyJoin: {inputs: ['attributes'], outputs: ['pairs', 'attributes']},
+  GPUKeyLookup: {inputs: ['attributes'], outputs: ['attributes']},
   // dataframe-analysis/column-profile/gpu-column-profile.ts
   GPUColumnProfile: {inputs: ['attributes', 'parameters'], outputs: ['attributes', 'summary']},
   // dataframe-analysis/composite-indicators/gpu-composite-score.ts
@@ -709,6 +709,8 @@ export const GPU_ANALYSIS_OPERATOR_KIND_RECORDS: Readonly<
   },
   // pointcloud-analysis/operations/gpu-pointcloud-surfaces.ts
   GPUPointCloudSurfaces: {inputs: ['points', 'attributes'], outputs: ['surface']},
+  // pointcloud-analysis/operations/gpu-pointcloud-coverage-validity.ts: coverage-cell bits to aligned validity masks
+  GPUPointCloudCoverageValidity: {inputs: ['surface'], outputs: ['attributes']},
   // pointcloud-analysis/operations/gpu-pointcloud-height.ts
   GPUPointCloudHeight: {inputs: ['points', 'surface'], outputs: ['attributes']},
   // pointcloud-analysis/operations/gpu-pointcloud-icp.ts
@@ -953,7 +955,7 @@ export const GPU_ANALYSIS_OPERATOR_KIND_RECORDS: Readonly<
     outputs: ['summary', 'attributes']
   },
   // gpu-spatial-analysis/spatial-clustering/gpu-spatial-clustering.ts: positions, times, parameters; labels, centroids
-  GPUSpatialClustering: {
+  GPUDBSCAN: {
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['attributes', 'points']
   },
@@ -1102,7 +1104,10 @@ export const GPU_ANALYSIS_OPERATOR_KIND_RECORDS: Readonly<
     outputs: ['spatial-weights', 'attributes']
   },
   // gpu-spatial-analysis/areal-interpolation/gpu-pycnophylactic.ts: grid, zones, totals, parameters; mass, density
-  GPUPycnophylactic: {inputs: ['surface', 'attributes', 'parameters'], outputs: ['surface']},
+  GPUPycnophylacticInterpolation: {
+    inputs: ['surface', 'attributes', 'parameters'],
+    outputs: ['surface']
+  },
   // gpu-spatial-analysis/trajectory-analysis/gpu-trajectory-metrics.ts: trajectory geometry fields, parameters; track lengths, stops
   GPUTrajectoryMetrics: {inputs: ['trajectories', 'parameters'], outputs: ['attributes', 'points']},
   // gpu-spatial-analysis/trajectory-interpolation/gpu-trajectory-playhead.ts: trajectory fields, parameters; currentPositions, speeds

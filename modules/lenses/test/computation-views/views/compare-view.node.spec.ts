@@ -8,7 +8,10 @@ import {
   buildCompareViewModel,
   renderCompareView
 } from '../../../src/computation-views/views/compare-view';
-import {getRunScaleRegistry} from '../../../src/computation-views/views/value-strip';
+import {
+  getRunScaleRegistry,
+  resolveValueScale
+} from '../../../src/computation-views/views/value-strip';
 import {viewNodeToHtml, findViewNodes} from '../../../src/computation-views/view-node';
 import {makeContext, makeRecord, makeCapture} from '../fixtures/v4-record';
 import {
@@ -59,6 +62,43 @@ describe('CompareView', () => {
       coordinateModel: 'unknown'
     };
     expect(COMPARE_VIEW.satisfies(context)).toEqual({ok: true});
+  });
+  test('UNI-10 compares effective sample placement and frame identity', () => {
+    const context = makeContext({bindings: {buffer: 'result'}});
+    const other = makeRecord();
+    for (const record of [context.record, other]) {
+      record.axes.keySpaces = [{id: 'cells', label: 'cells', size: 4}];
+      record.captures!.snapshots = [
+        makeCapture({
+          values: [1, 1, 1, 1],
+          geometry: {
+            kind: 'raster',
+            shape: [2, 2],
+            coordinateModel: 'projected',
+            unit: 'm',
+            origin: [0, 40],
+            cellSize: 10
+          }
+        })
+      ];
+    }
+    context.compare = {record: other, label: 'A', referenceLabel: 'B'};
+    const geometry = other.captures!.snapshots[0].geometry!;
+    if (geometry.kind !== 'raster') throw new Error('fixture');
+    // Closed form: area centres y = 40 + rowStep*0.5, hence 35 versus 30.
+    geometry.affine = [10, 0, 0, 0, -20, 40];
+    expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+    geometry.affine = [10, 0, 0, 0, -10, 40];
+    expect(COMPARE_VIEW.satisfies(context)).toEqual({ok: true});
+    geometry.pixelInterpretation = 'point';
+    expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+    geometry.affine = [10, 0, 5, 0, -10, 35];
+    expect(COMPARE_VIEW.satisfies(context)).toEqual({ok: true});
+    for (const field of ['frameId', 'crs'] as const) {
+      geometry[field] = 'different';
+      expect(COMPARE_VIEW.satisfies(context)).toMatchObject({ok: false});
+      delete geometry[field];
+    }
   });
   test('G2 compares every vector component and labels the scalar strip component', () => {
     const context = makeContext({bindings: {buffer: 'result'}});
@@ -274,5 +314,9 @@ describe('CompareView', () => {
         .list()
         .map(scale => scale.variable)
     ).toEqual(['result']);
+    const shared = getRunScaleRegistry(context).list()[0];
+    // The final hand-authored fixture is [2,4,...,18]; both references share that mapping.
+    expect(shared.domain).toEqual([2, 18]);
+    expect(resolveValueScale(context, 'result')?.scale).toBe(shared);
   });
 });

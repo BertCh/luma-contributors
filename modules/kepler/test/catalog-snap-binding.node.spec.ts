@@ -58,10 +58,11 @@ test('snap points binds GPUNetworkSnapping and reports edge, fraction and distan
 
 test('catalog lists GPUNetworkSnapping as runnable', () => {
   const entry = listCatalogEntries({lensScenarios: []}).find(
-    candidate => candidate.contributorName === 'GPUNetworkSnapping'
+    candidate => candidate.identity.exportName === 'GPUNetworkSnapping'
   );
   expect(entry?.runnable).toBe('catalog-binding');
-  // The curated drive-time bands binding dispatches snapping on its GPU-only path.
+  // Drive-time bands dispatch on the GPU, and snap points also supports the CPU.
   expect(entry?.bindingIds).toContain('curated-drive-time-bands');
-  expect(entry?.engine).toBe('gpu');
+  expect(entry?.bindingIds).toContain('network-snap-points');
+  expect(entry?.engine).toBe('gpu-or-cpu');
 });

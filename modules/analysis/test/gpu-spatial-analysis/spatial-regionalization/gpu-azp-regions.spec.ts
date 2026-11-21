@@ -8,7 +8,7 @@ import {expect, it} from 'vitest';
 import {
   getGPUAZPRegionsParameterValues,
   GPUAZPRegions,
-  GPU_AZP_STATUS,
+  GPU_AZP_STATUS_LAYOUT,
   type GPUAZPRegionsProps
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -54,7 +54,7 @@ it('GPUAZPRegions reproducibly improves a contiguous partition and reports conve
   const outputs = {
     labels: createOutputBuffer(device, 4),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_AZP_STATUS.length)
+    status: createOutputBuffer(device, GPU_AZP_STATUS_LAYOUT.length)
   };
   const seed = 17;
   const parametersBuffer = createInputBuffer(device, getGPUAZPRegionsParameterValues({seed}));
@@ -87,7 +87,13 @@ it('GPUAZPRegions reproducibly improves a contiguous partition and reports conve
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', 4),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_AZP_STATUS.length)
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_AZP_STATUS_LAYOUT.length
+        )
       }
     })
   );
@@ -95,15 +101,15 @@ it('GPUAZPRegions reproducibly improves a contiguous partition and reports conve
   submitGraph(device, compiled, undefined);
   const labels = await readUint32(outputs.labels, 4);
   const [objective] = await readFloat32(outputs.objective, 1);
-  const status = await readUint32(outputs.status, GPU_AZP_STATUS.length);
+  const status = await readUint32(outputs.status, GPU_AZP_STATUS_LAYOUT.length);
   expect(labels).toEqual([0, 1, 1, 1]);
   const mean = (10 + 11 + 20) / 3;
   const expectedObjective = (10 - mean) ** 2 + (11 - mean) ** 2 + (20 - mean) ** 2;
   expect(objective).toBeCloseTo(expectedObjective, 4);
-  expect(status[GPU_AZP_STATUS.iterationCount]).toBe(1);
-  expect(status[GPU_AZP_STATUS.converged]).toBe(1);
-  expect(status[GPU_AZP_STATUS.iterationLimitReached]).toBe(0);
-  expect(status[GPU_AZP_STATUS.invalidCount]).toBe(0);
+  expect(status[GPU_AZP_STATUS_LAYOUT.iterationCount]).toBe(1);
+  expect(status[GPU_AZP_STATUS_LAYOUT.converged]).toBe(1);
+  expect(status[GPU_AZP_STATUS_LAYOUT.iterationLimitReached]).toBe(0);
+  expect(status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(0);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   parametersBuffer.destroy();
@@ -131,7 +137,7 @@ it('GPUAZPRegions accepts a non-leaf move when exact source connectivity is pres
   const outputs = {
     labels: createOutputBuffer(device, 4),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_AZP_STATUS.length)
+    status: createOutputBuffer(device, GPU_AZP_STATUS_LAYOUT.length)
   };
   const seed = 5;
   const parametersBuffer = createInputBuffer(device, getGPUAZPRegionsParameterValues({seed}));
@@ -181,7 +187,7 @@ it('GPUAZPRegions accepts a non-leaf move when exact source connectivity is pres
           'cycle-status',
           outputs.status,
           'uint32',
-          GPU_AZP_STATUS.length
+          GPU_AZP_STATUS_LAYOUT.length
         )
       }
     })
@@ -190,7 +196,7 @@ it('GPUAZPRegions accepts a non-leaf move when exact source connectivity is pres
   submitGraph(device, compiled, undefined);
   expect(await readUint32(outputs.labels, 4)).toEqual([1, 0, 0, 1]);
   expect((await readFloat32(outputs.objective, 1))[0]).toBeCloseTo(0, 4);
-  expect(await readUint32(outputs.status, GPU_AZP_STATUS.length)).toEqual([1, 1, 0, 0]);
+  expect(await readUint32(outputs.status, GPU_AZP_STATUS_LAYOUT.length)).toEqual([1, 1, 0, 0]);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   parametersBuffer.destroy();
@@ -224,7 +230,7 @@ it('GPUAZPRegions keeps 36 contiguous regions on a 900-row lattice', async () =>
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_AZP_STATUS.length)
+    status: createOutputBuffer(device, GPU_AZP_STATUS_LAYOUT.length)
   };
   const seed = 11;
   const parametersBuffer = createInputBuffer(device, getGPUAZPRegionsParameterValues({seed}));
@@ -257,7 +263,13 @@ it('GPUAZPRegions keeps 36 contiguous regions on a 900-row lattice', async () =>
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_AZP_STATUS.length)
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_AZP_STATUS_LAYOUT.length
+        )
       }
     })
   );
@@ -265,16 +277,16 @@ it('GPUAZPRegions keeps 36 contiguous regions on a 900-row lattice', async () =>
   submitGraph(device, compiled, undefined);
   const labels = await readUint32(outputs.labels, rowCount);
   const [objective] = await readFloat32(outputs.objective, 1);
-  const status = await readUint32(outputs.status, GPU_AZP_STATUS.length);
+  const status = await readUint32(outputs.status, GPU_AZP_STATUS_LAYOUT.length);
   expect(labels.every(label => label < regionCount)).toBe(true);
   expect(new Set(labels).size).toBe(regionCount);
-  expect(status[GPU_AZP_STATUS.invalidCount]).toBe(0);
+  expect(status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(0);
   expect(findDisconnectedLabels(offsets, neighbors, labels)).toEqual([]);
   // The reported objective is the within-region SSD of the returned labels, and AZP only improves.
   const finalObjective = evaluatePartition(values, 1, labels).withinSsd;
   expect(Math.abs(objective - finalObjective)).toBeLessThan(1e-3 * finalObjective);
   expect(finalObjective).toBeLessThanOrEqual(initialObjective * (1 + 1e-6));
-  expect(status[GPU_AZP_STATUS.iterationCount]).toBeGreaterThan(0);
+  expect(status[GPU_AZP_STATUS_LAYOUT.iterationCount]).toBeGreaterThan(0);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   parametersBuffer.destroy();
@@ -322,7 +334,7 @@ async function runAzp(
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_AZP_STATUS.length)
+    status: createOutputBuffer(device, GPU_AZP_STATUS_LAYOUT.length)
   };
   const seed = 3;
   const parametersBuffer = createInputBuffer(device, getGPUAZPRegionsParameterValues({seed}));
@@ -368,7 +380,13 @@ async function runAzp(
       output: {
         labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
         objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
-        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_AZP_STATUS.length)
+        status: importGraphBuffer(
+          graph,
+          'status',
+          outputs.status,
+          'uint32',
+          GPU_AZP_STATUS_LAYOUT.length
+        )
       }
     })
   );
@@ -377,7 +395,7 @@ async function runAzp(
   const result = {
     labels: await readUint32(outputs.labels, rowCount),
     objective: (await readFloat32(outputs.objective, 1))[0],
-    status: await readUint32(outputs.status, GPU_AZP_STATUS.length)
+    status: await readUint32(outputs.status, GPU_AZP_STATUS_LAYOUT.length)
   };
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
@@ -401,10 +419,10 @@ it('GPUAZPRegions distinguishes a final improving round from a no-move convergen
     const result = await runAzp(device, {...scene, maximumIterations});
     expect(result.labels).toEqual([0, 1, 1, 1]);
     expect(result.objective).toBeCloseTo(182 / 3, 4);
-    expect(result.status[GPU_AZP_STATUS.iterationCount]).toBe(1);
-    expect(result.status[GPU_AZP_STATUS.invalidCount]).toBe(0);
-    expect(result.status[GPU_AZP_STATUS.converged]).toBe(maximumIterations === 2 ? 1 : 0);
-    expect(result.status[GPU_AZP_STATUS.iterationLimitReached]).toBe(
+    expect(result.status[GPU_AZP_STATUS_LAYOUT.iterationCount]).toBe(1);
+    expect(result.status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(0);
+    expect(result.status[GPU_AZP_STATUS_LAYOUT.converged]).toBe(maximumIterations === 2 ? 1 : 0);
+    expect(result.status[GPU_AZP_STATUS_LAYOUT.iterationLimitReached]).toBe(
       maximumIterations === 1 ? 1 : 0
     );
   }
@@ -423,8 +441,8 @@ it('GPUAZPRegions reports a disconnected initial region through invalidCount', a
     regionCapacity: 2,
     standardize: false
   });
-  expect(result.status[GPU_AZP_STATUS.invalidCount]).toBe(2);
-  expect(result.status[GPU_AZP_STATUS.iterationCount]).toBe(0);
+  expect(result.status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(2);
+  expect(result.status[GPU_AZP_STATUS_LAYOUT.iterationCount]).toBe(0);
 });
 
 it('GPUAZPRegions treats directed weights as undirected adjacency', async () => {
@@ -440,7 +458,7 @@ it('GPUAZPRegions treats directed weights as undirected adjacency', async () => 
     regionCapacity: 2,
     standardize: false
   });
-  expect(result.status[GPU_AZP_STATUS.invalidCount]).toBe(0);
+  expect(result.status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(0);
   expect(canonicalizePartition(result.labels)).toEqual([0, 0, 1, 1]);
   expect(result.objective).toBeCloseTo(0, 4);
 });
@@ -462,8 +480,8 @@ it('GPUAZPRegions keeps a region at or above the extensive threshold', async () 
   expect(canonicalizePartition(free.labels)).toEqual([0, 0, 1, 1]);
   const bound = await runAzp(device, {...scene, extensiveThreshold: 3});
   expect(bound.labels).toEqual([0, 0, 0, 1]);
-  expect(bound.status[GPU_AZP_STATUS.iterationCount]).toBe(0);
-  expect(bound.status[GPU_AZP_STATUS.converged]).toBe(1);
+  expect(bound.status[GPU_AZP_STATUS_LAYOUT.iterationCount]).toBe(0);
+  expect(bound.status[GPU_AZP_STATUS_LAYOUT.converged]).toBe(1);
   expect(bound.objective).toBeCloseTo(
     evaluatePartition(scene.values, 1, bound.labels).withinSsd,
     3
@@ -496,7 +514,7 @@ it('GPUAZPRegions standardizes columns by default and reports the z-score object
     regionCapacity: (width / tile) ** 2,
     maximumIterations: 16
   });
-  expect(result.status[GPU_AZP_STATUS.invalidCount]).toBe(0);
+  expect(result.status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(0);
   const expected = evaluatePartition(standardizeColumns(values, 2), 2, result.labels).withinSsd;
   expect(Math.abs(result.objective - expected)).toBeLessThan(1e-3 * Math.max(expected, 1));
 });
@@ -532,8 +550,8 @@ it('GPUAZPRegions keeps 1,024 contiguous regions on a 262,144-row lattice (no ro
     standardize: false,
     maximumIterations: 256
   });
-  expect(result.status[GPU_AZP_STATUS.invalidCount]).toBe(0);
-  expect(result.status[GPU_AZP_STATUS.iterationCount]).toBeGreaterThan(0);
+  expect(result.status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(0);
+  expect(result.status[GPU_AZP_STATUS_LAYOUT.iterationCount]).toBeGreaterThan(0);
   expect(result.labels.every(label => label < regionCapacity)).toBe(true);
   expect(new Set(result.labels).size).toBe(regionCapacity);
   // Contiguity is the invariant of the local articulation test.
@@ -564,7 +582,7 @@ it('GPUAZPRegions ends at a local optimum of the float64 CPU mirror and keeps co
       standardize: false,
       maximumIterations: 256
     });
-    expect(result.status[GPU_AZP_STATUS.converged], `${width}x${height}`).toBe(1);
+    expect(result.status[GPU_AZP_STATUS_LAYOUT.converged], `${width}x${height}`).toBe(1);
     expect(findDisconnectedLabels(offsets, neighbors, result.labels)).toEqual([]);
     const adjacency = getAdjacency(offsets, neighbors);
     const initialObjective = getWithinSumOfSquares(values, initialLabels, regionCapacity);
@@ -612,7 +630,7 @@ it('GPUAZPRegions reaches the quality of spopt AZP from the same starts (spopt o
       standardize: false,
       maximumIterations: 256
     });
-    expect(result.status[GPU_AZP_STATUS.converged], instance.name).toBe(1);
+    expect(result.status[GPU_AZP_STATUS_LAYOUT.converged], instance.name).toBe(1);
     expect(findDisconnectedLabels(offsets, neighbors, result.labels), instance.name).toEqual([]);
     const objective = getWithinSumOfSquares(instance.values, result.labels, instance.regionCount);
     expect(objective, instance.name).toBeLessThanOrEqual(instance.initialObjective * (1 + 1e-6));
@@ -621,7 +639,7 @@ it('GPUAZPRegions reaches the quality of spopt AZP from the same starts (spopt o
     console.log(
       `${instance.name}: GPU ${objective.toFixed(2)}, spopt ${instance.spoptObjective.toFixed(2)}, ` +
         `initial ${instance.initialObjective.toFixed(2)}, rounds ` +
-        `${result.status[GPU_AZP_STATUS.iterationCount]}`
+        `${result.status[GPU_AZP_STATUS_LAYOUT.iterationCount]}`
     );
   }
 }, 120_000);
@@ -666,7 +684,7 @@ it('GPUAZPRegions A/B: local articulation batches vs the exact-reachability sing
     console.log(
       `AZP A/B 16,384 rows ${name}: ${milliseconds.toFixed(0)} ms, objective ${objective.toFixed(2)} ` +
         `(initial ${initialObjective.toFixed(2)}), iterations ` +
-        `${run.status[GPU_AZP_STATUS.iterationCount]}, converged ${run.status[GPU_AZP_STATUS.converged]}`
+        `${run.status[GPU_AZP_STATUS_LAYOUT.iterationCount]}, converged ${run.status[GPU_AZP_STATUS_LAYOUT.converged]}`
     );
     expect(findDisconnectedLabels(offsets, neighbors, run.labels), name).toEqual([]);
     expect(objective, name).toBeLessThanOrEqual(initialObjective * (1 + 1e-6));
@@ -701,11 +719,11 @@ it('GPUAZPRegions checks a 16,384-row snake region for contiguity within bounded
     maximumIterations: 1
   };
   const whole = await runAzp(device, {...scene, initialLabels: new Uint32Array(rowCount)});
-  expect(whole.status[GPU_AZP_STATUS.invalidCount]).toBe(0);
+  expect(whole.status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(0);
   const cut = new Uint32Array(rowCount);
   cut[order[rowCount / 2]] = 1;
   const split = await runAzp(device, {...scene, initialLabels: cut});
   // Region 0 is cut in two: one extra component.
-  expect(split.status[GPU_AZP_STATUS.invalidCount]).toBe(1);
-  expect(split.status[GPU_AZP_STATUS.iterationCount]).toBe(0);
+  expect(split.status[GPU_AZP_STATUS_LAYOUT.invalidCount]).toBe(1);
+  expect(split.status[GPU_AZP_STATUS_LAYOUT.iterationCount]).toBe(0);
 }, 120_000);

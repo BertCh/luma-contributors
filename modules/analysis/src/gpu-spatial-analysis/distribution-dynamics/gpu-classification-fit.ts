@@ -10,6 +10,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -124,6 +125,7 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
   readonly props: GPUClassificationFitProps;
 
   constructor(props: GPUClassificationFitProps) {
+    props = {...props, output: {...props.output}};
     const id = props.id ?? 'classification-fit';
     this.id = id;
     this.props = props;
@@ -317,6 +319,7 @@ const UNCOUNTED_KEY: u32 = 0xffffffffu;`;
         guardIndex: false,
         declarations: `${constants}
 const LANES: u32 = ${STATISTICS_WORKGROUP_SIZE}u;
+${ROUNDED_DIFFERENCE_WGSL}
 var<workgroup> scratch: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;
 
 fn reduceSum(value: f32, lane: u32) -> f32 {
@@ -366,11 +369,20 @@ fn valueAt(slot: u32, position: u32) -> f32 {
   if (count > 0u) {
     let lower = valueAt(slot, start + (count - 1u) / 2u);
     let upper = valueAt(slot, start + count / 2u);
-    median = lower + (upper - lower) * 0.5;
+    // Branch on sign bits: finite opposite endpoints may have an infinite difference.
+    if (((bitcast<u32>(lower) ^ bitcast<u32>(upper)) & 0x80000000u) != 0u) {
+      median = lower * 0.5 + upper * 0.5;
+    } else {
+      median = lower + (upper - lower) * 0.5;
+    }
   }
   var partialSum = 0.0;
+  // Class keys are generated in 0..CLASSES and CLASSES <= 256. Their high bits are a
+  // GPU-resident zero that fixes subtraction rounding without another storage binding.
+  let runtimeZero = sortedClassKeys[sortedClassKeysOffset] >> 9u;
+  let origin = median;
   for (var position = start + lane; position < end; position += LANES) {
-    partialSum += valueAt(slot, position);
+    partialSum += getRoundedDifference(valueAt(slot, position), origin, runtimeZero);
   }
   let mean = reduceSum(partialSum, lane) / f32(max(count, 1u));
   var partialAbsolute = 0.0;
@@ -378,7 +390,7 @@ fn valueAt(slot: u32, position: u32) -> f32 {
   for (var position = start + lane; position < end; position += LANES) {
     let value = valueAt(slot, position);
     partialAbsolute += abs(value - median);
-    let centered = value - mean;
+    let centered = getRoundedDifference(getRoundedDifference(value, origin, runtimeZero), mean, runtimeZero);
     partialSquared += centered * centered;
   }
   let absolute = reduceSum(partialAbsolute, lane);

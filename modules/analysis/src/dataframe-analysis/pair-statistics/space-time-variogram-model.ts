@@ -8,6 +8,10 @@ import {
   type VariogramModelType,
   type VariogramModelWeighting
 } from './variogram-model';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** One marginal or joint structure: `gamma(lag) = nugget + sill * shape(lag / range)` for lag > 0. */
 export type SpaceTimeVariogramStructure = {
@@ -197,6 +201,8 @@ export function getGPUSpaceTimeVariogramBinLags(props: {
 
 /** Options of {@link fitSpaceTimeVariogramModel}. */
 export type SpaceTimeVariogramFitOptions = {
+  /** Coordinate cycles per weighting pass, integer in [1, 24]. Defaults to 24. */
+  maximumCycles?: number;
   /** Space-time family. */
   type: SpaceTimeVariogramModelType;
   /** Family of the spatial, temporal and joint structures. Defaults to `'exponential'`. */
@@ -214,6 +220,10 @@ export type SpaceTimeVariogramFit = {
   residual: number;
   /** True when a nonlinear parameter stopped at the edge of its search ladder. */
   atBoundary: boolean;
+  /** Actual completed coordinate cycles in the final weighting pass, at most maximumCycles. */
+  cycleCount: number;
+  /** Final pass met the relative residual improvement criterion (1e-9), even at a boundary. */
+  converged: boolean;
 };
 
 type SearchParameter = {low: number; high: number; scale: 'log' | 'linear'; steps: number};
@@ -385,12 +395,22 @@ function evaluateLinearDesign(
 function searchCoordinates(
   parameters: readonly SearchParameter[],
   start: readonly number[],
-  evaluate: (values: readonly number[]) => LinearEvaluation
-): {values: number[]; evaluation: LinearEvaluation; atBoundary: boolean} {
+  evaluate: (values: readonly number[]) => LinearEvaluation,
+  maximumCycles: number
+): {
+  values: number[];
+  evaluation: LinearEvaluation;
+  atBoundary: boolean;
+  cycleCount: number;
+  converged: boolean;
+} {
   const values = start.slice();
   let best = evaluate(values);
   const ratio = (Math.sqrt(5) - 1) / 2;
-  for (let cycle = 0; cycle < COORDINATE_CYCLES; cycle++) {
+  let cycleCount = 0;
+  let converged = false;
+  for (let cycle = 0; cycle < maximumCycles; cycle++) {
+    cycleCount++;
     const beforeCycle = best.residual;
     parameters.forEach((parameter, parameterIndex) => {
       const position = (step: number): number => {
@@ -453,6 +473,7 @@ function searchCoordinates(
       }
     });
     if (best.residual >= beforeCycle * (1 - 1e-9)) {
+      converged = Number.isFinite(best.residual);
       break;
     }
   }
@@ -464,7 +485,7 @@ function searchCoordinates(
       ? value <= parameter.low * span ** 1e-3 || value >= parameter.high / span ** 1e-3
       : value <= parameter.low + span * 1e-3 || value >= parameter.high - span * 1e-3;
   });
-  return {values, evaluation: best, atBoundary};
+  return {values, evaluation: best, atBoundary, cycleCount, converged};
 }
 
 /**
@@ -477,21 +498,38 @@ function searchCoordinates(
  * at zero spatial lag) start the ranges, through `fitVariogramModel`. Cressie weighting repeats the
  * search three times. The bin at zero spatial and temporal lag is ignored.
  *
- * @throws If fewer than two bins are usable.
+ * @throws If the bin arrays differ in length or fewer than two bins are usable.
  */
 export function fitSpaceTimeVariogramModel(
   input: SpaceTimeVariogramInput,
   options: SpaceTimeVariogramFitOptions
 ): SpaceTimeVariogramFit {
+  const maximumCycles = options.maximumCycles ?? COORDINATE_CYCLES;
+  validateCapacity(
+    'fitSpaceTimeVariogramModel',
+    'maximumCycles',
+    maximumCycles,
+    1,
+    COORDINATE_CYCLES
+  );
   const weighting = options.weighting ?? 'cressie';
+  validateRequirement(
+    'fitSpaceTimeVariogramModel',
+    weighting === 'cressie' || weighting === 'pairs' || weighting === 'none',
+    `weighting must be one of cressie, pairs, none; received ${String(weighting)}`
+  );
   const structure = options.structure ?? 'exponential';
   const bins: FitBins = {distances: [], timeLags: [], semivariances: [], pairCounts: []};
-  const length = Math.min(
-    input.distances.length,
-    input.timeLags.length,
-    input.semivariances.length,
-    input.pairCounts.length
-  );
+  const length = input.distances.length;
+  if (
+    input.timeLags.length !== length ||
+    input.semivariances.length !== length ||
+    input.pairCounts.length !== length
+  ) {
+    throw new Error(
+      `fitSpaceTimeVariogramModel distances, timeLags, semivariances and pairCounts must have equal lengths, got ${length}, ${input.timeLags.length}, ${input.semivariances.length} and ${input.pairCounts.length}`
+    );
+  }
   for (let bin = 0; bin < length; bin++) {
     if (
       Number.isFinite(input.distances[bin]) &&
@@ -511,12 +549,18 @@ export function fitSpaceTimeVariogramModel(
   }
   const specification = getSearchSpecification(bins, options.type, structure, options.gneiting);
   let weights = Float64Array.from(bins.pairCounts, count => (weighting === 'none' ? 1 : count));
-  let fit = searchCoordinates(specification.parameters, specification.start, values =>
-    evaluateLinearDesign(bins, weights, specification.columns, (bin, row) =>
-      specification.writeDesign(values, bin, row)
-    )
+  let fit = searchCoordinates(
+    specification.parameters,
+    specification.start,
+    values =>
+      evaluateLinearDesign(bins, weights, specification.columns, (bin, row) =>
+        specification.writeDesign(values, bin, row)
+      ),
+    maximumCycles
   );
-  if (weighting === 'cressie') {
+  // The exact zero field needs no reweighting: a vanishing fitted ordinate would produce
+  // infinite Cressie weights and destroy the already exact zero objective.
+  if (weighting === 'cressie' && !bins.semivariances.every(value => value === 0)) {
     for (let pass = 0; pass < CRESSIE_PASSES; pass++) {
       const previous = specification.getModel(fit.values, fit.evaluation.coefficients);
       weights = Float64Array.from(bins.pairCounts, (count, bin) => {
@@ -527,17 +571,23 @@ export function fitSpaceTimeVariogramModel(
         );
         return count / Math.max(fitted * fitted, Number.MIN_VALUE);
       });
-      fit = searchCoordinates(specification.parameters, fit.values, values =>
-        evaluateLinearDesign(bins, weights, specification.columns, (bin, row) =>
-          specification.writeDesign(values, bin, row)
-        )
+      fit = searchCoordinates(
+        specification.parameters,
+        fit.values,
+        values =>
+          evaluateLinearDesign(bins, weights, specification.columns, (bin, row) =>
+            specification.writeDesign(values, bin, row)
+          ),
+        maximumCycles
       );
     }
   }
   return {
     model: specification.getModel(fit.values, fit.evaluation.coefficients),
     residual: fit.evaluation.residual,
-    atBoundary: fit.atBoundary
+    atBoundary: fit.atBoundary,
+    cycleCount: fit.cycleCount,
+    converged: fit.converged
   };
 }
 

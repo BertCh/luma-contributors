@@ -5,6 +5,7 @@
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {basename, join, relative, resolve, sep} from 'node:path';
 import {describe, expect, it} from 'vitest';
+import {WEIGHTS_OPERATORS} from '../../src/gpu-spatial-analysis/computation-pack/operators/weights';
 import {PENDING_LENS_RECORDS, collectPendingRecordFailures} from './pending-lens-records';
 import type {GPUComputationFormulaRef} from '@luma-contributors/analysis/computation-record';
 // Registers every scenario descriptor (lazy; no GPU code runs).
@@ -28,6 +29,7 @@ import {
   REPOSITORY_ROOT,
   listDocsMarkdownFiles,
   listEntryElements,
+  createEntryElementDiscovery,
   parseDirectiveAttributes,
   scanLensDirectives,
   scanLensMarkers,
@@ -65,6 +67,8 @@ const GPU_DATAFRAME_PENDING: Readonly<Record<string, string>> = {
   GPUValueCube: SPATIOTEMPORAL_REVIEW_PENDING
 };
 const GPU_SPATIAL_ANALYSIS_PENDING: Readonly<Record<string, string>> = {
+  addStopValueCubeRecipe:
+    'lenses: gpu-spatial-analysis pack operator and formula, stop-value-cube-recipe scenario, documentation marker/directives and recording are absent (CMP-12)',
   GPUChunkedSpatialWeightsAlgebra:
     'lenses: pack operator, formula, supported row-local family scenario, directives and records; the whole-CSR algebra scenario uses unsupported higherOrder',
   GPUEnsembleScores: SPATIOTEMPORAL_REVIEW_PENDING,
@@ -187,6 +191,11 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
     // These three chunked variants share the demonstrated whole-CSR computation. Algebra remains
     // pending: its whole-CSR example uses higherOrder, outside the chunked row-local contract.
     familyScenarios: {
+      addBuildingTessellationReferenceRecipe: {
+        scenarioId: 'gpu-spatial-analysis.building-tessellation-recipe',
+        reason:
+          'The legacy reference lens calls the named reference entry and captures its per-building polygon overlays; it does not demonstrate the local sample-cell-union route.'
+      },
       GPUChunkedSpatialWeightsValidation: {
         scenarioId: 'gpu-spatial-analysis.spatial-weights-validation',
         reason: 'Per-chunk dispatch of the whole-CSR validation kernels.'
@@ -238,6 +247,41 @@ export const COVERED_ENTRIES: readonly CoveredEntry[] = [
  * `docs/lens-records/<scenario>.json` files are allowed; set LENS_COVERAGE_REQUIRE_RECORDS=1 to enforce.
  */
 const ALLOW_MISSING_RECORDS = process.env['LENS_COVERAGE_REQUIRE_RECORDS'] !== '1';
+
+it('shared discovery retains exact sibling exports, inherited methods and method-specific caches', () => {
+  const first = 'modules/lenses/test/computation-docs/discovery-first.fixture.ts';
+  const second = 'modules/lenses/test/computation-docs/discovery-second.fixture.ts';
+  const discover = createEntryElementDiscovery([first, second]);
+  expect(discover(first)).toEqual({
+    contributors: ['GPUInherited'],
+    recipes: ['addFixtureRecipe'],
+    otherClasses: []
+  });
+  expect(discover(second)).toEqual({contributors: [], recipes: [], otherClasses: ['GPUPass']});
+  expect(discover(second, ['getPasses'])).toEqual({
+    contributors: ['GPUPass'],
+    recipes: [],
+    otherClasses: []
+  });
+  // An exported sibling must never supply a contributor to the first barrel or its method query.
+  expect(discover(first, ['getPasses'])).toEqual({
+    contributors: [],
+    recipes: ['addFixtureRecipe'],
+    otherClasses: ['GPUInherited']
+  });
+  expect(discover(first).contributors).toEqual(['GPUInherited']);
+});
+
+// Build lazily, once, so the coverage gate shares inherited type information across barrels.
+let discoverCoveredEntries: ReturnType<typeof createEntryElementDiscovery> | undefined;
+function listCoveredEntryElements(barrel: string, methods?: readonly string[]) {
+  discoverCoveredEntries ??= createEntryElementDiscovery(
+    COVERED_ENTRIES.flatMap(entry =>
+      typeof entry.barrel === 'string' ? [entry.barrel] : [...entry.barrel]
+    )
+  );
+  return discoverCoveredEntries(barrel, methods);
+}
 
 type CoveredEntry = {
   /** Entry id, also the scenario id prefix, e.g. `gpu-spatial-analysis`. */
@@ -348,7 +392,8 @@ function collectDirectiveFailures(
 function collectSlotFailures(
   elements: ReturnType<typeof listEntryElements>,
   pages: readonly ScannedPage[],
-  conceptsFile: string
+  conceptsFile: string,
+  pending: Readonly<Record<string, string>> = {}
 ): string[] {
   const failures: string[] = [];
   const markers = pages.flatMap(page => page.markers.map(marker => ({...marker, file: page.file})));
@@ -356,6 +401,9 @@ function collectSlotFailures(
   const exported = new Set([...required, ...elements.otherClasses]);
   for (const name of required) {
     const count = markers.filter(marker => marker.name === name).length;
+    // Reuse the element pending list for an explicitly absent marker only. Keep discovery,
+    // duplicate markers, unknown markers and all siblings strict; entry coverage retires it.
+    if (count === 0 && /\bmarker\b/.test(pending[name] ?? '')) continue;
     if (count !== 1) failures.push(`${name}: expected exactly one marker, found ${count}`);
   }
   for (const marker of markers) {
@@ -423,12 +471,13 @@ function collectEntryFailures(
     if (familyScenarioId !== undefined && !family) continue; // Reported above.
     const elementFailures = collectElementFailures(
       entry,
-      family?.element ?? name,
+      name,
       pack,
       pages,
       family ? [family] : scenarios,
       allowMissingRecords,
-      hasRecord
+      hasRecord,
+      family?.element
     ).map(failure => (family ? `${name}: family ${family.id}: ${failure}` : failure));
     const pending = entry.pending?.[name];
     if (pending === undefined) {
@@ -444,6 +493,13 @@ function collectEntryFailures(
   return failures;
 }
 
+/** Serialized scenario-ID slugs kept for exports renamed in wave 6 (NAM-14, UDF-14). */
+const RENAMED_EXPORT_SCENARIO_SLUGS: Readonly<Partial<Record<string, string>>> = {
+  GPUKeyLookup: 'key-join',
+  GPUDBSCAN: 'spatial-clustering',
+  GPUHDBSCAN: 'hierarchical-density-clustering'
+};
+
 /** Checks (a)–(e) for one element; every failure string starts with `<name>: (<check>)`. */
 function collectElementFailures(
   entry: CoveredEntry,
@@ -452,7 +508,8 @@ function collectElementFailures(
   pages: readonly ScannedPage[],
   scenarios: readonly LensScenarioDescriptor[],
   allowMissingRecords: boolean,
-  hasRecord: (scenario: string) => boolean
+  hasRecord: (scenario: string) => boolean,
+  evidenceElement = name
 ): string[] {
   const failures: string[] = [];
   const operator = pack.operators?.[name];
@@ -466,13 +523,13 @@ function collectElementFailures(
     }
   }
   const elementScenarios = scenarios.filter(
-    scenario => scenario.entry === entry.entry && scenario.element === name
+    scenario => scenario.entry === entry.entry && scenario.element === evidenceElement
   );
   const selectedScenarioIds = new Set(elementScenarios.map(scenario => scenario.id));
   const directives = pages.flatMap(page =>
     page.directives.filter(
       directive =>
-        directive.sectionClasses.includes(name) &&
+        directive.sectionClasses.includes(evidenceElement) &&
         selectedScenarioIds.has(directive.attributes['scenario'])
     )
   );
@@ -494,16 +551,17 @@ function collectElementFailures(
   )
     failures.push(`${name}: (b) invalid formula`);
   // `element` is the exported name; the kebab form is only the scenario id's second segment.
+  // Scenario IDs are serialized and keep their spelling after an export rename (wave 6).
+  const scenarioSlug =
+    RENAMED_EXPORT_SCENARIO_SLUGS[evidenceElement] ?? getLensElementId(evidenceElement);
   if (elementScenarios.length === 0) {
     failures.push(`${name}: (c) missing registered scenario`);
-  } else if (
-    !elementScenarios.some(scenario => scenario.id.split('.')[1] === getLensElementId(name))
-  ) {
-    failures.push(`${name}: (c) no scenario id ${entry.entry}.${getLensElementId(name)}[.variant]`);
+  } else if (!elementScenarios.some(scenario => scenario.id.split('.')[1] === scenarioSlug)) {
+    failures.push(`${name}: (c) no scenario id ${entry.entry}.${scenarioSlug}[.variant]`);
   }
   const markerCount = pages
     .flatMap(page => page.markers)
-    .filter(marker => marker.name === name).length;
+    .filter(marker => marker.name === evidenceElement).length;
   if (markerCount !== 1)
     failures.push(`${name}: (d) expected exactly one marker, found ${markerCount}`);
   if (
@@ -536,7 +594,7 @@ function getCoveredElements(
     return {contributors: Object.keys(pack.operators ?? {}).sort(), recipes: [], otherClasses: []};
   }
   const barrels = typeof entry.barrel === 'string' ? [entry.barrel] : entry.barrel;
-  const listed = barrels.map(barrel => listEntryElements(barrel, entry.contributorMethods));
+  const listed = barrels.map(barrel => listCoveredEntryElements(barrel, entry.contributorMethods));
   return {
     contributors: listed.flatMap(elements => elements.contributors).sort(),
     recipes: listed.flatMap(elements => elements.recipes).sort(),
@@ -599,13 +657,14 @@ describe('lens coverage contract', () => {
   for (const entry of SLOT_ENTRIES) {
     it(`${entry} has exactly one slot for every contributor and recipe`, () => {
       const directory = join(DOCS_ROOT, 'api', entry);
-      const elements = listEntryElements(`modules/analysis/src/${entry}/index.ts`);
+      const elements = listCoveredEntryElements(`modules/analysis/src/${entry}/index.ts`);
       expect(elements.contributors.length).toBeGreaterThan(0);
       expect(
         collectSlotFailures(
           elements,
           selectPages(pages, [directory]),
-          join(directory, 'concepts.md')
+          join(directory, 'concepts.md'),
+          COVERED_ENTRIES.find(covered => covered.entry === entry)?.pending
         )
       ).toEqual([]);
     }, 120_000);
@@ -662,6 +721,16 @@ describe('lens coverage contract', () => {
 });
 
 describe('coverage helpers', () => {
+  it('registers own-name operators and formulas for the three demonstrated chunked weights variants', () => {
+    for (const name of [
+      'GPUChunkedSpatialWeightsValidation',
+      'GPUChunkedSpatialWeightsTranspose',
+      'GPUChunkedSpatialWeightsTransform'
+    ]) {
+      expect(WEIGHTS_OPERATORS[name], name).toBeDefined();
+      expect(WEIGHTS_OPERATORS[name]?.formula, name).toBeDefined();
+    }
+  });
   it('rejects higherOrder algebra as coverage for the chunked row-local variant', () => {
     expect(
       readFileSync(
@@ -862,8 +931,14 @@ describe('coverage helpers', () => {
     const familyElements = {...elements, contributors: ['GPUExample', 'GPUVariant']};
     const pack: PackCoverageData = {
       id: 'test',
-      operators: {GPUExample: {scope: 'local', reduction: 'none'}},
-      formulas: {GPUExample: {formula: 'none', reason: 'Structural operator'}}
+      operators: {
+        GPUExample: {scope: 'local', reduction: 'none'},
+        GPUVariant: {scope: 'local', reduction: 'none'}
+      },
+      formulas: {
+        GPUExample: {formula: 'none', reason: 'Structural operator'},
+        GPUVariant: {formula: 'none', reason: 'Structural variant'}
+      }
     };
     const page = makePage(
       '### Example\n<!-- lens:GPUExample -->\n::lens{scenario=test.example rung=graph}'
@@ -890,8 +965,165 @@ describe('coverage helpers', () => {
     expect(
       collectEntryFailures(familyEntry, familyElements, pack, [], [scenario], true, () => true)
     ).toContain(
-      'GPUVariant: family test.example: GPUExample: (d) missing directive for its registered scenario'
+      'GPUVariant: family test.example: GPUVariant: (d) missing directive for its registered scenario'
     );
+  });
+
+  it('S2: named tessellation routes require their own constructed-pack operator and formula with family evidence intact', async () => {
+    const {createSpatialPackData} = await import(
+      '../../src/gpu-spatial-analysis/computation-pack/pack'
+    );
+    const pack = createSpatialPackData();
+    const reference = 'addBuildingTessellationReferenceRecipe';
+    const legacy = 'addBuildingTessellationRecipe';
+    const local = 'addLocalBuildingTessellationRecipe';
+    const covered: CoveredEntry = {
+      entry: 'gpu-spatial-analysis',
+      barrel: 'unused',
+      docs: [],
+      loadPack: async () => pack,
+      requireVariableKinds: true,
+      familyScenarios: {
+        [reference]: {
+          scenarioId: 'gpu-spatial-analysis.building-tessellation-recipe',
+          reason: 'Calls the named reference entry'
+        }
+      }
+    };
+    const elements = {contributors: [], recipes: [legacy, reference, local], otherClasses: []};
+    const pages = [
+      makePage(
+        `## Reference\n<!-- lens:${legacy} -->\n<!-- lens:${reference} -->\n::lens{scenario=gpu-spatial-analysis.building-tessellation-recipe rung=graph}\n## Local\n<!-- lens:${local} -->\n::lens{scenario=gpu-spatial-analysis.local-building-tessellation-recipe rung=graph}`
+      )
+    ];
+    const registered = listLensScenarios().filter(scenario =>
+      [legacy, local].includes(scenario.element)
+    );
+    expect(
+      collectEntryFailures(covered, elements, pack, pages, registered, true, () => true)
+    ).toEqual([]);
+    const formulas = {...pack.formulas};
+    delete formulas[reference];
+    expect(formulas[legacy]).toBeDefined();
+    expect(
+      collectEntryFailures(
+        covered,
+        elements,
+        {...pack, formulas},
+        pages,
+        registered,
+        true,
+        () => true
+      )
+    ).toContain(
+      `${reference}: family gpu-spatial-analysis.building-tessellation-recipe: ${reference}: (b) missing formula`
+    );
+  });
+
+  async function expectStopCubePendingFixtures(spatialEntry: CoveredEntry) {
+    const name = 'addStopValueCubeRecipe';
+    const productionPack = await spatialEntry.loadPack();
+    expect(getCoveredElements(spatialEntry, productionPack).recipes).toContain(name);
+    const pack: PackCoverageData = {id: spatialEntry.entry, operators: {}};
+    const pending = {
+      [name]: 'fixture: missing pack, formula, scenario, marker, directives and recording'
+    };
+    const stopElements = {contributors: [], recipes: [name], otherClasses: []};
+    const concepts = makePage('## Execution\n<!-- lens:execution-model -->', 'concepts.md');
+    expect(collectSlotFailures(stopElements, [concepts], 'concepts.md', pending)).toEqual([]);
+    expect(
+      collectSlotFailures(
+        {...stopElements, contributors: ['GPUExample']},
+        [concepts],
+        'concepts.md',
+        pending
+      )
+    ).toEqual(['GPUExample: expected exactly one marker, found 0']);
+    const duplicate = makePage(`## Stop cube\n<!-- lens:${name} -->\n<!-- lens:${name} -->`);
+    expect(
+      collectSlotFailures(stopElements, [concepts, duplicate], 'concepts.md', pending)
+    ).toEqual([`${name}: expected exactly one marker, found 2`]);
+    expect(
+      collectEntryFailures(
+        {...spatialEntry, familyScenarios: {}, pending},
+        stopElements,
+        pack,
+        [],
+        [],
+        false,
+        () => false
+      )
+    ).toEqual([]);
+    const stopScenario = {
+      ...scenario,
+      id: 'gpu-spatial-analysis.stop-value-cube-recipe',
+      entry: spatialEntry.entry,
+      element: name
+    };
+    const completed: PackCoverageData = {
+      id: spatialEntry.entry,
+      operators: {
+        [name]: {
+          scope: 'zonal',
+          reduction: 'sum',
+          variableKinds: {counts: {level: 'ratio', extent: 'extensive'}}
+        }
+      },
+      formulas: {[name]: {formula: 'none', reason: 'Recipe composition shown by its graph'}}
+    };
+    const page = makePage(
+      `### Stop cube\n<!-- lens:${name} -->\n::lens{scenario=${stopScenario.id} rung=graph}`
+    );
+    const isolatedEntry = {
+      ...spatialEntry,
+      familyScenarios: {},
+      pending
+    };
+    expect(
+      collectEntryFailures(
+        isolatedEntry,
+        stopElements,
+        completed,
+        [page],
+        [stopScenario],
+        false,
+        () => true
+      )
+    ).toEqual([
+      `${name}: listed as pending (${pending[name]}) but complete; remove it from pending`
+    ]);
+    expect(
+      collectEntryFailures(
+        {...isolatedEntry, pending: {}},
+        stopElements,
+        completed,
+        [page],
+        [stopScenario],
+        false,
+        () => true
+      )
+    ).toEqual([]);
+    expect(
+      collectEntryFailures(
+        {...isolatedEntry, pending: {}},
+        stopElements,
+        completed,
+        [page],
+        [stopScenario],
+        false,
+        () => false
+      )
+    ).toEqual([`${name}: (e) missing record ${stopScenario.id} (inline.md:3)`]);
+  }
+
+  it('CMP-12: stop-cube pending coverage is element-specific and retires when complete', async () => {
+    const spatialEntry = COVERED_ENTRIES.find(
+      candidate => candidate.entry === 'gpu-spatial-analysis'
+    )!;
+    await expectStopCubePendingFixtures(spatialEntry);
+    const retiredPending = {...spatialEntry.pending};
+    delete retiredPending['addStopValueCubeRecipe'];
+    await expectStopCubePendingFixtures({...spatialEntry, pending: retiredPending});
   });
 
   it('skips pending elements honestly and fails once they are complete', async () => {

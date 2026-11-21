@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+import {validateNetworkCostMatrixIterations} from './network-cost-matrix-construction';
 
 import {
   createTransientView,
@@ -20,17 +21,21 @@ import {
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUNetworkReachability} from '../network-reachability/index';
 import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
-  type GPUNetworkTopology
+  type GPUNetworkTopology,
+  type GPUNodedNetworkTopologyPort
 } from '../../analysis-core/contracts/network-topology';
 import {ACCESSIBILITY_NONE} from './network-accessibility-passes';
 import {recommendLaneCount} from './network-accessibility-lanes';
 import {alignElementCount, getSubView} from '../network-view-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import type {GPUNetworkCostMatrixResult} from '../../analysis-core/contracts/network-cost-matrix-result';
 
 const OPERATION = 'GPUNetworkCostMatrix';
 const DEFAULT_LOCAL_ITERATIONS = 16;
@@ -54,6 +59,11 @@ export type GPUNetworkCostMatrixOutput = {
   costs: GraphDataView<'float32'>;
   /** Optional GPU-written status words. */
   status?: {
+    /**
+     * Source build certificate, independent of routing convergence. Required with nodedTopology.
+     * A noded source without both outer overflow and uncertainCount evidence cannot certify 1.
+     */
+    sourceComplete?: GraphDataView<'uint32'>;
     /** Optional one-row flag: 1 when every batch reached a fixpoint within `maximumIterations`. */
     converged?: GraphDataView<'uint32'>;
     /**
@@ -82,6 +92,10 @@ export type GPUNetworkCostMatrixProps = {
    * negative or NaN weights are impassable.
    */
   topology: GPUNetworkTopology;
+  /** Borrow the noding output, retaining its live node count and build diagnostics. Must describe topology. */
+  nodedTopology?: GPUNodedNetworkTopologyPort;
+  /** Physical trip direction between the start and target axes. Reverse CSR searches use 'target-to-start'. */
+  direction?: 'start-to-target' | 'target-to-start';
   /** Start node per start. Out-of-range nodes are ignored. */
   startNodes: GraphDataView<'uint32'>;
   /**
@@ -176,18 +190,163 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
    * Exact number of command nodes `getCommandNodes` returns: the seed expansion, the batch info
    * node, per batch one `GPUNetworkReachability` of `maximumIterations` rounds plus a copy or
    * gather node when the batch cannot write `output.costs` in place, and the converged reduction.
+   * A requested source certificate adds one node. Dense noded output also adds one metadata
+   * initializer and one live-column mask per batch, sharing one mask pipeline across batches.
    * Checked against the shared command node budget at construction.
    */
   readonly estimatedCommandNodeCount: number;
 
+  /** Borrowed matrix storage, axes, trip direction and evidence; no buffer ownership transfers. */
+  get result(): GPUNetworkCostMatrixResult {
+    const {props} = this;
+    return Object.freeze({
+      values: props.output.costs,
+      rowCount: this.rowCount,
+      columnCount: this.columnCount,
+      startNodes: props.startNodes,
+      startRows: props.startRows,
+      startsPerRow: this.startsPerRow,
+      targetNodes: props.targetNodes,
+      direction: props.direction ?? 'start-to-target',
+      converged: props.output.status?.converged,
+      sourceComplete: props.output.status?.sourceComplete,
+      costLimit: props.costLimit
+    });
+  }
+
   constructor(props: GPUNetworkCostMatrixProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'topology',
+      'nodedTopology',
+      'direction',
+      'startNodes',
+      'startCosts',
+      'startRows',
+      'startsPerRow',
+      'costLimit',
+      'targetNodes',
+      'laneCount',
+      'maximumIterations',
+      'localIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(captured.output, ['costs', 'status']);
+    const noded =
+      captured.nodedTopology &&
+      snapshotConstructionFields(captured.nodedTopology, ['topology', 'nodes', 'pieces', 'status']);
+    const snapshotId = captured.id ?? 'network-cost-matrix';
+    const topology = snapshotConstructionFields(captured.topology, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'nodePositions'
+    ]);
+    let nodedSnapshot: GPUNodedNetworkTopologyPort | undefined;
+    if (noded) {
+      validateRequirement(
+        snapshotId,
+        Boolean(noded.nodes),
+        'nodedTopology.nodes is required; received missing'
+      );
+      validateRequirement(
+        snapshotId,
+        Boolean(noded.pieces),
+        'nodedTopology.pieces is required; received missing'
+      );
+      const nodes = snapshotConstructionFields(noded.nodes, ['status']);
+      const pieces = snapshotConstructionFields(noded.pieces, ['status']);
+      validateRequirement(
+        snapshotId,
+        Boolean(nodes.status),
+        'nodedTopology.nodes.status is required; received missing'
+      );
+      validateRequirement(
+        snapshotId,
+        Boolean(pieces.status),
+        'nodedTopology.pieces.status is required; received missing'
+      );
+      const nodeStatus = snapshotConstructionFields(nodes.status, ['count']);
+      const pieceStatus = snapshotConstructionFields(pieces.status, [
+        'count',
+        'overflow',
+        'candidateOverflow',
+        'vertexCount',
+        'requiredVertexCount'
+      ]);
+      for (const [name, view] of [
+        ['nodedTopology.nodes.status.count', nodeStatus.count],
+        ['nodedTopology.pieces.status.count', pieceStatus.count],
+        ['nodedTopology.pieces.status.overflow', pieceStatus.overflow]
+      ] as const) {
+        validateRequirement(snapshotId, Boolean(view), `${name} is required; received missing`);
+        validateSinglePackedView(view, ['uint32'], `${snapshotId} ${name}`);
+        validateRequirement(
+          snapshotId,
+          view.length === 1,
+          `${name} length must equal 1; received ${view.length}`
+        );
+      }
+      nodedSnapshot = Object.freeze({
+        topology:
+          noded.topology === captured.topology
+            ? topology
+            : snapshotConstructionFields(noded.topology, [
+                'offsets',
+                'neighbors',
+                'weights',
+                'nodePositions'
+              ]),
+        nodes: Object.freeze({status: nodeStatus}),
+        pieces: Object.freeze({status: pieceStatus}),
+        status:
+          noded.status && snapshotConstructionFields(noded.status, ['overflow', 'uncertainCount'])
+      });
+    }
+    props = Object.freeze({
+      ...captured,
+      topology,
+      nodedTopology: nodedSnapshot,
+      output: Object.freeze({
+        ...output,
+        status:
+          output.status &&
+          snapshotConstructionFields(output.status, [
+            'converged',
+            'iterationLimitReached',
+            'sourceComplete'
+          ])
+      })
+    });
     this.id = props.id ?? 'network-cost-matrix';
+    validateNetworkCostMatrixIterations(this.id, props);
     this.props = props;
     validateNetworkWritableViews(this.id, props.output, [
       {outputs: {costs: props.output.costs}},
       {outputs: {status: props.output.status}}
     ]);
     const {id} = this;
+    validateRequirement(
+      id,
+      props.direction === undefined ||
+        props.direction === 'start-to-target' ||
+        props.direction === 'target-to-start',
+      "direction must be 'start-to-target' or 'target-to-start'"
+    );
+    if (props.nodedTopology) {
+      validateRequirement(
+        id,
+        Boolean(props.output.status?.sourceComplete),
+        'nodedTopology requires output.status.sourceComplete to retain source build evidence'
+      );
+      for (const name of ['offsets', 'neighbors', 'weights'] as const) {
+        validateRequirement(
+          id,
+          props.topology[name] === props.nodedTopology.topology[name],
+          `nodedTopology.topology.${name} must be the topology.${name} view`
+        );
+      }
+    }
     const {costs} = props.output;
     const converged = props.output.status?.converged;
     const iterationLimitReached = props.output.status?.iterationLimitReached;
@@ -197,6 +356,10 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       ['startNodes', props.startNodes],
       ['startRows', props.startRows],
       ['targetNodes', props.targetNodes],
+      ['output.status.sourceComplete', props.output.status?.sourceComplete],
+      ...getNodedInputs(props).map(
+        (view, index) => [`nodedTopology status ${index}`, view] as const
+      ),
       ['output.status.converged', converged],
       ['output.status.iterationLimitReached', iterationLimitReached]
     ] as const) {
@@ -235,6 +398,10 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['costLimit', props.costLimit],
+      ['output.status.sourceComplete', props.output.status?.sourceComplete],
+      ...getNodedInputs(props).map(
+        (view, index) => [`nodedTopology status ${index}`, view] as const
+      ),
       ['output.status.converged', converged],
       ['output.status.iterationLimitReached', iterationLimitReached]
     ] as const) {
@@ -287,12 +454,14 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       Number(copiedBatchCount > 0) +
       this.batchCount * reachabilityNodeCount +
       copiedBatchCount +
-      2 * Number(Boolean(converged || iterationLimitReached));
+      2 * Number(Boolean(converged || iterationLimitReached)) +
+      Number(Boolean(props.output.status?.sourceComplete)) +
+      (this.batchCount + 1) * Number(Boolean(props.nodedTopology && !props.targetNodes));
     // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [costs, converged, iterationLimitReached],
+      [costs, converged, iterationLimitReached, props.output.status?.sourceComplete],
       getInputs(props)
     );
   }
@@ -314,7 +483,8 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       ...getInputs(props),
       targetNodes ? costs : undefined,
       props.output.status?.converged,
-      iterationLimitReached
+      iterationLimitReached,
+      props.output.status?.sourceComplete
     ]);
     // The all-node matrix is bound through batch windows and may exceed a single binding.
     // Check the actual aligned windows without declaring resources; target gathers bind it whole.
@@ -339,6 +509,13 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
         : undefined);
     const seedCount = props.startNodes.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
+    const liveNodeCount = props.nodedTopology?.nodes.status.count;
+    const liveBindings: WGSLKernelBinding[] = liveNodeCount
+      ? [{name: 'liveNodeCount', view: liveNodeCount, type: 'u32', access: 'read'}]
+      : [];
+    const nodeLimit = liveNodeCount
+      ? 'min(NODE_COUNT, liveNodeCount[liveNodeCountOffset])'
+      : 'NODE_COUNT';
 
     // Batch sub-views start at multiples of ALIGNMENT_ELEMENTS (rule 12): the seeds of batch b
     // at b * seedStride, its converged flag at b * ALIGNMENT_ELEMENTS.
@@ -359,6 +536,7 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     );
     if (seedCount > 0) {
       const seedBindings: WGSLKernelBinding[] = [
+        ...liveBindings,
         {
           name: 'seedNodes',
           view: props.startNodes,
@@ -400,7 +578,7 @@ const SEEDS_PER_ROW: u32 = ${startsPerRow}u;`,
   let firstRow = batch * LANE_COUNT;
   let isInBatch = row < ROW_COUNT && row >= firstRow && row - firstRow < LANE_COUNT;
   expandedSeeds[expandedSeedsOffset + batch * SEED_STRIDE + seed] =
-    select(${ACCESSIBILITY_NONE}u, (row - firstRow) * NODE_COUNT + node, isInBatch && node < NODE_COUNT);`
+    select(${ACCESSIBILITY_NONE}u, (row - firstRow) * NODE_COUNT + node, isInBatch && node < ${nodeLimit});`
         })
       );
     }
@@ -512,6 +690,7 @@ const SLOT_WORDS: u32 = ${ALIGNMENT_ELEMENTS}u;`,
             operation: OPERATION,
             variant: 'gather',
             bindings: [
+              ...liveBindings,
               {
                 name: 'batchInfo',
                 view: getSubView(graph, batchInfo, batch * ALIGNMENT_ELEMENTS, 2),
@@ -532,7 +711,7 @@ const TARGET_COUNT: u32 = ${targetNodes.length}u;`,
   let column = index - lane * TARGET_COUNT;
   let node = targetNodes[targetNodesOffset + column];
   var costBits = 0x7f800000u;
-  if (node < NODE_COUNT) {
+  if (node < ${nodeLimit}) {
     costBits = bitcast<u32>(scratchCosts[scratchCostsOffset + lane * NODE_COUNT + node]);
   }
   costs[costsOffset + (batchInfo[batchInfoOffset] + lane) * TARGET_COUNT + column] = bitcast<f32>(costBits);`
@@ -599,6 +778,90 @@ const TARGET_COUNT: u32 = ${targetNodes.length}u;`,
         })
       );
     }
+    if (liveNodeCount && !targetNodes) {
+      const maskMetadata = createTransientView(
+        graph,
+        `${id}-mask-metadata`,
+        'uint32',
+        batchCount * ALIGNMENT_ELEMENTS
+      );
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-mask-metadata`,
+          operation: OPERATION,
+          variant: 'mask-metadata',
+          invocationCount: batchCount,
+          bindings: [{name: 'metadata', view: maskMetadata, type: 'u32', access: 'read_write'}],
+          declarations: `const RESIDUE: u32 = ${(costs.byteOffset / 4) % ALIGNMENT_ELEMENTS}u;
+const NODE_COUNT: u32 = ${nodeCount}u;
+const BATCH_NODE_COUNT: u32 = ${batchNodeCount}u;
+const ALIGNMENT: u32 = ${ALIGNMENT_ELEMENTS}u;`,
+          body: `let firstElement = RESIDUE + index * BATCH_NODE_COUNT;
+  let windowStart = firstElement - firstElement % ALIGNMENT;
+  let startColumn = windowStart % NODE_COUNT;
+  let residueColumn = RESIDUE % NODE_COUNT;
+  metadata[metadataOffset + index * ALIGNMENT] = select(0u, RESIDUE, windowStart == 0u);
+  metadata[metadataOffset + index * ALIGNMENT + 1u] = select(startColumn - residueColumn, NODE_COUNT - (residueColumn - startColumn), startColumn < residueColumn);`
+        })
+      );
+      for (let batch = 0; batch < batchCount; batch++) {
+        const window = getAlignedWindow(graph, costs, batch * batchNodeCount, batchNodeCount);
+        nodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-mask-inactive-targets-${batch}`,
+            operation: OPERATION,
+            variant: 'mask-inactive-targets',
+            invocationCount: window.length,
+            bindings: [
+              ...liveBindings,
+              {
+                name: 'metadata',
+                view: getSubView(graph, maskMetadata, batch * ALIGNMENT_ELEMENTS, 2),
+                type: 'u32',
+                access: 'read'
+              },
+              {name: 'costs', view: window, type: 'f32', access: 'read_write'}
+            ],
+            body: `let prefixCount = metadata[metadataOffset];
+            let column = (index + metadata[metadataOffset + 1u]) % ${nodeCount}u;
+            if (index >= prefixCount && column >= liveNodeCount[liveNodeCountOffset]) {
+              costs[costsOffset + index] = bitcast<f32>(0x7f800000u | (index & 0u));
+            }`
+          })
+        );
+      }
+    }
+    if (props.output.status?.sourceComplete) {
+      const losses = [
+        props.nodedTopology?.status?.overflow,
+        props.nodedTopology?.status?.uncertainCount,
+        props.nodedTopology?.pieces.status.overflow,
+        props.nodedTopology?.pieces.status.candidateOverflow
+      ].filter((view): view is GraphDataView<'uint32'> => Boolean(view));
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-source-complete`,
+          operation: OPERATION,
+          variant: 'source-complete',
+          invocationCount: 1,
+          bindings: [
+            ...losses.map((view, index) => ({
+              name: `loss${index}`,
+              view,
+              type: 'u32' as const,
+              access: 'read' as const
+            })),
+            {
+              name: 'sourceComplete',
+              view: props.output.status.sourceComplete,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: `sourceComplete[sourceCompleteOffset] = select(0u, 1u, ${props.nodedTopology && (!props.nodedTopology.status?.overflow || !props.nodedTopology.status?.uncertainCount) ? 'false && ' : ''}${losses.map((_, index) => `loss${index}[loss${index}Offset] == 0u`).join(' && ') || 'true'});`
+        })
+      );
+    }
     return nodes;
   }
 }
@@ -656,6 +919,20 @@ function getInputs(props: GPUNetworkCostMatrixProps): (GraphDataView | undefined
     props.startCosts,
     props.startRows,
     props.targetNodes,
-    props.costLimit
+    props.costLimit,
+    ...getNodedInputs(props)
   ];
 }
+
+function getNodedInputs(props: GPUNetworkCostMatrixProps): (GraphDataView<'uint32'> | undefined)[] {
+  const noded = props.nodedTopology;
+  return [
+    noded?.nodes.status.count,
+    noded?.status?.overflow,
+    noded?.status?.uncertainCount,
+    noded?.pieces.status.overflow,
+    noded?.pieces.status.candidateOverflow
+  ];
+}
+
+export type {GPUNetworkCostMatrixResult};

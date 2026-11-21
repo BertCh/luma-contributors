@@ -151,6 +151,8 @@ it('GPUCompositeScore emits deterministic node IDs and compiles optional passes 
     'basic-validate',
     'basic-tile-sums',
     'basic-means',
+    'basic-tile-centered-sums',
+    'basic-centered-means',
     'basic-tile-moments',
     'basic-moments',
     'basic-score'
@@ -403,4 +405,38 @@ it('computeCompositeScoreOnCPU averages tied ranks and honours directions', () =
   // Column 1 is reversed: 1 - rank / 5.
   expect(result.scaled[1]).toBe(1);
   expect(result.scaled[11]).toBe(0);
+});
+
+it('DPC-108: rejects non-finite packed weights and lost positive epsilon without modifying target', () => {
+  // Independent IEEE binary32 expectations: fround(1e39) is Infinity; fround(1e-50) is 0.
+  for (const settings of [
+    {weights: [1, 1e39]},
+    {weights: [-1e39]},
+    {weights: [1], epsilon: 1e-50},
+    {weights: [1], epsilon: 1e39}
+  ]) {
+    const target = new Float32Array(GPU_COMPOSITE_SCORE_PARAMETER_LENGTH + 2).fill(17);
+    expect(() => getGPUCompositeScoreParameterValues(settings, target)).toThrow();
+    expect(Array.from(target)).toEqual(new Array(target.length).fill(17));
+  }
+  const target = new Float32Array(GPU_COMPOSITE_SCORE_PARAMETER_LENGTH + 2).fill(17);
+  expect(getGPUCompositeScoreParameterValues({weights: [1, -0.5, 0], epsilon: 0.25}, target)).toBe(
+    target
+  );
+  expect(Array.from(target.subarray(0, 7))).toEqual([0, 0, 0.25, 0, 1, -0.5, 0]);
+  expect(Array.from(target.subarray(GPU_COMPOSITE_SCORE_PARAMETER_LENGTH))).toEqual([17, 17]);
+});
+
+it('S2: composite packer rejects JavaScript coercions before modifying a target', () => {
+  for (const settings of [{weights: [null]}, {weights: ['2']}, {weights: [1], epsilon: '0.5'}]) {
+    const target = new Float32Array(GPU_COMPOSITE_SCORE_PARAMETER_LENGTH).fill(17);
+    // These deliberately bypass TypeScript, as a JavaScript consumer can.
+    expect(() =>
+      getGPUCompositeScoreParameterValues(
+        settings as unknown as Parameters<typeof getGPUCompositeScoreParameterValues>[0],
+        target
+      )
+    ).toThrow();
+    expect(Array.from(target)).toEqual(new Array(target.length).fill(17));
+  }
 });

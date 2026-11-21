@@ -302,7 +302,7 @@ test('R6 fleet dwell returns the caller compact candidate view and attributes ev
       candidateCapacity: 8,
       trackEventCapacity: 1,
       eventCapacity: 2,
-      outputs: {events, status: {candidateOverflow: scalar()}}
+      output: {events, status: {candidateOverflow: scalar()}}
     });
     expect(result.outputs.events.status.candidateOverflow === events.status.candidateOverflow).toBe(
       true
@@ -496,7 +496,7 @@ test('R3 buffer selection supports all compact words and draw count on eight bin
     const producer = new GPUBufferSelection({
       points: {kind: 'points', positions: view('float32x2')},
       features: {kind: 'points', positions: view('float32x2')},
-      distance: view('float32'),
+      radius: view('float32'),
       candidateCapacity: 1,
       output: {matches: compact(), drawInstanceCount: scalar()}
     });
@@ -542,8 +542,7 @@ test.each([
         output: {
           leftRows: scalar(),
           rightRows: scalar(),
-          rowCount: count,
-          status: {overflow: scalar(), candidateOverflow: candidate}
+          status: {count, overflow: scalar(), candidateOverflow: candidate}
         }
       }).getCommandNodes(graph);
     if (byteOffset === 0) expect(construct).toThrow(/overlap/);
@@ -598,7 +597,7 @@ test.each([
       new GPUBufferSelection({
         points: {kind: 'points', positions: view('float32x2')},
         features: {kind: 'points', positions: view('float32x2')},
-        distance: view('float32'),
+        radius: view('float32'),
         candidateCapacity: 1,
         output: {matches}
       }).getCommandNodes(graph);
@@ -626,7 +625,7 @@ test.each([
       new GPUBufferSelection({
         points: {kind: 'points', positions: view('float32x2')},
         features: {kind: 'points', positions: view('float32x2')},
-        distance: view('float32'),
+        radius: view('float32'),
         candidateCapacity: 1,
         output: {matches, status: {overflow: aggregate}}
       }).getCommandNodes(graph)
@@ -653,7 +652,7 @@ test.each([
       new GPUBufferSelection({
         points: {kind: 'points', positions: view('float32x2')},
         features: {kind: 'points', positions: view('float32x2')},
-        distance: view('float32'),
+        radius: view('float32'),
         candidateCapacity: 1,
         output: {matches, status: {overflow: aggregate}}
       }).getCommandNodes(graph);

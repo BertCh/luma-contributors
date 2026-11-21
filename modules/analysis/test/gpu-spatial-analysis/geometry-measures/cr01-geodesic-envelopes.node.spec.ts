@@ -188,7 +188,7 @@ it.each([
         }
       })
   ).toThrow(
-    /^cr01-output-alias status\.converged chunk 0 and status\.iterationLimitReached chunk 0 aligned binding byte ranges must not overlap$/
+    /^cr01-output-alias status\.converged chunk 0 and status\.iterationLimitReached chunk 0 logical byte ranges must not overlap$/
   );
 });
 

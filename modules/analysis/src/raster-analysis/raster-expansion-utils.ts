@@ -3,8 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   validateGraphViewsBelongToGraph,
+  validateGraphPorts,
   validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
@@ -19,8 +21,66 @@ import {
   type RasterGatedRound
 } from './cost-distance/raster-relaxation';
 import {validateRasterBuffersDistinct, validateRasterGrid} from './raster-band-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPUIterationStatusPort} from '../analysis-core/contracts/status';
+
+/** Named shader-port expectations, including optional status leaves. @internal */
+export function validateRasterExpansionPorts(
+  id: string,
+  ports: Readonly<Record<string, unknown>>,
+  formats: Readonly<Record<string, readonly GPUVectorFormat[]>>,
+  optionalPaths: readonly string[] = []
+): void {
+  validateGraphPorts(
+    id,
+    ports,
+    Object.fromEntries(
+      Object.entries(formats).map(([name, allowed]) => [
+        name,
+        {required: !optionalPaths.includes(name), viewType: 'data' as const, formats: allowed}
+      ])
+    )
+  );
+  for (const [name, allowed] of Object.entries(formats)) {
+    let value: unknown = ports;
+    if (Object.prototype.hasOwnProperty.call(ports, name)) value = ports[name];
+    else
+      for (const part of name.split('.'))
+        value =
+          value && typeof value === 'object' ? (value as Record<string, unknown>)[part] : undefined;
+    if (value !== undefined && value !== null)
+      validateSinglePackedView(value as GraphDataView, allowed, {id, contributor: id}, name);
+  }
+}
+
+/** Packed scalar storage must agree with its band's declared native type. @internal */
+export function validateRasterExpansionBand(id: string, name: string, band: GPURasterBand): void {
+  validateRequirement(
+    id,
+    ['float32', 'sint32', 'uint32'].includes(band.format),
+    `${name}.format must be float32, sint32 or uint32; received ${band.format}`
+  );
+  validateRasterExpansionPorts(
+    id,
+    {
+      [`${name}.storage.values`]: band.storage.kind === 'buffer' ? band.storage.values : undefined,
+      [`${name}.validity`]: band.validity
+    },
+    {
+      [`${name}.storage.values`]: ['float32', 'sint32', 'uint32'],
+      [`${name}.validity`]: ['uint32']
+    },
+    band.storage.kind === 'buffer'
+      ? [`${name}.validity`]
+      : [`${name}.storage.values`, `${name}.validity`]
+  );
+  if (band.storage.kind === 'buffer')
+    validateRequirement(
+      id,
+      band.storage.values.format === band.format,
+      `${name}.storage.values.format must match ${name}.format ${band.format}; received ${band.storage.values.format}`
+    );
+}
 
 /** Shared exact-length and ownership checks for bounded raster producers. @internal */
 export function validateRasterExpansionViews(
@@ -31,7 +91,8 @@ export function validateRasterExpansionViews(
 ): number {
   const count = validateRasterGrid(id, grid);
   for (const view of [...inputs, ...outputs]) {
-    if (view) validateSinglePackedView(view, [view.format], id);
+    // Shared storage shapes; callers additionally prove each named shader port's element type.
+    if (view) validateSinglePackedView(view, ['float32', 'sint32', 'uint32', 'float32x2'], id);
   }
   validateRasterBuffersDistinct(id, outputs, inputs);
   return count;

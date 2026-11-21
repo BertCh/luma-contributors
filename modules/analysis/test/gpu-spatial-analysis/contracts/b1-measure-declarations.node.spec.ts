@@ -120,7 +120,7 @@ const MEASURE_CASES: MeasureCase[] = [
       new GPULabelPoint({
         spatialContext,
         ...createPolygon(),
-        output: {points: view('float32x2', 1), distances: view('float32', 1)}
+        output: {points: view('float32x2', 1), publishedCenterClearance: view('float32', 1)}
       })
   },
   {

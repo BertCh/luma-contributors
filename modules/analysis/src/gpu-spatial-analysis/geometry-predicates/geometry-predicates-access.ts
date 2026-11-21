@@ -9,10 +9,14 @@ import type {GPUSpatialJoinGeometry} from '../spatial-join/index';
 /** Returns the graph views of a geometry in binding order: positions, then every offsets view. @internal */
 export function getPredicateGeometryViews(geometry: GPUSpatialJoinGeometry): GraphDataView[] {
   if (geometry.kind === 'points') {
-    return [geometry.positions];
+    return [geometry.positions, ...(geometry.featureOffsets ? [geometry.featureOffsets] : [])];
   }
   if (geometry.kind === 'lines') {
-    return [geometry.positions, geometry.lineOffsets];
+    return [
+      geometry.positions,
+      geometry.lineOffsets,
+      ...(geometry.featureOffsets ? [geometry.featureOffsets] : [])
+    ];
   }
   return [
     geometry.positions,
@@ -24,6 +28,8 @@ export function getPredicateGeometryViews(geometry: GPUSpatialJoinGeometry): Gra
 
 /** Returns the number of features of a geometry. @internal */
 export function getPredicateFeatureCount(geometry: GPUSpatialJoinGeometry): number {
+  if (geometry.kind !== 'polygons' && geometry.featureOffsets)
+    return geometry.featureOffsets.length - 1;
   if (geometry.kind === 'points') {
     return geometry.positions.length;
   }
@@ -44,9 +50,18 @@ export function getPredicateGeometryBindings(
   geometry: GPUSpatialJoinGeometry,
   includePositions: boolean = true
 ): WGSLKernelBinding[] {
-  const bindings: WGSLKernelBinding[] = includePositions
-    ? [{name: `${prefix}Positions`, view: geometry.positions, type: 'f32', access: 'read'}]
-    : [];
+  const bindings: WGSLKernelBinding[] =
+    includePositions && geometry.positions.length > 0
+      ? [{name: `${prefix}Positions`, view: geometry.positions, type: 'f32', access: 'read'}]
+      : [];
+  if (geometry.kind !== 'polygons' && geometry.featureOffsets) {
+    bindings.push({
+      name: `${prefix}FeatureOffsets`,
+      view: geometry.featureOffsets,
+      type: 'u32',
+      access: 'read'
+    });
+  }
   if (geometry.kind === 'lines') {
     bindings.push({
       name: `${prefix}LineOffsets`,
@@ -96,12 +111,20 @@ export function getPredicateGeometryWGSL(
 const ${prefix}_VERTEX_COUNT: u32 = ${vertexCount}u;
 ${
   includePositions
-    ? `fn ${prefix}Vertex(vertex: u32) -> vec2f {
+    ? geometry.positions.length === 0
+      ? `fn ${prefix}Vertex(vertex: u32) -> vec2f { return vec2f(0.0); }`
+      : `fn ${prefix}Vertex(vertex: u32) -> vec2f {
   return vec2f(${prefix}Positions[${prefix}PositionsOffset + vertex * 2u], ${prefix}Positions[${prefix}PositionsOffset + vertex * 2u + 1u]);
 }`
     : ''
 }`;
   if (geometry.kind === 'points') {
+    if (geometry.featureOffsets) {
+      return `${common}
+fn ${prefix}VertexStart(feature: u32) -> u32 { return min(${prefix}FeatureOffsets[${prefix}FeatureOffsetsOffset + feature], ${prefix}_VERTEX_COUNT); }
+${getLastAtMostWGSL(`${prefix}LastFeature`, `${prefix}FeatureOffsets`)}
+fn ${prefix}FeatureOfVertex(vertex: u32) -> u32 { return ${prefix}LastFeature(${prefix}_FEATURE_COUNT, vertex); }`;
+    }
     return `${common}
 fn ${prefix}VertexStart(feature: u32) -> u32 { return min(feature, ${prefix}_VERTEX_COUNT); }
 fn ${prefix}FeatureOfVertex(vertex: u32) -> u32 { return vertex; }`;
@@ -109,10 +132,14 @@ fn ${prefix}FeatureOfVertex(vertex: u32) -> u32 { return vertex; }`;
   if (geometry.kind === 'lines') {
     return `${common}
 fn ${prefix}VertexStart(feature: u32) -> u32 {
-  return min(${prefix}LineOffsets[${prefix}LineOffsetsOffset + feature], ${prefix}_VERTEX_COUNT);
+  return min(${prefix}LineOffsets[${prefix}LineOffsetsOffset + ${geometry.featureOffsets ? `${prefix}FeatureOffsets[${prefix}FeatureOffsetsOffset + feature]` : 'feature'}], ${prefix}_VERTEX_COUNT);
 }
 ${getLastAtMostWGSL(`${prefix}LastLine`, `${prefix}LineOffsets`)}
-fn ${prefix}FeatureOfVertex(vertex: u32) -> u32 { return ${prefix}LastLine(${prefix}_FEATURE_COUNT, vertex); }`;
+${geometry.featureOffsets ? getLastAtMostWGSL(`${prefix}LastFeature`, `${prefix}FeatureOffsets`) : ''}
+fn ${prefix}FeatureOfVertex(vertex: u32) -> u32 {
+  let line = ${prefix}LastLine(${geometry.lineOffsets.length - 1}u, vertex);
+  return ${geometry.featureOffsets ? `${prefix}LastFeature(${prefix}_FEATURE_COUNT, line)` : 'line'};
+}`;
   }
   return `${common}
 const ${prefix}_POLYGON_COUNT: u32 = ${geometry.polygonOffsets.length - 1}u;

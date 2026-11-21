@@ -50,7 +50,7 @@ it('weights descriptions, transforms, transpose and validation preserve the inpu
     'binary',
     'double',
     'variance',
-    'symmetrize',
+    'average-reciprocal',
     'kernel'
   ] as const) {
     const transform = new GPUSpatialWeightsTransform({
@@ -59,17 +59,21 @@ it('weights descriptions, transforms, transpose and validation preserve the inpu
       output: view('float32', 6),
       bandwidth: 10
     });
-    expect(transform.outputWeights.spatialContext, operation).toBe(spatialContext);
+    expect(transform.outputWeights.spatialContext, operation).toStrictEqual(spatialContext);
+    expect(Object.isFrozen(transform.outputWeights.spatialContext), operation).toBe(true);
   }
-  expect(
-    new GPUSpatialWeightsTranspose({weights: input, output: weights()}).outputWeights.spatialContext
-  ).toBe(spatialContext);
-  expect(
-    new GPUSpatialWeightsValidation({
-      weights: input,
-      output: {status: {invalidCount: view('uint32', 1)}}
-    }).outputWeights.spatialContext
-  ).toBe(spatialContext);
+  const transpose = new GPUSpatialWeightsTranspose({
+    weights: input,
+    output: {...weights(), status: undefined}
+  });
+  expect(transpose.outputWeights.spatialContext).toStrictEqual(spatialContext);
+  expect(Object.isFrozen(transpose.outputWeights.spatialContext)).toBe(true);
+  const validation = new GPUSpatialWeightsValidation({
+    weights: input,
+    output: {status: {invalidCount: view('uint32', 1)}}
+  });
+  expect(validation.outputWeights.spatialContext).toStrictEqual(spatialContext);
+  expect(Object.isFrozen(validation.outputWeights.spatialContext)).toBe(true);
   device.destroy();
 });
 
@@ -96,7 +100,12 @@ it('kernel bandwidth checks contexts only when both are declared', () => {
 it('weights algebra checks two declared contexts and preserves either declared input', () => {
   const {device, view, weights} = createFixture();
   const spatialContext = GPU_GREAT_CIRCLE_SPATIAL_CONTEXT;
-  for (const operation of ['union', 'intersection', 'difference', 'symmetricDifference'] as const) {
+  for (const operation of [
+    'union',
+    'intersection',
+    'difference',
+    'symmetric-difference'
+  ] as const) {
     for (const [leftContext, rightContext] of [
       [spatialContext, spatialContext],
       [spatialContext, undefined],

@@ -18,19 +18,22 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {resolveGPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
-import {getCPUTrajectoryRows} from '../../analysis-core/operations/cpu-trajectory-rows';
+import {
+  getCPUTrajectoryRows,
+  type CPUTrajectoryRows
+} from '../../analysis-core/operations/cpu-trajectory-rows';
 import {GPU_TRAJECTORY_STAYPOINTS_PARAMETER_LENGTH} from './gpu-trajectory-staypoints';
 import {GPU_MOVEMENT_SENTINEL} from './movement-common';
+import {getTrajectoryVotePosition} from './geographic-vote';
 import {
   GPUTrajectoryStaypointsOperation,
+  snapshotTrajectoryStaypointsOperationProps,
   type TrajectoryStaypointsOperationProps
 } from './gpu-trajectory-staypoints-operation';
 
 /** Packed inputs; words are signed Int64 timestamps in little-endian low/high order. */
-export type CPUTrajectoryStaypointsInput = {
-  positions: Float32Array;
-  timestamps: Float32Array | Uint32Array;
-  trackOffsets: Uint32Array;
+export type CPUTrajectoryStaypointsInput = CPUTrajectoryRows & {
+  mask?: Uint32Array;
   /** Layout of getGPUTrajectoryStaypointsParameterValues. */
   parameters: Float32Array;
 };
@@ -42,6 +45,7 @@ export type CPUTrajectoryStaypointsResult = {
   requiredCount: Uint32Array;
   overflow: Uint32Array;
   candidateOverflow: Uint32Array;
+  missingFixCount: Uint32Array;
   drawInstanceCount: Uint32Array;
   startRows: Uint32Array;
   endRows: Uint32Array;
@@ -67,21 +71,40 @@ function getLongitudeDelta(source: number, destination: number): number {
  * strict gap test, distinct-coordinate centroid and exclusive end rows.
  *
  * What differs from the GPU contributor:
- * - Omitted maximumSearchRows leaves CPU searches uncapped; explicit caps split windows and
- *   report candidateOverflow as on the GPU.
+ * - Omitted maximumSearchRows leaves CPU searches uncapped; explicit caps split windows,
+ *   report candidateOverflow and write NaN durations and centroids on the cut track, as on the GPU.
  * - Arithmetic uses float64, rounded once to float32 outputs; threshold decisions near rounding
  *   boundaries can differ. Int64 timestamps are subtracted exactly before conversion to float64.
  * - No GPU row-count or search-budget limit is imposed. Output capacity still clamps count.
- * - Offsets are clamped to the row count, then decreasing offsets throw. The GPU does not
- *   validate ordering; decreasing offsets can produce overlapping track ranges there.
+ * - Compact offsets must terminate at the row count; storage: 'resident-capacity' opts into
+ *   GPU-compatible clamping. The GPU does not validate ordering.
  *
  * @throws Error naming positions, timestamps, trackOffsets or parameters for inconsistent arrays.
  */
 export function computeTrajectoryStaypointsOnCPU(
   input: CPUTrajectoryStaypointsInput,
-  options: {capacity: number; spatialContext?: GPUSpatialContext; maximumSearchRows?: number}
+  options: {
+    capacity: number;
+    spatialContext?: GPUSpatialContext;
+    maximumSearchRows?: number;
+    missingFixPolicy?: 'break';
+  }
 ): CPUTrajectoryStaypointsResult {
-  const {positions, parameters} = input;
+  const {positions, parameters, mask} = input;
+  validateRequirement(
+    'trajectory-staypoints',
+    options.missingFixPolicy === undefined || options.missingFixPolicy === 'break',
+    'missingFixPolicy must be break'
+  );
+  validateRequirement(
+    'trajectory-staypoints',
+    !mask || mask.length === positions.length / 2,
+    'mask must match positions row count'
+  );
+  const isObserved = (row: number) =>
+    (!mask || mask[row] !== 0) &&
+    Number.isFinite(positions[row * 2]) &&
+    Number.isFinite(positions[row * 2 + 1]);
   const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input);
   if (parameters.length < GPU_TRAJECTORY_STAYPOINTS_PARAMETER_LENGTH) {
     throw new Error('parameters must hold the staypoint parameter layout');
@@ -135,6 +158,7 @@ export function computeTrajectoryStaypointsOnCPU(
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
     candidateOverflow: new Uint32Array(1),
+    missingFixCount: new Uint32Array(1),
     drawInstanceCount: new Uint32Array(1)
   };
   let requiredCount = 0;
@@ -147,36 +171,62 @@ export function computeTrajectoryStaypointsOnCPU(
     result.finishRows[outputRow] = finish;
     result.durations[outputRow] = getTimeDifference(finish, start);
     const distinct = new Set<string>();
+    const [anchorLongitude, anchorLatitude] = getTrajectoryVotePosition(
+      positions[start * 2],
+      positions[start * 2 + 1],
+      radius !== undefined
+    );
     let longitudeOffset = 0;
     let latitudeOffset = 0;
     for (let row = start; row < end; row++) {
       result.staypointIds[row] = outputRow;
-      const longitude = positions[row * 2];
-      const latitude = positions[row * 2 + 1];
+      const [longitude, latitude] = getTrajectoryVotePosition(
+        positions[row * 2],
+        positions[row * 2 + 1],
+        radius !== undefined
+      );
       const key =
         Number.isNaN(longitude) || Number.isNaN(latitude)
           ? `nan-row-${row}`
           : `${longitude},${latitude}`;
       if (distinct.has(key)) continue;
       distinct.add(key);
-      const delta = longitude - positions[start * 2];
+      const delta = longitude - anchorLongitude;
       longitudeOffset +=
-        radius === undefined ? delta : getLongitudeDelta(positions[start * 2], longitude);
-      latitudeOffset += latitude - positions[start * 2 + 1];
+        radius === undefined ? delta : getLongitudeDelta(anchorLongitude, longitude);
+      latitudeOffset += latitude - anchorLatitude;
     }
-    const longitude = positions[start * 2] + longitudeOffset / distinct.size;
+    const longitude = getTrajectoryVotePosition(
+      anchorLongitude + longitudeOffset / distinct.size,
+      0,
+      radius !== undefined
+    )[0];
+    const roundedLongitude = Math.fround(longitude);
     result.centroids[outputRow * 2] =
-      radius === undefined ? longitude : longitude - 360 * Math.floor((longitude + 180) / 360);
-    result.centroids[outputRow * 2 + 1] = positions[start * 2 + 1] + latitudeOffset / distinct.size;
+      radius !== undefined && roundedLongitude >= 180 ? roundedLongitude - 360 : roundedLongitude;
+    result.centroids[outputRow * 2 + 1] = anchorLatitude + latitudeOffset / distinct.size;
   };
   for (let track = 0; track + 1 < trackOffsets.length; track++) {
     const end = trackOffsets[track + 1];
     let anchor = trackOffsets[track];
     if (anchor === end) continue;
+    const firstOutputRow = requiredCount;
+    let isTruncated = false;
     while (anchor < end) {
+      if (!isObserved(anchor)) {
+        result.missingFixCount[0]++;
+        anchor++;
+        continue;
+      }
       const searchEnd = Math.min(end, anchor + 1 + maximumSearchRows);
       let successor = anchor;
       for (let row = anchor + 1; row < searchEnd; row++) {
+        if (!isObserved(row)) {
+          if (getTimeDifference(row - 1, anchor) >= timeThreshold)
+            emitStaypoint(track, anchor, row, row - 1);
+          successor = row;
+          break;
+        }
         if (maximumGap > 0 && getTimeDifference(row, row - 1) > maximumGap) {
           successor = row;
           break;
@@ -193,6 +243,7 @@ export function computeTrajectoryStaypointsOnCPU(
       }
       if (searchEnd < end) {
         result.candidateOverflow[0] = 1;
+        isTruncated = true;
         if (getTimeDifference(searchEnd, anchor) >= timeThreshold)
           emitStaypoint(track, anchor, searchEnd, searchEnd);
         anchor = searchEnd;
@@ -202,6 +253,12 @@ export function computeTrajectoryStaypointsOnCPU(
         emitStaypoint(track, anchor, end, end - 1);
       break;
     }
+    if (isTruncated) {
+      // A cut window is not a staypoint: NaN, never a plausible duration or centroid.
+      const lastOutputRow = Math.min(requiredCount, capacity);
+      result.durations.fill(NaN, Math.min(firstOutputRow, capacity), lastOutputRow);
+      result.centroids.fill(NaN, Math.min(firstOutputRow, capacity) * 2, lastOutputRow * 2);
+    }
   }
   result.requiredCount[0] = requiredCount;
   result.count[0] = Math.min(requiredCount, capacity);
@@ -210,9 +267,13 @@ export function computeTrajectoryStaypointsOnCPU(
   return result;
 }
 
-/** CPU twin; explicit search budgets and output capacities have the contributor's meanings. */
+/**
+ * CPU staypoints operation. Explicit search budgets publish search loss under the required
+ * `output.status.candidateOverflow` graph value.
+ */
 export class CPUTrajectoryStaypointsOperation extends GPUCPUOperation {
   constructor(props: TrajectoryStaypointsOperationProps) {
+    props = snapshotTrajectoryStaypointsOperationProps(props);
     const operation = new GPUTrajectoryStaypointsOperation(props);
     const {id} = operation;
     validateCapacity(id, 'rowCount', props.rowCount, 0);
@@ -257,12 +318,15 @@ export class CPUTrajectoryStaypointsOperation extends GPUCPUOperation {
         const result = computeTrajectoryStaypointsOnCPU(
           {
             positions,
+            storage: 'resident-capacity',
             timestamps:
               props.timestampFormat === 'uint32x2'
                 ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')
                 : getCPUOperationFloat32Rows(id, inputs, 'timestamps'),
             trackOffsets: getCPUOperationUint32Rows(id, inputs, 'trackOffsets'),
-            parameters: getCPUOperationFloat32Rows(id, inputs, 'parameters')
+            parameters: getCPUOperationFloat32Rows(id, inputs, 'parameters'),
+            mask:
+              props.mask !== undefined ? getCPUOperationUint32Rows(id, inputs, 'mask') : undefined
           },
           props
         );

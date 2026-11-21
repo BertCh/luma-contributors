@@ -480,7 +480,7 @@ for (const [positions, pathOffsets] of [[realTrack, realOffsets], [snapshots, sn
 
 // Thirty daily steps at ${state.speedScale}x, one submit each (the frame word is the day):
 params.write(getGPUParticleAdvectionParameterValues({
-  fieldExtent: [-180, -80, 0.5, 0.5], timeStep: 1, speedScale: ${state.speedScale},
+  fieldPlacement: {origin: [-180, -80], cellSize: [0.5, 0.5]}, timeStep: 1, speedScale: ${state.speedScale},
   spawnBounds: [0, 89.95, 0, 89.95]          // lost particles park outside the field
 }, [720, 320]));
 for (let day = 1; day <= 30; day++) {

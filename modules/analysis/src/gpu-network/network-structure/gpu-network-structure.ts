@@ -143,7 +143,9 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
     );
     validateCapacity(
       this.id,
-      'nodeCount',
+      this.mode === 'exact'
+        ? "nodeCount for exact SCC (use mode: 'auto' for automatic selection)"
+        : 'nodeCount',
       this.nodeCount,
       1,
       this.mode === 'exact'
@@ -152,7 +154,9 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
     );
     validateCapacity(
       this.id,
-      'edgeCount',
+      this.mode === 'exact'
+        ? "edgeCount for exact SCC (use mode: 'auto' for automatic selection)"
+        : 'edgeCount',
       this.edgeCount,
       0,
       this.mode === 'exact'

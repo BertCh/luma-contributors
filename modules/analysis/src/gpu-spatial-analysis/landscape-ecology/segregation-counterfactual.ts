@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {captureUrbanLandscapeDestinations} from './urban-landscape-destinations';
 import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {RecipeBuilder} from '../recipes/recipe-utils';
@@ -9,12 +11,13 @@ import {validateUrbanLandscapeRecipeViews} from './urban-landscape-recipe-valida
 import {
   GPUPopulationSupportAlignment,
   validatePopulationSupportAlignmentViews,
-  type GPUPopulationSupportAlignmentProps
+  type GPUPopulationSupportAlignmentRecipeProps
 } from './gpu-population-support-alignment';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
   validateRequirement,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -69,11 +72,28 @@ export function addSegregationCounterfactualRecipe<Parameters>(
   props: GPUSegregationCounterfactualProps
 ) {
   const id = props.id ?? 'segregation-counterfactual';
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
   const count = props.baseline.length;
   validateCapacity(id, 'baseline rows', count, 1, SEGREGATION_COUNTERFACTUAL_MAXIMUM_UNIT_COUNT);
   validateViewLength(id, 'final', props.final, count);
+  validateSinglePackedView(props.baseline, ['float32x2'], `${id} baseline`);
+  validateSinglePackedView(props.final, ['float32x2'], `${id} final`);
   validateRequirement(id, props.supportId.length > 0, 'supportId must not be empty');
-  const output = props.output;
+  // The nested decomposition rejects an empty method only after both scenario kernels are added.
+  validateRequirement(
+    id,
+    props.method === 'composition' ||
+      props.method === 'dual-composition' ||
+      props.method === 'share',
+    "method must be 'composition', 'dual-composition' or 'share'"
+  );
+  const output = captureUrbanLandscapeDestinations(id, {output: props.output}, [
+    'compositionOnly',
+    'spatialOnly',
+    'indices',
+    'validity',
+    'decomposition'
+  ]);
   // Preflight all supplied layouts and bindings before reserving any transient resource IDs.
   const inputs = {baseline: props.baseline, final: props.final};
   validateUrbanLandscapeRecipeViews(
@@ -188,6 +208,7 @@ output[outputOffset+2u*unit]=select(missing,result.x,valid);output[outputOffset+
   });
   return {
     ...result,
+    outputs: {...result.outputs, compositionOnly, spatialOnly},
     counterfactuals: {compositionOnly, spatialOnly},
     provenance: {
       ...result.provenance,
@@ -200,25 +221,49 @@ output[outputOffset+2u*unit]=select(missing,result.x,valid);output[outputOffset+
 
 export type {
   GPUPopulationSupportAlignmentOutput,
-  GPUPopulationSupportAlignmentProps
+  GPUPopulationSupportAlignmentProps,
+  GPUPopulationSupportAlignmentRecipeProps
 } from './gpu-population-support-alignment';
 
 /**
  * Exact ID alignment. Prefer the CPU operation when support data is already on the host.
- * Returns canonical recipe status stages for missing targets, ambiguous targets and excluded
- * sources. Their invalidCount scalars alias the corresponding packed words without new commands.
- * The original [complete, missing, ambiguous, excluded] view remains available as packedStatus.
+ * The alignment stage certifies a one-to-one support match with no excluded sources.
+ * The missing-targets, ambiguous-targets and excluded-sources stages report invalidCount.
+ * Each scalar aliases its word in the contributor's status without additional commands.
  */
 export function addPopulationSupportAlignmentRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPUPopulationSupportAlignmentProps
+  props: GPUPopulationSupportAlignmentRecipeProps
 ) {
+  validateRequirement(
+    props.id ?? 'population-support-alignment',
+    !('outputs' in props),
+    'outputs was removed; use output'
+  );
+  props = snapshotConstructionFields(props, [
+    'id',
+    'populations',
+    'sourceIds',
+    'targetIds',
+    'output'
+  ]);
   const id = props.id ?? 'population-support-alignment';
   validateRequirement(
     id,
     !props.output || !('validity' in props.output),
     'output.validity is no longer supported; use output.alignmentCode for diagnostics and output.matchedMask for row selection'
   );
+  props = {
+    ...props,
+    output:
+      props.output &&
+      snapshotConstructionFields(props.output, [
+        'populations',
+        'alignmentCode',
+        'matchedMask',
+        'status'
+      ])
+  };
   // Preflight every input and supplied output before reserving transient resource IDs.
   validatePopulationSupportAlignmentViews(id, props, graph);
   const populations = getRecipeView(
@@ -251,24 +296,23 @@ export function addPopulationSupportAlignmentRecipe<Parameters>(
       output: {populations, alignmentCode, matchedMask, status}
     })
   );
-  const stages = ['missing-targets', 'ambiguous-targets', 'excluded-sources'].map(
-    (stage, index) => ({
-      stage,
-      status: {
-        invalidCount: graph.createDataView(status.buffer, {
-          format: 'uint32',
-          length: 1,
-          byteOffset: status.byteOffset + (index + 1) * Uint32Array.BYTES_PER_ELEMENT
-        })
-      }
-    })
-  );
+  const getStatusWord = (wordIndex: number) =>
+    graph.createDataView(status.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: status.byteOffset + wordIndex * Uint32Array.BYTES_PER_ELEMENT
+    });
+  const stages = [
+    {stage: 'missing-targets', status: {invalidCount: getStatusWord(1)}},
+    {stage: 'ambiguous-targets', status: {invalidCount: getStatusWord(2)}},
+    {stage: 'excluded-sources', status: {invalidCount: getStatusWord(3)}},
+    {stage: 'alignment', status: {complete: getStatusWord(0)}}
+  ] as const;
   return {
     contributors: builder.contributors,
     outputs: {populations, alignmentCode, matchedMask},
     intermediates: {},
     status: {stages},
-    packedStatus: status,
     provenance: {
       sourceIds: props.sourceIds,
       targetIds: props.targetIds,

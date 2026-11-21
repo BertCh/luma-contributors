@@ -13,7 +13,8 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
   `@luma-contributors/kepler` (private until dataset licensing is resolved).
 - Uses published luma.gl through public entry points only. The integration target, accepted peer
   range and unpublished alpha contract are recorded separately in [release-package.md](dev-docs/release-package.md).
-  No luma.gl code is copied or forked. See `dev-docs/upstream-first-plan.md`.
+  No luma.gl APIs are copied or forked; a few small pinned WGSL helpers are registered in
+  `dev-docs/upstream-workarounds.md`. See `dev-docs/upstream-first-plan.md`.
 - Targets published luma.gl `10.0.0-alpha.16` with peers `~10.0.0-alpha.16`; aligns grid readers with the public shared coordinate WGSL and forwards Kepler compile options. Node/GPU qualification is tracked in LR-22; segmented sums and PCG remain separate adoption work.
 - Fixed `GPUColorScale` and `GPUBivariateClassification` when `output.colors` is omitted: the colorize
   kernel declared palette, position or parameter bindings its counts-only body never read, so the
@@ -354,6 +355,169 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
   - Oracle fixtures are driven by `scripts/oracle-fixtures.json`; `yarn test-benchmarks` runs all
     benchmark suffixes; test typechecks default to an 8192 MiB heap and stop at the first failure.
 
+### Breaking changes before the alpha (review fixes 2026-11-20)
+
+The second library review's fixes (waves 1 to 6 and the known-issues pass) end with one name per
+concept and no compatibility aliases: the package is unpublished, so each rename below removes the
+old spelling, and every `@deprecated` alias added during the pass is gone. Committed lens scenario
+IDs keep their names. Per-change caller notes, including every behaviour fix, are in
+[the change records](dev-docs/research/library-review-2026-11-19/changes/); the decisions are in
+[the review README](dev-docs/research/library-review-2026-11-19/README.md).
+
+- **Renamed**
+  - `GPUSpatialKMeans.k` → `clusterCount`; `k` on `GPUNeighborSearch`, `GPUJacquezTest`,
+    `GPUNearestFeatureJoin` and `GPUNearestFeatureWeights` → `neighborCount`. Neighbour-search
+    `radius` → `searchRadius` (radius mode) or `maximumDistance` (kNN); `weightKind:
+    'inverseDistance'` → `weightType: 'inverse-distance'`; nearest-join `ties: 'lowest-id'` →
+    `'lowest-row'`.
+  - `GPUSpatialClustering` → `GPUDBSCAN`, `GPUHierarchicalDensityClustering` → `GPUHDBSCAN`,
+    `GPUPycnophylactic` → `GPUPycnophylacticInterpolation` (props, outputs, packers and constants
+    follow). DBSCAN `minimumPoints` → `minimumSamples` (the point itself counts).
+  - `GPUKeyJoin` → `GPUKeyLookup`; `kind` → `compactMatchedLeftRows`. Each matched left row is
+    emitted once; pair-join terminology is reserved for an operation that emits every pair.
+  - `GPUPairGather` `output.rowCount` → `output.status.count`.
+  - `GPU_LOCATION_ALLOCATION_STATUS`, `GPU_MINIMUM_SPANNING_TREE_STATUS`, `GPU_AZP_STATUS`,
+    `GPU_WARD_STATUS`, `GPU_MAX_P_STATUS` → the same names ending in `_STATUS_LAYOUT`.
+  - Colour scale resident `domainCount` → `classCount` (a threshold-settings overload needs no
+    dummy edge count). Hydrologic indices `slope` → `descentTangent`.
+  - Spatial weights transform `symmetrize` → `average-reciprocal` (it averages over the existing
+    pattern and does not add reverse edges); algebra `symmetricDifference` → `symmetric-difference`.
+  - `GPUPointBuffer.coordinateSystem` → `spatialContext`; `CellPrecision` `extended`/`fp64` →
+    `double-single`; dot-density `maskExtent` → `maskPlacement`; `getKahanSumWGSL` →
+    `getStridedPairwiseSumWGSL`; `unpackGPUCellPeriodKey` → `unpackGPUCellPeriodKeyChecked`; trace
+    and island-attachment crossover constants renamed to say automatic or forced.
+  - Ontology imports move to `@luma-contributors/analysis/gpu-spatial-analysis/ontology`; the parent
+    spatial entry no longer re-exports them.
+- **Removed**: `getCholeskyWGSL`, `getSymmetricEigenvalueRangeWGSL` and
+  `getSpatialWeightsTracesProbeWGSL` from the regression entry; `reusePreparation` on the conditional
+  Gaussian simulation operation (the producer keeps it); implicit one-period cell keys;
+  `GPUComputationRecorder.graph` (use `getRecordedGraphDescription`); flat `sumOverflow` views (read
+  `status.sumOverflow`); legacy packed or flat status views wherever a named status port exists
+  (regression, CPU weights, OPTICS, DBSCAN, HDBSCAN, location allocation, network kernel density,
+  depression hierarchy, population support recipe).
+- **Changed signatures and types**: `prepareGPUNetworkRestrictionStates({nodeCount, edges,
+  restrictions})` with `[source, target]` edge tuples; `GPUTransferMask` bindings typed `uint32`;
+  terrain derivatives require one of their outputs and distance fields encode seed/mask
+  configurations in props; `GPUPickRegionMask` has its own output type; population support
+  alignment splits contributor and recipe props; readonly spectral props and operation descriptors;
+  emerging hot spot critical levels use literal keys plus a checked lookup.
+- **Newly required inputs** (construction refuses without them): budgeted trajectory thinning and
+  staypoints require `status.candidateOverflow` and locations require `status.iterationLimitReached`;
+  an anti-only spatial predicate join requires `output.unmatched.status.candidateOverflow` unless
+  its capacity provably covers every pair; probit rejects `tolerance` above 0.01.
+- **Changed results**: mobility indicators exclude missing or unsettled location keys and count them
+  in `status.excludedLocationCount`; the drainage recipe reports geographic and Web Mercator
+  distances and reach lengths in ground metres; regression recipe `invalidCount` counts excluded
+  rows (the solver outcome is only in `code`).
+- **Catalog and packaging**: every catalog record carries `stability`, `'experimental'` for all
+  records until the stable-tier rule is met; Kepler discovery walks the full catalog keyed by
+  `{package, exportName}` (the `qualified` option and bare-name passes are gone). Tarballs ship
+  `dist` only (ESM, CommonJS, declarations, source maps); `src/`, `dist/testing/` and the build
+  record are excluded, and relative `import()` types in declarations are rewritten by the build.
+
+### Breaking changes (review fixes 2026-11-19)
+
+- **Inputs now rejected** (construction or packing time; fix the input named)
+  - `GPURasterZonalStatistics` defaults `parameterLayoutVersion` to 2, the layout
+    `getGPURasterZonalStatisticsParameterValues` writes. A geographic `parameters` view that is not
+    exactly seven words now throws unless `parameterLayoutVersion` is given: pass `1` for a legacy
+    four-word view or `2` for a padded one. `getRasterZonalCellArea` follows the same default.
+  - `GPUContinuousSpatialSample` rejects an area frame whose `bounds` lattice has more cells than
+    `maximumCandidates` (raise `maximumCandidates` to the count in the message), and a configuration
+    whose serial work per wave exceeds 2^24 inner iterations (lower `maximumCandidates` or the frame
+    size).
+  - `GPUClassBreaks` in approximate natural-breaks mode rejects `maximumClassCount` above
+    `naturalBreaksBinCount`; it used to return at most that many classes. `GPUColumnQuantilesOperation`
+    rejects a `rowCount` that differs from the values length.
+  - `GPUPointCloudNeighborhoods` rejects runtime `parameters` without `output.status`, as it already
+    did for static `supportBounds`.
+  - `GPUNetworkKFunction` rejects more than 92,682 events (`GPU_NETWORK_K_FUNCTION_MAXIMUM_EVENT_COUNT`),
+    above which its uint32 pair counts could wrap.
+  - Fifteen terrain contributors (curvature, geomorphons, vector ruggedness, Weiss landforms, relief
+    shading, horizon, cast shadow, viewshed, line of sight, cumulative viewshed, summits, peak snap,
+    flow field, point-horizon profile and visibility) reject a sheared grid at construction.
+    Resample onto an orthogonal grid first; rotated orthogonal grids are unchanged.
+  - `GPUGridGenerator` rejects `columns` and `rows` beyond the sizes whose lattice indices float32
+    holds exactly: 2^24 for square and point grids, 2^23 - 1 columns for triangle grids, 5,592,405 to
+    8,388,607 for hexagons (larger grids repeated cell positions).
+  - `GPUPointHorizonProfile` and `GPUTerrainCumulativeViewshed` reject dispatch settings that would
+    declare more than 32,768 command nodes and publish `estimatedCommandNodeCount`.
+  - Parameter packers validate the float32 values they return and throw where they used to write a
+    zero, infinity or collapsed range: `getGPUVariogramParameterValues`,
+    `getGPUSpatialCorrelogramParameterValues`, `getGPURipleyParameterValues`,
+    `getGPURipleyDistanceFunctionsParameterValues`, `getGPUPointPatternIndicesParameterValues`,
+    `getGPUSpaceTimeVariogramParameterValues`, `getGPUSpaceTimeKFunctionParameterValues` (bounds or a
+    time window that lose their strict order in float32), `getGPUSpatialClusteringParameterValues`,
+    `getGPUSpatialKMeansParameterValues` and `getGPUNetworkIsochronesParameterValues` (an extent with
+    zero or non-finite float32 width, or buffer and walk-cost values that overflow). Messages now end
+    "in float32".
+  - `fitVariogramModel` and `fitSpaceTimeVariogramModel` (and the CPU and GPU model-fit operations)
+    throw on bin arrays of unequal length, naming both lengths, instead of fitting the shortest prefix.
+  - `GPULocalFrame.projectArray` and `unprojectArray` throw, naming both lengths, when a supplied
+    `target` is too short; they used to drop rows silently.
+  - Spatial parameter schemas read only own properties: a field named `constructor`, `toString` or
+    `__proto__` uses its declared default. `prepareArrowTableForGPUAnalytics` reads `timeColumns` and
+    `dictionaries` the same way.
+  - `GPUHuffTradeAreas` treats an infinite attractiveness or weight as invalid and excludes the slot,
+    as it did for NaN and non-positive values.
+
+- **Changed results and status values**
+  - Chunked `GPUChunkedSpatialWeightsTranspose` output reports loss on the outer
+    `outputWeights.status`: `overflow` is 1 when an output chunk dropped slots, `candidateOverflow` is
+    1 when the input was incomplete. Chunk descriptions keep `count` and `requiredCount` but carry no
+    loss flags, so local Moran, hot spot and the global statistics accept it.
+  - `GPURasterLaggedCorrelation` status 2 now means every paired value of one series is equal
+    (zero spread); a translated non-constant series is no longer reported as zero variance, and
+    identical series correlate 1 at any finite magnitude.
+  - `GPUSpaceTimeVariogram` reports status 3, not 0, for a bin with more than `2^32 - 1` pairs
+    (`pairCounts` saturates at `0xffffffff`).
+  - `GPUTrajectoryLocations` publishes no partial labels at its round limit: every active `locationIds`
+    row is `0xffffffff`, `status.count` is 0 and `iterationLimitReached` is set. Check
+    `iterationLimitReached` before reading labels.
+  - `GPUTrajectoryStaypoints` writes NaN `durations` and `centroids` for every staypoint of a track
+    that hit `maximumSearchRows`, with or without `status.candidateOverflow`.
+    `GPUMobilityIndicators` writes NaN `realEntropy`, not 0, for a track above
+    `maximumEntropySequenceRows` (`computeMobilityIndicatorsOnCPU` takes the same optional cap).
+  - Spatial CSR visibility (`mode: 'csr'`) gives an invalid viewpoint an empty row and publishes the
+    other rows; one invalid viewpoint no longer empties the graph. `status.invalidCount` still counts them.
+  - `GPUSphericalPolygonContains` accepts either ring orientation: clockwise holes (GeoJSON order) are
+    no longer ignored and clockwise shells no longer contain nothing.
+  - `GPUMapColoring` leaves every row uncoloured with `converged` 0 when its weights status reports
+    `overflow` or `candidateOverflow`. `GPUNeighborhoodSummary` (and its operation forms) writes NaN
+    for incomplete weights, as does `GPUSpatialMarkov` (counts, probabilities, lag edges, diagnostics
+    and `status.converged`); `GPUSegregation` (per scale), `GPUColocationQuotient`,
+    `GPULocalCategoryDependence`, `GPUCategoryPairCounts` (so `GPUSpatialEntropy`) and
+    `GPULocalOutlierFactor` write NaN, or 0 for counts. `GPULocalKnox` and `GPUNearRepeatKnox`
+    suppress results when the pair list reports loss, as `GPUKnoxTest` does; weights-mode
+    `GPUEmergingHotSpots` suppresses z-scores, trends and counts and labels cells `UNDETERMINED`.
+  - The Poisson `GPUSpatialScanStatistic` reports a frame with a negative, NaN or infinite baseline cell
+    as invalid (`status.invalidCount` 1, NaN statistics) instead of rescaling around it.
+    `GPUPointPatternIndices` polygon quadrat statistics are NaN when points fall in a quadrat the area
+    lattice missed.
+  - `GPURasterSkeleton` publishes the state after at most `maximumIterations` iterations; the
+    convergence test no longer thins one iteration further.
+  - `GPUTerrainHeightAboveDrainage` reports cells on a receiver cycle in caller-supplied D8 directions as
+    `GPU_TERRAIN_DRAINAGE_UNRESOLVED` with `converged` 0, not as "no drainage".
+  - Computation records: read `node.entryPoint ?? source.entryPoint` and `node.constants`, since
+    nodes that share identical WGSL text keep their own entry point and override constants.
+    `describeGPUCommandGraphEncoding` gives each render pass its own pass node.
+  - The operator catalog's `status` lists changed: 93 operators and recipes now list their count,
+    overflow, invalid, uncertain, convergence or approximation status kinds, and `GPULineSegmentize`,
+    `GPUGreatCircleArcs`, `GPULineSmooth`, `GPULineChunk`, `GPURectangleClip` and `GPUOffsetCurve`
+    (compact layout) list count, overflow and vertex-count status. An empty list now means no such
+    view; queries filtering on `status` return more operators.
+
+- **Tooling**
+  - `check-upstream-first` rejects a luma.gl binding re-exported through a local `export {}`,
+    `export default` or a value alias; `check-contributor-contract` finds aliased `assert` and internal
+    symbols re-exported through an import, invalidates a single-invocation loop allowance when the host
+    bound its reason names changes, and no longer accepts a bare inline marker (add the bound).
+  - `check-packed-consumer` resolves every relative reference in every packed `.d.ts` under NodeNext and
+    type-checks a CommonJS (`.cts`) consumer beside the ES module one; public parameter schemas and
+    recipe results no longer reference extensionless declaration paths.
+  - Verify and release honour a lower command-line heap over a larger `NODE_OPTIONS` heap. Release
+    records identify the checked tarball by SHA-256 and byte length, and promotion verifies it first.
+
 ### Fixed
 
 - Population-support alignment inverse-convention `validity` flag misread as usable (ERG-01).
@@ -405,7 +569,11 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
 - Nearest joins with a distinct offset view of equal feature count were accepted by prepared inputs.
 - Kepler WKB selection failed on an empty XY chunk (four-byte placeholder, eight-byte row binding).
 - Network flow had no final-flow decomposition; CPU phases ordered paths serially.
-- Recipes left resources registered on the caller graph after a failure at a later stage.
+- Recipes in the spatial and network recipe indexes left resources registered on the caller graph after a
+  failure at a later stage. The 13 urban-morphology and landscape-ecology recipes are outside that
+  every-stage preparation; they now validate their options, packed input layouts and caller-owned
+  outputs before the first `graph.add`. Device-limit checks inside their overlay planning (tessellation
+  and building adjacency) can still reject after nodes were added.
 - Merge loops of error GM, 2SLS and weights traces had no bound on the tile count.
 - Shader memory estimator counted unknown typed immutable layouts, for-initializer arrays,
   block-commented declarations and half-float aliases as zero bytes; default-read storage
@@ -416,6 +584,86 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
   offsets to work around the old MST refusal.
 - Lens records could drift from the registered graph unnoticed: every scenario now has a declaration
   and committed-record signature check.
+- Zonal variances and standard deviations lost accuracy at projected magnitudes: a feature or raster zone
+  of 100,000 values near 1e7 with variance 2 reported about 123 (`GPUZonalStatistics`,
+  `GPURasterZonalStatistics`; GEO-105).
+- `GPUSpatialClustering` and `GPUNeighborSearch` could miss a neighbor exactly one epsilon or radius away
+  at projected origins of about 1e5 and above, and a point on the maximum bound could miss itself (CORE-102).
+- Voronoi diagrams, concave hulls and minimum bounding circles dropped the circumcircle of a thin triangle
+  whose rounded cross product cancelled to zero (CORE-103); minimum bounding circles had radii 50 to 73
+  percent too large above extent 2^32 or below 2^-42 (GEO-106).
+- Study-window circle fractions (Ripley, inhomogeneous point patterns, kernel density edge correction) were
+  wrong at a right-angle boundary vertex on GPUs that flip `atan2(y, -0.0)` (CORE-105); the shared Poisson
+  observed term was NaN for 1e9 cases over a 1e-30 baseline (CORE-104); the shared Jacobi eigen solver
+  cleared the coupling unrotated when an entry above 2^126 overflowed (CORE-106).
+- Cell aggregation, rollup and pyramid sums wrapped negative; they now saturate at `±(2^63 - 1)`, and
+  `sumValues` no longer flushes scales up to 2^127 to zero on Metal (DGGS-102, DGGS-107).
+  `GPUCellSetOutline` (H3) dropped boundary edges near the poles and for coarse cells (DGGS-101);
+  `GPUCellCover` refused feature counts whose capped candidate total reaches 2^32 (DGGS-103).
+- `GPUHealpixPointToCell` gave points just west of a 90 degree meridian at the belt-edge latitude a cell on
+  the far side of face 4 or invalid face 12 (DGGS-104); `GPUPointToCell` (S2, H3) and
+  `GPUHealpixPointToCell` were off by degrees for longitudes at 1e8 and beyond, and now reduce
+  longitudes beyond 2^24 degrees exactly modulo 360 (DGGS-106).
+- `packGPUCellPeriodKey` turned a missing cell into a groupable key; it now returns `undefined` for the
+  all-ones key and for periods outside `[0, periodCount)`, as `GPUCellPeriodKeys` does (DPC-101).
+  `GPUCalendarBuckets` decoded a negative time whose floored day is before day -1,000,000,000.
+- `GPUCompositeScore` gave a constant indicator column a spurious deviation and scores near 1 at large
+  offsets; `GPUGroupStatistics` means, `GPUKeyJoin` `mean` and `GPUValueCube` `means` were not finite when a
+  group's sum exceeded the float32 range; `GPUClassBreaks` equal-interval edges collapsed to the maximum
+  when the span exceeded float32; `GPUColumnProfile` returned an all-zero histogram for a finite domain
+  such as `[-3e38, 3e38]` (DPC-103, DPC-109, DPC-111).
+- `GPUSpaceTimeVariogram` centred both columns on all rows, so a row excluded by a non-finite time or
+  second value could erase the retained pairs' differences. The inhomogeneous
+  `GPUSpaceTimeKFunction` used a fixed 2^-16 pair unit that overstated K by 6.8 % at relative intensity
+  100 and dropped every pair from 363; each frame now scales it so every term keeps a relative error of
+  at most 2^-17.
+- `getKnoxPoissonPValue` returned 0 for small upper tails; it sums the tail directly down to about 1e-300
+  (SEAM-101). Recipe stage status records may carry a `code` (the spatial regression recipe publishes its
+  OLS and diagnostics codes there) instead of a solver code under `invalidCount` (SEAM-110).
+- `GPUNetworkAccessibility` and `GPUNetworkCostWeights` looked complete when the cost matrix stopped at its
+  round budget or the requested cutoff exceeded its horizon (NET-101, NET-124); `GPUNetworkKernelDensity`,
+  `GPULocationAllocation` and `GPUCatchmentAccessibility` had no way to see either.
+- Travel-time percentile ranks read 99.9 % of 1,000 departures as rank 1,000 in the CPU twin; the percentile
+  is now read as the decimal written, so the rank is 999 (NET-102).
+- `GPURadiationFlowModel` lost the flow of an origin holding nearly all of the population (a two-zone flow of
+  100 now stays 100, NET-111); `GPUKernelFlowSmoothing` returned NaN for a bandwidth too small for float32
+  and now returns the input (NET-112). The Louvain operation forms rejected an optional status port given
+  as `undefined` (NET-114).
+- Network snapping and map matching changed which points they admit, and their distances, when a projected
+  network was translated by 5e6 to 1e7 metres (NET-106).
+- `getRasterEmbeddingStretchRanges` threw on a rank-deficient PCA; constant components now get a usable
+  stretch (RT-121). `GPURasterEmbeddingZoneMean` published a partial mean for a truncated tuple list; it now
+  reads the coverage producer's `requiredCount`, `overflow`, `candidateOverflow` and `zoneValidity` and
+  publishes NaN, and no longer fails normalization for tiny nonzero means (RT-126, RT-127).
+- Streamlines (GPU and CPU) emitted a final point outside the field; they end at the last point with
+  velocity support (RT-124). `getGPULagrangianFlowMapParameterValues` rejected signed cell sizes, so a
+  north-up field now uploads with a negative cell height (RT-129).
+- `getGPURasterSnapshotEOFDecomposition` changed explained-variance fractions or dropped a small mode when
+  the data were rescaled; it now converges relative to the matrix norm (RT-132).
+  `GPURasterLaggedCorrelation` returned 0 or status 2 for identical series above about 1e10 (RT-133).
+- Simple and multi-scale local relief changed with a distant first valid elevation; the summed-area table now
+  subtracts its anchor exactly, so whole-raster and windowed runs agree (RT-128).
+- Kepler location allocation now skips and counts demand rows with negative weight, as documented; Kepler
+  predicate join tests geometry relative to the inputs' minimum corner, so translating a polygon and a point
+  together no longer changes whether the point lies in a hole; Kepler zonal value distribution reruns on the
+  CPU engine with a `gpu-fallback` warning naming the lost stage when the zone assignment overflowed or left
+  unproven containments; Kepler GPU kriging reports cells without data (`kriging-cells-without-data`)
+  apart from `singular-kriging-system` (SEAM-104, SEAM-106, SEAM-108, SEAM-115).
+- `addSegregationDecompositionRecipe` randomization counted exact ties as extreme about half the time and
+  biased the p value low; it now counts a replicate against the observed change summed in the replicates'
+  own order (URB-101).
+- Lens recordings and static twins headline the primary output (the 4,662-cell kriging result, not a
+  one-row diagnostic); a result whose headline geometry draws nothing says "geometry not drawn" in its alt
+  text, live-region text and thumbnail caption; the make-valid and polygonize lenses describe the ring count
+  as capacity to allocate only when candidate overflow is 0; the kernel-source view shows a node's own entry
+  point and override constants (LENS-101, LENS-108).
+- `formatDecimal128` formatted negative scales with a decimal point (coefficient 12, scale -3 is now
+  `12000`); `submitGPUCommandGraphWithTimings` leaked its timestamp query set when command-encoder creation
+  threw (DPC-106, DPC-127). `prepareArrowTableForGPUAnalytics` misread columns named `constructor` or
+  `toString` (DPC-104, DPC-115).
+- The `CommonJS` build rewrote string values that look like import specifiers; it now rewrites only real
+  import and export specifiers. `typecheck-status` ignored an edit to a resolved dependency
+  declaration (TOOL-108).
 
 ### Added
 
@@ -457,3 +705,9 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
 - Scripts: `node scripts/typecheck-tests.mjs --generate-only`; `node scripts/measure-typecheck.mjs`
   (cold and warm runs with sampled process-tree RSS; `--mode check|declarations|build|packages`).
 - CI builds packages before any typecheck and checks `examples/deck/kepler-compute`.
+- `status.sumOverflow` (cell aggregation, rollup and pyramid), `costsComplete` and `costLimit` inputs with `status.complete` outputs on `GPUNetworkAccessibility`,
+  `GPUNetworkCostWeights`, `GPUNetworkKernelDensity` (`output.ports.status.complete`) and
+  `GPULocationAllocation`, `costsComplete` on `GPUCatchmentAccessibility`, and the optional stage `code`
+  of recipe status records.
+- `usedThroughOtherEntries` in `scripts/upstream/usage.mjs` output; `scripts/upstream/diff.mjs` takes two
+  optional installed `@luma.gl` paths.

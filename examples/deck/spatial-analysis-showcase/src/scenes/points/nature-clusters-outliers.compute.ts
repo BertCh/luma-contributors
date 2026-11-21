@@ -153,7 +153,7 @@ export async function createNatureOutliers(
       id: 'nature-nearest-records',
       spatialContext: projection.spatialContext,
       mode: 'knn',
-      k: neighborCount,
+      neighborCount,
       positions: graphPositions,
       parameters: parameterBuffer.importToGraph(graph),
       gridSize: NEIGHBOR_GRID_SIZE,

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateFiniteNumber} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /** Number of float32 elements in a geographic-distribution parameter buffer. */
 export const GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH = 8;
 
@@ -88,6 +90,11 @@ export function getGPUGeographicDistributionParameterValues(
   if (medianTolerance < 0) {
     throw new Error('Geographic distribution medianTolerance must not be negative');
   }
+  const id = 'getGPUGeographicDistributionParameterValues';
+  validateFiniteNumber(id, 'origin[0]', originX);
+  validateFiniteNumber(id, 'origin[1]', originY);
+  validateFiniteNumber(id, 'standardDeviations', standardDeviations, Number.MIN_VALUE);
+  validateFiniteNumber(id, 'medianTolerance', medianTolerance, 0);
   if (convention !== 'root-two' && convention !== 'standard') {
     throw new Error('Geographic distribution ellipseConvention must be root-two or standard');
   }

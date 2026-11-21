@@ -6,7 +6,19 @@ source-polygon coverage and an ancillary raster. Targets own whole raster cells 
 interpolation, transfer and mass accounting on the GPU. It performs no readback or CPU fallback.
 
 ```typescript
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterFractionalCoverageProps} from '@luma-contributors/analysis/raster-analysis';
 import {addDasymetricRedistributionRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// Prepared coverage and all raster/source columns have been imported into graph.
+declare const graph: GPUCommandGraph;
+declare const grid: GPURasterMetadata;
+declare const coverage: GPURasterFractionalCoverageProps['output'];
+declare const sourceTotals: GraphDataView<'float32'>;
+declare const targetZones: GraphDataView<'uint32'>;
+declare const density: GraphDataView<'float32'>;
+declare const eligibleCells: GraphDataView<'uint32'>;
 
 const result = addDasymetricRedistributionRecipe(graph, {
   grid,
@@ -79,6 +91,15 @@ bound for arbitrarily ill-conditioned workloads; callers should inspect their ma
   malformed row values, invalid extensive totals and arithmetic failures, respectively.
 - `status.stages`: original coverage count/required-count/overflow, coverage validation,
   areal pair overflow/required count, source-value, arithmetic and conservation evidence.
+
+Stage fields use the canonical completeness/eligibility vocabulary:
+
+| Stage | Canonical status field | Compatibility spelling and meaning |
+| --- | --- | --- |
+| `coverage-validation` | `complete` | coverage completeness |
+| `coverage-validation` | `invalidCount` | malformed tuple count, also available as result-level `invalidTupleCount` |
+| `dasymetric-conservation` | `complete` | same word as result-level `status.complete` |
+| `dasymetric-conservation` | `zeroEligibleCount` | same word as result-level `status.zeroEligibleCount` |
 
 Coverage failure, invalid source totals or tuple values, truncated pair output, and detected
 float32 arithmetic overflow set `complete = 0` and invalidate published numeric outputs with

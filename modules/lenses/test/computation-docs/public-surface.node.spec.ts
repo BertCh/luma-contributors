@@ -13,6 +13,14 @@ import {
   getDefaultViewPacks
 } from '../../src/computation-views/registry/default-registry';
 
+// Public dataset binding/run options were added for caller-owned scenario inputs. Retain the
+// historical snapshot while pinning this reviewed additive contract with explicit type names.
+const RUN_OPTION_TYPES = [
+  'LensDatasetResolver',
+  'LensScenarioInputBinding',
+  'LensScenarioRunOptions'
+];
+
 describe('lens public surface', () => {
   test('all five public pack entries expose their registration factory', async () => {
     const packs = [
@@ -46,6 +54,9 @@ describe('lens public surface', () => {
     const allowed: Record<string, string[]> = JSON.parse(
       readFileSync(new URL('./public-surface-retention.json', import.meta.url), 'utf8')
     );
+    allowed['./computation-lenses'] = [
+      ...new Set([...allowed['./computation-lenses'], ...RUN_OPTION_TYPES])
+    ].sort();
     // gate:E1 adds exactly one reviewed registration factory to each public pack entry.
     for (const family of [
       'gpu-dataframe',
@@ -142,8 +153,12 @@ describe('lens public surface', () => {
   });
   test('pins sorted value and type names for every concrete entry', () => {
     const actual = createPublicSurfaceSnapshot();
-    expect(actual).toEqual(
-      JSON.parse(readFileSync(new URL('./public-surface.json', import.meta.url), 'utf8'))
+    const expected = JSON.parse(
+      readFileSync(new URL('./public-surface.json', import.meta.url), 'utf8')
     );
+    expected.entries['./computation-lenses'].types = [
+      ...new Set([...expected.entries['./computation-lenses'].types, ...RUN_OPTION_TYPES])
+    ].sort();
+    expect(actual).toEqual(expected);
   });
 });

@@ -86,6 +86,83 @@ For `values = [0, 41, 82, 123]`, domain `[0, 123]`, three bins, the intended hal
 closed last bin give **`[1, 1, 2]`** in both forms. The historical observed result was `[2, 1, 1]`
 in both forms. Every value, edge and width in this case is exactly representable in float32.
 
+For `values = 0..49`, domain `[0, 49]`, 49 bins, expect **48 ones followed by two**, in both
+forms. These expectations follow by counting `[k, k + 1)` and closing the final bin; they do not
+come from the quotient implementation. The runner below adds immediate float32 neighbors of 1,
+27, 41 and 82. The adjacent words differ by one in IEEE-754 binary32 encoding, so values below an
+interior edge must stay in the preceding bin and the edge and value above it belong in the upper
+bin. In particular, the triplet at 1 catches an incorrect float32 implementation that scales by
+`f32(binCount / range)` and adds `2^-24` before integer conversion: it moves `0x3f7fffff`
+(`1 - 2^-24`) into bin 1, producing `[0,3,0,…]` instead of `[1,2,0,…]`. The 27/41/82 controls
+alone do not reject that implementation; all ten earlier literal/view cases passed it.
+
+Append this to the reproduction above and supply the actual installed version and device adapter
+description (including backend), plus browser/version. It logs every input and every bin before
+asserting, including failures; do not replace the arrays with totals or abbreviated output.
+
+```typescript
+export async function collectHistogramEdgeEvidence(
+  device: Device,
+  evidence: {packageVersion: string; adapter: string; browser: string}
+) {
+  const fromWords = (...words: number[]) => new Float32Array(Uint32Array.from(words).buffer);
+  // Independent half-open interval counts: one value just below, two at/above each edge.
+  const adjacent1Counts = [1, 2, ...new Array<number>(47).fill(0)];
+  const adjacent27Counts = new Array<number>(49).fill(0);
+  adjacent27Counts[26] = 1;
+  adjacent27Counts[27] = 2;
+  const fixtures = [
+    {
+      name: 'integer-edges-49', values: Float32Array.from({length: 50}, (_, index) => index),
+      domain: [0, 49] as const, binCount: 49, expected: [...new Array<number>(48).fill(1), 2]
+    },
+    {
+      name: 'integer-edges-3', values: Float32Array.of(0, 41, 82, 123),
+      domain: [0, 123] as const, binCount: 3, expected: [1, 1, 2]
+    },
+    {
+      name: 'adjacent-1', values: fromWords(0x3f7fffff, 0x3f800000, 0x3f800001),
+      domain: [0, 49] as const, binCount: 49, expected: adjacent1Counts
+    },
+    {
+      name: 'adjacent-27', values: fromWords(0x41d7ffff, 0x41d80000, 0x41d80001),
+      domain: [0, 49] as const, binCount: 49, expected: adjacent27Counts
+    },
+    {
+      name: 'adjacent-41', values: fromWords(0x4223ffff, 0x42240000, 0x42240001),
+      domain: [0, 123] as const, binCount: 3, expected: [1, 2, 0]
+    },
+    {
+      name: 'adjacent-82', values: fromWords(0x42a3ffff, 0x42a40000, 0x42a40001),
+      domain: [0, 123] as const, binCount: 3, expected: [0, 1, 2]
+    }
+  ];
+  const records = [];
+  for (const fixture of fixtures) {
+    for (const domainForm of ['literal', 'view'] as const) {
+      const counts = await reproduceHistogram(
+        device, fixture.values, fixture.domain, fixture.binCount, domainForm
+      );
+      const record = {
+        ...evidence, name: fixture.name, domainForm, domain: fixture.domain,
+        binCount: fixture.binCount, values: Array.from(fixture.values),
+        counts, expected: fixture.expected
+      };
+      records.push(record);
+      console.log(JSON.stringify(record));
+    }
+  }
+  if (records.some(record => record.counts.length !== record.expected.length ||
+      record.counts.some((count, index) => count !== record.expected[index]))) {
+    throw new Error('Histogram edge mismatch; retain all version-labelled records above');
+  }
+  return records;
+}
+```
+
+This runner is queued, not executed here. Alpha.16 outcomes remain **unverified** until device
+readback, even if a CPU float32 model predicts a misplaced edge.
+
 For the wide case, call with `Float32Array.of(0, 1, -5e37, 5e37)`, domain `[-1e38, 1e38]` and
 16 bins. Assert both forms equal:
 

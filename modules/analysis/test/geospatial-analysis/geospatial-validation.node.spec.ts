@@ -22,10 +22,18 @@ function createPointBuffer(overrides: Record<string, unknown> = {}, offsetCount 
       parameters: view(graph, 'parameters', 'float32', 2),
       offsets: view(graph, 'offsets', 'float32x2', offsetCount),
       verticesPerRing: 4,
-      coordinateSystem: 'planar',
+      spatialContext: {coordinateSpace: 'planar', metric: 'native'},
       ...overrides
     });
 }
+
+it('GPUPointBuffer accepts a planar spatial context with a null prototype', () => {
+  const spatialContext = Object.assign(Object.create(null), {
+    coordinateSpace: 'planar',
+    metric: 'native'
+  });
+  expect(createPointBuffer({spatialContext})()).toBeInstanceOf(GPUPointBuffer);
+});
 
 it('GPUPointBuffer refuses bad props with named-limit messages', () => {
   expect(createPointBuffer()()).toBeInstanceOf(GPUPointBuffer);
@@ -49,7 +57,7 @@ it('GPUPointBuffer refuses bad props with named-limit messages', () => {
         parameters: createTransientView(graph, 'parameters', 'float32', 1),
         offsets: createTransientView(graph, 'offsets', 'float32x2', 3),
         verticesPerRing: 3,
-        coordinateSystem: 'planar'
+        spatialContext: {coordinateSpace: 'planar', metric: 'native'}
       })
   ).toThrow(/^point-buffer parameters must have at least 2 rows$/);
   expect(() => getGPUPointBufferParameterValues(0)).toThrow(
@@ -138,7 +146,7 @@ it('GPUPointCloudStatisticalFilter takes validity and no longer accepts the mask
     }).props.output.validity
   ).toBe(validity);
   expect(() => new GPUPointCloudStatisticalFilter({...props, mask: validity} as never)).toThrow(
-    /^gpu-pointcloud-statistical-filter validity must be given$/
+    /^gpu-pointcloud-statistical-filter output\.validity must be a data graph view of uint32; received undefined$/
   );
 });
 

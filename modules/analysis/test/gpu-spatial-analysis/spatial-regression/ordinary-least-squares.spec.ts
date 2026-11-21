@@ -40,7 +40,7 @@ import {
   type OrdinaryLeastSquaresScene
 } from './ordinary-least-squares-oracle';
 import {SPREG_ORDINARY_LEAST_SQUARES_REFERENCE} from './spreg-ols-reference';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type Result = {
   status: number;
@@ -617,4 +617,60 @@ it('GPUOrdinaryLeastSquares supports the largest predictor count', async () => {
   );
   expectClose('rSquared', [result.summary[1]], [expected.summary[1]], 1e-3, 1);
   fixture.destroy();
+});
+
+it('UST-09 evaluates likelihood in response units below the normal float32 RSS range', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const results: Result[] = [];
+  for (const scale of [1e-20, 1e-21, 0]) {
+    const fixture = createFixture(device, {
+      predictorCount: 1,
+      predictors: new Float32Array([0, 1, 2, 3]),
+      response: Float32Array.from([1, 3, 4, 8], value => value * scale)
+    });
+    try {
+      results.push(await fixture.run());
+    } finally {
+      fixture.destroy();
+    }
+  }
+  // Hand-worked RSS = 1.8*scale², n=4. Profile Gaussian log L increases by n*log(10).
+  for (const result of results) {
+    expect(result.status).toBe(0);
+    expect(Number.isFinite(result.summary[4])).toBe(true);
+  }
+  expect(results[0].summary[4]).toBeCloseTo(180.12807207656713, 3);
+  expect(results[1].summary[4] - results[0].summary[4]).toBeCloseTo(4 * Math.log(10), 3);
+  expect(results[1].summary[5] - results[0].summary[5]).toBeCloseTo(-8 * Math.log(10), 3);
+  expect(results[1].summary[6] - results[0].summary[6]).toBeCloseTo(-8 * Math.log(10), 3);
+  expect(results[2].summary[4]).toBeCloseTo(168.99733320922616, 3);
+});
+
+it('B5 preserves subnormal residuals of normal response inputs before taking the likelihood', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const center = 2 ** -120;
+  const deviation = 2 ** -141;
+  const fixture = createFixture(device, {
+    predictorCount: 1,
+    predictors: new Float32Array([-1, -1, 1, 1]),
+    response: new Float32Array([
+      center + deviation,
+      center - deviation,
+      center + deviation,
+      center - deviation
+    ])
+  });
+  try {
+    const result = await fixture.run();
+    expect(result.status).toBe(0);
+    expect(result.coefficients).toHaveLength(2);
+    expect(Array.from(result.residuals)).toEqual([deviation, -deviation, deviation, -deviation]);
+    // Exact mean=center and slope=0; RSS/n=2^-282, Gaussian profile log L below.
+    expect(Number.isFinite(result.summary[4])).toBe(true);
+    expect(result.summary[4]).toBeCloseTo(385.25925570299046, 3);
+  } finally {
+    fixture.destroy();
+  }
 });

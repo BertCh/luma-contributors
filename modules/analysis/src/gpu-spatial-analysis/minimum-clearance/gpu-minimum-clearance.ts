@@ -34,6 +34,9 @@ import {
   SEGMENT_TABLE_STRIDE
 } from '../segment-intersection/segment-intersection-wgsl';
 import type {GPUSegmentGeometry} from '../segment-intersection/segment-intersection-types';
+import {validateGPUMultipartGeometryPort} from '../../analysis-core/contracts/ports';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotJoinGeometry} from '../spatial-join/spatial-join-construction-snapshot';
 import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/segment-intersection-wgsl';
 import {GPU_SEGMENT_NONE} from '../segment-intersection/segment-intersection-types';
 import {getNextPowerOfTwo} from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -45,6 +48,7 @@ const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 } as const);
 
 const OPERATION = 'GPUMinimumClearance';
+import {createVertexClearanceNodes} from './vertex-clearance-nodes';
 
 /** Vertex count from which `spatialSort` defaults to on. */
 const SPATIAL_SORT_MINIMUM_SLOTS = 1024;
@@ -175,15 +179,45 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
 
   constructor(props: GPUMinimumClearanceProps) {
     this.id = props.id ?? 'minimum-clearance';
-    this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'geometry',
+      'leafCapacity',
+      'spatialSort',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(snapshot.output, [
+      'clearances',
+      'lines',
+      'vertexIds',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      geometry: snapshotJoinGeometry(snapshot.geometry),
+      output: Object.freeze({
+        ...output,
+        status: output.status && snapshotConstructionFields(output.status, ['candidateOverflow'])
+      })
+    });
+    this.props = props;
     const {id} = this;
     const {geometry} = props;
     validateSinglePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
+    if (geometry.kind === 'lines' && geometry.featureOffsets) {
+      validateGPUMultipartGeometryPort(id, geometry);
+      validateSinglePackedView(
+        geometry.featureOffsets,
+        ['uint32'],
+        `${id} geometry.featureOffsets`
+      );
+    }
     const offsetViews =
       geometry.kind === 'lines'
         ? [['lineOffsets', geometry.lineOffsets] as const]
@@ -199,12 +233,10 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
       }
     }
     this.vertexCount = geometry.positions.length;
-    if (this.vertexCount < 1) {
-      throw new Error(`${id} geometry must contain at least one vertex`);
-    }
     this.featureCount =
-      (geometry.kind === 'lines' ? geometry.lineOffsets.length : geometry.featureOffsets.length) -
-      1;
+      (geometry.kind === 'lines'
+        ? (geometry.featureOffsets ?? geometry.lineOffsets).length
+        : geometry.featureOffsets.length) - 1;
     if (this.featureCount < 1) {
       throw new Error(`${id} geometry must contain at least one feature`);
     }
@@ -237,14 +269,18 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
       );
     }
     this.spatialSort = props.spatialSort ?? this.vertexCount >= SPATIAL_SORT_MINIMUM_SLOTS;
-    this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(this.vertexCount);
+    this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(Math.max(this.vertexCount, 1));
     validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
   }
 
   private getInputViews(): GraphDataView[] {
     const {geometry} = this.props;
     return geometry.kind === 'lines'
-      ? [geometry.positions, geometry.lineOffsets]
+      ? [
+          geometry.positions,
+          geometry.lineOffsets,
+          ...(geometry.featureOffsets ? [geometry.featureOffsets] : [])
+        ]
       : [
           geometry.positions,
           geometry.featureOffsets,
@@ -275,6 +311,32 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
     );
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (vertexCount === 0) {
+      for (const [name, view] of Object.entries({
+        clearances,
+        lines,
+        vertexIds,
+        candidateOverflow: props.output.status?.candidateOverflow
+      }))
+        if (view)
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}-empty-${name}`,
+              operation: OPERATION,
+              invocationCount: name === 'lines' ? view.length * 4 : view.length,
+              bindings: [
+                {
+                  name: 'output',
+                  view,
+                  type: name === 'vertexIds' || name === 'candidateOverflow' ? 'u32' : 'f32',
+                  access: 'read_write'
+                }
+              ],
+              body: `output[outputOffset+index]=${name === 'vertexIds' ? '0xffffffffu' : name === 'candidateOverflow' ? '0u' : `bitcast<f32>(${name === 'clearances' ? '0x7f800000' : '0x7fc00000'}u | (index & 0u))`};`
+            })
+          );
+      return nodes;
+    }
 
     const table = createTransientView(
       graph,
@@ -339,7 +401,19 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
           {name: 'polygonOffsets', view: geometry.polygonOffsets, type: 'u32', access: 'read'},
           {name: 'featureOffsets', view: geometry.featureOffsets, type: 'u32', access: 'read'}
         ]
-      : [{name: 'lineOffsets', view: geometry.lineOffsets, type: 'u32', access: 'read'}];
+      : [
+          {name: 'lineOffsets', view: geometry.lineOffsets, type: 'u32', access: 'read'},
+          ...(geometry.featureOffsets
+            ? [
+                {
+                  name: 'featureOffsets',
+                  view: geometry.featureOffsets,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : [])
+        ];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-vertex-features`,
@@ -363,7 +437,11 @@ fn readOffset(kind: u32, row: u32) -> u32 {
   return featureOffsets[featureOffsetsOffset + row];
 }`
     : `const RING_COUNT: u32 = ${geometry.lineOffsets.length - 1}u;
-fn readOffset(kind: u32, row: u32) -> u32 { return lineOffsets[lineOffsetsOffset + row]; }`
+${geometry.featureOffsets ? `const FEATURE_COUNT: u32 = ${geometry.featureOffsets.length - 1}u;` : ''}
+fn readOffset(kind: u32, row: u32) -> u32 {
+  ${geometry.featureOffsets ? 'if (kind == 1u) { return featureOffsets[featureOffsetsOffset + row]; }' : ''}
+  return lineOffsets[lineOffsetsOffset + row];
+}`
 }
 // Last row in [0, count) whose offset is at most value, or SEGMENT_NONE.
 fn lastAtMost(kind: u32, count: u32, value: u32) -> u32 {
@@ -390,7 +468,9 @@ fn lastAtMost(kind: u32, count: u32, value: u32) -> u32 {
           feature = lastAtMost(2u, FEATURE_COUNT, polygon);
         }
       }`
-          : 'feature = ring;'
+          : geometry.featureOffsets
+            ? 'if (ring < readOffset(1u, FEATURE_COUNT)) { feature = lastAtMost(1u, FEATURE_COUNT, ring); }'
+            : 'feature = ring;'
       }
     }
   }
@@ -531,6 +611,18 @@ fn boxDistanceSquared(node: u32, point: vec2f) -> f32 {
       })
     );
 
+    if (geometry.kind === 'lines' && geometry.featureOffsets)
+      nodes.push(
+        ...createVertexClearanceNodes(graph, {
+          id,
+          positions: geometry.positions,
+          features: vertexFeatures,
+          nearest,
+          leafCapacity,
+          spatialSort,
+          overflow: props.output.status?.candidateOverflow
+        })
+      );
     // Per feature: [minimum distance bits, lowest vertex row reaching them]. Library rule 14: one
     // workgroup per feature reduces the feature's contiguous vertex range with a fixed binary tree,
     // instead of per-vertex atomics onto two words per feature (contention on large features).
@@ -569,7 +661,7 @@ fn getFeatureStart(row: u32) -> u32 {
   return min(ringOffsets[ringOffsetsOffset + ring], VERTEX_COUNT);
 }`
     : `fn getFeatureStart(row: u32) -> u32 {
-  return min(lineOffsets[lineOffsetsOffset + row], VERTEX_COUNT);
+  return min(lineOffsets[lineOffsetsOffset + ${geometry.kind === 'lines' && geometry.featureOffsets ? 'featureOffsets[featureOffsetsOffset + row]' : 'row'}], VERTEX_COUNT);
 }`
 }
 var<workgroup> laneBits: array<u32, ${FEATURE_REDUCTION_WORKGROUP_SIZE}>;

@@ -90,20 +90,8 @@ describe('GPUValueCube', () => {
     const actual = await runCube(events, cellCount, periodCount, {withMask: true});
     expect(actual.counts).toEqual(expected.counts);
     expect(bitsOf(actual.sums)).toEqual(bitsOf(expected.sums));
-    // WGSL division is not correctly rounded (up to 2.5 ULP), so a mean may differ from the
-    // correctly rounded quotient by a few units in the last place; NaN must match exactly.
-    const actualMeanBits = bitsOf(actual.means);
-    const expectedMeanBits = bitsOf(expected.means);
-    for (let bin = 0; bin < expected.means.length; bin++) {
-      if (Number.isNaN(expected.means[bin])) {
-        expect(actual.means[bin], `mean ${bin}`).toBeNaN();
-      } else {
-        expect(
-          Math.abs(actualMeanBits[bin] - expectedMeanBits[bin]),
-          `mean ${bin}`
-        ).toBeLessThanOrEqual(3);
-      }
-    }
+    // The independent integer-ratio oracle and production publication both round once.
+    expect(bitsOf(actual.means)).toEqual(bitsOf(expected.means));
     expect(actual.invalidCount).toBe(expected.invalidCount);
     // An empty bin has sum 0 and mean NaN, the missing marker of GPUEmergingHotSpots.
     const emptyBin = expected.counts.indexOf(0);
@@ -143,6 +131,26 @@ describe('GPUValueCube', () => {
     expect(Math.abs(actual.means[0] / (exact / events.length) - 1)).toBeLessThan(4e-7);
   });
 
+  it('review DPC-109: keeps a finite mean when a bin sum is past the float32 range', async () => {
+    // Four values of 1e38 in bin 0: the exact sum 4e38 rounds to Infinity in float32, and before
+    // the fix the mean was Infinity / 4. The mean of four equal values is the value (closed form):
+    // fround(1e38) = 9.999999680285692e37. Bin 1 is an ordinary control; its values must keep
+    // their bits in the fixed-point unit, which follows the largest value (about 2^35 here), so
+    // 1 and 3 would quantize to 0. 2^120 and 3 * 2^120 are exact: sum 2^122, mean 2^121.
+    const events: ValueCubeEvent[] = [
+      ...Array.from({length: 4}, () => ({cell: 0, period: 0, value: 1e38, selected: true})),
+      {cell: 1, period: 0, value: 2 ** 120, selected: true},
+      {cell: 1, period: 0, value: 3 * 2 ** 120, selected: true}
+    ];
+    const actual = await runCube(events, 2, 1, {withMask: false});
+    expect(actual.counts).toEqual([4, 2]);
+    expect(actual.sums[0]).toBe(Infinity);
+    expect(Number.isFinite(actual.means[0]), `mean ${actual.means[0]}`).toBe(true);
+    expect(actual.means[0]).toBe(9.999999680285692e37);
+    expect(actual.sums[1]).toBe(2 ** 122);
+    expect(actual.means[1]).toBe(2 ** 121);
+  });
+
   it('reproduces the same cube when rows are reordered', async () => {
     const random = createValueCubeRandom(21);
     const events: ValueCubeEvent[] = Array.from({length: 2000}, () => ({
@@ -157,4 +165,146 @@ describe('GPUValueCube', () => {
     expect(bitsOf(second.sums)).toEqual(bitsOf(first.sums));
     expect(second.counts).toEqual(first.counts);
   });
+});
+
+it('CMP-12 event rows retain Monday and Tuesday occupancy despite equal all-period totals', async () => {
+  for (const period of [1, 2]) {
+    const result = await runCube(
+      [
+        {cell: 0, period: 0, value: 1, selected: true},
+        {cell: 1, period, value: 1, selected: true}
+      ],
+      2,
+      3,
+      {withMask: false}
+    );
+    expect(result.counts).toEqual(period === 1 ? [1, 0, 0, 0, 1, 0] : [1, 0, 0, 0, 0, 1]);
+  }
+});
+
+it('W2-03 seven maximum values retain finite cube means and independent infinite sums', async () => {
+  const result = await runCube(
+    Array.from({length: 7}, () => ({
+      cell: 0,
+      period: 0,
+      value: 3.4028234663852886e38,
+      selected: true
+    })),
+    1,
+    2,
+    {withMask: false}
+  );
+  expect(result.counts).toEqual([7, 0]);
+  expect(result.means).toEqual([3.4028234663852886e38, NaN]);
+  expect(result.sums).toEqual([Infinity, 0]);
+});
+
+it('UDF-06 per-bin scale retains two independent occupied singleton bins', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new ValueCubeRig(device);
+  try {
+    const sums = rig.output('float32', 2);
+    const means = rig.output('float32', 2);
+    rig.run(
+      new GPUValueCube({
+        scaleMode: 'per-bin',
+        cellCount: 1,
+        periodCount: 2,
+        cells: rig.input(Uint32Array.of(0, 0), 'uint32'),
+        periods: rig.input(Uint32Array.of(0, 1), 'uint32'),
+        values: rig.input(Float32Array.of(1, 2 ** 100), 'float32'),
+        output: {sums, means}
+      })
+    );
+    expect(await rig.readFloat(sums)).toEqual([1, 2 ** 100]);
+    expect(await rig.readFloat(means)).toEqual([1, 2 ** 100]);
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('W2-03 production cube publication retains signed exact totals at count 16777217', async () => {
+  const {createTransientView} = await import('@luma.gl/graph/gpu-core');
+  const {createWGSLKernelNode} = await import(
+    '../../../src/analysis-core/kernels/wgsl-kernel-nodes'
+  );
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new ValueCubeRig(device);
+  const means = rig.output('float32', 3);
+  const count = 16777217;
+  const total = BigInt(count) * 0xffffffn * (1n << 46n);
+  const words = [total, -total, 0n].flatMap(value => {
+    const unsigned = BigInt.asUintN(96, value);
+    return [
+      Number(unsigned & 0xffffffffn),
+      Number((unsigned >> 32n) & 0xffffffffn),
+      Number(unsigned >> 64n)
+    ];
+  });
+  // E=254, headroom=25 => unit exponent 58. maxFloat32=(2^24-1)*2^104.
+  const cube = new GPUValueCube({
+    cellCount: 1,
+    periodCount: 3,
+    cells: createTransientView(rig.graph, 'synthetic-cells', 'uint32', count),
+    periods: createTransientView(rig.graph, 'synthetic-periods', 'uint32', count),
+    values: createTransientView(rig.graph, 'synthetic-values', 'float32', count),
+    output: {means}
+  });
+  const finish = cube.getCommandNodes(rig.graph).find(node => node.id === 'value-cube-means')!;
+  try {
+    for (const [resourceIndex, data] of [
+      [0, Uint32Array.of(count, count, 0)],
+      [2, Uint32Array.from(words)],
+      [3, Uint32Array.of(254)]
+    ] as const) {
+      const resource = finish.resources![resourceIndex];
+      if (!('buffer' in resource)) throw new Error('publication buffer required');
+      const source = rig.input(data, 'uint32');
+      rig.graph.add(
+        createWGSLKernelNode(rig.graph, {
+          id: `inject-${resourceIndex}`,
+          operation: 'mean-regression',
+          variant: 'inject',
+          invocationCount: data.length,
+          bindings: [
+            {name: 'source', view: source, type: 'u32', access: 'read'},
+            {
+              name: 'destination',
+              view: resource.buffer as typeof source,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: 'destination[destinationOffset + index] = source[sourceOffset + index];'
+        })
+      );
+    }
+    rig.graph.add(finish);
+    rig.run();
+    expect(await rig.readFloat(means)).toEqual([
+      3.4028234663852886e38,
+      -3.4028234663852886e38,
+      NaN
+    ]);
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('W3-01 cube subnormal mean has independently rounded word 0x00400001', async () => {
+  const result = await runCube(
+    [2 ** -126, -(2 ** -126), 12582914 * 2 ** -149].map(value => ({
+      cell: 0,
+      period: 0,
+      value,
+      selected: true
+    })),
+    1,
+    1,
+    {withMask: false}
+  );
+  // 12582914 / 3 = 4194304 + 2/3 subnormal units.
+  expect(bitsOf(result.means)).toEqual([0x00400001]);
 });

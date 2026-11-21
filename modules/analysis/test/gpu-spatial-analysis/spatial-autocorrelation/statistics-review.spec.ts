@@ -495,7 +495,7 @@ it('a genuine large BH family covers ranks around 2^24 and publishes the exact t
         method: 'benjamini-hochberg',
         output: {
           adjustedPValues: adjusted,
-          testedCount: importGraphBuffer(graph, 'count', count, 'uint32', 1)
+          effectiveFamilySize: importGraphBuffer(graph, 'count', count, 'uint32', 1)
         }
       })
     );

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -133,11 +135,19 @@ export type GPUPeriodComparisonRecipeIntermediates = Pick<
 >;
 
 /** Period-comparison outputs, intermediates and top-level convenience fields. */
-export type GPUPeriodComparisonRecipeResult = GPURecipeResult<
-  GPUPeriodComparisonRecipeOutputs,
-  GPUPeriodComparisonRecipeIntermediates
+export type GPUPeriodComparisonRecipeResult = Omit<
+  GPURecipeResult<GPUPeriodComparisonRecipeOutputs, GPUPeriodComparisonRecipeIntermediates>,
+  'status'
 > &
-  GPUPeriodComparisonRecipeViews;
+  GPUPeriodComparisonRecipeViews & {
+    /** Per-stage saturation and cardinality ports, retaining each stage's actual view identities. */
+    status: {
+      stages: readonly (
+        | {stage: 'before-aggregation' | 'after-aggregation'; status: GPUCellTable['status']}
+        | {stage: 'comparison'; status: GPUCellTableCompareOutput['status']}
+      )[];
+    };
+  };
 
 type GPUPeriodComparisonRecipeViews = {
   unionCapacity: number;
@@ -169,7 +179,8 @@ type GPUPeriodComparisonRecipeViews = {
  * Poisson denominator is never zero.
  *
  * Status: stages `before-aggregation`, `after-aggregation` and `comparison`, each with count,
- * overflow and the unclamped required count.
+ * overflow, sumOverflow and the unclamped required count. Sum saturation suppresses numeric
+ * comparisons (NaN), so those rows receive the no-data color.
  */
 export function addPeriodComparisonRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -183,8 +194,9 @@ function declarePeriodComparisonRecipe<Parameters>(
   props: GPUPeriodComparisonRecipeProps
 ): GPUPeriodComparisonRecipeResult {
   const id = props.id ?? 'period-comparison';
+  const destinations = resolveRecipeDestinations(id, props);
   const builder = new RecipeBuilder(graph);
-  const outputs = props.outputs ?? {};
+  const outputs = destinations ?? {};
   const scratch = props.scratch ?? {};
   const {tableCapacity} = props;
   const unionCapacity = props.unionCapacity ?? 2 * tableCapacity;
@@ -225,6 +237,13 @@ function declarePeriodComparisonRecipe<Parameters>(
         : provided.sums,
       status: {
         count: getOrCreateView(graph, `${id}-${period}-count`, 'uint32', 1, provided.status?.count),
+        sumOverflow: getOrCreateView(
+          graph,
+          `${id}-${period}-sum-overflow`,
+          'uint32',
+          1,
+          provided.status?.sumOverflow
+        ),
         ...(provided.status?.candidateOverflow
           ? {candidateOverflow: provided.status.candidateOverflow}
           : {}),
@@ -273,6 +292,13 @@ function declarePeriodComparisonRecipe<Parameters>(
     zScore: given.zScore,
     status: {
       count: getOrCreateView(graph, `${id}-union-count`, 'uint32', 1, given.status?.count),
+      sumOverflow: getOrCreateView(
+        graph,
+        `${id}-union-sum-overflow`,
+        'uint32',
+        1,
+        given.status?.sumOverflow
+      ),
       candidateOverflow: getOrCreateView(
         graph,
         `${id}-union-candidate-overflow`,
@@ -357,7 +383,7 @@ function declarePeriodComparisonRecipe<Parameters>(
       values: classified,
       mask,
       domain: breaks,
-      domainCount: classCount,
+      classCount,
       palette: props.palette,
       parameters: props.colorScaleParameters,
       maximumDomainCount: props.maximumClassCount + 1,

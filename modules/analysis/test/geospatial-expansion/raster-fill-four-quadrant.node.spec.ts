@@ -59,7 +59,9 @@ it('fill no-data validates its named status port', () => {
           status: {invalidCount: createTransientView(graph, 'short', 'float32', 1) as never}
         }
       })
-  ).toThrow(/^raster-fill-nodata invalidCount must contain one uint32 row/);
+  ).toThrow(
+    /^raster-fill-nodata output\.status\.invalidCount must have format uint32; received float32$/
+  );
   expect(
     () =>
       new GPURasterFillNoData({

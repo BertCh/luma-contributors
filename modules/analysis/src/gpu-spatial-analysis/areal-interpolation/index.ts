@@ -15,10 +15,13 @@ export type {
   GPUArealInterpolationOutput,
   GPUArealInterpolationProps
 } from './gpu-areal-interpolation';
-export {GPUPycnophylactic, GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS} from './gpu-pycnophylactic';
+export {
+  GPUPycnophylacticInterpolation,
+  GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS
+} from './gpu-pycnophylactic';
 export type {
-  GPUPycnophylacticKernel,
-  GPUPycnophylacticOutput,
-  GPUPycnophylacticProps
+  GPUPycnophylacticInterpolationKernel,
+  GPUPycnophylacticInterpolationOutput,
+  GPUPycnophylacticInterpolationProps
 } from './gpu-pycnophylactic';
 export {getSphericalRasterCellArea} from '../../analysis-core/kernels/spherical-cell-area';

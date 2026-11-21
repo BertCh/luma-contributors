@@ -148,7 +148,7 @@ export class CPUNormalizePolygonsOperation extends GPUCPUOperation {
   constructor(props: NormalizePolygonsOperationProps) {
     const id = props.id ?? 'normalize-polygons';
     for (const name of ['rowCount', 'ringCount', 'polygonCount', 'featureCount'] as const)
-      validateCapacity(id, name, props[name]);
+      validateCapacity(id, name, props[name], 0);
     const operation = new GPUNormalizePolygonsOperation(props);
     super({
       id,

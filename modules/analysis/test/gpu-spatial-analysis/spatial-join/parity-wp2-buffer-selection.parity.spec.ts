@@ -49,7 +49,7 @@ for (const entry of fixture.cases) {
               ends: ends.view,
               sourceIds: input('feature-ids', entry.sourceIds, 'uint32').view
             },
-            distance: radius.view,
+            radius: radius.view,
             candidateCapacity: Math.max(...entry.frames.map(frame => frame.candidateCount)) + 1,
             output: {
               outputMask: mask.view,
@@ -161,7 +161,7 @@ for (const entry of fixture.cases) {
             starts: input('starts', entry.frames[0].starts, 'float32x2').view,
             ends: input('ends', entry.frames[0].ends, 'float32x2').view
           },
-          distance: input('radius', [entry.radius], 'float32').view,
+          radius: input('radius', [entry.radius], 'float32').view,
           candidateCapacity: 1,
           output: {
             outputMask: output('mask', queryCount, 'uint32').view,

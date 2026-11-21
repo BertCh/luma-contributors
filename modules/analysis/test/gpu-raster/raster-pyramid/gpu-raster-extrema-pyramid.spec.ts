@@ -72,6 +72,8 @@ async function runPyramid(
 ) {
   const {width, height} = options;
   const grid = makeGPURasterMetadata({width, height});
+  if (options.maximum === false && options.minimum === false)
+    throw new Error('pyramid fixture requires minimum or maximum');
   const pixelCount = width * height;
   const layout = getGPURasterExtremaPyramidLayout(grid, options);
   const inputBuffer = createInputBuffer(device, options.values);
@@ -103,16 +105,23 @@ async function runPyramid(
           ? importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', pixelCount)
           : undefined
       } as never,
-      output: {
-        maximum:
-          options.maximum === false
-            ? undefined
-            : importGraphBuffer(graph, 'maximum', maximumBuffer, 'float32', layout.length),
-        minimum:
-          options.minimum === false
-            ? undefined
-            : importGraphBuffer(graph, 'minimum', minimumBuffer, 'float32', layout.length)
-      }
+      output:
+        options.maximum === false
+          ? {minimum: importGraphBuffer(graph, 'minimum', minimumBuffer, 'float32', layout.length)}
+          : {
+              maximum: importGraphBuffer(graph, 'maximum', maximumBuffer, 'float32', layout.length),
+              ...(options.minimum === false
+                ? {}
+                : {
+                    minimum: importGraphBuffer(
+                      graph,
+                      'minimum',
+                      minimumBuffer,
+                      'float32',
+                      layout.length
+                    )
+                  })
+            }
     })
   );
   const compiled = graph.compile();

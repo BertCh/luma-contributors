@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getSumOverflowNodes} from './sum-overflow-nodes';
+import {FINITE_MEAN_WGSL} from './finite-mean-wgsl';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
@@ -29,8 +31,8 @@ import {
   validateMaximumCount,
   validateCompactOutput,
   validateSinglePackedView,
-  validateCommandNodeBudget,
-  getGraphViewChunks
+  validateRequirement,
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGraphChunkBindingRanges,
@@ -47,9 +49,9 @@ import {
   getFixedPointHeadroomBits
 } from '../../analysis-core/kernels/fixed-point-accumulator';
 
-import {createKeyJoinDistinctNodes} from './key-join-distinct';
+import {createKeyLookupDistinctNodes} from './key-join-distinct';
 
-const OPERATION = 'GPUKeyJoin';
+const OPERATION = 'GPUKeyLookup';
 /** Base key sorts and scans, including published radix hierarchy at the maximum supported row count. */
 const BASE_COMMAND_NODE_ALLOWANCE = 2048;
 /** Two full-width stable radix sorts plus distinct-key preparation, counting and publication. */
@@ -64,11 +66,8 @@ const MAXIMUM_GATHER_COLUMNS_PER_KERNEL = 3;
 /** Workgroup size of the pass that reduces the largest exponent of an aggregate column. */
 const SUM_SCALE_WORKGROUP_SIZE = 256;
 
-/** Join kind: `'left'` keeps every left row aligned, `'inner'` also compacts the matched rows. */
-export type GPUKeyJoinKind = 'left' | 'inner';
-
-/** Operation of a 1:n {@link GPUKeyJoinAggregate} over all right rows matching a left row's key. */
-export type GPUKeyJoinAggregateOperation =
+/** Operation of a 1:n {@link GPUKeyLookupAggregate} over all right rows matching a left row's key. */
+export type GPUKeyLookupAggregateOperation =
   | 'count'
   | 'sum'
   | 'mean'
@@ -77,7 +76,7 @@ export type GPUKeyJoinAggregateOperation =
   | 'count-distinct';
 
 /** One 1:1 gathered right column: the first (smallest-row) matching right row's value. */
-export type GPUKeyJoinGather = {
+export type GPUKeyLookupGather = {
   /** Right-aligned source column. */
   column: GraphDataView<'float32'> | GraphDataView<'uint32'>;
   /**
@@ -85,42 +84,57 @@ export type GPUKeyJoinGather = {
    * `0xffffffff` (`uint32`). The value is copied bit for bit.
    */
   output: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  /** Fill for an unmatched row, in the destination format. Defaults to NaN or 0xffffffff. */
+  unmatchedValue?: number;
 };
 
 /** One 1:n aggregate over every right row that matches a left row's key. */
-export type GPUKeyJoinAggregate = {
+type GPUKeyLookupAggregateFields = {
   /**
    * Right-aligned values. Required except for `'count'`. Rows with a non-finite value are
    * excluded from this aggregate only.
    */
   column?: GraphDataView<'float32'>;
   /**
-   * `'count'` counts matching right rows (finite values when a column is given). `'sum'` is the
-   * exact sum of the finite values in a 96-bit fixed-point accumulator whose unit follows the
-   * largest value among the valid right rows, rounded once to float32; `'mean'` is that sum
-   * divided by the finite count. Neither depends on `sumScale`. `'minimum'` and `'maximum'` are
-   * exact. 'count-distinct' counts unique finite float32 values, treating +/-0 as the same
-   * value; its integer count is rounded once to the existing float32 output.
-   */
-  operation: GPUKeyJoinAggregateOperation;
-  /**
-   * Left-aligned destination. Unmatched rows receive 0 for `'count'` and `'count-distinct'` and NaN otherwise; a matched
-   * row without a finite value receives NaN for `'mean'`, `'minimum'` and `'maximum'`, and 0 for
-   * `'sum'`.
-   */
-  output: GraphDataView<'float32'>;
-  /**
    * Optional left-aligned fixed-point sums in units of `1 / sumScale` (`'sum'` and `'mean'`
    * only), signed 64-bit little-endian words equal to the sum of
    * `roundHalfEven(fround(value * sumScale))`. Each value is rounded to the unit first, so a
    * value below half a unit adds nothing; `output` holds the sum of the values themselves. Zero
-   * for unmatched rows.
+   * for unmatched rows. Scaled rows clamp just below 2^62 and totals wrap at 64 bits; request
+   * `status.sumOverflow` to detect either loss.
    */
   sums?: GraphDataView<'uint32x2'>;
+  status?: {
+    /** One-word flag for row clamping or signed-64-bit sum overflow among right keys
+     * matched by a valid, unmasked left row. Requires `sums`. */
+    sumOverflow?: GraphDataView<'uint32'>;
+  };
 };
 
-/** Outputs of {@link GPUKeyJoin}. Left-aligned unless noted. */
-export type GPUKeyJoinOutput = {
+/**
+ * Aggregate of matching right rows, published in left-row order. Count counts matching rows
+ * (finite values if column is supplied); count-distinct counts unique finite values, merging +/-0.
+ * Counts may publish exactly as uint32 or rounded as float32; unmatched counts are zero.
+ * Sum/mean use adaptive 96-bit totals independently of sumScale. Minimum/maximum are exact.
+ * Unmatched float aggregates are NaN; a matched group with no finite values has sum 0 and
+ * mean/minimum/maximum NaN. Caller-scale words and their loss status are independent.
+ */
+export type GPUKeyLookupAggregate = GPUKeyLookupAggregateFields &
+  (
+    | {
+        operation: 'count' | 'count-distinct';
+        output: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+      }
+    | {
+        operation: Exclude<GPUKeyLookupAggregateOperation, 'count' | 'count-distinct'>;
+        output: GraphDataView<'float32'>;
+      }
+  );
+
+/** Outputs of {@link GPUKeyLookup}. Left-aligned unless noted. */
+export type GPUKeyLookupOutput = {
+  /** Whole-table certification, required when rightTable is supplied. matched still describes retained keys only. */
+  status?: {complete: GraphDataView<'uint32'>; candidateOverflow?: GraphDataView<'uint32'>};
   /** Smallest matching right row per left row, `0xffffffff` when unmatched. */
   rightRows?: GraphDataView<'uint32'>;
   /** Number of right rows matching each left row's key. */
@@ -129,17 +143,17 @@ export type GPUKeyJoinOutput = {
   matched?: GraphDataView<'uint32'>;
   /** Right-aligned: 1 when the right row's key is matched by some valid left row. */
   rightMatched?: GraphDataView<'uint32'>;
-  /** `'inner'` only (required there): ascending matched left row IDs, capacity bounded. */
+  /** Required when compactMatchedLeftRows is true: ascending matched left row indices, capacity bounded. */
   rows?: GPUCompactOutput;
 };
 
 /**
- * Properties for {@link GPUKeyJoin}.
+ * Properties for {@link GPUKeyLookup}.
  *
  * Per-frame (no recompile): the contents of every input buffer. Topology (needs a new graph):
- * `kind`, `sumScale`, view lengths, key format, and which optional views and aggregates exist.
+ * `compactMatchedLeftRows`, `sumScale`, view lengths, key format, and which optional views and aggregates exist.
  */
-export type GPUKeyJoinProps = {
+export type GPUKeyLookupProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'key-join'`. */
   id?: string;
   /**
@@ -149,27 +163,35 @@ export type GPUKeyJoinProps = {
   leftKeys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
   /** Right keys, in the same format as `leftKeys`. */
   rightKeys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
+  /** Grouped right keys and producer loss. keys must be the same view as rightKeys.
+   * Requires output.status.complete; 0 means the lookup cannot certify genuine misses. */
+  rightTable?: {
+    keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
+    status: {overflow: GraphDataView<'uint32'>; candidateOverflow?: GraphDataView<'uint32'>};
+  };
   /** Optional left mask; zero rows never match. */
   leftMask?: GraphDataView<'uint32'>;
   /** Optional right mask; zero rows are ignored by every output. */
   rightMask?: GraphDataView<'uint32'>;
-  /** Join kind. Defaults to `'left'`. */
-  kind?: GPUKeyJoinKind;
+  /** Also publish compact matched left row indices in output.rows. Defaults to false. */
+  compactMatchedLeftRows?: boolean;
   /** 1:1 gathered right columns (first matching right row wins). */
-  gather?: readonly GPUKeyJoinGather[];
+  gather?: readonly GPUKeyLookupGather[];
   /** 1:n aggregates over all matching right rows. */
-  aggregates?: readonly GPUKeyJoinAggregate[];
+  aggregates?: readonly GPUKeyLookupAggregate[];
   /**
    * Fixed-point scale of the optional `sums` words of an aggregate only, a positive float32: one
    * unit is `1 / sumScale`. Defaults to 65536. The float `'sum'` and `'mean'` do not use it.
    */
   sumScale?: number;
+  /** Isolate adaptive float sum/mean units and finite-count headroom per right key. Defaults to shared. */
+  scaleMode?: 'shared' | 'per-group';
   /** Caller-owned outputs. */
-  output: GPUKeyJoinOutput;
+  output: GPUKeyLookupOutput;
 };
 
 /**
- * Attribute join of a left table onto a right table by key, entirely on the GPU.
+ * Looks up each left row's key in a right table, entirely on the GPU.
  *
  * Valid right rows (mask set, key not all-ones) are sorted by key with a stable radix sort
  * (one pass per key word), so equal keys stay in ascending right-row order. Segment heads and a
@@ -181,63 +203,114 @@ export type GPUKeyJoinProps = {
  * a sum is the exact integer sum rounded once to float32 (a value keeps all its bits while its
  * magnitude is at least `max * 2^(h - 71)`, `h` the bit length of the right row count). All
  * inputs must be single packed views.
- * Left-aligned outputs keep the left row order for both kinds; `'inner'` additionally compacts the
- * matched left row IDs in ascending order.
+ * Left-aligned outputs keep one slot per left row in source order. With
+ * `compactMatchedLeftRows: true`, `output.rows` also lists the matched left row indices in
+ * ascending order, once each.
  *
- * The official `GPUHashJoin` of `@luma.gl/graph/gpu-core` is a hash join; this contributor is a
- * sort and binary-search join because it needs 64-bit keys, row masks, and 1:n aggregates over
- * repeated right keys.
+ * Float sums and means default to one adaptive scale across right keys. With values [1, 2^100]
+ * at distinct keys, the shared unit is 256 and the singleton 1 rounds to zero. Set
+ * scaleMode: 'per-group' to isolate units by key. Caller-scale sums and status.sumOverflow remain
+ * independent: the flag covers row clamping and signed-64 loss for valid unmasked left matches.
  */
-export class GPUKeyJoin implements GPUCommandNodeProducer {
+export class GPUKeyLookup implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUKeyJoinProps;
-  /** Join kind. */
-  readonly kind: GPUKeyJoinKind;
+  readonly props: GPUKeyLookupProps;
+  /** Whether to publish compact matched left row indices in output.rows. */
+  readonly compactMatchedLeftRows: boolean;
   /** Fixed-point scale of the `sums` words. */
   readonly sumScale: number;
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUKeyJoinProps) {
+  constructor(props: GPUKeyLookupProps) {
+    const inputProps = props;
     props = snapshotConstructionFields(props, [
       'id',
       'leftKeys',
       'rightKeys',
+      'rightTable',
       'leftMask',
       'rightMask',
-      'kind',
+      'compactMatchedLeftRows',
       'gather',
       'aggregates',
       'sumScale',
+      'scaleMode',
       'output'
     ]);
+    const id = props.id ?? 'key-join';
+    for (const legacyProp of ['kind', 'how']) {
+      validateRequirement(
+        id,
+        !(legacyProp in inputProps || Reflect.get(inputProps, legacyProp) !== undefined),
+        `${legacyProp} was removed; use compactMatchedLeftRows`
+      );
+    }
+    const {compactMatchedLeftRows} = props;
+    validateRequirement(
+      id,
+      compactMatchedLeftRows === undefined || typeof compactMatchedLeftRows === 'boolean',
+      `compactMatchedLeftRows must be a boolean; received ${String(compactMatchedLeftRows)}`
+    );
     const declaredOutput = snapshotConstructionFields(props.output, [
       'rightRows',
       'matchCounts',
       'matched',
       'rightMatched',
-      'rows'
+      'rows',
+      'status'
     ]);
     const compact = declaredOutput.rows
       ? snapshotConstructionFields(declaredOutput.rows, ['ids', 'status'])
       : undefined;
     props = Object.freeze({
       ...props,
+      rightTable: props.rightTable
+        ? Object.freeze({
+            keys: props.rightTable.keys,
+            status: snapshotConstructionFields(props.rightTable.status, [
+              'overflow',
+              'candidateOverflow'
+            ])
+          })
+        : undefined,
       gather: props.gather
         ? Object.freeze(
-            props.gather.map(entry => snapshotConstructionFields(entry, ['column', 'output']))
+            props.gather.map(entry =>
+              snapshotConstructionFields(entry, ['column', 'output', 'unmatchedValue'])
+            )
           )
         : undefined,
       aggregates: props.aggregates
         ? Object.freeze(
-            props.aggregates.map(entry =>
-              snapshotConstructionFields(entry, ['column', 'operation', 'output', 'sums'])
-            )
+            props.aggregates.map((entry, index) => {
+              validateRequirement(
+                id,
+                !('sumOverflow' in entry || Reflect.get(entry, 'sumOverflow') !== undefined),
+                `aggregates[${index}].sumOverflow was removed; use aggregates[${index}].status.sumOverflow`
+              );
+              entry = snapshotConstructionFields(entry, [
+                'operation',
+                'column',
+                'output',
+                'sums',
+                'status'
+              ]);
+              return Object.freeze({
+                ...entry,
+                status: entry.status
+                  ? snapshotConstructionFields(entry.status, ['sumOverflow'])
+                  : undefined
+              });
+            })
           )
         : undefined,
       output: Object.freeze({
         ...declaredOutput,
+        status: declaredOutput.status
+          ? snapshotConstructionFields(declaredOutput.status, ['complete', 'candidateOverflow'])
+          : undefined,
         rows: compact
           ? Object.freeze({
               ...compact,
@@ -251,16 +324,50 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
           : undefined
       })
     });
-    this.id = props.id ?? 'key-join';
+    this.id = id;
     this.props = props;
-    this.kind = props.kind ?? 'left';
+    this.compactMatchedLeftRows = compactMatchedLeftRows ?? false;
     this.sumScale = props.sumScale ?? GPU_CELL_DEFAULT_SUM_SCALE;
-    const id = this.id;
     validateSumScale(id, this.sumScale);
-    if (this.kind !== 'left' && this.kind !== 'inner') {
-      throw new Error(`${id} kind must be 'left' or 'inner'`);
-    }
+    validateRequirement(
+      id,
+      props.scaleMode === undefined ||
+        props.scaleMode === 'shared' ||
+        props.scaleMode === 'per-group',
+      `scaleMode must be shared or per-group; received ${props.scaleMode}`
+    );
     const {output} = props;
+    if (props.rightTable) {
+      validateRequirement(
+        id,
+        props.rightTable.keys === props.rightKeys,
+        'rightTable.keys must equal rightKeys'
+      );
+      validateRequirement(
+        id,
+        Boolean(output.status?.complete),
+        'rightTable requires output.status.complete'
+      );
+      validateRequirement(
+        id,
+        Boolean(props.rightTable.status.overflow),
+        'rightTable.status.overflow is required'
+      );
+      for (const [name, view] of Object.entries(props.rightTable.status)) {
+        if (!view) continue;
+        validateSinglePackedView(view, ['uint32'], `${id} rightTable.status.${name}`);
+        validateRequirement(id, view.length === 1, `rightTable.status.${name} must hold one row`);
+      }
+    }
+    for (const [name, view] of Object.entries(output.status ?? {})) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
+      validateRequirement(id, view.length === 1, `output.status.${name} must hold one row`);
+    }
+    validateDisjointWritableViews(id, {
+      ...output.status,
+      localOverflow: output.status ? output.rows?.status.overflow : undefined
+    });
     const gather = props.gather ?? [];
     const aggregates = props.aggregates ?? [];
     const keyFormat = props.leftKeys.format;
@@ -289,6 +396,19 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       const format = entry.column.format;
       validateSinglePackedView(entry.column, ['float32', 'uint32'], `${id} ${name}.column`);
       validateSinglePackedView(entry.output, [format], `${id} ${name}.output`);
+      if (entry.unmatchedValue !== undefined) {
+        validateRequirement(
+          id,
+          format === 'uint32'
+            ? Number.isInteger(entry.unmatchedValue) &&
+                entry.unmatchedValue >= 0 &&
+                entry.unmatchedValue <= 0xffffffff
+            : typeof entry.unmatchedValue === 'number' &&
+                (!Number.isFinite(entry.unmatchedValue) ||
+                  Number.isFinite(Math.fround(entry.unmatchedValue))),
+          `${name}.unmatchedValue must fit ${format}; received ${entry.unmatchedValue}`
+        );
+      }
       if (entry.column.length !== rightCount) {
         throw new Error(`${id} ${name}.column length must equal the right row count`);
       }
@@ -312,9 +432,25 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
           throw new Error(`${id} ${name}.column length must equal the right row count`);
         }
       }
-      validateSinglePackedView(entry.output, ['float32'], `${id} ${name}.output`);
+      validateSinglePackedView(
+        entry.output,
+        entry.operation === 'count' || entry.operation === 'count-distinct'
+          ? ['float32', 'uint32']
+          : ['float32'],
+        `${id} ${name}.output`
+      );
       if (entry.output.length !== leftCount) {
         throw new Error(`${id} ${name}.output length must equal the left row count`);
+      }
+      const sumOverflow = entry.status?.sumOverflow;
+      if (sumOverflow) {
+        validateRequirement(id, Boolean(entry.sums), `${name}.status.sumOverflow requires sums`);
+        validateSinglePackedView(sumOverflow, ['uint32'], `${id} ${name}.status.sumOverflow`);
+        validateRequirement(
+          id,
+          sumOverflow.length === 1,
+          `${name}.status.sumOverflow must hold one uint32 row`
+        );
       }
       if (entry.sums) {
         if (entry.operation !== 'sum' && entry.operation !== 'mean') {
@@ -341,26 +477,36 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
         throw new Error(`${id} output.rightMatched length must equal the right row count`);
       }
     }
-    if (this.kind === 'inner') {
-      if (!output.rows) {
-        throw new Error(`${id} output.rows is required for the inner join`);
-      }
+    if (this.compactMatchedLeftRows) {
+      validateRequirement(
+        id,
+        output.rows !== undefined,
+        'output.rows is required when compactMatchedLeftRows is true'
+      );
       validateCompactOutput(id, output.rows);
       if (output.rows.ids.length < 1) {
         throw new Error(`${id} output.rows.ids must hold at least one row`);
       }
-    } else if (output.rows) {
-      throw new Error(`${id} output.rows is only supported for the inner join`);
+    } else {
+      validateRequirement(
+        id,
+        output.rows === undefined,
+        'output.rows is only supported when compactMatchedLeftRows is true'
+      );
     }
     const inputs = [
       props.leftKeys,
       props.rightKeys,
       props.leftMask,
       props.rightMask,
+      props.rightTable?.status.overflow,
+      props.rightTable?.status.candidateOverflow,
       ...gather.map(entry => entry.column),
       ...aggregates.map(entry => entry.column)
     ];
     const outputs = [
+      output.status?.complete,
+      output.status?.candidateOverflow,
       output.rightRows,
       output.matchCounts,
       output.matched,
@@ -371,69 +517,67 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.rows?.status.candidateOverflow,
       output.rows?.status.requiredCount,
       ...gather.map(entry => entry.output),
-      ...aggregates.flatMap(entry => [entry.output, entry.sums])
+      ...aggregates.flatMap(entry => [entry.output, entry.sums, entry.status?.sumOverflow])
     ];
-    const dispatches: (GraphDataView | undefined)[][] = [
-      [output.rightRows, output.matchCounts, output.matched],
-      [
-        output.rows?.status.count,
-        output.rows?.status.overflow,
-        output.rows?.status.candidateOverflow,
-        output.rows?.status.requiredCount
-      ],
-      ...aggregates.map(entry => [entry.output, entry.sums])
+    const publicationPasses: Readonly<Record<string, GraphDataView | undefined>>[] = [
+      {
+        'output.rightRows': output.rightRows,
+        'output.matchCounts': output.matchCounts,
+        'output.matched': output.matched
+      },
+      {
+        'output.rows.status.count': output.rows?.status.count,
+        'output.rows.status.overflow': output.rows?.status.overflow,
+        'output.rows.status.candidateOverflow': output.rows?.status.candidateOverflow,
+        'output.rows.status.requiredCount': output.rows?.status.requiredCount
+      },
+      ...aggregates.map((entry, index) => ({
+        [`aggregates[${index}].output`]: entry.output,
+        [`aggregates[${index}].sums`]: entry.sums
+      }))
     ];
     for (let first = 0; first < gather.length; first += MAXIMUM_GATHER_COLUMNS_PER_KERNEL) {
-      dispatches.push([
-        output.rightRows,
-        ...gather.slice(first, first + MAXIMUM_GATHER_COLUMNS_PER_KERNEL).map(entry => entry.output)
-      ]);
+      publicationPasses.push({
+        'output.rightRows': output.rightRows,
+        ...Object.fromEntries(
+          gather
+            .slice(first, first + MAXIMUM_GATHER_COLUMNS_PER_KERNEL)
+            .map((entry, index) => [`gather[${first + index}].output`, entry.output])
+        )
+      });
     }
-    if (output.rows) dispatches.push([output.matched, output.rows.ids]);
+    if (output.rows)
+      publicationPasses.push({
+        'output.matched': output.matched,
+        'output.rows.ids': output.rows.ids
+      });
     {
       const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
-        Object.fromEntries(outputs.map((view, index) => [`output[${index}]`, view]));
-      const publicationPasses: readonly (readonly (
-        | GraphDataView
-        | GraphVectorView
-        | undefined
-      )[])[] = dispatches;
-      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
-      const writableWordChunks = Object.values(writableOutputs)
-        .flatMap(view => (view ? getGraphViewChunks(view) : []))
-        .map(
-          view =>
-            new GraphDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset,
-              byteStride: 4,
-              rowByteLength: 4
-            })
-        );
-      const writableWordCount = writableWordChunks.reduce(
-        (total, chunk) => total + chunk.length,
-        0
-      );
-      validateDisjointWritableViews(id, {
-        outputs: new GraphVectorView({
-          id: `${id}-writable-ranges`,
-          name: 'outputs',
-          format: 'uint32',
-          length: writableWordCount,
-          valueLength: writableWordCount,
-          stride: 1,
-          byteStride: 4,
-          rowByteLength: 4,
-          data: writableWordChunks
-        })
-      });
-      for (const fields of publicationPasses) {
-        validateDisjointWritableViews(
-          id,
-          Object.fromEntries(fields.map((view, index) => [String(index), view]))
-        );
-      }
+        {
+          'output.status.complete': output.status?.complete,
+          'output.status.candidateOverflow': output.status?.candidateOverflow,
+          'output.rightRows': output.rightRows,
+          'output.matchCounts': output.matchCounts,
+          'output.matched': output.matched,
+          'output.rightMatched': output.rightMatched,
+          'output.rows.ids': output.rows?.ids,
+          'output.rows.status.count': output.rows?.status.count,
+          'output.rows.status.overflow': output.rows?.status.overflow,
+          'output.rows.status.candidateOverflow': output.rows?.status.candidateOverflow,
+          'output.rows.status.requiredCount': output.rows?.status.requiredCount,
+          ...Object.fromEntries(
+            gather.map((entry, index) => [`gather[${index}].output`, entry.output])
+          ),
+          ...Object.fromEntries(
+            aggregates.flatMap((entry, index) => [
+              [`aggregates[${index}].output`, entry.output],
+              [`aggregates[${index}].sums`, entry.sums],
+              [`aggregates[${index}].status.sumOverflow`, entry.status?.sumOverflow]
+            ])
+          )
+        };
+      validateDisjointWritableViews(id, writableOutputs, {separateDispatches: true});
+      for (const fields of publicationPasses) validateDisjointWritableViews(id, fields);
     }
     this.estimatedCommandNodeCount =
       BASE_COMMAND_NODE_ALLOWANCE +
@@ -443,7 +587,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
           total +
           (entry.operation === 'count-distinct'
             ? DISTINCT_COMMAND_NODE_ALLOWANCE
-            : AGGREGATE_COMMAND_NODE_ALLOWANCE),
+            : AGGREGATE_COMMAND_NODE_ALLOWANCE + (entry.status?.sumOverflow ? 4 : 0)),
         0
       );
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -454,7 +598,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, kind} = this;
+    const {id, props, compactMatchedLeftRows} = this;
     const output = props.output;
     const gather = props.gather ?? [];
     const aggregates = props.aggregates ?? [];
@@ -463,8 +607,17 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       props.rightKeys,
       props.leftMask,
       props.rightMask,
+      props.rightTable?.status.overflow,
+      props.rightTable?.status.candidateOverflow,
+      output.status?.complete,
+      output.status?.candidateOverflow,
       ...gather.flatMap(entry => [entry.column, entry.output]),
-      ...aggregates.flatMap(entry => [entry.column, entry.output, entry.sums]),
+      ...aggregates.flatMap(entry => [
+        entry.column,
+        entry.output,
+        entry.sums,
+        entry.status?.sumOverflow
+      ]),
       output.rightRows,
       output.matchCounts,
       output.matched,
@@ -709,7 +862,10 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
 
     // 6. Probe: binary search of every left key over the unique keys.
     const leftUnique = u32('left-unique', leftCount);
-    const uniqueMatched = output.rightMatched ? u32('unique-matched', rightCount) : undefined;
+    const uniqueMatched =
+      output.rightMatched || aggregates.some(aggregate => aggregate.status?.sumOverflow)
+        ? u32('unique-matched', rightCount)
+        : undefined;
     if (uniqueMatched) {
       nodes.push(
         createFillNode<Parameters>(graph, {
@@ -772,7 +928,7 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
     );
 
     // 7. Left-aligned flags, first rows and match counts.
-    const needsMatched = Boolean(output.matched) || kind === 'inner';
+    const needsMatched = Boolean(output.matched) || compactMatchedLeftRows;
     const needsFirst = Boolean(output.rightRows) || gather.length > 0;
     const matchedView = output.matched ?? (needsMatched ? u32('matched', leftCount) : undefined);
     const firstView = output.rightRows ?? (needsFirst ? u32('first-rows', leftCount) : undefined);
@@ -824,7 +980,7 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
   ${group
     .map(
       (entry, index) =>
-        `out${index}[out${index}Offset + index] = select(${entry.column.format === 'float32' ? '0x7fc00000u' : '0xffffffffu'}, column${index}[column${index}Offset + select(0u, row, isMatched)], isMatched);`
+        `out${index}[out${index}Offset + index] = select(${entry.unmatchedValue === undefined ? (entry.column.format === 'float32' ? '0x7fc00000u' : '0xffffffffu') : `${entry.column.format === 'float32' ? new Uint32Array(Float32Array.of(entry.unmatchedValue).buffer)[0] : entry.unmatchedValue}u`}, column${index}[column${index}Offset + select(0u, row, isMatched)], isMatched);`
     )
     .join('\n  ')}`
         )
@@ -837,7 +993,7 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
       const {operation, column} = aggregate;
       if (operation === 'count-distinct') {
         nodes.push(
-          ...createKeyJoinDistinctNodes(graph, {
+          ...createKeyLookupDistinctNodes(graph, {
             id: `${id}-${name}-distinct`,
             column: column!,
             sortedRows,
@@ -849,7 +1005,10 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
         continue;
       }
       const wantsSums = operation === 'sum' || operation === 'mean';
-      const wantsCounts = operation === 'mean' || (operation === 'count' && Boolean(column));
+      const wantsCounts =
+        operation === 'mean' ||
+        (operation === 'count' && Boolean(column)) ||
+        (wantsSums && props.scaleMode === 'per-group');
       const isMinimum = operation === 'minimum';
       const isMaximum = operation === 'maximum';
       // The float `'sum'` and `'mean'` come from the shared 96-bit fixed-point accumulator, whose
@@ -859,7 +1018,12 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
       // high word in `sumHighWords`, followed by one word that holds the largest biased exponent
       // (the scale of the unit).
       const sumWords = wantsSums ? u32(`${name}-sum-words`, 2 * rightCount) : undefined;
-      const sumHighWords = wantsSums ? u32(`${name}-sum-high-words`, rightCount + 1) : undefined;
+      const sumHighWords = wantsSums
+        ? u32(
+            `${name}-sum-high-words`,
+            rightCount + (props.scaleMode === 'per-group' ? rightCount : 1)
+          )
+        : undefined;
       // The 64-bit words in units of `1 / sumScale` are accumulated only for `aggregate.sums`.
       const sums =
         wantsSums && aggregate.sums
@@ -908,9 +1072,7 @@ fn addFixedPointToSumWords(cell: u32, value: vec3<u32>) {
                 ? `sumWords[sumWordsOffset + 2u * index] = 0u;
   sumWords[sumWordsOffset + 2u * index + 1u] = 0u;
   sumHighWords[sumHighWordsOffset + index] = 0u;
-  if (index == 0u) {
-    sumHighWords[sumHighWordsOffset + ${rightCount}u] = 0u;
-  }`
+  ${props.scaleMode === 'per-group' ? `sumHighWords[sumHighWordsOffset + ${rightCount}u + index] = 0u;` : `if (index == 0u) { sumHighWords[sumHighWordsOffset + ${rightCount}u] = 0u; }`}`
                 : ''
             }
   ${sums ? 'sums[sumsOffset + 2u * index] = 0u;\n  sums[sumsOffset + 2u * index + 1u] = 0u;' : ''}
@@ -931,7 +1093,8 @@ fn addFixedPointToSumWords(cell: u32, value: vec3<u32>) {
                 read('sortedRows', sortedRows),
                 read('rowUnique', rowUnique),
                 read('values', column!, 'f32'),
-                atomic('sumHighWords', sumHighWords!)
+                atomic('sumHighWords', sumHighWords!),
+                ...(props.scaleMode === 'per-group' ? [atomic('counts', counts!)] : [])
               ],
               invocationCount: rightCount,
               guardIndex: false,
@@ -939,7 +1102,17 @@ fn addFixedPointToSumWords(cell: u32, value: vec3<u32>) {
               declarations: `${fixedPointDeclarations}
 var<workgroup> workgroupExponentBits: atomic<u32>;`,
               // No early return: every invocation of a workgroup must reach the barriers.
-              body: `if (localInvocationIndex == 0u) {
+              body:
+                props.scaleMode === 'per-group'
+                  ? `if (index < INVOCATION_COUNT) {
+    let group = rowUnique[rowUniqueOffset + index];
+    let value = values[valuesOffset + sortedRows[sortedRowsOffset + index]];
+    if (group != 0xffffffffu && (bitcast<u32>(value) & 0x7fffffffu) < 0x7f800000u) {
+      atomicAdd(&counts[countsOffset + group], 1u);
+      atomicMax(&sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX + group], getFixedPointExponentBits(values[valuesOffset + sortedRows[sortedRowsOffset + index]]));
+    }
+  }`
+                  : `if (localInvocationIndex == 0u) {
     atomicStore(&workgroupExponentBits, 0u);
   }
   workgroupBarrier();
@@ -984,12 +1157,12 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
   if ((bitcast<u32>(value) & 0x7fffffffu) >= 0x7f800000u) {
     return;
   }
-  ${counts ? 'atomicAdd(&counts[countsOffset + unique], 1u);' : ''}
+  ${counts && !(wantsSums && props.scaleMode === 'per-group') ? 'atomicAdd(&counts[countsOffset + unique], 1u);' : ''}
   ${
     sumWords
       ? `let unitExponent = getFixedPointUnitExponent(
-    atomicLoad(&sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX]),
-    FIXED_POINT_HEADROOM_BITS
+    atomicLoad(&sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX${props.scaleMode === 'per-group' ? ' + unique' : ''}]),
+    ${props.scaleMode === 'per-group' ? 'firstLeadingBit(max(atomicLoad(&counts[countsOffset + unique]), 1u)) + 1u' : 'FIXED_POINT_HEADROOM_BITS'}
   );
   addFixedPointToSumWords(unique, quantizeFixedPoint(value, unitExponent));`
       : ''
@@ -1012,15 +1185,26 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
           )
         );
       }
+      if (aggregate.status?.sumOverflow) {
+        nodes.push(
+          ...getSumOverflowNodes(graph, {
+            id: `${id}-${name}-sum-overflow`,
+            capacity: rightCount,
+            sumScale: this.sumScale,
+            retainedGroups: uniqueMatched,
+            chunks: [{values: column!, groups: rowUnique, permutation: sortedRows}],
+            output: aggregate.status.sumOverflow
+          })
+        );
+      }
       // The exact integer sum of a unique key, rounded once to the nearest float32.
       const floatTotal = `let base = sumWordsOffset + 2u * unique;
-  let floatTotal = getFixedPointFloat(
-    vec3<u32>(sumWords[base], sumWords[base + 1u], sumHighWords[sumHighWordsOffset + unique]),
-    getFixedPointUnitExponent(
-      sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX],
-      FIXED_POINT_HEADROOM_BITS
-    )
-  );`;
+  let totalWords = vec3<u32>(sumWords[base], sumWords[base + 1u], sumHighWords[sumHighWordsOffset + unique]);
+  let unitExponent = getFixedPointUnitExponent(
+    sumHighWords[sumHighWordsOffset + SUM_SCALE_INDEX${props.scaleMode === 'per-group' ? ' + unique' : ''}],
+    ${props.scaleMode === 'per-group' ? 'firstLeadingBit(max(counts[countsOffset + unique], 1u)) + 1u' : 'FIXED_POINT_HEADROOM_BITS'}
+  );
+  let floatTotal = getFixedPointFloat(totalWords, unitExponent);`;
       let finishBody: string;
       if (operation === 'count') {
         finishBody = counts
@@ -1032,10 +1216,13 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
       } else if (operation === 'mean') {
         finishBody = `${floatTotal}
   let n = counts[countsOffset + unique];
-  let value = select(getNaN(), floatTotal / f32(n), n != 0u);`;
+  let value = getFiniteFixedPointMean(totalWords, unitExponent, n);`;
       } else {
         finishBody = `let key = extremes[extremesOffset + unique];
     let value = select(decodeOrderedKey(key), getNaN(), key == ${isMinimum ? '0xffffffffu' : '0u'});`;
+      }
+      if (operation === 'count' && aggregate.output.format === 'uint32') {
+        finishBody = finishBody.replace('f32(', '(');
       }
       const needsUniqueStart = operation === 'count' && !counts;
       nodes.push(
@@ -1049,13 +1236,17 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
             ...(sums ? [read('sums', sums)] : []),
             ...(counts ? [read('counts', counts)] : []),
             ...(extremes ? [read('extremes', extremes)] : []),
-            write('valueOut', aggregate.output, 'f32'),
+            write(
+              'valueOut',
+              aggregate.output,
+              aggregate.output.format === 'uint32' ? 'u32' : 'f32'
+            ),
             ...(aggregate.sums ? [write('sumsOut', aggregate.sums)] : [])
           ],
           leftCount,
           `let unique = leftUnique[leftUniqueOffset + index];
   if (unique == 0xffffffffu) {
-    valueOut[valueOutOffset + index] = ${operation === 'count' ? '0.0' : 'getNaN()'};
+    valueOut[valueOutOffset + index] = ${operation === 'count' ? (aggregate.output.format === 'uint32' ? '0u' : '0.0') : 'getNaN()'};
     ${aggregate.sums ? 'sumsOut[sumsOutOffset + 2u * index] = 0u;\n    sumsOut[sumsOutOffset + 2u * index + 1u] = 0u;' : ''}
     return;
   }
@@ -1063,7 +1254,7 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
   ${finishBody}
   valueOut[valueOutOffset + index] = value;
   ${aggregate.sums ? 'sumsOut[sumsOutOffset + 2u * index] = total.y;\n  sumsOut[sumsOutOffset + 2u * index + 1u] = total.x;' : ''}`,
-          `${ORDERED_KEY_WGSL}${sumWords ? `\n${fixedPointDeclarations}` : ''}`
+          `${ORDERED_KEY_WGSL}${sumWords ? `\n${fixedPointDeclarations}` : ''}${operation === 'mean' ? `\n${FINITE_MEAN_WGSL}` : ''}`
         )
       );
     }
@@ -1088,8 +1279,8 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
       );
     }
 
-    // 11. Inner join: ascending matched left row IDs through a scan, bounded by the capacity.
-    if (kind === 'inner' && output.rows && matchedView) {
+    // 11. Compact matched left row indices in ascending order, bounded by capacity.
+    if (compactMatchedLeftRows && output.rows && matchedView) {
       const positions = u32('positions', leftCount);
       const total = u32('matched-total', 1);
       const capacity = output.rows.ids.length;
@@ -1134,8 +1325,43 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
           id: `${id}-publish`,
           operation: OPERATION,
           requiredCount: total,
-          output: output.rows
+          output: output.rows,
+          candidateOverflowSources:
+            output.rows.status.candidateOverflow && props.rightTable
+              ? [
+                  props.rightTable.status.overflow,
+                  ...(props.rightTable.status.candidateOverflow
+                    ? [props.rightTable.status.candidateOverflow]
+                    : [])
+                ]
+              : []
         })
+      );
+    }
+    if (output.status) {
+      nodes.push(
+        node(
+          'certify',
+          [
+            ...(props.rightTable
+              ? [
+                  read('upstreamOverflow', props.rightTable.status.overflow),
+                  ...(props.rightTable.status.candidateOverflow
+                    ? [read('upstreamCandidateOverflow', props.rightTable.status.candidateOverflow)]
+                    : [])
+                ]
+              : []),
+            write('complete', output.status.complete),
+            ...(output.rows ? [write('localOverflow', output.rows.status.overflow)] : []),
+            ...(output.status.candidateOverflow
+              ? [write('candidateOverflow', output.status.candidateOverflow)]
+              : [])
+          ],
+          1,
+          `let loss = ${props.rightTable ? `upstreamOverflow[upstreamOverflowOffset] != 0u${props.rightTable.status.candidateOverflow ? ' || upstreamCandidateOverflow[upstreamCandidateOverflowOffset] != 0u' : ''}` : 'false'};
+  complete[completeOffset] = select(1u, 0u, loss${output.rows ? ' || localOverflow[localOverflowOffset] != 0u' : ''});
+  ${output.status.candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] = select(0u, 1u, loss);' : ''}`
+        )
       );
     }
     return nodes;

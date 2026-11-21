@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateOption} from '@luma-contributors/analysis/analysis-core';
 import type {
   BarChartData,
   ChartColor,
@@ -13,7 +14,13 @@ import type {ClassTable} from '../../cartography/types';
 import {CARDINALITY_CHART_LIMIT, getInkColor, type Ground} from './spatial-weights.style';
 
 /** Kernel profiles of `GPUNeighborSearch` and `GPUSpatialWeightsTransform`, as functions of z = d / h. */
-export type KernelName = 'gaussian' | 'triangular' | 'epanechnikov' | 'bisquare' | 'uniform';
+export type KernelName =
+  | 'gaussian'
+  | 'triangular'
+  | 'epanechnikov'
+  | 'bisquare'
+  | 'quartic'
+  | 'uniform';
 
 /** The kernel value K(z) as the contributors define it (see the reference page). */
 export function getKernelValue(kernel: KernelName, z: number): number {
@@ -24,10 +31,21 @@ export function getKernelValue(kernel: KernelName, z: number): number {
       return Math.max(1 - z, 0);
     case 'epanechnikov':
       return 0.75 * Math.max(1 - z * z, 0);
+    case 'quartic': // Published alias of the bisquare kernel.
     case 'bisquare':
       return (15 / 16) * Math.max(1 - z * z, 0) ** 2;
-    default:
+    case 'uniform':
       return z <= 1 ? 0.5 : 0;
+    default:
+      validateOption('spatial-weights-chart', 'kernel', kernel, [
+        'gaussian',
+        'triangular',
+        'epanechnikov',
+        'bisquare',
+        'quartic',
+        'uniform'
+      ]);
+      return Number.NaN;
   }
 }
 

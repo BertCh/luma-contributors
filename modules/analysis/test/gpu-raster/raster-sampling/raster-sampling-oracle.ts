@@ -6,6 +6,7 @@
 // is rounded with Math.fround in the association of the WGSL kernels. GPUs may contract a*b+c into
 // FMA, so bilinear/bicubic/profile results are exact only where the arithmetic is exact.
 
+import {findHalfOpenRasterCell} from './half-open-raster-reference';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
@@ -215,7 +216,14 @@ export function sampleRasterOnCPU(
   // The row coordinate counts from the outer edge of row 0 (slot 11) with a signed step (slot 7).
   const ty = f(f(y - parameters[11]) * parameters[7]);
   if (method === 0) {
-    return fetchClamped(raster, Math.floor(tx), Math.floor(ty));
+    const column = findHalfOpenRasterCell(x, minX, parameters[4], raster.width);
+    const row = findHalfOpenRasterCell(
+      y,
+      parameters[11],
+      parameters[7] > 0 ? parameters[5] : -parameters[5],
+      raster.height
+    );
+    return fetchClamped(raster, column, row);
   }
   const u = f(tx - 0.5);
   const v = f(ty - 0.5);

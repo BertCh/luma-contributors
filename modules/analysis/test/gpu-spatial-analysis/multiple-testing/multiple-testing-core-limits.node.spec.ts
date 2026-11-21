@@ -69,7 +69,7 @@ function build(method: GPUMultipleTestingMethod, rows: number) {
     minimumFamilySize: GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1,
     output: {
       adjustedPValues: createTransientView(graph, `mt-out-${method}-${rows}`, 'float32', rows),
-      testedCount: view('uint32', 1)
+      effectiveFamilySize: view('uint32', 1)
     }
   }).getCommandNodes(graph);
   return {device, nodes};

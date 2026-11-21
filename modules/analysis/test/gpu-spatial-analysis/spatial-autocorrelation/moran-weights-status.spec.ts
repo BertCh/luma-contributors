@@ -52,14 +52,14 @@ it('neighbor search capacity loss reaches Moran and clears after the radius shri
       weights: {
         kind: 'neighbor-search',
         positions: POSITIONS,
-        parameters: {bounds: BOUNDS, radius: 1.1},
+        parameters: {bounds: BOUNDS, searchRadius: 1.1},
         capacity
       },
       multipleTesting: 'benjamini-hochberg'
     });
     try {
       for (const radius of [1.1, 2.1, 1.1]) {
-        const result = await harness.run({}, {bounds: BOUNDS, radius});
+        const result = await harness.run({}, {bounds: BOUNDS, searchRadius: radius});
         // The line has 6 directed edges at radius 1.1 and 10 at radius 2.1.
         const requiredCount = radius < 2 ? 6 : 10;
         expect(result.status).toEqual({

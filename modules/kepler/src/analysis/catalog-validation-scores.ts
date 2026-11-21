@@ -12,10 +12,12 @@ import {withCatalogGpuSession} from './catalog-gpu-session';
 import {makeInputSpec, makeNumberParameter, makeOutputSpec} from './catalog-platform3-b-common';
 import {makeRecipeEnumParameter} from './catalog-platform5-recipe-common';
 import {
-  makeValidationBinding,
+  makeColumnValidationBinding,
   makeValidationProperty,
   makeValidationPropertyList,
   makeValidationResult,
+  getValidationRowCount,
+  type ValidationColumnInput,
   MAXIMUM_VALIDATION_ROWS,
   readValidationColumn,
   readValidationNames,
@@ -25,7 +27,7 @@ import {
 const SCORE_BINDINGS = [false, true].map(ensemble => {
   const id = ensemble ? 'validation-ensemble-scores' : 'validation-gaussian-scores';
   const contributor = ensemble ? 'GPUEnsembleScores' : 'GPUGaussianPredictiveScores';
-  return makeValidationBinding({
+  return makeColumnValidationBinding({
     id,
     title: ensemble ? 'Ensemble predictive scores' : 'Gaussian predictive scores',
     domain: 'analysis',
@@ -35,13 +37,16 @@ const SCORE_BINDINGS = [false, true].map(ensemble => {
     capabilityIds: ['coverage-local-prediction'],
     contributorNames: [contributor],
     inputs: [
-      makeInputSpec(
-        'points',
-        'Observed forecasts',
-        ['point'],
-        MAXIMUM_VALIDATION_ROWS,
-        MAXIMUM_VALIDATION_ROWS
-      )
+      {
+        ...makeInputSpec(
+          'points',
+          'Observed forecasts',
+          ['point'],
+          MAXIMUM_VALIDATION_ROWS,
+          MAXIMUM_VALIDATION_ROWS
+        ),
+        acceptsTable: true
+      }
     ],
     parameters: [
       makeValidationProperty('observationProperty', 'Observed property', 'observed'),
@@ -67,20 +72,30 @@ const SCORE_BINDINGS = [false, true].map(ensemble => {
           ])
     ],
     outputs: [
-      makeOutputSpec(id, 'Predictive scores', 'point', ['feature_index'], MAXIMUM_VALIDATION_ROWS),
+      {
+        ...makeOutputSpec(
+          id,
+          'Predictive scores',
+          'point',
+          ['feature_index'],
+          MAXIMUM_VALIDATION_ROWS
+        ),
+        geometryFromInput: 'points'
+      },
       makeOutputSpec(`${id}-diagnostics`, 'Predictive scores diagnostics', 'none', ['metric'], 16)
     ],
     declaredBehavior: [
       ...VALIDATION_BEHAVIOR,
+      'Numeric columns are read in input row order from a native table or point feature properties. feature_index is the zero-based input row; point geometry is optional passthrough and never affects scores. Ensemble columns share the same site order and member identity across the whole field; variogram pairs use both directions of consecutive rows.',
       'Lower CRPS means a better forecast. Negative or missing Gaussian variances produce null scores; zero variance is a point forecast.'
     ],
     limitation: ensemble
       ? 'At most 64 member columns. Variogram score uses both directions of consecutive input-row site pairs with equal weights; row order defines that pair list. All members must describe the same joint field.'
       : 'Gaussian predictive distributions only. Forecasts and observations must be independent of model training to measure predictive performance.',
-    runGpu: async ({device}, inputs, values) =>
+    runDataGpu: async ({device}, inputs, values) =>
       withCatalogGpuSession(device, id, async session => {
-        const collection = inputs['points'];
-        const count = collection.features.length;
+        const collection = inputs['points'] as ValidationColumnInput;
+        const count = getValidationRowCount(collection);
         const observations = session.input(
           'observations',
           readValidationColumn(collection, values['observationProperty'] as string),
@@ -110,7 +125,7 @@ const SCORE_BINDINGS = [false, true].map(ensemble => {
               observations,
               memberCount,
               dimension: count,
-              fair: values['fair'] as boolean,
+              estimator: values['fair'] === true ? 'fair' : 'empirical',
               variogramOrder: values['variogramOrder'] as number,
               ...(pairs.length ? {variogramPairs: session.input('pairs', pairs, 'uint32x2')} : {}),
               output: {
@@ -165,22 +180,25 @@ const SCORE_BINDINGS = [false, true].map(ensemble => {
   });
 });
 
-const FDR_BINDING = makeValidationBinding({
+const FDR_BINDING = makeColumnValidationBinding({
   id: 'validation-fdr',
   title: 'False discovery rate mask',
   domain: 'analysis',
   summary:
-    'Adjusts a declared family of point p-values and publishes significance, adjusted p-values and family diagnostics.',
+    'Adjusts a declared family of numeric p-values and publishes significance, adjusted p-values and family diagnostics.',
   capabilityIds: ['spatial-autocorrelation-and-inference'],
   contributorNames: ['GPURasterFalseDiscoveryRateMask'],
   inputs: [
-    makeInputSpec(
-      'points',
-      'Tests (one point per test or raster cell center)',
-      ['point'],
-      MAXIMUM_VALIDATION_ROWS,
-      MAXIMUM_VALIDATION_ROWS
-    )
+    {
+      ...makeInputSpec(
+        'points',
+        'Tests (one row per test; optional point geometry)',
+        ['point'],
+        MAXIMUM_VALIDATION_ROWS,
+        MAXIMUM_VALIDATION_ROWS
+      ),
+      acceptsTable: true
+    }
   ],
   parameters: [
     makeValidationProperty('pValueProperty', 'P-value property', 'pvalue'),
@@ -193,13 +211,16 @@ const FDR_BINDING = makeValidationBinding({
     )
   ],
   outputs: [
-    makeOutputSpec(
-      'validation-fdr',
-      'False discovery rate mask',
-      'point',
-      ['feature_index'],
-      MAXIMUM_VALIDATION_ROWS
-    ),
+    {
+      ...makeOutputSpec(
+        'validation-fdr',
+        'False discovery rate mask',
+        'point',
+        ['feature_index'],
+        MAXIMUM_VALIDATION_ROWS
+      ),
+      geometryFromInput: 'points'
+    },
     makeOutputSpec(
       'validation-fdr-diagnostics',
       'False discovery rate mask diagnostics',
@@ -210,13 +231,15 @@ const FDR_BINDING = makeValidationBinding({
   ],
   declaredBehavior: [
     ...VALIDATION_BEHAVIOR,
+    'Numeric p-values are read from native table columns or point feature properties in input row order. feature_index is the zero-based input row. Point geometry is optional passthrough; geometry-free tables produce geometry-free results.',
     'Finite p-values in [0, 1] enter the family; invalid rows are untested, adjusted p-value null and significant = 0. The selected input is the full testing family.'
   ],
   limitation:
-    'Raster cells must be supplied as point features at cell centers; this catalog operation does not read native raster tiles. Benjamini-Yekutieli is the default for dependent tests. Holm and Bonferroni control family-wise error.',
-  runGpu: async ({device}, inputs, values) =>
+    'Raster cell p-values can be supplied as table rows or point features at cell centers; this catalog operation does not read native raster tiles. Benjamini-Yekutieli is the default for dependent tests. Holm and Bonferroni control family-wise error.',
+  runDataGpu: async ({device}, inputs, values) =>
     withCatalogGpuSession(device, 'catalog-validation-fdr', async session => {
-      const count = inputs['points'].features.length;
+      const collection = inputs['points'] as ValidationColumnInput;
+      const count = getValidationRowCount(collection);
       const significant = session.output('significant', 'uint32', count);
       const adjusted = session.output('adjusted', 'float32', count);
       const testedCount = session.output('tested-count', 'uint32', 1);
@@ -227,7 +250,7 @@ const FDR_BINDING = makeValidationBinding({
           cellCount: count,
           pValues: session.input(
             'pvalues',
-            readValidationColumn(inputs['points'], values['pValueProperty'] as string),
+            readValidationColumn(collection, values['pValueProperty'] as string),
             'float32'
           ),
           parameters: session.input(
@@ -243,7 +266,7 @@ const FDR_BINDING = makeValidationBinding({
           output: {
             significant: significant.view,
             adjustedPValues: adjusted.view,
-            testedCount: testedCount.view,
+            effectiveFamilySize: testedCount.view,
             significantCount: significantCount.view,
             criticalPValue: critical.view
           }
@@ -253,7 +276,7 @@ const FDR_BINDING = makeValidationBinding({
       return makeValidationResult(
         'validation-fdr',
         'False discovery rate mask',
-        inputs['points'],
+        collection,
         {
           adjusted_pvalue: await session.readFloat32(adjusted),
           significant: await session.readUint32(significant)

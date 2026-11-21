@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotThinningOutput} from './thinning-output-aliases';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUTrajectoryThinning, type GPUTrajectoryThinningProps} from './gpu-trajectory-thinning';
 
@@ -19,23 +21,35 @@ export type TrajectoryThinningOperationProps = Pick<
   trackCount: number;
   capacity: number;
   output: {
-    rowIds: string;
+    sourceRows: string;
+    sourceSelectionMask?: string;
     trackOffsets: string;
-    status: {count: string; overflow: string; requiredCount?: string; candidateOverflow?: string};
-    validity?: string;
+    status: {count: string; overflow: string; requiredCount?: string; candidateOverflow: string};
     positions?: string;
     timestamps?: string;
   };
 };
 
-/** GPU thinning operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
+/**
+ * GPU thinning operation. Bind `output.status.candidateOverflow` to a one-row uint32 value
+ * for the search-loss flag. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
+ */
 export class GPUTrajectoryThinningOperation extends GPUContributorOperation {
   constructor(props: TrajectoryThinningOperationProps) {
     const id = props.id ?? 'trajectory-thinning';
-    const {output, capacity} = props;
+    const output = snapshotThinningOutput(id, props.output);
+    validateRequirement(
+      id,
+      typeof output.status?.candidateOverflow === 'string' &&
+        output.status.candidateOverflow.length > 0,
+      `output.status.candidateOverflow is required; pass the name of a one-row uint32 graph value, received ${output.status?.candidateOverflow}`
+    );
+    props = {...props, output};
+    const {capacity} = props;
     const timestampFormat = props.timestampFormat ?? 'float32';
     super({
       id,
+      emptyOutputPorts: ['sourceSelectionMask'],
       inputs: {
         positions: props.positions,
         timestamps: props.timestamps,
@@ -43,7 +57,7 @@ export class GPUTrajectoryThinningOperation extends GPUContributorOperation {
         parameters: props.parameters
       },
       outputs: {
-        rowIds: {value: output.rowIds, format: 'uint32', length: capacity},
+        sourceRows: {value: output.sourceRows, format: 'uint32', length: capacity},
         outputTrackOffsets: {
           value: output.trackOffsets,
           format: 'uint32',
@@ -54,17 +68,15 @@ export class GPUTrajectoryThinningOperation extends GPUContributorOperation {
         ...(output.status.requiredCount !== undefined
           ? {requiredCount: {value: output.status.requiredCount, format: 'uint32', length: 1}}
           : {}),
-        ...(output.status.candidateOverflow !== undefined
+        candidateOverflow: {value: output.status.candidateOverflow, format: 'uint32', length: 1},
+        ...(output.sourceSelectionMask !== undefined
           ? {
-              candidateOverflow: {
-                value: output.status.candidateOverflow,
+              sourceSelectionMask: {
+                value: output.sourceSelectionMask,
                 format: 'uint32',
-                length: 1
+                length: props.rowCount
               }
             }
-          : {}),
-        ...(output.validity !== undefined
-          ? {validity: {value: output.validity, format: 'uint32', length: props.rowCount}}
           : {}),
         ...(output.positions !== undefined
           ? {outputPositions: {value: output.positions, format: 'float32x2', length: capacity}}
@@ -94,7 +106,7 @@ export class GPUTrajectoryThinningOperation extends GPUContributorOperation {
           trackOffsets: getView<'uint32'>('trackOffsets'),
           parameters: getView<'float32'>('parameters'),
           output: {
-            rowIds: getView<'uint32'>('rowIds'),
+            sourceRows: getView<'uint32'>('sourceRows'),
             trackOffsets: getView<'uint32'>('outputTrackOffsets'),
             status: {
               count: getView<'uint32'>('count'),
@@ -103,12 +115,12 @@ export class GPUTrajectoryThinningOperation extends GPUContributorOperation {
                 output.status.requiredCount !== undefined
                   ? getView<'uint32'>('requiredCount')
                   : undefined,
-              candidateOverflow:
-                output.status.candidateOverflow !== undefined
-                  ? getView<'uint32'>('candidateOverflow')
-                  : undefined
+              candidateOverflow: getView<'uint32'>('candidateOverflow')
             },
-            validity: output.validity !== undefined ? getView<'uint32'>('validity') : undefined,
+            sourceSelectionMask:
+              output.sourceSelectionMask !== undefined
+                ? getView<'uint32'>('sourceSelectionMask')
+                : undefined,
             positions:
               output.positions !== undefined ? getView<'float32x2'>('outputPositions') : undefined,
             timestamps:

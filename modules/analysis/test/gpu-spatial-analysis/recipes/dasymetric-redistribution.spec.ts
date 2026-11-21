@@ -589,3 +589,59 @@ it('dasymetric skewed support retains explicit float32 mass-accounting tolerance
     fixture.destroy();
   }
 });
+
+it('STA-05 zero eligible support retains seven with complete conservation', async () => {
+  const fixture = await createFixture('sta05-retained');
+  try {
+    const result = addDasymetricRedistributionRecipe(fixture.graph, {
+      grid: {...GRID, width: 1},
+      sourceTotals: fixture.input('total', Float32Array.of(7), 'float32', 1),
+      targetZones: fixture.input('targets', Uint32Array.of(0), 'uint32', 1),
+      targetZoneCount: 1,
+      pairCapacity: 1,
+      ancillary: {
+        id: 'zero',
+        format: 'float32',
+        storage: {
+          kind: 'buffer',
+          values: fixture.input('weights', Float32Array.of(0), 'float32', 1)
+        }
+      },
+      source: {
+        kind: 'coverage',
+        coverage: {
+          zoneIds: fixture.input('zones', Uint32Array.of(0), 'uint32', 1),
+          cellIds: fixture.input('cells', Uint32Array.of(0), 'uint32', 1),
+          fractions: fixture.input('fractions', Float32Array.of(1), 'float32', 1),
+          zoneValidity: fixture.input('validity', Uint32Array.of(1), 'uint32', 1),
+          status: {
+            count: fixture.input('count', Uint32Array.of(1), 'uint32', 1),
+            requiredCount: fixture.input('required', Uint32Array.of(1), 'uint32', 1),
+            overflow: fixture.input('overflow', Uint32Array.of(0), 'uint32', 1)
+          }
+        }
+      }
+    });
+    const retained = publish(fixture, 'retained', result.outputs.sourceUnallocatedTotals);
+    const stage = result.status.stages.find(
+      stage => stage.stage === 'dasymetric-conservation'
+    )!.status;
+    if (
+      !('complete' in stage) ||
+      !stage.complete ||
+      !('zeroEligibleCount' in stage) ||
+      !stage.zeroEligibleCount
+    )
+      throw new Error('missing canonical conservation status');
+    const complete = publish(fixture, 'complete', stage.complete!);
+    const zeroEligible = publish(fixture, 'zero-eligible', stage.zeroEligibleCount!);
+    fixture.run();
+    const actual = (await fixture.readFloat32(retained, 1))[0];
+    expect(Number.isFinite(actual)).toBe(true);
+    expect(actual).toBe(7); // 7 - 0 allocated = 7 retained.
+    expect(await fixture.readUint32(complete, 1)).toEqual([1]);
+    expect(await fixture.readUint32(zeroEligible, 1)).toEqual([1]);
+  } finally {
+    fixture.destroy();
+  }
+});

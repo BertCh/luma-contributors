@@ -2,12 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getEmptyGeometryNodes} from '../group-geometry/empty-geometry-nodes';
+
+import {validateGeometryAuxiliaryOutput} from '../group-geometry/geometry-output-destinations';
+
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,6 +25,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -24,6 +35,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
+import {POLYGON_FEATURE_RING_RANGES_WGSL} from '../../analysis-core/ring-assembly/polygon-ring-ranges-wgsl';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 const OPERATION = 'GPULabelPoint';
@@ -51,14 +63,15 @@ const GPU_LABEL_POINT_MAXIMUM_GRID_SIZE = Math.floor(Math.sqrt(0xffffffff));
 
 /** Caller-owned outputs of {@link GPULabelPoint}. */
 export type GPULabelPointOutput = {
-  /** One label point per feature (longitude/latitude or planar), NaN for features with no vertices. */
-  points: GraphDataView<'float32x2'>;
   /**
-   * Optional signed distance from each label point to the nearest boundary in position units:
-   * positive inside, so it is the radius of the largest circle found around the label ("explain"
-   * column for label size). 0 for degenerate features, NaN for empty ones.
+   * One label point per feature in the input planar coordinate frame and position units;
+   * NaN for features with no vertices.
    */
-  distances?: GraphDataView<'float32'>;
+  points: GraphDataView<'float32x2'>;
+  /** Nonnegative clearance at the published point in position units. Zero for degeneracies, NaN for empty features. */
+  publishedCenterClearance?: GraphDataView<'float32'>;
+  /** Per feature: 1 when publication reduced the search clearance. */
+  precisionLimited?: GraphDataView<'uint32'>;
   /**
    * Optional per-feature flag, `1` when no strictly interior point was found (zero-area or
    * degenerate polygons, or numerically collapsed slivers) and the point lies on the boundary,
@@ -123,8 +136,9 @@ export type GPULabelPointProps = GPUPolygonGeometryFields & {
  *
  * **Guarantees.** The seeds are interior in exact arithmetic for any non-degenerate polygon, and a
  * candidate only replaces the best by a strictly larger signed distance, so the label point is
- * inside the polygon (outside holes) whenever the polygon has interior; `degenerate` flags the
- * rest. When no part is hit by the three feature scanlines (an archipelago of tiny parts in a large
+ * inside in exact arithmetic. Publication recomputes clearance in coordinates relative to the
+ * written float32 point; an exterior rounded candidate falls back to a source boundary vertex.
+ * `precisionLimited` identifies publication loss and `degenerate` identifies zero clearance. When no part is hit by the three feature scanlines (an archipelago of tiny parts in a large
  * extent) the scanlines are repeated through the bounds of the largest ring before the search
  * falls back to the first vertex. **Precision.** The grid spacing of the last refinement round is
  * `2 * halfExtent * (2 / initialGridSize) * (2 / refinementGridSize)^(refinementRounds - 1) /
@@ -169,6 +183,38 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
   readonly smallFeatureVertexLimit: number;
 
   constructor(props: GPULabelPointProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'ringOffsets',
+      'polygonOffsets',
+      'featureOffsets',
+      'initialGridSize',
+      'refinementGridSize',
+      'refinementRounds',
+      'refinementCandidates',
+      'smallFeatureVertexLimit',
+      'output'
+    ]);
+    validateRequirement(
+      captured.id ?? 'label-point',
+      !('distances' in captured.output),
+      'output.distances was removed; use output.publishedCenterClearance'
+    );
+    const capturedOutput = snapshotConstructionFields(captured.output, [
+      'points',
+      'publishedCenterClearance',
+      'precisionLimited',
+      'degenerate'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      ...(captured.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+        : {}),
+      output: Object.freeze({...capturedOutput})
+    });
     this.id = props.id ?? 'label-point';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -202,13 +248,11 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
     validateCapacity(id, 'refinementCandidates', this.refinementCandidates, 1, 16);
     validateCapacity(id, 'smallFeatureVertexLimit', this.smallFeatureVertexLimit, 0);
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length < 1) {
-      throw new Error(`${id} needs at least one position`);
-    }
+
     for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
       validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
-      if (props[name].length < 2) {
-        throw new Error(`${id} ${name} must contain at least two rows`);
+      if (props[name].length < 1) {
+        throw new Error(`${id} ${name} must contain a terminal row`);
       }
     }
     this.featureCount = props.featureOffsets.length - 1;
@@ -216,18 +260,24 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
       id,
       'feature count',
       this.featureCount,
-      1,
+      0,
       GPU_LABEL_POINT_MAXIMUM_FEATURE_COUNT
     );
-    const {points, distances, degenerate} = props.output;
+    const {points, publishedCenterClearance, degenerate} = props.output;
     validateSinglePackedView(points, ['float32x2'], `${id} output.points`);
     if (points.length !== this.featureCount) {
       throw new Error(`${id} output.points must hold ${this.featureCount} rows`);
     }
-    if (distances) {
-      validateSinglePackedView(distances, ['float32'], `${id} output.distances`);
-      if (distances.length !== this.featureCount) {
-        throw new Error(`${id} output.distances must hold ${this.featureCount} rows`);
+    if (publishedCenterClearance) {
+      validateSinglePackedView(
+        publishedCenterClearance,
+        ['float32'],
+        `${id} output.publishedCenterClearance`
+      );
+      if (publishedCenterClearance.length !== this.featureCount) {
+        throw new Error(
+          `${id} output.publishedCenterClearance must hold ${this.featureCount} rows`
+        );
       }
     }
     if (degenerate) {
@@ -236,28 +286,64 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
         throw new Error(`${id} output.degenerate must hold ${this.featureCount} rows`);
       }
     }
+    if (props.output.precisionLimited) {
+      validateSinglePackedView(
+        props.output.precisionLimited,
+        ['uint32'],
+        `${id} output.precisionLimited`
+      );
+      validateRequirement(
+        id,
+        props.output.precisionLimited.length === this.featureCount,
+        `output.precisionLimited must hold ${this.featureCount} rows`
+      );
+    }
+    validateGeometryAuxiliaryOutput(id, 'precisionLimited', props.output.precisionLimited, {
+      points,
+      publishedCenterClearance,
+      degenerate
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
-      [points, distances, degenerate],
+      [points, publishedCenterClearance, degenerate, props.output.precisionLimited],
       [props.positions, props.ringOffsets, props.featureOffsets, props.polygonOffsets]
     );
   }
 
-  /** Returns the single search node. */
+  /** Returns search nodes followed by clearance evaluation at the published float32 point. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {points, distances, degenerate} = props.output;
+    const {
+      points,
+      publishedCenterClearance: publishedClearance,
+      degenerate,
+      precisionLimited
+    } = props.output;
     validateGraphChunkBindingRanges(graph, id, {
       positions: props.positions,
       ringOffsets: props.ringOffsets,
       featureOffsets: props.featureOffsets,
       polygonOffsets: props.polygonOffsets,
       'output.points': points,
-      'output.distances': distances,
+      'output.publishedCenterClearance': publishedClearance,
+      'output.precisionLimited': precisionLimited,
       'output.degenerate': degenerate
     });
+    if (props.positions.length === 0)
+      return getEmptyGeometryNodes(graph, id, OPERATION, {
+        points: {view: points, value: NaN},
+        clearance: {view: publishedClearance, value: NaN},
+        degenerate: {view: degenerate, value: 1},
+        precisionLimited: {view: precisionLimited, value: 0}
+      });
+    const distances = createTransientView(
+      graph,
+      `${id}-search-clearance`,
+      'float32',
+      this.featureCount
+    );
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
@@ -282,22 +368,15 @@ const CANDIDATE_COUNT: u32 = ${this.refinementCandidates}u;
 const SMALL_FEATURE_VERTEX_LIMIT: u32 = ${this.smallFeatureVertexLimit}u;
 const WORKGROUP_SIZE: u32 = ${WORKGROUP_SIZE}u;
 const LARGE: f32 = 3.0e38;
-${LABEL_POINT_WGSL}
+${LABEL_POINT_WGSL}${LABEL_POINT_WORKGROUP_WGSL}
 // Feature -> polygons -> rings.
-fn getRingStart(feature: u32) -> u32 {
-  let polygon = min(featureOffsets[featureOffsetsOffset + feature], POLYGON_COUNT);
-  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
-}
-fn getRingEnd(feature: u32) -> u32 {
-  let polygon = min(featureOffsets[featureOffsetsOffset + feature + 1u], POLYGON_COUNT);
-  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
-}`;
+${POLYGON_FEATURE_RING_RANGES_WGSL}`;
     const writeOutputs = (feature: string, emptyCondition: string) => `
   pointsOut[pointsOutOffset + 2u * ${feature}] = result.x;
   pointsOut[pointsOutOffset + 2u * ${feature} + 1u] = result.y;
   ${distances ? `distancesOut[distancesOutOffset + ${feature}] = select(max(bestDistance, 0.0), nan, ${emptyCondition});` : ''}
   ${degenerate ? `degenerateOut[degenerateOutOffset + ${feature}] = isDegenerate;` : ''}`;
-    return [
+    const nodes = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-search`,
         operation: OPERATION,
@@ -525,6 +604,117 @@ fn getRingEnd(feature: u32) -> u32 {
   }`
       })
     ];
+    const publicationFlags =
+      precisionLimited || degenerate
+        ? createTransientView(graph, `${id}-publication-flags`, 'uint32x2', this.featureCount)
+        : undefined;
+    const publicationDeclarations = `const ROW_COUNT: u32 = ${props.positions.length}u;
+const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
+const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
+const CANDIDATE_COUNT: u32 = ${this.refinementCandidates}u;
+const LARGE: f32 = 3.0e38;
+${LABEL_POINT_WGSL}
+${POLYGON_FEATURE_RING_RANGES_WGSL}`;
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-published-clearance`,
+        operation: OPERATION,
+        variant: 'published-clearance',
+        invocationCount: this.featureCount,
+        declarations: publicationDeclarations,
+        bindings: [
+          ...bindings.filter(binding =>
+            ['positions', 'ringOffsets', 'featureOffsets', 'polygonOffsets'].includes(binding.name)
+          ),
+          {name: 'points', view: points, type: 'f32', access: 'read_write'},
+          ...(publishedClearance || publicationFlags
+            ? [
+                {
+                  name: 'searchClearance',
+                  view: distances,
+                  type: 'f32',
+                  access: 'read'
+                } as WGSLKernelBinding
+              ]
+            : []),
+          ...(publishedClearance
+            ? [
+                {
+                  name: 'clearance',
+                  view: publishedClearance,
+                  type: 'f32',
+                  access: 'read_write'
+                } as WGSLKernelBinding
+              ]
+            : []),
+          ...(publicationFlags
+            ? [
+                {
+                  name: 'flags',
+                  view: publicationFlags,
+                  type: 'u32',
+                  access: 'read_write'
+                } as WGSLKernelBinding
+              ]
+            : [])
+        ],
+        body: `var point = vec2f(points[pointsOffset + index * 2u], points[pointsOffset + index * 2u + 1u]);
+  let empty = any((bitcast<vec2u>(point) & vec2u(0x7f800000u)) == vec2u(0x7f800000u));
+  var signedClearance = bitcast<f32>(0x7fc00000u | (index & 0u));
+  var usedFallback = false;
+  if (!empty) {
+    // Project segments in center-relative coordinates: an absolute projected witness can round
+    // across the entire local distance even when the center itself is exactly representable.
+    signedClearance = getSignedDistance(vec2f(0.0), getRingStart(index), getRingEnd(index), point);
+    if (signedClearance < 0.0) {
+      point = getPosition(getRingRowStart(getRingStart(index)));
+      signedClearance = getSignedDistance(vec2f(0.0), getRingStart(index), getRingEnd(index), point);
+      points[pointsOffset + index * 2u] = point.x;
+      points[pointsOffset + index * 2u + 1u] = point.y;
+      usedFallback = true;
+    }
+  }
+  let distance = max(0.0, signedClearance);
+  ${publishedClearance || publicationFlags ? 'let searchRadius = searchClearance[searchClearanceOffset + index];' : ''}
+  ${publishedClearance ? 'clearance[clearanceOffset + index] = select(distance, searchRadius, empty);' : ''}
+  ${publicationFlags ? 'flags[flagsOffset + index * 2u] = select(0u, 1u, !empty && (usedFallback || distance < searchRadius)); flags[flagsOffset + index * 2u + 1u] = select(0u, 1u, empty || distance <= 0.0);' : ''}`
+      })
+    );
+    if (publicationFlags)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-published-status`,
+          operation: OPERATION,
+          variant: 'published-status',
+          invocationCount: this.featureCount,
+          bindings: [
+            {name: 'flags', view: publicationFlags, type: 'u32', access: 'read'},
+            ...(precisionLimited
+              ? [
+                  {
+                    name: 'precisionLimited',
+                    view: precisionLimited,
+                    type: 'u32',
+                    access: 'read_write'
+                  } as WGSLKernelBinding
+                ]
+              : []),
+            ...(degenerate
+              ? [
+                  {
+                    name: 'publishedDegenerate',
+                    view: degenerate,
+                    type: 'u32',
+                    access: 'read_write'
+                  } as WGSLKernelBinding
+                ]
+              : [])
+          ],
+          body: `${precisionLimited ? 'precisionLimited[precisionLimitedOffset + index] = flags[flagsOffset + index * 2u];' : ''}
+  ${degenerate ? 'publishedDegenerate[publishedDegenerateOffset + index] = flags[flagsOffset + index * 2u + 1u];' : ''}`
+        })
+      );
+    return nodes;
   }
 }
 
@@ -708,7 +898,9 @@ fn searchWindow(
   return best;
 }
 
-// Workgroup-cooperative variants used by the one-workgroup-per-feature kernel. Reductions end in
+`;
+
+const LABEL_POINT_WORKGROUP_WGSL = /* wgsl */ `// Workgroup-cooperative variants used by the one-workgroup-per-feature kernel. Reductions end in
 // workgroupUniformLoad so their results are workgroup-uniform, which keeps later barriers legal.
 const NO_CELL: u32 = 0xffffffffu;
 var<workgroup> sharedUint: array<u32, 1>;

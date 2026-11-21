@@ -172,13 +172,25 @@ for (const scene of [
     for (const name of outputs) {
       expect(gpu[name].length).toBe(cpu[name].length);
       if (name.endsWith('IterationCount')) {
-        // These are deliberately algorithm-specific diagnostics, not numerical results. CPU
-        // executes zero GPU rounds. Bounds cover the spill/tour confirmations and three flat
-        // relaxations, and are the stated tolerance for this output alone.
-        expect(cpu[name][0]).toBe(0);
+        // CPU tour diagnostics remain zero. Explicit positive-epsilon fill and flat budgets
+        // count bounded stages, including confirmation. Cross-tile GPU scheduling can
+        // change counts; independent singleton/plateau counts live in terrain-output fixtures.
         const maximumRounds = name === 'flatsIterationCount' ? 3 * 32 : 32;
+        if (
+          name === 'flatsIterationCount' ||
+          (name === 'fillIterationCount' && scene === 'epsilon-fill')
+        ) {
+          expect(cpu[name][0]).toBeGreaterThanOrEqual(name === 'flatsIterationCount' ? 3 : 1);
+          expect(cpu[name][0]).toBeLessThanOrEqual(maximumRounds);
+        } else expect(cpu[name][0]).toBe(0);
         expect(gpu[name][0]).toBeGreaterThanOrEqual(0);
-        expect(Math.abs(gpu[name][0] - cpu[name][0])).toBeLessThanOrEqual(maximumRounds);
+        expect(gpu[name][0]).toBeLessThanOrEqual(maximumRounds);
+        if (name === 'fillIterationCount' && scene === 'epsilon-fill') {
+          // The whole 5×5 bowl fits one relaxation tile. Round one lowers the
+          // interior from infinity; round two confirms unchanged. No scheduling tie.
+          expect(gpu[name][0]).toBe(2);
+          expect(cpu[name][0]).toBe(2);
+        }
       } else if (name === 'accumulation' || name === 'filledElevation') {
         for (let cell = 0; cell < count; cell++) {
           const expected = cpu[name][cell];

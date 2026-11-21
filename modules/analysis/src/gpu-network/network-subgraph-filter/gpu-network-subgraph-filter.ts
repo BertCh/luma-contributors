@@ -47,12 +47,32 @@ const TIME_WORD_PARAMETER_LENGTH = 8;
 const COLUMNS_PER_KERNEL = 6;
 const OPERATION = 'GPUNetworkSubgraphFilter';
 
+// Read predicates and column values as raw uint32 bits. Integer ordering preserves subnormal
+// thresholds and rows on Metal, where float32 comparisons may flush subnormals to signed zero.
+const RANGE_COMPARISON_WGSL = `
+fn networkRangeOrder(bits: u32) -> u32 {
+  if ((bits & 0x7fffffffu) == 0u) { return 0x80000000u; }
+  if ((bits & 0x80000000u) != 0u) { return ~bits; }
+  return bits ^ 0x80000000u;
+}
+fn networkRangePass(value: u32, lower: u32, upper: u32, closed: bool) -> bool {
+  if ((value & 0x7fffffffu) > 0x7f800000u ||
+      (lower & 0x7fffffffu) > 0x7f800000u ||
+      (upper & 0x7fffffffu) > 0x7f800000u) { return false; }
+  let ordered = networkRangeOrder(value);
+  let start = networkRangeOrder(lower);
+  let end = networkRangeOrder(upper);
+  return ordered >= start && select(ordered < end, ordered <= end, closed);
+}`;
+
 /**
  * Plain caller-owned induced CSR over the original node ids.
  *
  * Row `v` of `offsets`/`neighbors` holds the live slots of node `v` in their original order;
  * dead nodes and dead slots have no entries. `offsets` is exact (`nodeCount + 1` rows) even when
- * `neighbors` overflows. Bind `offsets` and `neighbors` to another contributor's `topology`.
+ * `neighbors` overflows, so they retain required slots for sizing. Before binding these views to
+ * an adjacency/matrix walker, verify `inducedTopology.status.overflow === 0` for the current
+ * submission. Recheck after every submission; overflowing offsets are not a stored CSR.
  */
 export type GPUNetworkSubgraphFilterInducedTopology = {
   /** `nodeCount + 1` rows. Row `nodeCount` is the live slot total. */
@@ -125,7 +145,7 @@ export type GPUNetworkSubgraphFilterProps = {
   nodeColumns?: readonly GraphDataView<'float32'>[];
   /** Float32 edge columns, one row per CSR slot. */
   edgeColumns?: readonly GraphDataView<'float32'>[];
-  /** Optional float32 time per CSR slot, gated by the closed `edgeTimeWindow` record. */
+  /** Optional float32 time per CSR slot, gated by the closed `closedEdgeTimeWindow` record. */
   edgeTimes?: GraphDataView<'float32'>;
   /** Optional exact Int64 time per CSR slot as `uint32x2` `(low, high)` words. */
   edgeTimeWords?: GraphDataView<'uint32x2'>;
@@ -345,10 +365,12 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
       output.liveNodes?.status.count,
       output.liveNodes?.status.overflow,
       output.liveNodes?.status.requiredCount,
+      output.liveNodes?.status.candidateOverflow,
       output.liveEdgeSlots?.ids,
       output.liveEdgeSlots?.status.count,
       output.liveEdgeSlots?.status.overflow,
       output.liveEdgeSlots?.status.requiredCount,
+      output.liveEdgeSlots?.status.candidateOverflow,
       output.inducedTopology?.offsets,
       output.inducedTopology?.neighbors,
       output.inducedTopology?.sourceSlots,
@@ -406,14 +428,14 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           {
             name: 'parameters',
             view: props.parameters!,
-            type: 'f32',
+            type: 'u32',
             access: 'read'
           },
           ...chunk.map(
             (view, i): WGSLKernelBinding => ({
               name: `column${i}`,
               view,
-              type: 'f32',
+              type: 'u32',
               access: 'read'
             })
           )
@@ -422,9 +444,9 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           .map(
             (_, i) => `{
     let base = parametersOffset + ${(firstRecord + first + i) * stride}u;
-    if (parameters[base + 2u] != 0.0) {
+    if ((parameters[base + 2u] & 0x7fffffffu) != 0u) {
       let value = column${i}[column${i}Offset + index];
-      live = live && value >= parameters[base] && value < parameters[base + 1u];
+      live = live && networkRangePass(value, parameters[base], parameters[base + 1u], false);
     }
   }`
           )
@@ -436,7 +458,8 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           rowCount,
           `var live = maskOut[maskOutOffset + index] != 0u;
   ${tests}
-  maskOut[maskOutOffset + index] = select(0u, 1u, live);`
+  maskOut[maskOutOffset + index] = select(0u, 1u, live);`,
+          RANGE_COMPARISON_WGSL
         );
       }
     };
@@ -519,20 +542,21 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
           {
             name: 'parameters',
             view: props.parameters!,
-            type: 'f32',
+            type: 'u32',
             access: 'read'
           },
-          {name: 'times', view: props.edgeTimes, type: 'f32', access: 'read'}
+          {name: 'times', view: props.edgeTimes, type: 'u32', access: 'read'}
         ],
         slotCount,
         `let base = parametersOffset + ${record}u;
-  if (parameters[base + 2u] != 0.0) {
+  if ((parameters[base + 2u] & 0x7fffffffu) != 0u) {
     let time = times[timesOffset + index];
-    let live = time >= parameters[base] && time <= parameters[base + 1u];
+    let live = networkRangePass(time, parameters[base], parameters[base + 1u], true);
     if (!live) {
       maskOut[maskOutOffset + index] = 0u;
     }
-  }`
+  }`,
+        RANGE_COMPARISON_WGSL
       );
     }
     if (props.edgeTimeWords) {
@@ -973,6 +997,8 @@ ${prefixSource}`
           access: 'read_write'
         }
       ];
+      // Required offsets are preserved on overflow for sizing. Bind this CSR to adjacency/matrix
+      // walkers only after checking inducedTopology.status.overflow === 0 for this submission.
       // Rows of the induced CSR past its live slot total keep 0xffffffff (an out-of-range node and
       // slot), so the output is fully written every frame (library rule 11).
       for (const [step, view] of [

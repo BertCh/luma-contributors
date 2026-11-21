@@ -310,7 +310,7 @@ export default defineScene<SatelliteConstellationsOptions>({
 // One 2D point per satellite: [inclination (deg), ${state.altitudeWeight} * log10(mean altitude in km)]
 graph.add(new GPUSpatialKMeans({
   positions: features,
-  k: ${state.k},                    // compile-time: a new k compiles a new graph
+  clusterCount: ${state.k},                    // compile-time: a new k compiles a new graph
   maximumIterations: 24, initialization: 'kmeans++',
   parameters: kmeansParameters.importToGraph(graph),   // getGPUSpatialKMeansParameterValues({seed: ${state.seed}})
   output: {labels, centers, sizes, status: {iterationCount, converged}}

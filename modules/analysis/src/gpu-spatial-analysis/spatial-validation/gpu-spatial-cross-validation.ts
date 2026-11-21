@@ -11,10 +11,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateSinglePackedView,
@@ -28,11 +25,13 @@ import {validateRegressionOutputDispatches} from '../spatial-regression/regressi
 import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSpatialValidationDesignNodes,
+  snapshotSpatialCrossValidationProps,
   type GPUSpatialValidationDesign,
   validateSpatialValidationDesign
 } from './spatial-validation-design';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
+import {getValidationBufferMembershipWGSL} from './validation-buffer-membership-wgsl';
 
 /** Most rows: each buffer-mask invocation scans all rows, so work grows as folds times rows squared. */
 const MAXIMUM_ROW_COUNT = 65536;
@@ -56,7 +55,8 @@ export type GPUSpatialCrossValidationProps = {
    * same folds; a different seed gives a different order. Default 0.
    */
   seed?: number;
-  /** Training points at distance <= bufferDistance of any test point are excluded. */
+  /** Training points at Euclidean distance <= bufferDistance of any test point are excluded.
+   * Membership uses stored coordinates and retains ambiguous boundary decisions exactly. */
   bufferDistance?: number;
   output: {
     /** Per-row fold ID, or 0xffffffff for invalid/masked positions. */
@@ -93,9 +93,18 @@ export type GPUSpatialCrossValidationProps = {
  * each outer fold, among the blocks of that fold's training rows, as nested resampling does.
  *
  * Reference tier and limits. Block folds are two all-pairs passes over the rows, O(rows²). Fold designs
- * (`design`) are one serial invocation each, so they accept at most 256 rows (64 for NNDM, 256
- * prediction locations); buffered masks run one invocation per (fold, row) but scan every row,
- * so rows go up to 65,536 and folds to 64 with O(folds * rows²) work. Planar positions only.
+ * (`design`) use one serial fit/match invocation each, with separate environmental centering.
+ * They accept at most 256 rows (64 for NNDM, 256
+ * prediction locations). Environmental gives up to 8 features, 16 clusters and 1,024 Lloyd
+ * iterations. kNNDM accepts up to 64 candidates and generates partitions with up to 16 folds.
+ * Its `maximumFoldFraction` must be in (1 / foldCount, 1). NNDM accepts `maximumDistance`
+ * in [0, 1e18] native planar units and `minimumTrainingFraction` in (0, 1).
+ * Buffered masks run one invocation per (fold, row) but scan every row,
+ * so rows go up to 65,536 and folds to 64 with O(folds * rows²) work. Planar positions only;
+ * bufferDistance is finite and in [0, 1e18] native planar units on every route.
+ * Buffer membership is inclusive Euclidean distance on stored coordinates, with exact ambiguous
+ * boundary comparisons. NNDM separately compares against its defining neighbor; rounded diagnostic
+ * radii do not determine membership.
  * Parallel designs (not implemented): block folds from a stable GPUSort by block key plus a scan
  * over block boundaries to deal whole blocks to folds; environmental and kNNDM clustering on
  * GPUSpatialKMeans (which has k-means++); buffer masks from a GPUNeighborSearch or grid-index radius
@@ -107,7 +116,10 @@ export class GPUSpatialCrossValidation implements GPUCommandNodeProducer {
   readonly id: string;
   /** Resolved spatial context (planar). */
   readonly spatialContext: GPUSpatialContext;
-  constructor(readonly props: GPUSpatialCrossValidationProps) {
+  readonly props: GPUSpatialCrossValidationProps;
+  constructor(props: GPUSpatialCrossValidationProps) {
+    props = snapshotSpatialCrossValidationProps(props);
+    this.props = props;
     this.id = props.id ?? 'spatial-cross-validation';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const rows = props.positions.length;
@@ -242,10 +254,21 @@ folds[foldsOffset + index] = fold;`
         id: `${id}-masks`,
         operation: 'GPUSpatialCrossValidation',
         variant: 'buffered-masks',
+        declarations: getValidationBufferMembershipWGSL(props.bufferDistance ?? 0),
         invocationCount: rows * props.foldCount,
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
           {name: 'folds', view: props.output.folds, type: 'u32', access: 'read'},
+          ...(design?.adaptiveNeighbors
+            ? [
+                {
+                  name: 'adaptiveNeighbors',
+                  view: design.adaptiveNeighbors,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           ...(design
             ? [
                 {
@@ -269,8 +292,16 @@ if (train) {
   let position = vec2<f32>(positions[positionsOffset + row * 2u], positions[positionsOffset + row * 2u + 1u]);
   for (var other = 0u; other < ${rows}u; other++) {
     if (folds[foldsOffset + other] == fold) {
-      let difference = position - vec2<f32>(positions[positionsOffset + other * 2u], positions[positionsOffset + other * 2u + 1u]);
-      if (${design && props.design?.mode === 'nndm' ? 'length(difference) <= designState[designStateOffset + fold + 4u]' : `dot(difference, difference) <= ${getWGSLFloatLiteral((props.bufferDistance ?? 0) ** 2)}`}) { train = false; break; }
+      let otherPosition = vec2<f32>(positions[positionsOffset + other * 2u], positions[positionsOffset + other * 2u + 1u]);
+      if (isWithinValidationRadius(position, otherPosition, 0.0)) { train = false; break; }
+      ${
+        design?.adaptiveNeighbors
+          ? `let neighbor = adaptiveNeighbors[adaptiveNeighborsOffset + other];
+      if (neighbor == 0xffffffffu) { train = false; break; }
+      let boundary = vec2<f32>(positions[positionsOffset + neighbor * 2u], positions[positionsOffset + neighbor * 2u + 1u]);
+      if (isWithinValidationNeighbor(position, otherPosition, boundary)) { train = false; break; }`
+          : ''
+      }
     }
   }
 }

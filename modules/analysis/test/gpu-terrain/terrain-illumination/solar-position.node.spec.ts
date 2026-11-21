@@ -131,6 +131,7 @@ it('GPUSolarPosition validates views and schedules one node', () => {
   };
   const contributor = create();
   expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual(['solar-position-sun']);
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({}, {azimuth: createTransientView(graph, 'short', 'float32', 9)})).toThrow(
     /10 float32/

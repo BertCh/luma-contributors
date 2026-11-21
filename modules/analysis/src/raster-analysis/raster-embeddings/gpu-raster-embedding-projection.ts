@@ -14,6 +14,7 @@ import {
   validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 import {
   MAXIMUM_RASTER_EMBEDDING_DIMENSIONS,
@@ -54,6 +55,11 @@ export function getGPURasterEmbeddingProjectionParameterValues(
   settings: GPURasterEmbeddingProjectionSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_EMBEDDING_PROJECTION_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRequirement(
+    'getGPURasterEmbeddingProjectionParameterValues',
+    target.length >= 6,
+    'target must hold at least 6 float32 elements; received ' + target.length
+  );
   const id = 'getGPURasterEmbeddingProjectionParameterValues';
   validateRequirement(
     id,
@@ -65,8 +71,10 @@ export function getGPURasterEmbeddingProjectionParameterValues(
     validateFiniteNumber(id, 'stretch low', low);
     validateFiniteNumber(id, 'stretch high', high);
     validateRequirement(id, Math.fround(high) > Math.fround(low), 'stretch high must exceed low');
-    target[channel * 2] = low;
-    target[channel * 2 + 1] = high;
+  }
+  for (let channel = 0; channel < 3; channel++) {
+    target[channel * 2] = settings.stretchRanges[channel][0];
+    target[channel * 2 + 1] = settings.stretchRanges[channel][1];
   }
   return target;
 }
@@ -116,6 +124,7 @@ export type GPURasterEmbeddingProjectionProps<
  *
  * Per-frame: `parameters`, `mean`, `components`. Compile-time: `pixelCount`, `dimensions`,
  * `componentCount` and which optional views exist.
+ * Pixel vectors accept 1–1,024 dimensions per complete pixel chunk; componentCount is at most 16.
  */
 export class GPURasterEmbeddingProjection<
   FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
@@ -127,6 +136,8 @@ export class GPURasterEmbeddingProjection<
   readonly estimatedCommandNodeCount: number;
 
   constructor(readonly props: GPURasterEmbeddingProjectionProps<FloatRows, UintRows>) {
+    props = {...props, output: {...props.output}};
+    this.props = props;
     const id = props.id ?? 'raster-embedding-projection';
     this.id = id;
     const {pixelCount, dimensions, output} = props;
@@ -183,7 +194,6 @@ export class GPURasterEmbeddingProjection<
       validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     const inputs = this.getInputs();
     const outputs = this.getOutputs();
-    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,
@@ -200,6 +210,7 @@ export class GPURasterEmbeddingProjection<
       'vectors',
       1
     );
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.estimatedCommandNodeCount =
       1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * 1;
   }
@@ -269,7 +280,7 @@ export class GPURasterEmbeddingProjection<
           ...(output.projected ? [rasterBinding('projected', output.projected, true)] : []),
           ...(output.rgb ? [rasterBinding('rgb', output.rgb, true)] : [])
         ],
-        declarations: RASTER_FINITE_WGSL,
+        declarations: `${RASTER_FINITE_WGSL}\n${SCALED_QUOTIENT_WGSL}`,
         body: `var isValid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
 for (var band = 0u; band < ${dimensions}u; band++) {
   let value = vectors[vectorsOffset + index * ${dimensions}u + band];
@@ -287,7 +298,13 @@ for (var component = 0u; component < ${componentCount}u; component++) {
       ? `if (component < 3u) {
     let low = parameters[parametersOffset + component * 2u];
     let high = parameters[parametersOffset + component * 2u + 1u];
-    rgb[rgbOffset + index * 3u + component] = select(missing(), clamp((score - low) / (high - low), 0.0, 1.0), isValid);
+    // A common exact power-of-two frame prevents opposite finite endpoints overflowing.
+    let magnitude = max(abs(score), max(abs(low), abs(high)));
+    // Clamp to 126: encoding 2^-127 by exponent bits alone would produce zero.
+    let exponent = min(126, max(0, i32((bitcast<u32>(magnitude) >> 23u) & 255u) - 127));
+    let scale = bitcast<f32>(u32(127 - exponent) << 23u);
+    let stretched = getScaledQuotient(score * scale - low * scale, high * scale - low * scale, 1.0, 0);
+    rgb[rgbOffset + index * 3u + component] = select(missing(), clamp(stretched, 0.0, 1.0), isValid);
   }`
       : ''
   }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -153,14 +154,14 @@ export const GPU_RELIEF_BLEND_VAT_FLAT: readonly GPUReliefBlendLayerSettings[] =
 ]);
 
 /** Caller-owned outputs of {@link GPUReliefBlend}; at least one is required. */
-export type GPUReliefBlendOutput = {
+export type GPUReliefBlendOutput = TerrainAtLeastOne<{
   /** Optional blended greyscale in `[0, 1]`, NaN where any layer is not finite. */
   blend?: GraphDataView<'float32'>;
   /** Optional packed RGBA8 grey (`pack4x8unorm`, red in the low byte, alpha 255; 0 where invalid). */
   color?: GraphDataView<'uint32'>;
   /** Optional per-pixel 1 where every layer is finite, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUReliefBlend}.

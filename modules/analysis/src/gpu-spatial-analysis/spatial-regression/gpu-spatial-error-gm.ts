@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
-import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {snapshotRegressionConstructionPropsWithCompleteness as snapshotRegressionConstructionProps} from './regression-certificate-snapshot';
 import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
 
 import {
@@ -30,6 +30,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateRequirement,
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
@@ -56,7 +57,7 @@ import {
 } from './gpu-spatial-weights-traces';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from './ordinary-least-squares-parameters';
 import {
-  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
@@ -88,14 +89,22 @@ import {
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {getRegressionGMCommandNodeCount} from './regression-command-counts';
+import {
+  getRegressionTileLayout,
+  getRowTileMergeNodes,
+  getRowTileSumNodes,
+  REGRESSION_TILE_MAXIMUM_TILE_COUNT
+} from './regression-row-tiles';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {LOCAL_REGRESSION_PAIRS_WGSL} from './local-regression-pairs-wgsl';
+import {
+  getSpatialErrorGMAffineCandidateWGSL,
+  getSpatialErrorGMAffineEqualityWGSL
+} from './spatial-error-gm-affine-certificate';
 
 const OPERATION = 'GPUSpatialErrorGM';
 const TILE_WORKGROUP_SIZE = 64;
-const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
-// Bounds the serial norm merge to the regression family's 4096-partial merge budget.
-const MAXIMUM_TILE_COUNT = 4096;
-const MINIMUM_DEFAULT_TILE_ROWS = 64;
 /** Moment sums: `u'u`, `u'Wu`, `(Wu)'Wu`, `u'WWu`, `(Wu)'WWu`, `(WWu)'WWu`, `tr W'W`. */
 const MOMENT_SUM_COUNT = 7;
 /** Residual sums: `e'e`, `sum u`, `u'u`, `sum (y - ybar) u`, `sum (y - ybar)^2`. */
@@ -108,6 +117,40 @@ const LAMBDA_SCAN_STEPS = 1024;
 const LAMBDA_BISECTION_STEPS = 40;
 /** Traces of `W` the homoskedastic variance needs: maximum power and Gram traces. */
 const TRACE_POWER_COUNT = 2;
+
+const PRECISE_KP_ACCUMULATION_WGSL = /* wgsl */ `
+${LOCAL_REGRESSION_PAIRS_WGSL}
+fn getPreciseLag(row: u32) -> vec2f {
+  return vec2f(lag[lagOffset + 2u * row], lag[lagOffset + 2u * row + 1u]);
+}`;
+
+const PRECISE_KP_TILE_BODY = /* wgsl */ `
+let firstRow = index * TILE_ROWS;
+let lastRow = min(firstRow + TILE_ROWS, ROWS);
+var sums: array<vec2f, ${MOMENT_SUM_COUNT}>;
+for (var row = firstRow; row < lastRow; row++) {
+  let u = residual[residualOffset + row];
+  let wu = getPreciseLag(row);
+  var wwu = vec2f(0.0);
+  for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
+    let neighbor = neighbors[neighborsOffset + slot];
+    if (neighbor >= ROWS) { continue; }
+    let weight = weights[weightsOffset + slot];
+    wwu = addRegressionPairs(wwu, multiplyRegressionPair(getPreciseLag(neighbor), weight));
+    sums[6] = addRegressionPairs(sums[6], multiplyRegressionPair(vec2f(weight, 0.0), weight));
+  }
+  sums[0] = addRegressionPairs(sums[0], multiplyRegressionPair(vec2f(u, 0.0), u));
+  sums[1] = addRegressionPairs(sums[1], multiplyRegressionPair(wu, u));
+  sums[2] = addRegressionPairs(sums[2], multiplyRegressionPairs(wu, wu));
+  sums[3] = addRegressionPairs(sums[3], multiplyRegressionPair(wwu, u));
+  sums[4] = addRegressionPairs(sums[4], multiplyRegressionPairs(wu, wwu));
+  sums[5] = addRegressionPairs(sums[5], multiplyRegressionPairs(wwu, wwu));
+}
+for (var slot = 0u; slot < ${MOMENT_SUM_COUNT}u; slot++) {
+  let destination = partialOffset + (index * ${MOMENT_SUM_COUNT}u + slot) * 2u;
+  partial[destination] = sums[slot].x;
+  partial[destination + 1u] = sums[slot].y;
+}`;
 
 /** Caller-owned outputs of {@link GPUSpatialErrorGM}. */
 export type GPUSpatialErrorGMOutput = {
@@ -125,7 +168,8 @@ export type GPUSpatialErrorGMOutput = {
   /** At least 13 float32 values; see the `GPU_SPATIAL_ERROR_GM_SUMMARY_*` slots. */
   summary: GraphDataView<'float32'>;
   /**
-   * Optional per-row residuals `u = y - X b` (spreg `u`); NaN for a failed fit. Formed in the
+   * Optional per-row residuals `u = y - X b` (spreg `u`) from the first filtered fit. A later
+   * report failure can retain finite residuals; consult `status.code` before using them. Formed in the
    * centered model as `(y - ybar) - a0 - (x - xbar) b`, so they keep their float32 accuracy when
    * the response mean is far above them.
    */
@@ -212,8 +256,9 @@ export type GPUSpatialErrorGMProps = {
  *    spatial dependence (`lambda` 0.19 against 0.06 on the same data).
  *
  * `estimator: 'kelejian-prucha'` is spreg `GM_Error`: the moments are `G [lambda, lambda^2,
- * sigma2]' = g` with `G = [[2 u'Wu, -(Wu)'Wu, 1], [2 (Wu)'WWu, -(WWu)'WWu, tr(W'W) / n],
- * [u'WWu + (Wu)'Wu, -(Wu)'WWu, 0]] / n` and `g = [u'u, (Wu)'Wu, u'Wu] / n`; `sigma2 >= 0` is
+ * sigma2]' = g` with the first two columns of `G` equal to
+ * `[[2 u'Wu, -(Wu)'Wu], [2 (Wu)'WWu, -(WWu)'WWu], [u'WWu + (Wu)'Wu, -(Wu)'WWu]] / n`,
+ * its third column `[1, tr(W'W) / n, 0]'`, and `g = [u'u, (Wu)'Wu, u'Wu] / n`; `sigma2 >= 0` is
  * eliminated by least squares. `lambda` is reported without a standard error; the betas use
  * `sigma2 (Xs'Xs)^-1`, `sigma2 = e'e / n` of the filtered residuals, and ignore the estimation of
  * `lambda`.
@@ -232,15 +277,18 @@ export type GPUSpatialErrorGMProps = {
  * entry is a combination of sums the kernels accumulate (`u'u`, `u'Wu`, ...) and of the traces
  * `tr(W)`, `tr(W^2)`, `tr(W'W)`, `tr(W'WW)`, `tr((W'W)^2)`, `sum c_i^2` from
  * `GPUSpatialWeightsTraces`: exact up to 4096 rows, Hutchinson estimates above, in which case the
- * standard error of `lambda` is approximate and `GPU_SPATIAL_ERROR_GM_SUMMARY_APPROXIMATION` is 1
- * (betas, `lambda` and the betas' standard errors are unaffected).
+ * second-step `lambda`, its standard error and the betas' standard errors are approximate and
+ * `GPU_SPATIAL_ERROR_GM_SUMMARY_APPROXIMATION` is 1. The reported betas and residuals come from
+ * the exact first step and are unaffected by the trace approximation.
  *
  * Conditioning of the final filtered regression is reported in `summary` (Belsley condition number,
  * correlation condition number, largest variance inflation factor, and a precision warning above
  * `GPU_REGRESSION_PRECISION_CONDITION_LIMIT`); a warning never changes `status`.
  *
- * All accumulations use the fixed-order tile and pairwise-merge scheme of `GPUOrdinaryLeastSquares`,
- * so results are deterministic; nothing is read back. Up to 15 predictors (the OLS limit, the
+ * Accumulations use fixed-order tile sums and pairwise merges. Above 4096 tiles, consecutive
+ * groups of at most 4096 tiles are merged pairwise before a final pairwise merge of the groups.
+ * The limit is REGRESSION_TILE_MAXIMUM_TILE_COUNT (2^24), subject to device bindings. Results are
+ * deterministic; nothing is read back. Up to 15 predictors (the OLS limit, the
  * 16-wide Cholesky); no kernel binds more than 8 storage buffers. Not included: `GM_Error_Het`
  * and the Kelejian-Prucha weighted estimator.
  */
@@ -255,6 +303,8 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
   readonly tileRowCount: number;
   /** Number of accumulation tiles. */
   readonly tileCount: number;
+  /** Upper bound including chunk passes, nested OLS/BP and the optional trace child. */
+  readonly estimatedCommandNodeCount: number;
   /** Resolved estimator. */
   readonly estimator: GPUSpatialErrorGMEstimator;
 
@@ -275,7 +325,8 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
         'output'
       ],
       ['table', 'summary', 'residuals', 'status'],
-      'spatial-error-gm'
+      'spatial-error-gm',
+      ['code']
     );
     const id = props.id ?? 'spatial-error-gm';
     this.id = id;
@@ -313,13 +364,15 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
           id,
           'exact trace rows',
           rows,
-          GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT
+          GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS
         );
     }
 
     if (estimator === 'homoskedastic' && isGPUChunkedSpatialWeights(props.weights)) {
       // The homoskedastic estimator needs the Gram traces of W, which need W' (no chunked transpose).
-      throw new Error(`${id} homoskedastic estimator needs whole weights`);
+      throw new Error(
+        `${id} weights must be whole weights for estimator 'homoskedastic': Gram traces require a whole-CSR transpose; use whole weights or estimator 'kelejian-prucha'`
+      );
     }
     validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     validateSinglePackedView(props.response, ['float32'], `${id} response`);
@@ -353,12 +406,20 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
-    this.tileRowCount =
-      props.tileRowCount ??
-      Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
+    this.tileRowCount = getRegressionTileLayout(rows, props.tileRowCount).tileRowCount;
     // Tiles never span chunks; a whole CSR has ceil(rows / tileRowCount) tiles.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
-    validateMaximumCount(id, 'tileCount', this.tileCount, MAXIMUM_TILE_COUNT);
+    validateMaximumCount(id, 'tileCount', this.tileCount, REGRESSION_TILE_MAXIMUM_TILE_COUNT);
+    this.estimatedCommandNodeCount =
+      5 +
+      getRegressionGMCommandNodeCount({
+        weights: props.weights,
+        rowCount: rows,
+        homoskedastic: estimator === 'homoskedastic',
+        traceMode: props.traceMode,
+        traceProbeCount: props.traceProbeCount
+      });
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRegressionOutputDispatches(
       this.id,
       {...output, status: undefined, code: output.status.code},
@@ -376,16 +437,22 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
   }
 
   /**
-   * Returns the first-stage `GPUOrdinaryLeastSquares` nodes, the weights-norm and means nodes, for
+   * Returns the first-stage `GPUOrdinaryLeastSquares` nodes, the weights-norm and means nodes,
+   * the bounded affine proposal and row-parallel exact certificate nodes, for
    * `homoskedastic` the `GPUSpatialWeightsTraces` nodes, then the moment, `lambda`, filtered
    * regression, residual and finish kernels (`homoskedastic` repeats the moment step on the FGLS
    * residuals and adds the filtered-residual power sums and the final filtered moments).
    */
   getCommandNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>
+    graph: GPUCommandGraph<Parameters>,
+    usePreciseMoments = false
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount, tileRowCount, tileCount, estimator} = this;
     const homoskedastic = estimator === 'homoskedastic';
+    // Spatial SUR may restore very large origins in its coefficient covariance, amplifying
+    // errors from the cancellation near lambda = 0. Its first stage retains both moment words.
+    const preciseMoments = usePreciseMoments && !homoskedastic;
+    const momentStride = MOMENT_SUM_COUNT * (preciseMoments ? 2 : 1);
     const {weights, output, predictorCount: k} = props;
     validateGraphChunkBindingRanges(graph, id, {
       predictors: props.predictors,
@@ -397,10 +464,8 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       code: output.status.code,
       residuals: output.residuals
     });
-    validateRegressionAllocations(
-      graph.device,
-      id,
-      getRegressionErrorGMAllocationLengths({
+    validateRegressionAllocations(graph.device, id, {
+      ...getRegressionErrorGMAllocationLengths({
         rowCount,
         predictorCount: k,
         edgeCount: getRegressionMaximumEdgeCount(weights),
@@ -409,8 +474,16 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
         homoskedastic,
         traceMode: props.traceMode,
         traceProbeCount: props.traceProbeCount
-      })
-    );
+      }),
+      // Two independently verified candidates need their own row flags and totals.
+      'GM affine workspace': k + 4 + (k + 1) + 18,
+      'GM affine candidates': 2 * (k + 2),
+      'GM affine row flags': 2 * rowCount,
+      'GM affine partial flags': 2 * tileCount,
+      ...(preciseMoments
+        ? {'GM precise lag': 2 * rowCount, 'GM precise partial moments': momentStride * tileCount}
+        : {})
+    });
     validateGraphViewsBelongToGraph(id, graph, [
       props.predictors,
       props.response,
@@ -426,12 +499,17 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
     // Workspace slots: means (k), response mean, lambda, objective, intercept, betas (q), then the
     // bound, the final lambda and objective, the approximation flag, the final moment matrix
     // (A0 A1 B0 B1), the trace terms (tr11 tr12 tr22 diag), the final power sums, and a zero
-    // written at run time by the means merge (the runtime zero of getRoundedDifference).
+    // written at run time by the means merge (the runtime zero of getRoundedDifference),
+    // followed by the row-rejection counts for the dyadic and common-denominator candidates.
     const boundSlot = k + 4 + q;
-    const workspaceLength = boundSlot + 16;
+    const workspaceLength = boundSlot + 18;
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const olsResiduals = transient('ols-residuals', rowCount);
+    const olsCoefficients = transient('ols-coefficients', q);
+    const affineCandidate = transient('affine-coefficients', 2 * (q + 1));
+    const affineRejectedRows = transient('affine-rejected-rows', rowCount * 2);
+    const affinePartial = transient('affine-partial', tileCount * 2);
     const olsStatus = createTransientView(graph, `${id}-ols-status`, 'uint32', 1);
     const olsNodes = new GPUOrdinaryLeastSquares({
       id: `${id}-ols`,
@@ -440,20 +518,20 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       predictorCount: k,
       tileRowCount,
       output: {
-        coefficients: transient('ols-coefficients', q),
+        coefficients: olsCoefficients,
         standardErrors: transient('ols-standard-errors', q),
         tStatistics: transient('ols-t-statistics', q),
         summary: transient('ols-summary', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
         status: {code: olsStatus},
         residuals: olsResiduals
       }
-    }).getCommandNodes(graph);
+    }).getCommandNodes(graph, preciseMoments);
     const partialMeans = transient('partial-means', tileCount * meanCount);
     const workspace = transient('workspace', workspaceLength);
     const partialNorm = transient('partial-weights-norm', tileCount);
-    const lagResiduals = transient('lag-residuals', rowCount);
-    const partialMoments = transient('partial-moments', tileCount * MOMENT_SUM_COUNT);
-    const moments = transient('moments', MOMENT_SUM_COUNT);
+    const lagResiduals = transient('lag-residuals', rowCount * (preciseMoments ? 2 : 1));
+    const partialMoments = transient('partial-moments', tileCount * momentStride);
+    const moments = transient('moments', momentStride);
     const partialFiltered = transient('partial-filtered-moments', tileCount * filteredMomentCount);
     const filteredMoments = transient('filtered-moments', filteredMomentCount);
     const partialResiduals = transient('partial-residuals', tileCount * RESIDUAL_SUM_COUNT);
@@ -476,7 +554,8 @@ const W_APPROXIMATION: u32 = ${boundSlot + 3}u;
 const W_MOMENT_MATRIX: u32 = ${boundSlot + 4}u;
 const W_TRACE_TERMS: u32 = ${boundSlot + 8}u;
 const W_POWER_SUMS: u32 = ${boundSlot + 12}u;
-const W_RUNTIME_ZERO: u32 = ${boundSlot + 15}u;`;
+const W_RUNTIME_ZERO: u32 = ${boundSlot + 15}u;
+const W_AFFINE_REJECTED: u32 = ${boundSlot + 16}u;`;
     const mergeLoop = (stride: number) =>
       getPairwiseSumWGSL({
         count: 'TILE_COUNT',
@@ -513,6 +592,35 @@ const W_RUNTIME_ZERO: u32 = ${boundSlot + 15}u;`;
         body,
         ...(workgroupSize ? {workgroupSize} : {})
       });
+    const mergeKernel = (
+      name: string,
+      bindings: WGSLKernelBinding[],
+      invocationCount: number,
+      declarations: string,
+      body: string
+    ) =>
+      getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-${name}`,
+          operation: OPERATION,
+          variant: name,
+          bindings,
+          invocationCount,
+          declarations,
+          body
+        },
+        {
+          tileCount,
+          partials: [
+            {
+              name: 'partial',
+              termCount: bindings[0].view.length / tileCount,
+              ...(name === 'weights-norm-merge' ? {maxima: {0: 0}} : {})
+            }
+          ]
+        }
+      );
     // Every tile kernel is dispatched once per weights chunk (one dispatch for a whole CSR).
     const tilePlan = getGPUSpatialWeightsTilePlan(weights, tileRowCount);
     const tileKernel = (
@@ -554,8 +662,10 @@ ${getCholeskyWGSL(q)}`;
           f32('lag', lag, 'read'),
           f32('partial', partial, 'read_write')
         ],
-        constants,
-        `let firstRow = index * TILE_ROWS;
+        preciseMoments ? `${constants}\n${PRECISE_KP_ACCUMULATION_WGSL}` : constants,
+        preciseMoments
+          ? PRECISE_KP_TILE_BODY
+          : `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROWS);
   var sums: array<f32, ${MOMENT_SUM_COUNT}>;
   for (var row = firstRow; row < lastRow; row++) {
@@ -594,10 +704,19 @@ ${getCholeskyWGSL(q)}`;
             f32('lag', lag, 'read_write')
           ],
           dispatch.rowCount,
-          `${constants}${dispatch.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}`,
+          `${constants}${dispatch.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}${preciseMoments ? `\n${LOCAL_REGRESSION_PAIRS_WGSL}` : ''}`,
           wrapWeightsChunkRowBodyWGSL(
             dispatch,
-            `var sum = 0.0;
+            preciseMoments
+              ? `var sum = vec2f(0.0);
+  for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
+    let neighbor = neighbors[neighborsOffset + slot];
+    if (neighbor >= ROWS) { continue; }
+    sum = addRegressionPairs(sum, multiplyRegressionPair(vec2f(residual[residualOffset + neighbor], 0.0), weights[weightsOffset + slot]));
+  }
+  lag[lagOffset + 2u * index] = sum.x;
+  lag[lagOffset + 2u * index + 1u] = sum.y;`
+              : `var sum = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
     if (neighbor >= ROWS) {
@@ -635,7 +754,7 @@ ${getCholeskyWGSL(q)}`;
   }`
       );
     const filteredMerge = (suffix: string, partial: GraphDataView, merged: GraphDataView) =>
-      kernel(
+      mergeKernel(
         `filtered-moments-merge${suffix}`,
         [f32('partial', partial, 'read'), f32('filteredMoments', merged, 'read_write')],
         filteredMomentCount,
@@ -667,7 +786,7 @@ ${getCholeskyWGSL(q)}`;
     partial[partialOffset + index * ${meanCount}u + slot] = sums[slot];
   }`
       ),
-      kernel(
+      ...mergeKernel(
         'means-merge',
         [f32('partial', partialMeans, 'read'), f32('workspace', workspace, 'read_write')],
         meanCount,
@@ -701,7 +820,7 @@ ${getCholeskyWGSL(q)}`;
   }
   partial[partialOffset + index] = largest;`
       ),
-      kernel(
+      ...mergeKernel(
         'weights-norm-merge',
         [f32('partial', partialNorm, 'read'), f32('workspace', workspace, 'read_write')],
         1,
@@ -715,6 +834,57 @@ ${finiteDeclarations}`,
   workspace[workspaceOffset + W_BOUND] = select(getNaN(), ${getWGSLFloatLiteral(GPU_SPATIAL_ERROR_GM_LAMBDA_BOUND_FRACTION)} / largest, valid);`
       )
     ];
+
+    nodes.push(
+      // contract-allow: bounded affine proposal, <=256 sampled rows and <=15 predictors;
+      // three 15x15 matrices plus vectors use <4 KiB; every original row verifies separately.
+      kernel(
+        'affine-candidate',
+        [
+          f32('design', props.predictors, 'read'),
+          f32('response', props.response, 'read'),
+          f32('olsCoefficients', olsCoefficients, 'read'),
+          f32('workspace', workspace, 'read'),
+          f32('candidateOut', affineCandidate, 'read_write')
+        ],
+        1,
+        `${constants}
+${finiteDeclarations}
+${getSpatialErrorGMAffineCandidateWGSL(k)}`,
+        'proposeAffineCandidate();'
+      ),
+      kernel(
+        'affine-rows',
+        [
+          // Read original bits as integers, including unsupported subnormals, before any f32 ALU.
+          {name: 'design', view: props.predictors, type: 'u32', access: 'read'},
+          {name: 'response', view: props.response, type: 'u32', access: 'read'},
+          {name: 'candidate', view: affineCandidate, type: 'u32', access: 'read'},
+          f32('rejectedOut', affineRejectedRows, 'read_write')
+        ],
+        rowCount,
+        `${constants}
+${getSpatialErrorGMAffineEqualityWGSL()}`,
+        `rejectedOut[rejectedOutOffset + 2u * index] = select(1.0, 0.0, isExactAffineRow(index, 0u));
+  rejectedOut[rejectedOutOffset + 2u * index + 1u] = select(1.0, 0.0, isExactAffineRow(index, Q + 1u));`
+      ),
+      ...getRowTileSumNodes(graph, {
+        id: `${id}-affine-rejections`,
+        operation: OPERATION,
+        variant: 'affine-rejections',
+        rowCount,
+        layout: {tileCount, tileRowCount},
+        sumCount: 2,
+        bindings: [f32('rejectedRows', affineRejectedRows, 'read')],
+        partial: affinePartial,
+        output: workspace,
+        outputSlot: boundSlot + 16,
+        declarations: `fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  (*terms)[0] += rejectedRows[rejectedRowsOffset + 2u * row];
+  (*terms)[1] += rejectedRows[rejectedRowsOffset + 2u * row + 1u];
+}`
+      })
+    );
 
     // Traces of W for the homoskedastic variance.
     const tracePowerTraces = transient('trace-power-traces', TRACE_POWER_COUNT);
@@ -745,12 +915,12 @@ ${finiteDeclarations}`,
     nodes.push(
       ...residualLag('', olsResiduals, lagResiduals),
       ...momentsTiles('', olsResiduals, lagResiduals, partialMoments),
-      kernel(
+      ...mergeKernel(
         'moments-merge',
         [f32('partial', partialMoments, 'read'), f32('moments', moments, 'read_write')],
-        MOMENT_SUM_COUNT,
+        momentStride,
         constants,
-        `${mergeLoop(MOMENT_SUM_COUNT)}
+        `${mergeLoop(momentStride)}
   moments[momentsOffset + index] = sum;`
       ),
       kernel(
@@ -764,12 +934,12 @@ ${getHomoskedasticMomentsWGSL(false)}
 ${getLambdaScanWGSL()}`
           : `${constants}
 ${finiteDeclarations}
-${getKelejianPruchaMomentsWGSL()}
+${getKelejianPruchaMomentsWGSL(preciseMoments)}
 ${getLambdaScanWGSL()}`,
         homoskedastic ? 'solveFirstStepLambda();' : 'solveLambda();'
       ),
       ...filteredTiles('', 'W_LAMBDA', partialFiltered),
-      filteredMerge('', partialFiltered, filteredMoments),
+      ...filteredMerge('', partialFiltered, filteredMoments),
       kernel(
         'filtered-solve',
         [
@@ -835,7 +1005,7 @@ ${getSolveWGSL(q, 'filteredMoments', 'solveFiltered', false)}`,
     partial[partialOffset + index * ${RESIDUAL_SUM_COUNT}u + slot] = sums[slot];
   }`
       ),
-      kernel(
+      ...mergeKernel(
         'residuals-merge',
         [f32('partial', partialResiduals, 'read'), f32('residualSums', residualSums, 'read_write')],
         RESIDUAL_SUM_COUNT,
@@ -888,7 +1058,7 @@ ${getSolveWGSL(q, 'filteredMoments', 'solveFiltered', false)}`,
       nodes.push(
         ...residualLag('-fgls', residualView, lagResiduals1),
         ...momentsTiles('-fgls', residualView, lagResiduals1, partialMoments1),
-        kernel(
+        ...mergeKernel(
           'moments-merge-fgls',
           [f32('partial', partialMoments1, 'read'), f32('moments', moments1, 'read_write')],
           MOMENT_SUM_COUNT,
@@ -897,7 +1067,7 @@ ${getSolveWGSL(q, 'filteredMoments', 'solveFiltered', false)}`,
   moments[momentsOffset + index] = sum;`
         ),
         ...powerTiles('-first', 'W_LAMBDA', partialPowers1),
-        kernel(
+        ...mergeKernel(
           'power-sums-merge-first',
           [f32('partial', partialPowers1, 'read'), f32('powers', powers1, 'read_write')],
           POWER_SUM_COUNT,
@@ -924,7 +1094,7 @@ ${getLambdaScanWGSL()}`,
           'solveWeightedLambda();'
         ),
         ...powerTiles('-final', 'W_LAMBDA_FINAL', partialPowers2),
-        kernel(
+        ...mergeKernel(
           'power-sums-merge-final',
           [f32('partial', partialPowers2, 'read'), f32('workspace', workspace, 'read_write')],
           POWER_SUM_COUNT,
@@ -933,7 +1103,7 @@ ${getLambdaScanWGSL()}`,
   workspace[workspaceOffset + W_POWER_SUMS + index] = sum;`
         ),
         ...filteredTiles('-final', 'W_LAMBDA_FINAL', partialFiltered2),
-        filteredMerge('-final', partialFiltered2, filteredMoments2)
+        ...filteredMerge('-final', partialFiltered2, filteredMoments2)
       );
     }
 
@@ -967,7 +1137,18 @@ ${getFinishWGSL(k, homoskedastic)}`,
     );
     return [
       ...nodes,
-      ...getRegressionWeightsSuppressionNodes<Parameters>(graph, id, props.weights, props.output)
+      ...getRegressionWeightsSuppressionNodes<Parameters>(
+        graph,
+        id,
+        props.weights,
+        props.output,
+        undefined,
+        {
+          table: (k + 2) * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE,
+          summary: GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH,
+          residuals: rowCount
+        }
+      )
     ];
   }
 }
@@ -1044,18 +1225,36 @@ fn scanLambda(bound: f32) -> vec2<f32> {
  * `solveLambda`: the Kelejian-Prucha moment system of `GM_Error` with `sigma2` projected out.
  * Writes `lambda` and the scaled objective, NaN for non-finite or empty moments or bound.
  */
-function getKelejianPruchaMomentsWGSL(): string {
+function getKelejianPruchaMomentsWGSL(precise: boolean): string {
   return /* wgsl */ `
 var<private> momentA: vec3<f32>;
 var<private> momentB: vec3<f32>;
 var<private> momentG: vec3<f32>;
-var<private> momentSigma: vec3<f32>;
+${precise ? LOCAL_REGRESSION_PAIRS_WGSL : 'var<private> momentSigma: vec3<f32>;'}
+
+${
+  precise
+    ? `fn getMomentPair(slot: u32) -> vec2f {
+  return vec2f(moments[momentsOffset + 2u * slot], moments[momentsOffset + 2u * slot + 1u]);
+}
+
+// Rotate the two variance moments so the nuisance variance lies only on the first axis.
+fn rotateMoment(value: vec3f, ratio: f32, length: f32) -> vec3f {
+  return vec3f((value.x + ratio * value.y) / length, (value.y - ratio * value.x) / length, value.z);
+}`
+    : ''
+}
 
 // Moment residual with sigma2 at its constrained optimum: least squares in sigma2, clamped at zero.
 fn getMomentResidual(lambda: f32) -> vec3<f32> {
   let free = momentG - momentA * lambda - momentB * (lambda * lambda);
+  ${
+    precise
+      ? `return vec3f(min(0.0, free.x), free.yz);`
+      : `
   let sigma = max(dot(momentSigma, free) / dot(momentSigma, momentSigma), 0.0);
-  return free - momentSigma * sigma;
+  return free - momentSigma * sigma;`
+  }
 }
 
 fn getMomentObjective(lambda: f32) -> f32 {
@@ -1072,7 +1271,7 @@ fn solveLambda() {
   let n = f32(ROWS);
   let u2 = moments[momentsOffset];
   var finite = u2 > 0.0;
-  for (var slot = 0u; slot < ${MOMENT_SUM_COUNT}u; slot++) {
+  for (var slot = 0u; slot < ${MOMENT_SUM_COUNT * (precise ? 2 : 1)}u; slot++) {
     finite = finite && isFiniteValue(moments[momentsOffset + slot]);
   }
   let bound = workspace[workspaceOffset + W_BOUND];
@@ -1081,16 +1280,28 @@ fn solveLambda() {
     workspace[workspaceOffset + W_OBJECTIVE] = getNaN();
     return;
   }
-  let uwu = moments[momentsOffset + 1u];
-  let wu2 = moments[momentsOffset + 2u];
-  let uwwu = moments[momentsOffset + 3u];
-  let wuwwu = moments[momentsOffset + 4u];
-  let wwu2 = moments[momentsOffset + 5u];
+  let uwu = moments[momentsOffset + ${precise ? 2 : 1}u];
+  let wu2 = moments[momentsOffset + ${precise ? 4 : 2}u];
+  let uwwu = moments[momentsOffset + ${precise ? 6 : 3}u];
+  let wuwwu = moments[momentsOffset + ${precise ? 8 : 4}u];
+  let wwu2 = moments[momentsOffset + ${precise ? 10 : 5}u];
   let scale = 1.0 / u2;
-  momentSigma = vec3<f32>(1.0, moments[momentsOffset + 6u] / n, 0.0);
   momentA = vec3<f32>(2.0 * uwu, 2.0 * wuwwu, uwwu + wu2) * scale;
   momentB = vec3<f32>(-wu2, -wwu2, -wuwwu) * scale;
   momentG = vec3<f32>(u2, wu2, uwu) * scale;
+  ${
+    precise
+      ? `let ratio = divideRegressionPair(getMomentPair(6u), vec2f(n, 0.0));
+  let norm = sqrt(1.0 + ratio.x * ratio.x);
+  let u2Pair = getMomentPair(0u);
+  let varianceMoment = addRegressionPairs(getMomentPair(2u), -multiplyRegressionPairs(u2Pair, ratio));
+  momentA = rotateMoment(momentA, ratio.x, norm);
+  momentB = rotateMoment(momentB, ratio.x, norm);
+  momentG = rotateMoment(momentG, ratio.x, norm);
+  momentG.y = (varianceMoment.x + varianceMoment.y) * scale / norm;`
+      : `
+  momentSigma = vec3<f32>(1.0, moments[momentsOffset + 6u] / n, 0.0);`
+  }
   let best = scanLambda(bound);
   workspace[workspaceOffset + W_LAMBDA] = best.x;
   workspace[workspaceOffset + W_OBJECTIVE] = best.y;
@@ -1207,7 +1418,10 @@ fn solveWeightedLambda() {
   );
   // psi at lambda1 from the power sums of u_s = u1 - lambda1 W u1.
   let sigma = powers[powersOffset] / n;
-  let psi = getPsi(n, sigma, powers[powersOffset + 2u] / n);
+  let rawPsi = getPsi(n, sigma, powers[powersOffset + 2u] / n);
+  let psiScale = max(max(abs(rawPsi[0][0]), abs(rawPsi[0][1])), max(abs(rawPsi[1][0]), abs(rawPsi[1][1])));
+  if (!(psiScale > 0.0) || !isFiniteValue(psiScale)) { return; }
+  let psi = rawPsi * (1.0 / psiScale);
   let determinant = getPsiDeterminant(psi);
   if (!(determinant > 0.0) || !isFiniteValue(determinant)) {
     return;
@@ -1219,7 +1433,7 @@ fn solveWeightedLambda() {
   momentWeight = weight;
   let best = scanLambda(bound);
   workspace[workspaceOffset + W_LAMBDA_FINAL] = best.x;
-  workspace[workspaceOffset + W_OBJECTIVE_FINAL] = best.y * weightScale;
+  workspace[workspaceOffset + W_OBJECTIVE_FINAL] = best.y * (weightScale / psiScale);
   workspace[workspaceOffset + W_MOMENT_MATRIX] = momentA.x;
   workspace[workspaceOffset + W_MOMENT_MATRIX + 1u] = momentA.y;
   workspace[workspaceOffset + W_MOMENT_MATRIX + 2u] = momentB.x;
@@ -1374,7 +1588,10 @@ fn getLambdaStandardError(n: f32, lambda: f32, sigma: f32, mu4: f32) -> f32 {
   for (var slot = 0u; slot < 4u; slot++) {
     traceTerms[slot] = workspace[workspaceOffset + W_TRACE_TERMS + slot];
   }
-  let psi = getPsi(n, sigma, mu4);
+  let rawPsi = getPsi(n, sigma, mu4);
+  let psiScale = max(max(abs(rawPsi[0][0]), abs(rawPsi[0][1])), max(abs(rawPsi[1][0]), abs(rawPsi[1][1])));
+  if (!(psiScale > 0.0) || !isFiniteValue(psiScale)) { return getNaN(); }
+  let psi = rawPsi * (1.0 / psiScale);
   let determinant = psi[0][0] * psi[1][1] - psi[0][1] * psi[1][0];
   if (!(determinant > 0.0) || !isFiniteValue(determinant)) {
     return getNaN();
@@ -1384,8 +1601,11 @@ fn getLambdaStandardError(n: f32, lambda: f32, sigma: f32, mu4: f32) -> f32 {
     workspace[workspaceOffset + W_MOMENT_MATRIX] + 2.0 * lambda * workspace[workspaceOffset + W_MOMENT_MATRIX + 2u],
     workspace[workspaceOffset + W_MOMENT_MATRIX + 1u] + 2.0 * lambda * workspace[workspaceOffset + W_MOMENT_MATRIX + 3u]
   );
-  let quadratic = dot(j, inverse * j);
-  return sqrt(1.0 / (quadratic * n));
+  let jacobianScale = max(abs(j.x), abs(j.y));
+  if (!(jacobianScale > 0.0) || !isFiniteValue(jacobianScale)) { return getNaN(); }
+  let normalizedJacobian = j / jacobianScale;
+  let quadratic = dot(normalizedJacobian, inverse * normalizedJacobian);
+  return sqrt(((psiScale / jacobianScale) / jacobianScale) / (quadratic * n));
 }
 `;
 }
@@ -1416,6 +1636,11 @@ fn finish() {
   }
   if (olsStatus[olsStatusOffset] != 0u) {
     fail(select(1u, 2u, olsStatus[olsStatusOffset] == 2u));
+    return;
+  }
+  if (workspace[workspaceOffset + W_AFFINE_REJECTED] == 0.0 || workspace[workspaceOffset + W_AFFINE_REJECTED + 1u] == 0.0) {
+    // An exact affine response has zero true residuals: lambda is unidentified.
+    fail(3u);
     return;
   }
   let lambda = workspace[workspaceOffset + ${homoskedastic ? 'W_LAMBDA_FINAL' : 'W_LAMBDA'}];
@@ -1494,7 +1719,12 @@ ${
   summaryOut[summaryOutOffset] = n;
   ${summary(1)} = lambda;
   ${summary(2)} = sigmaSquared;
-  ${summary(3)} = covariance * covariance / (responseSquares * predictedVariance);
+  // Materialize both quotients through integer bits: regrouping the square-root denominators
+  // would overflow responseSquares*predictedVariance and return zero at large response scales.
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
+  let normalizedCovariance = bitcast<f32>(bitcast<u32>(covariance / sqrt(responseSquares)) ^ runtimeZero);
+  let correlation = bitcast<f32>(bitcast<u32>(normalizedCovariance / sqrt(predictedVariance)) ^ runtimeZero);
+  ${summary(3)} = correlation * correlation;
   ${summary(4)} = residualSquares;
   ${summary(5)} = workspace[workspaceOffset + ${homoskedastic ? 'W_OBJECTIVE_FINAL' : 'W_OBJECTIVE'}];
   ${summary(GPU_SPATIAL_ERROR_GM_SUMMARY_CONDITION_NUMBER)} = conditioning[0];

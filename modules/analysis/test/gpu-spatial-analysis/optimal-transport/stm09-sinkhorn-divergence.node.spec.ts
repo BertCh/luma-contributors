@@ -95,6 +95,20 @@ it('GPUSinkhornDivergence estimates its command node count as an upper bound, ex
   }
 });
 
+it('GPUSinkhornDivergence rejects inherited blurRadius before capture', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const {props} = createContributor(graph, 4, 4);
+    const legacy = Object.setPrototypeOf({...props}, {blurRadius: 1});
+    expect(() => new GPUSinkhornDivergence(legacy)).toThrow(
+      /blurRadius was removed.*transportRadius/
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUSinkhornDivergence rejects out-of-range capacities and shapes with named limits', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'sinkhorn-limits'});
   const make = (overrides: Partial<GPUSinkhornDivergenceProps>, width = 8, height = 8) =>
@@ -105,9 +119,9 @@ it('GPUSinkhornDivergence rejects out-of-range capacities and shapes with named 
   expect(() => make({maximumIterations: 1001})).toThrow(
     'sinkhorn maximumIterations must be an integer in [1, 1000]'
   );
-  expect(() => make({blurRadius: 0})).toThrow(
-    'sinkhorn blurRadius must be an integer in [1, 2048]'
-  );
+  expect(() => make({transportRadius: 0})).not.toThrow();
+  // @ts-expect-error The removed prop also rejects at runtime for untyped callers.
+  expect(() => make({blurRadius: 0})).toThrow(/sinkhorn.*blurRadius was removed.*transportRadius/);
   expect(() => make({}, 2049, 2)).toThrow(
     'sinkhorn grid.width and grid.height must be at most 2048'
   );

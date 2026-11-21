@@ -55,8 +55,8 @@ export default defineOperationRun<Inputs, Outputs>({
           destinationZoneIds: builder.upload('destination-zones', 'uint32', flows.destinations)
             .view,
           weights: builder.upload('weights', 'float32', flows.jobs).view,
-          validPairCount: builder.upload('pair-count', 'uint32', Uint32Array.of(flows.jobs.length))
-            .view
+          completeness: 'known-complete',
+          count: builder.upload('pair-count', 'uint32', Uint32Array.of(flows.jobs.length)).view
         },
         parameters: parameterBuffer.view,
         output: {smoothed: smoothed.view, radii: radii.view}

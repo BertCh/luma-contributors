@@ -3,11 +3,15 @@
 
 // GPUCellGridPath finds the H3 grid path between origin and destination cells. The cells of every
 // path (origin first, destination last) are decoded with GPUCellGeometry and filled; the white dots
-// are the origin and destination points that were keyed.
+// are the origin and destination points that were keyed, over the muted epicenter catalog.
 
 import {GPUCellGridPath} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
-import {getHonshuEventSites, HONSHU_WINDOW} from '../../../data/point-observations';
+import {
+  getHonshuEvents,
+  getHonshuEventSites,
+  HONSHU_WINDOW
+} from '../../../data/point-observations';
 import {addCellFill, addPointKeys} from './support/cells';
 import {getWindowCenter} from './support/pointer';
 import {parameters} from './cell-grid-path.parameters';
@@ -19,7 +23,8 @@ export default defineOperationRun({
   parameters,
   geographicWindow: HONSHU_WINDOW,
   caption: 'H3 paths from four Honshu epicenters to the epicenters around the pointer.',
-  createInputs: () => ({
+  createInputs: ({random}) => ({
+    epicenters: getHonshuEvents(random, 400).positions,
     pointer: [...getWindowCenter(HONSHU_WINDOW)] as [number, number],
     origins: Float32Array.from(
       getHonshuEventSites([
@@ -56,6 +61,7 @@ export default defineOperationRun({
     );
     return {
       outputs: {
+        epicenters: builder.upload('epicenters', 'float32x2', inputs.epicenters),
         counts,
         origins,
         destinations,
@@ -68,10 +74,14 @@ export default defineOperationRun({
       },
       update: current => {
         // The pointer is the destination region: each pair ends at the measured epicenter nearest
-        // its own spot on a fan of radius `spread` around the pointer, so both endpoints are observations.
+        // the point of the ring (radius `spread` around the pointer) that faces its origin, so both
+        // endpoints are observations and the paths approach from their own sides without crossing.
         const targets: [number, number][] = [];
         for (let pair = 0; pair < pairCount; pair++) {
-          const angle = ((pair + 0.5) / pairCount) * 2 * Math.PI;
+          const angle = Math.atan2(
+            inputs.origins[pair * 2 + 1] - inputs.pointer[1],
+            (inputs.origins[pair * 2] - inputs.pointer[0]) * LONGITUDE_SCALE
+          );
           targets.push([
             inputs.pointer[0] + (Math.cos(angle) * current.spread) / LONGITUDE_SCALE,
             inputs.pointer[1] + Math.sin(angle) * current.spread
@@ -102,12 +112,13 @@ export default defineOperationRun({
         // counts holds the true path length; a path longer than maximumPathLength is drawn cut off.
         readout:
           cutOff > 0
-            ? `longest path ${longest} cells · ${cutOff} of ${lengths.length} drawn cut off at maximumPathLength ${values.maximumPathLength}`
-            : `longest path ${longest} cells · all ${lengths.length} drawn whole (maximumPathLength ${values.maximumPathLength})`
+            ? `longest ${longest} cells · ${cutOff} of ${lengths.length} cut at ${values.maximumPathLength}`
+            : `longest ${longest} cells · ${lengths.length} paths`
       };
     }
   },
   draw: ({outputs}) => [
+    {layer: 'dots', context: true, positions: outputs.epicenters, radius: 2.6},
     {
       layer: 'polygons',
       positions: outputs.fill.boundaries,

@@ -4,16 +4,16 @@
 
 import {getHaversineDistance as getSphereDistance} from '../geometry-measures/geodesic-oracle';
 
-/** Noise label and root, matching `GPU_SPATIAL_CLUSTERING_NOISE`. */
+/** Noise label and root, matching `GPU_DBSCAN_NOISE`. */
 export const ORACLE_NOISE = 0xffffffff;
 
-export type SpatialClusteringOracleParameters = {
+export type DBSCANOracleParameters = {
   bounds: readonly [number, number, number, number];
   epsilon: number;
-  minimumPoints: number;
+  minimumSamples: number;
 };
 
-export type SpatialClusteringOracleResult = {
+export type DBSCANOracleResult = {
   labels: number[];
   rootRows: number[];
   coreFlags: number[];
@@ -27,16 +27,16 @@ export type SpatialClusteringOracleResult = {
 };
 
 /**
- * Brute-force O(n^2) DBSCAN with the canonical labeling documented on `GPUSpatialClustering`.
+ * Brute-force O(n^2) DBSCAN with the canonical labeling documented on `GPUDBSCAN`.
  *
  * Inputs are rounded to f32 first, as on the GPU. Distances use float64, which is exact enough
  * because tests avoid pairs near epsilon (see {@link hasNearEpsilonPair}).
  */
 export function clusterPointsOracle(
   positions: ArrayLike<number>,
-  parameters: SpatialClusteringOracleParameters,
+  parameters: DBSCANOracleParameters,
   sourceIds?: ArrayLike<number>
-): SpatialClusteringOracleResult {
+): DBSCANOracleResult {
   const count = positions.length / 2;
   const xs = Array.from({length: count}, (_, row) => Math.fround(positions[row * 2]));
   const ys = Array.from({length: count}, (_, row) => Math.fround(positions[row * 2 + 1]));
@@ -75,7 +75,7 @@ export function clusterPointsOracle(
     }
   }
   const coreFlags = neighbors.map((list, row) =>
-    valid[row] && list.length >= parameters.minimumPoints ? 1 : 0
+    valid[row] && list.length >= parameters.minimumSamples ? 1 : 0
   );
 
   // Connected components of core points; scanning rows ascending makes the first visited row the
@@ -267,7 +267,7 @@ export function clusterGeographicPointsOracle(
   parameters: {
     bounds: readonly [number, number, number, number];
     epsilon: number;
-    minimumPoints: number;
+    minimumSamples: number;
     radius?: number;
   }
 ): {labels: number[]; coreFlags: number[]; clusterCount: number} {
@@ -291,7 +291,7 @@ export function clusterGeographicPointsOracle(
     if (!valid[a]) continue;
     for (let b = 0; b < rows; b++) if (valid[b] && near(a, b)) neighbors[a].push(b);
   }
-  const coreFlags = neighbors.map(list => (list.length >= parameters.minimumPoints ? 1 : 0));
+  const coreFlags = neighbors.map(list => (list.length >= parameters.minimumSamples ? 1 : 0));
   const root = new Array<number>(rows).fill(-1);
   for (let start = 0; start < rows; start++) {
     if (!coreFlags[start] || root[start] >= 0) continue;

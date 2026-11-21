@@ -8,9 +8,10 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {padToAlignedElementCount} from './spatial-maximum-likelihood-nodes';
+import {getRegressionTileLayout, getRowTileMergeScratchLength} from './regression-row-tiles';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_SCRATCH_ELEMENT_LIMIT,
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
@@ -58,6 +59,7 @@ export function getSpatialProbeAllocationLengths(
   return {
     'probe vectors': batchProbeCount * rowCount,
     'probe partials': batchProbeCount * tileCount,
+    'probe merge groups': getRowTileMergeScratchLength(tileCount, batchProbeCount),
     'probe batch information': batchCount * 64,
     'probe dots': powerCount * dotsStride
   };
@@ -69,6 +71,7 @@ export function getSpatialErrorLikelihoodAllocationLengths(props: {
   edgeCount: number;
   predictorCount: number;
   maximumPower?: number;
+  logDeterminant?: 'series' | 'exact';
   traceMode?: GPUSpatialWeightsTracesMode;
   traceProbeCount?: number;
   tileRowCount?: number;
@@ -80,13 +83,13 @@ export function getSpatialErrorLikelihoodAllocationLengths(props: {
   const maximumPower = props.maximumPower ?? 128;
   const mode =
     props.traceMode ??
-    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic');
+    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic');
   const probeTotal =
     mode === 'exact'
       ? rowCount
       : (props.traceProbeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT);
-  const tileRows = props.tileRowCount ?? Math.max(64, Math.ceil(rowCount / 4096));
-  const tileCount = props.tileCount ?? Math.ceil(rowCount / tileRows);
+  const layout = getRegressionTileLayout(rowCount, props.tileRowCount);
+  const tileCount = props.tileCount ?? layout.tileCount;
   const traceTileRows = Math.max(32, Math.ceil(rowCount / 1024));
   const traceTileCount = props.traceTileCount ?? Math.ceil(rowCount / traceTileRows);
   const columns = predictorCount + 2;
@@ -100,19 +103,28 @@ export function getSpatialErrorLikelihoodAllocationLengths(props: {
   );
   const informationProbes = getSpatialProbeAllocationLengths(rowCount, tileCount, probeTotal, 1);
   return {
-    'likelihood workspace': 22 + 4 * predictorCount,
+    'likelihood workspace': 22 + 4 * predictorCount + Number(props.logDeterminant === 'exact'),
+    'likelihood scalar certificate': props.logDeterminant === 'exact' ? rowCount : 0,
+    'likelihood scalar certificate partials':
+      props.logDeterminant === 'exact' ? getRegressionTileLayout(rowCount).tileCount : 0,
+    'likelihood scalar certificate total': props.logDeterminant === 'exact' ? 1 : 0,
     'power traces/sums': maximumPower,
     'likelihood norm partials': tileCount,
+    'likelihood merge groups': getRowTileMergeScratchLength(
+      tileCount,
+      Math.max(3 * packedCount, ordinaryLeastSquaresCount, predictorCount + 1, 6)
+    ),
     'likelihood mean partials': tileCount * (predictorCount + 1),
     'likelihood OLS partials': tileCount * ordinaryLeastSquaresCount,
     'likelihood OLS totals': ordinaryLeastSquaresCount,
     'likelihood Gram partials': 3 * tileCount * packedCount,
     'likelihood Gram totals': 3 * packedCount,
     'likelihood residuals': rowCount,
-    'likelihood residual partials': tileCount * 4,
-    'likelihood residual totals': 4,
+    'likelihood residual partials': tileCount * 6,
+    'likelihood residual totals': 6,
     'trace infinity norm': 1,
     'trace norm partials': traceTileCount,
+    'trace merge groups': getRowTileMergeScratchLength(traceTileCount, maximumPower),
     'trace scaled weights': edgeCount,
     'trace sums partials': maximumPower * padToAlignedElementCount(traceTileCount),
     'trace ones vectors': rowCount,
@@ -134,7 +146,7 @@ export function getSpatialErrorLikelihoodNodeCount(
 ): number {
   const mode =
     traceMode ??
-    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic');
+    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic');
   const probeTotal = mode === 'exact' ? rowCount : traceProbeCount;
   const batchSize = Math.min(
     probeTotal,

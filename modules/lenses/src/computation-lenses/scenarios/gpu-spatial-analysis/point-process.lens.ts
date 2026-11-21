@@ -3,13 +3,22 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {registerLensScenarios} from '../../define-lens-scenarios';
+import {getPointProcessKeySpaces} from './point-process-domains';
 import type {GPUComputationAttributeValue} from '@luma-contributors/analysis/computation-record';
 
 /** Choice receipts for the executed point-process branch. */
 export function getPointProcessLensChoices(
   element: string,
-  choices: Readonly<Record<string, GPUComputationAttributeValue>>
+  choices: Readonly<Record<string, GPUComputationAttributeValue>>,
+  suppliedIntensity = false
 ): Readonly<Record<string, GPUComputationAttributeValue>> {
+  if (element === 'GPUInhomogeneousPointPattern' && suppliedIntensity) {
+    return {
+      ...choices,
+      bandwidth: 'disabled: supplied intensity',
+      selfContribution: 'disabled: supplied intensity'
+    };
+  }
   if (element === 'GPUOPTICS') {
     const method = choices['extractionMethod'] ?? 'dbscan';
     return {
@@ -58,15 +67,19 @@ registerLensScenarios(
             runS2Lens(device, {
               scenarioId: 'gpu-spatial-analysis.inhomogeneous-point-pattern',
               element: 'GPUInhomogeneousPointPattern',
-              choices: {
-                bandwidth: 'disabled: supplied intensity',
-                edgeCorrection: 'border',
-                pairCorrelation: 'annular finite difference',
-                selfContribution: 'exclude'
-              },
+              choices: getPointProcessLensChoices(
+                'GPUInhomogeneousPointPattern',
+                {
+                  bandwidth: 'disabled: supplied intensity',
+                  edgeCorrection: 'border',
+                  pairCorrelation: 'annular finite difference',
+                  selfContribution: 'exclude'
+                },
+                true
+              ),
               datasets: ['point-process-illustrative/1'],
               seed: 7,
-              keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],
+              keySpaces: getPointProcessKeySpaces('GPUInhomogeneousPointPattern'),
               build: (graph, uploads) =>
                 buildPointProcessScenario('GPUInhomogeneousPointPattern', graph, uploads)
             })
@@ -96,7 +109,7 @@ registerLensScenarios(
               }),
               datasets: ['point-process-illustrative/1'],
               seed: 7,
-              keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],
+              keySpaces: getPointProcessKeySpaces('GPUPointPatternEnvelope'),
               build: (graph, uploads) =>
                 buildPointProcessScenario('GPUPointPatternEnvelope', graph, uploads)
             })
@@ -120,7 +133,7 @@ registerLensScenarios(
               choices: {seed: 7, replicate: 0, allocations: 'stratum 0: 2'},
               datasets: ['point-process-illustrative/1'],
               seed: 7,
-              keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],
+              keySpaces: getPointProcessKeySpaces('GPUSpatialBalancedSample'),
               build: (graph, uploads) =>
                 buildPointProcessScenario('GPUSpatialBalancedSample', graph, uploads)
             })
@@ -155,7 +168,7 @@ registerLensScenarios(
               }),
               datasets: ['point-process-illustrative/1'],
               seed: 7,
-              keySpaces: [{id: 'entry', label: 'Point-process input/output row', indexSpace: '1d'}],
+              keySpaces: getPointProcessKeySpaces('GPUOPTICS'),
               build: (graph, uploads) => buildPointProcessScenario('GPUOPTICS', graph, uploads)
             })
         };

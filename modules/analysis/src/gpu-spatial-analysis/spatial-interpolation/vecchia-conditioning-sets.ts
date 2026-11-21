@@ -8,6 +8,76 @@
  * every parameter evaluation. This runs before the GPU work, as a graph topology does.
  */
 
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Maximum conditioning width supported by the Vecchia GPU routes. */
+export const MAXIMUM_VECCHIA_NEIGHBOR_COUNT = 32;
+/** Signed linked-list row IDs and uint32 CSR offsets must both remain representable. */
+export const MAXIMUM_VECCHIA_ENTRY_COUNT = 0x7fffffff;
+
+function isEligible(
+  positions: ArrayLike<number>,
+  row: number,
+  validity?: ArrayLike<number>,
+  times?: ArrayLike<number>
+): boolean {
+  return (
+    (!validity || Boolean(validity[row])) &&
+    Number.isFinite(positions[row * 2]) &&
+    Number.isFinite(positions[row * 2 + 1]) &&
+    (!times || Number.isFinite(times[row]))
+  );
+}
+
+function hasEligiblePoint(
+  positions: ArrayLike<number>,
+  rowCount: number,
+  validity?: ArrayLike<number>,
+  times?: ArrayLike<number>
+): boolean {
+  for (let row = 0; row < rowCount; row++)
+    if (isEligible(positions, row, validity, times)) return true;
+  return false;
+}
+
+function validatePositions(
+  id: string,
+  positions: ArrayLike<number>,
+  rowCount: number,
+  port = 'positions'
+): void {
+  validateRequirement(
+    id,
+    positions.length % 2 === 0,
+    `${port} must contain complete XY pairs; received ${positions.length}`
+  );
+  validateCapacity(id, 'rowCount', rowCount, 0, MAXIMUM_VECCHIA_ENTRY_COUNT - 1);
+  validateRequirement(
+    id,
+    positions.length % 2 === 0 && positions.length >= rowCount * 2,
+    `${port} must contain complete XY pairs and at least ${rowCount * 2} elements; received ${positions.length}`
+  );
+}
+
+function validateNeighborhoodCapacity(
+  id: string,
+  rowCount: number,
+  neighborCount: number,
+  maximumNeighborCount = MAXIMUM_VECCHIA_NEIGHBOR_COUNT
+): void {
+  validateCapacity(id, 'neighborCount', neighborCount, 1, maximumNeighborCount);
+  validateCapacity(
+    id,
+    'rowCount * neighborCount',
+    rowCount * neighborCount,
+    0,
+    MAXIMUM_VECCHIA_ENTRY_COUNT
+  );
+}
+
 /** Grid of a uniform bucketed index over the coordinates. */
 type PointGrid = {
   minimumX: number;
@@ -22,26 +92,55 @@ type PointGrid = {
 /** Mean rows per cell at full occupancy. */
 const ROWS_PER_CELL = 2;
 
-function createPointGrid(positions: ArrayLike<number>, rowCount: number): PointGrid {
+function createPointGrid(
+  positions: ArrayLike<number>,
+  rowCount: number,
+  validity?: ArrayLike<number>,
+  times?: ArrayLike<number>
+): PointGrid {
   let minimumX = Infinity;
   let minimumY = Infinity;
   let maximumX = -Infinity;
   let maximumY = -Infinity;
+  let eligibleCount = 0;
   for (let row = 0; row < rowCount; row++) {
+    if (!isEligible(positions, row, validity, times)) continue;
+    eligibleCount++;
     minimumX = Math.min(minimumX, positions[row * 2]);
     maximumX = Math.max(maximumX, positions[row * 2]);
     minimumY = Math.min(minimumY, positions[row * 2 + 1]);
     maximumY = Math.max(maximumY, positions[row * 2 + 1]);
   }
-  const width = Math.max(maximumX - minimumX, Number.MIN_VALUE);
-  const height = Math.max(maximumY - minimumY, Number.MIN_VALUE);
-  const cellCount = Math.max(1, Math.round(rowCount / ROWS_PER_CELL));
-  const cellSize = Math.max(
-    Math.sqrt((width * height) / cellCount),
-    Math.max(width, height) / 4096
+  if (eligibleCount === 0) {
+    minimumX = minimumY = maximumX = maximumY = 0;
+  }
+  const width = maximumX - minimumX;
+  const height = maximumY - minimumY;
+  validateRequirement(
+    'VecchiaPointGrid',
+    Number.isFinite(width) && Number.isFinite(height),
+    `positions extent must be finite; received ${width} by ${height}`
   );
+  const cellCount = Math.max(1, Math.round(eligibleCount / ROWS_PER_CELL));
+  const span = Math.max(width, height);
+  // Scale before multiplying to avoid overflow/underflow for large/tiny finite extents.
+  const cellSize =
+    span === 0
+      ? 1
+      : Math.max(
+          span * Math.sqrt(((width / span) * (height / span)) / cellCount),
+          span / 4096,
+          Number.MIN_VALUE
+        );
   const columns = Math.floor(width / cellSize) + 1;
   const rows = Math.floor(height / cellSize) + 1;
+  validateCapacity(
+    'VecchiaPointGrid',
+    'columns * rows',
+    columns * rows,
+    1,
+    MAXIMUM_VECCHIA_ENTRY_COUNT
+  );
   return {
     minimumX,
     minimumY,
@@ -54,11 +153,11 @@ function createPointGrid(positions: ArrayLike<number>, rowCount: number): PointG
 }
 
 function getCellColumn(grid: PointGrid, x: number): number {
-  return Math.min(grid.columns - 1, Math.floor((x - grid.minimumX) / grid.cellSize));
+  return Math.max(0, Math.min(grid.columns - 1, Math.floor((x - grid.minimumX) / grid.cellSize)));
 }
 
 function getCellRow(grid: PointGrid, y: number): number {
-  return Math.min(grid.rows - 1, Math.floor((y - grid.minimumY) / grid.cellSize));
+  return Math.max(0, Math.min(grid.rows - 1, Math.floor((y - grid.minimumY) / grid.cellSize)));
 }
 
 function insertPoint(grid: PointGrid, positions: ArrayLike<number>, row: number): void {
@@ -112,7 +211,7 @@ function visitRings(
           }
         }
       } else {
-        if (firstColumn >= 0) {
+        if (firstColumn >= 0 && firstColumn < grid.columns) {
           for (
             let sample = grid.heads[cellRow * grid.columns + firstColumn];
             sample >= 0;
@@ -121,7 +220,7 @@ function visitRings(
             visit(sample);
           }
         }
-        if (lastColumn < grid.columns) {
+        if (lastColumn >= 0 && lastColumn < grid.columns) {
           for (
             let sample = grid.heads[cellRow * grid.columns + lastColumn];
             sample >= 0;
@@ -141,7 +240,41 @@ export type VecchiaConditioningSets = {
   offsets: Uint32Array;
   /** Earlier rows of the ordering, nearest first (`GPULocalKriging` re-sorts them by distance). */
   neighbors: Uint32Array;
+  /** Logical row count, requested width (even for short spans), and readable CSR entry count. */
+  counts?: {rowCount: number; neighborCount: number; entryCount: number};
+  formats?: {offsets: 'uint32'; neighbors: 'uint32'};
 };
+
+/** Builder result with guaranteed metadata; legacy CSR values remain assignable to VecchiaConditioningSets. */
+export type PreparedVecchiaConditioningSets = VecchiaConditioningSets & {
+  counts: NonNullable<VecchiaConditioningSets['counts']>;
+  formats: NonNullable<VecchiaConditioningSets['formats']>;
+};
+
+function prepareSets(
+  offsets: Uint32Array,
+  neighbors: Uint32Array,
+  neighborCount: number
+): PreparedVecchiaConditioningSets {
+  return {
+    offsets,
+    neighbors,
+    counts: {rowCount: offsets.length - 1, neighborCount, entryCount: neighbors.length},
+    formats: {offsets: 'uint32', neighbors: 'uint32'}
+  };
+}
+
+/** Maps CPU CSR arrays to the two named uint32 consumer ports using the caller's uploader. */
+export function uploadVecchiaNeighborhoods<View>(
+  sets: PreparedVecchiaConditioningSets,
+  uploadUint32: (values: Uint32Array, format: 'uint32') => View
+): {neighborhoodOffsets: View; neighborhoods: View; neighborCount: number} {
+  return {
+    neighborhoodOffsets: uploadUint32(sets.offsets, 'uint32'),
+    neighborhoods: uploadUint32(sets.neighbors, 'uint32'),
+    neighborCount: sets.counts.neighborCount
+  };
+}
 
 /** Options of {@link buildVecchiaConditioningSets}. */
 export type VecchiaConditioningSetProps = {
@@ -153,7 +286,7 @@ export type VecchiaConditioningSetProps = {
   neighborCount: number;
   /** Vecchia order: `order[k]` is the row at position k. Defaults to the row order. */
   order?: ArrayLike<number>;
-  /** Optional per-row validity; invalid rows neither condition nor are conditioned. */
+  /** Optional setup mask: nonzero includes (including negative integers); zero or NaN excludes. */
   validity?: ArrayLike<number>;
   /** Optional per-row times (space-time). Requires `timeScale`. */
   times?: ArrayLike<number>;
@@ -170,13 +303,52 @@ export type VecchiaConditioningSetProps = {
  * neighbours, so its likelihood term is the marginal one.
  *
  * A uniform grid keeps setup near-linear in the row count for spread data.
+ * The setup route accepts at most 2,147,483,647 scratch entries (rowCount * neighborCount)
+ * and grid buckets, and at most 2,147,483,646 rows, bounded by MAXIMUM_VECCHIA_ENTRY_COUNT.
  */
 export function buildVecchiaConditioningSets(
   props: VecchiaConditioningSetProps
-): VecchiaConditioningSets {
+): PreparedVecchiaConditioningSets {
   const {positions, neighborCount, order, validity, times, timeScale = 0} = props;
   const rowCount = props.rowCount ?? positions.length / 2;
-  const grid = createPointGrid(positions, rowCount);
+  const id = 'buildVecchiaConditioningSets';
+  validatePositions(id, positions, rowCount);
+  validateNeighborhoodCapacity(id, rowCount, neighborCount);
+  for (const [name, values] of [
+    ['validity', validity],
+    ['times', times]
+  ] as const) {
+    validateRequirement(
+      id,
+      !values || values.length >= rowCount,
+      `${name} length must cover selected rowCount ${rowCount}; received ${values?.length}`
+    );
+  }
+  validateRequirement(
+    id,
+    !times || (props.timeScale !== undefined && Number.isFinite(timeScale)),
+    `timeScale must be explicit and finite when times is supplied; received ${props.timeScale}`
+  );
+  if (order) {
+    validateRequirement(
+      id,
+      order.length === rowCount,
+      `order length must equal selected rowCount ${rowCount}; received ${order.length}`
+    );
+    const seen = new Set<number>();
+    for (let position = 0; position < rowCount; position++) {
+      const row = order[position];
+      validateRequirement(
+        id,
+        Number.isInteger(row) && row >= 0 && row < rowCount && !seen.has(row),
+        `order must be an exact permutation of [0, ${rowCount}); received ${row} at position ${position}`
+      );
+      seen.add(row);
+    }
+  }
+  if (!hasEligiblePoint(positions, rowCount, validity, times))
+    return prepareSets(new Uint32Array(rowCount + 1), new Uint32Array(), neighborCount);
+  const grid = createPointGrid(positions, rowCount, validity, times);
   const counts = new Uint32Array(rowCount);
   const neighbors = new Uint32Array(rowCount * neighborCount);
   const orderPositions = new Uint32Array(rowCount);
@@ -187,7 +359,7 @@ export function buildVecchiaConditioningSets(
   const bestDistances = new Float64Array(neighborCount);
   for (let position = 0; position < rowCount; position++) {
     const row = order ? order[position] : position;
-    if (validity && !validity[row]) {
+    if (!isEligible(positions, row, validity, times)) {
       continue;
     }
     const x = positions[row * 2];
@@ -244,25 +416,48 @@ export function buildVecchiaConditioningSets(
       packed[offsets[row] + slot] = neighbors[row * neighborCount + slot];
     }
   }
-  return {offsets, neighbors: packed};
+  return prepareSets(offsets, packed, neighborCount);
 }
 
-/** CSR of the data rows nearest each query, `[offsets, neighbors]` as for the conditioning sets. */
+/**
+ * CSR of the data rows nearest each query, `[offsets, neighbors]` as for the conditioning sets.
+ * This setup route accepts at most 2,147,483,647 scratch entries (queryCount * neighborCount)
+ * and grid buckets, and at most 2,147,483,646 data or query rows, bounded by
+ * MAXIMUM_VECCHIA_ENTRY_COUNT. Prediction setup supports positive integer widths beyond 32,
+ * including conformal calibration widths through 256; each downstream GPU solve enforces its own limit.
+ */
 export function buildVecchiaPredictionNeighborhoods(props: {
   /** Packed data x, y pairs. */
   positions: ArrayLike<number>;
   /** Packed query x, y pairs. */
   queries: ArrayLike<number>;
   neighborCount: number;
-  /** Optional data validity. */
+  /** Optional setup mask: nonzero includes (including negative integers); zero or NaN excludes. */
   validity?: ArrayLike<number>;
-}): VecchiaConditioningSets {
+}): PreparedVecchiaConditioningSets {
   const {positions, queries, neighborCount, validity} = props;
   const rowCount = positions.length / 2;
   const queryCount = queries.length / 2;
-  const grid = createPointGrid(positions, rowCount);
+  const id = 'buildVecchiaPredictionNeighborhoods';
+  validatePositions(id, positions, rowCount);
+  validatePositions(id, queries, queryCount, 'queries');
+  validateNeighborhoodCapacity(id, queryCount, neighborCount, MAXIMUM_VECCHIA_ENTRY_COUNT);
+  validateRequirement(
+    id,
+    !validity || validity.length === rowCount,
+    `validity length must equal data rowCount ${rowCount}; received ${validity?.length}`
+  );
+  for (let query = 0; query < queryCount; query++)
+    validateRequirement(
+      id,
+      isEligible(queries, query),
+      `queries must contain finite XY at row ${query}; received ${queries[query * 2]}, ${queries[query * 2 + 1]}`
+    );
+  if (queryCount === 0 || !hasEligiblePoint(positions, rowCount, validity))
+    return prepareSets(new Uint32Array(queryCount + 1), new Uint32Array(), neighborCount);
+  const grid = createPointGrid(positions, rowCount, validity);
   for (let row = 0; row < rowCount; row++) {
-    if (!validity || validity[row]) {
+    if (isEligible(positions, row, validity)) {
       insertPoint(grid, positions, row);
     }
   }
@@ -310,7 +505,7 @@ export function buildVecchiaPredictionNeighborhoods(props: {
       neighbors[total++] = bestRows[slot];
     }
   }
-  return {offsets, neighbors: neighbors.subarray(0, total)};
+  return prepareSets(offsets, neighbors.subarray(0, total), neighborCount);
 }
 
 /** Binary max-heap of `[key, row]` keyed by larger key, then lower row. */
@@ -393,6 +588,13 @@ export function getVecchiaMaxMinOrdering(
   positions: ArrayLike<number>,
   rowCount: number = positions.length / 2
 ): Uint32Array {
+  validatePositions('getVecchiaMaxMinOrdering', positions, rowCount);
+  for (let row = 0; row < rowCount; row++)
+    validateRequirement(
+      'getVecchiaMaxMinOrdering',
+      isEligible(positions, row),
+      `positions must contain finite XY at row ${row}; received ${positions[row * 2]}, ${positions[row * 2 + 1]}`
+    );
   const order = new Uint32Array(rowCount);
   if (rowCount === 0) {
     return order;

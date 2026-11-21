@@ -10,7 +10,7 @@ import {
   type GPUAnalysisQuestion,
   type GPUAnalysisRowSemantics,
   type GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {KEPLER_CURATED_ANALYSES} from '../curated/curated-analyses';
 import {getKeplerCuratedAnalysisSampleMetadata} from '../curated/curated-analysis-samples';
 import type {KeplerCuratedAnalysis} from '../curated/curated-analysis-types';

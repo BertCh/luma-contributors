@@ -149,3 +149,41 @@ it('validates both operation shapes and GPU maximumFlips when contributor views 
     )
   ).toThrow(/maximumFlips/);
 });
+
+it('GEO-126 CPU constrained triangulation retains polygon and allocation options', async () => {
+  const input = packOperationPolygons([
+    [
+      [
+        [0, 0],
+        [4, 0],
+        [4, 4],
+        [0, 1]
+      ]
+    ]
+  ]);
+  const props = {
+    ...getTriangulationOperationProps(input),
+    output: {...getTriangulationOperationProps(input).output, status: {converged: 'converged'}}
+  };
+  const operation = new CPUConstrainedDelaunayTriangulationOperation(props);
+  props.polygonCount = 99;
+  props.indexCapacity = 3;
+  props.output.indices = 'replacement';
+  props.output.status.converged = 'replacement-converged';
+  const inputs = Object.fromEntries(
+    Object.entries(input).map(([name, values]) => [
+      name,
+      {
+        format: name === 'positions' ? ('float32x2' as const) : ('uint32' as const),
+        length: name === 'positions' ? values.length / 2 : values.length,
+        chunks: [{values, length: name === 'positions' ? values.length / 2 : values.length}],
+        pack: () => values
+      }
+    ])
+  );
+  const result = await operation.execute({inputs});
+  // Same hand-derived legal 1--3 diagonal and triangles as the first fixture in this file.
+  expect(Array.from(result['indices'] as Uint32Array)).toEqual([3, 1, 2, 1, 3, 0]);
+  expect(Array.from(result['converged'] as Uint32Array)).toEqual([1]);
+  expect(operation.outputs['indices'].length).toBe(6);
+});

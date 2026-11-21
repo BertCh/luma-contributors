@@ -4,6 +4,7 @@
 
 import {SCAN_TOTAL_WGSL} from '../../analysis-core/kernels/scan-total';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
 import {LON_LAT_RING_WGSL} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/index';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -113,7 +114,9 @@ const PREFIX_LANES = 64;
  * is removed by shader compilers that reassociate. Phase 2: the workgroup visits the queued
  * lines of its block in ascending order and scans each cooperatively in tiles of `PREFIX_LANES`
  * segments: each tile is a Hillis-Steele inclusive scan in workgroup memory, and the running total
- * carries between tiles in compensated form. That cuts the dependent chain of a line of `n` rows
+ * carries between tiles in compensated form. Each published row also compensates the incoming
+ * carry plus its tile prefix, so the last moving vertex retains small increments immediately.
+ * That cuts the dependent chain of a line of `n` rows
  * from `n` global read-modify-write steps to `n / 64` tiles of 6 scan rounds, so one very long line
  * no longer stalls the stage, while many short lines still cost one thread each (not one
  * workgroup each). Shifts are sums of multiples of 360, exact in f32 either way; long-line
@@ -188,7 +191,7 @@ var<workgroup> prefixCarry: array<f32, 3>;
 var<workgroup> tileLengths: array<f32, ${PREFIX_LANES}>;
 var<workgroup> tileShifts: array<${shiftType}, ${PREFIX_LANES}>;
 ${props.rowTurns ? 'var<workgroup> turnCarry: array<i32, 1>;' : ''}
-${ADDITION_ROUNDING_ERROR_WGSL}
+${COMPENSATED_SUM_WGSL}
 ${getLineGeometrySource(props.coordinateSystem, props.radius)}
 ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
     body: /* wgsl */ `let lane = localInvocationIndex;
@@ -200,8 +203,7 @@ ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
     let last = min(max(lineOffsets[lineOffsetsOffset + ownLine + 1u], first), ROW_COUNT);
     if (last > first) {
       if (last - first <= PREFIX_LANES) {
-        var sum = 0.0;
-        var compensation = 0.0;
+        var measure = vec2<f32>(0.0);
         var shift = ${shiftZero};
         var previous = getPosition(first);
         ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + first] = 0.0;' : ''}
@@ -211,10 +213,8 @@ ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
           ${
             rowMeasures
               ? `let segmentLength = getSegmentLength(previous, current);
-          let nextSum = sum + segmentLength;
-          compensation = compensation + getAdditionRoundingError(sum, segmentLength, nextSum);
-          sum = nextSum;
-          rowMeasures[rowMeasuresOffset + row] = sum + compensation;`
+          measure = addCompensatedValue(measure, segmentLength);
+          rowMeasures[rowMeasuresOffset + row] = measure.x + measure.y;`
               : ''
           }
           ${
@@ -279,17 +279,21 @@ ${props.polygonEdges ? LON_LAT_RING_WGSL : ''}`,
           workgroupBarrier();
         }
         if (row < lineEnd) {
-          ${rowMeasures ? 'rowMeasures[rowMeasuresOffset + row] = (prefixCarry[0] + tileLengths[lane]) + prefixCarry[1];' : ''}
+          ${
+            rowMeasures
+              ? `let rowMeasure = addCompensatedValue(vec2<f32>(prefixCarry[0], prefixCarry[1]), tileLengths[lane]);
+          rowMeasures[rowMeasuresOffset + row] = rowMeasure.x + rowMeasure.y;`
+              : ''
+          }
           ${rowShifts ? `rowShifts[rowShiftsOffset + row] = ${shiftCarry} + tileShifts[lane];` : ''}
         }
         workgroupBarrier();
         if (lane == 0u) {
           // Neumaier-compensated carry of the tile total into the running measure.
           let total = tileLengths[PREFIX_LANES - 1u];
-          let sum = prefixCarry[0];
-          let nextSum = sum + total;
-          prefixCarry[1] += getAdditionRoundingError(sum, total, nextSum);
-          prefixCarry[0] = nextSum;
+          let carry = addCompensatedValue(vec2<f32>(prefixCarry[0], prefixCarry[1]), total);
+          prefixCarry[0] = carry.x;
+          prefixCarry[1] = carry.y;
           ${shiftCarry} += tileShifts[PREFIX_LANES - 1u];
         }
         workgroupBarrier();
@@ -878,7 +882,7 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
   // target first rounds away short antimeridian separations even with a stable angle.
   let angle = geodesicCentralAngle(source, destination);
   if (vertex == segments) {
-    let unwrapped = vec2<f32>(source.x + geodesicLongitudeDelta(source.x, destination.x), destination.y);
+    let unwrapped = geodesicUnwrapTarget(source, destination);
     writeVertex(index, unwrapped, angle * RADIUS, pair);
     return;
   }

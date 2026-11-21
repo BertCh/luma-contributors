@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getPlaneMomentTransferSource} from './pointcloud-plane-transfer';
+
 /**
  * Number of float32 words one 256-row block writes: count, weight, weighted squared residual, the
  * 6 by 6 normal matrix, the 6 right-hand sides and the block centre.
@@ -77,15 +79,7 @@ for(var batchIndex=0u;batchIndex<${typeof blocks === 'number' ? `${blocks}u` : b
 }
 for(var batchIndex=0u;batchIndex<${typeof blocks === 'number' ? `${blocks}u` : blocks};batchIndex++){
  let base=batchIndex*${words}u;if(!(readMoments(base+1u)>0.0)){continue;}
- let offset=vec3f(readMoments(base+45u),readMoments(base+46u),readMoments(base+47u))-centroid;
- // Row-major skew matrix of the offset: transfer * n = cross(offset, n).
- var transfer:array<f32,9>;transfer[1]=-offset.z;transfer[2]=offset.y;transfer[3]=offset.z;transfer[5]=-offset.x;transfer[6]=-offset.y;transfer[7]=offset.x;
- var blockSystem:array<f32,42>;
- for(var row=0u;row<6u;row++){for(var column=0u;column<6u;column++){blockSystem[row*7u+column]=readMoments(base+3u+row*6u+column);}blockSystem[row*7u+6u]=readMoments(base+39u+row);}
- // Rotation rows, then rotation columns: each reads only the translation rows or columns, which do not change.
- for(var row=0u;row<3u;row++){for(var column=0u;column<7u;column++){for(var term=0u;term<3u;term++){blockSystem[row*7u+column]+=transfer[row*3u+term]*blockSystem[(3u+term)*7u+column];}}}
- for(var row=0u;row<6u;row++){for(var column=0u;column<3u;column++){for(var term=0u;term<3u;term++){blockSystem[row*7u+column]+=blockSystem[row*7u+3u+term]*transfer[column*3u+term];}}}
- for(var entry=0u;entry<42u;entry++){system[entry]+=blockSystem[entry];}
+${getPlaneMomentTransferSource('readMoments')}
 }
 let residual=sqrt(residualSum/max(weight,1e-30));writeHistory(${typeof iteration === 'number' ? `${iteration}u` : iteration},vec3f(count,residual,0.0));
 if(readState(16u)!=1.0){return;}if(count<6.0){writeNext(16u,2.0);return;}

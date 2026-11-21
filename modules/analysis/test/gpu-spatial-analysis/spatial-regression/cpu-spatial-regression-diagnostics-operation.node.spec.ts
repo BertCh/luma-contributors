@@ -234,3 +234,53 @@ it('checks array consistency and both operation constructions', () => {
     props: {weights: {status: {overflow: expect.anything(), candidateOverflow: expect.anything()}}}
   });
 });
+
+it('BC2 operations retain complete certificates after caller status and output maps mutate', async () => {
+  const props = {
+    ...PROPS,
+    weights: {...PROPS.weights, status: {complete: 'flag' as string | undefined}},
+    output: {...PROPS.output, status: {...PROPS.output.status}}
+  };
+  const cpu = new CPUSpatialRegressionDiagnosticsOperation(props);
+  const gpu = new GPUSpatialRegressionDiagnosticsOperation(props);
+  const input = getInput();
+  const vector = <Values extends Float32Array | Uint32Array>(values: Values) => ({
+    format: (values instanceof Float32Array ? 'float32' : 'uint32') as 'float32' | 'uint32',
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  const inputs = {
+    offsets: vector(input.weights.offsets),
+    neighbors: vector(input.weights.neighbors),
+    weights: vector(input.weights.weights),
+    predictors: vector(input.predictors),
+    response: vector(input.response),
+    residuals: vector(input.residuals),
+    mask: vector(input.mask),
+    complete: vector(Uint32Array.of(0))
+  };
+  expect((await cpu.execute({inputs}))['code']).toEqual(Uint32Array.of(3));
+  delete props.weights.status.complete;
+  props.output.status.code = 'replacement';
+  expect((await cpu.execute({inputs}))['code']).toEqual(Uint32Array.of(3));
+  const contributor = constructRegressionOperationContributor(gpu, {
+    offsets: {format: 'uint32', length: 31},
+    neighbors: {format: 'uint32', length: 90},
+    weights: {format: 'float32', length: 90},
+    predictors: {format: 'float32', length: 60},
+    response: {format: 'float32', length: 30},
+    residuals: {format: 'float32', length: 30},
+    mask: {format: 'uint32', length: 30},
+    complete: {format: 'uint32', length: 1}
+  });
+  inputs.complete.pack()[0] = 1;
+  const recovered = (await cpu.execute({inputs})) as Record<string, Float32Array | Uint32Array>;
+  expect(recovered['code']).toEqual(Uint32Array.of(0));
+  expect(Number.isFinite(recovered['tests'][0])).toBe(true);
+  expect(contributor).toHaveProperty('props.weights.status.complete');
+  expect(
+    (contributor as unknown as {props: {weights: {status: {complete?: unknown}}}}).props.weights
+      .status.complete
+  ).toBeDefined();
+});

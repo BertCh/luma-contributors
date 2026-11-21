@@ -2,11 +2,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
 import {getVitestConfig} from '@vis.gl/dev-tools';
 import {
   BENCHMARK_PATTERNS,
   getOptInBrowserDefines,
-  getOptInTestExclusions
+  getOptInTestExclusions,
+  getVerificationBrowserConfiguration
 } from './scripts/verification-policy.mjs';
 
 // Kepler specs that exercise examples/deck/kepler-compute run against the example sources in
@@ -39,13 +41,7 @@ const browserExcludePatterns = [
   ...excludePatterns
 ];
 
-const launchArguments = [
-  '--enable-unsafe-webgpu',
-  '--ignore-gpu-blocklist',
-  ...(process.env['CI'] && process.platform === 'linux'
-    ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader']
-    : [])
-];
+const browserConfiguration = getVerificationBrowserConfiguration();
 
 const browserProject = {
   define: getOptInBrowserDefines(),
@@ -65,9 +61,20 @@ const browserProject = {
   }
 };
 
+// A committed or local `.only` must not suppress sibling cases while the run exits 0 (TOOL-111):
+// Vitest otherwise allows focus whenever CI is unset. `--allowOnly` still opts in for one run.
+const headlessProject = {
+  ...browserProject,
+  test: {...browserProject.test, allowOnly: false}
+};
+
 export default getVitestConfig({
+  tsconfigProjects: [fileURLToPath(new URL('./tsconfig.test.json', import.meta.url))],
   excludePatterns,
-  launchOptions: {channel: 'chromium', args: launchArguments},
+  launchOptions: {
+    channel: browserConfiguration.channel,
+    args: browserConfiguration.launchArguments
+  },
   projects: {
     node: {
       test: {
@@ -75,12 +82,13 @@ export default getVitestConfig({
         pool: 'threads',
         maxWorkers: 1,
         isolate: false,
+        allowOnly: false,
         include: ['modules/**/*.node.spec.{ts,js}'],
         exclude: excludePatterns
       }
     },
     browser: browserProject,
-    headless: browserProject
+    headless: headlessProject
   },
   coverage: {
     provider: 'istanbul',

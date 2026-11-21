@@ -166,7 +166,11 @@ async function measureNeighborhoods(
     for (let slot = 0; slot < capacity; slot++) {
       expectedIndices.push(support[slot] ?? 0xffffffff);
       expectedDistances.push(
-        slot < support.length ? (distribution === 'coincident' ? 0 : 1) : Math.fround(3.402823e38)
+        slot < support.length
+          ? distribution === 'coincident'
+            ? 0
+            : 1
+          : new Float32Array(Uint32Array.of(0x7f7fffff).buffer)[0]
       );
     }
   }

@@ -215,7 +215,12 @@ function contains(rings: NearestPoint[][], q: NearestPoint): boolean {
 export function nearestNeighborsOracle(
   queries: NearestOracleGeometry,
   features: NearestOracleGeometry,
-  options: {k: number; ties?: 'lowest-id' | 'all'; maxDistance?: number; featureIds?: number[]}
+  options: {
+    neighborCount: number;
+    ties?: 'lowest-row' | 'all';
+    maxDistance?: number;
+    featureIds?: number[];
+  }
 ): OracleNeighbor[][] {
   const queryGeometry = getEdges(queries);
   const featureGeometry = getEdges(features);
@@ -252,9 +257,9 @@ export function nearestNeighborsOracle(
       }
     }
     neighbors.sort((left, right) => left.distance - right.distance || left.id - right.id);
-    let count = Math.min(options.k, neighbors.length);
-    if (options.ties === 'all' && neighbors.length >= options.k) {
-      const kth = neighbors[options.k - 1].distance;
+    let count = Math.min(options.neighborCount, neighbors.length);
+    if (options.ties === 'all' && neighbors.length >= options.neighborCount) {
+      const kth = neighbors[options.neighborCount - 1].distance;
       while (count < neighbors.length && neighbors[count].distance === kth) count++;
     }
     result.push(

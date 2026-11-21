@@ -162,7 +162,7 @@ async function runCoverage(
         layout.polygonOffsets.length
       ),
       parameters: parameters.importToGraph(rig.graph),
-      snapTolerance: padding?.snapTolerance,
+      snapGridSize: padding?.snapTolerance,
       maximumIterations: 128,
       simplifyBoundary,
       topologyIterationCount: topologyRounds,
@@ -657,7 +657,7 @@ async function runProjectedSquares(
       polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
       featureOffsets: rig.input(layout.featureOffsets, 'uint32', layout.featureOffsets.length),
       parameters: parameters.importToGraph(rig.graph),
-      snapTolerance,
+      snapGridSize: snapTolerance,
       output: {
         positions: outputPositions.view,
         ringOffsets: outputOffsets.view,

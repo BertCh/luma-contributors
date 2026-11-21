@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
@@ -27,7 +28,7 @@ export type CPURasterMedoidCompositeResult = {
  * observations, with earliest-slice ties. A zero mask or any nonfinite band rejects the whole slice.
  *
  * What differs from the GPU contributor:
- * - Distances and sums use float64; near ties and float32 distance overflow can select a different
+ * - Distances and sums use float64; near ties can select a different
  *   medoid. Output values are copied from the selected float32 observation.
  * - GPU limits of 64 slices and 16 bands are dropped; uint32 shape/indexing limits remain.
  *
@@ -45,8 +46,41 @@ export function computeRasterMedoidCompositeOnCPU(
   const status = new Uint32Array(dimensions.cellCount).fill(1);
   for (let cell = 0; cell < dimensions.cellCount; cell++) {
     const slices = getCPUCompositeSlices(values, mask, dimensions, cell);
+    let varyingBandCount = 0;
+    let scalarBand = 0;
+    if (slices.length > 0) {
+      for (let band = 0; band < dimensions.bandCount; band++) {
+        const firstValue =
+          values[(cell * dimensions.sliceCount + slices[0]) * dimensions.bandCount + band];
+        if (
+          slices.some(
+            slice =>
+              values[(cell * dimensions.sliceCount + slice) * dimensions.bandCount + band] !==
+              firstValue
+          )
+        ) {
+          varyingBandCount++;
+          scalarBand = band;
+        }
+      }
+    }
+    if (slices.length > 0 && varyingBandCount <= 1) {
+      const sorted = slices
+        .map(
+          slice =>
+            values[(cell * dimensions.sliceCount + slice) * dimensions.bandCount + scalarBand]
+        )
+        .sort((first, second) => first - second);
+      const lower = sorted[Math.floor((sorted.length - 1) / 2)];
+      const upper = sorted[Math.floor(sorted.length / 2)];
+      sliceIndex[cell] = slices.find(slice => {
+        const value =
+          values[(cell * dimensions.sliceCount + slice) * dimensions.bandCount + scalarBand];
+        return value >= lower && value <= upper;
+      })!;
+    }
     let bestSum = Infinity;
-    for (const candidate of slices) {
+    for (const candidate of varyingBandCount > 1 ? slices : []) {
       let sum = 0;
       for (const other of slices) {
         if (other === candidate) continue;
@@ -80,6 +114,16 @@ export function computeRasterMedoidCompositeOnCPU(
 export class CPURasterMedoidCompositeOperation extends GPUCPUOperation {
   constructor(props: RasterMedoidCompositeOperationProps) {
     const id = props.id ?? 'raster-medoid-composite';
+    validateOperationGraphNames(
+      id,
+      {values: props.values, ...(props.mask !== undefined ? {mask: props.mask} : {})},
+      {
+        composite: props.output.composite,
+        sliceIndex: props.output.sliceIndex,
+        status: props.output.status
+      }
+    );
+    props = {...props, output: {...props.output}};
     validateCPUCompositeDimensions(id, props);
     super({
       id,

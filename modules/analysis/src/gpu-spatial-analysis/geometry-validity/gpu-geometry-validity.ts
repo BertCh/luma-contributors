@@ -21,8 +21,9 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSegmentIntersectionMaximumVertexCount,
-  GPUSegmentIntersection
+  type GPUSegmentIntersection
 } from '../segment-intersection/index';
+import {createSegmentPairNodes} from '../segment-intersection/segment-pair-nodes';
 import {SEGMENT_PREDICATES_WGSL} from '../segment-intersection/segment-intersection-wgsl';
 import {
   GPU_GEOMETRY_VALIDITY_BIT,
@@ -35,7 +36,6 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import type {
-  GPULineGeometryPort,
   GPUPackedGeometryPort,
   GPUPointGeometryPort,
   GPUPolygonGeometryPort
@@ -47,7 +47,14 @@ import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-stor
 
 import {validateSegmentIntersectionScratch} from '../segment-intersection/segment-storage-validation';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotLineFeatureGeometry,
+  snapshotPointFeatureGeometry,
+  getLineFeatureLookupWGSL,
+  type GPULineFeatureGeometry,
+  type GPUPointFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUGeometryValidity';
 
@@ -91,7 +98,7 @@ export type GPUGeometryValidityOutput = {
  * Per-frame: the contents of every input buffer. Topology: view lengths, `intersectionCapacity`,
  * `leafCapacity`, `ringClosure`, `orientation`, and which optional views exist.
  */
-export type GPUGeometryValidityProps = {
+type GPUGeometryValiditySharedProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-validity'`. */
   id?: string;
   /**
@@ -110,9 +117,9 @@ export type GPUGeometryValidityProps = {
    * Linestring features. Valid means finite coordinates and, for a non-empty line, at least two
    * distinct vertices (Shapely `is_valid` for a `LineString`). Self-intersection is allowed.
    */
-  lines?: GPUPackedGeometryPort<GPULineGeometryPort>;
+  lines?: GPULineFeatureGeometry;
   /** Point features. Valid means finite coordinates (Shapely `is_valid` for a `Point`). */
-  points?: GPUPackedGeometryPort<GPUPointGeometryPort>;
+  points?: GPUPointFeatureGeometry;
   /**
    * Caller-owned outputs: `issueCode`, one bitmask per feature (`featureCount` rows, see
    * {@link GPU_GEOMETRY_VALIDITY_BIT}; lines and points use only `nonFinite` and `tooFewPoints`)
@@ -133,6 +140,17 @@ export type GPUGeometryValidityProps = {
   /** Ring orientation convention. Defaults to `'counter-clockwise-shell'`. */
   orientation?: GPUGeometryValidityOrientation;
 };
+
+/** Exactly one geometry family, matching the construction-time validation. */
+export type GPUGeometryValidityProps = Omit<
+  GPUGeometryValiditySharedProps,
+  'polygons' | 'lines' | 'points'
+> &
+  (
+    | {polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>; lines?: never; points?: never}
+    | {polygons?: never; lines: GPULineFeatureGeometry; points?: never}
+    | {polygons?: never; lines?: never; points: GPUPointFeatureGeometry}
+  );
 
 /**
  * Computes a per-feature validity bitmask for polygons, multipolygons, linestrings and points: the GPU analog of the
@@ -173,11 +191,44 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
   constructor(props: GPUGeometryValidityProps) {
     this.id = props.id ?? 'geometry-validity';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    props = {
-      ...props,
-      points: props.points && snapshotSinglePartGeometryPort(this.id, 'points', props.points),
-      lines: props.lines && snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)
-    };
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'polygons',
+      'points',
+      'lines',
+      'output',
+      'intersectionCapacity',
+      'leafCapacity',
+      'ringClosure',
+      'orientation'
+    ]);
+    const output = snapshotConstructionFields(snapshot.output, ['issueCode', 'validity', 'status']);
+    props = Object.freeze({
+      ...snapshot,
+      ...(snapshot.points
+        ? {points: snapshotPointFeatureGeometry(this.id, snapshot.points)}
+        : snapshot.lines
+          ? {lines: snapshotLineFeatureGeometry(this.id, snapshot.lines)}
+          : snapshot.polygons
+            ? {
+                polygons: snapshotConstructionFields(snapshot.polygons, [
+                  'kind',
+                  'positions',
+                  'featureOffsets',
+                  'polygonOffsets',
+                  'ringOffsets',
+                  'sourceIds'
+                ])
+              }
+            : {}),
+      output: Object.freeze({
+        ...output,
+        status:
+          output.status &&
+          snapshotConstructionFields(output.status, ['overflow', 'intersectionCount'])
+      })
+    }) as GPUGeometryValidityProps;
     this.props = props;
     const {id} = this;
     const {polygons, lines, points} = props;
@@ -211,12 +262,14 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
       if (lines.lineOffsets.length < 1) {
         throw new Error(`${id} lines.lineOffsets requires a terminal entry`);
       }
-      this.featureCount = lines.lineOffsets.length - 1;
+      this.featureCount = (lines.featureOffsets ?? lines.lineOffsets).length - 1;
       this.ringCount = 0;
     } else {
-      const pointGeometry = points as GPUPackedGeometryPort<GPUPointGeometryPort>;
+      const pointGeometry = points as GPUPointFeatureGeometry;
       validateSinglePackedView(pointGeometry.positions, ['float32x2'], `${id} points.positions`);
-      this.featureCount = pointGeometry.positions.length;
+      this.featureCount = pointGeometry.featureOffsets
+        ? pointGeometry.featureOffsets.length - 1
+        : pointGeometry.positions.length;
       this.ringCount = 0;
     }
     if (this.featureCount < 1) {
@@ -257,6 +310,8 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
         props.polygons?.ringOffsets,
         props.lines?.positions,
         props.lines?.lineOffsets,
+        props.lines?.featureOffsets,
+        props.points?.featureOffsets,
         props.points?.positions
       ]
     );
@@ -268,7 +323,7 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
         'status.overflow': status?.overflow,
         'status.intersectionCount': status?.intersectionCount
       },
-      []
+      props.polygons ? [['status.overflow', 'status.intersectionCount']] : []
     );
     validateGraphOutputsDisjointFromInputs(
       `${id} diagnostic/status outputs`,
@@ -280,6 +335,8 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
         props.polygons?.ringOffsets,
         props.lines?.positions,
         props.lines?.lineOffsets,
+        props.lines?.featureOffsets,
+        props.points?.featureOffsets,
         props.points?.positions
       ]
     );
@@ -304,8 +361,15 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
     const geometryViews: GraphDataView[] = polygons
       ? [polygons.positions, polygons.featureOffsets, polygons.polygonOffsets, polygons.ringOffsets]
       : props.lines
-        ? [props.lines.positions, props.lines.lineOffsets]
-        : [(props.points as GPUPackedGeometryPort<GPUPointGeometryPort>).positions];
+        ? [
+            props.lines.positions,
+            props.lines.lineOffsets,
+            ...(props.lines.featureOffsets ? [props.lines.featureOffsets] : [])
+          ]
+        : [
+            props.points!.positions,
+            ...(props.points!.featureOffsets ? [props.points!.featureOffsets] : [])
+          ];
     const {issueCode, validity, status} = props.output;
     return [...geometryViews, issueCode, validity, status?.overflow, status?.intersectionCount];
   }
@@ -357,6 +421,55 @@ ${getReadPointWGSL('vertexAt', 'positions')}`,
     });
   }
 
+  private getMultipartSimpleNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {id, props, featureCount} = this;
+    const geometry = (props.lines ?? props.points)!;
+    return [
+      createWGSLKernelNode(graph, {
+        id: `${id}-clear-features`,
+        operation: OPERATION,
+        invocationCount: featureCount,
+        bindings: [
+          {name: 'issues', view: props.output.issueCode, type: 'u32', access: 'read_write'}
+        ],
+        body: 'issues[issuesOffset+index]=0u;'
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-multipart-kinds`,
+        operation: OPERATION,
+        invocationCount: props.lines
+          ? props.lines.lineOffsets.length - 1
+          : geometry.positions.length,
+        bindings: [
+          {name: 'positions', view: geometry.positions, type: 'f32', access: 'read'},
+          ...(props.lines
+            ? [
+                {
+                  name: 'lineOffsets',
+                  view: props.lines.lineOffsets,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
+          {name: 'features', view: geometry.featureOffsets!, type: 'u32', access: 'read'},
+          {name: 'issues', view: props.output.issueCode, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        declarations: `${SEGMENT_PREDICATES_WGSL}\n${getReadPointWGSL('vertexAt', 'positions')}\n${getLineFeatureLookupWGSL(geometry)}`,
+        body: `let first=${props.lines ? 'lineOffsets[lineOffsetsOffset+index]' : 'index'};
+let last=${props.lines ? 'lineOffsets[lineOffsetsOffset+index+1u]' : 'index+1u'};
+var bits=0u;
+if(last>first){let origin=vertexAt(first);var distinct=false;
+ for(var vertex=first;vertex<last;vertex++){let point=vertexAt(vertex);if(!orientIsFinite(point.x)||!orientIsFinite(point.y)){bits|=${GPU_GEOMETRY_VALIDITY_BIT.nonFinite}u;}if(any(point!=origin)){distinct=true;}}
+ ${props.lines ? `if(!distinct){bits|=${GPU_GEOMETRY_VALIDITY_BIT.tooFewPoints}u;}` : ''}
+}
+let feature=lineFeature(index);if(feature<${featureCount}u){atomicOr(&issues[issuesOffset+feature],bits);}`
+      })
+    ];
+  }
+
   /** Returns the mask clear, ring checks, same-feature segment intersection and fold nodes in order. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -389,7 +502,9 @@ ${getReadPointWGSL('vertexAt', 'positions')}`,
     }
     if (!polygons) {
       return [
-        this.getLineOrPointNode(graph),
+        ...((props.lines ?? props.points)?.featureOffsets
+          ? this.getMultipartSimpleNodes(graph)
+          : [this.getLineOrPointNode(graph)]),
         ...(['overflow', 'intersectionCount'] as const).flatMap(name => {
           const view = props.output.status?.[name];
           return view
@@ -913,29 +1028,30 @@ fn locateInShell(point: vec2f, shellStart: u32, count: u32, shellRing: u32, lane
       'uint32',
       intersectionCapacity
     );
-    const intersection = new GPUSegmentIntersection({
-      id: `${id}-intersection`,
-      left: polygons,
-      sameFeatureOnly: true,
-      leafCapacity: props.leafCapacity,
-      output: {
-        pairs: {
-          leftRows: pairLeft,
-          rightRows: pairRight,
-          status: {
-            count: pairCount,
-            // The constructor requires status.overflow for polygons.
-            overflow: status?.overflow as GraphDataView<'uint32'>,
-            requiredCount: status?.intersectionCount
-          }
-        },
-        kinds,
-        leftFeatures,
-        leftRings,
-        rightRings
-      }
-    });
-    nodes.push(...intersection.getCommandNodes(graph));
+    nodes.push(
+      ...createSegmentPairNodes(graph, {
+        id: `${id}-intersection`,
+        left: polygons,
+        sameFeatureOnly: true,
+        leafCapacity: props.leafCapacity,
+        output: {
+          pairs: {
+            leftRows: pairLeft,
+            rightRows: pairRight,
+            status: {
+              count: pairCount,
+              // The constructor requires status.overflow for polygons.
+              overflow: status?.overflow as GraphDataView<'uint32'>,
+              requiredCount: status?.intersectionCount
+            }
+          },
+          kinds,
+          leftFeatures,
+          leftRings,
+          rightRings
+        }
+      })
+    );
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {

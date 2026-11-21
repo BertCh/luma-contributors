@@ -210,7 +210,7 @@ it('publishes exact required counts with zero geometry on vertex and ring capaci
     {...OPTIONS, operation: 'union', capacity: 3}
   );
   // The fourth segment is beyond capacity, but its duplicate from the second operand must
-  // still be counted only once (GPU scratch cannot retain that segment for deduplication).
+  // still be counted only once; both forms retain it in output-independent segment scratch.
   expect(Array.from(duplicateOverflow.status)).toEqual([2]);
   expect(Array.from(duplicateOverflow.counts)).toEqual([0, 0, 4, 0]);
   const vertexFailure = computeSphericalArcOverlayOnCPU(getInput(), {

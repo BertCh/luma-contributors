@@ -20,6 +20,7 @@ import {
 } from './raster-time-series-chunks-b';
 import {
   validateCapacity,
+  validateGraphPorts,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
@@ -37,7 +38,7 @@ export type GPURasterRollingMeanProps<Rows extends RasterScalarView = GraphDataV
   cellCount: number;
   /** Slices of each chunk, in `[1, 256]`. */
   chunkSliceCount: number;
-  /** Trailing window in slices, in `[2, 128]`. */
+  /** Trailing window in slices, in `[1, 128]`. */
   windowLength: number;
   /** Cell-major chunk `cell * chunkSliceCount + slice`; nonfinite samples are missing. */
   values: RasterTimeSeriesView<'float32', Rows>;
@@ -71,9 +72,17 @@ export class GPURasterRollingMean<Rows extends RasterScalarView = GraphDataView>
   readonly chunkPlan: RasterTimeSeriesChunkPlan;
   readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterRollingMeanProps<Rows> & {values: Rows}) {
-    this.props = props;
+    this.props = {...props};
     const id = props.id ?? 'raster-rolling-mean';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      ring: {required: true, viewType: 'either', formats: ['float32']},
+      seenCount: {required: true, viewType: 'either', formats: ['uint32']},
+      output: {required: true, viewType: 'either', formats: ['float32']}
+    });
     validateCapacity(id, 'cellCount', props.cellCount);
     validateCapacity(
       id,
@@ -82,7 +91,7 @@ export class GPURasterRollingMean<Rows extends RasterScalarView = GraphDataView>
       1,
       MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT
     );
-    validateCapacity(id, 'windowLength', props.windowLength, 2, MAXIMUM_ROLLING_WINDOW_LENGTH);
+    validateCapacity(id, 'windowLength', props.windowLength, 1, MAXIMUM_ROLLING_WINDOW_LENGTH);
     const observationCount = props.cellCount * props.chunkSliceCount;
     validateCapacity(id, 'cellCount times chunkSliceCount', observationCount);
     validateRequirement(

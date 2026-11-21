@@ -687,3 +687,47 @@ const CANDIDATE_CAPACITY: u32 = ${context.candidateCapacity}u;`,
   ${views.candidateCount ? 'candidateCount[candidateCountOffset] = starts[startsOffset + FEATURE_COUNT];' : ''}`
   });
 }
+
+/** Publish non-capacity completeness separately, or suppress the uncertifiable prefix. @internal */
+export function createCoverCompletenessNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  context: CellCoverKernelContext,
+  views: {
+    invalidCount: GraphDataView<'uint32'>;
+    uncertainCount: GraphDataView<'uint32'>;
+    starts: GraphDataView<'uint32'>;
+    total: GraphDataView<'uint32'>;
+    count: GraphDataView<'uint32'>;
+    complete?: GraphDataView<'uint32'>;
+    outputCapacity: number;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode(graph, {
+    id: `${context.id}-completeness`,
+    operation: OPERATION,
+    variant: 'completeness',
+    invocationCount: 1,
+    bindings: [
+      {name: 'invalidCount', view: views.invalidCount, type: 'u32', access: 'read'},
+      {name: 'uncertainCount', view: views.uncertainCount, type: 'u32', access: 'read'},
+      ...(views.complete
+        ? [
+            {name: 'starts', view: views.starts, type: 'u32' as const, access: 'read' as const},
+            {name: 'total', view: views.total, type: 'u32' as const, access: 'read' as const},
+            {
+              name: 'complete',
+              view: views.complete,
+              type: 'u32' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : [{name: 'count', view: views.count, type: 'u32' as const, access: 'read_write' as const}])
+    ],
+    body: `let coverageLoss = invalidCount[invalidCountOffset] != 0u || uncertainCount[uncertainCountOffset] != 0u;
+  ${
+    views.complete
+      ? `complete[completeOffset] = select(1u, 0u, coverageLoss || starts[startsOffset + ${context.featureCount}u] > ${context.candidateCapacity}u || total[totalOffset] > ${views.outputCapacity}u);`
+      : 'if (coverageLoss) { count[countOffset] = 0u; }'
+  }`
+  });
+}

@@ -18,6 +18,7 @@ import { Route as ExploreIndexRouteImport } from './routes/explore/index'
 import { Route as FnIdRouteImport } from './routes/fn/$id'
 import { Route as HowItWorksIndexRouteImport } from './routes/how-it-works/index'
 import { Route as HowItWorksTopicRouteImport } from './routes/how-it-works/$topic'
+import { Route as LensScenarioRouteImport } from './routes/lens/$scenario'
 import { Route as ExploreDataIdRouteImport } from './routes/explore/data.$id'
 import { Route as ExploreDomainIdRouteImport } from './routes/explore/domain.$id'
 import { Route as ExploreUseIdRouteImport } from './routes/explore/use.$id'
@@ -67,6 +68,11 @@ const HowItWorksTopicRoute = HowItWorksTopicRouteImport.update({
   path: '/$topic',
   getParentRoute: () => HowItWorksRoute,
 } as any)
+const LensScenarioRoute = LensScenarioRouteImport.update({
+  id: '/lens/$scenario',
+  path: '/lens/$scenario',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ExploreDataIdRoute = ExploreDataIdRouteImport.update({
   id: '/data/$id',
   path: '/data/$id',
@@ -91,6 +97,7 @@ export interface FileRoutesByFullPath {
   '/docs/$': typeof DocsSplatRoute
   '/fn/$id': typeof FnIdRoute
   '/how-it-works/$topic': typeof HowItWorksTopicRoute
+  '/lens/$scenario': typeof LensScenarioRoute
   '/explore/': typeof ExploreIndexRoute
   '/how-it-works/': typeof HowItWorksIndexRoute
   '/explore/data/$id': typeof ExploreDataIdRoute
@@ -103,6 +110,7 @@ export interface FileRoutesByTo {
   '/docs/$': typeof DocsSplatRoute
   '/fn/$id': typeof FnIdRoute
   '/how-it-works/$topic': typeof HowItWorksTopicRoute
+  '/lens/$scenario': typeof LensScenarioRoute
   '/explore': typeof ExploreIndexRoute
   '/how-it-works': typeof HowItWorksIndexRoute
   '/explore/data/$id': typeof ExploreDataIdRoute
@@ -118,6 +126,7 @@ export interface FileRoutesById {
   '/docs/$': typeof DocsSplatRoute
   '/fn/$id': typeof FnIdRoute
   '/how-it-works/$topic': typeof HowItWorksTopicRoute
+  '/lens/$scenario': typeof LensScenarioRoute
   '/explore/': typeof ExploreIndexRoute
   '/how-it-works/': typeof HowItWorksIndexRoute
   '/explore/data/$id': typeof ExploreDataIdRoute
@@ -134,6 +143,7 @@ export interface FileRouteTypes {
     | '/docs/$'
     | '/fn/$id'
     | '/how-it-works/$topic'
+    | '/lens/$scenario'
     | '/explore/'
     | '/how-it-works/'
     | '/explore/data/$id'
@@ -146,6 +156,7 @@ export interface FileRouteTypes {
     | '/docs/$'
     | '/fn/$id'
     | '/how-it-works/$topic'
+    | '/lens/$scenario'
     | '/explore'
     | '/how-it-works'
     | '/explore/data/$id'
@@ -160,6 +171,7 @@ export interface FileRouteTypes {
     | '/docs/$'
     | '/fn/$id'
     | '/how-it-works/$topic'
+    | '/lens/$scenario'
     | '/explore/'
     | '/how-it-works/'
     | '/explore/data/$id'
@@ -174,6 +186,7 @@ export interface RootRouteChildren {
   HowItWorksRoute: typeof HowItWorksRouteWithChildren
   DocsSplatRoute: typeof DocsSplatRoute
   FnIdRoute: typeof FnIdRoute
+  LensScenarioRoute: typeof LensScenarioRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -241,6 +254,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HowItWorksTopicRouteImport
       parentRoute: typeof HowItWorksRoute
     }
+    '/lens/$scenario': {
+      id: '/lens/$scenario'
+      path: '/lens/$scenario'
+      fullPath: '/lens/$scenario'
+      preLoaderRoute: typeof LensScenarioRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/explore/data/$id': {
       id: '/explore/data/$id'
       path: '/data/$id'
@@ -303,6 +323,7 @@ const rootRouteChildren: RootRouteChildren = {
   HowItWorksRoute: HowItWorksRouteWithChildren,
   DocsSplatRoute: DocsSplatRoute,
   FnIdRoute: FnIdRoute,
+  LensScenarioRoute: LensScenarioRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

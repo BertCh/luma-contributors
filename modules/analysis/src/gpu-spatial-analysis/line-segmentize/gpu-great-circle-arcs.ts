@@ -104,9 +104,10 @@ export type GPUGreatCircleArcsProps = {
  * Tokyo to San Francisco arc runs from 139.7 to 237.6), never split into two lines. Feed the
  * result to `PathLayer` with `wrapLongitude: true`, or use it directly in a globe view.
  *
- * Limits: a pair less than about 1e-3 rad from antipodal has no unique great circle; its arc is
- * numerically unstable in f32 and should be split by the caller. Zero-length pairs emit
- * `minimumSegments + 1` copies of the source.
+ * Limits: when `pi - angle < 1e-6` radians for the float32 central angle of a pair, every
+ * interior vertex has NaN longitude and latitude. The source and the unwrapped target endpoints
+ * remain finite for finite valid endpoints; split near-antipodal pairs through a caller-chosen
+ * waypoint to select a path. Zero-length pairs emit `minimumSegments + 1` copies of the source.
  */
 export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

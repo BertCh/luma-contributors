@@ -19,7 +19,7 @@ import {
   stretchPoints
 } from './shared/weights';
 
-const OPERATIONS = ['row', 'binary', 'kernel', 'double', 'variance', 'symmetrize'] as const;
+const OPERATIONS = ['row', 'binary', 'kernel', 'double', 'variance', 'average-reciprocal'] as const;
 const KERNELS = ['gaussian', 'triangular', 'epanechnikov', 'bisquare', 'uniform'] as const;
 const BAND_RADIUS = 0.1;
 const CHART_RECTANGLE = [0.62, 0.14, 0.96, 0.86] as const;

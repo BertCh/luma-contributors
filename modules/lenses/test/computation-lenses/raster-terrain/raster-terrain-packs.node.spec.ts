@@ -150,3 +150,114 @@ for (const {entry, barrel, entries, pack} of PACKS) {
     );
   });
 }
+
+it('UCO-06 resolves every operator kind independent of registration order and renders nominal FillHoles', async () => {
+  const {createRasterViewPack} = await import(
+    '../../../src/gpu-raster/computation-pack/create-raster-pack'
+  );
+  const {getDeclaredVariableKind} = await import(
+    '../../../src/computation-views/views/value-strip'
+  );
+  const {createViewContext, ViewRegistry} = await import(
+    '../../../src/computation-views/registry/view-registry'
+  );
+  const {makeY2Capture, makeY2Record} = await import(
+    '../../computation-views/fixtures/y2-card-records'
+  );
+  const {buildResultViewModel, RESULT_VIEW} = await import(
+    '../../../src/computation-views/views/result-view'
+  );
+  const {LensController} = await import('../../../src/computation-views/hosts/lens-controller');
+  const entries = getRasterOperatorEntries();
+  const forward = createRasterViewPack('gpu-raster', entries);
+  const legacyKinds = Object.assign(
+    {},
+    ...Object.values(forward.operators!).map(operator => operator.variableKinds)
+  );
+  const legacyDisagreements = Object.entries(forward.operators!).flatMap(([operator, descriptor]) =>
+    Object.entries(descriptor.variableKinds!)
+      .filter(([name, kind]) => JSON.stringify(legacyKinds[name]) !== JSON.stringify(kind))
+      .map(([name]) => `${operator}.${name}`)
+  );
+  expect(legacyDisagreements).toHaveLength(10);
+  const reverse = createRasterViewPack(
+    'gpu-raster',
+    Object.fromEntries(Object.entries(entries).reverse())
+  );
+  expect(forward.variableKinds).toEqual(reverse.variableKinds);
+  expect(forward.variableKinds!['values']).toBeUndefined();
+  const record = makeY2Record([
+    makeY2Capture('values', [0, 1, 1, 0], {
+      role: 'output',
+      geometry: {kind: 'raster', shape: [2, 2]}
+    })
+  ]);
+  for (const pack of [forward, reverse]) {
+    for (const [operator, descriptor] of Object.entries(pack.operators!)) {
+      for (const [name, kind] of Object.entries(descriptor.variableKinds!)) {
+        const context = createViewContext(record, {packs: [pack], options: {element: operator}});
+        expect(getDeclaredVariableKind(context, name), `${operator}.${name}`).toEqual(kind);
+        expect(
+          getDeclaredVariableKind(context, `result.${name}`),
+          `${operator}.result.${name}`
+        ).toEqual(kind);
+      }
+    }
+  }
+  record.id = 'gpu-raster.raster-fill-holes';
+  record.domains = ['gpu-raster'];
+  const registry = new ViewRegistry();
+  registry.registerPack(forward);
+  registry.register(RESULT_VIEW);
+  expect(buildResultViewModel(createViewContext(record, {packs: [forward]})).output.palette).toBe(
+    'nom'
+  );
+  const controller = new LensController({record, registry, rung: 'result', lensId: 'fill'});
+  try {
+    expect(controller.getFrame().tree).toBeDefined();
+    expect(JSON.stringify(controller.getFrame().tree)).toContain('cv-nom-');
+  } finally {
+    controller.destroy();
+  }
+});
+
+it('UNI-10 raster writers retain affine, interpretation and available frame identity', async () => {
+  const {getRasterLensGeometry} = await import(
+    '../../../src/computation-lenses/scenarios/gpu-raster/raster-lens-harness'
+  );
+  const {makeY2Capture, makeY2Record} = await import(
+    '../../computation-views/fixtures/y2-card-records'
+  );
+  const {createViewContext} = await import('../../../src/computation-views/registry/view-registry');
+  const {buildResultViewModel} = await import('../../../src/computation-views/views/result-view');
+  for (const affine of [
+    [10, 0, 0, 0, -20, 40],
+    [10, 1, 0, 1, -10, 40]
+  ] as const) {
+    const geometry = getRasterLensGeometry({
+      grid: {
+        width: 2,
+        height: 2,
+        affine,
+        pixelInterpretation: 'area',
+        coordinateReferenceSystem: {authority: 'EPSG:3857'}
+      },
+      coordinateModel: 'projected',
+      unit: 'm',
+      frameId: 'fixture-frame'
+    });
+    expect(geometry).toMatchObject({
+      affine,
+      pixelInterpretation: 'area',
+      crs: 'EPSG:3857',
+      frameId: 'fixture-frame'
+    });
+    expect(geometry).not.toHaveProperty('cellSize');
+    const record = makeY2Record([
+      makeY2Capture('values', [1, 2, 3, 4], {role: 'output', geometry})
+    ]);
+    const model = buildResultViewModel(createViewContext(record));
+    expect(model.projection.statement).toContain('pixels');
+    expect(model.output.notes.join(' ')).toContain('pixel space');
+  }
+});

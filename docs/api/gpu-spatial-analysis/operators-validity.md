@@ -7,6 +7,7 @@ description: "Geometry validity & intersections contributors in @luma-contributo
 
 # Geometry validity & intersections
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
 
 ### `GPUSegmentIntersection`
 
@@ -23,6 +24,10 @@ Finds every intersecting pair of line segments between two geometries (`left`, `
 is a tagged line or polygon geometry port (`kind: 'lines'` or `'polygons'`, one kind per side). A segment is identified
 by the index of its start vertex. Polygon rings close implicitly; rings with fewer than three vertices,
 zero-length segments and segments with non-finite coordinates are skipped.
+Optional line `featureOffsets` groups parts into logical features. `sameFeatureOnly` and
+the feature columns use that grouping; ring columns remain line-part rows and pair rows
+remain global start-vertex indices. Empty features therefore consume a feature row without
+adding segment slots.
 
 | Prop | Meaning |
 | --- | --- |
@@ -55,6 +60,19 @@ construction. Removing or replacing a caller-map field later cannot change the v
 the contents of the retained buffers remain dynamic.
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUSegmentIntersection} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// Fragment inputs: all views belong to graph; pair/attribute capacities agree.
+declare const graph: GPUCommandGraph;
+declare const positions: GraphDataView<'float32x2'>;
+declare const lineOffsets: GraphDataView<'uint32'>;
+declare const leftRows: GraphDataView<'uint32'>;
+declare const rightRows: GraphDataView<'uint32'>;
+declare const count: GraphDataView<'uint32'>;
+declare const overflow: GraphDataView<'uint32'>;
+declare const kinds: GraphDataView<'uint32'>;
+declare const points: GraphDataView<'float32x2'>;
 graph.add(new GPUSegmentIntersection({
   left: {kind: 'lines', positions, lineOffsets},
   output: {pairs: {leftRows, rightRows, status: {count, overflow}}, kinds, points}
@@ -118,19 +136,40 @@ vertices, so it is reported but does not make a geometry structurally invalid).
 | --- | --- |
 | `polygons`, `output.issueCode`, `output.validity?` | The input, diagnostic code and optional nonzero-usable flag (`featureCount` rows each) |
 | `intersectionCapacity` | Capacity of the internal same-feature intersection list; valid data produces almost none |
-| `output.status.overflow`, `output.status.intersectionCount?` | The overflow flag (the self-intersection and crossing bits may then be incomplete) and the unclamped count |
+| `output.status.overflow`, `output.status.intersectionCount?` | Aggregate intersection-list capacity or BVH candidate loss (the self-intersection and crossing bits may then be incomplete), and the unclamped count of intersections found |
 | `ringClosure?` | `'implicit'` (default) or `'explicit'`, which sets `unclosedRing` |
 | `orientation?` | `'counter-clockwise-shell'` (default), `'clockwise-shell'` or `'ignore'` |
+
+`leafCapacity` may restrict the polygon segment tree below the vertex-slot count. Child candidate
+loss is folded into the required public `status.overflow`; any aggregate loss suppresses every
+`validity` row to zero. `intersectionCount` is only a lower bound when candidates were lost.
 
 `lines` (`{kind: 'lines', positions, lineOffsets}`) and `points` replace `polygons` for the other kinds
 (Shapely `is_valid`, `is_valid_reason` on lines and points). Lines report `nonFinite` and `tooFewPoints`,
 points report `nonFinite`; neither needs an intersection list.
+Both accept optional `featureOffsets`. Multipart diagnostics are the bitwise union of their
+parts' issues; a feature is usable only when every part is usable. Empty features and empty
+line parts are valid; duplicate points in a multipoint are valid. A nonempty line part without
+two distinct vertices sets `tooFewPoints` (512). Parts are checked independently, so a second
+valid part cannot hide a collapsed or nonfinite part. Both status scalars are rewritten to zero.
 
 Not checked: interior connectivity (holes touching at two points), nested holes, nested polygons of a
 multipolygon, and rings that leave the shell only through boundary vertices. Repeated vertices are reported
 although OGC accepts them. Hole containment tests one off-boundary vertex per hole.
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUGeometryValidity,
+  type GPUGeometryValidityProps
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// Fragment inputs: issueCode and validity each have one row per polygon feature.
+declare const graph: GPUCommandGraph;
+declare const polygons: NonNullable<GPUGeometryValidityProps['polygons']>;
+declare const issueCode: GraphDataView<'uint32'>;
+declare const validity: GraphDataView<'uint32'>;
+declare const overflow: GraphDataView<'uint32'>;
 graph.add(new GPUGeometryValidity({
   polygons,
   output: {issueCode, validity, status: {overflow}},
@@ -153,16 +192,26 @@ graph.add(new GPUGeometryValidity({
 ### `GPUGeometryPredicates`
 
 Evaluates per-feature predicates and counts such as simplicity, vertex count and hole count for points, lines or polygons.
-`geometry` and `other` use `GPUGeometryPredicatesGeometry`: one point or one linestring per row,
-or the polygon/multipolygon hierarchy. Multipart point/line `featureOffsets` are rejected at
-construction, including ports supplied through spreads or casts; this contributor does not yet
-reduce those parts into feature-level predicate/count columns.
+`geometry` and `other` use `GPUGeometryPredicatesGeometry`: single points/lines, optional
+point/line `featureOffsets` grouping parts into logical features, or the polygon/multipolygon
+hierarchy. Every output row belongs to a logical feature. Entire coordinate columns may be empty
+when offsets still describe at least one logical feature. Empty multipart features have zero
+coordinates/parts, `isSimple=1`, other unary flags zero, and compare equal to identically structured
+empty features; unique offsets and completeness counters are zero. Measures report zero length
+and vertex count, NaN centroid/bounds and `0xffffffff` extreme rows, including wholly empty columns.
+Logical emptiness does not remove the graph buffer's backing-row requirement: an imported
+zero-row `float32x2` view still needs at least eight physical bytes, as required by luma.gl's
+aligned storage-binding contract. Keep its logical length zero.
 
 ::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=result caption="102 park polygons shaded by stored vertex count; simplicity and hole counts are captured alongside."}
 
-Maximum: with `isSimple` or `isRing`, `geometry.positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows.
+Maximum: for non-point geometry with `isSimple`, `isRing` or either intersection status word, `geometry.positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows.
 
 Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`).
+
+Both spatial-context descriptors, including nested frame metadata, are captured once before
+validation. Shared input contexts retain a shared captured descriptor; later caller mutations do
+not change the retained metric or frame. GPU buffer identities remain dynamic resources.
 
 Per-feature columns for points, linestrings or polygons (Shapely `is_simple`, `is_ring`, `is_closed`,
 `is_ccw`, `get_num_points`, `count_coordinates`, `get_num_interior_rings`, `get_num_geometries`,
@@ -170,18 +219,61 @@ Per-feature columns for points, linestrings or polygons (Shapely `is_simple`, `i
 for booleans), all in the `output` bag: `isSimple`, `isRing`, `isClosed`, `isCcw`, `numPoints`,
 `numCoordinates`, `numInteriorRings` and `numGeometries`.
 
-- `isSimple` and `isRing` use `GPUSegmentIntersection` in self mode, so they need `intersectionCapacity`
-  and `output.status.overflow`; features after an overflow can be wrong. A polygon is simple when no ring meets itself
+- `isSimple` and `isRing` require `intersectionCapacity` and `output.status.overflow` at
+  construction for every geometry kind, points included. For non-point geometry they use
+  `GPUSegmentIntersection` in self mode; overflow suppresses both dependent outputs to 0 for every feature.
+  Multipoints are simple iff no point repeats. Multiline parts may meet only at endpoints of
+  two open parts; crossings, overlaps and endpoint-to-interior contacts are not simple.
+  `intersectionCount` includes nonadjacent same-feature segment intersections, including allowed
+  contacts between open parts. Point simplicity uses sorted unique points and writes zero status.
+  Either `output.status.overflow` or `output.status.intersectionCount` may also be requested
+  independently of predicate columns. Every such request requires `intersectionCapacity` (an
+  integer in `[1, 4294967295]`) at construction, points included. Non-point requests run the
+  segment intersection stages. Point-only requests validate the capacity but use a dedicated scalar writer that rewrites
+  each supplied word to zero on every submission; they do not build a segment tree or inherit its
+  vertex limit. For non-point geometry, `leafCapacity` below the vertex-slot count requires an
+  observable `output.status.overflow`, even for a status-only request. This word aggregates final
+  pair-capacity and intermediate BVH loss; `intersectionCount` is a lower bound after candidate loss.
+  A polygon is simple when no ring meets itself
   (Shapely 2.1). `isCcw` follows the GEOS `Orientation::isCCW` rule (the JTS 1.19 flat-top algorithm) for
   linestrings and is 0 for other kinds, as in Shapely.
 - `other` (same kind and feature count) enables `equalsExact` (per-frame `tolerance` through
   `getGPUGeometryPredicatesParameterValues`) and `equalsIdentical`, which compare feature `i` with
-  feature `i`. The distance is f32.
+  feature `i`. Coordinates and tolerance are stored as f32. Structural comparison preserves part counts and each part's
+  vertex count and order; an equal point set with a different split does not compare equal.
+  Single and multipart geometry types are distinct even when a multipart has one part.
+  `equalsExact` uses Euclidean distance in planar position units. Canonical equality
+  (`GPUCanonicalGeometryEquality`, `GPUCanonicalPolygonEquality`) instead defaults to
+  `toleranceMetric: 'per-coordinate'`; choose `'euclidean'` there to use the same distance
+  neighborhood while ignoring canonicalized ordering. Euclidean comparisons certify the inclusive
+  boundary against the stored coordinates and tolerance using integer products: displacement
+  `(13,84)` matches tolerance `85` and fails at the preceding float32 value `84.99999237060547`.
+  At tolerance 1, displacement `(0.75,0.75)`
+  passes per-coordinate comparison but fails Euclidean comparison (`sqrt(1.125) > 1`).
+- Optional `output.relate` evaluates aligned `(row,row)` pairs through the spatial join's
+  existing DE-9IM kernel, including feature unions and mod-2 multiline boundaries. Unlike
+  structural equality, `output.topological.equals` accepts different part splits. Topology-only
+  requests require the same feature count but permit different kinds. The packed matrix and
+  bit-31 uncertainty flag use the join format. Named `topological` columns support equals,
+  intersects, contains, within, covers, coveredBy, touches, crosses, overlaps and containsProperly;
+  uncertain results are suppressed. Valid empty operands retain their exterior cells: two empty
+  features give `FFFFFFFF2` (packed `196608`) and topological equality 1; empty/open-line pairs
+  give `FFFFFF102` (`221184`), and the reverse gives `FF1FF0FF2` (`197664`). Invalid pairs remain
+  suppressed to zero. These outputs add work only when requested. Writable columns, including
+  diagnostics and named predicates, must have disjoint logical byte ranges. Columns written in
+  separate passes may share adjacent words (for example `topological.equals` at byte 0 and
+  `topological.touches` at byte 4). Co-bound writable columns must also have disjoint aligned
+  binding ranges (`equalsExact`/`equalsIdentical`, and non-point intersection status words).
+  A public output read by another output's dispatch must use a separate buffer, including
+  `relate` read by named topology columns and `isSimple` read by `isRing`.
 - `output.uniquePositions` and `output.uniqueOffsets` give `extract_unique_points`: first-occurrence order, as Shapely,
   with `-0` equal to `0`.
+- Multilines have `numPoints`, `isRing` and `isCcw` equal to 0, as Shapely. `isClosed` is true only
+  for a nonempty multiline whose every part is closed. `numCoordinates` sums stored vertices
+  over parts, while `numGeometries` counts parts, including zero for an empty multipart feature.
 - Limits: one thread per feature in the row-wise kernels (a huge single feature is serial); the
   self-mode look-ahead is 1024; an empty polygon gives 0 geometries where Shapely gives 1. Open:
-  `equals_exact(normalize=True)`, multilinestring and multipoint layouts.
+  `equals_exact(normalize=True)`.
 
 #### How it computes
 
@@ -197,6 +289,8 @@ for booleans), all in the `output` bag: `isSimple`, `isRing`, `isClosed`, `isCcw
 
 #### `GPUGeometryPredicates` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUGeometryPredicates`.
+
 - Packer: `getGPUGeometryPredicatesParameterValues(settings?)`, writes `GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUGeometryPredicatesParameterValues`:
@@ -208,6 +302,18 @@ Settings of `getGPUGeometryPredicatesParameterValues`:
 {/* /parameters */}
 
 ### `GPUMinimumClearance`
+
+Multiline `geometry.featureOffsets` groups line parts into logical output rows. Clearance
+considers vertices and segments in every part of that feature, including distances between
+different parts. An empty feature reports Infinity, a NaN clearance line and vertex row
+`0xffffffff`. Line-part boundaries still determine adjacency; no edge bridges two parts.
+Entire all-empty columns are accepted when feature offsets still declare logical rows.
+Distinct vertices in collapsed line parts participate: parts collapsed at x=0 and x=9 have
+clearance 9, while one distinct point retains infinite clearance. Equal vertex-candidate distances
+choose the lowest original partner row, so spatial sorting cannot change the witness. For
+collapsed parts at x=`0,1,-1`, the winning row is 0 and the line is `[0,0,1,0]` with either sort mode.
+The diagonal tie at `(0,0)`, `(1,1)`, `(-1,-1)` likewise selects `[0,0,1,1]` with distance
+`sqrt(2)` under either sort mode; conservative squared BVH bounds retain equal-distance candidates.
 
 Measures the smallest distance a single vertex could move before each feature becomes invalid, and which vertex sets it.
 
@@ -260,7 +366,9 @@ Maximum: `positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(de
 
 Polygon coverage validity (Shapely `coverage_is_valid`, `coverage_invalid_edges(gap_width)`). One BVH over
 all segments writes a per-segment flag word (`unmatched`, `crossing`, `gap`, `overlap`, `uncertain` bits),
-optional per-feature counts (`featureInvalidCounts`), a total (`status.invalidCount`) and `isValid`. The input is the four-level polygon layout (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`); segments of one feature are never compared. `gapWidth` is per-frame through
+optional per-feature counts (`featureInvalidCounts`), a total (`status.invalidCount`) and `isValid`.
+`status.invalidCount` rewrites one `uint32` component on every submission; any caller-provided
+trailing storage is preserved. The input is the four-level polygon layout (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`); segments of one feature are never compared. `gapWidth` is per-frame through
 `getGPUCoverageValidityParameterValues`. The output has one row per vertex and cannot overflow. Matched
 edges are skipped and flagged only when both interiors are on the same side, and a T-junction touch counts.
 The gap rule is the GEOS one (`InvalidSegmentDetector::isNearlyParallel`): each segment is projected onto the
@@ -295,6 +403,8 @@ planar coordinates and `longitude-latitude` throws (project first).
 {/* parameters: GPUCoverageValidity generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUCoverageValidity` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUCoverageValidity`.
 
 - Packer: `getGPUCoverageValidityParameterValues(parameters)`, writes `GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH` (4) `float32` values.
 

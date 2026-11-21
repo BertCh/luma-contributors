@@ -193,7 +193,7 @@ it('multiple-testing keeps a family count above 2^24 exact and matches closed-fo
           pValues: importGraphBuffer(graph, 'input', input, 'float32', 3),
           output: {
             adjustedPValues: importGraphBuffer(graph, 'output', output, 'float32', 3),
-            testedCount: importGraphBuffer(graph, 'count', count, 'uint32', 1)
+            effectiveFamilySize: importGraphBuffer(graph, 'count', count, 'uint32', 1)
           }
         })
       );

@@ -58,11 +58,23 @@ export function getUnitVector(longitude: number, latitude: number): Vector3 {
 }
 
 export function isOnArc(first: Vector3, second: Vector3, point: Vector3, margin: number): boolean {
-  const normal = normalize(cross(first, second));
+  const firstDirection = normalize(first);
+  const secondDirection = normalize(second);
+  const pointDirection = normalize(point);
+  const normal = normalize(cross(firstDirection, secondDirection));
+  if (
+    dot(cross(firstDirection, pointDirection), normal) >= 0 &&
+    dot(cross(pointDirection, secondDirection), normal) >= 0
+  )
+    return Math.abs(dot(normal, pointDirection)) <= Math.sin(margin);
+  // Only endpoint caps extend beyond the finite minor arc. Normalize float32
+  // input directions before applying the unit-sphere chord identity.
   return (
-    Math.abs(dot(normal, point)) <= margin &&
-    dot(cross(first, point), normal) >= -margin &&
-    dot(cross(point, second), normal) >= -margin
+    Math.min(
+      Math.hypot(...firstDirection.map((value, index) => value - pointDirection[index])),
+      Math.hypot(...secondDirection.map((value, index) => value - pointDirection[index]))
+    ) <=
+    2 * Math.sin(margin / 2)
   );
 }
 
@@ -104,11 +116,43 @@ export function isRingValid(ring: readonly Vector3[]): boolean {
         return false;
     }
   }
-  return true;
+  const area = getRingSignedArea(ring);
+  return Number.isFinite(area) && area !== 0;
+}
+
+/** Signed central-projection area about a valid ring's own hemisphere pole.
+ * Local differences preserve small off-axis rings; the pole need not lie inside the ring.
+ */
+export function getRingSignedArea(ring: readonly Vector3[]): number {
+  const total = ring.reduce<Vector3>(
+    (sum, vertex) => [sum[0] + vertex[0], sum[1] + vertex[1], sum[2] + vertex[2]],
+    [0, 0, 0]
+  );
+  const pole = normalize(total);
+  const anchor = ring[0];
+  const projectDelta = (vertex: Vector3): Vector3 => {
+    const difference: Vector3 = [
+      vertex[0] - anchor[0],
+      vertex[1] - anchor[1],
+      vertex[2] - anchor[2]
+    ];
+    const correction = dot(pole, difference) / dot(pole, anchor);
+    const denominator = dot(pole, vertex);
+    return [
+      (difference[0] - anchor[0] * correction) / denominator,
+      (difference[1] - anchor[1] * correction) / denominator,
+      (difference[2] - anchor[2] * correction) / denominator
+    ];
+  };
+  let area = 0;
+  for (let index = 1; index + 1 < ring.length; index++)
+    area += dot(pole, cross(projectDelta(ring[index]), projectDelta(ring[index + 1])));
+  return area;
 }
 
 type SphericalPolygon = {
   rings: Vector3[][];
+  clockwise: boolean[];
   featureIndex: number;
   isValid: boolean;
 };
@@ -120,6 +164,7 @@ function testContainment(
   polygon: SphericalPolygon,
   point: Vector3
 ): {contains: boolean; onBoundary: boolean} {
+  point = normalize(point);
   let inside = false;
   let onBoundary = false;
   polygon.rings.forEach((ring, ringIndex) => {
@@ -128,13 +173,24 @@ function testContainment(
       const first = ring[edge];
       const second = ring[(edge + 1) % ring.length];
       onBoundary = onBoundary || isOnArc(first, second, point, TOLERANCE);
-      const normal = cross(first, second);
-      const numerator = dot(point, normal);
-      const denominator = dot(first, second) - dot(point, first) * dot(point, second);
+      // Local tangent vectors avoid cancellation for small off-axis rings, including
+      // float32-rounded queries whose squared length is not exactly one.
+      const tangent = (vertex: Vector3): Vector3 => {
+        const sign = dot(point, vertex) >= 0 ? 1 : -1;
+        return cross(point, [
+          vertex[0] - sign * point[0],
+          vertex[1] - sign * point[1],
+          vertex[2] - sign * point[2]
+        ]);
+      };
+      const firstTangent = tangent(first);
+      const secondTangent = tangent(second);
+      const numerator = dot(point, cross(firstTangent, secondTangent));
+      const denominator = dot(firstTangent, secondTangent);
       if (Math.abs(numerator) + Math.abs(denominator) > 1e-12)
         winding += Math.atan2(numerator, denominator);
     }
-    const ringInside = winding > Math.PI;
+    const ringInside = (polygon.clockwise[ringIndex] ? -winding : winding) > Math.PI;
     inside = ringIndex === 0 ? ringInside : inside && !ringInside;
   });
   return {contains: inside, onBoundary};
@@ -169,7 +225,13 @@ function readSphericalInputs(points: CatalogFeatureCollection, polygons: Catalog
         );
         return open.map(([longitude, latitude]) => getUnitVector(longitude, latitude));
       });
-      shapes.push({rings, featureIndex, isValid: rings.every(isRingValid)});
+      const isValid = rings.every(isRingValid);
+      shapes.push({
+        rings,
+        clockwise: rings.map(ring => isValid && getRingSignedArea(ring) < 0),
+        featureIndex,
+        isValid
+      });
     }
   });
   // Every point is tested against every polygon part.
@@ -301,7 +363,7 @@ const SPHERICAL_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     'Coordinates are WGS84 degrees treated as a unit sphere; polygon edges are the shorter great-circle arc between consecutive vertices, the first ring is the outer ring (its smaller region) and later rings are holes.',
     'Polygons that cross themselves, touch non-adjacent edges, have a zero-length edge or span a full hemisphere contain nothing and are counted as invalid; every point is tested against every polygon part (at most 500,000 pairs).',
-    'A point within 1e-6 of an edge is on_boundary and is contained for boundary=closed only. Positions are float32, so points closer than about 1e-6 radians to an edge can differ between engines.'
+    'A point within 1e-6 radians of a finite minor arc, including angular caps at its endpoints, is on_boundary and is contained for boundary=closed only. Positions are float32, so points closer than about 1e-6 radians to an edge can differ between engines.'
   ],
   limitation:
     'Containment only: the spherical overlay, convex-intersection and arc-overlay contributors are not bound, and complement (outside-of-polygon) mode and hemisphere-centered large rings are not exposed.',

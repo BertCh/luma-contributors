@@ -7,8 +7,13 @@
  * regression on one pipeline with no CPU readback between stages. One graph, one submission; the
  * outputs are read only after it, and every expectation is computed on the CPU from the raw events
  * by code that shares nothing with the contributors under test.
+ *
+ * Scope: the events enter as complete typed arrays, so this pipeline starts downstream of Arrow
+ * ingress. The separate DPC-123 case below starts at sliced nullable Arrow ingress and checks
+ * period selection, sparse grouping, join matches and dense cube bins with literal expectations.
  */
 
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {describe, expect, it} from 'vitest';
 import {
@@ -62,8 +67,18 @@ import {
   type DiagnosticsOracleWeights
 } from '../../gpu-spatial-analysis/spatial-regression/spatial-regression-diagnostics-oracle';
 import {fitSpatialTwoStageLeastSquaresOnCPU} from '../../gpu-spatial-analysis/spatial-regression/spatial-two-stage-least-squares-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
-import {getExactFloat32Sum} from './value-cube-oracle';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {makeGPUTimeVectorFromPreparedArrowColumn} from '../../../src/analysis-core/graph-support/arrow-analytics-time-upload';
+import {GPUCellPeriodKeys} from '../../../src/dataframe-analysis/value-cube/gpu-cell-period-keys';
+import {GPUGroupStatistics} from '../../../src/dataframe-analysis/group-statistics/gpu-group-statistics';
+import {GPUKeyLookup} from '../../../src/dataframe-analysis/key-join/gpu-key-join';
+import {createVectorView} from '../../utils/gpu-contributor-test-utils';
+import {
+  createArrowIngressFixture,
+  ARROW_INGRESS_CELLS,
+  ARROW_INGRESS_VALUES
+} from './arrow-ingress-fixture';
+import {getValueCubeMeanValues} from './value-cube-mean-reference';
 import {createValueCubeRandom, ValueCubeRig} from './value-cube-rig';
 
 // The scene: a 6 x 6 lattice of cells, 12 daily periods from 2024-03-01, four in-window events per
@@ -181,9 +196,7 @@ function computeMeanCube(
     if ((useWindow && !isInWindow(event)) || floored < 0 || floored >= PERIOD_COUNT) continue;
     bins[event.cell * PERIOD_COUNT + floored].push(event[column]);
   }
-  return Float32Array.from(bins, values =>
-    values.length > 0 ? Math.fround(getExactFloat32Sum(values) / values.length) : NaN
-  );
+  return getValueCubeMeanValues(bins);
 }
 
 function toPeriodMajor(cube: Float32Array): Float32Array {
@@ -436,7 +449,7 @@ async function runPipeline(
     positions,
     mask: filterMask,
     parameters: rig.input(
-      getGPUNeighborSearchParameterValues({bounds: [-1, -1, 601, 601], radius: KNOX_RADIUS}),
+      getGPUNeighborSearchParameterValues({bounds: [-1, -1, 601, 601], searchRadius: KNOX_RADIUS}),
       'float32'
     ),
     output: {
@@ -705,4 +718,124 @@ describe('wave 2 composition: filter, cube, Gi*, trend, Markov, Knox and panel o
       expect(Math.abs(z - expectedZ[bin]), `unfiltered Gi* z of bin ${bin}`).toBeLessThan(2e-3);
     });
   });
+});
+
+it('DPC-123 composes sliced nullable Arrow ingress through periods keys groups join and cube', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {column} = createArrowIngressFixture();
+  const upload = makeGPUTimeVectorFromPreparedArrowColumn(device, column);
+  const rig = new ValueCubeRig(device);
+  // Preserve the two source batches through period selection and sparse grouping. Packed aliases
+  // of the produced rows feed the packed-only join and cube without intermediate CPU readback.
+  const split = <Format extends 'uint32' | 'uint32x2' | 'float32'>(view: GraphDataView<Format>) =>
+    createVectorView(
+      view.buffer.id,
+      view.format,
+      [0, 4].map(row =>
+        rig.graph.createDataView(view.buffer, {
+          format: view.format,
+          byteOffset: row * view.rowByteLength,
+          length: 4
+        })
+      )
+    );
+  const periods = rig.output('uint32', 8);
+  const keys = rig.output('uint32x2', 8);
+  const values = rig.input(Float32Array.from(ARROW_INGRESS_VALUES), 'float32');
+  const cells = rig.input(
+    Uint32Array.from(
+      ARROW_INGRESS_CELLS.flatMap(cell => [Number(cell & 0xffffffffn), Number(cell >> 32n)])
+    ),
+    'uint32x2'
+  );
+  const groupKeys = rig.output('uint32x2', 8);
+  const groupCounts = rig.output('uint32', 8);
+  const groupMeans = rig.output('float32', 8);
+  const groupCount = rig.output('uint32', 1);
+  const groupOverflow = rig.output('uint32', 1);
+  const matched = rig.output('uint32', 8);
+  const matchCounts = rig.output('uint32', 8);
+  const rightRows = rig.output('uint32', 8);
+  const counts = rig.output('uint32', 6);
+  const sums = rig.output('float32', 6);
+  const means = rig.output('float32', 6);
+  const invalidTimes = rig.output('uint32', 1);
+  const invalidKeys = rig.output('uint32', 1);
+  const invalidCube = rig.output('uint32', 1);
+  try {
+    rig.run(
+      new GPUPeriodIndex({
+        timestamps: rig.graph.importGPUVector('arrow-times', upload.timestamps),
+        mask: rig.graph.importGPUVector('arrow-validity', upload.validity),
+        temporalContext: upload.temporalContext,
+        periods: {kind: 'fixed', origin: -10n, width: 10n, count: 3},
+        output: {periods: split(periods), status: {invalidCount: invalidTimes}}
+      }),
+      new GPUCellPeriodKeys({
+        cells: split(cells),
+        periods: split(periods),
+        periodCount: 3,
+        fill: 'zeros',
+        layout: 'legacy-one-bit',
+        output: {keys: split(keys), status: {invalidCount: invalidKeys}}
+      }),
+      new GPUGroupStatistics({
+        keys: split(keys),
+        columns: [{values: split(values), statistics: ['mean'], output: {means: groupMeans}}],
+        output: {
+          keys: groupKeys,
+          counts: groupCounts,
+          status: {count: groupCount, overflow: groupOverflow}
+        }
+      }),
+      new GPUKeyLookup({
+        leftKeys: keys,
+        rightKeys: groupKeys,
+        output: {matched, matchCounts, rightRows}
+      }),
+      new GPUValueCube({
+        cells: rig.input(new Uint32Array([0, 0, 0, 0, 1, 1, 1, 0xffffffff]), 'uint32'),
+        periods,
+        values,
+        cellCount: 2,
+        periodCount: 3,
+        output: {counts, sums, means, status: {invalidCount: invalidCube}}
+      })
+    );
+    const missing = 0xffffffffffffffffn;
+    expect(await rig.readUint(periods)).toEqual([0, 0xffffffff, 1, 1, 2, 2, 0xfffffffe, 1]);
+    expect(await rig.readKeys(keys)).toEqual([4n, missing, 5n, 5n, 10n, 10n, missing, missing]);
+    expect(await rig.readUint(groupCount)).toEqual([3]);
+    expect(await rig.readUint(groupOverflow)).toEqual([0]);
+    expect((await rig.readKeys(groupKeys)).slice(0, 3)).toEqual([4n, 5n, 10n]);
+    expect((await rig.readUint(groupCounts)).slice(0, 3)).toEqual([1, 2, 2]);
+    expect((await rig.readFloat(groupMeans)).slice(0, 3)).toEqual([2, 6, 12]);
+    // Survivors are source rows 0,2,3,4,5. Row 1 is null, row 6 is past the axis, row 7 has no cell.
+    expect(await rig.readUint(matched)).toEqual([1, 0, 1, 1, 1, 1, 0, 0]);
+    expect(await rig.readUint(matchCounts)).toEqual([1, 0, 1, 1, 1, 1, 0, 0]);
+    expect(await rig.readUint(rightRows)).toEqual([
+      0, 0xffffffff, 1, 1, 2, 2, 0xffffffff, 0xffffffff
+    ]);
+    expect(await rig.readUint(counts)).toEqual([1, 2, 0, 0, 0, 2]);
+    expect(await rig.readFloat(sums)).toEqual([2, 12, 0, 0, 0, 24]);
+    const binMeans = await rig.readFloat(means);
+    expect(binMeans).toHaveLength(6);
+    for (const [bin, expected] of [
+      [0, 2],
+      [1, 6],
+      [5, 12]
+    ]) {
+      expect(Number.isFinite(binMeans[bin])).toBe(true);
+      expect(binMeans[bin]).toBe(expected);
+    }
+    for (const bin of [2, 3, 4]) expect(Number.isNaN(binMeans[bin])).toBe(true);
+    expect(await rig.readUint(invalidTimes)).toEqual([1]);
+    expect(await rig.readUint(invalidKeys)).toEqual([1]);
+    expect(await rig.readUint(invalidCube)).toEqual([2]);
+    expect(rig.submissions).toBe(1);
+  } finally {
+    rig.destroy();
+    upload.destroy();
+  }
 });

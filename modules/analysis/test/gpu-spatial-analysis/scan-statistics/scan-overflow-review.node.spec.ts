@@ -118,7 +118,7 @@ it('Poisson sums normalized baselines before totals, including overflowing raw s
       const memory: Record<string, Float32Array | Uint32Array> = {
         rawBaseline: Float32Array.of(scale / 2, scale, scale / 4),
         normalizedBaseline: new Float32Array(3),
-        baselineMaximum: new Uint32Array(1),
+        baselineMaximum: new Uint32Array(2),
         blockBaseline: new Float32Array(3),
         blockCases: new Uint32Array(3),
         cases: Uint32Array.of(10, 0, 0),
@@ -139,15 +139,7 @@ it('Poisson sums normalized baselines before totals, including overflowing raw s
         // and supply the same invocation/dispatch overrides used by the graph for these sizes.
         const interpretedSource = kernel.source.replace(/^\s*_ = [^;]+;/gm, '');
         createScaledInterpreter(interpretedSource).dispatchWorkgroups('main', [1, 1, 1], bindings, {
-          constants: {
-            INVOCATION_COUNT:
-              /-baseline-maximum-clear$|-totals$/.test(kernel.id) &&
-              !kernel.id.endsWith('-block-totals')
-                ? 1
-                : 3,
-            WGSL_KERNEL_DISPATCH_X: 1,
-            WGSL_KERNEL_DISPATCH_Y: 1
-          }
+          constants: kernel.constants
         });
       }
       const roundedScale = Math.fround(scale);
@@ -174,45 +166,77 @@ it('Poisson binary normalization avoids raw reciprocals across baseline scales',
   }
 });
 
-function interpretBaselineReview(values: Float32Array, flushSubnormalLoads = false) {
+function interpretBaselineReview(
+  values: Float32Array,
+  flushSubnormalLoads = false,
+  capacity = 1,
+  route: 'indexed' | 'full-scan' = 'full-scan',
+  settings: {positions?: number[]; fraction?: number} = {}
+) {
   const zones = values.length;
+  const coordinates =
+    settings.positions ??
+    (zones === 6 ? [0, 1, 2, 10, 11, 12] : Array.from({length: zones}, (_, row) => row));
   const {device, graph, props} = createScene('poisson', 1, zones);
   try {
     const sources = getGPUCommandNodeKernelSources(
-      createSpatialScanStatisticForTesting({...props, maximumWindowZones: 1}).getCommandNodes(graph)
+      createSpatialScanStatisticForTesting({
+        ...props,
+        maximumWindowZones: capacity,
+        nearestZoneSearch: route
+      }).getCommandNodes(graph)
     );
     const memory: Record<string, Float32Array | Uint32Array> = {
       rawBaseline: new Uint32Array(values.buffer),
-      baselineMaximum: new Uint32Array(1),
+      positions: Float32Array.from({length: zones * 2}, (_, index) =>
+        index % 2 === 0 ? coordinates[index / 2] : 0
+      ),
+      population: new Float32Array(zones),
+      sortKeys: new Uint32Array(zones * (capacity + 1)),
+      sortZones: new Uint32Array(zones * (capacity + 1)),
+      sortedKeysX: Uint32Array.from(
+        coordinates,
+        value => new Uint32Array(Float32Array.of(value).buffer)[0] ^ 0x80000000
+      ),
+      sortedKeysY: new Uint32Array(zones).fill(0x80000000),
+      sortedRowsX: Uint32Array.from({length: zones}, (_, index) => index),
+      sortedRowsY: Uint32Array.from({length: zones}, (_, index) => index),
+      baselineMaximum: new Uint32Array(2),
       normalizedBaseline: new Float32Array(zones),
       blockBaseline: new Float32Array(zones),
       blockCases: new Uint32Array(zones),
       cases: Uint32Array.from({length: zones}, (_, row) => (row === 0 ? 10 : 0)),
-      totals: new Uint32Array(7),
+      totals: new Uint32Array(17),
+      partials: new Uint32Array(zones * 10),
+      destination: new Uint32Array(zones * 10),
       parameters: Uint32Array.of(
         1,
         0,
         1,
-        new Uint32Array(Float32Array.of(0.5).buffer)[0],
-        1,
+        new Uint32Array(Float32Array.of(settings.fraction ?? 0.5).buffer)[0],
+        0xffffffff,
         1,
         0,
         0
       ),
-      neighbors: Uint32Array.from(
-        {length: zones * 2},
-        (_, index) => (Math.floor(index / 2) + (index % 2)) % zones
-      ),
+      neighbors: new Uint32Array(zones * (capacity + 1)),
+      distances: new Uint32Array(zones * (capacity + 1) + 12 * zones),
       centerBest: new Uint32Array(zones * 32)
     };
     memory['baseline'] = memory['normalizedBaseline'];
     memory['fillTarget'] = memory['baselineMaximum'];
     let windowInfoStart = 0;
     for (const kernel of sources.filter(kernel =>
-      /-baseline-(block-maximum|maximum-clear|normalize)$|-block-totals$|-totals$|-window-limit$/.test(
+      /-baseline-(block-maximum|maximum-clear|normalize)$|-block-totals$|-totals$|-exact-population-|-nearest$|-window-limit$/.test(
         kernel.id
       )
     )) {
+      if (kernel.id.endsWith('-nearest')) memory['population'] = memory['normalizedBaseline'];
+      if (kernel.id.includes('-exact-population-merge-')) {
+        const remaining = Math.ceil(zones / 2 ** (Number(kernel.id.split('-').at(-1)) + 1));
+        memory['destination'] =
+          remaining === 1 ? memory['totals'] : new Uint32Array(remaining * 10);
+      }
       let source = kernel.source.replace(/^\s*_ = [^;]+;/gm, '');
       if (flushSubnormalLoads && /rawBaseline: array<f32>/.test(source))
         source =
@@ -221,11 +245,29 @@ function interpretBaselineReview(values: Float32Array, flushSubnormalLoads = fal
             'probeFlush($&)'
           );
       const bindings: Record<number, Record<number, Float32Array | Uint32Array>> = {0: {}};
-      for (const binding of new WgslReflect(source).storage)
+      for (const binding of new WgslReflect(source).storage) {
+        expect(memory[binding.name], `${kernel.id}: ${binding.name}`).toBeDefined();
         bindings[binding.group][binding.binding] = memory[binding.name];
-      createScaledInterpreter(source).dispatchWorkgroups('main', [1, 1, 1], bindings, {
-        constants: kernel.constants
-      });
+      }
+      // These kernels are pointwise. WgslExec shares private/function state between concurrent
+      // threads, so execute each invocation separately against the retained graph-stage buffers.
+      for (
+        let invocation = 0;
+        invocation < Number(kernel.constants['INVOCATION_COUNT']);
+        invocation++
+      ) {
+        const isolated = source
+          .replace(/@workgroup_size\(\d+\)/, '@workgroup_size(1)')
+          .replace(
+            /let index = workgroupIndex \* \d+u \+ localInvocationIndex;/,
+            `let index = ${invocation}u;`
+          );
+        createScaledInterpreter(isolated).dispatchWorkgroups('main', [1, 1, 1], bindings, {
+          constants: kernel.constants
+        });
+      }
+      if (kernel.id.includes('-exact-population-merge-'))
+        memory['partials'] = memory['destination'];
       if (kernel.id.endsWith('-window-limit'))
         windowInfoStart = Number(source.match(/const WINDOW_INFO_START: u32 = (\d+)u/)![1]);
     }
@@ -233,12 +275,61 @@ function interpretBaselineReview(values: Float32Array, flushSubnormalLoads = fal
       maximumBits: memory['baselineMaximum'][0],
       weights: Array.from(memory['normalizedBaseline']),
       total: new Float32Array(memory['totals'].buffer)[1],
-      slots: memory['centerBest'][windowInfoStart]
+      slots: memory['centerBest'][windowInfoStart],
+      truncated: Array.from(
+        {length: zones},
+        (_, index) => memory['centerBest'][windowInfoStart + 2 * index + 1]
+      )
     };
   } finally {
     device.destroy();
   }
 }
+
+it('W5-01 reports all six truncated half-population circles on both discovery routes', () => {
+  // Each separated triple has the identical stored-f32 mass 1 + .3f + .3f: exactly half
+  // the study population. Capacity two loses an eligible three-zone circle at every center.
+  for (const route of ['indexed', 'full-scan'] as const) {
+    const result = interpretBaselineReview(
+      Float32Array.of(1, 0.3, 0.3, 1, 0.3, 0.3),
+      false,
+      2,
+      route
+    );
+    expect(result.truncated, route).toEqual([1, 1, 1, 1, 1, 1]);
+  }
+});
+
+it('B1 admits exact three-quarter circles before rounding the mass or fraction product', () => {
+  // Three identical (1,.8f) pairs are exactly 3/4 of four such pairs. Six coincident
+  // zones require six slots, so capacity five loses one eligible circle at six centers.
+  for (const route of ['indexed', 'full-scan'] as const) {
+    const result = interpretBaselineReview(
+      Float32Array.of(1, 0.8, 1, 0.8, 1, 0.8, 1, 0.8),
+      false,
+      5,
+      route,
+      {positions: [0, 0, 0, 0, 0, 0, 10, 10], fraction: 0.75}
+    );
+    expect.soft(result.truncated, route).toEqual([1, 1, 1, 1, 1, 1, 0, 0]);
+    const admittedPrefix = interpretBaselineReview(
+      Float32Array.of(1, 0.8, 1, 0.8, 1, 0.8, 1, 0.8),
+      false,
+      6,
+      route,
+      {positions: [0, 0, 0, 0, 0, 0, 10, 10], fraction: 0.75}
+    );
+    expect.soft(admittedPrefix.slots, `${route} inclusive prefix`).toBe(6);
+    const excludedPrefix = interpretBaselineReview(
+      Float32Array.of(1, 0.8, 1, 0.8, 1, 0.8, 1, 0.8),
+      false,
+      6,
+      route,
+      {positions: [0, 0, 0, 0, 0, 0, 10, 10], fraction: 0.75 - 2 ** -24}
+    );
+    expect.soft(excludedPrefix.slots, `${route} strictly smaller cap`).toBe(5);
+  }
+});
 
 it('binary baseline scaling preserves a window at exactly half the study population', () => {
   const result = interpretBaselineReview(Float32Array.of(6, 1, 4, 1));
@@ -348,5 +439,83 @@ it('production scan intervals cover upper-bound totals exactly with no wrapped e
     }
     expect(previous).toBe(total);
     expect(covered).toBe(total);
+  }
+});
+
+it('counts positive cases at zero Poisson exposure and suppresses inference without a status port (NUM-01)', () => {
+  const {device, graph, props} = createScene('poisson', 1, 2);
+  try {
+    for (const exposeStatus of [true, false]) {
+      const output = {...props.output, status: exposeStatus ? props.output.status : undefined};
+      const sources = getGPUCommandNodeKernelSources(
+        createSpatialScanStatisticForTesting({
+          ...props,
+          id: `zero-exposure-${exposeStatus}`,
+          output
+        }).getCommandNodes(graph)
+      );
+      // The conditional null assigns probability zero to a case in the zero-exposure cell.
+      // A zero-case/zero-exposure cell is compatible; two incompatible cells count as two.
+      for (const [cases, baseline, expected] of [
+        [[1, 0], [0, 1], 1],
+        [[0, 1], [0, 1], 0],
+        [[1, 1], [0, 0], 2],
+        [[1, 0], [2 ** -70, 2 ** 70], 1]
+      ] as const) {
+        const memory: Record<string, Float32Array | Uint32Array> = {
+          rawBaseline: Float32Array.from(baseline),
+          baselineMaximum: new Uint32Array(2),
+          normalizedBaseline: new Float32Array(2),
+          cases: Uint32Array.from(cases),
+          blockBaseline: new Float32Array(2),
+          blockCases: new Uint32Array(2),
+          totals: new Uint32Array(7),
+          cumulative: Uint32Array.of(0, 1),
+          statistics: Float32Array.of(7, 7),
+          clusterStatistics: new Float32Array(8).fill(7),
+          invalidCount: Uint32Array.of(77)
+        };
+        memory['baseline'] = memory['normalizedBaseline'];
+        memory['fillTarget'] = memory['baselineMaximum'];
+        for (const kernel of sources.filter(kernel =>
+          /-baseline-(maximum-clear|block-maximum|normalize|scaling-loss)$|-block-totals$|-totals$|-weight-total$|-invalid-count-status$/.test(
+            kernel.id
+          )
+        )) {
+          const bindings: Record<number, Record<number, Float32Array | Uint32Array>> = {0: {}};
+          for (const binding of new WgslReflect(kernel.source).storage) {
+            expect(memory[binding.name], binding.name).toBeDefined();
+            bindings[binding.group][binding.binding] = memory[binding.name];
+          }
+          // Isolate invocations: WgslExec reuses function locals between threads.
+          for (
+            let invocation = 0;
+            invocation < Number(kernel.constants['INVOCATION_COUNT']);
+            invocation++
+          ) {
+            const source = kernel.source
+              .replace(/^\s*_ = [^;]+;/gm, '')
+              .replace(/@workgroup_size\(\d+\)/, '@workgroup_size(1)')
+              .replace(
+                /let index = workgroupIndex \* \d+u \+ localInvocationIndex;/,
+                `let index = ${invocation}u;`
+              );
+            createScaledInterpreter(source).dispatchWorkgroups('main', [1, 1, 1], bindings, {
+              constants: kernel.constants
+            });
+          }
+        }
+        if (exposeStatus) expect(memory['invalidCount'][0]).toBe(expected);
+        if (expected > 0) {
+          expect(memory['totals'][0]).toBe(0);
+          expect(Array.from(memory['statistics']).every(Number.isNaN)).toBe(true);
+          expect(Array.from(memory['clusterStatistics'])).toEqual(new Array(8).fill(NaN));
+        } else {
+          expect(Array.from(memory['statistics'])).toEqual([7, 7]);
+        }
+      }
+    }
+  } finally {
+    device.destroy();
   }
 });

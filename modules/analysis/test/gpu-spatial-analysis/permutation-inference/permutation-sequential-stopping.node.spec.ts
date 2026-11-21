@@ -132,9 +132,7 @@ it('stopAfterExceedances validates its range, the folded alternative and permuta
     expect(() => create(1.5)).toThrow(/stopAfterExceedances/);
     expect(() => create(5, 'folded')).toThrow(/does not support the folded alternative/);
   }
-  expect(() => createLocal(graph, {withCounts: true})).toThrow(
-    /permutationCounts requires stopAfterExceedances/
-  );
+  expect(() => createLocal(graph, {withCounts: true})).not.toThrow();
   expect(() => createLocal(graph, {withCounts: true, stopAfterExceedances: 5})).not.toThrow();
 });
 

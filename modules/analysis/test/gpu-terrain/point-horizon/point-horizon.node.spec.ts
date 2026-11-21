@@ -230,7 +230,7 @@ it('point horizon packers lay out settings', () => {
   getGPUPointHorizonProfileParameterValues({}, planarGrid(1), reused);
   expect(Array.from(reused.slice(0, 8))).toEqual([0, 1, 1, 0, 0, 0, 0, 1]);
   expect(() => getGPUPointHorizonProfileParameterValues({}, planarGrid([0, 1]))).toThrow(
-    /cell size/
+    /cell size|pixel-axis lengths/
   );
   // A Web Mercator grid needs square pixels and rows increasing south.
   expect(() =>
@@ -326,17 +326,17 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   expect(singleMarch?.resources?.length).toBe(6);
   const sector = create({
     id: 'sector',
-    azimuthSpan: 100,
-    firstAzimuth: 20,
+    azimuthBinCount: 100,
+    firstAzimuthIndex: 20,
     output: tangentOnly('sector-tangent', 300)
   });
-  expect(resolvePointHorizonModel(sector.id, sector.props.grid, sector.props).azimuthSpan).toBe(
+  expect(resolvePointHorizonModel(sector.id, sector.props.grid, sector.props).azimuthBinCount).toBe(
     100
   );
 
-  expect(() => create({output: {}})).toThrow(/at least one output/);
+  expect(() => create({output: {} as never})).toThrow(/at least one output/);
   expect(() => create({output: tangentOnly('short-tangent', 10)})).toThrow(
-    /observers \* azimuthSpan/
+    /observers \* azimuthBinCount/
   );
   expect(() =>
     create({parameters: createTransientView(graph, 'settings-short', 'float32', 7)})
@@ -350,8 +350,8 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   expect(() => create({heightReference: 'relative' as never})).toThrow(/heightReference/);
   expect(() => create({rowDirection: 'up' as never})).toThrow(/rowDirection/);
   expect(() => create({azimuthCount: 0})).toThrow(/azimuthCount/);
-  expect(() => create({firstAzimuth: 720})).toThrow(/firstAzimuth/);
-  expect(() => create({azimuthSpan: 721})).toThrow(/azimuthSpan/);
+  expect(() => create({firstAzimuthIndex: 720})).toThrow(/firstAzimuthIndex/);
+  expect(() => create({azimuthBinCount: 721})).toThrow(/azimuthBinCount/);
   expect(() => create({maximumDistance: 5})).toThrow(/maximumDistance/);
   expect(() => create({raysPerDispatch: 0})).toThrow(/raysPerDispatch/);
   const shared = createBand(graph, 'shared', 3 * 720);

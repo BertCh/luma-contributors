@@ -11,6 +11,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 
 /** Scalar result slots start on WebGPU storage binding boundaries, sharing reducer pipelines. */
 export const GWR_REDUCTION_SLOT_WORDS = 64;
@@ -118,6 +119,8 @@ export function createGWRVarianceReductionNodes<Parameters>(
   const totals = [0, 1, 2].map(channel =>
     createTransientView(graph, `${id}-variance-total-${channel}`, 'float32', 1)
   );
+  const anchorRows = createTransientView(graph, `${id}-variance-anchor-rows`, 'float32', tileCount);
+  const firstTile = createTransientView(graph, `${id}-variance-first-tile`, 'float32', 1);
   const binding = (name: string, view: GraphDataView, access: 'read' | 'read_write') => ({
     name,
     view,
@@ -127,20 +130,41 @@ export function createGWRVarianceReductionNodes<Parameters>(
   const declarations = `const TILE_COUNT: u32 = ${tileCount}u;`;
   return [
     createWGSLKernelNode(graph, {
+      id: `${id}-variance-anchor-rows`,
+      operation: 'GPUGeographicallyWeightedRegression',
+      variant: 'variance-anchor',
+      invocationCount: tileCount,
+      bindings: [
+        binding('statistics', statistics, 'read'),
+        binding('anchorRows', anchorRows, 'read_write')
+      ],
+      declarations,
+      body: 'anchorRows[anchorRowsOffset + index] = select(f32(TILE_COUNT), f32(index), statistics[statisticsOffset + 3u * index] > 0.0);'
+    }),
+    ...new GPUReduction({
+      id: `${id}-variance-first-tile`,
+      input: anchorRows,
+      output: firstTile,
+      operation: 'min'
+    }).getCommandNodes(graph),
+    createWGSLKernelNode(graph, {
       id: `${id}-variance-centre`,
       operation: 'GPUGeographicallyWeightedRegression',
       variant: 'variance-centre',
       invocationCount: tileCount,
       bindings: [
         binding('statistics', statistics, 'read'),
+        binding('firstTile', firstTile, 'read'),
         binding('counts', channels[0], 'read_write'),
         binding('deviations', channels[1], 'read_write')
       ],
-      declarations,
+      declarations: `${declarations}\n${ROUNDED_DIFFERENCE_WGSL}`,
       body: `let count = statistics[statisticsOffset + 3u * index];
-  let anchor = statistics[statisticsOffset + 1u];
+  let anchorIndex = min(u32(firstTile[firstTileOffset]), TILE_COUNT - 1u);
+  let anchor = statistics[statisticsOffset + 3u * anchorIndex + 1u];
+  let runtimeZero = bitcast<u32>(firstTile[firstTileOffset]) & 0x80000000u;
   counts[countsOffset + index] = count;
-  deviations[deviationsOffset + index] = count * (statistics[statisticsOffset + 3u * index + 1u] - anchor);`
+  deviations[deviationsOffset + index] = count * getRoundedDifference(statistics[statisticsOffset + 3u * index + 1u], anchor, runtimeZero);`
     }),
     ...[0, 1].flatMap(channel =>
       new GPUReduction({
@@ -157,14 +181,18 @@ export function createGWRVarianceReductionNodes<Parameters>(
       invocationCount: tileCount,
       bindings: [
         binding('statistics', statistics, 'read'),
+        binding('firstTile', firstTile, 'read'),
         binding('totalCount', totals[0], 'read'),
         binding('totalDeviation', totals[1], 'read'),
         binding('squares', channels[2], 'read_write')
       ],
-      declarations,
+      declarations: `${declarations}\n${ROUNDED_DIFFERENCE_WGSL}`,
       body: `let count = statistics[statisticsOffset + 3u * index];
-  let mean = statistics[statisticsOffset + 1u] + totalDeviation[totalDeviationOffset] / max(totalCount[totalCountOffset], 1.0);
-  let delta = statistics[statisticsOffset + 3u * index + 1u] - mean;
+  let anchorIndex = min(u32(firstTile[firstTileOffset]), TILE_COUNT - 1u);
+  let anchor = statistics[statisticsOffset + 3u * anchorIndex + 1u];
+  let runtimeZero = bitcast<u32>(firstTile[firstTileOffset]) & 0x80000000u;
+  let meanDeviation = totalDeviation[totalDeviationOffset] / max(totalCount[totalCountOffset], 1.0);
+  let delta = getRoundedDifference(statistics[statisticsOffset + 3u * index + 1u], anchor, runtimeZero) - meanDeviation;
   squares[squaresOffset + index] = statistics[statisticsOffset + 3u * index + 2u] + count * delta * delta;`
     }),
     ...new GPUReduction({

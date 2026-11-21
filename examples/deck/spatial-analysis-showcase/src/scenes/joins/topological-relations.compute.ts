@@ -86,6 +86,8 @@ const PATTERN_SLOTS = 4;
 const MAXIMUM_DISTANCE = 500;
 const PREDICATES_WITH_FAST_ENGINE = ['intersects', 'contains', 'within', 'dwithin'];
 const SETTLE_FRAMES = 3;
+/** Status words read back ahead of the pair, matrix, anti-join and CSR arrays. */
+const SUMMARY_WORDS = 10;
 const STATUS_PALETTE = [
   [120, 135, 160, 120],
   [255, 150, 40, 230],
@@ -132,10 +134,10 @@ export async function createTopologicalRelations(
   const areaSet = createPolygonSet(areasData, origin);
   const tractCommunityArea = tractsData.column<Uint8Array>('communityArea');
   const geoids = (tractsData.geojson?.features ?? []).map(feature =>
-    String((feature.properties as Record<string, unknown>)?.GEOID ?? '')
+    String((feature.properties as Record<string, unknown>)?.['GEOID'] ?? '')
   );
   const areaNames = (areasData.geojson?.features ?? []).map(feature =>
-    String((feature.properties as Record<string, unknown>)?.name ?? '')
+    String((feature.properties as Record<string, unknown>)?.['name'] ?? '')
   );
 
   // Roads: one direction of every road up to tertiary, as polylines.
@@ -173,7 +175,7 @@ export async function createTopologicalRelations(
     'pattern',
     'uint32',
     PATTERN_SLOTS * 2,
-    packGPUSpatialRelatePattern(RELATE_PATTERNS.rook.patterns, PATTERN_SLOTS)
+    packGPUSpatialRelatePattern(RELATE_PATTERNS['rook'].patterns, PATTERN_SLOTS)
   );
   const distanceParameters = resources.createParameterBuffer(
     'distance',
@@ -200,6 +202,8 @@ export async function createTopologicalRelations(
   let antiFlags = new Uint8Array(maximumLeft);
   let pairs: {left: number; right: number; matrix: number}[] = [];
   let maximumCount = 1;
+  let pairResultsIncomplete = true;
+  let antiResultsIncomplete = true;
 
   const getKey = (state: TopologicalOptions): string =>
     `${state.combo}|${state.predicate}|${PREDICATES_WITH_FAST_ENGINE.includes(state.predicate) ? state.engine : '-'}|${state.matrix && state.predicate !== 'dwithin'}`;
@@ -217,7 +221,7 @@ export async function createTopologicalRelations(
     combo === 'tracts-areas' ? areaSet.featureCount : tractSet.featureCount;
 
   const getPatterns = (state: TopologicalOptions): readonly string[] =>
-    (RELATE_PATTERNS[state.pattern] ?? RELATE_PATTERNS.rook).patterns;
+    (RELATE_PATTERNS[state.pattern] ?? RELATE_PATTERNS['rook']).patterns;
 
   /** Builds one compiled configuration. `engineOverride` is used by the timing comparison only. */
   async function buildVariant(
@@ -264,6 +268,9 @@ export async function createTopologicalRelations(
       const antiIds = own.createBuffer('anti-ids', leftCount * 4);
       const antiCount = own.createBuffer('anti-count', 4);
       const antiOverflow = own.createBuffer('anti-overflow', 4);
+      const antiUncertainCount = own.createBuffer('anti-uncertain-count', 4);
+      const pairCandidateOverflow = own.createBuffer('pair-candidate-overflow', 4);
+      const antiCandidateOverflow = own.createBuffer('anti-candidate-overflow', 4);
       const csrOffsets = own.createBuffer('csr-offsets', (leftCount + 1) * 4);
       const csrNeighbors = own.createBuffer('csr-neighbors', pairCapacity * 4);
       const csrWeights = own.createBuffer('csr-weights', pairCapacity * 4);
@@ -290,6 +297,13 @@ export async function createTopologicalRelations(
             status: {
               count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
               overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+              candidateOverflow: importGraphBuffer(
+                graph,
+                'pair-candidate-overflow',
+                pairCandidateOverflow,
+                'uint32',
+                1
+              ),
               requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
             }
           },
@@ -340,8 +354,24 @@ export async function createTopologicalRelations(
             ids: importGraphBuffer(graph, 'anti-ids', antiIds, 'uint32', leftCount),
             status: {
               count: importGraphBuffer(graph, 'anti-count', antiCount, 'uint32', 1),
-              overflow: importGraphBuffer(graph, 'anti-overflow', antiOverflow, 'uint32', 1)
+              overflow: importGraphBuffer(graph, 'anti-overflow', antiOverflow, 'uint32', 1),
+              candidateOverflow: importGraphBuffer(
+                graph,
+                'anti-candidate-overflow',
+                antiCandidateOverflow,
+                'uint32',
+                1
+              )
             }
+          },
+          status: {
+            uncertainCount: importGraphBuffer(
+              graph,
+              'anti-uncertain-count',
+              antiUncertainCount,
+              'uint32',
+              1
+            )
           }
         }
       });
@@ -355,6 +385,9 @@ export async function createTopologicalRelations(
         {buffer: candidates, size: 4},
         {buffer: antiCount, size: 4},
         {buffer: antiOverflow, size: 4},
+        {buffer: pairCandidateOverflow, size: 4},
+        {buffer: antiCandidateOverflow, size: 4},
+        {buffer: antiUncertainCount, size: 4},
         {buffer: leftRows, size: pairCapacity * 4},
         {buffer: rightRows, size: pairCapacity * 4},
         {buffer: relateBuffer, size: pairCapacity * 4},
@@ -433,20 +466,35 @@ export async function createTopologicalRelations(
     ctx.requestLayers();
   }
 
+  function describeOverflow(words: Uint32Array): string {
+    const lost = [
+      words[7] || words[8] ? 'candidates' : '',
+      words[1] ? 'pairs' : '',
+      words[6] ? 'unmatched rows' : ''
+    ].filter(Boolean);
+    return lost.length ? `OVERFLOW: ${lost.join(', ')}` : 'no overflow';
+  }
+
   function handleSummary(source: Variant, bytes: ArrayBuffer): void {
     const state = ctx.options;
+    // Words: 0 pair count, 1 pair overflow, 2 required pairs, 3 pair uncertainty, 4 candidates,
+    // 5 unmatched count, 6 unmatched overflow, 7 pair candidate loss, 8 unmatched candidate loss,
+    // 9 anti-join uncertainty.
     const words = new Uint32Array(bytes);
     const capacity = source.pairCapacity;
     const leftCount = source.leftCount;
     const rightCount = source.rightCount;
     const count = Math.min(words[0], capacity);
-    const lefts = words.subarray(7, 7 + capacity);
-    const rights = words.subarray(7 + capacity, 7 + capacity * 2);
-    const matrices = words.subarray(7 + capacity * 2, 7 + capacity * 3);
-    const antiIds = words.subarray(7 + capacity * 3, 7 + capacity * 3 + leftCount);
+    const lefts = words.subarray(SUMMARY_WORDS, SUMMARY_WORDS + capacity);
+    const rights = words.subarray(SUMMARY_WORDS + capacity, SUMMARY_WORDS + capacity * 2);
+    const matrices = words.subarray(SUMMARY_WORDS + capacity * 2, SUMMARY_WORDS + capacity * 3);
+    const antiIds = words.subarray(
+      SUMMARY_WORDS + capacity * 3,
+      SUMMARY_WORDS + capacity * 3 + leftCount
+    );
     const csrOffsets = words.subarray(
-      7 + capacity * 3 + leftCount,
-      7 + capacity * 3 + leftCount * 2 + 1
+      SUMMARY_WORDS + capacity * 3 + leftCount,
+      SUMMARY_WORDS + capacity * 3 + leftCount * 2 + 1
     );
 
     leftCounts = new Float32Array(maximumLeft);
@@ -468,16 +516,26 @@ export async function createTopologicalRelations(
     for (let slot = 0; slot < antiCount; slot++) {
       if (antiIds[slot] < leftCount) antiFlags[antiIds[slot]] = 1;
     }
+    // Growing the pair capacity cannot recover dropped candidates or certify uncertain predicates.
+    const pairCandidateLoss = words[7] !== 0;
+    const pairsIncomplete = words[1] !== 0 || pairCandidateLoss;
+    const antiIncomplete = words[6] !== 0 || words[8] !== 0;
+    const uncertain = words[3] !== 0 || words[9] !== 0;
+    const canCompare = !pairsIncomplete && !antiIncomplete && !uncertain;
+    pairResultsIncomplete = pairsIncomplete;
+    antiResultsIncomplete = antiIncomplete;
     let matchedLeft = 0;
     let complement = true;
     maximumCount = 1;
     for (let row = 0; row < leftCount; row++) {
-      if (leftCounts[row] > 0) matchedLeft++;
-      if (leftCounts[row] > 0 === (antiFlags[row] === 1)) complement = false;
+      const matched = leftCounts[row] > 0;
+      if (matched) matchedLeft++;
+      if (canCompare && matched === (antiFlags[row] === 1)) complement = false;
       maximumCount = Math.max(maximumCount, leftCounts[row]);
     }
     const matchedRight = rightCounts.reduce((total, value) => total + (value > 0 ? 1 : 0), 0);
     const describe = describePredicate(state);
+    const atLeast = (isLowerBound: boolean): string => (isLowerBound ? 'at least ' : '');
     ctx.setReadout(
       'left',
       `${formatInteger(leftCount)} ${source.combo === 'roads-tracts' ? 'road edges' : 'tracts'}`
@@ -488,19 +546,25 @@ export async function createTopologicalRelations(
     );
     ctx.setReadout(
       'pairs',
-      `${formatInteger(words[2])} pairs: ${formatInteger(matchedLeft)} of ${formatInteger(leftCount)} left, ${formatInteger(matchedRight)} of ${formatInteger(rightCount)} right`
+      `${atLeast(pairCandidateLoss)}${formatInteger(words[2])} pairs: ${atLeast(pairsIncomplete)}${formatInteger(matchedLeft)} of ${formatInteger(leftCount)} left, ${atLeast(pairsIncomplete)}${formatInteger(matchedRight)} of ${formatInteger(rightCount)} right${pairsIncomplete ? ' (incomplete: a capacity was exceeded)' : ''}`
     );
     ctx.setReadout(
       'anti',
-      `${formatInteger(words[5])} of ${formatInteger(leftCount)}; ${complement ? 'exactly the complement of the pairs' : 'DIFFERS from the complement'}`
+      canCompare
+        ? `${formatInteger(words[5])} of ${formatInteger(leftCount)} · ${complement ? 'exactly the complement of the pairs' : 'DIFFERS from the complement'}`
+        : uncertain
+          ? 'Unknown due to uncertain predicates'
+          : `Unknown due to incomplete results (${atLeast(antiIncomplete)}${formatInteger(words[5])} of ${formatInteger(leftCount)} unmatched)`
     );
     ctx.setReadout(
       'candidates',
-      `${formatInteger(words[4])} bounding-box candidates, ${formatInteger(words[2])} pass ${describe} (${words[4] ? ((100 * words[2]) / words[4]).toFixed(0) : 0}%)`
+      pairCandidateLoss
+        ? `${formatInteger(words[4])} bounding-box candidates counted (unclamped), candidate search incomplete; at least ${formatInteger(words[2])} pass ${describe} (fraction unknown: candidates were dropped)`
+        : `${formatInteger(words[4])} bounding-box candidates, ${formatInteger(words[2])} pass ${describe} (${words[4] ? ((100 * words[2]) / words[4]).toFixed(0) : 0}%)`
     );
     ctx.setReadout(
       'flags',
-      `${words[1] || words[6] ? 'OVERFLOW' : 'no overflow'}; ${formatInteger(words[3])} uncertain pairs`
+      `${describeOverflow(words)} · ${atLeast(pairCandidateLoss)}${formatInteger(words[3])} uncertain inner pairs, ${atLeast(words[8] !== 0)}${formatInteger(words[9])} uncertain anti pairs`
     );
     ctx.setReadout('engine', source.engineText);
     ctx.setReadout(
@@ -511,7 +575,10 @@ export async function createTopologicalRelations(
           ? [...histogram.entries()]
               .sort((a, b) => b[1] - a[1])
               .slice(0, 3)
-              .map(([text, total]) => `${text} x${formatInteger(total)}`)
+              .map(
+                ([text, total]) =>
+                  `${text} x${formatInteger(total)}${pairResultsIncomplete ? ' retained (lower bound)' : ''}`
+              )
               .join(', ') || 'none'
           : 'enable "Output DE-9IM matrices"'
     );
@@ -522,7 +589,9 @@ export async function createTopologicalRelations(
       const mean = nonZero / leftCount;
       ctx.setReadout(
         'contiguity',
-        `${formatInteger(nonZero)} links in the weights matrix, ${mean.toFixed(2)} neighbours per tract on average, ${islands} island${islands === 1 ? '' : 's'}`
+        pairsIncomplete
+          ? `at least ${formatInteger(nonZero)} links in the weights matrix (incomplete: a capacity was exceeded), at most ${islands} island${islands === 1 ? '' : 's'}`
+          : `${formatInteger(nonZero)} links in the weights matrix, ${mean.toFixed(2)} neighbours per tract on average, ${islands} island${islands === 1 ? '' : 's'}`
       );
       ctx.setReadout(
         'parity',
@@ -535,7 +604,7 @@ export async function createTopologicalRelations(
     const builds = source.prepared.encodedBuildCount;
     ctx.setReadout(
       'indexBuilds',
-      `${builds} build${builds === 1 ? '' : 's'} in ${formatInteger(source.frames)} join runs (right index reused)`
+      `${builds} CPU geometry refresh requests in ${formatInteger(source.frames)} join runs (geometry retained; preparation replays)`
     );
     refreshSelection();
     refreshStatus();
@@ -560,7 +629,7 @@ export async function createTopologicalRelations(
     });
     ctx.setReadout(
       'selection',
-      `${getLeftName(combo, selected)}: ${matches.length} match${matches.length === 1 ? '' : 'es'}${lines.length ? ` (${lines.join('; ')}${matches.length > 4 ? '; ...' : ''})` : ''}`
+      `${getLeftName(combo, selected)}: ${pairResultsIncomplete ? 'at least ' : ''}${matches.length} match${matches.length === 1 ? '' : 'es'}${lines.length ? ` (${lines.join('; ')}${matches.length > 4 ? '; ...' : ''})` : ''}${pairResultsIncomplete ? ' (incomplete)' : ''}`
     );
   }
 
@@ -572,6 +641,8 @@ export async function createTopologicalRelations(
     leftCounts = new Float32Array(maximumLeft);
     antiFlags = new Uint8Array(maximumLeft);
     variant = next;
+    pairResultsIncomplete = true;
+    antiResultsIncomplete = true;
     dirty = true;
     if (previous) {
       previous.reader.stop();
@@ -691,7 +762,7 @@ export async function createTopologicalRelations(
       const [x, y] = projection.project(event.coordinate[0], event.coordinate[1]);
       const row = findPolygonAt(tractSet, x, y);
       if (row < 0) return null;
-      return `${getLeftName(variant.combo, row)}\n${formatInteger(leftCounts[row])} match${leftCounts[row] === 1 ? '' : 'es'}`;
+      return `${getLeftName(variant.combo, row)}\n${pairResultsIncomplete ? 'at least ' : ''}${formatInteger(leftCounts[row])} match${leftCounts[row] === 1 ? '' : 'es'}${pairResultsIncomplete ? ' (incomplete)' : ''}`;
     },
 
     encode(commandEncoder) {
@@ -711,6 +782,7 @@ export async function createTopologicalRelations(
 
     getLayers() {
       const state = ctx.options;
+      if (pairResultsIncomplete || antiResultsIncomplete) return [];
       const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
       const dark = ctx.theme() === 'dark';
       const layers: Layer[] = [];

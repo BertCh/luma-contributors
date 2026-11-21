@@ -359,7 +359,7 @@ export async function createCoverageAuditView(
         polygonOffsets,
         featureOffsets,
         labels: groupView,
-        snapTolerance: 0,
+        snapGridSize: 0,
         vertexTolerance: 0.001,
         splitTouchingRings: true,
         output: {

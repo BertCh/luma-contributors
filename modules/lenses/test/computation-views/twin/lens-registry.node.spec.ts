@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {afterAll, expect, expectTypeOf, test} from 'vitest';
+import {afterAll, expect, expectTypeOf, test, vi} from 'vitest';
+import {readFileSync} from 'node:fs';
 import type {Device} from '@luma.gl/core';
 import {captureLensScenarioRecord} from '../../../src/computation-lenses/run-lens-scenario';
 import {
@@ -32,6 +33,33 @@ const descriptor: LensScenarioDescriptor = {
 const disposeRegistrations: (() => void)[] = [];
 afterAll(() => {
   for (const dispose of disposeRegistrations) dispose();
+});
+
+test('B7: an explicit empty presentation preserves the last-output choice through serialization', async () => {
+  const {buildLensTwin} = await import('../../../src/computation-views/twin/static-twin');
+  const file = JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../../../docs/lens-records/gpu-spatial-analysis.kriging.json',
+        import.meta.url
+      ),
+      'utf8'
+    )
+  );
+  const decoded = fromRecordedLensFile({...file, presentation: {}});
+  const directive = {scenario: decoded.scenarioId, rung: 'result'};
+  const before = buildLensTwin(decoded, directive);
+  // The explicit empty choice selects the last capture (uncertainCount: one row), rather than
+  // the absent-presentation kriging fallback (rainfall: 4,662 cells).
+  expect(before.keyNumber).toEqual({label: 'rows', value: '1'});
+  const rewritten = toRecordedLensFile(decoded.record, {
+    scenarioId: decoded.scenarioId,
+    recordedAt: decoded.recordedAt,
+    adapterLabel: decoded.adapterLabel,
+    presentation: decoded.presentation
+  });
+  expect(buildLensTwin(rewritten, directive).keyNumber).toEqual(before.keyNumber);
+  expect(fromRecordedLensFile(JSON.parse(JSON.stringify(rewritten))).presentation).toEqual({});
 });
 
 test('R6 rejects compact graphs with a missing dictionary and accepts genuine legacy graphs', () => {
@@ -80,15 +108,168 @@ test('validates scenario ids, coverage contract, duplicates and sorted lookup', 
   expect(listLensScenarios()).toEqual(previous);
 });
 
+test.each([
+  ['registration → static-twin → example-mock', ['registration', 'static-twin', 'example-mock']],
+  ['example-mock → static-twin → registration', ['example-mock', 'static-twin', 'registration']]
+] as const)('W2-03: fixture order %s leaves real behavior for the next caller', async (_name, order) => {
+  const identifiers = order.map(name => `registry-order.${name}`);
+  const trace: string[] = [];
+  const fixtureDisposers: (() => void)[] = [];
+  vi.resetModules();
+  try {
+    for (const name of [...order, 'next-caller']) {
+      const registry = await import('../../../src/computation-lenses/registry-implementation');
+      await import('../../../src/computation-lenses/scenarios/index');
+      const publicRegistry = await import('../../../src/computation-lenses/index');
+      expect(
+        publicRegistry.getLensScenario('gpu-spatial-analysis.building-tessellation-recipe')?.element
+      ).toBe('addBuildingTessellationRecipe');
+      expect(
+        publicRegistry.getLensScenario('gpu-spatial-analysis.building-tessellation-recipe')
+      ).toBe(registry.getLensScenario('gpu-spatial-analysis.building-tessellation-recipe'));
+      for (const id of identifiers)
+        expect(registry.getLensScenario(id), `${trace.at(-1)} → ${name}: ${id}`).toBeUndefined();
+      // Each next caller imports and executes real modules after the previous fixture's cleanup.
+      const spatial = await import('@luma-contributors/analysis/gpu-spatial-analysis');
+      expect(vi.isMockFunction(spatial.addBuildingTessellationReferenceRecipe)).toBe(false);
+      expect(
+        Array.from(
+          spatial.getRasterResistanceConnectivityParameterValues({
+            width: 1,
+            height: 1,
+            affine: [0.125, 0, 0, 0, 1, 0],
+            pixelInterpretation: 'area'
+          })
+        )
+      ).toContain(0.125);
+      const {createNullWebGPUDevice} = await import(
+        '../../../../analysis/src/testing/gpu-contributor-test-utils'
+      );
+      const {GPUCommandGraph, createTransientView} = await import('@luma.gl/graph/gpu-core');
+      const example = await import(
+        '../../../src/computation-lenses/scenarios/gpu-spatial-analysis/building-tessellation-recipe.example'
+      );
+      const device = createNullWebGPUDevice();
+      try {
+        const graph = new GPUCommandGraph(device);
+        const result = await example.runExample(graph, {
+          segments: createTransientView(graph, 'order-segments', 'float32x4', 4),
+          segmentBuildingIds: createTransientView(graph, 'order-owners', 'uint32', 4),
+          enclosure: createTransientView(graph, 'order-enclosure', 'float32x2', 4),
+          buildingCount: 1,
+          sampleSpacing: 2,
+          sampleCapacity: 4,
+          vertexTolerance: 1 / 1024,
+          capacity: {intersections: 16, nodedSegments: 16, vertices: 16, rings: 4}
+        });
+        expect(result.outputs.map(output => output.geometry.kind)).toEqual(['polygons']);
+      } finally {
+        device.destroy();
+      }
+      trace.push(name);
+      if (name === 'next-caller') continue;
+      const fixture: LensScenarioDescriptor = {
+        ...descriptor,
+        id: `registry-order.${name}`,
+        entry: 'registry-order',
+        load: async () => ({run: async () => makeScanRecord()})
+      };
+      const previous = registry.listLensScenarios();
+      const dispose = registry.registerLensScenario(fixture);
+      fixtureDisposers.push(dispose);
+      expect(registry.getLensScenario(fixture.id)).toBe(fixture);
+      expect(() => registry.registerLensScenario(fixture)).toThrow('Duplicate');
+      expect(await (await registry.getLensScenario(fixture.id)!.load()).run({} as Device)).toEqual(
+        makeScanRecord()
+      );
+      if (name === 'static-twin') {
+        const twin = await import('../../../src/computation-views/twin/static-twin');
+        const {ViewRegistry} = await import(
+          '../../../src/computation-views/registry/view-registry'
+        );
+        const views = new ViewRegistry();
+        const guardsFor = vi.fn((_target: {element?: string}) => []);
+        views.registerPack({id: 'gpu-core', guardsFor});
+        const recorded = registry.toRecordedLensFile(makeScanRecord(), {
+          scenarioId: fixture.id,
+          recordedAt: '2026-10-14T00:00:00.000Z',
+          adapterLabel: 'order fixture'
+        });
+        const expectRegisteredTwin = (scenarioId: string) => {
+          guardsFor.mockClear();
+          expect(
+            twin.buildLensTwin(
+              {...recorded, scenarioId},
+              {scenario: scenarioId, rung: 'table'},
+              {registry: views}
+            ).viewId
+          ).toBe('table');
+          expect(guardsFor).toHaveBeenCalledWith(
+            expect.objectContaining({element: fixture.element})
+          );
+        };
+        expectRegisteredTwin(fixture.id);
+        // A table fallback also renders for an unknown ID. It cannot prove registry visibility.
+        expect(() => expectRegisteredTwin('registry-order.unregistered')).toThrow();
+      }
+      dispose();
+      const replacement = {...fixture, title: `replacement after ${name}`};
+      const disposeReplacement = registry.registerLensScenario(replacement);
+      fixtureDisposers.push(disposeReplacement);
+      dispose();
+      expect(registry.getLensScenario(fixture.id)).toBe(replacement);
+      disposeReplacement();
+      expect(registry.listLensScenarios()).toEqual(previous);
+      if (name === 'example-mock') {
+        vi.resetModules();
+        vi.doMock('@luma-contributors/analysis/gpu-spatial-analysis', () => ({
+          addBuildingTessellationReferenceRecipe: vi.fn(() => ({outputs: ['order mock']}))
+        }));
+        try {
+          const example = await import(
+            '../../../src/computation-lenses/scenarios/gpu-spatial-analysis/building-tessellation-recipe.example'
+          );
+          expect(await example.runExample({} as never, {} as never)).toEqual({
+            outputs: ['order mock']
+          });
+        } finally {
+          vi.doUnmock('@luma-contributors/analysis/gpu-spatial-analysis');
+          vi.resetModules();
+        }
+      }
+    }
+    expect(trace).toEqual([...order, 'next-caller']);
+  } finally {
+    for (const dispose of fixtureDisposers.reverse()) dispose();
+    vi.doUnmock('@luma-contributors/analysis/gpu-spatial-analysis');
+    vi.resetModules();
+  }
+});
+
 test('JSON round trip preserves typed capture arrays and non-finite tokens', () => {
   const record = makeScanRecord();
   const capture = record.captures!.snapshots[0];
   record.captures = {
     ...record.captures!,
     snapshots: [
-      {...capture, elementType: 'f32', values: new Float32Array([NaN, Infinity, -Infinity, 1.25])},
-      {...capture, elementType: 'u32', values: new Uint32Array([0, 4294967295])},
-      {...capture, elementType: 'i32', values: new Int32Array([-2147483648, 2147483647])}
+      {
+        ...capture,
+        id: 'float-values',
+        elementType: 'f32',
+        values: new Float32Array([NaN, Infinity, -Infinity, 1.25])
+      },
+      {
+        ...capture,
+        id: 'unsigned-values',
+        elementType: 'u32',
+        values: new Uint32Array([0, 4294967295])
+      },
+      {
+        ...capture,
+        id: 'signed-values',
+        elementType: 'i32',
+        values: new Int32Array([-2147483648, 2147483647])
+      }
     ]
   };
   const serialized = toRecordedLensFile(record, {
@@ -113,6 +294,9 @@ test('JSON round trip preserves typed capture arrays and non-finite tokens', () 
   const invalid = JSON.parse(json);
   invalid.record.captures.snapshots[0].values = [null];
   expect(() => fromRecordedLensFile(invalid)).toThrow('values');
+  const duplicated = JSON.parse(json);
+  duplicated.record.captures.snapshots[1].id = duplicated.record.captures.snapshots[0].id;
+  expect(() => fromRecordedLensFile(duplicated)).toThrow('Duplicate capture id');
 });
 
 test('series values and unrelated attributes survive deep conversion', () => {

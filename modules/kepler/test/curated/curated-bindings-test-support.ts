@@ -4,7 +4,7 @@
 
 import {appendFileSync} from 'node:fs';
 import {expect} from 'vitest';
-import type {CatalogRunResult} from '../../src/analysis/catalog-binding-types';
+import type {CatalogRunOutput, CatalogRunResult} from '../../src/analysis/catalog-binding-types';
 import {getCatalogBinding, runCatalogOperation} from '../../src/analysis/catalog-bindings';
 import type {
   CatalogFeatureCollection,
@@ -24,7 +24,10 @@ export function runCuratedBinding(
   return runCatalogOperation(binding, parameters, inputs);
 }
 
-export function getResultTable(result: CatalogRunResult, tableId: string): CatalogOutputTable {
+export function getResultTable(
+  result: Pick<CatalogRunOutput, 'tables'>,
+  tableId: string
+): CatalogOutputTable {
   const table = result.tables.find(candidate => candidate.id === tableId);
   if (!table)
     throw new Error(

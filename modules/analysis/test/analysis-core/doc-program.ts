@@ -56,7 +56,7 @@ export function getSidebarPageIssues(
   ];
 }
 
-/** Package entries an analysis page may import, in the order free names are resolved. */
+/** Public entries used by documentation fixtures. */
 export const ANALYSIS_ENTRIES = [
   '@luma-contributors/analysis/analysis-core',
   '@luma-contributors/analysis/gpu-spatial-analysis',
@@ -116,6 +116,14 @@ export function createVirtualProgram(
       ? getSourceFile(fileName, languageVersion, onError, shouldCreate)
       : typescript.createSourceFile(fileName, text, languageVersion, true);
   };
+  // Validate literal imports before repository `paths` can make private leaves look public.
+  // Only roots are fenced documentation: source dependencies retain repository resolution.
+  host.resolveModuleNames = (names, containingFile) =>
+    names.map(name => {
+      if (virtualFiles.has(containingFile) && getPublicPackageSpecifierIssue(name))
+        return undefined;
+      return typescript.resolveModuleName(name, containingFile, options, host).resolvedModule;
+    });
   return typescript.createProgram([...virtualFiles.keys()], options, host, oldProgram);
 }
 
@@ -136,4 +144,73 @@ export function formatDiagnostic(diagnostic: typescript.Diagnostic): string {
   }
   const {line, character} = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
   return `${line + 1}:${character + 1} TS${diagnostic.code} ${message}`;
+}
+
+export const FIRST_RUN_HEADINGS = [
+  'Shared first-run lifecycle',
+  'First-run terrain derivatives',
+  'First-run exact distance field',
+  'First-run time-window filter',
+  'First-run point-cloud statistical filter'
+] as const;
+
+/** Literal bodies and original Markdown lines, including executable invocation lines. */
+export function getFirstRunFences(text = readDocPage('README.md')) {
+  return FIRST_RUN_HEADINGS.map(heading => getReadmeFence(heading, text));
+}
+
+function getReadmeFence(heading: string, text: string) {
+  const headingOffset = text.indexOf(`### ${heading}\n`);
+  if (headingOffset < 0) throw new Error(`README.md: missing ${heading}`);
+  const section = text.slice(headingOffset).split(/\n#{1,3} /)[0];
+  const matches = [...section.matchAll(/^```ts\n([\s\S]*?)^```/gm)];
+  if (matches.length !== 1) throw new Error(`README.md: expected one fence in ${heading}`);
+  const match = matches[0];
+  const fenceLine = text.slice(0, headingOffset + match.index!).split('\n').length;
+  const code = match[1].trimEnd();
+  return {heading, code, fenceLine};
+}
+
+/** The Deck integration is checked separately from the four executable family examples. */
+export function getDeckOwnedDeviceFence(text = readDocPage('README.md')) {
+  return getReadmeFence('Using a Deck-owned device', text);
+}
+
+function pairFirstRunFence(
+  shared: ReturnType<typeof getReadmeFence>,
+  example: ReturnType<typeof getReadmeFence>
+) {
+  return {
+    heading: example.heading,
+    page: 'README.md',
+    fenceLine: example.fenceLine,
+    code: `${shared.code}\n\n${example.code}`,
+    markdownLines: [
+      ...shared.code.split('\n').map((_, index) => shared.fenceLine + index + 1),
+      shared.fenceLine,
+      ...example.code.split('\n').map((_, index) => example.fenceLine + index + 1)
+    ]
+  };
+}
+
+export function getPairedDeckOwnedDeviceFence(text = readDocPage('README.md')) {
+  return pairFirstRunFence(getFirstRunFences(text)[0], getDeckOwnedDeviceFence(text));
+}
+
+export function getPairedFirstRunFences(text = readDocPage('README.md')) {
+  const [shared, ...examples] = getFirstRunFences(text);
+  return examples.map(example => pairFirstRunFence(shared, example));
+}
+
+/** Match the manifest contract before mapping an analysis package import to checkout source. */
+export function getPublicPackageSpecifierIssue(specifier: string): string | undefined {
+  const packageName = '@luma-contributors/analysis';
+  if (specifier !== packageName && !specifier.startsWith(`${packageName}/`)) return undefined;
+  const manifest = JSON.parse(
+    readFileSync(join(REPOSITORY_ROOT, 'modules/analysis/package.json'), 'utf8')
+  ) as {exports: Record<string, unknown>};
+  const subpath = `.${specifier.slice(packageName.length)}`;
+  return Object.hasOwn(manifest.exports, subpath)
+    ? undefined
+    : `unpublished package specifier ${specifier}`;
 }

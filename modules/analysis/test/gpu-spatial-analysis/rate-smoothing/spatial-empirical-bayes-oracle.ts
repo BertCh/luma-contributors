@@ -19,6 +19,8 @@ export function computeSpatialEmpiricalBayesOracle(input: {
   populations: ArrayLike<number>;
   offsets: ArrayLike<number>;
   neighbors: ArrayLike<number>;
+  /** Positive finite slots are active; omitted means a binary active slot. */
+  weights?: ArrayLike<number>;
   mask?: ArrayLike<number>;
 }): SpatialEmpiricalBayesOracle {
   const {events, populations, offsets, neighbors, mask} = input;
@@ -26,6 +28,7 @@ export function computeSpatialEmpiricalBayesOracle(input: {
   const included = (row: number) =>
     (!mask || mask[row] !== 0) &&
     Number.isFinite(events[row]) &&
+    events[row] >= 0 &&
     Number.isFinite(populations[row]) &&
     populations[row] > 0;
   const result: SpatialEmpiricalBayesOracle = {
@@ -42,7 +45,16 @@ export function computeSpatialEmpiricalBayesOracle(input: {
     const members = [row];
     for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
       const neighbor = neighbors[slot];
-      if (neighbor !== row && included(neighbor)) members.push(neighbor);
+      const weight = input.weights?.[slot] ?? 1;
+      if (
+        neighbor >= 0 &&
+        neighbor < rows &&
+        neighbor !== row &&
+        Number.isFinite(weight) &&
+        weight > 0 &&
+        included(neighbor)
+      )
+        members.push(neighbor);
     }
     const eventSum = members.reduce((total, member) => total + events[member], 0);
     const populationSum = members.reduce((total, member) => total + populations[member], 0);

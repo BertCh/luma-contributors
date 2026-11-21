@@ -120,6 +120,7 @@ it('GPUInequality validates props', () => {
     }),
     /globalSummary/
   );
+  // @ts-expect-error JavaScript callers still receive the runtime empty-selection guard.
   expectThrows(() => ({output: {}}), /at least one output/);
   expectThrows(graph => {
     const values = createTransientView(graph, `v-${serial++}`, 'float32', 10);
@@ -162,15 +163,12 @@ it('GPUInequality emits deterministic node IDs and only the passes its outputs n
     })
   );
   const fullIds = full.getCommandNodes(graph).map(node => node.id);
-  expect(fullIds.slice(-7)).toEqual([
-    'full-publish-indices',
-    'full-publish-moments',
-    'full-global-sums',
-    'full-global-gini-tile-totals',
-    'full-global-gini-tile-prefix',
-    'full-global-gini-tile-area',
-    'full-global-gini'
-  ]);
+  expect(fullIds).toContain('full-zone-gini-publish');
+  expect(fullIds).toContain('full-atkinson-zero-boundary');
+  expect(fullIds.indexOf('full-zone-gini-publish')).toBeLessThan(
+    fullIds.indexOf('full-publish-indices')
+  );
+  expect(fullIds.at(-1)).toBe('full-global-gini-publish');
   expect(new Set(fullIds).size).toBe(fullIds.length);
   device.destroy();
 });
@@ -189,7 +187,7 @@ it('computeInequalityOnCPU matches known answers', () => {
   expect(result.gini[1]).toBeCloseTo(3 / 4, 12);
   expect(result.theilT[1]).toBeCloseTo(Math.log(4), 12);
   expect(result.theilL[1]).toBeNaN();
-  expect(result.atkinson[1]).toBeNaN();
+  expect(result.atkinson[1]).toBe(1);
   expect(result.hoover[1]).toBeCloseTo(3 / 4, 12);
   // 1, 2, 3, 4: Gini = 2 * (1 + 4 + 9 + 16) / (4 * 10) - 5 / 4 = 0.25.
   expect(result.gini[2]).toBeCloseTo(0.25, 12);
@@ -259,7 +257,7 @@ it('computeInequalityOnCPU treats weights as population and applies the inclusio
   expect(filtered.mean[1]).toBeNaN();
   expect(filtered.gini[1]).toBeNaN();
   expect(filtered.globalSummary[4]).toBe(2);
-  // Atkinson with a zero: defined for epsilon < 1, NaN for epsilon >= 1.
+  // Positive-mean Atkinson with a positive-weight zero extends continuously to 1 for epsilon >= 1.
   const withZero = (epsilon: number) =>
     computeInequalityOnCPU({
       values: [0, 2, 4],
@@ -268,8 +266,8 @@ it('computeInequalityOnCPU treats weights as population and applies the inclusio
       settings: {epsilon}
     });
   expect(withZero(0.5).atkinson[0]).toBeGreaterThan(0);
-  expect(withZero(1).atkinson[0]).toBeNaN();
-  expect(withZero(2).atkinson[0]).toBeNaN();
+  expect(withZero(1).atkinson[0]).toBe(1);
+  expect(withZero(2).atkinson[0]).toBe(1);
   expect(withZero(0).atkinson[0]).toBeCloseTo(0, 12);
   // All-zero zone: mean 0, indices undefined.
   const zero = computeInequalityOnCPU({values: [0, 0], zoneIds: [0, 0], zoneCount: 1});
@@ -277,7 +275,7 @@ it('computeInequalityOnCPU treats weights as population and applies the inclusio
   expect(zero.gini[0]).toBeNaN();
 });
 
-it('GPUInequality global second-stage reductions run in 256-lane workgroups', () => {
+it('GPUInequality global summary is cooperative and Gini uses bounded bidirectional scans', () => {
   // 300 * 256 + 7 rows and 600 zones make the strided loops run more than once; 100 rows and 3
   // zones leave most lanes idle.
   for (const [rowCount, zoneCount] of [
@@ -300,7 +298,7 @@ it('GPUInequality global second-stage reductions run in 256-lane workgroups', ()
       })
     );
     const sources = getGPUCommandNodeKernelSources(inequality.getCommandNodes(graph));
-    for (const variant of ['global-sums', 'global-gini-tile-prefix', 'global-gini']) {
+    for (const variant of ['global-sums']) {
       const kernels = sources.filter(({id: kernelId}) => kernelId.endsWith(`${id}-${variant}`));
       expect(kernels.length, variant).toBe(1);
       const source = kernels[0].source;
@@ -311,6 +309,34 @@ it('GPUInequality global second-stage reductions run in 256-lane workgroups', ()
       expect(source, variant).not.toContain('zone = 0u; zone < ZONE_COUNT');
       expect(source, variant).not.toContain('tile = 0u; tile < GINI_TILE_COUNT');
     }
+    for (const direction of ['left', 'right']) {
+      expect(
+        sources.some(kernel => kernel.id.includes(`${id}-global-gini-${direction}-rows`))
+      ).toBe(true);
+    }
+    const gaps = sources.find(kernel => kernel.id.endsWith(`${id}-global-gini-terms`));
+    expect(gaps).toBeDefined();
+    expect(gaps?.source).toContain('rightParts');
+    expect(gaps?.source).toContain('ldexp');
+    expect(gaps?.source).not.toContain('1.0 -');
     device.destroy();
   }
+});
+
+it('DPC-108: preserves packed inequality ranges and explicit zero epsilon before writing target', () => {
+  for (const settings of [{epsilon: 1e-50}, {palmaTopShare: 1e-50}, {palmaBottomShare: 1e-50}]) {
+    const target = new Float32Array(6).fill(17);
+    expect(() => getGPUInequalityParameterValues(settings, target)).toThrow();
+    expect(Array.from(target)).toEqual([17, 17, 17, 17, 17, 17]);
+  }
+  const target = new Float32Array(6).fill(17);
+  expect(
+    getGPUInequalityParameterValues({epsilon: 0, palmaTopShare: 1, palmaBottomShare: 0.25}, target)
+  ).toBe(target);
+  expect(Array.from(target)).toEqual([0, 1, 0.25, 0, 17, 17]);
+  expect(
+    Array.from(
+      getGPUInequalityParameterValues({epsilon: 32, palmaTopShare: 0.25, palmaBottomShare: 1})
+    )
+  ).toEqual([32, 0.25, 1, 0]);
 });

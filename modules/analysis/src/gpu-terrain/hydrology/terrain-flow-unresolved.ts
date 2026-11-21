@@ -54,6 +54,7 @@ export function createTerrainFlowUnresolvedNodes<Parameters>(
     directions?: GraphDataView<'uint32'>;
     classes?: GraphDataView<'uint32'>;
     accumulation?: GraphDataView<'float32'>;
+    accumulationConverged?: GraphDataView<'uint32'>;
     streams?: GraphDataView<'uint32'>;
     codes: TerrainFlowUnresolvedCodes;
   }
@@ -106,11 +107,22 @@ export function createTerrainFlowUnresolvedNodes<Parameters>(
     variant: 'unresolved-arm',
     bindings: [
       ...statusBindings,
+      ...(props.accumulationConverged
+        ? [
+            {
+              name: 'accumulationConverged',
+              view: props.accumulationConverged,
+              type: 'u32' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : []),
       {name: 'dispatch', view: gate.dispatch, type: 'u32', access: 'read_write'}
     ],
     invocationCount: 1,
     // Word 3 of a relaxation status is 1 only when an iteration changed nothing.
     body: `let converged = ${convergedWGSL.join(' && ')};
+  ${props.accumulationConverged ? 'if (!converged) { accumulationConverged[accumulationConvergedOffset] = 0u; }' : ''}
   dispatch[dispatchOffset] = select(${x}u, 0u, converged);
   dispatch[dispatchOffset + 1u] = ${y}u;
   dispatch[dispatchOffset + 2u] = ${z}u;`

@@ -6,11 +6,82 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
 import {GPUPeriodIndex} from '../../../src/dataframe-analysis/period-index/index';
 import {GPUCalendarBuckets} from '../../../src/dataframe-analysis/calendar-buckets/index';
-import {addSpaceTimeHotSpotsRecipe} from '../../../src/gpu-spatial-analysis/recipes/space-time-hot-spots-recipe';
-import {GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/emerging-hot-spots/index';
+import {
+  addSpaceTimeHotSpotsRecipe,
+  getSpaceTimeSliceIndex
+} from '../../../src/gpu-spatial-analysis/recipes/space-time-hot-spots-recipe';
+import {
+  GPUEmergingHotSpots,
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+} from '../../../src/gpu-spatial-analysis/emerging-hot-spots/index';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {getGPUEmergingHotSpotsParameterValues} from '../../../src/gpu-spatial-analysis/emerging-hot-spots/index';
+
+it.each([
+  'day',
+  'week',
+  'hour'
+] as const)('W5-20 excludes missing calendar rows at the public %s recipe helper', step => {
+  const missing = {year: -2147483648, month: 4294967295, day: 4294967295, hour: 4294967295};
+  const slices = {step, origin: {year: 2023, month: 1, day: 1, hour: 0}, count: 8};
+  expect(getSpaceTimeSliceIndex(slices, missing)).toBe(-1);
+  // A missing observation is excluded; an invalid configuration must still reject first.
+  expect(() =>
+    getSpaceTimeSliceIndex({...slices, origin: {year: 2023, month: 2, day: 29}}, missing)
+  ).toThrow(/origin/);
+});
+
+it('W5-18 captures inherited and changing settings once and preserves state on rejection', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'settings',
+    format: 'float32',
+    length: GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+  });
+  const write = vi.spyOn(parameters, 'write');
+  let reads = 0;
+  const settings = Object.create({
+    temporalWindow: 1,
+    get criticalZ() {
+      return ++reads === 1 ? 0.75 : 2;
+    }
+  });
+  try {
+    const recipe = addSpaceTimeHotSpotsRecipe(graph, {
+      timestamps: createTransientView(graph, 'timestamps', 'uint32x2', 1),
+      calendarParameters: createTransientView(graph, 'calendar', 'sint32', 2),
+      slices: {step: 'month', origin: {year: 2023}, count: 6},
+      cells: {
+        kind: 'lattice',
+        positions: createTransientView(graph, 'positions', 'float32x2', 1),
+        width: 2,
+        height: 2,
+        bounds: [0, 0, 2, 2]
+      },
+      settings,
+      multipleTesting: 'none',
+      parameters
+    });
+    expect(reads).toBe(1);
+    expect(write.mock.calls[0][0][2]).toBe(0.75);
+    // Two-sided standard normal tail at .75, independent reference (SciPy norm.sf(.75)*2).
+    expect(recipe.inference.significanceLevel).toBeCloseTo(0.4532547047537364, 6);
+    reads = 0;
+    recipe.setSettings(settings);
+    expect(reads).toBe(1);
+    expect(write.mock.calls[1][0][2]).toBe(0.75);
+    expect(recipe.inference.significanceLevel).toBeCloseTo(0.4532547047537364, 6);
+    const previous = recipe.inference;
+    expect(() => recipe.setSettings(Object.create({temporalWindow: 1, criticalZ: -1}))).toThrow();
+    expect(recipe.inference).toBe(previous);
+    expect(write).toHaveBeenCalledTimes(2);
+  } finally {
+    parameters.destroy();
+    device.destroy();
+  }
+});
 
 it('H1 initial classification settings match an identical update in every parameter word', () => {
   const device = createNullWebGPUDevice();
@@ -227,7 +298,7 @@ it.each([
     settings: {temporalWindow: invalid === 'settings' ? -1 : 1},
     parameters,
     ...(invalid === 'output-length'
-      ? {outputs: {trendZ: createTransientView(graph, 'short-trend', 'float32', 1)}}
+      ? {output: {trendZ: createTransientView(graph, 'short-trend', 'float32', 1)}}
       : {}),
     ...(invalid === 'palette'
       ? {
@@ -248,5 +319,50 @@ it.each([
   } finally {
     parameters.destroy();
     device.destroy();
+  }
+});
+
+it('ever-occupied opt-in supplies the same rebuilt mask to both cube routes', () => {
+  for (const sorted of [false, true]) {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const parameters = new GPUParameterBuffer(device, {
+      id: 'occupied-parameters',
+      format: 'float32',
+      length: GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+    });
+    const callerMask = createTransientView(graph, 'caller-mask', 'uint32', 5);
+    try {
+      const recipe = addSpaceTimeHotSpotsRecipe(graph, {
+        timestamps: createTransientView(graph, 'timestamps', 'uint32x2', 6),
+        calendarParameters: createTransientView(graph, 'calendar', 'sint32', 2),
+        slices: {step: 'month', origin: {year: 2023}, count: 3},
+        cells: {
+          kind: 'lattice',
+          positions: createTransientView(graph, 'positions', 'float32x2', 6),
+          width: 5,
+          height: 1,
+          bounds: [0, 0, 5, 1]
+        },
+        occupiedCellsOnly: true,
+        cellMask: callerMask,
+        settings: {radius: 0, temporalWindow: 0},
+        parameters,
+        ...(sorted ? {scratch: {keys: createTransientView(graph, 'keys', 'uint32', 6)}} : {})
+      });
+      expect(recipe.intermediates.cellMask).toBeDefined();
+      expect(recipe.intermediates.cellMask).not.toBe(callerMask);
+      const emerging = recipe.contributors.find(
+        contributor => contributor instanceof GPUEmergingHotSpots
+      );
+      expect(emerging).toBeInstanceOf(GPUEmergingHotSpots);
+      if (emerging instanceof GPUEmergingHotSpots) {
+        if (sorted) expect(emerging.props.mask).not.toBe(recipe.intermediates.cellMask);
+        else expect(emerging.props.mask).toBe(recipe.intermediates.cellMask);
+      }
+    } finally {
+      parameters.destroy();
+      device.destroy();
+    }
   }
 });

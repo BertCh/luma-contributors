@@ -68,7 +68,16 @@ it.each([
   expect(() => requireStorageBudget(requests, parseSources)).toThrow();
 });
 
-const SCAN_SITES = [
+type ScanSite = {
+  exportName: string;
+  cases: string[];
+  prefix: string;
+  scanPrefix?: string;
+  consumer: string;
+  totalRead: string;
+};
+
+const SCAN_SITES: ScanSite[] = [
   {
     exportName: 'GPUNetworkCostWeights',
     cases: ['rows, every column, every output', 'one row, outputs without diagnostics'],
@@ -101,6 +110,7 @@ const SCAN_SITES = [
     exportName: 'GPULatticeWeights',
     cases: ['queen radius 1 mask and cell size', 'rook radius 1 mask and cell size'],
     prefix: 'lattice-weights',
+    scanPrefix: 'lattice-weights-scan',
     consumer: 'lattice-weights-offsets',
     totalRead: 'let total = scanTotal[scanTotalOffset];'
   },
@@ -108,6 +118,7 @@ const SCAN_SITES = [
     exportName: 'GPUSpatialWeightsAlgebra',
     cases: ['block with many groups', 'union left rule and distances'],
     prefix: 'spatial-weights-algebra',
+    scanPrefix: 'spatial-weights-algebra-scan',
     consumer: 'spatial-weights-algebra-offsets',
     totalRead: 'let total = scanTotal[scanTotalOffset];'
   },
@@ -119,6 +130,38 @@ const SCAN_SITES = [
     totalRead: 'let totalVertices = vertexTotal[vertexTotalOffset];'
   }
 ];
+
+/** The uint64 scan writes saturated monotone prefixes and the total together. */
+function expectSaturatedScanPublication(
+  nodes: readonly GPUCommandNode[],
+  sources: ReadonlyMap<string, string>,
+  scanPrefix: string,
+  consumer: string
+): number {
+  const ids = nodes.map(node => node.id);
+  const saturationIndex = ids.indexOf(`${scanPrefix}-saturate`);
+  const consumerIndex = ids.indexOf(consumer);
+  expect(saturationIndex, ids.join(', ')).toBeGreaterThanOrEqual(0);
+  expect(consumerIndex, ids.join(', ')).toBeGreaterThan(saturationIndex);
+  const saturatedOutputs = nodes[saturationIndex].resources?.filter(
+    resource => resource.usage === 'storage-read-write'
+  );
+  // Exactly the monotone exclusive offsets and the saturated total are published together.
+  expect(saturatedOutputs).toHaveLength(2);
+  for (const output of saturatedOutputs!) {
+    expect(nodes[consumerIndex].resources).toContainEqual({...output, usage: 'storage-read'});
+  }
+  const source = sources.get(`${scanPrefix}-saturate`);
+  expect(source).toContain(
+    'sum = select(low[lowOffset + ROW_COUNT - 1u], 0xffffffffu, high[highOffset + ROW_COUNT - 1u] != 0u);'
+  );
+  expect(source).toContain(
+    'offset = select(low[lowOffset + index - 1u], 0xffffffffu, high[highOffset + index - 1u] != 0u);'
+  );
+  expect(source).toContain('offsets[offsetsOffset + index] = offset;');
+  expect(source).toContain('total[totalOffset + TOTAL_ROW] = sum;');
+  return saturationIndex;
+}
 
 for (const site of SCAN_SITES) {
   for (const name of site.cases) {
@@ -132,25 +175,29 @@ for (const site of SCAN_SITES) {
         auditCase!.build(context);
         const nodes = getDeclaredNodes(context) as readonly GPUCommandNode[];
         const ids = nodes.map(node => node.id);
-        const totalIndex = ids.indexOf(`${site.prefix}-total`);
-        const carryIndex = ids.indexOf(`${site.prefix}-carry`);
-        expect(totalIndex).toBeGreaterThanOrEqual(0);
-        expect(carryIndex).toBe(totalIndex + 1);
-        expect(ids.indexOf(site.consumer)).toBeGreaterThan(carryIndex);
-        // The carry must update the word initialized by the total pass and read by the status pass.
-        const carryOutput = nodes[carryIndex].resources?.find(
-          resource => resource.usage === 'storage-read-write'
-        );
-        expect(carryOutput).toBeDefined();
-        expect(nodes[totalIndex].resources).toContainEqual(carryOutput);
-        expect(nodes[ids.indexOf(site.consumer)].resources).toContainEqual({
-          ...carryOutput,
-          usage: 'storage-read'
-        });
         const sources = requireStorageBudget(nodes);
-        expect(sources.get(`${site.prefix}-carry`)).toContain(
-          'atomicStore(&total[totalOffset + TOTAL_ROW], 4294967295u);'
-        );
+        if (site.scanPrefix !== undefined) {
+          expectSaturatedScanPublication(nodes, sources, site.scanPrefix, site.consumer);
+        } else {
+          const totalIndex = ids.indexOf(`${site.prefix}-total`);
+          const carryIndex = ids.indexOf(`${site.prefix}-carry`);
+          expect(totalIndex).toBeGreaterThanOrEqual(0);
+          expect(carryIndex).toBe(totalIndex + 1);
+          expect(ids.indexOf(site.consumer)).toBeGreaterThan(carryIndex);
+          // Total-only consumers still use the older total/carry pair.
+          const carryOutput = nodes[carryIndex].resources?.find(
+            resource => resource.usage === 'storage-read-write'
+          );
+          expect(carryOutput).toBeDefined();
+          expect(nodes[totalIndex].resources).toContainEqual(carryOutput);
+          expect(nodes[ids.indexOf(site.consumer)].resources).toContainEqual({
+            ...carryOutput,
+            usage: 'storage-read'
+          });
+          expect(sources.get(`${site.prefix}-carry`)).toContain(
+            'atomicStore(&total[totalOffset + TOTAL_ROW], 4294967295u);'
+          );
+        }
         expect(sources.get(site.consumer)).toContain(site.totalRead);
       } finally {
         context.device.destroy();
@@ -178,9 +225,13 @@ it('higher-order weights protect every intermediate CSR stage before offsets and
     expect(offsetsIds).toHaveLength(3);
     for (const offsetsId of offsetsIds) {
       const prefix = offsetsId.slice(0, -'-offsets'.length);
-      const carryIndex = ids.indexOf(`${prefix}-carry`);
-      expect(carryIndex).toBe(ids.indexOf(`${prefix}-total`) + 1);
-      expect(ids.indexOf(offsetsId)).toBe(carryIndex + 1);
+      const saturationIndex = expectSaturatedScanPublication(
+        nodes,
+        sources,
+        `${prefix}-scan`,
+        offsetsId
+      );
+      expect(ids.indexOf(offsetsId)).toBe(saturationIndex + 1);
       expect(sources.get(offsetsId)).toContain('let total = scanTotal[scanTotalOffset];');
     }
   } finally {

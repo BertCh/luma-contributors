@@ -36,7 +36,61 @@ import {
   getHaversineDistance,
   type NetworkMetricOracle
 } from '../network-metric-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {createOracleContext} from '../adjacency-matrix/network-output-oracle-test-utils';
+import {GPUNetworkCostMatrix} from '../../../src/gpu-network/network-accessibility/gpu-network-cost-matrix';
+
+it('directed midpoint and intersection starts preserve legal seed slots and matrix rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const reverse of [true, false]) {
+    const context = createOracleContext(device);
+    const {graph, input, output, read} = context;
+    try {
+      const topology = {
+        offsets: input('offsets', 'uint32', [0, 2, 2, 2]),
+        neighbors: input('neighbors', 'uint32', [1, 2]),
+        weights: input('weights', 'float32', [10, 1]),
+        nodePositions: input('nodes', 'float32x2', [0, 0, 10, 0, 0, 1])
+      };
+      const startNodes = output('seeds', 'uint32', 2);
+      const startCosts = output('seed-costs', 'float32', 2);
+      graph.add(
+        new GPUNetworkSnapping({
+          topology,
+          positions: input('point', 'float32x2', reverse ? [5, 0] : [0, 0]),
+          startDirection: reverse ? 'reverse' : 'forward',
+          intersectionAware: true,
+          output: {snappedEdges: output('snapped', 'uint32'), startNodes, startCosts}
+        })
+      );
+      const costs = output('matrix', 'float32', 3);
+      graph.add(
+        new GPUNetworkCostMatrix({
+          topology: reverse
+            ? {
+                offsets: input('reverse-offsets', 'uint32', [0, 0, 1, 2]),
+                neighbors: input('reverse-neighbors', 'uint32', [0, 0]),
+                weights: input('reverse-weights', 'float32', [10, 1])
+              }
+            : topology,
+          startNodes,
+          startCosts,
+          startsPerRow: 2,
+          output: {costs}
+        })
+      );
+      context.run();
+      // On 0->1 the midpoint can be reached only from node 0. At intersection 0,
+      // a forward trip may also take the distinct outgoing edge 0->2 with cost 1.
+      expect(await read(startNodes)).toEqual(reverse ? [0, NONE] : [0, 1]);
+      expect(await read(startCosts)).toEqual(reverse ? [5, -1] : [0, 10]);
+      expect(await read(costs)).toEqual(reverse ? [5, Infinity, Infinity] : [0, 10, 1]);
+    } finally {
+      context.destroy();
+    }
+  }
+});
 
 type SnappingResult = {
   edges: number[];
@@ -49,6 +103,65 @@ type SnappingResult = {
   startCosts: number[];
   overflow?: number;
 };
+
+it.each([
+  false,
+  true
+])('reverse exact-target snapping preserves both seed slots and a zero self-trip (indexed=%s, B2)', async indexed => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const context = createOracleContext(device);
+  const {graph, input, output, read} = context;
+  try {
+    const topology = {
+      offsets: input('offsets', 'uint32', [0, 1, 1]),
+      neighbors: input('neighbors', 'uint32', [1]),
+      weights: input('weights', 'float32', [11]),
+      nodePositions: input('nodes', 'float32x2', [0, 0, 11, 0])
+    };
+    const startNodes = output('start-nodes', 'uint32', 2);
+    const startCosts = output('start-costs', 'float32', 2);
+    const snapFractions = output('fractions', 'float32');
+    graph.add(
+      new GPUNetworkSnapping({
+        topology,
+        positions: input('point', 'float32x2', [11, 0]),
+        startDirection: 'reverse',
+        intersectionAware: true,
+        candidateCapacity: indexed ? 1 : undefined,
+        maximumSnapDistance: indexed ? input('radius', 'float32', [1]) : undefined,
+        output: {
+          snappedEdges: output('snapped', 'uint32'),
+          startNodes,
+          startCosts,
+          snapFractions,
+          status: indexed ? {overflow: output('overflow', 'uint32')} : undefined
+        }
+      })
+    );
+    const costs = output('matrix', 'float32', 2);
+    graph.add(
+      new GPUNetworkCostMatrix({
+        topology: {
+          offsets: input('reverse-offsets', 'uint32', [0, 0, 1]),
+          neighbors: input('reverse-neighbors', 'uint32', [0]),
+          weights: input('reverse-weights', 'float32', [11])
+        },
+        startNodes,
+        startCosts,
+        startsPerRow: 2,
+        output: {costs}
+      })
+    );
+    context.run();
+    expect(await read(snapFractions)).toEqual([1]);
+    expect(await read(startNodes)).toEqual([0, 1]);
+    expect(await read(startCosts)).toEqual([11, 0]);
+    expect(await read(costs)).toEqual([11, 0]);
+  } finally {
+    context.destroy();
+  }
+});
 
 type SnappingOptions = {
   edgeCosts?: boolean;

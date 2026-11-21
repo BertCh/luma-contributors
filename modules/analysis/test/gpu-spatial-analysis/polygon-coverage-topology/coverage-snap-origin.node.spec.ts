@@ -135,7 +135,7 @@ it('dissolve keeps near boundaries separate when assembly tolerance is smaller t
         polygonOffsets,
         featureOffsets,
         labels,
-        snapTolerance: 0.25,
+        snapGridSize: 0.25,
         // The gap is 1/16; the default 0.25 / 4 would match across it.
         vertexTolerance: 1 / 1024,
         output

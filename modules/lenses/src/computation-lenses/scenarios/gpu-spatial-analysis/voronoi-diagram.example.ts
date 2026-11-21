@@ -38,7 +38,8 @@ export async function runExample(
     status: {
       count: triangleCount,
       requiredCount: scalar('triangleRequiredCount'),
-      overflow: scalar('triangleOverflow')
+      overflow: scalar('triangleOverflow'),
+      converged: scalar('triangleConverged')
     }
   };
   graph.add(new GPUDelaunayTessellation({positions: places, output: delaunay}));
@@ -49,12 +50,21 @@ export async function runExample(
     status: {
       count: scalar('count'),
       requiredCount: scalar('requiredCount'),
-      overflow: scalar('overflow')
+      overflow: scalar('overflow'),
+      candidateOverflow: scalar('candidateOverflow'),
+      converged: scalar('converged')
     }
   };
   const {triangles} = delaunay;
   graph.add(
-    new GPUVoronoiDiagram({positions: places, triangles, triangleCount, clipBounds, output})
+    new GPUVoronoiDiagram({
+      positions: places,
+      triangles,
+      triangleCount,
+      triangleStatus: delaunay.status,
+      clipBounds,
+      output
+    })
   );
   // segments: (startX, startY, endX, endY) in m; siteIds: the two places each segment separates
   const {segments, siteIds} = output;

@@ -18,7 +18,8 @@ for (const empty of [false, true])
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const input = empty
-      ? {positions: [0, 0], ringOffsets: [0, 0], polygonOffsets: [0, 0], featureOffsets: [0, 1]}
+      ? // Canonical offsets cover every row: an empty ring and part own no positions.
+        {positions: [], ringOffsets: [0, 0], polygonOffsets: [0, 1], featureOffsets: [0, 1]}
       : fixture.input;
     const props: NormalizePolygonsOperationProps = {
       positions: 'positions',

@@ -180,7 +180,7 @@ it('maps an independent planar survey and matches the committed scikit-learn/Sha
   const points = makePoints(DBSCAN_PLANAR.points);
   const {result, reference, report} = await runMapped('projected-survey', points, 'planar', {
     epsilon: DBSCAN_PLANAR.epsilon,
-    minimumPoints: DBSCAN_PLANAR.minimumPoints
+    minimumSamples: DBSCAN_PLANAR.minimumSamples
   });
   expectParity(result, reference, report);
   const labels = getTable(result, 'points').columns['cluster'].map(Number);
@@ -210,7 +210,7 @@ it('matches the geographic sphere oracle after a real spherical GPU measurement 
   );
   const {result, reference, report} = await runMapped('geographic-survey', points, 'EPSG:4326', {
     epsilon: DBSCAN_GEOGRAPHIC.epsilon,
-    minimumPoints: DBSCAN_GEOGRAPHIC.minimumPoints
+    minimumSamples: DBSCAN_GEOGRAPHIC.minimumSamples
   });
   expectParity(result, reference, report);
   const labels = getTable(result, 'points').columns['cluster'].map(Number);
@@ -244,7 +244,7 @@ it('matches the existing cluster-and-outline recipe 400-point fixture and indepe
   const oracle = clusterPointsOracle(positions, {
     bounds: [0, 0, 100, 100],
     epsilon: 4,
-    minimumPoints: 4
+    minimumSamples: 4
   });
   const hulls = computeGroupConvexHullOracle(positions, oracle.labels, 16);
   const points = makePoints(
@@ -252,7 +252,7 @@ it('matches the existing cluster-and-outline recipe 400-point fixture and indepe
   );
   const {result, reference, report} = await runMapped('recipe-fixture', points, 'planar', {
     epsilon: 4,
-    minimumPoints: 4
+    minimumSamples: 4
   });
   expectParity(result, reference, report);
   expect(getTable(result, 'points').columns['cluster'], report).toEqual(
@@ -279,9 +279,9 @@ for (const fixture of [
       [20, 0]
     ],
     epsilon: 1,
-    minimumPoints: 4
+    minimumSamples: 4
   },
-  {id: 'single', points: [[5, 5]], epsilon: 1, minimumPoints: 1},
+  {id: 'single', points: [[5, 5]], epsilon: 1, minimumSamples: 1},
   {
     id: 'duplicates',
     points: [
@@ -290,7 +290,7 @@ for (const fixture of [
       [5, 5]
     ],
     epsilon: 1,
-    minimumPoints: 3
+    minimumSamples: 3
   },
   {
     id: 'degenerate',
@@ -306,7 +306,7 @@ for (const fixture of [
       [50, 50]
     ],
     epsilon: 1.5,
-    minimumPoints: 2
+    minimumSamples: 2
   },
   {
     id: 'inclusive-radius',
@@ -316,7 +316,7 @@ for (const fixture of [
       [0, 1]
     ],
     epsilon: 1,
-    minimumPoints: 3
+    minimumSamples: 3
   }
 ]) {
   it(`preserves ${fixture.id} counts, core flags and null footprint semantics`, async () => {
@@ -326,7 +326,7 @@ for (const fixture of [
       'planar',
       {
         epsilon: fixture.epsilon,
-        minimumPoints: fixture.minimumPoints
+        minimumSamples: fixture.minimumSamples
       }
     );
     expectParity(result, reference, report);
@@ -342,7 +342,7 @@ it('unwraps a GPU hull across the dateline and retains spherical units', async (
   ]);
   const {result, reference, report} = await runMapped('dateline', points, 'EPSG:4326', {
     epsilon: 30000,
-    minimumPoints: 1
+    minimumSamples: 1
   });
   expectParity(result, reference, report);
   const footprints = getTable(result, 'footprints');
@@ -362,7 +362,7 @@ it('preserves source identities and the dropped-feature diagnostic after GPU pre
   points.features.splice(1, 0, {id: 'missing-position', geometry: null, properties: {}});
   const {result, reference, report} = await runMapped('missing-position', points, 'planar', {
     epsilon: 2,
-    minimumPoints: 1
+    minimumSamples: 1
   });
   expectParity(result, reference, report);
   expect(getTable(result, 'points').columns['source_index'], report).toEqual([0, 2, 3]);

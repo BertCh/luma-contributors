@@ -33,6 +33,7 @@ function capture(
     elementType: 'f32',
     provenance: 'gpu-readback',
     keySpace: 'cells',
+    graph: 'd8-fixture',
     ...metadata
   };
 }
@@ -46,7 +47,8 @@ function makeRecord(snapshots: GPUComputationCapture[]): LensRecord {
     createdAt: '2026-10-14T00:00:00.000Z',
     adapter: {backend: 'webgpu', description: 'Fixture adapter'},
     domains: ['gpu-terrain'],
-    graphs: [],
+    // Even a view-only fixture must identify the graph to which its captures belong.
+    graphs: [{id: 'd8-fixture', form: 'compiled', domain: 'gpu-terrain', nodes: [], edges: []}],
     axes: {
       axes: [],
       keySpaces: [{id: 'cells', label: 'grid cells', size: 9, indexSpace: '2d', shape: [3, 3]}],

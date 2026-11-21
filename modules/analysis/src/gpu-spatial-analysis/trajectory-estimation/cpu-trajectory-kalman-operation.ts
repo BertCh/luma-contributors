@@ -21,7 +21,10 @@ import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
-import {getCPUTrajectoryRows} from '../../analysis-core/operations/cpu-trajectory-rows';
+import {
+  getCPUTrajectoryRows,
+  type CPUTrajectoryRows
+} from '../../analysis-core/operations/cpu-trajectory-rows';
 import {
   GPUTrajectoryKalmanOperation,
   type TrajectoryKalmanOperationProps
@@ -32,6 +35,8 @@ export type CPUTrajectoryKalmanInput = {
   positions: Float32Array;
   timestamps: Float32Array | Uint32Array;
   trackOffsets: Uint32Array;
+  /** Compact input must cover all observations. Defaults to GPU-compatible resident capacity. */
+  storage?: CPUTrajectoryRows['storage'];
   /** Isotropic [q,r,v,maximumGap]; full [qxx,qxy,qyy,rxx,rxy,ryy,vxx,vxy,vyy,maximumGap]. */
   parameters: Float32Array;
 };
@@ -214,8 +219,10 @@ function packKalmanCovariance(matrix: KalmanMatrix, full: boolean): number[] {
  *   A finite binary64 estimate outside float32 range rounds to Infinity at output.
  * - Int64 times are differenced exactly before conversion to float64, rather than float32.
  *   maximumGap=0 means unlimited even for finite time differences above the GPU float32 maximum.
- * - Offsets are clamped to the observation count as on GPU; decreasing clamped offsets throw an
- *   Error naming trackOffsets. Untouched rows outside tracks are zero, as in fresh graph outputs.
+ * - By default or with `storage: 'resident-capacity'`, offsets clamp to the observation count
+ *   as on GPU. Decreasing clamped offsets throw. Rows outside tracks are zero.
+ * - With `storage: 'compact'`, offsets must start at zero, be nondecreasing and end at the
+ *   observation count. A single `[0]` describes zero tracks over zero observations.
  * - No GPU-only limits exist to drop. Smoothing-singular rows retain their forward values, as the
  *   kernels do; an invalid parameter value returns status 4 rather than throwing.
  *
@@ -227,14 +234,8 @@ export function computeTrajectoryKalmanOnCPU(
 ): CPUTrajectoryKalmanResult {
   const wordTime = input.timestamps instanceof Uint32Array;
   const units = resolveKalmanOptions('computeTrajectoryKalmanOnCPU', options, wordTime);
-  if (input.trackOffsets.length === 0) throw new Error('trackOffsets must have at least one row');
-  const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows({
-    ...input,
-    trackOffsets:
-      input.trackOffsets.length === 1
-        ? Uint32Array.of(input.trackOffsets[0], input.trackOffsets[0])
-        : input.trackOffsets
-  });
+  const {storage = 'resident-capacity'} = input;
+  const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input, {storage});
   const full = options.covarianceMode === 'full';
   if (input.parameters.length !== (full ? 10 : 4))
     throw new Error(`parameters must have ${full ? 10 : 4} rows`);
@@ -501,6 +502,7 @@ export class CPUTrajectoryKalmanOperation extends GPUCPUOperation {
                 ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')
                 : getCPUOperationFloat32Rows(id, inputs, 'timestamps'),
             trackOffsets: getCPUOperationUint32Rows(id, inputs, 'trackOffsets'),
+            storage: 'resident-capacity',
             parameters: getCPUOperationFloat32Rows(id, inputs, 'parameters')
           },
           {...props, smooth: props.output.smoothedState !== undefined}

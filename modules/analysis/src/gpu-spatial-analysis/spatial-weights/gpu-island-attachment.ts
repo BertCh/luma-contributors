@@ -3,6 +3,29 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_ISLAND_ATTACHMENT_ROUTES,
+  GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS,
+  GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROWS
+} from './island-attachment-routes';
+export {
+  GPU_ISLAND_ATTACHMENT_ROUTES,
+  GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS,
+  GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROWS
+} from './island-attachment-routes';
+
+import type {
+  GPUAnalysisRoute,
+  GPUAnalysisExecutionPlanner
+} from '../ontology/spatial-analysis-ontology';
+import {
+  evaluateStatisticsRoute,
+  getStatisticsRequirementCheck,
+  getStatisticsViewBindingByteLength,
+  getStatisticsExecutionPlan,
+  validateStatisticsExecutionPlan,
+  type GPUStatisticsPlanDeviceLimits
+} from '../geographic-distribution/statistics-execution-plan';
+import {
   createTransientView,
   getViewBindingRange,
   doGraphDataViewsOverlap,
@@ -48,7 +71,13 @@ import {
 } from './spatial-weights';
 
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
+import {
+  createWeightsLossNodes,
+  getWeightsLossSources,
+  validateWeightsLossSources
+} from './spatial-weights-loss';
 import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
+import {snapshotWeightsFields, snapshotWeightsPort} from './weights-construction-snapshot';
 
 /**
  * Largest row count for which {@link GPUIslandAttachmentProps.nearestSearch} `'auto'` scans every
@@ -56,7 +85,8 @@ import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topolo
  * follows the cut-over of local kriging (`GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT`) and
  * of the segment-BVH contributors.
  */
-export const GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT = 4096;
+
+/** Forced nearestSearch scan supports at most 65,535 rows over the whole domain. */
 
 /** How {@link GPUIslandAttachment} finds the nearest representative of each island. */
 export type GPUIslandAttachmentNearestSearch = 'auto' | 'scan' | 'grid';
@@ -72,8 +102,6 @@ const ISLAND_ATTACHMENT_CANDIDATE_COUNT = 16;
 const ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT = 0xfffffffe;
 /** CSR counts and candidate slot addressing must fit uint32 without wrapping their scans. */
 const ISLAND_ATTACHMENT_MAXIMUM_SLOT_COUNT = 0xffffffff;
-/** Retains the old reference scan coverage; large inputs must use the indexed route. */
-const ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT = 65535;
 /**
  * Conservative allowance for published grid builds, compaction, scans and radix sort: at most
  * 32 radix bits and logarithmic scan levels in the uint32 row space. Node specs check the bound.
@@ -99,7 +127,7 @@ export type GPUIslandAttachmentProps = {
    * choice selects the same attachment (the nearest finite representative by the scan's comparison,
    * ties to the lowest row), so results do not depend on it, only speed. `'scan'` tests every
    * representative per island; `'grid'` takes the nearest candidates from a `GPUNeighborSearch`
-   * grid; `'auto'` scans up to {@link GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT} rows and uses
+   * grid; `'auto'` scans up to {@link GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS} rows and uses
    * the grid above. The explicit scan retains its reference limit of 65,535 rows.
    */
   nearestSearch?: GPUIslandAttachmentNearestSearch;
@@ -125,7 +153,7 @@ export type GPUIslandAttachmentProps = {
  * Output is sorted, unique and deterministic under truncation. Never silently row-standardizes.
  * Nonfinite representatives cannot acquire an attachment, but existing edges are preserved.
  * With `nearestSearch: 'scan'` (at most 65,535 rows) each island scans every representative. With
- * `'grid'` (and `'auto'` above {@link GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT} rows) a
+ * `'grid'` (and `'auto'` above {@link GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS} rows) a
  * `GPUNeighborSearch` k-nearest cross join over a grid lists the 16 nearest representatives of each
  * island by float32 `dx^2 + dy^2`, ties to the lowest row; the island's own row is skipped, and the
  * kernel then chooses among them with the scan's comparison, so ties still go to the lowest row.
@@ -138,8 +166,11 @@ export type GPUIslandAttachmentProps = {
  * tests at most 256 per dispatch and a tree reduction retains the best across batches. Query
  * dispatches are bounded by the device's 3D dispatch layout and uint32 invocation space. GPU
  * cursors supply batch bases, so shaders and pipelines do not grow with the number of batches.
- * The indexed route is bounded by uint32 CSR indexing and device storage bindings, including
- * 16 candidate slots per row. `output.status.uncertainCount`, when given, counts islands sent
+ * The indexed route requires rows * 16 <= 4294967295 and the whole-job schedule
+ * 4096 + 3 * ceil(rows / 65536) * ceil(rows / 16777215) <= 32768. This schedule permits
+ * at most 100663290 rows (31744 commands); 100663291 rows require 36352 commands and fail
+ * before device limits. Uint32 CSR indexing, the reciprocal edge upper bound and device
+ * bindings/allocations also apply. `output.status.uncertainCount`, when given, counts islands sent
  * to this pass (0 with `'scan'`). Degenerate inputs can require exhaustive work across batches.
  * `nearestSearch` and `reciprocal` are compile-time props; there are no per-frame scalar props.
  * The output rows then merge the original row, its attachment and the islands attached to it
@@ -147,10 +178,42 @@ export type GPUIslandAttachmentProps = {
  * scan of all rows.
  */
 export class GPUIslandAttachment implements GPUCommandNodeProducer {
+  /** Numeric route metadata; hard limits and automatic crossovers are distinct. */
+  static get routes(): readonly GPUAnalysisRoute[] {
+    return GPU_ISLAND_ATTACHMENT_ROUTES;
+  }
+  /** Preflight topology and, when supplied, actual device binding/allocation limits. */
+  static getExecutionPlan(
+    props: GPUIslandAttachmentProps,
+    deviceLimits?: GPUStatisticsPlanDeviceLimits
+  ) {
+    return getGPUIslandAttachmentExecutionPlan(props, deviceLimits);
+  }
+
   readonly id: string;
   readonly outputWeights: GPUSpatialWeights;
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPUIslandAttachmentProps) {
+  readonly props: GPUIslandAttachmentProps;
+  private readonly inputLossSources: ReturnType<typeof getWeightsLossSources>;
+  constructor(props: GPUIslandAttachmentProps) {
+    props = snapshotWeightsFields(props, [
+      'id',
+      'weights',
+      'positions',
+      'reciprocal',
+      'nearestSearch',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...props,
+      weights: snapshotWeightsPort(props.weights),
+      output: Object.freeze({
+        ...snapshotWeightsPort(props.output),
+        attachment: props.output.attachment,
+        added: props.output.added
+      })
+    });
+    this.props = props;
     this.id = props.id ?? 'island-attachment';
     const nearestSearch = props.nearestSearch ?? 'auto';
     validateRequirement(
@@ -159,18 +222,36 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       "nearestSearch must be 'auto', 'scan' or 'grid'"
     );
     const rows = validateGPUSpatialWeights(this.id, props.weights);
-    validateCapacity(this.id, 'rows', rows, 1, ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT);
-    if (nearestSearch === 'scan') {
-      validateMaximumCount(
+    for (const [name, view] of Object.entries(props.output.status)) {
+      validateRequirement(
         this.id,
-        'rows for nearestSearch scan',
-        rows,
-        ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT
+        !view ||
+          ['count', 'overflow', 'requiredCount', 'candidateOverflow', 'uncertainCount'].includes(
+            name
+          ),
+        `output.status.${name} is unsupported because attachment does not compute it; omit it and run the matching diagnostic contributor afterward`
       );
     }
-    const useGrid =
-      nearestSearch === 'grid' ||
-      (nearestSearch === 'auto' && rows > GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT);
+    this.inputLossSources = getWeightsLossSources([props.weights]);
+    const inputLossViews = validateWeightsLossSources(this.id, [
+      {
+        status: {
+          overflow: this.inputLossSources.overflow[0],
+          candidateOverflow: this.inputLossSources.candidateOverflow[0]
+        }
+      }
+    ]);
+    validateCapacity(this.id, 'rows', rows, 1, ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT);
+    if (nearestSearch === 'scan' && rows > GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROWS) {
+      const alternative = getGPUIslandAttachmentExecutionPlan({...props, nearestSearch: 'grid'});
+      validateRequirement(
+        this.id,
+        false,
+        `rows for nearestSearch scan must be at most ${GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROWS}; received ${rows}${alternative.feasible ? "; use nearestSearch: 'grid' subject to device bindings" : '; grid candidate product or command schedule also exceeds its limit'}`
+      );
+    }
+    const routePlan = getGPUIslandAttachmentExecutionPlan(props);
+    const useGrid = routePlan.route === 'grid';
     if (useGrid) {
       validateMaximumCount(
         this.id,
@@ -191,6 +272,7 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       ISLAND_ATTACHMENT_PRIMITIVE_NODE_ALLOWANCE +
       (useGrid ? 3 * getIslandAttachmentFallbackBatchCount(rows) : 0);
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateStatisticsExecutionPlan(this.id, routePlan);
     if (
       validateGPUSpatialWeightsOutput(this.id, props.output) !== rows ||
       props.positions.length !== rows ||
@@ -209,17 +291,38 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
         ...getGPUSpatialWeightsStatusViews(props.output),
         props.output.attachment,
         props.output.added,
-        props.output.status.uncertainCount
+        props.output.status.uncertainCount,
+        props.output.status.count
       ],
-      [...getGPUSpatialWeightsViews(props.weights), props.positions]
+      [...getGPUSpatialWeightsViews(props.weights), ...inputLossViews, props.positions]
     );
     const outputs = [
       ...getGPUSpatialWeightsViews(props.output),
       ...getGPUSpatialWeightsStatusViews(props.output),
       props.output.attachment,
       props.output.added,
-      props.output.status.uncertainCount
+      props.output.status.uncertainCount,
+      props.output.status.count
     ].filter((view): view is GraphDataView<'uint32'> | GraphDataView<'float32'> => Boolean(view));
+    if (props.output.status.count) {
+      validateSinglePackedView(
+        props.output.status.count,
+        ['uint32'],
+        `${this.id} output.status.count`
+      );
+      validateCapacity(
+        this.id,
+        'output.status.count length',
+        props.output.status.count.length,
+        1,
+        1
+      );
+      validateGraphOutputsDisjointFromInputs(
+        this.id,
+        [props.output.status.count],
+        [props.output.offsets]
+      );
+    }
     if (props.output.status.uncertainCount) {
       validateSinglePackedView(
         props.output.status.uncertainCount,
@@ -306,14 +409,31 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
         hasSelfWeights: false,
         provenance: {source: 'GPUIslandAttachment', criterion: 'nearest-original-island'}
       },
-      status: props.output.status
+      status: {
+        ...props.output.status,
+        ...(inputLossViews.length && !props.output.status.candidateOverflow
+          ? {
+              candidateOverflow: createTransientView(
+                props.output.offsets.buffer.graph as GPUCommandGraph,
+                `${this.id}-${props.output.offsets.buffer.id}-${props.output.offsets.byteOffset}-candidate-overflow`,
+                'uint32',
+                1
+              )
+            }
+          : {})
+      }
     });
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateStatisticsExecutionPlan(
+      this.id,
+      getGPUIslandAttachmentExecutionPlan(this.props, graph.device.limits)
+    );
     const {props, id} = this;
     validateSpatialStatisticsBindings(graph, id, props);
+    const inherited = this.inputLossSources;
     const rows = props.positions.length;
     const capacity = props.output.neighbors.length;
     // Check every aligned caller binding and all derived scratch before declaring graph resources.
@@ -322,6 +442,10 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       ['weights.neighbors', props.weights.neighbors],
       ['weights.weights', props.weights.weights],
       ['weights.distances', props.weights.distances],
+      ...inherited.overflow.map(view => ['weights.status.overflow', view] as const),
+      ...inherited.candidateOverflow.map(
+        view => ['weights.status.candidateOverflow', view] as const
+      ),
       ['positions', props.positions],
       ['output.offsets', props.output.offsets],
       ['output.neighbors', props.output.neighbors],
@@ -332,7 +456,8 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       ['output.status.overflow', props.output.status.overflow],
       ['output.status.requiredCount', props.output.status.requiredCount],
       ['output.status.candidateOverflow', props.output.status.candidateOverflow],
-      ['output.status.uncertainCount', props.output.status.uncertainCount]
+      ['output.status.uncertainCount', props.output.status.uncertainCount],
+      ['output.status.count', props.output.status.count]
     ];
     for (const [name, view] of views) {
       if (view)
@@ -347,7 +472,7 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
     const nearestSearch = props.nearestSearch ?? 'auto';
     const useGrid =
       nearestSearch === 'grid' ||
-      (nearestSearch === 'auto' && rows > GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT);
+      (nearestSearch === 'auto' && rows > GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS);
     const scratch = [
       ['CSR counts and starts', rows * 4],
       ['CSR scan total', 4]
@@ -402,12 +527,15 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       });
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUSpatialWeightsViews(props.weights),
+      ...inherited.overflow,
+      ...inherited.candidateOverflow,
       props.positions,
       ...getGPUSpatialWeightsViews(props.output),
       ...getGPUSpatialWeightsStatusViews(props.output),
       props.output.attachment,
       props.output.added,
-      props.output.status.uncertainCount
+      props.output.status.uncertainCount,
+      props.output.status.count
     ]);
     const reciprocal = props.reciprocal !== false;
     // Halving before subtraction prevents overflow for opposite finite coordinates. Compare both
@@ -498,7 +626,7 @@ attachment[attachmentOffset + index] = nearest;`,
         ...new GPUNeighborSearch({
           id: `${id}-index`,
           mode: 'knn',
-          k: ISLAND_ATTACHMENT_CANDIDATE_COUNT,
+          neighborCount: ISLAND_ATTACHMENT_CANDIDATE_COUNT,
           positions: props.positions,
           queryPositions: props.positions,
           queryMask: islandFlags,
@@ -673,6 +801,166 @@ ${reciprocal ? ' if (inverseId == other) { inverseNext++; }\n' : ''} if (other <
         ]
       })
     );
-    return nodes;
+    if (props.output.status.count) {
+      nodes.push(
+        node(
+          'count',
+          1,
+          [
+            binding('offsets', props.output.offsets),
+            binding('count', props.output.status.count, 'read_write')
+          ],
+          `count[countOffset] = offsets[offsetsOffset + ${rows}u];`
+        )
+      );
+    }
+    const candidateOverflow = this.outputWeights.status?.candidateOverflow;
+    return [
+      ...nodes,
+      ...(candidateOverflow
+        ? createWeightsLossNodes(
+            graph,
+            `${id}-inherited-candidate`,
+            [...inherited.overflow, ...inherited.candidateOverflow],
+            candidateOverflow
+          )
+        : [])
+    ];
   }
 }
+
+/** Numeric island route constraints; products and command limits apply over the whole domain. */
+
+/** No resources are created. Device binding limits are certified only when supplied. */
+export function getGPUIslandAttachmentExecutionPlan(
+  props: GPUIslandAttachmentProps,
+  deviceLimits?: GPUStatisticsPlanDeviceLimits
+) {
+  const rows = props.weights.offsets.length - 1;
+  const requested = props.nearestSearch ?? 'auto';
+  validateRequirement(
+    props.id ?? 'island-attachment',
+    ['auto', 'scan', 'grid'].includes(requested),
+    `nearestSearch must be auto, scan or grid; received ${requested}`
+  );
+  const route =
+    requested === 'grid' ||
+    (requested === 'auto' && rows > GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS)
+      ? 'grid'
+      : 'scan';
+  const descriptor = GPU_ISLAND_ATTACHMENT_ROUTES[0];
+  const checks = [
+    evaluateStatisticsRoute(descriptor, rows),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        kind: 'hard-limit',
+        name: 'domain-rows',
+        appliesWhen: 'all routes',
+        maximum: ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT,
+        minimum: 1
+      },
+      rows
+    ),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        kind: 'hard-limit',
+        name: 'output-edge-upper-bound',
+        quantity: 'input edge capacity + rows * reciprocal factor',
+        unit: 'elements',
+        maximum: ISLAND_ATTACHMENT_MAXIMUM_SLOT_COUNT,
+        appliesWhen: 'all routes'
+      },
+      props.weights.neighbors.length + rows * (props.reciprocal !== false ? 2 : 1)
+    )
+  ];
+  for (const [name, satisfied] of [
+    ['output.distances is not supported', props.output.distances === undefined],
+    ['positions row count must equal input CSR rows', props.positions.length === rows],
+    ['output CSR row count must equal input CSR rows', props.output.offsets.length === rows + 1],
+    [
+      'input edge weights must match neighbors capacity',
+      props.weights.weights.length === props.weights.neighbors.length
+    ],
+    [
+      'output edge weights must match neighbors capacity',
+      props.output.weights.length === props.output.neighbors.length
+    ],
+    ['attachment row count must equal input CSR rows', props.output.attachment.length === rows],
+    [
+      'added length must equal output edge capacity',
+      props.output.added.length === props.output.neighbors.length
+    ]
+  ] as const)
+    checks.push(getStatisticsRequirementCheck(descriptor, name, satisfied));
+  if (route === 'scan') checks.push(evaluateStatisticsRoute(GPU_ISLAND_ATTACHMENT_ROUTES[1], rows));
+  else
+    checks.push(
+      evaluateStatisticsRoute(
+        {
+          ...descriptor,
+          kind: 'hard-limit',
+          name: 'grid-candidate-product',
+          quantity: 'rows * 16',
+          unit: 'elements',
+          maximum: ISLAND_ATTACHMENT_MAXIMUM_SLOT_COUNT,
+          appliesWhen: 'nearestSearch grid',
+          conditionExpression: 'rows * 16 <= 4294967295',
+          alternative: 'reduce row count'
+        },
+        rows * ISLAND_ATTACHMENT_CANDIDATE_COUNT
+      )
+    );
+  const estimated =
+    ISLAND_ATTACHMENT_PRIMITIVE_NODE_ALLOWANCE +
+    (route === 'grid' ? 3 * getIslandAttachmentFallbackBatchCount(rows) : 0);
+  const namedViews = {
+    'input.offsets': props.weights.offsets,
+    'input.neighbors': props.weights.neighbors,
+    'input.weights': props.weights.weights,
+    'input.distances': props.weights.distances,
+    'output.offsets': props.output.offsets,
+    'output.neighbors': props.output.neighbors,
+    'output.weights': props.output.weights,
+    'output.distances': props.output.distances,
+    positions: props.positions,
+    'output.attachment': props.output.attachment,
+    'output.added': props.output.added,
+    ...Object.fromEntries(
+      Object.entries(props.weights.status ?? {}).map(([name, view]) => [
+        `input.status.${name}`,
+        view
+      ])
+    ),
+    ...Object.fromEntries(
+      Object.entries(props.output.status).map(([name, view]) => [`output.status.${name}`, view])
+    )
+  };
+  const actualBindings = Object.fromEntries(
+    Object.entries(namedViews).flatMap(([name, view]) =>
+      view ? [[name, getStatisticsViewBindingByteLength(view)]] : []
+    )
+  );
+  return getStatisticsExecutionPlan(
+    route,
+    checks,
+    estimated,
+    {
+      ...actualBindings,
+      'positions: rows * 8': rows * 8,
+      'CSR offsets: (rows + 1) * 4': (rows + 1) * 4,
+      'input edges': props.weights.neighbors.length * 4,
+      'output edges': props.output.neighbors.length * 4,
+      ...(route === 'grid' ? {'candidate lists and outputs': rows * 16 * 4} : {})
+    },
+    deviceLimits,
+    descriptor
+  );
+}
+export const GPU_ISLAND_ATTACHMENT_PLANNER = {
+  getExecutionPlan: getGPUIslandAttachmentExecutionPlan
+} satisfies GPUAnalysisExecutionPlanner<
+  GPUIslandAttachmentProps,
+  GPUStatisticsPlanDeviceLimits | undefined
+>;

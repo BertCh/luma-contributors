@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {expectStraightSkeleton} from './straight-skeleton-expectations';
 import {getLensScenario} from '../../src/computation-lenses/registry-implementation';
 import {GEOMETRY_REFINEMENT_SCENARIOS} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/geometry-refinement.lens';
 import {requireTestDevice} from '@luma-contributors/analysis/testing';
@@ -32,9 +33,7 @@ it.each(
       expect(values('equality')).toEqual([1]);
       break;
     case 'GPUVectorStraightSkeleton':
-      expect(values('status')[3]).toBe(0);
-      expect(values('status')[0]).toBeGreaterThan(8);
-      expect(values('status')[2]).toBe(8);
+      expectStraightSkeleton(values);
       break;
     case 'GPUOffsetCurveComponents':
       expect(values('status').slice(4)).toEqual([0, 0, 0, 0]);

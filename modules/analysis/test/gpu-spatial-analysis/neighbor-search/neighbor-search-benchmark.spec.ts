@@ -77,7 +77,7 @@ it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
   async function measure(
     points: Float32Array,
     mode: 'knn' | 'radius',
-    k: number,
+    neighborCount: number,
     radius: number,
     gridSize: [number, number],
     capacity: number
@@ -91,7 +91,7 @@ it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
       length: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
       values: getGPUNeighborSearchParameterValues({
         bounds: [0, 0, DOMAIN_SIZE, DOMAIN_SIZE],
-        radius: mode === 'radius' ? radius : undefined
+        searchRadius: mode === 'radius' ? radius : undefined
       })
     });
     const offsets = createOutputBuffer(device!, count + 1);
@@ -105,7 +105,7 @@ it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
       graph.add(
         new NeighborSearchClass({
           mode,
-          k,
+          neighborCount,
           gridSize,
           positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', count),
           parameters: parameters.importToGraph(graph),
@@ -144,11 +144,18 @@ it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
     const radiusGrid = Math.floor(DOMAIN_SIZE / radius);
     const knnGrid = Math.ceil(Math.sqrt(count / 2));
     const cases = [
-      {name: 'knn', mode: 'knn' as const, k: 8, radius: 0, grid: knnGrid, capacity: count * 8},
+      {
+        name: 'knn',
+        mode: 'knn' as const,
+        neighborCount: 8,
+        radius: 0,
+        grid: knnGrid,
+        capacity: count * 8
+      },
       {
         name: 'radius',
         mode: 'radius' as const,
-        k: 0,
+        neighborCount: 0,
         radius,
         grid: radiusGrid,
         capacity: Math.ceil(count * 13)
@@ -158,7 +165,7 @@ it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
             {
               name: 'radius-coarse-grid',
               mode: 'radius' as const,
-              k: 0,
+              neighborCount: 0,
               radius,
               grid: 8,
               capacity: Math.ceil(count * 13)
@@ -166,8 +173,14 @@ it('GPUNeighborSearch random order versus Morton order benchmark', async () => {
           ]
         : [])
     ];
-    for (const {name, mode, k, radius: caseRadius, grid, capacity} of cases) {
-      const args = [mode, k, caseRadius, [grid, grid] as [number, number], capacity] as const;
+    for (const {name, mode, neighborCount, radius: caseRadius, grid, capacity} of cases) {
+      const args = [
+        mode,
+        neighborCount,
+        caseRadius,
+        [grid, grid] as [number, number],
+        capacity
+      ] as const;
       const randomMilliseconds = await measure(random, ...args);
       const mortonMilliseconds = await measure(morton, ...args);
       const ratio = randomMilliseconds / mortonMilliseconds;

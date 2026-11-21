@@ -18,7 +18,7 @@ import {
 } from './standalone-viewer-icons';
 import {getHostRequiredLimits, resolveHostRequiredLimits} from './device-limits';
 import {isViewerOnline} from './standalone-viewer-raster';
-import {getViewStateForBounds} from './standalone-viewer-model';
+import {getViewerInitialViewState} from './standalone-viewer-initial-view';
 import {readViewerConfig} from './standalone-viewer-config';
 import {createViewerDataset, type ViewerDataset} from './standalone-viewer-data';
 import {buildViewerLayers, type ViewerBuildResult} from './standalone-viewer-layers';
@@ -151,19 +151,10 @@ async function main(): Promise<void> {
   }
 
   // First build only to find bounds and the initial view; rebuilt once the panes exist.
-  view =
-    mapState && Number.isFinite(mapState.zoom)
-      ? {
-          longitude: mapState.longitude ?? 0,
-          latitude: mapState.latitude ?? 0,
-          zoom: mapState.zoom ?? 1,
-          pitch: mapState.pitch ?? 0,
-          bearing: mapState.bearing ?? 0
-        }
-      : {longitude: 0, latitude: 0, zoom: 1};
+  view = getViewerInitialViewState(mapState, null, map.clientWidth, map.clientHeight);
   let result: ViewerBuildResult = rebuild();
   if (!(mapState && Number.isFinite(mapState.zoom)) && result.bounds) {
-    view = getViewStateForBounds(result.bounds, map.clientWidth, map.clientHeight);
+    view = getViewerInitialViewState(mapState, result, map.clientWidth, map.clientHeight);
     result = rebuild();
   }
   let animationStart = performance.now();

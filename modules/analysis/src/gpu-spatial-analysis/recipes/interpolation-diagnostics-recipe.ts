@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 
 import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './recipe-utils';
@@ -30,7 +32,8 @@ export type GPUInterpolationDiagnosticsOutput = {
 export type GPUInterpolationDiagnosticsRecipeProps = {
   id?: string;
   kriging: Omit<GPUKrigingProps, 'id' | 'output'>;
-  outputs?: Partial<GPUInterpolationDiagnosticsOutput>;
+  /** Caller-owned terminal destinations. */
+  output?: Partial<GPUInterpolationDiagnosticsOutput>;
 };
 
 /** Ordinary kriging and leave-one-out diagnostics, with no hidden fitting or readback. */
@@ -46,10 +49,11 @@ function declareInterpolationDiagnosticsRecipe<Parameters>(
   props: GPUInterpolationDiagnosticsRecipeProps
 ): GPURecipeResult<GPUInterpolationDiagnosticsOutput> {
   const id = props.id ?? 'interpolation-diagnostics-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   const builder = new RecipeBuilder(graph);
   const sampleCount = props.kriging.values.length;
   const cellCount = props.kriging.grid.width * props.kriging.grid.height;
-  const provided = props.outputs ?? {};
+  const provided = destinations ?? {};
   const outputs: GPUInterpolationDiagnosticsOutput = {
     values: getOrCreateView(graph, `${id}-values`, 'float32', cellCount, provided.values),
     variance: getOrCreateView(graph, `${id}-variance`, 'float32', cellCount, provided.variance),

@@ -94,3 +94,36 @@ export function expectOffsetCurveLineWithSubdivisions(
   }
   expect(expectedVertex).toBe(expectedVertexCount);
 }
+
+/** Exact oblique oracle: (-3,4) is the length-five left normal of (400,300). */
+export const PROJECTED_OBLIQUE_OFFSET_CASES = [
+  [0, 0],
+  [100000, 100000],
+  [1000000, 5000000],
+  [10000000, 10000000]
+].flatMap(([originX, originY]) =>
+  [0, 0.05].map(tolerance => ({
+    name: `origin (${originX},${originY}), tolerance ${tolerance}`,
+    originX,
+    originY,
+    tolerance,
+    originalPositions: Float32Array.of(originX, originY, originX + 400, originY + 300),
+    expectedPositions: Float32Array.of(originX - 3, originY + 4, originX + 397, originY + 304)
+  }))
+);
+
+/** No extra cuts are expected on this single straight segment, including rounded duplicates. */
+export function expectCompleteObliqueOffset(
+  result: Readonly<Record<string, ArrayLike<number>>>,
+  expectedPositions: Float32Array
+): void {
+  const diagnostic = JSON.stringify(
+    Object.fromEntries(Object.entries(result).map(([name, values]) => [name, Array.from(values)]))
+  );
+  expect(Array.from(result['status']), diagnostic).toEqual([1, 2, 1, 2, 0, 0, 0, 0]);
+  expect(Array.from(result['components']).slice(0, 4), diagnostic).toEqual([0, 2, 0, 0]);
+  expect(Array.from(result['positions']).slice(0, 4), diagnostic).toEqual(
+    Array.from(expectedPositions)
+  );
+  expect(Array.from(result['sourceEdges']).slice(0, 2), diagnostic).toEqual([0, 0]);
+}

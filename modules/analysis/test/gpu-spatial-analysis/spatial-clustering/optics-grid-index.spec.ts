@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getOPTICSStatusValues} from './optics-status-test-utils';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -136,7 +137,7 @@ type OPTICSRun = {
   reachability: number[];
   predecessors: number[];
   labels: number[];
-  status: number[];
+  invalidCount: number[];
   clusterIntervals?: number[];
   clusterSummary?: number[];
   candidateOverflow?: number[];
@@ -184,7 +185,6 @@ async function runOPTICS(
     reachability: output('float32'),
     predecessors: output('uint32'),
     labels: output('uint32'),
-    status: output('uint32', 3),
     ...(xi
       ? {clusterIntervals: output('uint32x2', rowCount, 2), clusterSummary: output('uint32', 2)}
       : {})
@@ -192,6 +192,7 @@ async function runOPTICS(
   const iterationPorts = {
     iterationCount: output('uint32', 1),
     converged: output('uint32', 1),
+    invalidCount: output('uint32', 1),
     iterationLimitReached: output('uint32', 1)
   };
   const candidateOverflow = neighborIndex === 'grid' ? output('uint32', 1) : undefined;
@@ -252,7 +253,7 @@ for (const scenario of SCENARIOS) {
       expect(grid[name as keyof OPTICSRun], name).toEqual(expected);
     }
     // The scenario exercises the frontier: several rows visited, some with finite reachability.
-    expect(bruteForce.status[0]).toBeGreaterThan(100);
+    expect(bruteForce.iterationCount[0]).toBeGreaterThan(100);
     expect(bruteForce.reachability.filter(Number.isFinite).length).toBeGreaterThan(50);
   });
 }
@@ -277,7 +278,8 @@ it('OPTICS grid path reports candidate overflow and leaves the ordering incomple
       view: importGraphBuffer(graph, `overflow-${buffers.length}`, buffer, format, length)
     };
   };
-  const status = view('uint32', 3);
+  const iterationCount = view('uint32', 1);
+  const converged = view('uint32', 1);
   const overflow = view('uint32', 1);
   graph.add(
     new GPUOPTICS({
@@ -291,8 +293,13 @@ it('OPTICS grid path reports candidate overflow and leaves the ordering incomple
         reachability: view('float32', rowCount).view,
         predecessors: view('uint32', rowCount).view,
         labels: view('uint32', rowCount).view,
-        status: status.view,
-        ports: {status: {candidateOverflow: overflow.view}}
+        ports: {
+          status: {
+            candidateOverflow: overflow.view,
+            iterationCount: iterationCount.view,
+            converged: converged.view
+          }
+        }
       }
     })
   );
@@ -300,7 +307,8 @@ it('OPTICS grid path reports candidate overflow and leaves the ordering incomple
   try {
     submitGraph(device, compiled, undefined);
     expect(await readUint32(overflow.buffer, 1)).toEqual([1]);
-    expect((await readUint32(status.buffer, 3)).slice(0, 2)).toEqual([0, 0]);
+    expect(await readUint32(iterationCount.buffer, 1)).toEqual([0]);
+    expect(await readUint32(converged.buffer, 1)).toEqual([0]);
   } finally {
     compiled.destroy();
     for (const buffer of buffers) buffer.destroy();
@@ -335,8 +343,7 @@ it('OPTICS neighborIndex resolves auto by row count and names its limits', async
         coreDistances: view(`core-${rows}-${Object.keys(overrides).join()}`, 'float32', rows),
         reachability: view(`reach-${rows}-${Object.keys(overrides).join()}`, 'float32', rows),
         predecessors: view(`pred-${rows}-${Object.keys(overrides).join()}`, 'uint32', rows),
-        labels: view(`labels-${rows}-${Object.keys(overrides).join()}`, 'uint32', rows),
-        status: view(`status-${rows}-${Object.keys(overrides).join()}`, 'uint32', 3)
+        labels: view(`labels-${rows}-${Object.keys(overrides).join()}`, 'uint32', rows)
       },
       ...overrides
     });
@@ -399,7 +406,7 @@ it('OPTICS above the exhaustive cap orders every valid row through the grid', as
     value => !Number.isFinite(value)
   ).length;
   expect(result.candidateOverflow).toEqual([0]);
-  expect(result.status).toEqual([rowCount - invalidCount, 1, invalidCount]);
+  expect(getOPTICSStatusValues(result)).toEqual([rowCount - invalidCount, 1, invalidCount]);
   const ordered = result.ordering.slice(0, rowCount - invalidCount);
   expect(new Set(ordered).size).toBe(ordered.length);
   const rank = new Map(ordered.map((row, position) => [row, position]));
@@ -481,7 +488,10 @@ for (const extractionMethod of ['xi', 'dbscan'] as const) {
       const incomplete = overflow || scene === 'visit-budget';
       expect(result.converged).toEqual([incomplete ? 0 : 1]);
       expect(result.iterationLimitReached).toEqual([scene === 'visit-budget' ? 1 : 0]);
-      expect(result.iterationCount).toEqual([result.status[0]]);
+      const invalidCount = scene === 'all-invalid' ? 259 : 16;
+      const visitedCount = overflow ? 0 : scene === 'visit-budget' ? 19 : 259 - invalidCount;
+      expect(result.iterationCount).toEqual([visitedCount]);
+      expect(result.invalidCount).toEqual([invalidCount]);
       if (incomplete || scene === 'all-invalid') {
         expect(result.labels.every(value => value === 0xffffffff)).toBe(true);
         if (extractionMethod === 'xi') {

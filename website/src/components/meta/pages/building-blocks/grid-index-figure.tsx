@@ -323,7 +323,7 @@ export function GridIndexFigure({model}: {model: LensViewModel}) {
         <KernelStrip
           title={
             <>
-              Recorded kernel density: <b>{model.recordedNodeCount}</b> kernels
+              Recorded kernel density: <b>{model.recordedNodeCount}</b> graph nodes
             </>
           }
           kernels={kernels}

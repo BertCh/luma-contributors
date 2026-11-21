@@ -19,9 +19,11 @@ import type {
   GPURasterMetadata,
   GPURasterTextureBand
 } from '@luma.gl/graph/gpu-raster';
+import type {CompiledProjection, ProjectionShader} from '@luma.gl/graph/gpu-project';
 import {
   captureGraphCommandNodes,
   validateFiniteNumber,
+  validateMaximumCount,
   validateRequirement,
   validateGraphViewsBelongToGraph
 } from '../analysis-core/kernels/gpu-contributor-utils';
@@ -29,9 +31,220 @@ import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
 import type {GPURasterCellSizeMode} from '../analysis-core/contracts/raster-grid';
 import {validateRasterWritableDispatches} from './raster-grid/raster-view-validation';
+import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
+
+/** Native nearest-label inputs must retain identity calibration. @internal */
+export function validateRasterLabelBand(
+  id: string,
+  band: GPURasterBand,
+  grid: GPURasterMetadata
+): void {
+  validateRequirement(
+    id,
+    band.format === 'uint32' || band.format === 'sint32',
+    `input.format must be uint32 or sint32 for output.labels (got ${band.format})`
+  );
+  validateRequirement(
+    id,
+    (band.scale ?? 1) === 1 && (band.offset ?? 0) === 0,
+    `input scale/offset must be identity (1/0) for output.labels (got ${band.scale ?? 1}/${band.offset ?? 0})`
+  );
+  if (band.noDataValue !== undefined) {
+    validateRequirement(
+      id,
+      Number.isInteger(band.noDataValue) &&
+        band.noDataValue >= (band.format === 'uint32' ? 0 : -2147483648) &&
+        band.noDataValue <= (band.format === 'uint32' ? 4294967295 : 2147483647),
+      `input.noDataValue must be an exact ${band.format} label (got ${band.noDataValue})`
+    );
+  }
+  new GPURaster({id: `${id} input`, metadata: grid, bands: [band]});
+}
+
+/** Gathers native integers and evaluates native nodata before any float conversion. @internal */
+export function getRasterLabelBandNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  band: GPURasterBand,
+  grid: GPURasterMetadata
+): RasterBufferBandSource<Parameters> {
+  const format = band.format === 'uint32' ? 'uint32' : 'sint32';
+  const type: 'u32' | 'i32' = format === 'uint32' ? 'u32' : 'i32';
+  const count = grid.width * grid.height;
+  const noDataLiteral =
+    band.noDataValue === -2147483648 && format === 'sint32'
+      ? 'bitcast<i32>(0x80000000u)'
+      : `${band.noDataValue}${format === 'uint32' ? 'u' : 'i'}`;
+  const values = createTransientView(graph, `${id}-label-values`, format, count);
+  const validity = createTransientView(graph, `${id}-label-validity`, 'uint32', count);
+  const nodes =
+    band.storage.kind === 'texture'
+      ? captureGraphCommandNodes(graph, () =>
+          new GPURasterTextureToBuffer({
+            id: `${id}-labels`,
+            input: band as GPURasterTextureBand,
+            output: values,
+            outputValidity: validity,
+            applyCalibration: false
+          }).addToGraph(graph)
+        )
+      : [
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-labels`,
+            operation: 'GPURasterReprojection',
+            invocationCount: count,
+            bindings: [
+              {name: 'source', view: band.storage.values, type, access: 'read'},
+              ...(band.validity
+                ? [
+                    {
+                      name: 'sourceValidity',
+                      view: band.validity,
+                      type: 'u32' as const,
+                      access: 'read' as const
+                    }
+                  ]
+                : []),
+              {name: 'values', view: values, type, access: 'read_write'},
+              {name: 'validity', view: validity, type: 'u32', access: 'read_write'}
+            ],
+            body: `let value=source[sourceOffset+index];values[valuesOffset+index]=value;
+validity[validityOffset+index]=u32(${band.validity ? 'sourceValidity[sourceValidityOffset+index]!=0u' : 'true'}${band.noDataValue === undefined ? '' : `&&value!=${noDataLiteral}`});`
+          })
+        ];
+  return {
+    band: {id, format, storage: {kind: 'buffer', values}, validity} as GPURasterBufferBand,
+    nodes
+  };
+}
 
 /** WGSL helper shared by raster and terrain kernels. @internal */
 export const RASTER_WGSL_HELPERS = /* wgsl */ IS_FINITE_VALUE_WGSL;
+
+/** Maximum total grid cells addressable by uint32 raster indices. @internal */
+export const RASTER_GRID_MAXIMUM_CELL_COUNT = 4294967295;
+
+/** Validates runtime string settings before selecting a route or packing. @internal */
+export function validateRasterOption(
+  id: string,
+  name: string,
+  value: string,
+  allowed: readonly string[]
+): void {
+  validateRequirement(
+    id,
+    allowed.includes(value),
+    `${name} must be ${allowed.join(', ')} (got ${value})`
+  );
+}
+
+/** Compares JSON values by member value, retaining array order. @internal */
+function equalRasterJSON(first: unknown, second: unknown): boolean {
+  if (first === second) return true;
+  if (first === null || second === null || typeof first !== 'object' || typeof second !== 'object')
+    return false;
+  if (Array.isArray(first) || Array.isArray(second)) {
+    return (
+      Array.isArray(first) &&
+      Array.isArray(second) &&
+      first.length === second.length &&
+      first.every((value, index) => equalRasterJSON(value, second[index]))
+    );
+  }
+  const firstRecord = first as Record<string, unknown>;
+  const secondRecord = second as Record<string, unknown>;
+  const keys = Object.keys(firstRecord);
+  return (
+    keys.length === Object.keys(secondRecord).length &&
+    keys.every(
+      key =>
+        Object.hasOwn(secondRecord, key) && equalRasterJSON(firstRecord[key], secondRecord[key])
+    )
+  );
+}
+
+/** Rejects same-lattice warp CRS mismatches before scratch is reserved. @internal */
+export function validateRasterReprojectionCRS(
+  id: string,
+  source: GPURasterMetadata,
+  destination: GPURasterMetadata,
+  projected: boolean
+): void {
+  const first = source.coordinateReferenceSystem;
+  const second = destination.coordinateReferenceSystem;
+  validateRequirement(
+    id,
+    projected ||
+      (first === undefined && second === undefined) ||
+      (first !== undefined &&
+        second !== undefined &&
+        first.authority === second.authority &&
+        first.wellKnownText === second.wellKnownText &&
+        equalRasterJSON(first.projectionJson, second.projectionJson)),
+    'sourceGrid and destinationGrid must share a coordinate reference system unless inverseProjection is given'
+  );
+}
+
+/** Validates projection compatibility before direct or tiled graph allocation. @internal */
+export function getRasterReprojectionShader(
+  id: string,
+  sourceGrid: GPURasterMetadata,
+  destinationGrid: GPURasterMetadata,
+  inverseProjection: CompiledProjection | undefined
+): ProjectionShader | undefined {
+  validateRasterReprojectionCRS(id, sourceGrid, destinationGrid, inverseProjection !== undefined);
+  validateRequirement(
+    id,
+    !inverseProjection || inverseProjection.inputFormat === 'float32x2',
+    `inverseProjection.inputFormat must be 'float32x2' (got ${inverseProjection?.inputFormat})`
+  );
+  if (!inverseProjection) return undefined;
+  if (inverseProjection.precision === 'double-single') {
+    validateFiniteNumber(id, 'sourceGrid.affine[2]', sourceGrid.affine[2]);
+    validateFiniteNumber(id, 'sourceGrid.affine[5]', sourceGrid.affine[5]);
+  }
+  const shader = inverseProjection.getShader({namespace: 'raster'});
+  const declaration = `@group(0) @binding(auto) var<storage, read> ${shader.bindingName}: array<u32>;`;
+  validateRequirement(
+    id,
+    shader.source.includes(declaration),
+    'inverseProjection.getShader() must declare its uint32 parameter storage binding'
+  );
+  return {...shader, source: shader.source.replace(declaration, '')};
+}
+
+/** Captures declared grid fields and CRS JSON without retaining caller metadata. @internal */
+export function snapshotRasterGrid(grid: GPURasterMetadata): GPURasterMetadata {
+  const captured = snapshotConstructionFields(grid, [
+    'width',
+    'height',
+    'affine',
+    'pixelInterpretation',
+    'coordinateReferenceSystem',
+    'level',
+    'levelZeroOrigin'
+  ]);
+  return Object.freeze({
+    ...captured,
+    affine: Object.freeze([...captured.affine]) as typeof grid.affine,
+    levelZeroOrigin: captured.levelZeroOrigin
+      ? (Object.freeze([...captured.levelZeroOrigin]) as typeof grid.levelZeroOrigin)
+      : undefined,
+    coordinateReferenceSystem: captured.coordinateReferenceSystem
+      ? Object.freeze(
+          JSON.parse(
+            JSON.stringify(
+              snapshotConstructionFields(captured.coordinateReferenceSystem, [
+                'authority',
+                'wellKnownText',
+                'projectionJson'
+              ])
+            )
+          ) as NonNullable<typeof grid.coordinateReferenceSystem>
+        )
+      : undefined
+  });
+}
 
 /**
  * Throws unless the grid width and height are positive integers whose product fits in uint32 and
@@ -42,15 +255,18 @@ export const RASTER_WGSL_HELPERS = /* wgsl */ IS_FINITE_VALUE_WGSL;
  */
 export function validateRasterGrid(id: string, grid: GPURasterMetadata): number {
   const {width, height, affine} = grid;
-  if (
-    !Number.isSafeInteger(width) ||
-    !Number.isSafeInteger(height) ||
-    width < 1 ||
-    height < 1 ||
-    width * height > 0xffffffff
-  ) {
-    throw new Error(`${id} grid dimensions must be positive integers`);
-  }
+  validateRequirement(
+    id,
+    Number.isSafeInteger(width) && Number.isSafeInteger(height) && width >= 1 && height >= 1,
+    'grid dimensions must be positive integers'
+  );
+  const cellCount = width * height;
+  validateMaximumCount(
+    id,
+    `grid cell count (${cellCount})`,
+    cellCount,
+    RASTER_GRID_MAXIMUM_CELL_COUNT
+  );
   if (affine.length !== 6 || !affine.every(Number.isFinite)) {
     throw new Error(`${id} grid affine must be six finite values`);
   }

@@ -152,7 +152,7 @@ it('matches Huber and Tukey constructor scale limits when packing ICP parameters
         target: features.positions,
         maximumDistance: 1,
         robust: {method, scale},
-        iterations: 1,
+        maximumIterations: 1,
         output: {
           transform: view('float32', 16),
           history: view('float32x3', 1),
@@ -214,7 +214,7 @@ it('rejects ICP local transforms that overflow float32 after origin conversion',
           initialTransform,
           origin,
           maximumDistance: 1,
-          iterations: 1,
+          maximumIterations: 1,
           output: {
             transform: view('float32', 16),
             history: view('float32x3', 1),
@@ -336,7 +336,7 @@ it('reads resident parameters and audits the feature and ICP shared eigensolvers
     }),
     new GPUPointCloudSMRF({
       ...smrf,
-      selection: view('uint32', 9),
+      mask: view('uint32', 9),
       parameters: view('float32', 5)
     }),
     new GPUPointCloudStatisticalFilter({
@@ -355,7 +355,7 @@ it('reads resident parameters and audits the feature and ICP shared eigensolvers
           robust: {method: 'tukey', scale: 1},
           targetGrid: {origin: [-1, -1, -1], cellSize: 1, dimensions: [5, 5, 5]},
           parameters: view('float32', 22),
-          iterations: 1,
+          maximumIterations: 1,
           output: {
             transform: view('float32', 16),
             history: view('float32x3', 1),

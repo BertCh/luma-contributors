@@ -169,12 +169,19 @@ it.each([
   expect(() => contributor.getCommandNodes(graph)).toThrow(/ringBounds.*bytes/);
   expect(allocate).not.toHaveBeenCalled();
 });
+it.each(['overlay', 'buffer'] as const)('%s accepts packed source columns', mode => {
+  const {graph, contributor} = createContributor(mode, {packed: true});
+  expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+});
+
 it.each([
   'overlay',
   'buffer'
-] as const)('%s accepts packed source columns and ignores unused source-ID bindings', mode => {
+] as const)('%s refuses foreign caller-ID bindings before allocating nested scratch', mode => {
   const {graph, contributor} = createContributor(mode, {packed: true, unusedSource: true});
-  expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  expect(() => contributor.getCommandNodes(graph)).toThrow(/views must belong to the target graph/);
+  expect(allocate).not.toHaveBeenCalled();
 });
 
 it.each([

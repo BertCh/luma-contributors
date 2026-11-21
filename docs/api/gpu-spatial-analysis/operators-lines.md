@@ -7,6 +7,8 @@ description: "Lines & trajectories contributors in @luma-contributors/analysis/g
 
 # Lines & trajectories
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 
 ### `GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, and `GPULineChunk`
 
@@ -43,28 +45,56 @@ Inputs are packed `positions` sorted by line with `lineOffsets` (`lineCount + 1`
 Lambert equal-area local frames throw (use an azimuthal-equidistant frame for planar lines).
 
 ```ts
-graph.add(new GPULineSegmentize({
-  positions, lineOffsets,
-  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}, // omit for planar
-  parameters: segmentizeParameters.importToGraph(graph),
-  output: {positions: densified, lineOffsets: densifiedOffsets, status: {count, overflow, vertexCount}, measures}
-}));
-segmentizeParameters.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: 50000}));
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPULineSegmentize, getGPULineSegmentizeParameterValues, GPUGreatCircleArcs, getGPUGreatCircleArcsParameterValues, GPULineSmooth, GPULineChunk, getGPULineChunkParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
-graph.add(new GPUGreatCircleArcs({
-  sources, targets, // longitude/latitude pairs
-  parameters: arcParameters.importToGraph(graph),
-  output: {positions: arcPositions, lineOffsets: arcOffsets, status: {count, overflow, vertexCount}}
-}));
-arcParameters.write(getGPUGreatCircleArcsParameterValues({maximumSegmentLength: 0, minimumSegments: 32}));
+export function addOperatorsLinesExample0(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['positions']>;
+  lineOffsets: NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['lineOffsets']>;
+  segmentizeParameters: GPUParameterBuffer<'float32'>;
+  densified: NonNullable<NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['output']>['positions']>;
+  densifiedOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['output']>['lineOffsets']>;
+  count: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['output']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['output']>['status']>['overflow']>;
+  vertexCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['output']>['status']>['vertexCount']>;
+  measures: NonNullable<NonNullable<ConstructorParameters<typeof GPULineSegmentize>[0]['output']>['measures']>;
+  sources: NonNullable<ConstructorParameters<typeof GPUGreatCircleArcs>[0]['sources']>;
+  targets: NonNullable<ConstructorParameters<typeof GPUGreatCircleArcs>[0]['targets']>;
+  arcParameters: GPUParameterBuffer<'float32'>;
+  arcPositions: NonNullable<NonNullable<ConstructorParameters<typeof GPUGreatCircleArcs>[0]['output']>['positions']>;
+  arcOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUGreatCircleArcs>[0]['output']>['lineOffsets']>;
+  smoothParameters: GPUParameterBuffer<'float32'>;
+  output: NonNullable<ConstructorParameters<typeof GPULineSmooth>[0]['output']>;
+  chunkParameters: GPUParameterBuffer<'float32'>;
+  pieces: NonNullable<NonNullable<ConstructorParameters<typeof GPULineChunk>[0]['output']>['positions']>;
+  pieceOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPULineChunk>[0]['output']>['lineOffsets']>;
+  sourceLineIndices: NonNullable<NonNullable<ConstructorParameters<typeof GPULineChunk>[0]['output']>['sourceLineIndices']>;
+}) {
+  const {positions, lineOffsets, segmentizeParameters, densified, densifiedOffsets, count, overflow, vertexCount, measures, sources, targets, arcParameters, arcPositions, arcOffsets, smoothParameters, output, chunkParameters, pieces, pieceOffsets, sourceLineIndices} = inputs;
+  graph.add(new GPULineSegmentize({
+    positions, lineOffsets,
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}, // omit for planar
+    parameters: segmentizeParameters.importToGraph(graph),
+    output: {positions: densified, lineOffsets: densifiedOffsets, status: {count, overflow, vertexCount}, measures}
+  }));
+  segmentizeParameters.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: 50000}));
 
-graph.add(new GPULineSmooth({positions, lineOffsets, iterationCount: 3, closed: false,
-  parameters: smoothParameters.importToGraph(graph), output}));
+  graph.add(new GPUGreatCircleArcs({
+    sources, targets, // longitude/latitude pairs
+    parameters: arcParameters.importToGraph(graph),
+    output: {positions: arcPositions, lineOffsets: arcOffsets, status: {count, overflow, vertexCount}}
+  }));
+  arcParameters.write(getGPUGreatCircleArcsParameterValues({maximumSegmentLength: 0, minimumSegments: 32}));
 
-graph.add(new GPULineChunk({positions, lineOffsets, mode: 'chunk', // or 'substring'
-  parameters: chunkParameters.importToGraph(graph),
-  output: {positions: pieces, lineOffsets: pieceOffsets, status: {count, overflow, vertexCount}, sourceLineIndices}}));
-chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
+  graph.add(new GPULineSmooth({positions, lineOffsets, iterationCount: 3, closed: false,
+    parameters: smoothParameters.importToGraph(graph), output}));
+
+  graph.add(new GPULineChunk({positions, lineOffsets, mode: 'chunk', // or 'substring'
+    parameters: chunkParameters.importToGraph(graph),
+    output: {positions: pieces, lineOffsets: pieceOffsets, status: {count, overflow, vertexCount}, sourceLineIndices}}));
+  chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
+}
 ```
 
 - `GPULineSegmentize` (PostGIS `ST_Segmentize`, densify): every segment of length `L` becomes
@@ -91,8 +121,11 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
   origin/destination pair, `segments = clamp(max(ceil(distance / maximumSegmentLength),
   minimumSegments), 1, maximumSegmentCount)`. Endpoints are exact; longitudes are unwrapped from the
   source (Tokyo to San Francisco ends at 237.6), never split. Draw with `PathLayer`
-  `wrapLongitude: true` or in a globe view. Near-antipodal interpolation can be numerically unstable
-  in float32; split such arcs in the caller. There is no whole-arc rejection: counts and endpoints
+  `wrapLongitude: true` or in a globe view. The shared interpolator declares an edge unresolved when its float32 central angle
+  satisfies `π - angle < 1e-6`. Both interior coordinates are NaN; known endpoints are retained,
+  with the target longitude unwrapped from the source. This same rule applies per edge in
+  great-circle `GPULineSegmentize`. Supply a caller-selected waypoint to choose the route
+  (for example `(0°,0°) → (90°,30°) → (180°,0°)`) and segmentize those two edges. There is no whole-arc rejection: counts and endpoints
   are emitted even when the shared interpolator returns NaN for interior vertices within 1e-6
   radians of an antipode. Exactly antipodal endpoints do not determine a unique great circle.
 - `GPULineSmooth` (Chaikin corner cutting, turf `polygonSmooth`): `iterationCount` (compile time,
@@ -106,12 +139,19 @@ chunkParameters.write(getGPULineChunkParameterValues({chunkLength: 1000}));
   count is data dependent: the line capacity is `output.lineOffsets.length - 1`, and
   `status.count`/`sourceLineIndices` report the pieces; `requiredCount` is the unclamped piece count,
   computed independently of output capacity and saturated at `0xffffffff` when it reaches the uint32
-  limit. Per-line requirements use float32 division of the measured length by `chunkLength`.
+  limit. Through chunk index `2^24`, the piece count is the first index whose rounded float32
+  boundary reaches the published line length. Beyond that range, the count uses float32 division
+  rounded up.
   Requesting `requiredCount` in chunk mode adds a per-line count scan; layout offsets remain bounded
   even when the full requirement exceeds uint32. `'substring'` extracts `[startMeasure,
   endMeasure]` from every line (turf `lineSliceAlong`, PostGIS `ST_LineSubstring` by distance);
-  measures are clamped to the line and a start past the end gives an empty line. Zero-length
-  lines are copied as one piece. Both modes support a great-circle `spatialContext`.
+  measures are clamped to the line and a start past the end gives an empty line. A cut at a
+  published float32 vertex measure selects the first row with that measure. A cut at the line's
+  total measure selects the last row. Other cuts interpolate their position. Each piece retains
+  all input rows between its cuts in row order, including coincident vertices and distinct
+  vertices whose published measures coincide. Equal substring measures on a positive-length line
+  emit the cut position twice. Zero-length lines are copied as one piece. Both modes support a
+  great-circle `spatialContext`.
 - Everything per frame lives in the parameter buffer, so resolution, ratio, chunk length and
   ranges change with no recompile. All kernels are element-wise or sequential per line:
   deterministic, no float atomics.
@@ -170,6 +210,8 @@ layout; planar contexts and omitted contexts do not warn.
 
 #### `GPUGreatCircleArcs` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUGreatCircleArcs`.
+
 - Packer: `getGPUGreatCircleArcsParameterValues(settings)`, writes `GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUGreatCircleArcsParameterValues`:
@@ -186,7 +228,9 @@ Settings of `getGPUGreatCircleArcsParameterValues`:
 
 #### `GPULineChunk` parameters
 
-- Packer: `getGPULineChunkParameterValues(settings)`, writes `GPU_LINE_CHUNK_PARAMETER_LENGTH` (4) `float32` values.
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULineChunk`.
+
+- Packer: `getGPULineChunkParameterValues(settings?)`, writes `GPU_LINE_CHUNK_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPULineChunkParameterValues`:
 
@@ -203,6 +247,8 @@ Settings of `getGPULineChunkParameterValues`:
 
 #### `GPULineSegmentize` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULineSegmentize`.
+
 - Packer: `getGPULineSegmentizeParameterValues(settings)`, writes `GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPULineSegmentizeParameterValues`:
@@ -218,6 +264,8 @@ Settings of `getGPULineSegmentizeParameterValues`:
 
 #### `GPULineSmooth` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULineSmooth`.
+
 - Packer: `getGPULineSmoothParameterValues(settings?)`, writes `GPU_LINE_SMOOTH_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPULineSmoothParameterValues`:
@@ -229,6 +277,11 @@ Settings of `getGPULineSmoothParameterValues`:
 {/* /parameters */}
 
 ### `GPUGeometryMeasures`, `GPUGeodesicPairs`, and `GPUGeodesicDestination`
+
+When requesting per-feature or per-group lengths or areas, GPUGeometryMeasures rejects known
+angular planar frames even with metric none and omitted result units. Project into a planar
+linear frame first. Coordinate-only columns with metric none remain usable; linear frames
+retain their declared units, and unlabelled XY cannot establish ground units.
 
 The [geodesic precision guide](geodesic-precision.md) defines per-row status, conditioning
 exclusions, measured error envelopes and differences from the float64 CPU operation twins.
@@ -256,25 +309,55 @@ geometry measures declare no measure because they output both lengths and areas.
 `resolveGPUSpatialContext` and its shared validation errors.
 
 ```ts
-graph.add(new GPUGeometryMeasures({
-  geometryType: 'polygons',
-  // GeoArrow four-level layout: feature -> polygons -> rings -> vertices
-  positions, featureOffsets, polygonOffsets, ringOffsets,
-  // planar (native units), great-circle (spherical), or ellipsoidal (geodesic edges by default)
-  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'},
-  output: {
-    areas, lengths, centroids, bounds, vertexCounts,
-    status: {invalidCount} // geographic polygons with a pole or half-world edge, see below
-  },
-  groupIds, groupCount: 12,
-  groupOutput: {areas: groupAreas, centroids: groupCentroids, featureCounts}
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUGeometryMeasures, GPUGeodesicPairs, GPUGeodesicDestination} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
-const wgs84 = {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'} as const;
-graph.add(new GPUGeodesicPairs({origins, targets, spatialContext: wgs84,
-  output: {distances, initialBearings, finalBearings, midpoints, status: {converged}}}));
-graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialContext: wgs84,
-  output: {destinations, finalBearings}}));
+export function addOperatorsLinesExample1(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['positions']>;
+  featureOffsets: NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['featureOffsets']>;
+  polygonOffsets: NonNullable<Extract<ConstructorParameters<typeof GPUGeometryMeasures>[0], {geometryType: 'polygons'}>['polygonOffsets']>;
+  ringOffsets: NonNullable<Extract<ConstructorParameters<typeof GPUGeometryMeasures>[0], {geometryType: 'polygons'}>['ringOffsets']>;
+  areas: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['output']>['areas']>;
+  lengths: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['output']>['lengths']>;
+  centroids: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['output']>['centroids']>;
+  bounds: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['output']>['bounds']>;
+  vertexCounts: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['output']>['vertexCounts']>;
+  invalidCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['output']>['status']>['invalidCount']>;
+  groupIds: NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['groupIds']>;
+  groupAreas: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['groupOutput']>['areas']>;
+  groupCentroids: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['groupOutput']>['centroids']>;
+  featureCounts: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeometryMeasures>[0]['groupOutput']>['featureCounts']>;
+  origins: NonNullable<ConstructorParameters<typeof GPUGeodesicPairs>[0]['origins']>;
+  targets: NonNullable<ConstructorParameters<typeof GPUGeodesicPairs>[0]['targets']>;
+  distances: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeodesicPairs>[0]['output']>['distances']>;
+  initialBearings: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeodesicPairs>[0]['output']>['initialBearings']>;
+  finalBearings: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeodesicPairs>[0]['output']>['finalBearings']>;
+  midpoints: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeodesicPairs>[0]['output']>['midpoints']>;
+  converged: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUGeodesicPairs>[0]['output']>['status']>['converged']>;
+  bearings: NonNullable<ConstructorParameters<typeof GPUGeodesicDestination>[0]['bearings']>;
+  destinations: NonNullable<NonNullable<ConstructorParameters<typeof GPUGeodesicDestination>[0]['output']>['destinations']>;
+}) {
+  const {positions, featureOffsets, polygonOffsets, ringOffsets, areas, lengths, centroids, bounds, vertexCounts, invalidCount, groupIds, groupAreas, groupCentroids, featureCounts, origins, targets,  distances, initialBearings, finalBearings, midpoints, converged, bearings, destinations} = inputs;
+  graph.add(new GPUGeometryMeasures({
+    geometryType: 'polygons',
+    // GeoArrow four-level layout: feature -> polygons -> rings -> vertices
+    positions, featureOffsets, polygonOffsets, ringOffsets,
+    // planar (native units), great-circle (spherical), or ellipsoidal (geodesic edges by default)
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'},
+    output: {
+      areas, lengths, centroids, bounds, vertexCounts,
+      status: {invalidCount} // geographic polygons with a pole or half-world edge, see below
+    },
+    groupIds, groupCount: 12,
+    groupOutput: {areas: groupAreas, centroids: groupCentroids, featureCounts}
+  }));
+
+  const wgs84 = {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'} as const;
+  graph.add(new GPUGeodesicPairs({origins, targets, spatialContext: wgs84,
+    output: {distances, initialBearings, finalBearings, midpoints, status: {converged}}}));
+  graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialContext: wgs84,
+    output: {destinations, finalBearings}}));
+}
 ```
 
 - Features: one invocation per feature walks its rings in row order with Neumaier-compensated f32
@@ -293,6 +376,14 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   correctly, and `areas` is non-negative. `GPUShapeDescriptors`, `GPUPolygonTriangulation` and
   `GPUAffineTransform` (centroid origins) use the same layout and rule; `GPULabelPoint` uses even-odd,
   which agrees with it for valid (non-overlapping) polygons.
+- Point and line `areas` are exact zero, including group totals. Planar bounds and extreme rows
+  cover every finite float32 coordinate, including both signs of `FLT_MAX`; group reductions
+  use the same full range. Bounds use finite sentinels; extreme-coordinate ties select the
+  lowest original row, including coordinates equal to those sentinels. Unsupported requested measure columns (for example `signedAreas`)
+  are rejected before descriptor snapshotting can discard them. Planar bounds and extreme rows
+  compare original float32 coordinates, preserving small distinctions far from the moment origin.
+  Local coordinates are still used for moments. When a multiline's total length is zero, its
+  centroid averages one point per nonempty collapsed part; repeated vertices add no extra weight.
 - With `metric: 'great-circle'` and linear edges (the default), area uses Chamberlain-Duquette
   (turf parity): an approximation of degree-straight edges with second-order error in latitude
   span, exact for longitude/latitude boxes. With `edgeModel: 'great-circle'`, area uses signed
@@ -336,6 +427,13 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   group straddling the antimeridian lands on the antimeridian (for example 179 and -179 give 180)
   instead of at longitude 0. An antipodal group has no mean direction and reports NaN; a group
   containing an invalid feature reports NaN. Planar groups are unchanged.
+  Feature centroid longitude stays on that feature's unwrapped branch; geographic group centroid
+  longitude uses the principal `[-180,180]` branch. Geographic group bounds translate whole feature
+  intervals by whole turns to align their centers with the first nonempty interval's center,
+  in stable feature-row order, before taking the union. Already-contained duplicate endpoints
+  remain contained. Compare bounds and a viewport on a common longitude branch: translate the
+  whole viewport or interval by multiples of 360°, or union the masks for each visible turn.
+  Do not independently wrap the interval endpoints or the feature centroid.
 - `'geodesic'` (`pyproj.Geod.geometry_area_perimeter`, geo `GeodesicArea`): lengths and perimeters are
   Vincenty geodesic lengths, as `'wgs84'`, and polygon areas follow geodesic edges on the context's
   ellipsoid (WGS84 by default). Edges of 20 km or more are sampled along the geodesic (spans of at most 250 km, at most 16)
@@ -349,7 +447,7 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   longitude of `bounds`. Per feature only (rejected in `groupOutput`).
 - `geometryType: 'points'`: every feature is one point or a multi-point. Outputs are lengths (0), centroids
   (vertex mean, as Shapely `MultiPoint.centroid`), bounds, vertex counts and `extremeVertices`;
-  `areas` is rejected. Group centroids weight by vertex count.
+  `areas` publishes zero per feature and group. Group centroids weight by vertex count.
 - `GPUGeodesicPairs`: distance, initial and final bearing (degrees clockwise from north in
   `(-180, 180]`), and midpoint per pair. `'sphere'` uses a Vincenty-form central angle that is well
   conditioned from millimeters to antipodal; `'wgs84'` runs bounded Vincenty inverse iteration.
@@ -364,9 +462,13 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
 - `GPUGeodesicDestination`: destination and final bearing from origin, bearing and distance
   columns, on the sphere or by Vincenty's direct solution.
   No warning is possible because the distance is a GPU view; see [Precision of longitude/latitude positions](./concepts.md#precision-of-longitudelatitude-positions).
-- `model: 'rhumb'` on both classes (turf `rhumbDistance`, `rhumbBearing`, `rhumbDestination`; geo `Rhumb`):
-  a line of constant bearing on a sphere of `radius` (default 6371008.8 m). Pairs give `distances` (in
-  `radius` units), `initialBearings` equal to `finalBearings` (constant, in `(-180, 180]`) and the rhumb
+- `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', units: 'meters'}`
+  on both classes (turf `rhumbDistance`, `rhumbBearing`, `rhumbDestination`; geo `Rhumb`):
+  a line of constant bearing on the context sphere (default radius 6371008.8 m).
+  Coordinates (`origins`, `targets`, `midpoints`, `destinations`) are longitude/latitude degrees;
+  `bearings`, `initialBearings` and `finalBearings` are degrees clockwise from north.
+  Distance inputs and outputs are meters in this context. Pairs give `distances`,
+  `initialBearings` equal to `finalBearings` (constant, in `(-180, 180]`) and the rhumb
   `midpoints` (the midpoint by distance: the mean latitude, and the longitude of the loxodrome at
   that latitude, which is linear in the Mercator latitude and differs from the mean longitude
   unless the line runs east-west). Coincident pairs have zero distance and zero initial and final
@@ -375,7 +477,13 @@ graph.add(new GPUGeodesicDestination({origins, bearings, distances, spatialConte
   case is approximate). Longitude differences take the short way across the antimeridian, latitudes clamp
   at 89.9999 degrees, equal-latitude edges use the east-west limit `cos(lat)`, and the Mercator-stretched
   latitude difference is an `atanh` of a cancellation-free ratio. Sphere only (turf and geo are spherical
-  too), `status.converged` is `'wgs84'`-only, and the model switch is compile-time. Distance error against an f64
+  too), `status.converged` is ellipsoidal-only, and the metric switch is compile-time.
+  For `(0°,60°) → (90°,60°)`, the closed-form rhumb distance is `R·π/4 = 5003778.610508981 m`,
+  versus great-circle `R·acos(3/4) = 4604546.2528806515 m` with `R=6371008.8 m`.
+  A rhumb destination from `(0°,60°)` at bearing 90° and distance `5003778.610508981 m`
+  returns `(90°,60°)` (subject to f32 rounding). For the ellipsoidal route, use
+  `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal', units: 'meters'}`
+  as in the example above. Distance error against an f64
   closed form was 0.74 m (6e-8 relative) over 12,108 km and bearings were within 1e-4 degrees. Rhumb length
   in `GPUGeometryMeasures` and rhumb densify in `GPULineSegmentize` are not provided.
 - Geometry-measure precision (f32 vs f64 oracles, Apple Metal): WGS84 and spherical box areas
@@ -450,8 +558,35 @@ Two ways to work on longitude/latitude data, used consistently across the packag
   See [Precision of longitude/latitude positions](./concepts.md#precision-of-longitudelatitude-positions) for float32 degrees.
   `GPULocalFrameProjection` projects GPU-resident `float32x2` or binary64
   (`uint32x4`) longitude/latitude rows into the frame without a readback (compiled adaptive patches
-  from `gpu-project`, default tolerance 1 cm, output in absolute frame meters). Add it with
-  `graph.add(new GPULocalFrameProjection({frame, positions, output, bounds}))`.
+  from `gpu-project`, default tolerance 1 cm, output in absolute frame meters). Retain the
+  contributor to release its projection plan, including when graph declaration or compilation fails:
+
+```ts
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPULocalFrameProjection, type GPULocalFrameProjectionProps} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export async function withLocalFrameProjection(
+  graph: GPUCommandGraph,
+  props: GPULocalFrameProjectionProps,
+  useCompiled: (compiled: ReturnType<typeof graph.compile>) => void | Promise<void>
+) {
+  const projection = new GPULocalFrameProjection(props);
+  let compiled: ReturnType<typeof graph.compile> | undefined;
+  try {
+    graph.add(projection);
+    compiled = graph.compile();
+    await useCompiled(compiled); // Submit and consume the graph here.
+  } finally {
+    try {
+      compiled?.destroy();
+    } finally {
+      projection.destroy();
+    }
+  }
+}
+```
+
+  The awaited callback keeps both owners alive until graph use finishes.
   The frame's `spatialContext` is `{coordinateSpace: 'planar', metric: 'native', units: 'meters', frame}`.
   Choose `'azimuthal-equidistant'` for distance operators and `'lambert-equal-area'` for area/density
   operators; the wrong frame kind throws at operator construction. `GPULocalFrameProjection.spatialContext`
@@ -487,21 +622,51 @@ Linear referencing on many polylines (`positions` sorted by path, `lineOffsets`)
 the nearest path and report where they are along it, or place events on paths by measure.
 
 ```ts
-graph.add(new GPULinearReferencing({
-  queryPositions, positions, lineOffsets,
-  radius: radiusParameters.importToGraph(graph), // one float32 row, per frame
-  candidateCapacity: 1 << 20, spatialSort: true,
-  output: {lineIndices, segmentIndices, fractions, footPoints, distances, measures, sides, signedOffsets,
-           status: {candidateOverflow, requiredCandidateCount}}
-}));
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPULinearReferencing, GPULineLocate, getGPULineLocateParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
-graph.add(new GPULineLocate({
-  positions, lineOffsets, eventLineIndices, eventMeasures, eventOffsets,
-  measureMode: 'distance', // or 'fraction'
-  parameters: locateParameters.importToGraph(graph),
-  output: {positions: eventPositions, angles, statuses}
-}));
-locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMeters})); // animate
+export function addOperatorsLinesExample2(graph: GPUCommandGraph, inputs: {
+  queryPositions: NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['queryPositions']>;
+  positions: NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['positions']>;
+  lineOffsets: NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['lineOffsets']>;
+  radiusParameters: GPUParameterBuffer<'float32'>;
+  lineIndices: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['lineIndices']>;
+  segmentIndices: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['segmentIndices']>;
+  fractions: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['fractions']>;
+  footPoints: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['footPoints']>;
+  distances: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['distances']>;
+  measures: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['measures']>;
+  sides: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['sides']>;
+  signedOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['signedOffsets']>;
+  candidateOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['status']>['candidateOverflow']>;
+  requiredCandidateCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULinearReferencing>[0]['output']>['status']>['requiredCandidateCount']>;
+  eventLineIndices: NonNullable<ConstructorParameters<typeof GPULineLocate>[0]['eventLineIndices']>;
+  eventMeasures: NonNullable<ConstructorParameters<typeof GPULineLocate>[0]['eventMeasures']>;
+  eventOffsets: NonNullable<ConstructorParameters<typeof GPULineLocate>[0]['eventOffsets']>;
+  locateParameters: GPUParameterBuffer<'float32'>;
+  eventPositions: NonNullable<NonNullable<ConstructorParameters<typeof GPULineLocate>[0]['output']>['positions']>;
+  angles: NonNullable<NonNullable<ConstructorParameters<typeof GPULineLocate>[0]['output']>['angles']>;
+  statuses: NonNullable<NonNullable<ConstructorParameters<typeof GPULineLocate>[0]['output']>['statuses']>;
+  elapsedMeters: number;
+}) {
+  const {queryPositions, positions, lineOffsets, radiusParameters, lineIndices, segmentIndices, fractions, footPoints, distances, measures, sides, signedOffsets, candidateOverflow, requiredCandidateCount, eventLineIndices, eventMeasures, eventOffsets, locateParameters, eventPositions, angles, statuses, elapsedMeters} = inputs;
+  graph.add(new GPULinearReferencing({
+    queryPositions, positions, lineOffsets,
+    radius: radiusParameters.importToGraph(graph), // one float32 row, per frame
+    candidateCapacity: 1 << 20, spatialSort: true,
+    output: {lineIndices, segmentIndices, fractions, footPoints, distances, measures, sides, signedOffsets,
+             status: {candidateOverflow, requiredCandidateCount}}
+  }));
+
+  graph.add(new GPULineLocate({
+    positions, lineOffsets, eventLineIndices, eventMeasures, eventOffsets,
+    measureMode: 'distance', // or 'fraction'
+    parameters: locateParameters.importToGraph(graph),
+    output: {positions: eventPositions, angles, statuses}
+  }));
+  locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMeters})); // animate
+}
 ```
 
 - `GPULinearReferencing` (turf `nearestPointOnLine`, PostGIS `ST_ClosestPoint` and
@@ -528,6 +693,19 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
   convention) and status (`2` for empty or out-of-range lines, NaN position).
 - Cumulative measures are a per-line Neumaier-compensated f32 prefix (optionally output as
   `output.vertexMeasures`). Planar by default: project geographic data first, or use `'spherical'` below.
+  In the cooperative route, each published row combines the incoming carry and that row's tile
+  prefix with compensation, then combines the resulting sum and correction for the output.
+  Compensation applies at publication, including the last moving endpoint, rather than only at
+  tile boundaries. For 64 steps of length 16 followed by 128 steps of length `2^-20`, that endpoint
+  measure is exactly `1024.0001220703125`. `GPULineChunk` therefore needs two chunks at chunk
+    length 1024. A published measure can plateau between distinct moving vertices: rows 191 and
+  192 both round to that total, but their positions differ. Chunk and substring cuts resolve
+  interior ties at the first published row attaining the cut, consistently for adjoining pieces.
+  Start/end measures preserve known input endpoints; a zero-width terminal substring emits
+  that endpoint twice. Projection at segment fraction one reads the published next-row measure;
+  normalized measure one and location at the total retain the terminal endpoint.
+  `GPULinearReferencing`'s `output.signedOffsets` are physical signed cross-track distances in the context's
+  length unit; they are distinct from `lineOffsets`, the integer row boundaries of the line layout.
 - `output.normalizedMeasures` (both coordinate systems) is `measures / lineLength`, 0 for zero-length
   lines and NaN when unmatched (Shapely `line_locate_point(normalized=True)`).
   `GPULineLocate({measureMode: 'fraction'})` is `line_interpolate_point(normalized=True)`.
@@ -578,7 +756,9 @@ locateParameters.write(getGPULineLocateParameterValues({measureOffset: elapsedMe
 
 #### `GPULineLocate` parameters
 
-- Packer: `getGPULineLocateParameterValues(settings)`, writes `GPU_LINE_LOCATE_PARAMETER_LENGTH` (4) `float32` values.
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULineLocate`.
+
+- Packer: `getGPULineLocateParameterValues(settings?)`, writes `GPU_LINE_LOCATE_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPULineLocateParameterValues`:
 
@@ -592,6 +772,27 @@ Settings of `getGPULineLocateParameterValues`:
 ### `GPULineSplit` and `GPULineMerge`
 
 **`GPULineSplit`** — Splits polylines at their mutual intersections, writing the pieces with their source-line indices.
+
+Optional `lines.featureOffsets` groups line parts into logical features, including empty features.
+Each part splits independently at all intersections; no connector is inserted between parts.
+Optional `output.pieces.geometry.featureOffsets` publishes feature-to-piece offsets with the
+input feature count plus one rows. Truncation leaves empty tail features visible. Optional
+`pieces.sourceIds` publishes the logical feature's caller ID, or feature row when no IDs are
+supplied; optional `pieces.sourceFeatureIds` publishes the same identity. Use
+`pieces.sourcePartRows` for original input line-part rows and `pieces.sourceFeatureRows` for
+logical feature rows. Unused provenance rows are `0xffffffff`. Piece/vertex counts and
+capacities continue to count parts and stored vertices.
+The terminal feature offset is the active piece count. Remaining allocated line offsets repeat
+the terminal vertex offset; CPU track and loop-removal consumers validate and accept that padding.
+
+`GPULineSplit` and `GPULineClipByPolygon` reject `pieces.geometry.sourceIds`: caller identities
+belong in `pieces.sourceIds` (or optional `pieces.sourceFeatureIds`). Their piece status supports `count`, `overflow`,
+`candidateOverflow`, `requiredCount`, `vertexCount` and `requiredVertexCount` only.
+The inherited `complete`, `unresolvedCount`, `uncertainCount`, `invalidCount`,
+iteration/convergence/approximation fields, `ringCount` and `requiredRingCount` are rejected because
+these contributors do not publish those
+piece diagnostics. Use top-level `output.status.uncertainCount` for uncertifiable predicates and
+`pieces.status.overflow` for incomplete output.
 
 ::lens{scenario=gpu-spatial-analysis.line-split rung=result caption="Grey: 223 Wicker Park streets · blue: pieces split at street intersections"}
 
@@ -609,11 +810,16 @@ in self mode, groups the split events by segment with a stable `GPUSort`, remove
 GeoArrow-layout pieces. Props: `lines` (`{kind: 'lines', positions, lineOffsets}`), `intersectionCapacity`,
 `output`, optional `spatialSort` and `leafCapacity`. `output` is `{pieces, status?: {uncertainCount?}}`; `pieces` is a
 `GPUGeneratedGeometryPort`: `geometry` holds `{kind: 'lines', positions, lineOffsets}`, `sourceIds`
-identifies the source line, and `status` holds `count` (pieces, not vertices), `overflow`, optional `candidateOverflow`,
+identifies the caller's source feature (logical row without caller IDs), while optional
+`sourcePartRows` retains the original input part row. `status` holds `count` (pieces, not vertices), `overflow`, optional `candidateOverflow`,
 optional `requiredCount` and optional `vertexCount` and `requiredVertexCount`, which report the flattened vertex cardinality. Pieces are ordered by
 source line, then traversal order. Splits at line ends are ignored, and a line with fewer than two
 vertices yields no piece. Piece or vertex truncation sets `status.overflow`; an insufficient
-`intersectionCapacity` independently sets `status.candidateOverflow`.
+`intersectionCapacity` or restricted BVH leaf coverage independently sets `status.candidateOverflow`.
+For `GPULineSplit`, a supplied `leafCapacity` below `lines.positions.length` requires
+`pieces.status.candidateOverflow`; final `pieces.status.overflow` alone cannot observe candidate loss.
+Read both words before treating the pieces as complete. The final word also reports nonfinite input
+or an uncertifiable intersection, which cannot be repaired by increasing output capacity.
 
 `GPULineMerge` is the inverse (Shapely `linemerge`, turf `lineMerge`): it joins linestrings at endpoints
 shared by exactly two line ends (an exact f32 match) into maximal chains. Junctions of three or more ends
@@ -624,23 +830,51 @@ Props: `positions`, `lineOffsets` and `output: {chainOffsets, positions, status:
 overflow?, vertexCount?, requiredVertexCount?}, sourceIds?, lineChains?, lineOrders?, lineReversed?}`;
 `status.count` counts chains. The capacities always suffice, so `requiredCount` equals `count` and
 `overflow` is 0. `sourceIds` is the source row of each chain, its first line; `lineChains` and
-`lineOrders` list every member. The list-ranking rounds are the shared helper in `line-merge/list-ranking.ts`, which `GPUSharedPaths` also uses. The result is deterministic: chains are ordered by their lowest line, paths start at the
+`lineOrders` list every member. Lines with fewer than two vertices receive `GPU_LINE_MERGE_NONE`
+in `lineChains` and `lineOrders`, including after repeated submissions.
+The zero overflow word is written on every submission, including when caller-owned status storage
+previously held a nonzero value. It follows from the construction-time capacity requirements:
+`positions` holds at least every input vertex and `chainOffsets` holds at least `lineCount + 1` rows.
+Ignored lines receive zero in `lineReversed`, including when a previously reversed line becomes
+a singleton on the next submission. `chainOffsets` may have more than `lineCount + 1` rows;
+every row after the final chain repeats the written vertex total, including spare rows.
+Merge captures view references, output descriptors, status fields and structural settings at
+construction. Editing the caller's descriptor afterward does not replace validated destinations;
+input buffer contents remain per-frame data and may be updated between submissions.
+The list-ranking rounds are the shared helper in `line-merge/list-ranking.ts`, which `GPUSharedPaths` also uses. The result is deterministic: chains are ordered by their lowest line, paths start at the
 lower endpoint ID and cycles start at their lowest line and are emitted closed. Chains are ranked by
 pointer jumping (list ranking), so a chain of `n` lines takes `O(log n)` dispatches rather than `n`
 serial steps. Merging with a tolerance is not provided.
 
 ```ts
-graph.add(new GPULineSplit({
-  lines: {kind: 'lines', positions, lineOffsets}, intersectionCapacity: 1 << 16,
-  output: {
-    pieces: {
-      geometry: {kind: 'lines', positions: piecePositions, lineOffsets: offsets},
-      sourceIds: lineIds,
-      status: {count, overflow, vertexCount}
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPULineSplit, GPULineMerge} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample3(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['lines']>['positions']>;
+  lineOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['lines']>['lineOffsets']>;
+  piecePositions: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['output']>['pieces']>['geometry']>['positions']>;
+  offsets: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['output']>['pieces']>['geometry']>['lineOffsets']>;
+  lineIds: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['output']>['pieces']>['sourceIds']>;
+  count: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['output']>['pieces']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['output']>['pieces']>['status']>['overflow']>;
+  vertexCount: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSplit>[0]['output']>['pieces']>['status']>['vertexCount']>;
+  chainOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPULineMerge>[0]['output']>['chainOffsets']>;
+  merged: NonNullable<NonNullable<ConstructorParameters<typeof GPULineMerge>[0]['output']>['positions']>;
+}) {
+  const {positions, lineOffsets, piecePositions, offsets, lineIds, count, overflow, vertexCount, chainOffsets, merged} = inputs;
+  graph.add(new GPULineSplit({
+    lines: {kind: 'lines', positions, lineOffsets}, intersectionCapacity: 1 << 16,
+    output: {
+      pieces: {
+        geometry: {kind: 'lines', positions: piecePositions, lineOffsets: offsets},
+        sourceIds: lineIds,
+        status: {count, overflow, vertexCount}
+      }
     }
-  }
-}));
-graph.add(new GPULineMerge({positions, lineOffsets, output: {chainOffsets, positions: merged, status: {count}}}));
+  }));
+  graph.add(new GPULineMerge({positions, lineOffsets, output: {chainOffsets, positions: merged, status: {count}}}));
+}
 ```
 
 `GPUNetworkNoding` in [GPU Network](/docs/api/gpu-network) builds a routable
@@ -687,10 +921,31 @@ collinear overlap are boundary and count as inside; the rest are classified by `
 their midpoint, and kept sub-pieces that continue each other merge. Several polygon features act as their
 union. Props: `lines`, `polygons`, `mode`, `intersectionCapacity`, `candidateCapacity` and
 `output: {pieces, status?: {uncertainCount}}` (`pieces` has the `GPULineSplitPieces` layout). Overflow of pairs,
-candidates, pieces or vertices sets `output.pieces.status.overflow`; the optional `output.pieces.status.candidateOverflow` is set only when the `intersectionCapacity` pair list was exceeded, as `GPULineSplit` reports it. `status.count` counts pieces. Limits: a line is not noded at its own crossings, a line running over itself keeps both
+candidates, pieces or vertices sets `output.pieces.status.overflow`. The optional
+`output.pieces.status.candidateOverflow` identifies intersection-pair-list or BVH-leaf loss;
+final piece/vertex capacity loss remains in the aggregate overflow word. Unlike split, clipping
+folds candidate loss into aggregate overflow. A supplied `leafCapacity` below
+`polygons.positions.length` requires `pieces.status.candidateOverflow` or `pieces.status.overflow`.
+Both named piece status maps reject `complete` and `unresolvedCount` because neither has a writer. `status.count` counts pieces. Limits: a line is not noded at its own crossings, a line running over itself keeps both
 traversals (Shapely dedupes), a point-only touch yields no piece (`keep_geom_type=True`), and a sub-piece a
 few f32 ulps long beside an edge can be misclassified. Against Shapely 2.1.2, 52 lines in both modes
 matched on total length (under 2e-3) and piece end points.
+
+Uncertifiable intersections or midpoint classifications also set `pieces.status.overflow`,
+whether or not `output.status.uncertainCount` is requested. An empty result with overflow set is
+incomplete; increasing capacity alone cannot resolve predicate uncertainty. The optional count
+reports the number of uncertifiable classifications for diagnosis.
+Unused midpoint capacity is excluded from containment before candidate generation, so increasing
+`intersectionCapacity` alone cannot introduce predicate uncertainty from padding rows.
+
+Multipart `lines.featureOffsets` groups input parts without connecting them. Optional
+`pieces.geometry.featureOffsets` maps logical features to their written pieces, including empty
+and fully truncated features. `pieces.sourceIds` contains caller feature IDs (logical rows
+without input `sourceIds`); optional `pieces.sourceFeatureIds` publishes the same identities.
+`pieces.sourcePartRows` preserves original part rows, and `pieces.sourceFeatureRows` preserves
+logical feature rows, independently of caller IDs.
+`vertexSourceEdges` identifies the original outgoing edge at each written vertex; at a piece's
+last vertex it identifies the incoming edge. Unwritten vertex rows use `0xffffffff`.
 
 `GPUSharedPaths` is Shapely `shared_paths(a, b)` for many line pairs. Collinear overlaps from
 `GPUSegmentIntersection` are oriented along the left line, tagged forward or backward by the exact sign of
@@ -703,6 +958,35 @@ the segment directions, and chained into one polyline per (left line, right line
 coincident right segments emit duplicate runs. Runs are sized and written by list ranking (Wyllie pointer jumping, `ceil(log2(intersectionCapacity))`
 rounds per pass) rather than one invocation walking each run, so a long shared road costs the same dispatches as a short one; the work is
 `O(intersectionCapacity * log(intersectionCapacity))`.
+
+`status.overflow` also reports uncertifiable intersection pairs, including when no run is written
+and optional `uncertainCount` is absent. `candidateOverflow` reports intersection-pair-list or
+restricted BVH-leaf loss. A zero run count with aggregate overflow set does not certify no overlap.
+Output words must not overlap. `count`, `vertexCount`, `requiredCount`, `requiredVertexCount`,
+`overflow` and `candidateOverflow` are co-bound in one scalar dispatch: their writable binding
+ranges must remain disjoint after WebGPU storage-offset alignment. Adjacent packed words among
+those co-bound columns are not a supported layout. `uncertainCount` is written by a separate
+dispatch; distinct adjacent `overflow` and `uncertainCount` words are supported, as verified by
+the shared-path packed-word regression. Other run columns also need disjoint aligned binding
+ranges whenever co-bound.
+
+The four run outputs (`leftSourceIds`, `rightSourceIds`, `forward`, `offsets`) and each side's
+`...SourceIds`/`...PartRows` provenance pair require disjoint aligned bindings. A provenance
+output cannot share a physical buffer with `status.count`, which that pass reads. Adjacent
+`count`/`overflow` words at bytes 0 and 4 reject; adjacent `overflow`/`uncertainCount` remain
+supported because they are written separately. With `leafCapacity < right.positions.length`, construction requires
+`status.candidateOverflow` or aggregate `status.overflow`; aggregate overflow includes BVH and
+intersection-list loss and predicate uncertainty. Candidate overflow diagnoses intermediate
+capacity loss, while aggregate overflow additionally diagnoses final run/vertex capacity loss. Downstream completeness claims require aggregate
+`overflow=0` evidence. An omitted aggregate view does not establish completeness, even when
+`count` fits the run capacity or `requiredCount` is supplied.
+
+Both operands accept multipart `featureOffsets`. Runs remain part-local, so a disconnected
+feature never acquires a connecting edge. For both single-part and grouped operands, `leftSourceIds` and
+`rightSourceIds` contain caller `sourceIds` (logical feature rows when absent); optional
+`leftPartRows` and `rightPartRows` retain the original line-part rows. Empty logical features
+emit no runs. Single-part inputs without caller IDs retain their row provenance. Supplied
+single-part caller IDs were previously ignored; they are now honored.
 
 #### How it computes
 
@@ -737,22 +1021,55 @@ delimited by `lineOffsets`. It runs in two parts: a
 per-vertex `importance` column computed once, and a per-frame selection at a tolerance from a
 parameter buffer. Changing the tolerance re-runs only the mask, compaction, and publish nodes.
 
-```ts
-// One-shot graph: importance.
-importanceGraph.add(new GPULineSimplification({
-  positions, lineOffsets, importance,
-  metric: 'segment', // or 'time-ratio' (TD-TR) with float32 `timestamps`
-  maximumIterations: 64,
-  output: {status: {converged, iterationCount}}
-}));
+`lineOffsets` contains vertex indices into `positions` and may describe a subrange of its rows.
+Equal adjacent offsets describe an empty line. A single in-bounds terminal describes zero lines
+in the named operations. Computed importance and the selection mask are zero outside the
+subrange. Selected IDs keep their indices in the full positions array, including when selection
+reuses a supplied importance column. The GPU clamps offsets to the position row count. The CPU
+forms accept `storage: 'resident-capacity'` for the same clamping. The resulting offsets must be
+nondecreasing. With storage omitted, the CPU forms require nondecreasing, in-bounds offsets.
+Set `storage: 'compact'` to require offsets that span all rows.
 
-// Per-frame graph: selection only.
-frameGraph.add(new GPULineSimplification({
-  positions, lineOffsets, importance, computeImportance: false,
-  parameters: toleranceParameters.importToGraph(frameGraph),
-  output: {ids, status: {count, overflow}, outputMask, lineCounts, lineStarts}
-}));
-toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: 2})); // no recompile
+```ts
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPULineSimplification, getGPULineSimplificationParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample4(importanceGraph: GPUCommandGraph, frameGraph: GPUCommandGraph, inputs: {
+  framePositions: GraphDataView<'float32x2'>;
+  frameLineOffsets: GraphDataView<'uint32'>;
+  frameImportance: GraphDataView<'float32'>;
+  positions: NonNullable<ConstructorParameters<typeof GPULineSimplification>[0]['positions']>;
+  lineOffsets: NonNullable<ConstructorParameters<typeof GPULineSimplification>[0]['lineOffsets']>;
+  importance: NonNullable<ConstructorParameters<typeof GPULineSimplification>[0]['importance']>;
+  converged: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSimplification>[0]['output']>['status']>['converged']>;
+  iterationCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPULineSimplification>[0]['output']>['status']>['iterationCount']>;
+  toleranceParameters: GPUParameterBuffer<'float32'>;
+  ids: NonNullable<NonNullable<ConstructorParameters<typeof GPULineSimplification>[0]['output']>['ids']>;
+  count: GraphDataView<'uint32'>;
+  overflow: GraphDataView<'uint32'>;
+  outputMask: GraphDataView<'uint32'>;
+  lineCounts: GraphDataView<'uint32'>;
+  lineStarts: GraphDataView<'uint32'>;
+}) {
+  const {framePositions, frameLineOffsets, frameImportance, positions, lineOffsets, importance, converged, iterationCount, toleranceParameters, ids, count, overflow, outputMask, lineCounts, lineStarts} = inputs;
+  // One-shot graph: importance.
+  importanceGraph.add(new GPULineSimplification({
+    positions, lineOffsets, importance,
+    metric: 'segment', // or 'time-ratio' (TD-TR) with float32 `timestamps`
+    maximumIterations: 64,
+    output: {status: {converged, iterationCount}}
+  }));
+
+  // Import the same caller-owned position/offset/importance buffers into frameGraph separately.
+  // Per-frame graph: selection only.
+  frameGraph.add(new GPULineSimplification({
+    positions: framePositions, lineOffsets: frameLineOffsets, importance: frameImportance, computeImportance: false,
+    parameters: toleranceParameters.importToGraph(frameGraph),
+    output: {ids, status: {count, overflow}, outputMask, lineCounts, lineStarts}
+  }));
+  toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: 2})); // no recompile
+}
 ```
 
 - Importance: every line starts as one open interval between its endpoints (importance
@@ -768,10 +1085,34 @@ toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: 2}
   A balanced split tree takes about `log2(n)` rounds and a spiral can take up to `n - 2`. If the
   cap is reached, the remaining rows get their interval's split importance, so the kept set is a
   superset of Douglas-Peucker's.
+- Completion and selection capacity are independent. A two-endpoint line has no interior decisions:
+  after one terminal round `converged = 1` and `iterationCount = 1`. With zero ID slots it still has
+  `lineCounts = [2]` and `requiredCount = 2`, while `count = 0` and `overflow = 1`; with two slots,
+  `count = 2` and `overflow = 0`. For an unfinished example, one Douglas-Peucker round on
+  `(0,0),(1,1),(2,0),(3,1),(4,0)` chooses row 1 and leaves child interval `[1,4]` undecided when
+  `finishSpanLimit = 1`, so a one-round budget gives `converged = 0`.
+  `iterationCount` reports work actually performed, rather than the requested budget: on the
+  four-point Visvalingam line `(0,0),(1,1),(2,1),(3,0)`, the first area-1/2 removal leaves one
+  area-3/2 interior. Budget three therefore completes in two iterations with `converged = 1`.
 - Selection: a row is kept when `importance > tolerance`. `output.ids` holds the kept rows in
   ascending order, and `status.count` is clamped so it can drive an indirect draw. `outputMask` is the
   per-row 0/1 mask. `lineCounts` (not
   clamped) and `lineStarts` give each line's range inside `output.ids`.
+  Optional `output.status.candidateOverflow` is always zero: selection uses a full input-sized
+  compaction buffer, so it has no intermediate candidate loss. Final `ids` truncation is reported
+  by `output.status.overflow`.
+  Both `GPULineSimplificationOperation` and `CPULineSimplificationOperation` accept the same
+  `output.status.candidateOverflow` name when selecting IDs and publish a one-word zero. It
+  requires `output.ids`; importance-only operations omit selection diagnostics. Diagnostic
+  output buffers must be separate from inputs, including line offsets, so resubmission cannot
+  overwrite the source layout. The same input-disjointness requirement applies to split's
+  top-level `output.status.uncertainCount`.
+  The contributor and both operation forms capture supported status fields by name, including
+  inherited/non-enumerable getters, once at construction. Selection diagnostics `count`,
+  `requiredCount`, `overflow` and `candidateOverflow` require `ids`; `converged` and
+  `iterationCount` require importance computation. Unsupported status names such as
+  `approximation` are refused. Settings, names and view destinations are immutable snapshots;
+  later caller edits cannot change registered outputs, validated destinations or CPU capacity.
 - Exactness: with `status.converged = 1`, the kept set at any tolerance `e` equals classic recursive
   Douglas-Peucker at `e` (split when `dmax > e`, first maximum on ties) under the same metric.
   The f32 distances are bit-identical to a `Math.fround` CPU oracle: products are prevented from
@@ -806,9 +1147,18 @@ rows get `+Infinity` (a superset). Not supported: `metric: 'time-ratio'` and top
 
 ::lens{scenario=gpu-spatial-analysis.line-simplification rung=graph caption="Command graph nodes and buffers that produce the importance and retained vertices"}
 
+The CPU and GPU named line-simplification forms accept zero vertex rows, zero lines with one
+terminal offset, and empty lines with repeated offsets. Importance and outputMask have vertex-row lengths;
+lineCounts and lineStarts have line-row lengths, including zero. Selection ids may have capacity
+zero. Scalar status views still have one word: count/requiredCount/overflow/candidateOverflow
+are zero, while converged and iterationCount are one for empty work. The terminal input offset
+is retained. The raw GPULineSimplification contributor retains its existing nonempty input contract.
+
 {/* parameters: GPULineSimplification generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPULineSimplification` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULineSimplification`.
 
 - Packer: `getGPULineSimplificationParameterValues(settings)`, writes `GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH` (4) `float32` values.
 
@@ -824,6 +1174,13 @@ Settings of `getGPULineSimplificationParameterValues`:
 
 ### `GPUCoverageSimplification`
 
+An explicit `maximumIterations` must be an integer in `[1, 1024]`. The contributor validates this
+budget at construction under its own ID, before building the nested line simplifier. Increase the
+budget within that range when `output.status.converged` is zero; output capacity does not determine
+solver convergence. The constructor reads and captures the budget once. Changing the caller's
+`maximumIterations` afterward cannot change the built graph; construct a new contributor to use
+a different budget.
+
 Simplifies a polygon coverage with Douglas-Peucker, simplifying each shared border once so neighbours stay gap-free, and writes the kept vertices.
 
 ::lens{scenario=gpu-spatial-analysis.coverage-simplification rung=result caption="Grey: 17 community areas, 3,201 vertices · blue: 397 after 50 m simplification, borders still shared"}
@@ -837,9 +1194,16 @@ and direction.
 
 Props: the four-level polygon layout (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`; rows
 are features and a ring's coverage identity is its feature),
-`snapTolerance` (default 0; vertices snap to cells `floor((coordinate - origin) / snapTolerance + 0.5)` with
-the first vertex as origin, so every vertex must be within `2^24 * snapTolerance` of the first vertex on both
-axes; vertices outside that range are counted in the optional `status.uncertainCount`, not in `overflow`), `parameters` (packed with `getGPULineSimplificationParameterValues`; the
+`snapGridSize` (default 0, position units; zero keeps exact float32 coordinate identity).
+Positive spacing must remain finite and positive after conversion to float32.
+Cells use half-up rounding of `(coordinate - origin) / snapGridSize`, with negative half ties
+rounding toward positive infinity, certified against the original operands even on reciprocal-division
+backends. The origin is the first coverage vertex. Every vertex must be within
+`2^24 * snapGridSize` of it on both axes; out-of-range keys increment optional
+`status.uncertainCount`, while `overflow` retains its final vertex-capacity meaning.
+At spacing 41, coordinate 20.5 maps to cell 1; coordinate 58720228 at spacing 7 stays in its
+original cell. Cleanup uses a zero origin instead of this coverage origin.
+Other props are `parameters` (packed with `getGPULineSimplificationParameterValues`; the
 tolerance changes per frame without recompiling), `maximumIterations`, and `output` with
 `positions` (the kept vertices, capacity), `ringOffsets` (`ringCount + 1`), optional `outputMask` (per input
 vertex), and `status: {overflow, requiredCount?, converged?, uncertainCount?}`. Feature and polygon offsets are
@@ -850,12 +1214,28 @@ Maximum: `positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(de
 Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). The tolerance is in position units. It measures distance, so `local-lambert-equal-area` frames throw.
 
 ```ts
-graph.add(new GPUCoverageSimplification({
-  positions, featureOffsets, polygonOffsets, ringOffsets,
-  parameters: toleranceBuffer.importToGraph(graph),
-  output: {positions: outPositions, ringOffsets: outRingOffsets, status: {overflow}}
-}));
-toleranceBuffer.write(getGPULineSimplificationParameterValues({tolerance: 0.05}));
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCoverageSimplification, getGPULineSimplificationParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample5(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPUCoverageSimplification>[0]['positions']>;
+  featureOffsets: NonNullable<ConstructorParameters<typeof GPUCoverageSimplification>[0]['featureOffsets']>;
+  polygonOffsets: NonNullable<ConstructorParameters<typeof GPUCoverageSimplification>[0]['polygonOffsets']>;
+  ringOffsets: NonNullable<ConstructorParameters<typeof GPUCoverageSimplification>[0]['ringOffsets']>;
+  toleranceBuffer: GPUParameterBuffer<'float32'>;
+  outPositions: NonNullable<NonNullable<ConstructorParameters<typeof GPUCoverageSimplification>[0]['output']>['positions']>;
+  outRingOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUCoverageSimplification>[0]['output']>['ringOffsets']>;
+  overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCoverageSimplification>[0]['output']>['status']>['overflow']>;
+}) {
+  const {positions, featureOffsets, polygonOffsets, ringOffsets, toleranceBuffer, outPositions, outRingOffsets, overflow} = inputs;
+  graph.add(new GPUCoverageSimplification({
+    positions, featureOffsets, polygonOffsets, ringOffsets,
+    parameters: toleranceBuffer.importToGraph(graph),
+    output: {positions: outPositions, ringOffsets: outRingOffsets, status: {overflow}}
+  }));
+  toleranceBuffer.write(getGPULineSimplificationParameterValues({tolerance: 0.05}));
+}
 ```
 
 Topology preservation: arc endpoints (junctions and ring starts) are always kept and a ring never keeps
@@ -869,7 +1249,11 @@ iteration also tests every kept vertex against the area between each span's orig
 island crosses nothing but would move the island into the neighboring polygon, so such a span is repaired
 the same way. `output.topologyStatistics` (4 `uint32`, length
 `GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH`) reports the crossings and swept spans before repair,
-those remaining, the vertices restored and a candidate-pair overflow flag; `topologyPairCapacity` (default `max(256, 4 * vertices)`) sizes the candidate list. Residual crossings
+those remaining, the vertices restored and a candidate-pair overflow flag; `topologyPairCapacity` (default `max(256, 4 * vertices)`) sizes the candidate list.
+If any topology candidate-pair detection overflows, every original coverage vertex is restored,
+including when `output.topologyStatistics` is omitted. This conservative fallback is independent
+of statistics selection. Public `status.overflow` continues to mean final vertex-capacity loss:
+the adjacent-polygon fixture requires 10 original vertices at pair capacity 1 versus 8 at 256. Residual crossings
 are reported, never hidden, and input that already crosses itself cannot be repaired (it counts in both
 numbers). On a wavy-strip scene the repaired output passes Shapely `coverage_is_valid`, where plain
 Douglas-Peucker gave three invalid polygons. The criterion is distance, not area (Shapely's
@@ -896,6 +1280,8 @@ one extra vertex.
 {/* parameters: GPUCoverageSimplification generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUCoverageSimplification` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUCoverageSimplification`.
 
 - Packer: `getGPULineSimplificationParameterValues(settings)`, writes `GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH` (4) `float32` values.
   - Input port: `parameters`.
@@ -925,9 +1311,17 @@ overlay: a coverage has no crossings, so the result is a subset of the input edg
 input vertex count plus one closing vertex per ring, with ring and vertex capacities and an overflow flag.
 The input must be a valid coverage (check it with [`GPUCoverageValidity`](./operators-validity.md#gpucoveragevalidity)).
 Planar only: `spatialContext` defaults to native planar coordinates and `longitude-latitude` throws.
-`snapTolerance` snaps vertices (cells relative to the first vertex of `positions`; every vertex must be
-within `2^24 * snapTolerance` of it on both axes; vertices outside that range are counted in the optional
-`status.uncertainCount`, and `overflow` stays for dropped rows) and
+`snapGridSize` (position units, default 0) snaps vertices relative to the first vertex of
+`positions`, using the original-operand-certified half-up rule above. Positive spacing must
+survive finite positive float32 conversion. Every vertex must be within `2^24 * snapGridSize`
+of the origin on both axes; out-of-range keys increment optional `status.uncertainCount`, and
+`overflow` retains its final capacity meaning. `status.complete` includes snap-key uncertainty
+even when `status.uncertainCount` is omitted. Optional input `labelsComplete` is separate,
+dimensionless solver provenance (1 complete, 0 provisional), and requires
+`output.status.labelsComplete`. The output word is copied every submission, defaulting to 1
+without solver input. Provisional labels keep useful incumbent geometry and do not change
+vertex/ring overflow or geometric/snap completeness. This distinction also applies when
+labels are categorical and the optional input is omitted. After keying,
 the output uses the coordinates of the lowest vertex index of each point. Ring winding is the exact turn at
 each ring's lexicographically smallest vertex. Dissolve edge sets,
 area, parts and holes matched `gdf.dissolve(method='coverage')` exactly on 5 scenes and 18 labels. The
@@ -963,14 +1357,37 @@ millisecond steps. Durations and `stopMinimumDuration` use the timestamp unit; s
 `stopSpeedThreshold` use the context's length unit per timestamp unit.
 
 ```ts
-graph.add(new GPUTrajectoryMetrics({
-  positions, timestamps, trackOffsets, parameters: stopParameters.importToGraph(graph),
-  output: {
-    trackLengths, averageSpeeds, maximumSpeeds, trackStopCounts,
-    stops: {ids: stopTracks, status: {count, overflow}, startRows, endRows, centroids, durations}
-  }
-}));
-stopParameters.write(getGPUTrajectoryMetricsParameterValues({stopSpeedThreshold: 0.5, stopMinimumDuration: 300}));
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUTrajectoryMetrics, getGPUTrajectoryMetricsParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample6(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['positions']>;
+  timestamps: NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['timestamps']>;
+  trackOffsets: NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['trackOffsets']>;
+  stopParameters: GPUParameterBuffer<'float32'>;
+  trackLengths: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['trackLengths']>;
+  averageSpeeds: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['averageSpeeds']>;
+  maximumSpeeds: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['maximumSpeeds']>;
+  trackStopCounts: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['trackStopCounts']>;
+  stopTracks: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['stops']>['ids']>;
+  count: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['stops']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['stops']>['status']>['overflow']>;
+  startRows: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['stops']>['startRows']>;
+  endRows: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['stops']>['endRows']>;
+  centroids: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['stops']>['centroids']>;
+  durations: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryMetrics>[0]['output']>['stops']>['durations']>;
+}) {
+  const {positions, timestamps, trackOffsets, stopParameters, trackLengths, averageSpeeds, maximumSpeeds, trackStopCounts, stopTracks, count, overflow, startRows, endRows, centroids, durations} = inputs;
+  graph.add(new GPUTrajectoryMetrics({
+    positions, timestamps, trackOffsets, parameters: stopParameters.importToGraph(graph),
+    output: {
+      trackLengths, averageSpeeds, maximumSpeeds, trackStopCounts,
+      stops: {ids: stopTracks, status: {count, overflow}, startRows, endRows, centroids, durations}
+    }
+  }));
+  stopParameters.write(getGPUTrajectoryMetricsParameterValues({stopSpeedThreshold: 0.5, stopMinimumDuration: 300}));
+}
 ```
 
 Optional per-vertex columns (`positions.length` float32 rows) describe the step that ends at each row:
@@ -1015,6 +1432,8 @@ planar-only.
 
 #### `GPUTrajectoryMetrics` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUTrajectoryMetrics`.
+
 - Packer: `getGPUTrajectoryMetricsParameterValues(settings)`, writes `GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUTrajectoryMetricsParameterValues`:
@@ -1046,18 +1465,42 @@ only rewrites the parameter buffer.
 Maximum (`GPUTrajectoryPlayhead`): the track count is at most `getGPUTrajectoryPlayheadMaximumTrackCount(device)` (6710886 on a default device).
 
 ```ts
-graph.add(new GPUTrajectoryPlayhead({
-  positions, timestamps, trackOffsets, // same layout as GPUTrajectoryMetrics
-  elevations, // optional float32 z per row
-  parameters: playheadParameters.importToGraph(graph),
-  output: {
-    currentPositions, currentElevations, headings, speeds, trackStatus, segmentRows, segmentFractions,
-    activeTracks: {ids, status: {count, overflow}}, drawInstanceCount
-  }
-}));
-playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: 125.5, maximumGap: 60}));
-// Int64 epoch-ms words: a uint32 parameter buffer and
-// getGPUTrajectoryPlayheadWordParameterValues({playhead: Date.now() + 0.25, maximumGap: 60_000})
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample7(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['positions']>;
+  timestamps: NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['timestamps']>;
+  trackOffsets: NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['trackOffsets']>;
+  elevations: NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['elevations']>;
+  playheadParameters: GPUParameterBuffer<'float32'>;
+  currentPositions: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['currentPositions']>;
+  currentElevations: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['currentElevations']>;
+  headings: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['headings']>;
+  speeds: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['speeds']>;
+  trackStatus: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['trackStatus']>;
+  segmentRows: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['segmentRows']>;
+  segmentFractions: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['segmentFractions']>;
+  ids: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['activeTracks']>['ids']>;
+  count: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['activeTracks']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['activeTracks']>['status']>['overflow']>;
+  drawInstanceCount: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryPlayhead>[0]['output']>['drawInstanceCount']>;
+}) {
+  const {positions, timestamps, trackOffsets, elevations, playheadParameters, currentPositions, currentElevations, headings, speeds, trackStatus, segmentRows, segmentFractions, ids, count, overflow, drawInstanceCount} = inputs;
+  graph.add(new GPUTrajectoryPlayhead({
+    positions, timestamps, trackOffsets, // same layout as GPUTrajectoryMetrics
+    elevations, // optional float32 z per row
+    parameters: playheadParameters.importToGraph(graph),
+    output: {
+      currentPositions, currentElevations, headings, speeds, trackStatus, segmentRows, segmentFractions,
+      activeTracks: {ids, status: {count, overflow}}, drawInstanceCount
+    }
+  }));
+  playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: 125.5, maximumGap: 60}));
+  // Int64 epoch-ms words: a uint32 parameter buffer and
+  // getGPUTrajectoryPlayheadWordParameterValues({playhead: Date.now() + 0.25, maximumGap: 60_000})
+}
 ```
 
 - Status (`output.trackStatus`, `GPU_TRAJECTORY_PLAYHEAD_STATUS`): `empty` (no rows), `active`, `beforeStart`,
@@ -1093,10 +1536,29 @@ elevations and sample times relative to the track start. It is the fixed-length 
 trajectory similarity, k-means, and fixed-vertex trails.
 
 ```ts
-graph.add(new GPUTrajectoryResample({
-  positions, timestamps, trackOffsets, sampleCount: 32, spacing: 'arc-length',
-  output: {samples, sampleElevations, sampleTimes}
-}));
+import {Buffer, type Device} from '@luma.gl/core';
+import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
+import {GPUTrajectoryResample} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function declareTrajectoryResample(device: Device) {
+  const graph = new GPUCommandGraph(device);
+  const usage = Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC;
+  const positionsBuffer = device.createBuffer({data: Float32Array.of(0, 0, 1, 0, 2, 0), usage});
+  const timestampsBuffer = device.createBuffer({data: Float32Array.of(0, 1, 2), usage});
+  const offsetsBuffer = device.createBuffer({data: Uint32Array.of(0, 3), usage});
+  const elevationsBuffer = device.createBuffer({data: Float32Array.of(0, 10, 20), usage});
+  const positions = graph.createDataView(graph.importBuffer({id: 'positions', byteLength: 24, usage}, positionsBuffer), {format: 'float32x2', length: 3});
+  const timestamps = graph.createDataView(graph.importBuffer({id: 'timestamps', byteLength: 12, usage}, timestampsBuffer), {format: 'float32', length: 3});
+  const trackOffsets = graph.createDataView(graph.importBuffer({id: 'tracks', byteLength: 8, usage}, offsetsBuffer), {format: 'uint32', length: 2});
+  const elevations = graph.createDataView(graph.importBuffer({id: 'elevations', byteLength: 12, usage}, elevationsBuffer), {format: 'float32', length: 3});
+  // One initialized three-fix track produces 32 samples.
+  const samples = createTransientView(graph, 'samples', 'float32x2', 32);
+  const sampleElevations = createTransientView(graph, 'sample-elevations', 'float32', 32);
+  const sampleTimes = createTransientView(graph, 'sample-times', 'float32', 32);
+  graph.add(new GPUTrajectoryResample({positions, timestamps, trackOffsets, elevations,
+    sampleCount: 32, spacing: 'arc-length', output: {samples, sampleElevations, sampleTimes}}));
+  return {graph, samples, sampleElevations, sampleTimes, inputBuffers: [positionsBuffer, timestampsBuffer, offsetsBuffer, elevationsBuffer]};
+}
 ```
 
 Both take the trajectory layout (`positions`, `timestamps`, `trackOffsets`) as flat props, and all result
@@ -1171,6 +1633,8 @@ timestamps retain exact word comparisons. A reversed offset range counts the row
 
 #### `GPUTrajectoryPlayhead` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUTrajectoryPlayhead`.
+
 - Packer: `getGPUTrajectoryPlayheadParameterValues(playhead)`, writes `GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH` (4) `float32` values.
 - Packer: `getGPUTrajectoryPlayheadWordParameterValues(playhead)`, writes `GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH` (4) `uint32` values.
 
@@ -1186,6 +1650,8 @@ Settings of `getGPUTrajectoryPlayheadParameterValues`:
 {/* parameters: GPUTrajectoryResample generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUTrajectoryResample` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUTrajectoryResample`.
 
 - Packer: `getGPUTrajectoryClockParameterValues(clock)`, writes `GPU_TRAJECTORY_CLOCK_PARAMETER_LENGTH` (4) `float32` values.
   - Input port: `clock`.
@@ -1261,16 +1727,40 @@ with `createGPULocalFrame`.
   candidate scratch or `trackEventCapacity` dropped events.
 
 ```ts
-graph.add(new GPUZoneEvents({
-  tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},
-  zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets},
-  candidateCapacity: 65536, trackEventCapacity: 16,
-  output: {
-    events: {ids, status: {count, overflow, candidateOverflow: eventCandidateOverflow}, eventZones, eventTypes, eventTimes},
-    dwellTimes, visitCounts,
-    status: {candidateOverflow: candidateScratchOverflow}
-  }
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUZoneEvents} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample9(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['tracks']>['positions']>;
+  timestamps: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['tracks']>['timestamps']>;
+  trackOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['tracks']>['trackOffsets']>;
+  zonePositions: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['zones']>['positions']>;
+  featureOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['zones']>['featureOffsets']>;
+  polygonOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['zones']>['polygonOffsets']>;
+  ringOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['zones']>['ringOffsets']>;
+  ids: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['events']>['ids']>;
+  count: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['events']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['events']>['status']>['overflow']>;
+  eventCandidateOverflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['events']>['status']>['candidateOverflow']>;
+  eventZones: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['events']>['eventZones']>;
+  eventTypes: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['events']>['eventTypes']>;
+  eventTimes: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['events']>['eventTimes']>;
+  dwellTimes: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['dwellTimes']>;
+  visitCounts: NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['visitCounts']>;
+  candidateScratchOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUZoneEvents>[0]['output']>['status']>['candidateOverflow']>;
+}) {
+  const {positions, timestamps, trackOffsets, zonePositions, featureOffsets, polygonOffsets, ringOffsets, ids, count, overflow, eventCandidateOverflow, eventZones, eventTypes, eventTimes, dwellTimes, visitCounts, candidateScratchOverflow} = inputs;
+  graph.add(new GPUZoneEvents({
+    tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},
+    zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets},
+    candidateCapacity: 65536, trackEventCapacity: 16,
+    output: {
+      events: {ids, status: {count, overflow, candidateOverflow: eventCandidateOverflow}, eventZones, eventTypes, eventTimes},
+      dwellTimes, visitCounts,
+      status: {candidateOverflow: candidateScratchOverflow}
+    }
+  }));
+}
 ```
 
 `output.events.eventPositions` (`float32x2`) holds the interpolated crossing position of each event.
@@ -1361,7 +1851,14 @@ Maximum: `columns * rows * bucketCount` of the lattice is at most `getGPUGridInd
   are deduplicated across buckets and sorted by `(track, partner)`; the sentinel is `0xffffffff` (IDs,
   buckets) and 0 after `status.count`. `output.pairs.status.overflow` reports only pair-capacity truncation;
   `output.status.candidateOverflow` reports hit-scratch or grid incompleteness.
-- It uses a 3D `GPUGridIndex` (x, y and the bucket as an exact third axis) with a 3x3 scan per sample,
+- It uses a 3D `GPUGridIndex` (x, y and the bucket as an exact third axis). Each sample maps its
+  search distance into cell units around the builder's coordinate. Rounding padding is
+  `max(1, ceil(axisCellCount * 64 * 2^-23))` cells on each side, independent of the absolute
+  world coordinate. A planar 2048-by-2048 grid visits at most 9 cells at zero distance or 25 for a
+  positive distance at most half a cell width, including translated projected coordinates.
+  Only higher track IDs are visited, once per cell, including wrapped
+  longitude images. This retains exact-distance pairs even when rounding separates them by
+  two columns (for example -18.5 and -17.5 in [-20.5,20.5] with unit cells). It then uses
   three stable sorts of the hits and `GPUCompaction` for the runs.
 - Great-circle: with `spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
   (optional `sphereRadius`) the samples are `(longitude, latitude)` degrees, `distance` and the reported
@@ -1376,7 +1873,9 @@ Maximum: `columns * rows * bucketCount` of the lattice is at most `getGPUGridInd
   every azimuth at that distance from latitude ±L stays within one cell. Pick latitude bounds that exclude the
   polar caps (the reach shrinks to 0 as `L` approaches 90). Bounds with longitudes exactly `[-180, 180]` wrap
   the lattice across the antimeridian (sample longitudes are folded into that range first and `cellSize` must
-  be below 120 degrees); other longitude bounds do not wrap, and `cellSize` must be below 90. Latitudes must
+  be below 120 degrees); other longitude bounds do not wrap, and `cellSize` must be below 90. Samples must
+  have raw longitude separation at most 180 degrees to form a pair on a non-wrapping grid;
+  this exclusion is independent of track order and candidate-range padding. Latitudes must
   lie in `(-90, 90)`. Planar contexts keep `maximumDistance = cellSize`. `addClockEncounters` forwards
   `spatialContext` to the resample and the encounters.
 - It is discrete in time: the samples must share a clock (column `k` is one instant for all tracks), and
@@ -1384,14 +1883,32 @@ Maximum: `columns * rows * bucketCount` of the lattice is at most `getGPUGridInd
   the same window.
 
 ```ts
-graph.add(new GPUTrajectoryEncounters({
-  samples, trackCount, bucketCount, distance, cellSize: 50, bounds: [0, 0, 1000, 1000],
-  hitCapacity: 1 << 16,
-  output: {
-    pairs: {ids, status: {count, overflow}, partners, firstBuckets, minimumDistances},
-    status: {candidateOverflow}
-  }
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUTrajectoryEncounters} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample10(graph: GPUCommandGraph, inputs: {
+  samples: NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['samples']>;
+  trackCount: NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['trackCount']>;
+  bucketCount: NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['bucketCount']>;
+  distance: NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['distance']>;
+  ids: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['output']>['pairs']>['ids']>;
+  count: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['output']>['pairs']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['output']>['pairs']>['status']>['overflow']>;
+  partners: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['output']>['pairs']>['partners']>;
+  firstBuckets: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['output']>['pairs']>['firstBuckets']>;
+  minimumDistances: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['output']>['pairs']>['minimumDistances']>;
+  candidateOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryEncounters>[0]['output']>['status']>['candidateOverflow']>;
+}) {
+  const {samples, trackCount, bucketCount, distance, ids, count, overflow, partners, firstBuckets, minimumDistances, candidateOverflow} = inputs;
+  graph.add(new GPUTrajectoryEncounters({
+    samples, trackCount, bucketCount, distance, cellSize: 50, bounds: [0, 0, 1000, 1000],
+    hitCapacity: 1 << 16,
+    output: {
+      pairs: {ids, status: {count, overflow}, partners, firstBuckets, minimumDistances},
+      status: {candidateOverflow}
+    }
+  }));
+}
 ```
 
 `addClockEncounters(graph, props)` builds the shared-clock chain in one call: it resamples all tracks
@@ -1455,14 +1972,35 @@ and no cell entries, so a long gap can no longer raise `entryOverflow`.
   every segment pair, self-checked by dense sampling and against shapely path distances.
 
 ```ts
-graph.add(new GPUTrajectoryClosestApproach({
-  positions, timestamps, trackOffsets, distance,
-  cellSize: 50, timeCellSize: 60, entryCapacity: 1 << 20, hitCapacity: 1 << 18,
-  output: {
-    pairs: {ids, status: {count, overflow}, partners, minimumDistances, closestTimes, firstTimes, durations},
-    status: {entryOverflow, hitOverflow}
-  }
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUTrajectoryClosestApproach} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample11(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['positions']>;
+  timestamps: NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['timestamps']>;
+  trackOffsets: NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['trackOffsets']>;
+  distance: NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['distance']>;
+  ids: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['ids']>;
+  count: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['status']>['overflow']>;
+  partners: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['partners']>;
+  minimumDistances: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['minimumDistances']>;
+  closestTimes: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['closestTimes']>;
+  firstTimes: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['firstTimes']>;
+  durations: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['pairs']>['durations']>;
+  entryOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['status']>['entryOverflow']>;
+  hitOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUTrajectoryClosestApproach>[0]['output']>['status']>['hitOverflow']>;
+}) {
+  const {positions, timestamps, trackOffsets, distance, ids, count, overflow, partners, minimumDistances, closestTimes, firstTimes, durations, entryOverflow, hitOverflow} = inputs;
+  graph.add(new GPUTrajectoryClosestApproach({
+    positions, timestamps, trackOffsets, distance,
+    cellSize: 50, timeCellSize: 60, entryCapacity: 1 << 20, hitCapacity: 1 << 18,
+    output: {
+      pairs: {ids, status: {count, overflow}, partners, minimumDistances, closestTimes, firstTimes, durations},
+      status: {entryOverflow, hitOverflow}
+    }
+  }));
+}
 ```
 
 #### How it computes
@@ -1478,6 +2016,10 @@ graph.add(new GPUTrajectoryClosestApproach({
 ::lens{scenario=gpu-spatial-analysis.trajectory-closest-approach rung=graph caption="Command graph nodes and buffers that produce the pairs"}
 
 ### `GPUTrackSimilarity`
+
+Multipart operands are supported for Hausdorff, maximum distance and SSPD; pairs index logical
+features and distances never bridge disconnected parts. Sequence metrics require a caller-chosen
+single-part traversal; see [multipart semantics and limits](./track-similarity-measures.md).
 
 invalidPair also reports invalid track ranges and densification overflow; an invalid pair must not
 be interpreted as a valid similarity.
@@ -1495,7 +2037,14 @@ segments, so values can be slightly smaller than before. Inputs are `linesA` (a 
 default the same set), `pairA`, `pairB` (`uint32` views) and an optional GPU-written `activePairCount`.
 Outputs, all in `output`, are `hausdorff`, `frechet`, optional `maximumDistance` (largest vertex-to-vertex distance per pair, Sedona
 `ST_MaxDistance`, original vertices) and `pairStatus` (bits of `GPU_TRACK_SIMILARITY_STATUS`: `emptyTrack` 1,
-`frechetCapExceeded` 2, `invalidPair` 4). Skipped pairs get NaN. `densify` (0 or in `[1/4096, 1]`, compile-time) splits each segment into `round(1/densify)` parts, as
+`frechetCapExceeded` 2, `invalidPair` 4, `invalidGeometry` 8, `invalidDecisionThreshold` 16).
+Invalid/absent/inactive pairs report bit 4 alone. On addressable pairs, invalid thresholds can
+compose with empty-track or invalid-geometry evidence; invalid geometry suppresses cap evidence.
+Empty/invalid geometry makes all distances NaN. Cap evidence makes Fréchet, DTW, EDR, ERP and
+LCSS unavailable while Hausdorff, SSPD and maximum distance remain usable. Bit 16 affects only
+`frechetWithin`: distances remain usable. Unavailable decisions are zero, so use
+`decodeGPUTrackSimilarityPairStatus` and its per-measure validity fields before interpreting them.
+`densify` (0 or in `[1/4096, 1]`, compile-time) splits each segment into `round(1/densify)` parts, as
 Shapely does; the virtual vertices are computed on the fly. Frechet sweeps the longer track in strips of
 256 lanes, so only the shorter (densified) track is capped: `maximumFrechetVertexCount` is 1 to 2048 (default
 256). A pair over the cap reports `frechetCapExceeded` with a NaN Frechet while its Hausdorff is still
@@ -1523,21 +2072,44 @@ longitude difference wrapped to +-180, so tracks may cross the antimeridian. Aga
 expected within 2e-3 relative; the spec covers a mid-latitude, a 66 degree and an antimeridian pair.
 
 ```ts
-graph.add(new GPUTrackSimilarity({
-  linesA: {kind: 'lines', positions, lineOffsets},
-  pairA: pairs.ids, pairB: pairs.partners, activePairCount: pairs.status.count,
-  maximumFrechetVertexCount: 256, densify: 0.25,
-  output: {hausdorff, frechet, maximumDistance, pairStatus}
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUTrackSimilarity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample12(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['linesA']>['positions']>;
+  lineOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['linesA']>['lineOffsets']>;
+  pairs: {ids: GraphDataView<'uint32'>; partners: GraphDataView<'uint32'>; status: {count: GraphDataView<'uint32'>}};
+  hausdorff: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['output']>['hausdorff']>;
+  frechet: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['output']>['frechet']>;
+  maximumDistance: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['output']>['maximumDistance']>;
+  pairStatus: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['output']>['pairStatus']>;
+}) {
+  const {positions, lineOffsets, pairs, hausdorff, frechet, maximumDistance, pairStatus} = inputs;
+  graph.add(new GPUTrackSimilarity({
+    linesA: {kind: 'lines', positions, lineOffsets},
+    pairA: pairs.ids, pairB: pairs.partners, activePairCount: pairs.status.count,
+    maximumFrechetVertexCount: 256, densify: 0.25,
+    output: {hausdorff, frechet, maximumDistance, pairStatus}
+  }));
+}
 ```
 
 Two more measures share the Frechet layout and its shorter-track cap. `output.frechetWithin` (`uint32`,
 with the per-frame one-row `frechetEpsilon` in the context's length unit) is the Frechet decision, 1 when the discrete Frechet distance
 is at most epsilon: endpoint distances reject pairs before scanning their vertices; a fixed monotone coupling
-accepts pairs in `O(n + m)`. Undecided planar pairs also use coordinate-extrema bounding-box lower bounds.
-The rest run the boolean free-space program, evaluating distances only for cells with reachable predecessors; it stops once no
+accepts pairs in `O(n + m)`. The remaining pairs run the boolean free-space program,
+evaluating membership only for cells with reachable predecessors; it stops once no
 monotone path can survive a row or two consecutive anti-diagonals. Use it to filter candidate pairs at a
 threshold without requesting the full distance or DTW, which still compute when requested alongside the decision.
+These are the base contributor's early decisions. `GPUTrackSimilaritySearch` separately applies
+metric-specific search bounds before delegating retained pairs: endpoint lower bounds for Fréchet
+and DTW, possible-match upper bounds for LCSS, and planar box bounds for Hausdorff, SSPD and EDR.
+Geographic Hausdorff and SSPD use a zero lower bound; geographic EDR uses `abs(n - m)`, the
+absolute vertex-count difference. ERP uses the difference of gap-distance sums in both contexts.
+For separated geographic singleton tracks, EDR's lower bound is 0 even when its edit distance is 1.
+See [the search bounds and stored-coordinate membership contract](./track-similarity-measures.md#definitions).
+Planar membership is inclusive on stored coordinates; a rounded displayed Fréchet distance of 1
+can coexist with `frechetWithin=0` at epsilon 1, including `(-2^-25,0) → (1,0)`.
 `track-similarity-dtw-frechet-ab.spec.ts` times decision-only and distance-only graphs separately.
 `output.dynamicTimeWarping` is the dynamic time warping cost, the
 smallest sum of point distances in the context's length unit over monotone warping paths (`similaritymeasures.dtw`; not the square root
@@ -1547,12 +2119,26 @@ the band are never evaluated. Both are verified against `test/oracles/track-simi
 (similaritymeasures, shapely, tslearn), planar and great-circle.
 
 ```ts
-graph.add(new GPUTrackSimilarity({
-  linesA: {kind: 'lines', positions, lineOffsets},
-  pairA: pairs.ids, pairB: pairs.partners, activePairCount: pairs.status.count,
-  frechetEpsilon, dynamicTimeWarpingBandRadius: 8,
-  output: {frechetWithin, dynamicTimeWarping}
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUTrackSimilarity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsLinesExample13(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['linesA']>['positions']>;
+  lineOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['linesA']>['lineOffsets']>;
+  pairs: {ids: GraphDataView<'uint32'>; partners: GraphDataView<'uint32'>; status: {count: GraphDataView<'uint32'>}};
+  frechetEpsilon: NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['frechetEpsilon']>;
+  frechetWithin: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['output']>['frechetWithin']>;
+  pairStatus: GraphDataView<'uint32'>;
+  dynamicTimeWarping: NonNullable<NonNullable<ConstructorParameters<typeof GPUTrackSimilarity>[0]['output']>['dynamicTimeWarping']>;
+}) {
+  const {positions, lineOffsets, pairs, frechetEpsilon, frechetWithin, dynamicTimeWarping, pairStatus} = inputs;
+  graph.add(new GPUTrackSimilarity({
+    linesA: {kind: 'lines', positions, lineOffsets},
+    pairA: pairs.ids, pairB: pairs.partners, activePairCount: pairs.status.count,
+    frechetEpsilon, dynamicTimeWarpingBandRadius: 8,
+    output: {frechetWithin, dynamicTimeWarping, pairStatus}
+  }));
+}
 ```
 
 #### How it computes
@@ -1564,3 +2150,23 @@ graph.add(new GPUTrackSimilarity({
 ::lens{scenario=gpu-spatial-analysis.track-similarity rung=kernel caption="The compute shaders that measure each pair"}
 
 ::lens{scenario=gpu-spatial-analysis.track-similarity rung=graph caption="Command graph nodes and buffers that produce the pair distances"}
+
+
+At the resample-to-cell handoff, select `longitudePolicy: 'wrap'` on the downstream
+`GPUPointToCell` to handle longitudes unwrapped beyond ±180°. The family defaults differ; see
+[the five-family longitude table](./operators-cells.md#cell-system-support). Use the canonical
+`precision: 'double-single'` spelling where supported.
+
+Base similarity status includes bit 8 `invalidGeometry` and bit 16 `invalidDecisionThreshold`.
+Always request `pairStatus` beside decisions and call `decodeGPUTrackSimilarityPairStatus` on
+readback. `decisionValid` must be true before treating `frechetWithin: 0` as rejection; identical
+tracks with epsilon −1 return distance 0, decision 0, status 16. `activePairCount` identifies the
+base contributor's inactive suffix, which shares the invalid-pair bit with bad indices.
+
+
+```ts
+import {decodeGPUTrackSimilarityPairStatus} from '@luma-contributors/analysis/gpu-spatial-analysis';
+export function readFrechetDecisions(pairStatus: Uint32Array | Uint8Array | ArrayBuffer) {
+  return decodeGPUTrackSimilarityPairStatus(pairStatus); // inspect each row's decisionValid
+}
+```

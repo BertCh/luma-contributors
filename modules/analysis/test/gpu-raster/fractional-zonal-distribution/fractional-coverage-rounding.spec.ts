@@ -9,7 +9,7 @@ import {
 } from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {createParityGraph} from '../../oracles/parity-wp2-geodesic-harness';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 it('R8 bounds translated decimal slivers and reports their tuple capacity on both routes', async () => {
   const device = await getWebGPUTestDevice();
@@ -301,3 +301,65 @@ it('both coverage routes retain translated quarter cells and decimal cell bounda
     }
   }
 }, 120000);
+
+it('UNI-03 preserves a half-cell strip at northing 4600000 in a shared local frame', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const searchStructure of ['bounds', 'brute-force'] as const) {
+    const rig = createParityGraph(device);
+    const grid = {
+      width: 1,
+      height: 1,
+      affine: [1, 0, 0, 0, 1, 4600000] as const,
+      pixelInterpretation: 'area' as const
+    };
+    const fractions = rig.output('fractions', 1, 'float32');
+    const count = rig.output('count', 1, 'uint32');
+    const validity = rig.output('validity', 1, 'uint32');
+    // Rebase the binary64 input, BEFORE the fixture converts it to float32 storage.
+    const absolute = [0, 4600000.25, 1, 4600000.25, 1, 4600000.75, 0, 4600000.75];
+    const positions = absolute.map((coordinate, index) => coordinate - (index % 2 ? 4600000 : 0));
+    rig.graph.add(
+      new GPURasterFractionalCoverage({
+        grid,
+        searchStructure,
+        parameters: rig.input(
+          'parameters',
+          Array.from(
+            getGPURasterFractionalCoverageParameterValues(grid, {localOrigin: [0, 4600000]})
+          ),
+          'float32'
+        ).view,
+        zones: {
+          positions: rig.input('positions', positions, 'float32x2').view,
+          featureOffsets: rig.input('features', [0, 1], 'uint32').view,
+          polygonOffsets: rig.input('polygons', [0, 1], 'uint32').view,
+          ringOffsets: rig.input('rings', [0, 4], 'uint32').view
+        },
+        output: {
+          zoneIds: rig.output('zones', 1, 'uint32').view,
+          cellIds: rig.output('cells', 1, 'uint32').view,
+          fractions: fractions.view,
+          zoneValidity: validity.view,
+          status: {
+            count: count.view,
+            requiredCount: rig.output('required', 1, 'uint32').view,
+            overflow: rig.output('overflow', 1, 'uint32').view
+          }
+        }
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      expect(await readUint32(count.buffer, 1)).toEqual([1]);
+      expect(await readUint32(validity.buffer, 1)).toEqual([1]);
+      const [fraction] = await readFloat32(fractions.buffer, 1);
+      expect(Number.isFinite(fraction)).toBe(true);
+      expect(fraction).toBe(0.5); // Rectangle area = 1 * (.75 - .25).
+    } finally {
+      compiled.destroy();
+      rig.destroy();
+    }
+  }
+});

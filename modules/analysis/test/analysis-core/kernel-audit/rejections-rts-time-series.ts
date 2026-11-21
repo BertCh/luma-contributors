@@ -19,7 +19,7 @@ export const RTS_TIME_SERIES_REJECTIONS: readonly KernelAuditRejection[] = [
     name: 'rts06-window-above-maximum',
     kind: 'binding',
     limit: 128,
-    rejects: /^Error: raster-rolling-mean windowLength must be an integer in \[2, 128\]$/
+    rejects: /^Error: raster-rolling-mean windowLength must be an integer in \[1, 128\]$/
   },
   {
     exportName: 'GPURasterWhittakerSmoother',

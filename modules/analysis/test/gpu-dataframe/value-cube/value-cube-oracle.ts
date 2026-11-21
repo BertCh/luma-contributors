@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-/** `2^149`: every finite float32 is an integer multiple of `2^-149`. */
-const SCALE = 1n << 149n;
-
 /** Exact integer (in units of `2^-149`) of a finite float32 value. */
 export function getFloat32Units(value: number): bigint {
   const view = new DataView(new ArrayBuffer(4));
@@ -22,12 +19,45 @@ export function getFloat32Units(value: number): bigint {
  * result no float accumulation order can promise. Independent of the fixed-point accumulator.
  */
 export function getExactFloat32Sum(values: readonly number[]): number {
-  let units = 0n;
-  for (const value of values) {
-    units += getFloat32Units(value);
-  }
-  // Number(bigint) rounds to nearest even in binary64; the scaling by 2^-149 is exact.
-  return Math.fround(Number(units) / Number(SCALE));
+  return roundFloat32Units(
+    values.reduce((total, value) => total + getFloat32Units(value), 0n),
+    1
+  );
+}
+
+/** Rounds an exact numerator in 2^-149 units divided by count, directly to binary32 ties-to-even. */
+export function roundFloat32Units(numerator: bigint, count: number): number {
+  if (numerator === 0n) return 0;
+  const negative = numerator < 0n;
+  const magnitude = negative ? -numerator : numerator;
+  const denominator = BigInt(count);
+  let leading = magnitude.toString(2).length - denominator.toString(2).length;
+  if (
+    leading >= 0
+      ? magnitude < denominator << BigInt(leading)
+      : magnitude << BigInt(-leading) < denominator
+  )
+    leading--;
+  // One unit is the subnormal spacing. Normal values retain 24 significant bits.
+  const shift = Math.max(0, leading - 23);
+  const divisor = denominator << BigInt(shift);
+  let significand = magnitude / divisor;
+  const remainder = magnitude % divisor;
+  if (2n * remainder > divisor || (2n * remainder === divisor && (significand & 1n) !== 0n))
+    significand++;
+  // The at-most-24-bit significand and power of two are exact binary64 operands. The only
+  // remaining binary32 rounding is overflow to infinity; no wide-total double rounding occurs.
+  const result = Math.fround(Number(significand) * 2 ** (shift - 149));
+  return negative ? -result : result;
+}
+
+export function getExactFloat32Mean(values: readonly number[]): number {
+  return values.length
+    ? roundFloat32Units(
+        values.reduce((total, value) => total + getFloat32Units(value), 0n),
+        values.length
+      )
+    : NaN;
 }
 
 export type ValueCubeEvent = {
@@ -66,8 +96,6 @@ export function computeValueCubeOracle(
   }
   const counts = binValues.map(values => values.length);
   const sums = binValues.map(values => getExactFloat32Sum(values));
-  const means = binValues.map((values, bin) =>
-    values.length > 0 ? Math.fround(sums[bin] / values.length) : NaN
-  );
+  const means = binValues.map(getExactFloat32Mean);
   return {counts, sums, means, invalidCount};
 }

@@ -4,7 +4,10 @@
 
 import {WGSL_RESERVED_WORDS} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {getGPUCommandNodeKernelSources} from '../../utils/gpu-contributor-test-utils';
-import {getExpectedRejection} from '../../analysis-core/kernel-audit/kernel-audit-runner';
+import {
+  getExpectedRejection,
+  getKernelAuditRefusalFindings
+} from '../../analysis-core/kernel-audit/kernel-audit-runner';
 import {Buffer} from '@luma.gl/core';
 import {expect, it} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
@@ -491,15 +494,21 @@ it('preserves every existing registered rejection in the owned families', () => 
   for (const auditCase of cases) {
     const context = createKernelAuditContext(`trajectory-rejection-${auditCase.exportName}`);
     try {
-      let message = '';
+      let caughtError: unknown;
       try {
         auditCase.build(context);
       } catch (error) {
-        message = String(error);
+        caughtError = error;
       }
-      expect(message, `${auditCase.exportName}: ${auditCase.name}`).toMatch(
-        getExpectedRejection(auditCase)!.rejects
-      );
+      expect(caughtError, `${auditCase.exportName}: ${auditCase.name}`).toBeDefined();
+      expect(
+        getKernelAuditRefusalFindings(
+          caughtError,
+          getExpectedRejection(auditCase),
+          context.rejectionObservation
+        ),
+        `${auditCase.exportName}: ${auditCase.name}`
+      ).toEqual([]);
     } finally {
       context.device.destroy();
     }

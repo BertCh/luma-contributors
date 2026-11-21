@@ -69,7 +69,7 @@ for (const kind of ['knox', 'mantel', 'jacquez', 'moran', 'lag', 'chunked-lag'] 
                   neighbors: weights,
                   times,
                   parameters,
-                  k: 1,
+                  neighborCount: 1,
                   maximumPermutations: 3,
                   stopAfterExceedances: 3,
                   output: {statistics: counts, summary, permutationCount}
@@ -280,7 +280,7 @@ for (const kind of ['knox', 'mantel', 'jacquez'] as const) {
             ? new GPUKnoxTest({...common, pairs: weights})
             : kind === 'mantel'
               ? new GPUMantelTest({...common, pairs: weights})
-              : new GPUJacquezTest({...common, neighbors: weights, k: 1});
+              : new GPUJacquezTest({...common, neighbors: weights, neighborCount: 1});
         if (mutate) {
           target = view('float32', 12);
           delete (weights.status as {candidateOverflow?: typeof loss}).candidateOverflow;

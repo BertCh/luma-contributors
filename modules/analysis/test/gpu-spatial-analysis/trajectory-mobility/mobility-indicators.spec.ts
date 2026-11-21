@@ -11,7 +11,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/trajectory-mobility/index';
 import {GPU_MOVEMENT_SENTINEL} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/index';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import scikitMobility from '../../oracles/fixtures/movement-scikit-mobility.json';
 import trackintel from '../../oracles/fixtures/movement-trackintel.json';
 import {GraphHarness, importTrajectory} from '../trajectory-staypoints/movement-spec-utils';
@@ -77,6 +77,7 @@ describe('GPUMobilityIndicators', () => {
     harness.graph.add(
       new GPUMobilityIndicators({
         spatialContext: SPHERICAL_KILOMETERS,
+        gyrationCenter: 'coordinate-mean',
         trackCount,
         timestamps,
         staypoints: {
@@ -172,6 +173,60 @@ describe('GPUMobilityIndicators', () => {
     const flag = await harness.run(async () => (await readUint32(overflow.buffer, 1))[0]);
     expect(flag).toBe(1);
     expect(GPU_MOBILITY_DEFAULT_ENTROPY_SEQUENCE_ROWS).toBeGreaterThan(8);
+  });
+
+  it('writes NaN real entropy over the sequence cap without a status view (TRJ-103)', async () => {
+    // Expected 1.2967875003814697: scikit-mobility 1.3.1 _true_entropy transcribed in
+    // /usr/bin/python3 on [0, 1, 0, 1, 2, 0, 1, 2, 3], 9 * log2(9) / 22, rounded to float32.
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const sequence = [0, 1, 0, 1, 2, 0, 1, 2, 3];
+    const rowCount = sequence.length;
+    const run = async (maximumEntropySequenceRows: number) => {
+      const harness = new GraphHarness(device, `entropy-nan-${maximumEntropySequenceRows}`);
+      const entropy = harness.output('entropy', 'float32', 1);
+      harness.graph.add(
+        new GPUMobilityIndicators({
+          trackCount: 1,
+          timestamps: harness.input(
+            'times',
+            Float32Array.from(sequence, (_, row) => row),
+            'float32',
+            rowCount
+          ),
+          maximumEntropySequenceRows,
+          staypoints: {
+            tracks: harness.input('tracks', new Uint32Array(rowCount), 'uint32', rowCount),
+            centroids: harness.input(
+              'centroids',
+              new Float32Array(rowCount * 2),
+              'float32x2',
+              rowCount
+            ),
+            startRows: harness.input(
+              'starts',
+              Uint32Array.from(sequence, (_, row) => row),
+              'uint32',
+              rowCount
+            ),
+            durations: harness.input(
+              'durations',
+              new Float32Array(rowCount).fill(1),
+              'float32',
+              rowCount
+            ),
+            locationIds: harness.input('locations', Uint32Array.from(sequence), 'uint32', rowCount),
+            status: {count: harness.input('count', Uint32Array.of(rowCount), 'uint32', 1)}
+          },
+          output: {realEntropy: entropy.view}
+        })
+      );
+      return harness.run(async () => (await readFloat32(entropy.buffer, 1))[0]);
+    };
+    const complete = await run(rowCount);
+    expect(Number.isFinite(complete)).toBe(true);
+    expect(complete).toBeCloseTo(1.2967875003814697, 5);
+    expect(Number.isNaN(await run(rowCount - 1))).toBe(true);
   });
 
   it('matches trackintel FREQ home and work, tracking quality and modal split', async () => {
@@ -370,7 +425,7 @@ describe('GPUModalSplit speed classes', () => {
 
   async function runSpeedClasses(
     name: string,
-    modeSpeedBreaks: number[],
+    modeSpeedUpperBoundsFloat32: number[],
     metric: 'count' | 'distance'
   ): Promise<{modes: number[]; split: number[]}> {
     const device = await getWebGPUTestDevice();
@@ -386,7 +441,7 @@ describe('GPUModalSplit speed classes', () => {
       trackOffsets: [0, 2 * triplegCount]
     });
     const predictedModes = harness.output('predicted-modes', 'uint32', triplegCount);
-    const modalSplit = harness.output('modal-split', 'float32', modeSpeedBreaks.length);
+    const modalSplit = harness.output('modal-split', 'float32', modeSpeedUpperBoundsFloat32.length);
     harness.graph.add(
       new GPUModalSplit({
         positions,
@@ -413,15 +468,15 @@ describe('GPUModalSplit speed classes', () => {
           ),
           status: {count: harness.input('tripleg-count', Uint32Array.of(triplegCount), 'uint32', 1)}
         },
-        modeSpeedBreaks,
-        modeCount: modeSpeedBreaks.length,
+        modeSpeedUpperBoundsFloat32,
+        modeCount: modeSpeedUpperBoundsFloat32.length,
         metric,
         output: {modalSplit: modalSplit.view, predictedModes: predictedModes.view}
       })
     );
     return harness.run(async () => ({
       modes: Array.from(await readUint32(predictedModes.buffer, triplegCount)),
-      split: Array.from(await readFloat32(modalSplit.buffer, modeSpeedBreaks.length))
+      split: Array.from(await readFloat32(modalSplit.buffer, modeSpeedUpperBoundsFloat32.length))
     }));
   }
 

@@ -21,6 +21,7 @@ import {
 import {CRESSIE_ROUND_COUNT, getParallelVariogramModelFitNodes} from './variogram-model-fit-nodes';
 
 import type {VariogramModelType, VariogramModelWeighting} from './variogram-model';
+import {validateVariogramModelFitChoices} from './variogram-model-fit-requirements';
 
 /** The ladder is evaluated per model and retained in one bounded search scratch table. */
 const MAXIMUM_RANGE_STEPS = 1024;
@@ -79,7 +80,10 @@ export class GPUVariogramModelFit implements GPUCommandNodeProducer {
   readonly models: readonly VariogramModelType[];
   readonly rangeSteps: number;
   readonly maximumIterations: number;
-  /** Includes the parameter upload, preparation, and two dispatches per fitting round. */
+  /**
+   * Includes two dispatches per fitting round. Preparation adds an upload and an ordered scan
+   * through 1,024 bins, or two dispatches for tile reduction and merge above 1,024 bins.
+   */
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUVariogramModelFitProps) {
@@ -108,16 +112,16 @@ export class GPUVariogramModelFit implements GPUCommandNodeProducer {
     validateCapacity(this.id, 'rangeSteps', this.rangeSteps, 3, MAXIMUM_RANGE_STEPS);
     validateCapacity(this.id, 'maximumIterations', this.maximumIterations, 0, MAXIMUM_ITERATIONS);
     validateCapacity(this.id, 'models length', this.models.length, 1, MAXIMUM_MODEL_COUNT);
-    if (
-      this.models.some(
-        model =>
-          !['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2'].includes(model)
-      ) ||
-      !['pairs', 'none', 'cressie'].includes(props.weighting ?? 'cressie') ||
-      props.distances.length !== props.semivariances.length ||
-      props.distances.length !== props.pairCounts.length
-    ) {
-      throw new Error(`${this.id} invalid model or bin topology`);
+    validateVariogramModelFitChoices(this.id, this.models, props.weighting ?? 'cressie');
+    for (const [name, view] of [
+      ['semivariances', props.semivariances],
+      ['pairCounts', props.pairCounts]
+    ] as const) {
+      validateRequirement(
+        this.id,
+        view.length === props.distances.length,
+        `invalid model or bin topology: ${name} bin count ${view.length} must equal distances bin count ${props.distances.length}`
+      );
     }
     for (const [name, view, format] of [
       ['distances', props.distances, 'float32'],

@@ -150,6 +150,20 @@ export function RasterTimeSeriesPanel({
           />
         </label>
       ))}
+      {(operation === 'standardized-calibration' || operation === 'standardized-index') && (
+        <label>
+          Zero atom{' '}
+          <select
+            data-testid="timeseries-setting-zeroAtom"
+            value={settingsText['zeroAtom'] ?? 'default'}
+            onChange={event => setSettingsText({...settingsText, zeroAtom: event.target.value})}
+          >
+            <option value="default">Distribution default</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+      )}
       <label>
         Polygon zones{' '}
         <select
@@ -213,7 +227,7 @@ export function RasterTimeSeriesPanel({
           setRunning(true);
           setStatus('Computing…');
           try {
-            const settings: Record<string, number | string | readonly number[]> = {};
+            const settings: Record<string, number | string | boolean | readonly number[]> = {};
             for (const [name, defaultValue] of Object.entries(binding.defaults)) {
               const text = settingsText[name];
               if (text === undefined) continue;
@@ -224,6 +238,12 @@ export function RasterTimeSeriesPanel({
                 : typeof defaultValue === 'number'
                   ? Number(text)
                   : text;
+            }
+            if (operation === 'standardized-calibration' || operation === 'standardized-index') {
+              const choice = settingsText['zeroAtom'] ?? 'default';
+              if (choice === 'on' || choice === 'off') settings['zeroAtom'] = choice === 'on';
+              else if (choice !== 'default')
+                throw new Error('zeroAtom choice must be default, on or off');
             }
             const result = await host.run({
               rasterLayerId: layerId || layers[0]?.id || '',

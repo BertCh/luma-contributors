@@ -95,6 +95,46 @@ test('H1 the scenario binds its published count and both rendered twins headline
   }
 });
 
+test('R6 event and radius receipts use the live point-process domains', async () => {
+  const {recorded} = await buildMetadata('inhomogeneous-point-pattern');
+  const event = buildDatumReceiptModel(
+    createViewContext(recorded.record, {
+      bindings: {entity: 1},
+      options: {keySpace: 'event'}
+    })
+  );
+  expect(event.rows.map(row => row.name).sort()).toEqual([
+    'intensity',
+    'positions',
+    'suppliedIntensity'
+  ]);
+  expect(event.rows.find(row => row.name === 'positions')?.value).toBe('5, 5');
+  expect(event.rows.find(row => row.name === 'intensity')?.value).toBe('1');
+  const radius = buildDatumReceiptModel(
+    createViewContext(recorded.record, {
+      bindings: {entity: 1},
+      options: {keySpace: 'radius-bin'}
+    })
+  );
+  expect(radius.rows.map(row => row.name).sort()).toEqual(['k', 'pairCorrelation', 'radii']);
+  expect(radius.rows.find(row => row.name === 'radii')?.value).toBe('2');
+});
+
+test.each([
+  ['point-pattern-envelope', 'observed', 'curve-bin', 'simulations', 'simulation'],
+  ['spatial-balanced-sample', 'frameIds', 'frame-row', 'selectedFrameIds', 'sample-row'],
+  ['optics', 'positions', 'event', 'ordering', 'ordering-rank']
+] as const)('R6 %s separates its independent row domains and status words', async (scenario, input, inputDomain, output, outputDomain) => {
+  const {specifications} = await buildMetadata(scenario);
+  expect(specifications[input].keySpace).toBe(inputDomain);
+  expect(specifications[output].keySpace).toBe(outputDomain);
+  const statusNames =
+    scenario === 'optics' ? ['iterationCount', 'converged', 'invalidCount'] : ['status'];
+  for (const name of statusNames) expect(specifications[name].keySpace).toBe('status-word');
+  if (scenario === 'point-pattern-envelope')
+    expect(specifications['simulations'].components).toBe(2);
+});
+
 test.each([
   ['geometry-validity', 'resultParks', 'parks', 'issueCode'],
   ['spatial-predicate-join', 'joinedTracts', 'tracts', 'tractMatches']

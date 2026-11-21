@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import type {GPUVisibilityGraphCSRProps} from '@luma-contributors/analysis/gpu-network';
+import type {GPUNetworkVisibilityGraphCSRProps} from '@luma-contributors/analysis/gpu-network';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {addVisibilityGraphRecipe} from '@luma-contributors/analysis/gpu-network';
@@ -180,7 +180,7 @@ it.each([
       maximumIterations: 8
     };
     const bad = graph.importBuffer({id: 'bad-usage', usage: Buffer.COPY_DST, byteLength: 64});
-    const props: GPUVisibilityGraphCSRProps = {...validProps};
+    const props: GPUNetworkVisibilityGraphCSRProps = {...validProps};
     switch (field) {
       case 'positions':
         props.positions = graph.createDataView(bad, {format: 'float32x2', length: 4});

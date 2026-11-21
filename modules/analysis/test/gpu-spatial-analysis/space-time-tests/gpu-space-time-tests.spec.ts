@@ -246,7 +246,7 @@ it('GPUKnoxTest runs on pairs written by GPUNeighborSearch', async () => {
       gridSize: [8, 8],
       positions: rig.input(positions, 'float32x2', 200),
       parameters: rig.input(
-        getGPUNeighborSearchParameterValues({bounds: [-1, -1, 101, 101], radius}),
+        getGPUNeighborSearchParameterValues({bounds: [-1, -1, 101, 101], searchRadius: radius}),
         'float32'
       ),
       output: {offsets, neighbors, weights, status: {overflow: rig.output('uint32', 1)}}
@@ -280,7 +280,11 @@ it('getKnoxPoissonPValue returns the Poisson upper tail', () => {
   expect(getKnoxPoissonPValue(0, 3)).toBe(1);
   // P(X >= 3 | mean 3) = 1 - (e^-3)(1 + 3 + 4.5) = 0.5768...
   expect(getKnoxPoissonPValue(3, 3)).toBeCloseTo(1 - Math.exp(-3) * 8.5, 10);
-  expect(getKnoxPoissonPValue(20, 3)).toBeLessThan(1e-8);
+  // /usr/bin/python3: scipy.stats.poisson.sf(19, 3) = 8.314423588191718e-11.
+  const tail = getKnoxPoissonPValue(20, 3);
+  expect(Number.isFinite(tail)).toBe(true);
+  expect(tail).toBeGreaterThan(0);
+  expect(Math.abs(tail / 8.314423588191718e-11 - 1)).toBeLessThan(2e-12);
 });
 
 // Reference values from pointpats 'Knox.from_dataframe' (delta=3, tau=4, permutations=0) on the

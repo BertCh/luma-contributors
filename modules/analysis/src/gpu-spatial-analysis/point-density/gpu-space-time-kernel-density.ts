@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveKernelShapeName} from '../shared/kernel-shape-name';
 import {
   createTransientView,
   GPUReduction,
@@ -35,7 +36,8 @@ import {
 } from '../../analysis-core/contracts/index';
 import {GET_ORDERED_KEY_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
-import {GRID_COORDINATE_WGSL} from '../spatial-interpolation/gpu-inverse-distance-weighting';
+import {GPU_GRID_COORDINATE_WGSL} from '@luma.gl/graph/gpu-core';
+import {DENSITY_VALUE_WGSL} from './density-neighbor-wgsl';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
 import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
 import {resolveGPUSpaceTimeTemporalContext} from '../space-time-tests/space-time-bands';
@@ -47,7 +49,8 @@ import {
 import {getKernelValueWGSL, getWindowMassWGSL} from './kernel-density-wgsl';
 import {
   GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH,
-  type GPUSpaceTimeTemporalKernel
+  type GPUSpaceTimeTemporalKernel,
+  type GPUSpaceTimeTemporalKernelName
 } from './space-time-kernel-density-math';
 import {
   getTemporalKernelValueWGSL,
@@ -63,6 +66,8 @@ import {
   validateDensityViewBindings,
   validateDensityWritableViews
 } from './density-point-passes';
+
+import {snapshotDensityConstructionProps} from './density-construction-snapshot';
 
 const OPERATION = 'GPUSpaceTimeKernelDensity';
 
@@ -92,7 +97,7 @@ export type GPUSpaceTimeKernelDensityOutput = {
    * order: row `(y * grid.width + x) * sliceCount + slice`, with `y * grid.width + x` in the grid's
    * row order (see `GPUKernelDensity`). Units: `'intensity'` is weight per unit area per time
    * unit; `'probability'` divides by the included weight, a density over space and time that
-   * integrates to about one over the window. NaN where the cell center or slice time is outside an
+   * has a window integral depending on event locations under uniform edge correction. NaN where the cell center or slice time is outside an
    * edge-correction window, a bandwidth is invalid, or (probability) no weight is included.
    */
   values: GraphDataView<'float32'>;
@@ -167,7 +172,7 @@ export type GPUSpaceTimeKernelDensityProps = {
   /** Spatial kernel, as for `GPUKernelDensity`. Defaults to `'gaussian'`. */
   spatialKernel?: GPUKernelDensityKernelName;
   /** Temporal kernel. Defaults to `'gaussian'`. */
-  temporalKernel?: GPUSpaceTimeTemporalKernel;
+  temporalKernel?: GPUSpaceTimeTemporalKernelName;
   /**
    * `'uniform'` (default) divides each voxel by the spatial kernel mass inside the spatial window
    * (`parameters.window`, the grid rectangle by default) and excludes points outside it, as
@@ -241,6 +246,30 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
   readonly voxelCount: number;
 
   constructor(props: GPUSpaceTimeKernelDensityProps) {
+    props = snapshotDensityConstructionProps(
+      props,
+      [
+        'grid',
+        'id',
+        'indexBounds',
+        'indexGridSize',
+        'normalization',
+        'output',
+        'parameters',
+        'positions',
+        'sliceCount',
+        'spatialContext',
+        'spatialEdgeCorrection',
+        'spatialKernel',
+        'temporalContext',
+        'temporalEdgeCorrection',
+        'temporalKernel',
+        'times',
+        'weights'
+      ],
+      ['values', 'weightSum', 'status'],
+      ['invalidCount']
+    );
     this.id = props.id ?? 'space-time-kernel-density';
     this.props = props;
     const {id} = this;
@@ -250,22 +279,29 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     this.temporalContext = resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
-    this.spatialKernel =
-      props.spatialKernel === 'bisquare' ? 'quartic' : (props.spatialKernel ?? 'gaussian');
-    this.temporalKernel = props.temporalKernel ?? 'gaussian';
+    for (const [name, kernel] of [
+      ['spatialKernel', props.spatialKernel ?? 'gaussian'],
+      ['temporalKernel', props.temporalKernel ?? 'gaussian']
+    ] as const) {
+      validateRequirement(
+        id,
+        ['gaussian', 'quartic', 'epanechnikov', 'bisquare'].includes(kernel),
+        `${name} received ${String(kernel)}; expected one of gaussian, quartic, epanechnikov, bisquare`
+      );
+    }
+    this.spatialKernel = resolveKernelShapeName(id, props.spatialKernel ?? 'gaussian', [
+      'gaussian',
+      'quartic',
+      'epanechnikov'
+    ]);
+    this.temporalKernel = resolveKernelShapeName(id, props.temporalKernel ?? 'gaussian', [
+      'gaussian',
+      'quartic',
+      'epanechnikov'
+    ]);
     this.spatialEdgeCorrection = props.spatialEdgeCorrection ?? 'uniform';
     this.temporalEdgeCorrection = props.temporalEdgeCorrection ?? 'uniform';
     this.normalization = props.normalization ?? 'intensity';
-    validateRequirement(
-      id,
-      ['gaussian', 'quartic', 'epanechnikov'].includes(this.spatialKernel),
-      'spatialKernel must be gaussian, quartic (alias bisquare), or epanechnikov'
-    );
-    validateRequirement(
-      id,
-      ['gaussian', 'quartic', 'epanechnikov'].includes(this.temporalKernel),
-      'temporalKernel must be gaussian, quartic, or epanechnikov'
-    );
     validateRequirement(
       id,
       ['none', 'uniform'].includes(this.spatialEdgeCorrection) &&
@@ -594,7 +630,7 @@ const INDEX_HEIGHT: u32 = ${indexGridSize[1]}u;
 const SPATIAL_FACTOR: f32 = ${getWGSLFloatLiteral(spatialFactor)};
 const TEMPORAL_FACTOR: f32 = ${getWGSLFloatLiteral(temporalFactor)};
 ${domainConstants}
-${GRID_COORDINATE_WGSL}
+${DENSITY_VALUE_WGSL}${GPU_GRID_COORDINATE_WGSL}
 ${getKernelValueWGSL(spatialKernel)}
 ${getTemporalKernelValueWGSL(temporalKernel)}
 ${spatialEdge ? getWindowMassWGSL(spatialKernel) : ''}
@@ -607,7 +643,7 @@ ${temporalEdge ? getTemporalWindowMassWGSL(temporalKernel, temporalNeedsErfc) : 
   let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
   let bandwidth = params[paramsOffset + 4u];
   let temporalBandwidth = params[paramsOffset + 9u];
-  let sliceTime = params[paramsOffset + 10u] + f32(slice) * params[paramsOffset + 11u];
+  let sliceTime = fma(f32(slice), params[paramsOffset + 11u], params[paramsOffset + 10u]);
   let windowMin = vec2f(params[paramsOffset + 5u], params[paramsOffset + 6u]) - gridStart;
   let windowMax = vec2f(params[paramsOffset + 7u], params[paramsOffset + 8u]) - gridStart;
   let cellSize = (gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));

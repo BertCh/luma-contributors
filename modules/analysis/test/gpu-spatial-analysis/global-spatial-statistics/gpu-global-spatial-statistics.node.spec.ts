@@ -311,21 +311,46 @@ it('GPUGlobalSpatialStatistics validates its props and emits deterministic node 
 it('GPUGlobalSpatialStatistics resolves islands and alternative and rejects permutation tails', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'global-statistics-options'});
   expect(new GPUGlobalSpatialStatistics(createProps(graph)).islands).toBe('exclude');
-  expect(new GPUGlobalSpatialStatistics(createProps(graph)).alternative).toBe('two-sided');
+  expect(new GPUGlobalSpatialStatistics(createProps(graph)).analyticAlternative).toBe('two-sided');
   expect(
-    new GPUGlobalSpatialStatistics(createProps(graph, {islands: 'keep', alternative: 'lesser'}))
-  ).toMatchObject({islands: 'keep', alternative: 'lesser'});
+    new GPUGlobalSpatialStatistics(createProps(graph, {analyticAlternative: 'greater'}))
+      .analyticAlternative
+  ).toBe('greater');
+  expect(
+    () =>
+      new GPUGlobalSpatialStatistics(
+        createProps(graph, {analyticAlternative: 'greater', ...{alternative: 'lesser'}})
+      )
+  ).toThrow(/alternative was removed.*analyticAlternative/);
+  expect(
+    () =>
+      new GPUGlobalSpatialStatistics(
+        createProps(graph, {
+          analyticAlternative: 'folded' as NonNullable<
+            GPUGlobalSpatialStatisticsProps['analyticAlternative']
+          >
+        })
+      )
+  ).toThrow(/two-sided.*greater.*lesser/);
+  expect(
+    new GPUGlobalSpatialStatistics(
+      createProps(graph, {islands: 'keep', analyticAlternative: 'lesser'})
+    )
+  ).toMatchObject({islands: 'keep', analyticAlternative: 'lesser'});
   expect(
     () => new GPUGlobalSpatialStatistics(createProps(graph, {islands: 'drop' as 'keep'}))
   ).toThrow(/islands/);
   for (const alternative of ['directed', 'folded'] as const) {
-    expect(() => new GPUGlobalSpatialStatistics(createProps(graph, {alternative}))).toThrow(
-      /alternative must be/
-    );
+    expect(
+      () =>
+        new GPUGlobalSpatialStatistics(
+          createProps(graph, {analyticAlternative: alternative as never})
+        )
+    ).toThrow(/analyticAlternative must be/);
   }
   expect(
     new GPUGlobalSpatialStatistics(
-      createProps(graph, {alternative: 'greater'})
+      createProps(graph, {analyticAlternative: 'greater'})
     ).getInferenceMetadata()
   ).toMatchObject({alternative: 'greater', permutationCount: 0, multipleTesting: 'none'});
   // Counts and degrees are f32 columns, exact only below 2^24 rows.

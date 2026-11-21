@@ -7,7 +7,7 @@ import type {
   GPUAnalysisParameterCondition,
   GPUAnalysisPresentationSpec,
   GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {NETWORK_OPERATION_DESCRIPTORS} from './descriptors-network';
 import type {
   KeplerOperationDescriptor,

@@ -4,11 +4,13 @@
 
 import type {GPURasterFocalPairsProps} from './gpu-raster-focal-pairs';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 /** @internal */
 export function getFocalPairsDeclarations(props: GPURasterFocalPairsProps): string {
   return /* wgsl */ `
 ${IS_FINITE_VALUE_WGSL}
+${SCALED_QUOTIENT_WGSL}
 const WIDTH: i32 = ${props.grid.width};
 const HEIGHT: i32 = ${props.grid.height};
 const RADIUS: i32 = ${props.radius};
@@ -91,7 +93,7 @@ if (code == 0u) {
     if (predictorSquares == 0.0) { code |= 4u; }
     if (responseSquares == 0.0) { code |= 8u; }
     if (predictorSquares > 0.0) {
-      slope = crossProducts / predictorSquares;
+      slope = getScaledQuotient(crossProducts, predictorSquares, 1.0, 0);
       intercept = (anchor.y - slope * anchor.x) + (meanDifference.y - slope * meanDifference.x);
       residualSumSquares = 0.0;
       var residualTotal = 0.0;
@@ -115,8 +117,8 @@ if (code == 0u) {
       }
       if (responseSquares > 0.0) {
         // Divide successively to avoid overflowing the product of the two squared sums.
-        correlation = clamp((crossProducts / sqrt(predictorSquares)) / sqrt(responseSquares), -1.0, 1.0);
-        rSquared = clamp(1.0 - residualSumSquares / responseSquares, 0.0, 1.0);
+        correlation = clamp(getScaledQuotient(crossProducts, sqrt(predictorSquares), sqrt(responseSquares), 0), -1.0, 1.0);
+        rSquared = clamp(1.0 - getScaledQuotient(residualSumSquares, responseSquares, 1.0, 0), 0.0, 1.0);
       }
       if (!isFiniteValue(slope) || !isFiniteValue(intercept) || !isFiniteValue(residualSumSquares) ||
           (responseSquares > 0.0 && (!isFiniteValue(correlation) || !isFiniteValue(rSquared)))) {

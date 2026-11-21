@@ -2,12 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCPUHostOffsets,
+  type CPUHostRowsOptions
+} from '../../analysis-core/operations/compact-host-offsets';
+
 /** Packed four-level polygon rows used by the geometry CPU operations. */
 export type CPUPolygonRows = {
   positions: Float32Array;
   ringOffsets: Uint32Array;
   polygonOffsets: Uint32Array;
   featureOffsets: Uint32Array;
+  /** Explicit resident-capacity storage retains the geometry kernels' clamping. */
+  storage?: CPUHostRowsOptions['storage'];
 };
 
 /** A ring's packed vertex interval and positional role. @internal */
@@ -36,14 +44,28 @@ export function getCPUPolygonFeatureRows(
   return {start, end: Math.max(start, Math.min(input.ringOffsets[lastRing], rowCount))};
 }
 
-/** Checks array consistency, without rejecting offsets the GPU deliberately clamps. @internal */
-export function validateCPUPolygonRows(input: CPUPolygonRows): void {
+/** Checks compact hierarchy terminals; opt into resident-capacity for clamped GPU storage. @internal */
+export function validateCPUPolygonRows(
+  input: CPUPolygonRows,
+  options: CPUHostRowsOptions = {storage: input.storage}
+): void {
   if (input.positions.length % 2 !== 0) {
-    throw new Error('positions must contain complete float32x2 rows');
+    throw new Error('validateCPUPolygonRows positions must contain complete float32x2 rows');
   }
-  for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
-    if (input[name].length < 2) {
-      throw new Error(`${name} must contain at least two rows`);
+  const levels = [
+    ['ringOffsets', input.positions.length / 2],
+    ['polygonOffsets', input.ringOffsets.length - 1],
+    ['featureOffsets', input.polygonOffsets.length - 1]
+  ] as const;
+  for (const [name, childCount] of levels) {
+    if (options.storage === 'resident-capacity') {
+      validateRequirement(
+        'validateCPUPolygonRows',
+        input[name].length >= 1,
+        `${name} length ${input[name].length} must include a terminal offset`
+      );
+    } else {
+      validateCPUHostOffsets('validateCPUPolygonRows', name, input[name], childCount, options);
     }
   }
 }

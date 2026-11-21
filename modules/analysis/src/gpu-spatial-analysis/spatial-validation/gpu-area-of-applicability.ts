@@ -24,6 +24,8 @@ import {
 import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
 import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 
 /** Most predictors of the dissimilarity index. */
 export const GPU_AREA_OF_APPLICABILITY_MAXIMUM_PREDICTOR_COUNT = 16;
@@ -55,7 +57,7 @@ export type GPUAreaOfApplicabilityFolds = {
 export type GPUAreaOfApplicabilityOutput = {
   /** Dissimilarity index of every training row; NaN for a row without a usable neighbour. */
   trainDissimilarity: GraphDataView<'float32'>;
-  /** Dissimilarity index of every query row; NaN for an incomplete query row. */
+  /** Dissimilarity index per query; NaN for incomplete rows or when no finite squared distance is computed. */
   queryDissimilarity: GraphDataView<'float32'>;
   /** 1 where the query row is inside the area of applicability (index at most the threshold). */
   applicable: GraphDataView<'uint32'>;
@@ -112,13 +114,45 @@ export type GPUAreaOfApplicabilityProps = {
  * a neighbour is left out of the threshold instead of receiving an infinite index, and rows with
  * non-finite predictors are unusable rather than imputed. Distances are exhaustive: the training
  * pass costs `O(rows^2 x predictors)` and each query row `O(rows x predictors)`; arithmetic is
- * float32.
+ * float32. This route accepts at most 65,536 training rows, 16 predictors, and, when
+ * crossValidation is supplied, 64 folds.
  */
 export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
   readonly id: string;
   readonly rows: number;
   readonly queryRows: number;
-  constructor(readonly props: GPUAreaOfApplicabilityProps) {
+  readonly props: GPUAreaOfApplicabilityProps;
+  constructor(props: GPUAreaOfApplicabilityProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'training',
+      'query',
+      'predictorCount',
+      'weights',
+      'mask',
+      'crossValidation',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, [
+        'trainDissimilarity',
+        'queryDissimilarity',
+        'applicable',
+        'summary',
+        'status'
+      ]),
+      ...(captured.crossValidation
+        ? {
+            crossValidation: snapshotConstructionFields(captured.crossValidation, [
+              'folds',
+              'training',
+              'foldCount'
+            ])
+          }
+        : {})
+    });
+    this.props = props;
     this.id = props.id ?? 'area-of-applicability';
     const {id} = this;
     const columns = props.predictorCount;
@@ -266,24 +300,30 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
           {name: 'rowValid', view: rowValid, type: 'u32', access: 'read'},
           {name: 'moments', view: moments, type: 'f32', access: 'read_write'}
         ],
-        // Two passes: the mean, then the sum of squared deviations; sample variance divides by n - 1.
+        declarations: ROUNDED_DIFFERENCE_WGSL,
+        // Center both passes around a usable value; identical packed values then have exact SD=0.
         body: `var count = 0.0;
   var sum = 0.0;
+  var origin = 0.0;
+  let runtimeZero = rowValid[rowValidOffset] >> 1u;
   for (var row = 0u; row < ${rows}u; row++) {
     if (rowValid[rowValidOffset + row] != 0u) {
+      let value = training[trainingOffset + row * ${columns}u + index];
+      if (count == 0.0) { origin = value; }
       count += 1.0;
-      sum += training[trainingOffset + row * ${columns}u + index];
+      sum += getRoundedDifference(value, origin, runtimeZero);
     }
   }
-  let mean = sum / count;
+  let centeredMean = sum / count;
   var squares = 0.0;
   for (var row = 0u; row < ${rows}u; row++) {
     if (rowValid[rowValidOffset + row] != 0u) {
-      let deviation = training[trainingOffset + row * ${columns}u + index] - mean;
+      let centered = getRoundedDifference(training[trainingOffset + row * ${columns}u + index], origin, runtimeZero);
+      let deviation = getRoundedDifference(centered, centeredMean, runtimeZero);
       squares += deviation * deviation;
     }
   }
-  moments[momentsOffset + index * 2u] = mean;
+  moments[momentsOffset + index * 2u] = origin + centeredMean;
   moments[momentsOffset + index * 2u + 1u] = select(0.0, sqrt(squares / (count - 1.0)), count > 1.0);`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -345,7 +385,7 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
           {name: 'nearest', view: nearest, type: 'f32', access: 'read_write'},
           {name: 'mean', view: mean, type: 'f32', access: 'read_write'}
         ],
-        declarations: GET_NAN_WGSL,
+        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
         // `mean` is over every other usable row; `nearest` over the candidate rows only.
         body: `var nearestSquared = 3.4e38;
   var found = false;
@@ -370,8 +410,8 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
       others += 1.0;
       ${
         cross
-          ? `if (scored && trainingMasks[trainingMasksOffset + min(testFold, ${cross.foldCount - 1}u) * ${rows}u + row] != 0u && squared < nearestSquared) {`
-          : 'if (squared < nearestSquared) {'
+          ? `if (scored && trainingMasks[trainingMasksOffset + min(testFold, ${cross.foldCount - 1}u) * ${rows}u + row] != 0u && isFiniteBits(squared) && (!found || squared < nearestSquared)) {`
+          : 'if (isFiniteBits(squared) && (!found || squared < nearestSquared)) {'
       }
         nearestSquared = squared;
         found = true;
@@ -506,6 +546,7 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
     complete = complete && isFiniteBits(query[queryOffset + index * ${columns}u + column]);
   }
   var nearestSquared = 3.4e38;
+  var found = false;
   if (complete) {
     for (var row = 0u; row < ${rows}u; row++) {
       if (rowValid[rowValidOffset + row] == 0u) { continue; }
@@ -514,12 +555,15 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
         let difference = scaledQuery[scaledQueryOffset + index * ${columns}u + column] - scaled[scaledOffset + row * ${columns}u + column];
         squared += difference * difference;
       }
-      nearestSquared = min(nearestSquared, squared);
+      if (isFiniteBits(squared) && (!found || squared < nearestSquared)) {
+        nearestSquared = squared;
+        found = true;
+      }
     }
   }
   let meanDistance = summary[summaryOffset];
   let value = sqrt(nearestSquared) / meanDistance;
-  let valid = complete && isFiniteBits(value) && meanDistance > 0.0;
+  let valid = complete && found && isFiniteBits(value) && meanDistance > 0.0;
   queryDissimilarity[queryDissimilarityOffset + index] = select(getNaN(), value, valid);
   applicable[applicableOffset + index] = select(0u, 1u, valid && value <= summary[summaryOffset + 1u]);`
       })

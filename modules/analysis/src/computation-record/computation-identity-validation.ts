@@ -9,6 +9,7 @@ export function getGPUComputationIdentityIssues(props: {
   adapter?: unknown;
   datasetVersion?: unknown;
   implementationRevision?: unknown;
+  dependencyRevision?: unknown;
   graphs?: unknown;
 }): {path: string; message: string}[] {
   const issues: {path: string; message: string}[] = [];
@@ -48,8 +49,10 @@ export function getGPUComputationIdentityIssues(props: {
   const checkString = (value: unknown, path: string): void => {
     if (typeof value !== 'string') issues.push({path, message: 'Expected a string identity value'});
   };
-  for (const name of ['datasetVersion', 'implementationRevision'] as const)
+  for (const name of ['datasetVersion', 'implementationRevision', 'dependencyRevision'] as const)
     if (props[name] !== undefined) checkString(props[name], name);
+  if (props.dependencyRevision === '')
+    issues.push({path: 'dependencyRevision', message: 'Expected a nonempty dependency revision'});
   if (props.adapter && typeof props.adapter === 'object') {
     const adapter = props.adapter as Record<string, unknown>;
     for (const name of ['backend', 'variant', 'vendor', 'architecture', 'description'])

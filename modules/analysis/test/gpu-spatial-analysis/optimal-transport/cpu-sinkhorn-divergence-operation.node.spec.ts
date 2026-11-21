@@ -59,9 +59,9 @@ for (const scalingFactor of [1, 0.5]) {
       }),
       {grid: {...GRID, width: 1, height: 1}, maximumIterations: 2}
     );
-    expect(result.iterationCount[0]).toBe(2);
-    expect(result.converged[0]).toBe(scalingFactor === 1 ? 0 : 1);
-    expect(result.iterationLimitReached[0]).toBe(scalingFactor === 1 ? 1 : 0);
+    expect(Array.from(result.iterationCount)).toEqual([2]);
+    expect(Array.from(result.converged)).toEqual([scalingFactor === 1 ? 0 : 1]);
+    expect(Array.from(result.iterationLimitReached)).toEqual([scalingFactor === 1 ? 1 : 0]);
   });
 }
 
@@ -80,9 +80,9 @@ it('retains a tiny mass times a large marginal exponential across epsilon scalin
       }),
       {grid: {...GRID, width: 2, height: 1}, maximumIterations}
     );
-    expect(result.converged[0]).toBe(maximumIterations === 2 ? 0 : 1);
-    expect(result.iterationLimitReached[0]).toBe(maximumIterations === 2 ? 1 : 0);
-    expect(result.iterationCount[0]).toBe(maximumIterations);
+    expect(Array.from(result.converged)).toEqual([maximumIterations === 2 ? 0 : 1]);
+    expect(Array.from(result.iterationLimitReached)).toEqual([maximumIterations === 2 ? 1 : 0]);
+    expect(Array.from(result.iterationCount)).toEqual([maximumIterations]);
   }
 });
 
@@ -113,8 +113,8 @@ for (const reverse of [false, true]) {
         getGPUSinkhornDivergenceParameterValues({...settings, tolerance}),
         {grid, maximumIterations: 1000}
       );
-      expect(result.converged[0]).toBe(1);
-      expect(result.iterationLimitReached[0]).toBe(0);
+      expect(Array.from(result.converged)).toEqual([1]);
+      expect(Array.from(result.iterationLimitReached)).toEqual([0]);
       expect(result.iterationCount[0]).toBeGreaterThan(2);
       expect(Number.isFinite(result.divergence[0])).toBe(true);
       expect(result.divergence[0]).toBeCloseTo(reference.divergence, 7);
@@ -157,8 +157,8 @@ it('preserves finite distributions whose totals exceed float32 range', () => {
       parameters,
       options
     );
-    expect(result.converged[0]).toBe(1);
-    expect(result.iterationLimitReached[0]).toBe(0);
+    expect(Array.from(result.converged)).toEqual([1]);
+    expect(Array.from(result.iterationLimitReached)).toEqual([0]);
     expect(result.invalidCount[0]).toBe(0);
     expect(Number.isFinite(result.marginalError[0])).toBe(true);
     expect(result.marginalError[0]).toBeLessThan(1e-9);
@@ -182,9 +182,9 @@ it('matches a dense coupling/primal oracle on a sparse, anisotropic grid', () =>
     {...GRID, ...settings, source: Array.from(SOURCE), target: Array.from(TARGET)},
     1e-12
   );
-  expect(result.converged[0]).toBe(1);
-  expect(result.iterationLimitReached[0]).toBe(0);
-  expect(result.approximation[0]).toBe(0);
+  expect(Array.from(result.converged)).toEqual([1]);
+  expect(Array.from(result.iterationLimitReached)).toEqual([0]);
+  expect(Array.from(result.approximation)).toEqual([0]);
   expect(result.invalidCount[0]).toBe(0);
   expect(result.marginalError[0]).toBeLessThan(1.1e-10);
   expect(result.divergence[0]).toBeCloseTo(reference.divergence, 6);
@@ -195,7 +195,7 @@ it('matches a dense coupling/primal oracle on a sparse, anisotropic grid', () =>
     SOURCE,
     TARGET,
     getGPUSinkhornDivergenceParameterValues({...settings, epsilonStart: 16, scalingFactor: 0.5}),
-    {grid: GRID, maximumIterations: 5000, blurRadius: 0}
+    {grid: GRID, maximumIterations: 5000}
   );
   expect(scheduled.divergence[0]).toBeCloseTo(reference.divergence, 6);
 });
@@ -227,7 +227,7 @@ it('delegates GPU limits to contributor construction and drops that GPU-only cap
   }
 });
 
-it('matches the point-mass closed form and keeps full blur support despite a short radius', () => {
+it('matches the point-mass closed form and keeps full blur support when the radius is omitted', () => {
   const parameters = getGPUSinkhornDivergenceParameterValues({
     cellWidth: 2,
     cellHeight: 3,
@@ -238,12 +238,12 @@ it('matches the point-mass closed form and keeps full blur support despite a sho
     new Float32Array([5, 0, 0, 0, 0, 0]),
     new Float32Array([0, 0, 0, 0, 0, 7]),
     parameters,
-    {grid: GRID, blurRadius: 0}
+    {grid: GRID}
   );
   expect(result.divergence[0]).toBe(25); // (2 cells * 2)^2 + (1 cell * 3)^2, KL = 0.
   expect(Array.from(result.components)).toEqual([25, 0, 0]);
-  expect(result.converged[0]).toBe(1);
-  expect(result.approximation[0]).toBe(0);
+  expect(Array.from(result.converged)).toEqual([1]);
+  expect(Array.from(result.approximation)).toEqual([0]);
   const singleton = computeSinkhornDivergenceOnCPU(
     Float32Array.of(3),
     Float32Array.of(9),
@@ -321,4 +321,83 @@ it('validates arrays, props and graph ports at construction', () => {
   expect(
     () => new CPUSinkhornDivergenceOperation({...PROPS, maximumIterations: 1001})
   ).not.toThrow();
+});
+
+it('CPUSinkhornDivergenceOperation rejects inherited blurRadius before capture', () => {
+  const legacy = Object.setPrototypeOf({...PROPS}, {blurRadius: 1});
+  expect(() => new CPUSinkhornDivergenceOperation(legacy)).toThrow(
+    /blurRadius was removed.*transportRadius/
+  );
+});
+
+it('retains an unreachable target residual with transportRadius one', () => {
+  // No coupling can cross two cells with radius one: all target mass (one) is missing.
+  const result = computeSinkhornDivergenceOnCPU(
+    Float32Array.of(1, 0, 0),
+    Float32Array.of(0, 0, 1),
+    getGPUSinkhornDivergenceParameterValues({cellWidth: 1, cellHeight: 1, epsilon: 1}),
+    {grid: {...GRID, width: 3, height: 1}, maximumIterations: 10, transportRadius: 1}
+  );
+  expect(Array.from(result.marginalError)).toEqual([1]);
+  expect(Array.from(result.converged)).toEqual([0]);
+  expect(Array.from(result.iterationLimitReached)).toEqual([1]);
+  expect(Array.from(result.iterationCount)).toEqual([10]);
+  expect(Array.from(result.approximation)).toEqual([1]);
+});
+
+it('pins the independent one-round two-cell iterate and diagnoses legacy ignored bounds', () => {
+  const parameters = getGPUSinkhornDivergenceParameterValues({
+    cellWidth: 1,
+    cellHeight: 1,
+    epsilon: 0.5
+  });
+  const options = {grid: {...GRID, width: 2, height: 1}, maximumIterations: 1};
+  const compute = (extra = {}) =>
+    computeSinkhornDivergenceOnCPU(Float32Array.of(9, 1), Float32Array.of(1, 9), parameters, {
+      ...options,
+      ...extra
+    });
+  const result = compute();
+  // K=[[1,exp(-2)],[exp(-2),1]], g=-log(K a)/2, f=-log(K(b exp(2g)))/2;
+  // self potentials are -log(K a)/4 and -log(K b)/4; S=a·(f-selfA)+b·(g-selfB).
+  expect(Number.isFinite(result.divergence[0])).toBe(true);
+  expect(result.divergence[0]).toBeCloseTo(0.6839309933613087, 7);
+  expect(Number.isFinite(result.marginalError[0])).toBe(true);
+  expect(result.marginalError[0]).toBeCloseTo(0.7090250677459775, 7);
+  expect(Array.from(result.converged)).toEqual([0]);
+  expect(Array.from(result.iterationLimitReached)).toEqual([1]);
+  expect(Array.from(result.iterationCount)).toEqual([1]);
+  expect(() => compute({...{blurRadius: 0}})).toThrow(/blurRadius was removed.*transportRadius/);
+  expect(() => compute({transportRadius: 1, ...{blurRadius: 1}})).toThrow(
+    /blurRadius was removed.*transportRadius/
+  );
+});
+
+it('reports bounded support even when an empty frame performs no iterations', () => {
+  const result = computeSinkhornDivergenceOnCPU(
+    Float32Array.of(1, 0, 0, 0),
+    new Float32Array(4),
+    getGPUSinkhornDivergenceParameterValues({cellWidth: 1, cellHeight: 1, epsilon: 1}),
+    {grid: {...GRID, width: 4, height: 1}, transportRadius: 1}
+  );
+  expect(Array.from(result.approximation)).toEqual([1]);
+  expect(Array.from(result.iterationCount)).toEqual([0]);
+});
+
+it('does not confuse a reachable large finite potential with an empty window', () => {
+  // Two point masses one cell apart have S=cellWidth², zero marginal residual at round two.
+  // Scaling squared costs and epsilon together preserves every dimensionless solver exponent.
+  for (const cellWidth of [1, 2 ** 50]) {
+    const result = computeSinkhornDivergenceOnCPU(
+      Float32Array.of(1, 0),
+      Float32Array.of(0, 1),
+      getGPUSinkhornDivergenceParameterValues({cellWidth, cellHeight: 1, epsilon: cellWidth ** 2}),
+      {grid: {...GRID, width: 2, height: 1}, maximumIterations: 8}
+    );
+    expect(Array.from(result.divergence)).toEqual([cellWidth ** 2]);
+    expect(Array.from(result.marginalError)).toEqual([0]);
+    expect(Array.from(result.converged)).toEqual([1]);
+    expect(Array.from(result.iterationLimitReached)).toEqual([0]);
+    expect(Array.from(result.iterationCount)).toEqual([2]);
+  }
 });

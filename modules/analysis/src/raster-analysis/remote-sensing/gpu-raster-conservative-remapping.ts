@@ -14,6 +14,7 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -233,6 +234,23 @@ export class GPURasterConservativeRemapping implements GPUCommandNodeProducer {
   readonly candidateHeight: number;
   private readonly axisPlans: readonly [ConservativeAxisPlan, ConservativeAxisPlan];
   constructor(readonly props: GPURasterConservativeRemappingProps) {
+    validateGraphPorts(props.id ?? 'raster-conservative-remapping', props, {
+      values: {required: true, viewType: 'data', formats: ['float32']},
+      mask: {required: false, viewType: 'data', formats: ['uint32']},
+      'preparedWeights.indices': {
+        required: Boolean(props.preparedWeights),
+        viewType: 'data',
+        formats: ['uint32']
+      },
+      'preparedWeights.areas': {
+        required: Boolean(props.preparedWeights),
+        viewType: 'data',
+        formats: ['float32']
+      },
+      'output.values': {required: true, viewType: 'data', formats: ['float32']},
+      'output.coveredArea': {required: true, viewType: 'data', formats: ['float32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     this.id = props.id ?? 'raster-conservative-remapping';
     for (const [gridName, grid] of [
       ['source', props.source],

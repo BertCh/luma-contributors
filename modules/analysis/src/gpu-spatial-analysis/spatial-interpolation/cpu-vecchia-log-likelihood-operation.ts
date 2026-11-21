@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotCPUVecchiaInput, snapshotVecchiaLossProps} from './vecchia-neighborhood-status';
+
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {snapshotVecchiaLogLikelihoodOperationProps} from './interpolation-operation-snapshots';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   getCPUOperationFloat32Rows,
@@ -15,6 +21,7 @@ import {
   evaluateCPUVecchiaLikelihood,
   validateCPUVecchiaProps,
   type CPUVecchiaRows,
+  type PreparedCPUVecchiaLikelihoodRows,
   type CPUVecchiaLikelihoodRows
 } from './cpu-vecchia-evaluation';
 
@@ -22,6 +29,8 @@ import {
 export type CPUVecchiaLogLikelihoodInput = CPUVecchiaRows;
 /** Every output port, in the same row order and formats as the contributor. */
 export type CPUVecchiaLogLikelihoodResult = CPUVecchiaLikelihoodRows;
+/** Numerical evaluator result with guaranteed neighborhood evidence. */
+export type PreparedCPUVecchiaLogLikelihoodResult = PreparedCPUVecchiaLikelihoodRows;
 
 /**
  * Evaluates zero-mean Gaussian conditional predictions and likelihood in float64, rounding each
@@ -38,8 +47,9 @@ export type CPUVecchiaLogLikelihoodResult = CPUVecchiaLikelihoodRows;
  * - Matern correlations use the full closed form instead of a short-lag truncated series.
  * - Totals sum unrounded float64 site terms, then split into float32 high/low words; the GPU sums
  *   float32 site terms with a fixed-point accumulator. Compare decoded totals at relative 1e-4.
- * - Nonfinite coordinates are rejected by the conditional solve; an empty CSR site's likelihood
- *   still follows the GPU's marginal branch. Float64-finite results outside float32 range publish
+ * - Invalid query coordinates propagate conditional-solve failure before the marginal branch.
+ *   A valid query with empty or wholly unusable conditioning follows the GPU's marginal branch.
+ *   Float64-finite results outside float32 range publish
  *   infinities on rounding; subnormal outputs are retained. These are outside GPU comparisons.
  * - Malformed CSR spans retain the spatial kernel's conditionalStatus 1 result.
  *
@@ -47,13 +57,15 @@ export type CPUVecchiaLogLikelihoodResult = CPUVecchiaLikelihoodRows;
  */
 export function computeVecchiaLogLikelihoodOnCPU(
   input: CPUVecchiaLogLikelihoodInput
-): CPUVecchiaLogLikelihoodResult {
-  return evaluateCPUVecchiaLikelihood(input);
+): PreparedCPUVecchiaLogLikelihoodResult {
+  input = snapshotCPUVecchiaInput(input);
+  return evaluateCPUVecchiaLikelihood({...input, id: input.id ?? 'vecchia-log-likelihood'});
 }
 
 /** CPU twin; GPU-only neighborhood capacity is dropped. Counts and contexts are compile-time. */
 export class CPUVecchiaLogLikelihoodOperation extends GPUCPUOperation {
   constructor(props: VecchiaLogLikelihoodOperationProps) {
+    props = snapshotVecchiaLossProps(props, snapshotVecchiaLogLikelihoodOperationProps);
     const id = props.id ?? 'vecchia-log-likelihood';
     validateCPUVecchiaProps(id, props);
     const operation = new GPUVecchiaLogLikelihoodOperation(props);
@@ -68,9 +80,23 @@ export class CPUVecchiaLogLikelihoodOperation extends GPUCPUOperation {
       ),
       execute({inputs}) {
         const positions = getCPUOperationFloat32Rows(id, inputs, 'positions', 'float32x2');
-        if (positions.length !== props.rowCount * 2)
-          throw new Error(`${id} positions length must equal rowCount * 2`);
+        validateRequirement(
+          id,
+          !(positions.length !== props.rowCount * 2),
+          `positions length must equal rowCount * 2 (${props.rowCount * 2}); received ${positions.length}`
+        );
         const result = computeVecchiaLogLikelihoodOnCPU({
+          id,
+          neighborhoodStatus: {
+            overflow:
+              props.neighborhoodStatus?.overflow !== undefined
+                ? getCPUOperationUint32Rows(id, inputs, 'neighborhoodOverflow')
+                : undefined,
+            candidateOverflow:
+              props.neighborhoodStatus?.candidateOverflow !== undefined
+                ? getCPUOperationUint32Rows(id, inputs, 'neighborhoodCandidateOverflow')
+                : undefined
+          },
           positions,
           observations: getCPUOperationFloat32Rows(id, inputs, 'observations', 'float32x4'),
           neighborhoodOffsets: getCPUOperationUint32Rows(id, inputs, 'neighborhoodOffsets'),

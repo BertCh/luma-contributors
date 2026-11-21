@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+import {
+  snapshotRasterFractionalDistributionOutput,
+  snapshotRasterFractionalDistributionCoverage
+} from './raster-zonal-statistics/raster-fractional-distribution-options';
 import {
   createTransientView,
   getViewBindingRange,
@@ -24,6 +29,9 @@ import {createSortedSegmentOffsetsNode} from '../analysis-core/kernels/sorted-se
 import {validateGraphChunkBindingRanges} from '../analysis-core/kernels/graph-chunk-dispatch';
 import {
   getRasterBandViews,
+  snapshotRasterBand,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph,
   getRasterBufferBandNodes,
   validateRasterGridAxisAligned,
   validateRasterParameters
@@ -37,11 +45,7 @@ import {
   getRasterEffectiveAxisAlignmentWGSL
 } from './raster-grid/raster-cell-area-scale';
 import {validateRasterExpansionGraph} from './raster-expansion-utils';
-import {
-  GPURaster,
-  type GPURasterBufferBand,
-  type GPURasterMetadata
-} from '@luma.gl/graph/gpu-raster';
+import {GPURaster, type GPURasterBand, type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPURasterFractionalCoverageProps} from './gpu-raster-fractional-coverage';
 import {
   validateRasterFractionalBindingByteLength,
@@ -50,7 +54,8 @@ import {
 
 /**
  * Slot of the affine determinant in the georeference view of `GPURasterFractionalCoverage`
- * (`[originX, originY, a, b, d, e, determinant, 0]`). Ground modes additionally read row placement
+ * (`[originX, originY, a, b, d, e, determinant, padding]`). Word 7 is ignored; the version-2
+ * extension appends [2, absolute Y offset] in words 8/9. Ground modes additionally read row placement
  * and both cross-axis terms to reject unsupported per-frame ground-area calculations.
  */
 const GEOREFERENCE_DETERMINANT_SLOT = 6;
@@ -94,16 +99,18 @@ export type GPURasterFractionalZonalDistributionOutput = {
 export type GPURasterFractionalZonalDistributionProps = {
   id?: string;
   grid: GPURasterMetadata;
-  input: GPURasterBufferBand;
+  input: GPURasterBand;
   zoneCount: number;
   /** Independent nonnegative per-cell reliability weights; default one. */
   observationWeights?: GraphDataView<'float32'>;
-  /** Positive per-cell areas in caller-declared units; default planar affine determinant. */
+  /** Positive per-cell areas in caller-declared units (area outputs retain those units); default planar affine determinant. */
   cellAreas?: GraphDataView<'float32'>;
   /**
    * The per-frame georeference view given to `GPURasterFractionalCoverage` (layout of
    * `getGPURasterFractionalCoverageParameterValues`). Without `cellAreas`, the cell area is read
-   * from it on every encoding as `abs(determinant)`, so the area outputs follow a repacked
+   * from it on every encoding as `abs(determinant)`. Legacy word 7 is ignored padding. The
+   * ten-word version-2 packet (word 8 = 2, word 9 = absolute Y offset) restores absolute row
+   * latitude after rebasing; reuse the same packet for clipping and area. The area outputs follow a repacked
    * georeference. When both are omitted the cell area is `abs(det(grid.affine))` fixed at compile
    * time: pass one of them whenever the coverage `parameters` are rewritten for another cell size.
    */
@@ -111,11 +118,11 @@ export type GPURasterFractionalZonalDistributionProps = {
   /**
    * What the affine's units are, for the default cell area. Default `'uniform'`: planar coordinate
    * units squared, as before. `'geographic'` (degrees) and `'web-mercator'` (EPSG:3857 meters)
-   * multiply the cell area by the WGS84 ground area per world area of the cell's row (row edges
-   * from `grid.affine`, evaluated at the row center), so areas are ground square meters. They need
+   * multiply the cell area by the grid-derived WGS84 midpoint ground-area scale (the product of local ground scales
+   * at the row midpoint, rather than integrated geodesic cell area), so areas are ground square meters. They need
    * an axis-aligned grid and cannot be combined with `cellAreas`, which already declares areas.
    * Compile-time mode. The row edges come from `parameters` (origin y and row step y, slots 1 and
-   * 5, with `grid.height` and `pixelInterpretation` compile-time) on every encoding when it is
+   * 5, plus word 9 when word 8 is 2, with `grid.height` and `pixelInterpretation` compile-time) on every encoding when it is
    * given, so the ground scale follows a repacked georeference together with the cell area. Without
    * `parameters` they are baked from `grid.affine`, like the planar cell area.
    */
@@ -152,13 +159,47 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
   readonly props: GPURasterFractionalZonalDistributionProps;
 
   constructor(props: GPURasterFractionalZonalDistributionProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'zoneCount',
+      'observationWeights',
+      'cellAreas',
+      'parameters',
+      'cellSizeMode',
+      'quantileMethod',
+      'coverage',
+      'probabilities',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      input: snapshotRasterBand(captured.input),
+      output: snapshotRasterFractionalDistributionOutput(captured.output),
+      coverage: snapshotRasterFractionalDistributionCoverage(captured.coverage)
+    });
     this.id = props.id ?? 'raster-fractional-zonal-distribution';
     this.props = props;
+    validateRasterTextureBand(this.id, props.input, props.grid);
     validateFiniteNumber(this.id, 'input.scale', props.input.scale ?? 1);
     validateFiniteNumber(this.id, 'input.offset', props.input.offset ?? 0);
     new GPURaster({id: `${this.id} input`, metadata: props.grid, bands: [props.input]});
-    for (const view of [...getInputViews(props), ...getGraphOutputViews(props.output)]) {
-      validateSinglePackedView(view, [view.format], this.id);
+    if (props.input.storage.kind === 'buffer') {
+      validateSinglePackedView(
+        props.input.storage.values,
+        [props.input.format],
+        `${this.id} input.storage.values`
+      );
+    }
+    if (props.input.validity) {
+      validateSinglePackedView(props.input.validity, ['uint32'], `${this.id} input.validity`);
+    }
+    for (const [name, view] of Object.entries({
+      observationWeights: props.observationWeights,
+      cellAreas: props.cellAreas
+    })) {
+      if (view) validateSinglePackedView(view, ['float32'], `${this.id} ${name}`);
     }
     validateRasterFractionalWritableViews(this.id, props.output, getInputViews(props), [
       [props.output.quantiles, props.output.quantileValidity, props.probabilities],
@@ -195,8 +236,8 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
       }
     }
     for (const [name, view] of Object.entries(props.coverage.status)) {
-      if (!view) continue;
-      validateSinglePackedView(view, ['uint32'], `${this.id} coverage.status.${name}`);
+      if (name === 'candidateOverflow' && view === undefined) continue;
+      validateSinglePackedView(view!, ['uint32'], `${this.id} coverage.status.${name}`);
     }
     validateSinglePackedView(props.probabilities, ['float32'], `${this.id} probabilities`);
     for (const [name, view] of Object.entries({
@@ -286,6 +327,7 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateRasterBandBelongsToGraph(id, graph, props.input, []);
     const {coverage, output, zoneCount, probabilities} = props;
     const capacity = coverage.zoneIds.length;
     const cellCount = props.grid.width * props.grid.height;
@@ -293,7 +335,7 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
       graph,
       id,
       Object.fromEntries(
-        [...getInputViews(props), ...getGraphOutputViews(output)].map((view, index) => [
+        [...getInputViews(props), ...Object.values(output)].map((view, index) => [
           `view.${index}`,
           view
         ])
@@ -321,13 +363,10 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
       cellSizeMode === 'uniform'
         ? `f32(${cellArea})`
         : `f32(${cellArea}) * select(1.0, getRowAreaScale(cell / ${props.grid.width}u), cell < ${cellCount}u)`;
-    validateRasterExpansionGraph(id, graph, [
-      ...getInputViews(props),
-      ...getGraphOutputViews(output)
-    ]);
+    validateRasterExpansionGraph(id, graph, [...getInputViews(props), ...Object.values(output)]);
     // Include the alignment prefix of caller subviews and every derived allocation before
     // canonicalizing the band or declaring sort scratch, so failure leaves the graph unchanged.
-    for (const view of [...getInputViews(props), ...getGraphOutputViews(output)]) {
+    for (const view of [...getInputViews(props), ...Object.values(output)]) {
       validateRasterFractionalBindingByteLength(
         graph.device,
         id,

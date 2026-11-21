@@ -228,10 +228,40 @@ function checkSolutions(
   results: {status: number; log: number; sign: number; solution: number[]; inverse: Matrix}[],
   tolerance: number
 ): void {
+  expect(getSolutionMismatches(cases, results, tolerance)).toEqual([]);
+}
+
+/**
+ * Mismatches of the OK results against the float64 reference. Every actual value must be finite,
+ * solution and inverse must have the case's size, and each bound is written `!(error <= bound)`
+ * so that a NaN error fails: `NaN > tolerance` is false and used to let a NaN through (CORE-117).
+ */
+function getSolutionMismatches(
+  cases: SolveCase[],
+  results: {status: number; log: number; sign: number; solution: number[]; inverse: Matrix}[],
+  tolerance: number
+): string[] {
   const mismatches: string[] = [];
+  if (results.length !== cases.length) {
+    mismatches.push(`${results.length} results for ${cases.length} cases`);
+  }
   cases.forEach((solveCase, index) => {
     const result = results[index];
-    if (result.status !== DENSE_SOLVE_STATUS.OK) {
+    if (!result || result.status !== DENSE_SOLVE_STATUS.OK) {
+      return;
+    }
+    const size = solveCase.matrix.length;
+    const actualValues = [result.log, result.sign, ...result.solution, ...result.inverse.flat()];
+    if (
+      result.solution.length !== size ||
+      result.inverse.length !== size ||
+      result.inverse.some(row => row.length !== size)
+    ) {
+      mismatches.push(`${solveCase.name}: solution or inverse is not of size ${size}`);
+      return;
+    }
+    if (!actualValues.every(Number.isFinite)) {
+      mismatches.push(`${solveCase.name}: OK status with a non-finite output`);
       return;
     }
     const reference = solveReference(solveCase.matrix, solveCase.vector);
@@ -239,9 +269,9 @@ function checkSolutions(
     const inverseError = getRelativeError(result.inverse.flat(), reference.inverse.flat());
     const logError = Math.abs(result.log - reference.logAbsDeterminant);
     if (
-      solutionError > tolerance ||
-      inverseError > tolerance ||
-      logError > tolerance * solveCase.matrix.length * 10
+      !(solutionError <= tolerance) ||
+      !(inverseError <= tolerance) ||
+      !(logError <= tolerance * size * 10)
     ) {
       mismatches.push(
         `${solveCase.name}: solution ${solutionError.toExponential(2)} inverse ${inverseError.toExponential(2)} log ${logError.toExponential(2)}`
@@ -253,7 +283,7 @@ function checkSolutions(
       );
     }
   });
-  expect(mismatches).toEqual([]);
+  return mismatches;
 }
 
 it('dense Cholesky solves, inverts and takes log-determinants of positive definite systems', async () => {

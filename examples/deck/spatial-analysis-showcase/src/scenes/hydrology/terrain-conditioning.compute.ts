@@ -181,7 +181,9 @@ export async function createTerrainConditioning(
     'float32',
     HIERARCHY_CAPACITY * STAGE_COUNT * 2
   );
-  const hierarchyStatus = buffer('hierarchy-status', 'uint32', 3);
+  const hierarchyCount = buffer('hierarchy-count', 'uint32', 1);
+  const hierarchyRequiredCount = buffer('hierarchy-required-count', 'uint32', 1);
+  const hierarchyOverflowFlag = buffer('hierarchy-overflow', 'uint32', 1);
   const fractionOutputs = new Map<
     string,
     {
@@ -311,7 +313,11 @@ export async function createTerrainConditioning(
           'float32',
           HIERARCHY_CAPACITY * STAGE_COUNT * 2
         ),
-        status: view('hierarchy-status', hierarchyStatus, 'uint32', 3)
+        status: {
+          count: view('hierarchy-count', hierarchyCount, 'uint32', 1),
+          requiredCount: view('hierarchy-required-count', hierarchyRequiredCount, 'uint32', 1),
+          overflow: view('hierarchy-overflow', hierarchyOverflowFlag, 'uint32', 1)
+        }
       }
     })
   );
@@ -566,7 +572,9 @@ maximumShare[maximumShareOffset + index] = select(maximum, bitcast<f32>(nanBits)
   const summaryBuffers = [
     pitStatus,
     breachUnresolved,
-    hierarchyStatus,
+    hierarchyCount,
+    hierarchyRequiredCount,
+    hierarchyOverflowFlag,
     flowFillStatus,
     flowFlatStatus,
     flowAccumulationStatus,
@@ -578,7 +586,9 @@ maximumShare[maximumShareOffset + index] = select(maximum, bitcast<f32>(nanBits)
   const summarySizes = [
     pitStatus.byteLength,
     4,
-    12,
+    4,
+    4,
+    4,
     4,
     4,
     4,

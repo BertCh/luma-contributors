@@ -339,3 +339,299 @@ for (const shortPort of ['marker', 'mask', 'markerValidity', 'maskValidity'] as 
     ).toThrow(/marker|mask/);
   });
 }
+
+for (const defect of [
+  'empty-result',
+  'empty-status',
+  'duplicate-status',
+  'duplicate-result',
+  'input-result',
+  'input-status',
+  'empty-input'
+] as const) {
+  it(`FRM-01 CPURasterReconstructionOperation rejects ${defect} before keying outputs`, () => {
+    const props = {...PROPS, output: {...PROPS.output, status: {...PROPS.output.status}}};
+    if (defect === 'empty-result') props.output.values = '';
+    if (defect === 'empty-status') props.output.status.iterationCount = '';
+    if (defect === 'duplicate-status')
+      props.output.status.iterationCount = props.output.status.converged;
+    if (defect === 'duplicate-result') props.output.values = props.output.status.converged;
+    if (defect === 'input-result') props.output.values = 'marker';
+    if (defect === 'input-status') props.output.status.iterationCount = 'marker';
+    if (defect === 'empty-input') props.marker = '';
+    for (const Operation of [CPURasterReconstructionOperation, GPURasterReconstructionOperation]) {
+      expect(() => new Operation(props)).toThrow(/graph value/);
+    }
+  });
+}
+
+it('B3 captures inherited iterationCount from the documented status map', async () => {
+  let destination = 'rounds';
+  const status = {...PROPS.output.status};
+  Reflect.deleteProperty(status, 'iterationCount');
+  Object.setPrototypeOf(
+    status,
+    new (class {
+      get iterationCount() {
+        return destination;
+      }
+    })()
+  );
+  const operation = new CPURasterReconstructionOperation({
+    ...PROPS,
+    maximumIterations: 1,
+    output: {...PROPS.output, status}
+  });
+  expect(Object.keys(operation.outputs)).toContain('rounds');
+  destination = 'replaced';
+  const values = Float32Array.of(1, 0, 0, 0, 0);
+  const wrap = (values: Float32Array) => ({
+    format: 'float32' as const,
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  const inputs = {marker: wrap(values), mask: wrap(new Float32Array(5).fill(1))};
+  const result = await operation.execute({inputs});
+  expect(result['rounds']).toEqual(Uint32Array.of(2));
+  expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+});
+it('B3 ignores unrelated shared status fields in both declaration and execution', async () => {
+  const status = {converged: 'done', invalidCount: 'invalid'};
+  const operation = new CPURasterReconstructionOperation({
+    ...PROPS,
+    output: {...PROPS.output, status}
+  });
+  const values = Float32Array.of(1, 0, 0, 0, 0);
+  const wrap = (values: Float32Array) => ({
+    format: 'float32' as const,
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  const inputs = {marker: wrap(values), mask: wrap(new Float32Array(5).fill(1))};
+  const result = await operation.execute({inputs});
+  expect(Object.keys(operation.outputs)).not.toContain('invalid');
+  expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+});
+
+for (const bandName of ['marker', 'mask'] as const) {
+  it(`S2 rejects empty ${bandName}.validity names in both operation forms`, () => {
+    const props: RasterReconstructionOperationProps = {
+      ...PROPS,
+      [bandName]: {
+        id: bandName,
+        format: 'float32',
+        storage: {kind: 'buffer', values: bandName},
+        validity: ''
+      }
+    };
+    expect(() => new CPURasterReconstructionOperation(props)).toThrow(/non-empty graph value/);
+    expect(() => new GPURasterReconstructionOperation(props)).toThrow(/non-empty graph value/);
+  });
+}
+
+it('W5-09 GPU reconstruction captures inherited band and status names through lowering', () => {
+  let destination = 'rounds';
+  let reads = 0;
+  const marker = new (class {
+    get id() {
+      return 'marker-band';
+    }
+    get format() {
+      return 'float32' as const;
+    }
+    get storage() {
+      return new (class {
+        get kind() {
+          return 'buffer' as const;
+        }
+        get values() {
+          return 'marker';
+        }
+      })();
+    }
+    get validity() {
+      return 'marker-flags';
+    }
+    get scale() {
+      return 2;
+    }
+  })();
+  const status = new (class {
+    get converged() {
+      return 'done';
+    }
+    get iterationCount() {
+      reads++;
+      return destination;
+    }
+    get iterationLimitReached() {
+      return 'limited';
+    }
+  })();
+  const operation = new GPURasterReconstructionOperation({
+    ...PROPS,
+    marker,
+    output: {...PROPS.output, status}
+  });
+  destination = 'changed';
+  expect(reads).toBe(1);
+  expect(operation.inputs['marker']).toBe('marker');
+  expect(operation.inputs['markerValidity']).toBe('marker-flags');
+  expect(operation.outputs['iterationCount']?.value).toBe('rounds');
+  const context = createKernelAuditContext('W5-09-reconstruction');
+  try {
+    const views = Object.fromEntries(
+      Object.entries(operation.outputs).map(([port, descriptor]) => [
+        port,
+        context.view(descriptor.format, descriptor.length)
+      ])
+    );
+    views['marker'] = context.view('float32', 5);
+    views['mask'] = context.view('float32', 5);
+    views['markerValidity'] = context.view('uint32', 5);
+    const contributor = operation.createContributor(
+      port => views[port] as never
+    ) as GPURasterReconstruction;
+    if ('buffer' in contributor.props.marker) throw new Error('expected calibrated band');
+    expect(contributor.props.marker.scale).toBe(2);
+    expect(contributor.props.marker.validity).toBe(views['markerValidity']);
+    expect(contributor.props.output.status.iterationCount).toBe(views['iterationCount']);
+    expect(contributor.props.output.status.iterationLimitReached).toBe(
+      views['iterationLimitReached']
+    );
+  } finally {
+    context.device.destroy();
+    operation.destroy();
+  }
+  expect(reads).toBe(1);
+});
+
+for (const format of ['float32', 'sint32', 'uint32'] as const) {
+  it(`TSC-05 reconstruction preserves ${format} offset prefixes, calibration and validity`, async () => {
+    const ArrayType =
+      format === 'float32' ? Float32Array : format === 'sint32' ? Int32Array : Uint32Array;
+    const raw = format === 'float32' ? 1.5 : format === 'sint32' ? -4 : 4;
+    const samples = new ArrayType([99, raw, 2, 88]).subarray(1);
+    const flags = Uint32Array.of(0, 1, 0, 1).subarray(1);
+    const wrap = (values: Float32Array | Int32Array | Uint32Array) => ({
+      format:
+        values instanceof Float32Array
+          ? ('float32' as const)
+          : values instanceof Int32Array
+            ? ('sint32' as const)
+            : ('uint32' as const),
+      length: values.length,
+      chunks: [{values, length: values.length}],
+      pack: () => values
+    });
+    const operation = new CPURasterReconstructionOperation({
+      ...PROPS,
+      grid: {...PROPS.grid, width: 2},
+      marker: {
+        id: 'marker',
+        format,
+        storage: {kind: 'buffer', values: 'marker'},
+        scale: 2,
+        offset: 1,
+        validity: 'flags',
+        noDataValue: 99
+      },
+      mask: {
+        id: 'mask',
+        format,
+        storage: {kind: 'buffer', values: 'mask'},
+        scale: 2,
+        offset: 1,
+        validity: 'mask-flags'
+      }
+    });
+    const result = await operation.execute({
+      inputs: {
+        marker: wrap(samples),
+        markerValidity: wrap(flags),
+        mask: wrap(new ArrayType([99, 10, 10, 88]).subarray(1)),
+        maskValidity: wrap(flags)
+      }
+    });
+    // Isolated first cell is raw*2+1 (4, -7, 9); cell 1 is a validity barrier.
+    const expected = format === 'float32' ? 4 : format === 'sint32' ? -7 : 9;
+    expect(result['values']).toEqual(Float32Array.of(expected, NaN));
+    expect(result['validity']).toEqual(Uint32Array.of(1, 0));
+    expect(samples.byteOffset).toBe(4);
+    expect(samples[2]).toBe(88);
+    expect(flags.byteOffset).toBe(4);
+  });
+}
+
+it('TSC-05 exact calibration continues to reject surplus values and validity', async () => {
+  const {calibrateRasterOperationBand} = await import(
+    '../../src/raster-analysis/raster-grid/raster-operation-band'
+  );
+  expect(() =>
+    calibrateRasterOperationBand({id: 'exact', format: 'float32', values: Float32Array.of(1, 2)}, 1)
+  ).toThrow(/exactly one sample/);
+  expect(() =>
+    calibrateRasterOperationBand(
+      {id: 'exact', format: 'float32', values: Float32Array.of(1), validity: Uint32Array.of(1, 0)},
+      1
+    )
+  ).toThrow(/exactly one flag/);
+});
+
+for (const format of ['uint32', 'sint32'] as const) {
+  it(`B3 reconstruction converts ${format} samples before calibration and validity decisions`, async () => {
+    const ArrayType = format === 'uint32' ? Uint32Array : Int32Array;
+    const operation = new CPURasterReconstructionOperation({
+      ...PROPS,
+      grid: {...PROPS.grid, width: 1},
+      marker: {
+        id: 'marker',
+        format,
+        offset: -33554432,
+        storage: {kind: 'buffer', values: 'marker'}
+      },
+      mask: 'mask'
+    });
+    const marker = new ArrayType([33554433]);
+    const mask = Float32Array.of(0);
+    const result = await operation.execute({
+      inputs: {
+        marker: {format, length: 1, chunks: [{values: marker, length: 1}], pack: () => marker},
+        mask: {format: 'float32', length: 1, chunks: [{values: mask, length: 1}], pack: () => mask}
+      }
+    });
+    // Binary32 spacing at 2^25 is four: integer 33554433 rounds to 33554432 first.
+    // Subtracting 33554432 therefore yields 0, satisfying marker <= mask (0 <= 0).
+    expect(result['values']).toEqual(Float32Array.of(0));
+    expect(result['validity']).toEqual(Uint32Array.of(1));
+  });
+}
+
+it('review option typo is rejected by both reconstruction operation constructors', () => {
+  const props = {...PROPS};
+  Reflect.set(props, 'method', 'errosion');
+  for (const Operation of [CPURasterReconstructionOperation, GPURasterReconstructionOperation])
+    expect(() => new Operation(props)).toThrow(/reconstruct.*method.*dilation.*erosion/);
+});
+
+it('B3 float32 calibration retains native integer nodata and exact-length checks', async () => {
+  const {calibrateRasterOperationBand} = await import(
+    '../../src/raster-analysis/raster-grid/raster-operation-band'
+  );
+  const input = {
+    id: 'exact',
+    format: 'uint32' as const,
+    values: Uint32Array.of(33554433),
+    noDataValue: 33554433,
+    offset: -33554432
+  };
+  expect(calibrateRasterOperationBand(input, 1, true)).toEqual(Float64Array.of(NaN));
+  expect(() =>
+    calibrateRasterOperationBand({...input, values: Uint32Array.of(33554433, 0)}, 1, true)
+  ).toThrow(/exactly one sample/);
+  expect(() =>
+    calibrateRasterOperationBand({...input, validity: Uint32Array.of(1, 0)}, 1, true)
+  ).toThrow(/exactly one flag/);
+});

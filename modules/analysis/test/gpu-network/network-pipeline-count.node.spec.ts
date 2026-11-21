@@ -49,12 +49,17 @@ it('travel-time departures reuse one solver shader and pipeline with aligned scr
     });
     const nodes = contributor.getCommandNodes(graph);
     expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
-    const routing = nodes.filter(node => /-routing-\d+$/.test(node.id));
+    const routing = nodes.filter(node => /-routing-\d+-elapsed$/.test(node.id));
+    const publications = nodes.filter(node => /-routing-\d+-publish-arrivals$/.test(node.id));
     expect(routing).toHaveLength(departureCount);
     expect(getDistinctComputePipelineCount(routing)).toBe(1);
+    expect(publications).toHaveLength(departureCount);
+    expect(getDistinctComputePipelineCount(publications)).toBe(1);
     counts.push(getDistinctComputePipelineCount(nodes));
   }
-  expect(counts).toEqual([3, 3, 3]);
+  // Two wrapper kernels (window + percentile), one shared elapsed solve and one shared
+  // absolute-arrival publication. The departure count changes dispatches, not these four families.
+  expect(counts).toEqual([4, 4, 4]);
 });
 
 function getDistinctComputePipelineCountMatching(

@@ -27,6 +27,7 @@ import {CELL_KEY_WGSL, type CellKeyLayout} from './cell-keys';
 import {createCellLevelKernelNode} from './cell-level-kernel';
 import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/kernels/cell-key-wgsl';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 /** Key word written to every word of an unused cell table row. */
 export const GPU_CELL_EMPTY_KEY_WORD = 0xffffffff;
@@ -55,6 +56,21 @@ export type GPUCellTable = GPUCellTablePort & {
    * each row is first rounded to a multiple of `1 / sumScale` (an error of up to `2^-17` per row
    * at the default 65536), so choose `sumScale` for the data (`getGPUCellSumScale`). Required on a
    * source table to roll sums up to a coarser level.
+   *
+   * Decode a readback with `decodeGPUGroupSum(words, row, sumScale)` from
+   * `@luma-contributors/analysis/dataframe-analysis` (the shared
+   * [group-sum decoder](../../dataframe-analysis/group-statistics/decode-gpu-group-sum.ts)).
+   * Each pair is low word then high word; bit 31 of the high word is the sign of the
+   * two's-complement integer. The decoder returns that exact `scaledInteger` as bigint and
+   * `value = scaledInteger / sumScale` in the original measure's units (rounded to binary64).
+   * For example `[0xffff0000, 0xffffffff]` represents `-65536n`, hence `-1` at scale 65536.
+   * An unsaturated total requires `status.sumOverflow == 0`; if the flag was not requested,
+   * the caller must independently guarantee row and total headroom. Decoding cannot recover
+   * clipped values or source cells lost to either capacity flag.
+   *
+   * Headroom: a scaled row saturates at `CELL_MAXIMUM_SCALED_VALUE` (just under `2^62`, a row of
+   * about `7.04e13` at the default scale) and a cell sum saturates at `±(2^63 - 1)` (about
+   * `1.4e14` at the default scale) instead of wrapping; either sets `status.sumOverflow`.
    */
   sums?: GraphDataView<'uint32x2'>;
   /** `sums / sumScale` as f32, for styling. */
@@ -70,9 +86,14 @@ export type GPUCellTable = GPUCellTablePort & {
    * before destination truncation; it is a lower bound when `candidateOverflow` is nonzero.
    * `candidateOverflow` is required on rollup outputs and coarser pyramid levels; raw aggregation
    * accepts it optionally and writes zero each submission. Missing source flags mean no prior loss.
+   * `sumOverflow` receives 1 when a retained cell's scaled row or sum saturated (see `sums`), or when a
+   * source table reported it; the saturated sums are written either way.
    */
   status: GPUCardinalityPort &
-    GPUOverflowStatusPort & {candidateOverflow?: GraphDataView<'uint32'>};
+    GPUOverflowStatusPort & {
+      candidateOverflow?: GraphDataView<'uint32'>;
+      sumOverflow?: GraphDataView<'uint32'>;
+    };
 };
 
 /** Capture declared status ports once, including inherited getters, without metadata. @internal */
@@ -83,7 +104,8 @@ export function snapshotCellTableStatus<Status extends GPUCellTable['status']>(
     'count',
     'overflow',
     'candidateOverflow',
-    'requiredCount'
+    'requiredCount',
+    'sumOverflow'
   ]);
 }
 
@@ -113,7 +135,8 @@ export function getCellTableViews(table: GPUCellTable): (GraphDataView | undefin
     table.status.count,
     table.status.overflow,
     table.status.candidateOverflow,
-    table.status.requiredCount
+    table.status.requiredCount,
+    table.status.sumOverflow
   ];
 }
 
@@ -145,7 +168,13 @@ export function validateCellTable(id: string, name: string, table: GPUCellTable)
       throw new Error(`${id} ${name}.${column} must have the same length as ${name}.cells`);
     }
   }
-  for (const column of ['count', 'overflow', 'candidateOverflow', 'requiredCount'] as const) {
+  for (const column of [
+    'count',
+    'overflow',
+    'candidateOverflow',
+    'requiredCount',
+    'sumOverflow'
+  ] as const) {
     const view = table.status[column];
     if (!view) {
       continue;
@@ -165,6 +194,12 @@ export type CellTableReductionSource =
       values?: GraphDataView<'float32'>;
     }
   | {kind: 'cells'; table: GPUCellTable};
+
+/** Private tile accumulator: preserve all 96 bits and per-key row clamping until union. @internal */
+export type CellTableSumAccumulator = {
+  guards: GraphDataView<'uint32'>;
+  rowOverflow: GraphDataView<'uint32'>;
+};
 
 /** Properties of {@link getCellTableNodes}. @internal */
 export type CellTableNodesProps = {
@@ -187,6 +222,10 @@ export type CellTableNodesProps = {
   candidateSources?: readonly GraphDataView<'uint32'>[];
   /** Extra one-row destinations of the clamped count. */
   extraCounts?: readonly GraphDataView<'uint32'>[];
+  /** Source sum-saturation flags propagated to `output.status.sumOverflow`. */
+  sumOverflowSources?: readonly GraphDataView<'uint32'>[];
+  /** Internal tiles defer 64-bit saturation until the final retained-key merge. */
+  sumAccumulator?: CellTableSumAccumulator;
 };
 
 /** Rows folded per workgroup by the accumulation passes of {@link getCellTableNodes}. */
@@ -199,6 +238,44 @@ const ACCUMULATE_TILE_SIZE = 256;
  * identical bits but measured 4.6-5.2 ms vs 3.1-3.3 ms per frame at 1M rows with a 70% hot cell,
  * and was slower on uniform data too (2026-10-13).
  */
+
+/**
+ * 96-bit accumulation of the signed 64-bit fixed-point sums: a guard word above `(high, low)`
+ * keeps the carries out of the high word, so a sum outside the signed 64-bit range is detected
+ * (the guard differs from the sign extension of the high word) instead of wrapping. The scaled
+ * rows are below `2^62` and at most `2^32` rows meet in one cell, so the 96-bit total is exact.
+ * Values are `vec3u(guard, high, low)`. @internal
+ */
+export const CELL_SUM_GUARD_WGSL = /* wgsl */ `
+fn cellGetSignWord(high: u32) -> u32 {
+  return select(0u, 0xffffffffu, (high & 0x80000000u) != 0u);
+}
+
+/** Sign-extends a two's-complement 64-bit \`vec2u(high, low)\` to \`vec3u(guard, high, low)\`. */
+fn cellExtendI64(value: vec2u) -> vec3u {
+  return vec3u(cellGetSignWord(value.x), value.x, value.y);
+}
+
+/** \`left + right\` modulo 2^96. */
+fn cellAddI96(left: vec3u, right: vec3u) -> vec3u {
+  let low = left.z + right.z;
+  let partialHigh = left.y + right.y;
+  let high = partialHigh + select(0u, 1u, low < left.z);
+  let highCarry = select(0u, 1u, partialHigh < left.y) + select(0u, 1u, high < partialHigh);
+  return vec3u(left.x + right.x + highCarry, high, low);
+}
+
+/** Whether a 96-bit sum is outside the signed 64-bit range. */
+fn cellIsI64Overflow(guardWord: u32, high: u32) -> bool {
+  return guardWord != cellGetSignWord(high);
+}
+
+/** \`2^63 - 1\` or \`-(2^63 - 1)\` as \`vec2u(high, low)\`, by the sign of the 96-bit guard. */
+fn cellGetSaturatedI64(guardWord: u32) -> vec2u {
+  let isNegative = (guardWord & 0x80000000u) != 0u;
+  return select(vec2u(0x7fffffffu, 0xffffffffu), vec2u(0x80000000u, 1u), isNegative);
+}
+`;
 
 /** Returns whether compact keys at this layout need a high word. @internal */
 export function hasCellKeyHighWord(layout: CellKeyLayout): boolean {
@@ -452,6 +529,9 @@ ${CELL_KEY_WGSL}`,
   const sums = wantsSums
     ? (output.sums ?? createTransientView(graph, `${id}-sums-scratch`, 'uint32x2', capacity))
     : undefined;
+  // Guard words above the 64-bit sums, and the table's sum-saturation flag.
+  const guards = sums ? (props.sumAccumulator?.guards ?? u32('sum-guards', capacity)) : undefined;
+  const sumFlag = sums ? u32('sum-overflow-flag', 1) : undefined;
   const minimumKeys = output.minimums ? u32('minimum-keys', capacity) : undefined;
   const maximumKeys = output.maximums ? u32('maximum-keys', capacity) : undefined;
   const sourceRow = permutation ? 'permutation[permutationOffset + index]' : 'index';
@@ -471,12 +551,14 @@ ${CELL_KEY_WGSL}`,
         operation,
         variant: 'clear',
         bindings: [
-          ...(sums ? [write('sums', sums)] : []),
+          ...(sums && guards && sumFlag
+            ? [write('sums', sums), write('guards', guards), write('sumFlag', sumFlag)]
+            : []),
           ...(minimumKeys ? [write('minimumKeys', minimumKeys)] : []),
           ...(maximumKeys ? [write('maximumKeys', maximumKeys)] : [])
         ],
         invocationCount: capacity,
-        body: `${sums ? 'sums[sumsOffset + 2u * index] = 0u;\n  sums[sumsOffset + 2u * index + 1u] = 0u;' : ''}
+        body: `${sums ? 'sums[sumsOffset + 2u * index] = 0u;\n  sums[sumsOffset + 2u * index + 1u] = 0u;\n  guards[guardsOffset + index] = 0u;\n  if (index == 0u) { sumFlag[sumFlagOffset] = 0u; }' : ''}
   ${minimumKeys ? 'minimumKeys[minimumKeysOffset + index] = 0xffffffffu;' : ''}
   ${maximumKeys ? 'maximumKeys[maximumKeysOffset + index] = 0u;' : ''}`
       })
@@ -485,9 +567,16 @@ ${CELL_KEY_WGSL}`,
 
   // 7. Accumulate sums (and child counts), then extremes, one invocation per source row.
   if (sums || childTable) {
+    // A raw row whose scaled value saturates in `cellScaleValue` raises the sum flag.
     const contribution = rowValues
-      ? `cellScaleValue(values[valuesOffset + ${sourceRow}])`
-      : 'vec2u(childSums[childSumsOffset + 2u * index + 1u], childSums[childSumsOffset + 2u * index])';
+      ? `cellExtendI64(cellScaleValue(rowValue))`
+      : 'cellExtendI64(vec2u(childSums[childSumsOffset + 2u * index + 1u], childSums[childSumsOffset + 2u * index]))';
+    const rowSaturation = rowValues
+      ? `let rowValue = values[valuesOffset + ${sourceRow}];
+      if (abs(round(rowValue * SUM_SCALE)) > MAXIMUM_SCALED_VALUE) {
+        atomicOr(&sumFlag[sumFlagOffset], 1u);
+      }`
+      : '';
     nodes.push(
       createTableKernel({
         id: `${id}-accumulate-sums`,
@@ -508,48 +597,57 @@ ${CELL_KEY_WGSL}`,
                 } as const
               ]
             : []),
-          ...(sums
-            ? [{name: 'sums', view: sums, type: 'atomic<u32>', access: 'read_write'} as const]
+          ...(sums && guards
+            ? [
+                {name: 'sums', view: sums, type: 'atomic<u32>', access: 'read_write'} as const,
+                {name: 'guards', view: guards, type: 'atomic<u32>', access: 'read_write'} as const
+              ]
+            : []),
+          ...(sums && sumFlag && rowValues
+            ? [{name: 'sumFlag', view: sumFlag, type: 'atomic<u32>', access: 'read_write'} as const]
             : [])
         ],
         workgroupSize: ACCUMULATE_TILE_SIZE,
         invocationCount: rowCount,
         guardIndex: false,
         declarations: `${getFixedPointWGSL(props.sumScale)}
+${CELL_SUM_GUARD_WGSL}
 const TILE_SIZE: u32 = ${ACCUMULATE_TILE_SIZE}u;
 const NO_CELL: u32 = 0xffffffffu;
 var<workgroup> tileCells: array<u32, ${ACCUMULATE_TILE_SIZE}>;
-${sums ? `var<workgroup> tileHigh: array<u32, ${ACCUMULATE_TILE_SIZE}>;\nvar<workgroup> tileLow: array<u32, ${ACCUMULATE_TILE_SIZE}>;` : ''}
+${sums ? `var<workgroup> tileGuard: array<u32, ${ACCUMULATE_TILE_SIZE}>;\nvar<workgroup> tileHigh: array<u32, ${ACCUMULATE_TILE_SIZE}>;\nvar<workgroup> tileLow: array<u32, ${ACCUMULATE_TILE_SIZE}>;` : ''}
 ${childTable ? `var<workgroup> tileCounts: array<u32, ${ACCUMULATE_TILE_SIZE}>;` : ''}`,
         // Rows are in cell order, so a cell's rows are contiguous. A segmented inclusive scan over
         // the tile folds each run of equal cells in shared memory, and only the last row of a run
         // issues the global atomics: a hot cell costs one atomic per tile instead of one per row.
-        // Integer sums are associative modulo 2^64, so the result is unchanged. Barriers are in
-        // uniform control flow (constant-bound loop, no early return).
+        // Integer sums are associative modulo 2^96, so the result is unchanged. Each word's
+        // atomic add returns the previous word, so every carry (low to high, high to guard) is
+        // exact in any order. Barriers are in uniform control flow (constant-bound loop, no early
+        // return).
         body: `let lane = localInvocationIndex;
   var cell = NO_CELL;
-  ${sums ? 'var value = vec2u(0u, 0u);' : ''}
+  ${sums ? 'var value = vec3u(0u, 0u, 0u);' : ''}
   ${childTable ? 'var childCount = 0u;' : ''}
   if (index < INVOCATION_COUNT) {
     cell = rowCells[rowCellsOffset + index];
     if (cell != NO_CELL) {
-      ${sums ? `value = ${contribution};` : ''}
+      ${sums ? `${rowSaturation}\n      value = ${contribution};` : ''}
       ${childTable ? 'childCount = childCounts[childCountsOffset + index];' : ''}
     }
   }
   tileCells[lane] = cell;
-  ${sums ? 'tileHigh[lane] = value.x;\n  tileLow[lane] = value.y;' : ''}
+  ${sums ? 'tileGuard[lane] = value.x;\n  tileHigh[lane] = value.y;\n  tileLow[lane] = value.z;' : ''}
   ${childTable ? 'tileCounts[lane] = childCount;' : ''}
   workgroupBarrier();
   for (var stride = 1u; stride < TILE_SIZE; stride = stride << 1u) {
-    ${sums ? 'var addValue = vec2u(0u, 0u);' : ''}
+    ${sums ? 'var addValue = vec3u(0u, 0u, 0u);' : ''}
     ${childTable ? 'var addCount = 0u;' : ''}
     if (lane >= stride && tileCells[lane - stride] == cell) {
-      ${sums ? 'addValue = vec2u(tileHigh[lane - stride], tileLow[lane - stride]);' : ''}
+      ${sums ? 'addValue = vec3u(tileGuard[lane - stride], tileHigh[lane - stride], tileLow[lane - stride]);' : ''}
       ${childTable ? 'addCount = tileCounts[lane - stride];' : ''}
     }
     workgroupBarrier();
-    ${sums ? 'value = cellAddI64(value, addValue);\n    tileHigh[lane] = value.x;\n    tileLow[lane] = value.y;' : ''}
+    ${sums ? 'value = cellAddI96(value, addValue);\n    tileGuard[lane] = value.x;\n    tileHigh[lane] = value.y;\n    tileLow[lane] = value.z;' : ''}
     ${childTable ? 'childCount += addCount;\n    tileCounts[lane] = childCount;' : ''}
     workgroupBarrier();
   }
@@ -560,12 +658,72 @@ ${childTable ? `var<workgroup> tileCounts: array<u32, ${ACCUMULATE_TILE_SIZE}>;`
   ${childTable ? 'atomicAdd(&countsOut[countsOutOffset + cell], childCount);' : ''}
   ${
     sums
-      ? `let previous = atomicAdd(&sums[sumsOffset + 2u * cell], value.y);
-  let high = value.x + select(0u, 1u, previous + value.y < previous);
+      ? `let previousLow = atomicAdd(&sums[sumsOffset + 2u * cell], value.z);
+  let high = value.y + select(0u, 1u, previousLow + value.z < previousLow);
+  var guardCarry = value.x + select(0u, 1u, high < value.y);
   if (high != 0u) {
-    atomicAdd(&sums[sumsOffset + 2u * cell + 1u], high);
+    let previousHigh = atomicAdd(&sums[sumsOffset + 2u * cell + 1u], high);
+    guardCarry += select(0u, 1u, previousHigh + high < previousHigh);
+  }
+  if (guardCarry != 0u) {
+    atomicAdd(&guards[guardsOffset + cell], guardCarry);
   }`
       : ''
+  }`
+      })
+    );
+  }
+  if (props.sumAccumulator && rowValues) {
+    const rowOverflow = props.sumAccumulator.rowOverflow;
+    nodes.push(
+      createTableKernel({
+        id: `${id}-row-overflow-clear`,
+        operation,
+        variant: 'row-overflow-clear',
+        invocationCount: capacity,
+        bindings: [write('rowOverflow', rowOverflow)],
+        body: 'rowOverflow[rowOverflowOffset + index] = 0u;'
+      }),
+      createTableKernel({
+        id: `${id}-row-overflow`,
+        operation,
+        variant: 'row-overflow',
+        invocationCount: rowCount,
+        bindings: [
+          read('rowCells', rowCells),
+          ...valueBindings(),
+          {name: 'rowOverflow', view: rowOverflow, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        declarations: getFixedPointWGSL(props.sumScale),
+        body: `let cell = rowCells[rowCellsOffset + index];
+  if (cell == 0xffffffffu) { return; }
+  let value = values[valuesOffset + ${sourceRow}];
+  if (abs(round(value * SUM_SCALE)) > MAXIMUM_SCALED_VALUE) {
+    atomicOr(&rowOverflow[rowOverflowOffset + cell], 1u);
+  }`
+      })
+    );
+  }
+  // 7b. Saturate sums outside the signed 64-bit range instead of leaving them wrapped.
+  if (sums && guards && sumFlag && !props.sumAccumulator) {
+    nodes.push(
+      createTableKernel({
+        id: `${id}-saturate-sums`,
+        operation,
+        variant: 'saturate-sums',
+        bindings: [
+          read('guards', guards),
+          write('sums', sums),
+          {name: 'sumFlag', view: sumFlag, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        invocationCount: capacity,
+        declarations: CELL_SUM_GUARD_WGSL,
+        body: `let guardWord = guards[guardsOffset + index];
+  if (cellIsI64Overflow(guardWord, sums[sumsOffset + 2u * index + 1u])) {
+    let saturated = cellGetSaturatedI64(guardWord);
+    sums[sumsOffset + 2u * index] = saturated.y;
+    sums[sumsOffset + 2u * index + 1u] = saturated.x;
+    atomicOr(&sumFlag[sumFlagOffset], 1u);
   }`
       })
     );
@@ -678,13 +836,16 @@ ${maximumKeys ? `var<workgroup> tileMaximums: array<u32, ${ACCUMULATE_TILE_SIZE}
         invocationCount: capacity,
         declarations: `${offsetsDeclarations}
 ${ORDERED_KEY_WGSL}
-${getFixedPointWGSL(props.sumScale)}`,
+${getFixedPointWGSL(props.sumScale)}
+${SCALED_QUOTIENT_WGSL}`,
         body: `let isOccupied = index < getCellCount();
   let nan = getNaN();
   ${
     output.sumValues
       ? `let total = vec2u(sums[sumsOffset + 2u * index + 1u], sums[sumsOffset + 2u * index]);
-  sumValuesOut[sumValuesOutOffset + index] = cellI64ToF32(total) / SUM_SCALE;`
+  // Exponent-scaled quotient: a division by SUM_SCALE may compile as a multiplication by the
+  // reciprocal, which is subnormal (and flushed to zero) for scales above 2^126.
+  sumValuesOut[sumValuesOutOffset + index] = getScaledQuotient(cellI64ToF32(total), SUM_SCALE, 1.0, 0);`
       : ''
   }
   ${
@@ -725,6 +886,23 @@ ${getFixedPointWGSL(props.sumScale)}`,
   ${extraCounts.map((_, index) => `extraOut${index}[extraOut${index}Offset] = count;`).join('\n  ')}`
     })
   );
+  if (output.status.sumOverflow) {
+    const sumOverflowSources = props.sumOverflowSources ?? [];
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-sum-status`,
+        operation,
+        variant: 'sum-status',
+        invocationCount: 1,
+        bindings: [
+          ...(sumFlag ? [read('sumFlag', sumFlag)] : []),
+          ...sumOverflowSources.map((view, index) => read(`sumOverflowIn${index}`, view)),
+          write('sumOverflowOut', output.status.sumOverflow)
+        ],
+        body: `sumOverflowOut[sumOverflowOutOffset] = select(0u, 1u, ${sumFlag ? 'sumFlag[sumFlagOffset] != 0u' : 'false'}${sumOverflowSources.map((_, index) => ` || sumOverflowIn${index}[sumOverflowIn${index}Offset] != 0u`).join('')});`
+      })
+    );
+  }
   if (output.status.candidateOverflow)
     nodes.push(
       createWGSLKernelNode(graph, {

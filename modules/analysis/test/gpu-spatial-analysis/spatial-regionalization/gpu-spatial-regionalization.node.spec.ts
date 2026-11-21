@@ -11,7 +11,7 @@ import {
   getGPUWardRegionsParameterValues,
   GPU_AZP_REGIONS_PARAMETER_LENGTH,
   GPU_MAX_P_REGIONS_PARAMETER_LENGTH,
-  GPU_MAX_P_STATUS,
+  GPU_MAX_P_STATUS_LAYOUT,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
   GPU_SKATER_REGIONS_PARAMETER_LENGTH,
   GPU_WARD_REGIONS_PARAMETER_LENGTH,
@@ -384,12 +384,25 @@ it('GPURegionPartitionEvaluation validates props and declares nodes', () => {
   // The stable label sort contributes its own nodes between the key and region kernels.
   const ids = nodes.map(node => node.id);
   expect(ids[0]).toBe('region-partition-evaluation-sort-keys');
-  expect(ids.filter(id => !id.startsWith('region-partition-evaluation-sort-'))).toEqual([
+  expect(
+    ids.filter(
+      id =>
+        !id.startsWith('region-partition-evaluation-sort-') &&
+        !id.startsWith('region-partition-evaluation-summary-')
+    )
+  ).toEqual([
     'region-partition-evaluation-label-offsets',
-    'region-partition-evaluation-region-sums',
-    'region-partition-evaluation-region-sums-fixup',
+    'region-partition-evaluation-region-origins',
+    'region-partition-evaluation-origin-signs',
+    'region-partition-evaluation-select-origins',
+    'region-partition-evaluation-region-sums-prepare',
+    'region-partition-evaluation-region-sums-stage-1',
+    'region-partition-evaluation-region-sums-stage-2',
+    'region-partition-evaluation-region-sums-stage-4',
+    'region-partition-evaluation-region-sums-finish',
     'region-partition-evaluation-region-deviations',
     'region-partition-evaluation-region-deviations-fixup',
+    'region-partition-evaluation-region-centroids',
     'region-partition-evaluation-region-within',
     'region-partition-evaluation-links',
     'region-partition-evaluation-links-fixup',
@@ -397,6 +410,7 @@ it('GPURegionPartitionEvaluation validates props and declares nodes', () => {
     // The overall means come first: the label tiles read them for the between sum of squares.
     'region-partition-evaluation-means',
     'region-partition-evaluation-label-tiles',
+    'region-partition-evaluation-between-tiles',
     'region-partition-evaluation-deviation-tiles',
     'region-partition-evaluation-summary'
   ]);
@@ -469,7 +483,7 @@ it('GPUMaxPRegions validates props and declares multi-start nodes within the bin
     output: {
       labels: view('uint32', 6),
       objective: view('float32', 1),
-      status: view('uint32', GPU_MAX_P_STATUS.length)
+      status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
     }
   };
   expect(() => new GPUMaxPRegions({...base, startCount: 0})).toThrow(/startCount/);
@@ -604,7 +618,7 @@ it('seeded regionalization kernels read the seed from the parameters binding', (
   const output = () => ({
     labels: view('uint32', 6),
     objective: view('float32', 1),
-    status: view('uint32', GPU_MAX_P_STATUS.length)
+    status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
   });
   const producers = [
     new GPUAZPRegions({

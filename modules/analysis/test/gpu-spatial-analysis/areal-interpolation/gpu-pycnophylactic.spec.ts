@@ -6,11 +6,11 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {getGPUPolygonRasterizationParameterValues} from '../../../src/raster-analysis/polygon-rasterization/index';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
-import {GPUPycnophylactic} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
+import {GPUPycnophylacticInterpolation} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
 import {computePycnophylacticOracle, createBlockZones} from './areal-interpolation-oracle';
 import {expectClose, GraphRig} from './areal-interpolation-harness';
 import {PYCNOPHYLACTIC_NUMPY} from './change-of-support-numpy-fixtures';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const WIDTH = 20;
 const HEIGHT = 15;
@@ -28,7 +28,7 @@ async function runPycnophylactic(
   const rig = new GraphRig(device);
   const output = rig.output('float32', WIDTH * HEIGHT);
   rig.run(
-    new GPUPycnophylactic({
+    new GPUPycnophylacticInterpolation({
       grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
       zones: rig.input(zones, 'uint32'),
       zoneCount,
@@ -54,7 +54,7 @@ async function runPycnophylactic(
 
 for (const kernel of ['rook', 'box'] as const) {
   for (const iterations of [0, 1, 6, 7]) {
-    it(`GPUPycnophylactic matches the oracle (${kernel}, ${iterations} iterations)`, async () => {
+    it(`GPUPycnophylacticInterpolation matches the oracle (${kernel}, ${iterations} iterations)`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
       const {actual, expected, zones, zoneCount, totals} = await runPycnophylactic(
@@ -79,7 +79,7 @@ for (const kernel of ['rook', 'box'] as const) {
   }
 }
 
-it('GPUPycnophylactic (box) smooths the surface across zone borders', async () => {
+it('GPUPycnophylacticInterpolation (box) smooths the surface across zone borders', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const flat = await runPycnophylactic(device, 0, 'rook');
@@ -144,7 +144,7 @@ async function runNumpyFixture(
   const order = (values: ArrayLike<number>) =>
     options.northUp ? mirrorRows(values, fixture.width, fixture.height) : Array.from(values);
   rig.run(
-    new GPUPycnophylactic({
+    new GPUPycnophylacticInterpolation({
       grid,
       zones: rig.input(Uint32Array.from(order(fixture.zones)), 'uint32'),
       zoneCount: fixture.zoneCount,
@@ -202,7 +202,7 @@ async function runNumpyFixture(
   return result;
 }
 
-it('GPUPycnophylactic anchors keep the mass of zones without cells (numpy)', async () => {
+it('GPUPycnophylacticInterpolation anchors keep the mass of zones without cells (numpy)', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const without = await runNumpyFixture(device, {iterations: 6, anchors: false});
@@ -214,11 +214,12 @@ it('GPUPycnophylactic anchors keep the mass of zones without cells (numpy)', asy
   expect(anchored.mass.reduce((sum, value) => sum + value, 0)).toBeCloseTo(507, 1);
 });
 
-it('GPUPycnophylactic stops at the tolerance and reports status (numpy)', async () => {
+it('GPUPycnophylacticInterpolation stops at the tolerance and reports status (numpy)', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const stopped = await runNumpyFixture(device, {
-    iterations: 12,
+    // Stops at six, leaving seven unused iterations: the final surface is in scratch.
+    iterations: 13,
     anchors: true,
     tolerance: PYCNOPHYLACTIC_NUMPY.tolerance
   });
@@ -227,12 +228,68 @@ it('GPUPycnophylactic stops at the tolerance and reports status (numpy)', async 
     1,
     PYCNOPHYLACTIC_NUMPY.planarTolerance.flaggedAt
   ]);
+  const totals = new Array<number>(6).fill(0);
+  for (const [cell, zone] of PYCNOPHYLACTIC_NUMPY.planarTolerance.zones.entries()) {
+    if (zone < totals.length) totals[zone] += stopped.mass[cell];
+  }
+  expectClose(totals, [120, 0, 45, 300, 30, 12], 'stopped zone totals', 1e-5, 1e-4);
   const limited = await runNumpyFixture(device, {iterations: 3, anchors: true, tolerance: 1e-12});
   expectClose(limited.mass, PYCNOPHYLACTIC_NUMPY.planarLimit.mass, 'limit', 2e-3, 1e-3);
   expect([limited.converged, limited.iterationCount]).toEqual([0, 3]);
 });
 
-it('GPUPycnophylactic smooths density per spherical cell area on a longitude/latitude raster (numpy)', async () => {
+it('GPUPycnophylacticInterpolation publishes a hand-worked stopped surface with an odd unused budget (GEO-130)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new GraphRig(device);
+  const mass = rig.output('float32', 4);
+  const converged = rig.output('uint32', 1);
+  const iterationCount = rig.output('uint32', 1);
+  try {
+    rig.run(
+      new GPUPycnophylacticInterpolation({
+        grid: makeGPURasterMetadata({width: 4, height: 1}),
+        zones: rig.input(Uint32Array.of(0, 0, 1, 1), 'uint32'),
+        zoneCount: 2,
+        totals: rig.input(Float32Array.of(2, 6), 'float32'),
+        kernel: 'box',
+        maximumIterations: 5,
+        tolerance: rig.input(Float32Array.of(0.1), 'float32'),
+        output: {
+          mass: mass.view,
+          status: {converged: converged.view, iterationCount: iterationCount.view}
+        }
+      })
+    );
+    // Hand calculation with box averages (including self) and additive zone restoration:
+    // initial [1,1,3,3]; step 1 averages [1,5/3,7/3,3], restores to [2/3,4/3,8/3,10/3].
+    // Step 2 averages [1,14/9,22/9,3], restores by [-5/18,-5/18,5/18,5/18].
+    // Changes relative to zone means 1 and 3: max step 1 = 1/3 > .1;
+    // max step 2 = 1/18 < .1. Stop at two, with three unused iterations.
+    const expected = [
+      0.7222222222222222, 1.2777777777777777, 2.7222222222222223, 3.2777777777777777
+    ];
+    for (let submission = 0; submission < 2; submission++) {
+      if (submission) rig.resubmit();
+      const actual = await mass.readFloat32();
+      for (const value of actual) expect(Number.isFinite(value)).toBe(true);
+      expectClose(actual, expected, 'hand-worked stopped surface', 1e-6, 1e-6);
+      expectClose(
+        [actual[0] + actual[1], actual[2] + actual[3]],
+        [2, 6],
+        'zone totals',
+        1e-6,
+        1e-6
+      );
+      expect(await converged.readUint32()).toEqual([1]);
+      expect(await iterationCount.readUint32()).toEqual([2]);
+    }
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('GPUPycnophylacticInterpolation smooths density per spherical cell area on a longitude/latitude raster (numpy)', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const result = await runNumpyFixture(device, {
@@ -252,7 +309,7 @@ it('GPUPycnophylactic smooths density per spherical cell area on a longitude/lat
   expect(result.mass.reduce((sum, value) => sum + value, 0)).toBeCloseTo(507, 1);
 });
 
-it('GPUPycnophylactic gives a north-up longitude/latitude grid the mirrored result of a north-advancing one', async () => {
+it('GPUPycnophylacticInterpolation gives a north-up longitude/latitude grid the mirrored result of a north-advancing one', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const options = {iterations: 6, anchors: true, geographic: true, density: true};
@@ -264,7 +321,7 @@ it('GPUPycnophylactic gives a north-up longitude/latitude grid the mirrored resu
   expect(northUp.mass.reduce((sum, value) => sum + value, 0)).toBeCloseTo(507, 1);
 });
 
-it('GPUPycnophylactic preserves mass and scales geographic density to square kilometers', async () => {
+it('GPUPycnophylacticInterpolation preserves mass and scales geographic density to square kilometers', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const options = {iterations: 6, anchors: true, geographic: true, density: true};

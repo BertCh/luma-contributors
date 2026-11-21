@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../../raster-analysis/raster-grid/raster-construction-snapshot';
+import type {TerrainAtLeastOne} from './terrain-output';
 import {
   validateTerrainBindings,
   getTerrainGateScratchByteLength
@@ -28,6 +31,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterBandViews,
+  snapshotRasterBand,
   getRasterBufferBandNodes,
   validateParameterTarget,
   validateRasterBandBelongsToGraph,
@@ -201,7 +205,8 @@ function validateTerrainFlowOutputAliasing(id: string, props: GPUTerrainFlowProp
   // Names of outputs that are bound together by one scheduled node.
   const boundTogether = [
     ['filledElevation', 'flowDirections', 'cellClasses'],
-    ['accumulation', 'streams']
+    ['accumulation', 'streams'],
+    ['status.flatsConverged', 'status.flatsIterationCount']
   ];
   for (const [index, [firstName, first]] of outputs.entries()) {
     for (const [secondName, second] of outputs.slice(index + 1)) {
@@ -233,29 +238,39 @@ export type GPUTerrainFlowStatus = {
   /** One row set to 1 when depression filling reached its fixpoint. Requires `fillDepressions`. */
   fillConverged?: GraphDataView<'uint32'>;
   /**
-   * One row set to 1 when accumulation resolved every valid cell. On the pull path (D8 with
+   * One row set to 1 when accumulation dependencies converged. On the pull path (D8 with
    * `runoff` or `'area'` units, or MFD and D-infinity routing) the flag is conservative: it can be
    * 0 when the last allowed round happened to finish everything. On the Euler-tour path (D8,
    * `'cells'`, no `runoff`) it is 1 unless a receiver cycle was found. Requires
-   * `output.accumulation` or `output.streams`.
+   * `output.accumulation` or `output.streams`. An unfinished fill or flat stage clears this flag
+   * when it suppresses the dependent accumulation. Numerical overflow can still produce nonfinite
+   * accumulation and unresolved stream membership even when this flag is 1.
    */
   accumulationConverged?: GraphDataView<'uint32'>;
   /**
    * One row set to 1 when every flat-resolution relaxation reached its fixpoint. Requires
-   * `resolveFlats`.
+   * `resolveFlats`. An unfinished fill clears this flag when it suppresses routing.
    */
   flatsConverged?: GraphDataView<'uint32'>;
   /**
    * One row: Boruvka rounds of the spill-graph fill, or gated relaxation iterations (including the
    * final unchanged one) when `fillEpsilon` > 0 or the grid exceeds the spill path's binding size.
+   * Tiled relaxation counts and finite-budget completion depend on workgroup scheduling;
+   * completed filled elevations do not. Poll `fillConverged` rather than comparing counts.
    * Requires `fillDepressions`. Presence is compile-time.
    */
   fillIterationCount?: GraphDataView<'uint32'>;
-  /** One row: total iterations executed by the three flat-resolution relaxations. Requires `resolveFlats`. Presence is compile-time. */
+  /**
+   * One row: total logical rounds of the three flat-resolution relaxations, cumulative with
+   * continuation. Counts and finite-budget completion depend on workgroup scheduling;
+   * use `flatsConverged` to certify the result. Requires `resolveFlats`. Presence is compile-time.
+   */
   flatsIterationCount?: GraphDataView<'uint32'>;
   /**
    * One row: gated accumulation rounds executed (pull rounds, or list-ranking rounds of the
    * Euler-tour path). Requires `output.accumulation` or `output.streams`. Presence is compile-time.
+   * In-place pull counts and finite-budget completion depend on scheduling; completed values
+   * keep their fixed donor order. Use `accumulationConverged` rather than expected pull counts.
    */
   accumulationIterationCount?: GraphDataView<'uint32'>;
 };
@@ -265,50 +280,53 @@ export type GPUTerrainFlowStatus = {
  * `flowDirections`, `cellClasses`, `accumulation` and `streams` is required. Presence of every
  * view is compile-time.
  */
-export type GPUTerrainFlowOutput = {
-  /**
-   * Depression-filled elevation, NaN for invalid cells and for every valid cell when the fill did
-   * not converge (`status.fillConverged` 0). Requires `fillDepressions`.
-   */
-  filledElevation?: GraphDataView<'float32'>;
-  /**
-   * ESRI D8 code toward the receiver (1 east, 2 south-east, 4 south, 8 south-west, 16 west, 32
-   * north-west, 64 north, 128 north-east); 0 for terminal cells; `GPU_TERRAIN_FLOW_NONE` for
-   * invalid cells; `GPU_TERRAIN_FLOW_UNRESOLVED` on every valid cell when depression filling or
-   * flat resolution did not converge.
-   *
-   * The codes are raster offsets, not compass bearings: "south" is the next row (`row + 1`) and
-   * "east" the next column, whatever the row sign of the grid affine. On a north-up raster (rows
-   * advance south, `grid.affine[4] < 0`) the names are true compass directions; on a grid whose
-   * rows advance north, code 4 points geographically north. Every terrain consumer of a direction
-   * grid reads the codes the same way, so this output round-trips on any grid.
-   */
-  flowDirections?: GraphDataView<'uint32'>;
-  /**
-   * `GPU_TERRAIN_FLOW_CELL_CLASS` per cell; `unresolved` on every valid cell when depression
-   * filling or flat resolution did not converge.
-   */
-  cellClasses?: GraphDataView<'uint32'>;
-  /**
-   * Total upstream weight including the cell itself. NaN for invalid cells, for cells left
-   * unresolved when accumulation did not converge, and for every valid cell when depression
-   * filling or flat resolution did not converge.
-   */
-  accumulation?: GraphDataView<'float32'>;
-  /**
-   * 1 where accumulation is finite and at least the `streamThreshold` setting; 0 below the threshold
-   * and on invalid cells; `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on valid cells whose accumulation
-   * is unresolved (NaN) because `maximumAccumulationIterations` ran out, so an unresolved trunk never
-   * reads as "not a stream". Every terrain consumer of a stream mask uses one rule: a nonzero
-   * word is a stream cell, except the unresolved sentinel, which is a cell of unknown status
-   * (`!= 0u && < 0xfffffffeu` in WGSL). A plain `!= 0u` also counts unresolved cells.
-   * Also `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on every valid cell when depression filling
-   * or flat resolution did not converge. Accumulation is computed into a transient when `accumulation` is not provided.
-   */
-  streams?: GraphDataView<'uint32'>;
-  /** One-row convergence and iteration-count words. */
-  status?: GPUTerrainFlowStatus;
-};
+export type GPUTerrainFlowOutput = TerrainAtLeastOne<
+  {
+    /**
+     * Depression-filled elevation, NaN for invalid cells and for every valid cell when the fill did
+     * not converge (`status.fillConverged` 0). Requires `fillDepressions`.
+     */
+    filledElevation?: GraphDataView<'float32'>;
+    /**
+     * ESRI D8 code toward the receiver (1 east, 2 south-east, 4 south, 8 south-west, 16 west, 32
+     * north-west, 64 north, 128 north-east); 0 for terminal cells; `GPU_TERRAIN_FLOW_NONE` for
+     * invalid cells; `GPU_TERRAIN_FLOW_UNRESOLVED` on every valid cell when depression filling or
+     * flat resolution did not converge.
+     *
+     * The codes are raster offsets, not compass bearings: "south" is the next row (`row + 1`) and
+     * "east" the next column, whatever the row sign of the grid affine. On a north-up raster (rows
+     * advance south, `grid.affine[4] < 0`) the names are true compass directions; on a grid whose
+     * rows advance north, code 4 points geographically north. Every terrain consumer of a direction
+     * grid reads the codes the same way, so this output round-trips on any grid.
+     */
+    flowDirections?: GraphDataView<'uint32'>;
+    /**
+     * `GPU_TERRAIN_FLOW_CELL_CLASS` per cell; `unresolved` on every valid cell when depression
+     * filling or flat resolution did not converge.
+     */
+    cellClasses?: GraphDataView<'uint32'>;
+    /**
+     * Total upstream weight including the cell itself. NaN for invalid cells, for cells left
+     * unresolved when accumulation did not converge, and for every valid cell when depression
+     * filling or flat resolution did not converge.
+     */
+    accumulation?: GraphDataView<'float32'>;
+    /**
+     * 1 where accumulation is finite and at least the `streamThreshold` setting; 0 below the threshold
+     * and on invalid cells; `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on valid cells whose accumulation
+     * is unresolved (NaN) because `maximumAccumulationIterations` ran out, so an unresolved trunk never
+     * reads as "not a stream". To read this contributor's stream mask, a nonzero
+     * word is a stream cell, except the unresolved sentinel, which is a cell of unknown status
+     * (`word != 0u && word != 0xffffffffu` in WGSL). A plain `!= 0u` also counts unresolved cells.
+     * Also `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` on every valid cell when depression filling
+     * or flat resolution did not converge. Accumulation is computed into a transient when `accumulation` is not provided.
+     */
+    streams?: GraphDataView<'uint32'>;
+    /** One-row convergence and iteration-count words. */
+    status?: GPUTerrainFlowStatus;
+  },
+  'filledElevation' | 'flowDirections' | 'cellClasses' | 'accumulation' | 'streams'
+>;
 
 /**
  * Properties for {@link GPUTerrainFlow}.
@@ -473,6 +491,48 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
   readonly props: GPUTerrainFlowProps;
 
   constructor(props: GPUTerrainFlowProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'elevation',
+      'parameters',
+      'cellSizeMode',
+      'fillDepressions',
+      'maximumFillIterations',
+      'resolveFlats',
+      'maximumFlatIterations',
+      'flatContinuation',
+      'flowRouting',
+      'maximumAccumulationIterations',
+      'runoff',
+      'accumulationUnits',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(props.output, [
+      'filledElevation',
+      'flowDirections',
+      'cellClasses',
+      'accumulation',
+      'streams',
+      'status'
+    ]);
+    const capturedStatus =
+      capturedOutput.status &&
+      snapshotConstructionFields(capturedOutput.status, [
+        'fillConverged',
+        'accumulationConverged',
+        'flatsConverged',
+        'fillIterationCount',
+        'flatsIterationCount',
+        'accumulationIterationCount'
+      ]);
+    props = {
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      elevation: snapshotRasterBand(props.elevation),
+      output: Object.freeze({...capturedOutput, status: capturedStatus}),
+      flatContinuation: props.flatContinuation && captureFlatContinuation(props.flatContinuation)
+    };
     this.id = props.id ?? 'terrain-flow';
     this.props = props;
     const {id} = this;
@@ -616,6 +676,8 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
     const needsRoutingForBindings = Boolean(
       this.props.output.flowDirections ||
         this.props.output.cellClasses ||
+        this.props.output.status?.flatsConverged ||
+        this.props.output.status?.flatsIterationCount ||
         needsAccumulationForBindings
     );
     const needsFlatsForBindings = Boolean(this.props.resolveFlats && needsRoutingForBindings);
@@ -701,6 +763,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
         directions: output.flowDirections,
         classes: output.cellClasses,
         accumulation: output.accumulation,
+        accumulationConverged: status?.accumulationConverged,
         streams: output.streams,
         codes: {
           direction: GPU_TERRAIN_FLOW_UNRESOLVED,
@@ -727,7 +790,13 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
     }
 
     const needsAccumulation = Boolean(output.accumulation || output.streams);
-    if (!output.flowDirections && !output.cellClasses && !needsAccumulation) {
+    if (
+      !output.flowDirections &&
+      !output.cellClasses &&
+      !needsAccumulation &&
+      !status?.flatsConverged &&
+      !status?.flatsIterationCount
+    ) {
       nodes.push(...getUnresolvedNodes());
       return nodes;
     }
@@ -761,6 +830,7 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
         continuation: props.flatContinuation,
         elevation,
         surface,
+        fillStatus,
         settings: props.parameters,
         classes,
         directions: output.flowDirections,
@@ -817,4 +887,16 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
     nodes.push(...getUnresolvedNodes());
     return nodes;
   }
+}
+
+/** Capture declared continuation maps while borrowing their GPU resources. */
+function captureFlatContinuation(
+  continuation: GPUTerrainFlowFlatContinuation
+): GPUTerrainFlowFlatContinuation {
+  const stages = snapshotConstructionFields(continuation, ['lower', 'higher', 'maximum']);
+  return Object.freeze({
+    lower: snapshotConstructionFields(stages.lower, ['state', 'values']),
+    higher: snapshotConstructionFields(stages.higher, ['state', 'values']),
+    maximum: snapshotConstructionFields(stages.maximum, ['state', 'values'])
+  });
 }

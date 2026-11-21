@@ -7,7 +7,7 @@ import {
   getBoundedDispatchLayout,
   getViewBinding,
   getViewElementOffset,
-  GraphVectorView,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -18,6 +18,7 @@ import {
   type WGSLKernelProps
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  isGraphVectorView,
   validateSinglePackedView,
   validateRequirement,
   validateCommandNodeBudget,
@@ -160,7 +161,7 @@ export class GPUSphericalConvexContains<
     }
     validateDisjointWritableViews(this.id, props.output);
     const chunked = [props.queries, props.polygonIndices, ...Object.values(props.output)].some(
-      view => view instanceof GraphVectorView
+      view => isGraphVectorView(view)
     );
     this.estimatedCommandNodeCount = chunked ? 1 + this.chunkPlan.nonemptyChunkCount : 1;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
@@ -202,7 +203,7 @@ export class GPUSphericalConvexContains<
       ...props.output
     });
     const chunked = [props.queries, props.polygonIndices, ...Object.values(props.output)].some(
-      view => view instanceof GraphVectorView
+      view => isGraphVectorView(view)
     );
     if (!chunked)
       return [

@@ -492,6 +492,7 @@ import {
 } from '@luma-contributors/analysis/raster-analysis';
 
 // velocities: float32x2 (u, v) per cell in degrees per second, row 0 = smallest latitude
+const fieldPlacement = {origin: [-105.125, 11.875], cellSize: [0.25, 0.25]} as const;
 const particleGraph = new GPUCommandGraph(device, {id: 'particles'});
 particleGraph.add(new GPUParticleAdvection({
   velocities, fieldWidth: 181, fieldHeight: 153,
@@ -512,16 +513,27 @@ streamlines.add(new GPUStreamlines({velocities, fieldWidth: 181, fieldHeight: 15
   output: {lines: {ids, status: {count, overflow}}, lineOffsets, positions: points, positionCount,
     status: {iterationLimitReached: unconverged}}}));
 
-// per frame: parameters only
+// per frame: camera is the current longitude, latitude and zoom; bounds are degrees.
+const [west, south, east, north] = viewportBounds;
+const viewportPlacement = {
+  origin: [west, south], cellSize: [(east - west) / 896, (north - south) / 704]
+} as const;
+const degreesPerPixel = 360 / (512 * 2 ** camera.zoom);
+const cellX = ${state.spacing} * degreesPerPixel;
+const cellY = cellX * Math.cos(camera.latitude * Math.PI / 180);
+const gridPlacement = {
+  origin: [camera.longitude - 128 * cellX / 2, camera.latitude - 112 * cellY / 2],
+  cellSize: [cellX, cellY]
+} as const;
 particleParameters.write(getGPUParticleAdvectionParameterValues({
-  fieldExtent: [-105.125, 11.875, 0.25, 0.25], timeStep: 120, speedScale: ${state.speedScale},
+  fieldPlacement, timeStep: 120, speedScale: ${state.speedScale},
   dropRate: ${state.dropRate}, spawnBounds: viewportBounds}, [181, 153]));
 particleWords.write(getGPUParticleAdvectionUint32ParameterValues({
   seed: ${state.seed}, frame, maximumAge: ${state.maximumAge}, reset: false}));
 licParameters.write(getGPULineIntegralConvolutionParameterValues({
-  fieldExtent, outputExtent: viewportExtent, stepLength: ${state.licStep}, phase, period: ${state.licPeriod}}));
+  fieldPlacement, outputPlacement: viewportPlacement, stepLength: ${state.licStep}, phase, period: ${state.licPeriod}}));
 streamParameters.write(getGPUStreamlinesParameterValues({
-  fieldExtent, gridExtent: [x0, y0, cell, cell], stepLength: 0.4 * cell}));
+  fieldPlacement, gridPlacement, stepLength: 0.4 * cellX}));
 (await particleGraph.compileAsync()).encode(commandEncoder, {parameters: undefined});`,
 
   about: {

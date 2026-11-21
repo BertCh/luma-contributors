@@ -180,7 +180,10 @@ test('R5 deleting a named polygon alias changes decoded capture parity', async (
   };
   const roundTrip = fromRecordedLensFile(toRecordedLensFile(changed, file)).record;
   expect(roundTrip.graphs).toEqual(record.graphs);
-  expect(roundTrip.captures!.snapshots).toEqual(changed.captures.snapshots);
+  // Current serialization records the exact logical valueCount on legacy captures as well.
+  expect(roundTrip.captures!.snapshots).toEqual(
+    changed.captures.snapshots.map(capture => ({...capture, valueCount: capture.values.length}))
+  );
   expect(getStructureSignature(roundTrip, getRecordedCaptureNames(roundTrip))).not.toEqual(
     getStructureSignature(record, getRecordedCaptureNames(record))
   );

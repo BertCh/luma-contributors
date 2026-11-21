@@ -184,7 +184,7 @@ for (const backend of ['zonal', 'group'] as const) {
             ),
             candidateCapacity: 4096
           },
-          outputs: {
+          output: {
             counts: counts.view,
             ...(statistic === 'count' ? {} : {featureValues: featureValues.view}),
             color: {
@@ -298,7 +298,7 @@ for (const backend of ['zonal', 'group'] as const) {
             )
           },
           polygons: {...polygons, kind: 'polygons', candidateCapacity: 64},
-          outputs: {counts: counts.view, status: {overflow: overflow.view}}
+          output: {counts: counts.view, status: {overflow: overflow.view}}
         });
         expect(result.featureCount).toBe(1);
         expect(result.spatialContext.edgeModel).toBe('linear');

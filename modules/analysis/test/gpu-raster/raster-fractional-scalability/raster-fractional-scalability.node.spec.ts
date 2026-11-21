@@ -40,7 +40,7 @@ it('indexes 100k polygons over a 4096 square raster and retains the named brute-
   ).toThrow(/zones times grid cells.*4194304/);
   expect(
     () => new GPURasterFractionalCategoricalStatistics({...categorical, mode: 'exact'})
-  ).toThrow(/exact mode/);
+  ).toThrow(/exact mode.*65535.*tiled/);
   const statistics = new GPURasterFractionalCategoricalStatistics(categorical);
   expect(statistics.getCommandNodes(graph).length).toBeLessThanOrEqual(
     statistics.estimatedCommandNodeCount

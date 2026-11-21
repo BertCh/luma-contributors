@@ -256,7 +256,10 @@ it('multiple-testing corrections accept 30 million rows with uint32 ranks and fa
         new GPUMultipleTestingAdjustment({
           pValues: view('float32', 30_000_000),
           method,
-          output: {adjustedPValues: view('float32', 30_000_000), testedCount: view('uint32', 1)}
+          output: {
+            adjustedPValues: view('float32', 30_000_000),
+            effectiveFamilySize: view('uint32', 1)
+          }
         }).getCommandNodes(graph)
       ).not.toThrow();
     } finally {

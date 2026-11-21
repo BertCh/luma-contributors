@@ -15,13 +15,13 @@ export type EmpiricalBayesOracle = {
 
 /**
  * Double-precision transcription of esda `smoothing.assuncao_rate` and `Empirical_Bayes`, over
- * the rows with finite events and a finite positive population (and a nonzero mask).
+ * the rows with finite nonnegative events and a finite positive population (and a nonzero mask).
  */
 export function computeEmpiricalBayesOracle(input: {
   events: ArrayLike<number>;
   populations: ArrayLike<number>;
   mask?: ArrayLike<number>;
-  /** Clamp the prior variance at zero in `smoothed` (Marshall 1991). Defaults to false (esda). */
+  /** Clamp the prior variance at zero in `smoothed` (Marshall 1991). Defaults to true, like the contributor. */
   clampPriorVariance?: boolean;
 }): EmpiricalBayesOracle {
   const {events, populations, mask} = input;
@@ -30,6 +30,7 @@ export function computeEmpiricalBayesOracle(input: {
     return (
       (!mask || mask[row] !== 0) &&
       Number.isFinite(events[row]) &&
+      events[row] >= 0 &&
       Number.isFinite(populations[row]) &&
       populations[row] > 0
     );
@@ -60,9 +61,13 @@ export function computeEmpiricalBayesOracle(input: {
     const variance = rawVariance < 0 ? noise : rawVariance;
     standardized.push((rate - pooledRate) / Math.sqrt(variance));
     const clampedVariance = Math.max(priorVariance, 0);
-    const weight = input.clampPriorVariance
-      ? clampedVariance / (clampedVariance + noise)
-      : priorVariance / rawVariance;
+    const clampedDenominator = clampedVariance + noise;
+    const weight =
+      (input.clampPriorVariance ?? true)
+        ? clampedDenominator > 0
+          ? clampedVariance / clampedDenominator
+          : 0
+        : priorVariance / rawVariance;
     smoothed.push(weight * rate + (1 - weight) * pooledRate);
     raw.push(rate);
   }

@@ -69,7 +69,7 @@ export async function runExample(
     positions: centroids,
     spatialContext,
     mode: 'knn',
-    k: 4,
+    neighborCount: 4,
     gridSize: [16, 16],
     parameters: searchParameters,
     rowStandardize: false,

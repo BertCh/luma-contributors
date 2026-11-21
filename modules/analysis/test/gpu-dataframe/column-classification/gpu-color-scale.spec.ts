@@ -1,3 +1,4 @@
+import {selectColorScaleOutput} from './select-classification-outputs.test-utils';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
@@ -11,7 +12,10 @@ import {
   importGraphBuffer
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
-import {GPUColorScale} from '../../../src/dataframe-analysis/column-classification/gpu-color-scale';
+import {
+  GPUColorScale,
+  type GPUColorScaleProps
+} from '../../../src/dataframe-analysis/column-classification/gpu-color-scale';
 import {
   getGPUColorScaleParameterValues,
   packGPUColor,
@@ -24,11 +28,43 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 import nativeFixtures from './color-scale-native-fixtures.json';
+import {CLASSIFICATION_OUTPUT_SUBSETS, COLOR_OPTIONAL_FIXTURE} from './optional-output-fixtures';
 
 const NONE = 0xffffffff;
+
+it.each(
+  CLASSIFICATION_OUTPUT_SUBSETS
+)('GPUColorScale optional outputs match hand-derived literals: %j', async subset => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const expected = COLOR_OPTIONAL_FIXTURE;
+  const fixture = createFixture(device, {
+    values: Float32Array.from(expected.values),
+    mask: Uint32Array.from(expected.mask),
+    maximumDomainCount: 4,
+    maximumPaletteCount: 4,
+    outputs: {colors: subset.colors, classIndices: subset.classes, classCounts: subset.counts},
+    mutateOutputSelection: true
+  });
+  try {
+    // Repeat to prove counts are cleared, rather than accumulated across encodings.
+    for (let frame = 0; frame < 2; frame++) {
+      const actual = await fixture.run({
+        domain: expected.domain,
+        palette: expected.palette,
+        options: {scale: 'threshold', noDataColor: 7, paletteCount: 3}
+      });
+      if (subset.colors) expect(Array.from(actual.colors)).toEqual(expected.colors);
+      if (subset.classes) expect(Array.from(actual.classIndices)).toEqual(expected.classes);
+      if (subset.counts) expect(Array.from(actual.classCounts)).toEqual(expected.counts);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
 
 /** Deterministic xorshift in [0, 1). */
 function createRandom(seed: number): () => number {
@@ -50,7 +86,7 @@ type Frame = {
     domainCount?: number;
     paletteCount?: number;
   };
-  /** Class count written to the GPU-side domainCount view (view path only). */
+  /** Class count written to the GPU-side classCount view (view path only). */
   classCount?: number;
 };
 
@@ -61,13 +97,15 @@ type FixtureConfig = {
   mask?: Uint32Array;
   maximumDomainCount: number;
   maximumPaletteCount: number;
-  useDomainCountView?: boolean;
+  useClassCountView?: boolean;
   outputs?: {colors?: boolean; classIndices?: boolean; classCounts?: boolean};
+  mutateOutputSelection?: boolean;
 };
 
 type FrameResult = {colors: Uint32Array; classIndices: Uint32Array; classCounts: Uint32Array};
 
 type Fixture = {
+  buffers: {colors: Buffer; classIndices: Buffer; classCounts: Buffer};
   compileCount: number;
   frames: number;
   run(frame: Frame): Promise<FrameResult>;
@@ -99,10 +137,13 @@ function createFixture(device: Device, config: FixtureConfig): Fixture {
     classIndices: track(createOutputBuffer(device, rows)),
     classCounts: track(createOutputBuffer(device, config.maximumPaletteCount))
   };
-  let domainCountView;
+  outputBuffers.colors.write(new Uint32Array(rows).fill(0xabcdef));
+  outputBuffers.classIndices.write(new Uint32Array(rows).fill(0xabcdef));
+  outputBuffers.classCounts.write(new Uint32Array(config.maximumPaletteCount).fill(0xabcdef));
+  let classCountView;
   let classCountSource: Buffer | undefined;
   const extraNodes = [];
-  if (config.useDomainCountView) {
+  if (config.useClassCountView) {
     // A GPU kernel writes the class count into a graph transient, like GPUClassBreaks would.
     classCountSource = track(createInputBuffer(device, new Uint32Array(1)));
     const sourceView = importGraphBuffer(
@@ -112,14 +153,14 @@ function createFixture(device: Device, config: FixtureConfig): Fixture {
       'uint32',
       1
     );
-    domainCountView = createTransientView(graph, 'domain-count', 'uint32', 1);
+    classCountView = createTransientView(graph, 'class-count', 'uint32', 1);
     extraNodes.push(
       createWGSLKernelNode(graph, {
         id: 'write-class-count',
         operation: 'test',
         bindings: [
           {name: 'classCountIn', view: sourceView, type: 'u32', access: 'read'},
-          {name: 'classCountOut', view: domainCountView, type: 'u32', access: 'read_write'}
+          {name: 'classCountOut', view: classCountView, type: 'u32', access: 'read_write'}
         ],
         invocationCount: 1,
         body: 'classCountOut[classCountOutOffset] = classCountIn[classCountInOffset];'
@@ -129,68 +170,66 @@ function createFixture(device: Device, config: FixtureConfig): Fixture {
   for (const node of extraNodes) {
     graph.add(node);
   }
-  graph.add(
-    new GPUColorScale({
-      id: 'scale',
-      values: importGraphBuffer(
-        graph,
-        'values',
-        track(createInputBuffer(device, config.values)),
-        config.values instanceof Float32Array
-          ? 'float32'
-          : config.values instanceof Int32Array
-            ? 'sint32'
-            : 'uint32',
-        rows
-      ) as never,
-      integerValues: config.integerValues,
-      mask: config.mask
+  const contributorProps: GPUColorScaleProps = {
+    id: 'scale',
+    values: importGraphBuffer(
+      graph,
+      'values',
+      track(createInputBuffer(device, config.values)),
+      config.values instanceof Float32Array
+        ? 'float32'
+        : config.values instanceof Int32Array
+          ? 'sint32'
+          : 'uint32',
+      rows
+    ) as never,
+    integerValues: config.integerValues,
+    mask: config.mask
+      ? importGraphBuffer(
+          graph,
+          'mask',
+          track(createInputBuffer(device, config.mask)),
+          'uint32',
+          rows
+        )
+      : undefined,
+    domain: importGraphBuffer(graph, 'domain', domainBuffer, 'float32', config.maximumDomainCount),
+    classCount: classCountView,
+    palette: importGraphBuffer(
+      graph,
+      'palette',
+      paletteBuffer,
+      'uint32',
+      config.maximumPaletteCount
+    ),
+    parameters: parameterBuffer.importToGraph(graph),
+    maximumDomainCount: config.maximumDomainCount,
+    maximumPaletteCount: config.maximumPaletteCount,
+    output: selectColorScaleOutput({
+      colors: wanted.colors
+        ? importGraphBuffer(graph, 'o-colors', outputBuffers.colors, 'uint32', rows)
+        : undefined,
+      classIndices: wanted.classIndices
+        ? importGraphBuffer(graph, 'o-classes', outputBuffers.classIndices, 'uint32', rows)
+        : undefined,
+      classCounts: wanted.classCounts
         ? importGraphBuffer(
             graph,
-            'mask',
-            track(createInputBuffer(device, config.mask)),
+            'o-counts',
+            outputBuffers.classCounts,
             'uint32',
-            rows
+            config.maximumPaletteCount
           )
-        : undefined,
-      domain: importGraphBuffer(
-        graph,
-        'domain',
-        domainBuffer,
-        'float32',
-        config.maximumDomainCount
-      ),
-      domainCount: domainCountView,
-      palette: importGraphBuffer(
-        graph,
-        'palette',
-        paletteBuffer,
-        'uint32',
-        config.maximumPaletteCount
-      ),
-      parameters: parameterBuffer.importToGraph(graph),
-      maximumDomainCount: config.maximumDomainCount,
-      maximumPaletteCount: config.maximumPaletteCount,
-      output: {
-        colors: wanted.colors
-          ? importGraphBuffer(graph, 'o-colors', outputBuffers.colors, 'uint32', rows)
-          : undefined,
-        classIndices: wanted.classIndices
-          ? importGraphBuffer(graph, 'o-classes', outputBuffers.classIndices, 'uint32', rows)
-          : undefined,
-        classCounts: wanted.classCounts
-          ? importGraphBuffer(
-              graph,
-              'o-counts',
-              outputBuffers.classCounts,
-              'uint32',
-              config.maximumPaletteCount
-            )
-          : undefined
-      }
+        : undefined
     })
-  );
+  };
+  const contributor = new GPUColorScale(contributorProps);
+  // R4: the validated selection must survive caller mutation before graph construction.
+  const callerOutput: Partial<GPUColorScaleProps['output']> = contributorProps.output;
+  if (config.mutateOutputSelection) delete callerOutput.classCounts;
+  graph.add(contributor);
   const fixture: Fixture = {
+    buffers: outputBuffers,
     compileCount: 0,
     frames: 0,
     async run(frame) {
@@ -389,6 +428,30 @@ it('GPUColorScale linear step is exact on dyadic values, with clamp on and off',
     0
   ]);
   expectParity(clampedResult, config, clamped, true, 'clamped');
+  expect(fixture.compileCount).toBe(1);
+  fixture.destroy();
+});
+
+it('GPUColorScale with only a classCounts output counts the dyadic linear-step scene by hand', async () => {
+  // TOOL-114: the counts-only colorize kernel, pinned to a hand count rather than another run.
+  // Linear step over [0, 8] with four classes: class = floor(value / 2), 8 in the last class; 9,
+  // -1, NaN and +-Infinity are outside the unclamped domain and the second 2 is masked out.
+  // Class 0: 0, 1, -0; class 1: 2, 3; class 2: 4, 5; class 3: 6, 7, 8.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createFixture(device, {
+    values: Float32Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, NaN, 2, Infinity, -Infinity, -0]),
+    mask: Uint32Array.from([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1]),
+    maximumDomainCount: 4,
+    maximumPaletteCount: 4,
+    outputs: {classCounts: true}
+  });
+  const options = {scale: 'linear', noDataColor: NO_DATA} as const;
+  const counted = await fixture.run({domain: [0, 8], palette: GRADIENT, options});
+  expect(Array.from(counted.classCounts)).toEqual([3, 2, 2, 3]);
+  // Every row outside the domain on the same graph: the counts are cleared, not accumulated.
+  const outside = await fixture.run({domain: [100, 108], palette: GRADIENT, options});
+  expect(Array.from(outside.classCounts)).toEqual([0, 0, 0, 0]);
   expect(fixture.compileCount).toBe(1);
   fixture.destroy();
 });
@@ -593,7 +656,7 @@ it('GPUColorScale reads the active domain length from a GPU-written class count'
     values,
     maximumDomainCount: 6,
     maximumPaletteCount: 5,
-    useDomainCountView: true
+    useClassCountView: true
   };
   const fixture = createFixture(device, config);
   const domain = [0, 2, 4, 8, 12, 100];
@@ -669,68 +732,149 @@ it('GPUColorScale linear interpolation blends adjacent palette entries within 1 
   fixture.destroy();
 });
 
-it('GPUColorScale writes subsets of outputs and is bitwise reproducible', async () => {
+it('DPC-122: GPUColorScale writes all seven output subsets with literal results on reuse', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const random = createRandom(31);
-  const values = Float32Array.from({length: 2000}, () => random() * 100 - 10);
-  const frame: Frame = {
-    domain: [0, 20, 50, 100],
-    palette: GRADIENT,
-    options: {scale: 'log', interpolation: 'linear', clamp: true, noDataColor: NO_DATA, logFloor: 1}
-  };
-  const outputSets = [
-    {colors: true},
-    {classIndices: true},
-    {classCounts: true},
-    {classIndices: true, classCounts: true},
-    {colors: true, classIndices: true, classCounts: true}
+  // Reuse the independent TOOL-114 dyadic fixture: class=floor(value/2), endpoint 8 in class 3.
+  // A tie at 2 enters class 1; NaN, infinities, out-of-domain and masked rows have no class.
+  const values = Float32Array.from([
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    -1,
+    NaN,
+    2,
+    Infinity,
+    -Infinity,
+    -0
+  ]);
+  const mask = Uint32Array.from([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1]);
+  const palette = [0xff010203, 0xff112233, 0xff445566, 0xff778899];
+  const firstIndices = [0, 0, 1, 1, 2, 2, 3, 3, 3, NONE, NONE, NONE, NONE, NONE, NONE, 0];
+  const firstColors = [
+    0xff010203,
+    0xff010203,
+    0xff112233,
+    0xff112233,
+    0xff445566,
+    0xff445566,
+    0xff778899,
+    0xff778899,
+    0xff778899,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    0xff010203
   ];
-  let reference: FrameResult | undefined;
-  const subsetResults: {outputs: (typeof outputSets)[number]; result: FrameResult}[] = [];
-  for (const outputs of outputSets) {
-    const config: FixtureConfig = {
+  // With two active palette entries, class=floor(value/4), endpoint 8 in class 1.
+  const secondIndices = [0, 0, 0, 0, 1, 1, 1, 1, 1, NONE, NONE, NONE, NONE, NONE, NONE, 0];
+  const secondColors = [
+    0xff010203,
+    0xff010203,
+    0xff010203,
+    0xff010203,
+    0xff112233,
+    0xff112233,
+    0xff112233,
+    0xff112233,
+    0xff112233,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    NO_DATA,
+    0xff010203
+  ];
+  for (let subset = 1; subset < 8; subset++) {
+    const outputs = {
+      colors: Boolean(subset & 1),
+      classIndices: Boolean(subset & 2),
+      classCounts: Boolean(subset & 4)
+    };
+    const fixture = createFixture(device, {
       values,
+      mask,
       maximumDomainCount: 4,
       maximumPaletteCount: 4,
       outputs
+    });
+    const poison = () => {
+      fixture.buffers.colors.write(new Uint32Array(16).fill(0xdeadbeef));
+      fixture.buffers.classIndices.write(new Uint32Array(16).fill(0xdeadbeef));
+      fixture.buffers.classCounts.write(new Uint32Array(4).fill(0xdeadbeef));
     };
-    const fixture = createFixture(device, config);
-    const first = await fixture.run(frame);
-    const second = await fixture.run(frame);
-    expect(Array.from(second.colors)).toEqual(Array.from(first.colors));
-    expect(Array.from(second.classIndices)).toEqual(Array.from(first.classIndices));
-    expect(Array.from(second.classCounts)).toEqual(Array.from(first.classCounts));
-    if (outputs.colors && outputs.classIndices && outputs.classCounts) {
-      reference = first;
+    const check = (result: FrameResult, indices: number[], colors: number[], counts: number[]) => {
+      expect(result.colors.length).toBe(outputs.colors ? 16 : 0);
+      expect(result.classIndices.length).toBe(outputs.classIndices ? 16 : 0);
+      expect(result.classCounts.length).toBe(outputs.classCounts ? 4 : 0);
+      if (outputs.colors)
+        expect(Array.from(result.colors), `subset ${subset} colors`).toEqual(colors);
+      if (outputs.classIndices)
+        expect(Array.from(result.classIndices), `subset ${subset} indices`).toEqual(indices);
+      if (outputs.classCounts)
+        expect(Array.from(result.classCounts), `subset ${subset} counts`).toEqual(counts);
+    };
+    try {
+      poison();
+      check(
+        await fixture.run({
+          domain: [0, 8],
+          palette,
+          options: {scale: 'linear', noDataColor: NO_DATA}
+        }),
+        firstIndices,
+        firstColors,
+        [3, 2, 2, 3]
+      );
+      poison();
+      check(
+        await fixture.run({
+          domain: [0, 8],
+          palette: palette.slice(0, 2),
+          options: {scale: 'linear', noDataColor: NO_DATA}
+        }),
+        secondIndices,
+        secondColors,
+        [5, 5, 0, 0]
+      );
+      expect(fixture.compileCount).toBe(1);
+    } finally {
+      fixture.destroy();
     }
-    subsetResults.push({outputs, result: first});
+  }
+});
+
+it('DPC-110: GPUColorScale sends both signed zeros to the upper class', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createFixture(device, {
+    values: Float32Array.of(-0, +0),
+    maximumDomainCount: 3,
+    maximumPaletteCount: 2
+  });
+  try {
+    const result = await fixture.run({
+      domain: [-1, +0, 1],
+      palette: [0xff010203, 0xff112233],
+      options: {scale: 'threshold'}
+    });
+    expect(Array.from(result.classIndices)).toEqual([1, 1]);
+    expect(Array.from(result.classCounts)).toEqual([0, 2]);
+    expect(Array.from(result.colors)).toEqual([0xff112233, 0xff112233]);
+  } finally {
     fixture.destroy();
   }
-  expect(reference).toBeDefined();
-  // Each requested output of a subset equals the same output of the run that requests all three.
-  for (const {outputs, result} of subsetResults) {
-    const label = JSON.stringify(outputs);
-    if (outputs.colors) {
-      expect(Array.from(result.colors), label).toEqual(Array.from(reference!.colors));
-    }
-    if (outputs.classIndices) {
-      expect(Array.from(result.classIndices), label).toEqual(Array.from(reference!.classIndices));
-    }
-    if (outputs.classCounts) {
-      expect(Array.from(result.classCounts), label).toEqual(Array.from(reference!.classCounts));
-    }
-  }
-  expect(Array.from(reference!.classCounts).reduce((sum, count) => sum + count, 0)).toBe(2000);
-  const full = createFixture(device, {
-    values,
-    maximumDomainCount: 4,
-    maximumPaletteCount: 4
-  });
-  const fullResult = await full.run(frame);
-  expect(Array.from(fullResult.colors)).toEqual(Array.from(reference!.colors));
-  expect(Array.from(fullResult.classCounts).reduce((sum, count) => sum + count, 0)).toBe(2000);
-  full.destroy();
 });
 
 it('GPUColorScale classifies 1M rows like the oracle', async () => {

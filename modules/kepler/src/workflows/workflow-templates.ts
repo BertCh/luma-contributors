@@ -260,7 +260,7 @@ export function listWorkflowTemplates(): readonly WorkflowTemplate[] {
           id: 'clusters',
           operationId: 'density-clustering',
           label: 'Find clusters',
-          parameters: {...COORDINATE_SYSTEM, epsilon: 80, minimumPoints: 4},
+          parameters: {...COORDINATE_SYSTEM, epsilon: 80, minimumSamples: 4},
           inputs: {points: output('samples', 'data')},
           promote: {parameter: 'epsilon', minimum: 60, maximum: 200}
         },

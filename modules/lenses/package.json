@@ -8,7 +8,7 @@
     "url": "https://github.com/visgl/luma-contributors",
     "directory": "modules/lenses"
   },
-  "license": "SEE LICENSE IN src/computation-lenses/data/README.md",
+  "license": "SEE LICENSE IN README.md",
   "type": "module",
   "types": "dist/index.d.ts",
   "main": "dist/index.cjs",
@@ -45,8 +45,8 @@
     }
   },
   "files": [
-    "src",
     "dist",
+    "!dist/.build-record.json",
     "README.md"
   ],
   "sideEffects": [

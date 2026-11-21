@@ -86,9 +86,9 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
 
   switch (method) {
     case 'equal-interval': {
-      const width = fround(fround(maximum - minimum) / classCount);
       for (let edge = 1; edge < classCount; edge++) {
-        inner.push(fround(minimum + fround(width * edge)));
+        // Binary64 reference interpolation avoids overflowing a binary32 span.
+        inner.push(fround((minimum * (classCount - edge) + maximum * edge) / classCount));
       }
       break;
     }
@@ -164,15 +164,17 @@ export function computeClassBreaksOracle(input: ClassBreaksOracleInput): ClassBr
       for (let position = 1; position < sortedFinite.length; position++) {
         const lower = sortedFinite[position - 1];
         const upper = sortedFinite[position];
-        if (getOrderedFloat32Key(lower) !== getOrderedFloat32Key(upper)) {
-          gaps.push({gap: fround(upper - lower), position});
+        if (lower < upper) {
+          gaps.push({gap: upper - lower, position});
         }
       }
       gaps.sort((left, right) => right.gap - left.gap || left.position - right.position);
       const midpoints = gaps.slice(0, Math.max(classCount - 1, 0)).map(({position}) => {
         const lower = sortedFinite[position - 1];
         const upper = sortedFinite[position];
-        return fround(lower + fround(fround(upper - lower) * 0.5));
+        // Independent float64 midpoint; publish to f32 only once, then enforce lower edges.
+        const midpoint = fround((lower + upper) / 2);
+        return midpoint <= lower ? upper : midpoint;
       });
       midpoints.sort((left, right) => left - right);
       inner.push(...midpoints);
@@ -339,7 +341,7 @@ export function computeExactNaturalBreaks(
   };
 }
 
-/** Brute-force rows per class: class `i` holds values with `i` inner edge keys at or below theirs. */
+/** Brute-force rows per class: class `i` holds values with `i` inner edges numerically at or below them. */
 export function countClassesOracle(
   values: Float32Array,
   mask: Uint32Array | undefined,
@@ -356,10 +358,9 @@ export function countClassesOracle(
     if (Number.isNaN(value) || (mask && mask[row] === 0)) {
       continue;
     }
-    const key = getOrderedFloat32Key(value);
     let classIndex = 0;
     for (let edge = 1; edge < classCount; edge++) {
-      if (getOrderedFloat32Key(breaks[edge]) <= key) {
+      if (breaks[edge] <= value) {
         classIndex++;
       }
     }

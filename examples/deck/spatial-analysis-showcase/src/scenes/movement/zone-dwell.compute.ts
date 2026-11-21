@@ -156,6 +156,7 @@ type StayTable = {
   tracks: Uint32Array;
   zones: Uint32Array;
   seconds: Float32Array;
+  overflow?: boolean;
   /** Planar metres, stops only. */
   centroids?: Float32Array;
 };
@@ -438,7 +439,11 @@ export async function createZoneDwell(
         {buffer: visitCount, size: 4},
         {buffer: visitTracks, size: VISIT_CAPACITY * 4},
         {buffer: visitZones, size: VISIT_CAPACITY * 4},
-        {buffer: visitDwell, size: VISIT_CAPACITY * 4}
+        {buffer: visitDwell, size: VISIT_CAPACITY * 4},
+        {buffer: visitOverflow, size: 4},
+        {buffer: candidateOverflow, size: 4},
+        {buffer: eventOverflow, size: 4},
+        {buffer: trackOverflow, size: 4}
       ],
       raw => {
         if (destroyed) return;
@@ -450,6 +455,7 @@ export async function createZoneDwell(
           count,
           tracks: words.slice(1, 1 + count),
           zones: words.slice(1 + VISIT_CAPACITY, 1 + VISIT_CAPACITY + count),
+          overflow: words.slice(1 + VISIT_CAPACITY * 3, 1 + VISIT_CAPACITY * 3 + 4).some(Boolean),
           seconds: floats.slice(1 + VISIT_CAPACITY * 2, 1 + VISIT_CAPACITY * 2 + count)
         };
         refresh();
@@ -466,7 +472,9 @@ export async function createZoneDwell(
         {buffer: stopIds, size: STOP_CAPACITY * 4},
         {buffer: stopZones, size: STOP_CAPACITY * 4},
         {buffer: stopDurations, size: STOP_CAPACITY * 4},
-        {buffer: stopCentroids, size: STOP_CAPACITY * 8}
+        {buffer: stopCentroids, size: STOP_CAPACITY * 8},
+        {buffer: stopOverflow, size: 4},
+        {buffer: joinOverflow, size: 4}
       ],
       raw => {
         if (destroyed) return;
@@ -479,6 +487,7 @@ export async function createZoneDwell(
           tracks: words.slice(1, 1 + count),
           zones: words.slice(1 + STOP_CAPACITY, 1 + STOP_CAPACITY + count),
           seconds: floats.slice(1 + STOP_CAPACITY * 2, 1 + STOP_CAPACITY * 2 + count),
+          overflow: words.slice(1 + STOP_CAPACITY * 5, 1 + STOP_CAPACITY * 5 + 2).some(Boolean),
           centroids: floats.slice(1 + STOP_CAPACITY * 3, 1 + STOP_CAPACITY * 3 + count * 2)
         };
         refresh();
@@ -575,7 +584,7 @@ export async function createZoneDwell(
       },
       candidateCapacity: EVENT_CANDIDATE_CAPACITY,
       trackEventCapacity: eventsPerVessel,
-      outputs: {
+      output: {
         events: {
           ids: view('event-tracks', eventTracks, 'uint32', capacity),
           status: {
@@ -689,7 +698,7 @@ export async function createZoneDwell(
         ),
         candidateCapacity: STOP_CANDIDATE_CAPACITY
       },
-      outputs: {
+      output: {
         stops: {
           ids: view('stop-ids', stopIds, 'uint32', STOP_CAPACITY),
           centroids: importGraphBuffer(
@@ -881,7 +890,9 @@ export async function createZoneDwell(
 
   function updateDefinitionReadouts(): void {
     const stops = stopped.stays;
-    if (stops) {
+    if (stops && (stops.overflow || stopped.flags.stopOverflow || stopped.flags.joinOverflow)) {
+      ctx.setReadout('stopCount', 'unavailable: incomplete stop list or zone join');
+    } else if (stops) {
       let inZones = 0;
       for (let row = 0; row < stops.count; row++) if (stops.zones[row] < zoneCount) inZones++;
       ctx.setReadout(
@@ -958,6 +969,18 @@ export async function createZoneDwell(
   function updateStayReadouts(): void {
     const primary = getPrimary();
     const stays = primary.stays;
+    const listIncomplete =
+      primary.variant === 'stopped'
+        ? primary.flags.stopOverflow || primary.flags.joinOverflow
+        : primary.flags.candidateOverflow ||
+          primary.flags.eventOverflow ||
+          primary.flags.trackOverflow ||
+          primary.flags.listOverflow;
+    if (listIncomplete || stays?.overflow) {
+      for (const key of ['longestVisit', 'passageShare', 'meanVisit'])
+        ctx.setReadout(key, 'unavailable: incomplete visits');
+      return;
+    }
     const minimumStop = ctx.options.stopMinutes * 60;
     if (!stays) {
       ctx.setReadout('longestVisit', null);
@@ -997,7 +1020,14 @@ export async function createZoneDwell(
     }
     ctx.setReadout(
       'events',
-      events ? `${formatCount(shown)} crossings in the zones in view` : null
+      events
+        ? flags.candidateOverflow ||
+          flags.trackOverflow ||
+          flags.eventOverflow ||
+          flags.listOverflow
+          ? `at least ${formatCount(shown)} retained crossings in the zones in view (incomplete)`
+          : `${formatCount(shown)} crossings in the zones in view`
+        : null
     );
     ctx.setReadout(
       'eventsKept',
@@ -1011,9 +1041,9 @@ export async function createZoneDwell(
     ctx.setReadout(
       'overflow',
       [
-        flags.candidateOverflow ? 'candidate scratch' : '',
+        flags.candidateOverflow ? 'candidate scratch (zone-event statistics incomplete)' : '',
         flags.trackOverflow
-          ? 'a vessel exceeded the per-vessel event cap (statistics stay exact)'
+          ? `a vessel exceeded the per-vessel event cap${flags.candidateOverflow ? '' : ' (zone-event statistics stay exact)'}`
           : '',
         flags.listOverflow ? 'event list' : '',
         stoppedFlags.joinOverflow || stoppedFlags.stopOverflow ? 'stop list or join' : ''
@@ -1205,7 +1235,10 @@ export async function createZoneDwell(
   function updateFollowed(): void {
     const vessel = followed;
     ctx.setReadout('followed', vessel ? `a ${vessel.category.toLowerCase()}` : null);
-    ctx.setChart('visitChart', vessel ? buildGantt(vessel) : null);
+    ctx.setChart(
+      'visitChart',
+      vessel && !hasEventLoss(inside.flags) && !inside.stays?.overflow ? buildGantt(vessel) : null
+    );
     if (!ctx.options.showVessel || !vessel) {
       if (vesselAnnotated) {
         markersKey = '';
@@ -1322,11 +1355,21 @@ export async function createZoneDwell(
   }
 
   // ---- The one place everything is recomputed ------------------------------------------------------
+  function hasEventLoss(flags: SummaryFlags): boolean {
+    return Boolean(
+      flags.candidateOverflow || flags.eventOverflow || flags.trackOverflow || flags.listOverflow
+    );
+  }
+
   function refresh(): void {
     if (destroyed) return;
     const options = ctx.options;
-    insideGroups = inside.stats ? reduceToGroups(inside.stats, groups) : null;
-    stoppedGroups = stopped.stats ? reduceToGroups(stopped.stats, groups) : null;
+    insideGroups =
+      inside.stats && !inside.flags.candidateOverflow ? reduceToGroups(inside.stats, groups) : null;
+    stoppedGroups =
+      stopped.stats && !stopped.flags.stopOverflow && !stopped.flags.joinOverflow
+        ? reduceToGroups(stopped.stats, groups)
+        : null;
     insideValues = getGroupValuesFor(insideGroups);
     stoppedValues = getGroupValuesFor(stoppedGroups);
     writeDisplay(inside, insideValues);
@@ -1369,6 +1412,11 @@ export async function createZoneDwell(
 
     const rankValues = options.compareVariants ? insideValues : getPrimaryValues();
     updateRanking(rankValues);
+    if (!rankValues) {
+      for (const key of ['topZone', 'busiestArea', 'typicalArea'])
+        ctx.setReadout(key, 'unavailable: incomplete statistics');
+      ctx.setChart('rankChart', null);
+    }
     ctx.setReadout(
       'zonesUsed',
       rankValues
@@ -1668,6 +1716,7 @@ export async function createZoneDwell(
     },
 
     getTooltip(event) {
+      if (!getPrimaryValues()) return null;
       if (!event.coordinate) return null;
       const [x, y] = vessels.project(event.coordinate[0], event.coordinate[1]);
       const zone = findZone(zones, x, y);

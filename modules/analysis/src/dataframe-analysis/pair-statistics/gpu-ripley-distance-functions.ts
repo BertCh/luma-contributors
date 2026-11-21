@@ -16,6 +16,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -30,6 +31,7 @@ import {
   validatePairStatisticsRowCount
 } from './pair-statistics-grid';
 import {GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH} from './ripley-distance-parameters';
+import {EXACT_HANISCH_SEARCH_WGSL} from './exact-hanisch-search';
 
 import {
   resolveGPUSpatialContext,
@@ -98,9 +100,15 @@ export type GPURipleyDistanceFunctionsOutput = {
  *
  * Per-frame (no rebuild or recompile): the contents of `positions`, `mask` and `parameters`
  * (window bounds, maximum distance, edge-correction mode: none, border, Kaplan-Meier, Hanisch). Compile-time: the row count,
- * `gridSize`, `referenceGrid`, `radiusCount`, `studyWindow` and which optional `output` views are present.
+ * `gridSize`, `referenceGrid`, `radiusCount`, `studyWindow`, `hanischSearch` and which optional `output` views are present.
  */
 export type GPURipleyDistanceFunctionsProps = {
+  /**
+   * Rectangle Hanisch denominator search. Default 'capped' preserves the radius-capped estimate.
+   * 'exact' extends unresolved event and reference searches to the boundary distance using cell
+   * rings and a geometric stopping bound. Compile-time; requires a rectangle study window.
+   */
+  hanischSearch?: 'capped' | 'exact';
   /** Prefix for generated node and transient IDs. Defaults to `'ripley-distance-functions'`. */
   id?: string;
   /**
@@ -152,6 +160,7 @@ export type GPURipleyDistanceFunctionsProps = {
  * Ripley's distance functions of a planar point pattern in a rectangle or prepared polygon window: the
  * nearest-neighbor function G, the empty-space function F and their ratio J
  * (spatstat `Gest`, `Fest`, `Jest`, here without kernel smoothing).
+ * This class publishes no overflow word.
  *
  * Definition, which the GPU result matches within the bounds below:
  * - The window is the per-frame bounds rectangle or prepared polygon. Included events have a nonzero mask (when
@@ -187,6 +196,13 @@ export type GPURipleyDistanceFunctionsProps = {
  *   exact when every point has a neighbor within
  *   `maximumDistance`, so choose `maximumDistance` at least as large as the largest
  *   nearest-neighbor distance when the Hanisch estimate matters.
+ *   Alternatively `hanischSearch: 'exact'` computes the rectangle denominator from all
+ *   uncensored nearest distances, including those beyond the last reported radius. It retains
+ *   the same 14-bit weights and 1024 area-ratio cap. The ring search stops when unvisited cells
+ *   are farther than the nearest event or the censoring boundary; worst case it visits every
+ *   included event per unresolved focus/reference location. Polygon mode remains capped.
+ *   Each exact search visits at most gridSize[0]*gridSize[1] < 2^24 cells and makes at most
+ *   4*max(gridSize[0],gridSize[1]) ring-side checks, including on one-cell-wide lattices.
  * - `J(r) = (1 - G(r)) / (1 - F(r))`, NaN where either function is undefined or F has
  *   zero survival. Survival probabilities are evaluated directly to avoid cancellation at one.
  * - Undefined results (`n < 2` for G, `n < 1` for F, zero reference count, an empty border set)
@@ -217,6 +233,18 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
     const id = this.id;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
     this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
+    validateRequirement(
+      id,
+      props.hanischSearch === undefined ||
+        props.hanischSearch === 'capped' ||
+        props.hanischSearch === 'exact',
+      "hanischSearch must be 'capped' or 'exact'"
+    );
+    validateRequirement(
+      id,
+      props.hanischSearch !== 'exact' || this.studyWindow === 'rectangle',
+      "hanischSearch 'exact' requires studyWindow 'rectangle'"
+    );
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH
@@ -224,21 +252,21 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
     const {radiusCount, referenceGrid, output} = props;
     validateCapacity(id, 'radiusCount', radiusCount, 1, MAXIMUM_RADIUS_COUNT);
     validatePairHistogramShape(id, radiusCount, CHANNEL_COUNT);
-    if (
-      referenceGrid.length !== 2 ||
-      !Number.isInteger(referenceGrid[0]) ||
-      !Number.isInteger(referenceGrid[1]) ||
-      referenceGrid[0] < 1 ||
-      referenceGrid[1] < 1 ||
-      referenceGrid[0] * referenceGrid[1] > MAXIMUM_REFERENCE_COUNT
-    ) {
-      throw new Error(
-        `${id} referenceGrid must be two positive integers with a product of at most ${MAXIMUM_REFERENCE_COUNT}`
-      );
-    }
-    if (!output.g && !output.f && !output.j) {
-      throw new Error(`${id} output needs at least one of g, f or j`);
-    }
+    validateRequirement(
+      id,
+      referenceGrid.length === 2 &&
+        Number.isInteger(referenceGrid[0]) &&
+        Number.isInteger(referenceGrid[1]) &&
+        referenceGrid[0] >= 1 &&
+        referenceGrid[1] >= 1 &&
+        referenceGrid[0] * referenceGrid[1] <= MAXIMUM_REFERENCE_COUNT,
+      `referenceGrid must be two positive integers with a product of at most ${MAXIMUM_REFERENCE_COUNT}`
+    );
+    validateRequirement(
+      id,
+      Boolean(output.g || output.f || output.j),
+      'output needs at least one of g, f or j'
+    );
     for (const [name, view] of [
       ['output.g', output.g],
       ['output.f', output.f],
@@ -247,9 +275,11 @@ export class GPURipleyDistanceFunctions implements GPUCommandNodeProducer {
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['float32'], `${id} ${name}`);
-        if (view.length < radiusCount) {
-          throw new Error(`${id} ${name} must hold radiusCount rows`);
-        }
+        validateRequirement(
+          id,
+          view.length >= radiusCount,
+          `${name} length ${view.length} must be at least radiusCount (${radiusCount})`
+        );
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -398,7 +428,9 @@ const PI: f32 = 3.14159265358979;
       );
     }
     // Needs the Lattice type, so only the kernels that include the shared pair-statistics WGSL.
+    const exactHanisch = props.hanischSearch === 'exact';
     const observationWGSL = /* wgsl */ `${constantsWGSL}${windowWGSL}
+${exactHanisch ? EXACT_HANISCH_SEARCH_WGSL : ''}
 const HANISCH_SCALE: f32 = 16384.0;
 const HANISCH_CAP: f32 = 1024.0;
 
@@ -466,7 +498,14 @@ fn getCensorSlot(distance: f32, step: f32) -> u32 {
     } else {
       accumulate(getCensorSlot(borderDistance, lattice.maximumDistance / f32(RADIUS_COUNT)), 5u, 1u);
       if (!hasNeighbor && borderDistance >= lattice.maximumDistance) {
-        accumulate(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));
+        ${
+          exactHanisch
+            ? `if (u32(parameters[parametersOffset + 5u] + 0.5) == 3u) {
+          let tail = getExactHanischDistance(lattice, vec2f(x, y), focus, borderDistance);
+          if (tail.y > 0.0) { accumulate(0u, 7u, getHanischAmount(lattice, tail.x)); }
+        }`
+            : 'accumulate(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));'
+        }
       }
     }`
     });
@@ -573,7 +612,14 @@ fn addReference(slot: u32, channel: u32, amount: u32) {
     } else {
       addReference(getCensorSlot(borderDistance, lattice.maximumDistance / f32(RADIUS_COUNT)), 5u, 1u);
       if (!hasEvent && borderDistance >= lattice.maximumDistance) {
-        addReference(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));
+        ${
+          exactHanisch
+            ? `if (u32(parameters[parametersOffset + 5u] + 0.5) == 3u) {
+          let tail = getExactHanischDistance(lattice, vec2f(x, y), 0xffffffffu, borderDistance);
+          if (tail.y > 0.0) { addReference(0u, 7u, getHanischAmount(lattice, tail.x)); }
+        }`
+            : 'addReference(0u, 7u, getHanischAmount(lattice, lattice.maximumDistance));'
+        }
       }
     }
 ${studyWindow ? '  }\n' : ''}  }

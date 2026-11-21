@@ -32,7 +32,7 @@ it('the Moran harness passes the neighbor search status to the next consumer', (
         weights: {
           kind: 'neighbor-search',
           positions: new Float32Array([0, 0, 1, 0, 2, 0, 3, 0]),
-          parameters: {bounds: [-1, -1, 4, 1], radius: 1.1},
+          parameters: {bounds: [-1, -1, 4, 1], searchRadius: 1.1},
           capacity: 1
         }
       })

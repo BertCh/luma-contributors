@@ -2,48 +2,85 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {SpatialFamilyOperators} from '../computation-pack/types';
+import type {SpatialFamilyOperators, SpatialOperatorEntry} from '../computation-pack/types';
+
+const BUILDING_REFERENCE_OPERATOR: SpatialOperatorEntry = {
+  family: 'recipes',
+  descriptor: {scope: 'pairwise', reduction: 'select'},
+  variables: {
+    positions: 'coordinate',
+    sourceIds: 'category',
+    featureOffsets: 'category',
+    polygonOffsets: 'category',
+    ringOffsets: 'category',
+    segments: 'coordinate',
+    segmentBuildingIds: 'category',
+    enclosure: 'coordinate',
+    samples: 'coordinate',
+    owners: 'category',
+    fragments: 'coordinate',
+    fragmentCounts: 'count',
+    complete: 'category'
+  },
+  stages: ['representation', 'support', 'operator'],
+  datumKinds: [
+    {kind: 'building', label: 'building cell', indexSpace: '1d'},
+    {kind: 'site', label: 'boundary sample', indexSpace: '1d'}
+  ],
+  guards: ['coordinate-model'],
+  choices: [
+    {name: 'sampleSpacing', stage: 'representation', sweepable: true},
+    {name: 'vertexTolerance', stage: 'operator', sweepable: true}
+  ],
+  formula: {
+    formula: 'none',
+    reason:
+      'Building boundary sampling feeds half-plane-clipped sample cells in a convex bound with optional nonconvex enclosure overlay; GPUPolygonOverlay dissolves same-building fragments on an explicit snap lattice. The geometry of each building is its own overlay output, indexed by building row, with independent sampling/overlay completeness.'
+  },
+  metadata: {
+    coordinateModel: 'projected',
+    enclosure: 'convex-or-simple-overlay',
+    maximumSamples: 128,
+    buildingShrink: 'explicit-preprocessing'
+  }
+};
 
 /** Resident urban/ecology recipe discovery, with approximation and solver boundaries preserved. */
 export const URBAN_ECOLOGY_OPERATORS: SpatialFamilyOperators = {
-  addBuildingTessellationRecipe: {
+  addBuildingTessellationRecipe: BUILDING_REFERENCE_OPERATOR,
+  addBuildingTessellationReferenceRecipe: BUILDING_REFERENCE_OPERATOR,
+  addLocalBuildingTessellationRecipe: {
     family: 'recipes',
     descriptor: {scope: 'pairwise', reduction: 'select'},
     variables: {
-      positions: 'coordinate',
-      sourceIds: 'category',
-      featureOffsets: 'category',
-      polygonOffsets: 'category',
-      ringOffsets: 'category',
-      segments: 'coordinate',
-      segmentBuildingIds: 'category',
-      enclosure: 'coordinate',
-      samples: 'coordinate',
-      owners: 'category',
-      fragments: 'coordinate',
-      fragmentCounts: 'count',
-      complete: 'category'
+      'output-positions': 'coordinate',
+      'output-cells': 'category',
+      'output-buildingStatus': 'category',
+      'status-sampling': 'category',
+      'status-count': 'count',
+      'status-requiredCount': 'count',
+      'status-overflow': 'category',
+      'status-candidateOverflow': 'category',
+      'status-invalidCount': 'count'
     },
-    stages: ['representation', 'support', 'operator'],
-    datumKinds: [
-      {kind: 'building', label: 'building cell', indexSpace: '1d'},
-      {kind: 'site', label: 'boundary sample', indexSpace: '1d'}
-    ],
+    stages: ['representation', 'support', 'neighbourhood', 'operator'],
+    datumKinds: [{kind: 'building', label: 'certified building cell', indexSpace: '1d'}],
     guards: ['coordinate-model'],
     choices: [
       {name: 'sampleSpacing', stage: 'representation', sweepable: true},
+      {name: 'candidateRadius', stage: 'neighbourhood', sweepable: true},
       {name: 'vertexTolerance', stage: 'operator', sweepable: true}
     ],
     formula: {
       formula: 'none',
       reason:
-        'Building boundary sampling feeds half-plane-clipped sample cells in a convex bound with optional nonconvex enclosure overlay; GPUPolygonOverlay dissolves same-building fragments on an explicit snap lattice. The geometry of each building is its own overlay output, indexed by building row, with independent sampling/overlay completeness.'
+        'Bounded indexed candidate searches clip sample Voronoi cells in parallel. Each building is the union of its fixed convex piece slots, without reference-route dissolve or snap-lattice semantics; buildingStatus and aggregate capacity certificates suppress uncertified cells.'
     },
     metadata: {
       coordinateModel: 'projected',
-      enclosure: 'convex-or-simple-overlay',
-      maximumSamples: 128,
-      buildingShrink: 'explicit-preprocessing'
+      representation: 'sample-cell-union',
+      maximumSamplesPerBuilding: 32,
+      maximumCandidateSamplesPerBuilding: 256
     }
   },
   addStreetProfilesRecipe: {
@@ -116,7 +153,7 @@ export const URBAN_ECOLOGY_OPERATORS: SpatialFamilyOperators = {
       distances: 'measure',
       segments: 'category',
       validity: 'category',
-      measures: 'measure',
+      localMeasures: 'measure',
       angles: 'direction',
       viewpointClassifications: 'category'
     },

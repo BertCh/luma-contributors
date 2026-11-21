@@ -11,7 +11,13 @@ import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-r
 import type {MarkProvenance} from '../types';
 import {h, rawHtml, viewNodeToDom, type ViewElementNode} from '../view-node';
 import {provenanceBadge} from '../encoding/provenance';
-import {getAdapterLabel, getBoundNode, getFormula, getPinnedEntity} from './record-queries';
+import {
+  getAdapterLabel,
+  getBoundNode,
+  getFormula,
+  getPinnedEntity,
+  getRecordedOperatorPackKey
+} from './record-queries';
 import {
   getSymbolValueAt,
   listTexTerms,
@@ -52,8 +58,9 @@ function getPackFormula(
   if (!op) {
     return undefined;
   }
+  const currentOperator = getRecordedOperatorPackKey(op);
   for (const pack of context.packs ?? []) {
-    const entry = pack.formulas?.[op];
+    const entry = pack.formulas?.[op] ?? pack.formulas?.[currentOperator];
     if (entry) {
       return entry;
     }
@@ -69,7 +76,8 @@ function chooseFormula(
   if (formulaId !== undefined) {
     return getFormula(context.record, String(formulaId));
   }
-  const packFormula = getPackFormula(context, boundNode?.op ?? context.options?.['op']?.toString());
+  const operator = boundNode?.op || context.options?.['op']?.toString();
+  const packFormula = getPackFormula(context, operator);
   return packFormula ?? context.record.refs.formulas[0];
 }
 

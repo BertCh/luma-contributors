@@ -205,7 +205,7 @@ describe('GPUTrajectoryThinning', () => {
             4
           ),
           output: {
-            rowIds: rowIds.view,
+            sourceRows: rowIds.view,
             trackOffsets: outOffsets.view,
             status: {
               count: count.view,

@@ -22,6 +22,7 @@ import {
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
 import {GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH} from './bivariate-classification-parameters';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
   type ClassificationRows,
@@ -33,6 +34,8 @@ import {
   validateClassificationOutputs
 } from './column-classification-rows';
 
+import type {RequiredTerminalOutput} from './required-terminal-output';
+
 const OPERATION = 'GPUBivariateClassification';
 /** Class counts use u32 atomics and must not wrap even when every row has one class. */
 const MAXIMUM_COUNTED_ROW_COUNT = 2 ** 32 - 1;
@@ -43,7 +46,7 @@ const MAXIMUM_AXIS_CLASS_COUNT = 16;
 /** Caller-owned outputs of {@link GPUBivariateClassification}. At least one is required. */
 export type GPUBivariateClassificationOutput<
   Rows extends ClassificationRows<'float32'> = GraphDataView<'float32'>
-> = {
+> = RequiredTerminalOutput<{
   /**
    * Joint class per row, `yClass * classCountX + xClass`, or `0xffffffff` for a masked row or a
    * row with a NaN X or Y value.
@@ -53,7 +56,7 @@ export type GPUBivariateClassificationOutput<
   colors?: ClassificationRowView<'uint32', Rows>;
   /** Rows per joint class, `maximumClassCount ** 2` rows, rewritten every encoding. */
   classCounts?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUBivariateClassification}.
@@ -132,7 +135,24 @@ export class GPUBivariateClassification<
   /** Upper bound for chunk dispatches, including the single counts reset. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUBivariateClassificationProps<Rows>) {
+  constructor(inputProps: GPUBivariateClassificationProps<Rows>) {
+    const captured = snapshotConstructionFields(inputProps, [
+      'id',
+      'valuesX',
+      'valuesY',
+      'mask',
+      'breaksX',
+      'breaksY',
+      'palette',
+      'alphaValues',
+      'parameters',
+      'maximumClassCount',
+      'output'
+    ]);
+    const props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, ['classIds', 'colors', 'classCounts'])
+    });
     this.id = props.id ?? 'bivariate-classification';
     this.props = props;
     const id = this.id;

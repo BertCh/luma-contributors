@@ -4,7 +4,7 @@
 import type {GpuSceneParameter} from '../../../types';
 import type {RunLegendItem} from '../../legend';
 
-// Bound to GPUComputationRecorder's `sourceText` prop and its `withScope` call; `iterations` only
+// Bound to GPUComputationRecorder's `sourceText` prop and its `withSynchronousScope` call; `iterations` only
 // sets how long the recorded relaxation is.
 export const parameters: GpuSceneParameter[] = [
   {
@@ -18,7 +18,7 @@ export const parameters: GpuSceneParameter[] = [
   },
   {
     id: 'scopes',
-    label: 'withScope',
+    label: 'withSynchronousScope',
     min: 0,
     max: 2,
     step: 1,

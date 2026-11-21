@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {OPERATOR_ANNOTATIONS} from './all-entry-points/operator-annotations';
+import {resolveOperatorDescriptor} from './all-entry-points/resolve-operator-descriptor';
 import type {GPUAnalysisOperator} from './spatial-analysis-ontology';
 
 /**
@@ -87,6 +87,7 @@ export const SPATIOTEMPORAL_OPERATOR_NAMES: ReadonlySet<string> = new Set([
   // Temporal recipes.
   'addSpaceTimeHotSpotsRecipe',
   'addPeriodComparisonRecipe',
+  'addStopValueCubeRecipe',
   'addFleetDwellRecipe',
   'addFleetDwellZoneEventsRecipe'
 ]);
@@ -135,7 +136,7 @@ const MOVEMENT_SEMANTICS_DOCUMENTATION = `${DOCUMENTATION_ROOT}/movement-semanti
 const CLEANING_TESTS = `${TEST_ROOT}/trajectory-cleaning/trajectory-cleaning.spec.ts`;
 const MOBILITY_TESTS = `${TEST_ROOT}/trajectory-mobility/mobility-indicators.spec.ts`;
 
-const MOB07_HOME_RANGE_DOCUMENTATION = `${DOCUMENTATION_ROOT}/home-range-and-recursion-mob07.md`;
+const MOB07_HOME_RANGE_DOCUMENTATION = `${DOCUMENTATION_ROOT}/home-ranges-and-recursions.md`;
 const MOB07_TESTS = `${TEST_ROOT}/trajectory-home-range/home-range-recursion-mob07.spec.ts`;
 
 const TRAJECTORY_ROW_DESCRIPTOR = {
@@ -151,6 +152,23 @@ const TRAJECTORY_ROW_DESCRIPTOR = {
 const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
   Record<string, SpatiotemporalReviewOperatorOverride>
 > = {
+  addNetworkLocationAllocationAdapter: {
+    primaryCapability: 'region-optimization',
+    inputs: ['attributes', 'parameters'],
+    outputs: ['attributes', 'summary'],
+    coordinateModels: ['topological'],
+    dimensionality: 'topology',
+    topology: 'fixed',
+    cardinality: 'source-sized',
+    semantics: 'model-based',
+    deterministic: true,
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/location-allocation/network-allocation-adapter.node.spec.ts`,
+    documentation: `${DOCUMENTATION_ROOT}/operators-statistics.md`,
+    summary:
+      'Adds location-allocation on a labelled network cost matrix with explicit facility axis and trip direction. Transposes storage without reversing trips, combines convergence with supplied source completeness, forwards the cost horizon and optionally maps facility-row assignments to network nodes. Solver diagnostics remain in the packed location-allocation status.',
+    contract: 'GPUNetworkLocationAllocationAdapterProps'
+  },
   GPUAnalysisContiguityStatistics: {
     primaryCapability: 'spatial-neighborhoods',
     inputs: ['polygons'],
@@ -215,6 +233,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     topology: 'fixed',
     cardinality: 'source-sized',
     semantics: 'exact',
+    status: ['overflow'],
     evidence: 'partial',
     tests: `${TEST_ROOT}/change-points/stx06-location-change-points.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/change-points-and-expectation-based-scan.md`,
@@ -282,6 +301,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     topology: 'fixed',
     cardinality: 'source-sized',
     semantics: 'stochastic',
+    status: ['overflow'],
     evidence: 'partial',
     tests: `${TEST_ROOT}/space-time-statistics/space-time-statistics.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/space-time-statistics.md`,
@@ -314,6 +334,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     topology: 'fixed',
     cardinality: 'fixed-sized',
     semantics: 'approximate',
+    status: ['invalidCount'],
     evidence: 'partial',
     tests: `${TEST_ROOT}/point-density/space-time-kernel-density.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/space-time-density-and-k-function.md`,
@@ -392,6 +413,14 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     topology: 'fixed',
     cardinality: 'source-sized',
     semantics: 'model-based',
+    status: [
+      'candidateOverflow',
+      'invalidCount',
+      'converged',
+      'iterationLimitReached',
+      'iterationCount',
+      'approximation'
+    ],
     evidence: 'partial',
     tests: `${TEST_ROOT}/space-time-hawkes/stm08-space-time-hawkes.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/space-time-hawkes.md`,
@@ -407,6 +436,13 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     topology: 'fixed',
     cardinality: 'fixed-sized',
     semantics: 'approximate',
+    status: [
+      'invalidCount',
+      'converged',
+      'iterationLimitReached',
+      'iterationCount',
+      'approximation'
+    ],
     evidence: 'partial',
     tests: `${TEST_ROOT}/optimal-transport/stm09-sinkhorn-divergence.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/sinkhorn-divergence.md`,
@@ -538,6 +574,24 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
       'Multiscale GTWR by backfitting: fixed or adaptive bandwidth and time scale per covariate, optional partial-residual AICc profile search, a fixed number of Gauss-Seidel iterations, per-iteration convergence scores.',
     contract: 'GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps'
   },
+  addStopValueCubeRecipe: {
+    primaryCapability: MOVEMENT_FAMILY,
+    inputs: ['points', 'attributes', 'time-series', 'cells', 'spatial-weights', 'parameters'],
+    outputs: ['time-series', 'spatial-weights', 'summary'],
+    coordinateModels: ['spherical', 'topological'],
+    dimensionality: '2d+time',
+    topology: 'fixed',
+    cardinality: 'fixed-sized',
+    semantics: 'approximate',
+    deterministic: true,
+    status: ['count', 'invalidCount', 'overflow', 'candidateOverflow'],
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/recipes/recipe-wave3.spec.ts`,
+    documentation: MOVEMENT_SEMANTICS_DOCUMENTATION,
+    summary:
+      'Bins the live stop prefix bounded by stops.status.count into fixed periods using signed Int64 start or finish timestamps and a stable dictionary whose rows also index the supplied weights. Cell assignment uses approximate float32 indexing; integer cell-major counts at cell * periods.count + period are exact after cell assignment. Invalid live stop references/count or supplied overflow and candidateOverflow flags from stops, slices or weights suppress the cube to zero; weights.status.requiredCount alone is not checked and remains available on the returned weights. Returns invalidCount, overflow and candidateOverflow, with distinct stops, slice-N and cube stage scopes; only the stops stage forwards the live-prefix count.',
+    contract: 'GPUStopValueCubeRecipeProps'
+  },
   addTrajectorySortCheck: {
     primaryCapability: MOVEMENT_FAMILY,
     inputs: ['trajectories'],
@@ -562,7 +616,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     status: ['count', 'requiredCount', 'overflow', 'candidateOverflow'],
     tests: `${TEST_ROOT}/trajectory-staypoints/gpu-trajectory-staypoints.spec.ts`,
     summary:
-      'Staypoints of each track with the trackintel sliding-window rule, found by a bounded forward search per row and pointer doubling.',
+      'Staypoints of each track with the trackintel sliding-window rule, found by a bounded forward search per row and pointer doubling. The required output.status.candidateOverflow reports exhaustion of the search budget.',
     contract: 'GPUTrajectoryStaypointsProps'
   },
   GPUTrajectoryLocations: {
@@ -570,9 +624,12 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['attributes'],
     cardinality: 'source-sized',
+    // Optional iterationCount receives the configured hook/compress round budget, not the
+    // first stable round. converged/iterationLimitReached reflect the final changed flag.
+    status: ['count', 'converged', 'iterationLimitReached', 'iterationCount', 'complete'],
     tests: `${TEST_ROOT}/trajectory-staypoints/gpu-trajectory-locations.spec.ts`,
     summary:
-      'Staypoint locations per track as connected components of staypoints within a distance (trackintel generate_locations).',
+      'Staypoint locations per track as connected components of staypoints within a distance (trackintel generate_locations). Optional iterationCount reports the configured hook/compress round budget. Required iterationLimitReached and optional converged describe stability after that budget. Optional complete certifies settled labels and whole input, including supplied staypoint loss evidence.',
     contract: 'GPUTrajectoryLocationsProps'
   },
   GPUTrajectorySegments: {
@@ -590,10 +647,10 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['attributes', 'summary'],
     cardinality: 'fixed-sized',
-    status: ['candidateOverflow'],
+    status: ['candidateOverflow', 'excludedLocationCount'],
     tests: MOBILITY_TESTS,
     summary:
-      'Per-track mobility indicators of staypoints: jump lengths, waiting times, location entropies, home and work, and tracking quality.',
+      'Per-track mobility indicators of staypoints: jump lengths, waiting times, location entropies, home and work, and tracking quality. Location measures exclude missing and unsettled keys.',
     contract: 'GPUMobilityIndicatorsProps'
   },
   GPUBrownianBridgeUtilization: {
@@ -679,6 +736,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     ...TRAJECTORY_ROW_DESCRIPTOR,
     outputs: ['trajectories', 'attributes'],
     cardinality: 'capacity-bounded',
+    status: ['count', 'requiredCount', 'overflow', 'candidateOverflow'],
     tests: CLEANING_TESTS,
     summary:
       'Splits tracks at observation gaps, at staypoints or where a value changes (MovingPandas splitters), as a new trajectory port.',
@@ -691,7 +749,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     status: ['count', 'requiredCount', 'overflow', 'candidateOverflow'],
     tests: CLEANING_TESTS,
     summary:
-      'Minimum-distance and minimum-time generalization of tracks with MovingPandas sequential semantics, in a bounded number of passes.',
+      'Minimum-distance and minimum-time generalization of tracks with MovingPandas sequential semantics, in a bounded number of passes. The required output.status.candidateOverflow reports exhaustion of the search budget.',
     contract: 'GPUTrajectoryThinningProps'
   },
   GPUTrajectoryTrackRelativeTimes: {
@@ -750,7 +808,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
     cardinality: 'fixed-sized',
     tests: `${TEST_ROOT}/stx08-spatial-methods/stx08-spatial-entropy.spec.ts`,
     summary:
-      'Shannon, co-occurrence (Leibovici) entropy and spatial mutual information (Altieri) of a categorical map over a weights graph.',
+      "Shannon entropy of row categories, Leibovici co-occurrence entropy of ordered endpoint-category pairs, and mutual information between source and destination categories of links in the supplied weights graph. Altieri's distance-class and unordered-pair construction is a different statistic and is not computed.",
     contract: 'GPUSpatialEntropyProps'
   },
   GPUColocationQuotient: {
@@ -902,8 +960,7 @@ const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
 export const SPATIOTEMPORAL_REVIEW_OPERATORS: readonly GPUAnalysisOperator[] = Object.entries(
   SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES
 ).map(([exportName, override]) => {
-  const annotation = OPERATOR_ANNOTATIONS[exportName] ?? {};
-  return {
+  return resolveOperatorDescriptor({
     exportName,
     primaryCapability: override.primaryCapability,
     tags: [],
@@ -916,18 +973,16 @@ export const SPATIOTEMPORAL_REVIEW_OPERATORS: readonly GPUAnalysisOperator[] = O
     cardinality: override.cardinality,
     semantics: override.semantics ?? 'unspecified',
     deterministic: override.deterministic ?? 'unspecified',
-    status: override.status ?? [],
+    status: override.status,
     readback: override.readback ?? 'none',
     summary: override.summary,
-    role: annotation.role ?? 'operator',
-    tier: annotation.tier ?? 'scale',
-    ...(annotation.limits ? {limits: annotation.limits} : {}),
-    ...(annotation.limitation ? {limitation: annotation.limitation} : {}),
+    role: 'operator',
+    tier: 'scale',
     evidence: {
       status: override.evidence,
       tests: override.tests,
       documentation: override.documentation,
       contract: override.contract
     }
-  };
+  });
 });

@@ -14,7 +14,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions-operation';
 import {
   getGPUWardRegionsParameterValues,
-  GPU_WARD_STATUS
+  GPU_WARD_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions';
 import {
   WARD_FIXTURE,
@@ -209,7 +209,7 @@ it('checks construction-time CPU limits and delegates GPU checks to contributor 
       parameters: {format: 'uint32', length: 1},
       labels: {format: 'uint32', length: 4},
       objective: {format: 'float32', length: 1},
-      status: {format: 'uint32', length: GPU_WARD_STATUS.length}
+      status: {format: 'uint32', length: GPU_WARD_STATUS_LAYOUT.length}
     });
     expect(() =>
       new GPUWardRegionsOperation({...PROPS, targetRegionCount: 5}).createContributor(getView)

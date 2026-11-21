@@ -13,7 +13,7 @@ import {
   GPUPolygonRasterization,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
-import {GPUPycnophylactic} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUPycnophylacticInterpolation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUParameterBuffer,
   type GPUPolygonGeometryFields,
@@ -73,7 +73,7 @@ export async function runExample(
   // #region example
   // zones: tracts rasterized to the grid by GPUPolygonRasterization; stops early at tolerance 0.001
   graph.add(
-    new GPUPycnophylactic({
+    new GPUPycnophylacticInterpolation({
       grid,
       zones,
       zoneCount: tracts.featureOffsets.length - 1,

@@ -468,7 +468,7 @@ export const CURATED_CELL_FLOW_TOPOLOGY_BINDING: CatalogOperationBinding = {
         origins: session.input('origins', prepared.origins, 'uint32'),
         destinations: session.input('destinations', prepared.destinations, 'uint32'),
         values: session.input('values', prepared.values, 'float32'),
-        outputs: {
+        output: {
           outgoingTotals: outgoingTotals.view,
           incomingTotals: incomingTotals.view,
           directedEdges: directedEdges.view,

@@ -447,10 +447,11 @@ it('GPUTerrainSummits clamps the radius to maximumRadiusPixels and raises overfl
   fixture.destroy();
 });
 
-it('GPUTerrainSummits follows per-row cell sizes in web-mercator and geographic modes', async () => {
+it('GPUTerrainSummits follows per-row cell sizes in web-mercator and geographic modes', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || isSoftwareDevice(device)) {
-    return;
+  requireTestDevice(device);
+  if (isSoftwareDevice(device)) {
+    context.skip('per-row cell-size summits require a hardware-backed device');
   }
   const width = 40;
   const height = 40;

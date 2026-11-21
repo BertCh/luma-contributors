@@ -139,7 +139,7 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
             starts: importGraphBuffer(graph, 'starts', startsBuffer, 'float32x2', segmentCount),
             ends: importGraphBuffer(graph, 'ends', endsBuffer, 'float32x2', segmentCount)
           },
-          distance: distance.importToGraph(graph),
+          radius: distance.importToGraph(graph),
           candidateCapacity: Math.min(pointCount * CANDIDATES_PER_POINT, MAXIMUM_CANDIDATES),
           spatialSort,
           output: {

@@ -10,7 +10,7 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createTransientView, GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {createTransientView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {
   flattenPointCloudAttribute,
   readPointCloudAttribute,
@@ -21,6 +21,7 @@ import {
   validatePointCloudScratchBindings
 } from './pointcloud-kernel-nodes';
 import {
+  isGraphVectorView,
   validateCapacity,
   validateCommandNodeBudget,
   validateRequirement,
@@ -124,6 +125,23 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
     ]);
     this.props = props = Object.freeze({
       ...props,
+      parts: Object.freeze(
+        props.parts.map(part => {
+          const captured = snapshotConstructionFields(part, [
+            'counts',
+            'centroids',
+            'representatives',
+            'sourceRowOffset',
+            'attribute'
+          ]);
+          return Object.freeze({
+            ...captured,
+            attribute: captured.attribute
+              ? snapshotConstructionFields(captured.attribute, ['means', 'counts'])
+              : undefined
+          });
+        })
+      ),
       output: Object.freeze({
         ...output,
         attribute: output.attribute
@@ -153,7 +171,7 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
         ])
       )
     };
-    if (Object.values(views).some(view => view instanceof GraphVectorView)) {
+    if (Object.values(views).some(view => isGraphVectorView(view))) {
       validateCapacity(this.id, 'parts.length', props.parts.length);
       const plan = planGraphChunkDispatch(this.id, views);
       const last = props.parts.length - 1;
@@ -302,7 +320,35 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
               }
             ]
           : [])
-      ]
+      ],
+      Object.fromEntries([
+        ...packedProps.parts.flatMap((part, index) =>
+          part.attribute
+            ? [
+                [
+                  `parts[${index}].attribute.means`,
+                  {
+                    required: true,
+                    viewType: 'data' as const,
+                    formats: ['float32', 'float32x2', 'float32x3', 'float32x4'] as const
+                  }
+                ]
+              ]
+            : []
+        ),
+        ...(packedProps.output.attribute
+          ? [
+              [
+                'output 4',
+                {
+                  required: true,
+                  viewType: 'data' as const,
+                  formats: ['float32', 'float32x2', 'float32x3', 'float32x4'] as const
+                }
+              ]
+            ]
+          : [])
+      ])
     );
     const length = packedProps.output.counts.length;
     validateViewLength(this.id, 'centroids', packedProps.output.centroids, length);

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUHierarchicalDensityClustering (HDBSCAN): builds the density hierarchy and keeps the stable
+// GPUHDBSCAN (HDBSCAN): builds the density hierarchy and keeps the stable
 // clusters, so clusters of different density are found without an epsilon. Noise points are
 // drawn in the muted color; each cluster gets its own color. Hovering a point rings its core
 // distance (the distance to its minimumSamples-th neighbor) and lights the members of its cluster.
 
-import {GPUHierarchicalDensityClustering} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUHDBSCAN} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {createClusteredPoints} from '../../inputs';
 import {chooseSticky, createPointIndex} from '../../pick';
@@ -24,7 +24,7 @@ export default defineOperationRun({
     const coreDistances = builder.allocate('core-distances', 'float32', points.count);
     const members = builder.allocate('members', 'uint32', points.count);
     builder.graph.add(
-      new GPUHierarchicalDensityClustering({
+      new GPUHDBSCAN({
         positions: builder.upload('positions', 'float32x2', points.positions).view,
         minimumClusterSize: values.minimumClusterSize,
         minimumSamples: values.minimumSamples,

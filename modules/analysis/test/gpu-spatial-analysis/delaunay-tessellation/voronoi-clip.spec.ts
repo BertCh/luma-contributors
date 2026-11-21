@@ -15,7 +15,8 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {expectCocircularVoronoiReadback} from './voronoi-cocircular-probe';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 async function runVoronoi(
   bounds: number[],
@@ -240,5 +241,81 @@ for (const exponent of [0, 45, -52, 100, -100]) {
       }
       expect(Array.from(seen).sort()).toEqual(['0,1', '0,2', '1,2']);
     }
+  });
+}
+
+it.each([
+  {name: 'diagonal 0,2', triangles: [0, 1, 2, 0, 2, 3], diagonal: '0,2'},
+  {name: 'diagonal 1,3', triangles: [0, 1, 3, 1, 2, 3], diagonal: '1,3'}
+])('cocircular square probe pins four positive bisectors and records zero rows: $name', async fixture => {
+  // Both triangle circumcenters are exactly (1/2,1/2). The four side bisectors
+  // extend from that center to the literal clip box; a diagonal has no positive-length dual.
+  const result = await runVoronoi([-1, -1, 2, 2], [0, 0, 1, 0, 1, 1, 0, 1], fixture.triangles);
+  expectCocircularVoronoiReadback(fixture, result);
+});
+
+it('CORE-103 Voronoi retains the analytic center after integer-product cancellation', async () => {
+  // Solve 2*(b-a).(center-a)=|b-a|^2 and the corresponding equation for c exactly.
+  // Integer determinant = -1, center = (-134168579/2, 134201343/2).
+  // Intersect its three outward perpendicular rays with the box below in rational arithmetic.
+  const result = await runVoronoi(
+    [-67086336, 67098624, -67082240, 67102720],
+    [0, 0, 8192, 8191, 8191, 8190],
+    [0, 1, 2]
+  );
+  const expected: Record<string, number[]> = {
+    '0,1': [-67084289.5, 67100671.5, -67086336, 67102718.24984739],
+    '1,2': [-67084289.5, 67100671.5, -67082242, 67098624],
+    '0,2': [-67084289.5, 67100671.5, -67082242.249969475, 67098624]
+  };
+  expect(result.written).toBe(3);
+  expect(result.required).toBe(3);
+  expect(result.invalidCount).toBe(0);
+  expect(result.segments.length).toBe(12);
+  expect(result.siteIds.length).toBe(6);
+  const pairs: string[] = [];
+  for (let row = 0; row < 3; row++) {
+    const pair = result.siteIds.slice(2 * row, 2 * row + 2).join(',');
+    pairs.push(pair);
+    expect(expected[pair]).toBeDefined();
+    result.segments.slice(4 * row, 4 * row + 4).forEach((value, component) => {
+      expect(Number.isFinite(value)).toBe(true);
+      // Eight ulps (ulp=4 or 8 here) cover float32 center/ray clipping arithmetic.
+      expect(Math.abs(value - expected[pair][component])).toBeLessThanOrEqual(64);
+    });
+  }
+  expect(pairs.sort()).toEqual(['0,1', '0,2', '1,2']);
+});
+
+for (const triangle of [
+  [0, 1, 2],
+  [1, 2, 0],
+  [2, 0, 1]
+]) {
+  it(`CORE-103 Voronoi retains asymmetric analytic bisectors for cyclic triangle ${triangle}`, async () => {
+    // Exact rational 2x2 solve on (1,1),(0,2^-26),(2^-24,0), followed by rational
+    // outward-ray clipping to [-1,-1,2,2]. Python fractions.Fraction gives these literals.
+    const result = await runVoronoi([-1, -1, 2, 2], [1, 1, 0, 2 ** -26, 2 ** -24, 0], triangle);
+    const expected: Record<string, number[]> = {
+      '0,1': [0.2000000247359275, 0.7999999871850011, -0.9999999701976777, 2],
+      '1,2': [0.2000000247359275, 0.7999999871850011, -0.24999997206032276, -1],
+      '0,2': [0.2000000247359275, 0.7999999871850011, 2, -0.9999998807907122]
+    };
+    expect(result.written).toBe(3);
+    expect(result.required).toBe(3);
+    expect(result.invalidCount).toBe(0);
+    expect(result.segments.length).toBe(12);
+    expect(result.siteIds.length).toBe(6);
+    const pairs: string[] = [];
+    for (let row = 0; row < 3; row++) {
+      const pair = result.siteIds.slice(2 * row, 2 * row + 2).join(',');
+      pairs.push(pair);
+      expect(expected[pair]).toBeDefined();
+      result.segments.slice(4 * row, 4 * row + 4).forEach((value, component) => {
+        expect(Number.isFinite(value)).toBe(true);
+        expect(Math.abs(value - expected[pair][component])).toBeLessThanOrEqual(2e-6);
+      });
+    }
+    expect(pairs.sort()).toEqual(['0,1', '0,2', '1,2']);
   });
 }

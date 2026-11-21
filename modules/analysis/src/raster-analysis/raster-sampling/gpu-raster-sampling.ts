@@ -84,7 +84,7 @@ export type GPURasterSamplingProps = {
  * - `bicubic`: Catmull-Rom (a = -0.5) over the 4x4 support with clamped indices.
  *
  * A neighbour participates only when both of its axis weights are nonzero, so a point exactly on a
- * cell centre returns that cell whatever its neighbours hold. Under `'strict'` any participating
+ * cell centre returns that cell whatever its neighbours hold. Under `'propagate'` any participating
  * nodata cell gives NaN. Under `'renormalize'` bilinear weights over valid neighbours are divided
  * by their sum (NaN when none is valid). Bicubic with nodata in its participating support falls
  * back to the bilinear rule of the same policy.

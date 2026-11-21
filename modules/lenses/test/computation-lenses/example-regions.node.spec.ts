@@ -27,7 +27,7 @@ for (const [scenario, operators, statusConnections] of [
   [
     'pair-gather',
     ['GPUSpatialPredicateJoin', 'GPUPairGather'],
-    ['output: {pairs}', 'pairs,', 'status: {overflow, candidateOverflow}']
+    ['output: {pairs}', 'pairs,', 'status: {count: rowCount, overflow, candidateOverflow}']
   ]
 ] as const) {
   test(`${scenario} publishes at most 25 lines with its operators and completeness ports visible`, () => {

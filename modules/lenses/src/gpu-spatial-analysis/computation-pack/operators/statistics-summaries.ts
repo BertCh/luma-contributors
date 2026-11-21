@@ -179,14 +179,22 @@ export const STATISTICS_SUMMARY_OPERATORS: SpatialFamilyOperators = {
       id: 'neighborhood-summary',
       derivation: 'curated',
       tex: String.raw`\begin{aligned}
-\term{mean}{\bar{x}_i}&=\frac{\term{weightedSum}{\sum_s w_s x_s}}{\term{weightSum}{W_i}},
-&\term{weightSum}{W_i}&=\sum_s \term{weight}{w_s}\\
+N_i&=\{s\in B_i:x_s\text{ finite}\},
+&C_i&=\{s\in B_i:c_s\ne 0xffffffff\}\\
+\term{mean}{\bar{x}_i}&=\frac{\term{weightedSum}{\sum_{s\in N_i} w_s^{\mathrm{num}} x_s}}{\term{weightSum}{W_i^{\mathrm{num}}}},
+&\term{weightSum}{W_i^{\mathrm{num}}}&=\sum_{s\in N_i} \term{weight}{w_s^{\mathrm{num}}}\\
 \term{entropy}{H_i}&=-\sum_c \term{share}{p_c}\ln p_c,
-&\term{share}{p_c}&=\frac{\term{frequency}{f_c}}{W_i},
-&\term{frequency}{f_c}&=\sum_{s:\,c_s=c} w_s
+&\term{share}{p_c}&=\frac{\term{frequency}{f_c}}{W_i^{\mathrm{cat}}},
+&\term{frequency}{f_c}&=\sum_{s\in C_i:\,c_s=c} w_s^{\mathrm{cat}}\\
+W_i^{\mathrm{cat}}&=\sum_{s\in C_i}w_s^{\mathrm{cat}},
+&\text{producer loss}&\Rightarrow\text{suppressed outputs}
 \end{aligned}`,
       ascii:
-        'mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.',
+        'B_i contains positive-weight CSR slots to in-range, unmasked rows other than i, plus the unmasked focal row only with includeFocal, at focalWeight (zero allowed). Numeric members N_i additionally require a finite numeric value; categorical members C_i instead require a category other than 0xffffffff (including the focal row), independently of numeric eligibility. ' +
+        'mean_i = sum_{s in N_i} w_s_num x_s / W_i_num; W_i_num = sum_{s in N_i} w_s_num. H_i = -sum_c p_c ln p_c; p_c = f_c / W_i_cat; f_c = sum_{s in C_i with category c} w_s_cat; W_i_cat = sum_{s in C_i} w_s_cat. ' +
+        'For row-standardised weights, normalize active numeric and categorical slot masses separately; focalWeight stays unchanged. The categorical implementation equivalently keeps raw slot masses and scales focalWeight by their sum when positive. A zero mass gives NaN for the corresponding mean/entropy. With no categorical member, mode is 0xffffffff; mode ties use the lowest category. ' +
+        'The GPU honors overflow and candidateOverflow at matrix and chunk level, and iterationLimitReached and converged at matrix level only. Nonzero overflow/candidateOverflow/iterationLimitReached or zero converged suppresses every included row: numeric outputs are NaN (count too), modes are 0xffffffff and entropy is NaN. Honored flags are checked each frame; clearing loss restores results. ' +
+        'The CPU twin additionally checks complete and requiredCount certificates. The GPU rejects complete, requiredCount and chunk-local iteration/convergence certificates at construction; supply explicit overflow/candidateOverflow certificates instead. Masked focal rows retain count 0 and otherwise suppressed outputs. Median-capacity overflow suppresses only median.',
       symbols: [
         {id: 'mean', role: 'output', binding: 'wgsl:mean'},
         {id: 'weightedSum', role: 'intermediate', binding: 'wgsl:weightedSum'},

@@ -8,6 +8,7 @@ import {
   addWorkflowStep,
   createWorkflowAnalysisSelection,
   getWorkflowOperationRegistry,
+  getWorkflowOutputKind,
   resolveWorkflowParameters,
   searchWorkflowAnalyses,
   replayKeplerCuratedAnalysisMapping,
@@ -126,7 +127,9 @@ export function getPalettePortLine(operation: WorkflowOperation): {
   });
   return {
     inputs: [...new Set(inputs)],
-    outputs: [...new Set(operation.outputs.map(output => output.kind))]
+    outputs: [
+      ...new Set(operation.outputs.map(output => (output.kindFrom ? 'features' : output.kind)))
+    ]
   };
 }
 
@@ -145,7 +148,9 @@ export function getPaletteConnection(
     outputLabel: output?.label ?? connection.output,
     kind:
       state.runner?.steps[connection.stepId]?.result?.outputs[connection.output]?.kind ??
-      output?.kind
+      (state.document && producer && output
+        ? getWorkflowOutputKind(state.document, registry, producer.id, output.name)
+        : output?.kind)
   };
 }
 
@@ -411,8 +416,11 @@ function OperationDetail({operation}: {operation: WorkflowOperation}): React.JSX
       {operation.outputs.length === 0 && <p>None</p>}
       {operation.outputs.map(output => (
         <p key={output.name}>
-          {output.label}: {WORKBENCH_PORT_LABELS[output.kind].toLowerCase()}, up to{' '}
-          {output.maximumRows.toLocaleString()} rows
+          {output.label}:{' '}
+          {output.kindFrom
+            ? `same representation as input ${output.kindFrom}`
+            : WORKBENCH_PORT_LABELS[output.kind].toLowerCase()}
+          , up to {output.maximumRows.toLocaleString()} rows
         </p>
       ))}
       {operation.declaredBehavior.length > 0 && (

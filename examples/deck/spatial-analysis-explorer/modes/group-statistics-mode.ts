@@ -15,7 +15,7 @@
  *
  * The compare view aggregates two time windows of the same vertices with `GPUCellAggregation`,
  * joins the two cell tables with `GPUCellTableCompare` (delta, ratio, percent change and a
- * Poisson z-score), and `GPUKeyJoin` attaches the zone statistics to the compare cells by key.
+ * Poisson z-score), and `GPUKeyLookup` attaches the zone statistics to the compare cells by key.
  * Window sliders rewrite two mask buffers; each graph is re-encoded only when its inputs change.
  */
 
@@ -37,7 +37,7 @@ import {
   GPUClassBreaks,
   GPUColorScale,
   GPUGroupStatistics,
-  GPUKeyJoin,
+  GPUKeyLookup,
   getGPUClassBreaksParameterLength,
   getGPUClassBreaksParameterValues,
   getGPUColorScaleParameterValues,
@@ -301,7 +301,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
   contributors: [
     'GPUPointToCell',
     'GPUGroupStatistics',
-    'GPUKeyJoin',
+    'GPUKeyLookup',
     'GPUCellAggregation',
     'GPUCellTableCompare',
     'GPUClassBreaks',
@@ -477,7 +477,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
           id: `${id}-color-scale`,
           values: displayValues,
           domain: breaksView,
-          domainCount: classCountView,
+          classCount: classCountView,
           palette: importGraphBuffer(graph, 'io-palette', palette, 'uint32', MAXIMUM_CLASS_COUNT),
           parameters: scaleParameters.importToGraph(graph),
           maximumDomainCount: MAXIMUM_CLASS_COUNT + 1,
@@ -583,7 +583,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
             maximums: slices.view(base + ZONE_SLOT.maximums, 'float32'),
             standardDeviations: slices.view(base + ZONE_SLOT.standardDeviations, 'float32'),
             medians: slices.view(base + ZONE_SLOT.medians, 'float32'),
-            percentiles: slices.view(base + ZONE_SLOT.percentiles, 'float32'),
+            quantiles: slices.view(base + ZONE_SLOT.percentiles, 'float32'),
             modes: slices.view(base + ZONE_SLOT.modes, 'float32'),
             uniqueCounts: slices.view(base + ZONE_SLOT.uniqueCounts, 'uint32'),
             ...(column === 0
@@ -606,7 +606,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
           keys,
           columns,
           variance: 'sample',
-          percentiles: percentileParameters.importToGraph(zoneGraph),
+          probabilities: percentileParameters.importToGraph(zoneGraph),
           output: {
             keys: importGraphBuffer(zoneGraph, 'io-zone-keys', zoneKeys, 'uint32x2', ZONE_CAPACITY),
             counts: slices.view(ZONE_ROWS_SLOT, 'uint32'),
@@ -765,7 +765,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
       });
       const zoneSlices = new SlotSlices(compareGraph, zoneMetrics, ZONE_CAPACITY);
       compareGraph.add(
-        new GPUKeyJoin({
+        new GPUKeyLookup({
           id: 'zone-join',
           leftKeys: unionCells,
           rightKeys: importGraphBuffer(
@@ -775,7 +775,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
             'uint32x2',
             ZONE_CAPACITY
           ),
-          kind: 'left',
+          compactMatchedLeftRows: false,
           gather: [
             {
               column: zoneSlices.view(ZONE_SLOT.medians, 'float32'),
@@ -921,7 +921,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
       label: 'View',
       options: [
         {value: 'zones', label: 'Zone statistics (GPUGroupStatistics)'},
-        {value: 'compare', label: 'Period compare (GPUCellTableCompare + GPUKeyJoin)'}
+        {value: 'compare', label: 'Period compare (GPUCellTableCompare + GPUKeyLookup)'}
       ],
       value: view,
       onChange: value => {

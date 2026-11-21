@@ -116,7 +116,10 @@ it('GPUSpatialPredicateJoin kernels parse for every kind pair, engine and metric
               pairs: {
                 leftRows: view('left-ids'),
                 rightRows: view('right-ids'),
-                status: {count: view('pair-count'), overflow: view('pair-overflow')}
+                status: {
+                  count: createTransientView(graph, `${id}-pair-count`, 'uint32', 1),
+                  overflow: createTransientView(graph, `${id}-pair-overflow`, 'uint32', 1)
+                }
               },
               status: {overflow: createTransientView(graph, `${id}-overflow`, 'uint32', 1)}
             },
@@ -224,7 +227,7 @@ it('GPUNearestFeatureJoin kernels parse with exact orientation for every feature
           positions: createTransientView(graph, `${id}-points`, 'float32x2', 3)
         },
         features: createGeometry(graph, kind),
-        k: 2,
+        neighborCount: 2,
         ties: 'all',
         neighborCapacity: 2,
         output: {
@@ -259,7 +262,7 @@ it('great-circle GPUNearestFeatureJoin kernels parse for every feature kind and 
           positions: createTransientView(graph, `${id}-points`, 'float32x2', 3)
         },
         features: createGeometry(graph, kind),
-        k: 2,
+        neighborCount: 2,
         ties: 'all',
         neighborCapacity: 2,
         radius: createTransientView(graph, `${id}-max`, 'float32', 1),

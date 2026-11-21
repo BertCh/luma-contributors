@@ -18,7 +18,7 @@ export const SCORING_RULES_AUDIT_CASES: readonly KernelAuditCase[] = [
         const dimension = Math.floor(maximumRows(4) / 4096);
         graph.add(
           new GPUEnsembleScores({
-            fair,
+            estimator: fair ? 'fair' : 'empirical',
             memberCount: 4096,
             dimension,
             variogramOrder: 2,
@@ -42,7 +42,7 @@ export const SCORING_RULES_AUDIT_CASES: readonly KernelAuditCase[] = [
         const dimension = Math.floor(maximumRows(4) / 2);
         graph.add(
           new GPUEnsembleScores({
-            fair,
+            estimator: fair ? 'fair' : 'empirical',
             memberCount: 2,
             dimension,
             ensemble: view('float32', 2 * dimension),

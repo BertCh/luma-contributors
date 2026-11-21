@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {evaluateGPUAnalysisRequirement} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisRequirement} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it, vi} from 'vitest';
 import {
   getNetworkParameters,

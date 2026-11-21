@@ -10,7 +10,7 @@ import {
   type NetworkTravelTimePercentilesOperationProps
 } from '../../../src/gpu-network/network-time-geography/gpu-network-travel-time-percentiles-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 it.each([
   {
@@ -255,3 +255,37 @@ for (const fixture of ['affine', 'piecewise-wait', 'invalid-initial', 'no-transi
     }
   });
 }
+
+it('counts finite elapsed departures without counting a disconnected vertex', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runOperationGraph(device, {
+    inputs: {
+      vertices: {format: 'uint32', values: Uint32Array.of(0, 1)},
+      transitions: {format: 'uint32x2', values: Uint32Array.of(0, 0)},
+      costs: {format: 'float32x2', values: Float32Array.of(0, 0)},
+      initial: {format: 'uint32', values: Uint32Array.of(0)},
+      window: {format: 'float32', values: Float32Array.of(1, 1)}
+    },
+    operations: [
+      new GPUNetworkTravelTimePercentilesOperation({
+        stateCount: 2,
+        transitionCount: 1,
+        vertexCount: 2,
+        departureCount: 2,
+        percentiles: [50],
+        stateVertices: 'vertices',
+        transitions: 'transitions',
+        costs: 'costs',
+        initialState: 'initial',
+        window: 'window',
+        output: {travelTimes: 'times', reachedCounts: 'reached', status: 'status'}
+      })
+    ],
+    outputs: ['times', 'reached', 'status']
+  });
+  // Both departures reach the origin with elapsed zero; no transition reaches vertex 1.
+  expect(Array.from(result['times'])).toEqual([0, Infinity]);
+  expect(Array.from(result['reached'])).toEqual([2, 0]);
+  expect(Array.from(result['status'])).toEqual([1, 1, 1, 1]);
+});

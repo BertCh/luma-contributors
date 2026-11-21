@@ -7,6 +7,7 @@ import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenario
 defineLensScenario({
   id: 'gpu-dataframe.column-quantiles',
   element: 'GPUColumnQuantiles',
+  inputBindings: [{port: 'values', role: 'poverty150Pct', required: true, missing: 'exclude'}],
   title: 'Chicago tract poverty quartiles and a 5-95 percentile filter',
   rungs: FORMULA_LENS_RUNGS,
   dataset: {

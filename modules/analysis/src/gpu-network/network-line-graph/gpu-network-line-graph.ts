@@ -154,8 +154,8 @@ export type GPUNetworkLineGraphOutput = {
  * Every base directed edge becomes a line node; edge `e = (u, v)` gets one arc to every edge
  * `f = (v, w)` whose turn is allowed. The arc costs `weights[f]` plus a turn cost from the turn
  * angle (`atan2` of the cross and dot product of the two unit directions, positive to the left):
- * `angleCost * |angle|`, plus the left or right extra beyond `straightAngle`, with an angle of
- * `uTurnAngle` or more costing `uTurnCost` instead (a negative `uTurnCost` bans U-turns). Listed
+ * `turnCostPerRadian * |angle|`, plus the left or right extra beyond `straightAngleRadians`, with an angle of
+ * `uTurnAngleRadians` or more costing `uTurnCost` instead (a negative `uTurnCost` bans U-turns). Listed
  * banned turns are removed. Rows keep their arcs in ascending following-edge order.
  *
  * Turn directions are planar by default. With a great-circle `spatialContext` positions are

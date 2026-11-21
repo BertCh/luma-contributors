@@ -30,7 +30,7 @@ function addStaypoints(context: KernelAuditContext, rows: number): void {
   const {graph, view} = context;
   const capacity = Math.max(1, rows >> 3);
   graph.add(
-    new GPUTrajectoryStaypoints({
+    context.construct(GPUTrajectoryStaypoints, {
       ...trajectoryFields(context, rows, 1024),
       spatialContext: SPATIAL_CONTEXT,
       parameters: view('float32', 4),
@@ -58,7 +58,7 @@ function addStaypoints(context: KernelAuditContext, rows: number): void {
 function addLocations(context: KernelAuditContext, capacity: number): void {
   const {graph, view} = context;
   graph.add(
-    new GPUTrajectoryLocations({
+    context.construct(GPUTrajectoryLocations, {
       spatialContext: SPATIAL_CONTEXT,
       centroids: view('float32x2', capacity),
       tracks: view('uint32', capacity),
@@ -83,7 +83,7 @@ function addSegments(context: KernelAuditContext, rows: number): void {
   const tracks = 1024;
   const capacity = Math.max(1, rows >> 3);
   graph.add(
-    new GPUTrajectorySegments({
+    context.construct(GPUTrajectorySegments, {
       ...trajectoryFields(context, rows, tracks),
       staypointIds: view('uint32', rows),
       staypoints: {
@@ -124,10 +124,10 @@ function addSegments(context: KernelAuditContext, rows: number): void {
   );
 }
 
-function addIndicators({graph, view}: KernelAuditContext, capacity: number): void {
+function addIndicators({graph, view, construct}: KernelAuditContext, capacity: number): void {
   const trackCount = 1024;
   graph.add(
-    new GPUMobilityIndicators({
+    construct(GPUMobilityIndicators, {
       spatialContext: SPATIAL_CONTEXT,
       trackCount,
       timestamps: view('uint32x2', capacity),
@@ -156,7 +156,10 @@ function addIndicators({graph, view}: KernelAuditContext, capacity: number): voi
         homeLocations: view('uint32', trackCount),
         workLocations: view('uint32', trackCount),
         trackingQuality: view('float32', trackCount),
-        status: {candidateOverflow: view('uint32', 1)}
+        status: {
+          candidateOverflow: view('uint32', 1),
+          excludedLocationCount: view('uint32', 1)
+        }
       }
     })
   );
@@ -172,7 +175,7 @@ function addModalSplit(
   const capacity = 1 << 16;
   const modeCount = 4;
   graph.add(
-    new GPUModalSplit({
+    context.construct(GPUModalSplit, {
       ...trajectoryFields(context, rows, trackCount),
       spatialContext: SPATIAL_CONTEXT,
       triplegs: {
@@ -181,7 +184,7 @@ function addModalSplit(
         endRows: view('uint32', capacity),
         status: {count: view('uint32', 1)}
       },
-      modeSpeedBreaks: [15 / 3.6, 100 / 3.6, 1000, Infinity],
+      modeSpeedUpperBoundsFloat32: [15 / 3.6, 100 / 3.6, 1000, Infinity],
       modeCount,
       metric,
       output: {
@@ -195,7 +198,7 @@ function addModalSplit(
 function addOutlierFlags(context: KernelAuditContext, rows: number): void {
   const {graph, view} = context;
   graph.add(
-    new GPUTrajectoryOutlierFlags({
+    context.construct(GPUTrajectoryOutlierFlags, {
       ...trajectoryFields(context, rows, 1024),
       spatialContext: SPATIAL_CONTEXT,
       parameters: view('float32', 4),
@@ -204,9 +207,9 @@ function addOutlierFlags(context: KernelAuditContext, rows: number): void {
   );
 }
 
-function addHampel({graph, view}: KernelAuditContext, rows: number): void {
+function addHampel({graph, view, construct}: KernelAuditContext, rows: number): void {
   graph.add(
-    new GPUTrajectoryHampel({
+    construct(GPUTrajectoryHampel, {
       values: view('float32', rows),
       trackOffsets: view('uint32', 1025),
       windowSize: 129,
@@ -224,7 +227,7 @@ function addSplit(context: KernelAuditContext, rows: number): void {
   const {graph, view} = context;
   const capacity = Math.max(1, rows >> 3);
   graph.add(
-    new GPUTrajectorySplit({
+    context.construct(GPUTrajectorySplit, {
       ...trajectoryFields(context, rows, 1024),
       mode: 'value-change',
       values: view('uint32', rows),
@@ -248,21 +251,21 @@ function addThinning(context: KernelAuditContext, rows: number): void {
   const {graph, view} = context;
   const capacity = Math.max(1, rows >> 3);
   graph.add(
-    new GPUTrajectoryThinning({
+    context.construct(GPUTrajectoryThinning, {
       ...trajectoryFields(context, rows, 1024),
       mode: 'minimum-distance',
       spatialContext: SPATIAL_CONTEXT,
       parameters: view('float32', 4),
       maximumSearchRows: 4096,
       output: {
-        rowIds: view('uint32', capacity),
+        sourceRows: view('uint32', capacity),
         trackOffsets: view('uint32', 1025),
         status: {
           count: view('uint32', 1),
           overflow: view('uint32', 1),
           candidateOverflow: view('uint32', 1)
         },
-        validity: view('uint32', rows),
+        sourceSelectionMask: view('uint32', rows),
         positions: view('float32x2', capacity),
         timestamps: view('uint32x2', capacity)
       }
@@ -270,9 +273,9 @@ function addThinning(context: KernelAuditContext, rows: number): void {
   );
 }
 
-function addTrackRelativeTimes({graph, view}: KernelAuditContext, rows: number): void {
+function addTrackRelativeTimes({graph, view, construct}: KernelAuditContext, rows: number): void {
   graph.add(
-    new GPUTrajectoryTrackRelativeTimes({
+    construct(GPUTrajectoryTrackRelativeTimes, {
       timestamps: view('uint32x2', rows),
       trackOffsets: view('uint32', 1025),
       output: view('float32', rows)

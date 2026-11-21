@@ -88,8 +88,7 @@ for (const sourceIds of [undefined, [1, 0], [100, 200]]) {
         output: {
           leftRows: integers('left-rows', 3),
           rightRows: integers('right-rows', 3),
-          rowCount: integers('row-count'),
-          status: {overflow: integers('gather-overflow')}
+          status: {count: integers('row-count'), overflow: integers('gather-overflow')}
         }
       });
       const gatherNodes = gather.getCommandNodes(graph);
@@ -189,8 +188,7 @@ it('pair gather refuses ambiguous legacy IDs even through a spread or cast', () 
   const output = {
     leftRows: integers('left', 2),
     rightRows: integers('right', 2),
-    rowCount: integers('count'),
-    status: {overflow: integers('overflow')}
+    status: {count: integers('count'), overflow: integers('overflow')}
   };
   try {
     for (const neighbors of [

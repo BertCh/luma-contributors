@@ -35,10 +35,11 @@ const PARAMETERS = getGPUTrajectoryStaypointsParameterValues({
   includeLast: true
 });
 
+// Geographic centers use canonical longitude for voting and offsets, including at poles.
 for (const [name, positions, centroid] of [
   ['equivalent antimeridian', [-180, 0, 180, 0], [-180, 0]],
-  ['north pole', [0, 90, 180, 90], [90, 90]],
-  ['south pole', [0, -90, 180, -90], [90, -90]],
+  ['north pole', [0, 90, 180, 90], [0, 90]],
+  ['south pole', [0, -90, 180, -90], [0, -90]],
   ['clamped terminal offset', [0, 0, 0, 0], [0, 0]]
 ] as const) {
   it(`keeps both fixes in one stay: ${name}`, () => {
@@ -46,6 +47,7 @@ for (const [name, positions, centroid] of [
     const result = computeTrajectoryStaypointsOnCPU(
       {
         positions: new Float32Array(positions),
+        storage: 'resident-capacity',
         timestamps: new Float32Array([0, 1]),
         trackOffsets,
         parameters: new Float32Array([name === 'clamped terminal offset' ? 1 : 1e-17, 1, 0, 1])
@@ -78,6 +80,7 @@ for (const [name, positions, centroid] of [
       requiredCount: [1],
       overflow: [0],
       candidateOverflow: [0],
+      missingFixCount: [0],
       drawInstanceCount: [1]
     });
     expect(Array.from(trackOffsets)).toEqual([0, name === 'clamped terminal offset' ? 3 : 2]);
@@ -108,6 +111,7 @@ it('keeps the IDs and every output of two non-empty tracks distinct', () => {
     requiredCount: [2],
     overflow: [0],
     candidateOverflow: [0],
+    missingFixCount: [0],
     drawInstanceCount: [2]
   });
 });
@@ -194,10 +198,11 @@ it('does not split a stationary window at the GPU default search cap', () => {
   expect(result.candidateOverflow[0]).toBe(0);
 });
 
-it('unwraps spherical centroids across the dateline and uses nearest-even half-turn ties', () => {
+it('unwraps spherical centroids and applies nearest-even half-turn ties to canonical longitudes', () => {
+  // 180 and -180 both canonicalize to -180 before the anchor-relative half-turn tie.
   for (const [longitudes, expected] of [
     [[179, -179, 179], -180],
-    [[0, 180, 0], 90],
+    [[0, 180, 0], -90],
     [[0, -180, 0], -90]
   ] as const) {
     const result = computeTrajectoryStaypointsOnCPU(
@@ -257,7 +262,10 @@ it('checks inconsistent arrays and construction-time output lengths in both clas
     parameters: 'parameters',
     rowCount: 2,
     capacity: 1,
-    output: {ids: 'ids', status: {count: 'count', overflow: 'overflow'}}
+    output: {
+      ids: 'ids',
+      status: {count: 'count', candidateOverflow: 'candidateOverflow', overflow: 'overflow'}
+    }
   };
   for (const Operation of [GPUTrajectoryStaypointsOperation, CPUTrajectoryStaypointsOperation]) {
     expect(() => new Operation({...props, capacity: 0})).toThrow(/^stay-test .*length/);
@@ -272,4 +280,35 @@ it('checks inconsistent arrays and construction-time output lengths in both clas
   expect(
     () => new CPUTrajectoryStaypointsOperation({...props, maximumSearchRows: 1e9})
   ).not.toThrow();
+});
+
+it('writes NaN durations and centroids for a stay cut by the search budget (TRJ-102)', () => {
+  // One track of 6,000 fixes one second apart: rows 0..5998 at the origin, row 5999 at (10, 0).
+  // By hand, distance threshold 5: uncapped, one stay [0, 5999), duration 5999, centroid (0, 0).
+  // A 4,096-row budget cuts the window at row 4097, giving two plausible but wrong stays.
+  const rowCount = 6000;
+  const positions = new Float32Array(rowCount * 2);
+  positions[(rowCount - 1) * 2] = 10;
+  const input = {
+    positions,
+    timestamps: Float32Array.from({length: rowCount}, (_, row) => row),
+    trackOffsets: Uint32Array.of(0, rowCount),
+    parameters: getGPUTrajectoryStaypointsParameterValues({distanceThreshold: 5, timeThreshold: 1})
+  };
+  const uncapped = computeTrajectoryStaypointsOnCPU(input, {capacity: 4});
+  expect(uncapped.count[0]).toBe(1);
+  expect(uncapped.candidateOverflow[0]).toBe(0);
+  expect(Number.isFinite(uncapped.durations[0])).toBe(true);
+  expect(uncapped.durations[0]).toBe(5999);
+  expect(Array.from(uncapped.centroids.subarray(0, 2))).toEqual([0, 0]);
+  const capped = computeTrajectoryStaypointsOnCPU(input, {capacity: 4, maximumSearchRows: 4096});
+  expect(capped.candidateOverflow[0]).toBe(1);
+  expect(Array.from(capped.startRows.subarray(0, capped.count[0]))).toEqual([0, 4097]);
+  for (let stay = 0; stay < capped.count[0]; stay++) {
+    expect(Number.isNaN(capped.durations[stay])).toBe(true);
+    expect(Number.isNaN(capped.centroids[stay * 2])).toBe(true);
+    expect(Number.isNaN(capped.centroids[stay * 2 + 1])).toBe(true);
+  }
+  // Unused capacity rows keep their zero fill.
+  expect(capped.durations[3]).toBe(0);
 });

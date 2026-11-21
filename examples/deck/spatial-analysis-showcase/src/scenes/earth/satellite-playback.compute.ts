@@ -11,6 +11,7 @@ import type {SceneContext, SceneInstance} from '../scene';
 import {SatelliteMarkerLayer, SatelliteTrailLayer} from './satellite-layers';
 import {
   createSatellitePlaybackCore,
+  quantizeSatellitePlaybackTime,
   type SatellitePlaybackSnapshot
 } from './satellite-playback-core';
 import {
@@ -248,7 +249,7 @@ export async function createSatellitePlayback(
 
     encode(commandEncoder, frame) {
       const options = ctx.options;
-      const playhead = clock.advance(frame);
+      const playhead = quantizeSatellitePlaybackTime(clock.advance(frame));
       ctx.setReadout(
         'clock',
         `${formatSatelliteClock(tracks, playhead)} (+${formatElapsed(playhead)})`

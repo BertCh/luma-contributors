@@ -100,7 +100,6 @@ it('GPUReliefShading aspect and Imhof swing match the oracle on axis, diagonal a
             }
           },
           parameters: settings.importToGraph(graph),
-          imhofSwing: true,
           output: {
             hillshade: importGraphBuffer(
               graph,

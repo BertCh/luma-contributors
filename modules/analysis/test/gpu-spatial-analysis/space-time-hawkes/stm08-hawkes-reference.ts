@@ -224,7 +224,43 @@ export function fitHawkesReference(
       spatialStandardDeviation: parameters.spatialStandardDeviation
     };
     if (triggeredSum > 1e-6 && lagSum > 0 && distanceSum > 0) {
-      next.decayRate = triggeredSum / lagSum;
+      // Independently maximize the finite-window profile with golden-section search.
+      // Each beta candidate refits omega; Q is concave in beta after profiling omega.
+      const profile = (decay: number) => {
+        const mass = sorted.reduce(
+          (sum, event) => sum - Math.expm1(-decay * (window.duration - event.time)),
+          0
+        );
+        const branching = Math.max(triggeredSum / mass, 1e-30);
+        return {
+          branching,
+          objective:
+            triggeredSum * (Math.log(branching) + Math.log(decay)) -
+            decay * lagSum -
+            branching * mass
+        };
+      };
+      let lower = 1e-6 / window.duration;
+      let upper = Math.max(lower, triggeredSum / lagSum);
+      const ratio = (Math.sqrt(5) - 1) / 2;
+      let first = upper - ratio * (upper - lower);
+      let second = lower + ratio * (upper - lower);
+      for (let step = 0; step < 80; step++) {
+        if (profile(first).objective > profile(second).objective) {
+          upper = second;
+          second = first;
+          first = upper - ratio * (upper - lower);
+        } else {
+          lower = first;
+          first = second;
+          second = lower + ratio * (upper - lower);
+        }
+      }
+      const candidates = [parameters.decayRate, 1e-6 / window.duration, (lower + upper) / 2];
+      next.decayRate = candidates.reduce((best, candidate) =>
+        profile(candidate).objective > profile(best).objective ? candidate : best
+      );
+      next.branchingRatio = profile(next.decayRate).branching;
       next.spatialStandardDeviation = Math.sqrt(distanceSum / (2 * triggeredSum));
     }
     const change = Math.max(

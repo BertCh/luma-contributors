@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveGyrationCenter, type GyrationCenter} from './gyration-center';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -33,10 +34,12 @@ export type CPUMobilityIndicatorsInput = {
     centroids: Float32Array;
     startRows: Uint32Array;
     durations: Float32Array;
-    locationIds: Uint32Array;
+    locationIds?: Uint32Array;
     count: Uint32Array;
     overflow?: Uint32Array;
     candidateOverflow?: Uint32Array;
+    /** Optional loss of the location-label iteration; other indicators remain usable. */
+    locationIterationLimitReached?: Uint32Array;
   };
   triplegs?: {
     tracks: Uint32Array;
@@ -52,7 +55,13 @@ export type CPUMobilityIndicatorsInput = {
 export type CPUMobilityIndicatorsOptions = {
   trackCount: number;
   spatialContext?: GPUSpatialContext;
+  gyrationCenter?: GyrationCenter;
   includeRealEntropy?: boolean;
+  /**
+   * Optional cap on usable location keys per track for `realEntropy`: an over-cap track
+   * gets NaN and sets `candidateOverflow`. Omitted, the full sequence is used.
+   */
+  maximumEntropySequenceRows?: number;
 };
 /** Same output layouts, including all unused capacity rows and scalar candidateOverflow. */
 export type CPUMobilityIndicatorsResult = {
@@ -66,10 +75,11 @@ export type CPUMobilityIndicatorsResult = {
   workLocations: Uint32Array;
   trackingQuality: Float32Array;
   candidateOverflow: Uint32Array;
+  excludedLocationCount: Uint32Array;
 };
 
 /** Nonoverlapping longest-previous matches in O(n^2) time and O(n) scratch, without a sequence cap. */
-function computeSequenceEntropy(sequence: Uint32Array): number {
+function computeSequenceEntropy(sequence: readonly number[]): number {
   const length = sequence.length;
   if (length < 2) return 0;
   let nextMatches = new Uint32Array(length + 1);
@@ -94,16 +104,21 @@ function computeSequenceEntropy(sequence: Uint32Array): number {
 
 /**
  * Computes staypoint mobility measures with float64 distances, maps for location shares/durations
- * and an uncapped Lempel-Ziv estimator. Radius of gyration uses the arithmetic coordinate mean,
- * including the contributor's deliberate lack of longitude unwrapping. Missing location keys
- * inside the active table participate as a category, just as in the GPU kernels. Tracking quality
+ * and an uncapped Lempel-Ziv estimator. Radius of gyration defaults to the spherical mean in
+ * great-circle contexts and coordinate mean in planar contexts; explicit coordinate-mean retains
+ * arithmetic longitude/latitude centering. An indeterminate spherical center yields NaN.
+ * Missing and unsettled location keys are excluded from location indicators. Tracking quality
  * uses positive endpoint time differences, not the staypoint duration column; overlaps are summed.
  *
  * What differs from the GPU contributor:
  * - Arithmetic uses float64 and rounds each output once. Int64 timestamps are subtracted exactly
  *   before conversion. Distances, entropies and duration-ranking ties near rounding can differ.
- * - Real entropy uses the full sequence: maximumEntropySequenceRows is ignored and
- *   candidateOverflow reports supplied staypoint loss. includeRealEntropy=false skips that unused calculation.
+ * - Real entropy uses the full sequence unless the maximumEntropySequenceRows option is given;
+ *   then, as on the GPU, a longer track gets NaN and sets candidateOverflow. The operation twin
+ *   passes the cap only when its props set one, so the GPU default cap of 1024 is not applied.
+ *   candidateOverflow also reports supplied staypoint loss. includeRealEntropy=false skips that
+ *   unused calculation and ignores its cap. An explicit cap is validated only when entropy is
+ *   requested; the CPU operation validates that prop at construction.
  * - Inconsistent columns, invalid row indices and unordered active track IDs throw an Error.
  * - Nonfinite coordinates/durations/times use JavaScript arithmetic and comparisons; GPU results
  *   for such inputs are unspecified.
@@ -115,8 +130,12 @@ export function computeMobilityIndicatorsOnCPU(
   options: CPUMobilityIndicatorsOptions
 ): CPUMobilityIndicatorsResult {
   const id = 'mobility-indicators';
+  const gyrationCenter = resolveGyrationCenter(id, options.gyrationCenter, options.spatialContext);
   const {trackCount} = options;
   validateCapacity(id, 'trackCount', trackCount);
+  const {maximumEntropySequenceRows} = options;
+  if (options.includeRealEntropy !== false && maximumEntropySequenceRows !== undefined)
+    validateCapacity(id, 'maximumEntropySequenceRows', maximumEntropySequenceRows);
   const {timestamps, staypoints, triplegs} = input;
   const isWordTime = timestamps instanceof Uint32Array;
   const rowCount = timestamps.length / (isWordTime ? 2 : 1);
@@ -131,9 +150,67 @@ export function computeMobilityIndicatorsOnCPU(
   const capacity = staypoints.tracks.length;
   if (staypoints.centroids.length !== capacity * 2)
     throw new Error('staypoints.centroids length must match staypoints.tracks');
-  for (const column of ['startRows', 'durations', 'locationIds'] as const)
+  for (const column of ['startRows', 'durations'] as const)
     if (staypoints[column].length !== capacity)
       throw new Error(`staypoints.${column} length must match staypoints.tracks`);
+  if (staypoints.locationIds && staypoints.locationIds.length !== capacity)
+    throw new Error('staypoints.locationIds length must match staypoints.tracks');
+  if (staypoints.count.length < 1)
+    throw new Error('staypoints.count must contain at least one row');
+  if (triplegs) {
+    if (
+      triplegs.startRows.length !== triplegs.tracks.length ||
+      triplegs.endRows.length !== triplegs.tracks.length ||
+      triplegs.staypointFinishRows.length !== capacity
+    )
+      throw new Error('mobility-indicators triplegs fixed shapes must match table capacities');
+    if (triplegs.count.length < 1) throw new Error('triplegs.count must contain at least one row');
+  }
+  for (const [tableName, table] of [
+    ['staypoints', staypoints],
+    ['triplegs', triplegs]
+  ] as const) {
+    for (const name of ['overflow', 'candidateOverflow'] as const) {
+      const flag = table?.[name];
+      if (flag && flag.length < 1)
+        throw new Error(`mobility-indicators ${tableName}.${name} must contain at least one row`);
+    }
+  }
+  const locationLoss = staypoints.locationIterationLimitReached;
+  validateRequirement(
+    id,
+    !locationLoss || locationLoss.length >= 1,
+    'staypoints.locationIterationLimitReached must contain at least one row'
+  );
+  const settledIds = locationLoss?.[0] ? undefined : staypoints.locationIds;
+  const activeStaypoints = Math.min(staypoints.count[0], capacity);
+  const result: CPUMobilityIndicatorsResult = {
+    radiusOfGyration: new Float32Array(trackCount),
+    jumpLengths: new Float32Array(capacity),
+    waitingTimes: new Float32Array(capacity),
+    randomEntropy: new Float32Array(trackCount),
+    uncorrelatedEntropy: new Float32Array(trackCount),
+    realEntropy: new Float32Array(trackCount),
+    homeLocations: new Uint32Array(trackCount).fill(GPU_MOVEMENT_SENTINEL),
+    workLocations: new Uint32Array(trackCount).fill(GPU_MOVEMENT_SENTINEL),
+    trackingQuality: new Float32Array(trackCount),
+    candidateOverflow: new Uint32Array(1),
+    excludedLocationCount: Uint32Array.of(settledIds ? 0 : activeStaypoints)
+  };
+  if (staypoints.overflow?.[0] || staypoints.candidateOverflow?.[0]) {
+    for (const values of Object.values(result))
+      if (values instanceof Float32Array) values.fill(NaN);
+    result.candidateOverflow[0] = 1;
+    // The early return skips the per-track pass, but still reports key loss in the active prefix.
+    if (settledIds) {
+      let excludedLocationCount = 0;
+      for (let row = 0; row < activeStaypoints; row++)
+        if (settledIds[row] === GPU_MOVEMENT_SENTINEL) excludedLocationCount++;
+      result.excludedLocationCount[0] = excludedLocationCount;
+    }
+    return result;
+  }
+  const triplegLoss = Boolean(triplegs?.overflow?.[0] || triplegs?.candidateOverflow?.[0]);
   const getActiveCount = (
     table: {tracks: Uint32Array; count: Uint32Array},
     name: string
@@ -158,8 +235,8 @@ export function computeMobilityIndicatorsOnCPU(
       throw new Error('triplegs.endRows length must match triplegs.tracks');
     if (triplegs.staypointFinishRows.length !== capacity)
       throw new Error('triplegs.staypointFinishRows length must match staypoints.tracks');
-    triplegTotal = getActiveCount(triplegs, 'triplegs');
-    for (let stay = 0; stay < total; stay++)
+    triplegTotal = triplegLoss ? 0 : getActiveCount(triplegs, 'triplegs');
+    for (let stay = 0; !triplegLoss && stay < total; stay++)
       if (triplegs.staypointFinishRows[stay] >= rowCount)
         throw new Error('triplegs.staypointFinishRows must index timestamps');
     for (let tripleg = 0; tripleg < triplegTotal; tripleg++) {
@@ -178,18 +255,11 @@ export function computeMobilityIndicatorsOnCPU(
     measure: 'distance'
   });
   const radius = getGPUGreatCircleRadius(context);
-  const result: CPUMobilityIndicatorsResult = {
-    radiusOfGyration: new Float32Array(trackCount),
-    jumpLengths: new Float32Array(capacity),
-    waitingTimes: new Float32Array(capacity),
-    randomEntropy: new Float32Array(trackCount),
-    uncorrelatedEntropy: new Float32Array(trackCount),
-    realEntropy: new Float32Array(trackCount),
-    homeLocations: new Uint32Array(trackCount).fill(GPU_MOVEMENT_SENTINEL),
-    workLocations: new Uint32Array(trackCount).fill(GPU_MOVEMENT_SENTINEL),
-    trackingQuality: new Float32Array(trackCount),
-    candidateOverflow: new Uint32Array(1)
-  };
+  validateRequirement(
+    id,
+    gyrationCenter !== 'spherical-mean' || radius !== undefined,
+    'gyrationCenter spherical-mean requires a great-circle spatialContext; use coordinate-mean for planar positions'
+  );
   let begin = 0;
   let triplegBegin = 0;
   for (let track = 0; track < trackCount; track++) {
@@ -203,6 +273,8 @@ export function computeMobilityIndicatorsOnCPU(
       const anchorLatitude = staypoints.centroids[begin * 2 + 1];
       let longitudeSum = 0;
       let latitudeSum = 0;
+      let validCount = 0;
+      const sequence: number[] = [];
       const locations = new Map<number, {count: number; duration: number}>();
       for (let row = begin; row < end; row++) {
         longitudeSum += staypoints.centroids[row * 2] - anchorLongitude;
@@ -219,14 +291,51 @@ export function computeMobilityIndicatorsOnCPU(
             staypoints.startRows[row - 1]
           );
         }
-        const location = staypoints.locationIds[row];
+        const location = settledIds?.[row];
+        if (location === undefined || location === GPU_MOVEMENT_SENTINEL) continue;
+        validCount++;
+        if (
+          options.includeRealEntropy !== false &&
+          (maximumEntropySequenceRows === undefined || validCount <= maximumEntropySequenceRows)
+        )
+          sequence.push(location);
         const statistics = locations.get(location) ?? {count: 0, duration: 0};
         statistics.count++;
         statistics.duration += staypoints.durations[row];
         locations.set(location, statistics);
       }
-      const meanLongitude = anchorLongitude + longitudeSum / (end - begin);
-      const meanLatitude = anchorLatitude + latitudeSum / (end - begin);
+      if (settledIds) result.excludedLocationCount[0] += end - begin - validCount;
+      let meanLongitude = anchorLongitude + longitudeSum / (end - begin);
+      let meanLatitude = anchorLatitude + latitudeSum / (end - begin);
+      if (gyrationCenter === 'spherical-mean') {
+        let unitXSum = 0;
+        let unitYSum = 0;
+        let unitZSum = 0;
+        let stationary = true;
+        for (let row = begin; row < end; row++) {
+          stationary =
+            stationary &&
+            staypoints.centroids[row * 2] === anchorLongitude &&
+            staypoints.centroids[row * 2 + 1] === anchorLatitude;
+          const longitude = (staypoints.centroids[row * 2] * Math.PI) / 180;
+          const latitude = (staypoints.centroids[row * 2 + 1] * Math.PI) / 180;
+          unitXSum += Math.cos(latitude) * Math.cos(longitude);
+          unitYSum += Math.cos(latitude) * Math.sin(longitude);
+          unitZSum += Math.sin(latitude);
+        }
+        // A mean unit-vector norm <= 1e-6 has no defined center in either backend.
+        const undefinedCenter = Math.hypot(unitXSum, unitYSum, unitZSum) <= (end - begin) * 1e-6;
+        meanLongitude = undefinedCenter
+          ? NaN
+          : stationary
+            ? anchorLongitude
+            : (Math.atan2(unitYSum, unitXSum) * 180) / Math.PI;
+        meanLatitude = undefinedCenter
+          ? NaN
+          : stationary
+            ? anchorLatitude
+            : (Math.atan2(unitZSum, Math.hypot(unitXSum, unitYSum)) * 180) / Math.PI;
+      }
       let squares = 0;
       for (let row = begin; row < end; row++) {
         // A float64 center must not be rounded into an intermediate Float32Array.
@@ -240,14 +349,14 @@ export function computeMobilityIndicatorsOnCPU(
         squares += separation * separation;
       }
       result.radiusOfGyration[track] = Math.sqrt(squares / (end - begin));
-      result.randomEntropy[track] = Math.log2(locations.size);
+      result.randomEntropy[track] = validCount ? Math.log2(locations.size) : NaN;
       let entropy = 0;
       let bestDuration = -1;
       let bestLocation = GPU_MOVEMENT_SENTINEL;
       let secondDuration = -1;
       let secondLocation = GPU_MOVEMENT_SENTINEL;
       for (const [location, statistics] of locations) {
-        const share = statistics.count / (end - begin);
+        const share = statistics.count / validCount;
         entropy -= share * Math.log2(share);
         const duration = statistics.duration;
         if (duration > bestDuration || (duration === bestDuration && location < bestLocation)) {
@@ -263,15 +372,25 @@ export function computeMobilityIndicatorsOnCPU(
           secondLocation = location;
         }
       }
-      result.uncorrelatedEntropy[track] = entropy;
+      result.uncorrelatedEntropy[track] = validCount ? entropy : NaN;
       result.homeLocations[track] = bestLocation;
       result.workLocations[track] = secondLocation;
-      if (options.includeRealEntropy !== false)
-        result.realEntropy[track] = computeSequenceEntropy(
-          staypoints.locationIds.subarray(begin, end)
-        );
+      if (options.includeRealEntropy !== false) {
+        if (validCount === 0) {
+          result.realEntropy[track] = NaN;
+        } else if (
+          maximumEntropySequenceRows !== undefined &&
+          validCount > maximumEntropySequenceRows
+        ) {
+          // Not computed: NaN, never the valid entropy 0, and the candidate flag.
+          result.realEntropy[track] = NaN;
+          result.candidateOverflow[0] = 1;
+        } else {
+          result.realEntropy[track] = computeSequenceEntropy(sequence);
+        }
+      }
     }
-    if (triplegs) {
+    if (triplegs && !triplegLoss) {
       let tracked = 0;
       let firstStart: number | undefined;
       let lastFinish: number | undefined;
@@ -313,6 +432,14 @@ export function computeMobilityIndicatorsOnCPU(
       result.candidateOverflow[0] = 1;
     }
   }
+  if (locationLoss?.[0]) {
+    result.randomEntropy.fill(NaN);
+    result.uncorrelatedEntropy.fill(NaN);
+    result.realEntropy.fill(NaN);
+    result.homeLocations.fill(GPU_MOVEMENT_SENTINEL);
+    result.workLocations.fill(GPU_MOVEMENT_SENTINEL);
+    result.candidateOverflow[0] = 1;
+  }
   return result;
 }
 
@@ -321,9 +448,12 @@ export class CPUMobilityIndicatorsOperation extends GPUCPUOperation {
   constructor(props: MobilityIndicatorsOperationProps) {
     props = snapshotMobilityIndicatorsOperationProps(props);
     const id = props.id ?? 'mobility-indicators';
+    resolveGyrationCenter(id, props.gyrationCenter, props.spatialContext);
     validateCapacity(id, 'trackCount', props.trackCount);
     validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'staypointCapacity', props.staypointCapacity, 0);
+    if (props.output.realEntropy !== undefined && props.maximumEntropySequenceRows !== undefined)
+      validateCapacity(id, 'maximumEntropySequenceRows', props.maximumEntropySequenceRows);
     if (props.triplegs) validateCapacity(id, 'triplegCapacity', props.triplegCapacity!, 0);
     validateRequirement(
       id,
@@ -380,8 +510,15 @@ export class CPUMobilityIndicatorsOperation extends GPUCPUOperation {
               centroids: getCPUOperationFloat32Rows(id, inputs, 'centroids', 'float32x2'),
               startRows: getCPUOperationUint32Rows(id, inputs, 'stayStartRows'),
               durations: getCPUOperationFloat32Rows(id, inputs, 'durations'),
-              locationIds: getCPUOperationUint32Rows(id, inputs, 'locationIds'),
+              locationIds:
+                props.staypoints.locationIds !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'locationIds')
+                  : undefined,
               count: getCPUOperationUint32Rows(id, inputs, 'stayCount'),
+              locationIterationLimitReached:
+                props.staypoints.status.locationIterationLimitReached !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'locationIterationLimitReached')
+                  : undefined,
               overflow:
                 props.staypoints.status.overflow !== undefined
                   ? getCPUOperationUint32Rows(id, inputs, 'stayOverflow')
@@ -412,7 +549,9 @@ export class CPUMobilityIndicatorsOperation extends GPUCPUOperation {
           {
             trackCount: props.trackCount,
             spatialContext: props.spatialContext,
-            includeRealEntropy: props.output.realEntropy !== undefined
+            gyrationCenter: props.gyrationCenter,
+            includeRealEntropy: props.output.realEntropy !== undefined,
+            maximumEntropySequenceRows: props.maximumEntropySequenceRows
           }
         );
         return Object.fromEntries(

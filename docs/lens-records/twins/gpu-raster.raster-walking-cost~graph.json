@@ -31,8 +31,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:21.668Z",
-    "runId": "run-bda2742e",
+    "date": "2026-11-20T23:49:07.168Z",
+    "runId": "run-e309b79c",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -40,7 +40,7 @@
     ]
   },
   "state": {
-    "runId": "run-bda2742e",
+    "runId": "run-e309b79c",
     "rung": "graph",
     "bindings": {},
     "clauses": [],

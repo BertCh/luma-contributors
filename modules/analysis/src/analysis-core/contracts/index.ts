@@ -10,6 +10,7 @@ export type {
   GPUBoundedResultStatusPort,
   GPUCandidateStatusPort,
   GPUCardinalityPort,
+  GPUCompletenessStatusPort,
   GPUGeneratedGeometryStatusPort,
   GPUInvalidStatusPort,
   GPUIterationStatusPort,
@@ -58,6 +59,7 @@ export {
 export type {
   GPUSpatialContext,
   GPUSpatialContextCompatibility,
+  GPUSpatialContextCompatibilityOptions,
   GPUSpatialContextSupport,
   GPUSpatialCoordinateSpace,
   GPUSpatialEdgeModel,
@@ -201,6 +203,13 @@ export {
 } from './partitioning';
 
 export type {
+  GPUNetworkTopology,
+  GPUNetworkAdjacency,
+  GPUNodedNetworkTopologyPort
+} from './network-topology';
+
+export type {
+  GPUAnalyticAlternative,
   GPUCircularStatisticsContract,
   GPUInferenceAlternative,
   GPUInferenceMetadata,
@@ -208,6 +217,7 @@ export type {
   GPUMultipleTestingMethod,
   GPUPermutationMetadata,
   GPUPermutationStatisticAdapter,
+  GPUQuantileLISAAlternative,
   GPUSolverStatusPort
 } from './inference';
 export {GPU_DEFAULT_INFERENCE_ALTERNATIVE} from './inference';
@@ -228,5 +238,6 @@ export type {
   GPUSigmaSquaredConvention,
   GPURegressionConditioning,
   GPURegressionTest,
-  GPURegressionModelStatus
+  GPURegressionModelStatus,
+  GPURegressionRegularization
 } from './model-result';

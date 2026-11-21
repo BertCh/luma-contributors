@@ -5,6 +5,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {afterAll, expect, it, vi} from 'vitest';
 import {readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
+import {join} from 'node:path';
 import ts from 'typescript';
 import * as spatialRecipes from '../../../src/gpu-spatial-analysis/recipes/index';
 import * as networkRecipes from '../../../src/gpu-network/recipes/index';
@@ -23,6 +24,8 @@ import * as preparation from '../../../src/gpu-spatial-analysis/recipes/prepared
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {auditRecipeResult} from './recipe-result-audit';
+import {createCPUGraphMemory} from '../segment-intersection/wgsl-graph-executor';
+import {createStopValueCubeFixture} from './stop-value-cube-fixture';
 
 // Opt-in mutation run proves that bypassing preparation reproduces the original defect.
 vi.mock('../../../src/gpu-spatial-analysis/recipes/prepared-recipe', async importOriginal => {
@@ -47,6 +50,16 @@ function createContext() {
   let bufferCount = 0;
   const view = <ValueFormat extends Format>(format: ValueFormat, length: number) =>
     createTransientView(graph, `input-${bufferCount++}`, format, length);
+  const memory = createCPUGraphMemory();
+  const input = <ValueFormat extends Format>(
+    format: ValueFormat,
+    values: Uint32Array | Float32Array,
+    length: number
+  ) => {
+    const result = view(format, length);
+    memory.write(result, values);
+    return result;
+  };
   const parameter = (format: 'float32' | 'uint32' = 'float32') => {
     const buffer = new GPUParameterBuffer(device, {
       id: `parameters-${parameters.length}`,
@@ -91,6 +104,7 @@ function createContext() {
     device,
     graph,
     view,
+    input,
     parameter,
     grid,
     polygons,
@@ -110,6 +124,7 @@ type Context = ReturnType<typeof createContext>;
 // Intentionally small fixed shapes. Shader execution is covered by the corresponding headless
 // recipes; this matrix discriminates host declaration failures at every contributor/glue stage.
 const fixtures = {
+  addStopValueCubeRecipe: ({input}: Context) => createStopValueCubeFixture(input),
   addDriveTimeCatchmentRecipe: ({view}: Context) => ({
     topology: {
       offsets: view('uint32', 4),
@@ -350,7 +365,29 @@ const fixtures = {
   })
 };
 
+function createTessellationFixture({input}: Context) {
+  return {
+    segments: input(
+      'float32x4',
+      Float32Array.of(0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0),
+      4
+    ),
+    segmentBuildingIds: input('uint32', Uint32Array.of(0, 0, 0, 0), 4),
+    enclosure: input('float32x2', Float32Array.of(-1, -1, 2, -1, 2, 2, -1, 2), 4),
+    buildingCount: 1,
+    sampleSpacing: 1,
+    sampleCapacity: 4,
+    vertexTolerance: 1 / 1024,
+    capacity: {intersections: 16, nodedSegments: 32, vertices: 32, rings: 4}
+  };
+}
+
 const domainFixtures = {
+  addBuildingTessellationReferenceRecipe: (context: Context) => createTessellationFixture(context),
+  addLocalBuildingTessellationRecipe: (context: Context) => ({
+    ...createTessellationFixture(context),
+    candidateRadius: 2
+  }),
   addLandscapeMetricsRecipe: ({view}: Context) => ({
     patches: view('uint32', 4),
     patchClasses: view('uint32', 2),
@@ -614,8 +651,10 @@ it('X3 inventories add-recipe exports from the public family entry points', () =
   const outsideStageMatrix = [
     'addBuildingAdjacencyRecipe',
     'addBuildingTessellationRecipe',
+    'addBuildingTessellationReferenceRecipe',
     'addIsovistsRecipe',
     'addLandscapeMetricsRecipe',
+    'addLocalBuildingTessellationRecipe',
     'addPatchProximityRecipe',
     'addPopulationSupportAlignmentRecipe',
     'addRasterResistanceConnectivityRecipe',
@@ -703,7 +742,7 @@ it.each([
   expect(captureWrites(true)).toStrictEqual(captureWrites(false));
 });
 
-it('audits every operation factory: one contributor and no direct graph declaration', () => {
+it('audits every operation factory: one contributor or the prepared choropleth recipe adapter', () => {
   const root = fileURLToPath(new URL('../../../src/', import.meta.url));
   let factoryCount = 0;
   for (const path of readdirSync(root, {recursive: true})
@@ -720,17 +759,34 @@ it('audits every operation factory: one contributor and no direct graph declarat
         factoryCount++;
         const constructions: string[] = [];
         const declarations: string[] = [];
+        const recipes: string[] = [];
         const visit = (child: ts.Node): void => {
           if (ts.isNewExpression(child)) constructions.push(child.expression.getText(source));
+          if (ts.isCallExpression(child) && /^add\w+Recipe$/.test(child.expression.getText(source)))
+            recipes.push(child.expression.getText(source));
           if (
             ts.isCallExpression(child) &&
-            /\.(add|addToGraph|getCommandNodes|lower)$/.test(child.expression.getText(source))
+            /\.(add|addToGraph|getCommandNodes|lower|createTransientBuffer|importBuffer|importFrameBuffer|createTransientTexture|importTexture|importFrameTexture)$/.test(
+              child.expression.getText(source)
+            )
           )
             declarations.push(child.expression.getText(source));
           ts.forEachChild(child, visit);
         };
         visit(node.initializer);
-        expect(constructions, path).toHaveLength(1);
+        // Multipart choropleths lower their complete prepared recipe as a primitive adapter.
+        // Keep this exception exact: other factories still construct one contributor, and no
+        // factory may bypass recipe preflight with direct graph declaration calls.
+        if (
+          path ===
+          join('gpu-spatial-analysis', 'recipes', 'points-in-polygons-choropleth-operation.ts')
+        ) {
+          expect(constructions, path).toEqual([]);
+          expect(recipes, path).toEqual(['addPointsInPolygonsChoroplethRecipe']);
+        } else {
+          expect(constructions, path).toHaveLength(1);
+          expect(recipes, path).toEqual([]);
+        }
         expect(declarations, path).toEqual([]);
       }
       ts.forEachChild(node, inspect);

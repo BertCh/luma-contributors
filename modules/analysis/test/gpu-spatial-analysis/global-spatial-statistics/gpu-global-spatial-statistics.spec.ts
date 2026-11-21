@@ -48,7 +48,7 @@ import {
   type CPUSpatialWeights,
   type GlobalSpatialStatisticsOracle
 } from './global-spatial-statistics-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const ALL: GPUGlobalSpatialStatistic[] = [
   'moran',
@@ -70,6 +70,7 @@ type Scene = {
 
 /** Builds one compiled graph; `run` rewrites the inputs and returns results and join counts. */
 type HarnessOptions = {
+  mode?: 'reference' | 'tiled';
   islands?: 'exclude' | 'keep';
   alternative?: 'two-sided' | 'greater' | 'lesser';
   /** Declares `weights.information.transform` 'row'. */
@@ -95,10 +96,12 @@ function createHarness(
     mask: scene.mask && createInputBuffer(device, scene.mask),
     overflow: options.truncated ? createInputBuffer(device, new Uint32Array([1])) : undefined,
     results: createOutputBuffer(device, LAYOUT.length),
-    joinCounts: createOutputBuffer(device, 3)
+    joinCounts: createOutputBuffer(device, 3),
+    invalidCount: createOutputBuffer(device, 1)
   };
   const graph = new GPUCommandGraph(device, {id: 'global-statistics-test'});
   const contributor = new GPUGlobalSpatialStatistics({
+    mode: options.mode,
     weights: {
       offsets: importGraphBuffer(graph, 'offsets', buffers.offsets, 'uint32', rows + 1),
       neighbors: importGraphBuffer(graph, 'neighbors', buffers.neighbors, 'uint32', capacity),
@@ -111,7 +114,7 @@ function createHarness(
         : undefined
     },
     islands: options.islands,
-    alternative: options.alternative,
+    analyticAlternative: options.alternative,
     values:
       scene.values instanceof Uint32Array
         ? importGraphBuffer(graph, 'values', buffers.values, 'uint32', rows)
@@ -123,7 +126,10 @@ function createHarness(
     statistics,
     output: {
       summary: importGraphBuffer(graph, 'results', buffers.results, 'float32', LAYOUT.length),
-      joinCounts: importGraphBuffer(graph, 'join-counts', buffers.joinCounts, 'uint32', 3)
+      joinCounts: importGraphBuffer(graph, 'join-counts', buffers.joinCounts, 'uint32', 3),
+      status: {
+        invalidCount: importGraphBuffer(graph, 'invalid-count', buffers.invalidCount, 'uint32', 1)
+      }
     }
   });
   let buildCount = 0;
@@ -153,6 +159,7 @@ function createHarness(
       buffers.results.write(new Float32Array(LAYOUT.length).fill(12345));
       submitGraph(device, compiled, undefined);
       return {
+        invalidCount: (await readUint32(buffers.invalidCount, 1))[0],
         results: await readFloat32(buffers.results, LAYOUT.length),
         resultBits: await readUint32(buffers.results, LAYOUT.length),
         joinCounts: await readUint32(buffers.joinCounts, 3)
@@ -457,7 +464,7 @@ it('GPUGlobalSpatialStatistics consumes the CSR written by GPUNeighborSearch in 
   graph.add(
     new GPUNeighborSearch({
       mode: 'knn',
-      k,
+      neighborCount: k,
       gridSize: [32, 32],
       positions: importGraphBuffer(graph, 'positions', buffers.positions, 'float32x2', count),
       parameters: parameterBuffer.importToGraph(graph),
@@ -1097,4 +1104,130 @@ it('GPUGlobalSpatialStatistics randomization variances do not form n^3 S0^2', as
   expectBlockMatches(results, 'moran', reference.moran, 'heavy weights');
   expectBlockMatches(results, 'geary', reference.geary, 'heavy weights');
   harness.destroy();
+});
+
+it('UST-01 General G preserves sparse off-diagonal mass in both analytic modes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The only nonzero ordered products are (0,1) and (1,0), each M: numerator = denominator = 2M.
+  const weights = createWeights([
+    [[1, 1]],
+    [
+      [0, 1],
+      [2, 1]
+    ],
+    [
+      [1, 1],
+      [3, 1]
+    ],
+    [[2, 1]]
+  ]);
+  for (const mode of ['reference', 'tiled'] as const)
+    for (const magnitude of [10000000, 2 ** 24]) {
+      const harness = createHarness(
+        device,
+        {weights, values: Float32Array.of(magnitude, 1, 0, 0)},
+        ['getisOrdG'],
+        {mode}
+      );
+      try {
+        const result = await harness.run();
+        const observed = result.results[LAYOUT.getisOrdG + FIELD.statistic];
+        expect(Number.isFinite(observed)).toBe(true);
+        expect(observed).toBeCloseTo(1, 5);
+        // Of twelve ordered placements of M and 1, six are adjacent: G~Bernoulli(1/2).
+        for (const field of [FIELD.varianceNormality, FIELD.varianceRandomization]) {
+          const variance = result.results[LAYOUT.getisOrdG + field];
+          expect(Number.isFinite(variance)).toBe(true);
+          expect(variance).toBeCloseTo(0.25, 5);
+        }
+        for (const field of [FIELD.zNormality, FIELD.zRandomization]) {
+          const value = result.results[LAYOUT.getisOrdG + field];
+          expect(Number.isFinite(value)).toBe(true);
+          expect(value).toBeCloseTo(1, 5);
+        }
+        for (const field of [FIELD.pNormality, FIELD.pRandomization]) {
+          const value = result.results[LAYOUT.getisOrdG + field];
+          expect(Number.isFinite(value)).toBe(true);
+          expect(value).toBeCloseTo(0.31731050786291415, 5);
+        }
+      } finally {
+        harness.destroy();
+      }
+    }
+});
+
+it('SSR-115 counts only negative analysis rows and resets the diagnostic on reuse', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const weights = createWeights([
+    [[1, 1]],
+    [
+      [0, 1],
+      [2, 1]
+    ],
+    [
+      [1, 1],
+      [3, 1]
+    ],
+    [[2, 1]]
+  ]);
+  for (const mode of ['reference', 'tiled'] as const) {
+    const harness = createHarness(
+      device,
+      {weights, values: Float32Array.of(-1, 2, 4, 8), mask: Uint32Array.of(1, 1, 1, 1)},
+      ['moran', 'geary', 'getisOrdG'],
+      {mode}
+    );
+    try {
+      const negative = await harness.run();
+      expect(negative.invalidCount).toBe(1);
+      expect(negative.results[LAYOUT.getisOrdG + FIELD.statistic]).toBeNaN();
+      for (const field of [LAYOUT.moran, LAYOUT.geary])
+        expect(Number.isFinite(negative.results[field + FIELD.statistic])).toBe(true);
+      expect((await harness.run({mask: Uint32Array.of(0, 1, 1, 1)})).invalidCount).toBe(0);
+      const clean = await harness.run({
+        values: Float32Array.of(1, 2, 4, 8),
+        mask: Uint32Array.of(1, 1, 1, 1)
+      });
+      expect(clean.invalidCount).toBe(0);
+      expect(Number.isFinite(clean.results[LAYOUT.getisOrdG + FIELD.statistic])).toBe(true);
+    } finally {
+      harness.destroy();
+    }
+  }
+});
+
+it('B2 General G sparse variance includes mixed triple and quadruple products', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Exhaustive 24 permutations in review-probes.py: all three distinct-index moments contribute.
+  const weights = createWeights([
+    [[1, 1]],
+    [
+      [0, 1],
+      [2, 1]
+    ],
+    [
+      [1, 1],
+      [3, 1]
+    ],
+    [[2, 1]]
+  ]);
+  for (const mode of ['reference', 'tiled'] as const) {
+    const harness = createHarness(
+      device,
+      {weights, values: Float32Array.of(3, 1e-5, 2e-5, 1e-5)},
+      ['getisOrdG'],
+      {mode}
+    );
+    try {
+      const result = await harness.run();
+      const variance = result.results[LAYOUT.getisOrdG + FIELD.varianceRandomization];
+      expect(Number.isFinite(variance)).toBe(true);
+      expect(variance).toBeCloseTo(0.041666041671788175, 6);
+    } finally {
+      harness.destroy();
+    }
+  }
 });

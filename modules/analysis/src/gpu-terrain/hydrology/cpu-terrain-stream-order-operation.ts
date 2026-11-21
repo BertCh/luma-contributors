@@ -32,6 +32,9 @@ export type CPUTerrainStreamOrderResult = {
  * Computes Strahler orders with a donor queue. Unknown direction neighbors seed unknown order,
  * which propagates downstream. Invalid/non-stream cells are zero. Rootless stream components
  * (including tributaries into receiver cycles) are unresolved, matching the GPU Euler-tour path.
+ * The streams input uses 0 for nonstream, 1..0xfffffffe for membership and 0xffffffff for
+ * unknown. Translate imported unresolved 0xfffffffe to 0xffffffff, as on the GPU port; this
+ * preserves the existing meaning of 0xfffffffe membership. Direction sentinels are separate.
  *
  * What differs from the GPU contributor:
  * - Completes the donor queue without maximumIterations, the 1024-round pull cap, or tour scratch.

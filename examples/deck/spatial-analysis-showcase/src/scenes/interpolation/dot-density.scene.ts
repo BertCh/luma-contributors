@@ -255,9 +255,12 @@ graph.add(new GPUDotDensity({
 }));
 const compiled = await graph.compileAsync();  // once
 
+// Mask origin and signed steps use the same local position units as the polygons.
+const maskPlacement = {origin: [grid.originX, grid.originY], cellSize: [grid.cellSize, grid.cellSize]} as const;
+
 // Every frame: dots per unit follows the zoom; the dots already drawn never move
 const dotsPerUnit = 2 ** (${state.zoomCoupling} * (zoom - 10)) / ${formatPeople(state.logUnitsPerDot)};
-parameters.write(getGPUDotDensityParameterValues({seed, dotsPerUnit, maskExtent}));
+parameters.write(getGPUDotDensityParameterValues({seed, dotsPerUnit, maskPlacement}));
 compiled.encode(commandEncoder, {parameters: undefined});
 // draw: SpatialAnalysisPointLayer({positions, drawCommands, values: categories, colormap: 'category'})
 
@@ -265,7 +268,8 @@ compiled.encode(commandEncoder, {parameters: undefined});
 const random = new GPURandomPointsInPolygon({
   spatialContext: projection.spatialContext,
   ...tractPolygons, counts, parameters: randomParameters.importToGraph(graph2), mask, output: randomOutput
-});`,
+});
+randomParameters.write(getGPUDotDensityParameterValues({seed: seed + 1, maskPlacement}));`,
 
   about: {
     what: '`GPUDotDensity` draws `value × dotsPerUnit` dots for every (tract, category), at random positions inside the tract (rejection sampling against the polygon), optionally thinned by a dasymetric weight raster. Counter-based random numbers make each dot a pure function of (seed, tract, category, rank). `GPURandomPointsInPolygon` places N uniform points per polygon, using the same sampler.',

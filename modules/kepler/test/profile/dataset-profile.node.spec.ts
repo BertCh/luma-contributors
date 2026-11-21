@@ -12,7 +12,7 @@ import type {
 import {
   computeGPUAnalysisSpacingStatistics,
   getGPUAnalysisExtentSizes
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {countCollectionVertices} from '../../src/analysis/catalog-geojson';
 import {createKeplerCuratedAnalysisSample} from '../../src/curated/curated-analysis-samples';
 import {

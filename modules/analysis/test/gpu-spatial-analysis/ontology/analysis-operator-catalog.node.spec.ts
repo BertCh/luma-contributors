@@ -22,11 +22,179 @@ import {
   getGPUAnalysisCapabilityCatalog,
   getGPUAnalysisOperator,
   getGPUAnalysisOperatorCatalog,
-  queryGPUAnalysisOperators
+  queryGPUAnalysisOperators,
+  queryGPUSpatialAnalysisOperators
 } from '../../../src/gpu-spatial-analysis/ontology/index';
 import type {GPUAnalysisPackage} from '../../../src/gpu-spatial-analysis/ontology/index';
 import {FITTING_KERNEL_OPERATORS} from '../../../src/gpu-spatial-analysis/ontology/fitting-kernel-catalog';
 import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../../../src/gpu-spatial-analysis/ontology/spatiotemporal-review-catalog';
+import {
+  describeOutputs,
+  searchGPUAnalysisTasks
+} from '../../../src/gpu-spatial-analysis/ontology/all-entry-points/analysis-operator-catalog';
+
+it('DST-11 ranks task aliases and keeps upstream tasks outside the analysis census', () => {
+  expect(searchGPUAnalysisTasks('find similar pixels')[0]?.identity.exportName).toBe(
+    'GPURasterEmbeddingNearestPixels'
+  );
+  expect(
+    searchGPUAnalysisTasks('change point')
+      .slice(0, 2)
+      .map(result => result.identity.exportName)
+      .sort()
+  ).toEqual(['GPULocationChangePoints', 'GPUPettittTest']);
+  expect(searchGPUAnalysisTasks('NDVI')[0]).toMatchObject({
+    owner: 'upstream',
+    identity: {package: '@luma.gl/graph/gpu-raster', exportName: 'GPURasterNDVI'}
+  });
+  expect(getGPUAnalysisOperator('GPURasterNDVI')).toBeUndefined();
+  expect(
+    searchGPUAnalysisTasks('Pettitt', {question: 'what-changed'})[0]?.identity.exportName
+  ).toBe('GPUPettittTest');
+  for (const search of ['Pettitt', 'similar pixels']) {
+    expect(queryGPUAnalysisOperators({search}).length).toBeGreaterThan(0);
+  }
+});
+
+it('UCO-17 describes reserved and readable output lengths explicitly', () => {
+  const packageName = '@luma-contributors/analysis/gpu-spatial-analysis' as const;
+  const ols = describeOutputs(
+    {package: packageName, exportName: 'GPUOrdinaryLeastSquares'},
+    'default',
+    {predictorCount: 2, rowCount: 10}
+  );
+  expect(ols.declaration).toBe('declared');
+  expect(ols.outputs.find(output => output.path === 'output.coefficients')).toMatchObject({
+    format: 'float32',
+    capacity: 16,
+    activeLength: 3,
+    minimumCapacity: 3
+  });
+  const line = describeOutputs({package: packageName, exportName: 'GPULineChunk'}, 'chunk', {
+    lineCapacity: 5,
+    vertexCapacity: 20
+  });
+  expect(line.outputs.find(output => output.path === 'output.lineOffsets')).toMatchObject({
+    capacity: 6,
+    activeLengthRule: 'output.status.count + 1',
+    status: ['output.status.count', 'output.status.overflow']
+  });
+  expect(
+    describeOutputs({package: packageName, exportName: 'GPUHotSpot'}, 'default', {}).declaration
+  ).toBe('absent');
+  expect(() =>
+    describeOutputs({package: packageName, exportName: 'GPULineChunk'}, 'typo', {})
+  ).toThrow(/chunk.*substring/);
+});
+
+it('FRM-13 links all graph pairs and array references to public qualified exports', () => {
+  let pairs = 0;
+  const arrays = new Set<string>();
+  for (const operator of getGPUAnalysisOperatorCatalog()) {
+    if (operator.forms?.cpu && operator.forms.gpu) pairs++;
+    for (const graphForm of [operator.forms?.cpu, operator.forms?.gpu]) {
+      if (graphForm)
+        expect(
+          ENTRY_POINTS[graphForm.package]?.[graphForm.exportName],
+          graphForm.exportName
+        ).toBeTypeOf('function');
+    }
+    for (const form of operator.forms?.arrays ?? []) {
+      arrays.add(`${form.package}:${form.exportName}`);
+      expect(ENTRY_POINTS[form.package]?.[form.exportName], form.exportName).toBeTypeOf('function');
+    }
+  }
+  const expectedPairs = Object.values(ENTRY_POINTS).flatMap(entry =>
+    Object.keys(entry).filter(name => /^CPU\w+Operation$/.test(name))
+  );
+  const expectedArrays = Object.entries(ENTRY_POINTS).flatMap(([packageName, entry]) =>
+    Object.keys(entry)
+      .filter(name => /^compute\w+OnCPU$/.test(name))
+      .map(name => `${packageName}:${name}`)
+  );
+  expect(pairs).toBe(expectedPairs.length);
+  expect([...arrays].sort()).toEqual(expectedArrays.sort());
+});
+
+it('SCL-16 distinguishes crossover, allocation and enforced route bounds', () => {
+  for (const exportName of [
+    'GPUSpatialJoinPrepared',
+    'GPUIslandAttachment',
+    'GPUSpatialWeightsTraces',
+    'GPURankMarkov',
+    'GPUSpatialInteraction',
+    'GPUGeographicDistribution',
+    'GPUSpatialPredicateJoin',
+    'GPUNeighborSearch',
+    'GPUCellPyramid',
+    'GPUPointDensity',
+    'GPUKernelDensity',
+    'GPUClassBreaks',
+    'GPUExpectationBasedSpaceTimeScan'
+  ]) {
+    const routes = getGPUAnalysisOperator(exportName)?.routes;
+    expect(routes?.length, exportName).toBeGreaterThan(0);
+    for (const route of routes ?? []) {
+      expect(existsSync(route.source), route.source).toBe(true);
+      expect(route.appliesWhen).toBeTruthy();
+      expect(route.accuracyImplications).toBeTruthy();
+      expect(
+        route.maximum !== undefined ||
+          route.minimum !== undefined ||
+          route.conditionExpression !== undefined ||
+          route.byteExpression !== undefined
+      ).toBe(true);
+      if (route.planner) {
+        const planner: unknown = ENTRY_POINTS[route.planner.package]?.[route.planner.exportName];
+        expect(
+          (planner as {getExecutionPlan?: unknown})?.getExecutionPlan,
+          `${route.planner.package}:${route.planner.exportName}`
+        ).toBeTypeOf('function');
+      }
+    }
+  }
+  expect(getGPUAnalysisOperator('GPUGeographicDistribution')?.routes?.[0]).toMatchObject({
+    kind: 'auto-crossover',
+    maximum: 64
+  });
+  expect(getGPUAnalysisOperator('GPUPointDensity')?.routes?.[0]).toMatchObject({
+    kind: 'allocation',
+    scope: 'binding'
+  });
+});
+
+it('FRM-13 qualifies prepared/chunked forms and conditional recipe stages', () => {
+  for (const operator of getGPUAnalysisOperatorCatalog()) {
+    for (const form of [
+      ...(operator.forms?.variants ?? []),
+      ...(operator.forms?.recipeStages ?? [])
+    ]) {
+      expect(ENTRY_POINTS[form.package]?.[form.exportName], form.exportName).toBeTypeOf('function');
+    }
+  }
+  expect(
+    getGPUAnalysisOperator('GPUSpatialWeightsValidation')?.forms?.variants?.[0]?.exportName
+  ).toBe('GPUChunkedSpatialWeightsValidation');
+  expect(
+    getGPUAnalysisOperator('GPUContiguityWeights')?.forms?.arrays?.map(form => form.exportName)
+  ).toContain('computePolygonContiguityOnCPU');
+});
+
+it('UCO-17 rejects missing or invalid sizes and freezes declarations', () => {
+  const identity = {
+    package: '@luma-contributors/analysis/gpu-spatial-analysis',
+    exportName: 'GPUOrdinaryLeastSquares'
+  } as const;
+  for (const predictorCount of [0, 16, Number.NaN, 1.5]) {
+    expect(() => describeOutputs(identity, 'default', {predictorCount, rowCount: 10})).toThrow(
+      /predictorCount/
+    );
+  }
+  expect(() => describeOutputs(identity, 'default', {predictorCount: 2})).toThrow(/rowCount/);
+  const description = describeOutputs(identity, 'default', {predictorCount: 15, rowCount: 10});
+  expect(description.outputs[0]?.activeLength).toBe(16);
+  expect(Object.isFrozen(description.outputs[0])).toBe(true);
+});
 
 const ENTRY_POINTS: Record<string, Record<string, unknown>> = {
   '@luma-contributors/analysis/analysis-core': analysisCore,
@@ -102,9 +270,18 @@ it('keeps the original exports unchanged and adds the other entry points beside 
       SPATIOTEMPORAL_REVIEW_OPERATORS.length +
       FITTING_KERNEL_OPERATORS.length +
       REUSED_ANALYSIS_OPERATORS.length +
-      1
+      2 + // Named reference and local tessellation routes added after the historical catalog.
+      1 + // Qualified network addVisibilityGraphRecipe, appended separately.
+      1 // Point-cloud coverage validity, registered alongside ground/surface operations.
   );
-  expect(all.slice(0, 261)).toEqual(GPU_SPATIAL_ANALYSIS_OPERATORS);
+  expect(
+    all
+      .slice(0, 261)
+      .map(({forms: _forms, outputDeclarations: _outputs, routes: _routes, ...operator}) => ({
+        ...operator,
+        status: operator.status === 'unknown' ? [] : operator.status
+      }))
+  ).toEqual(GPU_SPATIAL_ANALYSIS_OPERATORS);
   const capabilities = getGPUAnalysisCapabilityCatalog();
   expect(capabilities.slice(0, 49).map(({id}) => id)).toEqual(
     GPU_SPATIAL_ANALYSIS_CAPABILITIES.map(({id}) => id)
@@ -254,6 +431,7 @@ it('queries operators by package, tier and capability', () => {
     'GPUPointCloudGround',
     'GPUPointCloudSMRF',
     'GPUPointCloudSurfaces',
+    'GPUPointCloudCoverageValidity',
     'GPUPointCloudHeight'
   ]);
 });
@@ -274,4 +452,127 @@ it('classifies extracted preparation and exact summaries as operations, and thei
     expect(dataframeAnalysis[helper]).toBeTypeOf('function');
     expect(getGPUAnalysisOperator(helper)).toBeUndefined();
   }
+});
+
+it('RCP-107 discovers both named tessellation routes in the qualified urban family', () => {
+  const packageName = '@luma-contributors/analysis/gpu-spatial-analysis' as const;
+  const cases = [
+    [
+      'addBuildingTessellationReferenceRecipe',
+      ['lines', 'polygons', 'attributes'],
+      [
+        'count',
+        'requiredCount',
+        'overflow',
+        'candidateOverflow',
+        'requiredRingCount',
+        'ringCount',
+        'uncertainCount',
+        'nodedSegmentRequiredCount'
+      ],
+      'dissolved polygon rings',
+      'result.outputs[i].status',
+      64
+    ],
+    [
+      'addLocalBuildingTessellationRecipe',
+      ['lines', 'polygons', 'attributes', 'parameters'],
+      ['count', 'requiredCount', 'overflow', 'candidateOverflow', 'invalidCount'],
+      'convex polygon pieces',
+      'result.status',
+      1000000
+    ]
+  ] as const;
+  const family = getGPUAnalysisCapabilityCatalog().find(
+    record => record.id === 'coverage-urban-morphology'
+  );
+  for (const [exportName, inputs, status, representation, statusPath, maximum] of cases) {
+    const operator = getGPUAnalysisOperator({package: packageName, exportName});
+    expect(operator, exportName).toBeDefined();
+    expect(operator?.primaryCapability).toBe('coverage-urban-morphology');
+    expect(operator?.inputs).toEqual(inputs);
+    expect(operator?.outputs).toEqual(['polygons', 'attributes', 'summary']);
+    expect(operator?.status).toEqual(status);
+    expect(operator?.summary).toContain(representation);
+    expect(operator?.limitation).toContain(statusPath);
+    expect(
+      operator?.limits?.find(limit => limit.name === 'buildingCount (per call)')?.maximum
+    ).toBe(maximum);
+    expect(family?.operators).toContain(exportName);
+    expect(family?.operatorIdentities).toContainEqual({package: packageName, exportName});
+  }
+});
+
+it('GEO-129 records package-qualified CPU and GPU operation forms without extra contributors', () => {
+  const packageName = '@luma-contributors/analysis/gpu-spatial-analysis' as const;
+  for (const [exportName, cpu, gpu] of [
+    [
+      'GPUConstrainedDelaunayTriangulation',
+      'CPUConstrainedDelaunayTriangulationOperation',
+      'GPUConstrainedDelaunayTriangulationOperation'
+    ],
+    [
+      'GPUDelaunayTessellation',
+      'CPUDelaunayTessellationOperation',
+      'GPUDelaunayTessellationOperation'
+    ],
+    ['GPUMinimumBounds', 'CPUMinimumBoundsOperation', 'GPUMinimumBoundsOperation'],
+    [
+      'GPUPolygonTriangulation',
+      'CPUPolygonTriangulationOperation',
+      'GPUPolygonTriangulationOperation'
+    ]
+  ]) {
+    const operator = getGPUAnalysisOperator({package: packageName, exportName});
+    expect(operator?.forms, exportName).toMatchObject({
+      cpu: {package: packageName, exportName: cpu},
+      gpu: {package: packageName, exportName: gpu}
+    });
+    for (const form of [operator?.forms?.cpu, operator?.forms?.gpu]) {
+      expect(form).toBeDefined();
+      if (!form) throw new Error('Missing graph form');
+      expect(ENTRY_POINTS[form.package]?.[form.exportName], form.exportName).toBeTypeOf('function');
+      expect(getGPUAnalysisOperator(form)).toBeUndefined();
+    }
+  }
+  expect(GPU_SPATIAL_ANALYSIS_OPERATORS).toHaveLength(261);
+});
+
+it('review B4 queries the dispatcher by its route kinds without a network result', () => {
+  const names = [
+    'addBuildingTessellationRecipe',
+    'addBuildingTessellationReferenceRecipe',
+    'addLocalBuildingTessellationRecipe'
+  ];
+  // Both routes accept building attributes. Only local props accept a parameter view.
+  for (const [input, expected] of [
+    ['attributes', names],
+    ['parameters', ['addBuildingTessellationRecipe', 'addLocalBuildingTessellationRecipe']]
+  ] as const) {
+    expect(
+      queryGPUAnalysisOperators({input, output: 'summary'})
+        .map(record => record.exportName)
+        .filter(name => names.includes(name))
+        .sort()
+    ).toEqual([...expected].sort());
+  }
+  for (const query of [queryGPUAnalysisOperators, queryGPUSpatialAnalysisOperators]) {
+    expect(
+      query({input: 'parameters', output: 'summary'}).map(record => record.exportName)
+    ).toContain('addBuildingTessellationRecipe');
+    expect(
+      query({input: 'points', output: 'network'}).map(record => record.exportName)
+    ).not.toContain('addBuildingTessellationRecipe');
+  }
+  expect(getGPUAnalysisOperator('addBuildingTessellationRecipe')?.inputs).toEqual([
+    'lines',
+    'polygons',
+    'attributes',
+    'parameters'
+  ]);
+  expect(getGPUAnalysisOperator('addBuildingTessellationRecipe')?.outputs).toEqual([
+    'polygons',
+    'attributes',
+    'summary'
+  ]);
 });

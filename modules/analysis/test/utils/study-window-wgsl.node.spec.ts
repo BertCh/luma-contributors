@@ -139,8 +139,30 @@ for (const kernel of [undefined, 'gaussian', 'quartic', 'epanechnikov'] as const
     const source = sources.get('window-query')!;
     expect(source.match(/\borientSign\(/g)).toHaveLength(2); // declaration + one call
     expect(source.match(/\bexactOrientSigns\(/g)).toHaveLength(3); // declaration + unused segment helper + crossing helper
-    expect(getStorageBindingCount(source)).toBe(2);
-    for (const kernel of sources.getConfigurations('window-query'))
+    const configurations = sources.getConfigurations('window-query');
+    expect(configurations.length).toBeGreaterThan(0);
+    for (const kernel of configurations) {
+      expect(getStorageBindingCount(kernel.source)).toBe(2);
       expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
+    }
   });
 }
+
+it('CORE-105 the boundary fan sums its angles with the guarded atan2', () => {
+  // float32 transcription of the fan's dot product at the right-angle vertex of (0,0), (-1,0),
+  // (0,-1): start (-1,0), end (0,-1), each term -1 * 0 = -0.0, and -0.0 + -0.0 = -0.0. The
+  // builtin atan2(1, -0.0) is -pi/2 on the test GPU (GUARDED_ATAN2_WGSL), which made the angular
+  // baseline -0.25 (clamped to 0) instead of 0.25. The headless case is in study-window-wgsl.spec.ts.
+  const dot = Math.fround(Math.fround(-1 * 0) + Math.fround(0 * -1));
+  expect(Object.is(dot, -0)).toBe(true);
+  const layout = getStudyWindowPackedLayout({
+    vertexCount: 3,
+    slabOffsetCount: 2,
+    slabEntryCount: 3,
+    sampleCellCapacity: 1
+  });
+  const declarations = getStudyWindowWGSL({layout, vertexCount: 3, entryCapacity: 3});
+  expect(declarations).toContain('fn studyWindowAtan2(y: f32, x: f32) -> f32 {');
+  expect(declarations).toContain('angle += studyWindowAtan2(cross, dot(start, end));');
+  expect(declarations).not.toContain('angle += atan2(');
+});

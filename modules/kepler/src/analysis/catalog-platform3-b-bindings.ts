@@ -36,7 +36,7 @@ import {
   computeDbscanLabelsGpu,
   makeClusterOutput,
   readClusterSamples,
-  runHierarchicalDensityClustering,
+  runHDBSCANCut,
   runLocalOutlierFactor,
   runLocationAllocation,
   runOptics,
@@ -293,7 +293,7 @@ const KDE_PARAMETERS: CatalogParameterSpec[] = [
     name: 'kernel',
     label: 'Kernel',
     kind: 'enum',
-    options: ['gaussian', 'quartic', 'epanechnikov'],
+    options: ['gaussian', 'quartic', 'epanechnikov', 'bisquare'],
     defaultValue: 'gaussian'
   },
   makeNumberParameter('padding', 'Grid padding around the points', 0, 0, 1e9, 'crs'),
@@ -530,7 +530,7 @@ const POINT_DENSITY_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     ...GRID_BEHAVIOR,
     'Values are per-cell statistics, not intensity per area; they change with the cell size.',
-    'Points on a cell boundary bin by float32 arithmetic on the GPU and by float64 on the CPU, so boundary points may differ between engines.'
+    'Both engines bin float32-uploaded coordinates and bounds. The maximum bound belongs to the last cell, and non-finite and outside coordinates are excluded. The CPU computes exact cell edges when a finite float32 bound has magnitude at least 2^125, uses round-to-nearest float32 arithmetic for ordinary bounds and accumulates weighted sums in float64. GPU division can put an interior boundary point in an adjacent cell. Each of the four GPU bounds must have magnitude below 2^125 after rounding to float32. Rebase or rescale positions and bounds together for larger magnitudes.'
   ],
   limitation: 'Square cells only; no smoothing, hexagons or histogram outputs.',
   run: (inputs, values) => {
@@ -757,7 +757,7 @@ const KRIGING_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     ...GRID_BEHAVIOR,
     'Omitted nugget defaults to the mean nearest-neighbor semivariance, capped at sample variance; omitted sill defaults to sample variance minus nugget, and omitted range uses one third of the extent diagonal. Explicit nonnegative nugget and sill (including zero), and positive range override these estimates.',
-    'Cells whose kriging system is singular (for example coincident samples) are nodata and counted in a diagnostic; at most 2,000 samples, 40,000 cells and 60,000,000 cell-point work on the CPU. Increase cellSize or reduce points when the work limit is exceeded.'
+    'Cells whose kriging system is singular (for example coincident samples) are nodata and counted in a diagnostic; the GPU engine also counts ill-conditioned systems and materially negative variances there, and counts cells with no sample within the search radius in a separate kriging-cells-without-data diagnostic. At most 2,000 samples, 40,000 cells and 60,000,000 cell-point work on the CPU. Increase cellSize or reduce points when the work limit is exceeded.'
   ],
   limitation:
     'Local neighborhood with an isotropic moment-estimated or explicit variogram; no variogram curve fitting, trend, anisotropy or cross-validation. Kriging variance depends on this estimated model.',
@@ -1336,15 +1336,18 @@ const KNOX_BINDING: CatalogOperationBinding = {
 
 const DBSCAN_PARAMETERS: CatalogParameterSpec[] = [
   makeNumberParameter('epsilon', 'Neighborhood radius', 200, 1e-9, 1e9, 'crs'),
-  makeNumberParameter(
-    'minimumPoints',
-    'Minimum points (including the point)',
-    4,
-    1,
-    1000,
-    undefined,
-    'integer'
-  ),
+  {
+    ...makeNumberParameter(
+      'minimumSamples',
+      'Minimum samples (including the point)',
+      4,
+      1,
+      1000,
+      undefined,
+      'integer'
+    ),
+    renamedFrom: 'minimumPoints'
+  },
   CRS
 ];
 
@@ -1366,7 +1369,7 @@ function makeDbscanOutput(
       dispatchedContributors: dispatched,
       summary: {
         epsilon: values['epsilon'] as number,
-        minimumPoints: values['minimumPoints'] as number
+        minimumSamples: values['minimumSamples'] as number
       }
     }
   );
@@ -1378,8 +1381,8 @@ const DBSCAN_BINDING: CatalogOperationBinding = {
   domain: 'clustering',
   summary: 'DBSCAN clusters and noise with core flags and cluster centroids.',
   capabilityIds: ['group-and-regional-analysis'],
-  contributorNames: ['GPUSpatialClustering'],
-  gpuContributorNames: ['GPUSpatialClustering'],
+  contributorNames: ['GPUDBSCAN'],
+  gpuContributorNames: ['GPUDBSCAN'],
   engine: 'gpu-or-cpu',
   inputs: [makeInputSpec('points', 'Points', ['point'], 20000, 20000)],
   parameters: DBSCAN_PARAMETERS,
@@ -1407,7 +1410,7 @@ const DBSCAN_BINDING: CatalogOperationBinding = {
     const result = computeDbscanLabels(
       context.sample,
       values['epsilon'] as number,
-      values['minimumPoints'] as number
+      values['minimumSamples'] as number
     );
     return makeDbscanOutput(inputs, values, result, context);
   },
@@ -1417,9 +1420,9 @@ const DBSCAN_BINDING: CatalogOperationBinding = {
       gpuContext,
       context.sample,
       values['epsilon'] as number,
-      values['minimumPoints'] as number
+      values['minimumSamples'] as number
     );
-    return makeDbscanOutput(inputs, values, result, context, ['GPUSpatialClustering']);
+    return makeDbscanOutput(inputs, values, result, context, ['GPUDBSCAN']);
   }
 };
 
@@ -1519,7 +1522,7 @@ const HDBSCAN_BINDING: CatalogOperationBinding = {
   summary:
     'Clusters points by cutting the mutual-reachability spanning tree at a distance, dropping small clusters as noise.',
   capabilityIds: ['group-and-regional-analysis'],
-  contributorNames: ['GPUHierarchicalDensityClustering'],
+  contributorNames: ['GPUHDBSCAN'],
   gpuContributorNames: [],
   engine: 'cpu-reference',
   inputs: [makeInputSpec('points', 'Points', ['point'], 3000, 3000)],
@@ -1563,7 +1566,7 @@ const HDBSCAN_BINDING: CatalogOperationBinding = {
   limitation:
     'Single flat cut (HDBSCAN*-epsilon style); no condensed tree and no stability-based selection of varying-density clusters.',
   run: (inputs, values) =>
-    runHierarchicalDensityClustering(inputs['points'], {
+    runHDBSCANCut(inputs['points'], {
       minimumSamples: values['minimumSamples'] as number,
       minimumClusterSize: values['minimumClusterSize'] as number,
       cutDistance: values['cutDistance'] as number,
@@ -1757,4 +1760,26 @@ export const PLATFORM3_B_BINDINGS: readonly CatalogOperationBinding[] = [
   SIMILAR_BINDING,
   LOCATION_ALLOCATION_BINDING,
   SKATER_BINDING
-];
+].map(binding => {
+  const metricParameters: Readonly<Record<string, readonly string[]>> = {
+    'idw-grid': ['cellSize', 'searchRadius'],
+    'kernel-density-grid': ['cellSize', 'bandwidth', 'padding'],
+    'point-density-grid': ['cellSize'],
+    'line-density-grid': ['cellSize'],
+    'kriging-grid': ['cellSize', 'range', 'searchRadius']
+  };
+  const names = metricParameters[binding.id];
+  return names
+    ? {
+        ...binding,
+        parameters: binding.parameters.map(parameter =>
+          names.includes(parameter.name)
+            ? {
+                ...parameter,
+                coordinateModeUnits: {geographic: 'metres', planar: 'coordinate-units'}
+              }
+            : parameter
+        )
+      }
+    : binding;
+});

@@ -10,8 +10,72 @@ import {
   type ContinuousSpatialSampleOperationProps
 } from '../../../src/gpu-spatial-analysis/point-process/gpu-continuous-spatial-sample-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import fixtures from './continuous-spatial-sample-operation-fixtures.json';
+
+it('translated projected line retains membership spacing and two complete sampling waves (R19)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Binary32 spacing at 2^20 is 1/8. A 4-unit design step is exactly representable,
+  // exceeds the contributor's coordinate-resolution gate, and divides this straight line
+  // into four cells. Any phase in [0,4) produces exactly four sites per wave.
+  const origin = 1048576;
+  const props: ContinuousSpatialSampleOperationProps = {
+    id: 'projected-line',
+    frameRowCount: 2,
+    frame: {type: 'line', positions: 'positions'},
+    spacing: 4,
+    seed: 17,
+    waves: 2,
+    capacity: 4,
+    output: {
+      positions: 'selected',
+      designWeights: 'weights',
+      provenance: 'provenance',
+      status: 'status'
+    }
+  };
+  const result = await runOperationGraph(device, {
+    inputs: {
+      positions: {
+        format: 'float32x2',
+        values: Float32Array.from([origin, origin, origin + 16, origin])
+      }
+    },
+    operations: [new GPUContinuousSpatialSampleOperation(props)],
+    outputs: Object.values(props.output)
+  });
+  expect(Array.from(result['status'])).toEqual([4, 4, 4, 0, 4, 4, 4, 0]);
+  expect(Array.from(result['weights'])).toEqual(Array<number>(8).fill(4));
+  expect(result['selected']).toHaveLength(16);
+  expect(result['provenance']).toHaveLength(32);
+  // Independent Python integer Philox4x32-10, key=(17,0x43535350), counter=(wave,0,0,0):
+  // phases are 3.721618175506592 and 2.192657470703125. Rounded to coordinate ulps=1/8.
+  for (const [wave, expected] of [1048579.75, 1048578.25].entries()) {
+    expect(Number.isFinite(result['selected'][wave * 8])).toBe(true);
+    expect(Math.abs(result['selected'][wave * 8] - expected)).toBeLessThanOrEqual(0.125);
+  }
+  for (let wave = 0; wave < 2; wave++)
+    for (let site = 0; site < 4; site++) {
+      const row = wave * 4 + site;
+      const positionX = result['selected'][row * 2];
+      const positionY = result['selected'][row * 2 + 1];
+      expect(Number.isFinite(positionX) && Number.isFinite(positionY)).toBe(true);
+      expect(positionY).toBe(origin);
+      expect(positionX).toBeGreaterThanOrEqual(origin + site * 4);
+      expect(positionX).toBeLessThan(origin + (site + 1) * 4);
+      if (site)
+        expect(Math.abs(positionX - result['selected'][(row - 1) * 2] - 4)).toBeLessThanOrEqual(
+          0.25
+        );
+      expect(Array.from(result['provenance'].slice(row * 4, row * 4 + 4))).toEqual([
+        0,
+        wave,
+        site,
+        wave === 0 ? 0 : 1
+      ]);
+    }
+});
 
 for (const frameType of ['line', 'area'] as const)
   for (const scenario of ['ordinary', 'overflow', 'invalid'] as const) {

@@ -24,6 +24,8 @@ export type GPUComputationTimingInput = {
   nodes: readonly {
     id: string;
     cpuEncodeTimeMilliseconds: number;
+    /** Measured duration in milliseconds, independent of endpoint availability. */
+    gpuTimeMilliseconds?: number;
     gpuStartTimeMilliseconds?: number;
     gpuEndTimeMilliseconds?: number;
     gpuBeginNanoseconds?: number;
@@ -33,7 +35,7 @@ export type GPUComputationTimingInput = {
   }[];
 };
 
-/** Builds nanosecond metrics relative to the earliest GPU begin timestamp in the report. */
+/** Builds relative endpoint metrics and preserves independently measured millisecond durations. */
 export function createGPUComputationMetrics(props: {
   runId: string;
   executionId?: string;
@@ -54,20 +56,37 @@ export function createGPUComputationMetrics(props: {
   let origin = Infinity;
   for (const node of props.timing.nodes) {
     const begin = getBegin(node);
-    if (begin !== undefined) origin = Math.min(origin, begin);
+    const end = getEnd(node);
+    if (
+      begin !== undefined &&
+      end !== undefined &&
+      Number.isFinite(begin) &&
+      Number.isFinite(end) &&
+      end >= begin
+    )
+      origin = Math.min(origin, begin);
   }
   const nodes: Record<string, GPUComputationNodeMetrics> = Object.fromEntries(
     props.timing.nodes.map(node => {
       const outcome = node.condition?.outcome;
       const begin = getBegin(node);
       const end = getEnd(node);
+      const validPair =
+        begin !== undefined &&
+        end !== undefined &&
+        Number.isFinite(begin) &&
+        Number.isFinite(end) &&
+        end >= begin;
       const passIndex = node.passIndex ?? props.passIndices?.[node.id];
       return [
         node.id,
         {
           cpuEncodeMs: node.cpuEncodeTimeMilliseconds,
-          ...(begin !== undefined && {gpuBegin: begin - origin}),
-          ...(begin !== undefined && end !== undefined && {gpuEnd: end - origin}),
+          ...(node.gpuTimeMilliseconds !== undefined &&
+            Number.isFinite(node.gpuTimeMilliseconds) &&
+            node.gpuTimeMilliseconds >= 0 && {gpuTimeMs: node.gpuTimeMilliseconds}),
+          ...(validPair && {gpuBegin: begin! - origin}),
+          ...(validPair && {gpuEnd: end! - origin}),
           ...(passIndex !== undefined && {passIndex}),
           ...(node.condition !== undefined && {
             outcome:

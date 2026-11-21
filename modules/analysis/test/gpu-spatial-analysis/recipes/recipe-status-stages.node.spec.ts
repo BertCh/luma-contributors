@@ -8,7 +8,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {GPUNetworkIsochrones} from '../../../src/gpu-network/network-isochrones/index';
 import type {GPURecipeStatusPort} from '../../../src/analysis-core/contracts/index';
 import {addChangeOfSupportRecipe} from '../../../src/gpu-spatial-analysis/recipes/change-of-support-recipe';
@@ -93,7 +93,8 @@ function expectStages(
     contributors: readonly GPUCommandNodeProducer<never>[];
   },
   stageNames: string[],
-  adapterStages: readonly string[] = []
+  adapterStages: readonly string[] = [],
+  adapterWrites: ReadonlySet<unknown> = new Set()
 ): Record<string, GPURecipeStatusPort['stages'][number]['status']> {
   expect(recipe.status.stages.map(({stage}) => stage)).toEqual(stageNames);
   const written = getContributorViews(recipe.contributors);
@@ -106,7 +107,10 @@ function expectStages(
       }
       expect((view as GraphDataView).format, `${stage}.${name} format`).toBe('uint32');
       if (!ADAPTER_STAGES.has(stage) && !adapterStages.includes(stage)) {
-        expect(written.has(view), `${stage}.${name} is written by a contributor`).toBe(true);
+        expect(
+          written.has(view) || adapterWrites.has(view),
+          `${stage}.${name} is written by a contributor`
+        ).toBe(true);
       }
     }
   }
@@ -183,7 +187,7 @@ describe('change of support recipe status', () => {
       source: createZones(context, 8, 64),
       target: createZones(context, 8, 64),
       pairCapacity: 64,
-      outputs: {status: {rasterRequiredCount: given}}
+      output: {status: {rasterRequiredCount: given}}
     } as never);
     expect(recipe.status.rasterRequiredCount).toEqual(given);
     expect(recipe.status.rasterRequiredCount[0]).toBe(given[0]);
@@ -298,6 +302,7 @@ describe('drive-time catchment recipe status', () => {
 
   it('reports the cell outline path: table, outline, rings and the demand join', () => {
     const context = createContext();
+    const computeDeclarations = vi.spyOn(context.graph, 'addComputePass');
     const {view} = context;
     const capacity = 256;
     const table = {
@@ -353,20 +358,42 @@ describe('drive-time catchment recipe status', () => {
         joinDemand: {candidateCapacity: 256}
       }
     } as never);
-    const stages = expectStages(recipe, [
-      'service-areas',
-      'isochrone-cells',
-      'isochrone-outline',
-      'isochrone-rings',
-      'band-statistics',
-      'isochrone-demand'
-    ]);
+    const sourceLossWriters = computeDeclarations.mock.calls
+      .map(([node]) => node)
+      .filter(node => node.id.endsWith('-isochrone-join-source-loss'));
+    expect(sourceLossWriters).toHaveLength(1);
+    expect(sourceLossWriters[0].resources).toContainEqual({
+      buffer: recipe.isochroneDemand!.status.candidateOverflow,
+      usage: 'storage-read-write'
+    });
+    const adapterWrites = new Set(
+      sourceLossWriters.flatMap(node =>
+        (node.resources ?? []).flatMap(resource =>
+          'buffer' in resource && resource.usage === 'storage-read-write' ? [resource.buffer] : []
+        )
+      )
+    );
+    const stages = expectStages(
+      recipe,
+      [
+        'service-areas',
+        'isochrone-cells',
+        'isochrone-outline',
+        'isochrone-rings',
+        'band-statistics',
+        'isochrone-demand'
+      ],
+      [],
+      adapterWrites
+    );
+    computeDeclarations.mockRestore();
     expect(stages['isochrone-cells']).toEqual({
       count: table.status.count,
       overflow: table.status.overflow,
       requiredCount: table.status.requiredCount
     });
     expect(stages['isochrone-demand']).toEqual({
+      candidateOverflow: recipe.isochroneDemand!.status.candidateOverflow,
       overflow: recipe.isochroneDemand!.status.overflow,
       uncertainCount: recipe.isochroneDemand!.status.uncertainCount
     });
@@ -472,9 +499,13 @@ describe('fleet dwell recipes status', () => {
       'visit-table',
       'zone-statistics'
     ]);
+    expect(tableStages['visit-table'].candidateOverflow).toBe(
+      withTable.recipe.status.candidateOverflow
+    );
     expect(tableStages['visit-table']).toEqual({
       count: withTable.visitTable!.status.count,
       overflow: withTable.visitTable!.status.overflow,
+      candidateOverflow: withTable.recipe.status.candidateOverflow,
       requiredCount: withTable.visitTable!.status.requiredCount
     });
   });
@@ -665,19 +696,32 @@ describe('period comparison recipe status', () => {
     expect(stages['before-aggregation']).toEqual({
       count: recipe.before.status.count,
       overflow: recipe.before.status.overflow,
+      sumOverflow: recipe.before.status.sumOverflow,
       requiredCount: recipe.before.status.requiredCount
     });
     expect(stages['after-aggregation']).toEqual({
       count: recipe.after.status.count,
       overflow: recipe.after.status.overflow,
+      sumOverflow: recipe.after.status.sumOverflow,
       requiredCount: recipe.after.status.requiredCount
     });
     expect(stages['comparison']).toEqual({
       count: recipe.comparison.status.count,
       overflow: recipe.comparison.status.overflow,
+      sumOverflow: recipe.comparison.status.sumOverflow,
       candidateOverflow: recipe.comparison.status.candidateOverflow,
       requiredCount: recipe.comparison.status.requiredCount
     });
+    for (const [stage, output] of [
+      ['before-aggregation', recipe.before],
+      ['after-aggregation', recipe.after],
+      ['comparison', recipe.comparison]
+    ] as const) {
+      expect(output.status.sumOverflow).toBeDefined();
+      expect(recipe.status.stages.find(entry => entry.stage === stage)!.status.sumOverflow).toBe(
+        output.status.sumOverflow
+      );
+    }
     expect(recipe.comparison.status.candidateOverflow).toBeDefined();
     expect(recipe.comparison.status.requiredCount).toBeDefined();
   });
@@ -752,7 +796,7 @@ describe('space-time hot spots recipe status', () => {
         format: 'float32',
         length: 64
       }),
-      outputs: sorted
+      output: sorted
         ? {status: {groupOverflow: view('uint32', 1, 'group-overflow'), groupRequiredCount}}
         : undefined
     } as never);
@@ -778,9 +822,10 @@ describe('space-time hot spots recipe status', () => {
 });
 
 describe('spatial regression recipe status', () => {
-  it('reports the solver and diagnostics status words', () => {
+  it('reports separate solver codes and excluded-row counts', () => {
     const context = createContext();
     const {view} = context;
+    const computeDeclarations = vi.spyOn(context.graph, 'addComputePass');
     const rows = 32;
     const recipe = addSpatialRegressionRecipe(context.graph, {
       predictors: view('float32', rows * 2, 'predictors'),
@@ -797,9 +842,29 @@ describe('spatial regression recipe status', () => {
         length: 64
       })
     } as never);
-    const stages = expectStages(recipe, ['ordinary-least-squares', 'spatial-diagnostics']);
-    expect(stages['ordinary-least-squares']).toEqual({invalidCount: recipe.ols.status.code});
-    expect(stages['spatial-diagnostics']).toEqual({invalidCount: recipe.diagnostics.status.code});
+    const countWriters = computeDeclarations.mock.calls
+      .map(([node]) => node)
+      .filter(node => node.id.endsWith('-excluded-row-counts'));
+    computeDeclarations.mockRestore();
+    expect(countWriters).toHaveLength(1);
+    const adapterWrites = new Set(
+      (countWriters[0].resources ?? []).flatMap(resource =>
+        'buffer' in resource && resource.usage === 'storage-read-write' ? [resource.buffer] : []
+      )
+    );
+    const stageNames = ['ordinary-least-squares', 'spatial-diagnostics'];
+    const stages = expectStages(recipe, stageNames, [], adapterWrites);
+    const codes = Object.fromEntries(recipe.status.stages.map(({stage, code}) => [stage, code]));
+    expect(codes['ordinary-least-squares']).toBe(recipe.ols.status.code);
+    expect(codes['spatial-diagnostics']).toBe(recipe.diagnostics.status.code);
+    const counts = stageNames.map(stage => stages[stage].invalidCount);
+    expect(new Set(counts)).toEqual(adapterWrites);
+    expect(adapterWrites.size).toBe(2);
+    for (const stage of stageNames) {
+      expect(Object.keys(stages[stage])).toEqual(['invalidCount']);
+      expect(stages[stage].invalidCount?.length).toBe(1);
+      expect(stages[stage].invalidCount?.buffer).not.toBe(codes[stage]?.buffer);
+    }
   });
 });
 

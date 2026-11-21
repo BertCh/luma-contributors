@@ -270,6 +270,7 @@ export async function createNearTransit(
   // --- state -----------------------------------------------------------------------------------
   let destroyed = false;
   let variant: Variant;
+  let selectionComplete = false;
   let dirty = true;
   let settle = 0;
   let measuring = false;
@@ -386,7 +387,7 @@ export async function createNearTransit(
           positions: importGraphBuffer(graph, 'points', source.buffer, 'float32x2', count)
         },
         features,
-        distance: distanceParameter.importToGraph(graph),
+        radius: distanceParameter.importToGraph(graph),
         candidateCapacity: count * kind.candidatesPerPoint,
         spatialSort: state.spatialSort,
         output: {
@@ -461,6 +462,17 @@ export async function createNearTransit(
         const header = new Uint32Array(bytes, 0, 3);
         const mask32 = new Uint32Array(bytes, 12, count);
         const selected = header[0];
+        selectionComplete = header[1] === 0 && header[2] === 0;
+        if (!selectionComplete) {
+          ctx.setReadout(
+            'selected',
+            `at least ${formatInteger(selected)} of ${formatInteger(count)} (incomplete)`
+          );
+          ctx.setReadout('overflow', 'YES (capacity)');
+          ctx.setReadout('composition', 'unavailable: incomplete selection');
+          ctx.requestLayers();
+          return;
+        }
         ctx.setReadout(
           'selected',
           `${formatInteger(selected)} of ${formatInteger(count)} (${((100 * selected) / count).toFixed(1)}%)`
@@ -522,6 +534,7 @@ export async function createNearTransit(
   function commitVariant(next: Variant, state: NearTransitOptions): void {
     const previous = variant;
     variant = next;
+    selectionComplete = false;
     dirty = true;
     if (previous) {
       previous.reader.stop();
@@ -667,6 +680,7 @@ export async function createNearTransit(
     },
 
     getLayers() {
+      if (!selectionComplete) return [];
       const state = ctx.options;
       const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
       const dark = ctx.theme() === 'dark';

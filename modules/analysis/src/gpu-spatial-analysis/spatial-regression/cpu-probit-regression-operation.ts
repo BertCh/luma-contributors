@@ -3,11 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {
-  validateCapacity,
-  validateFiniteNumber,
-  validateRequirement
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
@@ -23,13 +19,27 @@ import {
 import type {CPURegressionWeights} from './cpu-regression-weights';
 import {getCPUErrorDot as getDotProduct, getCPUErrorMean} from './cpu-spatial-error-regression';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
+import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
+import {isProbitStepWithinTolerance, resolveProbitConvergenceTolerance} from './probit-convergence';
+import {
+  getProbitStatusFailureComparison,
+  GPU_PROBIT_SPATIAL_LAG_STATUS
+} from './probit-spatial-lag-nodes';
+import {GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE} from './ordinary-least-squares-parameters';
+
+type ProbitWeightsInput = {
+  weights: Pick<CPURegressionWeights, 'offsets' | 'neighbors' | 'weights'> & {
+    status?: Partial<Record<keyof NonNullable<GPUSpatialWeights['status']>, Uint32Array>>;
+  };
+};
 
 /** Packed complete-case observations, with optional whole-CSR residual diagnostics. */
 export type CPUProbitRegressionInput = {
   predictors: Float32Array;
   response: Float32Array;
   mask?: Uint32Array;
-  spatialDiagnostics?: {weights: CPURegressionWeights; overflow?: Uint32Array};
+  spatialDiagnostics?: ProbitWeightsInput;
+  spatialLag?: ProbitWeightsInput;
 };
 /** Fisher scoring settings. The caller's iteration budget remains a stopping rule. */
 export type CPUProbitRegressionOptions = Pick<
@@ -45,13 +55,13 @@ export type CPUProbitRegressionResult = {
   summary: Float32Array;
   status: Uint32Array;
   spatialDiagnostics?: {tests: Float32Array; status: Uint32Array};
+  spatialLag?: {coefficients: Float32Array; standardErrors: Float32Array; status: Uint32Array};
 };
 
-function validateOptions(id: string, options: CPUProbitRegressionOptions): void {
+function validateOptions(id: string, options: CPUProbitRegressionOptions): number {
   validateCapacity(id, 'predictorCount', options.predictorCount);
   validateCapacity(id, 'maximumIterations', options.maximumIterations ?? 64);
-  validateFiniteNumber(id, 'tolerance', options.tolerance ?? 1e-5, 0);
-  validateRequirement(id, (options.tolerance ?? 1e-5) > 0, 'tolerance must be positive');
+  return resolveProbitConvergenceTolerance(id, options.tolerance);
 }
 
 function getDensity(value: number): number {
@@ -179,7 +189,10 @@ function certifyColumn(raw: number[][], response: number[]): boolean {
  * - Float64 means, information, centered predictions, densities and diagnostics are rounded once
  *   on output. Well-conditioned comparisons use 5e-4 relative tolerance (iterations are discrete).
  * - Shader row/predictor/iteration caps and the 24-halving cap are dropped. The requested iteration
- *   budget and tolerance remain; backtracking stops when the candidate no longer changes.
+ *   budget remains; both forms accept tolerance up to 1e-2 and certify with
+ *   min(tolerance, 1e-5), default 1e-5, per coefficient:
+ *   every |step| <= tolerance * (1 + |coefficient|) in centered/scaled coordinates. Backtracking
+ *   stops when the candidate no longer changes.
  * - Stable float64 log tails and inverse Mills ratios remove the wrong-side bound of 12 and the
  *   float32 likelihood noise allowance. A bound-pinned GPU status 3 can converge here.
  * - Singular pivots use the shared float64 floor, 64 * Number.EPSILON of the information diagonal,
@@ -190,6 +203,9 @@ function certifyColumn(raw: number[][], response: number[]): boolean {
  *   direction blocks status 0. The candidate search is still incomplete for multiple columns.
  * - Diagnostic probabilities stay float64 until output, with the same [1e-7, 1-1e-7] clamp.
  *   P-values call the public chi-square survival helper. Subnormals are retained.
+ * - Optional spatialLag uses the same weighted probability-residual linearization, unweighted
+ *   instruments, complete-case induced graph, status codes and HC0 structural-residual sandwich.
+ *   Its two stages retain the GPU's 1e-3 factor-pivot limit; intermediates remain float64.
  *
  * @throws If predictors, mask or diagnostic arrays have inconsistent lengths, naming the argument.
  */
@@ -198,7 +214,7 @@ export function computeProbitRegressionOnCPU(
   options: CPUProbitRegressionOptions
 ): CPUProbitRegressionResult {
   const id = 'computeProbitRegressionOnCPU';
-  validateOptions(id, options);
+  const tolerance = validateOptions(id, options);
   const predictorCount = options.predictorCount;
   const coefficientCount = predictorCount + 1;
   const rowCount = input.response.length;
@@ -206,20 +222,17 @@ export function computeProbitRegressionOnCPU(
     throw new Error(`${id} predictors length must equal response length * predictorCount`);
   if (input.mask && input.mask.length !== rowCount)
     throw new Error(`${id} mask length must equal response length`);
-  if (input.spatialDiagnostics) {
-    if (input.spatialDiagnostics.weights.offsets.length !== rowCount + 1)
-      throw new Error(
-        `${id} spatialDiagnostics.weights.offsets length must equal response length + 1`
-      );
-    if (
-      input.spatialDiagnostics.weights.weights.length !==
-      input.spatialDiagnostics.weights.neighbors.length
-    )
-      throw new Error(
-        `${id} spatialDiagnostics.weights.weights length must equal neighbors length`
-      );
-    if (input.spatialDiagnostics.overflow && input.spatialDiagnostics.overflow.length !== 1)
-      throw new Error(`${id} spatialDiagnostics.overflow must hold one value`);
+  for (const name of ['spatialDiagnostics', 'spatialLag'] as const) {
+    const spatial = input[name];
+    if (!spatial) continue;
+    if (spatial.weights.offsets.length !== rowCount + 1)
+      throw new Error(`${id} ${name}.weights.offsets length must equal response length + 1`);
+    if (spatial.weights.weights.length !== spatial.weights.neighbors.length)
+      throw new Error(`${id} ${name}.weights.weights length must equal neighbors length`);
+    for (const [field, values] of Object.entries(spatial.weights.status ?? {})) {
+      if (!values || values.length !== 1)
+        throw new Error(`${id} ${name}.weights.status.${field} must hold one value`);
+    }
   }
   const result: CPUProbitRegressionResult = {
     coefficients: new Float32Array(coefficientCount).fill(NaN),
@@ -230,6 +243,15 @@ export function computeProbitRegressionOnCPU(
     status: new Uint32Array([1]),
     ...(input.spatialDiagnostics
       ? {spatialDiagnostics: {tests: new Float32Array(6).fill(NaN), status: new Uint32Array([1])}}
+      : {}),
+    ...(input.spatialLag
+      ? {
+          spatialLag: {
+            coefficients: new Float32Array(coefficientCount + 1).fill(NaN),
+            standardErrors: new Float32Array(coefficientCount + 1).fill(NaN),
+            status: Uint32Array.of(GPU_PROBIT_SPATIAL_LAG_STATUS.MODEL_NOT_CONVERGED)
+          }
+        }
       : {})
   };
   const usedRows: number[] = [];
@@ -357,9 +379,7 @@ export function computeProbitRegressionOnCPU(
     while (scale > 0) {
       nextEstimate = estimate.map((value, column) => value + scale * direction[column]);
       if (nextEstimate.every((value, column) => value === estimate[column])) {
-        accepted =
-          Math.max(...direction.map(Math.abs)) <=
-          (options.tolerance ?? 1e-5) * (1 + Math.max(...estimate.map(Math.abs)));
+        accepted = isProbitStepWithinTolerance(direction, estimate, tolerance);
         break;
       }
       const nextLikelihood = design.reduce(
@@ -380,12 +400,11 @@ export function computeProbitRegressionOnCPU(
     if (!accepted) break;
     estimate = nextEstimate;
     iterations++;
-    const largestStep = Math.max(...direction.map(value => Math.abs(scale * value)));
-    const magnitude = Math.max(...estimate.map(Math.abs));
-    if (largestStep <= (options.tolerance ?? 1e-5) * (1 + magnitude)) {
+    // Per coefficient, so that one large coefficient cannot certify an unrelated small one.
+    const steps = direction.map(value => scale * value);
+    if (isProbitStepWithinTolerance(steps, estimate, tolerance)) {
       // A tiny backtracked step alone is not a maximum: require the unshortened score step too.
-      if (Math.max(...direction.map(Math.abs)) > (options.tolerance ?? 1e-5) * (1 + magnitude))
-        break;
+      if (!isProbitStepWithinTolerance(direction, estimate, tolerance)) break;
       if (!separating && !undecided) result.status[0] = 0;
       else break;
     }
@@ -428,7 +447,235 @@ export function computeProbitRegressionOnCPU(
       result.spatialDiagnostics
     );
   }
+  if (input.spatialLag && result.spatialLag && result.status[0] === 0) {
+    computeSpatialLag(
+      input.spatialLag,
+      usedRows,
+      design,
+      response,
+      probabilities,
+      densities,
+      estimate,
+      means,
+      scales,
+      result.spatialLag
+    );
+  }
   return result;
+}
+
+function hasIncompleteWeights(input: ProbitWeightsInput): boolean {
+  const {offsets, neighbors, status} = input.weights;
+  const accessible = Math.min(
+    Math.max(0, offsets[offsets.length - 1] - offsets[0]),
+    neighbors.length
+  );
+  const required = status?.requiredCount?.[0];
+  const written = status?.count?.[0] ?? accessible;
+  return (
+    written > neighbors.length ||
+    (required !== undefined && required > Math.min(written, accessible)) ||
+    Object.entries(input.weights.status ?? {}).some(
+      ([name, values]) =>
+        !['count', 'requiredCount', 'iterationCount'].includes(name) &&
+        (getProbitStatusFailureComparison(name) === '==' ? values?.[0] === 0 : Boolean(values?.[0]))
+    )
+  );
+}
+
+function computeSpatialLag(
+  input: ProbitWeightsInput,
+  usedRows: number[],
+  design: number[][],
+  response: number[],
+  probabilities: number[],
+  densities: number[],
+  ordinaryEstimate: number[],
+  means: number[],
+  scales: number[],
+  result: NonNullable<CPUProbitRegressionResult['spatialLag']>
+): void {
+  const codes = GPU_PROBIT_SPATIAL_LAG_STATUS;
+  result.status[0] = codes.INVALID_WEIGHTS;
+  const {offsets, neighbors, weights} = input.weights;
+  if (hasIncompleteWeights(input) || offsets[0] !== 0) return;
+  const positions = new Map(usedRows.map((row, position) => [row, position]));
+  // Validate the whole supplied graph, including excluded focus rows, before using its products.
+  for (let row = 0; row + 1 < offsets.length; row++) {
+    if (offsets[row] > offsets[row + 1] || offsets[row + 1] > neighbors.length) return;
+    for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
+      if (
+        neighbors[slot] >= offsets.length - 1 ||
+        neighbors[slot] === row ||
+        !Number.isFinite(weights[slot]) ||
+        weights[slot] < 0 ||
+        (slot > offsets[row] && neighbors[slot - 1] >= neighbors[slot])
+      )
+        return;
+    }
+  }
+  const multiply = (values: number[][]): number[][] =>
+    usedRows.map(row => {
+      const product = new Array<number>(values[0].length).fill(0);
+      for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
+        const position = positions.get(neighbors[slot]);
+        if (position !== undefined)
+          product.forEach((_, column) => {
+            product[column] += weights[slot] * values[position][column];
+          });
+      }
+      return product;
+    });
+  const linear = design.map(row => getDotProduct(row, ordinaryEstimate));
+  const lagged = multiply(design.map((row, position) => [linear[position], ...row]));
+  const twiceLagged = multiply(lagged.map(row => row.slice(1)));
+  const instruments = design.map((row, position) => [
+    ...row,
+    ...lagged[position].slice(1),
+    ...twiceLagged[position]
+  ]);
+  // Completing the two spatial blocks before centering retains W1 and W²1 on induced graphs.
+  // Starting with centered/scaled X also avoids subtracting large raw predictor origins in WX.
+  const instrumentMeans = instruments[0].map((_, column) =>
+    column === 0 ? 0 : getCPUErrorMean(instruments.map(row => row[column]))
+  );
+  for (const row of instruments)
+    row.forEach((value, column) => {
+      row[column] = value - instrumentMeans[column];
+    });
+  const gradients = design.map((row, position) => {
+    const multiplier =
+      densities[position] / Math.sqrt(probabilities[position] * (1 - probabilities[position]));
+    return [...row, lagged[position][0]].map(value => value * multiplier);
+  });
+  const target = response.map(
+    (value, row) =>
+      (value - probabilities[row] + densities[row] * linear[row]) /
+      Math.sqrt(probabilities[row] * (1 - probabilities[row]))
+  );
+  const size = gradients[0].length;
+  const instrumentCount = instruments[0].length;
+  const gram = Array.from({length: instrumentCount}, (_, first) =>
+    Array.from({length: instrumentCount}, (_, second) =>
+      instruments.reduce((sum, row) => sum + row[first] * row[second], 0)
+    )
+  );
+  const factorWithPivotLimit = (matrix: number[][]) => {
+    const factor = factorCPURegressionCorrelation(matrix);
+    return factor &&
+      factor.every(
+        (row, column) =>
+          row[column] ** 2 >=
+          GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE ** 2 * matrix[column][column]
+      )
+      ? factor
+      : undefined;
+  };
+  result.status[0] = codes.SINGULAR_FIRST_STAGE;
+  const selected: number[] = [];
+  for (let column = 0; column < instrumentCount; column++) {
+    const candidate = [...selected, column];
+    if (factorWithPivotLimit(candidate.map(first => candidate.map(second => gram[first][second]))))
+      selected.push(column);
+  }
+  if (selected.length < size) return;
+  const firstFactor = factorWithPivotLimit(
+    selected.map(first => selected.map(second => gram[first][second]))
+  )!;
+  const projections = Array.from({length: size}, (_, column) =>
+    solveCPURegressionFactor(
+      firstFactor,
+      selected.map(instrument =>
+        instruments.reduce(
+          (sum, row, position) => sum + row[instrument] * gradients[position][column],
+          0
+        )
+      )
+    )
+  );
+  const projected = instruments.map(row =>
+    projections.map(projection =>
+      selected.reduce(
+        (sum, instrument, position) => sum + row[instrument] * projection[position],
+        0
+      )
+    )
+  );
+  const information = Array.from({length: size}, (_, first) =>
+    Array.from({length: size}, (_, second) =>
+      projected.reduce((sum, row) => sum + row[first] * row[second], 0)
+    )
+  );
+  result.status[0] = codes.SINGULAR_SECOND_STAGE;
+  // An exactly zero ordinary fit may retain a few ulps of score-solve rounding. Do not turn
+  // that into an identified rho column by independently normalizing it. Compare W eta with
+  // a propagated absolute error floor in eta, scaled by each row's sum of weights.
+  const linearError = design.map(
+    row =>
+      64 *
+      Number.EPSILON *
+      (1 +
+        row.reduce(
+          (sum, value, column) => sum + Math.abs(value) * (1 + Math.abs(ordinaryEstimate[column])),
+          0
+        ))
+  );
+  const laggedError = multiply(linearError.map(value => [value]));
+  if (!lagged.some((row, position) => Math.abs(row[0]) > laggedError[position][0])) return;
+  const secondFactor = factorWithPivotLimit(information);
+  if (!secondFactor) return;
+  const estimate = solveCPURegressionFactor(
+    secondFactor,
+    Array.from({length: size}, (_, column) =>
+      projected.reduce((sum, row, position) => sum + row[column] * target[position], 0)
+    )
+  );
+  if (estimate.some(value => !Number.isFinite(value))) return;
+  const residuals = gradients.map(
+    (row, position) => target[position] - getDotProduct(row, estimate)
+  );
+  const meat = Array.from({length: size}, (_, first) =>
+    Array.from({length: size}, (_, second) =>
+      projected.reduce(
+        (sum, row, position) => sum + row[first] * row[second] * residuals[position] ** 2,
+        0
+      )
+    )
+  );
+  const transform = Array.from({length: size}, (_, row) =>
+    Array.from({length: size}, (_, column) =>
+      row === 0
+        ? column === 0
+          ? 1
+          : column < size - 1
+            ? -means[column - 1] * scales[column - 1]
+            : 0
+        : row === column
+          ? row < size - 1
+            ? scales[row - 1]
+            : 1
+          : 0
+    )
+  );
+  const transformed = transform.map(row => getDotProduct(row, estimate));
+  const errors = transform.map(row => {
+    const influence = solveCPURegressionFactor(secondFactor, row);
+    return Math.sqrt(
+      Math.max(
+        0,
+        influence.reduce(
+          (sum, value, first) => sum + value * getDotProduct(meat[first], influence),
+          0
+        )
+      )
+    );
+  });
+  const published = Float32Array.from(transformed);
+  const publishedErrors = Float32Array.from(errors);
+  if ([...published, ...publishedErrors].some(value => !Number.isFinite(value))) return;
+  result.coefficients.set(published);
+  result.standardErrors.set(publishedErrors);
+  result.status[0] = Math.abs(published[size - 1]) >= 1 ? codes.RHO_OUT_OF_RANGE : codes.OK;
 }
 
 function computeDiagnostics(
@@ -441,7 +688,7 @@ function computeDiagnostics(
 ): void {
   const {offsets, neighbors, weights} = input.weights;
   result.status[0] = 2;
-  if (input.overflow?.[0]) return;
+  if (hasIncompleteWeights(input) || offsets[0] !== 0) return;
   const positions = new Map(usedRows.map((row, position) => [row, position]));
   const variance = probabilities.map(value => value * (1 - value));
   const naive = response.map((value, row) => value - probabilities[row]);
@@ -452,9 +699,9 @@ function computeDiagnostics(
   let naiveProduct = 0;
   let generalizedProduct = 0;
   let standardizedProduct = 0;
-  for (let position = 0; position < usedRows.length; position++) {
-    const row = usedRows[position];
+  for (let row = 0; row + 1 < offsets.length; row++) {
     if (offsets[row] > offsets[row + 1] || offsets[row + 1] > neighbors.length) return;
+    const position = positions.get(row);
     for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
       const neighbor = neighbors[slot];
       const weight = weights[slot];
@@ -462,9 +709,11 @@ function computeDiagnostics(
         neighbor >= offsets.length - 1 ||
         neighbor === row ||
         !Number.isFinite(weight) ||
+        weight < 0 ||
         (slot > offsets[row] && neighbors[slot - 1] >= neighbor)
       )
         return;
+      if (position === undefined) continue;
       const otherPosition = positions.get(neighbor);
       if (otherPosition === undefined) continue;
       let reciprocal = 0;
@@ -504,6 +753,27 @@ function computeDiagnostics(
 /** CPU twin; no GPU shape caps. The caller's iteration budget and output layouts are retained. */
 export class CPUProbitRegressionOperation extends GPUCPUOperation {
   constructor(props: ProbitRegressionOperationProps) {
+    props = {
+      ...props,
+      output: {...props.output},
+      spatialDiagnostics: props.spatialDiagnostics
+        ? {
+            ...props.spatialDiagnostics,
+            weights: {
+              ...props.spatialDiagnostics.weights,
+              status: {...props.spatialDiagnostics.weights.status}
+            },
+            output: {...props.spatialDiagnostics.output}
+          }
+        : undefined,
+      spatialLag: props.spatialLag
+        ? {
+            ...props.spatialLag,
+            weights: {...props.spatialLag.weights, status: {...props.spatialLag.weights.status}},
+            output: {...props.spatialLag.output}
+          }
+        : undefined
+    };
     const id = props.id ?? 'probit-regression';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);
@@ -525,17 +795,36 @@ export class CPUProbitRegressionOperation extends GPUCPUOperation {
           {
             predictors: getCPUOperationFloat32Rows(id, inputs, 'predictors'),
             response,
-            mask: props.mask ? getCPUOperationUint32Rows(id, inputs, 'mask') : undefined,
+            mask:
+              props.mask !== undefined ? getCPUOperationUint32Rows(id, inputs, 'mask') : undefined,
             spatialDiagnostics: props.spatialDiagnostics
               ? {
                   weights: {
                     offsets: getCPUOperationUint32Rows(id, inputs, 'offsets'),
                     neighbors: getCPUOperationUint32Rows(id, inputs, 'neighbors'),
-                    weights: getCPUOperationFloat32Rows(id, inputs, 'weights')
-                  },
-                  overflow: props.spatialDiagnostics.weights.overflow
-                    ? getCPUOperationUint32Rows(id, inputs, 'overflow')
-                    : undefined
+                    weights: getCPUOperationFloat32Rows(id, inputs, 'weights'),
+                    status: Object.fromEntries(
+                      Object.keys(props.spatialDiagnostics.weights.status ?? {}).map(name => [
+                        name,
+                        getCPUOperationUint32Rows(id, inputs, `diagnosticWeight${name}`)
+                      ])
+                    )
+                  }
+                }
+              : undefined,
+            spatialLag: props.spatialLag
+              ? {
+                  weights: {
+                    offsets: getCPUOperationUint32Rows(id, inputs, 'lagOffsets'),
+                    neighbors: getCPUOperationUint32Rows(id, inputs, 'lagNeighbors'),
+                    weights: getCPUOperationFloat32Rows(id, inputs, 'lagWeights'),
+                    status: Object.fromEntries(
+                      Object.keys(props.spatialLag.weights.status ?? {}).map(name => [
+                        name,
+                        getCPUOperationUint32Rows(id, inputs, `lagWeight${name}`)
+                      ])
+                    )
+                  }
                 }
               : undefined
           },
@@ -552,6 +841,13 @@ export class CPUProbitRegressionOperation extends GPUCPUOperation {
             ? {
                 [props.spatialDiagnostics.output.tests]: result.spatialDiagnostics.tests,
                 [props.spatialDiagnostics.output.status]: result.spatialDiagnostics.status
+              }
+            : {}),
+          ...(props.spatialLag && result.spatialLag
+            ? {
+                [props.spatialLag.output.coefficients]: result.spatialLag.coefficients,
+                [props.spatialLag.output.standardErrors]: result.spatialLag.standardErrors,
+                [props.spatialLag.output.status]: result.spatialLag.status
               }
             : {})
         };

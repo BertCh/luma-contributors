@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUStreamlinesSettings} from '../../src/raster-analysis/flow-texture/index';
+import {
+  decodeSavedStreamlinesSettings,
+  type SavedStreamlinesSettings
+} from '../gpu-raster/flow-texture/saved-flow-parameters';
 import type {StreamlinesCPUConfig} from './streamlines-cpu';
 import streamsJSON from './fixtures/parity-wp4-streamlines.json';
 import isotropicJSON from './fixtures/parity-wp4-distance-isotropic.json';
@@ -30,7 +34,11 @@ export type StreamlineCase = {
   minimumCellMargin: number;
 };
 
-type EncodedStreamlineCase = Omit<StreamlineCase, 'field' | 'candidates' | 'points'> & {
+type EncodedStreamlineCase = Omit<
+  StreamlineCase,
+  'field' | 'candidates' | 'points' | 'settings'
+> & {
+  settings: SavedStreamlinesSettings;
   field: string;
   candidates: string;
   points: string;
@@ -45,7 +53,13 @@ export async function decodeStreamlineCase(scene: EncodedStreamlineCase): Promis
     decodePackedNumbers(scene.candidates),
     decodePackedNumbers(scene.points)
   ]);
-  return {...scene, field, candidates, points};
+  return {
+    ...scene,
+    field,
+    candidates,
+    points,
+    settings: decodeSavedStreamlinesSettings(scene.settings)
+  };
 }
 export const distanceCases = [isotropicJSON, anisotropicJSON, distanceSyntheticJSON].flatMap(
   fixture => fixture.cases

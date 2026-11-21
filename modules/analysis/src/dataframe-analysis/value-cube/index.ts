@@ -9,8 +9,8 @@ export {
   getGPUCellPeriodKeyPeriodBits,
   GPU_CELL_PERIOD_KEY_MAXIMUM_PERIOD_BITS,
   packGPUCellPeriodKey,
-  unpackGPUCellPeriodKey
+  unpackGPUCellPeriodKeyChecked
 } from './cell-period-key-packing';
-export type {GPUCellPeriodKeyFill} from './cell-period-key-packing';
+export type {GPUCellPeriodKeyFill, GPUCellPeriodKeyLayout} from './cell-period-key-packing';
 export {GPUValueCube, getGPUValueCubeMaximumBinCount} from './gpu-value-cube';
 export type {GPUValueCubeOutput, GPUValueCubeProps} from './gpu-value-cube';

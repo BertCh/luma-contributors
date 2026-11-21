@@ -61,8 +61,8 @@ function getOperations(model: LensViewModel) {
 export function Page({topic, models, code}: TopicPageProps) {
   const timeWindow = models[COMMAND_GRAPH_SCENARIOS.timeWindowFilter];
   const moran = models[COMMAND_GRAPH_SCENARIOS.localMoran];
-  const declareKernels = code.declareKernels;
-  const localMoranChain = code.localMoranChain;
+  const declareKernels = code['declareKernels'];
+  const localMoranChain = code['localMoranChain'];
   const [operation, setOperation] = useState<OperationId | 'all'>('all');
   const operations = moran ? getOperations(moran) : [];
   const highlighted = operations.find(candidate => candidate.id === operation)?.nodeIds;
@@ -76,7 +76,11 @@ export function Page({topic, models, code}: TopicPageProps) {
     <TopicShell
       topic={topic}
       tryIt={[
-        {kind: 'function', id: 'time-window-filter', note: 'The nine-kernel run on this page.'},
+        {
+          kind: 'function',
+          id: 'time-window-filter',
+          note: `${timeWindow?.recordedNodeCount ?? 0} graph nodes in the recorded run on this page.`
+        },
         {kind: 'function', id: 'local-morans-i', note: 'Three chained operations in one graph.'},
         {
           kind: 'reference',
@@ -98,15 +102,15 @@ export function Page({topic, models, code}: TopicPageProps) {
 
       <Section title="Declare, never order">
         <Prose>
-          A <Term id="command-graph" /> is a list of <Term id="kernel">kernels</Term> and the{' '}
+          A <Term id="command-graph" /> is a list of graph nodes and the{' '}
           <Term id="buffer">buffers</Term> each one touches. The time window filter below keeps the
           rows of {formatCount(rowCount)} timestamps that fall inside a window and packs their ids
-          in {timeWindow?.nodes.length ?? 0} kernels, recorded on a real GPU.
+          in {timeWindow?.recordedNodeCount ?? 0} graph nodes, recorded on a real GPU.
         </Prose>
         {timeWindow ? (
           <Figure
             notice="Nobody wrote these edges."
-            caption="Each line on the left is one kernel reading a buffer that an earlier kernel wrote. Pick a kernel to light the buffers it reads and the kernels they came from."
+            caption="Each line on the left is one graph node reading a buffer that an earlier node wrote. Pick a node to light the buffers it reads and the nodes they came from."
           >
             <DeclareFigure model={timeWindow} />
           </Figure>
@@ -116,8 +120,8 @@ export function Page({topic, models, code}: TopicPageProps) {
         {declareKernels ? (
           <>
             <Prose>
-              This is how the filter adds those kernels. Each binding says <code>read</code> or{' '}
-              <code>read_write</code>; that becomes a <code>storage-read</code> or{' '}
+              This is how the filter adds its compute kernels. Each binding says <code>read</code>{' '}
+              or <code>read_write</code>; that becomes a <code>storage-read</code> or{' '}
               <code>storage-read-write</code> use, and luma.gl infers the edges from those uses.
             </Prose>
             <Figure>
@@ -169,7 +173,7 @@ export function Page({topic, models, code}: TopicPageProps) {
         ) : null}
         {moran ? (
           <Figure
-            notice={`${formatCount(moran.recordedNodeCount)} kernels, ${formatCount(moran.recordedEdgeCount)} edges, none written by hand.`}
+            notice={`${formatCount(moran.recordedNodeCount)} graph nodes, ${formatCount(moran.recordedEdgeCount)} edges, none written by hand.`}
             caption={`It folds into ${moran.nodes.length} groups (xN marks repeated kernels), so most write-after-read and write-after-write hazards fall inside a group: the key counts all of them, the lines show the ${crossingOrderHazards} that cross between groups. Pick an operation to see where its kernels sit.`}
           >
             <div

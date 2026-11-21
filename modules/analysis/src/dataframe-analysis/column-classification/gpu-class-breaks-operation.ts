@@ -6,11 +6,15 @@ import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contri
 import {GPUClassBreaks} from './gpu-class-breaks';
 import type {GPUClassBreaksMethod} from './class-breaks-parameters';
 import {
+  getClassBreaksProvenance,
   validateClassBreaksInput,
   validateClassBreaksInputAssertions,
-  validateClassBreaksNaturalOptions
+  validateClassBreaksGraphOptions
 } from './class-breaks-input';
-import {snapshotClassBreaksOperationProps} from './class-breaks-operation-snapshot';
+import {
+  getClassBreaksOperationPorts,
+  snapshotClassBreaksOperationProps
+} from './class-breaks-operation-snapshot';
 
 /** Shared graph-value props. The packed parameters select a method per frame. */
 export type ClassBreaksOperationProps = {
@@ -23,43 +27,31 @@ export type ClassBreaksOperationProps = {
   mask?: string;
   parameters: string;
   maximumClassCount: number;
+  /** GPU defaults omit incompatible layouts/capacities; CPU defaults run on its packed rows. */
   methods?: readonly GPUClassBreaksMethod[];
+  /** Coarse graph-bin default 2048. The 2048 ceiling is GPU-only; CPU computes exact partitions. */
   naturalBreaksBinCount?: number;
   naturalBreaksMode?: 'approximate' | 'exact' | 'monotone';
   naturalBreaksExactStorage?: 'auto' | 'materialized' | 'recompute';
   output: {breaks: string; classCount: string; classCounts?: string};
 };
 
+/** Named props alias for the public GPU operation class. */
+export type GPUClassBreaksOperationProps = ClassBreaksOperationProps;
+
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUClassBreaksOperation extends GPUContributorOperation {
+  /** Capacity-compatible methods; resolved input layout is reflected in the contributor.methods. */
+  readonly methods: readonly GPUClassBreaksMethod[];
+  /** Resolved natural-breaks route metadata, available before lowering. */
+  readonly provenance: ReturnType<typeof getClassBreaksProvenance>;
   constructor(inputProps: ClassBreaksOperationProps) {
     const props = snapshotClassBreaksOperationProps(inputProps);
     validateClassBreaksInputAssertions(props.id ?? 'class-breaks', props);
-    validateClassBreaksNaturalOptions(props.id ?? 'class-breaks', props);
+    const methods = validateClassBreaksGraphOptions(props.id ?? 'class-breaks', props);
     super({
       id: props.id ?? 'class-breaks',
-      inputs: {
-        values: props.values,
-        parameters: props.parameters,
-        ...(props.mask !== undefined ? {mask: props.mask} : {})
-      },
-      outputs: {
-        breaks: {
-          value: props.output.breaks,
-          format: 'float32',
-          length: props.maximumClassCount + 1
-        },
-        classCount: {value: props.output.classCount, format: 'uint32', length: 1},
-        ...(props.output.classCounts !== undefined
-          ? {
-              classCounts: {
-                value: props.output.classCounts,
-                format: 'uint32' as const,
-                length: props.maximumClassCount
-              }
-            }
-          : {})
-      },
+      ...getClassBreaksOperationPorts(props),
       createContributor: getView => {
         const values = getView<'float32' | 'uint32' | 'sint32'>('values');
         validateClassBreaksInput(props.id ?? 'class-breaks', props, values);
@@ -77,5 +69,7 @@ export class GPUClassBreaksOperation extends GPUContributorOperation {
         });
       }
     });
+    this.methods = methods;
+    this.provenance = getClassBreaksProvenance({...props, methods}, 'gpu');
   }
 }

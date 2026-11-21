@@ -18,7 +18,8 @@ test('GPU adjacency uses exact source equality tokens, including final-capacity 
   const topology = makeExactPolygonTopology();
   for (const criterion of ['queen', 'rook'] as const) {
     for (const capacity of [1, 2]) {
-      const expected = computePolygonContiguityOnCPU(topology, {criterion, capacity});
+      const {status, ...weights} = computePolygonContiguityOnCPU(topology, {criterion, capacity});
+      const expected = {...weights, ...status};
       const operation = new GPUContiguityWeightsOperation({
         criterion,
         capacity,

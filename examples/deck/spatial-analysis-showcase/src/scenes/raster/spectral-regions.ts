@@ -62,7 +62,7 @@ export function addDixieRegionalSupport(
     zones: props.zones,
     zoneCount: 4,
     probabilities: props.probabilities,
-    outputs: props.beforeOutputs
+    output: props.beforeOutputs
   });
   const afterDistribution = addDixieRasterZonalDistribution(graph, {
     id: 'dixie-regions-after',
@@ -71,7 +71,7 @@ export function addDixieRegionalSupport(
     zones: props.zones,
     zoneCount: 4,
     probabilities: props.probabilities,
-    outputs: props.afterOutputs
+    output: props.afterOutputs
   });
   const change = addDixieRegionalChange(graph, {
     id: 'dixie-regional-change',

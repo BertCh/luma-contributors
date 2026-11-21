@@ -163,7 +163,7 @@ describe('MOB-06 geographic flow (NumPy analytic projection oracle)', () => {
       const parameters = harness.input(
         'parameters',
         getGPULagrangianFlowMapParameterValues({
-          fieldExtent: [0, 40, 1, 1],
+          fieldPlacement: {origin: [0, 40], cellSize: [1, 1]},
           startTime: reference.startTime,
           timeStep: reference.timeStep,
           sliceStartTime: 0,

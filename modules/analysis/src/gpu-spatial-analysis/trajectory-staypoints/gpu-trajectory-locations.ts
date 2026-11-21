@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getTrajectoryVotePositionWGSL} from './geographic-vote';
 import {
   validateTrajectoryBindings,
   validateTrajectoryWritableDispatches,
@@ -9,6 +10,7 @@ import {
 } from '../trajectory-analysis/trajectory-binding-validation';
 import {
   createTransientView,
+  GPUCompaction,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -21,20 +23,29 @@ import {
   warnGPUShortLongitudeLatitudeDistance,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import type {GPUIterationStatusPort, GPUStatusScalar} from '../../analysis-core/contracts/index';
+import {
+  validateGPUStatusPort,
+  type GPUIterationStatusPort,
+  type GPUStatusScalar
+} from '../../analysis-core/contracts/index';
 import {
   validateCapacity,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateMaximumCount,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {TRAJECTORY_LOCATION_MEMBERSHIP_WGSL} from './trajectory-location-membership';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {MOVEMENT_SENTINEL_WGSL} from './movement-common';
+import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 const OPERATION = 'GPUTrajectoryLocations';
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -86,13 +97,21 @@ export function getGPUTrajectoryLocationsParameterValues(
 
 /** Caller-owned outputs of {@link GPUTrajectoryLocations}, one row per staypoint capacity row. */
 export type GPUTrajectoryLocationsOutput = {
-  /** Compact location per staypoint, in first-visit order within each track, tracks in order; `0xffffffff` past `count`. */
+  /**
+   * Compact location per staypoint, in first-visit order within each track, tracks in order;
+   * `0xffffffff` past `count`, and in every row when the labels did not settle within
+   * `maximumIterations`.
+   */
   locationIds: GraphDataView<'uint32'>;
   status: {
-    /** Number of locations written. */
+    /** Number of locations written; 0 when the labels did not settle within `maximumIterations`. */
     count: GPUStatusScalar;
+    /** Required one-row flag for exhaustion of the location solver budget. */
+    iterationLimitReached: GPUStatusScalar;
+    /** Whole input and a settled solver; independent of converged. */
+    complete?: GraphDataView<'uint32'>;
   } & GPUIterationStatusPort;
-  /** Optional centroid of the distinct staypoint coordinates of each location. */
+  /** Optional centroid of distinct coordinates; great-circle voting identifies wrapped longitudes and ignores longitude at exact poles. Not written when labels did not settle. */
   centers?: GraphDataView<'float32x2'>;
 };
 
@@ -108,6 +127,11 @@ export type GPUTrajectoryLocationsProps = {
   tracks: GraphDataView<'uint32'>;
   /** One row: active staypoint count (`GPUTrajectoryStaypoints` `status.count`). */
   count: GraphDataView<'uint32'>;
+  /** Forward both source flags when using GPUTrajectoryStaypoints. Optional for independently supplied tables. */
+  staypointStatus?: {
+    overflow?: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
+  };
   /** Per-frame float32 view of {@link GPU_TRAJECTORY_LOCATIONS_PARAMETER_LENGTH} elements. */
   parameters: GraphDataView<'float32'>;
   /** Hook-and-compress rounds, compile-time (default 32, at most 256). */
@@ -122,8 +146,18 @@ export type GPUTrajectoryLocationsProps = {
  * labelled by bounded min-label hooking with path compression. Noise does not exist because every
  * staypoint is its own core point.
  *
+ * A final hook checks the labels: when no label changes, every label is its component's root.
+ * Otherwise (a chain needing more than `maximumIterations` rounds) the partial labels are not
+ * published: every active `locationIds` row is `0xffffffff`, `status.count` is 0, `centers` are
+ * not written, and the required one-row uint32 `output.status.iterationLimitReached` is 1.
+ * Supplied staypoint overflow or candidateOverflow suppresses the table in the same way;
+ * `status.complete` is then 0 even if `status.converged` is 1.
+ *
  * Cost is `O(sum per track of m^2)` distance tests per round, with `m` the staypoints of a track.
- * Dataset-level locations and `num_samples > 1` are out of scope: use `GPUSpatialClustering`, which
+ * Sorted track ranges are found by parallel binary search. Per-label atomic minima identify
+ * first members; published stable `GPUCompaction` assigns first-visit location IDs without a
+ * single invocation scanning the staypoint table.
+ * Dataset-level locations and `num_samples > 1` are out of scope: use `GPUDBSCAN`, which
  * takes `bounds` and a `minimumSamples`-style core rule. The convex-hull `extent` of trackintel is
  * not produced; `concave-hull` and `buffer` contributors compose on the labels.
  */
@@ -135,9 +169,46 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
   readonly capacity: number;
 
   constructor(props: GPUTrajectoryLocationsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'centroids',
+      'tracks',
+      'count',
+      'staypointStatus',
+      'parameters',
+      'maximumIterations',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(props.output, [
+      'locationIds',
+      'centers',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...props,
+      staypointStatus: props.staypointStatus
+        ? snapshotConstructionFields(props.staypointStatus, ['overflow', 'candidateOverflow'])
+        : undefined,
+      spatialContext: props.spatialContext
+        ? snapshotConstructionSpatialContext(props.spatialContext)
+        : undefined,
+      output: Object.freeze({
+        ...capturedOutput,
+        status: snapshotConstructionFields(
+          capturedOutput.status ?? ({} as typeof capturedOutput.status),
+          ['count', 'iterationCount', 'converged', 'complete', 'iterationLimitReached']
+        )
+      })
+    });
     this.id = props.id ?? 'trajectory-locations';
     this.props = props;
     const id = this.id;
+    validateRequirement(
+      id,
+      Boolean(props.output.status?.iterationLimitReached),
+      'output.status.iterationLimitReached is required; pass a one-row uint32 view'
+    );
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
@@ -146,9 +217,19 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
     const {centroids, tracks, count, parameters, output} = props;
     validateSinglePackedView(centroids, ['float32x2'], `${id} centroids`);
     validateSinglePackedView(tracks, ['uint32'], `${id} tracks`);
+    for (const [name, view] of Object.entries(props.staypointStatus ?? {})) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} staypointStatus.${name}`);
+        validateViewLength(id, `staypointStatus.${name}`, view, 1);
+      }
+    }
     validateSinglePackedView(count, ['uint32'], `${id} count`);
     validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateSinglePackedView(output.locationIds, ['uint32'], `${id} output.locationIds`);
+    validateGPUStatusPort(`${id} output.status`, output.status);
+    for (const [name, scalar] of Object.entries(output.status)) {
+      if (scalar) validateSinglePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
+    }
     validateRequirement(id, count.length >= 1, 'count must contain one uint32 row');
     this.capacity = centroids.length;
     validateViewLength(id, 'tracks', tracks, this.capacity);
@@ -164,16 +245,20 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
       validateViewLength(id, 'output.centers', output.centers, this.capacity);
     }
     this.maximumIterations =
-      props.maximumIterations ?? GPU_TRAJECTORY_LOCATIONS_DEFAULT_MAXIMUM_ITERATIONS;
-    validateMaximumCount(
+      props.maximumIterations === undefined
+        ? GPU_TRAJECTORY_LOCATIONS_DEFAULT_MAXIMUM_ITERATIONS
+        : props.maximumIterations;
+    validateCapacity(
       id,
       'maximumIterations',
       this.maximumIterations,
+      0,
       GPU_TRAJECTORY_LOCATIONS_MAXIMUM_ITERATIONS
     );
     validateTrajectoryOutputRanges(this.id, this.props.output);
     validateTrajectoryWritableDispatches(this.id, [
       {
+        iterationCount: output.status.iterationCount,
         converged: output.status.converged,
         iterationLimitReached: output.status.iterationLimitReached
       }
@@ -183,11 +268,13 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
       [
         output.locationIds,
         output.status.count,
+        output.status.iterationCount,
         output.status.converged,
         output.status.iterationLimitReached,
+        output.status.complete,
         output.centers
       ],
-      [centroids, tracks, count, parameters]
+      [centroids, tracks, count, parameters, ...Object.values(props.staypointStatus ?? {})]
     );
   }
 
@@ -196,16 +283,19 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, capacity, maximumIterations} = this;
-    const {centroids, tracks, count, parameters, output} = props;
+    const {centroids, tracks, parameters, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       centroids,
       tracks,
-      count,
+      props.count,
       parameters,
+      ...Object.values(props.staypointStatus ?? {}),
       output.locationIds,
       output.status.count,
+      output.status.iterationCount,
       output.status.converged,
       output.status.iterationLimitReached,
+      output.status.complete,
       output.centers
     ]);
     validateGPUStorageBindingByteLength(
@@ -216,6 +306,7 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
       'use fewer staypoints per graph'
     );
     validateTrajectoryBindings(graph, this.id, this.props);
+    const count = createTransientView(graph, `${id}-usable-count`, 'uint32', 1);
     const radius = getGPUGreatCircleRadius(this.spatialContext);
     const labelsA = createTransientView(graph, `${id}-labels-a`, 'uint32', capacity);
     const labelsB = createTransientView(graph, `${id}-labels-b`, 'uint32', capacity);
@@ -230,9 +321,31 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
 fn point(row: u32) -> vec2<f32> {
   return vec2<f32>(centroids[centroidsOffset + 2u * row], centroids[centroidsOffset + 2u * row + 1u]);
 }
-fn neighborDistance(a: vec2<f32>, b: vec2<f32>) -> f32 { return ${distanceSource}; }
+${
+  radius === undefined
+    ? TRAJECTORY_LOCATION_MEMBERSHIP_WGSL
+    : `fn withinRadius(a: vec2<f32>, b: vec2<f32>, radius: f32) -> bool { return ${distanceSource} <= radius; }`
+}
 `;
     const nodes: GPUCommandNode<Parameters>[] = [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-input-loss`,
+        operation: OPERATION,
+        invocationCount: 1,
+        bindings: [
+          {name: 'inputCount', view: props.count, type: 'u32', access: 'read'},
+          ...Object.entries(props.staypointStatus ?? {}).flatMap(([name, view]) =>
+            view ? [{name, view, type: 'u32' as const, access: 'read' as const}] : []
+          ),
+          {name: 'count', view: count, type: 'u32', access: 'read_write'}
+        ],
+        body: `count[countOffset] = select(inputCount[inputCountOffset], 0u, ${
+          Object.entries(props.staypointStatus ?? {})
+            .filter(([, view]) => view)
+            .map(([name]) => `${name}[${name}Offset] != 0u`)
+            .join(' || ') || 'false'
+        });`
+      }),
       createFillNode<Parameters>(graph, {
         id: `${id}-init-a`,
         operation: OPERATION,
@@ -240,27 +353,26 @@ fn neighborDistance(a: vec2<f32>, b: vec2<f32>) -> f32 { return ${distanceSource
         type: 'u32',
         value: 'index'
       }),
-      // One serial thread over the sorted staypoint table; O(stays) and trivial.
+      // Every row independently finds its contiguous track range in the sorted table.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-groups`,
         operation: OPERATION,
-        invocationCount: 1,
+        invocationCount: capacity,
         bindings: [
           {name: 'tracks', view: tracks, type: 'u32', access: 'read'},
           {name: 'stayCount', view: count, type: 'u32', access: 'read'},
           {name: 'groupStarts', view: groupStarts, type: 'u32', access: 'read_write'},
           {name: 'groupEnds', view: groupEnds, type: 'u32', access: 'read_write'}
         ],
+        declarations: getBinarySearchWGSL('tracks'),
         body: `let total = min(stayCount[stayCountOffset], ${capacity}u);
-  var groupStart = 0u;
-  for (var row = 0u; row <= total; row++) {
-    if (row == total || (row > 0u && tracks[tracksOffset + row] != tracks[tracksOffset + row - 1u])) {
-      for (var member = groupStart; member < row; member++) {
-        groupStarts[groupStartsOffset + member] = groupStart;
-        groupEnds[groupEndsOffset + member] = row;
-      }
-      groupStart = row;
-    }
+  if (index < total) {
+    let track = tracks[tracksOffset + index];
+    groupStarts[groupStartsOffset + index] = lowerBoundTracks(0u, total, track);
+    groupEnds[groupEndsOffset + index] = upperBoundTracks(0u, total, track);
+  } else {
+    groupStarts[groupStartsOffset + index] = 0u;
+    groupEnds[groupEndsOffset + index] = 0u;
   }`
       })
     ];
@@ -292,7 +404,7 @@ fn neighborDistance(a: vec2<f32>, b: vec2<f32>) -> f32 { return ${distanceSource
     var label = labelsIn[labelsInOffset + index];
     let radius = parameters[parametersOffset];
     for (var other = groupStarts[groupStartsOffset + index]; other < groupEnds[groupEndsOffset + index]; other++) {
-      if (other != index && neighborDistance(center, point(other)) <= radius) {
+      if (other != index && withinRadius(center, point(other), radius)) {
         label = min(label, labelsIn[labelsInOffset + other]);
       }
     }
@@ -334,26 +446,93 @@ fn neighborDistance(a: vec2<f32>, b: vec2<f32>) -> f32 { return ${distanceSource
       hook('check', labelsA, labelsB, true)
     );
     const idMap = createTransientView(graph, `${id}-id-map`, 'uint32', capacity);
+    // Hook scratch is no longer read after the convergence check. Reuse it for the first
+    // member of every provisional label, including labels that are not their own roots.
+    const firstRows = labelsB;
+    // Track starts are dead after the final hook/check. Reuse their storage for first flags.
+    const firstFlags = groupStarts;
+    const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', capacity);
+    const compactFirstRows = createTransientView(
+      graph,
+      `${id}-compact-first-rows`,
+      'uint32',
+      capacity
+    );
     nodes.push(
-      // First-visit order within tracks, tracks in order: one serial thread over the table.
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-relabel`,
+      createFillNode<Parameters>(graph, {
+        id: `${id}-first-rows-reset`,
         operation: OPERATION,
-        invocationCount: 1,
+        view: firstRows,
+        type: 'u32',
+        value: MOVEMENT_SENTINEL_WGSL
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-first-rows`,
+        operation: OPERATION,
+        invocationCount: capacity,
         bindings: [
           {name: 'stayCount', view: count, type: 'u32', access: 'read'},
           {name: 'labels', view: labelsA, type: 'u32', access: 'read'},
+          {name: 'firstRows', view: firstRows, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        body: `if (index < min(stayCount[stayCountOffset], ${capacity}u)) {
+    let label = labels[labelsOffset + index];
+    atomicMin(&firstRows[firstRowsOffset + label], index);
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-first-flags`,
+        operation: OPERATION,
+        invocationCount: capacity,
+        bindings: [
+          {name: 'stayCount', view: count, type: 'u32', access: 'read'},
+          {name: 'labels', view: labelsA, type: 'u32', access: 'read'},
+          {name: 'firstRows', view: firstRows, type: 'u32', access: 'read'},
+          {name: 'firstFlags', view: firstFlags, type: 'u32', access: 'read_write'},
+          {name: 'rowIds', view: rowIds, type: 'u32', access: 'read_write'}
+        ],
+        body: `rowIds[rowIdsOffset + index] = index;
+  var first = 0u;
+  if (index < min(stayCount[stayCountOffset], ${capacity}u)) {
+    let label = labels[labelsOffset + index];
+    first = select(0u, 1u, firstRows[firstRowsOffset + label] == index);
+  }
+  firstFlags[firstFlagsOffset + index] = first;`
+      }),
+      ...new GPUCompaction({
+        id: `${id}-compact-locations`,
+        input: rowIds,
+        flags: firstFlags,
+        output: compactFirstRows,
+        count: output.status.count
+      }).getCommandNodes(graph),
+      // Stable compaction supplies location ordinals in first-visit order.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-relabel`,
+        operation: OPERATION,
+        invocationCount: capacity,
+        bindings: [
+          {name: 'labels', view: labelsA, type: 'u32', access: 'read'},
           {name: 'idMap', view: idMap, type: 'u32', access: 'read_write'},
+          {name: 'compactFirstRows', view: compactFirstRows, type: 'u32', access: 'read'},
+          {name: 'locationCount', view: output.status.count, type: 'u32', access: 'read'}
+        ],
+        body: `if (index < locationCount[locationCountOffset]) {
+    let row = compactFirstRows[compactFirstRowsOffset + index];
+    let label = labels[labelsOffset + row];
+    idMap[idMapOffset + label] = index;
+  }`
+      }),
+      // Unsettled labels are not all roots: publish no locations rather than stale IDs.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-unsettled-count`,
+        operation: OPERATION,
+        invocationCount: 1,
+        bindings: [
+          {name: 'changed', view: changed, type: 'u32', access: 'read'},
           {name: 'locationCount', view: output.status.count, type: 'u32', access: 'read_write'}
         ],
-        body: `var nextId = 0u;
-  for (var row = 0u; row < ${capacity}u; row++) {
-    if (row < min(stayCount[stayCountOffset], ${capacity}u) && labels[labelsOffset + row] == row) {
-      idMap[idMapOffset + row] = nextId;
-      nextId++;
-    }
-  }
-  locationCount[locationCountOffset] = nextId;`
+        body: `if (changed[changedOffset] != 0u) { locationCount[locationCountOffset] = 0u; }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-ids`,
@@ -362,10 +541,15 @@ fn neighborDistance(a: vec2<f32>, b: vec2<f32>) -> f32 { return ${distanceSource
         bindings: [
           {name: 'stayCount', view: count, type: 'u32', access: 'read'},
           {name: 'labels', view: labelsA, type: 'u32', access: 'read'},
+          {name: 'changed', view: changed, type: 'u32', access: 'read'},
           {name: 'idMap', view: idMap, type: 'u32', access: 'read'},
           {name: 'locationIds', view: output.locationIds, type: 'u32', access: 'read_write'}
         ],
-        body: `locationIds[locationIdsOffset + index] = select(${MOVEMENT_SENTINEL_WGSL}, idMap[idMapOffset + labels[labelsOffset + index]], index < min(stayCount[stayCountOffset], ${capacity}u));`
+        body: `var locationId = ${MOVEMENT_SENTINEL_WGSL};
+  if (changed[changedOffset] == 0u && index < min(stayCount[stayCountOffset], ${capacity}u)) {
+    locationId = idMap[idMapOffset + labels[labelsOffset + index]];
+  }
+  locationIds[locationIdsOffset + index] = locationId;`
       })
     );
     if (output.centers) {
@@ -378,25 +562,30 @@ fn neighborDistance(a: vec2<f32>, b: vec2<f32>) -> f32 { return ${distanceSource
             {name: 'centroids', view: centroids, type: 'f32', access: 'read'},
             {name: 'stayCount', view: count, type: 'u32', access: 'read'},
             {name: 'labels', view: labelsA, type: 'u32', access: 'read'},
+            {name: 'changed', view: changed, type: 'u32', access: 'read'},
             {name: 'groupEnds', view: groupEnds, type: 'u32', access: 'read'},
             {name: 'idMap', view: idMap, type: 'u32', access: 'read'},
+            {name: 'firstRows', view: firstRows, type: 'u32', access: 'read'},
             {name: 'centers', view: output.centers, type: 'f32', access: 'read_write'}
           ],
-          declarations: `fn point(row: u32) -> vec2<f32> {
-  return vec2<f32>(centroids[centroidsOffset + 2u * row], centroids[centroidsOffset + 2u * row + 1u]);
+          declarations: `${getTrajectoryVotePositionWGSL(radius !== undefined)}
+fn point(row: u32) -> vec2<f32> {
+  return votePosition(vec2<f32>(centroids[centroidsOffset + 2u * row], centroids[centroidsOffset + 2u * row + 1u]));
 }
 fn longitudeOffset(delta: f32) -> f32 { return ${radius === undefined ? 'delta' : 'delta - 360.0 * round(delta / 360.0)'}; }`,
           body: `let total = min(stayCount[stayCountOffset], ${capacity}u);
-  if (index < total && labels[labelsOffset + index] == index) {
+  if (changed[changedOffset] == 0u && index < total) {
+    let label = labels[labelsOffset + index];
+    if (firstRows[firstRowsOffset + label] != index) { return; }
     let anchor = point(index);
     var offset = vec2<f32>(0.0, 0.0);
     var distinctCount = 0u;
     for (var row = index; row < groupEnds[groupEndsOffset + index]; row++) {
-      if (labels[labelsOffset + row] != index) { continue; }
+      if (labels[labelsOffset + row] != label) { continue; }
       let position = point(row);
       var isDuplicate = false;
       for (var earlier = index; earlier < row; earlier++) {
-        if (labels[labelsOffset + earlier] != index) { continue; }
+        if (labels[labelsOffset + earlier] != label) { continue; }
         let other = point(earlier);
         if (other.x == position.x && other.y == position.y) { isDuplicate = true; break; }
       }
@@ -406,15 +595,15 @@ fn longitudeOffset(delta: f32) -> f32 { return ${radius === undefined ? 'delta' 
       }
     }
     let center = anchor + offset / f32(max(distinctCount, 1u));
-    let locationIndex = idMap[idMapOffset + index];
-    centers[centersOffset + 2u * locationIndex] = ${radius === undefined ? 'center.x' : '((center.x + 180.0) - 360.0 * floor((center.x + 180.0) / 360.0)) - 180.0'};
+    let locationIndex = idMap[idMapOffset + label];
+    centers[centersOffset + 2u * locationIndex] = ${radius === undefined ? 'center.x' : 'canonicalLongitude(center.x)'};
     centers[centersOffset + 2u * locationIndex + 1u] = center.y;
   }`
         })
       );
     }
-    const {converged, iterationLimitReached} = output.status;
-    if (converged || iterationLimitReached) {
+    const {iterationCount, converged, iterationLimitReached} = output.status;
+    if (iterationCount || converged || iterationLimitReached) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-status`,
@@ -422,6 +611,16 @@ fn longitudeOffset(delta: f32) -> f32 { return ${radius === undefined ? 'delta' 
           invocationCount: 1,
           bindings: [
             {name: 'changed', view: changed, type: 'u32', access: 'read'},
+            ...(iterationCount
+              ? [
+                  {
+                    name: 'iterationCount',
+                    view: iterationCount,
+                    type: 'u32',
+                    access: 'read_write'
+                  } as const
+                ]
+              : []),
             ...(converged
               ? [{name: 'converged', view: converged, type: 'u32', access: 'read_write'} as const]
               : []),
@@ -437,8 +636,30 @@ fn longitudeOffset(delta: f32) -> f32 { return ${radius === undefined ? 'delta' 
               : [])
           ],
           body: `let didChange = changed[changedOffset] != 0u;
-  ${converged ? `converged[convergedOffset] = select(1u, 0u, didChange);` : ''}
+  ${iterationCount ? `iterationCount[iterationCountOffset] = ${maximumIterations}u;\n  ` : ''}${converged ? `converged[convergedOffset] = select(1u, 0u, didChange);` : ''}
   ${iterationLimitReached ? `iterationLimitReached[iterationLimitReachedOffset] = select(0u, 1u, didChange);` : ''}`
+        })
+      );
+    }
+    if (output.status.complete) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-complete`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            {name: 'changed', view: changed, type: 'u32', access: 'read'},
+            ...Object.entries(props.staypointStatus ?? {}).flatMap(([name, view]) =>
+              view ? [{name, view, type: 'u32' as const, access: 'read' as const}] : []
+            ),
+            {name: 'complete', view: output.status.complete, type: 'u32', access: 'read_write'}
+          ],
+          body: `complete[completeOffset] = select(1u, 0u, changed[changedOffset] != 0u || ${
+            Object.entries(props.staypointStatus ?? {})
+              .filter(([, view]) => view)
+              .map(([name]) => `${name}[${name}Offset] != 0u`)
+              .join(' || ') || 'false'
+          });`
         })
       );
     }

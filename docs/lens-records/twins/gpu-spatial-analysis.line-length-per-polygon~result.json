@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const usage = Buffer.STORAGE | Buffer.COPY_SRC;\nconst areaCount = areas.featureOffsets.length - 1;\nconst output = {\n  lengths: createTransientView(graph, 'lengths', 'float32', areaCount, usage),\n  segmentCounts: createTransientView(graph, 'segmentCounts', 'uint32', areaCount, usage),\n  status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)}\n};\ngraph.add(\n  new GPULineLengthPerPolygon({\n    ...roads,\n    polygons: {kind: 'polygons', ...areas},\n    maximumCrossingCount: 64,\n    pairCapacity: 4096,\n    output\n  })\n);\n// lengths: m of road clipped to each area; segmentCounts: road segments with length inside\nconst {lengths, segmentCounts} = output;",
+    "code": "const usage = Buffer.STORAGE | Buffer.COPY_SRC;\nconst areaCount = areas.featureOffsets.length - 1;\nconst output = {\n  clippedLengths: createTransientView(graph, 'lengths', 'float32', areaCount, usage),\n  segmentCounts: createTransientView(graph, 'segmentCounts', 'uint32', areaCount, usage),\n  status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)}\n};\ngraph.add(\n  new GPULineLengthPerPolygon({\n    ...roads,\n    polygons: {kind: 'polygons', ...areas},\n    maximumCrossingCount: 64,\n    pairCapacity: 4096,\n    output\n  })\n);\n// lengths: m of road clipped to each area; segmentCounts: road segments with length inside\nconst {clippedLengths: lengths, segmentCounts} = output;",
     "language": "ts",
     "lineCount": 18
   },
@@ -46,12 +46,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:45.017Z",
-    "runId": "run-2dbe5a01",
+    "date": "2026-11-20T23:49:55.926Z",
+    "runId": "run-13692199",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-2dbe5a01",
+    "runId": "run-13692199",
     "rung": "result",
     "bindings": {},
     "clauses": [],

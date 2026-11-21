@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
+import type {GPUAnalysisRoute} from '../analysis-core/contracts/analysis-execution-planning';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   getViewBindingRange,
@@ -12,8 +16,10 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGraphOutputViews,
+  captureGraphCommandNodes,
   validateCapacity,
   validateCommandNodeBudget,
+  GPU_MAXIMUM_COMMAND_NODE_COUNT,
   validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
@@ -30,6 +36,10 @@ import {
 } from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getRasterBandViews,
+  snapshotRasterBand,
+  snapshotRasterGrid,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph,
   validateRasterGridAxisAligned,
   validateRasterParameters
 } from './raster-band-utils';
@@ -44,35 +54,43 @@ import {
 } from './raster-grid/raster-cell-area-scale';
 import {
   requireRasterLength,
+  validateRasterExpansionPorts,
   validateRasterExpansionGraph,
   validateRasterExpansionViews
 } from './raster-expansion-utils';
 import type {GPURasterFractionalCoverageProps} from './gpu-raster-fractional-coverage';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  GPURasterTextureToBuffer,
+  type GPURasterBand,
+  type GPURasterBufferBand,
+  type GPURasterMetadata
+} from '@luma.gl/graph/gpu-raster';
 
 /**
  * Slot of the affine determinant in the georeference view of `GPURasterFractionalCoverage`
- * (`[originX, originY, a, b, d, e, determinant, 0]`), the only word this class reads from it.
+ * (`[originX, originY, a, b, d, e, determinant, padding]`). Latitude weighting additionally
+ * reads origin Y and row Y; explicit local layout 2 appends discriminator 2 and absolute Y
+ * offset in words 8 and 9. Legacy padding word 7 is ignored.
  */
 const GEOREFERENCE_DETERMINANT_SLOT = 6;
 
 /** Largest category capacity; dense categories bound scratch space and the per-zone winner scan. */
-const MAXIMUM_CATEGORY_CAPACITY = 65534;
+export const MAXIMUM_CATEGORY_CAPACITY = 65534;
 
 /** uint32 group keys reserve the last word for inactive tuple slots. */
-const MAXIMUM_ZONE_CATEGORY_GROUPS = 0xfffffffe;
+export const MAXIMUM_ZONE_CATEGORY_GROUPS = 0xfffffffe;
 
 /** uint32 tuple row indices reserve the last word for saturated status counts. */
-const MAXIMUM_TUPLES = 0xfffffffe;
+export const MAXIMUM_TUPLES = 0xfffffffe;
 
 /** Full-sort reference limit preserves the original reduction order and scratch bound. */
-const MAXIMUM_REFERENCE_TUPLES = 1048576;
+export const MAXIMUM_REFERENCE_TUPLES = 1048576;
 
 /** The original reference route keeps its historical dense group cap. */
-const MAXIMUM_REFERENCE_ZONE_CATEGORY_GROUPS = 65535;
+export const MAXIMUM_REFERENCE_ZONE_CATEGORY_GROUPS = 65535;
 
 /** Sort tiles retain the historical 1M-row bound on any single sort allocation. */
-const MAXIMUM_TUPLE_TILE_SIZE = 1048576;
+export const MAXIMUM_TUPLE_TILE_SIZE = 1048576;
 
 /** One full historical-size sort preserves reduction order for every previously accepted input. */
 const DEFAULT_TUPLE_TILE_SIZE = 1048576;
@@ -87,7 +105,7 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
   id?: string;
   grid: GPURasterMetadata;
   /** Dense, uncalibrated category IDs. Masked/nodata cells contribute only to missing area. */
-  input: GPURasterBufferBand<'uint32'>;
+  input: GPURasterBand<'uint32'>;
   zoneCount: number;
   /** Category IDs are [0, categoryCapacity). Valid IDs outside this range fail the result. */
   categoryCapacity: number;
@@ -108,8 +126,8 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
    * What the affine's units are, for the area outputs. Default `'uniform'`: planar coordinate
    * units squared, as before. `'geographic'` (degrees) and `'web-mercator'` (EPSG:3857 meters)
    * give ground square meters on the WGS84 ellipsoid: each coverage fraction is weighted by the
-   * ground area per world area of its row (row edges from `grid.affine`, evaluated at the row
-   * center), so `coverageSums` then holds weighted coverage and `proportions` are area
+   * grid-derived WGS84 midpoint ground-area scale (the product of local ground scales
+   * at the row midpoint, rather than integrated geodesic cell area), so `coverageSums` then holds weighted coverage and `proportions` are area
    * proportions. They need an axis-aligned grid. Compile-time mode. The row edges come from
    * `parameters` (origin y and row step y, slots 1 and 5, with `grid.height` and
    * `pixelInterpretation` compile-time) on every encoding when it is given, so the ground scale
@@ -145,7 +163,11 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
  * The default tile size keeps every previously accepted input in one sort with its original
  * reduction order. Above that size, or with an explicit smaller tupleTileSize, float32 sums can
  * differ by reduction-order rounding; fractions are nonnegative and tile support is merged in a
- * fixed order. The 'exact' mode retains the original 1M tuple / 65535 group reference limits.
+ * fixed order. The 'exact' mode permits at most 1,048,576 total tuple slots and 65,535 groups.
+ * Tiled mode permits at most 4,294,967,294 total tuple slots and groups, categoryCapacity at
+ * most 65,534, and at most 1,048,576 tuples per sort tile. Caller outputs and derived scratch
+ * must each fit device binding/allocation limits. The 32,768-command budget requires
+ * 8 + 256 * tiles <= 32,768, hence at most 127 tiles per declaration.
  * The extra group holds missing support. Active tuples must be unique (zone, cell) pairs, as emitted
  * by GPURasterFractionalCoverage; disjoint tile cores may be concatenated with remapped cell IDs.
  *
@@ -163,45 +185,52 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPURasterFractionalCategoricalStatisticsProps) {
+    props = snapshotCategoricalProps(props);
     this.id = props.id ?? 'fractional-categorical-statistics';
     this.props = props;
-    validateRequirement(
+    validateRasterExpansionPorts(
       this.id,
-      props.mode === undefined || props.mode === 'tiled' || props.mode === 'exact',
-      "mode must be 'tiled' or 'exact'"
+      props,
+      {
+        'input.storage.values': ['uint32'],
+        'input.validity': ['uint32'],
+        parameters: ['float32'],
+        'coverage.zoneIds': ['uint32'],
+        'coverage.cellIds': ['uint32'],
+        'coverage.fractions': ['float32'],
+        'coverage.zoneValidity': ['uint32'],
+        'coverage.status.count': ['uint32'],
+        'coverage.status.requiredCount': ['uint32'],
+        'coverage.status.overflow': ['uint32'],
+        'coverage.status.candidateOverflow': ['uint32'],
+        'output.coverageSums': ['float32'],
+        'output.classAreas': ['float32'],
+        'output.proportions': ['float32'],
+        'output.coveredArea': ['float32'],
+        'output.validArea': ['float32'],
+        'output.missingArea': ['float32'],
+        'output.majority': ['uint32'],
+        'output.minority': ['uint32'],
+        'output.validity': ['uint32']
+      },
+      [
+        'input.validity',
+        'parameters',
+        'coverage.status.candidateOverflow',
+        ...(props.input.storage.kind === 'texture' ? ['input.storage.values'] : [])
+      ]
     );
-    if (props.tupleTileSize !== undefined)
-      validateCapacity(this.id, 'tupleTileSize', props.tupleTileSize, 1, MAXIMUM_TUPLE_TILE_SIZE);
-    if (props.mode === 'exact') {
-      validateCapacity(
-        this.id,
-        'coverage.zoneIds length in exact mode',
-        props.coverage.zoneIds.length,
-        1,
-        MAXIMUM_REFERENCE_TUPLES
-      );
-      validateCapacity(
-        this.id,
-        'zoneCount times (categoryCapacity + 1) in exact mode',
-        props.zoneCount * (props.categoryCapacity + 1),
-        1,
-        MAXIMUM_REFERENCE_ZONE_CATEGORY_GROUPS
-      );
+    validateRasterTextureBand(this.id, props.input, props.grid);
+    const selection = getCategoricalShapePlan(props);
+    for (const constraint of selection.constraints) {
       validateRequirement(
         this.id,
-        props.tupleTileSize === undefined || props.tupleTileSize >= props.coverage.zoneIds.length,
-        'tupleTileSize in exact mode must cover coverage.zoneIds.length'
+        constraint.satisfied,
+        `${constraint.quantity} in ${selection.route} mode received ${constraint.received}; must be in [${constraint.minimum ?? 0}, ${constraint.maximum}]; ${constraint.alternative ?? 'reduce the workload'}`
       );
     }
-    this.tupleTileSize =
-      props.mode === 'exact'
-        ? props.coverage.zoneIds.length
-        : (props.tupleTileSize ?? Math.min(DEFAULT_TUPLE_TILE_SIZE, props.coverage.zoneIds.length));
-    validateCapacity(this.id, 'tupleTileSize', this.tupleTileSize, 1, MAXIMUM_TUPLE_TILE_SIZE);
-    this.estimatedCommandNodeCount =
-      CATEGORICAL_COMMAND_NODE_ALLOWANCE +
-      Math.ceil(props.coverage.zoneIds.length / this.tupleTileSize) *
-        TUPLE_TILE_COMMAND_NODE_ALLOWANCE;
+    this.tupleTileSize = selection.tupleTileSize;
+    this.estimatedCommandNodeCount = selection.estimatedCommandNodeCount;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     const {grid, input, coverage, output, categoryCapacity, zoneCount} = props;
     const cellCount = validateRasterExpansionViews(
@@ -228,22 +257,6 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
         'grid.affine row edges must fit in finite float32 for cellSizeMode'
       );
     }
-    // Dense categories bound scratch space and the per-zone winner scan.
-    validateCapacity(this.id, 'categoryCapacity', categoryCapacity, 1, MAXIMUM_CATEGORY_CAPACITY);
-    validateRequirement(
-      this.id,
-      Number.isInteger(zoneCount) &&
-        zoneCount >= 1 &&
-        zoneCount * (categoryCapacity + 1) <= MAXIMUM_ZONE_CATEGORY_GROUPS,
-      `zoneCount must be an integer of at least 1 with zoneCount times (categoryCapacity + 1) at most ${MAXIMUM_ZONE_CATEGORY_GROUPS}`
-    );
-    validateCapacity(
-      this.id,
-      'coverage.zoneIds length',
-      coverage.zoneIds.length,
-      1,
-      MAXIMUM_TUPLES
-    );
     const cellArea = Math.fround(
       Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3])
     );
@@ -267,7 +280,7 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
       'input.noDataValue must be an unsigned 32-bit integer'
     );
     for (const view of [
-      input.storage.values,
+      ...(input.storage.kind === 'buffer' ? [input.storage.values] : []),
       input.validity,
       coverage.zoneIds,
       coverage.cellIds,
@@ -290,7 +303,9 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     ]) {
       validateSinglePackedView(view, ['float32'], this.id);
     }
-    requireRasterLength(input.storage.values, cellCount, this.id, 'input values');
+    if (input.storage.kind === 'buffer') {
+      requireRasterLength(input.storage.values, cellCount, this.id, 'input values');
+    }
     requireRasterLength(input.validity, cellCount, this.id, 'input.validity');
     requireRasterLength(coverage.cellIds, coverage.zoneIds.length, this.id, 'coverage.cellIds');
     requireRasterLength(coverage.fractions, coverage.zoneIds.length, this.id, 'coverage.fractions');
@@ -313,11 +328,134 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     }
   }
 
+  /** Side-effect-free route and device fit check; no resources or command nodes are declared.
+   * Invalid option spellings/ tile sizes throw; supported workloads report feasible and constraints.
+   */
+  static getExecutionPlan(
+    props: GPURasterFractionalCategoricalStatisticsProps,
+    deviceLimits: Pick<Device['limits'], 'maxStorageBufferBindingSize' | 'maxBufferSize'> &
+      Partial<
+        Pick<
+          Device['limits'],
+          | 'maxStorageBuffersPerShaderStage'
+          | 'maxComputeWorkgroupSizeX'
+          | 'maxComputeInvocationsPerWorkgroup'
+          | 'maxComputeWorkgroupStorageSize'
+          | 'maxSampledTexturesPerShaderStage'
+        >
+      >
+  ) {
+    props = snapshotCategoricalProps(props);
+    validateRasterCellSizeMode(props.id ?? 'fractional-categorical-statistics', props.cellSizeMode);
+    const plan = getCategoricalShapePlan(props);
+    const constraints = [...plan.constraints];
+    // Construction is the shared side-effect-free port/option/alias validator. A plan must not
+    // certify an input that the constructor rejects; no graph resources are declared here.
+    if (plan.feasible) {
+      try {
+        new GPURasterFractionalCategoricalStatistics(props);
+      } catch (error) {
+        constraints.push(
+          categoricalConstraint(
+            error instanceof Error ? error.message : String(error),
+            0,
+            1,
+            1,
+            'output',
+            plan.route
+          )
+        );
+      }
+    }
+    for (const [name, count] of getCategoricalBindingCounts(props))
+      constraints.push(
+        categoricalConstraint(
+          `${name} storage binding count`,
+          count,
+          0,
+          deviceLimits.maxStorageBuffersPerShaderStage ?? 8,
+          'dispatch',
+          plan.route
+        )
+      );
+    if (props.input.storage.kind === 'texture')
+      constraints.push(
+        categoricalConstraint(
+          'input sampled texture binding count',
+          1,
+          0,
+          deviceLimits.maxSampledTexturesPerShaderStage ?? 16,
+          'dispatch',
+          plan.route
+        )
+      );
+    // The published segment reducer uses 256 lanes and one 256-float workgroup table. The sort
+    // also uses up to 256 lanes; conforming WebGPU devices provide at least these resources.
+    for (const [name, received, maximum] of [
+      ['workgroup size X', 256, deviceLimits.maxComputeWorkgroupSizeX ?? 256],
+      ['workgroup invocations', 256, deviceLimits.maxComputeInvocationsPerWorkgroup ?? 256],
+      [
+        'segment workgroup storage bytes',
+        1024,
+        deviceLimits.maxComputeWorkgroupStorageSize ?? 16384
+      ]
+    ] as const)
+      constraints.push(categoricalConstraint(name, received, 0, maximum, 'dispatch', plan.route));
+
+    const views = [
+      ...getRasterBandViews(props.input),
+      ...getGraphOutputViews(props.coverage),
+      props.parameters,
+      ...getGraphOutputViews(props.output)
+    ];
+    const allocations: [string, number, number][] = views
+      .filter(view => Boolean(view))
+      .map(view => [view!.buffer.id, getViewBindingRange(view!).size, view!.buffer.byteLength]);
+    for (const [name, bytes] of getCategoricalScratchByteLengths(props, plan.tupleTileSize))
+      allocations.push([name, bytes, bytes]);
+    for (const [name, bindingBytes, bufferBytes] of allocations) {
+      constraints.push(
+        categoricalConstraint(
+          `${name} binding bytes`,
+          bindingBytes,
+          0,
+          deviceLimits.maxStorageBufferBindingSize,
+          'binding',
+          plan.route
+        )
+      );
+      constraints.push(
+        categoricalConstraint(
+          `${name} buffer bytes`,
+          Math.max(bufferBytes, 4),
+          0,
+          deviceLimits.maxBufferSize,
+          'binding',
+          plan.route
+        )
+      );
+    }
+    return {...plan, feasible: constraints.every(constraint => constraint.satisfied), constraints};
+  }
+
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const {grid, input, coverage, output, zoneCount, categoryCapacity} = props;
+    const {grid, coverage, output, zoneCount, categoryCapacity} = props;
+    const input = props.input;
+    validateRasterBandBelongsToGraph(id, graph, input, []);
+    validateRasterStorageBindings(
+      graph,
+      id,
+      [
+        ...getRasterBandViews(input),
+        ...getGraphOutputViews(coverage),
+        props.parameters,
+        ...getGraphOutputViews(output)
+      ],
+      {'canonical band planes': props.grid.width * props.grid.height * 4}
+    );
     // Binding ranges include the alignment prefix of nonzero-offset caller views. Preflight
     // every allocation before declaring a resource or node, including the sort's derived scratch.
     for (const view of [
@@ -336,18 +474,7 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
           view.buffer.byteLength
         );
     }
-    for (const [name, bytes] of [
-      ['categories', grid.width * grid.height * 4],
-      [
-        'sort tiles',
-        (this.tupleTileSize <= 256
-          ? 2 ** Math.ceil(Math.log2(this.tupleTileSize))
-          : this.tupleTileSize) * 4
-      ],
-      ['segment offsets', (zoneCount * (categoryCapacity + 1) + 1) * 4],
-      ['group sums', zoneCount * (categoryCapacity + 1) * 4],
-      ['zone summary', zoneCount * 16]
-    ] as const)
+    for (const [name, bytes] of getCategoricalScratchByteLengths(props, this.tupleTileSize))
       validateRasterFractionalBindingByteLength(
         graph.device,
         id,
@@ -361,6 +488,46 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
       props.parameters,
       ...getGraphOutputViews(output)
     ]);
+    const executionPlan = GPURasterFractionalCategoricalStatistics.getExecutionPlan(
+      props,
+      graph.device.limits
+    );
+    for (const constraint of executionPlan.constraints) {
+      validateRequirement(
+        id,
+        constraint.satisfied,
+        `${constraint.quantity} received ${constraint.received}; maximum ${constraint.maximum}; reduce zoneCount, categoryCapacity or tupleTileSize`
+      );
+    }
+    const sourceNodes: GPUCommandNode<Parameters>[] = [];
+    let nativeInput: GPURasterBufferBand<'uint32'>;
+    if (input.storage.kind === 'texture') {
+      const textureInput = {...input, storage: input.storage};
+      const values = createTransientView(
+        graph,
+        `${id}-native-values`,
+        'uint32',
+        grid.width * grid.height
+      );
+      const validity = createTransientView(
+        graph,
+        `${id}-native-validity`,
+        'uint32',
+        grid.width * grid.height
+      );
+      sourceNodes.push(
+        ...captureGraphCommandNodes(graph, () =>
+          new GPURasterTextureToBuffer({
+            id: `${id}-native`,
+            input: textureInput,
+            output: values,
+            outputValidity: validity,
+            applyCalibration: false
+          }).addToGraph(graph)
+        )
+      );
+      nativeInput = {...input, storage: {kind: 'buffer', values}, validity};
+    } else nativeInput = {...input, storage: input.storage};
     const cellCount = grid.width * grid.height;
     const tupleCapacity = coverage.zoneIds.length;
     const groupCount = zoneCount * (categoryCapacity + 1);
@@ -406,6 +573,7 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     const summary = createTransientView(graph, `${id}-summary`, 'float32x4', zoneCount);
     const operation = 'GPURasterFractionalCategoricalStatistics';
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...sourceNodes,
       createFillNode(graph, {
         id: `${id}-clear-sums`,
         operation,
@@ -419,14 +587,21 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
         operation,
         invocationCount: cellCount,
         bindings: [
-          {name: 'values', view: input.storage.values, type: 'u32', access: 'read'},
-          ...(input.validity
-            ? [{name: 'mask', view: input.validity, type: 'u32' as const, access: 'read' as const}]
+          {name: 'values', view: nativeInput.storage.values, type: 'u32', access: 'read'},
+          ...(nativeInput.validity
+            ? [
+                {
+                  name: 'mask',
+                  view: nativeInput.validity,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
             : []),
           {name: 'categories', view: categories, type: 'u32', access: 'read_write'}
         ],
         body: `let category = values[valuesOffset + index];
-let missing = ${input.validity ? 'mask[maskOffset + index] == 0u' : 'false'}${input.noDataValue === undefined ? '' : ` || category == ${input.noDataValue}u`};
+let missing = ${nativeInput.validity ? 'mask[maskOffset + index] == 0u' : 'false'}${input.noDataValue === undefined ? '' : ` || category == ${input.noDataValue}u`};
 categories[categoriesOffset + index] = select(min(category, ${categoryCapacity + 1}u), ${categoryCapacity}u, missing);
 // Unmasked categoryCapacity is invalid, distinct from the missing bucket.
 if (!missing && category >= ${categoryCapacity}u) { categories[categoriesOffset + index] = ${categoryCapacity + 1}u; }`
@@ -622,4 +797,220 @@ missing[missingOffset + index] = summary[summaryOffset + index * 4u + 2u] * ${ce
     );
     return nodes;
   }
+}
+
+/** Shared selection and logical limits, used by declaration and the public planner. */
+function getCategoricalShapePlan(props: GPURasterFractionalCategoricalStatisticsProps) {
+  const id = props.id ?? 'fractional-categorical-statistics';
+  validateRequirement(
+    id,
+    props.mode === undefined || props.mode === 'tiled' || props.mode === 'exact',
+    "mode must be 'tiled' or 'exact'"
+  );
+  if (props.tupleTileSize !== undefined)
+    validateCapacity(id, 'tupleTileSize', props.tupleTileSize, 1, MAXIMUM_TUPLE_TILE_SIZE);
+  const route = props.mode ?? 'tiled';
+  const tuples = props.coverage.zoneIds.length;
+  const tupleTileSize =
+    route === 'exact' ? tuples : (props.tupleTileSize ?? Math.min(DEFAULT_TUPLE_TILE_SIZE, tuples));
+  const tiles = Math.ceil(tuples / Math.max(tupleTileSize, 1));
+  const estimatedCommandNodeCount =
+    CATEGORICAL_COMMAND_NODE_ALLOWANCE + tiles * TUPLE_TILE_COMMAND_NODE_ALLOWANCE;
+  const constraints = [
+    categoricalConstraint(
+      'categoryCapacity',
+      props.categoryCapacity,
+      1,
+      MAXIMUM_CATEGORY_CAPACITY,
+      'domain',
+      route
+    ),
+    categoricalConstraint(
+      'zoneCount',
+      props.zoneCount,
+      1,
+      MAXIMUM_ZONE_CATEGORY_GROUPS,
+      'domain',
+      route
+    ),
+    categoricalConstraint(
+      'zoneCount times (categoryCapacity + 1)',
+      props.zoneCount * (props.categoryCapacity + 1),
+      1,
+      route === 'exact' ? MAXIMUM_REFERENCE_ZONE_CATEGORY_GROUPS : MAXIMUM_ZONE_CATEGORY_GROUPS,
+      'domain',
+      route
+    ),
+    categoricalConstraint(
+      'coverage.zoneIds length',
+      tuples,
+      1,
+      route === 'exact' ? MAXIMUM_REFERENCE_TUPLES : MAXIMUM_TUPLES,
+      'domain',
+      route
+    ),
+    categoricalConstraint(
+      'tupleTileSize',
+      tupleTileSize,
+      1,
+      MAXIMUM_TUPLE_TILE_SIZE,
+      'dispatch',
+      route
+    ),
+    categoricalConstraint(
+      'command node count (8 + 256 * tiles)',
+      estimatedCommandNodeCount,
+      0,
+      GPU_MAXIMUM_COMMAND_NODE_COUNT,
+      'dispatch',
+      route
+    )
+  ];
+  if (route === 'exact' && props.tupleTileSize !== undefined)
+    constraints.push(
+      categoricalConstraint(
+        'exact tupleTileSize must cover tuple capacity',
+        tuples,
+        1,
+        props.tupleTileSize,
+        'dispatch',
+        route
+      )
+    );
+  return {
+    route,
+    tupleTileSize,
+    tiles,
+    estimatedCommandNodeCount,
+    constraints,
+    feasible: constraints.every(constraint => constraint.satisfied),
+    accuracyImplications: [
+      'Exact planar coverage; changing sort tile size can change float32 sum rounding.'
+    ]
+  };
+}
+
+function categoricalConstraint(
+  quantity: string,
+  received: number,
+  minimum: number,
+  maximum: number,
+  scope: GPUAnalysisRoute['scope'],
+  route: string
+): GPUAnalysisRoute & {satisfied: boolean; received: number} {
+  return {
+    name: quantity,
+    kind: scope === 'binding' ? 'allocation' : 'hard-limit',
+    quantity,
+    unit: scope === 'binding' ? 'bytes' : quantity.startsWith('command') ? 'commands' : 'elements',
+    appliesWhen: `mode is ${route}`,
+    minimum,
+    maximum,
+    scope,
+    alternative:
+      route === 'exact'
+        ? 'use tiled mode for larger logical capacities'
+        : 'reduce the workload or split disjoint cores',
+    accuracyImplications: 'Sort tile changes may change float32 reduction rounding.',
+    planner: {
+      package: '@luma-contributors/analysis/raster-analysis',
+      exportName: 'GPURasterFractionalCategoricalStatistics'
+    },
+    source: 'modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts',
+    satisfied: Number.isSafeInteger(received) && received >= minimum && received <= maximum,
+    received
+  };
+}
+
+/** Identical derived binding sizes for the public preflight and command declaration. */
+function getCategoricalScratchByteLengths(
+  props: GPURasterFractionalCategoricalStatisticsProps,
+  tupleTileSize: number
+): readonly (readonly [string, number])[] {
+  const groups = props.zoneCount * (props.categoryCapacity + 1);
+  return [
+    ['canonical band planes', props.grid.width * props.grid.height * 4],
+    ['categories', props.grid.width * props.grid.height * 4],
+    [
+      'sort tiles',
+      (tupleTileSize <= 256 ? 2 ** Math.ceil(Math.log2(tupleTileSize)) : tupleTileSize) * 4
+    ],
+    ['segment offsets', (groups + 1) * 4],
+    ['group sums', groups * 4],
+    ['zone summary', props.zoneCount * 16]
+  ];
+}
+
+/** Capture declared ports even when inherited/non-enumerable; preserve GPU resource identities. */
+function snapshotCategoricalProps(
+  props: GPURasterFractionalCategoricalStatisticsProps
+): GPURasterFractionalCategoricalStatisticsProps {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'grid',
+    'input',
+    'zoneCount',
+    'categoryCapacity',
+    'tupleTileSize',
+    'mode',
+    'coverage',
+    'parameters',
+    'cellSizeMode',
+    'output'
+  ]);
+  const coverage = snapshotConstructionFields(captured.coverage, [
+    'zoneIds',
+    'cellIds',
+    'fractions',
+    'zoneValidity',
+    'status'
+  ]);
+  return {
+    ...captured,
+    grid: snapshotRasterGrid(captured.grid),
+    input: snapshotRasterBand(captured.input) as GPURasterBand<'uint32'>,
+    coverage: {
+      ...coverage,
+      status: snapshotConstructionFields(coverage.status, [
+        'count',
+        'requiredCount',
+        'overflow',
+        'candidateOverflow'
+      ])
+    },
+    output: snapshotConstructionFields(captured.output, [
+      'coverageSums',
+      'classAreas',
+      'proportions',
+      'coveredArea',
+      'validArea',
+      'missingArea',
+      'majority',
+      'minority',
+      'validity'
+    ])
+  };
+}
+
+/** Counts match the actual binding lists below and are checked before any declaration. */
+function getCategoricalBindingCounts(
+  props: GPURasterFractionalCategoricalStatisticsProps
+): readonly (readonly [string, number])[] {
+  const georeferenceCount = props.parameters ? 1 : 0;
+  return [
+    [
+      'classify',
+      2 + Number(Boolean(props.input.validity) || props.input.storage.kind === 'texture')
+    ],
+    [
+      'reset-status',
+      4 +
+        Number(Boolean(props.coverage.status.candidateOverflow)) +
+        ((props.cellSizeMode ?? 'uniform') !== 'uniform' ? georeferenceCount : 0)
+    ],
+    ['prepare-tuples', 7 + georeferenceCount],
+    ['summarize', 7 + georeferenceCount],
+    ['publish-classes', 5 + georeferenceCount],
+    ['publish-areas', 4 + georeferenceCount]
+  ];
 }

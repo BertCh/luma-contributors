@@ -46,7 +46,6 @@ export default defineOperationRun({
     const reachability = builder.allocate('reachability', 'float32', points.count);
     const predecessors = builder.allocate('predecessors', 'uint32', points.count);
     const labels = builder.allocate('labels', 'uint32', points.count);
-    const status = builder.allocate('status', 'uint32', 3);
     builder.graph.add(
       new GPUOPTICS({
         positions: builder.upload('positions', 'float32x2', points.positions).view,
@@ -59,8 +58,7 @@ export default defineOperationRun({
           coreDistances: coreDistances.view,
           reachability: reachability.view,
           predecessors: predecessors.view,
-          labels: labels.view,
-          status: status.view
+          labels: labels.view
         }
       })
     );

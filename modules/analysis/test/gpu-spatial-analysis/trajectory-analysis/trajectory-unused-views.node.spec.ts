@@ -146,9 +146,10 @@ it('publishes predicted modes without overwriting a supplied modes input', () =>
   const graph = new GPUCommandGraph(device);
   try {
     const props = createModalProps(graph);
-    const nodes = new GPUModalSplit({...props, modeSpeedBreaks: [1, Infinity]}).getCommandNodes(
-      graph
-    );
+    const nodes = new GPUModalSplit({
+      ...props,
+      modeSpeedUpperBoundsFloat32: [1, Infinity]
+    }).getCommandNodes(graph);
     const memory = createCPUGraphMemory();
     memory.write(props.positions, new Float32Array([0, 0, 10, 0]));
     memory.write(props.timestamps, new Float32Array([0, 1]));
@@ -165,7 +166,7 @@ it('publishes predicted modes without overwriting a supplied modes input', () =>
   }
 });
 
-it('ignores an unused predicted-modes output when using supplied modes', () => {
+it('requires writable prediction destinations and publishes missing IDs for supplied modes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const buffer = device.createBuffer({byteLength: 4, usage: Buffer.COPY_DST});
@@ -176,7 +177,15 @@ it('ignores an unused predicted-modes output when using supplied modes', () => {
       new GPUModalSplit({...props, output: {...props.output, predictedModes}}).getCommandNodes(
         graph
       )
-    ).not.toThrow();
+    ).toThrow();
+    const nodes = new GPUModalSplit(props).getCommandNodes(graph);
+    const memory = createCPUGraphMemory();
+    memory.write(props.output.predictedModes, Uint32Array.of(99));
+    executeCommandNodesOnCPU(
+      nodes.filter(node => node.id === 'modal-split-no-predictions'),
+      memory
+    );
+    expect(Array.from(memory.readUint32(props.output.predictedModes))).toEqual([0xffffffff]);
   } finally {
     buffer.destroy();
     device.destroy();

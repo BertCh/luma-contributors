@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateParameterTarget} from '../raster-band-utils';
 import type {
   GraphDataView,
   GPUCommandGraph,
@@ -19,6 +20,7 @@ import {
   type RasterTimeSeriesChunkPlan
 } from './raster-time-series-chunks-b';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
@@ -58,6 +60,11 @@ export function getGPURasterWhittakerSmootherParameterValues(
   settings: GPURasterWhittakerSmootherSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_WHITTAKER_SMOOTHER_PARAMETER_LENGTH)
 ): Float32Array {
+  validateParameterTarget(
+    'getGPURasterWhittakerSmootherParameterValues',
+    target,
+    GPU_RASTER_WHITTAKER_SMOOTHER_PARAMETER_LENGTH
+  );
   validateFiniteNumber(
     'getGPURasterWhittakerSmootherParameterValues',
     'smoothingParameter',
@@ -138,6 +145,19 @@ export class GPURasterWhittakerSmoother<Rows extends RasterScalarView = GraphDat
   private readonly ticksPerYear: number;
 
   constructor(props: GPURasterWhittakerSmootherProps<Rows> & {values: Rows}) {
+    validateGraphPorts(props.id ?? 'raster-whittaker-smoother', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      qualityWeights: {required: false, viewType: 'either', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'dateAxis.acquisitionTimes': {
+        required: Boolean(props.dateAxis),
+        viewType: 'data',
+        formats: ['uint32x2']
+      },
+      'output.smoothed': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
     this.props = props;
     const id = props.id ?? 'raster-whittaker-smoother';
     this.id = id;

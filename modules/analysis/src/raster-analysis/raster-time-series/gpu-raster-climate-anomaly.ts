@@ -18,6 +18,7 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateRequirement
@@ -30,6 +31,8 @@ import {
 } from './gpu-raster-streaming-accumulator';
 import {FIXED_POINT_WGSL} from '../../analysis-core/kernels/fixed-point-accumulator';
 import {getRasterFixedPointStateWGSL} from './raster-fixed-point-state-wgsl';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {RASTER_CLIMATE_RESIDUAL_WGSL} from './raster-climate-residual-wgsl';
 
 /** Properties of {@link GPURasterClimateAnomaly}. */
 export type GPURasterClimateAnomalyProps<
@@ -43,6 +46,8 @@ export type GPURasterClimateAnomalyProps<
     counts: Rows;
     sums: RasterTimeSeriesField<'uint32', Rows>;
     moments?: RasterTimeSeriesField<'uint32', Rows>;
+    /** Optional sticky accumulator loss certificate, one word per cell/slot. Nonzero suppresses every statistic and anomaly for that slot. */
+    status?: RasterTimeSeriesField<'uint32', Rows>;
   };
   /** The accumulator's parameters view, which holds the fixed-point unit exponents of `state`. */
   accumulatorParameters: GraphDataView<'float32'>;
@@ -68,6 +73,10 @@ export type GPURasterClimateAnomalyProps<
  * Reads the climatology held in a raster streaming accumulator state: per-slot means
  * and sample standard deviations, and the anomaly of a chunk of slices against them. The state is
  * unchanged, so the climatology can serve any number of chunks.
+ * Means divide in integer encoding units before rounding to float32. Residuals center in integer
+ * units before float conversion. Standardized results divide scaled residuals and deviations, so
+ * their physical intermediates need not fit float32. Supplied
+ * state.status loss certificates suppress affected means, deviations and anomalies with NaN.
  *
  * Cell-major fields accept packed views or matching vector chunks of complete cell records.
  * Shared date, model and parameter tables remain packed.
@@ -83,6 +92,47 @@ export class GPURasterClimateAnomaly<
   readonly estimatedCommandNodeCount: number;
   private readonly chunkProps: readonly GPURasterClimateAnomalyProps<Rows>[];
   constructor(readonly props: GPURasterClimateAnomalyProps<Rows>) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'cellCount',
+      'slotCount',
+      'state',
+      'accumulatorParameters',
+      'chunkSliceCount',
+      'values',
+      'slotIndices',
+      'standardized',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      state: snapshotConstructionFields(captured.state, ['counts', 'sums', 'moments', 'status']),
+      output:
+        captured.output &&
+        snapshotConstructionFields(captured.output, [
+          'climatologyMean',
+          'standardDeviation',
+          'anomaly'
+        ])
+    });
+    this.props = props;
+    validateRequirement(
+      props.id ?? 'raster-climate-anomaly',
+      props.output !== null && typeof props.output === 'object',
+      `output must be a required map; received ${props.output}`
+    );
+    validateGraphPorts(props.id ?? 'raster-climate-anomaly', props, {
+      'state.counts': {required: true, viewType: 'either', formats: ['uint32']},
+      'state.sums': {required: true, viewType: 'either', formats: ['uint32']},
+      'state.moments': {required: false, viewType: 'either', formats: ['uint32']},
+      'state.status': {required: false, viewType: 'either', formats: ['uint32']},
+      accumulatorParameters: {required: true, viewType: 'data', formats: ['float32']},
+      values: {required: false, viewType: 'either', formats: ['float32']},
+      slotIndices: {required: false, viewType: 'data', formats: ['uint32']},
+      'output.climatologyMean': {required: false, viewType: 'either', formats: ['float32']},
+      'output.standardDeviation': {required: false, viewType: 'either', formats: ['float32']},
+      'output.anomaly': {required: false, viewType: 'either', formats: ['float32']}
+    });
     const id = props.id ?? 'raster-climate-anomaly';
     this.id = id;
     const {cellCount, slotCount, state, output, standardized} = props;
@@ -100,6 +150,11 @@ export class GPURasterClimateAnomaly<
       'output needs at least one of climatologyMean, standardDeviation or anomaly'
     );
     const entries = cellCount * slotCount;
+    validateRequirement(
+      id,
+      !state.status || state.status.length >= entries,
+      `state.status must hold at least cellCount times slotCount (${entries}) entries; received ${state.status?.length}`
+    );
     validateRequirement(
       id,
       state.counts.length >= entries && state.sums.length >= entries * 3,
@@ -134,6 +189,7 @@ export class GPURasterClimateAnomaly<
       'state.counts': props.slotCount,
       'state.sums': props.slotCount * 3,
       'state.moments': props.slotCount * 3,
+      'state.status': props.slotCount,
       values: props.chunkSliceCount ?? 1,
       'output.climatologyMean': props.slotCount,
       'output.standardDeviation': props.slotCount,
@@ -154,6 +210,7 @@ export class GPURasterClimateAnomaly<
       state.counts,
       state.sums,
       ...(state.moments ? [state.moments] : []),
+      ...(state.status ? [state.status] : []),
       ...(values ? [values] : []),
       ...(slotIndices ? [slotIndices] : [])
     ];
@@ -191,23 +248,46 @@ export class GPURasterClimateAnomaly<
       rasterBinding('accumulatorParameters', props.accumulatorParameters),
       rasterBinding('counts', state.counts),
       rasterBinding('sums', state.sums),
-      ...(state.moments ? [rasterBinding('moments', state.moments)] : [])
+      ...(state.moments ? [rasterBinding('moments', state.moments)] : []),
+      ...(state.status ? [rasterBinding('stateStatus', state.status)] : [])
     ];
     const statisticsDeclarations = `${RASTER_FINITE_WGSL}
 ${FIXED_POINT_WGSL}
+${RASTER_CLIMATE_RESIDUAL_WGSL}
 ${getRasterFixedPointStateWGSL('sums', false)}
 ${state.moments ? getRasterFixedPointStateWGSL('moments', false) : ''}
 fn slotMean(entry: u32) -> f32 {
+  ${state.status ? 'if (stateStatus[stateStatusOffset + entry] != 0u) { return missing(); }' : ''}
   let count = counts[countsOffset + entry];
   if (count == 0u) { return missing(); }
-  return getFixedPointFloat(loadSums(entry), i32(accumulatorParameters[accumulatorParametersOffset + 2u])) / f32(count);
+  let sumUnit = i32(accumulatorParameters[accumulatorParametersOffset + 2u]);
+  return climateMean(loadSums(entry), count, sumUnit);
 }
 ${
   state.moments
-    ? `fn slotVariance(entry: u32) -> f32 {
+    ? `fn slotDeviationScale(entry: u32) -> vec2<f32> {
+  ${state.status ? 'if (stateStatus[stateStatusOffset + entry] != 0u) { return vec2<f32>(missing(), 0.0); }' : ''}
   let count = counts[countsOffset + entry];
-  if (count < 2u) { return missing(); }
-  return max(getFixedPointFloat(loadMoments(entry), i32(accumulatorParameters[accumulatorParametersOffset + 3u])) / f32(count - 1u), 0.0);
+  if (count < 2u) { return vec2<f32>(missing(), 0.0); }
+  let momentUnit = i32(accumulatorParameters[accumulatorParametersOffset + 3u]);
+  let halfExponent = momentUnit / 2;
+  let scaledMoment = getFixedPointFloat(loadMoments(entry), momentUnit - 2 * halfExponent);
+  return vec2<f32>(sqrt(max(scaledMoment / f32(count - 1u), 0.0)), f32(halfExponent));
+}
+fn slotStandardDeviation(entry: u32) -> f32 {
+  let deviationScale = slotDeviationScale(entry);
+  return climateScale(deviationScale.x, i32(deviationScale.y));
+}`
+    : ''
+}
+${
+  output.anomaly
+    ? `fn slotDifference(entry: u32, queryValue: f32) -> vec2<f32> {
+  ${state.status ? 'if (stateStatus[stateStatusOffset + entry] != 0u) { return vec2<f32>(missing(), 0.0); }' : ''}
+  let count = counts[countsOffset + entry];
+  if (count == 0u) { return vec2<f32>(missing(), 0.0); }
+  return climateResidual(loadSums(entry), count, queryValue,
+    i32(accumulatorParameters[accumulatorParametersOffset + 2u]));
 }`
     : ''
 }`;
@@ -230,7 +310,7 @@ ${
           ],
           declarations: statisticsDeclarations,
           body: `${output.climatologyMean ? 'climatologyMean[climatologyMeanOffset + index] = slotMean(index);' : ''}
-${output.standardDeviation ? 'standardDeviation[standardDeviationOffset + index] = sqrt(slotVariance(index));' : ''}`
+${output.standardDeviation ? 'standardDeviation[standardDeviationOffset + index] = slotStandardDeviation(index);' : ''}`
         })
       );
     }
@@ -257,12 +337,12 @@ let slot = slotIndices[slotIndicesOffset + slice];
 var result = missing();
 if (finite(value) && slot < ${slotCount}u) {
   let entry = cell * ${slotCount}u + slot;
-  let difference = value - slotMean(entry);
+  let difference = slotDifference(entry, value);
   ${
     props.standardized
-      ? `let deviation = sqrt(slotVariance(entry));
-  if (deviation > 0.0) { result = difference / deviation; }`
-      : 'result = difference;'
+      ? `let deviation = slotDeviationScale(entry);
+  if (deviation.x > 0.0) { result = climateScale(difference.x / deviation.x, i32(difference.y - deviation.y)); }`
+      : 'result = climateScale(difference.x, i32(difference.y));'
   }
 }
 anomalyOut[anomalyOutOffset + index] = result;`

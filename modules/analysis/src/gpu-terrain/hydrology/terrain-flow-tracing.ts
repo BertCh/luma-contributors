@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createContributorTransientView} from '../../raster-analysis/cost-distance/raster-grid-utils';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -186,11 +187,14 @@ function getStopRuleSource(stops: TerrainFlowStopRule): {
  * rounds, and the optional converged-flag publication.
  *
  * `pointer[c]` starts as `c` for stop cells and cells without a receiver, otherwise as the D8
- * receiver. Each round sets `pointer[c] = pointer[pointer[c]]` in place. A read of a partially
- * updated pointer is still a cell on the same downstream path, so the fixpoint (the first stop cell
+ * receiver. Each round sets `pointer[c] = pointer[pointer[c]]`. With stableRounds, every read
+ * comes from a separate snapshot copied before that round; otherwise updates are in place.
+ * A read of a partially
+ * updated pointer is still a cell on the same downstream path, so on acyclic paths the fixpoint (the first stop cell
  * or the terminal cell downstream) is unique and independent of the schedule. Path lengths up to
  * `2^k` need `k` doubling rounds plus one round that confirms nothing changed. Receiver cycles
- * (possible only in caller-supplied directions) never reach a fixpoint and leave `converged` at 0.
+ * can collapse to self-pointers, so consumers must verify original receivers and stop rules
+ * before treating pointer stability as drainage convergence.
  *
  * @internal
  */
@@ -203,6 +207,8 @@ export function createTerrainFlowPointerNodes<Parameters>(
     width: number;
     height: number;
     maxIterations: number;
+    /** Each round reads a separate snapshot, for deterministic explicit-budget watersheds. */
+    stableRounds?: boolean;
     flowDirections: GraphDataView<'uint32'>;
     /** Encoding of `flowDirections`. Defaults to `'esri'`. */
     directionEncoding?: GPUTerrainFlowDirectionEncoding;
@@ -222,6 +228,16 @@ export function createTerrainFlowPointerNodes<Parameters>(
     props.contributorId
   );
   const stopRule = getStopRuleSource(props.stops);
+  const previousPointer = props.stableRounds
+    ? createContributorTransientView(
+        graph,
+        props.operation,
+        props.contributorId,
+        `${props.id}-previous-pointer`,
+        'uint32',
+        cellCount
+      )
+    : undefined;
   const tracing = getTerrainFlowTracingWGSL(props.width, props.height, props.directionEncoding);
   const initBindings: WGSLKernelBinding[] = [
     {name: 'flowDirections', view: props.flowDirections, type: 'u32', access: 'read'},
@@ -252,36 +268,68 @@ export function createTerrainFlowPointerNodes<Parameters>(
   ];
   const roundBindings: WGSLKernelBinding[] = [
     {name: 'pointer', view: props.pointer, type: 'atomic<u32>', access: 'read_write'},
+    ...(previousPointer
+      ? [
+          {
+            name: 'previousPointer',
+            view: previousPointer,
+            type: 'u32' as const,
+            access: 'read' as const
+          }
+        ]
+      : []),
     {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'}
   ];
   const getRoundBody = (
     markChangedWGSL: string
-  ) => `let current = atomicLoad(&pointer[pointerOffset + index]);
-  let next = atomicLoad(&pointer[pointerOffset + current]);
+  ) => `let current = ${previousPointer ? 'previousPointer[previousPointerOffset + index]' : 'atomicLoad(&pointer[pointerOffset + index])'};
+  let next = ${previousPointer ? 'previousPointer[previousPointerOffset + current]' : 'atomicLoad(&pointer[pointerOffset + current])'};
   if (next != current) {
     atomicStore(&pointer[pointerOffset + index], next);
     ${markChangedWGSL}
   }`;
-  nodes.push(
-    ...createRasterGatedLoopNodes<Parameters>(graph, {
-      id: `${props.id}-pointer-round`,
-      gateId: `${props.id}-pointer-gate`,
-      operation: props.operation,
-      state,
-      maxIterations: props.maxIterations,
-      createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) =>
-        createWGSLKernelNode<Parameters>(graph, {
-          id: nodeId,
-          operation: props.operation,
-          variant: 'pointer-round',
-          bindings: [...roundBindings, slotBinding],
-          invocationCount: cellCount,
-          body: getRoundBody(markChangedWGSL),
-          condition,
-          extraResources
-        })
-    })
-  );
+  const snapshots = new Map<string, GPUCommandNode<Parameters>>();
+  const roundNodes = createRasterGatedLoopNodes<Parameters>(graph, {
+    id: `${props.id}-pointer-round`,
+    gateId: `${props.id}-pointer-gate`,
+    operation: props.operation,
+    state,
+    maxIterations: props.maxIterations,
+    createRound: ({nodeId, slotBinding, markChangedWGSL, condition, extraResources}) => {
+      if (previousPointer)
+        snapshots.set(
+          nodeId,
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${nodeId}-snapshot`,
+            operation: props.operation,
+            variant: 'pointer-snapshot',
+            bindings: [
+              {name: 'pointer', view: props.pointer, type: 'u32', access: 'read'},
+              {name: 'previousPointer', view: previousPointer, type: 'u32', access: 'read_write'}
+            ],
+            invocationCount: cellCount,
+            body: 'previousPointer[previousPointerOffset + index] = pointer[pointerOffset + index];',
+            condition,
+            extraResources
+          })
+        );
+      return createWGSLKernelNode<Parameters>(graph, {
+        id: nodeId,
+        operation: props.operation,
+        variant: 'pointer-round',
+        bindings: [...roundBindings, slotBinding],
+        invocationCount: cellCount,
+        body: getRoundBody(markChangedWGSL),
+        condition,
+        extraResources
+      });
+    }
+  });
+  for (const node of roundNodes) {
+    const snapshot = snapshots.get(node.id);
+    if (snapshot) nodes.push(snapshot);
+    nodes.push(node);
+  }
   if (props.converged || props.iterationCount) {
     nodes.push(
       createRasterIterationFinalizeNode<Parameters>(graph, {

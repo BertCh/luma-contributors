@@ -147,9 +147,14 @@ Parameters are `[bandwidth, relativeCoefficientTolerance]`. The kernel is `'gaus
 Each local model uses Newton/IRLS with Cholesky and a bounded likelihood step-halving search.
 `maximumIterations` defaults to 32 and is bounded to 128. Outputs are row-major `coefficients`
 (intercept first), `fitted`, and `status: {codes, iterationCount}`. Both status columns have one row per observation; `iterationCount` records the number of local IRLS steps. Converged fits and finite iteration-limit iterates publish coefficients.
-There is no implicit regularization or separation correction. Poisson predictors outside [-30,30]
+There is no implicit regularization or separation correction. Poisson linear predictors outside [-30,30]
 are reported as numerical failures; they are not silently clamped to another likelihood. Logistic
-predictors are bounded to [-80,80] for evaluation. All-zero count neighborhoods, singular designs,
+training linear predictors are bounded to [-80,80] for likelihood evaluation. Prediction-only
+logistic queries accept any finite link, including offset 100 with a float32 probability of 1
+and zero influence. Large Poisson exposure/count unit mismatches use a weighted exposure-aware
+intercept start. Prediction-only design conditioning uses training rows. `iterationCount` counts
+accepted coefficient updates, so a singular first solve reports zero completed updates.
+All-zero count neighborhoods, singular designs,
 and separated outcomes have explicit diagnostics; status 6 names a witnessed complete/quasi-separation
 direction. AICc grid/golden-section selection and its named search status are described in
 [Adaptive generalized GWR](./adaptive-generalized-gwr.md).
@@ -229,7 +234,9 @@ summary `[trace(S), trace(SᵀS), sigma2, residualDegreesOfFreedom]`. `residual-
 sigma² as SSE/(n-trace(S)); `smoother-df` uses SSE/(n-2trace(S)+trace(SᵀS)). Standard errors use
 the complete backfit Jacobian and estimated variance; effective parameters are each component's
 smoother trace. Inference status is 0 valid, 1 unsuccessful coupled fit, or 2 invalid degrees of
-freedom/variance. Failed inference produces NaNs.
+freedom/variance, including a finite CPU variance that overflows its public float32 representation.
+Invalid inference retains its diagnostic summary (which may contain Infinity on overflow) and
+suppresses dependent standard errors/effective parameters to NaN.
 
 This matches mgwr's bandwidth-conditioned uncertainty, including coupling among coefficient
 surfaces; it does not add uncertainty from reselecting bandwidths under resampling. Full inference
@@ -238,6 +245,12 @@ Bandwidths are distances; adaptive-neighbor MGWR selection is not supported. Gol
 a bounded continuous search, not a global-optimum certificate for a non-unimodal score. Direct mgwr 2.2.1 fixtures cover fixed bandwidths, both variance conventions, and an
 explicit finite-grid LOO policy composed from actual mgwr local fits. The latter is not advertised
 as parity with Sel_BW's different default AICc selection policy.
+The separate `multiscale-gwr-audit.oracle.py` solves the simultaneous component normal equations
+and their response operators as one block linear system. Its tied two-site fixture checks every
+CPU and GPU operation output against independent literals, including both variance conventions,
+conditional errors, excluded rows, exactly two completed sweeps and coordinate/predictor rescaling.
+The stopping convention checked here is maximum relative component change; it differs from
+PySAL mgwr's aggregate score-of-change stopping criterion.
 
 MGWR exports `GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS` and
 `decodeGPUMultiscaleGeographicallyWeightedRegressionStatus`. Its codes retain the existing numbers
@@ -273,6 +286,11 @@ Its classical pooled covariance is not clustered by entity or robust to serial c
 spatial regime. `regimes` contains integer IDs in `[0, regimeCount)`; other IDs and masked/nonfinite
 rows are excluded. It publishes regime-major `coefficients`, row-level `fitted`, regime `counts`,
 and regime `status` (0 fitted, 1 insufficient observations, 2 singular/nonfinite design). Predictors
+and response view identities, regime/predictor counts and the output map are snapshotted at
+construction; changing the caller's props later does not change dispatch bounds or bindings.
+Declared fields are captured by name, including inherited/non-enumerable mask getters, which
+are read once at construction. A prototype-supplied mask selects the same complete cases as an own field.
+Input buffer contents remain per-frame data. Predictors
 are centered within each regime before solving. Cross-products and predictions carry the correction
 for rounded float32 means; fitted values use centered predictors rather than the rounded raw
 intercept. Means are accumulated as differences from the first complete row of each regime,
@@ -289,12 +307,21 @@ per regime), so results are reproducible; rows are limited to 2^24 and the devic
 ## Evidence and performance limits
 
 The committed generator
-[`geospatial-expansion-statistics.py`](../../../modules/analysis/test/oracles/geospatial-expansion-statistics.py)
+[`geospatial-expansion-statistics.py`](https://github.com/visgl/luma-contributors/blob/master/modules/analysis/test/oracles/geospatial-expansion-statistics.py)
 records package versions, synthetic input provenance, float32 rounding and reference types. It uses
 direct esda LOSH/Geary, direct constrained-bandwidth mgwr backfitting, direct spreg panel and regime
 fits, independent local statsmodels GLMs, and explicit statsmodels/NumPy compositions for grid CV
 and conditional uncertainty. SciPy distance/NumPy bin compositions are labeled as compositions,
 not direct spatstat or scikit-gstat parity.
+
+To predict values at query locations or generate conditional realizations, see
+[Interpolation and simulation](./interpolation-expansion.md) for operation-specific examples of
+local kriging, radial basis functions, natural-neighbor interpolation and conditional Gaussian
+simulation. Local kriging can bind per-frame covariance parameters.
+Default simulations rebuild preparation on each encoding.
+With `reusePreparation: true`, write the changed geometry and call `invalidatePreparation()` before
+the next encoding to refresh preparation using the covariance captured at construction. In both
+cases, changing the covariance model or its parameters requires a new simulation and graph.
 
 Focused browser tests compare these references and exercise exact bin endpoints, signed
 cross-covariance, masks, upstream overflow, constant variables, empty regimes, singularity, forced

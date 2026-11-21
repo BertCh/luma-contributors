@@ -133,7 +133,7 @@ function createNeighborRun(
         ),
         ends: input('ends', Float32Array.from(segments.flatMap(([, end]) => end)), featureCount)
       },
-      k,
+      neighborCount: k,
       radius: maxDistance?.importToGraph(graph),
       spatialSort: true,
       querySort: options.querySort,

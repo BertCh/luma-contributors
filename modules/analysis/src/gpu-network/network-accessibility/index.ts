@@ -17,17 +17,20 @@ export type {
 export {GPUNetworkCostMatrix} from './gpu-network-cost-matrix';
 export type {
   GPUNetworkCostMatrixOutput,
+  GPUNetworkCostMatrixResult,
   GPUNetworkCostMatrixProps
 } from './gpu-network-cost-matrix';
 export {recommendLaneCount} from './network-accessibility-lanes';
 export type {RecommendLaneCountOptions} from './network-accessibility-lanes';
 export {
   GPUNetworkAccessibility,
+  addNetworkCatchmentAdapter,
   GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH,
   getGPUNetworkAccessibilityParameterValues
 } from './gpu-network-accessibility';
 export type {
   GPUNetworkAccessibilityCatchment,
+  GPUNetworkCatchmentAdapterProps,
   GPUNetworkAccessibilityDecay,
   GPUNetworkAccessibilitySettings,
   GPUNetworkAccessibilityProps
@@ -44,4 +47,8 @@ export type {
   CPUNetworkCostMatrixResult
 } from './cpu-network-cost-matrix-operation';
 export {GPUNetworkCostMatrixOperation} from './gpu-network-cost-matrix-operation';
-export type {NetworkCostMatrixOperationProps} from './gpu-network-cost-matrix-operation';
+export type {
+  NetworkCostMatrixOperationProps,
+  GPUNetworkCostMatrixOperationProps,
+  NetworkCostMatrixOperationStatus
+} from './gpu-network-cost-matrix-operation';

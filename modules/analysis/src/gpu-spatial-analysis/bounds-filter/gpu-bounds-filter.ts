@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotJoinStatus} from '../spatial-join/spatial-join-construction-snapshot';
+import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
@@ -26,7 +31,8 @@ import {
   validateGraphViewTopology,
   validateCompactOutput,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs
+  validateGraphOutputsDisjointFromInputs,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -114,7 +120,18 @@ export function getGPUBoundsFilterParameterValues(
   if ((maxX < minX && !wrapX) || maxY < minY) {
     throw new Error('Bounds filter requires maxX >= minX (unless wrapX) and maxY >= minY');
   }
-  target.set([minX, minY, maxX, maxY]);
+  const encoded = [minX, minY, maxX, maxY].map(Math.fround);
+  validateRequirement(
+    OPERATION,
+    encoded.every(Number.isFinite),
+    `parameters encoded endpoints must be finite; received [${minX}, ${minY}, ${maxX}, ${maxY}], encoded [${encoded}]`
+  );
+  validateRequirement(
+    OPERATION,
+    !(minX > maxX && encoded[0] <= encoded[2]),
+    `wrapX requires strict inversion to survive float32: minX ${minX} encoded ${encoded[0]}, maxX ${maxX} encoded ${encoded[2]}; use representable wrapped endpoints`
+  );
+  target.set(encoded);
   return target;
 }
 
@@ -199,6 +216,30 @@ export class GPUBoundsFilter<MaskRows extends GPUUint32Rows = GraphDataView<'uin
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUBoundsFilterProps<MaskRows>) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'bounds',
+      'parameters',
+      'mode',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['ids', 'status', 'outputMask']);
+    const capturedOutput = Object.freeze({
+      ...output,
+      status:
+        output.status && typeof output.status === 'object'
+          ? snapshotJoinStatus(output.status)
+          : output.status
+    });
+    validateCompactOutput(props.id ?? 'bounds-filter', capturedOutput);
+    props = Object.freeze({
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(props.spatialContext)}
+        : {}),
+      output: capturedOutput
+    });
     this.id = props.id ?? 'bounds-filter';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -227,7 +268,6 @@ export class GPUBoundsFilter<MaskRows extends GPUUint32Rows = GraphDataView<'uin
         `${id} parameters must hold ${GPU_BOUNDS_FILTER_PARAMETER_LENGTH} float32 values`
       );
     }
-    validateCompactOutput(id, props.output);
     if (props.output.ids.length < 1) {
       throw new Error(`${id} output.ids must contain at least one row`);
     }

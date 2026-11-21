@@ -70,6 +70,16 @@ The shared extent uses only valid offset-delimited feature spans from the panels
 frames actually displayed. Spare coordinate capacity cannot change that extent. All displayed
 animation positions share it, and each panel or key-frame SVG describes its own capture and count.
 
+Line and polygon capture windows have independent feature and vertex origins. For example, an
+offsets capture with `meaning: 'first:2'` and values `[5, 8]` describes feature key 2, while a
+positions capture with `meaning: 'first:5'`, `components: 2` and values `[0, 0, 1, 0, 0, 1]`
+contains vertex keys 5, 6 and 7. Offsets remain absolute vertex keys; subtract the positions origin
+only to address its captured array. Declare `geometry.featureKeySpace` for the feature domain and
+the positions capture's `keySpace` for the vertex domain. A feature-value capture `[10, 20, 30]`
+starting at feature key zero supplies value 30 for feature key 2. Displayed values, picks and linked
+selections all use that feature key, independently of the first captured vertex; they never treat
+the first captured feature as feature zero.
+
 Base geometry targets 400 vertices in a full figure and 64 in a thumbnail, divided across panels and
 animation frames. Each panel has a minimum of three vertices; its allocation can rise to six to
 retain distinct pinned and highlighted features. Selection and highlight overlays reuse the samples
@@ -80,19 +90,26 @@ explicitly. Empty or wholly undrawable captures show a labelled fallback in both
 ### Result rows and the primary output
 
 The `result-view` uses captures tagged `role: 'input'` or `role: 'output'`. Array columns share a
-table only when their declared `keySpace` matches. Each table names its row domain; columns without
+table only when both their role and declared `keySpace` match. Each table names its row domain; columns without
 a key space get individual tables labelled “row domain unknown”. Equal lengths or a `column`
 meaning do not establish a relation. Cross-space data must first be explicitly aligned through a
 recorded relation and captured in the resulting common key space; the renderer never guesses a join.
 Run-level diagnostics therefore remain separate from station or cell results. A geometric result
 keeps its map and shows its array tables below it. Full-size tables show at most six entity rows per
 domain, with omitted rows counted. Vector captures count complete rows as `values.length / components`
-and show every component in each table cell. Table thumbnails show only the primary output's domain.
-The GPU Core array renderer also groups `column:` captures by key space and isolates unkeyed
-columns. Raw vector entities and explicit primary outputs use `result-view`. A single changing keyed
+and show every component in each table cell. Input and output columns remain separate even when
+they use the same key space. Table thumbnails retain captured input and output role groups in the
+primary output's key space. Thumbnail keys come from usable nonempty captured windows: an input
+with `first:9` and two values alongside an empty output at origin zero shows both input rows.
+Empty outputs contribute no keys or marks. Thumbnails do not invent output readbacks for input rows.
+The GPU Core array renderer also groups `column:` captures by both role and declared key space and
+isolates each unkeyed column. Raw vector entities and explicit primary outputs use `result-view`. A single changing keyed
 array retains its strip frames and playback control. Strips show one cell per complete entity,
 including every vector component. Thumbnails draw readback marks only for captured entity keys;
-missing cells remain absent. A `first:<key>` annotation offsets a captured window in both tables and
+missing cells remain absent.
+Point playback also retains changes to the published active count and visible capture window,
+even when the stored coordinates are identical; points outside that frame's active prefix stay hidden.
+A `first:<key>` annotation offsets a captured window in both tables and
 strips, so array element zero is associated with that key rather than key zero.
 Comparisons require matching key spaces, element types and component counts. Across runs, both
 captures must also declare matching domain sizes and grid layouts; a shared capture name alone
@@ -155,6 +172,12 @@ presentation: {
 }
 ```
 
+Built-in scenarios declare it in the side-effect-free table
+`modules/lenses/src/computation-lenses/scenario-presentations.ts`, and newly captured recordings
+store it in the envelope as `presentation`. A static twin uses the recording's `presentation`
+first, then the registered scenario's, then that table, so reading a saved record without
+importing any scenario module selects the same headline (the saved kriging record headlines
+rainfall, 4,662 cells, rather than its trailing one-row diagnostic).
 Static twins and `mountLadderLens({scenarioId, ...})` pass this metadata to the view. Direct view
 callers can set `context.options.primaryOutputCaptureId`; live hosts can override it through
 `params.primaryOutputCaptureId`. `LensControllerOptions.presentation` retains the defaults when URL
@@ -166,6 +189,25 @@ Segment intersection selects `intersections`, retaining points colored by `kinds
 selects `joinedTracts`, retaining polygons shaded by `tractMatches`. Counts, overflow flags and other
 diagnostics remain in separate tables below the full figure. A trailing diagnostic or color-value
 capture must not displace the geometric output promised by a map's caption.
+When the headline output draws nothing (all features undrawable, empty geometry or unknown
+layout), the view's `display` fact states it (`geometry not drawn: no drawable captured features
+(0 of 1 polygons shown)`), and the alt text, live-region text and thumbnail caption all carry it
+ahead of the key number.
+Suppressed inputs are named even when the output is drawable. For example, a valid polygon output
+`geometry` beside an undrawable line input `roads` starts its concise display statement with
+`geometry drawn; roads not drawn: no drawable captured features (0 of 1 lines shown)`.
+Accessible descriptions and live-region text carry both clauses, and thumbnail captions retain
+that display statement as their first sentence. This describes what is drawn without implying
+that the input was absent from the recorded computation.
+An empty point output named `trees` instead says
+`trees not drawn: empty captured geometry (0 of 0 points shown)`; a nonempty point capture with no
+finite drawable coordinates says `no drawable captured features`. If an input `trail` is also
+suppressed, its `trail not drawn` clause follows the output clause in the same descriptions and
+captions. A headline count alone is not evidence that any output points are visible.
+Point drawability text uses the same stride sample as the figure, including any explicit
+highlight mark. If no sampled point is drawable, the caption, accessible description and live
+announcement say `not drawn` and `0 of N points shown`, even when an unsampled source row is finite.
+Full figures and thumbnails resolve their own sampling budgets independently.
 The showcase loads the scenario registration entry point when exploration is activated, preserving
 the same primary-output metadata when opening an existing recorded run.
 
@@ -275,18 +317,31 @@ the actual derived sidecar after execution. No synthetic numeric captures are us
 S2 scenarios must supply every choice template from their spatial operator entry before building
 their graph. Choice receipts include defaults the example uses and explicitly mark disabled
 optional features, such as bandwidth selection when the example supplies fixed bandwidths.
+Supplied-intensity point patterns disable both bandwidth estimation and self-contribution choices;
+estimated-intensity receipts retain both controls. Point-process receipts distinguish event rows,
+radius/curve bins, simulation or sampling rows, geometry offset boundaries, ordering ranks and status
+words. Choosing an event never indexes a radius, boundary or diagnostic word as though it were that event.
 Missing choices throw with the scenario ID and choice name before allocation or submission.
 Disabled choice strings are never sweepable. Coordinate captures use a vertex domain; polygon
 `geometry.featureKeySpace` identifies the feature rows selected by paths and used by scalar receipts.
 S2 park/tract display coordinates have a separate display-vertex domain, so pinning feature 1 cannot
 read vertex 1 of another feature as its datum. Spatial polygon aliases retain their scalar capture's
 feature domain for picking while keeping coordinates in the vertex domain.
+The shared Midwest county outlines and painted maps likewise capture coordinates in `county-vertex`
+and pick feature rows in `county`; scalar county receipts never index a ring's vertex array.
 Point maps resolve `geometry.countCapture` before fitting bounds, sampling coordinates or sampling
 associated values. Spare slots cannot change the extent, colour range or sampling stride. A zero
 count draws no points; a missing or invalid count withholds them. A captured point window intersects
 the active prefix, with count validation against the full declared domain when available. The
 dot-density result uses `points` as its primary output and its published `count` as the headline
 in both full and thumbnail twins.
+Automatic ordered point scales and legends use only value keys in the final active captured window,
+intersected with the value capture's absolute window. Explicit host-authored scales remain authoritative.
+The packed spatial-weights transpose lens captures the source's inherited overflow and candidate-loss
+flags. It supplies only CSR destination buffers: packed transpose does not write destination status
+ports. Either source loss flag refuses record publication rather than presenting incomplete topology.
+All tract-weights recordings forward both flags directly from the producer at the shared capture
+boundary, including contiguity and summary lenses; suppressed zero counts cannot establish zero islands.
 The staleness proofs mutate committed signatures in memory for pair-gather and nearest-feature-join:
 removed, added or reordered nodes, changed node kinds, renamed read/write resources and capture names.
 The same comparison used by registry parity reports the scenario and the drift. Unmodified records
@@ -298,6 +353,8 @@ Each displayed `#region example` is limited to 25 source lines. Keep allocation 
 above the region or in a named helper in the example file; keep the operator construction and its
 required status ports visible. Invoke graph-building helpers at the original stage so shortening a
 snippet does not change execution order or require recapturing its computation record.
+Checked dynamic imports and `require` calls must supply a single literal module specifier; concatenated
+or computed expressions are rejected even when their first string names a public entry.
 
 `captureLensScenarioRecord` and `toRecordedLensFile` return a `RecordedLensFile`: its `record`
 payload is opaque because graphs and capture values are encoded. Call `fromRecordedLensFile(file)`

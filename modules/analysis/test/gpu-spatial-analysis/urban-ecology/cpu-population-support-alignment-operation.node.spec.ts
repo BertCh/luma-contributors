@@ -303,8 +303,8 @@ it('the recipe delegates to the indexed contributor and honors both caller-owned
     expect(Object.keys(recipe.outputs)).toEqual(['populations', 'alignmentCode', 'matchedMask']);
     expect(recipe.outputs.alignmentCode).toBe(alignmentCode);
     expect(recipe.outputs.matchedMask).toBe(matchedMask);
-    expect(recipe.packedStatus.format).toBe('uint32x4');
-    expect(recipe.status.stages).toHaveLength(3);
+    expect(recipe.status.stages).toHaveLength(4);
+    expect(recipe.status.stages[3].status.complete.format).toBe('uint32');
     expect(recipe.provenance.alignment).toBe('exact-identifier-join');
   } finally {
     device.destroy();

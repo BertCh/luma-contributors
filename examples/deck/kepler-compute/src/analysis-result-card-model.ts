@@ -9,7 +9,8 @@ import {
   evaluateKeplerOperationApplicability,
   getCatalogBinding,
   getKeplerBindingResultPresentations,
-  getWorkflowFeatures,
+  getWorkflowCatalogInput,
+  serializeCatalogTableInput,
   makeWorkflowData,
   makeWorkflowFromCatalogHistory,
   parseWorkflowDocument,
@@ -188,7 +189,8 @@ export function createAnalysisResultNextDraft(
   const table = model.result.tables.find(output => output.id === action.tableId);
   if (!table)
     throw new Error('Analysis result card: the next analysis needs an output from this run.');
-  const text = JSON.stringify(getWorkflowFeatures(makeWorkflowData(table)));
+  const input = getWorkflowCatalogInput(makeWorkflowData(table), table.rowCount);
+  const text = input.type === 'table' ? serializeCatalogTableInput(input) : JSON.stringify(input);
   const profile = model.outputProfiles.find(output => output.datasetId === action.tableId);
   const coordinateModel =
     profile?.coordinates?.source === 'declared' ? profile.coordinates.model : undefined;

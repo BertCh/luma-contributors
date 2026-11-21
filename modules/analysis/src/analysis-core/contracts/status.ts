@@ -7,6 +7,7 @@ import type {
   GPUOverflowStatusPort,
   GPUStatusScalar
 } from '../kernels/gpu-contributor-types';
+import {validateRequirement} from '../kernels/gpu-contributor-utils';
 
 // The scalar, cardinality and overflow ports sit in utils so the compact-output contract there
 // is typed with them; this module is their public home.
@@ -22,10 +23,23 @@ export type GPUCandidateStatusPort = {
   candidateOverflow?: GPUStatusScalar;
 };
 
-/** Numerical classifications that could not be certified under the selected precision policy. */
+/** Numerical classification fallback and remaining unresolved work of a result or named stage. */
 export type GPUUncertaintyStatusPort = {
   /** Exact number of classifications resolved through the documented uncertainty fallback. */
   uncertainCount?: GPUStatusScalar;
+  /** Number of classifications or work items still unresolved after the stage's available work. */
+  unresolvedCount?: GPUStatusScalar;
+};
+
+/** Completeness certificate for the producer's documented result, or one named recipe stage. */
+export type GPUCompletenessStatusPort = {
+  /**
+   * One when the entire promised result is present, accounting for all supplied loss evidence;
+   * zero otherwise. In `GPURecipeStageStatusPort.status`, certifies only the stage named by
+   * `stage`, not the aggregate recipe. The producer documents the exact result being certified.
+   * Omission provides no certificate and must not be interpreted as completeness.
+   */
+  complete?: GPUStatusScalar;
 };
 
 /** Lon/lat polygon rings a degree-plane consumer could not interpret (results may be wrong there). */
@@ -65,8 +79,13 @@ export type GPUApproximationStatusPort = {
   approximation?: GPUStatusScalar;
 };
 
-/** Composable status vocabulary for a capacity-bounded analytical result. */
+/**
+ * Composable status vocabulary for a capacity-bounded analytical result. Concrete writable
+ * outputs must select the fields they actually write and reject unsupported requests before
+ * snapshotting. This vocabulary alone does not promise writers for every optional field.
+ */
 export type GPUBoundedResultStatusPort = GPUCardinalityPort &
+  GPUCompletenessStatusPort &
   GPUOverflowStatusPort &
   GPUCandidateStatusPort &
   GPUUncertaintyStatusPort &
@@ -102,16 +121,36 @@ export type GPUGeneratedGeometryStatusPort = GPUBoundedResultStatusPort &
   GPUVertexCountStatusPort &
   GPURingCountStatusPort;
 
-/** Status attributed to one named recipe stage. */
+/** Status attributed to one named recipe stage; `status.complete` certifies only that stage. */
 export type GPURecipeStageStatusPort = {
   stage: string;
   status: Partial<GPUBoundedResultStatusPort>;
+  /**
+   * Optional one-row result code of a stage whose contributor reports a code rather than row
+   * counts (for example a solver's `status.code`): 0 on success, otherwise the contributor's
+   * documented failure code. Test it against 0; it is not a count and must not be summed.
+   */
+  code?: GPUStatusScalar;
 };
 
 /** Aggregate status that preserves the stage responsible for each condition. */
 export type GPURecipeStatusPort = {
   stages: readonly GPURecipeStageStatusPort[];
 };
+
+function validateStatusScalar(id: string, name: string, scalar: GPUStatusScalar): void {
+  validateRequirement(
+    id,
+    scalar.format === 'uint32' && scalar.length === 1,
+    `${name} must contain one uint32 row`,
+    {
+      code: 'REQUIREMENT',
+      path: name,
+      received: {format: scalar.format, length: scalar.length},
+      expected: {format: 'uint32', length: 1}
+    }
+  );
+}
 
 /** Validates the format and scalar shape of every present status field. */
 export function validateGPUStatusPort(
@@ -122,10 +161,7 @@ export function validateGPUStatusPort(
     if (!scalar) {
       continue;
     }
-    if (scalar.format !== 'uint32' || scalar.length < 1) {
-      // Status values are GPU-written uint32 scalars.
-      throw new Error(`${id} ${name} must contain one uint32 row`);
-    }
+    validateStatusScalar(id, name, scalar);
   }
 }
 
@@ -139,5 +175,8 @@ export function validateGPURecipeStatusPort(id: string, status: GPURecipeStatusP
     }
     stages.add(stage.stage);
     validateGPUStatusPort(`${id} stage ${stage.stage}`, stage.status);
+    if (stage.code) {
+      validateStatusScalar(`${id} stage ${stage.stage}`, 'code', stage.code);
+    }
   }
 }

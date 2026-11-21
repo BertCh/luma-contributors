@@ -798,7 +798,7 @@ parametersBuffer.write(getGPURasterFalseDiscoveryRateMaskParameterValues({alpha:
         description: 'Unrolled Sinkhorn iterations, at most 1000.'
       },
       {
-        name: 'blurRadius',
+        name: 'transportRadius',
         type: 'number',
         description: 'Radius in cells of each 1D blur window.'
       },
@@ -892,7 +892,7 @@ parametersBuffer.write(
       },
       {name: 'slotCapacity', type: 'number', description: 'Slot capacity of each order ring.'},
       {
-        name: 'outputs',
+        name: 'output',
         type: 'Partial<GPUContiguityOrderCorrelogramRecipeOutputs>',
         description: 'Caller-owned outputs.'
       }
@@ -927,7 +927,7 @@ addContiguityOrderCorrelogramRecipe(graph, {
   weights, // rook contiguity of tracts
   values, // poverty share per tract
   maximumOrder: 5,
-  outputs: {correlogram, incompleteOrders}
+  output: {correlogram, incompleteOrders}
 });
 // Moran's I of order k: correlogram[(k - 1) * columns.length + columns.statistic]`,
     preview: {

@@ -308,3 +308,144 @@ it('zero variogram refinement budget publishes finite candidates and budget stat
     scope.destroy();
   }
 });
+
+it('CORE-118 variogram preparation merges a partial last bin tile on every replay', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scope = new InterpolationBenchmarkScope(device, 'variogram-prepare-tiles');
+  const binCount = 1025;
+  const lastBin = binCount - 1;
+  const distances = new Float32Array(binCount).fill(1);
+  const observations = new Float32Array(binCount).fill(1e30);
+  const counts = new Uint32Array(binCount);
+  observations[0] = 2;
+  counts[0] = 1;
+  scope.graph.add(
+    new GPUVariogramModelFit({
+      distances: scope.input('distances', distances, 'float32'),
+      semivariances: scope.input('semivariances', observations, 'float32'),
+      pairCounts: scope.input('pairs', counts, 'uint32'),
+      models: ['spherical'],
+      weighting: 'pairs',
+      rangeSteps: 8,
+      output: {
+        parameters: scope.output('parameters', 1, 'float32x4'),
+        diagnostics: scope.output('diagnostics', 1, 'float32x4'),
+        status: scope.output('status', 1, 'uint32')
+      }
+    })
+  );
+  const compiled = scope.graph.compile();
+  try {
+    for (const scenario of ['ordinary', 'missing', 'equal-lags', 'overflow', 'ordinary']) {
+      distances[lastBin] = scenario === 'equal-lags' ? 1 : 2;
+      observations[lastBin] = scenario === 'overflow' ? 1e30 : 2;
+      counts[lastBin] = scenario === 'missing' ? 0 : 1;
+      for (const write of scope.initialWrites) write.buffer.write(write.values);
+      submitGraph(device, compiled, undefined);
+      const result = await scope.read();
+      expect(result['parameters']).toHaveLength(4);
+      expect(result['diagnostics']).toHaveLength(4);
+      if (scenario === 'ordinary') {
+        // Two usable bins of height 2 give zero residual with nugget 2 and sill 0.
+        // Every range ties, so the first candidate (minLag / 10 = 0.1) wins at the boundary.
+        expect(result['status']).toEqual([3]);
+        expect(result['parameters'].every(Number.isFinite)).toBe(true);
+        expect(result['diagnostics'].every(Number.isFinite)).toBe(true);
+        const [nugget, sill, range, residual] = result['parameters'];
+        expect([nugget, sill, residual]).toEqual([2, 0, 0]);
+        expect(Math.abs(range - 0.1)).toBeLessThan(1e-6);
+        expect(result['diagnostics'].slice(0, 2)).toEqual([2, 0]);
+      } else {
+        expect(result['status']).toEqual([scenario === 'overflow' ? 2 : 1]);
+        expect(result['parameters'].every(Number.isNaN)).toBe(true);
+        expect(result['diagnostics'].every(Number.isNaN)).toBe(true);
+      }
+    }
+  } finally {
+    compiled.destroy();
+    scope.destroy();
+  }
+});
+
+it('B7-VAR-02 GPU flat spherical variogram selects the first tied range', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scope = new InterpolationBenchmarkScope(device, 'flat-spherical-variogram');
+  scope.graph.add(
+    new GPUVariogramModelFit({
+      distances: scope.input('distances', Float32Array.of(3, 6), 'float32'),
+      semivariances: scope.input('semivariances', Float32Array.of(4, 4), 'float32'),
+      pairCounts: scope.input('pairs', Uint32Array.of(1, 1), 'uint32'),
+      models: ['spherical'],
+      weighting: 'pairs',
+      rangeSteps: 8,
+      output: {
+        parameters: scope.output('parameters', 1, 'float32x4'),
+        diagnostics: scope.output('diagnostics', 1, 'float32x4'),
+        status: scope.output('status', 1, 'uint32')
+      }
+    })
+  );
+  const compiled = scope.graph.compile();
+  try {
+    for (const write of scope.initialWrites) write.buffer.write(write.values);
+    submitGraph(device, compiled, undefined);
+    const result = await scope.read();
+    // Height 4 at both lags gives zero error with nugget 4 and sill 0 at any range.
+    // The first tied ladder range is minLag / 10 = 0.3, with boundary status 3.
+    expect(result['parameters']).toHaveLength(4);
+    expect(result['diagnostics']).toHaveLength(4);
+    const [nugget, sill, range, residual] = result['parameters'];
+    expect([nugget, sill, residual]).toEqual([4, 0, 0]);
+    expect(Math.abs(range - 0.3)).toBeLessThan(1e-6);
+    expect(result['diagnostics'].every(Number.isFinite)).toBe(true);
+    expect(result['diagnostics'].slice(0, 2)).toEqual([2, 0]);
+    expect(result['status']).toEqual([3]);
+  } finally {
+    compiled.destroy();
+    scope.destroy();
+  }
+});
+
+it('review round 2 B1 GPU exponential fit prefers the nugget on a float32 tie', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scope = new InterpolationBenchmarkScope(device, 'exponential-float32-tie');
+  scope.graph.add(
+    new GPUVariogramModelFit({
+      distances: scope.input('distances', Float32Array.of(1, 2, 3), 'float32'),
+      semivariances: scope.input('semivariances', Float32Array.of(7 / 3, 5, 1), 'float32'),
+      pairCounts: scope.input('pairs', Uint32Array.of(5, 3, 6), 'uint32'),
+      models: ['exponential'],
+      weighting: 'pairs',
+      rangeSteps: 8,
+      maximumIterations: 24,
+      output: {
+        parameters: scope.output('parameters', 1, 'float32x4'),
+        diagnostics: scope.output('diagnostics', 1, 'float32x4'),
+        status: scope.output('status', 1, 'uint32')
+      }
+    })
+  );
+  const compiled = scope.graph.compile();
+  try {
+    for (const write of scope.initialWrites) write.buffer.write(write.values);
+    submitGraph(device, compiled, undefined);
+    const result = await scope.read();
+    // At range 0.1, the three float32 exponential shapes are all 1.
+    // The two projections coincide and the GPU keeps the nugget on this tie.
+    expect(result['parameters']).toHaveLength(4);
+    expect(result['diagnostics']).toHaveLength(4);
+    expect(result['diagnostics'].every(Number.isFinite)).toBe(true);
+    const [nugget, sill, range, residual] = result['parameters'];
+    expect(Math.abs(nugget - 7 / 3)).toBeLessThan(1e-6);
+    expect(sill).toBe(0);
+    expect(Math.abs(range - 0.1)).toBeLessThan(1e-6);
+    expect(Math.abs(residual - 32)).toBeLessThan(1e-4);
+    expect(result['status']).toEqual([3]);
+  } finally {
+    compiled.destroy();
+    scope.destroy();
+  }
+});

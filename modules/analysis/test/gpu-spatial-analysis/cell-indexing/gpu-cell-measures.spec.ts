@@ -177,6 +177,7 @@ it('GPUCellMeasures validates its properties', async () => {
   const outBuffer = createOutputBuffer(device, 2);
   const cells = importGraphBuffer(graph, 'cells', buffer, 'uint32x2', 2);
   const areas = importGraphBuffer(graph, 'areas', outBuffer, 'float32', 2);
+  // @ts-expect-error Deliberately empty terminal output selection exercises the JavaScript guard.
   expect(() => new GPUCellMeasures({family: 'h3', cells, output: {}})).toThrow(/at least one/);
   expect(
     () => new GPUCellMeasures({family: 'h3', cells, maximumEdgeCount: 5, output: {areas}})

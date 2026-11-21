@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateS2CoveringOptions} from './s2-covering-option-validation';
+import {snapshotS2CapOperationProps} from './s2-covering-construction-snapshot';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUS2CapCovering, type GPUS2CapCoveringProps} from './gpu-s2-cap-covering';
 
@@ -16,6 +18,11 @@ export type S2CapCoveringOperationProps = Omit<GPUS2CapCoveringProps, 'caps' | '
 /** Operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUS2CapCoveringOperation extends GPUContributorOperation {
   constructor(props: S2CapCoveringOperationProps) {
+    props = snapshotS2CapOperationProps(props);
+    validateS2CoveringOptions(props.id ?? 's2-cap-covering', props, [
+      'uniform',
+      'level-synchronous'
+    ]);
     super({
       id: props.id ?? 's2-cap-covering',
       inputs: {caps: props.caps},

@@ -245,7 +245,7 @@ it.each([
       byteOffset: 4
     });
     const invalid =
-      port === 'palette' ? {...props, palette: short} : {...props, outputs: {[port]: short}};
+      port === 'palette' ? {...props, palette: short} : {...props, output: {[port]: short}};
     try {
       expect(() => addRateClusterMapRecipe(graph, invalid)).toThrow(new RegExp(port));
       if (inspect) {
@@ -262,7 +262,7 @@ it.each([
         const correctedProps =
           port === 'palette'
             ? {...props, palette: corrected}
-            : {...props, outputs: {[port]: corrected}};
+            : {...props, output: {[port]: corrected}};
         const result = addRateClusterMapRecipe(graph, correctedProps);
         expect(result.colors.length).toBe(4);
         expect(result.quadrants.length).toBe(4);
@@ -283,7 +283,7 @@ it('R4 rejects independent smoothed-rate and z-score output aliases before mutat
       expect(() =>
         addRateClusterMapRecipe(graph, {
           ...props,
-          outputs: {smoothedRates: shared, zScores: shared}
+          output: {smoothedRates: shared, zScores: shared}
         })
       ).toThrow(/share|alias|overlap/);
       if (inspect) {
@@ -292,7 +292,7 @@ it('R4 rejects independent smoothed-rate and z-score output aliases before mutat
         expect(compiled.stats.nodeOrder).toEqual([]);
         compiled.destroy();
       } else {
-        const result = addRateClusterMapRecipe(graph, {...props, outputs: {smoothedRates: shared}});
+        const result = addRateClusterMapRecipe(graph, {...props, output: {smoothedRates: shared}});
         expect(result.smoothedRates).toBe(shared);
         expect(result.zScores.buffer).not.toBe(shared.buffer);
       }
@@ -325,7 +325,7 @@ it('R4 checks a nested raster median against the original raw input including of
       zoneCount: 2
     };
     try {
-      expect(() => addRasterZonalDistributionRecipe(graph, {...props, outputs: {medians}})).toThrow(
+      expect(() => addRasterZonalDistributionRecipe(graph, {...props, output: {medians}})).toThrow(
         /share|alias|overlap/
       );
       if (inspect) {
@@ -401,7 +401,7 @@ it('R6 rejects unequal similarity pairs before registering track-quality nodes/r
     try {
       expect(() =>
         addTrackQualityRecipe(graph, {...props, similarity: {...props.similarity, pairB: short}})
-      ).toThrow(/pairA and pairB/);
+      ).toThrow(/pairB.length must equal pairA.length/);
       expect(allocate).not.toHaveBeenCalled();
       expect(add).not.toHaveBeenCalled();
       if (inspect) {

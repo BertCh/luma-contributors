@@ -114,7 +114,7 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
         adjacency: view('uint32'),
         weights: view('float32'),
         mapping: view('uint32'),
-        status: {iterationLimitReached: view('uint32')}
+        status: {iterationLimitReached: view('uint32', 1)}
       }
     }),
     new GPURasterRegionGraph({
@@ -128,7 +128,7 @@ it('RS03/04/06/07/08/10/11 construct native graph kernels within eight storage b
         adjacency: view('uint32'),
         weights: view('float32'),
         mapping: view('uint32'),
-        status: {iterationLimitReached: view('uint32')}
+        status: {iterationLimitReached: view('uint32', 1)}
       }
     }),
     ...(['unconstrained', 'nonnegative', 'simplex'] as const).map(
@@ -250,7 +250,7 @@ it('remote-sensing rejects unsupported topology, insufficient capacities, aliase
       adjacency: view('uint32'),
       weights: view('float32'),
       mapping: view('uint32'),
-      status: {iterationLimitReached: view('uint32')}
+      status: {iterationLimitReached: view('uint32', 1)}
     }
   };
   const seasonal = {

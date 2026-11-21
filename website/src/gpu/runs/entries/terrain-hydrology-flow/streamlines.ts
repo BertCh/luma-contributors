@@ -65,8 +65,11 @@ export default defineOperationRun({
       outputs: {speeds, positions, slowCells},
       update: values => {
         const settings = {
-          fieldExtent: [0, 0, field.cellSize, field.cellSize] as const,
-          gridExtent: [0, 0, worldWidth / gridWidth, 1 / gridHeight] as const,
+          fieldPlacement: {origin: [0, 0], cellSize: [field.cellSize, field.cellSize]} as const,
+          gridPlacement: {
+            origin: [0, 0],
+            cellSize: [worldWidth / gridWidth, 1 / gridHeight]
+          } as const,
           stepLength: values.stepLength,
           minimumSpeed: values.minimumSpeed,
           seed: Math.round(values.seed),

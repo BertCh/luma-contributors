@@ -1,6 +1,8 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {resolveCellPrecision, type CellPrecision} from '../cell-indexing/cell-precision';
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -25,7 +27,6 @@ import {
   validateMaximumCount,
   validateCapacity,
   validateSinglePackedView,
-  validateRequirement,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {WGSLKernelProps} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -49,7 +50,7 @@ export type GPUS2CellMeasuresProps = {
   id?: string;
   cells: GraphDataView<'uint32x2'> | GraphVectorView<'uint32x2'>;
   /** Compile-time arithmetic choice; defaults to 'float32'. Outputs stay float32. */
-  precision?: 'float32' | 'fp64';
+  precision?: CellPrecision;
   output: {
     /** Spherical area (steradians), perimeter (radians). Multiply by radius squared/radius externally. */
     measures: GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>;
@@ -63,7 +64,7 @@ export type GPUS2CellMeasuresProps = {
 /**
  * S2 spherical cell measurements at levels 0–30 using cancellation-free local increments.
  * Per-frame: cells contents. Compile-time: precision, row count and view layouts.
- * With precision 'fp64', uses the published double-single module for projection and local increments.
+ * With precision 'double-single', uses the published double-single module for projection and local increments.
  *
  * Accepts packed or chunked row inputs; output chunks mirror inputs and keep whole fixed-stride records.
  */
@@ -73,13 +74,18 @@ export class GPUS2CellMeasures implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
+  private readonly precision: 'float32' | 'double-single';
+
   constructor(readonly props: GPUS2CellMeasuresProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'cells',
+      'precision',
+      ['output', ['measures', 'status']]
+    ]);
+    this.props = props;
     this.id = props.id ?? 's2-cell-measures';
-    validateRequirement(
-      this.id,
-      props.precision === undefined || ['float32', 'fp64'].includes(props.precision),
-      "precision must be 'float32' or 'fp64'"
-    );
+    this.precision = resolveCellPrecision(this.id, props.precision);
     const id = this.id;
     this.chunkPlan = planGraphChunkDispatch(id, {
       cells: props.cells,
@@ -134,7 +140,7 @@ export class GPUS2CellMeasures implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id} = this;
+    const {id} = this;
     validateMaximumCount(
       id,
       'storage bindings',
@@ -161,7 +167,7 @@ export class GPUS2CellMeasures implements GPUCommandNodeProducer {
     const chunkNodes = this.chunkPlan.chunks
       .filter(chunk => chunk.length > 0)
       .map(chunk => {
-        const usesFP64 = props.precision === 'fp64';
+        const usesFP64 = this.precision === 'double-single';
         const kernelProps: WGSLKernelProps<Parameters> = {
           id,
           operation: 'GPUS2CellMeasures',

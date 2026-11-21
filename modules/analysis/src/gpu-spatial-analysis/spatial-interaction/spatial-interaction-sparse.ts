@@ -29,6 +29,7 @@ import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {INTERACTION_BALANCING_WGSL} from './interaction-balancing-wgsl';
+import {INTERACTION_DEVIANCE_WGSL} from './interaction-deviance-wgsl';
 import type {GPUSpatialInteractionProps} from './gpu-spatial-interaction';
 
 /** Stable pair-list IPF. Sort support once; reuse its permutation and offsets every round. @internal */
@@ -394,6 +395,7 @@ if (error[errorOffset] <= ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)}) {
       id: `${id}-${prefix}-deviance`,
       operation: 'GPUSpatialInteraction',
       variant: 'sparse-deviance',
+      declarations: INTERACTION_DEVIANCE_WGSL,
       invocationCount: pairs,
       bindings: [
         unsigned('support', support),
@@ -404,8 +406,7 @@ if (error[errorOffset] <= ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)}) {
       body: `var term = 0.0;
 if (support[supportOffset + index] != 0u) {
   let flow = flows[flowsOffset + index]; let prediction = predictions[predictionsOffset + index];
-  term = prediction;
-  if (flow > 0.0) { term = flow * (log(flow) - log(prediction)) - flow + prediction; }
+  term = getPoissonHalfDeviance(flow, prediction);
 }
 contributions[contributionsOffset + index] = 2.0 * term;`
     });

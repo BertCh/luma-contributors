@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {calibrateRasterOperationBand} from '../../../src/raster-analysis/raster-grid/raster-operation-band';
 import {
   computeTerrainPeakProminenceOnCPU,
   CPUTerrainPeakProminenceOperation
@@ -218,4 +219,46 @@ it('validates both declarations, band metadata and inconsistent arrays', () => {
       GRID
     )
   ).toThrow(/validity/);
+});
+
+it('TWN-08 retains integer calibration differences and the true elder in the pure and CPU operation forms', async () => {
+  const grid = {...GRID, width: 2};
+  const values = Int32Array.of(16777216, 16777217);
+  const elevation = {
+    id: 'elevation',
+    format: 'sint32' as const,
+    values,
+    scale: 1,
+    offset: -16777216
+  };
+  // Exact integer arithmetic: [2^24, 2^24+1] - 2^24 = [0,1]. Cell 1 is elder;
+  // cell 0 joins at saddle 0 and has prominence 0. This is not a plateau tie.
+  expect(Array.from(calibrateRasterOperationBand(elevation, 2))).toEqual([0, 1]);
+  const pure = computeTerrainPeakProminenceOnCPU(elevation, grid);
+  expect(Array.from(pure.parentPeak)).toEqual([1, NONE]);
+  expect(Array.from(pure.prominence)).toEqual([0, Infinity]);
+  const operation = new CPUTerrainPeakProminenceOperation({
+    grid,
+    elevation: {...elevation, storage: {kind: 'buffer', values: 'values'}},
+    output: {prominence: 'prominence', parentPeak: 'parent'}
+  });
+  const rows = await operation.execute({
+    inputs: {
+      values: {
+        format: 'sint32',
+        length: 2,
+        chunks: [{values, length: 2}],
+        pack: () => values
+      }
+    }
+  });
+  expect(Array.from(rows['parent'] as Uint32Array)).toEqual([1, NONE]);
+  expect(Array.from(rows['prominence'] as Float32Array)).toEqual([0, Infinity]);
+});
+
+it('S3 names elevation when the prominence CPU boundary rejects mismatched storage', () => {
+  const malformed = {id: 'dem', format: 'sint32', values: Float32Array.of(1)};
+  expect(() => computeTerrainPeakProminenceOnCPU(malformed as never, {...GRID, width: 1})).toThrow(
+    /^computeTerrainPeakProminenceOnCPU.*elevation.values must be Int32Array/
+  );
 });

@@ -7,7 +7,7 @@ import {
   type AnalysisSensitivityControl
 } from './analysis-sensitivity-strip';
 import {getAnalysisSensitivityRuntimeKey} from './analysis-sensitivity-model';
-import {useRef, useState, type ReactNode} from 'react';
+import {createContext, useContext, useEffect, useRef, useState, type ReactNode} from 'react';
 import {
   getWorkflowParameterProblem,
   type CatalogParameterSpec,
@@ -18,11 +18,19 @@ import {WorkbenchParameterValue} from './workflow/workbench-parameter-form';
 import {ANALYSIS_SHEET_PREVIEW_POLICY, type AnalysisSheetRow} from './analysis-sheet-model';
 
 /** Discovery, saved invocations and lens access stay with the catalog host. */
+const CoordinateModeContext = createContext({
+  coordinateSystem: 'EPSG:4326',
+  setCoordinateSystem: (_value: string): void => {}
+});
+
 export function AnalysisSheet({children}: {children: ReactNode}) {
+  const [coordinateSystem, setCoordinateSystem] = useState('EPSG:4326');
   return (
-    <section aria-label="Analysis sheet" data-testid="ax-analysis-sheet">
-      {children}
-    </section>
+    <CoordinateModeContext.Provider value={{coordinateSystem, setCoordinateSystem}}>
+      <section aria-label="Analysis sheet" data-testid="ax-analysis-sheet">
+        {children}
+      </section>
+    </CoordinateModeContext.Provider>
   );
 }
 
@@ -111,6 +119,11 @@ export function ResidentAnalysisSheetForm({
           enumControl="select"
           testId={field.controlId}
           value={field.value}
+          coordinateSystem={
+            getCurrentFields().find(
+              candidate => candidate.specification.name === 'coordinateSystem'
+            )?.value
+          }
           suggestions={{columns: [...(field.columns ?? [])], hints: []}}
           commitOnRelease
           onDraftChange={text => {
@@ -244,6 +257,7 @@ export function ResidentAnalysisSheetForm({
 }
 
 export function AnalysisSheetParameter({
+  spec,
   row,
   value,
   source,
@@ -260,6 +274,11 @@ export function AnalysisSheetParameter({
   sensitivity?: AnalysisSensitivityControl;
   onValidityChange?(problem: string | null): void;
 }) {
+  const {coordinateSystem, setCoordinateSystem} = useContext(CoordinateModeContext);
+  useEffect(() => {
+    if (spec.name === 'coordinateSystem') setCoordinateSystem(String(value));
+  }, [spec.name, value, setCoordinateSystem]);
+  if (spec.aliasFor) return null;
   return (
     <div data-ax-parameter={row.specification.name} data-apply={row.apply}>
       <small data-testid="ax-parameter-apply">
@@ -271,10 +290,10 @@ export function AnalysisSheetParameter({
       <WorkbenchParameterValue
         spec={{
           ...row.specification,
-          label: row.specification.unit
-            ? `${row.specification.label} (${row.specification.unit === 'crs' ? 'CRS units' : row.specification.unit})`
-            : row.specification.label
+          ...spec,
+          kind: row.specification.kind
         }}
+        coordinateSystem={coordinateSystem}
         value={value}
         onCommit={onChange}
         onValidityChange={onValidityChange}

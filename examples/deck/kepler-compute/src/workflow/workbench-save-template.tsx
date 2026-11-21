@@ -8,7 +8,7 @@ import {
   GPU_SPATIAL_ANALYSIS_DATA_KINDS,
   matchGPUAnalysisFieldRole,
   type GPUAnalysisQuestion
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   createWorkflowAnalysisTemplateFromDocument,
   exportWorkflowAnalysisTemplateJSON,

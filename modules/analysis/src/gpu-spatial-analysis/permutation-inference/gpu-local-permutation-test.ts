@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUPermutationInferenceMetadata} from './permutation-inference-metadata';
+import {
+  getPermutationCauseStatusNodes,
+  validatePermutationCauseStatus,
+  type GPUPermutationCauseStatus
+} from './permutation-cause-status';
+
 import {
   createTransientView,
   GPUReduction,
@@ -25,7 +32,6 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUInferenceAlternative,
-  GPUInferenceMetadata,
   GPUMultipleTestingMethod
 } from '../../analysis-core/contracts/index';
 import {
@@ -62,19 +68,40 @@ import {
 } from './permutation-alternative';
 import {
   getGPUPermutationParameterValues,
+  MAXIMUM_PERMUTATION_COUNT,
   type GPUPermutationSettings
 } from './permutation-parameters';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {snapshotLocalPermutationProps} from './permutation-construction';
+import {getPermutationWeightsLossChecks} from './permutation-weights-loss';
+import {getWeightsLossSources} from '../spatial-weights/spatial-weights-loss';
+import {PERMUTATION_SIGNIFICANCE_WGSL} from './permutation-significance';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import type {GPUFloat32OrUint32Values} from '../spatial-weights/float32-values';
 import {
   getGPUSpatialWeightsOrChunksViews,
   getGPUSpatialWeightsChunks,
-  getGPUSpatialWeightsLossViews,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 
 const OPERATION = 'GPULocalPermutationTest';
+
+// Splitting sqrt(first)*sqrt(second) alone is insufficient: Metal can reassociate
+// it into sqrt(first*second). Keep the floating product bounded using frexp and
+// combine the integer exponents separately, including negative odd exponents.
+const GEOMETRIC_MEAN_WGSL = /* wgsl */ `
+fn getPermutationGeometricMean(first: f32, second: f32) -> f32 {
+  if (!(first > 0.0) || !(second > 0.0) || !isFiniteFloat(first) || !isFiniteFloat(second)) {
+    return 0.0;
+  }
+  let firstParts = frexp(first);
+  let secondParts = frexp(second);
+  let exponent = firstParts.exp + secondParts.exp;
+  let oddExponent = exponent & 1i;
+  let halfExponent = (exponent - oddExponent) / 2i;
+  let mantissaProduct = firstParts.fract * secondParts.fract * select(1.0, 2.0, oddExponent != 0i);
+  return ldexp(sqrt(mantissaProduct), halfExponent);
+}`;
 
 /** Bounds fixed split-column preparation, published scans/sort, classification and status nodes. */
 const LOCAL_PERMUTATION_FIXED_COMMAND_NODE_ALLOWANCE = 256;
@@ -241,10 +268,9 @@ export type GPULocalPermutationTestOutput = {
    * (negative association) the mean of the local Geary values over the analysis rows, whether it
    * is significant (`p <= level`, or the adjusted p-value for `multipleTesting`) and, for positive
    * association, whether `x_i` is above (high-high) or below (low-low) the mean (esda
-   * `Geary_Local(labels=True)`). The classification uses the p-values of the chosen
-   * `alternative`: with `'two-sided'` (default) clusters and negative association can both be
-   * significant, with `'lesser'` (the tail of clustering) negative association is never
-   * significant; `'greater'` finds only negative association.
+   * `Geary_Local(labels=True)`). The chosen `alternative` tests a row's conditional reference
+   * distribution, while the association label compares local values across rows. A one-sided
+   * tail therefore does not guarantee that any association class is absent.
    */
   classes?: GraphDataView<'uint32'>;
   /**
@@ -262,17 +288,20 @@ export type GPULocalPermutationTestOutput = {
    * Optional caller-owned permutation count `L` per row (uint32): the permutations the row used.
    * `P` for a row that did not stop, the stopping index for a row that did (see
    * `stopAfterExceedances`), `GPU_LOCAL_PERMUTATION_NOT_TESTED` for a row that was not tested.
-   * Requires `stopAfterExceedances`.
+   * Available for fixed-count and early-stopping runs.
    */
   permutationCounts?: GraphDataView<'uint32'>;
   /** Optional caller-owned one-row uint32 output: the number of islands among the included rows. */
   islandCount?: GraphDataView<'uint32'>;
   /** Completeness status. */
-  status: {
+  status: GPUPermutationCauseStatus & {
+    /** At least one analyzed row exceeded maximumNeighbors; cleared on every submission. */
+    neighborOverflow?: GraphDataView<'uint32'>;
     /**
      * Caller-owned one-row flag, 1 when the result is incomplete or invalid: an included row has
      * more than `maximumNeighbors` neighbors (that row is not tested), the weights report
-     * `status.overflow` or `status.candidateOverflow`, or the per-frame permutation count is outside `[1, maximumPermutations]`
+     * nonzero `status.overflow` / `status.candidateOverflow` or zero `status.complete` at root or chunk scope,
+     * or the per-frame permutation count is outside `[1, maximumPermutations]`
      * (no row is tested and all p-values are NaN; the count is never clamped).
      */
     overflow: GraphDataView<'uint32'>;
@@ -444,7 +473,7 @@ fn readSwap(
     body: `let observed = ${replay ? 'bitcast<f32>(replayInfo[replayInfoOffset])' : 'observedRaw[observedRawOffset + index]'};
   // The permutation count is never clamped: an invalid one leaves every row untested.
   // Join counts test only rows with at least one join (esda sets the other p-values to NaN).
-  if (!isFiniteFloat(observed) || !isPermutationCountValid()${spec.joinCount ? ' || observed == 0.0' : ''}) {
+  if (!isFiniteFloat(observed) || !isPermutationCountValid() || !isPermutationSignificanceValid()${spec.joinCount ? ' || observed == 0.0' : ''}) {
     ${replay ? '' : `exceedances[exceedancesOffset + index] = NOT_TESTED;${sequential ? '\n    exceedances[exceedancesOffset + ROWS + index] = NOT_TESTED;' : ''}`}
     return;
   }
@@ -564,6 +593,33 @@ export function getLocalPermutationReplayInputs(
   return localPermutationReplayInputs.get(test);
 }
 
+/** Checks compile-time inference settings before a parent reserves scratch. @internal */
+export function validateLocalPermutationSettings(
+  id: string,
+  props: {
+    maximumPermutations: number;
+    maximumNeighbors?: number;
+    extendedNeighborScratch?: boolean;
+  }
+): void {
+  validateCapacity(
+    id,
+    'maximumPermutations',
+    props.maximumPermutations,
+    1,
+    MAXIMUM_PERMUTATION_COUNT
+  );
+  validateCapacity(
+    id,
+    'maximumNeighbors',
+    props.maximumNeighbors ?? 32,
+    1,
+    props.extendedNeighborScratch
+      ? GPU_LOCAL_PERMUTATION_EXTENDED_MAXIMUM_NEIGHBORS
+      : GPU_LOCAL_PERMUTATION_MAXIMUM_NEIGHBORS
+  );
+}
+
 /**
  * Conditional-permutation (pseudo p-value) inference for local Moran's I, local Geary (with the
  * optional `classes` output), local Getis-Ord G / G*, local bivariate Moran, Lee's local L and the
@@ -610,6 +666,13 @@ export function getLocalPermutationReplayInputs(
  *
  * Cost is `P * sum_i k_i` draws (less with `stopAfterExceedances`). Each row is one invocation looping
  * over the permutations.
+ * Root/chunk nonzero overflow or candidateOverflow, or a supplied zero complete certificate,
+ * suppresses the whole analysis; separate cause ports retain final/candidate diagnostics.
+ * Construction rejects an estimated graph above 32,768 command nodes. The bound is
+ * 256 + 3*C + T + 2*L + F + N: C chunks, T row tiles, L polarity-aware loss checks,
+ * F requested scalar cause-fold passes (seven same-cause inputs per pass, at least one clear),
+ * and N=C+1 when neighborOverflow is requested, otherwise zero.
+ * Compile-time maximumPermutations is at most MAXIMUM_PERMUTATION_COUNT = 1,048,576 draws per submission.
  */
 export class GPULocalPermutationTest implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -696,9 +759,6 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       props.maximumPermutations
     );
     if (props.output.permutationCounts) {
-      if (props.stopAfterExceedances === undefined) {
-        throw new Error(`${id} permutationCounts requires stopAfterExceedances`);
-      }
       validatePackedUint32View(props.output.permutationCounts, `${id} permutationCounts`);
     }
     resolveGPUIslandPolicy(id, props.islands);
@@ -710,24 +770,28 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
         Math.ceil(chunk.rowCount / Math.min(props.rowTileSize ?? chunk.rowCount, chunk.rowCount)),
       0
     );
-    // Each distinct outer/chunk loss view adds a preparation pass and a completeness writer.
-    const lossViewCount = getGPUSpatialWeightsLossViews(props.weights).length;
+    // Each polarity-aware check adds preparation and aggregate-status passes. Cause
+    // writers fold seven same-cause inputs per pass, including a clear for no inputs.
+    const lossViewCount = getPermutationWeightsLossChecks(props.weights).length;
+    const causeSources = getWeightsLossSources([props.weights], id, true);
+    const causeNodeCount =
+      (props.output.status.weightsOverflow
+        ? Math.max(1, Math.ceil(causeSources.overflow.length / 7))
+        : 0) +
+      (props.output.status.candidateOverflow
+        ? Math.max(1, Math.ceil(causeSources.candidateOverflow.length / 7))
+        : 0) +
+      (props.output.status.invalidInput ? 1 : 0);
     this.estimatedCommandNodeCount =
       LOCAL_PERMUTATION_FIXED_COMMAND_NODE_ALLOWANCE +
       3 * chunks.length +
       tileCount +
-      2 * lossViewCount;
+      2 * lossViewCount +
+      causeNodeCount +
+      (props.output.status.neighborOverflow ? chunks.length + 1 : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
 
-    validateCapacity(
-      id,
-      'maximumNeighbors',
-      props.maximumNeighbors ?? 32,
-      1,
-      props.extendedNeighborScratch
-        ? GPU_LOCAL_PERMUTATION_EXTENDED_MAXIMUM_NEIGHBORS
-        : GPU_LOCAL_PERMUTATION_MAXIMUM_NEIGHBORS
-    );
+    validateLocalPermutationSettings(id, props);
     validatePackedUint32View(props.output.exceedances, `${id} exceedances`);
     validateSinglePackedView(props.output.pseudoPValues, ['float32'], `${id} pseudoPValues`);
     if (props.output.observed) {
@@ -758,6 +822,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     if (method !== 'none' && !significant && !adjustedPValues && !classes) {
       throw new Error(`${id} multipleTesting requires significant or adjustedPValues`);
     }
+    validatePermutationCauseStatus(id, props.output.status);
     validatePackedUint32View(props.output.status.overflow, `${id} output.status.overflow`);
     validateCapacity(id, 'output.status.overflow length', props.output.status.overflow.length);
     if (props.output.status.invalidCount) {
@@ -786,10 +851,10 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
         props.output.quadrants,
         props.output.islandCount,
         props.output.status.overflow,
-        props.output.status.invalidCount
+        ...Object.values(props.output.status)
       ],
       [
-        ...getGPUSpatialWeightsOrChunksViews(props.weights),
+        ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
         props.values,
         props.secondValues,
         props.mask,
@@ -810,20 +875,28 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
   }
 
   /** Describes how the p-values of a run with `settings` were produced, for legends. */
-  getInferenceMetadata(settings: GPUPermutationSettings): GPUInferenceMetadata {
+  getInferenceMetadata(settings: GPUPermutationSettings): GPUPermutationInferenceMetadata {
     // Validates the seed, the permutation count and the significance level.
-    this.getParameterValues(settings);
+    const packed = this.getParameterValues(settings);
     const keep = resolveGPUIslandPolicy(this.id, this.props.islands) === 'keep';
     const maximumNeighbors = this.props.maximumNeighbors ?? 32;
     return {
       alternative: resolvePermutationAlternative(this.id, this.props.alternative),
-      permutationCount: settings.permutationCount,
-      seed: settings.seed,
+      requestedPermutationCount: packed[2],
+      stoppingRule:
+        this.props.stopAfterExceedances === undefined
+          ? {method: 'fixed-count'}
+          : {method: 'besag-clifford', stopAfterExceedances: this.props.stopAfterExceedances},
+      pValueConstruction:
+        resolvePermutationAlternative(this.id, this.props.alternative) === 'two-sided'
+          ? 'doubled-minimum-tail'
+          : 'upper-tail-count',
+      seed: packed[0] + packed[1] * 2 ** 32,
       multipleTesting: resolveGPUMultipleTestingMethod(this.id, this.props.multipleTesting),
-      significanceLevel: settings.significanceLevel ?? 0.05,
+      significanceLevel: new Float32Array(packed.buffer, packed.byteOffset + 12, 1)[0],
       testedRowsDefinition:
         `rows with a nonzero mask and a finite value that have 1 to ${maximumNeighbors} ` +
-        `positive-weight neighbors among the analysis rows (islands, rows without such a neighbor, ` +
+        `positive-weight neighbors among the analysis rows and a finite positive normalization denominator (islands, rows without such a neighbor, ` +
         (keep ? 'are kept in n but not tested)' : 'are excluded from the analysis)')
     };
   }
@@ -835,7 +908,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {weights, parameters, statistic, maximumPermutations} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...getGPUSpatialWeightsOrChunksViews(weights, true),
       weights.status?.overflow,
       props.values,
       props.secondValues,
@@ -852,7 +925,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       props.output.quadrants,
       props.output.islandCount,
       props.output.status.overflow,
-      props.output.status.invalidCount
+      ...Object.values(props.output.status)
     ]);
     validatePermutationInputBindings(graph, {...props, id, operation: OPERATION}, [
       props.output.exceedances,
@@ -976,7 +1049,7 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
         observedRaw
       });
     }
-    const weightsLosses = getGPUSpatialWeightsLossViews(weights);
+    const weightsLosses = getPermutationWeightsLossChecks(weights);
     // Sequential stopping: the permute kernel already binds eight storage buffers, so it writes the
     // exceedance count and the permutation count into one transient (count at `index`, permutation
     // count at `ROWS + index`) that a following node splits into the two per-row views.
@@ -998,7 +1071,7 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
         componentCount: 1
       })
     );
-    for (const [lossIndex, weightsOverflow] of weightsLosses.entries()) {
+    for (const [lossIndex, {view: weightsOverflow, incompleteWhen}] of weightsLosses.entries()) {
       // Truncated weights: the front end analyzed no row; report it.
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
@@ -1015,7 +1088,7 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
             }
           ],
           invocationCount: 1,
-          body: `if (weightsOverflow[weightsOverflowOffset] != 0u) {
+          body: `if (weightsOverflow[weightsOverflowOffset] ${incompleteWhen} 0u) {
     atomicMax(&overflow[overflowOffset], 1u);
   }`
         })
@@ -1055,7 +1128,7 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
         invocationCount: 1,
         declarations: getPermutationParameterWGSL(maximumPermutations),
         // The count is never clamped: report an invalid one (permute leaves every row untested).
-        body: `if (!isPermutationCountValid()) {
+        body: `if (!isPermutationCountValid() || !isPermutationSignificanceValid()) {
     atomicMax(&overflow[overflowOffset], 1u);
   }`
       }),
@@ -1126,6 +1199,81 @@ ${accessWGSL}`,
         });
       })
     );
+    const normalization = spec.joinCount
+      ? undefined
+      : createTransientView(graph, `${id}-normalization`, 'float32', rows);
+    if (normalization) {
+      const denominator = {
+        localMoran: `totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquares}u]`,
+        localGeary: `totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquares}u]`,
+        localBivariateMoran: `getPermutationGeometricMean(totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquares}u], totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquaresY}u])`,
+        localLeeL: `getPermutationGeometricMean(totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquares}u], totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquaresY}u])`,
+        localG: `totals[totalsOffset + 1u] - compactX[compactXOffset + position]`,
+        localGStar: 'totals[totalsOffset + 1u]',
+        localJoinCount: '1.0',
+        localBivariateJoinCount: '1.0'
+      }[statistic];
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-statistic-validity`,
+          operation: OPERATION,
+          variant: 'statistic-validity',
+          bindings: [
+            {name: 'totals', view: totals, type: 'f32', access: 'read'},
+            ...(statistic === 'localG'
+              ? [
+                  {name: 'compactX', view: compactX, type: 'f32' as const, access: 'read' as const},
+                  {
+                    name: 'rowPositions',
+                    view: rowPositions,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {name: 'observedRaw', view: observedRaw, type: 'f32', access: 'read_write'},
+            {name: 'normalization', view: normalization, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: rows,
+          declarations: `${constantsWGSL}
+${statistic === 'localG' ? ADDITION_ROUNDING_ERROR_WGSL : ''}
+${statistic === 'localBivariateMoran' || statistic === 'localLeeL' ? GEOMETRIC_MEAN_WGSL : ''}`,
+          body: `${statistic === 'localG' ? 'let position = min(rowPositions[rowPositionsOffset + index], ROWS - 1u);' : ''}
+  var denominator = ${denominator};
+  ${
+    statistic === 'localG'
+      ? `let focus = compactX[compactXOffset + position];
+  let total = totals[totalsOffset + 1u];
+  // For nonnegative inputs only a dominant focus can lose its complement in
+  // total-focus. For a finite total at most two foci trigger this direct sum.
+  // Sum the other raw values directly so [2^24,1] keeps its complement of one.
+  if (focus > 0.0 && (focus >= 0.5 * total || !isFiniteFloat(total))) {
+    denominator = 0.0;
+    var correction = 0.0;
+    let analysisCount = rowPositions[rowPositionsOffset + ROWS];
+    for (var other = 0u; other < analysisCount; other++) {
+      if (other != position) {
+        let value = compactX[compactXOffset + other];
+        let next = denominator + value;
+        let error = correction + getAdditionRoundingError(denominator, value, next);
+        // Keep the correction small: it must not become an ordinary long sum
+        // of tiny observations beside a main value whose ulp is much larger.
+        let normalized = next + error;
+        correction = getAdditionRoundingError(next, error, normalized);
+        denominator = normalized;
+      }
+    }
+    denominator += correction;
+  }`
+      : ''
+  }
+  normalization[normalizationOffset + index] = denominator;
+  if (!(denominator > 0.0) || !isFiniteFloat(denominator)) {
+    observedRaw[observedRawOffset + index] = getQuietNaN(index);
+  }`
+        })
+      );
+    }
     for (const [chunkIndex, chunk] of chunkWeights.entries()) {
       const chunkKernelOptions = {
         ...kernelOptions,
@@ -1200,15 +1348,13 @@ ${accessWGSL}`,
         : undefined);
     if (observedView) {
       const count = 'rowPositions[rowPositionsOffset + ROWS]';
-      const sumSquaresX = `totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquares}u]`;
-      const sumSquaresY = `totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquaresY}u]`;
       const observedWGSL = {
-        localMoran: `multiplyBySpatialCount(raw, max(${count}, 1u) - 1u) / ${sumSquaresX}`,
-        localGeary: `multiplyBySpatialCount(raw, ${count}) / ${sumSquaresX}`,
-        localG: 'raw / (totals[totalsOffset + 1u] - compactX[compactXOffset + position])',
-        localGStar: 'raw / totals[totalsOffset + 1u]',
-        localBivariateMoran: `multiplyBySpatialCount(raw, max(${count}, 1u) - 1u) / sqrt(${sumSquaresX} * ${sumSquaresY})`,
-        localLeeL: `multiplyBySpatialCount(raw, ${count}) / sqrt(${sumSquaresX} * ${sumSquaresY})`,
+        localMoran: `multiplyBySpatialCount(raw, max(${count}, 1u) - 1u) / denominator`,
+        localGeary: `multiplyBySpatialCount(raw, ${count}) / denominator`,
+        localG: 'raw / denominator',
+        localGStar: 'raw / denominator',
+        localBivariateMoran: `multiplyBySpatialCount(raw, max(${count}, 1u) - 1u) / denominator`,
+        localLeeL: `multiplyBySpatialCount(raw, ${count}) / denominator`,
         localJoinCount: 'raw',
         localBivariateJoinCount: 'raw'
       }[statistic];
@@ -1220,14 +1366,22 @@ ${accessWGSL}`,
           bindings: [
             {name: 'observedRaw', view: observedRaw, type: 'f32', access: 'read'},
             {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
-            {name: 'compactX', view: compactX, type: 'f32', access: 'read'},
-            {name: 'totals', view: totals, type: 'f32', access: 'read'},
+            ...(normalization
+              ? [
+                  {
+                    name: 'normalization',
+                    view: normalization,
+                    type: 'f32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
             {name: 'observed', view: observedView, type: 'f32', access: 'read_write'}
           ],
           invocationCount: rows,
           declarations: constantsWGSL,
           body: `let raw = observedRaw[observedRawOffset + index];
-  let position = min(rowPositions[rowPositionsOffset + index], ROWS - 1u);
+  ${normalization ? 'let denominator = normalization[normalizationOffset + index];' : ''}
   let scaled = ${observedWGSL};
   // Canonical +0: a zero lag times a negative deviation is -0. Tested on the bits because a
   // floating-point compare may be folded by the shader compiler, which treats -0 as 0.
@@ -1345,8 +1499,7 @@ ${PERMUTATION_FLOAT_WGSL}`,
     const denominatorWGSL = sequential
       ? 'select(readValidPermutationCount() + 1u, permutationCounts[permutationCountsOffset + index], count == STOP_AFTER_EXCEEDANCES)'
       : 'readValidPermutationCount() + 1u';
-    // The exact integer comparison of the unadjusted path: only correctly rounded f32 products.
-    const exactSignificantWGSL = `significant[significantOffset + index] = select(0u, 1u, tested && f32(${numeratorWGSL}) <= readSignificanceLevel() * f32(${denominatorWGSL}));`;
+    const exactSignificantWGSL = `significant[significantOffset + index] = select(0u, 1u, tested && isPermutationRatioSignificant(${numeratorWGSL}, ${denominatorWGSL}, readSignificanceLevel()));`;
     if (props.output.significant && method === 'none') {
       classifyBindings.push({
         name: 'significant',
@@ -1363,6 +1516,7 @@ ${PERMUTATION_FLOAT_WGSL}`,
         bindings: classifyBindings,
         invocationCount: rows,
         declarations: `${getPermutationParameterWGSL(maximumPermutations)}
+${props.output.significant && method === 'none' ? PERMUTATION_SIGNIFICANCE_WGSL : ''}
 const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;${sequential ? `\nconst STOP_AFTER_EXCEEDANCES: u32 = ${stopAfter}u;` : ''}`,
         body: `let count = exceedances[exceedancesOffset + index];
   let tested = count != NOT_TESTED;
@@ -1386,7 +1540,7 @@ const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;${sequential ? `\nc
           output: {adjustedPValues}
         }).getCommandNodes(graph)
       );
-      if (props.output.significant) {
+      if (props.output.significant && method !== 'none') {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-significant`,
@@ -1423,6 +1577,38 @@ const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;${sequential ? `\nc
         )
       );
     }
+    if (!sequential && props.output.permutationCounts)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-record-counts`,
+          operation: OPERATION,
+          invocationCount: rows,
+          bindings: [
+            {name: 'exceedances', view: props.output.exceedances, type: 'u32', access: 'read'},
+            {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+            {
+              name: 'counts',
+              view: props.output.permutationCounts,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: 'counts[countsOffset + index] = select(parameters[parametersOffset + 2u], 0xffffffffu, exceedances[exceedancesOffset + index] == 0xffffffffu);'
+        })
+      );
+    nodes.push(
+      ...getPermutationCauseStatusNodes(graph, {
+        id,
+        operation: OPERATION,
+        weights,
+        parameters,
+        maximumPermutations,
+        status: props.output.status,
+        rowPositions,
+        maximumNeighbors,
+        usesSignificanceLevel: true
+      })
+    );
     return nodes;
   }
 
@@ -1466,7 +1652,7 @@ const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;${sequential ? `\nc
         : 'readValidPermutationCount() + 1u';
     const significantWGSL = adjustedPValues
       ? 'adjustedPValues[adjustedPValuesOffset + index] <= readSignificanceLevel()'
-      : `count != NOT_TESTED && f32(${unadjustedNumeratorWGSL}) <= readSignificanceLevel() * f32(${unadjustedDenominatorWGSL})`;
+      : `count != NOT_TESTED && isPermutationRatioSignificant(${unadjustedNumeratorWGSL}, ${unadjustedDenominatorWGSL}, readSignificanceLevel())`;
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-geary-mean-inputs`,
@@ -1529,6 +1715,7 @@ ${PERMUTATION_FLOAT_WGSL}`,
         ],
         invocationCount: rows,
         declarations: `${getPermutationParameterWGSL(props.maximumPermutations)}
+${adjustedPValues ? '' : PERMUTATION_SIGNIFICANCE_WGSL}
 const INVALID_POSITION: u32 = ${PERMUTATION_INVALID_POSITION}u;
 const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;
 ${PERMUTATION_FLOAT_WGSL}`,

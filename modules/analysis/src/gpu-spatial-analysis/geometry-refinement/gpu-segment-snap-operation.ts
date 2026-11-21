@@ -74,7 +74,10 @@ export class GPUSegmentSnapOperation extends GPUContributorOperation {
       props.output.status?.candidateOverflow ?? props.output.candidateOverflow;
     validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'referenceCount', props.referenceCount, 0);
-    validateCapacity(id, 'lineCount', props.lineCount);
+    validateCapacity(id, 'lineCount', props.lineCount, 0);
+    // As on the CPU form and the contributor: a line needs at least one output slot, and the
+    // capacity is checked before it sizes outputs (zero lines then allocate zero rows).
+    validateCapacity(id, 'maximumVerticesPerLine', props.maximumVerticesPerLine, 1, 0x7fffffff);
     validateSegmentSnapCompleteness(
       id,
       props.rowCount,
@@ -130,6 +133,14 @@ export class GPUSegmentSnapOperation extends GPUContributorOperation {
             }
           : {})
       },
+      emptyOutputPorts: [
+        'positionsOutput',
+        'sourceEdges',
+        'counts',
+        'validity',
+        'issueCode',
+        'candidateOverflow'
+      ],
       createContributor: getView =>
         new GPUSegmentSnap({
           id: props.id,

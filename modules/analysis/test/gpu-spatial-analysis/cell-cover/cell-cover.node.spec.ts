@@ -65,6 +65,36 @@ function createProps(
   };
 }
 
+it('GPUCellCover accepts feature counts whose capped candidate totals pass 2^32 (DGGS-103)', () => {
+  // (featureCount + 1) * (candidateCapacity + 1) used to be required below 2^32, rejecting 255
+  // features at the 2^24 maximum capacity (256 * (2^24 + 1) = 4295032832 >= 2^32 - 1) and 1,023
+  // features at 2^22 (1024 * (2^22 + 1) = 4294968320). The candidate and cost scans now saturate.
+  const device = createNullWebGPUDevice();
+  for (const [featureCount, candidateCapacity] of [
+    [255, 2 ** 24],
+    [1023, 2 ** 22],
+    [4096, 2 ** 20]
+  ]) {
+    const graph = new GPUCommandGraph(device, {id: `cell-cover-product-${featureCount}`});
+    const view = <Format extends 'uint32' | 'float32x2'>(format: Format, length: number) =>
+      createTransientView(graph, `product-${serial++}`, format, length);
+    expect((featureCount + 1) * (candidateCapacity + 1)).toBeGreaterThanOrEqual(0xffffffff);
+    const contributor = new GPUCellCover(
+      createProps(graph, {
+        positions: view('float32x2', 4 * featureCount),
+        featureOffsets: view('uint32', featureCount + 1),
+        polygonOffsets: view('uint32', featureCount + 1),
+        ringOffsets: view('uint32', featureCount + 1),
+        candidateCapacity
+      })
+    );
+    const ids = contributor.getCommandNodes(graph).map(node => node.id);
+    expect(ids, `${featureCount} features`).toContain('cell-cover-candidate-scan-saturate');
+    expect(ids, `${featureCount} features`).toContain('cell-cover-scanline-cost-scan-saturate');
+  }
+  device.destroy();
+});
+
 it('GPUCellCover validates its props', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'cell-cover-validation'});
   const view = <Format extends 'uint32' | 'uint32x2'>(format: Format, length: number) =>

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createOPTICSStatusFields,
+  getOPTICSStatusViews,
+  readOPTICSStatus
+} from './optics-status-test-utils';
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -13,10 +18,10 @@ import {
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/temporal-context';
 import {
-  getGPUSpatialClusteringParameterValues,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_NOISE,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  getGPUDBSCANParameterValues,
+  GPUDBSCAN,
+  GPU_DBSCAN_NOISE,
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {GPUOPTICS} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-optics';
 import {
@@ -26,7 +31,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   clusterSpaceTimeDBSCAN,
   orderSpaceTimeOPTICS,
@@ -34,7 +39,7 @@ import {
 } from './space-time-clustering-oracle';
 import fixture from '../../oracles/fixtures/space-time-clustering.json';
 
-const NOISE = GPU_SPATIAL_CLUSTERING_NOISE;
+const NOISE = GPU_DBSCAN_NOISE;
 const TEMPORAL_CONTEXT: GPUTemporalContext = {
   unit: 'second',
   epoch: 0n,
@@ -65,8 +70,8 @@ function createSpaceTimeHarness(
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'space-time-clustering-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: new Float32Array(GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH)
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: new Float32Array(GPU_DBSCAN_PARAMETER_LENGTH)
   });
   const outputs = {
     labels: createOutputBuffer(device, rows),
@@ -76,7 +81,7 @@ function createSpaceTimeHarness(
   };
   const graph = new GPUCommandGraph(device, {id: 'space-time-clustering-test'});
   graph.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
       ...(options.withTimes
         ? {
@@ -99,13 +104,13 @@ function createSpaceTimeHarness(
   const bounds = [-1, -1, extent, extent] as const;
   return {
     async run(
-      settings: {epsilon: number; minimumPoints: number; timeEpsilon?: number},
+      settings: {epsilon: number; minimumSamples: number; timeEpsilon?: number},
       times?: readonly number[]
     ): Promise<ClusteringRun> {
       if (times) {
         timesBuffer.write(Float32Array.from(times));
       }
-      parameterBuffer.write(getGPUSpatialClusteringParameterValues({bounds, ...settings}));
+      parameterBuffer.write(getGPUDBSCANParameterValues({bounds, ...settings}));
       for (const buffer of Object.values(outputs)) {
         buffer.write(new Uint32Array(buffer.byteLength / 4).fill(0x7f7f7f7f));
       }
@@ -146,7 +151,7 @@ it('ST-DBSCAN matches st-dbscan 0.2.3 labels and the double-precision CPU oracle
     const run = await harness.run({
       epsilon: scene.eps1,
       timeEpsilon: scene.eps2,
-      minimumPoints: scene.minimumPoints
+      minimumSamples: scene.minimumPoints
     });
     // The library's labels, produced by sklearn DBSCAN on its time-filtered distance matrix.
     expect(run.labels, scene.name).toEqual(toGPULabels(scene.labels));
@@ -175,18 +180,18 @@ it('ST-DBSCAN separates clusters that overlap in space and honors the closed tim
     }
   }
   const harness = createSpaceTimeHarness(device, {positions, times}, {withTimes: true});
-  const separate = await harness.run({epsilon: 2, timeEpsilon: 9, minimumPoints: 4});
+  const separate = await harness.run({epsilon: 2, timeEpsilon: 9, minimumSamples: 4});
   expect(separate.labels).toEqual([0, 0, 0, 0, 1, 1, 1, 1]);
   // |dt| == timeEpsilon is related: the groups merge exactly at the boundary.
-  const merged = await harness.run({epsilon: 2, timeEpsilon: 10, minimumPoints: 4});
+  const merged = await harness.run({epsilon: 2, timeEpsilon: 10, minimumSamples: 4});
   expect(merged.labels).toEqual(new Array(8).fill(0));
   // A boundary spatial distance: (5,5)-(7,5) would be exactly epsilon; here the diagonal is
   // sqrt(2) > 1.4 so only the axis neighbors relate, which is below four points.
-  const tight = await harness.run({epsilon: 1.4, timeEpsilon: 9, minimumPoints: 4});
+  const tight = await harness.run({epsilon: 1.4, timeEpsilon: 9, minimumSamples: 4});
   expect(tight.labels).toEqual(new Array(8).fill(NOISE));
   // Frame change: new times in the same graph.
   const reshuffled = await harness.run(
-    {epsilon: 2, timeEpsilon: 9, minimumPoints: 4},
+    {epsilon: 2, timeEpsilon: 9, minimumSamples: 4},
     [0, 0, 0, 0, 0, 0, 0, 0]
   );
   expect(reshuffled.labels).toEqual(new Array(8).fill(0));
@@ -199,7 +204,7 @@ it('ST-DBSCAN with a window wider than the time span equals the same graph witho
   const scene = fixture.dbscan[1];
   const plain = createSpaceTimeHarness(device, scene, {withTimes: false});
   const spaceTime = createSpaceTimeHarness(device, scene, {withTimes: true});
-  const settings = {epsilon: scene.eps1, minimumPoints: scene.minimumPoints};
+  const settings = {epsilon: scene.eps1, minimumSamples: scene.minimumPoints};
   const withoutTimes = await plain.run(settings);
   const wideWindow = await spaceTime.run({...settings, timeEpsilon: 1e6});
   expect(wideWindow).toEqual(withoutTimes);
@@ -219,16 +224,16 @@ it('ST-DBSCAN labels a point with a non-finite time as noise and never uses it a
   const positions = [5, 5, 6, 5, 5, 6, 6, 6, 5.5, 5.5];
   const times = [0, 0, 0, 0, Number.NaN];
   const harness = createSpaceTimeHarness(device, {positions, times}, {withTimes: true});
-  const run = await harness.run({epsilon: 2, timeEpsilon: 5, minimumPoints: 4});
+  const run = await harness.run({epsilon: 2, timeEpsilon: 5, minimumSamples: 4});
   expect(run.labels).toEqual([0, 0, 0, 0, NOISE]);
   expect(run.coreFlags).toEqual([1, 1, 1, 1, 0]);
   expectMatchesOracle(run, {positions, times}, [2, 5, 4]);
   // With one required point a lone row would be its own core, except that its time is NaN.
-  const single = await harness.run({epsilon: 2, timeEpsilon: 5, minimumPoints: 1});
+  const single = await harness.run({epsilon: 2, timeEpsilon: 5, minimumSamples: 1});
   expect(single.labels).toEqual([0, 0, 0, 0, NOISE]);
   expect(single.coreFlags).toEqual([1, 1, 1, 1, 0]);
   // Five related points would be needed if the NaN row counted as a neighbor.
-  const five = await harness.run({epsilon: 2, timeEpsilon: 5, minimumPoints: 5});
+  const five = await harness.run({epsilon: 2, timeEpsilon: 5, minimumSamples: 5});
   expect(five.labels).toEqual(new Array(5).fill(NOISE));
   harness.destroy();
 });
@@ -254,13 +259,13 @@ it('ST-DBSCAN reads Int64 millisecond words through GPUTimeWordsRelative', async
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'words-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues({
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues({
       bounds: [-1, -1, 100, 100],
       epsilon: scene.eps1,
       // The context unit is the millisecond, so the window is in milliseconds.
       timeEpsilon: scene.eps2 * 1000,
-      minimumPoints: scene.minimumPoints
+      minimumSamples: scene.minimumPoints
     })
   });
   const labelsBuffer = createOutputBuffer(device, rows);
@@ -278,7 +283,7 @@ it('ST-DBSCAN reads Int64 millisecond words through GPUTimeWordsRelative', async
   });
   graph.add(converter);
   graph.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rows),
       times: converter.props.output,
       temporalContext: converter.outputTemporalContext,
@@ -338,7 +343,7 @@ async function runSpaceTimeOptics(
   const reachability = output('reachability', 'float32', rows);
   const predecessors = output('predecessors', 'uint32', rows);
   const labels = output('labels', 'uint32', rows);
-  const status = output('status', 'uint32', 3);
+  const status = createOPTICSStatusFields(name => output(name, 'uint32', 1));
   graph.add(
     new GPUOPTICS({
       positions: input('positions', 'float32x2', scene.positions),
@@ -358,7 +363,7 @@ async function runSpaceTimeOptics(
         reachability: reachability.view,
         predecessors: predecessors.view,
         labels: labels.view,
-        status: status.view
+        ports: {status: getOPTICSStatusViews(status)}
       }
     })
   );
@@ -370,7 +375,7 @@ async function runSpaceTimeOptics(
     reachability: Array.from(await readFloat32(reachability.buffer, rows)),
     predecessors: await readUint32(predecessors.buffer, rows),
     labels: await readUint32(labels.buffer, rows),
-    status: await readUint32(status.buffer, 3)
+    status: await readOPTICSStatus(status)
   };
   compiled.destroy();
   for (const buffer of buffers) {
@@ -451,4 +456,22 @@ it('ST-OPTICS treats a row with a non-finite time as invalid, like a non-finite 
   expect(run.labels).toEqual(toGPULabels(oracle.labels));
   expect(run.coreDistances[3]).toBe(Infinity);
   expect(run.reachability[3]).toBe(Infinity);
+});
+
+it('clusters two coincident timed events with an explicit positive time window', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createSpaceTimeHarness(
+    device,
+    {positions: [0, 0, 0, 0], times: [0, 0]},
+    {withTimes: true}
+  );
+  try {
+    const result = await harness.run({epsilon: 1, minimumSamples: 2, timeEpsilon: 1});
+    expect(result.labels).toEqual([0, 0]);
+    expect(result.coreFlags).toEqual([1, 1]);
+    expect(result.clusterCount).toBe(1);
+  } finally {
+    harness.destroy();
+  }
 });

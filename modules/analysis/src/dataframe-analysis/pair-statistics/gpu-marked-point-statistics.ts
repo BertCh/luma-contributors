@@ -170,29 +170,57 @@ export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
         PAIR_STATISTICS_PARTIAL_ENTRY_MAXIMUM
       );
     }
-    if (Boolean(props.types) !== Boolean(props.typePair))
-      throw new Error(`${this.id}: types and typePair must be supplied together`);
-    if (props.typePair?.some(value => !Number.isInteger(value) || value < 0 || value > 0xffffffff))
-      throw new Error(`${this.id}: invalid category identifier`);
-    if (props.edgeCorrection && !['translation', 'none'].includes(props.edgeCorrection))
-      throw new Error(`${this.id}: unknown edge correction`);
+    validateRequirement(
+      `${this.id}:`,
+      Boolean(props.types) === Boolean(props.typePair),
+      'types and typePair must be supplied together'
+    );
+    if (props.typePair) {
+      validateRequirement(
+        `${this.id}:`,
+        props.typePair.length === 2,
+        `typePair must hold exactly 2 category identifiers, got ${props.typePair.length}`
+      );
+      for (const index of [0, 1] as const)
+        validateCapacity(`${this.id}:`, `typePair[${index}]`, props.typePair[index], 0, 0xffffffff);
+    }
+    validateRequirement(
+      `${this.id}:`,
+      !props.edgeCorrection || ['translation', 'none'].includes(props.edgeCorrection),
+      "edgeCorrection must be 'translation' or 'none'"
+    );
     for (const binding of getBindings(props)) {
       validateSinglePackedView(
         binding.view,
         [
           binding.name === 'positions' ? 'float32x2' : binding.type === 'u32' ? 'uint32' : 'float32'
         ],
-        this.id
+        `${this.id}: ${binding.name}`
       );
-      if (binding.name !== 'parameters' && binding.view.length !== rows)
-        throw new Error(`${this.id}: row count mismatch`);
+      if (binding.name !== 'parameters')
+        validateRequirement(
+          `${this.id}:`,
+          binding.view.length === rows,
+          `${binding.name} length ${binding.view.length} must equal positions length (${rows})`
+        );
     }
-    if (props.parameters.length < 6)
-      throw new Error(`${this.id}: six parameter values are required`);
+    validateRequirement(
+      `${this.id}:`,
+      props.parameters.length >= 6,
+      `parameters length ${props.parameters.length} must be at least 6`
+    );
     for (const [name, view] of Object.entries(props.output)) {
-      validateSinglePackedView(view, [name === 'statistics' ? 'float32' : 'uint32'], this.id);
-      if (view.length !== props.radiusCount * (name === 'statistics' ? 4 : 1))
-        throw new Error(`${this.id}: output size mismatch`);
+      validateSinglePackedView(
+        view,
+        [name === 'statistics' ? 'float32' : 'uint32'],
+        `${this.id}: output.${name}`
+      );
+      const columns = name === 'statistics' ? 4 : 1;
+      validateRequirement(
+        `${this.id}:`,
+        view.length === props.radiusCount * columns,
+        `output.${name} length ${view.length} must equal radiusCount x ${columns} (${props.radiusCount * columns})`
+      );
     }
     validateDisjointWritableViews(this.id, props.output);
     validateGraphOutputsDisjointFromInputs(

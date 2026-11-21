@@ -52,6 +52,121 @@ function render(kind: Parameters<typeof makeV8ResultRecord>[0] = 'polygons', opt
 }
 
 describe('result view', () => {
+  test('K1 playback retains active-prefix changes with identical point coordinates', () => {
+    const record = makeWindowRecord();
+    record.axes.keySpaces = [{id: 'cells', label: 'points', size: 12}];
+    record.captures!.snapshots = [8, 12].flatMap((count, iteration) => [
+      makeWindowCapture({
+        id: `points-${iteration}`,
+        name: 'output',
+        role: 'output',
+        iteration,
+        meaning: 'first:8',
+        components: 2,
+        values: [0, 0, 1, 1],
+        geometry: {kind: 'points', coordinateModel: 'projected', countCapture: 'count'}
+      }),
+      makeWindowCapture({id: `count-${iteration}`, name: 'count', iteration, values: [count]})
+    ]);
+    const context = createViewContext(record);
+    const model = buildResultViewModel(context);
+    expect(model.frames.map(frame => frame.count)).toEqual([8, 12]);
+    expect(model.frames.map(frame => frame.points)).toEqual([
+      [],
+      [
+        [0, 0],
+        [1, 1]
+      ]
+    ]);
+    expect(
+      findViewNodes(
+        renderResultView(model, context),
+        node => node.attributes['class'] === 'cv-frame'
+      ).map(frame =>
+        findViewNodes(
+          frame,
+          node => node.tag === 'circle' && node.attributes['data-action'] === 'pick'
+        ).map(point => point.attributes['data-key'])
+      )
+    ).toEqual([[], [8, 9]]);
+    // A repeated effective prefix still yields a static result.
+    record.captures!.snapshots[1].values = [12];
+    expect(buildResultViewModel(context).frames).toEqual([]);
+    // A shifted absolute window changes pick identities even with equal counts/coordinates.
+    record.captures!.snapshots[2].meaning = 'first:9';
+    const shifted = buildResultViewModel(context);
+    expect(shifted.frames.map(frame => frame.count)).toEqual([12, 12]);
+    expect(
+      findViewNodes(
+        renderResultView(shifted, context),
+        node => node.attributes['class'] === 'cv-frame'
+      ).map(frame =>
+        findViewNodes(
+          frame,
+          node => node.tag === 'circle' && node.attributes['data-action'] === 'pick'
+        ).map(point => point.attributes['data-key'])
+      )
+    ).toEqual([
+      [8, 9],
+      [9, 10]
+    ]);
+  });
+  test.each([0, 8])('R4 counted point scales ignore spare values at window start %s', first => {
+    const renderTail = (tail: number) => {
+      const record = makeV8ResultRecord();
+      const valueFirst = Math.max(0, first - 1);
+      record.axes.keySpaces = [{id: 'point', label: 'points', size: first + 5}];
+      record.captures!.snapshots = [
+        makeV8Capture('points', [0, 0, 1, 1, 100, 100, 200, 200, 300, 300], {
+          role: 'output',
+          keySpace: 'point',
+          meaning: `first:${first}`,
+          components: 2,
+          geometry: {
+            kind: 'points',
+            coordinateModel: 'projected',
+            countCapture: 'count',
+            valuesCapture: 'scores'
+          }
+        }),
+        // A wider value window checks intersection by absolute key, rather than prefix slicing.
+        makeV8Capture(
+          'scores',
+          [...Array(first - valueFirst).fill(tail), 10, 20, tail, tail, tail],
+          {
+            keySpace: 'point',
+            meaning: `first:${valueFirst}`
+          }
+        ),
+        makeV8Capture('count', [first + 2])
+      ];
+      const context = createViewContext(record);
+      const model = buildResultViewModel(context);
+      const tree = renderResultView(model, context);
+      expect(model.output.count).toBe(first + 2);
+      expect(model.output.points).toEqual([
+        [0, 0],
+        [1, 1]
+      ]);
+      return {
+        domain: model.output.scale?.domain,
+        fills: findViewNodes(
+          tree,
+          node => node.tag === 'circle' && node.attributes['data-action'] === 'pick'
+        ).map(node => node.attributes['fill']),
+        legend: findViewNodes(tree, node => node.attributes['class'] === 'cv-legend').map(
+          viewNodeToHtml
+        )
+      };
+    };
+    const negative = renderTail(-100);
+    expect(negative.domain).toEqual([10, 20]);
+    expect(negative.fills).toHaveLength(2);
+    const colors = getCardPaletteColors('seq', 'light');
+    expect(negative.fills).toEqual([colors[0], colors[4]]);
+    expect(negative.legend).toHaveLength(1);
+    expect(renderTail(100)).toEqual(negative);
+  });
   test('K1 a partial point window retains the full published count and absolute picks', () => {
     const record = makeWindowRecord();
     record.axes.keySpaces = [{id: 'cells', label: 'points', size: 12}];
@@ -657,7 +772,9 @@ describe('card result grammar', () => {
   });
   test('shared keys or column meanings produce a six-row table with output columns and missing cells', () => {
     const record = makeY2Arrays(true);
+    record.captures!.snapshots[0].role = 'output';
     const full = renderCard(record);
+    expect(full.model.grammar).toBe('table');
     expect(full.html).toContain('<table class="cv-table" data-key-space="rows">');
     expect(full.html).toContain('<th class="cv-col--output"');
     expect(full.html).toContain('<td class="cv-col--output"');
@@ -671,7 +788,7 @@ describe('card result grammar', () => {
     const thumbnail = renderCard(record, {options: {size: 'thumbnail'}});
     expect(thumbnail.html).not.toContain('<table');
     expect(thumbnail.html).not.toContain('<text');
-    expect(cardMarks(thumbnail.tree, 'output')).toHaveLength(4);
+    expect(cardMarks(thumbnail.tree, 'output')).toHaveLength(10);
     expect(
       cardMarks(thumbnail.tree, 'output').every(
         mark => mark.attributes['fill'] === CARD_COLORS.light['output']

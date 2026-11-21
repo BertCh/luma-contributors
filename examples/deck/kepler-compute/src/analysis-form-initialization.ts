@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useState, useSyncExternalStore, type SetStateAction} from 'react';
-import {resolveGPUAnalysisDefault} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {resolveGPUAnalysisDefault} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   analysisDatasetContext,
   getAnalysisDatasetRoles,

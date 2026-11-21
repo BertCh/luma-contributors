@@ -14,7 +14,11 @@ export type GPUNetworkIsochronesSettings = {
    * pixels). A cost exactly on a break is within it, the rule of `GPUNetworkReachability` bands.
    */
   breakCount: number;
-  /** Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`. */
+  /**
+   * Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`.
+   * The packed float32 endpoints must be finite with a positive width and height (an extent of
+   * width 0.25 at 1e7 rounds to zero width and is rejected).
+   */
   extent: readonly [number, number, number, number];
   /**
    * Walking buffer radius in the context's length unit. Pixels within it of an edge sample get that
@@ -71,15 +75,36 @@ export function getGPUNetworkIsochronesParameterValues(
   if (![minX, minY, maxX, maxY].every(Number.isFinite) || maxX <= minX || maxY <= minY) {
     throw new Error('GPUNetworkIsochrones extent must be finite with maxX > minX and maxY > minY');
   }
+  // The shader reads float32 uniforms: a JavaScript extent that is valid can still round to a
+  // zero-width span or overflow to infinity once packed, so validate the packed values too.
+  const packedExtent = [minX, minY, maxX, maxY].map(Math.fround);
+  const packedWidth = Math.fround(packedExtent[2] - packedExtent[0]);
+  const packedHeight = Math.fround(packedExtent[3] - packedExtent[1]);
+  if (
+    !packedExtent.every(Number.isFinite) ||
+    !(packedWidth > 0) ||
+    !(packedHeight > 0) ||
+    !Number.isFinite(packedWidth) ||
+    !Number.isFinite(packedHeight)
+  ) {
+    throw new Error(
+      `GPUNetworkIsochrones extent [${settings.extent.join(', ')}] becomes ` +
+        `[${packedExtent.join(', ')}] as float32; it must stay finite with a positive float32 width and height`
+    );
+  }
   const bufferRadius = settings.bufferRadius ?? 0;
   const walkCostPerUnit = settings.walkCostPerUnit ?? 0;
-  if (!(bufferRadius >= 0) || !Number.isFinite(bufferRadius)) {
-    throw new Error('GPUNetworkIsochrones bufferRadius must be a non-negative finite number');
+  if (!(bufferRadius >= 0) || !Number.isFinite(Math.fround(bufferRadius))) {
+    throw new Error(
+      'GPUNetworkIsochrones bufferRadius must be a non-negative number finite as float32'
+    );
   }
-  if (!(walkCostPerUnit >= 0) || !Number.isFinite(walkCostPerUnit)) {
-    throw new Error('GPUNetworkIsochrones walkCostPerUnit must be a non-negative finite number');
+  if (!(walkCostPerUnit >= 0) || !Number.isFinite(Math.fround(walkCostPerUnit))) {
+    throw new Error(
+      'GPUNetworkIsochrones walkCostPerUnit must be a non-negative number finite as float32'
+    );
   }
-  target.fill(0);
+  target.fill(0, 0, GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH);
   target[0] = breakCount;
   target[1] = minX;
   target[2] = minY;

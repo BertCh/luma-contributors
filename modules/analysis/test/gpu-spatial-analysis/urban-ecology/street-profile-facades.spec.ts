@@ -5,7 +5,8 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {describe, expect, it} from 'vitest';
 import {addStreetProfilesRecipe} from '../../../src/gpu-spatial-analysis/urban-morphology/index';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {expectUrbanMissingValues} from './urban-ecology-assertions';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
 
 // Exact facade lengths of `addStreetProfilesRecipe` at coordinates that are not small integers.
@@ -20,6 +21,7 @@ type FacadeCase = {
   /** Building row of each segment. */
   owners: number[];
   maximumDistance: number;
+  buildingCount?: number;
 };
 
 type Motion = {angle?: number; cosine?: number; sine?: number; scale?: number; offset?: number[]};
@@ -58,11 +60,11 @@ async function getFacades(
   const fixture = new RecipeTestFixture(device, `street-facades-${obstacleIndex}`);
   try {
     const segmentCount = facadeCase.segments.length / 4;
-    const buildingCount = Math.max(...facadeCase.owners) + 1;
+    const buildingCount = facadeCase.buildingCount ?? Math.max(...facadeCase.owners) + 1;
     const [startX, startY, endX, endY] = facadeCase.street;
     const lengths = fixture.output('facade-lengths', 'float32x2', segmentCount);
     const frontage = fixture.output('facade-frontage', 'float32x2', buildingCount);
-    addStreetProfilesRecipe(fixture.graph, {
+    const result = addStreetProfilesRecipe(fixture.graph, {
       positions: fixture.input(
         'positions',
         new Float32Array([0.5 * (startX + endX), 0.5 * (startY + endY)]),
@@ -99,6 +101,14 @@ async function getFacades(
       obstacleIndex,
       output: {facadeLengths: lengths.view, facadeFrontage: frontage.view}
     });
+    expect(result.facades!.lengths).toBe(lengths.view);
+    expect(result.facades!.frontage).toBe(frontage.view);
+    expect((result.facades!.lengths.length * result.facades!.lengths.rowByteLength) / 4).toBe(
+      2 * segmentCount
+    );
+    expect((result.facades!.frontage.length * result.facades!.frontage.rowByteLength) / 4).toBe(
+      2 * buildingCount
+    );
     fixture.run();
     return {
       lengths: await fixture.readFloat32(lengths, 2 * segmentCount),
@@ -112,6 +122,7 @@ async function getFacades(
 function expectRelativelyClose(actual: number[], expected: number[], relative = 1e-4) {
   expect(actual.length).toBe(expected.length);
   expected.forEach((value, index) => {
+    expect(Number.isFinite(actual[index])).toBe(true);
     expect(
       Math.abs(actual[index] - value),
       `value ${index}: ${actual[index]} against ${value}`
@@ -324,4 +335,24 @@ describe.each(['brute-force', 'bvh'] as const)('exact facade lengths, %s', obsta
     );
     expectRelativelyClose(clear.lengths, [8, 0, 0, 8]);
   });
+});
+
+// URB-104: two unobstructed four-unit walls, one on each side of an eight-unit street.
+// Each wall is wholly in the corridor, so its arc length is exactly 4.
+it.each([
+  'brute-force',
+  'bvh'
+] as const)('URB-104 invalid segment ownership suppresses every facade and building summary (%s)', async obstacleIndex => {
+  const geometry = {
+    street: [-4, 0, 4, 0],
+    segments: [-2, 2, 2, 2, -2, -3, 2, -3],
+    maximumDistance: 5,
+    buildingCount: 2
+  };
+  const valid = await getFacades({...geometry, owners: [0, 1]}, obstacleIndex);
+  expectRelativelyClose(valid.lengths, [4, 0, 0, 4]);
+  expectRelativelyClose(valid.frontage, [4, 0, 0, 4]);
+  const invalid = await getFacades({...geometry, owners: [0, 2]}, obstacleIndex);
+  expectUrbanMissingValues(invalid.lengths, 4);
+  expectUrbanMissingValues(invalid.frontage, 4);
 });

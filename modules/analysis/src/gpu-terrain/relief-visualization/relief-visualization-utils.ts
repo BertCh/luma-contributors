@@ -415,7 +415,8 @@ export function createReliefMeanFilterSetup<Parameters>(
 
 /**
  * Builds the single kernel of the O(1)-per-pixel mean filter over an exact summed-area table
- * (without squares) of elevations quantized to integers `q = round((z - anchor) / quantum)`. Output and
+ * (without squares) of elevations quantized to integers `q = round(z / quantum) - anchor / quantum`
+ * (formed exactly in 64 bits; the anchor is the quantum-snapped first valid elevation). Output and
  * window semantics are those of {@link getReliefMeanFilterNodes}.
  *
  * Edge replication. RVT pads the grid with `numpy.pad(mode='edge')`, so the clamped window gives
@@ -432,16 +433,19 @@ export function createReliefMeanFilterSetup<Parameters>(
  * integers. The deviation needs no large absolute value: with `D = N * q_c - S` formed exactly in
  * 64 bits (`q_c` is the centre's quantized value, `|D| < 2^63` by the radius bound),
  *
- *     z - mean = ((z_c - anchor) - q_c * quantum) + quantum * D / N.
+ *     z - mean = (z_c - round(z_c / quantum) * quantum) + quantum * D / N.
  *
  * The first term is the centre's own quantization residual: `z_c * 2^-k` scaling is exact in
- * float32, so it is formed without rounding. `D` converts to float32 once (relative error
+ * float32, so it is formed without rounding. Neither term depends on the anchor, so a fully
+ * haloed window gives the same result in a whole-raster run and in a cropped run. `D` converts to float32 once (relative error
  * `2^-24`), then one division and one multiplication. The result differs from the float64 RVT
  * mean filter by at most `quantum / 2` (quantization of the window samples; zero when every
  * `|z| >= 128` at the default quantum) plus about three float32 ULP of the deviation itself, with
  * no dependence on the absolute elevation magnitude (the subtraction additionally rounds at the
- * relief-span scale). Elevations with `|z - anchor| >= 2^31 * quantum` count as
- * invalid, like the topographic-position table.
+ * relief-span scale). The GPU selects the first finite valid quantum-snapped anchor and forms
+ * quantized integer offsets by exact 64-bit subtraction. Inclusive offsets
+ * `[-2147483520, 2147483520]` are accepted (`±32767.998046875` elevation offsets at the default
+ * quantum); absolute `|z / quantum| >= 2^62` is invalid, like the topographic-position table.
  *
  * @internal
  */
@@ -463,10 +467,9 @@ export function getReliefSummedAreaFilterNodes<Parameters>(
   const {width, height, radius, radiusSlot, groundRadius} = props;
   const radiusX = groundRadius ? 'radiusX' : 'radius';
   const radiusY = groundRadius ? 'radiusY' : 'radius';
+  // The table's anchor is not bound: centre and window values are anchor-shifted alike, so the
+  // deviation reads only absolute quantities and cannot depend on a distant first valid cell.
   const bindings: WGSLKernelBinding[] = [
-    ...(props.table.anchor
-      ? [{name: 'anchor', view: props.table.anchor, type: 'f32' as const, access: 'read' as const}]
-      : []),
     {name: 'lowTable', view: props.table.lowTable, type: 'u32', access: 'read'},
     {name: 'highTable', view: props.table.highTable, type: 'u32', access: 'read'},
     {name: 'values', view: props.values, type: 'f32', access: 'read'},
@@ -576,8 +579,10 @@ fn addWeighted(total: TerrainBoxSums, strip: TerrainBoxSums, weight: u32) -> Ter
       centreTotal = negate64(centreTotal);
     }
     let difference = subtract64(centreTotal, total.sum);
-    // The centre's own quantization residual is exact: scaling by a power of two does not round.
-    let residual = ((values[valuesOffset + index]${props.table.anchor ? ' - anchor[anchorOffset]' : ''}) * INVERSE_QUANTUM - f32(quantized)) * QUANTUM;
+    // The centre's own quantization residual is exact: scaling by a power of two does not round,
+    // and the table holds round(z / quantum) shifted by the lattice anchor.
+    let scaledCentre = values[valuesOffset + index] * INVERSE_QUANTUM;
+    let residual = (scaledCentre - round(scaledCentre)) * QUANTUM;
     deviationValue = residual + signed64ToFloat(difference) / f32(total.count) * QUANTUM;
     ${props.scale ? `deviationValue = deviationValue * ${scaleSettingsName}[${scaleSettingsName}Offset + ${props.scale.index}u];` : ''}
   }

@@ -302,6 +302,15 @@ function createEdgeScene(): Scene {
     -62_167_219_200_000
   ].map(BigInt);
   edges.push(2n ** 63n - 1n, -(2n ** 63n), 2n ** 62n, -(2n ** 62n), 1_000_000_000n * 86_400_000n);
+  // The supported day interval is [-1e9, 1e9] after flooring (DPC-114): -1e9 days exactly is
+  // valid, one millisecond earlier floors to day -1e9 - 1 and is invalid; the last millisecond of
+  // day 1e9 is valid and the next one is invalid.
+  edges.push(
+    -1_000_000_000n * 86_400_000n,
+    -1_000_000_000n * 86_400_000n - 1n,
+    1_000_000_001n * 86_400_000n - 1n,
+    1_000_000_001n * 86_400_000n
+  );
   return {timestamps: BigInt64Array.from(edges)};
 }
 

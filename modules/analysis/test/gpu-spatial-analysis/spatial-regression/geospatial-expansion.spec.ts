@@ -682,7 +682,7 @@ it('statistical expansion matches independent esda, mgwr, statsmodels and spreg 
     weights,
     values: response,
     parameters: input('float32', Array.from(getGPUSpatialAutocorrelationParameterValues({}))),
-    outputs: {losh: recipeLosh.view, loshStatus: recipeStatus.view}
+    output: {losh: recipeLosh.view, loshStatus: recipeStatus.view}
   });
   expect(recipe.inference.losh).toBe('descriptive-only');
   context.run();

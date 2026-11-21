@@ -65,11 +65,10 @@ test('every extra binding is runnable, defaults normalize and entries report the
     ).not.toThrow();
     expect(binding.declaredBehavior.length).toBeGreaterThan(0);
     for (const name of binding.contributorNames) {
-      const entry = entries.find(candidate => candidate.contributorName === name);
+      const entry = entries.find(candidate => candidate.identity.exportName === name);
       expect(entry?.runnable, name).toBe('catalog-binding');
       expect(entry?.bindingIds).toContain(binding.id);
-      // Fleet dwell now dispatches the polygon join; network disruption dispatches the cost matrix.
-      // Those GPU-only curated paths take precedence over this binding's CPU mirror.
+      // Fleet dwell and network disruption add GPU routes alongside the CPU reference bindings.
       const curatedBindingId =
         name === 'GPUPointInPolygonJoin'
           ? 'curated-fleet-dwell'
@@ -78,7 +77,7 @@ test('every extra binding is runnable, defaults normalize and entries report the
             : undefined;
       if (curatedBindingId) {
         expect(entry?.bindingIds).toContain(curatedBindingId);
-        expect(entry?.engine, name).toBe('gpu');
+        expect(entry?.engine, name).toBe('gpu-or-cpu');
       } else if (entry?.engine !== 'gpu-or-cpu') {
         // Other PLATFORM4 and PLATFORM5 dispatches also provide a CPU path.
         expect(entry?.engine, name).toBe(getCatalogBinding(binding.id)?.engine);

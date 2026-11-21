@@ -7,18 +7,22 @@ import {
   GPUCommandGraph,
   DrawCommandBuffer,
   GPUCompaction,
+  createTransientView,
   GPUElementwise,
   GPUGather,
   type CompiledGPUCommandGraph
 } from '@luma.gl/graph/gpu-core';
 import {
+  getRasterMetadataFromPointCloudGrid,
   GPUPointCloudFeatures,
+  GPUPointCloudCoverageValidity,
   GPUPointCloudGround,
   GPUPointCloudHeight,
   GPUPointCloudNeighborhoods,
   GPUPointCloudStatisticalFilter,
   GPUPointCloudSurfaces
 } from '@luma-contributors/analysis/pointcloud-analysis';
+import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 import {GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
@@ -28,9 +32,13 @@ import type {SceneContext, SceneInstance} from '../scene';
 import type {LidarGroundOptions} from './lidar-ground.scene';
 import {
   createGroundSeedCoverageNode,
+  createFeatureDisplayClassesNode,
+  addLidarFeatureSummary,
+  getLidarFilterSupportText,
   createSupportedGroundClassesNode,
   createGroundDisplayClassesNode,
   LIDAR_GROUND_DISPLAY_CATEGORIES,
+  LIDAR_FEATURE_DISPLAY_CATEGORIES,
   LIDAR_GROUND_GRID,
   LIDAR_GROUND_RADII
 } from './point-cloud-ground-support';
@@ -120,6 +128,9 @@ export async function createLidarGround(
   const eigenvaluesBuffer = resources.createBuffer('eigenvalues', count * 12);
   const shapesBuffer = resources.createBuffer('shapes', count * 12);
   const featureStatusBuffer = resources.createBuffer('feature-status', count * 4);
+  const featureSummaryBuffer = resources.createBuffer('feature-summary', 20);
+  const featureDisplayBuffer = resources.createBuffer('feature-display', count * 4);
+  const thresholdCompleteBuffer = resources.createBuffer('threshold-complete', 4);
   const representativeBuffer = resources.createBuffer('voxel-representatives', VOXEL_COUNT * 4);
   const voxelCountsBuffer = resources.createBuffer('voxel-counts', VOXEL_COUNT * 4);
   const voxelFlagOnesBuffer = resources.createBuffer(
@@ -346,8 +357,19 @@ export async function createLidarGround(
       id: 'lidar-ground-statistical-filter',
       squaredDistances: neighborhoodDistances,
       counts: neighborhoodCounts,
+      neighborhoodStatus,
       capacity: NEIGHBOR_CAPACITY,
-      output: {meanDistances, validity: inliers}
+      output: {
+        meanDistances,
+        validity: inliers,
+        thresholdComplete: importGraphBuffer(
+          graph,
+          'threshold-complete',
+          thresholdCompleteBuffer,
+          'uint32',
+          1
+        )
+      }
     })
   );
   graph.add(
@@ -414,14 +436,33 @@ export async function createLidarGround(
       output: {terrain, surface, canopy, coverage}
     })
   );
+  const terrainValidity = createTransientView(graph, 'terrain-validity', 'uint32', surfaceCount);
+  graph.add(
+    new GPUPointCloudCoverageValidity({
+      id: 'lidar-ground-raster-validity',
+      coverage,
+      output: {
+        surfaceValidity: createTransientView(graph, 'surface-validity', 'uint32', surfaceCount),
+        terrainValidity,
+        canopyValidity: createTransientView(graph, 'canopy-validity', 'uint32', surfaceCount)
+      }
+    })
+  );
+  const terrainBand = makeGPURasterBand(terrain, getRasterMetadataFromPointCloudGrid(RASTER_GRID), {
+    id: 'lidar-ground-terrain',
+    validity: terrainValidity
+  });
+  if (!terrainBand.validity) {
+    throw new Error('lidar-ground terrain band must carry ground validity');
+  }
   graph.add(
     new GPUPointCloudHeight({
       id: 'lidar-ground-height',
       positions: positionsView,
       grid: RASTER_GRID,
-      terrain,
-      coverage,
-      coverageBit: 2,
+      terrain: terrainBand.storage.values,
+      coverage: terrainBand.validity,
+      coverageBit: 1,
       output: {heights, status: heightStatus}
     })
   );
@@ -431,6 +472,7 @@ export async function createLidarGround(
       positions: positionsView,
       indices: neighborhoodIndices,
       counts: neighborhoodCounts,
+      neighborhoodStatus,
       capacity: NEIGHBOR_CAPACITY,
       output: {
         normals: featureNormals,
@@ -439,6 +481,13 @@ export async function createLidarGround(
         status: featureStatus
       }
     })
+  );
+  graph.add(
+    createFeatureDisplayClassesNode(
+      graph,
+      featureStatus,
+      importGraphBuffer(graph, 'feature-display', featureDisplayBuffer, 'uint32', count)
+    )
   );
   graph.add(
     new GPUPointCloudVoxelDownsample({
@@ -487,17 +536,44 @@ export async function createLidarGround(
     })
   );
 
+  addLidarFeatureSummary(
+    graph,
+    featureStatus,
+    importGraphBuffer(graph, 'feature-summary', featureSummaryBuffer, 'uint32', 5)
+  );
   const compiled = resources.track(await graph.compileAsync());
   let analysisDirty = true;
+  let filterThresholdComplete = false;
   const summaryReader = new SummaryReader(
     resources,
     'lidar-ground-voxel-count',
-    [{buffer: voxelDrawCommands.buffer, size: 8}],
+    [
+      {buffer: voxelDrawCommands.buffer, size: 8},
+      {buffer: featureSummaryBuffer, size: 20},
+      {buffer: thresholdCompleteBuffer, size: 4}
+    ],
     bytes => {
       ctx.setReadout('voxelPoints', new DataView(bytes).getUint32(4, true));
+      const [incomplete, usableIncomplete, truncated, failed, degenerate] = new Uint32Array(
+        bytes,
+        8,
+        5
+      );
+      ctx.setReadout(
+        'featureSupport',
+        `${incomplete} incomplete-support rows (${usableIncomplete} usable fits); ${truncated} truncated; ${failed} failed eigensolves; ${degenerate} degenerate. Halo completeness is not certified.`
+      );
+      filterThresholdComplete = new Uint32Array(bytes, 28, 1)[0] !== 0;
+      ctx.setReadout('filterSupport', getLidarFilterSupportText(filterThresholdComplete));
+      ctx.requestLayers();
     }
   );
   ctx.setReadout('samplePoints', count);
+  ctx.setReadout(
+    'featureSupport',
+    'Feature diagnostics pending; halo completeness is not certified'
+  );
+  ctx.setReadout('filterSupport', 'Filter diagnostics pending');
   const origin = [dataset.defaultOrigin[0], dataset.defaultOrigin[1], 0] as [
     number,
     number,
@@ -531,21 +607,23 @@ export async function createLidarGround(
         ];
       }
       if (view === 'outliers')
-        return [
-          new SpatialAnalysisPointLayer({
-            id: 'lidar-ground-statistical-support',
-            positions: position2DBuffer,
-            values: inlierBuffer,
-            valueFormat: 'uint32',
-            colormap: 'category',
-            palette: [
-              [204, 109, 97, 255],
-              [150, 211, 166, 255]
-            ],
-            instanceCount: count,
-            ...base
-          })
-        ];
+        return filterThresholdComplete
+          ? [
+              new SpatialAnalysisPointLayer({
+                id: 'lidar-ground-statistical-support',
+                positions: position2DBuffer,
+                values: inlierBuffer,
+                valueFormat: 'uint32',
+                colormap: 'category',
+                palette: [
+                  [204, 109, 97, 255],
+                  [150, 211, 166, 255]
+                ],
+                instanceCount: count,
+                ...base
+              })
+            ]
+          : [];
       if (view === 'ground')
         return [
           new SpatialAnalysisPointLayer({
@@ -590,11 +668,10 @@ export async function createLidarGround(
           new SpatialAnalysisPointLayer({
             id: 'lidar-ground-feature-support',
             positions: position2DBuffer,
-            values: featureStatusBuffer,
+            values: featureDisplayBuffer,
             valueFormat: 'uint32',
-            colormap: 'mask',
-            color: [233, 181, 101, 255],
-            noDataColor: [150, 211, 166, 255],
+            colormap: 'category',
+            palette: LIDAR_FEATURE_DISPLAY_CATEGORIES.map(({color}) => [...color, 255] as const),
             instanceCount: count,
             ...base
           })

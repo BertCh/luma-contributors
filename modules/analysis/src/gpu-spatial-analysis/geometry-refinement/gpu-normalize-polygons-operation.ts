@@ -47,6 +47,7 @@ export class GPUNormalizePolygonsOperation extends GPUContributorOperation {
           length: props.polygonCount + 1
         }
       },
+      emptyOutputPorts: ['positionsOutput'],
       createContributor: getView =>
         new GPUNormalizePolygons({
           id: props.id,

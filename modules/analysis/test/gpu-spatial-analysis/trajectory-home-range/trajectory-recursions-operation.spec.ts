@@ -10,7 +10,7 @@ import {
   type TrajectoryRecursionsOperationProps
 } from '../../../src/gpu-spatial-analysis/trajectory-recursion/gpu-trajectory-recursions-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 for (const scenario of ['ordinary', 'singleton', 'words'] as const) {
   it(`recursion operations compare every output: ${scenario}`, async () => {
@@ -121,6 +121,44 @@ it('recursion review regression compares every output: clamped-offset', async ()
   // Every expected time here is an exact integer, so use zero tolerance for every output.
   for (const output of outputs) {
     expect(Array.from(cpu[output])).toEqual(expected[output]);
-    expect(Array.from(gpu[output])).toEqual(Array.from(cpu[output]));
+    expect(Array.from(gpu[output])).toEqual(expected[output]);
   }
 });
+
+for (const offsets of [[0], [0, 0]]) {
+  it(`recursion operations execute zero fixes with offsets ${offsets}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    for (const Operation of [GPUTrajectoryRecursionsOperation, CPUTrajectoryRecursionsOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          positions: {format: 'float32x2', values: new Float32Array()},
+          timestamps: {format: 'float32', values: new Float32Array()},
+          offsets: {format: 'uint32', values: Uint32Array.from(offsets)},
+          radii: {format: 'float32', values: Float32Array.of(1)}
+        },
+        operations: [
+          new Operation({
+            positions: 'positions',
+            timestamps: 'timestamps',
+            trackOffsets: 'offsets',
+            radii: 'radii',
+            rowCount: 0,
+            radiusCount: 1,
+            output: {
+              revisits: 'revisits',
+              residenceTimes: 'residence',
+              firstPassageTimes: 'passage',
+              firstPassageCensored: 'censored',
+              status: {candidateOverflow: 'loss'}
+            }
+          })
+        ],
+        outputs: ['revisits', 'residence', 'passage', 'censored', 'loss']
+      });
+      for (const port of ['revisits', 'residence', 'passage', 'censored'])
+        expect(Array.from(result[port])).toEqual([]);
+      expect(Array.from(result['loss'])).toEqual([0]);
+    }
+  });
+}

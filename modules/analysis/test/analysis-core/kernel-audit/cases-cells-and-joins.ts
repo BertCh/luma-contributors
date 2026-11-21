@@ -469,7 +469,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
         build: context => {
           const {view} = context;
           context.graph.add(
-            new GPUCellCover({
+            context.construct(GPUCellCover, {
               family: 'quadbin',
               resolution: GPU_CELL_MAXIMUM_RESOLUTION.quadbin,
               containment,
@@ -508,7 +508,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
     build: context => {
       const {view} = context;
       context.graph.add(
-        new GPUCellCover({
+        context.construct(GPUCellCover, {
           family: 'quadbin',
           resolution: GPU_CELL_MAXIMUM_RESOLUTION.quadbin,
           containment: 'full',
@@ -540,7 +540,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       build: context => {
         const {view} = context;
         context.graph.add(
-          new GPUCellCover({
+          context.construct(GPUCellCover, {
             family: 'h3',
             resolution: GPU_CELL_MAXIMUM_RESOLUTION.h3,
             containment: 'center',
@@ -578,7 +578,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           const vertices = maximumRows(16);
           const capacity = maximumRows(8);
           context.graph.add(
-            new GPUCellCover({
+            context.construct(GPUCellCover, {
               family,
               resolution: GPU_CELL_MAXIMUM_RESOLUTION[family],
               ...polygons(context, 100, vertices),
@@ -611,7 +611,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
     build: context => {
       const {view, maximumRows} = context;
       context.graph.add(
-        new GPUCellCover({
+        context.construct(GPUCellCover, {
           family: 'quadbin',
           resolution: 10,
           ...polygons(context, 100, maximumRows(16)),
@@ -642,7 +642,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
         const {view} = context;
         const candidateCapacity = getGPUCellCoverMaximumCandidateCapacity(context.device) + extra;
         context.graph.add(
-          new GPUCellCover({
+          context.construct(GPUCellCover, {
             family: 'quadbin',
             resolution: 10,
             ...polygons(context, 1, ROWS),
@@ -1178,7 +1178,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           const slots = mode === 'knn' ? queryRows * GPU_NEIGHBOR_SEARCH_MAXIMUM_K : 4096;
           return {
             mode,
-            k: mode === 'knn' ? GPU_NEIGHBOR_SEARCH_MAXIMUM_K : undefined,
+            neighborCount: mode === 'knn' ? GPU_NEIGHBOR_SEARCH_MAXIMUM_K : undefined,
             spatialContext,
             positions: view('float32x2', ROWS),
             ...(cross ? {queryPositions: view('float32x2', queryRows)} : {}),
@@ -1206,7 +1206,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           (cross): KernelAuditCase => ({
             exportName: 'GPUNeighborSearch',
             name: `${mode} ${name} ${cross ? 'cross join' : 'self join'} rowStandardize ${rowStandardize} every output`,
-            build: context => context.graph.add(new GPUNeighborSearch(props(context, cross)))
+            build: context =>
+              context.graph.add(context.construct(GPUNeighborSearch, props(context, cross)))
           })
         );
       })
@@ -1216,14 +1217,14 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
     (mode): KernelAuditCase => ({
       exportName: 'GPUNeighborSearch',
       name: `${mode} rows and slots at the binding limit`,
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const rows =
           mode === 'knn' ? maximumRows(4 * GPU_NEIGHBOR_SEARCH_MAXIMUM_K) - 1 : maximumRows(12) - 1;
         const slots = maximumRows(4);
         graph.add(
-          new GPUNeighborSearch({
+          construct(GPUNeighborSearch, {
             mode,
-            k: mode === 'knn' ? GPU_NEIGHBOR_SEARCH_MAXIMUM_K : undefined,
+            neighborCount: mode === 'knn' ? GPU_NEIGHBOR_SEARCH_MAXIMUM_K : undefined,
             positions: view('float32x2', rows),
             mask: view('uint32', rows),
             queryMask: view('uint32', rows),
@@ -1253,9 +1254,9 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
     ({name, extra}): KernelAuditCase => ({
       exportName: 'GPUNeighborSearch',
       name: `radius gridSize ${name}`,
-      build: ({graph, view, device}) =>
+      build: ({graph, view, device, construct}) =>
         graph.add(
-          new GPUNeighborSearch({
+          construct(GPUNeighborSearch, {
             mode: 'radius',
             positions: view('float32x2', ROWS),
             parameters: view('float32', GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH),
@@ -1308,8 +1309,8 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               output: {
                 leftRows: view('uint32', ROWS),
                 rightRows: view('uint32', ROWS),
-                rowCount: view('uint32', 1),
                 status: {
+                  count: view('uint32', 1),
                   overflow: view('uint32', 1),
                   candidateOverflow: view('uint32', 1),
                   matchedCount: view('uint32', 1)
@@ -1338,8 +1339,11 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               output: {
                 leftRows: view('uint32', slots),
                 rightRows: view('uint32', slots),
-                rowCount: view('uint32', 1),
-                status: {overflow: view('uint32', 1), matchedCount: view('uint32', 1)}
+                status: {
+                  count: view('uint32', 1),
+                  overflow: view('uint32', 1),
+                  matchedCount: view('uint32', 1)
+                }
               }
             })
           );
@@ -1370,8 +1374,11 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               output: {
                 leftRows: view('uint32', rows),
                 rightRows: view('uint32', rows),
-                rowCount: view('uint32', 1),
-                status: {overflow: view('uint32', 1), candidateOverflow: view('uint32', 1)}
+                status: {
+                  count: view('uint32', 1),
+                  overflow: view('uint32', 1),
+                  candidateOverflow: view('uint32', 1)
+                }
               }
             })
           );
@@ -1410,7 +1417,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                 : {coordinateSpace: 'longitude-latitude', metric: 'none'},
               output: {
                 pointFeatureIds: view('uint32', ROWS),
-                featureCounts: view('uint32', 50),
+                polygonAssignmentCounts: view('uint32', 50),
                 matches: {ids: view('uint32', ROWS), status: compactStatus(context)},
                 status: {
                   overflow: view('uint32', 1),
@@ -1440,7 +1447,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           candidateCapacity: 4096,
           output: {
             pointFeatureIds: view('uint32', ROWS),
-            featureCounts: view('uint32', 50),
+            polygonAssignmentCounts: view('uint32', 50),
             matches: {ids: view('uint32', ROWS), status: compactStatus(context)},
             status: {
               overflow: view('uint32', 1),
@@ -1471,7 +1478,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           spatialSort: true,
           output: {
             pointFeatureIds: view('uint32', points),
-            featureCounts: view('uint32', features),
+            polygonAssignmentCounts: view('uint32', features),
             matches: {
               ids: view('uint32', points),
               status: compactStatus(context)
@@ -1516,7 +1523,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                     sourceIds: view('uint32', 200)
                   };
             context.graph.add(
-              new GPUNearestFeatureJoin({
+              context.construct(GPUNearestFeatureJoin, {
                 spatialContext,
                 queries: {
                   kind: 'points',
@@ -1555,7 +1562,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const
           }
         ].flatMap(({name, spatialContext}): KernelAuditCase[] =>
-          (['lowest-id', 'all'] as const).map(
+          (['lowest-row', 'all'] as const).map(
             (ties): KernelAuditCase => ({
               exportName: 'GPUNearestFeatureJoin',
               name: `neighbors ${queryKind} to ${featureKind} ${name} ties ${ties} every output`,
@@ -1588,7 +1595,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                   exclusive: true,
                   queryIds: view('uint32', ROWS),
                   onAttribute: {left: view('uint32', ROWS), right: view('uint32', 200)},
-                  k: NEAREST_FEATURE_JOIN_MAXIMUM_K,
+                  neighborCount: NEAREST_FEATURE_JOIN_MAXIMUM_K,
                   neighborCapacity: capacity,
                   ties,
                   leafCapacity: 256,
@@ -1603,7 +1610,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                     status: {overflow: view('uint32', 1), candidateCount: view('uint32', 1)}
                   }
                 };
-                context.graph.add(new GPUNearestFeatureJoin(props));
+                context.graph.add(context.construct(GPUNearestFeatureJoin, props));
               }
             })
           )
@@ -1619,11 +1626,11 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const prepared = new GPUSpatialJoinPrepared({geometry: features, leafCapacity: 256});
       graph.add(prepared);
       graph.add(
-        new GPUNearestFeatureJoin({
+        context.construct(GPUNearestFeatureJoin, {
           queries: {kind: 'points', positions: view('float32x2', ROWS)},
           features,
           prepared,
-          k: 4,
+          neighborCount: 4,
           output: {
             neighborIds: view('uint32', ROWS * 4),
             neighborCounts: view('uint32', ROWS),
@@ -1642,7 +1649,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const rows = maximumRows(8);
       const features = MAXIMUM_BVH_FEATURES;
       context.graph.add(
-        new GPUNearestFeatureJoin({
+        context.construct(GPUNearestFeatureJoin, {
           queries: {
             kind: 'points',
             positions: view('float32x2', rows),
@@ -1679,10 +1686,10 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       build: context => {
         const {view, maximumRows} = context;
         context.graph.add(
-          new GPUNearestFeatureJoin({
+          context.construct(GPUNearestFeatureJoin, {
             queries: {kind: 'points', positions: view('float32x2', queries)},
             features: geometry(context, 'polygons', features, maximumRows(8)) as never,
-            k: 1,
+            neighborCount: 1,
             output: {
               neighborIds: view('uint32', queries),
               neighborCounts: view('uint32', queries),
@@ -1704,10 +1711,10 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const queries = maximumRows(8 * capacity);
       const slots = queries * capacity;
       context.graph.add(
-        new GPUNearestFeatureJoin({
+        context.construct(GPUNearestFeatureJoin, {
           queries: {kind: 'points', positions: view('float32x2', queries)},
           features: geometry(context, 'polygons', 1 << 21, maximumRows(8)) as never,
-          k: NEAREST_FEATURE_JOIN_MAXIMUM_K,
+          neighborCount: NEAREST_FEATURE_JOIN_MAXIMUM_K,
           neighborCapacity: capacity,
           ties: 'all',
           spatialSort: true,
@@ -1755,7 +1762,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
                       starts: view('float32x2', 200),
                       ends: view('float32x2', 200)
                     },
-              distance: view('float32', 1),
+              radius: view('float32', 1),
               candidateCapacity: 4096,
               leafCapacity: 256,
               spatialSort: true,
@@ -1792,7 +1799,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             starts: view('float32x2', MAXIMUM_BVH_FEATURES),
             ends: view('float32x2', MAXIMUM_BVH_FEATURES)
           },
-          distance: view('float32', 1),
+          radius: view('float32', 1),
           candidateCapacity: maximumRows(8),
           output: {
             outputMask: view('uint32', rows),
@@ -1912,7 +1919,10 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               onAttribute: {left: view('uint32', ROWS), right: view('uint32', 200)},
               candidateCapacity: 8192,
               output: {
-                unmatched: {ids: view('uint32', ROWS), status: compactStatus(context)},
+                unmatched: {
+                  ids: view('uint32', ROWS),
+                  status: {...compactStatus(context), candidateOverflow: view('uint32', 1)}
+                },
                 status: {
                   overflow: view('uint32', 1),
                   candidateCount: view('uint32', 1),
@@ -2111,7 +2121,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           build: context => {
             const {view} = context;
             context.graph.add(
-              new GPUSpatialJoinCandidates({
+              context.construct(GPUSpatialJoinCandidates, {
                 left: geometry(context, leftKind, ROWS, 3000),
                 right: geometry(context, rightKind, 200, 2000),
                 distance: viewDistance ? view('float32', 1) : 5,
@@ -2146,7 +2156,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       });
       graph.add(prepared);
       graph.add(
-        new GPUSpatialJoinCandidates({
+        context.construct(GPUSpatialJoinCandidates, {
           left: geometry(context, 'points', ROWS, ROWS),
           right,
           prepared,
@@ -2174,7 +2184,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
         const {view, maximumRows} = context;
         const pairs = getGPUSpatialJoinCandidatesMaximumPairCapacity(context.device) + extra;
         context.graph.add(
-          new GPUSpatialJoinCandidates({
+          context.construct(GPUSpatialJoinCandidates, {
             left: geometry(context, 'polygons', maximumRows(8), maximumRows(8)),
             right: geometry(context, 'polygons', MAXIMUM_BVH_FEATURES, maximumRows(8)),
             distance: view('float32', 1),
@@ -2208,7 +2218,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
               neighborCounts: view('uint32', ROWS),
               neighborDistances: view('float32', ROWS * slotCapacity),
               slotCapacity,
-              k: slotCapacity - 1,
+              neighborCount: slotCapacity - 1,
               excludeSelf,
               weightType,
               power: 2,
@@ -2271,7 +2281,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             const lines = (tracks: number) =>
               geometry(context, 'lines', tracks, 4000) as GPUTrackSimilarityLines;
             context.graph.add(
-              new GPUTrackSimilarity({
+              context.construct(GPUTrackSimilarity, {
                 spatialContext,
                 linesA: lines(100),
                 ...(twoSets ? {linesB: lines(120)} : {}),
@@ -2305,9 +2315,9 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
     ({name, output}): KernelAuditCase => ({
       exportName: 'GPUTrackSimilarity',
       name: `single measure ${name}`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUTrackSimilarity({
+          construct(GPUTrackSimilarity, {
             linesA: {
               kind: 'lines',
               positions: view('float32x2', 1000),
@@ -2327,7 +2337,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const {view, maximumRows} = context;
       const pairs = GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT + 1;
       context.graph.add(
-        new GPUTrackSimilarity({
+        context.construct(GPUTrackSimilarity, {
           spatialContext: GREAT_CIRCLE,
           linesA: {
             kind: 'lines',
@@ -2362,7 +2372,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const {view, maximumRows} = context;
       const pairs = GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT;
       context.graph.add(
-        new GPUTrackSimilarity({
+        context.construct(GPUTrackSimilarity, {
           spatialContext: GREAT_CIRCLE,
           linesA: {
             kind: 'lines',
@@ -2548,7 +2558,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
           const bucketCount = 20;
           const capacity = 512;
           context.graph.add(
-            new GPUTrajectoryEncounters({
+            context.construct(GPUTrajectoryEncounters, {
               spatialContext,
               samples: view('float32x2', trackCount * bucketCount),
               trackCount,
@@ -2591,7 +2601,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
         const bucketCount = 1;
         const capacity = maximumRows(8);
         context.graph.add(
-          new GPUTrajectoryEncounters({
+          context.construct(GPUTrajectoryEncounters, {
             samples: view('float32x2', trackCount * bucketCount),
             trackCount,
             bucketCount,
@@ -2628,7 +2638,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const bucketCount = 8;
       const capacity = maximumRows(8);
       context.graph.add(
-        new GPUTrajectoryEncounters({
+        context.construct(GPUTrajectoryEncounters, {
           samples: view('float32x2', trackCount * bucketCount),
           trackCount,
           bucketCount,
@@ -2665,7 +2675,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const trackCount = Math.floor(samples / bucketCount);
       const capacity = maximumRows(8);
       context.graph.add(
-        new GPUTrajectoryEncounters({
+        context.construct(GPUTrajectoryEncounters, {
           samples: view('float32x2', trackCount * bucketCount),
           trackCount,
           bucketCount,
@@ -2696,7 +2706,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
             const {view} = context;
             const tracks = 40;
             context.graph.add(
-              new GPUTrajectoryPlayhead({
+              context.construct(GPUTrajectoryPlayhead, {
                 spatialContext,
                 positions: view('float32x2', ROWS),
                 trackOffsets: view('uint32', tracks + 1),
@@ -2732,7 +2742,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const rows = maximumRows(8);
       const tracks = getGPUTrajectoryPlayheadMaximumTrackCount(context.device) + 1;
       context.graph.add(
-        new GPUTrajectoryPlayhead({
+        context.construct(GPUTrajectoryPlayhead, {
           spatialContext: GREAT_CIRCLE,
           positions: view('float32x2', rows),
           trackOffsets: view('uint32', tracks + 1),
@@ -2762,7 +2772,7 @@ export const CELLS_AND_JOINS_CASES: KernelAuditCase[] = [
       const {view, maximumRows} = context;
       const tracks = getGPUTrajectoryPlayheadMaximumTrackCount(context.device);
       context.graph.add(
-        new GPUTrajectoryPlayhead({
+        context.construct(GPUTrajectoryPlayhead, {
           spatialContext: GREAT_CIRCLE,
           positions: view('float32x2', maximumRows(8)),
           trackOffsets: view('uint32', tracks + 1),

@@ -19,6 +19,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -50,6 +51,22 @@ import {
   validateSymmetricAdjacencyScratch
 } from './regionalization-inputs';
 import {estimateMaxPCommandNodeCount} from './regionalization-command-budget';
+import {
+  createRegionalizationLossSuppressionNodes,
+  validateRegionalizationWeightsCompleteness
+} from './adjacency-loss-suppression';
+import {getGPUSpatialWeightsLossViews} from '../spatial-weights/gpu-chunked-spatial-weights';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  createFinalRegionMassNodes,
+  validateFinalRegionMassScratch,
+  FINAL_REGION_MASS_NODE_ALLOWANCE
+} from './final-region-masses';
+import {
+  createEnclaveRemainderComponentNodes,
+  getEnclaveRemainderComponentNodeCount
+} from './enclave-remainder-components';
 
 export const GPU_MAX_P_MAXIMUM_COLUMNS = 8;
 /** Number of independent constructions run when `startCount` is not given. */
@@ -57,8 +74,8 @@ export const GPU_MAX_P_DEFAULT_START_COUNT = 16;
 /** Largest `startCount`: each start owns scratch rows and a region table of the input size. */
 export const GPU_MAX_P_MAXIMUM_START_COUNT = 64;
 /**
- * Number of construction rounds when `maximumGrowthSteps` is not given. A region claims one row per
- * round, so this is also the largest region (in rows) that the construction can complete.
+ * Number of construction rounds when `maximumGrowthSteps` is not given. A region starts with one
+ * seed and claims at most one row per round, so growth can complete at most this many rows plus one.
  */
 export const GPU_MAX_P_DEFAULT_MAXIMUM_ROUNDS = 256;
 /** Largest `maximumGrowthSteps`: each round is a fixed set of about nine command nodes. */
@@ -172,8 +189,11 @@ export function getGPUMaxPRegionsParameterValues(
   return getRegionalizationSeedParameterValues('GPUMaxPRegions', settings.seed);
 }
 
+/** Preserved six-word status layout bound. */
+export const GPU_MAX_P_STATUS_WORD_COUNT = 6;
+
 /** Words of {@link GPUMaxPRegionsOutput.status}. */
-export const GPU_MAX_P_STATUS = {
+export const GPU_MAX_P_STATUS_LAYOUT = {
   /** Number of regions of the selected start (including under-threshold leftovers). */
   regionCount: 0,
   /** 1 when every region reaches the threshold and the input is valid. */
@@ -185,8 +205,42 @@ export const GPU_MAX_P_STATUS = {
   selectedStart: 4,
   /** Rounds applying at least one local-improvement move (0 when `maximumIterations` is 0). */
   improvementIterationCount: 5,
-  length: 6
+  length: GPU_MAX_P_STATUS_WORD_COUNT
 } as const;
+
+/** Optional evidence words; a settled construction is not a proof of global infeasibility. */
+export const GPU_MAX_P_EVIDENCE = {
+  constructionLimitReached: 0,
+  constructionSettled: 1,
+  improvementEnabled: 2,
+  improvementConverged: 3,
+  iterationLimit: 4,
+  length: 5
+} as const;
+
+/** Decode packed uint32 evidence from a host buffer read. */
+export function decodeGPUMaxPRegionsEvidence(input: Uint32Array | Uint8Array | ArrayBuffer) {
+  validateRequirement(
+    'decodeGPUMaxPRegionsEvidence',
+    input.byteLength % 4 === 0 && input.byteLength >= GPU_MAX_P_EVIDENCE.length * 4,
+    `evidence must hold at least ${GPU_MAX_P_EVIDENCE.length} whole uint32 words; received ${input.byteLength} bytes`
+  );
+  const words =
+    input instanceof Uint32Array
+      ? input
+      : new Uint32Array(
+          input instanceof ArrayBuffer
+            ? input.slice(0)
+            : new Uint8Array(input.buffer, input.byteOffset, input.byteLength).slice().buffer
+        );
+  return {
+    constructionLimitReached: words[0] !== 0,
+    constructionSettled: words[1] !== 0,
+    improvementEnabled: words[2] !== 0,
+    improvementConverged: words[3] !== 0,
+    iterationLimit: words[4] !== 0
+  };
+}
 
 /** Caller-owned outputs of {@link GPUMaxPRegions}. */
 export type GPUMaxPRegionsOutput = {
@@ -198,8 +252,10 @@ export type GPUMaxPRegionsOutput = {
    * `GPURegionPartitionEvaluation` on the same table.
    */
   objective: GraphDataView<'float32'>;
-  /** Six words indexed by {@link GPU_MAX_P_STATUS}. */
+  /** Six words indexed by {@link GPU_MAX_P_STATUS_LAYOUT}. */
   status: GraphDataView<'uint32'>;
+  /** Optional five-word construction/improvement evidence, indexed by GPU_MAX_P_EVIDENCE. Zeroed on invalid input or adjacency loss. */
+  evidence?: GraphDataView<'uint32'>;
 };
 
 export type GPUMaxPRegionsProps = {
@@ -231,8 +287,9 @@ export type GPUMaxPRegionsProps = {
   startCount?: number;
   /**
    * Compile-time number of construction rounds (default {@link GPU_MAX_P_DEFAULT_MAXIMUM_ROUNDS},
-   * at most {@link GPU_MAX_P_MAXIMUM_ROUNDS}). A growing region claims one row per round, so a
-   * region needing more rows than this cannot complete and is reported under-threshold;
+   * at most {@link GPU_MAX_P_MAXIMUM_ROUNDS}). A growing region starts with one seed and claims
+   * at most one row per round, so growth alone cannot complete a region needing more than
+   * `maximumGrowthSteps + 1` rows; it is reported under-threshold unless enclave assignment absorbs it.
    * rounds after the construction has settled launch nothing. Raise it when the threshold needs
    * regions of more than about `maximumGrowthSteps / 4` rows (seed waves are spaced half an expected
    * region apart), at the cost of nine more command nodes per round.
@@ -278,6 +335,9 @@ export type GPUMaxPRegionsProps = {
  * 3. **Enclaves.** Rows of failed regions and rows that no region reached are given, round by
  *    round, to the most similar adjacent completed region. A failed region with no completed
  *    neighbor stays as an under-threshold region (reported in the status).
+ *    Remaining unfinished regions are split only into their actual connected components. A
+ *    connected remainder stays together even when its seed was absorbed; completed regions
+ *    retain their memberships.
  *
  * Every dispatch is `O(startCount * (rowCount + neighborCount))` and no thread runs a loop over
  * the whole input, so the construction has no row limit besides the storage-binding size of its
@@ -290,25 +350,37 @@ export type GPUMaxPRegionsProps = {
  * Max-P objective), then the smallest within-region sum of squares of the grown regions (the
  * sum of the regions' incremental squared deviations, before enclave rows are added), then the
  * lowest start index. The result is deterministic for a given seed and `startCount`.
+ * The frozen score includes every grown region, even one later absorbed in full by enclaves.
+ *
+ * Optional `output.evidence` distinguishes a selected construction that exhausted its growth
+ * budget from one that settled, and disabled improvement from converged or exhausted improvement.
+ * Settling is evidence about this construction, never a proof of global infeasibility.
  *
  * **Local improvement.** With `maximumIterations > 0` the selected construction is refined by
- * greedy steepest-descent AZP moves under the extensive-threshold constraint (a region never
- * drops below the threshold), which lowers the within-region sum of squares at the same region
+ * greedy steepest-descent AZP moves under the extensive-threshold constraint (a departing row
+ * leaves its source at or above the threshold), which lowers the squared error at the same region
  * count. spopt's `MaxPHeuristic` instead anneals; this is the greedy variant, off by default
- * because it uses the AZP candidate search (an `O(rowCount)` connectivity check per improving
- * candidate).
+ * because it adds AZP's budgeted batched search and bounded two-hop source-removal tests.
+ * Final feasibility and under-threshold counts are recomputed from the returned memberships:
+ * a previously under-threshold region can receive enough mass to become feasible.
  *
  * `output.objective` is the within-region sum of squared deviations of the returned labels (in
  * standardized units unless `standardize` is false).
+ * Nonzero weights.status overflow or candidateOverflow suppresses the partition: missing labels
+ * (0xffffffff), NaN objective and zero status words. Clearing the flags permits reuse.
  *
  * Default change: columns are standardized (`standardize`, default true); the previous raw-value
  * behavior is `standardize: false`. The construction itself changed from one sequential growth
  * per start to the parallel one above, so the regions differ from earlier releases for the same
  * seed; the region count is comparable to spopt's `MaxPHeuristic` (see the oracle spec).
  *
- * Scale: scratch memory is `startCount * rowCount * (columnCount + 12) * 4` bytes in at most
- * four storage bindings and must fit one binding each. There is no row cap: a region grows by one
- * row per round, so very large regions need a larger `maximumGrowthSteps`.
+ * Scale: the seven per-start row buffers use
+ * `startCount * rowCount * (2 * columnCount + 12) * 4` bytes, and each must fit one storage
+ * binding. Standardization, adjacency, scans and final evaluation/refinement need additional
+ * scratch. This route accepts 1–8 attribute columns, 1–64 starts, 1–4,096 growth steps
+ * and 0–256 improvement rounds. The expected-size estimate used for seeding is clamped
+ * to 1,048,576 rows. Input CSR capacity is at most 8,388,608 slots at a 128 MiB binding
+ * size, and the estimated graph is limited to 32,768 command nodes.
  */
 export class GPUMaxPRegions implements GPUCommandNodeProducer {
   readonly id: string;
@@ -325,9 +397,34 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUMaxPRegionsProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'weights',
+      'values',
+      'columnCount',
+      'standardize',
+      'extensiveValues',
+      'threshold',
+      'startCount',
+      'maximumGrowthSteps',
+      'maximumIterations',
+      'parameters',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      weights: snapshotWeightsPort(captured.weights),
+      output: snapshotConstructionFields(captured.output, [
+        'labels',
+        'objective',
+        'status',
+        'evidence'
+      ])
+    });
     this.id = props.id ?? 'max-p-regions';
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(this.id, props.weights);
+    validateRegionalizationWeightsCompleteness(this.id, props.weights);
     this.columnCount = props.columnCount ?? 1;
     this.startCount = props.startCount ?? GPU_MAX_P_DEFAULT_START_COUNT;
     this.maximumGrowthSteps = props.maximumGrowthSteps ?? GPU_MAX_P_DEFAULT_MAXIMUM_ROUNDS;
@@ -345,44 +442,86 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
     );
     validateCapacity(id, 'maximumIterations', maximumIterations, 0, GPU_AZP_MAXIMUM_ITERATIONS);
     const {growthRounds, enclaveRounds} = getGPUMaxPRoundCounts(rowCount, this.maximumGrowthSteps);
-    this.estimatedCommandNodeCount = estimateMaxPCommandNodeCount(
-      rowCount,
-      growthRounds,
-      enclaveRounds,
-      maximumIterations
-    );
+    this.estimatedCommandNodeCount =
+      estimateMaxPCommandNodeCount(rowCount, growthRounds, enclaveRounds, maximumIterations) +
+      1 +
+      (props.output.evidence ? 2 + Math.ceil(Math.log(rowCount) / Math.log(256)) : 0) +
+      getEnclaveRemainderComponentNodeCount(rowCount) +
+      (maximumIterations > 0 ? FINAL_REGION_MASS_NODE_ALLOWANCE : 0) +
+      // Symmetric input can retain its loss views in the nested AZP refinement as well.
+      3 *
+        getGPUSpatialWeightsLossViews(props.weights).length *
+        (1 + Number(maximumIterations > 0)) +
+      Number(Boolean(props.output.evidence)) * getGPUSpatialWeightsLossViews(props.weights).length;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     if (maximumIterations > 0 && rowCount < 2) {
-      throw new Error(`${id} maximumIterations needs at least 2 rows`);
+      validateRequirement(
+        id,
+        false,
+        `maximumIterations needs at least 2 rows; received rowCount=${rowCount}, maximumIterations=${maximumIterations}`
+      );
     }
     validateRegionalizationParameters(id, props.parameters, GPU_MAX_P_REGIONS_PARAMETER_LENGTH);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validateSinglePackedView(props.extensiveValues, ['float32'], `${id} extensiveValues`);
     validateSinglePackedView(props.threshold, ['float32'], `${id} threshold`);
     if (props.values.length !== rowCount * columnCount) {
-      throw new Error(`${id} values length must equal rows * columnCount`);
+      validateRequirement(
+        id,
+        false,
+        `values length must equal rows * columnCount; received props.values.length=${props.values.length}`
+      );
     }
     if (props.extensiveValues.length !== rowCount) {
-      throw new Error(`${id} extensiveValues length must equal the weights row count`);
+      validateRequirement(
+        id,
+        false,
+        `extensiveValues length must equal the weights row count; received props.extensiveValues.length=${props.extensiveValues.length}`
+      );
     }
     if (props.threshold.length < 1) {
-      throw new Error(`${id} threshold must hold one value`);
+      validateRequirement(
+        id,
+        false,
+        `threshold must hold one value; received props.threshold.length=${props.threshold.length}`
+      );
     }
     validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
+    if (output.evidence) {
+      validateSinglePackedView(output.evidence, ['uint32'], `${id} output.evidence`);
+      validateCapacity(
+        id,
+        'output.evidence.length',
+        output.evidence.length,
+        GPU_MAX_P_EVIDENCE.length
+      );
+    }
     validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
     validateSinglePackedView(output.objective, ['float32'], `${id} output.objective`);
     if (output.labels.length !== rowCount) {
-      throw new Error(`${id} output.labels length must equal the weights row count`);
+      validateRequirement(
+        id,
+        false,
+        `output.labels length must equal the weights row count; received output.labels.length=${output.labels.length}`
+      );
     }
     if (output.objective.length < 1) {
-      throw new Error(`${id} output.objective must hold one value`);
+      validateRequirement(
+        id,
+        false,
+        `output.objective must hold one value; received output.objective.length=${output.objective.length}`
+      );
     }
-    if (output.status.length < GPU_MAX_P_STATUS.length) {
-      throw new Error(`${id} output.status must hold ${GPU_MAX_P_STATUS.length} words`);
+    if (output.status.length < GPU_MAX_P_STATUS_LAYOUT.length) {
+      validateRequirement(
+        id,
+        false,
+        `output.status must hold ${GPU_MAX_P_STATUS_LAYOUT.length} words; received output.status.length=${output.status.length}, GPU_MAX_P_STATUS_LAYOUT.length=${GPU_MAX_P_STATUS_LAYOUT.length}`
+      );
     }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.labels, output.objective, output.status],
+      [output.labels, output.objective, output.status, output.evidence],
       [
         props.weights.offsets,
         props.weights.neighbors,
@@ -390,7 +529,8 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
         props.values,
         props.extensiveValues,
         props.threshold,
-        props.parameters
+        props.parameters,
+        ...getGPUSpatialWeightsLossViews(props.weights)
       ]
     );
     validateSpatialOutputViews(id, output, [[output.objective, output.status]]);
@@ -411,7 +551,9 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
       props.threshold,
       output.labels,
       output.objective,
-      output.status
+      output.status,
+      output.evidence,
+      ...getGPUSpatialWeightsLossViews(props.weights)
     ]);
     // Region record: row count, extensive sum, squared deviations, then one sum per column.
     const regionStride = columnCount + REGION_HEADER;
@@ -423,6 +565,12 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
       values: props.values,
       extensiveValues: props.extensiveValues,
       threshold: props.threshold,
+      ...Object.fromEntries(
+        getGPUSpatialWeightsLossViews(props.weights).map((view, index) => [
+          `weights loss ${index}`,
+          view
+        ])
+      ),
       ...output
     });
     validateRegionalizationSlotCount(id, props.weights, getGPUMaxPMaximumSlotCount(graph.device));
@@ -437,6 +585,9 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
       ['claims', startCount * rowCount * CLAIM_STRIDE * 4],
       ['start state', startCount * START_STATE_STRIDE * 4],
       ['control state', (STATE.startRecords + startCount * START_RECORD_WORDS) * 4],
+      ['remainder component parents', startCount * rowCount * 4],
+      ['remainder component hooks', startCount * rowCount * 4],
+      ['remainder component control', 12],
       ['region scan planes', rowCount * 4],
       ['round dispatch', 36],
       [
@@ -468,8 +619,10 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
         byteLength,
         'reduce startCount, rowCount or columnCount'
       );
-    if (maximumIterations > 0)
+    if (maximumIterations > 0) {
+      validateFinalRegionMassScratch(graph, id, rowCount);
       validateAZPRegionScratch(graph, id, rowCount, columnCount, rowCount, true);
+    }
     const {growthRounds, enclaveRounds} = getGPUMaxPRoundCounts(rowCount, this.maximumGrowthSteps);
     const standardize = props.standardize !== false;
     const table = standardize
@@ -632,16 +785,18 @@ fn getDistance(start: u32, row: u32, region: u32) -> f32 {
         id: `${id}-initialize`,
         operation: 'GPUMaxPRegions',
         variant: 'initialize',
-        invocationCount: 1,
+        invocationCount: GPU_MAX_P_STATUS_WORD_COUNT,
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read_write'},
           {name: 'objective', view: output.objective, type: 'f32', access: 'read_write'},
           {name: 'status', view: output.status, type: 'u32', access: 'read_write'}
         ],
-        body: `state[stateOffset] = 0u;
-  state[stateOffset + 1u] = 0u;
-  objective[objectiveOffset] = 0.0;
-  for (var word = 0u; word < ${GPU_MAX_P_STATUS.length}u; word++) { status[statusOffset + word] = 0u; }`
+        body: `if (index == 0u) {
+    state[stateOffset] = 0u;
+    state[stateOffset + 1u] = 0u;
+    objective[objectiveOffset] = 0.0;
+  }
+  status[statusOffset + index] = 0u;`
       }),
       // Row extensive values and the threshold in one buffer (one binding for the construction).
       createWGSLKernelNode<Parameters>(graph, {
@@ -1031,6 +1186,38 @@ const PURPOSE: u32 = ${PHILOX_PURPOSES.maxPRegionsSeedOrder.id}u;`,
       );
     }
 
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-freeze-growth-scores`,
+        operation: 'GPUMaxPRegions',
+        variant: 'freeze-growth-scores',
+        invocationCount: startCount * FINALIZE_WORKGROUP_SIZE,
+        workgroupSize: FINALIZE_WORKGROUP_SIZE,
+        guardIndex: false,
+        bindings: [
+          {name: 'regionPhase', view: regionPhase, type: 'u32', access: 'read'},
+          {name: 'regionData', view: regionData, type: 'f32', access: 'read'},
+          {name: 'startState', view: startState, type: 'u32', access: 'read_write'}
+        ],
+        declarations: `${declarations}
+var<workgroup> growthPartials: array<f32, ${FINALIZE_WORKGROUP_SIZE}>;`,
+        body: `let lane = localInvocationIndex;
+  let start = index / ${FINALIZE_WORKGROUP_SIZE}u;
+  var sum = 0.0;
+  for (var row = lane; row < ROWS; row += ${FINALIZE_WORKGROUP_SIZE}u) {
+    if (regionPhase[regionPhaseOffset + start * ROWS + row] != 0u) {
+      sum += regionData[regionDataOffset + (start * ROWS + row) * REGION_STRIDE + 2u];
+    }
+  }
+  growthPartials[lane] = sum;
+  workgroupBarrier();
+  for (var stride = ${FINALIZE_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (lane < stride) { growthPartials[lane] += growthPartials[lane + stride]; }
+    workgroupBarrier();
+  }
+  if (lane == 0u) { startState[startStateOffset + start * START_STATE_STRIDE + 2u] = bitcast<u32>(growthPartials[0]); }`
+      })
+    );
     // Enclaves: rows of failed and unfinished regions, and rows no region reached, join the most
     // similar adjacent completed region, round by round while some row moves.
     for (let round = 0; round < enclaveRounds; round++) {
@@ -1109,8 +1296,82 @@ const PURPOSE: u32 = ${PHILOX_PURPOSES.maxPRegionsSeedOrder.id}u;`,
       );
     }
 
+    let enclavePending: GraphDataView<'uint32'> | undefined;
+    if (output.evidence) {
+      enclavePending = createTransientView(graph, `${id}-enclave-pending`, 'uint32', scratchRows);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-enclave-pending`,
+          operation: 'GPUMaxPRegions',
+          invocationCount: scratchRows,
+          bindings: [
+            offsetsBinding(),
+            neighborsBinding(),
+            {name: 'rowState', view: rowState, type: 'u32', access: 'read'},
+            {name: 'regionPhase', view: regionPhase, type: 'u32', access: 'read'},
+            {name: 'pendingRows', view: enclavePending, type: 'u32', access: 'read_write'}
+          ],
+          declarations,
+          body: `${startAndRow}
+  let stateBase = rowStateOffset + start * ROWS * 2u;
+  let phaseBase = regionPhaseOffset + start * ROWS;
+  let label = rowState[stateBase + row * 2u];
+  var pending = 0u;
+  if (label == NONE || regionPhase[phaseBase + label] != PHASE_COMPLETE) {
+    for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
+      let neighborLabel = rowState[stateBase + neighbors[neighborsOffset + slot] * 2u];
+      if (neighborLabel != NONE && regionPhase[phaseBase + neighborLabel] == PHASE_COMPLETE) { pending = 1u; }
+    }
+  }
+  pendingRows[pendingRowsOffset + index] = pending;`
+        })
+      );
+      let pendingCount = rowCount;
+      let pendingStage = 0;
+      while (pendingCount > 1) {
+        const nextCount = Math.ceil(pendingCount / 256);
+        const next = createTransientView(
+          graph,
+          `${id}-enclave-pending-${pendingStage}`,
+          'uint32',
+          startCount * nextCount
+        );
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-enclave-pending-stage-${pendingStage++}`,
+            operation: 'GPUMaxPRegions',
+            invocationCount: startCount * nextCount,
+            bindings: [
+              {name: 'input', view: enclavePending, type: 'u32', access: 'read'},
+              {name: 'output', view: next, type: 'u32', access: 'read_write'}
+            ],
+            body: `let start = index / ${nextCount}u;
+  let tile = index % ${nextCount}u;
+  var pending = 0u;
+  for (var item = tile * 256u; item < min((tile + 1u) * 256u, ${pendingCount}u); item++) {
+    pending |= input[inputOffset + start * ${pendingCount}u + item];
+  }
+  output[outputOffset + index] = pending;`
+          })
+        );
+        enclavePending = next;
+        pendingCount = nextCount;
+      }
+    }
+
     nodes.push(
-      // One workgroup per start: rows nobody reached become singleton under-threshold regions,
+      ...createEnclaveRemainderComponentNodes(graph, {
+        id,
+        rowCount,
+        startCount,
+        weights: adjacency.weights,
+        rowState,
+        regionPhase,
+        claims
+      })
+    );
+    nodes.push(
+      // One workgroup per start: rows nobody reached become singleton regions,
       // the regions in use are flagged, and the start's statistics are reduced in a fixed order.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize-starts`,
@@ -1122,27 +1383,15 @@ const PURPOSE: u32 = ${PHILOX_PURPOSES.maxPRegionsSeedOrder.id}u;`,
         bindings: [
           {name: 'rowState', view: rowState, type: 'u32', access: 'read_write'},
           {name: 'regionPhase', view: regionPhase, type: 'u32', access: 'read_write'},
-          {name: 'regionData', view: regionData, type: 'f32', access: 'read_write'},
-          {name: 'claims', view: claims, type: 'u32', access: 'read_write'},
-          {name: 'startState', view: startState, type: 'u32', access: 'read_write'}
+          {name: 'claims', view: claims, type: 'atomic<u32>', access: 'read_write'},
+          {name: 'startState', view: startState, type: 'u32', access: 'read_write'},
+          {name: 'extensive', view: packedExtensive, type: 'f32', access: 'read'},
+          {name: 'state', view: state, type: 'u32', access: 'read'}
         ],
         declarations: `${declarations}
-var<workgroup> sumScratch: array<f32, ${FINALIZE_WORKGROUP_SIZE}>;
 var<workgroup> countScratch: array<u32, ${FINALIZE_WORKGROUP_SIZE}>;
 
 // Sum of one value per lane over the workgroup in a fixed order, available to every lane.
-fn reduceSum(lane: u32, value: f32) -> f32 {
-  sumScratch[lane] = value;
-  workgroupBarrier();
-  for (var stride = ${FINALIZE_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride >> 1u) {
-    if (lane < stride) { sumScratch[lane] = sumScratch[lane] + sumScratch[lane + stride]; }
-    workgroupBarrier();
-  }
-  let total = sumScratch[0];
-  workgroupBarrier();
-  return total;
-}
-
 fn reduceCount(lane: u32, value: u32) -> u32 {
   countScratch[lane] = value;
   workgroupBarrier();
@@ -1161,41 +1410,38 @@ fn reduceCount(lane: u32, value: u32) -> u32 {
   let phaseBase = regionPhaseOffset + start * ROWS;
   let claimBase = claimsOffset + start * ROWS * CLAIM_STRIDE;
   for (var row = lane; row < ROWS; row += ${FINALIZE_WORKGROUP_SIZE}u) {
-    claims[claimBase + row * CLAIM_STRIDE] = 0u;
+    atomicStore(&claims[claimBase + row * CLAIM_STRIDE], 0u);
   }
   storageBarrier();
   workgroupBarrier();
   for (var row = lane; row < ROWS; row += ${FINALIZE_WORKGROUP_SIZE}u) {
     var label = rowState[stateBase + row * 2u];
     if (label == NONE) {
-      // Nobody reached this row: it is its own under-threshold region.
+      // Nobody reached this row: classify its singleton by the actual extensive floor.
       label = row;
       rowState[stateBase + row * 2u] = row;
-      regionPhase[phaseBase + row] = PHASE_FAILED;
-      regionData[regionDataOffset + (start * ROWS + row) * REGION_STRIDE + 2u] = 0.0;
+      regionPhase[phaseBase + row] = select(PHASE_FAILED, PHASE_COMPLETE,
+        state[stateOffset + STATE_INVALID] == 0u &&
+        extensive[extensiveOffset + row] >= extensive[extensiveOffset + ROWS]);
     }
-    claims[claimBase + label * CLAIM_STRIDE] = 1u;
+    atomicStore(&claims[claimBase + label * CLAIM_STRIDE], 1u);
   }
   storageBarrier();
   workgroupBarrier();
-  var squares = 0.0;
   var regions = 0u;
   var infeasible = 0u;
   for (var row = lane; row < ROWS; row += ${FINALIZE_WORKGROUP_SIZE}u) {
-    if (claims[claimBase + row * CLAIM_STRIDE] == 1u) {
+    if (atomicLoad(&claims[claimBase + row * CLAIM_STRIDE]) == 1u) {
       regions += 1u;
       infeasible += select(1u, 0u, regionPhase[phaseBase + row] == PHASE_COMPLETE);
-      squares += regionData[regionDataOffset + (start * ROWS + row) * REGION_STRIDE + 2u];
     }
   }
   let regionTotal = reduceCount(lane, regions);
   let infeasibleTotal = reduceCount(lane, infeasible);
-  let squaresTotal = reduceSum(lane, squares);
   if (lane == 0u) {
     let base = startStateOffset + start * START_STATE_STRIDE;
     startState[base] = regionTotal;
     startState[base + 1u] = infeasibleTotal;
-    startState[base + 2u] = bitcast<u32>(squaresTotal);
     startState[base + 3u] = 0u;
   }`
       }),
@@ -1262,9 +1508,10 @@ fn reduceCount(lane: u32, value: u32) -> u32 {
       })
     );
 
+    let finalInfeasible: GraphDataView<'uint32'> | undefined;
     if (improving) {
-      // The selected construction is refined by greedy AZP moves that keep every region at or
-      // above the extensive threshold. The adjacency is already symmetric (`information.symmetric`).
+      // AZP moves keep each donor at or above the threshold; receivers can repair a deficit.
+      // The adjacency is already symmetric (`information.symmetric`).
       nodes.push(
         ...new GPUAZPRegions({
           id: `${id}-improvement`,
@@ -1286,6 +1533,15 @@ fn reduceCount(lane: u32, value: u32) -> u32 {
           }
         }).getCommandNodes(graph)
       );
+      const finalMasses = createFinalRegionMassNodes(
+        graph,
+        id,
+        output.labels,
+        props.extensiveValues,
+        props.threshold
+      );
+      nodes.push(...finalMasses.nodes);
+      finalInfeasible = finalMasses.count;
     } else {
       // The exact within-region sum of squares of the returned labels.
       nodes.push(
@@ -1325,6 +1581,12 @@ fn reduceCount(lane: u32, value: u32) -> u32 {
                   view: improvementStatus!,
                   type: 'u32' as const,
                   access: 'read' as const
+                },
+                {
+                  name: 'finalInfeasible',
+                  view: finalInfeasible!,
+                  type: 'u32' as const,
+                  access: 'read' as const
                 }
               ]
             : [])
@@ -1342,15 +1604,59 @@ fn reduceCount(lane: u32, value: u32) -> u32 {
       : `let improvementIterationCount = 0u;
   let withinSquares = evaluationSummary[evaluationSummaryOffset + ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.withinSumOfSquares}u];`
   }
-  let infeasible = startState[base + 1u];
+  let infeasible = ${improving ? 'select(finalInfeasible[finalInfeasibleOffset], startState[base + 1u], invalid > 0u)' : 'startState[base + 1u]'};
   objective[objectiveOffset] = select(withinSquares, 0.0, invalid > 0u);
   status[statusOffset] = select(startState[base], 0u, invalid > 0u);
   status[statusOffset + 1u] = select(0u, 1u, infeasible == 0u && invalid == 0u);
   status[statusOffset + 2u] = infeasible;
   status[statusOffset + 3u] = invalid;
   status[statusOffset + 4u] = best;
-  status[statusOffset + ${GPU_MAX_P_STATUS.improvementIterationCount}u] = improvementIterationCount;`
+  status[statusOffset + ${GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount}u] = improvementIterationCount;`
       })
+    );
+    if (output.evidence)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-evidence`,
+          operation: 'GPUMaxPRegions',
+          invocationCount: GPU_MAX_P_EVIDENCE.length,
+          bindings: [
+            {name: 'state', view: state, type: 'u32', access: 'read'},
+            {name: 'status', view: output.status, type: 'u32', access: 'read'},
+            {name: 'enclavePending', view: enclavePending!, type: 'u32', access: 'read'},
+            ...(improving
+              ? [
+                  {
+                    name: 'improvement',
+                    view: improvementStatus!,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {name: 'evidence', view: output.evidence, type: 'u32', access: 'read_write'}
+          ],
+          declarations,
+          body: `var value = 0u;
+  if (status[statusOffset + 3u] == 0u) {
+    let record = stateOffset + STATE_STARTS + state[stateOffset + STATE_SELECTED] * START_RECORD;
+    let constructionPending = state[record + WORD_GROWING] > 0u || state[record + WORD_UNASSIGNED] > 0u || enclavePending[enclavePendingOffset + state[stateOffset + STATE_SELECTED]] != 0u;
+    if (index == 0u) { value = select(0u, 1u, constructionPending); }
+    if (index == 1u) { value = select(1u, 0u, constructionPending); }
+    ${improving ? 'if (index == 2u) { value = 1u; } if (index == 3u) { value = improvement[improvementOffset + 1u]; } if (index == 4u) { value = improvement[improvementOffset + 2u]; }' : ''}
+  }
+  evidence[evidenceOffset + index] = value;`
+        })
+      );
+    nodes.push(
+      ...createRegionalizationLossSuppressionNodes(graph, id, 'GPUMaxPRegions', props.weights, [
+        {view: output.labels, length: rowCount, value: 'missing'},
+        {view: output.objective, length: 1, value: 'nan'},
+        {view: output.status, length: GPU_MAX_P_STATUS_LAYOUT.length, value: 'zero'},
+        ...(output.evidence
+          ? [{view: output.evidence, length: GPU_MAX_P_EVIDENCE.length, value: 'zero' as const}]
+          : [])
+      ])
     );
     return nodes;
   }

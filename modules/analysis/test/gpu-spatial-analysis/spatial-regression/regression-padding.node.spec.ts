@@ -30,6 +30,11 @@ for (const reader of [
           : 'W_y'
       ]);
       expect(result).toEqual(exact);
+      // Independent dimensions: n=10, intercept + one predictor + spatial parameter => k=3.
+      // Nonzero spare rows must not alter model degrees of freedom or add coefficient estimates.
+      expect(result.parameterCount).toBe(3);
+      expect(result.degreesOfFreedom).toBe(7);
+      expect(result.coefficients.map(coefficient => coefficient.estimate)).toEqual([10, 20, 0.5]);
     });
   }
   it(`${reader.name} rejects an invalid fitted layout`, () => {

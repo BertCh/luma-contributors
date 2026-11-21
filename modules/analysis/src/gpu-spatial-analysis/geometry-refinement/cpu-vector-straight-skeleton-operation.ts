@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRefinementOperationProps} from './refinement-construction-snapshot';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -122,10 +124,6 @@ function validateOptions(id: string, options: CPUVectorStraightSkeletonOptions):
 }
 
 function validateOffsets(name: string, offsets: Uint32Array, limit: number): void {
-  if (offsets.length === 1) {
-    if (offsets[0] > limit) throw new Error(`${name} must be in [0, ${limit}]`);
-    return;
-  }
   validateCanonicalOffsets(name, offsets, limit);
 }
 
@@ -157,9 +155,8 @@ function getWavefrontState(vertices: readonly Vertex[], active: readonly number[
  * What differs from the GPU contributor:
  * - Arithmetic is float64 with one float32 rounding at output. Near tolerance/event ties, topology
  *   and therefore slot IDs and arc order can differ; the GPU's tolerance definitions are retained.
- * - The event-count budget is removed. maximumEvents only sizes the fixed offset-slot layout;
- *   flag 4 is set only when that layout is exhausted before capture. After capture, event processing
- *   has no iteration budget. Increase maximumEvents if a later snapshot needs more historical slots.
+ * - maximumEvents sizes the fixed offset-slot layout and limits event work at the same point
+ *   as the contributor, after offset capture and before the next arc/event emission.
  * - A repeated active wavefront at the same event time terminates with numerical flag 8,
  *   retaining emitted arcs and the captured offset. The GPU has no repeat-state check and can
  *   instead stop at its work budget with flag 4.
@@ -203,6 +200,7 @@ export function computeVectorStraightSkeletonOnCPU(
     let offsetCount = 0;
     let captured = false;
     let time = 0;
+    let eventCount = 0;
     let wavefrontTime = -Infinity;
     const wavefrontStates = new Set<string>();
     const edges: Edge[] = [];
@@ -252,7 +250,11 @@ export function computeVectorStraightSkeletonOnCPU(
         const direction = subtractPoints(finish, start);
         const length = Math.hypot(...direction);
         const normal: Point = [-direction[1] / length, direction[0] / length];
-        edges.push({normal, constant: computeDotProduct(normal, start), source: sources[ordinal]});
+        edges.push({
+          normal,
+          constant: computeDotProduct(normal, start),
+          source: sources[reverse ? (ordinal + 1) % sources.length : ordinal]
+        });
       }
       for (let ordinal = 0; ordinal < sources.length; ordinal++) {
         const previous = ringStart + ((ordinal + sources.length - 1) % sources.length);
@@ -282,6 +284,43 @@ export function computeVectorStraightSkeletonOnCPU(
       }
       required++;
     };
+    const emitRidge = (vertex: Vertex, end: Point) => {
+      const row = required;
+      emitArc(vertex, end);
+      if (required === row || row >= segmentCapacity) return;
+      const midpoint: Point = [(vertex.birth[0] + end[0]) / 2, (vertex.birth[1] + end[1]) / 2];
+      // Each live interval retains its original outgoing support. An infinite-line
+      // search conflates adjacent collinear caller edges.
+      const first = vertex.right;
+      const opposite = vertices.find(candidate => {
+        if (
+          !candidate.active ||
+          computeDotProduct(edges[first].normal, edges[candidate.right].normal) >= -0.999999
+        )
+          return false;
+        const start = computePosition(candidate, time);
+        const finish = computePosition(vertices[candidate.next], time);
+        const direction = subtractPoints(finish, start);
+        const lengthSquared = computeDotProduct(direction, direction);
+        const separation = subtractPoints(midpoint, start);
+        const fraction = computeDotProduct(separation, direction) / Math.max(lengthSquared, 1e-30);
+        return (
+          lengthSquared > tolerance * tolerance &&
+          fraction * Math.sqrt(lengthSquared) >= -tolerance &&
+          (fraction - 1) * Math.sqrt(lengthSquared) <= tolerance &&
+          Math.abs(computeCrossProduct(separation, direction)) <=
+            tolerance * Math.sqrt(lengthSquared)
+        );
+      });
+      const second = opposite?.right;
+      result.sourceEdges.set(
+        [
+          first === undefined ? 0xffffffff : edges[first].source,
+          second === undefined ? 0xffffffff : edges[second].source
+        ],
+        (polygon * segmentCapacity + row) * 2
+      );
+    };
     while (flags === 0) {
       if (vertices.some(vertex => ![...vertex.start, ...vertex.velocity].every(Number.isFinite))) {
         flags |= 8;
@@ -294,6 +333,7 @@ export function computeVectorStraightSkeletonOnCPU(
         if (!vertex.active) continue;
         if (vertex.next === index) vertex.active = false;
         else if (vertices[vertex.next].next === index) {
+          // Both surviving supports already belong to this vertex, even when oblique.
           emitArc(vertex, vertices[vertex.next].birth);
           vertex.active = false;
           vertices[vertex.next].active = false;
@@ -354,7 +394,7 @@ export function computeVectorStraightSkeletonOnCPU(
           }
           if (keep) {
             vertex.birth = start;
-            emitArc(vertex, finish);
+            emitRidge(vertex, finish);
           }
         }
         for (const index of component) vertices[index].active = false;
@@ -445,7 +485,11 @@ export function computeVectorStraightSkeletonOnCPU(
         flags |= 8;
         break;
       }
-      if (!captured && vertices.length + (split ? 2 : 1) > slots) {
+      if (
+        eventCount >= (options.maximumEvents ?? Infinity) ||
+        ((options.maximumEvents !== undefined || !captured) &&
+          vertices.length + (split ? 2 : 1) > slots)
+      ) {
         flags |= 4;
         break;
       }
@@ -481,6 +525,7 @@ export function computeVectorStraightSkeletonOnCPU(
         vertices[after].previous = count;
       }
       time = eventTime;
+      eventCount++;
     }
     if (required > segmentCapacity) flags |= 2;
     result.status.set(
@@ -491,9 +536,10 @@ export function computeVectorStraightSkeletonOnCPU(
   return result;
 }
 
-/** CPU twin; maximumEvents sizes historical offset slots but does not limit event iterations. */
+/** CPU twin; maximumEvents bounds both event work and historical offset slots. */
 export class CPUVectorStraightSkeletonOperation extends GPUCPUOperation {
   constructor(props: VectorStraightSkeletonOperationProps) {
+    props = snapshotRefinementOperationProps(props, 'vector');
     const id = props.id ?? 'vector-straight-skeleton';
     validateOptions(id, props);
     validateCapacity(id, 'polygonCount', props.polygonCount, 0);

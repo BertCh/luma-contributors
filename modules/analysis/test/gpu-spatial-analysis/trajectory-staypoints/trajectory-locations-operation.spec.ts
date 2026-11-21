@@ -11,7 +11,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations-operation';
 import {getGPUTrajectoryLocationsParameterValues} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 it('locations compare seam-equivalent and pole coordinates on the sphere', async () => {
   const device = await getWebGPUTestDevice();
@@ -72,6 +72,11 @@ it('locations compare seam-equivalent and pole coordinates on the sphere', async
       ).toBeLessThanOrEqual(1e-5);
   }
   expect(Array.from(cpu['locationIds'])).toEqual([0, 0, 0, 1, 1]);
+  // Seam duplicates vote once: (-180 + -179)/2. Pole votes have longitude zero.
+  for (const result of [cpu, gpu]) {
+    expect(Array.from(result['centers']).slice(0, 4)).toEqual([-179.5, 0, 0, 90]);
+    expect(Array.from(result['locationCount'])).toEqual([2]);
+  }
 });
 
 for (const empty of [false, true]) {

@@ -35,7 +35,7 @@ function setup() {
     props: {
       values: view('float32', 16),
       variableCount: 2,
-      maximumPermutations: 19,
+      permutationCount: 19,
       weights: {
         offsets: view('uint32', 9),
         neighbors: view('uint32', 16),
@@ -43,7 +43,7 @@ function setup() {
       },
       output: {
         statistic: view('float32', 8),
-        pValues: view('float32', 8),
+        pseudoPValues: view('float32', 8),
         classes: view('uint32', 8)
       }
     }
@@ -55,7 +55,7 @@ for (const strategy of ['exact', 'tiled'] as const) {
     it(`${strategy} ${multipleTesting} Geary seed and level changes do not change its pipelines`, () => {
       const sources = (
         seed: readonly [number, number],
-        significance: number,
+        significanceLevel: number,
         runtime = false,
         chunked = false
       ) => {
@@ -66,7 +66,7 @@ for (const strategy of ['exact', 'tiled'] as const) {
             strategy,
             multipleTesting,
             seed,
-            significance,
+            significanceLevel,
             rowTileSize: 3,
             permutationTileSize: 7,
             weights: chunked
@@ -106,20 +106,21 @@ it('packs every Philox key bit and level bits while preserving target padding an
   const target = new Uint32Array([0, 0, 0, 0xdeadbeef]);
   expect(
     getGPUMultivariateLocalGearyPermutationTestParameterValues(
-      {seed: [0xffffffff, 0x80000001], significance: 0.5},
+      {seed: [0xffffffff, 0x80000001], significanceLevel: 0.5},
       target
     )
   ).toBe(target);
   expect([...target]).toEqual([0xffffffff, 0x80000001, 0x3f000000, 0xdeadbeef]);
   const invalid: GPUMultivariateLocalGearyPermutationTestSettings[] = [
+    ...[-1, 1.5, NaN, Infinity, 2 ** 53].map(seed => ({seed})),
     ...[-1, 1.5, NaN, Infinity, 2 ** 32].map(value => ({seed: [value, 0] as const})),
-    ...[0, 1, -1, NaN, Infinity].map(significance => ({significance}))
+    ...[0, 1, -1, NaN, Infinity].map(significanceLevel => ({significanceLevel}))
   ];
   for (const settings of invalid) {
     expect(() =>
       getGPUMultivariateLocalGearyPermutationTestParameterValues(settings, target)
     ).toThrow(
-      /^getGPUMultivariateLocalGearyPermutationTestParameterValues .*seed|^getGPUMultivariateLocalGearyPermutationTestParameterValues .*significance/
+      /^getGPUMultivariateLocalGearyPermutationTestParameterValues .*seed|^getGPUMultivariateLocalGearyPermutationTestParameterValues .*significanceLevel/
     );
     expect([...target]).toEqual([0xffffffff, 0x80000001, 0x3f000000, 0xdeadbeef]);
   }
@@ -198,7 +199,7 @@ it('word defaults copy on every encoding and release the owned GPUParameterBuffe
   }
 });
 
-it('degree-one oracle has a hand-derived variance and a discriminating corrected significance case', () => {
+it('degree-one oracle has a hand-derived variance and a discriminating corrected significanceLevel case', () => {
   const low = computeMultivariateGearyRuntimeOracle(
     MULTIVARIATE_GEARY_RUNTIME_SEED,
     0.01,
@@ -214,3 +215,147 @@ it('degree-one oracle has a hand-derived variance and a discriminating corrected
   expect(high.classes.some(value => value === 1 || value === 2)).toBe(true);
   expect(high.classes.slice(5)).toEqual([0xffffffff, 0xffffffff, 0xffffffff]);
 });
+
+it('DEF-02 packs canonical settings and preserves numeric seed high words', () => {
+  const settings = {seed: 2 ** 32 + 7, significanceLevel: 0.01};
+  const words = getGPUMultivariateLocalGearyPermutationTestParameterValues(settings);
+  const sharedSettings = {seed: [7, 0] as const, significanceLevel: 0.01};
+  const sharedWords = getGPUMultivariateLocalGearyPermutationTestParameterValues(sharedSettings);
+  expect(new Float32Array(sharedWords.buffer)[2]).toBe(Math.fround(0.01));
+  expect([...words.slice(0, 2)]).toEqual([7, 1]);
+  expect(new Float32Array(words.buffer)[2]).toBe(Math.fround(0.01));
+  expect(() =>
+    getGPUMultivariateLocalGearyPermutationTestParameterValues({
+      ...{significance: 0.05},
+      significanceLevel: 0.01
+    })
+  ).toThrow(/significance was removed.*significanceLevel/);
+  const context = setup();
+  try {
+    const contributor = new GPUMultivariateLocalGearyPermutationTest({
+      ...context.props,
+      ...settings
+    });
+    expect(contributor.getInferenceMetadata().permutationCount).toBe(19);
+    expect(contributor.getInferenceMetadata().significanceLevel).toBe(Math.fround(0.01));
+    expect(
+      () =>
+        new GPUMultivariateLocalGearyPermutationTest({
+          ...context.props,
+          ...{maximumPermutations: 20}
+        })
+    ).toThrow(/maximumPermutations was removed.*permutationCount/);
+    const legacyProbability = {pValues: context.props.output.pseudoPValues};
+    expect(
+      () =>
+        new GPUMultivariateLocalGearyPermutationTest({
+          ...context.props,
+          output: {...context.props.output, ...legacyProbability}
+        })
+    ).toThrow(/output.pValues was removed.*pseudoPValues.*adjustedPValues/);
+  } finally {
+    context.device.destroy();
+  }
+});
+
+for (const strategy of ['exact', 'tiled'] as const) {
+  it(`UST-12 ${strategy} writes stable raw/adjusted ports and validates the Bonferroni family`, () => {
+    const context = setup();
+    try {
+      const output = {
+        ...context.props.output,
+        pseudoPValues: context.view('float32', 8),
+        adjustedPValues: context.view('float32', 8)
+      };
+      for (const family of ['tested', 'complete'] as const) {
+        const nodes = new GPUMultivariateLocalGearyPermutationTest({
+          ...context.props,
+          id: `stable-${family}`,
+          strategy,
+          correction: 'bonferroni',
+          family,
+          output
+        }).getCommandNodes(context.graph);
+        expect(getParsedKernelSources(nodes).size).toBeGreaterThan(0);
+        for (const kernel of getGPUCommandNodeKernelSources(nodes))
+          expect(getStorageBindingCount(kernel.source)).toBeLessThanOrEqual(8);
+        expect(nodes.some(node => node.id.endsWith('-publish-probabilities'))).toBe(true);
+        expect(nodes.some(node => node.id.includes('-family-count'))).toBe(true);
+      }
+      for (const tail of ['', 'EqualTail']) {
+        expect(
+          () =>
+            new GPUMultivariateLocalGearyPermutationTest({...context.props, tail: tail as never})
+        ).toThrow(/tail.*equal-tail.*esda-min-tail/);
+      }
+      expect(
+        () =>
+          new GPUMultivariateLocalGearyPermutationTest({
+            ...context.props,
+            family: 'unknown'
+          } as never)
+      ).toThrow(/family.*tested.*complete/);
+    } finally {
+      context.device.destroy();
+    }
+  });
+}
+
+it('B3 metadata describes captured fixed words and requires current resident settings', () => {
+  const context = setup();
+  try {
+    const fixed = new GPUMultivariateLocalGearyPermutationTest({
+      ...context.props,
+      seed: [7, 1],
+      significanceLevel: 0.01
+    });
+    const misleading = {seed: [31, 9] as const, significanceLevel: 0.125};
+    expect(fixed.getInferenceMetadata(misleading).significanceLevel).toBe(Math.fround(0.01));
+    expect(fixed.getInferenceMetadata(misleading).seed).toEqual([7, 1]);
+    const resident = new GPUMultivariateLocalGearyPermutationTest({
+      ...context.props,
+      parameters: context.view('uint32', 3)
+    });
+    expect(() => resident.getInferenceMetadata()).toThrow(/current settings|packed words/);
+    const current = {seed: [0xffffffff, 0x80000001] as const, significanceLevel: 0.01};
+    expect(resident.getInferenceMetadata(current).significanceLevel).toBe(Math.fround(0.01));
+    expect(resident.getInferenceMetadata(current).seed).toEqual(current.seed);
+    const packed = getGPUMultivariateLocalGearyPermutationTestParameterValues(current);
+    expect(resident.getInferenceMetadata(packed)).toEqual(resident.getInferenceMetadata(current));
+    const padded = new Uint32Array(7);
+    padded.set(packed, 2);
+    expect(resident.getInferenceMetadata(padded.subarray(2, 5))).toEqual(
+      resident.getInferenceMetadata(current)
+    );
+    expect(() => resident.getInferenceMetadata(Uint32Array.of(7, 1, 0))).toThrow(
+      /significanceLevel/
+    );
+    expect(() => resident.getInferenceMetadata(new Uint32Array(2))).toThrow(/length/);
+  } finally {
+    context.device.destroy();
+  }
+});
+
+for (const strategy of ['exact', 'tiled'] as const) {
+  it(`N1 ${strategy} retains a weights completeness certificate in the shared suppression gate`, () => {
+    const context = setup();
+    try {
+      const complete = context.view('uint32', 1);
+      const contributor = new GPUMultivariateLocalGearyPermutationTest({
+        ...context.props,
+        strategy,
+        weights: {...context.props.weights, status: {complete}}
+      });
+      expect(contributor.props.weights.status?.['complete'] === complete).toBe(true);
+      const nodes = contributor.getCommandNodes(context.graph);
+      const certificate = getGPUCommandNodeKernelSources(nodes).find(kernel =>
+        kernel.id.endsWith('-weights-loss-0')
+      );
+      expect(certificate).toBeDefined();
+      expect(certificate!.source).toContain('lossInput0[lossInput0Offset] == 0u');
+      expect(getParsedKernelSources(nodes).size).toBeGreaterThan(0);
+    } finally {
+      context.device.destroy();
+    }
+  });
+}

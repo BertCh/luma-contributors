@@ -56,7 +56,7 @@ export default defineOperationRun({
               noDataPolicy: 'ignore'
             }
           : undefined,
-      outputs: {
+      output: {
         values: result.view,
         validity: validity.view,
         originalValidity: originalValidity.view,

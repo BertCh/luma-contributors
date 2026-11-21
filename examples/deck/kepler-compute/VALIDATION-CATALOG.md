@@ -5,7 +5,7 @@ SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 # Validation, regression and covariance catalog
 
-Layers → Analysis → Contributor catalog exposes twelve additional GPU operations. Each form accepts built-in samples, pasted GeoJSON or a native dataset with a geometry field. Numeric properties are selected by name. Run results show the dispatched contributor, row values and a separate diagnostics table; every table can be staged in Sources and published. Invocations preserve parameter values and input content hashes.
+Layers → Analysis → Contributor catalog exposes twelve additional GPU operations. Forms accept built-in samples, pasted GeoJSON or native data. The `validation-gaussian-scores`, `validation-ensemble-scores` and `validation-fdr` bindings also accept geometry-free native tables; spatial bindings require the geometry specified by their input ports. Numeric properties are selected by name. Run results show the dispatched contributor, row values and a separate diagnostics table; every table can be staged in Sources and published. Invocations preserve parameter values and input content hashes.
 
 | Operation | Inputs and controls | Tables |
 | --- | --- | --- |

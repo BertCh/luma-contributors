@@ -415,7 +415,7 @@ it('audits every registration kernel and large numeric literals in unmixing and 
   }
 });
 
-it('normalizes texture ranges with exponent-scaled division instead of a flushed reciprocal', () => {
+it('quantizes wide texture ranges against finite upward-rounded boundaries without a reciprocal', () => {
   const device = createNullWebGPUDevice();
   try {
     const graph = new GPUCommandGraph(device);
@@ -427,7 +427,16 @@ it('normalizes texture ranges with exponent-scaled division instead of a flushed
     const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
     expect(kernels).toHaveLength(1);
     const source = kernels[0].source;
-    expect(source).toContain('getScaledQuotient(value - ');
+    // Four levels over [0, max-f32]: boundaries are ceil-f32(max-f32 * k/4), k=1,2,3.
+    // max-f32=(2^24-1)*2^104. The first two quarters are exact; the third rounds upward.
+    const boundaries = Array.from(source.matchAll(/value >= ([\d.eE+-]+)/g), match =>
+      Number(match[1])
+    );
+    expect(boundaries).toEqual([
+      8.5070586659632215e37, 1.7014117331926443e38, 2.5521177519070385e38
+    ]);
+    expect(boundaries.every(Number.isFinite)).toBe(true);
+    expect(source.includes('getScaledQuotient(value - ')).toBe(false);
     expect(auditWGSLModule(source, kernels[0].constants)).toEqual([]);
   } finally {
     device.destroy();

@@ -44,7 +44,7 @@ export default defineOperationRun({
       denominator: {extensive: values.denominator === 1 ? 'overlap' : 'zone'},
       pairCapacity: capacity,
       sourceValues: sourceValues.view,
-      outputs: {
+      output: {
         extensiveWeights: {offsets: offsets.view, neighbors: neighbors.view, weights: weights.view},
         intensiveWeightValues: intensiveWeightValues.view,
         extensiveValues: extensiveValues.view,

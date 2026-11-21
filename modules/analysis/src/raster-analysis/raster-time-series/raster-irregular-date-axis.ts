@@ -13,7 +13,10 @@ import {
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  getWGSLFloatLiteral,
+  type WGSLKernelBinding
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {TIME_WORDS_WGSL} from '../../dataframe-analysis/time-window-filter/time-words';
 
 /** Length of the Gregorian mean year, 365.2425 days, in seconds. */
@@ -75,14 +78,26 @@ export function getGPURasterTicksPerYear(unit: ArrowAnalyticsTimeUnit): number {
 /**
  * Centred fractional years of a strictly increasing acquisition series, for CPU-side use such as
  * choosing a regular output grid. Matches the axis the kernels build from the same words.
+ * Distinct dates can share a float32 coordinate; use GPURasterTemporalResample.targetTimes
+ * for exact acquisition identity instead of fractional-year matching.
  */
 export function getGPURasterCentredFractionalYears(
   times: BigInt64Array,
   unit: ArrowAnalyticsTimeUnit
 ): Float32Array {
-  const ticksPerYear = getGPURasterTicksPerYear(unit);
+  const ticksPerYear = Math.fround(getGPURasterTicksPerYear(unit));
+  const yearsPerTick = Math.fround(1 / ticksPerYear);
   const midpoint = times[0] + (times[times.length - 1] - times[0]) / 2n;
-  return Float32Array.from(times, time => Number(time - midpoint) / ticksPerYear);
+  return Float32Array.from(times, time => {
+    // Match word conversion followed by one multiplication by the pinned float32 reciprocal.
+    // Converting the whole BigInt through float64 can double-round near a float32 midpoint.
+    const difference = time - midpoint;
+    const magnitude = difference < 0n ? -difference : difference;
+    const high = Math.fround(Number(magnitude >> 32n));
+    const low = Math.fround(Number(magnitude & 0xffffffffn));
+    const roundedMagnitude = Math.fround(high * 4294967296 + low);
+    return Math.fround((difference < 0n ? -roundedMagnitude : roundedMagnitude) * yearsPerTick);
+  });
 }
 
 /** Binding the declarations of {@link getGPURasterDateAxisDeclarations} read. */
@@ -98,7 +113,7 @@ export function getGPURasterDateAxisBinding(axis: GPURasterIrregularDateAxis): W
  */
 export function getGPURasterDateAxisDeclarations(ticksPerYear: number, sliceCount: number): string {
   return `${TIME_WORDS_WGSL}
-const RASTER_AXIS_TICKS_PER_YEAR: f32 = ${ticksPerYear}.0;
+const RASTER_AXIS_YEARS_PER_TICK: f32 = ${getWGSLFloatLiteral(Math.fround(1 / Math.fround(ticksPerYear)))};
 fn rasterAxisWords(slice: u32) -> vec2<u32> {
   return vec2<u32>(acquisitionTimes[acquisitionTimesOffset + 2u * slice], acquisitionTimes[acquisitionTimesOffset + 2u * slice + 1u]);
 }
@@ -109,10 +124,10 @@ fn rasterAxisMidpoint() -> vec2<u32> {
   return vec2<u32>(low, first.y + (difference.y >> 1u) + select(0u, 1u, low < first.x));
 }
 fn rasterSliceYears(slice: u32) -> f32 {
-  return timeWordsDifferenceToF32(rasterAxisWords(slice), rasterAxisMidpoint()) / RASTER_AXIS_TICKS_PER_YEAR;
+  return timeWordsDifferenceToF32(rasterAxisWords(slice), rasterAxisMidpoint()) * RASTER_AXIS_YEARS_PER_TICK;
 }
 fn rasterYearsBetween(later: u32, earlier: u32) -> f32 {
-  return timeWordsDifferenceToF32(rasterAxisWords(later), rasterAxisWords(earlier)) / RASTER_AXIS_TICKS_PER_YEAR;
+  return timeWordsDifferenceToF32(rasterAxisWords(later), rasterAxisWords(earlier)) * RASTER_AXIS_YEARS_PER_TICK;
 }
 `;
 }

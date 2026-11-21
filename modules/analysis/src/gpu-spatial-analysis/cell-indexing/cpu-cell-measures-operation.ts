@@ -5,6 +5,8 @@
 
 // Boundary construction follows H3 faceijk.c (Apache-2.0), including substrate face crossings.
 
+import {resolveCellPrecision} from './cell-precision';
+import {snapshotCellConstruction} from './cell-construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {dggs} from '@luma.gl/shaders';
 import {
@@ -19,7 +21,7 @@ import {
   normalizeCoveringVector,
   type CPUCoveringVector
 } from '../cell-topology/cpu-s2-covering-geometry';
-import {parseDggsFaceTable} from './h3-index-extended-wgsl';
+import {getFaceBasisVectors} from './h3-index-extended-wgsl';
 import {getRectangularCellMeasures} from './rectangular-cell-measures';
 import {GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT} from './gpu-cell-measures';
 import {
@@ -93,30 +95,9 @@ function readIntegerTable(functionName: string, columns: number, count: number):
 }
 const BASE_HOMES = readIntegerTable('dggs_h3_get_base_cell_home', 4, 122);
 const NEIGHBOR_FACES = readIntegerTable('dggs_h3_get_face_neighbor', 3, 20);
-const FACE_AZIMUTHS = parseDggsFaceTable('dggs_h3_get_face_axis_azimuths', 3);
-const FACE_BASES = parseDggsFaceTable('dggs_h3_get_face_center_geo', 2).map(
-  ([latitude, longitude], face) => {
-    const azimuth = FACE_AZIMUTHS[face][0];
-    const north = [
-      -Math.sin(latitude) * Math.cos(longitude),
-      -Math.sin(latitude) * Math.sin(longitude),
-      Math.cos(latitude)
-    ];
-    const east = [-Math.sin(longitude), Math.cos(longitude), 0];
-    const direction = (angle: number): Coordinates =>
-      north.map(
-        (value, axis) => Math.cos(angle) * value + Math.sin(angle) * east[axis]
-      ) as unknown as Coordinates;
-    return [
-      [
-        Math.cos(latitude) * Math.cos(longitude),
-        Math.cos(latitude) * Math.sin(longitude),
-        Math.sin(latitude)
-      ] as Coordinates,
-      direction(azimuth),
-      direction(azimuth - Math.PI / 2)
-    ];
-  }
+const FACE_BASIS_VECTORS = getFaceBasisVectors();
+const FACE_BASES = Array.from({length: 20}, (_, face) =>
+  FACE_BASIS_VECTORS.slice(3 * face, 3 * face + 3).map(vector => vector as unknown as Coordinates)
 );
 
 /**
@@ -124,7 +105,7 @@ const FACE_BASES = parseDggsFaceTable('dggs_h3_get_face_center_geo', 2).map(
  * the returned rows. Invalid keys produce zeros; edgeCounts is never truncated by the stride.
  *
  * What differs from the GPU contributor:
- * - Both precision options compute in binary64; 'fp64' selects double-single on the GPU only.
+ * - Every precision option computes in binary64 here; 'double-single' selects hi/lo float32 arithmetic only on the GPU.
  * - All boundaries use binary64 face projection, including pentagons and face crossings at
  *   resolutions 11–15 where the GPU's float32 fallback is unreliable. Near-zero lengths and
  *   areas still have binary64 coordinate error; no float32 intermediate is emulated.
@@ -227,6 +208,17 @@ export function computeCellMeasuresOnCPU(
 /** CPU twin with the contributor's exact vector output layouts and optional ports. */
 export class CPUCellMeasuresOperation extends GPUCPUOperation {
   constructor(props: CellMeasuresOperationProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'family',
+      'cells',
+      'wordOrder',
+      'maximumEdgeCount',
+      'units',
+      'precision',
+      'rowCount',
+      ['output', ['areas', 'perimeters', 'edgeLengths', 'edgeCounts', 'pentagons']]
+    ]);
     const operation = new GPUCellMeasuresOperation(props);
     const {id} = operation;
     validateCapacity(id, 'rowCount', props.rowCount);
@@ -277,11 +269,7 @@ function validateOptions(id: string, options: CPUCellMeasuresOptions): void {
     options.units === undefined || ['meters', 'kilometers'].includes(options.units),
     "units must be 'meters' or 'kilometers'"
   );
-  validateRequirement(
-    id,
-    options.precision === undefined || ['float32', 'fp64'].includes(options.precision),
-    "precision must be 'float32' or 'fp64'"
-  );
+  resolveCellPrecision(id, options.precision);
   validateCapacity(
     id,
     'maximumEdgeCount',

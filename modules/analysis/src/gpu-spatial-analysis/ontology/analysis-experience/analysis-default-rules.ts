@@ -701,8 +701,8 @@ function resolveKneeDistance(
       undefined,
       factor,
       unit,
-      false,
-      'No knee of the k-distance curve: the profile has no curve of at least 8 points'
+      spacing?.sampled ?? false,
+      `No knee of the k-distance curve: the profile has no curve of at least 8 points${spacing ? describeSample(spacing) : ''}`
     );
   }
   const knee = findKnee(curve.distances);
@@ -714,7 +714,7 @@ function resolveKneeDistance(
       factor,
       unit,
       spacing.sampled,
-      'No knee radius: duplicate locations give a zero k-distance at the bend; a radius must be positive and finite'
+      `No knee radius: duplicate locations give a zero k-distance at the bend; a radius must be positive and finite${describeSample(spacing)}`
     );
   }
   if (!knee || knee.bend < GPU_ANALYSIS_KNEE_MINIMUM_BEND) {
@@ -723,8 +723,8 @@ function resolveKneeDistance(
       undefined,
       factor,
       unit,
-      false,
-      `The sorted ${ordinal}-neighbour distance curve has no clear knee (largest bend ${knee ? formatNumber(knee.bend) : 'none'}, below ${GPU_ANALYSIS_KNEE_MINIMUM_BEND}), so no radius is suggested`
+      spacing.sampled,
+      `The sorted ${ordinal}-neighbour distance curve has no clear knee (largest bend ${knee ? formatNumber(knee.bend) : 'none'}, below ${GPU_ANALYSIS_KNEE_MINIMUM_BEND}), so no radius is suggested${describeSample(spacing)}`
     );
   }
   const sorted = [...curve.distances].sort((a, b) => a - b);
@@ -741,8 +741,8 @@ function resolveKneeDistance(
       undefined,
       factor,
       unit,
-      false,
-      `The sorted ${ordinal}-neighbour distance curve bends ${formatNumber(knee.bend)} but rises by only ${formatNumber(rangeOverMedian)} times its median (at least ${GPU_ANALYSIS_KNEE_MINIMUM_RANGE_OVER_MEDIAN} is needed), so it does not meet this rule's range-to-median threshold and no radius is suggested`
+      spacing.sampled,
+      `The sorted ${ordinal}-neighbour distance curve bends ${formatNumber(knee.bend)} but rises by only ${formatNumber(rangeOverMedian)} times its median (at least ${GPU_ANALYSIS_KNEE_MINIMUM_RANGE_OVER_MEDIAN} is needed), so it does not meet this rule's range-to-median threshold and no radius is suggested${describeSample(spacing)}`
     );
   }
   return createResolution(

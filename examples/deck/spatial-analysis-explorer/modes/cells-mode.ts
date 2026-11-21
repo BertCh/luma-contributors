@@ -157,7 +157,7 @@ const AUTO_MEASURE_FRAME = 45;
 const OUTLINE_CAPACITY = 1 << 17;
 /** Rings of the assembled outline. */
 const RING_CAPACITY = 1 << 12;
-const SUMMARY_FIXED_WORDS = 18;
+const SUMMARY_FIXED_WORDS = 20;
 const ZONE_COLORS = [
   [78, 201, 255, 200],
   [255, 148, 72, 200],
@@ -314,9 +314,12 @@ type Pipeline = {
         count: Buffer;
         overflow: Buffer;
         total: Buffer;
+        candidateOverflow: Buffer;
       })
     | null;
-  compacted: (GeometryBuffers & {count: Buffer; overflow: Buffer}) | null;
+  compacted:
+    | (GeometryBuffers & {count: Buffer; overflow: Buffer; candidateOverflow: Buffer})
+    | null;
   selection:
     | (GeometryBuffers & {distances: Buffer; counts: Buffer; cell: Buffer; stride: number})
     | null;
@@ -567,7 +570,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       // plain segments if it does not compile on the device.
       const outlineGraphs: CompiledGPUCommandGraph<void>[] = [];
       const outlineErrors: string[] = [];
-      if (tabular && tableCells && tableCounts && tableCount) {
+      if (tabular && tableCells && tableCounts && tableCount && tableOverflow) {
         const buildOutline = async (
           name: string,
           grouped: boolean,
@@ -614,6 +617,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             const outlineOverflow = create(`${name}-overflow`, 4);
             let rings: OutlineBuffers['rings'] = null;
             let ringOptions: ConstructorParameters<typeof GPUCellSetOutline>[0]['rings'];
+            let ringCountsPass: Parameters<typeof addKernelPass>[1] | undefined;
             if (withRings) {
               const ringOffsets = create(`${name}-ring-offsets`, (RING_CAPACITY + 1) * 4);
               const ringCounts = create(`${name}-ring-counts`, RING_CAPACITY * 4);
@@ -645,7 +649,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
               };
               // Vertex count of every ring (offsets past the ring count repeat the last offset, so
               // unused rings are empty), which the ring outline layer reads.
-              addKernelPass(graph, {
+              ringCountsPass = {
                 id: `${name}-ring-counts`,
                 invocationCount: RING_CAPACITY,
                 bindings: [
@@ -658,14 +662,19 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
                   }
                 ],
                 body: `counts[countsOffset + index] = offsets[offsetsOffset + index + 1u] - offsets[offsetsOffset + index];`
-              });
+              };
             }
             graph.add(
               new GPUCellSetOutline({
                 id: name,
                 family: selectedFamily as 'h3' | 'quadbin',
-                cells: tableCellsView,
-                count: tableCountView,
+                source: {
+                  cells: tableCellsView,
+                  status: {
+                    count: tableCountView,
+                    overflow: view('table-overflow', tableOverflow, 'uint32', 1)
+                  }
+                },
                 groups: tableGroupsView,
                 rings: ringOptions,
                 output: {
@@ -696,6 +705,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
                 }
               })
             );
+            if (ringCountsPass) addKernelPass(graph, ringCountsPass);
             const compiled = owned.track(await graph.compileAsync());
             const drawCommands = owned.track(
               new DrawCommandBuffer(device, {
@@ -743,6 +753,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         const compactCells = create('compact-cells', COVER_CAPACITY * 8);
         const compactCount = create('compact-count', 4);
         const compactOverflow = create('compact-overflow', 4);
+        const compactCandidateOverflow = create('compact-candidate-overflow', 4);
         const coverGeometry = createGeometry('cover', COVER_CAPACITY, maximumVertexCount);
         const compactGeometry = createGeometry('compact', COVER_CAPACITY, maximumVertexCount);
         const graph = new GPUCommandGraph<void>(device, {id: `cells-zones-${pipelineSerial}`});
@@ -760,6 +771,34 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
           compactCells,
           'uint32x2',
           COVER_CAPACITY
+        );
+        const coverOverflowView = importCellBuffer(
+          graph,
+          'cover-overflow',
+          coverOverflow,
+          'uint32',
+          1
+        );
+        const coverCandidateOverflowView = importCellBuffer(
+          graph,
+          'cover-candidate-overflow',
+          coverCandidateOverflow,
+          'uint32',
+          1
+        );
+        const compactOverflowView = importCellBuffer(
+          graph,
+          'compact-overflow',
+          compactOverflow,
+          'uint32',
+          1
+        );
+        const compactCandidateOverflowView = importCellBuffer(
+          graph,
+          'compact-candidate-overflow',
+          compactCandidateOverflow,
+          'uint32',
+          1
         );
         graph.add(
           new GPUCellCover({
@@ -809,14 +848,8 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
               status: {
                 count: coverCountView,
                 requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1),
-                overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
-                candidateOverflow: importCellBuffer(
-                  graph,
-                  'cover-candidate-overflow',
-                  coverCandidateOverflow,
-                  'uint32',
-                  1
-                )
+                overflow: coverOverflowView,
+                candidateOverflow: coverCandidateOverflowView
               }
             }
           })
@@ -826,13 +859,20 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             id: 'compact',
             family: tabularFamily,
             operation: {type: 'compact', resolution},
-            cells: coverCellsView,
-            count: coverCountView,
+            source: {
+              cells: coverCellsView,
+              status: {
+                count: coverCountView,
+                overflow: coverOverflowView,
+                candidateOverflow: coverCandidateOverflowView
+              }
+            },
             output: {
               cells: compactCellsView,
               status: {
                 count: importCellBuffer(graph, 'compact-count', compactCount, 'uint32', 1),
-                overflow: importCellBuffer(graph, 'compact-overflow', compactOverflow, 'uint32', 1)
+                overflow: compactOverflowView,
+                candidateOverflow: compactCandidateOverflowView
               }
             }
           })
@@ -873,9 +913,15 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
           core: coverCore,
           count: coverCount,
           overflow: coverOverflow,
-          total: coverTotal
+          total: coverTotal,
+          candidateOverflow: coverCandidateOverflow
         };
-        compacted = {...compactGeometry, count: compactCount, overflow: compactOverflow};
+        compacted = {
+          ...compactGeometry,
+          count: compactCount,
+          overflow: compactOverflow,
+          candidateOverflow: compactCandidateOverflow
+        };
 
         // Selection graph: click -> cell -> grid disk -> decode.
         const diskStride = getCellTopologyStride(tabularFamily, {type: 'disk', k: DISK_RADIUS});
@@ -1296,7 +1342,9 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         [active.groupOutline?.overflow ?? null, 14],
         [active.outline?.rings?.count ?? null, 15],
         [active.outline?.rings?.overflow ?? null, 16],
-        [active.outline?.rings?.openSegments ?? null, 17]
+        [active.outline?.rings?.openSegments ?? null, 17],
+        [active.cover?.candidateOverflow ?? null, 18],
+        [active.compacted?.candidateOverflow ?? null, 19]
       ];
       for (const [source, word] of sources) {
         if (!source) continue;
@@ -1390,7 +1438,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
         }
         if (active.cover) {
           coverReadout.setValue(
-            `${formatCount(words[3])} (${formatCount(words[5])} unclamped${words[4] ? ', OVERFLOW' : ''})`
+            `${formatCount(words[3])} (${formatCount(words[5])} unclamped${words[4] ? ', OVERFLOW' : ''}${words[18] ? ', CANDIDATE LOSS' : ''})`
           );
           const coverRows = Math.min(words[3], COVER_CAPACITY);
           let coreCells = 0;
@@ -1403,7 +1451,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
           );
           const fewer = words[3] > 0 ? (1 - words[6] / words[3]) * 100 : 0;
           compactReadout.setValue(
-            `${formatCount(words[6])} (${fewer.toFixed(0)}% fewer${words[7] ? ', OVERFLOW' : ''})`
+            `${formatCount(words[6])} (${fewer.toFixed(0)}% fewer${words[7] ? ', OVERFLOW' : ''}${words[19] ? ', INCOMPLETE SOURCE' : ''})`
           );
         }
       } catch {

@@ -31,7 +31,7 @@ export type VariogramOracleResult = {
  */
 export function computeVariogramOnCPU(
   scene: PairStatisticsScene & {values: Float32Array},
-  frame: PairStatisticsFrame & {azimuthOffset?: number},
+  frame: PairStatisticsFrame & {sectorOffsetRadians?: number},
   lagCount: number,
   directionCount = 1
 ): VariogramOracleResult {
@@ -41,7 +41,7 @@ export function computeVariogramOnCPU(
   const distanceSums = new Array<number>(binCount).fill(0);
   const robustSums = new Array<number>(binCount).fill(0);
   const edgePairCounts = new Array<number>(binCount).fill(0);
-  const offset = Math.fround(frame.azimuthOffset ?? 0);
+  const offset = Math.fround(frame.sectorOffsetRadians ?? 0);
   forEachPair(scene, frame, 'unordered', ({focus, neighbor, deltaX, deltaY, distance}) => {
     const lag = getDistanceBin(distance, frame.maximumDistance, lagCount);
     let sector = 0;

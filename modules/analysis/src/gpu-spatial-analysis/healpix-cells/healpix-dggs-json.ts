@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getPackedUint32Values,
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {resolveHealpixIndexScheme} from './healpix-scheme';
 import type {GPUHealpixIndexScheme} from './gpu-healpix-point-to-cell';
 import {HEALPIX_MAXIMUM_ORDER} from './healpix-index-wgsl';
 
@@ -39,7 +45,7 @@ export type HealpixDGGSJSONProps = {
   /** Nested index of the ancestral zone at `ancestorOrder`. Defaults to 0n. */
   ancestor?: bigint;
   /** Read-back cell keys (for example `GPUHealpixCellAggregation` `output.cells`, first `count` entries). */
-  cells: readonly bigint[];
+  cells: ArrayLike<bigint>;
   /** Named properties, each aligned with `cells`. */
   properties: Readonly<Record<string, HealpixDGGSJSONProperty>>;
   /** DGGRS URI. Defaults to {@link HEALPIX_DGGRS_URI}. */
@@ -65,7 +71,7 @@ export type HealpixDGGSJSON = {
 
 /**
  * Builds the DGGS-JSON zone data (OGC API - DGGS Part 1, approved 2025-10-24) of the cells below
- * one ancestral zone, from read-back aggregation output.
+ * one ancestral zone, from explicitly sparse bigint cells. For aggregation use createHealpixDGGSJSONFromReadback to check completeness first.
  *
  * Per the JSON schema (`dggs-json.json`: required `dggrs`, `zoneId`, `depths`, `values`; each value
  * entry has `depth`, `shape {count, subZones}` and a `data` array of numbers or null), the data of
@@ -82,6 +88,8 @@ export type HealpixDGGSJSON = {
  * Duplicated cells keep the last value. Cells outside the ancestor throw.
  */
 export function createHealpixDGGSJSON(props: HealpixDGGSJSONProps): HealpixDGGSJSON {
+  resolveHealpixIndexScheme('createHealpixDGGSJSON', props.scheme);
+  validateCapacity('createHealpixDGGSJSON', 'cells.length', props.cells.length, 0);
   const ancestorOrder = props.ancestorOrder ?? 0;
   const ancestor = props.ancestor ?? 0n;
   const relativeDepth = props.order - ancestorOrder;
@@ -103,13 +111,22 @@ export function createHealpixDGGSJSON(props: HealpixDGGSJSONProps): HealpixDGGSJ
   const subZones = 4 ** relativeDepth;
   const shift = 2n * BigInt(relativeDepth);
   const marker = props.scheme === 'uniq' ? 4n ** BigInt(props.order + 1) : 0n;
-  const slots = props.cells.map(cell => {
+  const slots: number[] = [];
+  for (let index = 0; index < props.cells.length; index++) {
+    const cell = props.cells[index];
+    validateRequirement(
+      'createHealpixDGGSJSON',
+      typeof cell === 'bigint',
+      `cells[${index}] must be bigint; received ${String(cell)}; use createHealpixDGGSJSONFromReadback for packed words`
+    );
     const nested = cell - marker;
     if (nested < 0n || nested >> shift !== ancestor) {
-      throw new Error('createHealpixDGGSJSON a cell lies outside the ancestral zone');
+      throw new Error(
+        `createHealpixDGGSJSON cell ${cell} (scheme ${props.scheme ?? 'nested'}) lies outside the ancestral zone`
+      );
     }
-    return Number(nested - (ancestor << shift));
-  });
+    slots.push(Number(nested - (ancestor << shift)));
+  }
   const document: HealpixDGGSJSON = {
     $schema: DGGS_JSON_SCHEMA_URI,
     dggrs: props.dggrs ?? HEALPIX_DGGRS_URI,
@@ -139,4 +156,79 @@ export function createHealpixDGGSJSON(props: HealpixDGGSJSONProps): HealpixDGGSJ
     document.values[name] = [{depth: relativeDepth, shape: {count: subZones, subZones}, data}];
   }
   return document;
+}
+
+/** Uint32 words or raw bytes from a GPU buffer read; bytes retain their offset and length. */
+type HealpixReadbackWords = Uint32Array | Uint8Array | ArrayBuffer;
+type HealpixReadbackScalar = number | HealpixReadbackWords;
+
+/** Aggregation readback plus metadata and aligned properties to export. */
+export type HealpixDGGSJSONFromReadbackProps = Omit<HealpixDGGSJSONProps, 'cells'> & {
+  /** Defaults to little-endian (low, high); high-low means (high, low). */
+  wordOrder?: 'little-endian' | 'high-low';
+  output: {
+    cells: HealpixReadbackWords;
+    status: {
+      count: HealpixReadbackScalar;
+      requiredCount: HealpixReadbackScalar;
+      overflow: HealpixReadbackScalar;
+    };
+  };
+};
+
+/**
+ * Exports exactly status.count keys, refusing dropped cells before treating missing cells as null.
+ * Each key is joined with bigint shifts in the declared word order, never through Number.
+ * Property values must already be decoded numeric elements; ambiguous raw byte views throw.
+ */
+export function createHealpixDGGSJSONFromReadback(
+  props: HealpixDGGSJSONFromReadbackProps
+): HealpixDGGSJSON {
+  const id = 'createHealpixDGGSJSONFromReadback';
+  resolveHealpixIndexScheme(id, props.scheme);
+  validateRequirement(
+    id,
+    props.wordOrder === undefined ||
+      props.wordOrder === 'little-endian' ||
+      props.wordOrder === 'high-low',
+    `wordOrder must be 'little-endian' or 'high-low'; received ${String(props.wordOrder)}`
+  );
+  const readScalar = (name: string, value: HealpixReadbackScalar): number => {
+    const scalar = typeof value === 'number' ? value : getPackedUint32Values(value, 1)[0];
+    validateCapacity(id, `output.status.${name}`, scalar, 0);
+    return scalar;
+  };
+  const count = readScalar('count', props.output.status.count);
+  const requiredCount = readScalar('requiredCount', props.output.status.requiredCount);
+  const overflow = readScalar('overflow', props.output.status.overflow);
+  validateRequirement(
+    id,
+    overflow === 0 && requiredCount === count,
+    `output.status must be complete before export; count ${count}, requiredCount ${requiredCount}, overflow ${overflow}; increase cellCapacity and rerun aggregation`
+  );
+  const words = getPackedUint32Values(props.output.cells);
+  validateRequirement(
+    id,
+    words.length % 2 === 0,
+    `output.cells must contain whole pairs of words; received ${words.length} words`
+  );
+  validateCapacity(id, 'output.status.count', count, 0, words.length / 2);
+  const cells: bigint[] = [];
+  const highOffset = props.wordOrder === 'high-low' ? 0 : 1;
+  for (let row = 0; row < count; row++) {
+    cells.push(
+      (BigInt(words[row * 2 + highOffset]) << 32n) | BigInt(words[row * 2 + 1 - highOffset])
+    );
+  }
+  for (const [name, property] of Object.entries(props.properties)) {
+    const valueType = Object.prototype.toString.call(property.values).slice(8, -1);
+    validateRequirement(
+      id,
+      !['Uint8Array', 'Uint8ClampedArray', 'Int8Array', 'ArrayBuffer', 'DataView'].includes(
+        valueType
+      ),
+      `property ${name} values must be decoded numeric elements, not ${valueType}; supply decoded Uint32Array, Float32Array or numeric values (Array.from for explicit byte-sized values)`
+    );
+  }
+  return createHealpixDGGSJSON({...props, cells});
 }

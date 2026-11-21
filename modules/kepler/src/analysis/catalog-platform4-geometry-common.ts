@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {describeOutputs} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
+import {iterateCatalogPositions} from './catalog-geojson';
 import type {GPUCommandNodeProducer, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPULineGeometryOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   getFeatureIdentity,
   getLineParts,
-  getPointPositions,
-  getPolygonParts,
   type CatalogFeature,
   type CatalogFeatureCollection,
   type CatalogPosition
@@ -19,15 +19,7 @@ import {CatalogGpuUnsupportedError, type CatalogGpuSession} from './catalog-gpu-
 export function collectCatalogPositions(
   collections: readonly CatalogFeatureCollection[]
 ): CatalogPosition[] {
-  const positions: CatalogPosition[] = [];
-  for (const collection of collections)
-    for (const feature of collection.features) {
-      positions.push(...getPointPositions(feature.geometry));
-      for (const part of getLineParts(feature.geometry)) positions.push(...part);
-      for (const polygon of getPolygonParts(feature.geometry))
-        for (const ring of polygon) positions.push(...ring);
-    }
-  return positions;
+  return Array.from(iterateCatalogPositions(collections));
 }
 
 /** One line part with its source feature. */
@@ -93,12 +85,21 @@ export async function runCatalogLineGeometry(
     output: GPULineGeometryOutput
   ) => GPUCommandNodeProducer
 ): Promise<CatalogLineGeometryResult> {
-  const lineCount = packed.lineOffsets.length - 1;
-  const outputPositions = session.output('line-positions', 'float32x2', capacities.vertices);
-  const outputOffsets = session.output('line-offsets', 'uint32', capacities.lines + 1);
-  const outputSources = session.output('line-sources', 'uint32', capacities.lines);
-  const outputLineCount = session.output('line-count', 'uint32', 1);
-  const overflow = session.output('line-overflow', 'uint32', 1);
+  const layout = describeOutputs(
+    {package: '@luma-contributors/analysis/gpu-spatial-analysis', exportName: 'GPULineChunk'},
+    'chunk',
+    {lineCapacity: capacities.lines, vertexCapacity: capacities.vertices}
+  );
+  const capacity = (path: string) => {
+    const declaration = layout.outputs.find(output => output.path === `output.${path}`);
+    if (!declaration) throw new Error(`Line output layout missing ${path}`);
+    return declaration.capacity;
+  };
+  const outputPositions = session.output('line-positions', 'float32x2', capacity('positions'));
+  const outputOffsets = session.output('line-offsets', 'uint32', capacity('lineOffsets'));
+  const outputSources = session.output('line-sources', 'uint32', capacity('sourceLineIndices'));
+  const outputLineCount = session.output('line-count', 'uint32', capacity('status.count'));
+  const overflow = session.output('line-overflow', 'uint32', capacity('status.overflow'));
   session.graph.add(
     createContributor(
       {
@@ -123,7 +124,7 @@ export async function runCatalogLineGeometry(
   ];
   // Capacities were sized from the exact requirement, so overflow is a contributor-side limit.
   if (overflowFlag) throw new CatalogGpuUnsupportedError('Line contributor output overflowed');
-  return {positions, lineOffsets, sourceLineIndices, lineCount: producedLineCount || lineCount};
+  return {positions, lineOffsets, sourceLineIndices, lineCount: producedLineCount};
 }
 
 /** Reads line `index` of a result as positions mapped by `unproject`. */

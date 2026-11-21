@@ -80,7 +80,7 @@ export default defineOperationRun({
           Math.max(MIN_TIME, Math.abs(values.integrationTime));
         flowParameters.write(
           getGPULagrangianFlowMapParameterValues({
-            fieldExtent: [0, 0, field.cellSize, field.cellSize],
+            fieldPlacement: {origin: [0, 0], cellSize: [field.cellSize, field.cellSize]},
             startTime: 0,
             timeStep: integrationTime / STEP_COUNT,
             sliceStartTime: 0,

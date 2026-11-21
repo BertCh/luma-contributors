@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotDelaunayTessellationOperationProps} from './delaunay-construction-snapshot';
 import {
   GPUContributorOperation,
   type GPUContributorOperationOutput
@@ -13,8 +15,7 @@ import {
 
 /**
  * Packed graph values for Delaunay construction; scalar output lengths are explicit.
- * Only status ports the contributor writes are exposed; its unused optional candidateOverflow,
- * uncertainCount and approximation ports are omitted.
+ * Status diagnostics are exposed only when requested by the caller.
  */
 export type DelaunayTessellationOperationProps = Pick<
   GPUDelaunayTessellationProps,
@@ -34,6 +35,9 @@ export type DelaunayTessellationOperationProps = Pick<
       converged?: string;
       iterationCount?: string;
       iterationLimitReached?: string;
+      candidateOverflow?: string;
+      uncertainCount?: string;
+      approximation?: string;
     };
     groups?: {triangleCounts: string; triangleOffsets?: string; status: {converged: string}};
   };
@@ -41,11 +45,19 @@ export type DelaunayTessellationOperationProps = Pick<
 
 /**
  * GPU Delaunay as a graph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
- * The shared operation base requires capacity >= 1, even when no triangles are produced.
- * The pure CPU function also accepts capacity zero.
+ * Capacity zero reports demand through mandatory scalar status without triangle payload.
  */
 export class GPUDelaunayTessellationOperation extends GPUContributorOperation {
   constructor(props: DelaunayTessellationOperationProps) {
+    props = snapshotDelaunayTessellationOperationProps(props);
+    for (const port of ['count', 'requiredCount', 'overflow'] as const) {
+      const value = props.output.status[port];
+      validateRequirement(
+        props.id ?? 'delaunay-tessellation',
+        typeof value === 'string' && value.length > 0,
+        `output.status.${port} must name a graph value; received ${String(value)}`
+      );
+    }
     const outputs: Record<string, GPUContributorOperationOutput> = {
       triangles: {value: props.output.triangles, format: 'uint32x3', length: props.capacity}
     };
@@ -74,6 +86,7 @@ export class GPUDelaunayTessellationOperation extends GPUContributorOperation {
       id: props.id ?? 'delaunay-tessellation',
       inputs: {positions: props.positions, ...(props.groups ? {groupIds: props.groups.ids} : {})},
       outputs,
+      emptyOutputPorts: ['triangles'],
       createContributor: getView =>
         new GPUDelaunayTessellation({
           id: props.id,

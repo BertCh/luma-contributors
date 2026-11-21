@@ -256,7 +256,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
           featureOffsets,
           polygonOffsets,
           ringOffsets,
-          output: {points, distances: radiiView, degenerate: degenerateView}
+          output: {points, publishedCenterClearance: radiiView, degenerate: degenerateView}
         })
       );
       const columnViews = Object.fromEntries(

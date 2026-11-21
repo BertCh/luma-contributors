@@ -102,14 +102,14 @@ for (const strategy of ['exact', 'tiled'] as const) {
           values,
           mask,
           variableCount: 2,
-          maximumPermutations: MULTIVARIATE_GEARY_RUNTIME_PERMUTATIONS,
+          permutationCount: MULTIVARIATE_GEARY_RUNTIME_PERMUTATIONS,
           strategy,
           rowTileSize: 3,
           permutationTileSize: 7,
           parameters: parameterView,
           // Deliberately different defaults: the resident parameter view must override both.
           seed: [123, 456],
-          significance: 0.5,
+          significanceLevel: 0.5,
           correction: mode === 'bonferroni' ? 'bonferroni' : 'none',
           multipleTesting: mode === 'benjamini-hochberg' ? 'benjamini-hochberg' : 'none',
           tail: mode === 'bonferroni' ? 'esda-min-tail' : 'equal-tail',
@@ -119,7 +119,7 @@ for (const strategy of ['exact', 'tiled'] as const) {
               length: 8,
               byteOffset: 4
             }),
-            pValues: rig.graph.createDataView(pValues.view.buffer, {
+            adjustedPValues: rig.graph.createDataView(pValues.view.buffer, {
               format: 'float32',
               length: 8,
               byteOffset: 4
@@ -150,7 +150,11 @@ for (const strategy of ['exact', 'tiled'] as const) {
                   NaN
                 )
               }
-            : computeMultivariateGearyRuntimeOracle(settings.seed!, settings.significance!, mode);
+            : computeMultivariateGearyRuntimeOracle(
+                settings.seed as readonly [number, number],
+                settings.significanceLevel!,
+                mode
+              );
           expectClose((await readFloat32(statistic.buffer, 10)).slice(1, 9), expected.statistic);
           expectClose((await readFloat32(pValues.buffer, 10)).slice(1, 9), expected.pValues);
           expect((await readUint32(classes.buffer, 10)).slice(1, 9)).toEqual(expected.classes);
@@ -170,22 +174,22 @@ for (const strategy of ['exact', 'tiled'] as const) {
           ]);
         };
         try {
-          const firstSettings = {seed: MULTIVARIATE_GEARY_RUNTIME_SEED, significance: 0.01};
+          const firstSettings = {seed: MULTIVARIATE_GEARY_RUNTIME_SEED, significanceLevel: 0.01};
           for (const settings of [
             firstSettings,
-            {...firstSettings, significance: 0.99},
-            {seed: [0xffffffff, 0xffffffff] as const, significance: 0.99},
-            {seed: [0x80000000, 1] as const, significance: 0.99},
+            {...firstSettings, significanceLevel: 0.99},
+            {seed: [0xffffffff, 0xffffffff] as const, significanceLevel: 0.99},
+            {seed: [0x80000000, 1] as const, significanceLevel: 0.99},
             firstSettings
           ])
             await check(settings);
           rig.bufferOf(mask).write(new Uint32Array(8));
-          await check({...firstSettings, significance: 0.99}, true);
+          await check({...firstSettings, significanceLevel: 0.99}, true);
           rig.bufferOf(mask).write(new Uint32Array([1, 1, 1, 1, 1, 1, 0, 1]));
           rig.bufferOf(weightOverflow).write(new Uint32Array([1]));
           await check(firstSettings, true);
           rig.bufferOf(weightOverflow).write(new Uint32Array([0]));
-          await check({...firstSettings, significance: 0.99});
+          await check({...firstSettings, significanceLevel: 0.99});
         } finally {
           compiled.destroy();
           parameters.destroy();

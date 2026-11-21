@@ -183,8 +183,8 @@ describe('createWGSLKernelNode kernel records', () => {
   test('recorder.recordKernels fills kernel facts and recorder annotations win', () => {
     const device = createDevice();
     const recorder = new GPUComputationRecorder({sourceText: true});
-    const graph = recorder.recordKernels(new GPUCommandGraph(device, {id: 'scoped'}));
-    expect(recorder.graph).toBe(graph);
+    const graph = new GPUCommandGraph(device, {id: 'scoped'});
+    expect(recorder.recordKernels(graph)).toBe(graph);
     const inputs = buildGraph(graph);
     // A pack-level annotation for one node: its own fields win, kernel facts fill the rest.
     recorder.recordNode(
@@ -193,7 +193,10 @@ describe('createWGSLKernelNode kernel records', () => {
     );
     const compiled = graph.compile();
     try {
-      const {graph: described, sources} = describeGPUCommandGraph(compiled, {recorder});
+      const description = describeGPUCommandGraph(compiled, {recorder});
+      expect(recorder.getRecordedGraphDescription(compiled)).toEqual(description);
+      expect(new GPUComputationRecorder().getRecordedGraphDescription(compiled)).toBeUndefined();
+      const {graph: described, sources} = description;
       const scale = described.nodes.find(node => node.id === 'scale')!;
       expect(scale).toMatchObject({
         op: 'GPUScaled',
@@ -206,6 +209,67 @@ describe('createWGSLKernelNode kernel records', () => {
     } finally {
       compiled.destroy();
       inputs.destroy();
+      device.destroy();
+    }
+  });
+
+  test.each([
+    'compile',
+    'compileAsync'
+  ] as const)('recorder rejects a foreign compilation with identical graph and node IDs (%s)', async compileMethod => {
+    const device = createDevice();
+    const recorder = new GPUComputationRecorder({sourceText: true});
+    const surveyGraph = recorder.recordKernels(new GPUCommandGraph(device));
+    const forecastGraph = new GPUCommandGraph(device);
+    recordWGSLKernelNodes(forecastGraph);
+    surveyGraph.add(
+      createWGSLKernelNode(surveyGraph, {
+        id: 'aggregate',
+        operation: 'Survey',
+        invocationCount: 9,
+        workgroupSize: 2,
+        bindings: [],
+        body: 'let survey = index;'
+      })
+    );
+    forecastGraph.add(
+      createWGSLKernelNode(forecastGraph, {
+        id: 'aggregate',
+        operation: 'Forecast',
+        invocationCount: 1,
+        workgroupSize: 2,
+        bindings: [],
+        body: 'let forecast = index;'
+      })
+    );
+    const compiledSurvey = await surveyGraph[compileMethod]();
+    const compiledForecast = await forecastGraph[compileMethod]();
+    try {
+      expect(compiledForecast.id).toBe(compiledSurvey.id);
+      expect(compiledSurvey.stats.nodeOrder).toEqual(['aggregate']);
+      expect(compiledForecast.stats.nodeOrder).toEqual(['aggregate']);
+      const survey = recorder.getRecordedGraphDescription(compiledSurvey);
+      expect(survey?.graph.nodes[0]).toMatchObject({
+        op: 'Survey',
+        dispatch: {workgroups: [5, 1, 1]}
+      });
+      expect(survey?.sources[0].text).toContain('let survey = index;');
+      const forecast = describeGPUCommandGraph(compiledForecast, {
+        graph: forecastGraph,
+        sourceText: true
+      });
+      expect(forecast.graph.nodes[0]).toMatchObject({
+        op: 'Forecast',
+        dispatch: {workgroups: [1, 1, 1]}
+      });
+      expect(forecast.sources[0].text).toContain('let forecast = index;');
+      const error =
+        'GPUComputationRecorder compiled must come from the graph passed to recordKernels';
+      expect(() => recorder.getRecordedGraphDescription(compiledForecast)).toThrow(error);
+      expect(() => describeGPUCommandGraph(compiledForecast, {recorder})).toThrow(error);
+    } finally {
+      compiledForecast.destroy();
+      compiledSurvey.destroy();
       device.destroy();
     }
   });

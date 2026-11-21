@@ -15,6 +15,7 @@ import {
   addCardinality,
   addLinkSegments,
   allocateWeights,
+  getWeightsInput,
   getChunkNumber,
   getChunkRowCounts,
   getSegmentTargets,
@@ -40,13 +41,16 @@ export default defineOperationRun({
     const directed = uploadChunkedWeights(
       builder,
       'directed',
-      createKnnWeights(points.positions, values.k),
-      getChunkRowCounts(rowCount, values.chunkCount)
+      createKnnWeights(points.positions, values['k']),
+      getChunkRowCounts(rowCount, values['chunkCount'])
     );
     const slotCapacity = directed.chunks.reduce((total, chunk) => total + chunk.capacity, 0);
     const transposed = allocateWeights(builder, 'transposed', rowCount, slotCapacity, true);
     builder.graph.add(
-      new GPUChunkedSpatialWeightsTranspose({weights: directed.input, output: transposed.port})
+      new GPUChunkedSpatialWeightsTranspose({
+        weights: directed.input,
+        output: getWeightsInput(transposed)
+      })
     );
     return {
       outputs: {

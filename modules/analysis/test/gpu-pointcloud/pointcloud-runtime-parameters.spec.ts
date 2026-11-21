@@ -240,7 +240,7 @@ it('updates SMRF scalar on one compiled graph against the independent PDAL/SciPy
       new GPUPointCloudSMRF({
         positions: fixture.view('float32x3', new Float32Array(scenario.positions)).view,
         classifications: fixture.view('uint32', new Uint32Array(scenario.classifications)).view,
-        selection: fixture.view('uint32', new Uint32Array(scenario.selection)).view,
+        mask: fixture.view('uint32', new Uint32Array(scenario.selection)).view,
         grid,
         window: scenario.window,
         cut: scenario.cut,
@@ -377,7 +377,7 @@ for (const metric of ['point-to-point', 'point-to-plane'] as const) {
           robust: {method: 'tukey', scale: 0.01},
           translationTolerance: 0,
           rotationTolerance: 0,
-          iterations: 1,
+          maximumIterations: 1,
           parameters: parameters.view,
           output: {
             status: status.view,
@@ -593,7 +593,7 @@ it('updates Huber ICP scales outside the float32 square range on one compiled gr
         maximumDistance: 1,
         robust: {method: 'huber', scale: 1},
         parameters: parameters.view,
-        iterations: 1,
+        maximumIterations: 1,
         translationTolerance: 1,
         rotationTolerance: 1,
         output: {
@@ -610,7 +610,7 @@ it('updates Huber ICP scales outside the float32 square range on one compiled gr
         source: source.view,
         target: target.view,
         maximumDistance: 1,
-        iterations: 1,
+        maximumIterations: 1,
         translationTolerance: 1,
         rotationTolerance: 1,
         output: {

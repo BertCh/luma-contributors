@@ -5,7 +5,7 @@ import {Device, Resource} from '@luma.gl/core';
 import {GPUSpatialJoinPrepared} from '../spatial-join/gpu-spatial-join-prepared';
 import {
   GPUCommandGraph,
-  GraphDataView,
+  type GraphDataView,
   GraphVectorView,
   GraphTextureHandle,
   GraphTextureView,
@@ -13,6 +13,8 @@ import {
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
 import {
+  isGraphDataView,
+  isGraphVectorView,
   GPUParameterBuffer,
   validateGPUParameterValues,
   type GPUParameterFormat,
@@ -83,7 +85,7 @@ export function addPreparedRecipe<Parameters, Props extends object, Result>(
     const prepared =
       view instanceof GPUParameterBuffer
         ? view
-        : view instanceof GraphVectorView
+        : isGraphVectorView(view)
           ? new GraphVectorView({...view, data: view.data.map(copyBufferView)})
           : view instanceof GraphTextureView
             ? preparation.createTextureView(copyTexture(view.texture), view)
@@ -208,7 +210,7 @@ function validateRecipeResource<Parameters>(
     );
     return;
   }
-  if (resource instanceof GraphDataView || resource instanceof GraphVectorView) {
+  if (isGraphDataView(resource) || isGraphVectorView(resource)) {
     validateGraphViewsBelongToGraph('GPURecipePreparation', graph, [resource]);
   } else {
     const texture = resource instanceof GraphTextureView ? resource.texture : resource;
@@ -258,8 +260,14 @@ function captureRecipeRecords<Value>(
 ): Value {
   if (!value || typeof value !== 'object') return value;
   if (
-    value instanceof GraphDataView ||
-    value instanceof GraphVectorView ||
+    // Presence checks do not evaluate unrelated configuration accessors (for example a
+    // raster band's format). Only a full candidate shape reaches the public discriminator.
+    (['buffer', 'format', 'length', 'byteOffset', 'byteStride', 'rowByteLength'].every(
+      field => field in value
+    ) &&
+      isGraphDataView(value)) ||
+    (['format', 'length', 'data', 'chunks'].every(field => field in value) &&
+      isGraphVectorView(value)) ||
     value instanceof GraphTextureHandle ||
     value instanceof GraphTextureView ||
     value instanceof GPUParameterBuffer ||

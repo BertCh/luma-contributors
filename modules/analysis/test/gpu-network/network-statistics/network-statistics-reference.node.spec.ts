@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {GPU_NETWORK_STATISTICS_WORD} from '../../../src/gpu-network/network-statistics/index';
 import {buildCSR} from '../network-reachability/network-reachability-oracle';
 import {computeNetworkStatisticsOracle} from './network-statistics-oracle';
 import {
@@ -35,4 +36,33 @@ it('the statistics oracle matches networkx, self-loops counted twice when undire
     });
     expect(compareNetworkStatistics(scene, words), name).toBeUndefined();
   }
+});
+
+it('the statistics comparison rejects a NaN or out-of-tolerance modularity (TOOL-109)', () => {
+  const scene = NETWORK_STATISTICS_REFERENCE.scenes['undirected'];
+  const words = computeNetworkStatisticsOracle({
+    nodeCount: scene.nodeCount,
+    csr: buildCSR(scene.nodeCount, getNetworkStatisticsReferenceEdges(scene)),
+    directed: scene.directed,
+    communities: scene.communities,
+    resolution: scene.resolution
+  });
+  const setModularity = (value: number) => {
+    const mutated = Uint32Array.from(words);
+    mutated[GPU_NETWORK_STATISTICS_WORD.modularity] = new Uint32Array(
+      Float32Array.of(value).buffer
+    )[0];
+    return mutated;
+  };
+  expect(compareNetworkStatistics(scene, setModularity(scene.modularity))).toBeUndefined();
+  expect(compareNetworkStatistics(scene, setModularity(NaN))).toMatch(/^modularity/);
+  expect(compareNetworkStatistics(scene, setModularity(Infinity))).toMatch(/^modularity/);
+  expect(compareNetworkStatistics(scene, setModularity(scene.modularity + 1e-3))).toMatch(
+    /^modularity/
+  );
+  expect(() => compareNetworkStatistics(scene, Uint32Array.from([...words, 0xdeadbeef]))).toThrow(
+    /length/
+  );
+  // A truncated summary cannot be compared.
+  expect(() => compareNetworkStatistics(scene, words.slice(0, words.length - 1))).toThrow();
 });

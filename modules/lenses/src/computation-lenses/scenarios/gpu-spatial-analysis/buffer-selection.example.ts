@@ -51,7 +51,7 @@ export async function runExample(
       points: {kind: 'points', positions: input.observations},
       features: {kind: 'points', positions: input.libraries},
       spatialContext: input.spatialContext,
-      distance: input.distance,
+      radius: input.distance,
       candidateCapacity: input.observations.length * input.libraries.length,
       output: {outputMask: selected, distances, status: {overflow}}
     })

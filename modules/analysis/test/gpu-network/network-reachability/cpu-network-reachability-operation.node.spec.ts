@@ -73,18 +73,82 @@ it.each([
   );
 });
 
-it('reuses slot-indexed tie flags across overlapping CSR rows', () => {
+it('keeps tight predecessor witnesses specific to each source across overlapping CSR rows', () => {
   const result = computeNetworkReachabilityOnCPU({
     topology: getOverlappingRoutingTopology(),
     startNodes: Uint32Array.of(0, 2),
     startCosts: Float32Array.of(1, 0)
   });
-  // Row 2 lowers node 1 to 0 and marks slot 0 as a tie. Both roots have level 0;
-  // row 0 reuses slot 0, so the lowest level-0 predecessor is 0 despite its cost of 1.
+  // Rows 0 and 2 both own slot 0 (a zero-cost edge to 1). Starting costs are 1 and 0,
+  // so the minimum cost at 1 is 0. Only 2->1 is tight: 0+0=0; 0->1 costs 1+0=1.
+  // A slot shared by two CSR rows cannot transfer its tightness to the other source.
   expect(Array.from(result.costs)).toEqual([1, 0, 0]);
-  expect(Array.from(result.predecessors)).toEqual([NONE, 0, NONE]);
+  expect(Array.from(result.predecessors)).toEqual([NONE, 2, NONE]);
+  expect(Array.from(result.predecessorEdges)).toEqual([NONE, 0, NONE]);
   expect(Array.from(result.unresolvedCount)).toEqual([0]);
   expect(Array.from(result.converged)).toEqual([1]);
+});
+
+it.each([
+  {
+    offsets: getOverlappingRoutingTopology().offsets,
+    root: 2,
+    sourceCost: 1,
+    expectedCosts: [1, 0, 0],
+    expectedParents: [NONE, 2, NONE]
+  },
+  {
+    offsets: Uint32Array.of(0, 1, 1, 0, 1),
+    root: 3,
+    sourceCost: 7,
+    expectedCosts: [7, 0, Infinity, 0],
+    expectedParents: [NONE, 3, NONE, NONE]
+  }
+])('CPU operation takes the tight parent in overlapping CSR rows with root $root', async fixture => {
+  const {offsets, root, sourceCost, expectedCosts, expectedParents} = fixture;
+  const operation = new CPUNetworkReachabilityOperation({
+    nodeCount: offsets.length - 1,
+    topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+    startNodes: 'starts',
+    startCosts: 'startCosts',
+    maximumIterations: 8,
+    maximumTieIterations: 8,
+    localIterations: 4,
+    output: {
+      costs: 'costs',
+      predecessors: 'parents',
+      predecessorEdges: 'parentEdges',
+      unresolvedCount: 'unresolved',
+      status: {converged: 'converged', iterationLimitReached: 'limitReached'}
+    }
+  });
+  const rows = {
+    ...getOverlappingRoutingTopology(),
+    offsets,
+    startNodes: Uint32Array.of(0, root),
+    startCosts: Float32Array.of(sourceCost, 0)
+  };
+  const inputs = Object.fromEntries(
+    Object.entries(rows).map(([port, values]) => [
+      port,
+      {
+        format: values instanceof Float32Array ? ('float32' as const) : ('uint32' as const),
+        length: values.length,
+        chunks: [{values, length: values.length}],
+        pack: () => values
+      }
+    ])
+  );
+  // Both sources share the zero-weight slot to node 1. Only the source seeded at 0 is tight.
+  const result = await operation.execute({inputs});
+  expect(result['costs']).toEqual(Float32Array.from(expectedCosts));
+  expect(result['parents']).toEqual(Uint32Array.from(expectedParents));
+  expect(result['parentEdges']).toEqual(
+    Uint32Array.from(expectedParents, parent => (parent === NONE ? NONE : 0))
+  );
+  expect(result['unresolved']).toEqual(Uint32Array.of(0));
+  expect(result['converged']).toEqual(Uint32Array.of(1));
+  expect(result['limitReached']).toEqual(Uint32Array.of(0));
 });
 
 it('publishes one CPU iteration and zero relaxation words for the empty comparison fixture', () => {

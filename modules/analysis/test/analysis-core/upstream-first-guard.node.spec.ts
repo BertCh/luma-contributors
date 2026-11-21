@@ -8,10 +8,12 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
-import {findNonPublicLumaImports} from '../../../../scripts/check-upstream-first.mjs';
+import {
+  findLumaReExports,
+  findNonPublicLumaImports
+} from '../../../../scripts/check-upstream-first.mjs';
 
-// The guard is a script with side effects (it walks the tree and prints), so it is run as a child
-// process. `UPSTREAM_FIRST_SCRATCH_FILE` makes it also check one file outside the repository tree.
+// Exercise CLI scans as child processes; importing the origin checks does not run the CLI. `UPSTREAM_FIRST_SCRATCH_FILE` makes it also check one file outside the repository tree.
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const GUARD_SCRIPT = 'scripts/check-upstream-first.mjs';
 const GUARD_TIMEOUT_MILLISECONDS = 120_000;
@@ -66,6 +68,43 @@ function runGuard(fixtureName: string, fixtureText: string): GuardRun {
 }
 
 describe('scripts/check-upstream-first.mjs', () => {
+  it.each([
+    [
+      "import * as luma from '@luma.gl/core'; const graphics = luma; export default graphics.Device;",
+      1
+    ],
+    ["import {Device as DEVICE} from '@luma.gl/core'; export const ANALYSIS_DEVICE = DEVICE;", 1],
+    [
+      "import {GPU_FFT2D_MAX_DIMENSION as limit} from '@luma.gl/graph/gpu-core'; export const ANALYSIS_LIMIT = (limit);",
+      0
+    ]
+  ] as const)('round 1 [B10] shares originating member and namespace semantics: %s', (text, count) => {
+    expect(findLumaReExports(text, 'fixture.ts')).toHaveLength(count);
+  });
+  it.each([
+    'scripts/check-upstream-first.mjs',
+    'scripts/luma-binding-origins.mjs',
+    'scripts/contributor-contract-catalog.mjs',
+    'scripts/check-contributor-contract.mjs'
+  ])('imports %s without scanning or running its CLI', script => {
+    const directory = mkdtempSync(join(tmpdir(), 'checker-import-'));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `await import(${JSON.stringify(new URL(script, new URL('../../../../', import.meta.url)).href)});`
+        ],
+        {cwd: directory, encoding: 'utf8'}
+      );
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    } finally {
+      rmSync(directory, {recursive: true, force: true});
+    }
+  });
   it('discovers a production JavaScript engine import in ordinary package traversal', () => {
     const directory = mkdtempSync(join(tmpdir(), 'upstream-first-javascript-'));
     try {
@@ -112,6 +151,40 @@ describe('scripts/check-upstream-first.mjs', () => {
         'examples/deck/fixture/src/scene.ts'
       )
     ).toEqual([]);
+  });
+  it('rejects a luma.gl binding exported by name, as the default or through a value alias', () => {
+    // TOOL-116: only `export ... from '@luma.gl/...'` used to be rejected.
+    const file = 'modules/analysis/src/analysis-core/fixture.ts';
+    const violations: Record<string, string> = {
+      named: "import {Device} from '@luma.gl/core';\nexport {Device};",
+      renamed: "import {Device} from '@luma.gl/core';\nexport {Device as AnalysisDevice};",
+      typeOnly: "import type {Device} from '@luma.gl/core';\nexport type {Device};",
+      defaultExport:
+        "import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';\nexport default GPUCommandGraph;",
+      localAlias:
+        "import {Device} from '@luma.gl/core';\nconst LocalDevice = Device;\nexport {LocalDevice};",
+      exportedAlias: "import {Device} from '@luma.gl/core';\nexport const LocalDevice = Device;",
+      aliasOfAlias:
+        "import {Device} from '@luma.gl/core';\nconst First = Device;\nconst Second = First;\nexport default Second;",
+      namespaceMember:
+        "import * as core from '@luma.gl/core';\nexport const LocalDevice = core.Device;",
+      namespace: "import * as core from '@luma.gl/core';\nexport {core};",
+      direct: "export {Device} from '@luma.gl/core';"
+    };
+    for (const [name, source] of Object.entries(violations)) {
+      expect(findLumaReExports(source, file), name).toHaveLength(1);
+    }
+    const permitted: Record<string, string> = {
+      typeAlias: "import type {Device} from '@luma.gl/core';\nexport type FixtureDevice = Device;",
+      use: "import {Device} from '@luma.gl/core';\nexport function getDevice(device: Device) { return device; }",
+      domainConstant:
+        "import {GPU_FFT2D_MAX_DIMENSION} from '@luma.gl/graph/gpu-core';\nexport const MAXIMUM_SPECTRAL_DIMENSION = GPU_FFT2D_MAX_DIMENSION;",
+      localExport: 'const value = 1;\nexport {value};\nexport default value;',
+      otherPackage: "import {Table} from 'apache-arrow';\nexport {Table};"
+    };
+    for (const [name, source] of Object.entries(permitted)) {
+      expect(findLumaReExports(source, file), name).toEqual([]);
+    }
   });
   it('rejects a loose source file while permitting only the root index barrel', () => {
     const directory = mkdtempSync(join(tmpdir(), 'upstream-first-layout-'));

@@ -7,57 +7,55 @@
 // Totals over all records are not repeated here: they live in src/lens/summary.json.
 
 import fs from 'node:fs';
+import {Buffer} from 'node:buffer';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {fromRecordedLensFile} from '@luma-contributors/lenses/computation-lenses/registry';
+import {
+  createLensPageData,
+  validateLensModel,
+  validateLensFileNames,
+  type LensPageEntry
+} from '../../../../lens/generation-metadata.ts';
+import {extractLensViewModel} from '../../../../lens/extract-lens-view-model.ts';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const generatedDirectory = path.resolve(directory, '../../../../lens/generated');
 const recordsDirectory = path.resolve(directory, '../../../../../../docs/lens-records');
 
-const FEATURED = [
-  'gpu-spatial-analysis.kernel-density',
-  'gpu-spatial-analysis.local-moran',
-  'gpu-network.network-service-areas'
-];
-// Lower bounds of the histogram bins, in kernels.
-const BIN_STARTS = [1, 2, 5, 10, 20, 50, 100, 300];
-
-type ModelLike = {nodes: {kind: string; count: number}[]};
-
-const entries: {id: string; kernels: number}[] = [];
-for (const file of fs.readdirSync(generatedDirectory).sort()) {
-  if (!file.endsWith('.json')) continue;
+const entries: LensPageEntry[] = [];
+const sourceFiles = fs
+  .readdirSync(recordsDirectory)
+  .filter(file => file.endsWith('.json'))
+  .sort();
+const modelFiles = fs
+  .readdirSync(generatedDirectory)
+  .filter(file => file.endsWith('.json'))
+  .sort();
+validateLensFileNames(sourceFiles, modelFiles);
+for (const file of sourceFiles) {
   const id = file.replace(/\.json$/, '');
-  const model = JSON.parse(
-    fs.readFileSync(path.join(generatedDirectory, file), 'utf8')
-  ) as ModelLike;
-  const kernels = model.nodes
-    .filter(node => node.kind === 'compute')
-    .reduce((total, node) => total + node.count, 0);
-  entries.push({id, kernels});
+  const modelText = fs.readFileSync(path.join(generatedDirectory, file), 'utf8');
+  const model = JSON.parse(modelText);
+  if (model.id !== id) throw new Error(`${file}: model id must be ${id}`);
+  const recordText = fs.readFileSync(path.join(recordsDirectory, file), 'utf8');
+  const envelope = fromRecordedLensFile(JSON.parse(recordText));
+  if (envelope.scenarioId !== id)
+    throw new Error(
+      `Record filename identifies ${id}, but envelope identifies ${envelope.scenarioId}; use the matching scenario filename`
+    );
+  const record = envelope.record;
+  validateLensModel(id, modelText, extractLensViewModel(id, record));
+  const graph = record.graphs.find(graph => graph.form === 'compiled') ?? record.graphs[0];
+  // Display groups can mix compute and copy nodes; count original commands before grouping.
+  const kernels = graph.nodes.filter(node => node.kind === 'compute').length;
+  entries.push({
+    id,
+    kernels,
+    recordBytes: Buffer.byteLength(recordText, 'utf8'),
+    viewModelBytes: Buffer.byteLength(modelText, 'utf8')
+  });
 }
-// Same ordering rule as generate-view-models.ts: sort by kernels, median is the middle element.
-const sorted = [...entries].sort((left, right) => left.kernels - right.kernels);
-const median = sorted[Math.floor(sorted.length / 2)];
-
-const bins = BIN_STARTS.map((start, index) => {
-  const next = BIN_STARTS[index + 1];
-  const count = entries.filter(
-    entry => entry.kernels >= start && (next === undefined || entry.kernels < next)
-  ).length;
-  const label =
-    next === undefined ? `${start}+` : next - start === 1 ? `${start}` : `${start}-${next - 1}`;
-  return {label, count};
-});
-
-const featured = FEATURED.map(id => ({
-  id,
-  recordBytes: fs.statSync(path.join(recordsDirectory, `${id}.json`)).size,
-  viewModelBytes: fs.statSync(path.join(generatedDirectory, `${id}.json`)).size
-}));
-
-fs.writeFileSync(
-  path.join(directory, 'lenses-data.json'),
-  `${JSON.stringify({featured, median, bins}, null, 2)}\n`
-);
+const page = createLensPageData(entries);
+fs.writeFileSync(path.join(directory, 'lenses-data.json'), `${JSON.stringify(page, null, 2)}\n`);
 process.stdout.write(`wrote ${entries.length} scenarios\n`);

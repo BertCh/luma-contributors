@@ -2,6 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  GWR_SUMMARY_TRACE_OF_HAT,
+  GWR_SUMMARY_AICC,
+  GWR_SUMMARY_R_SQUARED,
+  GWR_SUMMARY_OBSERVATION_COUNT,
+  GWR_SUMMARY_HAS_VALID_CANDIDATE,
+  GWR_SUMMARY_SINGULAR_ROW_COUNT,
+  GWR_SUMMARY_SIGMA_SQUARED,
+  GWR_SUMMARY_ADJUSTED_ALPHA,
+  GWR_SUMMARY_CRITICAL_T,
+  GWR_SUMMARY_LOG_LIKELIHOOD,
+  GWR_SUMMARY_INCLUDED_ROW_COUNT
+} from './gwr-summary-wgsl';
+
+import {getGWRAICcExpression, GWR_SELECTED_LOG_LIKELIHOOD_EXPRESSION} from './gwr-summary-wgsl';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
+
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
@@ -11,6 +28,11 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {GPUApproximationStatusPort} from '../../analysis-core/contracts/status';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -33,7 +55,6 @@ import {
   validateGWROutputs,
   getGWRGridScratchSizes,
   getGWRBindingOutputs,
-  validateGWRApproximationAliases,
   validateGWRPositiveShaderFloat
 } from './gwr-scalability-utils';
 import {createGWRRuntimeKernelNode} from './gwr-runtime-kernel';
@@ -107,9 +128,8 @@ const TAIL = {
 
 /**
  * Caller-owned outputs of {@link GPUGeographicallyWeightedRegression}.
- * The inherited flat approximation port is a deprecated compatibility alias for status.approximation.
  */
-export type GPUGeographicallyWeightedRegressionOutput = GPUApproximationStatusPort & {
+export type GPUGeographicallyWeightedRegressionOutput = {
   /**
    * Local coefficients at the selected bandwidth, row-major `row * (predictorCount + 1) + column`;
    * column 0 is the intercept and column `c + 1` is predictor `c`. NaN for excluded or singular rows.
@@ -323,8 +343,9 @@ export type GPUGeographicallyWeightedRegressionProps = {
  * `w_ij = K(d_ij / h_i)`, `d` the planar Euclidean distance (or the great-circle distance of a
  * `spatialContext`). Kernels: `'gaussian'` `exp(-0.5 (d/h)^2)`, `'bisquare'` `(1 - (d/h)^2)^2` for
  * `d < h`. The bandwidth is fixed (`h` is the ladder value) or adaptive (`h` is `1.00001` times the
- * distance to the k-th nearest included row, counting the location itself, as mgwr; ties in
- * distance cannot change the k-th value).
+ * distance to the k-th nearest included row, counting the location itself; ties in distance
+ * cannot change the k-th value). The counting convention matches mgwr; its expansion factor is
+ * 1.0000001, while this float32 implementation uses 1.00001 to retain positive boundary weights.
  *
  * Bandwidth selection. The parameter buffer carries a ladder of up to `maximumBandwidthCount`
  * candidates. For every candidate the contributor computes `RSS = sum (y_i - yhat_i)^2`, the hat
@@ -395,11 +416,11 @@ export type GPUGeographicallyWeightedRegressionProps = {
  * `getGPUGeographicallyWeightedRegressionModelResult` to turn the read-back summary into a
  * `GPURegressionModelResult`.
  *
- * Numerics: the design is centred on the focal row, `z_j = (1, x_j - x_i)`, so the fitted value
- * is the centred intercept and `S_ii` is the `(0, 0)` entry of the inverse; the normal equations
+ * Numerics: the design and response are centred on the focal row, `z_j = (1, x_j - x_i)` and
+ * `y_j - y_i`, so the fitted value is `y_i + b0` and `S_ii` is the `(0, 0)` entry of the inverse; the normal equations
  * are Jacobi-equilibrated (divided by the square root of their diagonal) before the shared
  * Cholesky solve. Original-space intercepts (and their standard errors) are recovered as
- * `b0 - sum b_c x_ic`. A predictor that is constant over a location's neighbourhood makes that
+ * `y_i + b0 - sum b_c x_ic`. A predictor that is constant over a location's neighbourhood makes that
  * location singular.
  *
  * Complexity: one thread per location evaluates every candidate of every pass (and once more to
@@ -470,11 +491,61 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUGeographicallyWeightedRegressionProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'positions',
+      'predictors',
+      'predictorCount',
+      'response',
+      'mask',
+      'parameters',
+      'maximumBandwidthCount',
+      'maximumNeighborCount',
+      'spatialContext',
+      'refinement',
+      'bandwidthSearch',
+      'maximumSearchIterations',
+      'gaussianCutoff',
+      'gaussianMode',
+      'indexGridSize',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(props.output, [
+      'coefficients',
+      'status',
+      'standardErrors',
+      'tValues',
+      'significant',
+      'localR2',
+      'fitted',
+      'residuals',
+      'hatDiagonal',
+      'localStatus',
+      'localConditionNumber',
+      'bandwidthScores',
+      'bandwidthSingularRowCounts',
+      'candidateTable',
+      'selectedBandwidth',
+      'searchState',
+      'summary'
+    ]);
+    props = {
+      ...props,
+      spatialContext: props.spatialContext
+        ? snapshotConstructionSpatialContext(props.spatialContext)
+        : undefined,
+      indexGridSize: props.indexGridSize ? [...props.indexGridSize] : props.indexGridSize,
+      output: {
+        ...capturedOutput,
+        status: capturedOutput.status
+          ? snapshotConstructionFields(capturedOutput.status, ['approximation'])
+          : undefined
+      }
+    };
     this.id = props.id ?? 'geographically-weighted-regression';
     this.props = props;
     const id = this.id;
     const {predictorCount} = props;
-    validateGWRApproximationAliases(id, props.output);
     const output = getGWRBindingOutputs(props.output);
     validateCapacity(
       id,
@@ -673,7 +744,7 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     }
     const tableLength =
       this.candidateTableRowCount * GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE;
-    const lengths: [keyof Omit<GPUGeographicallyWeightedRegressionOutput, 'status'>, number][] = [
+    const lengths: [keyof typeof output, number][] = [
       ['coefficients', this.rowCount * this.coefficientCount],
       ['approximation', 1],
       ['standardErrors', this.rowCount * this.coefficientCount],
@@ -703,10 +774,7 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     ]);
     for (const [name, length] of lengths) {
       const view = output[name];
-      const property =
-        name === 'approximation' && props.output.status?.approximation
-          ? 'status.approximation'
-          : name;
+      const property = name === 'approximation' ? 'status.approximation' : name;
       if (!view) {
         if (name === 'coefficients') {
           throw new Error(`${id} output.coefficients is required`);
@@ -1029,6 +1097,7 @@ ${getGWRFitWGSL({
   indexGridSize,
   hasConditionNumber: false,
   hasVariance: false,
+  preciseScalarFit: usesParallelReduction,
   sphereRadius,
   gaussianCutoff
 })}
@@ -1056,6 +1125,7 @@ ${getGWRFitWGSL({
   indexGridSize,
   hasConditionNumber: Boolean(output.localConditionNumber),
   hasVariance: hasInference,
+  preciseScalarFit: usesParallelReduction,
   sphereRadius,
   gaussianCutoff
 })}`;
@@ -1297,7 +1367,7 @@ ${REFINE_LADDER_WGSL}`,
     if (!fit.ok) {
       continue;
     }
-    let residual = response[responseOffset + focal] - fit.beta[0];
+    let residual = -fit.beta[0];
     candidateScratch[slot] = residual * residual;
     candidateScratch[slot + 1u] = fit.hat;
   }`
@@ -1317,7 +1387,7 @@ ${REFINE_LADDER_WGSL}`,
             ],
             invocationCount: batchTileCount * candidateWidth,
             workgroupSize: isBatched ? 256 : undefined,
-            declarations: common,
+            declarations: usesParallelReduction ? `${common}\n${COMPENSATED_SUM_WGSL}` : common,
             body: `let tile = index / LADDER + ${isBatched ? `${focusBaseWGSL} / TILE_ROWS` : '0u'};
   if (tile >= TILE_COUNT) { return; }
   let candidate = index % LADDER;
@@ -1325,6 +1395,7 @@ ${REFINE_LADDER_WGSL}`,
   let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
   var residualSum = 0.0;
   var traceSum = 0.0;
+  ${usesParallelReduction ? 'var rssPair = vec2f(0.0); var tracePair = vec2f(0.0);' : ''}
   var singular = 0.0;
   var invalid = 0.0;
   var included = 0.0;
@@ -1340,9 +1411,21 @@ ${REFINE_LADDER_WGSL}`,
     } else if (hat < 0.0) {
       singular = singular + 1.0;
     } else {
-      residualSum = residualSum + candidateScratch[slot];
-      traceSum = traceSum + hat;
+      ${
+        usesParallelReduction
+          ? `rssPair = addCompensatedValue(rssPair, candidateScratch[slot]);
+      tracePair = addCompensatedValue(tracePair, hat);`
+          : `residualSum = residualSum + candidateScratch[slot];
+      traceSum = traceSum + hat;`
+      }
     }
+  }
+
+  ${
+    usesParallelReduction
+      ? `residualSum = getCompensated(rssPair);
+  traceSum = getCompensated(tracePair);`
+      : ''
   }
   let base = tileCandidatesOffset + (tile * LADDER + candidate) * TILE_CANDIDATE_STRIDE;
   tileCandidates[base] = residualSum;
@@ -1413,12 +1496,12 @@ ${REFINE_LADDER_WGSL}`,
 `
   }
   // AICc over the non-singular rows; a row with an invalid bandwidth voids the candidate.
-  let count = included - singular;
+  let count = included - singular - invalid;
   let denominator = count - 2.0 - traceSum;
   var score = nan;
   if (invalid == 0.0 && count > 0.0 && denominator > 0.0) {
     let variance = max(residualSum / count, MINIMUM_VARIANCE);
-    let candidateScore = count * log(variance) + count * LN_TWO_PI + count * (count + traceSum) / denominator;
+    let candidateScore = ${getGWRAICcExpression('count', 'traceSum', 'denominator', 'log(variance)', 'LN_TWO_PI')};
     if (isFiniteBits(candidateScore)) {
       score = candidateScore;
     }
@@ -1505,7 +1588,7 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   let criticalT = select(nan, gwrLargeSampleCriticalValue(adjustedAlpha, count - 1.0), hasBest && traceSum > 0.0);
   let logLikelihood = select(
     nan,
-    -0.5 * count * (LN_TWO_PI + log(max(residualSum / count, MINIMUM_VARIANCE)) + 1.0),
+    ${GWR_SELECTED_LOG_LIKELIHOOD_EXPRESSION},
     hasBest
   );
   rowValid[rowValidOffset + TAIL_BASE + TAIL_FOCUS_BASE] = 0u;
@@ -1518,17 +1601,17 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   rowValid[rowValidOffset + TAIL_BASE + TAIL_SIGMA_SQUARED] = bitcast<u32>(sigmaSquared);
   rowValid[rowValidOffset + TAIL_BASE + TAIL_CRITICAL_T] = bitcast<u32>(criticalT);
   summary[summaryOffset] = residualSum;
-  summary[summaryOffset + 1u] = traceSum;
-  summary[summaryOffset + 2u] = select(nan, bestScore, hasBest);
-  summary[summaryOffset + 3u] = nan;
-  summary[summaryOffset + 4u] = select(included, count, hasBest);
-  summary[summaryOffset + 5u] = select(0.0, 1.0, hasBest);
-  summary[summaryOffset + 6u] = select(nan, bestSingular, hasBest);
-  summary[summaryOffset + 7u] = sigmaSquared;
-  summary[summaryOffset + 8u] = adjustedAlpha;
-  summary[summaryOffset + 9u] = criticalT;
-  summary[summaryOffset + 10u] = logLikelihood;
-  summary[summaryOffset + 11u] = included;`
+  summary[summaryOffset + ${GWR_SUMMARY_TRACE_OF_HAT}u] = traceSum;
+  summary[summaryOffset + ${GWR_SUMMARY_AICC}u] = select(nan, bestScore, hasBest);
+  summary[summaryOffset + ${GWR_SUMMARY_R_SQUARED}u] = nan;
+  summary[summaryOffset + ${GWR_SUMMARY_OBSERVATION_COUNT}u] = select(included, count, hasBest);
+  summary[summaryOffset + ${GWR_SUMMARY_HAS_VALID_CANDIDATE}u] = select(0.0, 1.0, hasBest);
+  summary[summaryOffset + ${GWR_SUMMARY_SINGULAR_ROW_COUNT}u] = select(nan, bestSingular, hasBest);
+  summary[summaryOffset + ${GWR_SUMMARY_SIGMA_SQUARED}u] = sigmaSquared;
+  summary[summaryOffset + ${GWR_SUMMARY_ADJUSTED_ALPHA}u] = adjustedAlpha;
+  summary[summaryOffset + ${GWR_SUMMARY_CRITICAL_T}u] = criticalT;
+  summary[summaryOffset + ${GWR_SUMMARY_LOG_LIKELIHOOD}u] = logLikelihood;
+  summary[summaryOffset + ${GWR_SUMMARY_INCLUDED_ROW_COUNT}u] = included;`
       })
     );
 
@@ -1569,8 +1652,8 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
     m2 = m2 + tileStatistics[tileStatisticsOffset + 3u * tile + 2u] + delta * delta * count * tileCountValue / total;
     count = total;
   }
-  let hasValid = summary[summaryOffset + 5u] > 0.5;
-  summary[summaryOffset + 3u] = select(getNaN(), 1.0 - summary[summaryOffset] / m2, hasValid && m2 > 0.0);`
+  let hasValid = summary[summaryOffset + ${GWR_SUMMARY_HAS_VALID_CANDIDATE}u] > 0.5;
+  summary[summaryOffset + ${GWR_SUMMARY_R_SQUARED}u] = select(getNaN(), 1.0 - summary[summaryOffset] / m2, hasValid && m2 > 0.0);`
           })
         );
 
@@ -1653,15 +1736,15 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
       let fit = fitLocation(focal, bandwidth);
       if (fit.ok) {
         status = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u;
-        var intercept = fit.beta[0];
+        var intercept = vec2f(response[responseOffset + focal], fit.beta[0]);
         for (var column = 1u; column < P; column++) {
           let slope = fit.beta[column];
           coefficients[coefficientBase + column] = slope;
-          intercept = intercept - slope * predictors[predictorsOffset + focal * PREDICTOR_COUNT + column - 1u];
+          intercept = subtractLocalRegressionInterceptProduct(intercept, slope, predictors[predictorsOffset + focal * PREDICTOR_COUNT + column - 1u]);
         }
-        coefficients[coefficientBase] = intercept;
-        fittedValue = fit.beta[0];
-        residual = response[responseOffset + focal] - fittedValue;
+        coefficients[coefficientBase] = intercept.x + intercept.y;
+        fittedValue = response[responseOffset + focal] + fit.beta[0];
+        residual = -fit.beta[0];
         hat = fit.hat;
         localR2 = getLocalR2(focal, bandwidth, fit);
         ${output.localConditionNumber ? 'conditionNumber = getLocalConditionNumber(focal, bandwidth);' : ''}
@@ -1743,29 +1826,31 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
           ],
           invocationCount: Math.ceil(batchRowCount / TILE_ROWS),
           workgroupSize: isBatched ? 256 : undefined,
-          declarations: common,
+          declarations: `${common}\n${ROUNDED_DIFFERENCE_WGSL}`,
           body: `let focusBase = ${isBatched ? focusBaseWGSL : '0u'};
   let firstRow = focusBase + index * TILE_ROWS;
   if (firstRow >= ROW_COUNT) { return; }
   let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
   var count = 0.0;
   var sum = 0.0;
+  var anchor = 0.0;
   for (var row = firstRow; row < endRow; row++) {
     if (rowValid[rowValidOffset + LOCALS_BASE + (row - focusBase) * LOCAL_STRIDE + 4u] == ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u) {
+      if (count == 0.0) { anchor = response[responseOffset + row]; }
       count = count + 1.0;
-      sum = sum + response[responseOffset + row];
+      sum = sum + getRoundedDifference(response[responseOffset + row], anchor, rowValid[rowValidOffset + row] - 1u);
     }
   }
   let mean = sum / max(count, 1.0);
   var m2 = 0.0;
   for (var row = firstRow; row < endRow; row++) {
     if (rowValid[rowValidOffset + LOCALS_BASE + (row - focusBase) * LOCAL_STRIDE + 4u] == ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u) {
-      let deviation = response[responseOffset + row] - mean;
+      let deviation = getRoundedDifference(response[responseOffset + row], anchor, rowValid[rowValidOffset + row] - 1u) - mean;
       m2 = m2 + deviation * deviation;
     }
   }
   tileStatistics[tileStatisticsOffset + 3u * (firstRow / TILE_ROWS)] = count;
-  tileStatistics[tileStatisticsOffset + 3u * (firstRow / TILE_ROWS) + 1u] = mean;
+  tileStatistics[tileStatisticsOffset + 3u * (firstRow / TILE_ROWS) + 1u] = anchor + mean;
   tileStatistics[tileStatisticsOffset + 3u * (firstRow / TILE_ROWS) + 2u] = m2;`
         })
       );

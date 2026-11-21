@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {addBuildingTessellationRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {addBuildingTessellationReferenceRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Runs the actual recipe shown in this lens with supplied graph views. */
 export async function runExample(
   graph: GPUCommandGraph<undefined>,
-  props: Parameters<typeof addBuildingTessellationRecipe>[1]
+  props: Parameters<typeof addBuildingTessellationReferenceRecipe>[1]
 ) {
   // #region example
-  return addBuildingTessellationRecipe(graph, props);
+  return addBuildingTessellationReferenceRecipe(graph, props);
   // #endregion example
 }

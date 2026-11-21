@@ -17,6 +17,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
+  type GPUGraphPortDescriptor,
   validateCapacity,
   validateRequirement,
   validateSinglePackedView
@@ -27,7 +28,11 @@ import {
   validateRasterWritableDispatches,
   type RasterWritableDispatch
 } from '../raster-grid/raster-view-validation';
-import {planRasterTimeSeriesCellTopology} from './raster-time-series-cell-topology';
+import {
+  planRasterTimeSeriesCellTopology,
+  validateRasterTimeSeriesPorts,
+  lowerRasterTimeSeriesCellChunks
+} from './raster-time-series-cell-topology';
 export {RASTER_TIME_SERIES_SPLIT_CELL_RECORD} from './raster-time-series-cell-topology';
 
 /** Scalar time-series fields, either packed or split between complete cell records. */
@@ -45,19 +50,21 @@ const RASTER_TIME_SERIES_DISPATCH_PARAMETER_WORD_COUNT = 16;
 export function planRasterTimeSeriesChunks<Props extends {cellCount: number}>(
   id: string,
   props: Props,
-  recordWidths: Readonly<Record<string, number>>
+  recordWidths: Readonly<Record<string, number>>,
+  ports: Readonly<Record<string, GPUGraphPortDescriptor>> = {}
 ): readonly Props[] {
-  for (const path of [
-    'parameters',
-    'accumulatorParameters',
-    'slotIndices',
-    'temporalModes',
-    'singularValues',
-    'sliceAttributes',
-    'dateAxis.acquisitionTimes'
-  ]) {
+  validateRasterTimeSeriesPorts(id, props, ports);
+  for (const [path, formats] of Object.entries({
+    parameters: ['float32'],
+    accumulatorParameters: ['float32'],
+    slotIndices: ['uint32'],
+    temporalModes: ['float32'],
+    singularValues: ['float32'],
+    sliceAttributes: ['float32'],
+    'dateAxis.acquisitionTimes': ['uint32x2']
+  } as const)) {
     const view = getField(props, path) as RasterTimeSeriesScalarView | undefined;
-    if (view) validateSinglePackedView(view, [view.format], `${id} ${path}`);
+    if (view) validateSinglePackedView(view, formats, `${id} ${path}`);
   }
   const fields = Object.entries(recordWidths).flatMap(([path, width]) => {
     const view = getField(props, path) as RasterTimeSeriesScalarView | undefined;
@@ -72,11 +79,13 @@ export function planRasterTimeSeriesChunks<Props extends {cellCount: number}>(
     Object.fromEntries(fields.map(({path, width, view}) => [path, {view, entriesPerCell: width}]))
   );
   if (!chunked) return [props];
-  return cellCounts.flatMap((cellCount, chunkIndex) => {
+  return lowerRasterTimeSeriesCellChunks(
+    cellCounts,
+    fields.map(field => field.view)
+  ).flatMap(({cellCount, views}) => {
     if (!cellCount) return [];
     const chunkProps = {...props, cellCount};
-    for (const {path, view} of fields)
-      setField(chunkProps, path, getGraphViewChunks(view)[chunkIndex]);
+    for (const {path, view} of fields) setField(chunkProps, path, views.get(view));
     return [chunkProps];
   });
 }
@@ -88,9 +97,10 @@ export function validateRasterTimeSeriesViews(
   outputs: readonly RasterTimeSeriesScalarView[],
   dispatches?: readonly RasterWritableDispatch[]
 ): void {
+  // Generic layout-only check: producers validate named port formats before planning.
   for (const view of [...inputs, ...outputs]) {
     for (const chunk of getGraphViewChunks(view)) {
-      validatePackedView(chunk, [view.format], `${id} views`);
+      validatePackedView(chunk, ['float32', 'uint32', 'sint32', 'uint32x2'], `${id} views`);
     }
   }
   validateRasterWritableDispatches(id, inputs, outputs, dispatches);

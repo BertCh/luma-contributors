@@ -34,7 +34,7 @@ export type PointPatternOracleOptions = {
   /** Defaults to `'donnelly'`, like `getGPUPointPatternIndicesParameterValues`. */
   clarkEvansCorrection?: 'none' | 'donnelly';
   /** Defaults to `'two-sided'`. */
-  alternative?: PointPatternOracleAlternative;
+  analyticAlternative?: PointPatternOracleAlternative;
 };
 
 /**
@@ -141,12 +141,24 @@ export type PointPatternIndicesOracleResult = {
 };
 
 /**
+ * Quadrat of an offset on `count` equal steps over `[0, extent]`, from the definition rather than
+ * from a quotient: the largest `k` with `extent * k / count <= offset`, so a point on an interior
+ * edge belongs to the upper quadrat and one on the maximum edge to the last. The products of a
+ * float32 offset or extent with an integer below 2^29 are exact in binary64.
+ */
+function getOracleQuadratIndex(offset: number, extent: number, count: number): number {
+  let index = 0;
+  while (index + 1 < count && offset * count >= extent * (index + 1)) index++;
+  return index;
+}
+
+/**
  * f64 Clark-Evans index and quadrat statistics with the `GPUPointPatternIndices` inclusion rule,
- * f32 squared distances (ties to the smallest row index) and f32 quadrat binning.
+ * f32 squared distances (ties to the smallest row index) and quadrats from the edge definition.
  */
 export function computePointPatternIndicesOnCPU(
   scene: PairStatisticsScene,
-  frame: PairStatisticsFrame & PointPatternOracleOptions,
+  frame: Pick<PairStatisticsFrame, 'bounds'> & PointPatternOracleOptions,
   quadratGrid: readonly [number, number] = [1, 1]
 ): PointPatternIndicesOracleResult {
   const [minX, minY, maxX, maxY] = frame.bounds.map(fround);
@@ -182,7 +194,7 @@ export function computePointPatternIndicesOnCPU(
       distanceSum += nearestNeighborDistances[focus];
     }
   }
-  const alternative = resolveAlternative(frame.alternative);
+  const alternative = resolveAlternative(frame.analyticAlternative);
   let clarkEvans = [n, NaN, NaN, NaN, NaN, NaN, NaN];
   if (n >= 2 && area > 0) {
     const observed = distanceSum / n;
@@ -213,17 +225,9 @@ export function computePointPatternIndicesOnCPU(
   for (const row of included) {
     const x = scene.positions[row * 2];
     const y = scene.positions[row * 2 + 1];
-    const column =
-      width > 0
-        ? Math.min(Math.floor(fround(fround(fround(x - minX) / width) * columns)), columns - 1)
-        : 0;
+    const column = width > 0 ? getOracleQuadratIndex(fround(x - minX), width, columns) : 0;
     const quadratRow =
-      height > 0
-        ? Math.min(
-            Math.floor(fround(fround(fround(y - minY) / height) * quadratRows)),
-            quadratRows - 1
-          )
-        : 0;
+      height > 0 ? getOracleQuadratIndex(fround(y - minY), height, quadratRows) : 0;
     quadratCounts[quadratRow * columns + column]++;
   }
   const m = quadratCounts.length;
@@ -253,7 +257,7 @@ export function computePointPatternIndicesOnCPU(
 /** Guard and polygon extension of the independent point-pattern oracle. */
 export function computeWindowPointPatternIndicesOnCPU(
   scene: PairStatisticsScene,
-  frame: PairStatisticsFrame &
+  frame: Pick<PairStatisticsFrame, 'bounds'> &
     Omit<PointPatternOracleOptions, 'clarkEvansCorrection'> & {
       clarkEvansCorrection?: 'none' | 'donnelly' | 'guard';
       guardDistance?: number;
@@ -317,7 +321,7 @@ export function computeWindowPointPatternIndicesOnCPU(
         observed / expected,
         standardError,
         zScore,
-        getNormalPValueOnCPU(zScore, resolveAlternative(frame.alternative))
+        getNormalPValueOnCPU(zScore, resolveAlternative(frame.analyticAlternative))
       ];
     }
   }
@@ -330,8 +334,17 @@ export function computeWindowPointPatternIndicesOnCPU(
     quadratAreas = sampledAreas.map(value => (value * area) / sampledTotal);
     const effectiveCount = sampledAreas.filter(value => value > 0).length;
     const equalAreas = effectiveCount > 0 && sampledAreas.every(value => value === sampledAreas[0]);
-    // Preserve the legacy equal-area formula exactly, including operation order.
-    if (!equalAreas) {
+    // spatstat quadrat.test counts every point in the window. Points in a quadrat with no area
+    // sample cannot be given an expected count, so the statistics are undefined (PTS-108).
+    const unsampledPoints = sampledAreas.reduce(
+      (sum, value, quadrat) => (value > 0 ? sum : sum + result.quadratCounts[quadrat]),
+      0
+    );
+    if (unsampledPoints > 0) {
+      const degreesOfFreedom = effectiveCount - 1;
+      result.quadratStatistics = [effectiveCount, NaN, NaN, NaN, NaN, degreesOfFreedom, NaN];
+    } else if (!equalAreas) {
+      // Preserve the legacy equal-area formula exactly, including operation order.
       const mean = effectiveCount > 0 ? count / effectiveCount : NaN;
       let squares = 0;
       let chiSquare = 0;
@@ -356,7 +369,7 @@ export function computeWindowPointPatternIndicesOnCPU(
           ? getChiSquarePValueOnCPU(
               chiSquare,
               degreesOfFreedom,
-              resolveAlternative(frame.alternative)
+              resolveAlternative(frame.analyticAlternative)
             )
           : NaN
       ];
@@ -364,3 +377,60 @@ export function computeWindowPointPatternIndicesOnCPU(
   }
   return {...result, quadratAreas};
 }
+
+function createSingleRingWindow(ring: readonly number[]): OracleStudyWindow {
+  return {
+    positions: new Float64Array(ring),
+    polygonOffsets: new Uint32Array([0, 1]),
+    ringOffsets: new Uint32Array([0, ring.length / 2]),
+    featureOffsets: new Uint32Array([0, 1])
+  };
+}
+
+/**
+ * PTS-108 fixtures for 2 x 2 quadrats with 16 samples per axis, with expectations computed
+ * independently of the oracle and the kernel: exact clipped areas of each quadrat in the window,
+ * every window point counted, expected counts `n * area / A` over the quadrats of positive area
+ * (spatstat `quadrat.test`), and the SciPy chi-square tails. Script:
+ * `/usr/bin/python3 polygon_quadrat_oracle.py` (Sutherland-Hodgman clipping, shoelace areas,
+ * `scipy.stats.chi2`), kept with the 2026-11-19 review fixes.
+ *
+ * Aligned: an L shape whose re-entrant corner (750, 750) lies on the sample lattice, so the
+ * sampled areas are exact: [937500, 750000, 750000, 0], counts [5, 1, 3, 0], n = 9, m = 3.
+ */
+export const QUADRAT_ALIGNED_L_WINDOW = createSingleRingWindow([
+  0, 0, 2000, 0, 2000, 750, 750, 750, 750, 2000, 0, 2000
+]);
+export const QUADRAT_ALIGNED_L_POSITIONS = new Float32Array([
+  100, 100, 300, 200, 500, 600, 800, 300, 900, 900, 200, 800, 1500, 300, 200, 1200, 400, 1500, 600,
+  1900
+]);
+/** `[m, mean, variance, ratio, chiSquare, df, two-sided p]` from the script. */
+export const QUADRAT_ALIGNED_L_STATISTICS = [
+  3, 3, 2.7751479289940826, 0.9166666666666665, 1.833333333333333, 2, 0.7996993086896947
+];
+
+/**
+ * Spike: the square [0, 1000]^2 plus the strip [1000, 2000] x [400, 405], which no sample row of
+ * its quadrat (y = 390.6, 421.9) reaches. Counts [45, 10, 45, 0]: the ten strip points fall in a
+ * quadrat with sampled area 0. With exact areas [500000, 5000, 500000, 0] the statistic is
+ * chi-square 182.405 with 2 degrees of freedom (p 4.9e-40); the old kernel dropped the strip's
+ * quadrat but kept its points in `n` and reported chi-square 1.0 with 1 degree of freedom
+ * (p 0.317). The lattice cannot give that quadrat an expected count, so the statistics are NaN.
+ */
+export const QUADRAT_SPIKE_WINDOW = createSingleRingWindow([
+  0, 0, 1000, 0, 1000, 400, 2000, 400, 2000, 405, 1000, 405, 1000, 1000, 0, 1000
+]);
+export const QUADRAT_SPIKE_POSITIONS = Float32Array.from(
+  [
+    ...Array.from({length: 45}, (_, index) => [
+      10 + (index % 9) * 110,
+      20 + Math.floor(index / 9) * 90
+    ]),
+    ...Array.from({length: 10}, (_, index) => [1050 + index * 100, 402]),
+    ...Array.from({length: 45}, (_, index) => [
+      10 + (index % 9) * 110,
+      520 + Math.floor(index / 9) * 90
+    ])
+  ].flat()
+);

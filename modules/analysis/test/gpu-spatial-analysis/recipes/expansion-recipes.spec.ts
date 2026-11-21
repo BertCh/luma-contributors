@@ -22,7 +22,7 @@ import {
 import {addDrainageNetworkRecipe} from '../../../src/gpu-spatial-analysis/recipes/drainage-network-recipe';
 import {getGPUTerrainFlowParameterValues} from '../../../src/gpu-terrain/hydrology/gpu-terrain-flow';
 import {addClusterAndOutlineRecipe} from '../../../src/gpu-spatial-analysis/recipes/cluster-and-outline-recipe';
-import {getGPUSpatialClusteringParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
+import {getGPUDBSCANParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {getGPUGeographicDistributionParameterValues} from '../../../src/gpu-spatial-analysis/geographic-distribution/index';
 import {addTrackQualityRecipe} from '../../../src/gpu-network/recipes/track-quality-recipe';
 import {GPUTrajectoryMetrics} from '../../../src/gpu-spatial-analysis/trajectory-analysis/gpu-trajectory-metrics';
@@ -448,10 +448,10 @@ it('cluster alpha outlines preserve disjoint memberships and return selected geo
       clusteringParameters: fixture.parameters(
         'clustering',
         'float32',
-        getGPUSpatialClusteringParameterValues({
+        getGPUDBSCANParameterValues({
           bounds: [-1, -1, 7, 2],
           epsilon: 1.5,
-          minimumPoints: 1
+          minimumSamples: 1
         })
       ),
       geometryParameters: fixture.parameters(

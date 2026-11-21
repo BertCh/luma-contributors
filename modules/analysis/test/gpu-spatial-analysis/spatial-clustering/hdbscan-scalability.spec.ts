@@ -4,7 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {runHierarchicalDensityClustering} from './hierarchical-density-clustering-harness';
+import {runHDBSCAN} from './hierarchical-density-clustering-harness';
 import {canonicalizeLabels} from './hierarchical-density-clustering-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
@@ -14,7 +14,7 @@ it('the default BVH core search and packed reference match hand-computed two-squ
   try {
     const positions = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1, 10, 0, 11, 0, 10, 1, 11, 1]);
     for (const coreDistanceSearch of ['bvh', 'neighbor-search'] as const) {
-      const result = await runHierarchicalDensityClustering(device, positions, {
+      const result = await runHDBSCAN(device, positions, {
         minimumClusterSize: 3,
         minimumSamples: 3,
         coreDistanceSearch
@@ -66,14 +66,14 @@ it('the exact BVH core search matches exhaustive distances on duplicates, invali
       0,
       Infinity
     ]);
-    const short = await runHierarchicalDensityClustering(device, positions.slice(0, 8), {
+    const short = await runHDBSCAN(device, positions.slice(0, 8), {
       minimumClusterSize: 3,
       minimumSamples: 32
     });
     expect(short.coreDistances).toEqual([Infinity, Infinity, Infinity, Infinity]);
     const rows = positions.length / 2;
     for (const minimumSamples of [1, 2, 3, 7, 32]) {
-      const result = await runHierarchicalDensityClustering(device, positions, {
+      const result = await runHDBSCAN(device, positions, {
         minimumClusterSize: 3,
         minimumSamples
       });
@@ -99,7 +99,7 @@ it('the exact BVH core search matches exhaustive distances on duplicates, invali
         if (Number.isFinite(expected)) expect(result.coreDistances[row]).toBeCloseTo(expected, 5);
         else expect(result.coreDistances[row]).toBe(Infinity);
       }
-      const reference = await runHierarchicalDensityClustering(device, positions, {
+      const reference = await runHDBSCAN(device, positions, {
         minimumClusterSize: 3,
         minimumSamples,
         coreDistanceSearch: 'neighbor-search'
@@ -136,7 +136,7 @@ it('clusters four million Gaussian points into their two known separated blobs',
       positions[row * 2 + 1] = radius * Math.sin(angle);
     }
     // Large minimum clusters prevent selecting small fluctuations inside either Gaussian.
-    const result = await runHierarchicalDensityClustering(device, positions, {
+    const result = await runHDBSCAN(device, positions, {
       minimumClusterSize: 1_000_000,
       minimumSamples: 8
     });
@@ -160,26 +160,24 @@ it('clusters four million Gaussian points into their two known separated blobs',
   }
 }, 900000);
 
-it('publishes poisoned count and requiredCount after changing positions on repeated encodings', async () => {
+it('overwrites poisoned status.count after changing positions on repeated encodings', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   try {
     const squares = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1, 10, 0, 11, 0, 10, 1, 11, 1]);
     const invalid = new Float32Array(squares.length).fill(NaN);
-    const actual = await runHierarchicalDensityClustering(device, squares, {
+    const actual = await runHDBSCAN(device, squares, {
       minimumClusterSize: 3,
       minimumSamples: 3,
       statusPoison: 123,
       positionUpdates: [invalid, squares, invalid, squares]
     });
     expect(actual.clusterCount).toBe(2);
-    expect(actual.requiredClusterCount).toBe(2);
     expect(canonicalizeLabels(actual.labels)).toEqual([0, 0, 0, 0, 1, 1, 1, 1]);
     for (let encoding = 0; encoding < actual.positionUpdated.length; encoding++) {
       const result = actual.positionUpdated[encoding];
       const expectedCount = encoding % 2 === 0 ? 0 : 2;
       expect(result.clusterCount).toBe(expectedCount);
-      expect(result.requiredClusterCount).toBe(expectedCount);
       expect(canonicalizeLabels(result.labels)).toEqual(
         expectedCount === 0 ? Array.from({length: 8}, () => -1) : [0, 0, 0, 0, 1, 1, 1, 1]
       );
@@ -208,12 +206,11 @@ it('handles workgroup and power-of-two boundaries with invalid rows and valid ta
       for (let point = 0; point < secondRows.length; point++)
         positions.set(secondPoints[point], secondRows[point] * 2);
       const secondRowSet = new Set(secondRows);
-      const actual = await runHierarchicalDensityClustering(device, positions, {
+      const actual = await runHDBSCAN(device, positions, {
         minimumClusterSize: 3,
         minimumSamples: 3
       });
       expect(actual.clusterCount, `rows=${rows}`).toBe(2);
-      expect(actual.requiredClusterCount).toBe(2);
       const firstLabel = actual.labels[0];
       const secondLabel = actual.labels[rows - 1];
       expect(firstLabel).not.toBe(0xffffffff);
@@ -244,14 +241,13 @@ it('finishes one million identical points at minimumSamples 32 with exact zero c
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   try {
-    const actual = await runHierarchicalDensityClustering(device, new Float32Array(1_000_000 * 2), {
+    const actual = await runHDBSCAN(device, new Float32Array(1_000_000 * 2), {
       minimumClusterSize: 100_000,
       minimumSamples: 32
     });
     expect(actual.coreDistances.every(distance => distance === 0)).toBe(true);
     expect(actual.labels.every(label => label === 0xffffffff)).toBe(true);
     expect(actual.clusterCount).toBe(0);
-    expect(actual.requiredClusterCount).toBe(0);
   } finally {
     device.destroy();
   }
@@ -265,7 +261,7 @@ it('preserves the two known memberships in increasing separated duplicate groups
       const positions = new Float32Array(rows * 2);
       const belongsToSecond = (row: number) => (rows === 256 ? row % 2 === 1 : row >= rows / 2);
       for (let row = 0; row < rows; row++) if (belongsToSecond(row)) positions[row * 2] = 10;
-      const actual = await runHierarchicalDensityClustering(device, positions, {
+      const actual = await runHDBSCAN(device, positions, {
         minimumClusterSize: rows / 4,
         minimumSamples: 32
       });

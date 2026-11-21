@@ -741,3 +741,18 @@ it('declares every QR scratch batch with STORAGE usage and its preflighted align
     expect(getViewBindingRange(view).size).toBe(view.buffer.byteLength);
   }
 });
+
+it('checks named required and optional chunk ports before topology arithmetic', () => {
+  const ports = {
+    values: {required: true, viewType: 'either', formats: ['float32']},
+    mask: {required: false, viewType: 'either', formats: ['uint32']}
+  } as const;
+  expect(() =>
+    planRasterTimeSeriesChunks('required-first', {cellCount: 1}, {values: NaN}, ports)
+  ).toThrow(/required-first.*values.*received undefined/);
+  const graph = new GPUCommandGraph(device);
+  const values = createTransientView(graph, 'values-required', 'float32', 1);
+  expect(
+    planRasterTimeSeriesChunks('optional-mask', {cellCount: 1, values}, {values: 1, mask: 1}, ports)
+  ).toHaveLength(1);
+});

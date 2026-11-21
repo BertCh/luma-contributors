@@ -47,7 +47,7 @@ it('fp64ify stored into Float32Array gives the same pair as the reference split'
   }
 });
 
-it('splitTimestamps and the parameter packing give the reference pair bit for bit', () => {
+it('splitTimestamps covers every sample and strict packing admits exactly lossless endpoint pairs', () => {
   const values = getSampleValues();
   const {high, low} = splitTimestamps(values);
   const highWords = new Uint32Array(high.buffer, high.byteOffset, high.length);
@@ -55,18 +55,56 @@ it('splitTimestamps and the parameter packing give the reference pair bit for bi
   const expected = new Float32Array(2);
   const expectedWords = new Uint32Array(expected.buffer);
   const parameters = new Float32Array(8);
-  const parameterWords = new Uint32Array(parameters.buffer, parameters.byteOffset, 4);
-  const expectedParameters = new Float32Array(4);
+  const parameterWords = new Uint32Array(parameters.buffer, parameters.byteOffset, 8);
+  const expectedParameters = new Float32Array(8);
   const expectedParameterWords = new Uint32Array(expectedParameters.buffer);
   for (const [index, value] of values.entries()) {
     expected.set(splitReference(value));
     expect(highWords[index]).toBe(expectedWords[0]);
     expect(lowWords[index]).toBe(expectedWords[1]);
-    if (!Number.isFinite(value)) continue;
-    const end = value === 0 ? 1_700_000_000.125 : -value;
-    expectedParameters.set(splitReference(value), 0);
-    expectedParameters.set(splitReference(end), 2);
-    getGPUTimeWindowFilterParameterValues({start: value, end}, parameters);
-    expect(Array.from(parameterWords)).toEqual(Array.from(expectedParameterWords));
+    // Use an exactly representable control in both endpoint positions: a start-only check
+    // must not certify a rounded end. Checking the whole target also pins fade/reserved zeros.
+    const exact = 1_700_000_000.125;
+    for (const [start, end] of [
+      [value, exact],
+      [exact, value]
+    ]) {
+      expectedParameters.fill(0);
+      expectedParameters.set(splitReference(start), 0);
+      expectedParameters.set(splitReference(end), 2);
+      const representable = [start, end].every(endpoint => {
+        const highLane = Math.fround(endpoint);
+        const residual = endpoint - highLane;
+        const lowLane = Math.fround(residual);
+        return Number.isFinite(highLane) && Number.isFinite(lowLane) && lowLane === residual;
+      });
+      parameters.fill(123.25);
+      const before = Array.from(parameterWords);
+      if (representable) {
+        getGPUTimeWindowFilterParameterValues({start, end}, parameters);
+        expect(Array.from(parameterWords)).toEqual(Array.from(expectedParameterWords));
+      } else {
+        expect(() => getGPUTimeWindowFilterParameterValues({start, end}, parameters)).toThrow();
+        expect(Array.from(parameterWords)).toEqual(before);
+      }
+    }
+  }
+});
+
+it('DPC-108 exactly representable equal and reversed windows remain valid', () => {
+  for (const [start, end] of [
+    [1.25, 1.25],
+    [2.5, -1.25]
+  ]) {
+    expect(Array.from(getGPUTimeWindowFilterParameterValues({start, end}))).toEqual([
+      start,
+      0,
+      end,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]);
   }
 });

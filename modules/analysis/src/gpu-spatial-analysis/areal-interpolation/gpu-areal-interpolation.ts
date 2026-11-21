@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGPUStatusPort} from '../../analysis-core/contracts/status';
 import {
   validateInterpolationOutputsDisjointFromInputs,
   validateInterpolationOutputPasses
@@ -20,6 +21,7 @@ import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateMaximumCount,
   validateGPUStorageBindingByteLength,
   validateSinglePackedView
@@ -117,7 +119,15 @@ export type GPUArealInterpolationOutput = {
    * `s` as `neighbors`, ascending, with the area-share weight of `mode`. The slot capacity is
    * `neighbors.length` and must hold the number of distinct (source, target) pairs that share at
    * least one cell. `distances` is not written. This is a cross (target to source) weights matrix:
-   * its neighbors index sources, not rows.
+   * its neighbors index sources, not rows. If `status.overflow` is supplied here, it must
+   * reference the same buffer and byte offset as `output.status.overflow`. The described matrix
+   * always carries that captured outer overflow view, even without a nested alias, so consumers observe
+   * incomplete pairs. Nested `count` is the readable slot count, `requiredCount` is the unclamped
+   * pair count, and `candidateOverflow` is reset to zero every submission (no candidate truncation).
+   * `count` must not share a physical buffer with offsets. Distinct nested requiredCount and outer
+   * requiredPairCount destinations must use different physical buffers; identical aliases share a writer.
+   * Other nested diagnostics are unsupported. Entries end at the last CSR offset; later bytes in
+   * neighbors, weights, areas and alternateWeights are unspecified across routes and submissions.
    */
   weights: GPUSpatialWeights;
   /** Status words: pair overflow, the optional required pair count and the optional invalid count. */
@@ -261,7 +271,10 @@ export type GPUArealInterpolationProps = {
    * Compile-time. Without `cellWeights` every cell weighs 1, so pair areas are the lengths of the
    * sorted pair runs and zone areas are the zone cell counts; the fast path computes exactly those
    * and skips the mask gather, the per-pair segmented sum and the per-zone sort, scan, gather and
-   * segmented sums. Defaults to `true`; results are identical. Set `false` to force the generic
+   * segmented sums. Defaults to `true`; results in the readable CSR prefix are bitwise identical
+   * when each pair and zone count is at most 2^24 (the exact float32 integer range). Larger counts
+   * can round differently between run-length conversion and segmented addition. Entries end at
+   * the last offset; later bytes are unspecified across routes and submissions. Set `false` to force the generic
    * weighted path (for A/B timing or tests). Ignored when `cellWeights` is given.
    */
   unweightedFastPath?: boolean;
@@ -322,7 +335,10 @@ export type GPUArealInterpolationProps = {
  * Unweighted fast path (no `cellWeights`, `unweightedFastPath` not `false`): every cell has weight
  * 1, so the pair areas are read off the run lengths and the zone totals off the zone counts. This
  * removes two sorts, two scans and five reduction kernels of the generic path with identical
- * results (counts are exact integers in float32 up to 2^24).
+ * results in the readable CSR prefix when every pair and zone count is at most 2^24; larger counts
+ * can differ by float32 rounding between routes. Entries end
+ * at the last CSR offset; compact pair readbacks end at their published count. Later bytes are
+ * unspecified across routes and submissions, including areas and alternateWeights.
  */
 export class GPUArealInterpolation implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -337,6 +353,94 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
   readonly intensiveDenominator: GPUArealInterpolationDenominator;
 
   constructor(props: GPUArealInterpolationProps) {
+    const callerOutput = props.output;
+    const weights = callerOutput.weights;
+    const status = callerOutput.status;
+    const outerOverflow = status.overflow;
+    const weightsStatus = weights.status;
+    const capturedWeightsStatus: Record<string, GPUStatusScalar | undefined> = {};
+    const supportedStatusFields = new Set([
+      'count',
+      'requiredCount',
+      'overflow',
+      'candidateOverflow'
+    ]);
+    // Validate the complete supplied map, including inherited ports, before narrowing it.
+    // Capture each accessor once so validation and graph declaration see the same destination.
+    for (
+      let descriptor = weightsStatus;
+      descriptor && descriptor !== Object.prototype;
+      descriptor = Object.getPrototypeOf(descriptor)
+    ) {
+      for (const name of Object.getOwnPropertyNames(descriptor)) {
+        if (
+          name === 'constructor' ||
+          Object.prototype.hasOwnProperty.call(capturedWeightsStatus, name)
+        )
+          continue;
+        const destination = weightsStatus![name as keyof NonNullable<typeof weightsStatus>];
+        validateRequirement(
+          props.id ?? 'areal-interpolation',
+          destination === undefined || supportedStatusFields.has(name),
+          `output.weights.status.${name} is unsupported; omit this diagnostic destination`
+        );
+        capturedWeightsStatus[name] = destination;
+      }
+    }
+    validateGPUStatusPort(
+      `${props.id ?? 'areal-interpolation'} output.weights.status`,
+      capturedWeightsStatus
+    );
+    const nestedOverflow = capturedWeightsStatus['overflow'];
+    validateRequirement(
+      props.id ?? 'areal-interpolation',
+      nestedOverflow === undefined ||
+        (nestedOverflow.buffer === outerOverflow.buffer &&
+          nestedOverflow.byteOffset === outerOverflow.byteOffset),
+      'output.weights.status.overflow must reference output.status.overflow so consumers observe pair loss'
+    );
+    const categories = props.categories;
+    // Read declared ports once, including inherited accessors, before any validation.
+    props = {
+      id: props.id,
+      grid: props.grid,
+      sourceZones: props.sourceZones,
+      targetZones: props.targetZones,
+      sourceZoneCount: props.sourceZoneCount,
+      targetZoneCount: props.targetZoneCount,
+      cellWeights: props.cellWeights,
+      denominator: props.denominator,
+      spatialContext: props.spatialContext,
+      parameters: props.parameters,
+      sourceAnchorCells: props.sourceAnchorCells,
+      mode: props.mode,
+      categories: categories && {
+        sourceCategories: categories.sourceCategories,
+        categoryCount: categories.categoryCount
+      },
+      unweightedFastPath: props.unweightedFastPath,
+      output: {
+        weights: {
+          spatialContext: weights.spatialContext,
+          information: weights.information,
+          offsets: weights.offsets,
+          neighbors: weights.neighbors,
+          weights: weights.weights,
+          distances: weights.distances,
+          status: {...capturedWeightsStatus, overflow: outerOverflow}
+        },
+        status: {
+          overflow: outerOverflow,
+          requiredPairCount: status.requiredPairCount,
+          invalidCount: status.invalidCount
+        },
+        alternateWeights: callerOutput.alternateWeights,
+        areas: callerOutput.areas,
+        sourceAreas: callerOutput.sourceAreas,
+        sourceTransferredFractions: callerOutput.sourceTransferredFractions,
+        categoryShares: callerOutput.categoryShares
+      }
+    };
     const id = props.id ?? 'areal-interpolation';
     this.id = id;
     this.props = props;
@@ -348,7 +452,8 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     } else if (props.parameters) {
       throw new Error(`${id} parameters need a longitude-latitude spatialContext`);
     }
-    const {sourceZoneCount: sourceCount, targetZoneCount: targetCount, output} = props;
+    const {sourceZoneCount: sourceCount, targetZoneCount: targetCount} = props;
+    const output = props.output;
     // The zone IDs and the no-zone sentinel 0xffffffff share uint32, so counts stop one below it.
     validateCapacity(id, 'sourceZoneCount', sourceCount, 1, 0xfffffffe);
     validateCapacity(id, 'targetZoneCount', targetCount, 1, 0xfffffffe);
@@ -423,7 +528,10 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['output.status.overflow', output.status.overflow],
       ['output.status.requiredPairCount', output.status.requiredPairCount],
-      ['output.status.invalidCount', output.status.invalidCount]
+      ['output.status.invalidCount', output.status.invalidCount],
+      ['output.weights.status.count', output.weights.status?.count],
+      ['output.weights.status.requiredCount', output.weights.status?.requiredCount],
+      ['output.weights.status.candidateOverflow', output.weights.status?.candidateOverflow]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
@@ -475,14 +583,19 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
         write: {
           offsets: output.weights.offsets,
           overflow: output.status.overflow,
-          requiredPairCount: output.status.requiredPairCount
+          requiredPairCount: output.status.requiredPairCount ?? output.weights.status?.requiredCount
         }
       },
       {
         read: {neighbors: output.weights.neighbors, areas: output.areas},
         write: {weights: output.weights.weights, alternateWeights: output.alternateWeights}
       },
-      {write: {categoryShares: output.categoryShares}}
+      {write: {categoryShares: output.categoryShares}},
+      {read: {offsets: output.weights.offsets}, write: {count: output.weights.status?.count}},
+      {
+        read: {requiredPairCount: output.status.requiredPairCount},
+        write: {requiredCount: this.getOutputBindings()['output.weights.status.requiredCount']}
+      }
     ]);
     validateInterpolationOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
@@ -514,6 +627,17 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       'output.status.overflow': output.status.overflow,
       'output.status.requiredPairCount': output.status.requiredPairCount,
       'output.status.invalidCount': output.status.invalidCount,
+      'output.weights.status.count': output.weights.status?.count,
+      'output.weights.status.requiredCount':
+        output.weights.status?.requiredCount &&
+        !(
+          output.weights.status.requiredCount.buffer === output.status.requiredPairCount?.buffer &&
+          output.weights.status.requiredCount.byteOffset ===
+            output.status.requiredPairCount?.byteOffset
+        )
+          ? output.weights.status.requiredCount
+          : undefined,
+      'output.weights.status.candidateOverflow': output.weights.status?.candidateOverflow,
       'output.sourceAreas': output.sourceAreas,
       'output.sourceTransferredFractions': output.sourceTransferredFractions,
       'output.categoryShares': output.categoryShares
@@ -542,6 +666,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     );
     const {targetZones, sourceZoneCount: sourceCount, targetZoneCount: targetCount, output} = props;
     const {weights} = output;
+    const requiredPairCount = output.status.requiredPairCount ?? weights.status?.requiredCount;
     const cellCount = props.sourceZones.length;
     const capacity = weights.neighbors.length;
     const slotCount = Math.min(capacity, cellCount);
@@ -993,11 +1118,11 @@ const CHUNK: u32 = ${ZONE_COUNT_CHUNK}u;`,
           {name: 'keyHigh', view: keyHigh, type: 'u32', access: 'read'},
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read_write'},
           {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
-          ...(output.status.requiredPairCount
+          ...(requiredPairCount
             ? [
                 {
                   name: 'totalPairs',
-                  view: output.status.requiredPairCount,
+                  view: requiredPairCount,
                   type: 'u32' as const,
                   access: 'read_write' as const
                 }
@@ -1024,7 +1149,7 @@ const CAPACITY: u32 = ${capacity}u;`,
   offsets[offsetsOffset + index] = min(low, CAPACITY);
   if (index == ROWS) {
     overflow[overflowOffset] = select(0u, 1u, low > CAPACITY);
-    ${output.status.requiredPairCount ? 'totalPairs[totalPairsOffset] = low;' : ''}
+    ${requiredPairCount ? 'totalPairs[totalPairsOffset] = low;' : ''}
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -1151,6 +1276,43 @@ const CATEGORY_SHARE_COUNT: u32 = ${categoryShareCount}u;`,
   output[outputOffset + index] = select(0.0, output[outputOffset + index] / covered, covered > 0.0);`
         })
       );
+    }
+    if (weights.status?.candidateOverflow) {
+      nodes.push(
+        createFillNode(graph, {
+          id: `${id}-clear-candidate-overflow`,
+          operation: OPERATION,
+          view: weights.status.candidateOverflow,
+          type: 'u32',
+          value: '0u',
+          componentCount: 1
+        })
+      );
+    }
+    for (const [name, destination, source, sourceIndex] of [
+      ['count', weights.status?.count, weights.offsets, targetCount],
+      [
+        'required-count',
+        this.getOutputBindings()['output.weights.status.requiredCount'],
+        output.status.requiredPairCount,
+        0
+      ]
+    ] as const) {
+      if (destination && source) {
+        nodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-nested-${name}`,
+            operation: OPERATION,
+            variant: `nested-${name}`,
+            invocationCount: 1,
+            bindings: [
+              {name: 'source', view: source, type: 'u32', access: 'read'},
+              {name: 'destination', view: destination, type: 'u32', access: 'read_write'}
+            ],
+            body: `destination[destinationOffset] = source[sourceOffset + ${sourceIndex}u];`
+          })
+        );
+      }
     }
     return nodes;
   }

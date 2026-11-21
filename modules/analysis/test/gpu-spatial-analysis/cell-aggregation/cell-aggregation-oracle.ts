@@ -244,11 +244,16 @@ export function getCellParent(family: CellFamily, cell: bigint, resolution: numb
 export type OracleCell = {
   key: bigint;
   count: number;
-  /** Exact fixed-point sum. */
+  /** Exact fixed-point sum, saturated at `±(2^63 - 1)`. */
   sum: bigint;
   minimum: number;
   maximum: number;
+  /** True when a scaled row or the cell sum saturated. */
+  sumOverflow?: boolean;
 };
+
+/** Largest magnitude of a saturated signed 64-bit fixed-point sum, `2^63 - 1`. */
+export const CELL_MAXIMUM_SUM = (1n << 63n) - 1n;
 
 /** `roundHalfEven(fround(value * sumScale))`, saturated like the kernel. */
 export function getScaledValue(value: number, sumScale: number): bigint {
@@ -265,6 +270,11 @@ export function getScaledValue(value: number, sumScale: number): bigint {
     rounded = 0;
   }
   return BigInt(rounded);
+}
+
+/** Whether `getScaledValue` saturates `value`: the f32 product exceeds the largest scaled row. */
+export function isScaledValueSaturated(value: number, sumScale: number): boolean {
+  return Math.abs(f(value * sumScale)) > CELL_MAXIMUM_SCALED_VALUE;
 }
 
 /** Two's-complement 64-bit wrap of a BigInt. */
@@ -310,16 +320,27 @@ export function aggregateCellsOnCPU(input: OracleRowsInput): OracleCell[] {
     const parent = getCellParent(input.family, key, input.resolution);
     let cell = cells.get(parent);
     if (!cell) {
-      cell = {key: parent, count: 0, sum: 0n, minimum: value, maximum: value};
+      cell = {key: parent, count: 0, sum: 0n, minimum: value, maximum: value, sumOverflow: false};
       cells.set(parent, cell);
     }
     cell.count++;
-    cell.sum = wrapInt64(cell.sum + getScaledValue(value, input.sumScale));
+    // Exact BigInt sum of the scaled rows; saturation is applied once, below, never a wrap.
+    cell.sum += getScaledValue(value, input.sumScale);
+    if (input.values && isScaledValueSaturated(value, input.sumScale)) {
+      cell.sumOverflow = true;
+    }
     if (isLess(value, cell.minimum)) {
       cell.minimum = value;
     }
     if (isLess(cell.maximum, value)) {
       cell.maximum = value;
+    }
+  }
+  for (const cell of cells.values()) {
+    // Outside the signed 64-bit range [-2^63, 2^63 - 1]: saturate to +-(2^63 - 1).
+    if (cell.sum > CELL_MAXIMUM_SUM || cell.sum < -CELL_MAXIMUM_SUM - 1n) {
+      cell.sum = cell.sum > 0n ? CELL_MAXIMUM_SUM : -CELL_MAXIMUM_SUM;
+      cell.sumOverflow = true;
     }
   }
   return [...cells.values()].sort((left, right) => (left.key < right.key ? -1 : 1));

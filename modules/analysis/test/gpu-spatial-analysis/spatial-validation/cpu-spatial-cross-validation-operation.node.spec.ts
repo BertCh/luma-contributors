@@ -102,13 +102,14 @@ it('matches SciPy kmeans2 including sample standardization and a constant featur
   expect(Array.from(result.diagnostics!.subarray(0, 2))).toEqual([0, 2]);
   expect(result.diagnostics![2]).toBeCloseTo(fixture.objective, 6);
   expect(Number.isNaN(result.diagnostics![3])).toBe(true);
-  // A GPU budget of one step would stop; the CPU computes the converged partition.
-  expect(
-    computeSpatialCrossValidationOnCPU(input, {
-      ...PROPS,
-      design: {mode: 'environmental', featureCount: 3, maximumIterations: 1}
-    })
-  ).toEqual(result);
+  // An explicit budget binds both forms; unconverged assignments are not usable folds.
+  const exhausted = computeSpatialCrossValidationOnCPU(input, {
+    ...PROPS,
+    design: {mode: 'environmental', featureCount: 3, maximumIterations: 1}
+  });
+  expect(Array.from(exhausted.diagnostics!.subarray(0, 2))).toEqual([3, 1]);
+  expect(exhausted.folds.every(fold => fold === 0xffffffff)).toBe(true);
+  expect(Array.from(exhausted.status)).toEqual([3, 3]);
 });
 
 it('selects the minimum SciPy Wasserstein candidate and rejects an unbalanced candidate', () => {

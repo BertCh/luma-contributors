@@ -65,28 +65,41 @@ fn overlapExactDeterminant(a: vec2f, b: vec2f, c: vec2f) -> f32 {
     let plus = positive[slot - 1u]; let minus = negative[slot - 1u];
     if (plus != minus) { negativeResult = plus < minus; break; }
   }
-  var difference: array<u32, 8>;
   var borrow = 0u;
   var highest = 0u;
-  var nonzero = false;
+  var highestWord = 0u;
+  var precedingWord = 0u;
+  var lowerWord = 0u;
+  var lowestBit = 0u;
+  // Keep conversion inputs in scalars. A dynamic reload from the difference array can
+  // lose the leading word under backend lowering even while retaining its nonzero index.
   for (var slot = 0u; slot < 8u; slot++) {
     let larger = select(positive[slot], negative[slot], negativeResult);
     let smaller = select(negative[slot], positive[slot], negativeResult);
-    difference[slot] = larger - smaller - borrow;
+    let differenceWord = larger - smaller - borrow;
     borrow = select(0u, 1u, larger < smaller || (larger == smaller && borrow != 0u));
-    if (difference[slot] != 0u) { highest = slot; nonzero = true; }
+    if (differenceWord != 0u) {
+      if (highestWord == 0u) { lowestBit = slot * 32u + countTrailingZeros(differenceWord); }
+      highest = slot;
+      highestWord = differenceWord;
+      lowerWord = precedingWord;
+    }
+    precedingWord = differenceWord;
   }
-  if (!nonzero) { return 0.0; }
-  let highestBit = 31u - countLeadingZeros(difference[highest]);
-  let exponent = minimumExponent + i32(highest * 32u + highestBit);
+  if (highestWord == 0u) { return 0.0; }
+  let highestBit = 31u - countLeadingZeros(highestWord);
+  let leadingBit = highest * 32u + highestBit;
+  let exponent = minimumExponent + i32(leadingBit);
   // Coordinates and constructed metric intersections must have normal finite determinants.
   if (exponent < -126 || exponent > 127) { return invalid; }
   var significand = 0u;
-  if (highestBit >= 23u) { significand = difference[highest] >> (highestBit - 23u); }
+  if (highestBit >= 23u) { significand = highestWord >> (highestBit - 23u); }
   else {
-    significand = difference[highest] << (23u - highestBit);
-    if (highest > 0u) { significand |= difference[highest - 1u] >> (9u + highestBit); }
+    significand = (highestWord << (23u - highestBit)) | (lowerWord >> (9u + highestBit));
   }
+  // A set bit below the largest finite significand makes the exact value too large.
+  if (exponent == 127 && significand == 0xffffffu && leadingBit > 23u &&
+      lowestBit < leadingBit - 23u) { return invalid; }
   let signBit = select(0u, 0x80000000u, negativeResult);
   return bitcast<f32>(signBit | (u32(exponent + 127) << 23u) | (significand & 0x7fffffu));
 }

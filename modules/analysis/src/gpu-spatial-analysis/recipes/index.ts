@@ -146,8 +146,21 @@ export {
   addContiguityOrderCorrelogramRecipe,
   GPU_CONTIGUITY_ORDER_CORRELOGRAM_COLUMNS
 } from './contiguity-order-correlogram-recipe';
+export {computePointsInPolygonsChoroplethOnCPU} from './cpu-points-in-polygons-choropleth-operation';
+export type {CPUPointsInPolygonsChoroplethOptions} from './cpu-points-in-polygons-choropleth-operation';
 export type {
   GPUContiguityOrderCorrelogramRecipeOutputs,
   GPUContiguityOrderCorrelogramRecipeProps,
   GPUContiguityOrderCorrelogramRecipeResult
 } from './contiguity-order-correlogram-recipe';
+
+export {createPointsInPolygonsChoroplethOperation} from './points-in-polygons-choropleth-operation';
+export type {PointsInPolygonsChoroplethOperationProps} from './points-in-polygons-choropleth-operation';
+export {createCPUPointsInPolygonsChoroplethOperation} from './cpu-points-in-polygons-choropleth-operation';
+export {addStopValueCubeRecipe} from './stop-value-cube-recipe';
+export type {
+  GPUStopValueCubeRecipeProps,
+  GPUStopValueCubeRecipeOutput,
+  GPUStopValueCubeRecipeResult,
+  GPUStopValueCubeRecipeStage
+} from './stop-value-cube-recipe';

@@ -99,6 +99,39 @@ function getBits(values: number[]): Uint32Array {
   return new Uint32Array(Float32Array.from(values).buffer);
 }
 
+it('W2-05 fixed-point decoder rounds a halfway value using the low-word sticky bit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph<undefined>(device, {id: 'fixed-point-sticky-bit'});
+  // Low-first triples encode 2^56+2^32 and that integer plus one, without a host
+  // Number conversion. At unit 2^-56 these are 1+2^-24 (tie to even) and just
+  // above that midpoint. IEEE-754 binary32 words must be 0x3f800000/0x3f800001.
+  const wordsBuffer = createInputBuffer(device, Uint32Array.of(0, 0x01000001, 0, 1, 0x01000001, 0));
+  // maximumTermCount=1 gives headroom=1: exponent bits 164 yield
+  // unitExponent = 164 - 127 + 1 + 1 - 95 = -56.
+  const scaleBuffer = createInputBuffer(device, Uint32Array.of(164));
+  const outputBuffer = createOutputBuffer(device, 2);
+  let compiled: Awaited<ReturnType<typeof graph.compileAsync>> | undefined;
+  try {
+    graph.add(
+      createFixedPointDecodeNode(graph, {
+        id: 'decode',
+        operation: 'FixedPointStickyBitSpec',
+        maximumTermCount: 1,
+        words: importGraphBuffer(graph, 'words', wordsBuffer, 'uint32', 6),
+        scale: importGraphBuffer(graph, 'scale', scaleBuffer, 'uint32', 1),
+        output: importGraphBuffer(graph, 'output', outputBuffer, 'float32', 2)
+      })
+    );
+    compiled = await graph.compileAsync();
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(outputBuffer, 2)).toEqual([0x3f800000, 0x3f800001]);
+  } finally {
+    compiled?.destroy();
+    for (const buffer of [wordsBuffer, scaleBuffer, outputBuffer]) buffer.destroy();
+  }
+});
+
 it('fixed-point sums equal the exact BigInt oracle bit for bit, in any row order', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

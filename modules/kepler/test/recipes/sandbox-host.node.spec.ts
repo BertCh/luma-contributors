@@ -735,7 +735,7 @@ const polygonOperations: readonly KeplerPolygonAnalysisOperation[] = [
     seed: 7,
     permutationCount: 99,
     significanceLevel: 0.05,
-    inference: 'legacy-directed-pseudo',
+    alternative: 'geoda-legacy',
     multipleTesting: 'none',
     islands: 'exclude',
     quantileMethod: 'type-5'
@@ -754,7 +754,11 @@ test('polygon replay accepts retained geometry roles independently of Float32 an
       expect(() => validateSandboxBundle(bundle, context.runtime)).not.toThrow();
       await replaySandbox(JSON.stringify(bundle.state), context);
       const restored = JSON.parse(publication.analysis.restoreRecipe.mock.lastCall![0]);
-      expect(restored.operation).toEqual(operation);
+      expect(restored.operation).toEqual(
+        operation.kind === 'quantile-lisa-polygons'
+          ? {...operation, alternative: 'geoda-legacy'}
+          : operation
+      );
     }
     expect(context.applyNativeConfig).toHaveBeenCalledTimes(polygonOperations.length);
     expect(publication.getAnalysis).toHaveBeenCalledTimes(polygonOperations.length);

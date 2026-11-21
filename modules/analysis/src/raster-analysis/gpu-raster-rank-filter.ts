@@ -19,6 +19,8 @@ import {
   getRasterBandViews,
   getRasterBufferBandNodes,
   snapshotRasterBand,
+  snapshotRasterGrid,
+  validateRasterOption,
   validateRasterTextureBand,
   validateRasterBandBelongsToGraph
 } from './raster-band-utils';
@@ -26,11 +28,21 @@ import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   requireRasterLength,
   validateRasterExpansionGraph,
+  validateRasterExpansionPorts,
+  validateRasterExpansionBand,
   validateRasterExpansionViews
 } from './raster-expansion-utils';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
 
 /** Largest footprint radius; each cell insertion-sorts (2 radius + 1) squared values in private memory. */
 const MAXIMUM_RADIUS = 8;
+
+/** Caller-owned dense outputs of {@link GPURasterRankFilter}. */
+export type GPURasterRankFilterOutput = {
+  values: GraphDataView<'float32'>;
+  validity: GraphDataView<'uint32'>;
+  changed?: GraphDataView<'uint32'>;
+};
 
 export type GPURasterRankFilterProps = {
   id?: string;
@@ -41,12 +53,11 @@ export type GPURasterRankFilterProps = {
   /** Quantile in [0,1], default 0.5. Selects floor(q * n), capped at n - 1 (SciPy rank convention). */
   quantile?: number;
   borderMode?: 'clamp' | 'nodata';
-  noDataPolicy?: 'propagate' | 'ignore';
-  output: {
-    values: GraphDataView<'float32'>;
-    validity: GraphDataView<'uint32'>;
-    changed?: GraphDataView<'uint32'>;
-  };
+  /** Defaults to propagate; strict is an alias. ignore omits invalid neighbors, but
+   * an invalid center always remains invalid.
+   */
+  noDataPolicy?: 'propagate' | 'strict' | 'ignore';
+  output: GPURasterRankFilterOutput;
 };
 
 /**
@@ -59,10 +70,42 @@ export class GPURasterRankFilter implements GPUCommandNodeProducer, GPURasterHal
   /** Receptive field in pixels (`GPURasterHaloStage` contract): the square footprint radius. */
   readonly requiredHalo: number;
   constructor(props: GPURasterRankFilterProps) {
-    props = {...props, input: snapshotRasterBand(props.input)};
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'radius',
+      'quantile',
+      'borderMode',
+      'noDataPolicy',
+      'output'
+    ]);
+    props = {
+      ...props,
+      input: snapshotRasterBand(props.input),
+      grid: snapshotRasterGrid(props.grid),
+      output: snapshotConstructionFields(props.output, ['values', 'validity', 'changed'])
+    };
     this.id = props.id ?? 'raster-rank-filter';
+    validateRasterOption(this.id, 'borderMode', props.borderMode ?? 'clamp', ['clamp', 'nodata']);
+    validateRasterOption(this.id, 'noDataPolicy', props.noDataPolicy ?? 'propagate', [
+      'propagate',
+      'strict',
+      'ignore'
+    ]);
     this.props = props;
     validateRasterTextureBand(this.id, props.input, props.grid);
+    validateRasterExpansionBand(this.id, 'input', props.input);
+    validateRasterExpansionPorts(
+      this.id,
+      props,
+      {
+        'output.values': ['float32'],
+        'output.validity': ['uint32'],
+        'output.changed': ['uint32']
+      },
+      ['output.changed']
+    );
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,

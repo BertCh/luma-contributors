@@ -54,7 +54,7 @@ for (const smallFeatureVertexLimit of [0, 32]) {
         featureOffsets: 'featureOffsets',
         featureCount: 2,
         smallFeatureVertexLimit,
-        output: {points: 'points', distances: 'distances', degenerate: 'degenerate'}
+        output: {points: 'points', publishedCenterClearance: 'distances', degenerate: 'degenerate'}
       };
       const results: Awaited<ReturnType<typeof runOperationGraph>>[] = [];
       for (const Operation of [GPULabelPointOperation, CPULabelPointOperation]) {
@@ -97,7 +97,7 @@ it('label twins treat descending final ring offsets as an empty feature', async 
     polygonOffsets: 'polygonOffsets',
     featureOffsets: 'featureOffsets',
     featureCount: 1,
-    output: {points: 'points', distances: 'distances', degenerate: 'degenerate'}
+    output: {points: 'points', publishedCenterClearance: 'distances', degenerate: 'degenerate'}
   };
   const results: Awaited<ReturnType<typeof runOperationGraph>>[] = [];
   for (const Operation of [GPULabelPointOperation, CPULabelPointOperation]) {

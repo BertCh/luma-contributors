@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotDelaunayTessellationOperationProps} from './delaunay-construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   resolveGPUSpatialContext,
@@ -40,6 +41,9 @@ export type CPUDelaunayTessellationResult = {
   converged: Uint32Array;
   iterationCount: Uint32Array;
   iterationLimitReached: Uint32Array;
+  candidateOverflow: Uint32Array;
+  uncertainCount: Uint32Array;
+  approximation: Uint32Array;
   groupTriangleCounts: Uint32Array;
   groupTriangleOffsets: Uint32Array;
   groupConverged: Uint32Array;
@@ -200,6 +204,9 @@ export function computeDelaunayTessellationOnCPU(
     converged: Uint32Array.of(invalidCount === 0 ? 1 : 0),
     iterationCount: new Uint32Array(1),
     iterationLimitReached: new Uint32Array(1),
+    candidateOverflow: new Uint32Array(1),
+    uncertainCount: new Uint32Array(1),
+    approximation: new Uint32Array(1),
     groupTriangleCounts: new Uint32Array(options.groupCount ?? 0),
     groupTriangleOffsets: new Uint32Array(options.groupCount ?? 0),
     groupConverged: new Uint32Array(options.groupCount ?? 0)
@@ -228,10 +235,10 @@ export function computeDelaunayTessellationOnCPU(
 /** CPU Delaunay twin, without GPU step/command budgets or exponent-span restrictions. */
 export class CPUDelaunayTessellationOperation extends GPUCPUOperation {
   constructor(props: DelaunayTessellationOperationProps) {
+    props = snapshotDelaunayTessellationOperationProps(props);
     const operation = new GPUDelaunayTessellationOperation(props);
     const {id} = operation;
-    validateCapacity(id, 'capacity', props.capacity);
-    resolveGPUSpatialContext(id, props.spatialContext);
+    validateCapacity(id, 'capacity', props.capacity, 0);
     if (props.groups) validateCapacity(id, 'groups.count', props.groups.count);
     validateRequirement(
       id,

@@ -2,8 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUPermutationInferenceMetadata} from './permutation-inference-metadata';
+import {
+  GLOBAL_PERMUTATION_PAIR_BLOCK_ROWS,
+  MAXIMUM_GLOBAL_PERMUTATION_PAIR_BLOCK_COUNT
+} from './permutation-limits';
+import {
+  getPermutationCauseStatusNodes,
+  validatePermutationCauseStatus,
+  type GPUPermutationCauseStatus
+} from './permutation-cause-status';
+import {getWeightsLossSources} from '../spatial-weights/spatial-weights-loss';
+import {snapshotGlobalPermutationProps} from './permutation-construction';
+import {getPermutationWeightsLossChecks} from './permutation-weights-loss';
+
 import {
   createTransientView,
+  GPUReduction,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -26,10 +41,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {
-  GPUInferenceAlternative,
-  GPUInferenceMetadata
-} from '../../analysis-core/contracts/index';
+import type {GPUInferenceAlternative} from '../../analysis-core/contracts/index';
 import {
   getGPUSpatialWeightsNeighborLoopWGSL,
   resolveGPUIslandPolicy,
@@ -69,6 +81,7 @@ import {
 } from './permutation-alternative';
 import {
   getGPUPermutationParameterValues,
+  GPU_PERMUTATION_PARAMETER_LENGTH,
   type GPUPermutationSettings
 } from './permutation-parameters';
 import type {GPUFloat32OrUint32Values} from '../spatial-weights/float32-values';
@@ -79,7 +92,7 @@ const OPERATION = 'GPUGlobalPermutationTest';
 const FINALIZE_WORKGROUP_SIZE = 256;
 
 /** Rows per workgroup block of the per-permutation pair sums. */
-const PAIR_BLOCK_ROWS = 2048;
+const PAIR_BLOCK_ROWS = GLOBAL_PERMUTATION_PAIR_BLOCK_ROWS;
 const PAIR_WORKGROUP_SIZE = 256;
 
 /** Workgroup (and chunk count) of the in-order scan that finds the stopping index of a batch. */
@@ -102,6 +115,8 @@ const MATERIALIZED_MAXIMUM_BATCHES = 4096;
  * Chunk-specific analysis/weight kernels and observed pair sums are counted separately below.
  */
 const FIXED_COMMAND_NODE_ALLOWANCE = 96;
+/** Two magnitude passes and their bounded hierarchical maximum reductions, only when requested. */
+const NORMALIZATION_COMMAND_NODE_ALLOWANCE = 32;
 
 /** Words of the sequential-stopping state view (see {@link GPUGlobalPermutationTest}). */
 const SEQUENTIAL_STATE = {
@@ -149,9 +164,8 @@ export function getGPUGlobalPermutationBatchSize(
  * need its own sums, shuffle rounds and dispatch, and a constant that depends on the row count
  * keeps the p-value honest about what is computed.
  */
-export const GPU_GLOBAL_PERMUTATION_TEST_MAXIMUM_PAIR_BLOCK_COUNT = Math.floor(
-  (2 ** 32 - 1) / PAIR_WORKGROUP_SIZE
-);
+export const GPU_GLOBAL_PERMUTATION_TEST_MAXIMUM_PAIR_BLOCK_COUNT =
+  MAXIMUM_GLOBAL_PERMUTATION_PAIR_BLOCK_COUNT;
 
 /**
  * A global statistic tested by {@link GPUGlobalPermutationTest}. `'leesL'` is Lee's spatial
@@ -216,7 +230,7 @@ export type GPUGlobalPermutationTestOutput = {
   /** Optional caller-owned histogram of the reference distribution over `[minimum, maximum]`. */
   histogram?: GraphDataView<'uint32'>;
   /** Optional status. */
-  status?: {
+  status?: GPUPermutationCauseStatus & {
     /**
      * Optional caller-owned one-row uint32 output: the number of analysis rows with a negative
      * value, which `'getisOrdG'` rejects (G is defined for non-negative data). When it is
@@ -358,7 +372,8 @@ function getPairBlockCount(weights: GPUSpatialWeights | GPUChunkedSpatialWeights
  *   exceedance count `M` and `p = min(m (M + 1), P + 1) / (P + 1)`.
  * - The permutation count is never clamped: a count outside `[1, maximumPermutations]` writes NaN
  *   for `permutations`, every p-value and every simulated summary (use `getParameterValues` to
- *   validate on the CPU). Incomplete weights (`weights.status.overflow` or `candidateOverflow`) analyze no row, so the
+ *   validate on the CPU). Incomplete weights (nonzero `overflow` / `candidateOverflow`, or zero
+ *   `complete`, at root or chunk scope) analyze no row, so the
  *   results are NaN.
  * - Pair sums are reduced in a fixed shape (one workgroup per permutation and row block, a
  *   shared-memory tree, then a fixed sequential sum over blocks). No float atomics: results are
@@ -369,6 +384,9 @@ function getPairBlockCount(weights: GPUSpatialWeights | GPUChunkedSpatialWeights
  *
  * Cost is `(P + 1)` pair sums, i.e. `(P + 1) * nnz` weighted terms, each evaluating the swap-or-not
  * shuffle (`6 ceil(log2 n) + 6` rounds of one hash each) for the neighbor.
+ * Compile-time maximumPermutations is at most MAXIMUM_PERMUTATION_COUNT = 1,048,576 draws per submission.
+ * The global route also requires (maximumPermutations + 1) times the sum of ceil(chunkRows / 2048)
+ * to be at most GPU_GLOBAL_PERMUTATION_TEST_MAXIMUM_PAIR_BLOCK_COUNT = 16,777,215.
  */
 export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -379,6 +397,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUGlobalPermutationTestProps) {
+    props = snapshotGlobalPermutationProps(props);
     const id = props.id ?? 'global-permutation-test';
     this.id = id;
     this.props = props;
@@ -443,10 +462,31 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
         ? getGPUGlobalPermutationBatchSize(props.values.length, props.maximumPermutations)
         : props.maximumPermutations + 1);
     const batchCount = Math.ceil((props.maximumPermutations + (sequential ? 0 : 1)) / batchSize);
+    const normalized =
+      props.statistic === 'bivariateMoran' ||
+      props.statistic === 'leesL' ||
+      props.statistic === 'getisOrdG';
+    const causeSources = getWeightsLossSources([props.weights], id, true);
+    const causeNodeCount =
+      (props.output.status?.weightsOverflow
+        ? Math.max(1, Math.ceil(causeSources.overflow.length / 7))
+        : 0) +
+      (props.output.status?.candidateOverflow
+        ? Math.max(1, Math.ceil(causeSources.candidateOverflow.length / 7))
+        : 0) +
+      (props.output.status?.invalidInput ? 1 : 0);
     this.estimatedCommandNodeCount =
-      FIXED_COMMAND_NODE_ALLOWANCE + 3 * chunkCount + batchCount * (chunkCount + 3);
+      FIXED_COMMAND_NODE_ALLOWANCE +
+      (normalized ? NORMALIZATION_COMMAND_NODE_ALLOWANCE : 0) +
+      (props.statistic === 'getisOrdG' ? Math.ceil(Math.log2(props.values.length)) + 2 : 0) +
+      (sequential ? 1 : 0) +
+      causeNodeCount +
+      3 * chunkCount +
+      getPermutationWeightsLossChecks(props.weights).length +
+      batchCount * (chunkCount + 3);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const {output} = props;
+    validatePermutationCauseStatus(id, output.status);
     if (output.status?.invalidCount) {
       validatePackedUint32View(output.status.invalidCount, `${id} output.status.invalidCount`);
       validateCapacity(id, 'output.status.invalidCount length', output.status.invalidCount.length);
@@ -481,10 +521,10 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
         props.output.islandCount,
         props.output.referenceDistribution,
         props.output.histogram,
-        props.output.status?.invalidCount
+        ...Object.values(props.output.status ?? {})
       ],
       [
-        ...getGPUSpatialWeightsOrChunksViews(props.weights),
+        ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
         props.values,
         props.secondValues,
         props.mask,
@@ -504,15 +544,23 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     });
   }
 
-  /** Describes how the p-value of a run with `settings` was produced, for legends. */
-  getInferenceMetadata(settings: GPUPermutationSettings): GPUInferenceMetadata {
+  /** Describes requested inference. For completed runs decode caller-read counts with the matching metadata decoder. */
+  getInferenceMetadata(settings: GPUPermutationSettings): GPUPermutationInferenceMetadata {
     // Validates the seed and the permutation count.
-    this.getParameterValues(settings);
+    const packed = this.getParameterValues(settings);
     const keep = resolveGPUIslandPolicy(this.id, this.props.islands) === 'keep';
     return {
       alternative: resolvePermutationAlternative(this.id, this.props.alternative),
-      permutationCount: settings.permutationCount,
-      seed: settings.seed,
+      requestedPermutationCount: packed[2],
+      stoppingRule:
+        this.props.stopAfterExceedances === undefined
+          ? {method: 'fixed-count'}
+          : {method: 'besag-clifford', stopAfterExceedances: this.props.stopAfterExceedances},
+      pValueConstruction:
+        resolvePermutationAlternative(this.id, this.props.alternative) === 'two-sided'
+          ? 'doubled-minimum-tail'
+          : 'upper-tail-count',
+      seed: packed[0] + packed[1] * 2 ** 32,
       multipleTesting: 'none',
       testedRowsDefinition:
         'one global statistic over the analysis rows (nonzero mask, finite values; islands, ' +
@@ -530,7 +578,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     const {weights, parameters, statistic, maximumPermutations} = props;
     const dispatches = getGPUSpatialWeightsChunkDispatches(weights);
     validateGraphViewsBelongToGraph(id, graph, [
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...getGPUSpatialWeightsOrChunksViews(weights, true),
       props.values,
       props.secondValues,
       props.mask,
@@ -541,7 +589,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       props.output.islandCount,
       props.output.referenceDistribution,
       props.output.histogram,
-      props.output.status?.invalidCount
+      ...Object.values(props.output.status ?? {})
     ]);
     if (props.permutationBatchSize !== undefined) {
       validateGPUStorageBindingByteLength(
@@ -558,7 +606,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       props.output.islandCount,
       props.output.referenceDistribution,
       props.output.histogram,
-      props.output.status?.invalidCount
+      ...Object.values(props.output.status ?? {})
     ]);
     validateGPUStorageBindingByteLength(
       graph.device,
@@ -580,6 +628,8 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       islands: props.islands,
       id: `${id}-inputs`,
       operation: OPERATION,
+      normalizeValues: bivariate || statistic === 'getisOrdG',
+      orderedPairMass: statistic === 'getisOrdG',
       centerX: statistic !== 'getisOrdG'
     });
     const nodes = inputs.nodes;
@@ -927,16 +977,43 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
           operation: OPERATION,
           rows,
           compactX,
+          originalX: inputs.originalX,
           rowPositions
         })
       : undefined;
     if (negative) {
       nodes.push(...negative.nodes);
     }
+    const positiveCount = negative
+      ? createTransientView(graph, `${id}-positive-count`, 'uint32', 1)
+      : undefined;
+    if (positiveCount) {
+      const indicators = createTransientView(graph, `${id}-positive-indicators`, 'uint32', rows);
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-positive-indicators`,
+          operation: OPERATION,
+          variant: 'positive-indicators',
+          bindings: [
+            {name: 'compactX', view: compactX, type: 'f32', access: 'read'},
+            {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
+            {name: 'indicators', view: indicators, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: rows,
+          body: `indicators[indicatorsOffset + index] = select(0u, 1u, index < rowPositions[rowPositionsOffset + ${rows}u] && compactX[compactXOffset + index] > 0.0);`
+        }),
+        ...new GPUReduction({
+          id: `${id}-positive-sum`,
+          input: indicators,
+          output: positiveCount,
+          operation: 'sum'
+        }).getCommandNodes(graph)
+      );
+    }
     const scaleWGSL = {
       moran: `divideSpatialCountByValue(exactCount, totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
       geary: `divideSpatialCountByValue(max(exactCount, 1u) - 1u, 2.0 * totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
-      getisOrdG: `1.0 / (multiplyBySpatialCount(multiplyBySpatialCount(totals[totalsOffset + ${T.mean}u] * totals[totalsOffset + ${T.mean}u], exactCount), max(exactCount, 1u) - 1u) - totals[totalsOffset + ${T.sumSquares}u])`,
+      getisOrdG: `1.0 / totals[totalsOffset + ${T.offDiagonalMass}u]`,
       bivariateMoran: `divideSpatialCountByValue(exactCount, totals[totalsOffset + ${T.s0}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`,
       // L = z'(W'W)z / 1'(W'W)1 with z standardized by the population deviation: n / sqrt(SS_x SS_y) / S0sq.
       leesL: `divideSpatialCountByValue(exactCount, totals[totalsOffset + ${T.s0Squared}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`
@@ -971,6 +1048,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
           variant: 'reject-negative',
           bindings: [
             {name: 'negativeCount', view: negative.negativeCount, type: 'u32', access: 'read'},
+            {name: 'positiveCount', view: positiveCount!, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read_write'},
             ...(invalidCountView
               ? [
@@ -985,7 +1063,9 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
           ],
           invocationCount: 1,
           declarations: PERMUTATION_FLOAT_WGSL,
-          body: `if (negativeCount[negativeCountOffset] > 0u) {
+          // For nonnegative values, sum_{i!=j} xi*xj is positive iff two values are positive.
+          // Test that exactly before the difference-of-moments scale can acquire cancellation noise.
+          body: `if (negativeCount[negativeCountOffset] > 0u || positiveCount[positiveCountOffset] < 2u) {
     totals[totalsOffset + ${T.count}u] = getQuietNaN(5u);
   }
   ${invalidCountView ? 'invalidCount[invalidCountOffset] = negativeCount[negativeCountOffset];' : ''}`
@@ -1074,20 +1154,26 @@ fn reduceCount(local: u32, value: u32) -> u32 {
   let invalidInput = ${negative ? '!isFiniteFloat(totals[totalsOffset + 0u])' : 'false'};
   let scale = select(${scaleWGSL}, getQuietNaN(5u), invalidInput);
   let observedSum = pairSums[pairSumsOffset];
-  let observed = scale * observedSum;
+  let observedCandidate = scale * observedSum;
+  let observed = select(getQuietNaN(0u), observedCandidate, isFiniteFloat(scale) && scale > 0.0 && isFiniteFloat(observedCandidate) && !invalidInput);
   var greaterPart = 0u;
   var lesserPart = 0u;
+  var finitePart = 0u;
   var totalPart = 0.0;
-  var minimumPart = 3.0e38;
-  var maximumPart = -3.0e38;
+  var minimumPart = 3.4028234663852886e38;
+  var maximumPart = -3.4028234663852886e38;
   for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
     let pairSum = pairSums[pairSumsOffset + permutation];
-    let simulated = scale * pairSum;
+    let candidate = scale * pairSum;
+    let simulated = select(getQuietNaN(permutation), candidate, isFiniteFloat(scale) && scale > 0.0 && isFiniteFloat(candidate) && !invalidInput);
     greaterPart += select(0u, 1u, pairSum >= observedSum);
     lesserPart += select(0u, 1u, pairSum <= observedSum);
-    totalPart += simulated;
-    minimumPart = min(minimumPart, simulated);
-    maximumPart = max(maximumPart, simulated);
+    if (isFiniteFloat(simulated)) {
+      finitePart++;
+      totalPart += simulated;
+      minimumPart = min(minimumPart, simulated);
+      maximumPart = max(maximumPart, simulated);
+    }
     ${props.output.referenceDistribution ? 'referenceDistribution[referenceDistributionOffset + permutation - 1u] = simulated;' : ''}
   }
   ${
@@ -1099,17 +1185,21 @@ fn reduceCount(local: u32, value: u32) -> u32 {
   }
   let greater = reduceCount(local, greaterPart);
   let lesser = reduceCount(local, lesserPart);
+  let finiteReferenceCount = reduceCount(local, finitePart);
+  let completeReference = permutations > 0u && finiteReferenceCount == permutations;
   let total = reduceFloat(local, totalPart, 0u);
   let minimum = reduceFloat(local, minimumPart, 1u);
   let maximum = reduceFloat(local, maximumPart, 2u);
-  let mean = select(getQuietNaN(2u), total / f32(permutations), permutations > 0u);
+  let mean = select(getQuietNaN(2u), total / f32(permutations), completeReference);
   var squaresPart = 0.0;
   for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
-    let deviation = scale * pairSums[pairSumsOffset + permutation] - mean;
-    squaresPart += deviation * deviation;
+    if (completeReference) {
+      let deviation = scale * pairSums[pairSumsOffset + permutation] - mean;
+      squaresPart += deviation * deviation;
+    }
   }
   let squares = reduceFloat(local, squaresPart, 0u);
-  let standardDeviation = select(getQuietNaN(3u), sqrt(squares / f32(permutations)), permutations > 0u);
+  let standardDeviation = select(getQuietNaN(3u), sqrt(squares / f32(permutations)), completeReference);
   ${
     alternative === 'folded'
       ? `var foldedPart = 0u;
@@ -1129,12 +1219,13 @@ fn reduceCount(local: u32, value: u32) -> u32 {
   workgroupBarrier();
   let range = maximum - minimum;
   for (var permutation = 1u + local; permutation <= permutations; permutation += WORKGROUP_SIZE) {
-    let simulated = scale * pairSums[pairSumsOffset + permutation];
-    var bin = 0u;
-    if (range > 0.0 && isFiniteFloat(range)) {
-      bin = min(u32(max(floor((simulated - minimum) / range * f32(BINS)), 0.0)), BINS - 1u);
-    }
-    if (!invalidInput) {
+    let candidate = scale * pairSums[pairSumsOffset + permutation];
+    let simulated = select(getQuietNaN(permutation), candidate, isFiniteFloat(scale) && scale > 0.0 && isFiniteFloat(candidate) && !invalidInput);
+    if (isFiniteFloat(simulated) && !invalidInput) {
+      var bin = 0u;
+      if (range > 0.0 && isFiniteFloat(range)) {
+        bin = min(u32(max(floor((simulated - minimum) / range * f32(BINS)), 0.0)), BINS - 1u);
+      }
       atomicAdd(&histogram[histogramOffset + bin], 1u);
     }
   }`
@@ -1145,7 +1236,7 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     let zSimulated = (observed - mean) / standardDeviation;
     let validZ = standardDeviation > 0.0 && isFiniteFloat(zSimulated);
     // Tested: a valid permutation count and an observed statistic that exists (n >= 2, not truncated).
-    let tested = permutations > 0u && isFiniteFloat(observed) && !invalidInput;
+    let tested = completeReference && isFiniteFloat(observed) && !invalidInput;
     results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed) && !invalidInput);
     results[resultsOffset + ${R.pseudoPValue}u] = select(getQuietNaN(1u), ${
       sequential
@@ -1158,11 +1249,21 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     results[resultsOffset + ${R.simulatedStandardDeviation}u] = select(standardDeviation, getQuietNaN(3u), invalidInput);
     results[resultsOffset + ${R.zSimulated}u] = select(getQuietNaN(1u), zSimulated, validZ && tested);
     results[resultsOffset + ${R.pZSimulated}u] = select(getQuietNaN(1u), max(0.5 * getTwoSidedPValue(zSimulated), ANALYTIC_P_VALUE_FLOOR), validZ && tested);
-    results[resultsOffset + ${R.minimum}u] = select(getQuietNaN(4u), minimum, permutations > 0u && !invalidInput);
-    results[resultsOffset + ${R.maximum}u] = select(getQuietNaN(4u), maximum, permutations > 0u && !invalidInput);
+    results[resultsOffset + ${R.minimum}u] = select(getQuietNaN(4u), minimum, finiteReferenceCount > 0u && !invalidInput);
+    results[resultsOffset + ${R.maximum}u] = select(getQuietNaN(4u), maximum, finiteReferenceCount > 0u && !invalidInput);
     results[resultsOffset + ${R.islandCount}u] = f32(islandCount[islandCountOffset]);
     results[resultsOffset + ${R.analysisCount}u] = f32(rowPositions[rowPositionsOffset + ROWS]);
   }`
+      })
+    );
+    nodes.push(
+      ...getPermutationCauseStatusNodes(graph, {
+        id,
+        operation: OPERATION,
+        weights,
+        parameters: props.parameters,
+        maximumPermutations,
+        status: props.output.status
       })
     );
     return nodes;
@@ -1312,14 +1413,10 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id, PERMUTATION_S
           {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
           {name: 'state', view: batchState, type: 'u32', access: 'read_write'}
         ],
-        invocationCount: 1,
-        // Copies the parameters and clears the batch cursor (word ${S.base}).
-        body: `for (var word = 0u; word < 4u; word++) {
-    state[stateOffset + word] = parameters[parametersOffset + word];
-  }
-  for (var word = ${S.base}u; word < ${S.length}u; word++) {
-    state[stateOffset + word] = 0u;
-  }`
+        invocationCount: S.length,
+        // The four-word prefix is parameters; all remaining state words [4, 12) are reset.
+        body: `if (index < ${GPU_PERMUTATION_PARAMETER_LENGTH}u) { state[stateOffset + index] = parameters[parametersOffset + index]; }
+  else { state[stateOffset + index] = 0u; }`
       })
     ];
     for (let batch = 0; batch < batchCount; batch++) {
@@ -1429,6 +1526,17 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id, PERMUTATION_S
     const sumsSlot = chunkDispatches.length;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-sequential-state`,
+        operation: OPERATION,
+        invocationCount: S.length,
+        bindings: [
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
+          {name: 'state', view: batchState, type: 'u32', access: 'read_write'}
+        ],
+        body: `if (index < ${GPU_PERMUTATION_PARAMETER_LENGTH}u) { state[stateOffset + index] = parameters[parametersOffset + index]; }
+  else { state[stateOffset + index] = 0u; }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-sequential-init`,
         operation: OPERATION,
         variant: 'sequential-init',
@@ -1441,13 +1549,7 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id, PERMUTATION_S
         declarations: getPermutationParameterWGSL(maximumPermutations),
         // Copies the parameters, clears the cursor and the counts, and arms the batch dispatches
         // unless the requested count is invalid (then nothing runs and the outputs are NaN).
-        body: `for (var word = 0u; word < 4u; word++) {
-    state[stateOffset + word] = parameters[parametersOffset + word];
-  }
-  for (var word = ${S.base}u; word < ${S.length}u; word++) {
-    state[stateOffset + word] = 0u;
-  }
-  if (isPermutationCountValid()) {
+        body: `if (isPermutationCountValid()) {
     ${gate.armWGSL}
   } else {
     state[stateOffset + ${S.done}u] = 1u;

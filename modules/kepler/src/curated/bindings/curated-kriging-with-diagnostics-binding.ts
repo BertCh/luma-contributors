@@ -440,7 +440,7 @@ export function prepareCuratedKriging(inputs: Inputs, values: Values) {
 function finishCuratedKriging(
   inputs: Inputs,
   prepared: ReturnType<typeof prepareCuratedKriging>,
-  field: ReturnType<typeof computeKrigingField>,
+  field: ReturnType<typeof computeKrigingField> & {invalidCount?: number; uncertainCount?: number},
   leaveOneOut: LeaveOneOutResult,
   gpuSummary: Record<string, number> = {}
 ): CatalogRunOutput {
@@ -457,21 +457,32 @@ function finishCuratedKriging(
   const {frame, grid, diagnostics} = context;
   const {model, nugget, sill, range} = settings;
   // Both engines publish the same grid and validation schema.
-  if (gpuSummary['gpuInvalidCellCount'])
+  // The CPU producer exposes retained-neighbour counts; zero distinguishes lack of data
+  // from a failed solve without redoing neighbourhood selection or conflating validation loss.
+  const invalidCount =
+    field.invalidCount ??
+    gpuSummary['gpuInvalidCellCount'] ??
+    (field.counts
+      ? Array.from(field.counts).reduce((count, neighbors) => count + Number(neighbors === 0), 0)
+      : 0);
+  const uncertainCount = field.uncertainCount ?? field.singularCount;
+  if (invalidCount)
     addCatalogDiagnostic(
       diagnostics,
       'insufficient-kriging-neighbors',
       'warning',
-      'Cells with no usable sample within the search radius are nodata.',
-      gpuSummary['gpuInvalidCellCount']
+      'Cells with lack of data or invalid settings are nodata, including cells with fewer than the minimum distinct sample positions in reach.',
+      invalidCount
     );
-  if (field.singularCount)
+  if (uncertainCount)
     addCatalogDiagnostic(
       diagnostics,
       'singular-kriging-system',
       'warning',
-      'Cells whose kriging system is singular or numerically unreliable are nodata.',
-      field.singularCount
+      field.uncertainCount !== undefined
+        ? 'Cells with an ill-conditioned kriging system or materially negative variance are nodata.'
+        : 'Cells whose kriging system is singular or numerically unreliable are nodata.',
+      uncertainCount
     );
   const cellTable = makeGridTable(frame, grid, field, {
     tableId: 'kriging-cells',
@@ -724,7 +735,7 @@ export const CURATED_KRIGING_WITH_DIAGNOSTICS_BINDING: CatalogOperationBinding =
     'Model checks (screening bounds, not tests) raise the run-time caution poor-model-fit: summary key poorModelFit is 1 and poorModelFitReasons lists the reasons, with a diagnostic, when the range exceeds the largest lag (not identified: white noise can give a range several times the lag), the nugget is above 75 percent of the total sill (Cambardella et al. 1994: weak spatial dependence), the root mean square standardised leave-one-out error is outside 0.8 to 1.25 (it is 1 when the kriging variance is right; the band allows a variance 56 percent off at its ends), or fewer than 90 percent of leave-one-out errors are within 1.96 standard errors (nominal 95; about 1.5 binomial deviations below it for 40 samples). These incomplete isotropic screens may miss white noise, trends or periodic data; no warning does not establish a good or identified fit. A high omnidirectional nugget can mask anisotropy. The bounds are fixed, so they are noisier for fewer than about 30 samples.',
     'Ordinary kriging uses the nearest samples within the search radius (at most the neighbour count) per cell; locations are ordered by local-frame x then y before neighbour selection, so equal-distance ties select the same locations under input reordering. A cell whose system is singular, or with no sample in reach, is nodata and counted.',
     'Leave-one-out predicts each sample from the nearest others within the search radius (at most the neighbour count, so it is local, as the grid is) with the same variogram, without refitting; the error is predicted minus observed and the standardised error is the error over the square root of the kriging variance; a failed prediction is counted and left out of the summary.',
-    'The GPU path dispatches addInterpolationDiagnosticsRecipe (GPUKriging plus residual and reduction nodes) on the same local-frame samples and fitted or stated model; the empirical variogram and fitting remain on the CPU. It supports 4 to 16 neighbours; larger requests fall back to the CPU with a visible reason, never clamp. Before GPU allocation, measurement origins are compared for float32 round-trip error (at most 1e-6 * max(1, abs(value)) in measurement units); unrepresentable measurements or distinct locations that collide in float32 cause a visible CPU fallback. GPU solves use float32 and reject ill-conditioned systems as nodata; recipe stage invalid/uncertain counts are retained in the summary. GPU sample_count is null because GPUKriging does not expose retained neighbourhood counts.',
+    'The GPU path dispatches addInterpolationDiagnosticsRecipe (GPUKriging plus residual and reduction nodes) on the same local-frame samples and fitted or stated model; the empirical variogram and fitting remain on the CPU. It supports 4 to 16 neighbours; larger requests fall back to the CPU with a visible reason, never clamp. Before GPU allocation, measurement origins are compared for float32 round-trip error (at most 1e-6 * max(1, abs(value)) in measurement units); unrepresentable measurements or distinct locations that collide in float32 cause a visible CPU fallback. GPU solves use float32 and reject ill-conditioned systems as nodata; recipe stage invalid/uncertain counts are retained separately in the summary and diagnostics: insufficient-kriging-neighbors counts lack of data or invalid settings, and singular-kriging-system counts ill-conditioned systems or materially negative variance. CPU fallback derives the insufficient-neighbor count from cells with zero retained samples. Leave-one-out failures have their own count. GPU sample_count is null because GPUKriging does not expose retained neighbourhood counts.',
     'At most 2000 samples and 40000 cells; CPU sample times cell work above 60 million throws a capacity error that names the binding, the limit and the cell size that would fit.'
   ],
   limitation:

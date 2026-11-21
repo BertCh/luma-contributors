@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
 import {
   RasterSpectralIndex,
   snapshotSpectralIndexProps,
@@ -12,8 +12,8 @@ import {
 
 /** Normalized burn ratio using near infrared and the approximately 2.2 micrometer SWIR2 band. */
 export type GPURasterNBRProps = SpectralIndexProps & {
-  nearInfrared: GPURasterBufferBand;
-  shortwaveInfrared2: GPURasterBufferBand;
+  nearInfrared: GPURasterBand;
+  shortwaveInfrared2: GPURasterBand;
 };
 
 /** Calibrated `(NIR - SWIR2)/(NIR + SWIR2)`; outputs the ratio, not a scaled integer product. */

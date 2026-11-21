@@ -11,7 +11,7 @@ import {CURATED_DRAINAGE_NETWORK_ANALYSIS} from './samples/drainage-network';
 import type {
   GPUAnalysisFieldRoleSpec,
   GPUAnalysisQuestion
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {KeplerCuratedAnalysis, KeplerCuratedAnalysisSlot} from './curated-analysis-types';
 import {CURATED_DASYMETRIC_REDISTRIBUTION_ANALYSIS} from './bindings/curated-dasymetric-redistribution-binding';
 
@@ -137,7 +137,7 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
       fieldParameters: {},
       parameters: {}
     },
-    exposedParameters: ['epsilon', 'minimumPoints'],
+    exposedParameters: ['epsilon', 'minimumSamples'],
     sampleId: 'city-incidents'
   },
   {

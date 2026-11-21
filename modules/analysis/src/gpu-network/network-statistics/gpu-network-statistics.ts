@@ -22,6 +22,11 @@ import {
 } from '../../analysis-core/kernels/load-balanced-for-each';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  getNetworkReadbackWords,
+  getNetworkReadbackBytes,
+  type NetworkReadbackBytes
+} from './network-packed-readback';
+import {
   validateCapacity,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -34,6 +39,9 @@ import {
   getWorkgroupCounterKernelSource,
   WORKGROUP_COUNTER_WORKGROUP_SIZE
 } from '../network-workgroup-counters';
+
+/** Maximum bins per histogram for GPUNetworkStatistics construction, sizing and readback. */
+export const MAXIMUM_GPU_NETWORK_STATISTICS_DEGREE_BIN_COUNT = 4096;
 
 /** Number of header words that precede the three degree histograms in the summary. */
 export const GPU_NETWORK_STATISTICS_HEADER_LENGTH = 16;
@@ -75,14 +83,15 @@ export const GPU_NETWORK_STATISTICS_PARAMETER_LENGTH = 2;
 
 /** Returns the exact row count of the `output` view for a histogram resolution. */
 export function getGPUNetworkStatisticsLength(degreeBinCount: number = 32): number {
+  validateDegreeBinCount('getGPUNetworkStatisticsLength', degreeBinCount);
   return GPU_NETWORK_STATISTICS_HEADER_LENGTH + 3 * degreeBinCount;
 }
 
 /** Per-frame settings of {@link GPUNetworkStatistics}. */
 export type GPUNetworkStatisticsSettings = {
-  /** Modularity resolution `gamma`. Defaults to 1. */
+  /** Modularity resolution `gamma`, finite in float32. Defaults to 1. */
   resolution?: number;
-  /** Linear degree bin width, floored and clamped to at least 1. Defaults to 1. */
+  /** Finite linear degree bin width, floored and clamped to at least 1; encoded width at most 4294967295. Defaults to 1. */
   degreeBinWidth?: number;
 };
 
@@ -96,15 +105,26 @@ export type GPUNetworkStatisticsSettings = {
 export function getGPUNetworkStatisticsParameterValues(
   settings: GPUNetworkStatisticsSettings = {}
 ): Uint32Array {
+  const resolution = settings.resolution ?? 1;
+  const requestedWidth = settings.degreeBinWidth ?? 1;
+  const degreeBinWidth = Math.max(1, Math.floor(requestedWidth));
+  if (!Number.isFinite(Math.fround(resolution))) {
+    throw new Error('GPUNetworkStatistics resolution must be finite in float32');
+  }
+  if (!Number.isFinite(requestedWidth) || degreeBinWidth > 0xffffffff) {
+    throw new Error(
+      'GPUNetworkStatistics degreeBinWidth must encode an integer in [1, 4294967295]'
+    );
+  }
   const words = new Uint32Array(GPU_NETWORK_STATISTICS_PARAMETER_LENGTH);
-  new Float32Array(words.buffer, 0, 1)[0] = settings.resolution ?? 1;
-  words[1] = Math.max(1, Math.floor(settings.degreeBinWidth ?? 1));
+  new Float32Array(words.buffer, 0, 1)[0] = resolution;
+  words[1] = degreeBinWidth;
   return words;
 }
 
 /** Histogram layout needed to decode a summary. */
 export type GPUNetworkStatisticsLayout = {
-  /** Bins per histogram. Defaults to 32. */
+  /** Bins per histogram. Exact-view readers infer the width; the legacy reader defaults to 32. */
   degreeBinCount?: number;
 };
 
@@ -133,15 +153,10 @@ export type GPUNetworkStatisticsResult = {
   totalDegreeHistogram: number[];
 };
 
-/** Decodes a summary read back from the `output` view. */
-export function decodeGPUNetworkStatistics(
-  words: Uint32Array | ArrayLike<number>,
-  layout: GPUNetworkStatisticsLayout = {}
+function decodeNetworkStatisticsWords(
+  words: Uint32Array,
+  binCount: number
 ): GPUNetworkStatisticsResult {
-  const binCount = layout.degreeBinCount ?? 32;
-  if (words.length < getGPUNetworkStatisticsLength(binCount)) {
-    throw new Error('decodeGPUNetworkStatistics needs the full summary');
-  }
   const word = GPU_NETWORK_STATISTICS_WORD;
   const histogram = (index: number) =>
     Array.from(
@@ -168,6 +183,54 @@ export function decodeGPUNetworkStatistics(
     inDegreeHistogram: histogram(1),
     totalDegreeHistogram: histogram(2)
   };
+}
+
+/** Decodes an exact logical word view; explicitly supplied dimensions must agree with it. */
+export function decodeGPUNetworkStatisticsWords(
+  values: Uint32Array | readonly number[],
+  layout: GPUNetworkStatisticsLayout = {}
+): GPUNetworkStatisticsResult {
+  if (layout.degreeBinCount !== undefined)
+    validateDegreeBinCount('decodeGPUNetworkStatisticsWords', layout.degreeBinCount);
+  const words = getNetworkReadbackWords(
+    'decodeGPUNetworkStatisticsWords',
+    values,
+    GPU_NETWORK_STATISTICS_HEADER_LENGTH
+  );
+  const binCount =
+    layout.degreeBinCount ?? (words.length - GPU_NETWORK_STATISTICS_HEADER_LENGTH) / 3;
+  validateDegreeBinCount('decodeGPUNetworkStatisticsWords', binCount);
+  if (words.length !== getGPUNetworkStatisticsLength(binCount)) {
+    throw new Error(
+      `decodeGPUNetworkStatisticsWords logical length must equal ${getGPUNetworkStatisticsLength(binCount)} words; received ${words.length}`
+    );
+  }
+  return decodeNetworkStatisticsWords(words, binCount);
+}
+
+/** Decodes exact logical little-endian bytes, for example `{bytes: await buffer.readAsync()}`. */
+export function decodeGPUNetworkStatisticsFromBytes(
+  values: NetworkReadbackBytes,
+  layout: GPUNetworkStatisticsLayout = {}
+): GPUNetworkStatisticsResult {
+  return decodeGPUNetworkStatisticsWords(
+    getNetworkReadbackBytes(
+      'decodeGPUNetworkStatisticsFromBytes',
+      values,
+      GPU_NETWORK_STATISTICS_HEADER_LENGTH
+    ),
+    layout
+  );
+}
+
+function validateDegreeBinCount(id: string, degreeBinCount: number): void {
+  validateCapacity(
+    id,
+    'degreeBinCount',
+    degreeBinCount,
+    1,
+    MAXIMUM_GPU_NETWORK_STATISTICS_DEGREE_BIN_COUNT
+  );
 }
 
 /**
@@ -212,7 +275,7 @@ export type GPUNetworkStatisticsProps = {
    * default 1), word 1 linear degree bin width (default 1).
    */
   parameters?: GraphDataView<'uint32'>;
-  /** Bins per histogram. Compile-time, default 32. */
+  /** Bins per histogram. Compile-time integer 1..4096, default 32. */
   degreeBinCount?: number;
   /**
    * Compile-time bin rule, default `'linear'`. Linear: `min(floor(d / binWidth), binCount - 1)`.
@@ -238,11 +301,11 @@ const MAXIMUM_PRIVATE_HISTOGRAM_WORDS = 1024;
  * node/edge/slot counts, weak component count and largest size, isolated nodes, maximum
  * degrees, three degree histograms and optional modularity, all in one caller-owned `uint32` view.
  * Every word is rewritten on every encoding; the CPU decodes it with
- * {@link decodeGPUNetworkStatistics}.
+ * {@link decodeGPUNetworkStatisticsWords}.
  *
  * Summary layout: words `0..15` are the header ({@link GPU_NETWORK_STATISTICS_WORD}, words 14 and
  * 15 reserved zeros), then out-degree, in-degree and total-degree histograms of `degreeBinCount`
- * bins each. Undirected: in = out = total = live row length, with a self-loop adding 2 (networkx).
+ * bins each (integer 1..4096 bins per histogram on every route). Undirected: in = out = total = live row length, with a self-loop adding 2 (networkx).
  * Directed: total = in + out. Degree statistics cover live nodes only.
  *
  * Self-loop rule: an undirected self-loop, stored as one slot, adds 2 to the degree of its node.
@@ -298,9 +361,15 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
     this.nodeCount = validateGPUNetworkTopology(id, props.topology).nodeCount;
     const {nodeCount} = this;
     this.degreeBinCount = props.degreeBinCount ?? 32;
-    validateCapacity(id, 'degreeBinCount', this.degreeBinCount, 1, 4096);
-    if (props.degreeBinning && props.degreeBinning !== 'linear' && props.degreeBinning !== 'log2') {
-      throw new Error(`${id} degreeBinning must be 'linear' or 'log2'`);
+    validateDegreeBinCount(id, this.degreeBinCount);
+    if (
+      props.degreeBinning !== undefined &&
+      props.degreeBinning !== 'linear' &&
+      props.degreeBinning !== 'log2'
+    ) {
+      throw new Error(
+        `${id} degreeBinning must be 'linear' or 'log2'; received ${props.degreeBinning}`
+      );
     }
     validateCapacity(
       id,

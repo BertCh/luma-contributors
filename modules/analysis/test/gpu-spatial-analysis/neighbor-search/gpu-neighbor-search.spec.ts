@@ -4,7 +4,11 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import type {GPUNeighborSearchSettings} from '../../../src/gpu-spatial-analysis/neighbor-search/index';
+import {packGPUSpatialParameterValues} from '../../../src/analysis-core/contracts/parameter-schema';
+import {
+  GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA,
+  type GPUNeighborSearchSettings
+} from '../../../src/gpu-spatial-analysis/neighbor-search/index';
 import {createNeighborSearchHarness, type NeighborSearchReadback} from './neighbor-search-harness';
 import {
   computeNeighborSearchOracle,
@@ -64,18 +68,22 @@ it('GPUNeighborSearch kNN self join matches the brute-force oracle for k = 1, 4,
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = createRandomPoints(1500, 7);
-  for (const k of [1, 4, 8, 32]) {
+  for (const neighborCount of [1, 4, 8, 32]) {
     const parameters: GPUNeighborSearchSettings = {bounds: BOUNDS};
     const harness = createNeighborSearchHarness(device, {
       mode: 'knn',
-      k,
+      neighborCount,
       positions,
-      capacity: 1500 * k,
+      capacity: 1500 * neighborCount,
       parameters,
       gridSize: [24, 24]
     });
     const result = await harness.run();
-    expectMatchesOracle(result, {mode: 'knn', k, positions, parameters}, `k=${k}`);
+    expectMatchesOracle(
+      result,
+      {mode: 'knn', neighborCount, positions, parameters},
+      `k=${neighborCount}`
+    );
     harness.destroy();
   }
 });
@@ -99,20 +107,20 @@ it('GPUNeighborSearch kNN resolves exact ties to the lowest ID and handles tiny 
     [5, 3],
     [40, 40]
   ] as const) {
-    for (const k of [3, 5, 9]) {
+    for (const neighborCount of [3, 5, 9]) {
       const parameters: GPUNeighborSearchSettings = {bounds: [0, 0, 44, 44]};
       const harness = createNeighborSearchHarness(device, {
         mode: 'knn',
-        k,
+        neighborCount,
         positions,
-        capacity: rows * k,
+        capacity: rows * neighborCount,
         parameters,
         gridSize
       });
       expectMatchesOracle(
         await harness.run(),
-        {mode: 'knn', k, positions, parameters},
-        `grid ${gridSize} k=${k}`
+        {mode: 'knn', neighborCount, positions, parameters},
+        `grid ${gridSize} k=${neighborCount}`
       );
       harness.destroy();
     }
@@ -122,16 +130,20 @@ it('GPUNeighborSearch kNN resolves exact ties to the lowest ID and handles tiny 
   const parameters: GPUNeighborSearchSettings = {bounds: [0, 0, 4, 4]};
   const harness = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 8,
+    neighborCount: 8,
     positions: few,
     capacity: 24,
     parameters
   });
-  expectMatchesOracle(await harness.run(), {mode: 'knn', k: 8, positions: few, parameters}, 'few');
-  const bounded = {bounds: [0, 0, 4, 4], radius: 1.5} as const;
+  expectMatchesOracle(
+    await harness.run(),
+    {mode: 'knn', neighborCount: 8, positions: few, parameters},
+    'few'
+  );
+  const bounded = {bounds: [0, 0, 4, 4], maximumDistance: 1.5} as const;
   expectMatchesOracle(
     await harness.run(bounded),
-    {mode: 'knn', k: 8, positions: few, parameters: bounded},
+    {mode: 'knn', neighborCount: 8, positions: few, parameters: bounded},
     'bounded'
   );
   harness.destroy();
@@ -150,13 +162,13 @@ it('GPUNeighborSearch kNN and radius cross joins with masks match the oracle', a
   queryPositions[3] = 150;
   const knnParameters: GPUNeighborSearchSettings = {
     bounds: BOUNDS,
-    weightKind: 'inverseDistance',
+    weightType: 'inverse-distance',
     power: 2,
     distanceFloor: 0.01
   };
   const knn = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 6,
+    neighborCount: 6,
     positions,
     queryPositions,
     mask,
@@ -166,12 +178,20 @@ it('GPUNeighborSearch kNN and radius cross joins with masks match the oracle', a
   });
   expectMatchesOracle(
     await knn.run(),
-    {mode: 'knn', k: 6, positions, queryPositions, mask, queryMask, parameters: knnParameters},
+    {
+      mode: 'knn',
+      neighborCount: 6,
+      positions,
+      queryPositions,
+      mask,
+      queryMask,
+      parameters: knnParameters
+    },
     'knn cross'
   );
   knn.destroy();
 
-  const radiusParameters: GPUNeighborSearchSettings = {bounds: BOUNDS, radius: 6};
+  const radiusParameters: GPUNeighborSearchSettings = {bounds: BOUNDS, searchRadius: 6};
   const radius = createNeighborSearchHarness(device, {
     mode: 'radius',
     positions,
@@ -200,22 +220,33 @@ it('GPUNeighborSearch radius self join follows per-frame radius and weights with
     positions,
     mask,
     capacity: 200000,
-    parameters: {bounds: BOUNDS, radius: 3},
+    parameters: {bounds: BOUNDS, searchRadius: 3},
     gridSize: [64, 64]
   });
   const frames: GPUNeighborSearchSettings[] = [
-    {bounds: BOUNDS, radius: 3},
-    {bounds: BOUNDS, radius: 0.5},
-    {bounds: BOUNDS, radius: 8, rowStandardize: true},
-    {bounds: BOUNDS, radius: 5, weightKind: 'inverseDistance', power: 1, distanceFloor: 0.001},
-    {bounds: BOUNDS, radius: 5, weightKind: 'kernel', kernel: 'gaussian'},
-    {bounds: BOUNDS, radius: 5, weightKind: 'kernel', kernel: 'triangular', rowStandardize: true},
-    {bounds: BOUNDS, radius: 5, weightKind: 'kernel', kernel: 'epanechnikov'},
-    {bounds: BOUNDS, radius: 5, weightKind: 'kernel', kernel: 'bisquare'},
-    {bounds: BOUNDS, radius: 5, weightKind: 'kernel', kernel: 'uniform'},
-    {bounds: [0, 0, 50, 50], radius: 4},
-    {bounds: BOUNDS, radius: 0},
-    {bounds: BOUNDS, radius: 250}
+    {bounds: BOUNDS, searchRadius: 3},
+    {bounds: BOUNDS, searchRadius: 0.5},
+    {bounds: BOUNDS, searchRadius: 8, rowStandardize: true},
+    {
+      bounds: BOUNDS,
+      searchRadius: 5,
+      weightType: 'inverse-distance',
+      power: 1,
+      distanceFloor: 0.001
+    },
+    {bounds: BOUNDS, searchRadius: 5, weightType: 'kernel', kernel: 'gaussian'},
+    {
+      bounds: BOUNDS,
+      searchRadius: 5,
+      weightType: 'kernel',
+      kernel: 'triangular',
+      rowStandardize: true
+    },
+    {bounds: BOUNDS, searchRadius: 5, weightType: 'kernel', kernel: 'epanechnikov'},
+    {bounds: BOUNDS, searchRadius: 5, weightType: 'kernel', kernel: 'bisquare'},
+    {bounds: BOUNDS, searchRadius: 5, weightType: 'kernel', kernel: 'uniform'},
+    {bounds: [0, 0, 50, 50], searchRadius: 4},
+    {bounds: BOUNDS, searchRadius: 250}
   ];
   for (const [frame, parameters] of frames.entries()) {
     expectMatchesOracle(
@@ -225,11 +256,22 @@ it('GPUNeighborSearch radius self join follows per-frame radius and weights with
       200000
     );
   }
+  // A GPU-resident zero radius bypasses the host packer's positive-distance validation.
+  const zeroRadius = packGPUSpatialParameterValues(GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA, {
+    minimumX: BOUNDS[0],
+    minimumY: BOUNDS[1],
+    maximumX: BOUNDS[2],
+    maximumY: BOUNDS[3],
+    maximumDistance: 0
+  });
+  const empty = await harness.run(zeroRadius);
+  expect(empty.neighborCounts).toEqual(Array(positions.length / 2).fill(0));
+  expect(empty.offsets).toEqual(Array(positions.length / 2 + 1).fill(0));
   // New positions and mask between submissions.
   const moved = createRandomPoints(2500, 23);
   harness.writePositions(moved);
   harness.writeMask(new Uint32Array(2500).fill(1));
-  const parameters = {bounds: BOUNDS, radius: 4} as const;
+  const parameters = {bounds: BOUNDS, searchRadius: 4} as const;
   expectMatchesOracle(
     await harness.run(parameters),
     {mode: 'radius', positions: moved, parameters},
@@ -251,7 +293,7 @@ it('GPUNeighborSearch radius cell pruning preserves exact cell and circle bounda
   const queryPositions = new Float32Array([-1, -1]);
   const parameters: GPUNeighborSearchSettings = {
     bounds: [-100, -100, 100, 100],
-    radius: 1
+    searchRadius: 1
   };
   const harness = createNeighborSearchHarness(device, {
     mode: 'radius',
@@ -275,7 +317,7 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
   const positions = createRandomPoints(800, 31);
   const harness = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 10,
+    neighborCount: 10,
     positions,
     capacity: 8000,
     parameters: {bounds: BOUNDS}
@@ -284,13 +326,13 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
     for (const rowStandardize of [false, true]) {
       const parameters: GPUNeighborSearchSettings = {
         bounds: BOUNDS,
-        weightKind: 'kernel',
+        weightType: 'kernel',
         kernel,
         rowStandardize
       };
       expectMatchesOracle(
         await harness.run(parameters),
-        {mode: 'knn', k: 10, positions, parameters},
+        {mode: 'knn', neighborCount: 10, positions, parameters},
         `${kernel} ${rowStandardize}`
       );
     }
@@ -299,7 +341,7 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
   const coincident = new Float32Array([5, 5, 5, 5, 6, 5]);
   const small = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 2,
+    neighborCount: 2,
     positions: coincident,
     capacity: 6,
     parameters: {bounds: BOUNDS}
@@ -307,13 +349,13 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
   for (const distanceFloor of [0, 0.5]) {
     const parameters: GPUNeighborSearchSettings = {
       bounds: BOUNDS,
-      weightKind: 'inverseDistance',
+      weightType: 'inverse-distance',
       distanceFloor
     };
     const result = await small.run(parameters);
     expectMatchesOracle(
       result,
-      {mode: 'knn', k: 2, positions: coincident, parameters},
+      {mode: 'knn', neighborCount: 2, positions: coincident, parameters},
       `floor ${distanceFloor}`
     );
     expect(result.weights[0]).toBe(distanceFloor === 0 ? 0 : 2);
@@ -323,7 +365,7 @@ it('GPUNeighborSearch kNN adaptive kernel weights and row standardization match 
   for (const power of [1, 2]) {
     const parameters: GPUNeighborSearchSettings = {
       bounds: BOUNDS,
-      weightKind: 'inverseDistance',
+      weightType: 'inverse-distance',
       power
     };
     const result = await small.run(parameters);
@@ -342,7 +384,7 @@ it('GPUNeighborSearch clamps offsets and flags overflow when the capacity is exc
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = createRandomPoints(600, 41);
-  const parameters: GPUNeighborSearchSettings = {bounds: BOUNDS, radius: 10};
+  const parameters: GPUNeighborSearchSettings = {bounds: BOUNDS, searchRadius: 10};
   const oracle = computeNeighborSearchOracle({mode: 'radius', positions, parameters});
   const capacity = Math.floor(oracle.offsets[600] / 3);
   const harness = createNeighborSearchHarness(device, {
@@ -369,14 +411,14 @@ it('GPUNeighborSearch clamps offsets and flags overflow when the capacity is exc
 
   const knn = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 4,
+    neighborCount: 4,
     positions,
     capacity: 1000,
     parameters: {bounds: BOUNDS}
   });
   expectMatchesOracle(
     await knn.run(),
-    {mode: 'knn', k: 4, positions, parameters: {bounds: BOUNDS}},
+    {mode: 'knn', neighborCount: 4, positions, parameters: {bounds: BOUNDS}},
     'knn overflow',
     1000
   );
@@ -389,8 +431,8 @@ it('GPUNeighborSearch is bitwise reproducible across submissions', async () => {
   const positions = createRandomPoints(3000, 51);
   const parameters: GPUNeighborSearchSettings = {
     bounds: BOUNDS,
-    radius: 4,
-    weightKind: 'kernel',
+    searchRadius: 4,
+    weightType: 'kernel',
     kernel: 'gaussian',
     rowStandardize: true
   };
@@ -432,20 +474,20 @@ it('GPUNeighborSearch kNN cell pruning matches the oracle on mixed density with 
     [64, 7],
     [100, 100]
   ] as const) {
-    for (const k of [1, 16, 32]) {
+    for (const neighborCount of [1, 16, 32]) {
       const parameters: GPUNeighborSearchSettings = {bounds: BOUNDS};
       const harness = createNeighborSearchHarness(device, {
         mode: 'knn',
-        k,
+        neighborCount,
         positions,
-        capacity: rows * k,
+        capacity: rows * neighborCount,
         parameters,
         gridSize
       });
       expectMatchesOracle(
         await harness.run(),
-        {mode: 'knn', k, positions, parameters},
-        `mixed grid ${gridSize} k=${k}`
+        {mode: 'knn', neighborCount, positions, parameters},
+        `mixed grid ${gridSize} k=${neighborCount}`
       );
       harness.destroy();
     }

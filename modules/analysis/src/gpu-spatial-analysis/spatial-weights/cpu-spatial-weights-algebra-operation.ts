@@ -1,9 +1,17 @@
+import {
+  validateAndSnapshotWeightsAlgebraProps,
+  validateWeightsOperationStatus
+} from './spatial-weights-operation-name';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {snapshotWeightsAlgebraProps} from './weights-construction-snapshot';
+import {
+  hasCPUWeightsLoss,
+  type CPUWeightsLossInput,
+  type CPUWeightsStatus
+} from './cpu-spatial-weights-loss';
 import {assertCompatibleGPUSpatialContexts} from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
@@ -19,19 +27,21 @@ import {
   validateSpatialWeightsOperationInformation,
   type SpatialWeightsAlgebraOperationProps
 } from './gpu-spatial-weights-algebra-operation';
-import type {GPUSpatialWeightsCombineRule} from './gpu-spatial-weights-algebra';
+import type {
+  GPUSpatialWeightsBinaryProps,
+  GPUSpatialWeightsCombineRule
+} from './gpu-spatial-weights-algebra';
 import type {
   GPUSpaceTimeWeightsLayout,
   GPUSpatialWeightsSpaceTimeLag
 } from './spatial-weights-space-time-stages';
 
 /** Packed CSR input. Slots beyond the last offset are unused capacity. */
-export type CPUSpatialWeightsAlgebraRows = {
+export type CPUSpatialWeightsAlgebraRows = CPUWeightsLossInput & {
   offsets: Uint32Array;
   neighbors: Uint32Array;
   weights: Float32Array;
   distances?: Float32Array;
-  status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
 };
 /** Arrays read by the chosen operation. */
 export type CPUSpatialWeightsAlgebraInput = {
@@ -45,7 +55,8 @@ export type CPUSpatialWeightsAlgebraInput = {
 /** CPU options; output row count is inferred from the input CSR (or groups). */
 export type CPUSpatialWeightsAlgebraOptions = {capacity: number; distances?: boolean} & (
   | {
-      operation: 'union' | 'intersection' | 'difference' | 'symmetricDifference';
+      /** Set operation. */
+      operation: GPUSpatialWeightsBinaryProps['operation'];
       weightRule?: GPUSpatialWeightsCombineRule;
     }
   | {operation: 'higherOrder'; order: number; cumulative?: boolean; workCapacity?: number}
@@ -60,29 +71,15 @@ export type CPUSpatialWeightsAlgebraOptions = {capacity: number; distances?: boo
     }
 );
 /** Output CSR and status scalars; unused capacity is zero. */
-export type CPUSpatialWeightsAlgebraResult = Omit<CPUSpatialWeightsAlgebraRows, 'status'> & {
-  overflow: Uint32Array;
-  requiredCount: Uint32Array;
-  candidateOverflow: Uint32Array;
+export type CPUSpatialWeightsAlgebraResult = Pick<
+  CPUSpatialWeightsAlgebraRows,
+  'offsets' | 'neighbors' | 'weights' | 'distances'
+> & {
+  status: Required<Pick<CPUWeightsStatus, 'overflow' | 'requiredCount' | 'candidateOverflow'>>;
 };
 
 function validateOptions(id: string, options: CPUSpatialWeightsAlgebraOptions): void {
   validateCapacity(id, 'capacity', options.capacity);
-  validateRequirement(
-    id,
-    [
-      'union',
-      'intersection',
-      'difference',
-      'symmetricDifference',
-      'higherOrder',
-      'selfWeight',
-      'subgraph',
-      'block',
-      'spaceTime'
-    ].includes(options.operation),
-    'operation must name a supported algebra operation'
-  );
   if ('weightRule' in options)
     validateRequirement(
       id,
@@ -232,7 +229,8 @@ function computeBoundedHigherOrderRows(
  * What differs from the GPU contributor:
  * - Higher-order searches use dynamic frontiers when workCapacity is omitted. An explicit
  *   workCapacity clamps each intermediate matrix in row order, exactly as on GPU, and sets
- *   candidateOverflow. The order-32 GPU cap is dropped. requiredCount is a lower bound after loss.
+ *   candidateOverflow. The order-32 GPU cap is dropped. After loss requiredCount counts the
+ *   retained computation and is not a bound on the complete exact-order result.
  * - The GPU limit of 16 temporal lags is dropped. Index and output sizes remain uint32.
  *   Empty input slot arrays are accepted; output capacity remains at least one.
  * - Arithmetic is float64 with one output rounding; near rounding boundaries products/sums
@@ -246,10 +244,11 @@ export function computeSpatialWeightsAlgebraOnCPU(
   input: CPUSpatialWeightsAlgebraInput,
   options: CPUSpatialWeightsAlgebraOptions
 ): CPUSpatialWeightsAlgebraResult {
+  options = validateAndSnapshotWeightsAlgebraProps(options);
   validateOptions('spatial-weights-algebra', options);
   const left =
     'weightRule' in options ||
-    ['union', 'intersection', 'difference', 'symmetricDifference'].includes(options.operation)
+    ['union', 'intersection', 'difference', 'symmetric-difference'].includes(options.operation)
       ? validateRows('left', input.left)
       : undefined;
   const right = left ? validateRows('right', input.right) : undefined;
@@ -275,27 +274,30 @@ export function computeSpatialWeightsAlgebraOnCPU(
     if (!(left ?? source)?.distances)
       throw new Error(`${left ? 'left' : 'weights'}.distances is required`);
     if (
-      (options.operation === 'union' || options.operation === 'symmetricDifference') &&
+      (options.operation === 'union' || options.operation === 'symmetric-difference') &&
       !right?.distances
     )
       throw new Error('right.distances is required');
   }
   const rowCount = baseRowCount * (options.operation === 'spaceTime' ? options.periodCount : 1);
   validateCapacity('spatial-weights-algebra', 'rowCount', rowCount);
+  const status = {
+    overflow: new Uint32Array(1),
+    requiredCount: new Uint32Array(1),
+    candidateOverflow: Uint32Array.of(
+      Number(
+        [left, right, source].some(
+          rows => rows && hasCPUWeightsLoss('spatial-weights-algebra', rows)
+        )
+      )
+    )
+  };
   const result: CPUSpatialWeightsAlgebraResult = {
     offsets: new Uint32Array(rowCount + 1),
     neighbors: new Uint32Array(options.capacity),
     weights: new Float32Array(options.capacity),
     distances: options.distances ? new Float32Array(options.capacity) : undefined,
-    overflow: new Uint32Array(1),
-    requiredCount: new Uint32Array(1),
-    candidateOverflow: Uint32Array.of(
-      Number(
-        [left, right, source].some(rows =>
-          Boolean(rows?.status?.overflow?.[0] || rows?.status?.candidateOverflow?.[0])
-        )
-      )
-    )
+    status
   };
   const boundedOrders =
     options.operation === 'higherOrder' && options.workCapacity !== undefined
@@ -304,7 +306,7 @@ export function computeSpatialWeightsAlgebraOnCPU(
           options.order,
           options.cumulative ?? false,
           options.workCapacity,
-          result.candidateOverflow
+          status.candidateOverflow
         )
       : undefined;
   let requiredCount = 0;
@@ -319,7 +321,7 @@ export function computeSpatialWeightsAlgebraOnCPU(
         if (
           (options.operation === 'intersection' && !(first && second)) ||
           (options.operation === 'difference' && (!first || second)) ||
-          (options.operation === 'symmetricDifference' && Boolean(first) === Boolean(second))
+          (options.operation === 'symmetric-difference' && Boolean(first) === Boolean(second))
         )
           continue;
         const rule = 'weightRule' in options ? (options.weightRule ?? 'left') : 'left';
@@ -444,15 +446,16 @@ export function computeSpatialWeightsAlgebraOnCPU(
     }
     result.offsets[row + 1] = Math.min(requiredCount, options.capacity);
   }
-  result.requiredCount[0] = Math.min(requiredCount, 0xffffffff);
-  result.overflow[0] = Number(requiredCount > options.capacity);
+  status.requiredCount[0] = Math.min(requiredCount, 0xffffffff);
+  status.overflow[0] = Number(requiredCount > options.capacity);
   return result;
 }
 
 /** CPU twin honoring explicit frontier budgets, without GPU lag-count or order limits. */
 export class CPUSpatialWeightsAlgebraOperation extends GPUCPUOperation {
   constructor(props: SpatialWeightsAlgebraOperationProps) {
-    props = snapshotWeightsAlgebraProps(props);
+    props = validateAndSnapshotWeightsAlgebraProps(props);
+    validateWeightsOperationStatus(props);
     const id = props.id ?? 'spatial-weights-algebra';
     const options: CPUSpatialWeightsAlgebraOptions = {
       ...props,
@@ -470,7 +473,7 @@ export class CPUSpatialWeightsAlgebraOperation extends GPUCPUOperation {
           props.left.distances !== undefined,
           'output.distances requires left.distances'
         );
-        if (props.operation === 'union' || props.operation === 'symmetricDifference')
+        if (props.operation === 'union' || props.operation === 'symmetric-difference')
           validateRequirement(
             id,
             props.right.distances !== undefined,
@@ -494,7 +497,8 @@ export class CPUSpatialWeightsAlgebraOperation extends GPUCPUOperation {
         assertCompatibleGPUSpatialContexts(
           id,
           props.left.spatialContext,
-          props.right.spatialContext
+          props.right.spatialContext,
+          {purpose: props.output.distances !== undefined ? 'metric-results' : 'coordinates'}
         );
       }
       validateSpatialWeightsOperationInformation(
@@ -569,11 +573,22 @@ export class CPUSpatialWeightsAlgebraOperation extends GPUCPUOperation {
         );
         if (result.offsets.length !== props.rowCount + 1)
           throw new Error(`${id} offsets/groupIds row count must equal rowCount`);
+        const vectors: Readonly<Record<string, Uint32Array | Float32Array | undefined>> = {
+          offsets: result.offsets,
+          neighbors: result.neighbors,
+          weights: result.weights,
+          distances: result.distances,
+          ...result.status
+        };
         return Object.fromEntries(
-          Object.entries(operation.outputs).map(([port, output]) => [
-            output.value,
-            result[port as keyof CPUSpatialWeightsAlgebraResult]!
-          ])
+          Object.entries(operation.outputs).map(
+            ([port, output]): [string, Uint32Array | Float32Array] => {
+              const vector = vectors[port];
+              if (vector === undefined)
+                throw new Error(`${id} output.${port} has no result vector`);
+              return [output.value, vector];
+            }
+          )
         );
       }
     });

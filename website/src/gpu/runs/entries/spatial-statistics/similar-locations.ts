@@ -21,7 +21,7 @@ const COLUMN_COUNT = 4;
 const RESULT_CAPACITY = 40;
 const DEFAULT_TRACT = 40;
 const SIMILAR_COUNT = 12;
-const STANDARDIZATIONS = ['zscore', 'rank'] as const;
+const STANDARDIZATIONS = ['z-score', 'rank'] as const;
 
 export default defineOperationRun({
   parameters,

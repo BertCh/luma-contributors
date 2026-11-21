@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.class-assignment",
   "viewId": "datum-receipt",
-  "caption": "Receipt of Midwest county 15. classMap: -91.50599670410156, 40.20000076293945. values read back from the GPU run. result: 4 quantities.",
-  "description": "Receipt of Midwest county 15. classMap: -91.50599670410156, 40.20000076293945. values read back from the GPU run. result: 4 quantities.",
-  "llms": "Receipt of Midwest county 15\n\n- classMap: -91.50599670410156, 40.20000076293945\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of Midwest county 15. classes: 3. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of Midwest county 15. classes: 3. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of Midwest county 15\n\n- classes: 3\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
-    "label": "classMap",
-    "value": "-91.50599670410156, 40.20000076293945"
+    "label": "classes",
+    "value": "3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Midwest county 15</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-counties-0\" title=\"gpu-spatial-analysis-class-assignment-snapshot-tap\">counties</button></td><td>-91.50599670410156, 40.20000076293945</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-unemployment-0\" title=\"Unemployment rate 2023 (%)\">unemployment</button></td><td>4.400000095367432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-classes-0\" title=\"gpu-spatial-analysis-class-assignment-snapshot-tap\">classes</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-classMap-0\" title=\"gpu-spatial-analysis-class-assignment-snapshot-tap\">classMap</button></td><td>-91.50599670410156, 40.20000076293945</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Midwest county 15</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-unemployment-0\" title=\"Unemployment rate 2023 (%)\">unemployment</button></td><td>4.400000095367432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-classes-0\" title=\"gpu-spatial-analysis-class-assignment-snapshot-tap\">classes</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,13 +29,6 @@
     "rows": [
       [
         "result",
-        "counties",
-        "-91.50599670410156, 40.20000076293945",
-        "0",
-        "readback"
-      ],
-      [
-        "result",
         "unemployment",
         "4.400000095367432",
         "0",
@@ -47,18 +40,9 @@
         "3",
         "0",
         "readback"
-      ],
-      [
-        "result",
-        "classMap",
-        "-91.50599670410156, 40.20000076293945",
-        "0",
-        "readback"
       ]
     ],
     "provenance": [
-      "readback",
-      "readback",
       "readback",
       "readback"
     ]
@@ -76,12 +60,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:31.248Z",
-    "runId": "run-3547993c",
+    "date": "2026-11-20T23:49:27.516Z",
+    "runId": "run-78f629b2",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-3547993c",
+    "runId": "run-78f629b2",
     "rung": "datum",
     "bindings": {
       "entity": 15

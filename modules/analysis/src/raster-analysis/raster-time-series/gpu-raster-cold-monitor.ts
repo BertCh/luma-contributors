@@ -18,6 +18,7 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
@@ -212,6 +213,16 @@ export class GPURasterCOLDMonitor<
   private readonly ticksPerYear: number;
 
   constructor(readonly props: GPURasterCOLDMonitorProps<Rows>) {
+    validateGraphPorts(props.id ?? 'raster-cold-monitor', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'dateAxis.acquisitionTimes': {required: true, viewType: 'data', formats: ['uint32x2']},
+      'output.segments': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.coefficients': {required: true, viewType: 'either', formats: ['float32']},
+      'output.segmentStatistics': {required: true, viewType: 'either', formats: ['float32']},
+      'output.cellSummary': {required: true, viewType: 'either', formats: ['uint32']}
+    });
     const id = props.id ?? 'raster-cold-monitor';
     this.id = id;
     this.minimumObservations = props.minimumObservations ?? 12;

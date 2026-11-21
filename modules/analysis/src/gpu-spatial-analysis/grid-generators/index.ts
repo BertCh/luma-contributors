@@ -8,6 +8,7 @@ export {
   getGPUGridGeneratorParameterValues,
   getGPUGridVerticesPerCell,
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,
+  MAXIMUM_GPU_GRID_CENTER_AXIS_CELL_COUNT,
   GPUGridGenerator
 } from './gpu-grid-generator';
 export type {
@@ -18,6 +19,7 @@ export type {
 } from './gpu-grid-generator';
 export {
   getGPUShapeGeneratorParameterValues,
+  getGPUShapePolygonIdentityOffsets,
   getGPUShapeMinimumSegments,
   getGPUShapeVertexCount,
   GPU_SHAPE_GENERATOR_PARAMETER_LENGTH,

@@ -6,6 +6,18 @@ import {describe, expect, it} from 'vitest';
 import {createHealpixDGGSJSON} from '../../../src/gpu-spatial-analysis/healpix-cells/index';
 
 describe('createHealpixDGGSJSON', () => {
+  it('names an invalid UNIQ zero key and preserves real nested pixel zero (DGGS-108)', () => {
+    expect(() =>
+      createHealpixDGGSJSON({order: 0, scheme: 'uniq', cells: [0n, 4n], properties: {}})
+    ).toThrow(/cell 0.*scheme uniq.*outside the ancestral zone/);
+    const document = createHealpixDGGSJSON({
+      order: 0,
+      scheme: 'nested',
+      cells: [0n],
+      properties: {n: {values: [1]}}
+    });
+    expect(document.values['n'][0].data).toEqual([1]);
+  });
   it('round-trips arbitrary own property names including __proto__', () => {
     const properties = JSON.parse(
       '{"__proto__":{"title":"prototype column","unit":"C","values":[7]},"temperature":{"values":[22]}}'

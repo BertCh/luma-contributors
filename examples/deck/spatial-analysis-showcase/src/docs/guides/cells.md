@@ -36,7 +36,7 @@ Resolution is the trade between **signal and noise**. At fine resolutions most c
 Some tips:
 
 - H3 resolution 8 (edge about 460 m) and Quadbin zoom 15 (about 900 m) are good city-scale defaults.
-- H3 and S2 keys are computed with f32 sphere math. They are exact at coarse resolutions and degrade past about resolution 10 (H3) or level 20 (S2); the scene shows the error rate for the family you picked. Quadbin, quadkey and geohash keys are bit-exact integers.
+- Geographic point-to-cell classification and integer key encoding have different precision limits. On the `GPUPointToCell` S2 f32 face/UV/ST/IJ route, a 10,176-point equal-area sample (excluding 64 special-case rows) had zero observed mismatches against the float64 reference through level 10 and **6.6% mismatches at level 20**. Zero observed mismatches is not an exactness guarantee at cell boundaries; the subsequent integer Hilbert key encoding is exact. H3's ordinary f32 sphere route also has boundary classification errors that grow with resolution. Quadbin and quadkey use deterministic integer-defined tiles of the clipped f32 input coordinates, which can differ from a float64 Mercator classification; geohash encodes the same f32 coordinates exactly. The scene shows the sampled error rate for the family you picked.
 - Counts per cell are heavy tailed. Use a square-root or log scale, or classify with `GPUClassBreaks`.
 
 ## What is compile-time, and what is not
@@ -47,7 +47,7 @@ Compile-time (the badge in the options panel): the **family**, the **resolution*
 
 ## Pitfalls
 
-- **Tables have a capacity.** Aggregation, cover and compaction write capacity-bounded tables and keep the smallest keys on overflow. Always read the overflow flag.
+- **Tables have a capacity.** Aggregation and compaction keep the smallest keys on final overflow. Cover retains feature/candidate order and may repeat keys. Inspect both `overflow` and `candidateOverflow`; select and check `complete` when whole H3 or Quadbin coverage is required. Without a `complete` output, cover suppresses its count for non-capacity loss. Forward the counted source and its loss status to compaction, and read only the prefix bounded by each output count; tails are unspecified.
 - **Keys of different families or resolutions do not mix.** `GPUCellTableCompare` cannot check that its two tables use the same family and resolution.
 - **H3 covers use the cell center only.** For `full` or `intersects` containment use Quadbin.
 - **Cover cells are not a perfect copy of the polygon.** The *core* flag marks cells that are provably inside, border cells straddle an edge; coarse covers of small polygons may be empty.

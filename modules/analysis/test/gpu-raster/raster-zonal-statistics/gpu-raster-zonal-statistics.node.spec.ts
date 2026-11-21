@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {findConstantNonFiniteBitcasts} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {expect, it} from 'vitest';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import {
@@ -121,6 +122,7 @@ it('GPURasterZonalStatistics validates its props', () => {
     }),
     /zones/
   );
+  // @ts-expect-error Runtime rejection remains necessary for JavaScript callers.
   expectConstructorToThrow(() => ({output: {}}), /at least one output/);
   expectConstructorToThrow(() => ({zoneCapacity: 0}), /zoneCapacity/);
   expectConstructorToThrow(() => ({zoneCapacity: 2 ** 32}), /zoneCapacity/);
@@ -234,15 +236,15 @@ const GEOGRAPHIC_ROW_AREAS = [1581471169984.1543, 2130710343385.227, 24229544034
 
 it('getRasterZonalCellArea matches closed-form spherical row areas', () => {
   for (const [row, area] of GEOGRAPHIC_ROW_AREAS.entries()) {
-    expect(getRasterZonalCellArea(GEOGRAPHIC_SETTINGS, row, 3) / area).toBeCloseTo(1, 12);
+    expect(getRasterZonalCellArea(GEOGRAPHIC_SETTINGS, row, 3, 1) / area).toBeCloseTo(1, 12);
     // Rows advancing north give the same areas.
-    expect(getRasterZonalCellArea([10, 20, 0, 60], 2 - row, 3) / area).toBeCloseTo(1, 12);
+    expect(getRasterZonalCellArea([10, 20, 0, 60], 2 - row, 3, 1) / area).toBeCloseTo(1, 12);
   }
 });
 
 it('the zonal oracle reproduces python area-weighted means and reliability variances', () => {
   const cellWeights = GEOGRAPHIC_ZONES.map((_, cell) =>
-    getRasterZonalCellArea(GEOGRAPHIC_SETTINGS, Math.floor(cell / 2), 3)
+    getRasterZonalCellArea(GEOGRAPHIC_SETTINGS, Math.floor(cell / 2), 3, 1)
   );
   const weighted = computeZonalStatistics(GEOGRAPHIC_ZONES, GEOGRAPHIC_VALUES, {
     zoneCapacity: 2,
@@ -275,6 +277,7 @@ it('GPURasterZonalStatistics schedules weighted moments only when requested', ()
   const ids = getNodeIds(
     createProps(graph, {
       cellSizeMode: 'geographic',
+      parameterLayoutVersion: 1,
       parameters,
       output: {
         means: createTransientView(graph, 'o-means', 'float32', CAPACITY),
@@ -324,9 +327,17 @@ it('GPURasterZonalStatistics validates geographic cell weighting', () => {
   expectConstructorToThrow(
     graph => ({
       cellSizeMode: 'geographic',
+      parameterLayoutVersion: 1,
       parameters: createTransientView(graph, 'short-parameters', 'float32', 3)
     }),
     /parameters must contain at least 4/
+  );
+  expectConstructorToThrow(
+    graph => ({
+      cellSizeMode: 'geographic',
+      parameters: createTransientView(graph, 'legacy-parameters', 'float32', 4)
+    }),
+    /exactly 7 values .* parameterLayoutVersion: 1/
   );
   expectConstructorToThrow(
     graph => ({
@@ -364,8 +375,9 @@ it('GPURasterZonalStatistics skips the identity copy for canonical float32 buffe
   });
   // Already canonical: float32 buffer, validity, no calibration or nodata.
   expect(countElevationNodes(graph => ({values: band(graph, {validity: true})}))).toBe(0);
-  // Each of these still needs the canonicalizing copy.
-  expect(countElevationNodes(graph => ({values: band(graph, {})}))).toBe(1);
+  // Without a caller mask the reducer supplies an all-eligible mask; its readers still reject
+  // non-finite values. Conversion/calibration/nodata below still need canonicalization.
+  expect(countElevationNodes(graph => ({values: band(graph, {})}))).toBe(0);
   expect(countElevationNodes(graph => ({values: band(graph, {validity: true, scale: 2})}))).toBe(1);
   expect(countElevationNodes(graph => ({values: band(graph, {validity: true, offset: 1})}))).toBe(
     1
@@ -400,4 +412,119 @@ it('getGPURasterZonalStatisticsParameterValues writes the grid words', () => {
   expect(() => getGPURasterZonalStatisticsParameterValues(grid, new Float32Array(3))).toThrow(
     /4 values/
   );
+});
+
+it('RT-137 guards counts-only and all zonal reductions after their normal publication', () => {
+  for (const sumOrder of ['atomic', 'sorted'] as const) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const props = createProps(graph, {
+      sumOrder,
+      producerOverflow: createTransientView(graph, 'producer-overflow', 'uint32', 1),
+      output: {cellCounts: createTransientView(graph, 'counts', 'uint32', CAPACITY)}
+    });
+    expect(() => new GPURasterZonalStatistics(props)).toThrow(/incomplete/);
+    props.output.status = {incomplete: createTransientView(graph, 'incomplete', 'uint32', 1)};
+    const ids = getNodeIds(props, graph);
+    expect(ids).toContain('zonal-producer-cellCounts');
+    expect(ids.at(-1)).toBe('zonal-producer-incomplete');
+  }
+});
+
+it('RT-137 guards weighted moments and sparse dictionary result columns on both reduction routes', () => {
+  for (const sumOrder of ['atomic', 'sorted'] as const) {
+    for (const sparse of [false, true]) {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      const column = <Format extends 'float32' | 'uint32'>(
+        name: string,
+        format: Format,
+        length = CAPACITY
+      ) => createTransientView(graph, name, format, length);
+      const props = createProps(graph, {
+        sumOrder,
+        cellSizeMode: 'geographic',
+        parameters: column('parameters', 'float32', 7),
+        producerOverflow: column('producer-overflow', 'uint32', 1),
+        ...(sparse ? {zoneDictionary: column('dictionary', 'uint32')} : {}),
+        output: {
+          cellCounts: column('cell-counts', 'uint32'),
+          valueCounts: column('value-counts', 'uint32'),
+          sums: column('sums', 'float32'),
+          means: column('weighted-means', 'float32'),
+          minimums: column('minimums', 'float32'),
+          maximums: column('maximums', 'float32'),
+          weightSums: column('weights', 'float32'),
+          variances: column('variances', 'float32'),
+          standardDeviations: column('deviations', 'float32'),
+          ...(sparse
+            ? {
+                sourceZoneIds: column('source-ids', 'uint32'),
+                denseZoneRows: column('dense-rows', 'uint32')
+              }
+            : {}),
+          status: {
+            incomplete: column('incomplete', 'uint32', 1),
+            ...(sparse ? {invalidCount: column('invalid-count', 'uint32', 1)} : {})
+          }
+        }
+      });
+      const nodes = new GPURasterZonalStatistics(props).getCommandNodes(graph);
+      const ids = nodes.map(node => node.id);
+      for (const name of Object.keys(props.output).filter(name => name !== 'status')) {
+        expect(ids).toContain(`zonal-producer-${name}`);
+      }
+      expect(ids.at(-1)).toBe('zonal-producer-incomplete');
+      const sources = getGPUCommandNodeKernelSources(nodes).filter(kernel =>
+        kernel.id.includes('-producer-')
+      );
+      expect(sources.length).toBe(Object.keys(props.output).length);
+      for (const {id, source} of sources) {
+        expect(source).toContain('producerOverflow[producerOverflowOffset]');
+        expect(findConstantNonFiniteBitcasts(source), id).toEqual([]);
+      }
+    }
+  }
+});
+
+it('CMP-09 captures loss-source lists and nested output maps at construction', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const loss = createTransientView(graph, 'loss', 'uint32', 1);
+  const sources = [loss];
+  const status = {incomplete: createTransientView(graph, 'incomplete', 'uint32', 1)};
+  const output = {means: createTransientView(graph, 'captured-means', 'float32', CAPACITY), status};
+  const props = createProps(graph, {incompleteSources: sources, output});
+  const contributor = new GPURasterZonalStatistics(props);
+  sources.length = 0;
+  output.means = createTransientView(graph, 'replacement', 'float32', CAPACITY);
+  status.incomplete = createTransientView(graph, 'replacement-status', 'uint32', 1);
+  expect(contributor.props.incompleteSources).toEqual([loss]);
+  expect(contributor.props.output.means).not.toBe(output.means);
+  expect(contributor.props.output.status?.incomplete).not.toBe(status.incomplete);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toContain('zonal-producer-means');
+});
+
+it('t1 retains the identity copy when an unmasked input shares disjoint output storage', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const cellCount = WIDTH * HEIGHT;
+  const pool = createTransientView(graph, 'shared-pool', 'float32', cellCount + CAPACITY);
+  const props = createProps(graph, {
+    values: {
+      id: 'values',
+      format: 'float32',
+      storage: {
+        kind: 'buffer',
+        values: graph.createDataView(pool.buffer, {format: 'float32', length: cellCount})
+      }
+    },
+    output: {
+      means: graph.createDataView(pool.buffer, {
+        format: 'float32',
+        byteOffset: cellCount * 4,
+        length: CAPACITY
+      })
+    }
+  });
+  // Logical ranges are disjoint but their aligned storage bindings overlap. The old copy made
+  // this call safe; retain it instead of imposing a new alias rejection on a valid caller.
+  const nodes = new GPURasterZonalStatistics(props).getCommandNodes(graph);
+  expect(nodes.some(node => node.id.includes('values-elevation'))).toBe(true);
 });

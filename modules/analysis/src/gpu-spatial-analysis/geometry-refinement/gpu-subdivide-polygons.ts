@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
 import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
@@ -18,15 +23,17 @@ import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-cont
 import {
   GPUPolygonTriangulation,
   getPolygonTriangulationIndexCount,
-  validatePolygonTriangulationScratch
+  validatePolygonTriangulationScratch,
+  validatePolygonTriangulationWorkLimits
 } from '../polygon-triangulation/gpu-polygon-triangulation';
 import {
   validateCapacity,
+  validateOption,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUScan} from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getRectilinearSubdivisionNodes} from './rectilinear-subdivision';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
@@ -64,9 +71,40 @@ export class GPUSubdividePolygons implements GPUCommandNodeProducer {
   readonly props: GPUSubdividePolygonsProps;
   readonly maximumVertices: number;
   constructor(props: GPUSubdividePolygonsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'method',
+      'maximumSplits',
+      'maximumVertices',
+      'maximumWork',
+      'positions',
+      'ringOffsets',
+      'polygonOffsets',
+      'featureOffsets',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...props,
+      spatialContext:
+        props.spatialContext && snapshotConstructionSpatialContext(props.spatialContext),
+      output: snapshotConstructionFields(props.output, ['positions', 'pieces', 'status'])
+    });
     this.id = props.id ?? 'subdivide-polygons';
     this.props = props;
+    resolveGPUSpatialContext(this.id, props.spatialContext);
     this.maximumVertices = props.maximumVertices ?? 32;
+    validateOption(this.id, 'method', props.method === undefined ? 'convex' : props.method, [
+      'convex',
+      'rectilinear'
+    ]);
+    validatePolygonTriangulationWorkLimits(this.id, props);
+    const identity = {id: this.id, contributor: 'GPUSubdividePolygons'};
+    validateSinglePackedView(props.positions, ['float32x2'], identity, 'positions');
+    for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
+      validateSinglePackedView(props[name], ['uint32'], identity, name);
+      validateCapacity(this.id, `${name}.length (including terminal offset)`, props[name].length);
+    }
     validateCapacity(
       this.id,
       'maximumVertices',
@@ -76,9 +114,9 @@ export class GPUSubdividePolygons implements GPUCommandNodeProducer {
     );
     validateCapacity(this.id, 'maximumSplits', props.maximumSplits ?? 4096, 1, 65536);
     validateCapacity(this.id, 'positions', props.positions.length, 1, 0x7fffffff);
-    validateSinglePackedView(props.output.positions, ['float32x2'], this.id);
-    validateSinglePackedView(props.output.pieces, ['uint32x4'], this.id);
-    validateSinglePackedView(props.output.status, ['uint32x4'], this.id);
+    validateSinglePackedView(props.output.positions, ['float32x2'], identity, 'output.positions');
+    validateSinglePackedView(props.output.pieces, ['uint32x4'], identity, 'output.pieces');
+    validateSinglePackedView(props.output.status, ['uint32x4'], identity, 'output.status');
     if (
       props.output.positions.length !== props.output.pieces.length * this.maximumVertices ||
       props.output.status.length !== 1
@@ -111,6 +149,18 @@ export class GPUSubdividePolygons implements GPUCommandNodeProducer {
       )
     );
     const inputPolygonCount = props.polygonOffsets.length - 1;
+    if (inputPolygonCount === 0) {
+      return [
+        createZeroPiecesNode(graph, id, props.output.pieces),
+        createFillNode(graph, {
+          id: `${id}-empty-status`,
+          operation: 'GPUSubdividePolygons',
+          view: props.output.status,
+          type: 'u32',
+          value: '0u'
+        })
+      ];
+    }
     validatePolygonTriangulationScratch(
       graph.device,
       id,

@@ -8,16 +8,28 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
-/** Validate the packed numerical views used by bounded point-process kernels. @internal */
+type PointProcessFormat = 'uint32' | 'uint32x2' | 'uint32x4' | 'float32' | 'float32x2';
+
+/** Validate point-process bindings with an explicit identity, field path and expected rows. @internal */
 export function validatePointProcessView(
+  id: string,
+  path: string,
   view: GraphDataView,
-  format: 'uint32' | 'uint32x2' | 'float32' | 'float32x2',
-  length: number,
-  id: string = 'point-process'
+  formats: readonly PointProcessFormat[],
+  expectedRows: number
 ): void {
-  validateSinglePackedView(view, [format], id);
-  // A point-process field must cover exactly the declared rows.
-  validateRequirement(id, view.length === length, `views must hold exactly ${length} rows`);
+  validateRequirement(
+    'point-process',
+    typeof id === 'string',
+    'Use validatePointProcessView(id, path, view, formats, expectedRows)'
+  );
+  validateSinglePackedView(view, formats, {id, contributor: 'point-process'}, path);
+  validateRequirement(
+    id,
+    view.length === expectedRows,
+    `${path} must have exactly ${expectedRows} rows. Received ${view.length}`,
+    {code: 'VIEW_LENGTH', path, received: view.length, expected: {rows: expectedRows}}
+  );
 }
 
 /** Validate positive finite scalars embedded in numerical kernels. @internal */

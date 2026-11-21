@@ -6,7 +6,7 @@ import {
   GPU_GRID_COORDINATE_WGSL,
   createTransientView,
   GPUPointSpatialFilter,
-  GraphVectorView,
+  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -16,7 +16,10 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  isGraphVectorView,
+  validateCapacity
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPURegionMask} from './gpu-region-mask';
 import type {
   GPURegionPolygon,
@@ -24,6 +27,7 @@ import type {
   GPURegionRectangle,
   GPURegionStatisticsGridIndex
 } from './region-statistics-types';
+import {getBoundsReductionNodes} from '../hilbert-keys/bounds-reduction';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const OPERATION = 'GPURegionStatistics';
@@ -85,48 +89,46 @@ export function getGridCandidateNodes<Parameters>(
   } else {
     query = createTransientView(graph, `${id}-polygon-bounds`, 'float32', 4);
     kind = 'bounds';
+    const vertexCapacity = selection.vertices.length;
+    const reducedBounds = createTransientView(graph, `${id}-reduced-bounds`, 'float32', 4);
     nodes.push(
+      // Two virtual points encode each vertex's box without per-vertex scratch. Finite vertices
+      // contribute the same point twice. Any nonfinite active vertex contributes both extremes,
+      // extending the query to the full finite range. Inactive vertices contribute nothing.
+      ...getBoundsReductionNodes(graph, {
+        id: `${id}-polygon-vertex`,
+        operation: OPERATION,
+        variant: 'polygon-vertex-bounds',
+        bindings: [
+          {name: 'vertices', view: selection.vertices, type: 'f32', access: 'read'},
+          {name: 'vertexCount', view: selection.vertexCount, type: 'u32', access: 'read'}
+        ],
+        itemCount: vertexCapacity * 2,
+        output: reducedBounds,
+        declarations: `${IS_FINITE_VALUE_WGSL}
+fn readItem(item: u32) -> vec4f {
+  let activeCount = min(vertexCount[vertexCountOffset], ${vertexCapacity}u);
+  let vertexIndex = item / 2u;
+  if (vertexIndex >= activeCount) { return vec4f(0.0); }
+  let vertex = vec2f(vertices[verticesOffset + vertexIndex * 2u], vertices[verticesOffset + vertexIndex * 2u + 1u]);
+  if (isFiniteValue(vertex.x) && isFiniteValue(vertex.y)) { return vec4f(vertex, 1.0, 0.0); }
+  let extreme = select(-FLOAT32_MAXIMUM, FLOAT32_MAXIMUM, (item & 1u) != 0u);
+  return vec4f(extreme, extreme, 1.0, 0.0);
+}`
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-polygon-bounds-kernel`,
         operation: OPERATION,
         variant: 'polygon-bounds',
         bindings: [
-          {name: 'vertices', view: selection.vertices, type: 'f32', access: 'read'},
+          {name: 'reducedBounds', view: reducedBounds, type: 'f32', access: 'read'},
           {name: 'vertexCount', view: selection.vertexCount, type: 'u32', access: 'read'},
           {name: 'bounds', view: query, type: 'f32', access: 'read_write'}
         ],
-        invocationCount: 1,
-        declarations: `const VERTEX_CAPACITY: u32 = ${selection.vertices.length}u;
-${IS_FINITE_VALUE_WGSL}`,
-        // GPURegionMask feeds non-finite vertices straight into its crossing test, whose result
-        // is then not reliably bounded by the finite vertices. A lasso with any non-finite active
-        // vertex therefore queries the whole finite range, so the candidate set (and the exact
-        // predicate on it) matches brute force, or the capacity overflow is flagged. Fewer than
-        // three active vertices write NaN bounds, which select no cell, matching brute force.
-        body: `let activeCount = min(vertexCount[vertexCountOffset], VERTEX_CAPACITY);
-  var minimum = vec2f(3.402823466e+38);
-  var maximum = vec2f(-3.402823466e+38);
-  var allFinite = true;
-  for (var vertexIndex = 0u; vertexIndex < activeCount; vertexIndex++) {
-    let vertex = vec2f(vertices[verticesOffset + vertexIndex * 2u], vertices[verticesOffset + vertexIndex * 2u + 1u]);
-    if (isFiniteValue(vertex.x) && isFiniteValue(vertex.y)) {
-      minimum = min(minimum, vertex);
-      maximum = max(maximum, vertex);
-    } else {
-      allFinite = false;
-    }
-  }
-  if (!allFinite) {
-    minimum = vec2f(-3.402823466e+38);
-    maximum = vec2f(3.402823466e+38);
-  }
-  // A runtime expression keeps the quiet-NaN bit pattern out of const evaluation.
+        invocationCount: 4,
+        body: `let activeCount = min(vertexCount[vertexCountOffset], ${vertexCapacity}u);
   let quietNaN = bitcast<f32>(0x7fc00000u | (index & 0u));
-  let valid = activeCount >= 3u;
-  bounds[boundsOffset] = select(quietNaN, minimum.x, valid);
-  bounds[boundsOffset + 1u] = select(quietNaN, minimum.y, valid);
-  bounds[boundsOffset + 2u] = select(quietNaN, maximum.x, valid);
-  bounds[boundsOffset + 3u] = select(quietNaN, maximum.y, valid);`
+  bounds[boundsOffset + index] = select(quietNaN, reducedBounds[reducedBoundsOffset + index], activeCount >= 3u);`
       })
     );
   }
@@ -141,6 +143,7 @@ ${IS_FINITE_VALUE_WGSL}`,
   const count = createTransientView(graph, `${id}-candidate-count`, 'uint32', 1);
   const queryOverflow = createTransientView(graph, `${id}-candidate-overflow`, 'uint32', 1);
   const rangeStart = createTransientView(graph, `${id}-range-start`, 'uint32', height);
+  const rangeLength = createTransientView(graph, `${id}-range-length`, 'uint32', height + 1);
   const rangePrefix = createTransientView(graph, `${id}-range-prefix`, 'uint32', height + 1);
   const isRadius = kind === 'radius';
   nodes.push(
@@ -155,17 +158,13 @@ ${IS_FINITE_VALUE_WGSL}`,
           type: 'u32',
           access: 'read'
         },
-        {name: 'indexOverflow', view: index.overflow, type: 'u32', access: 'read'},
         {name: 'query', view: query, type: 'f32', access: 'read'},
         {name: 'rangeStart', view: rangeStart, type: 'u32', access: 'read_write'},
-        {name: 'rangePrefix', view: rangePrefix, type: 'u32', access: 'read_write'},
-        {name: 'candidateCount', view: count, type: 'u32', access: 'read_write'},
-        {name: 'candidateOverflow', view: queryOverflow, type: 'u32', access: 'read_write'}
+        {name: 'rangeLength', view: rangeLength, type: 'u32', access: 'read_write'}
       ],
-      invocationCount: 1,
+      invocationCount: height + 1,
       declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-const CAPACITY: u32 = ${capacity}u;
 const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(domainMinX)}, ${getWGSLFloatLiteral(domainMinY)});
 const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(domainMaxX)}, ${getWGSLFloatLiteral(domainMaxY)});
 ${IS_FINITE_VALUE_WGSL}
@@ -203,22 +202,36 @@ ${GPU_GRID_COORDINATE_WGSL}`,
     columnHigh = min(columnHigh + 1u, WIDTH - 1u);
     rowHigh = min(rowHigh + 1u, HEIGHT - 1u);
   }
-  var total = 0u;
-  for (var row = 0u; row < HEIGHT; row++) {
-    var start = 0u;
-    var length = 0u;
-    if (overlaps && row >= rowLow && row <= rowHigh) {
-      start = cellOffsets[cellOffsetsOffset + row * WIDTH + columnLow];
-      let end = cellOffsets[cellOffsetsOffset + row * WIDTH + columnHigh + 1u];
-      length = select(0u, end - start, end > start);
-    }
-    rangeStart[rangeStartOffset + row] = start;
-    rangePrefix[rangePrefixOffset + row] = total;
-    total += length;
+  var start = 0u;
+  var length = 0u;
+  if (index < HEIGHT && overlaps && index >= rowLow && index <= rowHigh) {
+    start = cellOffsets[cellOffsetsOffset + index * WIDTH + columnLow];
+    let end = cellOffsets[cellOffsetsOffset + index * WIDTH + columnHigh + 1u];
+    length = select(0u, end - start, end > start);
   }
-  rangePrefix[rangePrefixOffset + HEIGHT] = total;
+  if (index < HEIGHT) { rangeStart[rangeStartOffset + index] = start; }
+  rangeLength[rangeLengthOffset + index] = length;`
+    }),
+    ...new GPUScan({
+      id: `${id}-range-scan`,
+      input: rangeLength,
+      output: rangePrefix,
+      mode: 'exclusive'
+    }).getCommandNodes(graph),
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-candidate-total`,
+      operation: OPERATION,
+      variant: 'grid-candidate-total',
+      invocationCount: 1,
+      bindings: [
+        {name: 'rangePrefix', view: rangePrefix, type: 'u32', access: 'read'},
+        {name: 'indexOverflow', view: index.overflow, type: 'u32', access: 'read'},
+        {name: 'candidateCount', view: count, type: 'u32', access: 'read_write'},
+        {name: 'candidateOverflow', view: queryOverflow, type: 'u32', access: 'read_write'}
+      ],
+      body: `let total = rangePrefix[rangePrefixOffset + ${height}u];
   candidateCount[candidateCountOffset] = total;
-  candidateOverflow[candidateOverflowOffset] = select(0u, 1u, total > CAPACITY || indexOverflow[indexOverflowOffset] != 0u);`
+  candidateOverflow[candidateOverflowOffset] = select(0u, 1u, total > ${capacity}u || indexOverflow[indexOverflowOffset] != 0u);`
     })
   );
   nodes.push(
@@ -435,7 +448,7 @@ export function validateGridIndexProps(
     ['values', props.values],
     ['sourceIds', props.sourceIds]
   ] as const) {
-    if (view instanceof GraphVectorView) {
+    if (isGraphVectorView(view)) {
       throw new Error(`${id} spatialIndex requires packed (non-vector) ${name}`);
     }
   }
@@ -443,7 +456,7 @@ export function validateGridIndexProps(
     throw new Error(`${id} spatialIndex.kind must be 'grid'`);
   }
   const {index, candidateCapacity} = spatialIndex;
-  if (index.cellOffsets instanceof GraphVectorView || index.objectIds instanceof GraphVectorView) {
+  if (isGraphVectorView(index.cellOffsets) || isGraphVectorView(index.objectIds)) {
     throw new Error(`${id} spatialIndex.index requires packed storage`);
   }
   if (index.gridSize.length !== 2 || index.bounds.length !== 4) {

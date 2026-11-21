@@ -198,7 +198,7 @@ export function prepareRegionalRasterChange(
   };
 }
 
-/** Reject incomplete ownership or summaries before any publication tables are constructed. */
+/** Gate positive certificates and declared loss fields; informational counts do not indicate loss. */
 export function validateRegionalRasterChangeStatus(status: {
   rasterOverflow: number;
   requiredCrossings: number;
@@ -212,8 +212,23 @@ export function validateRegionalRasterChangeStatus(status: {
   );
   validateRequirement(
     BINDING_ID,
-    status.stages.every(stage => stage.value === 0),
-    `recipe status must be zero before publication: ${JSON.stringify(status.stages)}`
+    status.stages.every(stage => {
+      const field = stage.name.slice(stage.name.lastIndexOf('.') + 1);
+      if (field === 'complete' || field === 'converged') return stage.value === 1;
+      return (
+        ![
+          'overflow',
+          'candidateOverflow',
+          'invalidInput',
+          'invalidCount',
+          'iterationLimit',
+          'unresolvedCount',
+          'incomplete',
+          'uncertainCount'
+        ].includes(field) || stage.value === 0
+      );
+    }),
+    `recipe status must certify completeness without loss before publication: ${JSON.stringify(status.stages)}`
   );
 }
 

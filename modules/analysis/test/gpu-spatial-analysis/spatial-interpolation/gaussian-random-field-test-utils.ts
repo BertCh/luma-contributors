@@ -107,10 +107,9 @@ export function createFieldRun(device: Device, scenario: FieldScenario, compile 
   const mass = output('float32', 1);
   const conditioning = scenario.conditioning;
   const contributor = new GPUGaussianRandomField({
-    grid,
-    positions: grid
-      ? undefined
-      : input('float32x2', new Float32Array(scenario.positions!.flat()), rowCount),
+    ...(grid
+      ? {grid}
+      : {positions: input('float32x2', new Float32Array(scenario.positions!.flat()), rowCount)}),
     method: scenario.method as 'fft' | 'spectral',
     modeCount: scenario.modeCount,
     parameters,

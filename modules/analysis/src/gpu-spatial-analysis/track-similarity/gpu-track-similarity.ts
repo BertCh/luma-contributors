@@ -1,7 +1,13 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {PLANAR_TRACK_MEMBERSHIP_WGSL} from './planar-track-metric';
+import {
+  snapshotLineFeatureGeometry,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {createMultipartTrackLayout, validateMultipartTrackMeasures} from './multipart-track-layout';
 
 import {
   validateTrajectoryBindings,
@@ -42,11 +48,11 @@ import {
 } from './track-similarity-edit-programs';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 
 /** Spatial contexts supported by this distance-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -73,25 +79,24 @@ const MAXIMUM_DENSIFIED_VERTEX_COUNT = 0xffffffff;
 const MAXIMUM_BAND_RADIUS = 2 ** 30;
 
 /**
- * WGSL: metric value (squared planar distance, or great-circle distances in the context's length
- * unit) from a point to the polyline of one track (`side` is `'A'` or `'B'`), with
+ * WGSL: metric value (planar or great-circle distance in the context's length unit) from a point to the polyline of one track (`side` is `'A'` or `'B'`), with
  * Taha-Hanbury early break against `worst` and a rotating start (`hint`, updated to the nearest
  * segment found). Returns a value at most `worst` as soon as the point cannot raise the maximum.
  */
-function getDirectedPolylineSource(side: 'A' | 'B'): string {
-  return `// Metric value (squared distance, or the context's length unit on the sphere) from a point to polyline ${side}; may stop early once it is at most worst.
+function getDirectedPolylineSource(side: 'A' | 'B', multipart = false): string {
+  return `// Metric value (distance in the context's length unit) from a point to polyline ${side}; may stop early once it is at most worst.
 fn distanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, worst: f32, hint: ptr<function, u32>) -> f32 {
   if (count == 1u) {
     return pointMetric(point, load${side}(start));
   }
   let segments = count - 1u;
-  var nearest = 3.402823466e+38;
+  var nearest = ${multipart ? `pointMetric(point,load${side}(start+count-1u))` : '3.402823466e+38'};
   var first = *hint;
   if (first >= segments) { first = 0u; }
   for (var step = 0u; step < segments; step++) {
     var j = first + step;
     if (j >= segments) { j -= segments; }
-    let squared = pointSegmentMetric(point, load${side}(start + j), load${side}(start + j + 1u));
+    let squared = pointSegmentMetric(point, load${side}(start + j), segmentEnd${side}(start + j));
     if (squared < nearest) {
       nearest = squared;
       *hint = j;
@@ -103,11 +108,12 @@ fn distanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, worst: f3
 // Cooperative minimum over the segments of polyline ${side}: every lane takes a stride of segments.
 fn cooperativeDistanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, lane: u32) -> f32 {
   var nearest = 3.402823466e+38;
+  ${multipart ? `if(lane==0u){nearest=pointMetric(point,load${side}(start+count-1u));}` : ''}
   if (count == 1u) {
     return pointMetric(point, load${side}(start));
   }
   for (var j = lane; j + 1u < count; j += WORKGROUP_SIZE) {
-    nearest = min(nearest, pointSegmentMetric(point, load${side}(start + j), load${side}(start + j + 1u)));
+    nearest = min(nearest, pointSegmentMetric(point, load${side}(start + j), segmentEnd${side}(start + j)));
   }
   return nearest;
 }`;
@@ -142,19 +148,82 @@ function getDirectedPassSource(from: 'A' | 'B', to: 'A' | 'B'): string {
   }`;
 }
 
-/** Bits of the `output.pairStatus` column of {@link GPUTrackSimilarity}. */
+/** Bits of the `output.pairStatus` column of {@link GPUTrackSimilarity}.
+ * Invalid/absent/inactive pair evidence takes precedence and stands alone. For addressable pairs,
+ * invalid thresholds compose with empty-track or invalid-geometry evidence. Invalid geometry
+ * suppresses cap evidence; the cap applies only to valid nonempty tracks.
+ */
 export const GPU_TRACK_SIMILARITY_STATUS = {
   /** At least one of the two tracks has no vertices. All distances are NaN. */
   emptyTrack: 1,
   /**
    * The shorter of the two (densified) tracks has more than `maximumFrechetVertexCount` vertices.
-   * The Frechet distance, dynamic time warping, EDR and ERP are NaN and `frechetWithin` is 0. The longer
+   * The Frechet distance, dynamic time warping, EDR, ERP and LCSS are NaN and `frechetWithin` is 0. The longer
    * track is not limited.
    */
   frechetCapExceeded: 2,
   /** The pair index or track range is invalid, at or beyond `activePairCount`, or its densified vertex count exceeds uint32. All distances are NaN. */
-  invalidPair: 4
+  invalidPair: 4,
+  /** Resident coordinates are nonfinite or latitude is outside [-90, 90]. All measures unavailable. */
+  invalidGeometry: 8,
+  /** Epsilon is negative or nonfinite. Only frechetWithin is unavailable. */
+  invalidDecisionThreshold: 16
 } as const;
+
+/** Checked per-pair evidence. Rows at or beyond activePairCount are inactive capacity.
+ * Cap evidence affects Frechet, DTW, EDR, ERP and LCSS; Hausdorff, SSPD and maximumDistance
+ * remain usable. Missing words never imply a clean pair. Pass the live pair count to exclude tails.
+ */
+export function decodeGPUTrackSimilarityPairStatus(
+  input: Uint32Array | Uint8Array | ArrayBuffer,
+  activePairCount?: number
+) {
+  const bytes =
+    input instanceof ArrayBuffer
+      ? new Uint8Array(input)
+      : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  validateRequirement(
+    'GPUTrackSimilarity',
+    bytes.byteLength % 4 === 0,
+    `pairStatus requires whole uint32 words; received ${bytes.byteLength} bytes`
+  );
+  validateRequirement(
+    'GPUTrackSimilarity',
+    bytes.byteLength > 0 || activePairCount === 0,
+    'pairStatus requires at least one word or activePairCount 0; received 0 bytes'
+  );
+  const count = activePairCount ?? bytes.byteLength / 4;
+  validateCapacity('GPUTrackSimilarity', 'activePairCount', count, 0, bytes.byteLength / 4);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return Array.from({length: count}, (_, row) => {
+    const flags = view.getUint32(row * 4, true);
+    const emptyTrack = Boolean(flags & 1);
+    const frechetCapExceeded = Boolean(flags & 2);
+    const invalidPair = Boolean(flags & 4);
+    const invalidGeometry = Boolean(flags & 8);
+    const invalidDecisionThreshold = Boolean(flags & 16);
+    const geometryValid = !emptyTrack && !invalidPair && !invalidGeometry && (flags & ~31) === 0;
+    return {
+      flags,
+      emptyTrack,
+      frechetCapExceeded,
+      invalidPair,
+      invalidGeometry,
+      invalidDecisionThreshold,
+      geometryValid,
+      uncappedMeasuresValid: geometryValid,
+      dynamicProgramMeasuresValid: geometryValid && !frechetCapExceeded,
+      decisionValid: geometryValid && !frechetCapExceeded && !invalidDecisionThreshold
+    };
+  });
+}
+
+/** Named pair evidence returned by the checked decoder. */
+export type GPUTrackSimilarityPairStatus = ReturnType<
+  typeof decodeGPUTrackSimilarityPairStatus
+>[number];
+/** Status decoder spelling for consumers using producer-level status naming. */
+export const decodeGPUTrackSimilarityStatus = decodeGPUTrackSimilarityPairStatus;
 
 /** Caller-owned per-pair outputs of {@link GPUTrackSimilarity}. At least one measure is required. */
 export type GPUTrackSimilarityOutput = {
@@ -167,8 +236,8 @@ export type GPUTrackSimilarityOutput = {
    * `frechetEpsilon`, else 0 (also 0 for skipped pairs and an unusable epsilon). Requires
    * `frechetEpsilon`. Cheaper than `frechet`: endpoint and coupling bounds decide most pairs in
    * `O(n + m)`, and the free-space program stops once no monotone path can survive. The test is
-   * made in the internal metric (squared planar distance against `epsilon^2`, or the context's
-   * length unit), so an epsilon within an f32 rounding of the distance may decide either way.
+   * inclusive on stored planar coordinates; a displayed distance can round to epsilon while
+   * the decision is false. Read decodeGPUTrackSimilarityPairStatus for decision validity.
    */
   frechetWithin?: GraphDataView<'uint32'>;
   /**
@@ -191,7 +260,8 @@ export type GPUTrackSimilarityOutput = {
   /**
    * Optional per-pair edit distance with real penalty (ERP, Chen and Ng 2004): a substitution
    * costs the distance of the two vertices, an insertion or deletion the distance of the vertex to
-   * `editDistanceGapPoint`, in the context's length unit. A metric. NaN when not computed.
+   * `editDistanceGapPoint`, in the context's length unit. A pseudometric on raw tracks when the
+   * gap point is a permitted vertex: inserting that vertex can cost zero. NaN when not computed.
    * Summed in f32 like `dynamicTimeWarping`. Shares the shorter-track cap.
    */
   editDistanceWithRealPenalty?: GraphDataView<'float32'>;
@@ -210,7 +280,10 @@ export type GPUTrackSimilarityOutput = {
    * Matches Sedona `ST_MaxDistance`.
    */
   maximumDistance?: GraphDataView<'float32'>;
-  /** Optional per-pair {@link GPU_TRACK_SIMILARITY_STATUS} bit set, 0 when computed. */
+  /** Optional per-pair bits; decodeGPUTrackSimilarityPairStatus identifies usable measures.
+   * Rows at or beyond activePairCount carry invalidPair and are inactive capacity.
+   * Zero means every requested measure is usable; flagged decisions are always 0.
+   */
   pairStatus?: GraphDataView<'uint32'>;
 };
 
@@ -241,11 +314,12 @@ export type GPUTrackSimilarityProps = {
   spatialContext?: GPUSpatialContext;
   /**
    * First set of tracks (lines or polygon boundaries): packed planar `positions` sorted by track
-   * and `lineOffsets` with `trackCountA + 1` monotonic vertex offsets.
+   * and line-part offsets. Optional featureOffsets groups parts for Hausdorff, maximum distance
+   * and SSPD; sequence measures require explicit single-part traversals.
    */
-  linesA: GPUPackedGeometryPort<GPULineGeometryPort>;
+  linesA: GPULineFeatureGeometry;
   /** Second set of tracks. Defaults to the first set (similarity inside one set). */
-  linesB?: GPUPackedGeometryPort<GPULineGeometryPort>;
+  linesB?: GPULineFeatureGeometry;
   /**
    * Track index into the first set for each pair. The length is the pair capacity, at most
    * {@link GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT}.
@@ -298,7 +372,7 @@ export type GPUTrackSimilarityProps = {
   /**
    * Compile-time reference point of `output.editDistanceWithRealPenalty`, `[x, y]` (or
    * `[longitude, latitude]` degrees). Defaults to the origin. Chen and Ng use a fixed point such as
-   * the origin; the result is a metric for any fixed choice.
+   * the origin. When that gap point can be a vertex, the result is a pseudometric on raw tracks.
    */
   editDistanceGapPoint?: readonly [number, number];
   /** Compile-time nonnegative distance tolerance for LCSS, in spatial-context units. Defaults to 1. */
@@ -368,33 +442,56 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     props = {
       ...props,
-      linesA: snapshotSinglePartGeometryPort(id, 'linesA', props.linesA),
-      linesB: props.linesB && snapshotSinglePartGeometryPort(id, 'linesB', props.linesB)
+      linesA: snapshotLineFeatureGeometry(id, props.linesA),
+      linesB: props.linesB && snapshotLineFeatureGeometry(id, props.linesB),
+      output: snapshotConstructionFields(props.output, [
+        'hausdorff',
+        'frechet',
+        'frechetWithin',
+        'dynamicTimeWarping',
+        'editDistanceOnRealSequence',
+        'editDistanceWithRealPenalty',
+        'symmetricSegmentPathDistance',
+        'longestCommonSubsequence',
+        'maximumDistance',
+        'pairStatus'
+      ])
     };
     this.props = props;
     const {linesA, linesB, output} = props;
+    validateMultipartTrackMeasures(
+      id,
+      Boolean(linesA.featureOffsets || linesB?.featureOffsets),
+      Object.keys(output).filter(key => output[key as keyof typeof output])
+    );
     validateSinglePackedView(linesA.positions, ['float32x2'], `${id} linesA.positions`);
     validateSinglePackedView(linesA.lineOffsets, ['uint32'], `${id} linesA.lineOffsets`);
-    if (linesA.lineOffsets.length < 2) {
-      throw new Error(`${id} linesA.lineOffsets needs two rows`);
-    }
+    validateRequirement(
+      id,
+      linesA.lineOffsets.length >= 1,
+      `linesA.lineOffsets requires at least 1 row; received ${linesA.lineOffsets.length}`
+    );
     if (linesB) {
       validateSinglePackedView(linesB.positions, ['float32x2'], `${id} linesB.positions`);
       validateSinglePackedView(linesB.lineOffsets, ['uint32'], `${id} linesB.lineOffsets`);
-      if (linesB.lineOffsets.length < 2) {
-        throw new Error(`${id} linesB.lineOffsets needs two rows`);
-      }
+      validateRequirement(
+        id,
+        linesB.lineOffsets.length >= 1,
+        `linesB.lineOffsets requires at least 1 row; received ${linesB.lineOffsets.length}`
+      );
     }
     validateSinglePackedView(props.pairA, ['uint32'], `${id} pairA`);
     validateSinglePackedView(props.pairB, ['uint32'], `${id} pairB`);
-    if (props.pairA.length < 1 || props.pairB.length !== props.pairA.length) {
-      throw new Error(`${id} pairA and pairB must have the same positive length`);
-    }
+    validateRequirement(
+      id,
+      props.pairB.length === props.pairA.length,
+      `pairB.length must equal pairA.length ${props.pairA.length}; received ${props.pairB.length}`
+    );
     validateCapacity(
       id,
       'pairA.length',
       props.pairA.length,
-      1,
+      0,
       GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT
     );
     if (props.activePairCount) {
@@ -518,8 +615,10 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       [
         linesA.positions,
         linesA.lineOffsets,
+        linesA.featureOffsets,
         linesB?.positions,
         linesB?.lineOffsets,
+        linesB?.featureOffsets,
         props.pairA,
         props.pairB,
         props.activePairCount,
@@ -538,8 +637,10 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       linesA.positions,
       linesA.lineOffsets,
+      linesA.featureOffsets,
       linesB?.positions,
       linesB?.lineOffsets,
+      linesB?.featureOffsets,
       props.pairA,
       props.pairB,
       props.activePairCount,
@@ -556,13 +657,20 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       output.pairStatus
     ]);
     const positionsB = linesB?.positions ?? linesA.positions;
-    const offsetsB = linesB?.lineOffsets ?? linesA.lineOffsets;
     const pairCount = props.pairA.length;
+    if (pairCount === 0) return [];
     validateTrajectoryScratch(graph, id, {
       'pair status': pairCount * 4,
-      ...(output.frechetWithin ? {'decision pair ranges': pairCount * 16} : {})
+      ...(output.frechetWithin ? {'decision pair ranges': pairCount * 4} : {})
     });
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const layoutA = createMultipartTrackLayout(graph, `${id}-a`, linesA);
+    const layoutB = linesB ? createMultipartTrackLayout(graph, `${id}-b`, linesB) : layoutA;
+    const offsetsA = layoutA.offsets;
+    const offsetsB = layoutB.offsets;
+    const nodes: GPUCommandNode<Parameters>[] = [
+      ...layoutA.nodes,
+      ...(linesB ? layoutB.nodes : [])
+    ];
     const requiresDynamicProgram = Boolean(
       output.frechet ||
         output.frechetWithin ||
@@ -573,14 +681,14 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     );
     const requiresDensification = Boolean(output.hausdorff || requiresDynamicProgram);
     const constants = `const PAIR_COUNT: u32 = ${pairCount}u;
-const TRACK_COUNT_A: u32 = ${linesA.lineOffsets.length - 1}u;
-const TRACK_COUNT_B: u32 = ${offsetsB.length - 1}u;
+const TRACK_COUNT_A: u32 = ${layoutA.featureCount}u;
+const TRACK_COUNT_B: u32 = ${layoutB.featureCount}u;
 const FRECHET_CAP: u32 = ${this.maximumFrechetVertexCount}u;
 const DENSIFY: u32 = ${this.densifySubdivisions}u;
 const MAXIMUM_DENSIFIED_VERTICES: u32 = ${MAXIMUM_DENSIFIED_VERTEX_COUNT}u;
 const STATUS_EMPTY: u32 = ${GPU_TRACK_SIMILARITY_STATUS.emptyTrack}u;
 const STATUS_TOO_LONG: u32 = ${GPU_TRACK_SIMILARITY_STATUS.frechetCapExceeded}u;
-const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
+const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair | GPU_TRACK_SIMILARITY_STATUS.invalidGeometry}u;`;
 
     // The status buffer is needed by the distance kernels even when the caller does not want it.
     const status =
@@ -588,8 +696,10 @@ const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
     const statusBindings: WGSLKernelBinding[] = [
       {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
       {name: 'pairB', view: props.pairB, type: 'u32', access: 'read'},
-      {name: 'offsetsA', view: linesA.lineOffsets, type: 'u32', access: 'read'},
-      {name: 'offsetsB', view: offsetsB, type: 'u32', access: 'read'}
+      {name: 'offsetsA', view: offsetsA, type: 'u32', access: 'read'},
+      {name: 'offsetsB', view: offsetsB, type: 'u32', access: 'read'},
+      {name: 'positionsA', view: linesA.positions, type: 'f32', access: 'read'},
+      {name: 'positionsB', view: positionsB, type: 'f32', access: 'read'}
     ];
     if (props.activePairCount) {
       statusBindings.push({
@@ -611,9 +721,9 @@ const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
         body: `let a = pairA[pairAOffset + index];
   let b = pairB[pairBOffset + index];
   var flags = 0u;
-  ${props.activePairCount ? 'if (index >= activePairCount[activePairCountOffset]) { flags = STATUS_INVALID; }' : ''}
+  ${props.activePairCount ? 'if (index >= activePairCount[activePairCountOffset]) { flags = 4u; }' : ''}
   if (a >= TRACK_COUNT_A || b >= TRACK_COUNT_B) {
-    flags = STATUS_INVALID;
+    flags = 4u;
   } else if (flags == 0u) {
     let startA = offsetsA[offsetsAOffset + a];
     let endA = offsetsA[offsetsAOffset + a + 1u];
@@ -622,25 +732,77 @@ const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
     let countA = endA - min(startA, endA);
     let countB = endB - min(startB, endB);
     if (startA > endA || startB > endB || endA > ${linesA.positions.length}u || endB > ${positionsB.length}u) {
-      flags = STATUS_INVALID;
+      flags = 4u;
     } else if (countA == 0u || countB == 0u) {
       flags = STATUS_EMPTY;
     } else if (${requiresDensification} && max(countA - 1u, countB - 1u) > (MAXIMUM_DENSIFIED_VERTICES - 1u) / DENSIFY) {
       // A densified vertex count must fit uint32 before any distance kernel uses it.
-      flags = STATUS_INVALID;
+      flags = 4u;
     } else if (${requiresDynamicProgram} && min(countA - 1u, countB - 1u) > (FRECHET_CAP - 1u) / DENSIFY) {
       flags = STATUS_TOO_LONG;
     }
   }
+  if ((flags & 5u) == 0u) {
+    let aStart = offsetsA[offsetsAOffset + a]; let aEnd = offsetsA[offsetsAOffset + a + 1u];
+    let bStart = offsetsB[offsetsBOffset + b]; let bEnd = offsetsB[offsetsBOffset + b + 1u];
+    for (var row = aStart; row < aEnd; row++) {
+      let x = positionsA[positionsAOffset + row * 2u]; let y = positionsA[positionsAOffset + row * 2u + 1u];
+      if ((bitcast<u32>(x) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(y) & 0x7f800000u) == 0x7f800000u ${this.sphereRadius === undefined ? '' : '|| abs(y) > 90.0'}) { flags = flags | 8u; }
+    }
+    for (var row = bStart; row < bEnd; row++) {
+      let x = positionsB[positionsBOffset + row * 2u]; let y = positionsB[positionsBOffset + row * 2u + 1u];
+      if ((bitcast<u32>(x) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(y) & 0x7f800000u) == 0x7f800000u ${this.sphereRadius === undefined ? '' : '|| abs(y) > 90.0'}) { flags = flags | 8u; }
+    }
+  }
+  if ((flags & 8u) != 0u) { flags = 8u; }
   status[statusOffset + index] = flags;`
       })
     );
 
+    if (props.frechetEpsilon)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-threshold-status`,
+          operation: OPERATION,
+          invocationCount: pairCount,
+          bindings: [
+            {name: 'epsilon', view: props.frechetEpsilon, type: 'f32', access: 'read'},
+            {name: 'status', view: status, type: 'u32', access: 'read_write'}
+          ],
+          body: `let threshold = epsilon[epsilonOffset];
+if ((status[statusOffset + index] & 4u) == 0u && ((bitcast<u32>(threshold) & 0x7f800000u) == 0x7f800000u || threshold < 0.0)) { status[statusOffset + index] |= 16u; }`
+        })
+      );
+
+    if (linesA.positions.length === 0 || positionsB.length === 0) {
+      for (const [name, view] of Object.entries(output))
+        if (view && name !== 'pairStatus')
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}-empty-${name}`,
+              operation: OPERATION,
+              invocationCount: pairCount,
+              bindings: [
+                {
+                  name: 'output',
+                  view,
+                  type: name === 'frechetWithin' ? 'u32' : 'f32',
+                  access: 'read_write'
+                }
+              ],
+              body:
+                name === 'frechetWithin'
+                  ? 'output[outputOffset+index]=0u;'
+                  : 'output[outputOffset+index]=bitcast<f32>(0x7fc00000u | (index & 0u));'
+            })
+          );
+      return nodes;
+    }
     const distanceBindings = (output: GraphDataView<'float32'>): WGSLKernelBinding[] => [
       {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
       {name: 'pairB', view: props.pairB, type: 'u32', access: 'read'},
       {name: 'positionsA', view: linesA.positions, type: 'f32', access: 'read'},
-      {name: 'offsetsA', view: linesA.lineOffsets, type: 'u32', access: 'read'},
+      {name: 'offsetsA', view: offsetsA, type: 'u32', access: 'read'},
       {name: 'positionsB', view: positionsB, type: 'f32', access: 'read'},
       {name: 'offsetsB', view: offsetsB, type: 'u32', access: 'read'},
       {name: 'status', view: status, type: 'u32', access: 'read'},
@@ -674,6 +836,8 @@ const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
 fn loadB(row: u32) -> vec2<f32> {
   return vec2<f32>(positionsB[positionsBOffset + row * 2u], positionsB[positionsBOffset + row * 2u + 1u]);
 }
+${layoutA.segmentHelpers('A')}
+${layoutB.segmentHelpers('B')}
 fn densifiedCount(count: u32) -> u32 {
   return select(0u, (count - 1u) * DENSIFY + 1u, count > 0u);
 }
@@ -681,33 +845,39 @@ fn densifiedPointA(start: u32, count: u32, k: u32) -> vec2<f32> {
   let segment = k / DENSIFY;
   let subStep = k - segment * DENSIFY;
   if (subStep == 0u || segment + 1u >= count) { return loadA(start + min(segment, count - 1u)); }
-  return interpolatePoint(loadA(start + segment), loadA(start + segment + 1u), f32(subStep) / f32(DENSIFY));
+  return interpolatePoint(loadA(start + segment), segmentEndA(start + segment), f32(subStep) / f32(DENSIFY));
 }
 fn densifiedPointB(start: u32, count: u32, k: u32) -> vec2<f32> {
   let segment = k / DENSIFY;
   let subStep = k - segment * DENSIFY;
   if (subStep == 0u || segment + 1u >= count) { return loadB(start + min(segment, count - 1u)); }
-  return interpolatePoint(loadB(start + segment), loadB(start + segment + 1u), f32(subStep) / f32(DENSIFY));
+  return interpolatePoint(loadB(start + segment), segmentEndB(start + segment), f32(subStep) / f32(DENSIFY));
 }
 ${
   this.sphereRadius === undefined
     ? `fn pointMetric(a: vec2<f32>, b: vec2<f32>) -> f32 {
-  let offset = a - b;
-  return dot(offset, offset);
+  let offset = abs(a - b);
+  let scale = max(offset.x, offset.y);
+  if (scale == 0.0) { return 0.0; }
+  let normalized = offset / scale;
+  return scale * sqrt(dot(normalized, normalized));
 }
 fn finishMetric(value: f32) -> f32 {
-  return sqrt(value);
+  return value;
 }
 fn interpolatePoint(from0: vec2<f32>, to0: vec2<f32>, fraction: f32) -> vec2<f32> {
   return from0 + (to0 - from0) * fraction;
 }
 fn pointSegmentMetric(point: vec2<f32>, from0: vec2<f32>, to0: vec2<f32>) -> f32 {
   let edge = to0 - from0;
-  let lengthSquared = dot(edge, edge);
+  let scale = max(abs(edge.x), abs(edge.y));
   var t = 0.0;
-  if (lengthSquared > 0.0) { t = clamp(dot(point - from0, edge) / lengthSquared, 0.0, 1.0); }
+  if (scale > 0.0) {
+    let normalizedEdge = edge / scale;
+    t = clamp(dot((point - from0) / scale, normalizedEdge) / dot(normalizedEdge, normalizedEdge), 0.0, 1.0);
+  }
   let offset = point - (from0 + edge * t);
-  return dot(offset, offset);
+  return pointMetric(offset, vec2f(0.0));
 }`
     : `${GEODESIC_WGSL}
 const SPHERE_RADIUS: f32 = ${this.sphereRadius};
@@ -727,6 +897,11 @@ fn pointSegmentMetric(point: vec2<f32>, from0: vec2<f32>, to0: vec2<f32>) -> f32
 }`
 }`;
 
+    const thresholdHelpers =
+      this.sphereRadius === undefined
+        ? PLANAR_TRACK_MEMBERSHIP_WGSL
+        : `fn pointWithin(a: vec2f, b: vec2f, radius: f32) -> bool { return pointMetric(a, b) <= radius; }`;
+
     if (output.hausdorff) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
@@ -743,8 +918,9 @@ var<workgroup> partials: array<f32, ${HAUSDORFF_WORKGROUP_SIZE}>;
 var<workgroup> sharedDenseA: u32;
 var<workgroup> sharedDenseB: u32;
 ${trackHelpers}
-${getDirectedPolylineSource('A')}
-${getDirectedPolylineSource('B')}`,
+${thresholdHelpers}
+${getDirectedPolylineSource('A', Boolean(linesA.featureOffsets))}
+${getDirectedPolylineSource('B', Boolean((linesB ?? linesA).featureOffsets))}`,
           // Directed distances use Taha and Hanbury's early break (a point whose running nearest
           // distance drops to the lane's current maximum cannot raise it, so its scan stops) with
           // the scan starting at the previous point's nearest segment, which is where the next
@@ -792,7 +968,8 @@ ${getDirectedPolylineSource('B')}`,
           declarations: `${constants}
 const WORKGROUP_SIZE: u32 = ${HAUSDORFF_WORKGROUP_SIZE}u;
 var<workgroup> partials: array<f32, ${HAUSDORFF_WORKGROUP_SIZE}>;
-${trackHelpers}`,
+${trackHelpers}
+${thresholdHelpers}`,
           body: `${prologue('(STATUS_EMPTY | STATUS_INVALID)')}
   var farthest = 0.0;
   // Lanes stride over the longer track and scan the shorter one, so a short track next to a long
@@ -844,6 +1021,7 @@ var<workgroup> boundaryRow: array<f32, ${this.maximumFrechetVertexCount}>;
 var<workgroup> sharedLongCount: u32;
 var<workgroup> sharedShortCount: u32;
 ${trackHelpers}
+${thresholdHelpers}
 // Metric value between densified vertex rowLong of the longer track and rowShort of the other.
 fn coupledSquared(swapped: bool, startA: u32, countA: u32, startB: u32, countB: u32, rowLong: u32, rowShort: u32) -> f32 {
   if (swapped) {
@@ -937,7 +1115,8 @@ ${getDynamicTimeWarpingDeclarations(
   this.maximumFrechetVertexCount,
   props.dynamicTimeWarpingBandRadius ?? TRACK_SIMILARITY_NO_BAND
 )}
-${trackHelpers}`,
+${trackHelpers}
+${thresholdHelpers}`,
           body: getDynamicTimeWarpingBody(
             prologue('(STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)')
           )
@@ -967,7 +1146,8 @@ ${getEditDistanceDeclarations(
   props.editDistanceTolerance ?? 1,
   props.editDistanceGapPoint ?? [0, 0]
 )}
-${trackHelpers}`,
+${trackHelpers}
+${thresholdHelpers}`,
           body: getEditDistanceBody(prologue('(STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)'))
         })
       );
@@ -983,8 +1163,15 @@ ${trackHelpers}`,
           invocationCount: pairCount * HAUSDORFF_WORKGROUP_SIZE,
           guardIndex: false,
           declarations: `${constants}
-${getSymmetricSegmentPathDeclarations(HAUSDORFF_WORKGROUP_SIZE)}
-${trackHelpers}`,
+${getSymmetricSegmentPathDeclarations(
+  HAUSDORFF_WORKGROUP_SIZE,
+  Boolean(linesA.featureOffsets),
+  Boolean((linesB ?? linesA).featureOffsets)
+)
+  .replace('loadA(start + segment + 1u)', 'segmentEndA(start + segment)')
+  .replace('loadB(start + segment + 1u)', 'segmentEndB(start + segment)')}
+${trackHelpers}
+${thresholdHelpers}`,
           body: getSymmetricSegmentPathBody(
             prologue('(STATUS_EMPTY | STATUS_INVALID)'),
             HAUSDORFF_WORKGROUP_SIZE
@@ -1005,7 +1192,8 @@ ${trackHelpers}`,
           guardIndex: false,
           declarations: `${constants}
 ${getDynamicTimeWarpingDeclarations(FRECHET_LANES, this.maximumFrechetVertexCount, props.lcssBandRadius ?? TRACK_SIMILARITY_NO_BAND)}
-${trackHelpers}`,
+${trackHelpers}
+${thresholdHelpers}`,
           body: getLongestCommonSubsequenceBody(
             prologue('(STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)'),
             props.lcssTolerance ?? 1
@@ -1014,47 +1202,47 @@ ${trackHelpers}`,
       );
     }
     if (output.frechetWithin && props.frechetEpsilon) {
-      // The decision kernel binds the epsilon too, so the pair ranges are resolved first into one
-      // view to stay within eight storage bindings.
-      const pairRanges = createTransientView(graph, `${id}-pair-ranges`, 'uint32', pairCount * 4);
+      // Four word columns keep each binding within the original per-pair capacity.
+      const rangeStartA = createTransientView(graph, `${id}-range-start-a`, 'uint32', pairCount);
+      const rangeCountA = createTransientView(graph, `${id}-range-count-a`, 'uint32', pairCount);
+      const rangeStartB = createTransientView(graph, `${id}-range-start-b`, 'uint32', pairCount);
+      const rangeCountB = createTransientView(graph, `${id}-range-count-b`, 'uint32', pairCount);
+      for (const [side, pairs, offsets, starts, counts] of [
+        ['A', props.pairA, offsetsA, rangeStartA, rangeCountA],
+        ['B', props.pairB, offsetsB, rangeStartB, rangeCountB]
+      ] as const)
+        nodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-pair-ranges-${side}`,
+            operation: OPERATION,
+            invocationCount: pairCount,
+            bindings: [
+              {name: 'pairs', view: pairs, type: 'u32', access: 'read'},
+              {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
+              {name: 'status', view: status, type: 'u32', access: 'read'},
+              {name: 'starts', view: starts, type: 'u32', access: 'read_write'},
+              {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
+            ],
+            body: `var start = 0u; var count = 0u;
+if ((status[statusOffset + index] & 15u) == 0u) {
+  let row = pairs[pairsOffset + index]; start = offsets[offsetsOffset + row];
+  count = offsets[offsetsOffset + row + 1u] - start;
+}
+starts[startsOffset + index] = start; counts[countsOffset + index] = count;`
+          })
+        );
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-pair-ranges`,
-          operation: OPERATION,
-          variant: 'pair-ranges',
-          bindings: [
-            {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
-            {name: 'pairB', view: props.pairB, type: 'u32', access: 'read'},
-            {name: 'offsetsA', view: linesA.lineOffsets, type: 'u32', access: 'read'},
-            {name: 'offsetsB', view: offsetsB, type: 'u32', access: 'read'},
-            {name: 'status', view: status, type: 'u32', access: 'read'},
-            {name: 'pairRanges', view: pairRanges, type: 'u32', access: 'read_write'}
-          ],
-          invocationCount: pairCount,
-          declarations: constants,
-          body: `var range = vec4<u32>(0u);
-  if (status[statusOffset + index] == 0u) {
-    let a = pairA[pairAOffset + index];
-    let b = pairB[pairBOffset + index];
-    let startA = offsetsA[offsetsAOffset + a];
-    let startB = offsetsB[offsetsBOffset + b];
-    range = vec4<u32>(startA, offsetsA[offsetsAOffset + a + 1u] - startA,
-      startB, offsetsB[offsetsBOffset + b + 1u] - startB);
-  }
-  pairRanges[pairRangesOffset + index * 4u] = range.x;
-  pairRanges[pairRangesOffset + index * 4u + 1u] = range.y;
-  pairRanges[pairRangesOffset + index * 4u + 2u] = range.z;
-  pairRanges[pairRangesOffset + index * 4u + 3u] = range.w;`
-        }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-frechet-decision`,
           operation: OPERATION,
           variant: 'frechet-decision',
           bindings: [
-            {name: 'pairRanges', view: pairRanges, type: 'u32', access: 'read'},
+            {name: 'rangeStartA', view: rangeStartA, type: 'u32', access: 'read'},
+            {name: 'rangeCountA', view: rangeCountA, type: 'u32', access: 'read'},
+            {name: 'rangeStartB', view: rangeStartB, type: 'u32', access: 'read'},
+            {name: 'rangeCountB', view: rangeCountB, type: 'u32', access: 'read'},
             {name: 'positionsA', view: linesA.positions, type: 'f32', access: 'read'},
             {name: 'positionsB', view: positionsB, type: 'f32', access: 'read'},
-            {name: 'status', view: status, type: 'u32', access: 'read'},
             {name: 'frechetEpsilon', view: props.frechetEpsilon, type: 'f32', access: 'read'},
             {name: 'frechetWithin', view: output.frechetWithin, type: 'u32', access: 'read_write'}
           ],
@@ -1067,17 +1255,15 @@ ${getFrechetDecisionDeclarations(
   this.maximumFrechetVertexCount,
   this.sphereRadius !== undefined
 )}
-${trackHelpers}`,
+${trackHelpers}
+${thresholdHelpers}`,
           body: getFrechetDecisionBody(`let pair = index / WORKGROUP_SIZE;
   let lane = localInvocationIndex;
-  let flags = status[statusOffset + min(pair, PAIR_COUNT - 1u)];
-  let skipped = pair >= PAIR_COUNT ||
-    (flags & (STATUS_EMPTY | STATUS_INVALID | STATUS_TOO_LONG)) != 0u;
-  let rangeBase = pairRangesOffset + min(pair, PAIR_COUNT - 1u) * 4u;
-  let startA = pairRanges[rangeBase];
-  let countA = select(pairRanges[rangeBase + 1u], 0u, skipped);
-  let startB = pairRanges[rangeBase + 2u];
-  let countB = select(pairRanges[rangeBase + 3u], 0u, skipped);`)
+  let startA = rangeStartA[rangeStartAOffset + pair];
+  let countA = rangeCountA[rangeCountAOffset + pair];
+  let startB = rangeStartB[rangeStartBOffset + pair];
+  let countB = rangeCountB[rangeCountBOffset + pair];
+  let skipped = countA == 0u || countB == 0u;`)
         })
       );
     }

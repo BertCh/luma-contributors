@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from '../terrain-illumination/terrain-output-selection';
+
 import {
   validateTerrainBindings,
   getTerrainPyramidParameterScratch
@@ -31,6 +33,8 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
+  validateFiniteNumber,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -52,6 +56,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters,
   validateRasterOutputTexture
 } from '../../raster-analysis/raster-band-utils';
@@ -61,6 +66,7 @@ import {
   validateRasterCellSizeMode
 } from '../../analysis-core/contracts/raster-grid';
 import {
+  TERRAIN_SIGHT_LINE_SAMPLE_POSITION_WGSL,
   getTerrainSightLineGroundCellWGSL,
   getTerrainSightLineWGSL,
   type GPUTerrainSightLineTraversal
@@ -120,12 +126,23 @@ export function getGPUTerrainViewshedParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainViewshedParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainViewshedParameterValues',
     target,
     GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH
   );
   const {cellSize, northEdge, southEdge} = getRasterGridGeoreference(grid);
+  for (const [name, value] of Object.entries({
+    observerColumn: settings.observer[0],
+    observerRow: settings.observer[1],
+    observerHeight: settings.observerHeight ?? 1.7,
+    targetHeight: settings.targetHeight ?? 0,
+    maximumDistance: settings.maximumDistance ?? 0,
+    curvatureCoefficient: settings.curvatureCoefficient ?? 0
+  })) {
+    validateFiniteNumber('getGPUTerrainViewshedParameterValues', name, value);
+  }
   if (!cellSize.every(size => Number.isFinite(size) && size > 0)) {
     throw new Error(
       'getGPUTerrainViewshedParameterValues grid cell size must be finite and positive'
@@ -170,7 +187,7 @@ export type GPUTerrainViewshedToleranceSettings = {
    * last `max(150 m, 2 %)` of the ray). Defaults to 0.
    */
   targetIgnoreDistance?: number;
-  /** Fraction of the target distance at the target end that is not tested. Defaults to 0. */
+  /** Fraction in [0, 1] of the target distance at the target end that is not tested. Defaults to 0. */
   targetIgnoreFraction?: number;
 };
 
@@ -185,7 +202,7 @@ export type GPUTerrainViewshedToleranceSettings = {
  * @throws If a value is negative or not finite, or `target` is too short.
  */
 export function getGPUTerrainViewshedToleranceParameterValues(
-  settings: GPUTerrainViewshedToleranceSettings,
+  settings: GPUTerrainViewshedToleranceSettings = {},
   target: Float32Array = new Float32Array(GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH)
 ): Float32Array {
   validateParameterTarget(
@@ -193,18 +210,26 @@ export function getGPUTerrainViewshedToleranceParameterValues(
     target,
     GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH
   );
-  const values = [
-    settings.toleranceMeters ?? 0,
-    settings.tolerancePerKilometer ?? 0,
-    settings.targetIgnoreDistance ?? 0,
-    settings.targetIgnoreFraction ?? 0
-  ];
-  if (!values.every(value => Number.isFinite(value) && value >= 0)) {
-    throw new Error(
-      'getGPUTerrainViewshedToleranceParameterValues values must be finite and non-negative'
+  const values = {
+    toleranceMeters: settings.toleranceMeters ?? 0,
+    tolerancePerKilometer: settings.tolerancePerKilometer ?? 0,
+    targetIgnoreDistance: settings.targetIgnoreDistance ?? 0,
+    targetIgnoreFraction: settings.targetIgnoreFraction ?? 0
+  };
+  for (const [name, value] of Object.entries(values)) {
+    validateRequirement(
+      'getGPUTerrainViewshedToleranceParameterValues',
+      value >= 0,
+      `${name} must be non-negative; received ${value}`
     );
+    validateFiniteNumber('getGPUTerrainViewshedToleranceParameterValues', name, value, 0);
   }
-  target.set(values);
+  validateRequirement(
+    'getGPUTerrainViewshedToleranceParameterValues',
+    values.targetIgnoreFraction <= 1,
+    `targetIgnoreFraction must be in [0, 1]; received ${values.targetIgnoreFraction}`
+  );
+  target.set(Object.values(values));
   return target;
 }
 
@@ -225,12 +250,12 @@ export function getGPUTerrainCurvatureCoefficient(
 }
 
 /** Caller-owned outputs of {@link GPUTerrainViewshed}; at least one is required. */
-export type GPUTerrainViewshedOutput = {
+export type GPUTerrainViewshedOutput = TerrainOutputSelection<{
   /** `GPU_TERRAIN_VISIBILITY` code per pixel. */
   visibility?: GraphDataView<'uint32'>;
   /** Storage texture (`r32uint` or `rgba32uint`, channel 0) receiving the codes. */
   visibilityTexture?: GraphTextureView<'r32uint' | 'rgba32uint'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainViewshed}.
@@ -348,6 +373,8 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     const pixelCount = validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     if (!output.visibility && !output.visibilityTexture) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -467,32 +494,53 @@ const VISIBLE: u32 = ${GPU_TERRAIN_VISIBILITY.visible}u;
 const OUT_OF_RANGE: u32 = ${GPU_TERRAIN_VISIBILITY.outOfRange}u;
 const NO_DATA: u32 = ${GPU_TERRAIN_VISIBILITY.noData}u;
 ${RASTER_WGSL_HELPERS}${groundCellDeclarations}
+${TERRAIN_SIGHT_LINE_SAMPLE_POSITION_WGSL}
 fn isValidPixel(column: u32, row: u32) -> bool {
   return elevationValidity[elevationValidityOffset + row * WIDTH + column] != 0u;
 }
 fn getElevation(column: u32, row: u32) -> f32 {
   return elevationValues[elevationValuesOffset + row * WIDTH + column];
 }
-// Bilinear elevation at a clamped pixel-center position; .y is 0 when any corner is invalid.
+fn interpolateElevation(first: f32, second: f32, fraction: f32) -> f32 {
+  if (fraction == 0.0 || first == second) { return first; }
+  if (fraction == 1.0) { return second; }
+  return mix(first, second, fraction);
+}
+// Bilinear elevation at a clamped pixel-center position; only positive-weight corners participate.
 fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let maximum = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
   let clamped = clamp(position, vec2<f32>(0.0), maximum);
   let base = vec2<u32>(floor(clamped));
   let next = min(base + vec2<u32>(1u), vec2<u32>(WIDTH - 1u, HEIGHT - 1u));
   let fraction = clamped - floor(clamped);
-  // Canonical elevation is NaN exactly where a pixel is invalid, so one bit test per corner
-  // replaces four validity loads; the interpolation below is unchanged.
-  let corner00 = getElevation(base.x, base.y);
-  let corner10 = getElevation(next.x, base.y);
-  let corner01 = getElevation(base.x, next.y);
-  let corner11 = getElevation(next.x, next.y);
-  if (!isFiniteValue(corner00) || !isFiniteValue(corner10) ||
-      !isFiniteValue(corner01) || !isFiniteValue(corner11)) {
-    return vec2<f32>(0.0, 0.0);
+  let weights = vec4<f32>(
+    (1.0 - fraction.x) * (1.0 - fraction.y), fraction.x * (1.0 - fraction.y),
+    (1.0 - fraction.x) * fraction.y, fraction.x * fraction.y
+  );
+  // Neutral finite values for unused corners keep interpolation free of 0 * NaN.
+  var corner00 = 0.0;
+  var corner10 = 0.0;
+  var corner01 = 0.0;
+  var corner11 = 0.0;
+  if (weights.x > 0.0) {
+    corner00 = getElevation(base.x, base.y);
+    if (!isFiniteValue(corner00)) { return vec2<f32>(0.0, 0.0); }
   }
-  let top = mix(corner00, corner10, fraction.x);
-  let bottom = mix(corner01, corner11, fraction.x);
-  return vec2<f32>(mix(top, bottom, fraction.y), 1.0);
+  if (weights.y > 0.0) {
+    corner10 = getElevation(next.x, base.y);
+    if (!isFiniteValue(corner10)) { return vec2<f32>(0.0, 0.0); }
+  }
+  if (weights.z > 0.0) {
+    corner01 = getElevation(base.x, next.y);
+    if (!isFiniteValue(corner01)) { return vec2<f32>(0.0, 0.0); }
+  }
+  if (weights.w > 0.0) {
+    corner11 = getElevation(next.x, next.y);
+    if (!isFiniteValue(corner11)) { return vec2<f32>(0.0, 0.0); }
+  }
+  let top = interpolateElevation(corner00, corner10, fraction.x);
+  let bottom = interpolateElevation(corner01, corner11, fraction.x);
+  return vec2<f32>(interpolateElevation(top, bottom, fraction.y), 1.0);
 }`,
           body: `let column = index % WIDTH;
   let row = index / WIDTH;
@@ -509,7 +557,7 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let observerInside = isFiniteValue(observer.x) && isFiniteValue(observer.y) &&
     observer.x >= 0.0 && observer.y >= 0.0 &&
     observer.x <= f32(WIDTH - 1u) && observer.y <= f32(HEIGHT - 1u);
-${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));\n'}  if (!observerInside || ${props.heightReference === 'absolute' ? '' : 'observerSample.y == 0.0 || '}!isValidPixel(column, row)) {
+${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));\n'}  if (!observerInside || !isFiniteValue(observerHeight) || !isFiniteValue(targetHeight) || ${props.heightReference === 'absolute' ? '' : 'observerSample.y == 0.0 || '}!isValidPixel(column, row)) {
     visibilityValues[visibilityValuesOffset + index] = NO_DATA;
     return;
   }
@@ -531,7 +579,7 @@ ${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElev
   var visible = true;
   for (var stepIndex = 1u; stepIndex < stepCount; stepIndex++) {
     let fraction = f32(stepIndex) / f32(stepCount);
-    let elevationSample = sampleElevation(observer + delta * fraction);
+    let elevationSample = sampleElevation(rayPosition(observer, delta, stepIndex, stepCount));
     // Invalid samples never block.
     if (elevationSample.y == 0.0) { continue; }
     let sampleDistance = targetDistance * fraction;
@@ -651,7 +699,7 @@ ${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElev
   let observerInside = isFiniteValue(observer.x) && isFiniteValue(observer.y) &&
     observer.x >= 0.0 && observer.y >= 0.0 &&
     observer.x <= f32(WIDTH - 1u) && observer.y <= f32(HEIGHT - 1u);
-${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));\n'}  if (!observerInside || ${props.heightReference === 'absolute' ? '' : 'observerSample.y == 0.0 || '}!isValidPixel(column, row)) {
+${props.heightReference === 'absolute' ? '' : '  let observerSample = sampleElevation(select(vec2<f32>(0.0), observer, observerInside));\n'}  if (!observerInside || !isFiniteValue(observerHeight) || !isFiniteValue(targetHeight) || ${props.heightReference === 'absolute' ? '' : 'observerSample.y == 0.0 || '}!isValidPixel(column, row)) {
     visibilityValues[visibilityValuesOffset + index] = NO_DATA;
     return;
   }

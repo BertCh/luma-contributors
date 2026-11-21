@@ -5,6 +5,7 @@
 import {GraphVectorView, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
+  isGraphVectorView,
   getStorageBindingElementLimit,
   validateCapacity
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -34,6 +35,21 @@ export function validateZonalStatisticsReadWriteDispatches(
   atomicSums: boolean
 ): void {
   const {output, features} = props;
+  if (features.kind === 'feature-rows') {
+    for (const name of [
+      'overflow',
+      'candidateOverflow',
+      'uncertainCount',
+      'antimeridianUncertainCount',
+      'poleUncertainCount'
+    ] as const) {
+      validateCellReadWriteDispatch(
+        id,
+        {[`features.status.${name}`]: features.status?.[name]},
+        {[`output.status.${name}`]: output.status?.[name]}
+      );
+    }
+  }
   const rows =
     features.kind === 'feature-rows' ? features.pointFeatureRows : output.pointFeatureRows;
   const rowChunks = rows ? getGraphViewChunks(rows) : [];
@@ -135,7 +151,12 @@ export function validateZonalStatisticsBindings<Parameters>(
       polygonOffsets: features.polygonOffsets,
       ringOffsets: features.ringOffsets
     });
-  else views['pointFeatureRows'] = features.pointFeatureRows;
+  else {
+    views['pointFeatureRows'] = features.pointFeatureRows;
+    for (const [name, view] of Object.entries(features.status ?? {})) {
+      views[`features.status.${name}`] = view;
+    }
+  }
   outputs.forEach((view, index) => {
     views[`output ${index}`] = view;
   });
@@ -152,7 +173,7 @@ export function validateZonalStatisticsBindings<Parameters>(
   if (values && plan.needValueStatistics) {
     for (const [index, chunk] of getGraphViewChunks(values).entries())
       scratch.push([`value contribution scratch ${index}`, chunk.length * 4]);
-    if (values instanceof GraphVectorView) {
+    if (isGraphVectorView(values)) {
       // The prepare stage binds only one 12-byte slot, but allocates one 256-byte slot per chunk.
       validateCapacity(
         id,

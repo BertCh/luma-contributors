@@ -60,7 +60,7 @@ function createPolygonProps(
     candidateCapacity: 16,
     output: {
       pointFeatureIds: view('point-feature-ids', 'uint32', 10),
-      featureCounts: view('feature-counts', 'uint32', 4),
+      polygonAssignmentCounts: view('feature-counts', 'uint32', 4),
       matches: {
         ids: view('match-ids', 'uint32', 10),
         status: {
@@ -117,6 +117,7 @@ it('GPUPointInPolygonJoin schedules nodes in dependency order', () => {
   expect(ids.filter(id => !id.startsWith('j-bvh-'))).toEqual([
     'j-bounds',
     'j-clear',
+    'j-clear-assignment-counts',
     'j-probe',
     'j-probe-scan-clear-high',
     'j-probe-scan-low-level-0-scan',
@@ -278,7 +279,7 @@ it('GPUNearestFeatureJoin evaluates neighbor foot points with one invocation per
       starts: createTransientView(graph, 'knn-starts', 'float32x2', 2),
       ends: createTransientView(graph, 'knn-ends', 'float32x2', 2)
     },
-    k: 1,
+    neighborCount: 1,
     ties: 'all',
     neighborCapacity,
     output: {
@@ -295,6 +296,27 @@ it('GPUNearestFeatureJoin evaluates neighbor foot points with one invocation per
   device.destroy();
 });
 
+it('checks and captures one point-in-polygon output map from a getter', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createPolygonProps(graph);
+    let outputReads = 0;
+    const joined = new GPUPointInPolygonJoin({
+      ...props,
+      get output() {
+        return ++outputReads === 1
+          ? props.output
+          : {...props.output, polygonAssignmentCounts: undefined};
+      }
+    });
+    expect(outputReads).toBe(1);
+    expect(joined.props.output.polygonAssignmentCounts).toBe(props.output.polygonAssignmentCounts);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('spatial joins validate props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -303,6 +325,10 @@ it('spatial joins validate props', () => {
     new GPUPointInPolygonJoin({...base, ...overrides});
   const createOutput = (output: Partial<GPUPointInPolygonJoinProps['output']>) =>
     create({output: {...base.output, ...output}});
+  const legacyOutput = {...base.output, featureCounts: base.output.polygonAssignmentCounts};
+  expect(() => create({output: legacyOutput})).toThrow(
+    /featureCounts.*polygonAssignmentCounts.*polygonMembershipCounts/
+  );
   expect(() => create({leafCapacity: 3})).toThrow(/leafCapacity/);
   expect(() => create({candidateCapacity: 0})).toThrow(/candidateCapacity/);
   expect(() => create({candidateCapacity: 1.5})).toThrow(/candidateCapacity/);
@@ -310,7 +336,7 @@ it('spatial joins validate props', () => {
     createOutput({pointFeatureIds: createTransientView(graph, 'short-ids', 'uint32', 9)})
   ).toThrow(/chunk topology/);
   expect(() =>
-    createOutput({featureCounts: createTransientView(graph, 'short-counts', 'uint32', 3)})
+    createOutput({polygonAssignmentCounts: createTransientView(graph, 'short-counts', 'uint32', 3)})
   ).toThrow(/feature/);
   expect(() =>
     create({

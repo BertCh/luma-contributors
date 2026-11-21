@@ -34,7 +34,7 @@ function makePoints(count: number): CatalogFeatureCollection {
 }
 
 const CASES: {id: string; chunked: string; parameters: Record<string, unknown>}[] = [
-  ...(['union', 'intersection', 'difference', 'symmetricDifference'] as const).map(operation => ({
+  ...(['union', 'intersection', 'difference', 'symmetric-difference'] as const).map(operation => ({
     id: 'weights-algebra',
     chunked: 'GPUChunkedSpatialWeightsAlgebra',
     parameters: {operation, weightRule: 'sum', neighborCount: 4, distanceBand: 150}

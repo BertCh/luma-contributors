@@ -21,8 +21,8 @@ const idParameter: ParamDoc = {
   type: 'string | undefined',
   description: 'Prefix for every node and transient ID; set it when composing recipes.'
 };
-const outputsOverrideParameter: ParamDoc = {
-  name: 'outputs',
+const outputOverrideParameter: ParamDoc = {
+  name: 'output',
   type: 'Partial<Output> | undefined',
   description: 'Caller-owned views to keep; every other result is a graph transient.'
 };
@@ -174,7 +174,7 @@ export const entries: CatalogEntry[] = [
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates',
@@ -198,7 +198,7 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
   },
   settings: {significanceLevel: 0.05, seed: 7, permutationCount: 199},
   parameters: autocorrelationParameters, // GPUParameterBuffer the recipe fills
-  outputs: {zScores, bins},
+  output: {zScores, bins},
   permutation: {parameters: permutationParameters, maximumPermutations: 199}
 });
 ${COMPILE_AND_ENCODE}
@@ -313,7 +313,7 @@ hotSpots.setSettings({significanceLevel: 0.01, seed: 7, permutationCount: 99});`
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates, status, cellCount, sliceCount, trendP, trendS, hotSliceCount, coldSliceCount, inference, setSettings',
@@ -418,7 +418,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates',
@@ -442,7 +442,7 @@ const clusterMap = addRateClusterMapRecipe(graph, {
   parameters: autocorrelationParameters, // GPUParameterBuffer<'float32'>
   permutation: {parameters: permutationParameters, maximumPermutations: 999},
   palette,
-  outputs: {quadrants, colors}
+  output: {quadrants, colors}
 });
 ${COMPILE_AND_ENCODE}`,
     preview: {kind: 'hotspots', caption: 'Smoothed rates, clustered by quadrant.', seed: 403},
@@ -653,7 +653,7 @@ ${COMPILE_AND_ENCODE}
         type: 'GPUMultipleTestingMethod | undefined',
         description: 'Correction for the Moran p-values only.'
       },
-      outputsOverrideParameter
+      outputOverrideParameter
     ],
     outputs: [
       {
@@ -919,7 +919,7 @@ ${COMPILE_AND_ENCODE}`,
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates, status, rowCount, inference, setSettings',
@@ -973,7 +973,7 @@ ${COMPILE_AND_ENCODE}
         name: 'clusteringParameters',
         type: 'GraphDataView<"float32">',
         required: true,
-        description: 'Bounds, epsilon and minimum points (getGPUSpatialClusteringParameterValues).'
+        description: 'Bounds, epsilon and minimum points (getGPUDBSCANParameterValues).'
       },
       {
         name: 'gridSize',
@@ -1038,7 +1038,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates, status, spatialContext, maximumClusterCount, outlineType, clusterCount, bounds, meanCenters, hullVertexIndices, hullOffsets, hullCounts, perimeters',
@@ -1051,7 +1051,7 @@ ${COMPILE_AND_ENCODE}
 // graph: GPUCommandGraph; points is a GPUPointGeometryPort in planar coordinates
 const clusters = addClusterAndOutlineRecipe(graph, {
   points,
-  clusteringParameters, // getGPUSpatialClusteringParameterValues({...})
+  clusteringParameters, // getGPUDBSCANParameterValues({...})
   gridSize: [256, 256],
   geometryParameters,   // getGPUGeographicDistributionParameterValues({...})
   maximumClusterCount: 64,
@@ -1145,7 +1145,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates',
@@ -1256,7 +1256,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates',
@@ -1327,7 +1327,7 @@ ${COMPILE_AND_ENCODE}
       },
       idParameter,
       {
-        name: 'outputs',
+        name: 'output',
         type: 'Partial<GPUCellFlowTopologyOutput> | undefined',
         description: 'Caller-owned views to keep.'
       }
@@ -1479,7 +1479,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates, spatialContext, sourceZoneCount, targetZoneCount, sourceZones, targetZones, extensiveWeights, intensiveWeights, sourceAreas',
@@ -1658,7 +1658,7 @@ ${COMPILE_AND_ENCODE}
         type: 'GraphDataView<"float32"> | undefined',
         description: 'Per-frame quantile probabilities in [0, 1].'
       },
-      outputsOverrideParameter
+      outputOverrideParameter
     ],
     outputs: [
       {
@@ -1705,7 +1705,7 @@ const distribution = addZonalDistributionRecipe(graph, {
   source: {kind: 'zones', zones: zoneIds, zoneCount: 40},
   values,
   probabilities, // e.g. [0.1, 0.5, 0.9]
-  outputs: {medians, quantiles}
+  output: {medians, quantiles}
 });
 ${COMPILE_AND_ENCODE}
 // distribution.status.stages keeps grouping overflow and join status`,
@@ -1752,7 +1752,7 @@ ${COMPILE_AND_ENCODE}
         type: 'GraphDataView<"float32"> | undefined',
         description: 'Per-frame quantile probabilities in [0, 1].'
       },
-      outputsOverrideParameter
+      outputOverrideParameter
     ],
     outputs: [
       {name: 'outputs.medians', type: 'GraphDataView<"float32">', description: 'Median per zone.'},
@@ -1797,7 +1797,7 @@ const distributions = addRasterZonalDistributionRecipe(graph, {
   zones: zoneIds,
   zoneCount: administrativeAreaCount,
   probabilities: quantileProbabilities, // [0.1, 0.5, 0.9]
-  outputs: {medians, quantiles}
+  output: {medians, quantiles}
 });
 ${COMPILE_AND_ENCODE}`,
     preview: {kind: 'histogram', caption: 'Elevation spread inside each zone.', seed: 416},
@@ -2060,7 +2060,7 @@ ${COMPILE_AND_ENCODE}
         type: 'GPURasterRankFilterProps | "radius" | >',
         description: 'Optional rank filter after the fill.'
       },
-      outputsOverrideParameter
+      outputOverrideParameter
     ],
     outputs: [
       {name: 'outputs.values', type: 'GraphDataView<"float32">', description: 'Repaired surface.'},
@@ -2143,7 +2143,7 @@ ${COMPILE_AND_ENCODE}
         description: 'Samples, values, variogram, neighborhood and target grid.'
       },
       idParameter,
-      outputsOverrideParameter
+      outputOverrideParameter
     ],
     outputs: [
       {name: 'outputs.values', type: 'GraphDataView<"float32">', description: 'Predicted surface.'},
@@ -2377,7 +2377,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates',
@@ -3124,7 +3124,7 @@ ${COMPILE_AND_ENCODE}`,
     summary:
       'Aligns population tables by ID; matchedMask selects unique matches and named stages count incomplete support.',
     explanation:
-      'Gather census rows by ID before comparing them in different orders. Missing or ambiguous targets receive NaN populations, alignmentCode and matchedMask = 0; pass matchedMask downstream to retain unique matches. Read packedStatus for the whole-support certificate and status.stages for named diagnostic counts.',
+      'Gather census rows by ID before comparing them in different orders. Missing or ambiguous targets receive NaN populations, alignmentCode and matchedMask = 0; pass matchedMask downstream to retain unique matches. Read the alignment stage for the whole-support certificate and the other status.stages for named diagnostic counts.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['relate'],
     domains: ['demographics', 'data-engineering'],
@@ -3166,9 +3166,9 @@ ${COMPILE_AND_ENCODE}`,
         description: '1 for a unique ID match, otherwise 0; pass as a downstream mask.'
       },
       {
-        name: 'packedStatus',
-        type: 'GraphDataView<"uint32x4">',
-        description: '[complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows].'
+        name: 'status.stages[3].status.complete',
+        type: 'GraphDataView<"uint32">',
+        description: 'The alignment stage reports 1 for a one-to-one support match and 0 otherwise.'
       },
       {
         name: 'status.stages',
@@ -3202,9 +3202,8 @@ const aligned = addPopulationSupportAlignmentRecipe(graph, {
 ${COMPILE_AND_ENCODE}
 // aligned.outputs.populations follows boundaryIds row for row.
 // Pass aligned.outputs.matchedMask as the mask of downstream operators.
-// If every support row must match, read aligned.packedStatus and require its first word to be 1.
-// Remaining packed words count missing targets, ambiguous targets and excluded source rows.
-// Generic recipe inspection uses aligned.status.stages and each stage.status.invalidCount.`,
+// For a one-to-one support match, require the 'alignment' stage's status.complete to be 1.
+// The missing-targets, ambiguous-targets and excluded-sources stages expose status.invalidCount.`,
     preview: {kind: 'polygons', caption: 'Rows matched to units by ID.', seed: 428},
     related: [
       'segregation-counterfactual-recipe',
@@ -3800,7 +3799,7 @@ ${COMPILE_AND_ENCODE}`,
         description: 'Rows of the per-zone table.'
       },
       spatialContextParameter,
-      outputsOverrideParameter
+      outputOverrideParameter
     ],
     outputs: [
       {
@@ -3823,7 +3822,7 @@ ${COMPILE_AND_ENCODE}`,
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates',
@@ -3893,7 +3892,7 @@ ${COMPILE_AND_ENCODE}
       },
       {name: 'eventCapacity', type: 'number | undefined', description: 'Rows of the event list.'},
       spatialContextParameter,
-      outputsOverrideParameter,
+      outputOverrideParameter,
       idParameter
     ],
     outputs: [
@@ -3921,7 +3920,7 @@ ${COMPILE_AND_ENCODE}
       {
         name: 'outputs',
         type: 'Record<string, unknown>',
-        description: 'Named terminal outputs; keep them by passing `outputs`.'
+        description: 'Named terminal outputs; keep them by passing `output`.'
       },
       {
         name: 'intermediates',

@@ -88,7 +88,10 @@ export default defineOperationRun({
         residuals: residuals.view,
         method,
         kernel: method === 'HAC' ? {...kernel.input, distances: undefined} : undefined,
-        output: {covariance: covariance.view, status: builder.allocate('status', 'uint32', 1).view}
+        output: {
+          covariance: covariance.view,
+          status: {code: builder.allocate('status', 'uint32', 1).view}
+        }
       })
     );
     // The robust standard errors are the square roots of the covariance diagonal.

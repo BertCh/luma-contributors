@@ -22,6 +22,224 @@ import {afterEach, expect, it} from 'vitest';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const directories: string[] = [];
 
+it.each(
+  ['dual', 'transitive', 'bundler', 'typed-require', 'reference-import', 'ignored-jsdoc'].flatMap(
+    scenario =>
+      ['esm', 'cjs'].flatMap(target =>
+        ['cold', 'warm'].map(interval => ({scenario, target, interval}))
+      )
+  )
+)('review 2 R6 $scenario $target declaration change during $interval matches compiler inputs', ({
+  scenario,
+  target,
+  interval
+}) => {
+  const directory = createFixture();
+  const bundler = scenario === 'bundler';
+  const conditional = ['transitive', 'reference-import', 'ignored-jsdoc'].includes(scenario);
+  if (scenario === 'reference-import') {
+    // Select the CJS JSX runtime so the explicit import mode must override its default.
+    write(directory, 'package.json', '{"type":"commonjs"}');
+  }
+  write(
+    directory,
+    'tsconfig.json',
+    JSON.stringify({
+      compilerOptions: {
+        rootDir: '.',
+        types: [],
+        jsx: 'react-jsx',
+        module: bundler ? 'ESNext' : 'NodeNext',
+        moduleResolution: bundler ? 'bundler' : 'NodeNext',
+        noEmit: true,
+        incremental: true
+      },
+      files: ['entry.tsx']
+    })
+  );
+  write(
+    directory,
+    'entry.tsx',
+    scenario === 'dual'
+      ? 'import runtime = require("react/jsx-runtime"); export const explicit = runtime.jsx; export const element = <div/>;'
+      : bundler
+        ? 'export {element} from "component-package";'
+        : scenario === 'typed-require'
+          ? 'declare const require: (name: string) => unknown; export const explicit = require("react/jsx-runtime"); export const element = <div/>;'
+          : 'export const element = <div/>;'
+  );
+  if (bundler) {
+    write(
+      directory,
+      'node_modules/component-package/package.json',
+      JSON.stringify({name: 'component-package', exports: './entry.tsx'})
+    );
+    write(directory, 'node_modules/component-package/entry.tsx', 'export const element = <div/>;');
+  }
+  write(
+    directory,
+    'node_modules/react/package.json',
+    JSON.stringify({
+      name: 'react',
+      exports: {'./jsx-runtime': {import: {types: './esm.d.mts'}, require: {types: './cjs.d.cts'}}}
+    })
+  );
+  const declarations =
+    'export namespace JSX { interface Element {} interface IntrinsicElements { div: {}; } } export function jsx(...values: unknown[]): JSX.Element;';
+  for (const mode of ['esm', 'cjs'])
+    write(
+      directory,
+      `node_modules/react/${mode}.d.${mode === 'esm' ? 'mts' : 'cts'}`,
+      (scenario === 'reference-import' && mode === 'cjs'
+        ? '/// <reference types="conditional-dependency" resolution-mode="import" />\n'
+        : '') +
+        declarations +
+        (scenario === 'transitive' && mode === 'esm'
+          ? '\nexport {marker} from "conditional-dependency";'
+          : scenario === 'ignored-jsdoc' && mode === 'esm'
+            ? '\n/** @type {import("conditional-dependency").Marker} */\nexport const ignored: number;'
+            : '')
+    );
+  if (conditional) {
+    write(
+      directory,
+      'node_modules/conditional-dependency/package.json',
+      JSON.stringify({
+        name: 'conditional-dependency',
+        exports: {'.': {import: {types: './esm.d.mts'}, require: {types: './cjs.d.cts'}}}
+      })
+    );
+    for (const mode of ['esm', 'cjs'])
+      write(
+        directory,
+        `node_modules/conditional-dependency/${mode}.d.${mode === 'esm' ? 'mts' : 'cts'}`,
+        'export const marker: number; export type Marker = number;'
+      );
+  }
+  const relativeTarget = `node_modules/${conditional ? 'conditional-dependency' : 'react'}/${target}.d.${target === 'esm' ? 'mts' : 'cts'}`;
+  const parsed = typescript.getParsedCommandLineOfConfigFile(
+    join(directory, 'tsconfig.json'),
+    {},
+    {
+      ...typescript.sys,
+      onUnRecoverableConfigFileDiagnostic() {
+        throw new Error('invalid fixture');
+      }
+    }
+  )!;
+  const program = typescript.createProgram(parsed.fileNames, parsed.options);
+  expect(typescript.getPreEmitDiagnostics(program).map(diagnostic => diagnostic.code)).toEqual([]);
+  // The compiler program is the independent oracle: explicit import mode selects only ESM,
+  // whereas JSDoc on a declaration is ignored and loads neither conditional declaration.
+  const included = scenario !== 'ignored-jsdoc' && (scenario === 'dual' || target === 'esm');
+  expect(program.getSourceFiles().some(file => file.fileName.endsWith(`/${relativeTarget}`))).toBe(
+    included
+  );
+  write(
+    directory,
+    'jsx-modes-compiler.mjs',
+    `
+import {spawnSync} from 'node:child_process';
+import {existsSync, writeFileSync, appendFileSync} from 'node:fs';
+const warm = existsSync('compiled-once');
+const result = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(join(ROOT, 'node_modules/typescript/bin/tsc'))}, ...process.argv.slice(2)], {stdio: 'inherit'});
+if (result.status !== 0) process.exit(result.status ?? 1);
+writeFileSync('compiled-once', 'yes');
+if (${JSON.stringify(interval)} === 'cold' || warm) appendFileSync(${JSON.stringify(join(directory, relativeTarget))}, '\\nexport type ChangedRuntime = string;');
+`
+  );
+  const result = run(directory, ['--compiler', 'jsx-modes-compiler.mjs', '--timing-only']);
+  expect(result.status, `${result.stdout}${result.stderr}`).toBe(included ? 1 : 0);
+  if (included) {
+    expect(result.stderr).toContain(`inputs changed during ${interval} measurement`);
+    expect(result.stdout).not.toContain('| tsconfig.json |');
+  } else expect(result.stdout).toContain('| tsconfig.json |');
+});
+
+it.each(
+  ['module', 'commonjs'].flatMap(packageType =>
+    ['cold', 'warm'].map(interval => ({packageType, interval}))
+  )
+)('R8 fingerprints the compiler-selected NodeNext JSX runtime in $packageType during $interval', ({
+  packageType,
+  interval
+}) => {
+  const directory = createFixture();
+  write(
+    directory,
+    'tsconfig.json',
+    JSON.stringify({
+      compilerOptions: {
+        rootDir: '.',
+        types: [],
+        jsx: 'react-jsx',
+        module: 'NodeNext',
+        moduleResolution: 'NodeNext',
+        noEmit: true,
+        incremental: true
+      },
+      files: ['app/entry.tsx']
+    })
+  );
+  write(directory, 'app/package.json', JSON.stringify({type: packageType}));
+  write(directory, 'app/entry.tsx', 'export const element = <div/>;');
+  write(
+    directory,
+    'node_modules/react/package.json',
+    JSON.stringify({
+      name: 'react',
+      exports: {'./jsx-runtime': {import: {types: './esm.d.mts'}, require: {types: './cjs.d.cts'}}}
+    })
+  );
+  for (const target of ['esm.d.mts', 'cjs.d.cts'])
+    write(
+      directory,
+      `node_modules/react/${target}`,
+      'export namespace JSX { interface Element {} interface IntrinsicElements { div: {}; } } export function jsx(...values: unknown[]): JSX.Element;'
+    );
+  const runtime = join(
+    directory,
+    `node_modules/react/${packageType === 'module' ? 'esm.d.mts' : 'cjs.d.cts'}`
+  );
+  const parsed = typescript.getParsedCommandLineOfConfigFile(
+    join(directory, 'tsconfig.json'),
+    {},
+    {
+      ...typescript.sys,
+      onUnRecoverableConfigFileDiagnostic() {
+        throw new Error('invalid fixture');
+      }
+    }
+  )!;
+  const program = typescript.createProgram(parsed.fileNames, parsed.options);
+  expect(
+    program
+      .getSourceFiles()
+      .map(file => file.fileName)
+      .filter(file => /react\//.test(file))
+  ).toEqual([
+    expect.stringContaining(`/react/${packageType === 'module' ? 'esm.d.mts' : 'cjs.d.cts'}`)
+  ]);
+  expect(typescript.getPreEmitDiagnostics(program).map(diagnostic => diagnostic.code)).toEqual([]);
+  write(
+    directory,
+    'jsx-nodenext-compiler.mjs',
+    `
+import {spawnSync} from 'node:child_process';
+import {existsSync, writeFileSync, appendFileSync} from 'node:fs';
+const warm = existsSync('compiled-once');
+const result = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(join(ROOT, 'node_modules/typescript/bin/tsc'))}, ...process.argv.slice(2)], {stdio: 'inherit'});
+if (result.status !== 0) process.exit(result.status ?? 1);
+writeFileSync('compiled-once', 'yes');
+if (${JSON.stringify(interval)} === 'cold' || warm) appendFileSync(${JSON.stringify(runtime)}, '\\nexport type ChangedRuntime = string;');
+`
+  );
+  const result = run(directory, ['--compiler', 'jsx-nodenext-compiler.mjs', '--timing-only']);
+  expect(result.status, `${result.stdout}${result.stderr}`).toBe(1);
+  expect(result.stderr).toContain(`inputs changed during ${interval} measurement`);
+  expect(result.stdout).not.toContain('| tsconfig.json |');
+});
+
 function write(directory: string, file: string, contents: string) {
   mkdirSync(dirname(join(directory, file)), {recursive: true});
   writeFileSync(join(directory, file), contents);
@@ -30,7 +248,11 @@ function write(directory: string, file: string, contents: string) {
 function createFixture() {
   const directory = mkdtempSync(join(tmpdir(), 'measure-typecheck-'));
   directories.push(directory);
-  for (const file of ['measure-typecheck.mjs', 'verification-policy.mjs']) {
+  for (const file of [
+    'measure-typecheck.mjs',
+    'verification-policy.mjs',
+    'typescript-project-inputs.mjs'
+  ]) {
     expect(existsSync(join(ROOT, 'scripts', file)), `missing scripts/${file}`).toBe(true);
     mkdirSync(join(directory, 'scripts'), {recursive: true});
     copyFileSync(join(ROOT, 'scripts', file), join(directory, 'scripts', file));

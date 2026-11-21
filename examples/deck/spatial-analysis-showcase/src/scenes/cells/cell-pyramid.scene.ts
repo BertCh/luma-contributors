@@ -535,19 +535,20 @@ graph.add(new GPUCellLevelSelection({
       return `import {GPUCellRollup, GPU_CELL_DEFAULT_SUM_SCALE} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // Roll the finest table up to res ${state.rollupResolution}. Counts and fixed-point sums are integers,
-// so the parent totals equal the child totals exactly.
+// so counts are conserved on complete tables; sums also require sumOverflow == 0.
 graph.add(new GPUCellRollup({
   family: 'quadbin', sourceResolution: 17, resolution: ${state.rollupResolution},
-  source: finestTable,                    // forward count, overflow and any candidateOverflow
+  source: finestTable,                    // forward count, overflow, candidateOverflow and sumOverflow
   sumScale: GPU_CELL_DEFAULT_SUM_SCALE,   // 65536 = 16 fractional bits
-  output: {cells, counts, sums, sumValues, status: {count: drawRecordInstanceCount, overflow}}
+  output: {cells, counts, sums, sumValues, status: {count: drawRecordInstanceCount, overflow, candidateOverflow, sumOverflow}}
 }));`;
     }
     if (state.view === 'classes') {
       return `import {GPUClassBreaks, GPUColorScale} from '@luma-contributors/analysis/dataframe-analysis';
+import {addShowcaseCellTableColumnsNode} from './cell-pyramid-sums';
 
-// Cell table to a value column and an occupied-row mask (adapter node, as in the hot-spot recipe).
-addCellTableColumnsNode(graph, 'classes', {counts, ${state.classValue === 'confirmed' ? 'sumValues' : ''}}, {values, mask});
+// Certify the compact prefix; count columns check capacity loss, sum columns also check sumOverflow.
+addShowcaseCellTableColumnsNode(graph, 'classes', {counts, ${state.classValue === 'confirmed' ? 'sumValues, ' : ''}status: {count, overflow, candidateOverflow, sumOverflow}}, {values, mask});
 
 graph.add(new GPUClassBreaks({
   values, mask, parameters,               // getGPUClassBreaksParameterValues({method: '${state.classMethod}', classCount: ${state.classCount}}, 8)
@@ -555,7 +556,7 @@ graph.add(new GPUClassBreaks({
   output: {breaks, classCount}
 }));
 graph.add(new GPUColorScale({
-  values, mask, domain: breaks, domainCount: classCount, palette,
+  values, mask, domain: breaks, classCount, palette,
   parameters: colorScaleParameters,       // scale: 'threshold'
   maximumDomainCount: 9, maximumPaletteCount: 8,
   output: {colors}                        // packed rgba8, read by the layer
@@ -570,7 +571,7 @@ const recipe = addPeriodComparisonRecipe(graph, {
   before: {positions${state.compareMeasure === 'sum' ? ', values: researchGrade' : ''}, mask: firstHalf},
   after:  {positions${state.compareMeasure === 'sum' ? ', values: researchGrade' : ''}, mask: secondHalf},
   measure: '${state.compareMeasure}', zScore: '${state.zScoreKind}',
-  outputs: {comparison: {cells, delta, ratio, percentChange, zScore, status: {count, overflow, candidateOverflow}}, colors},  // GPUCellTableCompare columns
+  output: {comparison: {cells, delta, ratio, percentChange, zScore, status: {count, overflow, candidateOverflow, sumOverflow}}, colors},  // Sum comparisons and dependent colors require sumOverflow == 0; counts remain independent.
   classify: 'delta',
   classBreaksParameters,   // custom edges [-4b, -b, b, 4b], or standard-deviation
   maximumClassCount: 5, methods: ['custom', 'standard-deviation'],

@@ -27,7 +27,7 @@ import {GPUCalendarBuckets} from '../../src/dataframe-analysis/calendar-buckets/
 import {GPUForestInference} from '../../src/dataframe-analysis/forest-inference/gpu-forest-inference';
 import {GPUPeriodIndex} from '../../src/dataframe-analysis/period-index/gpu-period-index';
 import {GPUInequality} from '../../src/dataframe-analysis/composite-indicators/gpu-inequality';
-import {GPUKeyJoin} from '../../src/dataframe-analysis/key-join/gpu-key-join';
+import {GPUKeyLookup} from '../../src/dataframe-analysis/key-join/gpu-key-join';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources
@@ -230,7 +230,7 @@ it('allows shared output prefixes across separate passes and aligned packed fiel
         periodCount: 1,
         output: {counts: output('uint32', 0), sums: output('float32', 4)}
       }),
-      new GPUKeyJoin({
+      new GPUKeyLookup({
         id: 'join',
         leftKeys: view('uint32'),
         rightKeys: view('uint32'),
@@ -349,9 +349,9 @@ it('allows shared output prefixes across separate passes and aligned packed fiel
         parameters: view('float32', 4),
         output: {counts: output('uint32', 0), globalSummary: output('float32', 256, 8)}
       }),
-      new GPUKeyJoin({
+      new GPUKeyLookup({
         id: 'join-inner',
-        kind: 'inner',
+        compactMatchedLeftRows: true,
         leftKeys: view('uint32'),
         rightKeys: view('uint32'),
         gather: [{column: view('float32'), output: output('float32', 1280)}],

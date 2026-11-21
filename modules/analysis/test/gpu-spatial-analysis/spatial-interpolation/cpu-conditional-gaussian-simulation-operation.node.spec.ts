@@ -53,6 +53,18 @@ const SHAPES = {
   queries: {format: 'float32x2' as const, length: 4}
 };
 
+it('rejects retained preparation on both simulation operation forms (LIF-09)', () => {
+  for (const Operation of [
+    CPUConditionalGaussianSimulationOperation,
+    GPUConditionalGaussianSimulationOperation
+  ]) {
+    const untyped = {...getProps(), reusePreparation: true};
+    expect(() => new Operation(untyped)).toThrow(
+      /simulation-test.*reusePreparation.*GPUConditionalGaussianSimulation/
+    );
+  }
+});
+
 for (const oracle of fixture.fixtures) {
   it(`matches SciPy Schur conditioning and independent integer Philox draws for ${oracle.model}`, () => {
     const input = createInput();

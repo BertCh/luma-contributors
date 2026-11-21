@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
+
 /** Raster-native catalog: these bindings consume time stacks, never feature collections. */
 export const RASTER_TIMESERIES_BINDINGS = [
   {
@@ -93,7 +95,7 @@ export const RASTER_TIMESERIES_BINDINGS = [
     title: 'Streaming accumulator',
     contributors: ['GPURasterStreamingAccumulator', 'GPURasterClimateAnomaly'],
     defaults: {slotCount: 1},
-    note: 'A fresh bounded chunk per run; mean and sample standard deviation. Slots: 1 overall or 12 UTC months.'
+    note: 'A fresh bounded chunk per run; mean and sample standard deviation. streamingStatus certifies observation counts only; decoded streamingCountStatus surfaces count loss and affected statistics become NaN. Slots: 1 overall or 12 UTC months.'
   },
   {
     id: 'climate-anomaly',
@@ -107,14 +109,14 @@ export const RASTER_TIMESERIES_BINDINGS = [
     title: 'Standardized index calibration',
     contributors: ['GPURasterStandardizedIndexCalibration'],
     defaults: {slotCount: 1, calibrationSliceCount: 12, distribution: 'gamma', location: 0},
-    note: 'APP fit: shape/scale/zero probability per slot; gamma is zero-inflated. Calibration is the first N samples. No rolling accumulation is implied.'
+    note: 'APP fit: shape/scale/zero probability per slot; zeroAtom defaults on for gamma and off for Fisk; an explicit boolean overrides it. Calibration is the first N samples. No rolling accumulation is implied.'
   },
   {
     id: 'standardized-index',
     title: 'Standardized index',
     contributors: ['GPURasterStandardizedIndexCalibration', 'GPURasterStandardizedIndex'],
     defaults: {slotCount: 1, calibrationSliceCount: 12, distribution: 'gamma', location: 0},
-    note: 'Gamma/Fisk APP fit from the first N samples, evaluated over the full stack. Choose a meaningful calibration period and climate variable; this does not infer precipitation or water balance.'
+    note: 'Gamma/Fisk APP fit from the first N samples, evaluated over the full stack. zeroAtom is a boolean (gamma defaults on, Fisk off). Choose a meaningful calibration period and climate variable; this does not infer precipitation or water balance.'
   },
   {
     id: 'resample',
@@ -155,10 +157,21 @@ export const RASTER_TIMESERIES_BINDINGS = [
 
 export type RasterTimeSeriesOperation = (typeof RASTER_TIMESERIES_BINDINGS)[number]['id'];
 export type RasterTimeSeriesSettings = Readonly<
-  Record<string, number | string | readonly number[]>
+  Record<string, number | string | boolean | readonly number[]> & {
+    /** Explicit original-zero atom, defaulting to true for gamma and false for Fisk. */
+    zeroAtom?: boolean;
+  }
 >;
 
-export function getRasterTimeSeriesBinding(operation: RasterTimeSeriesOperation) {
+export function getRasterTimeSeriesBinding(
+  operation: RasterTimeSeriesOperation,
+  settings?: RasterTimeSeriesSettings
+) {
+  validateRequirement(
+    `raster-timeseries-${operation}`,
+    settings === undefined || !('zeroInflated' in settings),
+    'zeroInflated was removed; use zeroAtom'
+  );
   const binding = RASTER_TIMESERIES_BINDINGS.find(candidate => candidate.id === operation);
   if (!binding) throw new Error(`Unknown raster time-series operation: ${operation}`);
   return binding;

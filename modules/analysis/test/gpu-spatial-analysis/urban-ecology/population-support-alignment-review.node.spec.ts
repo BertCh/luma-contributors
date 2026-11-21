@@ -6,6 +6,10 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {entries} from '../../../../../website/src/catalog/entries/recipes-trajectories';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {
+  getWGSLKernelNodeRecord,
+  recordWGSLKernelNodes
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {computePopulationSupportAlignmentOnCPU} from '../../../src/gpu-spatial-analysis/landscape-ecology/cpu-population-support-alignment-operation';
 import {GPUPopulationSupportAlignment} from '../../../src/gpu-spatial-analysis/landscape-ecology/gpu-population-support-alignment';
 import {addPopulationSupportAlignmentRecipe} from '../../../src/gpu-spatial-analysis/landscape-ecology/segregation-counterfactual';
@@ -91,6 +95,33 @@ it('final2 spatial-1:G4 ignores contributor output metadata when declaring comma
     const output = {...props.output, label: 'trial mask'};
     const contributor = new GPUPopulationSupportAlignment({...props, output});
     expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('preserves the validated alignment views when caller props change', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const originalTargetIds = props.targetIds;
+    const originalMatchedMask = props.output.matchedMask;
+    const contributor = new GPUPopulationSupportAlignment(props);
+
+    props.targetIds = createTransientView(graph, 'replacement-target-ids', 'uint32', 1);
+    props.output.matchedMask = createTransientView(graph, 'replacement-mask', 'uint32', 1);
+
+    recordWGSLKernelNodes(graph);
+    contributor.getCommandNodes(graph);
+    const alignment = getWGSLKernelNodeRecord(graph, 'review-alignment-align');
+    expect(alignment?.bindings.find(binding => binding.name === 'matchedMask')?.view).toBe(
+      originalMatchedMask
+    );
+    const targetKeys = getWGSLKernelNodeRecord(graph, 'review-alignment-targets-keys');
+    expect(targetKeys?.bindings.find(binding => binding.name === 'input')?.view).toBe(
+      originalTargetIds
+    );
   } finally {
     device.destroy();
   }
@@ -189,10 +220,11 @@ it('R4 documents partial support results and downstream selection in the catalog
   expect(entry.explanation).not.toContain('fails loudly');
   expect(entry.example).toContain('aligned.outputs.matchedMask');
   expect(entry.outputs).toContainEqual({
-    name: 'packedStatus',
-    type: 'GraphDataView<"uint32x4">',
-    description: '[complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows].'
+    name: 'status.stages[3].status.complete',
+    type: 'GraphDataView<"uint32">',
+    description: 'The alignment stage reports 1 for a one-to-one support match and 0 otherwise.'
   });
+  expect(entry.outputs.some(output => output.name === 'packedStatus')).toBe(false);
   const stages = entry.outputs.find(output => output.name === 'status.stages');
   expect(stages?.type).toBe('readonly GPURecipeStageStatusPort[]');
   for (const name of ['missing-targets', 'ambiguous-targets', 'excluded-sources', 'invalidCount'])
@@ -201,6 +233,6 @@ it('R4 documents partial support results and downstream selection in the catalog
   expect(
     entry.outputs.some(output => output.name === 'status' && output.type.includes('GraphDataView'))
   ).toBe(false);
-  expect(entry.example).toContain('read aligned.packedStatus');
+  expect(entry.example).toContain("the 'alignment' stage's status.complete");
   expect(entry.example).not.toContain('read aligned.status and require its first word');
 });

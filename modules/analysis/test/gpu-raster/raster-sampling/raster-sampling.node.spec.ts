@@ -56,7 +56,7 @@ const EXTENT = [0, 0, 8, 8] as const;
 
 function pack(
   method: 'nearest' | 'bilinear' | 'bicubic',
-  noDataPolicy: 'strict' | 'renormalize' = 'strict'
+  noDataPolicy: 'propagate' | 'renormalize' = 'propagate'
 ) {
   return getGPURasterSamplingParameterValues({method, noDataPolicy}, makeExtentGrid(8, 8, EXTENT));
 }
@@ -140,18 +140,18 @@ it('raster-sampling oracle: bicubic reproduces planes inside and clamps at edges
 it('raster-sampling oracle: nodata policies', () => {
   const raster = createPlane(1, 0);
   raster.values[3 * 8 + 3] = NaN;
-  const strict = pack('bilinear', 'strict');
+  const propagate = pack('bilinear', 'propagate');
   const renormalize = pack('bilinear', 'renormalize');
   // Point at the corner between cells (3,3) (NaN), (4,3), (3,4), (4,4).
-  expect(sampleRasterOnCPU(raster, strict, 4, 4)).toBeNaN();
+  expect(sampleRasterOnCPU(raster, propagate, 4, 4)).toBeNaN();
   expect(sampleRasterOnCPU(raster, renormalize, 4, 4)).toBeCloseTo(11 / 3, 6);
   // On the centre of a valid cell next to the hole the hole carries zero weight.
-  expect(sampleRasterOnCPU(raster, strict, 4.5, 3.5)).toBe(4);
-  // On the hole's own centre: strict and renormalize both give NaN.
-  expect(sampleRasterOnCPU(raster, strict, 3.5, 3.5)).toBeNaN();
+  expect(sampleRasterOnCPU(raster, propagate, 4.5, 3.5)).toBe(4);
+  // On the hole's own centre: propagate and renormalize both give NaN.
+  expect(sampleRasterOnCPU(raster, propagate, 3.5, 3.5)).toBeNaN();
   expect(sampleRasterOnCPU(raster, renormalize, 3.5, 3.5)).toBeNaN();
   // Bicubic with nodata in its support falls back to the bilinear rule.
-  expect(sampleRasterOnCPU(raster, pack('bicubic', 'strict'), 4, 4)).toBeNaN();
+  expect(sampleRasterOnCPU(raster, pack('bicubic', 'propagate'), 4, 4)).toBeNaN();
   expect(sampleRasterOnCPU(raster, pack('bicubic', 'renormalize'), 4, 4)).toBeCloseTo(11 / 3, 6);
   // Nearest on a nodata cell is NaN under both policies; sentinel and validity count as nodata.
   expect(sampleRasterOnCPU(raster, pack('nearest', 'renormalize'), 3.5, 3.5)).toBeNaN();
@@ -417,7 +417,10 @@ it('GPURasterSampling and GPURasterProfile create deterministic nodes', () => {
       lineOffsets: view(graph, 'uint32', 3),
       sampleCapacity: 8,
       parameters,
-      output: {status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}}
+      output: {
+        status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)},
+        sampleValues: view(graph, 'float32', 8)
+      }
     });
     const ids = profile.getCommandNodes(graph).map(node => node.id);
     expect(ids[0]).toBe('p-truncated-fill');
@@ -428,6 +431,28 @@ it('GPURasterSampling and GPURasterProfile create deterministic nodes', () => {
     expect(ids.filter(id => id.startsWith('p-cumulative'))).toEqual([]);
     expect(ids.at(-1)).toBe('p-finish-counts');
     expect(ids).not.toContain('p-finish-lines');
+
+    // WRT-11: geometric counts need the distance/count scans, but no sample columns.
+    const statusProfile = new GPURasterProfile({
+      ...profile.props,
+      id: 'status-only',
+      output: {
+        status: {count: view(graph, 'uint32', 1), overflow: view(graph, 'uint32', 1)}
+      }
+    });
+    const statusIds = statusProfile.getCommandNodes(graph).map(node => node.id);
+    expect(statusIds.slice(0, 5)).toEqual([
+      'status-only-truncated-fill',
+      'status-only-measure',
+      'status-only-measure-carries',
+      'status-only-measure-distances',
+      'status-only-sample-counts'
+    ]);
+    expect(statusIds.at(-1)).toBe('status-only-finish-counts');
+    expect(statusIds).not.toContain('status-only-locate');
+    expect(statusIds).not.toContain('status-only-sample');
+    expect(statusIds.filter(id => id.startsWith('status-only-cumulative'))).toEqual([]);
+    expect(statusIds).not.toContain('status-only-finish-lines');
   });
 });
 

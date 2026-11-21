@@ -92,8 +92,8 @@ it('probit fit merges the likelihood pairwise and damps overshoot before flaggin
   expect(source).toContain('signedMove < -errorBound');
   expect(source).toContain('value > thresholdValue');
   expect(source).toContain('S_UNDECIDED');
-  // A step shortened by the bound, not by the likelihood, cannot report convergence.
-  expect(source).toContain('limitedByBound');
+  // A step shortened by the bound or by the likelihood cannot report convergence (verdict 1).
+  expect(source).toContain('if (verdict == 1u) { state[stateOffset + S_DONE] = 1.0;');
   // The line search rejects unbounded trial steps by halving, instead of aborting on the first.
   expect(source).toContain('lastLargestLinear <= 12.0');
   expect(source).not.toContain('abs(linear) > 12.0');

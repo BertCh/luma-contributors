@@ -43,7 +43,7 @@ export function getModalProps(
       endRows: 'triplegEndRows',
       status: {count: 'triplegCount'}
     },
-    ...(prediction ? {modeSpeedBreaks: [2, 10, Infinity]} : {modes: 'modes'}),
+    ...(prediction ? {modeSpeedUpperBoundsFloat32: [2, 10, Infinity]} : {modes: 'modes'}),
     output: {modalSplit: 'modalSplit', ...(prediction ? {predictedModes: 'predictedModes'} : {})}
   };
 }

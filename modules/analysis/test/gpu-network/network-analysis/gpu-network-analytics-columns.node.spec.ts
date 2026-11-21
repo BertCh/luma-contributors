@@ -162,7 +162,7 @@ it('GPUNetworkAnalyticsColumns validates props', () => {
         extent: importView('degree-extent', 'uint32', 2)
       }
     })
-  ).toThrow(/extent requires degree\.normalized/);
+  ).not.toThrow();
   expect(() =>
     create({
       components: {
@@ -227,4 +227,33 @@ it('GPUNetworkAnalyticsColumns has no destroy method and validates iterations ea
       )
   ).toThrow(/iterations/);
   device.destroy();
+});
+
+it('degree and in-degree extents need no normalization dispatch (WRT-10)', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const imports = createImports(device);
+    const {importView, graph} = imports;
+    const contributor = new GPUNetworkAnalyticsColumns({
+      ...createProps(imports),
+      reverseTopology: {
+        offsets: importView('ro', 'uint32', NODE_COUNT + 1),
+        neighbors: importView('rn', 'uint32', EDGE_COUNT)
+      },
+      degree: {
+        output: importView('degree-only', 'uint32', NODE_COUNT),
+        extent: importView('degree-extent-only', 'uint32', 2)
+      },
+      inDegree: {
+        output: importView('in-degree-only', 'uint32', NODE_COUNT),
+        extent: importView('in-degree-extent-only', 'uint32', 2)
+      }
+    });
+    const ids = contributor.getCommandNodes(graph).map(node => node.id);
+    expect(ids).toContain('network-analytics-columns-degree-extent-finalize');
+    expect(ids).toContain('network-analytics-columns-in-degree-extent-finalize');
+    expect(ids.some(id => id.includes('normalize'))).toBe(false);
+  } finally {
+    device.destroy();
+  }
 });

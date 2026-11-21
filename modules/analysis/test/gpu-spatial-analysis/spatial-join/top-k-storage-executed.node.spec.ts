@@ -140,7 +140,7 @@ describe('storage top-k kernels executed on the WGSL interpreter', () => {
       queryCount,
       features: {kind: 'points', positions},
       featureCount: 5,
-      k: capacity,
+      neighborCount: capacity,
       capacity,
       leafCapacity: 8,
       spatialSort: false,

@@ -13,6 +13,9 @@ import {
   getLocalKernelWeightWGSL
 } from './local-weighted-least-squares-wgsl';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {LOCAL_REGRESSION_INTERCEPT_WGSL} from './local-regression-intercept-wgsl';
+import {getPairArithmeticWGSL} from './local-regression-pairs-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 
 /** Options of {@link getGWRFitWGSL}. @internal */
 export type GWRFitWGSLOptions = {
@@ -24,6 +27,8 @@ export type GWRFitWGSLOptions = {
   hasConditionNumber: boolean;
   /** Also accumulate the squared-weight Gram matrix and return `variance` (local standard errors). */
   hasVariance: boolean;
+  /** Retain the low words of the scalar-design Gram matrix and response moments. */
+  preciseScalarFit?: boolean;
   /** Distances are great-circle `geodesicHaversineDistance(a, b, radius)`; otherwise planar. */
   sphereRadius: number | null;
   /**
@@ -60,7 +65,15 @@ export function getGWRFitWGSL(options: GWRFitWGSLOptions): string {
   } = options;
   const gaussianCutoff = options.gaussianCutoff ?? null;
   const hasGrid = Boolean(indexGridSize);
+  const preciseScalarFit = options.preciseScalarFit && P === 2;
+  const fitWeight =
+    preciseScalarFit && sphereRadius === null
+      ? 'getFitWeight(origin, getPosition(row), bandwidth)'
+      : 'getWeight(getDistance(origin, getPosition(row)), bandwidth)';
   return /* wgsl */ `
+${ROUNDED_DIFFERENCE_WGSL}
+${LOCAL_REGRESSION_INTERCEPT_WGSL}
+${preciseScalarFit ? getPairArithmeticWGSL() : ''}
 ${hasGrid ? '' : IS_FINITE_VALUE_WGSL}
 ${getCholeskyWGSL(P)}
 ${getEquilibratedCholeskyWGSL(P)}
@@ -72,6 +85,7 @@ struct LocalFit {
   hat: f32,
   weightSum: f32,
   weightedResponse: f32,
+  // beta[0] is the fitted value minus response[i]; predictor columns are centered on row i.
   beta: array<f32, ${P}>,
   // diag((X'WX)^-1 X'W^2 X (X'WX)^-1) of the original (uncentered) coefficients; NaN when not
   // finite. Only filled when the squared-weight Gram matrix is accumulated.
@@ -86,6 +100,27 @@ ${getLocalDistanceWGSL(sphereRadius)}
 
 fn getWeight(distance: f32, bandwidth: f32) -> f32 {
   return getLocalKernelWeight(distance, bandwidth, getIsBisquare());
+}
+
+${
+  preciseScalarFit && sphereRadius === null
+    ? `fn getFitWeight(origin: vec2f, point: vec2f, bandwidth: f32) -> f32 {
+  if (getIsBisquare() && bandwidth >= 1.0e-15 && bandwidth <= 1.0e15) {
+    let delta = point - origin;
+    // Most grid candidates can be rejected before forming either low word.
+    if (dot(delta, delta) > (bandwidth * bandwidth) * 1.000001) { return 0.0; }
+    let norm = addRegressionPairs(multiplyRegressionPair(vec2f(delta.x, 0.0), delta.x),
+      multiplyRegressionPair(vec2f(delta.y, 0.0), delta.y));
+    let bandSquared = multiplyRegressionPair(vec2f(bandwidth, 0.0), bandwidth);
+    if (norm.x > bandSquared.x) { return 0.0; }
+    let gap = addRegressionPairs(bandSquared, -norm);
+    if (!(gap.x > 0.0)) { return 0.0; }
+    let ratio = divideRegressionPair(gap, bandSquared);
+    return multiplyRegressionPairs(ratio, ratio).x;
+  }
+  return getWeight(getDistance(origin, point), bandwidth);
+}`
+    : ''
 }
 
 ${
@@ -138,6 +173,7 @@ fn fitLocation(i: u32, bandwidth: f32) -> LocalFit {
   var a: array<f32, ${P * P}>;
   var b: array<f32, ${P}>;
   var z: array<f32, ${P}>;
+  ${preciseScalarFit ? 'var moments: array<vec2f, 5>;' : ''}
   ${hasVariance ? `var squared: array<f32, ${P * P}>;` : ''}
   var fit: LocalFit;
   fit.ok = false;
@@ -157,7 +193,7 @@ fn fitLocation(i: u32, bandwidth: f32) -> LocalFit {
   let originBase = predictorsOffset + i * PREDICTOR_COUNT;
   z[0] = 1.0;
   ${getCandidateLoopWGSL(
-    `let weight = getWeight(getDistance(origin, getPosition(row)), bandwidth);
+    `let weight = ${fitWeight};
     if (!(weight > 0.0)) {
       continue;
     }
@@ -166,25 +202,73 @@ fn fitLocation(i: u32, bandwidth: f32) -> LocalFit {
       z[column + 1u] = predictors[rowBase + column] - predictors[originBase + column];
     }
     let y = response[responseOffset + row];
-    for (var r = 0u; r < P; r++) {
+    // The validation pass writes one for retained rows. This independent buffer load
+    // preserves the rounded anchor difference under GPU fast math.
+    let runtimeZero = rowValid[rowValidOffset + i] - 1u;
+    let anchoredResponse = getRoundedDifference(y, response[responseOffset + i], runtimeZero);
+    ${preciseScalarFit ? '' : 'fit.weightedResponse += weight * anchoredResponse;'}
+    ${
+      preciseScalarFit
+        ? `let weightedX = multiplyRegressionPair(vec2f(weight, 0.0), z[1]);
+    moments[0] = addRegressionPairs(moments[0], vec2f(weight, 0.0));
+    moments[1] = addRegressionPairs(moments[1], weightedX);
+    moments[2] = addRegressionPairs(moments[2], multiplyRegressionPair(weightedX, z[1]));
+    moments[3] = addRegressionPairs(moments[3], multiplyRegressionPair(vec2f(weight, 0.0), anchoredResponse));
+    moments[4] = addRegressionPairs(moments[4], multiplyRegressionPair(weightedX, anchoredResponse));`
+        : ''
+    }
+    ${
+      !preciseScalarFit || hasVariance
+        ? `for (var r = 0u; r < P; r++) {
       let weighted = weight * z[r];
-      b[r] = b[r] + weighted * y;
+      ${preciseScalarFit ? '' : 'b[r] = b[r] + weighted * anchoredResponse;'}
       for (var c = 0u; c <= r; c++) {
-        a[r * P + c] = a[r * P + c] + weighted * z[c];
+        ${preciseScalarFit ? '' : 'a[r * P + c] = a[r * P + c] + weighted * z[c];'}
         ${hasVariance ? 'squared[r * P + c] = squared[r * P + c] + weighted * weight * z[c];' : ''}
       }
+    }`
+        : ''
     }`,
     hasGrid
   )}
+  ${
+    preciseScalarFit
+      ? `fit.weightedResponse = moments[3].x;
+  a[0] = moments[0].x;
+  a[2] = moments[1].x;
+  a[3] = moments[2].x;
+  b[0] = moments[3].x;
+  b[1] = moments[4].x;`
+      : ''
+  }
   fit.weightSum = a[0];
-  fit.weightedResponse = b[0];
   var scale: array<f32, ${P}>;
   if (!factorEquilibrated_${P}(&a, &scale)) {
     return fit;
   }
-  let inverse00 = inverseDiagonalEquilibrated_${P}(&a, &scale, 0u);
+  var inverse00 = inverseDiagonalEquilibrated_${P}(&a, &scale, 0u);
   // b holds X'Wy of the centered design; the solve is in place and unscales the coefficients.
   solveEquilibrated_${P}(&a, &scale, &b);
+  ${
+    preciseScalarFit
+      ? `// Keep the usual scaled-factor validation. Refine the scalar fit from the two
+  // moment words wherever the reciprocals stay normal.
+  if (moments[2].x >= 1.1754943508222875e-38 && moments[2].x <= 8.507059173023462e37) {
+    let ratio = divideRegressionPair(moments[1], moments[2]);
+    let schur = addRegressionPairs(moments[0], -multiplyRegressionPairs(ratio, moments[1]));
+    if (schur.x >= 1.1754943508222875e-38) {
+      let intercept = divideRegressionPair(addRegressionPairs(moments[3], -multiplyRegressionPairs(ratio, moments[4])), schur);
+      let slope = divideRegressionPair(addRegressionPairs(moments[4], -multiplyRegressionPairs(moments[1], intercept)), moments[2]);
+      let hat = divideRegressionPair(vec2f(1.0, 0.0), schur).x;
+      if (isFiniteBits(intercept.x) && isFiniteBits(slope.x) && isFiniteBits(hat) && hat > 0.0) {
+        b[0] = intercept.x;
+        b[1] = slope.x;
+        inverse00 = hat;
+      }
+    }
+  }`
+      : ''
+  }
   var finite = isFiniteBits(inverse00);
   for (var r = 0u; r < P; r++) {
     fit.beta[r] = b[r];
@@ -242,7 +326,7 @@ fn getLocalR2(i: u32, bandwidth: f32, fit: LocalFit) -> f32 {
   var residualSum = 0.0;
   var totalSum = 0.0;
   ${getCandidateLoopWGSL(
-    `let weight = getWeight(getDistance(origin, getPosition(row)), bandwidth);
+    `let weight = ${fitWeight};
     if (!(weight > 0.0)) {
       continue;
     }
@@ -252,8 +336,12 @@ fn getLocalR2(i: u32, bandwidth: f32, fit: LocalFit) -> f32 {
       prediction = prediction + fit.beta[column + 1u] * (predictors[rowBase + column] - predictors[originBase + column]);
     }
     let y = response[responseOffset + row];
-    residualSum = residualSum + weight * (y - prediction) * (y - prediction);
-    totalSum = totalSum + weight * (y - weightedMean) * (y - weightedMean);`,
+    let runtimeZero = rowValid[rowValidOffset + i] - 1u;
+    let anchoredResponse = getRoundedDifference(y, response[responseOffset + i], runtimeZero);
+    let residual = anchoredResponse - prediction;
+    residualSum = residualSum + weight * residual * residual;
+    let deviation = anchoredResponse - weightedMean;
+    totalSum = totalSum + weight * deviation * deviation;`,
     hasGrid
   )}
   return select(getNaN(), 1.0 - residualSum / totalSum, totalSum > 0.0);

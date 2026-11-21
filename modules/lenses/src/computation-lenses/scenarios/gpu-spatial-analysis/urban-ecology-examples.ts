@@ -12,6 +12,7 @@ import {runExample as runBuildingAdjacency} from './building-adjacency-recipe.ex
 import {runExample as runIsovists} from './isovists-recipe.example';
 import {runExample as runVisibilityGraph} from './visibility-graph-recipe.example';
 import {runExample as runBuildingTessellation} from './building-tessellation-recipe.example';
+import {runExample as runLocalBuildingTessellation} from './local-building-tessellation-recipe.example';
 import {runExample as runLandscapeMetrics} from './landscape-metrics-recipe.example';
 import {runExample as runPatchProximity} from './patch-proximity-recipe.example';
 import {runExample as runResistanceConnectivity} from './resistance-connectivity-recipe.example';
@@ -107,7 +108,11 @@ export async function buildUrbanEcologyScenario(
               rightSourceIds: input('right-lines', 'uint32', [1]),
               forward: input('forward', 'uint32', [0])
             },
-            status: {count: input('wall-count', 'uint32', [1])}
+            status: {
+              count: input('wall-count', 'uint32', [1]),
+              // This synthetic wall is complete; keep the certificate out of archived captures.
+              overflow: uploads.view('urban-ecology-wall-loss', Uint32Array.of(0), 'uint32')
+            }
           },
           lineBuildingIds: input('line-building-ids', 'uint32', [0, 1]),
           orientations: input('orientations', 'float32', [Math.PI * 0.49, -Math.PI * 0.49]),
@@ -130,20 +135,24 @@ export async function buildUrbanEcologyScenario(
           }
         })
       );
-    case 'addIsovistsRecipe':
-      return finish(
-        await runIsovists(graph, {
-          positions: input('observers', 'float32x2', [0, 0, 2, 0]),
-          segments: input(
-            'walls',
-            'float32x4',
-            [-2, -2, 2, -2, 2, -2, 2, 2, 2, 2, -2, 2, -2, 2, -2, -2]
-          ),
-          rayCount: 8,
-          region: {fillRule: 'even-odd', freeSpace: 'inside'},
-          maximumDistance: 10
-        })
-      );
+    case 'addIsovistsRecipe': {
+      const result = await runIsovists(graph, {
+        positions: input('observers', 'float32x2', [0, 0, 2, 0]),
+        segments: input(
+          'walls',
+          'float32x4',
+          [-2, -2, 2, -2, 2, -2, 2, 2, 2, 2, -2, 2, -2, 2, -2, -2]
+        ),
+        rayCount: 8,
+        region: {fillRule: 'even-odd', freeSpace: 'inside'},
+        maximumDistance: 10
+      });
+      // Preserve the result key used by the committed isovist lens record.
+      for (const [name, view] of Object.entries(result.outputs)) {
+        capture(view, name === 'localMeasures' ? 'output-measures' : `output-${name}`);
+      }
+      return captures;
+    }
     case 'addVisibilityGraphRecipe':
       return finish(
         await runVisibilityGraph(graph, {
@@ -154,6 +163,7 @@ export async function buildUrbanEcologyScenario(
         })
       );
     case 'addBuildingTessellationRecipe':
+    case 'addBuildingTessellationReferenceRecipe':
       return finish(
         await runBuildingTessellation(graph, {
           segments: input(
@@ -172,6 +182,26 @@ export async function buildUrbanEcologyScenario(
           vertexTolerance: 1 / 1024,
           // Four rectangular Voronoi fragments per building; retain headroom for their dissolve.
           capacity: {intersections: 64, nodedSegments: 32, vertices: 16, rings: 4}
+        })
+      );
+    case 'addLocalBuildingTessellationRecipe':
+      return finish(
+        await runLocalBuildingTessellation(graph, {
+          segments: input(
+            'building-boundaries',
+            'float32x4',
+            [-1, -1, 1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, -1, -1]
+          ),
+          segmentBuildingIds: input('building-ids', 'uint32', [0, 0, 0, 0]),
+          buildingCount: 1,
+          enclosure: input('enclosure', 'float32x2', [-2, -2, 2, -2, 2, 2, -2, 2]),
+          sampleSpacing: 2,
+          sampleCapacity: 4,
+          candidateRadius: 16,
+          maximumSamplesPerBuilding: 4,
+          candidateCapacity: 4,
+          cellVertexCapacity: 16,
+          vertexTolerance: 1 / 1024
         })
       );
     case 'addLandscapeMetricsRecipe':
@@ -333,12 +363,14 @@ export async function buildUrbanEcologyScenario(
       return finish({outputs: output});
     }
     case 'addPopulationSupportAlignmentRecipe': {
+      const status = uploads.view('alignment-status', new Uint32Array(4), 'uint32x4');
       const result = await runaddPopulationSupportAlignmentRecipe(graph, {
         populations: input('populations', 'float32x2', [2, 8, 6, 4]),
         sourceIds: input('source-ids', 'uint32', [20, 10]),
-        targetIds: input('target-ids', 'uint32', [10, 20])
+        targetIds: input('target-ids', 'uint32', [10, 20]),
+        output: {status}
       });
-      return finish({...result, status: result.packedStatus});
+      return finish({outputs: result.outputs, status});
     }
     default:
       throw new Error(`Unknown urban/ecology scenario: ${element}`);

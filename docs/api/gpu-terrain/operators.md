@@ -6,6 +6,59 @@ description: "Every GPU Terrain contributor: inputs, outputs, parameters and how
 
 # GPU Terrain operators
 
+Import from `@luma-contributors/analysis/gpu-terrain`.
+
+This entry exports terrain contributors, their props/output types and parameter packers.
+Raster band/grid helpers come from
+`@luma-contributors/analysis/raster-analysis`, with band/grid types from
+`@luma.gl/graph/gpu-raster`; graph and parameter-buffer types are imported explicitly in the
+fragments below. Each fragment declares the caller-provided inputs and output views it needs.
+Views must belong to the declared graph. Only per-pixel ports have `width * height` rows;
+per-scale, direction-map, pair, particle and scalar-status ports use the lengths stated beside
+their declarations. Packed parameter buffers use the lengths in each contributor’s parameters
+section. The caller owns the backing resources and parameter buffers; see the [first-run terrain example](../README.md#first-run-terrain-derivatives)
+for allocation and readback. Destroy compiled graphs and retained contributors before releasing
+the caller-owned resources they use.
+
+## Grid metrics and visibility limits
+
+These 15 terrain contributors use perpendicular pixel-axis lengths. Their constructors and
+public grid-taking packers reject shear:
+
+| Contributor | Public parameter packer |
+|---|---|
+| `GPUTerrainCurvature` | `getGPUTerrainCurvatureParameterValues` |
+| `GPUGeomorphons` | `getGPUGeomorphonsParameterValues` |
+| `GPUTerrainVectorRuggedness` | `getGPUTerrainVectorRuggednessParameterValues` |
+| `GPUTerrainWeissLandforms` | `getGPUTerrainWeissLandformsParameterValues` |
+| `GPUReliefShading` | `getGPUReliefShadingParameterValues` |
+| `GPUTerrainHorizon` | `getGPUTerrainHorizonParameterValues` |
+| `GPUTerrainCastShadow` | `getGPUTerrainCastShadowParameterValues` |
+| `GPUTerrainViewshed` | `getGPUTerrainViewshedParameterValues` |
+| `GPUTerrainLineOfSight` | `getGPUTerrainLineOfSightParameterValues` |
+| `GPUTerrainCumulativeViewshed` | `getGPUTerrainLineOfSightParameterValues` (delegated layout) |
+| `GPUTerrainSummits` | `getGPUTerrainSummitsParameterValues` |
+| `GPUTerrainPeakSnap` | `getGPUTerrainPeakSnapParameterValues` |
+| `GPUTerrainFlowField` | `getGPUTerrainFlowFieldParameterValues` |
+| `GPUPointHorizonProfile` | `getGPUPointHorizonProfileParameterValues` |
+| `GPUPointHorizonVisibility` | `getGPUPointHorizonVisibilityParameterValues` |
+
+Both pixel-axis lengths must be finite, positive and representable as nonzero finite float32
+values; for example, lengths `1e-46` and `1e39` are rejected before packing. Orthogonal uniform
+rotation is supported. Geographic and Web Mercator cell-size modes require axis-aligned grids.
+Point-horizon planar projection supports orthogonal grids; its Web Mercator route additionally
+requires square pixels, columns increasing east and rows increasing south. Full-affine distance
+operators keep their own shear support. See [Grid metrics and texture-shading tiles](./concepts.md#grid-metrics-and-texture-shading-tiles).
+
+`GPUPointHorizonProfile`, `GPUPointHorizonVisibility` and `GPUTerrainCumulativeViewshed` expose
+`estimatedCommandNodeCount` and reject estimates above 32,768 command nodes
+(`GPU_MAXIMUM_COMMAND_NODE_COUNT = 32768`) at construction. This is a **total per contributor**,
+including preparation, locally built
+pyramids, table writers and finalization, rather than a per-chunk allowance. A shared pyramid's
+construction belongs to its producer. Increase `raysPerDispatch`, `targetsPerDispatch` or
+`observersPerDispatch`, respectively, or partition the input to reduce the estimate. Point
+visibility includes at least one target chunk even for zero targets.
+
 
 ### `GPUTerrainDerivatives`, `GPUTerrainContours`, `GPUTerrainViewshed`, `GPUTerrainLineOfSight`, and `GPUTerrainCumulativeViewshed`
 
@@ -21,13 +74,21 @@ are forwarded to `GPURasterGradient`. North comes from the grid: `rowDirection` 
 sign of the row term `grid.affine[4]` (negative: rows advance south), and an explicit value that
 contradicts the grid throws at construction. The same rule holds for `GPUTerrainCurvature`,
 `GPUTerrainVectorRuggedness`, `GPUReliefShading`, `GPUTerrainHorizon` and `GPUTerrainCastShadow`.
-Columns are taken to advance east, and on a rotated `'uniform'` grid azimuths are measured from
-the grid's up axis. `GPUTerrainContours` extracts marching-squares segments for several fixed or
+Increasing columns define grid east. On a rotated `'uniform'` grid azimuths are measured
+clockwise from grid north, toward decreasing rows when `rowDirection: 'south'` and increasing
+rows when `rowDirection: 'north'`. `GPUTerrainContours` extracts marching-squares segments for several fixed or
 per-frame levels with one aggregate overflow flag (`output.status.overflow`). Every contributor
 takes a `grid` (`GPURasterMetadata`), reads `parameters`, and writes into an `output` bag. The grid
 supplies the width, height, cell size and latitude band, so the packers take it as their second
 argument. The three visibility contributors share one sight-line model, with `cellSizeMode` selecting
-how grid world units become ground meters:
+how grid world units become ground meters. At endpoints and along each ray, bilinear sampling uses
+only positive-weight corners and never evaluates `0 * NaN`: an integer pixel centre depends only
+on that pixel. A missing participating ground-relative observer or target makes the sight line
+noData; an absolute observer uses its supplied elevation without sampling observer ground.
+A missing participating interior sample is skipped and cannot block. With unit cells, zero
+observer/target heights and no curvature, `[0, 0, NaN]` has a visible target at `(1, 0)` from
+`(0, 0)`, and the height-10 ridge in `[[0, 10, 0], [0, 0, NaN]]` still hides `(2, 0)`.
+This policy is shared by march, pyramid and cumulative routes:
 
 - `GPUTerrainViewshed` writes a `GPU_TERRAIN_VISIBILITY` code (`output.visibility`, or
   `output.visibilityTexture`) per pixel from one per-frame observer.
@@ -45,12 +106,37 @@ All three accept `heightReference` (default `'ground'`) and, for absolute observ
 ground-relative. See [Heights and datums](./concepts.md#heights-and-datums).
 
 ```ts
+import {
+  GPUTerrainDerivatives,
+  getGPUTerrainDerivativesParameterValues
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const parameters: GPUParameterBuffer<'float32'>;
+const width = 256,
+  height = 256;
+declare const elevation: GPURasterBand;
+declare const slope: GraphDataView<'float32'>;
+
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
-graph.add(new GPUTerrainDerivatives({
-  grid, elevation, parameters: parameters.importToGraph(graph), output: {slope, hillshade}
-}));
+graph.add(
+  new GPUTerrainDerivatives({
+    grid,
+    elevation,
+    parameters: parameters.importToGraph(graph),
+    output: {slope}
+  })
+);
 parameters.write(getGPUTerrainDerivativesParameterValues({azimuthDegrees: 315}, grid));
 ```
+
+`GPUTerrainDerivatives` requires at least one of `slope`, `aspect`, `hillshade`, `outputValidity`
+or `hillshadeTexture` in `output`. Request any combination of these ports.
 
 `GPUTerrainContours` takes a required `grid` (its former optional `metadata`), which also sets
 `pixelInterpretation` for the vertex offset, and reports the aggregate flag in
@@ -75,7 +161,7 @@ and curvature drops are approximate on long rays, especially at high latitudes; 
 on the latitude span and ray bearing.
 
 Each sight line joins pixel positions at one-pixel steps with bilinear elevation and ignores
-samples with an invalid corner. There is no azimuth input and no pixel-direction conversion.
+samples with an invalid positive-weight corner. There is no azimuth input and no pixel-direction conversion.
 Row order comes from the affine, so these contributors have no `rowDirection` prop. Holding the
 ground cell constant along a ray preserves the monotone sample distances used by pyramid skipping.
 
@@ -131,14 +217,46 @@ difference matters little in practice. Changing k by ±0.1 moves a skyline by 0.
 bias (30 m is 0.034° at 50 km) dominate (mt-image measurements).
 
 ```ts
-graph.add(new GPUTerrainLineOfSight({
-  grid, elevation, pairs, parameters: parameters.importToGraph(graph), traversal: 'pyramid',
-  output: {visibility, clearance}
-}));
-parameters.write(getGPUTerrainLineOfSightParameterValues({
-  curvatureCoefficient: getGPUTerrainCurvatureCoefficient(1 / 7),
-  toleranceMeters: 2, tolerancePerKilometer: 1, targetIgnoreDistance: 150, targetIgnoreFraction: 0.02
-}, grid));
+import {
+  GPUTerrainLineOfSight,
+  getGPUTerrainLineOfSightParameterValues,
+  getGPUTerrainCurvatureCoefficient
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const parameters: GPUParameterBuffer<'float32'>;
+declare const grid: GPURasterMetadata;
+declare const elevation: GPURasterBand;
+declare const pairs: GraphDataView<'float32x4'>; // One float32x4 row per observer-target pair.
+declare const visibility: GraphDataView<'uint32'>; // One code per pair (pairs.length).
+declare const clearance: GraphDataView<'float32'>; // One value per pair (pairs.length).
+
+graph.add(
+  new GPUTerrainLineOfSight({
+    grid,
+    elevation,
+    pairs,
+    parameters: parameters.importToGraph(graph),
+    traversal: 'pyramid',
+    output: {visibility, clearance}
+  })
+);
+parameters.write(
+  getGPUTerrainLineOfSightParameterValues(
+    {
+      curvatureCoefficient: getGPUTerrainCurvatureCoefficient(1 / 7),
+      toleranceMeters: 2,
+      tolerancePerKilometer: 1,
+      targetIgnoreDistance: 150,
+      targetIgnoreFraction: 0.02
+    },
+    grid
+  )
+);
 ```
 
 Compile-time prop: `cellSizeMode` defaults to `'uniform'`; use `'geographic'` for degrees or
@@ -177,7 +295,7 @@ Turns an elevation grid into Horn slope, aspect and hillshade with two Sobel pas
 The grid's column and row axes must be orthogonal. Both construction and
 `getGPUTerrainDerivativesParameterValues` reject shear with a `grid.affine` error; resample a sheared
 DEM first. Rotated orthogonal grids remain supported in `'uniform'` mode, with azimuths relative
-to the grid's up axis. Latitude-dependent cell sizes require axis-aligned grids.
+to the resolved grid-north row direction. Latitude-dependent cell sizes require axis-aligned grids.
 Each pixel-axis length must remain positive and finite after float32 conversion. Orthogonality
 uses the normalized-axis dot product (absolute tolerance 1e-6), so rescaling the affine cannot
 make shear pass by underflow or overflow.
@@ -187,6 +305,8 @@ make shear pass by underflow or overflow.
 {/* parameters: GPUTerrainDerivatives generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUTerrainDerivatives` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainDerivatives`.
 
 - Packer: `getGPUTerrainDerivativesParameterValues(settings, grid)`, writes `GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -235,9 +355,11 @@ Classifies terrain visibility from ridge cell (45, 49), with an eye 1.7 m above 
 
 ##### `GPUTerrainViewshed` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainViewshed`.
+
 - Packer: `getGPUTerrainViewshedParameterValues(settings, grid)`, writes `GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH` (10) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
-- Packer: `getGPUTerrainViewshedToleranceParameterValues(settings)`, writes `GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH` (4) `float32` values.
+- Packer: `getGPUTerrainViewshedToleranceParameterValues(settings?)`, writes `GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUTerrainViewshedParameterValues`:
 
@@ -256,7 +378,7 @@ Settings of `getGPUTerrainViewshedToleranceParameterValues`:
 | `toleranceMeters` (optional) | `number` | Constant half-width of the tolerance band in metres of sight-line height at the target. mt-image uses 2. Defaults to 0. |
 | `tolerancePerKilometer` (optional) | `number` | Additional band half-width per kilometre of target distance, in metres. mt-image uses 1. Defaults to 0. |
 | `targetIgnoreDistance` (optional) | `number` | Samples closer than this many metres to the target are not tested (`viewPeaks` ignores the last `max(150 m, 2 %)` of the ray). Defaults to 0. |
-| `targetIgnoreFraction` (optional) | `number` | Fraction of the target distance at the target end that is not tested. Defaults to 0. |
+| `targetIgnoreFraction` (optional) | `number` | Fraction in [0, 1] of the target distance at the target end that is not tested. Defaults to 0. |
 
 {/* /parameters */}
 
@@ -279,6 +401,8 @@ Tests twelve observer-to-target pairs against terrain, returning visibility code
 
 ##### `GPUTerrainLineOfSight` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainLineOfSight`.
+
 - Packer: `getGPUTerrainLineOfSightParameterValues(settings, grid)`, writes `GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH` (12) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
 
@@ -293,7 +417,7 @@ Settings of `getGPUTerrainLineOfSightParameterValues`:
 | `toleranceMeters` (optional) | `number` | Constant tolerance band half-width in metres. Defaults to 0. |
 | `tolerancePerKilometer` (optional) | `number` | Additional band half-width per kilometre of distance, in metres. Defaults to 0. |
 | `targetIgnoreDistance` (optional) | `number` | Metres at the target end that are not tested. Defaults to 0. |
-| `targetIgnoreFraction` (optional) | `number` | Fraction of the distance at the target end that is not tested. Defaults to 0. |
+| `targetIgnoreFraction` (optional) | `number` | Fraction in [0, 1] of the distance at the target end that is not tested. Defaults to 0. |
 
 {/* /parameters */}
 
@@ -316,6 +440,8 @@ Counts how many of six ridge observers can see each terrain cell.
 
 ##### `GPUTerrainCumulativeViewshed` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainCumulativeViewshed`.
+
 - Packer: `getGPUTerrainLineOfSightParameterValues(settings, grid)`, writes `GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH` (12) `float32` values.
   - Input port: `parameters`.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -331,7 +457,7 @@ Settings of `getGPUTerrainLineOfSightParameterValues`:
 | `toleranceMeters` (optional) | `number` | Constant tolerance band half-width in metres. Defaults to 0. |
 | `tolerancePerKilometer` (optional) | `number` | Additional band half-width per kilometre of distance, in metres. Defaults to 0. |
 | `targetIgnoreDistance` (optional) | `number` | Metres at the target end that are not tested. Defaults to 0. |
-| `targetIgnoreFraction` (optional) | `number` | Fraction of the distance at the target end that is not tested. Defaults to 0. |
+| `targetIgnoreFraction` (optional) | `number` | Fraction in [0, 1] of the distance at the target end that is not tested. Defaults to 0. |
 
 {/* /parameters */}
 
@@ -356,7 +482,12 @@ A 360° horizon profile from any number of observers, ported from mt-image's hor
 - **Outputs.** In `output`, for each (observer, azimuth bin) the profile writes the maximum
   apparent-elevation tangent `t = (h − h0)/d − c·d`, the `skylineAngle` in degrees (−90 when nothing was sampled), and the
   crest distance. Azimuth bin `i` is at `i·360/azimuthCount` degrees clockwise from north. Sectors
-  are set with `firstAzimuth` and `azimuthSpan`.
+  are selected with `firstAzimuthIndex` (integer bin index, default 0) and `azimuthBinCount` (bin count,
+  default `azimuthCount`), rather than degree angles. Bin zero is north; indices advance clockwise
+  over one 360° period. With 720 bins, index 90 means 45°. On rotated planar grids north means
+  the resolved row direction: bin zero points along `[0,-1]` when `rowDirection: 'south'`
+  and `[0,+1]` when `rowDirection: 'north'`. For example, affine `[2,-1,0,1,2,0]` resolves
+  to rows north and bin zero points toward increasing rows. Web Mercator uses geographic north.
 - **Projections.**
   - `'planar'`: projected metres, a straight ray. The packer takes the cell size from the grid.
   - `'web-mercator'`: a window of the EPSG:3857 grid (square pixels, rows increasing south). The
@@ -438,6 +569,8 @@ Reduces terrain rays to skyline angles and tangents for three ridge observers an
 
 ##### `GPUPointHorizonProfile` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUPointHorizonProfile`.
+
 - Packer: `getGPUPointHorizonProfileParameterValues(settings, grid)`, writes `GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
 
@@ -469,6 +602,8 @@ Classifies four fixed targets from each of three ridge observers and records tar
 {/* parameters: GPUPointHorizonVisibility generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUPointHorizonVisibility` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUPointHorizonVisibility`.
 
 - Packer: `getGPUPointHorizonVisibilityParameterValues(settings, grid)`, writes `GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH` (12) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -543,21 +678,70 @@ repaired. It can shift a real enclosed butte whose walls happen to measure 216�
 only when the source is known to be noisy.
 
 ```ts
+import {GPUTerrainRGBDecode, GPUTerrainSpikeRepair} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  makeGPURasterMetadata,
+  makeGPURasterBand
+} from '@luma-contributors/analysis/raster-analysis';
+import type {Buffer, Device} from '@luma.gl/core';
+import type {GraphTextureView} from '@luma.gl/graph';
+
+declare const graph: GPUCommandGraph;
+const width = 256,
+  height = 256;
+declare const values: GraphDataView<'float32'>;
+declare const repaired: GraphDataView<'float32'>;
+declare const validity: GraphDataView<'uint32'>;
+declare const repairedValidity: GraphDataView<'uint32'>;
+declare const statistics: GraphDataView<'uint32'>; // Five words: jump, repaired, shifted, remaining, converged.
+declare const device: Device;
+declare const texture: GraphTextureView<'rgba8unorm'>;
+declare const repairedBuffer: Buffer; // Backing buffer of the repaired output view.
+
 const grid = makeGPURasterMetadata({width, height});
-graph.add(new GPUTerrainRGBDecode({
-  grid, encoding: 'terrarium', input: {texture}, output: {values, outputValidity: validity}
-}));
-graph.add(new GPUTerrainSpikeRepair({
+graph.add(
+  new GPUTerrainRGBDecode({
+    grid,
+    encoding: 'terrarium',
+    input: {texture},
+    output: {values, outputValidity: validity}
+  })
+);
+const repair = new GPUTerrainSpikeRepair({
   grid,
   elevation: makeGPURasterBand(values, grid, {id: 'dem', validity}),
   output: {values: repaired, outputValidity: repairedValidity, statistics}
-}));
+});
+let compiled: Awaited<ReturnType<typeof graph.compileAsync>> | undefined;
+let encoder: ReturnType<Device['createCommandEncoder']> | undefined;
+try {
+  graph.add(repair);
+  compiled = await graph.compileAsync();
+  encoder = device.createCommandEncoder();
+  compiled.encode(encoder, {parameters: undefined});
+  const commandBuffer = encoder.finish();
+  encoder = undefined;
+  device.submit(commandBuffer);
+  await repairedBuffer.readAsync(); // Wait for this submitted repair before releasing its owner.
+} finally {
+  try {
+    encoder?.destroy();
+  } finally {
+    try {
+      compiled?.destroy();
+    } finally {
+      repair.destroy();
+    }
+  }
+}
 ```
 
 `output.statistics` holds `[jumpCount, repairedPixelCount, shiftedComponentCount,
 remainingJumpCount, converged]`. If the labelling does not converge within
 `maximumComponentIterations`, nothing is repaired and the valid pixels are marked instead of
-copied: heights are `+Infinity`, validity and labels hold `GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED`,
+copied: heights are `+Infinity`, validity is 0 and labels hold `GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED`,
 and `converged` is 0. The optional one-row `output.status.converged` and `output.status.iterationLimitReached`
 ports carry the same answer under the shared status names (`iterationLimitReached` is the
 complement).
@@ -619,12 +803,33 @@ compared with the previous serial implementation's 16 bytes per cell.
 The NumPy vertex-activation reference and definition are in
 `modules/analysis/test/oracles/terrain-peak-prominence.py`.
 
+For offset-encoded integer DEMs, subtract the integer origin **before float32 upload**. Raw
+`sint32` samples `[16777216,16777217]` with scale 1 and offset `-16777216` should become `[0,1]`.
+Casting the raw integers to float32 first collapses both to `16777216`; applying the offset then
+creates a false plateau and can change which peak survives. Upload calibrated `Float32Array`
+samples `[0,1]` with scale 1 and offset 0 instead, and retain the original vertical origin in
+application metadata if absolute heights are needed.
+
 ```ts
-graph.add(new GPUTerrainPeakProminence({
-  grid,
-  elevation,
-  output: {prominence, keySaddle, parentPeak}
-}));
+import {GPUTerrainPeakProminence} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+
+declare const graph: GPUCommandGraph;
+declare const grid: GPURasterMetadata;
+declare const elevation: GPURasterBand;
+declare const prominence: GraphDataView<'float32'>;
+declare const keySaddle: GraphDataView<'float32'>;
+declare const parentPeak: GraphDataView<'uint32'>;
+
+graph.add(
+  new GPUTerrainPeakProminence({
+    grid,
+    elevation,
+    output: {prominence, keySaddle, parentPeak}
+  })
+);
 ```
 
 #### Parameters
@@ -714,7 +919,19 @@ it does not converge, `output.status.converged` is 0, undecided candidates carry
 `GPU_PROFILE_PEAKS_UNRESOLVED_*` sentinels and optional `output.peaks.status.candidateOverflow` is 1.
 `output.peaks.status.overflow` reports final peak-list capacity only. The optional `output.status.iterationLimitReached` is
 1 in that case. `minimumProminence` is set per frame and
-`minimumSide` at compile time.
+`minimumSide` at compile time. Acceptance against the inclusive minimum and suppression ordering
+both use the reported float32 prominence in the GPU class, operation and CPU twin. Values that
+round to the same prominence tie by ascending sample index. This agreement covers minimum
+thresholding and priority among competing candidates. CPU refinement uses binary64 while the GPU
+uses float32: refined-distance rounding can change which candidates compete at the inclusive
+suppression-radius boundary. For `[2^-26, 1, 0, 0, 1, 0]` with window/minimum side 1, minimum
+prominence 1 and suppression radius 3, the CPU refined distance is slightly greater than 3 and
+keeps rows 1 and 4; the GPU distance rounds to 3, so row 1 suppresses row 4.
+
+A populated status-only selection such as `output: {status: {converged}}` or
+`output: {status: {iterationLimitReached}}` is accepted (`converged` and `iterationLimitReached`
+are one-row uint32 views). An empty `output: {status: {}}` is not a terminal. A compact `peaks`
+selection includes its required count and capacity-overflow status.
 
 The CPU twin and operation forms honor the same explicit suppression budget (default 16).
 Both operation forms capture that budget and their declared output maps once at construction,
@@ -724,12 +941,37 @@ incomplete and must qualify a peak-count readout.
 
 The three mask states are `1` kept (measured prominence), `0` absent (NaN prominence), and
 `0xffffffff` undecided (+Infinity prominence). Undecided rows are not drawable peaks.
+At extreme finite input magnitudes, a kept peak can also have +Infinity prominence from numeric
+overflow. Read `peakMask` or request convergence status; an infinite value alone does not prove
+that suppression was incomplete.
 The terrain explorer counts every kept peak in its chart and readout; its 64-marker limit applies
 only to map markers. A truncated suppression run is labeled incomplete.
 CPU rows are visited in source order within a round; the GPU may decide a different subset at a
 small budget because its atomic updates happen in invocation order. Both suppress unresolved
 rows from the compact result and mark candidate loss. The old overflow bit-2 constant is replaced
 by `GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED` (value 1).
+
+Read both compact-list capacity and candidate-completion evidence before reporting a complete
+peak count. For values `[0,1,0]`, offsets `[0,3]`, window/minimum side 1, suppression radius 0
+and `maximumSuppressionIterations: 0`, the compact count is 0 and final `overflow` is 0, but
+`candidateOverflow` is 1, `converged` is 0 and `iterationLimitReached` is 1. The mask is
+`[0,0xffffffff,0]`: its middle word is undecided. A truthiness conversion would draw a false
+kept peak. The following host conversion produces `[0,0,0]` and an incomplete count:
+
+```ts
+// Read back these status words and the dense mask from the same execution.
+declare const peakMask: Uint32Array;
+declare const overflow: number;
+declare const candidateOverflow: number;
+declare const converged: number;
+const displayMask = Uint8Array.from(peakMask, word => (word === 1 ? 1 : 0));
+const complete = overflow === 0 && candidateOverflow === 0 && converged === 1;
+```
+
+Request `output.peaks.status.candidateOverflow` and `output.status.converged` alongside
+`output.peaks.status.overflow`. The compact prefix is bounded by `output.peaks.status.count`;
+storage beyond that count is unspecified. If candidate evidence is unavailable, zero final
+overflow alone does not certify that suppression completed.
 
 #### `GPUTerrainSummits`
 
@@ -740,6 +982,8 @@ Marks pixels that are the highest point of a metric disc and stand out from its 
 {/* parameters: GPUTerrainSummits generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUTerrainSummits` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainSummits`.
 
 - Packer: `getGPUTerrainSummitsParameterValues(settings, grid)`, writes `GPU_TERRAIN_SUMMITS_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -771,6 +1015,8 @@ Moves candidate points to the highest pixel of a metric disc around them, subjec
 {/* parameters: GPUTerrainPeakSnap generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUTerrainPeakSnap` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainPeakSnap`.
 
 - Packer: `getGPUTerrainPeakSnapParameterValues(settings, grid)`, writes `GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -818,13 +1064,15 @@ Finds local maxima along a 1-D profile with windowed prominence, parabolic refin
 
 ##### `GPUProfilePeaks` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUProfilePeaks`.
+
 - Packer: `getGPUProfilePeaksParameterValues(settings)`, writes `GPU_PROFILE_PEAKS_PARAMETER_LENGTH` (1) `float32` values.
 
 Settings of `getGPUProfilePeaksParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `minimumProminence` | `number` | Minimum prominence, in profile-value units. A candidate with `prominence < minimumProminence` is rejected. Must not be NaN; a value at or below zero accepts every candidate. |
+| `minimumProminence` | `number` | Minimum prominence, in profile-value units, packed as float32. Acceptance and candidate ranking use the reported float32 prominence in both GPU and CPU forms. A candidate with `prominence < minimumProminence` is rejected. Must not be NaN; a value at or below zero accepts every candidate. |
 
 {/* /parameters */}
 
@@ -865,11 +1113,34 @@ border column with Zevenbergen–Thorne); `'nodata'` invalidates windows that le
 `flatGradient` and `ringGains` are per-frame settings; the ring radii are compile time.
 
 ```ts
-graph.add(new GPUTerrainCurvature({
-  grid, elevation, parameters: parameters.importToGraph(graph),
-  output: {curvatures: {profile, plan: planCurvature, mean}, ringCurvature, outputValidity},
-  ringRadii: [2, 8]
-}));
+import {
+  GPUTerrainCurvature,
+  getGPUTerrainCurvatureParameterValues
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const parameters: GPUParameterBuffer<'float32'>;
+declare const grid: GPURasterMetadata;
+declare const elevation: GPURasterBand;
+declare const profile: GraphDataView<'float32'>;
+declare const planCurvature: GraphDataView<'float32'>;
+declare const mean: GraphDataView<'float32'>;
+declare const ringCurvature: GraphDataView<'float32'>;
+declare const outputValidity: GraphDataView<'uint32'>;
+
+graph.add(
+  new GPUTerrainCurvature({
+    grid,
+    elevation,
+    parameters: parameters.importToGraph(graph),
+    output: {curvatures: {profile, plan: planCurvature, mean}, ringCurvature, outputValidity},
+    ringRadii: [2, 8]
+  })
+);
 // Cell size and latitude band come from the grid.
 parameters.write(getGPUTerrainCurvatureParameterValues({zFactor: 1}, grid));
 ```
@@ -886,6 +1157,8 @@ parameters.write(getGPUTerrainCurvatureParameterValues({zFactor: 1}, grid));
 {/* parameters: GPUTerrainCurvature generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUTerrainCurvature` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainCurvature`.
 
 - Packer: `getGPUTerrainCurvatureParameterValues(settings, grid)`, writes `GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH` (12) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -941,6 +1214,8 @@ can change per frame. Geomorphons exposes no `requiredHalo` and cannot be suppli
 
 #### `GPUGeomorphons` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUGeomorphons`.
+
 - Packer: `getGPUGeomorphonsParameterValues(settings, grid)`, writes `GPU_GEOMORPHONS_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
 
@@ -994,6 +1269,8 @@ Measures how much unit surface normals diverge inside a window of an elevation r
 {/* parameters: GPUTerrainVectorRuggedness generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUTerrainVectorRuggedness` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainVectorRuggedness`.
 
 - Packer: `getGPUTerrainVectorRuggednessParameterValues(settings, grid)`, writes `GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -1054,10 +1331,26 @@ halo. Construct a new contributor to change those topology fields; elevation con
 packed per-frame parameters remain updateable.
 
 ```ts
-graph.add(new GPUTerrainTopographicPosition({
-  grid, elevation, scales: [{radius: 3}, {radius: 25}, {radius: 100}],
-  output: {deviationFromMean, maximumDeviation, maximumDeviationRadius}
-}));
+import {GPUTerrainTopographicPosition} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+
+declare const graph: GPUCommandGraph;
+declare const grid: GPURasterMetadata;
+declare const elevation: GPURasterBand;
+declare const deviationFromMean: GraphDataView<'float32'>; // Three planes of width * height values, one per scale.
+declare const maximumDeviation: GraphDataView<'float32'>; // width * height values.
+declare const maximumDeviationRadius: GraphDataView<'uint32'>; // width * height words.
+
+graph.add(
+  new GPUTerrainTopographicPosition({
+    grid,
+    elevation,
+    scales: [{radius: 3}, {radius: 25}, {radius: 100}],
+    output: {deviationFromMean, maximumDeviation, maximumDeviationRadius}
+  })
+);
 ```
 
 #### `GPUTerrainTopographicPosition`
@@ -1084,6 +1377,8 @@ Classifies each cell of an elevation raster into ten Weiss landforms from standa
 {/* parameters: GPUTerrainWeissLandforms generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUTerrainWeissLandforms` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainWeissLandforms`.
 
 - Packer: `getGPUTerrainWeissLandformsParameterValues(settings, grid)`, writes `GPU_TERRAIN_WEISS_LANDFORMS_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -1165,7 +1460,7 @@ validity outputs are named `outputValidity`.
   - `output.negativeOpenness` is openness of the inverted DEM (Yokoyama), and
     `output.anisotropicSkyViewFactor` is
     RVT's weighted SVF `1 - sum(w sin h+) / sum(w)`, `w = (1 - wMin) cos((a - A)/2)^level + wMin`,
-    computed exactly as RVT's `sky_view_factor_compute`. `anisotropyAzimuthDegrees` (`A`) uses RVT's
+    computed exactly as RVT's `sky_view_factor_compute`. `rvtDirectionDegrees` (`A`) uses RVT's
     direction convention, so the same number means the same direction as RVT's `asvf_dir`: angles
     run counterclockwise from north (90 west, 270 east), and the default 315 is RVT's default, which
     is compass north-east. `a` is each sector's RVT angle, `(360 - t) mod 360` for compass sector
@@ -1189,13 +1484,12 @@ validity outputs are named `outputValidity`.
     0.5 with 16 sectors the march equals the closed form (openness 90), RVT reads a sky-view factor
     0.022 and an openness 3.3 degrees lower, and the sweep 0.019 and 2.6 degrees lower. Inside the
     edge band a ray here stops at the edge, where RVT sees mirrored terrain.
-  - Breaking change: `anisotropyAzimuthDegrees` used to be a compass azimuth, so the default 315
-    weighted the north-west sky. It now weights the north-east sky, as RVT does. To keep a previous
-    compass azimuth `t`, pass `(360 - t) mod 360`. Non-integer levels now throw.
+  - Convert compass azimuth `t` to `rvtDirectionDegrees` with `(360 - t) mod 360`.
+    Non-integer levels throw.
 - `GPUSolarShadowMask` reads the horizon map and a per-frame sun: it interpolates the horizon at
   the sun azimuth and writes `output.sunVisibility`, the solar-disk area fraction above the horizon
-  (soft penumbra from the disk's angular radius, hard when 0). With `slope` and `aspect` from
-  `GPUTerrainDerivatives` it also writes `output.illumination = ambient * svf + sun * sunVisibility *
+  (soft penumbra from the disk's angular radius, hard when 0). With `slope` (Horn or compatible
+  slope in degrees) and `aspect` it also writes `output.illumination = ambient * svf + sun * sunVisibility *
   max(cos(incidence), 0)`. `horizon`, `slope`, `aspect`, and `skyViewFactor` are inputs. One frame
   costs two reads per pixel.
 - `GPUTerrainCastShadow` casts one sun's shadow with no horizon map: an exact sweep along the
@@ -1226,8 +1520,9 @@ validity outputs are named `outputValidity`.
   optional diffuse term `diffuseIrradiance * skyViewFactor * duration`). Bind the horizon's
   `output.irradianceSkyViewFactor` as `skyViewFactor`, not its solid-angle `output.skyViewFactor`,
   which understates diffuse energy (50 instead of 75 Wh/m² for 100 W/m² over one hour under a
-  uniform 30 degree horizon). The diffuse term is for a horizontal receiver: slope and aspect
-  enter the direct term only, and no `(1 + cos(slope)) / 2` factor is added because a horizon
+  uniform 30 degree horizon). The diffuse term is for a horizontal receiver. `slope` (Horn or
+  compatible slope in degrees) and `aspect` enter the direct term only, and no
+  `(1 + cos(slope)) / 2` factor is added because a horizon
   measured on the same terrain already contains the receiver's own slope. Terrain-reflected
   radiation is not modelled. `getGPUSolarIrradianceSunTable` samples
   `getSolarPosition` over a day or a date range (Meinel clear-sky DNI with Kasten–Young air mass by
@@ -1237,7 +1532,7 @@ validity outputs are named `outputValidity`.
   GDAL `-multidirectional`). It writes `output.hillshade`, and blends a Swiss/Imhof relief
   (`output.relief` luminance and packed RGBA8 `output.color`, plus `output.outputValidity`) from the hillshade, an optional sky-view factor, an optional texture shade, an
   elevation tint ramp of up to 8 stops, and a warm-lit/cool-shaded aspect tint. Imhof options:
-  `lightWeighting: 'imhof-swing'` (with the `imhofSwing: true` prop) swings each light toward the
+  `lightWeighting: 'imhof-swing'` swings each light toward the
   slope's side by up to `imhofSwingDegrees` (default 65), an optional `curvature` raster adds
   `curvatureStrength * curvature`, and `contrastStrength` with
   `contrastLowElevation`/`contrastHighElevation` raises contrast with elevation. Zero values keep the
@@ -1251,9 +1546,18 @@ validity outputs are named `outputValidity`.
   the blur cost. `downsampleLevels` (default `true`) computes levels with incremental sigma of at
   least 4 pixels on a 2x decimated grid and upsamples bilinearly; output stays within 1% of the exact
   output range (measured 0.1-0.27%), and `false` restores the exact full-resolution cascade.
+  For tiles, use [`getCommandNodesForTile(graph, expandedOrigin)`](./concepts.md#grid-metrics-and-texture-shading-tiles):
+  the expanded window's integer column **and** row, measured from one common source-pixel origin,
+  must each be divisible by `2 ** levelScaleLog2[levelCount - 1]`, the largest decimated scale.
+  Supply at least `requiredHalo` source pixels around the retained core and use identical cascade
+  settings across tiles. With `downsampleLevels: false`, that scale is 1 and any integer origin
+  works. Physical source edges retain replicated-edge sampling. The radius-only halo assembler
+  sees the support radius and cannot inspect or validate the two-axis decimation phase.
 - `GPUSolarPosition` evaluates the NOAA solar position for every row of a longitude/latitude
   column at one per-frame instant. It has no grid (it takes positions): `parameters` holds the time
   and `output` the azimuth, altitude (with optional refraction), and a daylight flag.
+  Select at least one of `output.azimuth`, `output.altitude` or `output.daylight`, for example
+  `output: {altitude}` with one float32 degree value per position row. An empty output bag is rejected.
   `getSolarPosition` is the float64 CPU version used to drive the shadow mask.
   Both use the **NOAA daily spreadsheet's Meeus-based approximation**, without observer parallax,
   rather than NREL SPA. [NOAA's published accuracy](https://gml.noaa.gov/grad/solcalc/calcdetails.html)
@@ -1265,21 +1569,72 @@ validity outputs are named `outputValidity`.
   Near that threshold, NOAA and SPA can legitimately produce different daylight flags.
 
 ```ts
+import {
+  getSolarPosition,
+  GPUTerrainHorizon,
+  GPUSolarShadowMask,
+  getGPUSolarShadowMaskParameterValues
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const horizonParameters: GPUParameterBuffer<'float32'>;
+declare const shadowParameters: GPUParameterBuffer<'float32'>;
+const width = 256,
+  height = 256;
+declare const elevation: GPURasterBand;
+declare const horizon: GraphDataView<'float32'>; // width * height * 16 float32 angles, pixel-major then bin.
+declare const skyViewFactor: GraphDataView<'float32'>;
+declare const slope: GraphDataView<'float32'>;
+declare const aspect: GraphDataView<'float32'>;
+declare const illumination: GraphDataView<'float32'>;
+const longitude = 8.2,
+  latitude = 46.8;
+
 const sun = getSolarPosition(Date.now(), longitude, latitude);
+// Local east/north metre coordinates: +Y is true north; rows advance south.
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
-graph.add(new GPUTerrainHorizon({
-  grid, elevation, parameters: horizonParameters.importToGraph(graph),
-  directionCount: 16, maximumRadius: 256, stepGrowth: 1.1,
-  output: {horizon, skyViewFactor}
-}));
-graph.add(new GPUSolarShadowMask({
-  grid, directionCount: 16, horizon, parameters: shadowParameters.importToGraph(graph),
-  slope, aspect, skyViewFactor, output: {illumination}
-}));
-shadowParameters.write(getGPUSolarShadowMaskParameterValues({
-  azimuthDegrees: sun.azimuthDegrees, altitudeDegrees: sun.altitudeDegrees, ambientIntensity: 0.3
-}));
+graph.add(
+  new GPUTerrainHorizon({
+    grid,
+    elevation,
+    parameters: horizonParameters.importToGraph(graph),
+    directionCount: 16,
+    maximumRadius: 256,
+    stepGrowth: 1.1,
+    output: {horizon, skyViewFactor}
+  })
+);
+graph.add(
+  new GPUSolarShadowMask({
+    grid,
+    directionCount: 16,
+    horizon,
+    parameters: shadowParameters.importToGraph(graph),
+    slope,
+    aspect,
+    skyViewFactor,
+    output: {illumination}
+  })
+);
+shadowParameters.write(
+  getGPUSolarShadowMaskParameterValues({
+    azimuthDegrees: sun.azimuthDegrees,
+    altitudeDegrees: sun.altitudeDegrees,
+    ambientIntensity: 0.3
+  })
+);
 ```
+
+Solar azimuth is clockwise from **true north**. Terrain lighting on a rotated uniform grid is
+clockwise from **grid north**, the decreasing-row direction for rows south or the increasing-row
+direction for rows north. Both solar examples use a true-north-aligned grid, where the bearings
+agree. On a rotated grid, convert the sun bearing into the resolved grid frame before packing:
+if grid north is 45° east of true north, a true-east sun at 90° needs grid bearing 45°.
 
 The horizon map needs `width * height * directionCount * 4` bytes in one binding (268 MB for a
 2048² tile with 16 sectors). The contributor checks `maxStorageBufferBindingSize`. For seamless
@@ -1324,27 +1679,126 @@ Typical 2048² timings on an Apple-silicon laptop are about 100 ms for the horiz
 shading, and 28 ms for six-level texture shading.
 
 ```ts
-graph.add(new GPUTerrainHorizon({
-  grid, elevation, parameters, directionCount: 16, maximumRadius: 1023,
-  algorithm: 'sweep', horizonFormat: 'unorm16', output: {horizon, irradianceSkyViewFactor}
-}));
-const {values, sampleCount} = getGPUSolarIrradianceSunTable({
-  longitude: 8.2, latitude: 46.8, start: Date.UTC(2026, 5, 21), end: Date.UTC(2026, 5, 22)
+import {
+  GPUTerrainHorizon,
+  getGPUSolarIrradianceSunTable,
+  getGPUSolarIrradianceParameterValues,
+  GPUSolarIrradiance
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+
+declare const graph: GPUCommandGraph;
+// Local east/north metre coordinates: +Y is true north; rows advance south.
+const grid = makeGPURasterMetadata({width: 256, height: 256, cellSize: 30, origin: [0, 7680]});
+declare const elevation: GPURasterBand;
+declare const parameters: GraphDataView<'float32'>;
+declare const irradianceParameters: GPUParameterBuffer<'float32'>;
+declare const irradianceSkyViewFactor: GraphDataView<'float32'>;
+declare const slope: GraphDataView<'float32'>;
+declare const aspect: GraphDataView<'float32'>;
+declare const sunHours: GraphDataView<'float32'>;
+declare const insolation: GraphDataView<'float32'>;
+declare const horizon: GraphDataView<'uint32'>; // ceil(width * height * 16 / 2) uint32 words (two angles per word).
+
+graph.add(
+  new GPUTerrainHorizon({
+    grid,
+    elevation,
+    parameters,
+    directionCount: 16,
+    maximumRadius: 1023,
+    algorithm: 'sweep',
+    horizonFormat: 'unorm16',
+    output: {horizon, irradianceSkyViewFactor}
+  })
+);
+const {values, counts, formats} = getGPUSolarIrradianceSunTable({
+  longitude: 8.2,
+  latitude: 46.8,
+  start: Date.UTC(2026, 5, 21),
+  end: Date.UTC(2026, 5, 22)
 });
-sunTableBuffer.write(values);
-graph.add(new GPUSolarIrradiance({
-  grid, directionCount: 16, horizonFormat: 'unorm16', horizon,
-  sunTable: sunTableBuffer.importToGraph(graph), sampleCapacity: 288, parameters: irradianceParameters,
-  slope, aspect, skyViewFactor: irradianceSkyViewFactor, output: {sunHours, insolation}
-}));
+// Four float32 elements per allocated row; counts distinguish live rows from storage capacity.
+const sunTableBuffer = new GPUParameterBuffer(graph.device, {
+  id: 'sun-table',
+  format: formats.sunTable,
+  length: counts.sampleCapacity * 4,
+  values: values.subarray(0, counts.sampleCapacity * 4)
+});
+irradianceParameters.write(
+  getGPUSolarIrradianceParameterValues({sampleCount: counts.sampleCount})
+);
+graph.add(
+  new GPUSolarIrradiance({
+    grid,
+    directionCount: 16,
+    horizonFormat: 'unorm16',
+    horizon,
+    sunTable: sunTableBuffer.importToGraph(graph),
+    sampleCapacity: counts.sampleCapacity,
+    parameters: irradianceParameters.importToGraph(graph),
+    slope,
+    aspect,
+    skyViewFactor: irradianceSkyViewFactor,
+    output: {sunHours, insolation}
+  })
+);
 ```
+
+The builder returns `values`, `counts` and `formats`: `counts.sampleCount` is the active row count,
+`counts.sampleCapacity` the allocated complete-row count, and `formats.sunTable` is `'float32'`.
+Each row has four scalar elements. A supplied builder target may have partial trailing-row
+padding; upload only `values.subarray(0, counts.sampleCapacity * 4)`, leaving that padding out of
+the imported view. The per-frame active count must be a nonnegative integer
+exactly representable in float32, no larger than the capacity. The total index limit is
+`MAXIMUM_GPU_SOLAR_IRRADIANCE_SAMPLE_COUNT = 1073741824` (`2^30`) rows at scalar binding offset
+zero. For nonempty tables the final scalar lane `offset + 4 * count - 1` must be at most
+`4294967295`, where `count` is the allocated `sampleCapacity` in rows and `offset` is the sun-table
+view's scalar binding offset. A nonzero offset lowers the allowed capacity. This limit applies to the
+whole table, and splitting it with `samplesPerNode` does not raise it. Device buffer and storage
+binding limits can be smaller. Destroy `sunTableBuffer` after the compiled graph that uses it.
 
 At 1024² with 16 sectors the sweep horizon takes 41 ms at full radius (98.6 ms at radius 256), and
 a 288-sample day of irradiance takes about 29 ms.
 
+Read a packed `'unorm16'` horizon directly from buffer bytes with the bounded public decoder:
+
+```ts
+import {unpackGPUTerrainHorizonUnorm16} from '@luma-contributors/analysis/gpu-terrain';
+import type {Buffer} from '@luma.gl/core';
+
+declare const horizonBuffer: Buffer; // Packed map starts at byte zero in this buffer.
+declare const width: number;
+declare const height: number;
+declare const directionCount: number;
+const angleCount = width * height * directionCount;
+const degrees = unpackGPUTerrainHorizonUnorm16(
+  {bytes: await horizonBuffer.readAsync()},
+  angleCount
+);
+```
+
+The element count is the number of angles, with two angles per uint32 word. The decoder returns
+degrees in pixel-major, then direction-bin order; code 0 becomes NaN. It preserves a byte view's
+offset and length and rejects partial words or insufficient storage. For a suballocated map,
+read just its byte range before decoding, rather than the entire backing buffer.
+
 #### `GPUTerrainHorizon`
 
 Marches 16 azimuth sectors from every cell over an elevation grid to find horizon angles, then reduces them to sky-view factor and openness.
+
+The packer returns 8 base, 12 anisotropic, or 24 sweep float32 elements. Allocate at least 12
+when setting `rvtDirectionDegrees` or another anisotropy field; a supplied target of at least 12
+also selects the anisotropic layout. Explicit `sweepReferenceCellSize` and `sweepSourceGrid`
+select 24 elements; padded ordinary settings do not select sweep. Size a parameter buffer from
+the returned array length when the settings can select different layouts.
+
+`rvtDirectionDegrees` sets the anisotropy direction counterclockwise from grid north.
+Sector azimuths and solar bearings remain clockwise.
 
 ::lens{scenario=gpu-terrain.terrain-horizon rung=result caption="Sky-view factor, 1 on open ridges; the most enclosed cell is marked."}
 
@@ -1352,7 +1806,9 @@ Marches 16 azimuth sectors from every cell over an elevation grid to find horizo
 
 ##### `GPUTerrainHorizon` parameters
 
-- Packer: `getGPUTerrainHorizonParameterValues(settings, grid)`, writes `GPU_TERRAIN_HORIZON_PARAMETER_LENGTH` (8) `float32` values.
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainHorizon`.
+
+- Packer: `getGPUTerrainHorizonParameterValues(settings, grid)`, writes `GPU_TERRAIN_HORIZON_PARAMETER_LENGTH` (8) for base settings; `GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH` (12) with any anisotropy field or a target of at least 12 elements; `GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH` (24) with explicit sweep settings `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
 
 Settings of `getGPUTerrainHorizonParameterValues`:
@@ -1365,7 +1821,7 @@ Settings of `getGPUTerrainHorizonParameterValues`:
 | `sweepReferenceCellSize` (optional) | `readonly [number, number]` | Shared ground metres per overview pixel `[x, y]` for sweep geometry and curvature decisions. Use the same positive finite pair for every window of a mosaic, including the whole-grid evaluation. Required for a seamless sweep halo in latitude-dependent cell-size modes. With `sweepSourceGrid`, packs the explicit 24-value sweep layout; this pair occupies 12..13. |
 | `sweepOrigin` (optional) | `readonly [number, number]` | Source-window origin in overview pixels, relative to `sweepSourceGrid`; per frame. Defaults to [0, 0]. |
 | `sweepSourceGrid` (optional) | `GPURasterMetadata` | Shared full overview grid for row spacing and distance cutoffs; required with sweep settings. Every window uses the same source grid per frame. Its height is at most 16777215 so global source rows can be combined exactly as integers before conversion to float32. |
-| `anisotropyAzimuthDegrees` (optional) | `number` | Direction of maximum weight for `anisotropicSkyViewFactor`, in RVT's convention: the same number as RVT's `asvf_dir` / `a_main_direction` means the same direction. RVT direction angles run counterclockwise from north (0 north, 90 west, 180 south, 270 east), so `A` is compass azimuth `(360 - A) mod 360`. Defaults to `GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES` (315, RVT's default, which is compass north-east). This is the only counterclockwise angle in gpu-terrain: sector azimuths, sun azimuths and aspect are compass azimuths, clockwise from north. |
+| `rvtDirectionDegrees` (optional) | `number` | Direction of maximum weight for `anisotropicSkyViewFactor`, in RVT's convention: the same number as RVT's `asvf_dir` / `a_main_direction` means the same direction. RVT direction angles run counterclockwise from north (0 north, 90 west, 180 south, 270 east), so `A` is compass azimuth `(360 - A) mod 360`. Defaults to `GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_AZIMUTH_DEGREES` (315, RVT's default, which is compass north-east). This is the only counterclockwise angle in gpu-terrain: sector azimuths, sun azimuths and aspect are compass azimuths, clockwise from north. |
 | `anisotropyLevel` (optional) | `number` | Weight exponent of `anisotropicSkyViewFactor`: a non-negative integer, RVT's `a_poly_level`. RVT's presets are low (level 4, minimum weight 0.4) and high (level 8, minimum weight 0.1). The power is signed as in RVT, `cos((a - A) / 2)^level`, so an odd level gives a weight below the minimum weight on the far side of the main direction, exactly like RVT. Defaults to `GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_LEVEL`. |
 | `anisotropyMinimumWeight` (optional) | `number` | Weight floor of `anisotropicSkyViewFactor` in `[0, 1]` (RVT: low 0.4, high 0.1). Defaults to `GPU_TERRAIN_HORIZON_DEFAULT_ANISOTROPY_MINIMUM_WEIGHT`. |
 
@@ -1389,6 +1845,8 @@ Turns a horizon map and a sun position into the visible fraction of the solar di
 {/* parameters: GPUSolarShadowMask generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUSolarShadowMask` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUSolarShadowMask`.
 
 - Packer: `getGPUSolarShadowMaskParameterValues(settings)`, writes `GPU_SOLAR_SHADOW_MASK_PARAMETER_LENGTH` (8) `float32` values.
 
@@ -1447,6 +1905,8 @@ bit-identical angles; visibility near an exact solar-disk boundary retains the d
 
 ##### `GPUTerrainCastShadow` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainCastShadow`.
+
 - Packer: `getGPUTerrainCastShadowParameterValues(settings, grid)`, writes `GPU_TERRAIN_CAST_SHADOW_PARAMETER_LENGTH` (16) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
 
@@ -1485,13 +1945,15 @@ Sums sun hours and direct insolation over a day of sun positions from a horizon 
 
 ##### `GPUSolarIrradiance` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUSolarIrradiance`.
+
 - Packer: `getGPUSolarIrradianceParameterValues(settings)`, writes `GPU_SOLAR_IRRADIANCE_PARAMETER_LENGTH` (8) `float32` values.
 
 Settings of `getGPUSolarIrradianceParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `sampleCount` | `number` | Number of valid sun table rows, an integer in `[0, sampleCapacity]`. |
+| `sampleCount` | `number` | Active rows in `[0, sampleCapacity]`, exactly representable in float32 and at most 1073741824. |
 | `angularRadiusDegrees` (optional) | `number` | Angular radius of the solar disk in degrees: 0 gives hard shadows. Defaults to `GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES`. |
 | `diffuseIrradiance` (optional) | `number` | Diffuse horizontal irradiance of an open site in W/m^2, added while the sun is up and scaled by `GPUSolarIrradianceProps.skyViewFactor` when one is bound (the irradiance sky-view factor, not the solid-angle one). Defaults to 0. |
 
@@ -1515,6 +1977,8 @@ Computes a multidirectional hillshade and a relief luminance from Horn normals o
 {/* parameters: GPUReliefShading generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUReliefShading` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUReliefShading`.
 
 - Packer: `getGPUReliefShadingParameterValues(settings, grid)`, writes `GPU_RELIEF_SHADING_PARAMETER_LENGTH` (80) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -1561,6 +2025,8 @@ Approximates Brown's fractional Laplacian of an elevation grid with a Gaussian b
 
 ##### `GPUTextureShading` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTextureShading`.
+
 - Packer: `getGPUTextureShadingParameterValues(settings?)`, writes `GPU_TEXTURE_SHADING_PARAMETER_LENGTH` (12) `float32` values.
 
 Settings of `getGPUTextureShadingParameterValues`:
@@ -1585,12 +2051,17 @@ Settings of `getGPUTextureShadingParameterValues`:
 #### `GPUSolarPosition`
 
 Computes the sun azimuth, altitude and daylight flag for each longitude and latitude row at one instant.
+Both named operation forms require at least one selected `azimuth`, `altitude` or `daylight`
+output and reject an empty JavaScript selection at construction. Angles are in degrees;
+`daylight` is a 0/1 flag. Output selection, row count and refraction are captured at construction.
 
 ::lens{scenario=gpu-terrain.solar-position rung=result caption="Sun altitude at eight northern California sites at 13:00 PDT; the table below lists all outputs."}
 
 {/* parameters: GPUSolarPosition generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUSolarPosition` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUSolarPosition`.
 
 - Packer: `getGPUSolarPositionParameterValues(settings)`, writes `GPU_SOLAR_POSITION_PARAMETER_LENGTH` (4) `float32` values.
 
@@ -1625,9 +2096,12 @@ handling and Python's half-even rounding.
   default `2^-16`), with RVT's edge replication applied as edge-strip weights and the deviation formed
   from exact integers; the error against RVT is at most `quantum / 2` (zero for `|z| >= 128`) plus a
   few float32 ULP, at any radius up to 23170. The GPU selects the first finite valid elevation,
-  snaps it to the quantum, and subtracts it before building the table. Only offsets from that
-  anchor of magnitude `2^31 * quantum` or more (32768 by default) are invalid; absolute elevation
-  is unrestricted. Larger grids use a separable O(radius) filter with anchored,
+  snaps it to the quantum, then forms `round(z / quantum) - round(anchor / quantum)` by exact
+  integer subtraction before building the table. Accepted quantized offsets are inclusive
+  `[-2147483520,2147483520]`; with the default quantum, elevation offsets are inclusive
+  `[-32767.998046875,32767.998046875]`. Samples with absolute `|z / quantum| >= 2^62` are
+  invalid even if their offset from the anchor is small. Larger grids use a separable O(radius)
+  filter with anchored,
   centre-relative sums, so any radius keeps sub-millimetre precision at alpine elevations. The radius is a
   per-frame setting: `maximumRadius` (compile time) sizes `requiredHalo` and bounds the loops, and
   `getGPUSimpleLocalReliefParameterValues({radius})` picks any integer in `[1, maximumRadius]` per
@@ -1635,7 +2109,10 @@ handling and Python's half-even rounding.
 - `GPUMultiScaleRelief` (MSRM; Orengo and Petrie 2018): RVT's radii from `resolution`,
   `featureMinimum`, `featureMaximum` and `scalingFactor` (`getGPUMultiScaleReliefRadii`). RVT's sum of
   consecutive low-pass differences telescopes, so the contributor runs only two mean filters, which
-  share one summed-area table on grids within the cell cap (same `quantum` option and bounds as SLRM).
+  share one summed-area table on grids within the cell cap. On that route, the first finite valid
+  elevation is the quantum-snapped anchor; exact integer subtraction forms the quantized offsets.
+  The same inclusive offset range `[-2147483520,2147483520]` applies (default elevation offsets
+  `±32767.998046875`), and absolute `|z / quantum| >= 2^62` is invalid, as for SLRM.
   `cellSizeMode` (default `'uniform'`, unchanged square windows) accepts `'geographic'` and
   `'web-mercator'` on axis-aligned grids: the RVT index ladder is unchanged, each nonzero radius `k^s`
   becomes `k^s * resolution` ground metres, and every row converts it to rectangular pixel half-widths
@@ -1669,6 +2146,8 @@ Subtracts the local window mean from an elevation raster, leaving small features
 
 ##### `GPUSimpleLocalRelief` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUSimpleLocalRelief`.
+
 - Packer: `getGPUSimpleLocalReliefParameterValues(settings?)`, writes `GPU_SIMPLE_LOCAL_RELIEF_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUSimpleLocalReliefParameterValues`:
@@ -1699,6 +2178,8 @@ Averages the differences between consecutive low-pass filters of an elevation ra
 
 ##### `GPUMultiScaleRelief` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUMultiScaleRelief`.
+
 - Packer: `getGPUMultiScaleReliefParameterValues(settings?)`, writes `GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUMultiScaleReliefParameterValues`:
@@ -1727,6 +2208,8 @@ Measures how far an observer standing above each cell of an elevation raster ris
 {/* parameters: GPULocalDominance generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPULocalDominance` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPULocalDominance`.
 
 - Packer: `getGPULocalDominanceParameterValues(settings?)`, writes `GPU_LOCAL_DOMINANCE_PARAMETER_LENGTH` (4) `float32` values.
 
@@ -1758,6 +2241,8 @@ Combines hillshade and slope layers from GPUTerrainDerivatives into one grey ima
 
 ##### `GPUReliefBlend` parameters
 
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUReliefBlend`.
+
 - Packer: `getGPUReliefBlendParameterValues(layers)`, writes `GPU_RELIEF_BLEND_PARAMETER_LENGTH` `float32` values.
   - `layers` (`readonly GPUReliefBlendLayerSettings[]`)
 
@@ -1773,6 +2258,10 @@ Combines hillshade and slope layers from GPUTerrainDerivatives into one grey ima
 ::lens{scenario=gpu-terrain.relief-blend rung=graph caption="Derivatives write the layers; the blend node composites them."}
 
 ### `GPUTerrainFlow`
+
+Select at least one data output: `filledElevation`, `flowDirections`, `cellClasses`, `accumulation`
+or `streams`. For example, `output: {flowDirections}` is a minimal terminal; status-only Flow
+selections are rejected. Status words qualify the selected data and do not replace it.
 
 Turns an elevation grid into filled elevation, D8 directions, cell classes, upstream-cell accumulation and a stream mask.
 
@@ -1812,6 +2301,37 @@ fill and 2 of 128 accumulation rounds). Every unrolled loop has one gate node pe
 after convergence inside a group are idempotent no-ops, so results and counts are unchanged and the
 graph has about a third fewer nodes.
 
+`output.status.accumulationConverged` measures dependency completion, rather than arithmetic
+finiteness. Finite inputs can overflow float32 during an area calculation: for example, a
+`1e20` by `1e20` metre cell has nonfinite accumulation and unresolved stream word `0xffffffff`,
+even when `accumulationConverged` is 1. Check accumulation finiteness and stream sentinels as well
+as the convergence flag.
+
+The tiled fill and flat-relaxation counts, and in-place pull accumulation counts, depend on GPU
+scheduling: a workgroup can observe another workgroup's updates within a round. These counts and
+finite-budget completion can vary even when completed values are identical. Use the respective
+convergence flags to certify completion, rather than comparing counts between submissions or runs.
+Tiled fill counts are bounded by `maximumFillIterations`, and pull accumulation counts by
+`maximumAccumulationIterations`. A submission adds at most `3 * maximumFlatIterations` to the
+flat count, which is cumulative when flat continuation is enabled.
+The separate Borůvka and Euler-tour counters keep their own algorithm-specific meanings.
+
+An unfinished fill or flat stage clears `output.status.accumulationConverged` and suppresses
+dependent accumulation with NaNs, even when the caller omits the upstream status outputs.
+The CPU operation honors an explicit `maximumFillIterations` for positive epsilon with bounded
+tiled relaxation, including unchanged confirmation. On a 3×3 bowl with rim 2, centre 0 and
+epsilon 0.25, budget one reports fill convergence/count `0/1` and suppresses filled elevations;
+budget two reports `1/2` and publishes centre 2.25. Without an explicit budget, the CPU retains
+its complete priority flood and zero fill-round count. Zero-epsilon spill filling remains exact
+and does not use the relaxation budget.
+
+Bounded CPU fill and flat fields follow the same sweep phases as the GPU: after 96 plain
+rounds they cycle tiled, right, left, down and up. A sweep publishes each tile to the next
+tile on its line. On a 1616×3 corridor with outer rows 10000, middle row 0 (right boundary
+10000), and epsilon 1, the middle-row fill at column `c < 1615` is exactly `c`. The rightward
+sweep in round 98 carries the left outlet through the row and round 99 can confirm completion.
+Other GPU workgroup schedules may confirm earlier; all complete values agree.
+
 The grid supplies the width, height, cell size and latitude band, so the settings carry only the
 algorithm values (`fillEpsilon`, `streamThreshold`, `flowExponent`) and the packer takes the grid as
 its second argument. The grid may be rotated but not sheared: `GPUTerrainFlow`,
@@ -1821,18 +2341,114 @@ affine are not orthogonal, as `GPUCostDistance` does.
 
 When `maximumAccumulationIterations` runs out on the pull path, unresolved cells keep NaN `accumulation`, and their
 `streams` word is `GPU_TERRAIN_FLOW_STREAM_UNRESOLVED` (`0xffffffff`), never 0: the unresolved cells
-are the downstream trunk, so 0 would silently drop the main river. Every consumer of a stream mask
-(height above drainage, stream order, stream network, flow distance, the catchment summary and tiled
-flow) reads it the same way: a nonzero word is a stream cell, so a mask of Strahler orders works
-too, and the unresolved word is a cell of unknown status, never a stream cell.
-`GPUTerrainHeightAboveDrainage` and `GPUTerrainStreamOrder` propagate the unresolved word.
+are the downstream trunk, so 0 would silently drop the main river. Read the Flow output's
+stream-membership plane with `word != 0 && word != 0xffffffff`. HAND and StreamOrder accept
+`0xfffffffe` as membership too; in these input domains only `0xffffffff` marks unknown stream
+status, and their outputs propagate that uncertainty.
+
+FlowDistance, StreamNetwork, CatchmentSummary and TiledFlow reserve both `0xfffffffe` and
+`0xffffffff` for unknown stream status. Their ordinary membership words are `1..0xfffffffd`,
+so their predicate is `word != 0 && word < 0xfffffffe`. Stream masks containing Strahler orders
+must respect the selected consumer's reserved values. These rules apply to stream-membership
+planes; direction, terminal-cell and catchment-ID planes have their own sentinel domains.
+Imported planes need the consumer-specific sentinel translation described below.
+
+Direction and stream planes have separate sentinel domains. In a direction plane,
+`0xfffffffe` means **unknown direction**, `0xffffffff` means no data and 0 means terminal.
+For `GPUTerrainStreamOrder`, a stream word `0xffffffff` means **unknown order**, propagated to
+downstream stream cells; `0xfffffffe` is ordinary stream **membership**, just like any word in
+`[1,0xfffffffe]`. Direction no-data or stream 0 takes precedence and produces nonstream order 0.
+For a participating stream cell, unknown direction or unknown stream order takes precedence over
+ordinary membership. Unknown-direction stream neighbors also seed uncertainty because their
+receiver is unknown. Do not copy a direction sentinel into a stream plane by numeric value.
+
+If an imported stream plane uses `0xfffffffe` for unknown membership/order, translate it before
+upload and pass the normalized mask to both HAND and StreamOrder. Apply this only when that
+is the imported plane's declared convention. D8 and fractional HAND both treat `0xfffffffe` as
+membership; their unknown stream word is `0xffffffff`:
 
 ```ts
+import {
+  GPUTerrainHeightAboveDrainage,
+  GPUTerrainStreamOrder
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+
+declare const graph: GPUCommandGraph;
+declare const grid: GPURasterMetadata;
+declare const elevation: GPURasterBand;
+declare const importedStreams: Uint32Array; // One word per grid cell.
+declare const streamBuffer: GPUParameterBuffer<'uint32'>; // width * height words.
+declare const flowDirections: GraphDataView<'uint32'>;
+declare const heightAboveDrainage: GraphDataView<'float32'>;
+declare const streamOrder: GraphDataView<'uint32'>;
+const normalizedWords = Uint32Array.from(importedStreams, word =>
+  word === 0xfffffffe ? 0xffffffff : word
+);
+streamBuffer.write(normalizedWords);
+const normalizedStreams = streamBuffer.importToGraph(graph);
+graph.add(
+  new GPUTerrainHeightAboveDrainage({
+    grid,
+    elevation,
+    flowDirections,
+    streams: normalizedStreams,
+    output: {heightAboveDrainage}
+  })
+);
+graph.add(
+  new GPUTerrainStreamOrder({
+    grid,
+    flowDirections,
+    streams: normalizedStreams,
+    output: {streamOrder}
+  })
+);
+```
+
+For example, direction `[0]` and StreamOrder stream input `[0xfffffffe]` yield order `[1]`;
+the translated input `[0xffffffff]` yields unknown order `[0xffffffff]`. For the same terminal
+cell, unnormalized HAND input `[0xfffffffe]` gives height zero and drainage cell 0; the normalized
+unknown word gives NaN height and unresolved drainage `0xfffffffe`. CatchmentSummary,
+StreamNetwork, FlowDistance and TiledFlow reserve **both** `0xfffffffe` and `0xffffffff` for unknown stream
+status (membership is `1..0xfffffffd`). Normalize imported sentinels for the selected consumer
+rather than interpreting every nonzero word as a boolean; see also [Terrain processing](./terrain-processing.md).
+
+```ts
+import {
+  GPUTerrainFlow,
+  getGPUTerrainFlowParameterValues
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const parameters: GPUParameterBuffer<'float32'>;
+const width = 256,
+  height = 256;
+declare const elevation: GPURasterBand;
+declare const accumulation: GraphDataView<'float32'>;
+declare const flowDirections: GraphDataView<'uint32'>;
+declare const streams: GraphDataView<'uint32'>;
+declare const fillConverged: GraphDataView<'uint32'>; // One word for the whole execution.
+declare const accumulationConverged: GraphDataView<'uint32'>; // One word for the whole execution.
+
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
-graph.add(new GPUTerrainFlow({
-  grid, elevation, parameters: parameters.importToGraph(graph), fillDepressions: true,
-  output: {flowDirections, accumulation, streams, status: {fillConverged, accumulationConverged}}
-}));
+graph.add(
+  new GPUTerrainFlow({
+    grid,
+    elevation,
+    parameters: parameters.importToGraph(graph),
+    fillDepressions: true,
+    output: {flowDirections, accumulation, streams, status: {fillConverged, accumulationConverged}}
+  })
+);
 parameters.write(getGPUTerrainFlowParameterValues({fillEpsilon: 0.01, streamThreshold: 500}, grid));
 ```
 
@@ -1852,7 +2468,12 @@ whose `2 * towardLower + (flatMaximum - awayFromHigher)` is strictly lower. Pair
 `tan(beta)^p`, `p = 1.1`) or `'mfd-quinn'` (Quinn et al. 1991, contour-length weighted, `p = 1`).
 Set `p` per frame with `flowExponent`. Non-D8 accumulation uses the same deterministic pull, with
 each donor's fraction recomputed from the surface, so it is reproducible bit for bit.
-`flowDirections` and `cellClasses` stay D8.
+`flowDirections` is the **steepest D8 companion under every routing option**, and `cellClasses`
+stays D8. For the one-row ridge `[0,10,0]` without filling or flat resolution, both `'d8'` and
+`'mfd-freeman'` return directions `[0,1,0]`. With unit cell contributions, D8 accumulation is
+`[1,1,2]`, while Freeman splits the centre's contribution equally and gives `[1.5,1,1.5]`.
+Tracing the companion pointers therefore reconstructs only D8 drainage; it cannot reconstruct
+branching accumulation.
 
 `flatContinuation` opts into 64 rounds per pass per execution (override with
 `maximumFlatIterations`). Supply `lower`, `higher`, and `maximum`, each with a zero-initialized
@@ -1883,6 +2504,8 @@ an input.
 {/* parameters: GPUTerrainFlow generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUTerrainFlow` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainFlow`.
 
 - Packer: `getGPUTerrainFlowParameterValues(settings, grid)`, writes `GPU_TERRAIN_FLOW_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -1936,15 +2559,22 @@ convergence) and `output.status.iterationCount`, and the iteration caps are `max
   pit cell.
 - `GPUTerrainStreamOrder`: Strahler order on the stream mask (`output.streamOrder`), with an optional
   `output.status.iterationCount`.
-  Unresolved stream words and the stream cells below them keep the unresolved order `0xffffffff`.
+  Unknown stream word `0xffffffff` and the stream cells below it keep unknown order `0xffffffff`;
+  `0xfffffffe` in this input is membership, while that value in `flowDirections` is unknown direction.
+- `GPUTerrainFlowDistance` (`output.distance`) and `GPUTerrainStreamNetwork` (`output.lengths`)
+  measure in grid affine units with the default `cellSizeMode: 'uniform'`, and in WGS84 ground
+  metres with `'geographic'` or `'web-mercator'` on an axis-aligned grid. With `transitionCosts`,
+  flow distance sums costs in caller units. Stream-network `output.positions` are grid affine
+  coordinates relative to `localOrigin` in all modes.
 - `GPUTerrainHydrologicIndices`: computes, from contributing area in m²
-  (`accumulationUnits: 'area'`, any routing), into `output.slope`, `output.specificCatchmentArea`,
+  (`accumulationUnits: 'area'`, any routing), into `output.descentTangent`, `output.specificCatchmentArea`,
   `output.wetnessIndex` and `output.streamPowerIndex`:
   - specific catchment area `a = A / b`;
   - topographic wetness `ln(a / tan β)`;
   - stream power `a · tan β`;
 
-  with `tan β` the D8 descent slope clamped to a per-frame `minimumSlope` (default 0.001).
+  `output.descentTangent` is `tan β`, the tangent of the steepest D8 descent (rise over run,
+  dimensionless), clamped to the per-frame `minimumSlope` (default 0.001).
 
 HAND and watersheds resolve D8 paths by GPU pointer jumping, which needs about log₂(path length)
 gated rounds. Stream order is Strahler by levels on the Euler tour of the stream forest: one
@@ -1955,27 +2585,138 @@ used when the `2 n` tour words exceed one storage binding (grids above 4096 x 40
 only) leaves every cell of its component at `0xffffffff` and clears `converged`. Every iterative contributor stops early on the
 GPU and can publish `output.status.converged`.
 
+`CPUTerrainWatershedsOperation` honors an explicit `maximumIterations` with synchronous
+pointer-jumping rounds, including the unchanged confirming round. A three-cell eastward chain
+`[1,1,0]` with budget one labels every cell 2 but reports `converged=0`,
+`iterationLimitReached=1`, and `iterationCount=1`; budget two confirms convergence. Pointers
+that have not reached a fixpoint produce unresolved labels. Without an explicit budget the
+CPU operation retains its complete memoized walk and zero-round diagnostics. Explicit budgets
+must lie in `[1,1024]` on the CPU function and both operation forms. Explicitly budgeted GPU
+watershed rounds read a separate pointer snapshot, so `[1,1,1,0]` at budget one produces
+`[UNRESOLVED,3,3,3]` and status `[0,1,1]` independent of scheduling. The default GPU route
+retains in-place jumping. The budget and output selection, including inherited getters, are
+captured once at construction in both operation forms. Terrain flow operations require at least
+one per-cell writer; status-only selections are rejected. Filled elevation and fill diagnostics
+require `fillDepressions`, flat diagnostics require `resolveFlats`, and accumulation diagnostics
+require `accumulation` or `streams`. Both operation forms reject unknown routing, cell-size and
+accumulation-unit options at construction; watershed forms likewise reject unknown direction encodings.
+
+Pointer stability alone does not certify a watershed: the reached cell must have no original
+receiver, or be an explicit pour point. On directions `[1,16,0]` and budget two, doubling makes
+the cycle's pointers look like terminals, but the original receivers remain cyclic. Both forms
+publish labels `[0xfffffffe,0xfffffffe,2]` and `(converged,iterationLimitReached,iterationCount)`
+`(0,0,2)`. A pour point at cell 0 legitimately stops that cycle.
+
+An unmarked unresolved direction also clears watershed convergence on both forms. Directions
+`[1,0xfffffffe,0xffffffff,1,0]` give two unresolved labels, invalid label `0xffffffff` and
+resolved labels `[4,4]`, with convergence/limit `0/0`; a pour point at cell 1 intercepts the
+unknown direction and restores convergence.
+
+D8 HAND applies the original-receiver check with stream cells as stops. Directions `[1,16]`
+and no streams give two `GPU_TERRAIN_DRAINAGE_UNRESOLVED` words, NaN heights and convergence 0,
+even after the cycle collapses to stable pointers. With streams `[1,0]`, both drainage cells
+are 0 and convergence is 1. The loop may stop before exhausting its budget in either case.
+Both D8 and fractional HAND clear `converged` for unknown drainage, including stream word
+`0xffffffff` and its unresolved dependents. Unknown membership alone does not set
+`iterationLimitReached`; known outlets without streams remain complete with NaN height and no
+drainage. Missing drainage retains precedence over an unknown fractional branch.
+
+An explicit CPU flow `maximumFlatIterations` in `[1,1024]` bounds each of the three tiled flat
+stages and includes unchanged confirmation. With filling, zero epsilon and a 3×3 plateau of
+tens, budget one reports `flatsConverged=0`, `flatsIterationCount=3`; filled elevation remains
+nine tens. An unfinished fill clears `flatsConverged` as well, even when the fill flag is
+omitted. The 3×3 rim-2/centre-0 bowl at epsilon 0.25, fill cap one and flat cap two gives nine
+unresolved directions and flat convergence 0; fill cap two gives centre direction 1 and flag 1.
+Incomplete flats suppress dependent routing outputs. The no-budget CPU route keeps
+its complete traversals and zero-round count. Plain CPU tile halos read a round snapshot;
+directional sweeps publish within each line. GPU scheduling across lines can change finite-budget completion. Flat status is computed even when
+only filled elevation is requested, and either status word can be omitted independently.
+The two flat status words share one writable finalizer dispatch: pooled words require disjoint
+256-byte binding windows (offsets 0/4 are refused; 0/256 are legal).
+
 Chain the contributors by wrapping a flow output with `makeGPURasterBand(view, grid)` where a
 downstream contributor takes a band (the `elevation` of HAND and the hydrologic indices); the
 direction, stream and accumulation views feed the other inputs directly.
 
+The example uses a finite stream threshold of **1,800 m²** with `accumulationUnits: 'area'`: two
+30 m cells contribute that much area. The omitted threshold defaults to no streams. On the 3×2
+DEM `[6,5,4,3,2,1]`, this threshold gives streams `[0,0,0,1,1,1]`; a threshold of 500 m² would
+mark every cell because each cell already contributes 900 m². Both parameter writes use the same grid.
+
 ```ts
+import {
+  GPUTerrainFlow,
+  getGPUTerrainFlowParameterValues,
+  getGPUTerrainHydrologicIndicesParameterValues,
+  GPUTerrainHeightAboveDrainage,
+  GPUTerrainWatersheds,
+  GPUTerrainStreamOrder,
+  GPUTerrainHydrologicIndices
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
+import {
+  makeGPURasterMetadata,
+  makeGPURasterBand
+} from '@luma-contributors/analysis/raster-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const flowParameters: GPUParameterBuffer<'float32'>;
+declare const indexParameters: GPUParameterBuffer<'float32'>;
+const width = 256,
+  height = 256;
+declare const elevation: GPURasterBand;
+declare const filledElevation: GraphDataView<'float32'>;
+declare const accumulation: GraphDataView<'float32'>;
+declare const heightAboveDrainage: GraphDataView<'float32'>;
+declare const wetnessIndex: GraphDataView<'float32'>;
+declare const flowDirections: GraphDataView<'uint32'>;
+declare const streams: GraphDataView<'uint32'>;
+declare const pourPoints: GraphDataView<'uint32'>;
+declare const labels: GraphDataView<'uint32'>;
+declare const streamOrder: GraphDataView<'uint32'>;
+
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
-graph.add(new GPUTerrainFlow({
-  grid, elevation, parameters: flowParameters.importToGraph(graph),
-  fillDepressions: true, resolveFlats: true, flowRouting: 'mfd-freeman', accumulationUnits: 'area',
-  output: {filledElevation, flowDirections, accumulation, streams}
-}));
+// Accumulation is area: each 30 m cell contributes 900 m².
+flowParameters.write(
+  getGPUTerrainFlowParameterValues({fillEpsilon: 0, streamThreshold: 1800}, grid)
+);
+indexParameters.write(getGPUTerrainHydrologicIndicesParameterValues({minimumSlope: 0.001}, grid));
+graph.add(
+  new GPUTerrainFlow({
+    grid,
+    elevation,
+    parameters: flowParameters.importToGraph(graph),
+    fillDepressions: true,
+    resolveFlats: true,
+    flowRouting: 'd8',
+    accumulationUnits: 'area',
+    output: {filledElevation, flowDirections, accumulation, streams}
+  })
+);
 const surface = makeGPURasterBand(filledElevation, grid, {id: 'filled'});
-graph.add(new GPUTerrainHeightAboveDrainage({
-  grid, elevation: surface, flowDirections, streams, output: {heightAboveDrainage}
-}));
+graph.add(
+  new GPUTerrainHeightAboveDrainage({
+    grid,
+    elevation: surface,
+    flowDirections,
+    streams,
+    output: {heightAboveDrainage}
+  })
+);
 graph.add(new GPUTerrainWatersheds({grid, flowDirections, pourPoints, output: {labels}}));
 graph.add(new GPUTerrainStreamOrder({grid, flowDirections, streams, output: {streamOrder}}));
-graph.add(new GPUTerrainHydrologicIndices({
-  grid, elevation: surface, accumulation, parameters: indexParameters.importToGraph(graph),
-  output: {wetnessIndex}
-}));
+graph.add(
+  new GPUTerrainHydrologicIndices({
+    grid,
+    elevation: surface,
+    accumulation,
+    parameters: indexParameters.importToGraph(graph),
+    output: {wetnessIndex}
+  })
+);
 ```
 
 #### `GPUTerrainHeightAboveDrainage`
@@ -2026,13 +2767,15 @@ Assigns Strahler order to stream cells by levels on the Euler tour of the stream
 
 #### `GPUTerrainHydrologicIndices`
 
-Combines upstream area and D8 descent slope into specific catchment area, topographic wetness and stream power.
+Combines upstream area and the D8 `descentTangent` into specific catchment area, topographic wetness and stream power.
 
 ::lens{scenario=gpu-terrain.terrain-hydrologic-indices rung=result caption="Topographic wetness: high in valley bottoms; the wettest cell is marked."}
 
 {/* parameters: GPUTerrainHydrologicIndices generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPUTerrainHydrologicIndices` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainHydrologicIndices`.
 
 - Packer: `getGPUTerrainHydrologicIndicesParameterValues(settings, grid)`, writes `GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
@@ -2070,17 +2813,49 @@ Wind and vertical exaggeration are per-frame settings; the cell size and latitud
 the `grid`, which the packer takes as its second argument.
 
 ```ts
+import {
+  GPUTerrainFlowField,
+  getGPUTerrainFlowFieldParameterValues
+} from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import type {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPUParticleAdvection} from '@luma-contributors/analysis/raster-analysis';
+
+declare const graph: GPUCommandGraph;
+declare const windParameters: GPUParameterBuffer<'float32'>;
+declare const advectionParameters: GPUParameterBuffer<'float32'>;
+const width = 256,
+  height = 256;
+declare const elevation: GPURasterBand;
+declare const velocities: GraphDataView<'float32x2'>;
+declare const positions: GraphDataView<'float32x2'>; // One float32x2 row per particle.
+declare const ages: GraphDataView<'uint32'>; // One word per particle (positions.length).
+declare const generations: GraphDataView<'uint32'>; // One word per particle (positions.length).
+declare const advectionWords: GPUParameterBuffer<'uint32'>;
+
 const grid = makeGPURasterMetadata({width, height, cellSize: 30});
-graph.add(new GPUTerrainFlowField({
-  grid, elevation, parameters: windParameters.importToGraph(graph), output: {velocities}
-}));
+graph.add(
+  new GPUTerrainFlowField({
+    grid,
+    elevation,
+    parameters: windParameters.importToGraph(graph),
+    output: {velocities}
+  })
+);
 windParameters.write(getGPUTerrainFlowFieldParameterValues({wind: [4, -2]}, grid));
-graph.add(new GPUParticleAdvection({
-  velocities, fieldWidth: width, fieldHeight: height,
-  parameters: advectionParameters.importToGraph(graph),
-  uint32Parameters: advectionWords.importToGraph(graph),
-  state: {positions, ages, generations}
-}));
+graph.add(
+  new GPUParticleAdvection({
+    velocities,
+    fieldWidth: width,
+    fieldHeight: height,
+    parameters: advectionParameters.importToGraph(graph),
+    uint32Parameters: advectionWords.importToGraph(graph),
+    state: {positions, ages, generations}
+  })
+);
 ```
 
 #### How it computes
@@ -2095,6 +2870,8 @@ graph.add(new GPUParticleAdvection({
 {/* parameters: GPUTerrainFlowField generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUTerrainFlowField` parameters
+
+Import from `@luma-contributors/analysis/gpu-terrain`: `GPUTerrainFlowField`.
 
 - Packer: `getGPUTerrainFlowFieldParameterValues(settings, grid)`, writes `GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH` (8) `float32` values.
   - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges

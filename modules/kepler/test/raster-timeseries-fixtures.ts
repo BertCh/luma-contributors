@@ -80,6 +80,32 @@ export function makeRasterTimeSeriesFixtures(): RasterTimeSeriesFixture[] {
       numerical: {rollingMean: [NaN, NaN, 2, 3]}
     },
     {
+      name: 'W5-17 window one short chunk keeps two-cell width-two pitch',
+      operation: 'rolling-mean',
+      stack: {
+        cellCount: 2,
+        sliceCount: 2,
+        bandCount: 1,
+        times: [0, 1],
+        values: Float32Array.of(12, -999, 22, -999)
+      },
+      settings: {windowLength: 1, activeSliceCount: 1},
+      numerical: {rollingMean: [12, NaN, 22, NaN]}
+    },
+    {
+      name: 'B4 rolling ignores oversized inactive padding',
+      operation: 'rolling-mean',
+      stack: {
+        cellCount: 2,
+        sliceCount: 3,
+        bandCount: 1,
+        times: [0, 1, 2],
+        values: Float32Array.of(2, 6, 1e22, 20, 60, 1e22)
+      },
+      settings: {windowLength: 1, activeSliceCount: 2},
+      numerical: {rollingMean: [2, 6, NaN, 20, 60, NaN]}
+    },
+    {
       name: 'whittaker',
       operation: 'whittaker',
       stack: scalarStack([1, 2, 3, 4]),
@@ -207,7 +233,7 @@ export function makeRasterTimeSeriesFixtures(): RasterTimeSeriesFixture[] {
       operation: 'streaming',
       stack: scalarStack([1, 2, 3]),
       numerical: {mean: [2], standardDeviation: [1]},
-      integers: {counts: [3]}
+      integers: {counts: [3], streamingStatus: [0]}
     },
     {
       name: 'climate-anomaly',
@@ -215,7 +241,7 @@ export function makeRasterTimeSeriesFixtures(): RasterTimeSeriesFixture[] {
       stack: scalarStack([1, 2, 3, 10, 11, NaN]),
       settings: {calibrationSliceCount: 3},
       numerical: {mean: [2], standardDeviation: [1], anomaly: [-1, 0, 1, 8, 9, NaN]},
-      integers: {counts: [3]}
+      integers: {counts: [3], streamingStatus: [0]}
     },
     {
       name: 'shifted-fisk-calibration',
@@ -282,7 +308,7 @@ export function makeRasterTimeSeriesFixtures(): RasterTimeSeriesFixture[] {
       stack: scalarStack([1e-6, 1.000001e-6, 1.000002e-6]),
       settings: {calibrationSliceCount: 3},
       numerical: {standardDeviation: [1.0231815394945443e-12], anomaly: [-1, 0, 1]},
-      integers: {counts: [3]},
+      integers: {counts: [3], streamingStatus: [0]},
       tolerances: {standardDeviation: 1e-13, anomaly: 0.06}
     }
   ];

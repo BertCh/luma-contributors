@@ -39,7 +39,13 @@ import {
   getGPUSpaceTimeKFunctionParameterValues
 } from '@luma-contributors/analysis/dataframe-analysis';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
+import {
+  HAWKES_WITNESS_POSITIONS,
+  HAWKES_WITNESS_FINAL,
+  getWitnessLogLikelihood,
+  getWitnessLikelihoodScore
+} from './catalog-spacetime-hawkes-reference';
 import {
   normalizeCatalogParameters,
   runCatalogOperationAsync
@@ -365,7 +371,7 @@ async function runDirect(device: Device, operationId: string): Promise<DirectRes
             new GPUJacquezTest({
               ...common,
               neighbors: pairs,
-              k: 2,
+              neighborCount: 2,
               output: {
                 summary: output.view,
                 statistics: session.output('statistics', 'uint32', 4).view
@@ -661,6 +667,131 @@ function compareValue(actual: unknown, expected: number, label: string): void {
     );
   }
 }
+
+test('Pettitt catalog tested and untested evidence keeps constant control distinct', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await withCatalogGpuSession(device, 'catalog-pettitt-missing', async session => {
+    const statistic = session.output('statistic', 'uint32', 3);
+    const changeSlice = session.output('change-slice', 'uint32', 3);
+    const pValues = session.output('p-values', 'float32', 3);
+    session.graph.add(
+      new GPUPettittTest({
+        values: session.input(
+          'values',
+          Float32Array.of(1, 2, 3, 4, NaN, 2, NaN, NaN, 7, 7, 7, 7),
+          'float32'
+        ),
+        cellCount: 3,
+        sliceCount: 4,
+        layout: 'cell-major',
+        output: {statistic: statistic.view, changeSlice: changeSlice.view, pValues: pValues.view}
+      })
+    );
+    session.run();
+    return {
+      statistic: await session.readUint32(statistic),
+      pValues: await session.readFloat32(pValues)
+    };
+  });
+  expect(Array.from(result.statistic)).toEqual([4, 0, 0]);
+  expect(result.pValues).toHaveLength(3);
+  expect(Number.isFinite(result.pValues[0])).toBe(true);
+  expect(result.pValues[0]).toBeCloseTo(0.6023884238244043, 6);
+  expect(result.pValues[1]).toBeNaN();
+  expect(result.pValues[2]).toBe(1);
+  expect(Array.from(result.pValues).filter(Number.isFinite)).toHaveLength(2);
+  // Catalog rows are a complete finite rectangle, so test its real constant route separately.
+  const points = structuredClone(SPACETIME_TEST_POINTS);
+  points.features.forEach(feature => {
+    feature.properties!['value'] = 7;
+  });
+  const binding = SPACETIME_BINDINGS.find(candidate => candidate.id === 'pettitt-test')!;
+  const parameters = normalizeCatalogParameters(
+    binding,
+    Object.fromEntries(
+      binding.parameters.map(parameter => [
+        parameter.name,
+        SPACETIME_TEST_PARAMETERS[parameter.name] ?? parameter.defaultValue
+      ])
+    )
+  );
+  const output = await runCatalogOperationAsync(binding, parameters, {points}, {device});
+  expect(output.summary['pValueMinimum']).toBe(1);
+  expect(output.summary['testedLocations']).toBe(6);
+  const table = output.tables.find(candidate => candidate.id === 'points')!;
+  expect(table.columns['p_value']).toEqual(Array(48).fill(1));
+  for (const name of ['change_slice', 'change_time', 'segment'])
+    expect(table.columns[name]).toEqual(Array(48).fill(null));
+});
+
+test('Hawkes catalog four-event witness improves finite-window likelihood and reaches a stationary fit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const binding = SPACETIME_BINDINGS.find(candidate => candidate.id === 'space-time-hawkes')!;
+  const points = structuredClone(SPACETIME_TEST_POINTS);
+  points.features = points.features.slice(0, 4);
+  points.features.forEach((feature, row) => {
+    feature.geometry = {type: 'Point', coordinates: HAWKES_WITNESS_POSITIONS[row]};
+    feature.properties!['time'] = [0.55, 0.7, 0.85, 1][row];
+  });
+  const run = async (maximumIterations: number) => {
+    const parameters = normalizeCatalogParameters(binding, {
+      coordinateSystem: 'planar',
+      timeProperty: 'time',
+      timeUnit: 'seconds',
+      spatialThreshold: 4,
+      temporalThreshold: 2,
+      maximumParents: 4,
+      maximumIterations
+    });
+    const result = await runCatalogOperationAsync(binding, parameters, {points}, {device});
+    const estimates = [
+      'backgroundRate',
+      'branchingRatio',
+      'decayRate',
+      'spatialStandardDeviation'
+    ].map(name => Number(result.summary[name]));
+    estimates.forEach(value => expect(Number.isFinite(value)).toBe(true));
+    const likelihood = Number(result.summary['fittedLogLikelihood']);
+    expect(Number.isFinite(likelihood)).toBe(true);
+    // Independent evaluation uses the displayed parameters, not a second contributor run.
+    expect(likelihood).toBeCloseTo(getWitnessLogLikelihood(estimates), 4);
+    expect(result.summary['maximumIterations']).toBe(maximumIterations);
+    expect(result.summary['windowArea']).toBe(81);
+    expect(result.summary['windowDurationSeconds']).toBe(1);
+    const statistics = result.tables.find(table => table.id === 'statistics')!;
+    const displayed = (name: string) =>
+      statistics.columns['value'][statistics.columns['statistic'].indexOf(name)];
+    expect(displayed('maximumIterations')).toBe(maximumIterations);
+    for (const name of [
+      'backgroundRate',
+      'branchingRatio',
+      'decayRate',
+      'spatialStandardDeviation'
+    ])
+      expect(displayed(name)).toBe(result.summary[name]);
+    return {result, estimates, likelihood};
+  };
+  const first = await run(1);
+  // Independent profiled EM first update; initial objective is -16.974445977916307.
+  expect(first.likelihood).toBeGreaterThanOrEqual(-14.776229122727967 - 1e-4);
+  expect(first.result.summary['iterationCount']).toBe(1);
+  expect(first.result.summary['converged']).toBe(0);
+  expect(first.result.summary['iterationLimitReached']).toBe(1);
+  const final = await run(100);
+  expect(final.likelihood).toBeCloseTo(-12.526952698424633, 4);
+  final.estimates.forEach((value, index) =>
+    expect(value).toBeCloseTo(HAWKES_WITNESS_FINAL[index], 3)
+  );
+  for (const score of getWitnessLikelihoodScore(final.estimates)) {
+    expect(Number.isFinite(score)).toBe(true);
+    expect(Math.abs(score)).toBeLessThan(0.002);
+  }
+  expect(final.result.summary['converged']).toBe(1);
+  expect(final.result.summary['iterationLimitReached']).toBe(0);
+  expect(Number(final.result.summary['iterationCount'])).toBeLessThanOrEqual(100);
+});
 
 for (const binding of SPACETIME_BINDINGS)
   test(`${binding.id}: GPU binding matches ${binding.contributorNames[0]} called directly`, async () => {

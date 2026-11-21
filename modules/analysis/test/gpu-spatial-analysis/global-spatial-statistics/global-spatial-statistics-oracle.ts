@@ -63,7 +63,7 @@ export function getTwoSidedPValue(z: number): number {
   if (!Number.isFinite(z)) {
     return NaN;
   }
-  return erfc(Math.abs(z) / Math.SQRT2);
+  return Math.max(2 ** -126, erfc(Math.abs(z) / Math.SQRT2));
 }
 
 /** Normal p-value of z for the analytic tail (`'two-sided'`, `'greater'` or `'lesser'`). */
@@ -73,9 +73,9 @@ export function getPValue(z: number, alternative: Alternative = 'two-sided'): nu
   }
   switch (alternative) {
     case 'greater':
-      return Math.min(0.5 * erfc(z / Math.SQRT2), 1);
+      return Math.max(2 ** -126, Math.min(0.5 * erfc(z / Math.SQRT2), 1));
     case 'lesser':
-      return Math.min(0.5 * erfc(-z / Math.SQRT2), 1);
+      return Math.max(2 ** -126, Math.min(0.5 * erfc(-z / Math.SQRT2), 1));
     default:
       return getTwoSidedPValue(z);
   }
@@ -231,7 +231,12 @@ function getDenseWeights(
       const neighbor = weights.neighbors[slot];
       const column = position.get(neighbor);
       // Active slots only: a positive weight to another analysis row.
-      if (column !== undefined && neighbor !== row && weights.weights[slot] > 0) {
+      if (
+        column !== undefined &&
+        neighbor !== row &&
+        weights.weights[slot] > 0 &&
+        Number.isFinite(weights.weights[slot])
+      ) {
         matrix[position.get(row)!][column] = weights.weights[slot];
       }
     }
@@ -281,10 +286,10 @@ function getStatistic(
   expected: number,
   varianceNormality: number,
   varianceRandomization: number,
-  alternative: Alternative = 'two-sided'
+  alternative: Alternative = 'two-sided',
+  centeredDifference = statistic - expected
 ): GlobalStatisticOracle {
-  const z = (variance: number) =>
-    variance > 0 ? (statistic - expected) / Math.sqrt(variance) : NaN;
+  const z = (variance: number) => (variance > 0 ? centeredDifference / Math.sqrt(variance) : NaN);
   const zNormality = z(varianceNormality);
   const zRandomization = z(varianceRandomization);
   return {
@@ -422,7 +427,13 @@ export function computeGlobalSpatialStatisticsOracle(input: {
     }
     for (let slot = weights.offsets[row]; slot < weights.offsets[row + 1]; slot++) {
       const neighbor = weights.neighbors[slot];
-      if (neighbor < rowCount && neighbor !== row && base[neighbor] && weights.weights[slot] > 0) {
+      if (
+        neighbor < rowCount &&
+        neighbor !== row &&
+        base[neighbor] &&
+        weights.weights[slot] > 0 &&
+        Number.isFinite(weights.weights[slot])
+      ) {
         return false;
       }
     }
@@ -549,7 +560,7 @@ export function computeGlobalSpatialStatisticsOracle(input: {
       (scale * bivariateCross) / Math.sqrt(sumSquares * sumSquaresY),
       0,
       NaN,
-      orNaN((scale * scale * lagDeviation) / ((n - 1) * sumSquares)),
+      sumSquaresY > 0 ? orNaN((scale * scale * lagDeviation) / ((n - 1) * sumSquares)) : NaN,
       alternative
     ),
     joinCount: {
@@ -570,6 +581,57 @@ export function computeGlobalSpatialStatisticsOracle(input: {
   };
   const nanBlock = (block: GlobalStatisticOracle): GlobalStatisticOracle =>
     Object.fromEntries(Object.keys(block).map(key => [key, NaN])) as GlobalStatisticOracle;
+  if (
+    valid &&
+    matrix.every((row, first) =>
+      row.every((weight, second) => first === second || weight + matrix[second][first] > 0)
+    )
+  ) {
+    const symmetric = matrix.map((row, first) =>
+      row.map((weight, second) => (weight + matrix[second][first]) * 0.5)
+    );
+    const anchor = symmetric.reduce(
+      (maximum, row, first) =>
+        Math.max(
+          maximum,
+          row.reduce(
+            (minimum, weight, second) => (first === second ? minimum : Math.min(minimum, weight)),
+            Infinity
+          )
+        ),
+      -Infinity
+    );
+    const delta = symmetric.map((row, first) =>
+      row.map((weight, second) => (first === second ? 0 : (weight - anchor) / s0))
+    );
+    const moments = getWeightSums(delta);
+    const r0 = moments.s0,
+      r1 = moments.s1,
+      r2 = moments.s2;
+    const normal = ((2 * r1 + r2) * (n - 1) - 4 * r0 * r0) / (2 * (n + 1));
+    const random =
+      ((n - 1) * r1 * (n * n - 3 * n + 3 - (n - 1) * kurtosis) -
+        0.25 * (n - 1) * r2 * (n * n + 3 * n - 6 - (n * n - n + 2) * kurtosis) +
+        r0 * r0 * (n * n - 3 - (n - 1) ** 2 * kurtosis)) /
+      (n * (n - 2) * (n - 3));
+    let pairSum = 0;
+    for (let first = 0; first < n; first++)
+      for (let second = 0; second < n; second++)
+        pairSum += delta[first][second] * (x[first] - x[second]) ** 2;
+    const centeredDifference = ((n - 1) * pairSum) / (2 * sumSquares) - moments.s0;
+    // Near the null the centered form keeps invariant weights at exactly C=1; far from it the
+    // direct nonnegative quadratic keeps a tiny positive C (|C-1| < 1/2 selects the centered form).
+    result.geary = getStatistic(
+      Math.abs(centeredDifference) < 0.5
+        ? 1 + centeredDifference
+        : ((n - 1) * gearySum) / (2 * s0 * sumSquares),
+      1,
+      normal,
+      random,
+      alternative,
+      centeredDifference
+    );
+  }
   if (hasNegative) {
     // General G needs non-negative data: the whole block is NaN.
     result.getisOrdG = nanBlock(result.getisOrdG);

@@ -115,6 +115,7 @@ export function getUndeclaredCalls(source: string): string[] {
     'atomicExchange',
     'atomicCompareExchangeWeak',
     'workgroupBarrier',
+    'workgroupUniformLoad',
     'storageBarrier',
     'arrayLength',
     'vec2',

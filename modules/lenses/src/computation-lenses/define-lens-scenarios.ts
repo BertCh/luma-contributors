@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {registerLensScenario} from './registry';
+import {getLensScenarioPresentation} from './scenario-presentations';
 import type {LensScenarioDescriptor} from './types';
 
 /** Fields every scenario in a registration group shares; individual entries may override them. */
@@ -32,7 +33,8 @@ export type LensScenarioRow = Pick<LensScenarioDescriptor, 'id' | 'element' | 't
 
 /**
  * Registers one scenario from a data row. `entry` defaults to the first id segment, `audience` to
- * `'analyst'`, `rungs` to {@link DEFAULT_LENS_RUNGS} and `defaultRung` to `'result'`.
+ * `'analyst'`, `rungs` to {@link DEFAULT_LENS_RUNGS}, `defaultRung` to `'result'` and `presentation`
+ * to the scenario's entry in `scenario-presentations.ts`.
  */
 export function defineLensScenario(row: LensScenarioRow): void {
   registerLensScenario(createLensScenarioDescriptor(row));
@@ -45,8 +47,16 @@ export function createLensScenarioDescriptor(row: LensScenarioRow): LensScenario
     audience: 'analyst',
     rungs: DEFAULT_LENS_RUNGS,
     defaultRung: 'result',
+    ...withLensScenarioPresentation(row.id),
     ...row
   };
+}
+
+function withLensScenarioPresentation(
+  scenarioId: string
+): Pick<LensScenarioDescriptor, 'presentation'> {
+  const presentation = getLensScenarioPresentation(scenarioId);
+  return presentation ? {presentation} : {};
 }
 
 /**

@@ -188,7 +188,13 @@ describe('result table row domains', () => {
     ]);
     const {context, model, tree} = render(record);
     expect(RESULT_VIEW.describe(model, context).keyNumber).toEqual({label: 'rows', value: 2});
-    const rows = findViewNodes(tree, node => node.tag === 'tbody')[0];
+    expect(findViewNodes(tree, node => node.tag === 'table')).toHaveLength(2);
+    const outputTable = findViewNodes(tree, node => node.tag === 'table').find(table =>
+      findViewNodes(table, node => node.tag === 'th').some(
+        header => getViewNodeText(header) === 'output'
+      )
+    )!;
+    const rows = findViewNodes(outputTable, node => node.tag === 'tbody')[0];
     expect(rows.children).toHaveLength(2);
     expect(getViewNodeText(rows)).toContain('5, 6');
     expect(getViewNodeText(rows)).toContain('7, 8');

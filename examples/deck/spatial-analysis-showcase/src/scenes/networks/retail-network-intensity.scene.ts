@@ -250,7 +250,7 @@ export default defineScene<RetailNetworkIntensityOptions>({
     {id: 'inhomogeneousK', label: 'Intensity-reweighted K curve', kind: 'chart'}
   ],
   snippet: state =>
-    `new GPUNetworkKernelDensity({distances: completeNodeToEventDistances, eventCount: 96, quadratureLengths: halfEdgeLengthAtNodes, bandwidth: ${state.bandwidth}});\nnew GPUNetworkInhomogeneousK({correction: '${state.correction}', normalization: '${state.normalization}', maximumPairCount: 96 * 96});`,
+    `new GPUNetworkKernelDensity({distances: completeNodeToEventDistances, costsComplete, eventCount: 96, quadratureLengths: halfEdgeLengthAtNodes, bandwidth: ${state.bandwidth}, output: {intensity, kernelMass, validity}});\nnew GPUNetworkInhomogeneousK({correction: '${state.correction}', normalization: '${state.normalization}', maximumPairCount: 96 * 96});`,
   about: {
     what: 'First-order network kernel intensity and second-order inhomogeneous K for real Overture places on a local Chicago street graph.',
     why: 'A map of dense first-order intensity can look clustered even when event pairs have no residual interaction. Inhomogeneous K reweights pairs by an estimated spatially varying baseline.',

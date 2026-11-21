@@ -10,7 +10,7 @@ import {
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPUSpatialWeightsTransform,
   type GPUNeighborSearchKernel,
-  type GPUNeighborSearchWeightKind,
+  type GPUNeighborSearchWeightType,
   type GPUSpatialWeightsInformation,
   type GPUSpatialWeightsKernel
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -29,7 +29,7 @@ export type WeightsTransform =
   | 'binary'
   | 'double'
   | 'variance'
-  | 'symmetrize'
+  | 'average-reciprocal'
   | 'kernel';
 
 /** Everything the producer and the transform need. Buffer-write fields never recompile. */
@@ -43,7 +43,7 @@ export type WeightsConfig = {
   bandFactor: number;
   /** Maximum kNN distance in the same unit; 0 for unbounded. */
   knnCapFactor: number;
-  weightKind: GPUNeighborSearchWeightKind;
+  weightType: GPUNeighborSearchWeightType;
   kernel: GPUNeighborSearchKernel;
   power: number;
   distanceFloor: number;
@@ -124,6 +124,7 @@ export type WeightsCore = {
   createPartner: (name: string) => {
     csr: WeightsCsr;
     slots: number;
+    overflow: Buffer;
     prepare: (k: number) => Promise<boolean>;
     encode: (commandEncoder: CommandEncoder, k: number) => void;
   };
@@ -286,7 +287,7 @@ export function createWeightsCore(props: {
         spatialContext: geography.analysisFrame.spatialContext,
         id: 'neighbor-search',
         mode,
-        k: mode === 'knn' ? k : undefined,
+        neighborCount: mode === 'knn' ? k : undefined,
         gridSize: SEARCH_GRID,
         positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
         parameters: searchParameters.importToGraph(graph),
@@ -360,7 +361,7 @@ export function createWeightsCore(props: {
           }
         },
         output:
-          operation === 'symmetrize'
+          operation === 'average-reciprocal'
             ? importGraphBuffer(graph, 'scratch', scratch, 'float32', slots)
             : undefined,
         kernel: operation === 'kernel' ? config.transformKernel : undefined,
@@ -411,13 +412,12 @@ export function createWeightsCore(props: {
       searchParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: searchBounds,
-          radius:
-            config.source === 'band'
-              ? config.bandFactor * spacing
-              : config.knnCapFactor > 0
-                ? config.knnCapFactor * spacing
-                : undefined,
-          weightKind: config.weightKind,
+          searchRadius: config.source === 'band' ? config.bandFactor * spacing : undefined,
+          maximumDistance:
+            config.source !== 'band' && config.knnCapFactor > 0
+              ? config.knnCapFactor * spacing
+              : undefined,
+          weightType: config.weightType,
           kernel: config.kernel,
           power: config.power,
           distanceFloor: config.distanceFloor,
@@ -432,7 +432,7 @@ export function createWeightsCore(props: {
       const transformKey = getTransformKey(config);
       if (transformKey) {
         compiled.get(transformKey)!.encode(commandEncoder, {parameters: undefined});
-        if (config.transform === 'symmetrize') {
+        if (config.transform === 'average-reciprocal') {
           commandEncoder.copyBufferToBuffer({
             sourceBuffer: scratch,
             destinationBuffer: csr.weights,
@@ -456,7 +456,7 @@ export function createWeightsCore(props: {
         `${name}-parameters`,
         'float32',
         GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-        getGPUNeighborSearchParameterValues({bounds: searchBounds, weightKind: 'binary'})
+        getGPUNeighborSearchParameterValues({bounds: searchBounds, weightType: 'binary'})
       );
       const build = (k: number) => {
         const graph = new GPUCommandGraph<void>(device, {id: `${id}-${name}-knn-${k}`});
@@ -465,7 +465,7 @@ export function createWeightsCore(props: {
             spatialContext: geography.analysisFrame.spatialContext,
             id: `${name}-search`,
             mode: 'knn',
-            k,
+            neighborCount: k,
             gridSize: SEARCH_GRID,
             positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
             parameters: partnerParameters.importToGraph(graph),
@@ -477,6 +477,7 @@ export function createWeightsCore(props: {
       return {
         csr: partnerCsr,
         slots,
+        overflow: partnerOverflow,
         prepare: (k: number) => getOrCompile(`${name}-knn-${k}`, () => build(k)),
         encode: (commandEncoder: CommandEncoder, k: number) =>
           compiled.get(`${name}-knn-${k}`)!.encode(commandEncoder, {parameters: undefined})

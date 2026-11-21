@@ -125,6 +125,36 @@ it('getGPUTimeWindowFilterWordParameterValues validates its input', () => {
   expect(() => getGPUTimeWindowFilterWordParameterValues({start: NaN, end: 1})).toThrow();
 });
 
+it('W2-05 reconstructs numeric word endpoints exactly before touching the target', () => {
+  // -1 + f32(0.875) is -0.125, distinct from this representable float64 endpoint.
+  const endpoint = -0.125 + 2 ** -56;
+  const target = new Uint32Array(10).fill(0xdeadbeef);
+  for (const instant of [endpoint, 2 ** 53]) {
+    expect(() =>
+      getGPUTimeWindowFilterWordParameterValues({start: instant, end: instant}, target)
+    ).toThrow(/exactly representable|safe integer/);
+    expect(Array.from(target)).toEqual(Array(10).fill(0xdeadbeef));
+  }
+  expect(
+    Array.from(
+      getGPUTimeWindowFilterWordParameterValues({
+        start: 9007199254740992n,
+        end: 9007199254740992n
+      })
+    )
+  ).toEqual([0, 2097152, 0, 2097152, 0, 0, 0, 0]);
+  // Exact equal and reversed endpoints are valid windows.
+  for (const [start, end] of [
+    [-0.125, -0.125],
+    [0.5, -0.125]
+  ]) {
+    const packed = getGPUTimeWindowFilterWordParameterValues({start, end});
+    const fractions = new Float32Array(packed.buffer, packed.byteOffset + 16, 2);
+    expect(Number(joinTimeWords(packed[0], packed[1])) + fractions[0]).toBe(start);
+    expect(Number(joinTimeWords(packed[2], packed[3])) + fractions[1]).toBe(end);
+  }
+});
+
 // Review B-07: ordering by the sign of the wrapped difference is wrong when |a - b| >= 2^63, so an
 // INT64_MIN/INT64_MAX "unbounded" window rejected pre-1970 rows. The functions below port the WGSL
 // statement for statement in uint32 arithmetic (Math.imul-free: only xor, compare and borrow
@@ -215,4 +245,48 @@ it('time-word comparison is exact for every pair of extreme Int64 values', () =>
   expect(compareWords(maximum, toWords(-1n))).toBe(1);
   expect(compareWords(toWords(0n), minimum)).toBe(1);
   expect(compareWords(maximum, minimum)).toBe(1);
+});
+
+it('DPC-108: validates packed word fades and fractional ordering before writing target', () => {
+  const invalid = [
+    {start: 0.5, end: 0.5 + 2 ** -53},
+    {start: 0.5 + 2 ** -53, end: 0.5},
+    {start: 0n, end: -1e-9},
+    ...(['startFadeDuration', 'endFadeDuration'] as const).flatMap(name =>
+      [1e-50, 1e40].map(value => ({start: 0n, end: 1n, [name]: value}))
+    )
+  ];
+  for (const settings of invalid) {
+    const target = new Uint32Array(10).fill(17);
+    expect(() => getGPUTimeWindowFilterWordParameterValues(settings, target)).toThrow();
+    expect(Array.from(target)).toEqual(new Array(10).fill(17));
+  }
+  // Exact word times, equal endpoints and deliberately reversed windows remain legal.
+  for (const [start, end] of [
+    [5n, 5n],
+    [6n, 5n],
+    [5n, 6n]
+  ]) {
+    const target = new Uint32Array(10).fill(17);
+    expect(
+      getGPUTimeWindowFilterWordParameterValues(
+        {start, end, startFadeDuration: 0, endFadeDuration: 0},
+        target
+      )
+    ).toBe(target);
+    expect(Array.from(target)).toEqual([Number(start), 0, Number(end), 0, 0, 0, 0, 0, 17, 17]);
+  }
+});
+
+it('B3: rejects rounding across either inclusive word boundary before writing the target', () => {
+  // End 1-2^-28 rounds its fraction up and carries into integer row 1n; start just above
+  // exactly representable fraction 0.5 rounds down and would admit row 0.5.
+  for (const settings of [
+    {start: -4n, end: 1 - 2 ** -28},
+    {start: 0.5 + 2 ** -28, end: 4n}
+  ]) {
+    const target = new Uint32Array(8).fill(17);
+    expect(() => getGPUTimeWindowFilterWordParameterValues(settings, target)).toThrow();
+    expect(Array.from(target)).toEqual(new Array(8).fill(17));
+  }
 });

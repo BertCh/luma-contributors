@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateCapacity,
+  validateFiniteNumber,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /** Number of leading control float32 elements of a {@link GPUSimilarLocations} parameter view. */
 export const GPU_SIMILAR_LOCATIONS_CONTROL_LENGTH = 4;
 
@@ -10,6 +16,13 @@ export const GPU_SIMILAR_LOCATIONS_NO_RANK = 0xffffffff;
 
 /** Returns the parameter view length for `columnCount` attribute columns: 4 controls plus weights. */
 export function getGPUSimilarLocationsParameterLength(columnCount: number): number {
+  validateCapacity(
+    'getGPUSimilarLocationsParameterLength',
+    'columnCount',
+    columnCount,
+    1,
+    Math.floor(0xffffffff / 256)
+  );
   return GPU_SIMILAR_LOCATIONS_CONTROL_LENGTH + columnCount;
 }
 
@@ -48,9 +61,21 @@ export function getGPUSimilarLocationsParameterValues(
   if (!Number.isSafeInteger(settings.resultCount) || settings.resultCount < 0) {
     throw new Error('Similar locations resultCount must be a non-negative integer');
   }
+  validateRequirement(
+    'getGPUSimilarLocationsParameterValues',
+    Math.fround(settings.resultCount) === settings.resultCount,
+    'resultCount must be exactly representable in float32; choose a representable integer'
+  );
   if (settings.weights && settings.weights.length !== columnCount) {
     throw new Error('Similar locations weights must have one entry per attribute');
   }
+  validateRequirement(
+    'getGPUSimilarLocationsParameterValues',
+    settings.direction === undefined ||
+      settings.direction === 'most' ||
+      settings.direction === 'least',
+    `direction must be 'most' or 'least'; received ${settings.direction}`
+  );
   target[0] = settings.resultCount;
   target[1] = settings.direction === 'least' ? 1 : 0;
   target[2] = settings.excludeReference === false ? 0 : 1;
@@ -60,6 +85,12 @@ export function getGPUSimilarLocationsParameterValues(
     if (!Number.isFinite(weight) || weight < 0) {
       throw new Error('Similar locations weights must be finite and non-negative');
     }
+    validateFiniteNumber(
+      'getGPUSimilarLocationsParameterValues',
+      `weights[${attribute}]`,
+      weight,
+      0
+    );
     target[GPU_SIMILAR_LOCATIONS_CONTROL_LENGTH + attribute] = weight;
   }
   return target;

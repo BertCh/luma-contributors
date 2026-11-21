@@ -13,7 +13,7 @@ import {
   getGPURasterSnapshotCovarianceParameterValues,
   getGPURasterSnapshotEOFDecomposition
 } from '@luma-contributors/analysis/raster-analysis';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   createRasterTimeSeriesHarness,
   getMaximumAbsoluteDifference
@@ -343,4 +343,163 @@ it('RTS-07 lagged correlation reports short support and zero variance', async ()
   // Cell 0 has two valid pairs, below the minimum; cell 1 is constant.
   expect(result['status']).toEqual([1, 2]);
   expect(result['correlations'].every(Number.isNaN)).toBe(true);
+});
+
+it('RT-132 RT-133 lagged correlation is scale and translation invariant on the device', async () => {
+  const device = await getDevice();
+  const harness = createRasterTimeSeriesHarness(device);
+  // The index is [0, 1, 2, 4] translated by 1e6. Cells 0-4 are positive-slope affine images of
+  // [0, 1, 2, 4] at magnitudes 1e-20 to 1e20 (r = 1 exactly); cell 5 is [1, 3, 2, 5], and
+  // /usr/bin/python3 np.corrcoef([0, 1, 2, 4], [1, 3, 2, 5])[0, 1] = 0.8857142857142857.
+  const index = [1e6, 1e6 + 1, 1e6 + 2, 1e6 + 4];
+  const cells = [
+    [1e-20, 2e-20, 3e-20, 5e-20],
+    [1, 2, 3, 5],
+    [1e10, 2e10, 3e10, 5e10],
+    [1e20, 2e20, 3e20, 5e20],
+    [1e6, 1e6 + 1, 1e6 + 2, 1e6 + 4],
+    [1, 3, 2, 5]
+  ];
+  const cellCount = cells.length;
+  const sliceCount = index.length;
+  const result = await harness.run(
+    new GPURasterLaggedCorrelation({
+      cellCount,
+      sliceCount,
+      values: harness.floats(cells.flat()),
+      referenceIndex: harness.floats(index),
+      parameters: harness.floats(getGPURasterLaggedCorrelationParameterValues()),
+      lags: [0],
+      output: {
+        correlations: harness.output('correlations', 'float32', cellCount),
+        status: harness.output('status', 'uint32', cellCount),
+        pairCount: harness.output('pairs', 'uint32', cellCount)
+      }
+    })
+  );
+  expect(result['status']).toEqual([0, 0, 0, 0, 0, 0]);
+  expect(result['pairs']).toEqual([4, 4, 4, 4, 4, 4]);
+  const expected = [1, 1, 1, 1, 1, 0.8857142857142857];
+  for (let cell = 0; cell < cellCount; cell++) {
+    expect(Number.isFinite(result['correlations'][cell])).toBe(true);
+    expect(Math.abs(result['correlations'][cell] - expected[cell])).toBeLessThan(1e-5);
+  }
+});
+
+it('FLT-06 decodes the centred two-slice Gram matrix before eigendecomposition', async () => {
+  const device = await getDevice();
+  const harness = createRasterTimeSeriesHarness(device);
+  const parameters = getGPURasterSnapshotCovarianceParameterValues(
+    {maximumValueMagnitude: 10000001},
+    1
+  );
+  const covariance = await harness.run(
+    new GPURasterSnapshotCovariance({
+      cellCount: 1,
+      sliceCount: 2,
+      values: harness.floats([10000000, 10000001]),
+      parameters: harness.floats(parameters),
+      output: {
+        covarianceWords: harness.output('gram', 'uint32', 9),
+        keptCellCount: harness.output('kept', 'uint32', 1)
+      }
+    })
+  );
+  // X=[-.5,.5] exactly, so X'X=[.25,-.25;-.25,.25], independent of either contributor.
+  const matrix = getGPURasterSnapshotCovarianceMatrix(covariance['gram'], 2, parameters[0]);
+  expect(Array.from(matrix)).toEqual([0.25, -0.25, -0.25, 0.25]);
+  expect(covariance['kept']).toEqual([1]);
+  const decomposition = getGPURasterSnapshotEOFDecomposition(matrix, 2, 1);
+  const projectionHarness = createRasterTimeSeriesHarness(device);
+  const projection = await projectionHarness.run(
+    new GPURasterEOFProjection({
+      cellCount: 1,
+      sliceCount: 2,
+      modeCount: 1,
+      values: projectionHarness.floats([10000000, 10000001]),
+      parameters: projectionHarness.floats(parameters),
+      temporalModes: projectionHarness.floats(decomposition.temporalModes),
+      singularValues: projectionHarness.floats(decomposition.singularValues),
+      output: {
+        eofs: projectionHarness.output('eofs', 'float32', 1),
+        status: projectionHarness.output('code', 'uint32', 1)
+      }
+    })
+  );
+  expect(projection['code']).toEqual([0]);
+  expect(Number.isFinite(projection['eofs'][0])).toBe(true);
+  expect(Math.abs(projection['eofs'][0] + 1)).toBeLessThan(1e-6);
+});
+
+it('review B3 preserves the small signed-field covariance entry', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  const parameters = getGPURasterSnapshotCovarianceParameterValues(
+    {maximumValueMagnitude: 32768},
+    1
+  );
+  const result = await harness.run(
+    new GPURasterSnapshotCovariance({
+      cellCount: 1,
+      sliceCount: 3,
+      values: harness.floats([32768, -32768, 1 / 1024]),
+      parameters: harness.floats(parameters),
+      output: {
+        covarianceWords: harness.output('words', 'uint32', 18),
+        keptCellCount: harness.output('kept', 'uint32', 1)
+      }
+    })
+  );
+  const matrix = getGPURasterSnapshotCovarianceMatrix(result['words'], 3, parameters[0]);
+  // Exact mean 1/3072; (32768 - 1/3072) * (1/1024 - 1/3072) = 21.333333121405707.
+  expect(parameters[0]).toBe(-61);
+  expect(result['kept']).toEqual([1]);
+  expect(Number.isFinite(matrix[2])).toBe(true);
+  expect(Math.abs(matrix[2] - 21.333333121405707)).toBeLessThan(2e-6);
+});
+
+it('review B7 constant six-slice cells have exactly zero EOF projection', async () => {
+  const harness = createRasterTimeSeriesHarness(await getDevice());
+  // Reference field [1,2,-3,0,0,0]/1024 has zero mean, singular sqrt(14)/1024,
+  // and unit temporal mode [1,2,-3,0,0,0]/sqrt(14). Its own projection is 1.
+  const result = await harness.run(
+    new GPURasterEOFProjection({
+      cellCount: 2,
+      sliceCount: 6,
+      modeCount: 1,
+      values: harness.floats([
+        10000002,
+        10000002,
+        10000002,
+        10000002,
+        10000002,
+        10000002,
+        1 / 1024,
+        2 / 1024,
+        -3 / 1024,
+        0,
+        0,
+        0
+      ]),
+      parameters: harness.floats(
+        getGPURasterSnapshotCovarianceParameterValues({maximumValueMagnitude: 10000002}, 2)
+      ),
+      temporalModes: harness.floats([
+        1 / Math.sqrt(14),
+        2 / Math.sqrt(14),
+        -3 / Math.sqrt(14),
+        0,
+        0,
+        0
+      ]),
+      singularValues: harness.floats([Math.sqrt(14) / 1024]),
+      output: {
+        eofs: harness.output('eofs', 'float32', 2),
+        status: harness.output('code', 'uint32', 2)
+      }
+    })
+  );
+  expect(result['code']).toEqual([0, 0]);
+  expect(result['eofs'][0]).toBe(0);
+  expect(Number.isFinite(result['eofs'][1])).toBe(true);
+  expect(Math.abs(result['eofs'][1] - 1)).toBeLessThan(1e-6);
 });

@@ -92,10 +92,63 @@ fn geodesicWrapLongitudeDelta(delta: f32) -> f32 {
   return delta - 360.0 * round(delta / 360.0);
 }
 
+// Exact turn reduction of finite f32 endpoints. Floating division/subtraction can erase the
+// remainder of 2^62 degrees. Decode the significand instead; integer remainders cannot be
+// reassociated by Metal. 104 is the largest shift (exponent 127 minus 23 significand bits).
+fn geodesicReduceLongitude(longitude: f32) -> f32 {
+  if (abs(longitude) <= 180.0) { return longitude; }
+  let bits = bitcast<u32>(longitude);
+  let exponentBits = (bits >> 23u) & 255u;
+  if (exponentBits == 255u) { return bitcast<f32>(0x7fc00000u | (bits & 0u)); }
+  let exponent = i32(exponentBits) - 127;
+  let significand = (bits & 0x7fffffu) | 0x800000u;
+  var remainder = 0.0;
+  if (exponent < 23) {
+    let denominator = 1u << u32(23 - exponent);
+    remainder = f32(significand % (720u * denominator)) / f32(denominator);
+  } else {
+    var integerRemainder = significand % 720u;
+    for (var shift = 0u; shift < 104u; shift++) {
+      if (shift >= u32(exponent - 23)) { break; }
+      integerRemainder = (integerRemainder * 2u) % 720u;
+    }
+    remainder = f32(integerRemainder);
+  }
+  // Retain modulo-720 turn parity for round-to-even half-turn ties, like the core CPU helper.
+  return select(remainder, -remainder, (bits >> 31u) != 0u);
+}
+
+// Canonicalize a modulo-720 endpoint with integer units. Floating reduced - 360*turns
+// could be reassociated into the caller's subtraction, losing a tiny trip from 360 degrees again.
+fn geodesicCanonicalLongitude(reduced: f32) -> f32 {
+  if (abs(reduced) <= 180.0) { return reduced; }
+  let bits = bitcast<u32>(reduced);
+  let exponentBits = (bits >> 23u) & 255u;
+  if (exponentBits == 255u) { return bitcast<f32>(0x7fc00000u | (bits & 0u)); }
+  let denominator = 1u << (150u - exponentBits);
+  let significand = (bits & 0x7fffffu) | 0x800000u;
+  let turnUnits = 360u * denominator;
+  let halfTurnUnits = 180u * denominator;
+  var turns = significand / turnUnits;
+  let remainder = significand % turnUnits;
+  if (remainder > halfTurnUnits || (remainder == halfTurnUnits && (turns % 2u) != 0u)) {
+    turns += 1u;
+  }
+  let canonical = f32(i32(significand) - i32(turns * turnUnits)) / f32(denominator);
+  return select(canonical, -canonical, (bits >> 31u) != 0u);
+}
+
 // Subtract near the shared antimeridian before forming the small angular separation.
 // Wrapping (destination - source) afterward cannot recover bits lost by that large subtraction:
 // 179.341 -> -179.877 loses about 1.6 meters on the OpenFlights sphere fixture.
 fn geodesicLongitudeDelta(source: f32, destination: f32) -> f32 {
+  let reducedSource = geodesicReduceLongitude(source);
+  let reducedDestination = geodesicReduceLongitude(destination);
+  let canonicalSource = geodesicCanonicalLongitude(reducedSource);
+  let canonicalDestination = geodesicCanonicalLongitude(reducedDestination);
+  // These differences are exact whole turns; avoid backend-dependent round(+-0.5) ties.
+  let sourceTurns = i32((reducedSource - canonicalSource) / 360.0);
+  let destinationTurns = i32((reducedDestination - canonicalDestination) / 360.0);
   // WGSL permits floating-point reassociation: the two seam-relative subtractions below
   // can become (destination - source) - 2 * halfTurn, restoring the cancellation.
   // For opposite seam quadrants, every f32 endpoint is exactly a multiple of 2^-17
@@ -103,16 +156,22 @@ fn geodesicLongitudeDelta(source: f32, destination: f32) -> f32 {
   // i32: magnitudes stay below 2^26, with no quantization or integer overflow. Only
   // the final, small difference is converted back to f32, so reassociation cannot
   // reintroduce a large floating-point subtraction.
-  if (abs(source) > 90.0 && abs(source) <= 180.0 &&
-      abs(destination) > 90.0 && abs(destination) <= 180.0 &&
-      ((source < 0.0) != (destination < 0.0))) {
-    let sourceUnits = i32(source * 131072.0);
-    let destinationUnits = i32(destination * 131072.0);
-    let turnUnits = select(-47185920, 47185920, source > 0.0);
+  if (abs(canonicalSource) > 90.0 && abs(canonicalSource) <= 180.0 &&
+      abs(canonicalDestination) > 90.0 && abs(canonicalDestination) <= 180.0 &&
+      ((canonicalSource < 0.0) != (canonicalDestination < 0.0))) {
+    let sourceUnits = i32(canonicalSource * 131072.0);
+    let destinationUnits = i32(canonicalDestination * 131072.0);
+    let turnUnits = select(-47185920, 47185920, canonicalSource > 0.0);
     return f32(destinationUnits - sourceUnits + turnUnits) * 0.00000762939453125;
   }
-  let halfTurn = 180.0 * round((destination - source) / 360.0);
-  return (destination - halfTurn) - (source + halfTurn);
+  // Canonicalize before subtraction: (tiny + 180) - 180 loses a sub-ulp target from a
+  // 360-degree origin. Only exact half-turn ties depend on the removed whole-turn parity.
+  let difference = canonicalDestination - canonicalSource;
+  if (abs(difference) == 180.0) {
+    let oddTurns = ((destinationTurns - sourceTurns) % 2) != 0;
+    return select(difference, -difference, oddTurns);
+  }
+  return geodesicWrapLongitudeDelta(difference);
 }
 
 // cos(latitude) as sin(colatitude): 90 - |lat| is exact in f32, so the cosine keeps its relative
@@ -122,7 +181,7 @@ fn geodesicCosLatitude(latitudeDegrees: f32) -> f32 {
 }
 
 fn geodesicUnitVector(lngLat: vec2<f32>) -> vec3<f32> {
-  let lambda = lngLat.x * GEODESIC_DEGREES_TO_RADIANS;
+  let lambda = geodesicCanonicalLongitude(geodesicReduceLongitude(lngLat.x)) * GEODESIC_DEGREES_TO_RADIANS;
   let phi = lngLat.y * GEODESIC_DEGREES_TO_RADIANS;
   let cosPhi = geodesicCosLatitude(lngLat.y);
   return vec3<f32>(cosPhi * cos(lambda), cosPhi * sin(lambda), sin(phi));
@@ -249,13 +308,18 @@ fn geodesicDestination(origin: vec2<f32>, bearingDegrees: f32, angle: f32) -> ve
   );
 }
 
+// Apply a whole longitude turn to the known target, never reconstruct it as source + delta:
+// the latter loses a small target longitude when the endpoints have very different magnitudes.
+fn geodesicUnwrapTarget(source: vec2<f32>, destination: vec2<f32>) -> vec2<f32> {
+  if (abs(destination.x - source.x) <= 180.0) { return destination; }
+  let turn = round((destination.x - source.x) / 360.0);
+  return vec2<f32>(destination.x - 360.0 * turn, destination.y);
+}
+
 fn geodesicInterpolate(a: vec2<f32>, b: vec2<f32>, angle: f32, fraction: f32) -> vec2<f32> {
   // Endpoints are known even when the interior path is nonunique or ill-conditioned.
   if (fraction == 0.0) { return a; }
-  if (fraction == 1.0) {
-    if (abs(b.x - a.x) <= 180.0) { return b; }
-    return vec2<f32>(a.x + geodesicLongitudeDelta(a.x, b.x), b.y);
-  }
+  if (fraction == 1.0) { return geodesicUnwrapTarget(a, b); }
   if (GEODESIC_PI - angle < 1e-6) {
     return vec2<f32>(bitcast<f32>(0x7fc00000u | (bitcast<u32>(a.x) & 0u)));
   }
@@ -270,7 +334,15 @@ fn geodesicInterpolate(a: vec2<f32>, b: vec2<f32>, angle: f32, fraction: f32) ->
       unitB * (sin(fraction * angle) / sinAngle);
   }
   let lngLat = geodesicFromUnitVector(vector);
-  // Keep longitudes continuous with the start point (unwrapped across the antimeridian).
+  // Float32 sin(pi) may choose the opposite sign of the half-turn meridian
+  // after crossing a pole. Align interiors to the known endpoint's branch,
+  // rather than letting that transcendental rounding create a 360-degree jump.
+  let endpoint = geodesicUnwrapTarget(a, b);
+  if (abs(geodesicLongitudeDelta(a.x, b.x)) == 180.0) {
+    let branch = a.x + (endpoint.x - a.x) * fraction;
+    return vec2<f32>(branch + geodesicWrapLongitudeDelta(lngLat.x - branch), lngLat.y);
+  }
+  // Keep ordinary longitudes continuous with the start (unwrapped across the antimeridian).
   return vec2<f32>(a.x + geodesicWrapLongitudeDelta(lngLat.x - a.x), lngLat.y);
 }
 

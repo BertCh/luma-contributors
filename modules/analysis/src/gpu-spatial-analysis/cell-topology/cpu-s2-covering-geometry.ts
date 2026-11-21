@@ -109,10 +109,33 @@ export function isPointOnCoveringArc(
   tolerance: number,
   normal = normalizeCoveringVector(getCoveringCross(first, second))
 ): boolean {
+  const firstDirection = normalizeCoveringVector(first);
+  const secondDirection = normalizeCoveringVector(second);
+  const pointDirection = normalizeCoveringVector(point);
+  const getChordDistance = (endpoint: CPUCoveringVector) =>
+    Math.hypot(
+      endpoint[0] - pointDirection[0],
+      endpoint[1] - pointDirection[1],
+      endpoint[2] - pointDirection[2]
+    );
+  if (
+    Math.min(getChordDistance(firstDirection), getChordDistance(secondDirection)) <=
+    2 * Math.sin(tolerance * 0.5)
+  ) {
+    return true;
+  }
   return (
-    Math.abs(getCoveringDot(normal, point)) <= tolerance &&
-    getCoveringDot(getCoveringCross(first, point), normal) >= -tolerance &&
-    getCoveringDot(getCoveringCross(point, second), normal) >= -tolerance
+    getCoveringDot(
+      [
+        firstDirection[0] + secondDirection[0],
+        firstDirection[1] + secondDirection[1],
+        firstDirection[2] + secondDirection[2]
+      ],
+      pointDirection
+    ) > 0 &&
+    getCoveringDot(getCoveringCross(firstDirection, pointDirection), normal) >= 0 &&
+    getCoveringDot(getCoveringCross(pointDirection, secondDirection), normal) >= 0 &&
+    Math.abs(getCoveringDot(normal, pointDirection)) <= Math.sin(tolerance)
   );
 }
 

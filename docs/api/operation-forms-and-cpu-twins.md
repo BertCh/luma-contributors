@@ -22,14 +22,63 @@ Operation forms and twins are exported from their contributor's domain entry poi
 When an existing class already uses the operation name, the wrapper is named
 `GPU<Name>GraphOperation`, for example `GPULocationAllocationGraphOperation`.
 
+Family contracts describe the named inputs, outputs and CPU/GPU differences for
+[movement coverage](./gpu-spatial-analysis/movement-coverage.md#operation-forms),
+[home range and recursion](./gpu-spatial-analysis/home-ranges-and-recursions.md#operation-forms),
+[HEALPix point-to-cell](./gpu-spatial-analysis/healpix-cells-dggs-json.md#graph-operation-forms),
+[cell indexing and measures](./gpu-spatial-analysis/operators-cells.md#operation-forms-indexing-and-measures),
+[S2 covers](./gpu-spatial-analysis/global-coordinates.md#operation-forms-s2-covers-and-intrinsic-arc-overlay),
+[arc overlay](./gpu-spatial-analysis/global-coordinates.md#operation-forms-s2-covers-and-intrinsic-arc-overlay),
+[trajectory cleaning](./gpu-spatial-analysis/movement-semantics.md#operation-forms-cleaning),
+[stays, segments and locations](./gpu-spatial-analysis/movement-semantics.md#operation-forms-stays-triplegs-and-locations),
+and [track similarity](./gpu-spatial-analysis/track-similarity-measures.md#operation-forms).
+
 ## Choosing CPU or GPU
 
-The coregionalization and variogram fit operations capture shape, options, model order and
+Quantile and Diggle operations require a positive integer `rowCount` at construction. GPU lowering checks the resolved values or positions against that exact population, just as CPU execution does; a longer input cannot silently add rows when optional outputs are omitted.
+
+Both Diggle wrappers capture spatial and temporal context descriptors at construction, including frame origin/units/extent and calendar-axis steps. Later edits to the caller's encoding, epoch, frame or axis cannot change validation or execution on a subsequent run.
+
+The region graph, coregionalization and variogram fit operations capture shape, options, model order and
 port names at construction. Reusing an operation preserves that contract even if the caller
 later edits its props, model array or nested output maps. Input graph values still change
 per run; construct a new operation when changing its configuration or names.
 
-A CPU twin computes in float64 and rounds once to the declared output format. Its exported pure
+Both multiple-testing adjustment wrappers snapshot `rowCount`, `method`, `minimumFamilySize`
+and the declared input and output names at construction, including nested output names.
+`CPUMultipleTestingAdjustmentOperation` and `GPUMultipleTestingAdjustmentOperation` therefore
+retain those settings after the caller edits its props. Construct a new operation to change the
+method, sizes or destinations. Input p-value contents remain per-frame and can change between runs.
+
+Region-graph wrappers copy grid metadata, including its affine array, and nested output/status names at construction. The direct `GPURasterRegionGraph` contributor likewise captures its route, budget, threshold, grid and output map while retaining the bound graph views. Editing the caller's construction objects afterward cannot change the declared contract, merge-node budget or output bindings.
+
+Region CRS snapshots read the declared `authority`, `wellKnownText` and `projectionJson` fields as plain data. Transparent proxy descriptors are accepted; nested projection arrays and records are copied, so later edits to their backing objects do not change the captured metadata.
+
+Many CPU twins compute in float64 and round once to the declared output format; consult the
+producer's arithmetic contract. CPU network routing currently has these producer-specific rules:
+
+| Public CPU form | Retained default | Selectable precision |
+| --- | --- | --- |
+| `computeNetworkCostTableOnCPU` / `CPUNetworkCostTableOperation` | `'float32-per-edge'` before cutoff and label comparisons. | Pure input `costPrecision` / operation `props.costPrecision`: `'float32-per-edge'` or `'float64'`. |
+| `computeNetworkCostMatrixOnCPU` / `CPUNetworkCostMatrixOperation` | `'float64'`, then Float32 output. | Same two values for completed and bounded searches. |
+| `computeNetworkReachabilityOnCPU` / `CPUNetworkReachabilityOperation` | `'float64'`, then Float32 output. | Same two values, including predecessor tight-edge tests. |
+| `computeNetworkServiceAreasOnCPU` / `CPUNetworkServiceAreasOperation` | `'float64'`, then Float32 output. | Same two values, including facility-label and predecessor comparisons. |
+
+All four pure CPU inputs accept `costPrecision`; their named CPU operation forms capture the same option from construction props. Unknown values are rejected. GPU operations accept only `'float32-per-edge'`. Precision changes addition and cutoff membership, not units or GPU scheduling. Import these public functions and operations from `@luma-contributors/analysis/gpu-network`.
+
+Only `undefined` selects a default; unknown values, including JavaScript `null`, are rejected.
+Sparse float64 tables omit costs that are not representable in float32 and clear `complete`,
+even when the search converges and storage fits.
+
+For the three-node chain `0 → 1 → 2`, stored Float32 edge weights `[0.1, 0.4]` and inclusive
+cutoff `0.5`, `'float32-per-edge'` admits node 2 at cost `0.5`; `'float64'` excludes it because
+the exact binary64 sum of the stored edges is `0.5000000074505806`. Thus the default sparse table
+includes node 2, while the default dense matrix and reachability exclude it. The distinction holds
+with completed searches and explicit sufficient iteration budgets. GPU forms use Float32 arithmetic;
+selecting CPU precision does not change GPU arithmetic or scheduling. See
+[routing arithmetic and cutoffs](./gpu-network/operators.md#gpunetworkcosttable).
+
+An exported pure
 `compute<Name>OnCPU` function also works with arrays outside a graph. Prefer that function when
 the data is already on the CPU and there are no GPU stages to compose. A reference-tier contributor
 with a twin should generally use that twin; check the family's documentation for its limits.
@@ -52,8 +101,8 @@ Mixed outputs belong to the invocation; caller-provided output targets are unsup
 
 In this checkout, after the repository's `nvm use` and `yarn install` setup, run
 `node_modules/.bin/vitest run --project node --maxWorkers=2 modules/analysis/test/analysis-core/first-run-docs.node.spec.ts -t 'CPU variogram walkthrough'`.
-This executes the first block below against workspace sources and checks the expected parameters,
-without a GPU or a package build. The package is currently unpublished; until an alpha is released,
+This executes the first block below against workspace sources, prints the fitted model and checks
+the expected parameters, without a GPU or a package build. The package is currently unpublished; until an alpha is released,
 use the workspace for this first run.
 In an installed alpha, use the same imports from your TypeScript application with the required
 `apache-arrow` peer and luma.gl peers installed.
@@ -66,7 +115,12 @@ for this first step. It fits three families to an exponential model with nugget 
 1.5 and effective range 2.2.
 
 ```ts
-import {computeVariogramModelFitOnCPU} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  computeVariogramModelFitOnCPU,
+  fitVariogramModel,
+  fitVariogramModelWithDiagnostics,
+  type VariogramModelFitDiagnostics
+} from '@luma-contributors/analysis/dataframe-analysis';
 
 const models = ['gaussian', 'exponential', 'spherical'] as const;
 const distances = Float32Array.from({length: 20}, (_, index) => (index + 1) * 0.2);
@@ -81,17 +135,38 @@ const bins = {
 const cpuFit = computeVariogramModelFitOnCPU(bins, {models, weighting: 'pairs'});
 // Row 1 is exponential because output rows follow models.
 const exponentialParameters = cpuFit.parameters.subarray(4, 8);
-// Approximately [0.2, 1.5, 2.2, 0], with cpuFit.status[1] === 0.
+console.log({
+  model: 'exponential',
+  nugget: exponentialParameters[0],
+  partialSill: exponentialParameters[1],
+  effectiveRange: exponentialParameters[2],
+  status: cpuFit.status[1]
+});
+// Approximately {model: 'exponential', nugget: 0.2, partialSill: 1.5,
+//                effectiveRange: 2.2, status: 0}.
+
+const fitOptions = {model: 'exponential', weighting: 'pairs'} as const;
+const coefficients = fitVariogramModel(bins, fitOptions); // No flag: coefficients directly.
+const diagnosticFit: VariogramModelFitDiagnostics = fitVariogramModelWithDiagnostics(bins, fitOptions);
+// The dedicated helper always returns diagnostics, with coefficients in .model.
+console.log(coefficients.nugget, diagnosticFit.model.nugget);
+console.log(diagnosticFit.atBoundary, diagnosticFit.logRangeBracket, diagnosticFit.converged);
+// Both nuggets are approximately 0.2; atBoundary is false and converged is true.
 ```
 
 This function calls the existing `fitVariogramModel` CPU fitter. Use `fitVariogramModel` directly
 when you want a model object for one family; `computeVariogramModelFitOnCPU` returns the typed-array
-rows used by the operation contract.
+rows used by the operation contract. `fitVariogramModel(input, options)` returns coefficients.
+For boundary and convergence diagnostics, the dedicated function is
+`fitVariogramModelWithDiagnostics(input, options)`; read its `.model` for coefficients and
+`.atBoundary`, `.logRangeBracket` and `.converged` for search diagnostics. The dedicated helper
+and its `VariogramModelFitDiagnostics` result type are publicly exported from
+`@luma-contributors/analysis/dataframe-analysis`.
 
 ## The same fit inside a graph
 
-Continue with `bins` and `models` above. The function takes an existing WebGPU `Device` and returns
-CPU output vectors and the selected model name. Calling it with `'gpu'` runs the GPU fit followed
+Pass `bins` and `models` from the first example to the function below. It takes an existing
+WebGPU `Device` and returns CPU output vectors and the selected model name. Calling it with `'gpu'` runs the GPU fit followed
 by a CPU selection stage; `'cpu'` replaces just the fit with its twin. The same
 `VariogramModelFitOperationProps` object builds either one. Even the CPU-only choice here needs a
 WebGPU device because it uses `GPUGraph`; the pure function above has no device requirement.
@@ -108,10 +183,16 @@ import {
 import {
   CPUVariogramModelFitOperation,
   GPUVariogramModelFitOperation,
+  type VariogramModelType,
   type VariogramModelFitOperationProps
 } from '@luma-contributors/analysis/dataframe-analysis';
 
-export async function fitVariogramInGraph(device: Device, location: 'cpu' | 'gpu' = 'cpu') {
+export async function fitVariogramInGraph(
+  device: Device,
+  bins: {distances: Float32Array; semivariances: Float32Array; pairCounts: Uint32Array},
+  models: readonly VariogramModelType[],
+  location: 'cpu' | 'gpu' = 'cpu'
+) {
   const graph = new GPUGraph({id: 'variogram-example'});
   const inputs: Record<string, CPUVector> = {};
   const binValues: Record<string, Float32Array | Uint32Array> = bins;
@@ -177,7 +258,7 @@ export async function fitVariogramInGraph(device: Device, location: 'cpu' | 'gpu
 }
 ```
 
-`await fitVariogramInGraph(device, 'cpu')` returns `model: 'exponential'` on these bins;
+`await fitVariogramInGraph(device, bins, models, 'cpu')` returns `model: 'exponential'` on these bins;
 `'gpu'` should select the same family within the fitting tolerance below. Returned `outputs` are
 `CPUVector`s, with data available through their `CPUData` chunks; the selected scalar above reads
 its chunk's buffer at `byteOffset`. They remain usable after compiled-graph cleanup. If outputs
@@ -248,9 +329,9 @@ first, then call the GPU operation's `destroy()` to release its final contributo
 Run this in a browser TypeScript entry point served on localhost or HTTPS with WebGPU enabled
 (for example, a Vite application in this workspace). It imports only published luma.gl and analysis
 entry points; the WebGPU adapter comes from the public `@luma.gl/core/webgpu` entry.
-Paste both blocks into that entry point. No existing device, buffers, graph or dataset is required.
+Paste the complete block into that entry point. No existing device, buffers, graph or dataset is required.
 
-For a minimal workspace browser page, save both blocks as `first-density.ts` in the repository
+For a minimal workspace browser page, save the block as `first-density.ts` in the repository
 root, add an `index.html` containing `<script type="module" src="/first-density.ts"></script>`,
 and run `node_modules/.bin/vite --host localhost`. Open the printed localhost URL and the browser
 console. Package-name imports use the package build in this setup; run `yarn build` first if
@@ -283,23 +364,27 @@ export async function runPointDensityExample() {
         usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST
       });
       buffers.push(buffer);
-      return graph.importBuffer({id, byteLength: buffer.byteLength, usage: buffer.usage}, buffer);
+      const handle = graph.importBuffer(
+        {id, byteLength: buffer.byteLength, usage: buffer.usage},
+        buffer
+      );
+      return {buffer, handle};
     };
     const positions = graph.createDataView(
       createBuffer(
         'positions',
         Float32Array.of(0.25, 0.25, 0.75, 0.75, 0.25, 1.25, 1.25, 1.25, 3, 3)
-      ),
+      ).handle,
       {format: 'float32x2', length: 5}
     );
-    const bounds = graph.createDataView(createBuffer('bounds', Float32Array.of(0, 0, 2, 2)), {
+    const bounds = graph.createDataView(createBuffer('bounds', Float32Array.of(0, 0, 2, 2)).handle, {
       format: 'float32',
       length: 4
     });
-    const valuesHandle = createBuffer('values', new Float32Array(4));
-    const overflowHandle = createBuffer('overflow', new Uint32Array(1));
-    const values = graph.createDataView(valuesHandle, {format: 'float32', length: 4});
-    const overflow = graph.createDataView(overflowHandle, {format: 'uint32', length: 1});
+    const valuesAllocation = createBuffer('values', new Float32Array(4));
+    const overflowAllocation = createBuffer('overflow', new Uint32Array(1));
+    const values = graph.createDataView(valuesAllocation.handle, {format: 'float32', length: 4});
+    const overflow = graph.createDataView(overflowAllocation.handle, {format: 'uint32', length: 1});
     graph.add(
       new GPUPointDensity({
         positions,
@@ -313,8 +398,8 @@ export async function runPointDensityExample() {
     const commandEncoder = device.createCommandEncoder();
     compiled.encode(commandEncoder, {parameters: undefined});
     device.submit(commandEncoder.finish());
-    const valueBytes = await buffers[2].readAsync();
-    const overflowBytes = await buffers[3].readAsync();
+    const valueBytes = await valuesAllocation.buffer.readAsync();
+    const overflowBytes = await overflowAllocation.buffer.readAsync();
     const result = {
       values: new Float32Array(valueBytes.buffer, valueBytes.byteOffset, 4).slice(),
       overflow: new Uint32Array(overflowBytes.buffer, overflowBytes.byteOffset, 1)[0]
@@ -327,14 +412,12 @@ export async function runPointDensityExample() {
     device.destroy();
   }
 }
-```
 
-```ts
 const density = await runPointDensityExample();
 console.log(Array.from(density.values), density.overflow);
-// [2, 0, 1, 1] 0
 ```
 
+Named allocations retain each output buffer for readback; `buffers` is used only for cleanup.
 Each raw buffer is imported exactly once and then given a typed view. `float32x2` length counts
 positions, so five positions occupy ten floats. `values` contains four `float32` rows, while
 `output.status.overflow` is a separate one-row `uint32` view. Storage, upload and readback need

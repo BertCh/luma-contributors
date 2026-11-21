@@ -26,9 +26,52 @@ export type GeodesicPairsOperationProps = {
   };
 };
 
+/** Capture compile-time geodesic options independently of caller-owned records. @internal */
+export function captureGeodesicPairsOperationProps(
+  props: GeodesicPairsOperationProps
+): GeodesicPairsOperationProps {
+  const {spatialContext, output} = props;
+  const ellipsoid = spatialContext.ellipsoid;
+  const status = output.status;
+  return {
+    id: props.id,
+    origins: props.origins,
+    targets: props.targets,
+    pairCount: props.pairCount,
+    maximumIterations: props.maximumIterations,
+    spatialContext: {
+      coordinateSpace: spatialContext.coordinateSpace,
+      metric: spatialContext.metric,
+      units: spatialContext.units,
+      sphereRadius: spatialContext.sphereRadius,
+      edgeModel: spatialContext.edgeModel,
+      datum: spatialContext.datum,
+      gridFamily: spatialContext.gridFamily,
+      gridResolution: spatialContext.gridResolution,
+      frame: spatialContext.frame,
+      ellipsoid: ellipsoid && {
+        semiMajorAxis: ellipsoid.semiMajorAxis,
+        flattening: ellipsoid.flattening
+      }
+    },
+    output: {
+      distances: output.distances,
+      initialBearings: output.initialBearings,
+      finalBearings: output.finalBearings,
+      midpoints: output.midpoints,
+      status: status && {
+        converged: status.converged,
+        approximation: status.approximation,
+        iterationLimitReached: status.iterationLimitReached
+      }
+    }
+  };
+}
+
 /** GPU geodesic pairs as an operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUGeodesicPairsOperation extends GPUContributorOperation {
   constructor(props: GeodesicPairsOperationProps) {
+    props = captureGeodesicPairsOperationProps(props);
     const outputs: Record<string, GPUContributorOperationOutput> = {};
     for (const port of ['distances', 'initialBearings', 'finalBearings', 'midpoints'] as const) {
       if (props.output[port] !== undefined)

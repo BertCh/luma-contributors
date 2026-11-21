@@ -5,7 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {GPUArealInterpolation} from '../../../src/gpu-spatial-analysis/areal-interpolation/gpu-areal-interpolation';
-import {GPUPycnophylactic} from '../../../src/gpu-spatial-analysis/areal-interpolation/gpu-pycnophylactic';
+import {GPUPycnophylacticInterpolation} from '../../../src/gpu-spatial-analysis/areal-interpolation/gpu-pycnophylactic';
 import {getZoneAnchorNodes} from '../../../src/gpu-spatial-analysis/areal-interpolation/zone-anchor-nodes';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import {createPaddedQueryFixture} from '../linear-referencing/gpu-linear-referencing-chunks.test-utils';
@@ -122,7 +122,7 @@ it('preserves packed mass and status bytes written in separate pycnophylactic pa
     byteOffset: backing.byteOffset + 16
   });
   graph.add(
-    new GPUPycnophylactic({
+    new GPUPycnophylacticInterpolation({
       grid: makeGPURasterMetadata({width: 2, height: 2}),
       zones: input('zones', 'uint32', new Uint32Array(4)),
       totals: input('totals', 'float32', new Float32Array([8])),

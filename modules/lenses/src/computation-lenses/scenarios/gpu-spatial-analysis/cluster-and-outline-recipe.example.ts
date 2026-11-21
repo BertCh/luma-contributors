@@ -11,9 +11,9 @@ import {
 import {
   addClusterAndOutlineRecipe,
   getGPUGeographicDistributionParameterValues,
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUParameterBuffer,
@@ -40,8 +40,8 @@ export async function runExample(
   const clusteringParameters = new GPUParameterBuffer(graph.device, {
     id: 'clustering-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues({bounds, epsilon: 250, minimumPoints: 6})
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues({bounds, epsilon: 250, minimumSamples: 6})
   });
   const geometryParameters = new GPUParameterBuffer(graph.device, {
     id: 'geometry-parameters',
@@ -71,7 +71,7 @@ export async function runExample(
     maximumClusterCount,
     maximumVerticesPerHull: 128,
     hullCapacity,
-    outputs: {labels, clusterCount, hullPositions, hullOffsets, areas, perimeters}
+    output: {labels, clusterCount, hullPositions, hullOffsets, areas, perimeters}
   });
   // labels colour the observations; hullPositions with hullOffsets outline each cluster
   // #endregion example

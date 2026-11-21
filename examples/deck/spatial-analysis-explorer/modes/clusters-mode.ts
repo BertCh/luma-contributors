@@ -14,17 +14,15 @@ import {
 import {
   getGPUGeographicDistributionParameterValues,
   getGPUSpatialKMeansParameterValues,
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
-  GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
   GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_NOISE,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
+  GPU_DBSCAN_NOISE,
+  GPU_DBSCAN_PARAMETER_LENGTH,
   GPUGroupConvexHull,
   GPUGroupGeometry,
   GPUSpatialKMeans,
-  GPUSpatialClustering,
+  GPUDBSCAN,
   type GPUSpatialKMeansInitialization
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
@@ -75,7 +73,7 @@ const HULL_CAPACITY = 1 << 14;
 const REBUILD_DEBOUNCE_MILLISECONDS = 250;
 const AUTO_MEASURE_FRAME = 40;
 /** Header words: cluster count, stored count, overflow flags, then k-means iterations and converged. */
-const SUMMARY_HEADER_WORDS = 7;
+const SUMMARY_HEADER_WORDS = 9;
 const ELLIPSE_SEGMENTS = 48;
 /** Period in meters of the demo weight sawtooth along x. */
 const WEIGHT_PERIOD_METERS = 250;
@@ -85,10 +83,10 @@ const WEIGHT_PERIOD_METERS = 250;
  * distinct neighborhoods (30-150 clusters, none above a few percent of the points) instead of one
  * giant connected component.
  */
-const POINT_SET_DEFAULTS: Record<PointSetId, {epsilon: number; minimumPoints: number}> = {
-  pickups: {epsilon: 130, minimumPoints: 5},
-  pois: {epsilon: 70, minimumPoints: 8},
-  vertices: {epsilon: 40, minimumPoints: 50}
+const POINT_SET_DEFAULTS: Record<PointSetId, {epsilon: number; minimumSamples: number}> = {
+  pickups: {epsilon: 130, minimumSamples: 5},
+  pois: {epsilon: 70, minimumSamples: 8},
+  vertices: {epsilon: 40, minimumSamples: 50}
 };
 
 const NOISE_COLOR = [128, 138, 156, 150] as const;
@@ -106,7 +104,7 @@ const POINT_SET_OPTIONS: readonly {value: PointSetId; label: string}[] = [
 ];
 
 const METHOD_OPTIONS: readonly {value: ClusterMethod; label: string}[] = [
-  {value: 'dbscan', label: 'DBSCAN (GPUSpatialClustering)'},
+  {value: 'dbscan', label: 'DBSCAN (GPUDBSCAN)'},
   {value: 'kmeans', label: 'K-means (GPUSpatialKMeans)'}
 ];
 
@@ -135,7 +133,7 @@ type ClusterConfig = {
 
 type ClusterBuffer = ReturnType<SpatialAnalysisResources['createBuffer']>;
 
-/** Caller-owned buffers of one `GPUSpatialClustering` instance. */
+/** Caller-owned buffers of one `GPUDBSCAN` instance. */
 type DbscanOutputs = {
   labels: ClusterBuffer;
   coreFlags: ClusterBuffer;
@@ -184,6 +182,8 @@ type ClusterSet = {
   hullCounts: ClusterBuffer;
   hullPositions: ClusterBuffer;
   hullOverflow: ClusterBuffer;
+  hullGroupOverflow: ClusterBuffer;
+  hullVertexOverflow: ClusterBuffer;
   drawCommands: DrawCommandBuffer;
   readbackRing: GPUReadbackRing;
   summaryByteLength: number;
@@ -195,9 +195,9 @@ type ClusterSet = {
 /**
  * Clustering of New York points on the GPU, then a description of every cluster.
  *
- * - Method: `GPUSpatialClustering` (DBSCAN) or `GPUSpatialKMeans`. The point set, method, `k`, k-means
+ * - Method: `GPUDBSCAN` (DBSCAN) or `GPUSpatialKMeans`. The point set, method, `k`, k-means
  *   initialization and seed and the DBSCAN dense-box shortcut are compile-time choices (they
- *   rebuild the graphs, labeled in the controls); DBSCAN `epsilon` and `minimumPoints` are written
+ *   rebuild the graphs, labeled in the controls); DBSCAN `epsilon` and `minimumSamples` are written
  *   into a parameter buffer, so dragging them never recompiles, and the graphs run only when a
  *   value changed.
  * - Description graph: `GPUGroupGeometry` (bounds, mean and weighted centers, medoids, standard
@@ -208,12 +208,7 @@ type ClusterSet = {
 export const clustersMode: SpatialAnalysisModeDefinition = {
   id: 'clusters',
   title: 'Clusters',
-  contributors: [
-    'GPUSpatialClustering',
-    'GPUSpatialKMeans',
-    'GPUGroupGeometry',
-    'GPUGroupConvexHull'
-  ],
+  contributors: ['GPUDBSCAN', 'GPUSpatialKMeans', 'GPUGroupGeometry', 'GPUGroupConvexHull'],
   description:
     'DBSCAN or k-means of taxi points on the GPU, then per-cluster convex hulls, standard ' +
     'ellipses, bounds, mean and weighted centers and medoids. Drag epsilon and the minimum ' +
@@ -232,9 +227,9 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       denseBoxShortcut: false
     };
     let epsilon = POINT_SET_DEFAULTS[config.pointSet].epsilon;
-    let minimumPoints = POINT_SET_DEFAULTS[config.pointSet].minimumPoints;
+    let minimumSamples = POINT_SET_DEFAULTS[config.pointSet].minimumSamples;
     let appliedEpsilon = Number.NaN;
-    let appliedMinimumPoints = Number.NaN;
+    let appliedMinimumSamples = Number.NaN;
     let highlightCore = false;
     let showHulls = true;
     let showEllipses = true;
@@ -330,7 +325,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const graph = new GPUCommandGraph<void>(device, {id});
       const clusterIds = resources.createBuffer('cluster-ids', CLUSTER_CAPACITY * 4);
       graph.add(
-        new GPUSpatialClustering({
+        new GPUDBSCAN({
           spatialContext: frame.spatialContext,
           id: 'clusters',
           positions: importGraphBuffer(
@@ -362,13 +357,15 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
             clusters: {
               ids: importGraphBuffer(graph, 'cluster-ids', clusterIds, 'uint32', CLUSTER_CAPACITY),
               status: {
-                count: importGraphBuffer(
-                  graph,
-                  'cluster-stored-count',
-                  outputs.clusterStoredCount,
-                  'uint32',
-                  1
-                ),
+                count: drawCommands
+                  ? graph.importGPUData('draw-instance-count', drawCommands.getInstanceCountData(0))
+                  : importGraphBuffer(
+                      graph,
+                      'cluster-stored-count',
+                      outputs.clusterStoredCount,
+                      'uint32',
+                      1
+                    ),
                 overflow: importGraphBuffer(
                   graph,
                   'cluster-overflow',
@@ -378,10 +375,6 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
                 )
               }
             },
-            // The clamped cluster count lands directly in the indirect draw record.
-            drawInstanceCount: drawCommands
-              ? graph.importGPUData('draw-instance-count', drawCommands.getInstanceCountData(0))
-              : undefined,
             clusterSizes: importGraphBuffer(
               graph,
               'cluster-sizes',
@@ -443,7 +436,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const parameters = resources.createParameterBuffer(
         'parameters',
         'float32',
-        GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+        GPU_DBSCAN_PARAMETER_LENGTH
       );
       const geometryParameters = resources.createParameterBuffer(
         'geometry-parameters',
@@ -512,7 +505,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
               'float32x2',
               pointCount
             ),
-            k: setConfig.k,
+            clusterCount: setConfig.k,
             maximumIterations: KMEANS_ITERATIONS,
             parameters: kmeansParameters.importToGraph(graph),
             initialization: setConfig.initialization,
@@ -549,6 +542,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const hullOffsets = resources.createBuffer('hull-offsets', (groupCount + 1) * 4);
       const hullCounts = resources.createBuffer('hull-counts', groupCount * 4);
       const hullOverflow = resources.createBuffer('hull-overflow', 4);
+      const hullGroupOverflow = resources.createBuffer('hull-group-overflow', 4);
+      const hullVertexOverflow = resources.createBuffer('hull-vertex-overflow', 4);
       const shapes = new GPUCommandGraph<void>(device, {id: `clusters-shapes-${setSerial}`});
       const shapePositions = importGraphBuffer(
         shapes,
@@ -644,7 +639,21 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
             ),
             counts: importGraphBuffer(shapes, 'hull-counts', hullCounts, 'uint32', groupCount),
             status: {
-              overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1)
+              overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1),
+              groupOverflow: importGraphBuffer(
+                shapes,
+                'hull-group-overflow',
+                hullGroupOverflow,
+                'uint32',
+                1
+              ),
+              vertexOverflow: importGraphBuffer(
+                shapes,
+                'hull-vertex-overflow',
+                hullVertexOverflow,
+                'uint32',
+                1
+              )
             }
           }
         })
@@ -693,6 +702,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         hullCounts,
         hullPositions,
         hullOverflow,
+        hullGroupOverflow,
+        hullVertexOverflow,
         drawCommands,
         readbackRing,
         summaryByteLength,
@@ -722,7 +733,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           const previous = active;
           active = next;
           appliedEpsilon = Number.NaN;
-          appliedMinimumPoints = Number.NaN;
+          appliedMinimumSamples = Number.NaN;
           encodedFrames = 0;
           // Keep the old buffers alive for a few frames: Deck may still hold them in layers.
           previous.destroyed = true;
@@ -735,9 +746,9 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           }, 400);
           if (resetParameters) {
             epsilon = POINT_SET_DEFAULTS[config.pointSet].epsilon;
-            minimumPoints = POINT_SET_DEFAULTS[config.pointSet].minimumPoints;
+            minimumSamples = POINT_SET_DEFAULTS[config.pointSet].minimumSamples;
             epsilonControl.setValue(epsilon);
-            minimumPointsControl.setValue(minimumPoints);
+            minimumSamplesControl.setValue(minimumSamples);
           }
           context.setStatus('');
           pointsReadout.setValue(`${formatCount(next.pointCount)} ${next.data.label}`);
@@ -789,15 +800,15 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         epsilon = value;
       }
     });
-    const minimumPointsControl = context.controls.addSlider({
-      label: 'DBSCAN minimum points (core threshold, per-frame)',
+    const minimumSamplesControl = context.controls.addSlider({
+      label: 'DBSCAN minimum samples (core threshold, per-frame)',
       min: 2,
       max: 50,
       step: 1,
-      value: minimumPoints,
+      value: minimumSamples,
       format: value => `${value}`,
       onChange: value => {
-        minimumPoints = value;
+        minimumSamples = value;
       }
     });
     const denseBoxControl = context.controls.addToggle({
@@ -849,7 +860,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
     const updateControlAvailability = () => {
       const isDbscan = config.method === 'dbscan';
       epsilonControl.setDisabled(!isDbscan);
-      minimumPointsControl.setDisabled(!isDbscan);
+      minimumSamplesControl.setDisabled(!isDbscan);
       denseBoxControl.setDisabled(!isDbscan);
       kControl.setDisabled(isDbscan);
       initializationControl.setDisabled(isDbscan);
@@ -929,11 +940,11 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const ticket = set.readbackRing.tryAcquire();
       if (!ticket) return;
       let offset = 0;
-      const copy = (source: Buffer | null, size: number) => {
+      const copy = (source: Buffer | null, size: number, sourceOffset = 0) => {
         if (source) {
           commandEncoder.copyBufferToBuffer({
             sourceBuffer: source,
-            sourceOffset: 0,
+            sourceOffset,
             destinationBuffer: ticket.buffer,
             destinationOffset: offset,
             size
@@ -943,12 +954,18 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       };
       const groups = set.groupCount;
       copy(set.clusterCount, 4);
-      copy(set.clusterStoredCount, 4);
+      if (set.config.method === 'dbscan') {
+        copy(set.drawCommands.buffer, 4, set.drawCommands.getInstanceCountByteOffset(0));
+      } else {
+        copy(set.clusterStoredCount, 4);
+      }
       copy(set.clusterOverflow, 4);
       copy(set.geometryOverflow, 4);
       copy(set.hullOverflow, 4);
       copy(set.iterationCount, 4);
       copy(set.converged, 4);
+      copy(set.hullGroupOverflow, 4);
+      copy(set.hullVertexOverflow, 4);
       copy(set.sizes, groups * 4);
       copy(set.geometryCounts, groups * 4);
       copy(set.hullCounts, groups * 4);
@@ -958,7 +975,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: set.summaryByteLength});
       readbackPending = true;
       const echoedEpsilon = epsilon;
-      const echoedMinimumPoints = minimumPoints;
+      const echoedMinimumSamples = minimumSamples;
       try {
         const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed || set.destroyed) return;
@@ -1001,7 +1018,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         meanReadout.setValue(stored > 0 ? (clustered / stored).toFixed(1) : '–');
         parametersReadout.setValue(
           isDbscan
-            ? `DBSCAN ${echoedEpsilon} m / ${echoedMinimumPoints}${
+            ? `DBSCAN ${echoedEpsilon} m / ${echoedMinimumSamples}${
                 set.config.denseBoxShortcut ? ' (dense-box)' : ''
               }`
             : `K-means k = ${set.config.k}, ${set.config.initialization}${
@@ -1020,8 +1037,9 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         );
         const hullOverflow = words[4];
         const hullFlags = [
-          hullOverflow & GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW ? 'a hull over 256 vertices' : '',
-          hullOverflow & GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW ? 'total capacity' : ''
+          words[7] ? 'a hull over 256 vertices' : '',
+          words[8] ? 'total capacity' : '',
+          hullOverflow && !words[7] && !words[8] ? 'hull loss' : ''
         ].filter(Boolean);
         hullReadout.setValue(
           `${formatCount(hullTotal)} hulls, largest ${hullLargest} vertices${
@@ -1081,7 +1099,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const scratch = new SpatialAnalysisResources(device, `clusters-timing-${set.serial}`);
       try {
         set.parameters.write(
-          getGPUSpatialClusteringParameterValues({bounds: set.bounds, epsilon, minimumPoints})
+          getGPUDBSCANParameterValues({bounds: set.bounds, epsilon, minimumSamples})
         );
         const outputs = createDbscanOutputs(scratch, set.pointCount);
         const results: {milliseconds: number; label: string}[] = [];
@@ -1110,7 +1128,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         const [plain, dense] = results;
         const ratio = plain.milliseconds / Math.max(dense.milliseconds, 1e-6);
         timingReadout.setValue(
-          `plain ${plain.label}, dense-box ${dense.label} (${ratio.toFixed(2)}x) at ${epsilon} m / ${minimumPoints}`
+          `plain ${plain.label}, dense-box ${dense.label} (${ratio.toFixed(2)}x) at ${epsilon} m / ${minimumSamples}`
         );
       } catch {
         // Interrupted by a rebuild or destroy; the next measurement replaces this one.
@@ -1126,9 +1144,9 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         const set = active;
         encodedFrames++;
         if (set.config.method === 'dbscan') {
-          if (epsilon !== appliedEpsilon || minimumPoints !== appliedMinimumPoints) {
+          if (epsilon !== appliedEpsilon || minimumSamples !== appliedMinimumSamples) {
             appliedEpsilon = epsilon;
-            appliedMinimumPoints = minimumPoints;
+            appliedMinimumSamples = minimumSamples;
             set.dirty = true;
           }
         }
@@ -1136,10 +1154,10 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           set.dirty = false;
           if (set.config.method === 'dbscan') {
             set.parameters.write(
-              getGPUSpatialClusteringParameterValues({
+              getGPUDBSCANParameterValues({
                 bounds: set.bounds,
                 epsilon,
-                minimumPoints
+                minimumSamples
               })
             );
           }
@@ -1200,7 +1218,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
             valueFormat: 'uint32',
             colormap: 'category',
             palette: CLUSTER_PALETTE,
-            noDataValue: GPU_SPATIAL_CLUSTERING_NOISE,
+            noDataValue: GPU_DBSCAN_NOISE,
             noDataColor: NOISE_COLOR,
             radiusPixels
           })

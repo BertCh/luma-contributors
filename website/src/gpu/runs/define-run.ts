@@ -15,7 +15,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {GpuScene, GpuSceneInstance, GpuSceneParameter} from '../types';
-import {readParameterValues} from '../demos/parameters';
+import {readParameterValues, validateParameterRenames} from '../demos/parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
@@ -1597,6 +1597,7 @@ export function defineOperationRun<Inputs, Outputs, Extra = undefined>(
         scheduler.request();
       },
       setParameters(update) {
+        validateParameterRenames(parameters, update);
         if (interaction) {
           // A slider now owns the values: stop following the pointer until it moves again.
           pointerState.target = null;

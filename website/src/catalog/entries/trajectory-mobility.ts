@@ -199,6 +199,12 @@ ${COMPILE_AND_ENCODE}
         description: "Mode 'stop': per-row staypoint index."
       },
       {
+        name: 'staypointStatus',
+        type: 'GPUCandidateStatusPort & Partial<GPUOverflowStatusPort>',
+        description:
+          "Mode 'stop': forward the staypoint loss flags when the IDs come from GPU staypoints."
+      },
+      {
         name: 'values',
         type: 'GraphDataView<"uint32"> | undefined',
         description: "Mode 'value-change': one label per row."
@@ -223,8 +229,9 @@ ${COMPILE_AND_ENCODE}
       },
       {
         name: 'status',
-        type: 'GPUCardinalityPort & GPUOverflowStatusPort',
-        description: 'Segment count and overflow.'
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & GPUCandidateStatusPort',
+        description:
+          'Segment count and overflow. Bind candidateOverflow when forwarding staypoint loss.'
       },
       {
         name: 'positions',
@@ -286,21 +293,25 @@ ${COMPILE_AND_ENCODE}`,
     ],
     moreRequired: ['output'],
     outputs: [
-      {name: 'rowIds', type: 'GraphDataView<"uint32">', description: 'Kept source rows in order.'},
+      {
+        name: 'sourceRows',
+        type: 'GraphDataView<"uint32">',
+        description: 'Kept source rows in order.'
+      },
       {
         name: 'trackOffsets',
         type: 'GraphDataView<"uint32">',
-        description: 'New per-track offsets into rowIds.'
+        description: 'New per-track offsets into sourceRows.'
       },
       {
         name: 'status',
-        type: 'GPUCardinalityPort & GPUOverflowStatusPort & GPUCandidateStatusPort',
-        description: 'Kept count and overflow flags.'
+        type: 'GPUCardinalityPort & GPUOverflowStatusPort & Required<GPUCandidateStatusPort>',
+        description: 'Kept count and required output and candidate overflow flags.'
       },
       {
-        name: 'validity',
+        name: 'sourceSelectionMask',
         type: 'GraphDataView<"uint32"> | undefined',
-        description: 'Optional 1/0 validity of the rows: 1 for a kept row.'
+        description: 'Optional original-row mask, with 1 for a kept row.'
       }
     ],
     example: `import {GPUTrajectoryThinning, GPU_TRAJECTORY_THINNING_PARAMETER_LENGTH, getGPUTrajectoryThinningParameterValues} from '${IMPORT_PATH}';
@@ -314,7 +325,7 @@ graph.add(new GPUTrajectoryThinning({
   mode: 'minimum-distance',
   positions, timestamps, trackOffsets,
   parameters: toleranceParameters.importToGraph(graph),
-  output: {rowIds, trackOffsets: keptOffsets, status: {count, overflow, candidateOverflow}}
+  output: {sourceRows, trackOffsets: keptOffsets, status: {count, overflow, candidateOverflow}}
 }));
 toleranceParameters.write(getGPUTrajectoryThinningParameterValues({tolerance: 500}));
 ${COMPILE_AND_ENCODE}`,
@@ -407,7 +418,7 @@ ${COMPILE_AND_ENCODE}
       },
       {
         name: 'status',
-        type: 'GPUCompactOutput["status"] & GPUCandidateStatusPort',
+        type: 'GPUCompactOutput["status"] & Required<GPUCandidateStatusPort>',
         description: 'Staypoint count, overflow and candidate overflow.'
       },
       {
@@ -436,7 +447,7 @@ const stayParameters = new GPUParameterBuffer(device, {
 graph.add(new GPUTrajectoryStaypoints({
   positions, timestamps, trackOffsets,
   parameters: stayParameters.importToGraph(graph),
-  output: {ids, status: {count, overflow}, startRows, endRows, finishRows, centroids, durations,
+  output: {ids, status: {count, overflow, candidateOverflow}, startRows, endRows, finishRows, centroids, durations,
     staypointIds}
 }));
 stayParameters.write(getGPUTrajectoryStaypointsParameterValues(
@@ -479,6 +490,11 @@ ${COMPILE_AND_ENCODE}`,
         required: true,
         description: 'One row: the active staypoint count.'
       },
+      {
+        name: 'staypointStatus',
+        type: '{overflow?: GPUStatusScalar; candidateOverflow?: GPUStatusScalar}',
+        description: 'Forward both flags with a table produced by GPUTrajectoryStaypoints.'
+      },
       perFrameParameters('[epsilon, 0, 0, 0]'),
       {
         name: 'maximumIterations',
@@ -497,8 +513,9 @@ ${COMPILE_AND_ENCODE}`,
       },
       {
         name: 'status',
-        type: 'GPUStatusScalar & GPUIterationStatusPort',
-        description: 'Location count and iteration status.'
+        type: '{count: GPUStatusScalar; iterationLimitReached: GPUStatusScalar; complete?: GPUStatusScalar} & GPUIterationStatusPort',
+        description:
+          'Location count, required iteration-limit flag and optional completeness certificate.'
       },
       {
         name: 'centers',
@@ -517,8 +534,9 @@ graph.add(new GPUTrajectoryLocations({
   centroids: stayCentroids,
   tracks: stayTracks,
   count: stayCount,
+  staypointStatus: {overflow: stayOverflow, candidateOverflow: stayCandidateOverflow},
   parameters: locationParameters.importToGraph(graph),
-  output: {locationIds, status: {count: locationCount}, centers}
+  output: {locationIds, status: {count: locationCount, iterationLimitReached}, centers}
 }));
 locationParameters.write(getGPUTrajectoryLocationsParameterValues({epsilon: 150}));
 ${COMPILE_AND_ENCODE}`,
@@ -826,7 +844,8 @@ ${COMPILE_AND_ENCODE}`,
         name: 'staypoints',
         type: 'GPUMobilityStaypointColumns',
         required: true,
-        description: 'Staypoint tracks, centroids, start rows, durations, locations, count.'
+        description:
+          'Staypoint columns and status, including the iteration-limit flag from the location solver.'
       },
       {
         name: 'triplegs',
@@ -837,7 +856,7 @@ ${COMPILE_AND_ENCODE}`,
         name: 'maximumEntropySequenceRows',
         type: 'number | undefined',
         default: '1024',
-        description: "Cap on a track's staypoint sequence for realEntropy."
+        description: 'Maximum usable location keys per track for realEntropy.'
       },
       spatialContextParameter
     ],
@@ -862,6 +881,11 @@ ${COMPILE_AND_ENCODE}`,
         name: 'trackingQuality',
         type: 'GraphDataView<"float32"> | undefined',
         description: 'Tracked duration over extent.'
+      },
+      {
+        name: 'status.excludedLocationCount',
+        type: 'GPUStatusScalar | undefined',
+        description: 'Number of active staypoint rows excluded from location measures.'
       }
     ],
     example: `import {GPUMobilityIndicators} from '${IMPORT_PATH}';
@@ -871,8 +895,9 @@ graph.add(new GPUMobilityIndicators({
   trackCount,
   timestamps,
   staypoints: {tracks, centroids, startRows, durations, locationIds,
-    status: {count, overflow: staypointOverflow, candidateOverflow: staypointCandidateOverflow}},
-  output: {radiusOfGyration, realEntropy, randomEntropy, homeLocations, workLocations}
+    status: {count, overflow: staypointOverflow, candidateOverflow: staypointCandidateOverflow,
+      locationIterationLimitReached: iterationLimitReached}},
+  output: {radiusOfGyration, realEntropy, randomEntropy, homeLocations, workLocations, status: {excludedLocationCount}}
 }));
 ${COMPILE_AND_ENCODE}`,
     preview: {kind: 'trajectories', caption: 'One set of numbers per track.', seed: 712},
@@ -889,7 +914,7 @@ ${COMPILE_AND_ENCODE}`,
     summary:
       'Totals triplegs per track and mode by count, distance or duration; modes may come from speed.',
     explanation:
-      'The trackintel `calculate_modal_split`. Give each tripleg a mode, or give ascending `modeSpeedBreaks` and the mode is the speed class of its average speed. One thread per track accumulates the chosen `metric`.',
+      'The trackintel `calculate_modal_split`. Give each tripleg a mode, or give ascending `modeSpeedUpperBoundsFloat32` and the mode is the speed class of its average speed. One thread per track accumulates the chosen `metric`.',
     dataTypes: {input: ['trajectories', 'table'], output: ['table']},
     useCases: ['summarize', 'measure'],
     domains: ['transport', 'urban'],
@@ -906,10 +931,10 @@ ${COMPILE_AND_ENCODE}`,
       {
         name: 'modes',
         type: 'GraphDataView<"uint32"> | undefined',
-        description: 'Mode of each tripleg, unless modeSpeedBreaks is given.'
+        description: 'Mode of each tripleg, unless modeSpeedUpperBoundsFloat32 is given.'
       },
       {
-        name: 'modeSpeedBreaks',
+        name: 'modeSpeedUpperBoundsFloat32',
         type: 'readonly number[] | undefined',
         description: 'Strictly ascending upper speed bounds per class (compile-time).'
       },
@@ -917,7 +942,7 @@ ${COMPILE_AND_ENCODE}`,
         name: 'modeCount',
         type: 'number',
         required: true,
-        description: 'Number of modes; the length of modeSpeedBreaks when given.'
+        description: 'Number of modes; the length of modeSpeedUpperBoundsFloat32 when given.'
       },
       {
         name: 'metric',
@@ -946,7 +971,7 @@ graph.add(new GPUModalSplit({
   positions, timestamps, trackOffsets,
   triplegs: {tracks: legTracks, startRows: legStarts, endRows: legEnds,
     status: {count: legCount, overflow: legOverflow, candidateOverflow: legCandidateOverflow}},
-  modeSpeedBreaks: [15 / 3.6, 100 / 3.6, Infinity],
+  modeSpeedUpperBoundsFloat32: [15 / 3.6, 100 / 3.6, Infinity],
   modeCount: 3,
   metric: 'distance',
   output: {modalSplit, predictedModes}

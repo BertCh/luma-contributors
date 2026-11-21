@@ -12,6 +12,11 @@
       "executables": ["python3.12", "python3"],
       "description": "Separate legacy environment from requirements.txt: NumPy 2.2.6, SciPy 1.15.3, scikit-image 0.25.2, Shapely 2.1.2, rasterio 1.4.3; install the generator's additional recorded packages."
     },
+    "python-clustering": {
+      "runtime": "python",
+      "executables": ["python3"],
+      "description": "Separate environment from requirements.txt: NumPy 2.0.2 and scikit-learn 1.6.1; the family producer verifies both versions."
+    },
     "python-pyxccd": {
       "runtime": "python",
       "executables": ["python3.12"],
@@ -36,6 +41,12 @@
     }
   },
   "generators": {
+    "spatial-clustering-fixtures.py": {
+      "kind": "fixture",
+      "profile": "python-clustering",
+      "inputs": ["gpu-spatial-analysis/spatial-clustering/clustering-fixture-oracles.py"],
+      "outputs": ["gpu-spatial-analysis/spatial-clustering/clustering-fixture-oracles.json"]
+    },
     "adaptive-generalized-gwr.py": {
       "kind": "fixture",
       "profile": "python-pinned",
@@ -1148,10 +1159,8 @@
     "parity-wp5-solar-noaa.py": {
       "kind": "fixture",
       "profile": "python-pinned",
-      "outputs": [
-        "oracles/fixtures/parity-wp5-solar-noaa-position.json",
-        "oracles/fixtures/parity-wp5-solar-position.json"
-      ]
+      "inputs": ["oracles/fixtures/parity-wp5-solar-position.json"],
+      "outputs": ["oracles/fixtures/parity-wp5-solar-noaa-position.json"]
     },
     "parity-wp5-solar.py": {
       "kind": "unconfigured",

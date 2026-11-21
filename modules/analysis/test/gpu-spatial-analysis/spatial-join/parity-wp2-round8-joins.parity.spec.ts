@@ -12,7 +12,7 @@ import {
 import {createParityGraph} from '../../oracles/parity-wp2-geodesic-harness';
 import {compareParity} from '../../oracles/parity-wp2-assert';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import fixture from '../../oracles/fixtures/parity-wp2-round8-joins.json';
 
 // Keep live radius updates in each graph, but bound serial readbacks per test.
@@ -25,7 +25,7 @@ for (const completeEntry of fixture.cases)
     };
     for (const spatialSort of [false, true])
       for (const querySort of [false, true])
-        for (const ties of ['lowest-id', 'all'] as const) {
+        for (const ties of ['lowest-row', 'all'] as const) {
           it(`showcase joins GEOS ${entry.name}/sort=${spatialSort}/querySort=${querySort}/ties=${ties}/frames=${frameStart}-${frameStart + entry.frames.length - 1}`, async () => {
             const device = await getWebGPUTestDevice();
             requireTestDevice(device);
@@ -93,7 +93,7 @@ for (const completeEntry of fixture.cases)
                 queries,
                 features,
                 prepared,
-                k: 8,
+                neighborCount: 8,
                 neighborCapacity,
                 ties,
                 radius: radius.view,
@@ -142,7 +142,7 @@ for (const completeEntry of fixture.cases)
                 new GPUBufferSelection({
                   points: queries,
                   features,
-                  distance: radius.view,
+                  radius: radius.view,
                   candidateCapacity: rows * featuresCount,
                   spatialSort,
                   querySort,

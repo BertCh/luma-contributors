@@ -215,7 +215,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUTerrainPeakProminence({
+        context.construct(GPUTerrainPeakProminence, {
           grid: SMALL,
           elevation: elevationBand(context, SMALL),
           output: {
@@ -440,7 +440,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
               parameters: view('float32', 8),
               cellSizeMode,
               output: {
-                slope: view('float32', count),
+                descentTangent: view('float32', count),
                 specificCatchmentArea: view('float32', count),
                 wetnessIndex: view('float32', count),
                 streamPowerIndex: view('float32', count)
@@ -466,17 +466,17 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             const rays = observers * (azimuthCount - 10);
             graph.add(
               new GPUPointHorizonProfile({
-                grid: withRowDirection(SMALL, 'north'),
+                grid: withRowDirection(SMALL, projection === 'web-mercator' ? 'south' : 'north'),
                 elevation: elevationBand(context, SMALL),
                 observers: view('float32x4', observers),
                 parameters: view('float32', 16),
                 projection,
-                rowDirection: 'north',
+                rowDirection: projection === 'web-mercator' ? 'south' : 'north',
                 heightReference: 'absolute',
                 traversal,
                 azimuthCount,
-                firstAzimuth: 10,
-                azimuthSpan: azimuthCount - 10,
+                firstAzimuthIndex: 10,
+                azimuthBinCount: azimuthCount - 10,
                 minimumDistance: 5,
                 maximumDistance: 20000,
                 cellSize: 30,
@@ -515,7 +515,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             observers: view('float32x4', 1),
             parameters: view('float32', 16),
             azimuthCount,
-            azimuthSpan: rays,
+            azimuthBinCount: rays,
             maximumDistance: 100000,
             cellSize: 30,
             output: {
@@ -539,13 +539,13 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
           const targets = 500;
           graph.add(
             new GPUPointHorizonVisibility({
-              grid: withRowDirection(SMALL, 'north'),
+              grid: withRowDirection(SMALL, projection === 'web-mercator' ? 'south' : 'north'),
               elevation: elevationBand(context, SMALL),
               observers: view('float32x4', 4),
               targets: view('float32x4', targets),
               parameters: view('float32', 16),
               projection,
-              rowDirection: 'north',
+              rowDirection: projection === 'web-mercator' ? 'south' : 'north',
               heightReference: 'absolute',
               traversal,
               minimumDistance: 5,
@@ -659,16 +659,22 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
         build: context => {
           const {graph, view} = context;
           const count = cellCount(grid);
+          const output: ConstructorParameters<typeof GPUSimpleLocalRelief>[0]['output'] =
+            outputs === 'relief only'
+              ? {relief: view('float32', count, 'relief-output')}
+              : outputs === 'validity only'
+                ? {outputValidity: view('uint32', count, 'validity-output')}
+                : {
+                    relief: view('float32', count, 'relief-output'),
+                    outputValidity: view('uint32', count, 'validity-output')
+                  };
           graph.add(
             new GPUSimpleLocalRelief({
               grid,
               elevation: elevationBand(context, grid),
               parameters: view('float32', 4),
               maximumRadius: grid === LARGE ? 1000 : 20,
-              output: {
-                ...(outputs !== 'validity only' ? {relief: view('float32', count)} : {}),
-                ...(outputs !== 'relief only' ? {outputValidity: view('uint32', count)} : {})
-              }
+              output
             })
           );
         }
@@ -1081,7 +1087,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
         const {graph, view} = context;
         const count = cellCount(grid);
         graph.add(
-          new GPUTerrainSpikeRepair({
+          context.construct(GPUTerrainSpikeRepair, {
             grid,
             elevation: elevationBand(context, grid),
             step: 256,
@@ -1146,7 +1152,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
           const candidates =
             grid === LARGE ? getGPUTerrainPeakSnapMaximumCandidateCount(context.device) : 500;
           graph.add(
-            new GPUTerrainPeakSnap({
+            context.construct(GPUTerrainPeakSnap, {
               grid,
               elevation: elevationBand(context, grid),
               parameters: view('float32', 8),
@@ -1177,7 +1183,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       // The kernel keeps five uint32 result words per candidate in one binding.
       const candidates = getGPUTerrainPeakSnapMaximumCandidateCount(context.device);
       graph.add(
-        new GPUTerrainPeakSnap({
+        context.construct(GPUTerrainPeakSnap, {
           grid: LARGE,
           elevation: elevationBand(context, LARGE),
           parameters: view('float32', 8),
@@ -1575,7 +1581,6 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
                 cellSizeMode: CELL_SIZE_MODES[modeIndex % 3],
                 rowDirection: modeIndex % 2 === 0 ? 'south' : 'north',
                 borderMode,
-                imhofSwing,
                 output: {
                   hillshade: view('float32', count),
                   relief: view('float32', count),
@@ -1710,7 +1715,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const count = cellCount(SMALL);
       graph.add(
-        new GPUTerrainTopographicPosition({
+        context.construct(GPUTerrainTopographicPosition, {
           grid: SMALL,
           elevation: elevationBand(context, SMALL),
           scales: [{radius: 2}, {radius: 5, innerRadius: 2}, {radius: 9, innerRadius: 1}],
@@ -1734,7 +1739,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       const scaleCount = GPU_TERRAIN_TOPOGRAPHIC_POSITION_MAXIMUM_SCALES;
       const count = cellCount(HORIZON_LIMIT);
       graph.add(
-        new GPUTerrainTopographicPosition({
+        context.construct(GPUTerrainTopographicPosition, {
           grid: HORIZON_LIMIT,
           elevation: elevationBand(context, HORIZON_LIMIT),
           scales: Array.from({length: scaleCount}, (_, index) => ({
@@ -1761,7 +1766,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       const grid = SUMMED_AREA_LIMIT;
       const count = cellCount(grid);
       graph.add(
-        new GPUTerrainTopographicPosition({
+        context.construct(GPUTerrainTopographicPosition, {
           grid,
           elevation: elevationBand(context, grid),
           scales: [{radius: 50}, {radius: 500, innerRadius: 100}],
@@ -1793,7 +1798,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
             const {graph, view} = context;
             const count = cellCount(grid);
             graph.add(
-              new GPUTerrainWeissLandforms({
+              context.construct(GPUTerrainWeissLandforms, {
                 grid,
                 elevation: elevationBand(context, grid),
                 parameters: view('float32', 8),
@@ -1827,7 +1832,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       });
       const count = cellCount(grid);
       graph.add(
-        new GPUTerrainSpikeRepair({
+        context.construct(GPUTerrainSpikeRepair, {
           grid,
           elevation: elevationBand(context, grid),
           output: {
@@ -1849,7 +1854,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       });
       const count = cellCount(grid);
       graph.add(
-        new GPUTerrainPeakProminence({
+        context.construct(GPUTerrainPeakProminence, {
           grid,
           elevation: elevationBand(context, grid),
           output: {prominence: view('float32', count)}
@@ -1864,7 +1869,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const candidates = getGPUTerrainPeakSnapMaximumCandidateCount(context.device) + 1;
       graph.add(
-        new GPUTerrainPeakSnap({
+        context.construct(GPUTerrainPeakSnap, {
           grid: SMALL,
           elevation: elevationBand(context, SMALL),
           parameters: view('float32', 8),
@@ -1888,7 +1893,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
         height: 1
       });
       graph.add(
-        new GPUTerrainTopographicPosition({
+        context.construct(GPUTerrainTopographicPosition, {
           grid,
           elevation: elevationBand(context, grid),
           scales: [{radius: 2}],
@@ -1906,7 +1911,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
       // One more row than the 512 x 1024 limit grid of the 64-scale case above.
       const grid = makeGPURasterMetadata({width: 512, height: 1025});
       graph.add(
-        new GPUTerrainTopographicPosition({
+        context.construct(GPUTerrainTopographicPosition, {
           grid,
           elevation: elevationBand(context, grid),
           scales: Array.from({length: scaleCount}, (_, index) => ({radius: index + 1})),
@@ -1926,7 +1931,7 @@ export const TERRAIN_CASES: KernelAuditCase[] = [
           height: 1
         });
         graph.add(
-          new GPUTerrainWeissLandforms({
+          context.construct(GPUTerrainWeissLandforms, {
             grid,
             elevation: elevationBand(context, grid),
             parameters: view('float32', 8),

@@ -59,6 +59,7 @@ export function generateLensDescription(
   const firstFact = facts.facts[0];
   const alt = [
     unavailable,
+    facts.display,
     facts.subject,
     `${facts.keyNumber.label}: ${formatted}`,
     provenance,
@@ -68,12 +69,13 @@ export function generateLensDescription(
     .map(sentence => `${sentence!.replace(/[.]+$/, '')}.`)
     .join(' ');
   const live =
-    [`${facts.keyNumber.label} ${formatted}`, unavailable, firstFact]
+    [`${facts.keyNumber.label} ${formatted}`, facts.display, unavailable, firstFact]
       .filter(Boolean)
       .join('; ')
       .replace(/[.]+$/, '') + '.';
   const bullets = [
     `${facts.keyNumber.label}: ${formatted}`,
+    ...(facts.display ? [facts.display] : []),
     ...facts.facts,
     ...(facts.caveats ?? []),
     ...(unavailable ? [unavailable] : [])

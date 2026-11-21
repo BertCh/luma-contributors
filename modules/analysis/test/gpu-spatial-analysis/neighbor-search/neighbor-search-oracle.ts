@@ -7,6 +7,7 @@ import {
   GPU_NEIGHBOR_SEARCH_KERNEL,
   type GPUNeighborSearchSettings
 } from '../../../src/gpu-spatial-analysis/neighbor-search/index';
+import {resolveNeighborSearchWeightType} from '../../../src/gpu-spatial-analysis/neighbor-search/neighbor-search-parameters';
 
 const f32 = Math.fround;
 
@@ -18,7 +19,7 @@ export type NeighborSearchOracleInput = {
   mask?: Uint32Array;
   queryMask?: Uint32Array;
   parameters: GPUNeighborSearchSettings;
-  k?: number;
+  neighborCount?: number;
 };
 
 /** Unclamped CSR of every query row, the neighbors of each row ascending by ID. */
@@ -52,13 +53,13 @@ export function getNeighborWeight(
   bandwidth: number,
   parameters: GPUNeighborSearchSettings
 ): number {
-  const weightKind = parameters.weightKind ?? 'binary';
+  const weightType = resolveNeighborSearchWeightType(parameters);
   let weight = 1;
-  if (weightKind === 'inverseDistance') {
+  if (weightType === 'inverse-distance') {
     // 1e-6 is the library default floor of inverse-distance weights.
     weight =
       Math.max(distance, f32(parameters.distanceFloor ?? 1e-6)) ** -f32(parameters.power ?? 1);
-  } else if (weightKind === 'kernel') {
+  } else if (weightType === 'kernel') {
     const z = bandwidth > 0 ? distance / bandwidth : 0;
     switch (GPU_NEIGHBOR_SEARCH_KERNEL[parameters.kernel ?? 'triangular']) {
       case GPU_NEIGHBOR_SEARCH_KERNEL.gaussian:
@@ -103,7 +104,8 @@ export function computeNeighborSearchOracle(
   const queries = input.queryPositions ?? positions;
   const queryMask = input.queryMask ?? (crossJoin ? undefined : input.mask);
   const bounds = parameters.bounds.map(f32);
-  const radius = f32(parameters.radius ?? Infinity);
+  // Accept the full float32 range that can appear in a GPU-resident parameters view.
+  const radius = f32(parameters.searchRadius ?? parameters.maximumDistance ?? Infinity);
   const radiusSquared = f32(radius * radius);
   const radiusValid = Number.isFinite(radius) && Number.isFinite(radiusSquared) && radius > 0;
   const boundsValid =
@@ -153,7 +155,7 @@ export function computeNeighborSearchOracle(
       }
       if (mode === 'knn') {
         candidates.sort((a, b) => a.distanceSquared - b.distanceSquared || a.id - b.id);
-        candidates = candidates.slice(0, input.k ?? 1);
+        candidates = candidates.slice(0, input.neighborCount ?? 1);
       }
       candidates.sort((a, b) => a.id - b.id);
     }

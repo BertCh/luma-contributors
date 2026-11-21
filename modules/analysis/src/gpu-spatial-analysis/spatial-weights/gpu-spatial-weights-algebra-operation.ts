@@ -1,3 +1,7 @@
+import {
+  validateAndSnapshotWeightsAlgebraProps,
+  validateWeightsOperationStatus
+} from './spatial-weights-operation-name';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
@@ -7,10 +11,10 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
-import {snapshotWeightsAlgebraProps} from './weights-construction-snapshot';
 import {
   GPUSpatialWeightsAlgebra,
   type GPUSpatialWeightsAlgebraProps,
+  type GPUSpatialWeightsBinaryProps,
   type GPUSpatialWeightsCombineRule
 } from './gpu-spatial-weights-algebra';
 import type {GPUSpatialWeights} from './spatial-weights';
@@ -79,7 +83,8 @@ export type SpatialWeightsAlgebraOperationProps = {
   };
 } & (
   | {
-      operation: 'union' | 'intersection' | 'difference' | 'symmetricDifference';
+      /** Set operation. */
+      operation: GPUSpatialWeightsBinaryProps['operation'];
       left: LossAwareAlgebraGraphInput;
       right: LossAwareAlgebraGraphInput;
       weightRule?: GPUSpatialWeightsCombineRule;
@@ -113,7 +118,8 @@ export type SpatialWeightsAlgebraOperationProps = {
  */
 export class GPUSpatialWeightsAlgebraOperation extends GPUContributorOperation {
   constructor(props: SpatialWeightsAlgebraOperationProps) {
-    props = snapshotWeightsAlgebraProps(props);
+    props = validateAndSnapshotWeightsAlgebraProps(props);
+    validateWeightsOperationStatus(props);
     const operands =
       'left' in props ? [props.left, props.right] : 'weights' in props ? [props.weights] : [];
     validateRequirement(

@@ -70,9 +70,10 @@ export const GPU_SPATIAL_ERROR_GM_SUMMARY_PRECISION_WARNING = 9;
  */
 export const GPU_SPATIAL_ERROR_GM_SUMMARY_LAMBDA_BOUND = 10;
 /**
- * `summary` slot: 1 when the `homoskedastic` variance of `lambda` uses stochastic (Hutchinson)
- * traces of `W` (more than 4096 rows by default), so its standard error is approximate; 0 when the
- * traces are exact or the estimator is `kelejian-prucha`. Betas and `lambda` are not approximated.
+ * `summary` slot: 1 when `homoskedastic` uses stochastic (Hutchinson) traces of `W` (more than
+ * 4096 rows by default), so the weighted second-step `lambda`, its standard error and the betas'
+ * standard errors are approximate; 0 for exact traces or `kelejian-prucha`. Reported first-step
+ * betas and residuals are unaffected by trace sampling.
  */
 export const GPU_SPATIAL_ERROR_GM_SUMMARY_APPROXIMATION = 11;
 /**

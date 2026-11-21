@@ -18,19 +18,40 @@ import {
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
 
 /**
- * WGSL `getGridUnitPosition`: maps a point onto the unit domain the published grid index takes
- * as a literal, with the per-frame lattice extended to `COLUMNS x ROWS` whole cells, so the index
- * cell of a point agrees with `getCellColumn` and `getCellRow`. Requires a `Lattice` with
- * `minimumX`, `minimumY`, `maximumX`, `maximumY`, `cellWidth`, `cellHeight` and the constants
- * `COLUMNS` and `ROWS`.
+ * WGSL `getGridUnitPosition`: encodes the cell of a point, as the caller's own `getCellColumn`
+ * and `getCellRow` compute it, as a position on the unit domain the published grid index takes as
+ * a literal. The index therefore files every point in exactly the cell the caller's walk reads;
+ * the lattice has one cell definition. (Rescaling the point instead by an extended lattice width
+ * rounded `minimum + cellWidth * COLUMNS` at projected origins, so near 1e6 the index and the walk
+ * could differ by a cell and a 3x3 walk missed a neighbor one epsilon away.) Requires a `Lattice`
+ * and `getCellColumn(lattice, x) -> u32`, `getCellRow(lattice, y) -> u32` returning a cell below
+ * the constants `COLUMNS` and `ROWS`.
  *
  * @internal
  */
 export const POINT_NEIGHBOR_GRID_UNIT_POSITION_WGSL = /* wgsl */ `
+// Centre of a cell of an axis of size cells on the unit domain. The published getCoordinate
+// truncates unit * f32(size), a correctly rounded product; division may be less exact, so a
+// centre that rounds into a neighbor (only on axes of about a million cells) moves one float per
+// attempt. Exact for axes up to 2^23 cells.
+fn getGridCellUnitCoordinate(cell: u32, size: u32) -> f32 {
+  var unit = (f32(cell) + 0.5) / f32(size);
+  for (var attempt = 0u; attempt < 4u; attempt++) {
+    let mapped = u32(floor(unit * f32(size)));
+    if (mapped < cell) {
+      unit = bitcast<f32>(bitcast<u32>(unit) + 1u);
+    } else if (mapped > cell) {
+      unit = bitcast<f32>(bitcast<u32>(unit) - 1u);
+    }
+  }
+  return unit;
+}
+
 fn getGridUnitPosition(lattice: Lattice, x: f32, y: f32) -> vec2f {
-  let width = max(lattice.maximumX, lattice.minimumX + lattice.cellWidth * f32(COLUMNS)) - lattice.minimumX;
-  let height = max(lattice.maximumY, lattice.minimumY + lattice.cellHeight * f32(ROWS)) - lattice.minimumY;
-  return vec2f((x - lattice.minimumX) / width, (y - lattice.minimumY) / height);
+  return vec2f(
+    getGridCellUnitCoordinate(getCellColumn(lattice, x), COLUMNS),
+    getGridCellUnitCoordinate(getCellRow(lattice, y), ROWS)
+  );
 }`;
 
 /** Views written by {@link createPointNeighborGridIndexNodes}. @internal */
@@ -49,7 +70,7 @@ export type PointNeighborGridIndex<Parameters> = {
 
 /**
  * Builds the point grid every neighbor scan in the point family reads: `GPUNeighborSearch`,
- * `GPUSpatialClustering` and `GPUKernelDensity`. It owns only the index and its scratch. Each
+ * `GPUDBSCAN` and `GPUKernelDensity`. It owns only the index and its scratch. Each
  * contributor keeps its own lattice rule (radius-wide cells, epsilon-wide cells, or a fixed domain)
  * and its own walk over the cells, because those differ by what the contributor proves about a cell.
  * Pair statistics can supply exact integer cell keys instead of positions: this preserves their

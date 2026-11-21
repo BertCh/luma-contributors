@@ -2,8 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RejectionPhase} from './kernel-audit-context';
+import type {AnalysisValidationCode} from '../../../src/analysis-core/kernels/analysis-validation-error';
+
 /** A case above a contributor's documented maximum that must be refused while it is declared. */
 export type KernelAuditRejection = {
+  /** Required operation boundary; fixture allocations are excluded. */
+  phase?: RejectionPhase;
+  /** Stable fields for refusals migrated to AnalysisValidationError. */
+  validation?: {
+    code: AnalysisValidationCode;
+    path: string;
+    received: unknown;
+    expected: unknown;
+    id: string;
+    contributor: string;
+  };
   /** Barrel export of the case. */
   exportName: string;
   /** Case name. */

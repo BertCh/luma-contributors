@@ -6,7 +6,7 @@ import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {assert, type Buffer} from '@luma.gl/core';
 import {
   computeAdjacencyMatrixOrder,
-  decodeGPUNetworkCoarseningSummary,
+  decodeGPUNetworkCoarseningSummaryWords,
   getGPUAdjacencyMatrixParameterValues,
   GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
   GPUAdjacencyMatrix,
@@ -986,7 +986,7 @@ export async function createFlightMatrix(
         ? `identical to the CPU twin (${formatCount(nodeCount)} airports)`
         : `MISMATCH: ${formatCount(nodeCount - matching)} airports differ`
     );
-    const summary = decodeGPUNetworkCoarseningSummary(get('summary'));
+    const summary = decodeGPUNetworkCoarseningSummaryWords(get('summary'));
     lastGroupVertexCount = get('groupVertexCount');
     lastGroupIntra = get('groupIntra');
     const superCount = Math.min(get('superCount')[0], SUPEREDGE_CAPACITY);

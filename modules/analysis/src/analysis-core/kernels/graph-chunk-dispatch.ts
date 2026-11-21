@@ -9,10 +9,11 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
-  GraphVectorView
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
+  isGraphVectorView,
   validateCapacity,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
@@ -176,12 +177,9 @@ export function validateDisjointWritableViews(
 ): void {
   const rangesByBuffer = new Map<Buffer | GraphDataView['buffer'], WritableChunkRanges[]>();
   for (const [name, output] of Object.entries(outputs)) {
+    const isVector = isGraphVectorView(output);
     for (const [chunkIndex, view] of output ? getGraphViewChunks(output).entries() : []) {
-      if (
-        output instanceof GraphVectorView &&
-        view.length === 0 &&
-        !options.strictAlignedBindings
-      ) {
+      if (isVector && view.length === 0 && !options.strictAlignedBindings) {
         continue;
       }
       const buffer = view.buffer.defaultBuffer
@@ -191,7 +189,7 @@ export function validateDisjointWritableViews(
       const rangeName = `${name} chunk ${chunkIndex}`;
       const ranges = rangesByBuffer.get(buffer) ?? [];
       ranges.push({
-        chunkIndex: output instanceof GraphVectorView ? chunkIndex : null,
+        chunkIndex: isVector ? chunkIndex : null,
         aligned: {name: rangeName, offset: range.offset, end: range.offset + range.size},
         logical:
           view.length > 0

@@ -85,8 +85,8 @@ export type PointHorizonOracleModel = {
   rowDirection?: 'south' | 'north';
   heightReference?: 'ground' | 'absolute';
   azimuthCount: number;
-  firstAzimuth: number;
-  azimuthSpan: number;
+  firstAzimuthIndex: number;
+  azimuthBinCount: number;
   lattice: GPUPointHorizonDistanceLattice;
   segments?: GPUPointHorizonSegments;
   curvature: number;
@@ -100,7 +100,7 @@ export type PointHorizonOracleModel = {
 /** Observer `[column, row, height]`. */
 export type PointHorizonOracleObserver = readonly [number, number, number];
 
-/** Float64 oracle result, one entry per `observer * azimuthSpan + a`. */
+/** Float64 oracle result, one entry per `observer * azimuthBinCount + a`. */
 export type PointHorizonOracleResult = {
   tangent: Float64Array;
   /** Degrees; -90 when no sample, NaN for an invalid observer. */
@@ -260,7 +260,7 @@ export function computePointHorizonProfile(
   model: PointHorizonOracleModel,
   observers: readonly PointHorizonOracleObserver[]
 ): PointHorizonOracleResult {
-  const rayCount = observers.length * model.azimuthSpan;
+  const rayCount = observers.length * model.azimuthBinCount;
   const tangent = new Float64Array(rayCount).fill(Number.NaN);
   const skylineAngle = new Float64Array(rayCount).fill(Number.NaN);
   const distance = new Float64Array(rayCount).fill(Number.NaN);
@@ -276,15 +276,18 @@ export function computePointHorizonProfile(
       }
       eyeElevation = ground + height;
     }
-    for (let a = 0; a < model.azimuthSpan; a++) {
+    for (let a = 0; a < model.azimuthBinCount; a++) {
       // Azimuths are ground bearings; a Web Mercator ray is traced along the matching sphere azimuth.
-      const [sinBearing, cosBearing] = getOracleAzimuth(model.firstAzimuth + a, model.azimuthCount);
+      const [sinBearing, cosBearing] = getOracleAzimuth(
+        model.firstAzimuthIndex + a,
+        model.azimuthCount
+      );
       const [sinA, cosA] =
         model.projection === 'web-mercator'
           ? getOracleSphereAzimuth(model, row, sinBearing, cosBearing)
           : [sinBearing, cosBearing];
       const result = marchOracleRay(model, column, row, eyeElevation, sinA, cosA);
-      const index = observerIndex * model.azimuthSpan + a;
+      const index = observerIndex * model.azimuthBinCount + a;
       tangent[index] = result.has ? result.t : -3.4028234663852886e38;
       skylineAngle[index] = result.has ? (Math.atan(result.t) * 180) / Math.PI : -90;
       distance[index] = result.has ? result.d : 0;

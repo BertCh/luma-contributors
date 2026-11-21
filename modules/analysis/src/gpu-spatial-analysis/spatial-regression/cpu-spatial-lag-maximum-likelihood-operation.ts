@@ -30,7 +30,10 @@ import {
   getCPUErrorMean,
   multiplyCPUErrorWeights
 } from './cpu-spatial-error-regression';
-import {getCPUSpatialErrorLikelihoodCandidates} from './cpu-spatial-error-likelihood-polynomial';
+import {
+  getCPUSpatialErrorLikelihoodCandidates,
+  hasCPUSpatialErrorCenteredOrthogonality
+} from './cpu-spatial-error-likelihood-polynomial';
 import {
   GPUSpatialLagMaximumLikelihoodOperation,
   type SpatialLagMaximumLikelihoodOperationProps
@@ -38,10 +41,11 @@ import {
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import * as likelihood from './spatial-maximum-likelihood-parameters';
 import {getSpatialExactLogDeterminant} from './spatial-exact-log-determinant';
+import {hasSpatialErrorScalarWeights} from './spatial-error-scalar-profile';
 import {getSpatialSeriesTailModel, SPATIAL_SERIES_TAIL_MINIMUM_POWER} from './spatial-series-tail';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getSpatialLogDeterminantFromTraces,
   getSpatialLogDeterminantTruncationBound,
@@ -117,7 +121,7 @@ function validateOptions(id: string, options: CPUSpatialLagMaximumLikelihoodOpti
 function certifyResidualDependency(
   input: CPUSpatialLagMaximumLikelihoodInput,
   predictorCount: number
-): {pole?: number; constantLag: boolean} | undefined {
+): {pole?: number; constantLag: boolean; constantOriginalLag: boolean} {
   const scale = 1n << 149n;
   const getInteger = (value: number) => BigInt(value * 2 ** 149);
   const response = Array.from(input.response, getInteger);
@@ -140,11 +144,15 @@ function certifyResidualDependency(
       lagged
     ];
   });
+  const constantOriginalLag = working.every(row => row[width + 1] === working[0][width + 1]);
   let previousPivot = 1n;
   // Rectangular fraction-free elimination, solely for an exact rank certificate.
   for (let column = 0; column <= width; column++) {
     const pivotRow = working.findIndex((row, index) => index >= column && row[column] !== 0n);
-    if (pivotRow < 0) return column === width ? {pole: 0, constantLag: false} : undefined;
+    if (pivotRow < 0)
+      return column === width
+        ? {pole: 0, constantLag: false, constantOriginalLag}
+        : {constantLag: false, constantOriginalLag};
     [working[column], working[pivotRow]] = [working[pivotRow], working[column]];
     const pivot = working[column][column];
     for (let row = column + 1; row < working.length; row++) {
@@ -157,10 +165,11 @@ function certifyResidualDependency(
     }
     previousPivot = pivot;
   }
-  if (working.slice(width + 1).some(row => row[width + 1] !== 0n)) return undefined;
+  if (working.slice(width + 1).some(row => row[width + 1] !== 0n))
+    return {constantLag: false, constantOriginalLag};
   const numerator = working[width][width];
   const denominator = working[width][width + 1];
-  if (denominator === 0n) return {constantLag: true};
+  if (denominator === 0n) return {constantLag: true, constantOriginalLag};
   // Scale integer significands separately, avoiding Infinity/Infinity for large minors.
   const getMantissa = (value: bigint) => {
     const magnitude = value < 0n ? -value : value;
@@ -171,7 +180,8 @@ function certifyResidualDependency(
   const second = getMantissa(denominator);
   return {
     pole: (first.value / second.value) * 2 ** (first.shift - second.shift),
-    constantLag: false
+    constantLag: false,
+    constantOriginalLag
   };
 }
 
@@ -206,8 +216,10 @@ function certifyResidualDependency(
  *   Non-finite active weights give NaN trace outputs. Unused capacity and out-of-range neighbor
  *   sentinels are ignored; empty slot arrays are accepted by the pure function. Zero-link weights
  *   return status 3, while their trace infinityNorm is 1, matching the trace contributor fallback.
- *   Finite positive norms at/above 3e38 stay normalized in float64; the GPU trace pass falls back
- *   to 1 there. Norms above float32 range round to infinity in the infinityNorm output only.
+ *   The GPU and CPU traces retain positive norms throughout the finite float32 range.
+ *   The CPU still normalizes in float64 when its published infinityNorm rounds to infinity.
+ *   The bundled GPU trace contributor uses the same exponent gate as standalone GPU traces
+ *   when computing cubic and quartic Gram probe moments.
  *
  * @throws If weights, predictors, response, eigenvalues or traceParameters arrays are inconsistent.
  */
@@ -238,7 +250,7 @@ export function computeSpatialLagMaximumLikelihoodOnCPU(
     throw new Error(`${id} traceParameters must hold the packed seed`);
   const stochastic =
     (options.traceMode ??
-      (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic')) ===
+      (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic')) ===
     'stochastic';
   const probeCount = stochastic
     ? (options.traceProbeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT)
@@ -345,19 +357,35 @@ export function computeSpatialLagMaximumLikelihoodOnCPU(
   const lagged = multiply(response).map(
     (value, row) => value + responseMean * ((rowSums[row] - rowSumReference) / traceNorm)
   );
+  const dependency = certifyResidualDependency(input, predictorCount);
+  const constantOriginalLag = dependency.constantOriginalLag;
+  if (constantOriginalLag) lagged.fill(lagged[0]);
   const first = fitCPURegressionWithQR(design, response);
   const second = fitCPURegressionWithQR(design, lagged);
   if (!first || !second) return fail(likelihood.GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_SINGULAR);
+  if (
+    hasCPUSpatialErrorCenteredOrthogonality(
+      Array.from({length: rowCount}, (_, row) => [
+        1,
+        ...input.predictors.subarray(row * predictorCount, (row + 1) * predictorCount)
+      ]),
+      Array.from(input.response)
+    )
+  )
+    first.estimate.fill(0);
   if (!(norm > 0) || !Number.isFinite(norm) || !traces.every(Number.isFinite))
     return fail(likelihood.GPU_SPATIAL_MAXIMUM_LIKELIHOOD_STATUS_NON_FINITE);
+  if (constantOriginalLag) {
+    second.estimate.fill(0);
+    second.estimate[0] = lagged[0];
+  }
   const residualZero = response.map(
     (value, row) => value - getCPUErrorDot(design[row], first.estimate)
   );
   const residualOne = lagged.map(
     (value, row) => value - getCPUErrorDot(design[row], second.estimate)
   );
-  const dependency = certifyResidualDependency(input, predictorCount);
-  if (dependency?.constantLag) residualOne.fill(0);
+  if (dependency.constantLag) residualOne.fill(0);
   const initialSquares = getCPUErrorDot(residualZero, residualZero);
   const laggedSquares = getCPUErrorDot(residualOne, residualOne);
   if (!(initialSquares > 0))
@@ -386,15 +414,21 @@ export function computeSpatialLagMaximumLikelihoodOnCPU(
     [0, value],
     [0, -value]
   ]);
-  const candidates = getCPUSpatialErrorLikelihoodCandidates(
-    candidateRows,
-    candidateLags,
-    traces,
-    eigenvalues,
-    tail,
-    rowCount,
-    limit
-  );
+  const scalarProfile =
+    exact &&
+    Boolean(input.eigenvalues?.every(value => value === input.eigenvalues![0])) &&
+    hasSpatialErrorScalarWeights(input.weights, rowCount, input.eigenvalues![0]);
+  const candidates = scalarProfile
+    ? [{parameter: -limit, atBoundary: true}]
+    : getCPUSpatialErrorLikelihoodCandidates(
+        candidateRows,
+        candidateLags,
+        traces,
+        eigenvalues,
+        tail,
+        rowCount,
+        limit
+      );
   let bestObjective = -Infinity;
   let parameter = NaN;
   let atBoundary = false;
@@ -475,13 +509,14 @@ export function computeSpatialLagMaximumLikelihoodOnCPU(
   for (let column = 0; column < width; column++)
     information[width][column] = information[column][width];
   const scales = information.map((row, column) => Math.sqrt(row[column]));
-  const factor = scales.every(value => value > 0 && Number.isFinite(value))
-    ? factorCPURegressionCorrelation(
-        information.map((row, firstColumn) =>
-          row.map((value, secondColumn) => value / scales[firstColumn] / scales[secondColumn])
+  const factor =
+    !scalarProfile && scales.every(value => value > 0 && Number.isFinite(value))
+      ? factorCPURegressionCorrelation(
+          information.map((row, firstColumn) =>
+            row.map((value, secondColumn) => value / scales[firstColumn] / scales[secondColumn])
+          )
         )
-      )
-    : undefined;
+      : undefined;
   const standardErrors = new Array<number>(size).fill(NaN);
   if (factor) {
     // C^-1 L = L^-T gives a covariance root without differencing large variances.
@@ -515,17 +550,15 @@ export function computeSpatialLagMaximumLikelihoodOnCPU(
       (covariance / getCPUErrorDot(centered, centered))
     );
   };
-  // Preserve the contributor's moment definition: a constant fit has undefined correlation,
-  // even if QR roundoff leaves tiny nonconstant reconstructed fitted rows.
   const responseSquares = getCPUErrorDot(response, response);
-  const responseResidual = getCPUErrorDot(response, residuals);
-  const residualTotal = residuals.reduce((sum, value) => sum + value, 0);
-  const predictionCovariance = responseSquares - responseResidual;
-  const predictionVariance =
-    responseSquares -
-    2 * responseResidual +
-    sigmaSquared * rowCount -
-    (residualTotal * residualTotal) / rowCount;
+  const laggedMean = getCPUErrorMean(lagged);
+  const centeredPrediction = design.map(
+    (row, position) =>
+      getCPUErrorDot(row.slice(1), centeredCoefficients.slice(1)) +
+      parameter * (lagged[position] - laggedMean)
+  );
+  const predictionCovariance = getCPUErrorDot(response, centeredPrediction);
+  const predictionVariance = getCPUErrorDot(centeredPrediction, centeredPrediction);
   const conditioning = getCPUErrorConditioning(design, means);
   const logLikelihood = bestObjective - 0.5 * rowCount * (Math.log(2 * Math.PI) + 1);
   const laggedRatio = getCPUErrorDot(residuals, residualOne) / residualSquares;
@@ -556,7 +589,10 @@ export function computeSpatialLagMaximumLikelihoodOnCPU(
     Number(converged),
     Number(atBoundary),
     Number(limit < likelihood.GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BOUND_FRACTION),
-    exact ? 0 : getSpatialLogDeterminantTruncationBound(parameter, maximumPower, rowCount),
+    exact
+      ? 0
+      : getSpatialLogDeterminantTruncationBound(parameter, maximumPower, rowCount) +
+        Math.abs(logDeterminant(parameter) - getSpatialLogDeterminantFromTraces(parameter, traces)),
     Number(Boolean(factor)),
     candidates.length,
     logDeterminant(parameter)

@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "// A true kNN list with distances: the self join of the observations, ten neighbours each.\nconst search = new GPUNeighborSearch({\n  spatialContext,\n  mode: 'knn',\n  k: 10,\n  positions: observations,\n  parameters: searchParameters,\n  gridSize: [32, 32],\n  output: table\n});\ngraph.add(search);\ngraph.add(\n  new GPULocalOutlierFactor({\n    spatialContext,\n    neighbors: search.outputWeights,\n    parameters,\n    output\n  })\n);\n// lof near 1 is as dense as the neighbours; outlier flags lof above the chosen threshold",
+    "code": "// A true kNN list with distances: the self join of the observations, ten neighbours each.\nconst search = new GPUNeighborSearch({\n  spatialContext,\n  mode: 'knn',\n  neighborCount: 10,\n  positions: observations,\n  parameters: searchParameters,\n  gridSize: [32, 32],\n  output: table\n});\ngraph.add(search);\ngraph.add(\n  new GPULocalOutlierFactor({\n    spatialContext,\n    neighbors: search.outputWeights,\n    parameters,\n    output\n  })\n);\n// lof near 1 is as dense as the neighbours; outlier flags lof above the chosen threshold",
     "language": "ts",
     "lineCount": 20
   },
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:46.905Z",
-    "runId": "run-d899c3ab",
+    "date": "2026-11-20T23:50:04.016Z",
+    "runId": "run-bb6f29a6",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-d899c3ab",
+    "runId": "run-bb6f29a6",
     "rung": "result",
     "bindings": {},
     "clauses": [],

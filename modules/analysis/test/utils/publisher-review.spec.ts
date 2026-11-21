@@ -135,8 +135,8 @@ it('R1 anti join through left gather rewrites prefilled candidate flags on graph
             output: {
               leftRows: outputs['leftRows'] as never,
               rightRows: outputs['rightRows'] as never,
-              rowCount: outputs['rowCount'] as never,
               status: {
+                count: outputs['rowCount'] as never,
                 overflow: outputs['overflow'] as never,
                 candidateOverflow: outputs['candidate'] as never
               }
@@ -281,8 +281,8 @@ it('R4 gather writes count and candidate in adjacent words in separate GPU passe
         output: {
           leftRows: fixture.output('left-out', 'uint32', 2).view,
           rightRows: fixture.output('right-out', 'uint32', 2).view,
-          rowCount: count,
           status: {
+            count,
             overflow: fixture.output('overflow', 'uint32', 1).view,
             candidateOverflow: candidate
           }
@@ -404,7 +404,7 @@ for (const candidateCapacity of [32, 1])
         candidateCapacity,
         trackEventCapacity: 1,
         eventCapacity: 2,
-        outputs: {
+        output: {
           events: {
             status: {count: count.view, overflow: overflow.view, candidateOverflow: candidate.view}
           }

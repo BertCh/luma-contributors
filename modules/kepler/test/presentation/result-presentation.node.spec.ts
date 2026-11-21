@@ -5,8 +5,8 @@
 import {
   GPU_ANALYSIS_CLASS_SCHEMES,
   getGPUAnalysisResultClasses
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import type {GPUAnalysisResultClass} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
+import type {GPUAnalysisResultClass} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import type {CatalogParameterValue} from '../../src/analysis/catalog-binding-types';
 import type {CatalogRunResult} from '../../src/analysis/catalog-binding-types';

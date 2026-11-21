@@ -37,7 +37,7 @@ it('GPUEnsembleScores fair CRPS matches the order-statistic form and is unbiased
     ensemble: crps.ensemble,
     observations: new Array<number>(crps.siteCount).fill(crps.observation)
   };
-  const fair = (await runEnsembleScores(device, entry, {crps: true, fair: true})).crps!;
+  const fair = (await runEnsembleScores(device, entry, {crps: true, estimator: 'fair'})).crps!;
   const standard = (await runEnsembleScores(device, entry, {crps: true})).crps!;
   expect(fair.length).toBe(crps.siteCount);
   for (let site = 0; site < crps.siteCount; site++) {
@@ -68,8 +68,9 @@ it('GPUEnsembleScores fair energy score matches the distinct-pair form and is un
       ensemble,
       observations: energy.observation
     };
-    const fairScore = (await runEnsembleScores(device, entry, {energyScore: true, fair: true}))
-      .energyScore!;
+    const fairScore = (
+      await runEnsembleScores(device, entry, {energyScore: true, estimator: 'fair'})
+    ).energyScore!;
     const standardScore = (await runEnsembleScores(device, entry, {energyScore: true}))
       .energyScore!;
     expect(Math.abs(fairScore - energy.fair[index]), `fair ensemble ${index}`).toBeLessThanOrEqual(

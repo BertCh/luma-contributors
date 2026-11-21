@@ -19,15 +19,31 @@ import {
   type RasterTimeSeriesChunkPlan
 } from './raster-time-series-chunks-b';
 import {
+  type GPUPackedReadbackValues,
   validateCapacity,
+  validateFiniteNumber,
+  validateGraphPorts,
+  validateOption,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateRasterStreamFrame,
+  validateRasterStreamParameterTarget,
+  getRasterStreamStatusWord
+} from './raster-stream-parameters';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {GET_NORMAL_QUANTILE_WGSL} from '../../analysis-core/kernels/normal-quantile-wgsl';
 import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
-import {RASTER_REGULARIZED_GAMMA_TAILS_WGSL} from './raster-climate-distribution-wgsl';
+import {
+  RASTER_REGULARIZED_GAMMA_TAILS_WGSL,
+  RASTER_CLIMATE_ZERO_ATOM_WGSL,
+  RASTER_CLIMATE_SHIFTED_RATIO_WGSL
+} from './raster-climate-distribution-wgsl';
 import {MAXIMUM_RASTER_STREAM_SLOT_COUNT} from './gpu-raster-streaming-accumulator';
-import type {GPURasterStandardizedIndexDistribution} from './gpu-raster-standardized-index-calibration';
+import {
+  resolveGPURasterStandardizedIndexZeroAtom,
+  type GPURasterStandardizedIndexDistribution
+} from './gpu-raster-standardized-index-calibration';
 
 /** Independent sample invocations need no per-cell scratch; activeSliceCount is exact in float32 through 2^24. */
 export const MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT = 2 ** 24;
@@ -43,10 +59,43 @@ export function getGPURasterStandardizedIndexParameterValues(
   chunkSliceCount: number,
   target: Float32Array = new Float32Array(GPU_RASTER_STANDARDIZED_INDEX_PARAMETER_LENGTH)
 ): Float32Array {
-  target[0] = settings.activeSliceCount ?? chunkSliceCount;
-  target[1] = settings.location ?? 0;
+  const id = 'getGPURasterStandardizedIndexParameterValues';
+  validateRasterStreamParameterTarget(id, target, GPU_RASTER_STANDARDIZED_INDEX_PARAMETER_LENGTH);
+  const activeSliceCount = settings.activeSliceCount ?? chunkSliceCount;
+  validateRasterStreamFrame(
+    id,
+    chunkSliceCount,
+    activeSliceCount,
+    MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT
+  );
+  validateFiniteNumber(id, 'location', settings.location ?? 0);
+  target.set([activeSliceCount, settings.location ?? 0]);
   return target;
 }
+
+/** Named interpretation of a standardized-index status word. */
+export function decodeGPURasterStandardizedIndexStatus(input: GPUPackedReadbackValues): {
+  complete: boolean;
+  invalidInput: boolean;
+  calibrationUnavailable: boolean;
+  iterationLimit: boolean;
+} {
+  const code = getRasterStreamStatusWord('decodeGPURasterStandardizedIndexStatus', input, 3);
+  return {
+    complete: code === 0,
+    invalidInput: code === 1,
+    calibrationUnavailable: code === 2,
+    iterationLimit: code === 3
+  };
+}
+
+/** Per-observation results, indexed cell * chunkSliceCount + slice. */
+export type GPURasterStandardizedIndexOutput<Rows extends RasterScalarView = GraphDataView> = {
+  /** Standardized index in [-8.21, 8.21]; NaN where status is nonzero. */
+  index: RasterTimeSeriesView<'float32', Rows>;
+  /** 0 valid, 1 missing input/inactive slice, 2 calibration unusable, 3 evaluation iteration limit. */
+  status: RasterTimeSeriesView<'uint32', Rows>;
+};
 
 /** Properties of {@link GPURasterStandardizedIndex}. */
 export type GPURasterStandardizedIndexProps<Rows extends RasterScalarView = GraphDataView> = {
@@ -56,8 +105,8 @@ export type GPURasterStandardizedIndexProps<Rows extends RasterScalarView = Grap
   chunkSliceCount: number;
   slotCount?: number;
   distribution: GPURasterStandardizedIndexDistribution;
-  /** Must match the calibration. */
-  zeroInflated?: boolean;
+  /** Atom at original value zero; must match calibration. Defaults to false. */
+  zeroAtom?: boolean;
   /** Chunk to evaluate, cell-major; nonfinite samples are missing. */
   values: RasterTimeSeriesView<'float32', Rows>;
   mask?: RasterTimeSeriesView<'uint32', Rows>;
@@ -66,12 +115,7 @@ export type GPURasterStandardizedIndexProps<Rows extends RasterScalarView = Grap
   fit: RasterTimeSeriesView<'float32', Rows>;
   /** Float32, see {@link getGPURasterStandardizedIndexParameterValues}. */
   parameters: GraphDataView<'float32'>;
-  output: {
-    /** `cell * chunkSliceCount + slice`, standardized index in `[-8.21, 8.21]`, NaN where status is nonzero. */
-    index: RasterTimeSeriesView<'float32', Rows>;
-    /** 0 valid, 1 missing input, 2 calibration not usable for the slot. */
-    status: RasterTimeSeriesView<'uint32', Rows>;
-  };
+  output: GPURasterStandardizedIndexOutput<Rows>;
 };
 
 /**
@@ -81,7 +125,7 @@ export type GPURasterStandardizedIndexProps<Rows extends RasterScalarView = Grap
  * the quantile keeps its precision on both sides. Results are clipped to xclim's `+-8.21`.
  *
  * Per-frame: `parameters` and the view contents. Compile-time: `cellCount`, `chunkSliceCount`,
- * `slotCount`, `distribution`, `zeroInflated`, and which optional views exist.
+ * `slotCount`, `distribution`, `zeroAtom`, and which optional views exist.
  *
  * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
@@ -94,9 +138,22 @@ export class GPURasterStandardizedIndex<Rows extends RasterScalarView = GraphDat
   readonly estimatedCommandNodeCount: number;
   readonly slotCount: number;
   constructor(props: GPURasterStandardizedIndexProps<Rows> & {values: Rows}) {
-    this.props = props;
+    const zeroAtom = resolveGPURasterStandardizedIndexZeroAtom(
+      props.id ?? 'raster-standardized-index',
+      props
+    );
+    this.props = {...props, zeroAtom, output: {...props.output}};
     const id = props.id ?? 'raster-standardized-index';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      slotIndices: {required: false, viewType: 'data', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      fit: {required: true, viewType: 'either', formats: ['float32']},
+      'output.index': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
     const slotCount = props.slotCount ?? 1;
     this.slotCount = slotCount;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -108,11 +165,7 @@ export class GPURasterStandardizedIndex<Rows extends RasterScalarView = GraphDat
       MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT
     );
     validateCapacity(id, 'slotCount', slotCount, 1, MAXIMUM_RASTER_STREAM_SLOT_COUNT);
-    validateRequirement(
-      id,
-      props.distribution === 'gamma' || props.distribution === 'fisk',
-      "distribution must be 'gamma' or 'fisk'"
-    );
+    validateOption(id, 'distribution', props.distribution, ['gamma', 'fisk']);
     const observationCount = props.cellCount * props.chunkSliceCount;
     validateCapacity(id, 'cellCount times chunkSliceCount', observationCount);
     validateRequirement(
@@ -169,12 +222,12 @@ export class GPURasterStandardizedIndex<Rows extends RasterScalarView = GraphDat
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, slotCount} = this;
     const {chunkSliceCount: chunk, values, mask, slotIndices, fit, parameters, output} = props;
-    const zeroInflated = props.zeroInflated ?? false;
+    const zeroAtom = props.zeroAtom ?? false;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const tails =
       props.distribution === 'gamma'
-        ? 'getRegularizedGammaTails(fitShape, getScaledQuotient(positive, fitScale, 1.0, 0))'
-        : 'getFiskTails(fitShape, getScaledQuotient(positive, fitScale, 1.0, 0))';
+        ? 'getConvergedRegularizedGammaTails(fitShape, getRasterClimateShiftedRatio(value, parameters[parametersOffset + 1u], fitScale))'
+        : 'getFiskTails(fitShape, getRasterClimateShiftedRatio(value, parameters[parametersOffset + 1u], fitScale))';
     return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
       id,
       operation: 'GPURasterStandardizedIndex',
@@ -191,6 +244,8 @@ export class GPURasterStandardizedIndex<Rows extends RasterScalarView = GraphDat
       ],
       declarations: `${RASTER_FINITE_WGSL}
 ${SCALED_QUOTIENT_WGSL}
+${RASTER_CLIMATE_SHIFTED_RATIO_WGSL}
+${zeroAtom ? RASTER_CLIMATE_ZERO_ATOM_WGSL : ''}
 ${props.distribution === 'gamma' ? RASTER_REGULARIZED_GAMMA_TAILS_WGSL : ''}
 ${GET_NORMAL_QUANTILE_WGSL}
 fn getFiskTails(shape: f32, ratio: f32) -> vec2<f32> {
@@ -213,25 +268,22 @@ if (slice < activeSliceCount && finite(value) ${mask ? '&& mask[maskOffset + sou
     let fitShape = fit[fitOffset + 3u * entry];
     let fitScale = fit[fitOffset + 3u * entry + 1u];
     let zeroProbability = fit[fitOffset + 3u * entry + 2u];
-    if (finite(fitShape) && finite(fitScale) && fitShape > 0.0 && fitScale > 0.0) {
-      code = 0u;
-      var lowerTail = zeroProbability;
-      var upperTail = 1.0 - zeroProbability;
-      ${
-        zeroInflated
-          ? `if (value != 0.0) {
-        let positive = value - parameters[parametersOffset + 1u];
-        let tails = ${tails};
-        lowerTail = zeroProbability + (1.0 - zeroProbability) * tails.x;
-        upperTail = (1.0 - zeroProbability) * tails.y;
-      }`
-          : `let positive = value - parameters[parametersOffset + 1u];
+    if (finite(fitShape) && finite(fitScale) && fitShape > 0.0 && fitScale > 0.0 ${zeroAtom ? '&& finite(zeroProbability) && zeroProbability >= 0.0 && zeroProbability <= 1.0' : ''}) {
+      code = 3u;
       let tails = ${tails};
-      lowerTail = tails.x;
-      upperTail = tails.y;`
+      if (finite(tails.x) && finite(tails.y)) {
+        code = 0u;
+        var lowerTail = tails.x;
+        var upperTail = tails.y;
+        ${
+          zeroAtom
+            ? `lowerTail = (1.0 - zeroProbability) * tails.x + select(0.0, zeroProbability, !isRasterClimateOriginalNegative(value));
+        upperTail = (1.0 - zeroProbability) * tails.y + select(0.0, zeroProbability, isRasterClimateOriginalNegative(value));`
+            : ''
+        }
+        result = select(getNormalQuantileValue(lowerTail), -getNormalQuantileValue(upperTail), upperTail < lowerTail);
+        result = clamp(result, -${GPU_RASTER_STANDARDIZED_INDEX_LIMIT}, ${GPU_RASTER_STANDARDIZED_INDEX_LIMIT});
       }
-      result = select(getNormalQuantileValue(lowerTail), -getNormalQuantileValue(upperTail), upperTail < lowerTail);
-      result = clamp(result, -${GPU_RASTER_STANDARDIZED_INDEX_LIMIT}, ${GPU_RASTER_STANDARDIZED_INDEX_LIMIT});
     }
   }
 }

@@ -56,6 +56,11 @@ describe('GPUTransferMask', () => {
                   attrs: {layout, mode}
                 });
                 if ('sourceText' in recording) {
+                  if (node.id.endsWith('-scatter')) {
+                    expect(annotation?.source?.text).toContain(
+                      mode === 'count' ? 'atomicAdd(' : 'atomicMax('
+                    );
+                  }
                   expect(annotation?.source?.hash).toBe(
                     hashGPUComputationText(annotation!.source!.text!)
                   );
@@ -76,6 +81,101 @@ describe('GPUTransferMask', () => {
     }
   }
 
+  test('VAL-04: rejects supplied invalid modes before graph declaration and defaults only undefined', () => {
+    const device = createDevice('mode-validation');
+    const graph = new GPUCommandGraph(device);
+    try {
+      const source = createTransientView(graph, 'source', 'uint32', 2);
+      const target = createTransientView(graph, 'target', 'uint32', 1);
+      const targets = createTransientView(graph, 'targets', 'uint32', 2);
+      const props = {
+        id: 'mode-transfer',
+        source,
+        target,
+        relation: {layout: 'index' as const, targets}
+      };
+      for (const mode of ['counts', '', null, false]) {
+        expect(() => new GPUTransferMask({...props, mode: mode as never})).toThrow(
+          `mode-transfer mode must be any or count; received ${String(mode)}`
+        );
+      }
+      expect(
+        () =>
+          new GPUTransferMask({...props, relation: {...props.relation, layout: 'unknown' as never}})
+      ).toThrow('layout must be index or csr; received unknown');
+      expect(
+        new GPUTransferMask({...props, mode: undefined}).getCommandNodes(graph)[1].workload?.variant
+      ).toBe('index-any');
+    } finally {
+      device.destroy();
+    }
+  });
+
+  for (const layout of ['index', 'csr'] as const) {
+    test(`review B7: captures getter-backed ${layout} relation fields once`, () => {
+      const device = createDevice('relation-getters');
+      const graph = new GPUCommandGraph(device);
+      try {
+        const source = createTransientView(graph, 'source', 'uint32', 2);
+        const target = createTransientView(graph, 'target', 'uint32', 1);
+        const targets = createTransientView(graph, 'targets', 'uint32', 2);
+        const offsets = createTransientView(graph, 'offsets', 'uint32', 3);
+        let selectedTargets = targets;
+        const reads = {layout: 0, targets: 0, offsets: 0, neighbors: 0};
+        const relation =
+          layout === 'index'
+            ? new (class {
+                get layout() {
+                  reads.layout++;
+                  return 'index' as const;
+                }
+                get targets() {
+                  reads.targets++;
+                  return selectedTargets;
+                }
+              })()
+            : new (class {
+                get layout() {
+                  reads.layout++;
+                  return 'csr' as const;
+                }
+                get offsets() {
+                  reads.offsets++;
+                  return offsets;
+                }
+                get neighbors() {
+                  reads.neighbors++;
+                  return selectedTargets;
+                }
+              })();
+        const recorder = new GPUComputationRecorder({sourceText: true});
+        const transfer = new GPUTransferMask({
+          id: 'getter-transfer',
+          source,
+          target,
+          relation,
+          mode: 'count',
+          recorder
+        });
+        selectedTargets = source;
+        const nodes = transfer.getCommandNodes(graph);
+        expect(nodes[1].workload?.variant).toBe(`${layout}-count`);
+        expect(
+          nodes[1].resources?.map(resource => 'buffer' in resource && resource.buffer)
+        ).toEqual([source, ...(layout === 'csr' ? [offsets] : []), targets, target]);
+        expect(recorder.getNodeRecord(nodes[1].id)?.attrs).toMatchObject({layout, mode: 'count'});
+        expect(reads).toEqual({
+          layout: 1,
+          targets: layout === 'index' ? 1 : 0,
+          offsets: layout === 'csr' ? 1 : 0,
+          neighbors: layout === 'csr' ? 1 : 0
+        });
+      } finally {
+        device.destroy();
+      }
+    });
+  }
+
   test('validates packed formats, relation lengths, graph ownership and separate output storage', () => {
     const device = createDevice('validation-device');
     const graph = new GPUCommandGraph(device);
@@ -90,9 +190,16 @@ describe('GPUTransferMask', () => {
         target,
         relation: {layout: 'index' as const, targets}
       };
-      expect(() => new GPUTransferMask({...props, source: invalid})).toThrow('validate-transfer');
-      expect(() => new GPUTransferMask({...props, target: invalid})).toThrow('validate-transfer');
       expect(
+        // @ts-expect-error Exercise runtime rejection of a float32 source.
+        () => new GPUTransferMask({...props, source: invalid})
+      ).toThrow('validate-transfer');
+      expect(
+        // @ts-expect-error Exercise runtime rejection of a float32 target.
+        () => new GPUTransferMask({...props, target: invalid})
+      ).toThrow('validate-transfer');
+      expect(
+        // @ts-expect-error Exercise runtime rejection of float32 indices.
         () => new GPUTransferMask({...props, relation: {layout: 'index', targets: invalid}})
       ).toThrow('validate-transfer');
       expect(

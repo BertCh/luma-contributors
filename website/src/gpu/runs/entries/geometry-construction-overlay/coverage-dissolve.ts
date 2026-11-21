@@ -33,7 +33,7 @@ export default defineOperationRun({
       new GPUCoverageDissolve({
         ...getPolygonFields(polygons),
         labels: labels.view,
-        snapTolerance: 1e-5,
+        snapGridSize: 1e-5,
         output: {
           ringOffsets: ringOffsets.view,
           positions: positions.view,

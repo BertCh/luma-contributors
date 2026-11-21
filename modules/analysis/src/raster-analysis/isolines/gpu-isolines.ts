@@ -19,7 +19,10 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validateGPUStorageBindingByteLength
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
+  getPackedFloat32Values,
+  getPackedUint32Values
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateIsolinesTile,
@@ -118,6 +121,234 @@ export type GPUIsolinesPolylineOutput = {
   /** One row receiving the number of vertices written (`polylineOffsets[polylineCount]`). */
   vertexCount: GraphDataView<'uint32'>;
 };
+
+/** Float32 column readback, including bytes returned by a GPU buffer read. */
+export type GPUIsolinesFloatReadback = Float32Array | Uint8Array | ArrayBuffer;
+/** Uint32 column readback, including bytes returned by a GPU buffer read. */
+export type GPUIsolinesUintReadback = Uint32Array | Uint8Array | ArrayBuffer;
+
+/** Host readbacks of the stitched output and its two loss words. */
+export type GPUIsolinesPolylineReadback = {
+  polylines: {
+    vertices: GPUIsolinesFloatReadback;
+    polylineOffsets: GPUIsolinesUintReadback;
+    polylineLevels: GPUIsolinesUintReadback;
+    polylineClosed: GPUIsolinesUintReadback;
+    polylineCount: GPUIsolinesUintReadback;
+    vertexCount: GPUIsolinesUintReadback;
+  };
+  status: {overflow: GPUIsolinesUintReadback; polylineOverflow: GPUIsolinesUintReadback};
+};
+
+/** Retained XY geometry; coordinates include the supplied local origin, without reprojection. */
+export type GPUIsolinesDecodedPolylines = {
+  polylines: {
+    coordinates: [number, number][];
+    levelIndex: number;
+    levelValue: number;
+    closed: boolean;
+  }[];
+  segmentComplete: boolean;
+  /** False for either segment loss or stitched polyline loss, matching the combined loss word. */
+  polylineComplete: boolean;
+  complete: boolean;
+};
+
+/** Decode complete retained chains, bounded by validated live counts and CSR offsets. */
+export function decodeGPUIsolinesPolylines(
+  readback: GPUIsolinesPolylineReadback,
+  options: {levels: GPUIsolinesFloatReadback; localOrigin?: readonly [number, number]}
+): GPUIsolinesDecodedPolylines {
+  const id = 'decodeGPUIsolinesPolylines';
+  const read = <ArrayType extends Float32Array | Uint32Array>(
+    name: string,
+    data: ArrayType | Uint8Array | ArrayBuffer,
+    readValues: (bytes: Uint8Array, minimumLength: number) => ArrayType,
+    minimumLength: number,
+    expectedBrand: 'Uint32Array' | 'Float32Array'
+  ): ArrayType => {
+    validateRequirement(id, data !== undefined && data !== null, `${name} readback is required`);
+    // The intrinsic typed-array brand accepts foreign realms and Node Buffer bytes without
+    // reinterpreting unrelated element types (or a DataView) as successful readback words.
+    const typedArrayName = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(Uint8Array.prototype),
+      Symbol.toStringTag
+    )!.get!;
+    const observedBrand = ArrayBuffer.isView(data) ? typedArrayName.call(data) : undefined;
+    validateRequirement(
+      id,
+      ArrayBuffer.isView(data)
+        ? observedBrand === expectedBrand || observedBrand === 'Uint8Array'
+        : Object.prototype.toString.call(data) === '[object ArrayBuffer]',
+      `${name} must be ${expectedBrand}, Uint8Array or ArrayBuffer; received ${observedBrand ?? Object.prototype.toString.call(data)}`
+    );
+    validateRequirement(
+      id,
+      data.byteLength % 4 === 0,
+      `${name} byte length must be a multiple of 4; received ${data.byteLength}`
+    );
+    validateRequirement(
+      id,
+      data.byteLength / 4 >= minimumLength,
+      `${name} must contain at least ${minimumLength} elements; received ${data.byteLength / 4}`
+    );
+    // Create the logical live prefix directly: Buffer.slice aliases its parent and foreign-realm
+    // byte arrays fail instanceof checks. The common reader handles little-endian bytes.
+    const isView = ArrayBuffer.isView(data);
+    const bytes = new Uint8Array(
+      isView ? data.buffer : (data as ArrayBuffer),
+      isView ? data.byteOffset : 0,
+      minimumLength * 4
+    );
+    return readValues(bytes, minimumLength);
+  };
+  const polylineCount = read(
+    'polylineCount',
+    readback.polylines.polylineCount,
+    getPackedUint32Values,
+    1,
+    'Uint32Array'
+  )[0];
+  const vertexCount = read(
+    'vertexCount',
+    readback.polylines.vertexCount,
+    getPackedUint32Values,
+    1,
+    'Uint32Array'
+  )[0];
+  const overflow = read(
+    'status.overflow',
+    readback.status.overflow,
+    getPackedUint32Values,
+    1,
+    'Uint32Array'
+  )[0];
+  const polylineOverflow = read(
+    'status.polylineOverflow',
+    readback.status.polylineOverflow,
+    getPackedUint32Values,
+    1,
+    'Uint32Array'
+  )[0];
+  validateRequirement(
+    id,
+    overflow <= 1 && polylineOverflow <= 1,
+    'status loss words must be 0 or 1'
+  );
+  validateRequirement(
+    id,
+    overflow === 0 || polylineOverflow === 1,
+    'segment loss requires polylineOverflow = 1'
+  );
+  validateRequirement(
+    id,
+    overflow === 0 || (polylineCount === 0 && vertexCount === 0),
+    'segment loss suppresses stitched polylines'
+  );
+  validateRequirement(
+    id,
+    readback.polylines.vertices.byteLength >= 8,
+    'polylines.vertices must have an allocated XY row as evidence of stitching; for the CPU adapter supply vertexCapacity >= 1'
+  );
+  const vertices = read(
+    'vertices',
+    readback.polylines.vertices,
+    getPackedFloat32Values,
+    vertexCount * 2,
+    'Float32Array'
+  );
+  const offsets = read(
+    'polylineOffsets',
+    readback.polylines.polylineOffsets,
+    getPackedUint32Values,
+    polylineCount + 1,
+    'Uint32Array'
+  );
+  const levelIndices = read(
+    'polylineLevels',
+    readback.polylines.polylineLevels,
+    getPackedUint32Values,
+    polylineCount,
+    'Uint32Array'
+  );
+  const closures = read(
+    'polylineClosed',
+    readback.polylines.polylineClosed,
+    getPackedUint32Values,
+    polylineCount,
+    'Uint32Array'
+  );
+  const requiredLevelCount = levelIndices.reduce(
+    (maximum, levelIndex) => Math.max(maximum, levelIndex + 1),
+    0
+  );
+  const levels = read(
+    'levels',
+    options.levels,
+    getPackedFloat32Values,
+    requiredLevelCount,
+    'Float32Array'
+  );
+  const localOrigin = options.localOrigin ?? [0, 0];
+  validateRequirement(
+    id,
+    localOrigin.length === 2 && localOrigin.every(Number.isFinite),
+    'localOrigin must contain two finite coordinates'
+  );
+  validateRequirement(
+    id,
+    offsets[0] === 0 && offsets[polylineCount] === vertexCount,
+    'polylineOffsets must start at 0 and end at vertexCount'
+  );
+  const polylines: GPUIsolinesDecodedPolylines['polylines'] = [];
+  for (let polyline = 0; polyline < polylineCount; polyline++) {
+    const begin = offsets[polyline];
+    const end = offsets[polyline + 1];
+    validateRequirement(
+      id,
+      begin < end && end <= vertexCount,
+      `polylineOffsets must increase within vertexCount; received ${begin}, ${end}`
+    );
+    const levelIndex = levelIndices[polyline];
+    validateRequirement(
+      id,
+      levelIndex < levels.length && Number.isFinite(levels[levelIndex]),
+      `polylineLevels must index a finite level; received ${levelIndex}`
+    );
+    validateRequirement(
+      id,
+      closures[polyline] <= 1,
+      `polylineClosed must be 0 or 1; received ${closures[polyline]}`
+    );
+    const coordinates: [number, number][] = [];
+    for (let vertex = begin; vertex < end; vertex++) {
+      const coordinate: [number, number] = [
+        vertices[2 * vertex] + localOrigin[0],
+        vertices[2 * vertex + 1] + localOrigin[1]
+      ];
+      validateRequirement(
+        id,
+        coordinate.every(Number.isFinite),
+        `vertices row ${vertex} must contain finite XY coordinates`
+      );
+      coordinates.push(coordinate);
+    }
+    polylines.push({
+      coordinates,
+      levelIndex,
+      levelValue: levels[levelIndex],
+      closed: closures[polyline] !== 0
+    });
+  }
+  const segmentComplete = overflow === 0;
+  const polylineComplete = polylineOverflow === 0;
+  return {
+    polylines,
+    segmentComplete,
+    polylineComplete,
+    complete: segmentComplete && polylineComplete
+  };
+}
 
 /**
  * Properties for {@link GPUIsolines}.
@@ -242,7 +473,8 @@ export class GPUIsolines implements GPUCommandNodeProducer, GPURasterHaloStage {
     for (const [name, scalar] of [
       ['status.count', output.status.count],
       ['status.overflow', output.status.overflow],
-      ['status.requiredCount', output.status.requiredCount]
+      ['status.requiredCount', output.status.requiredCount],
+      ['status.polylineOverflow', output.status.polylineOverflow]
     ] as const) {
       validateIsolinesView(id, `output.${name}`, scalar, 'uint32', 1);
     }
@@ -506,7 +738,11 @@ ${getCrossingWGSL(props.tile)}`,
         operation: OPERATION,
         requiredCount: total,
         output: {
-          ids: output.segmentLevels,
+          ids: graph.createDataView(output.segmentLevels.buffer, {
+            format: 'uint32',
+            byteOffset: output.segmentLevels.byteOffset,
+            length: output.segments.length
+          }),
           status: {
             count: output.status.count,
             overflow: output.status.overflow,
@@ -524,6 +760,26 @@ ${getCrossingWGSL(props.tile)}`,
           edges,
           polylines,
           common: getStitchWGSL(width, height)
+        })
+      );
+    }
+    if (!polylines && output.status.polylineOverflow) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish-polyline-overflow`,
+          operation: OPERATION,
+          variant: 'publish-polyline-overflow',
+          bindings: [
+            {name: 'segmentOverflow', view: output.status.overflow, type: 'u32', access: 'read'},
+            {
+              name: 'polylineOverflow',
+              view: output.status.polylineOverflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: 1,
+          body: 'polylineOverflow[polylineOverflowOffset] = segmentOverflow[segmentOverflowOffset];'
         })
       );
     }

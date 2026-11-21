@@ -143,7 +143,7 @@ parametersView.write(getGPUKernelFlowSmoothingParameterValues({neighborhoodSize:
 graph.add(new GPUKernelFlowSmoothing({
   positions: zoneCenters,
   locationWeights: ones,
-  flows: {kind: 'pairs', originZoneIds, destinationZoneIds, weights, validPairCount},
+  flows: {kind: 'pairs', originZoneIds, destinationZoneIds, weights, count, completeness: 'known-complete'},
   parameters: parametersView,
   output: {smoothed}
 }));`,
@@ -571,6 +571,12 @@ graph.add(new GPUValueCube({
         required: true,
         description: 'Free low bits of a cell key: ones for H3 and Quadbin.'
       },
+      {
+        name: 'layout',
+        type: "'legacy-one-bit' | 'zero-period-bit-identity'",
+        required: true,
+        description: 'Use the identity layout to preserve every cell bit in a single-period cube.'
+      },
       {name: 'mask', type: "GraphDataView<'uint32'>", description: 'Zero rows are not packed.'}
     ],
     outputs: [
@@ -593,6 +599,7 @@ graph.add(new GPUCellPeriodKeys({
   periods,
   periodCount: 18, // 5 key bits
   fill: 'ones', // H3
+  layout: 'legacy-one-bit',
   output: {keys}
 }));
 graph.add(new GPUGroupStatistics({

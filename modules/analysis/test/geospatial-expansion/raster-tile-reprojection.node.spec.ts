@@ -15,6 +15,52 @@ import {
 } from '../utils/gpu-contributor-test-utils';
 
 it.each([
+  'uint32',
+  'sint32'
+] as const)('URT-04 routes a tiled %s mosaic without float conversion', format => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const grid = {
+    width: 2,
+    height: 1,
+    affine: [1, 0, 0, 0, 1, 0] as const,
+    pixelInterpretation: 'point' as const
+  };
+  const contributor = new GPURasterTileReprojection({
+    sourceGrid: grid,
+    destinationGrid: grid,
+    method: 'nearest',
+    sources: [
+      {
+        pixelBounds: [0, 0, 2, 1],
+        input: {
+          id: 'native',
+          format,
+          storage: {kind: 'buffer', values: createTransientView(graph, 'source', format, 2)}
+        } as import('@luma.gl/graph/gpu-raster').GPURasterBand
+      }
+    ],
+    output: {
+      values: createTransientView(graph, 'values', 'float32', 2),
+      validity: createTransientView(graph, 'validity', 'uint32', 2),
+      labels: createTransientView(graph, 'labels', format, 2)
+    }
+  });
+  try {
+    const kernels = getParsedKernelSources(contributor.getCommandNodes(graph));
+    expect(kernels.get('raster-tile-reprojection-route-0')).toContain(
+      `source: array<${format === 'uint32' ? 'u32' : 'i32'}>`
+    );
+    expect(kernels.get('raster-tile-reprojection-sample-sample')).toContain(
+      'labels[labelsOffset+index]=label'
+    );
+  } finally {
+    contributor.destroy();
+    device.destroy();
+  }
+});
+
+it.each([
   'source authority',
   'destination authority',
   'source wellKnownText',

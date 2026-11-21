@@ -44,7 +44,7 @@ function whittaker(
 ): void {
   const {graph, view} = context;
   graph.add(
-    new GPURasterWhittakerSmoother({
+    context.construct(GPURasterWhittakerSmoother, {
       cellCount: CELLS,
       sliceCount,
       differenceOrder: order,
@@ -68,7 +68,7 @@ function hants(
 ): void {
   const {graph, view} = context;
   graph.add(
-    new GPURasterHANTS({
+    context.construct(GPURasterHANTS, {
       cellCount: CELLS,
       sliceCount: slices,
       harmonicCount,
@@ -96,7 +96,7 @@ function streamingAccumulator(
   const {graph, view} = context;
   const entries = CELLS * slotCount;
   graph.add(
-    new GPURasterStreamingAccumulator({
+    context.construct(GPURasterStreamingAccumulator, {
       cellCount: CELLS,
       chunkSliceCount,
       slotCount,
@@ -117,19 +117,19 @@ function streamingAccumulator(
 function calibration(
   context: KernelAuditContext,
   distribution: 'gamma' | 'fisk',
-  zeroInflated: boolean,
+  zeroAtom: boolean,
   chunkSliceCount = 256
 ): void {
   const {graph, view} = context;
   const slotCount = 12;
   const entries = CELLS * slotCount;
   graph.add(
-    new GPURasterStandardizedIndexCalibration({
+    context.construct(GPURasterStandardizedIndexCalibration, {
       cellCount: CELLS,
       chunkSliceCount,
       slotCount,
       distribution,
-      zeroInflated,
+      zeroAtom,
       values: view('float32', CELLS * chunkSliceCount),
       slotIndices: view('uint32', chunkSliceCount),
       parameters: view('float32', 7),
@@ -142,19 +142,19 @@ function calibration(
 function standardizedIndex(
   context: KernelAuditContext,
   distribution: 'gamma' | 'fisk',
-  zeroInflated: boolean,
+  zeroAtom: boolean,
   chunkSliceCount = 256,
   cellCount = CELLS
 ): void {
   const {graph, view} = context;
   const slotCount = 12;
   graph.add(
-    new GPURasterStandardizedIndex({
+    context.construct(GPURasterStandardizedIndex, {
       cellCount,
       chunkSliceCount,
       slotCount,
       distribution,
-      zeroInflated,
+      zeroAtom,
       values: view('float32', cellCount * chunkSliceCount),
       slotIndices: view('uint32', chunkSliceCount),
       fit: view('float32', cellCount * slotCount * 3),
@@ -174,7 +174,7 @@ function runAccumulator(
 ): void {
   const {graph, view} = context;
   graph.add(
-    new GPURasterClimateRunAccumulator({
+    context.construct(GPURasterClimateRunAccumulator, {
       cellCount: CELLS,
       chunkSliceCount,
       condition,
@@ -201,10 +201,27 @@ export const RTS_TIME_SERIES_AUDIT_CASES: KernelAuditCase[] = [
   },
   {
     exportName: 'GPURasterRollingMean',
-    name: 'rts06-maximum-window',
-    build: ({graph, view}) =>
+    name: 'rts06-minimum-window',
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURasterRollingMean({
+        construct(GPURasterRollingMean, {
+          cellCount: 2,
+          chunkSliceCount: 2,
+          windowLength: 1,
+          values: view('float32', 4),
+          parameters: view('float32', 5),
+          ring: view('float32', 2),
+          seenCount: view('uint32', 2),
+          output: view('float32', 4)
+        })
+      )
+  },
+  {
+    exportName: 'GPURasterRollingMean',
+    name: 'rts06-maximum-window',
+    build: ({graph, view, construct}) =>
+      graph.add(
+        construct(GPURasterRollingMean, {
           cellCount: CELLS,
           chunkSliceCount: 256,
           windowLength: 128,
@@ -219,9 +236,9 @@ export const RTS_TIME_SERIES_AUDIT_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURasterRollingMean',
     name: 'rts06-window-above-maximum',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURasterRollingMean({
+        construct(GPURasterRollingMean, {
           cellCount: CELLS,
           chunkSliceCount: 256,
           windowLength: 129,
@@ -264,7 +281,7 @@ export const RTS_TIME_SERIES_AUDIT_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPURasterTemporalResample({
+        context.construct(GPURasterTemporalResample, {
           cellCount: CELLS,
           sliceCount: 256,
           gridCount: 4096,
@@ -282,7 +299,7 @@ export const RTS_TIME_SERIES_AUDIT_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPURasterTemporalResample({
+        context.construct(GPURasterTemporalResample, {
           cellCount: CELLS,
           sliceCount: 256,
           gridCount: 4097,

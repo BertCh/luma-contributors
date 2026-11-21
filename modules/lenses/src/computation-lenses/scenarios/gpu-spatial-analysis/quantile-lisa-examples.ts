@@ -41,6 +41,8 @@ export function buildQuantileLISAScenario(
   };
   graph.add(
     new GPUQuantileLISA({
+      // Preserve the scenario's recorded GeoDa legacy strict-complement rule.
+      alternative: 'geoda-legacy',
       values: input('values', 'float32', [8, 9, 1, 2, 3, 4, 5, 6]),
       quantileParameters: input('quantile-parameters', 'uint32', [4, 4]),
       parameters: input(

@@ -136,6 +136,8 @@ export type SliderOption<O> = OptionBase<O> & {
 /** Dropdown, segmented control or chips. */
 export type SelectOption<O> = OptionBase<O> & {
   kind: 'select';
+  /** Saved spellings mapped to canonical option values. */
+  aliases?: Readonly<Record<string, string>>;
   options: readonly {value: string; label: string; help?: string}[];
   default: string;
   /**

@@ -43,7 +43,7 @@ export type WeightsTransformChoice =
   | 'binary'
   | 'double'
   | 'variance'
-  | 'symmetrize';
+  | 'average-reciprocal';
 
 /** Which weights matrix the links and the focus readout show. */
 export type WeightsMatrixChoice = 'weights' | 'transpose' | 'union';
@@ -59,7 +59,7 @@ export const WEIGHTS_TRANSFORM_OPTIONS: readonly {value: WeightsTransformChoice;
     {value: 'binary', label: 'Binary B (w > 0 becomes 1)'},
     {value: 'double', label: 'Double standardization D (w / S0)'},
     {value: 'variance', label: 'Variance stabilizing V'},
-    {value: 'symmetrize', label: 'Symmetrize ((w_ij + w_ji) / 2)'}
+    {value: 'average-reciprocal', label: 'Average reciprocal weights ((w_ij + w_ji) / 2)'}
   ];
 
 /** A weights CSR held in application buffers. */
@@ -135,7 +135,7 @@ export type WeightsKit = {
   focusNeighbors: Record<WeightsMatrixChoice, Buffer>;
   /** Full-matrix segments of the transpose and the union (and the weights segments for sources that draw them). */
   allSegments: Record<WeightsMatrixChoice, {segments: Buffer; fade: Buffer; slots: number} | null>;
-  /** Encodes the in-place transform (and its copy-back for symmetrize). */
+  /** Encodes the in-place transform (and its copy-back for average-reciprocal). */
   encodeTransform: (commandEncoder: CommandEncoder, transform: WeightsTransformChoice) => void;
   /** Encodes summary, transpose, union, lag and focus links of the current weights. */
   encodeAnalysis: (
@@ -215,10 +215,10 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
   const importPositions = (graph: GPUCommandGraph<void>) =>
     importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount);
 
-  // Transforms run in place on the producer's output. Symmetrize needs a separate output, then
+  // Transforms run in place on the producer's output. Reciprocal averaging needs a separate output, then
   // the result is copied back so every analysis keeps reading the same buffer.
   const transforms = new Map<WeightsTransformChoice, CompiledGPUCommandGraph<void>>();
-  for (const operation of ['row', 'binary', 'double', 'variance', 'symmetrize'] as const) {
+  for (const operation of ['row', 'binary', 'double', 'variance', 'average-reciprocal'] as const) {
     const graph = new GPUCommandGraph<void>(device, {id: `${id}-transform-${operation}`});
     graph.add(
       new GPUSpatialWeightsTransform({
@@ -226,7 +226,7 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
         operation,
         weights: importCsr(graph, 'a', csr, slots),
         output:
-          operation === 'symmetrize'
+          operation === 'average-reciprocal'
             ? importGraphBuffer(graph, 'scratch', scratchBuffer, 'float32', slots)
             : undefined
       })
@@ -465,7 +465,7 @@ export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsK
     encodeTransform(commandEncoder, transform) {
       if (transform === 'none') return;
       transforms.get(transform)!.encode(commandEncoder, {parameters: undefined});
-      if (transform === 'symmetrize') {
+      if (transform === 'average-reciprocal') {
         commandEncoder.copyBufferToBuffer({
           sourceBuffer: scratchBuffer,
           destinationBuffer: csr.weights,

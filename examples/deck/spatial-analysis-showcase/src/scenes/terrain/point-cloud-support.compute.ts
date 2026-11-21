@@ -306,7 +306,7 @@ export async function createPointCloudSupport(
         id: 'support-smrf',
         positions: positionsView,
         classifications: sourceClassView,
-        selection: radiusMask,
+        mask: radiusMask,
         grid: rasterGrid,
         window: settings.smrfWindow,
         slope: settings.smrfSlope,

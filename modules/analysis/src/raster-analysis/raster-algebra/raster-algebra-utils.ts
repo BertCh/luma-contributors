@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphDataView, type GraphVectorView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  type GraphDataView,
+  type GraphVectorView,
+  type GPUCommandGraph
+} from '@luma.gl/graph/gpu-core';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  isGraphDataView,
   validateCapacity,
   validateFiniteNumber,
   validateGraphViewsBelongToGraph,
@@ -105,7 +110,7 @@ export function getNamedRasterOutputViews(
   const views: Record<string, GraphDataView | undefined> = {};
   for (const [name, value] of Object.entries(output)) {
     const path = `${prefix}.${name}`;
-    if (value instanceof GraphDataView) views[path] = value;
+    if (isGraphDataView(value)) views[path] = value;
     else if (value && typeof value === 'object')
       Object.assign(views, getNamedRasterOutputViews(value, path));
   }

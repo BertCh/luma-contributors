@@ -175,6 +175,7 @@ export function addKeplerPointIDW<Parameters>(
   try {
     const contributor = new GPUInverseDistanceWeighting({
       id,
+      longitudeSearch: settings.longitudeSearch ?? 'clipped',
       spatialContext,
       positions,
       values: props.values,

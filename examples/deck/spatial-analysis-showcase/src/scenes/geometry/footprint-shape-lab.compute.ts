@@ -19,6 +19,7 @@ import {
   GPUOffsetCurveComponents,
   GPUOffsetExpansion,
   GPUVectorStraightSkeleton,
+  decodeGPUOffsetCurveComponentsStatus,
   getGPUOffsetCurveRowsPerVertex
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {createGraphBufferImporter} from '../../engine/graph-buffers';
@@ -785,6 +786,7 @@ export async function createFootprintShapeLab(
               const statusAt =
                 byteSizes.slice(0, statusIndex).reduce((sum, value) => sum + value, 0) / 4;
               const componentStatus = indexes.slice(statusAt, statusAt + 8);
+              const componentStatusFields = decodeGPUOffsetCurveComponentsStatus(componentStatus);
               const componentCount = componentStatus[0];
               const componentCapacity = byteSizes[topology] / 16;
               const componentVertexCapacity = byteSizes[outputPositions] / 8;
@@ -809,8 +811,7 @@ export async function createFootprintShapeLab(
                     Number.isFinite(data[first + (firstVertex + point) * 2 + 1]);
               }
               const componentComplete =
-                componentStatus[4] === 0 &&
-                componentStatus[5] === 0 &&
+                componentStatusFields.complete &&
                 componentStatus[0] === componentStatus[2] &&
                 componentStatus[1] === componentStatus[3] &&
                 componentRangesValid;
@@ -870,12 +871,15 @@ export async function createFootprintShapeLab(
                     rawPath.push(footprint.projection.unproject(point[0], point[1]));
                 }
               }
-              const sourceEdgeIndex = ownedBuffers.findIndex(buffer =>
-                buffer.id.includes('selected-source-edge-ids')
-              );
-              const sourceEdgeAt =
-                byteSizes.slice(0, sourceEdgeIndex).reduce((sum, value) => sum + value, 0) / 4;
-              const sourceEdge = indexes[sourceEdgeAt];
+              let sourceEdgeDetail = '';
+              if (componentComplete && componentStatusFields.writtenVertices > 0) {
+                const sourceEdgeIndex = ownedBuffers.findIndex(buffer =>
+                  buffer.id.includes('selected-source-edge-ids')
+                );
+                const sourceEdgeAt =
+                  byteSizes.slice(0, sourceEdgeIndex).reduce((sum, value) => sum + value, 0) / 4;
+                sourceEdgeDetail = `; first selected source-edge ID ${indexes[sourceEdgeAt]}`;
+              }
               const diagnosticValues = [
                 'count',
                 'required',
@@ -901,9 +905,9 @@ export async function createFootprintShapeLab(
                 secondaryPaths: rawOutputComplete && rawPath.length > 1 ? [rawPath] : [],
                 points: [],
                 status: !componentComplete
-                  ? `Withheld · written/required components ${componentStatus[0]}/${componentStatus[2]}, vertices ${componentStatus[1]}/${componentStatus[3]} · overflow/noding ${componentStatus[4]}/${componentStatus[5]}`
+                  ? `Withheld · written/required components ${componentStatus[0]}/${componentStatus[2]}, vertices ${componentStatus[1]}/${componentStatus[3]} · overflow/noding ${componentStatus[4]}/${componentStatus[5]} · iterationLimit ${Number(componentStatusFields.iterationLimit)}`
                   : `${componentStatus[0]} written / ${componentStatus[2]} required components · ${componentStatus[1]} / ${componentStatus[3]} vertices`,
-                detail: `Signed distance ${options.curveSide === 'left' ? '+' : '-'}${options.offsetDistance} m (${options.curveSide} of source direction). Raw curve ${rawOutputComplete ? `${rawUsedRows} rows` : 'withheld because row counts or coordinates exceeded capacity'}; first selected source-edge ID ${sourceEdge ?? 0xffffffff}.${diagnosticDetail}`
+                detail: `Signed distance ${options.curveSide === 'left' ? '+' : '-'}${options.offsetDistance} m (${options.curveSide} of source direction). Raw curve ${rawOutputComplete ? `${rawUsedRows} rows` : 'withheld because row counts or coordinates exceeded capacity'}${sourceEdgeDetail}.${diagnosticDetail}`
               };
             } else if (options.footprint === 'convex') {
               const findOffset = (name: string) =>

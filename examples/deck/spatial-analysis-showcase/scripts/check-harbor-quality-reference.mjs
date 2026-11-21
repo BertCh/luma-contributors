@@ -90,7 +90,7 @@ try {
         assert.ok(Number(difference[1]) < .1 && Number(difference[2]) < .1, `Unexpected isotropic/full mismatch: ${difference[0]}`);
         assert.equal(axes[1], axes[2], 'Isotropic covariance must have equal axes');
       } else assert.ok(Number(axes[1]) > Number(axes[2]), 'Correlated anisotropic covariance must expose unequal axes');
-      assert.equal(observed['Selected model status'], '265 valid · 0 invalid states · 0 singular RTS steps');
+      assert.equal(observed['Selected model status'], '265 valid · 0 invalid states · 0 RTS fallback steps');
       assert.equal(observed['Raw threshold review'], '0 flagged observations · 0 long-gap endpoints');
       reports.push({covarianceModel: 'full', ratio, correlation, display, observed});
     }

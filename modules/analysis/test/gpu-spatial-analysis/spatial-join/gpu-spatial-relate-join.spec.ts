@@ -412,6 +412,83 @@ it("GPUSpatialPredicateJoin how: 'anti' emits unmatched left rows", async () => 
   expect(total).toBeGreaterThan(5);
 });
 
+it('GEO-103 anti join reports candidate loss separately from unmatched output overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device, {id: 'anti-capacity'});
+  const buffers: Buffer[] = [];
+  const output = (name: string, length: number) => {
+    const buffer = createOutputBuffer(device, length);
+    buffers.push(buffer);
+    return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
+  };
+  try {
+    const left = createGeometry(
+      device,
+      graph,
+      'left',
+      'points',
+      [point(1, 1), point(3, 3), point(5, 5)],
+      buffers
+    );
+    const right = createGeometry(
+      device,
+      graph,
+      'right',
+      'polygons',
+      [
+        polygonWithRings([
+          [0, 0],
+          [4, 0],
+          [0, 4]
+        ])
+      ],
+      buffers
+    );
+    const ids = output('ids', 3);
+    const count = output('count', 1);
+    const overflow = output('overflow', 1);
+    const candidateOverflow = output('candidate-overflow', 1);
+    const unmatched = {ids: ids.view, status: {count: count.view, overflow: overflow.view}};
+    const props = {
+      id: 'anti-capacity',
+      left,
+      right,
+      predicate: 'within',
+      how: 'anti',
+      candidateCapacity: 1
+    } as const;
+    expect(() => new GPUSpatialPredicateJoin({...props, output: {unmatched}})).toThrow(
+      /^anti-capacity.*Add output\.unmatched\.status\.candidateOverflow/
+    );
+    graph.add(
+      new GPUSpatialPredicateJoin({
+        ...props,
+        output: {
+          unmatched: {
+            ...unmatched,
+            status: {...unmatched.status, candidateOverflow: candidateOverflow.view}
+          }
+        }
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      // The triangle contains row 0 only. Row 1 is outside the triangle but inside its bounds,
+      // and loses its candidate to row 0. Row 2 is already outside the bounds.
+      expect(await readUint32(count.buffer, 1)).toEqual([1]);
+      expect(await readUint32(ids.buffer, 1)).toEqual([2]);
+      expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+      expect(await readUint32(candidateOverflow.buffer, 1)).toEqual([1]);
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
 it('GPUSpatialPredicateJoin relate handles Shapely reference cases on the GPU', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -561,7 +638,7 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
   ]);
   expect(prepared.encodedBuildCount).toBe(1);
 
-  // Animated left features: queries see the new points, the index is not rebuilt.
+  // Animated left features query the same right-hand snapshot.
   leftPositions.write(Float32Array.from([1, 1, 3, 3, 12, 12]));
   submitGraph(device, compiled, undefined);
   expect(await readPairs()).toEqual([
@@ -571,14 +648,17 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
   ]);
   expect(prepared.encodedBuildCount).toBe(1);
 
-  // The right-hand side changes: the static tree is stale until invalidated (a reused build, not a
-  // result cache). Candidates still come from the old boxes, so the point in the moved polygon is missed.
+  // Both the BVH and `within` read the retained polygons until invalidation. (3, 3) is strictly
+  // inside the old [0, 4] square, and (21, 21) is strictly inside only the new [20, 24] square.
   rightPositions.write(
     Float32Array.from([20, 20, 24, 20, 24, 24, 20, 24, 10, 10, 14, 10, 14, 14, 10, 14])
   );
   leftPositions.write(Float32Array.from([21, 21, 3, 3, 12, 12]));
   submitGraph(device, compiled, undefined);
-  expect(await readPairs()).toEqual([[2, 1]]);
+  expect(await readPairs()).toEqual([
+    [1, 0],
+    [2, 1]
+  ]);
   expect(prepared.encodedBuildCount).toBe(1);
   prepared.invalidate();
   submitGraph(device, compiled, undefined);
@@ -588,6 +668,10 @@ it('GPUSpatialPredicateJoin reuses a prepared right-hand side until invalidated'
   ]);
   expect(prepared.encodedBuildCount).toBe(2);
   submitGraph(device, compiled, undefined);
+  expect(await readPairs()).toEqual([
+    [0, 0],
+    [2, 1]
+  ]);
   expect(prepared.encodedBuildCount).toBe(2);
   compiled.destroy();
   prepared.destroy();

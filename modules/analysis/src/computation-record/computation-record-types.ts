@@ -56,10 +56,16 @@ export type GPUComputationRecord = {
    * parameters, choices and implementation revision. Sidecars additionally join on executionId.
    */
   runId: string;
+  /** Dataset revision used to reproduce this run; absent in legacy records. */
+  datasetVersion?: string;
+  /** Random seed used to reproduce this run, including zero. */
+  seed?: string | number;
   /** Unique execution identity. Omitted only in legacy /1 records. */
   executionId?: string;
   /** Implementation revision included in runId. Omitted in legacy /1 records. */
   implementationRevision?: string;
+  /** Concrete computational dependency revision; absent in legacy /1 records. */
+  dependencyRevision?: string;
   /** Per-frame parameters included in runId, supplied by the caller. */
   parameters?: GPUComputationAttributes;
   /** ISO 8601 creation time. */
@@ -186,10 +192,22 @@ export type GPUComputationBinding = {
   access: 'read' | 'read_write' | 'write' | 'sampled' | 'uniform';
   /** Shader element type, such as `f32` or `atomic<u32>`, when known. */
   elementType?: string;
-  /** Element offset of the bound view within its resource. */
+  /** Shader-relative element prefix within the aligned binding window. */
   elementOffset?: number;
+  /** Aligned binding-window byte offset relative to the graph resource. */
+  bindingByteOffset?: number;
+  /** Aligned binding-window byte length, including the shader element prefix. */
+  bindingByteLength?: number;
   /** Element count of the bound view. */
   length?: number;
+};
+
+/** Declared shader slot layout; does not identify the graph resource bound at that slot. */
+export type GPUComputationDeclaredBinding = {
+  name: string;
+  type: string;
+  group?: number;
+  location: number;
 };
 
 /** Upper-bound cost of a node, mirroring `GPUCommandGraphNodeWorkloadEstimate`. */
@@ -240,10 +258,17 @@ export type GPUComputationNode = {
    * by every node with the same module text, so per-pipeline values live here.
    */
   constants?: Readonly<Record<string, number>>;
+  /**
+   * Entry point of this node's pipeline when it differs from the shared source ref's `entryPoint`.
+   * Read `node.entryPoint ?? source.entryPoint`.
+   */
+  entryPoint?: string;
   /** Dispatch shape, for compute nodes. */
   dispatch?: GPUComputationDispatch;
   /** Named shader bindings, for kernels whose bindings are known. */
   bindings?: readonly GPUComputationBinding[];
+  /** Public shader slot layout, independent of resource-linked bindings and retained text. */
+  declaredBindings?: readonly GPUComputationDeclaredBinding[];
   /** Resource ids read by the node. */
   reads: readonly string[];
   /** Resource ids written by the node. */
@@ -560,6 +585,8 @@ export type GPUComputationEncodingFlags = {
 
 /** Measurements of one node in one run. */
 export type GPUComputationNodeMetrics = {
+  /** Measured GPU duration in milliseconds, including zero; independent of endpoint timebase. */
+  gpuTimeMs?: number;
   /** GPU begin timestamp in `timebase` units, relative to the earliest begin in the run. */
   gpuBegin?: number;
   /** GPU end timestamp in `timebase` units, relative to the earliest begin in the run. */
@@ -634,7 +661,7 @@ export type GPUComputationCapture = {
   elementType: GPUComputationCaptureElementType;
   /** Values per key, when more than one (for example 2 for a vec2). */
   components?: number;
-  /** Captured values; typed arrays in memory, number arrays in JSON. */
+  /** Captured values; typed arrays in memory; use serializeGPUComputationCaptures for lossless JSON. */
   values: ArrayLike<number>;
   /** Provenance; drawn as solid (readback) or hatched (replay) texture. */
   provenance: 'gpu-readback' | 'gpu-replay';
@@ -678,6 +705,21 @@ export type GPUComputationCaptureGeometry =
     }
   | {
       kind: 'raster';
+      /**
+       * [a, b, c, d, e, f]: x = a*column + b*row + c; y = d*column + e*row + f.
+       * Coordinates use coordinateModel/unit. For area pixels the integer origin is the outer
+       * corner (sample centres add 0.5 to column and row); point pixels sample integer indices.
+       * Overrides legacy origin/cellSize/rowDirection placement. Legacy mapping is
+       * [cellSize, 0, origin[0], 0, (rowDirection === 'north' ? 1 : -1)*cellSize, origin[1]],
+       * with cellSize defaulting to 1 and area interpretation. Omitted origin is
+       * [0, shape[1]*cellSize] for southward rows (the default), [0, 0] for northward rows.
+       */
+      affine?: readonly [number, number, number, number, number, number];
+      pixelInterpretation?: 'area' | 'point';
+      /** Coordinate-frame identity; equality is required for spatial comparisons. */
+      frameId?: string;
+      /** CRS identity, for example EPSG:3857. */
+      crs?: string;
       /** Width and height in cells; values are row-major. */
       shape: readonly [number, number];
       coordinateModel?: 'geographic' | 'projected' | 'unknown';
@@ -686,7 +728,8 @@ export type GPUComputationCaptureGeometry =
       unit?: string;
       /**
        * World coordinate of the outer corner of cell (0, 0), in `coordinateModel` units, so vector
-       * inputs overlay the raster. Omitted: the raster is drawn at the origin of its own space.
+       * inputs overlay the raster. Omitted: [0, height*cellSize] for southward rows,
+       * [0, 0] for northward rows, preserving the legacy top/bottom outer edge.
        */
       origin?: readonly [number, number];
       /**
@@ -752,6 +795,8 @@ export type GPUComputationNodeAnnotation = {
   formula?: string;
   /** Full source, including `text` when retained. */
   source?: GPUComputationSourceRef;
+  /** Pipeline entry point, available even without retained source. */
+  entryPoint?: string;
   /** Workgroup size. */
   workgroupSize?: readonly [number, number, number];
   /** Pipeline override constants of this node's pipeline. */
@@ -763,11 +808,13 @@ export type GPUComputationNodeAnnotation = {
    * bound view.
    */
   bindings?: readonly GPUComputationBinding[];
+  /** Public shader slot layout, independent of resource-linked bindings and retained text. */
+  declaredBindings?: readonly GPUComputationDeclaredBinding[];
   /** Free-form attributes. */
   attrs?: GPUComputationAttributes;
 };
 
-/** One scope pushed with `GPUComputationRecorder.withScope`, stamped on nodes recorded inside it. */
+/** One scope pushed with `GPUComputationRecorder.withSynchronousScope`, stamped on nodes recorded inside it. */
 export type GPUComputationRecordScope = {
   /** Namespace segment appended to the enclosing path, such as `scan` or `level-0`. */
   namespace?: string;

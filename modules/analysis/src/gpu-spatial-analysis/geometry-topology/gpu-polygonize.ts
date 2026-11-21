@@ -1,7 +1,12 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotLineFeatureGeometry,
+  getLineFeatureLookupWGSL,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
   createTransientView,
@@ -18,7 +23,6 @@ import {
   validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 import {
   GPUSegmentRingAssembly,
   GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED,
@@ -27,7 +31,14 @@ import {
 } from '../../analysis-core/ring-assembly/index';
 import {GPULineNoding, validateLineNodingBounds} from './gpu-line-noding';
 import {GPUSnapRoundedNoding} from './gpu-snap-rounded-noding';
-import {validatePolygonizeStatus} from './topology-status';
+import {createPolygonizeDanglePruningNodes} from './polygonize-dangle-pruning';
+import {
+  validatePolygonizeStatus,
+  validateSupportedTopologyStatus,
+  validateTopologyStatusScalars,
+  snapshotTopologyStatus,
+  validateTopologyStatusAliases
+} from './topology-status';
 import {
   GPU_POLYGONIZE_EDGE_CLASS,
   GPU_TOPOLOGY_NONE,
@@ -52,11 +63,8 @@ export type GPUPolygonizeProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Arbitrary finite planar linework; rings need not be pre-noded or consistently oriented. */
-  lines: GPUPackedGeometryPort<GPULineGeometryPort> & {
-    /** Optional source feature ID per line. */
-    sourceIds?: GraphDataView<'uint32'>;
-  };
-  /** Optional polygonization group per input line; omitted lines belong to one shared group. */
+  lines: GPULineFeatureGeometry;
+  /** Optional polygonization group per logical feature. Without grouping offsets, one group per line and a shared default group; with offsets, default groups are feature rows. */
   groupIds?: GraphDataView<'uint32'>;
   /**
    * Capacity of the exact intersection event list used by noding. The line count plus four times
@@ -82,8 +90,9 @@ export type GPUPolygonizeProps = {
  * General bounded polygonization of planar linework.
  *
  * The operation first nodes every crossing, touch and collinear overlap, expands every atomic
- * segment into two directed edges, then applies the ring assembler's deterministic left-face
- * traversal. Equivalent directed edges within a group share one traversal owner, while every
+ * segment into two directed edges, recursively peels degree-one edges, then applies the ring
+ * assembler's deterministic left-face traversal. Peeled edges remain in the source diagnostics.
+ * Equivalent directed edges within a group share one traversal owner, while every
  * noded segment and its provenance remains in the output and diagnostics. Clockwise unbounded faces
  * and zero-area walks are excluded from the polygon port. Every polygon is one canonical polygon
  * feature and `polygons.sourceIds` carries the source group of its shell. Diagnostics remain
@@ -105,8 +114,93 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
   constructor(props: GPUPolygonizeProps) {
     this.id = props.id ?? 'polygonize';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'lines',
+      'groupIds',
+      'intersectionCapacity',
+      'precision',
+      'snapRounding',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(snapshot.output, [
+      'nodedSegments',
+      'directedEdges',
+      'polygons',
+      'diagnostics',
+      'status'
+    ]);
+    const nodedSnapshot = snapshotConstructionFields(outputSnapshot.nodedSegments, [
+      'endpoints',
+      'sourceFeatureIds',
+      'sourceRingIds',
+      'sourceEdgeIds',
+      'sourceStartParameters',
+      'sourceEndParameters',
+      'status'
+    ]);
+    const directedSnapshot = snapshotConstructionFields(outputSnapshot.directedEdges, [
+      'endpoints',
+      'sourceSegmentIds',
+      'sourceFeatureIds',
+      'twinIds',
+      'ringIds',
+      'flags',
+      'status'
+    ]);
+    const nodedStatus = snapshotTopologyStatus(nodedSnapshot.status);
+    const directedStatus = snapshotTopologyStatus(directedSnapshot.status);
+    const statusSnapshot = snapshotTopologyStatus(outputSnapshot.status);
+    validatePolygonizeStatus(this.id, statusSnapshot);
+    validateTopologyStatusScalars(this.id, nodedStatus, 'output.nodedSegments.status');
+    validateTopologyStatusScalars(this.id, directedStatus, 'output.directedEdges.status');
+    validateSupportedTopologyStatus(this.id, statusSnapshot, 'output.status');
+    validateSupportedTopologyStatus(this.id, nodedStatus, 'output.nodedSegments.status');
+    validateSupportedTopologyStatus(this.id, directedStatus, 'output.directedEdges.status');
+    props = Object.freeze({
+      ...snapshot,
+      lines: snapshotLineFeatureGeometry(this.id, snapshot.lines),
+      precision: snapshotConstructionFields(snapshot.precision, [
+        'vertexTolerance',
+        'predicates',
+        'storage'
+      ]),
+      snapRounding:
+        snapshot.snapRounding &&
+        snapshotConstructionFields(snapshot.snapRounding, ['gridSize', 'lattice']),
+      output: Object.freeze({
+        nodedSegments: Object.freeze({
+          ...nodedSnapshot,
+          status: nodedStatus
+        }),
+        directedEdges: Object.freeze({
+          ...directedSnapshot,
+          status: directedStatus
+        }),
+        polygons: snapshotConstructionFields(outputSnapshot.polygons, [
+          'kind',
+          'positions',
+          'featureOffsets',
+          'polygonOffsets',
+          'ringOffsets',
+          'sourceIds'
+        ]),
+        diagnostics: snapshotConstructionFields(outputSnapshot.diagnostics, [
+          'edgeClasses',
+          'closedRingCount',
+          'openChainCount',
+          'cutEdgeCount',
+          'dangleCount',
+          'unusedEdgeCount'
+        ]),
+        status: statusSnapshot
+      })
+    });
     this.props = props;
+    validateTopologyStatusAliases(this.id, props.output);
     const {id} = this;
     const {output, precision} = props;
     if (!(precision.vertexTolerance > 0) || !Number.isFinite(precision.vertexTolerance)) {
@@ -122,8 +216,13 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
     }
     if (props.groupIds) {
       validatePackedUint32View(props.groupIds, `${id} groupIds`);
-      if (props.groupIds.length !== props.lines.lineOffsets.length - 1) {
-        throw new Error(`${id} groupIds length must equal the input line count`);
+      if (
+        props.groupIds.length !==
+        (props.lines.featureOffsets ?? props.lines.lineOffsets).length - 1
+      ) {
+        throw new Error(
+          `${id} groupIds length must equal the logical feature count (line count without featureOffsets)`
+        );
       }
     }
     const segmentCapacity = output.nodedSegments.endpoints.length;
@@ -175,7 +274,6 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
     if (!output.status.requiredRingCount || !output.status.candidateOverflow) {
       throw new Error(`${id} output.status requires requiredRingCount and candidateOverflow`);
     }
-    validatePolygonizeStatus(id, output.status);
   }
 
   getCommandNodes<Parameters>(
@@ -187,6 +285,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
       props.lines.positions,
       props.lines.lineOffsets,
       props.lines.sourceIds,
+      props.lines.featureOffsets,
       props.groupIds,
       output.nodedSegments.endpoints,
       output.nodedSegments.sourceFeatureIds,
@@ -269,9 +368,17 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
       'uint32',
       directedCapacity
     );
-    const groupBindings = props.groupIds
-      ? [{name: 'inputGroups', view: props.groupIds, type: 'u32' as const, access: 'read' as const}]
-      : [];
+    const groupBindings =
+      props.groupIds && !props.lines.featureOffsets
+        ? [
+            {
+              name: 'inputGroups',
+              view: props.groupIds,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]
+        : [];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-directed-edge-geometry`,
@@ -350,7 +457,7 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
   sourceFeatureIds[sourceFeatureIdsOffset + index] = select(NONE, sourceFeatures[sourceFeaturesOffset + source], isActive);
   twinIds[twinIdsOffset + index] = select(NONE, index ^ 1u, isActive);
   let sourceRing = sourceRings[sourceRingsOffset + source];
-  groups[groupsOffset + index] = select(NONE, ${props.groupIds ? 'inputGroups[inputGroupsOffset + sourceRing]' : '0u'}, isActive);`
+  groups[groupsOffset + index] = select(NONE, ${props.groupIds && !props.lines.featureOffsets ? 'inputGroups[inputGroupsOffset + sourceRing]' : '0u'}, isActive);`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-directed-edge-status`,
@@ -403,6 +510,30 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
       })
     );
 
+    if (props.lines.featureOffsets)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-feature-groups`,
+          operation: OPERATION,
+          invocationCount: directedCapacity,
+          bindings: [
+            {name: 'parts', view: output.nodedSegments.sourceRingIds, type: 'u32', access: 'read'},
+            {name: 'count', view: output.nodedSegments.status.count, type: 'u32', access: 'read'},
+            {name: 'features', view: props.lines.featureOffsets, type: 'u32', access: 'read'},
+            ...(props.groupIds
+              ? [{name: 'inputGroups', view: props.groupIds, type: 'u32', access: 'read'} as const]
+              : []),
+            {name: 'groups', view: directedGroups, type: 'u32', access: 'read_write'}
+          ],
+          declarations: getLineFeatureLookupWGSL(props.lines),
+          body: `var group = 0xffffffffu;
+if (index / 2u < count[countOffset]) {
+  let feature = lineFeature(parts[partsOffset + index / 2u]);
+  group = ${props.groupIds ? 'inputGroups[inputGroupsOffset + feature]' : 'feature'};
+}
+groups[groupsOffset + index] = group;`
+        })
+      );
     const ringCapacity = output.polygons.ringOffsets.length - 1;
     const vertexCapacity = output.polygons.positions.length;
     const transient = <Format extends 'uint32' | 'float32' | 'float32x2'>(
@@ -418,11 +549,19 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
     const ringCount = transient('ring-count', 'uint32', 1);
     const ringRequiredCount = transient('ring-required-count', 'uint32', 1);
     const ringOverflow = transient('ring-overflow', 'uint32', 1);
+    const faceInput = createPolygonizeDanglePruningNodes(graph, {
+      id: `${id}-dangles`,
+      endpoints: output.directedEdges.endpoints,
+      groups: directedGroups,
+      count: output.directedEdges.status.count,
+      vertexTolerance: props.precision.vertexTolerance
+    });
+    nodes.push(...faceInput.nodes);
     nodes.push(
       ...new GPUSegmentRingAssembly({
         id: `${id}-faces`,
         spatialContext: this.spatialContext,
-        endpoints: output.directedEdges.endpoints,
+        endpoints: faceInput.endpoints,
         count: output.directedEdges.status.count,
         groups: directedGroups,
         pairedOpposites: true,

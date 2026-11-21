@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRefinementOperationProps} from './refinement-construction-snapshot';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   resolveGPUSpatialContext,
@@ -23,6 +25,7 @@ import {
 export type CPURatioConcaveHullOptions = {
   ratio: number;
   allowHoles?: boolean;
+  maximumIterations?: number;
   spatialContext?: GPUSpatialContext;
 };
 export type CPURatioConcaveHullResult = {
@@ -40,8 +43,8 @@ export type CPURatioConcaveHullResult = {
  * length at every incident vertex; lowest triangle row wins ties. This is the GPU's definition.
  *
  * What differs from the GPU contributor:
- * - maximumIterations is ignored: removal rounds finish. Finite input therefore converges
- *   even when the GPU removal budget or Delaunay step budget would be exhausted.
+ * - An explicit maximumIterations limits the number of triangle removals, including an entire
+ *   simultaneous round or none of it. Omitted budgets allow erosion to finish.
  * - Edge lengths, extrema and thresholds use float64. The ratio is first rounded to float32,
  *   matching the GPU override. Near threshold/tie boundaries, float32 GPU lengths can select
  *   different triangles. Distances that overflow float32 remain finite on the CPU.
@@ -57,6 +60,8 @@ export function computeRatioConcaveHullOnCPU(
 ): CPURatioConcaveHullResult {
   if (positions.length % 2 !== 0) throw new Error('positions must hold float32x2 rows');
   validateFiniteNumber('ratio-concave-hull', 'ratio', options.ratio, 0, 1);
+  if (options.maximumIterations !== undefined)
+    validateCapacity('ratio-concave-hull', 'maximumIterations', options.maximumIterations, 0);
   validateRequirement(
     'ratio-concave-hull',
     options.ratio >= 0 && options.ratio <= 1,
@@ -106,6 +111,7 @@ export function computeRatioConcaveHullOnCPU(
     adjacency[slot] === -1 || result.triangleValidity[adjacency[slot]] === 0;
   const threshold = minimumLength + Math.fround(options.ratio) * (maximumLength - minimumLength);
   if (converged[0] !== 0 && triangleCount > 0) {
+    let removedCount = 0;
     do {
       const boundary = new Uint8Array(pointCount);
       for (let row = 0; row < triangleCount; row++) {
@@ -169,11 +175,22 @@ export function computeRatioConcaveHullOnCPU(
           candidates[row] > 0 &&
           [0, 1, 2].every(corner => winners[triangles[3 * row + corner]] === row)
         ) {
-          result.triangleValidity[row] = 0;
           removalCount++;
         }
       }
       if (removalCount === 0) break;
+      if (removedCount + removalCount > (options.maximumIterations ?? Infinity)) {
+        result.converged[0] = 0;
+        break;
+      }
+      for (let row = 0; row < triangleCount; row++) {
+        if (
+          candidates[row] > 0 &&
+          [0, 1, 2].every(corner => winners[triangles[3 * row + corner]] === row)
+        )
+          result.triangleValidity[row] = 0;
+      }
+      removedCount += removalCount;
     } while (true);
   }
   for (let row = 0; row < capacity; row++) {
@@ -187,11 +204,14 @@ export function computeRatioConcaveHullOnCPU(
   return result;
 }
 
-/** CPU ratio hull twin, preserving local-priority rounds and dropping the GPU removal budget. */
+/** CPU ratio hull twin, preserving local-priority rounds and explicit removal budgets. */
 export class CPURatioConcaveHullOperation extends GPUCPUOperation {
   constructor(props: RatioConcaveHullOperationProps) {
+    props = snapshotRefinementOperationProps(props, 'hull');
     const id = props.id ?? 'ratio-concave-hull';
     validateCapacity(id, 'pointCount', props.pointCount, 3);
+    if (props.maximumIterations !== undefined)
+      validateCapacity(id, 'maximumIterations', props.maximumIterations, 0);
     validateFiniteNumber(id, 'ratio', props.ratio, 0, 1);
     validateRequirement(id, props.ratio >= 0 && props.ratio <= 1, 'ratio must be in [0, 1]');
     resolveGPUSpatialContext(id, props.spatialContext);

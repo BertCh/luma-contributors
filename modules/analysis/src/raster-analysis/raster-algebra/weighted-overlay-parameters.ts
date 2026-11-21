@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from '../raster-band-utils';
+import {validateParameterTarget, validateRasterOption} from '../raster-band-utils';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Largest layer count accepted by {@link GPUWeightedOverlay}. */
 export const GPU_WEIGHTED_OVERLAY_MAXIMUM_LAYER_COUNT = 16;
@@ -11,6 +12,8 @@ export const GPU_WEIGHTED_OVERLAY_MAXIMUM_LAYER_COUNT = 16;
 const HEADER_LENGTH = 8;
 /** float32 elements per layer record. */
 const LAYER_LENGTH = 8;
+/** Smallest normal float32 reciprocal accepted by the active linear overlay route. */
+export const GPU_WEIGHTED_OVERLAY_MINIMUM_NORMAL_SCALE = 2 ** -126;
 
 /** Remap of one {@link GPUWeightedOverlay} input layer. */
 export type GPUWeightedOverlayLayerSettings = {
@@ -43,8 +46,9 @@ export type GPUWeightedOverlaySettings = {
   /**
    * `'propagate'` (default): a nodata input makes the cell nodata. `'ignore'`: nodata layers are
    * skipped (and excluded from weight normalization); a cell with no valid layer is nodata.
+   * `'strict'` is an alias for propagate.
    */
-  noDataPolicy?: 'propagate' | 'ignore';
+  noDataPolicy?: 'propagate' | 'strict' | 'ignore';
 };
 
 /** Returns the float32 element count of a weighted-overlay parameter view for `layerCount`. */
@@ -60,6 +64,8 @@ export function getGPUWeightedOverlayParameterLength(layerCount: number): number
  * `mode` is 0 (linear) or 1 (table), `scale = 1 / (inputMaximum - inputMinimum)` is computed here so the
  * shader multiplies instead of dividing, and `degenerate` is 1 when `inputMaximum == inputMinimum` (the
  * layer then scores 1 for values `>= inputMinimum`, else 0).
+ * Active unequal linear ramps must retain endpoint order and a finite normal float32 reciprocal
+ * scale (absolute scale at least 2^-126). Table mode ignores retained linear-ramp settings.
  *
  * @param settings Layer records and global options.
  * @param target Optional destination of at least `getGPUWeightedOverlayParameterLength(layers)`.
@@ -77,44 +83,88 @@ export function getGPUWeightedOverlayParameterValues(
 ): Float32Array {
   const length = getGPUWeightedOverlayParameterLength(settings.layers.length);
   validateParameterTarget('getGPUWeightedOverlayParameterValues', target, length);
-  target.fill(0, 0, length);
-  target[0] = settings.normalizeWeights ? 1 : 0;
-  target[1] = settings.noDataPolicy === 'ignore' ? 1 : 0;
+  validateRasterOption(
+    'getGPUWeightedOverlayParameterValues',
+    'noDataPolicy',
+    settings.noDataPolicy ?? 'propagate',
+    ['propagate', 'strict', 'ignore']
+  );
+  const candidate = new Float32Array(length);
+  candidate[0] = settings.normalizeWeights ? 1 : 0;
+  candidate[1] = settings.noDataPolicy === 'ignore' ? 1 : 0;
   for (const [layerIndex, layer] of settings.layers.entries()) {
+    validateRasterOption(
+      'getGPUWeightedOverlayParameterValues',
+      `layer ${layerIndex} mode`,
+      layer.mode ?? 'linear',
+      ['linear', 'table']
+    );
+    validateRasterOption(
+      'getGPUWeightedOverlayParameterValues',
+      `layer ${layerIndex} closed`,
+      layer.closed ?? 'left',
+      ['left', 'right']
+    );
+    const linear = layer.mode !== 'table';
     const inputMinimum = layer.inputMinimum ?? 0;
     const inputMaximum = layer.inputMaximum ?? 1;
     const breakCount = layer.breakCount ?? 0;
     for (const [name, value] of [
       ['weight', layer.weight],
-      ['inputMinimum', inputMinimum],
-      ['inputMaximum', inputMaximum]
+      ...(linear
+        ? ([
+            ['inputMinimum', inputMinimum],
+            ['inputMaximum', inputMaximum]
+          ] as const)
+        : [])
     ] as const) {
-      if (!Number.isFinite(value)) {
-        throw new Error(
-          `getGPUWeightedOverlayParameterValues layer ${layerIndex} ${name} must be finite`
-        );
-      }
-    }
-    if (!Number.isSafeInteger(breakCount) || breakCount < 0) {
-      throw new Error(
-        `getGPUWeightedOverlayParameterValues layer ${layerIndex} breakCount must be a non-negative integer`
+      validateRequirement(
+        'getGPUWeightedOverlayParameterValues',
+        Number.isFinite(value),
+        `layer ${layerIndex} ${name} must be finite (got ${value})`
       );
     }
-    if (layer.mode === 'table' && options.hasTables === false) {
-      throw new Error(
-        `getGPUWeightedOverlayParameterValues layer ${layerIndex} is a table layer but has no remap tables`
-      );
-    }
+    validateRequirement(
+      'getGPUWeightedOverlayParameterValues',
+      Number.isSafeInteger(breakCount) && breakCount >= 0,
+      `layer ${layerIndex} breakCount must be a non-negative integer (got ${breakCount})`
+    );
+    validateRequirement(
+      'getGPUWeightedOverlayParameterValues',
+      layer.mode !== 'table' || options.hasTables !== false,
+      `layer ${layerIndex} is a table layer but has no remap tables; provide remap tables or use mode linear`
+    );
     const base = HEADER_LENGTH + layerIndex * LAYER_LENGTH;
-    const degenerate = Math.fround(inputMaximum) === Math.fround(inputMinimum);
-    target[base] = layer.weight;
-    target[base + 1] = layer.mode === 'table' ? 1 : 0;
-    target[base + 2] = inputMinimum;
-    target[base + 3] = degenerate ? 0 : 1 / (Math.fround(inputMaximum) - Math.fround(inputMinimum));
-    target[base + 4] = layer.invert ? 1 : 0;
-    target[base + 5] = breakCount;
-    target[base + 6] = layer.closed === 'right' ? 1 : 0;
-    target[base + 7] = degenerate ? 1 : 0;
+    const encodedMinimum = Math.fround(inputMinimum);
+    const encodedMaximum = Math.fround(inputMaximum);
+    validateRequirement(
+      'getGPUWeightedOverlayParameterValues',
+      !linear ||
+        (Number.isFinite(encodedMinimum) &&
+          Number.isFinite(encodedMaximum) &&
+          (inputMinimum === inputMaximum ||
+            Math.sign(encodedMaximum - encodedMinimum) === Math.sign(inputMaximum - inputMinimum))),
+      `layer ${layerIndex} inputMinimum/inputMaximum must preserve requested order in float32 (requested [${inputMinimum}, ${inputMaximum}], encoded [${encodedMinimum}, ${encodedMaximum}])`
+    );
+    const degenerate = linear ? inputMaximum === inputMinimum : encodedMinimum === encodedMaximum;
+    const encodedScale = Math.fround(degenerate ? 0 : 1 / (encodedMaximum - encodedMinimum));
+    candidate[base] = layer.weight;
+    candidate[base + 1] = layer.mode === 'table' ? 1 : 0;
+    candidate[base + 2] = !linear && !Number.isFinite(encodedMinimum) ? 0 : encodedMinimum;
+    candidate[base + 3] = !linear && !Number.isFinite(encodedScale) ? 0 : encodedScale;
+    candidate[base + 4] = layer.invert ? 1 : 0;
+    candidate[base + 5] = breakCount;
+    candidate[base + 6] = layer.closed === 'right' ? 1 : 0;
+    candidate[base + 7] = degenerate ? 1 : 0;
+    validateRequirement(
+      'getGPUWeightedOverlayParameterValues',
+      candidate.subarray(base, base + LAYER_LENGTH).every(Number.isFinite) &&
+        (!linear ||
+          degenerate ||
+          Math.abs(candidate[base + 3]) >= GPU_WEIGHTED_OVERLAY_MINIMUM_NORMAL_SCALE),
+      `layer ${layerIndex} weight and breakCount must be finite float32; an active unequal linear ramp requires a normal float32 reciprocal scale (absolute scale >= ${GPU_WEIGHTED_OVERLAY_MINIMUM_NORMAL_SCALE}; got weight ${layer.weight}, breakCount ${breakCount}, scale ${candidate[base + 3]}); use table mode for a wider ramp`
+    );
   }
+  target.set(candidate);
   return target;
 }

@@ -485,7 +485,8 @@ export async function executeResidentSpatialJoin(props: {
             polygons.featureOffsets.length
           )
         };
-        // The polygon BVH is built once on the first encoding and reused by every chunk.
+        // Polygon geometry stays resident; each chunk encoding replays its preparation
+        // (including the BVH build) before the predicate join.
         prepared = new GPUSpatialJoinPrepared({
           id: 'spatial-join-prepared',
           geometry: rightGeometry

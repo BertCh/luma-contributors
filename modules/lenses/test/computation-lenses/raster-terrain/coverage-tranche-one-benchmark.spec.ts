@@ -160,7 +160,7 @@ async function buildBenchmark(device: Device, workload: Workload, side: number) 
     ancillary: input,
     denominator: 'overlap',
     pairCapacity: count,
-    outputs: {
+    output: {
       targetTotals: floats('targetTotals', 4),
       targetSupportWeights: floats('targetSupportWeights', 4),
       sourceEligibleWeights: floats('sourceEligibleWeights', zoneCount),

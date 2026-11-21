@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test} from 'vitest';
+import {expect, test, vi} from 'vitest';
+import {NullDevice} from '@luma.gl/core/test-utils';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUInverseDistanceWeighting,
+  GPUKriging
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
 import {
   parseKeplerAnalysisRecipe,
   parseKeplerKrigingSettings,
@@ -80,6 +87,107 @@ test('ordinary kriging recipes normalize manual variogram units and preserve sou
     expect(() =>
       parseKeplerKrigingSettings({...settings, variogram: {...settings.variogram, ...override}})
     ).toThrow();
+});
+
+test.each([
+  {bounds: [179, -0.5, 179.9, 0.5]},
+  {bounds: [-1, 89, 1, 89.5]}
+])('wrapped interpolation recipes construct and replay seam/pole searches at $bounds', ({
+  bounds
+}) => {
+  const device = new NullDevice({});
+  Object.defineProperty(device, 'type', {value: 'webgpu'});
+  Object.assign(device.limits, {
+    maxStorageBuffersPerShaderStage: 8,
+    maxStorageBufferBindingSize: 128 * 1024 * 1024,
+    maxBufferSize: 256 * 1024 * 1024,
+    maxComputeInvocationsPerWorkgroup: 256,
+    maxComputeWorkgroupSizeX: 256,
+    maxComputeWorkgroupStorageSize: 16_384,
+    maxComputeWorkgroupsPerDimension: 65_535
+  });
+  const graph = new GPUCommandGraph(device);
+  const add = vi.spyOn(graph, 'add');
+  const columns = Object.fromEntries(
+    ['longitude', 'latitude', 'temperature'].map(name => [
+      name,
+      createTransientView(graph, name, 'float32', 3)
+    ])
+  );
+  const findLastDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, 'findLast');
+  try {
+    // ES2022 consumers have no Array.findLast, including in their TypeScript declarations.
+    Object.defineProperty(Array.prototype, 'findLast', {value: undefined, configurable: true});
+    for (const kind of ['idw-points', 'kriging-points'] as const) {
+      const common = {
+        longitudeColumn: settings.longitudeColumn,
+        latitudeColumn: settings.latitudeColumn,
+        coordinateSpace: settings.coordinateSpace,
+        metric: settings.metric,
+        units: settings.units,
+        grid: {...settings.grid, bounds},
+        neighborCount: 3
+      };
+      const operation =
+        kind === 'idw-points'
+          ? {
+              ...common,
+              kind,
+              column: 'temperature',
+              searchRadius: 200000,
+              power: 2,
+              minimumNeighborCount: 1,
+              taper: 'none'
+            }
+          : {
+              ...common,
+              kind,
+              column: 'temperature',
+              searchRadiusMeters: 200000,
+              minimumNeighbors: 1,
+              variogram: settings.variogram
+            };
+      const input = {
+        ...recipe,
+        id: kind,
+        population: 'all',
+        selectionRevision: undefined,
+        operation
+      };
+      // Both boxes reach the seam/pole after expansion; historical clipped searches still refuse.
+      expect(() => parseKeplerAnalysisRecipe(input)).toThrow(/search domain/);
+      expect(() =>
+        parseKeplerAnalysisRecipe({...input, operation: {...operation, longitudeSearch: 'clipped'}})
+      ).toThrow(/search domain/);
+      expect(() =>
+        parseKeplerAnalysisRecipe({...input, operation: {...operation, longitudeSearch: 'typo'}})
+      ).toThrow(/clipped.*wrapped/);
+      const parsed = parseKeplerAnalysisRecipe({
+        ...input,
+        operation: {...operation, longitudeSearch: 'wrapped'}
+      });
+      const serialized = serializeKeplerAnalysisRecipe(parsed);
+      expect(parsed.operation).toHaveProperty('longitudeSearch', 'wrapped');
+      expect((parsed.operation as KeplerKrigingSettings).grid.bounds).not.toBe(bounds);
+      expect(Object.isFrozen((parsed.operation as KeplerKrigingSettings).grid.bounds)).toBe(true);
+      const restored = restoreKeplerAnalysisRecipe(serialized, {resolveDatasetRevision: () => 2});
+      expect(restored).toEqual(parsed);
+      const start = add.mock.calls.length;
+      const result = addKeplerAnalysisRecipe(graph, restored, {source: recipe.source, columns});
+      const ExpectedContributor = kind === 'idw-points' ? GPUInverseDistanceWeighting : GPUKriging;
+      const contributor = add.mock.calls
+        .slice(start)
+        .map(call => call[0])
+        .find(candidate => candidate instanceof ExpectedContributor);
+      expect(contributor).toBeInstanceOf(ExpectedContributor);
+      expect((contributor as GPUKriging).props.longitudeSearch).toBe('wrapped');
+      result.destroyParameters();
+    }
+  } finally {
+    if (findLastDescriptor) Object.defineProperty(Array.prototype, 'findLast', findLastDescriptor);
+    else Reflect.deleteProperty(Array.prototype, 'findLast');
+    device.destroy();
+  }
 });
 
 test('kriging settings accept every analysis variogram family and reject unknown ones', () => {

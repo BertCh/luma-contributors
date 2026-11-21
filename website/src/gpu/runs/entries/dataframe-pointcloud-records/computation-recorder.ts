@@ -3,7 +3,7 @@
 
 // GPUComputationRecorder watching a real analysis being built. A spatial-lag relaxation is added
 // to a command graph through the recorder. The top graph is what the compiled graph publishes by
-// itself; the bottom one is described with the recorder, whose withScope namespaces color the
+// itself; the bottom one is described with the recorder, whose withSynchronousScope namespaces color the
 // nodes. The strip below shows the kernel sources the recorder kept: full text only with
 // `sourceText`, otherwise just a hash.
 

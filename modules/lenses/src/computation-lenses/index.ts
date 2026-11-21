@@ -5,6 +5,9 @@
 export type {
   DecodedLensFile,
   LensScenarioDescriptor,
+  LensDatasetResolver,
+  LensScenarioRunOptions,
+  LensScenarioInputBinding,
   LensScenarioResult,
   RecordedLensFile
 } from './types';

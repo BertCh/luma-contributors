@@ -132,7 +132,7 @@ export default defineOperationRun<Inputs, Outputs>({
         parameterBuffer.write(
           getGPUPointPatternIndicesParameterValues({
             bounds: [0, 0, world.width, 1],
-            maximumDistance: 0.05
+            indexCellSizeHint: 0.05
           })
         );
       }

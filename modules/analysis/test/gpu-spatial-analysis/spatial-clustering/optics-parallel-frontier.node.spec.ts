@@ -42,13 +42,13 @@ function createOPTICS(
       reachability: createTransientView(graph, `${resourcePrefix}-reachability`, 'float32', rows),
       predecessors: createTransientView(graph, `${resourcePrefix}-predecessors`, 'uint32', rows),
       labels: createTransientView(graph, `${resourcePrefix}-labels`, 'uint32', rows),
-      status: createTransientView(graph, `${resourcePrefix}-status`, 'uint32', 3),
       ports: {
         status: {
           candidateOverflow: createTransientView(graph, `${resourcePrefix}-overflow`, 'uint32', 1),
           iterationCount: createTransientView(graph, `${resourcePrefix}-iterations`, 'uint32', 1),
           converged: createTransientView(graph, `${resourcePrefix}-converged`, 'uint32', 1),
-          iterationLimitReached: createTransientView(graph, `${resourcePrefix}-limit`, 'uint32', 1)
+          iterationLimitReached: createTransientView(graph, `${resourcePrefix}-limit`, 'uint32', 1),
+          reason: createTransientView(graph, `${resourcePrefix}-reason`, 'uint32', 1)
         }
       }
     },
@@ -304,5 +304,6 @@ it('the CPU twin matches the independent scikit-learn fixture above 4096, with b
     expect(Array.from(result.iterationCount)).toEqual([fixture.ordering.length]);
     expect(Array.from(result.converged)).toEqual([1]);
     expect(Array.from(result.iterationLimitReached)).toEqual([0]);
+    expect(Array.from(result.reason)).toEqual([0]);
   }
 });

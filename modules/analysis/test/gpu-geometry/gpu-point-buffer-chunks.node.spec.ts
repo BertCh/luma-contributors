@@ -3,13 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {afterAll, afterEach, expect, it, vi} from 'vitest';
+import {afterAll, afterEach, expect, expectTypeOf, it, vi} from 'vitest';
 import {
   WGSL_RESERVED_WORDS,
   stripWGSLComments
 } from '../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {readPointBufferRing} from './gpu-point-buffer-chunks.test-utils';
-import {GPUPointBuffer} from '../../src/geospatial-analysis/point-buffer/index';
+import {
+  GPUPointBuffer,
+  type GPUPointBufferProps,
+  getGPUPointBufferParameterValues
+} from '../../src/geospatial-analysis/point-buffer/index';
 import {
   createNullWebGPUDevice,
   createVectorView,
@@ -42,7 +46,10 @@ function createProps(graph: GPUCommandGraph, lengths: number[], padded = false) 
     );
   return {
     id: 'chunk-point-buffer',
-    coordinateSystem: 'geographic' as const,
+    spatialContext: {
+      coordinateSpace: 'longitude-latitude' as const,
+      metric: 'great-circle' as const
+    },
     points: rows('points', 1),
     offsets: rows('offsets', 4),
     verticesPerRing: 4,
@@ -69,7 +76,7 @@ it('validates whole-ring topology, output overlap and uint32 expanded row counts
       })
   ).toThrow(/byte ranges must not overlap/);
   expect(() => new GPUPointBuffer({...props, verticesPerRing: 0xffffffff})).toThrow(
-    /offsets.length.*4294967295/
+    /points\.length \* verticesPerRing \(30064771065\).*GRAPH_CHUNK_MAXIMUM_ROW_COUNT \(4294967295\)/
   );
   const shared = createTransientView(graph, 'shared', 'float32x2', 5);
   expect(
@@ -119,7 +126,10 @@ it('keeps one source and pipeline per coordinate system as chunk count grows', (
           Array.from({length: chunkCount}, (_, index) => [1, 257, 513][index % 3]),
           true
         ),
-        coordinateSystem
+        spatialContext:
+          coordinateSystem === 'geographic'
+            ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+            : {coordinateSpace: 'planar', metric: 'native'}
       });
       const nodes = contributor.getCommandNodes(graph);
       expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
@@ -168,4 +178,145 @@ it('prefixes chunk scratch resource IDs so two contributors can share one graph'
   expect(new Set(nodeIds).size).toBe(nodeIds.length);
   expect(firstNodes.every(node => node.id.startsWith('first-'))).toBe(true);
   expect(secondNodes.every(node => node.id.startsWith('second-'))).toBe(true);
+});
+
+it('ERG-102 distinguishes product overflow from a legal product with a short offsets view', () => {
+  const graph = new GPUCommandGraph(device);
+  // Transient views only declare sizes: no huge host or device allocation is needed.
+  const overflow = createProps(graph, [1, 4, 2]);
+  expect(() => new GPUPointBuffer({...overflow, verticesPerRing: 0xffffffff})).toThrow(
+    'chunk-point-buffer points.length * verticesPerRing (30064771065) must not exceed GRAPH_CHUNK_MAXIMUM_ROW_COUNT (4294967295)'
+  );
+  const legalProduct = createProps(graph, [1]);
+  const shortOffsets = createTransientView(graph, 'short-offsets', 'float32x2', 1);
+  expect(
+    () =>
+      new GPUPointBuffer({
+        ...legalProduct,
+        points: legalProduct.points.data[0],
+        offsets: shortOffsets,
+        verticesPerRing: 0xffffffff
+      })
+  ).toThrow(/^chunk-point-buffer offsets must have verticesPerRing rows per point$/);
+});
+
+it('S1 reports the exact expanded product beyond Number.MAX_SAFE_INTEGER', () => {
+  const graph = new GPUCommandGraph(device);
+  // Exact integer arithmetic: 3,000,001 * 4,294,967,295 = 12,884,906,179,967,295.
+  // Only view extents are declared; no large allocation is submitted.
+  const props = createProps(graph, [3_000_001]);
+  expect(() => new GPUPointBuffer({...props, verticesPerRing: 0xffffffff})).toThrow(
+    'points.length * verticesPerRing (12884906179967295) must not exceed GRAPH_CHUNK_MAXIMUM_ROW_COUNT (4294967295)'
+  );
+});
+
+it('NAM-07 rejects unknown modes and resolves one captured spatial context mode', () => {
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph, [1]);
+  for (const coordinateSystem of ['longitude-latitude', 'unrelated-token']) {
+    const legacyProps = {...props, coordinateSystem};
+    expect(() => new GPUPointBuffer(legacyProps)).toThrow(/coordinateSystem.*spatialContext/);
+  }
+  for (const mode of ['planar', 'geographic'] as const) {
+    const spatialContext =
+      mode === 'planar'
+        ? {coordinateSpace: 'planar' as const, metric: 'native' as const}
+        : {
+            coordinateSpace: 'longitude-latitude' as const,
+            metric: 'great-circle' as const,
+            units: 'meters' as const
+          };
+    const input = {
+      ...props,
+      id: `mode-${mode}`,
+      spatialContext
+    };
+    const contributor = new GPUPointBuffer(input);
+    expectTypeOf(contributor.props.spatialContext).toEqualTypeOf<
+      GPUPointBufferProps['spatialContext']
+    >();
+    input.spatialContext = {coordinateSpace: 'planar', metric: 'native'};
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.at(-1)?.workload?.variant).toBe(mode);
+    const source = getGPUCommandNodeKernelSources(nodes)
+      .map(kernel => kernel.source)
+      .join('\n');
+    expect(source.includes('let clampedLatitude')).toBe(mode === 'geographic');
+  }
+  expect(
+    () =>
+      new GPUPointBuffer({
+        ...props,
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'rhumb', units: 'meters'}
+      })
+  ).toThrow();
+});
+
+it('VAL-02 validates encoded radius and full parameter destinations before writing', () => {
+  for (const radius of [Number.MIN_VALUE, 1e-50, Number.MAX_VALUE, 0, -1, NaN, Infinity]) {
+    const target = new Float32Array([77, 88, 99]);
+    expect(() => getGPUPointBufferParameterValues(radius, target)).toThrow(/radius/);
+    expect([...target]).toEqual([77, 88, 99]);
+  }
+  for (const length of [0, 1]) {
+    const target = new Float32Array(length).fill(77);
+    expect(() => getGPUPointBufferParameterValues(10, target)).toThrow(/target.length/);
+    expect([...target]).toEqual(new Array(length).fill(77));
+  }
+  for (const length of [2, 4]) {
+    const target = new Float32Array(length).fill(77);
+    expect(getGPUPointBufferParameterValues(10, target)).toBe(target);
+    expect([...target]).toEqual([10, 0, ...new Array(length - 2).fill(77)]);
+  }
+});
+
+it('B1 accepts effective metre units', () => {
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph, [1]);
+  expect(
+    () =>
+      new GPUPointBuffer({
+        ...props,
+        spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      })
+  ).not.toThrow();
+});
+
+it('B1 rejects explicit null context instead of resolving a default', () => {
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph, [1]);
+  expect(() => new GPUPointBuffer({...props, spatialContext: null as never})).toThrow(
+    /spatialContext.*null/
+  );
+});
+
+it('S4 snapshots all nested spatial context metadata exposed in props', () => {
+  const graph = new GPUCommandGraph(device);
+  const spatialContext = {
+    coordinateSpace: 'planar' as const,
+    metric: 'native' as const,
+    frame: {
+      id: 'local',
+      kind: 'crs' as const,
+      origin: [1, 2] as [number, number],
+      areaOfUse: [0, 0, 3, 4] as [number, number, number, number]
+    }
+  };
+  const contributor = new GPUPointBuffer({
+    ...createProps(graph, [1]),
+    spatialContext
+  });
+  spatialContext.frame.origin[0] = 99;
+  spatialContext.frame.areaOfUse[0] = 99;
+  spatialContext.frame.id = 'changed';
+  spatialContext.coordinateSpace = 'longitude-latitude' as never;
+  expect(contributor.props.spatialContext).toEqual({
+    coordinateSpace: 'planar',
+    metric: 'native',
+    frame: {id: 'local', kind: 'crs', origin: [1, 2], areaOfUse: [0, 0, 3, 4]}
+  });
+});
+
+it('B5 requires a mode declaration in the public input type', () => {
+  expectTypeOf<Omit<GPUPointBufferProps, 'spatialContext'>>().not.toExtend<GPUPointBufferProps>();
 });

@@ -187,7 +187,14 @@ it('particle CPU mirror diagnostic stays within the independent ODE budget (not 
       velocities: new Float32Array(scene.field)
     };
     const parameters = getGPUParticleAdvectionParameterValues(
-      {fieldExtent: scene.extent, spawnBounds: scene.spawnBounds, timeStep: scene.timeStep},
+      {
+        fieldPlacement: {
+          origin: [scene.extent[0], scene.extent[1]],
+          cellSize: [scene.extent[2], scene.extent[3]]
+        },
+        spawnBounds: scene.spawnBounds,
+        timeStep: scene.timeStep
+      },
       [scene.width, scene.height]
     );
     const positions: number[] = [];

@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {resolveRecipeDestinations, getRecipeDestinationKeys} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -36,6 +39,12 @@ import {
 
 const ID = 'GPUStraightLineCatchmentsRecipe';
 
+// This recipe wires exactly these six columns, independently of additions to the reducer.
+type CatchmentStatisticsOutput = Pick<
+  GPURasterZonalStatisticsOutput,
+  'cellCounts' | 'valueCounts' | 'sums' | 'means' | 'minimums' | 'maximums' | 'status'
+>;
+
 /** Native planar distances for the recipe's radius-based stages. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
   ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -50,8 +59,10 @@ export type GPUStraightLineCatchmentsRecipeProps = GPURecipeOverrides<
     allocation?: GraphDataView<'uint32'>;
     /** Caller-owned distance to the nearest facility per cell. */
     distances?: GraphDataView<'float32'>;
-    /** Caller-owned per-catchment statistics. */
-    statistics?: GPURasterZonalStatisticsOutput;
+    /** Caller-owned per-catchment statistics. status.incomplete is unsupported on this route.
+     * status.overflow and the outer status.overflow must request the same view.
+     */
+    statistics?: CatchmentStatisticsOutput;
     /** Mirrors `result.status`. */
     status?: {
       /** Caller-owned one-row flag of the `zonal-statistics` stage, see `result.status.overflow`. */
@@ -111,7 +122,7 @@ type GPUStraightLineCatchmentsRecipeViews = {
   /** Euclidean distance from each cell to its facility. */
   distances: GraphDataView<'float32'>;
   /** Per-catchment cell counts, value counts, sums, means, minimums and maximums. */
-  statistics: Required<GPURasterZonalStatisticsOutput> & {
+  statistics: Required<CatchmentStatisticsOutput> & {
     status: {overflow: GraphDataView<'uint32'>};
   };
   /** Status words next to the per-stage `stages`. */
@@ -149,6 +160,9 @@ function declareStraightLineCatchmentsRecipe<Parameters>(
   props: GPUStraightLineCatchmentsRecipeProps
 ): GPUStraightLineCatchmentsRecipeResult {
   const id = props.id ?? 'straight-line-catchments';
+  const destinations = resolveRecipeDestinations(id, props);
+  const statisticsKeys = getRecipeDestinationKeys(props.output?.statistics);
+  const statisticsStatusKeys = getRecipeDestinationKeys(props.output?.statistics?.status);
   const spatialContext = resolveGPUSpatialContext(
     id,
     props.spatialContext,
@@ -161,7 +175,52 @@ function declareStraightLineCatchmentsRecipe<Parameters>(
   const builder = new RecipeBuilder(graph);
   const {grid} = props;
   const cellCount = grid.width * grid.height;
-  const outputs = props.outputs ?? {};
+  const outputs = destinations ?? {};
+  const provided = outputs.statistics ?? {};
+  const supportedColumns = new Set([
+    'cellCounts',
+    'valueCounts',
+    'sums',
+    'means',
+    'minimums',
+    'maximums',
+    'status'
+  ]);
+  for (const name of new Set([
+    ...statisticsKeys,
+    'weightSums',
+    'variances',
+    'populationVariances',
+    'standardDeviations',
+    'sourceZoneIds',
+    'denseZoneRows'
+  ])) {
+    validateRequirement(
+      id,
+      (provided as Record<string, unknown>)[name] === undefined || supportedColumns.has(name),
+      `output.statistics.${name} is unsupported; use GPURasterZonalStatistics directly for moment or dictionary destinations`
+    );
+  }
+  for (const name of new Set([...statisticsStatusKeys, 'incomplete', 'invalidCount'])) {
+    validateRequirement(
+      id,
+      (provided.status as Record<string, unknown> | undefined)?.[name] === undefined ||
+        name === 'overflow',
+      `output.statistics.status.${name} is not supported by this catchments route`
+    );
+  }
+  const outerOverflow = outputs.status?.overflow;
+  const nestedOverflow = provided.status?.overflow;
+  validateRequirement(
+    id,
+    !outerOverflow || !nestedOverflow || outerOverflow === nestedOverflow,
+    'output.status.overflow and output.statistics.status.overflow must reference the same view'
+  );
+  validateRequirement(
+    id,
+    provided.status?.incomplete === undefined,
+    'output.statistics.status.incomplete is not supported by this catchments route'
+  );
   const zoneCapacity = props.facilities.positions.length;
   assertRecipe(ID, cellCount >= 1, 'needs a non-empty grid');
   assertRecipe(ID, zoneCapacity >= 1, 'needs at least one facility row');
@@ -193,7 +252,6 @@ function declareStraightLineCatchmentsRecipe<Parameters>(
     })
   );
 
-  const provided = outputs.statistics ?? {};
   const overflow = getOrCreateView(
     graph,
     `${id}-overflow`,

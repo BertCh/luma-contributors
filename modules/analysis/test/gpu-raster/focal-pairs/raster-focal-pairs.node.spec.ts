@@ -65,6 +65,32 @@ function setup() {
   return {device, graph, props, view, predictorValues};
 }
 
+it('NAM-05 strict has the same nondefault focal policy as propagate', () => {
+  const {device, props} = setup();
+  try {
+    expect(new GPURasterFocalPairs({...props, noDataPolicy: 'strict'}).props.noDataPolicy).toBe(
+      'propagate'
+    );
+    expect(
+      new GPURasterFocalPairs(Object.create({...props, noDataPolicy: 'strict'})).props.grid
+    ).toBe(props.grid);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('WGS-08 divides focal squared sums with exponent scaling', () => {
+  const {device, graph, props} = setup();
+  try {
+    const source = getParsedKernelSources(new GPURasterFocalPairs(props).getCommandNodes(graph));
+    expect([...source.values()].join('\n')).toContain(
+      'slope = getScaledQuotient(crossProducts, predictorSquares, 1.0, 0)'
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
 it('RS05 maximal output shaders parse within default binding limits and declare the full halo', () => {
   const {device, graph, props} = setup();
   try {

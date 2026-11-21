@@ -50,9 +50,9 @@ export const entries: CatalogEntry[] = [
       },
       {
         name: 'precision',
-        type: '"float32" | "extended"',
+        type: '"float32" | "double-single"',
         default: "'float32'",
-        description: 'H3 only: extended arithmetic for finer resolutions.'
+        description: 'H3 only: double-single arithmetic for finer resolutions.'
       },
       {
         name: 'output',
@@ -2164,9 +2164,9 @@ const compiled = await graph.compileAsync();`,
         description: 'Containing feature id per point.'
       },
       {
-        name: 'featureCounts',
+        name: 'polygonAssignmentCounts',
         type: 'GraphDataView<"uint32">',
-        description: 'Points inside each feature.'
+        description: 'Points assigned to each polygon.'
       },
       {
         name: 'matches',
@@ -2185,11 +2185,11 @@ import {GPUPointInPolygonJoin} from '${IMPORT_PATH}';
 const graph = new GPUCommandGraph(device, {id: 'pip'});
 const points = {kind: 'points', positions: pointPositions} as const; // views on this graph
 const polygons = {kind: 'polygons' as const, featureOffsets, polygonOffsets, ringOffsets, positions: zonePositions};
-const {pointFeatureIds, featureCounts, status} = joinViews; // output views
+const {pointFeatureIds, polygonAssignmentCounts, status} = joinViews; // output views
 
 graph.add(new GPUPointInPolygonJoin({
   points, polygons, candidateCapacity: 1 << 18,
-  output: {pointFeatureIds, featureCounts, status}
+  output: {pointFeatureIds, polygonAssignmentCounts, status}
 }));
 const compiled = await graph.compileAsync();`,
     preview: {
@@ -2359,7 +2359,7 @@ const compiled = await graph.compileAsync();`,
     summary:
       'Joins each query to its nearest feature, or its k nearest, by planar or great-circle distance.',
     explanation:
-      'Use it to snap points to roads, find the closest station or build neighbor lists. Set `radius` to cap the search and `k` with `neighborCapacity` for several neighbors. Ties break by lowest id or keep all.',
+      'Use it to snap points to roads, find the closest station or build neighbor lists. Set `radius` to cap the search and `neighborCount` with `neighborCapacity` for several neighbors. Choose the lowest feature rows at a tied distance or keep all ties.',
     dataTypes: {input: ['points', 'lines', 'polygons'], output: ['table', 'spatial-weights']},
     useCases: ['relate', 'route'],
     domains: ['transport', 'urban'],
@@ -2381,13 +2381,13 @@ const compiled = await graph.compileAsync();`,
         type: 'GraphDataView<"float32">',
         description: 'Per-frame maximum distance.'
       },
-      {name: 'k', type: 'number', default: '1', description: 'Neighbors per query.'},
+      {name: 'neighborCount', type: 'number', default: '1', description: 'Neighbors per query.'},
       {name: 'neighborCapacity', type: 'number', description: 'Neighbor slots per query.'},
       {
         name: 'ties',
         type: 'GPUNearestTieMode',
-        default: "'lowest-id'",
-        description: "'lowest-id' or 'all'."
+        default: "'lowest-row'",
+        description: "'lowest-row' or 'all'."
       },
       {
         name: 'exclusive',
@@ -2513,7 +2513,7 @@ const compiled = await graph.compileAsync();`,
 import {GPUNearestFeatureWeights} from '${IMPORT_PATH}';
 
 const graph = new GPUCommandGraph(device, {id: 'knn-weights'});
-// Request neighborRows alongside neighborIds on GPUNearestFeatureJoin (k = 8).
+// Request neighborRows alongside neighborIds on GPUNearestFeatureJoin (neighborCount = 8).
 const {neighborRows, neighborCounts, neighborDistances, status: neighborStatus} = nearestViews;
 const weights = weightViews; // GPUSpatialWeights output views plus status.overflow and status.candidateOverflow
 
@@ -2558,7 +2558,7 @@ const compiled = await graph.compileAsync();`,
         description: 'Point or polyline features.'
       },
       {
-        name: 'distance',
+        name: 'radius',
         type: 'GraphDataView<"float32">',
         required: true,
         description: 'Per-frame selection distance.'
@@ -2606,7 +2606,7 @@ const features = {kind: 'points', positions: roadPositions} as const;
 const {outputMask} = selectionViews; // output views
 
 graph.add(new GPUBufferSelection({
-  points, features, distance: distance.importToGraph(graph),
+  points, features, radius: distance.importToGraph(graph),
   candidateCapacity: 1 << 18, output: {outputMask}
 }));
 distance.write(Float32Array.of(250)); // drag the slider: no recompile`,

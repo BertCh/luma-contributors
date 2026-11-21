@@ -31,6 +31,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {UINT64_WGSL} from '../../analysis-core/kernels/uint64-wgsl';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -293,12 +294,13 @@ export class GPURasterContrastEqualization implements GPUCommandNodeProducer {
       access: 'read'
     };
     const declarations = `${IS_FINITE_VALUE_WGSL}
+${SCALED_QUOTIENT_WGSL}
 ${GET_NAN_WGSL}
 const BIN_COUNT: u32 = ${binCount}u;
 fn getBin(value: f32, domain: u32) -> u32 {
   let minimum = parameters[parametersOffset + domain];
   let maximum = parameters[parametersOffset + domain + 1u];
-  let normalized = clamp((clamp(value, minimum, maximum) - minimum) / (maximum - minimum), 0.0, 1.0);
+  let normalized = clamp(getScaledQuotient(clamp(value, minimum, maximum) - minimum, maximum - minimum, 1.0, 0), 0.0, 1.0);
   ${matching ? 'return min(BIN_COUNT - 1u, u32(floor(normalized * f32(BIN_COUNT - 1u) + 0.5)));' : 'return min(BIN_COUNT - 1u, u32(round(normalized * 16383.0)) / (1u + 16384u / BIN_COUNT));'}
 }
 fn reflectCell(coordinate: u32, extent: u32) -> u32 {

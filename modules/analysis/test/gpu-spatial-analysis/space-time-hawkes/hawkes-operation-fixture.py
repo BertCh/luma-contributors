@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-"""Independent fixed-point oracle: SciPy least_squares solves the four EM equations.
+"""Independent score oracle: SciPy least_squares solves the four finite-window EM equations.
 
 Run with /usr/bin/python3. This does not iterate EM: it solves all equations simultaneously,
 using a dense parent-weight matrix and direct intensities instead of the twin's log-domain walk.
@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 import numpy
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, brentq
 
 positions = numpy.asarray([[0, 0], [0.2, 0.1], [0.3, 0.2], [3, 3], [3.2, 3.1], [3.4, 3.2], [6, 0], [6.1, 0.2]], dtype=numpy.float32).astype(float)
 times = numpy.asarray([0.1, 0.3, 0.7, 3, 3.3, 3.8, 6, 6.5], dtype=numpy.float32).astype(float)
@@ -28,7 +28,16 @@ def evaluate(theta):
     responsibility = weights / intensity[:, None]
     triggered = responsibility.sum()
     mass = -numpy.expm1(-decay * (duration - times)).sum()
-    next_values = numpy.array([(background / intensity).sum() / (area * duration), triggered / mass, triggered / (responsibility * lags).sum(), (responsibility * distance_squared).sum() / (2 * triggered)])
+    lag_sum = (responsibility * lags).sum()
+    def profile_score(rate):
+        remaining = duration-times
+        window_mass = -numpy.expm1(-rate*remaining).sum()
+        derivative = (remaining*numpy.exp(-rate*remaining)).sum()
+        return triggered/rate-lag_sum-triggered*derivative/window_mass
+    lower = 1e-6/duration
+    next_decay = lower if profile_score(lower)<=0 else brentq(profile_score, lower, triggered/lag_sum, xtol=1e-14)
+    next_mass = -numpy.expm1(-next_decay*(duration-times)).sum()
+    next_values = numpy.array([(background / intensity).sum() / (area * duration), triggered / next_mass, next_decay, (responsibility * distance_squared).sum() / (2 * triggered)])
     return next_values, background / intensity
 
 

@@ -11,7 +11,11 @@ import {
   getGPUDistanceFieldParameterValues,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
-import {validateFiniteNumber, validateRequirement} from '@luma-contributors/analysis/analysis-core';
+import {
+  createWGSLKernelNode,
+  validateFiniteNumber,
+  validateRequirement
+} from '@luma-contributors/analysis/analysis-core';
 import type {
   CatalogOperationBinding,
   CatalogParameterValue,
@@ -197,7 +201,7 @@ async function computeChoroplethGpu(
         polygons,
         getRecipeCandidateCapacity(points.count, featureCount)
       ),
-      outputs: {
+      output: {
         counts: counts.view,
         ...(statistic === 'count' ? {} : {featureValues: featureValues.view}),
         status: {overflow: overflow.view, uncertainCount: uncertainCount.view}
@@ -415,6 +419,28 @@ function computeDistributionCpu(
   return totals;
 }
 
+/** Stage status words whose nonzero value means rows were lost or assignments are unproven. */
+const ZONAL_DISTRIBUTION_LOSS_FIELDS = ['overflow', 'uncertainCount', 'candidateOverflow'];
+
+/**
+ * Refuses GPU zone statistics when the zone-assignment join overflowed or left unproven
+ * containments, or the group statistics overflowed: the statistics would describe only the rows
+ * that survived. The catalog then reruns on the exact CPU engine and reports the GPU fallback.
+ */
+export function requireCompleteZonalDistributionStages(
+  stages: readonly {stage: string; fields: Readonly<Record<string, number>>}[]
+): void {
+  const lost = stages.flatMap(({stage, fields}) =>
+    ZONAL_DISTRIBUTION_LOSS_FIELDS.filter(field => (fields[field] ?? 0) !== 0).map(
+      field => `${stage}.${field} ${fields[field]}`
+    )
+  );
+  if (lost.length)
+    throw new CatalogGpuUnsupportedError(
+      `The GPU zonal distribution is incomplete (${lost.join(', ')})`
+    );
+}
+
 async function computeDistributionGpu(
   device: Device,
   points: RecipePoints,
@@ -430,7 +456,7 @@ async function computeDistributionGpu(
     const modes = session.output('modes', 'float32', zoneCount);
     const uniqueCounts = session.output('unique-counts', 'uint32', zoneCount);
     const quantiles = session.output('quantiles', 'float32', zoneCount * probabilities.length);
-    addZonalDistributionRecipe(session.graph, {
+    const recipe = addZonalDistributionRecipe(session.graph, {
       id: 'catalog-recipe-zonal-distribution',
       source: {
         kind: 'points',
@@ -453,7 +479,7 @@ async function computeDistributionGpu(
             )
           }
         : {}),
-      outputs: {
+      output: {
         zoneIds: zoneIds.view,
         rowCounts: rowCounts.view,
         validCounts: validCounts.view,
@@ -463,7 +489,35 @@ async function computeDistributionGpu(
         ...(probabilities.length ? {quantiles: quantiles.view} : {})
       }
     });
+    // Stage statuses are graph-owned one-row transients: copy them into readable outputs.
+    const statusOutputs = recipe.status.stages.map(({stage, status}) => ({
+      stage,
+      fields: Object.entries(status).flatMap(([field, source]) => {
+        if (!source) return [];
+        const output = session.output(`${stage}-${field}`, 'uint32', 1);
+        session.graph.add(
+          createWGSLKernelNode(session.graph, {
+            id: `catalog-recipe-zonal-distribution-status-${stage}-${field}`,
+            operation: 'catalog-recipe-zonal-distribution',
+            invocationCount: 1,
+            bindings: [
+              {name: 'source', view: source, type: 'u32', access: 'read'},
+              {name: 'destination', view: output.view, type: 'u32', access: 'read_write'}
+            ],
+            body: 'destination[destinationOffset] = source[sourceOffset];'
+          })
+        );
+        return [{field, output}];
+      })
+    }));
     session.run();
+    const stageValues: {stage: string; fields: Record<string, number>}[] = [];
+    for (const {stage, fields} of statusOutputs) {
+      const values: Record<string, number> = {};
+      for (const {field, output} of fields) values[field] = await session.readScalar(output);
+      stageValues.push({stage, fields: values});
+    }
+    requireCompleteZonalDistributionStages(stageValues);
     return {
       rowCounts: Array.from(await session.readUint32(rowCounts)),
       validCounts: Array.from(await session.readUint32(validCounts)),
@@ -582,7 +636,8 @@ const ZONAL_DISTRIBUTION_BINDING: CatalogOperationBinding = {
     'Each point joins the smallest-row polygon feature that contains it; points outside every polygon are ignored.',
     'row_count counts all assigned points; the statistics use only points with a finite numeric value (valid_count). Empty polygons keep zero counts and null order statistics.',
     'Median and quantiles use linear interpolation of the sorted values; the mode is the most frequent value with ties resolved to the smallest value; values are compared after float32 rounding.',
-    'Points exactly on a polygon edge may differ between the engines.'
+    'Points exactly on a polygon edge may differ between the engines.',
+    'When the GPU zone assignment overflows its candidate capacity or leaves unproven containments, or the zone statistics overflow, the GPU result is discarded and the CPU engine runs, with a gpu-fallback warning naming the lost stage.'
   ],
   limitation:
     'Unweighted distributions of point values; the raster and pre-assigned zone sources of the recipe are not exposed.',
@@ -809,7 +864,7 @@ async function computeCatchmentsGpu(device: Device, grid: CatchmentGrid): Promis
         positions: session.input('facilities', grid.facilities.positions, 'float32x2')
       },
       values: session.input('cell-values', grid.cellValues, 'float32'),
-      outputs: {
+      output: {
         allocation: allocation.view,
         distances: distances.view,
         statistics: {

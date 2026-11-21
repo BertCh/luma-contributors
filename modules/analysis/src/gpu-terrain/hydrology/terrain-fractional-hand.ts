@@ -9,6 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -46,7 +47,22 @@ export function createTerrainFractionalHANDNodes<Parameters>(
     maximumIterations: number;
   }
 ): GPUCommandNode<Parameters>[] {
-  const {id, grid, output, maximumIterations} = props;
+  const {id, grid, output: requestedOutput, maximumIterations} = props;
+  const capturedOutput = snapshotConstructionFields(requestedOutput, [
+    'heightAboveDrainage',
+    'drainageCells',
+    'status'
+  ]);
+  const output = {
+    ...capturedOutput,
+    status:
+      capturedOutput.status &&
+      snapshotConstructionFields(capturedOutput.status, [
+        'converged',
+        'iterationLimitReached',
+        'iterationCount'
+      ])
+  };
   const cellCount = grid.width * grid.height;
   const current = createTransientView(
     graph,
@@ -243,17 +259,23 @@ next[nextBase + 2u] = drainage;`
       type: 'u32',
       access: 'read_write'
     });
-  nodes.push(
-    createWGSLKernelNode(graph, {
-      id: `${id}-average-publish`,
-      operation: OPERATION,
-      invocationCount: cellCount,
-      bindings,
-      body: `let base = currentOffset + index * ${TERRAIN_HAND_STATE_WORDS}u;
+  if (output.status?.converged)
+    bindings.push({
+      name: 'converged',
+      view: output.status.converged,
+      type: 'atomic<u32>',
+      access: 'read_write'
+    });
+  const publication = createWGSLKernelNode(graph, {
+    id: `${id}-average-publish`,
+    operation: OPERATION,
+    invocationCount: cellCount,
+    bindings,
+    body: `let base = currentOffset + index * ${TERRAIN_HAND_STATE_WORDS}u;
+${output.status?.converged ? 'if (current[base] == 3u) { atomicStore(&converged[convergedOffset], 0u); }' : ''}
 ${output.heightAboveDrainage ? 'height[heightOffset + index] = bitcast<f32>(current[base + 1u]);' : ''}
 ${output.drainageCells ? 'drainage[drainageOffset + index] = current[base + 2u];' : ''}`
-    })
-  );
+  });
   if (
     output.status?.converged ||
     output.status?.iterationLimitReached ||
@@ -268,5 +290,8 @@ ${output.drainageCells ? 'drainage[drainageOffset + index] = current[base + 2u];
       })
     );
   }
+  // Initialize progress diagnostics first, then clear convergence for unknown drainage in parallel.
+  // No-drainage rows remain complete; waiting rows/cycles retain the gate's budget diagnostics.
+  nodes.push(publication);
   return nodes;
 }

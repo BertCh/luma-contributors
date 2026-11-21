@@ -40,6 +40,117 @@ import {requireTestDevice} from '../../utils/require-test-device';
  */
 const EDGE_TOLERANCE = 1e-4;
 
+it('B1 negative mask steps preserve the normalized sampling distribution', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const features: SceneFeature[] = [
+    [
+      [
+        [
+          [0.25, 0.25],
+          [0.75, 0.25],
+          [0.75, 7.75],
+          [0.25, 7.75]
+        ]
+      ]
+    ]
+  ];
+  const run = async (northUp: boolean) => {
+    const fixture = createFixture(device, {
+      features,
+      values: Float32Array.of(1024),
+      capacity: 1024,
+      mask: {
+        width: 1,
+        height: 8,
+        normalizeFeatures: true,
+        weights: Float32Array.from(
+          northUp
+            ? [0.25, 0.25, 0.25, 0.25, 0.75, 0.75, 0.75, 0.75]
+            : [0.75, 0.75, 0.75, 0.75, 0.25, 0.25, 0.25, 0.25]
+        )
+      }
+    });
+    try {
+      return await fixture.run({
+        seed: 9,
+        maskPlacement: {origin: [0, northUp ? 8 : 0], cellSize: [1, northUp ? -1 : 1]}
+      });
+    } finally {
+      fixture.destroy();
+    }
+  };
+  const positive = await run(false);
+  const negative = await run(true);
+  expect(negative.failedCount).toBe(0);
+  expect(Array.from(negative.positions).every(Number.isFinite)).toBe(true);
+  expect(Array.from(negative.positions)).toEqual(Array.from(positive.positions));
+  // Equal-area halves, normalized acceptance weights 1 and 1/3 => lower half probability 3/4.
+  const lowerCount = Array.from(
+    {length: negative.count},
+    (_, row) => negative.positions[2 * row + 1]
+  ).filter(y => y < 4).length;
+  expect(lowerCount).toBeGreaterThan(0.7 * 1024);
+  expect(lowerCount).toBeLessThan(0.8 * 1024);
+});
+
+it('OUT-13 slotStarts delimit both polygon samplers after final capacity clamping', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Two positive-area right triangles, each requesting exactly two dots.
+  const features: SceneFeature[] = [
+    [
+      [
+        [
+          [0, 0],
+          [2, 0],
+          [0, 2]
+        ]
+      ]
+    ],
+    [
+      [
+        [
+          [10, 0],
+          [12, 0],
+          [10, 2]
+        ]
+      ]
+    ]
+  ];
+  for (const form of ['values', 'counts'] as const) {
+    const fixture = createFixture(device, {
+      features,
+      capacity: 3,
+      ...(form === 'values' ? {values: Float32Array.of(2, 2)} : {counts: Uint32Array.of(2, 2)})
+    });
+    try {
+      const result = await fixture.run({seed: 3});
+      expect(Array.from(result.slotStarts)).toEqual([0, 2]);
+      expect(Array.from(result.slotCounts)).toEqual([2, 2]);
+      expect(result.count).toBe(3);
+      expect(result.requiredCount).toBe(4);
+      expect(result.overflow).toBe(1);
+      expect(Array.from(result.featureIds)).toEqual([0, 0, 1]);
+      const intervals = Array.from(result.slotStarts, (start, slot) => [
+        Math.min(start, result.count),
+        Math.min(start + result.slotCounts[slot], result.count)
+      ]);
+      expect(intervals).toEqual([
+        [0, 2],
+        [2, 3]
+      ]);
+      for (const [start, end] of intervals) {
+        const coordinates = result.positions.subarray(2 * start, 2 * end);
+        expect(coordinates.length).toBe(2 * (end - start));
+        expect(Array.from(coordinates).every(Number.isFinite)).toBe(true);
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
 type ShapelyFeature = {
   xs: number[];
   ys: number[];
@@ -137,7 +248,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
     categories: output(capacity),
     failed: output(1),
     slotCounts: output(slotCount),
-    slotOffsets: output(slotCount)
+    slotStarts: output(slotCount)
   };
   const polygonViews = {
     positions: importGraphBuffer(
@@ -202,13 +313,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
     },
     status: {failedCount: importGraphBuffer(graph, 'o-failed', outputs.failed, 'uint32', 1)},
     slotCounts: importGraphBuffer(graph, 'o-slot-counts', outputs.slotCounts, 'uint32', slotCount),
-    slotOffsets: importGraphBuffer(
-      graph,
-      'o-slot-offsets',
-      outputs.slotOffsets,
-      'uint32',
-      slotCount
-    )
+    slotStarts: importGraphBuffer(graph, 'o-slot-offsets', outputs.slotStarts, 'uint32', slotCount)
   };
   const parameters = parameterBuffer.importToGraph(graph);
   if (props.values) {
@@ -252,6 +357,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
       parameterBuffer.write(getGPUDotDensityParameterValues(settings));
       submitGraph(device, compiled, undefined);
       const [count] = await readUint32(outputs.count, 1);
+      const slotStarts = Uint32Array.from(await readUint32(outputs.slotStarts, slotCount));
       return {
         count,
         overflow: (await readUint32(outputs.overflow, 1))[0],
@@ -259,7 +365,7 @@ function createFixture(device: Device, props: FixtureProps): Fixture {
         requiredCount: (await readUint32(outputs.total, 1))[0],
         failedCount: (await readUint32(outputs.failed, 1))[0],
         slotCounts: Uint32Array.from(await readUint32(outputs.slotCounts, slotCount)),
-        slotOffsets: Uint32Array.from(await readUint32(outputs.slotOffsets, slotCount)),
+        slotStarts,
         positions: Float32Array.from(await readFloat32(outputs.positions, capacity * 2)),
         featureIds: Uint32Array.from(await readUint32(outputs.ids, capacity)),
         categories: Uint32Array.from(await readUint32(outputs.categories, capacity))
@@ -281,7 +387,7 @@ function expectMatchesOracle(
   checkCategories: boolean
 ): void {
   expect(Array.from(actual.slotCounts)).toEqual(Array.from(expected.slotCounts));
-  expect(Array.from(actual.slotOffsets)).toEqual(Array.from(expected.slotOffsets));
+  expect(Array.from(actual.slotStarts)).toEqual(Array.from(expected.slotStarts));
   expect(actual.requiredCount).toBe(expected.requiredCount);
   expect(actual.count).toBe(expected.count);
   expect(actual.overflow).toBe(expected.overflow);
@@ -470,8 +576,8 @@ it('GPUDotDensity keeps dot positions stable when the dot value changes', async 
     for (let slot = 0; slot < 6; slot++) {
       expect(fine.slotCounts[slot]).toBeGreaterThanOrEqual(coarse.slotCounts[slot]);
       for (let rank = 0; rank < coarse.slotCounts[slot]; rank++) {
-        const coarseDot = coarse.slotOffsets[slot] + rank;
-        const fineDot = fine.slotOffsets[slot] + rank;
+        const coarseDot = coarse.slotStarts[slot] + rank;
+        const fineDot = fine.slotStarts[slot] + rank;
         // Bitwise equal: same Philox draws on the same triangulation.
         expect(fine.positions[2 * fineDot]).toBe(coarse.positions[2 * coarseDot]);
         expect(fine.positions[2 * fineDot + 1]).toBe(coarse.positions[2 * coarseDot + 1]);
@@ -533,8 +639,8 @@ it('GPUDotDensity clamps to capacity and applies a mask, counting masked-out dot
     const settings = {
       seed: 4,
       dotsPerUnit: 1,
-      maskExtent: [0, 0, 1, 1] as const
-    };
+      maskPlacement: {origin: [0, 0], cellSize: [1, 1]}
+    } satisfies GPUDotDensitySettings;
     const actual = await masked.run(settings);
     const expected = generateDotCountsOnCPU({
       ...polygons,
@@ -575,7 +681,11 @@ it('GPUDotDensity mask.normalizeFeatures keeps counts of low-weight features', a
     weights.fill(0.02, row * width + 20, row * width + 30);
   }
   const values = new Float32Array([200, 100, 50]);
-  const settings = {seed: 9, dotsPerUnit: 1, maskExtent: [0, 0, 1, 1] as const};
+  const settings = {
+    seed: 9,
+    dotsPerUnit: 1,
+    maskPlacement: {origin: [0, 0], cellSize: [1, 1]}
+  } as const;
   const run = async (normalizeFeatures: boolean) => {
     const fixture = createFixture(device, {
       values,

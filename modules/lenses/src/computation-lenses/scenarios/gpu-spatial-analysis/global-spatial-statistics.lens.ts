@@ -32,7 +32,7 @@ defineLensScenario({
           tracts,
           entry: STATISTICS_OPERATORS['GPUGlobalSpatialStatistics'],
           columns: {values: 'poverty150Pct'},
-          choices: {transform: 'row', islands: 'exclude', alternative: 'two-sided'},
+          choices: {transform: 'row', islands: 'exclude', analyticAlternative: 'two-sided'},
           metadata: {
             // Analytic normal p-values of one test each; no multiple-testing family exists.
             pCorrection: 'none',

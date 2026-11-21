@@ -3,11 +3,28 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLOPE_SLICE_COUNT,
+  LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT,
+  LOCATION_CHANGE_POINT_MEAN_SCALE_THRESHOLD_EXPONENT,
+  LOCATION_CHANGE_POINT_STANDARDIZATION_EXPONENT,
+  LOCATION_CHANGE_POINT_STANDARDIZATION_THRESHOLD_EXPONENT,
+  validateLocationChangeShape
+} from './change-point-shape';
+export {
+  GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLICE_COUNT,
+  GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLOPE_SLICE_COUNT,
+  GPU_LOCATION_CHANGE_POINTS_MAXIMUM_CHANGE_POINTS
+} from './change-point-shape';
+import {snapshotChangePointProps} from './change-point-construction';
+
+import {
+  createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -30,21 +47,11 @@ import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-stat
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 const OPERATION = 'GPULocationChangePoints';
+// Squaring offsets in these units leaves room to sum any 512 finite float32 observations.
+const MEAN_WIDE_MOMENT_SHIFT = 80;
 
 /** Elements of the `parameters` view: `[penalty, minimumSegmentLength]`. */
 export const GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH = 2;
-/**
- * Largest `sliceCount`. Every location keeps its standardized series and the dynamic program in
- * workgroup arrays and evaluates `sliceCount^2 / 2` segment costs, so the bound limits both.
- */
-export const GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLICE_COUNT = 512;
-/**
- * Largest `sliceCount` of the `'slope'` cost: the time sums of a segment are exact unsigned
- * integers, and `n * sum(t^2)` with positions below 256 stays below `2^32`.
- */
-export const GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLOPE_SLICE_COUNT = 256;
-/** Largest `maximumChangePoints` per location. */
-export const GPU_LOCATION_CHANGE_POINTS_MAXIMUM_CHANGE_POINTS = 128;
 /** Sentinel of unused `changePoints` rows. */
 export const GPU_LOCATION_CHANGE_POINTS_NONE = 0xffffffff;
 
@@ -96,9 +103,10 @@ export type GPULocationChangePointsOutput = {
   /**
    * Optional per-cell penalized optimum: the sum of the segment costs plus `penalty` per change
    * point (no penalty for the first segment). NaN for a cell without a defined series.
+   * A defined mean or slope optimum beyond float32 range is +Infinity; its partition is still reported.
    */
   optimalCost?: GraphDataView<'float32'>;
-  /** Optional scalar status: `overflow` is 1 when any cell had more than `maximumChangePoints`. */
+  /** Optional one-row uint32 status: `overflow` is 1 when any cell had more than `maximumChangePoints`. */
   status?: Pick<GPUOverflowStatusPort, 'overflow'>;
 };
 
@@ -142,8 +150,11 @@ export type GPULocationChangePointsProps = {
  * - `'slope'`: the residual sum of squares of a line per segment (positions are the true slice
  *   indices, so missing slices keep their spacing); a unit-variance Normal cost like `'mean'`.
  *
- * Precision: values are centered and scaled by the series' own mean and standard deviation
- * (a deviance form for Poisson), so the partition does not depend on the unit of `values`. The
+ * Precision: variance, mean-variance and slope scale wide inputs before standardizing.
+ * Mean cost uses segment-local offsets and rescales wide offsets before squaring. The Poisson
+ * cost uses a deviance form. Changing units preserves the partition when penalty scales
+ * with the cost: squared value scale for mean/slope, value scale for Poisson, unchanged for
+ * variance/mean-variance. The
  * moments of a segment are running sums that begin at the segment's own start, taken about its
  * first value, so a quiet segment after a loud one keeps f32 relative accuracy over 512 slices;
  * no difference of two long prefix sums is formed. The series mean and variance use a sum
@@ -170,42 +181,19 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
   readonly props: GPULocationChangePointsProps;
 
   constructor(props: GPULocationChangePointsProps) {
+    props = snapshotChangePointProps(props);
     const id = props.id ?? 'location-change-points';
+    validateLocationChangeShape(id, props);
     this.id = id;
     this.props = props;
-    const {values, cellCount, sliceCount, cost, maximumChangePoints, parameters, output} = props;
-    validateRequirement(id, cost in MINIMUM_SEGMENT_LENGTHS, 'cost is not supported');
-    validateCapacity(id, 'cellCount', cellCount);
-    validateCapacity(
-      id,
-      'sliceCount',
-      sliceCount,
-      1,
-      GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLICE_COUNT
-    );
-    if (cost === 'slope') {
-      validateCapacity(
-        id,
-        "sliceCount of the 'slope' cost",
-        sliceCount,
-        1,
-        GPU_LOCATION_CHANGE_POINTS_MAXIMUM_SLOPE_SLICE_COUNT
-      );
-    }
-    validateCapacity(
-      id,
-      'maximumChangePoints',
-      maximumChangePoints,
-      1,
-      GPU_LOCATION_CHANGE_POINTS_MAXIMUM_CHANGE_POINTS
-    );
+    const {values, cellCount, sliceCount, maximumChangePoints, parameters, output} = props;
     validateSinglePackedView(values, ['float32'], `${id} values`);
     validateViewLength(id, 'values', values, cellCount * sliceCount);
     validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
       parameters.length >= GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH,
-      `parameters needs ${GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH} rows`
+      `parameters needs ${GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH} rows; received ${parameters.length}`
     );
     validateSinglePackedView(output.changePointCount, ['uint32'], `${id} changePointCount`);
     validateViewLength(id, 'changePointCount', output.changePointCount, cellCount);
@@ -230,6 +218,7 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
     }
     if (output.status?.overflow) {
       validateSinglePackedView(output.status.overflow, ['uint32'], `${id} status.overflow`);
+      validateViewLength(id, 'status.overflow', output.status.overflow, 1);
     }
     validateDisjointWritableViews(id, {...output, status: undefined, ...output.status});
     validateGraphOutputsDisjointFromInputs(
@@ -251,6 +240,12 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
     target: Float32Array = new Float32Array(GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH)
   ): Float32Array {
     const {id, props} = this;
+    validateCapacity(
+      id,
+      'target length',
+      target.length,
+      GPU_LOCATION_CHANGE_POINTS_PARAMETER_LENGTH
+    );
     validateFiniteNumber(id, 'penalty', settings.penalty, 0);
     const smallest = MINIMUM_SEGMENT_LENGTHS[props.cost];
     const minimumSegmentLength = settings.minimumSegmentLength ?? smallest;
@@ -259,7 +254,7 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
     return target;
   }
 
-  /** Returns the one kernel of this contributor. */
+  /** Returns the initialization (when needed) and partition kernels. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -290,23 +285,41 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
       cellCount * maximumChangePoints * 4,
       'lower maximumChangePoints or split the cells'
     );
+    const roundingZero =
+      cost === 'poisson'
+        ? undefined
+        : createTransientView(graph, `${id}-rounding-zero`, 'uint32', 1);
     return [
-      ...(output.status?.overflow
+      ...(roundingZero || output.status?.overflow
         ? [
             createWGSLKernelNode<Parameters>(graph, {
               id: `${id}-clear-status`,
               operation: OPERATION,
               variant: 'clear-status',
               bindings: [
-                {
-                  name: 'overflowStatus',
-                  view: output.status.overflow,
-                  type: 'u32',
-                  access: 'read_write'
-                }
+                ...(roundingZero
+                  ? [
+                      {
+                        name: 'roundingZero',
+                        view: roundingZero,
+                        type: 'u32' as const,
+                        access: 'read_write' as const
+                      }
+                    ]
+                  : []),
+                ...(output.status?.overflow
+                  ? [
+                      {
+                        name: 'overflowStatus',
+                        view: output.status.overflow,
+                        type: 'u32' as const,
+                        access: 'read_write' as const
+                      }
+                    ]
+                  : [])
               ],
               invocationCount: 1,
-              body: 'overflowStatus[overflowStatusOffset] = 0u;'
+              body: `${roundingZero ? 'roundingZero[roundingZeroOffset] = 0u;' : ''}\n${output.status?.overflow ? 'overflowStatus[overflowStatusOffset] = 0u;' : ''}`
             })
           ]
         : []),
@@ -317,6 +330,16 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
         bindings: [
           {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+          ...(roundingZero
+            ? [
+                {
+                  name: 'roundingZero',
+                  view: roundingZero,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           {
             name: 'changePointCount',
             view: output.changePointCount,
@@ -376,15 +399,20 @@ function getDeclarationsWGSL(
 ): string {
   const arraySize = sliceCount + 1;
   const isPoisson = cost === 'poisson';
+  const isSlope = cost === 'slope';
+  const isMean = cost === 'mean';
   return /* wgsl */ `
 ${IS_FINITE_VALUE_WGSL}
 ${GET_NAN_WGSL}
 ${ADDITION_ROUNDING_ERROR_WGSL}
+${ROUNDED_DIFFERENCE_WGSL}
 ${isPoisson ? POISSON_OBSERVED_TERM_WGSL : ''}
 var<workgroup> position: array<u32, ${sliceCount}>;
 var<workgroup> series: array<f32, ${sliceCount}>;
 var<workgroup> bestCost: array<f32, ${arraySize}>;
 var<workgroup> previousEnd: array<u32, ${arraySize}>;
+${isSlope ? `var<workgroup> changeCounts: array<u32, ${arraySize}>;` : ''}
+${isMean ? `var<workgroup> wideCosts: array<u32, ${arraySize}>;` : ''}
 const CELL_COUNT: u32 = ${cellCount}u;
 const SLICE_COUNT: u32 = ${sliceCount}u;
 const MAXIMUM_CHANGE_POINTS: u32 = ${maximumChangePoints}u;
@@ -401,6 +429,50 @@ ${getChangePointSeriesReaderWGSL(layout)}
 fn addCompensated(accumulator: vec2<f32>, value: f32) -> vec2<f32> {
   let sum = accumulator.x + value;
   return vec2<f32>(sum, accumulator.y + getAdditionRoundingError(accumulator.x, value, sum));
+}
+${
+  isPoisson
+    ? ''
+    : `fn scaleObservation(value: f32, factor: f32, runtimeZero: u32) -> f32 {
+  if (factor == 1.0) {
+    return value;
+  }
+  // Keep Metal from subtracting the unscaled observations first.
+  return bitcast<f32>(bitcast<u32>(value * factor) ^ runtimeZero);
+}`
+}
+${
+  isMean
+    ? `// Only costs near or above the float32 limit are compared in wide units. Terms that
+// become subnormal after scaling cannot affect a wide total at float32 precision.
+fn lowerMeanCost(value: f32, shift: u32) -> f32 {
+  let bits = bitcast<u32>(value) & 0x7fffffffu;
+  if ((bits >> 23u) <= shift) {
+    return 0.0;
+  }
+  return bitcast<f32>(bits - (shift << 23u));
+}`
+    : ''
+}
+${
+  isSlope
+    ? `fn getSlopeOptimalCost(residual: f32, scale: f32, shift: u32, changePenalty: f32, runtimeZero: u32) -> f32 {
+  let scaledResidual = residual * scale;
+  if (shift == 0u) {
+    return scaledResidual;
+  }
+  // Wide, nonconstant inputs have a large scaled variance. Multiplying by it leaves
+  // zero or a normal residual, whose exponent we can restore without forming 2^(2*shift).
+  let bits = bitcast<u32>(scaledResidual) & 0x7fffffffu;
+  if (bits == 0u) {
+    return changePenalty;
+  }
+  if ((bits >> 23u) + 2u * shift >= 255u) {
+    return bitcast<f32>(0x7f800000u ^ runtimeZero);
+  }
+  return bitcast<f32>(bits + ((2u * shift) << 23u)) + changePenalty;
+}`
+    : ''
 }`;
 }
 
@@ -413,7 +485,20 @@ fn addCompensated(accumulator: vec2<f32>, value: f32) -> vec2<f32> {
 function getSegmentCostWGSL(cost: GPULocationChangePointCost): string {
   switch (cost) {
     case 'mean':
-      return `segmentCost = max(squares - total * total / segmentLength, 0.0);`;
+      return `segmentCost = max(squares - total * total / segmentLength, 0.0);
+      if (wideMeanMoments) {
+        wideSegment = true;
+      } else if (scaledMeanMoments) {
+        // Fix the residual before restoring data units so Metal cannot expand the scale
+        // into the individual terms, whose sum or product can overflow in data units.
+        let residualBits = bitcast<u32>(segmentCost);
+        wideSegment = (residualBits >> 23u) + ${2 * LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT}u >= 255u;
+        if (wideSegment) {
+          segmentCost = lowerMeanCost(segmentCost, ${2 * (MEAN_WIDE_MOMENT_SHIFT - LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT)}u);
+        } else {
+          segmentCost = bitcast<f32>(residualBits ^ runtimeZero) * 0x1p+${2 * LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT}f;
+        }
+      }`;
     case 'variance':
       return `let variance = max(squares / segmentLength, VARIANCE_FLOOR);
       segmentCost = segmentLength * log(variance);`;
@@ -443,7 +528,8 @@ function getDynamicProgramBodyWGSL(
 ): string {
   const isPoisson = cost === 'poisson';
   const isSlope = cost === 'slope';
-  const usesSquareScale = cost === 'mean' || isSlope;
+  const isMean = cost === 'mean';
+  const usesStandardization = !isPoisson && !isMean;
   // 'variance' measures about the mean of the whole series (0 after standardizing) and 'poisson'
   // needs the raw total; the other costs are unchanged by subtracting the segment's first value.
   const usesSegmentOrigin = cost !== 'variance' && !isPoisson;
@@ -465,42 +551,100 @@ function getDynamicProgramBodyWGSL(
     return;
   }
   let cellIndex = index / 2u;
+  ${isPoisson ? '' : 'let runtimeZero = roundingZero[roundingZeroOffset];'}
   var seriesLength = 0u;
+  ${isPoisson ? 'var hasNegativeObservation = false;' : ''}
+  ${usesStandardization ? 'var maximumMagnitude = 0u;' : ''}
   for (var slice = 0u; slice < SLICE_COUNT; slice++) {
     let value = readSeriesValue(cellIndex, slice);
     if (isFiniteValue(value)) {
+      ${isPoisson ? 'hasNegativeObservation = hasNegativeObservation || value < 0.0;' : ''}
+      ${
+        usesStandardization
+          ? `maximumMagnitude = max(maximumMagnitude, bitcast<u32>(value) & 0x7fffffffu);
+      series[seriesLength] = value;`
+          : ''
+      }
       position[seriesLength] = slice;
       seriesLength++;
     }
   }
+  let minimumLength = max(u32(parameters[parametersOffset + 1u]), 1u);
+  if (seriesLength < minimumLength${isPoisson ? ' || hasNegativeObservation' : ''}) {
+    changePointCount[changePointCountOffset + cellIndex] = 0u;
+    for (var slot = 0u; slot < MAXIMUM_CHANGE_POINTS; slot++) {
+      changePoints[changePointsOffset + cellIndex * MAXIMUM_CHANGE_POINTS + slot] = NO_CHANGE_POINT;
+    }
+    ${output.requiredChangePointCounts ? 'requiredChangePointCounts[requiredChangePointCountsOffset + cellIndex] = 0u;' : ''}
+    ${invalidOptimalWGSL}
+    return;
+  }
+  ${
+    usesStandardization
+      ? `// Choose the power of two from finite input bits, before taking differences or squares.
+  let magnitudeExponent = maximumMagnitude >> 23u;
+  let standardizationShift = select(0u,
+    max(magnitudeExponent, ${127 + LOCATION_CHANGE_POINT_STANDARDIZATION_EXPONENT}u) - ${127 + LOCATION_CHANGE_POINT_STANDARDIZATION_EXPONENT}u,
+    magnitudeExponent >= ${127 + LOCATION_CHANGE_POINT_STANDARDIZATION_THRESHOLD_EXPONENT}u);
+  let standardizationFactor = bitcast<f32>((127u - standardizationShift) << 23u);`
+      : ''
+  }
+  // Retain the center in coordinates relative to a finite observation. An absolute mean can
+  // round onto one group even though every input and every offset is exactly representable.
+  let seriesOrigin = ${usesStandardization ? 'scaleObservation(series[0], standardizationFactor, runtimeZero)' : '0.0'};
   var sumAccumulator = vec2<f32>(0.0, 0.0);
   for (var row = 0u; row < seriesLength; row++) {
-    sumAccumulator = addCompensated(sumAccumulator, readSeriesValue(cellIndex, position[row]));
+    ${
+      isSlope
+        ? `let scaledValue = scaleObservation(series[row], standardizationFactor, runtimeZero);
+    let offset = getRoundedDifference(scaledValue, seriesOrigin, runtimeZero);
+    series[row] = select(offset, scaledValue, standardizationShift > 0u);
+    sumAccumulator = addCompensated(sumAccumulator, offset);`
+        : `series[row] = ${usesStandardization ? 'getRoundedDifference(scaleObservation(series[row], standardizationFactor, runtimeZero), seriesOrigin, runtimeZero)' : 'readSeriesValue(cellIndex, position[row])'};
+    sumAccumulator = addCompensated(sumAccumulator, series[row]);`
+    }
   }
   let count = f32(seriesLength);
   let overallSum = sumAccumulator.x + sumAccumulator.y;
   let center = ${isPoisson ? '0.0' : 'select(0.0, overallSum / count, seriesLength > 0u)'};
   var squareAccumulator = vec2<f32>(0.0, 0.0);
   for (var row = 0u; row < seriesLength; row++) {
-    let deviation = readSeriesValue(cellIndex, position[row]) - center;
+    let uncentered = ${isSlope ? 'select(series[row], getRoundedDifference(series[row], seriesOrigin, runtimeZero), standardizationShift > 0u)' : 'series[row]'};
+    let deviation = ${isPoisson ? 'uncentered' : 'getRoundedDifference(uncentered, center, runtimeZero)'};
     squareAccumulator = addCompensated(squareAccumulator, deviation * deviation);
   }
   let scale = select(0.0, (squareAccumulator.x + squareAccumulator.y) / count, seriesLength > 0u);
   let overallRate = select(0.0, overallSum / count, seriesLength > 0u);
   var found = 0u;
-  let hasStructure = seriesLength >= 2u && ${isPoisson ? 'overallRate > 0.0' : 'scale > 0.0'};
+  ${isMean ? 'var hasVariation = false;\n  for (var row = 1u; row < seriesLength; row++) { hasVariation = hasVariation || series[row] != series[0]; }' : ''}
+  let hasStructure = seriesLength >= 2u && ${isPoisson ? 'overallRate > 0.0' : isMean ? 'hasVariation' : 'scale > 0.0'};
   if (hasStructure) {
     let deviationScale = ${isPoisson ? '1.0' : 'sqrt(scale)'};
     for (var row = 0u; row < seriesLength; row++) {
-      let observed = readSeriesValue(cellIndex, position[row]);
-      series[row] = ${isPoisson ? 'observed' : '(observed - center) / deviationScale'};
+      ${isSlope ? 'if (standardizationShift > 0u) { break; }' : ''}
+      let observed = series[row];
+      series[row] = ${isPoisson || isMean ? 'observed' : 'getRoundedDifference(observed, center, runtimeZero) / deviationScale'};
     }
-    let penalty = parameters[parametersOffset]${usesSquareScale ? ' / scale' : ''};
-    let minimumLength = max(u32(parameters[parametersOffset + 1u]), 1u);
-    bestCost[0] = -penalty;
+    let dataPenalty = parameters[parametersOffset];
+    ${
+      isSlope
+        ? `let penaltyInScaledUnits = dataPenalty / scale;
+    let penaltyOnceScaled = bitcast<f32>(bitcast<u32>(penaltyInScaledUnits * standardizationFactor) ^ runtimeZero);
+    let penalty = select(penaltyInScaledUnits, penaltyOnceScaled * standardizationFactor, standardizationShift > 0u);
+    // Use the same rounded penalized comparison on both routes unless the wide penalty
+    // is too small to stay normal on Metal. This preserves ties between candidates.
+    let separateSlopePenalty = standardizationShift > 0u && dataPenalty > 0.0 &&
+      bitcast<u32>(penalty) < 0x00800000u;
+    changeCounts[0] = 0u;`
+        : 'let penalty = dataPenalty;'
+    }
+    bestCost[0] = 0.0;
+    ${isMean ? 'wideCosts[0] = 0u;' : ''}
     for (var end = 1u; end <= seriesLength; end++) {
       bestCost[end] = 0x1.fffffep+127f;
       previousEnd[end] = 0xffffffffu;
+      ${isSlope ? 'changeCounts[end] = 0u;' : ''}
+      ${isMean ? 'wideCosts[end] = 0u;' : ''}
     }
     // Forward form of F(end) = min over start of F(start) + C(start, end) + penalty: starts are
     // visited in ascending order, so F(start) is final when its segments are relaxed, and the
@@ -515,6 +659,7 @@ function getDynamicProgramBodyWGSL(
       let origin = ${usesSegmentOrigin ? 'series[start]' : '0.0'};
       var total = 0.0;
       var squares = 0.0;
+      ${isMean ? 'var scaledMeanMoments = false;\n      var wideMeanMoments = false;' : ''}
       ${
         isSlope
           ? `let timeOrigin = position[start];
@@ -524,7 +669,49 @@ function getDynamicProgramBodyWGSL(
           : ''
       }
       for (var end = start + 1u; end <= seriesLength; end++) {
-        let offsetValue = series[end - 1u] - origin;
+        ${
+          isMean
+            ? `let observed = series[end - 1u];
+        let observedBits = bitcast<u32>(observed);
+        let originBits = bitcast<u32>(origin);
+        let oppositeSigns = ((observedBits ^ originBits) & 0x80000000u) != 0u;
+        let wideDifference: bool = oppositeSigns &&
+          (max(observedBits & 0x7fffffffu, originBits & 0x7fffffffu) >= bitcast<u32>(0x1p+126f));
+        var offsetValue = 0.0;
+        if (!wideMeanMoments && !wideDifference) {
+          offsetValue = getRoundedDifference(observed, origin, runtimeZero);
+        }
+        let magnitudeBits = bitcast<u32>(offsetValue) & 0x7fffffffu;
+        // A pair separated by at least 2^65 has SSE above float32 range in every
+        // extension. Keep its moments and cost in the same wide units as the DP.
+        if (wideMeanMoments || wideDifference || magnitudeBits >= bitcast<u32>(0x1p+65f)) {
+          if (!wideMeanMoments) {
+            let shift = select(${MEAN_WIDE_MOMENT_SHIFT}u, ${MEAN_WIDE_MOMENT_SHIFT - LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT}u, scaledMeanMoments);
+            total *= bitcast<f32>((127u - shift) << 23u);
+            squares = lowerMeanCost(squares, 2u * shift);
+            wideMeanMoments = true;
+          }
+          offsetValue = getRoundedDifference(
+            scaleObservation(observed, 0x1p-${MEAN_WIDE_MOMENT_SHIFT}f, runtimeZero),
+            scaleObservation(origin, 0x1p-${MEAN_WIDE_MOMENT_SHIFT}f, runtimeZero), runtimeZero);
+        } else {
+          if (!scaledMeanMoments && magnitudeBits >= bitcast<u32>(0x1p+${LOCATION_CHANGE_POINT_MEAN_SCALE_THRESHOLD_EXPONENT}f)) {
+            total *= 0x1p-${LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT}f;
+            squares *= 0x1p-${2 * LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT}f;
+            scaledMeanMoments = true;
+          }
+          if (scaledMeanMoments) {
+            offsetValue = scaleObservation(offsetValue, 0x1p-${LOCATION_CHANGE_POINT_MEAN_SCALE_EXPONENT}f, runtimeZero);
+          }
+        }`
+            : isSlope
+              ? `var offsetValue = getRoundedDifference(series[end - 1u], origin, runtimeZero);
+        if (standardizationShift > 0u) {
+          // Subtract in the original segment's coordinates before standardizing.
+          offsetValue /= deviationScale;
+        }`
+              : `let offsetValue = ${isPoisson ? 'series[end - 1u] - origin' : 'getRoundedDifference(series[end - 1u], origin, runtimeZero)'};`
+        }
         total += offsetValue;
         squares += offsetValue * offsetValue;
         ${
@@ -540,13 +727,56 @@ function getDynamicProgramBodyWGSL(
         }
         let segmentLength = f32(end - start);
         var segmentCost = 0.0;
+        ${isMean ? 'var wideSegment = false;' : ''}
         {
           ${getSegmentCostWGSL(cost)}
         }
-        let candidate = bestCost[start] + segmentCost + penalty;
-        if (candidate < bestCost[end]) {
+        // There is no penalty on the first segment. Subtracting it at F(0) and adding it
+        // back can erase a small residual when penalty is large, even without reassociation.
+        ${
+          isSlope
+            ? `if (separateSlopePenalty) {
+          // Keep the residual and change count separately so a small penalty can still
+          // break residual ties and be published in data units even if it flushes here.
+          let residual = bitcast<f32>(bitcast<u32>(bestCost[start] + segmentCost) ^ runtimeZero);
+          let changeCount = changeCounts[start] + select(0u, 1u, start > 0u);
+          let changeDifference = i32(changeCounts[end]) - i32(changeCount);
+          let penaltyAllowance = (f32(changeDifference) * penaltyOnceScaled) * standardizationFactor;
+          let residualDifference = getRoundedDifference(residual, bestCost[end], runtimeZero);
+          let cheaperTie = residualDifference == 0.0 && penaltyAllowance == 0.0 &&
+            dataPenalty > 0.0 && changeDifference > 0;
+          if (previousEnd[end] == 0xffffffffu || residualDifference < penaltyAllowance || cheaperTie) {
+            bestCost[end] = residual;
+            previousEnd[end] = start;
+            changeCounts[end] = changeCount;
+          }
+          continue;
+        }`
+            : ''
+        }
+        let changePenalty = select(0.0, penalty, start > 0u);
+        let candidate = bestCost[start] + segmentCost + changePenalty;
+        ${
+          isMean
+            ? `let widePrefix = wideCosts[start] != 0u;
+        let useWideCost = widePrefix || wideSegment || !isFiniteValue(candidate);
+        var comparisonCost = candidate;
+        if (useWideCost) {
+          let prefix = select(lowerMeanCost(bestCost[start], ${2 * MEAN_WIDE_MOMENT_SHIFT}u), bestCost[start], widePrefix);
+          let segment = select(lowerMeanCost(segmentCost, ${2 * MEAN_WIDE_MOMENT_SHIFT}u), segmentCost, wideSegment);
+          comparisonCost = prefix + segment + lowerMeanCost(changePenalty, ${2 * MEAN_WIDE_MOMENT_SHIFT}u);
+        }
+        let costRange = select(0u, 1u, useWideCost);
+        if (previousEnd[end] == 0xffffffffu || costRange < wideCosts[end] ||
+            (costRange == wideCosts[end] && comparisonCost < bestCost[end])) {
+          bestCost[end] = comparisonCost;
+          previousEnd[end] = start;
+          wideCosts[end] = costRange;
+        }`
+            : `if (candidate < bestCost[end] || (previousEnd[end] == 0xffffffffu && isFiniteValue(candidate))) {
           bestCost[end] = candidate;
           previousEnd[end] = start;
+        }`
         }
       }
     }
@@ -614,7 +844,7 @@ function getFlatCostExpression(cost: GPULocationChangePointCost): string {
     case 'slope':
       return '0.0';
     case 'poisson':
-      return '0.0';
+      return 'select(0.0, -2.0 * overallSum * log(overallRate), overallRate > 0.0)';
     default:
       // A constant series has zero variance, so the relative floor of the segment costs has nothing
       // to be relative to: the single segment takes the changepoint package's substitute variance
@@ -625,12 +855,13 @@ function getFlatCostExpression(cost: GPULocationChangePointCost): string {
 
 function getOptimalCostExpression(cost: GPULocationChangePointCost): string {
   switch (cost) {
-    case 'mean':
     case 'slope':
-      return 'bestCost[seriesLength] * scale';
+      return 'getSlopeOptimalCost(bestCost[seriesLength], scale, standardizationShift, select(0.0, f32(found) * dataPenalty, separateSlopePenalty), runtimeZero)';
+    case 'mean':
+      return 'select(bestCost[seriesLength], bitcast<f32>(0x7f800000u ^ runtimeZero), wideCosts[seriesLength] != 0u)';
     case 'poisson':
       return 'bestCost[seriesLength] - 2.0 * overallSum * log(overallRate)';
     default:
-      return 'bestCost[seriesLength] + count * (log(TAU) + log(scale) + 1.0)';
+      return 'bestCost[seriesLength] + count * (log(TAU) + log(scale) + 1.0 + 2.0 * log(2.0) * f32(standardizationShift))';
   }
 }

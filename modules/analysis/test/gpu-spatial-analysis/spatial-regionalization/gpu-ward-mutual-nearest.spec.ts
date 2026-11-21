@@ -9,7 +9,7 @@ import {expect, it} from 'vitest';
 import {
   getGPUWardRegionsParameterValues,
   GPUWardRegions,
-  GPU_WARD_STATUS
+  GPU_WARD_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
 import {GPU_WARD_ROUND_COUNT_STATUS_WORD} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -161,12 +161,12 @@ it('GPUWardRegions mutual-nearest equals scipy ward + fcluster on the separated 
       expect(Math.abs(result.objective - cut.objective), name).toBeLessThan(
         WARD_FIXTURE.tolerances.objectiveRelative * cut.objective
       );
-      expect(result.status[GPU_WARD_STATUS.iterationCount], name).toBe(
+      expect(result.status[GPU_WARD_STATUS_LAYOUT.iterationCount], name).toBe(
         scene.rowCount - cut.targetRegionCount
       );
-      expect(result.status[GPU_WARD_STATUS.converged], name).toBe(1);
-      expect(result.status[GPU_WARD_STATUS.iterationLimitReached], name).toBe(0);
-      expect(result.status[GPU_WARD_STATUS.invalidCount], name).toBe(0);
+      expect(result.status[GPU_WARD_STATUS_LAYOUT.converged], name).toBe(1);
+      expect(result.status[GPU_WARD_STATUS_LAYOUT.iterationLimitReached], name).toBe(0);
+      expect(result.status[GPU_WARD_STATUS_LAYOUT.invalidCount], name).toBe(0);
     }
   }
 });
@@ -211,7 +211,7 @@ it('GPUWardRegions mutual-nearest equals the CPU mirror on the random and lattic
       mergeSchedule: 'mutual-nearest'
     });
     const result = await runScene(device, scene, adjacency, targetRegionCount, 'mutual-nearest');
-    expect(result.status[GPU_WARD_STATUS.iterationCount]).toBe(expected.mergeCount);
+    expect(result.status[GPU_WARD_STATUS_LAYOUT.iterationCount]).toBe(expected.mergeCount);
     if (scene === WARD_FIXTURE.random) {
       // 40 rows with a 0.3% sequential merge margin: float32 costs keep every choice.
       expect(result.labels).toEqual(expected.labels);
@@ -249,8 +249,8 @@ it('GPUWardRegions mutual-nearest needs about log2(n) rounds on a 64 x 64 lattic
   const rounds = result.status[GPU_WARD_ROUND_COUNT_STATUS_WORD];
   // eslint-disable-next-line no-console
   console.log(`ward mutual-nearest 64x64: rounds=${rounds} ms=${result.milliseconds.toFixed(1)}`);
-  expect(result.status[GPU_WARD_STATUS.converged]).toBe(1);
-  expect(result.status[GPU_WARD_STATUS.iterationCount]).toBe(rowCount - 1);
+  expect(result.status[GPU_WARD_STATUS_LAYOUT.converged]).toBe(1);
+  expect(result.status[GPU_WARD_STATUS_LAYOUT.iterationCount]).toBe(rowCount - 1);
   // Each round merges every reciprocal pair, at least a third of the regions on a lattice in
   // practice; 12 * log2(n) = 144 is a loose bound compared with 4095 sequential merges.
   expect(rounds).toBeGreaterThan(0);
@@ -277,8 +277,8 @@ it('GPUWardRegions mutual-nearest stops exactly at the target with a contiguous 
       maximumIterations: 128
     });
     expect(new Set(result.labels).size, `k=${targetRegionCount}`).toBe(targetRegionCount);
-    expect(result.status[GPU_WARD_STATUS.converged]).toBe(1);
-    expect(result.status[GPU_WARD_STATUS.iterationCount]).toBe(rowCount - targetRegionCount);
+    expect(result.status[GPU_WARD_STATUS_LAYOUT.converged]).toBe(1);
+    expect(result.status[GPU_WARD_STATUS_LAYOUT.iterationCount]).toBe(rowCount - targetRegionCount);
     expect(findDisconnectedLabels(offsets, neighbors, result.labels)).toEqual([]);
     const exact = evaluatePartition(values, 2, result.labels).withinSsd;
     expect(Math.abs(result.objective - exact)).toBeLessThan(1e-3 * Math.max(exact, 1));
@@ -328,7 +328,7 @@ it('GPUWardRegions A/B: sequential vs mutual-nearest on a 1024-row lattice to 16
     const exact = evaluatePartition(values, 2, run.labels).withinSsd;
     // eslint-disable-next-line no-console
     console.log(
-      `ward A/B ${mergeSchedule}: ms=${run.milliseconds.toFixed(1)} merges=${run.status[GPU_WARD_STATUS.iterationCount]} rounds=${run.status[GPU_WARD_ROUND_COUNT_STATUS_WORD]} objective=${run.objective.toFixed(3)} exact=${exact.toFixed(3)}`
+      `ward A/B ${mergeSchedule}: ms=${run.milliseconds.toFixed(1)} merges=${run.status[GPU_WARD_STATUS_LAYOUT.iterationCount]} rounds=${run.status[GPU_WARD_ROUND_COUNT_STATUS_WORD]} objective=${run.objective.toFixed(3)} exact=${exact.toFixed(3)}`
     );
     expect(new Set(run.labels).size).toBe(targetRegionCount);
     expect(findDisconnectedLabels(offsets, neighbors, run.labels)).toEqual([]);

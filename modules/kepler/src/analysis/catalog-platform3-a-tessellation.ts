@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  CATALOG_POLYGON_TRIANGLE_COLUMNS,
+  appendCatalogTriangleRows,
+  projectCatalogPolygonParts
+} from './catalog-triangle-output';
 import type {CatalogRunOutput} from './catalog-binding-types';
 import {
   addCatalogDiagnostic,
@@ -22,7 +27,6 @@ import {
   getSourceColumns,
   intersectSegments,
   isPointInPolygonRings,
-  projectPolygonParts,
   readPropertyText,
   type PlanarPoint
 } from './catalog-platform3-a-shared';
@@ -766,20 +770,12 @@ export function runPolygonTriangulation(
   const table = makeCatalogTable(
     'polygon-triangles',
     'Polygon triangles',
-    {
-      triangle_id: 'string',
-      source_index: 'int32',
-      source_id: 'string',
-      part_index: 'int32',
-      triangle_index: 'int32',
-      area: 'float64',
-      geometry: 'string'
-    },
+    CATALOG_POLYGON_TRIANGLE_COLUMNS,
     'geometry'
   );
   let incompleteCount = 0;
   polygons.features.forEach((feature, sourceIndex) => {
-    projectPolygonParts(feature, frame).forEach((rings, partIndex) => {
+    projectCatalogPolygonParts(feature, frame).forEach(({rings, partIndex}) => {
       const vertexCount = rings.reduce((sum, ring) => sum + ring.length, 0);
       if (vertexCount > MAXIMUM_TRIANGULATION_VERTICES) {
         addCatalogDiagnostic(
@@ -792,18 +788,9 @@ export function runPolygonTriangulation(
       }
       const {triangles, complete} = triangulatePolygonRings(rings);
       if (!complete) incompleteCount++;
-      triangles.forEach((triangle, triangleIndex) => {
-        appendCatalogRow(table, {
-          triangle_id: `${sourceIndex}:${partIndex}:${triangleIndex}`,
-          ...getSourceColumns(feature, sourceIndex),
-          part_index: partIndex,
-          triangle_index: triangleIndex,
-          area: Math.abs(getSignedArea(triangle)),
-          geometry: makeCatalogGeometryText('Polygon', [
-            closeRing(triangle.map(point => frame.inverse(point[0], point[1])))
-          ])
-        });
-      });
+      appendCatalogTriangleRows(table, triangles, feature, sourceIndex, partIndex, (x, y) =>
+        frame.inverse(x, y)
+      );
     });
   });
   if (incompleteCount)

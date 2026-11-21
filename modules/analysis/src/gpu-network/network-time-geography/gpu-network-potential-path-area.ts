@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
 
 import {
@@ -53,6 +54,10 @@ export type GPUNetworkPotentialPathAreaProps = {
    * weights).
    */
   reverseCosts: GraphDataView<'float32'>;
+  /** Optional one-word certificate for the forward tree: nonzero means complete. */
+  forwardComplete?: GraphDataView<'uint32'>;
+  /** Optional one-word certificate for the reverse tree: nonzero means complete. */
+  reverseComplete?: GraphDataView<'uint32'>;
   /** One row: the time budget `t_b - t_a`, in the cost unit of the weights. */
   budget: GraphDataView<'float32'>;
   output: {
@@ -68,6 +73,8 @@ export type GPUNetworkPotentialPathAreaProps = {
     nodeInPrism: GraphDataView<'uint32'>;
     /** Optional {@link GPU_NETWORK_POTENTIAL_PATH_AREA_SUMMARY_LENGTH} rows: node and edge counts. */
     summary?: GraphDataView<'uint32'>;
+    /** Optional one-word evidence. Incomplete trees suppress all dependent results. */
+    status?: {complete: GraphDataView<'uint32'>; invalidInput: GraphDataView<'uint32'>};
   };
 };
 
@@ -83,7 +90,10 @@ export type GPUNetworkPotentialPathAreaProps = {
  *
  * One thread per node visits that node's out-edges (a bounded neighbourhood), then one thread per edge counts the members; the trees come from
  * existing reachability runs, so no search is repeated here. Costs add in float32: an edge within
- * a few float32 roundings of the budget may fall on either side.
+ * Optional forwardComplete/reverseComplete evidence suppresses membership, slack and counts
+ * when either supplied tree is incomplete. Omitted evidence preserves standalone tree inputs.
+ * Malformed CSR suppresses results and reports status.invalidInput.
+ * An edge within a few float32 roundings of the budget may fall on either side.
  */
 export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
   readonly id: string;
@@ -93,10 +103,51 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
   /** Number of edge slots. */
   readonly edgeCount: number;
 
-  constructor(props: GPUNetworkPotentialPathAreaProps) {
+  constructor(originalProps: GPUNetworkPotentialPathAreaProps) {
+    const settings = snapshotConstructionFields(originalProps, [
+      'id',
+      'topology',
+      'forwardCosts',
+      'reverseCosts',
+      'forwardComplete',
+      'reverseComplete',
+      'budget',
+      'output'
+    ]);
+    const outputSettings = snapshotConstructionFields(settings.output, [
+      'edgeSlack',
+      'edgeInPrism',
+      'nodeInPrism',
+      'summary',
+      'status'
+    ]);
+    const props = {
+      ...settings,
+      topology: snapshotConstructionFields(settings.topology, [
+        'offsets',
+        'neighbors',
+        'weights',
+        'nodePositions'
+      ]),
+      output: {
+        ...outputSettings,
+        ...(outputSettings.status
+          ? {
+              status: snapshotConstructionFields(outputSettings.status, [
+                'complete',
+                'invalidInput'
+              ])
+            }
+          : {})
+      }
+    };
     this.id = props.id ?? 'network-potential-path-area';
     this.props = props;
-    validateNetworkWritableViews(this.id, props.output);
+    validateNetworkWritableViews(this.id, {
+      ...props.output,
+      status: undefined,
+      ...props.output.status
+    });
     const {id} = this;
     const topology = validateGPUNetworkTopology(id, props.topology, {weights: true});
     this.nodeCount = topology.nodeCount;
@@ -112,6 +163,10 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['output.edgeInPrism', props.output.edgeInPrism],
       ['output.nodeInPrism', props.output.nodeInPrism],
+      ['forwardComplete', props.forwardComplete],
+      ['reverseComplete', props.reverseComplete],
+      ['output.complete', props.output.status?.complete],
+      ['output.invalidInput', props.output.status?.invalidInput],
       ['output.summary', props.output.summary]
     ] as const) {
       if (view) validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
@@ -130,14 +185,33 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
         GPU_NETWORK_POTENTIAL_PATH_AREA_SUMMARY_LENGTH
       );
     }
-    validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
-      props.topology.offsets,
-      props.topology.neighbors,
-      props.topology.weights,
-      props.forwardCosts,
-      props.reverseCosts,
-      props.budget
-    ]);
+    for (const [name, view] of Object.entries({
+      forwardComplete: props.forwardComplete,
+      reverseComplete: props.reverseComplete,
+      ...props.output.status
+    })) {
+      if (view) validateViewLength(id, name, view, 1);
+    }
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [
+        props.output.edgeInPrism,
+        props.output.edgeSlack,
+        props.output.nodeInPrism,
+        props.output.summary,
+        ...Object.values(props.output.status ?? {})
+      ],
+      [
+        props.topology.offsets,
+        props.topology.neighbors,
+        props.topology.weights,
+        props.forwardCosts,
+        props.reverseCosts,
+        props.forwardComplete,
+        props.reverseComplete,
+        props.budget
+      ]
+    );
   }
 
   getCommandNodes<Parameters>(
@@ -151,8 +225,14 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
       topology.weights,
       props.forwardCosts,
       props.reverseCosts,
+      props.forwardComplete,
+      props.reverseComplete,
       props.budget,
-      ...Object.values(output)
+      output.edgeInPrism,
+      output.edgeSlack,
+      output.nodeInPrism,
+      output.summary,
+      ...Object.values(output.status ?? {})
     ]);
     validateNetworkViewBindings(id, graph, [], {
       summary: GPU_NETWORK_POTENTIAL_PATH_AREA_SUMMARY_LENGTH * 4
@@ -165,7 +245,96 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
         'uint32',
         GPU_NETWORK_POTENTIAL_PATH_AREA_SUMMARY_LENGTH
       );
+    const certifiedForward = createTransientView(
+      graph,
+      `${id}-certified-forward`,
+      'float32',
+      nodeCount
+    );
+    const malformed = createTransientView(graph, `${id}-malformed`, 'uint32', 1);
+    const evidenceBindings = [
+      {name: 'malformed', view: malformed, type: 'u32' as const, access: 'read' as const},
+      ...(props.forwardComplete
+        ? [
+            {
+              name: 'forwardComplete',
+              view: props.forwardComplete,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]
+        : []),
+      ...(props.reverseComplete
+        ? [
+            {
+              name: 'reverseComplete',
+              view: props.reverseComplete,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]
+        : [])
+    ];
+    const complete = `malformed[malformedOffset] == 0u${props.forwardComplete ? ' && forwardComplete[forwardCompleteOffset] != 0u' : ''}${props.reverseComplete ? ' && reverseComplete[reverseCompleteOffset] != 0u' : ''}`;
     return [
+      createFillNode<Parameters>(graph, {
+        id: `${id}-clear-malformed`,
+        operation: OPERATION,
+        view: malformed,
+        type: 'u32',
+        value: '0u'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-validate-topology`,
+        operation: OPERATION,
+        variant: 'validate-topology',
+        invocationCount: nodeCount,
+        bindings: [
+          {name: 'offsets', view: topology.offsets, type: 'u32', access: 'read'},
+          getWGSLKernelBinding('malformed', malformed, 'atomic')
+        ],
+        body: `let start = offsets[offsetsOffset + index]; let end = offsets[offsetsOffset + index + 1u];
+if (start > end || end > ${this.edgeCount}u) { atomicOr(&malformed[malformedOffset], 1u); }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-certify-forward`,
+        operation: OPERATION,
+        variant: 'certify-forward',
+        invocationCount: nodeCount,
+        bindings: [
+          ...evidenceBindings,
+          {name: 'source', view: props.forwardCosts, type: 'f32', access: 'read'},
+          {name: 'destination', view: certifiedForward, type: 'f32', access: 'read_write'}
+        ],
+        body: `var missingBits = 0xff800000u;
+destination[destinationOffset + index] = select(bitcast<f32>(missingBits), source[sourceOffset + index], ${complete});`
+      }),
+      ...(output.status
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-publish-status`,
+              operation: OPERATION,
+              variant: 'publish-status',
+              invocationCount: nodeCount,
+              bindings: [
+                ...evidenceBindings,
+                {
+                  name: 'complete',
+                  view: output.status.complete,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                },
+                {
+                  name: 'invalidInput',
+                  view: output.status.invalidInput,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ],
+              body: `if (index == 0u) { complete[completeOffset] = select(0u, 1u, ${complete}); invalidInput[invalidInputOffset] = malformed[malformedOffset]; }`
+            })
+          ]
+        : []),
       createFillNode<Parameters>(graph, {
         id: `${id}-clear-summary`,
         operation: OPERATION,
@@ -179,7 +348,7 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
         variant: 'node-prism',
         invocationCount: nodeCount,
         bindings: [
-          {name: 'forward', view: props.forwardCosts, type: 'f32', access: 'read'},
+          {name: 'forward', view: certifiedForward, type: 'f32', access: 'read'},
           {name: 'reverse', view: props.reverseCosts, type: 'f32', access: 'read'},
           {name: 'budget', view: props.budget, type: 'f32', access: 'read'},
           {name: 'nodeInPrism', view: output.nodeInPrism, type: 'u32', access: 'read_write'},
@@ -194,6 +363,19 @@ nodeInPrism[nodeInPrismOffset + index] = select(0u, 1u, nodeFits);
 if (nodeFits) { atomicAdd(&summary[summaryOffset], 1u); }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-clear-edge-outputs`,
+        operation: OPERATION,
+        variant: 'clear-edge-outputs',
+        invocationCount: this.edgeCount,
+        bindings: [
+          {name: 'edgeInPrism', view: output.edgeInPrism, type: 'u32', access: 'read_write'},
+          {name: 'edgeSlack', view: output.edgeSlack, type: 'f32', access: 'read_write'}
+        ],
+        body: `var infinityBits = 0xff800000u;
+edgeSlack[edgeSlackOffset + index] = bitcast<f32>(infinityBits);
+edgeInPrism[edgeInPrismOffset + index] = 0u;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-edges`,
         operation: OPERATION,
         variant: 'edge-prism',
@@ -202,7 +384,7 @@ if (nodeFits) { atomicAdd(&summary[summaryOffset], 1u); }`
           {name: 'offsets', view: topology.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: topology.neighbors, type: 'u32', access: 'read'},
           {name: 'weights', view: topology.weights, type: 'f32', access: 'read'},
-          {name: 'forward', view: props.forwardCosts, type: 'f32', access: 'read'},
+          {name: 'forward', view: certifiedForward, type: 'f32', access: 'read'},
           {name: 'reverse', view: props.reverseCosts, type: 'f32', access: 'read'},
           {name: 'budget', view: props.budget, type: 'f32', access: 'read'},
           {name: 'edgeInPrism', view: output.edgeInPrism, type: 'u32', access: 'read_write'},
@@ -213,6 +395,7 @@ if (nodeFits) { atomicAdd(&summary[summaryOffset], 1u); }`
         body: `var infinityBits = 0xff800000u; let negativeInfinity = bitcast<f32>(infinityBits);
 let limit = budget[budgetOffset];
 let fromOrigin = forward[forwardOffset + index];
+if (!isFiniteValue(fromOrigin)) { return; }
 for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
   let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
   var slack = negativeInfinity;

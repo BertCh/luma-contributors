@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphDataView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GraphDataView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
+  isGraphDataView,
   validateCapacity,
   validateGPUStorageBindingByteLength,
   validateRequirement
@@ -114,7 +115,7 @@ export function getCellPackedFields(
   const fields: Record<string, GraphDataView | undefined> = {};
   for (const [name, value] of Object.entries(record)) {
     const path = prefix ? `${prefix}.${name}` : name;
-    if (value instanceof GraphDataView) fields[path] = value;
+    if (isGraphDataView(value)) fields[path] = value;
     else if (value && typeof value === 'object')
       Object.assign(fields, getCellPackedFields(value, path));
   }

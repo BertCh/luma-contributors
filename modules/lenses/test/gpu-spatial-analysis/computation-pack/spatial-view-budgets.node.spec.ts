@@ -24,7 +24,10 @@ function makeDenseRecord() {
     adapter: {backend: 'webgpu', description: 'Fixture adapter'},
     domains: ['gpu-spatial-analysis'],
     createdAt: '2026-10-15T00:00:00Z',
-    graphs: [],
+    // Unqualified captures must resolve to exactly one graph when loading a recorded twin.
+    graphs: [
+      {id: 'spatial-budget', form: 'compiled', domain: 'gpu-spatial-analysis', nodes: [], edges: []}
+    ],
     axes: {keySpaces: [{id: 'row', label: 'row', size: count}], axes: []},
     choices: Object.entries({
       weightsStandardisation: 'row',

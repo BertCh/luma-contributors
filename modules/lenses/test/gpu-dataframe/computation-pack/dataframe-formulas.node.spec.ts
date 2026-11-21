@@ -30,7 +30,7 @@ const EXPECTED_ELEMENTS = [
   'GPUTemporalReduction',
   'GPUCalendarBuckets',
   'GPUGroupStatistics',
-  'GPUKeyJoin',
+  'GPUKeyLookup',
   'GPUVariogram',
   'GPUCrossVariogram',
   'GPUSpaceTimeVariogram',
@@ -146,7 +146,9 @@ describe('dataframe curated analysis formulas', () => {
           expect(formula.reason.trim()).not.toBe('');
           return;
         }
-        expect(formula.id).toBe(`gpu-dataframe:${name}`);
+        // The lookup's formula ID is already referenced by committed lens records.
+        const formulaName = name === 'GPUKeyLookup' ? 'GPUKeyJoin' : name;
+        expect(formula.id).toBe(`gpu-dataframe:${formulaName}`);
         expect(formula.derivation).toBe('curated');
         expect(formula.tex.trim()).not.toBe('');
         expect(formula.ascii.trim()).not.toBe('');

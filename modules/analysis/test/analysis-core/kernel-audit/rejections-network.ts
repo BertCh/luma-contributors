@@ -59,10 +59,18 @@ export const NETWORK_REJECTIONS: readonly KernelAuditRejection[] = [
   },
   {
     exportName: 'GPUNetworkKFunction',
-    name: 'events at the binding limit, row blocks past the invocation limit',
+    name: 'events at the pair-count limit, row blocks past the invocation limit',
     kind: 'dispatch',
     limit: 4294967295,
     rejects: /^Error: network-k-function rowsPerBlock x events must be at most 4294967295$/
+  },
+  {
+    // n (n - 1) / 2 unordered pairs must fit the uint32 histogram and pairCounts (NET-110).
+    exportName: 'GPUNetworkKFunction',
+    name: 'events above the pair-count limit',
+    kind: 'dispatch',
+    limit: 92682,
+    rejects: /^Error: network-k-function eventCount must be at most 92682$/
   },
   {
     exportName: 'GPUNetworkCoarsening',
@@ -96,7 +104,7 @@ export const NETWORK_REJECTIONS: readonly KernelAuditRejection[] = [
   },
   {
     exportName: 'GPUNetworkKFunction',
-    name: 'events at the binding limit, row blocks at the invocation limit, over the command node budget',
+    name: 'events at the pair-count limit, one-row blocks, over the command node budget',
     kind: 'dispatch',
     limit: 32768,
     rejects: /^Error: network-k-function estimated command node count must be at most 32768$/

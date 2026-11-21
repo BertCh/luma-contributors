@@ -100,6 +100,19 @@ it('GPUGeographicallyWeightedRegressionNonstationarityTest validates its inputs 
     'batch-0-advance',
     'finish'
   ]);
+  const mutableProps = createProps();
+  const inherited = new GPUGeographicallyWeightedRegressionNonstationarityTest(
+    Object.create(mutableProps)
+  );
+  expect(inherited.props.predictorCount).toBe(2);
+  const table = mutableProps.output.table;
+  const contributor = new GPUGeographicallyWeightedRegressionNonstationarityTest(mutableProps);
+  mutableProps.predictorCount = 1;
+  mutableProps.maximumPermutations = 1;
+  mutableProps.output.table = view('float32', 12);
+  expect(contributor.props.predictorCount).toBe(2);
+  expect(contributor.props.maximumPermutations).toBe(9);
+  expect(contributor.props.output.table).toBe(table);
   device.destroy();
 });
 

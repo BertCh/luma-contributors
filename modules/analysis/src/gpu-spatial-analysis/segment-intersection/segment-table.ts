@@ -89,6 +89,14 @@ fn ringOfVertex(vertex: u32) -> u32 {
 }`;
   } else {
     bindings.push({name: 'lineOffsets', view: geometry.lineOffsets, type: 'u32', access: 'read'});
+    if (geometry.featureOffsets) {
+      bindings.push({
+        name: 'featureOffsets',
+        view: geometry.featureOffsets,
+        type: 'u32',
+        access: 'read'
+      });
+    }
     declarations = `
 const RING_COUNT: u32 = ${geometry.lineOffsets.length - 1}u;
 const MINIMUM_RING_VERTICES: u32 = 2u;
@@ -106,7 +114,20 @@ fn lastAtMost(offsetsKind: u32, count: u32, value: u32) -> u32 {
 }
 fn ringStartOf(ring: u32) -> u32 { return lineOffsets[lineOffsetsOffset + ring]; }
 fn ringEndOf(ring: u32) -> u32 { return min(lineOffsets[lineOffsetsOffset + ring + 1u], VERTEX_COUNT); }
-fn featureOfRing(ring: u32) -> u32 { return ring; }
+${
+  geometry.featureOffsets
+    ? `fn featureOfRing(ring: u32) -> u32 {
+  var low = 0u;
+  var high = ${geometry.featureOffsets.length - 1}u;
+  if (high == 0u || ring < featureOffsets[featureOffsetsOffset] || ring >= featureOffsets[featureOffsetsOffset + high]) { return SEGMENT_NONE; }
+  while (high - low > 1u) {
+    let middle = (low + high) / 2u;
+    if (featureOffsets[featureOffsetsOffset + middle] <= ring) { low = middle; } else { high = middle; }
+  }
+  return low;
+}`
+    : 'fn featureOfRing(ring: u32) -> u32 { return ring; }'
+}
 fn ringOfVertex(vertex: u32) -> u32 {
   let ring = lastAtMost(0u, RING_COUNT, vertex);
   if (ring == SEGMENT_NONE || vertex >= ringEndOf(ring)) { return SEGMENT_NONE; }

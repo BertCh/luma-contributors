@@ -95,7 +95,7 @@ for (const kind of ['knox', 'mantel', 'jacquez'] as const) {
             : new GPUJacquezTest({
                 ...common,
                 neighbors: pairs,
-                k: 1,
+                neighborCount: 1,
                 output
               })
       );
@@ -489,7 +489,7 @@ describe('GPUJacquezTest', () => {
           getGPUSpaceTimeParameterValues({seed, permutationCount: permutations}),
           'uint32'
         ),
-        k,
+        neighborCount: k,
         maximumPermutations,
         ...(options.stopAfterExceedances === undefined
           ? {}

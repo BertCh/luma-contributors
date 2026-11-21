@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const hotSpots = addHotSpotAnalysisRecipe(graph, {\n  source: {\n    kind: 'points',\n    positions: observations,\n    family: 'quadbin',\n    resolution: 16,\n    studyArea: {\n      kind: 'polygons',\n      ...studyArea,\n      candidateCapacity,\n      coverCapacity: 2 * cellCapacity\n    },\n    cellCapacity\n  },\n  parameters,\n  settings: {significanceLevel: 0.05},\n  outputs: {zScores, pValues, bins, neighborCounts, status: {pointsOutsideStudyArea}},\n  scratch: {centers, values}\n});\n// zScores at centers: bins +-1, 2, 3 are 90, 95, 99% confidence hot or cold spots",
+    "code": "const hotSpots = addHotSpotAnalysisRecipe(graph, {\n  source: {\n    kind: 'points',\n    positions: observations,\n    family: 'quadbin',\n    resolution: 16,\n    studyArea: {\n      kind: 'polygons',\n      ...studyArea,\n      candidateCapacity,\n      coverCapacity: 2 * cellCapacity\n    },\n    cellCapacity\n  },\n  parameters,\n  settings: {significanceLevel: 0.05},\n  output: {zScores, pValues, bins, neighborCounts, status: {pointsOutsideStudyArea}},\n  scratch: {centers, values}\n});\n// zScores at centers: bins +-1, 2, 3 are 90, 95, 99% confidence hot or cold spots",
     "language": "ts",
     "lineCount": 20
   },
@@ -55,12 +55,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:42.652Z",
-    "runId": "run-17efabad",
+    "date": "2026-11-20T23:49:52.873Z",
+    "runId": "run-16acf3a8",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-17efabad",
+    "runId": "run-16acf3a8",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -16,10 +16,17 @@ import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-c
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {describeGPUSpatialWeights, type GPUSpatialWeights} from './spatial-weights';
+import {
+  snapshotWeightsFields,
+  snapshotWeightsPort,
+  snapshotWeightsDescription
+} from './weights-construction-snapshot';
+import {validateWeightsLogicalAliases} from './spatial-weights-aliases';
 import {
   getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
@@ -27,6 +34,10 @@ import {
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
 } from './gpu-chunked-spatial-weights';
+import {
+  resolveSpatialWeightsValidationOptions,
+  type SpatialWeightsValidationOptions
+} from './spatial-weights-validation-options';
 
 const OPERATION = 'GPUSpatialWeightsValidation';
 const CHUNKED_OPERATION = 'GPUChunkedSpatialWeightsValidation';
@@ -42,11 +53,11 @@ export const GPU_SPATIAL_WEIGHTS_VIOLATION = {
    * the last row).
    */
   offsets: 1,
-  /** A neighbor ID `>= rows`. */
+  /** A neighbor row `>= columnCount` (the target-row count by default). */
   neighborRange: 2,
   /** Neighbor IDs of the row are not strictly ascending (a duplicate or a descending pair). */
   order: 4,
-  /** The row lists itself as a neighbor. */
+  /** Diagonal policy violation: forbidden self slot, or missing/nonunit required diagonal. */
   self: 8,
   /** A weight is NaN, infinite or negative. */
   weight: 16
@@ -55,12 +66,12 @@ export const GPU_SPATIAL_WEIGHTS_VIOLATION = {
 /** Properties for {@link GPUSpatialWeightsValidation}. */
 export type GPUSpatialWeightsValidationProps<
   Weights extends GPUSpatialWeights | GPUChunkedSpatialWeights = GPUSpatialWeights
-> = {
+> = SpatialWeightsValidationOptions & {
   /** Prefix for generated node and transient IDs. Defaults to `'spatial-weights-validation'`. */
   id?: string;
   /**
-   * Square weights to check. Read only. Chunked weights run one rows dispatch per chunk (chunk `c`
-   * checks its own offsets and capacity, and neighbor IDs against the total row count), with the
+   * Weights to check. Read only. Chunked weights run one rows dispatch per chunk (chunk `c`
+   * checks its own offsets and capacity, and neighbor rows against columnCount), with the
    * per-row flags and the invalid count in global row order; the result does not depend on the
    * chunking.
    */
@@ -79,7 +90,7 @@ export type GPUSpatialWeightsValidationOutput = {
   status: {
     /**
      * One-row uint32 receiving the number of rows with at least one violation. Zero means the
-     * weights satisfy every {@link GPUSpatialWeights} invariant.
+     * weights satisfy the declared CSR invariants, including columnCount and diagonal policy.
      */
     invalidCount: GraphDataView<'uint32'>;
   };
@@ -93,12 +104,13 @@ export type GPUSpatialWeightsValidationOutput = {
  * `findWeight` binary-searches the neighbor IDs of a row, so unsorted or duplicate IDs give wrong
  * `S1`, `S2` and symmetry counts. Run this node once after upload (the CSR rarely changes) and
  * read `output.status.invalidCount` before using the weights. There is no GPU sort or dedupe: fix the CSR on
- * the CPU (sort each row by neighbor ID, merge duplicates by summing, drop self slots) and upload
+ * the CPU (sort each row by neighbor row, merge duplicates by summing, repair the declared diagonal) and upload
  * it again.
  *
  * Checked per row `i`: `offsets[0] = 0`, offsets non-decreasing and `offsets[rows] <=
- * neighbors.length`; every neighbor ID `< rows`; neighbor IDs strictly ascending within the row
- * (sorted, no duplicates); no self slot; every weight finite and `>= 0`. Slots past
+ * neighbors.length`; every neighbor row `< columnCount` (defaults to target-row count); neighbor rows strictly ascending within the row
+ * (sorted, no duplicates); diagonal policy (defaults to forbid; allow accepts self slots;
+ * require-unit requires one diagonal weight of exactly 1 per target row); every weight finite and `>= 0`. Slots past
  * `offsets[rows]` are not inspected.
  *
  * {@link GPUSpatialWeightsValidation.outputWeights} is `weights` with `invalidCount` attached to
@@ -114,8 +126,22 @@ export class GPUSpatialWeightsValidation<
   readonly props: GPUSpatialWeightsValidationProps<Weights>;
   /** The checked weights with `status.invalidCount` attached. */
   readonly outputWeights: Weights;
+  private readonly bindingProps: GPUSpatialWeightsValidationProps<
+    GPUSpatialWeights | GPUChunkedSpatialWeights
+  >;
 
   constructor(props: GPUSpatialWeightsValidationProps<Weights>) {
+    props = snapshotWeightsFields(props, ['id', 'weights', 'output', 'columnCount', 'diagonal']);
+    const capturedWeights = snapshotWeightsDescription(props.weights);
+    const capturedOutput = snapshotWeightsFields(props.output, ['flags', 'status']);
+    props = Object.freeze({
+      ...props,
+      weights: capturedWeights,
+      output: Object.freeze({
+        ...capturedOutput,
+        status: snapshotWeightsFields(capturedOutput.status, ['invalidCount'])
+      })
+    });
     const id =
       props.id ??
       (isGPUChunkedSpatialWeights(props.weights)
@@ -124,10 +150,18 @@ export class GPUSpatialWeightsValidation<
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
+    const options = resolveSpatialWeightsValidationOptions(id, rows, props);
+    this.bindingProps = Object.freeze({
+      ...props,
+      ...options,
+      weights: snapshotWeightsPort(capturedWeights)
+    });
     validateSinglePackedView(props.output.status.invalidCount, ['uint32'], `${id} invalidCount`);
-    if (props.output.status.invalidCount.length < 1) {
-      throw new Error(`${id} invalidCount must hold one uint32`);
-    }
+    validateRequirement(
+      id,
+      props.output.status.invalidCount.length === 1,
+      'output.status.invalidCount must hold exactly one uint32 row; use a one-word view'
+    );
     if (props.output.flags) {
       validateSinglePackedView(props.output.flags, ['uint32'], `${id} flags`);
       if (props.output.flags.length !== rows) {
@@ -141,18 +175,43 @@ export class GPUSpatialWeightsValidation<
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.status.invalidCount, props.output.flags],
-      getGPUSpatialWeightsOrChunksViews(props.weights)
+      getGPUSpatialWeightsChunkDispatches(props.weights).flatMap(chunk => [
+        chunk.weights.offsets,
+        chunk.weights.neighbors,
+        chunk.weights.weights
+      ])
+    );
+    const statuses = [
+      props.weights.status,
+      ...getGPUSpatialWeightsChunkDispatches(props.weights).map(chunk => chunk.weights.status)
+    ];
+    validateWeightsLogicalAliases(
+      id,
+      {flags: props.output.flags, invalidCount: props.output.status.invalidCount},
+      Object.fromEntries([
+        ...getGPUSpatialWeightsOrChunksViews(props.weights, true).map((view, index) => [
+          `input view ${index}`,
+          view
+        ]),
+        ...statuses.flatMap((status, index) =>
+          Object.entries(status ?? {}).map(([name, view]) => [
+            `input status ${index}.${name}`,
+            view
+          ])
+        )
+      ])
     );
     const information = props.weights.information ?? {
       rowCount: rows,
       transform: 'unknown' as const,
       symmetric: 'unknown' as const
     };
+    const describedWeights = props.weights;
     // The cast is the generic parameter: whole weights stay whole, chunked weights stay chunked.
     this.outputWeights = (
       isGPUChunkedSpatialWeights(props.weights)
         ? {
-            ...props.weights,
+            ...describedWeights,
             information,
             status: {...props.weights.status, invalidCount: props.output.status.invalidCount}
           }
@@ -167,22 +226,24 @@ export class GPUSpatialWeightsValidation<
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+    validateSpatialStatisticsBindings(graph, this.id, this.bindingProps, {
       'row scratch':
-        getGPUSpatialWeightsChunkDispatches(this.props.weights).reduce(
+        getGPUSpatialWeightsChunkDispatches(this.bindingProps.weights).reduce(
           (total, dispatch) => total + dispatch.rowCount,
           0
         ) * 4
     });
-    const {id, props} = this;
+    const {id} = this;
+    const props = this.bindingProps;
     const {weights} = props;
     validateGraphViewsBelongToGraph(id, graph, [
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...getGPUSpatialWeightsOrChunksViews(weights, true),
       props.output.status.invalidCount,
       props.output.flags
     ]);
     const dispatches = getGPUSpatialWeightsChunkDispatches(weights);
     const rows = dispatches.reduce((total, dispatch) => total + dispatch.rowCount, 0);
+    const {columnCount, diagonal} = resolveSpatialWeightsValidationOptions(id, rows, props);
     const violated = createTransientView(graph, `${id}-violated`, 'uint32', rows);
     const flags = props.output.flags ?? createTransientView(graph, `${id}-flags`, 'uint32', rows);
     const bits = GPU_SPATIAL_WEIGHTS_VIOLATION;
@@ -202,7 +263,7 @@ export class GPUSpatialWeightsValidation<
         ],
         invocationCount: dispatch.rowCount,
         declarations: `${IS_FINITE_FLOAT_WGSL}
-const ROWS: u32 = ${rows}u;
+const COLUMNS: u32 = ${columnCount}u;
 `,
         // `index` is the row inside the dispatch's chunk; `row` is the global row.
         body: `let row = index; let localRow = index - WEIGHTS_ROW_START;
@@ -213,14 +274,17 @@ const ROWS: u32 = ${rows}u;
     rowFlags |= ${bits.offsets}u;
   }
   var previous = 0u;
+  var hasUnitDiagonal = false;
   for (var slot = begin; slot < min(end, CAPACITY); slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
     let weight = weights[weightsOffset + slot];
-    if (neighbor >= ROWS) {
+    if (neighbor >= COLUMNS) {
       rowFlags |= ${bits.neighborRange}u;
     }
     if (neighbor == row) {
-      rowFlags |= ${bits.self}u;
+      ${diagonal === 'forbid' ? `rowFlags |= ${bits.self}u;` : ''}
+      ${diagonal === 'require-unit' ? `if (weight != 1.0) { rowFlags |= ${bits.self}u; }` : ''}
+      hasUnitDiagonal = hasUnitDiagonal || weight == 1.0;
     }
     if (slot > begin && neighbor <= previous) {
       rowFlags |= ${bits.order}u;
@@ -230,6 +294,7 @@ const ROWS: u32 = ${rows}u;
     }
     previous = neighbor;
   }
+  ${diagonal === 'require-unit' ? `if (!hasUnitDiagonal) { rowFlags |= ${bits.self}u; }` : ''}
   flags[flagsOffset + row] = rowFlags;
   violated[violatedOffset + row] = select(0u, 1u, rowFlags != 0u);`
       })

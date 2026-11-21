@@ -148,10 +148,11 @@ for (const [className, json] of groups) {
                     edgeCorrection: scene.correction as GPURipleyDistanceEdgeCorrection
                   })
                 : getGPUPointPatternIndicesParameterValues({
-                    ...common,
+                    bounds: common.bounds,
+                    indexCellSizeHint: scene.maximumDistance,
                     clarkEvansCorrection: scene.correction as GPUClarkEvansCorrection,
                     guardDistance: scene.guardDistance,
-                    alternative: scene.alternative
+                    analyticAlternative: scene.alternative
                   });
           const actual = await harness.run(parameters);
           if (className === 'GPUPointPatternIndices') {

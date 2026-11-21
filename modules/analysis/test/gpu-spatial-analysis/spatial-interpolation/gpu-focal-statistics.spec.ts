@@ -27,7 +27,7 @@ import {
   computeFocalStatisticsOnCPU,
   type FocalStatisticsOracleResult
 } from './spatial-interpolation-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 /**
  * Tolerances against the oracle. `count`, `min`, `max`, `range`, and `sum` (f32 sums in the same
@@ -299,4 +299,25 @@ it('GPUFocalStatistics treats an infinity as nodata, like NaN (raster-fields-07)
   expect(Array.from(actual.mean)).toEqual([1, NaN, 3, NaN, 5]);
   expect(Array.from(actual.count)).toEqual([1, 2, 1, 2, 1]);
   fixture.destroy();
+});
+
+it('URT-12 clips edges and fills a missing center from valid neighbors', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createFixture(device, {
+    values: Float32Array.of(1, NaN, 3),
+    width: 3,
+    height: 1,
+    maximumRadius: 1
+  });
+  try {
+    const actual = await fixture.run({radius: 1});
+    // Hand worked clipped windows: [1, NaN], [1, NaN, 3], [NaN, 3].
+    expect(Array.from(actual.count)).toEqual([1, 2, 1]);
+    expect(Array.from(actual.mean).every(Number.isFinite)).toBe(true);
+    expect(Array.from(actual.mean)).toEqual([1, 2, 3]);
+    expect(Array.from(actual.sum)).toEqual([1, 4, 3]);
+  } finally {
+    fixture.destroy();
+  }
 });

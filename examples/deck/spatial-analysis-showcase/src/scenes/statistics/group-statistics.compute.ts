@@ -3,11 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Layer} from '@deck.gl/core';
-import {
-  GPUGroupStatistics,
-  GPUKeyJoin,
-  type GPUKeyJoinKind
-} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUGroupStatistics, GPUKeyLookup} from '@luma-contributors/analysis/dataframe-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getClassCounts, getClassIndex} from '../../cartography/breaks';
 import {getClassTableLayerProps} from '../../cartography/class-table';
@@ -95,7 +91,7 @@ export type GroupStatisticsOptions = {
   variance: 'sample' | 'population';
   lowerFraction: number;
   upperFraction: number;
-  joinKind: GPUKeyJoinKind;
+  joinKind: 'left' | 'inner';
   minimumObservations: number;
 };
 
@@ -123,7 +119,7 @@ const KERNEL_KIND = {slot: 0, unsigned: 1, percentile: 2, derived: 3} as const;
 
 /**
  * Nature observations grouped by community area with `GPUGroupStatistics` (dense keys: counts,
- * hour statistics, grade and introduced shares, distinct taxa) and `GPUKeyJoin` (a 1:n join sums
+ * hour statistics, grade and introduced shares, distinct taxa) and `GPUKeyLookup` (a 1:n join sums
  * tract population and income-times-population onto the areas, a gather join paints the area value
  * back on the tracts). A GPU kernel builds the row mask from the options each frame, a second
  * kernel picks the displayed statistic and withholds small groups.
@@ -389,7 +385,7 @@ export async function createGroupStatistics(
         mask: maskView,
         keyCount: ZONE_COUNT,
         variance: options.variance,
-        percentiles: percentileParameters.importToGraph(graph),
+        probabilities: percentileParameters.importToGraph(graph),
         columns: [
           {
             values: hour,
@@ -398,11 +394,7 @@ export async function createGroupStatistics(
               means: slots.view(SLOT.hourMean, 'float32', ZONE_COUNT),
               medians: slots.view(SLOT.hourMedian, 'float32', ZONE_COUNT),
               standardDeviations: slots.view(SLOT.hourSd, 'float32', ZONE_COUNT),
-              percentiles: slots.view(
-                SLOT.hourPercentiles,
-                'float32',
-                ZONE_COUNT * PERCENTILE_COUNT
-              ),
+              quantiles: slots.view(SLOT.hourPercentiles, 'float32', ZONE_COUNT * PERCENTILE_COUNT),
               modes: slots.view(SLOT.hourMode, 'float32', ZONE_COUNT)
             }
           },
@@ -470,7 +462,7 @@ export async function createGroupStatistics(
     const incomeSum = bind.float(incomeSumBuffer, ZONE_COUNT);
     const incomePopulation = bind.float(incomePopulationBuffer, ZONE_COUNT);
     graph.add(
-      new GPUKeyJoin({
+      new GPUKeyLookup({
         id: 'tracts-into-areas',
         leftKeys: bind.word(areaKeysBuffer, ZONE_COUNT),
         rightKeys: bind.word(tractZoneBuffer, tractCount),
@@ -591,11 +583,11 @@ export async function createGroupStatistics(
   areaKeep[areaKeepOffset + index] = select(0u, 1u, observationRows >= minimum[minimumOffset]);`
     });
 
-    // Gather join: paint the area statistic on every tract of the area (left or inner join).
+    // Look up the area statistic for each tract, with an optional list of matched tract rows.
     graph.add(
-      new GPUKeyJoin({
+      new GPUKeyLookup({
         id: 'areas-onto-tracts',
-        kind: options.joinKind,
+        compactMatchedLeftRows: options.joinKind === 'inner',
         leftKeys: bind.word(tractZoneBuffer, tractCount),
         rightKeys: bind.word(areaKeysBuffer, ZONE_COUNT),
         rightMask: areaKeep,
@@ -859,8 +851,8 @@ export async function createGroupStatistics(
     ctx.setReadout(
       'joinResult',
       options.joinKind === 'inner'
-        ? `inner join keeps ${formatCount(latest.innerCount)} of ${formatCount(tractCount)} tracts`
-        : `left join: ${formatCount(latest.matchedTracts)} of ${formatCount(tractCount)} tracts match an area with enough records`
+        ? `The compact list contains ${formatCount(latest.innerCount)} of ${formatCount(tractCount)} tracts`
+        : `${formatCount(latest.matchedTracts)} of ${formatCount(tractCount)} tracts match an area with enough records`
     );
 
     // Tract scale (the zoning step): how well the area class describes the tracts inside it.

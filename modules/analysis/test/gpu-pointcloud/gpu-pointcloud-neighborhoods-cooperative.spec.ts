@@ -7,6 +7,9 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUPointCloudNeighborhoods} from '../../src/pointcloud-analysis/operations/gpu-pointcloud-neighborhoods';
 import {makeSpatialFixture, readFloats, readIntegers} from '../spatial-test-utils';
 import {requireTestDevice} from '../utils/require-test-device';
+import {expectPointCloudReadback} from './pointcloud-readback-assertions';
+
+const MAXIMUM_FINITE_DISTANCE = new Float32Array(new Uint32Array([0x7f7fffff]).buffer)[0];
 
 function getExpected(
   positions: Float32Array,
@@ -42,10 +45,14 @@ function getExpected(
     support.sort((first, second) => first.distance - second.distance || first.index - second.index);
     counts.push(support.length);
     const complete = position.every(value => value - 2 >= -5 && value + 2 <= 5);
-    status.push((valid ? 0 : 1) | (support.length > capacity ? 2 : 0) | (complete ? 0 : 4));
+    status.push(
+      queryRow >= pointCount
+        ? 1
+        : (valid ? 0 : 1) | (support.length > capacity ? 2 : 0) | (complete ? 0 : 4)
+    );
     for (let slot = 0; slot < capacity; slot++) {
       indices.push(support[slot]?.index ?? 0xffffffff);
-      squaredDistances.push(support[slot]?.distance ?? Math.fround(3.402823e38));
+      squaredDistances.push(support[slot]?.distance ?? MAXIMUM_FINITE_DISTANCE);
     }
   }
   return {indices, squaredDistances, counts, status};
@@ -203,7 +210,7 @@ for (const pointCount of [0, 1, 2, 129]) {
                 );
             for (let slot = 0; slot < 64; slot++) {
               expectedIndices.push(neighbors[slot] ?? 0xffffffff);
-              expectedDistances.push(slot < neighbors.length ? 0 : Math.fround(3.402823e38));
+              expectedDistances.push(slot < neighbors.length ? 0 : MAXIMUM_FINITE_DISTANCE);
             }
           }
           expect((await readIntegers(indices.buffer)).slice(0, pointCount * 64)).toEqual(
@@ -264,7 +271,7 @@ for (const indexed of [false, true]) {
         0,
         Math.fround(inside * inside),
         1,
-        Math.fround(3.402823e38)
+        MAXIMUM_FINITE_DISTANCE
       ]);
       expect(await readIntegers(counts.buffer)).toEqual([3]);
       expect(await readIntegers(status.buffer)).toEqual([0]);
@@ -340,17 +347,12 @@ for (const capacity of [1, 4, 16, 64]) {
           expect(await readIntegers(output.counts.buffer, 16)).toEqual(expected.counts);
           expect(await readIntegers(output.status.buffer, 16)).toEqual(expected.status);
           const actualDistances = await readFloats(output.squaredDistances.buffer, 16);
+          expect(actualDistances).toHaveLength(expected.squaredDistances.length);
           distanceOutputs.push(actualDistances);
-          for (const [slot, distance] of actualDistances.entries()) {
-            if (expected.indices[slot] === 0xffffffff) {
-              expect(distance).toBe(Math.fround(3.402823e38));
-            } else {
-              // Independent f64 distances from the same quantized inputs allow f32 arithmetic error.
-              expect(Math.abs(distance - expected.squaredDistances[slot])).toBeLessThanOrEqual(
-                Math.max(1e-8, expected.squaredDistances[slot] * 1e-5)
-              );
-            }
-          }
+          // Independent f64 distances from the same quantized inputs allow f32 arithmetic error.
+          expectPointCloudReadback(actualDistances, expected.squaredDistances, value =>
+            value === MAXIMUM_FINITE_DISTANCE ? 0 : Math.max(1e-8, value * 1e-5)
+          );
         }
         expect(distanceOutputs[1]).toEqual(distanceOutputs[0]);
       } finally {

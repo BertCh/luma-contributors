@@ -22,6 +22,7 @@ import {
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -44,6 +45,11 @@ import {
   WORKGROUP_COUNTER_WORKGROUP_SIZE
 } from '../network-workgroup-counters';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotLineFeatureGeometry} from '../../analysis-core/contracts/line-feature-provenance';
 
 const NODING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -157,7 +163,7 @@ export type GPUNetworkNodingProps = {
   tolerance: GraphDataView<'float32'>;
   /** Passed to `GPULineSplit`. */
   spatialSort?: boolean;
-  /** Passed to `GPULineSplit`. */
+  /** Passed to GPULineSplit. Below lines.positions.length, requires pieces.status.candidateOverflow or status.overflow to expose dropped candidate crossings. */
   leafCapacity?: number;
   /** Caller-owned outputs. */
   output: GPUNetworkNodingOutput;
@@ -166,7 +172,18 @@ export type GPUNetworkNodingProps = {
 /** GPU-written outputs of {@link GPUNetworkNoding}. */
 export type GPUNetworkNodingOutput = {
   /** Pieces, the geometry of the edges. */
-  pieces: GPULineSplitPieces;
+  pieces: Omit<GPULineSplitPieces, 'geometry' | 'status'> & {
+    geometry: Omit<GPULineSplitPieces['geometry'], 'sourceIds'>;
+    status: Pick<
+      GPULineSplitPieces['status'],
+      | 'count'
+      | 'requiredCount'
+      | 'overflow'
+      | 'candidateOverflow'
+      | 'vertexCount'
+      | 'requiredVertexCount'
+    >;
+  };
   /** Nodes. */
   nodes: GPUNetworkNodingNodes;
   /** Edge list. */
@@ -215,6 +232,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUNetworkNodingProps;
   private readonly lineSplit: GPULineSplit;
+  private readonly splitCandidateOverflow?: GraphDataView<'uint32'>;
   /** Node capacity. */
   readonly nodeCapacity: number;
   /** Edge capacity. */
@@ -222,10 +240,122 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
   /** Resolved spatial context, always planar. */
   readonly spatialContext: GPUSpatialContext;
 
+  /** Borrowed live topology, retaining node cardinality and source build diagnostics. */
+  get outputTopology(): import('../../analysis-core/contracts/network-topology').GPUNodedNetworkTopologyPort {
+    return this.props.output;
+  }
+
   constructor(props: GPUNetworkNodingProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'lines',
+      'intersectionCapacity',
+      'tolerance',
+      'spatialSort',
+      'leafCapacity',
+      'output'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(snapshot.output, [
+      'pieces',
+      'nodes',
+      'edges',
+      'topology',
+      'status'
+    ]);
+    const pieceSnapshot = snapshotConstructionFields(outputSnapshot.pieces, [
+      'geometry',
+      'sourceIds',
+      'sourceFeatureIds',
+      'sourcePartRows',
+      'sourceFeatureRows',
+      'vertexSourceEdges',
+      'status'
+    ]);
+    const nodeSnapshot = snapshotConstructionFields(outputSnapshot.nodes, ['positions', 'status']);
+    props = Object.freeze({
+      ...snapshot,
+      spatialContext:
+        snapshot.spatialContext && snapshotConstructionSpatialContext(snapshot.spatialContext),
+      lines: snapshotLineFeatureGeometry(snapshot.id ?? 'network-noding', snapshot.lines),
+      output: Object.freeze({
+        ...outputSnapshot,
+        pieces: Object.freeze({
+          ...pieceSnapshot,
+          // Capture unsupported inherited fields too, so refusals see a defined view
+          // exactly once and explicitly undefined optional fields remain harmless.
+          geometry: snapshotConstructionFields(
+            pieceSnapshot.geometry as GPULineSplitPieces['geometry'],
+            ['kind', 'positions', 'lineOffsets', 'featureOffsets', 'sourceIds']
+          ),
+          status: snapshotConstructionFields(pieceSnapshot.status as GPULineSplitPieces['status'], [
+            'count',
+            'requiredCount',
+            'overflow',
+            'candidateOverflow',
+            'vertexCount',
+            'requiredVertexCount',
+            'complete',
+            'unresolvedCount',
+            'approximation',
+            'converged',
+            'invalidCount',
+            'iterationCount',
+            'iterationLimitReached',
+            'requiredRingCount',
+            'ringCount',
+            'uncertainCount'
+          ])
+        }),
+        nodes: Object.freeze({
+          ...nodeSnapshot,
+          status: snapshotConstructionFields(nodeSnapshot.status, ['count', 'requiredCount'])
+        }),
+        edges: snapshotConstructionFields(outputSnapshot.edges, [
+          'fromNodes',
+          'toNodes',
+          'lengths'
+        ]),
+        topology: snapshotConstructionFields(outputSnapshot.topology, [
+          'offsets',
+          'neighbors',
+          'weights',
+          'edgeIds'
+        ]),
+        status:
+          outputSnapshot.status &&
+          snapshotConstructionFields(outputSnapshot.status, ['uncertainCount', 'overflow'])
+      })
+    }) as GPUNetworkNodingProps;
     this.id = props.id ?? 'network-noding';
     this.props = props;
     const {id} = this;
+    validateRequirement(
+      id,
+      (props.output.pieces.geometry as GPULineSplitPieces['geometry']).sourceIds === undefined,
+      'output.pieces.geometry.sourceIds is input identity metadata, not a written piece output; use output.pieces.sourceIds or sourceFeatureIds for caller identities and sourcePartRows for input line rows'
+    );
+    const unsupportedStatus = (
+      [
+        'complete',
+        'unresolvedCount',
+        'approximation',
+        'converged',
+        'invalidCount',
+        'iterationCount',
+        'iterationLimitReached',
+        'requiredRingCount',
+        'ringCount',
+        'uncertainCount'
+      ] as const
+    ).find(
+      name => (props.output.pieces.status as GPULineSplitPieces['status'])[name] !== undefined
+    );
+    validateRequirement(
+      id,
+      unsupportedStatus === undefined,
+      `output.pieces.status.${unsupportedStatus} has no line-split output semantics; use output.status.uncertainCount for uncertified pairs or output.pieces.status.overflow for incomplete geometry`
+    );
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
@@ -255,10 +385,20 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
           requiredCount: writable.nodes.status.requiredCount,
           overflow: writable.status?.overflow
         },
-        inputs: {splitOverflow: writable.pieces.status.overflow}
+        inputs: {
+          splitOverflow: writable.pieces.status.overflow,
+          splitCandidateOverflow: writable.pieces.status.candidateOverflow
+        }
       }
     ]);
     const {nodes, edges, topology: csr, pieces} = props.output;
+    validateRequirement(
+      id,
+      props.leafCapacity === undefined ||
+        props.leafCapacity >= props.lines.positions.length ||
+        Boolean(pieces.status.candidateOverflow || props.output.status?.overflow),
+      `leafCapacity ${props.leafCapacity} below lines.positions.length ${props.lines.positions.length} requires output.pieces.status.candidateOverflow or output.status.overflow to expose candidate loss`
+    );
     validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
     validateSinglePackedView(props.tolerance, ['float32'], `${id} tolerance`);
     if (props.tolerance.length < 1) {
@@ -317,6 +457,16 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal output.pieces.sourceIds.length`);
       }
     }
+    this.splitCandidateOverflow =
+      pieces.status.candidateOverflow ??
+      (props.output.status?.overflow
+        ? createTransientView(
+            pieces.status.count.buffer.graph as GPUCommandGraph,
+            `${id}-split-candidate-overflow`,
+            'uint32',
+            1
+          )
+        : undefined);
     this.lineSplit = new GPULineSplit({
       id: `${id}-split`,
       lines: props.lines,
@@ -324,7 +474,10 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       spatialSort: props.spatialSort,
       leafCapacity: props.leafCapacity,
       output: {
-        pieces,
+        pieces: {
+          ...pieces,
+          status: {...pieces.status, candidateOverflow: this.splitCandidateOverflow}
+        },
         status: props.output.status?.uncertainCount
           ? {uncertainCount: props.output.status.uncertainCount}
           : undefined
@@ -359,9 +512,12 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       pieces.geometry.positions,
       pieces.geometry.lineOffsets,
       pieces.sourceIds,
+      pieces.sourcePartRows,
+      pieces.sourceFeatureRows,
       pieces.status.count,
       pieces.status.requiredCount,
       pieces.status.overflow,
+      this.splitCandidateOverflow,
       pieces.status.vertexCount,
       pieces.status.requiredVertexCount,
       pieces.vertexSourceEdges,
@@ -758,6 +914,12 @@ const LAST: u32 = ${endpointCount - 1}u;`,
     }
     if (props.output.status?.overflow) {
       scalarBindings.push({
+        name: 'splitCandidateOverflow',
+        view: this.splitCandidateOverflow!,
+        type: 'u32',
+        access: 'read'
+      });
+      scalarBindings.push({
         name: 'overflow',
         view: props.output.status.overflow,
         type: 'u32',
@@ -776,7 +938,7 @@ const LAST: u32 = ${endpointCount - 1}u;`,
         body: `let total = headRanks[headRanksOffset + LAST] + headFlags[headFlagsOffset + LAST];
   nodeCount[nodeCountOffset] = min(total, NODE_CAPACITY);
   ${nodeOutputs.status.requiredCount ? 'requiredCount[requiredCountOffset] = total;' : ''}
-  ${props.output.status?.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > NODE_CAPACITY || splitOverflow[splitOverflowOffset] != 0u || snapOverflow[snapOverflowOffset] != 0u);' : ''}`
+  ${props.output.status?.overflow ? 'overflow[overflowOffset] = select(0u, 1u, total > NODE_CAPACITY || splitOverflow[splitOverflowOffset] != 0u || splitCandidateOverflow[splitCandidateOverflowOffset] != 0u || snapOverflow[snapOverflowOffset] != 0u);' : ''}`
       })
     );
     return nodes;

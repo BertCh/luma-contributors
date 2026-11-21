@@ -11,10 +11,28 @@ import {
 } from '../../../src/gpu-spatial-analysis/space-time-tests/index';
 import fixture from '../../oracles/fixtures/parity-wp1-mantel-band.json';
 import {compareParity} from '../../oracles/parity-wp1-compare';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {AnalysisRig} from '../catchment-accessibility/rig';
 
-for (const testCase of fixture.cases) {
+// A restricted pair list with a constant time vector has no Pearson coefficient.
+const cases = [
+  ...fixture.cases,
+  {
+    ...fixture.cases[0],
+    name: 'constant-band',
+    n: 3,
+    offsets: [0, 2, 2, 2],
+    neighbors: [1, 2],
+    distances: [1, 2],
+    times: [0, 0, 0],
+    observed: null,
+    constant: true,
+    null: [],
+    permutationCount: 19,
+    seeds: [0]
+  }
+];
+for (const testCase of cases) {
   for (const seed of testCase.seeds) {
     it(`GPUMantelTest distance-band independent parity: ${testCase.name}/${seed}`, async () => {
       const device = await getWebGPUTestDevice();
@@ -48,12 +66,33 @@ for (const testCase of fixture.cases) {
         );
         const actual = await rig.readFloat(statistics);
         const actualSummary = await rig.readFloat(summary);
+        const observed = testCase.observed;
+        if (observed === null) {
+          // Pearson of a constant vector is undefined (not a measured zero correlation).
+          compareParity(
+            'GPUMantelTest',
+            comparison,
+            'undefined-statistics',
+            actual,
+            Array(testCase.permutationCount + 3).fill(NaN),
+            'E'
+          );
+          compareParity(
+            'GPUMantelTest',
+            comparison,
+            'undefined-summary',
+            actualSummary,
+            [NaN, pairs.neighbors.length, 0, 0, ...Array(8).fill(NaN)],
+            'E'
+          );
+          return;
+        }
         compareParity(
           'GPUMantelTest',
           comparison,
           'observed-r',
           [actual[0], actualSummary[0]],
-          [testCase.observed, testCase.observed]
+          [observed, observed]
         );
         compareParity(
           'GPUMantelTest',
@@ -154,7 +193,7 @@ for (const testCase of fixture.cases) {
             0
           );
           const referenceUpper =
-            expected.filter(value => value >= testCase.observed).length / expected.length;
+            expected.filter(value => value >= observed).length / expected.length;
           // Binomial standard error of TWO independent samples, with 1/n floor
           // for zero observed counts; five sigma plus the pseudo-p resolution.
           const error = Math.sqrt(

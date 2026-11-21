@@ -211,11 +211,12 @@ it('both tests validate permutation counts and describe their inference', () => 
     significanceLevel: 0.01
   });
   expect(metadata).toMatchObject({
+    // This metadata describes the resident float32 significance cutoff.
     alternative: 'two-sided',
-    permutationCount: 49,
+    requestedPermutationCount: 49,
     seed: 5,
     multipleTesting: 'benjamini-yekutieli',
-    significanceLevel: 0.01
+    significanceLevel: Math.fround(0.01)
   });
   expect(metadata.testedRowsDefinition).toMatch(/1 to 8 positive-weight neighbors/);
   expect(metadata.testedRowsDefinition).toMatch(/excluded/);

@@ -20,7 +20,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {GraphRig} from '../areal-interpolation/areal-interpolation-harness';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
 
 for (const kind of ['losh', 'geary'] as const)
@@ -329,3 +329,178 @@ for (const values of [
       rig.destroy();
     }
   });
+
+for (const chunked of [false, true])
+  for (const residualPower of [1, 2] as const)
+    it(`W5-16 harmonic subtraction and a nonzero residual (${chunked ? 'chunked' : 'whole'}, power ${residualPower})`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const rig = new WeightsRig(device);
+      try {
+        const first = {
+          offsets: [0, 4],
+          neighbors: [1, 2, 3, 4],
+          weights: [1, 1, 1, 1],
+          distances: []
+        };
+        const weights = chunked
+          ? {
+              rowCount: 5,
+              chunks: [
+                {rowStart: 0, rowCount: 1, weights: rig.uploadWeights(first)},
+                {
+                  rowStart: 1,
+                  rowCount: 4,
+                  weights: rig.uploadWeights({
+                    offsets: [0, 1, 2, 3, 4],
+                    neighbors: [0, 0, 0, 0],
+                    weights: [1, 1, 1, 1],
+                    distances: []
+                  })
+                }
+              ]
+            }
+          : rig.uploadWeights({
+              offsets: [0, 4, 5, 6, 7, 8],
+              neighbors: [1, 2, 3, 4, 0, 0, 0, 0],
+              weights: new Array(8).fill(1),
+              distances: []
+            });
+        const d = 2 ** -26;
+        const values = rig.input(Float32Array.of(d, 2 * d, 1, 2 * d, -1), 'float32', 5);
+        const normalized = rig.output('float32', 5);
+        const status = rig.output('uint32', 5);
+        rig.graph.add(
+          new GPULocalSpatialHeteroscedasticity({
+            weights,
+            values,
+            residualPower,
+            output: {
+              statistic: rig.output('float32', 5).view,
+              status: status.view,
+              normalizedResiduals: normalized.view
+            }
+          })
+        );
+        const compiled = rig.graph.compile();
+        try {
+          for (const focus of [d, 0, d]) {
+            rig.bufferOf(values).write(Float32Array.of(focus, 2 * d, 1, 2 * d, -1));
+            submitGraph(device, compiled, undefined);
+            const actual = (await readFloat32(normalized.buffer, 5))[0];
+            expect(Number.isFinite(actual)).toBe(true);
+            expect(await readUint32(status.buffer, 5)).toEqual([0, 0, 0, 0, 0]);
+            if (focus === d) expect(actual).toBe(0);
+            else {
+              // Hand residuals: [d**p, (2d)**p, 1, (2d)**p, 1]; divide by their mean.
+              const expected =
+                (5 * d ** residualPower) / (2 + d ** residualPower + 2 * (2 * d) ** residualPower);
+              expect(actual).toBeGreaterThan(0);
+              expect(Math.abs(actual / expected - 1)).toBeLessThan(2e-6);
+            }
+          }
+        } finally {
+          compiled.destroy();
+        }
+      } finally {
+        rig.destroy();
+      }
+    });
+
+for (const chunked of [false, true])
+  for (const residualPower of [1, 2] as const)
+    it(`W5-16 B1 compensated corrections keep a harmonic residual zero (${chunked ? 'chunked' : 'whole'}, power ${residualPower})`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const rig = new WeightsRig(device);
+      try {
+        // Review B1: d = 2^-25, u = 1 - 2^-24. Pairs (1, -0.5 + 2d) with weight 1 and
+        // (0.25, 0.25 + 2d) with weight u each average exactly to the focus 0.25 + d.
+        const d = 2 ** -25;
+        const u = 1 - 2 ** -24;
+        const harmonicWeights = [1, u, 1, u];
+        // Control: only the second weight becomes 1, so the weighted difference is
+        // -d * (1 - u) = -2^-49 over total weight 4 - 2^-24.
+        const controlWeights = [1, 1, 1, u];
+        const first = chunked
+          ? rig.uploadWeights({
+              offsets: [0, 4],
+              neighbors: [1, 2, 3, 4],
+              weights: harmonicWeights,
+              distances: []
+            })
+          : undefined;
+        const weights = first
+          ? {
+              rowCount: 5,
+              chunks: [
+                {rowStart: 0, rowCount: 1, weights: first},
+                {
+                  rowStart: 1,
+                  rowCount: 4,
+                  weights: rig.uploadWeights({
+                    offsets: [0, 1, 2, 3, 4],
+                    neighbors: [0, 0, 0, 0],
+                    weights: [1, 1, 1, 1],
+                    distances: []
+                  })
+                }
+              ]
+            }
+          : rig.uploadWeights({
+              offsets: [0, 4, 5, 6, 7, 8],
+              neighbors: [1, 2, 3, 4, 0, 0, 0, 0],
+              weights: [...harmonicWeights, 1, 1, 1, 1],
+              distances: []
+            });
+        const weightBuffer = rig.bufferOf(
+          'chunks' in weights ? weights.chunks[0].weights.weights : weights.weights
+        );
+        const values = rig.input(
+          Float32Array.of(0.25 + d, 1, 0.25, -0.5 + 2 * d, 0.25 + 2 * d),
+          'float32',
+          5
+        );
+        const normalized = rig.output('float32', 5);
+        const status = rig.output('uint32', 5);
+        rig.graph.add(
+          new GPULocalSpatialHeteroscedasticity({
+            weights,
+            values,
+            residualPower,
+            output: {
+              statistic: rig.output('float32', 5).view,
+              status: status.view,
+              normalizedResiduals: normalized.view
+            }
+          })
+        );
+        const compiled = rig.graph.compile();
+        try {
+          for (const harmonic of [true, false, true]) {
+            const rowZero = harmonic ? harmonicWeights : controlWeights;
+            weightBuffer.write(Float32Array.from(chunked ? rowZero : [...rowZero, 1, 1, 1, 1]));
+            submitGraph(device, compiled, undefined);
+            const actual = (await readFloat32(normalized.buffer, 5))[0];
+            expect(Number.isFinite(actual)).toBe(true);
+            expect(await readUint32(status.buffer, 5)).toEqual([0, 0, 0, 0, 0]);
+            if (harmonic) expect(actual).toBe(0);
+            else {
+              // Hand residuals: row 0 is 2^-49/(4 - 2^-24); rows 1..4 have one unit-weight
+              // neighbor (the focus) and residuals [0.75 - d, d, 0.75 - d, d]. Normalized
+              // residuals divide by the mean of the five powered residuals.
+              const own = 2 ** -49 / (4 - 2 ** -24);
+              const expected =
+                (5 * own ** residualPower) /
+                (own ** residualPower + 2 * (0.75 - d) ** residualPower + 2 * d ** residualPower);
+              expect(actual).toBeGreaterThan(0);
+              expect(Math.abs(actual / expected - 1)).toBeLessThan(2e-6);
+            }
+          }
+        } finally {
+          compiled.destroy();
+        }
+      } finally {
+        rig.destroy();
+      }
+    });

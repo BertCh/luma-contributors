@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /** Number of float32 elements in a {@link GPUBivariateClassification} parameter view. */
 export const GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH = 8;
 
@@ -58,6 +60,14 @@ export function getGPUBivariateClassificationParameterValues(
   }
   const noDataColor = (settings.noDataColor ?? 0) >>> 0;
   const alpha = settings.valueByAlpha;
+  if (alpha) {
+    const [lower, upper] = alpha.domain;
+    validateRequirement(
+      'GPUBivariateClassification',
+      !(lower < upper) || Math.fround(lower) < Math.fround(upper),
+      `valueByAlpha.domain [${lower}, ${upper}] packs to [${Math.fround(lower)}, ${Math.fround(upper)}]; supply endpoints that remain ordered as float32`
+    );
+  }
   target[0] = settings.classCountX;
   target[1] = settings.classCountY;
   target[2] = noDataColor & 0xffff;

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
+import {snapshotRegressionWeights} from './regression-weights-snapshot';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
 import {
@@ -22,10 +23,16 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
+  validateCommandNodeBudget,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
+import {
+  getRegressionCompletenessViews,
+  getRegressionLossFoldCount,
+  getRegressionWeightsLossNodes
+} from './regression-weights-completeness';
 import {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
@@ -41,6 +48,11 @@ import {
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {getRegressionTileLayout, getRowTileSumNodes} from './regression-row-tiles';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {getDiagnosticsObservedOriginNodes} from './diagnostics-observed-origin';
+import {getDiagnosticsMoranPrecisionNodes} from './diagnostics-moran-precision-nodes';
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
 
 const OPERATION = 'GPUSpatialRegressionDiagnostics';
 const TILE_WORKGROUP_SIZE = 64;
@@ -173,9 +185,15 @@ export type GPUSpatialRegressionDiagnosticsProps = {
  * Every sum is a fixed-order reduction with no atomics: a tile pass (one invocation per
  * `tileRowCount` rows, rows in order) accumulates the Gram matrices and scalar moments for its
  * tile in f32, a merge pass sums the tiles in a fixed pairwise order, and a single
+ * invocation solves the fitted-lag projection, a row pass and fixed-order reduction accumulate
+ * its squared residual norm directly (never subtracting two large squared norms), and a final
  * invocation finishes the small arithmetic and p-values (chi-square via the closed forms for df 1
  * and 2, normal via a 1e-7 accurate `erfc`). Columns are centered before accumulation and the
- * Gram matrices are scaled to unit diagonal before the Cholesky solve. Nothing is read back.
+ * Gram matrices are scaled to unit diagonal before the Cholesky solve. Fitted values are centered
+ * before weighted lag accumulation; differing row sums restore the fitted origin explicitly.
+ * Selected-row references reduce parallel tiles of at most 64 CSR slots
+ * (MAXIMUM_DIAGNOSTICS_REFERENCE_TILE_SLOTS); uint32 CSR lookup takes at most 32 binary-search
+ * iterations (MAXIMUM_DIAGNOSTICS_CSR_SEARCH_ITERATIONS). Nothing is read back.
  *
  * `W` is read inline rather than through `GPUSpatialLag`, so the `W`-products of `y`, `e`, the
  * fitted values and every column of `Z` cost one pass; the arithmetic is the same as
@@ -215,6 +233,8 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
   readonly tileRowCount: number;
   /** Number of accumulation tiles. */
   readonly tileCount: number;
+  /** Conservative bound including transpose, hierarchical reference reductions and precision passes. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSpatialRegressionDiagnosticsProps) {
     const captured = snapshotConstructionFields(props, [
@@ -229,15 +249,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       'tileRowCount',
       'output'
     ]);
-    const weights = snapshotConstructionFields(captured.weights, [
-      'offsets',
-      'neighbors',
-      'weights',
-      'distances',
-      'spatialContext',
-      'information',
-      'status'
-    ]);
+    const weights = snapshotRegressionWeights(captured.weights);
     const capturedOutput = snapshotConstructionFields(captured.output, [
       'tests',
       'summary',
@@ -245,25 +257,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
     ]);
     props = Object.freeze({
       ...captured,
-      weights: Object.freeze({
-        ...weights,
-        ...(weights.status
-          ? {
-              status: snapshotConstructionFields(weights.status, [
-                'count',
-                'requiredCount',
-                'overflow',
-                'candidateOverflow',
-                'invalidCount',
-                'uncertainCount',
-                'iterationCount',
-                'converged',
-                'iterationLimitReached',
-                'approximation'
-              ])
-            }
-          : {})
-      }),
+      weights,
       output: Object.freeze({
         ...capturedOutput,
         status: snapshotConstructionFields(capturedOutput.status, ['code'])
@@ -323,6 +317,12 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       props.tileRowCount ??
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     this.tileCount = Math.ceil(rows / this.tileRowCount);
+    this.estimatedCommandNodeCount = 256 + getRegressionLossFoldCount(props.weights);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    for (const view of getRegressionCompletenessViews(props.weights)) {
+      validateSinglePackedView(view, ['uint32'], `${id} weights.status`);
+      validateCapacity(id, 'weights.status length', view.length, 1);
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.tests, output.summary, output.status.code],
@@ -334,8 +334,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
-        props.weights.status?.overflow,
-        props.weights.status?.candidateOverflow
+        ...getRegressionCompletenessViews(props.weights)
       ]
     );
   }
@@ -358,8 +357,7 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       weights.offsets,
       weights.neighbors,
       weights.weights,
-      weights.status?.overflow,
-      weights.status?.candidateOverflow,
+      ...getRegressionCompletenessViews(weights),
       output.tests,
       output.summary,
       output.status.code
@@ -379,6 +377,10 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       getGPUSpatialRegressionDiagnosticsMaximumTileMomentCount(graph.device)
     );
     const restandardize = props.restandardizeRows === true;
+    validateRegressionAllocations(graph.device, id, {
+      'observed origin partials': 2 * getRegressionTileLayout(rowCount).tileCount
+    });
+    const completeness = getRegressionWeightsLossNodes(graph, id, weights);
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const partialMeans = transient('partial-means', tileCount * (k + 1));
@@ -388,6 +390,9 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
     const moments = transient('moments', momentCount);
     const rowTable = transient('row-table', rowCount * (p + 2));
     const transposedLagTable = transient('transposed-lag-table', rowCount * p);
+    const fittedProjection = transient('fitted-lag-projection', p + 1);
+    const fittedProjectionResiduals = transient('fitted-lag-residual-squares', rowCount);
+    const fittedProjectionNorm = transient('fitted-lag-residual-norm', 1);
     const rowScale = restandardize ? transient('row-scale', rowCount) : undefined;
     const transposed: GPUSpatialWeights = {
       offsets: createTransientView(graph, `${id}-transpose-offsets`, 'uint32', rowCount + 1),
@@ -404,10 +409,13 @@ export class GPUSpatialRegressionDiagnostics implements GPUCommandNodeProducer {
       weights,
       output: transposed
     }).getCommandNodes(graph);
-    const constants = `const ROWS: u32 = ${rowCount}u;
+    // Row helpers own their tile overrides. Keep observation/design constants separate so a
+    // helper's TILE_ROWS is never redeclared by this contributor's accumulation layout.
+    const rowConstants = `const ROWS: u32 = ${rowCount}u;
 const K: u32 = ${k}u;
 const TABLE_WIDTH: u32 = ${p + 2}u;
-const P: u32 = ${p}u;
+const P: u32 = ${p}u;`;
+    const constants = `${rowConstants}
 const TILE_ROWS: u32 = ${tileRowCount}u;
 const TILE_COUNT: u32 = ${tileCount}u;`;
     // Row validity for kernels that bind design, response, residuals and the optional rowMask.
@@ -458,7 +466,15 @@ fn isFittedRow(row: u32) -> bool {
       type: 'f32',
       access: 'read'
     };
+    const observedOrigin = transient('observed-origin', 5);
+    const originBinding: WGSLKernelBinding = {
+      name: 'observedOrigin',
+      view: observedOrigin,
+      type: 'f32',
+      access: 'read'
+    };
     return [
+      ...completeness.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-means-tiles`,
         operation: OPERATION,
@@ -562,6 +578,32 @@ fn isFittedRow(row: u32) -> bool {
             })
           ]
         : []),
+      ...getRowTileSumNodes(graph, {
+        id: `${id}-origin-row`,
+        operation: OPERATION,
+        variant: 'origin-row',
+        rowCount,
+        layout: getRegressionTileLayout(rowCount),
+        sumCount: 1,
+        maximumCount: 1,
+        bindings: [rowTableBinding],
+        partial: transient('origin-partials', 2 * getRegressionTileLayout(rowCount).tileCount),
+        output: observedOrigin,
+        declarations: `${rowConstants}
+fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  if (table[tableOffset + row * TABLE_WIDTH] > 0.5) { (*terms)[1] = max((*terms)[1], f32(ROWS - row)); }
+}`
+      }),
+      ...getDiagnosticsObservedOriginNodes(graph, {
+        id,
+        slotCount: weights.neighbors.length,
+        constants: rowConstants,
+        rowScaleWGSL,
+        weightBindings,
+        table: rowTableBinding,
+        rowScaleBindings,
+        origin: observedOrigin
+      }),
       ...transposeNodes,
       // W'Z row by row over the transposed CSR: (W'Z)_i = sum_j w_ji z_j, with j ascending.
       createWGSLKernelNode<Parameters>(graph, {
@@ -602,6 +644,7 @@ ${rowScaleWGSL}`,
           rowTableBinding,
           ...rowScaleBindings,
           {name: 'transposedLag', view: transposedLagTable, type: 'f32', access: 'read'},
+          originBinding,
           {name: 'partial', view: partialMoments, type: 'f32', access: 'read_write'}
         ],
         invocationCount: tileCount,
@@ -609,6 +652,7 @@ ${rowScaleWGSL}`,
 const PP: u32 = ${p * p}u;
 const MOMENTS: u32 = ${momentCount}u;
 ${rowScaleWGSL}
+${ROUNDED_DIFFERENCE_WGSL}
 ${getRowAccumulationWGSL()}`,
         body: `let base = partialOffset + index * MOMENTS;
   for (var slot = 0u; slot < MOMENTS; slot++) {
@@ -634,29 +678,101 @@ ${getRowAccumulationWGSL()}`,
   moments[momentsOffset + index] = sum;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-fitted-lag-projection`,
+        operation: OPERATION,
+        variant: 'fitted-lag-projection',
+        // contract-allow: single-invocation -- at most 16 design columns, enforced by predictorCount; no serial row scan.
+        invocationCount: 1,
+        bindings: [
+          {name: 'moments', view: moments, type: 'f32', access: 'read'},
+          {name: 'projectionOut', view: fittedProjection, type: 'f32', access: 'read_write'}
+        ],
+        declarations: `${constants}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${getCholeskyWGSL(p)}`,
+        body: `projectionOut[projectionOutOffset + P] = 0.0;
+  var scale: array<f32, ${p}>;
+  for (var column = 0u; column < P; column++) { projectionOut[projectionOutOffset + column] = getNaN(); }
+  for (var column = 0u; column < P; column++) {
+    let diagonal = moments[momentsOffset + column * P + column];
+    if (!(diagonal > 0.0) || !isFiniteValue(diagonal)) { return; }
+    scale[column] = inverseSqrt(diagonal);
+  }
+  var factor: array<f32, ${p * p}>;
+  var projected: array<f32, ${p}>;
+  for (var row = 0u; row < P; row++) {
+    for (var column = 0u; column < P; column++) {
+      factor[row * P + column] = moments[momentsOffset + row * P + column] * scale[row] * scale[column];
+    }
+    projected[row] = moments[momentsOffset + ${5 * p * p + 7}u + row] * scale[row];
+  }
+  if (!choleskyFactor_${p}(&factor)) { return; }
+  choleskySolve_${p}(&factor, &projected);
+  for (var column = 0u; column < P; column++) { projectionOut[projectionOutOffset + column] = projected[column] * scale[column]; }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-fitted-lag-residuals`,
+        operation: OPERATION,
+        variant: 'fitted-lag-residuals',
+        invocationCount: rowCount,
+        bindings: [
+          ...weightBindings,
+          rowTableBinding,
+          ...rowScaleBindings,
+          {name: 'projection', view: fittedProjection, type: 'f32', access: 'read'},
+          originBinding,
+          {name: 'squaresOut', view: fittedProjectionResiduals, type: 'f32', access: 'read_write'}
+        ],
+        declarations: `${constants}\n${rowScaleWGSL}\n${ROUNDED_DIFFERENCE_WGSL}`,
+        body: `squaresOut[squaresOutOffset + index] = 0.0;
+  if (table[tableOffset + index * TABLE_WIDTH] < 0.5) { return; }
+  var lagFitted = 0.0; var rowWeight = 0.0;
+  for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
+    let neighbor = neighbors[neighborsOffset + slot];
+    if (neighbor < ROWS && table[tableOffset + neighbor * TABLE_WIDTH] > 0.5) {
+      let base = tableOffset + neighbor * TABLE_WIDTH;
+      let weight = weights[weightsOffset + slot] * getRowScale(index);
+      let runtimeZero = bitcast<u32>(observedOrigin[observedOriginOffset]);
+      let fitted = getRoundedDifference(table[base + P], table[base + P + 1u], runtimeZero);
+      lagFitted += weight * getRoundedDifference(fitted, observedOrigin[observedOriginOffset + 3u], runtimeZero);
+      rowWeight += weight;
+    }
+  }
+  let runtimeZero = bitcast<u32>(projection[projectionOffset + P]);
+  let weightedOrigin = observedOrigin[observedOriginOffset + 3u] * getRoundedDifference(rowWeight, observedOrigin[observedOriginOffset + 4u], runtimeZero);
+  let centeredLag = getRoundedDifference(lagFitted, observedOrigin[observedOriginOffset + 1u], runtimeZero) + weightedOrigin;
+  var residual = getRoundedDifference(centeredLag, projection[projectionOffset], runtimeZero);
+  for (var column = 1u; column < P; column++) {
+    residual -= table[tableOffset + index * TABLE_WIDTH + column] * projection[projectionOffset + column];
+  }
+  squaresOut[squaresOutOffset + index] = residual * residual;`
+      }),
+      ...getRowTileSumNodes<Parameters>(graph, {
+        id: `${id}-fitted-lag-norm`,
+        operation: OPERATION,
+        variant: 'fitted-lag-norm',
+        rowCount,
+        layout: getRegressionTileLayout(rowCount),
+        sumCount: 1,
+        bindings: [{name: 'squares', view: fittedProjectionResiduals, type: 'f32', access: 'read'}],
+        declarations:
+          'fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) { (*terms)[0] += squares[squaresOffset + row]; }',
+        partial: transient('fitted-lag-norm-partials', getRegressionTileLayout(rowCount).tileCount),
+        output: fittedProjectionNorm
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finish`,
         operation: OPERATION,
         variant: 'finish',
         bindings: [
           {name: 'moments', view: moments, type: 'f32', access: 'read'},
+          {name: 'fittedProjectionNorm', view: fittedProjectionNorm, type: 'f32', access: 'read'},
           {name: 'testsOut', view: output.tests, type: 'f32', access: 'read_write'},
           {name: 'summaryOut', view: output.summary, type: 'f32', access: 'read_write'},
           {name: 'statusOut', view: output.status.code, type: 'u32', access: 'read_write'},
-          ...(weights.status?.overflow
+          ...(completeness.loss
             ? [
                 {
                   name: 'weightsOverflow',
-                  view: weights.status.overflow,
-                  type: 'u32',
-                  access: 'read'
-                } as const
-              ]
-            : []),
-          ...(weights.status?.candidateOverflow
-            ? [
-                {
-                  name: 'weightsCandidateOverflow',
-                  view: weights.status.candidateOverflow,
+                  view: completeness.loss,
                   type: 'u32',
                   access: 'read'
                 } as const
@@ -667,9 +783,22 @@ ${getRowAccumulationWGSL()}`,
         declarations: `${constants}
 const PP: u32 = ${p * p}u;
 ${getFinishWGSL(p)}`,
-        body: `${weights.status?.overflow ? 'if (weightsOverflow[weightsOverflowOffset] != 0u) { fail(3u, moments[momentsOffset + 5u * PP + 7u + P]); return; }' : ''}
-${weights.status?.candidateOverflow ? 'if (weightsCandidateOverflow[weightsCandidateOverflowOffset] != 0u) { fail(3u, moments[momentsOffset + 5u * PP + 7u + P]); return; }' : ''}
+        body: `${completeness.loss ? 'if (weightsOverflow[weightsOverflowOffset] != 0u) { fail(3u, moments[momentsOffset + 5u * PP + 7u + P]); return; }' : ''}
 finish();`
+      }),
+      ...getDiagnosticsMoranPrecisionNodes(graph, {
+        id,
+        rowCount,
+        width: p,
+        rowConstants,
+        rowScaleWGSL,
+        weightBindings,
+        rowScaleBindings,
+        table: rowTable,
+        moments,
+        origin: observedOrigin,
+        summary: output.summary,
+        tests: output.tests
       })
     ];
   }
@@ -735,7 +864,9 @@ fn accumulateRow(row: u32, base: u32) {
     let neighborResidual = tableValue(neighbor, P + 1u);
     lagResponse += weight * neighborResponse;
     lagResidual += weight * neighborResidual;
-    lagFitted += weight * (neighborResponse - neighborResidual);
+    let runtimeZero = bitcast<u32>(observedOrigin[observedOriginOffset]);
+    let fitted = getRoundedDifference(neighborResponse, neighborResidual, runtimeZero);
+    lagFitted += weight * getRoundedDifference(fitted, observedOrigin[observedOriginOffset + 3u], runtimeZero);
     for (var column = 0u; column < P; column++) {
       u[column] += weight * tableValue(neighbor, column);
     }
@@ -751,6 +882,9 @@ fn accumulateRow(row: u32, base: u32) {
     }
   }
   let scalars = base + 5u * PP;
+  let runtimeZero = bitcast<u32>(observedOrigin[observedOriginOffset]);
+  lagFitted = getRoundedDifference(lagFitted, observedOrigin[observedOriginOffset + 1u], runtimeZero)
+    + observedOrigin[observedOriginOffset + 3u] * getRoundedDifference(weightSum, observedOrigin[observedOriginOffset + 4u], runtimeZero);
   partial[scalars] += weightSum;
   partial[scalars + 1u] += squareSum;
   partial[scalars + 2u] += crossSum;
@@ -919,19 +1053,8 @@ fn finish() {
       traceCCTransposed += inverseC[row * P + column] * inverseCTransposed[column * P + row];
     }
   }
-  // (W Zb)' M (W Zb) = v'v - (Z'v)' (Z'Z)^-1 (Z'v) with v = W (y - e).
-  var projected: array<f32, ${p}>;
-  var scaledProduct: array<f32, ${p}>;
-  for (var column = 0u; column < P; column++) {
-    scaledProduct[column] = moments[momentsOffset + scalars + 7u + column] * columnScale[column];
-    projected[column] = scaledProduct[column];
-  }
-  choleskySolve_${p}(&factor, &projected);
-  var quadratic = 0.0;
-  for (var column = 0u; column < P; column++) {
-    quadratic += scaledProduct[column] * projected[column];
-  }
-  let fittedLagResidualSquares = max(fittedLagSquares - quadratic, 0.0);
+  // Direct squared residual norm preserves J when v'v and its projection nearly cancel.
+  let fittedLagResidualSquares = fittedProjectionNorm[fittedProjectionNormOffset];
 
   let sigmaSquared = residualSquares / n;
   let errorGradient = residualLag / sigmaSquared;
@@ -963,8 +1086,12 @@ fn finish() {
   let traceMWMWt = squareSum - traceE - traceD + traceCCTransposed;
   let traceMWMW = crossSum - 2.0 * traceF + traceCC;
   let traceMW = -traceC;
-  let moranVariance = scaleFactor * scaleFactor * (traceMWMWt + traceMWMW + traceMW * traceMW) /
+  var moranVariance = scaleFactor * scaleFactor * (traceMWMWt + traceMWMW + traceMW * traceMW) /
     (degrees * (degrees + 2.0)) - moranExpectation * moranExpectation;
+  let varianceScale = scaleFactor * scaleFactor * (abs(squareSum) + abs(traceE) + abs(traceD) +
+    abs(traceCCTransposed) + abs(crossSum) + 2.0 * abs(traceF) + abs(traceCC) + traceMW * traceMW) /
+    (degrees * (degrees + 2.0)) + moranExpectation * moranExpectation;
+  if (abs(moranVariance) <= 7.62939453125e-6 * varianceScale) { moranVariance = 0.0; }
   var moranZ = getNaN();
   var moranP = getNaN();
   if (moranVariance > 0.0) {

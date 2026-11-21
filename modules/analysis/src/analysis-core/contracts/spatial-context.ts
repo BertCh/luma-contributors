@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../kernels/gpu-contributor-utils';
+import {snapshotConstructionSpatialContext} from '../kernels/construction-snapshot';
 import {toRadians} from '@math.gl/core';
 import {log} from '@luma.gl/core';
+import {getKnownGPUSpatialFrameUnit} from './spatial-frame';
 import type {
   GPUSpatialFrameAnchor,
   GPUSpatialFramePrecision,
@@ -81,15 +84,14 @@ export type GPUSpatialFrameKind =
   | 'crs';
 
 /**
- * Identity of a projected planar frame; compared by `id` only. Every other field is optional
- * descriptive metadata (see `spatial-frame.ts` for constructors that fill it) and never affects
- * compatibility.
+ * Identity of a projected planar frame. Compatibility checks the id and effective relative
+ * storage origin (see `spatial-frame.ts` for constructors that fill its metadata).
  */
 export type GPUSpatialFrame = {
-  /** Stable identity; equal ids mean interchangeable coordinates. */
+  /** Stable identity; compatibility also checks relative storage origins. */
   id: string;
   kind: GPUSpatialFrameKind;
-  /** Frame origin `[longitude, latitude]` in degrees for local frames. */
+  /** Projection center in longitude-latitude degrees, or relative storage origin in target CRS units. */
   origin?: [number, number];
   /** CRS identifier (for example `EPSG:32633`) when `kind` is `'crs'`. */
   crs?: string;
@@ -115,6 +117,11 @@ export type GPUSpatialContextCompatibility =
 /** Validates one spatial context without performing CRS parsing or reprojection. */
 export function validateGPUSpatialContext(id: string, context: GPUSpatialContext): void {
   const {coordinateSpace, metric} = context;
+  validateRequirement(
+    id,
+    context.units === undefined || ['native', 'meters', 'kilometers'].includes(context.units),
+    `units must be native, meters or kilometers; received ${context.units}`
+  );
   const allowedMetrics: Record<GPUSpatialCoordinateSpace, readonly GPUSpatialMetric[]> = {
     planar: ['none', 'native'],
     'longitude-latitude': ['none', 'great-circle', 'rhumb', 'ellipsoidal'],
@@ -178,6 +185,22 @@ export function validateGPUSpatialContext(id: string, context: GPUSpatialContext
   if (context.frame !== undefined && (coordinateSpace !== 'planar' || !context.frame.id)) {
     throw new Error(`${id} frame needs a planar coordinate space and an id`);
   }
+  const frameUnit = getEffectiveFrameUnit(context.frame);
+  if (coordinateSpace === 'planar' && frameUnit) {
+    validateRequirement(
+      id,
+      (metric !== 'native' && context.units !== 'meters' && context.units !== 'kilometers') ||
+        frameUnit.degreesPerUnit === undefined,
+      `frame units ${frameUnit.name} are angular; project positions to a planar linear frame before measuring distance or area`
+    );
+    validateRequirement(
+      id,
+      (context.units !== 'meters' && context.units !== 'kilometers') ||
+        frameUnit.metersPerUnit === undefined ||
+        frameUnit.metersPerUnit === (context.units === 'kilometers' ? 1000 : 1),
+      `units ${context.units} contradict frame.unit ${frameUnit.name} (metersPerUnit ${frameUnit.metersPerUnit}); use units native or project positions into a meter frame`
+    );
+  }
   if (coordinateSpace === 'discrete-grid') {
     if (!context.gridFamily) {
       throw new Error(`${id} discrete-grid contexts need gridFamily`);
@@ -223,7 +246,7 @@ export type GPUSpatialContextSupport = {
 };
 
 /** The context assumed when an operation is given none: native planar coordinates. */
-export const GPU_PLANAR_SPATIAL_CONTEXT: GPUSpatialContext = Object.freeze({
+export const GPU_PLANAR_SPATIAL_CONTEXT: GPUSpatialContext = snapshotConstructionSpatialContext({
   coordinateSpace: 'planar',
   metric: 'native',
   units: 'native'
@@ -253,7 +276,8 @@ export function getGPUDatumKey(datum: string): string {
 }
 
 /**
- * Validates an operation's spatial context against what it supports and returns the context to use.
+ * Captures an operation's spatial context, validates it against what it supports and returns the
+ * frozen metadata snapshot to use. Nested frame, unit and ellipsoid metadata are copied.
  * An omitted context means native planar coordinates. Unsupported contexts throw at construction:
  * spatial analysis never treats longitude/latitude degrees as planar coordinates.
  */
@@ -262,7 +286,16 @@ export function resolveGPUSpatialContext(
   context: GPUSpatialContext | undefined,
   support: GPUSpatialContextSupport = GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT
 ): GPUSpatialContext {
-  const resolved = context ?? GPU_PLANAR_SPATIAL_CONTEXT;
+  const declared = context ?? GPU_PLANAR_SPATIAL_CONTEXT;
+  validateRequirement(
+    id,
+    typeof declared === 'object' && declared !== null,
+    `spatialContext must be an object; received ${typeof declared === 'object' ? 'object' : String(declared)}`
+  );
+  const resolved =
+    declared === GPU_PLANAR_SPATIAL_CONTEXT
+      ? declared
+      : snapshotConstructionSpatialContext(declared);
   validateGPUSpatialContext(id, resolved);
   if (!support.coordinateSpaces.includes(resolved.coordinateSpace)) {
     const hint =
@@ -283,6 +316,14 @@ export function resolveGPUSpatialContext(
   if (support.units && resolved.units !== undefined && !support.units.includes(resolved.units)) {
     throw new Error(
       `${id} units ${resolved.units} are not supported; results are in ${support.units.join(' or ')}`
+    );
+  }
+  if (support.measure && resolved.coordinateSpace === 'planar') {
+    const unit = getEffectiveFrameUnit(resolved.frame);
+    validateRequirement(
+      id,
+      unit?.degreesPerUnit === undefined,
+      `frame units ${unit?.name} are angular; project positions to a planar linear frame before measuring ${support.measure}`
     );
   }
   if (support.measure && resolved.coordinateSpace === 'planar' && resolved.metric === 'none') {
@@ -362,10 +403,11 @@ export function getGPUAreaUnit(lengthUnits: GPUSpatialUnit): GPUAreaUnit {
 }
 
 /** Longitude/latitude positions with no metric: what coordinate-only operations (indexing, cover) accept. */
-export const GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT: GPUSpatialContext = Object.freeze({
-  coordinateSpace: 'longitude-latitude',
-  metric: 'none'
-});
+export const GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT: GPUSpatialContext =
+  snapshotConstructionSpatialContext({
+    coordinateSpace: 'longitude-latitude',
+    metric: 'none'
+  });
 
 /** Support declaration of operations that read longitude/latitude positions but measure nothing. */
 export const GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport =
@@ -375,11 +417,12 @@ export const GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSu
   });
 
 /** Longitude/latitude context with great-circle metric in meters: what spherical operations default to. */
-export const GPU_GREAT_CIRCLE_SPATIAL_CONTEXT: GPUSpatialContext = Object.freeze({
-  coordinateSpace: 'longitude-latitude',
-  metric: 'great-circle',
-  units: 'meters'
-});
+export const GPU_GREAT_CIRCLE_SPATIAL_CONTEXT: GPUSpatialContext =
+  snapshotConstructionSpatialContext({
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle',
+    units: 'meters'
+  });
 
 /**
  * Support declaration of operations that accept native planar coordinates, or longitude/latitude
@@ -515,13 +558,43 @@ export function getGPUGreatCircleRadius(context: GPUSpatialContext): number | un
   return context.metric === 'great-circle' ? getGPUSphereRadius(context) : undefined;
 }
 
+/**
+ * Purpose of a compatibility check; positions retain the existing coordinate contract.
+ * 'metric-results' compares lengths and distance thresholds, not area model/radius defaults.
+ * Spherical areas may use an authalic radius; compare their resolved area model separately.
+ */
+export type GPUSpatialContextCompatibilityOptions = {
+  purpose?: 'coordinates' | 'metric-results';
+};
+
 /** Checks graph-construction compatibility without changing either context. */
 export function getGPUSpatialContextCompatibility(
   source: GPUSpatialContext,
-  target: GPUSpatialContext
+  target: GPUSpatialContext,
+  options: GPUSpatialContextCompatibilityOptions = {}
 ): GPUSpatialContextCompatibility {
+  validateRequirement(
+    'spatial context compatibility',
+    options.purpose === undefined || ['coordinates', 'metric-results'].includes(options.purpose),
+    `purpose must be coordinates or metric-results; received ${options.purpose}`
+  );
   validateGPUSpatialContext('source spatial context', source);
   validateGPUSpatialContext('target spatial context', target);
+  if (options.purpose === 'metric-results') {
+    if (source.metric !== target.metric) return {compatible: false, reason: 'metrics differ'};
+    if (getEffectiveLengthScale(source) !== getEffectiveLengthScale(target))
+      return {compatible: false, reason: 'effective length units differ'};
+    if (
+      ['great-circle', 'rhumb'].includes(source.metric) &&
+      getGPUSphereRadius(source) !== getGPUSphereRadius(target)
+    )
+      return {compatible: false, reason: 'effective sphere radii differ'};
+    if (
+      source.metric === 'ellipsoidal' &&
+      !equalOptionalEllipsoid(getGPUEllipsoid(source), getGPUEllipsoid(target))
+    )
+      return {compatible: false, reason: 'effective ellipsoids differ'};
+  }
   if (source.coordinateSpace !== target.coordinateSpace) {
     return {
       compatible: false,
@@ -552,6 +625,7 @@ export function getGPUSpatialContextCompatibility(
     }
   }
   if (
+    options.purpose !== 'metric-results' &&
     source.units &&
     target.units &&
     source.units !== target.units &&
@@ -581,6 +655,15 @@ export function getGPUSpatialContextCompatibility(
       reason: `planar frames differ (${source.frame.id} and ${target.frame.id})`
     };
   }
+  if (source.frame && target.frame) {
+    const isRelative = (frame: GPUSpatialFrame) =>
+      frame.anchor === 'relative-origin' ||
+      (frame.precision === 'float32-origin-relative' && frame.anchor !== 'projection-center');
+    const sourceOrigin = isRelative(source.frame) ? (source.frame.origin ?? [0, 0]) : [0, 0];
+    const targetOrigin = isRelative(target.frame) ? (target.frame.origin ?? [0, 0]) : [0, 0];
+    if (sourceOrigin[0] !== targetOrigin[0] || sourceOrigin[1] !== targetOrigin[1])
+      return {compatible: false, reason: 'relative storage origins differ'};
+  }
   return {compatible: true};
 }
 
@@ -588,9 +671,10 @@ export function getGPUSpatialContextCompatibility(
 export function assertCompatibleGPUSpatialContexts(
   id: string,
   source: GPUSpatialContext,
-  target: GPUSpatialContext
+  target: GPUSpatialContext,
+  options: GPUSpatialContextCompatibilityOptions = {}
 ): void {
-  const compatibility = getGPUSpatialContextCompatibility(source, target);
+  const compatibility = getGPUSpatialContextCompatibility(source, target, options);
   if ('reason' in compatibility) {
     throw new Error(`${id} incompatible spatial contexts: ${compatibility.reason}`);
   }
@@ -599,7 +683,8 @@ export function assertCompatibleGPUSpatialContexts(
 /**
  * Resolves the optional context of an operation's second input (its polygon, feature or raster
  * side), named `<sideName>SpatialContext` after the operation's prop for that input. Omitted returns
- * `primary`, so one context still describes both inputs. When given, it is validated, checked
+ * `primary`, so one resolved context still describes both inputs. When given, it is captured before
+ * validation and retention, checked
  * against `edgeModels` when it is longitude/latitude, then checked for compatibility with `primary`
  * (datum, coordinate space, metric, units, frame id). Messages start with
  * `${id} ${sideName}SpatialContext`.
@@ -615,18 +700,31 @@ export function resolveGPUSecondarySpatialContext(
     return primary;
   }
   const label = `${id} ${sideName}SpatialContext`;
-  validateGPUSpatialContext(label, context);
+  validateRequirement(
+    label,
+    typeof context === 'object' && context !== null,
+    `spatialContext must be an object; received ${typeof context === 'object' ? 'null' : String(context)}`
+  );
+  validateRequirement(
+    label,
+    typeof primary === 'object' && primary !== null,
+    `primary spatialContext must be an object; received ${typeof primary === 'object' ? 'null' : String(primary)}`
+  );
+  const resolved = snapshotConstructionSpatialContext(context);
+  const resolvedPrimary =
+    context === primary ? resolved : snapshotConstructionSpatialContext(primary);
+  validateGPUSpatialContext(label, resolved);
   if (
     edgeModels &&
-    context.coordinateSpace === 'longitude-latitude' &&
-    !edgeModels.includes(getGPUEdgeModel(context))
+    resolved.coordinateSpace === 'longitude-latitude' &&
+    !edgeModels.includes(getGPUEdgeModel(resolved))
   ) {
     throw new Error(
       `${label} needs ${edgeModels.join(' or ')} edges; prepare polygons with GPULonLatPolygonPreparation`
     );
   }
-  assertCompatibleGPUSpatialContexts(label, context, primary);
-  return context;
+  assertCompatibleGPUSpatialContexts(label, resolved, resolvedPrimary);
+  return resolved;
 }
 
 /** Planar `'native'` units are undeclared, so they match a planar frame declared in meters. */
@@ -654,4 +752,23 @@ function equalOptionalEllipsoid(
     !right ||
     (left.semiMajorAxis === right.semiMajorAxis && left.flattening === right.flattening)
   );
+}
+
+/** Resolve recognized registry frame units without importing CRS provider/runtime code. */
+function getEffectiveFrameUnit(
+  frame: GPUSpatialFrame | undefined
+): GPUSpatialFrameUnit | undefined {
+  return (
+    frame?.unit ??
+    (frame?.crs ? getKnownGPUSpatialFrameUnit(frame.crs.trim().toUpperCase()) : undefined)
+  );
+}
+
+/** Scale of one numeric length unit in meters, or its unresolved native label. */
+function getEffectiveLengthScale(context: GPUSpatialContext): number | string {
+  const units = getGPULengthUnits(context);
+  if (units === 'meters') return 1;
+  if (units === 'kilometers') return 1000;
+  const unit = getEffectiveFrameUnit(context.frame);
+  return unit?.metersPerUnit ?? (unit ? `native:${unit.name}` : 'native');
 }

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations, getRecipeDestinationKeys} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUPolygonRasterization} from '../../raster-analysis/polygon-rasterization/index';
@@ -60,6 +63,10 @@ export type GPUChangeOfSupportZones = GPUPackedGeometryPort<GPUPolygonGeometryPo
 export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
   Record<never, never>,
   {
+    /** CSR destinations with supported count, requiredCount, overflow and candidateOverflow.
+     * status.overflow must share the outer overflow word. A distinct requiredCount destination
+     * is copied by the areal producer; distinct destinations must use separate physical buffers.
+     */
     extensiveWeights?: Partial<GPUSpatialWeights>;
     intensiveWeightValues?: GraphDataView<'float32'>;
     areas?: GraphDataView<'float32'>;
@@ -72,7 +79,9 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
       /** One-row unclamped crossing counts of the source and target rasterizations. */
       rasterRequiredCount?: [GPUStatusScalar, GPUStatusScalar];
     };
+    /** Requires sourceValues. */
     extensiveValues?: GraphDataView<'float32'>;
+    /** Requires sourceValues. */
     intensiveValues?: GraphDataView<'float32'>;
     /** `targetCount * categories.categoryCount` category shares; required with `categories`. */
     categoryShares?: GraphDataView<'float32'>;
@@ -252,6 +261,7 @@ function declareChangeOfSupportRecipe<Parameters>(
   props: GPUChangeOfSupportRecipeProps
 ): GPUChangeOfSupportRecipeResult {
   const id = props.id ?? 'change-of-support-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   const spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
   if (!props.prepare) {
     resolveGPUSecondarySpatialContext(
@@ -290,7 +300,65 @@ function declareChangeOfSupportRecipe<Parameters>(
   const targetCount = props.target.featureOffsets.length - 1;
   assertRecipe(ID, sourceCount >= 1 && targetCount >= 1, 'needs source and target zones');
   const columnCount = props.columnCount ?? 1;
-  const outputs = props.outputs ?? {};
+  const outputs = destinations ?? {};
+  const outerOverflow = outputs.status?.overflow;
+  const nestedOverflow = outputs.extensiveWeights?.status?.overflow;
+  validateRequirement(
+    id,
+    !outerOverflow ||
+      !nestedOverflow ||
+      (outerOverflow.buffer === nestedOverflow.buffer &&
+        outerOverflow.byteOffset === nestedOverflow.byteOffset),
+    'output.status.overflow and output.extensiveWeights.status.overflow must reference the same word'
+  );
+  const outerRequiredCount = outputs.status?.requiredCount;
+  const nestedRequiredCount = outputs.extensiveWeights?.status?.requiredCount;
+  validateRequirement(
+    id,
+    outputs.extensiveWeights?.distances === undefined,
+    'output.extensiveWeights.distances is not supported: this areal route has no distance writer'
+  );
+  const nestedStatus = outputs.extensiveWeights?.status;
+  const supportedStatusFields = new Set([
+    'count',
+    'requiredCount',
+    'overflow',
+    'candidateOverflow'
+  ]);
+  // Validate the supplied selection before constructing the narrower producer map. Named reads
+  // also cover inherited/nonenumerable and get-only destinations captured by preparation.
+  for (const name of new Set([
+    ...getRecipeDestinationKeys(props.output?.extensiveWeights?.status),
+    'complete',
+    'unresolvedCount',
+    'invalidCount',
+    'invalidInput',
+    'iterationLimit',
+    'converged',
+    'uncertainCount',
+    'iterationCount',
+    'iterationLimitReached',
+    'approximation'
+  ])) {
+    const destination = (nestedStatus as Record<string, unknown> | undefined)?.[name];
+    validateRequirement(
+      id,
+      destination === undefined || supportedStatusFields.has(name),
+      `output.extensiveWeights.status.${name} is unsupported; omit this diagnostic destination`
+    );
+  }
+  validateRequirement(
+    id,
+    outputs.categoryShares === undefined || Boolean(props.categories),
+    'output.categoryShares requires categories; received a destination with categories disabled'
+  );
+  for (const name of ['extensiveValues', 'intensiveValues'] as const) {
+    validateRequirement(
+      id,
+      outputs[name] === undefined || Boolean(props.sourceValues),
+      `output.${name} requires sourceValues; received a destination with sourceValues disabled`
+    );
+  }
   const scratch = props.scratch ?? {};
   const builder = new RecipeBuilder(graph);
 
@@ -419,20 +487,36 @@ function declareChangeOfSupportRecipe<Parameters>(
     return raster;
   });
 
-  const overflow = getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, outputs.status?.overflow);
+  const overflow = getOrCreateView(
+    graph,
+    `${id}-overflow`,
+    'uint32',
+    1,
+    outerOverflow ?? nestedOverflow
+  );
   const requiredCount = getOrCreateView(
     graph,
     `${id}-required-count`,
     'uint32',
     1,
-    outputs.status?.requiredCount
+    outerRequiredCount ?? nestedRequiredCount
   );
   const extensiveWeights = createTransientSpatialWeights(
     graph,
     `${id}-extensive`,
     targetCount,
     props.pairCapacity,
-    {...outputs.extensiveWeights, status: {overflow, requiredCount}}
+    {
+      offsets: outputs.extensiveWeights?.offsets,
+      neighbors: outputs.extensiveWeights?.neighbors,
+      weights: outputs.extensiveWeights?.weights,
+      status: {
+        overflow,
+        requiredCount: nestedRequiredCount ?? requiredCount,
+        count: nestedStatus?.count,
+        candidateOverflow: nestedStatus?.candidateOverflow
+      }
+    }
   );
   const intensiveValues = getOrCreateView(
     graph,

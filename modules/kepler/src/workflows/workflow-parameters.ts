@@ -2,17 +2,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
+import type {CatalogParameterValue, CatalogParameterSpec} from '../analysis/catalog-binding-types';
+import {
+  getCatalogNumberProblem,
+  getCatalogParameterRenameMessage,
+  parseCatalogParameterNumber as parseNumber,
+  resolveCatalogParameterAliases,
+  resolveCatalogParameterUnit,
+  type CatalogNumericConstraints
+} from '../analysis/catalog-parameter-constraints';
+import {
+  getRemovedPointCloudIcpParameterMessage,
+  POINT_CLOUD_ICP_ID,
+  POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER
+} from '../analysis/catalog-pointcloud-icp-parameters';
 import {WORKFLOW_LIMITS, WorkflowError, type WorkflowParameterSpec} from './workflow-types';
-
-const NUMBER_PATTERN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
-
-function parseNumber(value: unknown): number | null {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value !== 'string' || !NUMBER_PATTERN.test(value.trim())) return null;
-  const number = Number(value.trim());
-  return Number.isFinite(number) ? number : null;
-}
 
 function formatProblemValue(value: unknown): string {
   if (typeof value === 'string') {
@@ -24,7 +28,14 @@ function formatProblemValue(value: unknown): string {
   return String(value);
 }
 
-function getNumberRangeProblem(spec: WorkflowParameterSpec, value: number): string | null {
+function getNumberRangeProblem(
+  spec: WorkflowParameterSpec & CatalogNumericConstraints,
+  value: number
+): string | null {
+  const problem = getCatalogNumberProblem(spec, value, 'got');
+  if (!problem) return null;
+  if (spec.nonzeroFloat32Scale !== undefined) return problem;
+  if (spec.nonzero && value === 0) return problem;
   if (
     (spec.minimum === undefined || value >= spec.minimum) &&
     (spec.maximum === undefined || value <= spec.maximum)
@@ -69,14 +80,17 @@ function getMaximumStringLength(spec: WorkflowParameterSpec): number {
 
 /** Static defaults by name; input-derived parameters remain absent until resolved. */
 export function getWorkflowParameterDefaults(
-  specs: readonly WorkflowParameterSpec[]
+  specs: readonly (WorkflowParameterSpec & Pick<CatalogParameterSpec, 'aliasFor'>)[]
 ): Record<string, CatalogParameterValue> {
-  return Object.fromEntries(
+  const defaults: Record<string, CatalogParameterValue> = Object.fromEntries(
     specs.flatMap(spec => {
       const value = spec.defaultValue;
       return value === undefined ? [] : [[spec.name, Array.isArray(value) ? [...value] : value]];
     })
   );
+  return resolveCatalogParameterAliases(specs, defaults, (name, problem) => {
+    throw new WorkflowError('parameter-out-of-range', `${name} ${problem}`, {parameter: name});
+  });
 }
 
 /**
@@ -85,7 +99,7 @@ export function getWorkflowParameterDefaults(
  * `must be a whole number; got 1.5`, `must be one of knn, distance; got "x"`.
  */
 export function getWorkflowParameterProblem(
-  spec: WorkflowParameterSpec,
+  spec: WorkflowParameterSpec & CatalogNumericConstraints,
   rawValue: unknown
 ): string | null {
   switch (spec.kind) {
@@ -162,28 +176,47 @@ export function getWorkflowParameterProblem(
  * for `expression`, `WORKFLOW_LIMITS.maximumTextCharacters` for `text`).
  */
 export function normalizeWorkflowParameters(
-  specs: readonly WorkflowParameterSpec[],
+  specs: readonly (WorkflowParameterSpec & Pick<CatalogParameterSpec, 'aliasFor'>)[],
   raw: Readonly<Record<string, unknown>>,
-  context: {operationTitle: string}
+  context: {operationTitle: string; operationId?: string}
 ): Record<string, CatalogParameterValue> {
+  const explicit = resolveCatalogParameterAliases(specs, raw, (name, problem) => {
+    throw new WorkflowError(
+      'parameter-out-of-range',
+      `${context.operationTitle}: ${name} ${problem}`,
+      {parameter: name}
+    );
+  });
   const parameterNames = new Set(specs.map(spec => spec.name));
+  const defaults = getWorkflowParameterDefaults(specs);
   for (const name of Object.keys(raw)) {
     if (!parameterNames.has(name)) {
-      throw new WorkflowError(
-        'unknown-parameter',
-        `${context.operationTitle}: Unknown parameter ${formatProblemValue(name)}.`,
-        {parameter: name}
-      );
+      const operationId =
+        context.operationId ??
+        (specs.includes(POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER)
+          ? POINT_CLOUD_ICP_ID
+          : undefined);
+      const problem =
+        getRemovedPointCloudIcpParameterMessage(operationId, name) ??
+        getCatalogParameterRenameMessage(specs, name) ??
+        `Unknown parameter ${formatProblemValue(name)}.`;
+      throw new WorkflowError('unknown-parameter', `${context.operationTitle}: ${problem}`, {
+        parameter: name
+      });
     }
   }
   return Object.fromEntries(
     specs.flatMap(spec => {
-      const supplied = Object.hasOwn(raw, spec.name);
-      if (!supplied && spec.defaultValue === undefined) return [];
-      const rawValue = supplied ? raw[spec.name] : spec.defaultValue;
+      const supplied = Object.hasOwn(explicit, spec.name);
+      if (!supplied && defaults[spec.name] === undefined) return [];
+      const rawValue = supplied ? explicit[spec.name] : defaults[spec.name];
       const problem = getWorkflowParameterProblem(spec, rawValue);
       if (problem !== null) {
-        const unit = spec.unit ? ` (${spec.unit === 'crs' ? 'CRS units' : spec.unit})` : '';
+        const resolvedUnit = resolveCatalogParameterUnit(
+          spec,
+          explicit['coordinateSystem'] ?? defaults['coordinateSystem']
+        );
+        const unit = resolvedUnit ? ` (${resolvedUnit})` : '';
         throw new WorkflowError(
           'parameter-out-of-range',
           `${context.operationTitle}: ${spec.label}${unit} ${problem}.`,
@@ -223,9 +256,10 @@ export function formatWorkflowParameterValue(
 
 /** Whether `visibleWhen` lets the form show the parameter for the current values. */
 export function isWorkflowParameterVisible(
-  spec: WorkflowParameterSpec,
+  spec: WorkflowParameterSpec & Pick<CatalogParameterSpec, 'aliasFor'>,
   values: Readonly<Record<string, CatalogParameterValue>>
 ): boolean {
+  if (spec.aliasFor) return false;
   if (!spec.visibleWhen) return true;
   const value = values[spec.visibleWhen.parameter];
   return spec.visibleWhen.equals.some(candidate => {

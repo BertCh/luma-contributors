@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {iterateCatalogPositions} from './catalog-geojson';
 import type {LocalFrame} from './catalog-local-frame';
 import type {
   CatalogInputSpec,
@@ -11,8 +12,7 @@ import type {
 } from './catalog-binding-types';
 import {
   getFeatureIdentity,
-  getLineParts,
-  getPointPositions,
+  measureRingSignedArea,
   getPolygonParts,
   type CatalogFeature,
   type CatalogFeatureCollection,
@@ -104,14 +104,9 @@ export function getSourceColumns(
 
 /** Every finite vertex of the collection, in feature order. */
 export function collectPositions(collection: CatalogFeatureCollection): CatalogPosition[] {
-  const positions: CatalogPosition[] = [];
-  for (const feature of collection.features) {
-    for (const position of getPointPositions(feature.geometry)) positions.push(position);
-    for (const part of getLineParts(feature.geometry)) positions.push(...part);
-    for (const polygon of getPolygonParts(feature.geometry))
-      for (const ring of polygon) positions.push(...ring);
-  }
-  return positions.filter(position => Number.isFinite(position[0]) && Number.isFinite(position[1]));
+  return Array.from(iterateCatalogPositions([collection])).filter(
+    position => Number.isFinite(position[0]) && Number.isFinite(position[1])
+  );
 }
 
 export function getFeatureVertices(feature: CatalogFeature): CatalogPosition[] {
@@ -149,13 +144,7 @@ export function readPropertyNumber(feature: CatalogFeature, name: string): numbe
 }
 
 export function getSignedArea(ring: readonly PlanarPoint[]): number {
-  let sum = 0;
-  for (let index = 0; index < ring.length; index++) {
-    const [firstX, firstY] = ring[index];
-    const [secondX, secondY] = ring[(index + 1) % ring.length];
-    sum += firstX * secondY - secondX * firstY;
-  }
-  return sum / 2;
+  return measureRingSignedArea(ring, 'planar');
 }
 
 export function isPointInRing(x: number, y: number, ring: readonly CatalogPosition[]): boolean {

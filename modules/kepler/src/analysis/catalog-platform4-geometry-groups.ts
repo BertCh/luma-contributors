@@ -278,7 +278,7 @@ export async function runGpuKMeans(
     session.graph.add(
       new GPUSpatialKMeans({
         positions: session.input('positions', packed, 'float32x2'),
-        k: clusterCount,
+        clusterCount,
         maximumIterations: parameters.maximumIterations,
         restartCount: KMEANS_RESTART_COUNT,
         parameters: session.input(

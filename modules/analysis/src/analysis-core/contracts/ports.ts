@@ -66,7 +66,10 @@ export type GPUMultipartPointGeometryPort = Omit<GPUPointGeometryPort, 'featureO
 /**
  * Multilinestring features: `featureOffsets` maps feature rows to linestring-part rows;
  * `lineOffsets` maps those parts to vertices. Both offset arrays start at zero, are nondecreasing
- * and end at the child count. Empty parts and empty features are distinct and allowed.
+ * and end at the active child count. Generated geometry may have capacity after that active
+ * prefix: the terminal feature offset can be smaller than lineOffsets.length - 1, provided
+ * remaining line offsets repeat the active terminal vertex offset. Empty parts and empty
+ * features are distinct and allowed.
  * `sourceIds`, when present, has one row per feature, independent of the part count.
  * A consumer must explicitly support multipart inputs.
  */
@@ -213,7 +216,10 @@ export type GPUTrajectoryGeometryFields<
   TimestampFormat extends GPUTrajectoryTimestampFormat = GPUTrajectoryTimestampFormat
 > = Omit<GPUPackedGeometryPort<GPUTrajectoryGeometryPort<TimestampFormat>>, 'kind' | 'sourceIds'>;
 
-/** Capacity-bounded pairs with explicit final and candidate completeness. */
+/**
+ * Capacity-bounded pairs with explicit final and candidate completeness. Both row arrays are
+ * defined only on `[0, status.count)`; tail bytes are unspecified across submissions.
+ */
 export type GPUCompactPairPort = {
   /** Left input row offsets, never application identities. */
   leftRows: GraphDataView<'uint32'>;

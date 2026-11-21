@@ -334,8 +334,8 @@ export function CompactionFigure({model}: {model: LensViewModel}) {
           <KernelStrip
             title={
               <>
-                Recorded run: <b>{model.recordedNodeCount}</b> kernels over {formatCount(rowCount)}{' '}
-                rows
+                Recorded run: <b>{model.recordedNodeCount}</b> graph nodes over{' '}
+                {formatCount(rowCount)} rows
               </>
             }
             kernels={kernels}

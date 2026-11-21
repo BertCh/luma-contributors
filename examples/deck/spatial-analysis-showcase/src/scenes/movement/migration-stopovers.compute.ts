@@ -5,11 +5,11 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   getGPUTrajectoryMetricsParameterValues,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
+  GPU_DBSCAN_PARAMETER_LENGTH,
   GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
-  GPUSpatialClustering,
+  GPUDBSCAN,
   GPUTrajectoryMetrics
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
@@ -86,7 +86,7 @@ type Site = {
 /**
  * Migration stopovers: `GPUTrajectoryMetrics` finds every dwell (a run of slow two-hour steps that
  * lasts at least the minimum stay); a kernel keeps the stays that are short enough to be a stopover
- * rather than a home range, started in the chosen season, by the chosen species; `GPUSpatialClustering`
+ * rather than a home range, started in the chosen season, by the chosen species; `GPUDBSCAN`
  * (DBSCAN) groups the surviving stops into sites; the CPU ranks the sites by bird-days of dwell.
  * Stop detection (speeds, dwell) and DBSCAN both run on longitude/latitude with a great-circle metric
  * (the site radius is a great-circle distance in meters), so no projection is involved; drawing uses
@@ -188,7 +188,7 @@ export async function createMigrationStopovers(
     })
   );
   // The metrics run on longitude/latitude with a great-circle metric. A stop's center is the mean
-  // lng/lat of its rows; it is both what is drawn and what `GPUSpatialClustering` groups.
+  // lng/lat of its rows; it is both what is drawn and what `GPUDBSCAN` groups.
   const stopLngLatMetricsView = view(
     metricsGraph,
     'stop-lng-lat',
@@ -344,11 +344,11 @@ export async function createMigrationStopovers(
   const clusterParameters = resources.createParameterBuffer(
     'cluster-parameters',
     'float32',
-    GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+    GPU_DBSCAN_PARAMETER_LENGTH
   );
   const clusterGraph = new GPUCommandGraph<void>(device, {id: 'stopovers-clusters'});
   clusterGraph.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       id: 'sites',
       positions: view(clusterGraph, 'selected-lng-lat', selectedLngLat, 'float32x2', STOP_CAPACITY),
       spatialContext: CLUSTER_SPATIAL_CONTEXT,
@@ -465,11 +465,11 @@ export async function createMigrationStopovers(
 
   function writeClusterParameters(): void {
     clusterParameters.write(
-      getGPUSpatialClusteringParameterValues({
+      getGPUDBSCANParameterValues({
         spatialContext: CLUSTER_SPATIAL_CONTEXT,
         bounds,
         epsilon: ctx.options.epsilonKm * 1000,
-        minimumPoints: ctx.options.minimumStops
+        minimumSamples: ctx.options.minimumStops
       })
     );
     clusterDirty = true;

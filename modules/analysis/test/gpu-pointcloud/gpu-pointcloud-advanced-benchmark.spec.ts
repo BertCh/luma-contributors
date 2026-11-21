@@ -102,7 +102,7 @@ for (const mode of ['smrf', 'icp', 'skew'] as const)
                 cellSize: 1
               },
               maximumDistance: 0.2,
-              iterations: 4,
+              maximumIterations: 4,
               robust: {method: 'huber', scale: 0.1},
               output: {
                 transform: transform.view,

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterOperationArray} from '../raster-grid/raster-operation-band';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   validateCapacity,
   validateRequirement
@@ -15,6 +18,7 @@ import {GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH} from '../gpu-raster-fra
 import {
   calibrateRasterOperationBand,
   readRasterOperationBand,
+  snapshotRasterOperationBand,
   validateRasterOperationBand,
   type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
@@ -78,6 +82,29 @@ export function computeRasterFractionalZonalStatisticsOnCPU(
   options: CPURasterFractionalZonalStatisticsOptions
 ): CPURasterFractionalZonalStatisticsResult {
   const id = 'computeRasterFractionalZonalStatisticsOnCPU';
+  for (const name of [
+    'zoneIds',
+    'cellIds',
+    'zoneValidity',
+    'count',
+    'requiredCount',
+    'overflow'
+  ] as const) {
+    validateRasterOperationArray(id, `coverage.${name}`, input.coverage[name], 'Uint32Array');
+  }
+  if (input.coverage.candidateOverflow !== undefined) {
+    validateRasterOperationArray(
+      id,
+      'coverage.candidateOverflow',
+      input.coverage.candidateOverflow,
+      'Uint32Array'
+    );
+  }
+  validateRasterOperationArray(id, 'coverage.fractions', input.coverage.fractions, 'Float32Array');
+  if (input.parameters !== undefined)
+    validateRasterOperationArray(id, 'parameters', input.parameters, 'Float32Array');
+  if (input.cellAreas !== undefined)
+    validateRasterOperationArray(id, 'cellAreas', input.cellAreas, 'Float32Array');
   validateRasterOperationBand(id, input.input, options.grid);
   validateStatisticsOptions(id, options, input.cellAreas !== undefined);
   if (input.cellAreas && input.cellAreas.length !== options.grid.width * options.grid.height)
@@ -112,6 +139,8 @@ export function computeRasterFractionalZonalStatisticsOnCPU(
   );
   const [columnX, rowX, , columnY, rowY] = options.grid.affine;
   // getGPURasterFractionalCoverageParameterValues: [originX, originY, a, b, d, e, determinant, padding].
+  // Word 7 is ignored legacy padding. Version 2 appends [2, absolute Y offset] in words 8/9;
+  // the same ten-word packet supports local clipping and absolute-latitude ground areas.
   const [, , , , , , determinant] = parameters ?? [];
   const cellArea = Math.abs(parameters ? determinant : columnX * rowY - rowX * columnY);
   const weighted = new Float64Array(options.zoneCount);
@@ -207,6 +236,46 @@ function validateStatisticsOptions(
 /** CPU aggregate with the same packed graph values as the GPU operation. */
 export class CPURasterFractionalZonalStatisticsOperation extends GPUCPUOperation {
   constructor(props: RasterFractionalZonalStatisticsOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'zoneCount',
+      'coverage',
+      'quantity',
+      'parameters',
+      'cellSizeMode',
+      'cellAreas',
+      'output'
+    ]);
+    const output = Object.freeze({
+      totals: props.output.totals,
+      means: props.output.means,
+      coveredArea: props.output.coveredArea,
+      validArea: props.output.validArea,
+      validity: props.output.validity
+    });
+    const coverage = snapshotConstructionFields(props.coverage, [
+      'zoneIds',
+      'cellIds',
+      'fractions',
+      'zoneValidity',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...props,
+      input: snapshotRasterOperationBand(props.input),
+      coverage: Object.freeze({
+        ...coverage,
+        status: snapshotConstructionFields(coverage.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow'
+        ])
+      }),
+      output
+    });
     const id = props.id ?? 'fractional-zonal-statistics';
     validateRasterOperationBand(id, props.input, props.grid);
     validateStatisticsOptions(id, props, props.cellAreas !== undefined);
@@ -226,6 +295,7 @@ export class CPURasterFractionalZonalStatisticsOperation extends GPUCPUOperation
       ...(props.parameters !== undefined ? {parameters: props.parameters} : {}),
       ...(props.cellAreas !== undefined ? {cellAreas: props.cellAreas} : {})
     };
+    validateOperationGraphNames(id, inputs, props.output);
     super({
       id,
       inputs,

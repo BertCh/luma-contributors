@@ -80,9 +80,15 @@ it('GPURipley validates its inputs and outputs', () => {
   expectThrows(() => ({radiusCount: 0}), /radiusCount/);
   expectThrows(() => ({radiusCount: 257}), /radiusCount/);
   expectThrows(() => ({radiusCount: 2.5}), /radiusCount/);
-  expectThrows(graph => ({output: {k: view(graph, 'float32', 7)}}), /output\.k must hold/);
-  expectThrows(graph => ({output: {l: view(graph, 'float32', 7)}}), /output\.l must hold/);
-  expectThrows(graph => ({output: {lMinusR: view(graph, 'float32', 7)}}), /lMinusR/);
+  expectThrows(
+    graph => ({output: {k: view(graph, 'float32', 7)}}),
+    /output\.k length 7 must be at least radiusCount \(8\)/
+  );
+  expectThrows(
+    graph => ({output: {l: view(graph, 'float32', 7)}}),
+    /output\.l length 7 must be at least radiusCount \(8\)/
+  );
+  expectThrows(graph => ({output: {lMinusR: view(graph, 'float32', 7)}}), /lMinusR length 7.*8/);
   expectThrows(
     graph => ({output: {pairCorrelation: view(graph, 'float32', 7)}}),
     /pairCorrelation/
@@ -323,6 +329,11 @@ it.each([
     units: 'meters',
     frame: {id: 'f', kind}
   } as const;
-  expect(new GPURipley(createProps(graph, {spatialContext})).spatialContext).toBe(spatialContext);
+  const captured = new GPURipley(createProps(graph, {spatialContext})).spatialContext;
+  expect(captured).toStrictEqual(spatialContext);
+  expect(captured).not.toBe(spatialContext);
+  expect(captured.frame).not.toBe(spatialContext.frame);
+  expect(Object.isFrozen(captured)).toBe(true);
+  expect(Object.isFrozen(captured.frame)).toBe(true);
   device.destroy();
 });

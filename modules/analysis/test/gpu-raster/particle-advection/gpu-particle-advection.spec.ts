@@ -225,7 +225,7 @@ function expectStateClose(
 }
 
 const VORTEX_SETTINGS: GPUParticleAdvectionSettings = {
-  fieldExtent: [0, 0, 1, 1],
+  fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
   timeStep: 0.5,
   dropRate: 0.01,
   spawnBounds: [16, 16, 48, 48]
@@ -282,7 +282,7 @@ it('GPUParticleAdvection replays bitwise and changes parameters without rebuildi
       for (let frame = 0; frame < 10; frame++) {
         // Speed scale, time step and drop rate change every frame on the same compiled graph.
         const settings: GPUParticleAdvectionSettings = {
-          fieldExtent: [0, 0, 1, 1],
+          fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
           timeStep: 0.25 + 0.05 * frame,
           speedScale: frame % 2 === 0 ? 1 : 2,
           dropRate: frame % 3 === 0 ? 0.2 : 0
@@ -346,7 +346,7 @@ it('GPUParticleAdvection respawns on NaN cells, field exit, age, slowness and fi
     state.trails!.fill(-1);
     fixture.writeState(state);
     const settings: GPUParticleAdvectionSettings = {
-      fieldExtent: [0, 0, 1, 1],
+      fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
       timeStep: 1,
       minimumSpeed: 0.5,
       spawnBounds: [1, 1, 2, 2]

@@ -79,7 +79,7 @@ for (const kind of ['knox', 'mantel', 'jacquez'] as const)
               })
             : new GPUJacquezTest({
                 ...common,
-                k: 1,
+                neighborCount: 1,
                 neighbors: weights,
                 output: {summary, permutationCount, statistics: rig.output('uint32', 4)}
               });

@@ -2,18 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateS2CoveringOptions} from './s2-covering-option-validation';
+import {snapshotS2PolygonOperationProps} from './s2-covering-construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateMaximumCount,
-  validateRequirement
+  validateMaximumCount
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
-import {assertUnitVector} from '../global-coordinates/assert-unit-vector';
+import {validateUnitVector} from '../global-coordinates/assert-unit-vector';
 import {
   GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
   GPU_SPHERICAL_MINIMUM_TOLERANCE,
@@ -25,6 +26,7 @@ import {
   GPUS2PolygonCoveringOperation,
   type S2PolygonCoveringOperationProps
 } from './gpu-s2-polygon-covering-operation';
+import {GPU_S2_POLYGON_COVERING_MAXIMUM_VISITED_CELLS} from './gpu-s2-polygon-covering';
 import {
   CPU_S2_COVERING_MAXIMUM_LEVEL,
   type CPUCoveringVector,
@@ -38,12 +40,12 @@ import {
 
 /** Float32 xyz vertices and uint32 offsets; rings need not consume the entire positions array. */
 export type CPUS2PolygonCoveringInput = {positions: Float32Array; ringOffsets: Uint32Array};
-/** GPU scheduling budgets are accepted for props compatibility and ignored. */
+/** Float64 geometry; explicit traversal budgets and exhaustion publication match the GPU. */
 export type CPUS2PolygonCoveringOptions = Omit<
   S2PolygonCoveringOperationProps,
   'id' | 'positions' | 'ringOffsets' | 'positionCount' | 'ringOffsetCount' | 'output'
 >;
-/** Counts are [written, required]; status bits 1 invalid, 2 output capacity. */
+/** Counts are [written, required so far]; status bits 1 invalid, 2 capacity, 4 traversal exhaustion. */
 export type CPUS2PolygonCoveringResult = {
   cells: Uint32Array;
   counts: Uint32Array;
@@ -52,13 +54,15 @@ export type CPUS2PolygonCoveringResult = {
 };
 
 /**
- * Adaptive S2 cover, in ascending cell-ID order, with the contributor's signed winding,
- * CCW-hole subtraction, inclusive tolerance bands and invalid-ring status.
+ * Adaptive S2 cover, in ascending cell-ID order, with orientation-independent shell and
+ * hole subtraction, inclusive tolerance bands and invalid-ring status.
  *
  * What differs from the GPU contributor:
  * - Predicates and geometry use float64; cell-edge decisions within GPU rounding error can differ.
- * - maximumVisitedCells and refinement are ignored. The traversal completes, status bit 4 is
- *   never set, and required count is complete. visitedCount counts the full depth-first walk.
+ * - Only an explicit maximumVisitedCells bounds traversal. Omission retains a complete CPU
+ *   traversal; the GPU defaults to 65,536. Serial exhaustion retains its emitted prefix;
+ *   level-synchronous exhaustion clears cells/counts. Both set bit 4. Frontier overflow counts
+ *   only cells already visited; classification exhaustion reports the explicit visit budget.
  * - Levels up to 30 are accepted (the S2 key layout limit), dropping the GPU level-15 precision
  *   cap and fixed stack. The uint32 counts/visitedCount layout limits still apply.
  * - Malformed ring ranges, non-unit/non-finite vertices and degenerate rings return status 1,
@@ -123,21 +127,57 @@ export function computeS2PolygonCoveringOnCPU(
           return getInvalid();
       }
     }
+    // A gnomonic fan about the validated pole determines orientation from local differences.
+    // Taking abs(winding) instead would also accept the shell's antipodal image.
+    const anchor = vertices[0];
+    const projectDelta = (point: CPUCoveringVector): CPUCoveringVector => {
+      const difference = point.map((value, axis) => value - anchor[axis]) as [
+        number,
+        number,
+        number
+      ];
+      const correction =
+        getCoveringDot(unitCenter, difference) / getCoveringDot(unitCenter, anchor);
+      const scale = getCoveringDot(unitCenter, point);
+      return difference.map((value, axis) => (value - anchor[axis] * correction) / scale) as [
+        number,
+        number,
+        number
+      ];
+    };
+    let area = 0;
+    for (let vertex = 1; vertex + 1 < vertices.length; vertex++)
+      area += getCoveringDot(
+        unitCenter,
+        getCoveringCross(projectDelta(vertices[vertex]), projectDelta(vertices[vertex + 1]))
+      );
+    if (!Number.isFinite(area) || area === 0) return getInvalid();
+    if (area < 0) vertices.reverse();
     rings.push(vertices);
   }
   const contains = (point: CPUCoveringVector): [boolean, boolean] => {
     let inside = false;
     let boundary = false;
+    const direction = normalizeCoveringVector(point);
+    const tangent = (vertex: CPUCoveringVector): CPUCoveringVector => {
+      const sign = getCoveringDot(direction, vertex) >= 0 ? 1 : -1;
+      const difference = vertex.map((value, axis) => value - sign * direction[axis]) as [
+        number,
+        number,
+        number
+      ];
+      return getCoveringCross(direction, difference);
+    };
     rings.forEach((ring, ringIndex) => {
       let winding = 0;
       ring.forEach((first, vertex) => {
         const second = ring[(vertex + 1) % ring.length];
         boundary ||= isPointOnCoveringArc(first, second, point, tolerance);
-        const numerator = getCoveringDot(point, getCoveringCross(first, second));
-        const denominator =
-          getCoveringDot(first, second) -
-          getCoveringDot(point, first) * getCoveringDot(point, second);
-        if (Math.abs(numerator) + Math.abs(denominator) > 1e-12)
+        const firstTangent = tangent(first);
+        const secondTangent = tangent(second);
+        const numerator = getCoveringDot(direction, getCoveringCross(firstTangent, secondTangent));
+        const denominator = getCoveringDot(firstTangent, secondTangent);
+        if (Math.abs(numerator) + Math.abs(denominator) > 0)
           winding +=
             numerator === 0 && denominator === 0
               ? 0
@@ -183,11 +223,66 @@ export function computeS2PolygonCoveringOnCPU(
     }
     return [intersects, contained && !touched];
   };
+  const budget = options.maximumVisitedCells ?? Infinity;
+  if (options.refinement === 'level-synchronous' && options.maximumVisitedCells !== undefined) {
+    let frontier = Array.from({length: 6}, (_, face) => ({
+      cell: BigInt(2 * face + 1) << 60n,
+      level: 0
+    }));
+    const retained: bigint[] = [];
+    let visited = 0;
+    while (frontier.length) {
+      if (retained.length + frontier.length > budget) {
+        result.status[0] = 4;
+        result.visitedCount[0] = visited;
+        return result;
+      }
+      if (visited + frontier.length > budget) {
+        result.status[0] = 4;
+        result.visitedCount[0] = budget;
+        return result;
+      }
+      const next: typeof frontier = [];
+      for (const {cell, level} of frontier) {
+        visited++;
+        const [intersects, contained] = classify(cell, level);
+        if (!intersects) continue;
+        if (
+          level >= (options.minimumLevel ?? 0) &&
+          (contained || (options.mode !== 'interior' && level === options.maximumLevel))
+        )
+          retained.push(cell);
+        else if (level < options.maximumLevel) {
+          const marker = 1n << BigInt(60 - 2 * level),
+            childMarker = marker >> 2n;
+          for (let child = 0; child < 4; child++)
+            next.push({
+              cell: cell - marker + childMarker + BigInt(child) * 2n * childMarker,
+              level: level + 1
+            });
+        }
+      }
+      frontier = next;
+    }
+    retained.sort((first, second) => (first < second ? -1 : first > second ? 1 : 0));
+    retained.slice(0, options.capacity).forEach((cell, row) => {
+      result.cells[2 * row] = Number(cell & 0xffffffffn);
+      result.cells[2 * row + 1] = Number(cell >> 32n);
+    });
+    result.counts.set([Math.min(retained.length, options.capacity), retained.length]);
+    result.status[0] = Number(retained.length > options.capacity) * 2;
+    result.visitedCount[0] = visited;
+    return result;
+  }
   const stack: {cell: bigint; level: number}[] = [];
   for (let face = 5; face >= 0; face--) stack.push({cell: BigInt(2 * face + 1) << 60n, level: 0});
   let required = 0;
   let visited = 0;
   while (stack.length) {
+    if (visited === budget) {
+      result.status[0] |= 4;
+      break;
+    }
     const {cell, level} = stack.pop()!;
     visited++;
     validateMaximumCount('s2-polygon-covering', 'visitedCount', visited, 0xffffffff);
@@ -214,14 +309,15 @@ export function computeS2PolygonCoveringOnCPU(
     validateMaximumCount('s2-polygon-covering', 'requiredCount', required, 0xffffffff);
   }
   result.counts.set([Math.min(required, options.capacity), required]);
-  result.status[0] = Number(required > options.capacity) * 2;
+  result.status[0] |= Number(required > options.capacity) * 2;
   result.visitedCount[0] = visited;
   return result;
 }
 
-/** CPU traversal without GPU scheduling, stack-size or precision caps. */
+/** CPU traversal with the declared visit budget, without GPU stack-size or precision caps. */
 export class CPUS2PolygonCoveringOperation extends GPUCPUOperation {
   constructor(props: S2PolygonCoveringOperationProps) {
+    props = snapshotS2PolygonOperationProps(props);
     const operation = new GPUS2PolygonCoveringOperation(props);
     const {id} = operation;
     validateOptions(id, props);
@@ -256,6 +352,15 @@ export class CPUS2PolygonCoveringOperation extends GPUCPUOperation {
 }
 
 function validateOptions(id: string, options: CPUS2PolygonCoveringOptions): void {
+  validateS2CoveringOptions(id, options, ['serial', 'level-synchronous']);
+  if (options.maximumVisitedCells !== undefined)
+    validateCapacity(
+      id,
+      'maximumVisitedCells',
+      options.maximumVisitedCells,
+      6,
+      GPU_S2_POLYGON_COVERING_MAXIMUM_VISITED_CELLS
+    );
   validateCapacity(id, 'maximumLevel', options.maximumLevel, 0, CPU_S2_COVERING_MAXIMUM_LEVEL);
   validateCapacity(id, 'minimumLevel', options.minimumLevel ?? 0, 0, options.maximumLevel);
   validateCapacity(id, 'capacity', options.capacity);
@@ -270,13 +375,8 @@ function validateOptions(id: string, options: CPUS2PolygonCoveringOptions): void
     options.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
     GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
   );
-  if (options.hemisphereCenter) assertUnitVector(options.hemisphereCenter, id, 'hemisphereCenter');
-  validateRequirement(
-    id,
-    options.refinement === undefined ||
-      ['serial', 'level-synchronous'].includes(options.refinement),
-    'refinement must be serial or level-synchronous'
-  );
+  if (options.hemisphereCenter)
+    validateUnitVector(options.hemisphereCenter, id, 'hemisphereCenter');
 }
 
 function doArcsIntersect(

@@ -22,14 +22,26 @@ export type ScenarioDeclaration = {
 
 /**
  * Execute the real scenario closure through record assembly, stopping before submission/readback.
- * Only executable callbacks are replaced: published graph scheduling, resource validation and
- * preflight still run. Spies are scoped to one scenario and restored even on a declaration error.
+ * Pipelines are inert null-device objects, while real node compilation still registers kernel
+ * facts. Encoding is forbidden. Published scheduling, validation and preflight still run.
+ * Spies are scoped to one scenario and restored even on a declaration error.
  */
 export async function declareLensScenario(
   scenario: LensScenarioDescriptor,
   storageBufferLimit = 8
 ): Promise<ScenarioDeclaration> {
   const device = createNullWebGPUDevice();
+  Object.defineProperty(device, 'props', {
+    value: {...device.props, _cacheShaders: false, _cachePipelines: false}
+  });
+  Object.defineProperty(device, 'createComputePipeline', {
+    value: (props: {id?: string}) => ({id: props.id ?? '', hash: '', destroy() {}})
+  });
+  Object.defineProperty(device, 'submit', {
+    value: () => {
+      throw new Error('Null-device declaration must never submit');
+    }
+  });
   Object.defineProperty(device.limits, 'maxStorageBuffersPerShaderStage', {
     value: storageBufferLimit
   });
@@ -41,8 +53,6 @@ export async function declareLensScenario(
   const compiledStructures: records.GPUComputationGraph[] = [];
   const buffers: {destroy(): void}[] = [];
   const originalCreateBuffer = device.createBuffer;
-  const originalCompute = GPUCommandGraph.prototype.addComputePass;
-  const originalCopy = GPUCommandGraph.prototype.addCopyPass;
   const originalCompile = GPUCommandGraph.prototype.compile;
   const originalRecord = records.createGPUComputationRecord;
   const originalTap = records.GPUSnapshotTap.prototype.getCommandNodes;
@@ -59,24 +69,15 @@ export async function declareLensScenario(
       buffers.push(buffer);
       return buffer;
     }),
-    vi.spyOn(GPUCommandGraph.prototype, 'addComputePass').mockImplementation(function (
-      this: GPUCommandGraph,
-      node
-    ) {
-      originalCompute.call(this, withoutExecution(node));
-    }),
-    vi.spyOn(GPUCommandGraph.prototype, 'addCopyPass').mockImplementation(function (
-      this: GPUCommandGraph,
-      node
-    ) {
-      originalCopy.call(this, withoutExecution(node));
+    vi.spyOn(device, 'createCommandEncoder').mockImplementation(() => {
+      throw new Error('Null-device declaration must never execute');
     }),
     vi.spyOn(GPUCommandGraph.prototype, 'compile').mockImplementation(function (
       this: GPUCommandGraph
     ) {
       const compiled = originalCompile.call(this);
       compiledGraphs.push(compiled);
-      compiledStructures.push(records.describeGPUCommandGraph(compiled).graph);
+      compiledStructures.push(records.describeGPUCommandGraph(compiled, {graph: this}).graph);
       for (const name of getLensCaptureNames(this)) captureNames.add(name);
       return compiled;
     }),
@@ -202,7 +203,11 @@ export function getRecordedCaptureNames(
   ].sort();
 }
 
-/** Ignore timings, source text, allocations and values; retain the declared observation graph. */
+/**
+ * Ignore timings, source text, allocations and values; retain the declared observation graph and
+ * each kernel binding's layout (name, resource, access, element type, element offset and length),
+ * so a binding that shifts by one element changes the signature (LENS-106).
+ */
 export function getStructureSignature(
   record: records.GPUComputationRecord,
   captureNames: readonly string[]
@@ -216,25 +221,30 @@ export function getStructureSignature(
   };
 }
 
+/** Declared binding order is part of the layout; absent optional fields stay absent. */
+function getBindingLayoutSignature(node: records.GPUComputationNode) {
+  return (node.bindings ?? []).map(binding => ({
+    name: binding.name,
+    resource: binding.resource,
+    access: binding.access,
+    ...(binding.elementType !== undefined ? {elementType: binding.elementType} : {}),
+    ...(binding.elementOffset !== undefined ? {elementOffset: binding.elementOffset} : {}),
+    ...(binding.length !== undefined ? {length: binding.length} : {}),
+    ...(binding.bindingByteOffset !== undefined
+      ? {bindingByteOffset: binding.bindingByteOffset}
+      : {}),
+    ...(binding.bindingByteLength !== undefined
+      ? {bindingByteLength: binding.bindingByteLength}
+      : {})
+  }));
+}
+
 function getGraphNodeSignature(graph: records.GPUComputationGraph) {
   return graph.nodes.map(node => ({
     id: node.id,
     kind: node.kind,
     reads: [...(node.reads ?? [])].sort(),
-    writes: [...(node.writes ?? [])].sort()
+    writes: [...(node.writes ?? [])].sort(),
+    bindings: getBindingLayoutSignature(node)
   }));
-}
-
-function withoutExecution<Node extends {compile: unknown; compileAsync?: unknown}>(
-  node: Node
-): Node {
-  const {compile: _compile, compileAsync: _compileAsync, ...declaration} = node;
-  return {
-    ...declaration,
-    compile: () => ({
-      encode() {
-        throw new Error('Null-device declaration must never execute');
-      }
-    })
-  } as unknown as Node;
 }

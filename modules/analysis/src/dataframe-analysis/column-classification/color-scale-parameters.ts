@@ -40,8 +40,8 @@ export type GPUColorScaleSettings = {
   /** Scale type. */
   scale: GPUColorScaleType;
   /**
-   * Number of active domain entries, `1..maximumDomainCount`. Ignored when the contributor was given a
-   * `domainCount` view, which then supplies a CLASS count `k` and the domain has `k + 1` edges.
+   * Number of active domain entries, `1..maximumDomainCount`. A resident `classCount` view
+   * supplies a class count `k` and takes precedence with `k + 1` edges.
    */
   domainCount: number;
   /** Number of active palette entries, `1..maximumPaletteCount`. */
@@ -65,8 +65,20 @@ export type GPUColorScaleSettings = {
   exponent?: number;
 };
 
+/** Threshold settings for a GPUColorScale with a resident `classCount` view. */
+export type GPUColorScaleResidentThresholdSettings = Omit<
+  GPUColorScaleSettings,
+  'scale' | 'domainCount'
+> & {
+  scale: 'threshold';
+  domainCount?: never;
+};
+
 /**
  * Packs per-frame {@link GPUColorScale} parameters.
+ *
+ * Threshold settings without a numeric domain count write zero to that slot. Supply the
+ * contributor's `classCount` view to get the active edge count on the GPU.
  *
  * Layout (float32): `[scaleCode, domainCount, paletteCount, interpolation (0 step, 1 linear),
  * outside-domain (0 no-data, 1 clamp, 2 extrapolate), noDataColorLow16, noDataColorHigh16, logFloor, exponent]`. The no-data colour
@@ -75,10 +87,10 @@ export type GPUColorScaleSettings = {
  *
  * @param settings Scale settings.
  * @param target Optional destination of at least {@link GPU_COLOR_SCALE_PARAMETER_LENGTH} elements.
- * @throws If a count is not a non-negative integer or `target` is short.
+ * @throws If an option is unknown, a count is not a non-negative integer, or `target` is short.
  */
 export function getGPUColorScaleParameterValues(
-  settings: GPUColorScaleSettings,
+  settings: GPUColorScaleSettings | GPUColorScaleResidentThresholdSettings,
   target: Float32Array = new Float32Array(GPU_COLOR_SCALE_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_COLOR_SCALE_PARAMETER_LENGTH) {
@@ -86,25 +98,35 @@ export function getGPUColorScaleParameterValues(
       `GPUColorScale parameter target must hold ${GPU_COLOR_SCALE_PARAMETER_LENGTH} elements`
     );
   }
-  if (!(settings.scale in GPU_COLOR_SCALE_CODES)) {
-    throw new Error(`GPUColorScale unknown scale '${String(settings.scale)}'`);
+  const {scale, interpolation, logMode, domainCount: suppliedDomainCount, paletteCount} = settings;
+  if (typeof scale !== 'string' || !Object.hasOwn(GPU_COLOR_SCALE_CODES, scale)) {
+    throw new Error(
+      `GPUColorScale unknown scale '${String(scale)}'. Accepted values are ${Object.keys(GPU_COLOR_SCALE_CODES).join(', ')}`
+    );
   }
-  for (const [name, count] of [
-    ['domainCount', settings.domainCount],
-    ['paletteCount', settings.paletteCount]
-  ] as const) {
-    if (!Number.isInteger(count) || count < 0) {
-      throw new Error(`GPUColorScale ${name} must be a non-negative integer`);
-    }
+  if (interpolation !== undefined && interpolation !== 'step' && interpolation !== 'linear') {
+    throw new Error(
+      `GPUColorScale unknown interpolation '${String(interpolation)}'. Accepted values are step, linear`
+    );
+  }
+  if (logMode !== undefined && logMode !== 'positive-floor' && logMode !== 'domain-sign') {
+    throw new Error(
+      `GPUColorScale unknown logMode '${String(logMode)}'. Accepted values are positive-floor, domain-sign`
+    );
+  }
+  const domainCount =
+    scale === 'threshold' && suppliedDomainCount === undefined ? 0 : suppliedDomainCount;
+  if (domainCount === undefined || !Number.isInteger(domainCount) || domainCount < 0) {
+    throw new Error('GPUColorScale domainCount must be a non-negative integer');
+  }
+  if (!Number.isInteger(paletteCount) || paletteCount < 0) {
+    throw new Error('GPUColorScale paletteCount must be a non-negative integer');
   }
   const noDataColor = (settings.noDataColor ?? 0) >>> 0;
-  target[0] =
-    settings.scale === 'log' && settings.logMode === 'domain-sign'
-      ? 9
-      : GPU_COLOR_SCALE_CODES[settings.scale];
-  target[1] = settings.domainCount;
-  target[2] = settings.paletteCount;
-  target[3] = settings.interpolation === 'linear' ? 1 : 0;
+  target[0] = scale === 'log' && logMode === 'domain-sign' ? 9 : GPU_COLOR_SCALE_CODES[scale];
+  target[1] = domainCount;
+  target[2] = paletteCount;
+  target[3] = interpolation === 'linear' ? 1 : 0;
   target[4] = settings.clamp ? 1 : settings.extrapolate ? 2 : 0;
   target[5] = noDataColor & 0xffff;
   target[6] = noDataColor >>> 16;

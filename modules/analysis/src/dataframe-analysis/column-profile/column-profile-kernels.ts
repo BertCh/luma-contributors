@@ -39,7 +39,10 @@ export const COLUMN_PROFILE_TILE_SIZE =
 const RECORD_STRIDE = 7;
 /** Keys per column: `[minimumKey, maximumKey, finiteMinimumKey, finiteMaximumKey]`. */
 const KEY_STRIDE = 4;
-/** Floats per resolved domain: `[lo, hi, width, mode]`; mode 0 invalid, 1 regular, 2 `lo == hi`. */
+/**
+ * Floats per resolved domain: `[lo, hi, width, mode]`; mode 0 invalid, 1 regular, 2 `lo == hi`.
+ * When finite endpoints span more than float32 holds, `width` is scaled by 2^-24.
+ */
 const DOMAIN_STRIDE = 4;
 /** A histogram domain wider than this (2^100) is scaled before the bin products. @internal */
 export const COLUMN_PROFILE_LARGE_RANGE = 2 ** 100;
@@ -150,14 +153,21 @@ fn reduceSharedMoments(local: u32) {
  * compared with `fround(k * width)` for a width rounded twice, which drifted by a unit in the
  * last place per bin when the bin count is not a power of two.)
  *
- * A range above 2^100 is scaled by 2^-24 first (exact) so that the products stay finite. The
- * caller has already rejected values outside the domain.
+ * A range above 2^100 is scaled by 2^-24 first (exact) so that the products stay finite. Finite
+ * endpoints whose float32 span overflows (`[-3e38, 3e38]`) are scaled before the subtractions, so
+ * the scaled span is finite; a finite span keeps the subtract-then-scale arithmetic. The caller has
+ * already rejected values outside the domain.
  */
 const BIN_WGSL = /* wgsl */ `
 fn getBinIndex(value: f32, minimum: f32, maximum: f32) -> u32 {
   var difference = value - minimum;
   var range = maximum - minimum;
-  if (range > ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE)}) {
+  if ((bitcast<u32>(range) & 0x7f800000u) == 0x7f800000u) {
+    // Finite endpoints whose span overflows float32: scale (exactly) before subtracting.
+    let scale = ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE_SCALE)};
+    difference = value * scale - minimum * scale;
+    range = maximum * scale - minimum * scale;
+  } else if (range > ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE)}) {
     difference = difference * ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE_SCALE)};
     range = range * ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE_SCALE)};
   }
@@ -559,6 +569,12 @@ ${IS_FINITE_BITS_WGSL}`,
       let range = hi - lo;
       width = range * INVERSE_BIN_COUNT;
       if (isFiniteBits(range) && isFiniteBits(width) && width > 0.0) {
+        mode = 1.0;
+      } else if (!isFiniteBits(range)) {
+        // Finite ordered endpoints whose span overflows float32: the bin index scales before it
+        // subtracts. The stored width is then the width scaled by 2^-24.
+        let scale = ${getWGSLFloatLiteral(COLUMN_PROFILE_LARGE_RANGE_SCALE)};
+        width = (hi * scale - lo * scale) * INVERSE_BIN_COUNT;
         mode = 1.0;
       }
     }

@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export {GPUSpatialInteraction} from './gpu-spatial-interaction';
-export type {GPUSpatialInteractionProps} from './gpu-spatial-interaction';
+export type {
+  GPUSpatialInteractionProps,
+  GPUSpatialInteractionOutput
+} from './gpu-spatial-interaction';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {
@@ -23,4 +26,12 @@ export {
   GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_GROUPS,
   GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_PAIRS,
   GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_GROUPS
+} from './gpu-spatial-interaction';
+
+export {decodeGPUSpatialInteractionCoefficientStatus} from './spatial-interaction-identification';
+
+export {
+  getGPUSpatialInteractionExecutionPlan,
+  GPU_SPATIAL_INTERACTION_ROUTES,
+  GPU_SPATIAL_INTERACTION_PLANNER
 } from './gpu-spatial-interaction';

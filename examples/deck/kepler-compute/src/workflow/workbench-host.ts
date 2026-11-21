@@ -1147,9 +1147,10 @@ export function createWorkbenchHost(
           checkAborted(signal, request.label);
           if (cause instanceof WorkflowError) throw cause;
           const message = cause instanceof Error ? cause.message : String(cause);
-          const precisionFailure = /^Float64 column "(.+)" exceeds its precision policy$/s.exec(
-            message
-          );
+          const precisionFailure =
+            /^(?:Float64|Int64|Uint64|Decimal\[[^\]]+\]) column "(.+)" exceeds its precision policy$/s.exec(
+              message
+            );
           throw new WorkflowError(
             'publish-failed',
             precisionFailure

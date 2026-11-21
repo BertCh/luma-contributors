@@ -14,9 +14,6 @@ defineLensScenario({
   title: 'Spatial Predicate Join, Chicago North Side',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.parks,
-  presentation: {
-    primaryOutputCaptureId: 'gpu-spatial-analysis-spatial-predicate-join-snapshots-joinedTracts-0'
-  },
   load: async () => {
     const [{runS2Lens, createS2ChicagoFrame, uploadS2JoinPolygons}, {runExample}, parks, tracts] =
       await Promise.all([

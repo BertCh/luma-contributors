@@ -122,6 +122,23 @@ async function runCurvature<Kind extends GPUTerrainCurvatureKind>(
     length: 12,
     values: getGPUTerrainCurvatureParameterValues({}, grid)
   });
+  const curvatures = Object.fromEntries(
+    kinds.map((kind, index) => [
+      kind,
+      importGraphBuffer(graph, kind, outputBuffers[index], 'float32', PIXEL_COUNT)
+    ])
+  );
+  // These fixtures select profile first, except for the laplacian-only case.
+  // Keep that terminal explicit while retaining all other selected views.
+  if (kinds[0] !== 'profile' && kinds[0] !== 'laplacian')
+    throw new Error('Curvature fixture must select profile or laplacian first');
+  const firstView = curvatures[kinds[0]];
+  const output: GPUTerrainCurvatureProps['output'] = {
+    curvatures:
+      kinds[0] === 'profile'
+        ? {...curvatures, profile: firstView}
+        : {...curvatures, laplacian: firstView}
+  };
   graph.add(
     new GPUTerrainCurvature({
       grid,
@@ -134,14 +151,7 @@ async function runCurvature<Kind extends GPUTerrainCurvatureKind>(
         }
       },
       parameters: settings.importToGraph(graph),
-      output: {
-        curvatures: Object.fromEntries(
-          kinds.map((kind, index) => [
-            kind,
-            importGraphBuffer(graph, kind, outputBuffers[index], 'float32', PIXEL_COUNT)
-          ])
-        )
-      },
+      output,
       ...overrides
     })
   );

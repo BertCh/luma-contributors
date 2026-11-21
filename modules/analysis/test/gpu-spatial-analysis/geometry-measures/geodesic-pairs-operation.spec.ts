@@ -10,7 +10,75 @@ import {
   type GeodesicPairsOperationProps
 } from '../../../src/gpu-spatial-analysis/geometry-measures/gpu-geodesic-pairs-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+
+for (const metric of ['great-circle', 'ellipsoidal', 'rhumb'] as const) {
+  it(`equivalent extreme longitude has a valid nonzero ${metric} inverse in CPU and GPU operations`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const props: GeodesicPairsOperationProps = {
+      origins: 'origins',
+      targets: 'targets',
+      pairCount: 5,
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric, units: 'meters'},
+      output: {
+        distances: 'distances',
+        status: {
+          approximation: 'approximation',
+          iterationLimitReached: 'iterationLimit',
+          ...(metric === 'ellipsoidal' ? {converged: 'converged'} : {})
+        }
+      }
+    };
+    for (const Operation of [CPUGeodesicPairsOperation, GPUGeodesicPairsOperation]) {
+      const actual = await runOperationGraph(device, {
+        inputs: {
+          origins: {
+            format: 'float32x2',
+            values: Float32Array.of(2 ** 62, 0, -176, 0, 179.999, 0, 0, 0, 360, 0)
+          },
+          targets: {
+            format: 'float32x2',
+            values: Float32Array.of(0, 0, 0, 0, -179.999, 0, 1e-6, 0, 1e-6, 0)
+          }
+        },
+        operations: [new Operation(props)],
+        outputs: [
+          'distances',
+          'approximation',
+          'iterationLimit',
+          ...(metric === 'ellipsoidal' ? ['converged'] : [])
+        ]
+      });
+      expect(actual['distances']).toHaveLength(5);
+      // 2^62 mod 360=184=-176. Equatorial distance is R*176*pi/180.
+      const expected = metric === 'ellipsoidal' ? 19592230.37961615 : 19570334.12110179;
+      for (let row = 0; row < 2; row++) {
+        expect(Number.isFinite(actual['distances'][row])).toBe(true);
+        expect(Math.abs(actual['distances'][row] - expected)).toBeLessThan(100);
+      }
+      expect(actual['distances'][0]).toBe(actual['distances'][1]);
+      // Preserve the short-seam control using its uploaded float32 longitudes.
+      const origin = Math.fround(179.999),
+        target = Math.fround(-179.999);
+      const seam =
+        (((360 - origin + target) * Math.PI) / 180) *
+        (metric === 'ellipsoidal' ? 6378137 : 6371008.8);
+      expect(Number.isFinite(actual['distances'][2])).toBe(true);
+      expect(Math.abs(actual['distances'][2] - seam)).toBeLessThan(0.01);
+      const tiny =
+        (((metric === 'ellipsoidal' ? 6378137 : 6371008.8) * Math.PI) / 180) * Math.fround(1e-6);
+      for (const row of [3, 4]) {
+        expect(Number.isFinite(actual['distances'][row])).toBe(true);
+        expect(Math.abs(actual['distances'][row] - tiny)).toBeLessThan(1e-6);
+      }
+      expect(Array.from(actual['approximation'])).toEqual([0, 0, 0, 0, 0]);
+      expect(Array.from(actual['iterationLimit'])).toEqual([0, 0, 0, 0, 0]);
+      if (metric === 'ellipsoidal')
+        expect(Array.from(actual['converged'])).toEqual([1, 1, 1, 1, 1]);
+    }
+  });
+}
 
 for (const metric of ['great-circle', 'ellipsoidal', 'rhumb'] as const) {
   for (const coincident of [false, true]) {

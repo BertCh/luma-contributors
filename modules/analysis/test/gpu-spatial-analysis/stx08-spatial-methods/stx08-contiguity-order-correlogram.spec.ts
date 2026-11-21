@@ -36,7 +36,7 @@ it('final1 upstream candidate loss flags an ample-capacity order and suppresses 
       values: rig.input(new Float32Array([1, 2, 4, 8]), 'float32', 4),
       maximumOrder: 1,
       slotCapacity: 8,
-      outputs: {correlogram: table.view, incompleteOrders: incomplete.view}
+      output: {correlogram: table.view, incompleteOrders: incomplete.view}
     });
     const compiled = rig.graph.compile();
     try {
@@ -83,7 +83,7 @@ async function runCorrelogram(
     values: rig.input(new Float32Array(values), 'float32'),
     maximumOrder,
     slotCapacity,
-    outputs: {correlogram, incompleteOrders: overflow}
+    output: {correlogram, incompleteOrders: overflow}
   });
   const compiled = rig.graph.compile();
   const {submitGraph} = await import('../../utils/gpu-contributor-test-utils');

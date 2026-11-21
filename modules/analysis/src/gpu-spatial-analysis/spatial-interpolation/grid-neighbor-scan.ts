@@ -105,3 +105,32 @@ export function getRingScanWGSL(visitSample: string): string {
       }
     }`;
 }
+
+/** Visits each represented cell intersecting either wrapped longitude interval once. */
+export function getWrappedRectangleScanWGSL(visitSample: string): string {
+  return /* wgsl */ `
+    let rawBox = getUnwrappedQueryBox(center, radius);
+    for (var indexRow = rowLow; indexRow <= rowHigh; indexRow++) {
+      var nextColumn = columnLow;
+      // Shifted intervals are ordered west to east. Coalescing their widened column ranges
+      // avoids duplicate samples in a coarse cell and covers a full-longitude polar cap once.
+      for (var turn = -1; turn <= 1; turn++) {
+        let shift = f32(turn) * 360.0;
+        let intervalMinimum = rawBox.minimum.x + shift;
+        let intervalMaximum = rawBox.maximum.x + shift;
+        if (intervalMaximum < DOMAIN_MIN.x || intervalMinimum > DOMAIN_MAX.x) { continue; }
+        let first = getCoordinate(max(intervalMinimum, DOMAIN_MIN.x), DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH);
+        let last = getCoordinate(min(intervalMaximum, DOMAIN_MAX.x), DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH);
+        let firstColumn = max(nextColumn, first - min(first, 1u));
+        let lastColumn = min(columnHigh, min(last + 1u, INDEX_WIDTH - 1u));
+        if (firstColumn > lastColumn) { continue; }
+        nextColumn = lastColumn + 1u;
+        let start = cellOffsets[cellOffsetsOffset + indexRow * INDEX_WIDTH + firstColumn];
+        let end = cellOffsets[cellOffsetsOffset + indexRow * INDEX_WIDTH + lastColumn + 1u];
+        for (var slot = start; slot < end; slot++) {
+          let sample = sortedIds[sortedIdsOffset + slot];
+          ${visitSample}
+        }
+      }
+    }`;
+}

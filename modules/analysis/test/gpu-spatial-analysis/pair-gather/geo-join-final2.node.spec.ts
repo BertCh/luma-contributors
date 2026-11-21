@@ -138,8 +138,7 @@ it('G1 getter-backed left mode emits an unmatched row and survives caller mutati
   const output = {
     leftRows: view('uint32'),
     rightRows: view('uint32'),
-    rowCount: scalar(),
-    status: {overflow: scalar()}
+    status: {count: scalar(), overflow: scalar()}
   };
   const props = Object.assign(
     Object.create({
@@ -152,6 +151,7 @@ it('G1 getter-backed left mode emits an unmatched row and survives caller mutati
   );
   try {
     const gather = new GPUPairGather(props);
+    expect(gather.outputCount).toBe(gather.props.output.status.count);
     expect(gather.how).toBe('left');
     expect(reads).toBe(1);
     how = 'inner';
@@ -175,7 +175,7 @@ it('G1 getter-backed left mode emits an unmatched row and survives caller mutati
     memory.write(binding(rows, 'unmatchedIds'), Uint32Array.of(0));
     memory.write(binding(rows, 'unmatchedCount'), Uint32Array.of(1));
     executeCommandNodesOnCPU([rows, publish], memory);
-    expect(Array.from(memory.readUint32(output.rowCount))).toEqual([1]);
+    expect(Array.from(memory.readUint32(output.status.count))).toEqual([1]);
     expect(Array.from(memory.readUint32(output.leftRows))).toEqual([0]);
     expect(Array.from(memory.readUint32(output.rightRows))).toEqual([0xffffffff]);
     expect(reads).toBe(1);
@@ -215,8 +215,8 @@ it.each([
   const output = getters('output', {
     leftRows: view('uint32'),
     rightRows: view('uint32'),
-    rowCount: scalar(),
     status: getters('status', {
+      count: scalar(),
       overflow: scalar(),
       candidateOverflow: scalar(),
       matchedCount: scalar()

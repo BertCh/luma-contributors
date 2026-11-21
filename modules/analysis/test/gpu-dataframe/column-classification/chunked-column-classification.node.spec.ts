@@ -115,6 +115,7 @@ it('dispatches apply contributors per nonempty chunk and resets shared counts on
       maximumDomainCount: 8,
       output: {values: rows('scaled', 'float32'), validity: rows('validity', 'uint32')}
     });
+    const colors = rows('colors', 'uint32');
     const color = new GPUColorScale({
       values,
       mask,
@@ -124,7 +125,7 @@ it('dispatches apply contributors per nonempty chunk and resets shared counts on
       maximumDomainCount: 9,
       maximumPaletteCount: 8,
       output: {
-        colors: rows('colors', 'uint32'),
+        colors,
         classIndices: rows('classes', 'uint32'),
         classCounts: packed('counts', 'uint32', 8)
       }
@@ -179,7 +180,7 @@ it('dispatches apply contributors per nonempty chunk and resets shared counts on
           ...color.props,
           output: {
             colors: rows('aliased', 'uint32', [3, 0, 4]),
-            classIndices: color.props.output.colors
+            classIndices: colors
           }
         })
     ).not.toThrow();
@@ -187,7 +188,7 @@ it('dispatches apply contributors per nonempty chunk and resets shared counts on
       () =>
         new GPUColorScale({
           ...color.props,
-          output: {colors: color.props.output.colors, classIndices: color.props.output.colors}
+          output: {colors, classIndices: colors}
         })
     ).toThrow(/share buffers|byte ranges must not overlap/);
   } finally {

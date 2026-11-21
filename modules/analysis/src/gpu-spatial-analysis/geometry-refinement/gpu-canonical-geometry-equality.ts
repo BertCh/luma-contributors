@@ -4,6 +4,10 @@
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateRefinementShaderNumber} from './refinement-storage-validation';
+import {
+  getCanonicalEqualityMetricWGSL,
+  validateCanonicalEqualityMetric
+} from './canonical-equality-metric';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -11,11 +15,9 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCanonicalGeometryTree} from './gpu-normalize-geometry';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
+  validateRequirement,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -26,7 +28,10 @@ export type GPUCanonicalGeometryEqualityProps = {
   right: GPUCanonicalGeometryTree;
   /** Root node IDs in the left and right normalized trees. Only successful normalization may be compared. */
   pairs: GraphDataView<'uint32x2'>;
+  /** Absolute tolerance in normalized coordinate units; default zero. */
   tolerance?: number;
+  /** Distance metric in normalized coordinate units. Default: per-coordinate (legacy behavior). */
+  toleranceMetric?: 'per-coordinate' | 'euclidean';
   /** Per pair: equal=1, unequal=0, nonfinite/invalid traversal=2. Source IDs are not geometry. */
   output: GraphDataView<'uint32'>;
 };
@@ -37,7 +42,9 @@ export class GPUCanonicalGeometryEquality implements GPUCommandNodeProducer {
   readonly props: GPUCanonicalGeometryEqualityProps;
   constructor(props: GPUCanonicalGeometryEqualityProps) {
     this.id = props.id ?? 'canonical-geometry-equality';
+    props = {...props, left: {...props.left}, right: {...props.right}};
     this.props = props;
+    validateCanonicalEqualityMetric(this.id, props.toleranceMetric);
     validateRefinementShaderNumber(this.id, 'tolerance', props.tolerance ?? 0);
     for (const tree of [props.left, props.right]) {
       validateSinglePackedView(tree.positions, ['float32x2'], this.id);
@@ -46,11 +53,11 @@ export class GPUCanonicalGeometryEquality implements GPUCommandNodeProducer {
     }
     validateSinglePackedView(props.pairs, ['uint32x2'], this.id);
     validateSinglePackedView(props.output, ['uint32'], this.id);
-    if (
-      props.output.length !== props.pairs.length ||
-      !(Number.isFinite(props.tolerance ?? 0) && (props.tolerance ?? 0) >= 0)
-    )
-      throw new Error('Invalid canonical equality contract');
+    validateRequirement(
+      this.id,
+      props.output.length === props.pairs.length,
+      `output.length must equal pairs.length (${props.pairs.length})`
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [props.output],
@@ -88,6 +95,7 @@ export class GPUCanonicalGeometryEquality implements GPUCommandNodeProducer {
           {name: 'pairs', view: props.pairs, type: 'u32', access: 'read'},
           {name: 'result', view: props.output, type: 'u32', access: 'read_write'}
         ],
+        declarations: getCanonicalEqualityMetricWGSL(props.tolerance ?? 0, props.toleranceMetric),
         body: `var left = pairs[pairsOffset + index * 2u]; var right = pairs[pairsOffset + index * 2u + 1u];
 var leftStack: array<u32, 64>; var rightStack: array<u32, 64>; var cursorStack: array<u32, 64>;
 var depth = 0u; var code = 1u; var visits = 0u;
@@ -103,7 +111,7 @@ loop {
     for (var coordinate = 0u; coordinate < leftCount * 2u; coordinate++) {
       let leftValue = leftPositions[leftPositionsOffset + leftFirst * 2u + coordinate]; let rightValue = rightPositions[rightPositionsOffset + rightFirst * 2u + coordinate];
       if ((bitcast<u32>(leftValue) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(rightValue) & 0x7f800000u) == 0x7f800000u) { code = 2u; break; }
-      if (abs(leftValue - rightValue) > ${getWGSLFloatLiteral(props.tolerance ?? 0)}) { code = 0u; }
+      if (coordinate % 2u == 0u && !withinTolerance(vec2f(leftValue,leftPositions[leftPositionsOffset + leftFirst * 2u + coordinate + 1u]),vec2f(rightValue,rightPositions[rightPositionsOffset + rightFirst * 2u + coordinate + 1u]))) { code = 0u; }
     }
     if (code != 1u) { break; }
   } else {

@@ -9,6 +9,7 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {GPUMinimumClearance} from '../../../src/gpu-spatial-analysis/minimum-clearance/index';
 import {
+  createInputBuffer,
   createOutputBuffer,
   readFloat32,
   readUint32,
@@ -32,19 +33,34 @@ const NO_VERTEX = 0xffffffff;
 async function runClearance(
   device: Device,
   features: OracleSegmentFeature[],
-  options: {spatialSort?: boolean; leafCapacity?: number} = {}
+  options: {spatialSort?: boolean; leafCapacity?: number; featureOffsets?: number[]} = {}
 ): Promise<ClearanceResult> {
   const graph = new GPUCommandGraph(device, {id: 'minimum-clearance'});
   const buffers: Buffer[] = [];
-  const geometry = createSegmentGeometry(device, graph, 'geometry', features, buffers);
+  let geometry = createSegmentGeometry(device, graph, 'geometry', features, buffers);
+  const featureCount = options.featureOffsets ? options.featureOffsets.length - 1 : features.length;
+  if (options.featureOffsets && geometry.kind === 'lines') {
+    const buffer = createInputBuffer(device, Uint32Array.from(options.featureOffsets));
+    buffers.push(buffer);
+    geometry = {
+      ...geometry,
+      featureOffsets: importGraphBuffer(
+        graph,
+        'feature-offsets',
+        buffer,
+        'uint32',
+        options.featureOffsets.length
+      )
+    };
+  }
   const output = <Format extends 'float32' | 'float32x4' | 'uint32'>(
     name: string,
     format: Format,
     words: number
   ) => {
-    const buffer = createOutputBuffer(device, features.length * words);
+    const buffer = createOutputBuffer(device, featureCount * words);
     buffers.push(buffer);
-    return {buffer, view: importGraphBuffer(graph, name, buffer, format, features.length)};
+    return {buffer, view: importGraphBuffer(graph, name, buffer, format, featureCount)};
   };
   const clearances = output('clearances', 'float32', 1);
   const lines = output('lines', 'float32x4', 4);
@@ -74,9 +90,9 @@ async function runClearance(
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const result = {
-    clearances: await readFloat32(clearances.buffer, features.length),
-    lines: await readFloat32(lines.buffer, features.length * 4),
-    vertexIds: await readUint32(vertexIds.buffer, features.length),
+    clearances: await readFloat32(clearances.buffer, featureCount),
+    lines: await readFloat32(lines.buffer, featureCount * 4),
+    vertexIds: await readUint32(vertexIds.buffer, featureCount),
     candidateOverflow: (await readUint32(candidateOverflowBuffer, 1))[0]
   };
   compiled.destroy();
@@ -136,6 +152,38 @@ function expectLines(
     }
   });
 }
+
+it('GPUMinimumClearance considers vertices in different parts of the same feature', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runClearance(
+    device,
+    [
+      {
+        kind: 'lines',
+        vertices: [
+          [0, 0],
+          [2, 0]
+        ]
+      },
+      {
+        kind: 'lines',
+        vertices: [
+          [0, 0.25],
+          [2, 0.25]
+        ]
+      }
+    ],
+    {featureOffsets: [0, 0, 2]}
+  );
+  // multipart-clearance.oracle.py: union clearance .25 versus 2 for either individual part.
+  expect(result.clearances).toEqual([Infinity, 0.25]);
+  expect(result.lines.slice(0, 4).every(Number.isNaN)).toBe(true);
+  // All four endpoint-to-other-part distances tie; the lowest input vertex row wins.
+  expect(result.lines.slice(4)).toEqual([0, 0, 0, 0.25]);
+  expect(result.vertexIds).toEqual([NO_VERTEX, 0]);
+  expect(result.candidateOverflow).toBe(0);
+});
 
 it('GPUMinimumClearance matches Shapely minimum_clearance on polygons', async () => {
   const device = await getWebGPUTestDevice();

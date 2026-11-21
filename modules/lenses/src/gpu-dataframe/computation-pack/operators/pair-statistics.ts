@@ -11,7 +11,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
    * values and positions inside the window. Lag=min(floor(d/maximumDistance*lagCount),lagCount-1)
    * for d<=maximumDistance; internal edges belong to the higher lag, the outer edge to the last.
    * The i<j sum denotes unordered pairs; focus need not be the lower row, but directional deltas
-   * are oriented from lower to higher row ID. Sectors use atan2 modulo pi relative to azimuthOffset.
+   * are oriented from lower to higher row ID. Sectors use atan2 modulo pi relative to sectorOffsetRadians.
    * The mathematical sum is
    * realized by quantized 64-bit accumulators (2^24 units per robust variance, large terms at
    * 2^12); empty bins are NaN and overflow is reported, not silently interpreted as exact data.
@@ -55,7 +55,7 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       'maximumDistance',
       'lagCount',
       'directionCount',
-      'azimuthOffset',
+      'sectorOffsetRadians',
       'gridSize',
       'studyWindow'
     ],
@@ -182,6 +182,8 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
    * sets give NaN; G also needs n>=2, F n>=1; J is NaN if 1-F<=0.
    * Alternatives: none (empirical CDF), kaplan-meier (binned hazards), hanisch (inverse eroded
    * area, 14-bit weights capped at 1024; polygon area uses the sampled reference lattice).
+   * Hanisch denominator search: capped uses maximumDistance for unresolved neighbors; exact
+   * extends the search to the boundary distance and requires studyWindow: 'rectangle'.
    */
   GPURipleyDistanceFunctions: {
     family: 'pair-statistics',
@@ -218,8 +220,17 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
       'radiusCount',
       'referenceGrid',
       'gridSize',
+      'hanischSearch',
       'studyWindow'
     ],
+    metadata: {
+      hanischSearchChoices: 'capped, exact',
+      hanischSearchCapped:
+        'Unresolved neighbors use maximumDistance in the denominator (default compatibility estimate).',
+      hanischSearchExact:
+        'Search unresolved event and reference neighbors to the boundary distance for the denominator.',
+      hanischSearchExactCondition: 'studyWindow: rectangle'
+    },
     variables: {
       positions: {level: 'interval', extent: 'intensive'},
       g: {level: 'ratio', extent: 'intensive'},
@@ -298,13 +309,13 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
   },
   /**
    * Primary: Clark-Evans with default rectangular Donnelly correction (0.041, not 0.0412).
-   * NN ties choose the smallest row; search is not truncated at maximumDistance. 'none' removes
+   * NN ties choose the smallest row; indexCellSizeHint controls search work. 'none' removes
    * the perimeter term; 'guard' averages boundary-distant focuses but searches all events and
    * uses 0.5*sqrt(A/n), SE=0.26136*sqrt(A/(n*nFocus)). Donnelly is invalid for polygons.
    * Quadrat chi-square=sum((count_q-expected_q)^2/expected_q), expected_q=n*area_q/A; drop
    * zero-area quadrats, df=mEffective-1. Rectangles have equal expected n/m. Polygon areas are
    * sampled and normalized. Clark-Evans uses normal tails; quadrats use gamma tails (Wilson-
-   * Hilferty above df=100); alternative selects two-sided/greater/lesser without correction.
+   * Hilferty above df=100); analyticAlternative selects two-sided/greater/lesser without correction.
    */
   GPUPointPatternIndices: {
     family: 'pair-statistics',
@@ -337,10 +348,10 @@ export const PAIR_STATISTICS_OPERATORS: DataFrameFamilyOperators = {
     guards: ['coordinate-model', 'uncorrected-p'],
     choices: [
       'bounds',
-      'maximumDistance',
+      'indexCellSizeHint',
       'clarkEvansCorrection',
       'guardDistance',
-      'alternative',
+      'analyticAlternative',
       'gridSize',
       'quadratGrid',
       'quadratSamples',

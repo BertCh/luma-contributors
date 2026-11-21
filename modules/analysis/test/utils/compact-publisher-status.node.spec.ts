@@ -77,8 +77,7 @@ test('pair gather refuses to discard a supplied candidate status', () => {
         output: {
           leftRows: scalar('left-out'),
           rightRows: scalar('right-out'),
-          rowCount: scalar('row-count'),
-          status: {overflow: scalar('output-overflow')}
+          status: {count: scalar('row-count'), overflow: scalar('output-overflow')}
         }
       })
   ).toThrow(/pair-gather.*output.status.candidateOverflow is required/);
@@ -100,8 +99,11 @@ test('pair gather propagates the supplied pair candidate flag into a separate st
     output: {
       leftRows: createTransientView(graph, 'left-out', 'uint32', 2),
       rightRows: createTransientView(graph, 'right-out', 'uint32', 2),
-      rowCount: scalar('row-count'),
-      status: {overflow: scalar('output-overflow'), candidateOverflow: outputCandidateOverflow}
+      status: {
+        count: scalar('row-count'),
+        overflow: scalar('output-overflow'),
+        candidateOverflow: outputCandidateOverflow
+      }
     }
   }).getCommandNodes(graph);
   const kernels = getGPUCommandNodeKernelSources(nodes);

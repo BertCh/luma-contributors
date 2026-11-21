@@ -7,6 +7,8 @@ import {
   joinTimeWords
 } from '../../../src/dataframe-analysis/time-window-filter/time-words';
 
+import type {GPUNetworkSubgraphFilterState} from '../../../src/gpu-network/network-subgraph-filter/network-subgraph-filter-parameters';
+
 type Range = readonly [number, number] | null | undefined;
 
 export type SubgraphOracleOptions = {
@@ -42,10 +44,21 @@ export type SubgraphOracleResult = {
   inducedSlots: number[];
 };
 
-/** Half-open attribute rule `min <= value < max`; NaN fails. Bounds are rounded to f32. */
+/** Fixture adapter keeps mathematical oracle bounds independent of float32 packing. */
+export function resolveSubgraphOracleState(
+  state: GPUNetworkSubgraphFilterState
+): Pick<SubgraphOracleOptions, 'vertexRanges' | 'edgeRanges' | 'edgeTimeWindow'> {
+  return {
+    vertexRanges: state.nodeAttributeRanges,
+    edgeRanges: state.edgeAttributeRanges,
+    edgeTimeWindow: state.closedEdgeTimeWindow
+  };
+}
+
+/** Half-open attribute rule `min <= value < max`; NaN fails. Compare the original JavaScript bounds. */
 function passes(value: number, range: Range): boolean {
   if (!range) return true;
-  return value >= Math.fround(range[0]) && value < Math.fround(range[1]);
+  return value >= range[0] && value < range[1];
 }
 
 /** CPU reference of {@link GPUNetworkSubgraphFilter}. */
@@ -70,7 +83,7 @@ export function computeSubgraphOracle(options: SubgraphOracleOptions): SubgraphO
       if (options.edgeTimes && options.edgeTimeWindow) {
         const time = options.edgeTimes[slot];
         const [start, end] = options.edgeTimeWindow;
-        live = live && time >= Math.fround(start) && time <= Math.fround(end);
+        live = live && time >= start && time <= end;
       }
       if (options.edgeTimeWords && options.timeWordWindow) {
         const start = splitTimeWords(options.timeWordWindow.start);

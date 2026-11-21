@@ -30,8 +30,24 @@ export function makeY2Record(snapshots: GPUComputationCapture[]): LensRecord {
     createdAt: '2026-10-14T00:00:00.000Z',
     adapter: {backend: 'webgpu', description: 'Card fixture adapter'},
     domains: ['gpu-core'],
-    graphs: [],
-    axes: {axes: [{id: 'entity', label: 'entity', kind: 'data'}], keySpaces: [], relations: []},
+    // Even unqualified captures belong to a unique graph at the external-file boundary.
+    graphs: [{id: 'cards', form: 'compiled', domain: 'gpu-core', nodes: [], edges: []}],
+    axes: {
+      axes: [{id: 'entity', label: 'entity', kind: 'data'}],
+      keySpaces: [
+        ...new Set(
+          snapshots.flatMap(capture =>
+            [
+              capture.keySpace,
+              capture.geometry && 'featureKeySpace' in capture.geometry
+                ? capture.geometry.featureKeySpace
+                : undefined
+            ].filter((keySpace): keySpace is string => keySpace !== undefined)
+          )
+        )
+      ].map(id => ({id, label: id})),
+      relations: []
+    },
     refs: {formulas: [], sources: []},
     decisions: [],
     choices: [],

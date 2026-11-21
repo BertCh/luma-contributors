@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RequireTrajectoryOutput} from '../trajectory-analysis/trajectory-output-choice';
 import {
   validateTrajectoryBindings,
   validateTrajectoryWritableDispatches,
@@ -63,7 +64,7 @@ export function getGPUTrajectoryPlayheadMaximumTrackCount(device: Device): numbe
 /**
  * Caller-owned outputs of {@link GPUTrajectoryPlayhead}. At least one view must be present.
  */
-export type GPUTrajectoryPlayheadOutput = {
+export type GPUTrajectoryPlayheadOutput = RequireTrajectoryOutput<{
   /** Optional interpolated position per track, `trackCount` rows. */
   currentPositions?: GraphDataView<'float32x2'>;
   /** Optional interpolated elevation per track. Requires `elevations`. */
@@ -94,7 +95,7 @@ export type GPUTrajectoryPlayheadOutput = {
    * record's `instanceCount`. Requires `activeTracks`.
    */
   drawInstanceCount?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTrajectoryPlayhead}: the trajectory layout

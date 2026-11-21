@@ -13,6 +13,7 @@ import type {
 import {createTransientView, GPUReduction} from '@luma.gl/graph/gpu-core';
 import {
   validateCommandNodeBudget,
+  validateGraphPorts,
   validateRequirement,
   validateCapacity,
   validateFiniteNumber,
@@ -104,7 +105,7 @@ export type GPUPointCloudSMRFOutput = {
   /**
    * Per-point bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_SMRF_STATUS_INVALID`): the point is
    * outside the grid or not finite. Bit 2 (`..._NO_TERRAIN`): its cell has no terrain anchors, so
-   * it is not classified. Bit 4 (`..._EXCLUDED`): `selection` is zero for the point, which keeps its
+   * it is not classified. Bit 4 (`..._EXCLUDED`): `mask` is zero for the point, which keeps its
    * original class. Bit 8 (`..._INPAINTED`): the terrain under the point is inpainted, or the point
    * lies within the filter margin of the grid edge, so its classification is less certain. Bits 1,
    * 2 and 4 are mutually exclusive and exclude bit 8. Bits above 8 are zero.
@@ -118,8 +119,8 @@ export type GPUPointCloudSMRFProps = {
   id?: string;
   positions: GraphDataView<'float32x3'>;
   classifications: GraphDataView<'uint32'>;
-  /** Caller-selected returns/class-bit/ignore policy. Zero rows retain their original class. */
-  selection?: GraphDataView<'uint32'>;
+  /** Source-position-row mask: nonzero keeps a point; zero retains its original class. Scatter query-aligned filter validity through queryRows first. */
+  mask?: GraphDataView<'uint32'>;
   /** Set origin to cloud XY minimum and dimensions to floor(extent / cellSize) + 1 for PDAL grid alignment. */
   grid: PointCloudRasterGrid;
   slope?: number;
@@ -140,7 +141,7 @@ export type GPUPointCloudSMRFProps = {
 export const GPU_POINT_CLOUD_SMRF_STATUS_INVALID = 1;
 /** `GPUPointCloudSMRF` status bit 2: the point's cell has no terrain anchors. */
 export const GPU_POINT_CLOUD_SMRF_STATUS_NO_TERRAIN = 2;
-/** `GPUPointCloudSMRF` status bit 4: excluded by `selection`. */
+/** `GPUPointCloudSMRF` status bit 4: excluded by `mask`. */
 export const GPU_POINT_CLOUD_SMRF_STATUS_EXCLUDED = 4;
 /** `GPUPointCloudSMRF` status bit 8: inpainted terrain or a point near the grid edge. */
 export const GPU_POINT_CLOUD_SMRF_STATUS_INPAINTED = 8;
@@ -157,8 +158,8 @@ type RasterViews = Record<
  * `GPURasterDilation` (`pointcloud-diamond-morphology.ts`); the other stages are independently
  * implemented WGSL. No CPU numerical fallback or intermediate readback.
  * Per-frame: input contents and parameters (slope, scalar, threshold). Compile-time: grid,
- * window, cut, class labels, onlyGround, optional selection and view shapes. Without parameters,
- * threshold props retain their constructor-time behavior.
+ * window, cut, class labels, onlyGround, optional mask and view shapes.
+ * Without parameters, threshold props retain their constructor-time behavior.
  */
 export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
   readonly id: string;
@@ -166,12 +167,24 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
   readonly cutRadius: number;
   readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUPointCloudSMRFProps) {
+    const identifier = props.id ?? 'gpu-pointcloud-smrf';
+    validateRequirement(identifier, !('selection' in props), 'selection was removed; use mask');
+    validateGraphPorts(identifier, props, {
+      positions: {required: true, viewType: 'data', formats: ['float32x3']},
+      classifications: {required: true, viewType: 'data', formats: ['uint32']},
+      mask: {required: false, viewType: 'data', formats: ['uint32']},
+      parameters: {required: false, viewType: 'data', formats: ['float32']},
+      'output.groundSurface': {required: true, viewType: 'data', formats: ['float32']},
+      'output.groundMask': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.outputClassifications': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     props = snapshotConstructionFields(props, [
       'parameters',
       'id',
       'positions',
       'classifications',
-      'selection',
+      'mask',
       'grid',
       'slope',
       'scalar',
@@ -256,8 +269,8 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
       props.positions.length
     );
     validateViewLength(this.id, 'status', props.output.status, props.positions.length);
-    if (props.selection) {
-      validateViewLength(this.id, 'selection', props.selection, props.positions.length);
+    if (props.mask) {
+      validateViewLength(this.id, 'mask', props.mask, props.positions.length);
     }
     validateFiniteNumber(
       this.id,
@@ -276,7 +289,7 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
       {
         positions: props.positions,
         classifications: props.classifications,
-        selection: props.selection,
+        mask: props.mask,
         parameters: props.parameters
       },
       {
@@ -294,7 +307,7 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
           inputs: {
             positions: props.positions,
             terrain: props.output.groundSurface,
-            selection: props.selection,
+            mask: props.mask,
             parameters: props.parameters
           },
           outputs: {groundMask: props.output.groundMask, status: props.output.status}
@@ -325,7 +338,7 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
     const {
       positions,
       classifications,
-      selection,
+      mask: selection,
       grid,
       parameters,
       output: {groundSurface, groundMask, outputClassifications, status}
@@ -333,7 +346,7 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
     validateGraphChunkBindingRanges(graph, this.id, {
       positions,
       classifications,
-      selection,
+      mask: selection,
       groundSurface,
       groundMask,
       outputClassifications,

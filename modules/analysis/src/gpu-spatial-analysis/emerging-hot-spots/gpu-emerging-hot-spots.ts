@@ -23,6 +23,14 @@ import {
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  getCooperativeMannKendallBody,
+  getSliceStateWGSL,
+  getSliceCountingWGSL,
+  getSerialMannKendallBody
+} from './emerging-hot-spot-trend-wgsl';
 import {getTheilSenSlopeWGSL} from '../../analysis-core/kernels/wgsl-theil-sen-median';
 import type {
   GPUInferenceMetadata,
@@ -34,6 +42,9 @@ import {
   resolveGPUMultipleTestingMethod
 } from '../multiple-testing/index';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
+import {GET_QUIET_NAN_SEEDED_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
+import {getGPUSpatialWeightsLossViews} from '../spatial-weights/gpu-chunked-spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
@@ -43,18 +54,21 @@ import {
 } from '../spatial-weights/index';
 import {
   getGPUEmergingHotSpotsParameterValues,
+  snapshotEmergingHotSpotSettings,
   type GPUEmergingHotSpotsSettings,
   GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS,
   GPU_EMERGING_HOT_SPOTS_MAXIMUM_CORRECTED_TREND_SLICE_COUNT,
   GPU_EMERGING_HOT_SPOTS_MAXIMUM_SLICE_COUNT,
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
-  GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
+  GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH,
+  GPU_EMERGING_HOT_SPOTS_CATEGORIES
 } from './emerging-hot-spot-parameters';
 
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-statistics-collective-node';
 import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
+import {getChiSquareSurvival} from '../spatial-regression/ordinary-least-squares-statistics';
 
 import {
   resolveStatisticsPopulationCount,
@@ -68,6 +82,10 @@ const BIN_BLOCK = 4096;
 const MOMENT_WORKGROUP_SIZE = 256;
 /** Threads per workgroup of the space-time Gi* kernel; each workgroup covers whole cells. */
 const GI_WORKGROUP_SIZE = 256;
+const EMERGING_SUM_WGSL = /* wgsl */ `${COMPENSATED_SUM_WGSL}
+fn mergeEmergingSums(total: vec2<f32>, partial: vec2<f32>) -> vec2<f32> {
+  return addCompensatedValue(addCompensatedValue(total, partial.x), partial.y);
+}`;
 /** Threads per cell in the cooperative Mann-Kendall pass. */
 const MANN_KENDALL_WORKGROUP_SIZE = 64;
 /** Below this series length a single invocation is cheaper than workgroup setup and reduction. */
@@ -134,7 +152,9 @@ export type GPUEmergingHotSpotsProps = {
    * Dense space-time cube indexed `cell * sliceCount + slice` with `cell = row * gridWidth +
    * column` in lattice mode and `cell` = the weights row in weights mode, the layout of `GPUTemporalReduction` output. A NaN bin is missing and excluded. A
    * `uint32` view (for example `GPUTemporalReduction` `counts`) is read as `f32(count)`, every bin
-   * valid.
+   * valid. Cell identities must remain in weights/grid order and slices in one fixed period
+   * order. Observed empty event bins are 0; unknown float32 bins are NaN. Adapt sparse-gather
+   * sentinels at the producer boundary (for example, GPUKeyLookup unmatchedValue: 0 for counts).
    */
   values: GraphDataView<'float32'> | GraphDataView<'uint32'>;
   /** Lattice mode: lattice width in cells. Compile-time. Set together with `gridHeight`. */
@@ -215,12 +235,12 @@ export type GPUEmergingHotSpotsProps = {
 };
 
 /**
- * ArcGIS-style emerging hot spot analysis over a dense space-time cube on a regular lattice.
+ * ArcGIS-style emerging hot spot analysis over a dense space-time cube with lattice or CSR neighborhoods.
  *
  * Passes, each deterministic and free of float atomics:
- * 1. Global `n`, mean and population standard deviation of valid bins: per-block sums over fixed
- *    1024-bin blocks, then one invocation adding the blockIndex partials in order (mean first, then
- *    the sum of squared deviations). The mean gets a second-pass correction
+ * 1. Global `n`, mean and population standard deviation of valid bins: fixed workgroup trees
+ *    over 4096-bin blocks, then another fixed workgroup tree combines their partials (mean first,
+ *    then the sum of squared deviations). The mean gets a second-pass correction
  *    (`mean += sum(x - mean) / n`) and every `x_j - X` below is the stored first-pass deviation
  *    minus the mean of those deviations, the scheme of `GPUGlobalSpatialStatistics` and
  *    `GPUHotSpotAnalysis`, so a large common offset does not round the centered values. In the
@@ -238,6 +258,13 @@ export type GPUEmergingHotSpotsProps = {
  *    temporal weight is 1) and neighbors are visited in CSR slot order, then ascending slice.
  *    z is NaN for a missing bin, `n < 2`, `S = 0` or `n S1 <= W^2`. With binary weights the two
  *    modes agree.
+ *    Scaled coefficient moments use a verified majority coefficient comparable to the focal
+ *    weight as origin, falling back to the smallest comparable usable coefficient. Masked and
+ *    non-finite bins cannot choose the origin. Temporal merges convert each slice's sums and
+ *    coefficient moments to a common scale and origin before combining them. The centered
+ *    coefficient squares are summed with compensation. Weighted and unweighted deviation sums
+ *    carry their rounding corrections through the temporal merge. The weighted route also
+ *    compensates the population residual mean used to center those sums.
  * 3. Per-cell Mann-Kendall test over the finite z series (NaN slices skipped): `S = sum_{i<j}
  *    sign(z_j - z_i)` in exact integers, `Var = [n(n-1)(2n+5) - sum_t t(t-1)(2t+5)] / 18` with tie
  *    groups of exactly equal f32 values, `z = (S - sign(S)) / sqrt(Var)` (0 when `S = 0` or
@@ -276,9 +303,22 @@ export type GPUEmergingHotSpotsProps = {
  * finite slice whose last slice is missing; and a cell that is persistent in one direction
  * (the Intensifying / Persistent / Diminishing branches) but has fewer finite slices than
  * `minimumTrendSliceCount` (default 10, ESRI guidance), because its trend class would rest on a
- * Mann-Kendall test that is not supported by enough data. Such cells have NaN `trendZ` and
- * `trendP`. They are never silently reported as Persistent. Cells without any finite slice are
- * `NO_PATTERN`.
+ * Mann-Kendall test that is not supported by enough data. Cells below the minimum trend length
+ * have NaN `trendZ` and `trendP`; a missing final slice alone does not discard a trend supported
+ * by earlier slices. They are never silently reported as Persistent. Cells without any finite
+ * slice are `NO_PATTERN`.
+ *
+ * Neighborhood loss flags suppress every Gi* bin before downstream inference. Input population
+ * moments and counts remain available; clearing the flags restores the neighborhood results on
+ * the next frame. Construction snapshots topology descriptors, while buffer contents stay mutable.
+ *
+ * Incomplete weights (weights mode): when `weights.status.overflow` or
+ * `weights.status.candidateOverflow` (outer or chunk-local) is nonzero, the neighborhoods are
+ * truncated and nothing that depends on them is reported for that frame: `giZScores`, `pValues`,
+ * `adjustedPValues`, `trendZ` and `trendP` are quiet NaN, `trendS`, `hotSliceCount` and
+ * `coldSliceCount` are 0, `lastValidSlice` is `GPU_EMERGING_HOT_SPOTS_NO_SLICE` and every
+ * `category` is `UNDETERMINED`. `globalStatistics` and the population count do not depend on the
+ * weights and are kept. Clearing the flags restores ordinary results on the next frame.
  *
  * Statistical caveats. Consecutive Gi* z values share `temporalWindow` slices, so the series is
  * serially correlated and the Mann-Kendall p-value is anti-conservative (ESRI has the same
@@ -312,24 +352,63 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
   readonly trendAutocorrelationCorrection: 'none' | 'hamed-rao' | 'yue-wang';
 
   constructor(props: GPUEmergingHotSpotsProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'values',
+      'weights',
+      'selfWeight',
+      'gridWidth',
+      'gridHeight',
+      'sliceCount',
+      'maximumRadius',
+      'mask',
+      'parameters',
+      'multipleTesting',
+      'finalSlice',
+      'trendAutocorrelationCorrection',
+      'trendCorrectionMaximumLag',
+      'trendCorrectionCriticalZ',
+      'output'
+    ]);
+    props = {
+      ...props,
+      output: snapshotConstructionFields(props.output, [
+        'giZScores',
+        'pValues',
+        'adjustedPValues',
+        'lastValidSlice',
+        'trendZ',
+        'trendP',
+        'trendS',
+        'category',
+        'hotSliceCount',
+        'coldSliceCount',
+        'globalStatistics',
+        'includedCount',
+        'count'
+      ]),
+      weights: props.weights ? snapshotWeightsPort(props.weights) : undefined
+    };
     this.id = props.id ?? 'emerging-hot-spots';
     this.props = props;
     this.populationCount = resolveStatisticsPopulationCount(this.id, props.output);
     const id = this.id;
     const {output} = props;
     this.multipleTesting = resolveGPUMultipleTestingMethod(
-      id,
+      `${id} multipleTesting`,
       props.multipleTesting ?? 'benjamini-hochberg'
     );
     this.finalSlice = props.finalSlice ?? 'require';
     this.trendAutocorrelationCorrection = props.trendAutocorrelationCorrection ?? 'none';
-    if (this.finalSlice !== 'require' && this.finalSlice !== 'last-valid') {
-      throw new Error(`${id} finalSlice must be 'require' or 'last-valid'`);
-    }
+    validateRequirement(
+      id,
+      this.finalSlice === 'require' || this.finalSlice === 'last-valid',
+      `finalSlice must be 'require' or 'last-valid'; received ${this.finalSlice}`
+    );
     validateRequirement(
       id,
       ['none', 'hamed-rao', 'yue-wang'].includes(this.trendAutocorrelationCorrection),
-      "trendAutocorrelationCorrection must be 'none', 'hamed-rao' or 'yue-wang'"
+      `trendAutocorrelationCorrection must be 'none', 'hamed-rao' or 'yue-wang'; received ${this.trendAutocorrelationCorrection}`
     );
     if (this.trendAutocorrelationCorrection !== 'none') {
       validateCapacity(
@@ -353,13 +432,17 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     }
     const {gridWidth, gridHeight, sliceCount} = props;
     const hasLattice = gridWidth !== undefined || gridHeight !== undefined;
-    if (hasLattice === (props.weights !== undefined)) {
-      throw new Error(`${id} needs exactly one of gridWidth and gridHeight, or weights`);
-    }
+    validateRequirement(
+      id,
+      hasLattice !== (props.weights !== undefined),
+      `gridWidth and gridHeight, or weights needs exactly one route; received lattice=${hasLattice}, weights=${props.weights !== undefined}`
+    );
     const selfWeight = props.selfWeight ?? 1;
-    if (!Number.isFinite(Math.fround(selfWeight)) || selfWeight < 0) {
-      throw new Error(`${id} selfWeight must round to a finite float32 >= 0`);
-    }
+    validateRequirement(
+      id,
+      Number.isFinite(Math.fround(selfWeight)) && selfWeight >= 0,
+      `selfWeight must round to a finite float32 >= 0; received ${selfWeight}`
+    );
     if (hasLattice) {
       validateCapacity(id, 'gridWidth', gridWidth ?? Number.NaN);
       validateCapacity(id, 'gridHeight', gridHeight ?? Number.NaN);
@@ -368,13 +451,17 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     const cellCount = props.weights
       ? validateGPUSpatialWeightsOrChunks(id, props.weights)
       : gridWidth! * gridHeight!;
-    if (cellCount > MAXIMUM_CELL_COUNT) {
-      throw new Error(`${id} cellCount must be at most ${MAXIMUM_CELL_COUNT}`);
-    }
+    validateRequirement(
+      id,
+      cellCount <= MAXIMUM_CELL_COUNT,
+      `cellCount must be at most ${MAXIMUM_CELL_COUNT}; received ${cellCount}`
+    );
     const binCount = cellCount * sliceCount;
-    if (binCount > MAXIMUM_BIN_COUNT) {
-      throw new Error(`${id} cellCount * sliceCount must be below 2^31`);
-    }
+    validateRequirement(
+      id,
+      binCount <= MAXIMUM_BIN_COUNT,
+      `cellCount * sliceCount must be below 2^31; received ${binCount}`
+    );
     validateCapacity(
       id,
       'maximumRadius',
@@ -383,48 +470,57 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       GPU_EMERGING_HOT_SPOTS_MAXIMUM_RADIUS
     );
     validateSinglePackedView(props.values, ['float32', 'uint32'], `${id} values`);
-    if (props.values.length !== binCount) {
-      throw new Error(`${id} values length must equal cellCount * sliceCount`);
-    }
+    validateRequirement(
+      id,
+      props.values.length === binCount,
+      `values length must equal cellCount * sliceCount (${binCount}); received ${props.values.length}`
+    );
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters is too short`);
-    }
+    validateRequirement(
+      id,
+      props.parameters.length >= GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+      `parameters length must be at least ${GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH}; received ${props.parameters.length}`
+    );
     if (props.mask) {
       validatePackedUint32View(props.mask, `${id} mask`);
-      if (props.mask.length !== cellCount) {
-        throw new Error(`${id} mask length must equal the cell count`);
-      }
+      validateRequirement(
+        id,
+        props.mask.length === cellCount,
+        `mask length must equal the cell count (${cellCount}); received ${props.mask.length}`
+      );
     }
     validateSinglePackedView(output.giZScores, ['float32'], `${id} giZScores`);
-    if (output.giZScores.length !== binCount) {
-      throw new Error(`${id} giZScores length must equal values length`);
-    }
+    validateRequirement(
+      id,
+      output.giZScores.length === binCount,
+      `giZScores length must equal values length (${binCount}); received ${output.giZScores.length}`
+    );
     for (const [name, view] of [
       ['pValues', output.pValues],
       ['adjustedPValues', output.adjustedPValues]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['float32'], `${id} ${name}`);
-        if (view.length !== binCount) {
-          throw new Error(`${id} ${name} length must equal values length`);
-        }
+        validateRequirement(
+          id,
+          view.length === binCount,
+          `${name} length must equal values length (${binCount}); received ${view.length}`
+        );
       }
     }
-    if (
-      (this.multipleTesting !== 'none' || output.pValues || output.adjustedPValues) &&
-      binCount >= GPU_MULTIPLE_TESTING_MAXIMUM_ROWS
-    ) {
-      // Adjustment ranks are uint32 and bounded by the published sort limit.
-      throw new Error(
-        `${id} multiple testing bins must be less than ${GPU_MULTIPLE_TESTING_MAXIMUM_ROWS}`
-      );
-    }
+    validateRequirement(
+      id,
+      !(this.multipleTesting !== 'none' || output.pValues || output.adjustedPValues) ||
+        binCount < GPU_MULTIPLE_TESTING_MAXIMUM_ROWS,
+      `multiple testing bins must be less than ${GPU_MULTIPLE_TESTING_MAXIMUM_ROWS}; received ${binCount}`
+    );
     if (output.lastValidSlice) {
       validatePackedUint32View(output.lastValidSlice, `${id} lastValidSlice`);
-      if (output.lastValidSlice.length !== cellCount) {
-        throw new Error(`${id} lastValidSlice length must equal the cell count`);
-      }
+      validateRequirement(
+        id,
+        output.lastValidSlice.length === cellCount,
+        `lastValidSlice length must equal the cell count (${cellCount}); received ${output.lastValidSlice.length}`
+      );
     }
     validateSinglePackedView(output.trendZ, ['float32'], `${id} trendZ`);
     validateSinglePackedView(output.trendP, ['float32'], `${id} trendP`);
@@ -440,15 +536,19 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       ['hotSliceCount', output.hotSliceCount],
       ['coldSliceCount', output.coldSliceCount]
     ] as const) {
-      if (view.length !== cellCount) {
-        throw new Error(`${id} ${name} length must equal the cell count`);
-      }
+      validateRequirement(
+        id,
+        view.length === cellCount,
+        `${name} length must equal the cell count (${cellCount}); received ${view.length}`
+      );
     }
     if (output.globalStatistics) {
       validateSinglePackedView(output.globalStatistics, ['float32'], `${id} globalStatistics`);
-      if (output.globalStatistics.length < GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH) {
-        throw new Error(`${id} globalStatistics is too short`);
-      }
+      validateRequirement(
+        id,
+        output.globalStatistics.length >= GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH,
+        `globalStatistics length must be at least ${GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH}; received ${output.globalStatistics.length}`
+      );
     }
     if (this.populationCount) {
       validatePackedUint32View(
@@ -497,33 +597,37 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
    * @param target Optional destination of at least `GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH` elements.
    */
   getParameterValues(settings: GPUEmergingHotSpotsSettings, target?: Float32Array): Float32Array {
-    return getGPUEmergingHotSpotsParameterValues(this._resolveSettings(settings), target);
+    return getGPUEmergingHotSpotsParameterValues(this._resolveSettings(settings), target, this.id);
   }
 
   /**
    * CPU-side description of the inference behind the hot and cold bins, for building a legend,
-   * derived from the same `settings` that {@link getParameterValues} packs
-   * (`significanceLevel = 1 - confidenceLevel`). Validates `settings` like the packer.
+   * derived from the same `settings` that {@link getParameterValues} packs.
+   * A custom unadjusted critical value uses its encoded two-sided normal tail. Otherwise the
+   * level is `1 - confidenceLevel`. The independent trend level is unchanged.
    */
   getInferenceMetadata(settings: GPUEmergingHotSpotsSettings): GPUInferenceMetadata {
     const resolved = this._resolveSettings(settings);
-    getGPUEmergingHotSpotsParameterValues(resolved);
+    const encoded = getGPUEmergingHotSpotsParameterValues(resolved, undefined, this.id);
     return {
       alternative: 'two-sided',
       permutationCount: 0,
       multipleTesting: this.multipleTesting,
-      significanceLevel: 1 - (resolved.confidenceLevel ?? 0.95),
+      significanceLevel:
+        this.multipleTesting === 'none' && resolved.criticalZ !== undefined
+          ? getChiSquareSurvival(encoded[2] * encoded[2], 1)
+          : 1 - (resolved.confidenceLevel ?? 0.95),
       testedRowsDefinition: 'valid space-time bins'
     };
   }
 
   private _resolveSettings(settings: GPUEmergingHotSpotsSettings): GPUEmergingHotSpotsSettings {
-    if (
-      settings.multipleTesting !== undefined &&
-      settings.multipleTesting !== this.multipleTesting
-    ) {
-      throw new Error(`${this.id} settings.multipleTesting must match the node`);
-    }
+    settings = snapshotEmergingHotSpotSettings(settings);
+    validateRequirement(
+      this.id,
+      settings.multipleTesting === undefined || settings.multipleTesting === this.multipleTesting,
+      `settings.multipleTesting must match the node (${this.multipleTesting}); received ${settings.multipleTesting}`
+    );
     return {...settings, multipleTesting: this.multipleTesting};
   }
 
@@ -572,9 +676,11 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     // Rule 16: every per-bin view is one storage binding, so the cube must fit the device's
     // binding size (2^25 four-byte bins at the 128 MiB default), not only the 2^31 index range.
     const maximumBindingBins = Math.floor(graph.device.limits.maxStorageBufferBindingSize / 4);
-    if (binCount > maximumBindingBins) {
-      throw new Error(`${id} cube exceeds maxStorageBufferBindingSize`);
-    }
+    validateRequirement(
+      id,
+      binCount <= maximumBindingBins,
+      `cube bin count must be at most ${maximumBindingBins} for maxStorageBufferBindingSize; received ${binCount}`
+    );
     const cooperativeMannKendall = sliceCount >= MANN_KENDALL_COOPERATIVE_SLICE_COUNT;
     const blockCount = Math.ceil(binCount / BIN_BLOCK);
     const valueType = values.format === 'uint32' ? 'u32' : 'f32';
@@ -608,9 +714,18 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       graph,
       `${id}-deviation-partials`,
       'float32',
-      blockCount
+      blockCount * (weights ? 2 : 1)
     );
     const residualMean = createTransientView(graph, `${id}-residual-mean`, 'float32', 1);
+    // Retain both parts through the population residual reduction. An error in that mean can
+    // otherwise be amplified when it is multiplied by a dense window's sum of coefficients.
+    const deviationSumZero = weights ? 'vec2<f32>(0.0)' : '0.0';
+    const deviationReductionWGSL = /* wgsl */ `
+${weights ? EMERGING_SUM_WGSL : ''}
+var<workgroup> partialSums: array<${weights ? 'vec2<f32>' : 'f32'}, ${MOMENT_WORKGROUP_SIZE}>;`;
+    const mergeDeviationLanes = weights
+      ? 'partialSums[localInvocationIndex] = mergeEmergingSums(partialSums[localInvocationIndex], partialSums[localInvocationIndex + stride]);'
+      : 'partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];';
 
     const constantDeclarations = /* wgsl */ `
 const GRID_WIDTH: u32 = ${gridWidth}u;
@@ -687,15 +802,68 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
     const cellsPerGroup = Math.max(1, Math.floor(GI_WORKGROUP_SIZE / sliceCount));
     const getInstantWGSL = (localCell: string) =>
       weights
-        ? `var weighted = 0.0;
-    var weightTotal = 0.0;
-    var squareTotal = 0.0;
+        ? `var weighted = vec2<f32>(0.0);
+    var unweighted = vec2<f32>(0.0);
+    var weightCount = 0u;
+    var weightMoment = vec3<f32>(0.0);
     let bin = cell * SLICE_COUNT + slice;
+    // A common power-of-two scale keeps squared coefficient differences normal. Choose the
+    // verified majority coefficient when comparable, falling back to the smallest comparable
+    // coefficient. Both choices are independent of CSR order. Sparse positive or negative
+    // deviations then remain exceptional terms, rather than thousands of cancelling offsets.
+    var maximumCoefficient = abs(SELF_WEIGHT);
+    var majorityCandidate = SELF_WEIGHT;
+    var coefficientCount = select(0u, 1u, SELF_WEIGHT != 0.0 && isBinValid(bin, cell));
+    var majorityBalance = coefficientCount;
+    for (var slot = offsets[offsetsOffset + ${localCell}]; slot < offsets[offsetsOffset + ${localCell} + 1u]; slot++) {
+      let neighborCell = neighbors[neighborsOffset + slot];
+      if (neighborCell < CELL_COUNT && neighborCell != cell && isBinValid(neighborCell * SLICE_COUNT + slice, neighborCell)) {
+        let coefficient = weights[weightsOffset + slot];
+        maximumCoefficient = max(maximumCoefficient, abs(coefficient));
+        coefficientCount++;
+        if (majorityBalance == 0u) {
+          majorityCandidate = coefficient;
+          majorityBalance = 1u;
+        } else if (coefficient == majorityCandidate) {
+          majorityBalance++;
+        } else {
+          majorityBalance--;
+        }
+      }
+    }
+    let coefficientScale = getEmergingCoefficientScale(maximumCoefficient);
+    let scaledSelf = SELF_WEIGHT / coefficientScale;
+    // Only usable coefficients choose this slice's origin. Save the scale alongside the origin
+    // so temporal merging can convert both before combining the sums and central moments.
+    // A distant coefficient can erase a tiny focal weight in (origin + relative mean).
+    // Only a comparable neighbor coefficient is a safe origin; scaled magnitudes are < 4,
+    // so this magnitude gate cannot overflow even at the largest finite input coefficient.
+    coefficientOrigin = scaledSelf;
+    var majorityCount = select(0u, 1u, SELF_WEIGHT != 0.0 && isBinValid(bin, cell) && SELF_WEIGHT == majorityCandidate);
+    for (var slot = offsets[offsetsOffset + ${localCell}]; slot < offsets[offsetsOffset + ${localCell} + 1u]; slot++) {
+      let neighborCell = neighbors[neighborsOffset + slot];
+      if (neighborCell < CELL_COUNT && neighborCell != cell && isBinValid(neighborCell * SLICE_COUNT + slice, neighborCell)) {
+        let candidateOrigin = weights[weightsOffset + slot] / coefficientScale;
+        if (weights[weightsOffset + slot] == majorityCandidate) { majorityCount++; }
+        if (scaledSelf > 0.0 && candidateOrigin >= scaledSelf * 0.5 && candidateOrigin <= scaledSelf * 2.0) {
+          coefficientOrigin = min(coefficientOrigin, candidateOrigin);
+        }
+      }
+    }
+    // Boyer-Moore proposes a candidate, but only a strict, verified majority may replace the
+    // deterministic fallback. An unverified candidate would reintroduce order dependence.
+    let scaledMajority = majorityCandidate / coefficientScale;
+    if (majorityCount > coefficientCount / 2u && scaledSelf > 0.0 && scaledMajority >= scaledSelf * 0.5 && scaledMajority <= scaledSelf * 2.0) {
+      coefficientOrigin = scaledMajority;
+    }
     // The focal cell has weight SELF_WEIGHT; its CSR row never lists the cell itself.
     if (SELF_WEIGHT != 0.0 && isBinValid(bin, cell)) {
-      weighted += SELF_WEIGHT * readDeviation(bin);
-      weightTotal += SELF_WEIGHT;
-      squareTotal += SELF_WEIGHT * SELF_WEIGHT;
+      let centeredValue = readDeviation(bin);
+      unweighted = addCompensatedValue(unweighted, centeredValue);
+      let relativeSelf = scaledSelf - coefficientOrigin;
+      weighted = addCompensatedValue(weighted, relativeSelf * centeredValue);
+      weightCount++;
+      weightMoment = addEmergingWeightMoment(weightMoment, weightCount, relativeSelf);
     }
     for (var slot = offsets[offsetsOffset + ${localCell}]; slot < offsets[offsetsOffset + ${localCell} + 1u]; slot++) {
       let neighborCell = neighbors[neighborsOffset + slot];
@@ -705,14 +873,20 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
       let weight = weights[weightsOffset + slot];
       let neighborBin = neighborCell * SLICE_COUNT + slice;
       if (isBinValid(neighborBin, neighborCell)) {
-        weighted += weight * readDeviation(neighborBin);
-        weightTotal += weight;
-        squareTotal += weight * weight;
+        let relativeWeight = weight / coefficientScale - coefficientOrigin;
+        let centeredValue = readDeviation(neighborBin);
+        weighted = addCompensatedValue(weighted, relativeWeight * centeredValue);
+        unweighted = addCompensatedValue(unweighted, centeredValue);
+        weightCount++;
+        weightMoment = addEmergingWeightMoment(weightMoment, weightCount, relativeWeight);
       }
     }
     instantWeighted[local] = weighted;
-    instantWeight[local] = weightTotal;
-    instantSquare[local] = squareTotal;`
+    instantWeight[local] = weightMoment.x;
+    instantSquare[local] = getCompensated(weightMoment.yz);
+    instantCount[local] = weightCount;
+    instantUnweighted[local] = unweighted;
+    instantScale[local] = coefficientScale;`
         : `var weighted = 0.0;
     var neighborCount = 0u;
     let column = i32(cell % GRID_WIDTH);
@@ -738,27 +912,52 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
     }
     instantWeighted[local] = weighted;
     instantWeight[local] = f32(neighborCount);
-    instantSquare[local] = 0.0;`;
+    instantSquare[local] = 0.0;
+    instantCount[local] = neighborCount;`;
     const windowSumWGSL = weights
-      ? `var weightedSum = 0.0;
-    var weightSum = 0.0;
-    var squareSum = 0.0;
+      ? `var weightedSum = vec2<f32>(0.0);
+    var unweightedSum = vec2<f32>(0.0);
+    var weightMean = 0.0;
+    var weightSquares = 0.0;
+    var supportCount = 0u;
+    // Missing bins can change a slice's maximum usable weight. Convert to the largest scale
+    // in the window so none of the ratios amplify a slice's moments.
+    var windowScale = instantScale[local];
+    for (var windowSlice = firstSlice; windowSlice < slice; windowSlice++) {
+      let slot = cellInGroup * SLICE_COUNT + windowSlice;
+      windowScale = max(windowScale, instantScale[slot]);
+    }
+    let windowOrigin = coefficientOrigin * (instantScale[local] / windowScale);
     for (var windowSlice = firstSlice; windowSlice <= slice; windowSlice++) {
       let slot = cellInGroup * SLICE_COUNT + windowSlice;
-      weightedSum += instantWeighted[slot];
-      weightSum += instantWeight[slot];
-      squareSum += instantSquare[slot];
+      let scaleRatio = instantScale[slot] / windowScale;
+      let originDifference = instantOrigin[slot] * scaleRatio - windowOrigin;
+      // Bring both parts of the sums into the window coordinates before rounding them together.
+      let scaledWeighted = instantWeighted[slot] * scaleRatio;
+      let sliceUnweighted = instantUnweighted[slot];
+      let originAdjustment = sliceUnweighted * originDifference;
+      weightedSum = mergeEmergingSums(mergeEmergingSums(weightedSum, scaledWeighted), originAdjustment);
+      unweightedSum = mergeEmergingSums(unweightedSum, sliceUnweighted);
+      let sliceCount = instantCount[slot];
+      if (sliceCount > 0u) {
+        let mergedCount = supportCount + sliceCount;
+        let difference = (instantWeight[slot] * scaleRatio + originDifference) - weightMean;
+        weightSquares += (instantSquare[slot] * scaleRatio) * scaleRatio + difference * difference * f32(supportCount) * f32(sliceCount) / f32(mergedCount);
+        weightMean += difference * f32(sliceCount) / f32(mergedCount);
+        supportCount = mergedCount;
+      }
     }`
       : `var weightedSum = 0.0;
     var weightSum = 0.0;
+    var supportCount = 0u;
     for (var windowSlice = firstSlice; windowSlice <= slice; windowSlice++) {
       let slot = cellInGroup * SLICE_COUNT + windowSlice;
       weightedSum += instantWeighted[slot];
       weightSum += instantWeight[slot];
-    }
-    let squareSum = weightSum;`;
-    // Lattice weights are 1, so the squared-weight sum equals the weight sum; the weights path
-    // keeps the squared-weight sum separately.
+      supportCount += instantCount[slot];
+    }`;
+    // Lattice coefficients are binary. Arbitrary coefficients retain centered moments, including
+    // zero coefficients outside the support, rather than subtracting large squared sums.
     const getGiBody = () => {
       const localCell = '(cell - chunkRowStart)';
       return `let chunkRowStart = getChunkParameter(36u);
@@ -778,11 +977,15 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
   let radius = min(rawRadius, MAXIMUM_RADIUS);
   let radiusSquared = radius * radius;
   let reach = i32(floor(radius));
-  instantWeighted[local] = 0.0;
+  ${weights ? 'var coefficientOrigin = 0.0;' : ''}
+  instantWeighted[local] = ${weights ? 'vec2<f32>(0.0)' : '0.0'};
   instantWeight[local] = 0.0;
   instantSquare[local] = 0.0;
+  instantCount[local] = 0u;
+  ${weights ? 'instantUnweighted[local] = vec2<f32>(0.0); instantOrigin[local] = 0.0; instantScale[local] = 0.0;' : ''}
   if (isActive && parametersValid) {
     ${getInstantWGSL(localCell)}
+    ${weights ? 'instantOrigin[local] = coefficientOrigin;' : ''}
   }
   // Every invocation reaches the barrier.
   workgroupBarrier();
@@ -794,14 +997,29 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
       ${windowSumWGSL}
       ${
         weights
-          ? 'let spread = divideBySpatialCount(multiplyBySpatialCount(squareSum, count) - weightSum * weightSum, max(count, 1u) - 1u);'
-          : 'let spread = divideBySpatialCount(multiplyBySpatialCount(weightSum, count) - weightSum * weightSum, max(count, 1u) - 1u);'
+          ? `let outsideCount = count - min(count, supportCount);
+      let supportMean = windowOrigin + weightMean;
+      let zeroContribution = divideBySpatialCount(multiplyBySpatialCount(multiplyBySpatialCount(supportMean * supportMean, supportCount), outsideCount), max(count, 1u));
+      let spread = divideBySpatialCount(multiplyBySpatialCount(weightSquares + zeroContribution, count), max(count, 2u) - 1u);`
+          : 'let spread = divideBySpatialCount(multiplyBySpatialCount(weightSum, count - min(count, supportCount)), max(count, 2u) - 1u);'
       }
       if (count >= 2u && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
         // sum_j w_j (x_j - X): the stored deviations from the provisional mean, corrected once by
         // the mean of those deviations.
-        let centeredSum = weightedSum - residualMean[residualMeanOffset] * weightSum;
-        zScore = centeredSum / (deviation * sqrt(spread));
+        ${
+          weights
+            ? `let residualTotal = residualMean[residualMeanOffset] * f32(supportCount);
+        var centeredSum = addCompensatedValue(weightedSum, -residualTotal * weightMean);
+        // A common coefficient on the complete population contributes exactly zero. On a
+        // subset it contributes that subset's centered sum, with omitted bins weighted zero.
+        if (supportCount < count) {
+          let centeredUnweighted = addCompensatedValue(unweightedSum, -residualTotal);
+          centeredSum = addCompensatedValue(centeredSum, windowOrigin * centeredUnweighted.x);
+          centeredSum = addCompensatedValue(centeredSum, windowOrigin * centeredUnweighted.y);
+        }`
+            : 'let centeredSum = weightedSum - residualMean[residualMeanOffset] * weightSum;'
+        }
+        zScore = ${weights ? 'getCompensated(centeredSum)' : 'centeredSum'} / (deviation * sqrt(spread));
       }
     }
     giZScores[giZScoresOffset + cell * SLICE_COUNT + slice] = zScore;
@@ -851,6 +1069,10 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
         output: {adjustedPValues: adjustedPValues!}
       }).getCommandNodes(graph)
     ];
+    const lossViews = weights ? getGPUSpatialWeightsLossViews(weights) : [];
+    const weightsLoss = lossViews.length
+      ? createTransientView(graph, `${id}-weights-loss`, 'uint32', 1)
+      : undefined;
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     nodes.push(
@@ -985,12 +1207,11 @@ var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
         workgroupSize: MOMENT_WORKGROUP_SIZE,
         invocationCount: blockCount * MOMENT_WORKGROUP_SIZE,
         guardIndex: false,
-        declarations: `${declarations}
-var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
+        declarations: `${declarations}${deviationReductionWGSL}`,
         body: `let blockIndex = index / ${MOMENT_WORKGROUP_SIZE}u;
   let isInRange = index < INVOCATION_COUNT;
   let provisionalMean = statistics[statisticsOffset + 1u];
-  var sum = 0.0;
+  var sum = ${deviationSumZero};
   if (isInRange) {
     let begin = blockIndex * BIN_BLOCK;
     let end = min(begin + BIN_BLOCK, BIN_COUNT);
@@ -998,19 +1219,26 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
       let valid = isBinValid(bin, bin / SLICE_COUNT);
       let deviation = readValue(bin) - provisionalMean;
       centeredValues[centeredValuesOffset + bin] = select(getQuietNaN(bin), deviation, valid);
-      sum += select(0.0, deviation, valid);
+      let term = select(0.0, deviation, valid);
+      ${weights ? 'sum = addCompensatedValue(sum, term);' : 'sum += term;'}
     }
   }
   partialSums[localInvocationIndex] = sum;
   workgroupBarrier();
   for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
     if (localInvocationIndex < stride) {
-      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+      ${mergeDeviationLanes}
     }
     workgroupBarrier();
   }
   if (isInRange && localInvocationIndex == 0u) {
-    deviationPartials[deviationPartialsOffset + blockIndex] = partialSums[0];
+    ${
+      weights
+        ? `let destination = deviationPartialsOffset + 2u * blockIndex;
+    deviationPartials[destination] = partialSums[0].x;
+    deviationPartials[destination + 1u] = partialSums[0].y;`
+        : 'deviationPartials[deviationPartialsOffset + blockIndex] = partialSums[0];'
+    }
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -1037,16 +1265,21 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         guardIndex: false,
         declarations: `${SPATIAL_STATISTICS_COUNTS_WGSL}
 const BLOCK_COUNT: u32 = ${blockCount}u;
-var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
-        body: `var sum = 0.0;
+${deviationReductionWGSL}`,
+        body: `var sum = ${deviationSumZero};
   for (var blockIndex = localInvocationIndex; blockIndex < BLOCK_COUNT; blockIndex += ${MOMENT_WORKGROUP_SIZE}u) {
-    sum += deviationPartials[deviationPartialsOffset + blockIndex];
+    ${
+      weights
+        ? `let source = deviationPartialsOffset + 2u * blockIndex;
+    sum = mergeEmergingSums(sum, vec2<f32>(deviationPartials[source], deviationPartials[source + 1u]));`
+        : 'sum += deviationPartials[deviationPartialsOffset + blockIndex];'
+    }
   }
   partialSums[localInvocationIndex] = sum;
   workgroupBarrier();
   for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
     if (localInvocationIndex < stride) {
-      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+      ${mergeDeviationLanes}
     }
     workgroupBarrier();
   }
@@ -1054,7 +1287,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     let count = (u32(statistics[statisticsOffset + 4u]) << 16u) | u32(statistics[statisticsOffset + 5u]);
     // Mean of the first-pass deviations: added to the reported mean and subtracted from every
     // stored deviation by the next kernel.
-    let residual = select(0.0, divideBySpatialCount(partialSums[0], count), count > 0u);
+    let residual = select(0.0, divideBySpatialCount(${weights ? 'getCompensated(partialSums[0])' : 'partialSums[0]'}, count), count > 0u);
     statistics[statisticsOffset + 1u] += residual;
     residualMean[residualMeanOffset] = residual;
   }`
@@ -1227,12 +1460,66 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
           parameterValues: [dispatch?.rowStart ?? 0, dispatch?.rowCount ?? cellCount],
           declarations: `${centeredDeclarations}
 const CELLS_PER_GROUP: u32 = ${cellsPerGroup}u;
-var<workgroup> instantWeighted: array<f32, ${GI_WORKGROUP_SIZE}>;
+var<workgroup> instantWeighted: array<${weights ? 'vec2<f32>' : 'f32'}, ${GI_WORKGROUP_SIZE}>;
 var<workgroup> instantWeight: array<f32, ${GI_WORKGROUP_SIZE}>;
-var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
+var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;
+var<workgroup> instantCount: array<u32, ${GI_WORKGROUP_SIZE}>;
+${
+  weights
+    ? `var<workgroup> instantUnweighted: array<vec2<f32>, ${GI_WORKGROUP_SIZE}>;
+var<workgroup> instantOrigin: array<f32, ${GI_WORKGROUP_SIZE}>;
+var<workgroup> instantScale: array<f32, ${GI_WORKGROUP_SIZE}>;
+${EMERGING_SUM_WGSL}
+fn getEmergingCoefficientScale(maximum: f32) -> f32 {
+  // Normal power of two with a normal reciprocal, even if the backend lowers division to multiply.
+  return bitcast<f32>(clamp(bitcast<u32>(maximum) & 0x7f800000u, 0x00800000u, 0x7e800000u));
+}
+// Central moments in scaled coefficient-offset coordinates: mean, square sum, square correction.
+fn addEmergingWeightMoment(previous: vec3<f32>, count: u32, value: f32) -> vec3<f32> {
+  let difference = value - previous.x;
+  let mean = previous.x + difference / f32(count);
+  let squares = addCompensatedValue(previous.yz, difference * (value - mean));
+  return vec3<f32>(mean, squares);
+}`
+    : ''
+}`,
           body: getGiBody()
         })
       ),
+      // A lost edge/candidate makes every dependent neighborhood statistic unavailable.
+      // Suppress before p-values and trends so no downstream category survives incomplete CSR.
+      ...lossViews.map((loss, lossIndex) =>
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-incomplete-aggregate-${lossIndex}`,
+          operation: OPERATION,
+          variant: 'aggregate-weights-loss',
+          invocationCount: 1,
+          bindings: [
+            {name: 'loss', view: loss, type: 'u32', access: 'read'},
+            {name: 'weightsLoss', view: weightsLoss!, type: 'u32', access: 'read_write'}
+          ],
+          // First flag replaces last frame's aggregate; later flags combine in graph order.
+          body: `weightsLoss[weightsLossOffset] ${lossIndex === 0 ? '=' : '|='} select(0u, 1u, loss[lossOffset] != 0u);`
+        })
+      ),
+      ...(weightsLoss
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-incomplete-gi`,
+              operation: OPERATION,
+              variant: 'incomplete-weights-gi',
+              invocationCount: binCount,
+              bindings: [
+                {name: 'weightsLoss', view: weightsLoss, type: 'u32', access: 'read'},
+                {name: 'giZScores', view: giZScores, type: 'f32', access: 'read_write'}
+              ],
+              declarations: GET_QUIET_NAN_SEEDED_WGSL,
+              body: `if (weightsLoss[weightsLossOffset] != 0u) {
+  giZScores[giZScoresOffset + index] = getQuietNaN(index);
+}`
+            })
+          ]
+        : []),
       ...(needsPValues ? getPValueNodes() : []),
       // Hot and cold slice counts and the last finite slice, per cell. A separate pass keeps the
       // Mann-Kendall kernel within the storage buffer limit.
@@ -1308,6 +1595,16 @@ ${getSliceStateWGSL(usesAdjustment)}`,
                 } satisfies WGSLKernelBinding
               ]
             : []),
+          ...(weightsLoss
+            ? [
+                {
+                  name: 'weightsLoss',
+                  view: weightsLoss,
+                  type: 'u32',
+                  access: 'read'
+                } satisfies WGSLKernelBinding
+              ]
+            : []),
           {
             name: 'trendZ',
             view: output.trendZ,
@@ -1358,73 +1655,15 @@ ${this.trendAutocorrelationCorrection !== 'none' ? getTheilSenSlopeWGSL(sliceCou
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 ${getSliceStateWGSL(usesAdjustment)}`,
         body: cooperativeMannKendall
-          ? `let cell = index / MANN_KENDALL_LANES;
-  let lane = localInvocationIndex;
-  let isActiveCell = cell < CELL_COUNT;
-  let base = cell * SLICE_COUNT;
-  for (var slice = lane; slice < SLICE_COUNT; slice += MANN_KENDALL_LANES) {
-    var value = getQuietNaN(index);
-    if (isActiveCell) {
-      value = giZScores[giZScoresOffset + base + slice];
-    }
-    sharedSeries[slice] = value;
-    tieCandidates[slice] = 0u;
-  }
-  for (var word = lane; word < ${Math.ceil(sliceCount / 32)}u; word += MANN_KENDALL_LANES) {
-    atomicStore(&equalBeforeBits[word], 0u);
-  }
-  workgroupBarrier();
-  var laneStatistic = 0;
-  for (var first = lane; first < SLICE_COUNT; first += MANN_KENDALL_LANES) {
-    let firstValue = sharedSeries[first];
-    if (isFiniteFloat(firstValue)) {
-      var groupSize = 1u;
-      for (var second = first + 1u; second < SLICE_COUNT; second++) {
-        let secondValue = sharedSeries[second];
-        if (isFiniteFloat(secondValue)) {
-          laneStatistic += select(select(0, -1, secondValue < firstValue), 1, secondValue > firstValue);
-          if (secondValue == firstValue) {
-            groupSize++;
-            atomicOr(&equalBeforeBits[second / 32u], 1u << (second % 32u));
-          }
-        }
-      }
-      if (groupSize > 1u) {
-        tieCandidates[first] = groupSize * (groupSize - 1u) * (2u * groupSize + 5u);
-      }
-    }
-  }
-  partialStatistics[lane] = laneStatistic;
-  workgroupBarrier();
-  var laneTieTerm = 0u;
-  for (var first = lane; first < SLICE_COUNT; first += MANN_KENDALL_LANES) {
-    let hasEqualBefore = (atomicLoad(&equalBeforeBits[first / 32u]) & (1u << (first % 32u))) != 0u;
-    if (!hasEqualBefore) {
-      laneTieTerm += tieCandidates[first];
-    }
-  }
-  partialTieTerms[lane] = laneTieTerm;
-  workgroupBarrier();
-  for (var stride = MANN_KENDALL_LANES / 2u; stride > 0u; stride /= 2u) {
-    if (lane < stride) {
-      partialStatistics[lane] += partialStatistics[lane + stride];
-      partialTieTerms[lane] += partialTieTerms[lane + stride];
-    }
-    workgroupBarrier();
-  }
-  if (lane == 0u && isActiveCell) {
-  let statistic = partialStatistics[0];
-  let tieTerm = partialTieTerms[0];
-  ${getSliceCountingWGSL({
-    valueExpression: 'sharedSeries[slice]',
-    adjustedExpression: 'adjustedPValues[adjustedPValuesOffset + base + slice]',
-    usesAdjustment,
-    collectSeries: false
-  })}
-  ${getClassificationWGSL({cellName: 'cell', finalSlice})}
-  }`
+          ? getCooperativeMannKendallBody({
+              sliceCount,
+              usesAdjustment,
+              finalSlice,
+              hasWeightsLoss: Boolean(weightsLoss)
+            })
           : getSerialMannKendallBody({
               sliceCount,
+              hasWeightsLoss: Boolean(weightsLoss),
               usesAdjustment,
               finalSlice,
               trendCorrection: this.trendAutocorrelationCorrection,
@@ -1435,297 +1674,4 @@ ${getSliceStateWGSL(usesAdjustment)}`,
     );
     return nodes;
   }
-}
-
-/**
- * WGSL `getSliceState`: 1 for a hot bin, 2 for a cold bin, 0 otherwise. Without a correction it
- * compares z with the critical z (the pre-correction behavior); with one, a bin is hot or cold
- * when its adjusted p-value is at most the significance level, with the sign of z.
- */
-function getSliceStateWGSL(usesAdjustment: boolean): string {
-  return usesAdjustment
-    ? `fn getSliceState(z: f32, adjustedP: f32, level: f32) -> u32 {
-  if (adjustedP <= level) {
-    if (z > 0.0) {
-      return 1u;
-    }
-    if (z < 0.0) {
-      return 2u;
-    }
-  }
-  return 0u;
-}`
-    : `fn getSliceState(z: f32, criticalZ: f32) -> u32 {
-  if (z >= criticalZ) {
-    return 1u;
-  }
-  if (z <= -criticalZ) {
-    return 2u;
-  }
-  return 0u;
-}`;
-}
-
-/**
- * WGSL pass over one cell's slices that declares `valid`, `hot`, `cold`, `trailingHot`,
- * `trailingCold`, `finalState` and `lastValid` (the last finite slice, `0xffffffff` for none), and
- * `series` when `collectSeries` is set. Reads the parameters it needs itself.
- */
-function getSliceCountingWGSL(options: {
-  valueExpression: string;
-  adjustedExpression: string;
-  usesAdjustment: boolean;
-  collectSeries: boolean;
-}): string {
-  const state = options.usesAdjustment
-    ? `getSliceState(value, ${options.adjustedExpression}, significanceLevel)`
-    : 'getSliceState(value, criticalZ)';
-  return /* wgsl */ `let criticalZ = parameters[parametersOffset + 2u];
-  let significanceLevel = parameters[parametersOffset + 6u];
-  var valid = 0u;
-  var hot = 0u;
-  var cold = 0u;
-  var trailingHot = 0u;
-  var trailingCold = 0u;
-  var finalState = 0u;
-  var lastValid = 0xffffffffu;
-  for (var slice = 0u; slice < SLICE_COUNT; slice++) {
-    let value = ${options.valueExpression};
-    if (isFiniteFloat(value)) {
-      ${options.collectSeries ? 'series[valid] = value;' : ''}
-      valid++;
-      lastValid = slice;
-      let state = ${state};
-      if (state == 1u) {
-        hot++;
-        trailingHot++;
-        trailingCold = 0u;
-        finalState = 1u;
-      } else if (state == 2u) {
-        cold++;
-        trailingCold++;
-        trailingHot = 0u;
-        finalState = 2u;
-      } else {
-        trailingHot = 0u;
-        trailingCold = 0u;
-        finalState = 0u;
-      }
-    }
-  }`;
-}
-
-/**
- * WGSL tail shared by both Mann-Kendall paths: from `statistic`, `tieTerm` and the slice counts it
- * writes the trend outputs, the slice counts and the category. See {@link GPUEmergingHotSpots} for
- * the rules; `UNDETERMINED` (17) replaces Intensifying/Persistent/Diminishing for cells with fewer
- * than `minimumTrendSliceCount` finite slices, and every pattern of a cell whose last slice is
- * missing when `finalSlice` is `'require'`.
- */
-function getClassificationWGSL(options: {
-  cellName: string;
-  finalSlice: 'require' | 'last-valid';
-  applyVarianceCorrection?: boolean;
-}): string {
-  const {cellName} = options;
-  return /* wgsl */ `let trendLevel = parameters[parametersOffset + 3u];
-  let fraction = parameters[parametersOffset + 4u];
-  let minimumTrendSliceCount = parameters[parametersOffset + 5u];
-  let isLegacySporadic = parameters[parametersOffset + 7u] != 0.0;
-  var numerator = 0u;
-  if (valid >= 2u) {
-    numerator = valid * (valid - 1u) * (2u * valid + 5u) - tieTerm;
-  }
-  var trendZScore = 0.0;
-  var trendPValue = 1.0;
-  if (numerator > 0u) {
-    let deviation = sqrt(f32(numerator) / 18.0${options.applyVarianceCorrection ? ' * varianceCorrection' : ''});
-    if (statistic > 0) {
-      trendZScore = f32(statistic - 1) / deviation;
-    } else if (statistic < 0) {
-      trendZScore = f32(statistic + 1) / deviation;
-    }
-    trendPValue = getTwoSidedPValue(trendZScore);
-  }
-  // Too few finite slices for a Mann-Kendall decision: no trend z or p, and no trend category.
-  let isTrendKnown = f32(valid) >= minimumTrendSliceCount;
-  if (!isTrendKnown) {
-    trendZScore = getQuietNaN(${cellName});
-    trendPValue = getQuietNaN(${cellName});
-  }
-  trendZ[trendZOffset + ${cellName}] = trendZScore;
-  trendP[trendPOffset + ${cellName}] = trendPValue;
-  trendS[trendSOffset + ${cellName}] = statistic;
-  let threshold = fraction * f32(valid);
-  let hotPersistent = f32(hot) >= threshold;
-  let coldPersistent = f32(cold) >= threshold;
-  let trendSignificant = trendPValue <= trendLevel;
-  let trendUp = trendSignificant && trendZScore > 0.0;
-  let trendDown = trendSignificant && trendZScore < 0.0;
-  var result = 0u;
-  if (valid > 0u) {
-    if (finalState == 1u) {
-      if (hot == 1u) {
-        result = 1u;
-      } else if (trailingHot >= 2u && trailingHot == hot && !hotPersistent) {
-        result = 2u;
-      } else if (hotPersistent) {
-        result = select(17u, select(select(4u, 5u, trendDown), 3u, trendUp), isTrendKnown);
-      } else {
-        result = select(7u, 6u, cold == 0u);
-      }
-    } else if (finalState == 2u) {
-      if (cold == 1u) {
-        result = 9u;
-      } else if (trailingCold >= 2u && trailingCold == cold && !coldPersistent) {
-        result = 10u;
-      } else if (coldPersistent) {
-        result = select(17u, select(select(12u, 13u, trendUp), 11u, trendDown), isTrendKnown);
-      } else {
-        result = select(15u, 14u, hot == 0u);
-      }
-    } else if (hot > 0u && hotPersistent) {
-      result = 8u;
-    } else if (cold > 0u && coldPersistent) {
-      result = 16u;
-    } else if (isLegacySporadic && hot > 0u && cold == 0u) {
-      result = 6u;
-    } else if (isLegacySporadic && cold > 0u && hot == 0u) {
-      result = 14u;
-    }
-    ${
-      options.finalSlice === 'require'
-        ? `// A missing final slice makes the pattern undecidable instead of silently shifting it.
-    if (lastValid != SLICE_COUNT - 1u) {
-      result = 17u;
-    }`
-        : ''
-    }
-  }
-  category[categoryOffset + ${cellName}] = result;`;
-}
-
-/** Serial exact pass retained for short series where cooperative setup would dominate. */
-function getSerialMannKendallBody(options: {
-  sliceCount: number;
-  usesAdjustment: boolean;
-  finalSlice: 'require' | 'last-valid';
-  trendCorrection: 'none' | 'hamed-rao' | 'yue-wang';
-  maximumLag: number;
-  criticalZ: number;
-}): string {
-  const {sliceCount, trendCorrection} = options;
-  const applyVarianceCorrection = trendCorrection !== 'none';
-  return /* wgsl */ `let base = index * SLICE_COUNT;
-  var series: array<f32, SLICE_COUNT>;
-  var hasEqualBefore: array<u32, ${Math.ceil(sliceCount / 32)}>;
-  ${getSliceCountingWGSL({
-    valueExpression: 'giZScores[giZScoresOffset + base + slice]',
-    adjustedExpression: 'adjustedPValues[adjustedPValuesOffset + base + slice]',
-    usesAdjustment: options.usesAdjustment,
-    collectSeries: true
-  })}
-  var statistic = 0;
-  var tieTerm = 0u;
-  for (var first = 0u; first < valid; first++) {
-    let firstValue = series[first];
-    var groupSize = 1u;
-    for (var second = first + 1u; second < valid; second++) {
-      let secondValue = series[second];
-      statistic += select(select(0, -1, secondValue < firstValue), 1, secondValue > firstValue);
-      if (secondValue == firstValue) {
-        groupSize++;
-        hasEqualBefore[second / 32u] |= 1u << (second % 32u);
-      }
-    }
-    let isFirstMember = (hasEqualBefore[first / 32u] & (1u << (first % 32u))) == 0u;
-    if (isFirstMember && groupSize > 1u) {
-      tieTerm += groupSize * (groupSize - 1u) * (2u * groupSize + 5u);
-    }
-  }
-  ${applyVarianceCorrection ? getVarianceCorrectionWGSL(sliceCount, trendCorrection, options.maximumLag, options.criticalZ) : ''}
-  ${getClassificationWGSL({
-    cellName: 'index',
-    finalSlice: options.finalSlice,
-    applyVarianceCorrection
-  })}`;
-}
-
-/**
- * WGSL statements declaring `varianceCorrection` from `series` and `valid`: the factor of
- * `Var(S)` of the modified Mann-Kendall tests over the Sen-detrended finite series, with `n` the
- * finite slice count, `r_k` the lag autocorrelation with denominator `n` over the series
- * deviations, positions being positions in the finite series.
- * Hamed-Rao: `1 + 2 / (n (n - 1) (n - 2)) * sum (n - k)(n - k - 1)(n - k - 2) r_k` of the ranks,
- * lags with `|r_k| > criticalZ / sqrt(n)` only. Yue-Wang: `1 + 2 * sum (1 - k / n) r_k` of the
- * detrended values.
- */
-function getVarianceCorrectionWGSL(
-  sliceCount: number,
-  trendCorrection: 'hamed-rao' | 'yue-wang',
-  maximumLag: number,
-  criticalZ: number
-): string {
-  const isHamedRao = trendCorrection === 'hamed-rao';
-  const seriesWGSL = isHamedRao
-    ? `  var ranks: array<f32, ${sliceCount}>;
-    for (var first = 0u; first < valid; first++) {
-      var lower = 0u;
-      var equal = 0u;
-      for (var second = 0u; second < valid; second++) {
-        if (detrended[second] < detrended[first]) {
-          lower++;
-        } else if (detrended[second] == detrended[first]) {
-          equal++;
-        }
-      }
-      ranks[first] = f32(lower) + 0.5 * f32(equal + 1u);
-    }`
-    : '';
-  const seriesName = isHamedRao ? 'ranks' : 'detrended';
-  const lagSumWGSL = isHamedRao
-    ? `  let lagFilter = ${getWGSLFloatLiteral(criticalZ)} / sqrt(lengthValue);
-      if (abs(correlation) > lagFilter) {
-        let gap = lengthValue - f32(lag);
-        lagSum += gap * (gap - 1.0) * (gap - 2.0) * correlation;
-      }`
-    : `  lagSum += (1.0 - f32(lag) / lengthValue) * correlation;`;
-  const scale = isHamedRao
-    ? '2.0 / (lengthValue * (lengthValue - 1.0) * (lengthValue - 2.0))'
-    : '2.0';
-  return /* wgsl */ `var varianceCorrection = 1.0;
-  if (valid >= 3u) {
-    let lengthValue = f32(valid);
-    let slope = getTheilSenSlope(&series, valid);
-    var detrended: array<f32, ${sliceCount}>;
-    for (var row = 0u; row < valid; row++) {
-      detrended[row] = series[row] - slope * f32(row + 1u);
-    }
-    ${seriesWGSL}
-    var seriesMean = 0.0;
-    for (var row = 0u; row < valid; row++) {
-      seriesMean += ${seriesName}[row];
-    }
-    seriesMean /= lengthValue;
-    var variance = 0.0;
-    for (var row = 0u; row < valid; row++) {
-      variance += (${seriesName}[row] - seriesMean) * (${seriesName}[row] - seriesMean);
-    }
-    if (variance > 0.0) {
-      var lagSum = 0.0;
-      let lastLag = ${maximumLag > 0 ? `min(${maximumLag}u, valid - 1u)` : 'valid - 1u'};
-      for (var lag = 1u; lag <= lastLag; lag++) {
-        var covariance = 0.0;
-        for (var row = 0u; row + lag < valid; row++) {
-          covariance += (${seriesName}[row] - seriesMean) * (${seriesName}[row + lag] - seriesMean);
-        }
-        let correlation = covariance / variance;
-        ${lagSumWGSL}
-      }
-      let factor = 1.0 + ${scale} * lagSum;
-      if (factor > 0.0) {
-        varianceCorrection = factor;
-      }
-    }
-  }`;
 }

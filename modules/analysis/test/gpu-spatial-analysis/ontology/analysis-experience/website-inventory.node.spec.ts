@@ -8,7 +8,10 @@ import {
   selectInventoryContract,
   getInventoryOutputIssues
 } from '../../../../../../website/scripts/inventory-contracts';
-import {extractInventory} from '../../../../../../website/scripts/extract-inventory';
+import {
+  extractInventory,
+  type InventoryContract
+} from '../../../../../../website/scripts/extract-inventory';
 import {getGPUAnalysisOperatorCatalog} from '../../../../src/gpu-spatial-analysis/ontology/index';
 import {entries} from '../../../../../../website/src/catalog/entries/geometry-construction-overlay';
 import inventory from '../../../../../../website/src/catalog/generated/inventory.json';
@@ -22,6 +25,7 @@ it('validates the committed mode-omitted visibility example against the referenc
   )!;
   const contract = selectInventoryContract(symbol, entry.symbol, entry.example);
   expect(contract.props.find(prop => prop.name === 'mode')?.optional).toBe(true);
+  expect(contract.propsType).toBe('GPUVisibilityGraphProps');
   expect(
     getInventoryOutputIssues(
       contract,
@@ -59,6 +63,13 @@ it('checks explicit CSR calls against CSR-only required return fields', () => {
     selectInventoryContract(
       symbol,
       symbol.symbol,
+      "addVisibilityGraphRecipe(graph, {mode: 'csr', positions, segments, edgeCapacity: 8})"
+    )
+  ).toThrow(/no unique overload/);
+  expect(() =>
+    selectInventoryContract(
+      symbol,
+      symbol.symbol,
       "addVisibilityGraphRecipe(graph, {mode: 'unknown'})"
     )
   ).toThrow(/no unique overload/);
@@ -92,6 +103,7 @@ it('selects overloaded defaults by their required options when mode alone is amb
   const symbol = inventory.symbols.find(
     symbol => symbol.symbol === entry.symbol && symbol.importPath === entry.importPath
   )!;
+  expect(symbol.overloads).toHaveLength(4);
   const contract = selectInventoryContract(symbol, entry.symbol, entry.example);
   expect(contract.props.some(prop => prop.name === 'capacity')).toBe(true);
   expect(contract.props.some(prop => prop.name === 'candidateRadius')).toBe(false);
@@ -101,6 +113,33 @@ it('selects overloaded defaults by their required options when mode alone is amb
       entry.outputs.map(output => output.name)
     )
   ).toMatchObject({unknown: [], missing: []});
+
+  const sharedOptions =
+    'segments, segmentBuildingIds, buildingCount, enclosure, sampleSpacing, sampleCapacity, vertexTolerance';
+  const local = selectInventoryContract(
+    symbol,
+    entry.symbol,
+    `addBuildingTessellationRecipe(graph, {${sharedOptions}, candidateRadius: 10})`
+  );
+  expect(local.propsType).toBe('GPUBuildingTessellationLocalProps');
+  expect(local.outputs.map(output => output.name)).toContain('estimatedCommandNodeCount');
+
+  // The explicit reference signature admits candidateRadius and still uses the overlay route.
+  const reference = selectInventoryContract(
+    symbol,
+    entry.symbol,
+    `addBuildingTessellationRecipe(graph, {${sharedOptions}, mode: 'reference', capacity, candidateRadius: 10})`
+  );
+  expect(reference.props.find(prop => prop.name === 'mode')?.optional).toBe(false);
+  expect(reference.outputs.map(output => output.name)).not.toContain('estimatedCommandNodeCount');
+
+  expect(() =>
+    selectInventoryContract(
+      symbol,
+      entry.symbol,
+      `addBuildingTessellationRecipe(graph, {${sharedOptions}})`
+    )
+  ).toThrow(/no unique overload/);
 });
 
 it('keeps neighborStatus visible within the nearest-weights short-card limits', () => {
@@ -137,6 +176,7 @@ it('keeps committed inventory paths, ports and kinds equal to extraction from cu
       directory: string;
       props: readonly {name: string; optional: boolean}[];
       outputs: readonly {name: string; optional: boolean}[];
+      overloads?: readonly InventoryContract[];
       dataKinds: {input: readonly string[]; output: readonly string[]};
     }[]
   ) =>
@@ -146,6 +186,7 @@ it('keeps committed inventory paths, ports and kinds equal to extraction from cu
       directory: symbol.directory,
       props: symbol.props.map(({name, optional}) => ({name, optional})),
       outputs: symbol.outputs.map(({name, optional}) => ({name, optional})),
+      overloads: symbol.overloads,
       dataKinds: symbol.dataKinds
     }));
   expect(project(inventory.symbols)).toEqual(project(extracted.symbols));

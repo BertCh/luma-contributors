@@ -50,7 +50,8 @@ it('GPUTrackSimilarity decision and DTW kernels fit the core limits at maximal o
   const nodes = new GPUTrackSimilarity(createProps(graph, 16)).getCommandNodes(graph);
   const ids = nodes.map(node => node.id);
   expect(ids).toContain('track-similarity-dynamic-time-warping');
-  expect(ids).toContain('track-similarity-pair-ranges');
+  expect(ids).toContain('track-similarity-pair-ranges-A');
+  expect(ids).toContain('track-similarity-pair-ranges-B');
   expect(ids).toContain('track-similarity-frechet-decision');
   const recordedKernelSources1 = getParsedKernelSources(nodes);
   for (const {id: kernelId, source: source, constants} of recordedKernelSources1.configurations) {
@@ -117,7 +118,7 @@ it('track-similarity DTW and Frechet fixture is self-consistent', () => {
   }
 });
 
-it('decision-only work prunes endpoints before coupling and boxes before reachable-cell distances', () => {
+it('decision-only work prunes endpoints before coupling and retains the reachability fallback', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const props = createProps(graph, 16);
   const nodes = new GPUTrackSimilarity({
@@ -129,11 +130,32 @@ it('decision-only work prunes endpoints before coupling and boxes before reachab
   expect(sources.has('track-similarity-dynamic-time-warping')).toBe(false);
   const decision = sources.get('track-similarity-frechet-decision')!;
   expect(decision.indexOf('if (decision == 2u)')).toBeLessThan(decision.indexOf('var coupled ='));
-  expect(decision.indexOf('let minimumGap')).toBeLessThan(decision.indexOf('var finalValue'));
+  expect(decision.indexOf('if (decision == 2u)')).toBeGreaterThanOrEqual(0);
+  expect(decision.indexOf('var coupled =')).toBeGreaterThanOrEqual(0);
+  expect(decision.indexOf('var finalValue')).toBeGreaterThanOrEqual(0);
   expect(decision).toContain('predecessor && coupledMetric');
   expect(decision).toContain('deadDiagonals >= 2u');
   expect(decision).toContain('previousBoundaryCount == 0u');
   for (const kernel of sources.getConfigurations('track-similarity-frechet-decision')) {
     expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBeLessThanOrEqual(16384);
   }
+});
+
+// Endpoints agree, but the diagonal coupling fails at row 1. A monotone path repeats
+// B's first vertex before advancing, so the fallback DP must accept radius zero.
+it('accepts a non-diagonal free-space path when the fixed coupling fails', async () => {
+  const {computeTrackSimilarityOnCPU} = await import(
+    '../../../src/gpu-spatial-analysis/track-similarity'
+  );
+  const result = computeTrackSimilarityOnCPU(
+    {
+      linesA: {positions: Float32Array.of(0, 0, 0, 0, 1, 0), lineOffsets: Uint32Array.of(0, 3)},
+      linesB: {positions: Float32Array.of(0, 0, 1, 0, 1, 0), lineOffsets: Uint32Array.of(0, 3)},
+      pairA: Uint32Array.of(0),
+      pairB: Uint32Array.of(0),
+      frechetEpsilon: Float32Array.of(0)
+    },
+    {measures: ['frechetWithin']}
+  );
+  expect(Array.from(result.frechetWithin)).toEqual([1]);
 });

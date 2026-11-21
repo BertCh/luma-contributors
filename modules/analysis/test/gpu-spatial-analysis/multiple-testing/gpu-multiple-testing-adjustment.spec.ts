@@ -52,7 +52,7 @@ async function runAdjustment(
       minimumFamilySize,
       output: {
         adjustedPValues: importGraphBuffer(graph, 'adjusted', adjustedBuffer, 'float32', rows),
-        testedCount: importGraphBuffer(graph, 'tested-count', testedBuffer, 'uint32', 1)
+        effectiveFamilySize: importGraphBuffer(graph, 'tested-count', testedBuffer, 'uint32', 1)
       }
     })
   );

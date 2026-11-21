@@ -2,6 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUPackedReadbackValues} from '../../analysis-core/kernels/packed-readback';
+import {getVecchiaReadbackValues, decodeVecchiaStatus} from './vecchia-readback';
+import {
+  snapshotVecchiaLossProps,
+  validateVecchiaPorts,
+  createVecchiaNeighborhoodStatusNodes,
+  type VecchiaNeighborhoodStatus
+} from './vecchia-neighborhood-status';
+import {MAXIMUM_VECCHIA_NEIGHBOR_COUNT} from './vecchia-conditioning-sets';
+import {getInterpolationNeighborhoodLossViews} from './interpolation-neighborhood-loss';
+
 import {
   validateInterpolationPredictionViews,
   validateInterpolationOutputPasses,
@@ -9,6 +20,10 @@ import {
 } from './interpolation-view-validation';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 import type {
@@ -35,7 +50,7 @@ import {
 
 const OPERATION = 'GPUVecchiaLogLikelihood';
 /** Every conditioning-set solve goes through the `GPULocalKriging` private arrays. */
-const MAXIMUM_NEIGHBOR_COUNT = 32;
+const MAXIMUM_NEIGHBOR_COUNT = MAXIMUM_VECCHIA_NEIGHBOR_COUNT;
 
 /** Outputs of {@link GPUVecchiaLogLikelihood}, all caller-owned. */
 export type GPUVecchiaLogLikelihoodOutput = GPUVecchiaLikelihoodOutput;
@@ -58,7 +73,7 @@ export type GPUVecchiaLogLikelihoodProps = {
   /** One packed row per site, in any row order the conditioning sets refer to. */
   positions: GraphDataView<'float32x2'>;
   /**
-   * Rows `[value, observationErrorVariance, reserved, validity (0 excludes)]`. Values are residuals
+   * Rows `[value, observationErrorVariance, reserved, validity (> 0 includes; zero, negative and NaN exclude)]`. Values are residuals
    * from any known mean (simple kriging, mean zero); subtract an estimated trend first.
    */
   observations: GraphDataView<'float32x4'>;
@@ -68,6 +83,8 @@ export type GPUVecchiaLogLikelihoodProps = {
   neighborhoods: GraphDataView<'uint32'>;
   /** Largest conditioning set, 1..32. Compile time. */
   neighborCount: number;
+  /** Optional producer loss flags; any supplied loss suppresses dependent totals. */
+  neighborhoodStatus?: VecchiaNeighborhoodStatus;
   /**
    * Written by `getGPUVecchiaLogLikelihoodParameterValues`. Per-frame: model, nugget, sill and range
    * change without a recompile, the point of a likelihood evaluation.
@@ -86,13 +103,13 @@ export type GPUVecchiaLogLikelihoodProps = {
  * CSR neighbourhoods, whose per-frame `parameters` make this a likelihood evaluation with no
  * recompile. A site's term reads `d_i` from `values.y` and adds the observation error variance of
  * that site. Sites with an empty conditioning set, and sites whose conditioning rows are all
- * unusable (validity 0, or a non-finite value, error variance or position), use the marginal
+ * unusable (validity not strictly positive, or a non-finite value, error variance or position), use the marginal
  * variance `sill + nugget`, as `GPUVecchiaFisherScoring` does; `conditionalStatus` is 0 for them.
  *
  * Failure semantics (float32 experiment, dev-docs/research/spatiotemporal-review-2026-11-09): a site
  * whose solve reports failure (status not 0), or whose variance is nonpositive, counts in `status[0]`,
  * and any such site makes `logLikelihood` NaN. A caller reads that word, not a partial sum.
- * Excluded sites (validity 0) count in `status[1]` and drop out.
+ * Excluded sites (validity not strictly positive) count in `status[1]` and drop out.
  *
  * The total is a fixed-point sum, so it is exact for the float32 per-site terms (order independent),
  * and is published as a double-single pair so a CPU optimizer can resolve differences near 1e-3 at
@@ -100,6 +117,8 @@ export type GPUVecchiaLogLikelihoodProps = {
  *
  * Compile-time: row count, conditioning-set width, the wiring of optional views. Per-frame: the
  * covariance `parameters`.
+ * The GPU spatial route retains the nearest at most 32 usable conditioning rows per site
+ * (MAXIMUM_VECCHIA_NEIGHBOR_COUNT); CPU evaluation uses all usable CSR slots.
  */
 export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
   readonly id: string;
@@ -110,7 +129,37 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
   private readonly kriging: GPULocalKriging;
 
   constructor(props: GPUVecchiaLogLikelihoodProps) {
-    this.props = props;
+    validateVecchiaPorts(props.id ?? 'vecchia-log-likelihood', props, false, false);
+    const originalProps = props;
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'neighborCount',
+      'neighborhoodOffsets',
+      'neighborhoods',
+      'observations',
+      'output',
+      'parameters',
+      'positions',
+      'spatialContext'
+    ]);
+    this.props = props = Object.freeze({
+      ...captured,
+      spatialContext:
+        captured.spatialContext && snapshotConstructionSpatialContext(captured.spatialContext),
+      output: snapshotConstructionFields(captured.output, [
+        'conditionals',
+        'conditionalStatus',
+        'siteTerms',
+        'siteStatus',
+        'logLikelihood',
+        'status'
+      ])
+    });
+    this.props = props = snapshotVecchiaLossProps(originalProps, () => props);
+    const lossViews = getInterpolationNeighborhoodLossViews(
+      props.id ?? 'vecchia-log-likelihood',
+      props
+    );
     this.id = props.id ?? 'vecchia-log-likelihood';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
@@ -120,6 +169,8 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
     const {id} = this;
     const {positions, observations, parameters, neighborhoods, neighborhoodOffsets, output} = props;
     this.rowCount = positions.length;
+    if (output.neighborhoodStatus)
+      validateViewLength(id, 'output.neighborhoodStatus', output.neighborhoodStatus, 3);
     validateCapacity(id, 'neighborCount', props.neighborCount, 1, MAXIMUM_NEIGHBOR_COUNT);
     validateViewLength(id, 'observations', observations, this.rowCount);
     validateViewLength(id, 'neighborhoodOffsets', neighborhoodOffsets, this.rowCount + 1);
@@ -136,25 +187,28 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
         read: {conditionals: output.conditionals, conditionalStatus: output.conditionalStatus},
         write: {siteTerms: output.siteTerms, siteStatus: output.siteStatus, status: output.status}
       },
-      {read: {status: output.status}, write: {logLikelihood: output.logLikelihood}}
+      {read: {status: output.status}, write: {logLikelihood: output.logLikelihood}},
+      {write: {logLikelihood: output.logLikelihood, neighborhoodStatus: output.neighborhoodStatus}}
     ]);
     validateInterpolationOutputsDisjointFromInputs(id, Object.values(output), [
       positions,
       observations,
       neighborhoodOffsets,
       neighborhoods,
-      parameters
+      parameters,
+      ...lossViews
     ]);
     validateInterpolationPredictionViews(
       id,
-      [positions, observations, neighborhoodOffsets, neighborhoods, parameters],
+      [positions, observations, neighborhoodOffsets, neighborhoods, parameters, ...lossViews],
       [
         output.conditionals,
         output.conditionalStatus,
         output.siteTerms,
         output.siteStatus,
         output.logLikelihood,
-        output.status
+        output.status,
+        ...(output.neighborhoodStatus ? [output.neighborhoodStatus] : [])
       ]
     );
     this.kriging = new GPULocalKriging({
@@ -184,6 +238,12 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
       neighborhoodOffsets: props.neighborhoodOffsets,
       neighborhoods: props.neighborhoods,
       parameters: props.parameters,
+      ...Object.fromEntries(
+        getInterpolationNeighborhoodLossViews(id, props).map((view, index) => [
+          `neighborhoodLoss${index}`,
+          view
+        ])
+      ),
       ...props.output
     });
     validateGPUStorageBindingByteLength(
@@ -211,7 +271,14 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
         neighborhoodOffsets,
         parameters,
         output
-      })
+      }),
+      ...createVecchiaNeighborhoodStatusNodes(
+        graph,
+        id,
+        props.neighborhoodStatus,
+        output.logLikelihood,
+        output.neighborhoodStatus
+      )
     ];
   }
 }
@@ -224,14 +291,22 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
  * @param status The three-word status output.
  */
 export function getVecchiaLogLikelihoodResult(
-  logLikelihood: ArrayLike<number>,
-  status: ArrayLike<number>
+  logLikelihood: GPUPackedReadbackValues,
+  status: GPUPackedReadbackValues
 ): {
   logLikelihood: number;
   failedSiteCount: number;
   excludedSiteCount: number;
   usedSiteCount: number;
 } {
+  logLikelihood = getVecchiaReadbackValues(
+    'getVecchiaLogLikelihoodResult',
+    'logLikelihood',
+    logLikelihood,
+    2,
+    'float32'
+  );
+  status = getVecchiaReadbackValues('getVecchiaLogLikelihoodResult', 'status', status, 3, 'uint32');
   const failedSiteCount = status[0];
   return {
     logLikelihood: failedSiteCount > 0 ? Number.NaN : logLikelihood[0] + logLikelihood[1],
@@ -239,4 +314,32 @@ export function getVecchiaLogLikelihoodResult(
     excludedSiteCount: status[1],
     usedSiteCount: status[2]
   };
+}
+
+/** Decodes the three solve counts and optional input-neighborhood loss evidence. */
+export function decodeGPUVecchiaLogLikelihoodStatus(
+  status: GPUPackedReadbackValues,
+  neighborhoodStatus?: GPUPackedReadbackValues
+) {
+  return decodeVecchiaStatus('decodeGPUVecchiaLogLikelihoodStatus', status, neighborhoodStatus);
+}
+
+/** Reads each port with its declared scalar type, including raw buffer readback byte ranges. */
+export function decodeGPUVecchiaLogLikelihoodResult(ports: {
+  logLikelihood: Float32Array | Uint8Array | ArrayBuffer;
+  status: Uint32Array | Uint8Array | ArrayBuffer;
+  neighborhoodStatus?: Uint32Array | Uint8Array | ArrayBuffer;
+}) {
+  const totals = getVecchiaReadbackValues(
+    'decodeGPUVecchiaLogLikelihoodResult',
+    'logLikelihood',
+    ports.logLikelihood,
+    2,
+    'float32',
+    true
+  );
+  const result = getVecchiaLogLikelihoodResult(totals, ports.status);
+  const status = decodeGPUVecchiaLogLikelihoodStatus(ports.status, ports.neighborhoodStatus);
+  status.complete = status.complete && Number.isFinite(result.logLikelihood);
+  return {...result, logLikelihood: status.complete ? result.logLikelihood : NaN, status};
 }

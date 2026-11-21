@@ -39,6 +39,8 @@ export type GpuSceneContext = {
  */
 export type GpuSceneParameter = {
   id: string;
+  /** Retired ID of this parameter, used in validation messages. */
+  renamedFrom?: string;
   /** Short label, for example `Bandwidth`. */
   label: string;
   min: number;

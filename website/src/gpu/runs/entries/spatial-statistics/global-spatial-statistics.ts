@@ -74,7 +74,7 @@ export default defineOperationRun({
         weights: uploadSpatialWeights(builder, graph.weights),
         values: valueBuffer.view,
         statistics: ['moran', 'geary', 'getisOrdG'],
-        alternative: ALTERNATIVES[values.alternative],
+        analyticAlternative: ALTERNATIVES[values.alternative],
         output: {summary: summary.view}
       })
     );

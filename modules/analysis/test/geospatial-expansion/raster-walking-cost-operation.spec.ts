@@ -20,6 +20,11 @@ import {
   createSingletonWalkingInput
 } from './raster-walking-cost-operation-fixture';
 import fixtures from './raster-walking-cost-operation-fixtures.json';
+import {checkWalkingWatershedTextures} from './walking-watershed-texture-fixture';
+
+it('walking cost buffer and texture inputs preserve raw nodata and masks on resubmission (RT-09)', async () => {
+  await checkWalkingWatershedTextures('walking');
+});
 
 it('compares all directed walking-cost outputs for both models, no sources, barriers and parameter mismatch', async () => {
   const device = await getWebGPUTestDevice();

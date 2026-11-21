@@ -26,7 +26,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {RecipeTestFixture} from '../../gpu-spatial-analysis/recipes/recipe-harness';
 
 it('final1b F9 sorted filter gathers source rows independently of reversed caller IDs', async () => {
@@ -303,7 +303,7 @@ const FLOAT_WINDOWS: Window[] = [
   {start: 100, end: 200}, // all out above
   {start: -200, end: -100}, // all out below
   {start: 9, end: 3}, // reversed
-  {start: 4.25, end: 4.4} // between values: empty
+  {start: 4.25, end: 4.375} // exact dyadic endpoints between half-integer values: empty
 ];
 
 function expectSameAcceptance(sorted: RunResult, mask: RunResult, capacity: number) {
@@ -345,6 +345,11 @@ it('GPUTimeWindowFilter sorted equals the mask path on sorted float data', async
       expectSameAcceptance(actual, expected, capacity);
       expect(actual.mask, JSON.stringify(window)).toEqual(expected.mask);
       expect(actual.orderViolations).toBe(0);
+      if (window.start === 4.25) {
+        // Every source value is a multiple of 1/2; none lies in [17/4, 35/8].
+        expect(expected.count).toBe(0);
+        expect(actual.count).toBe(0);
+      }
     }
     maskPath.destroy();
     rangePath.destroy();
@@ -459,3 +464,47 @@ it('GPUTimeWindowFilter sorted A/B: mask path versus range mode on 1e7 sorted ro
   maskPath.destroy();
   rangePath.destroy();
 });
+
+for (const sorted of [false, true]) {
+  it(`encoded inclusive endpoints and strict original-double membership (PCK-06, sorted=${sorted})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const end = 1 + 2 ** -25;
+    // Independent binary64 ordering: the second row is outside. Both pairs round to
+    // high 0x3f800000 / low 0x33000000, so default encoded-pair membership includes both.
+    const values = [end, end + Number.EPSILON];
+    expect(values[1] > end).toBe(true);
+    expect(() => splitTimestamps(values, {requireExact: true})).toThrow(/row 1/);
+    const fixture = createFixture(device, {sorted, times: splitTimestamps(values), capacity: 2});
+    try {
+      const result = await fixture.run({start: end, end});
+      expect(result.ids).toEqual([0, 1]);
+      expect(result.count).toBe(2);
+      expect(result.overflow).toBe(0);
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
+
+for (const sorted of [false, true]) {
+  it(`preserves strict subnormal lane membership (earlier-fix note 1, sorted=${sorted})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const endpoint = 2 ** -103;
+    const fixture = createFixture(device, {
+      sorted,
+      times: splitTimestamps([endpoint, endpoint + 2 ** -149], {requireExact: true}),
+      capacity: 2
+    });
+    try {
+      const result = await fixture.run({start: endpoint, end: endpoint});
+      expect(result.ids).toEqual([0]);
+      expect(result.count).toBe(1);
+      expect(result.overflow).toBe(0);
+      expect(result.requiredCount).toBe(1);
+    } finally {
+      fixture.destroy();
+    }
+  });
+}

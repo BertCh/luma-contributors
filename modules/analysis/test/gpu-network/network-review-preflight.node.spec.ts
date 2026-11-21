@@ -26,17 +26,17 @@ it('KDE rejects overlapping output fields at construction and missing STORAGE be
   const quadratureLengths = createTransientView(graph, 'lengths', 'float32', 1);
   const intensity = createTransientView(graph, 'intensity', 'float32', 1);
   const kernelMass = createTransientView(graph, 'mass', 'float32', 1);
-  const status = createTransientView(graph, 'status', 'uint32', 1);
+  const validity = createTransientView(graph, 'validity', 'uint32', 1);
   const props = {
     distances,
     quadratureLengths,
     bandwidth: 1,
     eventCount: 1,
-    output: {intensity, kernelMass, status}
+    output: {intensity, kernelMass, validity}
   };
   const aliased = graph.createDataView(intensity.buffer, {format: 'uint32', length: 1});
   expect(
-    () => new GPUNetworkKernelDensity({...props, output: {...props.output, status: aliased}})
+    () => new GPUNetworkKernelDensity({...props, output: {...props.output, validity: aliased}})
   ).toThrow(/network-kernel-density.*overlap/);
   const buffer = graph.createTransientBuffer({
     id: 'copy-only',
@@ -44,9 +44,31 @@ it('KDE rejects overlapping output fields at construction and missing STORAGE be
     usage: Buffer.COPY_DST
   });
   const copyOnly = graph.createDataView(buffer, {format: 'float32', length: 1});
+  const copyOnlyUint32 = graph.createDataView(buffer, {format: 'uint32', length: 1});
+  const costsComplete = createTransientView(graph, 'costs-complete', 'uint32', 1);
   const contributor = new GPUNetworkKernelDensity({...props, distances: copyOnly});
   const create = vi.spyOn(graph, 'createTransientBuffer');
-  expect(() => graph.add(contributor)).toThrow(/network-kernel-density.*STORAGE/);
+  expect(() => graph.add(contributor)).toThrow(/network-kernel-density distances.*STORAGE/);
+  const certificate = new GPUNetworkKernelDensity({
+    ...props,
+    costsComplete,
+    output: {...props.output, status: {complete: copyOnlyUint32}}
+  });
+  expect(() => graph.add(certificate)).toThrow(
+    /network-kernel-density output\.status\.complete.*STORAGE/
+  );
+  const count = new GPUNetworkKernelDensity({
+    ...props,
+    output: {...props.output, status: {invalidCount: copyOnlyUint32}}
+  });
+  expect(() => graph.add(count)).toThrow(
+    /network-kernel-density output\.status\.invalidCount.*STORAGE/
+  );
+  const invalid = new GPUNetworkKernelDensity({
+    ...props,
+    output: {...props.output, validity: copyOnlyUint32}
+  });
+  expect(() => graph.add(invalid)).toThrow(/network-kernel-density output\.validity.*STORAGE/);
   expect(create).not.toHaveBeenCalled();
 });
 
@@ -109,13 +131,13 @@ it('KDE accepts packed outputs written separately and audits scaled quotient sha
     const packed = createTransientView(graph, 'packed', 'uint32', 66).buffer;
     const intensity = graph.createDataView(packed, {format: 'float32', length: 2});
     const kernelMass = graph.createDataView(packed, {format: 'float32', length: 1, byteOffset: 8});
-    const status = graph.createDataView(packed, {format: 'uint32', length: 2, byteOffset: 256});
+    const validity = graph.createDataView(packed, {format: 'uint32', length: 2, byteOffset: 256});
     const props = {
       distances: createTransientView(graph, 'distances', 'float32', 2),
       quadratureLengths: createTransientView(graph, 'lengths', 'float32', 2),
       eventCount: 1,
       bandwidth,
-      output: {intensity, kernelMass, status}
+      output: {intensity, kernelMass, validity}
     };
     try {
       const nodes = new GPUNetworkKernelDensity(props).getCommandNodes(graph);
@@ -134,8 +156,20 @@ it('KDE accepts packed outputs written separately and audits scaled quotient sha
       });
       expect(
         () =>
-          new GPUNetworkKernelDensity({...props, output: {...props.output, status: overlapping}})
+          new GPUNetworkKernelDensity({...props, output: {...props.output, validity: overlapping}})
       ).toThrow(/aligned binding byte ranges must not overlap/);
+      const invalidCount = graph.createDataView(packed, {
+        format: 'uint32',
+        length: 1,
+        byteOffset: 12
+      });
+      expect(
+        () =>
+          new GPUNetworkKernelDensity({
+            ...props,
+            output: {...props.output, status: {invalidCount}}
+          })
+      ).toThrow(/output\.status\.invalidCount.*output\.validity/);
       for (const invalid of [Number.NaN, 1e100, Number.MIN_VALUE]) {
         expect(() => new GPUNetworkKernelDensity({...props, bandwidth: invalid})).toThrow(
           /network-kernel-density.*bandwidth.*float32/

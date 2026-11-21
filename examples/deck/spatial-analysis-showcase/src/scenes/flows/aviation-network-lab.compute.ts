@@ -407,6 +407,11 @@ async function buildAviationNetworkRegion(
       topology: {...topology, weights: view(flightBuffer, 'float32', edgeCount)},
       directed: true,
       labels: communityLabels,
+      labelsComplete: graph.createDataView(view(communitySummaryBuffer, 'uint32', 4).buffer, {
+        format: 'uint32',
+        length: 1,
+        byteOffset: 4
+      }),
       groupCapacity: nodeCount,
       output: {
         groupNodeCount: view(directedCoarseningBuffers.groupNodeCount, 'uint32', nodeCount),
@@ -445,6 +450,14 @@ async function buildAviationNetworkRegion(
       topology: symmetricTopology,
       directed: false,
       labels: symmetricCommunityLabels,
+      labelsComplete: graph.createDataView(
+        view(symmetricCommunitySummaryBuffer, 'uint32', 4).buffer,
+        {
+          format: 'uint32',
+          length: 1,
+          byteOffset: 4
+        }
+      ),
       groupCapacity: nodeCount,
       output: {
         groupNodeCount: view(symmetricCoarseningBuffers.groupNodeCount, 'uint32', nodeCount),
@@ -667,10 +680,12 @@ async function buildAviationNetworkRegion(
     setReadout(
       'communityMembers',
       selectedCommunitySummary[0] === 1
-        ? [...membersByCommunity.entries()]
+        ? `${selectedCommunitySummary[1] === 1 ? '' : 'Provisional incumbent · '}${[
+            ...membersByCommunity.entries()
+          ]
             .sort(([first], [second]) => first - second)
             .map(([community, members]) => `${community}: ${members.join(',')}`)
-            .join(' · ')
+            .join(' · ')}`
         : 'membership withheld; invalid partition'
     );
     const intraWeight = selectedCoarsening.intraWeights.reduce((sum, value) => sum + value, 0);
@@ -679,6 +694,7 @@ async function buildAviationNetworkRegion(
     const coarseningSummary = selectedCoarsening.summary;
     const coarseningComplete =
       selectedCommunitySummary[0] === 1 &&
+      selectedCommunitySummary[1] === 1 &&
       selectedCoarsening.overflow === 0 &&
       coarseningSummary[1] === 0 &&
       coarseningSummary[3] === 0;
@@ -689,7 +705,9 @@ async function buildAviationNetworkRegion(
         ? `${coarseningSummary[6]} groups · ${coarseningSummary[5]} inter-group pairs / ${coarseningSummary[4]} within-group pairs · weight ${Math.round(intraWeight).toLocaleString()} within + ${Math.round(interWeight).toLocaleString()} between = ${Math.round(intraWeight + interWeight).toLocaleString()} / ${Math.round(inputWeight).toLocaleString()} ${weightError < 1 ? 'conserved' : `difference ${weightError.toFixed(1)}`}`
         : selectedCommunitySummary[0] !== 1
           ? 'Coarsening withheld; selected community partition is invalid'
-          : 'Coarsening incomplete; overflow or dropped links'
+          : selectedCommunitySummary[1] !== 1
+            ? 'Provisional incumbent; Louvain iteration limit reached, final coarsening withheld'
+            : 'Coarsening incomplete; overflow or dropped links'
     );
     setChart(
       'communityCoarseningChart',
@@ -880,13 +898,15 @@ async function buildAviationNetworkRegion(
       }
       if (nearest < 0) return null;
       const analysis = lastAnalysis;
+      const selectedCommunitySummary =
+        ctx.options.communityModel === 'directed'
+          ? analysis?.communitySummary
+          : analysis?.symmetricCommunitySummary;
       const score = !analysis
         ? 'waiting for GPU output'
         : ctx.options.measure === 'communities'
-          ? (ctx.options.communityModel === 'directed'
-              ? analysis.communitySummary
-              : analysis.symmetricCommunitySummary)[0]
-            ? `${ctx.options.communityModel} community ${(ctx.options.communityModel === 'directed' ? analysis.communities : analysis.symmetricCommunities)[nearest]}`
+          ? selectedCommunitySummary![0]
+            ? `${selectedCommunitySummary![1] === 1 ? '' : 'Provisional incumbent · '}${ctx.options.communityModel} community ${(ctx.options.communityModel === 'directed' ? analysis.communities : analysis.symmetricCommunities)[nearest]}`
             : 'partition invalid'
           : ctx.options.measure === 'components'
             ? `component ${analysis.components[nearest]}`

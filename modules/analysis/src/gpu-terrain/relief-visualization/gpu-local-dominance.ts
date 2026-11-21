@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileCopyrightText: Copyright (c) Relief Visualization Toolbox (RVT) contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -183,12 +184,12 @@ export function getGPULocalDominanceShifts(
 }
 
 /** Caller-owned outputs of {@link GPULocalDominance}; at least one is required. */
-export type GPULocalDominanceOutput = {
+export type GPULocalDominanceOutput = TerrainAtLeastOne<{
   /** Optional local dominance per pixel, NaN where the center is invalid. */
   dominance?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where the center elevation is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPULocalDominance}.

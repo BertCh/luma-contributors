@@ -1,5 +1,7 @@
 # GPUDorlingCartogram
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 {/* lens:GPUDorlingCartogram */}
 
 ::lens{scenario=gpu-spatial-analysis.dorling-cartogram rung=graph}
@@ -9,14 +11,24 @@ Constructs a bounded planar circle cartogram entirely in a caller-encoded GPU gr
 `values` determine circle area: `pi * radius² = value * areaScale` (`areaScale` defaults to 1).
 Rows and source IDs are preserved. Optional `sourceIds` default to zero-based input rows.
 
-Each synchronous iteration sums half-penetration forces over exact spatial neighbors (all other
-circles), averages by overlapping neighbor count, and attracts the circle toward its original
+Construction captures `id`, input view bindings, `areaScale`, `maximumIterations`,
+`overlapTolerance`, `attraction`, `rowTileSize` and `neighborGrid`. Spatial-context metadata,
+including nested frame and ellipsoid fields, and the nested `output` mapping (`positions`,
+`radii`, `sourceIds`, `metrics`, `status`) are copied. For example, after constructing with
+`maximumIterations: 10`, assigning `props.maximumIterations = 100` or replacing
+`props.output.positions` leaves the original ten-pass budget and output destination in effect.
+Construct a new contributor to change those choices. Graph-view identities are retained:
+writing new centers or values into the original input buffers is visible when the compiled
+graph is resubmitted.
+
+Each synchronous iteration sums half-penetration forces over exact spatial neighbors (a shared
+neighbor grid from 32,768 rows by default, or all other circles with `neighborGrid: false`), averages by overlapping neighbor count, and attracts the circle toward its original
 center by `attraction * (origin - center)`. `attraction` defaults to 0.01 and accepts 0..1.
 Coincident circles separate along the x axis using row order. This is a deterministic, geography
 anchored Dorling variant; it does not reproduce GeoDa's neighborhood forces or coordinates.
 Attraction and competing forces may leave unresolved overlap. No convergence guarantee is made.
 
-`maximumIterations` is a static budget from 0 to 256 (default 100), with at most 1024 input rows. GPU
+`maximumIterations` is a static budget from 0 to 256 (default 100), with at most 1,073,741,822 input rows on the neighbor-grid route (`neighborGrid: true`, or `'auto'` from 32,768 rows) and at most 65,536 rows with `neighborGrid: false`. GPU
 checks after initialization and every pass freeze the centers when maximum penetration is at
 most `overlapTolerance` (default 0.001 position units). A stationary overlapping layout remains
 unconverged. There is no CPU iteration decision, submission, readback, or fallback.
@@ -39,9 +51,9 @@ views, matching row counts, and separate output buffers. Borrowed input ownershi
 chunked vectors require explicit caller packing. Float32 precision can prevent small corrections
 at large coordinate magnitudes; inspect residuals and subtract a common coordinate origin.
 
-Each pass has O(n²) exact pair queries distributed over rows; the scalar diagnostic reduction is
-O(n). Temporary storage is O(n). Kernels use at most seven storage buffers, within default WebGPU
-limits. Larger interacting layouts require a future indexed implementation. Independent partitions
+On the all-pairs route each pass has O(n²) exact pair queries distributed over rows; the neighbor-grid route visits every overlapping pair but can still approach O(n²) for highly clustered layouts or a dominant circle; the scalar diagnostic reduction is
+O(n). Temporary storage is O(n). Kernels use at most eight storage buffers (the neighbor-grid relaxation uses all eight), within
+default WebGPU limits. Independent partitions
 do not resolve overlaps across partition boundaries and are not equivalent to one global layout.
 
 The pinned behavioral reference is Luc Anselin's *Exploring Spatial Data with GeoDa: A Workbook*,

@@ -481,8 +481,8 @@ const EDGE_COUNT: u32 = ${csr.neighbors.length}u;${COUNTER_WGSL}`,
 }
 
 /**
- * Writes the smallest strictly-cheaper predecessor on a shortest path. With `tieBits`, also sets
- * the bit of every tie edge (a tight edge between equal costs) for the tie-level phase. @internal
+ * Writes the smallest strictly-cheaper predecessor on a shortest path and marks each such
+ * target as level zero for the equal-cost phase. @internal
  */
 export function createReachabilityPredecessorsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -492,7 +492,7 @@ export function createReachabilityPredecessorsNode<Parameters>(
     csr: NetworkReachabilityGraphViews;
     costs: GraphDataView<'float32'>;
     predecessors: GraphDataView<'uint32'>;
-    tieBits?: GraphDataView<'uint32'>;
+    levels: GraphDataView<'uint32'>;
     /**
      * Optional per-node label (a service-area facility row). When given, only tight edges between
      * nodes of the same label count, so predecessor links stay inside one label's tree.
@@ -511,16 +511,9 @@ export function createReachabilityPredecessorsNode<Parameters>(
       view: props.predecessors,
       type: 'atomic<u32>',
       access: 'read_write'
-    }
+    },
+    {name: 'levels', view: props.levels, type: 'atomic<u32>', access: 'read_write'}
   ];
-  if (props.tieBits) {
-    bindings.push({
-      name: 'tieBits',
-      view: props.tieBits,
-      type: 'atomic<u32>',
-      access: 'read_write'
-    });
-  }
   if (props.labels) {
     bindings.push({name: 'labels', view: props.labels, type: 'u32', access: 'read'});
   }
@@ -535,6 +528,7 @@ const NODE_COUNT: u32 = ${props.nodeCount}u;
 const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
     body: `let sourceCost = costs[costsOffset + index];
   if (bitcast<u32>(sourceCost) >= INFINITY_BITS) { return; }
+  ${props.labels ? 'if (labels[labelsOffset + index] == NONE) { return; }' : ''}
   let firstEdge = min(offsets[offsetsOffset + index], EDGE_COUNT);
   let lastEdge = min(offsets[offsetsOffset + index + 1u], EDGE_COUNT);
   for (var edgeIndex = firstEdge; edgeIndex < lastEdge; edgeIndex++) {
@@ -546,12 +540,7 @@ const EDGE_COUNT: u32 = ${csr.neighbors.length}u;`,
     ${props.labels ? 'if (labels[labelsOffset + index] != labels[labelsOffset + targetNode]) { continue; }' : ''}
     if (sourceCost < targetCost) {
       atomicMin(&predecessors[predecessorsOffset + targetNode], index);
-    }${
-      props.tieBits
-        ? ` else if (sourceCost == targetCost) {
-      atomicOr(&tieBits[tieBitsOffset + (edgeIndex >> 5u)], 1u << (edgeIndex & 31u));
-    }`
-        : ''
+      atomicStore(&levels[levelsOffset + targetNode], 0u);
     }
   }`
   });
@@ -598,45 +587,122 @@ const THRESHOLD_COUNT: u32 = ${props.thresholds.length}u;`,
   });
 }
 
-/** WGSL helper shared by tie-level kernels: whether `node` has any tie out-edge. @internal */
-const TIE_EDGE_WGSL = /* wgsl */ `
-fn isTieEdge(edgeIndex: u32) -> bool {
-  return ((tieBits[tieBitsOffset + (edgeIndex >> 5u)] >> (edgeIndex & 31u)) & 1u) != 0u;
+/** Read-only certification data colocated with tie levels or weights to fit eight bindings. */
+type ReachabilityTieViews = {
+  /** Two node-length columns: mutable levels followed by final cost bits. */
+  levels: GraphDataView<'uint32'>;
+  costs: GraphDataView<'float32'>;
+  weights: GraphDataView<'float32'>;
+  /** Service areas also pack facility labels followed by the weight bits. */
+  labeledWeights?: {labels: GraphDataView<'uint32'>; packed: GraphDataView<'uint32'>};
+};
+
+function getTieEdgeBindings(
+  props: {
+    offsets: GraphDataView<'uint32'>;
+    neighbors: GraphDataView<'uint32'>;
+    tie: ReachabilityTieViews;
+  },
+  atomicLevels: boolean
+): WGSLKernelBinding[] {
+  const {tie} = props;
+  return [
+    {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
+    {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},
+    tie.labeledWeights
+      ? {name: 'labeledWeights', view: tie.labeledWeights.packed, type: 'u32', access: 'read'}
+      : {name: 'weights', view: tie.weights, type: 'f32', access: 'read'},
+    {
+      name: 'levels',
+      view: tie.levels,
+      type: atomicLevels ? 'atomic<u32>' : 'u32',
+      access: atomicLevels ? 'read_write' : 'read'
+    }
+  ];
+}
+
+/** Checks rounded tightness for the actual source, including when CSR rows share a slot. */
+function getTieEdgeSource(
+  tie: ReachabilityTieViews,
+  edgeCount: number,
+  atomicLevels: boolean
+): string {
+  const loadCost = (node: string) =>
+    atomicLevels
+      ? `atomicLoad(&levels[levelsOffset + NODE_COUNT + ${node}])`
+      : `levels[levelsOffset + NODE_COUNT + ${node}]`;
+  return /* wgsl */ `
+${REACHABILITY_WGSL_CONSTANTS}
+const NODE_COUNT: u32 = ${tie.costs.length}u;
+const EDGE_COUNT: u32 = ${edgeCount}u;
+
+fn isTieEdge(sourceNode: u32, targetNode: u32, edgeIndex: u32) -> bool {
+  if (targetNode >= NODE_COUNT) { return false; }
+  let sourceBits = ${loadCost('sourceNode')};
+  let targetBits = ${loadCost('targetNode')};
+  let weightBits = ${
+    tie.labeledWeights
+      ? 'labeledWeights[labeledWeightsOffset + NODE_COUNT + edgeIndex]'
+      : 'bitcast<u32>(weights[weightsOffset + edgeIndex])'
+  };
+  if ((sourceBits & 0x7fffffffu) >= INFINITY_BITS ||
+      (targetBits & 0x7fffffffu) >= INFINITY_BITS ||
+      (weightBits & 0x7fffffffu) >= INFINITY_BITS) { return false; }
+  let sourceCost = bitcast<f32>(sourceBits);
+  let targetCost = bitcast<f32>(targetBits);
+  let weight = bitcast<f32>(weightBits);
+  ${
+    tie.labeledWeights
+      ? `let sourceLabel = labeledWeights[labeledWeightsOffset + sourceNode];
+  if (sourceLabel == NONE || sourceLabel != labeledWeights[labeledWeightsOffset + targetNode]) {
+    return false;
+  }`
+      : ''
+  }
+  return weight >= 0.0 && sourceCost == targetCost && sourceCost + weight == targetCost;
 }
 
 fn hasTieOutEdge(node: u32) -> bool {
   let firstEdge = min(offsets[offsetsOffset + node], EDGE_COUNT);
   let lastEdge = min(offsets[offsetsOffset + node + 1u], EDGE_COUNT);
   for (var edgeIndex = firstEdge; edgeIndex < lastEdge; edgeIndex++) {
-    if (isTieEdge(edgeIndex)) { return true; }
+    let targetNode = neighbors[neighborsOffset + edgeIndex];
+    if (isTieEdge(node, targetNode, edgeIndex)) { return true; }
   }
   return false;
 }`;
+}
 
 /**
- * Prepares the tie-level phase: clears `levels` to `NONE` and `tieBits` to zero, and resets the
- * tie phase's control words and dispatch slots. Runs before the predecessor pass. @internal
+ * Clears tie levels, captures the certification data, and resets control words and dispatch
+ * slots. Runs after costs and any facility labels are final, before choosing parents. @internal
  */
 export function createReachabilityTieInitializeNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    nodeCount: number;
     state: FrontierState;
     tiePhase: FrontierPhase;
-    levels: GraphDataView<'uint32'>;
-    tieBits: GraphDataView<'uint32'>;
+    tie: ReachabilityTieViews;
     unresolvedCount?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  const {state, tiePhase} = props;
+  const {state, tiePhase, tie} = props;
+  const {costs, weights, labeledWeights} = tie;
   const bindings: WGSLKernelBinding[] = [
-    {name: 'levels', view: props.levels, type: 'u32', access: 'read_write'},
-    {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read_write'},
+    {name: 'levels', view: tie.levels, type: 'u32', access: 'read_write'},
+    {name: 'costs', view: costs, type: 'f32', access: 'read'},
     {name: 'control', view: state.control, type: 'u32', access: 'read_write'},
     {name: 'dispatchEven', view: state.dispatchEven, type: 'u32', access: 'read_write'},
     {name: 'dispatchOdd', view: state.dispatchOdd, type: 'u32', access: 'read_write'}
   ];
+  if (labeledWeights) {
+    bindings.push(
+      {name: 'labels', view: labeledWeights.labels, type: 'u32', access: 'read'},
+      {name: 'weights', view: weights, type: 'f32', access: 'read'},
+      {name: 'labeledWeights', view: labeledWeights.packed, type: 'u32', access: 'read_write'}
+    );
+  }
   if (props.unresolvedCount) {
     bindings.push({
       name: 'unresolvedCount',
@@ -651,16 +717,25 @@ export function createReachabilityTieInitializeNode<Parameters>(
     variant: 'tie-initialize',
     bindings,
     invocationCount: Math.max(
-      props.nodeCount,
-      props.tieBits.length,
+      costs.length,
+      labeledWeights ? weights.length : 0,
       getFrontierResetInvocationCount(tiePhase)
     ),
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
-const NODE_COUNT: u32 = ${props.nodeCount}u;
-const TIE_WORD_COUNT: u32 = ${props.tieBits.length}u;`,
+const NODE_COUNT: u32 = ${costs.length}u;`,
     body: `${getFrontierResetSource(tiePhase, {limit: `${tiePhase.maxRounds}u`})}
-  if (index < NODE_COUNT) { levels[levelsOffset + index] = NONE; }
-  if (index < TIE_WORD_COUNT) { tieBits[tieBitsOffset + index] = 0u; }${
+  if (index < NODE_COUNT) {
+    levels[levelsOffset + index] = NONE;
+    levels[levelsOffset + NODE_COUNT + index] = bitcast<u32>(costs[costsOffset + index]);
+    ${labeledWeights ? 'labeledWeights[labeledWeightsOffset + index] = labels[labelsOffset + index];' : ''}
+  }${
+    labeledWeights
+      ? `
+  if (index < ${weights.length}u) {
+    labeledWeights[labeledWeightsOffset + NODE_COUNT + index] = bitcast<u32>(weights[weightsOffset + index]);
+  }`
+      : ''
+  }${
     props.unresolvedCount
       ? '\n  if (index == 0u) { unresolvedCount[unresolvedCountOffset] = 0u; }'
       : ''
@@ -703,7 +778,7 @@ export function createReachabilityTieRootsNode<Parameters>(
   }
   bindings.push(
     {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
-    {name: 'levels', view: props.levels, type: 'u32', access: 'read_write'}
+    {name: 'levels', view: props.levels, type: 'atomic<u32>', access: 'read_write'}
   );
   if (props.hasCostLimit) {
     bindings.push({name: 'control', view: props.state.control, type: 'u32', access: 'read'});
@@ -726,54 +801,44 @@ const NODE_COUNT: u32 = ${props.nodeCount}u;`,
   if (bits >= INFINITY_BITS) { return; }
   ${props.labels ? 'if (labels[labelsOffset + node] != index) { return; }' : ''}
   if (bits == bitcast<u32>(costs[costsOffset + node])) {
-    levels[levelsOffset + node] = 0u;
+    // Duplicate accepted source rows may publish the same root concurrently.
+    atomicStore(&levels[levelsOffset + node], 0u);
   }`
   });
 }
 
 /**
- * Assigns level 0 to every node with a strict predecessor and pushes each level-0 node that has a
- * tie out-edge into round 0 of the tie-level phase. Roots were marked by the roots pass. @internal
+ * Pushes each level-zero node with a tie out-edge into round zero. The strict predecessor
+ * and root passes have already marked the level-zero nodes. @internal
  */
 export function createReachabilityTieSeedNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    nodeCount: number;
-    edgeCount: number;
     state: FrontierState;
     tiePhase: FrontierPhase;
     offsets: GraphDataView<'uint32'>;
-    tieBits: GraphDataView<'uint32'>;
-    predecessors: GraphDataView<'uint32'>;
-    levels: GraphDataView<'uint32'>;
+    neighbors: GraphDataView<'uint32'>;
+    tie: ReachabilityTieViews;
   }
 ): GPUCommandNode<Parameters> {
+  const {tie, neighbors} = props;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'tie-seed',
     bindings: [
-      {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-      {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read'},
-      {name: 'predecessors', view: props.predecessors, type: 'u32', access: 'read'},
-      {name: 'levels', view: props.levels, type: 'u32', access: 'read_write'},
+      ...getTieEdgeBindings(props, false),
       ...getFrontierBindings(graph, props.state, props.tiePhase, 0)
     ],
-    invocationCount: props.nodeCount,
-    declarations: `${REACHABILITY_WGSL_CONSTANTS}
-const NODE_COUNT: u32 = ${props.nodeCount}u;
-const EDGE_COUNT: u32 = ${props.edgeCount}u;
-${TIE_EDGE_WGSL}
+    invocationCount: tie.costs.length,
+    declarations: `${getTieEdgeSource(tie, neighbors.length, false)}
 ${getFrontierPushSource(
   props.tiePhase,
-  props.nodeCount,
+  tie.costs.length,
   graph.device.limits.maxComputeWorkgroupsPerDimension
 )}`,
-    body: `if (predecessors[predecessorsOffset + index] != NONE) {
-    levels[levelsOffset + index] = 0u;
-  }
-  if (levels[levelsOffset + index] == 0u && hasTieOutEdge(index)) {
+    body: `if (levels[levelsOffset + index] == 0u && hasTieOutEdge(index)) {
     frontierPush(index);
   }`
   });
@@ -787,16 +852,13 @@ export function createReachabilityTieLevelNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    nodeCount: number;
-    edgeCount: number;
     state: FrontierState;
     tiePhase: FrontierPhase;
     round: number;
     localIterations: number;
     offsets: GraphDataView<'uint32'>;
     neighbors: GraphDataView<'uint32'>;
-    tieBits: GraphDataView<'uint32'>;
-    levels: GraphDataView<'uint32'>;
+    tie: ReachabilityTieViews;
   }
 ): GPUCommandNode<Parameters> {
   return createFrontierRoundNode<Parameters>(graph, {
@@ -807,16 +869,8 @@ export function createReachabilityTieLevelNode<Parameters>(
     phase: props.tiePhase,
     round: props.round,
     localIterations: props.localIterations,
-    bindings: [
-      {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-      {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},
-      {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read'},
-      {name: 'levels', view: props.levels, type: 'atomic<u32>', access: 'read_write'}
-    ],
-    declarations: `${REACHABILITY_WGSL_CONSTANTS}
-const NODE_COUNT: u32 = ${props.nodeCount}u;
-const EDGE_COUNT: u32 = ${props.edgeCount}u;
-${TIE_EDGE_WGSL}`,
+    bindings: getTieEdgeBindings(props, true),
+    declarations: getTieEdgeSource(props.tie, props.neighbors.length, true),
     // Only nodes with a tie out-edge are pushed, so a plateau that ends exactly at the round budget
     // is not reported as truncated.
     visitSource: `fn visit(node: u32) {
@@ -826,9 +880,8 @@ ${TIE_EDGE_WGSL}`,
   let firstEdge = min(offsets[offsetsOffset + node], EDGE_COUNT);
   let lastEdge = min(offsets[offsetsOffset + node + 1u], EDGE_COUNT);
   for (var edgeIndex = firstEdge; edgeIndex < lastEdge; edgeIndex++) {
-    if (!isTieEdge(edgeIndex)) { continue; }
     let targetNode = neighbors[neighborsOffset + edgeIndex];
-    if (targetNode >= NODE_COUNT) { continue; }
+    if (!isTieEdge(node, targetNode, edgeIndex)) { continue; }
     if (nextLevel < atomicLoad(&levels[levelsOffset + targetNode])) {
       if (atomicMin(&levels[levelsOffset + targetNode], nextLevel) > nextLevel && hasTieOutEdge(targetNode)) {
         push(targetNode);
@@ -841,7 +894,7 @@ ${TIE_EDGE_WGSL}`,
 
 /**
  * Writes the smallest tie in-neighbor one level below each plateau node that has no strict
- * predecessor. Reads `levels` and the tie edge bits; leaves strict predecessors and roots alone.
+ * predecessor. Leaves strict predecessors and roots alone.
  *
  * @internal
  */
@@ -849,12 +902,9 @@ export function createReachabilityTiePredecessorsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
-    nodeCount: number;
-    edgeCount: number;
     offsets: GraphDataView<'uint32'>;
     neighbors: GraphDataView<'uint32'>;
-    tieBits: GraphDataView<'uint32'>;
-    levels: GraphDataView<'uint32'>;
+    tie: ReachabilityTieViews;
     predecessors: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
@@ -863,25 +913,18 @@ export function createReachabilityTiePredecessorsNode<Parameters>(
     operation: OPERATION,
     variant: 'tie-predecessors',
     bindings: [
-      {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-      {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},
-      {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read'},
-      {name: 'levels', view: props.levels, type: 'u32', access: 'read'},
+      ...getTieEdgeBindings(props, false),
       {name: 'predecessors', view: props.predecessors, type: 'atomic<u32>', access: 'read_write'}
     ],
-    invocationCount: props.nodeCount,
-    declarations: `${REACHABILITY_WGSL_CONSTANTS}
-const NODE_COUNT: u32 = ${props.nodeCount}u;
-const EDGE_COUNT: u32 = ${props.edgeCount}u;
-${TIE_EDGE_WGSL}`,
+    invocationCount: props.tie.costs.length,
+    declarations: getTieEdgeSource(props.tie, props.neighbors.length, false),
     body: `let level = levels[levelsOffset + index];
   if (level == NONE) { return; }
   let firstEdge = min(offsets[offsetsOffset + index], EDGE_COUNT);
   let lastEdge = min(offsets[offsetsOffset + index + 1u], EDGE_COUNT);
   for (var edgeIndex = firstEdge; edgeIndex < lastEdge; edgeIndex++) {
-    if (!isTieEdge(edgeIndex)) { continue; }
     let targetNode = neighbors[neighborsOffset + edgeIndex];
-    if (targetNode >= NODE_COUNT) { continue; }
+    if (!isTieEdge(index, targetNode, edgeIndex)) { continue; }
     let targetLevel = levels[levelsOffset + targetNode];
     if (targetLevel != 0u && targetLevel != NONE && level + 1u == targetLevel) {
       atomicMin(&predecessors[predecessorsOffset + targetNode], index);
@@ -928,5 +971,48 @@ export function createReachabilityUnresolvedCountNode<Parameters>(
   if (predecessors[predecessorsOffset + index] != NONE) { return; }
   if (levels[levelsOffset + index] == 0u) { return; }
   atomicAdd(&unresolvedCount[unresolvedCountOffset], 1u);`
+  });
+}
+
+/** Publishes edge provenance after the parent forest is final and the output is filled with NONE.
+ * Each child has exactly one parent invocation writing its slot, so no atomics are needed. @internal */
+export function createReachabilityPredecessorEdgesNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    topology: {
+      offsets: GraphDataView<'uint32'>;
+      neighbors: GraphDataView<'uint32'>;
+      weights: GraphDataView<'float32'>;
+    };
+    predecessors: GraphDataView<'uint32'>;
+    predecessorEdges: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: 'GPUNetworkReachability',
+    variant: 'predecessor-edges',
+    invocationCount: props.predecessors.length,
+    bindings: [
+      {name: 'parents', view: props.predecessors, type: 'u32', access: 'read'},
+      {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: props.topology.neighbors, type: 'u32', access: 'read'},
+      {name: 'weights', view: props.topology.weights, type: 'f32', access: 'read'},
+      {name: 'edges', view: props.predecessorEdges, type: 'u32', access: 'read_write'}
+    ],
+    body: `let end = min(offsets[offsetsOffset + index + 1u], ${props.topology.neighbors.length}u);
+    for (var edge = min(offsets[offsetsOffset + index], ${props.topology.neighbors.length}u); edge < end; edge++) {
+      let head = neighbors[neighborsOffset + edge];
+      if (head >= ${props.predecessors.length}u || parents[parentsOffset + head] != index) { continue; }
+      let weightBits = bitcast<u32>(weights[weightsOffset + edge]);
+      let bits = weightBits & 0x7fffffffu;
+      // Permit either signed zero; reject every other negative word before any float comparison.
+      if (weightBits < 0x7f800000u || bits == 0u) {
+        let selected = edges[edgesOffset + head];
+        if (selected == 0xffffffffu) { edges[edgesOffset + head] = edge; }
+        else if (bits < (bitcast<u32>(weights[weightsOffset + selected]) & 0x7fffffffu)) { edges[edgesOffset + head] = edge; }
+      }
+    }`
   });
 }

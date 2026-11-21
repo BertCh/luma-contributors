@@ -126,7 +126,8 @@ async function runPreparedSelfJoin(
           ids: output('unmatched', features.length),
           status: {
             count: output('unmatched-count', 1),
-            overflow: output('unmatched-overflow', 1)
+            overflow: output('unmatched-overflow', 1),
+            candidateOverflow: output('unmatched-candidate-overflow', 1)
           }
         }
       }

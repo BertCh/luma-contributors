@@ -53,7 +53,7 @@ const scenario: NetworkElementScenario = {
       'parameters',
       getGPUNetworkSubgraphFilterParameterValues(
         {nodeColumnCount: 0, edgeColumnCount: 1, hasEdgeTimes: false},
-        {edgeRanges: [[0, MAXIMUM_SECONDS]]}
+        {edgeAttributeRanges: [[0, MAXIMUM_SECONDS]]}
       ),
       'float32'
     );

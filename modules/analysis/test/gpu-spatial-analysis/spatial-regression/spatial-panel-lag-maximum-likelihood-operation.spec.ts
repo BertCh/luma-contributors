@@ -11,6 +11,152 @@ import {requireTestDevice} from '../../utils/require-test-device';
 import {expectRegressionRowsClose} from './regression-operation-test-utils';
 import fixtures from './spatial-panel-lag-maximum-likelihood-operation-fixtures.json';
 import edges from './spatial-panel-lag-maximum-likelihood-operation-edge-fixtures.json';
+import {panelPoleScenes} from './panel-lag-poles.test-utils';
+import {GPUSpatialPanelLagMaximumLikelihood} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-lag-maximum-likelihood';
+import {createRegressionTestContext} from './math-review-regression-test-utils';
+import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
+
+for (const scene of panelPoleScenes)
+  for (const route of [
+    'unit',
+    'random',
+    ...(['weightedPole', 'weightedRationalPole', 'rationalSlopePole'].includes(scene.name)
+      ? (['tiled'] as const)
+      : [])
+  ] as const)
+    for (const affine of [false, true])
+      it(`all panel lag forms reject the Fraction-certified pole ${scene.name}, ${route}, affine=${affine}`, async () => {
+        const effects = route === 'random' ? 'random' : 'unit';
+        const predictors = Float32Array.from(scene.predictors, value => value + (affine ? 8 : 0));
+        const response = Float32Array.from(scene.response, (value, row) =>
+          affine ? 2 * value + 16 * (row % 4) : value
+        );
+        const context = await createRegressionTestContext();
+        try {
+          const coefficients = context.output('float32', scene.predictorCount + 3),
+            covariance = context.output('float32', (scene.predictorCount + 2) ** 2);
+          const summary = context.output('float32', 6),
+            fitted = context.output('float32', 8),
+            residuals = context.output('float32', 8),
+            status = context.output('uint32', 1);
+          const hausman =
+            effects === 'random'
+              ? {tests: context.output('float32', 3), status: context.output('uint32', 1)}
+              : undefined;
+          context.graph.add(
+            new GPUSpatialPanelLagMaximumLikelihood({
+              periodCount: 2,
+              predictorCount: scene.predictorCount,
+              effects,
+              eigenvalues:
+                route === 'tiled'
+                  ? context.input(
+                      'float32',
+                      scene.name.startsWith('weighted') ? [-1, -0.25, 0.25, 1] : [-1, 0, 0, 1]
+                    )
+                  : undefined,
+              predictors: context.input('float32', predictors),
+              response: context.input('float32', response),
+              weights: {
+                offsets: context.input('uint32', scene.weights.offsets),
+                neighbors: context.input('uint32', scene.weights.neighbors),
+                weights: context.input('float32', scene.weights.weights)
+              },
+              output: {
+                coefficients: coefficients.view,
+                covariance: covariance.view,
+                summary: summary.view,
+                fitted: fitted.view,
+                residuals: residuals.view,
+                status: status.view
+              },
+              hausman: hausman
+                ? {tests: hausman.tests.view, status: hausman.status.view}
+                : undefined
+            })
+          );
+          context.run();
+          expect(Array.from(await readUint32(status.buffer, 1))).toEqual([2]);
+          for (const port of [coefficients, covariance, summary, fitted, residuals])
+            expect((await readFloat32(port.buffer, port.view.length)).every(Number.isNaN)).toBe(
+              true
+            );
+          if (hausman) {
+            expect(Array.from(await readUint32(hausman.status.buffer, 1))).toEqual([1]);
+            expect((await readFloat32(hausman.tests.buffer, 3)).every(Number.isNaN)).toBe(true);
+          }
+          for (const Operation of [
+            GPUSpatialPanelLagMaximumLikelihoodOperation,
+            CPUSpatialPanelLagMaximumLikelihoodOperation
+          ]) {
+            const result = await runOperationGraph(context.device, {
+              inputs: {
+                predictors: {format: 'float32', values: predictors},
+                response: {format: 'float32', values: response},
+                offsets: {format: 'uint32', values: Uint32Array.from(scene.weights.offsets)},
+                neighbors: {format: 'uint32', values: Uint32Array.from(scene.weights.neighbors)},
+                weights: {format: 'float32', values: Float32Array.from(scene.weights.weights)},
+                ...(route === 'tiled'
+                  ? {
+                      eigenvalues: {
+                        format: 'float32' as const,
+                        values: Float32Array.from(
+                          scene.name.startsWith('weighted') ? [-1, -0.25, 0.25, 1] : [-1, 0, 0, 1]
+                        )
+                      }
+                    }
+                  : {})
+              },
+              operations: [
+                new Operation({
+                  entityCount: 4,
+                  periodCount: 2,
+                  predictorCount: scene.predictorCount,
+                  effects,
+                  eigenvalues: route === 'tiled' ? 'eigenvalues' : undefined,
+                  predictors: 'predictors',
+                  response: 'response',
+                  weights: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+                  output: {
+                    coefficients: 'coefficients',
+                    covariance: 'covariance',
+                    summary: 'summary',
+                    status: 'status',
+                    fitted: 'fitted',
+                    residuals: 'residuals'
+                  },
+                  hausman:
+                    effects === 'random'
+                      ? {tests: 'hausmanTests', status: 'hausmanStatus'}
+                      : undefined
+                })
+              ],
+              outputs: [
+                'coefficients',
+                'covariance',
+                'summary',
+                'status',
+                'fitted',
+                'residuals',
+                ...(effects === 'random' ? ['hausmanTests', 'hausmanStatus'] : [])
+              ]
+            });
+            expect(Array.from(result['status'])).toEqual([2]);
+            for (const port of [
+              'coefficients',
+              'covariance',
+              'summary',
+              'fitted',
+              'residuals',
+              ...(effects === 'random' ? ['hausmanTests'] : [])
+            ])
+              expect(Array.from(result[port]).every(Number.isNaN)).toBe(true);
+            if (effects === 'random') expect(Array.from(result['hausmanStatus'])).toEqual([1]);
+          }
+        } finally {
+          context.destroy();
+        }
+      });
 
 for (const scene of [
   'random',
@@ -67,7 +213,10 @@ for (const scene of [
                     format: 'float32' as const,
                     values: new Float32Array(fixture.weights.neighbors.length)
                   },
-                  requiredCount: {format: 'uint32' as const, values: Uint32Array.of(999)},
+                  requiredCount: {
+                    format: 'uint32' as const,
+                    values: Uint32Array.of(fixture.weights.neighbors.length)
+                  },
                   candidateOverflow: {format: 'uint32' as const, values: Uint32Array.of(0)},
                   approximation: {format: 'uint32' as const, values: Uint32Array.of(1)}
                 }
@@ -87,7 +236,7 @@ for (const scene of [
                 offsets: 'offsets',
                 neighbors: 'neighbors',
                 weights: 'weights',
-                overflow: 'overflow',
+                status: {overflow: 'overflow'},
                 ...(scene === 'optionalWeights'
                   ? {
                       distances: 'distances',
@@ -149,9 +298,16 @@ for (const scene of [
               )
           );
       }
-    // Search diagnostics describe different searches: at most one outer sweep difference,
-    // phi-change absolute tolerance 1e-5, bracket-width absolute tolerance 5e-7 (32 GPU steps).
-    expect(Math.abs(gpu['summary'][2] - cpu['summary'][2])).toBeLessThanOrEqual(1);
+    // Sweep counts describe separate float32 and float64 convergence histories. There is
+    // no bound on their difference. Validate each count's own budget/meaning instead.
+    expect(Number.isInteger(gpu['summary'][2])).toBe(true);
+    expect(gpu['summary'][2]).toBeGreaterThanOrEqual(1);
+    expect(gpu['summary'][2]).toBeLessThanOrEqual(unit ? 1 : 64);
+    expect(Number.isInteger(cpu['summary'][2])).toBe(true);
+    expect(cpu['summary'][2]).toBeGreaterThanOrEqual(1);
+    if (unit) expect(cpu['summary'][2]).toBe(1);
+    // Both successful fits meet their declared phi tolerance; 32 GPU bracket steps leave
+    // width <=5e-7 while the uncapped CPU search reaches binary64 precision.
     expect(Math.abs(gpu['summary'][3] - cpu['summary'][3])).toBeLessThanOrEqual(1e-5);
     expect(Math.abs(gpu['summary'][4] - cpu['summary'][4])).toBeLessThanOrEqual(5e-7);
     expect(gpu['summary'][5] === cpu['summary'][5]).toBe(true);
@@ -179,7 +335,7 @@ for (const scene of [
 }
 
 for (const scene of edges.reviewCases) {
-  it(`checks the review's unverified GPU hypothesis: ${scene.name}`, async () => {
+  it(`panel operations honor independent review edge expectations: ${scene.name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const outputNames = ['coefficients', 'covariance', 'summary', 'status', 'fitted', 'residuals'];
@@ -224,8 +380,7 @@ for (const scene of edges.reviewCases) {
     const pole = scene.name === 'responseCopy' || scene.name === 'originalPole';
     const invalidWeights = scene.name === 'normalizationBoundary';
     expect(cpu['status'][0]).toBe(invalidWeights ? 1 : 2);
-    // These status expectations explicitly test the source-reading hypotheses, not measured
-    // device behavior. If a prediction fails, include all GPU rows for the integrator to inspect.
+    // Include every observed GPU output when an independent edge expectation fails.
     const observed = JSON.stringify(
       Object.fromEntries(
         outputNames.map(port => [
@@ -234,8 +389,8 @@ for (const scene of edges.reviewCases) {
         ])
       )
     );
-    expect(gpu['status'][0], `GPU hypothesis ${scene.name}: ${observed}`).toBe(
-      pole ? 0 : invalidWeights ? 1 : 2
+    expect(gpu['status'][0], `GPU review edge ${scene.name}: ${observed}`).toBe(
+      invalidWeights ? 1 : 2
     );
     for (const port of ['covariance', 'fitted', 'residuals'])
       expect(cpu[port].every(Number.isNaN)).toBe(true);
@@ -243,42 +398,24 @@ for (const scene of edges.reviewCases) {
       // Both reject the same serial-f32 row sum: every output, including NaNs, agrees exactly.
       for (const port of outputNames) expectRegressionRowsClose(gpu[port], cpu[port], 0);
     } else if (pole) {
-      // CPU corrects the zero-RSS pole; the hypothesized GPU result is a finite nearby iterate
-      // mislabeled successful. Check its model identities and all publication fields instead
-      // of equating it with the CPU's withheld outputs.
-      const expected = scene.name === 'responseCopy' ? [1, 0, 0, 0] : [1, 0.5, 0];
-      expect(cpu['summary'][0] === 0).toBe(true);
-      expectRegressionRowsClose(cpu['coefficients'].subarray(1), expected, 0);
-      expect(gpu['coefficients'][0]).toBeNaN();
-      for (let column = 0; column < expected.length; column++)
-        expect(Math.abs(gpu['coefficients'][column + 1] - expected[column])).toBeLessThan(1e-5);
-      expect(gpu['summary'][0]).toBeGreaterThan(0);
-      expect(gpu['summary'][0]).toBeLessThan(1e-10);
-      expect(Number.isFinite(gpu['summary'][1])).toBe(true);
-      expect(gpu['summary'][2]).toBe(1);
-      expect(gpu['summary'][3] === 0).toBe(true);
-      expect(gpu['summary'][4]).toBeLessThan(5e-7);
-      expect(gpu['summary'][5] === 0).toBe(true);
-      const width = scene.predictorCount + 2;
-      for (let row = 0; row < width; row++)
-        for (let column = 0; column < width; column++) {
-          const value = gpu['covariance'][row * width + column];
-          if (row === 0 || column === 0) expect(value).toBeNaN();
-          else {
-            expect(Number.isFinite(value)).toBe(true);
-            expect(Math.abs(value)).toBeLessThan(1e-8);
-          }
-        }
-      for (let row = 0; row < scene.response.length; row++) {
-        expect(Math.abs(gpu['fitted'][row] - scene.response[row])).toBeLessThan(1e-5);
-        expect(Math.abs(gpu['residuals'][row])).toBeLessThan(1e-5);
+      // Fraction oracle: responseCopy has beta=[1,0], rho=0; originalPole beta=1,
+      // rho=.5. Both have exact zero within variance and no finite Gaussian maximum.
+      for (const port of outputNames.filter(port => port !== 'status')) {
+        expect(Array.from(gpu[port]).every(Number.isNaN)).toBe(true);
+        expect(Array.from(cpu[port]).every(Number.isNaN)).toBe(true);
       }
     } else {
       // scale²/2 is outside float32. The CPU preserves a finite float64 likelihood while
       // the GPU can overflow/underflow earlier; those failure diagnostics need not agree.
       const expectedVariance = scene.name === 'varianceOverflow' ? Infinity : 0;
       expect(cpu['summary'][0] === expectedVariance).toBe(true);
-      expect(gpu['summary'][0] === expectedVariance).toBe(true);
+      if (scene.name === 'varianceUnderflow') {
+        // Test correction: the GPU's squared moments underflow before its profile search.
+        // The early status-2 path withholds all diagnostics. CPU float64 retains a finite
+        // likelihood before its variance rounds to zero at float32 publication.
+        for (const port of outputNames.filter(port => port !== 'status'))
+          expect(Array.from(gpu[port]).every(Number.isNaN), `${port}: ${observed}`).toBe(true);
+      } else expect(gpu['summary'][0] === expectedVariance).toBe(true);
       for (const port of ['covariance', 'fitted', 'residuals'])
         expectRegressionRowsClose(gpu[port], cpu[port], 0);
     }

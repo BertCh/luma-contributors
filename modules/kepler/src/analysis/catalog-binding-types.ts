@@ -19,6 +19,12 @@ export type CatalogEngine = 'cpu-reference' | 'gpu';
 /** Engines a binding supports. */
 export type CatalogEngineSupport = 'cpu-reference' | 'gpu-or-cpu' | 'gpu';
 
+/** Ordered analytical stage, including host work between GPU submissions. */
+export type CatalogExecutionStage = {
+  identity: {package: string; exportName: string};
+  execution: 'cpu' | 'gpu';
+};
+
 /** Device handed to GPU runners; the caller owns it. */
 export type CatalogGpuContext = {device: Device; signal?: AbortSignal};
 
@@ -49,6 +55,7 @@ export type CatalogPreviewPlan = {
 
 /** Tables, diagnostics and summary of one run. */
 export type CatalogRunOutput = {
+  stages?: readonly CatalogExecutionStage[];
   tables: CatalogOutputTable[];
   diagnostics: CatalogDiagnostic[];
   summary: Record<string, string | number>;
@@ -64,6 +71,14 @@ export type CatalogParameterSpec = {
   kind: 'number' | 'integer' | 'boolean' | 'enum' | 'string' | 'number-list';
   /** Physical unit of the value, `crs` when it depends on the declared coordinate system. */
   unit?: string;
+  coordinateModeUnits?: {geographic: string; planar: string};
+  nonzero?: boolean;
+  /** The unscaled value and its product with this scale must each remain finite and nonzero as Float32. */
+  nonzeroFloat32Scale?: number;
+  /** Canonical parameter named by a retained deprecated spelling. */
+  aliasFor?: string;
+  /** Retired name of this parameter, used in validation messages. */
+  renamedFrom?: string;
   minimum?: number;
   maximum?: number;
   options?: readonly string[];
@@ -77,8 +92,10 @@ export type CatalogInputSpec = {
   label: string;
   /** Absent means features, preserving existing bindings. Non-feature ports use accepts: []. */
   dataKind?: 'features' | 'table' | 'raster';
+  /** Additive table route for a feature port whose calculation only reads numeric columns. */
+  acceptsTable?: boolean;
   accepts: readonly ('point' | 'line' | 'polygon')[];
-  /** Feature cap; for dataKind=table this is the row cap. */
+  /** Feature cap; for table routes (including acceptsTable) this is the row cap. */
   maximumFeatures: number;
   /** Required positive bound for dataKind=raster; cells are never counted as features. */
   maximumCells?: number;
@@ -91,12 +108,17 @@ export type CatalogOutputSpec = {
   tableId: string;
   label: string;
   geometry: 'point' | 'line' | 'polygon' | 'mixed' | 'none';
+  /** Selected input determines geometry, including no geometry for a table route. */
+  geometryFromInput?: string;
   /** Columns that tie each output row to the source feature and to its new identity. */
   identityColumns: readonly string[];
   maximumRows: number;
 };
 
 export type CatalogOperationBinding = {
+  /** Qualified contributor declarations for exports whose names overlap between packages. */
+  contributorIdentities?: readonly {package: string; exportName: string}[];
+  stages?: readonly CatalogExecutionStage[];
   id: string;
   title: string;
   domain:
@@ -111,7 +133,7 @@ export type CatalogOperationBinding = {
   summary: string;
   /** Ontology capability families this operation belongs to. */
   capabilityIds: readonly string[];
-  /** GPU contributor exports whose semantics this binding mirrors on the CPU. */
+  /** Analytical contributor/helper exports, including CPU stages in a mixed execution. */
   contributorNames: readonly string[];
   /** GPU contributor exports the GPU path dispatches. Empty when only the CPU reference exists. */
   gpuContributorNames: readonly string[];
@@ -158,6 +180,7 @@ export type CatalogOperationBinding = {
 };
 
 export type CatalogRunResult = {
+  stages?: readonly CatalogExecutionStage[];
   sensitivity?: AnalysisSensitivityProvenance;
   operationId: string;
   /** Engine that actually produced the tables. */

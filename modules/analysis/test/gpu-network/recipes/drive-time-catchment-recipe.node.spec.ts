@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   GPUNetworkSnapping,
   GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK
@@ -101,12 +101,14 @@ it('drive-time recipe reports BVH snapping overflow per stage', () => {
   expect(exact.recipe.status.stages.map(stage => stage.stage)).not.toContain('snap-demand');
 });
 
-it('drive-time recipe feeds one topology to both snappings', () => {
+it('drive-time recipe feeds the same topology views to both snappings', () => {
   // Each snapping expands its own edge sources from the topology; the recipe keeps no private
   // edge-source input on the snapping props.
   const {snappings} = buildRecipe(undefined);
   const [facilities, demand] = snappings;
-  expect(facilities.props.topology).toBe(demand.props.topology);
+  for (const port of ['offsets', 'neighbors', 'weights', 'nodePositions'] as const) {
+    expect(facilities.props.topology[port]).toBe(demand.props.topology[port]);
+  }
   expect(facilities.edgeCount).toBe(8);
   expect(facilities.nodeCount).toBe(4);
 });
@@ -308,6 +310,78 @@ it.each([
       expect(auditWGSLModule(source, constants), identifier).toEqual([]);
     }
   } finally {
+    device.destroy();
+  }
+});
+
+it.each([
+  'geographic-raster',
+  'geographic-cells',
+  'planar-raster'
+] as const)('preflights the recipe coordinate context before declarations: %s (NET-113)', route => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'uint32x2' | 'float32' | 'float32x2' | 'float32x4'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `context-${serial++}`, format, length);
+  const cells = route === 'geographic-cells';
+  const props = {
+    id: 'context-catchment',
+    spatialContext:
+      route === 'planar-raster'
+        ? undefined
+        : {
+            coordinateSpace: 'longitude-latitude' as const,
+            metric: 'great-circle' as const
+          },
+    topology: {
+      offsets: view('uint32', 3),
+      neighbors: view('uint32', 2),
+      weights: view('float32', 2),
+      nodePositions: view('float32x2', 2)
+    },
+    facilities: view('float32x2', 1),
+    demand: view('float32x2', 1),
+    costBreaks: view('float32', 1),
+    isochrones: {
+      costBreaks: view('float32', 1),
+      parameters: view('float32', 12),
+      ...(cells
+        ? {
+            cellOutline: {
+              family: 'quadbin' as const,
+              resolution: 2,
+              output: {
+                rows: view('uint32', 8),
+                cells: view('uint32x2', 8),
+                edgeIndices: view('uint32', 8),
+                endpoints: view('float32x4', 8),
+                status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+              }
+            }
+          }
+        : {
+            raster: {
+              width: 2,
+              height: 2,
+              output: {bandClasses: view('uint32', 4)}
+            }
+          })
+    }
+  };
+  const add = vi.spyOn(GPUCommandGraph.prototype, 'add');
+  try {
+    if (route === 'geographic-raster') {
+      expect(() => addDriveTimeCatchmentRecipe(graph, props)).toThrow(
+        /context-catchment.*isochrones.raster.*planar.*project/
+      );
+      expect(add).not.toHaveBeenCalled();
+    } else {
+      expect(() => addDriveTimeCatchmentRecipe(graph, props)).not.toThrow();
+    }
+  } finally {
+    add.mockRestore();
     device.destroy();
   }
 });

@@ -16,6 +16,14 @@ import {
   expectRegressionRowsClose
 } from './regression-operation-test-utils';
 import fixture from './probit-regression-operation-fixtures.json';
+import {
+  createProbitConvergenceFixture,
+  PROBIT_CONVERGENCE_SLOPE,
+  PROBIT_CONVERGENCE_LOG_LIKELIHOOD,
+  PROBIT_CONVERGENCE_STANDARD_ERROR,
+  createProbitLargeCoefficientFixture,
+  PROBIT_LARGE_COEFFICIENT_SLOPE
+} from './probit-convergence-fixture';
 
 const PROPS: ProbitRegressionOperationProps = {
   id: 'probit-test',
@@ -173,6 +181,8 @@ it('matches hand-computed zero-score fit and failure layouts', () => {
   expect(Array.from(fit.fitted)).toEqual(new Array(6).fill(0.5));
   expect(fit.standardErrors[0]).toBeCloseTo(Math.sqrt(Math.PI / 12), 6);
   expect(fit.standardErrors[1]).toBeCloseTo(Math.sqrt(Math.PI / 8), 6);
+  expectRegressionRowsClose(fit.summary, [6, -6 * Math.log(2), 12 * Math.log(2), 1], 1e-7);
+  expect(Array.from(fit.marginalEffects)).toEqual([0]);
   for (const [change, status, count] of [
     [{mask: new Uint32Array(6)}, 1, 0],
     [{predictors: new Float32Array(6)}, 2, 6],
@@ -194,7 +204,7 @@ it('returns the diagnostic weight and variance failure statuses', () => {
   const malformedOffsets = input.spatialDiagnostics.weights.offsets.slice();
   malformedOffsets[1] = malformedOffsets[2] + 1;
   for (const [change, status] of [
-    [{overflow: Uint32Array.of(1)}, 2],
+    [{weights: {...input.spatialDiagnostics.weights, status: {overflow: Uint32Array.of(1)}}}, 2],
     [{weights: {...input.spatialDiagnostics.weights, offsets: malformedOffsets}}, 2],
     [
       {
@@ -221,6 +231,34 @@ it('returns the diagnostic weight and variance failure statuses', () => {
     );
     expect(result.status[0]).toBe(0);
     expect(result.spatialDiagnostics!.status[0]).toBe(status);
+    expect(result.spatialDiagnostics!.tests.every(Number.isNaN)).toBe(true);
+  }
+});
+
+it('refuses negative diagnostic weights and a CSR that does not start at zero', () => {
+  // GPUSpatialWeights requires nonnegative values and offsets[0] = 0. A signed matrix can
+  // still have positive diagnostic denominators, so a variance check does not validate it.
+  for (const change of [
+    {weights: Float32Array.from(fixture.weights, value => -value)},
+    {offsets: Uint32Array.from(fixture.offsets, (value, index) => (index === 0 ? 1 : value))}
+  ]) {
+    const input = getInput();
+    Object.assign(input.spatialDiagnostics.weights, change);
+    const result = computeProbitRegressionOnCPU(input, {predictorCount: 2});
+    expect(result.spatialDiagnostics!.status[0]).toBe(2);
+    expect(result.spatialDiagnostics!.tests.every(Number.isNaN)).toBe(true);
+  }
+});
+
+it('propagates candidate loss and failed weights convergence into diagnostic status', () => {
+  for (const status of [{candidateOverflow: Uint32Array.of(1)}, {converged: Uint32Array.of(0)}]) {
+    const input = getInput();
+    const result = computeProbitRegressionOnCPU(
+      {...input, spatialDiagnostics: {weights: {...input.spatialDiagnostics.weights, status}}},
+      {predictorCount: 2}
+    );
+    expect(result.status[0]).toBe(0);
+    expect(result.spatialDiagnostics!.status[0]).toBe(2);
     expect(result.spatialDiagnostics!.tests.every(Number.isNaN)).toBe(true);
   }
 });
@@ -307,4 +345,131 @@ it('rejects malformed arrays and validates both operations at construction', () 
   expect(
     () => new CPUProbitRegressionOperation({...PROPS, predictorCount: 12, maximumIterations: 257})
   ).not.toThrow();
+});
+
+for (const tolerance of [1e-4, 1e-3, 1e-2]) {
+  it(`SSR-109 certifies the closed-form maximum even with loose tolerance ${tolerance}`, () => {
+    const result = computeProbitRegressionOnCPU(createProbitConvergenceFixture(), {
+      predictorCount: 1,
+      tolerance
+    });
+    expect(result.status[0]).toBe(0);
+    expect(result.coefficients.every(Number.isFinite)).toBe(true);
+    expect(result.coefficients[0]).toBeCloseTo(0, 6);
+    expect(result.coefficients[1]).toBeCloseTo(PROBIT_CONVERGENCE_SLOPE, 5);
+    expect(Number.isFinite(result.summary[1])).toBe(true);
+    expect(result.summary[1]).toBeCloseTo(PROBIT_CONVERGENCE_LOG_LIKELIHOOD, 5);
+    expect(result.summary[3]).toBeGreaterThan(1);
+    expect(result.standardErrors).toHaveLength(2);
+    for (const value of result.standardErrors) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeCloseTo(PROBIT_CONVERGENCE_STANDARD_ERROR, 5);
+    }
+  });
+}
+
+it('SSR-109 loose tolerance cannot certify an exhausted fit or separated data', () => {
+  const unfinished = computeProbitRegressionOnCPU(createProbitConvergenceFixture(), {
+    predictorCount: 1,
+    tolerance: 1e-2,
+    maximumIterations: 1
+  });
+  expect(unfinished.status[0]).toBe(3);
+  expect(unfinished.summary[3]).toBe(1);
+  expect(unfinished.coefficients).toHaveLength(2);
+  expect(unfinished.coefficients.every(Number.isFinite)).toBe(true);
+  expect(unfinished.standardErrors).toHaveLength(2);
+  expect(unfinished.standardErrors.every(Number.isNaN)).toBe(true);
+  const separated = computeProbitRegressionOnCPU(
+    {
+      predictors: Float32Array.of(-1, -1, 1, 1),
+      response: Float32Array.of(0, 0, 1, 1)
+    },
+    {predictorCount: 1, tolerance: 1e-2}
+  );
+  expect(separated.status[0]).toBe(4);
+  expect(separated.coefficients).toHaveLength(2);
+  expect(separated.coefficients.every(Number.isNaN)).toBe(true);
+  expect(separated.standardErrors).toHaveLength(2);
+  expect(separated.standardErrors.every(Number.isNaN)).toBe(true);
+});
+
+it('SSR-109 loose tolerance still matches the independent masked two-predictor review fixture', () => {
+  const result = computeProbitRegressionOnCPU(getInput(), {predictorCount: 2, tolerance: 1e-2});
+  expect(result.status[0]).toBe(0);
+  expectRegressionRowsClose(result.coefficients, fixture.expected.coefficients, 5e-6);
+});
+
+for (const tolerance of [undefined, 1e-2]) {
+  it(`SSR-109 one large coefficient cannot certify an unrelated one (tolerance ${tolerance})`, () => {
+    const result = computeProbitRegressionOnCPU(createProbitLargeCoefficientFixture(), {
+      predictorCount: 3,
+      tolerance
+    });
+    expect(result.status[0]).toBe(0);
+    expect(result.coefficients).toHaveLength(4);
+    expect(Number.isFinite(result.coefficients[3])).toBe(true);
+    // Before the per-coefficient certificate: status 0 after 4 iterations at 2.2803545.
+    expect(Math.abs(result.coefficients[3] - PROBIT_LARGE_COEFFICIENT_SLOPE)).toBeLessThan(1e-4);
+  });
+}
+
+it('SSR-109 accepts positive tolerances below the float32 range', () => {
+  for (const tolerance of [1e-46, Number.MIN_VALUE]) {
+    const result = computeProbitRegressionOnCPU(createProbitConvergenceFixture(), {
+      predictorCount: 1,
+      tolerance
+    });
+    expect([0, 3]).toContain(result.status[0]);
+    expect(() => new CPUProbitRegressionOperation({...PROPS, tolerance})).not.toThrow();
+  }
+  const loose = computeProbitRegressionOnCPU(createProbitConvergenceFixture(), {
+    predictorCount: 1,
+    tolerance: 1e-2
+  });
+  expect(loose.status[0]).toBe(0);
+  expect(loose.coefficients[1]).toBeCloseTo(PROBIT_CONVERGENCE_SLOPE, 5);
+});
+
+it('both operation forms reject an explicitly empty optional mask or weights overflow name', () => {
+  const lag = {
+    weights: {offsets: 'lagOffsets', neighbors: 'lagNeighbors', weights: 'lagWeights'},
+    output: {coefficients: 'lagCoefficients', standardErrors: 'lagErrors', status: 'lagStatus'}
+  };
+  const changes: Partial<ProbitRegressionOperationProps>[] = [
+    {mask: ''},
+    {spatialLag: {...lag, weights: {...lag.weights, status: {overflow: ''}}}},
+    {
+      spatialDiagnostics: {
+        ...PROPS.spatialDiagnostics!,
+        weights: {...PROPS.spatialDiagnostics!.weights, status: {overflow: ''}}
+      }
+    }
+  ];
+  for (const change of changes) {
+    for (const Operation of [CPUProbitRegressionOperation, GPUProbitRegressionOperation]) {
+      expect(() => new Operation({...PROPS, ...change})).toThrow(/probit-test/);
+    }
+  }
+  // Omission stays valid and declares no port; a supplied name declares one.
+  const {mask: _mask, ...unmasked} = PROPS;
+  expect(new GPUProbitRegressionOperation(unmasked).inputs).not.toHaveProperty('mask');
+  expect(new GPUProbitRegressionOperation(PROPS).inputs).toHaveProperty('mask', 'mask');
+  const withLag = new GPUProbitRegressionOperation({
+    ...PROPS,
+    spatialLag: {...lag, weights: {...lag.weights, status: {overflow: 'lagOverflow'}}}
+  });
+  expect(withLag.inputs).toHaveProperty('lagWeightoverflow', 'lagOverflow');
+});
+
+it('a subnormal response word is nonbinary (status 4); signed zero is a binary zero', () => {
+  const input = createProbitConvergenceFixture();
+  const response = Float32Array.from(input.response);
+  response[0] = 2 ** -149;
+  expect(new Uint32Array(response.buffer)[0]).toBe(1);
+  const rejected = computeProbitRegressionOnCPU({...input, response}, {predictorCount: 1});
+  expect(rejected.status[0]).toBe(4);
+  expect(rejected.coefficients.every(Number.isNaN)).toBe(true);
+  response[0] = -0;
+  expect(computeProbitRegressionOnCPU({...input, response}, {predictorCount: 1}).status[0]).toBe(0);
 });

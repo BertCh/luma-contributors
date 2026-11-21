@@ -546,6 +546,7 @@ export async function createIsochrones(
       void tableOverflowBytes;
     }
   );
+  let ringsComplete = false;
   const demandSizes = [4, 4, 4, 4, 4, RING_CAPACITY * 4, demand.count * 4, demand.count * 4];
   const ringReader = new SummaryReader(
     resources,
@@ -562,8 +563,23 @@ export async function createIsochrones(
     ],
     bytes => {
       if (destroyed) return;
-      const [ringWords, , openWords, touchingWords, , holeBytes, insideBytes, bandBytes] =
-        sliceSections(bytes, demandSizes);
+      const [
+        ringWords,
+        ringLoss,
+        openWords,
+        touchingWords,
+        joinLoss,
+        holeBytes,
+        insideBytes,
+        bandBytes
+      ] = sliceSections(bytes, demandSizes);
+      ringsComplete = new Uint32Array(ringLoss)[0] === 0 && new Uint32Array(joinLoss)[0] === 0;
+      if (!ringsComplete) {
+        ctx.setReadout('ringJoin', 'unavailable: incomplete rings or join');
+        ctx.setReadout('ringJoinGap', 'unavailable: incomplete rings or join');
+        ctx.setChart('ringComparison', null);
+        return;
+      }
       const ringTotalCount = Math.min(new Uint32Array(ringWords)[0], RING_CAPACITY);
       const holes = new Uint32Array(holeBytes);
       let holeCount = 0;
@@ -670,7 +686,7 @@ export async function createIsochrones(
         maximumIterations: MAXIMUM_ITERATIONS,
         costBreaks: breaks,
         bandCapacity: BAND_TABLE_CAPACITY,
-        outputs: {
+        output: {
           assignments,
           nodeCosts: nodeCostsView,
           demandTimes: view(demandTimesBuffer, 'float32', demand.count),
@@ -874,7 +890,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
         values: view(populationRasterBuffer, 'float32', straightCellCount),
         mode: options.distanceMode,
         sumOrder: options.sumOrder,
-        outputs: {
+        output: {
           allocation: view(allocationBuffer, 'uint32', straightCellCount),
           distances: view(distancesBuffer, 'float32', straightCellCount),
           statistics: {
@@ -1294,7 +1310,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
           })
         );
       }
-      if (options.showRings) {
+      if (options.showRings && ringsComplete) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: `isochrones-cell-boundary-edges-${options.cellChoice}`,

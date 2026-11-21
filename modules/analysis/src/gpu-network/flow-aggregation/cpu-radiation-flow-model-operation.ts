@@ -15,8 +15,10 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
 import type {GPURadiationFlowModelNormalization} from './gpu-radiation-flow-model';
+import {resolveRadiationFlowModelNormalization} from './radiation-flow-model-normalization';
 import {
   GPURadiationFlowModelOperation,
+  snapshotRadiationFlowModelOperationProps,
   type RadiationFlowModelOperationProps
 } from './gpu-radiation-flow-model-operation';
 
@@ -28,6 +30,9 @@ export type CPURadiationFlowModelInput = {
   spatialContext?: GPUSpatialContext;
   normalization?: GPURadiationFlowModelNormalization;
 };
+
+/** Dense origin-major radiation flows. */
+export type CPURadiationFlowModelResult = {flows: Float32Array};
 
 /**
  * Computes radiation fluxes using one distance sort and grouped population prefix per origin.
@@ -41,9 +46,9 @@ export type CPURadiationFlowModelInput = {
  *
  * @throws If positions, populations or outflows have inconsistent lengths.
  */
-export function computeRadiationFlowModelOnCPU(input: CPURadiationFlowModelInput): {
-  flows: Float32Array;
-} {
+export function computeRadiationFlowModelOnCPU(
+  input: CPURadiationFlowModelInput
+): CPURadiationFlowModelResult {
   const {positions, populations, outflows} = input;
   const zoneCount = populations.length;
   if (positions.length !== zoneCount * 2) {
@@ -52,25 +57,32 @@ export function computeRadiationFlowModelOnCPU(input: CPURadiationFlowModelInput
   if (outflows.length !== zoneCount) {
     throw new Error('outflows length must equal populations length');
   }
+  let total = 0;
+  for (let zone = 0; zone < zoneCount; zone++) {
+    total += populations[zone];
+    validateRequirement(
+      'radiation-flow-model',
+      Number.isFinite(positions[zone * 2]) && Number.isFinite(positions[zone * 2 + 1]),
+      `positions at zone ${zone} must be finite; received [${positions[zone * 2]}, ${positions[zone * 2 + 1]}]`
+    );
+  }
   const context = resolveGPUSpatialContext(
     'radiation-flow-model',
     input.spatialContext,
     GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
   );
   const sphereRadius = getGPUGreatCircleRadius(context);
-  const normalization = input.normalization ?? 'none';
-  validateRequirement(
+  const normalization = resolveRadiationFlowModelNormalization(
     'radiation-flow-model',
-    normalization === 'none' || normalization === 'finite-size',
-    "normalization must be 'none' or 'finite-size'"
+    input.normalization
   );
-  const total = populations.reduce((sum, population) => sum + population, 0);
   const flows = new Float32Array(zoneCount * zoneCount);
   for (let origin = 0; origin < zoneCount; origin++) {
     const destinations: {zone: number; distance: number}[] = [];
-    const missingDistances: number[] = [];
+    let outside = 0;
     for (let destination = 0; destination < zoneCount; destination++) {
       if (destination === origin) continue;
+      outside += populations[destination];
       let distance: number;
       if (sphereRadius === undefined) {
         distance = Math.hypot(
@@ -101,8 +113,7 @@ export function computeRadiationFlowModelOnCPU(input: CPURadiationFlowModelInput
           sourceCosine * destinationCosine * (1 - halfVersine);
         distance = sphereRadius * Math.atan2(Math.hypot(east, north), up);
       }
-      if (Number.isNaN(distance)) missingDistances.push(destination);
-      else destinations.push({zone: destination, distance});
+      destinations.push({zone: destination, distance});
     }
     destinations.sort((left, right) => left.distance - right.distance);
     const sourcePopulation = populations[origin];
@@ -114,7 +125,7 @@ export function computeRadiationFlowModelOnCPU(input: CPURadiationFlowModelInput
       if (denominator > 0) {
         flow = (outflows[origin] * sourcePopulation * targetPopulation) / denominator;
         if (normalization === 'finite-size') {
-          const remaining = 1 - sourcePopulation / total;
+          const remaining = outside / total;
           flow = remaining > 0 ? flow / remaining : 0;
         }
       }
@@ -134,15 +145,14 @@ export function computeRadiationFlowModelOnCPU(input: CPURadiationFlowModelInput
         between += populations[destinations[index].zone];
       first = last;
     }
-    // A NaN distance compares less than no distance in the GPU kernel.
-    for (const destination of missingDistances) writeFlow(destination, 0);
   }
   return {flows};
 }
 
 /** CPU twin, preferred for the serial reference model. The GPU zone cap is not retained. */
 export class CPURadiationFlowModelOperation extends GPUCPUOperation {
-  constructor(props: RadiationFlowModelOperationProps) {
+  constructor(originalProps: RadiationFlowModelOperationProps) {
+    const props = snapshotRadiationFlowModelOperationProps(originalProps);
     const id = props.id ?? 'radiation-flow-model';
     validateCapacity(id, 'zoneCount', props.zoneCount, 2);
     resolveGPUSpatialContext(
@@ -150,16 +160,18 @@ export class CPURadiationFlowModelOperation extends GPUCPUOperation {
       props.spatialContext,
       GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
     );
-    validateRequirement(
-      id,
-      props.normalization === undefined || ['none', 'finite-size'].includes(props.normalization),
-      "normalization must be 'none' or 'finite-size'"
-    );
     const operation = new GPURadiationFlowModelOperation(props);
     super({
       id,
       inputs: operation.inputs,
-      outputs: {[props.output.flows]: gpuGraph.vector('float32', {length: props.zoneCount ** 2})},
+      outputs: {
+        [props.output.flows]: gpuGraph.vector('float32', {length: props.zoneCount ** 2}),
+        ...(props.output.invalidInput !== undefined
+          ? {
+              [props.output.invalidInput]: gpuGraph.vector('uint32', {length: props.zoneCount})
+            }
+          : {})
+      },
       execute({inputs}) {
         const populations = getCPUOperationFloat32Rows(id, inputs, 'populations');
         if (populations.length !== props.zoneCount)
@@ -171,7 +183,12 @@ export class CPURadiationFlowModelOperation extends GPUCPUOperation {
             outflows: getCPUOperationFloat32Rows(id, inputs, 'outflows'),
             spatialContext: props.spatialContext,
             normalization: props.normalization
-          }).flows
+          }).flows,
+          ...(props.output.invalidInput !== undefined
+            ? {
+                [props.output.invalidInput]: new Uint32Array(props.zoneCount)
+              }
+            : {})
         };
       }
     });

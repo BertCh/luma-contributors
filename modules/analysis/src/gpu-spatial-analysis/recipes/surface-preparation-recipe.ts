@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
+import {snapshotRecipeRasterMetadata} from './recipe-raster-metadata';
 
 import {validateRecipeBoundary, getRecipeView, getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -35,7 +38,8 @@ export type GPUSurfacePreparationOutput = {
 };
 export type GPUSurfacePreparationRecipeProps = Omit<GPURasterFillNoDataProps, 'output'> & {
   filter?: Pick<GPURasterRankFilterProps, 'radius' | 'quantile' | 'borderMode' | 'noDataPolicy'>;
-  outputs?: Partial<GPUSurfacePreparationOutput>;
+  /** Caller-owned terminal destinations. */
+  output?: Partial<GPUSurfacePreparationOutput>;
 };
 /** Continuous-surface repair with original validity and independent fill/filter provenance. */
 export function addSurfacePreparationRecipe<Parameters>(
@@ -49,6 +53,7 @@ function declareSurfacePreparationRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSurfacePreparationRecipeProps
 ): GPURecipeResult<GPUSurfacePreparationOutput> & {band: GPURasterBufferBand<'float32'>} {
+  const destinations = resolveRecipeDestinations(props.id ?? 'surface-preparation-recipe', props);
   props = snapshotConstructionFields(props, [
     'id',
     'grid',
@@ -56,9 +61,9 @@ function declareSurfacePreparationRecipe<Parameters>(
     'maximumDistance',
     'method',
     'filter',
-    'outputs'
+    'output'
   ]);
-  const provided = snapshotConstructionFields(props.outputs ?? {}, [
+  const provided = snapshotConstructionFields(destinations ?? {}, [
     'values',
     'validity',
     'originalValidity',
@@ -69,7 +74,7 @@ function declareSurfacePreparationRecipe<Parameters>(
   props = {
     ...props,
     input: snapshotRasterBand(props.input),
-    outputs: provided,
+    output: provided,
     filter:
       props.filter &&
       snapshotConstructionFields(props.filter, ['radius', 'quantile', 'borderMode', 'noDataPolicy'])
@@ -188,7 +193,7 @@ ${!props.filter ? 'filtered[filteredOffset + index] = 0u;' : ''}`
   return {
     contributors: builder.contributors,
     outputs,
-    intermediates: {fillValues, fillValidity, grid: props.grid},
+    intermediates: {fillValues, fillValidity, grid: snapshotRecipeRasterMetadata(props.grid)},
     band: {
       id,
       format: 'float32',

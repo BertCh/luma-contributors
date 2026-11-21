@@ -12,7 +12,7 @@ import {
 import {GPUNeighborSearch} from '../../../src/gpu-spatial-analysis/neighbor-search/index';
 import {getGPUNeighborSearchParameterValues} from '../../../src/gpu-spatial-analysis/neighbor-search/index';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
-import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {
   DUPLICATES_FIXTURE,
   RANDOM_FIXTURE,
@@ -52,7 +52,7 @@ async function runLof(
     producers.push(
       new GPUNeighborSearch({
         mode: 'knn',
-        k: fixture.k,
+        neighborCount: fixture.k,
         positions: rig.input(new Float32Array(fixture.points), 'float32x2', rows),
         parameters: rig.input(
           getGPUNeighborSearchParameterValues({bounds: [-100, -100, 300, 300]}),
@@ -132,4 +132,59 @@ it('GPULocalOutlierFactor flags nothing without a threshold (there is no default
   expect(RANDOM_FIXTURE.lof.some(value => value > 1.5)).toBe(true);
   expect(result.outlier.every(flag => flag === 0)).toBe(true);
   expect(result.count).toBe(0);
+});
+
+it('WGS-13 bounds malformed offsets and preserves weights-loss suppression and clean recovery', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const offsets = rig.input(Uint32Array.of(0, 3, 3), 'uint32', 3);
+    const loss = rig.input(Uint32Array.of(1), 'uint32', 1);
+    const neighbors = {
+      offsets,
+      neighbors: rig.input(Uint32Array.of(1), 'uint32', 1),
+      weights: rig.input(Float32Array.of(1), 'float32', 1),
+      distances: rig.input(Float32Array.of(2), 'float32', 1),
+      status: {candidateOverflow: loss}
+    };
+    const kDistance = rig.output('float32', 2);
+    const density = rig.output('float32', 2);
+    const lof = rig.output('float32', 2);
+    rig.graph.add(
+      new GPULocalOutlierFactor({
+        neighbors,
+        parameters: rig.input(
+          getGPULocalOutlierFactorParameterValues({densityFloor: 1}),
+          'float32',
+          4
+        ),
+        output: {kDistance: kDistance.view, localReachabilityDensity: density.view, lof: lof.view}
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      for (const output of [kDistance, density, lof])
+        expect((await readFloat32(output.buffer, 2)).every(Number.isNaN)).toBe(true);
+      rig.bufferOf(loss).write(Uint32Array.of(0));
+      // Even before topology repair the allocated domain is just one slot.
+      submitGraph(device, compiled, undefined);
+      const malformed = await readFloat32(kDistance.buffer, 2);
+      expect(malformed).toEqual([2, 0]);
+      rig.bufferOf(offsets).write(Uint32Array.of(0, 1, 1));
+      submitGraph(device, compiled, undefined);
+      expect(await readFloat32(kDistance.buffer, 2)).toEqual([2, 0]);
+      // Row 0 reaches island 1 at distance 2: density=1/(2+1)=1/3; LOF=0.
+      const actualDensity = await readFloat32(density.buffer, 2);
+      expect(Number.isFinite(actualDensity[0])).toBe(true);
+      expect(actualDensity[0]).toBeCloseTo(1 / 3, 6);
+      expect(actualDensity[1]).toBe(0);
+      expect(await readFloat32(lof.buffer, 2)).toEqual([0, 1]);
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
+  }
 });

@@ -13,7 +13,7 @@ import {
   RASTER_EMBEDDING_BINDINGS,
   makeRasterEmbeddingCatalogOutput
 } from '../src/analysis/catalog-raster-embeddings-bindings';
-import {getCatalogBinding} from '../src/analysis/catalog-bindings';
+import {getCatalogBinding, listCatalogEntries} from '../src/analysis/catalog-bindings';
 import {createNumericRasterTile} from '../../../examples/deck/kepler-compute/src/raster-tile-ingest';
 import {
   prepareRasterEmbeddingTile,
@@ -51,6 +51,39 @@ test('every embedding operation is registered as a GPU binding with explicit fix
     expect(binding.gpuContributorNames.length).toBeGreaterThan(0);
     expect(binding.title).toContain('generated');
   }
+});
+
+test('PCA discovery and returned execution evidence distinguish the CPU eigensolver', () => {
+  const entry = listCatalogEntries({lensScenarios: []}).find(
+    candidate =>
+      candidate.identity.package === '@luma-contributors/analysis/raster-analysis' &&
+      candidate.identity.exportName === 'getRasterEmbeddingPrincipalComponents'
+  );
+  expect(entry?.engine).toBe('cpu-reference');
+  for (const operation of ['pca', 'projection']) {
+    const binding = getCatalogBinding(`raster-embedding-${operation}`)!;
+    expect(binding.gpuContributorNames).toEqual([
+      'GPURasterEmbeddingCovariance',
+      'GPURasterEmbeddingProjection'
+    ]);
+  }
+  const output = makeRasterEmbeddingCatalogOutput({
+    width: 1,
+    height: 1,
+    rowCount: 1,
+    layout: 'pixels',
+    columns: {},
+    contributors: [
+      'GPURasterEmbeddingCovariance',
+      'getRasterEmbeddingPrincipalComponents',
+      'GPURasterEmbeddingProjection'
+    ]
+  });
+  expect(output.dispatchedContributors).toEqual([
+    'GPURasterEmbeddingCovariance',
+    'GPURasterEmbeddingProjection'
+  ]);
+  expect(output.stages?.map(stage => stage.execution)).toEqual(['gpu', 'cpu', 'gpu']);
 });
 
 test('fixture is unit length and has one explicit QA exclusion', () => {

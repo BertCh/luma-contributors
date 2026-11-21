@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  validateFiniteFloat32,
   validatePairStatisticsBounds,
   type GPUPairStatisticsBounds
 } from './pair-statistics-parameters';
@@ -34,12 +36,12 @@ export type GPUVariogramSettings = {
    * `[s * pi / directionCount, (s + 1) * pi / directionCount)`. Ignored when `directionCount` is 1.
    * Defaults to 0.
    */
-  azimuthOffset?: number;
+  sectorOffsetRadians?: number;
 };
 
 /**
  * Packs `GPUVariogram` parameters into the 8-element float32 layout
- * `[minX, minY, maxX, maxY, maximumDistance, azimuthOffset, 0, 0]`.
+ * `[minX, minY, maxX, maxY, maximumDistance, sectorOffsetRadians, 0, 0]`.
  *
  * @param@param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
@@ -53,15 +55,18 @@ export function getGPUVariogramParameterValues(
   if (target.length < GPU_VARIOGRAM_PARAMETER_LENGTH) {
     throw new Error(`GPUVariogram target must hold ${GPU_VARIOGRAM_PARAMETER_LENGTH} elements`);
   }
-  const azimuthOffset = settings.azimuthOffset ?? 0;
+  validateRequirement(
+    'GPUVariogram',
+    !('azimuthOffset' in settings),
+    'azimuthOffset was removed. Use sectorOffsetRadians'
+  );
+  const sectorOffsetRadians = settings.sectorOffsetRadians ?? 0;
   validatePairStatisticsBounds('GPUVariogram', settings.bounds, settings.maximumDistance);
-  if (!Number.isFinite(azimuthOffset)) {
-    throw new Error('GPUVariogram azimuthOffset must be finite');
-  }
+  validateFiniteFloat32('GPUVariogram', 'sectorOffsetRadians', sectorOffsetRadians);
   target.set([
     ...(settings.bounds === 'study-window' ? [NaN, NaN, NaN, NaN] : settings.bounds),
     settings.maximumDistance,
-    azimuthOffset,
+    sectorOffsetRadians,
     0,
     0
   ]);

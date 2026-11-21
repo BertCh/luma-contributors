@@ -69,6 +69,8 @@ type GroundResult = {
   candidateCount: number;
   densityOverflow: boolean;
   eventOverflow: boolean;
+  /** Candidate segment-edge pairs were lost, so band entries can be missing. */
+  candidateOverflow: boolean;
   trackOverflow: boolean;
 };
 
@@ -472,6 +474,7 @@ export async function createSatelliteGroundTracks(
           candidateCount: words[4],
           densityOverflow: words[0] !== 0,
           eventOverflow: words[3] !== 0 || words[7] !== 0,
+          candidateOverflow: words[5] !== 0,
           trackOverflow: words[6] !== 0
         };
         // Other variants keep their result until a commit makes them active.
@@ -563,10 +566,18 @@ export async function createSatelliteGroundTracks(
       'selectedOrbit',
       `${orbit.name} · ${SATELLITE_GROUPS[orbit.group]} · ${orbit.inclination.toFixed(1)}° inclination · ${Math.round(orbit.meanAltitudeKm).toLocaleString()} km · ${orbit.periodMinutes.toFixed(0)} min`
     );
+    const lostWork = [
+      result.densityOverflow ? 'density' : '',
+      result.eventOverflow ? 'events' : '',
+      result.candidateOverflow ? 'candidates' : '',
+      result.trackOverflow ? 'events per track' : ''
+    ].filter(Boolean);
+    const areEntriesIncomplete =
+      result.eventOverflow || result.candidateOverflow || result.trackOverflow;
     ctx.setReadout(
       'events',
       `${formatCount(result.eventCount)} band crossings, ${formatCount(result.candidateCount)} candidates${
-        result.eventOverflow || result.densityOverflow || result.trackOverflow ? ' (OVERFLOW)' : ''
+        lostWork.length ? ` (OVERFLOW: ${lostWork.join(', ')}; counts are incomplete)` : ''
       }`
     );
     const divisor = hours * (options.perSatellite ? Math.max(1, active.satelliteCount) : 1);
@@ -610,7 +621,9 @@ export async function createSatelliteGroundTracks(
     const perHour = result.enters[band] / hours;
     ctx.setReadout(
       'bandPasses',
-      `${perHour.toFixed(1)} per hour in the ${formatLatitude(BAND_MIN_LATITUDE + band * BAND_HEIGHT)} to ${formatLatitude(BAND_MIN_LATITUDE + (band + 1) * BAND_HEIGHT)} band`
+      `${areEntriesIncomplete ? 'at least ' : ''}${perHour.toFixed(1)} per hour in the ${formatLatitude(BAND_MIN_LATITUDE + band * BAND_HEIGHT)} to ${formatLatitude(BAND_MIN_LATITUDE + (band + 1) * BAND_HEIGHT)} band${
+        areEntriesIncomplete ? ' (incomplete: a capacity was exceeded)' : ''
+      }`
     );
     ctx.setReadout(
       'bandGap',
@@ -622,6 +635,11 @@ export async function createSatelliteGroundTracks(
           }`
         : 'no pass in 3 h'
     );
+    if (areEntriesIncomplete) {
+      ctx.setReadout('bandGap', 'unavailable: incomplete entries');
+      ctx.setChart('passChart', null);
+      ctx.setChart('beltChart', null);
+    }
     ctx.refreshTooltip();
   }
 

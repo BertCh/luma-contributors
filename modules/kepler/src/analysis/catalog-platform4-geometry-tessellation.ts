@@ -24,11 +24,16 @@ import {
   collectPositions,
   getSignedArea,
   getSourceColumns,
-  projectPolygonParts,
   type PlanarPoint
 } from './catalog-platform3-a-shared';
 import {makeLocalFrame} from './catalog-local-frame';
 import {MAXIMUM_TRIANGULATION_VERTICES, collectSites} from './catalog-platform3-a-tessellation';
+
+import {
+  CATALOG_POLYGON_TRIANGLE_COLUMNS,
+  projectCatalogPolygonParts,
+  serializeCatalogTriangle
+} from './catalog-triangle-output';
 
 /**
  * GPUDelaunayTessellation on the metric local frame of the CPU reference, shifted to the data
@@ -197,7 +202,7 @@ export async function runGpuPolygonTriangulation(
   const parts: {sourceIndex: number; partIndex: number; rings: PlanarPoint[][]}[] = [];
   let oversized = 0;
   polygons.features.forEach((feature, sourceIndex) =>
-    projectPolygonParts(feature, frame).forEach((rings, partIndex) => {
+    projectCatalogPolygonParts(feature, frame).forEach(({rings, partIndex}) => {
       if (rings.reduce((sum, ring) => sum + ring.length, 0) > MAXIMUM_TRIANGULATION_VERTICES)
         oversized++;
       else parts.push({sourceIndex, partIndex, rings});
@@ -286,15 +291,7 @@ export async function runGpuPolygonTriangulation(
   const table = makeCatalogTable(
     'polygon-triangles',
     'Polygon triangles',
-    {
-      triangle_id: 'string',
-      source_index: 'int32',
-      source_id: 'string',
-      part_index: 'int32',
-      triangle_index: 'int32',
-      area: 'float64',
-      geometry: 'string'
-    },
+    CATALOG_POLYGON_TRIANGLE_COLUMNS,
     'geometry'
   );
   let incompleteCount = 0;
@@ -308,10 +305,7 @@ export async function runGpuPolygonTriangulation(
         ...getSourceColumns(polygons.features[part.sourceIndex], part.sourceIndex),
         part_index: part.partIndex,
         triangle_index: triangle,
-        area: Math.abs(getSignedArea(corners)),
-        geometry: makeCatalogGeometryText('Polygon', [
-          closeRing(corners.map(point => frame.inverse(point[0], point[1])))
-        ])
+        ...serializeCatalogTriangle(corners, frame.inverse)
       });
     }
   });

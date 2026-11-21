@@ -40,10 +40,12 @@ export async function runExample(
   const createWeights = (prefix: string) => ({
     offsets: createInteger(`${prefix}RowOffsets`, count + 1),
     neighbors: createInteger(`${prefix}Neighbors`, capacity),
-    weights: createFloat(`${prefix}Values`, capacity),
-    status: {overflow: createInteger(`${prefix}Overflow`, 1)}
+    weights: createFloat(`${prefix}Values`, capacity)
   });
-  const sourceOutput = createWeights('sourceWeights');
+  const sourceOutput = {
+    ...createWeights('sourceWeights'),
+    status: {overflow: createInteger('sourceWeightsOverflow', 1)}
+  };
   const weightOutput = createWeights('weights');
   const statistics = createFloat('statistics', 3);
   const counts = createInteger('counts', 6);
@@ -75,6 +77,7 @@ export async function runExample(
       weightsNeighbors,
       weightsValues,
       weightsOverflow: weights.status!.overflow!,
+      weightsCandidateOverflow: weights.status!.candidateOverflow!,
       statistics: statistics,
       counts: counts,
       neighborCounts: neighborCounts,

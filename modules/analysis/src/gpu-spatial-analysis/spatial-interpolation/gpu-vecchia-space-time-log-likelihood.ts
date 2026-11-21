@@ -3,6 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  snapshotVecchiaLossProps,
+  validateVecchiaPorts,
+  createVecchiaNeighborhoodStatusNodes,
+  type VecchiaNeighborhoodStatus
+} from './vecchia-neighborhood-status';
+import {MAXIMUM_VECCHIA_NEIGHBOR_COUNT} from './vecchia-conditioning-sets';
+import {getInterpolationNeighborhoodLossViews} from './interpolation-neighborhood-loss';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
+import {
   validateInterpolationPredictionViews,
   validateInterpolationOutputPasses,
   validateInterpolationOutputsDisjointFromInputs
@@ -34,10 +45,7 @@ import {
 import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
-  evaluateSpaceTimeVariogramModel,
-  type SpaceTimeVariogramModel
-} from '../../dataframe-analysis/pair-statistics/space-time-variogram-model';
+import type {SpaceTimeVariogramModel} from '../../dataframe-analysis/pair-statistics/space-time-variogram-model';
 import {getEquilibratedSolveWGSL} from './equilibrated-solve-wgsl';
 import {
   getGPUSpaceTimeKrigingParameterValues,
@@ -49,13 +57,38 @@ import {
   type GPUVecchiaLikelihoodOutput
 } from './vecchia-likelihood-nodes';
 import {VECCHIA_NUGGET_FLOOR_FRACTION} from './vecchia-parameters';
+import type {GPUPackedReadbackValues} from '../../analysis-core/kernels/packed-readback';
+import {decodeVecchiaStatus} from './vecchia-readback';
+import {decodeGPUVecchiaLogLikelihoodResult} from './gpu-vecchia-log-likelihood';
 
 const OPERATION = 'GPUVecchiaSpaceTimeLogLikelihood';
-const MAXIMUM_NEIGHBOR_COUNT = 32;
+const MAXIMUM_NEIGHBOR_COUNT = MAXIMUM_VECCHIA_NEIGHBOR_COUNT;
 /** Number of float32 elements in a space-time Vecchia parameter view. */
 export const GPU_VECCHIA_SPACE_TIME_PARAMETER_LENGTH = GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH;
 
-/** Rows `[value, observationErrorVariance, reserved, validity]`, as for the spatial likelihood. */
+/** Output layout shared with the spatial likelihood. */
+export type GPUVecchiaSpaceTimeLogLikelihoodOutput = GPUVecchiaLikelihoodOutput;
+
+/** Decodes space-time solve counts and optional input-neighborhood loss evidence. */
+export function decodeGPUVecchiaSpaceTimeLogLikelihoodStatus(
+  status: GPUPackedReadbackValues,
+  neighborhoodStatus?: GPUPackedReadbackValues
+) {
+  return decodeVecchiaStatus(
+    'decodeGPUVecchiaSpaceTimeLogLikelihoodStatus',
+    status,
+    neighborhoodStatus
+  );
+}
+
+/** Space-time totals have the same port element types as the spatial likelihood. */
+export function decodeGPUVecchiaSpaceTimeLogLikelihoodResult(
+  ports: Parameters<typeof decodeGPUVecchiaLogLikelihoodResult>[0]
+) {
+  return decodeGPUVecchiaLogLikelihoodResult(ports);
+}
+
+/** Rows `[value, observationErrorVariance, reserved, validity]`; validity must be strictly `> 0` (zero, negative and NaN exclude), as for the spatial likelihood. */
 export type GPUVecchiaSpaceTimeLogLikelihoodProps = {
   id?: string;
   /** Planar coordinates only; project longitude and latitude first. */
@@ -65,11 +98,14 @@ export type GPUVecchiaSpaceTimeLogLikelihoodProps = {
   positions: GraphDataView<'float32x2'>;
   /** Relative float32 time per row. */
   times: GraphDataView<'float32'>;
+  /** Rows [value, observationErrorVariance, reserved, validity]; strictly > 0 includes, zero/negative/NaN exclude. */
   observations: GraphDataView<'float32x4'>;
   neighborhoodOffsets: GraphDataView<'uint32'>;
   neighborhoods: GraphDataView<'uint32'>;
   /** Largest conditioning set, 1..32. Compile time. */
   neighborCount: number;
+  /** Optional producer loss flags; any supplied loss suppresses dependent totals. */
+  neighborhoodStatus?: VecchiaNeighborhoodStatus;
   /** Written by `getGPUVecchiaSpaceTimeLogLikelihoodParameterValues`. Per-frame. */
   parameters: GraphDataView<'float32'>;
   output: GPUVecchiaLikelihoodOutput;
@@ -86,6 +122,8 @@ export type GPUVecchiaSpaceTimeLogLikelihoodProps = {
  * Bindings are limited to the core eight storage buffers per stage by reading site positions and
  * times directly; there is no separate query view.
  *
+ * The GPU route accepts at most 32 usable neighbors per site (MAXIMUM_VECCHIA_NEIGHBOR_COUNT),
+ * taking the first usable CSR entries. CPU evaluation uses all usable slots.
  * Compile-time: row count, conditioning-set width. Per-frame: every covariance parameter.
  */
 export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer {
@@ -95,7 +133,30 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
   readonly temporalContext: GPUTemporalContext;
 
   constructor(props: GPUVecchiaSpaceTimeLogLikelihoodProps) {
-    this.props = props;
+    validateVecchiaPorts(props.id ?? 'vecchia-space-time-log-likelihood', props, false, true);
+    const originalProps = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'id',
+        'neighborCount',
+        'neighborhoodOffsets',
+        'neighborhoods',
+        'observations',
+        'output',
+        'parameters',
+        'positions',
+        'spatialContext',
+        'temporalContext',
+        'times'
+      ],
+      ['conditionals', 'conditionalStatus', 'siteTerms', 'siteStatus', 'logLikelihood', 'status']
+    );
+    this.props = props = snapshotVecchiaLossProps(originalProps, () => props);
+    const lossViews = getInterpolationNeighborhoodLossViews(
+      props.id ?? 'vecchia-space-time-log-likelihood',
+      props
+    );
     this.id = props.id ?? 'vecchia-space-time-log-likelihood';
     const {id} = this;
     const {positions, times, observations, neighborhoodOffsets, neighborhoods, parameters, output} =
@@ -108,6 +169,8 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
       encodings: ['float32-relative'] as const
     });
     this.rowCount = positions.length;
+    if (output.neighborhoodStatus)
+      validateViewLength(id, 'output.neighborhoodStatus', output.neighborhoodStatus, 3);
     validateCapacity(id, 'neighborCount', props.neighborCount, 1, MAXIMUM_NEIGHBOR_COUNT);
     validateViewLength(id, 'times', times, this.rowCount);
     validateViewLength(id, 'observations', observations, this.rowCount);
@@ -125,7 +188,8 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
         read: {conditionals: output.conditionals, conditionalStatus: output.conditionalStatus},
         write: {siteTerms: output.siteTerms, siteStatus: output.siteStatus, status: output.status}
       },
-      {read: {status: output.status}, write: {logLikelihood: output.logLikelihood}}
+      {read: {status: output.status}, write: {logLikelihood: output.logLikelihood}},
+      {write: {logLikelihood: output.logLikelihood, neighborhoodStatus: output.neighborhoodStatus}}
     ]);
     validateInterpolationOutputsDisjointFromInputs(id, Object.values(output), [
       positions,
@@ -133,18 +197,28 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
       neighborhoodOffsets,
       neighborhoods,
       parameters,
-      times
+      times,
+      ...lossViews
     ]);
     validateInterpolationPredictionViews(
       id,
-      [positions, times, observations, neighborhoodOffsets, neighborhoods, parameters],
+      [
+        positions,
+        times,
+        observations,
+        neighborhoodOffsets,
+        neighborhoods,
+        parameters,
+        ...lossViews
+      ],
       [
         output.conditionals,
         output.conditionalStatus,
         output.siteTerms,
         output.siteStatus,
         output.logLikelihood,
-        output.status
+        output.status,
+        ...(output.neighborhoodStatus ? [output.neighborhoodStatus] : [])
       ]
     );
   }
@@ -160,6 +234,12 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
       neighborhoods: props.neighborhoods,
       parameters: props.parameters,
       times: props.times,
+      ...Object.fromEntries(
+        getInterpolationNeighborhoodLossViews(id, props).map((view, index) => [
+          `neighborhoodLoss${index}`,
+          view
+        ])
+      ),
       ...props.output
     });
     validateGPUStorageBindingByteLength(
@@ -274,7 +354,14 @@ statuses[statusesOffset + index] = 0u;`
         neighborhoodOffsets,
         parameters,
         output
-      })
+      }),
+      ...createVecchiaNeighborhoodStatusNodes(
+        graph,
+        id,
+        props.neighborhoodStatus,
+        output.logLikelihood,
+        output.neighborhoodStatus
+      )
     ];
   }
 }
@@ -301,8 +388,34 @@ function hasSmoothComponent(model: SpaceTimeVariogramModel): boolean {
   }
 }
 
-/** Lag small enough that a sill contribution is negligible beside any nugget. */
-const NUGGET_PROBE_LAG = 1e-12;
+/** Exact coincident discontinuity as both spatial and temporal lags approach zero from above. */
+function getSpaceTimeCoincidentNugget(model: SpaceTimeVariogramModel): number {
+  switch (model.type) {
+    case 'separable':
+      return (
+        model.sill * (model.spatial.nugget + (1 - model.spatial.nugget) * model.temporal.nugget)
+      );
+    case 'product-sum': {
+      const spatialNugget = model.spatial.nugget;
+      const temporalNugget = model.temporal.nugget;
+      // Expand C(0,0) - C(0+,0+) into nonnegative terms, avoiding cancellation.
+      return (
+        spatialNugget +
+        temporalNugget +
+        model.k *
+          (spatialNugget * temporalNugget +
+            spatialNugget * model.temporal.sill +
+            model.spatial.sill * temporalNugget)
+      );
+    }
+    case 'metric':
+      return model.joint.nugget;
+    case 'sum-metric':
+      return model.spatial.nugget + model.temporal.nugget + model.joint.nugget;
+    case 'gneiting':
+      return model.nugget;
+  }
+}
 
 /**
  * Packs per-frame parameters of `GPUVecchiaSpaceTimeLogLikelihood`. Enforces the float32 nugget
@@ -319,16 +432,22 @@ export function getGPUVecchiaSpaceTimeLogLikelihoodParameterValues(
   target?: Float32Array,
   searchAnisotropy: number = 1
 ): Float32Array {
-  const values = getGPUSpaceTimeKrigingParameterValues(
-    {covariance: model, searchAnisotropy},
-    target
-  );
+  const values = getGPUSpaceTimeKrigingParameterValues({covariance: model, searchAnisotropy});
   const total = values[0];
-  const nugget = evaluateSpaceTimeVariogramModel(model, NUGGET_PROBE_LAG, NUGGET_PROBE_LAG);
+  const nugget = getSpaceTimeCoincidentNugget(model);
   validateRequirement(
     OPERATION,
     !hasSmoothComponent(model) || nugget >= VECCHIA_NUGGET_FLOOR_FRACTION * total * (1 - 1e-6),
     `nugget must be at least ${VECCHIA_NUGGET_FLOOR_FRACTION} of the total variance for a smooth component`
   );
+  if (target) {
+    validateRequirement(
+      OPERATION,
+      target.length >= values.length,
+      `target must hold at least ${values.length} elements; received ${target.length}`
+    );
+    target.set(values);
+    return target;
+  }
   return values;
 }

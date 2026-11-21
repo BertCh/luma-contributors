@@ -147,11 +147,15 @@ it('validates both operation constructors and deferred GPU contributor construct
       /measure-test/
     );
   }
+  // @ts-expect-error Deliberate empty terminal selection exercises both runtime guards.
+  const empty: CellMeasuresOperationProps['output'] = {};
+  for (const Operation of [GPUCellMeasuresOperation, CPUCellMeasuresOperation]) {
+    expect(() => new Operation({...PROPS, output: empty})).toThrow(/measure-test.*at least one/);
+  }
   for (const changes of [
     {maximumEdgeCount: 5},
     {maximumEdgeCount: 11},
     {maximumEdgeCount: 6.5},
-    {output: {}},
     {family: 'geohash' as 'h3'},
     {units: 'native' as 'meters'},
     {wordOrder: 'wrong' as 'high-low'}

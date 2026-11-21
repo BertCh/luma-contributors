@@ -34,7 +34,7 @@ defineLensScenario({
             {id: 'hull-offset', label: 'hull offset', size: 129, indexSpace: '1d'},
             {id: 'status', label: 'run status', size: 1, indexSpace: '1d'}
           ],
-          choices: {epsilon: 250, minimumPoints: 6},
+          choices: {epsilon: 250, minimumSamples: 6},
           async build(graph, uploads) {
             const observations = uploads.view('observations', projected.positions, 'float32x2');
             const result = await runExample(graph, {

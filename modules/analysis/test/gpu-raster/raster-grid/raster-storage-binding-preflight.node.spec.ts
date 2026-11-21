@@ -460,7 +460,10 @@ cases.push(
         lineOffsets: view('uint32', 2),
         sampleCapacity: 1000,
         parameters: view('float32', 16),
-        output: {status: {count: view('uint32', 1), overflow: view('uint32', 1)}}
+        output: {
+          lineMinimums: view('float32', 1),
+          status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+        }
       })
   },
   {
@@ -477,6 +480,33 @@ cases.push(
       })
   }
 );
+
+it('status-only profile accepts an unused non-storage raster with a 256-byte limit and seven count-route nodes', () => {
+  const fixture = createFixture(false, 8, 1);
+  try {
+    const values = fixture.band();
+    Object.defineProperty(values.storage.values.buffer, 'usage', {value: Buffer.COPY_DST});
+    const contributor = new GPURasterProfile({
+      grid: fixture.grid,
+      values,
+      positions: fixture.view('float32x2', 2),
+      lineOffsets: fixture.view('uint32', 2),
+      sampleCapacity: 1000,
+      parameters: fixture.view('float32', 16),
+      output: {status: {count: fixture.view('uint32', 1), overflow: fixture.view('uint32', 1)}}
+    });
+    Object.defineProperty(fixture.device, 'limits', {
+      value: {...fixture.device.limits, maxStorageBufferBindingSize: 256}
+    });
+    const nodes = contributor.getCommandNodes(fixture.graph);
+    expect(nodes).toHaveLength(7);
+    expect(nodes.map(node => node.id)).not.toContain('raster-profile-locate');
+    expect(nodes.map(node => node.id)).not.toContain('raster-profile-sample');
+    for (const node of nodes) fixture.graph.add(node);
+  } finally {
+    fixture.device.destroy();
+  }
+});
 
 function expectNoDeclarations(graph: GPUCommandGraph, run: () => unknown, pattern: RegExp): void {
   const declarations = [

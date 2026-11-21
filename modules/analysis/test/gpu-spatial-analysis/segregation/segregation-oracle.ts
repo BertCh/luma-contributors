@@ -9,6 +9,7 @@ export type OracleWeights = {offsets: number[]; neighbors: number[]; weights: nu
 
 /** Float64 result of one scale. */
 export type SegregationOracle = {
+  invalidUnitCount: number;
   indices: number[];
   environment: number[];
   entropy: number[];
@@ -28,11 +29,19 @@ export function computeSegregationOracle(props: {
   weights: OracleWeights | null;
   selfWeight?: number;
   atkinsonB?: number;
+  missingCountPolicy?: 'zero' | 'exclude-unit';
 }): SegregationOracle {
   const {unitCount: units, groupCount: K, counts} = props;
   const selfWeight = props.selfWeight ?? 1;
   const b = props.atkinsonB ?? 0.5;
+  const invalidUnits = Array.from({length: units}, (_, unit) =>
+    Array.from({length: K}, (_, group) => counts[unit * K + group]).some(
+      value => !Number.isFinite(value) || value < 0
+    )
+  );
+  const invalidUnitCount = invalidUnits.filter(Boolean).length;
   const count = (unit: number, group: number) => {
+    if (props.missingCountPolicy === 'exclude-unit' && invalidUnits[unit]) return 0;
     const value = counts[unit * K + group];
     return Number.isFinite(value) && value > 0 ? value : 0;
   };
@@ -66,10 +75,11 @@ export function computeSegregationOracle(props: {
           slot < props.weights.offsets[unit + 1];
           slot++
         ) {
+          if (props.weights.neighbors[slot] === unit) continue;
           sum += props.weights.weights[slot] * count(props.weights.neighbors[slot], group);
         }
       }
-      row[group] = sum;
+      row[group] = props.missingCountPolicy === 'exclude-unit' && invalidUnits[unit] ? 0 : sum;
     }
     const rowTotal = row.reduce((a, c) => a + c, 0);
     hasEnvironment[unit] = rowTotal > 0;
@@ -85,6 +95,7 @@ export function computeSegregationOracle(props: {
   const theil = new Array<number>(units).fill(NaN);
   const dissimilarity = new Array<number>(units * K).fill(NaN);
   let sumEntropy = 0;
+  let definedPopulation = 0;
   let sumAbsolute = 0;
   const sumDissimilarity = new Array<number>(K).fill(0);
   const sumAtkinson = new Array<number>(K).fill(0);
@@ -92,6 +103,7 @@ export function computeSegregationOracle(props: {
   for (let unit = 0; unit < units; unit++) {
     if (!hasEnvironment[unit]) continue;
     const t = unitTotal(unit);
+    definedPopulation += t;
     const unitEntropy = entropyOf(shares[unit]);
     entropy[unit] = unitEntropy;
     sumEntropy += t * unitEntropy;
@@ -108,7 +120,8 @@ export function computeSegregationOracle(props: {
       }
     }
   }
-  indices[layout.entropy] = E > 0 && total > 0 ? 1 - sumEntropy / (E * total) : NaN;
+  indices[layout.entropy] =
+    E > 0 && total > 0 ? definedPopulation / total - sumEntropy / (E * total) : NaN;
   indices[layout.multiGroupDissimilarity] =
     I > 0 && total > 0 ? sumAbsolute / (2 * total * I) : NaN;
   indices[layout.diversity] = total > 0 ? E : NaN;
@@ -129,7 +142,7 @@ export function computeSegregationOracle(props: {
       if (other === group) indices[layout.isolation + group] = value;
     }
   }
-  return {indices, environment, entropy, dissimilarity, theil};
+  return {indices, environment, entropy, dissimilarity, theil, invalidUnitCount};
 }
 
 /**

@@ -41,17 +41,17 @@ it.each([
     capacity: 3,
     pairCapacity: 2048
   });
-  expect(Array.from(partial.overflow)).toEqual([0]);
-  expect(Array.from(partial.candidateOverflow)).toEqual([1]);
-  expect(Array.from(finalLoss.overflow)).toEqual([1]);
-  expect(Array.from(finalLoss.candidateOverflow)).toEqual([0]);
+  expect(Array.from(partial.status.overflow)).toEqual([0]);
+  expect(Array.from(partial.status.candidateOverflow)).toEqual([1]);
+  expect(Array.from(finalLoss.status.overflow)).toEqual([1]);
+  expect(Array.from(finalLoss.status.candidateOverflow)).toEqual([0]);
   const events = Float32Array.of(10, 20, 40, 80);
   const womenYears = new Float32Array(4).fill(1000);
   const state = (weights: typeof partial) => ({
     offsets: weights.offsets,
     neighbors: weights.neighbors,
-    weightsOverflow: Boolean(weights.overflow[0]),
-    weightsCandidateOverflow: Boolean(weights.candidateOverflow[0]),
+    weightsOverflow: Boolean(weights.status.overflow[0]),
+    weightsCandidateOverflow: Boolean(weights.status.candidateOverflow[0]),
     local: getLocalPooling(events, womenYears, weights.offsets, weights.neighbors),
     weight: new Float32Array(4).fill(0.5)
   });

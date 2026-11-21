@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
 import {
   RasterSpectralIndex,
   snapshotSpectralIndexProps,
@@ -12,9 +12,9 @@ import {
 
 /** EVI bands must calibrate to unitless reflectance, not radiance, percent, or scaled integers. */
 export type GPURasterEVIProps = SpectralIndexProps & {
-  nearInfrared: GPURasterBufferBand;
-  red: GPURasterBufferBand;
-  blue: GPURasterBufferBand;
+  nearInfrared: GPURasterBand;
+  red: GPURasterBand;
+  blue: GPURasterBand;
 };
 
 /**

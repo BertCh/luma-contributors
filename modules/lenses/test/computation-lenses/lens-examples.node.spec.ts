@@ -114,6 +114,17 @@ describe('lens example mechanism', () => {
       )
     ).toEqual([]);
   });
+  test('R8 checked module specifiers must be single literals, including dynamic import and require', () => {
+    for (const loader of ['import', 'require']) {
+      expect(findNonPublicImports(`${loader}('@luma.gl/graph/gpu-core');`)).toEqual([]);
+      expect(
+        findNonPublicImports(`${loader}('@luma.gl/graph/gpu-core' + '/no-such-entry');`)
+      ).toEqual(['@luma.gl/graph/gpu-core (module specifier must be a single literal)']);
+      expect(findNonPublicImports(`${loader}(moduleName);`)).toEqual([
+        'module specifier must be a single literal'
+      ]);
+    }
+  });
   test('derives sibling paths from entry and element, ignoring variant', () => {
     expect(getLensExamplePath('gpu-spatial-analysis.local-moran.variant')).toBe(
       'scenarios/gpu-spatial-analysis/local-moran.example.ts'

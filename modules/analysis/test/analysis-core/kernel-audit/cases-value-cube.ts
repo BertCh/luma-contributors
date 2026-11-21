@@ -9,7 +9,7 @@ import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 const BYTES_PER_BIN = 12;
 
 function addValueCube(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   cellCount: number,
   periodCount: number,
   rows: number,
@@ -17,7 +17,7 @@ function addValueCube(
 ): void {
   const binCount = cellCount * periodCount;
   graph.add(
-    new GPUValueCube({
+    construct(GPUValueCube, {
       cellCount,
       periodCount,
       cells: view('uint32', rows),
@@ -34,13 +34,14 @@ function addValueCube(
   );
 }
 
-function addCellPeriodKeys({graph, view}: KernelAuditContext, rows: number): void {
+function addCellPeriodKeys({graph, view, construct}: KernelAuditContext, rows: number): void {
   graph.add(
-    new GPUCellPeriodKeys({
+    construct(GPUCellPeriodKeys, {
       cells: view('uint32x2', rows),
       periods: view('uint32', rows),
       periodCount: 0xfffffffd,
       fill: 'zeros',
+      layout: 'legacy-one-bit',
       mask: view('uint32', rows),
       output: {keys: view('uint32x2', rows), status: {invalidCount: view('uint32', 1)}}
     })

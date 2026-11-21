@@ -21,13 +21,13 @@ const CONTEXT: GPUTemporalContext = {
 const CELLS = 4096;
 
 function medoid(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   sliceCount: number,
   bandCount: number,
   withValidity: boolean
 ): void {
   graph.add(
-    new GPURasterMedoidComposite({
+    construct(GPURasterMedoidComposite, {
       cellCount: CELLS,
       sliceCount,
       bandCount,
@@ -43,14 +43,14 @@ function medoid(
 }
 
 function geometricMedian(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   sliceCount: number,
   bandCount: number,
   iterationCount: number,
   withOptional: boolean
 ): void {
   graph.add(
-    new GPURasterGeometricMedianComposite({
+    construct(GPURasterGeometricMedianComposite, {
       cellCount: CELLS,
       sliceCount,
       bandCount,
@@ -68,13 +68,13 @@ function geometricMedian(
 }
 
 function bestAvailablePixel(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   sliceCount: number,
   bandCount: number,
   withOptional: boolean
 ): void {
   graph.add(
-    new GPURasterBestAvailablePixel({
+    construct(GPURasterBestAvailablePixel, {
       cellCount: CELLS,
       sliceCount,
       bandCount,
@@ -93,13 +93,13 @@ function bestAvailablePixel(
 }
 
 function phenology(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   sliceCount: number,
   maximumSeasonCount: number,
   withAxis: boolean
 ): void {
   graph.add(
-    new GPURasterPhenologyMetrics({
+    construct(GPURasterPhenologyMetrics, {
       cellCount: CELLS,
       sliceCount,
       maximumSeasonCount,

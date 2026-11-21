@@ -306,6 +306,45 @@ describe('GPUTrajectoryStaypoints', () => {
     expect(result.count).toBe(4);
     expect(result.requiredCount).toBe(4);
     expect(result.staypoints.map(staypoint => staypoint.startRow)).toEqual([0, 257, 514, 771]);
+    // TRJ-102: the cut windows are not staypoints, so their duration and centroid are NaN.
+    for (const staypoint of result.staypoints) {
+      expect(Number.isNaN(staypoint.duration)).toBe(true);
+      expect(staypoint.centroid.every(Number.isNaN)).toBe(true);
+    }
+  });
+
+  it('keeps finite geometry on an uncut track beside a cut one (TRJ-102)', async () => {
+    // Track 0: rows 0..299 at the origin, one second apart, then a fix 1000 away: one 300 s stay,
+    // cut by a 64-row budget. Track 1: 10 rows at (5, 5) from t = 400, then a fix 1000 away: one 10 s stay
+    // inside the budget, duration 10 and centroid (5, 5) by hand.
+    const rows: number[][] = [];
+    const times: number[] = [];
+    for (let second = 0; second < 300; second++) {
+      rows.push([0, 0]);
+      times.push(second);
+    }
+    rows.push([1000, 0]);
+    times.push(300);
+    for (let second = 0; second < 10; second++) {
+      rows.push([5, 5]);
+      times.push(400 + second);
+    }
+    rows.push([1000, 5]);
+    times.push(410);
+    const result = await detectOnGPU(
+      {positions: rows, times: Float32Array.from(times), trackOffsets: [0, 301, rows.length]},
+      {distanceThreshold: 10, timeThreshold: 5},
+      {maximumSearchRows: 64}
+    );
+    expect(result.candidateOverflow).toBe(1);
+    const cut = result.staypoints.filter(staypoint => staypoint.track === 0);
+    const whole = result.staypoints.filter(staypoint => staypoint.track === 1);
+    expect(cut.length).toBeGreaterThan(1);
+    for (const staypoint of cut) expect(Number.isNaN(staypoint.duration)).toBe(true);
+    expect(whole).toHaveLength(1);
+    expect(Number.isFinite(whole[0].duration)).toBe(true);
+    expect(whole[0].duration).toBe(10);
+    expect(whole[0].centroid).toEqual([5, 5]);
   });
 
   it('honours the shared gap rule and capacity overflow', async () => {

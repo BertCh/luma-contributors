@@ -47,7 +47,7 @@ export const GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY = {
   variance: 5,
   /** Number of included rows whose value is nonzero (black, for join counts). */
   blackCount: 6,
-  /** Number of included rows with no included neighbor (out or in). */
+  /** Number of initially included rows with no included outgoing neighbor, before island removal. */
   islandCount: 7
 } as const;
 

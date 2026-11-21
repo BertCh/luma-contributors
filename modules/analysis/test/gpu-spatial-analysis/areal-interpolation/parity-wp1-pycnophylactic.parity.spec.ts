@@ -4,14 +4,14 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it} from 'vitest';
-import {GPUPycnophylactic} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
+import {GPUPycnophylacticInterpolation} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
 import fixture from '../../oracles/fixtures/parity-wp1-pycnophylactic.json';
 import {compareReference} from '../../oracles/parity-wp1-round8-compare';
 import {AnalysisRig} from '../catchment-accessibility/rig';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 for (const scene of fixture.cases) {
-  it(`GPUPycnophylactic R pycno adapted reference ${scene.name}`, async () => {
+  it(`GPUPycnophylacticInterpolation R pycno adapted reference ${scene.name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const rig = new AnalysisRig(device);
@@ -22,7 +22,7 @@ for (const scene of fixture.cases) {
     const invalidCount = rig.output('uint32', 1);
     try {
       rig.run(
-        new GPUPycnophylactic({
+        new GPUPycnophylacticInterpolation({
           grid: {
             width: scene.width,
             height: scene.height,
@@ -46,7 +46,7 @@ for (const scene of fixture.cases) {
       );
       const result = await rig.readFloat(mass);
       const compare = (metric: string, actual: number[], expected: number[], exact = false) =>
-        compareReference('GPUPycnophylactic', scene, metric, actual, expected, exact);
+        compareReference('GPUPycnophylacticInterpolation', scene, metric, actual, expected, exact);
       compare('every-cell-mass', result, scene.expected.mass);
       compare('every-cell-density', await rig.readFloat(density), scene.expected.mass);
       compare(

@@ -25,10 +25,6 @@ registerLensScenarios(
       element: 'GPUNetworkStronglyConnectedComponents',
       title: 'Synthetic directed components with an isolated node',
       rungs: ['result', 'datum', 'kernel', 'graph'],
-      presentation: {
-        primaryOutputCaptureId:
-          'gpu-network.network-strongly-connected-components-snapshots-strongComponents-0'
-      },
       dataset: {
         id: 'synthetic-four-node-directed-components-v1',
         source: 'Deterministic example constructed in expansion.lens.ts',

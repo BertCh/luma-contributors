@@ -376,8 +376,11 @@ it('network:G8 counts are conditional on the retained match after scoring loss',
     alternativeRoadCounts.push(memory.readUint32(volumes)[11]);
   }
   expect(alternativeRoadCounts).toEqual([0, 1]);
-  expect(readFileSync('docs/api/gpu-network/map-matched-edge-volumes-mob05.md', 'utf8')).toContain(
+  expect(readFileSync('docs/api/gpu-network/map-matched-edge-volumes.md', 'utf8')).toContain(
     'conditional on the retained match'
+  );
+  expect(readFileSync('docs/api/gpu-network/map-matched-edge-volumes-mob05.md', 'utf8')).toContain(
+    '[Edge volumes of map-matched tracks](./map-matched-edge-volumes.md)'
   );
 });
 

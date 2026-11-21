@@ -113,10 +113,10 @@ export type {LocalMoranSettings} from './analysis-local-moran-settings';
 import {
   normalizeQuantileLisaSettings,
   type QuantileLisaSettings
-} from './analysis-quantile-lisa-settings';
+} from './analysis-quantile-lisa-inference';
 import {AnalysisQuantileLisaOutputs} from './analysis-quantile-lisa-outputs';
 import {getPointCoordinateColumns} from './analysis-point-coordinate-settings';
-export type {QuantileLisaSettings} from './analysis-quantile-lisa-settings';
+export type {QuantileLisaSettings} from './analysis-quantile-lisa-inference';
 import {
   InterpolationRuntime,
   type InterpolationMetric,
@@ -233,6 +233,7 @@ export type AnalysisSummary = {
   denominatorColumn?: string;
   localMoran?: {invalidCount: number};
   quantileLisa?: {
+    alternative?: NonNullable<QuantileLisaSettings['alternative']>;
     boundaries: readonly number[];
     validCount: number;
     islandCount: number;
@@ -268,6 +269,8 @@ export type AnalysisRow = {
   sourceRevision: number;
   analysisRevision: number;
   value: number;
+  /** P-value tail for a Quantile LISA row; omitted for other result kinds. */
+  alternative?: NonNullable<QuantileLisaSettings['alternative']>;
   kind:
     | GPUVariableStandardizationMethod
     | 'class'
@@ -606,15 +609,22 @@ export class AnalysisRuntime {
           variableColumns
         });
       } else if (current.mode === 'quantile-lisa-points' && current.quantileLisa) {
-        const {quantileCount, selectedQuantile, seed, permutationCount, significanceLevel} =
-          current.quantileLisa;
+        const {
+          quantileCount,
+          selectedQuantile,
+          seed,
+          permutationCount,
+          significanceLevel,
+          alternative
+        } = current.quantileLisa;
         this.configureQuantileLisa({
           ...topology,
           quantileCount,
           selectedQuantile,
           seed,
           permutationCount,
-          significanceLevel
+          significanceLevel,
+          alternative
         });
       } else throw new Error('Choose a point analysis before selecting point weights');
     }
@@ -1493,6 +1503,10 @@ export class AnalysisRuntime {
         }
         const quantileLisaStatus = quantileLisa
           ? {
+              alternative: (recipe.operation.kind === 'quantile-lisa-points' ||
+              recipe.operation.kind === 'quantile-lisa-polygons'
+                ? (recipe.operation.alternative ?? 'geoda-legacy')
+                : 'geoda-legacy') as NonNullable<QuantileLisaSettings['alternative']>,
               boundaries: Array.from(floatValues(bytes[2])),
               validCount: unsignedValues(bytes[3])[0],
               islandCount: unsignedValues(bytes[4])[0],
@@ -1674,6 +1688,10 @@ export class AnalysisRuntime {
         sourceRowIndex,
         sourceRevision: recipe.source.revision,
         analysisRevision: revision,
+        ...(recipe.operation.kind === 'quantile-lisa-points' ||
+        recipe.operation.kind === 'quantile-lisa-polygons'
+          ? {alternative: recipe.operation.alternative ?? 'geoda-legacy'}
+          : {}),
         value: floatingResult ? floatValues(bytes)[0] : unsignedValues(bytes)[0],
         kind: isPolygonAnalysisOperation(recipe.operation)
           ? recipe.operation.kind
@@ -1719,8 +1737,14 @@ export class AnalysisRuntime {
     });
     if (recipe.source.datasetId !== this.lease.dataset.id)
       throw new Error('Recipe belongs to another dataset');
+    const restoredSettings = getAnalysisRecipeSettings(recipe);
+    if (recipe.operation.kind === 'quantile-lisa-points' && restoredSettings.quantileLisa)
+      restoredSettings.quantileLisa = {
+        ...restoredSettings.quantileLisa,
+        alternative: recipe.operation.alternative ?? 'geoda-legacy'
+      };
     this.update(
-      {...this.requestedSettings, ...getAnalysisRecipeSettings(recipe)},
+      {...this.requestedSettings, ...restoredSettings},
       !weightsReference,
       recipe.operation.kind === 'kriging-points' ? recipe.operation.column : undefined
     );
@@ -1916,7 +1940,7 @@ export class AnalysisRuntime {
                       seed: quantileLisa!.seed,
                       permutationCount: quantileLisa!.permutationCount,
                       significanceLevel: quantileLisa!.significanceLevel,
-                      inference: 'legacy-directed-pseudo',
+                      alternative: quantileLisa!.alternative,
                       multipleTesting: 'none',
                       islands: 'exclude',
                       quantileMethod: 'type-5'
@@ -2536,7 +2560,7 @@ export class AnalysisRuntime {
             profileValues,
           mask: effectiveMask,
           domain: colorDomain,
-          ...(classified ? {domainCount: classCount} : {}),
+          ...(classified ? {classCount} : {}),
           palette:
             hotspotPalette ??
             (dbscanViews

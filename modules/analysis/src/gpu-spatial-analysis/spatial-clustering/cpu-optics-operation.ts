@@ -23,13 +23,13 @@ import {
   snapshotOPTICSOperationProps,
   type OPTICSOperationProps
 } from './gpu-optics-operation';
-import {GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS, OPTICS_ITERATION_STATUS_FIELDS} from './gpu-optics';
+import {GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS, OPTICS_NAMED_STATUS_FIELDS} from './gpu-optics';
 
 const MISSING_ROW = 0xffffffff;
 
 export type CPUOPTICSOptions = Omit<
   OPTICSOperationProps,
-  'id' | 'positions' | 'times' | 'rowCount' | 'output'
+  'positions' | 'times' | 'rowCount' | 'output'
 >;
 export type CPUOPTICSResult = {
   ordering: Uint32Array;
@@ -37,13 +37,14 @@ export type CPUOPTICSResult = {
   reachability: Float32Array;
   predecessors: Uint32Array;
   labels: Uint32Array;
-  status: Uint32Array;
   clusterIntervals: Uint32Array;
   clusterSummary: Uint32Array;
   candidateOverflow: Uint32Array;
   iterationCount: Uint32Array;
   converged: Uint32Array;
+  invalidCount: Uint32Array;
   iterationLimitReached: Uint32Array;
+  reason: Uint32Array;
 };
 
 function validateOPTICSOptions(
@@ -155,17 +156,15 @@ export function computeOPTICSOnCPU(
   options: CPUOPTICSOptions,
   times?: Float32Array
 ): CPUOPTICSResult {
-  if (positions.length % 2 !== 0)
-    throw new Error('computeOPTICSOnCPU positions must contain float32x2 rows');
+  const id = options.id ?? 'computeOPTICSOnCPU';
+  validateRequirement(id, positions.length % 2 === 0, 'positions must contain float32x2 rows');
   const rowCount = positions.length / 2;
-  if (times && times.length !== rowCount)
-    throw new Error('computeOPTICSOnCPU times length must equal positions row count');
-  const spatialContext = validateOPTICSOptions(
-    'computeOPTICSOnCPU',
-    rowCount,
-    times !== undefined,
-    options
+  validateRequirement(
+    id,
+    !times || times.length === rowCount,
+    'times length must equal positions row count'
   );
+  const spatialContext = validateOPTICSOptions(id, rowCount, times !== undefined, options);
   const geographic = spatialContext.coordinateSpace === 'longitude-latitude';
   const radius = geographic ? getGPUSphereRadius(spatialContext) : 1;
   const processed = new Uint8Array(rowCount);
@@ -271,12 +270,13 @@ export function computeOPTICSOnCPU(
     labels,
     coreDistances: Float32Array.from(coreDistances),
     reachability: Float32Array.from(reachability),
-    status: Uint32Array.of(visitedCount, Number(complete), invalidCount),
     clusterIntervals,
     clusterSummary,
     iterationCount: Uint32Array.of(visitedCount),
     converged: Uint32Array.of(Number(complete)),
+    invalidCount: Uint32Array.of(invalidCount),
     iterationLimitReached: Uint32Array.of(Number(!complete && visitedCount === maximumIterations)),
+    reason: Uint32Array.of(complete ? 0 : 2),
     candidateOverflow: Uint32Array.of(0)
   };
 }
@@ -430,7 +430,6 @@ export class CPUOPTICSOperation extends GPUCPUOperation {
         [output.reachability]: gpuGraph.vector('float32', shape),
         [output.predecessors]: gpuGraph.vector('uint32', shape),
         [output.labels]: gpuGraph.vector('uint32', shape),
-        [output.status]: gpuGraph.vector('uint32', {length: 3}),
         ...(output.clusterIntervals
           ? {[output.clusterIntervals]: gpuGraph.vector('uint32x2', shape)}
           : {}),
@@ -438,7 +437,7 @@ export class CPUOPTICSOperation extends GPUCPUOperation {
           ? {[output.clusterSummary]: gpuGraph.vector('uint32', {length: 2})}
           : {}),
         ...Object.fromEntries(
-          OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
+          OPTICS_NAMED_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
             output.ports!.status[name]!,
             gpuGraph.vector('uint32', {length: 1})
           ])
@@ -449,8 +448,11 @@ export class CPUOPTICSOperation extends GPUCPUOperation {
       },
       execute({inputs}) {
         const positions = getCPUOperationFloat32Rows(id, inputs, 'positions', 'float32x2');
-        if (positions.length !== props.rowCount * 2)
-          throw new Error(`${id} positions length must equal rowCount * 2`);
+        validateRequirement(
+          id,
+          !(positions.length !== props.rowCount * 2),
+          `positions length must equal rowCount * 2`
+        );
         const result = computeOPTICSOnCPU(
           positions,
           props,
@@ -462,11 +464,10 @@ export class CPUOPTICSOperation extends GPUCPUOperation {
           [output.reachability]: result.reachability,
           [output.predecessors]: result.predecessors,
           [output.labels]: result.labels,
-          [output.status]: result.status,
           ...(output.clusterIntervals ? {[output.clusterIntervals]: result.clusterIntervals} : {}),
           ...(output.clusterSummary ? {[output.clusterSummary]: result.clusterSummary} : {}),
           ...Object.fromEntries(
-            OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
+            OPTICS_NAMED_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
               output.ports!.status[name]!,
               result[name]
             ])

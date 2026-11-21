@@ -16,6 +16,7 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
+import {getPairwiseSumWGSL} from '../spatial-regression/pairwise-sum-wgsl';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
@@ -26,6 +27,7 @@ import {
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateGPUSpatialWeights} from '../spatial-weights/spatial-weights';
+import {snapshotCategoricalStatisticsProps} from './categorical-construction-snapshot';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs
@@ -47,8 +49,8 @@ export const GPU_SPATIAL_ENTROPY_LAYOUT = {
    */
   cooccurrence: 3,
   /**
-   * Spatial mutual information `originEntropy + destinationEntropy - cooccurrence`
-   * (Altieri, Cocchi and Roli 2018): the information the origin category carries about the
+   * Endpoint-category mutual information `originEntropy + destinationEntropy - cooccurrence`:
+   * the information the origin category carries about the
    * destination category. 0 for a spatially random map up to sampling noise; at most
    * `min(originEntropy, destinationEntropy)`.
    */
@@ -70,6 +72,8 @@ export type GPUSpatialEntropyProps = {
   /**
    * Square weights; each active slot (positive weight, another row: the shared neighbor rule) is
    * one ordered link. Self slots and zero-weight slots are not links.
+   * Supplied completeness status views are rejected because these outputs cannot qualify loss;
+   * verify the producer's evidence before supplying a complete CSR without those status ports.
    */
   weights: GPUSpatialWeights;
   /** Category per row, `0xffffffff` for none. */
@@ -93,18 +97,20 @@ export type GPUSpatialEntropyOutput = {
 /**
  * Global spatial entropy of a categorical map over a weights graph: the Shannon entropy of the
  * categories, the co-occurrence entropy of the category pairs at the links (Leibovici 2009) and
- * the spatial mutual information between a link's two ends, which is the part of the entropy that
- * is spatial in the decomposition of Altieri, Cocchi and Roli (2018). Use contiguity weights, or
+ * the mutual information between a link's two category labels. Use contiguity weights, or
  * distance-band weights per distance class for the Leibovici distance-class form.
  *
- * Counts come from {@link GPUCategoryPairCounts} (exact integer atomics); one finalize invocation
- * then loops over the at most `32 x 32` counters. Entropies are evaluated in float32 from exact
- * counts, so they agree with binary64 to about `1e-6` relative.
+ * Counts come from {@link GPUCategoryPairCounts} (exact integer atomics). Eight publication
+ * invocations publish pre-reduced terms. Four reduction invocations each compute one entropy,
+ * visiting at most 32 x 32 counters, bounded by GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT = 32. Entropy terms use fixed pairwise sums
+ * in float32. An absolute mutual-information tolerance near zero requires device measurement.
  *
- * **Reference.** The R package `spatentropy` (GPL, not installed) defines these measures; no
- * pinned package was run. The reference is a binary64 CPU evaluation of the formulas above.
- * Batty's area-weighted spatial entropy and the Altieri conditional (distance-class) terms are not
- * implemented.
+ * **Reference.** Shannon category entropy and the ordered co-occurrence definition above;
+ * expectations are independent binary64 evaluations, not a pinned R package run.
+ * Batty's area-weighted entropy and Altieri's decomposition into mutual information and
+ * conditional entropy between unordered category pairs and distance classes are unavailable:
+ * this interface has neither area nor distance-class inputs. Supply separate distance-band
+ * graphs to compare ordered pair entropies across bands.
  */
 export class GPUSpatialEntropy implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -113,6 +119,7 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
   readonly props: GPUSpatialEntropyProps;
 
   constructor(props: GPUSpatialEntropyProps) {
+    props = snapshotCategoricalStatisticsProps(props, ['summary', 'counts', 'pairCounts']);
     const id = props.id ?? 'spatial-entropy';
     this.id = id;
     this.props = props;
@@ -135,6 +142,17 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
       GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT
     );
     const rows = validateGPUSpatialWeights(id, props.weights);
+    validateRequirement(
+      id,
+      !props.weights.status?.overflow &&
+        !props.weights.status?.candidateOverflow &&
+        !props.weights.status?.requiredCount &&
+        !props.weights.status?.complete &&
+        !props.weights.status?.converged &&
+        !props.weights.status?.iterationLimitReached &&
+        !props.weights.status?.unresolvedCount,
+      'weights.status overflow, candidateOverflow, requiredCount, complete, converged, iterationLimitReached and unresolvedCount ports cannot be checked or propagated by the entropy outputs; provide a complete CSR after verifying all supplied completeness descriptors, then omit those ports'
+    );
     validateSinglePackedView(props.categories, ['uint32'], `${id} categories`);
     validateRequirement(
       id,
@@ -169,7 +187,9 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
     const {id, props} = this;
     validateSpatialStatisticsBindings(graph, id, props, {
       'pair count scratch': props.categoryCount ** 2 * 4,
-      'category scratch': props.categoryCount * 4
+      'category scratch': props.categoryCount * 4,
+      'entropy totals': 8,
+      'entropy terms': 16
     });
     const {categoryCount, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [output.summary, output.pairCounts]);
@@ -182,6 +202,8 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
       'uint32',
       categoryCount
     );
+    const totals = createTransientView(graph, `${id}-summary-totals`, 'uint32', 2);
+    const entropies = createTransientView(graph, `${id}-summary-entropies`, 'float32', 4);
     return [
       ...new GPUCategoryPairCounts({
         id: `${id}-pairs`,
@@ -191,12 +213,83 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
         output: {pairCounts, categoryRowCounts}
       }).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-summary`,
+        id: `${id}-summary-totals`,
+        operation: OPERATION,
+        variant: 'summary-totals',
+        invocationCount: 2,
+        bindings: [
+          {name: 'pairCounts', view: pairCounts, type: 'u32', access: 'read'},
+          {name: 'categoryRowCounts', view: categoryRowCounts, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
+        ],
+        body: `var total = 0u;
+  if (index == 0u) { for (var category = 0u; category < ${categoryCount}u; category++) { total += categoryRowCounts[categoryRowCountsOffset + category]; } }
+  else { for (var pair = 0u; pair < ${categoryCount ** 2}u; pair++) { total += pairCounts[pairCountsOffset + pair]; } }
+  totals[totalsOffset + index] = total;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-summary-entropies`,
         operation: OPERATION,
         variant: 'summary',
         bindings: [
           {name: 'pairCounts', view: pairCounts, type: 'u32', access: 'read'},
           {name: 'categoryRowCounts', view: categoryRowCounts, type: 'u32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'entropies', view: entropies, type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: 4,
+        declarations: `const CATEGORIES: u32 = ${categoryCount}u;
+${GET_NAN_WGSL}
+${SPATIAL_STATISTICS_COUNTS_WGSL}
+fn getTerm(count: u32, total: u32) -> f32 {
+  if (count == 0u) {
+    return 0.0;
+  }
+  let share = divideSpatialCounts(count, total);
+  return -share * log(share);
+}`,
+        body: `let rowTotal = totals[totalsOffset]; let linkTotal = totals[totalsOffset + 1u];
+  if (index == 0u) {
+  ${getPairwiseSumWGSL({count: 'CATEGORIES', name: 'shannon', term: 'getTerm(categoryRowCounts[categoryRowCountsOffset + shannonItem], rowTotal)'})}
+    entropies[entropiesOffset] = shannon; return;
+  }
+  if (index == 3u) {
+  ${getPairwiseSumWGSL({count: 'CATEGORIES * CATEGORIES', name: 'joint', term: 'getTerm(pairCounts[pairCountsOffset + jointItem], linkTotal)'})}
+    entropies[entropiesOffset + 3u] = joint; return;
+  }
+  if (index == 1u) {
+  ${getPairwiseSumWGSL({
+    count: 'CATEGORIES',
+    name: 'origin',
+    setup: `
+    var originCount = 0u;
+    for (var b = 0u; b < CATEGORIES; b++) {
+      originCount += pairCounts[pairCountsOffset + originItem * CATEGORIES + b];
+    }`,
+    term: 'getTerm(originCount, linkTotal)'
+  })}
+    entropies[entropiesOffset + 1u] = origin; return;
+  }
+  ${getPairwiseSumWGSL({
+    count: 'CATEGORIES',
+    name: 'destination',
+    setup: `
+    var destinationCount = 0u;
+    for (var b = 0u; b < CATEGORIES; b++) {
+      destinationCount += pairCounts[pairCountsOffset + b * CATEGORIES + destinationItem];
+    }`,
+    term: 'getTerm(destinationCount, linkTotal)'
+  })}
+  entropies[entropiesOffset + 2u] = destination;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-summary`,
+        operation: OPERATION,
+        variant: 'publish-summary',
+        invocationCount: GPU_SPATIAL_ENTROPY_LAYOUT.length,
+        bindings: [
+          {name: 'entropies', view: entropies, type: 'f32', access: 'read'},
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
           {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'},
           ...(output.counts
             ? [
@@ -209,53 +302,17 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
               ]
             : [])
         ],
-        invocationCount: 1,
-        declarations: `const CATEGORIES: u32 = ${categoryCount}u;
-${GET_NAN_WGSL}
-${SPATIAL_STATISTICS_COUNTS_WGSL}
-fn getTerm(count: u32, total: u32) -> f32 {
-  if (count == 0u) {
-    return 0.0;
-  }
-  let share = divideSpatialCounts(count, total);
-  return -share * log(share);
-}`,
-        body: `var rowTotal = 0u;
-  var linkTotal = 0u;
-  for (var a = 0u; a < CATEGORIES; a++) {
-    rowTotal += categoryRowCounts[categoryRowCountsOffset + a];
-    for (var b = 0u; b < CATEGORIES; b++) {
-      linkTotal += pairCounts[pairCountsOffset + a * CATEGORIES + b];
-    }
-  }
-  ${output.counts ? 'counts[countsOffset] = rowTotal; counts[countsOffset + 1u] = linkTotal;' : ''}
-  var shannon = 0.0;
-  var origin = 0.0;
-  var destination = 0.0;
-  var joint = 0.0;
-  for (var a = 0u; a < CATEGORIES; a++) {
-    shannon += getTerm(categoryRowCounts[categoryRowCountsOffset + a], rowTotal);
-    var originCount = 0u;
-    var destinationCount = 0u;
-    for (var b = 0u; b < CATEGORIES; b++) {
-      originCount += pairCounts[pairCountsOffset + a * CATEGORIES + b];
-      destinationCount += pairCounts[pairCountsOffset + b * CATEGORIES + a];
-      joint += getTerm(pairCounts[pairCountsOffset + a * CATEGORIES + b], linkTotal);
-    }
-    origin += getTerm(originCount, linkTotal);
-    destination += getTerm(destinationCount, linkTotal);
-  }
+        declarations: GET_NAN_WGSL,
+        body: `let shannon = entropies[entropiesOffset]; let origin = entropies[entropiesOffset + 1u]; let destination = entropies[entropiesOffset + 2u]; let joint = entropies[entropiesOffset + 3u];
+  let rowTotal = totals[totalsOffset]; let linkTotal = totals[totalsOffset + 1u];
+  ${output.counts ? 'if (index < 2u) { counts[countsOffset + index] = totals[totalsOffset + index]; }' : ''}
   let nan = getNaN();
   let hasLinks = linkTotal > 0u;
   let mutual = select(nan, max(origin + destination - joint, 0.0), hasLinks);
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.shannon}u] = select(nan, shannon, rowTotal > 0u);
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.originEntropy}u] = select(nan, origin, hasLinks);
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.destinationEntropy}u] = select(nan, destination, hasLinks);
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.cooccurrence}u] = select(nan, joint, hasLinks);
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.mutualInformation}u] = mutual;
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.relativeMutualInformation}u] = select(nan, mutual / destination, hasLinks && destination > 0.0);
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.linkCount}u] = f32(linkTotal);
-  summary[summaryOffset + ${GPU_SPATIAL_ENTROPY_LAYOUT.rowCount}u] = f32(rowTotal);`
+  let result = array<f32, 8>(select(nan, shannon, rowTotal > 0u), select(nan, origin, hasLinks),
+    select(nan, destination, hasLinks), select(nan, joint, hasLinks), mutual,
+    select(nan, mutual / destination, hasLinks && destination > 0.0), f32(linkTotal), f32(rowTotal));
+  summary[summaryOffset + index] = result[index];`
       })
     ];
   }

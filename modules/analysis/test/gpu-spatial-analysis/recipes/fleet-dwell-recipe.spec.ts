@@ -79,7 +79,7 @@ it.each([
         zones,
         candidateCapacity: 8,
         trackEventCapacity: 4,
-        outputs: {table: {counts: zoneCounts.view, sumValues: zoneDwell.view}}
+        output: {table: {counts: zoneCounts.view, sumValues: zoneDwell.view}}
       });
     } else {
       addFleetDwellRecipe(fixture.graph, {
@@ -106,7 +106,7 @@ it.each([
         ),
         stopCapacity: sharedOutput ? 2 : 64,
         zones,
-        outputs: {
+        output: {
           stops: {
             status: {count: count.view},
             ...(sharedOutput
@@ -224,7 +224,7 @@ it('addFleetDwellRecipe joins stop centroids to zones and summarises dwell per z
         candidateCapacity: 4096
       },
       zoneCapacity: 32,
-      outputs: {
+      output: {
         stops: {
           ids: outputs.ids.view,
           centroids: outputs.centroids.view,
@@ -376,7 +376,7 @@ it('addFleetDwellZoneEventsRecipe rolls dwell per (track, zone) up per zone', as
       },
       candidateCapacity: 1 << 16,
       trackEventCapacity,
-      outputs: {
+      output: {
         events: {
           eventTypes: outputs.eventTypes.view,
           status: {count: outputs.eventCount.view, overflow: outputs.eventOverflow.view}

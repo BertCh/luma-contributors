@@ -29,6 +29,7 @@ import {
   MAXIMUM_TRAJECTORY_TRACKS,
   TRAJECTORY_PARAMETERS,
   prepareCatalogTrajectory,
+  validateTrajectoryPublication,
   makeTrajectoryFixes,
   makeTrajectoryOutput,
   numberParameter,
@@ -94,8 +95,10 @@ export function prepareTrackQuality(
       typeof values[name] === 'string' && values[name].length <= 128,
       `${name} must be a string of at most 128 characters`
     );
+  const trajectory = prepareCatalogTrajectory(collection, values);
+  validateTrajectoryPublication(trajectory);
   return {
-    trajectory: prepareCatalogTrajectory(collection, values),
+    trajectory,
     settings,
     // Recipe distances are per millisecond; interface speeds and gaps are per second.
     thresholds: new Float32Array([settings.maximumSpeed / 1000, settings.maximumGap * 1000])
@@ -249,7 +252,7 @@ export const CURATED_TRACK_QUALITY_BINDING: CatalogOperationBinding = {
   cleanup:
     'The session releases buffers and compiled graphs in finally; returned tables own plain arrays.',
   declaredBehavior: [
-    'Reuses catalog trajectory preparation: Point fixes or timed LineStrings, stable first-seen track order and time sorting, original source and vertex identities, and exact signed Int64 epoch millisecond words.',
+    'Reuses catalog trajectory preparation: Point fixes or timed LineStrings, stable first-seen track order and time sorting, original source and vertex identities, and exact signed Int64 epoch millisecond words. Track IDs must have distinct string spellings before GPU allocation.',
     'Missing IDs, invalid positions/times and duplicate timestamps reject preparation; null geometries are skipped and counted. At most 2048 fixes and 128 tracks.',
     'Geographic observations use the existing local azimuthal equidistant frame in metres; planar data uses shifted coordinate units. Metrics are two dimensional; source altitude survives publication.',
     'Speeds and gap thresholds use seconds at the interface and milliseconds in the recipe. Zero is a literal threshold, not a disable switch. Recipe comparisons are strictly greater than the uploaded float32 thresholds.',

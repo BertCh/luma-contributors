@@ -71,8 +71,10 @@ export const INDICATORS_OPERATORS: DataFrameFamilyOperators = {
    * within a row; knots are L(k/(K-1)). Empty/zero-income zones give NaN indices.
    * With r=x/mu, Theil T=mean_w(r*ln r), Theil L=-mean_w(ln r), Atkinson at epsilon!=1 is
    * 1-mean_w(r^(1-epsilon))^(1/(1-epsilon)); at epsilon=1 it is 1-exp(mean_w(ln r)).
-   * Zero values contribute zero to T and to power sums for epsilon<1; any zero makes L and
-   * Atkinson for epsilon>=1 NaN. Palma=(1-L(1-palmaTopShare))/L(palmaBottomShare), NaN for a
+   * Zero values contribute zero to T and to power sums for epsilon<1. With a positive mean,
+   * a positive-weight zero income gives Atkinson=1 for epsilon>=1 (the continuous extension),
+   * while Theil L stays NaN. An all-zero population remains undefined.
+   * Palma=(1-L(1-palmaTopShare))/L(palmaBottomShare), NaN for a
    * zero denominator. Hoover=sum(w*abs(x-mu))/(2*totalIncome). Global Theil decomposition and
    * pooled Gini are additional outputs. All sums follow the kernel's fixed-order f32 arithmetic.
    */
@@ -82,9 +84,12 @@ export const INDICATORS_OPERATORS: DataFrameFamilyOperators = {
     formula: {
       id: 'gpu-dataframe:GPUInequality',
       derivation: 'curated',
-      tex: String.raw`\term{populationShare}{P_i}=\frac{\term{cumulativeWeight}{\sum_{j\leq i}w_j}}{\term{totalWeight}{W}},\quad \term{incomeShare}{L_i}=\frac{\term{cumulativeIncome}{\sum_{j\leq i}w_jx_j}}{\term{totalIncome}{S}},\quad \term{gini}{G}=1-\sum_{\text{value-sorted rows}}(\term{populationShare}{P_i}-\term{previousP}{P_{i-1}})(\term{incomeShare}{L_i}+\term{previousL}{L_{i-1}})`,
+      tex: String.raw`\begin{gathered}
+\term{populationShare}{P_i}=\frac{\term{cumulativeWeight}{\sum_{j\leq i}w_j}}{\term{totalWeight}{W}},\quad \term{incomeShare}{L_i}=\frac{\term{cumulativeIncome}{\sum_{j\leq i}w_jx_j}}{\term{totalIncome}{S}},\quad \term{gini}{G}=1-\sum_{\text{value-sorted rows}}(\term{populationShare}{P_i}-\term{previousP}{P_{i-1}})(\term{incomeShare}{L_i}+\term{previousL}{L_{i-1}})\\
+\mu>0,\ \exists i:w_i>0,x_i=0,\ \epsilon\ge1\ \Rightarrow A_\epsilon=1;\quad \mu=0\ \Rightarrow A_\epsilon=\mathrm{undefined}
+\end{gathered}`,
       ascii:
-        'P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.',
+        'P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. With a positive mean and a positive-weight zero income, Atkinson = 1 for epsilon >= 1 (continuous extension); an all-zero population remains undefined. Theil L remains NaN when any positive-weight income is zero.',
       symbols: [
         {id: 'populationShare', role: 'intermediate', binding: 'wgsl:nextP'},
         {id: 'cumulativeWeight', role: 'intermediate', binding: 'wgsl:cumulativeWeight'},

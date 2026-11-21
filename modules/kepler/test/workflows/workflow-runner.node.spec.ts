@@ -2139,3 +2139,34 @@ test('runtime replacement republishes a same-key result and accepts its successo
     await runner.destroy();
   }
 });
+
+test('SEAM-113 saves execution-time dependency provenance and preserves historical absence', async () => {
+  const {makeWorkflowComputationRecord} = await import(
+    '../../src/workflows/workflow-computation-record'
+  );
+  const fixture = createFixture({dependencyRevision: '@luma.gl/graph@execution-fixture'});
+  try {
+    const run = await fixture.runner.run();
+    expect(run.dependencyRevision).toBe('@luma.gl/graph@execution-fixture');
+    const saved = JSON.parse(JSON.stringify(run));
+    const converted = makeWorkflowComputationRecord(saved, fixture.registry);
+    expect(converted.runId).toBe(run.runId);
+    expect(converted.dependencyRevision).toBe('@luma.gl/graph@execution-fixture');
+    delete saved.dependencyRevision;
+    const historical = makeWorkflowComputationRecord(saved, fixture.registry);
+    expect(historical.runId).toBe(run.runId);
+    expect(historical).not.toHaveProperty('dependencyRevision');
+  } finally {
+    fixture.runner.destroy();
+  }
+  const defaults = createFixture();
+  try {
+    const run = await defaults.runner.run();
+    expect(typeof run.dependencyRevision).toBe('string');
+    expect(makeWorkflowComputationRecord(run, defaults.registry).dependencyRevision).toBe(
+      run.dependencyRevision
+    );
+  } finally {
+    defaults.runner.destroy();
+  }
+});

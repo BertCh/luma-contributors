@@ -13,6 +13,7 @@ export {
 } from './gpu-brownian-bridge-utilization';
 export type {
   GPUBrownianBridgeUtilizationProps,
+  BrownianBridgeTailPolicy,
   GPUBrownianBridgeUtilizationSettings
 } from './gpu-brownian-bridge-utilization';
 export {
@@ -44,6 +45,9 @@ export {
   computeBrownianBridgeUtilizationOnCPU,
   CPUBrownianBridgeUtilizationOperation
 } from './cpu-brownian-bridge-utilization-operation';
-export type {CPUBrownianBridgeUtilizationInput} from './cpu-brownian-bridge-utilization-operation';
+export type {
+  CPUBrownianBridgeUtilizationInput,
+  CPUBrownianBridgeUtilizationResult
+} from './cpu-brownian-bridge-utilization-operation';
 export {GPUBrownianBridgeUtilizationOperation} from './gpu-brownian-bridge-utilization-operation';
 export type {BrownianBridgeUtilizationOperationProps} from './gpu-brownian-bridge-utilization-operation';

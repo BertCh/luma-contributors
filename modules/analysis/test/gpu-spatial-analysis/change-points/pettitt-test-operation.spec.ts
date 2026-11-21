@@ -8,6 +8,7 @@ import {CPUPettittTestOperation} from '../../../src/gpu-spatial-analysis/change-
 import {GPUPettittTestOperation} from '../../../src/gpu-spatial-analysis/change-points/gpu-pettitt-test-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 
 for (const layout of ['cell-major', 'period-major'] as const) {
   for (const edgeCase of [false, true]) {
@@ -50,10 +51,14 @@ for (const layout of ['cell-major', 'period-major'] as const) {
       for (const name of ['statistic', 'changeSlice'])
         expect(Array.from(results[0][name])).toEqual(Array.from(results[1][name]));
       // Integer outputs are exact; the exponential p-value allows 2e-6 absolute error.
-      for (let cell = 0; cell < 3; cell++)
-        expect(
-          Math.abs(results[0]['pValues'][cell] - results[1]['pValues'][cell])
-        ).toBeLessThanOrEqual(2e-6);
+      expectNumericArrayClose(results[0]['pValues'], results[1]['pValues'], {
+        absoluteTolerance: 2e-6
+      });
+      if (edgeCase) {
+        // The first two cells have respectively zero and one finite observations; only the
+        // third cell (three equal observations) is tested, with K=0 and p=1.
+        for (const result of results) expectNumericArrayClose(result['pValues'], [NaN, NaN, 1]);
+      }
     });
   }
 }

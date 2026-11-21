@@ -129,7 +129,7 @@ export const ACCESSIBILITY_OPERATORS: SpatialFamilyOperators = {
     },
     metadata: {coordinateModel: 'projected', metricUnit: 'm', mappedVariableExtent: 'extensive'}
   },
-  GPUPycnophylactic: {
+  GPUPycnophylacticInterpolation: {
     family: 'accessibility',
     descriptor: {scope: 'solver', reduction: 'solve'},
     variables: {population: 'count', mass: 'count'},

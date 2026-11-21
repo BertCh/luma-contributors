@@ -68,19 +68,32 @@ export function getLineGraphEdgeDirections(
   return {departures, arrivals};
 }
 
+type ResolvedLineGraphSettings = Required<
+  Pick<
+    GPUNetworkLineGraphSettings,
+    | 'turnCostPerRadian'
+    | 'leftTurnCost'
+    | 'rightTurnCost'
+    | 'uTurnCost'
+    | 'straightAngleRadians'
+    | 'uTurnAngleRadians'
+    | 'bannedTurnCount'
+  >
+>;
+
 /** Turn cost of `from -> to` from the arrival and departure directions, or -1 for a banned U-turn. */
 function getTurnCost(
   directionA: readonly [number, number],
   directionB: readonly [number, number],
-  settings: Required<GPUNetworkLineGraphSettings>
+  settings: ResolvedLineGraphSettings
 ): number {
   const angle = getLineGraphTurnAngle(directionA, directionB);
   const magnitude = Math.abs(angle);
-  if (magnitude >= settings.uTurnAngle) {
+  if (magnitude >= settings.uTurnAngleRadians) {
     return settings.uTurnCost;
   }
-  let cost = settings.angleCost * magnitude;
-  if (magnitude > settings.straightAngle) {
+  let cost = settings.turnCostPerRadian * magnitude;
+  if (magnitude > settings.straightAngleRadians) {
     cost += angle > 0 ? settings.leftTurnCost : settings.rightTurnCost;
   }
   return cost;
@@ -100,13 +113,13 @@ export function lineGraphOracle(
   arcCapacity: number,
   isGreatCircle = false
 ): {csr: LineGraphCSR; totalArcs: number} {
-  const resolved: Required<GPUNetworkLineGraphSettings> = {
-    angleCost: settings.angleCost ?? 0,
+  const resolved: ResolvedLineGraphSettings = {
+    turnCostPerRadian: settings.turnCostPerRadian ?? 0,
     leftTurnCost: settings.leftTurnCost ?? 0,
     rightTurnCost: settings.rightTurnCost ?? 0,
     uTurnCost: settings.uTurnCost ?? -1,
-    straightAngle: settings.straightAngle ?? 0.5,
-    uTurnAngle: settings.uTurnAngle ?? 2.9,
+    straightAngleRadians: settings.straightAngleRadians ?? 0.5,
+    uTurnAngleRadians: settings.uTurnAngleRadians ?? 2.9,
     bannedTurnCount: settings.bannedTurnCount ?? bannedTurns.length
   };
   const nodeCount = base.offsets.length - 1;

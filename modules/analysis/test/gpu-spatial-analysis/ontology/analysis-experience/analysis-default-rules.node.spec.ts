@@ -1861,3 +1861,44 @@ def stats(p):
 print('uniform', stats(uniform(1,1500)))
 print('clustered', stats(clustered(2,1600)))
 */
+
+describe('DEF-05 knee rejection sampling evidence', () => {
+  it('retains the sampled lattice provenance on bend rejection', () => {
+    const coordinates = Array.from({length: 100}, (_, index) => [
+      index % 10,
+      Math.floor(index / 10)
+    ]).flat();
+    const spacing = computeMaybeSpacingStatistics(coordinates, {
+      coordinateModel: 'planar',
+      neighborRank: 3,
+      maximumSampleSize: 8
+    });
+    if (!spacing) throw new Error('expected lattice spacing');
+    const result = resolveGPUAnalysisDefault('k-distance-knee', createProfileFromSpacing(spacing));
+    expect(result.value).toBeUndefined();
+    expect(result.explanation).toContain('no clear knee');
+    expect(result.sampled).toBe(true);
+    expect(result.explanation).toContain('8 of 100 points');
+  });
+
+  it('retains sampling on a hand-worked range-to-median rejection', () => {
+    const spacing = computeMaybeSpacingStatistics([0, 0, 1, 0], {coordinateModel: 'planar'});
+    if (!spacing) throw new Error('expected spacing');
+    // Seven values at 1 then 1.1: bend 6/7, range/median 0.1, below the required ratio of 30.
+    expect(GPU_ANALYSIS_KNEE_MINIMUM_RANGE_OVER_MEDIAN).toBe(30);
+    const result = resolveGPUAnalysisDefault(
+      'k-distance-knee',
+      createProfileFromSpacing({
+        ...spacing,
+        sampled: true,
+        pointCount: 100,
+        sampleSize: 8,
+        kDistance: {k: 3, distances: [1, 1, 1, 1, 1, 1, 1, 1.1]}
+      })
+    );
+    expect(result.value).toBeUndefined();
+    expect(result.explanation).toContain('range-to-median threshold');
+    expect(result.sampled).toBe(true);
+    expect(result.explanation).toContain('8 of 100 points');
+  });
+});

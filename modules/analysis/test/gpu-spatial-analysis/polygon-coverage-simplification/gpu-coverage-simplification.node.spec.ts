@@ -28,15 +28,15 @@ it('GPUCoverageSimplification validates props and declares nodes', () => {
     }
   });
   const base = make();
+  const legacy = {...base, snapTolerance: 2};
+  expect(() => new GPUCoverageSimplification(legacy)).toThrow(/snapTolerance.*snapGridSize/);
   expect(() => new GPUCoverageSimplification({...base, spatialContext: AREA_FRAME})).toThrow(
     /measures distance; project into an azimuthal-equidistant frame/
   );
   expect(
     () => new GPUCoverageSimplification({...base, spatialContext: DISTANCE_FRAME})
   ).not.toThrow();
-  expect(() => new GPUCoverageSimplification({...base, snapTolerance: -1})).toThrow(
-    /snapTolerance/
-  );
+  expect(() => new GPUCoverageSimplification({...base, snapGridSize: -1})).toThrow(/snapGridSize/);
   expect(() => new GPUCoverageSimplification({...base, parameters: view('float32', 2)})).toThrow(
     /parameters/
   );
@@ -74,8 +74,8 @@ it('GPUCoverageSimplification validates props and declares nodes', () => {
   expect(ids).toContain('coverage-simplification-arcs-init');
   expect(ids).toContain('coverage-simplification-ring-minimum');
   expect(ids).toContain('coverage-simplification-round-0-classify');
-  // The measuring-only last round is built only when topologyStatistics consumes it.
-  expect(ids).not.toContain('coverage-simplification-round-4-classify');
+  // Final detection certifies completeness even when statistics are omitted.
+  expect(ids).toContain('coverage-simplification-round-4-classify');
   expect(ids).toContain('coverage-simplification-round-3-classify');
   const statsIds = new GPUCoverageSimplification({
     ...base,
@@ -87,6 +87,8 @@ it('GPUCoverageSimplification validates props and declares nodes', () => {
   expect(statsIds).toContain('stats-round-4-classify');
   expect(statsIds).not.toContain('stats-round-4-repair');
   expect(ids).toContain('coverage-simplification-round-3-repair');
+  expect(ids).toContain('coverage-simplification-topology-fallback');
+  expect(statsIds).toContain('stats-topology-fallback');
   const plainIds = new GPUCoverageSimplification({...base, id: 'plain', topologyIterationCount: 0})
     .getCommandNodes(graph)
     .map(node => node.id);

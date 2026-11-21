@@ -118,3 +118,52 @@ it('isolates cutoff rounding with binary-exact axis lengths and endpoint fractio
   expect(result.costs[result.offsets[1] + row.indexOf(2)]).toBe(0.5);
   expect(result.complete[0]).toBe(1);
 });
+
+it.each([
+  {nodeCount: 4, builtLimit: 0, requestedLimit: 10},
+  {nodeCount: 5, builtLimit: 1, requestedLimit: 22}
+])('retains the built cutoff when the caller changes the build input for a later match ($nodeCount nodes)', ({
+  nodeCount,
+  builtLimit,
+  requestedLimit
+}) => {
+  const topology = {
+    offsets: Uint32Array.from({length: nodeCount + 1}, (_, node) => Math.min(node, nodeCount - 1)),
+    neighbors: Uint32Array.from({length: nodeCount - 1}, (_, edge) => edge + 1),
+    weights: new Float32Array(nodeCount - 1).fill(1),
+    nodePositions: Float32Array.from({length: nodeCount * 2}, (_, component) =>
+      component % 2 === 0 ? component / 2 : 0
+    )
+  };
+  const costLimit = Float32Array.of(builtLimit);
+  const table = computeNetworkCostTableOnCPU(
+    {topology, costLimit},
+    {capacity: nodeCount * nodeCount}
+  );
+  costLimit[0] = requestedLimit;
+  const fresh = computeNetworkCostTableOnCPU(
+    {topology, costLimit},
+    {capacity: nodeCount * nodeCount}
+  );
+  expect(table.builtCostLimit).toEqual(Float32Array.of(builtLimit));
+  for (const retained of [table, fresh]) {
+    const result = computeMapMatchingOnCPU(
+      {
+        topology,
+        positions: Float32Array.of(0.5, 0, nodeCount - 1.5, 0),
+        trackOffsets: Uint32Array.of(0, 2),
+        parameters: getGPUMapMatchingParameterValues({
+          sigma: 0.1,
+          beta: 1,
+          searchRadius: 0.1,
+          routeFactor: 3,
+          routeSlack: 0
+        }),
+        routeTable: {...retained, costLimit}
+      },
+      {candidateCount: 1, cellSize: 1}
+    );
+    // A straight, connected chain has no break, regardless of the preprocessing cutoff.
+    expect(result.breaks).toEqual(Uint32Array.of(0, 0));
+  }
+});

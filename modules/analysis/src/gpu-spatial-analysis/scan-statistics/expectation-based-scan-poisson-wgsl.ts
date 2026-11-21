@@ -35,7 +35,7 @@ fn getLogFactorial(value: f32) -> f32 {
   return (shifted - 0.5) * log(shifted) - shifted + 0.9189385332046727 + inverse / 12.0 - inverse * inverse * inverse / 360.0;
 }
 fn drawPhiloxPoisson(stream: ptr<function, PhiloxStream>, mean: f32) -> u32 {
-  if (!(mean > 0.0)) {
+  if (!(mean > 0.0) || (bitcast<u32>(mean) & 0x7f800000u) == 0x7f800000u) {
     return 0u;
   }
   if (mean < 30.0) {

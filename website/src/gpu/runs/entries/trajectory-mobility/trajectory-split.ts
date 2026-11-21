@@ -35,6 +35,8 @@ type Outputs = {
   rowIds: RunBuffer;
   segmentOffsets: RunBuffer;
   segmentCount: RunBuffer;
+  overflow: RunBuffer;
+  candidateOverflow: RunBuffer;
   copiedPositions: RunBuffer;
 };
 
@@ -75,6 +77,7 @@ export default defineOperationRun({
     const rowIds = builder.allocate('row-ids', 'uint32', rowCapacity);
     const segmentCount = builder.allocate('segment-count', 'uint32', 1);
     const overflow = builder.allocate('segment-overflow', 'uint32', 1);
+    const candidateOverflow = builder.allocate('split-candidate-overflow', 'uint32', 1);
     const copiedPositions = builder.allocate('copied-positions', 'float32x2', rowCapacity);
     const parameterBuffer = builder.allocate('split-parameters', 'float32', 4);
     const staypoints = mode === 'stop' ? addStaypoints(builder, fleet, buffers) : null;
@@ -86,6 +89,12 @@ export default defineOperationRun({
         trackOffsets: buffers.trackOffsets.view,
         parameters: mode === 'gap' ? parameterBuffer.view : undefined,
         staypointIds: staypoints?.rowStaypointIds.view,
+        staypointStatus: staypoints
+          ? {
+              overflow: staypoints.overflow.view,
+              candidateOverflow: staypoints.candidateOverflow.view
+            }
+          : undefined,
         values:
           mode === 'value-change'
             ? builder.upload('blocks', 'uint32', fleet.blocks).view
@@ -94,7 +103,11 @@ export default defineOperationRun({
           segmentOffsets: segmentOffsets.view,
           segmentTracks: segmentTracks.view,
           rowIds: rowIds.view,
-          status: {count: segmentCount.view, overflow: overflow.view},
+          status: {
+            count: segmentCount.view,
+            overflow: overflow.view,
+            candidateOverflow: candidateOverflow.view
+          },
           positions: copiedPositions.view
         }
       })
@@ -105,6 +118,8 @@ export default defineOperationRun({
       rowIds,
       segmentOffsets,
       segmentCount,
+      overflow,
+      candidateOverflow,
       copiedPositions
     };
     return {
@@ -119,11 +134,14 @@ export default defineOperationRun({
   },
   // The segment table is read back to join the consecutive rows of each segment, labeled by segment.
   async afterRun({inputs, outputs, values, upload}) {
-    const [count, offsets] = await Promise.all([
+    const [count, offsets, overflow, candidateOverflow] = await Promise.all([
       readUint32(outputs.segmentCount),
-      readUint32(outputs.segmentOffsets)
+      readUint32(outputs.segmentOffsets),
+      readUint32(outputs.overflow),
+      readUint32(outputs.candidateOverflow)
     ]);
-    const segmentCount = Math.min(count[0], offsets.length - 1);
+    const segmentCount =
+      overflow[0] || candidateOverflow[0] ? 0 : Math.min(count[0], offsets.length - 1);
     const rowTotal = segmentCount > 0 ? offsets[segmentCount] : 0;
     const edges: number[] = [];
     const labels = new Uint32Array(outputs.copiedPositions.length);
@@ -170,6 +188,11 @@ export default defineOperationRun({
       const duration = inputs.stepDurations[hit.index];
       const maximumGap = Math.min(parameter.max, Math.max(parameter.min, Math.floor(duration)));
       const count = peek(outputs.segmentCount);
+      const overflow = peek(outputs.overflow);
+      const candidateOverflow = peek(outputs.candidateOverflow);
+      if (!count || !overflow || !candidateOverflow) return {};
+      if (overflow[0] || candidateOverflow[0])
+        return {values: {maximumGap}, readout: 'Segments unavailable due to an incomplete result'};
       return {
         values: {maximumGap},
         glyphs: [
@@ -182,14 +205,14 @@ export default defineOperationRun({
         ],
         readout:
           values.mode === 0
-            ? `maximumGap ${formatDuration(maximumGap)} · step ${formatDuration(duration)} · ${count ? count[0] : 0} segments`
-            : `mode ${MODES[values.mode]}${values.mode === 2 ? ' (label: quarter of the day)' : ''} · ${count ? count[0] : 0} segments`
+            ? `maximumGap ${formatDuration(maximumGap)} · step ${formatDuration(duration)} · ${count[0]} segments`
+            : `mode ${MODES[values.mode]}${values.mode === 2 ? ' (label: quarter of the day)' : ''} · ${count[0]} segments`
       };
     }
   },
   draw: ({inputs, outputs, extra}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
-    ...(extra
+    ...(extra?.rowTotal
       ? [
           {
             layer: 'segments' as const,
@@ -197,7 +220,11 @@ export default defineOperationRun({
             edges: extra.edges,
             values: extra.labels,
             radius: 3
-          },
+          }
+        ]
+      : []),
+    ...(extra?.cutCount
+      ? [
           {
             layer: 'lines' as const,
             segments: extra.cuts,

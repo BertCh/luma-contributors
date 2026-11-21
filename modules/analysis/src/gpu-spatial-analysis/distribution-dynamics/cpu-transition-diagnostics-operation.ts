@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   validateCapacity,
   validateRequirement
@@ -20,7 +21,8 @@ import {
   GPU_TRANSITION_STATE_SPARSITY_LENGTH
 } from './gpu-transition-diagnostics';
 import {
-  GPUTransitionDiagnosticsOperation,
+  captureTransitionDiagnosticsOperationProps,
+  getTransitionDiagnosticsOperationProps,
   type TransitionDiagnosticsOperationProps
 } from './gpu-transition-diagnostics-operation';
 
@@ -60,7 +62,7 @@ function getTransitionChiSquareSurvival(value: number, degreesOfFreedom: number)
 
 /**
  * Computes homogeneity, stationary distributions and sparsity in the GPU's scalar row layouts.
- * Stationarity uses float64 GTH elimination, including its exact escape-to-lower-states test.
+ * Stationarity checks strong connectivity on the count support, then uses float64 GTH elimination.
  * Empty chains return NaNs without clearing `converged`; any failed nonempty chain clears it.
  * Extra counts after conditionCount * classCount² are unused capacity, as on the GPU.
  *
@@ -71,10 +73,11 @@ function getTransitionChiSquareSurvival(value: number, degreesOfFreedom: number)
  *   recurrence, without the GPU's incomplete-gamma iteration cap or large-df normal approximation.
  *   GPU p-values allow 2e-4 absolute error (including its large-df approximation).
  * - Drops the 64-class private-array limit; output layout imposes no corresponding class limit.
- * - Aggregated counts do not wrap at uint32 overflow; individual input and output words stay uint32.
+ * - Aggregated counts use float64 rather than float32; individual input and output words stay uint32.
+ * - minimumTransitions is not capped at uint32, unlike the GPU's integer sparsity diagnostic.
  * - Rescales stationary weights during back-substitution, staying finite where the GPU's unscaled
  *   float32 weights overflow. A non-finite or non-positive normalization leaves the chain NaN and
- *   sets converged to 0; the GPU can publish NaNs while leaving converged at 1.
+ *   sets converged to 0; the GPU also clears converged if its unscaled weights overflow.
  */
 export function computeTransitionDiagnosticsOnCPU(
   counts: Uint32Array,
@@ -86,7 +89,13 @@ export function computeTransitionDiagnosticsOnCPU(
     options.minimumTransitions ?? GPU_TRANSITION_DEFAULT_MINIMUM_TRANSITIONS;
   validateCapacity('computeTransitionDiagnosticsOnCPU', 'classCount', classCount);
   validateCapacity('computeTransitionDiagnosticsOnCPU', 'conditionCount', conditionCount);
-  validateCapacity('computeTransitionDiagnosticsOnCPU', 'minimumTransitions', minimumTransitions);
+  validateCapacity(
+    'computeTransitionDiagnosticsOnCPU',
+    'minimumTransitions',
+    minimumTransitions,
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
   if (counts.length < conditionCount * classCount * classCount)
     throw new Error(
       'computeTransitionDiagnosticsOnCPU counts length must cover conditionCount * classCount * classCount'
@@ -94,6 +103,7 @@ export function computeTransitionDiagnosticsOnCPU(
   const matrixLength = classCount * classCount;
   const chainCount = conditionCount > 1 ? conditionCount + 1 : 1;
   const pooled = new Float64Array(matrixLength);
+  const pooledIntegers = new Array<bigint>(matrixLength).fill(0n);
   const stateSparsity = new Uint32Array(GPU_TRANSITION_STATE_SPARSITY_LENGTH);
   for (let condition = 0; condition < conditionCount; condition++) {
     for (let origin = 0; origin < classCount; origin++) {
@@ -102,6 +112,7 @@ export function computeTransitionDiagnosticsOnCPU(
         const cell = origin * classCount + destination;
         const count = counts[condition * matrixLength + cell];
         pooled[cell] += count;
+        pooledIntegers[cell] += BigInt(count);
         total += count;
       }
       if (total === 0) stateSparsity[GPU_TRANSITION_STATE_SPARSITY.EMPTY]++;
@@ -112,27 +123,51 @@ export function computeTransitionDiagnosticsOnCPU(
   let likelihoodRatio = 0;
   let degreesOfFreedom = 0;
   for (let origin = 0; origin < classCount; origin++) {
-    let pooledTotal = 0;
+    let pooledTotalInteger = 0n;
     let nonzeroCells = 0;
     for (let destination = 0; destination < classCount; destination++) {
       const count = pooled[origin * classCount + destination];
-      pooledTotal += count;
+      pooledTotalInteger += pooledIntegers[origin * classCount + destination];
       if (count > 0) nonzeroCells++;
     }
+    const pooledTotal = Number(pooledTotalInteger);
     if (pooledTotal === 0) continue;
     let regimes = 0;
     for (let condition = 0; condition < conditionCount; condition++) {
       const start = condition * matrixLength + origin * classCount;
-      let total = 0;
+      let totalInteger = 0n;
       for (let destination = 0; destination < classCount; destination++)
-        total += counts[start + destination];
+        totalInteger += BigInt(counts[start + destination]);
+      const total = Number(totalInteger);
       if (total === 0) continue;
       regimes++;
       for (let destination = 0; destination < classCount; destination++) {
         const observed = counts[start + destination];
-        const expected = (total * pooled[origin * classCount + destination]) / pooledTotal;
-        if (expected > 0) statistic += (observed - expected) ** 2 / expected;
-        if (observed > 0) likelihoodRatio += observed * Math.log(observed / expected);
+        const expectedProduct = total * pooled[origin * classCount + destination];
+        const expected = expectedProduct / pooledTotal;
+        // Preserve the exact integer residual before converting: both binary64 products
+        // can round to the same value even when their difference is one.
+        const difference =
+          Number(
+            BigInt(observed) * pooledTotalInteger -
+              totalInteger * pooledIntegers[origin * classCount + destination]
+          ) / pooledTotal;
+        if (expected > 0) {
+          statistic += difference ** 2 / expected;
+          const delta = difference / expected;
+          if (Math.abs(delta) < 0.25) {
+            let term = (delta * delta) / 2;
+            let entropy = term;
+            for (let order = 3; order <= 40; order++) {
+              term *= (-delta * (order - 2)) / order;
+              entropy += term;
+            }
+            likelihoodRatio += expected * entropy;
+          } else {
+            likelihoodRatio +=
+              observed > 0 ? observed * Math.log(observed / expected) - difference : expected;
+          }
+        }
       }
     }
     degreesOfFreedom += (regimes - 1) * (nonzeroCells - 1);
@@ -171,6 +206,30 @@ export function computeTransitionDiagnosticsOnCPU(
     }
     const size = active.length;
     if (size === 0) continue;
+    // Positive GTH escape sums alone do not prove irreducibility: a transient state can
+    // escape to a lower-numbered closed class. Every active state must both reach and be
+    // reachable from active[0]. Test the integer support, independent of numeric underflow.
+    for (const reversed of [false, true]) {
+      const reachable = new Uint8Array(size);
+      reachable[0] = 1;
+      for (let pass = 0; pass < size; pass++) {
+        let changed = false;
+        for (let origin = 0; origin < size; origin++) {
+          if (!reachable[origin]) continue;
+          for (let destination = 0; destination < size; destination++) {
+            const cell = reversed
+              ? active[destination] * classCount + active[origin]
+              : active[origin] * classCount + active[destination];
+            if (matrix[cell] > 0 && !reachable[destination]) {
+              reachable[destination] = 1;
+              changed = true;
+            }
+          }
+        }
+        if (!changed) break;
+      }
+      if (reachable.some(value => value === 0)) solvable = false;
+    }
     const work = Float64Array.from({length: size * size}, (_, index) => {
       const origin = active[Math.floor(index / size)];
       return matrix[origin * classCount + active[index % size]] / totals[origin];
@@ -232,13 +291,14 @@ export function computeTransitionDiagnosticsOnCPU(
 /** CPU twin. Class count is not capped at the GPU private-array size of 64. */
 export class CPUTransitionDiagnosticsOperation extends GPUCPUOperation {
   constructor(props: TransitionDiagnosticsOperationProps) {
+    props = captureTransitionDiagnosticsOperationProps(props);
     const id = props.id ?? 'transition-diagnostics';
     const conditionCount = props.conditionCount ?? 1;
     const minimumTransitions =
       props.minimumTransitions ?? GPU_TRANSITION_DEFAULT_MINIMUM_TRANSITIONS;
     validateCapacity(id, 'classCount', props.classCount);
     validateCapacity(id, 'conditionCount', conditionCount);
-    validateCapacity(id, 'minimumTransitions', minimumTransitions);
+    validateCapacity(id, 'minimumTransitions', minimumTransitions, 1, Number.MAX_SAFE_INTEGER);
     const {output} = props;
     validateRequirement(
       id,
@@ -252,7 +312,7 @@ export class CPUTransitionDiagnosticsOperation extends GPUCPUOperation {
     );
     const chainCount = conditionCount > 1 ? conditionCount + 1 : 1;
     // Reuse the graph-port shape and disjointness checks; this allocates no GPU resources.
-    new GPUTransitionDiagnosticsOperation(props);
+    new GPUContributorOperation(getTransitionDiagnosticsOperationProps(props));
     super({
       id,
       inputs: {counts: props.counts},

@@ -159,13 +159,13 @@ export class GPUTrajectoryRecursions implements GPUCommandNodeProducer {
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
     this.rowCount = positions.length;
-    validateCapacity(id, 'fix count', this.rowCount);
+    validateCapacity(id, 'fix count', this.rowCount, 0);
     validateViewLength(id, 'timestamps', timestamps, this.rowCount);
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
       id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     validateSinglePackedView(radii, ['float32'], `${id} radii`);
     this.radiusCount = radii.length;

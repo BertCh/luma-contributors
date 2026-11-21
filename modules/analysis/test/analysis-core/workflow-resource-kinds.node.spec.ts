@@ -89,6 +89,6 @@ it('X2 labels one compute and one copy as two graph nodes', () => {
     formatResourceBytes,
     formatResourceCount
   });
-  expect(description).toBe('2 graph nodes, 3 dependencies, 2 buffers of 16 B');
+  expect(description).toBe('2 graph nodes, 3 dependencies, 2 resources of 16 B');
   expect(text).toContain("label: 'graph nodes they compiled to'");
 });

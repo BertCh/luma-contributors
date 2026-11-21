@@ -78,8 +78,14 @@ export function searchSpatialMaximumLikelihoodParameter(
   const step = (2 * bound) / scanSteps;
   let previousParameter = -bound;
   let previous = evaluateDerivative(previousParameter);
-  if (previous <= 0) {
+  const lowerInward = -bound + bound * Number.EPSILON;
+  const lowerInwardDerivative = evaluateDerivative(lowerInward);
+  if (previous < 0 || (previous === 0 && lowerInwardDerivative <= 0)) {
     consider(-bound, true);
+  }
+  if (previous === 0 && lowerInwardDerivative > 0) {
+    previous = lowerInwardDerivative;
+    previousParameter = lowerInward;
   }
   for (let index = 1; index <= scanSteps; index++) {
     const parameter = index === scanSteps ? bound : -bound + index * step;
@@ -95,7 +101,9 @@ export function searchSpatialMaximumLikelihoodParameter(
           high = middle;
         }
       }
-      consider(0.5 * (low + high), false);
+      const root =
+        index === scanSteps && current === 0 && high === bound ? bound : 0.5 * (low + high);
+      consider(root, root === -bound || root === bound);
     }
     previous = current;
     previousParameter = parameter;

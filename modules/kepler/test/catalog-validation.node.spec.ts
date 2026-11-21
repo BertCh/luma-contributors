@@ -14,6 +14,7 @@ import {
   runCatalogOperationAsync
 } from '../src/analysis/catalog-bindings';
 import {parseCatalogFeatureCollection} from '../src/analysis/catalog-geojson';
+import {makeCatalogTableInput} from '../src/analysis/catalog-data-input';
 import {VALIDATION_BINDINGS} from '../src/analysis/catalog-validation-bindings';
 import {
   getValidationTemporalContext,
@@ -33,6 +34,39 @@ import {
 } from '../src/analysis/catalog-validation-vecchia';
 import {fitKeplerVecchiaVariogram} from '../src/analysis/kriging-variogram-fit';
 import type {Device} from '@luma.gl/core';
+
+test('column-only scores admit native tables and preserve indexed geometry-free publication', () => {
+  const table = {
+    id: 'scores',
+    label: 'Scores',
+    rowCount: 2,
+    columns: {
+      observed: [1, 3],
+      predicted: [2, 3],
+      variance: [0, 0],
+      pvalue: [0.01, 0.2],
+      member1: [1, 3],
+      member2: [2, 4]
+    },
+    columnTypes: {
+      observed: 'float64',
+      predicted: 'float64',
+      variance: 'float64',
+      pvalue: 'float64',
+      member1: 'float64',
+      member2: 'float64'
+    } as const
+  };
+  const input = makeCatalogTableInput(table, {maximumRows: 2048});
+  for (const id of ['validation-gaussian-scores', 'validation-ensemble-scores', 'validation-fdr'])
+    expect(() => validateCatalogInputs(getCatalogBinding(id)!, {points: input})).not.toThrow();
+  expect(Array.from(readValidationColumn(input, 'observed'))).toEqual([1, 3]);
+  const result = makeValidationResult('scores', 'Scores', input, {crps: [1, 0]}, {}, []);
+  expect(result.tables[0].columns['feature_index']).toEqual([0, 1]);
+  expect(result.tables[0].columns['crps']).toEqual([1, 0]);
+  expect(result.tables[0].geometryColumn).toBeUndefined();
+  expect(result.tables[0].columns['geometry']).toBeUndefined();
+});
 
 const CONTRIBUTORS = [
   'GPUGeographicallyTemporallyWeightedRegression',
@@ -57,11 +91,11 @@ test('all twelve contributors are registered once, discoverable and GPU executab
   for (const binding of VALIDATION_BINDINGS) {
     expect(getCatalogBinding(binding.id)).toBe(binding);
     expect(binding.engine).toBe('gpu');
-    expect(binding.runGpu).toBeTypeOf('function');
+    expect(binding.runDataGpu ?? binding.runGpu).toBeTypeOf('function');
     expect(binding.run).toBeUndefined();
     expect(binding.outputs.some(output => output.tableId.endsWith('-diagnostics'))).toBe(true);
     const entries = listCatalogEntries().filter(entry =>
-      binding.contributorNames.includes(entry.contributorName)
+      binding.contributorNames.includes(entry.identity.exportName)
     );
     expect(entries.length).toBeGreaterThan(0);
     expect(

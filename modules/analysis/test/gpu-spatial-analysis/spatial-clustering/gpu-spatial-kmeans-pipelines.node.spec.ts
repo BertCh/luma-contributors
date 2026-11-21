@@ -18,7 +18,9 @@ import {
 
 const ROWS = 500;
 
-type KMeansShape = Partial<Pick<GPUSpatialKMeansProps, 'k' | 'maximumIterations' | 'restartCount'>>;
+type KMeansShape = Partial<
+  Pick<GPUSpatialKMeansProps, 'clusterCount' | 'maximumIterations' | 'restartCount'>
+>;
 
 function getKMeansNodes(shape: KMeansShape) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
@@ -27,10 +29,10 @@ function getKMeansNodes(shape: KMeansShape) {
     format: Format,
     length: number
   ) => createTransientView(graph, `kmeans-view-${serial++}`, format, length);
-  const k = shape.k ?? 3;
+  const k = shape.clusterCount ?? 3;
   return new GPUSpatialKMeans({
     positions: view('float32x2', ROWS),
-    k,
+    clusterCount: k,
     maximumIterations: shape.maximumIterations ?? 2,
     restartCount: shape.restartCount ?? 1,
     parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
@@ -48,12 +50,12 @@ it('GPUSpatialKMeans pipeline count does not grow with k, maximumIterations or r
     getGPUCommandNodePipelineKeys(getKMeansNodes(shape)).size;
   // k is a size as well as the seeding round count, so compare k at equal size-like constants by
   // checking that one more k adds no per-round variant: the counts at k = 3 and k = 4 are equal.
-  expect(distinct({k: 4})).toBe(distinct({k: 3}));
+  expect(distinct({clusterCount: 4})).toBe(distinct({clusterCount: 3}));
   expect(distinct({maximumIterations: 3})).toBe(distinct({maximumIterations: 2}));
   expect(distinct({restartCount: 3})).toBe(distinct({restartCount: 2}));
   // More rounds still add nodes; only the variant count is fixed.
-  expect(getGPUCommandNodeKernelSources(getKMeansNodes({k: 4})).length).toBeGreaterThan(
-    getGPUCommandNodeKernelSources(getKMeansNodes({k: 3})).length
+  expect(getGPUCommandNodeKernelSources(getKMeansNodes({clusterCount: 4})).length).toBeGreaterThan(
+    getGPUCommandNodeKernelSources(getKMeansNodes({clusterCount: 3})).length
   );
 });
 

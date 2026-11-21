@@ -11,7 +11,7 @@ import {
 import {
   GPU_ANALYSIS_MEASUREMENT_LEVELS,
   GPU_ANALYSIS_ROW_SEMANTICS
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   analysisDatasetContext,
   ANALYSIS_PROFILE_LIMITS,

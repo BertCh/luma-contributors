@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {prepareSamplingTriangleFrame, getSamplingSourceRow} from './sampling-triangle-frame';
 import type {Buffer} from '@luma.gl/core';
 import {GPUReadbackRing} from '@luma.gl/graph/gpu-core';
 import {
@@ -655,10 +656,14 @@ export async function createSamplingFrames(
             ctx.setReadout('selected', valid ? acceptedRows : null);
             const examples: string[] = [];
             for (let row = 0; row < outputCapacity * waveCount && examples.length < 8; row++) {
-              const source = provenance[row * 4];
+              const packedSource = provenance[row * 4];
+              const role = provenance[row * 4 + 3];
+              const source =
+                state.design === 'area' && parkTriangles
+                  ? getSamplingSourceRow(packedSource, role, parkTriangles.sourceTriangleRows)
+                  : packedSource;
               const stream = provenance[row * 4 + 1];
               const candidate = provenance[row * 4 + 2];
-              const role = provenance[row * 4 + 3];
               if (role > 2) continue;
               examples.push(
                 `source ${source} · stream ${stream} · candidate ${candidate} · ${role === 0 ? 'primary' : role === 1 ? 'replacement' : 'synthetic legacy'}`
@@ -1068,6 +1073,7 @@ async function buildParkTriangleFrame(
   resources: SpatialAnalysisResources
 ): Promise<{
   positions: Float32Array;
+  sourceTriangleRows: Uint32Array;
   bounds: [number, number, number, number];
   legacyCentroid: [number, number];
   invalidIndexCount: number;
@@ -1148,14 +1154,11 @@ async function buildParkTriangleFrame(
   );
   if (validity[0] !== 1 || count[0] === 0)
     throw new Error('Northerly Island polygon triangulation failed validity gate');
-  const trianglePositions = new Float32Array(count[0] * 6);
-  let invalidIndexCount = 0;
-  for (let index = 0; index < count[0] * 3; index++) {
-    const vertex = triangles[index];
-    if (vertex >= park.positions.length / 2) invalidIndexCount++;
-    trianglePositions[index * 2] = park.positions[vertex * 2];
-    trianglePositions[index * 2 + 1] = park.positions[vertex * 2 + 1];
-  }
+  const filtered = prepareSamplingTriangleFrame(park.positions, triangles, count[0]);
+  const trianglePositions = filtered.positions;
+  if (!trianglePositions.length)
+    throw new Error('Northerly Island sampling frame has no positive-area triangles');
+  const invalidIndexCount = 0;
   const bounds: [number, number, number, number] = [
     Math.min(...trianglePositions.filter((_, index) => index % 2 === 0)),
     Math.min(...trianglePositions.filter((_, index) => index % 2 === 1)),
@@ -1214,6 +1217,7 @@ async function buildParkTriangleFrame(
     : '';
   return {
     positions: trianglePositions,
+    sourceTriangleRows: filtered.sourceTriangleRows,
     bounds,
     invalidIndexCount,
     nonFiniteCoordinateCount,

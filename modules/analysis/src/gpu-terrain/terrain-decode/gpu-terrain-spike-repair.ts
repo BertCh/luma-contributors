@@ -52,11 +52,11 @@ export const GPU_TERRAIN_SPIKE_REPAIR_STATISTICS = {
 } as const;
 
 /**
- * Value of every `output.labels` word and every `output.outputValidity` word of a valid pixel when
+ * Value of every `output.labels` word of a valid input pixel when
  * component labelling did not converge (`maximumComponentIterations` too small). `output.values` of
- * those pixels hold `+Infinity`. A
- * converged run never produces any of them: labels are pixel indices, validity is 0 or 1 and valid
- * heights are finite. Invalid pixels keep NaN, validity 0 and their own label.
+ * those pixels hold `+Infinity` and their output validity is 0. Converged valid pixels have
+ * pixel-index labels, validity 1 and finite heights. Invalid pixels keep NaN, validity 0 and
+ * their own label.
  */
 export const GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED = 0xffffffff;
 
@@ -99,8 +99,7 @@ export type GPUTerrainSpikeRepairOutput = {
    */
   values: GraphDataView<'float32'>;
   /**
-   * Validity (0 or 1) per pixel, copied from the canonical input; valid pixels hold
-   * {@link GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED} when labelling did not converge.
+   * Usability (0 or 1) per pixel. Invalid inputs and unfinished repairs have validity 0.
    */
   outputValidity: GraphDataView<'uint32'>;
   /** Optional component label per pixel: the lowest pixel index of its component. Invalid pixels label themselves. Valid pixels hold {@link GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED} when labelling did not converge. */
@@ -154,7 +153,7 @@ export type GPUTerrainSpikeRepairProps = {
    * {@link GPU_TERRAIN_SPIKE_REPAIR_DEFAULT_MAXIMUM_COMPONENT_ITERATIONS}. If labelling has not
    * converged nothing is repaired and the outputs are marked instead of copied, because an
    * unchanged copy reads as "nothing to repair": `output.values` of valid pixels hold `+Infinity`,
-   * their `output.outputValidity` and `output.labels` words
+   * their `output.outputValidity` is 0, their `output.labels` words hold
    * {@link GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED}, and `statistics.converged` is 0.
    * `statistics.remainingJumpCount` still equals `jumpCount`.
    */
@@ -351,14 +350,27 @@ export class GPUTerrainSpikeRepair implements GPUCommandNodeProducer {
 
     if (!this.ownedBuffers) {
       const usage = Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST;
-      const create = (name: string, words: number) =>
-        graph.device.createBuffer({id: `${id}-${name}`, byteLength: Math.max(words, 1) * 4, usage});
-      this.ownedBuffers = {
-        offsets: create('offsets', pixelCount + 1),
-        neighbors: create('neighbors', 2 * pixelCount),
-        labels: create('labels', pixelCount),
-        converged: create('converged', 1)
+      const acquiredBuffers: Buffer[] = [];
+      const create = (name: string, words: number) => {
+        const buffer = graph.device.createBuffer({
+          id: `${id}-${name}`,
+          byteLength: Math.max(words, 1) * 4,
+          usage
+        });
+        acquiredBuffers.push(buffer);
+        return buffer;
       };
+      try {
+        this.ownedBuffers = {
+          offsets: create('offsets', pixelCount + 1),
+          neighbors: create('neighbors', 2 * pixelCount),
+          labels: create('labels', pixelCount),
+          converged: create('converged', 1)
+        };
+      } catch (error) {
+        for (const buffer of acquiredBuffers) buffer.destroy();
+        throw error;
+      }
     }
     const owned = this.ownedBuffers;
     const offsets = importGraphBuffer(
@@ -848,7 +860,7 @@ fn isWideLessOrEqual(left: vec2<u32>, right: vec2<u32>) -> bool {
     // Labelling stopped early: nothing is repaired and the pixel is marked, not copied.
     var infinityBits = 0x7f800000u;
     valuesOut[valuesOutOffset + index] = bitcast<f32>(infinityBits);
-    validityOut[validityOutOffset + index] = ${GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED}u;
+    validityOut[validityOutOffset + index] = 0u;
     return;
   }
   validityOut[validityOutOffset + index] = 1u;

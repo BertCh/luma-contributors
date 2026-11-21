@@ -13,7 +13,7 @@
  *    and sources (extensive and intensive normalizations from one run).
  * 3. `GPUSpatialLag` applies those cross weights (`sourceCount` != row count): extensive counts are
  *    split by area, intensive densities are area-weighted means.
- * 4. `GPUPycnophylactic` builds Tobler's smooth, volume-preserving surface from the ZIP totals. Its
+ * 4. `GPUPycnophylacticInterpolation` builds Tobler's smooth, volume-preserving surface from the ZIP totals. Its
  *    iteration count is compile-time, so a ladder of graphs is compiled up front and the slider
  *    picks one; a readback proves that every ZIP total is preserved.
  *
@@ -37,7 +37,7 @@ import {
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,
   GPUArealInterpolation,
   GPUGridGenerator,
-  GPUPycnophylactic,
+  GPUPycnophylacticInterpolation,
   GPUSpatialLag,
   getGPUGridGeneratorParameterValues,
   getGPUGridVerticesPerCell,
@@ -86,7 +86,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
   contributors: [
     'GPUArealInterpolation',
     'GPUSpatialLag',
-    'GPUPycnophylactic',
+    'GPUPycnophylacticInterpolation',
     'GPUPolygonRasterization',
     'GPUGridGenerator'
   ],
@@ -567,7 +567,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       ITERATION_LADDER.map(async iterations => {
         const graph = new GPUCommandGraph<void>(device, {id: `areal-pycno-${iterations}`});
         graph.add(
-          new GPUPycnophylactic({
+          new GPUPycnophylacticInterpolation({
             spatialContext: projection.spatialContext,
             id: 'pycnophylactic',
             grid: rasterGrid,

@@ -25,6 +25,22 @@ import {
 let serial = 0;
 const ROWS = 10;
 
+it('preserves the validated GWR design and output bindings after caller mutation', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = createProps(graph);
+  // The props contract also permits inherited/non-enumerable getters.
+  const inherited = new GPUGeographicallyWeightedRegression(Object.create(props));
+  expect(inherited.props.predictorCount).toBe(2);
+  const coefficients = props.output.coefficients;
+  const contributor = new GPUGeographicallyWeightedRegression(props);
+  props.predictorCount = 1;
+  props.output.coefficients = createTransientView(graph, 'replacement', 'float32', ROWS);
+  expect(contributor.props.predictorCount).toBe(2);
+  expect(contributor.props.output.coefficients).toBe(coefficients);
+  device.destroy();
+});
+
 function createProps(
   graph: GPUCommandGraph,
   overrides: Partial<GPUGeographicallyWeightedRegressionProps> = {}

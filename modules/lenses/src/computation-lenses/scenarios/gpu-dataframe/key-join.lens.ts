@@ -6,7 +6,7 @@ import {defineLensScenario, FORMULA_LENS_RUNGS} from '../../define-lens-scenario
 
 defineLensScenario({
   id: 'gpu-dataframe.key-join',
-  element: 'GPUKeyJoin',
+  element: 'GPUKeyLookup',
   title: 'Tract poverty joined onto Chicago iNaturalist observations by tract id',
   rungs: FORMULA_LENS_RUNGS,
   dataset: {

@@ -60,7 +60,10 @@ export function getGPUVecchiaLogLikelihoodParameterValues(
   covariance: GPUVecchiaCovariance,
   target?: Float32Array
 ): Float32Array {
-  validatePredictionCovariance(covariance as GPUPredictionCovariance);
+  validatePredictionCovariance(
+    covariance as GPUPredictionCovariance,
+    'getGPUVecchiaLogLikelihoodParameterValues'
+  );
   validateRequirement(
     'GPUVecchiaLogLikelihood',
     covariance.model === 'exponential' || covariance.model === 'matern-3/2',

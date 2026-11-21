@@ -25,7 +25,7 @@ export async function runExample(
   const usage = Buffer.STORAGE | Buffer.COPY_SRC;
   const areaCount = areas.featureOffsets.length - 1;
   const output = {
-    lengths: createTransientView(graph, 'lengths', 'float32', areaCount, usage),
+    clippedLengths: createTransientView(graph, 'lengths', 'float32', areaCount, usage),
     segmentCounts: createTransientView(graph, 'segmentCounts', 'uint32', areaCount, usage),
     status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1, usage)}
   };
@@ -39,7 +39,7 @@ export async function runExample(
     })
   );
   // lengths: m of road clipped to each area; segmentCounts: road segments with length inside
-  const {lengths, segmentCounts} = output;
+  const {clippedLengths: lengths, segmentCounts} = output;
   // #endregion example
   return {...output, lengths, segmentCounts};
 }

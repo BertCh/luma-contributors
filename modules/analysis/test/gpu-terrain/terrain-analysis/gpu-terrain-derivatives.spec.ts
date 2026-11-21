@@ -27,6 +27,7 @@ import {
 import {computeTerrainDerivatives, type TerrainDerivativeOptions} from './terrain-analysis-oracle';
 import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {expectDerivativeArraysClose as expectCloseArray} from './terrain-derivatives-readback-assertions';
 
 const WIDTH = 6;
 const HEIGHT = 5;
@@ -36,21 +37,6 @@ const PLANE = Float32Array.from(
   (_, index) => 2 * (index % WIDTH) + 3 * Math.floor(index / WIDTH)
 );
 const GRID = makeGPURasterMetadata({width: WIDTH, height: HEIGHT, cellSize: 10});
-
-function expectCloseArray(actual: number[], expected: number[], angular: boolean = false): void {
-  expect(actual.length).toBe(expected.length);
-  for (const [index, value] of expected.entries()) {
-    if (Number.isNaN(value)) {
-      expect(Number.isNaN(actual[index])).toBe(true);
-      continue;
-    }
-    let difference = Math.abs(actual[index] - value);
-    if (angular) {
-      difference = Math.min(difference, 360 - difference);
-    }
-    expect(difference).toBeLessThan(Math.max(5e-4, Math.abs(value) * 1e-4));
-  }
-}
 
 type DerivativeFixture = {
   graph: GPUCommandGraph;
@@ -257,7 +243,7 @@ it('GPUTerrainDerivatives scales Web Mercator and geographic rows', async () => 
   destroyFixture(geographic);
 });
 
-it('GPUTerrainDerivatives supports north row order, percent slope, and textures', async () => {
+it('GPUTerrainDerivatives buffer supports north row order and percent slope', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const settingsValues = getGPUTerrainDerivativesParameterValues({}, GRID);
@@ -277,7 +263,7 @@ it('GPUTerrainDerivatives supports north row order, percent slope, and textures'
     undefined,
     northGrid
   );
-  let compiled = north.graph.compile();
+  const compiled = north.graph.compile();
   submitGraph(device, compiled, undefined);
   await expectDerivatives(north, PLANE, settingsValues, {
     rowDirection: 'north',
@@ -288,10 +274,16 @@ it('GPUTerrainDerivatives supports north row order, percent slope, and textures'
   expect((await readFloat32(north.buffers.slope, PIXEL_COUNT))[interior]).toBeCloseTo(36.0555, 3);
   compiled.destroy();
   destroyFixture(north);
+});
 
+it('GPUTerrainDerivatives r32float storage-texture hillshade readback', async context => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
   if (!device.getTextureFormatCapabilities('r32float').store) {
-    return;
+    context.skip('device does not support r32float storage textures (store unavailable)');
   }
+  const settingsValues = getGPUTerrainDerivativesParameterValues({}, GRID);
+
   const inputTexture = device.createTexture({
     format: 'r32float',
     width: WIDTH,
@@ -349,7 +341,7 @@ it('GPUTerrainDerivatives supports north row order, percent slope, and textures'
       PIXEL_COUNT
     )
   }).addToGraph(graph);
-  compiled = graph.compile();
+  const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   expectCloseArray(
     await readFloat32(readbackBuffer, PIXEL_COUNT),

@@ -5,6 +5,7 @@
 import {
   defineGPUSpatialParameterSchema,
   type GPUSpatialContext,
+  type GPUSpatialParameterSchema,
   warnGPUShortLongitudeLatitudeDistance,
   packGPUSpatialParameterValues
 } from '../../analysis-core/contracts/index';
@@ -13,40 +14,42 @@ import {
 export const GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH = 4;
 
 /** Declarative layout of `GPULineSegmentize` parameters. */
-export const GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
-  id: 'line-segmentize',
-  format: 'float32',
-  wordLength: GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
-  fields: [
-    {
-      name: 'maximumSegmentLength',
-      format: 'float32',
-      wordOffset: 0,
-      defaultValue: 0,
-      minimum: 0,
-      units: 'spatial-context-units',
-      dynamic: true
-    }
-  ]
-});
+export const GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA: GPUSpatialParameterSchema<'float32'> =
+  defineGPUSpatialParameterSchema({
+    id: 'line-segmentize',
+    format: 'float32',
+    wordLength: GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
+    fields: [
+      {
+        name: 'maximumSegmentLength',
+        format: 'float32',
+        wordOffset: 0,
+        defaultValue: 0,
+        minimum: 0,
+        units: 'spatial-context-units',
+        dynamic: true
+      }
+    ]
+  });
 
 /** Declarative layout of `GPUGreatCircleArcs` parameters. */
-export const GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
-  id: 'great-circle-arcs',
-  format: 'float32',
-  wordLength: GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
-  fields: [
-    ...GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA.fields,
-    {
-      name: 'minimumSegments',
-      format: 'float32' as const,
-      wordOffset: 1,
-      defaultValue: 1,
-      minimum: 1,
-      dynamic: true
-    }
-  ]
-});
+export const GPU_GREAT_CIRCLE_ARCS_PARAMETER_SCHEMA: GPUSpatialParameterSchema<'float32'> =
+  defineGPUSpatialParameterSchema({
+    id: 'great-circle-arcs',
+    format: 'float32',
+    wordLength: GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH,
+    fields: [
+      ...GPU_LINE_SEGMENTIZE_PARAMETER_SCHEMA.fields,
+      {
+        name: 'minimumSegments',
+        format: 'float32' as const,
+        wordOffset: 1,
+        defaultValue: 1,
+        minimum: 1,
+        dynamic: true
+      }
+    ]
+  });
 
 /** CPU description of the per-frame parameters of `GPULineSegmentize`. */
 export type GPULineSegmentizeSettings = {

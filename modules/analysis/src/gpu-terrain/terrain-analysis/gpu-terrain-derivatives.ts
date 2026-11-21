@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from '../terrain-illumination/terrain-output-selection';
+
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -25,6 +27,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
+  validateFiniteNumber,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -95,6 +98,17 @@ export function getGPUTerrainDerivativesParameterValues(
     target,
     GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
   );
+  validateFiniteNumber('getGPUTerrainDerivativesParameterValues', 'zFactor', settings.zFactor ?? 1);
+  validateFiniteNumber(
+    'getGPUTerrainDerivativesParameterValues',
+    'azimuthDegrees',
+    settings.azimuthDegrees ?? 315
+  );
+  validateFiniteNumber(
+    'getGPUTerrainDerivativesParameterValues',
+    'altitudeDegrees',
+    settings.altitudeDegrees ?? 45
+  );
   target[2] = settings.zFactor ?? 1;
   target[3] = settings.azimuthDegrees ?? 315;
   target[4] = settings.altitudeDegrees ?? 45;
@@ -104,7 +118,7 @@ export function getGPUTerrainDerivativesParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUTerrainDerivatives}; at least one is required. */
-export type GPUTerrainDerivativesOutput = {
+export type GPUTerrainDerivativesOutput = TerrainOutputSelection<{
   /** Slope per pixel in degrees `[0, 90)` or percent. */
   slope?: GraphDataView<'float32'>;
   /** Downslope direction per pixel, degrees clockwise from north; -1 for flat cells. */
@@ -115,7 +129,7 @@ export type GPUTerrainDerivativesOutput = {
   outputValidity?: GraphDataView<'uint32'>;
   /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the hillshade. */
   hillshadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainDerivatives}.
@@ -443,6 +457,7 @@ ${getRasterGroundCellSizeWGSL(props.cellSizeMode, TERRAIN_DERIVATIVES_GRID_SLOTS
     gradientMagnitude = larger * sqrt(1.0 + ratio * ratio);
   }
   let isValid = gradientValidity[gradientValidityOffset + gradientIndex] != 0u &&
+    ${props.hillshade ? 'isFiniteValue(settings[settingsOffset + 3u]) && isFiniteValue(settings[settingsOffset + 4u]) &&' : ''}
     isFiniteValue(rawX) && isFiniteValue(rawY) && groundCell.x > 0.0 && groundCell.y > 0.0 &&
     isFiniteValue(eastGradient) && isFiniteValue(northGradient) && isFiniteValue(gradientMagnitude);
   let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));

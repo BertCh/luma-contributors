@@ -7,10 +7,20 @@ import {expect, test} from 'vitest';
 import {listLensScenarios} from '../../src/computation-lenses/registry-implementation';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/statistics-coverage.lens';
 import {requireTestDevice} from '@luma-contributors/analysis/testing';
+import {
+  getStatisticsCaptureFailures,
+  STATISTICS_STATUS_CAPTURES
+} from './statistics-capture-expectations';
 
 const scenarios = listLensScenarios().filter(
   scenario => scenario.dataset?.id === 'statistics-coverage-illustrative/1'
 );
+
+test('statistics scenarios cover the independently enumerated capture contracts', () => {
+  expect(scenarios.map(scenario => scenario.element).sort()).toEqual(
+    Object.keys(STATISTICS_STATUS_CAPTURES).sort()
+  );
+});
 
 test.each(scenarios)('$element executes and captures its synthetic result', async scenario => {
   const device = await getWebGPUTestDevice();
@@ -23,12 +33,5 @@ test.each(scenarios)('$element executes and captures its synthetic result', asyn
   for (const snapshot of outputs) {
     expect(snapshot.values.length, snapshot.name).toBeGreaterThan(0);
   }
-  // Every synthetic fit has sufficient observations, finite support and a valid design.
-  for (const success of outputs.filter(snapshot =>
-    ['status', 'status-code', 'folds-status', 'fitStatus', 'metricStatus'].includes(snapshot.name)
-  )) {
-    expect(Array.from(success.values), `${scenario.element}: ${success.name}`).toEqual(
-      Array(success.values.length).fill(0)
-    );
-  }
+  expect(getStatisticsCaptureFailures(scenario.element, snapshots)).toEqual([]);
 }, 120000);

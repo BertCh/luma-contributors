@@ -679,10 +679,10 @@ visiblePositions[visiblePositionsOffset + index * 2u] = positions[positionsOffse
         ? summary.fullKalmanStatus
         : summary.kalmanStatus;
       const invalidStateCount = kalmanStatusValues.filter(status => status & 4).length;
-      const smoothingSingularCount = kalmanStatusValues.filter(status => status & 8).length;
+      const smoothingFallbackCount = kalmanStatusValues.filter(status => status & 8).length;
       ctx.setReadout(
         'kalmanValidity',
-        `${observationCount - invalidStateCount} valid · ${invalidStateCount} invalid states · ${smoothingSingularCount} singular RTS steps`
+        `${observationCount - invalidStateCount} valid · ${invalidStateCount} invalid states · ${smoothingFallbackCount} RTS fallback steps`
       );
       const bins = [0, 0, 0, 0];
       let filteredSquaredError = 0;

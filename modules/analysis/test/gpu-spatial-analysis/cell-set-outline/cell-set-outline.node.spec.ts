@@ -8,7 +8,10 @@ import {
   GPUCellSetOutline,
   type GPUCellSetOutlineProps
 } from '../../../src/gpu-spatial-analysis/cell-set-outline/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 import {expectCellStorageScopes} from '../cell-indexing/cell-dispatch-audit';
 
 let serial = 0;
@@ -42,6 +45,17 @@ it('GPUCellSetOutline declares classify, scan, write, total and publish nodes', 
   const quadbin = new GPUCellSetOutline(createProps(graph, {family: 'quadbin'}));
   expect(quadbin.edgeSlots).toBe(4);
   expect(new GPUCellSetOutline(createProps(graph)).edgeSlots).toBe(10);
+});
+
+it('GPUCellSetOutline h3 picks the neighbor by spherical chord distance (DGGS-101)', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'outline-h3-rule'});
+  const sources = getParsedKernelSources(
+    new GPUCellSetOutline(createProps(graph)).getCommandNodes(graph)
+  );
+  const classify = sources.get('cell-set-outline-classify');
+  expect(classify).toContain('outlineGetUnitVector');
+  // The planar rule scaled longitude differences by a cosine floored at 0.01.
+  expect(classify).not.toContain('cos(radians(midpoint.y))');
 });
 
 it('GPUCellSetOutline validates its properties', () => {

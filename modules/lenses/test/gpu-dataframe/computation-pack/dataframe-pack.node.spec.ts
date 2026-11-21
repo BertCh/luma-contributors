@@ -78,7 +78,8 @@ test('every curated formula has exactly its tagged symbols and real source ident
       continue;
     }
     expect(formula.derivation).toBe('curated');
-    expect(formula.id).toBe(`gpu-dataframe:${name}`);
+    const formulaName = name === 'GPUKeyLookup' ? 'GPUKeyJoin' : name;
+    expect(formula.id).toBe(`gpu-dataframe:${formulaName}`);
     const terms = new Set(listTexTerms(formula.tex).map(term => term.symbolId));
     expect(terms).toEqual(new Set(formula.symbols.map(symbol => symbol.id)));
     expect(terms.size).toBe(formula.symbols.length);

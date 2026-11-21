@@ -14,6 +14,7 @@ import {GPURasterBufferToTexture} from '@luma.gl/graph/gpu-raster';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -32,6 +33,7 @@ import {
 } from './distance-field-kernels';
 import {
   GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION,
+  GPU_DISTANCE_FIELD_MAXIMUM_REFINEMENT_COUNT,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH
 } from './distance-field-parameters';
 
@@ -50,22 +52,33 @@ export type GPUDistanceFieldMode = 'exact' | 'jump-flood';
 /** Caller-owned results, one row per cell in row-major order. Every view uses its own buffer. */
 export type GPUDistanceFieldOutput = {
   /**
-   * Ground distance from each cell center to the center of its nearest seed cell, `+Infinity`
-   * when there is no seed or the nearest seed is beyond `maximumDistance`.
+   * Ground distance from each cell center to the seed cell found by the selected algorithm,
+   * `+Infinity` when it found no seed or its selected seed is beyond `maximumDistance`.
+   * Jump flooding is approximate and can miss a nearer seed inside that limit.
    */
   distances: GraphDataView<'float32'>;
-  /** Optional ID of the nearest seed (Euclidean allocation / Voronoi zones); ties take the smallest ID. */
+  /**
+   * Optional ID of the seed found by the selected algorithm (Euclidean allocation / Voronoi
+   * zones); ties take the smallest ID. Zero is a valid ID, not background.
+   * `GPU_DISTANCE_FIELD_NONE` (0xffffffff) means the algorithm found no seed within
+   * `maximumDistance`; approximate jump flooding can miss a nearer seed. This is an ID plane,
+   * not a zero/nonzero validity mask.
+   */
   allocation?: GraphDataView<'uint32'>;
-  /** Optional row-major cell index of the nearest seed, or `GPU_DISTANCE_FIELD_NONE`. */
+  /** Optional row-major index of the selected seed cell, or `GPU_DISTANCE_FIELD_NONE`. */
   nearestCells?: GraphDataView<'uint32'>;
-  /** Optional mask: `1` when a seed lies within `maximumDistance`, otherwise `0`. */
+  /**
+   * Optional mask: `1` when the selected seed lies within `maximumDistance`, otherwise `0`.
+   * In approximate jump-flood mode, 0 does not prove there is no seed inside that limit.
+   */
   withinDistance?: GraphDataView<'uint32'>;
   /** Optional `r32float` texture copy of `distances` with `width x height` texels. */
   texture?: GraphTextureView<'r32float'>;
 };
 
 /**
- * Properties for {@link GPUDistanceField}.
+ * Properties for {@link GPUDistanceField}. Supply point positions with an optional seed mask,
+ * or a seed mask alone. Point IDs and the active point count require point positions.
  *
  * Compile-time: `grid` size, `mode`, `jumpFloodRefinementIterationCount`, the seed capacity
  * (`seedPositions.length`), and which optional views exist. Per-frame: the contents of
@@ -91,7 +104,10 @@ export type GPUDistanceFieldProps = {
   seedCount?: GraphDataView<'uint32'>;
   /**
    * Optional per-cell seed raster. A nonzero value `v` marks a seed with ID `v - 1`: write `1`
-   * for a plain mask (every mask seed has ID 0) or `label + 1` for per-zone allocation.
+   * for a plain mask (every mask seed has ID 0) or `label + 1` for per-zone allocation. Zero is
+   * background; 0xffffffff is a seed with ID 0xfffffffe, not an undecided sentinel here.
+   * Convert profile peak masks with `value == 1u`, and only submit once their candidate status
+   * establishes completeness; directly wiring an unresolved peak mask creates a false seed.
    */
   seedMask?: GraphDataView<'uint32'>;
   /** Algorithm. Compile-time. Defaults to `'exact'`. */
@@ -103,7 +119,15 @@ export type GPUDistanceFieldProps = {
   jumpFloodRefinementIterationCount?: 0 | 1 | 2;
   /** Caller-owned results. */
   output: GPUDistanceFieldOutput;
-};
+} & (
+  | {seedPositions: GraphDataView<'float32x2'>; seedMask?: GraphDataView<'uint32'>}
+  | {
+      seedMask: GraphDataView<'uint32'>;
+      seedPositions?: never;
+      seedIds?: never;
+      seedCount?: never;
+    }
+);
 
 /**
  * Computes a Euclidean distance transform and nearest-seed allocation (Voronoi zones) on a
@@ -130,7 +154,8 @@ export type GPUDistanceFieldProps = {
  * distances on longitude/latitude grids, and polygon or line seeds (rasterize them into
  * `seedMask`).
  *
- * Precision: seeds snap to cells with `floor((position - origin) * (1 / cellSize))` in float32,
+ * Precision: seeds snap against edges of the canonical float32 signed step, correcting the
+ * reciprocal-based candidate at interior cell boundaries,
  * with `position` and `origin` relative to the `localOrigin` packed into the parameters. Absolute seeds (the default
  * origin `[0, 0]`) are quantized to the float32 ulp, 0.5 m at a UTM northing of 4.6e6 m (2 m at
  * 2e7 m in EPSG:3857), so seeds that close to a cell edge can snap to the neighbouring cell. Set
@@ -172,9 +197,13 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
     if (!['exact', 'jump-flood'].includes(this.mode)) {
       throw new Error(`${id} mode must be exact or jump-flood`);
     }
-    if (![0, 1, 2].includes(this.jumpFloodRefinementIterationCount)) {
-      throw new Error(`${id} jumpFloodRefinementIterationCount must be 0, 1, or 2`);
-    }
+    validateCapacity(
+      id,
+      'jumpFloodRefinementIterationCount',
+      this.jumpFloodRefinementIterationCount,
+      0,
+      GPU_DISTANCE_FIELD_MAXIMUM_REFINEMENT_COUNT
+    );
     validateRasterParameters(id, props.parameters, GPU_DISTANCE_FIELD_PARAMETER_LENGTH);
     if (!props.seedPositions && !props.seedMask) {
       throw new Error(`${id} requires seedPositions or seedMask`);

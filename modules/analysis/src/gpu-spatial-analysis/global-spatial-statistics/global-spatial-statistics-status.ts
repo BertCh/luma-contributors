@@ -13,6 +13,29 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUGlobalSpatialStatisticsProps} from './gpu-global-spatial-statistics';
 
+/** Publish the existing exact count of negative analysis values on every submission. @internal */
+export function getGlobalSpatialStatisticsInvalidCountNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUGlobalSpatialStatisticsProps,
+  counters: GraphDataView<'uint32'>
+): GPUCommandNode<Parameters>[] {
+  const invalidCount = props.output.status?.invalidCount;
+  return invalidCount
+    ? [
+        createWGSLKernelNode(graph, {
+          id: `${props.id ?? 'global-spatial-statistics'}-invalid-count`,
+          operation: 'GPUGlobalSpatialStatistics',
+          invocationCount: 1,
+          bindings: [
+            {name: 'counters', view: counters, type: 'u32', access: 'read'},
+            {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read_write'}
+          ],
+          body: `invalidCount[invalidCountOffset] = ${props.statistics.includes('getisOrdG') ? 'counters[countersOffset + 1u]' : '0u'};`
+        })
+      ]
+    : [];
+}
+
 /** Folds weights loss for inference while forwarding both producer flags independently. @internal */
 export function getGlobalSpatialStatisticsStatusNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,

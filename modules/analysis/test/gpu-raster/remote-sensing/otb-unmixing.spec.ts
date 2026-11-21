@@ -149,3 +149,128 @@ it.each(
   }
   expect(result['residual'][0]).toBeLessThan(1e-10);
 });
+
+for (const constraint of ['nonnegative', 'simplex'] as const) {
+  for (const scale of [2 ** -40, 1, 2 ** 40]) {
+    it(`RT-140 ${constraint} identity fit is invariant at scale ${scale}`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const harness = createRemoteSensingHarness(device);
+      // Identity design: unique least-squares minimizer [.75, .25, 0], feasible for
+      // both cones. Third coefficient is the active nonnegativity constraint; SSE = 0.
+      const result = await harness.run(
+        new GPURasterSpectralUnmixing({
+          cellCount: 1,
+          bandCount: 3,
+          endmemberCount: 3,
+          constraint,
+          maximumIterations: 512,
+          tolerance: 1e-7,
+          values: harness.input([0.75 * scale, 0.25 * scale, 0]),
+          endmembers: harness.input([scale, 0, 0, 0, scale, 0, 0, 0, scale]),
+          output: {
+            abundances: harness.output('abundances', 'float32', 3),
+            residual: harness.output('residual', 'float32', 1),
+            status: harness.output('status', 'uint32', 1),
+            iterationCounts: harness.output('iterations', 'uint32', 1)
+          }
+        })
+      );
+      expect(result['status']).toEqual([0]);
+      expect(result['abundances']).toHaveLength(3);
+      for (const [index, expected] of [0.75, 0.25, 0].entries()) {
+        expect(Number.isFinite(result['abundances'][index])).toBe(true);
+        expect(result['abundances'][index]).toBeCloseTo(expected, 6);
+        expect(result['abundances'][index]).toBeGreaterThanOrEqual(0);
+      }
+      expect(Number.isFinite(result['residual'][0])).toBe(true);
+      expect(result['residual'][0]).toBeGreaterThanOrEqual(0);
+      expect(result['residual'][0] / (scale * scale)).toBeLessThan(1e-12);
+      expect(result['iterations'][0]).toBeLessThan(512);
+    });
+  }
+}
+
+for (const constraint of ['nonnegative', 'simplex'] as const) {
+  for (const scale of [2 ** -40, 1, 2 ** 40]) {
+    it(`RT-140 S2 exhausted ${constraint} keeps squared residual units at scale ${scale}`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const harness = createRemoteSensingHarness(device);
+      const result = await harness.run(
+        new GPURasterSpectralUnmixing({
+          cellCount: 1,
+          bandCount: 3,
+          endmemberCount: 3,
+          constraint,
+          maximumIterations: 1,
+          tolerance: 1e-7,
+          values: harness.input([0.75 * scale, 0.25 * scale, 0]),
+          endmembers: harness.input([scale, 0, 0, 0, scale, 0, 0, 0, scale]),
+          output: {
+            abundances: harness.output('abundances', 'float32', 3),
+            residual: harness.output('residual', 'float32', 1),
+            status: harness.output('status', 'uint32', 1),
+            iterationCounts: harness.output('iterations', 'uint32', 1)
+          }
+        })
+      );
+      expect(result['status']).toEqual([4]);
+      expect(result['iterations']).toEqual([1]);
+      expect(result['abundances']).toHaveLength(3);
+      // Identity design has L=3*s^2. One step gives [1/4,1/12,0] for NNLS,
+      // with squared residual s^2*(1/4+1/36)=s^2*5/18. Starting simplex at
+      // thirds instead gives [17/36,11/36,2/9], residual s^2*7/54.
+      const expected =
+        constraint === 'nonnegative' ? [1 / 4, 1 / 12, 0] : [17 / 36, 11 / 36, 2 / 9];
+      for (const [index, value] of expected.entries()) {
+        expect(Number.isFinite(result['abundances'][index])).toBe(true);
+        expect(result['abundances'][index]).toBeCloseTo(value, 6);
+      }
+      const expectedResidual = scale * scale * (constraint === 'nonnegative' ? 5 / 18 : 7 / 54);
+      expect(result['residual']).toHaveLength(1);
+      expect(Number.isFinite(result['residual'][0])).toBe(true);
+      expect(result['residual'][0]).toBeGreaterThan(0);
+      expect(Math.abs(result['residual'][0] - expectedResidual) / expectedResidual).toBeLessThan(
+        1e-6
+      );
+    });
+  }
+}
+
+for (const scale of [2 ** -40, 1, 2 ** 40]) {
+  it(`RT-140 B2 dark-pixel simplex solves at scale ${scale}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const harness = createRemoteSensingHarness(device);
+    const result = await harness.run(
+      new GPURasterSpectralUnmixing({
+        cellCount: 1,
+        bandCount: 2,
+        endmemberCount: 2,
+        constraint: 'simplex',
+        tolerance: 1e-7,
+        values: harness.input([0, 0]),
+        endmembers: harness.input([scale, 0.125 * scale, 0.625 * scale, scale]),
+        output: {
+          abundances: harness.output('abundances', 'float32', 2),
+          residual: harness.output('residual', 'float32', 1),
+          status: harness.output('status', 'uint32', 1),
+          iterationCounts: harness.output('iterations', 'uint32', 1)
+        }
+      })
+    );
+    // Minimize (.625+.375*a)^2+(1-.875*a)^2 on [0,1]: a=41/58,
+    // other abundance 17/58; the squared norm at that point is 3481/3712.
+    expect(result['status']).toEqual([0]);
+    expect(result['iterations'][0]).toBeGreaterThan(0);
+    expect(result['iterations'][0]).toBeLessThan(256);
+    expect(result['abundances']).toHaveLength(2);
+    for (const [index, expected] of [41 / 58, 17 / 58].entries()) {
+      expect(Number.isFinite(result['abundances'][index])).toBe(true);
+      expect(result['abundances'][index]).toBeCloseTo(expected, 6);
+    }
+    expect(Number.isFinite(result['residual'][0])).toBe(true);
+    expect(result['residual'][0] / (scale * scale)).toBeCloseTo(3481 / 3712, 6);
+  });
+}

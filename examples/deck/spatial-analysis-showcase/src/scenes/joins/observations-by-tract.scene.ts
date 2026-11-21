@@ -194,7 +194,7 @@ export default defineScene<ObservationsByTractOptions>({
       group: 'Join',
       apply: 'compile',
       default: false,
-      help: 'GPUSpatialJoinPrepared builds the tract bounds and BVH once and reuses them while the observations are joined again. Off: the index is rebuilt in every join run.'
+      help: 'GPUSpatialJoinPrepared retains input geometry. Bounds, sort and BVH preparation kernels replay each encoding and are shared by consumers in that encoding.'
     },
     {
       kind: 'toggle',
@@ -212,17 +212,17 @@ export default defineScene<ObservationsByTractOptions>({
       group: 'Join',
       apply: 'param',
       default: false,
-      help: 'By default the graphs run when an option changes. Turn this on to stream 43,557 points through the join at display rate; the readouts count index builds against join runs.'
+      help: 'By default the graphs run when an option changes. Turn this on to stream 43,557 points through the join at display rate; the readouts count CPU geometry refresh requests, including discarded encodings, against join runs.'
     },
     {
       kind: 'toggle',
       id: 'invalidateEveryFrame',
-      label: 'Invalidate the prepared index every frame',
+      label: 'Request a geometry refresh every frame',
       group: 'Join',
       apply: 'param',
       default: false,
       disabledWhen: state => !state.prepared,
-      help: 'The contrast case: calling `prepared.invalidate()` each frame forces a rebuild, so the prepared index costs what the unprepared one does.'
+      help: 'Calling `prepared.invalidate()` requests a geometry refresh on the next encoding. Bounds and BVH preparation replay on every encoding, including when no refresh is requested.'
     },
     {
       kind: 'select',
@@ -415,8 +415,8 @@ export default defineScene<ObservationsByTractOptions>({
     {id: 'areaCheck', label: 'GPU polygon area'},
     {
       id: 'indexBuilds',
-      label: 'Tract index builds',
-      help: 'GPUSpatialJoinPrepared.encodedBuildCount against the number of join runs.'
+      label: 'CPU geometry refresh requests',
+      help: 'CPU geometry refresh requests, including discarded encodings, against join runs. Retained geometry feeds preparation kernels replayed on every encoding.'
     },
     {id: 'timePlain', label: 'Join: rebuilt index'},
     {id: 'timeSorted', label: 'Join: Hilbert sort'},
@@ -493,7 +493,7 @@ const graph = new GPUCommandGraph(device, {id: 'observations-by-tract'});
 ${
   state.prepared
     ? `const prepared = new GPUSpatialJoinPrepared({geometry: tracts, spatialSort: ${state.spatialSort}});
-graph.add(prepared);                          // built once, reused every run
+graph.add(prepared);                          // retains geometry; preparation replays each encoding
 `
     : ''
 }graph.add(
@@ -504,7 +504,7 @@ graph.add(prepared);                          // built once, reused every run
     boundaryRule: '${state.boundaryRule}',${state.prepared ? '\n    prepared,' : `\n    spatialSort: ${state.spatialSort},`}
     output: {
       pointFeatureIds,                        // per observation: tract row or NO_FEATURE
-      featureCounts,                          // per tract: observations
+      polygonAssignmentCounts: featureCounts,                          // per tract: observations
       status: {overflow, candidateCount, uncertainCount}
     }
   })
@@ -607,13 +607,13 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
     },
     {
       id: 'prepared-index',
-      headline: 'Index reuse avoids repeated tract-tree construction',
+      headline: 'Retained geometry shares preparation within each encoding',
       textAlternative:
         'Prepared and rebuilt spatial joins return the same tract aggregation with different setup work.',
       controls: ['prepared', 'rerunEveryFrame', 'invalidateEveryFrame', 'measure'],
       readouts: ['indexBuilds', 'timePlain', 'timePrepared'],
-      title: 'Build the tract index once',
-      body: 'Every join run builds bounds and a BVH over the tracts. They never move, so **`GPUSpatialJoinPrepared`** builds that index once and reuses it. Turn on **Prepared tract index** and **Re-run the join every frame**: **Tract index builds** stays at one while the join runs hundreds of times.\n\nThen turn on the invalidate contrast: calling `invalidate()` every frame forces a rebuild and the benefit disappears. Press **Time the join variants** for GPU times of the plain, Hilbert-sorted and prepared graphs. 791 coherent tracts and 43,557 points are small, so expect the gap to be modest; it grows with the feature count.',
+      title: 'Retain tract geometry across encodings',
+      body: 'Every encoding replays bounds, ring, sort, BVH and optional slab preparation. **`GPUSpatialJoinPrepared`** retains input geometry and shares that preparation among consumers within an encoding. **CPU geometry refresh requests** counts CPU requests, including discarded request encodings, rather than executed index builds. Calling `invalidate()` requests a refresh of retained geometry. Time the variants to compare their actual GPU cost.',
       options: {
         display: 'ramp',
         prepared: true,

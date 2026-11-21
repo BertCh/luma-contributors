@@ -197,7 +197,7 @@ function createFixture(
             ? assignmentChunks[0]
             : createVectorView('assignment-chunks', 'uint32', assignmentChunks),
           candidateTruncated: flags,
-          featureCounts,
+          polygonAssignmentCounts: featureCounts,
           matches: {
             ids,
             status: {count, overflow, requiredCount, candidateOverflow: compactCandidateOverflow}
@@ -699,7 +699,7 @@ it('join and bounds constructors reject logically separated but co-bound aligned
         },
         output: {
           pointFeatureIds: second,
-          featureCounts: first,
+          polygonAssignmentCounts: first,
           matches: {
             ids: scalar('match-id'),
             status: {count: scalar('count'), overflow: scalar('compact-overflow')}

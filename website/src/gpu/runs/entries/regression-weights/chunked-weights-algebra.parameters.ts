@@ -12,7 +12,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 3,
     step: 1,
     default: 1,
-    options: ['union', 'intersection', 'difference', 'symmetricDifference']
+    options: ['union', 'intersection', 'difference', 'symmetric-difference']
   },
   {id: 'chunkCount', label: 'Data: chunks', min: 1, max: 4, step: 1, default: 3}
 ];

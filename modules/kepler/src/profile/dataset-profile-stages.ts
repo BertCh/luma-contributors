@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUAnalysisColumnProfile} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUAnalysisColumnProfile} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {KeplerDatasetProfileCache} from './dataset-profile-cache';
 import {withKeplerDatasetProfileStatistics} from './dataset-profile';
 import type {KeplerDatasetProfile, KeplerDatasetProfileProgress} from './dataset-profile-types';

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphDataView, GraphVectorView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GraphDataView, GraphVectorView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphChunkBindingRanges,
   validateDisjointWritableViews,
@@ -11,6 +11,8 @@ import {
 import {getCoreDefaultBuffer} from '../analysis-core/contracts/network-topology';
 import {
   getGraphViewChunks,
+  isGraphDataView,
+  isGraphVectorView,
   validateGPUStorageBindingByteLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
 
@@ -26,7 +28,7 @@ export function validateNetworkWritableViews(
 ): void {
   const fields: Record<string, GraphDataView | GraphVectorView> = {};
   const collect = (name: string, value: unknown): void => {
-    if (value instanceof GraphDataView || value instanceof GraphVectorView) fields[name] = value;
+    if (isGraphDataView(value) || isGraphVectorView(value)) fields[name] = value;
     else if (
       value &&
       typeof value === 'object' &&
@@ -107,7 +109,7 @@ export function alignElementCount(count: number): number {
 
 /** Collects graph views from plain contributor property/output bags. @internal */
 export function getNetworkViews(value: unknown): (GraphDataView | GraphVectorView)[] {
-  if (value instanceof GraphDataView || value instanceof GraphVectorView) return [value];
+  if (isGraphDataView(value) || isGraphVectorView(value)) return [value];
   if (
     value &&
     typeof value === 'object' &&

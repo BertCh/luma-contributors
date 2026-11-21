@@ -120,8 +120,10 @@ for (const sparse of [false, true])
           rowOffsets: sparseCosts.offsets,
           rowFacilities: sparseCosts.facilities,
           selected: Uint32Array.of(1, 1, 0),
-          selectedList: new Uint32Array(2),
-          slotOfFacility: new Uint32Array(3),
+          // Selected flags [1,1,0] compact by hand to list [0,1] and inverse [0,1,NONE].
+          // The cooperative compaction kernels are covered by their separate GPU spec.
+          selectedList: Uint32Array.of(0, 1),
+          slotOfFacility: Uint32Array.of(0, 1, 0xffffffff),
           chosen: Uint32Array.of(0, 0, 0x3f800000),
           status: new Uint32Array(7),
           swapState: new Uint32Array(3),
@@ -138,7 +140,6 @@ for (const sparse of [false, true])
           interpretSwapKernel(kernel, memory, reductionGroups);
         };
         run('score-scale');
-        run('swap-0-list');
         run('swap-0-prepare');
         run(sparse ? 'swap-0-removal' : 'swap-0-totals', sparse ? 3 : 1);
         run('swap-0-score');
@@ -257,8 +258,8 @@ for (const sparse of [false, true])
               demandWeights,
               coverageDistance: Float32Array.of(0),
               selected: Uint32Array.of(1, 1, 0),
-              selectedList: new Uint32Array(2),
-              slotOfFacility: new Uint32Array(3),
+              selectedList: Uint32Array.of(0, 1),
+              slotOfFacility: Uint32Array.of(0, 1, 0xffffffff),
               chosen: new Uint32Array(3),
               status: new Uint32Array(7),
               swapState: new Uint32Array(3),
@@ -271,7 +272,6 @@ for (const sparse of [false, true])
             memory['scoreScale'] = memory['chosen'];
             for (const suffix of [
               'score-scale',
-              'swap-0-list',
               'swap-0-prepare',
               sparse ? 'swap-0-removal' : 'swap-0-totals',
               'swap-0-score'

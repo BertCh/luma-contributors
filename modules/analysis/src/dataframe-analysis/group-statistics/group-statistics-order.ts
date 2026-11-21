@@ -25,7 +25,7 @@ import {ORDER_STATISTIC_WGSL} from '../column-classification/order-statistic-wgs
 /** Output views of one column written by the order statistics. @internal */
 export type GroupColumnOrderOutput = {
   medians?: GraphDataView<'float32'>;
-  percentiles?: GraphDataView<'float32'>;
+  quantiles?: GraphDataView<'float32'>;
   modes?: GraphDataView<'float32'>;
   uniqueCounts?: GraphDataView<'uint32'>;
 };
@@ -62,7 +62,7 @@ fn getQuantile(begin: u32, count: u32, p: f32) -> f32 {
  * group's finite values are ascending at the front of the group's range, then quantiles by direct
  * lookup, and modes / unique counts from run heads, a scan and integer-atomic run reductions.
  *
- * `percentiles` is read from a parameter view at encode time; a fraction that is NaN or outside
+ * `probabilities` is read from a parameter view at encode time; a fraction that is NaN or outside
  * `[0, 1]` gives NaN.
  *
  * @internal
@@ -75,7 +75,7 @@ export function getColumnOrderNodes<Parameters>(
     structure: GroupStructure;
     valueBits: GraphDataView<'uint32'>;
     finiteCounts: GraphDataView<'uint32'>;
-    percentiles?: GraphDataView<'float32'>;
+    probabilities?: GraphDataView<'float32'>;
     output: GroupColumnOrderOutput;
   }
 ): GPUCommandNode<Parameters>[] {
@@ -155,8 +155,8 @@ ${QUANTILE_WGSL}`;
       })
     );
   }
-  if (output.percentiles && props.percentiles) {
-    const percentileCount = props.percentiles.length;
+  if (output.quantiles && props.probabilities) {
+    const percentileCount = props.probabilities.length;
     nodes.push(
       createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-percentiles`,
@@ -166,8 +166,8 @@ ${QUANTILE_WGSL}`;
           readBinding('finiteCounts', finiteCounts),
           readBinding('offsets', structure.offsets),
           readBinding('sortedKeys', sortedKeys),
-          readBinding('fractions', props.percentiles, 'f32'),
-          writeBinding('percentilesOut', output.percentiles, 'f32')
+          readBinding('fractions', props.probabilities, 'f32'),
+          writeBinding('percentilesOut', output.quantiles, 'f32')
         ],
         invocationCount: capacity * percentileCount,
         declarations: `${quantileDeclarations}

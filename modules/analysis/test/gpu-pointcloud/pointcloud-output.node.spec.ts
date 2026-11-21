@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {
   GPUPointCloudChange,
@@ -18,8 +19,166 @@ import {
 } from '@luma-contributors/analysis/pointcloud-analysis';
 import {
   createNullWebGPUDevice,
+  createVectorView,
   getGPUCommandNodeKernelSources
 } from '../utils/gpu-contributor-test-utils';
+
+for (const chunked of [false, true]) {
+  it(`VoxelMerge captures getter-backed input parts before mutation, chunked=${chunked}`, async () => {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const {declarations, view} = createDeclarations(graph);
+    const packed = declarations.GPUPointCloudVoxelMerge;
+    let sequence = 0;
+    const chunksByView = new Map<object, import('@luma.gl/graph/gpu-core').GraphDataView[]>();
+    const captureView = <Format extends 'float32' | 'float32x3' | 'uint32'>(
+      original: import('@luma.gl/graph/gpu-core').GraphDataView<Format>
+    ) => {
+      const chunks = chunked ? [original, view(original.format, 2)] : [original];
+      const result = chunked
+        ? createVectorView(`capture-${sequence++}`, original.format, chunks)
+        : original;
+      chunksByView.set(result, chunks);
+      return result;
+    };
+    const original = {
+      counts: captureView(packed.parts[0].counts),
+      centroids: captureView(packed.parts[0].centroids),
+      representatives: captureView(packed.parts[0].representatives),
+      sourceRowOffset: 17,
+      attribute: {
+        means: captureView(packed.parts[0].attribute.means),
+        counts: captureView(packed.parts[0].attribute.counts)
+      }
+    };
+    const originalParts = [
+      original,
+      {
+        counts: captureView(view('uint32')),
+        centroids: captureView(view('float32x3')),
+        representatives: captureView(view('uint32')),
+        sourceRowOffset: 37,
+        attribute: {means: captureView(view('float32')), counts: captureView(view('uint32'))}
+      }
+    ];
+    const fields = originalParts.map(part => ({...part}));
+    const attributeFields = originalParts.map(part => ({...part.attribute}));
+    const reads: Record<string, number> = {};
+    const getters = (values: object, prefix: string) =>
+      Object.create(
+        Object.defineProperties(
+          {},
+          Object.fromEntries(
+            Object.keys(values).map(key => [
+              key,
+              {
+                get: () => {
+                  reads[prefix + key] = (reads[prefix + key] ?? 0) + 1;
+                  return (values as Record<string, unknown>)[key];
+                }
+              }
+            ])
+          )
+        )
+      );
+    const parts = fields.map((part, index) => {
+      part.attribute = getters(attributeFields[index], `attribute.${index}.`);
+      return getters(part, `part.${index}.`);
+    });
+    const contributor = new GPUPointCloudVoxelMerge({
+      partitionPolicy: 'disjoint-owned-rows',
+      parts,
+      output: {
+        counts: captureView(packed.output.counts),
+        centroids: captureView(packed.output.centroids),
+        representatives: captureView(packed.output.representatives),
+        status: captureView(packed.output.status),
+        attribute: {
+          means: captureView(packed.output.attribute.means),
+          counts: captureView(packed.output.attribute.counts)
+        }
+      }
+    });
+    // Replace both nested descriptors and the array itself. Buffer contents remain borrowed.
+    for (const [index, part] of fields.entries()) {
+      part.counts = captureView(view('uint32'));
+      part.centroids = captureView(view('float32x3'));
+      part.representatives = captureView(view('uint32'));
+      part.sourceRowOffset = 999;
+      attributeFields[index].means = captureView(view('float32'));
+      attributeFields[index].counts = captureView(view('uint32'));
+    }
+    parts.length = 0;
+    const nodes = contributor.getCommandNodes(graph);
+    const expectReadSlot = (
+      id: string,
+      slot: number,
+      expected: import('@luma.gl/graph/gpu-core').GraphDataView
+    ) => {
+      const node = nodes.find(candidate => candidate.id === id);
+      expect(node, id).toBeDefined();
+      const resource = node?.resources?.[slot];
+      if (!resource || !('buffer' in resource) || !('buffer' in resource.buffer)) {
+        throw new Error(`${id} slot ${slot} is not a data view`);
+      }
+      expect(resource.usage, `${id} slot ${slot}`).toBe('storage-read');
+      expect(resource.buffer.buffer, `${id} slot ${slot} buffer`).toBe(expected.buffer);
+      expect(resource.buffer.byteOffset).toBe(expected.byteOffset);
+      expect(resource.buffer.length * resource.buffer.rowByteLength).toBe(
+        expected.length * expected.rowByteLength
+      );
+    };
+    for (let chunkIndex = 0; chunkIndex < (chunked ? 2 : 1); chunkIndex++) {
+      const prefix = chunked ? `${contributor.id}-chunk-${chunkIndex}` : contributor.id;
+      for (const [partIndex, expected] of originalParts.entries()) {
+        const chunk = (view: object) => chunksByView.get(view)![chunkIndex];
+        // Runtime node resources follow WGSL binding slots: parameter slot 0, then declared inputs.
+        expectReadSlot(`${prefix}-metadata-${partIndex}-chunk-0`, 3, chunk(expected.counts));
+        expectReadSlot(
+          `${prefix}-metadata-${partIndex}-chunk-0`,
+          4,
+          chunk(expected.representatives)
+        );
+        expectReadSlot(`${prefix}-centroid-${partIndex}-chunk-0`, 3, chunk(expected.counts));
+        expectReadSlot(`${prefix}-centroid-${partIndex}-chunk-0`, 4, chunk(expected.centroids));
+        expectReadSlot(
+          `${prefix}-attribute-${partIndex}-chunk-0`,
+          3,
+          chunk(expected.attribute.counts)
+        );
+        expectReadSlot(
+          `${prefix}-attribute-${partIndex}-chunk-0`,
+          4,
+          chunk(expected.attribute.means)
+        );
+        const upload = nodes.find(
+          node => node.id === `${prefix}-metadata-${partIndex}-chunks-upload`
+        );
+        expect(upload).toBeDefined();
+        const created: Buffer[] = [];
+        const createBuffer = graph.device.createBuffer.bind(graph.device);
+        const spy = vi.spyOn(graph.device, 'createBuffer').mockImplementation(props => {
+          const buffer = createBuffer(props);
+          created.push(buffer);
+          return buffer;
+        });
+        const compiled = upload!.compile({device: graph.device});
+        try {
+          expect(created).toHaveLength(1);
+          const bytes = await created[0].readAsync();
+          const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+          // Three common dispatch words precede the actual uploaded sourceRowOffset.
+          expect(words[3], `${prefix} part ${partIndex} uploaded row offset`).toBe(
+            expected.sourceRowOffset
+          );
+        } finally {
+          compiled.destroy?.();
+          spy.mockRestore();
+        }
+      }
+    }
+    expect(Object.values(reads)).toEqual(new Array(14).fill(1));
+  });
+}
 
 // Wrong implementation: read a former top-level output instead of the caller's output port.
 // Every case supplies only the new port, so even one unmigrated validation/binding fails.
@@ -136,7 +295,7 @@ function createDeclarations(graph: GPUCommandGraph) {
     GPUPointCloudICP: {
       source: positions,
       target: positions,
-      iterations: 1,
+      maximumIterations: 1,
       maximumDistance: 1,
       output: {
         transform: view('float32', 16),

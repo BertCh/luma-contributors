@@ -38,7 +38,7 @@ const TRY_IT: readonly TryItLink[] = [
 ];
 
 function describeRecord(record: WorkflowRecord): string {
-  return `${formatCount(record.nodeCount)} graph nodes, ${formatCount(record.dependencies)} dependencies, ${formatResourceCount({count: record.buffers, inventoryKnown: record.inventoryKnown})} of ${formatResourceBytes(record.bytes, record.bytesKind)}`;
+  return `${formatCount(record.nodeCount)} graph nodes, ${formatCount(record.dependencies)} dependencies, ${formatResourceCount({count: record.resourceCount, inventoryKnown: record.inventoryKnown})} of ${formatResourceBytes(record.bytes, record.bytesKind)}`;
 }
 
 function WorkflowBlock({workflow, example}: {workflow: Workflow; example?: TopicExample}) {
@@ -189,7 +189,7 @@ export function Page({topic, code}: TopicPageProps) {
             {value: formatCount(LOCAL_MORAN_RECORD.dependencies), label: 'dependencies'},
             {
               value: formatResourceBytes(LOCAL_MORAN_RECORD.bytes, LOCAL_MORAN_RECORD.bytesKind),
-              label: 'in buffers, none read between steps'
+              label: 'in resources, none read between steps'
             }
           ]}
         />

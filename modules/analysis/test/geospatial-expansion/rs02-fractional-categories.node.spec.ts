@@ -16,11 +16,13 @@ import {
   getStorageBindingCount
 } from '../utils/gpu-contributor-test-utils';
 
+import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+
 function makeProps(
   graph: GPUCommandGraph,
   categoryCapacity = 4,
   zoneCount = 3
-): GPURasterFractionalCategoricalStatisticsProps {
+): GPURasterFractionalCategoricalStatisticsProps & {input: GPURasterBufferBand<'uint32'>} {
   let identifier = 0;
   const view = <Format extends 'float32' | 'uint32'>(format: Format, length: number) =>
     createTransientView(graph, `rs02-${identifier++}`, format, length);

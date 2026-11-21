@@ -18,6 +18,8 @@ import {
   validateRasterIterations
 } from '../../raster-analysis/cost-distance/raster-relaxation';
 import {
+  validateOption,
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateGraphViewsBelongToGraph,
@@ -101,7 +103,23 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
   readonly id: string;
   readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUTerrainBranchingFlowProps) {
+    validateGraphPorts(props.id ?? 'terrain-branching-flow', props, {
+      fractions: {required: true, viewType: 'data', formats: ['float32']},
+      values: {required: true, viewType: 'data', formats: ['float32']},
+      edgeLengths: {required: false, viewType: 'data', formats: ['float32']},
+      validity: {required: false, viewType: 'data', formats: ['uint32']},
+      'output.values': {required: true, viewType: 'data', formats: ['float32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.unresolvedCount': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     this.id = props.id ?? 'terrain-branching-flow';
+    validateOption(this.id, 'mode', props.mode, [
+      'transport',
+      'expected-distance',
+      'minimum-distance',
+      'maximum-distance',
+      'fractional-catchment'
+    ]);
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
     validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);

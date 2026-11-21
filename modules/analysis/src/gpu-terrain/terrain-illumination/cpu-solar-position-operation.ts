@@ -11,6 +11,7 @@ import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-ope
 import {GPU_SOLAR_POSITION_PARAMETER_LENGTH} from './gpu-solar-position';
 import {
   GPUSolarPositionOperation,
+  snapshotSolarPositionOperationProps,
   type SolarPositionOperationProps
 } from './gpu-solar-position-operation';
 import {getSolarPosition} from './solar-position';
@@ -80,6 +81,7 @@ export function computeSolarPositionOnCPU(
 /** CPU solar twin; uses the same row count and optional output ports as the GPU operation. */
 export class CPUSolarPositionOperation extends GPUCPUOperation {
   constructor(props: SolarPositionOperationProps) {
+    props = snapshotSolarPositionOperationProps(props);
     const operation = new GPUSolarPositionOperation(props);
     const {id} = operation;
     validateCapacity(id, 'rowCount', props.rowCount, 1);

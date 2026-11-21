@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {GPU_CLARK_EVANS_CORRECTION} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './point-pattern-indices.example';
@@ -20,9 +21,9 @@ const CLARK_EVANS_LENGTH = 7;
 const QUADRAT_STATISTICS_LENGTH = 7;
 
 /** Runs the Clark-Evans and quadrat tests once and reads every output back from the GPU. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-nature');
+  const dataset = await loadDataFrameLensData('f-chicago-nature', options?.datasetResolver);
   const {x, y} = dataset.columns;
   const positions = new Float32Array(x.length * 2);
   x.forEach((value, index) => {
@@ -129,13 +130,13 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         }),
         createDataFrameChoice('filter', 'studyWindow', 'rectangle'),
         createDataFrameChoice('filter', 'bounds', studyWindow.join(',')),
-        createDataFrameChoice('select', 'maximumDistance', SEARCH_CELL_SIZE, {unit: 'm'}),
+        createDataFrameChoice('select', 'indexCellSizeHint', SEARCH_CELL_SIZE, {unit: 'm'}),
         createDataFrameChoice('aggregate', 'clarkEvansCorrection', 'donnelly', {
           alternatives: Object.keys(GPU_CLARK_EVANS_CORRECTION),
           sweepable: true
         }),
         createDataFrameChoice('aggregate', 'quadratGrid', '8 x 10', {sweepable: true}),
-        createDataFrameChoice('infer', 'alternative', 'two-sided', {
+        createDataFrameChoice('infer', 'analyticAlternative', 'two-sided', {
           alternatives: ['two-sided', 'greater', 'lesser']
         }),
         createDataFrameChoice('infer', 'pCorrection', 'none')

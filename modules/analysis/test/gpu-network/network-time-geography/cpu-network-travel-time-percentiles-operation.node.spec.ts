@@ -11,6 +11,7 @@ import {
   GPUNetworkTravelTimePercentilesOperation,
   type NetworkTravelTimePercentilesOperationProps
 } from '../../../src/gpu-network/network-time-geography/gpu-network-travel-time-percentiles-operation';
+import {getNetworkTravelTimePercentileRank} from '../../../src/gpu-network/network-time-geography/network-travel-time-percentile-rank';
 import {constructNetworkOperationContributor} from '../../utils/network-operation-test-utils';
 
 const INPUT = {
@@ -99,6 +100,57 @@ it.each([
   );
 });
 
+it('reads a typed decimal percentile as written (NET-102)', () => {
+  // Departure k of 0..n-1 has travel time k + 1, so rank r selects r. Nearest rank in decimal
+  // arithmetic: ceil(p * n / 100) gives 0.1% -> 1, 12.3% -> 123, 99.9% -> 999 of 1,000 and
+  // 99.9% -> 1,998 of 2,000. The binary64 values of 0.1, 12.3 and 99.9 lie just above the
+  // decimals, which previously selected 2, 124, 1,000 and 1,999.
+  for (const {departureCount, percentiles, expected} of [
+    {departureCount: 1000, percentiles: [0.1, 12.3, 99.9, 100], expected: [1, 123, 999, 1000]},
+    {departureCount: 2000, percentiles: [99.9], expected: [1998]}
+  ]) {
+    const result = computeNetworkTravelTimePercentilesOnCPU({
+      ...INPUT,
+      stateVertices: Uint32Array.of(0, 1),
+      transitions: Uint32Array.of(0, 1),
+      costs: Float32Array.of(1, 1),
+      window: Float32Array.of(0, 1),
+      departureCount,
+      percentiles
+    });
+    const columnCount = percentiles.length;
+    // Vertex 0 is the origin, vertex 1 has the selected ranks, and vertex 2 is unreachable.
+    expect(Array.from(result.travelTimes)).toEqual([
+      ...new Array<number>(columnCount).fill(0),
+      ...expected,
+      ...new Array<number>(columnCount).fill(Infinity)
+    ]);
+  }
+});
+
+it('matches the decimal nearest rank for every percentile with up to three decimals (NET-102)', () => {
+  // Independent closed form: percentile k / 1000 of n departures has rank
+  // ceil(k * n / 100000), in integers.
+  const mismatches: string[] = [];
+  for (const departureCount of [7, 60, 1000, 2000]) {
+    for (let thousandths = 1; thousandths <= 100000; thousandths += 1) {
+      const percentile = thousandths / 1000;
+      const expected = Number((BigInt(thousandths) * BigInt(departureCount) + 99999n) / 100000n);
+      const rank = getNetworkTravelTimePercentileRank(percentile, departureCount);
+      if (rank !== expected) {
+        mismatches.push(`${percentile} of ${departureCount}: ${rank} instead of ${expected}`);
+      }
+    }
+  }
+  expect(mismatches.slice(0, 5)).toEqual([]);
+  // Adjacent binary64 values keep their own ranks (the earlier 1e-9 slack defect).
+  expect(getNetworkTravelTimePercentileRank(56 + 2 ** -47, 25)).toBe(15);
+  expect(getNetworkTravelTimePercentileRank(56 - 2 ** -47, 25)).toBe(14);
+  expect(getNetworkTravelTimePercentileRank(50.00000001, 2)).toBe(2);
+  expect(getNetworkTravelTimePercentileRank(Number.MIN_VALUE, 2)).toBe(1);
+  expect(getNetworkTravelTimePercentileRank(1e-7, 1000)).toBe(1);
+});
+
 it('sorts waiting travel times, counts invalid runs and keeps subtraction in float64', () => {
   const piecewise = computeNetworkTravelTimePercentilesOnCPU({
     ...INPUT,
@@ -184,4 +236,107 @@ it('rejects inconsistent arrays and validates both operation constructions', () 
         transitionCount: 4097
       })
   ).not.toThrow();
+});
+
+it('preserves pure CPU sample counts above uint32 when no transitions need samples (S1)', () => {
+  // The only state is the origin; no edge reads a sample, so every duration is exactly zero.
+  const result = computeNetworkTravelTimePercentilesOnCPU({
+    stateVertices: Uint32Array.of(0),
+    transitions: new Uint32Array(0),
+    costs: new Float32Array(0),
+    costModel: 'piecewise-arrival',
+    samplesPerTransition: 2 ** 32,
+    vertexCount: 1,
+    initialState: Uint32Array.of(0),
+    window: Float32Array.of(0, 1),
+    departureCount: 1,
+    percentiles: [100]
+  });
+  expect(result.travelTimes).toEqual(Float32Array.of(0));
+  expect(result.reachedCounts).toEqual(Uint32Array.of(1));
+  expect(result.status).toEqual(Uint32Array.of(1, 1));
+});
+
+it('NAM-01 treats .95 and 95 as percentages', () => {
+  const result = computeNetworkTravelTimePercentilesOnCPU({
+    ...INPUT,
+    stateVertices: Uint32Array.of(0, 1),
+    transitions: Uint32Array.of(0, 1),
+    costs: Float32Array.of(5, 85),
+    window: Float32Array.of(0, 1),
+    departureCount: 2,
+    percentiles: [0.95, 95]
+  });
+  expect(Array.from(result.travelTimes.slice(2, 4))).toEqual([5, 90]);
+});
+
+it('STA-14 distinguishes reached overflow from unreachable and ordinary finite costs', () => {
+  for (const cost of [3e38, 7]) {
+    const result = computeNetworkTravelTimePercentilesOnCPU({
+      ...INPUT,
+      stateVertices: Uint32Array.of(0, 1, 2),
+      transitions: Uint32Array.of(0, 1, 1, 2),
+      costs: Float32Array.of(cost, 0, cost, 0),
+      window: Float32Array.of(0, 1),
+      departureCount: 1,
+      percentiles: [50]
+    });
+    expect(Array.from(result.reachedCounts)).toEqual([1, 1, 1]);
+    expect(Array.from(result.status)).toEqual([1, 1]);
+    expect(Array.from(result.unrepresentable)).toEqual([0, 0, cost === 7 ? 0 : 1]);
+    expect(result.travelTimes[2]).toBe(cost === 7 ? 14 : Infinity);
+  }
+});
+
+it('UNI-16 preserves affine duration only when departure and intercept are rebased together', () => {
+  const input = {
+    ...INPUT,
+    stateVertices: Uint32Array.of(0, 1),
+    transitions: Uint32Array.of(0, 1),
+    departureCount: 1,
+    percentiles: [50]
+  };
+  for (const [departure, base] of [
+    [100, 10],
+    [0, 60]
+  ]) {
+    const result = computeNetworkTravelTimePercentilesOnCPU({
+      ...input,
+      window: Float32Array.of(departure, 0),
+      costs: Float32Array.of(base, 0.5)
+    });
+    // d(100) = 10 + .5 * 100 = 60; d′(0) = (10 + .5 * 100) + .5 * 0.
+    expect(result.travelTimes[1]).toBe(60);
+  }
+});
+
+it('FLT-12 retains short elapsed routes at departure 16777216 on the CPU', () => {
+  for (const direct of [false, true]) {
+    const result = computeNetworkTravelTimePercentilesOnCPU({
+      ...INPUT,
+      stateVertices: Uint32Array.of(0, 1, 2),
+      transitions: direct ? Uint32Array.of(0, 1, 1, 2, 0, 2) : Uint32Array.of(0, 1, 1, 2),
+      costs: direct ? Float32Array.of(1, 0, 1, 0, 1.5, 0) : Float32Array.of(1, 0, 1, 0),
+      departureCount: 1,
+      percentiles: [50],
+      window: Float32Array.of(16777216, 0)
+    });
+    // Literal shortest paths: 0; 1; min(1+1, optional direct 1.5).
+    expect(Array.from(result.travelTimes)).toEqual([0, 1, direct ? 1.5 : 2]);
+    expect(Array.from(result.reachedCounts)).toEqual([1, 1, 1]);
+    expect(Array.from(result.status)).toEqual([1, 1]);
+  }
+});
+
+it('review B1 preserves elapsed CPU paths beyond the float64 absolute-clock spacing', () => {
+  const result = computeNetworkTravelTimePercentilesOnCPU({
+    ...INPUT,
+    stateVertices: Uint32Array.of(0, 1, 2),
+    transitions: Uint32Array.of(0, 1, 1, 2, 0, 2),
+    costs: Float32Array.of(1, 0, 1, 0, 1.5, 0),
+    departureCount: 1,
+    percentiles: [50],
+    window: Float32Array.of(2 ** 54, 0)
+  });
+  expect(Array.from(result.travelTimes)).toEqual([0, 1, 1.5]);
 });

@@ -19,6 +19,10 @@ import {
 } from '../../../src/dataframe-analysis/column-classification/class-breaks-parameters';
 import {GPUClassBreaks} from '../../../src/dataframe-analysis/column-classification/gpu-class-breaks';
 import {
+  makeGPURasterBand,
+  makeGPURasterMetadata
+} from '../../../src/raster-analysis/raster-grid/gpu-raster-grid';
+import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
@@ -42,7 +46,12 @@ import {
 } from './class-breaks-reference';
 import {LegacyNaturalBreaks} from './legacy-natural-breaks';
 import {CLASS_BREAKS_EDGE_POLICY} from '../dataframe-edge-policy';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {
+  getWGSLKernelNodeRecord,
+  recordWGSLKernelNodes
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {createClassificationKernelNode} from '../../../src/dataframe-analysis/column-classification/classification-kernel-node';
 
 const MAXIMUM_CLASS_COUNT = 10;
 
@@ -95,7 +104,13 @@ function createClusteredColumn(seed: number, rows: number): Float32Array {
   return values;
 }
 
-type Result = {breaks: number[]; breakBits: number[]; classCount: number; classCounts: number[]};
+type Result = {
+  breaks: number[];
+  breakBits: number[];
+  classCount: number;
+  classCounts: number[];
+  gapKeys?: number[];
+};
 
 type Harness = {
   /** `parameters` may be a raw packed view, to write values the CPU packer refuses. */
@@ -114,6 +129,10 @@ function createHarness(
   device: Device,
   props: {
     rows: number;
+    /** Allocation may contain a spare tail; the declared values view still has rows rows. */
+    allocationRows?: number;
+    captureGapKeys?: boolean;
+    logicalGridSize?: readonly [number, number];
     withMask: boolean;
     naturalBreaksBinCount: number;
     naturalBreaksMode?: 'approximate' | 'exact' | 'monotone';
@@ -131,20 +150,37 @@ function createHarness(
     buffers.push(buffer);
     return buffer;
   };
-  const valuesBuffer = keep(createInputBuffer(device, new Float32Array(rows)));
+  const valuesBuffer = keep(
+    createInputBuffer(device, new Float32Array(props.allocationRows ?? rows))
+  );
   const maskBuffer = withMask ? keep(createInputBuffer(device, new Uint32Array(rows))) : undefined;
   const breaksBuffer = keep(createOutputBuffer(device, maximumClassCount + 1));
   const classCountBuffer = keep(createOutputBuffer(device, 1));
   const classCountsBuffer = keep(createOutputBuffer(device, maximumClassCount));
+  const gapKeysBuffer = props.captureGapKeys ? keep(createOutputBuffer(device, rows)) : undefined;
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'class-breaks-parameters',
     format: 'float32',
     length: getGPUClassBreaksParameterLength(maximumClassCount)
   });
   const graph = new GPUCommandGraph(device, {id: 'class-breaks-graph'});
+  if (props.captureGapKeys) recordWGSLKernelNodes(graph);
+  const allocationView = importGraphBuffer(
+    graph,
+    'values',
+    valuesBuffer,
+    props.valueFormat ?? 'float32',
+    props.allocationRows ?? rows
+  );
+  const values = props.logicalGridSize
+    ? makeGPURasterBand(
+        allocationView,
+        makeGPURasterMetadata({width: props.logicalGridSize[0], height: props.logicalGridSize[1]})
+      ).storage.values
+    : allocationView;
   const contributor = new GPUClassBreaks({
     id: 'breaks',
-    values: importGraphBuffer(graph, 'values', valuesBuffer, props.valueFormat ?? 'float32', rows),
+    values,
     mask: maskBuffer ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows) : undefined,
     parameters: parameterBuffer.importToGraph(graph),
     maximumClassCount,
@@ -187,7 +223,13 @@ function createHarness(
       const breakBits = await readUint32(breaksBuffer, maximumClassCount + 1);
       const [classCount] = await readUint32(classCountBuffer, 1);
       const classCounts = await readUint32(classCountsBuffer, maximumClassCount);
-      return {breaks, breakBits, classCount, classCounts};
+      return {
+        breaks,
+        breakBits,
+        classCount,
+        classCounts,
+        ...(gapKeysBuffer ? {gapKeys: await readUint32(gapKeysBuffer, rows)} : {})
+      };
     },
     async submit(frameCount) {
       for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
@@ -204,6 +246,33 @@ function createHarness(
     }
   };
   graph.add(contributor);
+  if (gapKeysBuffer) {
+    const gapKeys = getWGSLKernelNodeRecord(graph, 'breaks-maximum-breaks-gaps')?.bindings.find(
+      binding => binding.name === 'gapKeys'
+    );
+    expect(gapKeys).toBeDefined();
+    const destination = importGraphBuffer(
+      graph,
+      'captured-gap-keys',
+      gapKeysBuffer,
+      'uint32',
+      rows
+    );
+    // Copy the actual production gap-kernel output; a second arithmetic implementation would
+    // fail to detect a saturated key. Extending its read lifetime also prevents transient aliasing.
+    graph.add(
+      createClassificationKernelNode(graph, {
+        id: 'capture-production-gap-keys',
+        operation: 'GPUClassBreaksGapKeyTest',
+        invocationCount: rows,
+        bindings: [
+          {name: 'source', view: gapKeys!.view, type: 'u32', access: 'read'},
+          {name: 'destination', view: destination, type: 'u32', access: 'read_write'}
+        ],
+        body: 'destination[destinationOffset + index] = source[sourceOffset + index];'
+      })
+    );
+  }
   harness.buildCount++;
   const compiled = graph.compile();
   return harness;
@@ -337,6 +406,8 @@ it('GPUClassBreaks matches the oracle for every method across per-frame changes 
       const mask = new Uint32Array(rows).map(() => (random() < 0.8 ? 1 : 0));
       const result = await harness.run(values, mask, frame);
       checkFrame(result, values, mask, frame, binCount);
+      if (frame.method === 'custom')
+        expect(result.classCounts.slice(0, 4)).toEqual([996, 396, 1900, 1463]);
       const again = await harness.run(values, mask, frame);
       expect(again.breakBits, `${frame.method} run-to-run`).toEqual(result.breakBits);
       expect(again.classCounts).toEqual(result.classCounts);
@@ -727,8 +798,8 @@ it('GPUClassBreaks follows the class breaks edge policy', async () => {
       withMask: false,
       naturalBreaksBinCount: 16,
       maximumClassCount,
-      // Only the methods the policy rows use: the constructor rightly refuses 'box-plot' (6
-      // classes) at maximumClassCount 4, and the default compiles every method.
+      // Explicitly compile only the methods the policy rows use. Omitted methods would also
+      // select the other compatible routes, excluding box-plot at this four-class capacity.
       methods: ['equal-interval', 'quantile', 'standard-deviation', 'custom']
     });
     try {
@@ -1043,6 +1114,402 @@ it('GPUClassBreaks monotone mode preserves data boundaries across large and dege
     // Numeric zeros form one class; the shared integer-key minimum preserves the input -0 bits.
     expect(distinct.breaks.slice(0, 5)).toEqual([-0, 1, 10, 11, 11]);
     expect(distinct.classCounts).toEqual([2, 2, 2, 2]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+// DPC-111. For float32 [-3e38, 0, 3e38] the span 6e38 is past the float32 maximum. A float32
+// replay of `min + ((max - min) / k) * i` gives an infinite width, every inner edge clamped to the
+// maximum and counts [2, 1] for k = 2. Expected (float64, then fround; the CPU twin agrees):
+// k = 2 has the middle edge 0 and counts [1, 2] under the lower-edge rule; k = 4 has the edges
+// -1.5e38, 0, 1.5e38 and counts [1, 0, 1, 1].
+it('GPUClassBreaks equal interval keeps its cuts when finite extrema span past float32', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    rows: 3,
+    withMask: false,
+    naturalBreaksBinCount: 64,
+    methods: ['equal-interval']
+  });
+  try {
+    const values = Float32Array.from([-3e38, 0, 3e38]);
+    const minimum = Math.fround(-3e38);
+    const maximum = Math.fround(3e38);
+    const two = await harness.run(values, undefined, {method: 'equal-interval', classCount: 2});
+    expect(two.classCount).toBe(2);
+    expect(two.breaks.slice(0, 3)).toEqual([minimum, 0, maximum]);
+    expect(two.classCounts.slice(0, 2)).toEqual([1, 2]);
+    const four = await harness.run(values, undefined, {method: 'equal-interval', classCount: 4});
+    expect(four.classCount).toBe(4);
+    const expectedEdges = [minimum, Math.fround(-1.5e38), 0, Math.fround(1.5e38), maximum];
+    for (const [edge, expected] of expectedEdges.entries()) {
+      const actual = four.breaks[edge];
+      expect(Number.isFinite(actual), `edge ${edge} ${actual}`).toBe(true);
+      expect(Math.abs(actual - expected), `edge ${edge} ${actual}`).toBeLessThanOrEqual(
+        1e-6 * Math.abs(expected)
+      );
+    }
+    expect(four.classCounts.slice(0, 4)).toEqual([1, 0, 1, 1]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('DPC-110: class breaks merges signed zeros in membership and maximum gaps', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const custom = createHarness(device, {
+    rows: 2,
+    withMask: false,
+    naturalBreaksBinCount: 64,
+    methods: ['custom'],
+    maximumClassCount: 2
+  });
+  const maximum = createHarness(device, {
+    rows: 4,
+    withMask: false,
+    naturalBreaksBinCount: 64,
+    methods: ['maximum-breaks'],
+    maximumClassCount: 4
+  });
+  try {
+    const counted = await custom.run(Float32Array.of(-0, +0), undefined, {
+      method: 'custom',
+      customEdges: [-1, +0, 1]
+    });
+    expect(counted.classCounts).toEqual([0, 2]);
+    const distinct = await maximum.run(Float32Array.of(-1, -0, +0, 1), undefined, {
+      method: 'maximum-breaks',
+      classCount: 4
+    });
+    expect(distinct.classCount).toBe(3);
+    expect(distinct.breaks).toEqual([-1, -0.5, 0.5, 1, NaN]);
+    expect(distinct.classCounts).toEqual([1, 2, 1, 0]);
+  } finally {
+    custom.destroy();
+    maximum.destroy();
+  }
+});
+
+it('DPC-111: approximate natural breaks keeps finite cuts across a float32-overflowing span', async () => {
+  // Two tight symmetric clusters, separated by a gap 56 times their width: the unique two-class
+  // least-squares partition separates the signs (within-cluster SSD = 4 * (1e37)^2).
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    rows: 6,
+    withMask: false,
+    naturalBreaksBinCount: 64,
+    methods: ['natural-breaks'],
+    maximumClassCount: 2
+  });
+  try {
+    const values = Float32Array.of(-3e38, -2.9e38, -2.8e38, 2.8e38, 2.9e38, 3e38);
+    const result = await harness.run(values, undefined, {method: 'natural-breaks', classCount: 2});
+    expect(result.classCount).toBe(2);
+    expect(result.breaks.every(Number.isFinite)).toBe(true);
+    expect(result.breaks).toEqual([values[0], values[3], values[5]]);
+    expect(result.classCounts).toEqual([3, 3]);
+    // A stale 2^-64 scale erases this entire normal-float column. Both clusters must still
+    // classify, and refinement must publish the actual smallest value of the upper cluster.
+    const tinyValues = Float32Array.from([-3, -2.9, -2.8, 2.8, 2.9, 3], value => value * 2 ** -90);
+    const ordinary = await harness.run(tinyValues, undefined, {
+      method: 'natural-breaks',
+      classCount: 2
+    });
+    expect(ordinary.classCounts).toEqual([3, 3]);
+    expect(ordinary.breaks.every(Number.isFinite)).toBe(true);
+    expect(ordinary.breaks).toEqual([tinyValues[0], tinyValues[3], tinyValues[5]]);
+    expect(harness.buildCount).toBe(1);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('DPC-110 ordering: retains adjacent nonzero floats and excludes NaN and masked rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const adjacent = 1 + 2 ** -23;
+  const harness = createHarness(device, {
+    rows: 8,
+    withMask: true,
+    naturalBreaksBinCount: 64,
+    methods: ['custom'],
+    maximumClassCount: 3
+  });
+  try {
+    const result = await harness.run(
+      Float32Array.of(-adjacent, -1, -0, +0, 1, adjacent, NaN, adjacent),
+      Uint32Array.of(1, 1, 1, 1, 1, 1, 1, 0),
+      {method: 'custom', customEdges: [-2, -1, adjacent, 2]}
+    );
+    // Hand membership: -adjacent below -1; -1, both zeros and 1 in the middle; adjacent upper.
+    expect(result.classCounts).toEqual([1, 4, 1]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('B1: approximate natural breaks merges signed-zero classes before publishing', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    rows: 4,
+    withMask: false,
+    naturalBreaksBinCount: 4,
+    methods: ['natural-breaks'],
+    maximumClassCount: 4
+  });
+  try {
+    const result = await harness.run(Float32Array.of(-2, -0, +0, 2), undefined, {
+      method: 'natural-breaks',
+      classCount: 4
+    });
+    // Three numeric distinct values have a zero-cost partition; both zeros share one class.
+    expect(result.classCount).toBe(3);
+    expect(result.classCounts).toEqual([1, 2, 1, 0]);
+    expect(result.breaks.slice(0, 4).map(value => (value === 0 ? 0 : value))).toEqual([
+      -2, 0, 2, 2
+    ]);
+    expect(result.breaks[4]).toBeNaN();
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('B2: approximate natural breaks preserves the tiny bulk beside a huge normal outlier', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const tiny = 2 ** -90;
+  const large = 2 ** 70;
+  const harness = createHarness(device, {
+    rows: 4,
+    withMask: false,
+    naturalBreaksBinCount: 16,
+    methods: ['natural-breaks'],
+    maximumClassCount: 3
+  });
+  try {
+    const result = await harness.run(Float32Array.of(tiny, tiny, 2 * tiny, large), undefined, {
+      method: 'natural-breaks',
+      classCount: 3
+    });
+    // Each distinct value has its own class: unique zero-SSD partition, counts [2,1,1].
+    expect(result.classCount).toBe(3);
+    expect(result.classCounts).toEqual([2, 1, 1]);
+    expect(result.breaks.every(Number.isFinite)).toBe(true);
+    expect(result.breaks).toEqual([tiny, 2 * tiny, large, large]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('B2: equal intervals retain the zero cut with three classes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    rows: 4,
+    withMask: false,
+    naturalBreaksBinCount: 64,
+    methods: ['equal-interval'],
+    maximumClassCount: 3
+  });
+  try {
+    const result = await harness.run(Float32Array.of(-2, -(2 ** -58), 0, 1), undefined, {
+      method: 'equal-interval',
+      classCount: 3
+    });
+    // Exact unit width: the tiny negative value belongs below the zero cut.
+    expect(result.classCount).toBe(3);
+    expect(result.breaks).toEqual([-2, -1, 0, 1]);
+    expect(result.classCounts).toEqual([1, 1, 2]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it.each([
+  {
+    values: [1, 1.0000001192092896],
+    edges: [1, 1.0000001192092896, 1.0000001192092896],
+    bits: [0x3f800000, 0x3f800001, 0x3f800001]
+  },
+  // Python struct.unpack('<f', struct.pack('<I', bits)) for 0x08800000 and 0x08800001.
+  {
+    values: [7.703719777548943e-34, 7.703720695903905e-34],
+    edges: [7.703719777548943e-34, 7.703720695903905e-34, 7.703720695903905e-34],
+    bits: [0x08800000, 0x08800001, 0x08800001]
+  }
+])('W5-01: maximum breaks separates adjacent float32 observations: %j', async fixture => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    rows: 2,
+    withMask: false,
+    naturalBreaksBinCount: 64,
+    methods: ['maximum-breaks'],
+    maximumClassCount: 2
+  });
+  try {
+    const result = await harness.run(Float32Array.from(fixture.values), undefined, {
+      method: 'maximum-breaks',
+      classCount: 2
+    });
+    // Exact midpoint 1 + 2^-24 rounds to the lower row; lower-edge membership needs the upper.
+    expect(result.classCount).toBe(2);
+    expect(result.breaks).toEqual(fixture.edges);
+    expect(result.breakBits).toEqual(fixture.bits);
+    expect(result.classCounts).toEqual([1, 1]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('WGS-05: maximum breaks keeps extreme midpoints finite and unequal large gaps ordered', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const values of [
+    Float32Array.of(-(2 ** 127), 2 ** 127),
+    Float32Array.of(-3 * 2 ** 126, 3 * 2 ** 126),
+    Float32Array.of(-3 * 2 ** 126, -(2 ** 127), 2 ** 127, 3 * 2 ** 126),
+    // The largest gap is 2^128; the next is 2^127. Literal midpoint is -2^126.
+    Float32Array.of(-3 * 2 ** 126, 2 ** 126, 3 * 2 ** 126)
+  ]) {
+    const harness = createHarness(device, {
+      rows: values.length,
+      withMask: false,
+      naturalBreaksBinCount: 2048,
+      methods: ['maximum-breaks'],
+      maximumClassCount: 2
+    });
+    try {
+      const result = await harness.run(values, undefined, {
+        method: 'maximum-breaks',
+        classCount: 2
+      });
+      expect(result.breaks.every(Number.isFinite)).toBe(true);
+      expect(result.breaks[1]).toBe(values.length === 3 ? -(2 ** 126) : 0);
+      expect(result.classCounts).toEqual(
+        values.length === 4 ? [2, 2] : values.length === 3 ? [1, 2] : [1, 1]
+      );
+    } finally {
+      harness.destroy();
+    }
+  }
+});
+
+it('CMP-05: a four-row density-grid view ignores its spare allocation tail', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // A 2x2 raster's logical prefix over the five-float producer allocation.
+  for (const rows of [4, 5]) {
+    const harness = createHarness(device, {
+      rows,
+      allocationRows: 5,
+      logicalGridSize: rows === 4 ? [2, 2] : undefined,
+      withMask: false,
+      naturalBreaksBinCount: 2048,
+      methods: ['equal-interval'],
+      maximumClassCount: 2
+    });
+    try {
+      const result = await harness.run(Float32Array.of(2, 4, 6, 8, 1000), undefined, {
+        method: 'equal-interval',
+        classCount: 2
+      });
+      expect(result.breaks.every(Number.isFinite)).toBe(true);
+      expect(result.breaks).toEqual(rows === 4 ? [2, 5, 8] : [2, 501, 1000]);
+      expect(result.classCounts).toEqual(rows === 4 ? [2, 2] : [4, 1]);
+    } finally {
+      harness.destroy();
+    }
+  }
+});
+
+it('DEF-06: reads default and exact natural-breaks edges for the twelve-value provenance fixture', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const values = Float32Array.of(174, 15, 79, 177, 157, 114, 36, 56, 179, 166, 104, 100000);
+  for (const naturalBreaksMode of [undefined, 'exact'] as const) {
+    const harness = createHarness(device, {
+      rows: 12,
+      withMask: false,
+      maximumClassCount: 4,
+      naturalBreaksBinCount: 2048,
+      methods: ['natural-breaks'],
+      naturalBreaksMode
+    });
+    try {
+      const result = await harness.run(values, undefined, {
+        method: 'natural-breaks',
+        classCount: 4
+      });
+      expect(result.breaks.every(Number.isFinite)).toBe(true);
+      // Default [104,157,100000] is the approximate host-mirror observation until this GPU case runs.
+      // Exact [79,157,100000] comes from independently enumerating Fisher-Jenks partitions.
+      expect(result.breaks.slice(1, 4)).toEqual(
+        naturalBreaksMode === 'exact' ? [79, 157, 100000] : [104, 157, 100000]
+      );
+    } finally {
+      harness.destroy();
+    }
+  }
+});
+
+it('R1 B6: reads distinct production keys for unequal overflowing gaps across two runs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    rows: 2,
+    maximumClassCount: 2,
+    withMask: false,
+    methods: ['maximum-breaks'],
+    naturalBreaksBinCount: 2048,
+    captureGapKeys: true
+  });
+  try {
+    const observed: number[] = [];
+    // Widths 2.25*2^127 = 1.125*2^128 and 3*2^127 = 1.5*2^128.
+    // Extended positive exponent encodings 0x7f900000/0x7fc00000 invert to the literals below.
+    for (const [lower, expectedKey, midpoint] of [
+      [-(2 ** 127), 0x806fffff, 2 ** 124],
+      [-1.75 * 2 ** 127, 0x803fffff, -(2 ** 125)]
+    ]) {
+      const result = await harness.run(Float32Array.of(lower, 1.25 * 2 ** 127), undefined, {
+        method: 'maximum-breaks',
+        classCount: 2
+      });
+      expect(result.gapKeys).toEqual([0xffffffff, expectedKey]);
+      expect(Number.isFinite(result.breaks[1])).toBe(true);
+      expect(result.breaks[1]).toBe(midpoint);
+      expect(result.classCounts).toEqual([1, 1]);
+      observed.push(result.gapKeys![1]);
+    }
+    expect(observed[1]).toBeLessThan(observed[0]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('R1 B3: one-class defaults use exactly-sized public parameters', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device, {
+    rows: 3,
+    maximumClassCount: 1,
+    withMask: false,
+    naturalBreaksBinCount: 2048
+  });
+  try {
+    const result = await harness.run(Float32Array.of(0, 2, 4), undefined, {
+      method: 'equal-interval',
+      classCount: 1
+    });
+    expect(result.breaks.every(Number.isFinite)).toBe(true);
+    expect(result.breaks).toEqual([0, 4]);
+    expect(result.classCounts).toEqual([3]);
   } finally {
     harness.destroy();
   }

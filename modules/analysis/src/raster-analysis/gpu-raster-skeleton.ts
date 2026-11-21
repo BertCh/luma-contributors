@@ -23,6 +23,7 @@ import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   requireRasterLength,
   validateRasterExpansionViews,
+  validateRasterExpansionPorts,
   validateRasterExpansionGraph,
   type RasterIterationStatusOutputs
 } from './raster-expansion-utils';
@@ -54,7 +55,9 @@ export type GPURasterSkeletonProps = {
  * two-pixel-thick strokes can vanish, and the ends of a thick bar are eroded. Use
  * `GPURasterMedialAxis` when every component must keep a centre.
  * Iterations after convergence dispatch no work, and the current skeleton is always published;
- * check `status.converged` to know whether thinning finished.
+ * check `status.converged` to know whether thinning finished. One extra iteration after the
+ * budget only tests for a fixed point and never thins: the published skeleton is the state after
+ * at most `maximumIterations` iterations, and `status.iterationCount` counts that test too.
  */
 export class GPURasterSkeleton implements GPUCommandNodeProducer {
   readonly id: string;
@@ -65,6 +68,18 @@ export class GPURasterSkeleton implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-skeleton';
     this.props = props;
     const {id} = this;
+    validateRasterExpansionPorts(
+      id,
+      props,
+      {
+        input: ['uint32'],
+        'output.skeleton': ['uint32'],
+        'output.status.converged': ['uint32'],
+        'output.status.iterationLimitReached': ['uint32'],
+        'output.status.iterationCount': ['uint32']
+      },
+      ['output.status.iterationLimitReached', 'output.status.iterationCount']
+    );
     const count = validateRasterExpansionViews(
       id,
       props.grid,
@@ -167,7 +182,12 @@ fn shouldRemove(index: u32, phase: u32) -> bool {
     ];
     // One extra iteration tests whether the final skeleton is a fixed point. Each iteration is
     // two dependent sub-iterations, so the loop gates per iteration, not per group of rounds.
+    // The test reads the budgeted plane and writes neither plane, so the published skeleton is
+    // the state after at most maximumIterations iterations. Both of its phases read `first`: when
+    // phase 0 finds a deletion the plane is not a fixed point whatever phase 1 sees, and when it
+    // finds none, phase 1 would have read the same plane.
     for (let iteration = 0; iteration < roundCount; iteration++) {
+      const verification = iteration === roundCount - 1;
       for (let phase = 0; phase < 2; phase++) {
         const nodeId = `${id}-${iteration}-${phase}`;
         const {condition, extraResources} = getRasterIterationCondition<Parameters>(state, nodeId);
@@ -175,17 +195,31 @@ fn shouldRemove(index: u32, phase: u32) -> bool {
           createWGSLKernelNode(graph, {
             id: nodeId,
             operation,
-            variant: `thinning-phase-${phase}`,
+            variant: `${verification ? 'verification' : 'thinning'}-phase-${phase}`,
             invocationCount: count,
             bindings: [
-              {name: 'previous', view: phase === 0 ? first : second, type: 'u32', access: 'read'},
-              {name: 'next', view: phase === 0 ? second : first, type: 'u32', access: 'read_write'},
+              {
+                name: 'previous',
+                view: phase === 0 || verification ? first : second,
+                type: 'u32',
+                access: 'read'
+              },
+              ...(!verification
+                ? [
+                    {
+                      name: 'next',
+                      view: phase === 0 ? second : first,
+                      type: 'u32',
+                      access: 'read_write'
+                    } as const
+                  ]
+                : []),
               {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'}
             ],
             declarations,
             body: `let original = previous[previousOffset + index];
   let remove = original != 0u && shouldRemove(index, ${phase}u);
-  next[nextOffset + index] = select(original, 0u, remove);
+  ${verification ? '' : 'next[nextOffset + index] = select(original, 0u, remove);'}
   if (remove) { atomicOr(&status[statusOffset], 1u); }`,
             condition,
             extraResources
@@ -282,6 +316,11 @@ export class GPURasterMedialAxis implements GPUCommandNodeProducer {
   constructor(props: GPURasterMedialAxisProps) {
     this.id = props.id ?? 'raster-medial-axis';
     this.props = props;
+    validateRasterExpansionPorts(this.id, props, {
+      input: ['uint32'],
+      'output.medialAxis': ['uint32'],
+      'output.radius': ['float32']
+    });
     const count = validateRasterExpansionViews(
       this.id,
       props.grid,

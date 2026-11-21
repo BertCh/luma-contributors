@@ -12,7 +12,7 @@ import {GPUInequality} from '../../src/dataframe-analysis/composite-indicators/g
 import {GPUValueCube} from '../../src/dataframe-analysis/value-cube/gpu-value-cube';
 import {GPUTemporalReduction} from '../../src/dataframe-analysis/temporal-reduction/gpu-temporal-reduction';
 import {GPUVariogramModelFit} from '../../src/dataframe-analysis/pair-statistics/gpu-variogram-model-fit';
-import {GPUKeyJoin} from '../../src/dataframe-analysis/key-join/gpu-key-join';
+import {GPUKeyLookup} from '../../src/dataframe-analysis/key-join/gpu-key-join';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources,
@@ -44,7 +44,8 @@ it('retains integer count scratch and accepts packed columns above 2^24', () => 
       }
     });
     const sources = getGPUCommandNodeKernelSources(profile.getCommandNodes(graph));
-    for (const {source, id} of sources) expect(auditWGSLModule(source), id).toEqual([]);
+    for (const {source, constants, id} of sources)
+      expect(auditWGSLModule(source, constants), id).toEqual([]);
     const merge = sources.find(({id}) => id.endsWith('-moments-merge'))!.source;
     expect(merge).toContain('count: u32');
     expect(merge).toContain('nullCount: u32');
@@ -74,7 +75,8 @@ it('column profiling reuses shader and pipeline families as the column count gro
         output: {statistics: view('float32', columnCount * GPU_COLUMN_PROFILE_STATISTIC_COUNT)}
       }).getCommandNodes(graph);
       const sources = getGPUCommandNodeKernelSources(nodes);
-      for (const {source, id} of sources) expect(auditWGSLModule(source), id).toEqual([]);
+      for (const {source, constants, id} of sources)
+        expect(auditWGSLModule(source, constants), id).toEqual([]);
       return {
         count: sources.length,
         distinct: getGPUCommandNodePipelineKeys(nodes, {includeShaderLayout: true}).size
@@ -114,7 +116,7 @@ it.each([
           output: {gini: first, theilT: second}
         });
       if (kind === 'key-join')
-        return new GPUKeyJoin({
+        return new GPUKeyLookup({
           leftKeys: view('uint32', 1),
           rightKeys: view('uint32', 2),
           output: {},
@@ -166,7 +168,7 @@ it.each([
             output: {gini: view('float32', 1)}
           })
         : kind === 'key-join'
-          ? new GPUKeyJoin({
+          ? new GPUKeyLookup({
               leftKeys: view('uint32', 1),
               rightKeys: view('uint32', 1),
               output: {},
@@ -196,7 +198,7 @@ it.each([
 it('preflights derived key-join sum scratch before declaring graph resources', () => {
   const {device, graph, view} = createFixture();
   try {
-    const producer = new GPUKeyJoin({
+    const producer = new GPUKeyLookup({
       leftKeys: view('uint32', 1),
       rightKeys: view('uint32', 40),
       output: {},
@@ -233,7 +235,7 @@ it('preflights profile register scratch before declaring graph resources', () =>
 it('preflights scratch allocation against maxBufferSize before mutating the graph', () => {
   const {device, graph, view} = createFixture();
   try {
-    const producer = new GPUKeyJoin({
+    const producer = new GPUKeyLookup({
       leftKeys: view('uint32', 1),
       rightKeys: view('uint32', 40),
       output: {},
@@ -265,7 +267,7 @@ it('rejects key-join and inequality metadata above the published sort boundary a
           output: {gini: view('float32', 1)}
         });
       const constructJoin = () =>
-        new GPUKeyJoin({leftKeys: view('uint32', 1), rightKeys: keys, output: {}});
+        new GPUKeyLookup({leftKeys: view('uint32', 1), rightKeys: keys, output: {}});
       if (rowCount === 0x80000000) {
         expect(constructInequality).not.toThrow();
         expect(constructJoin).not.toThrow();

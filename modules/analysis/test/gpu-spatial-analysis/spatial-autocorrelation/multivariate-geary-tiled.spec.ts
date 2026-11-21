@@ -88,11 +88,11 @@ async function runGeary(
       values: input('float32', data.values),
       variableCount: 3,
       mask: input('uint32', data.mask),
-      maximumPermutations: permutations,
+      permutationCount: permutations,
       seed: [7, 0],
       ...inference,
       ...strategy,
-      output: {statistic: statistic.view, pValues: pValues.view, classes: classes.view}
+      output: {statistic: statistic.view, adjustedPValues: pValues.view, classes: classes.view}
     })
   );
   const compiled = graph.compile();

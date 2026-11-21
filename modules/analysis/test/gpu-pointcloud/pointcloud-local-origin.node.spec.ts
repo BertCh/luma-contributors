@@ -127,7 +127,7 @@ describe('point-cloud local origin', () => {
       maximumDistance: 1,
       origin,
       initialTransform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1],
-      iterations: 2,
+      maximumIterations: 2,
       output: {
         transform: view('float32', 16),
         history: view('float32x3', 2),
@@ -153,7 +153,7 @@ describe('point-cloud local origin', () => {
           source: view('float32x3', large),
           target: view('float32x3', large),
           maximumDistance: 1,
-          iterations: 1,
+          maximumIterations: 1,
           output: {
             transform: view('float32', 16),
             history: view('float32x3', 1),

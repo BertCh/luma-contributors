@@ -12,6 +12,10 @@ import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {SPATIAL_GEODESIC_WGSL} from './spatial-geodesic-wgsl';
 import {SCALED_PLANAR_DISTANCE_WGSL} from '../../analysis-core/kernels/scaled-planar-distance-wgsl';
+import {
+  SPATIAL_DISTANCE_INTEGER_WGSL,
+  SPATIAL_DISTANCE_COMPARE_WGSL
+} from './spatial-distance-compare-wgsl';
 
 /**
  * Squared-distance ranks retain a normalized f32 significand and a biased exponent. The two
@@ -29,6 +33,15 @@ const NEAREST_MAXIMUM_FINITE_RANK: u32 = 0xff7ffffcu;
 fn nearestDistanceLess(first: f32, second: f32) -> bool { return bitcast<u32>(first) < bitcast<u32>(second); }
 fn nearestDistanceAtMost(first: f32, second: f32) -> bool { return bitcast<u32>(first) <= bitcast<u32>(second); }
 fn minimumNearestDistance(first: f32, second: f32) -> f32 { return select(second, first, nearestDistanceLess(first, second)); }
+// Undo the reserved float-encoding gap before counting adjacent squared-rank bins.
+fn nearestRankOrdinal(rank: f32) -> u32 {
+  let word = bitcast<u32>(rank);
+  return select(word, word - 0x01000000u, word >= 0x80800000u);
+}
+fn nearestRadiusNeedsCertification(rank: f32, radius: f32) -> bool {
+  let first = nearestRankOrdinal(rank); let second = nearestRankOrdinal(radius);
+  return max(first, second) - min(first, second) <= 16u;
+}
 fn encodeNearestSquaredRank(significand: f32, exponent: i32) -> f32 {
   if (significand == 0.0) { return 0.0; }
   let parts = frexp(significand);
@@ -132,6 +145,8 @@ fn crossProduct(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
  * @internal
  */
 export const NEAREST_COMMON_WGSL = /* wgsl */ `${NEAREST_ORIENTATION_WGSL}
+${SPATIAL_DISTANCE_INTEGER_WGSL}
+${SPATIAL_DISTANCE_COMPARE_WGSL}
 ${SCALED_PLANAR_DISTANCE_WGSL}
 fn rankPlanarSquaredDistance(value: PlanarDistanceValue) -> f32 {
   return encodeNearestSquaredRank(value.significand, value.exponent);
@@ -164,19 +179,165 @@ fn nearestCrossProduct(first: PlanarDistanceVector, second: PlanarDistanceVector
   }
   return addPlanarDistanceValues(left, negatePlanarDistanceValue(right));
 }
+// When coordinate subtraction loses a determinant or projection residual, evaluate the
+// six cross-product or eight dot-product ORIGINAL coordinate products with the shared exact integer product/accumulator primitives. This
+// preserves magnitude as well as sign; an exact orientation sign alone cannot rank distances.
+fn nearestOriginalSegmentProduct(point: vec2f, start: vec2f, end: vec2f,
+    approximate: PlanarDistanceValue, projection: bool, origin: bool) -> PlanarDistanceValue {
+  var firstWords = array<u32, 8>(bitcast<u32>(start.x), bitcast<u32>(start.y),
+    bitcast<u32>(end.x), bitcast<u32>(end.y), bitcast<u32>(point.x), bitcast<u32>(point.y), 0u, 0u);
+  var secondWords = array<u32, 8>(bitcast<u32>(end.y), bitcast<u32>(end.x),
+    bitcast<u32>(point.y), bitcast<u32>(point.x), bitcast<u32>(start.y), bitcast<u32>(start.x), 0u, 0u);
+  if (projection) {
+    // dot(point-start, end-start) from eight ORIGINAL coordinate products. Subtracting
+    // the coordinates first can erase the projection residual for far-away queries.
+    firstWords = array<u32, 8>(bitcast<u32>(point.x), bitcast<u32>(point.x),
+      bitcast<u32>(start.x), bitcast<u32>(start.x), bitcast<u32>(point.y), bitcast<u32>(point.y),
+      bitcast<u32>(start.y), bitcast<u32>(start.y));
+    secondWords = array<u32, 8>(bitcast<u32>(end.x), bitcast<u32>(start.x),
+      bitcast<u32>(end.x), bitcast<u32>(start.x), bitcast<u32>(end.y), bitcast<u32>(start.y),
+      bitcast<u32>(end.y), bitcast<u32>(start.y));
+    if (origin) {
+      // dot(point, end-start) keeps cancellation before any endpoint translation or division.
+      firstWords[2] = 0u; firstWords[3] = 0u; firstWords[6] = 0u; firstWords[7] = 0u;
+    }
+  }
+  var lows: array<u32, 8>;
+  var highs: array<u32, 8>;
+  var exponents: array<i32, 8>;
+  var minimumExponent = 100000;
+  var maximumExponent = -100000;
+  for (var term = 0u; term < 8u; term++) {
+    let firstBits = firstWords[term];
+    let secondBits = secondWords[term];
+    if ((firstBits & 0x7fffffffu) == 0u || (secondBits & 0x7fffffffu) == 0u) { continue; }
+    let firstPower = (firstBits >> 23u) & 255u;
+    let secondPower = (secondBits >> 23u) & 255u;
+    let firstFraction = firstBits & 0x7fffffu;
+    let secondFraction = secondBits & 0x7fffffu;
+    let product = multiply24(select(firstFraction | 0x800000u, firstFraction, firstPower == 0u),
+      select(secondFraction | 0x800000u, secondFraction, secondPower == 0u));
+    lows[term] = product.x;
+    highs[term] = product.y;
+    exponents[term] = select(i32(firstPower) - 150, -149, firstPower == 0u) +
+      select(i32(secondPower) - 150, -149, secondPower == 0u);
+    minimumExponent = min(minimumExponent, exponents[term]);
+    maximumExponent = max(maximumExponent, exponents[term]);
+  }
+  if (minimumExponent > maximumExponent) { return PlanarDistanceValue(0.0, 0); }
+  if (maximumExponent - minimumExponent > ORIENT_MAXIMUM_SPAN) { return approximate; }
+  var positive: array<u32, 8>;
+  var negative: array<u32, 8>;
+  for (var term = 0u; term < 8u; term++) {
+    if (lows[term] == 0u && highs[term] == 0u) { continue; }
+    let shift = u32(exponents[term] - minimumExponent);
+    let subtract = select((term & 1u) != 0u, (term & 3u) == 1u || (term & 3u) == 2u, projection);
+    if ((((firstWords[term] ^ secondWords[term]) >> 31u) != 0u) != subtract) { accumulateShifted(&negative, lows[term], highs[term], shift); }
+    else { accumulateShifted(&positive, lows[term], highs[term], shift); }
+  }
+  var reverse = false;
+  for (var slot = 8u; slot > 0u; slot--) {
+    if (positive[slot - 1u] != negative[slot - 1u]) {
+      reverse = positive[slot - 1u] < negative[slot - 1u]; break;
+    }
+  }
+  var magnitude: array<u32, 8>;
+  var borrow = 0u;
+  for (var slot = 0u; slot < 8u; slot++) {
+    let larger = select(positive[slot], negative[slot], reverse);
+    let smaller = select(negative[slot], positive[slot], reverse);
+    let difference = larger - smaller;
+    magnitude[slot] = difference - borrow;
+    borrow = select(0u, 1u, larger < smaller || difference < borrow);
+  }
+  var result = PlanarDistanceValue(0.0, 0);
+  for (var slot = 8u; slot > 0u; slot--) {
+    result = addPlanarDistanceValues(result,
+      getPlanarDistanceValue(f32(magnitude[slot - 1u]), minimumExponent + i32(slot - 1u) * 32));
+  }
+  if (projection) {
+    return PlanarDistanceValue(select(result.significand, -result.significand, reverse), result.exponent);
+  }
+  // Six products above give cross(end-start, point-start), the reverse of our convention.
+  return PlanarDistanceValue(select(-result.significand, result.significand, reverse), result.exponent);
+}
+fn nearestPointSegmentCross(point: vec2f, start: vec2f, end: vec2f,
+    fromStart: PlanarDistanceVector, direction: PlanarDistanceVector) -> PlanarDistanceValue {
+  return nearestOriginalSegmentProduct(point, start, end, nearestCrossProduct(fromStart, direction), false, false);
+}
+fn nearestPointSegmentProjection(point: vec2f, start: vec2f, end: vec2f,
+    direction: PlanarDistanceVector) -> PlanarDistanceValue {
+  return nearestOriginalSegmentProduct(point, start, end,
+    dotPlanarDistanceVectors(getPlanarDistanceVector(point, start), direction), true, false);
+}
 fn interpolateNearestSegment(start: vec2f, direction: PlanarDistanceVector, fraction: PlanarDistanceValue) -> vec2f {
   return vec2f(convertPlanarDistanceValue(addPlanarDistanceValues(getPlanarDistanceValue(start.x, 0), multiplyPlanarDistanceValues(direction.x, fraction))),
     convertPlanarDistanceValue(addPlanarDistanceValues(getPlanarDistanceValue(start.y, 0), multiplyPlanarDistanceValues(direction.y, fraction))));
 }
-fn closestPointOnSegment(p: vec2f, a: vec2f, b: vec2f) -> vec2f {
+// Choose the construction with the smallest coordinate magnitudes before addition. Near a
+// distant road the perpendicular form is best; far from a nearby road an endpoint is best.
+fn nearestProjectedCoordinate(query: f32, start: f32, end: f32,
+    perpendicular: PlanarDistanceValue, fromStart: PlanarDistanceValue, fromEnd: PlanarDistanceValue,
+    originFirst: PlanarDistanceValue, originSecond: PlanarDistanceValue, lengthSq: PlanarDistanceValue) -> f32 {
+  if (start == end) { return start; }
+  var result = addPlanarDistanceValues(getPlanarDistanceValue(query, 0), perpendicular);
+  var cost = abs(query) + abs(convertPlanarDistanceValue(perpendicular));
+  let startCost = abs(start) + abs(convertPlanarDistanceValue(fromStart));
+  if (startCost < cost) {
+    result = addPlanarDistanceValues(getPlanarDistanceValue(start, 0), fromStart); cost = startCost;
+  }
+  let endCost = abs(end) + abs(convertPlanarDistanceValue(fromEnd));
+  if (endCost < cost) {
+    result = addPlanarDistanceValues(getPlanarDistanceValue(end, 0), fromEnd); cost = endCost;
+  }
+  // Form the origin-based numerator BEFORE division. Dividing a projection into an endpoint
+  // fraction and then subtracting the endpoint can erase a small or exactly-zero coordinate.
+  let originNumerator = addPlanarDistanceValues(originFirst, originSecond);
+  let originCostValue = addPlanarDistanceValues(
+    PlanarDistanceValue(abs(originFirst.significand), originFirst.exponent),
+    PlanarDistanceValue(abs(originSecond.significand), originSecond.exponent));
+  let originCost = convertPlanarDistanceValue(getPlanarDistanceValue(
+    originCostValue.significand / lengthSq.significand, originCostValue.exponent - lengthSq.exponent));
+  if (originCost < cost) {
+    result = getPlanarDistanceValue(originNumerator.significand / lengthSq.significand,
+      originNumerator.exponent - lengthSq.exponent);
+  }
+  return convertPlanarDistanceValue(result);
+}
+fn closestPointOnSegment(p: vec2f, first: vec2f, second: vec2f) -> vec2f {
+  let reverse = first.x > second.x || (first.x == second.x && first.y > second.y);
+  let a = select(first, second, reverse); let b = select(second, first, reverse);
   let direction = getPlanarDistanceVector(b, a);
   let lengthSq = dotPlanarDistanceVectors(direction, direction);
-  let projection = dotPlanarDistanceVectors(getPlanarDistanceVector(p, a), direction);
+  let projection = nearestPointSegmentProjection(p, a, b, direction);
   if (lengthSq.significand == 0.0 || projection.significand <= 0.0) { return a; }
-  if (dotPlanarDistanceVectors(getPlanarDistanceVector(p, b), direction).significand >= 0.0) { return b; }
-  return interpolateNearestSegment(a, direction, getPlanarDistanceValue(projection.significand / lengthSq.significand, projection.exponent - lengthSq.exponent));
+  let endProjection = negatePlanarDistanceValue(nearestPointSegmentProjection(p, b, a, getPlanarDistanceVector(a, b)));
+  if (endProjection.significand >= 0.0) { return b; }
+  // Construct the perpendicular displacement near p, preserving the determinant residual
+  // instead of cancelling an almost full segment displacement against a distant endpoint.
+  let cross = nearestPointSegmentCross(p, a, b, getPlanarDistanceVector(p, a), direction);
+  let fraction = getPlanarDistanceValue(cross.significand / lengthSq.significand, cross.exponent - lengthSq.exponent);
+  let startFraction = getPlanarDistanceValue(projection.significand / lengthSq.significand, projection.exponent - lengthSq.exponent);
+  let endFraction = getPlanarDistanceValue(endProjection.significand / lengthSq.significand, endProjection.exponent - lengthSq.exponent);
+  let originProjection = nearestOriginalSegmentProduct(p, a, b,
+    dotPlanarDistanceVectors(getPlanarDistanceVector(p, vec2f(0.0)), direction), true, true);
+  let originCross = nearestPointSegmentCross(vec2f(0.0), a, b,
+    getPlanarDistanceVector(vec2f(0.0), a), direction);
+  return vec2f(
+    nearestProjectedCoordinate(p.x, a.x, b.x, negatePlanarDistanceValue(multiplyPlanarDistanceValues(direction.y, fraction)),
+      multiplyPlanarDistanceValues(direction.x, startFraction), multiplyPlanarDistanceValues(direction.x, endFraction),
+      multiplyPlanarDistanceValues(direction.x, originProjection),
+      negatePlanarDistanceValue(multiplyPlanarDistanceValues(direction.y, originCross)), lengthSq),
+    nearestProjectedCoordinate(p.y, a.y, b.y, multiplyPlanarDistanceValues(direction.x, fraction),
+      multiplyPlanarDistanceValues(direction.y, startFraction), multiplyPlanarDistanceValues(direction.y, endFraction),
+      multiplyPlanarDistanceValues(direction.y, originProjection),
+      multiplyPlanarDistanceValues(direction.x, originCross), lengthSq));
 }
-fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+fn pointSegmentDistanceSq(p: vec2f, first: vec2f, second: vec2f) -> f32 {
+  // Canonical endpoints give geometrically identical reversed edges identical ranks, including
+  // the rounded direction length and projection classification for fractional coordinates.
+  let reverse = first.x > second.x || (first.x == second.x && first.y > second.y);
+  let a = select(first, second, reverse); let b = select(second, first, reverse);
   let direction = getPlanarDistanceVector(b, a);
   let fromStart = getPlanarDistanceVector(p, a);
   let lengthSq = dotPlanarDistanceVectors(direction, direction);
@@ -185,7 +346,7 @@ fn pointSegmentDistanceSq(p: vec2f, a: vec2f, b: vec2f) -> f32 {
   }
   let fromEnd = getPlanarDistanceVector(p, b);
   if (dotPlanarDistanceVectors(fromEnd, direction).significand >= 0.0) { return rankPlanarSquaredDistance(dotPlanarDistanceVectors(fromEnd, fromEnd)); }
-  let cross = nearestCrossProduct(fromStart, direction);
+  let cross = nearestPointSegmentCross(p, a, b, fromStart, direction);
   return rankPlanarSquaredDistance(getPlanarDistanceValue(cross.significand * cross.significand / lengthSq.significand, 2 * cross.exponent - lengthSq.exponent));
 }
 fn segmentPairDistanceSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
@@ -411,7 +572,11 @@ fn ${p}First(f: u32) -> vec3f {
  *
  * @internal
  */
-export function getNearestPairWGSL(query: NearestSide, feature: NearestSide): string {
+export function getNearestPairWGSL(
+  query: NearestSide,
+  feature: NearestSide,
+  greatCircle = false
+): string {
   const featureSegment =
     feature.kind === 'points' ? 'NO_SEGMENT' : feature.kind === 'segments' ? '0u' : 'rvs + rk';
   const inner = forEachEdge(
@@ -422,8 +587,9 @@ export function getNearestPairWGSL(query: NearestSide, feature: NearestSide): st
     `let distanceSq = segmentPairDistanceSq(qa, qb, ra, rb);
       if (nearestDistanceLess(distanceSq, result.distanceSq)) {
         result.distanceSq = distanceSq;
-        result.foot = segmentFoot(qa, qb, ra, rb);
-        result.queryFoot = segmentFoot(ra, rb, qa, qb);
+        let points = nearestSegmentPoints(qa, qb, ra, rb, distanceSq);
+        result.foot = points.featurePoint;
+        result.queryFoot = points.queryPoint;
         result.segment = ${featureSegment};
         if (distanceSq == 0.0) { return result; }
       }`
@@ -444,11 +610,67 @@ export function getNearestPairWGSL(query: NearestSide, feature: NearestSide): st
   }`
       : '';
   return `
+struct NearestSegmentPoints { queryPoint: vec2f, featurePoint: vec2f }
+// Select ONE endpoint/projection candidate, including its mate. Two independent calls
+// to segmentFoot can choose opposite ends of parallel/overlapping edges on a tie.
+fn nearestSegmentPoints(a: vec2f, b: vec2f, c: vec2f, d: vec2f, distance: f32) -> NearestSegmentPoints {
+  if (distance == 0.0) {
+    // A point query/feature already supplies an exactly shared coordinate. Projecting it
+    // from a distant segment endpoint can move it through float32 cancellation.
+    if (a.x == b.x && a.y == b.y) { return NearestSegmentPoints(a, a); }
+    if (c.x == d.x && c.y == d.y) { return NearestSegmentPoints(c, c); }
+    // Preserve an existing shared endpoint for touching/overlapping edges too. These
+    // metric-aware tests work for both planar ranks and wrapped great-circle angles.
+    if (pointSegmentDistanceSq(a, c, d) == 0.0) { return NearestSegmentPoints(a, a); }
+    if (pointSegmentDistanceSq(b, c, d) == 0.0) { return NearestSegmentPoints(b, b); }
+    if (pointSegmentDistanceSq(c, a, b) == 0.0) { return NearestSegmentPoints(c, c); }
+    if (pointSegmentDistanceSq(d, a, b) == 0.0) { return NearestSegmentPoints(d, d); }
+    let crossing = segmentFoot(a, b, c, d);
+    return NearestSegmentPoints(crossing, crossing);
+  }
+  var result = NearestSegmentPoints(a, closestPointOnSegment(a, c, d));
+  var best = pointSegmentDistanceSq(a, c, d);
+  let second = pointSegmentDistanceSq(b, c, d);
+  if (nearestDistanceLess(second, best)) {
+    result = NearestSegmentPoints(b, closestPointOnSegment(b, c, d)); best = second;
+  }
+  let third = pointSegmentDistanceSq(c, a, b);
+  if (nearestDistanceLess(third, best)) {
+    result = NearestSegmentPoints(closestPointOnSegment(c, a, b), c); best = third;
+  }
+  if (nearestDistanceLess(pointSegmentDistanceSq(d, a, b), best)) {
+    result = NearestSegmentPoints(closestPointOnSegment(d, a, b), d);
+  }
+  return result;
+}
 struct PairResult { distanceSq: f32, foot: vec2f, segment: u32, queryFoot: vec2f }
 fn pairResult(rowQ: u32, rowF: u32) -> PairResult {
   var result = PairResult(NEAREST_NO_DISTANCE, vec2f(0.0), NO_SEGMENT, vec2f(0.0));
   ${outer}${queryInFeature}${featureInQuery}
   return result;
+}
+${
+  greatCircle
+    ? ''
+    : `
+fn pairWithinRadius(rowQ: u32, rowF: u32, radius: f32) -> bool {
+  ${forEachEdge(
+    query,
+    'rowQ',
+    'qa',
+    'qb',
+    forEachEdge(
+      feature,
+      'rowF',
+      'ra',
+      'rb',
+      'if (segmentWithinDistance(qa, qb, ra, rb, radius)) { return true; }'
+    )
+  )}
+  ${query.kind === 'polygons' ? forEachEdge(feature, 'rowF', 'a', 'b', 'if (qContains(a, rowQ)) { return true; }') : ''}
+  ${feature.kind === 'polygons' ? forEachEdge(query, 'rowQ', 'a', 'b', 'if (rContains(a, rowF)) { return true; }') : ''}
+  return false;
+}`
 }
 `;
 }
@@ -456,11 +678,11 @@ fn pairResult(rowQ: u32, rowF: u32) -> PairResult {
 /** Options of {@link getNearestTraversalWGSL}. @internal */
 export type NearestTraversalOptions = {
   /** Neighbors wanted per query. */
-  k: number;
+  neighborCount: number;
   /** Result slots per query, at least `k`; larger than `k` only in all-ties mode. */
   capacity: number;
   /** Report dropped k-th-distance ties even when capacity equals k. */
-  ties?: 'all' | 'lowest-id';
+  ties?: 'all' | 'lowest-row';
   /** Number of features. */
   featureCount: number;
   /** Number of internal BVH nodes. */
@@ -542,7 +764,8 @@ fn boxLowerAngle(
  * (slightly widened so f32 rounding in the box bound never drops a tied candidate). It keeps the
  * best `capacity` rows in a list ordered by `(distance squared, feature row)` and writes the
  * result into `topk`: `[count, flags, bound rank bits, (row, distance rank bits) * capacity]`.
- * Slot `[2]` must hold the initial encoded bound (the clear pass writes it).
+ * Slot `[2]` holds the original planar radius (or the spherical central angle); reserved
+ * negative sentinels represent an unbounded or invalid radius. The clear pass writes it.
  *
  * @internal
  */
@@ -550,7 +773,7 @@ export function getNearestTraversalWGSL(options: NearestTraversalOptions): {
   declarations: string;
   body: string;
 } {
-  const {k, capacity} = options;
+  const {neighborCount, capacity} = options;
   const storageBacked = capacity > NEAREST_PRIVATE_NEIGHBOR_CAPACITY;
   const storageList = getStorageTopKAccessors('topk', 'header + 3u');
   const readRow = (slot: string) =>
@@ -564,7 +787,7 @@ export function getNearestTraversalWGSL(options: NearestTraversalOptions): {
   const stride = NEAREST_HEADER_WORDS + 2 * capacity;
   const declarations = `
 const DISPATCH_WORD: u32 = ${options.dispatchWord}u;
-const K: u32 = ${k}u;
+const K: u32 = ${neighborCount}u;
 const CAPACITY: u32 = ${capacity}u;
 const STRIDE: u32 = ${stride}u;
 const FEATURE_COUNT: u32 = ${options.featureCount}u;
@@ -617,6 +840,13 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
   let header = topkOffset + row * STRIDE;`
   }
   var bound = bitcast<f32>(topk[header + 2u]);
+  ${
+    options.greatCircle
+      ? ''
+      : `let radius = bound;
+  if (radius >= 0.0) { bound = encodeNearestDistance(radius); }
+  let radiusRank = bound;`
+  }
   topk[header] = 0u;
   topk[header + 1u] = 0u;
   if (bitcast<u32>(bound) == bitcast<u32>(NEAREST_INVALID_DISTANCE) ||
@@ -691,7 +921,18 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
     ${options.filter.onAttribute ? 'if (nodeData[queryFilter + 1u] != nodeData[featureFilter + 1u]) { continue; }' : ''}`
         : ''
     }
-    let candidate = pairResult(localQuery, featureRow).distanceSq;
+    var candidate = pairResult(localQuery, featureRow).distanceSq;
+    ${
+      options.greatCircle
+        ? ''
+        : `
+    let radiusWord = bitcast<u32>(radiusRank);
+    if (radiusWord < bitcast<u32>(NEAREST_NO_DISTANCE) &&
+        nearestRadiusNeedsCertification(candidate, radiusRank)) {
+      if (!pairWithinRadius(localQuery, featureRow, radius)) { continue; }
+      candidate = minimumNearestDistance(candidate, radiusRank);
+    }`
+    }
     if (!nearestDistanceLess(candidate, NEAREST_NO_DISTANCE) || !nearestDistanceAtMost(candidate, bound)) { continue; }
     // Find the slot of (candidate, featureRow) in the ordered list.
     var position = count;

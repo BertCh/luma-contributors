@@ -7,14 +7,14 @@ import {expect, it} from 'vitest';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUSpatialKMeansParameterValues,
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPUSpatialKMeans,
   GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_NOISE,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
+  GPUDBSCAN,
+  GPU_DBSCAN_NOISE,
+  GPU_DBSCAN_PARAMETER_LENGTH,
   type GPUSpatialKMeansInitialization,
-  type GPUSpatialClusteringSettings
+  type GPUDBSCANSettings
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
@@ -39,7 +39,7 @@ type Device = NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>;
 async function runDbscan(
   device: Device,
   positions: Float32Array,
-  parameters: GPUSpatialClusteringSettings,
+  parameters: GPUDBSCANSettings,
   denseBoxShortcut: boolean
 ) {
   const rows = positions.length / 2;
@@ -51,11 +51,11 @@ async function runDbscan(
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'dbscan-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues(parameters)
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues(parameters)
   });
   rig.run(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       positions: rig.input(positions, 'float32x2', rows),
       parameters: parameterBuffer.importToGraph(rig.graph),
       gridSize: [32, 32],
@@ -79,11 +79,11 @@ async function runDbscan(
   return result;
 }
 
-/** Number of points whose dense box (side 0.7 epsilon) holds at least `minimumPoints` points. */
+/** Number of points whose dense box (side 0.7 epsilon) holds at least `minimumSamples` points. */
 function countDenseBoxPoints(
   positions: Float32Array,
   epsilon: number,
-  minimumPoints: number,
+  minimumSamples: number,
   minimum: number
 ) {
   const side = Math.fround(epsilon) * 0.7;
@@ -93,20 +93,21 @@ function countDenseBoxPoints(
   const rows = positions.length / 2;
   for (let row = 0; row < rows; row++) boxes.set(keyOf(row), (boxes.get(keyOf(row)) ?? 0) + 1);
   let covered = 0;
-  for (let row = 0; row < rows; row++) if ((boxes.get(keyOf(row)) ?? 0) >= minimumPoints) covered++;
+  for (let row = 0; row < rows; row++)
+    if ((boxes.get(keyOf(row)) ?? 0) >= minimumSamples) covered++;
   return covered;
 }
 
-it('GPUSpatialClustering with denseBoxShortcut gives identical results to the plain algorithm', async () => {
+it('GPUDBSCAN with denseBoxShortcut gives identical results to the plain algorithm', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const bounds = [-10, -10, 110, 110] as const;
-  const frames: GPUSpatialClusteringSettings[] = [
-    {bounds, epsilon: 12, minimumPoints: 40},
-    {bounds, epsilon: 6, minimumPoints: 15},
-    {bounds, epsilon: 1.5, minimumPoints: 5},
-    {bounds, epsilon: 4, minimumPoints: 1},
-    {bounds: [20, 20, 80, 80], epsilon: 8, minimumPoints: 20}
+  const frames: GPUDBSCANSettings[] = [
+    {bounds, epsilon: 12, minimumSamples: 40},
+    {bounds, epsilon: 6, minimumSamples: 15},
+    {bounds, epsilon: 1.5, minimumSamples: 5},
+    {bounds, epsilon: 4, minimumSamples: 1},
+    {bounds: [20, 20, 80, 80], epsilon: 8, minimumSamples: 20}
   ];
   const epsilons = [...new Set(frames.map(frame => frame.epsilon))];
   const positions = separateNearEpsilonPairs(
@@ -131,7 +132,7 @@ it('GPUSpatialClustering with denseBoxShortcut gives identical results to the pl
     expect(dense.coreFlags).toEqual(oracle.coreFlags);
     expect(dense.clusterCount).toBe(oracle.clusterCount);
     // Make sure the shortcut decided real core flags on at least one frame.
-    if (countDenseBoxPoints(positions, frame.epsilon, frame.minimumPoints, -10) > 100) {
+    if (countDenseBoxPoints(positions, frame.epsilon, frame.minimumSamples, -10) > 100) {
       shortcutHelped = true;
       expect(oracle.coreFlags.some(flag => flag === 1)).toBe(true);
     }
@@ -181,13 +182,14 @@ async function runKMeans(
   const iterationCount = rig.output('uint32', 1);
   const converged = rig.output('uint32', 1);
   const inertia = rig.output('float32', 1);
-  const {iterations, seed, tolerance, ...shape} = options;
+  const {k: clusterCount, iterations, seed, tolerance, ...shape} = options;
   rig.run(
     new GPUSpatialKMeans({
       positions: rig.input(positions, 'float32x2', rows),
       // The default initialization is 'kmeans++'; the first-valid oracle specs pin it explicitly.
       initialization: 'first-valid',
       ...shape,
+      clusterCount,
       maximumIterations: iterations,
       parameters: rig.input(
         getGPUSpatialKMeansParameterValues({seed, tolerance}),
@@ -232,7 +234,7 @@ it("GPUSpatialKMeans 'first-valid' matches the f64 Lloyd oracle and ignores non-
     const result = await runKMeans(device, positions, {k, iterations});
     expect(result.labels).toEqual(expected.labels);
     expect(result.sizes).toEqual(expected.sizes);
-    expect(result.labels[5]).toBe(GPU_SPATIAL_CLUSTERING_NOISE);
+    expect(result.labels[5]).toBe(GPU_DBSCAN_NOISE);
     expect(result.sizes.reduce((sum, size) => sum + size, 0)).toBe(positions.length / 2 - 2);
     expect(result.sizes.every(size => size > 0)).toBe(true);
     for (let index = 0; index < 2 * k; index++) {
@@ -269,7 +271,7 @@ it('GPUSpatialKMeans center reduction handles many chunks, k=1, k not dividing 2
     const histogram = new Array<number>(k).fill(0);
     for (let row = 0; row < expected.labels.length; row++) {
       if (result.labels[row] !== expected.labels[row]) mismatches++;
-      if (result.labels[row] !== GPU_SPATIAL_CLUSTERING_NOISE) histogram[result.labels[row]]++;
+      if (result.labels[row] !== GPU_DBSCAN_NOISE) histogram[result.labels[row]]++;
     }
     // f32 distances may flip a handful of near-ties against the f64 oracle.
     expect(mismatches).toBeLessThanOrEqual(Math.ceil(0.005 * expected.labels.length));
@@ -316,13 +318,7 @@ it('GPUSpatialKMeans leaves centers empty when there are fewer valid points than
   expect(result.sizes).toEqual([1, 1, 1, 0, 0]);
   expect(result.centers[6]).toBeNaN();
   expect(result.centers[9]).toBeNaN();
-  expect(result.labels).toEqual([
-    0,
-    GPU_SPATIAL_CLUSTERING_NOISE,
-    1,
-    2,
-    GPU_SPATIAL_CLUSTERING_NOISE
-  ]);
+  expect(result.labels).toEqual([0, GPU_DBSCAN_NOISE, 1, 2, GPU_DBSCAN_NOISE]);
   expect(result.squaredDistances[0]).toBe(0);
 });
 
@@ -332,16 +328,33 @@ it('GPUSpatialKMeans does not report convergence when the center update overflow
   // Three finite rows at x = 2e38: the f32 coordinate sum 6e38 overflows, so the center becomes
   // +infinity and every later shift is infinite or NaN. Skipping those shifts used to leave the
   // largest shift at 0 and report convergence after one iteration.
+  // The historical uncentered route sums raw coordinates.
   const positions = new Float32Array([2e38, 0, 2e38, 0, 2e38, 0]);
-  const result = await runKMeans(device, positions, {k: 1, iterations: 4});
+  const result = await runKMeans(device, positions, {
+    k: 1,
+    iterations: 4,
+    centerCoordinates: false
+  });
   expect(result.centers[0]).toBe(Infinity);
   expect(result.convergence).toEqual([4, 0]);
+  // The default route sums offsets from the cluster's origin (the first row), which are zero, so
+  // the same rows give the exact center and converge after one iteration.
+  const centered = await runKMeans(device, positions, {k: 1, iterations: 4});
+  expect(Array.from(centered.centers)).toEqual([Math.fround(2e38), 0]);
+  expect(centered.convergence).toEqual([1, 1]);
+  // An offset of 4e38 from the origin -2e38 overflows in the centered frame too; the infinite
+  // shift must still keep the run from reporting convergence.
+  const overflowing = await runKMeans(device, new Float32Array([-2e38, 0, 2e38, 0, 2e38, 0]), {
+    k: 1,
+    iterations: 4
+  });
+  expect(overflowing.convergence).toEqual([4, 0]);
   // NaN rows stay noise and do not block convergence of the finite rows.
   const withNaN = await runKMeans(device, new Float32Array([1, 1, NaN, 2, 3, 3]), {
     k: 1,
     iterations: 4
   });
-  expect(withNaN.labels[1]).toBe(GPU_SPATIAL_CLUSTERING_NOISE);
+  expect(withNaN.labels[1]).toBe(GPU_DBSCAN_NOISE);
   expect(withNaN.convergence[1]).toBe(1);
   expect(Array.from(withNaN.centers)).toEqual([2, 2]);
 });
@@ -440,7 +453,7 @@ it("GPUSpatialKMeans 'kmeans++' draws each next center in proportion to its squa
   rig.graph.add(
     new GPUSpatialKMeans({
       positions: rig.input(positions, 'float32x2', 3),
-      k: 3,
+      clusterCount: 3,
       maximumIterations: 1,
       parameters: parameterBuffer.importToGraph(rig.graph),
       output: {labels: labels.view, centers: rig.output('float32x2', 3).view}
@@ -500,7 +513,7 @@ it("GPUSpatialKMeans 'kmeans++' repeats a point, not NaN, when no distance is le
     seed: 7
   });
   expect(noValidPoint.centers.every(Number.isNaN)).toBe(true);
-  expect(noValidPoint.labels).toEqual([GPU_SPATIAL_CLUSTERING_NOISE, GPU_SPATIAL_CLUSTERING_NOISE]);
+  expect(noValidPoint.labels).toEqual([GPU_DBSCAN_NOISE, GPU_DBSCAN_NOISE]);
 });
 
 it('GPUSpatialKMeans reports the total inertia of the returned clustering', async () => {
@@ -565,7 +578,9 @@ it('GPUSpatialKMeans restartCount returns the lowest-inertia restart (ties: lowe
 it('GPUSpatialKMeans reaches the scikit-learn inertia on a well-separated scene for every seed', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  // Oracle: scikit-learn 1.9.1 KMeans, fix/work/C/U7/kmeans-sklearn.py (see the node spec).
+  // Historical scikit-learn 1.9.1 KMeans: n_init=10, random_state=0, both k-means++ and random.
+  // clustering-fixture-oracles.py beside this spec reproduces both with installed 1.6.1,
+  // alongside the explicit-center check; all three reach this pinned f64 inertia.
   const sklearnInertia = 3707.8660708989237;
   const positions = createSeparatedBlobScene(4, 60);
   for (const restartCount of [1, 4]) {
@@ -579,6 +594,76 @@ it('GPUSpatialKMeans reaches the scikit-learn inertia on a well-separated scene 
     expect(result.sizes).toEqual([60, 60, 60, 60]);
     expect(Math.abs(result.inertia - sklearnInertia)).toBeLessThan(2e-4 * sklearnInertia);
   }
+});
+
+it('FLT-04 default centering preserves the 255-row inertia and minority distance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const hasMinority of [true, false]) {
+    const positions = new Float32Array(255 * 2);
+    for (let row = 0; row < 255; row++) positions[2 * row] = 10_000_001;
+    if (hasMinority) positions[508] = 10_000_002;
+    const result = await runKMeans(device, positions, {
+      k: 1,
+      iterations: 2,
+      initialization: 'first-valid'
+    });
+    // Mean offset 1/255. SSD=254*(1/255)^2+(254/255)^2=254/255.
+    const inertia = hasMinority ? 254 / 255 : 0;
+    const minorityDistance = hasMinority ? (254 / 255) ** 2 : 0;
+    expect(Number.isFinite(result.inertia)).toBe(true);
+    expect(Number.isFinite(result.squaredDistances[254])).toBe(true);
+    expect(Math.abs(result.inertia - inertia)).toBeLessThanOrEqual(2e-6 * inertia);
+    expect(Math.abs(result.squaredDistances[254] - minorityDistance)).toBeLessThanOrEqual(
+      2e-7 * minorityDistance
+    );
+    // Every row, not only the minority: the majority sits 1/255 from the center.
+    const majorityDistance = hasMinority ? (1 / 255) ** 2 : 0;
+    expect(Array.from(result.labels)).toEqual(new Array(255).fill(0));
+    expect(Array.from(result.sizes)).toEqual([255]);
+    for (let row = 0; row < 254; row++) {
+      expect(Number.isFinite(result.squaredDistances[row]), `row ${row}`).toBe(true);
+      expect(
+        Math.abs(result.squaredDistances[row] - majorityDistance),
+        `row ${row}`
+      ).toBeLessThanOrEqual(2e-7 * majorityDistance);
+    }
+    // 10_000_001 + 1/255 rounds to 10_000_001 in float32.
+    expect(Array.from(result.centers)).toEqual([10_000_001, 0]);
+  }
+});
+
+it('B3 default centering keeps a small cluster beside a distant one', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Hand-worked: cluster 0 is the lone point at 1e7, cluster 1 holds 0.125 and 0.375, whose mean
+  // is 0.25 and whose squared distances are (1/8)^2 each, so the inertia is 1/32. Subtracting one
+  // origin of 1e7 would round both small points to -1e7 and erase that spread.
+  for (const centerCoordinates of [undefined, false]) {
+    const result = await runKMeans(device, Float32Array.of(10_000_000, 0, 0.125, 0, 0.375, 0), {
+      k: 2,
+      iterations: 2,
+      initialization: 'first-valid',
+      ...(centerCoordinates === undefined ? {} : {centerCoordinates})
+    });
+    expect(Array.from(result.labels)).toEqual([0, 1, 1]);
+    expect(Array.from(result.sizes)).toEqual([1, 2]);
+    expect(Array.from(result.centers)).toEqual([10_000_000, 0, 0.25, 0]);
+    expect(Array.from(result.squaredDistances)).toEqual([0, 1 / 64, 1 / 64]);
+    expect(result.inertia).toBe(1 / 32);
+  }
+  // Empty-cluster relocation moves cluster 1 from the duplicate seed at 1e7 to the farthest point
+  // (0.125, lowest row on the tie); the next update gives the same two means and inertia.
+  const relocated = await runKMeans(
+    device,
+    Float32Array.of(10_000_000, 0, 10_000_000, 0, 0.125, 0, 0.375, 0),
+    {k: 2, iterations: 4, initialization: 'first-valid'}
+  );
+  expect(Array.from(relocated.labels)).toEqual([0, 0, 1, 1]);
+  expect(Array.from(relocated.sizes)).toEqual([2, 2]);
+  expect(Array.from(relocated.centers)).toEqual([10_000_000, 0, 0.25, 0]);
+  expect(Array.from(relocated.squaredDistances)).toEqual([0, 0, 1 / 64, 1 / 64]);
+  expect(relocated.inertia).toBe(1 / 32);
 });
 
 it('GPUSpatialKMeans centerCoordinates keeps projected-coordinate centers accurate in float32', async () => {
@@ -603,7 +688,7 @@ it('GPUSpatialKMeans centerCoordinates keeps projected-coordinate centers accura
   });
   const k = blobCenters.length;
   const expected = computeKMeansOracle(positions, k, 6);
-  const plain = await runKMeans(device, positions, {k, iterations: 6});
+  const plain = await runKMeans(device, positions, {k, iterations: 6, centerCoordinates: false});
   const centered = await runKMeans(device, positions, {k, iterations: 6, centerCoordinates: true});
   const getError = (result: {centers: ArrayLike<number>}) =>
     Math.max(

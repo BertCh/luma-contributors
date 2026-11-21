@@ -3,7 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getPackedFloat32Values,
+  validateCapacity,
+  validateOption,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Number of uint32 elements in a space-time test parameter view. */
 export const GPU_SPACE_TIME_PARAMETER_LENGTH = 4;
@@ -47,6 +52,40 @@ export const GPU_SPACE_TIME_SUMMARY = {
   zScore: 11
 } as const;
 
+const {observed: mantelObservedCorrelationSlot, ...mantelSummarySlots} = GPU_SPACE_TIME_SUMMARY;
+
+/** Mantel names over the unchanged shared summary slots. */
+export const GPU_MANTEL_TEST_SUMMARY = {
+  ...mantelSummarySlots,
+  /** Pearson correlation; NaN for an undefined observation. */
+  observedCorrelation: mantelObservedCorrelationSlot
+} as const;
+
+/** Named readback of the unchanged 12-word Mantel summary, accepting GPU bytes and float words. */
+export function decodeGPUMantelTestSummary(values: Float32Array | Uint8Array | ArrayBuffer) {
+  const tag = Object.prototype.toString.call(values);
+  validateRequirement(
+    'decodeGPUMantelTestSummary',
+    ['[object Float32Array]', '[object Uint8Array]', '[object ArrayBuffer]'].includes(tag),
+    `values must be Float32Array, Uint8Array or ArrayBuffer; received ${tag}`
+  );
+  const words = getPackedFloat32Values(values, GPU_SPACE_TIME_SUMMARY_LENGTH);
+  return {
+    observedCorrelation: words[0],
+    pairCount: words[1],
+    timeClosePairs: words[2],
+    expected: words[3],
+    permutationMean: words[4],
+    permutationVariance: words[5],
+    greaterCount: words[6],
+    lesserCount: words[7],
+    pseudoPGreater: words[8],
+    pseudoPLesser: words[9],
+    pseudoPTwoSided: words[10],
+    zScore: words[11]
+  };
+}
+
 /** Per-frame settings of `GPUKnoxTest` and `GPUMantelTest`, packed by {@link getGPUSpaceTimeParameterValues}. */
 export type GPUSpaceTimeSettings = {
   /** Random seed, an integer in `[0, 2^53)`. The result is a pure function of the seed and inputs. */
@@ -86,8 +125,10 @@ export function getGPUSpaceTimeParameterValues(settings: GPUSpaceTimeSettings): 
 /**
  * Upper-tail p-value `P(X >= observed)` of a Poisson distribution with mean `expected`, the
  * classic Knox (1964) test. CPU helper for the `observed` and `expected` of `GPUKnoxTest`'s
- * `summary`. Sums the probability mass function in double precision. Returns NaN when either
- * input is nonfinite, including a suppressed GPU summary.
+ * `summary`. When `observed` exceeds `expected` the tail terms are summed directly, so a small
+ * p-value keeps its relative precision down to the float64 range (about 1e-300) instead of
+ * rounding to 0; otherwise it is one minus the lower tail. A fractional `observed` is rounded up.
+ * Returns NaN when either input is nonfinite, including a suppressed GPU summary.
  *
  * @param observed Observed Knox count.
  * @param expected Expected count under no interaction.
@@ -100,14 +141,100 @@ export function getKnoxPoissonPValue(observed: number, expected: number): number
   if (!(expected > 0)) {
     return 0;
   }
-  // 1 - P(X <= observed - 1), summed in log space from the mode for stability.
-  let logTerm = -expected;
-  let lowerTail = 0;
-  for (let count = 0; count < observed; count++) {
-    lowerTail += Math.exp(logTerm);
-    logTerm += Math.log(expected) - Math.log(count + 1);
+  const threshold = Math.ceil(observed);
+  if (threshold > expected) {
+    // Right tail: sum P(X = k) for k >= threshold directly, so a small tail keeps its relative
+    // precision instead of vanishing in `1 - P(X < threshold)`.
+    return Math.min(1, sumPoissonUpperTerms(threshold, expected));
   }
+  // The upper tail is at least about one half here; summing the short lower tail is exact enough.
+  const lowerTail = sumPoissonLowerTerms(threshold - 1, expected);
   return Math.max(0, Math.min(1, 1 - lowerTail));
+}
+
+const STIRLING_ERROR_SMALL = [
+  0, 0.0810614667953272582196702, 0.0413406959554092940938221, 0.02767792568499833914878929,
+  0.02079067210376509311152277, 0.01664469118982119216319487, 0.01387612882307074799874573,
+  0.01189670994589177009505572, 0.010411265261972096497478567, 0.009255462182712732917728637,
+  0.00833056343336287125646931, 0.007573675487951840794972024, 0.006942840107209529865664152,
+  0.006408994188004207068439631, 0.005951370112758847735624416, 0.00555473355196280137103869
+];
+
+/** `log(n!) - ((n + 1/2) log(n) - n + log(2 pi) / 2)` for integer `n >= 0` (Loader 2000). */
+function getStirlingError(count: number): number {
+  if (count < STIRLING_ERROR_SMALL.length) return STIRLING_ERROR_SMALL[count];
+  const squared = count * count;
+  if (count > 500) return (1 / 12 - 1 / 360 / squared) / count;
+  if (count > 80) return (1 / 12 - (1 / 360 - 1 / 1260 / squared) / squared) / count;
+  if (count > 35) {
+    return (1 / 12 - (1 / 360 - (1 / 1260 - 1 / 1680 / squared) / squared) / squared) / count;
+  }
+  return (
+    (1 / 12 -
+      (1 / 360 - (1 / 1260 - (1 / 1680 - 1 / 1188 / squared) / squared) / squared) / squared) /
+    count
+  );
+}
+
+/** Deviance term `x log(x / mean) + mean - x`, accurate when `x` is close to `mean` (Loader 2000). */
+function getPoissonDeviance(count: number, mean: number): number {
+  if (Math.abs(count - mean) < 0.1 * (count + mean)) {
+    let ratio = (count - mean) / (count + mean);
+    let sum = (count - mean) * ratio;
+    let term = 2 * count * ratio;
+    ratio *= ratio;
+    for (let index = 1; index < 1000; index++) {
+      term *= ratio;
+      const next = sum + term / (2 * index + 1);
+      if (next === sum) return next;
+      sum = next;
+    }
+    return sum;
+  }
+  // Separate logarithms preserve a representable tail when a subnormal mean overflows the ratio.
+  const ratio = count / mean;
+  const logRatio = Number.isFinite(ratio) ? Math.log(ratio) : Math.log(count) - Math.log(mean);
+  return count * logRatio + mean - count;
+}
+
+/** Poisson probability mass `P(X = count)` for integer `count >= 0`, without log-factorial cancellation. */
+function getPoissonProbability(count: number, mean: number): number {
+  if (count === 0) return Math.exp(-mean);
+  return (
+    Math.exp(-getStirlingError(count) - getPoissonDeviance(count, mean)) /
+    Math.sqrt(2 * Math.PI * count)
+  );
+}
+
+/** `P(X >= threshold)` for `threshold > mean`: terms decrease geometrically from the first. */
+function sumPoissonUpperTerms(threshold: number, mean: number): number {
+  const first = getPoissonProbability(threshold, mean);
+  if (first === 0) return 0;
+  let ratioSum = 1;
+  let term = 1;
+  for (let count = threshold + 1; ; count++) {
+    term *= mean / count;
+    const next = ratioSum + term;
+    if (next === ratioSum) break;
+    ratioSum = next;
+  }
+  return first * ratioSum;
+}
+
+/** `P(X <= last)` for `last < mean`: terms decrease from `last` downward. */
+function sumPoissonLowerTerms(last: number, mean: number): number {
+  if (last < 0) return 0;
+  const first = getPoissonProbability(last, mean);
+  if (first === 0) return 0;
+  let ratioSum = 1;
+  let term = 1;
+  for (let count = last; count > 0; count--) {
+    term *= count / mean;
+    const next = ratioSum + term;
+    if (next === ratioSum) break;
+    ratioSum = next;
+  }
+  return first * ratioSum;
 }
 
 /** Result of {@link getGPUSpaceTimeRelativeTimes}. */
@@ -157,52 +284,121 @@ export function getGPUSpaceTimeRelativeTimes(
   }
   const relative = new Float32Array(count);
   let largest = 0;
+  let hasNonzeroDifference = false;
   for (let index = 0; index < count; index++) {
     const value = times[index] - resolvedOrigin;
     relative[index] = value;
-    largest = Math.max(largest, Math.abs(value));
+    if (!Number.isFinite(relative[index])) {
+      throw new Error(
+        `space-time times[${index}] must encode as finite float32; received ${value}`
+      );
+    }
+    hasNonzeroDifference ||= value !== 0;
+    largest = Math.max(largest, Math.abs(relative[index]));
   }
-  const resolution = largest > 0 ? 2 ** (Math.floor(Math.log2(largest)) - 23) : 0;
+  const resolution = hasNonzeroDifference
+    ? Math.max(2 ** -149, largest > 0 ? 2 ** (Math.floor(Math.log2(largest)) - 23) : 0)
+    : 0;
   if (requiredResolution !== undefined && resolution > requiredResolution) {
     throw new Error(`space-time float32 resolution ${resolution} exceeds ${requiredResolution}`);
   }
   return {times: relative, origin: resolvedOrigin, resolution};
 }
 
+/** Selects a probability word without confusing scientific sidedness and its counting rule. */
+export type GPUSpaceTimePValueField = 'pseudoPGreater' | 'pseudoPLesser' | 'pseudoPTwoSided';
+
 /** Settings-derived inference description; no GPU result is read to construct it. */
 export type GPUSpaceTimeInferenceMetadata = Omit<GPUInferenceMetadata, 'permutationCount'> & {
   /** Requested draw count after clamping to `maximumPermutations`, before early stopping. */
   requestedPermutationCount: number;
+  /** Mantel conditional inference uses defined null correlations, not the attempted prefix. */
+  inferenceCountDefinition?: 'usable-correlations';
   stoppingRule: {method: 'fixed-count'} | {method: 'besag-clifford'; stopAfterExceedances: number};
   /**
-   * Present only for fixed-count inference. For final records use
+   * Present only for fixed-count Knox/Jacquez inference. Mantel settings never publish a
+   * data-dependent inference count. For final records use
    * {@link decodeGPUSpaceTimeInferenceMetadata} with the published draw count.
    */
   permutationCount?: number;
 };
 
+/** Mantel settings cannot certify data-dependent usable draws, even with a fixed budget. */
+export type GPUMantelTestInferenceMetadata = Omit<
+  GPUSpaceTimeInferenceMetadata,
+  'permutationCount'
+> & {
+  inferenceCountDefinition: 'usable-correlations';
+  permutationCount?: never;
+};
+
+/** A methods record distinguishes the statistics prefix from the inference denominator. */
+export type GPUSpaceTimeDecodedInferenceMetadata = Omit<
+  GPUSpaceTimeInferenceMetadata,
+  'permutationCount'
+> & {
+  /** Attempted prefix length, excluding observed slot 0. */
+  permutationCount: number;
+  usablePermutationCount: number;
+  available: boolean;
+  /** Metadata to pass to probability-resolution helpers: its count is the usable denominator. */
+  inference: GPUInferenceMetadata;
+};
+
 /**
- * Decodes a final inference record using a caller-read `output.permutationCount` scalar.
- * `permutationCount` always means draws actually used; no implicit GPU readback occurs.
- * Zero represents suppressed inference (`available: false`). Positive counts retain the
- * fixed-count/stopping lower bound and return `available: true`.
- * Availability records execution; a statistic can still be undefined for a degenerate population.
+ * Decode caller-read counts without GPU readback. permutationCount is the attempted prefix;
+ * Mantel also requires usablePermutationCount for a positive prefix. The nested inference
+ * metadata contains the usable denominator for significance-resolution helpers. Zero usable
+ * draws mean available=false, including a defined observation with no defined null draws.
  */
 export function decodeGPUSpaceTimeInferenceMetadata(
   metadata: GPUSpaceTimeInferenceMetadata,
-  permutationCount: number
-): GPUSpaceTimeInferenceMetadata & GPUInferenceMetadata & {available: boolean} {
-  if (permutationCount === 0) return {...metadata, permutationCount: 0, available: false};
+  permutationCount: number,
+  usablePermutationCount?: number
+): GPUSpaceTimeDecodedInferenceMetadata {
+  validateRequirement(
+    'space-time',
+    !('permutationCountDefinition' in metadata),
+    'permutationCountDefinition was removed. Use inferenceCountDefinition'
+  );
+  const conditional = metadata.inferenceCountDefinition === 'usable-correlations';
   validateCapacity(
     'space-time',
     'permutationCount',
     permutationCount,
-    metadata.stoppingRule.method === 'fixed-count'
-      ? metadata.requestedPermutationCount
-      : Math.min(metadata.requestedPermutationCount, metadata.stoppingRule.stopAfterExceedances),
+    0,
     metadata.requestedPermutationCount
   );
-  return {...metadata, permutationCount, available: true};
+  if (permutationCount > 0)
+    validateCapacity(
+      'space-time',
+      'permutationCount',
+      permutationCount,
+      metadata.stoppingRule.method === 'fixed-count'
+        ? metadata.requestedPermutationCount
+        : Math.min(metadata.requestedPermutationCount, metadata.stoppingRule.stopAfterExceedances),
+      metadata.requestedPermutationCount
+    );
+  validateRequirement(
+    'space-time',
+    !conditional || permutationCount === 0 || usablePermutationCount !== undefined,
+    'usablePermutationCount is required for Mantel inference; read output.usablePermutationCount'
+  );
+  const usable = usablePermutationCount ?? permutationCount;
+  validateCapacity('space-time', 'usablePermutationCount', usable, 0, permutationCount);
+  if (!conditional)
+    validateRequirement(
+      'space-time',
+      usable === permutationCount,
+      `usablePermutationCount must equal permutationCount ${permutationCount}; received ${usable}`
+    );
+  return {
+    ...metadata,
+    permutationCount,
+    usablePermutationCount: usable,
+    available: usable > 0,
+    inference: {...metadata, permutationCount: usable}
+  };
 }
 
 /**
@@ -215,31 +411,54 @@ export function decodeGPUSpaceTimeInferenceMetadata(
  * @internal
  */
 export function getGPUSpaceTimeInferenceMetadata(
-  test: 'knox' | 'mantel',
+  test: 'knox',
   settings: GPUSpaceTimeSettings,
   maximumPermutations: number
 ): GPUSpaceTimeInferenceMetadata & GPUInferenceMetadata;
 /** @internal */
 export function getGPUSpaceTimeInferenceMetadata(
+  test: 'mantel',
+  settings: GPUSpaceTimeSettings,
+  maximumPermutations: number,
+  stopAfterExceedances?: number,
+  summaryField?: GPUSpaceTimePValueField
+): GPUMantelTestInferenceMetadata;
+/** @internal */
+export function getGPUSpaceTimeInferenceMetadata(
   test: 'knox' | 'mantel',
   settings: GPUSpaceTimeSettings,
   maximumPermutations: number,
-  stopAfterExceedances: number | undefined
+  stopAfterExceedances?: number,
+  summaryField?: GPUSpaceTimePValueField
 ): GPUSpaceTimeInferenceMetadata;
 export function getGPUSpaceTimeInferenceMetadata(
   test: 'knox' | 'mantel',
   settings: GPUSpaceTimeSettings,
   maximumPermutations: number,
-  stopAfterExceedances?: number
+  stopAfterExceedances?: number,
+  summaryField: GPUSpaceTimePValueField = 'pseudoPGreater'
 ): GPUSpaceTimeInferenceMetadata {
   getGPUSpaceTimeParameterValues(settings);
+  validateOption('space-time', 'summaryField', summaryField, [
+    'pseudoPGreater',
+    'pseudoPLesser',
+    'pseudoPTwoSided'
+  ]);
   const requestedPermutationCount = Math.min(settings.permutationCount, maximumPermutations);
   return {
-    alternative: 'greater',
+    alternative:
+      summaryField === 'pseudoPTwoSided'
+        ? 'two-sided'
+        : summaryField === 'pseudoPLesser'
+          ? 'lesser'
+          : 'greater',
+    pValueConstruction:
+      summaryField === 'pseudoPTwoSided' ? 'doubled-minimum-tail' : 'upper-tail-count',
+    ...(test === 'mantel' ? {inferenceCountDefinition: 'usable-correlations' as const} : {}),
     requestedPermutationCount,
     ...(stopAfterExceedances === undefined
       ? {
-          permutationCount: requestedPermutationCount,
+          ...(test === 'mantel' ? {} : {permutationCount: requestedPermutationCount}),
           stoppingRule: {method: 'fixed-count' as const}
         }
       : {stoppingRule: {method: 'besag-clifford' as const, stopAfterExceedances}}),

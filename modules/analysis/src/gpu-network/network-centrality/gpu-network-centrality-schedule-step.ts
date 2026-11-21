@@ -24,6 +24,7 @@ import {
   GPUNetworkCentrality,
   createNetworkCentralityForComposition,
   validateNetworkCentralityBindings,
+  type PreparedNetworkCentrality,
   type GPUNetworkCentralityProps
 } from './gpu-network-centrality';
 import {validateCentralityLogicalRanges} from './network-centrality-bindings';
@@ -103,7 +104,10 @@ export type GPUNetworkCentralityScheduleStepProps = GPUNetworkCentralityProps & 
  * laneCount, betweennessScale and other configuration for the entire schedule. Exact all-node
  * results have the parent contributor's tolerance; batching only changes the grouping of sums.
  * This public contributor lets hosts encode/queue bounded batches beside other contributors,
- * including several submissions without readbacks. The per-batch round budget still applies;
+ * including several submissions without readbacks. Per encoding's pivot batch, each search
+ * and optional sigma/delta phase is limited to min(maximumIterations, nodeCount) rounds,
+ * with maximumIterations 1..1024 (default 64). Search localIterations is 1..64 (default 16);
+ * sigma/delta use one hop per round. Failure flags stay set until reset;
  * createNetworkCentralityContinuation supplies the host-controlled long-path alternative.
  * CPU oracle: computeNetworkCentralityOnCPU, or the committed networkx fixture.
  */
@@ -111,7 +115,7 @@ export class GPUNetworkCentralityScheduleStep implements GPUCommandNodeProducer 
   readonly id: string;
   readonly props: GPUNetworkCentralityScheduleStepProps;
   readonly estimatedCommandNodeCount: number;
-  private readonly contributor: GPUNetworkCentrality;
+  private readonly preparation: PreparedNetworkCentrality;
 
   constructor(props: GPUNetworkCentralityScheduleStepProps) {
     this.id = props.id ?? 'network-centrality-schedule-step';
@@ -123,7 +127,7 @@ export class GPUNetworkCentralityScheduleStep implements GPUCommandNodeProducer 
       props.laneCount === undefined || props.laneCount === props.pivotNodes.length,
       'laneCount must equal pivotNodes.length (one fixed-capacity batch per encoding)'
     );
-    this.contributor = createNetworkCentralityForComposition({
+    this.preparation = createNetworkCentralityForComposition({
       ...props,
       id: this.id,
       laneCount: props.pivotNodes.length
@@ -155,7 +159,7 @@ export class GPUNetworkCentralityScheduleStep implements GPUCommandNodeProducer 
           {strictAlignedBindings: true}
         );
     this.estimatedCommandNodeCount =
-      this.contributor.estimatedCommandNodeCount + accumulated.length;
+      this.preparation.estimatedCommandNodeCount + accumulated.length;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
 
@@ -165,7 +169,7 @@ export class GPUNetworkCentralityScheduleStep implements GPUCommandNodeProducer 
     const {props, id} = this;
     // All checks precede even the partial-output allocations. The inner contributor has exactly
     // these shapes, with zero-offset fresh scratch replacing the accumulated output bindings.
-    validateNetworkCentralityBindings(graph, this.contributor);
+    validateNetworkCentralityBindings(graph, this.preparation);
     validateGraphChunkBindingRanges(graph, id, {reset: props.reset});
     const output = {...props.output, status: {...props.output.status}};
     const merges: GPUCommandNode<Parameters>[] = [];

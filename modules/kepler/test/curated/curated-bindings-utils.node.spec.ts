@@ -163,6 +163,24 @@ describe('readRateRows', () => {
 });
 
 describe('getSignificanceAttainability at Sidak precision and count boundaries', () => {
+  it('selects engine arithmetic while retaining the deprecated tie-count alias', () => {
+    const reference = getSignificanceAttainability('benjamini-hochberg', 0.05, 750, 999, 2);
+    const gpu = getSignificanceAttainability('benjamini-hochberg', 0.05, 750, 999, 2, 'gpu');
+    expect(reference.sufficientMinimumPValueTieCount).toBe(30);
+    expect(gpu.sufficientMinimumPValueTieCount).toBe(31);
+    expect(reference).not.toHaveProperty('requiredTiedMinimumCount');
+    expect(gpu).not.toHaveProperty('requiredTiedMinimumCount');
+    expect(() =>
+      Reflect.apply(getSignificanceAttainability, undefined, [
+        'benjamini-hochberg',
+        0.05,
+        750,
+        999,
+        2,
+        'device'
+      ])
+    ).toThrow(/engine must be one of cpu-reference, gpu; received device/);
+  });
   it('retains small-alpha precision (Python Decimal, 70 digits)', () => {
     // /usr/bin/python3: Decimal precision=70; ceil(1/(1-(1-Decimal('1e-9'))**(Decimal(1)/5000))-1).
     expect(getSignificanceAttainability('sidak', 1e-9, 5000, 999).permutationsNeeded).toBe(

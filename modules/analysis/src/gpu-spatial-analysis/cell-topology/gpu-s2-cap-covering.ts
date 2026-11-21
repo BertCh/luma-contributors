@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {validateS2CoveringOptions} from './s2-covering-option-validation';
 import {
   GPUScan,
   createTransientView,
@@ -34,6 +35,10 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateAngularTolerance} from '../global-coordinates/spherical-limits';
 import {S2_ANALYSIS_WGSL} from './s2-analysis-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {
   getScanCommandNodeCount,
   createS2CoveringRoundParameters,
@@ -169,7 +174,27 @@ export class GPUS2CapCovering implements GPUCommandNodeProducer {
   readonly frontierCapacity: number;
   /** Exact number of command nodes `getCommandNodes` returns. */
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPUS2CapCoveringProps) {
+  readonly props: GPUS2CapCoveringProps;
+  constructor(props: GPUS2CapCoveringProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'caps',
+      'level',
+      'mode',
+      'capacity',
+      'tolerance',
+      'refinement',
+      'frontierCapacity',
+      'output'
+    ]);
+    props = this.props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, ['cells', 'counts', 'status']),
+      ...(captured.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+        : {})
+    });
     this.id = props.id ?? 's2-cap-covering';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
@@ -194,13 +219,7 @@ export class GPUS2CapCovering implements GPUCommandNodeProducer {
       0,
       MAXIMUM_S2_COVERING_COMPONENT_COUNT
     );
-    validateRequirement(
-      this.id,
-      props.refinement === undefined ||
-        props.refinement === 'uniform' ||
-        props.refinement === 'level-synchronous',
-      "refinement must be 'uniform' or 'level-synchronous'"
-    );
+    validateS2CoveringOptions(this.id, props, ['uniform', 'level-synchronous']);
     const refined = props.refinement === 'level-synchronous';
     // Uniform enumeration is intentionally bounded; the refined form is an adaptive frontier.
     validateCapacity(
@@ -410,6 +429,7 @@ if (index == 0u) { counts[countsOffset + ${rowCount}u] = 0u; }`
 var count = 0u;
 if (slot < min(listCounts[listCountsOffset + capIndex], ${frontierCapacity}u)) {
   let offset = capsOffset + capIndex * 4u; let center = vec3f(caps[offset], caps[offset + 1u], caps[offset + 2u]); let radius = caps[offset + 3u];
+  ${props.mode === 'interior' ? `if (radius <= ${toleranceLiteral}) { counts[countsOffset + index] = 0u; return; }` : ''}
   let cell = vec2u(list[listOffset + index * 2u + 1u], list[listOffset + index * 2u]);
   let nearest = s2AnalysisDistance(cell, center);
   if (roundParameters[roundParametersOffset] == ${props.level}u) {

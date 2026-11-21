@@ -26,6 +26,7 @@ import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph
 import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {validateRasterAlgebraInput} from '../raster-algebra/raster-algebra-input';
 import {RASTER_BAND_CANONICALIZATION_NODE_COUNT} from '../raster-expansion-utils';
+import type {RasterAlgebraAtLeastOne} from '../raster-algebra/raster-algebra-output';
 import {
   createRasterFractionalTileNode,
   validateRasterFractionalBindingByteLength,
@@ -195,7 +196,7 @@ export type GPURasterExtremaPyramidProps = GPURasterExtremaPyramidLayoutOptions 
  * Caller-owned output views of {@link GPURasterExtremaPyramid}. This is the props bag; the built
  * pyramid that consumers read is {@link GPURasterExtremaPyramidOutput}.
  */
-export type GPURasterExtremaPyramidViews = {
+export type GPURasterExtremaPyramidViews = RasterAlgebraAtLeastOne<{
   /** Receives per-cell maxima; `length === layout.length`. */
   maximum?: GraphDataView<'float32'>;
   /** Receives per-cell minima; `length === layout.length`. */
@@ -207,7 +208,7 @@ export type GPURasterExtremaPyramidViews = {
    * {@link GPURasterExtremaPyramid.output}); it costs them a single storage binding.
    */
   combined?: GraphDataView<'float32'>;
-};
+}>;
 
 /**
  * A built min/max pyramid handed to a consumer so that it does not build its own.

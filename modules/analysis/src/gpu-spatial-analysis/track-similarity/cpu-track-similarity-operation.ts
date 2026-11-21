@@ -1,6 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {isPlanarTrackPointWithin} from './planar-track-metric';
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
@@ -25,13 +26,16 @@ import {
 import {GPU_TRACK_SIMILARITY_STATUS} from './gpu-track-similarity';
 import {
   GPUTrackSimilarityOperation,
+  snapshotTrackSimilarityOperationProps,
   type TrackSimilarityOperationProps
 } from './gpu-track-similarity-operation';
+import {validateMultipartTrackMeasures} from './multipart-track-layout';
+import {validateCPULineFeatureLayout} from '../../analysis-core/contracts/line-feature-provenance';
 
 /** Packed float32x2 positions, uint32 offsets and pair indices, as in GPUTrackSimilarity. */
 export type CPUTrackSimilarityInput = {
-  linesA: {positions: Float32Array; lineOffsets: Uint32Array};
-  linesB?: {positions: Float32Array; lineOffsets: Uint32Array};
+  linesA: {positions: Float32Array; lineOffsets: Uint32Array; featureOffsets?: Uint32Array};
+  linesB?: {positions: Float32Array; lineOffsets: Uint32Array; featureOffsets?: Uint32Array};
   pairA: Uint32Array;
   pairB: Uint32Array;
   activePairCount?: Uint32Array;
@@ -69,6 +73,7 @@ export type CPUTrackSimilarityOptions = Pick<
 };
 
 type TrackPoint = readonly [number, number];
+type TrackPoints = TrackPoint[] & {partEnds?: Set<number>};
 
 // JavaScript arrays and the contributor's densified row indices both have a uint32 length.
 const MAXIMUM_DENSIFIED_VERTEX_COUNT = 0xffffffff;
@@ -106,35 +111,43 @@ function validateOptions(id: string, options: CPUTrackSimilarityOptions): void {
 }
 
 function validateLines(name: string, lines: CPUTrackSimilarityInput['linesA']): void {
-  if (lines.positions.length % 2 !== 0)
-    throw new Error(`${name}.positions must have float32x2 rows`);
-  if (lines.lineOffsets.length < 2)
-    throw new Error(`${name}.lineOffsets must have at least two rows`);
-  for (let row = 0; row < lines.lineOffsets.length; row++) {
-    const offset = lines.lineOffsets[row];
-    if (offset > lines.positions.length / 2 || (row > 0 && offset < lines.lineOffsets[row - 1])) {
-      throw new Error(`${name}.lineOffsets must be nondecreasing and within positions`);
-    }
-  }
+  validateCPULineFeatureLayout(
+    'computeTrackSimilarityOnCPU',
+    lines.positions,
+    lines.lineOffsets,
+    lines.featureOffsets,
+    name,
+    true
+  );
 }
 
-function getTrackPoints(lines: CPUTrackSimilarityInput['linesA'], track: number): TrackPoint[] {
-  const points: TrackPoint[] = [];
-  for (let row = lines.lineOffsets[track]; row < lines.lineOffsets[track + 1]; row++) {
-    points.push([lines.positions[row * 2], lines.positions[row * 2 + 1]]);
+function getTrackPoints(lines: CPUTrackSimilarityInput['linesA'], track: number): TrackPoints {
+  const points: TrackPoints = [];
+  const firstPart = lines.featureOffsets?.[track] ?? track;
+  const endPart = lines.featureOffsets?.[track + 1] ?? track + 1;
+  for (let part = firstPart; part < endPart; part++) {
+    for (let row = lines.lineOffsets[part]; row < lines.lineOffsets[part + 1]; row++) {
+      points.push([lines.positions[row * 2], lines.positions[row * 2 + 1]]);
+    }
+    if (lines.featureOffsets && points.length) {
+      points.partEnds ??= new Set();
+      points.partEnds.add(points.length - 1);
+    }
   }
   return points;
 }
 
-function densifyTrack(
-  points: TrackPoint[],
-  subdivisions: number,
-  geographic: boolean
-): TrackPoint[] {
+function densifyTrack(points: TrackPoints, subdivisions: number, geographic: boolean): TrackPoints {
   if (subdivisions === 1 || points.length < 2) return points;
-  const densePoints: TrackPoint[] = [];
+  const densePoints: TrackPoints = [];
   for (let segment = 0; segment + 1 < points.length; segment++) {
     const first = points[segment];
+    if (points.partEnds?.has(segment)) {
+      densePoints.push(first);
+      densePoints.partEnds ??= new Set();
+      densePoints.partEnds.add(densePoints.length - 1);
+      continue;
+    }
     const second = points[segment + 1];
     const longitudeDifference = second[0] - first[0];
     const longitudeDelta = geographic
@@ -209,15 +222,22 @@ function computeTrackPointDistance(
 
 function computeNearestTrackDistance(
   point: TrackPoint,
-  track: TrackPoint[],
+  track: TrackPoints,
   radius: number | undefined
 ): number {
   if (track.length === 1) return computeTrackPointDistance(point, track[0], radius);
-  let nearest = Infinity;
+  let nearest = track.partEnds
+    ? computeTrackPointDistance(point, track[track.length - 1], radius)
+    : Infinity;
   for (let segment = 0; segment + 1 < track.length; segment++) {
     nearest = Math.min(
       nearest,
-      computeTrackSegmentDistance(point, track[segment], track[segment + 1], radius)
+      computeTrackSegmentDistance(
+        point,
+        track[segment],
+        track[track.partEnds?.has(segment) ? segment : segment + 1],
+        radius
+      )
     );
   }
   return nearest;
@@ -227,17 +247,20 @@ function computeTrackProgram(
   first: TrackPoint[],
   second: TrackPoint[],
   kind:
+    | 'frechetWithin'
     | 'frechet'
     | 'dynamicTimeWarping'
     | 'editDistanceOnRealSequence'
     | 'editDistanceWithRealPenalty'
     | 'longestCommonSubsequence',
   radius: number | undefined,
-  options: CPUTrackSimilarityOptions
+  options: CPUTrackSimilarityOptions,
+  epsilon = 0
 ): number {
   const longer = first.length >= second.length ? first : second;
   const shorter = first.length >= second.length ? second : first;
   const isEdit = kind === 'editDistanceOnRealSequence' || kind === 'editDistanceWithRealPenalty';
+  const isDecision = kind === 'frechetWithin';
   const isSubsequence = kind === 'longestCommonSubsequence';
   const tolerance = Math.fround(
     isSubsequence ? (options.lcssTolerance ?? 1) : (options.editDistanceTolerance ?? 1)
@@ -268,15 +291,35 @@ function computeTrackProgram(
         current[column] = Math.max(
           previous[column],
           current[column - 1],
-          insideBand && distance <= tolerance ? previous[column - 1] + 1 : 0
+          insideBand &&
+            (radius === undefined
+              ? isPlanarTrackPointWithin(longer[row - 1], shorter[column - 1], tolerance)
+              : distance <= tolerance)
+            ? previous[column - 1] + 1
+            : 0
         );
       } else if (isEdit) {
         const substitution =
-          kind === 'editDistanceOnRealSequence' ? Number(distance > tolerance) : distance;
+          kind === 'editDistanceOnRealSequence'
+            ? Number(
+                !(radius === undefined
+                  ? isPlanarTrackPointWithin(longer[row - 1], shorter[column - 1], tolerance)
+                  : distance <= tolerance)
+              )
+            : distance;
         current[column] = Math.min(
           previous[column - 1] + substitution,
           previous[column] + getGapCost(longer[row - 1]),
           current[column - 1] + getGapCost(shorter[column - 1])
+        );
+      } else if (isDecision) {
+        const within =
+          radius === undefined
+            ? isPlanarTrackPointWithin(longer[row - 1], shorter[column - 1], epsilon)
+            : distance <= epsilon;
+        current[column] = Math.max(
+          Number(!within),
+          Math.min(previous[column - 1], previous[column], current[column - 1])
         );
       } else if (kind === 'frechet') {
         current[column] = Math.max(
@@ -298,8 +341,11 @@ function computeTrackProgram(
  * matching thresholds, widened Sakoe-Chiba bands and original-vertex SSPD/maximum distance.
  *
  * What differs from the GPU contributor:
- * - All arithmetic uses float64 and rounds once to float32 output. Near-threshold Frechet, EDR
- *   and LCSS decisions can differ; compare noninteger distances with relative tolerance 3e-5.
+ * - Distance arithmetic and virtual densification use float64, with float32 result columns.
+ *   Planar matching predicates agree on identical vertex inputs, but float64 CPU versus float32
+ *   GPU virtual vertices can differ after densification and change Frechet, EDR or LCSS decisions.
+ *   Geographic matching also retains distance-arithmetic differences. Compare noninteger
+ *   distances with relative tolerance 3e-5.
  *   Numeric match tolerances and the ERP gap point are converted to float32 as GPU constants are.
  * - The shorter-track, subdivision, pair-dispatch and band-index GPU limits are dropped.
  *   An explicit maximumFrechetVertexCount bounds dynamic-program measures, setting
@@ -309,7 +355,7 @@ function computeTrackProgram(
  *   DTW costs are not saturated at the largest finite float32; output overflow becomes Infinity.
  * - Inconsistent arrays and decreasing/out-of-range lineOffsets throw an Error naming the array.
  *   Nonfinite coordinates or geographic latitudes outside [-90, 90] leave distances NaN and
- *   frechetWithin zero, with the ordinary empty/invalid-pair status only; GPU results are undefined.
+ *   frechetWithin zero, with invalidGeometry evidence. Invalid epsilon affects only decision validity.
  *
  * @throws Error naming an argument when array layouts or options are inconsistent.
  */
@@ -320,8 +366,11 @@ export function computeTrackSimilarityOnCPU(
   validateOptions('computeTrackSimilarityOnCPU', options);
   validateLines('linesA', input.linesA);
   if (input.linesB) validateLines('linesB', input.linesB);
-  if (input.pairB.length !== input.pairA.length)
-    throw new Error('pairB length must equal pairA length');
+  validateRequirement(
+    'computeTrackSimilarityOnCPU',
+    input.pairB.length === input.pairA.length,
+    `pairB.length must equal pairA.length ${input.pairA.length}; received ${input.pairB.length}`
+  );
   if (input.activePairCount?.length === 0)
     throw new Error('activePairCount must have at least one row');
   if (input.frechetEpsilon?.length === 0)
@@ -346,6 +395,11 @@ export function computeTrackSimilarityOnCPU(
           port !== 'pairStatus' && (port !== 'frechetWithin' || input.frechetEpsilon !== undefined)
       )
   );
+  validateMultipartTrackMeasures(
+    'computeTrackSimilarityOnCPU',
+    Boolean(input.linesA.featureOffsets || input.linesB?.featureOffsets),
+    [...measures]
+  );
   for (const measure of measures) {
     if (!(measure in result) || measure === 'pairStatus')
       throw new Error(`measures contains unknown measure ${measure}`);
@@ -367,16 +421,22 @@ export function computeTrackSimilarityOnCPU(
     const secondTrack = input.pairB[pair];
     if (
       pair >= (input.activePairCount?.[0] ?? count) ||
-      firstTrack + 1 >= input.linesA.lineOffsets.length ||
-      secondTrack + 1 >= linesB.lineOffsets.length
+      firstTrack + 1 >= (input.linesA.featureOffsets ?? input.linesA.lineOffsets).length ||
+      secondTrack + 1 >= (linesB.featureOffsets ?? linesB.lineOffsets).length
     ) {
       result.pairStatus[pair] = GPU_TRACK_SIMILARITY_STATUS.invalidPair;
       continue;
     }
+    if (
+      measures.has('frechetWithin') &&
+      (!Number.isFinite(input.frechetEpsilon![0]) || input.frechetEpsilon![0] < 0)
+    ) {
+      result.pairStatus[pair] |= GPU_TRACK_SIMILARITY_STATUS.invalidDecisionThreshold;
+    }
     const first = getTrackPoints(input.linesA, firstTrack);
     const second = getTrackPoints(linesB, secondTrack);
     if (!first.length || !second.length) {
-      result.pairStatus[pair] = GPU_TRACK_SIMILARITY_STATUS.emptyTrack;
+      result.pairStatus[pair] |= GPU_TRACK_SIMILARITY_STATUS.emptyTrack;
       continue;
     }
     if (
@@ -386,8 +446,10 @@ export function computeTrackSimilarityOnCPU(
             point.every(Number.isFinite) && (radius === undefined || Math.abs(point[1]) <= 90)
         )
       )
-    )
+    ) {
+      result.pairStatus[pair] |= GPU_TRACK_SIMILARITY_STATUS.invalidGeometry;
       continue;
+    }
     const capExceeded =
       options.maximumFrechetVertexCount !== undefined &&
       Math.min((first.length - 1) * subdivisions + 1, (second.length - 1) * subdivisions + 1) >
@@ -398,7 +460,7 @@ export function computeTrackSimilarityOnCPU(
           measure !== 'maximumDistance' &&
           measure !== 'symmetricSegmentPathDistance'
       );
-    if (capExceeded) result.pairStatus[pair] = GPU_TRACK_SIMILARITY_STATUS.frechetCapExceeded;
+    if (capExceeded) result.pairStatus[pair] |= GPU_TRACK_SIMILARITY_STATUS.frechetCapExceeded;
     const densifyPair = requiresDensification && (!capExceeded || measures.has('hausdorff'));
     if (densifyPair) {
       // Preflight both tracks before allocating either dense point array.
@@ -463,7 +525,16 @@ export function computeTrackSimilarityOnCPU(
       if (kind === 'frechet' && measures.has('frechetWithin')) {
         const epsilon = input.frechetEpsilon![0];
         result.frechetWithin[pair] = Number(
-          Number.isFinite(epsilon) && epsilon >= 0 && value <= epsilon
+          Number.isFinite(epsilon) &&
+            epsilon >= 0 &&
+            computeTrackProgram(
+              denseFirst,
+              denseSecond,
+              'frechetWithin',
+              radius,
+              options,
+              epsilon
+            ) === 0
         );
       }
     }
@@ -474,8 +545,9 @@ export function computeTrackSimilarityOnCPU(
 /** CPU twin, retaining uint32 output sizes and dropping GPU workgroup/dispatch limits. */
 export class CPUTrackSimilarityOperation extends GPUCPUOperation {
   constructor(props: TrackSimilarityOperationProps) {
+    props = snapshotTrackSimilarityOperationProps(props);
     const id = props.id ?? 'track-similarity';
-    validateCapacity(id, 'pairCount', props.pairCount);
+    validateCapacity(id, 'pairCount', props.pairCount, 0);
     validateOptions(id, props);
     validateRequirement(
       id,
@@ -510,12 +582,18 @@ export class CPUTrackSimilarityOperation extends GPUCPUOperation {
           {
             linesA: {
               positions: getCPUOperationFloat32Rows(id, inputs, 'positionsA', 'float32x2'),
-              lineOffsets: getCPUOperationUint32Rows(id, inputs, 'offsetsA')
+              lineOffsets: getCPUOperationUint32Rows(id, inputs, 'offsetsA'),
+              featureOffsets: props.linesA.featureOffsets
+                ? getCPUOperationUint32Rows(id, inputs, 'featuresA')
+                : undefined
             },
             linesB: props.linesB
               ? {
                   positions: getCPUOperationFloat32Rows(id, inputs, 'positionsB', 'float32x2'),
-                  lineOffsets: getCPUOperationUint32Rows(id, inputs, 'offsetsB')
+                  lineOffsets: getCPUOperationUint32Rows(id, inputs, 'offsetsB'),
+                  featureOffsets: props.linesB.featureOffsets
+                    ? getCPUOperationUint32Rows(id, inputs, 'featuresB')
+                    : undefined
                 }
               : undefined,
             pairA,

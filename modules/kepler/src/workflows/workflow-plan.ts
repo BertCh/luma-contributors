@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getCatalogParameterRenameMessage,
+  resolveCatalogParameterAliases
+} from '../analysis/catalog-parameter-constraints';
+import {getRemovedPointCloudIcpParameterMessage} from '../analysis/catalog-pointcloud-icp-parameters';
 import {parseCatalogFeatureCollection} from '../analysis/catalog-geojson';
 import {parseKeplerDatasetProfileDeclarations} from '../profile/dataset-profile-cache';
 import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';
 import {evaluateKeplerWorkbenchInputs} from '../descriptors/workbench-adapters';
-import {hashWorkflowValue} from './workflow-data';
+import {hashWorkflowValue, makeWorkflowDataFromFeatures} from './workflow-data';
 import {getWorkflowPortCompatibility} from './workflow-operations';
 import {makeWorkflowSourceGeoJSONData} from './workflow-source-operations';
 import {WORKFLOW_LIMITS, WorkflowError} from './workflow-types';
@@ -144,22 +149,51 @@ export function resolveWorkflowParameters(
   operation: WorkflowOperation
 ): Record<string, unknown> {
   const inputs = new Map(document.inputs.map(input => [input.id, input.value]));
-  return Object.fromEntries(
-    operation.parameters.flatMap(parameter => {
-      const binding = Object.hasOwn(step.parameters, parameter.name)
-        ? step.parameters[parameter.name]
-        : undefined;
-      const value =
-        binding?.from === 'static'
-          ? binding.value
-          : binding?.from === 'input' && inputs.has(binding.inputId)
-            ? inputs.get(binding.inputId)
-            : parameter.defaultValue;
-      return value === undefined
-        ? []
-        : [[parameter.name, Array.isArray(value) ? [...value] : value]];
-    })
+  const explicit: Record<string, unknown> = {};
+  for (const parameter of operation.parameters) {
+    const binding = Object.hasOwn(step.parameters, parameter.name)
+      ? step.parameters[parameter.name]
+      : undefined;
+    const value =
+      binding?.from === 'static'
+        ? binding.value
+        : binding?.from === 'input'
+          ? inputs.get(binding.inputId)
+          : undefined;
+    if (value !== undefined) explicit[parameter.name] = Array.isArray(value) ? [...value] : value;
+  }
+  let resolved = explicit;
+  try {
+    resolved = resolveCatalogParameterAliases(operation.parameters, explicit, (name, problem) => {
+      throw new WorkflowError('parameter-out-of-range', `${operation.id}: ${name} ${problem}`);
+    });
+  } catch (cause) {
+    if (!(cause instanceof WorkflowError)) throw cause;
+    // This is the raw inspector resolver: retain invalid edits so forms can render their
+    // named error. Planning, preflight and execution reject them in normalizeParameters.
+    // In particular, never replace a genuinely conflicting explicit pair with one spelling.
+  }
+  const defaults = resolveCatalogParameterAliases(
+    operation.parameters,
+    Object.fromEntries(
+      operation.parameters.flatMap(parameter =>
+        parameter.defaultValue === undefined
+          ? []
+          : [
+              [
+                parameter.name,
+                Array.isArray(parameter.defaultValue)
+                  ? [...parameter.defaultValue]
+                  : parameter.defaultValue
+              ]
+            ]
+      )
+    ),
+    (name, problem) => {
+      throw new WorkflowError('parameter-out-of-range', `${operation.id}: ${name} ${problem}`);
+    }
   );
+  return {...defaults, ...resolved};
 }
 
 /** Explicit values only: filling operation constants here would erase AX default provenance. */
@@ -374,6 +408,71 @@ export type WorkflowPlanOptions = {
   observedKinds?: Readonly<Record<string, Readonly<Record<string, WorkflowPortKind>>>>;
 };
 
+/** Resolve inherited representations for planning, editing and host port summaries. Unknown sources defer. */
+export function getWorkflowOutputKind(
+  document: WorkflowDocument,
+  registry: WorkflowOperationRegistry,
+  stepId: string,
+  outputName: string,
+  options: Pick<WorkflowPlanOptions, 'host' | 'observedKinds'> = {},
+  visited = new Set<string>()
+): WorkflowPortKind {
+  const producerObservations =
+    options.observedKinds && Object.hasOwn(options.observedKinds, stepId)
+      ? options.observedKinds[stepId]
+      : undefined;
+  const observed =
+    producerObservations && Object.hasOwn(producerObservations, outputName)
+      ? producerObservations[outputName]
+      : undefined;
+  if (observed) return observed;
+  const producer = document.steps.find(step => step.id === stepId);
+  const operation = producer && registry.get(producer.operationId);
+  const output = operation?.outputs.find(port => port.name === outputName);
+  if (!producer || !operation || !output || visited.has(stepId)) return 'features';
+  visited.add(stepId);
+  if (output.kindFrom) {
+    const connection = producer.inputs[output.kindFrom];
+    return connection
+      ? getWorkflowOutputKind(
+          document,
+          registry,
+          connection.stepId,
+          connection.output,
+          options,
+          visited
+        )
+      : 'features';
+  }
+  if (producer.operationId === 'source-dataset') {
+    const values = resolveWorkflowParameters(document, producer, operation);
+    const dataset = options.host
+      ?.listDatasets()
+      .find(candidate => candidate.id === values['dataset']);
+    const profile = dataset ? options.host?.getAnalysisProfile?.(dataset.id) : undefined;
+    if (profile?.kind === 'surface') return 'raster';
+    if (values['geometryMode'] === 'none') return profile ? 'table' : 'features';
+    if (values['geometryMode'] === 'point-columns') return 'point';
+    if (
+      profile?.catalogGeometry &&
+      profile.geometryColumns.includes(String(values['geometryField']))
+    )
+      return profile.catalogGeometry;
+  }
+  if (producer.operationId === 'source-geojson') {
+    try {
+      const values = resolveWorkflowParameters(document, producer, operation);
+      return makeWorkflowDataFromFeatures(parseCatalogFeatureCollection(String(values['text'])), {
+        id: producer.id,
+        label: producer.label ?? operation.title
+      }).kind;
+    } catch {
+      return 'features';
+    }
+  }
+  return output.kind;
+}
+
 /**
  * Static plan: order, normalised parameters, issues, status and content key per step.
  *
@@ -483,14 +582,13 @@ export function planWorkflow(
         continue;
       }
       if (!input) continue;
-      const observations =
-        options.observedKinds && Object.hasOwn(options.observedKinds, producer.id)
-          ? options.observedKinds[producer.id]
-          : undefined;
-      const kind =
-        observations && Object.hasOwn(observations, output.name)
-          ? (observations[output.name] ?? output.kind)
-          : output.kind;
+      const kind = getWorkflowOutputKind(
+        document,
+        options.registry,
+        producer.id,
+        output.name,
+        options
+      );
       const compatibility = getWorkflowPortCompatibility(kind, input);
       const connectionMessage = `"${input.label}" accepts ${input.accepts.map(formatKind).join(' or ')}; "${output.label}" of ${getLabel(producer.id)} is ${formatKind(kind)}.`;
       if (compatibility === 'no') {
@@ -517,9 +615,11 @@ export function planWorkflow(
     for (const name of Object.keys(step.parameters).sort(compareIds)) {
       const parameter = operation.parameters.find(specification => specification.name === name);
       if (!parameter) {
-        addIssue('unknown-parameter', 'error', `parameter "${name}" is not declared.`, {
-          parameter: name
-        });
+        const problem =
+          getRemovedPointCloudIcpParameterMessage(step.operationId, name) ??
+          getCatalogParameterRenameMessage(operation.parameters, name) ??
+          `parameter "${name}" is not declared.`;
+        addIssue('unknown-parameter', 'error', problem, {parameter: name});
       }
       const binding = step.parameters[name];
       if (binding.from === 'input' && !workflowInputs.has(binding.inputId)) {

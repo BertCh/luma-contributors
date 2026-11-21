@@ -36,6 +36,7 @@ import {
   readCatalogLine
 } from './catalog-platform4-geometry-common';
 import {makeLocalFrame} from './catalog-local-frame';
+import {createCatalogFrame} from './catalog-gpu-pack';
 
 const LINE_COLUMNS = {
   line_id: 'string',
@@ -187,13 +188,15 @@ export async function runGpuLineSmooth(
           })
       )
     );
-    group.forEach(({row}, index) =>
-      smoothed.set(row, readCatalogLine(result, index, frame.inverse))
-    );
+    for (let index = 0; index < result.lineCount; index++) {
+      const source = result.sourceLineIndices[index];
+      smoothed.set(group[source].row, readCatalogLine(result, index, frame.inverse));
+    }
   }
   const table = makeCatalogTable('smoothed-lines', 'Smoothed lines', LINE_COLUMNS, 'geometry');
   parts.forEach((part, row) => {
-    const line = smoothed.get(row)!;
+    const line = smoothed.get(row);
+    if (!line) return;
     appendCatalogRow(table, {
       line_id: `${part.sourceIndex}:${part.partIndex}`,
       ...getCatalogSourceColumns(part.feature, part.sourceIndex),
@@ -254,11 +257,17 @@ export async function runGpuLineChunk(
   // Chunk count exceeds the declared output capacity; the CPU engine raises the allocation error.
   if (lineCapacity > maximumRows) throw new CatalogGpuUnsupportedError('Chunk capacity exceeded');
   // Longitude/latitude interpolates on the sphere, so the raw (unshifted) degrees go in.
-  const packed = packCatalogParts(
-    parts.map(part =>
-      part.coordinates.map(position => [position[0], position[1]] as [number, number])
-    )
-  );
+  const frame =
+    parameters.coordinateSystem === 'planar'
+      ? (() => {
+          const frame = createCatalogFrame('planar', [lines]);
+          return {forward: frame.project, inverse: frame.unproject};
+        })()
+      : {
+          forward: (position: CatalogPosition): [number, number] => [position[0], position[1]],
+          inverse: (x: number, y: number): [number, number] => [x, y]
+        };
+  const packed = packCatalogParts(parts.map(part => part.coordinates.map(frame.forward)));
   const spatialContext = getMeasureContext(parameters.coordinateSystem);
   const vertexCapacity = packed.positions.length / 2 + 2 * lineCapacity + 16;
   const result = await withCatalogGpuSession(context.device, 'catalog-line-chunk', session =>
@@ -314,10 +323,7 @@ export async function runGpuLineChunk(
       start_measure: startMeasure,
       end_measure: endMeasure,
       length: endMeasure - startMeasure,
-      geometry: makeCatalogGeometryText(
-        'LineString',
-        readCatalogLine(result, piece, (x, y) => [x, y])
-      )
+      geometry: makeCatalogGeometryText('LineString', readCatalogLine(result, piece, frame.inverse))
     });
   }
   const diagnostics: CatalogDiagnostic[] = [];
@@ -401,7 +407,7 @@ export async function runGpuLineMerge(
       const coordinates = lineReversed[row]
         ? [...parts[row].coordinates].reverse()
         : parts[row].coordinates;
-      chain.push(...(index === 0 ? coordinates : coordinates.slice(1)));
+      for (const position of index === 0 ? coordinates : coordinates.slice(1)) chain.push(position);
     });
     const sourceIndices = [...new Set(chainMembers.map(row => parts[row].sourceIndex))].sort(
       (first, second) => first - second

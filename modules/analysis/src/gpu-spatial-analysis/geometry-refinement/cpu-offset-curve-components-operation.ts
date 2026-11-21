@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateCapacity,
   validateFiniteNumber
@@ -23,8 +24,8 @@ import {
 
 /** Packed original lines and their raw offset curves, in matching line order. */
 export type CPUOffsetCurveComponentsInput = {
-  original: {positions: Float32Array; lineOffsets: Uint32Array};
-  raw: {positions: Float32Array; lineOffsets: Uint32Array};
+  original: {positions: Float32Array; lineOffsets: Uint32Array; featureOffsets?: Uint32Array};
+  raw: {positions: Float32Array; lineOffsets: Uint32Array; featureOffsets?: Uint32Array};
 };
 
 /** Output dimensions, geometric parameters and optional noding budgets (uncapped when omitted). */
@@ -39,7 +40,7 @@ export type CPUOffsetCurveComponentsResult = {
   positions: Float32Array;
   components: Uint32Array;
   sourceEdges: Uint32Array;
-  /** [writtenComponents,writtenVertices,requiredComponents,requiredVertices,overflow,incompleteNoding,0,0]. */
+  /** [writtenComponents,writtenVertices,requiredComponents,requiredVertices,overflow,incompleteNoding,iterationLimit,0]. */
   status: Uint32Array;
 };
 
@@ -67,14 +68,15 @@ function validateOptions(id: string, options: CPUOffsetCurveComponentsOptions): 
  * first-match ties, whole-component metadata publication and partial writes.
  *
  * What differs from the GPU contributor:
- * - Arithmetic is float64, rounded once at output; distance-band, coincidence and cut decisions
+ * - Arithmetic is float64, with fragment endpoints captured as float32; distance-band and cut decisions
  *   near tolerance boundaries can differ.
  * - Noding uses exact rational predicates/visit keys on float32 input edges. Optional segmentCapacity
  *   retains a traversal-order prefix; optional intersectionCapacity suppresses geometry when its
  *   pair list is exhausted, since the GPU's spatial-index-dependent partial prefix is not replayed.
  *   Either loss sets incompleteNoding=1 without setting final-output overflow. Omitted budgets are
  *   uncapped. No uncertain-predicate status, 1024-successor scan or GPU binding limit is imposed.
- * - Intersections remain float64 through clipping instead of being rounded in intermediate buffers.
+ * - Intersections remain float64 through cut construction; fragment endpoints are rounded before
+ *   topology assembly to match their published representation.
  * - Unused positions/sourceEdges are zeroed; the GPU leaves them untouched on reused buffers.
  * - Empty coordinate arrays with valid zero offsets are accepted. Empty raw arrays return
  *   zero-filled outputs with all-zero status; the GPU noding delegate requires a raw coordinate row.
@@ -93,6 +95,46 @@ export function computeOffsetCurveComponentsOnCPU(
   validateCPURefinementLines(input.raw.positions, input.raw.lineOffsets, 'raw');
   if (input.original.lineOffsets.length !== input.raw.lineOffsets.length)
     throw new Error('raw.lineOffsets must match original.lineOffsets length');
+  const featureOffsets = input.original.featureOffsets;
+  const rawFeatureOffsets = input.raw.featureOffsets;
+  if (featureOffsets || rawFeatureOffsets) {
+    if (
+      !featureOffsets ||
+      !rawFeatureOffsets ||
+      featureOffsets.length !== rawFeatureOffsets.length ||
+      featureOffsets.length < 1
+    )
+      throw new Error(
+        'offset-curve-components original.featureOffsets and raw.featureOffsets must have identical grouping; supply both arrays'
+      );
+    if (
+      featureOffsets[0] !== 0 ||
+      featureOffsets[featureOffsets.length - 1] !== input.original.lineOffsets.length - 1
+    )
+      throw new Error(
+        'offset-curve-components original.featureOffsets must span every source line part'
+      );
+    for (let row = 0; row < featureOffsets.length; row++) {
+      if (
+        featureOffsets[row] !== rawFeatureOffsets[row] ||
+        (row > 0 && featureOffsets[row] < featureOffsets[row - 1])
+      )
+        throw new Error(
+          'offset-curve-components original.featureOffsets and raw.featureOffsets must be identical nondecreasing feature-to-part offsets'
+        );
+    }
+  }
+  const getFeatureRow = (line: number): number => {
+    if (!featureOffsets) return 0;
+    let low = 0;
+    let high = featureOffsets.length - 1;
+    while (high - low > 1) {
+      const middle = Math.floor((low + high) / 2);
+      if (featureOffsets[middle] <= line) low = middle;
+      else high = middle;
+    }
+    return low;
+  };
   const noded = nodeCPURefinementLines(input.raw.positions, input.raw.lineOffsets, {
     intersectionCapacity: options.intersectionCapacity
   });
@@ -111,7 +153,13 @@ export function computeOffsetCurveComponentsOnCPU(
     y: input.original.positions[row * 2 + 1]
   });
   const offsets = input.original.lineOffsets;
-  const getSeparation = (query: Point, line: number, owner: number, outerJoin: boolean): number => {
+  const getSeparation = (
+    query: Point,
+    line: number,
+    owner: number,
+    outerJoin: boolean,
+    roundingSign: number
+  ): number => {
     let minimum = MAXIMUM_SEPARATION;
     for (let vertex = offsets[line]; vertex + 1 < offsets[line + 1]; vertex++) {
       if (outerJoin && (vertex === owner || vertex + 1 === owner)) continue;
@@ -129,13 +177,27 @@ export function computeOffsetCurveComponentsOnCPU(
           ((query.x - start.x) * directionX + (query.y - start.y) * directionY) / denominator
         )
       );
-      minimum = Math.min(
-        minimum,
-        Math.hypot(
-          query.x - start.x - fraction * directionX,
-          query.y - start.y - fraction * directionY
-        )
-      );
+      const residualX = query.x - start.x - fraction * directionX;
+      const residualY = query.y - start.y - fraction * directionY;
+      const separation = Math.hypot(residualX, residualY);
+      const length = Math.sqrt(denominator);
+      const normalX =
+        fraction > 0 && fraction < 1
+          ? -directionY / length
+          : separation > 0
+            ? residualX / separation
+            : 0;
+      const normalY =
+        fraction > 0 && fraction < 1
+          ? directionX / length
+          : separation > 0
+            ? residualY / separation
+            : 0;
+      // Coordinate rounding matters only along this source-distance measurement direction.
+      const roundingFloor =
+        1.1920928955078125e-7 *
+        (distance + Math.abs(query.x * normalX) + Math.abs(query.y * normalY));
+      minimum = Math.min(minimum, separation + roundingSign * roundingFloor);
     }
     return minimum;
   };
@@ -146,35 +208,9 @@ export function computeOffsetCurveComponentsOnCPU(
     const directionY = end.y - start.y;
     const squaredLength = directionX ** 2 + directionY ** 2;
     if (squaredLength === 0) continue;
-    // GPULineNoding publishes the nearest input edge to the atomic segment's midpoint,
-    // with ties to the smallest edge ID, including coincident traversals of the same line.
-    const midpointX = (start.x + end.x) * 0.5;
-    const midpointY = (start.y + end.y) * 0.5;
-    let rawEdge = 0xffffffff;
-    let bestError = Infinity;
-    for (
-      let candidate = input.raw.lineOffsets[line];
-      candidate + 1 < input.raw.lineOffsets[line + 1];
-      candidate++
-    ) {
-      const startX = input.raw.positions[candidate * 2];
-      const startY = input.raw.positions[candidate * 2 + 1];
-      const deltaX = input.raw.positions[(candidate + 1) * 2] - startX;
-      const deltaY = input.raw.positions[(candidate + 1) * 2 + 1] - startY;
-      const lengthSquared = deltaX ** 2 + deltaY ** 2;
-      if (lengthSquared === 0 || !Number.isFinite(lengthSquared)) continue;
-      const parameter = Math.max(
-        0,
-        Math.min(1, ((midpointX - startX) * deltaX + (midpointY - startY) * deltaY) / lengthSquared)
-      );
-      const error =
-        (midpointX - (startX + parameter * deltaX)) ** 2 +
-        (midpointY - (startY + parameter * deltaY)) ** 2;
-      if (error < bestError) {
-        bestError = error;
-        rawEdge = candidate;
-      }
-    }
+    // Traversal identity survives cancellation: a later coincident edge must not
+    // inherit the earliest edge's row merely because its geometry is identical.
+    const rawEdge = segment.source;
     const owner = Math.floor(rawEdge / rowsPerVertex);
     let outerJoin = false;
     if (
@@ -228,6 +264,17 @@ export function computeOffsetCurveComponentsOnCPU(
       for (const endpoint of [first, last]) {
         const deltaX = start.x - endpoint.x;
         const deltaY = start.y - endpoint.y;
+        const endDeltaX = end.x - endpoint.x;
+        const endDeltaY = end.y - endpoint.y;
+        // A circle tangent at an existing endpoint adds no interior cut. Construct this tie
+        // before normalizing the direction: reciprocal division can otherwise split the tie.
+        if (
+          (deltaX * directionX + deltaY * directionY === 0 &&
+            deltaX ** 2 + deltaY ** 2 === distance ** 2) ||
+          (endDeltaX * directionX + endDeltaY * directionY === 0 &&
+            endDeltaX ** 2 + endDeltaY ** 2 === distance ** 2)
+        )
+          continue;
         const segmentLength = Math.sqrt(squaredLength);
         const unitX = directionX / segmentLength;
         const unitY = directionY / segmentLength;
@@ -251,41 +298,48 @@ export function computeOffsetCurveComponentsOnCPU(
     cuts.sort((left, right) => left.fraction - right.fraction);
     const outwardX = -directionY / Math.sqrt(squaredLength);
     const outwardY = directionX / Math.sqrt(squaredLength);
-    const epsilon = Math.max(1e-5, tolerance * 2, distance * 1e-5);
     for (let slot = 0; slot + 1 < cuts.length; slot++) {
       const firstCut = cuts[slot];
       const lastCut = cuts[slot + 1];
       const first = firstCut.fraction;
       const last = lastCut.fraction;
       if (last <= first) continue;
+      // Topology is published as float32: distinct cut parameters can describe one vertex.
+      const publishedStart = {x: Math.fround(firstCut.point.x), y: Math.fround(firstCut.point.y)};
+      const publishedEnd = {x: Math.fround(lastCut.point.x), y: Math.fround(lastCut.point.y)};
+      if (publishedStart.x === publishedEnd.x && publishedStart.y === publishedEnd.y) continue;
       const middle = {
         x: start.x + (first + last) * 0.5 * directionX,
         y: start.y + (first + last) * 0.5 * directionY
       };
-      if (getSeparation(middle, line, owner, outerJoin) + tolerance < distance) continue;
+      const probeFloor =
+        1.1920928955078125e-7 *
+        Math.max(distance, Math.abs(middle.x * outwardX), Math.abs(middle.y * outwardY));
+      const epsilon = Math.max(probeFloor * 4, 1e-5, tolerance * 2, distance * 1e-5);
+      if (getSeparation(middle, line, owner, outerJoin, 1) + tolerance < distance) continue;
+      const positiveProbe = getSeparation(
+        {x: middle.x + epsilon * outwardX, y: middle.y + epsilon * outwardY},
+        line,
+        owner,
+        outerJoin,
+        -1
+      );
+      const negativeProbe = getSeparation(
+        {x: middle.x - epsilon * outwardX, y: middle.y - epsilon * outwardY},
+        line,
+        owner,
+        outerJoin,
+        -1
+      );
       if (
-        Math.hypot(lastCut.point.x - firstCut.point.x, lastCut.point.y - firstCut.point.y) >
+        Math.hypot(publishedEnd.x - publishedStart.x, publishedEnd.y - publishedStart.y) >
           epsilon &&
-        Math.max(
-          getSeparation(
-            {x: middle.x + epsilon * outwardX, y: middle.y + epsilon * outwardY},
-            line,
-            owner,
-            outerJoin
-          ),
-          getSeparation(
-            {x: middle.x - epsilon * outwardX, y: middle.y - epsilon * outwardY},
-            line,
-            owner,
-            outerJoin
-          )
-        ) <=
-          distance + epsilon * 0.05
+        Math.max(positiveProbe, negativeProbe) <= distance + epsilon * 0.05
       )
         continue;
       fragments.push({
-        start: firstCut.point,
-        end: lastCut.point,
+        start: publishedStart,
+        end: publishedEnd,
         line,
         source: owner,
         state: 1
@@ -326,7 +380,13 @@ export function computeOffsetCurveComponentsOnCPU(
     }
     vertexCount++;
   };
-  while (true) {
+  let consumed = 0;
+  let iterationLimit = 0;
+  for (
+    let componentRound = 0;
+    componentRound < fragments.length && consumed < fragments.length;
+    componentRound++
+  ) {
     let seed: Fragment | undefined;
     for (const candidate of fragments) {
       if (candidate.state !== 1) continue;
@@ -348,7 +408,7 @@ export function computeOffsetCurveComponentsOnCPU(
     const componentStart = vertexCount;
     writeVertex(seed.start, seed.source);
     let fragment: Fragment | undefined = seed;
-    while (fragment) {
+    for (; fragment && consumed < fragments.length; consumed++) {
       fragment.state = 2;
       const finish: Point = fragment.end;
       writeVertex(finish, fragment.source);
@@ -357,9 +417,13 @@ export function computeOffsetCurveComponentsOnCPU(
           candidate.state === 1 && candidate.line === seed.line && matches(finish, candidate.start)
       );
     }
+    if (fragment) {
+      iterationLimit = 1;
+      break;
+    }
     if (componentCount < options.componentCapacity && vertexCount <= options.vertexCapacity) {
       result.components.set(
-        [componentStart, vertexCount - componentStart, seed.line, 0],
+        [componentStart, vertexCount - componentStart, seed.line, getFeatureRow(seed.line)],
         componentCount * 4
       );
       writtenComponents++;
@@ -367,14 +431,15 @@ export function computeOffsetCurveComponentsOnCPU(
     }
     componentCount++;
   }
+  if (fragments.some(fragment => fragment.state === 1)) iterationLimit = 1;
   result.status.set([
-    writtenComponents,
-    writtenVertices,
+    iterationLimit ? 0 : writtenComponents,
+    iterationLimit ? 0 : writtenVertices,
     componentCount,
     vertexCount,
     Number(componentCount > options.componentCapacity || vertexCount > options.vertexCapacity),
     incompleteNoding,
-    0,
+    iterationLimit,
     0
   ]);
   return result;
@@ -383,6 +448,35 @@ export function computeOffsetCurveComponentsOnCPU(
 /** CPU twin: honours noding budgets; pair exhaustion suppresses geometry with incompleteNoding=1. */
 export class CPUOffsetCurveComponentsOperation extends GPUCPUOperation {
   constructor(props: OffsetCurveComponentsOperationProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'original',
+      'raw',
+      'lineCount',
+      'distance',
+      'tolerance',
+      'rowsPerVertex',
+      'intersectionCapacity',
+      'segmentCapacity',
+      'vertexCapacity',
+      'componentCapacity',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      original: snapshotConstructionFields(snapshot.original, [
+        'positions',
+        'lineOffsets',
+        'featureOffsets'
+      ]),
+      raw: snapshotConstructionFields(snapshot.raw, ['positions', 'lineOffsets', 'featureOffsets']),
+      output: snapshotConstructionFields(snapshot.output, [
+        'positions',
+        'components',
+        'sourceEdges',
+        'status'
+      ])
+    });
     const id = props.id ?? 'offset-curve-components';
     validateOptions(id, props);
     validateCapacity(id, 'lineCount', props.lineCount);
@@ -410,11 +504,17 @@ export class CPUOffsetCurveComponentsOperation extends GPUCPUOperation {
           {
             original: {
               positions: getCPUOperationFloat32Rows(id, inputs, 'originalPositions', 'float32x2'),
-              lineOffsets: originalOffsets
+              lineOffsets: originalOffsets,
+              featureOffsets: props.original.featureOffsets
+                ? getCPUOperationUint32Rows(id, inputs, 'originalFeatures')
+                : undefined
             },
             raw: {
               positions: getCPUOperationFloat32Rows(id, inputs, 'rawPositions', 'float32x2'),
-              lineOffsets: rawOffsets
+              lineOffsets: rawOffsets,
+              featureOffsets: props.raw.featureOffsets
+                ? getCPUOperationUint32Rows(id, inputs, 'rawFeatures')
+                : undefined
             }
           },
           props

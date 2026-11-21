@@ -13,6 +13,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/shape-descriptors/gpu-shape-descriptors-operation';
 import {getGPUShapeDescriptorsParameterValues} from '../../../src/gpu-spatial-analysis/shape-descriptors/gpu-shape-descriptors';
 import {flattenPolygonFeatures} from '../geometry-measures/polygon-layout';
+import {makeCPUInputRows} from '../../analysis-core/mixed-execution/output-oracles-test-utils';
 
 const PROPS: ShapeDescriptorsOperationProps = {
   id: 'shape-test',
@@ -133,9 +134,10 @@ it('handles empty and zero-area features and rejects inconsistent arrays by name
 it('validates operation shapes and aliases at construction', () => {
   for (const Operation of [GPUShapeDescriptorsOperation, CPUShapeDescriptorsOperation]) {
     expect(() => new Operation(PROPS)).not.toThrow();
-    expect(() => new Operation({...PROPS, featureCount: 0})).toThrow(/^shape-test/);
+    expect(() => new Operation({...PROPS, featureCount: 0})).not.toThrow();
     expect(() => new Operation({...PROPS, output: {areas: 'positions'}})).toThrow(/^shape-test/);
   }
+  // @ts-expect-error Deliberately test the JavaScript guard for an empty selection.
   expect(() => new CPUShapeDescriptorsOperation({...PROPS, output: {}})).toThrow(
     /^shape-test.*output/
   );
@@ -170,6 +172,7 @@ it('uses the feature row interval for hull membership with descending ring offse
     {
       positions: new Float32Array([0, 0, 4, 0, 4, 4, 0, 4]),
       ringOffsets: new Uint32Array([0, 4, 0]),
+      storage: 'resident-capacity',
       polygonOffsets: new Uint32Array([0, 2]),
       featureOffsets: new Uint32Array([0, 1])
     },
@@ -186,3 +189,46 @@ it('uses the feature row interval for hull membership with descending ring offse
   expect(result.clockwise[0]).toBe(0);
   expect(result.sliver[0]).toBe(0);
 });
+
+for (const convexityMethod of ['gift-wrapping', 'monotone-chain'] as const) {
+  it(`measures a square with an empty hull interval in the named CPU form (${convexityMethod})`, async () => {
+    const inputs = {
+      positions: makeCPUInputRows('float32x2', Float32Array.of(0, 0, 4, 0, 4, 4, 0, 4)),
+      ringOffsets: makeCPUInputRows('uint32', Uint32Array.of(0, 4, 0)),
+      polygonOffsets: makeCPUInputRows('uint32', Uint32Array.of(0, 2)),
+      featureOffsets: makeCPUInputRows('uint32', Uint32Array.of(0, 1)),
+      parameters: makeCPUInputRows('float32', getGPUShapeDescriptorsParameterValues())
+    };
+    const props: ShapeDescriptorsOperationProps = {
+      ...PROPS,
+      convexityMethod,
+      output: {
+        areas: 'areas',
+        perimeters: 'perimeters',
+        polsbyPopper: 'polsbyPopper',
+        schwartzberg: 'schwartzberg',
+        elongation: 'elongation',
+        orientation: 'orientation',
+        convexity: 'convexity',
+        clockwise: 'clockwise',
+        sliver: 'sliver'
+      }
+    };
+    const result = await new CPUShapeDescriptorsOperation(props).execute({inputs});
+    // The first ring is a 4-by-4 square; the full feature's hull window is [0, 0).
+    expect(result).toEqual({
+      areas: Float32Array.of(16),
+      perimeters: Float32Array.of(16),
+      polsbyPopper: Float32Array.of(Math.PI / 4),
+      schwartzberg: Float32Array.of(Math.sqrt(Math.PI) / 2),
+      elongation: Float32Array.of(0),
+      orientation: Float32Array.of(0),
+      convexity: Float32Array.of(NaN),
+      clockwise: Uint32Array.of(0),
+      sliver: Uint32Array.of(0)
+    });
+    expect(() =>
+      new CPUShapeDescriptorsOperation({...props, storage: 'compact'}).execute({inputs})
+    ).toThrow(/ringOffsets/);
+  });
+}

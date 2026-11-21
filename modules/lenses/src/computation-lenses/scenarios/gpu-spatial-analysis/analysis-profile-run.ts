@@ -160,8 +160,12 @@ export async function runAnalysisProfileExample(
         counts: values('counts'),
         median: values('median'),
         validity: values('validity'),
-        overflow: values('weightsOverflow'),
-        candidateOverflow: values('candidateOverflow')
+        weights: {
+          status: {
+            overflow: values('weightsOverflow'),
+            candidateOverflow: values('candidateOverflow')
+          }
+        }
       });
       if (
         !statistics.exact ||

@@ -155,7 +155,11 @@ export function traceStreamlineCandidatesOnCPU(
         }
         const nextX = fround(x + stepLength * middle[0]);
         const nextY = fround(y + stepLength * middle[1]);
-        if (getStreamlineGridCell(nextX, nextY, parameters, config) < 0) {
+        // RT-124: the landing needs velocity support as well as a grid cell.
+        if (
+          !sampleFieldOnCPU(field, nextX, nextY, fieldExtent) ||
+          getStreamlineGridCell(nextX, nextY, parameters, config) < 0
+        ) {
           break;
         }
         x = nextX;

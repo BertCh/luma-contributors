@@ -255,7 +255,7 @@ async function computeHotSpotGpu(
         parameters,
         minimumNeighbors: lattice.minimumNeighbors,
         multipleTesting: lattice.multipleTesting,
-        outputs: {
+        output: {
           zScores: zScores.view,
           pValues: pValues.view,
           bins: bins.view,

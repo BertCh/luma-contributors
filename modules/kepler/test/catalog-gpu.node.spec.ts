@@ -546,13 +546,13 @@ test('bindings declare their engine honestly and GPU-only operations carry no CP
 
 test('catalog entries name the dispatched engine and keep honest reasons for the rest', () => {
   const entries = listCatalogEntries({lensScenarios: []});
-  const byName = new Map(entries.map(entry => [entry.contributorName, entry]));
+  const byName = new Map(entries.map(entry => [entry.identity.exportName, entry]));
   expect(byName.get('GPUGeometryMeasures')?.engine).toBe('gpu-or-cpu');
   expect(byName.get('GPUPolygonOverlay')?.engine).toBe('gpu');
   expect(byName.get('GPUNetworkIsochrones')?.engine).toBe('gpu');
   expect(byName.get('GPUNetworkReachability')?.runnable).toBe('catalog-binding');
-  // Curated drive-time bands now dispatch service areas directly on the GPU.
-  expect(byName.get('GPUNetworkServiceAreas')?.engine).toBe('gpu');
+  // Drive-time bands dispatch service areas on the GPU. Network service areas also have a CPU route.
+  expect(byName.get('GPUNetworkServiceAreas')?.engine).toBe('gpu-or-cpu');
   const unbound = entries.filter(entry => entry.runnable === 'no');
   expect(unbound.length).toBeGreaterThan(0);
   for (const entry of unbound) {
@@ -570,7 +570,7 @@ test('catalog entries name the dispatched engine and keep honest reasons for the
       }
     ]
   });
-  const moran = withLens.find(entry => entry.contributorName === 'GPULocalMoran');
+  const moran = withLens.find(entry => entry.identity.exportName === 'GPULocalMoran');
   if (moran) {
     // A registered catalog binding wins over the lens scenario, which stays listed alongside it.
     expect(moran.runnable).toBe('catalog-binding');

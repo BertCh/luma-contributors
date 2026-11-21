@@ -42,9 +42,11 @@ import {
   type GPUSpatialContext,
   getGPUSphereRadius
 } from '../../analysis-core/contracts/spatial-context';
+import {getKnownGPUSpatialFrameUnit} from '../../analysis-core/contracts/spatial-frame';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {COOPERATIVE_RING_ROWS} from './feature-measures-cooperative';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   createFeatureMeasuresNode,
   createGroupReduceNode,
@@ -62,6 +64,34 @@ import {
 } from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPUGeometryMeasures';
+
+/** Validate names before the declared-field snapshot can discard an unsupported port. */
+function validateMeasureOutputKeys(id: string, name: string, output: object | undefined): void {
+  const supported = new Set([
+    'lengths',
+    'areas',
+    'centroids',
+    'bounds',
+    'vertexCounts',
+    'featureCounts',
+    ...(name === 'output' ? ['extremeVertices', 'status'] : [])
+  ]);
+  for (
+    let descriptor = output;
+    descriptor && descriptor !== Object.prototype;
+    descriptor = Object.getPrototypeOf(descriptor)
+  ) {
+    for (const key of Object.getOwnPropertyNames(descriptor)) {
+      if (descriptor !== output) {
+        const property = Object.getOwnPropertyDescriptor(descriptor, key);
+        // Prototype methods describe the destination object, not measure columns.
+        // Inspect descriptors so supported/unsupported getters are never invoked here.
+        if (key === 'constructor' || (property && typeof property.value === 'function')) continue;
+      }
+      validateRequirement(id, supported.has(key), `${name}.${key} is not a measure column`);
+    }
+  }
+}
 
 // No measure declaration: this operator outputs both lengths and areas.
 const GEOMETRY_MEASURES_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
@@ -84,12 +114,19 @@ export type GPUGeometryMeasuresOutput = {
   /**
    * Polygon area, the sum of the shell areas minus the sum of the hole areas. Ring role is
    * positional (the first ring of each polygon is the shell and later rings are holes, whatever
-   * their winding), so it is never negative. Polygons only.
+   * their winding), so it is never negative. Point and line features publish zero.
    */
   areas?: GraphDataView<'float32'>;
-  /** Area-weighted (polygons) or length-weighted (lines) centroid. */
+  /**
+   * Area-weighted (polygons) or length-weighted (lines) centroid. Feature longitude stays on the
+   * feature's unwrapped branch; geographic group longitude uses the principal [-180, 180] branch.
+   */
   centroids?: GraphDataView<'float32x2'>;
-  /** `[minX, minY, maxX, maxY]`. Geographic longitudes are unwrapped from the first vertex. */
+  /**
+   * `[minX, minY, maxX, maxY]`. Geographic feature longitudes are unwrapped from the first vertex.
+   * Geographic groups align interval centers by whole turns to the first nonempty feature's interval.
+   * Bounds and viewport queries must use a common longitude branch (or union per-turn masks).
+   */
   bounds?: GraphDataView<'float32x4'>;
   /** Number of vertex rows. */
   vertexCounts?: GraphDataView<'uint32'>;
@@ -164,8 +201,8 @@ type GPUGeometryMeasuresSharedProps = {
  *   `featureCount + 1` monotonic line offsets so a feature owns several lines (multi-lines).
  * - `'points'`: `positions` only (one feature per point), or with `featureOffsets`
  *   `featureCount + 1` monotonic point offsets so a feature owns several points (multi-points,
- *   centroid = vertex mean as shapely's `MultiPoint.centroid`; lengths are zero and `areas` is
- *   unavailable).
+ *   centroid = vertex mean as shapely's `MultiPoint.centroid`; lengths and areas are zero,
+ *   including group totals).
  *
  * Per-frame (no recompile): the contents of every input buffer. Compile-time: view lengths, the
  * feature and group counts, `geometryType`, `spatialContext`, `ellipsoidalEdgeModel`, and which
@@ -221,7 +258,9 @@ export type GPUGeometryMeasuresProps = GPUGeometryMeasuresSharedProps &
  * between antipodal endpoints are ambiguous. Prepare global rings with `GPULonLatPolygonPreparation`.
  *
  * **Measure model.** {@link GPUGeometryMeasures.measures} describes the length and area models and
- * units of the outputs: the context's length unit and its square for areas.
+ * units of the outputs: the context's length unit and its square for areas. Requests for lengths
+ * or areas reject known angular planar frames, even with metric none and omitted result units;
+ * project to a planar linear frame first. Coordinate-only columns remain accepted with metric none.
  *
  * **Groups.** Features are stably sorted by group ID; one workgroup per group reduces its
  * features with a fixed tree (bitwise reproducible). Group centroids are the area- or
@@ -229,6 +268,10 @@ export type GPUGeometryMeasuresProps = GPUGeometryMeasuresSharedProps &
  * the feature centroids as 3D unit vectors (a spherical centroid, correct across the
  * antimeridian); an antipodal group with no mean direction reports NaN. Planar groups are
  * unchanged. A group that contains an invalid feature reports NaN area and centroid.
+ * Feature centroid longitude stays on the feature's unwrapped branch, while geographic group
+ * centroids use the principal [-180, 180] branch. Geographic group bounds translate each feature
+ * interval by a whole turn to align its center to the first nonempty feature's interval (stable feature-row
+ * order), then take the union. Bounds and viewport comparisons need a common longitude branch.
  *
  * **Geodesic areas.** An `'ellipsoidal'` context with the default `ellipsoidalEdgeModel` replaces every edge of 20 km or more by its
  * geodesic, sampled with Vincenty's direct solution at the ends and midpoint of spans of at most
@@ -268,12 +311,94 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   readonly cooperativeRingRows: number;
 
   constructor(props: GPUGeometryMeasuresProps) {
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'geometryType',
+      'positions',
+      'featureOffsets',
+      'lineOffsets',
+      'ringOffsets',
+      'polygonOffsets',
+      'ellipsoidalEdgeModel',
+      'ellipsoidalInverse',
+      'geodesicAreaTolerance',
+      'geodesicAreaMaximumSegments',
+      'cooperativeRingRows',
+      'output',
+      'groupIds',
+      'groupCount',
+      'groupOutput'
+    ] as (keyof GPUGeometryMeasuresProps)[]);
+    validateMeasureOutputKeys(snapshot.id ?? 'geometry-measures', 'output', snapshot.output);
+    validateMeasureOutputKeys(
+      snapshot.id ?? 'geometry-measures',
+      'groupOutput',
+      snapshot.groupOutput
+    );
+    const constructionOutput =
+      snapshot.output &&
+      snapshotConstructionFields(
+        snapshot.output as GPUGeometryMeasuresOutput &
+          Pick<GeometryMeasureColumns, 'featureCounts'>,
+        [
+          'lengths',
+          'areas',
+          'centroids',
+          'bounds',
+          'vertexCounts',
+          'extremeVertices',
+          'featureCounts',
+          'status'
+        ]
+      );
+    props = Object.freeze({
+      ...snapshot,
+      output:
+        constructionOutput &&
+        Object.freeze({
+          ...constructionOutput,
+          status:
+            constructionOutput.status &&
+            snapshotConstructionFields(constructionOutput.status, ['invalidCount'])
+        }),
+      groupOutput:
+        snapshot.groupOutput &&
+        snapshotConstructionFields(snapshot.groupOutput, [
+          'lengths',
+          'areas',
+          'centroids',
+          'bounds',
+          'vertexCounts',
+          'featureCounts'
+        ])
+    });
     this.id = props.id ?? 'geometry-measures';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
       GEOMETRY_MEASURES_SPATIAL_CONTEXT_SUPPORT
+    );
+    const requestsMeasurement =
+      props.output?.lengths !== undefined ||
+      props.output?.areas !== undefined ||
+      props.groupOutput?.lengths !== undefined ||
+      props.groupOutput?.areas !== undefined;
+    const frame = this.spatialContext.frame;
+    const registryUnit = frame?.crs
+      ? getKnownGPUSpatialFrameUnit(frame.crs.trim().toUpperCase())
+      : undefined;
+    // A partial explicit unit declaration cannot erase recognized CRS dimension metadata.
+    const angularUnit = [frame?.unit, registryUnit].find(
+      unit => unit?.degreesPerUnit !== undefined
+    );
+    validateRequirement(
+      this.id,
+      !requestsMeasurement ||
+        this.spatialContext.coordinateSpace !== 'planar' ||
+        angularUnit === undefined,
+      `frame units ${angularUnit?.name} are angular; project positions to a planar linear frame before measuring length or area`
     );
     this.coordinateSystem = resolveGeometryMeasureCoordinateSystem(
       this.id,
@@ -310,9 +435,6 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       'spatialContext sphere radius must be a positive finite number'
     );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length < 1) {
-      throw new Error(`${id} needs at least one position`);
-    }
     const layout = getMeasuredLayout(props);
     if (props.geometryType === 'points' && props.featureOffsets) {
       validateGPUMultipartGeometryPort(id, {
@@ -332,8 +454,10 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       const view = layout[name];
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
-        if (view.length < 2) {
-          throw new Error(`${id} ${name} must contain at least two rows`);
+        if (view.length < (name === 'featureOffsets' ? 2 : 1)) {
+          throw new Error(
+            `${id} ${name} must contain at least ${name === 'featureOffsets' ? 2 : 1} rows`
+          );
         }
       }
     }
@@ -342,8 +466,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       : layout.ringOffsets
         ? layout.ringOffsets.length - 1
         : props.positions.length;
-    const isPolygon = props.geometryType === 'polygons';
-    validateMeasureColumns(id, 'output', output, this.featureCount, isPolygon);
+    validateMeasureColumns(id, 'output', output, this.featureCount);
     const hasGroupOutput = Object.values(groupOutput).some(Boolean);
     if (props.groupIds) {
       validateSinglePackedView(props.groupIds, ['uint32'], `${id} groupIds`);
@@ -354,7 +477,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       if (!hasGroupOutput) {
         throw new Error(`${id} groupIds require at least one groupOutput column`);
       }
-      validateMeasureColumns(id, 'groupOutput', groupOutput, props.groupCount ?? 0, isPolygon);
+      validateMeasureColumns(id, 'groupOutput', groupOutput, props.groupCount ?? 0);
     } else if (hasGroupOutput) {
       throw new Error(`${id} groupOutput requires groupIds`);
     }
@@ -476,7 +599,8 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
           operation: OPERATION,
           view: invalidCount,
           type: 'u32',
-          value: '0u'
+          value: '0u',
+          componentCount: 1
         }),
         createInvalidCountNode<Parameters>(graph, id, featureCount, featureStats, invalidCount)
       );
@@ -676,8 +800,7 @@ function validateMeasureColumns(
   id: string,
   name: string,
   columns: GPUGeometryMeasuresGroupOutput,
-  rowCount: number,
-  isPolygon: boolean
+  rowCount: number
 ): void {
   const formats = {
     lengths: 'float32',
@@ -702,8 +825,6 @@ function validateMeasureColumns(
     if (view.length !== rowCount) {
       throw new Error(`${id} ${name}.${column} must hold ${rowCount} rows`);
     }
-    if (!isPolygon && column === 'areas') {
-      throw new Error(`${id} ${name}.${column} requires geometryType 'polygons'`);
-    }
+    // Non-polygon feature statistics already carry exact zero area (GEOS semantics).
   }
 }

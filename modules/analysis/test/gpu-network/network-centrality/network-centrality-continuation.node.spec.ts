@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
+import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import {GPUCommandGraph, createTransientView, type GPUCommandNode} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
 import {
@@ -464,6 +465,150 @@ it('checks actual CSR STORAGE usage before persistent allocation', () => {
     expect(allocate).not.toHaveBeenCalled();
   } finally {
     weights.destroy();
+    configuration.destroy();
+  }
+});
+
+it('direct, scheduled and continued centrality reject oversized bindings before transient creation', async () => {
+  const {GPUNetworkCentrality} = await import(
+    '../../../src/gpu-network/network-centrality/gpu-network-centrality'
+  );
+  const {GPUNetworkCentralityScheduleStep} = await import(
+    '../../../src/gpu-network/network-centrality/gpu-network-centrality-schedule-step'
+  );
+  const configuration = build(4, 1);
+  const reset = createTransientView(configuration.graph, 'schedule-reset', 'uint32', 1);
+  Object.defineProperty(configuration.device.limits, 'maxStorageBufferBindingSize', {
+    value: 30_000
+  });
+  const mutations = [
+    vi.spyOn(configuration.graph, 'createTransientBuffer'),
+    vi.spyOn(configuration.device, 'createBuffer'),
+    vi.spyOn(configuration.graph, 'add')
+  ];
+  try {
+    for (const declare of [
+      () => new GPUNetworkCentrality(configuration.props).getCommandNodes(configuration.graph),
+      () =>
+        new GPUNetworkCentralityScheduleStep({...configuration.props, reset}).getCommandNodes(
+          configuration.graph
+        ),
+      () => createCentralityContinuationGraphs(configuration.graph, configuration.props)
+    ]) {
+      expect(declare).toThrow(/adjacency needs/);
+      for (const mutation of mutations) expect(mutation).not.toHaveBeenCalled();
+    }
+  } finally {
+    for (const mutation of mutations) mutation.mockRestore();
+    configuration.destroy();
+  }
+});
+
+it('scheduled publication admits adjacent status scalars while direct co-bound status rejects them', async () => {
+  const {GPUNetworkCentrality} = await import(
+    '../../../src/gpu-network/network-centrality/gpu-network-centrality'
+  );
+  const {GPUNetworkCentralityScheduleStep} = await import(
+    '../../../src/gpu-network/network-centrality/gpu-network-centrality-schedule-step'
+  );
+  const configuration = build(4, 1);
+  const packed = createOutputBuffer(configuration.device, 4);
+  const imported = importGraphBuffer(configuration.graph, 'adjacent-status', packed, 'uint32');
+  const status = Object.fromEntries(
+    ['converged', 'zeroWeightCycle', 'iterationLimitReached', 'approximation'].map(
+      (name, index) => [
+        name,
+        configuration.graph.createDataView(imported.buffer, {
+          format: 'uint32' as const,
+          length: 1,
+          byteOffset: index * 4
+        })
+      ]
+    )
+  );
+  const props = {...configuration.props, output: {...configuration.props.output, status}};
+  const reset = createTransientView(configuration.graph, 'schedule-reset', 'uint32', 1);
+  try {
+    expect(() => new GPUNetworkCentrality(props)).toThrow(/overlap/);
+    const step = new GPUNetworkCentralityScheduleStep({...props, reset});
+    const nodes = step.getCommandNodes(configuration.graph);
+    expect(nodes.length).toBe(step.estimatedCommandNodeCount);
+    expect(nodes.filter(node => node.id.includes('-merge-'))).toHaveLength(6);
+  } finally {
+    packed.destroy();
+    configuration.destroy();
+  }
+});
+
+it('retains a dynamic pivot import and its logical range after growth', () => {
+  const configuration = build(4, 1);
+  const pivots = new DynamicBuffer(configuration.device, {
+    byteLength: 4,
+    usage: Buffer.STORAGE | Buffer.COPY_DST
+  });
+  const handle = configuration.graph.importBuffer(
+    {id: 'dynamic-pivots', byteLength: 4, usage: Buffer.STORAGE | Buffer.COPY_DST},
+    pivots
+  );
+  const pivotNodes = configuration.graph.createDataView(handle, {format: 'uint32', length: 1});
+  const imports = vi.spyOn(GPUCommandGraph.prototype, 'importBuffer');
+  const schedule = createCentralityContinuationGraphs(configuration.graph, {
+    ...configuration.props,
+    pivotNodes
+  });
+  try {
+    const retained = imports.mock.results
+      .filter(result => result.type === 'return')
+      .map(result => result.value)
+      .filter(handle => handle.defaultBuffer === pivots);
+    expect(retained.length).toBeGreaterThan(0);
+    pivots.resize({byteLength: 8});
+    pivots.write(Uint32Array.of(1));
+    expect(
+      retained.every(handle => handle.defaultBuffer === pivots && handle.byteLength === 4)
+    ).toBe(true);
+  } finally {
+    schedule.destroy();
+    imports.mockRestore();
+    pivots.destroy();
+    configuration.destroy();
+  }
+});
+
+it('B5 retains shared logical import capacity with an overallocated offset pivot', () => {
+  const configuration = build(4, 1);
+  const pivots = new DynamicBuffer(configuration.device, {
+    byteLength: 32,
+    usage: Buffer.STORAGE | Buffer.COPY_DST
+  });
+  const handle = configuration.graph.importBuffer(
+    {id: 'offset-dynamic-pivots', byteLength: 8, usage: Buffer.STORAGE | Buffer.COPY_DST},
+    pivots
+  );
+  const pivotNodes = configuration.graph.createDataView(handle, {
+    format: 'uint32',
+    length: 1,
+    byteOffset: 4
+  });
+  const imports = vi.spyOn(GPUCommandGraph.prototype, 'importBuffer');
+  const schedule = createCentralityContinuationGraphs(configuration.graph, {
+    ...configuration.props,
+    pivotNodes
+  });
+  try {
+    const retained = imports.mock.results
+      .filter(result => result.type === 'return')
+      .map(result => result.value)
+      .filter(handle => handle.defaultBuffer === pivots);
+    expect(retained.length).toBeGreaterThan(0);
+    expect(retained.map(handle => handle.byteLength)).toEqual(retained.map(() => 8));
+    pivots.resize({byteLength: 8});
+    pivots.write(Uint32Array.of(1), 4);
+    expect(retained.every(handle => handle.byteLength <= pivots.byteLength)).toBe(true);
+  } finally {
+    schedule.destroy();
+    imports.mockRestore();
+    pivots.destroy();
     configuration.destroy();
   }
 });

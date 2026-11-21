@@ -8,44 +8,61 @@ CSR or independently partitioned output chunks. Import it and
 `@luma-contributors/analysis/gpu-spatial-analysis`.
 
 ```ts
-const output: GPUChunkedSpatialWeightsTransposeOutput = {
-  chunks: [
-    {
-      rowStart: 0,
-      rowCount: firstRowCount,
-      weights: {
-        offsets: firstOffsets, // firstRowCount + 1 uint32 entries
-        neighbors: firstNeighbors, // global input row IDs
-        weights: firstWeights,
-        distances: firstDistances, // optional; requires distances on every input chunk
-        status: {
-          count: firstCount,
-          requiredCount: firstRequiredCount,
-          overflow: firstOverflow
-        }
-      }
-    },
-    {
-      rowStart: firstRowCount,
-      rowCount: columnCount - firstRowCount,
-      weights: {
-        offsets: secondOffsets,
-        neighbors: secondNeighbors,
-        weights: secondWeights,
-        status: {
-          count: secondCount,
-          requiredCount: secondRequiredCount,
-          overflow: secondOverflow
-        }
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUChunkedSpatialWeightsTranspose,
+  type GPUChunkedSpatialWeights,
+  type GPUChunkedSpatialWeightsTransposeOutput
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// input views must belong to graph; columnCount >= 2 for this two-chunk example.
+function addTranspose(
+  graph: GPUCommandGraph,
+  input: GPUChunkedSpatialWeights,
+  columnCount: number,
+  outputCapacities: readonly [number, number]
+) {
+  const firstRowCount = Math.floor(columnCount / 2);
+  const makeChunk = (name: string, rowStart: number, rowCount: number, capacity: number) => ({
+    rowStart,
+    rowCount,
+    weights: {
+      offsets: createTransientView(graph, `${name}-offsets`, 'uint32', rowCount + 1),
+      neighbors: createTransientView(graph, `${name}-neighbors`, 'uint32', capacity),
+      weights: createTransientView(graph, `${name}-weights`, 'float32', capacity),
+      status: {
+        count: createTransientView(graph, `${name}-count`, 'uint32', 1),
+        requiredCount: createTransientView(graph, `${name}-required`, 'uint32', 1),
+        overflow: createTransientView(graph, `${name}-overflow`, 'uint32', 1)
       }
     }
-  ],
-  asymmetricSlots // optional, square matrices only
-};
-const transpose = new GPUChunkedSpatialWeightsTranspose({weights: input, columnCount, output});
-graph.add(transpose);
-// Feed transpose.outputWeights directly to a consumer accepting GPUChunkedSpatialWeights.
+  });
+  const output: GPUChunkedSpatialWeightsTransposeOutput = {
+    chunks: [
+      makeChunk('first', 0, firstRowCount, outputCapacities[0]),
+      makeChunk('second', firstRowCount, columnCount - firstRowCount, outputCapacities[1])
+    ]
+  };
+  const transpose = new GPUChunkedSpatialWeightsTranspose({weights: input, columnCount, output});
+  graph.add(transpose);
+  // Feed transpose.outputWeights directly to a consumer accepting GPUChunkedSpatialWeights.
+  return {outputWeights: transpose.outputWeights, output};
+}
 ```
+
+`outputCapacities` supplies independent slot capacities; each chunk's offsets and slot views must
+fit the device binding limit. For example, two eight-slot input chunks can use `[8, 8]` output
+capacities with a 32-byte binding limit. Summing all input capacities into each output chunk would
+request a 64-byte binding and defeat this route's chunking.
+
+After submission, first read `outputWeights.status.candidateOverflow`: any inherited input loss
+must be repaired at its producer and retried before the transpose's requirements certify sizing.
+Then read each `output.chunks[index].weights.status.overflow` and `requiredCount`. Grow only an
+overflowing chunk to its certified requirement, or repartition its rows if that capacity cannot
+fit one binding. `count` is its readable retained prefix, not the unclamped requirement. Rebuild
+the transpose and its consumer graph after changing capacities; same-shaped view correction does
+not change capacities. The outer `outputWeights.status.overflow` reports whether any output chunk
+truncated. A complete retry has both outer loss flags zero.
 
 Each output chunk is an ordinary CSR with offsets starting at zero. Chunks cover
 `[0, columnCount)` consecutively, with at least one row and one slot of physical capacity each.
@@ -58,6 +75,12 @@ slots, `requiredCount` is the exact requirement before truncation, and `overflow
 chunk dropped slots. An overflowing chunk retains the prefix of its complete CSR, possibly ending
 inside a row; all its offsets are clamped to capacity. Extra capacity in a different chunk is not
 borrowed. Unused slots are zeroed, including distances. These values reset on every encoding.
+A supplied chunk `candidateOverflow` is also overwritten with zero: this transpose has no bounded
+candidate stage. Matrix-level input loss remains attached to the returned description.
+Matrix-level input `count` and `requiredCount` are omitted because output chunks can truncate;
+read each output chunk's own count and requirement.
+Other destination status fields are refused because transpose does not compute them; omit those
+ports and run the corresponding diagnostic contributor afterward.
 
 `asymmetricSlots` counts mismatched positions in the union of the patterns of the input and its
 transpose, using `symmetryTolerance` (default zero). It is computed from the input and remains
@@ -65,15 +88,42 @@ exact even when output chunks overflow. A structurally absent reverse slot count
 even when the present weight is zero. The input must satisfy the usual CSR invariants, including
 sorted unique neighbor IDs in each row.
 
-The described `outputWeights` retains the output layout, spatial context and matrix-level input
-status. Output chunks retain their own capacity status. Output views must not share buffers with
+The described `outputWeights` retains the output layout and spatial context. For chunked output it
+aggregates loss at matrix level, as chunked algebra does: `status.overflow` is one when any output
+chunk dropped slots, and `status.candidateOverflow` is one when the input reported `overflow` or
+`candidateOverflow`, or any root/child positive `complete` certificate is zero (a larger output
+cannot recover that loss). Certificates are read with their positive polarity on every submission,
+so repairing a producer from `complete = 0` to `complete = 1` clears inherited loss. Its chunk
+descriptions keep `count`
+and `requiredCount` but no loss flags, so local Moran, hot spot, the additional and global
+statistics and another chunked transpose accept it; before this they refused it at construction.
+Packed output forwards matrix-level input status except `count` and `requiredCount`. When child
+loss flags or completeness certificates are present, its `candidateOverflow` aggregates all
+inherited loss, including `complete == 0`.
+
+An input `requiredCount` must travel with the producer's final overflow flag for those slots.
+For a child chunk, the flag can be on that chunk or aggregated at the matrix root by the producer.
+Verify completeness before omitting `converged`, `iterationLimitReached` or `unresolvedCount` and
+passing the CSR.
+
+Read `offsets[columnCount]` for the retained slot count. The caller's output chunks still receive their
+own capacity status. Output views must not share buffers with
 matrix-level or chunk-level input status views. Row, variance and double transform metadata becomes
-`unknown`: chunk capacity may truncate the result and break global normalization. Chunked output
+`unknown`: chunk capacity may truncate the result and break global normalization. Packed output
+also reports `unknown` for double normalization: no source column bound is declared by the input
+handle, so out-of-range neighbors can remove mass even when `columnCount` equals the focus row
+count (two rows with neighbors `[2, 0]`, weights `[0.5, 0.5]` and `columnCount: 2` retain only
+`0.5`). The exception is square packed output of input declared `symmetric: true`, whose neighbors
+index `[0, rowCount)`: every slot is kept and `double` is carried over. Chunked output
 symmetry metadata is also `unknown` because capacity can truncate it.
 
 The packed output API remains supported: pass `offsets`, `neighbors`, `weights`, optional
 `distances` and optional `asymmetricSlots` directly in `output`. Its capacity must still be at least
 the sum of input capacities.
+Packed output does not accept destination `status` ports: it preserves input loss and cannot
+truncate at that capacity. It omits input `count` and `requiredCount`, which can change when
+out-of-range columns are dropped; read the terminal output offset for the retained count.
+Omit `output.status`, or use chunked output for destination diagnostics.
 
 ## Limits and work
 
@@ -82,8 +132,11 @@ sort and every output scan fits its own storage binding; device-dependent bindin
 alignment prefixes and run before scratch allocation or node creation. A rejected binding preflight
 leaves the graph available for retry with corrected views. The `outputWeights` description and its
 chunk wrappers stay stable, and their CSR view properties and status ports follow same-shaped
-corrections made to the caller's output before node generation, including descriptions saved before
-a failed preflight.
+corrections. Before scratch allocation, corrected inputs and outputs are checked again for the
+original port presence, shapes, row ranges, required distances and aliases. Removing a port or
+changing its shape requires rebuilding the contributor. A rejected correction can be repaired
+with distinct same-shaped views and retried on the same graph, including descriptions saved
+before a failed preflight.
 Replace views before generating successful nodes or wiring downstream consumers; shapes, formats,
 chunk ranges and optional-view presence remain fixed at construction. Packed input chunk capacities
 are limited to `2^31` slots by published `GPUSort`.
@@ -104,6 +157,8 @@ the GPU specs compare against an independent column-first CPU transpose.
 {/* parameters: GPUChunkedSpatialWeightsTranspose generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ## `GPUChunkedSpatialWeightsTranspose` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUChunkedSpatialWeightsTranspose`.
 
 - Packer: `getGPUSpatialWeightsTransposeParameterValues(settings?)`, writes `GPU_SPATIAL_WEIGHTS_TRANSPOSE_PARAMETER_LENGTH` (1) `float32` values.
   - Input port: `symmetryTolerance`.

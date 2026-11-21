@@ -225,7 +225,7 @@ for (const fixture of fixtures.network) {
     const count = expected.quadratureLengths.length;
     const density = state.view('float32', new Array(count).fill(0));
     const masses = state.view('float32', new Array(expected.eventCount).fill(0));
-    const status = state.view('uint32', new Array(count).fill(0));
+    const validity = state.view('uint32', new Array(count).fill(0));
     state.graph.add(
       new GPUNetworkKernelDensity({
         distances: state.view(
@@ -235,7 +235,7 @@ for (const fixture of fixtures.network) {
         eventCount: expected.eventCount,
         quadratureLengths: state.view('float32', expected.quadratureLengths).view,
         bandwidth: expected.bandwidth,
-        output: {intensity: density.view, kernelMass: masses.view, status: status.view}
+        output: {intensity: density.view, kernelMass: masses.view, validity: validity.view}
       })
     );
     const compiled = state.graph.compile();
@@ -250,7 +250,7 @@ for (const fixture of fixtures.network) {
       expect(
         actual.reduce((sum, value, row) => sum + value * expected.quadratureLengths[row], 0)
       ).toBeCloseTo(expected.eventCount, 5);
-      expect(await readUint32(status.buffer, count)).toEqual(new Array(count).fill(0));
+      expect(await readUint32(validity.buffer, count)).toEqual(new Array(count).fill(1));
     } finally {
       compiled.destroy();
       state.destroy();

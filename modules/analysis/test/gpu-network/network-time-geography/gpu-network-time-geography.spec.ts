@@ -12,7 +12,7 @@ import {
   GPUNetworkTravelTimePercentiles
 } from '../../../src/gpu-network/network-time-geography/index';
 import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type Edge = [number, number, number];
 
@@ -38,6 +38,34 @@ function buildCsr(nodeCount: number, edges: Edge[], reverse: boolean) {
 
 const infinityOf = (values: (number | null)[]) =>
   Float32Array.from(values.map(value => value ?? Infinity));
+
+it('potential path area includes literal zero slack at the budget boundary (NET-121)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createOptimizationHarness(device);
+  const output = {
+    edgeSlack: harness.output('float32', 3),
+    edgeInPrism: harness.output('uint32', 3),
+    nodeInPrism: harness.output('uint32', 3)
+  };
+  const read = await harness.run(
+    new GPUNetworkPotentialPathArea({
+      topology: {
+        offsets: harness.input('uint32', Uint32Array.of(0, 2, 3, 3)),
+        neighbors: harness.input('uint32', Uint32Array.of(1, 1, 2)),
+        weights: harness.input('float32', Float32Array.of(3, 7, 4))
+      },
+      forwardCosts: harness.input('float32', Float32Array.of(2, 5, 9)),
+      reverseCosts: harness.input('float32', Float32Array.of(7, 4, 0)),
+      budget: harness.input('float32', Float32Array.of(9)),
+      output
+    })
+  );
+  // Slack = 9 - (forward[source] + edge cost + reverse[target]); node sums all equal 9.
+  expect(read(output.edgeSlack)).toEqual([0, -4, 0]);
+  expect(read(output.edgeInPrism)).toEqual([1, 0, 1]);
+  expect(read(output.nodeInPrism)).toEqual([1, 1, 1]);
+});
 
 for (const [caseIndex, scene] of fixture.cases.entries()) {
   it(`GPUNetworkPotentialPathArea matches networkx on case ${caseIndex} (${scene.nodeCount} nodes)`, async () => {

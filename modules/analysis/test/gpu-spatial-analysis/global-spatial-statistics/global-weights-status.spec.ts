@@ -174,14 +174,44 @@ it('final1 transpose cannot erase a chunk-local candidate signal before global i
         }
       ]
     };
-    const output = rig.weightsOutput(2, 2).spatialWeights;
-    for (const flag of [0, 1, 0]) {
-      rig.bufferOf(candidate).write(new Uint32Array([flag]));
-      expect(() => new GPUChunkedSpatialWeightsTranspose({weights: input, output})).toThrow(
-        /chunk.*status.*outer/
-      );
+    const transpose = new GPUChunkedSpatialWeightsTranspose({
+      weights: input,
+      output: rig.weightsOutput(2, 2).spatialWeights
+    });
+    const summary = rig.output('float32', LAYOUT.length);
+    const overflow = rig.output('uint32', 1);
+    const candidateOverflow = rig.output('uint32', 1);
+    rig.graph.add(transpose);
+    rig.graph.add(
+      new GPUGlobalSpatialStatistics({
+        weights: transpose.outputWeights,
+        values: rig.input(Float32Array.of(1, 4), 'float32', 2),
+        statistics: ['moran'],
+        output: {
+          summary: summary.view,
+          status: {overflow: overflow.view, candidateOverflow: candidateOverflow.view}
+        }
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      for (const flag of [0, 1, 0]) {
+        rig.bufferOf(candidate).write(Uint32Array.of(flag));
+        submitGraph(device, compiled, undefined);
+        expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+        expect(await readUint32(candidateOverflow.buffer, 1)).toEqual([flag]);
+        const statistic = (await readFloat32(summary.buffer, LAYOUT.length))[LAYOUT.moran];
+        if (flag) {
+          expect(statistic).toBeNaN();
+        } else {
+          // The two centered values are opposites and both unit-weight links cross between them.
+          expect(Number.isFinite(statistic)).toBe(true);
+          expect(statistic).toBeCloseTo(-1, 5);
+        }
+      }
+    } finally {
+      compiled.destroy();
     }
-    // No packed result is published for a port whose chunk completeness has not been aggregated.
   } finally {
     rig.destroy();
   }
@@ -227,7 +257,10 @@ it('final1 showcase importer suppresses contiguity candidate loss and recovers a
         output: importWeightsCoreWeights(contiguityRig.graph, core, 4)
       })
     );
-    const settings = getGPUNeighborSearchParameterValues({bounds: [-1, -1, 4, 1], radius: 1.1});
+    const settings = getGPUNeighborSearchParameterValues({
+      bounds: [-1, -1, 4, 1],
+      searchRadius: 1.1
+    });
     searchRig.graph.add(
       new GPUNeighborSearch({
         mode: 'radius',

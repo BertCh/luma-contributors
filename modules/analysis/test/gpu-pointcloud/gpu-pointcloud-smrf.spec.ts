@@ -42,7 +42,7 @@ for (const scenario of oracle.fixtures) {
           new GPUPointCloudSMRF({
             positions: positions.view,
             classifications: classifications.view,
-            selection: selection.view,
+            mask: selection.view,
             grid: {
               origin: [0, 0],
               cellSize: 1,

@@ -7,7 +7,11 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getCPUVecchiaNeighborhoodStatus} from './vecchia-neighborhood-status';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {solveCPUEquilibratedSystem} from '../../analysis-core/kernels/cpu-equilibrated-solve';
 import {KRIGING_PIVOT_RATIO_TOLERANCE} from './kriging-parameters';
 import {
@@ -29,6 +33,8 @@ const GNEITING_LENGTH = 8;
 
 /** Packed per-site observations and ordered CSR conditioning sets. @internal */
 export type CPUVecchiaRows = {
+  id?: string;
+  neighborhoodStatus?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
   positions: Float32Array;
   observations: Float32Array;
   neighborhoodOffsets: Uint32Array;
@@ -38,12 +44,19 @@ export type CPUVecchiaRows = {
 
 /** Same six output arrays as GPUVecchiaLikelihoodOutput. @internal */
 export type CPUVecchiaLikelihoodRows = {
+  /** [complete, overflow, candidateOverflow], separate from solve failures. */
+  neighborhoodStatus?: Uint32Array;
   conditionals: Float32Array;
   conditionalStatus: Uint32Array;
   siteTerms: Float32Array;
   siteStatus: Uint32Array;
   logLikelihood: Float32Array;
   status: Uint32Array;
+};
+
+/** Evaluator result with a guaranteed input-neighborhood certificate. @internal */
+export type PreparedCPUVecchiaLikelihoodRows = CPUVecchiaLikelihoodRows & {
+  neighborhoodStatus: Uint32Array;
 };
 
 /** Construction-time CPU props checks, with the GPU-only neighborhood capacity dropped. @internal */
@@ -65,21 +78,40 @@ export function validateCPUVecchiaRows(
   times?: Float32Array,
   allowInvalidSpans = false
 ): number {
+  const id = input.id ?? 'VecchiaEvaluation';
   const rowCount = input.positions.length / 2;
-  if (!Number.isInteger(rowCount)) throw new Error('positions length must be a multiple of 2');
+  validateRequirement(
+    id,
+    Number.isInteger(rowCount),
+    `positions length must be a multiple of 2; received ${input.positions.length}`
+  );
+  validateCapacity(id, 'positions rowCount', rowCount, 0);
   if (input.observations.length !== rowCount * 4) {
-    throw new Error('observations length must equal positions row count * 4');
+    validateRequirement(
+      id,
+      false,
+      `observations length must equal positions rowCount * 4 (${rowCount * 4}); received ${input.observations.length}`
+    );
   }
-  if (times && times.length !== rowCount)
-    throw new Error('times length must equal positions row count');
+  validateRequirement(
+    id,
+    !times || times.length === rowCount,
+    `times length must equal positions rowCount ${rowCount}; received ${times?.length}`
+  );
   if (input.neighborhoodOffsets.length !== rowCount + 1) {
-    throw new Error('neighborhoodOffsets length must equal positions row count + 1');
+    validateRequirement(
+      id,
+      false,
+      `neighborhoodOffsets length must equal positions rowCount + 1 (${rowCount + 1}); received ${input.neighborhoodOffsets.length}`
+    );
   }
   if (!allowInvalidSpans) {
     for (let row = 0; row < rowCount; row++) {
       if (!hasCPUVecchiaSpan(input, row)) {
-        throw new Error(
-          'neighborhoodOffsets must be nondecreasing and within neighborhoods length'
+        validateRequirement(
+          id,
+          false,
+          `neighborhoodOffsets[${row}..${row + 1}] must be nondecreasing and within neighborhoods length ${input.neighborhoods.length}; received [${input.neighborhoodOffsets[row]}, ${input.neighborhoodOffsets[row + 1]}]`
         );
       }
     }
@@ -88,7 +120,11 @@ export function validateCPUVecchiaRows(
     ? GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH
     : GPU_LOCAL_KRIGING_PARAMETER_LENGTH;
   if (input.parameters.length !== parameterLength) {
-    throw new Error(`parameters length must equal ${parameterLength}`);
+    validateRequirement(
+      id,
+      false,
+      `parameters length must equal ${parameterLength}; received ${input.parameters.length}`
+    );
   }
   return rowCount;
 }
@@ -306,10 +342,11 @@ export function solveCPUVecchiaConditioning(
 export function sumCPUVecchiaCells(
   terms: Float64Array,
   cellCount: number,
-  status: Uint32Array
+  status: Uint32Array,
+  neighborhoodStatus?: Uint32Array
 ): Float32Array {
   const totals = new Float32Array(cellCount * 2).fill(NaN);
-  if (status[0] > 0 || status[2] === 0) return totals;
+  if (status[0] > 0 || status[2] === 0 || neighborhoodStatus?.[0] === 0) return totals;
   for (let cell = 0; cell < cellCount; cell++) {
     let total = 0;
     let correction = 0;
@@ -332,7 +369,7 @@ export function sumCPUVecchiaCells(
 export function evaluateCPUVecchiaLikelihood(
   input: CPUVecchiaRows,
   times?: Float32Array
-): CPUVecchiaLikelihoodRows {
+): PreparedCPUVecchiaLikelihoodRows {
   const rowCount = validateCPUVecchiaRows(input, times, !times);
   const model = times
     ? getCPUVecchiaSpaceTimeCovariance(input, times)
@@ -342,6 +379,10 @@ export function evaluateCPUVecchiaLikelihood(
   const siteTerms = new Float64Array(rowCount).fill(NaN);
   const siteStatus = new Uint32Array(rowCount);
   const status = new Uint32Array(3);
+  const neighborhoodStatus = getCPUVecchiaNeighborhoodStatus(
+    input.id ?? 'VecchiaEvaluation',
+    input.neighborhoodStatus
+  );
   for (let site = 0; site < rowCount; site++) {
     const start = site * 4;
     conditionals.set([NaN, NaN, 0, 0], start);
@@ -408,7 +449,7 @@ export function evaluateCPUVecchiaLikelihood(
     const marginal = input.neighborhoodOffsets[site] === input.neighborhoodOffsets[site + 1];
     let mean = 0;
     let variance = model.scale;
-    if (marginal ? !(variance > 0) : conditionalStatus[site] !== 0) {
+    if (conditionalStatus[site] !== 0 || (marginal && !(variance > 0))) {
       siteStatus[site] = 2;
       status[0]++;
       continue;
@@ -434,7 +475,8 @@ export function evaluateCPUVecchiaLikelihood(
     conditionalStatus,
     siteTerms: Float32Array.from(siteTerms),
     siteStatus,
-    logLikelihood: sumCPUVecchiaCells(siteTerms, 1, status),
+    logLikelihood: sumCPUVecchiaCells(siteTerms, 1, status, neighborhoodStatus),
+    neighborhoodStatus,
     status
   };
 }

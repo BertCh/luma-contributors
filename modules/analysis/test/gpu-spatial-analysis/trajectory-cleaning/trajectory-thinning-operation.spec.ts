@@ -36,7 +36,7 @@ it('both thinning forms honor a one-row forward search budget', async () => {
           mode: 'minimum-time',
           maximumSearchRows: 1,
           output: {
-            rowIds: 'rows',
+            sourceRows: 'rows',
             trackOffsets: 'outputOffsets',
             status: {count: 'count', overflow: 'overflow', candidateOverflow: 'candidate'}
           }
@@ -69,9 +69,9 @@ it('thinning compares spherical dateline and quarter-circle tracks exactly', asy
       sphereRadius: 1
     },
     output: {
-      rowIds: 'rowIds',
+      sourceRows: 'rowIds',
       trackOffsets: 'outputTrackOffsets',
-      validity: 'validity',
+      sourceSelectionMask: 'validity',
       positions: 'copiedPositions',
       timestamps: 'copiedTimes',
       status: {
@@ -124,9 +124,9 @@ for (const mode of ['minimum-distance', 'minimum-time'] as const) {
         trackCount: 3,
         capacity: overflow ? 2 : 8,
         output: {
-          rowIds: 'rowIds',
+          sourceRows: 'rowIds',
           trackOffsets: 'outputTrackOffsets',
-          validity: 'validity',
+          sourceSelectionMask: 'validity',
           positions: 'copiedPositions',
           timestamps: 'copiedTimes',
           status: {

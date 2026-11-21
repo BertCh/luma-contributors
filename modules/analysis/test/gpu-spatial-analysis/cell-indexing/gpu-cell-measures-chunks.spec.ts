@@ -38,7 +38,7 @@ async function runMeasures(
   device: Device,
   keys: bigint[],
   lengths: number[],
-  precision: 'float32' | 'fp64',
+  precision: 'float32' | 'double-single',
   wordOrder: 'little-endian' | 'high-low',
   options: {family?: 'h3' | 's2'; maximumEdgeCount?: number} = {}
 ) {
@@ -184,7 +184,7 @@ async function runMeasures(
 
 it.each([
   'float32',
-  'fp64'
+  'double-single'
 ] as const)('matches packed measures for three uneven chunks (%s) and the closed-form S2 face area and edges', async precision => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -314,7 +314,7 @@ it('writes more edge records than fit the former packed 128 MiB binding', async 
 
 it.each([
   'float32',
-  'fp64'
+  'double-single'
 ] as const)('S2 measures check valid invocation seams and empty chunks (%s)', async precision => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -356,7 +356,7 @@ it.each([
 
 it.each([
   'float32',
-  'fp64'
+  'double-single'
 ] as const)('H3 measures compare complete hexagon, pentagon and face-crossing records to h3-js (%s)', async precision => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -408,7 +408,8 @@ it.each([
       expect(result.edgeLengths.slice(row * 10, row * 10 + 10)).toEqual(new Array(10).fill(0));
     } else {
       const reference = expected.get(key.toString(16))!;
-      const tolerance = precision === 'fp64' ? 2e-5 : row % pool.length === 0 ? 3e-6 : 1e-3;
+      const tolerance =
+        precision === 'double-single' ? 2e-5 : row % pool.length === 0 ? 3e-6 : 1e-3;
       expect(Math.abs(result.areas[row] / reference.area - 1)).toBeLessThan(tolerance);
       expect(Math.abs(result.perimeters[row] / reference.perimeter - 1)).toBeLessThan(tolerance);
       expect(result.edgeCounts[row]).toBe(reference.edges.length);

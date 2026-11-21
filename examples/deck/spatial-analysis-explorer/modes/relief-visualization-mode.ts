@@ -600,7 +600,6 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
                 parameters: reliefSettings.importToGraph(graph),
                 skyViewFactor: importFloats(graph, 'sky-view', skyViewBuffer),
                 curvature,
-                imhofSwing: true,
                 cellSizeMode: 'uniform',
                 rowDirection: 'south',
                 output: {
@@ -739,7 +738,7 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
       horizonSettings.write(
         getGPUTerrainHorizonParameterValues(
           {
-            anisotropyAzimuthDegrees: anisotropyAzimuth,
+            rvtDirectionDegrees: anisotropyAzimuth,
             anisotropyLevel,
             anisotropyMinimumWeight
           },

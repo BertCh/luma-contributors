@@ -8,6 +8,7 @@ export type {
   GPUEmergingHotSpotsProps
 } from './gpu-emerging-hot-spots';
 export {
+  getGPUEmergingHotSpotsCriticalZ,
   getGPUEmergingHotSpotsParameterValues,
   GPU_EMERGING_HOT_SPOTS_CATEGORIES,
   GPU_EMERGING_HOT_SPOTS_DEFAULT_MINIMUM_TREND_SLICE_COUNT,

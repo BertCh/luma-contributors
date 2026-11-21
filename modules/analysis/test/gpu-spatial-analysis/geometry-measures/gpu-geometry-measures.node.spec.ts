@@ -10,8 +10,8 @@ import {
   getChamberlainDuquetteArea,
   getSphericalTriangleArea
 } from './geometry-measures-oracle';
-import {expect, it} from 'vitest';
-import {WgslReflect} from 'wgsl_reflect';
+import {expect, it, vi} from 'vitest';
+import {WgslReflect, WgslExec, ScalarData} from 'wgsl_reflect';
 import {
   GPUGeodesicDestination,
   GPUGeodesicPairs,
@@ -33,6 +33,10 @@ import {
 import {getVincentyDirect, getVincentyInverse} from './vincenty-oracle';
 import {getVincentyWGSL} from '../../../src/gpu-spatial-analysis/geometry-measures/geodesic-kernels';
 import {getAuthalicConstants} from '../../../src/gpu-spatial-analysis/geometry-measures/geometry-measures-kernels';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 
 let viewSerial = 0;
@@ -77,17 +81,48 @@ it('GPUGeometryMeasures validates layouts and emits deterministic nodes', () => 
   expect(ids).toContain('geometry-measures-group-reduce');
   expect(ids.at(-1)).toBe('geometry-measures-group-output');
 
-  expect(
-    () =>
-      new GPUGeometryMeasures(
-        createProps(graph, {
-          geometryType: 'lines',
-          lineOffsets: view(graph, 'uint32', 6),
-          featureOffsets: view(graph, 'uint32', 4),
-          output: {areas: view(graph, 'float32', 3)}
-        })
-      )
-  ).toThrow(/requires geometryType 'polygons'/);
+  const positions = view(graph, 'float32x2', 6);
+  const lineOffsets = view(graph, 'uint32', 4);
+  const featureOffsets = view(graph, 'uint32', 4);
+  const areas = view(graph, 'float32', 3);
+  const memory = createCPUGraphMemory();
+  memory.write(positions, Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0, 5, 0, 6, 0));
+  memory.write(lineOffsets, Uint32Array.of(0, 2, 4, 6));
+  memory.write(featureOffsets, Uint32Array.of(0, 2, 2, 3));
+  memory.write(areas, Float32Array.of(12345, 12345, 12345));
+  // Every line has zero area, including a union of parts and an empty feature (GEOS).
+  // Interpreter primitive only: WGSL ldexp is absent from wgsl_reflect.
+  const original = WgslExec.prototype._callBuiltinFunction;
+  const primitive = vi
+    .spyOn(WgslExec.prototype, '_callBuiltinFunction')
+    .mockImplementation(function (this: WgslExec, node, context) {
+      if (node.name === 'ldexp') {
+        const value = this.evalExpression(node.args![0], context) as ScalarData;
+        const exponent = this.evalExpression(node.args![1], context) as ScalarData;
+        return new ScalarData(
+          Math.fround(value.value * 2 ** exponent.value),
+          this.getTypeInfo('f32')!
+        );
+      }
+      return original.call(this, node, context);
+    });
+  try {
+    executeCommandNodesOnCPU(
+      new GPUGeometryMeasures({
+        id: 'zero-line-areas',
+        geometryType: 'lines',
+        positions,
+        lineOffsets,
+        featureOffsets,
+        output: {areas},
+        cooperativeRingRows: 0
+      }).getCommandNodes(graph),
+      memory
+    );
+  } finally {
+    primitive.mockRestore();
+  }
+  expect(Array.from(memory.readFloat32(areas))).toEqual([0, 0, 0]);
   expect(
     () =>
       new GPUGeometryMeasures(createProps(graph, {output: {lengths: view(graph, 'float32', 2)}}))

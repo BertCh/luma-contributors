@@ -22,7 +22,9 @@ level under R; alpha/invalid bytes are exact. No percentile normalization.
 
 Peaks: scipy.signal.find_peaks plateau left_edges (not midpoint), followed by
 scipy.ndimage.maximum_filter1d size=5 and explicit earlier-equal exclusion.
-scipy.signal.peak_prominences(wlen=2*window+1) supplies all prominence values.
+scipy.signal.peak_prominences(wlen=2*window+1) supplies binary64 prominences,
+rounded to the reported float32 precision before inclusive minimum acceptance
+and suppression ranking. Equal reported prominences prefer the earlier index.
 Gaps split finite segments; minimumSide=1 and positive minimumProminence make
 segment endpoints ineligible. Circular inputs are triplicated and the central
 copy selected, with window capped at n-1. Empty CSR profiles are retained.
@@ -45,6 +47,7 @@ import json
 import math
 import os
 import platform
+import sys
 from pathlib import Path
 
 os.environ.setdefault('MPLCONFIGDIR', '/private/tmp/parity-wp5-matplotlib')
@@ -170,6 +173,7 @@ def buildBlend(name, images, settings, source):
 
 
 def buildPeaks(name, profiles, window, suppressionRadius, minimumProminence, source, wrap=False, validities=None):
+    minimumProminence = float(numpy.float32(minimumProminence))
     profiles = [roundInput(profile) for profile in profiles]
     validities = [numpy.ones(len(profile), dtype=int) for profile in profiles] if validities is None else validities
     offsets = numpy.concatenate(([0], numpy.cumsum([len(profile) for profile in profiles])))
@@ -205,7 +209,7 @@ def buildPeaks(name, profiles, window, suppressionRadius, minimumProminence, sou
                 continue
             segment = numpy.flatnonzero(segments == segments[position])
             start, stop = segment[0], segment[-1] + 1
-            prominence = float(peak_prominences(extended[start:stop], [position - start], wlen=2 * halfWindow + 1)[0][0])
+            prominence = float(numpy.float32(peak_prominences(extended[start:stop], [position - start], wlen=2 * halfWindow + 1)[0][0]))
             if prominence < minimumProminence:
                 continue
             localPosition = position % count
@@ -336,8 +340,41 @@ def main():
     peakCases = [buildPeaks('plateaus-gaps-empty-and-short', plateauProfiles, 12, 0, 0.25, synthetic, validities=validities),
                  buildPeaks('prominence-ranked-tied-suppression', plateauProfiles, 12, 5, 0.25, synthetic, validities=validities),
                  buildPeaks('circular-seam-and-multiple-peaks', [circular, numpy.roll(circular, 53)], 120, 8, 0.25, synthetic, wrap=True)]
+    peakCases.extend(buildPeakPrecisionCases())
     writeFixture('peaks-synthetic', peakCases)
 
 
+def buildPeakPrecisionCases():
+    # Independent dyadic arithmetic: 1-2^-26 and 1-2^-25 both round to f32 1;
+    # the latter is halfway below 1 and ties to its even significand. These
+    # threshold/tie expectations are not attributed to a SciPy decision rule.
+    source = {'kind': 'exact dyadic derivation',
+              'derivation': 'f32(1-2^-26)=f32(1-2^-25)=1; inclusive minimum 1; earlier index wins equal reported prominence'}
+    return [buildPeaks('float32-inclusive-prominence', [[2**-26, 1, 2**-26]], 1, 0, 1, source),
+            buildPeaks('float32-prominence-suppression-tie',
+                       [[2**-25, 1, 2**-25, numpy.nan, 2**-26, 1, 2**-26]],
+                       1, 5, .5, source)]
+
+
+def verifyPeakReferenceBoundaries():
+    """Exact read-only controls, also run before pinned fixture regeneration.
+
+    --check-reference exercises these actual SciPy-backed calculations without
+    opening the DEM or writing a fixture. Expectations use exact dyadic inputs.
+    """
+    threshold, tie = buildPeakPrecisionCases()
+    assert threshold['expectedMask'].tolist() == [0, 1, 0]
+    assert threshold['expectedIds'].tolist() == [1]
+    assert threshold['expected']['prominence'][1] == 1
+    assert tie['expectedIds'].tolist() == [1]
+    assert tie['candidateCount'] == 2
+    roundedMinimum = buildPeaks('rounded-minimum', [[0,2,0]], 1, 0, 2 + 2**-24, {})
+    assert roundedMinimum['expectedIds'].tolist() == [1]
+
+
 if __name__ == '__main__':
-    main()
+    verifyPeakReferenceBoundaries()
+    if '--check-reference' in sys.argv:
+        print('peak reference boundaries: passed (read-only)')
+    else:
+        main()

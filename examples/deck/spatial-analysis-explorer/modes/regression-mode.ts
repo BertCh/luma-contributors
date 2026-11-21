@@ -43,6 +43,7 @@ import {
   GPU_COMPOSITE_SCORE_PARAMETER_LENGTH,
   GPU_INEQUALITY_GLOBAL_SUMMARY,
   GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
+  GPU_INEQUALITY_MAXIMUM_EPSILON,
   GPU_INEQUALITY_PARAMETER_LENGTH,
   type GPUCompositeScoreAggregation,
   type GPUCompositeScoreScaler
@@ -113,8 +114,9 @@ import type {
 } from '../spatial-analysis-mode';
 import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resources';
 import {CellGridLayer} from './regression-layers';
-import {addModelResultReadouts} from './regression-result-readouts';
+import {addModelResultReadouts, countSingularGWRRows} from './regression-result-readouts';
 import {SummaryReader} from './summary-reader';
+import {createRegressionResidualDisplayNode} from '../../spatial-analysis-shared/regression-residual-display';
 
 import {clamp} from '@math.gl/core';
 
@@ -1049,8 +1051,7 @@ async function createGwrView(
       );
       coefficientTable = floats.slice(summaryFloats, summaryFloats + rowCount * 4);
       const statusBase = summaryFloats + rowCount * 5;
-      let singular = 0;
-      for (let row = 0; row < rowCount; row++) if (words[statusBase + row] === 1) singular++;
+      const singular = countSingularGWRRows(words.subarray(statusBase, statusBase + rowCount));
       const olsBase = statusBase + rowCount;
       olsCoefficientValues = floats.slice(olsBase, olsBase + 4);
       const olsSummaryEnd = olsBase + 4 + GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH;
@@ -1531,7 +1532,7 @@ async function createInequalityView(
   context.controls.addSlider({
     label: 'Atkinson inequality aversion epsilon (parameter)',
     min: 0,
-    max: 0.95,
+    max: GPU_INEQUALITY_MAXIMUM_EPSILON,
     step: 0.05,
     value: epsilon,
     format: value => value.toFixed(2),
@@ -1558,8 +1559,8 @@ async function createInequalityView(
   });
   context.controls.addNote(
     'Bands split the study area into six latitude slices, 1 in the south to 6 in the north. ' +
-      'Atkinson needs epsilon below 1 and Theil L is not shown because many cells hold zero (a ' +
-      'zero makes them NaN by design).'
+      'Atkinson is 1 at epsilon >= 1 when a positive-mean band contains a positive-weight zero income. ' +
+      'All-zero bands remain undefined. Theil L is not shown because a positive-weight zero income makes it NaN.'
   );
   context.controls.addReadout('Cells (rows)', formatCount(rowCount));
   const pooledReadout = context.controls.addReadout('Pooled Gini / Theil T');
@@ -1764,6 +1765,7 @@ function createSpatialStage(
   const neighbors = resources.createBuffer('neighbors', capacity * 4);
   const weightValues = resources.createBuffer('weights', capacity * 4);
   const searchOverflow = resources.createBuffer('search-overflow', 4);
+  const searchCandidateOverflow = resources.createBuffer('search-candidate-overflow', 4);
   const totalNeighbors = resources.createBuffer('total-neighbors', 4);
   const searchParameters = resources.createParameterBuffer(
     'search-parameters',
@@ -1773,7 +1775,18 @@ function createSpatialStage(
   const weights = {
     offsets: importGraphBuffer(graph, 'offsets', offsets, 'uint32', rowCount + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', neighbors, 'uint32', capacity),
-    weights: importGraphBuffer(graph, 'weights', weightValues, 'float32', capacity)
+    weights: importGraphBuffer(graph, 'weights', weightValues, 'float32', capacity),
+    status: {
+      overflow: importGraphBuffer(graph, 'search-overflow', searchOverflow, 'uint32', 1),
+      candidateOverflow: importGraphBuffer(
+        graph,
+        'search-candidate-overflow',
+        searchCandidateOverflow,
+        'uint32',
+        1
+      ),
+      requiredCount: importGraphBuffer(graph, 'total-neighbors', totalNeighbors, 'uint32', 1)
+    }
   };
   // The distance band is a symmetric pattern (at 360 m the 250 m cells are exactly queen
   // contiguity). Plain kNN weights are directed: i lists j without j listing i.
@@ -1782,16 +1795,13 @@ function createSpatialStage(
       spatialContext: study.frame.spatialContext,
       id: 'weights-search',
       mode: kind === 'knn' ? 'knn' : 'radius',
-      k: kind === 'knn' ? neighborCount : undefined,
+      neighborCount: kind === 'knn' ? neighborCount : undefined,
       gridSize: [64, 64],
       positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
       parameters: searchParameters.importToGraph(graph),
       output: {
         ...weights,
-        status: {
-          overflow: importGraphBuffer(graph, 'search-overflow', searchOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'total-neighbors', totalNeighbors, 'uint32', 1)
-        }
+        status: weights.status
       }
     })
   );
@@ -1800,8 +1810,8 @@ function createSpatialStage(
     searchParameters.write(
       getGPUNeighborSearchParameterValues({
         bounds,
-        radius: kind === 'knn' ? Infinity : radiusMeters,
-        weightKind: 'binary',
+        searchRadius: kind === 'knn' ? undefined : radiusMeters,
+        weightType: 'binary',
         rowStandardize: true
       })
     );
@@ -1918,6 +1928,7 @@ function addSpatialOls(
     getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: 0})
   );
   const residualView = importGraphBuffer(graph, 'ols-residuals', olsResiduals, 'float32', rowCount);
+  const statusView = importGraphBuffer(graph, 'ols-status', olsStatus, 'uint32', 1);
   graph.add(
     new GPUOrdinaryLeastSquares({
       id: 'ols',
@@ -1936,7 +1947,7 @@ function addSpatialOls(
           'float32',
           GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: {code: importGraphBuffer(graph, 'ols-status', olsStatus, 'uint32', 1)},
+        status: {code: statusView},
         residuals: residualView
       }
     })
@@ -1948,7 +1959,8 @@ function addSpatialOls(
     olsSummary,
     olsStatus,
     olsResiduals,
-    residualView
+    residualView,
+    statusView
   };
 }
 
@@ -2016,7 +2028,7 @@ async function createSpatialView(
     dirty = true;
   });
   const ols = addSpatialOls(graph, resources, stage, rowCount);
-  const {olsSummary, olsStatus, olsResiduals} = ols;
+  const {olsSummary, olsStatus} = ols;
   const {tests, diagnosticsSummary, diagnosticsStatus} = addSpatialDiagnostics(
     graph,
     resources,
@@ -2031,6 +2043,19 @@ async function createSpatialView(
   );
   const twoStageStatus = resources.createBuffer('two-stage-status', 4);
   const twoStageResiduals = resources.createBuffer('two-stage-residuals', rowCount * 4);
+  const twoStageDisplayResiduals = resources.createBuffer(
+    'two-stage-display-residuals',
+    rowCount * 4
+  );
+  const olsDisplayResiduals = resources.createBuffer('ols-display-residuals', rowCount * 4);
+  const residualView = importGraphBuffer(
+    graph,
+    'two-stage-residuals',
+    twoStageResiduals,
+    'float32',
+    rowCount
+  );
+  const statusView = importGraphBuffer(graph, 'two-stage-status', twoStageStatus, 'uint32', 1);
   graph.add(
     new GPUSpatialTwoStageLeastSquares({
       id: 'two-stage',
@@ -2048,15 +2073,37 @@ async function createSpatialView(
           'float32',
           GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: {code: importGraphBuffer(graph, 'two-stage-status', twoStageStatus, 'uint32', 1)},
-        residuals: importGraphBuffer(
-          graph,
-          'two-stage-residuals',
-          twoStageResiduals,
-          'float32',
-          rowCount
-        )
+        status: {code: statusView},
+        residuals: residualView
       }
+    })
+  );
+  graph.add(
+    createRegressionResidualDisplayNode(graph, {
+      id: 'two-stage-residual-display',
+      residuals: residualView,
+      code: statusView,
+      output: importGraphBuffer(
+        graph,
+        'display-residual-output',
+        twoStageDisplayResiduals,
+        'float32',
+        rowCount
+      )
+    })
+  );
+  graph.add(
+    createRegressionResidualDisplayNode(graph, {
+      id: 'ols-residual-display',
+      residuals: ols.residualView,
+      code: ols.statusView,
+      output: importGraphBuffer(
+        graph,
+        'display-ols-residual-output',
+        olsDisplayResiduals,
+        'float32',
+        rowCount
+      )
     })
   );
   const compiled = resources.track(await graph.compileAsync());
@@ -2200,7 +2247,11 @@ async function createSpatialView(
     },
     getLayers(): Layer[] {
       const values =
-        mapKind === 'ols' ? olsResiduals : mapKind === 'lag' ? twoStageResiduals : stage.response;
+        mapKind === 'ols'
+          ? olsDisplayResiduals
+          : mapKind === 'lag'
+            ? twoStageDisplayResiduals
+            : stage.response;
       const isResidual = mapKind !== 'response';
       return [
         new CellGridLayer({
@@ -2257,6 +2308,19 @@ async function createErrorView(
   );
   const errorStatus = resources.createBuffer('error-status', 4);
   const errorResiduals = resources.createBuffer('error-residuals', rowCount * 4);
+  const errorDisplayResiduals = resources.createBuffer('error-display-residuals', rowCount * 4);
+  const olsDisplayResiduals = resources.createBuffer(
+    'error-view-ols-display-residuals',
+    rowCount * 4
+  );
+  const residualView = importGraphBuffer(
+    graph,
+    'error-residuals',
+    errorResiduals,
+    'float32',
+    rowCount
+  );
+  const statusView = importGraphBuffer(graph, 'error-status', errorStatus, 'uint32', 1);
   graph.add(
     new GPUSpatialErrorGM({
       id: 'error-gm',
@@ -2273,9 +2337,37 @@ async function createErrorView(
           'float32',
           GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH
         ),
-        status: {code: importGraphBuffer(graph, 'error-status', errorStatus, 'uint32', 1)},
-        residuals: importGraphBuffer(graph, 'error-residuals', errorResiduals, 'float32', rowCount)
+        status: {code: statusView},
+        residuals: residualView
       }
+    })
+  );
+  graph.add(
+    createRegressionResidualDisplayNode(graph, {
+      id: 'error-residual-display',
+      residuals: residualView,
+      code: statusView,
+      output: importGraphBuffer(
+        graph,
+        'display-error-output',
+        errorDisplayResiduals,
+        'float32',
+        rowCount
+      )
+    })
+  );
+  graph.add(
+    createRegressionResidualDisplayNode(graph, {
+      id: 'error-view-ols-residual-display',
+      residuals: ols.residualView,
+      code: ols.statusView,
+      output: importGraphBuffer(
+        graph,
+        'display-error-ols-output',
+        olsDisplayResiduals,
+        'float32',
+        rowCount
+      )
     })
   );
   const compiled = resources.track(await graph.compileAsync());
@@ -2411,9 +2503,9 @@ async function createErrorView(
     getLayers(): Layer[] {
       const values =
         mapKind === 'ols'
-          ? ols.olsResiduals
+          ? olsDisplayResiduals
           : mapKind === 'error'
-            ? errorResiduals
+            ? errorDisplayResiduals
             : stage.response;
       const isResidual = mapKind !== 'response';
       return [

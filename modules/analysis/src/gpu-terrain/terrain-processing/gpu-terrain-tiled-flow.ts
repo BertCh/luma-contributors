@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {clamp} from '@math.gl/core';
+import type {Device} from '@luma.gl/core';
+import {snapshotRasterGrid} from '../../raster-analysis/raster-grid/raster-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -31,10 +34,7 @@ import {
 
 import {createTerrainResidentTileNodes} from './terrain-tiled-resident';
 import {validateRasterIterations} from '../../raster-analysis/cost-distance/raster-relaxation';
-import {
-  getTerrainBranchingFlowCommandNodeCount,
-  validateTerrainBranchingFlowScratch
-} from './terrain-branching-flow-budget';
+import {validateTerrainBranchingFlowScratch} from './terrain-branching-flow-budget';
 
 import {
   getTerrainResolutionStatusViews,
@@ -42,34 +42,22 @@ import {
 } from './terrain-resolution-status';
 import {
   planTerrainD8Tiles,
-  getTerrainD8TileCommandNodeCount,
+  getTerrainTiledFlowExecutionPlan,
+  TERRAIN_TILED_MAXIMUM_CELL_COUNT,
+  TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT,
   validateTerrainD8TileBindings,
   type TerrainD8TilePlan
 } from './terrain-tiled-plan';
 import {createTerrainBoundaryTileNodes} from './terrain-tiled-boundary';
 
-// The resident fraction plane has eight uint32-indexed entries per global cell.
-const TERRAIN_TILED_MAXIMUM_CELL_COUNT = Math.floor(0xffffffff / 8);
-// Global D8 cell identifiers are uint32; the largest word is reserved for the no-cell sentinel.
-const TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT = 0xffffffff;
-// Two count reductions and two status publications cover every optional aggregate status port.
-const TERRAIN_TILED_STATUS_NODE_ALLOWANCE = 6;
-
-function usesTerrainBoundaryRoute(
-  props: GPUTerrainTiledFlowProps,
-  graph: Pick<GPUCommandGraph, 'device'>
-): boolean {
-  return (
-    props.routing !== 'branching' &&
-    props.execution !== 'resident' &&
-    (props.execution === 'tiled' ||
-      props.grid.width * props.grid.height * 32 >
-        Math.min(
-          graph.device.limits.maxStorageBufferBindingSize,
-          graph.device.limits.maxBufferSize
-        ))
-  );
-}
+export {
+  getTerrainTiledFlowExecutionPlan,
+  TERRAIN_TILED_MAXIMUM_CELL_COUNT,
+  TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT,
+  TERRAIN_TILED_MAXIMUM_FOREST_CELL_COUNT,
+  TERRAIN_TILED_MAXIMUM_GRID_EXTENT,
+  TERRAIN_TILED_MAXIMUM_INDEX_WORD_COUNT
+} from './terrain-tiled-plan';
 
 export type GPUTerrainFlowTile = {
   /** Global origin of the input buffer, including any halo. */
@@ -145,12 +133,68 @@ export type GPUTerrainTiledFlowProps = {
  * Tiled D8 schedules one tile at a time, retaining only maximum-tile scratch and a graph of owned
  * boundary cells. Caller input/output views remain caller-owned; no host storage paging or terrain
  * filling is performed. All tile geometry, lengths and offsets use dispatch parameters.
+ * Resident routing accepts at most 536,870,911 global cells; tiled D8 accepts at most
+ * 4,294,967,295 global cells, with each axis at most 2,147,483,646. Each owned tile and the
+ * combined boundary forest contain at most 536,870,911 cells; tile index arrays contain at most
+ * 4,294,967,295 scalar uint32 words. Tile and boundary tour-sum planes use 32 bytes per forest cell.
+ * Each scratch binding must fit maxStorageBufferBindingSize and maxBufferSize on the device;
+ * the selected route's command-node estimate must be at most 32,768. A 32768 x 16384 grid is tiled.
  */
 export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
   readonly id: string;
   readonly estimatedCommandNodeCount: number;
+  /** Estimate for the selected route on the views' graph device. */
+  readonly selectedExecution: 'resident' | 'tiled';
+  /** Conservative cross-device command bound, separate from selected-route admission. */
+  readonly worstCaseCommandNodeCount: number;
+  readonly props: GPUTerrainTiledFlowProps;
   private readonly tiledPlan?: TerrainD8TilePlan;
-  constructor(readonly props: GPUTerrainTiledFlowProps) {
+  constructor(inputProps: GPUTerrainTiledFlowProps) {
+    const captured = snapshotConstructionFields(inputProps, [
+      'id',
+      'grid',
+      'routing',
+      'execution',
+      'directionEncoding',
+      'tiles',
+      'maximumIterations',
+      'output'
+    ]);
+    const props: GPUTerrainTiledFlowProps = {
+      ...captured,
+      grid: snapshotRasterGrid(captured.grid),
+      tiles: captured.tiles.map(inputTile => {
+        const tile = snapshotConstructionFields(inputTile, [
+          'column',
+          'row',
+          'width',
+          'height',
+          'owned',
+          'flowDirections',
+          'fractions',
+          'runoff',
+          'streams',
+          'output'
+        ]);
+        return {
+          ...tile,
+          owned: [...tile.owned] as [number, number, number, number],
+          output: snapshotConstructionFields(tile.output, ['accumulation', 'status', 'reachIds'])
+        };
+      }),
+      ...(captured.output
+        ? {
+            output: {
+              status: snapshotConstructionFields(captured.output.status, [
+                'converged',
+                'iterationLimitReached',
+                'invalidCount'
+              ])
+            }
+          }
+        : {})
+    };
+    this.props = props;
     this.id = props.id ?? 'terrain-tiled-flow';
     const count = validateRasterGrid(this.id, props.grid);
     if (props.execution === 'resident' || props.routing === 'branching') {
@@ -189,16 +233,13 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
     const maximumIterations =
       props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024);
     validateRasterIterations(this.id, 'maximumIterations', maximumIterations);
-    this.estimatedCommandNodeCount = Math.max(
-      getTerrainBranchingFlowCommandNodeCount(maximumIterations) +
-        props.tiles.length * 2 +
-        1 +
-        Math.ceil(Math.log2(count)) +
-        TERRAIN_TILED_STATUS_NODE_ALLOWANCE,
-      props.routing !== 'branching' && props.execution !== 'resident'
-        ? getTerrainD8TileCommandNodeCount(props.tiles.length)
-        : 0
+    validateRequirement(this.id, props.tiles.length > 0, 'tiles must contain at least one tile');
+    const executionPlan = this.getExecutionPlan(
+      (props.tiles[0].streams.buffer.graph as GPUCommandGraph).device
     );
+    this.selectedExecution = executionPlan.selectedExecution;
+    this.estimatedCommandNodeCount = executionPlan.estimatedCommandNodeCount;
+    this.worstCaseCommandNodeCount = executionPlan.worstCaseCommandNodeCount;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateTerrainStatusPorts(this.id, {...props.output?.status});
     let ownedCount = 0;
@@ -287,10 +328,7 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       'owned rectangles must cover every grid cell exactly once'
     );
     const allOutputs = [...outputs, ...getTerrainResolutionStatusViews(props.output?.status)];
-    const publicationReadsStreams = usesTerrainBoundaryRoute(
-      props,
-      props.tiles[0].streams.buffer.graph as GPUCommandGraph
-    );
+    const publicationReadsStreams = this.selectedExecution === 'tiled';
     checkTerrainViews(this.id, inputs, allOutputs, [
       ...props.tiles.map(tile => ({
         reads: publicationReadsStreams ? [tile.streams] : [],
@@ -298,9 +336,13 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       })),
       ...getTerrainResolutionStatusViews(props.output?.status).map(view => ({writes: [view]}))
     ]);
-    if (props.routing !== 'branching' && props.execution !== 'resident') {
+    if (this.selectedExecution === 'tiled') {
       this.tiledPlan = planTerrainD8Tiles(this.id, props);
     }
+  }
+  /** The same pure selector used for admission and graph declaration. */
+  getExecutionPlan(device: Pick<Device, 'limits'>) {
+    return getTerrainTiledFlowExecutionPlan(this.props, device);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -317,7 +359,7 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       ...getTerrainResolutionStatusViews(props.output?.status)
     ]);
     const count = props.grid.width * props.grid.height;
-    const useTiles = this.tiledPlan && usesTerrainBoundaryRoute(props, graph);
+    const useTiles = this.getExecutionPlan(graph.device).selectedExecution === 'tiled';
     if (useTiles) {
       validateTerrainD8TileBindings(graph, id, this.tiledPlan!);
       validateGraphChunkGroupKernelSupport(graph, id, 8);

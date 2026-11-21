@@ -119,15 +119,19 @@ it('stream network rejects malformed directions and unresolved stream masks with
   const {graph, input, output, run} = await setup();
   const results = [];
   for (const [caseIndex, testCase] of [
-    {directions: [1, 3, 0], streams: [1, 1, 1]},
-    {directions: [1, 64, 0], streams: [1, 1, 1]},
-    {directions: [1, 0xffffffff, 0], streams: [1, 1, 1]},
-    {directions: [1, 1, 0], streams: [1, 0xffffffff, 1]},
-    {directions: [1, 1, 0], streams: [1, 0xfffffffe, 1]}
+    // Cells 0 and 1 have invalid downstream paths. Cell 2 has no possible donor.
+    {directions: [1, 3, 0], streams: [1, 1, 1], unresolved: 2},
+    {directions: [1, 64, 0], streams: [1, 1, 1], unresolved: 2},
+    {directions: [1, NO_CELL, 0], streams: [1, 1, 1], unresolved: 2},
+    // Cell 1 can donate to either neighbor when its direction is unresolved.
+    {directions: [1, UNRESOLVED_DIRECTION, 0], streams: [1, 1, 1], unresolved: 3},
+    // Cell 1 and the cell draining to it are unresolved. Cell 2 may receive a donor from cell 1.
+    {directions: [1, 1, 0], streams: [1, NO_CELL, 1], unresolved: 3},
+    {directions: [1, 1, 0], streams: [1, UNRESOLVED_DIRECTION, 1], unresolved: 3}
   ].entries()) {
     const reachCount = output(1, 'uint32');
     const unresolvedCount = output(1, 'uint32');
-    results.push({reachCount, unresolvedCount});
+    results.push({reachCount, unresolvedCount, expectedUnresolved: testCase.unresolved});
     graph.add(
       new GPUTerrainStreamNetwork({
         id: `invalid-network-${caseIndex}`,
@@ -152,7 +156,9 @@ it('stream network rejects malformed directions and unresolved stream masks with
   try {
     for (const result of results) {
       expect(Array.from(await readUint32(result.reachCount.buffer, 1))).toEqual([0]);
-      expect(Array.from(await readUint32(result.unresolvedCount.buffer, 1))).toEqual([2]);
+      expect(Array.from(await readUint32(result.unresolvedCount.buffer, 1))).toEqual([
+        result.expectedUnresolved
+      ]);
     }
   } finally {
     destroy();
@@ -368,7 +374,7 @@ it('flow distance resolves a path of several hundred cells in logarithmic rounds
   }
 });
 
-/** The per-cell reach logic that GPUTerrainStreamNetwork used before pointer jumping. */
+/** Exhaustively classify donors, then trace each candidate stream path one cell at a time. */
 function traceStreamNetwork(
   directions: number[],
   streams: number[],
@@ -378,13 +384,26 @@ function traceStreamNetwork(
 ) {
   const count = width * height;
   const isStream = (cell: number) => streams[cell] !== 0;
-  const incoming = (cell: number) => {
-    let total = 0;
-    for (let other = 0; other < count; other++) {
-      if (isStream(other) && getReceiver(other, directions[other], width, height) === cell) total++;
+  const hasUnknownMembership = (cell: number) =>
+    streams[cell] === NO_CELL || streams[cell] === UNRESOLVED_DIRECTION;
+  const receivers = directions.map((code, cell) => getReceiver(cell, code, width, height));
+  const donorCounts = directions.map((_, cell) => {
+    let donors = 0;
+    for (let donor = 0; donor < count; donor++) {
+      if (!isStream(donor) || donor === cell) continue;
+      if (receivers[donor] === cell) {
+        if (hasUnknownMembership(donor)) return undefined;
+        donors++;
+      } else if (
+        directions[donor] === UNRESOLVED_DIRECTION &&
+        Math.abs((donor % width) - (cell % width)) <= 1 &&
+        Math.abs(Math.floor(donor / width) - Math.floor(cell / width)) <= 1
+      ) {
+        return undefined;
+      }
     }
-    return total;
-  };
+    return donors;
+  });
   const vertices = new Array<number>(count).fill(0);
   let unresolved = 0;
   for (let index = 0; index < count; index++) {
@@ -392,10 +411,9 @@ function traceStreamNetwork(
     let current = index;
     let complete = false;
     for (let step = 0; step < maximumSteps; step++) {
-      const code = directions[current];
-      if (streams[current] === NO_CELL || streams[current] === UNRESOLVED_DIRECTION) break;
-      const receiver = getReceiver(current, code, width, height);
-      if (code !== 0 && receiver === NO_CELL) break;
+      if (hasUnknownMembership(current) || donorCounts[current] === undefined) break;
+      const receiver = receivers[current];
+      if (directions[current] !== 0 && receiver === NO_CELL) break;
       if (receiver === NO_CELL || !isStream(receiver)) {
         complete = true;
         break;
@@ -403,15 +421,15 @@ function traceStreamNetwork(
       current = receiver;
     }
     unresolved += complete ? 0 : 1;
-    if (complete && incoming(index) !== 1) {
+    if (complete && donorCounts[index] !== 1) {
       current = index;
       let reachVertices = 1;
       for (let step = 0; step < maximumSteps; step++) {
-        const receiver = getReceiver(current, directions[current], width, height);
+        const receiver = receivers[current];
         if (receiver === NO_CELL || !isStream(receiver)) break;
         current = receiver;
         reachVertices++;
-        if (incoming(current) !== 1) break;
+        if (donorCounts[current] !== 1) break;
       }
       vertices[index] = reachVertices < 2 ? 0 : reachVertices;
     }

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCPUHostOffsets} from '../../analysis-core/operations/compact-host-offsets';
+
 /** One float32 point represented without a further rounding. @internal */
 export type CanonicalPoint = readonly [number, number];
 
@@ -51,10 +53,7 @@ export function computeCanonicalWinding(points: readonly CanonicalPoint[]): numb
   return determinant < 0n ? -1 : determinant > 0n ? 1 : 0;
 }
 
-/** Checks the packed polygon hierarchy without requiring full coverage. @internal */
+/** Checks a compact host hierarchy level, including exact child coverage and empty parents. @internal */
 export function validateCanonicalOffsets(name: string, offsets: Uint32Array, limit: number): void {
-  if (offsets.length < 2) throw new Error(`${name} must contain at least two entries`);
-  for (let index = 0; index < offsets.length; index++)
-    if (offsets[index] > limit || (index > 0 && offsets[index] < offsets[index - 1]))
-      throw new Error(`${name} must be nondecreasing and in [0, ${limit}]`);
+  validateCPUHostOffsets('validateCanonicalOffsets', name, offsets, limit);
 }

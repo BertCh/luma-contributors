@@ -6,7 +6,10 @@ import type {Buffer} from '@luma.gl/core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {GPUPairGather} from '../../../src/gpu-spatial-analysis/pair-gather/index';
-import {GPUSpatialPredicateJoin} from '../../../src/gpu-spatial-analysis/spatial-join/index';
+import {
+  GPUSpatialPredicateJoin,
+  GPUNearestFeatureJoin
+} from '../../../src/gpu-spatial-analysis/spatial-join/index';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {createGeometryFixture} from '../outline-geometry/geometry-fixture';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
@@ -130,8 +133,7 @@ it('final2 G1 inherited left mode emits one unmatched row with zero neighbors', 
         output: {
           leftRows: leftRows.view,
           rightRows: rightRows.view,
-          rowCount: rowCount.view,
-          status: {overflow: overflow.view}
+          status: {count: rowCount.view, overflow: overflow.view}
         }
       }
     );
@@ -267,8 +269,8 @@ for (const matchCount of [2, 9]) {
             output: {
               leftRows: outputs['leftRows'] as never,
               rightRows: outputs['rightRows'] as never,
-              rowCount: outputs['rowCount'] as never,
               status: {
+                count: outputs['rowCount'] as never,
                 overflow: outputs['overflow'] as never,
                 candidateOverflow: outputs['candidateOverflow'] as never
               }
@@ -304,3 +306,252 @@ for (const matchCount of [2, 9]) {
     }
   });
 }
+
+for (const perQuery of [true, false]) {
+  it(`GEO-113 synthetic selective candidate-only loss withholds uncertain unmatched rows and clears on reuse (${perQuery})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createGeometryFixture(device, {
+      inputs: {
+        rows: {values: Uint32Array.of(0xffffffff, 0xffffffff), format: 'uint32'},
+        counts: {values: Uint32Array.of(0, 0), format: 'uint32'},
+        candidate: {values: Uint32Array.of(1), format: 'uint32'},
+        producerOverflow: {values: Uint32Array.of(0), format: 'uint32'},
+        truncated: {values: Uint32Array.of(1, 0), format: 'uint32'}
+      },
+      outputs: {
+        left: {format: 'uint32', length: 2},
+        right: {format: 'uint32', length: 2},
+        count: {format: 'uint32', length: 1},
+        overflow: {format: 'uint32', length: 1},
+        candidate: {format: 'uint32', length: 1}
+      },
+      create: ({inputs, outputs}) =>
+        new GPUPairGather({
+          how: 'left',
+          neighbors: {
+            rows: inputs['rows'] as never,
+            counts: inputs['counts'] as never,
+            capacity: 1,
+            status: {
+              overflow: inputs['producerOverflow'] as never,
+              candidateOverflow: inputs['candidate'] as never
+            },
+            ...(perQuery ? {candidateTruncated: inputs['truncated'] as never} : {})
+          },
+          output: {
+            leftRows: outputs['left'] as never,
+            rightRows: outputs['right'] as never,
+            status: {
+              count: outputs['count'] as never,
+              overflow: outputs['overflow'] as never,
+              candidateOverflow: outputs['candidate'] as never
+            }
+          }
+        })
+    });
+    try {
+      // Synthetic gather-port fixture: selective candidate-only loss is not emitted by nearest
+      // neighbors mode, whose candidate table is absent and whose BVH loss flags every query.
+      // Hand-worked: both counts are zero, but query 0 lost candidates. Only query 1 has
+      // established absence; without row flags neither query has established absence.
+      const incomplete = await fixture.run();
+      expect(incomplete['count']).toEqual([perQuery ? 1 : 0]);
+      expect(incomplete['left']).toEqual(perQuery ? [1, 0xffffffff] : [0xffffffff, 0xffffffff]);
+      expect(incomplete['right']).toEqual([0xffffffff, 0xffffffff]);
+      expect(incomplete['overflow']).toEqual([0]);
+      expect(incomplete['candidate']).toEqual([1]);
+      fixture.writeInput('candidate', Uint32Array.of(0));
+      fixture.writeInput('truncated', Uint32Array.of(0, 0));
+      const complete = await fixture.run();
+      expect(complete['count']).toEqual([2]);
+      expect(complete['left']).toEqual([0, 1]);
+      expect(complete['right']).toEqual([0xffffffff, 0xffffffff]);
+      expect(complete['overflow']).toEqual([0]);
+      expect(complete['candidate']).toEqual([0]);
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
+
+for (const scenario of [
+  {kind: 'bvh', perQuery: true},
+  {kind: 'ties', perQuery: true},
+  {kind: 'ties', perQuery: false}
+] as const) {
+  it(`S1 nearest ${scenario.kind} loss reaches gather and exact rows refresh (${scenario.perQuery})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createGeometryFixture(device, {
+      inputs: {
+        queries: {format: 'float32x2', values: Float32Array.of(0, 0, 100, 0)},
+        features: {
+          format: 'float32x2',
+          values:
+            scenario.kind === 'bvh' ? Float32Array.of(0, 0, 50, 0) : Float32Array.of(-1, 0, 1, 0)
+        },
+        radius: {format: 'float32', values: Float32Array.of(2)}
+      },
+      outputs: {
+        nearestRows: {format: 'uint32', length: 2},
+        nearestCounts: {format: 'uint32', length: 2},
+        truncated: {format: 'uint32', length: 2},
+        producerOverflow: {format: 'uint32', length: 1},
+        producerCandidate: {format: 'uint32', length: 1},
+        left: {format: 'uint32', length: 2},
+        right: {format: 'uint32', length: 2},
+        count: {format: 'uint32', length: 1},
+        overflow: {format: 'uint32', length: 1},
+        candidate: {format: 'uint32', length: 1}
+      },
+      create: ({inputs, outputs}) => ({
+        getCommandNodes(graph) {
+          const status = {
+            overflow: outputs['producerOverflow'] as never,
+            candidateOverflow: outputs['producerCandidate'] as never
+          };
+          const join = new GPUNearestFeatureJoin({
+            queries: {kind: 'points', positions: inputs['queries'] as never},
+            features: {kind: 'points', positions: inputs['features'] as never},
+            radius: inputs['radius'] as never,
+            leafCapacity: scenario.kind === 'bvh' ? 1 : 2,
+            spatialSort: false,
+            neighborCount: 1,
+            neighborCapacity: 1,
+            ties: 'all',
+            output: {
+              neighborIds: createTransientView(graph, 'nearest-ids', 'uint32', 2),
+              neighborRows: outputs['nearestRows'] as never,
+              neighborCounts: outputs['nearestCounts'] as never,
+              candidateTruncated: outputs['truncated'] as never,
+              status
+            }
+          });
+          const gather = new GPUPairGather({
+            how: 'left',
+            neighbors: {
+              rows: outputs['nearestRows'] as never,
+              counts: outputs['nearestCounts'] as never,
+              capacity: 1,
+              status,
+              ...(scenario.perQuery ? {candidateTruncated: outputs['truncated'] as never} : {})
+            },
+            output: {
+              leftRows: outputs['left'] as never,
+              rightRows: outputs['right'] as never,
+              status: {
+                count: outputs['count'] as never,
+                overflow: outputs['overflow'] as never,
+                candidateOverflow: outputs['candidate'] as never
+              }
+            }
+          });
+          return [...join.getCommandNodes(graph), ...gather.getCommandNodes(graph)];
+        }
+      })
+    });
+    try {
+      const first = await fixture.run();
+      // BVH retains only feature 0. Tie mode has equal unit distances to rows 0 and 1;
+      // capacity 1 retains row 0. Query 1 is 100 units away, beyond the radius in either case.
+      expect(first['nearestRows']).toEqual([0, 0xffffffff]);
+      expect(first['nearestCounts']).toEqual([1, 0]);
+      expect(first['producerOverflow']).toEqual([1]);
+      expect(first['producerCandidate']).toEqual([scenario.kind === 'bvh' ? 1 : 0]);
+      expect(first['truncated']).toEqual(scenario.kind === 'bvh' ? [1, 1] : [0, 0]);
+      const withUnmatched = scenario.kind === 'ties' && scenario.perQuery;
+      expect(first['count']).toEqual([withUnmatched ? 2 : 1]);
+      expect(first['left']).toEqual([0, withUnmatched ? 1 : 0xffffffff]);
+      expect(first['right']).toEqual([0, 0xffffffff]);
+      expect(first['overflow']).toEqual([0]);
+      expect(first['candidate']).toEqual([1]);
+      if (scenario.kind === 'bvh') {
+        fixture.writeInput('queries', Float32Array.of(100, 0, 0, 0));
+        const reused = await fixture.run();
+        expect(reused['nearestRows']).toEqual([0xffffffff, 0]);
+        expect(reused['nearestCounts']).toEqual([0, 1]);
+        expect(reused['truncated']).toEqual([1, 1]);
+        expect(reused['left']).toEqual([1, 0xffffffff]);
+        expect(reused['right']).toEqual([0, 0xffffffff]);
+        expect(reused['count']).toEqual([1]);
+        expect(reused['producerOverflow']).toEqual([1]);
+        expect(reused['producerCandidate']).toEqual([1]);
+        expect(reused['overflow']).toEqual([0]);
+        expect(reused['candidate']).toEqual([1]);
+      } else {
+        fixture.writeInput('features', Float32Array.of(-1, 0, 5, 0));
+        const complete = await fixture.run();
+        expect(complete['nearestRows']).toEqual([0, 0xffffffff]);
+        expect(complete['nearestCounts']).toEqual([1, 0]);
+        expect(complete['truncated']).toEqual([0, 0]);
+        expect(complete['left']).toEqual([0, 1]);
+        expect(complete['right']).toEqual([0, 0xffffffff]);
+        expect(complete['count']).toEqual([2]);
+        expect(complete['producerOverflow']).toEqual([0]);
+        expect(complete['producerCandidate']).toEqual([0]);
+        expect(complete['overflow']).toEqual([0]);
+        expect(complete['candidate']).toEqual([0]);
+      }
+      expect(fixture.getCompileCount()).toBe(0);
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
+
+it('S2 truncation-only maximum preserves noncanonical nonzero loss and clears on reuse', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createGeometryFixture(device, {
+    inputs: {
+      rows: {format: 'uint32', values: Uint32Array.of(0xffffffff, 0xffffffff)},
+      counts: {format: 'uint32', values: Uint32Array.of(0, 0)},
+      truncated: {format: 'uint32', values: Uint32Array.of(0, 7)}
+    },
+    outputs: {
+      left: {format: 'uint32', length: 2},
+      right: {format: 'uint32', length: 2},
+      count: {format: 'uint32', length: 1},
+      overflow: {format: 'uint32', length: 1},
+      candidate: {format: 'uint32', length: 1}
+    },
+    create: ({inputs, outputs}) =>
+      new GPUPairGather({
+        how: 'left',
+        neighbors: {
+          rows: inputs['rows'] as never,
+          counts: inputs['counts'] as never,
+          capacity: 1,
+          candidateTruncated: inputs['truncated'] as never
+        },
+        output: {
+          leftRows: outputs['left'] as never,
+          rightRows: outputs['right'] as never,
+          status: {
+            count: outputs['count'] as never,
+            overflow: outputs['overflow'] as never,
+            candidateOverflow: outputs['candidate'] as never
+          }
+        }
+      })
+  });
+  try {
+    // Flag 7 still means incomplete: query 0 is established absent, query 1 is unknown.
+    const incomplete = await fixture.run();
+    expect(incomplete['left']).toEqual([0, 0xffffffff]);
+    expect(incomplete['right']).toEqual([0xffffffff, 0xffffffff]);
+    expect(incomplete['count']).toEqual([1]);
+    expect(incomplete['overflow']).toEqual([0]);
+    expect(incomplete['candidate']).toEqual([1]);
+    fixture.writeInput('truncated', Uint32Array.of(0, 0));
+    const complete = await fixture.run();
+    expect(complete['left']).toEqual([0, 1]);
+    expect(complete['right']).toEqual([0xffffffff, 0xffffffff]);
+    expect(complete['count']).toEqual([2]);
+    expect(complete['overflow']).toEqual([0]);
+    expect(complete['candidate']).toEqual([0]);
+  } finally {
+    fixture.destroy();
+  }
+});

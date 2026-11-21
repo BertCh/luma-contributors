@@ -833,7 +833,7 @@ graph.add(new GPULabelPoint({
   spatialContext: planarProjection.spatialContext,
   positions: planarPositions, featureOffsets, polygonOffsets, ringOffsets,
   initialGridSize: ${state.initialGridSize}, refinementCandidates: ${state.refinementCandidates},
-  output: {points, distances, degenerate}
+  output: {points, publishedCenterClearance: distances, degenerate}
 }));
 `;
     const validity = `graph.add(new GPUGeometryValidity({

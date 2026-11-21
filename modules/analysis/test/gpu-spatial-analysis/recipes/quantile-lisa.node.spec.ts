@@ -16,6 +16,7 @@ import {
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
 import {
+  QUANTILE_LISA_LEGACY_INFERENCE,
   computeQuantileLISAReference,
   QUANTILE_LISA_REFERENCE_CASES
 } from './quantile-lisa-reference';
@@ -32,6 +33,19 @@ it('quantile LISA matches pinned type-five and half-open class fixtures', () => 
   }
 });
 
+it('review2 R9 type-five integer numerator retains the exact boundary member', () => {
+  // Exact ranks: 21*9/14 - 1/2 = 13; 21*10/14 - 1/2 = 14.5.
+  const result = computeQuantileLISAReference(
+    Float32Array.from({length: 21}, (_, row) => row),
+    14,
+    10
+  );
+  expect(result.boundaries).toEqual([13, 14.5]);
+  expect(Array.from(result.membership).flatMap((member, row) => (member ? [row] : []))).toEqual([
+    13, 14
+  ]);
+});
+
 export function createQuantileLISAProps(
   graph: GPUCommandGraph,
   rows = 8
@@ -40,6 +54,7 @@ export function createQuantileLISAProps(
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `quantile-lisa-${serial++}`, format, length);
   return {
+    ...QUANTILE_LISA_LEGACY_INFERENCE,
     values: view('float32', rows),
     quantileParameters: view('uint32', 2),
     parameters: view('uint32', 8),
@@ -277,16 +292,53 @@ it('NumPy fixtures distinguish marginal quantiles from joint complete-case quant
   expect(MULTIVARIATE_REFERENCE.cases[2].membership).toEqual(new Array(8).fill(0));
 });
 
-it('quantile LISA checks the shared inference matrix binding before creating nodes', () => {
+it('quantile LISA checks the split inference row-position binding before creating nodes', () => {
   const device = createNullWebGPUDevice();
   try {
+    // Split preparation uses one float per row per binding, not eight floats per row.
+    // The former 8-column cutoff must remain usable: 513 * 32 > 16384, but all split bindings fit.
+    Object.assign(device.limits, {maxStorageBufferBindingSize: 16384});
     const graph = new GPUCommandGraph(device);
-    const maximumRows = Math.floor(
-      device.limits.maxStorageBufferBindingSize / (8 * Float32Array.BYTES_PER_ELEMENT)
-    );
-    const contributor = new GPUQuantileLISA(createQuantileLISAProps(graph, maximumRows + 1));
-    expect(() => contributor.getCommandNodes(graph)).toThrow(
-      /quantile-lisa inference matrix scratch.*limit/
+    expect(() =>
+      new GPUQuantileLISA(createQuantileLISAProps(graph, 513)).getCommandNodes(graph)
+    ).not.toThrow();
+    const oversizedGraph = new GPUCommandGraph(device);
+    const rows = 4096;
+    const props: GPUQuantileLISAProps = {
+      ...createQuantileLISAProps(oversizedGraph, rows),
+      weights: {
+        rowCount: rows,
+        chunks: [0, 2048].map(rowStart => ({
+          rowStart,
+          rowCount: 2048,
+          weights: {
+            offsets: createTransientView(
+              oversizedGraph,
+              `chunk-${rowStart}-offsets`,
+              'uint32',
+              2049
+            ),
+            neighbors: createTransientView(
+              oversizedGraph,
+              `chunk-${rowStart}-neighbors`,
+              'uint32',
+              2048
+            ),
+            weights: createTransientView(
+              oversizedGraph,
+              `chunk-${rowStart}-weights`,
+              'float32',
+              2048
+            )
+          }
+        }))
+      }
+    };
+    // All borrowed bindings fit 16384 bytes. The private row-position sentinel adds one word:
+    // (4096 + 1) * 4 = 16388 bytes, exceeding the device limit independently of CSR chunking.
+    const contributor = new GPUQuantileLISA(props);
+    expect(() => contributor.getCommandNodes(oversizedGraph)).toThrow(
+      /row positions scratch.*limit/
     );
   } finally {
     device.destroy();

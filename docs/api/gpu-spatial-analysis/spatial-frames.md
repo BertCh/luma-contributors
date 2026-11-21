@@ -9,10 +9,12 @@ projected differently.
 A frame is an identity plus optional math.gl CRS metadata:
 
 ```ts
+import type {GPUSpatialFrameUnit} from '@luma-contributors/analysis/analysis-core';
+
 type GPUSpatialFrame = {
-  id: string; // identity; equal ids mean interchangeable coordinates
+  id: string; // identity; compatibility also checks relative storage origins
   kind: 'local-azimuthal-equidistant' | 'local-lambert-equal-area' | 'crs';
-  origin?: [number, number]; // [longitude, latitude] in degrees
+  origin?: [number, number]; // local center: degrees; relative storage: target CRS units
   crs?: string; // identifier as written, for kind 'crs'
   signature?: string; // execution signature of resolved math.gl CRS metadata
   unit?: GPUSpatialFrameUnit; // math.gl CRSUnit: name, metersPerUnit, degreesPerUnit
@@ -23,14 +25,16 @@ type GPUSpatialFrame = {
 };
 ```
 
-Compatibility between two contexts is decided by comparing frame `id` only. Every other field is
-descriptive metadata and never changes whether two frames are compatible. Two frames with
-different ids are incompatible even if they describe the same CRS; build both with the same
-constructor and options to get the same id.
+Compatibility compares frame `id` and effective relative storage origins, including when an
+explicit id is supplied. Two frames with different ids are incompatible even if they describe
+the same CRS; build both with the same constructor and options to get the same id. Relative
+origins default to a captured, published `[0, 0]` tuple and also apply when precision is `float32-origin-relative` unless
+the anchor is `projection-center`.
 
 - `anchor: 'projection-center'` means the projection is centered on `origin` (local frames).
 - `anchor: 'relative-origin'` means coordinates are the CRS's own, stored relative to `origin` to
-  keep float32 precision.
+  keep float32 precision. Storage origins use target CRS units (meters for UTM); local projection
+  centers use `[longitude, latitude]` in degrees.
 
 ### Signature and semantic equivalence
 
@@ -43,8 +47,15 @@ mixed. Datum or area-of-use differences that do not change execution are not ref
 ## Units and precision
 
 `unit` is math.gl's `CRSUnit`. The library checks declared units and never converts them.
+For manually described frames without `unit`, recognized registry CRS identifiers still supply
+their known unit for validation and length compatibility.
 `getGPUSpatialFrameContextUnits` returns `'meters'` for `metersPerUnit === 1` and otherwise leaves
 `GPUSpatialContext.units` undeclared (native), as required by the native planar context validator.
+Declaring `units: 'meters'` for a known non-meter frame throws. A known angular frame
+cannot use the planar native metric: project its positions into a linear frame first. Provider-free
+PROJ `longlat`, `latlong`, `lonlat` and `latlon` resolve as degrees. Raw unlabelled XY alone cannot
+determine units; callers must declare the coordinate space and frame from their data source.
+
 Kilometers and other units remain in `frame.unit`; coordinates and thresholds continue to use
 those native frame units without conversion.
 
@@ -74,6 +85,7 @@ import {createGPULocalFrame} from '@luma-contributors/analysis/analysis-core';
 
 const frame = createGPULocalFrame({origin: [-122.4, 37.8], kind: 'azimuthal-equidistant'});
 const [x, y] = frame.project(-122.39, 37.81); // meters, binary64
+const lngLats = Float64Array.of(-122.39, 37.81, -122.38, 37.82);
 const positions = frame.projectArray(lngLats, 2); // interleaved float32 [x, y]
 // frame.spatialContext carries units 'meters' and the frame identity.
 ```
@@ -82,7 +94,12 @@ const positions = frame.projectArray(lngLats, 2); // interleaved float32 [x, y]
 `projectArray` and `unprojectArray`. Props: `origin` (required, finite, `|latitude| <= 90`), `kind`
 (default `'azimuthal-equidistant'`), `sphereRadius` (AEQD only; default mean Earth radius),
 `id` and `datum`. The `datum` is copied to `spatialContext.datum` and does not change the frame id.
-Antipodes project to NaN.
+Unknown local-frame kinds throw with accepted values `azimuthal-equidistant` and
+`lambert-equal-area`. Spatial context units accept only `native`, `meters` and `kilometers`.
+Antipodes project to NaN. `projectArray` requires complete rows (`length % stride === 0`);
+`unprojectArray` requires complete XY pairs (`length % 2 === 0`). Partial inputs and short
+destinations throw before any destination write. Overlapping typed-array views are supported
+by snapshotting the source. Extra destination elements remain unchanged.
 
 ### createGPULocalSpatialFrame
 
@@ -104,7 +121,9 @@ Creates a `'crs'` frame synchronously, without a CRS provider. The id is the nor
 identifier (`epsg:3857` and `urn:ogc:def:crs:EPSG::3857` both give `EPSG:3857`), else the metadata
 signature, else the input string. `crs` keeps the input as written. Options: `metadata` (resolved
 math.gl metadata, for example from `projectionEngine.getCRS`, giving the signature, unit, axis
-order and area of use), `id` and `precision`. The unit comes from `metadata`, then the PROJ string
+order and area of use), `id`, `precision`, `origin` and `anchor`. Invalid anchors and precisions
+throw with their accepted spellings; supplied origins must contain two finite numbers. Origin tuples are captured at
+construction. Relative storage origins are included in the derived id. The unit comes from `metadata`, then the PROJ string
 `+units`/`+to_meter`, then a known registry family; it is omitted when unknown.
 
 ### createGPUSpatialFrameFromIdentifier and getKnownGPUSpatialFrameUnit
@@ -150,3 +169,30 @@ A local AEQD or LAEA projection is distinct from an east/north/up tangent offset
 Reusing the same longitude/latitude origin alone does not make their coordinates interchangeable.
 Project the data into the renderer's frame, or choose a rendering projection that preserves the
 analysis frame; keep the declared origin and units consistent in both paths.
+
+## Comparing metric results
+
+Position compatibility retains the coordinate contract. This mode compares **lengths and distance
+thresholds**, including the length radius; it does not certify area results. When comparing lengths or thresholds,
+request `purpose: 'metric-results'`: it checks effective result units, sphere radius and ellipsoid,
+including their defaults. Omitted sphere radius matches explicit `6371008.8` meters, but differs
+from a unit sphere. Native planar units resolve through the known frame scale, so an omitted unit
+in a meter frame matches explicit meters. Kilometers differ from meters even when positions share
+the same frame.
+
+For areas, compare the resolved area model and area radius separately. Default linear-edge
+spherical areas use the authalic radius `6371007.180918475` meters; explicitly setting
+`sphereRadius: 6371008.8` overrides that area radius even though the length radii match.
+
+```ts
+import {
+  assertCompatibleGPUSpatialContexts,
+  type GPUSpatialContext
+} from '@luma-contributors/analysis/analysis-core';
+
+const source: GPUSpatialContext = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'};
+const target: GPUSpatialContext = {...source, units: 'meters', sphereRadius: 6371008.8};
+assertCompatibleGPUSpatialContexts('length comparison', source, target, {purpose: 'metric-results'});
+```
+
+The same optional purpose argument is accepted by `getGPUSpatialContextCompatibility`.

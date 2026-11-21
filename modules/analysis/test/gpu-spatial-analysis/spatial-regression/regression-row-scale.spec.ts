@@ -436,7 +436,7 @@ for (const method of ['HC1', 'HAC'] as const)
                 }
               }
             : {}),
-          output: {covariance: covariance.view, status: status.view}
+          output: {covariance: covariance.view, status: {code: status.view}}
         })
       );
       context.run();

@@ -126,6 +126,8 @@ export type GPUAnalysisCoordinateModel = 'geographic' | 'planar';
  */
 export type GPUAnalysisSpacingStatistics = {
   pointCount: number;
+  /** Rejected source rows, counted before sampling. Absent in legacy profiles. */
+  invalidCount?: number;
   /** Points the distance statistics were computed on; equals `pointCount` when exact. */
   sampleSize: number;
   sampled: boolean;

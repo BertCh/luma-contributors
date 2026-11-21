@@ -20,6 +20,7 @@ import {
 } from './raster-time-series-chunks';
 import {
   getGraphViewChunks,
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
@@ -51,6 +52,11 @@ export function getGPURasterGeometricMedianCompositeParameterValues(
   settings: GPURasterGeometricMedianCompositeSettings = {},
   target: Float32Array = new Float32Array(GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRequirement(
+    'getGPURasterGeometricMedianCompositeParameterValues',
+    target.length >= GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH,
+    `target must hold at least ${GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH} float32 words; received ${target.length}`
+  );
   const distanceEpsilon = settings.distanceEpsilon ?? 1e-5;
   validateFiniteNumber(
     'getGPURasterGeometricMedianCompositeParameterValues',
@@ -73,7 +79,7 @@ export type GPURasterGeometricMedianCompositeProps<
   sliceCount: number;
   /** Bands per observation in `[1, 16]`. */
   bandCount: number;
-  /** Weiszfeld iterations in `[1, 64]`; all of them run. */
+  /** Weiszfeld iterations in `[1, 64]`; all run for two or more valid observations. A singleton is copied. */
   iterationCount: number;
   /** Observations `(cell * sliceCount + slice) * bandCount + band`; an observation with any non-finite band is missing. */
   values: Rows;
@@ -94,12 +100,15 @@ export type GPURasterGeometricMedianCompositeProps<
 /**
  * Geometric median composite per cell (Roberts, Mueller and McIntyre 2017): the point minimising the
  * sum of Euclidean distances to the valid observations over all bands together, so band
- * relationships are preserved and indices computed after compositing equal those computed before.
+ * relationships are fitted jointly. An index of the synthetic spectrum can differ from the
+ * temporal median of acquisition-level indices; compute each acquisition index first for that product.
  * The output is synthetic; use {@link GPURasterMedoidComposite} when provenance matters.
  *
  * Weiszfeld's recursion `y <- sum(x_i / d_i) / sum(1 / d_i)` with `d_i = max(|x_i - y|, epsilon)`,
- * started at the mean of the valid observations, for exactly `iterationCount` iterations (no data
- * dependent exit). With few observations or a skewed cloud convergence can be slow: read `lastStep`.
+ * started at the mean of the valid observations, for exactly `iterationCount` iterations when
+ * at least two are valid. A singleton is copied directly with zero last step. With few observations or a skewed cloud convergence can be slow: read `lastStep`.
+ *
+ * The GPU route accepts at most 256 slices and 16 bands per cell, with at most 64 iterations.
  *
  * Cell-major fields accept packed views or matching vector chunks of complete cell records.
  * Shared date, model and parameter tables remain packed.
@@ -117,6 +126,17 @@ export class GPURasterGeometricMedianComposite<
   constructor(readonly props: GPURasterGeometricMedianCompositeProps<Rows>) {
     const id = props.id ?? 'raster-geometric-median-composite';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'output.composite': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.lastStep': {required: false, viewType: 'either', formats: ['float32']}
+    });
+    // Capture constructor options/maps while preserving graph resource identities.
+    props = {...props, output: {...props.output}};
+    this.props = props;
     validateCapacity(id, 'cellCount', props.cellCount);
     validateCapacity(id, 'sliceCount', props.sliceCount, 1, MAXIMUM_GEOMETRIC_MEDIAN_SLICE_COUNT);
     validateCapacity(id, 'bandCount', props.bandCount, 1, MAXIMUM_GEOMETRIC_MEDIAN_BAND_COUNT);
@@ -232,17 +252,19 @@ fn isObservationValid(cell: u32, slice: u32) -> bool {
 var estimate: array<f32, ${bands}>;
 var numerator: array<f32, ${bands}>;
 var validCount = 0u;
+var firstSlice = 0u;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   if (!isObservationValid(index, slice)) { continue; }
+  if (validCount == 0u) { firstSlice = slice; }
   validCount++;
   for (var band = 0u; band < ${bands}u; band++) {
-    estimate[band] += values[valuesOffset + (index * ${slices}u + slice) * ${bands}u + band];
+    estimate[band] += values[valuesOffset + (index * ${slices}u + slice) * ${bands}u + band] - values[valuesOffset + (index * ${slices}u + firstSlice) * ${bands}u + band];
   }
 }
 var step = 0.0;
 if (validCount > 0u) {
-  for (var band = 0u; band < ${bands}u; band++) { estimate[band] /= f32(validCount); }
-  for (var iteration = 0u; iteration < ${iterationCount}u; iteration++) {
+  for (var band = 0u; band < ${bands}u; band++) { estimate[band] = values[valuesOffset + (index * ${slices}u + firstSlice) * ${bands}u + band] + estimate[band] / f32(validCount); }
+  for (var iteration = 0u; validCount > 1u && iteration < ${iterationCount}u; iteration++) {
     var weightSum = 0.0;
     for (var band = 0u; band < ${bands}u; band++) { numerator[band] = 0.0; }
     for (var slice = 0u; slice < ${slices}u; slice++) {
@@ -255,11 +277,11 @@ if (validCount > 0u) {
       }
       let weight = 1.0 / max(sqrt(squared), distanceEpsilon);
       weightSum += weight;
-      for (var band = 0u; band < ${bands}u; band++) { numerator[band] += weight * values[valuesOffset + base + band]; }
+      for (var band = 0u; band < ${bands}u; band++) { numerator[band] += weight * (values[valuesOffset + base + band] - estimate[band]); }
     }
     var squaredStep = 0.0;
     for (var band = 0u; band < ${bands}u; band++) {
-      let next = numerator[band] / weightSum;
+      let next = estimate[band] + numerator[band] / weightSum;
       squaredStep += (next - estimate[band]) * (next - estimate[band]);
       estimate[band] = next;
     }

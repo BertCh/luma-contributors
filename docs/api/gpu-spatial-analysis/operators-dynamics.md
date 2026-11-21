@@ -11,6 +11,11 @@ description: "Distribution dynamics & space-time tests contributors in @luma-con
 Distribution dynamics contributors use period-major columns: period `t` of row `i` is at
 `t * rowCount + i`, with `periodCount` periods.
 
+Contributor constructors and GPU/CPU operation forms snapshot their topology options, output
+routes, weight descriptors and method lists. Mutating the caller's options later does not change
+the declared computation; construct a new contributor or operation for a different topology.
+The contents of the existing input and parameter views remain per-frame data.
+
 See [Space-time statistics](./space-time-statistics.md) for space-time weights, the lagged and differential
 local Moran, and cross-correlation by lag. The near-repeat, local Knox and Jacquez tests are listed with
 the contributors below; their times follow the [temporal context](./temporal-context.md).
@@ -35,6 +40,45 @@ classes or transition counts must equal theirs. The two differ only for rows equ
 produce whenever the data are tied at the quantile. `GPUSpatialMarkov` has the same choice for its lag classes as
 `lagIntervalClosure`. Run one `GPUClassBreaks` over the
 pooled `n * T` column and assign every period with its breaks to get one legend for a time slider.
+
+Check a stored option object with `satisfies GPUClassAssignmentProps` before construction:
+a misspelled key or an `intervalClosure` other than `'left'` or `'right'` is then a type
+error. The constructor also rejects both at run time (for example `class-assignment unknown
+prop intervalClosue; accepted keys: id, values, breaks, classCount, mask, intervalClosure,
+output`), so a typo never falls back to `'left'`. For the value `1` on breaks `[0, 1, 2]`
+(one inner edge, `1`), `'left'` gives class `1` and `'right'` gives class `0`:
+
+```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUClassAssignment,
+  type GPUClassAssignmentProps
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+declare const graph: GPUCommandGraph;
+declare const values: GraphDataView<'float32'>; // [1]
+declare const breaks: GraphDataView<'float32'>; // [0, 1, 2]
+declare const classCount: GraphDataView<'uint32'>; // [2]
+declare const leftClasses: GraphDataView<'uint32'>;
+declare const rightClasses: GraphDataView<'uint32'>;
+const left = {
+  id: 'left-closed',
+  values,
+  breaks,
+  classCount,
+  intervalClosure: 'left',
+  output: leftClasses
+} satisfies GPUClassAssignmentProps; // leftClasses = [1]
+const right = {
+  id: 'right-closed',
+  values,
+  breaks,
+  classCount,
+  intervalClosure: 'right',
+  output: rightClasses
+} satisfies GPUClassAssignmentProps; // rightClasses = [0]
+graph.add(new GPUClassAssignment(left));
+graph.add(new GPUClassAssignment(right));
+```
 
 #### How it computes
 
@@ -66,11 +110,35 @@ total sum of squares. `GVF = 1 - TSS / total sum of squares` is an extension, be
 sorted segment, so medians are read directly and sums run in sorted order: no atomics, bit-reproducible, no
 per-class search passes.
 
+Squared deviations reduce offsets from the already computed median of each class (and of the
+overall slot), then center those offsets. This also avoids summing millions of identical large
+offsets when almost every value equals the median. The absolute mean is never rounded back onto the
+input scale. For classes `[a,a,b,b]`, `[b,b,b,b]` with `a = 1000000` and `b = a + 0.0625`,
+the class/overall squared deviations are `[0.00390625, 0, 0.005859375]` and GVF is `1/3`,
+just as after subtracting `a` from every value.
+
+Check a stored option object with `satisfies GPUClassAssignmentProps` before construction:
+a misspelled key or an `intervalClosure` other than `'left'` or `'right'` is then a type
+error. The constructor also rejects both at run time (for example `class-assignment unknown
+prop intervalClosue; accepted keys: id, values, breaks, classCount, mask, intervalClosure,
+output`), so a typo never falls back to `'left'`. For the value `1` on breaks `[0, 1, 2]`
+(one inner edge, `1`), `'left'` gives class `1` and `'right'` gives class `0`:
+
 The spec pins mapclassify 2.11.0 Quantiles, NaturalBreaks and EqualInterval fits (about 1e-4 relative).
 Deviations: sums run in float32 and in sorted order rather than index order, non-finite values are skipped, and
 at least one row is required.
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUClassificationFit} from '@luma-contributors/analysis/gpu-spatial-analysis';
+declare const graph: GPUCommandGraph;
+declare const values: GraphDataView<'float32'>;
+declare const classes: GraphDataView<'uint32'>;
+declare const counts: GraphDataView<'uint32'>;
+declare const medians: GraphDataView<'float32'>;
+declare const absoluteDeviations: GraphDataView<'float32'>;
+declare const squaredDeviations: GraphDataView<'float32'>;
+declare const summary: GraphDataView<'float32'>;
 graph.add(new GPUClassificationFit({values, classes, classCount: 5, output: {counts, medians, absoluteDeviations, squaredDeviations, summary}}));
 ```
 
@@ -121,14 +189,50 @@ Markov transition counts between classes of consecutive periods (giddy `Markov`)
   `dof_hom` by the number of empty pooled rows. The p-values are upper-tail chi-square (`'greater'`) from
   an f32 incomplete gamma (relative error below 6e-5 for p above 1e-6); `dof = 0` gives NaN. The test is
   asymptotic: with sparse rows (see `stateSparsity`) it is unreliable.
+  LR accumulates the centered deviance `2 * (O * log(O/E) - O + E)` for every positive
+  expected cell, including `O = 0`. This is algebraically the same likelihood ratio, but
+  avoids cancellation between signed terms for nearly identical conditional matrices.
+  The GPU forms `O-E` from the difference of count products, retaining their multiplication
+  rounding errors before division; an expected count rounded onto its observation must not
+  erase the evidence. The CPU also uses centered deviance rather than signed log terms.
 - Steady states use a direct Grassmann-Taksar-Heyman solve per chain. States with no transition in or out
   are dropped (probability 0, as giddy's `Markov` drops classes absent from the data); the remaining
   states must have an outgoing transition and form one communicating class, otherwise the whole chain is
   NaN (giddy raises or returns several distributions). `converged` is one when every chain that has
   transitions got a steady state. The solver is direct, so `iterationLimitReached` is never written.
   A periodic chain is solved (its stationary distribution, not a limit of powers).
+- The connectivity check uses both directions of the transition support, so rejection is independent
+  of state labels: counts `[[1, 0], [1, 0]]` and its relabeling both give NaN and `converged = 0`.
+  Completely empty chains give NaN without clearing convergence. If float32 stationary weights
+  overflow, the GPU also writes NaN and clears convergence; the CPU twin rescales its float64 weights.
+  Diagnostic aggregate counts use float32 instead of wrapping at uint32; sparsity counts retain exact
+  integer comparisons. The GPU's `minimumTransitions` must be between 1 and 4,294,967,295.
+  Both CPU entry points accept integer thresholds through `Number.MAX_SAFE_INTEGER`.
+  The GPU operation checks its uint32 threshold limit at construction; the CPU operation
+  shares graph-port validation without inheriting that backend limit.
+- Condition-axis aggregation and global diagnostic totals use published `GPUSegmentedReduction`
+  and `GPUReduction` stages. Per-row kernels visit at most 64 destination classes; the scalar
+  publication folds at most 64 class rows after the condition reductions. No serial summary scans
+  the complete condition tensor. The graph uses float32 reduction trees, so the last rounding bits
+  of Q/LR and pooled stationary probabilities can differ from serial sums; definitions and output
+  layouts are unchanged. Summary
+  scratch includes one float32 transpose of the count tensor and scalar fields per condition/state;
+  every individual buffer must fit the device binding limit. `estimatedCommandNodeCount` is a
+  conservative 64-node bound including public reduction stages; no new condition-count cap applies.
+  The stationary solver reuses these pooled counts, including when homogeneity and sparsity are
+  omitted; it visits only the bounded state system rather than rescanning conditions per matrix cell.
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUClassAssignment, GPUTransitionMatrix} from '@luma-contributors/analysis/gpu-spatial-analysis';
+declare const graph: GPUCommandGraph;
+declare const values: GraphDataView<'float32'>;
+declare const breaks: GraphDataView<'float32'>;
+declare const classCount: GraphDataView<'uint32'>;
+declare const classes: GraphDataView<'uint32'>;
+declare const counts: GraphDataView<'uint32'>;
+declare const probabilities: GraphDataView<'float32'>;
+declare const periodCount: number;
 // `classCount` is the one-row uint32 view written by GPUClassBreaks.
 graph.add(new GPUClassAssignment({values, breaks, classCount, output: classes}));
 graph.add(new GPUTransitionMatrix({classes, periodCount, classCount: 5, output: {counts, probabilities}}));
@@ -186,7 +290,17 @@ graph.add(new GPUTransitionMatrix({classes, periodCount, classCount: 5, output: 
   `S` (rows `(1 + c) * K ..`), NaN where a chain is not ergodic. The pooled chain here sums the counted
   transitions over the lag classes, so it excludes rows without a lag class. A small `Q_p_value` says the
   spatial lag matters; a large one says the conditional matrices cannot be told apart from the pooled one.
-  `getInferenceMetadata()` describes the tests (analytic, `'greater'`, no correction).
+  `getInferenceMetadata()` describes the tests (analytic, `'greater'`, no correction). Incomplete
+  weights (nonzero `weights.status.overflow` or `weights.status.candidateOverflow`) suppress the
+  result: every period's `lagValues` and the pooled `lagBreaks` are NaN, lag classes are absent,
+  and every transition is ignored. `counts`, `rowTotals`, `lagClassCount` and
+  `status.converged` are 0, and `probabilities`, `homogeneity` and `steadyStates` are NaN.
+  Supplying a complete neighborhood and clearing the producer's loss flags restores ordinary
+  results on the next submission.
+  Both spatial and LISA Markov validate all transition/diagnostic output shapes in their
+  constructors, before declaring graph stages. Their writable outputs must be disjoint from
+  every input, including both neighborhood loss flags. Transition outputs also require
+  separate backing buffers even when byte ranges do not overlap; this is checked at construction.
 - `GPULISAMarkov` (giddy `LISA_Markov`): props `values`, `weights`, `periodCount` (at least `periodLag + 1`),
   optional `periodLag`, `parameters` (the `GPULocalMoran` view from
   `getGPUSpatialAutocorrelationParameterValues`, which carries the significance level), optional `mask`,
@@ -246,6 +360,8 @@ classifying.
 
 #### `GPULISAMarkov` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULISAMarkov`.
+
 - Packer: `getGPUSpatialAutocorrelationParameterValues(settings?)`, writes `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` (8) `float32` values.
   - Input port: `parameters`.
 
@@ -275,7 +391,8 @@ kNN list, is taken from that row; duplicate and self entries are ignored; lists 
 are only as complete as the pair list. Pass `GPUNeighborSearch.outputWeights` so both loss causes
 reach inference rather than rebuilding the CSR views without their status.
 Pairs carry their own `spatialContext`; Knox needs no context check because it only counts spatial pairs.
-Mantel needs no context check because its correlation is unit-free and it takes no spatial distance parameter.
+Mantel's correlation is unit-free and it takes no spatial distance parameter. Its optional `temporalContext`
+is captured and validated as float32-relative ticks; it performs no unit conversion.
 
 Knox, Mantel and Jacquez capture declared input/output maps, including inherited/getter-backed
 fields, once at construction. Optional-port declarations and destinations stay fixed; unrelated
@@ -303,12 +420,42 @@ Clearing the loss flags with complete inputs restores the result on the same gra
   `timeTransform` (`{constant, power}`, or `GPU_MANTEL_POINTPATS_TRANSFORM` for the pointpats defaults) to
   match it. The time transform acts on `|t_i - t_j|`, so it cannot be done by transforming `times` first.
   The base of `x + constant` must stay positive for a non-integer power. Sums are f32 shifted partials, within about 1e-4 of a
-  double-precision oracle. Above about 43,000 permutations the rows are split into fewer than 256 blocks so
-  the `(permutation, block)` partials table stays within one storage binding (`maxStorageBufferBindingSize`). The statistic runs over the listed pairs only, so with a distance band it is a
+  double-precision oracle. With compile-time `maximumPermutations = M` and storage binding limit
+  `B` bytes, row blocks are at most `min(256, rowCount, floor(B / (4 * (9 * (M + 1) + 2))))`.
+  Each (draw, block) stores nine float32 words and each block has two spatial moment words.
+  Both routes choose this block count; stopping allocates only one draw batch in the partials table. The statistic runs over the listed pairs only, so with a distance band it is a
   band-truncated Mantel `r` (pairs beyond the band are absent) that differs from the full Mantel `r`;
   report the band with the result. `getInferenceMetadata(settings)` states alternative `'greater'`: the interaction
   hypothesis is a positive space-time correlation, the upper-tail convention of pointpats `mantel`
   (`pseudoPTwoSided` is also in the summary if repulsion matters).
+
+The Mantel operation forms are `GPUMantelTestOperation` and `CPUMantelTestOperation`, sharing
+`MantelTestOperationProps`; the standalone CPU twin is `computeMantelTestOnCPU`. Their pair list,
+transforms, temporal metadata and output names are captured at construction, while buffer contents
+remain live. `GPU_MANTEL_TEST_SUMMARY.observedCorrelation` names the observed coefficient.
+The shared `GPU_SPACE_TIME_SUMMARY` indices are unchanged. `decodeGPUMantelTestSummary` accepts float32 words,
+`Uint8Array` readback bytes (including subviews) or an `ArrayBuffer` and returns named fields.
+
+With fewer than two usable pairs, or a zero spatial or temporal norm, Mantel preserves `pairCount`
+and publishes NaN observed/inferential statistics and zero usable permutations. This applies to
+full and band-restricted tests. When the observation is defined, a degenerate null draw remains NaN
+in its statistics slot and is excluded from both tails, moments and the denominator; the null
+distribution is conditional on a defined correlation. If no usable
+null draw remains, the probabilities and moments are NaN. `output.permutationCount` is a one-word
+uint32 attempted-prefix length, including NaN null slots; it is optional for fixed-count Mantel
+and required for stopping. The additive optional one-word uint32 `output.usablePermutationCount`
+reports the defined null correlations used by inference. CPU results expose both arrays. Both
+counts are zero for an undefined observation; a defined observation with no usable null draws
+retains its positive attempted-prefix count and reports zero usable draws.
+Slots beyond the attempted/stopping prefix remain zero; an undefined observation makes all owned
+statistics slots NaN. For stopping with degenerate draws, `h / usableDraws` replaces `h / L`.
+
+`getInferenceMetadata(settings, 'pseudoPTwoSided')` describes the summary's doubled minimum tail as
+`alternative: 'two-sided', pValueConstruction: 'doubled-minimum-tail'`. Its attainable floor at
+19 usable draws is `2 / 20 = .10`. This differs from a scan's maximum-statistic upper-tail
+count, whose floor is `1 / 20 = .05`. The default field is `'pseudoPGreater'` with
+`pValueConstruction: 'upper-tail-count'`; `'pseudoPLesser'` is also accepted. The numerical
+summary formulas are unchanged.
 
 `timeThreshold`, `seed` and `permutationCount` are per-frame settings (`GPUSpaceTimeSettings`), written with
 `getGPUSpaceTimeParameterValues({seed, permutationCount, timeThreshold})` (`uint32[4]`). `times` must be
@@ -316,8 +463,10 @@ finite and are float32, so raw epoch seconds (about 1.7e9) are spaced 128 s apar
 are unusable. Subtract an origin on the CPU with `getGPUSpaceTimeRelativeTimes(times, origin?,
 requiredResolution?)`, which subtracts a float64 origin (default the minimum), returns
 `{times, origin, resolution}` and throws if the span is too coarse for `requiredResolution`; the float32
-spacing at a span `S` is `2^(floor(log2 S) - 23)` (about 0.5 ms for an hour, 1 s for 4.6 months of
-seconds). `timeThreshold` is in the same relative units. `output.summary` (`float32`, 12 entries, `GPU_SPACE_TIME_SUMMARY`) holds the observed statistic, pair
+spacing at the encoded magnitude `S` is `max(2^-149, 2^(floor(log2 S) - 23))` (about 0.5 ms for an hour, 1 s for 4.6 months of
+seconds). Encoding rejects infinity, the guard detects subnormal collapse, and guarded context rebasing
+rejects an epoch outside signed Int64, an unknown temporal unit or an empty/non-string timeZone. The default origin still maps `[2²⁴, 2²⁴+1]` to `[0,1]`.
+`timeThreshold` is in the same relative units. `output.summary` (`float32`, 12 entries, `GPU_SPACE_TIME_SUMMARY`) holds the observed statistic, pair
 count, time-close pair count, expected value, permutation mean and variance, greater and lesser counts,
 the pseudo p-values (greater, lesser, two-sided, `(1 + count) / (P + 1)`) and the z-score. The Kulldorff
 space-time scan is `GPUSpatialScanStatistic` with `timeBuckets > 1`.
@@ -331,40 +480,46 @@ non-uniform on small domains. At most `2^24 - 1` events are supported.
 maximumPermutations]`, default omitted) enables Besag-Clifford sequential Monte Carlo p-values
 (Besag and Clifford 1991) for both tests, with the greater alternative that `pseudoPGreater` reports. The
 run stops at the first permutation `L` whose running exceedance count (permuted statistic `>=` observed)
-equals `h`, and `pseudoPGreater = min(1, h / L)`; with fewer than `h` exceedances in all `P` it is the usual
-`(count + 1) / (P + 1)`. Omitted, nothing changes. Permutations run in batches of 64 slots (the batch doubles
+equals `h`. Knox uses `pseudoPGreater = min(1, h / L)`; Mantel uses `min(1, h / U)`, where
+`U` is the usable count inside prefix `L`. Without a stop, the add-one denominator is `P + 1`
+for Knox and `U + 1` for Mantel (NaN when U is zero). Omitted, nothing changes. Permutations run in batches of 64 slots (the batch doubles
 when `maximumPermutations` exceeds 16,383, so there are at most 256 batches; batch 0 also computes the
 observed statistic). After each batch a one-thread node scans its statistics in permutation order and
 disarms the remaining batches through a GPU dispatch gate, so `L` and the p-value do not depend on the batch
 size, and the first `L` permutations are those of the full run (same keyed shuffle stream). Work saved is
 the batches after the one holding `L`, and the batches past the per-frame `permutationCount`; the stopping
 batch finishes whole, so expect savings in steps of one batch, and each batch is a few more graph nodes
-(`batch-<n>-partials`, `batch-<n>-reduce`, `batch-<n>-scan`, between `stop-reset` and `stop-finalize`).
-`output.permutationCount` (one `uint32`, required with `stopAfterExceedances` and rejected without it)
-receives `L`, or `P` when the rule did not fire. `output.statistics` rows past `L` are 0, and the summary
+(`batch-<n>-partials`, `batch-<n>-reduce`, a parallel Mantel finite-comparison pass, and
+`batch-<n>-scan`, between `stop-reset` and `stop-finalize`). `output.permutationCount` (one uint32,
+required with stopping) receives attempted prefix `L`, or `P` when the rule did not fire. Without
+stopping it is accepted for Mantel and rejected for Knox. Mantel preserves NaN draws in that prefix
+and exposes the separate optional `output.usablePermutationCount` for the inference denominator. `output.statistics` rows past `L` are 0, and the summary
 permutation mean, variance, greater and lesser counts and z-score cover the first `L` permutations.
 `pseudoPLesser` and `pseudoPTwoSided` keep the fixed-length formulas over those `L` permutations and are not
 sequentially valid; use `pseudoPGreater`. The `parameters` layout is unchanged, and `h` is baked into the kernels, so a different `h`
 is a rebuild.
 
-The decoder represents suppressed zero-draw inference with `available: false, permutationCount: 0`.
-Positive counts still obey the fixed-count/stopping lower bounds and return `available: true`.
-The Poisson helper returns NaN for nonfinite observed/expected values. Readouts must show unavailable
-and omit the permutation distribution until a complete frame arrives.
+Settings metadata always reports `requestedPermutationCount` after clamping to
+`maximumPermutations`, with the fixed-count or Besag-Clifford stopping rule. For Knox and Jacquez,
+`permutationCount` is present only with a fixed budget; stopping omits it. Their decoder remains
+`decodeGPUSpaceTimeInferenceMetadata(metadata, attemptedCount)`. Positive attempted counts must
+meet the fixed-count or stopping lower bound.
 
-For Knox, Mantel and Jacquez, `getInferenceMetadata(settings)` reports `requestedPermutationCount`
-after clamping to `maximumPermutations`, and `stoppingRule` is `{method: 'fixed-count'}` or
-`{method: 'besag-clifford', stopAfterExceedances: h}`. The settings-derived `permutationCount`
-is present only with fixed-count inference; it is omitted when stopping is enabled. After reading
-`output.permutationCount`, call `decodeGPUSpaceTimeInferenceMetadata(metadata, permutationCount)`
-to build the final methods record. The decoder performs no readback and returns a `GPUInferenceMetadata`
-whose `permutationCount` is the actual number used. For example, requesting 150 permutations with
-`maximumPermutations: 191` and stopping after 10 ties gives `requestedPermutationCount: 150` and
-final `permutationCount: 10`. The same decoder accepts the count from `computeMantelTestOnCPU`.
-The decoder rejects counts below `min(requestedPermutationCount, stopAfterExceedances)` for sequential
-inference. When the request is below the stopping threshold, all requested draws must run.
-Contributors snapshot the compile-time maximum and stopping threshold at construction; later mutation
-of the caller's props cannot change either the generated stopping rule or its metadata.
+Mantel returns `GPUMantelTestInferenceMetadata` with
+`inferenceCountDefinition: 'usable-correlations'`. It omits `permutationCount` even with a fixed
+budget because settings cannot know which correlations will be defined. Read both count outputs,
+then call `decodeGPUSpaceTimeInferenceMetadata(metadata, attemptedCount, usableCount)`. The final
+record preserves attempted `permutationCount` and separate `usablePermutationCount`; use its
+nested `inference` metadata for significance-resolution helpers because
+`decoded.inference.permutationCount` is the actual usable denominator. For example, requesting
+19 draws can produce 19 attempted and 11 usable draws: the doubled-tail floor is `2 / 12`, not
+`2 / 20`. A stopped six-attempt prefix with four usable correlations retains count 6, so a reader
+can inspect every stopping draw. The same decoder accepts both arrays from `computeMantelTestOnCPU`.
+
+No decoder performs readback. Zero usable draws return `available: false`; an undefined observation
+has both counts zero. The Poisson helper returns NaN for nonfinite observed/expected values.
+Contributors capture the maximum and stopping rule at construction; later caller mutation cannot
+change their kernels or metadata. The standalone CPU twin also validates optional temporal metadata.
 
 #### How it computes
 
@@ -394,6 +549,8 @@ of the caller's props cannot change either the generated stopping rule or its me
 
 #### `GPUKnoxTest` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUKnoxTest`.
+
 - Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
   - Input port: `parameters`.
 
@@ -410,6 +567,8 @@ Settings of `getGPUSpaceTimeParameterValues`:
 {/* parameters: GPUMantelTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUMantelTest` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUMantelTest`.
 
 - Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
   - Input port: `parameters`.
@@ -449,6 +608,16 @@ the Jacquez test, the same Besag-Clifford stopping. None has a lens scenario yet
   counts are exact and deterministic, and a table with one cell equals `GPUKnoxTest`. There is no
   Besag-Clifford stopping: cells stop at different permutations. The cells are separate one-sided tests with
   no multiple-testing correction, which `getInferenceMetadata(settings)` states; correct on the CPU.
+  If `pairs.status.overflow` or `pairs.status.candidateOverflow` is nonzero, the contributor clears
+  its `(maximumPermutations + 1) * cells` count words to zero and its `8 * cells` summary words to
+  NaN. Extra caller-owned words are preserved. Complete input on a later submission restores the
+  normal tables and summaries.
+  The packed pair wrapper, its declared status views and the band edges are captured at construction;
+  changing buffer contents affects replay, but deleting or replacing wrapper fields does not change
+  the validated bindings. Undeclared fields such as `chunks` do not select chunked semantics.
+  `output.counts` and `output.summary` must use separate buffers from all inputs, including
+  `pairs.status.overflow` and `pairs.status.candidateOverflow`; use dedicated output buffers when
+  those inputs are present. Alias errors name the conflicting public ports.
 - `GPULocalKnox({pairs, times, parameters, maximumPermutations, output: {summary}})` is pointpats
   `KnoxLocal`: for every event, the number of its spatial neighbors with `|t_i - t_j| <= timeThreshold`, with
   **conditional** permutation inference as in pointpats: the focal event keeps its own time and the other
@@ -460,11 +629,15 @@ the Jacquez test, the same Besag-Clifford stopping. None has a lens scenario yet
   test per event with no correction. There is no stopping (events stop at different permutations). The sum
   of the permuted counts per event is a `uint32`: keep `maximumPermutations` times the longest row below
   2^32. The pointpats analytic hypergeometric p-values and the lead/lag orientation are not computed.
-- `GPUJacquezTest({neighbors, times, parameters, k, maximumPermutations, stopAfterExceedances?, output:
+- Incomplete pairs: `GPUNearRepeatKnox` and `GPULocalKnox` read `pairs.status.overflow` and
+  `pairs.status.candidateOverflow` like `GPUKnoxTest`. Either nonzero means pairs were dropped, so that
+  frame's owned `summary` words are all quiet NaN and the near-repeat owned `counts` words are 0,
+  as detailed above. Clearing the flags restores ordinary results on the next frame without recompiling.
+- `GPUJacquezTest({neighbors, times, parameters, neighborCount, maximumPermutations, stopAfterExceedances?, output:
   {statistics, summary, permutationCount?}})` is the Jacquez (1996) k-nearest-neighbor test, pointpats
   `jacquez`: the number of (event, spatial neighbor) entries where the neighbor is also among the `k` nearest
   events of the event in time, summed over the directed lists (a mutual pair counts twice). `neighbors` is a
-  k-nearest-neighbor `GPUSpatialWeights` (`GPUNeighborSearch` in k-nearest mode); use the same `k`.
+  k-nearest-neighbor `GPUSpatialWeights` (`GPUNeighborSearch` in k-nearest mode); use the same `neighborCount`.
   Temporal neighbors come from a stable GPU sort of the times: the `k` nearest in time of an event are the
   interval of `k + 1` ranks around its own rank, so membership under a permutation is one rank comparison.
   Ties in the time distance take the lower rank, which can differ from another library's arbitrary choice
@@ -500,6 +673,8 @@ every permutation exactly.
 
 #### `GPUJacquezTest` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUJacquezTest`.
+
 - Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
   - Input port: `parameters`.
 
@@ -517,6 +692,8 @@ Settings of `getGPUSpaceTimeParameterValues`:
 
 #### `GPULocalKnox` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULocalKnox`.
+
 - Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
   - Input port: `parameters`.
 
@@ -533,6 +710,8 @@ Settings of `getGPUSpaceTimeParameterValues`:
 {/* parameters: GPUNearRepeatKnox generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUNearRepeatKnox` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUNearRepeatKnox`.
 
 - Packer: `getGPUSpaceTimeParameterValues(settings)`, writes `GPU_SPACE_TIME_PARAMETER_LENGTH` (4) `uint32` values.
   - Input port: `parameters`.
@@ -592,14 +771,35 @@ Windows and defaults:
   A window the capacity cut short while the population fraction would still allow it is never silent:
   `output.summary` word `overflow` counts the affected centers and the cluster record carries
   `truncatedByZoneCap` (0 or 1). The per-frame `maximumWindowZones` may lower the capacity.
+  For circles, capacity loss requires the entire next tied distance group to fit the population cap;
+  a partial tie never qualifies. Discovery accumulates that boundary population during its existing
+  search, including tied rows beyond the stored list, and checks the whole circle's row count against
+  the caller's requested per-frame zone limit. Reaching that explicit limit is not capacity loss.
+  Omission leaves the compiled capacity as a storage constraint: population-admissible windows
+  beyond it still count as capacity loss. An explicit limit also excludes larger windows from
+  that diagnostic, even when the limit equals capacity. With capacity one, the three-zone oracle
+  reports overflow `0` for an explicit limit of one and `3` when omitted.
+  Positive float32 boundary masses are accumulated exactly with integer words. Eligibility compares
+  the exact mass with the exact study mass times the packed float32 fraction, independently of
+  discovery order; rounding is deferred to published/scoring masses. A 100% cap admits every subset.
+  Space-time permutation uses the integer zone
+  case margins and grand case count for the spatial cap, independently of rounded cell expectations.
+  Its threshold is `floor(C * packedFloat32Fraction)`: for example, packed `0.7` admits at most
+  6,999 of 10,000 cases, not the raw JavaScript threshold of 7,000. The CPU test reference uses the
+  same packed fraction and an exact integer comparison.
+  Window-count requests above the uint32 range saturate during parameter packing, so the GPU
+  still clamps them to capacity rather than interpreting wrapped counts as smaller windows.
+  Explicit window limits must be finite and positive; they round down with a minimum of one.
+  `maximumPopulationFraction` must remain in `(0,1]` after float32 conversion.
 - Temporal: with `timeBuckets > 1` each window is a cylinder over every run of up to
   `maximumTimeBuckets` buckets. The default is 50% of the study period, `max(1, floor(timeBuckets / 2))`
   (SaTScan's default), no longer all buckets: with a global trend, pure-spatial windows over the whole
   period would otherwise dominate.
 - Direction: per-frame `rateDirection` `'high'` (default, `c > e`), `'low'` (`c < e`) or `'both'`.
   Windows of the other direction score 0.
-- Defaults: `maximumPopulationFraction` 0.5, `maximumWindowZones` every zone (bounded), `maximumTimeBuckets`
-  50% of the study period, `windowShape` `'circle'`, `rateDirection` `'high'`, `maximumClusters` 8.
+- Defaults: `maximumPopulationFraction` 0.5, compile-time `maximumWindowZones` every zone (bounded),
+  per-frame zone limit omitted, `maximumTimeBuckets` 50% of the study period, `windowShape` `'circle'`,
+  `rateDirection` `'high'`, `maximumClusters` 8.
 
 Outputs: the most likely cluster plus greedy, non-overlapping secondary clusters (no shared zone, time
 ignored, same maximum distribution, as SaTScan), all in the caller-owned `output` bag. The candidates
@@ -611,8 +811,10 @@ window overlaps an earlier cluster is dropped, and its smaller windows are not r
 replicate), `output.summary` (`GPU_SPATIAL_SCAN_STATISTIC_SUMMARY`: cluster count, total cases,
 `permutationCount`, `overflow`) and an optional per-zone best LLR `output.zoneStatistics`.
 
-Inference: `p = (1 + #{max_rep >= LLR}) / (P + 1)`, a Monte Carlo maximum over every window, so it already
-accounts for the search; no further correction applies. `getInferenceMetadata(settings)` takes the same
+Inference: `p = (1 + #{max_rep >= LLR}) / (P + 1)`, one upper-tail count of replicate maxima
+over every searched window. Searching both rate directions uses that same count, with no doubled
+tail probability. This already accounts for the search; no further correction applies.
+`getInferenceMetadata(settings)` takes the same
 `GPUSpatialScanStatisticSettings` that are packed into `parameters` and returns the CPU-side
 `GPUInferenceMetadata` (alternative `'greater'` for high rates, `'lesser'` for low and `'two-sided'` for
 both, the permutation count clamped to `maximumPermutations` as the kernels do, the seed,
@@ -623,6 +825,13 @@ replicate (about `C` sequential draws, times `timeBuckets` for the latter). The 
 (fixed-order reductions, integer atomics, ties to the lowest index). Limits, the seed and the replicate
 count are per-frame settings (`getGPUSpatialScanStatisticParameterValues(settings)`), up to the compile-time
 `maximumPermutations` (at most 99999, SaTScan-style runs).
+
+Construction captures capacities, contexts and nested output-port maps; later changes to the caller's
+props do not alter the validated graph. Buffer contents and parameter views remain per-frame inputs.
+Independent eight-zone, four-bucket fixtures cover two-bucket retrospective and prospective optima
+for all three models, including every output and replicate maximum. Separate combinatorial fixtures
+enumerate the conditional maximum distributions for multinomial, hypergeometric and fixed-margin
+draws; fixed-seed CDF tests cover both serial draws and the parallel swap-or-not route on small domains.
 
 Replicate batches: the observed data is evaluated once, then the replicates run in `batchCount` batches
 of `batchReplicates` (`R`). A batch draws replicates `b * R + 1 .. b * R + R` into an `R`-slot count
@@ -645,8 +854,18 @@ any float arithmetic. Thus finite
 nonnegative baselines can have a raw sum above the float32 range.
 Scoring and published expected counts both multiply the case total by the window's baseline
 fraction, so changing baseline units does not introduce an overflowing intermediate product.
-Float32 rounding still applies to baseline shares and sums; an all-zero baseline gives no cluster.
-Normalization adds three GPU nodes per Poisson graph, with linear work in the cell count.
+Baseline shares use float32. Study totals, eligible prefixes and complete-circle masses accumulate
+stored float32 exposures exactly before rounding once for scoring. Eligibility retains the exact
+mass through multiplication by the packed float32 population fraction, including inclusive
+half- and three-quarter-population boundaries. A complete-study window has expected cases equal
+to the study case total and scores zero when it contains all cases.
+All-zero cases at zero exposure are a valid no-cluster control. Positive cases at zero exposure
+invalidate inference, as do negative, NaN or infinite baseline cells (`-0` counts as zero).
+`status.invalidCount` counts incompatible or numerically lost cells: positive exposures more than
+126 binary exponents below the maximum cannot survive the normalized float32 route and are counted.
+Count/population overflow reports at least one. Invalid frames publish NaN inference, no clusters
+and zero evaluated replicates in the summary, even when the optional status destination is omitted.
+Baseline normalization and exact population reduction take linear work in the cell count.
 
 Neighbor discovery: compile-time `nearestZoneSearch: 'auto'` uses exact coordinate indexes when
 the list is shorter than the domain and (including the extra lookahead zone) has at most
@@ -661,9 +880,14 @@ selects the exhaustive radix route. Auto uses full-scan for whole-domain or larg
 `contributor.nearestZoneSearch`. `contributor.estimatedFullScanSeparationCount` is an upper bound
 on the exhaustive route's separation evaluations per submission: `5 * zones^2` for a truncated
 list (four selection sweeps and at most one gather sweep), or `zones^2` when every zone is retained.
-This excludes radix sorting. The indexed route adds two linear-size coordinate orders and uses
-data-dependent pruning: coincident zones or many equal axis coordinates can still require
-quadratic work. It is an exact search, with no candidate truncation or approximation flag.
+This excludes radix sorting. For `N = zones`, both scan classes expose
+`estimatedIndexedCandidateSeparationCount = N²`,
+`estimatedIndexedAxisSeparationCount = 2N(N+1)`, their sum as
+`estimatedIndexedSeparationCount`, and `indexedRadixSortCount = 2` per indexed frame.
+These conservative separation-call bounds exclude the two coordinate radix sorts. Pruning is
+data-dependent: equal-latitude great-circle inputs can require all `N²` candidate separations,
+because latitude cannot narrow the search. No longitude pruning is assumed across wraps or poles.
+Discovery remains exact, with no candidate truncation or approximation flag.
 
 `estimatedCommandNodeCount` separately bounds discovery sorts, model preparation, all replicate
 batches and cluster rounds. The constructor checks it against the shared command-node budget.
@@ -673,6 +897,12 @@ table needs `(R + 1) * zones * timeBuckets <= 2^25` words (so `zones * timeBucke
 cost is about `(P + 1) * zones * windowZones * timeBuckets^2`, plus neighbor discovery above.
 The full-scan route has two sort scratch tables the size of the neighbor tables; the indexed route
 instead uses seven `zones`-word coordinate-key and row-order buffers, plus the published sorts' scratch.
+Bounded lists append twelve words per center for Poisson and Bernoulli: rounded boundary population,
+complete-circle row count and ten exact mass words. Space-time permutation needs only the first
+two words per center, using its integer margins. The entire distance length is preflighted before
+allocating scratch. The neighbor
+table budget still counts `zones * listLength` entries. Bounded discovery runs after model population
+preparation so it can include all members of the lookahead circle in that record.
 The absolute LLR error is about `|c - e|` times the relative
 f32 rounding of `e`; `baseline` must be finite and non-negative. Cluster rounds after the last cluster are
 GPU-gated and launch nothing. No kernel binds more than 8 storage buffers, so the scan runs on `'core'`
@@ -694,6 +924,8 @@ WebGPU devices.
 
 #### `GPUSpatialScanStatistic` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUSpatialScanStatistic`.
+
 - Packer: `getGPUSpatialScanStatisticParameterValues(settings)`, writes `GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH` (8) `uint32` values.
 
 Settings of `getGPUSpatialScanStatisticParameterValues`:
@@ -702,10 +934,10 @@ Settings of `getGPUSpatialScanStatisticParameterValues`:
 |---|---|---|
 | `seed` | `number` | Random seed, an integer in `[0, 2^53)`. The result is a pure function of seed and inputs. |
 | `permutationCount` | `number` | Monte Carlo replicates `P`, at most the contributor's `maximumPermutations`. |
-| `maximumPopulationFraction` (optional) | `number` | Largest spatial window as a fraction of the total baseline, in `(0, 1]`. A window grows until adding the next zone would exceed it. Defaults to 0.5. |
-| `maximumWindowZones` (optional) | `number` | Largest number of zones per window, clamped to the contributor's compile-time capacity. Defaults to the capacity (every zone unless the neighbor tables are bounded), so the population fraction governs. |
-| `maximumTimeBuckets` (optional) | `number` | Longest cylinder in time buckets, clamped to `timeBuckets`. Defaults to 50% of the study period, `max(1, floor(timeBuckets / 2))`, as in SaTScan. |
-| `windowShape` (optional) | `GPUSpatialScanWindowShape` | Window shape. Defaults to `'circle'`. |
-| `rateDirection` (optional) | `GPUSpatialScanRateDirection` | Which anomalies count as clusters. Defaults to `'high'`. |
+| `maximumPopulationFraction` (optional) | `number` | Largest spatial window as a fraction of the total population, remaining in `(0, 1]` after float32 conversion. A window grows until adding the next zone would exceed it. Defaults to 0.5. |
+| `maximumWindowZones` (optional) | `number` | Finite positive requested zone limit, rounded down (minimum 1); evaluated windows are also bounded by compile-time capacity. Omission leaves capacity as a storage constraint, with the population fraction governing eligible windows. An explicit limit also excludes larger windows from capacity loss diagnostics, even when it equals capacity. |
+| `maximumTimeBuckets` (optional) | `number` | Finite positive cylinder length in buckets, rounded down (minimum 1) and clamped to `timeBuckets`. Defaults to 50% of the study period, `max(1, floor(timeBuckets / 2))`, as in SaTScan. |
+| `windowShape` (optional) | `'circle' \| 'nearest'` | Window shape. Defaults to `'circle'`. |
+| `rateDirection` (optional) | `'high' \| 'low' \| 'both'` | Which anomalies count as clusters. Defaults to `'high'`. |
 
 {/* /parameters */}

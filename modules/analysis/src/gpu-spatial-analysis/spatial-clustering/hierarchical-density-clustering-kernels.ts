@@ -9,7 +9,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
-const OPERATION = 'GPUHierarchicalDensityClustering';
+const OPERATION = 'GPUHDBSCAN';
 
 /**
  * State words: `[valid point count, minimum spanning tree edge count]`. @internal

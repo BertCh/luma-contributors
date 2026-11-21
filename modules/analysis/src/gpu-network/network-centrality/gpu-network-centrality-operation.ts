@@ -6,6 +6,10 @@ import {
   GPUContributorOperation,
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
+import {
+  validateRequirement,
+  validateCapacity
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUNetworkCentrality, type GPUNetworkCentralityProps} from './gpu-network-centrality';
 
 /** Graph value names replacing views; counts formerly inferred from views are explicit. */
@@ -15,10 +19,10 @@ export type NetworkCentralityOperationProps = Pick<
 > & {
   nodeCount: number;
   edgeCount: number;
-  reverseEdgeCount: number;
+  reverseEdgeCount?: number;
   pivotCount: number;
   topology: {offsets: string; neighbors: string; weights: string; nodePositions?: string};
-  reverseTopology: {offsets: string; neighbors: string; weights: string; nodePositions?: string};
+  reverseTopology?: {offsets: string; neighbors: string; weights: string; nodePositions?: string};
   pivotNodes: string;
   costLimit?: string;
   output: {
@@ -39,9 +43,21 @@ export type NetworkCentralityOperationProps = Pick<
 /** GPU centrality operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNetworkCentralityOperation extends GPUContributorOperation {
   constructor(props: NetworkCentralityOperationProps) {
+    validateRequirement(
+      props.id ?? 'network-centrality',
+      !(props.output.betweenness || props.output.edgeBetweenness) || Boolean(props.reverseTopology),
+      'reverseTopology is required for betweenness'
+    );
+    if (props.reverseEdgeCount !== undefined)
+      validateCapacity(
+        props.id ?? 'network-centrality',
+        'reverseEdgeCount',
+        props.reverseEdgeCount,
+        0
+      );
     const inputs: Record<string, string> = {pivotNodes: props.pivotNodes};
     for (const prefix of ['topology', 'reverseTopology'] as const) {
-      for (const [field, value] of Object.entries(props[prefix])) {
+      for (const [field, value] of Object.entries(props[prefix] ?? {})) {
         if (value !== undefined) inputs[`${prefix}.${field}`] = value;
       }
     }
@@ -75,8 +91,16 @@ export class GPUNetworkCentralityOperation extends GPUContributorOperation {
       id: props.id ?? 'network-centrality',
       inputs,
       outputs,
-      createContributor: getView =>
-        new GPUNetworkCentrality({
+      createContributor: getView => {
+        if (props.reverseTopology && props.reverseEdgeCount !== undefined) {
+          const actual = getView<'uint32'>('reverseTopology.neighbors').length;
+          validateRequirement(
+            props.id ?? 'network-centrality',
+            actual === props.reverseEdgeCount,
+            `reverseEdgeCount must equal reverseTopology.neighbors.length ${actual}; received ${props.reverseEdgeCount}`
+          );
+        }
+        return new GPUNetworkCentrality({
           ...props,
           topology: {
             offsets: getView<'uint32'>('topology.offsets'),
@@ -87,15 +111,17 @@ export class GPUNetworkCentralityOperation extends GPUContributorOperation {
                 ? getView<'float32x2'>('topology.nodePositions')
                 : undefined
           },
-          reverseTopology: {
-            offsets: getView<'uint32'>('reverseTopology.offsets'),
-            neighbors: getView<'uint32'>('reverseTopology.neighbors'),
-            weights: getView<'float32'>('reverseTopology.weights'),
-            nodePositions:
-              props.reverseTopology.nodePositions !== undefined
-                ? getView<'float32x2'>('reverseTopology.nodePositions')
-                : undefined
-          },
+          reverseTopology: props.reverseTopology
+            ? {
+                offsets: getView<'uint32'>('reverseTopology.offsets'),
+                neighbors: getView<'uint32'>('reverseTopology.neighbors'),
+                weights: getView<'float32'>('reverseTopology.weights'),
+                nodePositions:
+                  props.reverseTopology.nodePositions !== undefined
+                    ? getView<'float32x2'>('reverseTopology.nodePositions')
+                    : undefined
+              }
+            : undefined,
           pivotNodes: getView<'uint32'>('pivotNodes'),
           costLimit: props.costLimit === undefined ? undefined : getView<'float32'>('costLimit'),
           output: {
@@ -136,7 +162,8 @@ export class GPUNetworkCentralityOperation extends GPUContributorOperation {
                   : undefined
             }
           }
-        })
+        });
+      }
     });
   }
 }

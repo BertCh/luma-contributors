@@ -8,6 +8,7 @@ import {
   GPUTerrainRuggedness,
   type GPUTerrainRuggednessOutput
 } from '@luma-contributors/analysis/gpu-terrain';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {defineOperationRun} from '../../define-run';
 import {getCellWindow} from './support/pointer';
 import {
@@ -28,6 +29,23 @@ const RUGGEDNESS_RANGES = [
   [-40, 40]
 ] as const;
 
+/** One selected ruggedness output; the class requires at least one named output. */
+function getRuggednessOutput(
+  key: keyof GPUTerrainRuggednessOutput,
+  view: GraphDataView<'float32'>
+): GPUTerrainRuggednessOutput {
+  switch (key) {
+    case 'terrainRuggednessIndex':
+      return {terrainRuggednessIndex: view};
+    case 'roughness':
+      return {roughness: view};
+    case 'topographicPositionIndex':
+      return {topographicPositionIndex: view};
+    default:
+      throw new Error(`terrain-ruggedness run: unsupported output ${String(key)}`);
+  }
+}
+
 export default defineOperationRun({
   parameters,
   caption: 'Elevation in; local ruggedness out: bright where the surface is broken up.',
@@ -46,7 +64,7 @@ export default defineOperationRun({
         elevation: band,
         terrainRuggednessAlgorithm: values.terrainRuggednessAlgorithm === 1 ? 'wilson' : 'riley',
         edgeMode: values.edgeMode === 1 ? 'extrapolate' : 'nodata',
-        output: {[outputKeys[values.output]]: result.view}
+        output: getRuggednessOutput(outputKeys[values.output], result.view)
       })
     );
     return {outputs: {elevation, result}};

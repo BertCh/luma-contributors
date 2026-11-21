@@ -4,8 +4,8 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {GPUSpatialClustering} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-spatial-clustering';
-import {getGPUSpatialClusteringParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-parameters';
+import {GPUDBSCAN} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-spatial-clustering';
+import {getGPUDBSCANParameterValues} from '../../../src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-parameters';
 import {AnalysisRig} from '../catchment-accessibility/rig';
 import {requireTestDevice} from '../../utils/require-test-device';
 
@@ -27,16 +27,15 @@ it('publishes an empty clustering from a zero-byte input with packed separate-pa
     const count = rig.output('uint32', 1);
     const overflow = rig.output('uint32', 1);
     const requiredCount = rig.output('uint32', 1);
-    const drawInstanceCount = rig.output('uint32', 1);
     rig.run(
-      new GPUSpatialClustering({
+      new GPUDBSCAN({
         positions,
         sourceIds: emptyRows,
         parameters: rig.input(
-          getGPUSpatialClusteringParameterValues({
+          getGPUDBSCANParameterValues({
             bounds: [0, 0, 10, 10],
             epsilon: 1,
-            minimumPoints: 1
+            minimumSamples: 1
           }),
           'float32'
         ),
@@ -52,13 +51,12 @@ it('publishes an empty clustering from a zero-byte input with packed separate-pa
             status: {count, overflow, requiredCount}
           },
           clusterSizes: sizes,
-          clusterCentroids: centroids,
-          drawInstanceCount
+          clusterCentroids: centroids
         }
       })
     );
     expect(await rig.readUint(packed)).toEqual(new Array(12).fill(0));
-    for (const field of [clusterCount, count, overflow, requiredCount, drawInstanceCount])
+    for (const field of [clusterCount, count, overflow, requiredCount])
       expect(await rig.readUint(field)).toEqual([0]);
   } finally {
     rig.destroy();

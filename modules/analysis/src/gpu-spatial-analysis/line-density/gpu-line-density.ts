@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {getRasterGridCorners} from '../spatial-interpolation/spatial-interpolation-parameters';
 import type {
   GPULineGeometryFields,
   GPUOverflowStatusPort
@@ -27,7 +30,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -44,7 +48,12 @@ import {
   type LineDensityGridConstants
 } from './line-density-kernels';
 
-import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createLineDensitySeamNodes} from './line-density-seam';
+
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   getGeometrySortScratchByteLengths,
   validateGeometryScratchByteLengths
@@ -115,24 +124,90 @@ export type GPULineDensitySettings = {
  *
  * @param settings Settings to encode.
  * @param target Optional destination of at least 4 elements.
- * @throws If a value is not finite, a cell size is not positive, or `target` is too short.
+ * @throws If a value is not finite, a cell size is not positive, encoding a minimum moves
+ *   it by at least one cell, or `target` is too short. Subtract a common local origin from
+ *   positions and grid placement when a minimum cannot preserve sub-cell placement.
  */
 export function getGPULineDensityParameterValues(
   settings: GPULineDensitySettings,
+  target?: Float32Array
+): Float32Array;
+/**
+ * Packs an axis-aligned raster using the existing minimum/positive-cell-size schema.
+ * Also spread getGPULineDensityRasterOutputMapping(grid) into the contributor to map its
+ * output rows/columns to raster storage order. Point pixels shift the corner by half a cell.
+ */
+export function getGPULineDensityParameterValues(
+  grid: GPURasterMetadata,
+  target?: Float32Array
+): Float32Array;
+export function getGPULineDensityParameterValues(
+  settings: GPULineDensitySettings | GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_LINE_DENSITY_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_LINE_DENSITY_PARAMETER_LENGTH) {
     throw new Error(`Line density target must hold ${GPU_LINE_DENSITY_PARAMETER_LENGTH} elements`);
   }
-  target.set(
-    packGPUSpatialParameterValues(GPU_LINE_DENSITY_PARAMETER_SCHEMA, {
-      minimumX: settings.minX,
-      minimumY: settings.minY,
-      cellWidth: settings.cellWidth,
-      cellHeight: settings.cellHeight
-    })
-  );
+  if ('affine' in settings) {
+    validateRequirement(
+      'line-density',
+      ['area', 'point'].includes(settings.pixelInterpretation),
+      `grid.pixelInterpretation must be area or point; received ${settings.pixelInterpretation}`
+    );
+    // This layout stores steps directly; it does not derive them from float32 corners.
+    const [startX, startY, endX, endY] = getRasterGridCorners('line-density', settings, false);
+    return getGPULineDensityParameterValues(
+      {
+        minX: Math.min(startX, endX),
+        minY: Math.min(startY, endY),
+        cellWidth: Math.abs(settings.affine[0]),
+        cellHeight: Math.abs(settings.affine[4])
+      },
+      target
+    );
+  }
+
+  const values = packGPUSpatialParameterValues(GPU_LINE_DENSITY_PARAMETER_SCHEMA, {
+    minimumX: settings.minX,
+    minimumY: settings.minY,
+    cellWidth: settings.cellWidth,
+    cellHeight: settings.cellHeight
+  });
+  for (const [minimumName, minimum, encodedMinimum, cellSizeName, cellSize, encodedCellSize] of [
+    ['minX', settings.minX, values[0], 'cellWidth', settings.cellWidth, values[2]],
+    ['minY', settings.minY, values[1], 'cellHeight', settings.cellHeight, values[3]]
+  ] as const) {
+    const displacement = Math.abs(encodedMinimum - minimum);
+    validateRequirement(
+      'line-density',
+      displacement < Math.min(cellSize, encodedCellSize),
+      `${minimumName} received ${minimum}, encoded as ${encodedMinimum}, moves by ${displacement}; displacement must be less than one ${cellSizeName} (${cellSize}, encoded ${encodedCellSize}); subtract a common local origin from positions and grid placement`
+    );
+  }
+  target.set(values);
   return target;
+}
+
+/** Explicit permutation from physical south/west-first cells to raster storage rows/columns. */
+export type GPULineDensityRasterOutputMapping = {
+  outputRowOrder: 'south-first' | 'north-first';
+  outputColumnOrder: 'west-first' | 'east-first';
+};
+/** Pair with the metadata parameter overload and matching columns/rows; does not alter geometry. */
+export function getGPULineDensityRasterOutputMapping(
+  grid: GPURasterMetadata
+): GPULineDensityRasterOutputMapping {
+  validateRequirement(
+    'line-density',
+    ['area', 'point'].includes(grid.pixelInterpretation),
+    `grid.pixelInterpretation must be area or point; received ${grid.pixelInterpretation}`
+  );
+  // Use the same origin/positive-step validation as the raster parameter overload.
+  getGPULineDensityParameterValues(grid);
+  return {
+    outputRowOrder: grid.affine[4] < 0 ? 'north-first' : 'south-first',
+    outputColumnOrder: grid.affine[0] < 0 ? 'east-first' : 'west-first'
+  };
 }
 
 /** Caller-owned outputs of {@link GPULineDensity}. */
@@ -153,7 +228,13 @@ export type GPULineDensityOutput = {
    * are then low), else `0`, and the optional `requiredCount` receives the unclamped number of
    * segment-cell pieces.
    */
-  status: GPUOverflowStatusPort & {requiredCount?: GraphDataView<'uint32'>};
+  status: GPUOverflowStatusPort & {
+    requiredCount?: GraphDataView<'uint32'>;
+    /** Optional one-row count of geographic segments with absolute longitude difference > 180 degrees.
+     * These retain the literal longitude/latitude walk; the count resets on every encoding.
+     */
+    antimeridianUncertainCount?: GraphDataView<'uint32'>;
+  };
 };
 
 /**
@@ -183,6 +264,10 @@ export type GPULineDensityProps = GPULineGeometryFields & {
   recordCapacity?: number;
   /** Per-frame packed float32 view written with {@link getGPULineDensityParameterValues}. */
   parameters: GraphDataView<'float32'>;
+  /** Storage order only; cell-boundary ownership remains physical north/east. Default south-first. */
+  outputRowOrder?: 'south-first' | 'north-first';
+  /** Storage order only; default west-first. */
+  outputColumnOrder?: 'west-first' | 'east-first';
   /** Output columns. */
   output: GPULineDensityOutput;
 };
@@ -202,6 +287,11 @@ export type GPULineDensityProps = GPULineGeometryFields & {
  * grid contribute nothing; consecutive lines are not joined, and only segments inside a line are
  * counted (single-vertex lines have length 0).
  *
+ * Original settings write south-first rows (row zero has the smallest Y). Raster-metadata
+ * parameters keep that physical grid; getGPULineDensityRasterOutputMapping chooses the explicit
+ * output permutation to match the raster. Cell-boundary ownership stays north/east. To overlay
+ * an original-settings result on a north-up raster, read source row `rows - 1 - rasterRow`.
+ *
  * For per-polygon line length (QGIS "Sum line lengths") use {@link GPULineLengthPerPolygon}.
  *
  * Longitude-latitude context. A segment is the straight line between its two vertices in
@@ -212,6 +302,9 @@ export type GPULineDensityProps = GPULineGeometryFields & {
  * (0, 60) to (90, 60) is 4,605 km as one piece and about 5,004 km (the length along the parallel)
  * when cut by 1 degree cells. For segments short against the grid the difference vanishes, so
  * densify long segments along the path they are meant to follow before passing them in.
+ * A longitude jump greater than 180 degrees retains this literal route (179 to -179 walks 358
+ * degrees). Optional `status.antimeridianUncertainCount` counts these segments per encoding,
+ * including segments outside the grid; split or unwrap seam crossings before use if needed.
  *
  * Precision: f32 grid coordinates relative to the grid origin; piece lengths come from f32
  * parameters along the segment (relative error about `1e-6` of the segment length).
@@ -235,6 +328,43 @@ export class GPULineDensity implements GPUCommandNodeProducer {
   readonly recordCapacity: number;
 
   constructor(props: GPULineDensityProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'positions',
+      'lineOffsets',
+      'spatialContext',
+      'columns',
+      'rows',
+      'recordCapacity',
+      'parameters',
+      'outputRowOrder',
+      'outputColumnOrder',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(captured.output, ['lengths', 'densities', 'status']);
+    props = Object.freeze({
+      ...captured,
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'overflow',
+          'requiredCount',
+          'antimeridianUncertainCount'
+        ])
+      })
+    });
+    validateRequirement(
+      props.id ?? 'line-density',
+      props.outputRowOrder === undefined ||
+        ['south-first', 'north-first'].includes(props.outputRowOrder),
+      `outputRowOrder must be south-first or north-first; received ${props.outputRowOrder}`
+    );
+    validateRequirement(
+      props.id ?? 'line-density',
+      props.outputColumnOrder === undefined ||
+        ['west-first', 'east-first'].includes(props.outputColumnOrder),
+      `outputColumnOrder must be west-first or east-first; received ${props.outputColumnOrder}`
+    );
     this.id = props.id ?? 'line-density';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -268,7 +398,7 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       );
     }
     const {lengths, densities, status} = props.output;
-    const {overflow, requiredCount} = status;
+    const {overflow, requiredCount, antimeridianUncertainCount} = status;
     validateSinglePackedView(lengths, ['float32'], `${id} output.lengths`);
     if (lengths.length !== this.cellCount) {
       throw new Error(`${id} output.lengths must hold ${this.cellCount} rows`);
@@ -281,7 +411,8 @@ export class GPULineDensity implements GPUCommandNodeProducer {
     }
     for (const [name, scalar] of [
       ['overflow', overflow],
-      ['requiredCount', requiredCount]
+      ['requiredCount', requiredCount],
+      ['antimeridianUncertainCount', antimeridianUncertainCount]
     ] as const) {
       if (scalar) {
         validateSinglePackedView(scalar, ['uint32'], `${id} output.status.${name}`);
@@ -290,9 +421,19 @@ export class GPULineDensity implements GPUCommandNodeProducer {
         }
       }
     }
+    if (antimeridianUncertainCount && antimeridianUncertainCount.length !== 1) {
+      throw new Error(
+        `${id} output.status.antimeridianUncertainCount must contain exactly one uint32 row`
+      );
+    }
+    validateDisjointWritableViews(
+      id,
+      {lengths, densities, overflow, requiredCount, antimeridianUncertainCount},
+      {separateDispatches: true}
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
-      [lengths, densities, overflow, requiredCount],
+      [lengths, densities, overflow, requiredCount, antimeridianUncertainCount],
       [props.positions, props.lineOffsets, props.parameters]
     );
   }
@@ -317,7 +458,8 @@ export class GPULineDensity implements GPUCommandNodeProducer {
           output.lengths,
           output.densities,
           output.status.overflow,
-          output.status.requiredCount
+          output.status.requiredCount,
+          output.status.antimeridianUncertainCount
         ].map((view, index) => [String(index), view])
       )
     );
@@ -334,7 +476,9 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       rows: props.rows,
       coordinateSystem: this.coordinateSystem,
       radius: this.radius,
-      capacity: recordCapacity
+      capacity: recordCapacity,
+      outputRowOrder: props.outputRowOrder,
+      outputColumnOrder: props.outputColumnOrder
     };
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rowCount);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rowCount);
@@ -347,6 +491,13 @@ export class GPULineDensity implements GPUCommandNodeProducer {
       recordCapacity
     );
     return [
+      ...(output.status.antimeridianUncertainCount
+        ? createLineDensitySeamNodes(graph, {
+            id,
+            constants,
+            output: output.status.antimeridianUncertainCount
+          })
+        : []),
       createWalkCountNode<Parameters>(graph, {
         id: `${id}-count`,
         operation: OPERATION,
@@ -408,6 +559,7 @@ export class GPULineDensity implements GPUCommandNodeProducer {
               operation: OPERATION,
               columns: props.columns,
               rows: props.rows,
+              outputRowOrder: props.outputRowOrder,
               coordinateSystem: this.coordinateSystem,
               areaRadius: this.areaRadius,
               parameters: props.parameters,

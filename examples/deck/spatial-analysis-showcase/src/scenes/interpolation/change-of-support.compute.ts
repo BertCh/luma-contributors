@@ -17,7 +17,7 @@ import {
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,
   GPUArealInterpolation,
   GPUGridGenerator,
-  GPUPycnophylactic,
+  GPUPycnophylacticInterpolation,
   type GPUGridType
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
@@ -141,7 +141,7 @@ type ReadResult = {
  * Moves Chicago census-tract values to hexagons, squares, triangles or community areas with the
  * `addChangeOfSupportRecipe` chain (rasterize both systems, area-share weights, extensive and
  * intensive transfer through `GPUSpatialLag`), optionally weighted by an ancillary raster
- * (dasymetric), and builds a smooth mass-preserving surface with `GPUPycnophylactic`.
+ * (dasymetric), and builds a smooth mass-preserving surface with `GPUPycnophylacticInterpolation`.
  *
  * Compile-time choices (target system, denominator, pycnophylactic iterations and kernel) select
  * a graph that is compiled the first time it is used and cached afterwards. Everything else is a
@@ -660,7 +660,7 @@ export async function createChangeOfSupport(
         ),
         categoryCount: CATEGORY_COUNT
       },
-      outputs: {
+      output: {
         categoryShares: importGraphBuffer(
           graph,
           'shares',
@@ -775,7 +775,7 @@ export async function createChangeOfSupport(
       ['denominator', denominatorTotals, denominatorSurface]
     ] as const) {
       graph.add(
-        new GPUPycnophylactic({
+        new GPUPycnophylacticInterpolation({
           spatialContext: projection.spatialContext,
           id: `pycno-${name}`,
           grid: rasterGrid,

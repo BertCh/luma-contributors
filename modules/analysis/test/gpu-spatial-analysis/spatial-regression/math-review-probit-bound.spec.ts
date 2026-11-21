@@ -7,6 +7,17 @@ import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {GPUProbitRegression} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-probit-regression';
 import {createRegressionTestContext} from './math-review-regression-test-utils';
 import fixture from '../../oracles/fixtures/statistics-probit-tails.json';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {
+  createProbitConvergenceFixture,
+  PROBIT_CONVERGENCE_SLOPE,
+  PROBIT_CONVERGENCE_LOG_LIKELIHOOD,
+  PROBIT_CONVERGENCE_STANDARD_ERROR,
+  createProbitLargeCoefficientFixture,
+  PROBIT_LARGE_COEFFICIENT_SLOPE
+} from './probit-convergence-fixture';
+import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {PROBIT_STEP_VERDICT_WGSL} from '../../../src/gpu-spatial-analysis/spatial-regression/probit-convergence';
 
 /**
  * Probit fits whose linear predictor leaves the range the kernel used to bound (|eta| <= 12),
@@ -93,6 +104,7 @@ async function runProbit(
   options: {maximumIterations?: number; tolerance?: number; ringDiagnostics?: boolean} = {}
 ) {
   const context = await createRegressionTestContext();
+  requireTestDevice(context.device);
   const {graph, input, output} = context;
   try {
     const rowCount = response.length;
@@ -692,4 +704,122 @@ it('probit on data quasi-separated by an indicator is status 4 at any iteration 
   for (const options of [{maximumIterations: 1}, {maximumIterations: 3}, {tolerance: 1e-2}]) {
     await expectSeparated(scene.predictors, scene.response, scene.columnCount, options);
   }
+});
+
+for (const tolerance of [1e-4, 1e-3, 1e-2]) {
+  it(`SSR-109 GPU certifies the closed-form maximum with loose tolerance ${tolerance}`, async () => {
+    const input = createProbitConvergenceFixture();
+    const result = await runProbit(input.predictors, input.response, 1, {tolerance});
+    expect(result.status).toBe(0);
+    expect(result.coefficients).toHaveLength(2);
+    expect(result.coefficients.every(Number.isFinite)).toBe(true);
+    expect(result.coefficients[0]).toBeCloseTo(0, 5);
+    expect(result.coefficients[1]).toBeCloseTo(PROBIT_CONVERGENCE_SLOPE, 4);
+    expect(Number.isFinite(result.summary[1])).toBe(true);
+    expect(result.summary[1]).toBeCloseTo(PROBIT_CONVERGENCE_LOG_LIKELIHOOD, 4);
+    expect(result.errors).toHaveLength(2);
+    for (const value of result.errors) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeCloseTo(PROBIT_CONVERGENCE_STANDARD_ERROR, 3);
+    }
+    expect(result.summary[3]).toBeGreaterThan(1);
+  });
+}
+
+it('SSR-109 GPU loose tolerance cannot certify exhaustion or separation', async () => {
+  const input = createProbitConvergenceFixture();
+  const unfinished = await runProbit(input.predictors, input.response, 1, {
+    tolerance: 1e-2,
+    maximumIterations: 1
+  });
+  expect(unfinished.status).toBe(3);
+  expect(unfinished.summary[3]).toBe(1);
+  expect(unfinished.coefficients).toHaveLength(2);
+  expect(unfinished.coefficients.every(Number.isFinite)).toBe(true);
+  expect(unfinished.errors).toHaveLength(2);
+  expect(unfinished.errors.every(Number.isNaN)).toBe(true);
+  const separated = await runProbit([-1, -1, 1, 1], [0, 0, 1, 1], 1, {tolerance: 1e-2});
+  expect(separated.status).toBe(4);
+  expect(separated.coefficients).toHaveLength(2);
+  expect(separated.coefficients.every(Number.isNaN)).toBe(true);
+  expect(separated.errors).toHaveLength(2);
+  expect(separated.errors.every(Number.isNaN)).toBe(true);
+});
+
+it('SSR-109 GPU one large coefficient cannot certify an unrelated one', async () => {
+  const input = createProbitLargeCoefficientFixture();
+  const result = await runProbit(input.predictors, input.response, 3, {tolerance: 1e-2});
+  // The float32 information matrix of two columns that differ by 2^-16 loses rank (status 2 at
+  // iteration 0, measured on Apple Metal); what must never happen is status 0 away from the
+  // independent maximum. The per-coefficient rule itself is pinned by the step-verdict case below.
+  expect([0, 2, 3]).toContain(result.status);
+  if (result.status === 0) {
+    expect(Number.isFinite(result.coefficients[3])).toBe(true);
+    expect(Math.abs(result.coefficients[3] - PROBIT_LARGE_COEFFICIENT_SLOPE)).toBeLessThan(1e-3);
+  }
+});
+
+it('SSR-109 GPU step verdict: a shortened step never certifies a large full direction', async () => {
+  // [scale, direction, candidate, tolerance, expected verdict]; threshold t (1 + |candidate|).
+  const cases = [
+    // Review S2: likelihood accepted only at 2^-17 with full direction 1 near a zero estimate.
+    // Step 2^-17 = 7.63e-6 <= 1e-5 (1 + 7.63e-6), direction 1 > it: verdict 1 (not converged).
+    [2 ** -17, 1, 2 ** -17, 1e-5, 1],
+    // Unshortened small step: 5e-6 <= 1e-5: verdict 2.
+    [1, 5e-6, 0, 1e-5, 2],
+    // Accepted step above the threshold: verdict 0.
+    [1, 1e-3, 0, 1e-5, 0],
+    // Per coefficient: a step of 1e-3 against its own coefficient 2 (threshold 3e-5): verdict 0.
+    [1, 1e-3, 2, 1e-5, 0],
+    // The same step against its own coefficient 1000 (threshold 1.001e-2): verdict 2.
+    [1, 1e-3, 1000, 1e-5, 2]
+  ];
+  const context = await createRegressionTestContext();
+  requireTestDevice(context.device);
+  try {
+    const values = context.input(
+      'float32',
+      cases.flatMap(row => row.slice(0, 4))
+    );
+    const verdicts = context.output('uint32', cases.length);
+    context.graph.add(
+      createWGSLKernelNode(context.graph, {
+        id: 'probit-step-verdict-test',
+        operation: 'test',
+        invocationCount: cases.length,
+        bindings: [
+          {name: 'values', view: values, type: 'f32', access: 'read'},
+          {name: 'verdicts', view: verdicts.view, type: 'u32', access: 'read_write'}
+        ],
+        declarations: PROBIT_STEP_VERDICT_WGSL,
+        body: `let base = valuesOffset + 4u * index;
+verdicts[verdictsOffset + index] = getProbitStepVerdict(values[base], values[base + 1u], values[base + 2u], values[base + 3u]);`
+      })
+    );
+    context.run();
+    expect(Array.from(await readUint32(verdicts.buffer, cases.length))).toEqual(
+      cases.map(row => row[4])
+    );
+  } finally {
+    context.destroy();
+  }
+});
+
+it('probit rejects a subnormal response word as nonbinary (status 4), as the CPU form does', async () => {
+  // Word 0x00000001 (the smallest subnormal float32, 2^-149) among ordinary zeros and ones is not
+  // a binary response: it is neither signed zero nor exactly 1.0. A flush-to-zero comparison would
+  // read it as 0 and fit the row.
+  const subnormal = new Float32Array(new Uint32Array([1]).buffer)[0];
+  expect(subnormal).toBe(2 ** -149);
+  const input = createProbitConvergenceFixture();
+  const response = Array.from(input.response);
+  response[0] = subnormal;
+  const result = await runProbit(input.predictors, response, 1);
+  expect(result.status).toBe(4);
+  expect(result.coefficients).toHaveLength(2);
+  expect(result.coefficients.every(Number.isNaN)).toBe(true);
+  // Signed zero is a binary zero on both forms.
+  response[0] = -0;
+  const signedZero = await runProbit(input.predictors, response, 1);
+  expect(signedZero.status).toBe(0);
 });

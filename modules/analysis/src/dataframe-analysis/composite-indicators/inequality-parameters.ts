@@ -34,6 +34,9 @@ export function getGPUInequalityMaximumLorenzKnotTotal(device: Device): number {
 /** Largest Atkinson epsilon accepted; larger values overflow `(x / mean) ^ (1 - epsilon)` in f32. */
 export const GPU_INEQUALITY_MAXIMUM_EPSILON = 32;
 
+/** Leave float32 exponent headroom for logarithmic and centered Atkinson terms. @internal */
+export const ATKINSON_WEIGHT_NORMALIZATION_THRESHOLD = 2 ** 112;
+
 /** Float32 slots of the `globalSummary` output of `GPUInequality`. */
 export const GPU_INEQUALITY_GLOBAL_SUMMARY = {
   /** Theil T of all included rows pooled, computed directly from the row values. */
@@ -74,7 +77,8 @@ export type GPUInequalitySettings = {
  * Packs `settings` into the float32 parameter layout `[epsilon, palmaTopShare, palmaBottomShare, 0]`.
  *
  * @param target Optional destination, at least {@link GPU_INEQUALITY_PARAMETER_LENGTH} long.
- * @throws If a value is outside its range.
+ * @throws If a value is outside its range before or after float32 packing, or positive epsilon
+ * rounds to zero. Explicit epsilon 0 is legal. Validation leaves `target` unchanged.
  */
 export function getGPUInequalityParameterValues(
   settings: GPUInequalitySettings = {},
@@ -86,18 +90,24 @@ export function getGPUInequalityParameterValues(
   const epsilon = settings.epsilon ?? 1;
   const top = settings.palmaTopShare ?? GPU_INEQUALITY_DEFAULT_PALMA_TOP_SHARE;
   const bottom = settings.palmaBottomShare ?? GPU_INEQUALITY_DEFAULT_PALMA_BOTTOM_SHARE;
-  if (!Number.isFinite(epsilon) || epsilon < 0 || epsilon > GPU_INEQUALITY_MAXIMUM_EPSILON) {
+  const packedEpsilon = Math.fround(epsilon);
+  if (
+    !Number.isFinite(epsilon) ||
+    epsilon < 0 ||
+    epsilon > GPU_INEQUALITY_MAXIMUM_EPSILON ||
+    (epsilon > 0 && !(packedEpsilon > 0))
+  ) {
     throw new Error(`epsilon must be in [0, ${GPU_INEQUALITY_MAXIMUM_EPSILON}]`);
   }
   for (const [name, share] of [
     ['palmaTopShare', top],
     ['palmaBottomShare', bottom]
   ] as const) {
-    if (!(share > 0 && share <= 1)) {
+    if (!(share > 0 && share <= 1 && Math.fround(share) > 0 && Math.fround(share) <= 1)) {
       throw new Error(`${name} must be in (0, 1]`);
     }
   }
-  target[0] = epsilon;
+  target[0] = packedEpsilon;
   target[1] = top;
   target[2] = bottom;
   target[3] = 0;

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotVecchiaLossProps} from './vecchia-neighborhood-status';
+
+import {snapshotVecchiaSpaceTimeLogLikelihoodOperationProps} from './interpolation-operation-snapshots';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   GPUVecchiaSpaceTimeLogLikelihood,
@@ -20,6 +24,7 @@ export type VecchiaSpaceTimeLogLikelihoodOperationProps = Pick<
   observations: string;
   neighborhoodOffsets: string;
   neighborhoods: string;
+  neighborhoodStatus?: {overflow?: string; candidateOverflow?: string};
   parameters: string;
   output: {
     conditionals: string;
@@ -28,6 +33,7 @@ export type VecchiaSpaceTimeLogLikelihoodOperationProps = Pick<
     siteStatus: string;
     logLikelihood: string;
     status: string;
+    neighborhoodStatus?: string;
   };
 };
 
@@ -37,6 +43,7 @@ export type VecchiaSpaceTimeLogLikelihoodOperationProps = Pick<
  */
 export class GPUVecchiaSpaceTimeLogLikelihoodOperation extends GPUContributorOperation {
   constructor(props: VecchiaSpaceTimeLogLikelihoodOperationProps) {
+    props = snapshotVecchiaLossProps(props, snapshotVecchiaSpaceTimeLogLikelihoodOperationProps);
     const id = props.id ?? 'vecchia-space-time-log-likelihood';
     super({
       id,
@@ -46,6 +53,12 @@ export class GPUVecchiaSpaceTimeLogLikelihoodOperation extends GPUContributorOpe
         observations: props.observations,
         neighborhoodOffsets: props.neighborhoodOffsets,
         neighborhoods: props.neighborhoods,
+        ...(props.neighborhoodStatus?.overflow !== undefined
+          ? {neighborhoodOverflow: props.neighborhoodStatus.overflow}
+          : {}),
+        ...(props.neighborhoodStatus?.candidateOverflow !== undefined
+          ? {neighborhoodCandidateOverflow: props.neighborhoodStatus.candidateOverflow}
+          : {}),
         parameters: props.parameters
       },
       outputs: {
@@ -62,6 +75,15 @@ export class GPUVecchiaSpaceTimeLogLikelihoodOperation extends GPUContributorOpe
         siteTerms: {value: props.output.siteTerms, format: 'float32', length: props.rowCount},
         siteStatus: {value: props.output.siteStatus, format: 'uint32', length: props.rowCount},
         logLikelihood: {value: props.output.logLikelihood, format: 'float32', length: 2},
+        ...(props.output.neighborhoodStatus !== undefined
+          ? {
+              neighborhoodStatus: {
+                value: props.output.neighborhoodStatus,
+                format: 'uint32' as const,
+                length: 3
+              }
+            }
+          : {}),
         status: {value: props.output.status, format: 'uint32', length: 3}
       },
       createContributor: getView =>
@@ -76,12 +98,25 @@ export class GPUVecchiaSpaceTimeLogLikelihoodOperation extends GPUContributorOpe
           neighborhoodOffsets: getView<'uint32'>('neighborhoodOffsets'),
           neighborhoods: getView<'uint32'>('neighborhoods'),
           parameters: getView<'float32'>('parameters'),
+          neighborhoodStatus: {
+            overflow:
+              props.neighborhoodStatus?.overflow !== undefined
+                ? getView<'uint32'>('neighborhoodOverflow')
+                : undefined,
+            candidateOverflow:
+              props.neighborhoodStatus?.candidateOverflow !== undefined
+                ? getView<'uint32'>('neighborhoodCandidateOverflow')
+                : undefined
+          },
           output: {
             conditionals: getView<'float32x4'>('conditionals'),
             conditionalStatus: getView<'uint32'>('conditionalStatus'),
             siteTerms: getView<'float32'>('siteTerms'),
             siteStatus: getView<'uint32'>('siteStatus'),
             logLikelihood: getView<'float32'>('logLikelihood'),
+            ...(props.output.neighborhoodStatus !== undefined
+              ? {neighborhoodStatus: getView<'uint32'>('neighborhoodStatus')}
+              : {}),
             status: getView<'uint32'>('status')
           }
         })

@@ -1,7 +1,14 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotLineFeatureGeometry,
+  getLineFeatureLookupWGSL,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {createCapacityPrefixNodes} from '../line-split/capacity-prefix-nodes';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
@@ -26,23 +33,19 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  getGPUSegmentIntersectionMaximumVertexCount,
-  GPUSegmentIntersection
-} from '../segment-intersection/index';
+import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/index';
+import {createSegmentPairNodes} from '../segment-intersection/segment-pair-nodes';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import type {
-  GPULineGeometryPort,
-  GPUPackedGeometryPort,
-  GPUVertexCountStatusPort
-} from '../../analysis-core/contracts/index';
+import type {GPUVertexCountStatusPort} from '../../analysis-core/contracts/index';
 
 const OPERATION = 'GPUSharedPaths';
 
@@ -71,16 +74,21 @@ export const GPU_SHARED_PATHS_NONE = 0xffffffff;
  */
 export type GPUSharedPathsRuns = {
   /**
-   * Row of the `left` linestring of each run (two-input provenance, contributor contract rule 8).
+   * Left feature caller identity (or logical row without sourceIds), for both grouped and
+   * single-part inputs (two-input provenance, contributor contract rule 8).
    * Capacity is the length; unused slots hold `GPU_SHARED_PATHS_NONE`. Renamed from `leftLineIds`
    * (breaking, 2026-11-10).
    */
   leftSourceIds: GraphDataView<'uint32'>;
   /**
-   * Row of the `right` linestring of each run; same length as `leftSourceIds`. Renamed from
+   * Right feature identity with the same convention as leftSourceIds; same length. Renamed from
    * `rightLineIds` (breaking, 2026-11-10).
    */
   rightSourceIds: GraphDataView<'uint32'>;
+  /** Optional original left line-part row per run; unused rows are GPU_SHARED_PATHS_NONE. */
+  leftPartRows?: GraphDataView<'uint32'>;
+  /** Optional original right line-part row per run; unused rows are GPU_SHARED_PATHS_NONE. */
+  rightPartRows?: GraphDataView<'uint32'>;
   /**
    * `1` when the right line runs the same way as the left line along the run (Shapely's forward
    * collection), `0` when it runs the opposite way (the backward collection).
@@ -103,7 +111,7 @@ export type GPUSharedPathsOutput = {
   status: GPUVertexCountStatusPort & {
     /** One-row scalar receiving the number of complete runs written (runs, not vertices). */
     count: GraphDataView<'uint32'>;
-    /** Optional one-row scalar receiving `1` when any capacity was exceeded. */
+    /** Optional one-row scalar receiving `1` when a capacity was exceeded or an intersection could not be certified. */
     overflow?: GraphDataView<'uint32'>;
     /** Optional one-row scalar receiving the unclamped number of runs. */
     requiredCount?: GraphDataView<'uint32'>;
@@ -111,7 +119,7 @@ export type GPUSharedPathsOutput = {
     uncertainCount?: GraphDataView<'uint32'>;
     /**
      * Optional one-row scalar receiving `1` when the `intersectionCapacity` pair list (an
-     * intermediate capacity) overflowed, so runs may be missing. That case also sets `overflow`.
+     * intermediate capacity) or BVH leaf capacity overflowed, so runs may be missing. That case also sets `overflow`.
      */
     candidateOverflow?: GraphDataView<'uint32'>;
   };
@@ -134,9 +142,9 @@ export type GPUSharedPathsProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Left linestrings. */
-  left: GPUPackedGeometryPort<GPULineGeometryPort>;
+  left: GPULineFeatureGeometry;
   /** Right linestrings, indexed by a BVH. */
-  right: GPUPackedGeometryPort<GPULineGeometryPort>;
+  right: GPULineFeatureGeometry;
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list (one row per intersecting segment
    * pair, not only the shared ones). When it overflows, runs are produced from the sorted prefix
@@ -197,14 +205,119 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
   constructor(props: GPUSharedPathsProps) {
     this.id = props.id ?? 'shared-paths';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    props = {
-      ...props,
-      left: snapshotSinglePartGeometryPort(this.id, 'left', props.left),
-      right: snapshotSinglePartGeometryPort(this.id, 'right', props.right)
-    };
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'left',
+      'right',
+      'intersectionCapacity',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      left: snapshotLineFeatureGeometry(this.id, snapshot.left),
+      right: snapshotLineFeatureGeometry(this.id, snapshot.right),
+      output: Object.freeze({
+        runs: snapshotConstructionFields(snapshot.output.runs, [
+          'leftSourceIds',
+          'rightSourceIds',
+          'leftPartRows',
+          'rightPartRows',
+          'forward',
+          'offsets',
+          'positions'
+        ]),
+        status: snapshotConstructionFields(snapshot.output.status, [
+          'count',
+          'vertexCount',
+          'requiredVertexCount',
+          'overflow',
+          'requiredCount',
+          'uncertainCount',
+          'candidateOverflow'
+        ])
+      })
+    });
     this.props = props;
+    validateRequirement(
+      this.id,
+      props.leafCapacity === undefined ||
+        props.leafCapacity >= props.right.positions.length ||
+        Boolean(props.output.status.candidateOverflow || props.output.status.overflow),
+      `leafCapacity ${String(props.leafCapacity)} below the right segment slot count ${props.right.positions.length} requires output.status.candidateOverflow or output.status.overflow`
+    );
+
     const {id} = this;
     const {runs, status} = props.output;
+    const {left, right} = props;
+    validateDisjointWritableViews(
+      id,
+      {
+        'output.runs.leftSourceIds': runs.leftSourceIds,
+        'output.runs.rightSourceIds': runs.rightSourceIds,
+        'output.runs.leftPartRows': runs.leftPartRows,
+        'output.runs.rightPartRows': runs.rightPartRows,
+        'output.runs.forward': runs.forward,
+        'output.runs.offsets': runs.offsets,
+        'output.runs.positions': runs.positions,
+        ...Object.fromEntries(
+          Object.entries(status).map(([name, view]) => [`output.status.${name}`, view])
+        )
+      },
+      {separateDispatches: true}
+    );
+    validateDisjointWritableViews(id, {
+      'output.runs.leftSourceIds': runs.leftSourceIds,
+      'output.runs.rightSourceIds': runs.rightSourceIds,
+      'output.runs.forward': runs.forward,
+      'output.runs.offsets': runs.offsets
+    });
+    for (const [role, geometry, identities, partRows] of [
+      ['left', left, runs.leftSourceIds, runs.leftPartRows],
+      ['right', right, runs.rightSourceIds, runs.rightPartRows]
+    ] as const) {
+      if (!geometry.featureOffsets && !geometry.sourceIds && !partRows) continue;
+      const outputs = {
+        [`output.runs.${role}SourceIds`]: identities,
+        [`output.runs.${role}PartRows`]: partRows
+      };
+      validateDisjointWritableViews(id, outputs);
+      validateGraphOutputsDisjointFromInputs(id, outputs, {'output.status.count': status.count});
+    }
+    // These scalars share the final dispatch; uncertainty is published separately.
+    validateDisjointWritableViews(id, {
+      'output.status.count': status.count,
+      'output.status.vertexCount': status.vertexCount,
+      'output.status.requiredCount': status.requiredCount,
+      'output.status.requiredVertexCount': status.requiredVertexCount,
+      'output.status.overflow': status.overflow,
+      'output.status.candidateOverflow': status.candidateOverflow
+    });
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [
+        runs.leftSourceIds,
+        runs.rightSourceIds,
+        runs.leftPartRows,
+        runs.rightPartRows,
+        runs.forward,
+        runs.offsets,
+        runs.positions,
+        ...Object.values(status)
+      ],
+      [
+        left.positions,
+        left.lineOffsets,
+        left.featureOffsets,
+        left.sourceIds,
+        right.positions,
+        right.lineOffsets,
+        right.featureOffsets,
+        right.sourceIds
+      ]
+    );
     for (const [name, lines] of [
       ['left', props.left],
       ['right', props.right]
@@ -235,6 +348,15 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
     }
     validateSinglePackedView(runs.positions, ['float32x2'], `${id} output.runs.positions`);
     this.runCapacity = runs.leftSourceIds.length;
+    for (const [name, view] of [
+      ['leftPartRows', runs.leftPartRows],
+      ['rightPartRows', runs.rightPartRows]
+    ] as const)
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} output.runs.${name}`);
+        if (view.length !== this.runCapacity)
+          throw new Error(`${id} output.runs.${name} length must equal run capacity`);
+      }
     this.vertexCapacity = runs.positions.length;
     if (
       this.runCapacity < 1 ||
@@ -277,8 +399,14 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       left.positions,
       left.lineOffsets,
+      left.featureOffsets,
+      left.sourceIds,
       right.positions,
       right.lineOffsets,
+      right.featureOffsets,
+      right.sourceIds,
+      runs.leftPartRows,
+      runs.rightPartRows,
       runs.leftSourceIds,
       runs.rightSourceIds,
       runs.forward,
@@ -324,13 +452,16 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
     const pairRight = T('pair-right', 'uint32', pairCapacity);
     const pairCount = T('pair-count', 'uint32', 1);
     const pairOverflow = T('pair-overflow', 'uint32', 1);
+    // Keep predicate state internal: caller status views may share a buffer,
+    // which cannot be bound read-only beside read-write status outputs.
+    const uncertainCount = T('uncertain-count', 'uint32', 1);
     const kinds = T('kinds', 'uint32', pairCapacity);
     const points = T('points', 'float32x2', pairCapacity);
     const endPoints = T('end-points', 'float32x2', pairCapacity);
     const leftRings = T('left-rings', 'uint32', pairCapacity);
     const rightRings = T('right-rings', 'uint32', pairCapacity);
     nodes.push(
-      ...new GPUSegmentIntersection({
+      ...createSegmentPairNodes(graph, {
         id: `${id}-intersection`,
         left,
         right,
@@ -342,14 +473,14 @@ export class GPUSharedPaths implements GPUCommandNodeProducer {
             rightRows: pairRight,
             status: {count: pairCount, overflow: pairOverflow}
           },
-          status: {uncertainCount: status.uncertainCount},
+          status: {uncertainCount},
           kinds,
           points,
           endPoints,
           leftRings,
           rightRings
         }
-      }).getCommandNodes(graph)
+      })
     );
 
     const geometryWGSL = (prefix: string) => `
@@ -598,6 +729,27 @@ fn emitsEnd(span: u32) -> bool {
 
     // 5. Run table, capacity clamp and outputs.
     const runTable = T('run-table', 'uint32', pairCapacity * RUN_STRIDE);
+    const fitting = createCapacityPrefixNodes(graph, {
+      id: `${id}-capacity-prefix`,
+      operation: OPERATION,
+      length: Math.min(runCapacity, pairCapacity),
+      bindings: [
+        {name: 'runFlags', view: runFlags, type: 'u32', access: 'read'},
+        {name: 'runRanks', view: runRanks, type: 'u32', access: 'read'},
+        {name: 'vertexTotal', view: vertexTotal, type: 'u32', access: 'read'},
+        {name: 'runTable', view: runTable, type: 'u32', access: 'read'}
+      ],
+      body: `let total=runRanks[runRanksOffset+${pairCapacity - 1}u]+runFlags[runFlagsOffset+${pairCapacity - 1}u];
+if(index>=total) {return;}
+var end=vertexTotal[vertexTotalOffset];
+if(index+1u<total) {end=runTable[runTableOffset+(index+1u)*${RUN_STRIDE}u];}
+if(end>${vertexCapacity}u) {return;}
+if(index+1u<min(total,${runCapacity}u)) {
+ var nextEnd=vertexTotal[vertexTotalOffset];
+ if(index+2u<total) {nextEnd=runTable[runTableOffset+(index+2u)*${RUN_STRIDE}u];}
+ if(nextEnd<=${vertexCapacity}u) {return;}
+}`
+    });
     const state = T('state', 'uint32', 8);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -621,11 +773,13 @@ fn emitsEnd(span: u32) -> bool {
   runTable[row + 3u] = (spanTable[source] >> 1u) & 1u;
   runTable[row + 4u] = index;`
       }),
+      ...fitting.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize`,
         operation: OPERATION,
         variant: 'finalize',
         bindings: [
+          {name: 'fitting', view: fitting.count, type: 'u32', access: 'read'},
           {name: 'runFlags', view: runFlags, type: 'u32', access: 'read'},
           {name: 'runRanks', view: runRanks, type: 'u32', access: 'read'},
           {name: 'vertexTotal', view: vertexTotal, type: 'u32', access: 'read'},
@@ -639,14 +793,7 @@ const RUN_CAPACITY: u32 = ${runCapacity}u;
 const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
         body: `let totalRuns = runRanks[runRanksOffset + LAST] + runFlags[runFlagsOffset + LAST];
   let totalVertices = vertexTotal[vertexTotalOffset];
-  var low = 0u;
-  var high = min(totalRuns, RUN_CAPACITY);
-  while (low < high) {
-    let middle = (low + high + 1u) / 2u;
-    var end = totalVertices;
-    if (middle < totalRuns) { end = runTable[runTableOffset + middle * ${RUN_STRIDE}u]; }
-    if (end <= VERTEX_CAPACITY) { low = middle; } else { high = middle - 1u; }
-  }
+  let low = fitting[fittingOffset];
   var written = totalVertices;
   if (low < totalRuns) { written = runTable[runTableOffset + low * ${RUN_STRIDE}u]; }
   state[stateOffset] = low;
@@ -837,6 +984,17 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
     const scalarBindings: WGSLKernelBinding[] = [
       {name: 'state', view: state, type: 'u32', access: 'read'}
     ];
+    // Capacity clamping above only selects complete runs. Publish numerical
+    // incompleteness here, alongside the aggregate status, without changing the
+    // bounded run-capacity search.
+    if (status.overflow) {
+      scalarBindings.push({
+        name: 'uncertainCount',
+        view: uncertainCount,
+        type: 'u32',
+        access: 'read'
+      });
+    }
     const scalars: [string, GraphDataView<'uint32'> | undefined, number][] = [
       ['count', status.count, 0],
       ['vertexCount', status.vertexCount, 1],
@@ -859,10 +1017,74 @@ const VERTEX_CAPACITY: u32 = ${vertexCapacity}u;`,
         invocationCount: 1,
         body: scalars
           .filter(([, view]) => view)
-          .map(([name, , word]) => `${name}[${name}Offset] = state[stateOffset + ${word}u];`)
+          .map(([name, , word]) =>
+            name === 'overflow'
+              ? `overflow[overflowOffset] = select(0u, 1u, state[stateOffset + ${word}u] != 0u || uncertainCount[uncertainCountOffset] != 0u);`
+              : `${name}[${name}Offset] = state[stateOffset + ${word}u];`
+          )
           .join('\n  ')
       })
     );
+    if (status.uncertainCount) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-uncertainty`,
+          operation: OPERATION,
+          variant: 'uncertainty',
+          bindings: [
+            {name: 'uncertainCount', view: uncertainCount, type: 'u32', access: 'read'},
+            {name: 'output', view: status.uncertainCount, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: 'output[outputOffset] = uncertainCount[uncertainCountOffset];'
+        })
+      );
+    }
+    for (const [role, geometry, identities, partRows] of [
+      ['left', left, runs.leftSourceIds, runs.leftPartRows],
+      ['right', right, runs.rightSourceIds, runs.rightPartRows]
+    ] as const) {
+      if (!geometry.featureOffsets && !geometry.sourceIds && !partRows) continue;
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-${role}-feature-provenance`,
+          operation: OPERATION,
+          invocationCount: runCapacity,
+          bindings: [
+            {name: 'count', view: status.count, type: 'u32', access: 'read'},
+            {name: 'identities', view: identities, type: 'u32', access: 'read_write'},
+            ...(partRows
+              ? [{name: 'partRows', view: partRows, type: 'u32', access: 'read_write'} as const]
+              : []),
+            ...(geometry.featureOffsets
+              ? [
+                  {
+                    name: 'features',
+                    view: geometry.featureOffsets,
+                    type: 'u32',
+                    access: 'read'
+                  } as const
+                ]
+              : []),
+            ...(geometry.sourceIds
+              ? [
+                  {
+                    name: 'callerIds',
+                    view: geometry.sourceIds,
+                    type: 'u32',
+                    access: 'read'
+                  } as const
+                ]
+              : [])
+          ],
+          declarations: getLineFeatureLookupWGSL(geometry),
+          body: `if(index>=count[countOffset]){${partRows ? 'partRows[partRowsOffset+index]=0xffffffffu;' : ''}return;}
+let part=identities[identitiesOffset+index];${partRows ? 'partRows[partRowsOffset+index]=part;' : ''}
+let feature=lineFeature(part);
+identities[identitiesOffset+index]=${geometry.sourceIds ? 'callerIds[callerIdsOffset+feature]' : 'feature'};`
+        })
+      );
+    }
     return nodes;
   }
 }

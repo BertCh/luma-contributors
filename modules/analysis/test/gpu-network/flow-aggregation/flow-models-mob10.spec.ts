@@ -163,6 +163,40 @@ describe('GPURadiationFlowModel (MOB-10)', () => {
     }
   });
 
+  it('finite-size normalization keeps the outflow when the origin holds nearly all of the population (NET-111)', async () => {
+    // Two zones, populations 1e9 and 1, outflow 100 from zone 0. The only destination absorbs
+    // every trip: T_01 = 100 m n / (m (m + n)) / (1 - m / M) = 100 (Simini et al. 2012, finite-size
+    // correction 1 / (1 - m_i / M)). In float32 1 - 1e9 / (1e9 + 1) is 0, which gave 0 before.
+    const twoZones = await runRadiation(
+      {
+        positions: Float32Array.from([0, 0, 1, 0]),
+        populations: Float32Array.from([1e9, 1]),
+        outflows: Float32Array.from([100, 0])
+      },
+      'finite-size'
+    );
+    for (const value of twoZones) expect(Number.isFinite(value)).toBe(true);
+    expect(twoZones[0]).toBe(0);
+    expect(twoZones[1]).toBeCloseTo(100, 3);
+    expect(twoZones[2]).toBe(0);
+    expect(twoZones[3]).toBe(0);
+    // Three zones at x = 0, 1, 3, populations 100, 50, 200 (M = 350), outflows 10, 20, 30, by
+    // hand: the 'none' flows of the first case times M / (M - m_i) = 7/5, 7/6 and 7/3.
+    const threeZones = await runRadiation(
+      {
+        positions: Float32Array.from([0, 0, 1, 0, 3, 0]),
+        populations: Float32Array.from([100, 50, 200]),
+        outflows: Float32Array.from([10, 20, 30])
+      },
+      'finite-size'
+    );
+    const expected = [0, 14 / 3, 16 / 3, 140 / 9, 0, 40 / 9, 16, 14, 0];
+    expected.forEach((value, index) => {
+      expect(Number.isFinite(threeZones[index])).toBe(true);
+      expect(threeZones[index]).toBeCloseTo(value, 4);
+    });
+  });
+
   it('rejects more zones than the reference-tier maximum', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'mob10-limit'});
     const zoneCount = GPU_RADIATION_FLOW_MODEL_MAXIMUM_ZONES + 1;
@@ -288,7 +322,8 @@ async function runSmoothing(options: {
               'float32',
               pairs.weights.length
             ),
-            validPairCount: harness.input('count', Uint32Array.from([pairs.count]), 'uint32', 1)
+            completeness: 'known-complete',
+            count: harness.input('count', Uint32Array.from([pairs.count]), 'uint32', 1)
           }
         : {
             kind: 'matrix',
@@ -404,6 +439,23 @@ describe('GPUKernelFlowSmoothing (MOB-10)', () => {
       expect(value).toBeCloseTo(index === 8 ? 100 / (1 + k) ** 2 : 0, 3);
     });
     expect(remote.smoothed.reduce((sum, value) => sum + value, 0)).toBeCloseTo(77.58, 1);
+  });
+
+  it('keeps the input when the bandwidth squares to zero in float32 (NET-112)', async () => {
+    // Two zones one unit apart, neighbourhood size 2 (radius 1), ratio 1e-30: sigma = 1e-30 and
+    // fround(2 sigma sigma) = 0, so the old self weight was 0 / 0 = NaN. The Gaussian of the
+    // other zone is exp(-0.5e60) = 0, so each neighbourhood keeps only its own zone and the
+    // smoothed matrix is the input (closed form, no reference needed).
+    const actual = await runSmoothing({
+      positions: Float32Array.from([0, 0, 1, 0]),
+      locationWeights: Float32Array.from([1, 1]),
+      matrix: Float32Array.from([1, 2, 3, 4]),
+      neighborhoodSize: 2,
+      bandwidthRatio: 1e-30
+    });
+    expect(Array.from(actual.radii)).toEqual([1, 1]);
+    for (const value of actual.smoothed) expect(Number.isFinite(value)).toBe(true);
+    expect(Array.from(actual.smoothed)).toEqual([1, 2, 3, 4]);
   });
 
   it('reads the OD pairs of the aggregation like the dense matrix, ignoring pairs past the count and bad weights', async () => {

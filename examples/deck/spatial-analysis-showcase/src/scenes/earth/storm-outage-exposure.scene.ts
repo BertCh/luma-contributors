@@ -284,41 +284,80 @@ import {GPULineLengthPerPolygon, GPUZonalStatistics} from '@luma-contributors/an
 import {
   GPUGroupStatistics, GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues
 } from '@luma-contributors/analysis/dataframe-analysis';
+import {importGraphBuffer} from '../../engine/graph-buffers';
 
 // Once: join every flash to its county and keep the point-to-county rows.
+const staticOverflowBuffer = resources.createBuffer('flash-membership-overflow', 4);
+const staticUncertainCountBuffer = resources.createBuffer('flash-membership-uncertain', 4);
+const staticOverflow = importGraphBuffer(staticGraph, 'flash-membership-overflow', staticOverflowBuffer, 'uint32', 1);
+const staticUncertainCount = importGraphBuffer(staticGraph, 'flash-membership-uncertain', staticUncertainCountBuffer, 'uint32', 1);
+const pointFeatureRowsBuffer = resources.createBuffer('flash-county-rows', flashCount * 4);
+const staticPointFeatureRows = importGraphBuffer(staticGraph, 'flash-county-rows', pointFeatureRowsBuffer, 'uint32', flashCount);
+const livePointFeatureRows = importGraphBuffer(graph, 'flash-county-rows', pointFeatureRowsBuffer, 'uint32', flashCount);
+const statusWord = (target, name) => importGraphBuffer(target, name, resources.createBuffer(name, 4), 'uint32', 1);
+const peakCount = statusWord(staticGraph, 'peak-count'), peakOverflow = statusWord(staticGraph, 'peak-overflow');
+const windowCount = statusWord(graph, 'window-count'), windowOverflow = statusWord(graph, 'window-overflow');
+const lineOverflow = statusWord(graph, 'line-overflow');
+const outageCount = statusWord(graph, 'outage-count'), outageOverflow = statusWord(graph, 'outage-overflow');
+const flashOverflow = statusWord(graph, 'flash-overflow');
 staticGraph.add(new GPUZonalStatistics({
   spatialContext: STORM_FRAME.spatialContext,
   features: {kind: 'polygons', positions: countyPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
   positions: flashMeters,
-  output: {counts: flashTotals, pointFeatureRows, status: {overflow}}
+  output: {counts: flashTotals, pointFeatureRows: staticPointFeatureRows, status: {overflow: staticOverflow, uncertainCount: staticUncertainCount}}
 }));
 // Once: the peak customers out per county, dense keys = county rows.
+const staticSnapshotCounty = importGraphBuffer(staticGraph, 'snapshot-county', snapshotCountyBuffer, 'uint32', snapshotCount);
+const staticCustomersOut = importGraphBuffer(staticGraph, 'customers-out', customersOutBuffer, 'float32', snapshotCount);
+const liveSnapshotCounty = importGraphBuffer(graph, 'snapshot-county', snapshotCountyBuffer, 'uint32', snapshotCount);
+const liveCustomersOut = importGraphBuffer(graph, 'customers-out', customersOutBuffer, 'float32', snapshotCount);
 staticGraph.add(new GPUGroupStatistics({
-  keys: snapshotCounty, keyCount: countyCount,
-  columns: [{values: customersOut, statistics: ['maximum'], output: {maximums: peakOutage}}],
-  output: {keys, counts, status: {count, overflow}}
+  keys: staticSnapshotCounty, keyCount: countyCount,
+  columns: [{values: staticCustomersOut, statistics: ['maximum'], output: {maximums: peakOutage}}],
+  output: {keys: peakKeys, counts: peakCounts, status: {count: peakCount, overflow: peakOverflow}}
 }));
+
+// Static membership diagnostics accompany every reused flash total, independently of line/outage loss.
+// setFlashMembershipStatus renders alongside flashTotals and flashSums; live callbacks do not clear it.
+setFlashMembershipStatus('static flash membership diagnostics pending');
+async function readStaticMembership() {
+  const [overflowBytes, uncertainBytes] = await Promise.all([
+    staticOverflowBuffer.readAsync(), staticUncertainCountBuffer.readAsync()
+  ]);
+  const capacityLoss = new Uint32Array(overflowBytes.buffer, overflowBytes.byteOffset, 1)[0];
+  const uncertain = new Uint32Array(uncertainBytes.buffer, uncertainBytes.byteOffset, 1)[0];
+  setFlashMembershipStatus(capacityLoss || uncertain
+    ? uncertain + ' uncertain static flash memberships; ' + (capacityLoss ? 'flash membership capacity loss; ' : '') + 'county flash totals are not exact'
+    : 'no uncertain static flash memberships');
+} // Call after staticGraph submission; pending persists until both reads complete.
 
 // When the playhead moves five minutes:
 graph.add(new GPUTimeWindowFilter({timestamps: flashTimes, window: flashWindow.importToGraph(graph),
-  output: {rows, status: {count, overflow}, fadeWeights: flashWeights}}));      // 1 inside the window, 0 outside
+  output: {rows: windowRows, status: {count: windowCount, overflow: windowOverflow}, fadeWeights: flashWeights}})); // 1 inside the window, 0 outside
 graph.add(new GPUZonalStatistics({
   spatialContext: STORM_FRAME.spatialContext,
-  features: {kind: 'feature-rows', pointFeatureRows, featureCount: countyCount},
+  features: {kind: 'feature-rows', pointFeatureRows: livePointFeatureRows, featureCount: countyCount},
   values: ones, weights: flashWeights, sumOrder: '${state.sumOrder}',  // compile-time
-  output: {sums: flashSums}                                           // flashes in the window per county
+  output: {sums: flashSums, status: {overflow: flashOverflow}} // static membership diagnostic still accompanies these totals
 }));
 graph.add(new GPULineLengthPerPolygon({
   positions: tracksClippedAtPlayhead, lineOffsets: pathOffsets, lineWeights: peakDbz,
   polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
-  output: {lengths: trackLengths, weightedLengths, status: {overflow}}        // meters of track inside each county
+  output: {clippedLengths: trackLengths, weightedLengths, status: {overflow: lineOverflow}} // meters inside each county
 }));
 graph.add(new GPUGroupStatistics({
-  keys: snapshotCounty, mask: snapshotInWindow, keyCount: countyCount,
-  columns: [{values: customersOut, statistics: ['sum'], output: {sumValues: outageNow}}],
-  output: {keys, counts, status: {count, overflow}}
+  keys: liveSnapshotCounty, mask: snapshotInWindow, keyCount: countyCount,
+  columns: [{values: liveCustomersOut, statistics: ['sum'], output: {sumValues: outageNow}}],
+  output: {keys: outageKeys, counts: outageCounts, status: {count: outageCount, overflow: outageOverflow}}
 }));
-flashWindow.write(getGPUTimeWindowFilterParameterValues({start: 0, end: ${state.exposureWindow === 'so-far' ? 'playhead' : 'eventEnd'}}));`,
+flashWindow.write(getGPUTimeWindowFilterParameterValues({start: 0, end: ${state.exposureWindow === 'so-far' ? 'playhead' : 'eventEnd'}}));
+// Submit the static membership and peak graph before live totals consume its rows.
+const staticCompiled = await staticGraph.compileAsync();
+const staticEncoder = device.createCommandEncoder();
+staticCompiled.encode(staticEncoder, {parameters: undefined});
+device.submit(staticEncoder.finish());
+void readStaticMembership(); // pending resolves only after these static diagnostic reads finish
+// Read windowOverflow, lineOverflow, flashOverflow and outageOverflow independently with live totals.`,
 
   about: {
     what: '`GPULineLengthPerPolygon` cuts every storm-cell track where it crosses a county boundary and sums the length inside each county. `GPUZonalStatistics` joins the lightning flashes to counties once, then sums the flashes of a time window per county from the stored rows. `GPUGroupStatistics` reduces the 40,000-row outage table to a peak and to the latest snapshot per county, and `GPUTimeWindowFilter` picks the flashes and the outage snapshots that belong to the playhead.',

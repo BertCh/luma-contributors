@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {Buffer} from '@luma.gl/core';
 import {
   getGPUClassBreaksParameterLength,
   getGPUClassBreaksParameterValues,
@@ -14,6 +15,11 @@ import {
   GPUClassBreaks,
   type GPUClassBreaksProps
 } from '../../../src/dataframe-analysis/column-classification/gpu-class-breaks';
+import {validateClassificationOutput} from '../../../src/dataframe-analysis/column-classification/column-classification-rows';
+import {
+  makeGPURasterBand,
+  makeGPURasterMetadata
+} from '../../../src/raster-analysis/raster-grid/gpu-raster-grid';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   CORE_WORKGROUP_STORAGE_LIMIT_BYTES,
@@ -110,7 +116,7 @@ it('GPUClassBreaks validates its views and options', () => {
   expect(build(() => ({maximumClassCount: 65}))).toThrow(/maximumClassCount/);
   expect(build(() => ({methods: []}))).toThrow(/at least one/);
   expect(build(() => ({methods: ['bogus' as GPUClassBreaksMethod]}))).toThrow(/unknown method/);
-  expect(build(undefined, 100, 5)).toThrow(/box-plot/);
+  expect(build(() => ({methods: ['box-plot']}), 100, 5)).toThrow(/box-plot/);
   expect(build(() => ({methods: ['quantile']}), 100, 5)).not.toThrow();
   expect(build(() => ({naturalBreaksBinCount: 1}))).toThrow(/naturalBreaksBinCount/);
   expect(build(() => ({naturalBreaksBinCount: 4096}))).toThrow(/naturalBreaksBinCount/);
@@ -121,12 +127,13 @@ it('GPUClassBreaks validates its views and options', () => {
     build(
       graph =>
         ({
+          methods: ['maximum-breaks'],
           values: createVectorView('vector', 'float32', [
             createTransientView(graph, 'chunk', 'float32', 100)
           ])
         }) as unknown as Partial<GPUClassBreaksProps>
     )
-  ).toThrow(/must be one packed view/);
+  ).toThrow(/one packed view/);
   expect(build(graph => ({parameters: createTransientView(graph, 'short', 'float32', 4)}))).toThrow(
     /parameters must hold/
   );
@@ -174,7 +181,7 @@ it('GPUClassBreaks returns deterministic node IDs and rejects foreign views', ()
   expect(first[1]).toBe('cb-extremes');
   expect(first).toContain('cb-head-tail-0-split');
   expect(first).toContain('cb-natural-breaks-backtrack');
-  expect(first).toContain('cb-maximum-breaks-finish');
+  expect(first).toContain('cb-maximum-breaks-midpoints');
   expect(first.slice(-4)).toEqual([
     'cb-finish',
     'cb-publish',
@@ -375,7 +382,8 @@ it('GPUClassBreaks natural breaks build for one class, two bins and a handful of
     [1, 2, 3],
     [2, 2, 1],
     [2, 2048, 1],
-    [64, 2, 5]
+    // Approximate mode needs at least maximumClassCount bins (DPC-120).
+    [64, 64, 5]
   ] as const) {
     const graph = createGraph();
     const nodes = new GPUClassBreaks({
@@ -525,5 +533,395 @@ it('GPUClassBreaks validates row-proportional scratch against the actual device 
       8
     )
   );
-  expect(() => contributor.getCommandNodes(graph)).toThrow(/partitions.*binding/);
+  expect(() => contributor.getCommandNodes(graph)).toThrow(
+    /sorted moments\/prefix needs.*bytes in one binding/
+  );
+});
+
+// DPC-120. Approximate natural breaks clamp the per-frame class count to the bin count, so
+// maximumClassCount 8 over 4 bins could never return more than 4 classes. The contributor now
+// refuses that combination at construction; exact and monotone modes do not bin and keep it.
+it('GPUClassBreaks rejects more approximate natural-breaks classes than bins', () => {
+  const build = (overrides: Partial<GPUClassBreaksProps>) => {
+    const graph = createGraph();
+    return () => new GPUClassBreaks(createProps(graph, {id: 'breaks-check', ...overrides}));
+  };
+  expect(build({methods: ['natural-breaks'], naturalBreaksBinCount: 4})).toThrow(
+    /^breaks-check maximumClassCount 8 must not exceed naturalBreaksBinCount 4/
+  );
+  expect(
+    build({methods: ['natural-breaks'], naturalBreaksBinCount: 4, naturalBreaksMode: 'approximate'})
+  ).toThrow(/naturalBreaksBinCount 4/);
+  expect(build({naturalBreaksBinCount: 8})).not.toThrow();
+  expect(build({naturalBreaksBinCount: 4, methods: ['quantile']})).not.toThrow();
+  expect(build({naturalBreaksBinCount: 4, naturalBreaksMode: 'exact'})).not.toThrow();
+  expect(build({naturalBreaksBinCount: 4, naturalBreaksMode: 'monotone'})).not.toThrow();
+});
+
+it('WGS-05: ranks large gaps with an extended exponent and repairs midpoints in parallel', () => {
+  const graph = createGraph();
+  const kernels = getGPUCommandNodeKernelSources(
+    new GPUClassBreaks(createProps(graph, {methods: ['maximum-breaks']}, 4, 2)).getCommandNodes(
+      graph
+    )
+  );
+  const gaps = kernels.find(({id}) => id.endsWith('maximum-breaks-gaps'))!;
+  expect(gaps.source).toContain('0x00800000u');
+  const midpoints = kernels.find(({id}) => id.endsWith('maximum-breaks-midpoints'));
+  expect(midpoints).toBeDefined();
+  expect(midpoints!.source).toContain('(lower + upper) * 0.5');
+  for (const {source} of kernels) expect(() => new WgslReflect(source)).not.toThrow();
+});
+
+it('DEF-07: omitted methods include compatible routes at two classes and on chunked input', () => {
+  const graph = createGraph();
+  const props = createProps(graph, {}, 3, 2);
+  const contributor = new GPUClassBreaks(props);
+  expect(contributor.methods).toContain('equal-interval');
+  expect(contributor.methods).not.toContain('box-plot');
+  const chunked = createVectorView('default-chunks', 'float32', [
+    props.values as GraphDataView<'float32'>
+  ]);
+  const chunkContributor = new GPUClassBreaks({...props, values: chunked, mask: undefined});
+  expect(chunkContributor.methods).not.toContain('maximum-breaks');
+  expect(chunkContributor.methods).toContain('natural-breaks');
+  expect(
+    () =>
+      new GPUClassBreaks({...props, values: chunked, mask: undefined, methods: ['maximum-breaks']})
+  ).toThrow(/packed/);
+  expect(() => new GPUClassBreaks({...props, methods: ['box-plot']})).toThrow(/box-plot/);
+});
+
+it.each([
+  {
+    rows: 1025,
+    naturalBreaksMode: 'exact' as const,
+    naturalBreaksExactStorage: 'materialized' as const
+  },
+  {rows: 8193, naturalBreaksMode: 'exact' as const},
+  {rows: 262145, naturalBreaksMode: 'monotone' as const}
+])('SCL-05: inactive natural settings admit $rows equal-interval rows', settings => {
+  const graph = createGraph();
+  const {rows, ...options} = settings;
+  const contributor = new GPUClassBreaks(
+    createProps(graph, {methods: ['equal-interval'], ...options}, rows, 2)
+  );
+  expect(contributor.getCommandNodes(graph)).toHaveLength(6);
+  expect(contributor.estimatedCommandNodeCount).toBe(48);
+});
+
+it('DEF-06: exposes GPU natural-breaks mode and algorithm provenance', () => {
+  for (const naturalBreaksMode of [undefined, 'exact'] as const) {
+    const graph = createGraph();
+    const contributor = new GPUClassBreaks(
+      createProps(graph, {methods: ['natural-breaks'], naturalBreaksMode}, 12, 4)
+    );
+    expect(contributor.provenance.naturalBreaksMode).toBe(naturalBreaksMode ?? 'approximate');
+    expect(contributor.provenance.naturalBreaksAlgorithm).toBe(
+      naturalBreaksMode === 'exact'
+        ? 'exact-fisher-jenks-normalized-float32'
+        : 'histogram-refinement'
+    );
+  }
+});
+
+it('SCL-16: describes conditional routes and plans admission without graph mutation', () => {
+  expect(GPUClassBreaks).toHaveProperty('limits');
+  expect(GPUClassBreaks).toHaveProperty('getExecutionPlan');
+  const device = createNullWebGPUDevice();
+  try {
+    const equal = GPUClassBreaks.getExecutionPlan(
+      {
+        rowCount: 8193,
+        maximumClassCount: 2,
+        methods: ['equal-interval'],
+        naturalBreaksMode: 'exact'
+      },
+      device.limits
+    );
+    expect(equal.feasible).toBe(true);
+    const exact = GPUClassBreaks.getExecutionPlan(
+      {
+        rowCount: 8193,
+        maximumClassCount: 2,
+        methods: ['natural-breaks'],
+        naturalBreaksMode: 'exact'
+      },
+      device.limits
+    );
+    expect(exact.feasible).toBe(false);
+    expect(exact.constraints.find(constraint => constraint.name === 'exact-rows')).toMatchObject({
+      maximum: 8192,
+      received: 8193,
+      satisfied: false
+    });
+    const binding = GPUClassBreaks.getExecutionPlan(
+      {rowCount: 100, maximumClassCount: 2, methods: ['equal-interval']},
+      {...device.limits, maxStorageBufferBindingSize: 128}
+    );
+    expect(binding.feasible).toBe(false);
+    for (const chunks of [659, 660]) {
+      const plan = GPUClassBreaks.getExecutionPlan(
+        {
+          rowCount: chunks,
+          chunkRowCounts: Array(chunks).fill(1),
+          maximumClassCount: 18,
+          methods: ['natural-breaks']
+        },
+        device.limits
+      );
+      expect(plan.estimatedCommandNodeCount).toBe(chunks === 659 ? 32725 : 32771);
+      expect(plan.feasible).toBe(chunks === 659);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('ENT-02: classification accepts foreign vector shapes and preserves integer chunks', () => {
+  const graph = createGraph();
+  const chunks = [
+    createTransientView(graph, 'foreign-first', 'uint32', 1),
+    createTransientView(graph, 'foreign-second', 'uint32', 2)
+  ];
+  const vector = createVectorView('foreign', 'uint32', chunks);
+  // Same published shape, without this module condition's GraphVectorView prototype.
+  const foreign = {...vector} as typeof vector;
+  const props = createProps(
+    graph,
+    {values: foreign, mask: undefined, methods: ['equal-interval']},
+    3,
+    2
+  );
+  const kernels = getGPUCommandNodeKernelSources(new GPUClassBreaks(props).getCommandNodes(graph));
+  expect(kernels.filter(({id}) => /float-values-[01]$/.test(id))).toHaveLength(2);
+  const output = createTransientView(graph, 'foreign-output', 'uint32', 3);
+  expect(() =>
+    validateClassificationOutput('foreign', 'output', output, 'uint32', foreign)
+  ).toThrow(/topology|chunk/);
+});
+
+it('GPUClassBreaks captures construction options and nested output ports', () => {
+  const graph = createGraph();
+  const methods: GPUClassBreaksMethod[] = ['equal-interval'];
+  const props = createProps(graph, {methods}, 3, 2);
+  const contributor = new GPUClassBreaks(props);
+  methods.push('quantile');
+  props.maximumClassCount = 6;
+  props.output.breaks = createTransientView(graph, 'replacement', 'float32', 7);
+  expect(contributor.props.maximumClassCount).toBe(2);
+  expect(contributor.props.methods).toEqual(['equal-interval']);
+  expect(contributor.props.output.breaks).not.toBe(props.output.breaks);
+  expect(contributor.props.values).toBe(props.values);
+});
+
+it.each([
+  {
+    rowCount: 1024,
+    expectedFeasible: true,
+    naturalBreaksMode: 'exact' as const,
+    naturalBreaksExactStorage: 'materialized' as const
+  },
+  {
+    rowCount: 1025,
+    expectedFeasible: false,
+    naturalBreaksMode: 'exact' as const,
+    naturalBreaksExactStorage: 'materialized' as const
+  },
+  {
+    rowCount: 8192,
+    expectedFeasible: true,
+    naturalBreaksMode: 'exact' as const,
+    naturalBreaksExactStorage: 'recompute' as const
+  },
+  {
+    rowCount: 8193,
+    expectedFeasible: false,
+    naturalBreaksMode: 'exact' as const,
+    naturalBreaksExactStorage: 'recompute' as const
+  },
+  {rowCount: 262144, expectedFeasible: true, naturalBreaksMode: 'monotone' as const},
+  {rowCount: 262145, expectedFeasible: false, naturalBreaksMode: 'monotone' as const}
+])('SCL-16: planner and constructor agree at the $naturalBreaksMode boundary $rowCount', shape => {
+  const graph = createGraph();
+  const options = {...shape, maximumClassCount: 2, methods: ['natural-breaks'] as const};
+  const plan = GPUClassBreaks.getExecutionPlan(options, graph.device.limits);
+  const construct = () => new GPUClassBreaks(createProps(graph, options, shape.rowCount, 2));
+  expect(plan.feasible).toBe(shape.expectedFeasible);
+  if (shape.expectedFeasible) expect(construct).not.toThrow();
+  else expect(construct).toThrow(/rows/);
+});
+
+it('CMP-05: a raster band supplies its grid-sized prefix without copying the allocation', () => {
+  const graph = createGraph();
+  const allocation = createTransientView(graph, 'density-allocation', 'float32', 5);
+  const band = makeGPURasterBand(allocation, makeGPURasterMetadata({width: 2, height: 2}));
+  expect(band.storage.values.length).toBe(4);
+  expect(band.storage.values.buffer).toBe(allocation.buffer);
+  expect(band.storage.values.byteOffset).toBe(allocation.byteOffset);
+  const contributor = new GPUClassBreaks(
+    createProps(
+      graph,
+      {values: band.storage.values, mask: undefined, methods: ['equal-interval']},
+      4,
+      2
+    )
+  );
+  expect(contributor.props.values.length).toBe(4);
+  expect(allocation.length).toBe(5);
+});
+
+it('ENT-02: foreign vectors must retain a single scalar format and their declared row total', () => {
+  const graph = createGraph();
+  const chunks = [
+    createTransientView(graph, 'format-first', 'uint32', 1),
+    createTransientView(graph, 'format-second', 'uint32', 2)
+  ];
+  const vector = createVectorView('format-vector', 'uint32', chunks);
+  const mixed = {
+    ...vector,
+    data: [{...chunks[0], format: 'float32'}, chunks[1]]
+  } as unknown as typeof vector;
+  const props = createProps(graph, {mask: undefined, methods: ['equal-interval']}, 3, 2);
+  const create = (values: typeof vector) => new GPUClassBreaks({...props, values});
+  expect(() => create(mixed)).toThrow(/chunk format float32 must equal declared format uint32/);
+  expect(() => create({...vector, length: 4})).toThrow(/chunk row total.*declared length 4/);
+});
+
+it('R1 B3: one-class defaults copy only probabilities within the public packed parameters', () => {
+  const graph = createGraph();
+  const parameters = getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 1}, 1);
+  expect(parameters.length).toBe(10);
+  const contributor = new GPUClassBreaks(createProps(graph, {}, 3, 1));
+  expect(contributor.quantileCount).toBe(1);
+  expect(8 + contributor.quantileCount).toBeLessThanOrEqual(parameters.length);
+  const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+  expect(kernels.find(({id}) => id.endsWith('-prepare'))!.source).toContain(
+    'QUANTILE_COUNT: u32 = 1u'
+  );
+});
+
+it('R1 B4: partial binding inventories cannot erase required input bindings', () => {
+  const graph = createGraph();
+  const shape = {rowCount: 35, maximumClassCount: 2, methods: ['equal-interval'] as const};
+  const limits = {...graph.device.limits, maxStorageBufferBindingSize: 128};
+  expect(GPUClassBreaks.getExecutionPlan(shape, limits).feasible).toBe(false);
+  const partial = GPUClassBreaks.getExecutionPlan(
+    {...shape, bindings: [{name: 'parameters', byteLength: 44, bufferByteLength: 44}]},
+    limits
+  );
+  expect(partial.feasible).toBe(false);
+  expect(partial.constraints.find(constraint => constraint.name === 'values.0')).toMatchObject({
+    received: 140,
+    satisfied: false
+  });
+});
+
+it('R1 B5: a twelve-byte binding may use a thirteen-byte backing allocation', () => {
+  const graph = createGraph();
+  const buffer = graph.createTransientBuffer({
+    id: 'odd-capacity',
+    byteLength: 13,
+    usage: Buffer.STORAGE
+  });
+  const values = graph.createDataView(buffer, {format: 'float32', length: 3});
+  const shape = {
+    rowCount: 3,
+    maximumClassCount: 2,
+    methods: ['equal-interval'] as const,
+    bindings: [{name: 'values.0', byteLength: 12, bufferByteLength: 13}]
+  };
+  expect(GPUClassBreaks.getExecutionPlan(shape, graph.device.limits).feasible).toBe(true);
+  const contributor = new GPUClassBreaks(
+    createProps(graph, {values, mask: undefined, methods: ['equal-interval']}, 3, 2)
+  );
+  expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+});
+
+it('R1 B7: aligned mask binding diagnostics precede derived quantile scratch failures', () => {
+  const graph = createGraph();
+  Object.assign(graph.device.limits, {maxStorageBufferBindingSize: 1024});
+  const maskBuffer = graph.createTransientBuffer({
+    id: 'offset-mask',
+    byteLength: 1028,
+    usage: Buffer.STORAGE
+  });
+  const mask = graph.createDataView(maskBuffer, {format: 'uint32', length: 256, byteOffset: 4});
+  const contributor = new GPUClassBreaks(createProps(graph, {mask, methods: ['quantile']}, 256, 6));
+  expect(() => contributor.getCommandNodes(graph)).toThrow(
+    /mask chunk 0 needs 1028 bytes in one binding \(limit 1024\)/
+  );
+});
+
+it('R1 S3: opposite-sign midpoint sums before halving and no legacy overflow kernel executes', () => {
+  const graph = createGraph();
+  const kernels = getGPUCommandNodeKernelSources(
+    new GPUClassBreaks(createProps(graph, {methods: ['maximum-breaks']}, 2, 2)).getCommandNodes(
+      graph
+    )
+  );
+  const midpoint = kernels.find(({id}) => id.endsWith('-midpoints'))!;
+  // In units u=2^-149, (-3u+u)/2 = -u exactly; separate halving rounds -1.5u to -2u and u/2 to 0.
+  expect(midpoint.source).toContain('midpoint = (lower + upper) * 0.5');
+  const unit = 2 ** -149;
+  expect(Math.fround(Math.fround(-3 * unit + unit) * 0.5)).toBe(-unit);
+  expect(Math.fround(Math.fround(-3 * unit * 0.5) + Math.fround(unit * 0.5))).toBe(-2 * unit);
+  expect(kernels.some(({id}) => id.endsWith('maximum-breaks-finish'))).toBe(false);
+});
+
+it.each([
+  {rows: 256, feasible: true},
+  {rows: 257, feasible: false}
+])('R1 S4: dispatch dimension admission at $rows rows', ({rows, feasible}) => {
+  const graph = createGraph();
+  Object.assign(graph.device.limits, {maxComputeWorkgroupsPerDimension: 1});
+  const shape = {rowCount: rows, maximumClassCount: 2, methods: ['equal-interval'] as const};
+  expect(GPUClassBreaks.getExecutionPlan(shape, graph.device.limits).feasible).toBe(feasible);
+  const contributor = new GPUClassBreaks(
+    createProps(graph, {methods: ['equal-interval']}, rows, 2)
+  );
+  if (feasible) expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+  else expect(() => contributor.getCommandNodes(graph)).toThrow(/dispatch|workgroup/);
+});
+
+it('R1 B7: retains the chunk-proportional refinement dispatch binding diagnostic', () => {
+  const graph = createGraph();
+  Object.assign(graph.device.limits, {maxStorageBufferBindingSize: 1024});
+  const chunk = createTransientView(graph, 'repeated-row', 'float32', 1);
+  const values = createVectorView(
+    'forty-chunks',
+    'float32',
+    Array.from({length: 40}, () => chunk)
+  );
+  const contributor = new GPUClassBreaks(
+    createProps(
+      graph,
+      {values, mask: undefined, methods: ['natural-breaks'], naturalBreaksBinCount: 16},
+      40,
+      6
+    )
+  );
+  expect(() => contributor.getCommandNodes(graph)).toThrow(
+    /natural-breaks refinement dispatch scratch needs 1488 bytes in one binding/
+  );
+});
+
+it.each([
+  'approximate',
+  'exact',
+  'monotone'
+] as const)('R1 B7: retains bytes-in-one-binding for %s scratch', naturalBreaksMode => {
+  const graph = createGraph();
+  Object.assign(graph.device.limits, {
+    maxStorageBufferBindingSize: naturalBreaksMode === 'approximate' ? 65536 : 1024
+  });
+  const contributor = new GPUClassBreaks(
+    createProps(
+      graph,
+      {methods: ['natural-breaks'], naturalBreaksMode, naturalBreaksBinCount: 16},
+      100,
+      6
+    )
+  );
+  expect(() => contributor.getCommandNodes(graph)).toThrow(/bytes in one binding/);
 });

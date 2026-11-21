@@ -260,6 +260,9 @@ ${CELL_KEY_WGSL}`,
           props.source.status.overflow,
           ...(props.source.status.candidateOverflow ? [props.source.status.candidateOverflow] : [])
         ],
+        sumOverflowSources: props.source.status.sumOverflow
+          ? [props.source.status.sumOverflow]
+          : [],
         extraCounts: this.extraCounts
       })
     ];

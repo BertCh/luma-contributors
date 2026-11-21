@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:20.988Z",
-    "runId": "run-4ad6c72d",
+    "date": "2026-11-20T23:49:05.044Z",
+    "runId": "run-11e2b80d",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-4ad6c72d",
+    "runId": "run-11e2b80d",
     "rung": "graph",
     "bindings": {},
     "clauses": [],

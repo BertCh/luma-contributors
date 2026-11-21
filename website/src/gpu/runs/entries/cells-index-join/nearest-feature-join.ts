@@ -31,7 +31,7 @@ export default defineOperationRun({
     };
   },
   build(builder, inputs, values) {
-    const k = values.k;
+    const k = values.neighborCount;
     const rowCount = QUERY_COUNT + 1;
     const queries = builder.allocate('queries', 'float32x2', rowCount);
     const stations = builder.upload('stations', 'float32x2', inputs.stations);
@@ -48,7 +48,7 @@ export default defineOperationRun({
         queries: {kind: 'points', positions: queries.view},
         features: {kind: 'points', positions: stations.view},
         radius: radius.view,
-        k,
+        neighborCount: k,
         output: {
           neighborIds: neighborIds.view,
           neighborCounts: neighborCounts.view,
@@ -73,7 +73,7 @@ export default defineOperationRun({
       }
     };
   },
-  rebuildOn: ['k'],
+  rebuildOn: ['neighborCount'],
   // The pointer is one more query row and its distance to the nearest station is the search radius:
   // every query links to the stations within that reach, so the links grow as the pointer moves
   // away from the stations. The ring is that radius.
@@ -126,15 +126,20 @@ export default defineOperationRun({
       const links = peek(outputs.links);
       const distances = peek(outputs.neighborDistances);
       const counts = peek(outputs.neighborCounts);
-      const first = QUERY_COUNT * values.k;
+      const first = QUERY_COUNT * values.neighborCount;
       let linked = '…';
       // After a rebuild with another k the read-back still has the old size until the next run.
-      if (links && distances && counts && distances.length === (QUERY_COUNT + 1) * values.k) {
+      if (
+        links &&
+        distances &&
+        counts &&
+        distances.length === (QUERY_COUNT + 1) * values.neighborCount
+      ) {
         let queriesLinked = 0;
         for (let row = 0; row < QUERY_COUNT; row++) if (counts[row] > 0) queriesLinked++;
         linked = `${queriesLinked} of ${QUERY_COUNT} queries linked`;
         const found = counts[QUERY_COUNT];
-        for (let slot = 0; slot < Math.min(found, values.k); slot++) {
+        for (let slot = 0; slot < Math.min(found, values.neighborCount); slot++) {
           const row = (first + slot) * 4;
           const to = [links[row + 2], links[row + 3]] as const;
           glyphs.push({shape: 'line', from: inputs.pointer, to}, {shape: 'dot', at: to});
@@ -144,7 +149,7 @@ export default defineOperationRun({
         rerun: true,
         values: {radius},
         glyphs,
-        readout: `radius ${radius.toFixed(2)} · k ${values.k} · ${linked}`
+        readout: `radius ${radius.toFixed(2)} · k ${values.neighborCount} · ${linked}`
       };
     }
   },

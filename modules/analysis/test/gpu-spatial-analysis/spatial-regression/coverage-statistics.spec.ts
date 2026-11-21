@@ -100,7 +100,7 @@ for (const method of ['HC0', 'HC1', 'HAC'] as const) {
                 }
               }
             : {}),
-          output: {covariance: covariance.view, status: status.view}
+          output: {covariance: covariance.view, status: {code: status.view}}
         })
       );
       context.run();
@@ -140,7 +140,7 @@ for (const method of ['HC0', 'HC1', 'HAC'] as const) {
                   }
                 }
               : {}),
-            output: {covariance: covariance.view, status: robustStatus.view}
+            output: {covariance: covariance.view, status: {code: robustStatus.view}}
           },
           output: {table: table.view, summary: summary.view, status: {code: status.view}}
         })
@@ -198,7 +198,7 @@ for (const scenario of ['singular', 'nonfinite', 'invalid-kernel', 'insufficient
                 }
               }
             : {}),
-          output: {covariance: covariance.view, status: status.view}
+          output: {covariance: covariance.view, status: {code: status.view}}
         })
       );
       context.run();

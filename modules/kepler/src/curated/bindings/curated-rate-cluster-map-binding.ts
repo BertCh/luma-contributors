@@ -351,13 +351,14 @@ export function publishRateClusterMap(
   );
   // Could any area be flagged at this permutation count? The smallest pseudo p-value is
   // 1 / (permutations + 1) on CPU and twice that on GPU, so correction can be out of reach.
-  const minimumPValue = (gpu ? 2 : 1) / (permutations + 1);
+  const minimumPValue = gpu ? Math.fround(2 / (permutations + 1)) : 1 / (permutations + 1);
   const attainability = getSignificanceAttainability(
     multipleTesting,
     significance,
     testedRows.length,
     permutations,
-    gpu ? 2 : 1
+    gpu ? 2 : 1,
+    gpu ? 'gpu' : 'cpu-reference'
   );
   const isAttainable = testedRows.length === 0 || attainability.attainable;
   if (!isAttainable)
@@ -368,14 +369,15 @@ export function publishRateClusterMap(
       `With ${permutations} permutations the smallest pseudo p-value is ${minimumPValue.toPrecision(3)}, so ${multipleTesting} over ${testedRows.length} tested areas at ${significance} can never flag an area; about ${attainability.permutationsNeeded} permutations are needed${attainability.permutationsNeeded > MAXIMUM_PERMUTATIONS ? ` (more than the ${MAXIMUM_PERMUTATIONS} this binding accepts: use a less strict correction or a higher significance level)` : ''}.`
     );
   else if (
-    attainability.requiredTiedMinimumCount !== null &&
-    attainability.requiredTiedMinimumCount > 1
+    attainability.sufficientMinimumPValueTieCount !== null &&
+    Number.isFinite(attainability.sufficientMinimumPValueTieCount) &&
+    attainability.sufficientMinimumPValueTieCount > 1
   )
     addCatalogDiagnostic(
       diagnostics,
       'significance-needs-ties',
       'info',
-      `With ${permutations} permutations Benjamini-Hochberg flags an area only if at least ${attainability.requiredTiedMinimumCount} of the ${testedRows.length} tested areas reach the smallest possible pseudo p-value ${minimumPValue.toPrecision(3)}, or the p-values of the strongest areas are otherwise small enough.`
+      `Benjamini-Hochberg selects the largest rank k satisfying p_(k) <= k * alpha / m and rejects ranks 1 through k. With ${permutations} permutations a sufficient scenario is at least ${attainability.sufficientMinimumPValueTieCount} of the ${testedRows.length} tested areas tied at the smallest possible pseudo p-value ${minimumPValue.toPrecision(3)}; other ranks can allow rejection without floor ties, depending on the cutoff.`
     );
   const countClass = (label: string) => clusters.filter(cluster => cluster === label).length;
   return {
@@ -397,6 +399,7 @@ export function publishRateClusterMap(
       multipleTesting,
       rateAnalysis: 'smoothed',
       permutationAlternative: gpu ? 'two-sided-doubled-tail' : 'absolute-statistic',
+      pValueConstruction: gpu ? 'doubled-minimum-tail' : 'upper-tail-count',
       localStatisticScaling: gpu ? 'sample-variance' : 'population-variance',
       spatialLagScaling: gpu ? 'centered-rate' : 'standardized-rate',
       minimumPseudoPValue: minimumPValue,
@@ -466,7 +469,7 @@ export const CURATED_RATE_CLUSTER_MAP_BINDING: CatalogOperationBinding = {
     'Neighbours are areas sharing a vertex (queen) or an edge (rook) among the usable areas, with weights standardised by row; an area with no neighbour is an island: it is not tested, is left out of the corrected family and is counted in a diagnostic.',
     'CPU reference p-value definition: for each area the area keeps its own standardised rate and draws as many rates as it has neighbours from the other areas without replacement; the pseudo p-value is (m + 1) / (permutations + 1), with m the draws whose absolute statistic is at least the observed absolute statistic. This absolute-value form is not the contributor GPULocalPermutationTest, which doubles the smaller tail: The definitions can differ materially on skewed data; either may give the smaller p-value.',
     'With distinct anchors the permutation stream does not depend on input row order: each area draws from a generator seeded by the seed and its rank when areas are sorted by anchor (centroid in the local frame) x, then y. Areas whose anchors coincide exactly keep their input order, which can affect inference throughout the dataset because their values enter other areas’ permutation pools; their count is in the summary key tiedAnchorCount and a diagnostic.',
-    'The correction runs over the tested areas only and the cluster class is kept when the corrected p-value is at most the significance level. On the CPU reference with 999 permutations the smallest pseudo p-value is 0.001: Bonferroni and Holm over more than 50 tested areas, and Sidak over more than 51 tested areas, at 0.05 can never flag an area, and Benjamini-Hochberg needs enough areas at the minimum; a diagnostic and the summary keys significanceNotAttainable and permutationsNeeded say when no area could be flagged.',
+    'The correction runs over the tested areas only and the cluster class is kept when the corrected p-value is at most the significance level. On the CPU reference with 999 permutations the smallest pseudo p-value is 0.001: Bonferroni and Holm over more than 50 tested areas, and Sidak over more than 51 tested areas, at 0.05 can never flag an area. Benjamini-Hochberg selects the largest rank k with p_(k) <= k * alpha / m and rejects ranks 1 through k; other ranks can allow rejection without floor ties, depending on the cutoff. The helper sufficientMinimumPValueTieCount verifies a sufficient floor-tie scenario in the selected engine arithmetic. The diagnostic and summary keys significanceNotAttainable and permutationsNeeded say when no area could be flagged.',
     'The GPU path dispatches addRateClusterMapRecipe with analyze=smoothed, clamped prior variance, row-standardized weights and two-sided (doubled-smaller-tail) permutation inference. CPU reference inference retains its absolute-statistic definition; selecting an engine can change p-values and classes. GPU local I uses the recipe sample-variance convention and its spatial_lag is in centered rate units; the CPU statistic uses population variance and a standardized-rate spatial_lag. Both preserve the class names and input identities.',
     'The GPU significance gate uses the requested significance rounded once to float32, exactly as packed into the recipe. The run summary records requestedSignificance and effectiveSignificance; diagnostics and published classes use effectiveSignificance. The CPU reference retains the requested binary64 threshold.',
     'GPU contiguity uses exact float32 local-frame vertex or edge keys. CPU tolerance-based contiguity can differ on nearly coincident vertices. GPU topology or permutation overflow rejects publication and uses the catalog fallback, with a diagnostic.',

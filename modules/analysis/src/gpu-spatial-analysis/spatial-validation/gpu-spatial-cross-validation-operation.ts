@@ -7,7 +7,11 @@ import {
   GPUSpatialCrossValidation,
   type GPUSpatialCrossValidationProps
 } from './gpu-spatial-cross-validation';
-import type {GPUSpatialValidationDesign} from './spatial-validation-design';
+import {
+  snapshotSpatialCrossValidationProps,
+  validateSpatialValidationDesignMode,
+  type GPUSpatialValidationDesign
+} from './spatial-validation-design';
 
 type OperationDesign<Design = GPUSpatialValidationDesign> =
   Design extends GPUSpatialValidationDesign
@@ -36,6 +40,12 @@ export type SpatialCrossValidationOperationProps = Pick<
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUSpatialCrossValidationOperation extends GPUContributorOperation {
   constructor(props: SpatialCrossValidationOperationProps) {
+    props = snapshotSpatialCrossValidationProps(props);
+    if (props.design)
+      validateSpatialValidationDesignMode(
+        props.id ?? 'spatial-cross-validation',
+        props.design.mode
+      );
     const {design, rowCount, foldCount, output} = props;
     super({
       id: props.id ?? 'spatial-cross-validation',

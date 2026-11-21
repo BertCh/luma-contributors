@@ -10,7 +10,7 @@ import {
   getRegressionTileLayout,
   getRowTileSumNodes
 } from '../../../src/gpu-spatial-analysis/spatial-regression/regression-row-tiles';
-import {getKahanSumWGSL} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-maximum-likelihood-wgsl';
+import {getStridedPairwiseSumWGSL} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-maximum-likelihood-wgsl';
 import {createRegressionTestContext} from './math-review-regression-test-utils';
 
 /**
@@ -89,7 +89,7 @@ for (const [name, values, exact, tolerance] of [
             {name: 'partial', view: input('float32', values), type: 'f32', access: 'read'},
             {name: 'total', view: total.view, type: 'f32', access: 'read_write'}
           ],
-          body: `${getKahanSumWGSL('partial', 'index', '1u', `${values.length}u`)}
+          body: `${getStridedPairwiseSumWGSL('partial', 'index', '1u', `${values.length}u`)}
   total[totalOffset] = sum;`
         })
       );

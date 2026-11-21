@@ -79,7 +79,7 @@ it('both operations support omitted mask and validity ports', async () => {
   requireTestDevice(device);
   const props: PointToCellOperationProps = {
     family: 'h3',
-    precision: 'extended',
+    precision: 'double-single',
     resolution: 12,
     rowCount: 3,
     positions: 'positions',
@@ -146,7 +146,7 @@ it('the H3 operations check the formerly omitted resolution-zero boundary row', 
   requireTestDevice(device);
   const props: PointToCellOperationProps = {
     family: 'h3',
-    precision: 'extended',
+    precision: 'double-single',
     resolution: 0,
     rowCount: 1,
     positions: 'positions',

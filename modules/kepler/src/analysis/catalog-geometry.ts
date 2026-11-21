@@ -9,9 +9,11 @@ import {
   addCatalogDiagnostic,
   appendCatalogRow,
   getFeatureIdentity,
+  getCatalogFloat32CoordinateDiagnostic,
   getLineParts,
   getPointPositions,
   getPolygonParts,
+  validateCatalogGeometryPositions,
   makeCatalogGeometryText,
   makeCatalogTable,
   measureDistance,
@@ -100,10 +102,12 @@ export function runGeometryValidity(polygons: CatalogFeatureCollection): Catalog
   polygons.features.forEach((feature, sourceIndex) => {
     const parts = getPolygonParts(feature.geometry);
     const errors = new Set<string>();
+    const sourceDiagnostic = getCatalogFloat32CoordinateDiagnostic(feature.geometry);
+    if (sourceDiagnostic) errors.add(sourceDiagnostic);
     const warnings = new Set<string>();
     let skipped = false;
     if (!parts.length) errors.add('not-polygon');
-    for (const rings of parts) {
+    for (const rings of sourceDiagnostic ? [] : parts) {
       if (rings.reduce((count, ring) => count + ring.length, 0) > VALIDITY_VERTEX_LIMIT) {
         skipped = true;
         continue;
@@ -241,13 +245,13 @@ export function runGeometryMeasures(
         const ringArea = Math.abs(measureRingSignedArea(ring, coordinateSystem));
         area += ringIndex === 0 ? ringArea : -ringArea;
         length += measurePathLength(ring, coordinateSystem);
-        all.push(...ring);
+        for (const position of ring) all.push(position);
       });
     for (const line of lines) {
       length += measurePathLength(line, coordinateSystem);
-      all.push(...line);
+      for (const position of line) all.push(position);
     }
-    all.push(...points);
+    for (const position of points) all.push(position);
     if (!all.length) emptyCount++;
     const centroid = all.length ? getCentroid(all) : [null, null];
     appendCatalogRow(table, {
@@ -257,10 +261,18 @@ export function runGeometryMeasures(
       area: polygons.length ? Math.max(0, area) : null,
       length: polygons.length || lines.length ? length : null,
       vertex_count: all.length,
-      minimum_x: all.length ? Math.min(...all.map(position => position[0])) : null,
-      minimum_y: all.length ? Math.min(...all.map(position => position[1])) : null,
-      maximum_x: all.length ? Math.max(...all.map(position => position[0])) : null,
-      maximum_y: all.length ? Math.max(...all.map(position => position[1])) : null,
+      minimum_x: all.length
+        ? all.reduce((bound, position) => Math.min(bound, position[0]), Infinity)
+        : null,
+      minimum_y: all.length
+        ? all.reduce((bound, position) => Math.min(bound, position[1]), Infinity)
+        : null,
+      maximum_x: all.length
+        ? all.reduce((bound, position) => Math.max(bound, position[0]), -Infinity)
+        : null,
+      maximum_y: all.length
+        ? all.reduce((bound, position) => Math.max(bound, position[1]), -Infinity)
+        : null,
       centroid_x: centroid[0],
       centroid_y: centroid[1],
       geometry: feature.geometry ? JSON.stringify(feature.geometry) : null
@@ -511,6 +523,47 @@ function isRingConvex(ring: readonly CatalogPosition[]): boolean {
   return true;
 }
 
+/** Validates the whole operand before either runner chooses a shell. */
+export function validateCatalogClipOperand(
+  collection: CatalogFeatureCollection
+): CatalogPosition[] {
+  const invalid = () => {
+    throw new Error(
+      'geometry-convex-clip: clip requires one polygon, one ring and a closed simple convex shell; remove holes or use a general polygon overlay'
+    );
+  };
+  const geometry = collection.features[0]?.geometry;
+  validateCatalogGeometryPositions(geometry ?? null, 'geometry-convex-clip');
+  const polygons = collection.features.length === 1 ? getPolygonParts(geometry ?? null) : [];
+  const ring = polygons[0]?.[0]?.filter(
+    (position, index, positions) =>
+      index === 0 ||
+      position[0] !== positions[index - 1][0] ||
+      position[1] !== positions[index - 1][1]
+  );
+  if (polygons.length !== 1 || polygons[0].length !== 1 || !ring || ring.length < 4)
+    return invalid();
+  if (
+    ring.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y)) ||
+    ring[0][0] !== ring[ring.length - 1][0] ||
+    ring[0][1] !== ring[ring.length - 1][1] ||
+    measureRingSignedArea(ring, 'planar') === 0 ||
+    !isRingConvex(ring)
+  )
+    return invalid();
+  const count = ring.length - 1;
+  for (let first = 0; first < count; first++) {
+    if (ring[first][0] === ring[first + 1][0] && ring[first][1] === ring[first + 1][1])
+      return invalid();
+    for (let second = first + 2; second < count; second++) {
+      if (first === 0 && second === count - 1) continue;
+      if (doSegmentsTouch(ring[first], ring[first + 1], ring[second], ring[second + 1]))
+        return invalid();
+    }
+  }
+  return ring;
+}
+
 function clipRingByConvex(
   ring: readonly CatalogPosition[],
   clip: readonly CatalogPosition[]
@@ -582,15 +635,7 @@ export function runConvexClip(
   clipCollection: CatalogFeatureCollection
 ): CatalogGeometryResult {
   const diagnostics: CatalogDiagnostic[] = [];
-  const clipRing = getPolygonParts(clipCollection.features[0]?.geometry ?? null)[0]?.[0];
-  // Clip input must be one polygon with a convex shell; holes in it are ignored.
-  if (
-    clipCollection.features.length !== 1 ||
-    !clipRing ||
-    clipRing.length < 4 ||
-    !isRingConvex(clipRing)
-  )
-    throw new Error('Clip polygon invalid');
+  const clipRing = validateCatalogClipOperand(clipCollection);
   const clip = (
     measureRingSignedArea(clipRing, 'planar') < 0 ? [...clipRing].reverse() : clipRing
   ).slice(0, -1);

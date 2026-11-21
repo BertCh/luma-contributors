@@ -58,6 +58,10 @@ it('WP4 round3 fixture provenance, versions and byte limits', () => {
 for (const encoded of streamlineCases) {
   it(`Streamlines CPU diagnostic versus independent ODE/spacing (not GPU evidence): ${encoded.name}`, async () => {
     const scene = await decodeStreamlineCase(encoded);
+    const parameters = getGPUStreamlinesParameterValues(scene.settings);
+    expect(Array.from(parameters.subarray(0, 8))).toEqual(
+      [...encoded.settings.fieldExtent, ...encoded.settings.gridExtent].map(Math.fround)
+    );
     const result = generateStreamlinesOnCPU(
       {
         width: scene.fieldWidth,
@@ -65,7 +69,7 @@ for (const encoded of streamlineCases) {
         velocities: new Float32Array(scene.field)
       },
       scene.config,
-      getGPUStreamlinesParameterValues(scene.settings),
+      parameters,
       getGPUStreamlinesUint32ParameterValues(scene.settings)
     );
     const compare = (

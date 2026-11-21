@@ -36,8 +36,7 @@ it('point process kernels declare parseable GPU stages within eight storage bind
       coreDistances: view('float32', 8),
       reachability: view('float32', 8),
       predecessors: view('uint32', 8),
-      labels: view('uint32', 8),
-      status: view('uint32', 3)
+      labels: view('uint32', 8)
     }
   });
   const envelope = new GPUPointPatternEnvelope({
@@ -81,7 +80,7 @@ it('point process kernels declare parseable GPU stages within eight storage bind
     output: {
       intensity: view('float32', 4),
       kernelMass: view('float32', 3),
-      status: view('uint32', 4)
+      validity: view('uint32', 4)
     }
   });
   const studyWindow = new GPUStudyWindowPreparation({

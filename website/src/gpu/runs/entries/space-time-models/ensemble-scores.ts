@@ -75,7 +75,7 @@ export default defineOperationRun({
         observations: builder.upload('observations', 'float32', inputs.residuals).view,
         memberCount,
         dimension: inputs.count,
-        fair: values.fair === 1,
+        estimator: values.fair === 1 ? 'fair' : 'empirical',
         output: {crps: crps.view}
       })
     );

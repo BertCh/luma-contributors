@@ -29,6 +29,14 @@ const COLOR_SOURCE = [0.3, 0.7, 1] as const;
 const COLOR_ALIGNED = [1, 0.6, 0.2] as const;
 // The misalignment's shift is along this unit direction; the `shift` parameter is its length.
 const SHIFT_DIRECTION = [0.832, -0.555] as const;
+// Status codes 2 to 4 (insufficient matches, degenerate, eigensolve exhausted) leave no usable
+// transform, so the aligned cloud is hidden. Code 1 (iteration limit) still holds the last iterate,
+// which is drawn. As bits, 2 | 4 matches exactly the codes 2, 3 and 4.
+const UNUSABLE_STATUS_BITS = 6;
+
+function isAlignmentHidden(status: number | undefined): boolean {
+  return status === undefined || (status & UNUSABLE_STATUS_BITS) !== 0;
+}
 
 function createInputs({
   random,
@@ -67,7 +75,7 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
         source: source.view,
         target: target.view,
         maximumDistance: values.maximumDistance,
-        iterations: values.iterations,
+        maximumIterations: values.iterations,
         output: {
           transform: transform.view,
           history: history.view,
@@ -88,7 +96,7 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
           aligned,
           status,
           POINT_COUNT,
-          {components: 2, statusIndex: 0}
+          {components: 2, statusIndex: 0, invalidBits: UNUSABLE_STATUS_BITS}
         ),
         status,
         rmse: addFloatCopy(builder, 'rmse', history, values.iterations, {componentStart: 1})
@@ -179,7 +187,7 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
           {shape: 'crosshair', at: [centerX, 0.5], size: 6},
           {shape: 'polyline', points: arc}
         ],
-        readout: `${getPointCloudICPSupportText(status)}${status === 0 ? '' : ' (alignment hidden)'} · rotation ${values.rotation}° · shift ${values.shift.toFixed(3)}${
+        readout: `${getPointCloudICPSupportText(status)}${isAlignmentHidden(status) ? ' (alignment hidden)' : ''} · rotation ${values.rotation}° · shift ${values.shift.toFixed(3)}${
           history
             ? ` · RMSE ${history[0].toFixed(3)} -> ${history[history.length - 1].toFixed(3)}`
             : ''
@@ -248,7 +256,7 @@ export default defineOperationRun<Inputs, Outputs, Extra>({
               {label: 'target', swatch: COLOR_TARGET},
               {label: 'source before ICP', swatch: COLOR_SOURCE},
               {
-                label: `source after ICP: ${getPointCloudICPSupportText(extra?.status)}${extra?.status === 0 ? '' : ' (hidden)'}`,
+                label: `source after ICP: ${getPointCloudICPSupportText(extra?.status)}${isAlignmentHidden(extra?.status) ? ' (hidden)' : ''}`,
                 swatch: COLOR_ALIGNED
               }
             ]
@@ -267,5 +275,5 @@ function identityTransform(builder: Parameters<typeof addTransformedFootprint>[0
   );
 }
 
-// Bound to GPUPointCloudICP's `iterations` and `maximumDistance` (compile-time), and the rotation
+// Bound to GPUPointCloudICP's `maximumIterations` and `maximumDistance` (compile-time), and the rotation
 // and shift that misalign the source cloud.

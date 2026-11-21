@@ -4,16 +4,31 @@
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
-import {
-  validateCapacity,
-  validateRequirement
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
-import {getMultipleTestingAdjustedPValues} from './gpu-multiple-testing-adjustment';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
+import {
+  getMultipleTestingAdjustedPValues,
+  resolveGPUMultipleTestingMethod
+} from './gpu-multiple-testing-adjustment';
 import type {MultipleTestingAdjustmentOperationProps} from './gpu-multiple-testing-adjustment-operation';
+import {
+  MULTIPLE_TESTING_COUNT_OUTPUT_NAMES,
+  validateMultipleTestingCountPorts
+} from './multiple-testing-counts';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
+/** Scalar float32 adjusted rows and independent one-word uint32 family counts. */
+export type CPUMultipleTestingAdjustmentResult = {
+  adjustedPValues: Float32Array;
+  /** Number of finite p-values in [0, 1], before padding. */
+  finiteTestCount: Uint32Array;
+  /** max(finiteTestCount, minimumFamilySize), the adjustment denominator. */
+  effectiveFamilySize: Uint32Array;
+};
 
 /**
- * Calls the public float64 adjustment and rounds only the output. testedCount is the family size,
+ * Calls the public float64 adjustment and rounds only the output. effectiveFamilySize is the family size,
  * including minimumFamilySize, even for method none.
  *
  * What differs from the GPU contributor:
@@ -28,7 +43,7 @@ export function computeMultipleTestingAdjustmentOnCPU(
   pValues: Float32Array,
   method: GPUMultipleTestingMethod,
   minimumFamilySize = 0
-): {adjustedPValues: Float32Array; testedCount: Uint32Array} {
+): CPUMultipleTestingAdjustmentResult {
   validateCapacity(
     'computeMultipleTestingAdjustmentOnCPU',
     'minimumFamilySize',
@@ -44,30 +59,58 @@ export function computeMultipleTestingAdjustmentOnCPU(
   const familySize = Math.max(tested, minimumFamilySize);
   const adjusted = getMultipleTestingAdjustedPValues(pValues, method, minimumFamilySize);
   const adjustedPValues = Float32Array.from(adjusted, value => (value === 0 ? 0 : value));
-  return {adjustedPValues, testedCount: Uint32Array.of(familySize)};
+  return {
+    adjustedPValues,
+    finiteTestCount: Uint32Array.of(tested),
+    effectiveFamilySize: Uint32Array.of(familySize)
+  };
 }
 
 /** CPU twin. The GPU sort row-count cap is dropped; uint32 output sizes remain. */
 export class CPUMultipleTestingAdjustmentOperation extends GPUCPUOperation {
   constructor(props: MultipleTestingAdjustmentOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'pValues',
+      'rowCount',
+      'method',
+      'minimumFamilySize',
+      'output'
+    ]);
     const id = props.id ?? 'multiple-testing-adjustment';
+    validateMultipleTestingCountPorts(id, props.output);
+    props = Object.freeze({
+      ...props,
+      output: snapshotConstructionFields(props.output, [
+        'adjustedPValues',
+        ...MULTIPLE_TESTING_COUNT_OUTPUT_NAMES
+      ])
+    });
+    const countOutputs = MULTIPLE_TESTING_COUNT_OUTPUT_NAMES.flatMap(name =>
+      props.output[name] !== undefined ? [[name, props.output[name]!] as const] : []
+    );
+    validateOperationGraphNames(
+      id,
+      {pValues: props.pValues},
+      {
+        adjustedPValues: props.output.adjustedPValues,
+        ...Object.fromEntries(countOutputs)
+      }
+    );
     validateCapacity(id, 'rowCount', props.rowCount);
     validateCapacity(id, 'minimumFamilySize', props.minimumFamilySize ?? 0, 0);
-    validateRequirement(
-      id,
-      ['none', 'bonferroni', 'holm', 'benjamini-hochberg', 'benjamini-yekutieli'].includes(
-        props.method
-      ),
-      'method must name a supported multiple-testing method'
-    );
+    const method = resolveGPUMultipleTestingMethod(id, props.method, true);
     super({
       id,
       inputs: {pValues: props.pValues},
       outputs: {
         [props.output.adjustedPValues]: gpuGraph.vector('float32', {length: props.rowCount}),
-        ...(props.output.testedCount
-          ? {[props.output.testedCount]: gpuGraph.vector('uint32', {length: 1})}
-          : {})
+        ...Object.fromEntries(
+          countOutputs.map(([, destination]) => [
+            destination,
+            gpuGraph.vector('uint32', {length: 1})
+          ])
+        )
       },
       execute({inputs}) {
         const pValues = getCPUOperationFloat32Rows(id, inputs, 'pValues');
@@ -76,12 +119,14 @@ export class CPUMultipleTestingAdjustmentOperation extends GPUCPUOperation {
         }
         const result = computeMultipleTestingAdjustmentOnCPU(
           pValues,
-          props.method,
+          method,
           props.minimumFamilySize
         );
         return {
           [props.output.adjustedPValues]: result.adjustedPValues,
-          ...(props.output.testedCount ? {[props.output.testedCount]: result.testedCount} : {})
+          ...Object.fromEntries(
+            countOutputs.map(([name, destination]) => [destination, result[name]])
+          )
         };
       }
     });

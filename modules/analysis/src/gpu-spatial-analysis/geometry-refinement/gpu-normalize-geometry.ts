@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRefinementOutputLength} from './refinement-output-validation';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
 import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
@@ -110,6 +111,7 @@ export class GPUNormalizeGeometry implements GPUCommandNodeProducer {
   readonly props: GPUNormalizeGeometryProps;
   constructor(props: GPUNormalizeGeometryProps) {
     this.id = props.id ?? 'normalize-geometry';
+    props = {...props, output: {...props.output}};
     this.props = props;
     validateCapacity(
       this.id,
@@ -118,18 +120,51 @@ export class GPUNormalizeGeometry implements GPUCommandNodeProducer {
       1,
       MAXIMUM_NESTING_DEPTH
     );
-    validateSinglePackedView(props.positions, ['float32x2'], this.id);
-    validateSinglePackedView(props.nodes, ['uint32x4'], this.id);
-    validateSinglePackedView(props.children, ['uint32'], this.id);
-    validateSinglePackedView(props.output.positions, ['float32x2'], this.id);
-    validateSinglePackedView(props.output.children, ['uint32'], this.id);
-    validateSinglePackedView(props.output.status, ['uint32'], this.id);
-    if (
-      props.positions.length !== props.output.positions.length ||
-      props.children.length !== props.output.children.length ||
-      props.nodes.length !== props.output.status.length
-    )
-      throw new Error('Canonical tree output size mismatch');
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`, {
+      id: this.id,
+      contributor: 'GPUNormalizeGeometry'
+    });
+    validateSinglePackedView(props.nodes, ['uint32x4'], `${this.id} nodes`, {
+      id: this.id,
+      contributor: 'GPUNormalizeGeometry'
+    });
+    validateSinglePackedView(props.children, ['uint32'], `${this.id} children`, {
+      id: this.id,
+      contributor: 'GPUNormalizeGeometry'
+    });
+    validateSinglePackedView(props.output.positions, ['float32x2'], `${this.id} output.positions`, {
+      id: this.id,
+      contributor: 'GPUNormalizeGeometry'
+    });
+    validateSinglePackedView(props.output.children, ['uint32'], `${this.id} output.children`, {
+      id: this.id,
+      contributor: 'GPUNormalizeGeometry'
+    });
+    validateSinglePackedView(props.output.status, ['uint32'], `${this.id} output.status`, {
+      id: this.id,
+      contributor: 'GPUNormalizeGeometry'
+    });
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPUNormalizeGeometry'},
+      'output.positions',
+      props.output.positions,
+      props.positions.length,
+      'positions.length'
+    );
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPUNormalizeGeometry'},
+      'output.children',
+      props.output.children,
+      props.children.length,
+      'children.length'
+    );
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPUNormalizeGeometry'},
+      'output.status',
+      props.output.status,
+      props.nodes.length,
+      'nodes.length'
+    );
     validateOutlineOutputPasses(this.id, props.output, [
       ['positions', 'status'],
       ['children', 'status']

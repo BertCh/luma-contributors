@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeL…",
   "description": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths. rows: 9. values read back from the GPU run. input elevation: 9 cells.",
-  "llms": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths\n\n- rows: 9\n- input elevation: 9 cells\n- input flowDirections: 9 cells\n- Coordinate model unknown: drawn as planar x, y.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-flow-fractions: elevation, flowDirections → edgeLengths\n\n- rows: 9\n- input elevation: 9 cells\n- input flowDirections: 9 cells\n- Coordinate model unknown: drawn as planar x, y.\n- cell size 1 m\n- cell size 1 m\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "9"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:15.459Z",
-    "runId": "run-641fc3db",
+    "date": "2026-11-20T23:51:48.365Z",
+    "runId": "run-5ed0d08b",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-641fc3db",
+    "runId": "run-5ed0d08b",
     "rung": "result",
     "bindings": {},
     "clauses": [],

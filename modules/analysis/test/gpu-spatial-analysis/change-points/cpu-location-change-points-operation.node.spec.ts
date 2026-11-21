@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {AnalysisValidationError} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createOperationTestViewGetter} from '../../utils/statistics-dynamics-operation-test-utils';
@@ -137,7 +138,7 @@ it('keeps the unsplit residual when the change penalty is much larger', () => {
   expect(result.optimalCost[0]).toBe(0.5);
 });
 
-it('delegates GPU limits to contributor construction and drops that GPU-only cap on CPU', () => {
+it('enforces GPU operation limits at construction and retains the larger CPU shape', () => {
   const device = createNullWebGPUDevice();
   try {
     const graph = new GPUCommandGraph(device);
@@ -260,4 +261,21 @@ it('checks arrays and both operation constructors', () => {
   expect(() => new CPULocationChangePointsOperation({...PROPS, sliceCount: 0})).toThrow(
     /^changes-check.*sliceCount/
   );
+});
+
+it('W2-15 validates both operation forms at construction with the caller ID', () => {
+  for (const Operation of [GPULocationChangePointsOperation, CPULocationChangePointsOperation]) {
+    expect(() => new Operation({...PROPS, id: 'my-change', cost: 'bogus' as 'mean'})).toThrow(
+      AnalysisValidationError
+    );
+    expect(() => new Operation({...PROPS, id: 'my-change', cost: 'bogus' as 'mean'})).toThrow(
+      /^my-change.*cost.*mean.*variance.*poisson.*slope.*bogus/
+    );
+  }
+  expect(() =>
+    computeLocationChangePointsOnCPU(new Float32Array(7), Float32Array.of(1, 2), {
+      ...PROPS,
+      id: 'my-cpu-change'
+    })
+  ).toThrow(/^my-cpu-change.*values.*8.*7/);
 });

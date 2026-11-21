@@ -11,7 +11,7 @@ import {
   AnalysisRuntime,
   type PointWeightsSettings
 } from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 
 const pointSettings: PointWeightsSettings = {
   longitudeColumn: 'longitude',
@@ -202,6 +202,7 @@ test('point spatial rates preserve source nearest neighbors through filtering an
     await render();
     expect(analysis.summary?.operation).toBe('quantile-lisa-points');
     expect(analysis.summary?.quantileLisa).toEqual({
+      alternative: 'geoda-legacy',
       boundaries: [50, Infinity],
       validCount: 4,
       islandCount: 0,

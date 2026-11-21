@@ -154,6 +154,74 @@ it('scan clears stale clusters across valid, overflowing and valid encodings', a
   }
 });
 
+it('Poisson scan reports a negative or non-finite baseline cell as invalid (PTS-107)', async () => {
+  // Before the fix the normaliser masked the sign bit and took NaN or infinity as the largest
+  // baseline: [1, 1, NaN, 1] normalised to [0, 0, 1.5, 0], -1 to 1, and invalidCount stayed 0.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new GraphRig(device);
+  const summary = rig.output('uint32', 4);
+  const statistics = rig.output('float32', 2);
+  const clusters = rig.output('float32', 8);
+  const invalid = rig.output('uint32', 1);
+  const baseline = rig.output('float32', 2);
+  baseline.buffer.write(Float32Array.of(1, 1));
+  try {
+    rig.run(
+      new GPUSpatialScanStatistic({
+        model: 'poisson',
+        positions: rig.input(Float32Array.of(0, 0, 1, 0), 'float32x2', 2),
+        cases: rig.input(Uint32Array.of(10, 0), 'uint32'),
+        baseline: baseline.view,
+        timeBuckets: 1,
+        maximumWindowZones: 2,
+        maximumPermutations: 1,
+        maximumClusters: 1,
+        parameters: rig.input(
+          getGPUSpatialScanStatisticParameterValues({
+            seed: 1,
+            permutationCount: 1,
+            maximumPopulationFraction: 0.5,
+            maximumTimeBuckets: 1
+          }),
+          'uint32'
+        ),
+        output: {
+          summary: summary.view,
+          clusterIndices: rig.output('uint32', 4).view,
+          clusterStatistics: clusters.view,
+          statistics: statistics.view,
+          status: {invalidCount: invalid.view}
+        }
+      })
+    );
+    expect(await invalid.readUint32()).toEqual([0]);
+    expect((await statistics.readFloat32())[0]).toBeCloseTo(10 * Math.log(2), 5);
+    for (const values of [
+      [Number.NaN, 1],
+      [1, Number.NaN],
+      [Number.POSITIVE_INFINITY, 1],
+      [1, Number.NEGATIVE_INFINITY],
+      [-1, 1],
+      [1, -1e-30]
+    ]) {
+      baseline.buffer.write(Float32Array.from(values));
+      rig.resubmit();
+      expect(await invalid.readUint32(), `baseline ${values}`).toEqual([1]);
+      expect((await summary.readUint32())[0], `baseline ${values}`).toBe(0);
+      for (const value of await statistics.readFloat32()) expect(value).toBeNaN();
+    }
+    // A valid frame afterwards is valid again: the invalid word is cleared every frame.
+    baseline.buffer.write(Float32Array.of(1, 1));
+    rig.resubmit();
+    expect(await invalid.readUint32()).toEqual([0]);
+    expect((await summary.readUint32())[0]).toBe(1);
+    expect((await statistics.readFloat32())[0]).toBeCloseTo(10 * Math.log(2), 5);
+  } finally {
+    rig.destroy();
+  }
+});
+
 it('Poisson binary baseline scale admits an exact half-population boundary', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

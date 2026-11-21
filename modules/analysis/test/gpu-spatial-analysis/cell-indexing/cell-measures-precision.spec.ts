@@ -80,7 +80,7 @@ it('H3 fp64 subtracts outside fan triangles at concave face-distortion vertices'
     operations: [
       new GPUCellMeasuresOperation({
         family: 'h3',
-        precision: 'fp64',
+        precision: 'double-single',
         rowCount: 1,
         cells: 'cells',
         output: {areas: 'areas', edgeCounts: 'edgeCounts'}
@@ -106,7 +106,7 @@ for (const family of ['h3', 's2', 'quadbin'] as const)
         for (const maximumEdgeCount of [family === 'h3' ? 6 : 4, 10]) {
           const props: CellMeasuresOperationProps = {
             family,
-            precision: 'fp64',
+            precision: 'double-single',
             cells: 'cells',
             rowCount: keys.length,
             wordOrder,
@@ -165,7 +165,7 @@ it('unit-sphere S2 fp64 preserves valid/invalid statuses and agrees with the bin
         },
         createContributor: getView =>
           new GPUS2CellMeasures({
-            precision: 'fp64',
+            precision: 'double-single',
             cells: getView<'uint32x2'>('cells'),
             output: {
               measures: getView<'float32x2'>('measures'),

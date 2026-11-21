@@ -79,6 +79,16 @@ it.each([
   try {
     const graph = new GPUCommandGraph(device);
     const width = limit === 'counter' ? 0x40000000 : limit === 'raster' ? 33554433 : 2;
+    if (limit === 'counter') {
+      // Isolate the uint32 side-counter bound from device binding limits. Four sides per cell
+      // permit floor((2^32-1)/4)=1073741823 cells; the fixture has one more cell. Its label
+      // binding is 2^30*4=2^32 bytes. These transient handles describe storage only; rejection
+      // occurs before graph compilation/allocation, so this does not allocate a 4 GiB buffer.
+      Object.assign(device.limits, {
+        maxStorageBufferBindingSize: 2 ** 32,
+        maxBufferSize: 2 ** 32
+      });
+    }
     const patchCount = limit === 'patches' ? 8388609 : 1;
     const expected =
       limit === 'counter'

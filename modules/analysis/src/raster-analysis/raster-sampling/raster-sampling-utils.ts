@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphVectorView, validatePackedView, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  type GraphVectorView,
+  validatePackedView,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
+import {isGraphVectorView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRasterGrid} from '../raster-band-utils';
@@ -33,7 +38,7 @@ export function validateRasterSamplingView(
   if (!view) {
     throw new Error(`${id} needs ${name}`);
   }
-  if (view instanceof GraphVectorView) {
+  if (isGraphVectorView(view)) {
     throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
   }
   validatePackedView(view, [format], `${id} ${name}`);
@@ -59,6 +64,23 @@ export function validateRasterDescription(
   return pixelCount;
 }
 
+/** Canonical signed-step cell ownership, corrected after reciprocal rounding. @internal */
+export const RASTER_CELL_INDEX_WGSL = /* wgsl */ `
+fn getRasterCellIndex(position: f32, origin: f32, step: f32, inverseStep: f32) -> f32 {
+  let offset = position - origin;
+  var cell = floor(offset * inverseStep);
+  let firstEdge = origin + cell * step;
+  let nextEdge = origin + (cell + 1.0) * step;
+  if (step > 0.0) {
+    if (position < firstEdge) { cell -= 1.0; }
+    else if (position >= nextEdge) { cell += 1.0; }
+  } else {
+    if (position > firstEdge) { cell -= 1.0; }
+    else if (position <= nextEdge) { cell += 1.0; }
+  }
+  return cell;
+}`;
+
 /** Options of {@link getRasterSamplingWGSL}. @internal */
 export type RasterSamplingWGSLOptions = {
   width: number;
@@ -79,6 +101,7 @@ export function getRasterSamplingWGSL(options: RasterSamplingWGSLOptions): strin
   return /* wgsl */ `
 const RASTER_WIDTH: i32 = ${width};
 const RASTER_HEIGHT: i32 = ${height};
+${RASTER_CELL_INDEX_WGSL}
 ${GET_NAN_WGSL}
 fn isNaNValue(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) > 0x7f800000u; }
 ${IS_FINITE_VALUE_WGSL}
@@ -188,7 +211,11 @@ fn sampleRaster(x: f32, y: f32) -> f32 {
   let tx = (x - minX) * params[paramsOffset + 6u];
   let ty = (y - params[paramsOffset + 11u]) * params[paramsOffset + 7u];
   if (method == 0u) {
-    return fetchClamped(i32(floor(tx)), i32(floor(ty)));
+    let column = getRasterCellIndex(x, minX, params[paramsOffset + 4u], params[paramsOffset + 6u]);
+    let rowStep = select(-params[paramsOffset + 5u], params[paramsOffset + 5u], params[paramsOffset + 7u] > 0.0);
+    let row = getRasterCellIndex(y, params[paramsOffset + 11u], rowStep, params[paramsOffset + 7u]);
+    // Outermost extent edges remain included in the final cell.
+    return fetchClamped(i32(column), i32(row));
   }
   let u = tx - 0.5;
   let v = ty - 0.5;

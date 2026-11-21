@@ -17,7 +17,9 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {prefillPackedOutputs} from '../geometry-refinement/geometry-output-review-test-utils';
+import {expectRetainedCounterClockwiseTriangle} from './concave-hull-directed-oracle';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   createConcaveHullTestOutput,
   createConcaveHullValidationProps
@@ -524,5 +526,121 @@ it('alpha hulls reject undersized outputs and invalid group counts with named li
     ).toThrow(/^group-concave-hull output.status.converged must have at least 2 rows/);
   } finally {
     device.destroy();
+  }
+});
+
+it('packed grouped alpha hull publishes exterior edges without either square diagonal', async () => {
+  const {graph, input, output, run} = await setup();
+  const groupCount = 3;
+  const capacity = getDelaunayMaximumTriangleCount(7);
+  const triangles = output(capacity, 'uint32x3');
+  const triangleValidity = output(capacity, 'uint32');
+  const edges = output(3 * capacity, 'uint32x2');
+  const edgeValidity = output(3 * capacity, 'uint32');
+  const converged = output(groupCount, 'uint32');
+  const count = output(1, 'uint32'),
+    required = output(1, 'uint32'),
+    overflow = output(1, 'uint32');
+  const triangleOffsets = output(groupCount, 'uint32'),
+    triangleCounts = output(groupCount, 'uint32');
+  const edgeOffsets = output(groupCount, 'uint32'),
+    edgeCounts = output(groupCount, 'uint32');
+  graph.add(
+    new GPUGroupConcaveHull({
+      positions: input([0, 0, 1, 0, 1, 1, 0, 1, 10, 0, 11, 0, 10, 1], 'float32x2'),
+      groupIds: input([0, 0, 0, 0, 1, 1, 1], 'uint32'),
+      groupCount,
+      maximumCircumradius: 1,
+      layout: 'packed',
+      output: {
+        triangles: triangles.view,
+        triangleValidity: triangleValidity.view,
+        boundaryEdges: edges.view,
+        edgeValidity: edgeValidity.view,
+        status: {
+          converged: converged.view,
+          count: count.view,
+          requiredCount: required.view,
+          overflow: overflow.view
+        },
+        groups: {
+          triangleOffsets: triangleOffsets.view,
+          triangleCounts: triangleCounts.view,
+          edgeOffsets: edgeOffsets.view,
+          edgeCounts: edgeCounts.view
+        }
+      }
+    })
+  );
+  // Poison complete caller buffers: a missing clear pass must expose stale padding on run one.
+  prefillPackedOutputs([
+    {buffer: triangles.buffer, wordCount: 3 * capacity},
+    {buffer: triangleValidity.buffer, wordCount: capacity},
+    {buffer: edges.buffer, wordCount: 6 * capacity},
+    {buffer: edgeValidity.buffer, wordCount: 3 * capacity}
+  ]);
+  const destroy = run();
+  try {
+    // Hand-worked square has two radius-sqrt(1/2) triangles and four exterior edges,
+    // independent of which cocircular diagonal the tessellator selects. Group 1 is one triangle.
+    expect(await readUint32(converged.buffer, groupCount)).toEqual([1, 1, 1]);
+    expect(await readUint32(triangleOffsets.buffer, groupCount)).toEqual([0, 2, 3]);
+    expect(await readUint32(triangleCounts.buffer, groupCount)).toEqual([2, 1, 0]);
+    expect(await readUint32(edgeOffsets.buffer, groupCount)).toEqual([0, 4, 7]);
+    expect(await readUint32(edgeCounts.buffer, groupCount)).toEqual([4, 3, 0]);
+    expect(await readUint32(count.buffer, 1)).toEqual([7]);
+    expect(await readUint32(required.buffer, 1)).toEqual([7]);
+    expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+    const triangleRows = await readUint32(triangles.buffer, 3 * capacity);
+    const squareTriangles = [triangleRows.slice(0, 3), triangleRows.slice(3, 6)]
+      .map(corners => corners.sort((first, second) => first - second).join(','))
+      .sort();
+    expect([
+      ['0,1,2', '0,2,3'],
+      ['0,1,3', '1,2,3']
+    ]).toContainEqual(squareTriangles);
+    expect(triangleRows.slice(6, 9).sort((first, second) => first - second)).toEqual([4, 5, 6]);
+    expect(triangleRows.slice(9)).toEqual(new Array(3 * (capacity - 3)).fill(0));
+    expect(await readUint32(triangleValidity.buffer, capacity)).toEqual([
+      1,
+      1,
+      1,
+      ...new Array(capacity - 3).fill(0)
+    ]);
+    expect(await readUint32(edgeValidity.buffer, 3 * capacity)).toEqual([
+      ...new Array(7).fill(1),
+      ...new Array(3 * capacity - 7).fill(0)
+    ]);
+    const edgeRows = await readUint32(edges.buffer, 6 * capacity);
+    const pair = (row: number) =>
+      edgeRows
+        .slice(2 * row, 2 * row + 2)
+        .sort((first, second) => first - second)
+        .join(',');
+    const squareEdges = [0, 1, 2, 3].map(pair).sort();
+    expect(squareEdges).toEqual(['0,1', '0,3', '1,2', '2,3']);
+    expect(squareEdges).not.toContain('0,2');
+    expect(squareEdges).not.toContain('1,3');
+    expect([4, 5, 6].map(pair).sort()).toEqual(['4,5', '4,6', '5,6']);
+    expect(edgeRows.slice(14)).toEqual(new Array(6 * capacity - 14).fill(0));
+  } finally {
+    destroy();
+  }
+});
+
+it('CORE-103 alpha hull retains the asymmetric triangle below cutoff 0.9 in cyclic rotations', async () => {
+  // Exact rational circumcenter (0.2000000247359275,0.7999999871850011) gives
+  // radius 0.8246211042342516 < 0.9. The former cancellation gave a radius above 0.9.
+  const points = [
+    [1, 1],
+    [0, 2 ** -26],
+    [2 ** -24, 0]
+  ];
+  for (let rotation = 0; rotation < 3; rotation++) {
+    const positions = [...points.slice(rotation), ...points.slice(0, rotation)].flat();
+    const result = await runHull(3, positions, 0.9);
+    // Every cyclic position rotation remains counterclockwise, so the public boundary must
+    // retain 0->1, 1->2, 2->0. Output row order and the triangle's starting corner may vary.
+    expectRetainedCounterClockwiseTriangle(result);
   }
 });

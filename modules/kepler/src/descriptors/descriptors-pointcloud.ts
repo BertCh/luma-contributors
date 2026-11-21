@@ -369,7 +369,7 @@ export const POINT_CLOUD_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
     parameters: [
       describeConstant('coordinateSystem'),
       describeDistance('maximumDistance', 'target'),
-      describeConstant('iterations', 'basic')
+      describeConstant('maximumIterations', 'basic')
     ],
     requirements: [...describeRequirements('source'), ...describeRequirements('target')],
     outputs: [
@@ -384,7 +384,7 @@ export const POINT_CLOUD_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
     notes: [
       XYZ_NOTE,
       STATUS_NOTE,
-      'Point-to-point ICP starts at identity and may converge to a local alignment. maximumDistance uses target XY spacing times three (extent diagonal/10 fallback), an exploratory correspondence gate that cannot estimate the initial 3D displacement. Clouds need overlapping matched structure, common units and datum. Inspect registration_status, matched_count and root_mean_square_error; reaching the iteration limit does not certify convergence. The transform is source-to-target in the shared local frame, not a global geographic affine transform.'
+      'maximumIterations is the basic iteration budget (default 10; Kepler range 1–30). Point-to-point ICP starts at identity and may converge to a local alignment. maximumDistance uses target XY spacing times three (extent diagonal/10 fallback), an exploratory correspondence gate that cannot estimate the initial 3D displacement. Clouds need overlapping matched structure, common units and datum. Inspect registration_status, matched_count and root_mean_square_error; reaching the iteration limit does not certify convergence. The transform is source-to-target in the shared local frame, not a global geographic affine transform.'
     ]
   },
   {

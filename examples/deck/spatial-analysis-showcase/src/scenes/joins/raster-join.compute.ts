@@ -20,7 +20,7 @@ import {
   SpatialAnalysisSegmentLayer,
   type SpatialAnalysisColormap
 } from '../../engine/layers';
-import {addKernelPass} from '../../engine/mode-kernels';
+import {addRasterJoinMismatchNode} from './raster-join-mismatch';
 import type {RampName} from '../../engine/ramps';
 import {GraphSwap} from '../../engine/graph-swap';
 import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
@@ -116,8 +116,10 @@ export async function createRasterJoin(
     GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH
   );
   const boundsBuffer = resources.createBuffer('bounds', 16);
+  let currentPlacement: Float32Array = new Float32Array(4);
   const exactIds = resources.createBuffer('exact-ids', pointCount * 4);
   const exactOverflow = resources.createBuffer('exact-overflow', 4);
+  const exactUncertainCount = resources.createBuffer('exact-uncertain-count', 4);
   const zoneValues = resources.createBuffer('zone-values', zoneCount * 4);
   const boundaryBuffer = resources.createBuffer('unused-boundary', 4);
   void boundaryBuffer;
@@ -130,8 +132,8 @@ export async function createRasterJoin(
   let measuring = false;
   let frames = 0;
   let lastBounds: [number, number, number, number] | null = null;
-  let rasterCounts = new Uint32Array(zoneCount);
-  let exactCounts = new Uint32Array(zoneCount);
+  let rasterCounts: Uint32Array | null = null;
+  let exactCounts: Uint32Array | null = null;
   let valueRange: [number, number] = [0, 1];
 
   const [cityMinX, cityMinY, cityMaxX, cityMaxY] = areaSet.bounds;
@@ -178,6 +180,7 @@ export async function createRasterJoin(
     const zones = own.createBuffer('zones', cellCount * 4);
     const boundary = own.createBuffer('boundary', cellCount * 4);
     const rasterOverflow = own.createBuffer('raster-overflow', 4);
+    const incomplete = own.createBuffer('join-incomplete', 4);
     const crossingCount = own.createBuffer('crossing-count', 4);
     const counts = own.createBuffer('counts', zoneCount * 4);
     const sums = own.createBuffer('sums', zoneCount * 4);
@@ -189,6 +192,7 @@ export async function createRasterJoin(
     const exactCountsBuffer = own.createBuffer('exact-counts', zoneCount * 4);
     const exactCandidates = own.createBuffer('exact-candidates', 4);
     const mismatch = own.createBuffer('mismatch', pointCount * 4);
+    const extentMembership = own.createBuffer('extent-membership', pointCount * 4);
 
     const extentView = extentParameters.importToGraph(graph);
     const zonesView = importGraphBuffer(graph, 'zones', zones, 'uint32', cellCount);
@@ -209,7 +213,28 @@ export async function createRasterJoin(
       pointCount
     );
     const exactIdsView = importGraphBuffer(graph, 'exact-ids', exactIds, 'uint32', pointCount);
+    const exactOverflowView = importGraphBuffer(
+      graph,
+      'exact-overflow',
+      exactOverflow,
+      'uint32',
+      1
+    );
+    const exactUncertainView = importGraphBuffer(
+      graph,
+      'exact-uncertain-count',
+      exactUncertainCount,
+      'uint32',
+      1
+    );
 
+    const rasterOverflowView = importGraphBuffer(
+      graph,
+      'raster-overflow',
+      rasterOverflow,
+      'uint32',
+      1
+    );
     graph.add(
       new GPUPolygonRasterization({
         id: 'rasterize',
@@ -224,7 +249,7 @@ export async function createRasterJoin(
           zones: zonesView,
           boundary: boundaryView,
           status: {
-            overflow: importGraphBuffer(graph, 'raster-overflow', rasterOverflow, 'uint32', 1),
+            overflow: rasterOverflowView,
             crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCount, 'uint32', 1)
           }
         }
@@ -233,6 +258,7 @@ export async function createRasterJoin(
     graph.add(
       new GPURasterJoin({
         id: 'raster-join',
+        producerOverflow: rasterOverflowView,
         grid,
         parameters: extentView,
         points: pointPositionsView,
@@ -241,6 +267,9 @@ export async function createRasterJoin(
         boundary: boundaryView,
         zoneCount,
         output: {
+          status: {
+            incomplete: importGraphBuffer(graph, 'join-incomplete', incomplete, 'uint32', 1)
+          },
           counts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount),
           sums: importGraphBuffer(graph, 'sums', sums, 'float32', zoneCount),
           boundaryCounts: importGraphBuffer(
@@ -272,7 +301,7 @@ export async function createRasterJoin(
         candidateCapacity: pointCount * 6,
         output: {
           pointFeatureIds: exactIdsView,
-          featureCounts: importGraphBuffer(
+          polygonAssignmentCounts: importGraphBuffer(
             graph,
             'exact-counts',
             exactCountsBuffer,
@@ -280,7 +309,8 @@ export async function createRasterJoin(
             zoneCount
           ),
           status: {
-            overflow: importGraphBuffer(graph, 'exact-overflow', exactOverflow, 'uint32', 1),
+            overflow: exactOverflowView,
+            uncertainCount: exactUncertainView,
             candidateCount: importGraphBuffer(
               graph,
               'exact-candidates',
@@ -292,21 +322,24 @@ export async function createRasterJoin(
         }
       })
     );
-    // Points whose raster zone differs from the exact zone: the error the boundary flags must explain.
-    addKernelPass(graph, {
-      id: 'mismatch',
-      invocationCount: pointCount,
-      bindings: [
-        {name: 'rasterZone', view: pointZonesView, type: 'u32', access: 'read'},
-        {name: 'exactZone', view: exactIdsView, type: 'u32', access: 'read'},
-        {
-          name: 'mismatch',
-          view: importGraphBuffer(graph, 'mismatch', mismatch, 'uint32', pointCount),
-          type: 'u32',
-          access: 'read_write'
-        }
-      ],
-      body: `mismatch[mismatchOffset + index] = select(0u, 1u, rasterZone[rasterZoneOffset + index] != exactZone[exactZoneOffset + index]);`
+    addRasterJoinMismatchNode(graph, {
+      positions: pointPositionsView,
+      parameters: extentView,
+      rasterZones: pointZonesView,
+      exactZones: exactIdsView,
+      producerOverflow: rasterOverflowView,
+      exactOverflow: exactOverflowView,
+      exactUncertainCount: exactUncertainView,
+      width,
+      height,
+      output: importGraphBuffer(graph, 'mismatch', mismatch, 'uint32', pointCount),
+      extentMembership: importGraphBuffer(
+        graph,
+        'extent-membership',
+        extentMembership,
+        'uint32',
+        pointCount
+      )
     });
 
     const reader = new SummaryReader(
@@ -322,11 +355,18 @@ export async function createRasterJoin(
         {buffer: rasterOverflow, size: 4},
         {buffer: crossingCount, size: 4},
         {buffer: exactOverflow, size: 4},
+        {buffer: incomplete, size: 4},
+        {buffer: exactUncertainCount, size: 4},
         {buffer: mismatch, size: pointCount * 4},
-        {buffer: pointBoundary, size: pointCount * 4}
+        {buffer: pointBoundary, size: pointCount * 4},
+        {buffer: exactIds, size: pointCount * 4},
+        {buffer: extentMembership, size: pointCount * 4},
+        {buffer: extentParameters.buffer, size: 16}
       ],
       bytes => {
         if (destroyed || variant?.resolution !== resolution) return;
+        const placement = new Float32Array(bytes, bytes.byteLength - 16, 4);
+        if (!placement.every((value, index) => value === currentPlacement[index])) return;
         handleSummary(bytes, width, height, crossingCapacity);
       }
     );
@@ -368,13 +408,77 @@ export async function createRasterJoin(
     const boundaryCounts = new Uint32Array(take(zoneCount));
     const exact = new Uint32Array(take(zoneCount));
     const sums = new Float32Array(take(zoneCount));
-    const [unassigned, outside, rasterOverflow, crossings, exactOverflow] = new Uint32Array(
-      take(5)
-    );
+    const [
+      unassigned,
+      outside,
+      rasterOverflow,
+      crossings,
+      exactOverflow,
+      incomplete,
+      exactUncertain
+    ] = new Uint32Array(take(7));
     const mismatch = new Uint32Array(take(pointCount));
     const pointBoundary = new Uint32Array(take(pointCount));
+    const referenceIds = new Uint32Array(take(pointCount));
+    const extentMembership = new Uint32Array(take(pointCount));
+    take(4); // placement was checked against the current frame before handling the readback.
+    // Compare only observations in the raster extent, including when the camera moves.
+    exact.fill(0);
+    let comparisonPointCount = 0;
+    for (let point = 0; point < pointCount; point++) {
+      if (extentMembership[point]) {
+        comparisonPointCount++;
+        if (referenceIds[point] < zoneCount) exact[referenceIds[point]]++;
+      }
+    }
+    if (incomplete || rasterOverflow) {
+      rasterCounts = null;
+      exactCounts = null;
+      for (const name of [
+        'joined',
+        'mismatch',
+        'explained',
+        'bound',
+        'difference',
+        'boundaryJoined'
+      ]) {
+        ctx.setReadout(name, 'unavailable: incomplete join');
+      }
+      ctx.setReadout('rasterOverflow', rasterOverflow ? 'YES: rasterization incomplete' : 'no');
+      ctx.setReadout('exactOverflow', exactOverflow ? 'YES' : 'no');
+      zoneValues.write(new Float32Array(zoneCount).fill(NaN));
+      ctx.requestLayers();
+      return;
+    }
     rasterCounts = counts;
-    exactCounts = exact;
+    exactCounts = exactOverflow || exactUncertain ? null : exact;
+    if (!exactCounts) {
+      ctx.setReadout(
+        'joined',
+        `${formatInteger(counts.reduce((total, count) => total + count, 0))} by raster; exact reference unavailable`
+      );
+      for (const name of ['mismatch', 'explained', 'bound', 'difference'])
+        ctx.setReadout(name, 'unavailable: incomplete or uncertain reference');
+      ctx.setReadout(
+        'boundaryJoined',
+        formatInteger(boundaryCounts.reduce((total, count) => total + count, 0))
+      );
+      ctx.setReadout('rasterOverflow', 'no');
+      ctx.setReadout('exactOverflow', 'reference incomplete or uncertain');
+      const display =
+        state.metric === 'count'
+          ? Float32Array.from(counts)
+          : state.metric === 'researchGrade'
+            ? sums
+            : state.metric === 'boundaryShare'
+              ? Float32Array.from(counts, (count, zone) =>
+                  count ? boundaryCounts[zone] / count : 0
+                )
+              : new Float32Array(zoneCount).fill(NaN);
+      zoneValues.write(display);
+      ctx.requestLayers();
+      return;
+    }
 
     let joined = 0;
     let exactJoined = 0;
@@ -412,7 +516,7 @@ export async function createRasterJoin(
     );
     ctx.setReadout(
       'mismatch',
-      `${formatInteger(mismatches)} points (${((100 * mismatches) / pointCount).toFixed(3)}%) join a different area than the exact join`
+      `${formatInteger(mismatches)} points (${((100 * mismatches) / Math.max(1, comparisonPointCount)).toFixed(3)}%) join a different area than the exact join`
     );
     ctx.setReadout(
       'explained',
@@ -514,6 +618,13 @@ export async function createRasterJoin(
           signal: ctx.signal
         };
         const all = await measureCompiledGraph(device, built.compiled, options);
+        const flags = await Promise.all(
+          [built.rasterOverflow, exactOverflow, exactUncertainCount].map(buffer =>
+            buffer.readAsync(0, 4)
+          )
+        );
+        if (flags.some(bytes => new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0]))
+          throw new Error('incomplete');
         results.push(
           `rasterize + raster join + exact join ${formatCompiledGraphTiming(all).split(' · ')[0]}`
         );
@@ -529,6 +640,11 @@ export async function createRasterJoin(
           completionBuffer: exactOnly.overflow,
           signal: ctx.signal
         });
+        const flags = await Promise.all(
+          [exactOnly.overflow, exactOnly.uncertainCount].map(buffer => buffer.readAsync(0, 4))
+        );
+        if (flags.some(bytes => new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0]))
+          throw new Error('incomplete');
         results.push(`exact join alone ${formatCompiledGraphTiming(timing).split(' · ')[0]}`);
       } finally {
         exactOnly.compiled.destroy();
@@ -541,6 +657,8 @@ export async function createRasterJoin(
           completionBuffer: rasterOnly.overflow,
           signal: ctx.signal
         });
+        const bytes = await rasterOnly.overflow.readAsync(0, 4);
+        if (new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0]) throw new Error('incomplete');
         results.push(
           `rasterize + raster join ${formatCompiledGraphTiming(timing).split(' · ')[0]}`
         );
@@ -550,7 +668,8 @@ export async function createRasterJoin(
       }
       if (!destroyed) ctx.setReadout('timing', results.join(' | '));
     } catch {
-      // Device destroyed or measurement aborted.
+      if (!destroyed)
+        ctx.setReadout('timing', 'unavailable: incomplete or interrupted computation');
     } finally {
       measuring = false;
       dirty = true;
@@ -564,6 +683,7 @@ export async function createRasterJoin(
     const ids = own.createBuffer('ids', pointCount * 4);
     const counts = own.createBuffer('counts', zoneCount * 4);
     const overflow = own.createBuffer('overflow', 4);
+    const uncertainCount = own.createBuffer('uncertain-count', 4);
     graph.add(
       new GPUPointInPolygonJoin({
         spatialContext: projection.spatialContext,
@@ -576,12 +696,20 @@ export async function createRasterJoin(
         candidateCapacity: pointCount * 6,
         output: {
           pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
-          featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount),
-          status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+          polygonAssignmentCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount),
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+            uncertainCount: importGraphBuffer(graph, 'uncertain-count', uncertainCount, 'uint32', 1)
+          }
         }
       })
     );
-    return {resources: own, compiled: own.track(await graph.compileAsync()), overflow};
+    return {
+      resources: own,
+      compiled: own.track(await graph.compileAsync()),
+      overflow,
+      uncertainCount
+    };
   }
 
   async function buildRasterOnlyGraph(resolution: number) {
@@ -602,9 +730,17 @@ export async function createRasterJoin(
     const views = importPolygons(graph, 'areas', polygons);
     const zones = own.createBuffer('zones', cellCount * 4);
     const rasterOverflow = own.createBuffer('raster-overflow', 4);
+    const incomplete = own.createBuffer('join-incomplete', 4);
     const counts = own.createBuffer('counts', zoneCount * 4);
     const extentView = extentParameters.importToGraph(graph);
     const zonesView = importGraphBuffer(graph, 'zones', zones, 'uint32', cellCount);
+    const rasterOverflowView = importGraphBuffer(
+      graph,
+      'raster-overflow',
+      rasterOverflow,
+      'uint32',
+      1
+    );
     graph.add(
       new GPUPolygonRasterization({
         id: 'rasterize',
@@ -621,7 +757,7 @@ export async function createRasterJoin(
         output: {
           zones: zonesView,
           status: {
-            overflow: importGraphBuffer(graph, 'raster-overflow', rasterOverflow, 'uint32', 1)
+            overflow: rasterOverflowView
           }
         }
       })
@@ -629,18 +765,22 @@ export async function createRasterJoin(
     graph.add(
       new GPURasterJoin({
         id: 'raster-join',
+        producerOverflow: rasterOverflowView,
         grid,
         parameters: extentView,
         points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
         zones: zonesView,
         zoneCount,
-        output: {counts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount)}
+        output: {
+          counts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount),
+          status: {incomplete: importGraphBuffer(graph, 'join-incomplete', incomplete, 'uint32', 1)}
+        }
       })
     );
     return {
       resources: own,
       compiled: own.track(await graph.compileAsync()),
-      overflow: rasterOverflow
+      overflow: incomplete
     };
   }
 
@@ -660,9 +800,10 @@ export async function createRasterJoin(
     }
     if (lastBounds && bounds.every((value, index) => value === lastBounds![index])) return;
     lastBounds = bounds;
-    extentParameters.write(
-      getGPUPolygonRasterizationParameterValues(getRasterGrid(width, height, bounds))
+    currentPlacement = getGPUPolygonRasterizationParameterValues(
+      getRasterGrid(width, height, bounds)
     );
+    extentParameters.write(currentPlacement);
     boundsBuffer.write(Float32Array.from(bounds));
     const cellWidth = (bounds[2] - bounds[0]) / width;
     const cellHeight = (bounds[3] - bounds[1]) / height;
@@ -703,6 +844,9 @@ export async function createRasterJoin(
       const [x, y] = projection.project(event.coordinate[0], event.coordinate[1]);
       const zone = findPolygonAt(areaSet, x, y);
       if (zone < 0) return null;
+      if (!rasterCounts) return `${areaNames[zone]}: unavailable (incomplete join)`;
+      if (!exactCounts)
+        return `${areaNames[zone]}: raster join ${formatInteger(rasterCounts[zone])}; exact reference unavailable`;
       return `${areaNames[zone]}\nraster join ${formatInteger(rasterCounts[zone])}, exact ${formatInteger(exactCounts[zone])}`;
     },
 
@@ -710,6 +854,9 @@ export async function createRasterJoin(
       frames++;
       writeExtent(frame);
       if (dirty) {
+        rasterCounts = null;
+        exactCounts = null;
+        ctx.requestLayers();
         variant.compiled.encode(commandEncoder, {parameters: undefined});
         dirty = false;
         settle = SETTLE_FRAMES;
@@ -746,7 +893,10 @@ export async function createRasterJoin(
             opacity: state.opacity
           })
         );
-      } else {
+      } else if (
+        rasterCounts &&
+        (exactCounts || (state.metric !== 'exact' && state.metric !== 'difference'))
+      ) {
         const direct =
           state.metric === 'count' || state.metric === 'exact' || state.metric === 'researchGrade';
         layers.push(
@@ -757,13 +907,10 @@ export async function createRasterJoin(
             values:
               state.metric === 'count'
                 ? variant.counts
-                : state.metric === 'exact'
-                  ? variant.exactCounts
-                  : state.metric === 'researchGrade'
-                    ? variant.sums
-                    : zoneValues,
-            valueFormat:
-              state.metric === 'count' || state.metric === 'exact' ? 'uint32' : 'float32',
+                : state.metric === 'researchGrade'
+                  ? variant.sums
+                  : zoneValues,
+            valueFormat: state.metric === 'count' ? 'uint32' : 'float32',
             colormap: (state.metric === 'difference'
               ? 'diverging'
               : state.ramp) as SpatialAnalysisColormap,
@@ -797,7 +944,7 @@ export async function createRasterJoin(
           widthPixels: 1.2
         })
       );
-      if (state.points !== 'off') {
+      if (state.points !== 'off' && rasterCounts && (state.points !== 'mismatch' || exactCounts)) {
         layers.push(
           new SpatialAnalysisPointLayer({
             id: 'flagged-points',

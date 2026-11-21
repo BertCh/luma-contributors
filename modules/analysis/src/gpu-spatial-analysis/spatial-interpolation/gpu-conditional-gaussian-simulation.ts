@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateInterpolationPorts} from './interpolation-view-validation';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {
   validateInterpolationPredictionViews,
   validateInterpolationOutputPasses,
@@ -65,7 +69,7 @@ export type GPUConditionalGaussianSimulationProps = {
    */
   spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
-  /** [value, measurement-error variance, reserved, validity]; zero validity omits the sample. */
+  /** [value, measurement-error variance, reserved, validity]; validity must be strictly > 0 (zero, negative and NaN omit the sample). */
   observations: GraphDataView<'float32x4'>;
   queries: GraphDataView<'float32x2'>;
   covariance: GPUPredictionCovariance;
@@ -124,14 +128,43 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
   private ownedBuffers: Buffer[] = [];
   private destroyed = false;
   constructor(props: GPUConditionalGaussianSimulationProps) {
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'covariance',
+        'id',
+        'mean',
+        'observations',
+        'output',
+        'positions',
+        'queries',
+        'replicateCount',
+        'replicateOffset',
+        'reusePreparation',
+        'seed',
+        'spatialContext'
+      ],
+      ['values', 'moments', 'status']
+    );
     this.id = props.id ?? 'conditional-gaussian-simulation';
+    validateInterpolationPorts(
+      {id: this.id, contributor: 'GPUConditionalGaussianSimulation'},
+      props,
+      {
+        positions: {required: true, viewType: 'data', formats: ['float32x2']},
+        observations: {required: true, viewType: 'data', formats: ['float32x4']},
+        queries: {required: true, viewType: 'data', formats: ['float32x2']},
+        'output.values': {required: true, viewType: 'data', formats: ['float32']},
+        'output.moments': {required: true, viewType: 'data', formats: ['float32x2']},
+        'output.status': {required: true, viewType: 'data', formats: ['uint32']}
+      }
+    );
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
       PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT
     );
-    validatePredictionCovariance(props.covariance);
+    validatePredictionCovariance(props.covariance, this.id);
     validateFiniteNumber(this.id, 'covariance.range', props.covariance.range, Number.MIN_VALUE);
     validateFiniteNumber(this.id, 'covariance.sill', props.covariance.sill, 0);
     validateFiniteNumber(this.id, 'covariance.nugget', props.covariance.nugget ?? 0, 0);
@@ -142,9 +175,11 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
       Number.MIN_VALUE
     );
     // Matern is validated for local kriging only; the dense Cholesky here has no pivot ratio check.
-    if (props.covariance.model === 'matern') {
-      throw new Error(`${this.id} does not support the Matern covariance`);
-    }
+    validateRequirement(
+      this.id,
+      !(props.covariance.model === 'matern'),
+      `covariance.model must not be matern (Matern); use a supported closed-form family`
+    );
     validateCapacity(this.id, 'replicateCount', props.replicateCount, 1);
     validateCapacity(this.id, 'replicateOffset', props.replicateOffset ?? 0, 0);
     validateMaximumCount(
@@ -153,21 +188,24 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
       props.positions.length + props.queries.length,
       GPU_CONDITIONAL_GAUSSIAN_SIMULATION_MAXIMUM_JOINT_ROW_COUNT
     );
-    if (
-      props.queries.length < 1 ||
-      props.positions.length !== props.observations.length ||
-      props.output.values.length < props.queries.length * props.replicateCount ||
-      props.output.moments.length < props.queries.length ||
-      props.output.status.length < props.replicateCount ||
-      !Number.isInteger(props.seed) ||
-      props.seed < 0 ||
-      props.seed > 0xffffffff ||
-      (props.replicateOffset ?? 0) + props.replicateCount > 0x100000000 ||
-      !Number.isFinite(props.mean ?? 0)
-    ) {
-      throw new Error(`${this.id} invalid bounded simulation topology`);
-    }
+    validateRequirement(
+      this.id,
+      !(
+        props.queries.length < 1 ||
+        props.positions.length !== props.observations.length ||
+        props.output.values.length < props.queries.length * props.replicateCount ||
+        props.output.moments.length < props.queries.length ||
+        props.output.status.length < props.replicateCount ||
+        !Number.isInteger(props.seed) ||
+        props.seed < 0 ||
+        props.seed > 0xffffffff ||
+        (props.replicateOffset ?? 0) + props.replicateCount > 0x100000000 ||
+        !Number.isFinite(props.mean ?? 0)
+      ),
+      `queries.length must be at least 1; observations.length must equal positions.length; output.values/moments/status must cover queryCount * replicateCount/queryCount/replicateCount; seed must be uint32, replicateOffset + replicateCount at most 4294967296 and mean finite`
+    );
     validateFiniteNumber(this.id, 'mean', props.mean ?? 0);
+
     validateInterpolationOutputPasses(this.id, props.output, [
       {
         read: {
@@ -324,8 +362,31 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
       this.preparationControlBuffer.write(this.getPreparationControl());
   }
 
+  /** Acquisitions are committed after node generation; later graph insertion errors require destroy(). */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    const acquired: Buffer[] = [];
+    const publication: {controlBuffer?: Buffer; statisticsView?: GraphDataView<'uint32x2'>} = {};
+    try {
+      const nodes = this.createCommandNodes(graph, acquired, publication);
+      this.ownedBuffers.push(...acquired);
+      if (acquired.length) {
+        this.preparationControlBuffer = publication.controlBuffer;
+        this.preparationStatisticsView = publication.statisticsView;
+      }
+      return nodes;
+    } catch (error) {
+      for (const buffer of acquired) buffer.destroy();
+      // Imported graph IDs cannot be rolled back: rebuild the graph and its imports after failure.
+      throw error;
+    }
+  }
+
+  private createCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    acquired: Buffer[],
+    publication: {controlBuffer?: Buffer; statisticsView?: GraphDataView<'uint32x2'>}
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const capacity = Math.max(1, props.positions.length + props.queries.length);
@@ -377,7 +438,7 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
         usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST,
         ...(values ? {data: values} : {})
       });
-      this.ownedBuffers.push(buffer);
+      acquired.push(buffer);
       return {buffer, view: importGraphBuffer(graph, `${id}-${name}`, buffer, format, length)};
     };
     // Imported storage retains data across encodings; transient allocations may be aliased.
@@ -403,8 +464,8 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
       ? createPersistentView('preparation-state', 'uint32', 7, new Uint32Array(7)).view
       : undefined;
     if (controlStorage && preparationState) {
-      this.preparationControlBuffer = controlStorage.buffer;
-      this.preparationStatisticsView = graph.createDataView(preparationState.buffer, {
+      publication.controlBuffer = controlStorage.buffer;
+      publication.statisticsView = graph.createDataView(preparationState.buffer, {
         format: 'uint32x2',
         length: 1,
         byteOffset: 16

@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import type {GPUTerrainHeightReference} from '../../analysis-core/contracts/vertical-datum';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
 import {getRasterGridGeoreference} from '../../analysis-core/contracts/raster-grid';
-import {validateParameterTarget} from '../../raster-analysis/raster-band-utils';
+import {
+  validateRasterGridOrthogonal,
+  validateParameterTarget
+} from '../../raster-analysis/raster-band-utils';
 
 /** Number of float32 values read from `GPUPointHorizonProfileProps.parameters`. */
 export const GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH = 8;
@@ -42,8 +46,8 @@ export const GPU_POINT_HORIZON_EARTH_RADIUS = GPU_EARTH_MEAN_RADIUS_METERS;
  * - `'planar'`: the raster is in projected meters (a local metric CRS such as UTM or a national
  *   grid). Rays are straight lines, a pixel is `cellSize = [x, y]` meters, distances are planar
  *   meters. The packer takes the cell size from the grid.
- * - `'web-mercator'`: the raster is a window of the Web Mercator world pixel grid (EPSG:3857, rows
- *   increase to the south). Rays follow the great circle on a sphere of radius
+ * - `'web-mercator'`: the raster is a window of the Web Mercator world pixel grid (EPSG:3857, square pixels, columns
+ *   increase east and rows increase south; rotated and mirrored axes are rejected). Rays follow the great circle on a sphere of radius
  *   `GPU_POINT_HORIZON_EARTH_RADIUS` (6371008.8 m), approximated piecewise: positions are linear
  *   in pixels between breakpoints whose spacing keeps the chord sagitta below
  *   `segmentTolerance` of the distance (the model of mt-image's fast horizon). Ground distance
@@ -158,6 +162,21 @@ export const POINT_HORIZON_DERIVED_TARGET_IGNORE_DISTANCE = -1;
 export type GPUPointHorizonVisibilitySettings = GPUPointHorizonProfileSettings &
   GPUPointHorizonVisibilityTolerances;
 
+/** Validates the unrotated east/south square-pixel Web Mercator window model. @internal */
+export function validatePointHorizonWebMercatorGrid(id: string, grid: GPURasterMetadata): void {
+  const [columnStepX, rowStepX, , columnStepY, rowStepY] = grid.affine;
+  validateRequirement(
+    id,
+    columnStepY === 0 && rowStepX === 0 && columnStepX > 0 && rowStepY < 0,
+    'web-mercator grid must be axis-aligned with columns increasing east and rows increasing south'
+  );
+  validateRequirement(
+    id,
+    Math.abs(columnStepX + rowStepY) <= 1e-6 * columnStepX,
+    'web-mercator grid needs square pixels with rows increasing south'
+  );
+}
+
 function packModelSettings(
   name: string,
   settings: GPUPointHorizonProfileSettings,
@@ -175,10 +194,8 @@ function packModelSettings(
     throw new Error(`${name} grid cell size must be finite and positive`);
   }
   if (projection === 'web-mercator') {
-    const [cellSizeX, cellSizeY] = cellSize;
-    if (Math.abs(cellSizeX - cellSizeY) > 1e-6 * cellSizeX || grid.affine[4] >= 0) {
-      throw new Error(`${name} web-mercator grid needs square pixels with rows increasing south`);
-    }
+    validatePointHorizonWebMercatorGrid(name, grid);
+    const [cellSizeX] = cellSize;
     // Pixels per 360 degrees and the Mercator ordinate (radians) of the top edge of row 0, in
     // float64 before the float32 pack. northEdge is EPSG:3857 meters.
     target[1] = (2 * Math.PI * WEB_MERCATOR_EARTH_RADIUS) / cellSizeX;
@@ -203,14 +220,15 @@ function packModelSettings(
  * `settings.projection`; a contributor whose `projection` differs reports NaN for every ray
  * instead of misreading the cell size.
  *
- * @throws If the grid cell size is invalid (a Web Mercator grid needs square pixels and rows
- *   increasing south), or `target` is too short.
+ * @throws If the grid cell size is invalid (a Web Mercator grid needs axis-aligned square pixels,
+ *   columns increasing east and rows increasing south), or `target` is too short.
  */
 export function getGPUPointHorizonProfileParameterValues(
   settings: GPUPointHorizonProfileSettings,
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUPointHorizonProfileParameterValues', grid);
   const name = 'getGPUPointHorizonProfileParameterValues';
   validateParameterTarget(name, target, GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH);
   target.fill(0, 0, GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH);
@@ -234,6 +252,7 @@ export function getGPUPointHorizonVisibilityParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUPointHorizonVisibilityParameterValues', grid);
   const name = 'getGPUPointHorizonVisibilityParameterValues';
   validateParameterTarget(name, target, GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH);
   target.fill(0, 0, GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH);

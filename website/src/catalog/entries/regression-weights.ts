@@ -271,7 +271,7 @@ export const entries: CatalogEntry[] = [
         required: true
       }),
       param('positions', "GraphDataView<'float32x2'>", 'Target points.', {required: true}),
-      param('k', 'number | undefined', 'Neighbors per query in knn mode, 1 to 32.'),
+      param('neighborCount', 'number | undefined', 'Neighbors per query in knn mode, 1 to 256.'),
       param(
         'gridSize',
         'readonly [number, number]',
@@ -313,7 +313,7 @@ export const entries: CatalogEntry[] = [
         'graph.add(',
         '  new GPUNeighborSearch({',
         "    mode: 'knn',",
-        '    k: 4,',
+        '    neighborCount: 4,',
         "    positions: graph.importGPUData('positions', positionData),",
         '    gridSize: [64, 64],',
         '    parameters: parameters.importToGraph(graph),',
@@ -402,7 +402,7 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Weights transforms',
-    summary: 'Row-standardizes, binarizes, symmetrizes or kernel-weights a spatial weights matrix.',
+    summary: 'Row-standardizes, binarizes, averages reciprocal weights or applies a kernel.',
     explanation:
       'Do this once after building weights and before any statistic. `row` makes each row sum to 1; `kernel` applies a distance profile at a bandwidth, fixed or adaptive. Results carry the transform state, so consumers know what they got.',
     dataTypes: {input: ['spatial-weights'], output: ['spatial-weights']},
@@ -412,7 +412,7 @@ export const entries: CatalogEntry[] = [
       param(
         'operation',
         'GPUSpatialWeightsTransformOperation',
-        'row, binary, kernel, symmetrize, double or variance.',
+        'row, binary, kernel, average-reciprocal, double or variance.',
         {required: true}
       ),
       param('weights', 'GPUSpatialWeights', 'Weights to transform.', {required: true}),
@@ -483,7 +483,7 @@ export const entries: CatalogEntry[] = [
     params: [
       param(
         'operation',
-        "'intersection' | 'union' | 'difference' | 'symmetricDifference' | 'higherOrder' | 'selfWeight' | 'subgraph' | 'block'",
+        "'intersection' | 'union' | 'difference' | 'symmetric-difference' | 'higherOrder' | 'selfWeight' | 'subgraph' | 'block'",
         'What to compute.',
         {required: true}
       ),
@@ -856,7 +856,7 @@ export const entries: CatalogEntry[] = [
         "GraphDataView<'uint32'>",
         'Right input row index, sentinel when unmatched.'
       ),
-      output('rowCount', "GraphDataView<'uint32'>", 'Number of valid output rows.'),
+      output('status.count', "GraphDataView<'uint32'>", 'Number of valid output rows.'),
       output(
         'status.overflow',
         "GraphDataView<'uint32'>",
@@ -879,8 +879,7 @@ export const entries: CatalogEntry[] = [
         '    output: {',
         "      leftRows: output('left', 'uint32', capacity),",
         "      rightRows: output('right', 'uint32', capacity),",
-        "      rowCount: output('count', 'uint32', 1),",
-        "      status: {overflow: output('overflow', 'uint32', 1), candidateOverflow: output('candidate-overflow', 'uint32', 1)}",
+        "      status: {count: output('count', 'uint32', 1), overflow: output('overflow', 'uint32', 1), candidateOverflow: output('candidate-overflow', 'uint32', 1)}",
         '    }',
         '  })',
         ');'
@@ -972,7 +971,7 @@ export const entries: CatalogEntry[] = [
       param(
         'operation',
         'SpatialWeightsMergeOperation',
-        'union, intersection, difference or symmetricDifference.',
+        'union, intersection, difference or symmetric-difference.',
         {required: true}
       ),
       param(
@@ -1034,7 +1033,7 @@ export const entries: CatalogEntry[] = [
       param(
         'operation',
         'GPUSpatialWeightsTransformOperation',
-        'row, binary, kernel, symmetrize, double or variance.',
+        'row, binary, kernel, average-reciprocal, double or variance.',
         {required: true}
       ),
       param('weights', 'GPUChunkedSpatialWeights', 'Chunked weights to transform.', {
@@ -1462,11 +1461,11 @@ export const entries: CatalogEntry[] = [
       }),
       param('method', "'HC0' | 'HC1' | 'HAC' | undefined", 'Sandwich estimator.'),
       param('kernel', 'GPUSpatialWeights | undefined', 'HAC kernel weights.'),
-      param('output', '{covariance, status}', 'Caller-owned results.', {required: true})
+      param('output', '{covariance, status: {code}}', 'Caller-owned results.', {required: true})
     ],
     outputs: [
       output('covariance', "GraphDataView<'float32'>", 'Coefficient covariance matrix.'),
-      output('status', "GraphDataView<'uint32'>", 'Status code.')
+      output('status.code', "GraphDataView<'uint32'>", 'Status code.')
     ],
     example: makeExample(
       ['GPUInstrumentalVariablesCovariance'],
@@ -1480,7 +1479,7 @@ export const entries: CatalogEntry[] = [
         '    residuals, // structural residuals of the same rows',
         "    method: 'HAC',",
         '    kernel: bandWeights,',
-        '    output // covariance and status views',
+        '    output // covariance and status.code views',
         '  })',
         ');'
       ]

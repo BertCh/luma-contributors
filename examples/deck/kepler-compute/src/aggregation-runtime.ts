@@ -956,7 +956,7 @@ export class AggregationRuntime {
             values,
             mask,
             domain,
-            domainCount: classCount,
+            classCount,
             palette: importBuffer(
               'palette',
               allocate('palette', settings.palette.length, Uint32Array.from(settings.palette)),

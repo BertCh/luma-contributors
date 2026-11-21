@@ -54,6 +54,13 @@ function getSplancsClass(value: number, maximum: number, count: number): number 
   return classIndex;
 }
 
+/** First inclusive break, using host products instead of a rounded quotient. */
+function getClosedClass(value: number, maximum: number, count: number): number {
+  let classIndex = 0;
+  while (classIndex + 1 < count && value * count > maximum * (classIndex + 1)) classIndex++;
+  return classIndex;
+}
+
 export type SpaceTimeKReference = {
   included: number[];
   k: number[];
@@ -203,10 +210,10 @@ export function getSpaceTimeKReference(options: SpaceTimeKReferenceOptions): Spa
           );
         }
       }
-      let inDistance = scaledDistance <= U;
-      let inLag = scaledLag <= V;
-      let distanceClass = Math.min(Math.max(Math.ceil(scaledDistance) - 1, 0), U - 1);
-      let lagClass = Math.min(Math.max(Math.ceil(scaledLag) - 1, 0), V - 1);
+      let inDistance = distance <= maximumDistance;
+      let inLag = lag <= maximumTimeLag;
+      let distanceClass = getClosedClass(distance, maximumDistance, U);
+      let lagClass = getClosedClass(lag, maximumTimeLag, V);
       if (splancs) {
         distanceClass = getSplancsClass(distance, maximumDistance, U);
         lagClass = getSplancsClass(lag, maximumTimeLag, V);
@@ -224,7 +231,7 @@ export function getSpaceTimeKReference(options: SpaceTimeKReferenceOptions): Spa
       }
       // Cumulative temporal marginal over every pair, regardless of distance.
       for (let index = 0; index < V; index++) {
-        if (splancs ? lagClass <= index : scaledLag <= index + 1) {
+        if (splancs ? lagClass <= index : lag * V <= maximumTimeLag * (index + 1)) {
           temporalCumulative[index] += temporalWeight;
         }
       }

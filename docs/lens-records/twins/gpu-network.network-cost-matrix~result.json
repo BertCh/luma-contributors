@@ -4,9 +4,9 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const startNodes = createTransientView(graph, 'startNodes', 'uint32', 2 * facilityCount);\nconst startCosts = createTransientView(graph, 'startCosts', 'float32', 2 * facilityCount);\nconst snapping = new GPUNetworkSnapping({\n  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},\n  positions: facilityPositions,\n  topology: roads,\n  startDirection: 'forward',\n  output: {snappedEdges, startNodes, startCosts}\n});\nconst matrix = new GPUNetworkCostMatrix({\n  topology: roads,\n  startNodes,\n  startCosts,\n  startsPerRow: 2,\n  maximumIterations: 24,\n  output: {\n    costs: createTransientView(graph, 'matrixCosts', 'float32', facilityCount * nodeCount),\n    status: {converged}\n  }\n});\ngraph.add([snapping, matrix]);\nconst {costs} = matrix.props.output;",
+    "code": "const startNodes = createTransientView(graph, 'startNodes', 'uint32', 2 * facilityCount);\nconst startCosts = createTransientView(graph, 'startCosts', 'float32', 2 * facilityCount);\nconst snapping = new GPUNetworkSnapping({\n  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},\n  positions: facilityPositions,\n  topology: roads,\n  startDirection: 'forward',\n  intersectionAware: true,\n  output: {snappedEdges, startNodes, startCosts}\n});\nconst matrix = new GPUNetworkCostMatrix({\n  topology: roads,\n  startNodes,\n  startCosts,\n  startsPerRow: 2,\n  maximumIterations: 24,\n  output: {\n    costs: createTransientView(graph, 'matrixCosts', 'float32', facilityCount * nodeCount),\n    status: {converged}\n  }\n});\ngraph.add([snapping, matrix]);\nconst {costs} = matrix.props.output;",
     "language": "ts",
-    "lineCount": 22
+    "lineCount": 23
   },
   "scenarioId": "gpu-network.network-cost-matrix",
   "viewId": "result-view",
@@ -24,8 +24,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:15.564Z",
-    "runId": "run-71a4c301",
+    "date": "2026-11-20T23:48:43.784Z",
+    "runId": "run-49432651",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -33,7 +33,7 @@
     ]
   },
   "state": {
-    "runId": "run-71a4c301",
+    "runId": "run-49432651",
     "rung": "result",
     "bindings": {},
     "clauses": [],

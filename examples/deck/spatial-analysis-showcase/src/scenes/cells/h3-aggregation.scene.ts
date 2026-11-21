@@ -507,8 +507,8 @@ export default defineScene<H3AggregationOptions>({
         lines.push(
           ``,
           `// Boundary of the occupied set${state.outline === 'groups' ? ' (an edge is kept when the neighbour has another group label)' : ''}.`,
-          `graph.add(new GPUCellSetOutline({family: ${family}, cells: tableCells, count${state.outline === 'groups' ? ', groups: tiers' : ''},`,
-          `${state.outline === 'rings' ? '  rings: {normalizeWinding: true, output: ringOutput},\n' : ''}  output: {rows, cells, edgeIndices, endpoints${state.outline === 'groups' ? ', groups' : ''}, status: {count, overflow}}}));`
+          `graph.add(new GPUCellSetOutline({family: ${family}, source: {cells: tableCells, status: {count, overflow}}${state.outline === 'groups' ? ', groups: tiers' : ''},`,
+          `${state.outline === 'rings' ? '  rings: {normalizeWinding: true, output: ringOutput},\n' : ''}  output: {rows, cells, edgeIndices, endpoints${state.outline === 'groups' ? ', groups' : ''}, status: {count: outlineCount, overflow: outlineOverflow}}}));`
         );
       }
       if (state.showSelection) {
@@ -531,13 +531,13 @@ export default defineScene<H3AggregationOptions>({
           `// Polyfill the community areas.`,
           `graph.add(new GPUCellCover({family: ${family}, resolution, containment: '${state.family === 'h3' ? 'center' : state.containment}',`,
           `  positions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity: 1 << 20,`,
-          `  output: {featureIds, cells: coverCells, core, status: {count, overflow, candidateOverflow}}}));`
+          `  output: {featureIds, cells: coverCells, core, status: {count: coverCount, overflow: coverOverflow, candidateOverflow: coverCandidateOverflow}}}));`
         );
         if (state.showCompacted) {
           lines.push(
             `graph.add(new GPUCellCompaction({family: ${family},`,
             `  operation: {type: 'compact', resolution, minimumResolution: resolution - ${state.compactDepth}},`,
-            `  cells: coverCells, count: coverCount, output: {cells: compacted, status: {count, overflow}}}));`
+            `  source: {cells: coverCells, status: {count: coverCount, overflow: coverOverflow, candidateOverflow: coverCandidateOverflow}}, output: {cells: compacted, status: {count: compactCount, overflow: compactOverflow, candidateOverflow: compactCandidateOverflow}}}));`
           );
         }
       }

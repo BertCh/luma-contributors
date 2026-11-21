@@ -32,6 +32,10 @@ import {
   getCandidateSpurInterruptionInput
 } from './k-shortest-paths-test-utils';
 import reference from '../../oracles/fixtures/k-shortest-paths.json';
+import {
+  expectTraversalPadding,
+  expectYenEnumerationStatus
+} from '../alternative-routes/traversal-enumeration-assertions';
 
 const OUTPUT = {
   vertices: 'vertices',
@@ -90,7 +94,7 @@ it('network:H2 every spur certificate precedes local truncation on both backends
         expect(rows['converged']).toEqual(Uint32Array.of(0));
         expect(rows['iterationLimitReached']).toEqual(Uint32Array.of(1));
         expect(rows['candidateOverflow']).toEqual(Uint32Array.of(0));
-        checkPadding(rows, 2, maximumPathLength);
+        checkPadding(rows, 2, maximumPathLength, 2);
       }
   }
 });
@@ -112,7 +116,7 @@ it('network:G5 a shared shortest-search interruption vetoes every active query p
       expect(rows['converged']).toEqual(Uint32Array.of(0));
       expect(rows['iterationLimitReached']).toEqual(Uint32Array.of(1));
       expect(rows['candidateOverflow']).toEqual(Uint32Array.of(0));
-      checkPadding(rows, 1, 72);
+      checkPadding(rows, 1, 72, 2);
     }
   }
 });
@@ -159,25 +163,21 @@ async function run(
 function checkPadding(
   rows: Record<string, OperationGraphRows>,
   routeCount: number,
-  pathLength: number
+  pathLength: number,
+  queryCount = 1
 ) {
-  for (let route = 0; route < rows['lengths'].length; route++) {
-    const length = rows['lengths'][route];
-    expect(
-      Array.from(
-        rows['vertices'].slice(route * pathLength + length, (route + 1) * pathLength)
-      ).every(value => value === 0xffffffff)
-    ).toBe(true);
-    expect(
-      Array.from(
-        rows['edges'].slice(route * pathLength + Math.max(0, length - 1), (route + 1) * pathLength)
-      ).every(value => value === 0xffffffff)
-    ).toBe(true);
-    if (route % routeCount >= rows['counts'][Math.floor(route / routeCount)]) {
-      expect(length).toBe(0);
-      expect(rows['costs'][route]).toBe(Infinity);
-    }
-  }
+  expectTraversalPadding(
+    {
+      counts: rows['counts'],
+      lengths: rows['lengths'],
+      costs: rows['costs'],
+      vertices: rows['vertices'],
+      edges: rows['edges']
+    },
+    queryCount,
+    routeCount,
+    pathLength
+  );
 }
 
 for (const fixture of reference.cases) {
@@ -334,7 +334,7 @@ it('skips impassable edges and unused CSR capacity across expanded lanes', async
   for (const name of OUTPUT_NAMES)
     expect(Array.from(gpu[name]), name).toEqual(Array.from(cpu[name]));
   expect(Array.from(gpu['counts'])).toEqual([2, 1, 0]);
-  checkPadding(gpu, 4, 3);
+  checkPadding(gpu, 4, 3, 3);
 });
 
 it('reuses a compiled graph after sources and weights change, clearing pools, gates and padding', async () => {
@@ -438,7 +438,7 @@ it('an overlong one-slot path cannot corrupt an adjacent invalid-endpoint query'
   expect(Array.from(gpu['converged'])).toEqual([0]);
   for (const name of OUTPUT_NAMES)
     expect(Array.from(gpu[name]), name).toEqual(Array.from(cpu[name]));
-  checkPadding(gpu, 2, 1);
+  checkPadding(gpu, 2, 1, 2);
 });
 
 it('shares round shaders across independently exhausted queries', async () => {
@@ -476,5 +476,57 @@ it('shares round shaders across independently exhausted queries', async () => {
   expect(Array.from(rows['converged'])).toEqual([1]);
   expect(Array.from(rows['iterationLimitReached'])).toEqual([0]);
   expect(Array.from(rows['candidateOverflow'])).toEqual([0]);
-  checkPadding(rows, 4, 2);
+  checkPadding(rows, 4, 2, 3);
+});
+
+it('Yen complete enumeration and budget prefixes match independent simple edge-slot DFS', async () => {
+  const {enumerateAlternativeRoutes, getTraversalEnumerationInput, readTraversalRoutes} =
+    await import('../alternative-routes/alternative-routes-operation-test-utils');
+  const input = getTraversalEnumerationInput();
+  const expected = enumerateAlternativeRoutes(input, 8);
+  const all = readTraversalRoutes(expected, 6);
+  expect(Array.from(expected.counts)).toEqual([6, 0]);
+  for (const options of [
+    {maximumPathLength: 5, candidateCapacity: 64},
+    {maximumPathLength: 2, candidateCapacity: 64},
+    {maximumPathLength: 5, candidateCapacity: 1}
+  ]) {
+    const rows = await run(input, {...options, routeCount: 8});
+    const count = rows['counts'][0];
+    const routes = readTraversalRoutes(
+      {edges: rows['edges'], lengths: rows['lengths'], costs: rows['costs']},
+      count,
+      options.maximumPathLength
+    );
+    // Yen promises cost order, not global edge-lexicographic ordering among cost ties.
+    expect(routes.map(route => route.cost)).toEqual(all.slice(0, count).map(route => route.cost));
+    for (const [routeIndex, route] of routes.entries()) {
+      expect(all).toContainEqual(route);
+      expect(
+        Array.from(
+          rows['vertices'].slice(
+            routeIndex * options.maximumPathLength,
+            routeIndex * options.maximumPathLength + route.edges.length + 1
+          )
+        )
+      ).toEqual([0, ...route.edges.map(edge => input.topology.neighbors[edge])]);
+    }
+    expect(new Set(routes.map(route => JSON.stringify(route.edges))).size).toBe(count);
+    expectYenEnumerationStatus(
+      {
+        counts: rows['counts'],
+        converged: rows['converged'],
+        iterationLimitReached: rows['iterationLimitReached'],
+        candidateOverflow: rows['candidateOverflow']
+      },
+      options.maximumPathLength,
+      options.candidateCapacity
+    );
+    if (options.maximumPathLength === 5 && options.candidateCapacity === 64) {
+      expect(routes.map(route => route.edges.join(',')).sort()).toEqual(
+        all.map(route => route.edges.join(',')).sort()
+      );
+    }
+    checkPadding(rows, 8, options.maximumPathLength, 2);
+  }
 });

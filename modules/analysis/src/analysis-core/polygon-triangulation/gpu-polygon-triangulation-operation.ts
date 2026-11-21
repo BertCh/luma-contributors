@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../operations/gpu-contributor-operation';
-import {validateCapacity} from '../kernels/gpu-contributor-utils';
 import {
   snapshotConstructionFields,
   snapshotConstructionSpatialContext
 } from '../kernels/construction-snapshot';
 import {
   GPUPolygonTriangulation,
+  validatePolygonTriangulationWorkLimits,
   type GPUPolygonTriangulationProps
 } from './gpu-polygon-triangulation';
 
@@ -85,7 +85,7 @@ export class GPUPolygonTriangulationOperation extends GPUContributorOperation {
   constructor(props: PolygonTriangulationOperationProps) {
     props = snapshotPolygonTriangulationOperationProps(props);
     const id = props.id ?? 'polygon-triangulation';
-    if (props.maximumWork !== undefined) validateCapacity(id, 'maximumWork', props.maximumWork);
+    validatePolygonTriangulationWorkLimits(id, props);
     const {output, polygonCount, indexCapacity} = props;
     super({
       id,

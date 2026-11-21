@@ -27,7 +27,15 @@ export const LOCAL_MORANS_I_PARAMETERS: GpuSceneParameter[] = [
 
 export const DBSCAN_PARAMETERS: GpuSceneParameter[] = [
   {id: 'epsilon', label: 'Epsilon', min: 0.8, max: 5, step: 0.1, default: 2.6, unit: '%'},
-  {id: 'minimumPoints', label: 'Minimum points', min: 2, max: 20, step: 1, default: 6}
+  {
+    id: 'minimumSamples',
+    renamedFrom: 'minimumPoints',
+    label: 'Minimum samples',
+    min: 2,
+    max: 20,
+    step: 1,
+    default: 6
+  }
 ];
 
 export const K_MEANS_PARAMETERS: GpuSceneParameter[] = [
@@ -57,11 +65,24 @@ export const NETWORK_ISOCHRONES_PARAMETERS: GpuSceneParameter[] = [
   {id: 'congestion', label: 'Data: congestion', min: 0, max: 2, step: 0.1, default: 0.9}
 ];
 
+export function validateParameterRenames(
+  parameters: readonly GpuSceneParameter[],
+  raw?: Readonly<Record<string, number>>
+): void {
+  if (!raw) return;
+  for (const {id, renamedFrom} of parameters) {
+    if (renamedFrom !== undefined && Object.hasOwn(raw, renamedFrom)) {
+      throw new Error(`use ${id} instead of ${renamedFrom}`);
+    }
+  }
+}
+
 /** The initial value of every parameter, overridden by any `initial` values the page passes. */
 export function readParameterValues(
   parameters: readonly GpuSceneParameter[],
   initial?: Record<string, number>
 ): Record<string, number> {
+  validateParameterRenames(parameters, initial);
   const values: Record<string, number> = {};
   for (const parameter of parameters) {
     values[parameter.id] = initial?.[parameter.id] ?? parameter.default;

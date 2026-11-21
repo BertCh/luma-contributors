@@ -8,11 +8,11 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUHierarchicalDensityClustering} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUHDBSCAN} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {type GPUSpatialContext} from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
-export type HierarchicalDensityClusteringExampleInput = {
+export type HDBSCANExampleInput = {
   /** Every third iNaturalist observation, projected to local-frame metres. */
   observations: GraphDataView<'float32x2'>;
   /** Planar context of the local frame. */
@@ -22,7 +22,7 @@ export type HierarchicalDensityClusteringExampleInput = {
 /** HDBSCAN of observations: clusters of at least 12 points, core distance from 5 neighbours. */
 export async function runExample(
   graph: GPUCommandGraph<undefined>,
-  {observations, spatialContext}: HierarchicalDensityClusteringExampleInput
+  {observations, spatialContext}: HDBSCANExampleInput
 ) {
   const usage = Buffer.STORAGE | Buffer.COPY_SRC;
   const labels = createTransientView(graph, 'labels', 'uint32', observations.length, usage);
@@ -36,7 +36,7 @@ export async function runExample(
   const clusterCount = createTransientView(graph, 'clusterCount', 'uint32', 1, usage);
   // #region example
   graph.add(
-    new GPUHierarchicalDensityClustering({
+    new GPUHDBSCAN({
       spatialContext,
       positions: observations,
       minimumClusterSize: 12,

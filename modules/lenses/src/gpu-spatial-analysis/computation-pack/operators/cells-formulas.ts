@@ -9,9 +9,9 @@ export const CELLS_FORMULAS = {
   aggregation: {
     id: 's3.cell-aggregation',
     derivation: 'curated',
-    tex: String.raw`\begin{aligned}\term{counts}{n_c}&=|\term{members}{I_c}|,\quad \term{sums}{S_c}=\sum_{\term{row}{i}\in\term{members}{I_c}}\operatorname{clamp}(\operatorname{roundEven}(\operatorname{f32}(\term{values}{x_i}\term{scale}{s})),-\term{limit}{M},\term{limit}{M})\pmod{2^{64}}\\\term{decoded}{V_c}&=\operatorname{f32}(\term{sums}{S_c})/\term{scale}{s}\end{aligned}`,
+    tex: String.raw`\begin{aligned}\term{counts}{n_c}&=|\term{members}{I_c}|,\quad \term{sums}{S_c}=\operatorname{sat}_{64}\sum_{\term{row}{i}\in\term{members}{I_c}}\operatorname{clamp}(\operatorname{roundEven}(\operatorname{f32}(\term{values}{x_i}\term{scale}{s})),-\term{limit}{M},\term{limit}{M})\\\term{decoded}{V_c}&=\operatorname{f32}(\term{sums}{S_c})/\term{scale}{s}\end{aligned}`,
     ascii:
-      'For each retained cell c, I[c] contains its accepted input rows: counts[c] = |I[c]|; sums[c] = sum(i in I[c]) clamp(roundHalfEven(f32(values[i] * s)), -M, M), modulo 2^64; sumValues[c] = f32(signed sums[c]) / s. M is the largest f32 below 2^62. Masked, invalid-key and non-finite-value rows are excluded; only NaN coordinates are excluded by the Quadbin aggregation keyer (infinite coordinates are clipped). Capacity retains the smallest keys. Optional minimums/maximums select the original accepted values, not quantized sums.',
+      'For each retained cell c, I[c] contains its accepted input rows: counts[c] = |I[c]|; sums[c] = sum(i in I[c]) clamp(roundHalfEven(f32(values[i] * s)), -M, M), with signed 64-bit saturation; sumValues[c] = f32(signed sums[c]) / s. M is the largest f32 below 2^62. status.sumOverflow reports per-row clamping or signed sum saturation; certified sums require it to be zero as well as overflow and candidateOverflow. Masked, invalid-key and non-finite-value rows are excluded; only NaN coordinates are excluded by the Quadbin aggregation keyer (infinite coordinates are clipped). Capacity retains the smallest keys. Optional minimums/maximums select the original accepted values, not quantized sums.',
     symbols: [
       {id: 'counts', role: 'output', binding: 'wgsl:countsOut'},
       {
@@ -31,9 +31,9 @@ export const CELLS_FORMULAS = {
   rollup: {
     id: 's3.cell-rollup',
     derivation: 'curated',
-    tex: String.raw`\term{counts}{n_p}=\sum_{\term{child}{c}\in\term{members}{C_p}}\term{childCounts}{n_c}\pmod{2^{32}},\qquad \term{sums}{S_p}=\sum_{\term{child}{c}\in\term{members}{C_p}}\term{childSums}{S_c}\pmod{2^{64}}`,
+    tex: String.raw`\term{counts}{n_p}=\sum_{\term{child}{c}\in\term{members}{C_p}}\term{childCounts}{n_c}\pmod{2^{32}},\qquad \term{sums}{S_p}=\operatorname{sat}_{64}\sum_{\term{child}{c}\in\term{members}{C_p}}\term{childSums}{S_c}`,
     ascii:
-      'For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes the signed sum with the existing sumScale. Minimums/maximums reduce the matching source extremes. Source rows must be at sourceResolution. Final overflow reports only destination capacity drops; source overflow and candidateOverflow propagate as candidateOverflow, making requiredCount a lower bound on the full parent requirement.',
+      'For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] with signed 64-bit saturation. The representable signed interval is [-2^63, 2^63-1], including exact -2^63 with a clear flag; positive overflow is replaced by 2^63-1 and negative overflow by -(2^63-1); status.sumOverflow propagates source sum loss and local saturation independently of count completeness. No re-quantization occurs; sumValues decodes the signed sum with the existing sumScale. Minimums/maximums reduce the matching source extremes. Source rows must be at sourceResolution. Final overflow reports only destination capacity drops; source overflow and candidateOverflow propagate as candidateOverflow, making requiredCount a lower bound on the full parent requirement.',
     symbols: [
       {id: 'counts', role: 'output', binding: 'wgsl:countsOut'},
       {id: 'sums', role: 'output', binding: 'wgsl:sums'},
@@ -51,9 +51,9 @@ export const CELLS_FORMULAS = {
   pyramid: {
     id: 's3.cell-pyramid',
     derivation: 'curated',
-    tex: String.raw`\term{counts}{n_{\ell,p}}=\sum_{\term{child}{c}\in\term{members}{C_{\ell,p}}}\term{childCounts}{n_{\ell-1,c}}\pmod{2^{32}},\qquad \term{sums}{S_{\ell,p}}=\sum_{\term{child}{c}\in\term{members}{C_{\ell,p}}}\term{childSums}{S_{\ell-1,c}}\pmod{2^{64}}`,
+    tex: String.raw`\term{counts}{n_{\ell,p}}=\sum_{\term{child}{c}\in\term{members}{C_{\ell,p}}}\term{childCounts}{n_{\ell-1,c}}\pmod{2^{32}},\qquad \term{sums}{S_{\ell,p}}=\operatorname{sat}_{64}\sum_{\term{child}{c}\in\term{members}{C_{\ell,p}}}\term{childSums}{S_{\ell-1,c}}`,
     ascii:
-      'Coarser levels ell >= 1: counts[ell,p] = sum(c in C[ell,p]) counts[ell-1,c] modulo 2^32; sums[ell,p] = sum(c in C[ell,p]) sums[ell-1,c] modulo 2^64. C[ell,p] groups finer rows by the parent key at resolutions[ell]. Level 0 uses GPUCellAggregation: count accepted rows and sum saturated roundHalfEven(f32(value * sumScale)). Intermediate sums/extremes are retained when coarser levels need them. Conservation compares individual level totals, with no filtering or capacity losses between them; levelCounts counts occupied cells, not input events.',
+      'Coarser levels ell >= 1: counts[ell,p] = sum(c in C[ell,p]) counts[ell-1,c] modulo 2^32; sums[ell,p] = sum(c in C[ell,p]) sums[ell-1,c] with signed 64-bit saturation. C[ell,p] groups finer rows by the parent key at resolutions[ell]. Level 0 uses GPUCellAggregation: count accepted rows and sum saturated roundHalfEven(f32(value * sumScale)). Intermediate sums/extremes are retained when coarser levels need them. Each level propagates status.sumOverflow and reports local signed saturation; sums are certified only with zero sumOverflow, overflow and candidateOverflow. Conservation compares individual level totals, with no filtering or capacity losses between them; levelCounts counts occupied cells, not input events.',
     symbols: [
       {id: 'counts', role: 'output', binding: 'wgsl:countsOut'},
       {id: 'sums', role: 'output', binding: 'wgsl:sums'},

@@ -7,7 +7,7 @@ export type {GPURegionStatisticsProps} from './gpu-region-statistics';
 export {GPURegionMask, GPU_REGION_SCREEN_TRANSFORM_LENGTH} from './gpu-region-mask';
 export type {GPURegionMaskProps} from './gpu-region-mask';
 export {GPUPickRegionMask} from './gpu-pick-region-mask';
-export type {GPUPickRegionMaskProps} from './gpu-pick-region-mask';
+export type {GPUPickRegionMaskOutput, GPUPickRegionMaskProps} from './gpu-pick-region-mask';
 export {
   decodeGPURegionStatistics,
   getGPURegionStatisticsSummaryLength,

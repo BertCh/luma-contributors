@@ -3,13 +3,21 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
+import {readFileSync} from 'node:fs';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
 import {
   GPUTerrainTiledFlow,
+  getTerrainTiledFlowExecutionPlan,
+  type GPUTerrainTiledFlowProps,
   type GPUTerrainFlowTile
 } from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-tiled-flow';
 import {GPUTerrainBranchingFlow} from '../../../src/gpu-terrain/terrain-processing/gpu-terrain-branching-flow';
+import {
+  planTerrainD8Tiles,
+  TERRAIN_TILED_MAXIMUM_CELL_COUNT,
+  TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT
+} from '../../../src/gpu-terrain/terrain-processing/terrain-tiled-plan';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {
@@ -67,6 +75,122 @@ function makeTiles(
 function makeGrid(width: number, height = 1) {
   return {width, height, affine: [1, 0, 0, 0, 1, 0] as const, pixelInterpretation: 'area' as const};
 }
+
+it('review B4 captures inherited terrain route, tile and output fields', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const tile = makeTiles(graph, [1])[0];
+    const inheritedTile = Object.create(tile, {output: {get: () => Object.create(tile.output)}});
+    const props: GPUTerrainTiledFlowProps = Object.create(
+      {grid: makeGrid(1), tiles: [inheritedTile]},
+      {
+        execution: {get: () => 'tiled'},
+        maximumIterations: {get: () => 1}
+      }
+    );
+    expect(getTerrainTiledFlowExecutionPlan(props, device).selectedExecution).toBe('tiled');
+    const contributor = new GPUTerrainTiledFlow(props);
+    expect(contributor.selectedExecution).toBe('tiled');
+    expect(contributor.props.maximumIterations).toBe(1);
+    expect(contributor.props.tiles[0].output.status).toBe(tile.output.status);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('review B6 documents graph-node budgets separately from GPU commands', () => {
+  const page = readFileSync(
+    new URL('../../../../../docs/api/gpu-terrain/terrain-processing.md', import.meta.url),
+    'utf8'
+  );
+  expect(page).toContain('**32,768 command nodes**');
+  expect(page).toContain('3,072-command-node estimate');
+  const source = readFileSync(
+    new URL(
+      '../../../src/gpu-terrain/terrain-processing/gpu-terrain-tiled-flow.ts',
+      import.meta.url
+    ),
+    'utf8'
+  );
+  expect(source).toContain('command-node estimate must be at most 32,768');
+});
+
+it('SCL-07 budgets only the resident route selected for one cell', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const contributor = new GPUTerrainTiledFlow({
+      grid: makeGrid(1),
+      tiles: makeTiles(graph, [1]),
+      maximumIterations: 1
+    });
+    expect(contributor.selectedExecution).toBe('resident');
+    expect(contributor.estimatedCommandNodeCount).toBe(17); // 8 solver + 2 exchange/publication + 1 reach + 0 jumps + 6 status allowance
+    expect(contributor.getCommandNodes(graph)).toHaveLength(11);
+    expect(contributor.worstCaseCommandNodeCount).toBe(517);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('SCL-07 admits 6452 one-cell tiles when the resident fraction plane fits', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const contributor = new GPUTerrainTiledFlow({
+      grid: makeGrid(6452),
+      tiles: makeTiles(graph, Array(6452).fill(1)),
+      maximumIterations: 1
+    });
+    expect(contributor.selectedExecution).toBe('resident');
+    expect(contributor.estimatedCommandNodeCount).toBe(12932); // 8 + 2*6452 + 1 + ceil(log2(6452)) + 6
+    expect(contributor.worstCaseCommandNodeCount).toBe(32772); // 5*6452 + 512, unused tiled route
+  } finally {
+    device.destroy();
+  }
+});
+
+it('SCL-15 keeps 32768 by 16384 on the tiled side of the checked cell bounds', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const tile = makeTiles(graph, [1024], 1024)[0];
+    const props = {
+      grid: makeGrid(32768, 16384),
+      execution: 'tiled' as const,
+      tiles: Array.from({length: 512}, (_, index) => ({
+        ...tile,
+        column: (index % 32) * 1024,
+        row: Math.floor(index / 32) * 1024,
+        output: {
+          accumulation: createTransientView(
+            graph,
+            `large-accumulation-${index}`,
+            'float32',
+            1048576
+          ),
+          status: createTransientView(graph, `large-status-${index}`, 'uint32', 1048576),
+          reachIds: createTransientView(graph, `large-reaches-${index}`, 'uint32', 1048576)
+        }
+      })),
+      maximumIterations: 1
+    };
+    // 32*16 cores, each 1024^2 cells. Each square has 4*1024-4 boundary cells.
+    expect(TERRAIN_TILED_MAXIMUM_CELL_COUNT).toBe(536870911);
+    expect(TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT).toBe(4294967295);
+    const plan = planTerrainD8Tiles('documented-grid', props);
+    expect(plan.maximumCellCount).toBe(1048576);
+    expect(plan.boundaryCount).toBe(2095104);
+    expect(plan.estimatedCommandNodeCount).toBe(3072);
+    expect(new GPUTerrainTiledFlow(props).estimatedCommandNodeCount).toBe(3072);
+    expect(() => new GPUTerrainTiledFlow({...props, execution: 'resident'})).toThrow(
+      /resident grid cell count.*536870911/
+    );
+  } finally {
+    device.destroy();
+  }
+});
 
 for (const branching of [false, true]) {
   it(`keeps one exchange and one publication pipeline for unequal tile counts (branching=${branching})`, () => {

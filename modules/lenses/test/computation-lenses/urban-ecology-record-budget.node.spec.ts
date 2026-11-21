@@ -102,7 +102,9 @@ for (const [scenario, element] of [
         );
         const bytes = new TextEncoder().encode(`${JSON.stringify(projected)}\n`).length;
         console.info(`${scenarioId}: ${bytes} projected bytes with synthetic capture words`);
-        expect(bytes, `${scenarioId}: ${bytes} projected bytes`).toBeLessThan(480_000);
+        // The public record budget is 512 KiB (docs/api/computation-views.md). Retain 4 KiB
+        // for timing/adapter metadata, matching the network envelope qualification fixture.
+        expect(bytes, `${scenarioId}: ${bytes} projected bytes`).toBeLessThan(512 * 1024 - 4096);
       } finally {
         compiled.destroy();
         snapshot.arena.destroy();

@@ -84,6 +84,26 @@ function createScene() {
   return {device, graph, bands, props};
 }
 
+it('TYP-13 exposes the constructed spectral properties as readonly', () => {
+  const {device, bands, props} = createScene();
+  try {
+    const evi = new spectralExports.GPURasterEVI({
+      ...props,
+      epsilon: 0.125,
+      nearInfrared: bands['nearInfrared'],
+      red: bands['red'],
+      blue: bands['blue']
+    });
+    expect(() => {
+      // @ts-expect-error The validated spectral properties are readonly after construction.
+      evi.props.epsilon = 0.25;
+    }).toThrow(TypeError);
+    expect(evi.props.epsilon).toBe(0.125);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('G3 spectral construction retains validated output and band descriptors after mutation', () => {
   const {device, graph, bands, props} = createScene();
   const nearInfrared = {...bands['nearInfrared']};

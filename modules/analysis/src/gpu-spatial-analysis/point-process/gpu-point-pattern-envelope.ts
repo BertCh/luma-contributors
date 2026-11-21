@@ -19,16 +19,26 @@ import {
   validateRequirement,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  POINT_PATTERN_EXACT_STATISTIC_WGSL,
+  POINT_PATTERN_EXACT_MAXIMUM_WGSL
+} from './point-pattern-exact-statistic-wgsl';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createRankEnvelopeNodes} from './gpu-point-pattern-rank-envelope';
+import {
+  snapshotEnvelopeConstruction,
+  resolveEnvelopeSimulationCount,
+  resolveEnvelopeStatistic
+} from './point-pattern-envelope-construction';
 import {validatePointProcessView} from './point-process-utils';
 
 /** Most curve rows: the global deviation tests reduce a curve in one serial invocation. */
-const MAXIMUM_CURVE_ROW_COUNT = 4096;
-/** Most simulated curves: the pointwise order statistics sort S values per row. */
-const MAXIMUM_SIMULATION_COUNT = 4096;
+export const MAXIMUM_CURVE_ROW_COUNT = 4096;
+/** Most simulated curves: the pointwise order statistics select from S values per row. */
+export const MAXIMUM_SIMULATION_COUNT = 4096;
 /** Quadratic rank comparison budget of the extreme-rank test; no curves are truncated. */
-const MAXIMUM_RANK_COMPARISON_COUNT = 16777216;
+export const MAXIMUM_RANK_COMPARISON_COUNT = 16777216;
 
 /** Resident simulation-curve inference with explicit exchangeability metadata. */
 export type GPUPointPatternEnvelopeProps = {
@@ -36,11 +46,12 @@ export type GPUPointPatternEnvelopeProps = {
   observed: GraphDataView<'float32'>;
   /** Replicate-major curves, simulationCount * observed.length values. */
   simulations: GraphDataView<'float32'>;
-  /** Fixed, externally specified null expectation, shared by observed and simulated curves. */
-  reference: GraphDataView<'float32'>;
-  /** Positive integration weights; used by the DCLF statistic. */
-  integrationWeights: GraphDataView<'float32'>;
-  simulationCount: number;
+  /** Fixed null expectation in curve units; required for deviation statistics, unused by extreme rank. */
+  reference?: GraphDataView<'float32'>;
+  /** Positive quadrature weights; required only for integrated-squared-deviation (DCLF). */
+  integrationWeights?: GraphDataView<'float32'>;
+  /** Number of simulated curves; omitted means the exact simulations.length / observed.length quotient. */
+  simulationCount?: number;
   /** Pointwise lower/upper order statistic, default 1. */
   rank?: number;
   statistic?: 'maximum-deviation' | 'integrated-squared-deviation' | 'extreme-rank';
@@ -55,7 +66,7 @@ export type GPUPointPatternEnvelopeProps = {
     upper: GraphDataView<'float32'>;
     /** [observedStatistic, conservativePValue, pValueResolution, simulationCount]. */
     statistics: GraphDataView<'float32'>;
-    /** 0 valid, 1 invalid/nonfinite curve or nonpositive integration weight. */
+    /** 0 valid, 1 invalid/nonfinite used input (including nonpositive weights in integrated mode). */
     status: GraphDataView<'uint32'>;
     /** Extreme-rank p interval [strict, conservative]; available only in extreme-rank mode. */
     pValueInterval?: GraphDataView<'float32'>;
@@ -89,11 +100,29 @@ fn selectOrderedValue(column: u32, order: u32) -> f32 {
  * ties conservatively. DCLF uses the supplied quadrature measure. No invalid replicate is silently
  * discarded: any invalid curve makes every inferential result NaN. Null calibration depends on
  * caller-provided exchangeable simulations and declared parameter treatment.
+ * GPU limits: 4096 ordinates per curve, 4096 simulations, and for extreme rank
+ * (simulationCount + 1)^2 * ordinateCount <= 16777216 comparisons in total.
+ * Maximum and integrated deviations are compared with exact dyadic integer arithmetic on
+ * the stored float32 inputs. The displayed statistic remains float32.
  */
 export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly props: GPUPointPatternEnvelopeProps;
-  constructor(props: GPUPointPatternEnvelopeProps) {
+  readonly props: GPUPointPatternEnvelopeProps & {simulationCount: number};
+  constructor(input: GPUPointPatternEnvelopeProps) {
+    const captured = snapshotEnvelopeConstruction(input);
+    const props = snapshotEnvelopeConstruction({
+      ...captured,
+      statistic: resolveEnvelopeStatistic(
+        captured.id ?? 'point-pattern-envelope',
+        captured.statistic
+      ),
+      simulationCount: resolveEnvelopeSimulationCount(
+        captured.id ?? 'point-pattern-envelope',
+        captured.observed.length,
+        captured.simulations.length,
+        captured.simulationCount
+      )
+    });
     this.id = props.id ?? 'point-pattern-envelope';
     this.props = props;
     const count = props.observed.length;
@@ -120,18 +149,36 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
         ),
       "statistic must be 'maximum-deviation', 'integrated-squared-deviation' or 'extreme-rank'"
     );
-    for (const view of [
-      props.observed,
-      props.reference,
-      props.integrationWeights,
-      props.output.lower,
-      props.output.upper
-    ]) {
-      validatePointProcessView(view, 'float32', count, id);
+    validateRequirement(
+      id,
+      props.statistic === 'extreme-rank' || props.reference !== undefined,
+      'reference is required for maximum-deviation and integrated-squared-deviation'
+    );
+    validateRequirement(
+      id,
+      props.statistic !== 'integrated-squared-deviation' || props.integrationWeights !== undefined,
+      'integrationWeights is required for integrated-squared-deviation'
+    );
+    for (const [path, view] of Object.entries({
+      observed: props.observed,
+      'output.lower': props.output.lower,
+      'output.upper': props.output.upper,
+      ...(props.statistic === 'extreme-rank' ? {} : {reference: props.reference!}),
+      ...(props.statistic === 'integrated-squared-deviation'
+        ? {integrationWeights: props.integrationWeights!}
+        : {})
+    })) {
+      validatePointProcessView(id, path, view, ['float32'], count);
     }
-    validatePointProcessView(props.simulations, 'float32', count * props.simulationCount, id);
-    validatePointProcessView(props.output.statistics, 'float32', 4, id);
-    validatePointProcessView(props.output.status, 'uint32', 1, id);
+    validatePointProcessView(
+      id,
+      'simulations',
+      props.simulations,
+      ['float32'],
+      count * props.simulationCount
+    );
+    validatePointProcessView(id, 'output.statistics', props.output.statistics, ['float32'], 4);
+    validatePointProcessView(id, 'output.status', props.output.status, ['uint32'], 1);
     if (props.statistic === 'extreme-rank') {
       // The quadratic rank comparison budget is explicit; no curves/radii are truncated.
       validateRequirement(
@@ -151,7 +198,13 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
         props.statistic === 'extreme-rank',
         "output.pValueInterval needs statistic 'extreme-rank'"
       );
-      validatePointProcessView(props.output.pValueInterval, 'float32', 2, id);
+      validatePointProcessView(
+        id,
+        'output.pValueInterval',
+        props.output.pValueInterval,
+        ['float32'],
+        2
+      );
     }
 
     validateSpatialOutputViews(this.id, props.output, [
@@ -161,8 +214,8 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.observed,
       props.simulations,
-      props.reference,
-      props.integrationWeights
+      ...(props.statistic === 'extreme-rank' ? [] : [props.reference]),
+      ...(props.statistic === 'integrated-squared-deviation' ? [props.integrationWeights] : [])
     ]);
   }
   getCommandNodes<Parameters>(
@@ -175,15 +228,17 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       props.observed,
       props.simulations,
-      props.reference,
-      props.integrationWeights,
+      ...(props.statistic === 'extreme-rank' ? [] : [props.reference]),
+      ...(props.statistic === 'integrated-squared-deviation' ? [props.integrationWeights] : []),
       ...Object.values(props.output)
     ]);
     validateGraphChunkBindingRanges(graph, id, {
       observed: props.observed,
       simulations: props.simulations,
-      reference: props.reference,
-      integrationWeights: props.integrationWeights,
+      ...(props.statistic === 'extreme-rank' ? {} : {reference: props.reference}),
+      ...(props.statistic === 'integrated-squared-deviation'
+        ? {integrationWeights: props.integrationWeights}
+        : {}),
       ...Object.fromEntries(
         Object.entries(props.output).map(([name, view]) => [`output.${name}`, view])
       )
@@ -196,6 +251,13 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
       'reduce simulationCount'
     );
     if (props.statistic === 'extreme-rank') return createRankEnvelopeNodes(graph, props, id);
+    const residuals = createTransientView(graph, `${id}-residuals`, 'float32', simulationCount + 1);
+    const comparisonFlags = createTransientView(
+      graph,
+      `${id}-comparison-flags`,
+      'float32',
+      simulationCount + 1
+    );
     const deviations = createTransientView(
       graph,
       `${id}-deviations`,
@@ -211,31 +273,73 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
         bindings: [
           {name: 'observed', view: props.observed, type: 'f32', access: 'read'},
           {name: 'simulations', view: props.simulations, type: 'f32', access: 'read'},
-          {name: 'reference', view: props.reference, type: 'f32', access: 'read'},
-          {name: 'weights', view: props.integrationWeights, type: 'f32', access: 'read'},
+          {name: 'reference', view: props.reference!, type: 'f32', access: 'read'},
+          ...(props.statistic === 'integrated-squared-deviation'
+            ? [
+                {
+                  name: 'weights',
+                  view: props.integrationWeights!,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          {name: 'residuals', view: residuals, type: 'f32', access: 'read_write'},
           {name: 'deviations', view: deviations, type: 'f32', access: 'read_write'}
         ],
-        declarations: IS_FINITE_FLOAT_WGSL,
+        declarations: `${IS_FINITE_FLOAT_WGSL}\n${COMPENSATED_SUM_WGSL}`,
         body: `var statistic = 0.0;
+  var accumulator = vec2f(0.0);
   var valid = true;
   for (var radius = 0u; radius < ${count}u; radius++) {
     var value = observed[observedOffset + radius];
     if (index < ${simulationCount}u) { value = simulations[simulationsOffset + index * ${count}u + radius]; }
     let center = reference[referenceOffset + radius];
-    let weight = weights[weightsOffset + radius];
-    valid = valid && isFiniteFloat(value) && isFiniteFloat(center) && isFiniteFloat(weight) && weight > 0.0;
+    valid = valid && isFiniteFloat(value) && isFiniteFloat(center);
+    ${props.statistic === 'integrated-squared-deviation' ? 'let weight = weights[weightsOffset + radius];\n    valid = valid && (bitcast<u32>(weight) > 0u && bitcast<u32>(weight) < 0x7f800000u);' : ''}
     let deviation = abs(value - center);
-    ${props.statistic === 'integrated-squared-deviation' ? 'statistic += weight * deviation * deviation;' : 'statistic = max(statistic, deviation);'}
+    ${props.statistic === 'integrated-squared-deviation' ? 'accumulator = addCompensatedValue(accumulator, weight * deviation * deviation); statistic = accumulator.x;' : 'statistic = max(statistic, deviation);'}
   }
+  residuals[residualsOffset + index] = accumulator.y;
   deviations[deviationsOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), statistic, valid && isFiniteFloat(statistic));`
       }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-compare`,
+        operation: 'GPUPointPatternEnvelope',
+        variant: 'residual-comparison',
+        invocationCount: simulationCount + 1,
+        bindings:
+          props.statistic === 'integrated-squared-deviation'
+            ? [
+                {name: 'observed', view: props.observed, type: 'f32', access: 'read'},
+                {name: 'simulations', view: props.simulations, type: 'f32', access: 'read'},
+                {name: 'reference', view: props.reference!, type: 'f32', access: 'read'},
+                {name: 'weights', view: props.integrationWeights!, type: 'f32', access: 'read'},
+                {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
+                {name: 'flags', view: comparisonFlags, type: 'f32', access: 'read_write'}
+              ]
+            : [
+                {name: 'observed', view: props.observed, type: 'f32', access: 'read'},
+                {name: 'simulations', view: props.simulations, type: 'f32', access: 'read'},
+                {name: 'reference', view: props.reference!, type: 'f32', access: 'read'},
+                {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
+                {name: 'flags', view: comparisonFlags, type: 'f32', access: 'read_write'}
+              ],
+        declarations: `${IS_FINITE_FLOAT_WGSL}\nconst CURVE_ROWS: u32 = ${count}u;\nconst SIMULATION_COUNT: u32 = ${simulationCount}u;\n${props.statistic === 'integrated-squared-deviation' ? POINT_PATTERN_EXACT_STATISTIC_WGSL : POINT_PATTERN_EXACT_MAXIMUM_WGSL}`,
+        body: `let observed = deviations[deviationsOffset + ${simulationCount}u];
+  let value = deviations[deviationsOffset + index];
+  let exceeds = ${props.statistic === 'integrated-squared-deviation' ? 'envelopeExactAtLeast(getEnvelopeExactStatistic(index), getEnvelopeExactStatistic(SIMULATION_COUNT))' : 'envelopeExactAtLeast(getEnvelopeExactMaximum(index), getEnvelopeExactMaximum(SIMULATION_COUNT))'};
+  flags[flagsOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), select(0.0, 1.0, exceeds), isFiniteFloat(value) && isFiniteFloat(observed));`
+      }),
+      // The scalar test reduces 0/1 exceedance flags against an observed sentinel of 1.
+      // The following display node replaces its temporary statistic with the actual rounded sum.
       createWGSLKernelNode(graph, {
         id: `${id}-test`,
         operation: 'GPUPointPatternEnvelope',
         variant: 'global-test',
         invocationCount: 1,
         bindings: [
-          {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
+          {name: 'deviations', view: comparisonFlags, type: 'f32', access: 'read'},
           {name: 'statistics', view: props.output.statistics, type: 'f32', access: 'read_write'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
@@ -254,6 +358,19 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
   statistics[statisticsOffset + 2u] = 1.0 / ${simulationCount + 1}.0;
   statistics[statisticsOffset + 3u] = ${simulationCount}.0;
   status[statusOffset] = select(1u, 0u, valid);`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-observed-statistic`,
+        operation: 'GPUPointPatternEnvelope',
+        variant: 'display-statistic',
+        invocationCount: 1,
+        bindings: [
+          {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
+          {name: 'residuals', view: residuals, type: 'f32', access: 'read'},
+          {name: 'status', view: props.output.status, type: 'u32', access: 'read'},
+          {name: 'statistics', view: props.output.statistics, type: 'f32', access: 'read_write'}
+        ],
+        body: `if (status[statusOffset] == 0u) { statistics[statisticsOffset] = deviations[deviationsOffset + ${simulationCount}u] + residuals[residualsOffset + ${simulationCount}u]; }`
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-pointwise`,
@@ -282,3 +399,6 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
     ];
   }
 }
+
+/** Caller-owned output map for {@link GPUPointPatternEnvelope}. */
+export type GPUPointPatternEnvelopeOutput = GPUPointPatternEnvelopeProps['output'];

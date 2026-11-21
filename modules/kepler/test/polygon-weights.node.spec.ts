@@ -5,6 +5,7 @@
 import {expect, test, vi} from 'vitest';
 import {NullDevice} from '@luma.gl/core/test-utils';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUContiguityWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {addKeplerPolygonWeights} from '../src/analysis/polygon-weights';
 import {addKeplerAnalysisRecipe} from '../src/analysis/recipe-bindings';
 import {
@@ -67,7 +68,7 @@ const operations: KeplerPolygonAnalysisOperation[] = [
     seed: 17,
     permutationCount: 99,
     significanceLevel: 0.05,
-    inference: 'legacy-directed-pseudo',
+    alternative: 'geoda-legacy',
     multipleTesting: 'none',
     islands: 'exclude',
     quantileMethod: 'type-5'
@@ -90,7 +91,13 @@ test('polygon recipes preserve exact-source topology and explicit statistical ch
       restoreKeplerAnalysisRecipe(serializeKeplerAnalysisRecipe(recipe), {
         resolveDatasetRevision: () => 2
       })
-    ).toEqual(recipe);
+    ).toEqual({
+      ...recipe,
+      operation:
+        operation.kind === 'quantile-lisa-polygons'
+          ? {...operation, alternative: 'geoda-legacy'}
+          : operation
+    });
     for (const rowCount of [3, 4097])
       expect(
         selectKeplerExecutionRoute(
@@ -159,6 +166,8 @@ test('polygon bindings retain original rows and reject stale topology before sta
   const addCompute = vi.spyOn(graph, 'addComputePass');
   try {
     expect(producer.weights.spatialContext).toBeUndefined();
+    expect(producer.weights.status).toBe(producer.status);
+    expect(new Set(Object.values(producer.status)).size).toBe(4);
     expect(producer.weights.information).toMatchObject({
       rowCount: 3,
       transform: 'binary',
@@ -270,4 +279,96 @@ test('polygon Quantile LISA rejects changed inference and admits only meaningful
       {webgpu: true, availableBytes: 1024, duckdb: false, analysisBackend: false}
     ).reason
   ).toBe('capacity');
+});
+
+test.each([false, true])('polygon count has a writer when topology is empty=%s', empty => {
+  const device = makeDevice();
+  const graph = new GPUCommandGraph(device);
+  const count = createTransientView(graph, 'retained-count', 'uint32', 1);
+  const add = vi.spyOn(graph, 'add');
+  const compute = vi.spyOn(graph, 'addComputePass');
+  try {
+    const result = addKeplerPolygonWeights(graph, {
+      source,
+      settings: weights,
+      polygons: {
+        kind: 'polygons',
+        positions: createTransientView(graph, 'tokens', 'float32x2', empty ? 0 : 6),
+        featureOffsets: createTransientView(graph, 'features', 'uint32', 4),
+        polygonOffsets: createTransientView(graph, 'polygons', 'uint32', empty ? 1 : 3),
+        ringOffsets: createTransientView(graph, 'rings', 'uint32', empty ? 1 : 3)
+      },
+      geometryMask: createTransientView(graph, 'mask', 'uint32', 3),
+      output: {
+        offsets: createTransientView(graph, 'offsets', 'uint32', 4),
+        neighbors: createTransientView(graph, 'neighbors', 'uint32', 8),
+        weights: createTransientView(graph, 'values', 'float32', 8),
+        status: {
+          count,
+          overflow: createTransientView(graph, 'overflow', 'uint32', 1),
+          requiredCount: createTransientView(graph, 'required', 'uint32', 1),
+          candidateOverflow: createTransientView(graph, 'candidate', 'uint32', 1),
+          invalidCount: createTransientView(graph, 'invalid', 'uint32', 1)
+        }
+      }
+    });
+    expect(result.weights.status?.count).toBe(count);
+    if (empty) {
+      expect(
+        compute.mock.calls.some(([node]) =>
+          node.resources?.some(
+            resource =>
+              'buffer' in resource &&
+              resource.buffer === count &&
+              resource.usage === 'storage-read-write'
+          )
+        )
+      ).toBe(true);
+    } else {
+      const contributor = add.mock.calls
+        .map(([node]) => node)
+        .find(node => node instanceof GPUContiguityWeights);
+      expect(contributor?.props.output.status.count?.buffer.id).toBe(count.buffer.id);
+    }
+  } finally {
+    add.mockRestore();
+    compute.mockRestore();
+    device.destroy();
+  }
+});
+
+test('polygon status rejects destinations without a writer before declaring work', () => {
+  const device = makeDevice();
+  const graph = new GPUCommandGraph(device);
+  const add = vi.spyOn(graph, 'addComputePass');
+  try {
+    for (const name of ['complete', 'invalidInput']) {
+      const status = {
+        overflow: createTransientView(graph, `overflow-${name}`, 'uint32', 1),
+        requiredCount: createTransientView(graph, `required-${name}`, 'uint32', 1),
+        candidateOverflow: createTransientView(graph, `candidate-${name}`, 'uint32', 1),
+        invalidCount: createTransientView(graph, `invalid-${name}`, 'uint32', 1),
+        [name]: createTransientView(graph, `unsupported-${name}`, 'uint32', 1)
+      };
+      expect(() =>
+        addKeplerPolygonWeights(graph, {
+          source,
+          settings: weights,
+          status,
+          polygons: {
+            kind: 'polygons',
+            positions: createTransientView(graph, `tokens-${name}`, 'float32x2', 0),
+            featureOffsets: createTransientView(graph, `features-${name}`, 'uint32', 4),
+            polygonOffsets: createTransientView(graph, `polygons-${name}`, 'uint32', 1),
+            ringOffsets: createTransientView(graph, `rings-${name}`, 'uint32', 1)
+          },
+          geometryMask: createTransientView(graph, `mask-${name}`, 'uint32', 3)
+        })
+      ).toThrow(new RegExp(`kepler-polygon-weights.*${name}.*unsupported`));
+    }
+    expect(add).not.toHaveBeenCalled();
+  } finally {
+    add.mockRestore();
+    device.destroy();
+  }
 });

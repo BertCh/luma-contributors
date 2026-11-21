@@ -6,7 +6,11 @@ export * from './gpu-analysis-contiguity-statistics';
 
 export {
   GPUIslandAttachment,
-  GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT
+  getGPUIslandAttachmentExecutionPlan,
+  GPU_ISLAND_ATTACHMENT_ROUTES,
+  GPU_ISLAND_ATTACHMENT_PLANNER,
+  GPU_ISLAND_ATTACHMENT_AUTO_SCAN_MAXIMUM_ROWS,
+  GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROWS
 } from './gpu-island-attachment';
 export type {
   GPUIslandAttachmentNearestSearch,
@@ -32,6 +36,8 @@ export type {
   GPUSpatialWeightsCapacityPlanOptions,
   GPUSpatialWeightsInformation,
   GPUSpatialWeightsOutput,
+  GPUSpatialWeightsProducerOutput,
+  GPUSpatialWeightsRequirementObservation,
   GPUSpatialWeightsProvenance,
   GPUSpatialWeightsTransformState
 } from './spatial-weights';
@@ -186,3 +192,8 @@ export {
   GPU_SPATIAL_WEIGHTS_TRANSPOSE_PARAMETER_LENGTH
 } from './spatial-weights-parameters';
 export type {GPUSpatialWeightsTransposeSettings} from './spatial-weights-parameters';
+
+export type {CPUSpatialWeightsValidationResult} from './cpu-spatial-weights-validation-operation';
+export type {SpatialWeightsValidationOptions} from './spatial-weights-validation-options';
+
+export type {CPUPolygonRows} from '../shared/cpu-polygon-rows';

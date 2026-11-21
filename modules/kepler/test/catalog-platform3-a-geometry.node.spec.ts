@@ -751,3 +751,27 @@ test('invalid input is rejected by the declared capacities and kinds', () => {
     runCatalogOperation(binding, {...planar, padding: -1}, {points: points([[0, 0]])})
   ).toThrow();
 });
+
+test('TSC-01 readonly predicate rings preserve hole interiors and boundary contact', () => {
+  const shell = Object.freeze(square(0, 0, 4).map(position => Object.freeze(position)));
+  const hole = Object.freeze(square(1, 1, 2).map(position => Object.freeze(position)));
+  const right = collection([{type: 'Polygon', coordinates: Object.freeze([shell, hole])}]);
+  const left = points([
+    [0, 2],
+    [1, 2],
+    [2, 2],
+    [0.5, 0.5]
+  ]);
+  // Both boundaries intersect; the open hole interior does not. No predicate mutates a ring.
+  const intersecting = run('spatial-join-predicate', {predicate: 'intersects'}, {left, right});
+  expect(column(intersecting, 'left_index')).toEqual([0, 1, 3]);
+  const coveringHole = run(
+    'spatial-join-predicate',
+    {predicate: 'within'},
+    {
+      left: collection([{type: 'Polygon', coordinates: [shell]}]),
+      right
+    }
+  );
+  expect(coveringHole.tables[0].rowCount).toBe(0);
+});

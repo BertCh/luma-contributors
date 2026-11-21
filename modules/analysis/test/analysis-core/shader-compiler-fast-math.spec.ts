@@ -15,8 +15,10 @@ import {getAdapterLabel, getRawTestDevice, runRawComputeShader} from './shader-c
 // The same Metal source compiled outside the browser with fast math off gives the IEEE result for
 // all three, so they are one cause. The browser offers no switch for it.
 //
-// Expected values are IEEE float32 arithmetic done here with Math.fround. Each test pins what
-// the test GPU does and skips on an adapter that computes the expression as written.
+// Expected values are IEEE float32 arithmetic done here with Math.fround. Each test accepts
+// exactly two behaviours, the one measured on the test GPU and the IEEE one an adapter without
+// fast math gives, annotates which it saw, and fails on anything else (CORE-120). It does not
+// skip: a second vendor that computes as written passes here rather than skipping the file.
 
 const TERM_COUNT = 1_000_000;
 const RESIDUAL_COUNT = 16;
@@ -156,7 +158,7 @@ function getMeasurement(): Promise<Measurement> {
   return measurement;
 }
 
-it('(a) Kahan, Neumaier and two-sum compensation terms are removed on the test GPU', async context => {
+it('(a) Kahan, Neumaier and two-sum compensation terms are either all removed or all kept', async context => {
   const {adapterLabel, inputs, values} = await getMeasurement();
   const [plain, kahanSum, kahanCompensation, neumaierSum, neumaierCompensation, twoSumError] =
     values;
@@ -164,8 +166,15 @@ it('(a) Kahan, Neumaier and two-sum compensation terms are removed on the test G
   let exactScaledSum = 0;
   let serialSum = 0;
   let serialCompensation = 0;
+  let serialKahanSum = 0;
+  let serialKahanCompensation = 0;
   for (let row = 0; row < TERM_COUNT; row++) {
     const term = inputs[row];
+    // Kahan as the shader writes it, one rounded operation at a time.
+    const corrected = Math.fround(term - serialKahanCompensation);
+    const kahanNext = Math.fround(serialKahanSum + corrected);
+    serialKahanCompensation = Math.fround(Math.fround(kahanNext - serialKahanSum) - corrected);
+    serialKahanSum = kahanNext;
     // Integers below 2^23 each and below 2^43 in total: exact in float64.
     exactScaledSum += term * 1024;
     const next = Math.fround(serialSum + term);
@@ -183,13 +192,19 @@ it('(a) Kahan, Neumaier and two-sum compensation terms are removed on the test G
   expect(Math.abs(serialSum + serialCompensation - exactSum)).toBeLessThan(1);
 
   if (twoSumError === 1) {
-    // The adapter computes the expressions as written: the sums are then the IEEE ones.
+    // The adapter computes the expressions as written: the sums are then the IEEE ones, and
+    // the compensated totals are within 1 of the true sum.
+    await context.annotate(`${adapterLabel} keeps float compensation terms`);
     expect(neumaierSum).toBe(serialSum);
     expect(neumaierCompensation).toBe(serialCompensation);
-    context.skip(`${adapterLabel} keeps float compensation terms`);
+    expect(Math.abs(neumaierSum + neumaierCompensation - exactSum)).toBeLessThan(1);
+    expect(kahanSum).toBe(serialKahanSum);
+    expect(kahanCompensation).toBe(serialKahanCompensation);
+    return;
   }
   // Measured on the test GPU: every compensation is exactly zero and both "compensated" sums
   // are the plain sum of the same loop bit for bit, more than 1000 from the true sum.
+  await context.annotate(`${adapterLabel} removes float compensation terms`);
   expect(twoSumError).toBe(0);
   expect(kahanCompensation).toBe(0);
   expect(neumaierCompensation).toBe(0);
@@ -198,7 +213,7 @@ it('(a) Kahan, Neumaier and two-sum compensation terms are removed on the test G
   expect(Math.abs(plain - exactSum)).toBeGreaterThan(1000);
 });
 
-it('(b) (value - shift) - small is computed as value - (shift + small) on the test GPU', async context => {
+it('(b) (value - shift) - small is computed as written or as value - (shift + small)', async context => {
   const {adapterLabel, inputs, values} = await getMeasurement();
   const shift = inputs[CHAIN_OFFSET];
   const small = inputs[CHAIN_OFFSET + 1];
@@ -218,15 +233,17 @@ it('(b) (value - shift) - small is computed as value - (shift + small) on the te
     values.slice(SUM_WORD_COUNT + RESIDUAL_COUNT, SUM_WORD_COUNT + 2 * RESIDUAL_COUNT)
   );
   if (expression.every((value, row) => value === asWritten[row])) {
+    await context.annotate(`${adapterLabel} subtracts in the order written`);
     expect(statements).toEqual(asWritten);
-    context.skip(`${adapterLabel} subtracts in the order written`);
+    return;
   }
   // Measured on the test GPU: all 16 rows regrouped, and a statement boundary does not help.
+  await context.annotate(`${adapterLabel} regroups the subtraction`);
   expect(expression).toEqual(regrouped);
   expect(statements).toEqual(regrouped);
 });
 
-it('(d) float division is up to one unit in the last place off on the test GPU', async context => {
+it('(d) float division is correctly rounded or at most one unit in the last place off', async context => {
   const {adapterLabel, inputs, words, values} = await getMeasurement();
   const expectedWords = new Uint32Array(1);
   const expectedValues = new Float32Array(expectedWords.buffer);
@@ -244,8 +261,10 @@ it('(d) float division is up to one unit in the last place off on the test GPU',
   // 6 / 3 is exact in this shader on every adapter tried.
   expect(values[SUM_WORD_COUNT + 2 * RESIDUAL_COUNT]).toBe(2);
   if (mismatchCount === 0) {
-    context.skip(`${adapterLabel} rounds division correctly`);
+    await context.annotate(`${adapterLabel} rounds division correctly`);
+    return;
   }
+  await context.annotate(`${adapterLabel}: ${mismatchCount} of ${DIVISION_COUNT} quotients off`);
   // Measured on the test GPU: 551 of the 2048 quotients, each by one unit in the last place
   // (WGSL allows 2.5). The count is not pinned exactly; the size of the error is.
   expect(mismatchCount).toBeGreaterThan(100);

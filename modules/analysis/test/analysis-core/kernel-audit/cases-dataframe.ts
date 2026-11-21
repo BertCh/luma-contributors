@@ -16,7 +16,7 @@ import {
   GPUCompositeScore,
   GPUGroupStatistics,
   GPUInequality,
-  GPUKeyJoin,
+  GPUKeyLookup,
   GPUPointPatternIndices,
   GPURipley,
   GPURipleyDistanceFunctions,
@@ -120,9 +120,9 @@ const CLASS_BREAKS_CASES: KernelAuditCase[] = [
     (method: GPUClassBreaksMethod): KernelAuditCase => ({
       exportName: 'GPUClassBreaks',
       name: `method ${method}, 64 classes, 2048 bins`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUClassBreaks({
+          construct(GPUClassBreaks, {
             values: view('float32', ROWS),
             mask: view('uint32', ROWS),
             parameters: view('float32', getGPUClassBreaksParameterLength(64)),
@@ -142,9 +142,9 @@ const CLASS_BREAKS_CASES: KernelAuditCase[] = [
     (format): KernelAuditCase => ({
       exportName: 'GPUClassBreaks',
       name: `every method, ${format} values`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUClassBreaks({
+          construct(GPUClassBreaks, {
             values: view(format, ROWS),
             mask: view('uint32', ROWS),
             parameters: view('float32', getGPUClassBreaksParameterLength(64)),
@@ -162,9 +162,9 @@ const CLASS_BREAKS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUClassBreaks',
     name: 'every method at maximum rows (2^24), 64 classes',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUClassBreaks({
+        construct(GPUClassBreaks, {
           values: view('float32', COLUMN_MAXIMUM_ROWS),
           mask: view('uint32', COLUMN_MAXIMUM_ROWS),
           parameters: view('float32', getGPUClassBreaksParameterLength(64)),
@@ -181,9 +181,9 @@ const CLASS_BREAKS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUClassBreaks',
     name: 'one row above the maximum (2^24 + 1), float32 counts',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUClassBreaks({
+        construct(GPUClassBreaks, {
           values: view('float32', COLUMN_MAXIMUM_ROWS + 1),
           parameters: view('float32', getGPUClassBreaksParameterLength(6)),
           maximumClassCount: 6,
@@ -194,9 +194,9 @@ const CLASS_BREAKS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUClassBreaks',
     name: 'every method, 6 classes, default bins, no optional views',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUClassBreaks({
+        construct(GPUClassBreaks, {
           values: view('float32', ROWS),
           parameters: view('float32', getGPUClassBreaksParameterLength(6)),
           maximumClassCount: 6,
@@ -208,15 +208,16 @@ const CLASS_BREAKS_CASES: KernelAuditCase[] = [
     [
       {classes: 1, bins: 2},
       {classes: 2, bins: 2},
-      {classes: 64, bins: 2}
+      // Approximate natural breaks need at least as many bins as classes (DPC-120).
+      {classes: 64, bins: 64}
     ] as const
   ).map(
     ({classes, bins}): KernelAuditCase => ({
       exportName: 'GPUClassBreaks',
       name: `natural-breaks only, ${classes} classes, ${bins} bins, masked`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUClassBreaks({
+          construct(GPUClassBreaks, {
             values: view('float32', ROWS),
             mask: view('uint32', ROWS),
             parameters: view('float32', getGPUClassBreaksParameterLength(classes)),
@@ -267,14 +268,14 @@ const SCALAR_SCALE_CASES: KernelAuditCase[] = [
 const COLOR_SCALE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColorScale',
-    name: 'float32 every output, domainCount view',
+    name: 'float32 every output, classCount view',
     build: ({graph, view}) =>
       graph.add(
         new GPUColorScale({
           values: view('float32', ROWS),
           mask: view('uint32', ROWS),
           domain: view('float32', 65),
-          domainCount: view('uint32', 1),
+          classCount: view('uint32', 1),
           palette: view('uint32', 64),
           parameters: view('float32', GPU_COLOR_SCALE_PARAMETER_LENGTH),
           maximumDomainCount: 65,
@@ -314,7 +315,7 @@ const COLOR_SCALE_CASES: KernelAuditCase[] = [
             integerValues,
             mask: view('uint32', ROWS),
             domain: view('float32', 65),
-            domainCount: view('uint32', 1),
+            classCount: view('uint32', 1),
             palette: view('uint32', 64),
             parameters: view('float32', GPU_COLOR_SCALE_PARAMETER_LENGTH),
             maximumDomainCount: 65,
@@ -337,7 +338,7 @@ const COLOR_SCALE_CASES: KernelAuditCase[] = [
           values: view('sint32', ROWS),
           mask: view('uint32', ROWS),
           domain: view('float32', 65),
-          domainCount: view('uint32', 1),
+          classCount: view('uint32', 1),
           palette: view('uint32', 64),
           parameters: view('float32', GPU_COLOR_SCALE_PARAMETER_LENGTH),
           maximumDomainCount: 65,
@@ -360,7 +361,7 @@ const COLOR_SCALE_CASES: KernelAuditCase[] = [
           values: view('float32', rows),
           mask: view('uint32', rows),
           domain: view('float32', rows),
-          domainCount: view('uint32', 1),
+          classCount: view('uint32', 1),
           palette: view('uint32', rows),
           parameters: view('float32', GPU_COLOR_SCALE_PARAMETER_LENGTH),
           maximumDomainCount: rows,
@@ -381,9 +382,9 @@ const DATAFRAME_COLUMN_CASES: KernelAuditCase[] = [
     (quantileCount): KernelAuditCase => ({
       exportName: 'GPUColumnQuantiles',
       name: `every output, ${quantileCount} quantiles`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUColumnQuantiles({
+          construct(GPUColumnQuantiles, {
             values: view('float32', ROWS),
             mask: view('uint32', ROWS),
             parameters: view('float32', getGPUColumnQuantilesParameterLength(quantileCount)),
@@ -401,10 +402,10 @@ const DATAFRAME_COLUMN_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnQuantiles',
     name: 'maximum rows (2^24), maximum quantiles',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const quantileCount = GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT;
       graph.add(
-        new GPUColumnQuantiles({
+        construct(GPUColumnQuantiles, {
           values: view('float32', COLUMN_MAXIMUM_ROWS),
           mask: view('uint32', COLUMN_MAXIMUM_ROWS),
           parameters: view('float32', getGPUColumnQuantilesParameterLength(quantileCount)),
@@ -422,9 +423,9 @@ const DATAFRAME_COLUMN_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnQuantiles',
     name: 'one row above the maximum (2^24 + 1), float32 counts',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUColumnQuantiles({
+        construct(GPUColumnQuantiles, {
           values: view('float32', COLUMN_MAXIMUM_ROWS + 1),
           parameters: view('float32', getGPUColumnQuantilesParameterLength(3)),
           quantileCount: 3,
@@ -435,9 +436,9 @@ const DATAFRAME_COLUMN_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnQuantiles',
     name: 'required outputs only',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUColumnQuantiles({
+        construct(GPUColumnQuantiles, {
           values: view('float32', ROWS),
           parameters: view('float32', getGPUColumnQuantilesParameterLength(3)),
           quantileCount: 3,
@@ -611,13 +612,13 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'every option, 16 mixed columns',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const columnCount = GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT;
       const binCount = 1024;
       const precision = 12;
       const topCategoryCount = 10;
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           columns: Array.from({length: columnCount}, (_, index) =>
             index % 2 === 0
               ? {values: view('float32', ROWS)}
@@ -643,9 +644,9 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'one numeric column, statistics only',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           columns: [{values: view('float32', ROWS)}],
           histogramBinCount: 1,
           output: {statistics: view('float32', GPU_COLUMN_PROFILE_STATISTIC_COUNT)}
@@ -655,14 +656,14 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'maximum columns, bins, precision and top categories at 2^24 rows',
-    build: ({graph, view, device}) => {
+    build: ({graph, view, device, construct}) => {
       const categoryCount = getGPUColumnProfileMaximumCategoryTotal(device) / 4;
       const columnCount = GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT;
       const binCount = 2 ** 20;
       const precision = 16;
       const topCategoryCount = GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT;
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           columns: Array.from({length: columnCount}, (_, index) =>
             index < 12
               ? {values: view('float32', COLUMN_MAXIMUM_ROWS)}
@@ -692,9 +693,9 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'uint32 counts above the former float32 boundary (2^24 + 1)',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           columns: [{values: view('float32', COLUMN_MAXIMUM_ROWS + 1)}],
           parameters: view('float32', getGPUColumnProfileParameterLength(1)),
           histogramBinCount: 2048,
@@ -710,9 +711,9 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
       name: aboveLimit
         ? 'numeric rows one above the storage binding maximum'
         : 'numeric rows at the storage binding maximum',
-      build: ({graph, view, maximumRows}) =>
+      build: ({graph, view, maximumRows, construct}) =>
         graph.add(
-          new GPUColumnProfile({
+          construct(GPUColumnProfile, {
             columns: [{values: view('float32', maximumRows(4) + Number(aboveLimit))}],
             histogramBinCount: 1,
             output: {
@@ -726,9 +727,9 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'row metadata one above uint32 addressing',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           // Metadata-only: the constructor must reject the row count before any GPU allocation.
           columns: [
             {
@@ -749,14 +750,14 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'category total one above the maximum, 16 columns',
-    build: ({graph, view, device}) => {
+    build: ({graph, view, device, construct}) => {
       const categoryCount = getGPUColumnProfileMaximumCategoryTotal(device) / 4 + 1;
       const columnCount = GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT;
       const binCount = 2 ** 20;
       const precision = 16;
       const topCategoryCount = GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT;
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           columns: Array.from({length: columnCount}, (_, index) =>
             index < 12
               ? {values: view('float32', COLUMN_MAXIMUM_ROWS)}
@@ -786,10 +787,10 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'two category columns of 2^24 categories (2^25 in total)',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const topCategoryCount = GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT;
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           columns: [0, 1].map(() => ({
             values: view('uint32', COLUMN_MAXIMUM_ROWS),
             kind: 'category' as const,
@@ -809,10 +810,10 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUColumnProfile',
     name: 'one category column with 2^24 categories',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const topCategoryCount = GPU_COLUMN_PROFILE_MAXIMUM_TOP_CATEGORY_COUNT;
       graph.add(
-        new GPUColumnProfile({
+        construct(GPUColumnProfile, {
           columns: [
             {
               values: view('uint32', COLUMN_MAXIMUM_ROWS),
@@ -924,10 +925,10 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'every output, weights and mask, 11 knots',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const zones = 40;
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', ROWS),
           zoneIds: view('uint32', ROWS),
           zoneCount: zones,
@@ -953,10 +954,10 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'every output, 1025 knots, no weights',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const zones = 40;
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', ROWS),
           zoneIds: view('uint32', ROWS),
           zoneCount: zones,
@@ -981,9 +982,9 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'gini only, one zone',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', ROWS),
           zoneIds: view('uint32', ROWS),
           zoneCount: 1,
@@ -995,11 +996,11 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'zones x 1025 knots at the maximum',
-    build: ({graph, view, maximumRows, device}) => {
+    build: ({graph, view, maximumRows, device, construct}) => {
       const rows = maximumRows(4);
       const zones = Math.floor(getGPUInequalityMaximumLorenzKnotTotal(device) / 1025);
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', rows),
           zoneIds: view('uint32', rows),
           zoneCount: zones,
@@ -1026,11 +1027,11 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'zones x 1025 knots one zone above the maximum',
-    build: ({graph, view, maximumRows, device}) => {
+    build: ({graph, view, maximumRows, device, construct}) => {
       const rows = maximumRows(4);
       const zones = Math.floor(getGPUInequalityMaximumLorenzKnotTotal(device) / 1025) + 1;
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', rows),
           zoneIds: view('uint32', rows),
           zoneCount: zones,
@@ -1057,11 +1058,11 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'zone count at the largest per-zone scratch binding (44 bytes per zone)',
-    build: ({graph, view, maximumRows}) => {
+    build: ({graph, view, maximumRows, construct}) => {
       const rows = maximumRows(4);
       const zones = maximumRows(44);
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', rows),
           zoneIds: view('uint32', rows),
           zoneCount: zones,
@@ -1084,11 +1085,11 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'zone count at the maximum, per-zone views only',
-    build: ({graph, view, maximumRows, device}) => {
+    build: ({graph, view, maximumRows, device, construct}) => {
       const rows = maximumRows(4);
       const zones = getGPUInequalityMaximumZoneCount(device);
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', rows),
           zoneIds: view('uint32', rows),
           zoneCount: zones,
@@ -1111,11 +1112,11 @@ const INEQUALITY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUInequality',
     name: 'zone count one above the maximum, per-zone views only',
-    build: ({graph, view, maximumRows, device}) => {
+    build: ({graph, view, maximumRows, device, construct}) => {
       const rows = maximumRows(4);
       const zones = getGPUInequalityMaximumZoneCount(device) + 1;
       graph.add(
-        new GPUInequality({
+        construct(GPUInequality, {
           values: view('float32', rows),
           zoneIds: view('uint32', rows),
           zoneCount: zones,
@@ -1176,7 +1177,7 @@ function groupStatisticsColumn(
       skewness: view('float32', capacity),
       kurtosis: view('float32', capacity),
       medians: view('float32', capacity),
-      percentiles: view('float32', capacity * percentileCount),
+      quantiles: view('float32', capacity * percentileCount),
       modes: view('float32', capacity),
       uniqueCounts: view('uint32', capacity),
       zScores: view('float32', rows)
@@ -1189,15 +1190,15 @@ const GROUP_STATISTICS_CASES: KernelAuditCase[] = [
     (variance): KernelAuditCase => ({
       exportName: 'GPUGroupStatistics',
       name: `uint32 keys, 4 columns, every statistic, ${variance}`,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const capacity = 64;
         graph.add(
-          new GPUGroupStatistics({
+          construct(GPUGroupStatistics, {
             keys: view('uint32', ROWS),
             mask: view('uint32', ROWS),
             columns: Array.from({length: 4}, () => groupStatisticsColumn(view, ROWS, capacity, 5)),
             variance,
-            percentiles: view('float32', 5),
+            probabilities: view('float32', 5),
             sumScale: 1024,
             output: {
               keys: view('uint32', capacity),
@@ -1216,14 +1217,14 @@ const GROUP_STATISTICS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUGroupStatistics',
     name: 'uint32x2 keys, 4 columns, every statistic',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const capacity = 64;
       graph.add(
-        new GPUGroupStatistics({
+        construct(GPUGroupStatistics, {
           keys: view('uint32x2', ROWS),
           mask: view('uint32', ROWS),
           columns: Array.from({length: 4}, () => groupStatisticsColumn(view, ROWS, capacity, 5)),
-          percentiles: view('float32', 5),
+          probabilities: view('float32', 5),
           output: {
             keys: view('uint32x2', capacity),
             counts: view('uint32', capacity),
@@ -1240,15 +1241,15 @@ const GROUP_STATISTICS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUGroupStatistics',
     name: 'dense keyCount, 4 columns, every statistic',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const keyCount = 128;
       graph.add(
-        new GPUGroupStatistics({
+        construct(GPUGroupStatistics, {
           keys: view('uint32', ROWS),
           mask: view('uint32', ROWS),
           keyCount,
           columns: Array.from({length: 4}, () => groupStatisticsColumn(view, ROWS, keyCount, 5)),
-          percentiles: view('float32', 5),
+          probabilities: view('float32', 5),
           output: {
             keys: view('uint32', keyCount),
             counts: view('uint32', keyCount),
@@ -1261,9 +1262,9 @@ const GROUP_STATISTICS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUGroupStatistics',
     name: 'no value columns',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUGroupStatistics({
+        construct(GPUGroupStatistics, {
           keys: view('uint32', ROWS),
           columns: [],
           output: {
@@ -1277,11 +1278,11 @@ const GROUP_STATISTICS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUGroupStatistics',
     name: 'uint32x2 keys, groups one above the maximum',
-    build: ({graph, view, maximumRows, device}) => {
+    build: ({graph, view, maximumRows, device, construct}) => {
       const rows = maximumRows(8);
       const capacity = getGPUGroupStatisticsMaximumGroupCount(device) + 1;
       graph.add(
-        new GPUGroupStatistics({
+        construct(GPUGroupStatistics, {
           keys: view('uint32x2', rows),
           mask: view('uint32', rows),
           columns: [
@@ -1322,11 +1323,11 @@ const GROUP_STATISTICS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUGroupStatistics',
     name: 'uint32x2 keys, groups at the maximum',
-    build: ({graph, view, maximumRows, device}) => {
+    build: ({graph, view, maximumRows, device, construct}) => {
       const rows = maximumRows(8);
       const capacity = getGPUGroupStatisticsMaximumGroupCount(device);
       graph.add(
-        new GPUGroupStatistics({
+        construct(GPUGroupStatistics, {
           keys: view('uint32x2', rows),
           mask: view('uint32', rows),
           columns: [
@@ -1367,24 +1368,24 @@ const GROUP_STATISTICS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUGroupStatistics',
     name: 'uint32 keys, percentiles at the binding limit',
-    build: ({graph, view, maximumRows}) => {
+    build: ({graph, view, maximumRows, construct}) => {
       const percentileCount = 64;
       const capacity = maximumRows(4 * percentileCount);
       const rows = maximumRows(4);
       graph.add(
-        new GPUGroupStatistics({
+        construct(GPUGroupStatistics, {
           keys: view('uint32', rows),
           columns: [
             {
               values: view('float32', rows),
               statistics: ['percentiles', 'median'],
               output: {
-                percentiles: view('float32', capacity * percentileCount),
+                quantiles: view('float32', capacity * percentileCount),
                 medians: view('float32', capacity)
               }
             }
           ],
-          percentiles: view('float32', percentileCount),
+          probabilities: view('float32', percentileCount),
           output: {
             keys: view('uint32', capacity),
             counts: view('uint32', capacity),
@@ -1400,18 +1401,18 @@ const KEY_JOIN_CASES: KernelAuditCase[] = (['left', 'inner'] as const)
   .flatMap(kind =>
     (['uint32', 'uint32x2'] as const).map(
       (keyFormat): KernelAuditCase => ({
-        exportName: 'GPUKeyJoin',
+        exportName: 'GPUKeyLookup',
         name: `${kind} join, ${keyFormat} keys, every option`,
         build: ({graph, view}) => {
           const left = ROWS;
           const right = 200;
           graph.add(
-            new GPUKeyJoin({
+            new GPUKeyLookup({
               leftKeys: view(keyFormat, left),
               rightKeys: view(keyFormat, right),
               leftMask: view('uint32', left),
               rightMask: view('uint32', right),
-              kind,
+              compactMatchedLeftRows: kind === 'inner',
               sumScale: 1024,
               gather: [
                 ...Array.from({length: 4}, () => ({
@@ -1468,11 +1469,11 @@ const KEY_JOIN_CASES: KernelAuditCase[] = (['left', 'inner'] as const)
   )
   .concat([
     {
-      exportName: 'GPUKeyJoin',
+      exportName: 'GPUKeyLookup',
       name: 'left join, matched output only',
       build: ({graph, view}) =>
         graph.add(
-          new GPUKeyJoin({
+          new GPUKeyLookup({
             leftKeys: view('uint32', ROWS),
             rightKeys: view('uint32', ROWS),
             output: {matched: view('uint32', ROWS)}
@@ -1481,17 +1482,17 @@ const KEY_JOIN_CASES: KernelAuditCase[] = (['left', 'inner'] as const)
     },
     ...(['left', 'inner'] as const).map(
       (kind): KernelAuditCase => ({
-        exportName: 'GPUKeyJoin',
+        exportName: 'GPUKeyLookup',
         name: `${kind} join, uint32x2 keys, rows at the binding limit`,
         build: ({graph, view, maximumRows}) => {
           const rows = maximumRows(8);
           graph.add(
-            new GPUKeyJoin({
+            new GPUKeyLookup({
               leftKeys: view('uint32x2', rows),
               rightKeys: view('uint32x2', rows),
               leftMask: view('uint32', rows),
               rightMask: view('uint32', rows),
-              kind,
+              compactMatchedLeftRows: kind === 'inner',
               gather: [{column: view('float32', rows), output: view('float32', rows)}],
               aggregates: [
                 {
@@ -1528,10 +1529,10 @@ const VARIOGRAM_CASES: KernelAuditCase[] = [
     ([lagCount, directionCount, robust]): KernelAuditCase => ({
       exportName: 'GPUVariogram',
       name: `${lagCount} lags x ${directionCount} sectors, robust ${robust}, every output`,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const binCount = lagCount * directionCount;
         graph.add(
-          new GPUVariogram({
+          construct(GPUVariogram, {
             positions: view('float32x2', ROWS),
             values: view('float32', ROWS),
             mask: view('uint32', ROWS),
@@ -1555,9 +1556,9 @@ const VARIOGRAM_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUVariogram',
     name: 'semivariances only',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUVariogram({
+        construct(GPUVariogram, {
           positions: view('float32x2', ROWS),
           values: view('float32', ROWS),
           parameters: view('float32', GPU_VARIOGRAM_PARAMETER_LENGTH),
@@ -1570,9 +1571,9 @@ const VARIOGRAM_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUVariogram',
     name: 'maximum rows and lattice, 409 bins with robust channel',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUVariogram({
+        construct(GPUVariogram, {
           positions: view('float32x2', pairMaximumRows),
           values: view('float32', pairMaximumRows),
           mask: view('uint32', pairMaximumRows),
@@ -1597,9 +1598,9 @@ const CORRELOGRAM_CASES: KernelAuditCase[] = [
     (bandMode): KernelAuditCase => ({
       exportName: 'GPUSpatialCorrelogram',
       name: `${bandMode} bands, 64 bands, every output`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUSpatialCorrelogram({
+          construct(GPUSpatialCorrelogram, {
             positions: view('float32x2', ROWS),
             values: view('float32', ROWS),
             mask: view('uint32', ROWS),
@@ -1625,9 +1626,9 @@ const CORRELOGRAM_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUSpatialCorrelogram',
     name: 'one band, Moran I only',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUSpatialCorrelogram({
+        construct(GPUSpatialCorrelogram, {
           positions: view('float32x2', ROWS),
           values: view('float32', ROWS),
           parameters: view('float32', GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH),
@@ -1641,9 +1642,9 @@ const CORRELOGRAM_CASES: KernelAuditCase[] = [
     (bandMode): KernelAuditCase => ({
       exportName: 'GPUSpatialCorrelogram',
       name: `${bandMode} bands, maximum rows, lattice and bands`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPUSpatialCorrelogram({
+          construct(GPUSpatialCorrelogram, {
             positions: view('float32x2', pairMaximumRows),
             values: view('float32', pairMaximumRows),
             mask: view('uint32', pairMaximumRows),
@@ -1672,9 +1673,9 @@ const RIPLEY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipley',
     name: '256 radii, every output',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipley({
+        construct(GPURipley, {
           positions: view('float32x2', ROWS),
           mask: view('uint32', ROWS),
           parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
@@ -1694,9 +1695,9 @@ const RIPLEY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipley',
     name: 'one radius, K only',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipley({
+        construct(GPURipley, {
           positions: view('float32x2', ROWS),
           parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
           gridSize: [1, 1],
@@ -1708,9 +1709,9 @@ const RIPLEY_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipley',
     name: 'maximum rows and lattice, 256 radii, every output',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipley({
+        construct(GPURipley, {
           positions: view('float32x2', pairMaximumRows),
           mask: view('uint32', pairMaximumRows),
           parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
@@ -1734,9 +1735,9 @@ const ENVELOPE_CASES: KernelAuditCase[] = [
     (statistic): KernelAuditCase => ({
       exportName: 'GPURipleyEnvelope',
       name: `statistic ${statistic}, 99 simulations, rank 5, every output`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPURipleyEnvelope({
+          construct(GPURipleyEnvelope, {
             positions: view('float32x2', ROWS),
             mask: view('uint32', ROWS),
             parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
@@ -1761,9 +1762,9 @@ const ENVELOPE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipleyEnvelope',
     name: 'maximum simulations (199), rank 99, 256 radii, every output',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipleyEnvelope({
+        construct(GPURipleyEnvelope, {
           positions: view('float32x2', ROWS),
           mask: view('uint32', ROWS),
           parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
@@ -1786,9 +1787,9 @@ const ENVELOPE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipleyEnvelope',
     name: 'two simulations, one radius, lower only',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipleyEnvelope({
+        construct(GPURipleyEnvelope, {
           positions: view('float32x2', ROWS),
           parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
           gridSize: [1, 1],
@@ -1801,9 +1802,9 @@ const ENVELOPE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipleyEnvelope',
     name: 'maximum rows and lattice, 199 simulations, 256 radii',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipleyEnvelope({
+        construct(GPURipleyEnvelope, {
           positions: view('float32x2', pairMaximumRows),
           mask: view('uint32', pairMaximumRows),
           parameters: view('float32', GPU_RIPLEY_PARAMETER_LENGTH),
@@ -1829,9 +1830,9 @@ const POINT_PATTERN_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUPointPatternIndices',
     name: 'every output, 256 x 256 quadrats',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUPointPatternIndices({
+        construct(GPUPointPatternIndices, {
           positions: view('float32x2', ROWS),
           mask: view('uint32', ROWS),
           parameters: view('float32', GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH),
@@ -1850,9 +1851,9 @@ const POINT_PATTERN_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUPointPatternIndices',
     name: 'nearest neighbor outputs only',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUPointPatternIndices({
+        construct(GPUPointPatternIndices, {
           positions: view('float32x2', ROWS),
           parameters: view('float32', GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH),
           gridSize: [16, 16],
@@ -1867,9 +1868,9 @@ const POINT_PATTERN_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUPointPatternIndices',
     name: 'quadrat statistics only, 65536 x 1 quadrats',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUPointPatternIndices({
+        construct(GPUPointPatternIndices, {
           positions: view('float32x2', ROWS),
           parameters: view('float32', GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH),
           gridSize: [16, 16],
@@ -1881,9 +1882,9 @@ const POINT_PATTERN_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUPointPatternIndices',
     name: 'maximum rows and lattice, every output',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUPointPatternIndices({
+        construct(GPUPointPatternIndices, {
           positions: view('float32x2', pairMaximumRows),
           mask: view('uint32', pairMaximumRows),
           parameters: view('float32', GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH),
@@ -1905,9 +1906,9 @@ const DISTANCE_FUNCTIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipleyDistanceFunctions',
     name: '256 radii, G F J and radii',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipleyDistanceFunctions({
+        construct(GPURipleyDistanceFunctions, {
           positions: view('float32x2', ROWS),
           mask: view('uint32', ROWS),
           parameters: view('float32', GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH),
@@ -1927,9 +1928,9 @@ const DISTANCE_FUNCTIONS_CASES: KernelAuditCase[] = [
     (name): KernelAuditCase => ({
       exportName: 'GPURipleyDistanceFunctions',
       name: `${name} only, 8 radii`,
-      build: ({graph, view}) =>
+      build: ({graph, view, construct}) =>
         graph.add(
-          new GPURipleyDistanceFunctions({
+          construct(GPURipleyDistanceFunctions, {
             positions: view('float32x2', ROWS),
             parameters: view('float32', GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH),
             gridSize: [16, 16],
@@ -1943,9 +1944,9 @@ const DISTANCE_FUNCTIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURipleyDistanceFunctions',
     name: 'maximum rows, lattice and reference grid (2^24)',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURipleyDistanceFunctions({
+        construct(GPURipleyDistanceFunctions, {
           positions: view('float32x2', pairMaximumRows),
           mask: view('uint32', pairMaximumRows),
           parameters: view('float32', GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH),
@@ -1965,7 +1966,7 @@ const DISTANCE_FUNCTIONS_CASES: KernelAuditCase[] = [
 
 /** Builds a temporal reduction with every output and `cellCount * bucketCount` slots. */
 function temporalReduction(
-  {view}: KernelAuditContext,
+  {view, construct}: KernelAuditContext,
   options: {
     rows: number;
     cellCount: number;
@@ -1978,7 +1979,7 @@ function temporalReduction(
   const {rows, cellCount, bucketCount, words} = options;
   const slots = cellCount * bucketCount;
   const capacity = options.capacity ?? slots;
-  return new GPUTemporalReduction({
+  return construct(GPUTemporalReduction, {
     sorted: options.sorted,
     cellIds: view('uint32', rows),
     timestamps: words ? view('uint32x2', rows) : view('float32', rows),
@@ -2278,7 +2279,7 @@ DATAFRAME_CASES.push(
     (exportName): KernelAuditCase => ({
       exportName,
       name: 'polygon study window, every output',
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const studyWindow = new GPUStudyWindowPreparation({
           positions: view('float32x2', 12),
           featureOffsets: view('uint32', 2),
@@ -2296,7 +2297,7 @@ DATAFRAME_CASES.push(
         };
         if (exportName === 'GPURipley') {
           graph.add(
-            new GPURipley({
+            construct(GPURipley, {
               ...common,
               radiusCount: 256,
               output: {
@@ -2311,7 +2312,7 @@ DATAFRAME_CASES.push(
           );
         } else if (exportName === 'GPUVariogram') {
           graph.add(
-            new GPUVariogram({
+            construct(GPUVariogram, {
               ...common,
               values: view('float32', ROWS),
               lagCount: 409,
@@ -2327,7 +2328,7 @@ DATAFRAME_CASES.push(
           );
         } else {
           graph.add(
-            new GPUSpatialCorrelogram({
+            construct(GPUSpatialCorrelogram, {
               ...common,
               values: view('float32', ROWS),
               bandCount: 64,
@@ -2353,7 +2354,7 @@ DATAFRAME_CASES.push(
 DATAFRAME_CASES.push({
   exportName: 'GPUPointPatternIndices',
   name: 'polygon guard and quadrats, every output',
-  build: ({graph, view}) => {
+  build: ({graph, view, construct}) => {
     const studyWindow = new GPUStudyWindowPreparation({
       positions: view('float32x2', 12),
       featureOffsets: view('uint32', 2),
@@ -2363,7 +2364,7 @@ DATAFRAME_CASES.push({
     });
     graph.add(studyWindow);
     graph.add(
-      new GPUPointPatternIndices({
+      construct(GPUPointPatternIndices, {
         studyWindow,
         positions: view('float32x2', ROWS),
         mask: view('uint32', ROWS),
@@ -2388,7 +2389,7 @@ DATAFRAME_CASES.push(
     (exportName): KernelAuditCase => ({
       exportName,
       name: 'polygon window, every output and maximum radius count',
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const studyWindow = new GPUStudyWindowPreparation({
           positions: view('float32x2', 12),
           featureOffsets: view('uint32', 2),
@@ -2407,7 +2408,7 @@ DATAFRAME_CASES.push(
         };
         if (exportName === 'GPURipleyEnvelope') {
           graph.add(
-            new GPURipleyEnvelope({
+            construct(GPURipleyEnvelope, {
               ...common,
               simulationCount: 2,
               maximumAttempts: 256,
@@ -2425,7 +2426,7 @@ DATAFRAME_CASES.push(
           );
         } else {
           graph.add(
-            new GPURipleyDistanceFunctions({
+            construct(GPURipleyDistanceFunctions, {
               ...common,
               referenceGrid: [17, 19],
               output: {

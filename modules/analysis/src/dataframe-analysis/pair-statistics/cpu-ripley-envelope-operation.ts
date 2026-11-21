@@ -25,6 +25,7 @@ import {
 import {GPU_RIPLEY_WEIGHT_CAP} from './gpu-ripley';
 import {
   GPURipleyEnvelopeOperation,
+  snapshotRipleyEnvelopeOperation,
   type RipleyEnvelopeOperationProps
 } from './gpu-ripley-envelope-operation';
 import {
@@ -212,9 +213,10 @@ export function computeRipleyEnvelopeOnCPU(
     .sort((first, second) => second - first);
   const critical = deviations.length >= rank ? deviations[rank - 1] : NaN;
   const observed = observedK ? getDeviation(observedK) : NaN;
-  const probability = Number.isFinite(observed)
-    ? (1 + deviations.filter(value => value >= observed).length) / (deviations.length + 1)
-    : NaN;
+  const probability =
+    Number.isFinite(observed) && deviations.length > 0
+      ? (1 + deviations.filter(value => value >= observed).length) / (deviations.length + 1)
+      : NaN;
   const lower = new Float32Array(options.radiusCount).fill(NaN);
   const upper = new Float32Array(options.radiusCount).fill(NaN);
   for (let radius = 0; radius < radii.length; radius++) {
@@ -240,7 +242,8 @@ export function computeRipleyEnvelopeOnCPU(
 
 /** Rectangle CPU twin; GPU-only limits and grid search are omitted. */
 export class CPURipleyEnvelopeOperation extends GPUCPUOperation {
-  constructor(props: RipleyEnvelopeOperationProps) {
+  constructor(callerProps: RipleyEnvelopeOperationProps) {
+    const props = snapshotRipleyEnvelopeOperation(callerProps);
     const operation = new GPURipleyEnvelopeOperation(props);
     const {id} = operation;
     validateCapacity(id, 'rowCount', props.rowCount);

@@ -4,6 +4,7 @@
 
 import {
   defineGPUSpatialParameterSchema,
+  type GPUSpatialParameterSchema,
   packGPUSpatialParameterValues
 } from '../../analysis-core/contracts/index';
 
@@ -11,31 +12,32 @@ import {
 export const GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH = 4;
 
 /** Declarative layout shared by trajectory-metrics parameter writers and the contributor. */
-export const GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
-  id: 'trajectory-metrics',
-  format: 'float32',
-  wordLength: GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
-  fields: [
-    {
-      name: 'stopSpeedThreshold',
-      format: 'float32',
-      wordOffset: 0,
-      defaultValue: 0,
-      minimum: 0,
-      units: 'spatial-context-units-per-time-unit',
-      dynamic: true
-    },
-    {
-      name: 'stopMinimumDuration',
-      format: 'float32',
-      wordOffset: 1,
-      defaultValue: 0,
-      minimum: 0,
-      units: 'time-units',
-      dynamic: true
-    }
-  ]
-});
+export const GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA: GPUSpatialParameterSchema<'float32'> =
+  defineGPUSpatialParameterSchema({
+    id: 'trajectory-metrics',
+    format: 'float32',
+    wordLength: GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH,
+    fields: [
+      {
+        name: 'stopSpeedThreshold',
+        format: 'float32',
+        wordOffset: 0,
+        defaultValue: 0,
+        minimum: 0,
+        units: 'spatial-context-units-per-time-unit',
+        dynamic: true
+      },
+      {
+        name: 'stopMinimumDuration',
+        format: 'float32',
+        wordOffset: 1,
+        defaultValue: 0,
+        minimum: 0,
+        units: 'time-units',
+        dynamic: true
+      }
+    ]
+  });
 
 /**
  * CPU description of the per-frame stop-detection parameters of `GPUTrajectoryMetrics`.

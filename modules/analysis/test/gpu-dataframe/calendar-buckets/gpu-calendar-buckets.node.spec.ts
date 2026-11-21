@@ -63,6 +63,7 @@ it('GPUCalendarBuckets parameter helper packs and validates', () => {
 });
 
 it('GPUCalendarBuckets validates its inputs', () => {
+  // @ts-expect-error empty output is intentionally invalid for JavaScript runtime coverage
   expectThrows(() => ({output: {}}), /at least one output/);
   expectThrows(graph => ({timestamps: view(graph, 'uint32x2', 0)}), /at least one row/);
   expectThrows(graph => ({mask: view(graph, 'uint32', 5)}), /mask length/);

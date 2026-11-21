@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validatePettittShape} from './change-point-shape';
+export {GPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT} from './change-point-shape';
+import {snapshotChangePointProps} from './change-point-construction';
+
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -11,7 +15,6 @@ import {
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validateCapacity,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -26,8 +29,6 @@ import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-c
 
 const OPERATION = 'GPUPettittTest';
 
-/** Largest `sliceCount`: every invocation compares `sliceCount^2` pairs. */
-export const GPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT = 512;
 /** `changeSlice` value of a cell with fewer than two finite slices. */
 export const GPU_PETTITT_TEST_NO_CHANGE_SLICE = 0xffffffff;
 
@@ -37,7 +38,7 @@ export type GPUPettittTestOutput = {
   statistic: GraphDataView<'uint32'>;
   /** First slice after the most likely change: `t + 1` of the first `t` reaching `K` (uint32). */
   changeSlice: GraphDataView<'uint32'>;
-  /** Asymptotic two-sided p-value `min(1, 2 exp(-6 K^2 / (n^3 + n^2)))`, 1 for `n < 2`. */
+  /** Asymptotic two-sided p-value `min(1, 2 exp(-6 K^2 / (n^3 + n^2)))`; NaN for `n < 2`, 1 for tested constants. */
   pValues: GraphDataView<'float32'>;
 };
 
@@ -72,12 +73,12 @@ export class GPUPettittTest implements GPUCommandNodeProducer {
   readonly props: GPUPettittTestProps;
 
   constructor(props: GPUPettittTestProps) {
+    props = snapshotChangePointProps(props);
     const id = props.id ?? 'pettitt-test';
+    validatePettittShape(id, props);
     this.id = id;
     this.props = props;
     const {values, cellCount, sliceCount, output} = props;
-    validateCapacity(id, 'cellCount', cellCount);
-    validateCapacity(id, 'sliceCount', sliceCount, 1, GPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT);
     validateSinglePackedView(values, ['float32'], `${id} values`);
     validateViewLength(id, 'values', values, cellCount * sliceCount);
     validateSinglePackedView(output.statistic, ['uint32'], `${id} statistic`);
@@ -168,7 +169,7 @@ ${getChangePointSeriesReaderWGSL(layout)}`,
     pValues[pValuesOffset + index] = min(1.0, 2.0 * exp(-6.0 * statisticValue * statisticValue / (lengthValue * lengthValue * lengthValue + lengthValue * lengthValue)));
   } else {
     changeSlice[changeSliceOffset + index] = NO_CHANGE_SLICE;
-    pValues[pValuesOffset + index] = 1.0;
+    pValues[pValuesOffset + index] = getNaN();
   }`
       })
     ];

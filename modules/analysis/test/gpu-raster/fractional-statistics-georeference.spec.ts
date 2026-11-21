@@ -24,7 +24,8 @@ import {
   readFloat32,
   submitGraph
 } from '../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../utils/require-test-device';
+import {requireTestDevice} from '../../src/testing/require-test-device';
+import {createParityGraph} from '../oracles/parity-wp2-geodesic-harness';
 
 // raster-fields-02. The three fractional statistics contributors used to bake
 // abs(det(grid.affine)) into their shaders while GPURasterFractionalCoverage reads the affine per
@@ -261,3 +262,76 @@ it('fractional statistics read the cell area from the per-frame georeference (ra
     }
   }
 });
+
+for (const cellSizeMode of ['geographic', 'web-mercator'] as const) {
+  it(`UNI-03 origin-relative categorical areas retain absolute latitude (${cellSizeMode})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const rig = createParityGraph(device);
+    const originY = cellSizeMode === 'geographic' ? 45 : 4600000;
+    const grid: GPURasterMetadata = {
+      width: 1,
+      height: 1,
+      affine: [1, 0, 0, 0, 1, originY],
+      pixelInterpretation: 'area'
+    };
+    const coveredArea = rig.output('covered-area', 1, 'float32');
+    rig.graph.add(
+      new GPURasterFractionalCategoricalStatistics({
+        grid,
+        cellSizeMode,
+        zoneCount: 1,
+        categoryCapacity: 1,
+        parameters: rig.input(
+          'parameters',
+          Array.from(
+            getGPURasterFractionalCoverageParameterValues(grid, {localOrigin: [0, originY]})
+          ),
+          'float32'
+        ).view,
+        input: {
+          id: 'categories',
+          format: 'uint32',
+          storage: {kind: 'buffer', values: rig.input('categories', [0], 'uint32').view}
+        },
+        coverage: {
+          zoneIds: rig.input('zones', [0], 'uint32').view,
+          cellIds: rig.input('cells', [0], 'uint32').view,
+          fractions: rig.input('fractions', [0.5], 'float32').view,
+          zoneValidity: rig.input('zone-validity', [1], 'uint32').view,
+          status: {
+            count: rig.input('count', [1], 'uint32').view,
+            requiredCount: rig.input('required', [1], 'uint32').view,
+            overflow: rig.input('overflow', [0], 'uint32').view
+          }
+        },
+        output: {
+          coverageSums: rig.output('coverage-sums', 1, 'float32').view,
+          classAreas: rig.output('areas', 1, 'float32').view,
+          proportions: rig.output('proportions', 1, 'float32').view,
+          coveredArea: coveredArea.view,
+          validArea: rig.output('valid-area', 1, 'float32').view,
+          missingArea: rig.output('missing-area', 1, 'float32').view,
+          majority: rig.output('majority', 1, 'uint32').view,
+          minority: rig.output('minority', 1, 'uint32').view,
+          validity: rig.output('validity', 1, 'uint32').view
+        }
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      // Independent WGS84: f=1/298.257223563, e²=f(2-f), N=a/sqrt(1-e²sin²φ),
+      // M=a(1-e²)/(1-e²sin²φ)^1.5. Half-cell midpoint area is .5*N*M*cosφ*(pi/180)^2
+      // for degrees, .5*N*M*cos²φ/a² for Mercator, φ=atan(sinh(4600000.5/a)).
+      // /usr/bin/python3 math gives these literals (a=6378137).
+      const expected = cellSizeMode === 'geographic' ? 4343304122.976737 : 0.30875252328196756;
+      const [area] = await readFloat32(coveredArea.buffer, 1);
+      expect(Number.isFinite(area)).toBe(true);
+      expect(area / expected).toBeCloseTo(1, 5);
+    } finally {
+      compiled.destroy();
+      rig.destroy();
+    }
+  });
+}

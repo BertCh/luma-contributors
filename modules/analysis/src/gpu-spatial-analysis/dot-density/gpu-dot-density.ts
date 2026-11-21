@@ -13,6 +13,7 @@ import {
 import {
   DEFAULT_DOT_MAXIMUM_ATTEMPTS,
   getDotSamplingNodes,
+  snapshotDotSamplingOutput,
   validateDotSamplingConfig,
   type DotSamplingConfig,
   type GPUDotDensityMask,
@@ -70,9 +71,12 @@ export type GPUDotDensityProps = GPUPolygonGeometryFields & {
  * Dasymetric dot-density map: places `value * dotsPerUnit` random dots inside each polygon, per
  * category, without flicker when the dot value changes with zoom.
  *
- * A slot is one (feature, category) pair. It draws `n = ceil(value * dotsPerUnit - u)` dots, where
+ * A slot is one (feature, category) pair. With float32 `x = value * dotsPerUnit`, it draws
+ * `n = floor(x) + (u < frac(x) ? 1 : 0)` dots, where
  * `u` is a per-slot uniform from `philox(counter = (slot, 0, 0, 0), key = (seed, 6))`: that is
- * `floor(x)` dots plus one more with probability `frac(x)`, so the expected count is exact, and
+ * `floor(x)` dots plus one more with probability `frac(x)`. Representable integer requests remain
+ * exact before per-slot clamping or empty-feature rejection. Fractional round-up probability is
+ * quantized by the 24-bit uniform draw, within one 2^-24 quantum of the fraction, and
  * `n` never decreases when `dotsPerUnit` grows. Dot `j` of a slot is placed exactly: every polygon
  * is triangulated on the GPU (`GPUPolygonTriangulation`; the first ring of a polygon is the shell
  * and later rings are holes), a triangle is chosen with probability proportional to its area by a
@@ -141,7 +145,7 @@ export class GPUDotDensity implements GPUCommandNodeProducer {
       parameters: props.parameters,
       maximumAttempts: props.maximumAttempts ?? DEFAULT_DOT_MAXIMUM_ATTEMPTS,
       mask: props.mask,
-      output: props.output
+      output: snapshotDotSamplingOutput(id, props.output)
     };
     this.featureCount = validateDotSamplingConfig(this.config);
     this.id = id;

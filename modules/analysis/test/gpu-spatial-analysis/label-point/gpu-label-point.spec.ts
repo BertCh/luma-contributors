@@ -125,7 +125,7 @@ it('GPULabelPoint lands inside and near the polylabel pole of every polygon', as
         featureOffsets: inputs['featureOffsets'] as never,
         output: {
           points: outputs['points'] as never,
-          distances: outputs['distances'] as never,
+          publishedCenterClearance: outputs['distances'] as never,
           degenerate: outputs['degenerate'] as never
         }
       })
@@ -204,7 +204,7 @@ it('GPULabelPoint flags degenerate polygons and reports empty features as NaN', 
         featureOffsets: inputs['featureOffsets'] as never,
         output: {
           points: outputs['points'] as never,
-          distances: outputs['distances'] as never,
+          publishedCenterClearance: outputs['distances'] as never,
           degenerate: outputs['degenerate'] as never
         }
       })
@@ -256,7 +256,7 @@ async function runLabelPoint(
         smallFeatureVertexLimit,
         output: {
           points: outputs['points'] as never,
-          distances: outputs['distances'] as never,
+          publishedCenterClearance: outputs['distances'] as never,
           degenerate: outputs['degenerate'] as never
         }
       })

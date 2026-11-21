@@ -9,8 +9,13 @@ import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {
   GPUPointCloudSurfaces,
   GPUPointCloudGround,
-  GPUPointCloudSMRF
+  GPUPointCloudSMRF,
+  GPUPointCloudHeight,
+  GPUPointCloudCoverageValidity,
+  getRasterMetadataFromPointCloudGrid
 } from '@luma-contributors/analysis/pointcloud-analysis';
+import {constructPointCloudShowcaseSnippet} from './pointcloud-showcase-snippets';
+import {makeGPURasterBand} from '../../src/raster-analysis/raster-grid/gpu-raster-grid';
 import {makeSpatialFixture} from '../spatial-test-utils';
 import {
   createNullWebGPUDevice,
@@ -37,7 +42,8 @@ const entries = 'website/src/gpu/runs/entries/dataframe-pointcloud-records/';
 // encoding or readback: catch setup failures without duplicating their graph inputs here.
 it.each([
   'F2 Surfaces',
-  'F4 suppresses provisional'
+  'F4 suppresses provisional',
+  'F4 / final2 G4 displayed lidar height'
 ])('%s headless graph declares successfully', prefix => {
   const source = typescript.createSourceFile(
     'pointcloud-website.spec.ts',
@@ -86,6 +92,11 @@ it.each([
         GPUPointCloudSurfaces,
         GPUPointCloudGround,
         GPUPointCloudSMRF,
+        GPUPointCloudHeight,
+        GPUPointCloudCoverageValidity,
+        makeGPURasterBand,
+        getRasterMetadataFromPointCloudGrid,
+        constructPointCloudShowcaseSnippet,
         createGroundSeedCoverageNode,
         createSupportedGroundClassesNode,
         createGroundDisplayClassesNode,
@@ -120,12 +131,15 @@ it('F2 declares seed-bit extraction and rejects every nonzero ground status', ()
   const status = createTransientView(graph, 'status', 'uint32', 2);
   const output = createTransientView(graph, 'output', 'uint32', 2);
   const sources = getGPUCommandNodeKernelSources([
-    createGroundSeedCoverageNode(graph, input, output),
+    ...createGroundSeedCoverageNode(graph, input, output).getCommandNodes(graph),
     createSupportedGroundClassesNode(graph, input, status, output)
   ]);
+  expect(sources).toHaveLength(2);
   expect(sources[0].source).toContain('& 2u) != 0u');
+  expect(sources[0].source).toContain('writeTerrainValidity(index, ground)');
   expect(sources[1].source).toContain('classification == 2u && status[statusOffset + index] != 0u');
-  for (const source of sources) expect(auditWGSLModule(source.source)).toEqual([]);
+  for (const source of sources)
+    expect(auditWGSLModule(source.source, source.constants)).toEqual([]);
 });
 
 it('F10 actual showcase part builder uploads means, including a nonzero origin and empty tile', () => {

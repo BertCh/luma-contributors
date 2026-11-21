@@ -13,7 +13,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  decodeGPUNetworkStatistics,
+  decodeGPUNetworkStatisticsWords,
   getGPUNetworkStatisticsParameterValues,
   getGPUNetworkStatisticsLength,
   GPUNetworkStatistics
@@ -166,10 +166,10 @@ function expectMatches(actual: number[], expected: Uint32Array): void {
     );
   }
   expect(actualWords).toEqual(expectedWords);
-  const decodedActual = decodeGPUNetworkStatistics(actual, {
+  const decodedActual = decodeGPUNetworkStatisticsWords(actual, {
     degreeBinCount: (actual.length - 16) / 3
   });
-  const decodedExpected = decodeGPUNetworkStatistics(expected, {
+  const decodedExpected = decodeGPUNetworkStatisticsWords(expected, {
     degreeBinCount: (actual.length - 16) / 3
   });
   expect(Math.abs(decodedActual.modularity - decodedExpected.modularity)).toBeLessThan(1e-5);
@@ -208,7 +208,7 @@ it('GPUNetworkStatistics matches the oracle on an undirected random graph with c
   });
   const words = await fixture.run();
   expectMatches(words, fixture.oracle());
-  const decoded = decodeGPUNetworkStatistics(words);
+  const decoded = decodeGPUNetworkStatisticsWords(words);
   expect(decoded.liveNodeCount).toBe(nodeCount);
   expect(decoded.selfLoopSlotCount).toBe(1);
   expect(decoded.componentsConverged).toBe(true);
@@ -236,7 +236,7 @@ it('GPUNetworkStatistics matches the oracle on a directed random graph with mask
   });
   const words = await fixture.run();
   expectMatches(words, fixture.oracle());
-  const decoded = decodeGPUNetworkStatistics(words, {degreeBinCount: 8});
+  const decoded = decodeGPUNetworkStatisticsWords(words, {degreeBinCount: 8});
   expect(decoded.liveEdgeCount).toBe(decoded.liveSlotCount);
   expect(decoded.liveNodeCount).toBeLessThan(nodeCount);
   expect(decoded.maximumTotalDegree).toBeGreaterThanOrEqual(decoded.maximumOutDegree);
@@ -259,7 +259,7 @@ it('GPUNetworkStatistics matches the oracle without masks or communities (direct
     });
     const words = await fixture.run();
     expectMatches(words, fixture.oracle());
-    const decoded = decodeGPUNetworkStatistics(words, {degreeBinCount: 5});
+    const decoded = decodeGPUNetworkStatisticsWords(words, {degreeBinCount: 5});
     expect(decoded.modularityValid).toBe(false);
     expect(decoded.modularity).toBe(0);
     fixture.destroy();
@@ -289,7 +289,7 @@ it('GPUNetworkStatistics changes the bin width and masks between encodings witho
   fixture.setParameters({resolution: 0.5, degreeBinWidth: 2});
   const words = await fixture.run();
   expectMatches(words, fixture.oracle({vertexMask: mask, resolution: 0.5, binWidth: 2}));
-  expect(decodeGPUNetworkStatistics(words, {degreeBinCount: 6}).liveNodeCount).toBe(
+  expect(decodeGPUNetworkStatisticsWords(words, {degreeBinCount: 6}).liveNodeCount).toBe(
     mask.reduce((sum, value) => sum + value, 0)
   );
   expect(fixture.compiled).toBe(compiled);
@@ -320,7 +320,7 @@ it('GPUNetworkStatistics splits a component when a bridge vertex is masked', asy
     vertexMask: new Uint32Array(7).fill(1),
     communities: Uint32Array.from([0, 0, 0, 0, 1, 1, 1])
   });
-  let decoded = decodeGPUNetworkStatistics(await fixture.run());
+  let decoded = decodeGPUNetworkStatisticsWords(await fixture.run());
   expect(decoded.componentCount).toBe(1);
   expect(decoded.largestComponentSize).toBe(7);
   expect(decoded.liveEdgeCount).toBe(8);
@@ -329,7 +329,7 @@ it('GPUNetworkStatistics splits a component when a bridge vertex is masked', asy
   fixture.setVertexMask(mask);
   const words = await fixture.run();
   expectMatches(words, fixture.oracle({vertexMask: mask}));
-  decoded = decodeGPUNetworkStatistics(words);
+  decoded = decodeGPUNetworkStatisticsWords(words);
   expect(decoded.componentCount).toBe(2);
   expect(decoded.largestComponentSize).toBe(3);
   expect(decoded.liveNodeCount).toBe(6);
@@ -353,7 +353,7 @@ it('GPUNetworkStatistics reports invalid modularity for out-of-range labels and 
   });
   const words = await fixture.run();
   expectMatches(words, fixture.oracle());
-  const decoded = decodeGPUNetworkStatistics(words);
+  const decoded = decodeGPUNetworkStatisticsWords(words);
   expect(decoded.modularityValid).toBe(false);
   expect(decoded.modularity).toBe(0);
   fixture.destroy();
@@ -364,7 +364,7 @@ it('GPUNetworkStatistics reports invalid modularity for out-of-range labels and 
     vertexMask: new Uint32Array(nodeCount),
     communities: createLabels(nodeCount, 3)
   });
-  const deadDecoded = decodeGPUNetworkStatistics(await dead.run());
+  const deadDecoded = decodeGPUNetworkStatisticsWords(await dead.run());
   expect(deadDecoded.liveNodeCount).toBe(0);
   expect(deadDecoded.componentCount).toBe(0);
   expect(deadDecoded.largestComponentSize).toBe(0);
@@ -383,7 +383,7 @@ it('GPUNetworkStatistics undirected modularity matches GPUGraphAlgorithmsModular
     edges,
     communities: labels
   });
-  const decoded = decodeGPUNetworkStatistics(await fixture.run());
+  const decoded = decodeGPUNetworkStatisticsWords(await fixture.run());
 
   const roads = edges.filter(edge => edge[0] < edge[1]);
   const buffers: Buffer[] = [];
@@ -459,7 +459,7 @@ it('GPUNetworkStatistics undirected modularity counts self-loops twice, matching
   });
   const words = await fixture.run();
   expectMatches(words, fixture.oracle());
-  const decoded = decodeGPUNetworkStatistics(words);
+  const decoded = decodeGPUNetworkStatisticsWords(words);
   expect(decoded.selfLoopSlotCount).toBe(2);
 
   const roads = edges.filter(edge => edge[0] <= edge[1]);
@@ -573,7 +573,7 @@ it('GPUNetworkStatistics matches the oracle on a hub-and-spoke graph across many
       const words = await fixture.run();
       expectMatches(words, fixture.oracle());
       expect(
-        decodeGPUNetworkStatistics(words, {degreeBinCount: binCount}).maximumTotalDegree
+        decodeGPUNetworkStatisticsWords(words, {degreeBinCount: binCount}).maximumTotalDegree
       ).toBeGreaterThan(1000);
       fixture.destroy();
     }

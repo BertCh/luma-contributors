@@ -55,8 +55,10 @@ it('aligns the deck package extension with the workspace graph pin', () => {
 it('distinguishes panel-error effects and shipped sorted rank-Markov support', () => {
   const roadmap = readRepositoryFile('dev-docs/roadmap.md');
   const panelRow = roadmap.split('\n').find(line => line.startsWith('| ST03 |'))!;
-  expect(panelRow).toContain('Panel error ML supports unit fixed effects only');
-  expect(panelRow).toContain('panel lag ML supports fixed and random effects');
+  expect(panelRow).toContain('takes unit (default), time and two-way fixed effects');
+  expect(panelRow).toContain('time and two-way require `predictorCount + periodCount - 1 <= 15`');
+  expect(panelRow).toContain('Random effects are refused');
+  expect(panelRow).toContain('Panel lag ML supports fixed and random effects');
   const rankRow = roadmap.split('\n').find(line => line.startsWith('| ST08 |'))!;
   expect(rankRow).toContain('Sorted ranking supports more than 64 states');
   expect(rankRow).toContain('reference diagnostics remain capped at 64 states');
@@ -175,4 +177,77 @@ it('qualifies the SCC reference bound with its exact route', () => {
     `exact route is limited to ${maximumExactNodes.toLocaleString('en-US')} vertices`
   );
   expect(row).toContain('parallel');
+});
+
+function getCoverageRouteIssues(markdown: string): string[] {
+  const requirements: Record<string, readonly RegExp[]> = {
+    KG02: [
+      /indexed route up to 1,073,741,822 rows/,
+      /all-pairs reference up to 65,536 rows/,
+      /both at most 256 passes/,
+      /Device binding and command budgets can impose smaller configurations/
+    ],
+    KG03: [
+      /(?<![\w.,+-])64 classes\b/,
+      /(?<![\w.,+-])1024 rows materialized\b/,
+      /(?<![\w.,+-])8192 recomputed\b/
+    ],
+    EC03: [
+      /The raster adapter is exported; its domain and solver limits still apply\./,
+      /at most 1,048,576 vertices, 2,097,152 edges/,
+      /independent true residual/
+    ]
+  };
+  return Object.entries(requirements).flatMap(([identity, patterns]) => {
+    const rows = markdown.split('\n').filter(line => line.split('|')[1]?.trim() === identity);
+    if (rows.length !== 1) return [`${identity}: expected exactly one coverage row`];
+    const cells = rows[0].split('|').map(cell => cell.trim());
+    const issues = patterns
+      .filter(pattern => !pattern.test(cells[4]))
+      .map(pattern => `${identity}: missing ${pattern.source}`);
+    if (identity === 'EC03' && !cells[5].includes('`addRasterResistanceConnectivityRecipe`'))
+      issues.push('EC03: missing exported raster adapter');
+    return issues;
+  });
+}
+
+it('CAT-10 pins route-specific Dorling, natural-breaks and raster-resistance coverage rows', () => {
+  const markdown = readRepositoryFile('dev-docs/coverage-matrix.md');
+  expect(getCoverageRouteIssues(markdown)).toEqual([]);
+  const mutations = [
+    [
+      'KG02',
+      markdown.replace(
+        'indexed route up to 1,073,741,822 rows, explicit all-pairs reference up to 65,536 rows',
+        'indexed route up to 65,536 rows, explicit all-pairs reference up to 1,073,741,822 rows'
+      )
+    ],
+    [
+      'KG03',
+      markdown.replace(
+        '1024 rows materialized, 8192 recomputed',
+        '8192 rows materialized, 1024 recomputed'
+      )
+    ],
+    [
+      'KG03',
+      markdown.replace(
+        '64 classes; 1024 rows materialized, 8192 recomputed',
+        '164 classes; 11024 rows materialized, 18192 recomputed'
+      )
+    ],
+    [
+      'EC03',
+      markdown.replace('The raster adapter is exported', 'The raster adapter is not exported')
+    ],
+    ['EC03', markdown.replace('`addRasterResistanceConnectivityRecipe`', '`removedRasterAdapter`')]
+  ];
+  for (const [identity, mutated] of mutations) {
+    expect(mutated).not.toBe(markdown);
+    // Keep all original tokens elsewhere: a whole-document token search must not certify a row.
+    const issues = getCoverageRouteIssues(
+      `${mutated}\n\nOriginal tokens: ${markdown.replaceAll('|', ' ').replaceAll('\n', ' ')}`
+    );
+    expect(issues.some(issue => issue.startsWith(`${identity}:`))).toBe(true);
+  }
 });

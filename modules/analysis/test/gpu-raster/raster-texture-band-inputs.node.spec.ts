@@ -145,7 +145,7 @@ it('F5/G7 rejects aliased surface outputs before allocation and allows same-ID r
         grid: GRID,
         input,
         maximumDistance: 1,
-        outputs: {originalValidity: views[0], unresolvedCount: views[1]}
+        output: {originalValidity: views[0], unresolvedCount: views[1]}
       })
     ).toThrow(/overlap|share a buffer/);
     expect(add).not.toHaveBeenCalled();
@@ -157,7 +157,7 @@ it('F5/G7 rejects aliased surface outputs before allocation and allows same-ID r
         grid: GRID,
         input,
         maximumDistance: 1,
-        outputs: {originalValidity: views[0], unresolvedCount: correctedCount}
+        output: {originalValidity: views[0], unresolvedCount: correctedCount}
       });
       expect(result.outputs.originalValidity).toBe(views[0]);
       expect(result.outputs.unresolvedCount).toBe(correctedCount);
@@ -217,7 +217,7 @@ for (const name of [
       expect(() =>
         addSurfacePreparationRecipe(graph, {
           ...props,
-          outputs: {[name]: invalid} as Partial<GPUSurfacePreparationOutput>
+          output: {[name]: invalid} as Partial<GPUSurfacePreparationOutput>
         })
       ).toThrow(
         defect === 'rows'
@@ -232,7 +232,7 @@ for (const name of [
       try {
         const result = addSurfacePreparationRecipe(graph, {
           ...props,
-          outputs: {[name]: corrected} as Partial<GPUSurfacePreparationOutput>
+          output: {[name]: corrected} as Partial<GPUSurfacePreparationOutput>
         });
         expect(result.outputs[name]).toBe(corrected);
       } catch (error) {
@@ -268,7 +268,7 @@ it('G7 captures inherited output getters once before validating and wiring the b
         grid: GRID,
         input,
         maximumDistance: 1,
-        outputs: provided
+        output: provided
       });
       expect(result.outputs.originalValidity).toBe(originalValidity);
       expect(result.outputs.unresolvedCount).toBe(count);

@@ -581,10 +581,11 @@ it('GPUTerrainPeakSnap clamps the radius to maximumRadiusPixels and raises overf
   fixture.destroy();
 });
 
-it('GPUTerrainPeakSnap follows per-row cell sizes in web-mercator and geographic modes', async () => {
+it('GPUTerrainPeakSnap follows per-row cell sizes in web-mercator and geographic modes', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || isSoftwareDevice(device)) {
-    return;
+  requireTestDevice(device);
+  if (isSoftwareDevice(device)) {
+    context.skip('per-row cell-size peak snapping requires a hardware-backed device');
   }
   const values = createNoise(WIDTH, HEIGHT, 100000, 31);
   const candidates: number[] = [];

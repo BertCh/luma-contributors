@@ -168,3 +168,31 @@ it('bandwidthRule and output.bandwidth are validated', () => {
   ).toThrow(/exactly one/);
   device.destroy();
 });
+
+it('the extracted bandwidth validator keeps the existing one-row output requirement', async () => {
+  const {validateKernelDensityBandwidthRule} = await import(
+    '../../../src/gpu-spatial-analysis/point-density/kernel-density-bandwidth'
+  );
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  expect(() =>
+    validateKernelDensityBandwidthRule(
+      'density',
+      'scott',
+      createTransientView(graph, 'too-long-bandwidth', 'float32', 2)
+    )
+  ).toThrow('density output.bandwidth must contain exactly one float32 row');
+  expect(() => validateKernelDensityBandwidthRule('density', undefined, undefined)).not.toThrow();
+  device.destroy();
+});
+
+it('UPT-11 scales weights by one shared power of two before forming moments', () => {
+  const {device, nodes} = createNodes(3);
+  const sources = getGPUCommandNodeKernelSources(nodes);
+  const terms = sources.find(source => source.id.includes('bandwidth-terms'))?.source ?? '';
+  expect(terms).toContain('ldexp(rawWeight, -frexp(');
+  expect(terms).toContain('weight * weight');
+  expect(terms).not.toContain('rawWeight * rawWeight');
+  expect(nodes.some(node => node.id.includes('bandwidth-maximum-weight'))).toBe(true);
+  device.destroy();
+});

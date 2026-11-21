@@ -9,6 +9,7 @@ import {
   GPU_ANALYSIS_DEFAULT_MAXIMUM_SAMPLE_SIZE,
   GPU_ANALYSIS_K_DISTANCE_QUANTILE_COUNT,
   computeGPUAnalysisSpacingStatistics as computeMaybeSpacingStatistics,
+  computeGPUAnalysisSpacingStatisticsDetailed,
   getGPUAnalysisExtentSizes,
   getGPUAnalysisSamplingFactor
 } from '../../../../src/gpu-spatial-analysis/ontology/analysis-experience/analysis-spacing-statistics';
@@ -1668,4 +1669,46 @@ describe('shared exact geographic extent conventions', () => {
       ).toEqual([170, 0, 50, 3]);
     }
   });
+});
+
+describe('STA-06 rejected input evidence', () => {
+  it('counts rejected rows before sampling and preserves absence in the convenience result', () => {
+    // Hand-counted pairs: empty 0/0, invalid 0/2, single 1/0, mixed 3/2.
+    for (const [coordinates, pointCount, invalidCount] of [
+      [[], 0, 0],
+      [[NaN, 0, 0, Infinity], 0, 2],
+      [[0, 0], 1, 0],
+      [[0, 0, NaN, 0, 1, 0, 0, Infinity, 2, 0], 3, 2]
+    ] as const) {
+      const options = {coordinateModel: 'planar' as const, maximumSampleSize: 2};
+      const detail = computeGPUAnalysisSpacingStatisticsDetailed(coordinates, options);
+      expect(detail.pointCount).toBe(pointCount);
+      expect(detail.invalidCount).toBe(invalidCount);
+      const statistics = computeMaybeSpacingStatistics(coordinates, options);
+      if (pointCount === 0) {
+        expect(statistics).toBeUndefined();
+        expect(detail.statistics).toBeUndefined();
+      } else {
+        expect(statistics?.invalidCount).toBe(invalidCount);
+        expect(detail.statistics).toEqual(statistics);
+      }
+    }
+    expect(
+      computeMaybeSpacingStatistics([0, 0, NaN, 0], {coordinateModel: 'planar'})?.invalidCount
+    ).toBe(1);
+    expect(
+      computeMaybeSpacingStatistics([0, 91, 1, 0], {coordinateModel: 'geographic'})?.invalidCount
+    ).toBe(1);
+  });
+});
+
+it('S2 rejects an unknown coordinate model before accepting rows', () => {
+  const options = {coordinateModel: 'map' as 'planar'};
+  // 95 degrees would be invalid latitude in geographic mode; an unknown model has no semantics.
+  expect(() => computeGPUAnalysisSpacingStatisticsDetailed([0, 95], options)).toThrow(
+    /coordinateModel.*planar.*geographic.*map/
+  );
+  expect(() => computeMaybeSpacingStatistics([0, 95], options)).toThrow(
+    /coordinateModel.*planar.*geographic.*map/
+  );
 });

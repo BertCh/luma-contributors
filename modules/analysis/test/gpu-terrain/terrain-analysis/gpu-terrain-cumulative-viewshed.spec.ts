@@ -32,7 +32,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 
 const WIDTH = 40;
@@ -343,3 +343,96 @@ it('GPUTerrainCumulativeViewshed geographic counts at 60 degrees match the oracl
   expect(march.visible).toContain(0);
   expect(march.marginal.some(count => count > 0)).toBe(true);
 });
+
+for (const traversal of ['march', 'pyramid'] as const) {
+  it(`URT-02 positive-weight corners and participating missing-data controls: ${traversal}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // Literal geometry: integer target height 0, ridge slope 10 > target slope 0.
+    // A participating missing endpoint is noData; a participating missing interior is skipped.
+    const fixtures = [
+      {values: [0, 0, NaN], height: 1, target: 1, code: V.visible},
+      {values: [0, 10, 0, 0, 0, NaN], height: 2, target: 2, code: V.hidden},
+      {values: [0, NaN, 0], height: 1, target: 1, code: V.noData},
+      {values: [0, NaN, 0], height: 1, target: 2, code: V.visible}
+    ];
+    for (const fixture of fixtures) {
+      const grid = makeGPURasterMetadata({width: 3, height: fixture.height, cellSize: 1});
+      const settings = {observerHeight: 0, targetHeight: 0, curvatureCoefficient: 0};
+      const result = await runCumulative(device, Float32Array.from(fixture.values), traversal, 1, {
+        grid,
+        observers: [[0, 0]],
+        settings
+      });
+      expect(result.visible).toHaveLength(3 * fixture.height);
+      expect(result.marginal).toHaveLength(3 * fixture.height);
+      expect(result.visible[fixture.target]).toBe(fixture.code === V.visible ? 1 : 0);
+      expect(result.marginal[fixture.target]).toBe(0);
+    }
+  });
+}
+
+for (const traversal of ['march', 'pyramid'] as const) {
+  it(`B1/B2 exact diagonal ridge, fractional missing corner and flat grazing ray: ${traversal}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const ridge = new Float32Array(900);
+    ridge[15 * 30 + 15] = 50;
+    ridge[15 * 30 + 14] = ridge[15 * 30 + 16] = NaN;
+    const fractional = ridge.slice();
+    fractional[14 * 30 + 15] = NaN;
+    const fixtures = [
+      {
+        values: ridge,
+        width: 30,
+        height: 30,
+        observer: [0, 0] as [number, number],
+        target: [29, 29] as [number, number],
+        targetHeight: 5,
+        code: V.hidden
+      },
+      {
+        values: fractional,
+        width: 30,
+        height: 30,
+        observer: [0, 0] as [number, number],
+        target: [29, 28] as [number, number],
+        targetHeight: 5,
+        code: V.visible
+      },
+      {
+        values: new Float32Array(8).fill(3),
+        width: 2,
+        height: 4,
+        observer: [0, 0.125] as [number, number],
+        target: [1, 3] as [number, number],
+        targetHeight: 0,
+        code: V.visible
+      }
+    ];
+    // Step 15 of the diagonal is exactly (15,15), with slope 50/(15*sqrt(2)) > 5/(29*sqrt(2)).
+    // On the fractional ray row 420/29 gives the NaN positive weight; on the flat every slope is 0.
+    for (const fixture of fixtures) {
+      const grid = makeGPURasterMetadata({
+        width: fixture.width,
+        height: fixture.height,
+        cellSize: 1
+      });
+      const settings = {
+        observerHeight: 0,
+        targetHeight: fixture.targetHeight,
+        curvatureCoefficient: 0
+      };
+      const result = await runCumulative(device, fixture.values, traversal, 1, {
+        grid,
+        observers: [fixture.observer],
+        settings
+      });
+      expect(result.visible).toHaveLength(fixture.values.length);
+      expect(result.marginal).toHaveLength(fixture.values.length);
+      const target = fixture.target[1] * fixture.width + fixture.target[0];
+      expect(result.visible[target]).toBe(fixture.code === V.visible ? 1 : 0);
+      expect(result.marginal[target]).toBe(0);
+    }
+  });
+}

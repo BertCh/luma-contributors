@@ -65,7 +65,7 @@ const scene: GpuScene = async context => {
         new GPUSpatialKMeans({
           id: `demo-k-means-${maximumIterations}`,
           positions: importBufferView(graph, 'positions', positionBuffer, 'float32x2', pointCount),
-          k: CLUSTER_COUNT,
+          clusterCount: CLUSTER_COUNT,
           maximumIterations,
           parameters: importBufferView(
             graph,

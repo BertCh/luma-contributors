@@ -9,6 +9,7 @@ import {getRasterGroundScale} from '../../../src/analysis-core/contracts/raster-
 import {getGPURasterFractionalCoverageParameterValues} from '../../../src/raster-analysis/gpu-raster-fractional-coverage';
 import {
   GPURasterPatchMetrics,
+  getGPURasterPatchMetricsParameterValues,
   type GPURasterPatchMetricsProps
 } from '../../../src/raster-analysis/raster-patches/index';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
@@ -193,4 +194,37 @@ it('GPURasterPatchMetrics ground weights stay within their quantization at the p
     expectedPatch1 += 3 * scaleX * scaleY * 0.01;
   }
   expectRelative([result.areas[0]], [expectedPatch1], 2e-5);
+});
+
+it('RT-102 uniform sheared one-cell patch has determinant area and affine edge perimeter', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  const grid: GPURasterMetadata = {
+    width: 1,
+    height: 1,
+    affine: [3, 2, 0, 4, -2, 0],
+    pixelInterpretation: 'area'
+  };
+  const areas = rig.output('float32', 1);
+  const perimeters = rig.output('float32', 1);
+  try {
+    rig.run(
+      new GPURasterPatchMetrics({
+        grid,
+        labels: rig.input(new Uint32Array([1]), 'uint32', 1),
+        parameters: rig.input(getGPURasterPatchMetricsParameterValues(grid), 'float32', 8),
+        output: {areas: areas.view, perimeters: perimeters.view}
+      })
+    );
+    const area = (await readFloat32(areas.buffer, 1))[0];
+    const perimeter = (await readFloat32(perimeters.buffer, 1))[0];
+    expect(Number.isFinite(area)).toBe(true);
+    expect(Number.isFinite(perimeter)).toBe(true);
+    // Hand parallelogram: |3*(-2)-2*4| = 14; 2*(sqrt(3²+4²)+sqrt(2²+(-2)²)).
+    expect(area).toBe(14);
+    expect(perimeter).toBeCloseTo(15.65685424949238, 5);
+  } finally {
+    rig.destroy();
+  }
 });

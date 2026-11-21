@@ -249,3 +249,78 @@ test('snapshot covariance equals an independent centred Gram matrix and EOF excl
   expect(projection.columns['status'].values[2]).toBe(1);
   expect(Number.isNaN(projection.columns['eofs'].values[4])).toBe(true);
 });
+
+for (const [distribution, zeroAtom, expectedProbability] of [
+  ['gamma', false, 0],
+  ['fisk', true, 1 / 3]
+] as const) {
+  test(`W5-18 explicit ${distribution} zeroAtom=${zeroAtom} controls the fitted atom`, async () => {
+    const result = await runRasterTimeSeries(
+      await getDevice(),
+      {
+        cellCount: 1,
+        sliceCount: 3,
+        bandCount: 1,
+        times: [0, 1, 2],
+        values: Float32Array.of(0, 1, 2)
+      },
+      'standardized-index',
+      {calibrationSliceCount: 3, distribution, zeroAtom}
+    );
+    expect(result.columns['fit'].values).toHaveLength(3);
+    expect(result.columns['index'].values).toHaveLength(3);
+    expect(result.columns['counts'].values).toHaveLength(3);
+    const probability = result.columns['fit'].values[2];
+    expect(Number.isFinite(probability)).toBe(true);
+    expect(probability).toBeCloseTo(expectedProbability, 6);
+    expect(Array.from(result.columns['status'].values)).toEqual([0, 0, 0]);
+    if (zeroAtom) {
+      // Atom mass is 1/3, so the original zero has normal quantile Phi^-1(1/3).
+      const index = result.columns['index'].values[0];
+      expect(Number.isFinite(index)).toBe(true);
+      expect(index).toBeCloseTo(-0.43072729929545756, 5);
+    }
+  });
+}
+
+for (const values of [
+  [10000000, 10000001],
+  [10000001, 10000000]
+]) {
+  test(`SCL-01 adapter sample deviation and calibration population moment for ${values.join(',')}`, async () => {
+    const device = await getDevice();
+    const stack = {
+      cellCount: 1,
+      sliceCount: 2,
+      bandCount: 1,
+      times: [0, 1],
+      values: Float32Array.from(values)
+    };
+    const streaming = await runRasterTimeSeries(device, stack, 'streaming');
+    // Independent binary64 closed form: mean 10000000.5, residuals +/-0.5, M2=0.5.
+    // Streaming publishes SAMPLE standard deviation: sqrt(M2/(n-1)) = sqrt(0.5).
+    for (const name of ['mean', 'standardDeviation', 'counts', 'streamingStatus'])
+      expect(streaming.columns[name].values).toHaveLength(1);
+    expect(streaming.streamingCountStatus).toHaveLength(1);
+    const deviation = streaming.columns['standardDeviation'].values[0];
+    expect(Number.isFinite(deviation)).toBe(true);
+    expect(deviation).toBeCloseTo(0.7071067811865476, 5);
+    const calibration = await runRasterTimeSeries(device, stack, 'standardized-calibration', {
+      calibrationSliceCount: 2,
+      distribution: 'fisk'
+    });
+    expect(calibration.columns['fit'].values).toHaveLength(3);
+    expect(calibration.columns['counts'].values).toHaveLength(3);
+    const shape = calibration.columns['fit'].values[0];
+    const scale = calibration.columns['fit'].values[1];
+    // APP Fisk uses POPULATION variance M2/n=.25, shape=pi*mean/sqrt(3*variance),
+    // scale=2*mean^3/(variance+2*mean^2). Python math gives these literals.
+    expect(Number.isFinite(shape)).toBe(true);
+    expect(Number.isFinite(scale)).toBe(true);
+    expect(Math.abs(shape / 36275989.09848373 - 1)).toBeLessThan(1e-5);
+    expect(Math.abs(scale / 10000000.499999987 - 1)).toBeLessThan(1e-6);
+    const impliedSquaredDeviations = 2 * ((Math.PI * 10000000.5) / (Math.sqrt(3) * shape)) ** 2;
+    expect(Number.isFinite(impliedSquaredDeviations)).toBe(true);
+    expect(impliedSquaredDeviations).toBeCloseTo(0.5, 5);
+  });
+}

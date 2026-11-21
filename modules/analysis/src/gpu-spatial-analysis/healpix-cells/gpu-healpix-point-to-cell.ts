@@ -2,17 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveHealpixIndexScheme} from './healpix-scheme';
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {
-  createGPUComputeCommandNode,
   getBoundedDispatchLayout,
-  getViewBinding,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView,
   type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
-import {Kernel} from '@luma.gl/graph';
 import {
   createGraphChunkDispatchParameters,
   planGraphChunkDispatch,
@@ -25,9 +24,12 @@ import {
   validateMaximumCount,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateSinglePackedView,
-  validateRequirement
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  createCellRowKernelNode,
+  CELL_ROW_WORKGROUP_SIZE
+} from '../cell-aggregation/cell-row-kernel';
 import type {WGSLKernelProps} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -39,12 +41,8 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {HEALPIX_INDEX_WGSL, HEALPIX_MAXIMUM_ORDER} from './healpix-index-wgsl';
 
-/** Fixed workgroup size makes chunk lengths runtime dispatch metadata. */
-const CHUNK_WORKGROUP_SIZE = 256;
 /** Storage component indices of whole fixed-stride records cannot wrap uint32. */
 const MAXIMUM_CHUNK_COMPONENT_COUNT = 0xffffffff;
-/** Guard padded workgroups before multiplying their index into a uint32 invocation index. */
-const MAXIMUM_LINEAR_WORKGROUP_COUNT = 16777216;
 
 const OPERATION = 'GPUHealpixPointToCell';
 
@@ -105,6 +103,9 @@ export type GPUHealpixPointToCellProps = {
  * dominated by the 1.5e-5 degree quantization of float32 longitude near 180 degrees: the key is
  * the cell of the rounded position. A mismatch is always an adjacent cell.
  *
+ * The direct contributor requires at least one position row; named graph forms support zero
+ * rows and produce empty outputs without a dispatch.
+ *
  * Packed and chunked inputs are supported. Outputs mirror input chunks and must not share buffers with the inputs.
  */
 export class GPUHealpixPointToCell implements GPUCommandNodeProducer {
@@ -120,6 +121,15 @@ export class GPUHealpixPointToCell implements GPUCommandNodeProducer {
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
   constructor(props: GPUHealpixPointToCellProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'order',
+      'scheme',
+      'spatialContext',
+      'positions',
+      'mask',
+      ['output', ['cells', 'validity']]
+    ]);
     this.id = props.id ?? 'healpix-point-to-cell';
     this.props = props;
     const id = this.id;
@@ -129,11 +139,7 @@ export class GPUHealpixPointToCell implements GPUCommandNodeProducer {
       GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT
     );
     validateCapacity(id, 'order', props.order, 0, HEALPIX_MAXIMUM_ORDER);
-    validateRequirement(
-      id,
-      props.scheme === undefined || ['nested', 'uniq'].includes(props.scheme),
-      "scheme must be 'nested' or 'uniq'"
-    );
+    resolveHealpixIndexScheme(id, props.scheme);
     this.chunkPlan = planGraphChunkDispatch(id, {
       positions: props.positions,
       mask: props.mask,
@@ -217,20 +223,19 @@ export class GPUHealpixPointToCell implements GPUCommandNodeProducer {
     );
     validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
     const invocationsPerRow = 1;
-    const layouts = this.chunkPlan.chunks.map(chunk =>
+    // Resolve every dispatch before declaring parameter scratch, as on the original route.
+    for (const chunk of this.chunkPlan.chunks) {
       getBoundedDispatchLayout(
         id,
-        Math.max(chunk.length * invocationsPerRow, 1),
-        CHUNK_WORKGROUP_SIZE,
+        Math.max(chunk.length, 1),
+        CELL_ROW_WORKGROUP_SIZE,
         graph.device.limits.maxComputeWorkgroupsPerDimension
-      )
-    );
+      );
+    }
     const {slots, nodes} = createGraphChunkDispatchParameters(graph, {
       id: `${id}-chunks`,
       plan: this.chunkPlan
     });
-    // Every chunk closes over the same source string, including assembled fp64 modules.
-    let sharedShaderSource: string | undefined;
     const chunkNodes = this.chunkPlan.chunks
       .filter(chunk => chunk.length > 0)
       .map(chunk => {
@@ -273,85 +278,24 @@ ${IS_FINITE_BITS_WGSL}`,
   cellsOut[cellsOutOffset + 2u * index + 1u] = key.x;
   ${output.validity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isValid);' : ''}`
         };
-        const storageDeclarations = kernelProps.bindings
-          .map(
-            (binding, location) =>
-              `@group(0) @binding(${location}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`
-          )
-          .join('\n');
-        const bindingComponentCounts: Record<string, number> = {
+        const components: Record<string, number> = {
           positions: 2,
           rowMask: 1,
           cellsOut: 2,
           validityOut: 1
         };
-        const bindingOffsets = kernelProps.bindings
-          .filter(binding => binding.name !== 'chunkParameters')
-          .map(
-            binding =>
-              `let ${binding.name}Offset = arrayLength(&${binding.name}) - rowCount * ${bindingComponentCounts[binding.name]}u;`
-          )
-          .join('\n  ');
-        const source =
-          sharedShaderSource ??
-          `${storageDeclarations}
-${kernelProps.declarations ?? ''}
-@compute @workgroup_size(${CHUNK_WORKGROUP_SIZE})
-fn main(@builtin(workgroup_id) workgroupId: vec3u,
-  @builtin(num_workgroups) workgroupCount: vec3u,
-  @builtin(local_invocation_index) localInvocationIndex: u32) {
-  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
-  if (workgroupIndex >= ${MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
-  let index = workgroupIndex * ${CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
-  let rowCount = chunkParameters[1];
-  if (index >= rowCount * ${invocationsPerRow}u) { return; }
-  ${bindingOffsets}
-  ${kernelProps.body}
-}`;
-        sharedShaderSource = source;
-        const kernelBindings = kernelProps.bindings;
-        const operationName = kernelProps.operation;
-        const layout = layouts[chunk.chunkIndex];
-        return createGPUComputeCommandNode<Parameters>({
+        return createCellRowKernelNode(graph, {
           id: `${kernelProps.id}-${chunk.chunkIndex}`,
-          resources: kernelProps.bindings.map(binding => ({
-            buffer: binding.view,
-            usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
-          })),
-          workload: {
-            operation: kernelProps.operation,
-            ...(kernelProps.variant ? {variant: kernelProps.variant} : {}),
-            commandCount: 1,
-            maximumWorkgroupCount: layout.x * layout.y * layout.z,
-            maximumInvocationCount: chunk.length * invocationsPerRow
-          },
-          compile: ({device}) => {
-            const kernel = new Kernel(device, {
-              id: operationName,
-              source,
-              shaderLayout: {
-                bindings: kernelBindings.map((binding, location) => ({
-                  name: binding.name,
-                  group: 0,
-                  location,
-                  type: binding.access === 'read' ? 'read-only-storage' : 'storage'
-                }))
-              }
-            });
-            return {
-              encode: ({computePass, getBuffer}) =>
-                kernel.dispatch(computePass, {
-                  bindings: Object.fromEntries(
-                    kernelBindings.map(binding => [
-                      binding.name,
-                      getViewBinding(binding.view, getBuffer)
-                    ])
-                  ),
-                  ...layout
-                }),
-              destroy: () => kernel.destroy()
-            };
-          }
+          kernelId: OPERATION,
+          operation: OPERATION,
+          variant: kernelProps.variant!,
+          length: chunk.length,
+          parameters: slots[chunk.chunkIndex],
+          bindings: kernelProps.bindings
+            .filter(binding => binding.name !== 'chunkParameters')
+            .map(binding => ({...binding, components: components[binding.name]})),
+          declarations: kernelProps.declarations,
+          body: kernelProps.body
         });
       });
     return [...nodes, ...chunkNodes];

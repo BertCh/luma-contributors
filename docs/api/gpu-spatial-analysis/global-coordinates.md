@@ -1,5 +1,7 @@
 # Global coordinates, spherical geometry and S2 analysis
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 These graph contributors cover bounded portions of CR01–CR05. Inputs and outputs remain GPU
 views. They declare compute nodes and never submit, read back, download grids, or call a CPU GIS
 engine. Use a separate contributor for each source batch; the kernels do not merge chunks or own
@@ -15,6 +17,9 @@ within eight bindings per compute stage.
 | CR05 | Exact hierarchy/neighbors and stable measures through level 30, adaptive polygon covers through level 15, uniform cap covers and geometric cross-family overlap weights for prepared convex boundaries. | Cover guarantees are tolerance-aware; automatic cross-family broad-phase/boundary acquisition and optimized CPU timing comparisons remain separate integration/performance work. |
 
 ## Prepared datum grids
+
+Import `GPUDatumGridTransform`, `decodeGPUDatumGridTransformPositions` and
+`decodeGPUDatumGridTransformStatus` from `@luma-contributors/analysis/geospatial-analysis`.
 
 `GPUDatumGridTransform` takes `float32x3` positions: longitude and latitude in degrees, then
 height in the declared unit. Grid samples are `(longitude shift degrees, latitude shift degrees,
@@ -47,6 +52,20 @@ low views, small shifts at large coordinates can still round away. Samples remai
 tolerance is a residual stopping test, not a certified geodetic accuracy bound. See the [PROJ horizontal grid semantics](https://proj.org/en/stable/operations/transformations/hgridshift.html)
 and [vertical grid semantics](https://proj.org/en/stable/operations/transformations/vgridshift.html)
 for the broader reference contracts; this prepared-grid interface does not implement every option.
+
+For split readbacks, reconstruct in binary64:
+
+```ts
+import {decodeGPUDatumGridTransformPositions} from '@luma-contributors/analysis/geospatial-analysis';
+export function reconstructDatum(high: Float32Array, low: Float32Array, status: Uint32Array) {
+  const checked = decodeGPUDatumGridTransformPositions({positions: high, positionsLow: low, status});
+  const reconstructed = Float64Array.from(high, (value, i) => value + low[i]);
+  return {checked, reconstructed};
+}
+```
+
+The decoder checks byte windows, XYZ alignment, matching lengths and status row count; use its
+status alongside the reconstructed coordinates. Failed rows remain NaN.
 
 ## Convex spherical geometry and overlap weights
 
@@ -113,10 +132,17 @@ the final cell count. The default holds a cover that exceeds `capacity` by a fac
 so the caller still gets status 2 and the required count. A cap that outgrows the frontier reports
 status bit 4, writes no cells and reports counts `(0, 0)`: a truncated frontier cannot know the
 size of the full cover, so no required count is available; raise `frontierCapacity` (or
-`capacity`) and run again. A zero-radius cap on a face center covers the four cells that touch
-it in both enumerations. The rounds are not gated on the live frontier length (the published
+`capacity`) and run again. At level 0, a zero-radius exterior cap on a face center covers
+exactly that face. With the default tolerance, at levels 1 and above it covers the four cells that touch the center in both
+enumerations. The rounds are not gated on the live frontier length (the published
 `GPUScan` has no GPU-written dispatch size), and `estimatedCommandNodeCount` is exact for both the
 cap and the polygon level-synchronous coverings. The default remains `refinement: 'uniform'`, the reference tier.
+The CPU cap twin applies this frontier bound only when `frontierCapacity` is explicit. Omission
+retains its complete adaptive traversal, including level-synchronous requests. An explicit bound
+clears cells/counts with status bit 4 on exhaustion. An interior cap whose packed radius is less
+than or equal to the float32-encoded tolerance is empty on both forms and does not expand a
+frontier (including radius and tolerance both supplied as `0.000011`). Complete CPU traversal can count
+contained subtrees without storing all descendants.
 
 
 
@@ -147,6 +173,41 @@ user-requested tolerance guarantees.
 
 ## Spatial context, limits and status codes
 
+Host direction props (`GPUSphericalPolygonContains.hemisphereCenter`,
+`GPUS2PolygonCovering.hemisphereCenter`, `GPUSphericalPolygonOverlay.chartCenter`, and
+`GPUSphericalArcOverlay.referencePoint`, including the corresponding CPU helpers) use
+`validateUnitVector`, which requires
+finite length and **abs(length(v) - 1) < 1e-6**, a strict length bound. Buffer vertices and
+queries in convex contains/intersection, polygon contains, hemisphere polygon overlay,
+intrinsic arc overlay and S2 polygon covering use **abs(dot(v,v) - 1) <= 1e-4**, an inclusive
+squared-length bound evaluated in f32 on the GPU. The CPU arc-overlay and S2-covering twins
+use that squared-length bound in binary64. The exported constants
+`GPU_SPHERICAL_UNIT_VECTOR_LENGTH_TOLERANCE` and
+`GPU_SPHERICAL_UNIT_VECTOR_SQUARED_LENGTH_TOLERANCE` name those different measures.
+
+`GPUSphericalConvexIntersection.capacity` is 1–64 output vertices **per paired polygon row**,
+with that fixed row stride; each input polygon has 3–32 vertices. Intrinsic arc overlay accepts
+at most 128 **total input vertices across both operands**; output positions hold 3–1024
+vertices **across all result rings on the GPU**. The CPU operation has no 1024-vertex ceiling
+(for example capacity 1536 is accepted). Its operation's `capacity` is that total output vertex
+capacity, while `ringCapacity` counts result rings and reserves `ringCapacity + 1` offsets.
+S2 polygon covering's `capacity` counts output S2 cells across all levels for either traversal.
+
+Use `decodeGPUSphericalConvexContainsStatus` or `decodeGPUSphericalPolygonContainsStatus`
+for `{valid, invalidInput, boundary}` (bits 1 invalid, 2 boundary). Use
+`decodeGPUSphericalConvexIntersectionStatus` for
+`{complete, invalidInput, outputVertexCapacityExceeded, numericallyAmbiguous}`, or
+`decodeGPUSphericalArcOverlayStatus` for
+`{complete, invalidInput, outputCapacityExceeded, numericallyUnresolved}` (bits 1/2/4).
+Bit 4 can mean a short split piece, insufficient side separation, ambiguous membership,
+or a ring junction/assembly failure; it cannot identify the cause.
+Existing codes and ports are unchanged. `decodeGPUSphericalConvexIntersectionCounts`
+names the two words `{writtenVertexCount, requiredVertexCount}`;
+`decodeGPUSphericalArcOverlayCounts` names the four words
+`{writtenVertexCount, writtenRingCount, requiredSegmentCount, referenceInside}`.
+Hemisphere polygon overlay retains the named status views of its planar arrangement.
+
+
 The five spherical classes and the two S2 coverings read unit direction vectors. Each takes an
 optional `spatialContext`, resolved with `resolveGPUSpatialContext` and exposed as
 `.spatialContext`. The accepted space is `longitude-latitude`, the space whose positions these
@@ -162,8 +223,8 @@ exports with their reasons:
 
 | Constant | Value | Reason |
 | --- | --- | --- |
-| `GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES` | 128 | O(n^3) arrangement in one invocation with private scratch |
-| `GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES` | 1024 | seven floats of scratch per output vertex |
+| `GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES` | 128 | serialized pairwise noding and ring assembly |
+| `GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES` | 1024 | bounded assembled output; segment scratch depends on input sizes |
 | `GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES`, `GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES` | 3, 32 | convex polygons live in fixed private arrays |
 | `GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY` | 64 | a clip has at most the sum of two 32-vertex polygons |
 | `GPU_SPHERICAL_MINIMUM_TOLERANCE`, `GPU_SPHERICAL_MAXIMUM_TOLERANCE` | 1e-7, 1e-2 | below f32 noise, and the meaning of a boundary band |
@@ -183,14 +244,29 @@ unchanged: `GPU_SPHERICAL_CONVEX_CONTAINS_STATUS_*`, `GPU_SPHERICAL_POLYGON_CONT
 
 ## General spherical topology
 
-`GPUSphericalPolygonContains` accepts nonconvex simple CCW shell/hole rings and a query-to-polygon
+`GPUSphericalPolygonContains` accepts nonconvex simple shell/hole rings in either orientation and a query-to-polygon
 index. The first ring is the shell and subsequent rings are holes. Rings must be disjoint, holes
 properly nested, and minor arcs nondegenerate. Boundary policy and status 0/1/2 follow the convex
 predicate. Each ring must lie in the open hemisphere defined by `hemisphereCenter`, or its
 normalized vertex mean when omitted. Supplying a pole avoids sensitivity to uneven vertex
-sampling. The operator checks ring self-crossings; cross-ring nesting is a prepared-input contract.
+sampling. Each ring denotes its hemisphere-interior region regardless of orientation;
+`complement: true` explicitly selects the other polygon region. Reversing a shell or hole does
+not select its antipodal image. The separate `GPUSphericalConvexContains` contract still requires
+counterclockwise convex rings. The general operator checks ring self-crossings; cross-ring nesting is a prepared-input contract.
 Direct S2 checks include 1,032 normal/complement classifications on concave and holed rings rotated
 across the pole and antimeridian.
+The general-polygon boundary band measures distance to the finite minor arc, including angular
+caps around its endpoints. A short edge's antipode is outside that band. For a triangle with an
+equatorial edge spanning longitudes `[-0.00075, 0.00075]` radians and a north-pole vertex, tolerance
+`0.001` classifies `(-1,0,0)` as outside with status 0 and `(1,0,0)` as closed boundary with status 2.
+Accepted near-unit coordinates are normalized for these distance tests: radial error does not
+consume angular tolerance. For the positive octant, `(1.00002,-3e-7,-4e-7)` and its normalized
+copy both have status 2; closed boundaries contain them and open boundaries exclude them.
+Endpoint caps are accepted before plane-distance tests: an exact packed vertex remains boundary
+even when float32 arithmetic rounds its incident plane residual just above tolerance.
+The Kepler spherical-containment CPU binding uses the same finite-arc and endpoint-cap geometry.
+
+<a id="hemisphere-polygon-overlay-contract"></a>
 
 `GPUSphericalPolygonOverlay` maps caller-prepared polygon/multipolygon boundaries into a common
 gnomonic hemisphere, runs the existing GPU snap-rounded arrangement, then lifts assembled rings
@@ -202,6 +278,58 @@ required counts, overflow and candidate overflow retain the planar arrangement c
 or capacity failures cannot be interpreted as an empty successful region. The direct S2 oracle
 checks nonconvex/holed Boolean ring counts and areas to `3e-5` steradians.
 
+Boundary `operandIds` and representative `featureSources.operandIds` always use the caller's left
+(0) and right (1), including complemented operations that swap operands internally. Representative
+selection minimizes that caller `(operand, source row)` pair and marks mixed ownership explicitly.
+`boundary.sourceFeatureIds` uses each operand's `sourceIds` when supplied, falling back to its
+feature row when omitted; `featureSources.sourceRows` always remains a row index. Caller IDs are
+published after row-based representative reduction. Every supplied `sourceIds` view must hold at
+least one identity per feature. The complement scalar must not overlap any feature-source view,
+geometry, boundary or status output. All actual spherical output byte ranges, including lifted XYZ
+positions, must be disjoint. Separate writers may use nonoverlapping packed columns (for example,
+feature-source row at byte 0 and complement at byte 256). Read-only and writable views bound in
+the same dispatch must use separate physical buffers; the identity publisher stages its output
+so packed boundary operand and identity columns are supported.
+In particular, result `status.count`, `status.overflow` and `status.candidateOverflow` must use
+physical buffers separate from `geometry.featureOffsets`, `boundary.status.overflow` and
+`boundary.status.candidateOverflow`: the result publisher reads the latter while writing the
+former. Disjoint slices at bytes 0 and 256 still conflict and are rejected at construction.
+The assembly-completeness dispatch also requires result `status.candidateOverflow` to use
+a physical buffer separate from `boundary.status.count`. Within each co-written status group
+(result count/overflow/candidateOverflow, all four boundary status words, optional
+ringCount/requiredRingCount), aligned binding ranges must be disjoint; adjacent uint32 words
+can have overlapping aligned bindings and are rejected. Separate-dispatch complement/source-row
+packing remains supported even when their aligned binding ranges overlap.
+
+The chart arrangement uses fixed passes rather than a solver iteration budget. Result `status`
+contains `count`, `overflow`, `candidateOverflow`, and optional `ringCount`, `requiredRingCount`,
+`nodedSegmentRequiredCount` and `uncertainCount`. Boundary `status` contains exactly `count`,
+`requiredCount`, `overflow` and `candidateOverflow`. The result's `uncertainCount` counts segment
+pairs whose predicates could not be certified; it is not a boundary-level count of selected edges.
+Accept geometry and provenance only when both result overflow flags are zero. The polygon output
+uses implicitly closed rings, without a repeated closing vertex.
+Written counts are capacity-clamped; required counts describe the unclamped requirement. For
+example, a three-edge boundary with capacity two reports count 2, requiredCount 3 and overflow 1;
+two disjoint rings with ring capacity one report ringCount 1, requiredRingCount 2 and overflow 1.
+
+Neither status port exposes `iterationCount`, `converged`, `iterationLimitReached`, `invalidCount`
+or `approximation`; result status also excludes `requiredCount` (use `requiredRingCount` for ring
+sizing), while boundary status retains `requiredCount` and excludes `uncertainCount`. These inherited
+fields had no writer and are rejected at construction, including when supplied through a cast or
+object spread. Use `overflow` and `candidateOverflow` for completeness and result `uncertainCount`
+for uncertified predicates. Exactness is defined on the documented chart snap lattice, controlled
+by `vertexTolerance`; no solver-round or separate approximation flag is implied. Input rejection
+sets incomplete noding through `candidateOverflow` rather than publishing a separate rejected-row
+count. The constructor
+snapshots declared descriptor fields, so unrelated getters and metadata labels are ignored, while
+retired status names are refused even when inherited. Spatial-context metadata is also captured;
+both public context properties retain the validated coordinate space after caller mutation.
+Subsequent descriptor changes do not change the graph; buffer contents remain per-frame inputs.
+The website example suppresses both result layers and reports an incomplete result when either
+failure flag is set, preserving the operand outlines for context.
+
+<a id="intrinsic-arc-overlay-contract"></a>
+
 `GPUSphericalArcOverlay` handles boundaries that cannot share a hemisphere. It nodes great-circle
 arcs intrinsically, classifies adjacent faces by crossing parity, retains oriented boundary pieces,
 and assembles rings using the left-turn rule at junctions. Both operands supply the known membership
@@ -211,20 +339,50 @@ the full sphere. The reference membership is caller-prepared semantic data, not 
 orientation. Simple disjoint boundary rings are checked for self/cross-ring intersections; touching
 rings within one operand are rejected. Output rings are open xyz rings with interior on the left.
 
-Intrinsic overlay accepts at most 128 total input vertices and 3–1024 output vertex capacity.
+Intrinsic overlay is a bounded serial reference route accepting at most 128 total input vertices
+and 3–1024 output vertex capacity. Prefer `CPUSphericalArcOverlayOperation` when GPU graph
+composition is unnecessary; its CPU implementation does not have these GPU size caps.
+The public operator descriptor reports tier `reference`, quadratic-source transient storage and
+multi-pass dispatch: parallel offset packing, one arrangement invocation and parallel offset padding.
+Operand/output view identities and compile-time configuration are captured at construction in
+the contributor and both operation forms; their buffer contents remain per-frame inputs.
 Tolerance ranges from `1e-7` to `1e-3` radians, default `1e-6`. Seven deterministic two-arc parity
 paths avoid reference rays through vertices. Adjacent-side probes start at 16 times tolerance and
 shrink according to boundary separation; inadequate separation and unresolved junctions fail
 explicitly. Counts are `(written vertices, written rings, required segments, reference membership)`.
 Status bits are 1 invalid input/reference/topology, 2 capacity and 4 numerical uncertainty. Failed
 results have zero written geometry; required segments are only a lower bound on early failure.
-Segment storage is an explicit graph transient, not a large shader-private array. Twelve direct
+Segment storage is an explicit graph transient, not a large shader-private array. For L left and R
+right vertices it retains at most `max(1, L + R + 4*L*R)` seven-float records, independent of output
+capacity: each edge gains at most two split points per opposing edge. This lets duplicate detection
+count every retained boundary piece once even after the output fills. The union of two identical
+four-edge squares reports required segments 4 at both capacities 3 and 4; capacity 3 gives counts
+`[0,0,4,0]` and status 2, while capacity 4 gives `[4,1,4,0]` and status 0. Twelve direct
 S2 Boolean cases cover globally distributed zigzag boundaries and complements, with area error
 below `2e-5` steradians and exact ring counts. This is tolerance-based topology, not exact S2 parity.
+An input offset table claiming more than `floor(vertexCount/3)` rings is invalid before its ranges
+are scanned, because every ring requires at least three vertices. Oversized output offset destinations
+remain accepted: a parallel pass fills every spare slot with the written vertex count. A four-edge
+square in nine offset slots produces `[0,4,4,4,4,4,4,4,4]`; failure clears all offset slots to zero.
+The padding dispatch reads `output.counts` while writing `output.ringOffsets`; those two views
+must use separate physical buffers, even for nonoverlapping slices. Construction rejects this
+mixed usage before graph mutation. Other output columns may retain safe disjoint packing.
 
 ## Adaptive polygon covers
 
-`GPUS2PolygonCovering` traverses the six S2 roots using a bounded depth-first stack. It emits whole
+`GPUS2PolygonCovering` accepts simple shell/hole rings in either orientation. A parallel
+preparation pipeline orders each ring counterclockwise about its hemisphere pole, then the selected
+traversal classifies the hemisphere-interior region; `complement` selects the other region.
+Clockwise GeoJSON holes therefore subtract their interior, and reversing a shell never selects
+its antipodal image. Per-vertex preparation and segmented center reductions establish each ring's
+pole; per-vertex projected differences and segmented area reductions establish its orientation.
+Each reduction has `ceil(log2(max(N,1)))` stages over `N` position rows. Per-ring orientation and
+parallel vertex copying follow. Zero or nonfinite projected area is invalid before any cell visit.
+The polygon containment predicate also uses local differences for ring
+orientation, tangent-angle winding and arc normals to retain small off-axis geometry.
+
+
+`GPUS2PolygonCovering` classifies the six S2 roots and their candidate descendants in parallel. It emits whole
 contained cells early and subdivides boundary cells through `maximumLevel` (0–15), subject to
 `minimumLevel`. Interior mode emits only contained cells; exterior mode includes intersecting
 terminal cells. Inputs use the same prepared shell/hole hemisphere contract and optional pole as
@@ -236,22 +394,56 @@ H3 centroid containment or S2's priority-queue `max_cells` minimization policy.
 `maximumVisitedCells` defaults to 65,536 and may range from 6 to 1,048,576. Status bits are 1 invalid
 input, 2 output capacity and 4 traversal exhaustion. Counts are `(written, required so far)`;
 when exhausted they do not claim the complete requirement. `visitedCount` exposes traversal work.
+Capacity and traversal bits can coexist: the positive-xyz octant at level 1, six visits and
+capacity 1 gives serial counts `(1,4)` and status `6`. Level-synchronous exhaustion discards
+that unfinished frontier, giving counts `(0,0)` and status `4`.
 
-The default `refinement: 'serial'` runs the ring check and the depth-first walk in one invocation,
-which is exact but cannot use the GPU's width. `refinement: 'level-synchronous'` distributes both.
-Ring validation becomes one invocation per ring (shape, unit vertices, hemisphere center) and one
-per edge (zero length, hemisphere, crossings and touches against the ring's later edges). The
-traversal then runs `maximumLevel + 1` rounds over one ordered frontier list: each round
-classifies every cell of the round's level in parallel (drop, keep, or split into four children),
-a scan numbers the survivors and a write builds the next list, so the cover is already in
-ascending cell-ID order and needs no sort. For every input that completes, the cells, counts,
-status bits 1 and 2 and `visitedCount` equal the serial traversal's, which the recorded fixtures
-check on more than 100 cases. The difference is exhaustion: the serial traversal stops after
-exactly `maximumVisitedCells` pops and keeps the cells emitted so far, while the level-synchronous
-traversal fails the whole round, writes no cells and reports counts `(0, 0)` with status bit 4
-(`visitedCount` is capped at `maximumVisitedCells`). `maximumVisitedCells` also sizes the two
-ping-pong frontier buffers (8 bytes per cell). The serial traversal stays the default because its
-partial results are pinned.
+Both refinement routes use the same parallel preparation and bounded predicates. Each work
+invocation examines at most **4,096 input edges or edge pairs**, independently of ring size;
+this is a per-invocation work tile, not a maximum ring size. Larger rings use integer winding
+partials. Range searches take at most **32 bisections** per invocation. Vertex reductions process
+one vertex per invocation per stage. These input-work bounds are separate from the visited-cell
+budget and do not promise device timing or watchdog safety.
+
+Both routes run `maximumLevel + 1` rounds, classifying bounded candidate lists (drop, keep or
+split), then scanning and expanding children. Subtree sizes and ranks recover the exact ordered
+depth-first prefix for default `refinement: 'serial'`; it retains cells emitted within exactly
+`maximumVisitedCells` visits on exhaustion. The `level-synchronous` route instead suppresses
+the whole cover when a round cannot fit, writes counts `(0,0)` and status bit 4, and caps
+`visitedCount` at the budget. Its live frontier budget includes retained and pending cells.
+Complete covers and visits agree between routes and keys are in ascending cell-ID order.
+
+Let `N=max(positionCount,1)`, `R=ringCount`, `B=maximumVisitedCells`, `L=maximumLevel+1`, and
+`H0=max(0,min(R,floor((positionCount-3*R)/4094)))`. Define `H=max(1,H0)`,
+`T=max(1,H0+ceil(positionCount/4096))` and `C=min(B,max(1,floor(128*1024*1024/(16*H))))`.
+Scratch, excluding input/output buffers and published `GPUScan` scratch, is approximately
+`48*N + 32*R + 4*H + 16*T + 16*C + 16*C*H + 40*B*L` bytes, plus eight control words and
+`maximumLevel+2` count words. Winding scratch `16*C*H` is at most **128 MiB per binding**.
+The tree alone costs **40 bytes per budget cell per configured level**: about **40 MiB** at
+the default budget and level 15, or **640 MiB** at the maximum budget and level 15.
+Every configured level still dispatches/scans its bounded arrays.
+
+Command-node cost includes segmented preparation, ring scans and bounded predicate batches;
+it is no longer two orientation nodes plus a serial walk. For valid input dimensions, define
+`S(n)` as the published scan's node count (one scan per 256-row reduction level and an offset
+node for every level except the last), `Q=2^32-1`, and `P=ceil(N/max(1,floor(Q/ceil(N/4096))))`.
+Preparation uses `10+2*ceil(log2(N))+2*S(R)+P` nodes. A predicate batch of `c` cells uses
+`2+ceil(c/max(1,floor(Q/R)))+ceil(c/max(1,floor(Q/T)))+ceil(c/max(1,floor(Q/H)))` nodes.
+Sum that over batches of at most `C` cells covering `B` slots to get `D`. The total is
+`preparation + L*(D+S(B)+3+isLevelSynchronous) + 1`; `estimatedCommandNodeCount` exposes it.
+The existing shared command-node and device storage limits still apply.
+
+Both contributors and named operations capture declared options, context metadata, pole tuples
+and nested output selections at construction, including getter-backed fields. Resource contents
+remain live. Named GPU polygon input lengths must match captured `positionCount` and
+`ringOffsetCount`. Mode values are `exterior` and `interior`; polygon refinement values are
+`serial` and `level-synchronous`, cap refinements `uniform` and `level-synchronous`.
+The CPU polygon twin honors an explicit `maximumVisitedCells` in both refinement modes and uses
+these same publication rules: a serial prefix survives exhaustion, while level-synchronous
+cells/counts are cleared. Omission retains complete CPU traversal; the GPU still defaults to
+65,536 visits. A frontier that is already too large fails before classification, so its cells
+do not increment `visitedCount`: six roots queuing 24 children into eight slots report six visits.
+Both twins retain float64 geometric predicates, so boundary rounding can differ.
 The direct `s2geometry==0.14.0` oracle enumerates all 6,144 level-5 cells for each of two concave/holed
 regions: emitted interior cells are S2-contained, exterior covers include every S2 `MayIntersect` cell,
 and summed interior/exterior cell areas bracket the region area. This is the precise tested
@@ -381,7 +573,7 @@ steradians/radians and its per-row status (0 valid, 1 invalid with NaN measures)
 stable local-increment arithmetic of [`GPUCellMeasures`](./operators-cells.md#gpucellgridpath-and-gpucellmeasures).
 Use `GPUCellMeasures` with `family: 's2'` for meters/kilometers, ordered edges and the common
 H3/S2/Quadbin interface; invalid rows there are zero. Both APIs accept the compile-time
-`precision: 'fp64'` option for published double-single projection and local-increment arithmetic;
+`precision: 'double-single'` option for published double-single projection and local-increment arithmetic;
 the default is `'float32'`. Output formats and the unit-sphere API's invalid statuses stay the same.
 
 {/* lens:GPUS2CellMeasures */}
@@ -422,6 +614,8 @@ Identical octants with intersection area and overlap fractions.
 
 ### `GPUS2PolygonCovering`
 
+[Inputs, outputs and limits](#adaptive-polygon-covers).
+
 {/* lens:GPUS2PolygonCovering */}
 
 ::lens{scenario=gpu-spatial-analysis.s2-polygon-covering rung=result caption="Inspect captured geometry, counts and failure flags."}
@@ -429,6 +623,8 @@ Identical octants with intersection area and overlap fractions.
 ::lens{scenario=gpu-spatial-analysis.s2-polygon-covering rung=graph caption="Inspect the executed GPU stages."}
 
 ### `GPUSphericalPolygonContains`
+
+[Inputs, outputs and limits](#general-spherical-topology).
 
 {/* lens:GPUSphericalPolygonContains */}
 
@@ -438,6 +634,8 @@ Identical octants with intersection area and overlap fractions.
 
 ### `GPUSphericalPolygonOverlay`
 
+[Inputs, outputs and limits](#hemisphere-polygon-overlay-contract).
+
 {/* lens:GPUSphericalPolygonOverlay */}
 
 ::lens{scenario=gpu-spatial-analysis.spherical-polygon-overlay rung=result caption="Inspect captured geometry, counts and failure flags."}
@@ -445,6 +643,8 @@ Identical octants with intersection area and overlap fractions.
 ::lens{scenario=gpu-spatial-analysis.spherical-polygon-overlay rung=graph caption="Inspect the executed GPU stages."}
 
 ### `GPUSphericalArcOverlay`
+
+[Inputs, outputs and limits](#intrinsic-arc-overlay-contract).
 
 {/* lens:GPUSphericalArcOverlay */}
 
@@ -483,3 +683,78 @@ or vertex count increases; they do not establish large-region scalability. In pa
 level-6 cover costs about 309 ms in this fixture and the 32-vertex arrangement about 22 ms. Output
 capacity bytes include unused slots, and graph transient bytes exclude shader-private and driver
 allocation. Every initial, repeated and updated result passed its numerical checks.
+
+### Operation forms: S2 covers and intrinsic arc overlay
+
+`GPUS2CapCoveringOperation` / `CPUS2CapCoveringOperation` consume logical float32x4 `caps`
+(unit xyz and angular radius), `capCount` and per-cap `capacity`. They publish fixed-stride
+uint32x2 `cells`, `(written, required)` `counts`, and one packed status word per cap (1 invalid,
+2 output capacity, 4 frontier capacity in the level-synchronous GPU route).
+
+`GPUS2PolygonCoveringOperation` / `CPUS2PolygonCoveringOperation` consume logical unit-xyz
+`positions` and uint32 `ringOffsets`, with explicit `positionCount` and `ringOffsetCount`.
+They publish cells, a single `(written, required)` pair, packed `status` (1 invalid, 2 output
+capacity, 4 visited-cell budget), and
+optional `visitedCount`. GPU traversal selection and visit budget remain construction settings;
+CPU traversal is complete when its visit budget is omitted; an explicit
+`maximumVisitedCells` applies in both CPU traversal modes too. CPU cap/polygon levels may
+reach 30; GPU caps stop at 8 uniform/15 refined and GPU polygons at 15. Both forms accept either ring orientation after local orientation preparation.
+
+`GPUSphericalArcOverlayOperation` / `CPUSphericalArcOverlayOperation` take logical positions
+and ring-offset names for each operand, operand reference-membership booleans, the reference
+point and Boolean operation. The GPU limit is 128 combined input vertices. `capacity` counts
+total result vertices and `ringCapacity` counts result rings. Outputs are positions, offsets,
+four packed counts (written vertices, written rings, required segments, reference membership),
+and status bits 1 invalid / 2 capacity / 4 unresolved. The CPU arrangement is not limited by
+the GPU's 128-input-vertex private storage. Compile GPU forms with
+`GPU_CONTRIBUTOR_OPERATION_LOWERING`.
+
+
+### Work bounds and reference routes
+
+The intrinsic GPU arrangement's 128-vertex bound is combined across both operands, not per ring
+or per operand. Every edge is compared to opposing edges for splits; each piece also performs
+side classification and ring assembly. Segment scratch holds at most `max(1, L + R + 4*L*R)`
+records for `L` left and `R` right vertices, as described above. Increasing output capacity does
+not remove that work. CPU overlay uses the same noding/classification strategy in binary64
+without those GPU vertex/split/output ceilings; it has no implicit execution-time budget.
+Caller vertex and ring capacities still bound publication, and overflow suppresses geometry.
+
+For GPU S2 cap uniform traversal the bound is `6 * 4^level` cell tests per cap, with level at
+most 8. Refined caps run `level + 1` rounds, level at most 15, with a per-cap frontier bound.
+For serial GPU polygon refinement, `maximumVisitedCells` (default 65,536, maximum 1,048,576)
+bounds the published depth-first prefix. Parallel preparation may classify up to that many
+candidates **per configured level**, through level 15; total candidate classifications can reach
+`maximumVisitedCells * (maximumLevel + 1)`. Level-synchronous refinement additionally bounds
+the whole live frontier and suppresses an exhausted round's result. The CPU cover routes accept key levels through 30 and perform
+unbudgeted traversal when explicit frontier/visit budgets are omitted, subject to the uint32
+publication ceiling below. Large complete
+covers can take substantial CPU work even when the stored output capacity is small; required
+counts still describe the complete traversal when it finishes.
+
+
+CPU traversal without an explicit budget is still subject to the uint32 publication ceiling:
+`requiredCount`/visited counts cannot exceed 4294967295 (`2^32 - 1`). Output capacity controls
+stored cells, not this count range. A whole-sphere exterior cap at level 16 requires
+`6 * 4^16 = 25769803776` cells and throws even with output capacity one, rather than publishing
+a wrapped count. CPU support through level 30 is a key-layout limit, not a guarantee that every
+complete cover count is publishable.
+
+The GPU polygon visit budget bounds the published depth-first prefix on the serial route,
+while candidate classification is bounded per level. It does not bound input-ring validation
+or the edge tests within each cell classification: ring self/crossing checks and polygon-edge
+work scale with the supplied boundary. Serial exhaustion retains its emitted prefix; refined
+whole-round exhaustion clears geometry as documented above.
+
+Count decoders accept typed uint32 words, ArrayBuffer and Uint8Array byte windows. They reject
+partial words and reads shorter than the required two/four words; the byte offset and length are
+honored. These checked layouts are distinct from per-row status bits:
+
+```ts
+import {decodeGPUSphericalConvexIntersectionCounts, decodeGPUSphericalArcOverlayCounts} from '@luma-contributors/analysis/gpu-spatial-analysis';
+export function readSphericalCountExamples() {
+  const convex = decodeGPUSphericalConvexIntersectionCounts(new Uint8Array(Uint32Array.of(3, 3).buffer));
+  const arc = decodeGPUSphericalArcOverlayCounts(new Uint8Array(Uint32Array.of(4, 1, 4, 0).buffer));
+  return {convex, arc}; // 3 written/required vertices; 4 vertices, 1 ring, 4 segments, outside reference
+}
+```

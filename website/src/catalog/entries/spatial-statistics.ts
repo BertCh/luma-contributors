@@ -332,7 +332,11 @@ graph.add(new GPUHotSpotAnalysis({
         type: 'GPUFloat32OrUint32Values | undefined',
         description: 'Second variable for bivariate Moran.'
       },
-      alternativeParameter,
+      {
+        ...alternativeParameter,
+        name: 'analyticAlternative',
+        type: 'GPUAnalyticAlternative | undefined'
+      },
       islandsParameter,
       maskParameter,
       {
@@ -360,7 +364,7 @@ ${SETUP_NOTE}
 graph.add(new GPUGlobalSpatialStatistics({
   weights, values,
   statistics: ['moran', 'geary', 'getisOrdG'],
-  alternative: 'greater',
+  analyticAlternative: 'greater',
   output: {summary}
 }));
 // read summary with GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`,
@@ -858,7 +862,7 @@ graph.add(new GPULOSHResidualPermutationTest({
         description: 'Number of variables per row.'
       },
       {
-        name: 'maximumPermutations',
+        name: 'permutationCount',
         type: 'number | undefined',
         description: 'Number of conditional permutations.'
       },
@@ -868,7 +872,7 @@ graph.add(new GPULOSHResidualPermutationTest({
         description: 'Two-word random seed.'
       },
       {
-        name: 'significance',
+        name: 'significanceLevel',
         type: 'number | undefined',
         description: 'Significance level for classes.'
       },
@@ -890,7 +894,16 @@ graph.add(new GPULOSHResidualPermutationTest({
         type: 'GraphDataView<"float32">',
         description: 'Mean multivariate local Geary per row.'
       },
-      {name: 'pValues', type: 'GraphDataView<"float32">', description: 'Pseudo p-value per row.'},
+      {
+        name: 'pseudoPValues',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Raw pseudo p-value per row.'
+      },
+      {
+        name: 'adjustedPValues',
+        type: 'GraphDataView<"float32"> | undefined',
+        description: 'Adjusted p-value per row.'
+      },
       {
         name: 'classes',
         type: 'GraphDataView<"uint32">',
@@ -903,10 +916,10 @@ ${SETUP_NOTE}
 graph.add(new GPUMultivariateLocalGearyPermutationTest({
   weights, values,
   variableCount: 3,
-  maximumPermutations: 999,
+  permutationCount: 999,
   seed: [1, 2],
   multipleTesting: 'benjamini-hochberg',
-  output: {statistic, pValues, classes}
+  output: {statistic, adjustedPValues, classes}
 }));`,
     preview: {
       kind: 'hotspots',
@@ -963,7 +976,7 @@ graph.add(new GPUMultivariateLocalGearyPermutationTest({
         description: 'Adjusted p-value in [0, 1]; must not alias the input.'
       },
       {
-        name: 'testedCount',
+        name: 'effectiveFamilySize',
         type: 'GraphDataView<"uint32">',
         description: 'Family size m actually used.'
       }
@@ -974,7 +987,7 @@ ${SETUP_NOTE}
 graph.add(new GPUMultipleTestingAdjustment({
   pValues: pseudoPValues,
   method: 'benjamini-hochberg',
-  output: {adjustedPValues, testedCount}
+  output: {adjustedPValues, effectiveFamilySize}
 }));`,
     preview: {
       kind: 'histogram',
@@ -1576,7 +1589,7 @@ graph.add(new GPUSpatialScanStatistic({
   // ---------------------------------------------------------------- clustering
   {
     id: 'dbscan-clustering',
-    symbol: 'GPUSpatialClustering',
+    symbol: 'GPUDBSCAN',
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'DBSCAN clustering',
@@ -1593,7 +1606,7 @@ graph.add(new GPUSpatialScanStatistic({
         name: 'parameters',
         type: 'GraphDataView<"float32">',
         required: true,
-        description: 'Bounds, epsilon and minimumPoints from the packer.'
+        description: 'Bounds, epsilon and minimumSamples from the packer.'
       },
       {
         name: 'gridSize',
@@ -1613,7 +1626,7 @@ graph.add(new GPUSpatialScanStatistic({
       },
       {
         name: 'output',
-        type: 'GPUSpatialClusteringOutput',
+        type: 'GPUDBSCANOutput',
         required: true,
         description: 'Labels plus optional core flags and clusters.'
       }
@@ -1623,15 +1636,15 @@ graph.add(new GPUSpatialScanStatistic({
       {name: 'coreFlags', type: 'GraphDataView<"uint32">', description: '1 for core points.'},
       {name: 'clusterCount', type: 'GraphDataView<"uint32">', description: 'Number of clusters k.'}
     ],
-    example: `import {GPUSpatialClustering, getGPUSpatialClusteringParameterValues} from '${IMPORT_PATH}';
+    example: `import {GPUDBSCAN, getGPUDBSCANParameterValues} from '${IMPORT_PATH}';
 import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 
 // The demo above: bounds spanning 1 unit, epsilon 2.6% of it, 6 points
-const values = getGPUSpatialClusteringParameterValues({bounds, epsilon: 0.026, minimumPoints: 6});
+const values = getGPUDBSCANParameterValues({bounds, epsilon: 0.026, minimumSamples: 6});
 const parameters = new GPUParameterBuffer(device, {
   id: 'dbscan', format: 'float32', length: values.length, values
 });
-graph.add(new GPUSpatialClustering({
+graph.add(new GPUDBSCAN({
   positions, gridSize: [256, 256],
   parameters: parameters.importToGraph(graph),
   output: {labels, clusterCount}
@@ -1648,7 +1661,7 @@ graph.add(new GPUSpatialClustering({
   },
   {
     id: 'hdbscan-clustering',
-    symbol: 'GPUHierarchicalDensityClustering',
+    symbol: 'GPUHDBSCAN',
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'HDBSCAN clustering',
@@ -1670,7 +1683,8 @@ graph.add(new GPUSpatialClustering({
       {
         name: 'minimumSamples',
         type: 'number | undefined',
-        description: 'Neighbors for core distance; defaults to minimumClusterSize.'
+        description:
+          'Neighbors for core distance, including the point itself. Defaults to min(minimumClusterSize, 32).'
       },
       {
         name: 'spatialContext',
@@ -1679,7 +1693,7 @@ graph.add(new GPUSpatialClustering({
       },
       {
         name: 'output',
-        type: 'GPUHierarchicalDensityClusteringOutput',
+        type: 'GPUHDBSCANOutput',
         required: true,
         description: 'Labels plus optional core distances.'
       }
@@ -1693,14 +1707,14 @@ graph.add(new GPUSpatialClustering({
       },
       {
         name: 'status',
-        type: 'Partial<GPUCardinalityPort>',
+        type: 'Pick<Partial<GPUCardinalityPort>, "count">',
         description: 'Optional; count is the number of selected clusters.'
       }
     ],
-    example: `import {GPUHierarchicalDensityClustering} from '${IMPORT_PATH}';
+    example: `import {GPUHDBSCAN} from '${IMPORT_PATH}';
 
 ${SETUP_NOTE}
-graph.add(new GPUHierarchicalDensityClustering({
+graph.add(new GPUHDBSCAN({
   positions,
   minimumClusterSize: 15,
   minimumSamples: 5,
@@ -1752,7 +1766,8 @@ graph.add(new GPUHierarchicalDensityClustering({
       {
         name: 'extractionDistance',
         type: 'number | undefined',
-        description: 'Cut distance for dbscan extraction.'
+        description:
+          'Required for dbscan extraction, the default route. Must be positive and at most maximumDistance.'
       },
       {
         name: 'xi',
@@ -1791,9 +1806,19 @@ graph.add(new GPUHierarchicalDensityClustering({
         description: 'Cluster id per row, or 0xffffffff for noise.'
       },
       {
-        name: 'status',
-        type: 'GraphDataView<"uint32">',
-        description: '[visitedCount, complete, invalidRowCount].'
+        name: 'ports.status.iterationCount',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Optional one-row count of visited points.'
+      },
+      {
+        name: 'ports.status.converged',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Optional one-row flag set to 1 when all valid points were visited.'
+      },
+      {
+        name: 'ports.status.invalidCount',
+        type: 'GraphDataView<"uint32"> | undefined',
+        description: 'Optional one-row count of excluded points.'
       }
     ],
     example: `import {GPUOPTICS} from '${IMPORT_PATH}';
@@ -1804,7 +1829,8 @@ graph.add(new GPUOPTICS({
   minimumSamples: 8,
   maximumDistance: 400,
   extractionMethod: 'xi',
-  output: {ordering, coreDistances, reachability, predecessors, labels, status}
+  output: {ordering, coreDistances, reachability, predecessors, labels,
+    ports: {status: {iterationCount, converged, invalidCount}}}
 }));`,
     preview: {kind: 'point-clusters', caption: 'Reachability valleys are clusters.', seed: 523},
     related: ['dbscan-clustering', 'hdbscan-clustering'],
@@ -1827,7 +1853,7 @@ graph.add(new GPUOPTICS({
     domains: ['spatial-statistics', 'urban'],
     params: [
       positionsParameter,
-      {name: 'k', type: 'number', required: true, description: 'Number of clusters.'},
+      {name: 'clusterCount', type: 'number', required: true, description: 'Number of clusters.'},
       {
         name: 'maximumIterations',
         type: 'number',
@@ -1886,7 +1912,7 @@ const parameters = new GPUParameterBuffer(device, {
   values: getGPUSpatialKMeansParameterValues({seed: 5})
 });
 graph.add(new GPUSpatialKMeans({
-  positions, k: 8, maximumIterations: 50, restartCount: 4,
+  positions, clusterCount: 8, maximumIterations: 50, restartCount: 4,
   parameters: parameters.importToGraph(graph),
   output: {labels, centers, inertia}
 }));`,
@@ -2015,7 +2041,7 @@ graph.add(new GPULocalOutlierFactor({
       {
         name: 'standardization',
         type: 'GPUSimilarLocationsStandardization | undefined',
-        description: "'zscore' or 'rank'."
+        description: "'z-score' or 'rank'."
       },
       {
         name: 'resultCapacity',

@@ -21,7 +21,7 @@ right=right+csr_matrix(([0.5],([0],[1])),shape=(8,8))
 dataset,mask=reference.makeAlgebraDataset('eight-zone-directed-cycle',left,right,np.arange(8)%3,{'source':'synthetic directed cycle and two-step partner'})
 cases=reference.algebraCases(0,dataset,left,right,mask)
 cases=[case for case in cases if case['operation'] not in ['selfWeight','higherOrder']]
-for operation in ['difference','symmetricDifference']:
+for operation in ['difference','symmetric-difference']:
  prototype=next(case for case in cases if case['operation']==operation and case['weightRule']=='left')
  for rule in ['right','sum','min','max','product']:
   case=copy.deepcopy(prototype);case.update(name=dataset['name']+'/'+operation+'-'+rule,weightRule=rule);cases.append(case)

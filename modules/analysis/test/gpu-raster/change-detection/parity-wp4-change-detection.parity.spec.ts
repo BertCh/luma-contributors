@@ -62,8 +62,14 @@ for (const scene of fixture.cases) {
         return buffer;
       };
       const outputBuffers = new Map<OutputName, Buffer>();
-      const output: GPUChangeDetectionOutput = {};
+      const difference = createOutputBuffer(device, scene.cellCount);
+      buffers.push(difference);
+      outputBuffers.set('difference', difference);
+      const output: GPUChangeDetectionOutput = {
+        difference: importGraphBuffer(graph, 'difference', difference, 'float32', scene.cellCount)
+      };
       for (const name of FLOAT_OUTPUTS) {
+        if (name === 'difference') continue;
         const buffer = createOutputBuffer(device, scene.cellCount);
         buffers.push(buffer);
         outputBuffers.set(name, buffer);

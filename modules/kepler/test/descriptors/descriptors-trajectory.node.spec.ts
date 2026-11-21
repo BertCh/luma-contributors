@@ -4,7 +4,7 @@
 
 import {describe, expect, it} from 'vitest';
 import * as arrow from 'apache-arrow';
-import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {TRAJECTORY_BINDINGS} from '../../src/analysis/catalog-trajectory-bindings';
 import {
   getCatalogDefaultParameters,

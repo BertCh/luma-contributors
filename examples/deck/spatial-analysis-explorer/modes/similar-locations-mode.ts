@@ -180,7 +180,7 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
     );
 
     // --- State ---------------------------------------------------------------------------------
-    let standardization: GPUSimilarLocationsStandardization = 'zscore';
+    let standardization: GPUSimilarLocationsStandardization = 'z-score';
     let resultCount = 12;
     let direction: 'most' | 'least' = 'most';
     let excludeReference = true;
@@ -371,7 +371,7 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
     context.controls.addSelect<GPUSimilarLocationsStandardization>({
       label: 'Standardization (compile-time: rebuilds the graph)',
       options: [
-        {value: 'zscore', label: 'Z-score'},
+        {value: 'z-score', label: 'Z-score'},
         {value: 'rank', label: 'Percentile rank (quadratic scan)'}
       ],
       value: standardization,

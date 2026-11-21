@@ -7,7 +7,7 @@ import * as terrainModule from '@luma-contributors/analysis/gpu-terrain';
 import * as dataframeModule from '@luma-contributors/analysis/dataframe-analysis';
 import * as rasterModule from '@luma-contributors/analysis/raster-analysis';
 import * as analysisModule from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {validateGPUAnalysisResultEncoding} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {validateGPUAnalysisResultEncoding} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import type {CatalogRunResult} from '../../src/analysis/catalog-binding-types';
 import {
@@ -175,7 +175,7 @@ describe('CURATED_OPERATION_DESCRIPTORS', () => {
         {
           coordinateSystem: 'planar',
           epsilon: DBSCAN_PLANAR.epsilon,
-          minimumPoints: DBSCAN_PLANAR.minimumPoints
+          minimumSamples: DBSCAN_PLANAR.minimumSamples
         },
         {
           points: makePoints(

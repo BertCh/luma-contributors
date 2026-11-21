@@ -23,7 +23,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {createAdversarialEdgeScene, ADVERSARIAL_WIDTHS} from './adversarial-edges';
 
 type Scene = {
@@ -328,4 +328,42 @@ it('GPUTemporalReduction sorted A/B: full reduction versus range mode on 1e7 sor
   );
   unsorted.destroy();
   sorted.destroy();
+});
+
+// Backend lead: a reciprocal of width=1e38 is subnormal. A reciprocal-multiply lowering
+// that flushes it to zero can defeat the one-bucket quotient correction. Host replay cannot
+// establish the adapter's behavior. floor(f32(3e38) / f32(1e38)) is 3.
+it.each([
+  false,
+  true
+])('GPUTemporalReduction large float widths retain bucket three (sorted=%s)', async sorted => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  console.log('temporal large-width adapter', device.info);
+  const fixture = createFixture(
+    device,
+    {
+      cellIds: new Uint32Array([0]),
+      timestamps: new Float32Array([3e38]),
+      values: new Float32Array([7]),
+      cellCount: 1,
+      bucketCount: 4
+    },
+    sorted
+  );
+  try {
+    const result = await fixture.run(0, 1e38);
+    console.log('temporal large-width readback', {sorted, ...result});
+    expect(result.counts).toEqual([0, 0, 0, 1]);
+    expect(result.occupiedCount).toBe(1);
+    expect(result.occupiedIds).toEqual([3]);
+    expect(result.occupiedRequired).toBe(1);
+    expect(result.occupiedOverflow).toBe(0);
+    // This fixture reads numeric outputs as float32 bit patterns: 7 = 0x40e00000.
+    for (const values of [result.minimums, result.maximums, result.first, result.last]) {
+      expect(values[3]).toBe(0x40e00000);
+    }
+  } finally {
+    fixture.destroy();
+  }
 });

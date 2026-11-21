@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getOrdinaryLeastSquaresAllocationLengths} from '../spatial-regression/gpu-ordinary-least-squares';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 
 import {validateSpatialCrossValidationBindings} from './validation-binding-plans';
 
@@ -58,10 +63,74 @@ export type GPUSpatialCrossValidatedOLSProps = {
  * Held-out scores report missing coverage explicitly. This selected evaluation recipe does not
  * perform whole-data preprocessing or bandwidth/variogram selection. Those models require their
  * own nested training-only fit graph; supplying one whole-data fit is not cross-validation.
+ * Scalar options, fold design/context metadata and input/output view identities are captured at
+ * construction. Buffer contents remain per-frame data. Each fit accepts 1–15 predictors and
+ * inherits the row and fold limits of its GPUSpatialCrossValidation design.
  */
 export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUSpatialCrossValidatedOLSProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'folds',
+      'predictors',
+      'predictorCount',
+      'response',
+      'output'
+    ]);
+    const capturedFolds = snapshotConstructionFields(captured.folds, [
+      'spatialContext',
+      'positions',
+      'blocks',
+      'mask',
+      'design',
+      'foldCount',
+      'seed',
+      'bufferDistance',
+      'output'
+    ]);
+    this.props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, [
+        'coefficients',
+        'predictions',
+        'fitStatus',
+        'metrics',
+        'metricStatus'
+      ]),
+      folds: Object.freeze({
+        ...capturedFolds,
+        ...(capturedFolds.spatialContext
+          ? {spatialContext: snapshotConstructionSpatialContext(capturedFolds.spatialContext)}
+          : {}),
+        ...(capturedFolds.design
+          ? {
+              design: snapshotConstructionFields(capturedFolds.design, [
+                'mode',
+                'diagnostics',
+                'features',
+                'featureCount',
+                'standardize',
+                'maximumIterations',
+                'predictionPositions',
+                'maximumDistance',
+                'minimumTrainingFraction',
+                'candidates',
+                'candidateCount',
+                'maximumFoldFraction'
+              ] as never[])
+            }
+          : {}),
+        output: snapshotConstructionFields(capturedFolds.output, [
+          'folds',
+          'training',
+          'testing',
+          'counts',
+          'status'
+        ])
+      })
+    });
+    props = this.props;
     this.id = props.id ?? 'spatial-cross-validated-ols';
     const rows = props.response.length;
     const folds = props.folds.foldCount;
@@ -194,9 +263,13 @@ export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
           {name: 'metrics', view: props.output.metrics, type: 'f32', access: 'read_write'},
           {name: 'status', view: props.output.metricStatus, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
-        body: `var count=0u;var missing=0u;var squares=0.0;var absolute=0.0;var bias=0.0;var mean=0.0;var totalSquares=0.0;
-for(var row=0u;row<${rows}u;row++){if(testing[testingOffset+index*${rows}u+row]==0u){continue;}let observed=response[responseOffset+row];let predicted=predictions[predictionsOffset+index*${rows}u+row];if(!isFiniteBits(observed)||!isFiniteBits(predicted)){missing++;continue;}count++;let error=predicted-observed;squares+=error*error;absolute+=abs(error);bias+=error;let difference=observed-mean;mean+=difference/f32(count);totalSquares+=difference*(observed-mean);}
+        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}`,
+        body: `var count=0u;var missing=0u;var squares=0.0;var absolute=0.0;var bias=0.0;var origin=0.0;var mean=0.0;var totalSquares=0.0;
+// Keep the running mean in deviations from the first scored observation. A large raw
+// mean can round away a half-step and double the held-out variance of representable inputs.
+// The fold-mask producer writes one for testing rows: testMask-1 is a runtime zero,
+// fixing each origin subtraction against Metal fast-math regrouping.
+for(var row=0u;row<${rows}u;row++){let testMask=testing[testingOffset+index*${rows}u+row];if(testMask==0u){continue;}let observed=response[responseOffset+row];let predicted=predictions[predictionsOffset+index*${rows}u+row];if(!isFiniteBits(observed)||!isFiniteBits(predicted)){missing++;continue;}count++;if(count==1u){origin=observed;}let error=predicted-observed;squares+=error*error;absolute+=abs(error);bias+=error;let shifted=getRoundedDifference(observed,origin,testMask-1u);let difference=shifted-mean;mean+=difference/f32(count);totalSquares+=difference*(shifted-mean);}
 let coefficientOfDetermination=1.0-squares/totalSquares;
 let numericFailure=!isFiniteBits(squares)||!isFiniteBits(absolute)||!isFiniteBits(bias)||!isFiniteBits(mean)||!isFiniteBits(totalSquares)||(totalSquares>0.0&&!isFiniteBits(coefficientOfDetermination));
 let base=metricsOffset+index*6u;metrics[base]=f32(count);metrics[base+1u]=f32(missing);metrics[base+2u]=select(getNaN(),squares/f32(count),count>0u&&!numericFailure);metrics[base+3u]=select(getNaN(),absolute/f32(count),count>0u&&!numericFailure);metrics[base+4u]=select(getNaN(),bias/f32(count),count>0u&&!numericFailure);metrics[base+5u]=select(getNaN(),coefficientOfDetermination,totalSquares>0.0&&!numericFailure);

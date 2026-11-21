@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
+import {getSpatialWeightsTransformBindingViews} from './spatial-weights-transform-bindings';
+import {resolveKernelShapeName} from '../shared/kernel-shape-name';
 import {
   assertCompatibleGPUSpatialContexts,
   type GPUSpatialContext
@@ -23,6 +25,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
   validateCapacity,
+  validateRequirement,
   validateFiniteNumber,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -34,6 +37,13 @@ import {
   validateGPUSpatialWeights
 } from './spatial-weights';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SPATIAL_WEIGHTS_TRANSFORM_ARITHMETIC_WGSL} from './spatial-weights-transform-arithmetic';
+import {validateWeightsLogicalAliases} from './spatial-weights-aliases';
+import {
+  snapshotWeightsFields,
+  snapshotWeightsPort,
+  snapshotWeightsSpatialContext
+} from './weights-construction-snapshot';
 
 import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {
@@ -51,7 +61,16 @@ export type GPUSpatialWeightsKernel =
   | 'triangular'
   | 'epanechnikov'
   | 'bisquare'
+  | 'quartic'
   | 'uniform';
+
+const SPATIAL_WEIGHTS_KERNEL_SHAPES = [
+  'gaussian',
+  'triangular',
+  'epanechnikov',
+  'quartic',
+  'uniform'
+] as const;
 
 /**
  * Factor libpysal `Kernel` multiplies the k-th neighbor distance by to get an adaptive bandwidth
@@ -74,17 +93,22 @@ export function getGPUSpatialWeightsKernelValue(
   kernel: GPUSpatialWeightsKernel,
   z: number
 ): number {
+  const shape = resolveKernelShapeName(
+    'getGPUSpatialWeightsKernelValue',
+    kernel,
+    SPATIAL_WEIGHTS_KERNEL_SHAPES
+  );
   if (!(Number.isFinite(z) && z >= 0)) {
     return 0;
   }
-  switch (kernel) {
+  switch (shape) {
     case 'gaussian':
       return Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
     case 'triangular':
       return Math.max(1 - z, 0);
     case 'epanechnikov':
       return 0.75 * Math.max(1 - z * z, 0);
-    case 'bisquare':
+    case 'quartic':
       return 0.9375 * Math.max(1 - z * z, 0) ** 2;
     case 'uniform':
       return z <= 1 ? 0.5 : 0;
@@ -98,7 +122,7 @@ export type GPUSpatialWeightsTransformOperation =
   | 'row'
   | 'binary'
   | 'kernel'
-  | 'symmetrize'
+  | 'average-reciprocal'
   | 'double'
   | 'variance';
 
@@ -118,7 +142,7 @@ export type GPUSpatialWeightsTransformProps = {
    *   neighbor and is an island for every statistic (it is not given a uniform weight).
    * - `'binary'`: `w_ij > 0 ? 1 : 0` (PySAL `B`). Slots are kept, so a zero weight stays an explicit slot.
    * - `'kernel'`: replace each weight by `K(d_ij / h_i)` from `weights.distances` (see `kernel`, `bandwidth`).
-   * - `'symmetrize'`: `(w_ij + w_ji) / 2`, with a missing reverse slot counting as 0. The sparsity pattern
+   * - `'average-reciprocal'`: `(w_ij + w_ji) / 2`, with a missing reverse slot counting as 0. The sparsity pattern
    *   is not changed, so it needs a symmetric pattern (contiguity, lattice, distance band) to give
    *   a symmetric result. `output` must be a different view than `weights.weights`.
    * - `'double'`: double standardization `w_ij / S0` with `S0 = sum_ij w_ij` (the PySAL `D`
@@ -138,8 +162,10 @@ export type GPUSpatialWeightsTransformProps = {
    * Destination for the transformed weights, one float per slot of `weights.neighbors` (the length
    * must equal `weights.neighbors.length`). Defaults to
    * `weights.weights` (in place). Only slots below `offsets[rows]` are written. Use a separate
-   * view to keep the original weights, and a graph view with its own buffer when `weights`
-   * is also read by other nodes in the same graph.
+   * buffer to keep the original weights. Views in the source buffer must cover the exact same
+   * byte range for in-place execution; distinct ranges in that buffer are refused except for
+   * `'kernel'`, which reads only distances and never binds the old weights. Use a graph
+   * view with its own buffer when `weights` is also read by other nodes in the same graph.
    */
   output?: GraphDataView<'float32'>;
   /**
@@ -177,10 +203,21 @@ const OPERATION_STATES: Record<
   row: 'row',
   binary: 'binary',
   kernel: 'kernel',
-  symmetrize: 'symmetric',
+  'average-reciprocal': 'symmetric',
   double: 'double',
   variance: 'variance'
 };
+
+const TRANSFORM_OPERATIONS = Object.keys(OPERATION_STATES);
+
+/** @internal Validate the operation at construction for whole and chunked weights. */
+export function validateSpatialWeightsTransformOperation(id: string, operation: string): void {
+  validateRequirement(
+    id,
+    TRANSFORM_OPERATIONS.includes(operation),
+    `operation received ${String(operation)}; expected one of ${TRANSFORM_OPERATIONS.join(', ')}. 'average-reciprocal' averages w_ij and w_ji.`
+  );
+}
 
 /** Describes the transformed weights: the operation's state and only the guaranteed symmetry. */
 function getTransformOutputInformation(
@@ -191,8 +228,7 @@ function getTransformOutputInformation(
   const preserved =
     props.operation === 'binary' ||
     props.operation === 'double' ||
-    props.operation === 'symmetrize' ||
-    (props.operation === 'kernel' && props.bandwidth !== 'adaptive');
+    props.operation === 'average-reciprocal';
   return {
     rowCount: props.weights.offsets.length - 1,
     transform: OPERATION_STATES[props.operation],
@@ -210,14 +246,14 @@ function getTransformOutputInformation(
 
 /**
  * Transforms spatial weights on the GPU: row standardization, binarization, distance kernels and
- * symmetrization of a {@link GPUSpatialWeights} (the PySAL `transform` and `Kernel` equivalents).
+ * reciprocal weight averaging over the stored links of a {@link GPUSpatialWeights}.
  *
  * Kernel formulas, with `z = d / h` (`z = 0` when `h <= 0`), match PySAL's `Kernel` and
  * `GPUNeighborSearch`:
  * - `gaussian`: `exp(-z^2 / 2) / sqrt(2 pi)`, no cutoff.
  * - `triangular`: `max(1 - z, 0)`.
  * - `epanechnikov` (PySAL `quadratic`): `3/4 max(1 - z^2, 0)`.
- * - `bisquare` (PySAL `quartic`): `15/16 max(1 - z^2, 0)^2`.
+ * - `bisquare` or `quartic`: `15/16 max(1 - z^2, 0)^2`.
  * - `uniform`: `1/2` for `z <= 1`, else 0.
  *
  * Non-finite or negative results are written as 0, so the non-negativity invariant holds.
@@ -232,9 +268,9 @@ function getTransformOutputInformation(
  * standardization after `GPUSpatialWeightsAlgebra` `'subgraph'` removed neighbors.
  *
  * {@link GPUSpatialWeightsTransform.outputWeights} is the transformed weights with `information`
- * attached: `transform` is the operation (`'symmetrize'` gives `'symmetric'`), `symmetric` is
- * kept only where guaranteed (`binary` and `double` keep the input flag, a fixed-bandwidth
- * `kernel` keeps `true`, a `symmetrize` of symmetric weights stays `true`; everything else is
+ * attached: `transform` is the operation (`'average-reciprocal'` gives `'symmetric'`), `symmetric` is
+ * kept only where guaranteed (`binary` and `double` keep the input flag,
+ * reciprocal averaging of symmetric weights keeps `true`; everything else is
  * `'unknown'`, notably `row`, which makes a symmetric pattern asymmetric unless all rows have
  * equal sums), and the input `status` is carried over.
  * Row sums run in slot order and results are deterministic. `row`, `binary` and `kernel` work in
@@ -251,22 +287,76 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   private readonly bandwidthValues?: Float32Array;
 
   constructor(props: GPUSpatialWeightsTransformProps) {
+    props = snapshotWeightsFields(props, [
+      'id',
+      'operation',
+      'weights',
+      'output',
+      'doubleSum',
+      'kernel',
+      'bandwidth',
+      'spatialContext'
+    ]);
+    props = Object.freeze({
+      ...props,
+      weights: snapshotWeightsPort(props.weights),
+      ...(props.spatialContext
+        ? {spatialContext: snapshotWeightsSpatialContext(props.spatialContext)}
+        : {})
+    });
     const id = props.id ?? 'spatial-weights-transform';
     this.id = id;
     this.props = props;
-    if (
-      !['row', 'binary', 'kernel', 'symmetrize', 'double', 'variance'].includes(props.operation)
-    ) {
-      throw new Error(`${id} unknown operation ${props.operation}`);
+    if (props.kernel !== undefined) {
+      resolveKernelShapeName(id, props.kernel, SPATIAL_WEIGHTS_KERNEL_SHAPES);
     }
+    validateSpatialWeightsTransformOperation(id, props.operation);
     validateGPUSpatialWeights(id, props.weights);
+    validateWeightsLogicalAliases(
+      id,
+      {output: props.output ?? props.weights.weights},
+      {
+        offsets: props.weights.offsets,
+        neighbors: props.weights.neighbors,
+        distances: props.weights.distances,
+        ...Object.fromEntries(
+          Object.entries(props.weights.status ?? {}).map(([name, view]) => [`status.${name}`, view])
+        )
+      }
+    );
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [props.output ?? props.weights.weights],
+      [
+        props.weights.offsets,
+        props.operation === 'average-reciprocal' ? props.weights.neighbors : undefined,
+        props.operation === 'kernel' ? props.weights.distances : undefined
+      ]
+    );
     if (props.weights.spatialContext && props.spatialContext) {
-      assertCompatibleGPUSpatialContexts(id, props.weights.spatialContext, props.spatialContext);
+      assertCompatibleGPUSpatialContexts(id, props.weights.spatialContext, props.spatialContext, {
+        purpose: props.operation === 'kernel' ? 'metric-results' : 'coordinates'
+      });
     }
     if (props.output) {
       validateSinglePackedView(props.output, ['float32'], `${id} output`);
       if (props.output.length !== props.weights.neighbors.length) {
         throw new Error(`${id} output length must equal the slot capacity`);
+      }
+      if (props.operation !== 'kernel') {
+        validateRequirement(
+          id,
+          props.output.buffer !== props.weights.weights.buffer ||
+            props.output.byteOffset === props.weights.weights.byteOffset,
+          'output in the source buffer must use the same byte range; use the exact source view or a separate buffer'
+        );
+        if (!this.isInPlace()) {
+          validateGraphOutputsDisjointFromInputs(
+            id,
+            {output: props.output},
+            {'weights.weights': props.weights.weights}
+          );
+        }
       }
     }
     if (props.operation === 'kernel') {
@@ -298,16 +388,12 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
         // Adaptive bandwidths are the k-th neighbor distance; use a number for distance bands.
         throw new Error(`${id} bandwidth 'adaptive' needs kNN weights`);
       }
-      const kernel = props.kernel ?? 'triangular';
-      if (!['gaussian', 'triangular', 'epanechnikov', 'bisquare', 'uniform'].includes(kernel)) {
-        throw new Error(`${id} unknown kernel ${kernel}`);
-      }
     }
     if (props.doubleSum !== undefined && !['one', 'rows'].includes(props.doubleSum)) {
       throw new Error(`${id} doubleSum must be 'one' or 'rows'`);
     }
-    if (props.operation === 'symmetrize' && this.isInPlace()) {
-      throw new Error(`${id} 'symmetrize' needs a separate output`);
+    if (props.operation === 'average-reciprocal' && this.isInPlace()) {
+      throw new Error(`${id} 'average-reciprocal' needs a separate output`);
     }
     this.outputWeights = describeGPUSpatialWeights(
       {...props.weights, weights: props.output ?? props.weights.weights},
@@ -318,17 +404,29 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   /** Returns whether the transform writes `weights.weights` itself. */
   isInPlace(): boolean {
     const {output, weights} = this.props;
-    return !output || output.buffer === weights.weights.buffer;
+    return (
+      !output ||
+      (output.buffer === weights.weights.buffer &&
+        output.byteOffset === weights.weights.byteOffset &&
+        output.length === weights.weights.length)
+    );
   }
 
   /** Returns the transform nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    validateSpatialStatisticsBindings(graph, this.id, this.props, {
-      'row scratch': this.props.weights.offsets.length * 4,
-      'transpose scratch': this.props.weights.neighbors.length * 4
-    });
+    validateSpatialStatisticsBindings(
+      graph,
+      this.id,
+      getSpatialWeightsTransformBindingViews(this.props),
+      {
+        'row scratch':
+          this.props.operation === 'double' || this.props.operation === 'variance'
+            ? (this.props.weights.offsets.length - 1) * 4
+            : 0
+      }
+    );
     const {id, props} = this;
     const {weights, operation} = props;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -336,6 +434,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       weights.neighbors,
       weights.weights,
       weights.distances,
+      ...Object.values(weights.status ?? {}),
       props.output,
       typeof props.bandwidth === 'object' ? props.bandwidth : undefined
     ]);
@@ -399,20 +498,38 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       const variance = operation === 'variance';
       const squareSum = `var squares = 0.0;
   var sum = 0.0;
+  var maximum = 0.0;
   for (var slot = begin; slot < end; slot++) {
     let value = ${read('slot')};
     sum += value;
     squares += value * value;
+    maximum = max(maximum, value);
   }
-  let norm = sqrt(squares);
-  let valid = norm > 0.0 && isFiniteFloat(norm) && isFiniteFloat(sum);`;
+  var norm = sqrt(squares);
+  var valid = norm > 0.0 && isFiniteFloat(norm) && isFiniteFloat(sum);
+  var normalizationScale = 1.0;
+  // Preserve the established arithmetic for ordinary rows. Rescale only when
+  // the squared norm overflows or enters the float32 underflow range.
+  if ((!valid || squares < 1.1754943508222875e-38) && maximum > 0.0 && isFiniteFloat(maximum)) {
+    normalizationScale = maximum;
+    squares = 0.0;
+    sum = 0.0;
+    for (var slot = begin; slot < end; slot++) {
+      let value = ${read('slot')} / maximum;
+      sum += value;
+      squares += value * value;
+    }
+    norm = sqrt(squares);
+    valid = norm > 0.0 && isFiniteFloat(norm) && isFiniteFloat(sum);
+  }`;
       const factor = variance
         ? `let totalValue = total[totalOffset];
   let scale = select(0.0, f32(ROWS) / totalValue, totalValue > 0.0 && isFiniteFloat(totalValue));`
         : `let totalValue = total[totalOffset];
-  let scale = select(0.0, ${
+  let normalization = getSpatialWeightsDoubleScale(totalValue, ${
     props.doubleSum === 'rows' ? 'f32(ROWS)' : '1.0'
-  } / totalValue, totalValue > 0.0 && isFiniteFloat(totalValue));`;
+  });
+  let scale = normalization.value;`;
       return [
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-partials`,
@@ -433,7 +550,8 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   for (var slot = begin; slot < end; slot++) {
     sum += ${read('slot')};
   }
-  partials[partialsOffset + index] = select(0.0, sum, isFiniteFloat(sum));`
+  // Retain a nonfinite partial so the global total suppresses every row.
+  partials[partialsOffset + index] = sum;`
   }`
         }),
         ...new GPUReduction({
@@ -448,7 +566,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
           variant: `${operation}-apply`,
           bindings: [...bindings, {name: 'total', view: total, type: 'f32', access: 'read'}],
           invocationCount: rows,
-          declarations: `${finite}\nconst ROWS: u32 = ${rows}u;`,
+          declarations: `${finite}\n${variance ? '' : SPATIAL_WEIGHTS_TRANSFORM_ARITHMETIC_WGSL}\nconst ROWS: u32 = ${rows}u;`,
           body: `${rowBounds}
   ${factor}
   ${
@@ -458,7 +576,16 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       : 'let rowScale = scale;'
   }
   for (var slot = begin; slot < end; slot++) {
-    let result = ${read('slot')} * rowScale;
+    var value = ${read('slot')};
+    ${variance ? 'if (normalizationScale != 1.0) { value = value / normalizationScale; }' : ''}
+    var result = value * rowScale;
+    ${
+      variance
+        ? ''
+        : `if (normalization.useScaledQuotient != 0u) {
+      result = getScaledQuotient(value, totalValue, 1.0, 0i) * ${props.doubleSum === 'rows' ? 'f32(ROWS)' : '1.0'};
+    }`
+    }
     ${write('slot', 'select(0.0, result, isFiniteFloat(result) && result >= 0.0)')}
   }`
         })
@@ -480,7 +607,11 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       ];
     }
     if (operation === 'kernel') {
-      const kernel = props.kernel ?? 'triangular';
+      const kernel = resolveKernelShapeName(
+        id,
+        props.kernel ?? 'triangular',
+        SPATIAL_WEIGHTS_KERNEL_SHAPES
+      );
       const bandwidth = props.bandwidth!;
       const runtime =
         bandwidth === 'adaptive'
@@ -520,7 +651,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
         gaussian: 'exp(-0.5 * z * z) * 0.3989422804014327',
         triangular: 'max(1.0 - z, 0.0)',
         epanechnikov: '0.75 * max(1.0 - z * z, 0.0)',
-        bisquare: '0.9375 * max(1.0 - z * z, 0.0) * max(1.0 - z * z, 0.0)',
+        quartic: '0.9375 * max(1.0 - z * z, 0.0) * max(1.0 - z * z, 0.0)',
         uniform: 'select(0.0, 0.5, z <= 1.0)'
       }[kernel];
       return [
@@ -546,17 +677,17 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
   for (var slot = begin; slot < end; slot++) {
     let z = select(0.0, distances[distancesOffset + slot] / bandwidth, bandwidth > 0.0);
     let weight = ${profile};
-    ${write('slot', 'select(0.0, weight, isFiniteFloat(weight) && weight >= 0.0)')}
+    ${write('slot', 'select(0.0, weight, isFiniteFloat(z) && z >= 0.0 && isFiniteFloat(weight) && weight >= 0.0)')}
   }`
         })
       ];
     }
-    // symmetrize: one invocation per slot; both rows are found by binary search.
+    // average-reciprocal: one invocation per slot; both rows are found by binary search.
     return [
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-symmetrize`,
+        id: `${id}-average-reciprocal`,
         operation: OPERATION,
-        variant: 'symmetrize',
+        variant: 'average-reciprocal',
         bindings: [
           bindings[0],
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
@@ -564,7 +695,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
           bindings[2]
         ],
         invocationCount: capacity,
-        declarations: `const ROWS: u32 = ${rows}u;`,
+        declarations: `${finite}\n${SPATIAL_WEIGHTS_TRANSFORM_ARITHMETIC_WGSL}\nconst ROWS: u32 = ${rows}u;`,
         body: `if (index >= offsets[offsetsOffset + ROWS]) {
     return;
   }
@@ -597,7 +728,7 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       }
     }
   }
-  values[valuesOffset + index] = 0.5 * (source[sourceOffset + index] + reverse);`
+  values[valuesOffset + index] = averageSpatialWeights(source[sourceOffset + index], reverse);`
       })
     ];
   }

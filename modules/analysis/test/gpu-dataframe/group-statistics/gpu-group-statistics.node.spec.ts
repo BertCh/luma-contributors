@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPUGroupStatistics,
@@ -240,26 +240,26 @@ it('GPUGroupStatistics validates props', () => {
         {
           values: view(graph, 'float32', 10),
           statistics: ['percentiles'],
-          output: {percentiles: view(graph, 'float32', 8)}
+          output: {quantiles: view(graph, 'float32', 8)}
         }
       ]
     }),
-    /needs the percentiles view/
+    /needs the probabilities view/
   );
   expectThrows(
     graph => ({
-      percentiles: view(graph, 'float32', 3),
+      probabilities: view(graph, 'float32', 3),
       columns: [
         {
           values: view(graph, 'float32', 10),
           statistics: ['percentiles'],
-          output: {percentiles: view(graph, 'float32', 8)}
+          output: {quantiles: view(graph, 'float32', 8)}
         }
       ]
     }),
-    /capacity|output.keys.length \* percentiles.length/
+    /capacity|output.keys.length \* probabilities.length/
   );
-  expectThrows(graph => ({percentiles: view(graph, 'float32', 3)}), /only used by/);
+  expectThrows(graph => ({probabilities: view(graph, 'float32', 3)}), /only used by/);
   expectThrows(
     graph => ({
       columns: Array.from({length: 5}, () => ({
@@ -293,7 +293,7 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
     id: 'stats',
     keys: view('uint32x2', 12),
     mask: view('uint32', 12),
-    percentiles: view('float32', 3),
+    probabilities: view('float32', 3),
     columns: [
       {
         values: view('float32', 12),
@@ -325,7 +325,7 @@ it('GPUGroupStatistics emits deterministic nodes for every statistic', () => {
           skewness: view('float32', 5),
           kurtosis: view('float32', 5),
           medians: view('float32', 5),
-          percentiles: view('float32', 15),
+          quantiles: view('float32', 15),
           modes: view('float32', 5),
           uniqueCounts: view('uint32', 5),
           zScores: view('float32', 12)
@@ -438,6 +438,112 @@ it('GPUGroupStatistics refuses row scratch above the device binding limit before
     expect(() => contributor.getCommandNodes(graph)).toThrow(
       /group-statistics keys.length row scratch needs .* bytes in one binding \(limit .*\); reduce keys.length/
     );
+  } finally {
+    device.destroy();
+  }
+});
+
+it('NAM-01 and ERG-104 resolve canonical ports without duplicate writes', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  let serial = 0;
+  const view = <Format extends 'uint32' | 'float32' | 'uint32x2'>(format: Format, length: number) =>
+    createTransientView(graph, `alias-${serial++}`, format, length);
+  try {
+    const probabilities = view('float32', 1);
+    const quantiles = view('float32', 2);
+    const sumOverflow = view('uint32', 1);
+    const props = {
+      keys: view('uint32', 3),
+      probabilities,
+      scaleMode: 'per-group' as const,
+      columns: [
+        {
+          values: view('float32', 3),
+          statistics: ['percentiles', 'sum'] as const,
+          output: {quantiles, sums: view('uint32x2', 2), status: {sumOverflow}}
+        }
+      ],
+      output: {
+        keys: view('uint32', 2),
+        counts: view('uint32', 2),
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+      }
+    };
+    const producer = new GPUGroupStatistics(props);
+    expect((producer.props as GPUGroupStatisticsProps).probabilities).toBe(probabilities);
+    const capturedOutput = (producer.props as GPUGroupStatisticsProps).columns[0].output;
+    expect(capturedOutput.quantiles).toBe(quantiles);
+    expect(capturedOutput.status?.sumOverflow).toBe(sumOverflow);
+    expect(capturedOutput).not.toHaveProperty('sumOverflow');
+    const legacyColumn = {
+      ...props.columns[0],
+      output: {...props.columns[0].output, status: undefined, sumOverflow}
+    };
+    expect(() => new GPUGroupStatistics({...props, columns: [legacyColumn]})).toThrow(
+      /sumOverflow was removed.*status\.sumOverflow/
+    );
+    const retiredInput = {...props, percentiles: probabilities};
+    expect(() => new GPUGroupStatistics(retiredInput as GPUGroupStatisticsProps)).toThrow(
+      /percentiles was removed.*probabilities/
+    );
+    expect(
+      () =>
+        new GPUGroupStatistics({
+          ...props,
+          columns: [
+            {
+              ...props.columns[0],
+              output: {...props.columns[0].output, percentiles: view('float32', 2)}
+            }
+          ]
+        })
+    ).toThrow(/output\.percentiles was removed.*output\.quantiles/);
+    expect(
+      () => new GPUGroupStatistics({...props, probabilities: view('uint32', 1) as never})
+    ).toThrow(/float32/);
+    const chunkedProbabilities = new GraphVectorView({
+      id: 'probability-chunks',
+      name: 'probabilities',
+      format: 'float32',
+      length: 1,
+      valueLength: 1,
+      stride: 1,
+      byteStride: 4,
+      rowByteLength: 4,
+      data: [probabilities]
+    });
+    expect(
+      () => new GPUGroupStatistics({...props, probabilities: chunkedProbabilities as never})
+    ).toThrow(/packed/);
+    expect(
+      () =>
+        new GPUGroupStatistics({
+          ...props,
+          columns: [
+            {
+              ...props.columns[0],
+              output: {
+                ...props.columns[0].output,
+                quantiles: new GraphVectorView({
+                  id: 'quantile-chunks',
+                  name: 'quantiles',
+                  format: 'float32',
+                  length: 2,
+                  valueLength: 2,
+                  stride: 1,
+                  byteStride: 4,
+                  rowByteLength: 4,
+                  data: [quantiles]
+                }) as never
+              }
+            }
+          ]
+        })
+    ).toThrow(/packed/);
+    // Runtime validation also catches keys supplied through untyped object spreads.
+    expect(() => new GPUGroupStatistics({...props, optoin: true} as never)).toThrow(/optoin/);
+    expect(() => producer.getCommandNodes(graph)).not.toThrow();
   } finally {
     device.destroy();
   }

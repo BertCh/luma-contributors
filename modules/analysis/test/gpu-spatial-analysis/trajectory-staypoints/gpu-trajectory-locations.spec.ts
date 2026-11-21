@@ -5,6 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {describe, expect, it} from 'vitest';
 import {
+  GPU_MOVEMENT_SENTINEL,
   GPUTrajectoryLocations,
   getGPUTrajectoryLocationsParameterValues
 } from '../../../src/gpu-spatial-analysis/trajectory-staypoints/index';
@@ -90,5 +91,28 @@ describe('GPUTrajectoryLocations', () => {
     const result = await runLocations(centroids, tracks, 50, 1);
     expect(result.converged).toBe(0);
     expect(result.iterationLimitReached).toBe(1);
+    // TRJ-101: unsettled labels are not published as location IDs.
+    expect(result.count).toBe(0);
+    expect(result.ids).toEqual(new Array(64).fill(GPU_MOVEMENT_SENTINEL));
+  });
+
+  it('publishes the sentinel, not stale IDs, when the default rounds do not settle (TRJ-101)', async () => {
+    // One 256-staypoint chain at spacing 50 (epsilon 60 joins only neighbours), row r at
+    // x = 50 * ((97 r) mod 256). Exact answer: one location, every ID 0. A NumPy model of the
+    // hook-and-compress rounds (scratch locations_model.py) leaves 3 components after the
+    // default 32 rounds and settles within 256 rounds.
+    const rowCount = 256;
+    const centroids = Array.from({length: rowCount}, (_, row) => [((97 * row) % rowCount) * 50, 0]);
+    const tracks = new Array(rowCount).fill(0);
+    const unsettled = await runLocations(centroids, tracks, 60);
+    expect(unsettled.converged).toBe(0);
+    expect(unsettled.iterationLimitReached).toBe(1);
+    expect(unsettled.count).toBe(0);
+    expect(unsettled.ids).toEqual(new Array(rowCount).fill(GPU_MOVEMENT_SENTINEL));
+    const settled = await runLocations(centroids, tracks, 60, 256);
+    expect(settled.converged).toBe(1);
+    expect(settled.iterationLimitReached).toBe(0);
+    expect(settled.count).toBe(1);
+    expect(settled.ids).toEqual(new Array(rowCount).fill(0));
   });
 });

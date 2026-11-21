@@ -59,7 +59,7 @@ export function LifetimeChart({model, step}: {model: LensViewModel; step: number
           viewBox={`0 0 ${width} ${height}`}
           style={{minWidth: Math.min(width, 520), maxWidth: Math.max(720, width * 1.3)}}
           role="img"
-          aria-label={`Lifetimes of ${lifetimes.length} buffers over ${stepCount} steps`}
+          aria-label={`Lifetimes of ${lifetimes.length} resources over ${stepCount} steps`}
         >
           {model.nodes.map((node, index) => (
             <g key={node.id}>

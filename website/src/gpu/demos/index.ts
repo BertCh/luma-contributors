@@ -71,7 +71,7 @@ export const DEMOS: readonly DemoDescriptor[] = [
     title: 'DBSCAN',
     caption:
       'Hover an epicenter: the ring is epsilon, and the neighbors inside it decide core, border or noise.',
-    symbols: ['GPUSpatialClustering'],
+    symbols: ['GPUDBSCAN'],
     entryIds: ['dbscan-clustering'],
     interactive: true,
     parameters: DBSCAN_PARAMETERS,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {captureUrbanLandscapeDestinations} from './urban-landscape-destinations';
 import {
   createTransientView,
   GPUReduction,
@@ -11,9 +12,12 @@ import {
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {
   validateCapacity,
+  validateGraphViewsBelongToGraph,
   validateRequirement,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateUrbanLandscapeRecipeViews} from './urban-landscape-recipe-validation';
 import {PHILOX_WGSL, PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -64,9 +68,17 @@ export function addSegregationDecompositionRecipe<Parameters>(
   props: GPUSegregationDecompositionProps
 ) {
   const id = props.id ?? 'segregation-decomposition';
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
+  // Every rejection happens here, before the first graph.add (RCP-101).
+  validateRequirement(
+    id,
+    Array.isArray(props.populations) && props.populations.length === 4,
+    'populations must have 4 entries'
+  );
   const count = props.populations[0].length;
   validateRequirement(id, count > 0, 'populations must have at least 1 row');
   for (const population of props.populations) {
+    validateSinglePackedView(population, ['float32x2'], `${id} populations entry`);
     validateViewLength(id, 'populations entry', population, count);
   }
   validateRequirement(id, props.supportId.length > 0, 'supportId must not be empty');
@@ -75,7 +87,75 @@ export function addSegregationDecompositionRecipe<Parameters>(
     props.counterfactualMethod.length > 0,
     'counterfactualMethod must not be empty'
   );
-  const output = props.output;
+  const options = props.randomization;
+  if (options) {
+    validateCapacity(
+      id,
+      'randomization.replicates',
+      options.replicates,
+      1,
+      SEGREGATION_DECOMPOSITION_MAXIMUM_REPLICATES
+    );
+    validateCapacity(
+      id,
+      'randomization.seed',
+      options.seed,
+      0,
+      SEGREGATION_DECOMPOSITION_MAXIMUM_SEED
+    );
+    if (options.swaps) {
+      validateSinglePackedView(options.swaps, ['uint32'], `${id} randomization.swaps`);
+      validateViewLength(id, 'randomization.swaps', options.swaps, count * options.replicates);
+    }
+  }
+  validateGraphViewsBelongToGraph(id, graph, [...props.populations, options?.swaps]);
+  const output = captureUrbanLandscapeDestinations(id, {output: props.output}, [
+    'indices',
+    'validity',
+    'decomposition',
+    'distribution',
+    'inference'
+  ]);
+  const inputs = {
+    baseline: props.populations[0],
+    compositionOnly: props.populations[1],
+    spatialOnly: props.populations[2],
+    final: props.populations[3],
+    swaps: options?.swaps
+  };
+  validateUrbanLandscapeRecipeViews(
+    graph,
+    id,
+    inputs,
+    {
+      indices: {view: output?.indices, format: 'float32', length: 4},
+      validity: {view: output?.validity, format: 'uint32', length: 4},
+      decomposition: {view: output?.decomposition, format: 'float32x4', length: 1},
+      ...(options
+        ? ({
+            distribution: {
+              view: output?.distribution,
+              format: 'float32',
+              length: options.replicates
+            },
+            inference: {view: output?.inference, format: 'float32x4', length: 1}
+          } as const)
+        : {})
+    },
+    [
+      {reads: {}, writes: {indices: output?.indices, validity: output?.validity}},
+      {reads: {indices: output?.indices}, writes: {decomposition: output?.decomposition}},
+      ...(options
+        ? [
+            {
+              reads: {baseline: inputs.baseline, final: inputs.final, swaps: inputs.swaps},
+              writes: {distribution: output?.distribution}
+            },
+            {reads: {indices: output?.indices}, writes: {inference: output?.inference}}
+          ]
+        : [])
+    ]
+  );
   const indices = getRecipeView(graph, `${id}-indices`, 'float32', 4, output?.indices);
   const validity = getRecipeView(graph, `${id}-validity`, 'uint32', 4, output?.validity);
   const decomposition = getRecipeView(
@@ -201,25 +281,7 @@ writeOutput(0u,vec4<f32>(change,composition,spatial,change-composition-spatial))
   let randomization:
     | {distribution: GraphDataView<'float32'>; inference: GraphDataView<'float32x4'>}
     | undefined;
-  if (props.randomization) {
-    const options = props.randomization;
-    validateCapacity(
-      id,
-      'randomization.replicates',
-      options.replicates,
-      1,
-      SEGREGATION_DECOMPOSITION_MAXIMUM_REPLICATES
-    );
-    validateCapacity(
-      id,
-      'randomization.seed',
-      options.seed,
-      0,
-      SEGREGATION_DECOMPOSITION_MAXIMUM_SEED
-    );
-    if (options.swaps) {
-      validateViewLength(id, 'randomization.swaps', options.swaps, count * options.replicates);
-    }
+  if (options) {
     const distribution = getRecipeView(
       graph,
       `${id}-randomization`,
@@ -228,11 +290,12 @@ writeOutput(0u,vec4<f32>(change,composition,spatial,change-composition-spatial))
       output?.distribution
     );
     const inference = getRecipeView(graph, `${id}-inference`, 'float32x4', 1, output?.inference);
+    const serialObserved = createTransientView(graph, `${id}-serial-observed`, 'float32', 1);
     graph.add(
       createRecipeKernelNode(graph, {
         id: `${id}-paired-randomization`,
         operation: id,
-        invocationCount: options.replicates,
+        invocationCount: options.replicates + 1,
         declarations:
           IS_FINITE_VALUE_WGSL +
           PHILOX_WGSL +
@@ -245,15 +308,22 @@ fn populationAt(unit:u32,scenario:u32,swap:u32)->vec2<f32>{let first=vec2<f32>(b
           ...(options.swaps
             ? [{name: 'swaps', view: options.swaps, type: 'u32' as const, access: 'read' as const}]
             : []),
-          {name: 'output', view: distribution, type: 'f32', access: 'read_write'}
+          {name: 'output', view: distribution, type: 'f32', access: 'read_write'},
+          {name: 'serialObserved', view: serialObserved, type: 'f32', access: 'read_write'}
         ],
         // One exchange draw per unit and pass serves both scenarios (two Philox blocks per unit
-        // instead of five), with the same stream as before.
+        // instead of five), with the same stream as before. The extra last thread runs the same
+        // code without any exchange: the observed change summed in the replicates' serial order,
+        // so an exchange that leaves the tables unchanged in exact arithmetic (no swap, every
+        // swap, or swaps of units whose baseline and final rows are equal) ties it bit for bit
+        // (URB-101). The tree-reduced indices differ from serial sums by a few float32 ulps.
         body: `var values=vec2<f32>(0.0);var valid=true;var totals0=vec2<f32>(0.0);var totals1=vec2<f32>(0.0);
-for(var unit=0u;unit<${count}u;unit++){let swap=swapAt(unit,index);valid=valid&&swap<=1u;let population0=populationAt(unit,0u,swap);let population1=populationAt(unit,1u,swap);valid=valid&&all(population0>=vec2<f32>(0.0))&&isFiniteValue(population0.x)&&isFiniteValue(population0.y)&&all(population1>=vec2<f32>(0.0))&&isFiniteValue(population1.x)&&isFiniteValue(population1.y);totals0+=population0;totals1+=population1;}
+let exchange=index<${options.replicates}u;let replicate=min(index,${options.replicates - 1}u);
+for(var unit=0u;unit<${count}u;unit++){let swap=select(0u,swapAt(unit,replicate),exchange);valid=valid&&swap<=1u;let population0=populationAt(unit,0u,swap);let population1=populationAt(unit,1u,swap);valid=valid&&all(population0>=vec2<f32>(0.0))&&isFiniteValue(population0.x)&&isFiniteValue(population0.y)&&all(population1>=vec2<f32>(0.0))&&isFiniteValue(population1.x)&&isFiniteValue(population1.y);totals0+=population0;totals1+=population1;}
 valid=valid&&all(totals0>vec2<f32>(0.0))&&isFiniteValue(totals0.x)&&isFiniteValue(totals0.y)&&all(totals1>vec2<f32>(0.0))&&isFiniteValue(totals1.x)&&isFiniteValue(totals1.y);
-for(var unit=0u;unit<${count}u;unit++){let swap=swapAt(unit,index);let shares0=populationAt(unit,0u,swap)/totals0;let shares1=populationAt(unit,1u,swap)/totals1;values.x+=0.5*abs(shares0.x-shares0.y);values.y+=0.5*abs(shares1.x-shares1.y);}
-output[outputOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),values.y-values.x,valid);`
+for(var unit=0u;unit<${count}u;unit++){let swap=select(0u,swapAt(unit,replicate),exchange);let shares0=populationAt(unit,0u,swap)/totals0;let shares1=populationAt(unit,1u,swap)/totals1;values.x+=0.5*abs(shares0.x-shares0.y);values.y+=0.5*abs(shares1.x-shares1.y);}
+let value=select(bitcast<f32>(0x7fc00000u | (index & 0u)),values.y-values.x,valid);
+if(exchange){output[outputOffset+index]=value;}else{serialObserved[serialObservedOffset]=value;}`
       })
     );
     // Valid and extreme replicates are counted by reductions over per-replicate flags.
@@ -278,12 +348,12 @@ output[outputOffset+index]=select(bitcast<f32>(0x7fc00000u | (index & 0u)),value
         invocationCount: options.replicates,
         declarations: IS_FINITE_VALUE_WGSL,
         bindings: [
-          {name: 'indices', view: indices, type: 'f32', access: 'read'},
+          {name: 'serialObserved', view: serialObserved, type: 'f32', access: 'read'},
           {name: 'distribution', view: distribution, type: 'f32', access: 'read'},
           {name: 'validFlags', view: validReplicates, type: 'u32', access: 'read_write'},
           {name: 'extremeFlags', view: extremeReplicates, type: 'u32', access: 'read_write'}
         ],
-        body: `let observed=indices[indicesOffset+3u]-indices[indicesOffset];
+        body: `let observed=serialObserved[serialObservedOffset];
 let value=distribution[distributionOffset+index];
 let valid=isFiniteValue(value);
 validFlags[validFlagsOffset+index]=u32(valid);

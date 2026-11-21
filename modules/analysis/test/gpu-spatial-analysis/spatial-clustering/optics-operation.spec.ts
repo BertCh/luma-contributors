@@ -32,13 +32,13 @@ for (const extractionMethod of ['dbscan', 'xi'] as const) {
           reachability: 'reachability',
           predecessors: 'predecessors',
           labels: 'labels',
-          status: 'status',
           ...(extractionMethod === 'xi'
             ? {clusterIntervals: 'clusterIntervals', clusterSummary: 'clusterSummary'}
             : {}),
           ports: {
             status: {
               iterationCount: 'iterationCount',
+              invalidCount: 'invalidCount',
               converged: 'converged',
               iterationLimitReached: 'iterationLimitReached'
             }
@@ -48,7 +48,7 @@ for (const extractionMethod of ['dbscan', 'xi'] as const) {
       const outputs = [
         'ordering',
         'labels',
-        'status',
+        'invalidCount',
         'iterationCount',
         'converged',
         'iterationLimitReached',
@@ -68,7 +68,7 @@ for (const extractionMethod of ['dbscan', 'xi'] as const) {
         expect(Array.from(result['labels'])).toEqual(
           complete ? [0, 0, 1, 1] : [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff]
         );
-        expect(Array.from(result['status'])).toEqual([maximumIterations, Number(complete), 0]);
+        expect(Array.from(result['invalidCount'])).toEqual([0]);
         expect(Array.from(result['iterationCount'])).toEqual([maximumIterations]);
         expect(Array.from(result['converged'])).toEqual([Number(complete)]);
         expect(Array.from(result['iterationLimitReached'])).toEqual([Number(!complete)]);
@@ -129,13 +129,13 @@ for (const {neighborIndex, orderingMethod} of [
             reachability: 'reachability',
             predecessors: 'predecessors',
             labels: 'labels',
-            status: 'status',
             ...(extractionMethod === 'xi'
               ? {clusterIntervals: 'clusterIntervals', clusterSummary: 'clusterSummary'}
               : {}),
             ports: {
               status: {
                 iterationCount: 'iterationCount',
+                invalidCount: 'invalidCount',
                 converged: 'converged',
                 iterationLimitReached: 'iterationLimitReached',
                 ...(neighborIndex === 'grid' ? {candidateOverflow: 'candidateOverflow'} : {})
@@ -149,7 +149,7 @@ for (const {neighborIndex, orderingMethod} of [
           'reachability',
           'predecessors',
           'labels',
-          'status',
+          'invalidCount',
           'iterationCount',
           'converged',
           'iterationLimitReached',

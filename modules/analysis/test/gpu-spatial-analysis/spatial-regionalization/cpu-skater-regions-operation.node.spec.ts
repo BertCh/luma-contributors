@@ -22,7 +22,7 @@ import {
   getGPUSkaterRegionsParameterValues,
   GPU_SKATER_NO_CUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions';
-import {GPU_MINIMUM_SPANNING_TREE_STATUS} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
+import {GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const INPUT: CPUSkaterRegionsInput = {
@@ -195,8 +195,8 @@ it('allows zero-gain ties in slot order, honours size floors and clamps the targ
 });
 
 it('tree status stops all cuts, while nonfinite values alone stop only their initial tree', () => {
-  const treeStatus = new Uint32Array(GPU_MINIMUM_SPANNING_TREE_STATUS.length);
-  treeStatus[GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount] = 1;
+  const treeStatus = new Uint32Array(GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length);
+  treeStatus[GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.invalidCount] = 1;
   const stopped = computeSkaterRegionsOnCPU(
     {...INPUT, treeStatus},
     {columnCount: 2, maximumRegionCount: 4}

@@ -7,20 +7,20 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-tile-reprojection: input → values.",
   "description": "Result of gpu-raster.raster-tile-reprojection: input → values. cells: 9. values read back from the GPU run. input input: 9 cells.",
-  "llms": "Result of gpu-raster.raster-tile-reprojection: input → values\n\n- cells: 9\n- input input: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-tile-reprojection: input → values\n\n- cells: 9\n- input input: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- cell size 1 m\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "9"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[3,3]]\" role=\"img\" aria-label=\"Result: values\"><defs><pattern id=\"lens-gpu-raster-raster-tile-reprojection-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-raster-tile-reprojection-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-raster-tile-reprojection-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"84\" height=\"84\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#c6dbef\" stroke=\"#ffffff\" x=\"38\" y=\"6\" data-provenance=\"readback\" data-raster-width=\"3\" data-raster-height=\"3\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAMAAABh9kWNAAAAElBMVEUIPX8ca7BKmMnZ2dmKv93G2+90hVeXAAAAF0lEQVR4AQEMAPP/AAAAAQACAwIABAUFAFoAF9IwoZIAAAAASUVORK5CYII=\"></image></g><g data-role=\"highlight\"></g></svg></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[3,3]]\" role=\"img\" aria-label=\"Result: values\"><defs><pattern id=\"lens-gpu-raster-raster-tile-reprojection-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-raster-tile-reprojection-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-raster-tile-reprojection-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"84\" height=\"84\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#c6dbef\" stroke=\"#ffffff\" x=\"38\" y=\"6\" data-provenance=\"readback\" data-raster-width=\"3\" data-raster-height=\"3\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAMAAABh9kWNAAAAElBMVEUIPX8ca7BKmMnZ2dmKv93G2+90hVeXAAAAF0lEQVR4AQEMAPP/AAQFBQACAwIAAAABAMIAF75UOiIAAAAASUVORK5CYII=\"></image></g><g data-role=\"highlight\"></g></svg></section>",
     "width": 160,
     "height": 96
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:21.639Z",
-    "runId": "run-f22a9cf9",
+    "date": "2026-11-20T23:49:07.133Z",
+    "runId": "run-9f567ca1",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-f22a9cf9",
+    "runId": "run-9f567ca1",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -6,7 +6,9 @@
  * WGSL `getEntropyExcess` and `getObservedTerm`: the Poisson term `o ln(o/e) - o + e`, evaluated as
  * `e ((1 + d) ln(1 + d) - d)` with `d = (o - e) / e` so the two large logarithm terms never cancel.
  * `getObservedTerm` is 0 for `e <= 0` and `e` for `o = 0`, and stays finite when `o` is positive
- * but negligible beside `e` (`d` rounds to -1, where the term is `e`). Shared by the scan
+ * but negligible beside `e` (`d` rounds to -1, where the term is `e`). When `d` or the product
+ * overflows (a large count over a tiny baseline, such as `o = 1e9`, `e = 1e-30`) it falls back to
+ * `o (ln o - ln e) - o + e`, which is +inf only when the term exceeds float32. Shared by the scan
  * statistics and the per-location Poisson change point cost. Checked against float64 in
  * `test/utils/wgsl-poisson-observed-term.spec.ts`.
  *
@@ -52,5 +54,12 @@ fn getObservedTerm(observed: f32, expected: f32) -> f32 {
   if (!(observed > 0.0)) {
     return expected;
   }
-  return expected * getEntropyExcess((observed - expected) / expected);
+  let term = expected * getEntropyExcess((observed - expected) / expected);
+  if ((bitcast<u32>(term) & 0x7f800000u) != 0x7f800000u) {
+    return term;
+  }
+  // d = (o - e) / e, or (1 + d) ln(1 + d), overflowed although the term can be finite (a large
+  // count over a tiny baseline): separate logarithms, o (ln o - ln e) - o + e, do not cancel there.
+  // The result is +inf only when the term itself exceeds float32.
+  return observed * (log(observed) - log(expected)) - observed + expected;
 }`;

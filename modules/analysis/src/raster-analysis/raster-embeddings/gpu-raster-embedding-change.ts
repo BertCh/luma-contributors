@@ -51,6 +51,11 @@ export function getGPURasterEmbeddingChangeParameterValues(
   settings: GPURasterEmbeddingChangeSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_EMBEDDING_CHANGE_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRequirement(
+    'getGPURasterEmbeddingChangeParameterValues',
+    target.length >= 1,
+    'target must hold at least 1 float32 elements; received ' + target.length
+  );
   validateFiniteNumber(
     'getGPURasterEmbeddingChangeParameterValues',
     'similarityThreshold',
@@ -116,6 +121,7 @@ export type GPURasterEmbeddingChangeProps<
  *
  * Per-frame: `parameters` and the contents of the views. Compile-time: `pixelCount`,
  * `dimensions` and which optional views exist.
+ * Pixel vectors accept 1–1,024 dimensions per complete pixel chunk.
  */
 export class GPURasterEmbeddingChange<
   FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
@@ -127,6 +133,8 @@ export class GPURasterEmbeddingChange<
   readonly estimatedCommandNodeCount: number;
 
   constructor(readonly props: GPURasterEmbeddingChangeProps<FloatRows, UintRows>) {
+    props = {...props, output: {...props.output}};
+    this.props = props;
     const id = props.id ?? 'raster-embedding-change';
     this.id = id;
     const {pixelCount, dimensions, output} = props;
@@ -172,6 +180,22 @@ export class GPURasterEmbeddingChange<
     );
     if (props.parameters)
       validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
+    this.chunks = planRasterEmbeddingChunks(
+      id,
+      pixelCount,
+      {
+        before: {view: props.before, format: 'float32', components: dimensions},
+        after: {view: props.after, format: 'float32', components: dimensions},
+        beforeMask: {view: props.beforeMask, format: 'uint32', components: 1},
+        afterMask: {view: props.afterMask, format: 'uint32', components: 1},
+        'output.similarity': {view: props.output.similarity, format: 'float32', components: 1},
+        'output.angle': {view: props.output.angle, format: 'float32', components: 1},
+        'output.magnitude': {view: props.output.magnitude, format: 'float32', components: 1},
+        'output.changed': {view: props.output.changed, format: 'uint32', components: 1}
+      },
+      'before',
+      output.changed ? 2 : 1
+    );
     validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs(), [
       {
         inputs: [props.before, props.after, props.beforeMask, props.afterMask].filter(
@@ -192,22 +216,6 @@ export class GPURasterEmbeddingChange<
           ]
         : [])
     ]);
-    this.chunks = planRasterEmbeddingChunks(
-      id,
-      pixelCount,
-      {
-        before: {view: props.before, format: 'float32', components: dimensions},
-        after: {view: props.after, format: 'float32', components: dimensions},
-        beforeMask: {view: props.beforeMask, format: 'uint32', components: 1},
-        afterMask: {view: props.afterMask, format: 'uint32', components: 1},
-        'output.similarity': {view: props.output.similarity, format: 'float32', components: 1},
-        'output.angle': {view: props.output.angle, format: 'float32', components: 1},
-        'output.magnitude': {view: props.output.magnitude, format: 'float32', components: 1},
-        'output.changed': {view: props.output.changed, format: 'uint32', components: 1}
-      },
-      'before',
-      output.changed ? 2 : 1
-    );
     this.estimatedCommandNodeCount =
       1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * (output.changed ? 2 : 1);
   }

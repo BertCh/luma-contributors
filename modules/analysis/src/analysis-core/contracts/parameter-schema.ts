@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../kernels/analysis-validation-error';
+
 /** Scalar formats supported by packed spatial-analysis parameter schemas. */
 export type GPUSpatialParameterFormat = 'float32' | 'uint32' | 'sint32';
 
@@ -26,6 +28,11 @@ export type GPUSpatialParameterSchema<Format extends GPUSpatialParameterFormat> 
   format: Format;
   wordLength: number;
   fields: readonly GPUSpatialParameterField<Format>[];
+  /**
+   * Retired field names mapped to their replacements. A packer refuses a retired key with a
+   * message that names the replacement; it never remaps the value.
+   */
+  renamedFields?: Readonly<Record<string, string>>;
 };
 
 /** Values accepted by a schema packer, keyed by field name. */
@@ -42,7 +49,8 @@ export function defineGPUSpatialParameterSchema<Format extends GPUSpatialParamet
   validateGPUSpatialParameterSchema(schema);
   return Object.freeze({
     ...schema,
-    fields: Object.freeze(schema.fields.map(field => Object.freeze({...field})))
+    fields: Object.freeze(schema.fields.map(field => Object.freeze({...field}))),
+    ...(schema.renamedFields ? {renamedFields: Object.freeze({...schema.renamedFields})} : {})
   });
 }
 
@@ -95,12 +103,18 @@ export function packGPUSpatialParameterValues<Format extends GPUSpatialParameter
   const fieldByName = new Map(schema.fields.map(field => [field.name, field]));
   for (const name of Object.keys(values)) {
     if (!fieldByName.has(name)) {
+      const renamedFields = schema.renamedFields;
+      if (renamedFields && Object.hasOwn(renamedFields, name)) {
+        validateRequirement(schema.id, false, `${name} was renamed; use ${renamedFields[name]}`);
+      }
       throw new Error(`${schema.id} has no parameter named ${name}`);
     }
   }
   const packed = createParameterArray(schema.format, schema.wordLength);
   for (const field of schema.fields) {
-    const value = values[field.name] ?? field.defaultValue;
+    // Own keys only: a field named `constructor` or `toString` must not read Object.prototype.
+    const value =
+      (Object.hasOwn(values, field.name) ? values[field.name] : undefined) ?? field.defaultValue;
     packed[field.wordOffset] = validateFieldValue(schema.id, field, value);
   }
   return packed as GPUSpatialParameterArray<Format>;

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
+import {KALMAN_LOCAL_ORIGIN_WGSL, type KalmanLocalMetadata} from './kalman-local-publication';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -41,9 +42,12 @@ fn rowElapsed(row: u32, previous: u32) -> f32 { return timeWordsDifferenceToF32(
 export function createFullCovarianceKalmanNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  props: GPUTrajectoryKalmanResolvedProps
+  props: GPUTrajectoryKalmanResolvedProps,
+  metadata: KalmanLocalMetadata<Parameters>
 ): GPUCommandNode<Parameters>[] {
+  const {origins} = metadata;
   const declarations = `${GET_NAN_WGSL}
+${KALMAN_LOCAL_ORIGIN_WGSL}
 const IDENTITY = mat4x4<f32>(vec4<f32>(1.0,0.0,0.0,0.0),vec4<f32>(0.0,1.0,0.0,0.0),vec4<f32>(0.0,0.0,1.0,0.0),vec4<f32>(0.0,0.0,0.0,1.0));
 const OBSERVATION = mat4x2<f32>(vec2<f32>(1.0,0.0),vec2<f32>(0.0,1.0),vec2<f32>(0.0),vec2<f32>(0.0));
 fn finite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
@@ -100,6 +104,7 @@ ${writable ? `fn store${capitalized}(row: u32, value: ${type}) { let base = ${na
       workgroupSize: 32,
       bindings: [
         {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+        {name: 'origins', view: origins, type: 'f32', access: 'read_write'},
         {name: 'times', view: props.times, type: time.bindingType, access: 'read'},
         {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
         {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
@@ -120,8 +125,9 @@ ${writable ? `fn store${capitalized}(row: u32, value: ${type}) { let base = ${na
       body: `let start = min(offsets[offsetsOffset + index], ${props.positions.length}u); let end = min(offsets[offsetsOffset + index + 1u], ${props.positions.length}u);
 let noise = covariance2(0u); let measurement = covariance2(3u); let initialVelocity = covariance2(6u); let maximumGap = ${getEffectiveMaximumGapWGSL('parameters[parametersOffset + 9u]')};
 let validParameters = validCovariance(noise, false) && validCovariance(measurement, true) && validCovariance(initialVelocity, false) && maximumGap > 0.0;
-var initialized = false; var estimate = vec4<f32>(0.0); var uncertainty = IDENTITY; var previousRow = start;
+var initialized = false; var estimate = vec4<f32>(0.0); var origin = vec2<f32>(0.0); var uncertainty = IDENTITY; var previousRow = start;
 for (var row = start; row < end; row++) {
+  origins[originsOffset + 4u * row] = 0.0; origins[originsOffset + 4u * row + 1u] = 0.0;
   let missing = getNaN(); storeState(row, vec4<f32>(missing)); storeCovariance(row, mat4x4<f32>(vec4<f32>(missing),vec4<f32>(missing),vec4<f32>(missing),vec4<f32>(missing)));
   let elapsed = rowElapsed(row, previousRow); let delta = ${time.deltaExpression}; let position = vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]); let measured = finite(position.x) && finite(position.y);
   if (!validParameters || !isRowTimeFinite(row) || (initialized && elapsed < 0.0)) { status[statusOffset + row] = 4u; initialized = false; continue; }
@@ -129,24 +135,31 @@ for (var row = start; row < end; row++) {
   var flags = 0u;
   if (!initialized) {
     if (!measured) { status[statusOffset + row] = 6u; continue; }
-    estimate = vec4<f32>(position,0.0,0.0);
+    origin = position; estimate = vec4<f32>(0.0);
     uncertainty = mat4x4<f32>(vec4<f32>(measurement[0],0.0,0.0),vec4<f32>(measurement[1],0.0,0.0),vec4<f32>(0.0,0.0,initialVelocity[0]),vec4<f32>(0.0,0.0,initialVelocity[1]));
     initialized = true; flags = 1u;
   } else {
-    let prediction = transition(delta); estimate = prediction * estimate; uncertainty = prediction * uncertainty * transpose(prediction) + processCovariance(delta);
+    let prediction = transition(delta);
+    let predictedPosition = kalmanPositionAdvance(KalmanPosition(origin, estimate.xy), estimate.zw, delta);
+    origin = predictedPosition.high; estimate = vec4<f32>(predictedPosition.low, estimate.zw);
+    uncertainty = prediction * uncertainty * transpose(prediction) + processCovariance(delta);
     if (measured) {
       let innovation = OBSERVATION * uncertainty * transpose(OBSERVATION) + measurement;
       if (!validCovariance(innovation, true)) { status[statusOffset + row] = 4u; initialized = false; continue; }
       let gain = uncertainty * transpose(OBSERVATION) * inverse2(innovation);
-      estimate += gain * (position - estimate.xy);
+      let residual = kalmanPositionSubtract(KalmanPosition(position, vec2<f32>(0.0)), KalmanPosition(origin, estimate.xy));
+      let updatedPosition = kalmanPositionAdd(KalmanPosition(origin, estimate.xy), kalmanPositionMultiply(mat2x2<f32>(gain[0].xy, gain[1].xy), residual));
+      estimate = vec4<f32>(updatedPosition.low, estimate.zw + kalmanPositionValue(kalmanPositionMultiply(mat2x2<f32>(gain[0].zw, gain[1].zw), residual)));
+      origin = updatedPosition.high;
       let correction = IDENTITY - gain * OBSERVATION;
       uncertainty = symmetric(correction * uncertainty * transpose(correction) + gain * measurement * transpose(gain));
     } else { flags = 2u; }
   }
-  var valid = true;
+  var valid = finite(estimate.x + origin.x) && finite(estimate.y + origin.y);
   for (var component = 0u; component < 4u; component++) { valid = valid && finite(estimate[component]); for (var column = 0u; column < 4u; column++) { valid = valid && finite(uncertainty[column][component]); } }
   if (!valid) { status[statusOffset + row] = 4u; initialized = false; continue; }
   previousRow = row; storeState(row, estimate); storeCovariance(row, uncertainty); status[statusOffset + row] = flags;
+  origins[originsOffset + 4u * row] = origin.x; origins[originsOffset + 4u * row + 1u] = origin.y;
 }`
     })
   ];
@@ -161,7 +174,7 @@ for (var row = start; row < end; row++) {
         bindings: [
           {name: 'times', view: props.times, type: time.bindingType, access: 'read'},
           {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-          {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+          {name: 'parameters', view: metadata.parameters, type: 'f32', access: 'read_write'},
           {name: 'state', view: props.output.filteredState, type: 'f32', access: 'read'},
           {name: 'covariance', view: props.output.filteredCovariance, type: 'f32', access: 'read'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'},
@@ -182,6 +195,7 @@ for (var row = start; row < end; row++) {
           declarations +
           time.source +
           accessors('state', false, false) +
+          metadata.originSource +
           accessors('covariance', true, false) +
           accessors('smoothedState', false, true) +
           accessors('smoothedCovariance', true, true),
@@ -190,16 +204,25 @@ var row = end;
 loop {
   if (row <= start) { break; } row--;
   let estimate = loadState(row); let uncertainty = loadCovariance(row); storeSmoothedState(row, estimate); storeSmoothedCovariance(row, uncertainty);
+  storeSmoothedOrigin(row, rowOrigin(row));
   if (row + 1u >= end || (status[statusOffset + row] & 4u) != 0u || (status[statusOffset + row + 1u] & 5u) != 0u) { continue; }
   let elapsed = rowElapsed(row + 1u, row); let delta = ${time.deltaExpression}; let prediction = transition(delta); let predicted = prediction * uncertainty * transpose(prediction) + processCovariance(delta); let inverse = inverse4(predicted);
   if (!inverse.valid) { status[statusOffset + row] |= 8u; continue; }
   let gain = uncertainty * transpose(prediction) * inverse.value;
-  let correctedState = estimate + gain * (loadSmoothedState(row + 1u) - prediction * estimate);
+  let nextEstimate = loadSmoothedState(row + 1u);
+  let residualPosition = kalmanPositionSubtract(KalmanPosition(rowSmoothedOrigin(row + 1u), nextEstimate.xy), kalmanPositionAdvance(KalmanPosition(rowOrigin(row), estimate.xy), estimate.zw, delta));
+  let residualVelocity = nextEstimate.zw - estimate.zw;
+  let positionCorrection = kalmanPositionAdd(kalmanPositionMultiply(mat2x2<f32>(gain[0].xy, gain[1].xy), residualPosition), kalmanPositionMultiply(mat2x2<f32>(gain[2].xy, gain[3].xy), KalmanPosition(residualVelocity, vec2<f32>(0.0))));
+  let correctedPosition = kalmanPositionAdd(KalmanPosition(rowOrigin(row), estimate.xy), positionCorrection);
+  let velocityCorrection = kalmanPositionAdd(kalmanPositionMultiply(mat2x2<f32>(gain[0].zw, gain[1].zw), residualPosition), kalmanPositionMultiply(mat2x2<f32>(gain[2].zw, gain[3].zw), KalmanPosition(residualVelocity, vec2<f32>(0.0))));
+  let correctedState = vec4<f32>(correctedPosition.low, estimate.zw + kalmanPositionValue(velocityCorrection));
   let correctedCovariance = symmetric(uncertainty + gain * (loadSmoothedCovariance(row + 1u) - predicted) * transpose(gain));
-  var valid = true;
+  let absolutePosition = kalmanPositionValue(correctedPosition);
+  var valid = finite(absolutePosition.x) && finite(absolutePosition.y);
   for (var component = 0u; component < 4u; component++) { valid = valid && finite(correctedState[component]); for (var column = 0u; column < 4u; column++) { valid = valid && finite(correctedCovariance[column][component]); } }
   if (!valid) { status[statusOffset + row] |= 8u; continue; }
   storeSmoothedState(row, correctedState); storeSmoothedCovariance(row, correctedCovariance);
+  storeSmoothedOrigin(row, correctedPosition.high);
 }`
       })
     );

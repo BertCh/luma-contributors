@@ -11,7 +11,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/delaunay-tessellation/gpu-delaunay-tessellation-operation';
 import {getDelaunayStepCount} from '../../../src/gpu-spatial-analysis/delaunay-tessellation/gpu-delaunay-tessellation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 for (const scenario of ['groups', 'overflow', 'collinear', 'duplicates'] as const) {
   it(`Delaunay operations agree on topology and report their iteration counts on ${scenario}`, async () => {
@@ -106,5 +106,32 @@ for (const scenario of ['groups', 'overflow', 'collinear', 'duplicates'] as cons
     expect(results[0]['count'][0]).toBe(
       scenario === 'collinear' || scenario === 'duplicates' ? 0 : scenario === 'overflow' ? 2 : 6
     );
+  });
+}
+
+for (const capacity of [0, 1]) {
+  it(`Delaunay named forms report one triangle at capacity ${capacity}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // One noncollinear simplex: demand is one even when no payload fits.
+    for (const Operation of [GPUDelaunayTessellationOperation, CPUDelaunayTessellationOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {positions: {format: 'float32x2', values: Float32Array.of(0, 0, 2, 0, 0, 2)}},
+        operations: [
+          new Operation({
+            positions: 'positions',
+            capacity,
+            output: {
+              triangles: 'triangles',
+              status: {count: 'count', requiredCount: 'requiredCount', overflow: 'overflow'}
+            }
+          })
+        ],
+        outputs: ['count', 'requiredCount', 'overflow']
+      });
+      expect(Array.from(result['requiredCount'])).toEqual([1]);
+      expect(Array.from(result['count'])).toEqual([capacity]);
+      expect(Array.from(result['overflow'])).toEqual([1 - capacity]);
+    }
   });
 }

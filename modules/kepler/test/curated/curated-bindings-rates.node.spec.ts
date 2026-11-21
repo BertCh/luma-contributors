@@ -301,7 +301,9 @@ describe('curated-rate-cluster-map declared behaviour', () => {
     expect(() =>
       runCuratedBinding(CLUSTER_ID, {...PLANAR, populationProperty: 'population'}, {areas})
     ).toThrow(/curated-rate-cluster-map: parameter casesProperty must name a column/);
-    expect(() => run(areas, {permutations: 98})).toThrow(/out of range/);
+    expect(() => run(areas, {permutations: 98})).toThrow(
+      /permutations must be at least 99; received 98/
+    );
     const large = makeRateLattice(50, 42, new Array(2100).fill(5), new Array(2100).fill(100));
     expect(() => run(large, {permutations: 9999})).toThrow(
       /2100 areas times 9999 permutations exceeds/
@@ -577,9 +579,9 @@ describe('curated-rate-cluster-map GPU preparation and publication contract', ()
       capacity: prepared.neighborCapacity,
       pairCapacity: 256
     });
-    expect(Array.from(partial.overflow)).toEqual([0]);
-    expect(Array.from(partial.candidateOverflow)).toEqual([1]);
-    expect(Array.from(partial.requiredCount)).toEqual([2]);
+    expect(Array.from(partial.status.overflow)).toEqual([0]);
+    expect(Array.from(partial.status.candidateOverflow)).toEqual([1]);
+    expect(Array.from(partial.status.requiredCount)).toEqual([2]);
     expect(
       Array.from(partial.offsets)
         .slice(1)
@@ -594,7 +596,7 @@ describe('curated-rate-cluster-map GPU preparation and publication contract', ()
       readGpuRateClusterComputation(prepared, {
         ...createReadback(),
         offsets: partial.offsets,
-        weightsRequiredCount: partial.requiredCount[0],
+        weightsRequiredCount: partial.status.requiredCount[0],
         weightsCandidateOverflow: 1
       })
     ).toThrow(/candidate overflow/);

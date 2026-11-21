@@ -10,6 +10,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {FIND_LINE_WGSL} from '../line-segmentize/line-segmentize-kernels';
+import {LINE_DENSITY_GRID_CLASSIFICATION_WGSL} from './line-density-grid-wgsl';
 
 /** Static description shared by the walk kernels. @internal */
 export type LineDensityGridConstants = {
@@ -20,6 +21,8 @@ export type LineDensityGridConstants = {
   coordinateSystem: 'planar' | 'spherical';
   radius: number;
   capacity: number;
+  outputRowOrder?: 'south-first' | 'north-first';
+  outputColumnOrder?: 'west-first' | 'east-first';
 };
 
 /**
@@ -46,6 +49,7 @@ const INFINITE: f32 = 3.0e38;
 const EMITS_PIECES: bool = ${emit};
 ${spherical ? GEODESIC_WGSL : ''}
 ${FIND_LINE_WGSL}
+${LINE_DENSITY_GRID_CLASSIFICATION_WGSL}
 
 fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
@@ -105,8 +109,22 @@ fn walkSegment(row: u32, slot: u32) -> u32 {
   let end = ua + delta * t1;
   var cx = clamp(i32(floor(start.x)), 0, COLUMNS - 1);
   var cy = clamp(i32(floor(start.y)), 0, ROWS - 1);
-  let endX = clamp(i32(floor(end.x)), 0, COLUMNS - 1);
-  let endY = clamp(i32(floor(end.y)), 0, ROWS - 1);
+  var endX = clamp(i32(floor(end.x)), 0, COLUMNS - 1);
+  var endY = clamp(i32(floor(end.y)), 0, ROWS - 1);
+  // Unclipped endpoints and constant axes retain their original packed coordinates.
+  // A quotient rounded just below an integer must not move a physical boundary south/west.
+  if (t0 == 0.0 || bitcast<u32>(a.x) == bitcast<u32>(b.x)) {
+    cx = getStoredCoordinateCell(a.x, origin.x, cellSize.x, COLUMNS, start.x);
+  }
+  if (t0 == 0.0 || bitcast<u32>(a.y) == bitcast<u32>(b.y)) {
+    cy = getStoredCoordinateCell(a.y, origin.y, cellSize.y, ROWS, start.y);
+  }
+  if (t1 == 1.0 || bitcast<u32>(a.x) == bitcast<u32>(b.x)) {
+    endX = getStoredCoordinateCell(b.x, origin.x, cellSize.x, COLUMNS, end.x);
+  }
+  if (t1 == 1.0 || bitcast<u32>(a.y) == bitcast<u32>(b.y)) {
+    endY = getStoredCoordinateCell(b.y, origin.y, cellSize.y, ROWS, end.y);
+  }
   var stepsX = u32(abs(endX - cx));
   var stepsY = u32(abs(endY - cy));
   let pieceCount = stepsX + stepsY + 1u;
@@ -136,7 +154,7 @@ fn walkSegment(row: u32, slot: u32) -> u32 {
     ${
       emit
         ? `if (slot + piece < CAPACITY) {
-      keys[keysOffset + slot + piece] = u32(cy * COLUMNS + cx);
+      keys[keysOffset + slot + piece] = u32(${constants.outputRowOrder === 'north-first' ? '(ROWS - 1 - cy)' : 'cy'} * COLUMNS + ${constants.outputColumnOrder === 'east-first' ? '(COLUMNS - 1 - cx)' : 'cx'});
       contributions[contributionsOffset + slot + piece] = getPieceLength(a, b, tCurrent, tNext);
     }`
         : ''
@@ -256,6 +274,7 @@ export function createDensityNode<Parameters>(
     rows: number;
     coordinateSystem: 'planar' | 'spherical';
     areaRadius: number;
+    outputRowOrder?: 'south-first' | 'north-first';
     parameters: GraphDataView<'float32'>;
     lengths: GraphDataView<'float32'>;
     densities: GraphDataView<'float32'>;
@@ -274,7 +293,7 @@ export function createDensityNode<Parameters>(
     declarations: `const COLUMNS: u32 = ${props.columns}u;
 const AREA_RADIUS: f32 = ${getWGSLFloatLiteral(props.areaRadius)};
 const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;`,
-    body: `let row = index / COLUMNS;
+    body: `let row = ${props.outputRowOrder === 'north-first' ? `${props.rows - 1}u - index / COLUMNS` : 'index / COLUMNS'};
   let width = parameters[parametersOffset + 2u];
   let height = parameters[parametersOffset + 3u];
   ${
@@ -287,6 +306,6 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;`,
     cos((south + 0.5 * height) * DEGREES_TO_RADIANS) * sin(0.5 * height * DEGREES_TO_RADIANS);`
       : 'let area = width * height;'
   }
-  densities[densitiesOffset + index] = lengths[lengthsOffset + index] / area;`
+  densities[densitiesOffset + index] = lengths[lengthsOffset + index] / abs(area);`
   });
 }

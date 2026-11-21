@@ -23,10 +23,16 @@ const ADDITION_SLACK = '1.2e-7';
 
 /** WGSL declarations the bound statements use. @internal */
 export const TRACK_SIMILARITY_BOUND_DECLARATIONS = /* wgsl */ `
+fn scaledNorm(offset: vec2f) -> f32 {
+  let scale = max(abs(offset.x), abs(offset.y));
+  if (scale == 0.0) { return 0.0; }
+  let normalized = offset / scale;
+  return scale * sqrt(dot(normalized, normalized));
+}
 // Euclidean distance from a point to an axis-aligned box. The polyline of a track lies inside the
 // box of its vertices, so this never exceeds the distance from the point to the polyline.
 fn boxDistance(point: vec2<f32>, lower: vec2<f32>, upper: vec2<f32>) -> f32 {
-  return length(max(max(lower - point, point - upper), vec2<f32>(0.0)));
+  return scaledNorm(max(max(lower - point, point - upper), vec2<f32>(0.0)));
 }`;
 
 /**
@@ -71,12 +77,13 @@ for (var row = startA; row < endA; row++) { let position = loadA(row); if (all(p
 for (var row = startB; row < endB; row++) { let position = loadB(row); if (all(position >= lowerA - reach) && all(position <= upperA + reach)) { possibleB++; } }
 bounds[boundsOffset + index] = f32(max(${countA}, ${countB}) - min(possibleA, possibleB));`;
     case 'edit-distance-with-real-penalty':
-      // ERP is a metric, and its distance to the empty sequence is the sum of the gap distances,
+      // ERP is a pseudometric when the gap can be a vertex. Its distance to the empty sequence is
+      // the sum of the gap distances,
       // so the difference of the two sums is a lower bound (reverse triangle inequality).
       return `let gap = vec2<f32>(${gapPoint[0]}, ${gapPoint[1]});
 var sumA = 0.0; var sumB = 0.0;
-for (var row = startA; row < endA; row++) { sumA += length(loadA(row) - gap); }
-for (var row = startB; row < endB; row++) { sumB += length(loadB(row) - gap); }
+for (var row = startA; row < endA; row++) { sumA += scaledNorm(loadA(row) - gap); }
+for (var row = startB; row < endB; row++) { sumB += scaledNorm(loadB(row) - gap); }
 bounds[boundsOffset + index] = max(0.0, abs(sumA - sumB) - f32(${countA} + ${countB}) * ${ADDITION_SLACK} * (sumA + sumB));`;
   }
 }

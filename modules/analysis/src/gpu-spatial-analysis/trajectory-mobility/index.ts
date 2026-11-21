@@ -39,3 +39,6 @@ export {GPUMobilityIndicatorsOperation} from './gpu-mobility-indicators-operatio
 export type {MobilityIndicatorsOperationProps} from './gpu-mobility-indicators-operation';
 export {GPUModalSplitOperation} from './gpu-modal-split-operation';
 export type {ModalSplitOperationProps} from './gpu-modal-split-operation';
+
+export type {GyrationCenter} from './gyration-center';
+export type {ModalSpeedOptions} from './modal-split-options';

@@ -401,7 +401,7 @@ windSettings.write(getGPUTerrainFlowFieldParameterValues({
   verticalExaggeration: ${state.exaggeration}
 }, southFirstGrid));    // grid: EPSG:3857 meters, origin at the bottom-left, rowDirection 'north'
 particleParameters.write(getGPUParticleAdvectionParameterValues({
-  fieldExtent: [minX, minY, cellWidth, cellHeight], timeStep: ${state.timeStep},
+  fieldPlacement: {origin: [minX, minY], cellSize: [cellWidth, cellHeight]}, timeStep: ${state.timeStep},
   speedScale: ${state.speedScale}, dropRate: ${state.dropRate}, minimumSpeed: ${state.minimumSpeed},
   spawnBounds: ${state.spawnRegion === 'view' ? 'visibleMapBounds' : 'undefined /* whole field */'}
 }, [width, height]));

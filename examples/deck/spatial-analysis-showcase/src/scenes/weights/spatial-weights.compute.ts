@@ -8,7 +8,7 @@ import {
   GPULatticeWeights,
   GPUSpatialWeightsAlgebra,
   type GPUNeighborSearchKernel,
-  type GPUNeighborSearchWeightKind,
+  type GPUNeighborSearchWeightType,
   type GPUSpatialWeightsCombineRule,
   type GPUSpatialWeightsKernel
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -95,7 +95,7 @@ export type WeightsCombine =
   | 'union'
   | 'intersection'
   | 'difference'
-  | 'symmetricDifference'
+  | 'symmetric-difference'
   | 'higherOrder'
   | 'selfWeight'
   | 'subgraph'
@@ -123,7 +123,7 @@ export type SpatialWeightsOptions = {
   k: number;
   bandFactor: number;
   knnCapFactor: number;
-  weightKind: GPUNeighborSearchWeightKind;
+  weightKind: GPUNeighborSearchWeightType;
   kernel: GPUNeighborSearchKernel;
   power: number;
   distanceFloorFactor: number;
@@ -266,6 +266,7 @@ type World = {
   algebra: Map<string, CompiledGPUCommandGraph<void>>;
   algebraOverflow: Buffer;
   algebraTotal: Buffer;
+  algebraCandidateOverflow: Buffer;
   lattice: Lattice | null;
   focusRow: number;
   populationSorted: Float32Array;
@@ -384,7 +385,7 @@ export async function createSpatialWeights(
       snapTolerance: Number(o.snapTolerance),
       bandFactor: o.bandFactor,
       knnCapFactor: o.knnCapFactor,
-      weightKind: o.weightKind,
+      weightType: o.weightKind,
       kernel: o.kernel,
       power: o.power,
       distanceFloor: o.distanceFloorFactor * geography.medianSpacing,
@@ -404,7 +405,7 @@ export async function createSpatialWeights(
       case 'union':
       case 'intersection':
       case 'difference':
-      case 'symmetricDifference':
+      case 'symmetric-difference':
         return `${o.combine}-${o.weightRule}`;
       case 'higherOrder':
         return `higherOrder-${o.order}-${o.cumulative}`;
@@ -582,6 +583,9 @@ export async function createSpatialWeights(
       resources.createBuffer(name, data);
     const core = createWeightsCore({device, resources, id: 'weights-core', geography});
     const analysisSlots = ANALYSIS_SLOTS[geography.id];
+    const algebraOverflow = create('analysis-overflow', 4);
+    const algebraTotal = create('analysis-total', 4);
+    const algebraCandidateOverflow = create('analysis-candidate-overflow', 4);
     const initialValues = geography.getVariable(ctx.options.variable);
     const values = create('values', Float32Array.from(initialValues));
     const valueMask = create('value-mask', new Uint32Array(rowCount));
@@ -601,9 +605,9 @@ export async function createSpatialWeights(
       categories: geography.groups,
       drawAllLinks: true,
       producer: {
-        overflow: core.overflow,
-        total: core.total,
-        candidateOverflow: core.candidateOverflow
+        overflow: algebraOverflow,
+        total: algebraTotal,
+        candidateOverflow: algebraCandidateOverflow
       }
     });
     const populationSorted = Float32Array.from(geography.population).sort();
@@ -649,8 +653,9 @@ export async function createSpatialWeights(
       subgraphMask: create('subgraph-mask', new Uint32Array(rowCount).fill(1)),
       groups: create('group-ids', geography.groups),
       algebra: new Map(),
-      algebraOverflow: create('algebra-overflow', 4),
-      algebraTotal: create('algebra-total', 4),
+      algebraOverflow,
+      algebraTotal,
+      algebraCandidateOverflow,
       lattice: null,
       focusRow,
       populationSorted,
@@ -887,14 +892,33 @@ export async function createSpatialWeights(
       neighbors: importGraphBuffer(graph, `${name}-neighbors`, csr.neighbors, 'uint32', slots),
       weights: importGraphBuffer(graph, `${name}-weights`, csr.weights, 'float32', slots)
     });
-    const left = importCsr('a', core.csr, core.slots);
+    const left = {
+      ...importCsr('a', core.csr, core.slots),
+      status: {
+        overflow: importGraphBuffer(graph, 'a-overflow', core.overflow, 'uint32', 1),
+        candidateOverflow: importGraphBuffer(
+          graph,
+          'a-candidate-overflow',
+          core.candidateOverflow,
+          'uint32',
+          1
+        )
+      }
+    };
     const common = {
       id: 'algebra',
       output: {
         ...importCsr('out', space.csr, space.slots),
         status: {
           overflow: importGraphBuffer(graph, 'overflow', target.algebraOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'total', target.algebraTotal, 'uint32', 1)
+          requiredCount: importGraphBuffer(graph, 'total', target.algebraTotal, 'uint32', 1),
+          candidateOverflow: importGraphBuffer(
+            graph,
+            'candidate-overflow',
+            target.algebraCandidateOverflow,
+            'uint32',
+            1
+          )
         }
       }
     };
@@ -902,13 +926,24 @@ export async function createSpatialWeights(
       case 'union':
       case 'intersection':
       case 'difference':
-      case 'symmetricDifference':
+      case 'symmetric-difference':
         graph.add(
           new GPUSpatialWeightsAlgebra({
             ...common,
             operation: o.combine,
             left,
-            right: importCsr('b', target.partner.csr, target.partner.slots),
+            right: {
+              ...importCsr('b', target.partner.csr, target.partner.slots),
+              status: {
+                overflow: importGraphBuffer(
+                  graph,
+                  'b-overflow',
+                  target.partner.overflow,
+                  'uint32',
+                  1
+                )
+              }
+            },
             weightRule: o.weightRule
           })
         );
@@ -968,7 +1003,7 @@ export async function createSpatialWeights(
   };
 
   const isBinaryCombine = () =>
-    ['union', 'intersection', 'difference', 'symmetricDifference'].includes(ctx.options.combine);
+    ['union', 'intersection', 'difference', 'symmetric-difference'].includes(ctx.options.combine);
 
   /** The configuration of the two reference producers: exact contiguity, no transform. */
   const getReferenceConfig = (target: World, source: 'queen' | 'rook'): WeightsConfig => ({
@@ -995,13 +1030,29 @@ export async function createSpatialWeights(
         {buffer: queen.csr.offsets, size: (rows + 1) * 4},
         {buffer: queen.csr.neighbors, size: queen.slots * 4},
         {buffer: rook.csr.offsets, size: (rows + 1) * 4},
-        {buffer: rook.csr.neighbors, size: rook.slots * 4}
+        {buffer: rook.csr.neighbors, size: rook.slots * 4},
+        {buffer: queen.overflow, size: 4},
+        {buffer: queen.candidateOverflow, size: 4},
+        {buffer: rook.overflow, size: 4},
+        {buffer: rook.candidateOverflow, size: 4}
       ],
       bytes => {
         const reference = target.reference;
         if (!reference || world !== target) return;
         const offsetBytes = (rows + 1) * 4;
         const slotBytes = queen.slots * 4;
+        const loss = new Uint32Array(bytes, offsetBytes * 2 + slotBytes + rook.slots * 4, 4);
+        if (loss.some(Boolean)) {
+          reference.data = null;
+          target.cornerRows = [];
+          target.cornerLinks = null;
+          for (const key of ['cornerLinks', 'cornerFocus', 'cornerCount']) {
+            ctx.setReadout(key, 'unavailable: incomplete reference weights');
+          }
+          publishAnnotations();
+          ctx.requestLayers();
+          return;
+        }
         reference.data = {
           queenOffsets: new Uint32Array(bytes, 0, rows + 1),
           queenNeighbors: new Uint32Array(bytes, offsetBytes, queen.slots),
@@ -1093,6 +1144,10 @@ export async function createSpatialWeights(
       return;
     }
     target.snapshot = snapshot;
+    if (target.kitSummary?.producerCandidateOverflow || target.kitSummary?.producerOverflow) {
+      updateReadouts();
+      return;
+    }
     const {lag, difference, values} = writeDerived(target, snapshot);
     if (!tables) tables = buildTables(target);
     const o = ctx.options;
@@ -1135,6 +1190,7 @@ export async function createSpatialWeights(
 
   /** The focus row arrived: draw the bundle outlines, weights, kernel chart and notes. */
   function handleFocusRow(target: World, row: FocusRow) {
+    if (target.kitSummary?.producerCandidateOverflow || target.kitSummary?.producerOverflow) return;
     target.focusData = row;
     const {geography} = target;
     let maximum = 0;
@@ -1222,11 +1278,11 @@ export async function createSpatialWeights(
     let kernel: KernelName | null = null;
     let bandwidth = 0;
     if (o.transform === 'kernel') {
-      kernel = o.transformKernel as KernelName;
+      kernel = o.transformKernel;
       const kernelBandwidth = target.core.getKernelBandwidth(config);
       bandwidth = kernelBandwidth === 'adaptive' ? farthest : kernelBandwidth;
     } else if (o.weightKind === 'kernel') {
-      kernel = o.kernel as KernelName;
+      kernel = o.kernel;
       bandwidth = o.source === 'band' ? target.core.getBandMeters(config) : farthest;
     }
     if (!kernel || !(bandwidth > 0) || distances.length === 0) {
@@ -1268,6 +1324,40 @@ export async function createSpatialWeights(
       useLattice ? `${formatCount(insideRows)} of ${formatCount(rows)} cells` : formatCount(rows)
     );
     ctx.setReadout('focusName', getFocusName(target));
+    if (kit?.producerCandidateOverflow || kit?.producerOverflow) {
+      for (const key of [
+        'links',
+        'meanNeighbors',
+        'asymmetric',
+        'sums',
+        'union',
+        'lagRange',
+        'islands',
+        'focusDegree',
+        'weightSum',
+        'islandNames',
+        'oneWayPlaces',
+        'edgeMean',
+        'interiorMean',
+        'cornerLinks',
+        'cornerFocus',
+        'cornerCount',
+        'lagSlope'
+      ]) {
+        ctx.setReadout(key, 'unavailable: incomplete weights');
+      }
+      ctx.setReadout(
+        'capacity',
+        kit.producerCandidateOverflow
+          ? 'candidate overflow: incomplete weights'
+          : 'neighbor overflow: incomplete weights'
+      );
+      for (const chart of ['cardinality', 'kernelCurve', 'lagScatter']) ctx.setChart(chart, null);
+      counts = {};
+      publishLegendData();
+      ctx.requestLayers();
+      return;
+    }
     if (kit) {
       ctx.setReadout('links', formatCount(kit.slots));
       ctx.setReadout('meanNeighbors', (kit.slots / Math.max(1, rows - kit.isolates)).toFixed(1));
@@ -1285,14 +1375,7 @@ export async function createSpatialWeights(
         'lagRange',
         `${kit.lagMinimum.toFixed(variable.digits)} to ${kit.lagMaximum.toFixed(variable.digits)} ${variable.unit}`
       );
-      ctx.setReadout(
-        'capacity',
-        kit.producerCandidateOverflow
-          ? 'pair list full: some links dropped, count is a lower bound'
-          : kit.producerOverflow
-            ? 'producer overflow: some links dropped'
-            : 'ok'
-      );
+      ctx.setReadout('capacity', 'ok');
       ctx.setReadout('islands', formatCount(kit.isolates));
       const focus = kit.focus[o.matrix];
       ctx.setReadout('focusDegree', formatCount(focus.degree));
@@ -1386,7 +1469,11 @@ export async function createSpatialWeights(
     const o = ctx.options;
     const {geography} = target;
     const display = getEffectiveDisplay(o);
-    if (o.lattice) {
+    if (
+      o.lattice ||
+      target.kitSummary?.producerCandidateOverflow ||
+      target.kitSummary?.producerOverflow
+    ) {
       ctx.setAnnotations('weights', null);
       return;
     }
@@ -1544,15 +1631,32 @@ export async function createSpatialWeights(
     const space = useLattice ? target.lattice!.space : target.space;
     if (readbackStale && !space.isReading()) {
       readbackStale = false;
+      const revision = optionRevision;
+      let pairedSummary: WeightsKitSummary | undefined;
+      let pairedSnapshot: SpaceSnapshot | undefined;
+      const publishPair = () => {
+        if (!pairedSummary || !pairedSnapshot) return;
+        if (world !== target || revision !== optionRevision) {
+          readbackStale = true;
+          return;
+        }
+        if (useLattice) target.latticeKitSummary = pairedSummary;
+        else target.kitSummary = pairedSummary;
+        handleSnapshot(target, pairedSnapshot, useLattice);
+        updateReadouts();
+        publishAnnotations();
+        ctx.requestLayers();
+      };
       space.requestReadback(
         commandEncoder,
         summary => {
-          if (useLattice) target.latticeKitSummary = summary;
-          else target.kitSummary = summary;
-          updateReadouts();
-          publishAnnotations();
+          pairedSummary = summary;
+          publishPair();
         },
-        snapshot => handleSnapshot(target, snapshot, useLattice)
+        snapshot => {
+          pairedSnapshot = snapshot;
+          publishPair();
+        }
       );
     }
     if (focusStale && !useLattice && !target.gatherer.isReading()) {
@@ -1747,6 +1851,11 @@ export async function createSpatialWeights(
   const getLayerList = (): Layer[] => {
     const target = world;
     if (!target) return [];
+    if (
+      !ctx.options.lattice &&
+      (target.kitSummary?.producerCandidateOverflow || target.kitSummary?.producerOverflow)
+    )
+      return [];
     const o = ctx.options;
     const ground = ctx.ground();
     const {geography, buffers} = target;
@@ -2243,6 +2352,14 @@ export async function createSpatialWeights(
               target.geography.count,
               target.core.slots
             );
+            // These stable ports always describe the producer of space.csr for this submission.
+            for (const [sourceBuffer, destinationBuffer] of [
+              [target.core.overflow, target.algebraOverflow],
+              [target.core.total, target.algebraTotal],
+              [target.core.candidateOverflow, target.algebraCandidateOverflow]
+            ] as const) {
+              commandEncoder.copyBufferToBuffer({sourceBuffer, destinationBuffer, size: 4});
+            }
           }
           const display = getEffectiveDisplay(o);
           target.space.encode(commandEncoder, {
@@ -2288,6 +2405,11 @@ export async function createSpatialWeights(
     getTooltip(event) {
       const target = world;
       if (!target) return null;
+      if (
+        !ctx.options.lattice &&
+        (target.kitSummary?.producerCandidateOverflow || target.kitSummary?.producerOverflow)
+      )
+        return null;
       const o = ctx.options;
       if (o.lattice && target.lattice) {
         const cell = getLatticeCell(event);

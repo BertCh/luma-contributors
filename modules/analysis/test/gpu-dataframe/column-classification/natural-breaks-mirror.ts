@@ -179,6 +179,7 @@ type Element = {
 };
 
 type Plan = {
+  scale: number;
   anchor: number;
   cellWidth: number;
   inverseUnit: number;
@@ -218,17 +219,23 @@ function computeCoarseStage(
   binCount: number
 ): CoarseStage {
   const classCount = Math.min(requestedClassCount, binCount);
-  const width = fround(fround(maximum - minimum) * fround(1 / binCount));
+  const scale = getCoordinateScale(minimum, maximum);
+  const scaledMinimum = fround(minimum * scale);
+  const scaledMaximum = fround(maximum * scale);
+  const width = fround(fround(scaledMaximum - scaledMinimum) * fround(1 / binCount));
   const histogram = new Uint32Array(binCount);
   const binSums = new Array<bigint>(binCount).fill(0n);
   const binSquares = new Array<bigint>(binCount).fill(0n);
   const inverseWidth = width > 0 ? fround(SUBBIN_COUNT / width) : 0;
   for (let row = 0; row < values.length; row++) {
-    const bin = width > 0 ? getBinIndex(values[row], minimum, width, binCount) : 0;
+    const bin =
+      width > 0 ? getBinIndex(fround(values[row] * scale), scaledMinimum, width, binCount) : 0;
     // Position in 1/SUBBIN_COUNT bins: the bin index plus the fixed-point offset inside the bin.
     let offset = 0;
     if (width > 0) {
-      const remainder = fround(fround(values[row] - minimum) - fround(bin * width));
+      const remainder = fround(
+        fround(fround(values[row] * scale) - scaledMinimum) - fround(bin * width)
+      );
       offset = Math.min(
         Math.max(Math.floor(fround(remainder * inverseWidth)), 0),
         SUBBIN_COUNT - 1
@@ -306,7 +313,9 @@ function computeCoarseStage(
     end = start - 1;
   }
   const coarseCost = totals[classCount - 1][binCount - 1];
-  const coarseEdges = coarseStarts.map(start => fround(minimum + fround(start * width)));
+  const coarseEdges = coarseStarts.map(start =>
+    fround(fround(scaledMinimum + fround(start * width)) / scale)
+  );
   return {histogram, binSums, binSquares, coarseStarts, coarseCost, coarseEdges};
 }
 
@@ -339,6 +348,7 @@ export function computeNaturalBreaksMirror(
   const keys = valid.map(getOrderedFloat32Key);
   const classMinimum = new Array<number>(classCount).fill(NO_MINIMUM);
   const classMaximum = new Array<number>(classCount).fill(NO_MAXIMUM);
+  const coordinateScales = new Array<number>(classCount + 1).fill(0);
   const halfWidths = new Array<number>(classCount).fill(0);
   const zoomLevels = new Array<number>(classCount).fill(0);
   // How far each cut moved at its last update; a break keeps a window wide enough to follow the
@@ -348,12 +358,12 @@ export function computeNaturalBreaksMirror(
   movements[classCount] = 0;
   let passCount = 0;
   let movedInRound = false;
-  const getRowClass = (key: number, cuts: number[]): number => {
+  const getRowClass = (value: number, cuts: number[]): number => {
     let low = 1;
     let high = classCount;
     while (low < high) {
       const middle = (low + high) >> 1;
-      if (cuts[middle] <= key) {
+      if (cuts[middle] <= value) {
         low = middle + 1;
       } else {
         high = middle;
@@ -371,9 +381,9 @@ export function computeNaturalBreaksMirror(
       classMinimum.fill(NO_MINIMUM);
       classMaximum.fill(NO_MAXIMUM);
       classCounts.fill(0);
-      const cuts = edges.map(edge => getOrderedFloat32Key(edge));
+      const cuts = edges;
       for (const key of keys) {
-        const rowClass = getRowClass(key, cuts);
+        const rowClass = getRowClass(decodeKey(key), cuts);
         classMinimum[rowClass] = Math.min(classMinimum[rowClass], key);
         classMaximum[rowClass] = Math.max(classMaximum[rowClass], key);
         classCounts[rowClass]++;
@@ -434,7 +444,7 @@ export function computeNaturalBreaksMirror(
         movedInRound = false;
       }
       const wanted = 1 - (half & 1);
-      const rowCuts = edges.map(edge => getOrderedFloat32Key(edge));
+      const rowCuts = edges;
       const plans = new Map<number, Plan>();
       for (let breakIndex = wanted === 1 ? 1 : 2; breakIndex < classCount; breakIndex += 2) {
         const lowKey = Math.min(classMinimum[breakIndex - 1], classMinimum[breakIndex]);
@@ -445,23 +455,31 @@ export function computeNaturalBreaksMirror(
         }
         // The window is anchored at the cut, clamped into the data extent of the two classes: a
         // cut beside an empty class sits outside the data and would waste the window.
-        const lowValue = decodeKey(lowKey);
-        const highValue = decodeKey(highKey);
-        const anchor = Math.min(Math.max(edges[breakIndex], lowValue), highValue);
+        const scale = getCoordinateScale(decodeKey(lowKey), decodeKey(highKey));
+        const lowValue = fround(decodeKey(lowKey) * scale);
+        const highValue = fround(decodeKey(highKey) * scale);
+        const anchor = Math.min(Math.max(fround(edges[breakIndex] * scale), lowValue), highValue);
         const span = Math.max(fround(anchor - lowValue), fround(highValue - anchor));
         if (!(span > 0)) {
           zoomLevels[breakIndex] = 99;
           continue;
         }
-        const wanted_ =
+        const previousWidth = convertDistance(
+          halfWidths[breakIndex],
+          coordinateScales[breakIndex],
+          scale,
+          span
+        );
+        const shift = Math.max(
+          convertDistance(movements[breakIndex - 1], coordinateScales[breakIndex - 1], scale, span),
+          convertDistance(movements[breakIndex + 1], coordinateScales[breakIndex + 1], scale, span)
+        );
+        const halfWidth =
           halfWidths[breakIndex] > 0
-            ? Math.max(
-                halfWidths[breakIndex],
-                fround(2 * Math.max(movements[breakIndex - 1], movements[breakIndex + 1]))
-              )
+            ? Math.min(Math.max(previousWidth, fround(2 * Math.min(shift, span))), span)
             : span;
-        const halfWidth = Math.min(wanted_, span);
         plans.set(breakIndex, {
+          scale,
           anchor,
           halfWidth,
           cellWidth: fround(halfWidth * (2 / CELL_COUNT)),
@@ -470,7 +488,7 @@ export function computeNaturalBreaksMirror(
         });
       }
       for (let row = 0; row < valid.length; row++) {
-        const rowClass = getRowClass(keys[row], rowCuts);
+        const rowClass = getRowClass(valid[row], rowCuts);
         let breakIndex = 0;
         if (rowClass >= 1 && (rowClass & 1) === wanted) {
           breakIndex = rowClass;
@@ -481,7 +499,7 @@ export function computeNaturalBreaksMirror(
         if (!plan) {
           continue;
         }
-        const offset = fround(valid[row] - plan.anchor);
+        const offset = fround(fround(valid[row] * plan.scale) - plan.anchor);
         let cell =
           Math.floor(
             Math.min(Math.max(fround(offset / plan.cellWidth), -2 * CELL_COUNT), 2 * CELL_COUNT)
@@ -600,7 +618,9 @@ export function computeNaturalBreaksMirror(
     classMaximum[breakIndex] = rightMaximum;
     if (rightMinimum !== NO_MINIMUM) {
       const cut = decodeKey(rightMinimum);
-      movements[breakIndex] = Math.abs(fround(cut - edges[breakIndex]));
+      movements[breakIndex] = Math.abs(
+        fround(fround(cut * plan.scale) - fround(edges[breakIndex] * plan.scale))
+      );
       if (movements[breakIndex] > 0) {
         movedInRound = true;
       }
@@ -608,6 +628,7 @@ export function computeNaturalBreaksMirror(
     } else {
       movements[breakIndex] = 0;
     }
+    coordinateScales[breakIndex] = plan.scale;
     // Zoom around the chosen boundary unless a class beside the break is empty (the window must
     // then cover the extent again), or the optimum sits at the window edge (it may continue).
     const degenerate = currentLeftCount === 0 || totalCount - currentLeftCount === 0;
@@ -631,4 +652,35 @@ const scratchBits = new Uint32Array(scratchFloat.buffer);
 function decodeKey(key: number): number {
   scratchBits[0] = ((key & 0x80000000) !== 0 ? key ^ 0x80000000 : ~key) >>> 0;
   return scratchFloat[0];
+}
+
+/** Match the coordinate units of each production range, including secondary bulk ranges. */
+function getCoordinateScale(minimum: number, maximum: number): number {
+  const magnitude = Math.max(Math.abs(minimum), Math.abs(maximum));
+  if (magnitude > Math.fround(1e19)) return 2 ** -64;
+  if (magnitude > 0 && magnitude < Math.fround(1e-19)) return 2 ** 64;
+  return 1;
+}
+
+/** Widths and movements are saved in the preceding solve's coordinate units. */
+function convertDistance(
+  value: number,
+  previousScale: number,
+  scale: number,
+  limit: number
+): number {
+  if (value === 0) return 0;
+  if (previousScale === 0) return limit;
+  // Convert by power-of-two steps, capping before each upward step can overflow.
+  const increase = (distance: number) =>
+    distance >= fround(limit * 2 ** -64) ? limit : fround(distance * 2 ** 64);
+  let converted = value;
+  if (scale > previousScale) {
+    converted = increase(converted);
+    if (previousScale === 2 ** -64 && scale === 2 ** 64) converted = increase(converted);
+  } else if (scale < previousScale) {
+    converted = fround(converted * 2 ** -64);
+    if (previousScale === 2 ** 64 && scale === 2 ** -64) converted = fround(converted * 2 ** -64);
+  }
+  return Math.min(converted, limit);
 }

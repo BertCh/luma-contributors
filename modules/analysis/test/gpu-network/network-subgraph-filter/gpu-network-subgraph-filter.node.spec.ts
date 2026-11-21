@@ -7,7 +7,7 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  decodeGPUNetworkSubgraphFilterCounts,
+  decodeGPUNetworkSubgraphFilterCountsWords,
   getGPUNetworkSubgraphFilterParameterLength,
   getGPUNetworkSubgraphFilterParameterValues,
   GPUNetworkSubgraphFilter,
@@ -241,15 +241,15 @@ it('parameter helpers pack records and decode counts', () => {
   };
   expect(getGPUNetworkSubgraphFilterParameterLength(layout)).toBe(16);
   const values = getGPUNetworkSubgraphFilterParameterValues(layout, {
-    nodeRanges: [[1, 2], null],
-    edgeRanges: [[3, Infinity]],
-    edgeTimeWindow: [10, 20]
+    nodeAttributeRanges: [[1, 2], null],
+    edgeAttributeRanges: [[3, Infinity]],
+    closedEdgeTimeWindow: [10, 20]
   });
   expect(Array.from(values)).toEqual([1, 2, 1, 0, 0, 0, 0, 0, 3, Infinity, 1, 0, 10, 20, 1, 0]);
   expect(() => getGPUNetworkSubgraphFilterParameterValues(layout, {}, new Float32Array(4))).toThrow(
     /too short/
   );
-  expect(decodeGPUNetworkSubgraphFilterCounts([4, 3, 1, 2])).toEqual({
+  expect(decodeGPUNetworkSubgraphFilterCountsWords([4, 3, 1, 2])).toEqual({
     liveNodeCount: 4,
     liveSlotCount: 3,
     selfLoopSlotCount: 1,

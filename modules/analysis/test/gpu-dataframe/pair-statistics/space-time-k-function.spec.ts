@@ -20,7 +20,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   createSpaceTimeKScene,
   getSpaceTimeKReference,
@@ -36,6 +36,30 @@ const TIME_CLASS_COUNT = 3;
 const SPATIAL_BANDWIDTH = 0.9;
 const TEMPORAL_BANDWIDTH = 1.7;
 const BINS = DISTANCE_CLASS_COUNT * TIME_CLASS_COUNT;
+
+it('PTS-140 unequal spatial and temporal lags match individually enumerated cumulative bins', async () => {
+  // Unordered (distance,time lag): (1,2),(4,8),(6,15),(3,6),(5,13),(2,7).
+  // Spatial thresholds 2,4,6,8; temporal thresholds 5,10,15. Each pair is directed twice.
+  const actual = await runKFunction(
+    {
+      positions: [1, 1, 2, 1, 5, 1, 7, 1],
+      times: [1, 3, 9, 16]
+    },
+    {edgeCorrection: 'none', marginals: true},
+    {maximumDistance: 8, maximumTimeLag: 15}
+  );
+  const counts = [2, 4, 4, 2, 8, 8, 2, 8, 12, 2, 8, 12];
+  expect(actual.k).toHaveLength(12);
+  expect(actual.pairCounts).toEqual([2, 2, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0]);
+  expect(actual.temporalK).toHaveLength(3);
+  expectClose(actual.temporalK!, [10 / 3, 40 / 3, 20], 'closed maximum temporal marginal', 2e-6);
+  // |W||T|/(n(n-1)) = (10*8*20)/(4*3) = 400/3.
+  for (let bin = 0; bin < counts.length; bin++) {
+    expect(Number.isFinite(actual.k[bin])).toBe(true);
+    expect(actual.k[bin]).toBeCloseTo((counts[bin] * 400) / 3, 3);
+  }
+  expect(actual.status).toBe(0);
+});
 
 type Options = {
   edgeCorrection: GPUSpaceTimeKEdgeCorrection;
@@ -244,6 +268,53 @@ it('GPUSpaceTimeKFunction matches the reference with first-order intensities', a
   expect(
     Math.max(...reference.k.map((value, bin) => Math.abs(value - homogeneous.k[bin])))
   ).toBeGreaterThan(0.05);
+});
+
+it('GPUSpaceTimeKFunction keeps small intensity-weighted pair terms (PTS-106)', async () => {
+  // Two events 1 apart and 1 time unit apart, both at 400 times the mean intensity. Closed form
+  // (edge correction none, so every weight is 1): n = 2, |W||T| = 10 * 8 * 20 = 1600,
+  // lambdaBar = 2 / 1600, lambda' = 400, and K = |W||T| / n^2 * 2 / 400^2 = 0.005 in every
+  // cumulative class (the pair falls in class (0, 0)). The old fixed 2^-16 unit rounded each
+  // term 65536 / 160000 = 0.41 units to 0, so K was 0.
+  const lambda = 400 * (2 / 1600);
+  const scene: SpaceTimeKScene = {
+    positions: [3, 3, 4, 3],
+    times: [5, 6],
+    intensities: [lambda, lambda]
+  };
+  const actual = await runKFunction(scene, {edgeCorrection: 'none'});
+  expect(actual.status).toBe(0);
+  expect(actual.pairCounts[0]).toBe(2);
+  for (const [bin, value] of actual.k.entries()) {
+    expect(Number.isFinite(value), `K ${bin} finite`).toBe(true);
+    expect(Math.abs(value - 0.005), `K ${bin}`).toBeLessThanOrEqual(0.005 * 1e-5);
+  }
+});
+
+it('GPUSpaceTimeKFunction matches the reference with relative intensities to about 1,400 (PTS-106)', async () => {
+  // The scene's intensities (0.5 to 2 against a mean intensity of about 0.043) times 10 to 30:
+  // relative intensities lambda' of about 120 to 1,400, pair terms down to about 5e-7. With the
+  // per-frame scale each term rounds to at most 2^-17 of itself, so the 1e-4 tolerance of
+  // expectClose holds; the old 2^-16 unit rounded every term below 2^-17 to 0.
+  const base = createSpaceTimeKScene(17, {intensities: true});
+  const scene: SpaceTimeKScene = {
+    ...base,
+    intensities: base.intensities!.map((value, row) =>
+      Math.fround(value * (10 + (20 * ((row * 7) % 11)) / 10))
+    )
+  };
+  const options: Options = {edgeCorrection: 'isotropic', pairCorrelation: true};
+  const reference = getReference(scene, options);
+  const actual = await runKFunction(scene, options);
+  expect(actual.status).toBe(0);
+  expect(actual.pairCounts).toEqual(reference.pairCounts);
+  expect(Math.max(...reference.k)).toBeGreaterThan(0);
+  expectClose(actual.k, reference.k, 'inhomogeneous K, large relative intensities');
+  expectClose(
+    actual.pairCorrelation!,
+    reference.pairCorrelation,
+    'inhomogeneous pair correlation, large relative intensities'
+  );
 });
 
 it.each([

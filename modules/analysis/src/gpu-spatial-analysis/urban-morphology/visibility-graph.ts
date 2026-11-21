@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {captureUrbanLandscapeDestinations} from '../landscape-ecology/urban-landscape-destinations';
 import {
   createTransientView,
   GPUCompaction,
@@ -12,12 +13,12 @@ import {
 import {
   addVisibilityGraphCSRRecipe,
   VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE,
-  type GPUVisibilityGraphCSRProps
+  type GPUVisibilityGraphAdjacencyCSRProps
 } from './visibility-graph-csr';
 export type {
-  GPUVisibilityGraphCSRProps,
-  GPUVisibilityGraphCSROutput,
-  GPUVisibilityGraphCSRStatus
+  GPUVisibilityGraphAdjacencyCSRProps,
+  GPUVisibilityGraphAdjacencyCSROutput,
+  GPUVisibilityGraphAdjacencyCSRStatus
 } from './visibility-graph-csr';
 export {
   getGPUVisibilityGraphCSRParameterValues,
@@ -28,6 +29,7 @@ import {
   validateUrbanStorageByteLength
 } from './building-tessellation-validation';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {validateProvidedRecipeViews} from '../landscape-ecology/urban-landscape-recipe-validation';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -118,7 +120,7 @@ export type GPUVisibilityGraphProps = {
 /** Closed obstacles block sightlines. CSR mode builds adjacency and degree only; import the same recipe name from @luma-contributors/analysis/gpu-network for sampled centrality. The dense reference retains exact integration and choice. */
 export function addVisibilityGraphRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPUVisibilityGraphCSRProps
+  props: GPUVisibilityGraphAdjacencyCSRProps
 ): ReturnType<typeof addVisibilityGraphCSRRecipe>;
 export function addVisibilityGraphRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -126,17 +128,46 @@ export function addVisibilityGraphRecipe<Parameters>(
 ): ReturnType<typeof addVisibilityGraphReferenceRecipe>;
 export function addVisibilityGraphRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPUVisibilityGraphProps | GPUVisibilityGraphCSRProps
+  props: GPUVisibilityGraphProps | GPUVisibilityGraphAdjacencyCSRProps
+):
+  | ReturnType<typeof addVisibilityGraphCSRRecipe>
+  | ReturnType<typeof addVisibilityGraphReferenceRecipe>;
+export function addVisibilityGraphRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUVisibilityGraphProps | GPUVisibilityGraphAdjacencyCSRProps
 ) {
+  validateRequirement(
+    props.id ?? 'visibility-graph',
+    props.mode === undefined || props.mode === 'reference' || props.mode === 'csr',
+    "mode must be 'reference' or 'csr'"
+  );
   return props.mode === 'csr'
     ? addVisibilityGraphCSRRecipe(graph, props)
     : addVisibilityGraphReferenceRecipe(graph, props);
 }
+/** Precise dense reference result, for composing wrappers without widening to the dispatcher union. */
+export type GPUVisibilityGraphReferenceRecipeResult = ReturnType<
+  typeof addVisibilityGraphReferenceRecipe
+>;
+
 function addVisibilityGraphReferenceRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUVisibilityGraphProps
 ) {
   const id = props.id ?? 'visibility-graph';
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
+  validateRequirement(
+    id,
+    props.obstacleIndex === undefined ||
+      (['auto', 'brute-force', 'bvh'] as readonly string[]).includes(props.obstacleIndex),
+    `obstacleIndex must be auto or brute-force or bvh; received ${String(props.obstacleIndex)}`
+  );
+  validateRequirement(
+    id,
+    props.searchStructure === undefined ||
+      (['grid', 'brute-force'] as readonly string[]).includes(props.searchStructure),
+    `searchStructure must be grid or brute-force; received ${String(props.searchStructure)}`
+  );
   const count = props.positions.length;
   const tolerance = props.tolerance ?? 1e-6;
   validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
@@ -173,11 +204,22 @@ function addVisibilityGraphReferenceRecipe<Parameters>(
     Number.isSafeInteger(props.edgeCapacity) && props.edgeCapacity > 0,
     'edgeCapacity must be a positive integer'
   );
+  const output = captureUrbanLandscapeDestinations(id, {output: props.output}, [
+    'adjacency',
+    'edges',
+    'status',
+    'metrics',
+    'choice',
+    'integration',
+    'extendedIntegration',
+    'normalizedChoice',
+    'viewpointClassifications'
+  ]);
   validateUrbanRecipeBindings(
     graph,
     id,
     {positions: props.positions, segments: props.segments},
-    props.output
+    output
   );
   let leafCapacity = 2;
   while (leafCapacity < props.segments.length) leafCapacity *= 2;
@@ -198,7 +240,18 @@ function addVisibilityGraphReferenceRecipe<Parameters>(
   ] as const) {
     validateUrbanStorageByteLength(graph.device, id, name, byteLength, hint);
   }
-  const output = props.output;
+  // Formats and lengths of supplied outputs, before the obstacle index or classification adds nodes.
+  validateProvidedRecipeViews(graph, [
+    [`${id}-adjacency`, 'uint32', count * count, output?.adjacency],
+    [`${id}-edges`, 'uint32x2', props.edgeCapacity, output?.edges],
+    [`${id}-status`, 'uint32x4', 1, output?.status],
+    [`${id}-metrics`, 'float32x4', count, output?.metrics],
+    [`${id}-choice`, 'float32', count, output?.choice],
+    [`${id}-integration`, 'float32x4', count, output?.integration],
+    [`${id}-extended-integration`, 'float32x4', count, output?.extendedIntegration],
+    [`${id}-normalized-choice`, 'float32', count, output?.normalizedChoice],
+    [`${id}-viewpoint-classifications`, 'uint32', count, output?.viewpointClassifications]
+  ]);
   const obstacleBVH =
     resolveUrbanObstacleIndex(props.obstacleIndex, props.segments.length) === 'bvh'
       ? addUrbanObstacleBVH(graph, {

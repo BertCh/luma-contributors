@@ -18,6 +18,7 @@ import {
   addSparseResistanceConnectivityRecipe,
   addRasterResistanceConnectivityRecipe
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {addVisibilityGraphRecipe as addNetworkVisibilityGraphRecipe} from '@luma-contributors/analysis/gpu-network';
 import type {KernelAuditCase} from './kernel-audit-context';
 
 /** Full optional evidence and documented bounds, without allocating input or scratch buffers. */
@@ -25,7 +26,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'GPUPopulationSupportAlignment',
     name: 'indexed joins at partial workgroup lengths',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       graph.add(
         new GPUPopulationSupportAlignment({
           populations: view('float32x2', 4097),
@@ -56,7 +57,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addPopulationSupportAlignmentRecipe',
     name: 'explicit stable-ID alignment and missing or duplicate evidence',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       addPopulationSupportAlignmentRecipe(graph, {
         sourceIds: view('uint32', 2048),
         targetIds: view('uint32', 2048),
@@ -67,7 +68,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addStreetProfilesRecipe',
     name: '1024-segment facade event storage and finite corridor',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       addStreetProfilesRecipe(graph, {
         positions: view('float32x2', 16),
         normals: view('float32x2', 16),
@@ -83,7 +84,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addIsovistsRecipe',
     name: '4096 sorted vertex-event rays in graph storage',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       addIsovistsRecipe(graph, {
         positions: view('float32x2', 8),
         segments: view('float32x4', 512),
@@ -97,7 +98,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addLandscapeMetricsRecipe',
     name: 'resident tile reconciliation, background policy and joint adjacency contagion',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       addLandscapeMetricsRecipe(graph, {
         patches: view('uint32', 1024),
         patchClasses: view('uint32', 16),
@@ -134,7 +135,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addBuildingAdjacencyRecipe',
     name: '64 building union structures, exterior perimeter and cardinal alignment',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       addBuildingAdjacencyRecipe(graph, {
         orientations: view('float32', 64),
         lineBuildingIds: view('uint32', 64),
@@ -203,6 +204,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   },
   {
     exportName: 'addVisibilityGraphRecipe',
+    entry: 'gpu-spatial-analysis',
     name: '256 viewpoints, binding-limited edge capacity and obstacles',
     build({graph, view, maximumRows}) {
       addVisibilityGraphRecipe(graph, {
@@ -216,8 +218,9 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   },
   {
     exportName: 'addVisibilityGraphRecipe',
+    entry: 'gpu-spatial-analysis',
     name: '256 viewpoints, every segment tested, with a region',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       addVisibilityGraphRecipe(graph, {
         positions: view('float32x2', 256),
         segments: view('float32x4', 4096),
@@ -226,6 +229,41 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
         tolerance: 1e-5,
         region: {fillRule: 'nonzero', freeSpace: 'outside'},
         obstacleIndex: 'brute-force'
+      });
+    }
+  },
+  // TOOL-112: gpu-network exports a different addVisibilityGraphRecipe whose 'csr' mode composes
+  // the network CSR centrality and integration kernels.
+  {
+    exportName: 'addVisibilityGraphRecipe',
+    entry: 'gpu-network',
+    name: 'CSR mode, 256 viewpoints, exact all-source metrics and obstacles',
+    build({graph, view, maximumRows}) {
+      addNetworkVisibilityGraphRecipe(graph, {
+        mode: 'csr',
+        positions: view('float32x2', 256),
+        segments: view('float32x4', maximumRows(16)),
+        maximumDistance: 100,
+        edgeCapacity: 4096,
+        tolerance: 1e-5,
+        metricsMode: 'exact'
+      });
+    }
+  },
+  {
+    exportName: 'addVisibilityGraphRecipe',
+    entry: 'gpu-network',
+    name: 'CSR mode, 10k viewpoints, sampled pivots',
+    build({graph, view, declare}) {
+      addNetworkVisibilityGraphRecipe(graph, {
+        mode: 'csr',
+        positions: view('float32x2', 10000),
+        segments: view('float32x4', 4),
+        maximumDistance: 1.1,
+        edgeCapacity: 50000,
+        pivotCount: 4,
+        laneCount: 4,
+        maximumIterations: 8
       });
     }
   },
@@ -291,7 +329,7 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addResistanceConnectivityRecipe',
     name: '256 vertices,65536 edges,4096 iterations, explicit residual tolerance',
-    build({graph, view}) {
+    build({graph, view, declare}) {
       addResistanceConnectivityRecipe(graph, {
         edges: view('uint32x2', 65536),
         conductances: view('float32', 65536),
@@ -306,8 +344,8 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addSparseResistanceConnectivityRecipe',
     name: '1048576 vertices, 2097152 edges, 4096 iterations, 1024 connectivity iterations',
-    build({graph, view}) {
-      addSparseResistanceConnectivityRecipe(graph, {
+    build({graph, view, declare}) {
+      declare(addSparseResistanceConnectivityRecipe, graph, {
         edges: view('uint32x2', 2097152),
         conductances: view('float32', 2097152),
         vertexCount: 1048576,
@@ -333,10 +371,10 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
         label === 'all edge outputs'
           ? `${width} x ${height} cells, neighborhood ${neighborhood}, ${cellSizeMode}, 4096 iterations, 1024 connectivity iterations, all edge outputs`
           : label,
-      build({graph, view}) {
+      build({graph, view, declare}) {
         const cellCount = width * height;
         const edgeCount = cellCount * (neighborhood === 4 ? 2 : 4);
-        addRasterResistanceConnectivityRecipe(graph, {
+        declare(addRasterResistanceConnectivityRecipe, graph, {
           grid: {width, height, affine: [0.001, 0, 10, 0, -0.001, 50], pixelInterpretation: 'area'},
           resistance: {
             id: 'resistance',
@@ -375,8 +413,8 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addSparseResistanceConnectivityRecipe',
     name: 'vertices above the maximum',
-    build({graph, view}) {
-      addSparseResistanceConnectivityRecipe(graph, {
+    build({graph, view, declare}) {
+      declare(addSparseResistanceConnectivityRecipe, graph, {
         edges: view('uint32x2', 1),
         conductances: view('float32', 1),
         vertexCount: 1048577,
@@ -388,8 +426,8 @@ export const COVERAGE_URBAN_ECOLOGY_CASES: readonly KernelAuditCase[] = [
   {
     exportName: 'addSparseResistanceConnectivityRecipe',
     name: 'edges above the maximum',
-    build({graph, view}) {
-      addSparseResistanceConnectivityRecipe(graph, {
+    build({graph, view, declare}) {
+      declare(addSparseResistanceConnectivityRecipe, graph, {
         edges: view('uint32x2', 2097153),
         conductances: view('float32', 2097153),
         vertexCount: 4,

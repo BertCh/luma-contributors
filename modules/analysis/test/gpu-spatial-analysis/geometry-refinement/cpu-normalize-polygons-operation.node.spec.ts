@@ -72,7 +72,8 @@ it('rejects malformed arrays and validates both operation contracts', () => {
   };
   for (const Operation of [CPUNormalizePolygonsOperation, GPUNormalizePolygonsOperation]) {
     expect(() => new Operation(props)).not.toThrow();
-    expect(() => new Operation({...props, rowCount: 0})).toThrow(/^polygon-check/);
+    // rowCount 0 is a canonical empty source (DGN-09); a negative row count is not.
+    expect(() => new Operation({...props, rowCount: -1})).toThrow(/^polygon-check/);
     expect(
       () => new Operation({...props, output: {...props.output, positions: 'positions'}})
     ).toThrow(/^polygon-check/);

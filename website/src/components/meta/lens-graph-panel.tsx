@@ -155,7 +155,7 @@ function LensGraphView({
           <span className="meta-panel__title">{model.title}</span>
           <ul className="meta-stats">
             <li>
-              <strong>{formatCount(model.recordedNodeCount)}</strong> kernels
+              <strong>{formatCount(model.recordedNodeCount)}</strong> graph nodes
               {model.collapsed ? (
                 <>
                   {' '}
@@ -204,7 +204,7 @@ function LensGraphView({
                 aria-pressed={view === 'buffers'}
                 onClick={() => setView('buffers')}
               >
-                Buffers
+                Resources
               </button>
             </div>
           ) : null}
@@ -465,7 +465,7 @@ function renderDetail(model: LensViewModel, hover: Hover, nodeById: Map<string, 
           </strong>
           <span>
             <b>{formatResourceBytes(edge.bytes, edge.bytesKind)}</b> in <b>{edge.resourceCount}</b>{' '}
-            {edge.resourceCount === 1 ? 'buffer' : 'buffers'}
+            {edge.resourceCount === 1 ? 'resource' : 'resources'}
           </span>
           <span>
             {getEdgeHazard(edge) === 'raw'
@@ -506,7 +506,7 @@ function renderLifetimeDetail(model: LensViewModel, step: number) {
     <>
       <span>
         <b>{formatResourceBytes(getLiveBytes(lifetimes, step), bytesKind)}</b> alive in{' '}
-        <b>{live}</b> of {lifetimes.length} buffers
+        <b>{live}</b> of {lifetimes.length} resources
       </span>
       <span>
         {hasTransient ? 'peak' : 'peak logical live'}{' '}
@@ -514,11 +514,11 @@ function renderLifetimeDetail(model: LensViewModel, step: number) {
       </span>
       <span>
         {hasUnknown
-          ? 'Ownership is unobserved for some buffers; allocation sharing cannot be inferred from these lifetimes.'
+          ? 'Ownership is unobserved for some resources; allocation sharing cannot be inferred from these lifetimes.'
           : hasTransient
-            ? 'Buffers that never overlap in time can share one block of memory.'
-            : 'All buffers are imported, so all stay allocated for the whole run; a bar is the logical span between first write and last use.'}
-        {model.lifetimesOmitted ? ` ${model.lifetimesOmitted} smaller buffers not shown.` : ''}
+            ? 'Resources that never overlap in time can share an allocation.'
+            : 'All resources are imported, so all stay allocated for the whole run; a bar is the logical span between first write and last use.'}
+        {model.lifetimesOmitted ? ` ${model.lifetimesOmitted} smaller resources not shown.` : ''}
       </span>
     </>
   );

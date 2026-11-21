@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 import type {Device} from '@luma.gl/core';
 import {
@@ -175,6 +180,8 @@ export type GPUNetworkSnappingProps = {
   spatialSort?: boolean;
   /** Which endpoints `output.startNodes` lists. Defaults to `'both'`. */
   startDirection?: GPUNetworkSnappingStartDirection;
+  /** Seed a snapped endpoint at zero cost in either direction. Defaults to false. 'both' assumes equal costs in both directions. */
+  intersectionAware?: boolean;
   /** The GPU-written views. */
   output: GPUNetworkSnappingOutput;
 };
@@ -214,11 +221,56 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUNetworkSnappingProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'positions',
+      'spatialContext',
+      'topology',
+      'maximumSnapDistance',
+      'candidateCapacity',
+      'maximumUnindexedWork',
+      'spatialSort',
+      'startDirection',
+      'intersectionAware',
+      'output'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(captured.output, [
+      'snappedEdges',
+      'snapFractions',
+      'snapDistances',
+      'snappedPositions',
+      'sourceCosts',
+      'targetCosts',
+      'startNodes',
+      'startCosts',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      spatialContext:
+        captured.spatialContext && snapshotConstructionSpatialContext(captured.spatialContext),
+      topology: snapshotConstructionFields(captured.topology, [
+        'offsets',
+        'neighbors',
+        'weights',
+        'nodePositions'
+      ]),
+      output: Object.freeze({
+        ...outputSnapshot,
+        status:
+          outputSnapshot.status && snapshotConstructionFields(outputSnapshot.status, ['overflow'])
+      })
+    });
     this.id = props.id ?? 'network-snapping';
     this.props = props;
     validateNetworkWritableViews(this.id, props.output);
     this.startDirection = props.startDirection ?? 'both';
     const {id} = this;
+    validateRequirement(
+      id,
+      ['both', 'forward', 'reverse'].includes(this.startDirection),
+      "startDirection must be 'both', 'forward' or 'reverse'"
+    );
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
@@ -401,6 +453,9 @@ fn readNode(node: u32) -> vec2<f32> {
 ${metricWGSL}
 // Fraction of the closest point along a -> b; 0 for a degenerate edge.
 fn getFraction(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) -> f32 {
+  // Preserve endpoint identity before projection can lower division to a rounded reciprocal.
+  if (all(point == start)) { return 0.0; }
+  if (all(point == end)) { return 1.0; }
   return networkSegmentFraction(point, start, end);
 }
 fn getDistance(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, fraction: f32) -> f32 {
@@ -749,6 +804,16 @@ ${metricWGSL}`,
           operation: OPERATION,
           variant: `seeds-${this.startDirection}`,
           bindings: [
+            ...(props.intersectionAware
+              ? [
+                  {
+                    name: 'fractions',
+                    view: fractions,
+                    type: 'f32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
             {
               name: 'snappedEdges',
               view: output.snappedEdges,
@@ -791,14 +856,17 @@ ${metricWGSL}`,
           declarations: nodeDeclarations,
           body: `let edge = snappedEdges[snappedEdgesOffset + index];
   let isSnapped = edge < EDGE_COUNT;
-  let useSource = isSnapped && ${useSource};
-  let useTarget = isSnapped && ${useTarget};
+  ${props.intersectionAware ? 'let fraction = fractions[fractionsOffset + index];' : ''}
+  let sourceCoincident = ${props.intersectionAware ? 'fraction == 0.0' : 'false'};
+  let targetCoincident = ${props.intersectionAware ? 'fraction == 1.0' : 'false'};
+  let useSource = isSnapped && (${useSource} || sourceCoincident);
+  let useTarget = isSnapped && (${useTarget} || targetCoincident);
   let sourceNode = select(0u, edgeSources[edgeSourcesOffset + min(edge, EDGE_COUNT - 1u)], isSnapped);
   let targetNode = select(0u, edgeTargets[edgeTargetsOffset + min(edge, EDGE_COUNT - 1u)], isSnapped);
   seedNodes[seedNodesOffset + index * 2u] = select(NONE, sourceNode, useSource);
-  seedCosts[seedCostsOffset + index * 2u] = select(-1.0, sourceCosts[sourceCostsOffset + index], useSource);
+  seedCosts[seedCostsOffset + index * 2u] = select(-1.0, select(sourceCosts[sourceCostsOffset + index], 0.0, sourceCoincident), useSource);
   seedNodes[seedNodesOffset + index * 2u + 1u] = select(NONE, targetNode, useTarget);
-  seedCosts[seedCostsOffset + index * 2u + 1u] = select(-1.0, targetCosts[targetCostsOffset + index], useTarget);`
+  seedCosts[seedCostsOffset + index * 2u + 1u] = select(-1.0, select(targetCosts[targetCostsOffset + index], 0.0, targetCoincident), useTarget);`
         })
       );
     }

@@ -126,6 +126,21 @@ function createDeferred<Value>() {
 
 describe('catalog operation adapter and registry', () => {
   test('adapts every binding with stable identity and exact metadata, ports and defaults', () => {
+    // Additive transport contract: clipping inherits the subject; scores admit scalar tables.
+    const clipped = makeWorkflowOperationFromCatalogBinding(
+      KEPLER_CATALOG_BINDINGS.find(binding => binding.id === 'geometry-convex-clip')!
+    );
+    expect(clipped.outputs[0]).toMatchObject({
+      name: 'clipped',
+      kind: 'polygon',
+      kindFrom: 'features'
+    });
+    const scores = makeWorkflowOperationFromCatalogBinding(
+      KEPLER_CATALOG_BINDINGS.find(binding => binding.id === 'validation-gaussian-scores')!
+    );
+    expect(scores.inputs[0].accepts).toEqual(['point', 'table']);
+    expect(scores.inputs[0].acceptsTable).toBe(true);
+    expect(scores.outputs[0].kindFrom).toBe('points');
     const requiredDefaultValues: string[] = [];
     for (const binding of KEPLER_CATALOG_BINDINGS) {
       const operation = makeWorkflowOperationFromCatalogBinding(binding);
@@ -152,8 +167,11 @@ describe('catalog operation adapter and registry', () => {
           accepts:
             input.dataKind === 'table' || input.dataKind === 'raster'
               ? [input.dataKind]
-              : input.accepts,
+              : input.acceptsTable
+                ? [...input.accepts, 'table']
+                : input.accepts,
           ...(input.dataKind === 'table' ? {geometryFree: true} : {}),
+          ...(input.acceptsTable ? {acceptsTable: true} : {}),
           maximumRows: input.dataKind === 'raster' ? 0 : input.maximumFeatures,
           maximumVertices: input.maximumVertices,
           ...(input.dataKind === 'raster' ? {maximumCells: input.maximumCells} : {})
@@ -171,6 +189,7 @@ describe('catalog operation adapter and registry', () => {
                 : output.geometry === 'mixed'
                   ? 'features'
                   : output.geometry,
+          ...(output.geometryFromInput ? {kindFrom: output.geometryFromInput} : {}),
           identityColumns: output.identityColumns,
           maximumRows: output.maximumRows
         }))
@@ -211,10 +230,10 @@ describe('catalog operation adapter and registry', () => {
     expect(
       registry
         .list()
-        .slice(0, 3)
+        .slice(0, 4)
         .map(operation => operation.id)
-    ).toEqual(['source-dataset', 'source-geojson', 'source-drawing']);
-    const tableOperations = registry.list().slice(3, -KEPLER_CATALOG_BINDINGS.length);
+    ).toEqual(['source-dataset', 'source-geojson', 'source-drawing', 'source-table']);
+    const tableOperations = registry.list().slice(4, -KEPLER_CATALOG_BINDINGS.length);
     expect(tableOperations.every(operation => operation.category === 'table')).toBe(true);
     // The SQL step is listed after the table glue operations.
     expect(tableOperations.at(-1)?.id).toBe('table-sql');

@@ -12,6 +12,38 @@ import {
 import {RecipeTestFixture} from '../recipes/recipe-harness';
 import reference from '../../oracles/fixtures/urban-ecology-advanced.json';
 
+it('UCT-03 four short rays at a projected origin retain local area and perimeter', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'projected-local-isovist');
+  try {
+    const localMeasures = fixture.output('local', 'float32x4', 1);
+    const result = addIsovistsRecipe(fixture.graph, {
+      positions: fixture.input('origins', new Float32Array([5_000_000, 5_000_000]), 'float32x2', 1),
+      segments: fixture.input(
+        'wall',
+        new Float32Array([5_000_010, 4_999_990, 5_000_010, 5_000_010]),
+        'float32x4',
+        1
+      ),
+      rayCount: 4,
+      maximumDistance: 0.1,
+      output: {localMeasures: localMeasures.view}
+    });
+    expect(result.outputs.localMeasures).toBe(localMeasures.view);
+    fixture.run();
+    const actual = await fixture.readFloat32(localMeasures, 4);
+    expect(actual).toHaveLength(4);
+    // A diamond of radius 0.1: four right triangles of area 0.005 and four sqrt(2)*0.1 sides.
+    [0.02, 0.5656854249492381, 0.1, 1].forEach((expected, index) => {
+      expect(Number.isFinite(actual[index])).toBe(true);
+      expect(actual[index]).toBeCloseTo(expected, 6);
+    });
+  } finally {
+    fixture.destroy();
+  }
+});
+
 it('R4 separate isovist outputs retain first angle zero and unit-range diamond area two', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -24,7 +56,7 @@ it('R4 separate isovist outputs retain first angle zero and unit-range diamond a
       segments: fixture.input('wall', new Float32Array([2, -2, 2, 2]), 'float32x4', 1),
       rayCount: 4,
       maximumDistance: 1,
-      output: {angles: angles.view, measures: measures.view}
+      output: {angles: angles.view, localMeasures: measures.view}
     });
     fixture.run();
     const actualAngles = await fixture.readFloat32(angles, 4);

@@ -40,6 +40,30 @@ import {
 
 let serial = 0;
 
+it('SCL-16 declaration follows the numeric planner for auto grid and forced BVH', () => {
+  for (const searchStructure of ['auto', 'grid', 'bvh'] as const) {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device, {id: `planned-${searchStructure}`});
+    const props = createProps(graph, {searchStructure});
+    const plan = GPUNeighborSearch.getExecutionPlan(
+      {
+        mode: props.mode,
+        searchStructure,
+        targetRowCount: props.positions.length,
+        gridSize: props.gridSize,
+        neighborCount: props.neighborCount
+      },
+      device.limits
+    );
+    const nodes = new GPUNeighborSearch(props).getCommandNodes(graph);
+    expect(plan.feasible).toBe(true);
+    expect(nodes.some(node => node.id.includes('bvh-node-data'))).toBe(plan.route === 'bvh');
+    // Public graph validation also catches accidental binding/ordering changes during extraction.
+    expect(() => graph.add(nodes)).not.toThrow();
+    device.destroy();
+  }
+});
+
 function createProps(
   graph: GPUCommandGraph,
   overrides: Partial<GPUNeighborSearchProps> = {}
@@ -50,7 +74,7 @@ function createProps(
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   return {
     mode: 'knn',
-    k: 4,
+    neighborCount: 4,
     positions: view('float32x2', 10),
     parameters: view('float32', GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH),
     gridSize: [4, 4],
@@ -65,14 +89,21 @@ function createProps(
   };
 }
 
-it('GPUNeighborSearch validates modes, k, grid, weights and lengths', () => {
+it('GPUNeighborSearch validates modes, neighborCount, grid, weights and lengths', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'neighbor-search-validation'});
   expect(() => new GPUNeighborSearch(createProps(graph))).not.toThrow();
+  const oldProps = {...createProps(graph), k: 4};
+  expect(() => new GPUNeighborSearch(oldProps)).toThrow(
+    'neighbor-search: k was renamed; use neighborCount'
+  );
   expect(
-    () => new GPUNeighborSearch(createProps(graph, {mode: 'radius', k: undefined}))
+    () => new GPUNeighborSearch(createProps(graph, {mode: 'radius', neighborCount: undefined}))
   ).not.toThrow();
-  for (const k of [0, GPU_NEIGHBOR_SEARCH_MAXIMUM_K + 1, 2.5, undefined]) {
-    expect(() => new GPUNeighborSearch(createProps(graph, {k})), `k ${k}`).toThrow(/k must/);
+  for (const neighborCount of [0, GPU_NEIGHBOR_SEARCH_MAXIMUM_K + 1, 2.5, undefined]) {
+    expect(
+      () => new GPUNeighborSearch(createProps(graph, {neighborCount})),
+      `k ${neighborCount}`
+    ).toThrow(/neighborCount must/);
   }
   expect(() => new GPUNeighborSearch(createProps(graph, {gridSize: [0, 4]}))).toThrow(/gridSize/);
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
@@ -163,8 +194,8 @@ it('GPUNeighborSearch emits deterministic node IDs in both modes and every join 
 it('getGPUNeighborSearchParameterValues packs the layout and rejects unknown enums', () => {
   const values = getGPUNeighborSearchParameterValues({
     bounds: [1, 2, 3, 4],
-    radius: 5,
-    weightKind: 'kernel',
+    searchRadius: 5,
+    weightType: 'kernel',
     power: 2,
     distanceFloor: 0.25,
     kernel: 'bisquare',
@@ -176,33 +207,38 @@ it('getGPUNeighborSearchParameterValues packs the layout and rejects unknown enu
   expect(getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1]})[7]).toBe(Math.fround(1e-6));
   expect(getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1], distanceFloor: 0})[7]).toBe(0);
   expect(() =>
-    getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1], weightKind: 'nope' as 'binary'})
-  ).toThrow(/weightKind/);
+    getGPUNeighborSearchParameterValues({bounds: [0, 0, 1, 1], weightType: 'nope' as 'binary'})
+  ).toThrow(/weightType/);
 });
 
 it('the neighbor-search oracle selects lowest IDs on ties and sorts rows by ID', () => {
   // Four points at distance 1 from the origin point 0, plus a far point.
   const positions = new Float32Array([5, 5, 6, 5, 4, 5, 5, 6, 5, 4, 9, 9]);
   const parameters = {bounds: [0, 0, 10, 10]} as const;
-  const result = computeNeighborSearchOracle({mode: 'knn', k: 2, positions, parameters});
+  const result = computeNeighborSearchOracle({
+    mode: 'knn',
+    neighborCount: 2,
+    positions,
+    parameters
+  });
   expect(result.neighbors.slice(0, 2)).toEqual([1, 2]);
   const radius = computeNeighborSearchOracle({
     mode: 'radius',
     positions,
-    parameters: {...parameters, radius: 1}
+    parameters: {...parameters, searchRadius: 1}
   });
   expect(radius.neighbors.slice(radius.offsets[0], radius.offsets[1])).toEqual([1, 2, 3, 4]);
   expect(radius.counts[5]).toBe(0);
   expect(
-    getNeighborWeight(0.5, 1, {...parameters, weightKind: 'kernel', kernel: 'triangular'})
+    getNeighborWeight(0.5, 1, {...parameters, weightType: 'kernel', kernel: 'triangular'})
   ).toBe(0.5);
   // The default floor 1e-6 gives coincident points a finite weight; an explicit 0 removes it.
-  expect(getNeighborWeight(0, 1, {...parameters, weightKind: 'inverseDistance'})).toBeCloseTo(
+  expect(getNeighborWeight(0, 1, {...parameters, weightType: 'inverse-distance'})).toBeCloseTo(
     1e6,
     0
   );
   expect(
-    getNeighborWeight(0, 1, {...parameters, weightKind: 'inverseDistance', distanceFloor: 0})
+    getNeighborWeight(0, 1, {...parameters, weightType: 'inverse-distance', distanceFloor: 0})
   ).toBe(0);
 });
 
@@ -304,7 +340,7 @@ it('GPUNeighborSearch outputWeights carries rowCount, provenance, symmetry and s
   expect(knn.outputWeights.offsets).toBe(knn.props.output.offsets);
 
   const band = new GPUNeighborSearch(
-    createProps(graph, {mode: 'radius', k: undefined, weightTransform: 'binary'})
+    createProps(graph, {mode: 'radius', neighborCount: undefined, weightTransform: 'binary'})
   );
   expect(band.outputWeights.information).toMatchObject({
     transform: 'binary',
@@ -312,13 +348,13 @@ it('GPUNeighborSearch outputWeights carries rowCount, provenance, symmetry and s
     provenance: {criterion: 'distance-band'}
   });
   const rowStandardized = new GPUNeighborSearch(
-    createProps(graph, {mode: 'radius', k: undefined, weightTransform: 'row'})
+    createProps(graph, {mode: 'radius', neighborCount: undefined, weightTransform: 'row'})
   );
   expect(rowStandardized.outputWeights.information?.symmetric).toBe('unknown');
   const cross = new GPUNeighborSearch(
     createProps(graph, {
       mode: 'radius',
-      k: undefined,
+      neighborCount: undefined,
       weightTransform: 'kernel',
       queryPositions: createTransientView(graph, `query-${serial++}`, 'float32x2', 3),
       output: {
@@ -345,21 +381,22 @@ it('GPUNeighborSearch outputWeights carries rowCount, provenance, symmetry and s
 
 it('getGPUNeighborSearchWeightTransform derives the declared transform from the parameters', () => {
   expect(getGPUNeighborSearchWeightTransform({})).toBe('binary');
-  expect(getGPUNeighborSearchWeightTransform({weightKind: 'inverseDistance'})).toBe('raw');
-  expect(getGPUNeighborSearchWeightTransform({weightKind: 'kernel'})).toBe('kernel');
-  expect(getGPUNeighborSearchWeightTransform({weightKind: 'kernel', rowStandardize: true})).toBe(
+  expect(getGPUNeighborSearchWeightTransform({weightType: 'inverse-distance'})).toBe('raw');
+  expect(getGPUNeighborSearchWeightTransform({weightType: 'kernel'})).toBe('kernel');
+  expect(getGPUNeighborSearchWeightTransform({weightType: 'kernel', rowStandardize: true})).toBe(
     'row'
   );
-  expect(() => getGPUNeighborSearchWeightTransform({weightKind: 'x' as 'binary'})).toThrow(
-    /weightKind/
+  expect(() => getGPUNeighborSearchWeightTransform({weightType: 'x' as 'binary'})).toThrow(
+    /weightType/
   );
 });
 
 it('GPUNeighborSearch derives outputWeights.info.transform from the compile-time rowStandardize', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'neighbor-search-row'});
   const transform = (overrides: Partial<GPUNeighborSearchProps>) =>
-    new GPUNeighborSearch(createProps(graph, {mode: 'radius', k: undefined, ...overrides}))
-      .outputWeights.information;
+    new GPUNeighborSearch(
+      createProps(graph, {mode: 'radius', neighborCount: undefined, ...overrides})
+    ).outputWeights.information;
   expect(transform({rowStandardize: true})?.transform).toBe('row');
   expect(transform({rowStandardize: true})?.symmetric).toBe('unknown');
   expect(transform({rowStandardize: true, weightTransform: 'row'})?.transform).toBe('row');
@@ -429,9 +466,9 @@ it('GPUNeighborSearch validates searchStructure and keeps great-circle search on
 
 it('GPUNeighborSearch builds only the selected structure, with auto identical to grid', () => {
   for (const overrides of [
-    {mode: 'knn' as const, k: 4},
-    {mode: 'radius' as const, k: undefined},
-    {mode: 'knn' as const, k: 32}
+    {mode: 'knn' as const, neighborCount: 4},
+    {mode: 'radius' as const, neighborCount: undefined},
+    {mode: 'knn' as const, neighborCount: 32}
   ]) {
     const idsOf = (structure: (typeof STRUCTURES)[number]) =>
       getStructureNodes(structure, overrides).map(node => node.id);
@@ -469,8 +506,8 @@ it('GPUNeighborSearch builds only the selected structure, with auto identical to
 
 it('GPUNeighborSearch auto has the same pipelines as grid with no unused build or gate', () => {
   for (const overrides of [
-    {mode: 'knn' as const, k: 4},
-    {mode: 'radius' as const, k: undefined}
+    {mode: 'knn' as const, neighborCount: 4},
+    {mode: 'radius' as const, neighborCount: undefined}
   ]) {
     const automatic = getStructureNodes('auto', overrides);
     const grid = getStructureNodes('grid', overrides);
@@ -483,10 +520,10 @@ it('GPUNeighborSearch auto has the same pipelines as grid with no unused build o
 it('GPUNeighborSearch generated WGSL parses and stays inside the core limits for every structure and join shape', () => {
   const shapes: Partial<GPUNeighborSearchProps>[] = [];
   for (const mode of ['knn', 'radius'] as const) {
-    for (const k of mode === 'knn' ? [1, 4, 32] : [undefined]) {
+    for (const neighborCount of mode === 'knn' ? [1, 4, 32] : [undefined]) {
       for (const cross of [false, true]) {
         for (const masked of [false, true]) {
-          shapes.push({mode, k, _cross: cross, _masked: masked} as never);
+          shapes.push({mode, neighborCount, _cross: cross, _masked: masked} as never);
         }
       }
     }
@@ -603,34 +640,52 @@ it('the BVH kNN model equals the brute-force oracle on clustered, duplicate, col
   const mask = new Uint32Array(1500).fill(1);
   for (let row = 3; row < 1500; row += 7) mask[row] = 0;
   const parameters = {bounds: [0, 0, 1000, 1000]} as const;
-  for (const k of [1, 4, 32]) {
-    expectModelMatchesOracle({mode: 'knn', k, positions: clustered, mask, parameters}, `k ${k}`);
+  for (const neighborCount of [1, 4, 32]) {
     expectModelMatchesOracle(
-      {mode: 'knn', k, positions: clustered, parameters: {...parameters, radius: 6}},
-      `k ${k} radius-limited`
+      {mode: 'knn', neighborCount, positions: clustered, mask, parameters},
+      `k ${neighborCount}`
+    );
+    expectModelMatchesOracle(
+      {
+        mode: 'knn',
+        neighborCount,
+        positions: clustered,
+        parameters: {...parameters, maximumDistance: 6}
+      },
+      `k ${neighborCount} radius-limited`
     );
   }
   const collinear = new Float32Array(600);
   for (let row = 0; row < 300; row++) collinear.set([Math.floor(row / 3), 100], row * 2);
-  for (const k of [1, 4, 32]) {
-    expectModelMatchesOracle({mode: 'knn', k, positions: collinear, parameters}, `line k ${k}`);
+  for (const neighborCount of [1, 4, 32]) {
+    expectModelMatchesOracle(
+      {mode: 'knn', neighborCount, positions: collinear, parameters},
+      `line k ${neighborCount}`
+    );
   }
   // A cross join with its own invalid queries.
   const queries = createClusteredPoints(120, 11);
   queries.set([Number.NaN, Number.NaN], 10);
   expectModelMatchesOracle(
-    {mode: 'knn', k: 8, positions: clustered, queryPositions: queries, mask, parameters},
+    {
+      mode: 'knn',
+      neighborCount: 8,
+      positions: clustered,
+      queryPositions: queries,
+      mask,
+      parameters
+    },
     'cross'
   );
   // Fewer valid targets than k, and no valid target at all.
   expectModelMatchesOracle(
-    {mode: 'knn', k: 32, positions: new Float32Array([1, 1, 2, 2, 3, 3]), parameters},
+    {mode: 'knn', neighborCount: 32, positions: new Float32Array([1, 1, 2, 2, 3, 3]), parameters},
     'few'
   );
   expectModelMatchesOracle(
     {
       mode: 'knn',
-      k: 4,
+      neighborCount: 4,
       positions: new Float32Array([1, 1, 2, 2]),
       mask: new Uint32Array([0, 0]),
       parameters
@@ -645,7 +700,7 @@ it('the BVH radius model equals the brute-force oracle, including radius boundar
   const parameters = {bounds: [0, 0, 1000, 1000]} as const;
   for (const radius of [0.5, 5, 40, 2000]) {
     expectModelMatchesOracle(
-      {mode: 'radius', positions: clustered, parameters: {...parameters, radius}},
+      {mode: 'radius', positions: clustered, parameters: {...parameters, searchRadius: radius}},
       `radius ${radius}`
     );
   }
@@ -653,13 +708,17 @@ it('the BVH radius model equals the brute-force oracle, including radius boundar
   const lattice = new Float32Array(2 * 400);
   for (let row = 0; row < 400; row++) lattice.set([row % 20, Math.floor(row / 20)], row * 2);
   expectModelMatchesOracle(
-    {mode: 'radius', positions: lattice, parameters: {bounds: [0, 0, 19, 19], radius: 2}},
+    {mode: 'radius', positions: lattice, parameters: {bounds: [0, 0, 19, 19], searchRadius: 2}},
     'lattice'
   );
-  // Invalid radius: nothing is a neighbor.
+  // Invalid radius in a raw parameter view: nothing is a neighbor.
   for (const radius of [0, -1, Number.NaN]) {
     expectModelMatchesOracle(
-      {mode: 'radius', positions: lattice, parameters: {bounds: [0, 0, 19, 19], radius}},
+      {
+        mode: 'radius',
+        positions: lattice,
+        parameters: {bounds: [0, 0, 19, 19], searchRadius: radius}
+      },
       `radius ${radius}`
     );
   }
@@ -685,7 +744,7 @@ it('the BVH prunes clustered targets, but the former occupancy heuristic is not 
   const queryRows = 200;
   const input = {
     mode: 'knn' as const,
-    k: 8,
+    neighborCount: 8,
     positions: clustered,
     queryPositions: clustered.slice(0, queryRows * 2),
     parameters: {bounds}
@@ -709,7 +768,7 @@ it('the masked radius fixture needs more than 64 neighbors per query on average'
     mode: 'radius',
     positions,
     queryMask,
-    parameters: {bounds: [0, 0, 1000, 1000], radius: 6}
+    parameters: {bounds: [0, 0, 1000, 1000], searchRadius: 6}
   });
   expect(result.neighbors.length).toBeGreaterThan(count * 64);
   expect(result.neighbors.length).toBeLessThanOrEqual(count * (count - 1));

@@ -36,10 +36,10 @@ Each measurement separates declaration/allocation, deferred upload plus queue co
 
 Pipeline caches remain shared and deferred driver compilation can appear in first execution. First execution is not a guaranteed cold-driver result. Logical/physical graph transient bytes are separate from caller-owned input/output bytes; driver peak memory is unknown. These contributors use invocation-local scratch and may report zero graph transient allocation; that does not imply zero shader storage or register pressure.
 
-The node suite constructs maximum supported combinations, including eight-bound external drift, 32-sample/64-vertex Sibson, 16+16 simulation, and 1024-candidate/64-iteration variogram fitting. It audits WGSL and records exact static private/function storage, workgroup memory and bindings as `GEOSPATIAL_INTERPOLATION_SHADER_BUDGETS`. These are static source budgets rather than measured register occupancy or driver allocation:
+The node suite constructs audited combinations, including eight-bound external drift, 32-sample/64-vertex Sibson, 16+16 simulation and 128+128 prepared simulation (both with 128 replicates), and 1024-candidate/64-iteration variogram fitting. These simulation fixtures audit cooperative-path storage; they do not construct the 4096-joint-row blocked dense maximum. It audits WGSL and records exact static private/function storage, workgroup memory and bindings as `GEOSPATIAL_INTERPOLATION_SHADER_BUDGETS`. These are static source budgets rather than measured register occupancy or driver allocation:
 
 ```sh
-yarn test-node --silent=false --maxWorkers=2 modules/graph/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance.node.spec.ts
+yarn test-node --silent=false --maxWorkers=2 modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance.node.spec.ts
 ```
 
 The benchmark establishes only the recorded device/workload observations. It does not compare optimized CPU libraries, global large-data prediction, different adapters, indexed topology reuse, or end-to-end variogram readback avoidance. The independent numerical suite separately checks noisy SciPy variogram fits, kriging covariance equations, Shapely stolen areas and simulation ensemble covariance.

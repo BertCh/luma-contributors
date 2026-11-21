@@ -55,7 +55,8 @@ const references: Record<FloatMetric, string> = {
   gini: 'inequality.gini.Gini',
   theilT: 'inequality.theil.Theil + scipy.stats.entropy',
   theilL: 'scipy.stats.entropy(population, income); documented zero-income NaN',
-  atkinson: 'inequality.atkinson.Atkinson; zero-income composite Atkinson(1970)/scipy.stats.pmean',
+  atkinson:
+    'inequality.atkinson.Atkinson for positive incomes; zero income epsilon<1: Atkinson(1970)/scipy.stats.pmean; epsilon>=1 with positive mean: continuous extension (Atkinson=1); all-zero/empty: undefined',
   hoover: 'inequality.schutz.Schutz.distance',
   palma: 'inequality.schutz.Schutz Lorenz table + numpy.interp',
   mean: 'numpy.average',

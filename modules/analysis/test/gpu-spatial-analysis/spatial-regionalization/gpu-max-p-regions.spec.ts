@@ -9,7 +9,7 @@ import {
   getGPUMaxPRegionsParameterValues,
   GPUMaxPRegions,
   GPU_MAX_P_DEFAULT_START_COUNT,
-  GPU_MAX_P_STATUS
+  GPU_MAX_P_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -54,7 +54,7 @@ it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
   const outputs = {
     labels: createOutputBuffer(device, 4),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_MAX_P_STATUS.length)
+    status: createOutputBuffer(device, GPU_MAX_P_STATUS_LAYOUT.length)
   };
   graph.add(
     new GPUMaxPRegions({
@@ -89,7 +89,7 @@ it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
           'status',
           outputs.status,
           'uint32',
-          GPU_MAX_P_STATUS.length
+          GPU_MAX_P_STATUS_LAYOUT.length
         )
       }
     })
@@ -99,10 +99,10 @@ it('GPUMaxPRegions grows contiguous threshold-feasible regions', async () => {
   // Label numbers follow the selected start's random seed order; the partition is what is pinned.
   expect(canonicalizePartition(await readUint32(outputs.labels, 4))).toEqual([0, 0, 1, 1]);
   expect((await readFloat32(outputs.objective, 1))[0]).toBeCloseTo(1, 5);
-  const status = await readUint32(outputs.status, GPU_MAX_P_STATUS.length);
+  const status = await readUint32(outputs.status, GPU_MAX_P_STATUS_LAYOUT.length);
   expect(status.slice(0, 4)).toEqual([2, 1, 0, 0]);
-  expect(status[GPU_MAX_P_STATUS.selectedStart]).toBeLessThan(GPU_MAX_P_DEFAULT_START_COUNT);
-  expect(status[GPU_MAX_P_STATUS.improvementIterationCount]).toBe(0);
+  expect(status[GPU_MAX_P_STATUS_LAYOUT.selectedStart]).toBeLessThan(GPU_MAX_P_DEFAULT_START_COUNT);
+  expect(status[GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount]).toBe(0);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   Object.values(outputs).forEach(buffer => buffer.destroy());
@@ -133,7 +133,7 @@ it('GPUMaxPRegions labels every row of a 900-row lattice with contiguous regions
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_MAX_P_STATUS.length)
+    status: createOutputBuffer(device, GPU_MAX_P_STATUS_LAYOUT.length)
   };
   graph.add(
     new GPUMaxPRegions({
@@ -168,7 +168,7 @@ it('GPUMaxPRegions labels every row of a 900-row lattice with contiguous regions
           'status',
           outputs.status,
           'uint32',
-          GPU_MAX_P_STATUS.length
+          GPU_MAX_P_STATUS_LAYOUT.length
         )
       }
     })
@@ -176,20 +176,20 @@ it('GPUMaxPRegions labels every row of a 900-row lattice with contiguous regions
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const labels = await readUint32(outputs.labels, rowCount);
-  const status = await readUint32(outputs.status, GPU_MAX_P_STATUS.length);
+  const status = await readUint32(outputs.status, GPU_MAX_P_STATUS_LAYOUT.length);
   const [objective] = await readFloat32(outputs.objective, 1);
   const NONE = 0xffffffff;
   expect(labels.every(label => label !== NONE)).toBe(true);
-  expect(status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
-  expect(status[GPU_MAX_P_STATUS.feasible]).toBe(1);
-  expect(status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBe(0);
+  expect(status[GPU_MAX_P_STATUS_LAYOUT.invalidCount]).toBe(0);
+  expect(status[GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(1);
+  expect(status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount]).toBe(0);
   expect(Number.isFinite(objective)).toBe(true);
   // Region count matches the reported count and every region meets the floor.
   const regionSums = new Map<number, number>();
   labels.forEach((label, row) =>
     regionSums.set(label, (regionSums.get(label) ?? 0) + extensiveValues[row])
   );
-  expect(regionSums.size).toBe(status[GPU_MAX_P_STATUS.regionCount]);
+  expect(regionSums.size).toBe(status[GPU_MAX_P_STATUS_LAYOUT.regionCount]);
   expect(regionSums.size).toBeGreaterThan(1);
   for (const sum of regionSums.values()) {
     expect(sum).toBeGreaterThanOrEqual(floor);
@@ -238,7 +238,7 @@ async function runMaxP(
   const outputs = {
     labels: createOutputBuffer(device, rowCount),
     objective: createOutputBuffer(device, 1),
-    status: createOutputBuffer(device, GPU_MAX_P_STATUS.length)
+    status: createOutputBuffer(device, GPU_MAX_P_STATUS_LAYOUT.length)
   };
   graph.add(
     new GPUMaxPRegions({
@@ -282,7 +282,7 @@ async function runMaxP(
           'status',
           outputs.status,
           'uint32',
-          GPU_MAX_P_STATUS.length
+          GPU_MAX_P_STATUS_LAYOUT.length
         )
       }
     })
@@ -292,7 +292,7 @@ async function runMaxP(
   const result = {
     labels: await readUint32(outputs.labels, rowCount),
     objective: (await readFloat32(outputs.objective, 1))[0],
-    status: await readUint32(outputs.status, GPU_MAX_P_STATUS.length)
+    status: await readUint32(outputs.status, GPU_MAX_P_STATUS_LAYOUT.length)
   };
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
@@ -321,18 +321,18 @@ it('GPUMaxPRegions multi-start never loses to its own first start', async () => 
   const scene = {...createLatticeScene(20, 11, 22), threshold: 10, seed: 9};
   const single = await runMaxP(device, {...scene, startCount: 1});
   const multi = await runMaxP(device, {...scene, startCount: 16});
-  expect(multi.status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
-  expect(single.status[GPU_MAX_P_STATUS.selectedStart]).toBe(0);
-  expect(multi.status[GPU_MAX_P_STATUS.selectedStart]).toBeLessThan(16);
-  const singleLeftovers = single.status[GPU_MAX_P_STATUS.infeasibleRegionCount];
-  const multiLeftovers = multi.status[GPU_MAX_P_STATUS.infeasibleRegionCount];
+  expect(multi.status[GPU_MAX_P_STATUS_LAYOUT.invalidCount]).toBe(0);
+  expect(single.status[GPU_MAX_P_STATUS_LAYOUT.selectedStart]).toBe(0);
+  expect(multi.status[GPU_MAX_P_STATUS_LAYOUT.selectedStart]).toBeLessThan(16);
+  const singleLeftovers = single.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount];
+  const multiLeftovers = multi.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount];
   expect(multiLeftovers).toBeLessThanOrEqual(singleLeftovers);
   if (multiLeftovers === singleLeftovers) {
-    expect(multi.status[GPU_MAX_P_STATUS.regionCount]).toBeGreaterThanOrEqual(
-      single.status[GPU_MAX_P_STATUS.regionCount]
+    expect(multi.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]).toBeGreaterThanOrEqual(
+      single.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]
     );
   }
-  expect(new Set(multi.labels).size).toBe(multi.status[GPU_MAX_P_STATUS.regionCount]);
+  expect(new Set(multi.labels).size).toBe(multi.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]);
   const {offsets, neighbors} = scene;
   expect(findDisconnectedLabels(offsets, neighbors, multi.labels)).toEqual([]);
   // Reproducible: the same seed and start count give the same labels.
@@ -364,20 +364,22 @@ it('GPUMaxPRegions local improvement keeps the region count and the threshold', 
   const scene = {...createLatticeScene(16, 31, 32), threshold: 8, seed: 4, startCount: 4};
   const constructed = await runMaxP(device, scene);
   const improved = await runMaxP(device, {...scene, maximumIterations: 64});
-  expect(improved.status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
-  expect(improved.status[GPU_MAX_P_STATUS.selectedStart]).toBe(
-    constructed.status[GPU_MAX_P_STATUS.selectedStart]
+  expect(improved.status[GPU_MAX_P_STATUS_LAYOUT.invalidCount]).toBe(0);
+  expect(improved.status[GPU_MAX_P_STATUS_LAYOUT.selectedStart]).toBe(
+    constructed.status[GPU_MAX_P_STATUS_LAYOUT.selectedStart]
   );
-  expect(improved.status[GPU_MAX_P_STATUS.regionCount]).toBe(
-    constructed.status[GPU_MAX_P_STATUS.regionCount]
+  expect(improved.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]).toBe(
+    constructed.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]
   );
   expect(improved.objective).toBeLessThanOrEqual(constructed.objective * (1 + 1e-5));
-  expect(new Set(improved.labels).size).toBe(constructed.status[GPU_MAX_P_STATUS.regionCount]);
+  expect(new Set(improved.labels).size).toBe(
+    constructed.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]
+  );
   const sums = new Map<number, number>();
   improved.labels.forEach((label, row) =>
     sums.set(label, (sums.get(label) ?? 0) + scene.extensiveValues[row])
   );
-  if (improved.status[GPU_MAX_P_STATUS.infeasibleRegionCount] === 0) {
+  if (improved.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount] === 0) {
     for (const sum of sums.values()) {
       expect(sum).toBeGreaterThanOrEqual(scene.threshold);
     }
@@ -449,9 +451,13 @@ it('GPUMaxPRegions equals its CPU mirror on integer-valued input', async () => {
       startCount: 4,
       standardize: false
     });
-    expect(gpu.status[GPU_MAX_P_STATUS.selectedStart], `${width}`).toBe(mirror.selectedStart);
-    expect(gpu.status[GPU_MAX_P_STATUS.regionCount]).toBe(mirror.regionCount);
-    expect(gpu.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBe(mirror.infeasibleRegionCount);
+    expect(gpu.status[GPU_MAX_P_STATUS_LAYOUT.selectedStart], `${width}`).toBe(
+      mirror.selectedStart
+    );
+    expect(gpu.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]).toBe(mirror.regionCount);
+    expect(gpu.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount]).toBe(
+      mirror.infeasibleRegionCount
+    );
     expect(gpu.labels).toEqual(Array.from(mirror.labels));
   }
 });
@@ -470,11 +476,11 @@ it('GPUMaxPRegions reports an island below the threshold and keeps contiguity on
     startCount: 3,
     standardize: false
   });
-  expect(result.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBe(1);
-  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(0);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount]).toBe(1);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(0);
   expect(result.labels[6]).toBe(result.labels[7]);
   expect(result.labels[6]).not.toBe(result.labels[0]);
-  expect(Math.max(...result.labels)).toBe(result.status[GPU_MAX_P_STATUS.regionCount] - 1);
+  expect(Math.max(...result.labels)).toBe(result.status[GPU_MAX_P_STATUS_LAYOUT.regionCount] - 1);
 });
 
 it('GPUMaxPRegions reports under-threshold regions when the growth steps run out', async () => {
@@ -488,12 +494,12 @@ it('GPUMaxPRegions reports under-threshold regions when the growth steps run out
     startCount: 2
   };
   const starved = await runMaxP(device, {...scene, maximumGrowthSteps: 5});
-  expect(starved.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBeGreaterThan(0);
-  expect(starved.labels.every(label => label < starved.status[GPU_MAX_P_STATUS.regionCount])).toBe(
-    true
-  );
+  expect(starved.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount]).toBeGreaterThan(0);
+  expect(
+    starved.labels.every(label => label < starved.status[GPU_MAX_P_STATUS_LAYOUT.regionCount])
+  ).toBe(true);
   const roomy = await runMaxP(device, {...scene, maximumGrowthSteps: 256});
-  expect(roomy.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBe(0);
+  expect(roomy.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount]).toBe(0);
   expect(findDisconnectedLabels(scene.offsets, scene.neighbors, roomy.labels)).toEqual([]);
 });
 
@@ -509,11 +515,11 @@ it('GPUMaxPRegions A/B: 16,384-row lattice timing of the parallel construction',
   const elapsed = performance.now() - start;
   // eslint-disable-next-line no-console
   console.log(
-    `GPUMaxPRegions A/B 16384 rows: ${elapsed.toFixed(0)} ms, ${result.status[GPU_MAX_P_STATUS.regionCount]} regions, ` +
-      `${result.status[GPU_MAX_P_STATUS.infeasibleRegionCount]} under threshold`
+    `GPUMaxPRegions A/B 16384 rows: ${elapsed.toFixed(0)} ms, ${result.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]} regions, ` +
+      `${result.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount]} under threshold`
   );
-  expect(result.status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
-  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(1);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.invalidCount]).toBe(0);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(1);
   expect(findDisconnectedLabels(scene.offsets, scene.neighbors, result.labels)).toEqual([]);
   for (const sum of getRegionSums(result.labels, scene.extensiveValues).values()) {
     expect(sum).toBeGreaterThanOrEqual(scene.threshold);
@@ -531,11 +537,11 @@ it('GPUMaxPRegions runs 262,144 rows without a row cap', async () => {
   const result = await runMaxP(device, scene);
   // eslint-disable-next-line no-console
   console.log(`GPUMaxPRegions 262144 rows: ${(performance.now() - start).toFixed(0)} ms`);
-  expect(result.status[GPU_MAX_P_STATUS.invalidCount]).toBe(0);
-  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(1);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.invalidCount]).toBe(0);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(1);
   expect(result.labels.length).toBe(width * width);
-  expect(result.status[GPU_MAX_P_STATUS.regionCount]).toBeGreaterThan(1000);
-  expect(new Set(result.labels).size).toBe(result.status[GPU_MAX_P_STATUS.regionCount]);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]).toBeGreaterThan(1000);
+  expect(new Set(result.labels).size).toBe(result.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]);
   expect(findDisconnectedLabels(scene.offsets, scene.neighbors, result.labels)).toEqual([]);
   for (const sum of getRegionSums(result.labels, scene.extensiveValues).values()) {
     expect(sum).toBeGreaterThanOrEqual(scene.threshold);

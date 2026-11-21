@@ -10,6 +10,16 @@
  */
 
 import type {GPURegressionModelResult} from '@luma-contributors/analysis/analysis-core';
+import {decodeGPUGeographicallyWeightedRegressionStatus} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+/** Count singular local GWR fits; excluded and unrecognized words are separate states. */
+export function countSingularGWRRows(statuses: Uint32Array): number {
+  return statuses.reduce(
+    (count, word) =>
+      count + Number(decodeGPUGeographicallyWeightedRegressionStatus(word) === 'singular'),
+    0
+  );
+}
 
 type ReadoutControls = {
   addReadout(label: string, value?: string): {setValue: (value: string) => void};
@@ -66,19 +76,31 @@ export function addModelResultReadouts(
   const varianceReadout = controls.addReadout(label('σ² (error scale) / ML σ²'));
   const likelihoodReadout = controls.addReadout(label('log-lik / AIC / BIC'));
   const conditionReadout = controls.addReadout(label('condition (Belsley / corr.) / max VIF'));
+  const regularizationReadout = controls.addReadout(label('regularization'));
+  const inferenceReadout = controls.addReadout(label('coefficient inference'));
   const testReadouts = testNames.map(name => controls.addReadout(label(TEST_LABELS[name] ?? name)));
   const coefficientReadouts = coefficientNames.map(name => controls.addReadout(label(name)));
 
   return {
     update(result) {
       fitReadout.setValue(describeStatus(result));
+      regularizationReadout.setValue(
+        result.regularization
+          ? `${result.regularization.kind}, λ ${formatValue(result.regularization.lambda)}`
+          : 'not reported'
+      );
+      inferenceReadout.setValue(result.inferenceMethod ?? 'estimator convention (not reported)');
       sizeReadout.setValue(
         `${result.rowCount} / ${formatValue(result.parameterCount, result.kind === 'geographically-weighted-regression' ? 1 : 0)} / ${formatValue(result.degreesOfFreedom, 0)}`
       );
       const sigmaConvention =
         result.standardErrorSigmaSquared === 'degrees-of-freedom' ? 'n−k' : 'n';
+      const errorConvention =
+        result.standardErrorSigmaSquared === 'robust'
+          ? 'SEs use robust covariance'
+          : `SEs use the ${sigmaConvention} form`;
       varianceReadout.setValue(
-        `${formatValue(result.sigmaSquared)} / ${formatValue(result.sigmaSquaredMaximumLikelihood)} (SEs use the ${sigmaConvention} form)`
+        `${formatValue(result.sigmaSquared)} / ${formatValue(result.sigmaSquaredMaximumLikelihood)} (${errorConvention})`
       );
       likelihoodReadout.setValue(
         result.logLikelihood === null

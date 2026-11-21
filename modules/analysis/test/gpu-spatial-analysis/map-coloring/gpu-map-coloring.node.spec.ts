@@ -11,8 +11,11 @@ import {
 } from '../../../src/gpu-spatial-analysis/map-coloring/index';
 import {
   createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
   getGPUCommandNodePipelineKeys
 } from '../../utils/gpu-contributor-test-utils';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+import {computeContiguityOracle} from '../spatial-weights/spatial-weights-oracle';
 import fixture from '../../oracles/fixtures/geometry-map-coloring.json';
 import {createSeededRandom} from '../spatial-weights/spatial-weights-oracle';
 import {
@@ -43,6 +46,26 @@ function setup(id: string = 'map-coloring-nodes') {
   };
   return {graph, view, props};
 }
+
+it('AMG-54 accepts packed scalar outputs with a weights loss port', () => {
+  const {graph, view, props} = setup('packed-loss');
+  const packed = view('uint32', 2);
+  const colorCount = graph.createDataView(packed.buffer, {format: 'uint32', length: 1});
+  const conflictCount = graph.createDataView(packed.buffer, {
+    format: 'uint32',
+    byteOffset: 4,
+    length: 1
+  });
+  expect(() =>
+    graph.add(
+      new GPUMapColoring({
+        ...props,
+        weights: {...props.weights, status: {overflow: view('uint32', 1)}},
+        output: {...props.output, colorCount, conflictCount}
+      }).getCommandNodes(graph)
+    )
+  ).not.toThrow();
+});
 
 it('GPUMapColoring validates props and declares gated rounds', () => {
   const {graph, view, props: base} = setup();
@@ -178,5 +201,73 @@ it('largest-degree-first stays within one color of networkx largest_first on Del
       `${graph.name}: ldf colors=${colorCount} rounds=${degreeFirst.rounds}; random colors=${Math.max(...random.colors) + 1} rounds=${random.rounds}; networkx`,
       graph.networkxColorCounts
     );
+  }
+});
+
+// GEO-107: truncated adjacency gives a coloring that is proper on the stored pairs but not on the
+// true adjacency, so a weights loss flag must not be ignored (decision LR-D4).
+it('GPUMapColoring suppresses its outputs behind every weights loss flag', () => {
+  // The defect, on the sequential oracle: drop each row's last queen neighbor of a 4 x 3 grid.
+  const polygons = [];
+  for (let y = 0; y < 3; y++) {
+    for (let x = 0; x < 4; x++) {
+      polygons.push([
+        [
+          [x, y],
+          [x + 1, y],
+          [x + 1, y + 1],
+          [x, y + 1]
+        ] as [number, number][]
+      ]);
+    }
+  }
+  const complete = computeContiguityOracle(polygons, 'queen');
+  const offsets = [0];
+  const neighbors: number[] = [];
+  for (let row = 0; row + 1 < complete.offsets.length; row++) {
+    const start = complete.offsets[row];
+    const end = complete.offsets[row + 1];
+    neighbors.push(...complete.neighbors.slice(start, Math.max(start, end - 1)));
+    offsets.push(neighbors.length);
+  }
+  const truncated = {offsets, neighbors, weights: neighbors.map(() => 1), distances: []};
+  const truncatedColors = computeMapColoringOracle(truncated, 0);
+  expect(countColoringConflicts(truncated, truncatedColors)).toBe(0);
+  expect(countColoringConflicts(complete, truncatedColors)).toBeGreaterThan(0);
+
+  const {graph, view, props} = setup();
+  const output = {
+    ...props.output,
+    colorCount: view('uint32', 1),
+    conflictCount: view('uint32', 1),
+    status: {converged: view('uint32', 1), iterationCount: view('uint32', 1)}
+  };
+  const withoutStatus = new GPUMapColoring({...props, output}).getCommandNodes(graph);
+  expect(withoutStatus.some(node => node.id.includes('incomplete'))).toBe(false);
+  const nodes = new GPUMapColoring({
+    ...props,
+    id: 'map-coloring-loss',
+    weights: {
+      ...props.weights,
+      status: {overflow: view('uint32', 1), candidateOverflow: view('uint32', 1)}
+    },
+    output
+  }).getCommandNodes(graph);
+  const ids = nodes.map(node => node.id);
+  expect(ids.filter(id => id.includes('incomplete'))).toHaveLength(8);
+  expect(ids.indexOf('map-coloring-loss-conflicts')).toBeLessThan(ids.length - 8);
+  const sources = getGPUCommandNodeKernelSources(nodes.slice(-8));
+  expect(sources).toHaveLength(8);
+  for (const {source, constants} of sources) {
+    expect(source).not.toContain('iterationCount[');
+    expect(auditWGSLModule(source, constants)).toEqual([]);
+  }
+  expect(
+    sources.filter(({source}) => source.includes('colors[colorsOffset + index] = 4294967295u;'))
+  ).toHaveLength(2);
+  for (const name of ['colorCount', 'conflictCount', 'converged']) {
+    expect(
+      sources.filter(({source}) => source.includes(`${name}[${name}Offset] = 0u;`))
+    ).toHaveLength(2);
   }
 });

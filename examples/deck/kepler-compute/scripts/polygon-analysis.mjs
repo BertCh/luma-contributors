@@ -162,13 +162,13 @@ try {
     }, undefined, {timeout: 30000});
   }
   await waitForQuantile();
-  assert.match(await panel.innerText(), /legacy directed rule without correction/);
+  assert.match(await panel.innerText(), /The geoda-legacy choice uses/);
   await panel.getByRole('button', {name: 'Save recipe', exact: true}).click();
   const quantileRecipe = JSON.parse(await panel.getByLabel('Saved analysis recipe', {exact: true}).inputValue());
   assert.deepEqual(quantileRecipe.operation, {
     kind: 'quantile-lisa-polygons', column: 'measure', weights: queenRecipe.operation.weights,
     quantileCount: 2, selectedQuantile: 1, seed: 7, permutationCount: 99,
-    significanceLevel: 0.05, inference: 'legacy-directed-pseudo', multipleTesting: 'none',
+    significanceLevel: 0.05, alternative: 'geoda-legacy', multipleTesting: 'none',
     islands: 'exclude', quantileMethod: 'type-5'
   });
   stage('restore polygon Quantile LISA recipe through native controls');

@@ -250,7 +250,7 @@ export async function runGpuLabelPoints(
             })
           : new GPULabelPoint({
               ...geometry,
-              output: {points: points.view, distances: distances.view}
+              output: {points: points.view, publishedCenterClearance: distances.view}
             })
       );
       session.run();
@@ -310,6 +310,13 @@ export async function runGpuLabelPoints(
       'largest-part',
       'info',
       'MultiPolygon features report the part with the largest clearance.'
+    );
+  if (asCircle && result.status?.some(value => value === 1))
+    addCatalogDiagnostic(
+      diagnostics,
+      'search-budget-exhausted',
+      'warning',
+      'Some maximum inscribed circles stopped at their cell or iteration budget; their radius is a lower bound.'
     );
   return {
     tables: [table],

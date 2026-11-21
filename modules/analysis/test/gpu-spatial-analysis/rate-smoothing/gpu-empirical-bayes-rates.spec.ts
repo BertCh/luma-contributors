@@ -19,11 +19,16 @@ import {
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
+  readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {computeEmpiricalBayesOracle} from './empirical-bayes-oracle';
 import {EB_LOW_DISPERSION} from './eb-low-dispersion-fixture';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {
+  createRateAuditInput,
+  RATE_AUDIT_EXPECTED
+} from './rate-smoothing-mathematical-audit-fixture';
 
 const GARBAGE = 0x7f7f7f7f;
 const S = GPU_EMPIRICAL_BAYES_SUMMARY;
@@ -63,6 +68,9 @@ async function runRates(
     standardized: createOutputBuffer(device, rows),
     smoothed: createOutputBuffer(device, rows),
     raw: createOutputBuffer(device, rows),
+    excess: createOutputBuffer(device, rows),
+    includedCount: createOutputBuffer(device, 1),
+    invalidCount: createOutputBuffer(device, 1),
     summary: createOutputBuffer(device, S.length)
   };
   for (const buffer of Object.values(outputs)) {
@@ -91,6 +99,17 @@ async function runRates(
         standardizedRates: importGraphBuffer(graph, 'z', outputs.standardized, 'float32', rows),
         smoothedRates: importGraphBuffer(graph, 'smoothed', outputs.smoothed, 'float32', rows),
         rawRates: importGraphBuffer(graph, 'raw', outputs.raw, 'float32', rows),
+        excessRisk: importGraphBuffer(graph, 'excess', outputs.excess, 'float32', rows),
+        includedCount: importGraphBuffer(
+          graph,
+          'included-count',
+          outputs.includedCount,
+          'uint32',
+          1
+        ),
+        status: {
+          invalidCount: importGraphBuffer(graph, 'invalid-count', outputs.invalidCount, 'uint32', 1)
+        },
         summary: importGraphBuffer(graph, 'summary', outputs.summary, 'float32', S.length)
       }
     })
@@ -101,6 +120,9 @@ async function runRates(
     standardized: await readFloat32(outputs.standardized, rows),
     smoothed: await readFloat32(outputs.smoothed, rows),
     raw: await readFloat32(outputs.raw, rows),
+    excess: await readFloat32(outputs.excess, rows),
+    includedCount: (await readUint32(outputs.includedCount, 1))[0],
+    invalidCount: (await readUint32(outputs.invalidCount, 1))[0],
     summary: await readFloat32(outputs.summary, S.length)
   };
   compiled.destroy();
@@ -131,6 +153,41 @@ it('GPUEmpiricalBayesRates reproduces the esda assuncao_rate docstring example',
     expect(Math.abs(result.standardized[row] - value), `row ${row}`).toBeLessThan(1e-4);
   }
   expect(result.summary[S.count]).toBe(8);
+});
+
+it('GPUEmpiricalBayesRates writes every output against independent NumPy moments with population-unit equivariance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const scale of [1, 2]) {
+    const actual = await runRates(device, {
+      ...createRateAuditInput(scale),
+      clampPriorVariance: true
+    });
+    const expected = RATE_AUDIT_EXPECTED.global;
+    for (const name of ['raw', 'standardized', 'smoothed', 'excess'] as const) {
+      for (const [row, value] of expected[name].entries()) {
+        if (value === null) expect(actual[name][row]).toBeNaN();
+        else {
+          expect(Number.isFinite(actual[name][row])).toBe(true);
+          const factor = name === 'raw' || name === 'smoothed' ? scale : 1;
+          expectClose(actual[name][row] * factor, value, `${name} row ${row}`, 2e-5);
+        }
+      }
+    }
+    for (const [index, value] of expected.summary.entries()) {
+      const factor =
+        index === 2
+          ? 1 / scale
+          : index === 3
+            ? scale
+            : index >= 4 && index <= 6
+              ? scale * scale
+              : 1;
+      expectClose(actual.summary[index] * factor, value, `summary ${index}`, 2e-5);
+    }
+    expect(actual.includedCount).toBe(6);
+    expect(actual.invalidCount).toBe(1);
+  }
 });
 
 it('GPUEmpiricalBayesRates gives identical results for uint32 and float32 counts', async () => {
@@ -293,5 +350,43 @@ it('GPUEmpiricalBayesRates feeds GPUGlobalSpatialStatistics Moran in one graph',
   compiled.destroy();
   for (const buffer of [...Object.values(inputs), results]) {
     buffer.destroy();
+  }
+});
+
+it('UST-03 rejects a negative focal event and excludes it from the global prior', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runRates(device, {
+    events: Float32Array.of(-10, 2, 2, 2),
+    populations: Float32Array.of(10, 10, 10, 10),
+    clampPriorVariance: true
+  });
+  expect(result.smoothed).toHaveLength(4);
+  expect(result.smoothed[0]).toBeNaN();
+  for (const value of result.smoothed.slice(1)) {
+    expect(Number.isFinite(value)).toBe(true);
+    expect(value).toBeCloseTo(0.2, 6);
+  }
+  expect(result.invalidCount).toBe(1);
+  expect(result.includedCount).toBe(3);
+});
+
+it('DST-03 reads smoothedRates for the clamped and PySAL prior conventions', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const clampPriorVariance of [true, false]) {
+    const result = await runRates(device, {
+      events: Float32Array.of(10, 11, 9),
+      populations: Float32Array.of(100, 100, 100),
+      clampPriorVariance
+    });
+    // m=.1; s2=1/15000; a=s2-.001=-.0009333333. Without clamping
+    // a/(a+.001)=-14, so .1-14*(rate-.1) gives [.1,-.04,.24].
+    const expected = clampPriorVariance ? [0.1, 0.1, 0.1] : [0.1, -0.04, 0.24];
+    expect(result.smoothed).toHaveLength(expected.length);
+    for (const [row, value] of expected.entries()) {
+      expect(Number.isFinite(result.smoothed[row])).toBe(true);
+      expect(result.smoothed[row]).toBeCloseTo(value, 5);
+    }
   }
 });

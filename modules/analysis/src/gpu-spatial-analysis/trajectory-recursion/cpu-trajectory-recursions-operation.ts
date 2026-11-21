@@ -22,6 +22,7 @@ import {
 import {resolveGPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
 import {
   GPUTrajectoryRecursionsOperation,
+  snapshotTrajectoryRecursionsOperationProps,
   type TrajectoryRecursionsOperationProps
 } from './gpu-trajectory-recursions-operation';
 
@@ -41,17 +42,17 @@ export type CPUTrajectoryRecursionsResult = {
  * durations add no residence time, matching the GPU definition.
  *
  * What differs from the GPU contributor:
- * - Whole tracks are examined: maximumTrackSegments is ignored, candidateOverflow is always zero,
- *   and forward passage is censored only at the real track end.
+ * - Omitted maximumTrackSegments examines whole tracks. An explicit cap uses the GPU's centred
+ *   segment windows, reports candidateOverflow and censors forward passage at the window end.
  * - The GPU radius-count maximum is dropped; the fix-major output layout is unchanged.
  * - Circle intersections and time sums use float64, rounded once on output. The intersection
  *   calculation uses projection onto the segment's supporting line to avoid subtracting large
  *   quadratic discriminant terms. Near-boundary decisions can differ from float32 GPU decisions.
  * - Int64 timestamps are subtracted exactly before conversion to float64.
- * - The pure function accepts empty trajectories or radii and returns empty row outputs. The CPU
- *   graph operation retains the GPU contributor's minima of one fix and one radius.
- * - Offsets are clamped to the row count, then decreasing offsets throw. The GPU does not
- *   validate ordering; decreasing offsets can produce overlapping track ranges there.
+ * - The pure function accepts empty trajectories or radii and returns empty row outputs. The graph
+ *   operation also accepts zero fixes; it requires at least one radius.
+ * - Compact offsets must terminate at the row count; storage: 'resident-capacity' opts into
+ *   GPU-compatible clamping. The GPU does not validate ordering.
  * - Non-finite positions are not defined by the GPU contributor. In the twin, segments touching
  *   NaN coordinates have no inside interval; an outside endpoint that ends passage on such a
  *   segment uses its start time. For positions [(0, 0), (NaN, 0), (2, 0)], times [0, 1, 2], one
@@ -59,11 +60,21 @@ export type CPUTrajectoryRecursionsResult = {
  *   and censored [0, 1, 1]. The device comparison returned GPU [2, 2, 2] where the twin returned
  *   [0, 0, 0] (measured on an Apple GPU, 2026-11-11); that undefined GPU result is not matched.
  *
- * @throws Error naming positions, timestamps or trackOffsets for inconsistent packed arrays.
+ * @param options Optional positive safe-integer maximumTrackSegments; omission examines whole tracks.
+ * @throws Error naming maximumTrackSegments, positions, timestamps or trackOffsets for invalid input.
  */
 export function computeTrajectoryRecursionsOnCPU(
-  input: CPUTrajectoryRows & {radii: Float32Array}
+  input: CPUTrajectoryRows & {radii: Float32Array},
+  options: {maximumTrackSegments?: number} = {}
 ): CPUTrajectoryRecursionsResult {
+  const maximumTrackSegments = options.maximumTrackSegments ?? Number.MAX_SAFE_INTEGER;
+  validateCapacity(
+    'trajectory-recursions',
+    'maximumTrackSegments',
+    maximumTrackSegments,
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
   const {positions, radii} = input;
   const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input);
   const length = rowCount * radii.length;
@@ -104,16 +115,25 @@ export function computeTrajectoryRecursionsOnCPU(
   for (let track = 0; track + 1 < trackOffsets.length; track++) {
     const start = trackOffsets[track];
     const end = trackOffsets[track + 1];
+    const isWindowed = end - start - 1 > maximumTrackSegments;
+    if (isWindowed) result.candidateOverflow[0] = 1;
     for (let row = start; row < end; row++) {
+      const windowStart = isWindowed
+        ? Math.min(
+            Math.max(start, row - Math.floor(maximumTrackSegments / 2)),
+            end - 1 - maximumTrackSegments
+          )
+        : start;
+      const windowEnd = isWindowed ? windowStart + maximumTrackSegments : end - 1;
       for (let radiusIndex = 0; radiusIndex < radii.length; radiusIndex++) {
         const radius = radii[radiusIndex];
         const slot = row * radii.length + radiusIndex;
         if (!(radius > 0)) continue;
         let visits = 0;
         let residence = 0;
-        for (let segment = start; segment + 1 < end; segment++) {
+        for (let segment = windowStart; segment < windowEnd; segment++) {
           const outside = getDistance(segment, row) > radius;
-          if (segment === start && !outside) visits++;
+          if (segment === windowStart && !outside) visits++;
           const interval = getInsideInterval(segment, row, radius);
           if (interval) {
             if (outside) visits++;
@@ -123,8 +143,8 @@ export function computeTrajectoryRecursionsOnCPU(
         }
         result.revisits[slot] = Math.max(0, visits - 1);
         result.residenceTimes[slot] = residence;
-        let passage = getTimeDifference(end - 1, row);
-        for (let segment = row; segment + 1 < end; segment++) {
+        let passage = getTimeDifference(windowEnd, row);
+        for (let segment = Math.max(row, windowStart); segment < windowEnd; segment++) {
           if (getDistance(segment + 1, row) > radius) {
             const interval = getInsideInterval(segment, row, radius);
             // The path has not yet exited: its start is in the closed disc.
@@ -142,14 +162,24 @@ export function computeTrajectoryRecursionsOnCPU(
   return result;
 }
 
-/** CPU recursion operation; retains output shape constraints and removes GPU window/radius caps. */
+/** CPU recursion operation; honours explicit windows and removes the GPU window/radius maxima. */
 export class CPUTrajectoryRecursionsOperation extends GPUCPUOperation {
   constructor(props: TrajectoryRecursionsOperationProps) {
+    props = snapshotTrajectoryRecursionsOperationProps(props);
     const operation = new GPUTrajectoryRecursionsOperation(props);
     const {id} = operation;
-    validateCapacity(id, 'rowCount', props.rowCount);
-    validateCapacity(id, 'radiusCount', props.radiusCount);
-    validateCapacity(id, 'output rows', props.rowCount * props.radiusCount);
+    const {maximumTrackSegments, rowCount, radiusCount, timestampFormat} = props;
+    validateCapacity(id, 'rowCount', rowCount, 0);
+    validateCapacity(id, 'radiusCount', radiusCount);
+    validateCapacity(id, 'output rows', rowCount * radiusCount, 0);
+    if (maximumTrackSegments !== undefined)
+      validateCapacity(
+        id,
+        'maximumTrackSegments',
+        maximumTrackSegments,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
     validateRequirement(
       id,
       Boolean(
@@ -164,15 +194,15 @@ export class CPUTrajectoryRecursionsOperation extends GPUCPUOperation {
     );
     validateRequirement(
       id,
-      props.timestampFormat === undefined ||
-        props.timestampFormat === 'float32' ||
-        props.timestampFormat === 'uint32x2',
+      timestampFormat === undefined ||
+        timestampFormat === 'float32' ||
+        timestampFormat === 'uint32x2',
       'timestampFormat must be float32 or uint32x2'
     );
     resolveGPUSpatialContext(id, props.spatialContext, GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT);
     if (props.temporalContext)
       resolveGPUTemporalContext(id, props.temporalContext, {
-        encodings: [props.timestampFormat === 'uint32x2' ? 'int64-words' : 'float32-relative'],
+        encodings: [timestampFormat === 'uint32x2' ? 'int64-words' : 'float32-relative'],
         axisKinds: ['irregular']
       });
     super({
@@ -187,19 +217,22 @@ export class CPUTrajectoryRecursionsOperation extends GPUCPUOperation {
       execute({inputs}) {
         const positions = getCPUOperationFloat32Rows(id, inputs, 'positions', 'float32x2');
         const radii = getCPUOperationFloat32Rows(id, inputs, 'radii');
-        if (positions.length !== props.rowCount * 2)
+        if (positions.length !== rowCount * 2)
           throw new Error(`${id} positions must match rowCount`);
-        if (radii.length !== props.radiusCount)
-          throw new Error(`${id} radii must match radiusCount`);
-        const result = computeTrajectoryRecursionsOnCPU({
-          positions,
-          radii,
-          timestamps:
-            props.timestampFormat === 'uint32x2'
-              ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')
-              : getCPUOperationFloat32Rows(id, inputs, 'timestamps'),
-          trackOffsets: getCPUOperationUint32Rows(id, inputs, 'trackOffsets')
-        });
+        if (radii.length !== radiusCount) throw new Error(`${id} radii must match radiusCount`);
+        const result = computeTrajectoryRecursionsOnCPU(
+          {
+            positions,
+            storage: 'resident-capacity',
+            radii,
+            timestamps:
+              timestampFormat === 'uint32x2'
+                ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')
+                : getCPUOperationFloat32Rows(id, inputs, 'timestamps'),
+            trackOffsets: getCPUOperationUint32Rows(id, inputs, 'trackOffsets')
+          },
+          {maximumTrackSegments}
+        );
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
             output.value,

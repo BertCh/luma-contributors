@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export {GPUSpatialScanStatistic} from './gpu-spatial-scan-statistic';
-export type {GPUSpatialScanStatisticProps} from './gpu-spatial-scan-statistic';
+export type {
+  GPUSpatialScanStatisticProps,
+  GPUSpatialScanStatisticOutput
+} from './gpu-spatial-scan-statistic';
 export {
   getGPUSpatialScanStatisticLayout,
   getGPUSpatialScanStatisticParameterValues,
@@ -31,6 +34,7 @@ export type {
 export {
   getGPUExpectationBasedScanParameterValues,
   GPUExpectationBasedSpaceTimeScan,
+  GPU_EXPECTATION_BASED_SCAN_LIMITS,
   GPU_EXPECTATION_BASED_SCAN_CLUSTER,
   GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS,
   GPU_EXPECTATION_BASED_SCAN_MAXIMUM_REPLICATES,
@@ -44,7 +48,9 @@ export {
 export type {
   GPUExpectationBasedScanSettings,
   GPUExpectationBasedSpaceTimeScanOutput,
-  GPUExpectationBasedSpaceTimeScanProps
+  GPUExpectationBasedSpaceTimeScanProps,
+  GPUExpectationBasedSpaceTimeScanShape,
+  GPUExpectationBasedSpaceTimeScanDeviceLimits
 } from './gpu-expectation-based-space-time-scan';
 export {getGPUScanRecurrenceInterval} from './scan-statistic-parameters';
 export {GPU_SCAN_MAXIMUM_INDEXED_NEIGHBOR_COUNT} from './scan-statistic-nearest-index';

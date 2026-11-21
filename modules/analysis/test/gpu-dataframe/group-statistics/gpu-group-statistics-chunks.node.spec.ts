@@ -389,7 +389,7 @@ it('keeps shader and pipeline counts constant as chunk count grows, including un
     let expectedShaderCount: number | undefined;
     for (const chunkCount of [2, 16, 64]) {
       const graph = new GPUCommandGraph(device);
-      const props = createProps(graph, ['mean', 'variance', 'zScore', 'median']);
+      const props = createProps(graph, ['sum', 'mean', 'variance', 'zScore', 'median']);
       const lengths = new Array(chunkCount).fill(rowCount / chunkCount);
       // Exercise nonzero aligned-binding prefixes and different dispatch sizes as well.
       lengths[0]--;
@@ -426,6 +426,10 @@ it('keeps shader and pipeline counts constant as chunk count grows, including un
             values,
             output: {
               ...props.columns[0].output,
+              sums: createTransientView(graph, 'pipeline-sums', 'uint32x2', 8),
+              status: {
+                sumOverflow: createTransientView(graph, 'pipeline-sum-overflow', 'uint32', 1)
+              },
               zScores: createTransientView(graph, 'pipeline-z-scores', 'float32', rowCount)
             }
           }
@@ -444,7 +448,8 @@ it('keeps shader and pipeline counts constant as chunk count grows, including un
           kernel.id
         )
       );
-      expect(new Set(stages.map(kernel => kernel.source)).size).toBe(7);
+      // Seven original stages plus the shared optional overflow accumulation stage.
+      expect(new Set(stages.map(kernel => kernel.source)).size).toBe(8);
       expect(stages.every(kernel => Object.keys(kernel.constants).length === 0)).toBe(true);
       for (const kernel of kernels) {
         const tokens =
@@ -597,7 +602,7 @@ it('checks all generated statistic branches against the full W3C reserved-word l
         'skewness',
         'kurtosis',
         'medians',
-        'percentiles',
+        'quantiles',
         'modes',
         'zScores'
       ] as const;
@@ -608,13 +613,13 @@ it('checks all generated statistic branches against the full W3C reserved-word l
             graph,
             `all-${field}`,
             'float32',
-            field === 'zScores' ? 1031 : field === 'percentiles' ? 2 * capacity : capacity
+            field === 'zScores' ? 1031 : field === 'quantiles' ? 2 * capacity : capacity
           )
         ])
       );
       const contributor = new GPUGroupStatistics({
         ...props,
-        percentiles: createTransientView(graph, 'all-fractions', 'float32', 2),
+        probabilities: createTransientView(graph, 'all-fractions', 'float32', 2),
         columns: [
           {
             ...props.columns[0],
@@ -955,34 +960,34 @@ it('rejects non-finite and out-of-range numeric shader props before generating a
     for (const length of [NaN, Infinity, -Infinity, 2 ** 32, 1.5, -1, 0]) {
       const graph = new GPUCommandGraph(device);
       const props = createProps(graph);
-      const percentiles = createTransientView(graph, 'bad-fractions', 'float32', 1);
-      Object.defineProperty(percentiles, 'length', {value: length});
-      expect(() => new GPUGroupStatistics({...props, columns: [], percentiles})).toThrow(
-        /group-statistics percentiles.length must be an integer in \[1, 4294967295\]/
+      const probabilities = createTransientView(graph, 'bad-fractions', 'float32', 1);
+      Object.defineProperty(probabilities, 'length', {value: length});
+      expect(() => new GPUGroupStatistics({...props, columns: [], probabilities})).toThrow(
+        /group-statistics probabilities.length must be an integer in \[1, 4294967295\]/
       );
     }
     const graph = new GPUCommandGraph(device);
     const props = createProps(graph);
-    const percentiles = createTransientView(graph, 'excessive-total-fractions', 'float32', 1);
+    const probabilities = createTransientView(graph, 'excessive-total-fractions', 'float32', 1);
     const percentileOutput = createTransientView(graph, 'excessive-total-output', 'float32', 1);
     // Metadata-only oversized views exercise construction without allocating gigabytes.
-    Object.defineProperty(percentiles, 'length', {value: 2 ** 29});
+    Object.defineProperty(probabilities, 'length', {value: 2 ** 29});
     Object.defineProperty(percentileOutput, 'length', {value: 2 ** 32});
     expect(
       () =>
         new GPUGroupStatistics({
           ...props,
-          percentiles,
+          probabilities,
           columns: [
             {
               values: props.columns[0].values,
               statistics: ['percentiles'],
-              output: {percentiles: percentileOutput}
+              output: {quantiles: percentileOutput}
             }
           ]
         })
     ).toThrow(
-      /group-statistics output.keys.length \* percentiles.length must be an integer in \[1, 4294967295\]/
+      /group-statistics output.keys.length \* probabilities.length must be an integer in \[1, 4294967295\]/
     );
   } finally {
     device.destroy();

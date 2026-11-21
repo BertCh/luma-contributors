@@ -11,9 +11,10 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GET_NAN_WGSL, IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -24,13 +25,16 @@ import {
   validateGPUStatusPort,
   type GPUIterationStatusPort
 } from '../../analysis-core/contracts/index';
-import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../analysis-core/kernels/incomplete-gamma-wgsl';
+import {createTransitionDiagnosticsSummaryNodes} from './transition-diagnostics-summary';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 const OPERATION = 'GPUTransitionDiagnostics';
-/** Serial GTH elimination and homogeneity retain a bounded reference dense system. */
+/** GTH elimination retains a bounded reference state system; condition summaries use parallel reductions. */
 export const GPU_TRANSITION_DIAGNOSTICS_MAXIMUM_CLASS_COUNT = 64;
+
+/** Two integer condition reductions (at most four 256-way levels plus publication each), four public sums (at most five nodes each), and at most twelve summary/solver nodes. */
+const DIAGNOSTIC_COMMAND_NODE_ALLOWANCE = 64;
 
 /** Default {@link GPUTransitionDiagnosticsProps.minimumTransitions}. */
 export const GPU_TRANSITION_DEFAULT_MINIMUM_TRANSITIONS = 5;
@@ -117,6 +121,30 @@ export type GPUTransitionDiagnosticsProps = {
 };
 
 /**
+ * Reads each declared scalar and nested port field once (own, inherited or accessor) before any
+ * validation; a spread would drop an inherited `minimumTransitions`. @internal
+ */
+function captureGPUTransitionDiagnosticsProps(
+  props: GPUTransitionDiagnosticsProps
+): GPUTransitionDiagnosticsProps {
+  const {id, counts, classCount, conditionCount, minimumTransitions, output} = props;
+  const {homogeneity, steadyStates, stateSparsity, status} = output;
+  return {
+    id,
+    counts,
+    classCount,
+    conditionCount,
+    minimumTransitions,
+    output: {
+      homogeneity,
+      steadyStates,
+      stateSparsity,
+      status: status ? {converged: status.converged} : undefined
+    }
+  };
+}
+
+/**
  * Diagnostics of a transition-count tensor: homogeneity of the conditional matrices, steady
  * states of the pooled and conditional chains, and a minimum-cell-count count.
  *
@@ -151,10 +179,14 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
   readonly chainCount: number;
   /** Resolved minimum transitions per state. */
   readonly minimumTransitions: number;
+  /** Upper bound including public reduction nodes at every supported tensor length. */
+  readonly estimatedCommandNodeCount = DIAGNOSTIC_COMMAND_NODE_ALLOWANCE;
 
   constructor(props: GPUTransitionDiagnosticsProps) {
+    props = captureGPUTransitionDiagnosticsProps(props);
     const id = props.id ?? 'transition-diagnostics';
     this.id = id;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     this.props = props;
     this.conditionCount = props.conditionCount ?? 1;
     this.chainCount = this.conditionCount > 1 ? this.conditionCount + 1 : 1;
@@ -169,7 +201,7 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
       GPU_TRANSITION_DIAGNOSTICS_MAXIMUM_CLASS_COUNT
     );
     validateCapacity(id, 'conditionCount', this.conditionCount);
-    validateCapacity(id, 'minimumTransitions', this.minimumTransitions);
+    validateCapacity(id, 'minimumTransitions', this.minimumTransitions, 1, 0xffffffff);
     validatePackedUint32View(props.counts, `${id} counts`);
     if (props.counts.length < this.conditionCount * classCount * classCount) {
       throw new Error(`${id} counts is too short`);
@@ -215,7 +247,7 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
     }
   }
 
-  /** Returns the summary node (homogeneity, sparsity, status reset) and the steady-state node. */
+  /** Returns parallel homogeneity/sparsity summaries, status reset and the dense steady-state node. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -249,130 +281,16 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
 const C: u32 = ${conditionCount}u;
 const MINIMUM_TRANSITIONS: u32 = ${minimumTransitions}u;`;
     const nodes: GPUCommandNode<Parameters>[] = [];
-    if (output.homogeneity || output.stateSparsity || converged) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-summary`,
-          operation: OPERATION,
-          variant: 'summary',
-          bindings: [
-            {name: 'counts', view: counts, type: 'u32', access: 'read'},
-            ...(output.homogeneity
-              ? [
-                  {
-                    name: 'homogeneity',
-                    view: output.homogeneity,
-                    type: 'f32' as const,
-                    access: 'read_write' as const
-                  }
-                ]
-              : []),
-            ...(output.stateSparsity
-              ? [
-                  {
-                    name: 'stateSparsity',
-                    view: output.stateSparsity,
-                    type: 'u32' as const,
-                    access: 'read_write' as const
-                  }
-                ]
-              : []),
-            ...(converged
-              ? [
-                  {
-                    name: 'converged',
-                    view: converged,
-                    type: 'u32' as const,
-                    access: 'read_write' as const
-                  }
-                ]
-              : [])
-          ],
-          invocationCount: 1,
-          declarations: `${constants}
-${GET_NAN_WGSL}
-${IS_NAN_BITS_WGSL}
-${GPU_UPPER_INCOMPLETE_GAMMA_WGSL}`,
-          body: `${converged ? 'converged[convergedOffset] = 1u;' : ''}
-  ${
-    output.stateSparsity
-      ? `var sparse = 0u;
-  var empty = 0u;
-  for (var state = 0u; state < C * K; state++) {
-    var stateTotal = 0u;
-    for (var to = 0u; to < K; to++) {
-      stateTotal += counts[countsOffset + state * K + to];
-    }
-    if (stateTotal == 0u) {
-      empty += 1u;
-    } else if (stateTotal < MINIMUM_TRANSITIONS) {
-      sparse += 1u;
-    }
-  }
-  stateSparsity[stateSparsityOffset + ${GPU_TRANSITION_STATE_SPARSITY.SPARSE}u] = sparse;
-  stateSparsity[stateSparsityOffset + ${GPU_TRANSITION_STATE_SPARSITY.EMPTY}u] = empty;`
-      : ''
-  }
-  ${
-    output.homogeneity
-      ? `var q = 0.0;
-  var likelihoodRatio = 0.0;
-  var degreesOfFreedom = 0.0;
-  var pooledRow: array<u32, ${classCount}>;
-  for (var origin = 0u; origin < K; origin++) {
-    var pooledTotal = 0u;
-    var nonZeroCells = 0u;
-    for (var to = 0u; to < K; to++) {
-      var pooled = 0u;
-      for (var condition = 0u; condition < C; condition++) {
-        pooled += counts[countsOffset + (condition * K + origin) * K + to];
-      }
-      pooledRow[to] = pooled;
-      pooledTotal += pooled;
-      if (pooled > 0u) {
-        nonZeroCells += 1u;
-      }
-    }
-    if (pooledTotal == 0u) {
-      continue;
-    }
-    var regimes = 0u;
-    for (var condition = 0u; condition < C; condition++) {
-      var regimeTotal = 0u;
-      for (var to = 0u; to < K; to++) {
-        regimeTotal += counts[countsOffset + (condition * K + origin) * K + to];
-      }
-      if (regimeTotal == 0u) {
-        continue;
-      }
-      regimes += 1u;
-      for (var to = 0u; to < K; to++) {
-        let observed = f32(counts[countsOffset + (condition * K + origin) * K + to]);
-        let expected = f32(regimeTotal) * f32(pooledRow[to]) / f32(pooledTotal);
-        if (pooledRow[to] > 0u) {
-          q += (observed - expected) * (observed - expected) / expected;
-        }
-        if (observed > 0.0) {
-          likelihoodRatio += observed * log(observed / expected);
-        }
-      }
-    }
-    degreesOfFreedom += f32(regimes - 1u) * f32(nonZeroCells - 1u);
-  }
-  likelihoodRatio = max(2.0 * likelihoodRatio, 0.0);
-  let nan = getNaN();
-  homogeneity[homogeneityOffset + ${GPU_TRANSITION_HOMOGENEITY.Q}u] = q;
-  homogeneity[homogeneityOffset + ${GPU_TRANSITION_HOMOGENEITY.Q_P_VALUE}u] =
-    select(nan, getChiSquareSurvivalValue(q, degreesOfFreedom), degreesOfFreedom > 0.0);
-  homogeneity[homogeneityOffset + ${GPU_TRANSITION_HOMOGENEITY.LR}u] = likelihoodRatio;
-  homogeneity[homogeneityOffset + ${GPU_TRANSITION_HOMOGENEITY.LR_P_VALUE}u] =
-    select(nan, getChiSquareSurvivalValue(likelihoodRatio, degreesOfFreedom), degreesOfFreedom > 0.0);
-  homogeneity[homogeneityOffset + ${GPU_TRANSITION_HOMOGENEITY.DEGREES_OF_FREEDOM}u] = degreesOfFreedom;`
-      : ''
-  }`
-        })
-      );
-    }
+    const summary = createTransitionDiagnosticsSummaryNodes(graph, {
+      id,
+      counts,
+      classCount,
+      conditionCount,
+      minimumTransitions,
+      output
+    });
+    nodes.push(...summary.nodes);
+    const pooledCounts = summary.pooledCounts;
     if (output.steadyStates) {
       // The elimination matrix of every chain (K * K floats each) lives in storage: at 64 classes
       // it would take 16 KiB of private memory per invocation, twice the core limit of 8,192 bytes.
@@ -389,6 +307,16 @@ ${GPU_UPPER_INCOMPLETE_GAMMA_WGSL}`,
           variant: 'steady-states',
           bindings: [
             {name: 'counts', view: counts, type: 'u32', access: 'read'},
+            ...(pooledCounts
+              ? [
+                  {
+                    name: 'pooledCounts',
+                    view: pooledCounts,
+                    type: 'f32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
             {
               name: 'steadyStates',
               view: output.steadyStates,
@@ -415,18 +343,15 @@ var<private> usedStates: array<u32, ${classCount}>;
 var<private> solution: array<f32, ${classCount}>;
 
 // Transition count of one chain: chain 0 is the pooled chain when there are conditions.
-fn getChainCount(chain: u32, origin: u32, to: u32) -> u32 {
-  if (C == 1u) {
-    return counts[countsOffset + origin * K + to];
+fn getChainCount(chain: u32, origin: u32, to: u32) -> f32 {
+  ${
+    pooledCounts
+      ? `if (chain == 0u) {
+    return pooledCounts[pooledCountsOffset + origin * K + to];
   }
-  if (chain == 0u) {
-    var pooled = 0u;
-    for (var condition = 0u; condition < C; condition++) {
-      pooled += counts[countsOffset + (condition * K + origin) * K + to];
-    }
-    return pooled;
+  return f32(counts[countsOffset + ((chain - 1u) * K + origin) * K + to]);`
+      : 'return f32(counts[countsOffset + origin * K + to]);'
   }
-  return counts[countsOffset + ((chain - 1u) * K + origin) * K + to];
 }`,
           body: `let chain = index;
   let workBase = chainWorkOffset + chain * K * K;
@@ -434,16 +359,16 @@ fn getChainCount(chain: u32, origin: u32, to: u32) -> u32 {
   var activeCount = 0u;
   var solvable = true;
   for (var state = 0u; state < K; state++) {
-    var outgoing = 0u;
-    var incoming = 0u;
+    var outgoing = 0.0;
+    var incoming = 0.0;
     for (var other = 0u; other < K; other++) {
       outgoing += getChainCount(chain, state, other);
       incoming += getChainCount(chain, other, state);
     }
-    if (outgoing > 0u || incoming > 0u) {
+    if (outgoing > 0.0 || incoming > 0.0) {
       usedStates[activeCount] = state;
       activeCount += 1u;
-      if (outgoing == 0u) {
+      if (outgoing == 0.0) {
         solvable = false;
       }
     }
@@ -456,14 +381,40 @@ fn getChainCount(chain: u32, origin: u32, to: u32) -> u32 {
     return;
   }
   let m = activeCount;
+  // GTH escape sums are only a one-sided test: transient higher-numbered states can escape
+  // to a lower closed class. Check reachability from state 0 in both support directions.
+  // Reuse solution as 0/1 reachability scratch before back-substitution overwrites it.
+  for (var direction = 0u; direction < 2u; direction++) {
+    for (var stateIndex = 0u; stateIndex < m; stateIndex++) {
+      solution[stateIndex] = select(0.0, 1.0, stateIndex == 0u);
+    }
+    for (var traversal = 0u; traversal < m; traversal++) {
+      var changed = false;
+      for (var originIndex = 0u; originIndex < m; originIndex++) {
+        if (solution[originIndex] == 0.0) { continue; }
+        for (var destinationIndex = 0u; destinationIndex < m; destinationIndex++) {
+          let origin = select(usedStates[originIndex], usedStates[destinationIndex], direction == 1u);
+          let destination = select(usedStates[destinationIndex], usedStates[originIndex], direction == 1u);
+          if (getChainCount(chain, origin, destination) > 0.0 && solution[destinationIndex] == 0.0) {
+            solution[destinationIndex] = 1.0;
+            changed = true;
+          }
+        }
+      }
+      if (!changed) { break; }
+    }
+    for (var stateIndex = 0u; stateIndex < m; stateIndex++) {
+      if (solution[stateIndex] == 0.0) { solvable = false; }
+    }
+  }
   if (solvable) {
     for (var a = 0u; a < m; a++) {
-      var rowTotal = 0u;
+      var rowTotal = 0.0;
       for (var b = 0u; b < m; b++) {
         rowTotal += getChainCount(chain, usedStates[a], usedStates[b]);
       }
       for (var b = 0u; b < m; b++) {
-        chainWork[workBase + a * m + b] = f32(getChainCount(chain, usedStates[a], usedStates[b])) / f32(rowTotal);
+        chainWork[workBase + a * m + b] = getChainCount(chain, usedStates[a], usedStates[b]) / rowTotal;
       }
     }
     // Grassmann-Taksar-Heyman: eliminate the last state repeatedly. The sum of the remaining
@@ -497,6 +448,15 @@ fn getChainCount(chain: u32, origin: u32, to: u32) -> u32 {
       }
       solution[k] = weight;
       total += weight;
+    }
+    // Float32 GTH weights can overflow on a highly biased chain. Do not certify NaN
+    // probabilities as converged: publish the existing whole-chain failure convention.
+    solvable = total > 0.0 && (bitcast<u32>(total) & 0x7f800000u) != 0x7f800000u;
+  }
+  if (solvable) {
+    var total = 0.0;
+    for (var stateIndex = 0u; stateIndex < m; stateIndex++) {
+      total += solution[stateIndex];
     }
     for (var state = 0u; state < K; state++) {
       steadyStates[steadyStatesOffset + chain * K + state] = 0.0;

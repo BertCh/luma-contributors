@@ -93,6 +93,12 @@ export function prepareGPUScalarScaleControls(settings: GPUScalarScaleControls):
   parameters: Float32Array;
   domain: Float32Array;
   range: Float32Array;
+  /** Live entry counts; domainCount is distinct from allocation capacity. */
+  counts: {domainCount: number; rangeCount: number; parameterCount: number};
+  /** Graph view formats, named for the consuming GPUScalarScale fields. */
+  formats: {domain: 'float32'; range: 'float32'; parameters: 'float32'};
+  /** Minimum domain allocation; use as maximumDomainCount for a minimal graph. */
+  minimumDomainCapacity: number;
 } {
   const parameters = getGPUScalarScaleParameterValues({
     scale: settings.scale,
@@ -126,5 +132,16 @@ export function prepareGPUScalarScaleControls(settings: GPUScalarScaleControls):
       (domain[0] < 0 && domain[1] < 0),
     'log domain endpoints must be nonzero with the same sign'
   );
-  return {parameters, domain, range};
+  return {
+    parameters,
+    domain,
+    range,
+    counts: {
+      domainCount: domain.length,
+      rangeCount: range.length,
+      parameterCount: parameters.length
+    },
+    formats: {domain: 'float32', range: 'float32', parameters: 'float32'},
+    minimumDomainCapacity: Math.max(2, domain.length)
+  };
 }

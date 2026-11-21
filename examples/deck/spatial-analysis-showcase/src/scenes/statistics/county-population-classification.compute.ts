@@ -197,7 +197,7 @@ export async function createCountyPopulationClassification(
         values: classIdsView,
         integerValues: 'ordinal',
         domain: breaksView,
-        domainCount: classCountView,
+        classCount: classCountView,
         palette: paletteView,
         parameters: ordinalScaleParameters.importToGraph(graph),
         maximumDomainCount: CLASS_COUNT + 1,

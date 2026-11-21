@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  resolveRecipeDestinations,
+  snapshotRecipeGeometryRows,
+  createRecipeRowAssignments
+} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 
 import {validateRecipeBoundary, getRecipeView as getOrCreateView} from './recipe-utils';
@@ -48,7 +54,7 @@ export type GPUZonalDistributionRecipeProps = {
   values: GraphDataView<'float32'>;
   /** Per-frame probabilities in [0, 1], using the linear quantile convention. */
   probabilities?: GraphDataView<'float32'>;
-  outputs?: Partial<GPUZonalDistributionOutput>;
+  output?: Partial<GPUZonalDistributionOutput>;
 };
 
 export type GPUZonalDistributionRecipeResult = GPURecipeResult<
@@ -76,15 +82,34 @@ function declareZonalDistributionRecipe<Parameters>(
   props: GPUZonalDistributionRecipeProps
 ): GPUZonalDistributionRecipeResult {
   const id = props.id ?? 'zonal-distribution-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   const builder = new RecipeBuilder(graph);
   const stages: GPURecipeStageStatusPort[] = [];
-  const source = props.source;
+  const source =
+    props.source.kind === 'zones'
+      ? props.source
+      : {
+          kind: 'points' as const,
+          join: {
+            ...props.source.join,
+            points: snapshotRecipeGeometryRows(props.source.join.points),
+            polygons: snapshotRecipeGeometryRows(props.source.join.polygons)
+          }
+        };
   const zoneCount =
     source.kind === 'zones' ? source.zoneCount : source.join.polygons.featureOffsets.length - 1;
-  const zones =
-    source.kind === 'zones'
-      ? source.zones
-      : getOrCreateView(graph, `${id}-assignments`, 'uint32', props.values.length);
+  const assignments =
+    source.kind === 'points'
+      ? createRecipeRowAssignments(
+          graph,
+          `${id}-assignments`,
+          source.join.points.positions,
+          source.join.points.featureOffsets
+            ? source.join.points.featureOffsets.length - 1
+            : undefined
+        )
+      : undefined;
+  const zones = source.kind === 'zones' ? source.zones : assignments!.values;
   if (zones.length !== props.values.length) {
     throw new Error('Zone values must align with assignments');
   }
@@ -97,14 +122,12 @@ function declareZonalDistributionRecipe<Parameters>(
       new GPUPointInPolygonJoin({
         ...source.join,
         id: `${id}-join`,
-        points: {...source.join.points, sourceIds: undefined},
-        polygons: {...source.join.polygons, sourceIds: undefined},
-        output: {pointFeatureIds: zones, status: joinStatus}
+        output: {pointFeatureRows: assignments!.output, status: joinStatus}
       })
     );
     stages.push({stage: 'zone-assignment', status: joinStatus});
   }
-  const output = props.outputs ?? {};
+  const output = destinations ?? {};
   const outputs: GPUZonalDistributionOutput = {
     zoneIds: getOrCreateView(graph, `${id}-zone-ids`, 'uint32', zoneCount, output.zoneIds),
     rowCounts: getOrCreateView(graph, `${id}-row-counts`, 'uint32', zoneCount, output.rowCounts),
@@ -166,7 +189,7 @@ function declareZonalDistributionRecipe<Parameters>(
       keys: zones,
       keyCount: zoneCount,
       mask: source.kind === 'zones' ? source.mask : undefined,
-      percentiles: props.probabilities,
+      probabilities: props.probabilities,
       columns: [
         {
           values: props.values,
@@ -182,7 +205,7 @@ function declareZonalDistributionRecipe<Parameters>(
             medians: outputs.medians,
             modes: outputs.modes,
             uniqueCounts: outputs.uniqueCounts,
-            percentiles: outputs.quantiles
+            quantiles: outputs.quantiles
           }
         }
       ],

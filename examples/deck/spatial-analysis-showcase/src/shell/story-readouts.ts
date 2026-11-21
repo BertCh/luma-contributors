@@ -96,8 +96,10 @@ export function parseOptionText(spec: OptionSpec<never>, text: string): OptionVa
       const [low, high] = text.split('..').map(Number);
       return Number.isFinite(low) && Number.isFinite(high) ? ([low, high] as const) : undefined;
     }
-    case 'select':
-      return spec.options.some(option => option.value === text) ? text : undefined;
+    case 'select': {
+      const canonical = spec.aliases?.[text] ?? text;
+      return spec.options.some(option => option.value === canonical) ? canonical : undefined;
+    }
     default:
       return undefined;
   }

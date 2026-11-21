@@ -56,6 +56,7 @@ it('GPUGeographicDistribution validates its props', () => {
     id: 'validation'
   });
   expect(() => new GPUGeographicDistribution(createProps(graph))).not.toThrow();
+  // @ts-expect-error Empty terminal selection is intentionally exercised for JavaScript callers.
   expect(() => new GPUGeographicDistribution(createProps(graph, {}, {}))).toThrow(
     'at least one output'
   );
@@ -345,7 +346,7 @@ it('GPUGeographicDistribution and GPURoseStatistic are planar only', () => {
   const planar = {coordinateSpace: 'planar', metric: 'native', units: 'native'} as const;
   expect(
     new GPUGeographicDistribution(createProps(graph, {spatialContext: planar})).spatialContext
-  ).toBe(planar);
+  ).toEqual(planar); // Captured at construction (lifecycle convention), so equal, not identical.
   for (const context of [lonLat, greatCircle]) {
     expect(
       () => new GPUGeographicDistribution(createProps(graph, {spatialContext: context}))

@@ -50,6 +50,17 @@ export type SpatialLagMaximumLikelihoodOperationProps = Pick<
  * Whole-CSR spatial lag likelihood operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING.
  * Compile-time: all props. Per-frame: contents of every input, including the packed Philox seed.
  * Chunked weights are omitted because the mixed executor requires one packed vector per value.
+ * Main regression tiles default to max(64, ceil(rowCount / 4096)) rows: 4096 is a target.
+ * Main and nested trace layouts enforce at most 16,777,216 (4096 squared) tiles, subject to
+ * device binding limits and the independent command budget. Above 4096 tiles a group merge
+ * precedes the final merge. Explicit main tileRowCount values are preserved.
+ * Nested traces independently start at max(32, ceil(rowCount / 1024)) rows per tile; this width
+ * does not use the operation's main tileRowCount. Whole CSR counts ceil(rowCount / width).
+ * The underlying contributor also accepts chunks, counting ceil(chunk.rowCount / width) per
+ * chunk. Traces widen toward the 4096-tile target when at most 4096 chunks are nonempty;
+ * more nonempty chunks retain the initial width and use hierarchical merging.
+ * Lag-ML main regression tiles span the global row range; its separate CSR norm tiles sum
+ * ceil(chunk.rowCount / tileRowCount) over chunks.
  */
 export class GPUSpatialLagMaximumLikelihoodOperation extends GPUContributorOperation {
   constructor(props: SpatialLagMaximumLikelihoodOperationProps) {

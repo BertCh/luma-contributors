@@ -9,7 +9,7 @@ import {createIndexedLayer} from './indexed-layer';
 import {getConnectionLimitReason} from './resident-arc-line-plan';
 import {getResidentChannelLegendModel} from './resident-channel-legend-model';
 import {isCellLayerType} from './cell-layer-types';
-import {cellToLatLng} from 'h3-js';
+import {cellToLatLng, cellToBoundary, isValidCell} from 'h3-js';
 import {decodeCellFeatures} from './standalone-viewer-cells';
 import {buildClusterLayer, type ViewerClusterView} from './standalone-viewer-cluster';
 import {
@@ -42,6 +42,7 @@ import {
 } from './standalone-viewer-scales';
 
 import {clamp} from '@math.gl/core';
+import {getGeographicViewportFit} from '@luma-contributors/analysis/geospatial-analysis';
 
 /** Builds deck.gl layers for every resident layer family from the saved Kepler configuration. */
 
@@ -73,6 +74,8 @@ export type ViewerBuildResult = {
   legends: ViewerLegend[];
   skipped: {layerId: string; label: string; reason: string}[];
   bounds: [number, number, number, number] | null;
+  /** Compact continuous longitude fit for a capable Trips camera, in degrees. */
+  geographicFit?: ReturnType<typeof getGeographicViewportFit>;
   tripDomain: [number, number] | null;
   needsWebGL: boolean;
   /** Layers whose geometry depends on the zoom level (cluster). */
@@ -90,12 +93,14 @@ function toNumber(value: unknown, fallback: number): number {
 type ChannelRange = readonly [number, number];
 
 class BoundsAccumulator {
+  constructor(readonly positions?: number[]) {}
   west = Infinity;
   south = Infinity;
   east = -Infinity;
   north = -Infinity;
   add(longitude: number, latitude: number): void {
     if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return;
+    this.positions?.push(longitude, latitude);
     this.west = Math.min(this.west, longitude);
     this.east = Math.max(this.east, longitude);
     this.south = Math.min(this.south, latitude);
@@ -300,7 +305,9 @@ export function buildViewerLayers(
     isZoomDependent: false,
     pickTargets: new Map()
   };
-  const bounds = new BoundsAccumulator();
+  const bounds = new BoundsAccumulator(
+    specs.some(spec => spec.isVisible && spec.type === 'trip') ? [] : undefined
+  );
   for (const spec of specs) {
     if (!spec.isVisible) continue;
     const dataset = context.datasets.get(spec.datasetId);
@@ -353,6 +360,11 @@ export function buildViewerLayers(
   }
   if (bounds.west <= bounds.east)
     result.bounds = [bounds.west, bounds.south, bounds.east, bounds.north];
+  if (result.tripDomain && bounds.positions) {
+    const fit = getGeographicViewportFit([Float32Array.from(bounds.positions)], 2);
+    // Preserve ordinary cameras; only a shorter wrapped interval needs the capable fit.
+    if (fit && fit.longitudeSpanDegrees < bounds.east - bounds.west) result.geographicFit = fit;
+  }
   return result;
 }
 
@@ -486,7 +498,6 @@ function buildLayer(
       const features = isCell
         ? decodeCellFeatures(spec.type as 's2' | 'a5' | 'geohash', dataset, fieldName, rows)
         : parseFeatures(context, dataset, fieldName, rows);
-      for (const feature of features) collectGeometryBounds(feature.geometry, bounds);
       const getFill = createColorChannel(
         spec,
         dataset,
@@ -497,7 +508,8 @@ function buildLayer(
         legendEntries
       );
       if (spec.type === 'trip')
-        return buildTripsLayer(spec, features, getFill, context, result, common);
+        return buildTripsLayer(spec, features, getFill, context, result, common, bounds);
+      for (const feature of features) collectGeometryBounds(feature.geometry, bounds);
       const getStroke = createColorChannel(
         spec,
         dataset,
@@ -557,6 +569,11 @@ function buildLayer(
       const fieldName = spec.columns['hex_id'];
       const hexagons = fieldName ? dataset.readStrings(fieldName) : null;
       if (!hexagons) return null;
+      for (const row of rowList) {
+        const cell = hexagons[row];
+        if (cell && isValidCell(cell))
+          for (const [latitude, longitude] of cellToBoundary(cell)) bounds.add(longitude, latitude);
+      }
       const getFill = createColorChannel(
         spec,
         dataset,
@@ -736,7 +753,8 @@ function buildTripsLayer(
   getColor: (row: number) => ColorTriple,
   context: ViewerBuildContext,
   result: ViewerBuildResult,
-  common: {id: string; pickable: boolean; opacity: number}
+  common: {id: string; pickable: boolean; opacity: number},
+  bounds: BoundsAccumulator
 ): any | null {
   const trips = features.filter(
     feature =>
@@ -747,6 +765,7 @@ function buildTripsLayer(
   let maximum = -Infinity;
   for (const trip of trips)
     for (const coordinate of trip.geometry.coordinates) {
+      bounds.add(coordinate[0], coordinate[1]);
       minimum = Math.min(minimum, coordinate[3]);
       maximum = Math.max(maximum, coordinate[3]);
     }
@@ -763,7 +782,20 @@ function buildTripsLayer(
     fadeTrail: spec.visConfig['fadeTrail'] !== false,
     trailLength,
     currentTime: context.currentTime,
-    getPath: (trip: any) => trip.geometry.coordinates.map((c: number[]) => [c[0], c[1], c[2] || 0]),
+    getPath: (trip: any) => {
+      const path: number[][] = trip.geometry.coordinates.map((coordinate: number[]) => [
+        coordinate[0],
+        coordinate[1],
+        coordinate[2] || 0
+      ]);
+      for (let index = 1; index < path.length; index++)
+        path[index][0] += 360 * Math.round((path[index - 1][0] - path[index][0]) / 360);
+      const center =
+        result.geographicFit?.longitudeCenterDegrees ?? (bounds.west + bounds.east) / 2;
+      const shift = 360 * Math.round((center - path[0][0]) / 360);
+      for (const position of path) position[0] += shift;
+      return path;
+    },
     getTimestamps: (trip: any) => trip.geometry.coordinates.map((c: number[]) => c[3]),
     getColor: (trip: any) => getColor(trip.properties.__row)
   });

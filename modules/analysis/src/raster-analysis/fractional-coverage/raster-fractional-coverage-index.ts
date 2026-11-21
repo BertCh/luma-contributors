@@ -28,6 +28,7 @@ import {
   createRasterFractionalTileNode
 } from './raster-fractional-tile-kernel';
 import type {GPURasterFractionalCoverage} from '../gpu-raster-fractional-coverage';
+import {RASTER_FRACTIONAL_INVERSE_WGSL} from './raster-fractional-inverse-wgsl';
 
 /** Upper bound on clipping scratch; final input tiles bind and dispatch only their actual rows. */
 export const RASTER_FRACTIONAL_CANDIDATE_TILE_SIZE = 262144;
@@ -103,7 +104,8 @@ export function validateFractionalCoverageBindings<Parameters>(
 }
 
 /** Shared exact clipping and affine inversion used by both coverage routes. @internal */
-export const RASTER_FRACTIONAL_CLIPPING_WGSL = `fn setting(slot:u32)->f32{return settings[settingsOffset+slot];}
+export const RASTER_FRACTIONAL_CLIPPING_WGSL = `${RASTER_FRACTIONAL_INVERSE_WGSL}
+fn setting(slot:u32)->f32{return settings[settingsOffset+slot];}
 // A non-identity pixel coordinate within four float32 steps of an integer is that integer,
 // capped at 1e-5 pixel so representable subpixel polygons survive large pixel indices. The
 // decision uses the displacement from the nearest lattice point, a local subpixel coordinate.
@@ -119,7 +121,8 @@ export const RASTER_FRACTIONAL_CLIPPING_WGSL = `fn setting(slot:u32)->f32{return
 fn snapToLattice(pixel:vec2<f32>)->vec2<f32>{let nearest=round(pixel-vec2<f32>(FRACTIONAL_BOUNDARY_SHIFT))+vec2<f32>(FRACTIONAL_BOUNDARY_SHIFT);let tolerance=min(vec2<f32>(1.0e-5),4.76837158203125e-7*max(abs(nearest),vec2<f32>(1.0)));return select(pixel,nearest,abs(pixel-nearest)<=tolerance);}
 // Pixel coordinates of a vertex. On an axis-aligned grid (b = d = 0) each axis is one division,
 // which rounds less than the general form (two products, a difference and a quotient).
-fn point(vertex:u32)->vec2<f32>{let x=positions[positionsOffset+vertex*2u]-setting(0u);let y=positions[positionsOffset+vertex*2u+1u]-setting(1u);if(setting(0u)==0.0&&setting(1u)==0.0&&setting(2u)==1.0&&setting(3u)==0.0&&setting(4u)==0.0&&setting(5u)==1.0){return vec2<f32>(x,y);}if(setting(3u)==0.0&&setting(4u)==0.0){return snapToLattice(vec2<f32>(x/setting(2u),y/setting(5u)));}return snapToLattice(vec2<f32>((setting(5u)*x-setting(3u)*y)/setting(6u),(-setting(4u)*x+setting(2u)*y)/setting(6u)));}
+// Word 6 retains the original-grid area determinant. Invert the actual packed axes instead.
+fn point(vertex:u32)->vec2<f32>{let x=positions[positionsOffset+vertex*2u]-setting(0u);let y=positions[positionsOffset+vertex*2u+1u]-setting(1u);if(setting(0u)==0.0&&setting(1u)==0.0&&setting(2u)==1.0&&setting(3u)==0.0&&setting(4u)==0.0&&setting(5u)==1.0){return vec2<f32>(x,y);}if(setting(3u)==0.0&&setting(4u)==0.0){return snapToLattice(vec2<f32>(fractionalDivide(fractionalValue(x),fractionalValue(setting(2u))),fractionalDivide(fractionalValue(y),fractionalValue(setting(5u)))));}let determinant=fractionalProductDifference(setting(2u),setting(5u),setting(3u),setting(4u));let column=fractionalProductDifference(setting(5u),x,setting(3u),y);let row=fractionalProductDifference(setting(2u),y,setting(4u),x);return snapToLattice(vec2<f32>(fractionalDivide(column,determinant),fractionalDivide(row,determinant)));}
 fn clip(vertices:ptr<function,array<vec2<f32>,8>>,count:u32,axis:u32,bound:f32,lower:bool)->u32{
  var result:array<vec2<f32>,8>;var size=0u;if(count==0u){return 0u;}var previous=(*vertices)[count-1u];var previousInside=select(previous[axis]<=bound,previous[axis]>=bound,lower);
  for(var cursor=0u;cursor<count;cursor++){let current=(*vertices)[cursor];let inside=select(current[axis]<=bound,current[axis]>=bound,lower);if(inside!=previousInside){let fraction=(bound-previous[axis])/(current[axis]-previous[axis]);var intersection=mix(previous,current,fraction);intersection[axis]=bound;result[size]=intersection;size++;}if(inside){result[size]=current;size++;}previous=current;previousInside=inside;}

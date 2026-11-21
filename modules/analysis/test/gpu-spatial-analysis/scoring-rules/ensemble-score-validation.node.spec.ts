@@ -228,3 +228,56 @@ it('the division profile reproduces the near-maximum reciprocal flush missed by 
   const expected = (Math.SQRT2 * 3e38) / 4;
   expect(Math.abs(oldScore / expected - 1)).toBeCloseTo(0.5857864080164626, 6);
 });
+
+it('t1 publishes NaN energy for invalid members before finite-math self-pair cancellation', () => {
+  const fixture = createFixture();
+  try {
+    recordWGSLKernelNodes(fixture.graph);
+    const contributor = new GPUEnsembleScores({
+      ...fixture.props,
+      memberCount: 1,
+      output: {energyScore: fixture.props.output.energyScore}
+    });
+    const term = contributor
+      .getCommandNodes(fixture.graph)
+      .find(node => node.id.includes('energy-terms'))!;
+    const record = getWGSLKernelNodeRecord(fixture.graph, term.id)!;
+    const bindings = Object.fromEntries(
+      record.bindings.map((binding, index) => {
+        const values = new Float32Array(getViewBindingRange(binding.view).size / 4);
+        if (binding.name === 'ensemble') values.set([Infinity, 1]);
+        if (binding.name === 'observations') values.set([1, 1]);
+        return [index, values];
+      })
+    );
+    const executor = createReciprocalFlushExecutor(record.source);
+    const original = executor._evalBinaryOp.bind(executor);
+    // With nonfinite operands WGSL permits a finite-math optimization of x - x to zero.
+    // This profile demonstrates why an invalid-member result must not depend on that subtraction.
+    executor._evalBinaryOp = (expression, context) => {
+      const result = original(expression, context);
+      if (expression.operator === '-' && result instanceof ScalarData) {
+        const first = executor.evalExpression(expression.left, context);
+        const second = executor.evalExpression(expression.right, context);
+        if (
+          first instanceof ScalarData &&
+          second instanceof ScalarData &&
+          !Number.isFinite(first.value) &&
+          first.value === second.value
+        )
+          result.value = 0;
+      }
+      return result;
+    };
+    executor.dispatchWorkgroups(
+      'main',
+      [...record.workgroups],
+      {0: bindings},
+      {constants: record.constants}
+    );
+    const terms = bindings[record.bindings.findIndex(binding => binding.name === 'terms')];
+    expect(terms[0]).toBeNaN();
+  } finally {
+    fixture.device.destroy();
+  }
+});

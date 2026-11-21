@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {
   validateCellDispatchBindings,
   validateCellDispatchOutputs
@@ -28,6 +29,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/status';
 import {HEALPIX_MAXIMUM_ORDER} from './healpix-index-wgsl';
+import {resolveHealpixIndexScheme} from './healpix-scheme';
 import type {GPUHealpixIndexScheme} from './gpu-healpix-point-to-cell';
 
 const OPERATION = 'GPUHealpixCellAggregation';
@@ -47,7 +49,8 @@ export type GPUHealpixCellAggregationProps = {
   /**
    * Optional per-row selection: nonzero keeps the row. Pass `GPUHealpixPointToCell`
    * `output.validity` to leave out rows that received no cell; with the `'nested'` scheme the zero
-   * key is a real cell, so rows are otherwise all kept.
+   * key is a real cell, so rows are otherwise all kept. With `'uniq'`, the impossible zero key
+   * is always left out and included in `status.invalidCount`, with or without a mask.
    */
   mask?: GraphDataView<'uint32'>;
   /** Optional values to sum and take extremes of. A non-finite value leaves its row out. */
@@ -73,7 +76,7 @@ export type GPUHealpixCellAggregationOutput = {
   /**
    * Status scalars (one uint32 row each): `count` is the number of cells written (clamped to
    * `cellCapacity`), `requiredCount` the number of distinct cells, `overflow` is 1 when cells were
-   * dropped, and `invalidCount` the rows left out by the mask or by a non-finite value.
+   * dropped, and `invalidCount` the rows left out by the mask, a non-finite value or a zero UNIQ key.
    */
   status: GPUCardinalityPort & GPUOverflowStatusPort & {invalidCount?: GraphDataView<'uint32'>};
 };
@@ -102,17 +105,33 @@ export class GPUHealpixCellAggregation implements GPUCommandNodeProducer {
   readonly props: GPUHealpixCellAggregationProps;
 
   constructor(props: GPUHealpixCellAggregationProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'order',
+      'scheme',
+      'cells',
+      'mask',
+      'values',
+      'cellCapacity',
+      [
+        'output',
+        [
+          'cells',
+          'counts',
+          'sums',
+          'minimums',
+          'maximums',
+          ['status', ['count', 'requiredCount', 'overflow', 'invalidCount']]
+        ]
+      ]
+    ]);
     const id = props.id ?? 'healpix-cell-aggregation';
     this.id = id;
     this.props = props;
     const {output} = props;
     validateCapacity(id, 'order', props.order, 0, HEALPIX_MAXIMUM_ORDER);
     validateCapacity(id, 'cellCapacity', props.cellCapacity, 1, MAXIMUM_HEALPIX_AGGREGATION_ROWS);
-    validateRequirement(
-      id,
-      props.scheme === undefined || ['nested', 'uniq'].includes(props.scheme),
-      "scheme must be 'nested' or 'uniq'"
-    );
+    resolveHealpixIndexScheme(id, props.scheme);
     validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
     validateCapacity(id, 'cells.length', rows, 1, MAXIMUM_HEALPIX_AGGREGATION_ROWS);
@@ -279,6 +298,7 @@ const CAPACITY: u32 = ${capacity}u;`;
         declarations,
         body: `var keep = true;
   ${props.mask ? 'keep = rowMask[rowMaskOffset + index] != 0u;' : ''}
+  ${props.scheme === 'uniq' ? 'keep = keep && (cells[cellsOffset + 2u * index] != 0u || cells[cellsOffset + 2u * index + 1u] != 0u);' : ''}
   ${props.values ? 'keep = keep && (bitcast<u32>(values[valuesOffset + index]) & 0x7fffffffu) < 0x7f800000u;' : ''}
   lowKeys[lowKeysOffset + index] = cells[cellsOffset + 2u * index];
   highKeys[highKeysOffset + index] = cells[cellsOffset + 2u * index + 1u];

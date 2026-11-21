@@ -5,6 +5,7 @@
 import {GraphVectorView, type GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
+  isGraphVectorView,
   validateRequirement,
   validateCapacity,
   validateGPUStorageBindingByteLength,
@@ -50,10 +51,21 @@ export function validateClassificationRows(
   formats: readonly ClassificationFormat[],
   source?: ClassificationRows<ClassificationFormat>
 ): void {
-  for (const chunk of getGraphViewChunks(view)) {
+  const chunks = getGraphViewChunks(view);
+  for (const chunk of chunks) {
     validateSinglePackedView(chunk, formats, `${id} ${name}`);
+    validateRequirement(
+      id,
+      chunk.format === view.format,
+      `${name} chunk format ${chunk.format} must equal declared format ${view.format}`
+    );
   }
-  if (source && (source instanceof GraphVectorView || view instanceof GraphVectorView))
+  validateRequirement(
+    id,
+    chunks.reduce((total, chunk) => total + chunk.length, 0) === view.length,
+    `${name} chunk row total must equal declared length ${view.length}`
+  );
+  if (source && (isGraphVectorView(source) || isGraphVectorView(view)))
     validateGraphViewTopology(id, name, source, view);
 }
 
@@ -66,7 +78,7 @@ export function validateClassificationOutput(
   source: ClassificationRows<ClassificationFormat>
 ): void {
   validateClassificationRows(id, name, view, [format]);
-  if (source instanceof GraphVectorView || view instanceof GraphVectorView) {
+  if (isGraphVectorView(source) || isGraphVectorView(view)) {
     validateGraphViewTopology(id, name, source, view);
   } else {
     validateRequirement(

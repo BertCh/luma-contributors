@@ -13,7 +13,7 @@ import {
   GPU_ANALYSIS_QUESTIONS,
   GPU_ANALYSIS_ROW_SEMANTICS,
   GPU_SPATIAL_ANALYSIS_DATA_KINDS
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import {getKeplerOperationDescriptor} from '../descriptors/operation-descriptors';
 import {parseWorkflowDocument} from './workflow-document';
@@ -475,10 +475,11 @@ export function validateWorkflowAnalysisTemplate(
   const observedKinds: Record<string, Record<string, WorkflowPortKind>> = {};
   for (const slot of template.slots) {
     const geometry = getGPUAnalysisCatalogGeometryForDataKind(slot.kind);
-    if (geometry)
+    const kind = slot.kind === 'surface' ? 'raster' : geometry === 'none' ? 'table' : geometry;
+    if (kind)
       observedKinds[slot.source.stepId] = {
-        [slot.source.output]:
-          slot.kind === 'surface' ? 'raster' : geometry === 'none' ? 'table' : geometry
+        ...observedKinds[slot.source.stepId],
+        [slot.source.output]: kind
       };
   }
   const plan = planWorkflow(template.document, {registry, observedKinds});

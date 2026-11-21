@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   type GPUCommandGraph,
@@ -34,7 +35,7 @@ export type GPUTerrainRuggednessAlgorithm = 'riley' | 'wilson';
 export type GPUTerrainRuggednessEdgeMode = 'nodata' | 'extrapolate';
 
 /** Caller-owned outputs of {@link GPUTerrainRuggedness}; at least one is required. */
-export type GPUTerrainRuggednessOutput = {
+export type GPUTerrainRuggednessOutput = TerrainAtLeastOne<{
   /** Optional topographic position index: centre minus the mean of its 8 neighbours. */
   topographicPositionIndex?: GraphDataView<'float32'>;
   /** Optional terrain ruggedness index, see `terrainRuggednessAlgorithm`. */
@@ -43,7 +44,7 @@ export type GPUTerrainRuggednessOutput = {
   roughness?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where every output is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainRuggedness}.

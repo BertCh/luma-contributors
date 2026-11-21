@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
@@ -52,15 +54,19 @@ export type GPUStreamlinesOutput = {
    * or point capacity was full. Optional `candidateOverflow` is 1 when the iteration budget left
    * undecided seeds. `requiredCount` counts accepted lines before final capacity, a lower bound
    * when candidate loss is set.
+   * An existing overflow-only reader must also request candidateOverflow == 0 or
+   * status.iterationLimitReached == 0 to establish completeness. requiredCount == count alone
+   * only proves that the decided accepted lines fit; it cannot prove all seeds were decided.
    */
   lines: GPUCompactOutput;
   /**
+   * Unused offsets repeat positionCount; the position tail remains unspecified.
    * CSR offsets into `positions`, `lines.ids.length + 1` rows: line `i` is
-   * `positions[lineOffsets[i] .. lineOffsets[i + 1])`. Rows past `count + 1` are not written.
+   * `positions[lineOffsets[i] .. lineOffsets[i + 1])`. Every unused offset repeats `positionCount`.
    */
   lineOffsets: GraphDataView<'uint32'>;
   /**
-   * Polyline points, capacity rows, ordered backward end, seed, forward end per line. Rows past
+   * Polyline points in the packed frame (local when the packer uses localOrigin), capacity rows, ordered backward end, seed, forward end per line. Rows past
    * `positionCount` are not written.
    */
   positions: GraphDataView<'float32x2'>;
@@ -137,6 +143,8 @@ export type GPUStreamlinesProps = {
  *    or below `minimumSpeed`. Seed `s` uses `philox((s, 0, 0, 0), (seed, 2))`: words x and y
  *    jitter it inside its lattice cell and word z gives its priority key
  *    `(z >> 16) << 16 | (0xffff - s)`, unique, with ties favouring the lower seed index.
+ *    A supported terminal landing is retained even if its speed is zero or below minimumSpeed;
+ *    no next step starts there. This differs from LIC's exclusion of that landing's noise.
  * 2. Prune: the result equals this greedy pass in descending key: a line whose seed cell is
  *    occupied is rejected; each direction is cut before its first point in an occupied cell; the
  *    line is accepted when it keeps `minimumPoints` points, and its kept points occupy their cells.
@@ -162,9 +170,9 @@ export type GPUStreamlinesProps = {
  * Row direction: with positive cellHeight, row zero is on the smallest-y side of the field extent and
  * rows advance toward larger y; `v` is the velocity toward larger y. Signed cell sizes explicitly
  * reverse the corresponding index direction; sample centers are origin + (index + 0.5) * cell size. No grid affine is read and
- * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
- * must have its row order reversed by the caller before upload, or the flow is mirrored north to
- * south. Following a grid affine is deferred (roadmap 12.4).
+ * nothing is checked at construction. A north-up field (row 0 at the top) can be uploaded as is
+ * with a top-edge origin and negative cellHeight. Callers choosing positive cellHeight must
+ * reverse those rows and use a bottom-edge origin. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPUStreamlines implements GPUCommandNodeProducer {
   /** Prefix for graph node and transient IDs. */
@@ -177,6 +185,51 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
   readonly props: Readonly<GPUStreamlinesProps>;
 
   constructor(props: GPUStreamlinesProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'velocities',
+      'fieldWidth',
+      'fieldHeight',
+      'gridWidth',
+      'gridHeight',
+      'seedColumns',
+      'seedRows',
+      'stepsPerDirection',
+      'maximumIterations',
+      'parameters',
+      'uint32Parameters',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(props.output, [
+      'lines',
+      'positions',
+      'lineOffsets',
+      'positionCount',
+      'status',
+      'candidates'
+    ]);
+    const capturedLines = snapshotConstructionFields(capturedOutput.lines, ['ids', 'status']);
+    props = Object.freeze({
+      ...props,
+      output: Object.freeze({
+        ...capturedOutput,
+        lines: Object.freeze({
+          ...capturedLines,
+          status: snapshotConstructionFields(capturedLines.status, [
+            'count',
+            'requiredCount',
+            'overflow',
+            'candidateOverflow'
+          ])
+        }),
+        status:
+          capturedOutput.status &&
+          snapshotConstructionFields(capturedOutput.status, ['iterationLimitReached']),
+        candidates:
+          capturedOutput.candidates &&
+          snapshotConstructionFields(capturedOutput.candidates, ['positions', 'spans'])
+      })
+    });
     const id = props.id ?? 'streamlines';
     for (const [name, value] of [
       ['fieldWidth', props.fieldWidth],
@@ -484,7 +537,8 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
         break;
       }
       let next = position + stepLength * middle.xy;
-      if (!isInsideGrid(getGridLocal(next))) {
+      // The landing needs velocity support too, or the line would end outside the field.
+      if (sampleField(next, fieldExtent).z == 0.0 || !isInsideGrid(getGridLocal(next))) {
         break;
       }
       position = next;
@@ -745,7 +799,7 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
             type: 'u32',
             access: 'read_write'
           },
-          {name: 'state', view: state, type: 'u32', access: 'read_write'}
+          {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: seedCount,
         body: /* wgsl */ `
@@ -758,7 +812,8 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
   );
   lineFlags[lineFlagsOffset + index] = select(0u, 1u, isAccepted);
   if (lineStatus == ${UNDECIDED}u) {
-    state[stateOffset + 1u] = 1u;
+    // Several seeds can remain undecided in this dispatch. Equal ordinary stores still race.
+    atomicOr(&state[stateOffset + 1u], 1u);
   }`
       }),
       ...new GPUScan({
@@ -884,6 +939,27 @@ ${fitsDeclaration}`,
   pathOffsets[pathOffsetsOffset + rank + 1u] =
     pointOffsets[pointOffsetsOffset + index] + pointCounts[pointCountsOffset + index];
   atomicMax(&state[stateOffset], rank + 1u);`
+      })
+    );
+
+    // Repeated-terminal CSR padding is parallel and leaves the fingerprinted finalizer unchanged.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-pad-offsets`,
+        operation: OPERATION,
+        variant: 'pad-offsets',
+        bindings: [
+          {name: 'state', view: state, type: 'u32', access: 'read'},
+          {name: 'pathOffsets', view: output.lineOffsets, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: output.lineOffsets.length,
+        body: /* wgsl */ `
+  let count = state[stateOffset];
+  if (index > count) {
+    var terminal = 0u;
+    if (count > 0u) { terminal = pathOffsets[pathOffsetsOffset + count]; }
+    pathOffsets[pathOffsetsOffset + index] = terminal;
+  }`
       })
     );
 

@@ -30,6 +30,8 @@ import {
 } from './cpu-regression-linear-algebra';
 import {
   validateCPURegressionWeights,
+  hasCPURegressionWeightsLoss,
+  type CPURegressionWeightsStatus,
   validateCompleteRegressionWeights,
   type CPURegressionWeights
 } from './cpu-regression-weights';
@@ -52,8 +54,9 @@ export type CPUSpatialTwoStageLeastSquaresInput = {
   response: Float32Array;
   robust?: {
     method: GPUInstrumentalVariablesCovarianceMethod;
-    kernel?: CPURegressionWeights;
-    overflow?: Uint32Array;
+    kernel?: CPURegressionWeights & {
+      status?: CPURegressionWeightsStatus;
+    };
     clusters?: Uint32Array;
     clusterCount?: number;
   };
@@ -71,7 +74,11 @@ export type CPUSpatialTwoStageLeastSquaresResult = {
   residuals: Float32Array;
   /** Covariance status: 0 success, 1 finite rank failure, 2 insufficient rows,
    * 3 non-finite failure, 4 invalid HAC kernel, 5 invalid leverage, 6 invalid clusters, 7 non-PSD covariance. Failure covariance entries are NaN. */
-  robust?: {covariance: Float32Array; status: Uint32Array};
+  robust?: {
+    method: GPUInstrumentalVariablesCovarianceMethod;
+    covariance: Float32Array;
+    status: Uint32Array;
+  };
 };
 
 /** Certifies a covariance directly, without running the CPU model fit. @internal */
@@ -116,8 +123,8 @@ function multiplyMatrixRows(matrix: number[][], values: number[]): number[] {
   return matrix.map(row => getCPUErrorDot(row, values));
 }
 
-function isKernelValid(kernel: CPURegressionWeights, overflow?: Uint32Array): boolean {
-  if (overflow?.[0]) return false;
+function isKernelValid(kernel: CPURegressionWeights): boolean {
+  if (kernel.offsets[0] !== 0) return false;
   const rowCount = kernel.offsets.length - 1;
   for (let row = 0; row < rowCount; row++) {
     if (
@@ -171,6 +178,7 @@ function isKernelValid(kernel: CPURegressionWeights, overflow?: Uint32Array): bo
  * - HC0, HC1 and HAC use float64 influence rows and structural residuals, avoiding the GPU's
  *   second rounding of raw lag columns and residuals before robust covariance. Kernel symmetry
  *   and diagonal tolerances remain 1e-5; PSD remains a caller precondition.
+ * - HAC loss flags are read from kernel.status arrays. CPU loss arrays hold exactly one word.
  * - HC2/HC3 leverage and the shifted PSD test use float64 with the same 1e-6 and 1e-5
  *   tolerances as the GPU. CLUSTER sums scores in input order, rather than the GPU segment tree.
  * - Non-finite active data/weights return solver status 1, matching the current kernel's failed
@@ -208,8 +216,12 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
       input.robust.kernel.weights.length !== input.robust.kernel.neighbors.length
     )
       throw new Error(`${id} robust.kernel.weights length must equal neighbors length`);
-    if (input.robust.overflow && input.robust.overflow.length !== 1)
-      throw new Error(`${id} robust.overflow must hold one value`);
+    for (const [name, view] of [
+      ['robust.kernel.status.overflow', input.robust.kernel?.status?.overflow],
+      ['robust.kernel.status.candidateOverflow', input.robust.kernel?.status?.candidateOverflow]
+    ] as const) {
+      if (view && view.length !== 1) throw new Error(`${id} ${name} must hold one value`);
+    }
   }
   const result: CPUSpatialTwoStageLeastSquaresResult = {
     status: new Uint32Array([1]),
@@ -221,6 +233,7 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
     ...(input.robust
       ? {
           robust: {
+            method: input.robust.method,
             covariance: new Float32Array(coefficientCount ** 2).fill(NaN),
             status: new Uint32Array([3])
           }
@@ -229,7 +242,8 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
   };
   result.summary[0] = rowCount;
   const invalidKernel =
-    input.robust?.kernel && !isKernelValid(input.robust.kernel, input.robust.overflow);
+    input.robust?.kernel &&
+    (hasCPURegressionWeightsLoss(id, input.robust.kernel) || !isKernelValid(input.robust.kernel));
   if (rowCount <= coefficientCount) {
     result.status[0] = 2;
     if (result.robust) result.robust.status[0] = invalidKernel ? 4 : 2;
@@ -390,9 +404,11 @@ export function computeSpatialTwoStageLeastSquaresOnCPU(
     instrumentConditioning,
     Math.abs(coefficients[coefficientCount - 1]) * infinityNorm < 1 ? 0 : 1,
     infinityNorm,
-    (restrictedSquares - fullSquares) /
-      (instrumentCount - predictorCount) /
-      (fullSquares / (rowCount - instrumentCount - 1)),
+    rowCount > instrumentCount + 1
+      ? (restrictedSquares - fullSquares) /
+        (instrumentCount - predictorCount) /
+        (fullSquares / (rowCount - instrumentCount - 1))
+      : NaN,
     (restrictedSquares - fullSquares) / restrictedSquares
   ]);
   result.status[0] = 0;
@@ -541,11 +557,25 @@ export class CPUSpatialTwoStageLeastSquaresOperation extends GPUCPUOperation {
                     ? {
                         offsets: getCPUOperationUint32Rows(id, inputs, 'kernelOffsets'),
                         neighbors: getCPUOperationUint32Rows(id, inputs, 'kernelNeighbors'),
-                        weights: getCPUOperationFloat32Rows(id, inputs, 'kernelWeights')
+                        weights: getCPUOperationFloat32Rows(id, inputs, 'kernelWeights'),
+                        status: {
+                          complete: props.robust.kernel.status?.complete
+                            ? getCPUOperationUint32Rows(id, inputs, 'kernelComplete')
+                            : undefined,
+                          count: props.robust.kernel.status?.count
+                            ? getCPUOperationUint32Rows(id, inputs, 'kernelCount')
+                            : undefined,
+                          requiredCount: props.robust.kernel.status?.requiredCount
+                            ? getCPUOperationUint32Rows(id, inputs, 'kernelRequiredCount')
+                            : undefined,
+                          overflow: props.robust.kernel.status?.overflow
+                            ? getCPUOperationUint32Rows(id, inputs, 'kernelOverflow')
+                            : undefined,
+                          candidateOverflow: props.robust.kernel.status?.candidateOverflow
+                            ? getCPUOperationUint32Rows(id, inputs, 'kernelCandidateOverflow')
+                            : undefined
+                        }
                       }
-                    : undefined,
-                  overflow: props.robust.kernel?.overflow
-                    ? getCPUOperationUint32Rows(id, inputs, 'kernelOverflow')
                     : undefined
                 }
               : undefined
@@ -560,7 +590,7 @@ export class CPUSpatialTwoStageLeastSquaresOperation extends GPUCPUOperation {
           ...(props.robust && result.robust
             ? {
                 [props.robust.output.covariance]: result.robust.covariance,
-                [props.robust.output.status]: result.robust.status
+                [props.robust.output.status.code]: result.robust.status
               }
             : {})
         };

@@ -31,6 +31,7 @@ const PROPS: SpaceTimeHawkesOperationProps = {
     status: {
       converged: 'converged',
       iterationCount: 'iterationCount',
+      maximumIterations: 'maximumIterations',
       iterationLimitReached: 'iterationLimitReached',
       candidateOverflow: 'candidateOverflow',
       invalidCount: 'invalidCount',
@@ -80,9 +81,9 @@ it('leaves endpoint-event probabilities undefined when the fitted temporal mass 
   expect(Number.isNaN(result.fittedLogLikelihood[0])).toBe(true);
 });
 
-it('agrees with SciPy simultaneous solution of the four fixed-point equations', () => {
+it('agrees with SciPy simultaneous solution of the finite-window score equations', () => {
   const input = createInput();
-  const result = computeSpaceTimeHawkesOnCPU(input);
+  const result = computeSpaceTimeHawkesOnCPU(input, {maximumIterations: 1000});
   fixture.estimates.forEach((expected, index) =>
     expect(Math.abs(result.estimates[index] / expected - 1)).toBeLessThan(2e-6)
   );
@@ -100,13 +101,16 @@ it('agrees with SciPy simultaneous solution of the four fixed-point equations', 
   expect(result.approximation[0]).toBe(1);
   // Reordering the catalogue cannot change the fit; probabilities map back to input rows.
   const order = [5, 2, 7, 0, 4, 1, 6, 3];
-  const shuffled = computeSpaceTimeHawkesOnCPU({
-    ...input,
-    positions: Float32Array.from(
-      order.flatMap(row => [input.positions[row * 2], input.positions[row * 2 + 1]])
-    ),
-    times: Float32Array.from(order, row => input.times[row])
-  });
+  const shuffled = computeSpaceTimeHawkesOnCPU(
+    {
+      ...input,
+      positions: Float32Array.from(
+        order.flatMap(row => [input.positions[row * 2], input.positions[row * 2 + 1]])
+      ),
+      times: Float32Array.from(order, row => input.times[row])
+    },
+    {maximumIterations: 1000}
+  );
   expect(shuffled.estimates).toEqual(result.estimates);
   expect(Array.from(shuffled.backgroundProbability)).toEqual(
     order.map(row => result.backgroundProbability[row])
@@ -162,27 +166,37 @@ it('publishes the hand-calculated first update and terminates the reported round
   // Direct enumeration of the six earlier/later pairs gives backgroundSum=1.394800823044734,
   // triggeredSum=2.6051991769552663, lagSum=3.5267182296874493,
   // distanceSum=0.7762238289891579 and windowMass=3.9914701998482.
-  // The four updates are backgroundSum/100, triggeredSum/windowMass, triggeredSum/lagSum,
-  // sqrt(distanceSum/(2*triggeredSum)). Likelihood is at the initial parameters.
+  // SciPy bounded minimization of -Q(beta), refitting omega=S/M(beta), gives
+  // beta=.7012133208939824 and omega=.6592794165712239. Other updates retain the
+  // closed forms backgroundSum/100 and sqrt(distanceSum/(2*triggeredSum)).
   expect(first.estimates).toEqual(
     Float32Array.of(
       0.01394800823044734,
-      0.6526916265225643,
-      0.7387035218819136,
+      0.6592794165712239,
+      0.7012133208939824,
       0.38597397400484873
     )
   );
   expect(first.logLikelihood).toEqual(Float32Array.of(-15.259916788653317));
   expect(first.backgroundProbability).toEqual(
-    Float32Array.of(0.14177828210786117, 1, 0.1416091940909227, 0.07455119955538482)
+    Float32Array.of(0.14042880777282357, 1, 0.13815156081218397, 0.07406758696668789)
   );
   expect(first.iterationCount[0]).toBe(1);
   expect(first.converged[0]).toBe(0);
   expect(first.iterationLimitReached[0]).toBe(1);
+  // The tolerance 1e-20 is below binary64 resolution. The fixed-count updates cycled at rounding
+  // level until the budget; the finite-window decay update reaches an exact fixed point (zero
+  // relative change) instead. Either way the run terminates within the budget with exactly
+  // one of the two flags set.
   const bounded = computeSpaceTimeHawkesOnCPU(input);
-  expect(bounded.iterationCount[0]).toBe(CPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS);
-  expect(bounded.converged[0]).toBe(0);
-  expect(bounded.iterationLimitReached[0]).toBe(1);
+  expect(bounded.iterationCount[0]).toBeGreaterThan(1);
+  expect(bounded.iterationCount[0]).toBeLessThanOrEqual(
+    CPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS
+  );
+  expect(bounded.converged[0] + bounded.iterationLimitReached[0]).toBe(1);
+  expect(bounded.iterationLimitReached[0]).toBe(
+    Number(bounded.iterationCount[0] === CPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS)
+  );
   expect(bounded.estimates.every(Number.isFinite)).toBe(true);
   expect(bounded.logLikelihood.every(Number.isFinite)).toBe(true);
   expect(bounded.backgroundProbability.every(Number.isFinite)).toBe(true);

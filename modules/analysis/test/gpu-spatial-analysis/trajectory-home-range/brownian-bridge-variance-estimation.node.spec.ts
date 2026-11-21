@@ -3,6 +3,40 @@
 
 import {expect, it, vi} from 'vitest';
 
+it('selects exact zero for a singular zero-residual bridge among noisy bridges', () => {
+  // Bridge 1 has variance m/2 and residual 0: -log(m/2) tends to +Infinity.
+  // Bridge 2 has variance m/2 + 1/16 and residual squared 4, finite at zero.
+  const track = {x: [0, 0, 0, 2, 0], y: [0, 0, 0, 0, 0], times: [0, 1, 2, 3, 4]};
+  const options = {locationError: [0, 0, 0, 0.25, 0], windowSize: 5};
+  expect(estimateBrownianMotionVarianceWithStatus(track, options)).toEqual({
+    motionVariance: 0,
+    status: {lowerBoundReached: true}
+  });
+  expect(estimateBrownianMotionVariance(track, options)).toBe(0);
+  expect(estimateWindowedBrownianMotionVarianceWithStatus(track, options)).toEqual({
+    motionVariances: Float64Array.of(0, 0, 0, 0),
+    segmentStatus: Array.from({length: 4}, () => ({lowerBoundReached: true}))
+  });
+  expect(Array.from(estimateWindowedBrownianMotionVariance(track, options))).toEqual([0, 0, 0, 0]);
+});
+
+it('rejects the singular boundary when a zero-error bridge has nonzero residual', () => {
+  // Errors remain [0,0,0,1/4,0], but residuals are now 1 and 2. The first
+  // bridge contributes -1/m, so likelihood tends to -Infinity as m approaches zero.
+  const track = {x: [0, 1, 0, 2, 0], y: [0, 0, 0, 0, 0], times: [0, 1, 2, 3, 4]};
+  const options = {locationError: [0, 0, 0, 0.25, 0], windowSize: 5};
+  const whole = estimateBrownianMotionVarianceWithStatus(track, options);
+  const windows = estimateWindowedBrownianMotionVarianceWithStatus(track, options);
+  // dL/dm=0 reduces to 128m^3-296m^2-15m-1=0; its unique positive root
+  // (/usr/bin/python3: numpy.roots([128, -296, -15, -1])).
+  for (const variance of [whole.motionVariance, ...windows.motionVariances]) {
+    expect(Number.isFinite(variance)).toBe(true);
+    expect(variance).toBeCloseTo(2.3634811577, 7);
+  }
+  expect(whole.status.lowerBoundReached).toBe(false);
+  expect(windows.segmentStatus.every(status => !status.lowerBoundReached)).toBe(true);
+});
+
 it('refines the first positive interval even when zero beats its sampled endpoint', () => {
   const track = {x: [0, 500, 0, 1000, 0], y: [0, 500, 0, 1, 0], times: [0, 1, 2, 3, 4]};
   const options = {locationError: 500, windowSize: 5};

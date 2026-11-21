@@ -215,7 +215,7 @@ async function runGpuPermutations(
   permutations: number,
   seed: number,
   significance: number
-): Promise<Float32Array> {
+): Promise<{pValues: Float32Array; exceedances: Uint32Array}> {
   const rowCount = set.values.length;
   const maxNeighbors = Math.max(0, ...set.weights.neighbors.map(list => list.length));
   // Rows with more neighbors than the scratch holds are not tested.
@@ -253,7 +253,10 @@ async function runGpuPermutations(
     session.run();
     if ((await session.readScalar(overflow)) !== 0)
       throw new CatalogGpuUnsupportedError('Permutation test incomplete');
-    return session.readFloat32(pseudo);
+    return {
+      pValues: await session.readFloat32(pseudo),
+      exceedances: await session.readUint32(exceedances)
+    };
   });
 }
 
@@ -311,7 +314,7 @@ async function runGpuLocalMoran(
   const lag = Float64Array.from(result.spatialLag, value => value / deviation);
   const localI = Float64Array.from(result.localI, value => (value * n) / (n - 1));
   const pValue = pValues
-    ? Float64Array.from(pValues, (value, row) =>
+    ? Float64Array.from(pValues.pValues, (value, row) =>
         set.weights.neighbors[row].length ? value : Number.NaN
       )
     : undefined;
@@ -326,7 +329,14 @@ async function runGpuLocalMoran(
         multipleTesting: values['multipleTesting'] as 'none' | 'benjamini-hochberg' | 'bonferroni',
         ...settings
       },
-      {set, statistic: localI, spatialLag: lag, pValue}
+      {
+        set,
+        statistic: localI,
+        spatialLag: lag,
+        pValue,
+        pValueExceedances: pValues?.exceedances,
+        pValueConstruction: 'doubled-minimum-tail'
+      }
     ),
     dispatchedContributors:
       permutations > 0 ? ['GPULocalMoran', 'GPULocalPermutationTest'] : ['GPULocalMoran']
@@ -374,7 +384,7 @@ async function runGpuLocalGeary(
         )
       : undefined;
   const pValue = pValues
-    ? Float64Array.from(pValues, (value, row) =>
+    ? Float64Array.from(pValues.pValues, (value, row) =>
         set.weights.neighbors[row].length ? value : Number.NaN
       )
     : new Float64Array(set.values.length).fill(Number.NaN);

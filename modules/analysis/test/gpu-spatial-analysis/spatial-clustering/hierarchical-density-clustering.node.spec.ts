@@ -6,8 +6,8 @@ import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spati
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
-  GPUHierarchicalDensityClustering,
-  type GPUHierarchicalDensityClusteringProps
+  GPUHDBSCAN,
+  type GPUHDBSCANProps
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {
   createNullWebGPUDevice,
@@ -44,8 +44,8 @@ const TIED_SCENE_MINIMUM_RAND_INDEX = 0.97;
 function createProps(
   graph: GPUCommandGraph,
   rows: number,
-  overrides: Partial<GPUHierarchicalDensityClusteringProps> = {}
-): GPUHierarchicalDensityClusteringProps {
+  overrides: Partial<GPUHDBSCANProps> = {}
+): GPUHDBSCANProps {
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
     length: number
@@ -65,10 +65,10 @@ function createProps(
 
 function getNodes(rows: number) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
-  return new GPUHierarchicalDensityClustering(createProps(graph, rows)).getCommandNodes(graph);
+  return new GPUHDBSCAN(createProps(graph, rows)).getCommandNodes(graph);
 }
 
-it('GPUHierarchicalDensityClustering kernels parse and fit the core limits', () => {
+it('GPUHDBSCAN kernels parse and fit the core limits', () => {
   const nodes = getNodes(1000);
   const recordedKernelSources1 = getParsedKernelSources(nodes);
   for (const {id: kernelId, source: source, constants} of recordedKernelSources1.configurations) {
@@ -104,7 +104,7 @@ it('GPUHierarchicalDensityClustering kernels parse and fit the core limits', () 
   }
 });
 
-it('GPUHierarchicalDensityClustering rounds add nodes but no kernel variants (rule 12)', () => {
+it('GPUHDBSCAN rounds add nodes but no kernel variants (rule 12)', () => {
   // 1000 and 5000 rows unroll 11 and 14 Boruvka rounds and different pointer-jump counts.
   const small = getNodes(1000);
   const large = getNodes(5000);
@@ -147,32 +147,28 @@ it('tree contraction gates iterative work and never walks the whole tree in one 
   );
 });
 
-it('GPUHierarchicalDensityClustering validates props', () => {
+it('GPUHDBSCAN validates props', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const props = createProps(graph, 64);
-  expect(() => new GPUHierarchicalDensityClustering({...props, minimumClusterSize: 1})).toThrow(
-    /minimumClusterSize/
-  );
-  expect(() => new GPUHierarchicalDensityClustering({...props, minimumSamples: 33})).toThrow(
-    /minimumSamples/
-  );
+  expect(() => new GPUHDBSCAN({...props, minimumClusterSize: 1})).toThrow(/minimumClusterSize/);
+  expect(() => new GPUHDBSCAN({...props, minimumSamples: 33})).toThrow(/minimumSamples/);
   expect(
     () =>
-      new GPUHierarchicalDensityClustering({
+      new GPUHDBSCAN({
         ...props,
         spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
       })
   ).toThrow();
   expect(
     () =>
-      new GPUHierarchicalDensityClustering({
+      new GPUHDBSCAN({
         ...props,
         output: {labels: createTransientView(graph, 'short-labels', 'uint32', 3)}
       })
   ).toThrow(/labels/);
   // minimumSamples defaults to min(minimumClusterSize, 32).
   expect(
-    new GPUHierarchicalDensityClustering({
+    new GPUHDBSCAN({
       ...props,
       minimumSamples: undefined,
       minimumClusterSize: 50
@@ -231,7 +227,7 @@ it('distance measurements reject Lambert frames and accept AEQD meters', () => {
     frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
   } as const;
   const create = (spatialContext: GPUSpatialContext) =>
-    new GPUHierarchicalDensityClustering(createProps(graph, 100, {spatialContext}));
+    new GPUHDBSCAN(createProps(graph, 100, {spatialContext}));
   expect(() => create(lambert)).toThrow(/measures distance/);
   expect(() =>
     create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})

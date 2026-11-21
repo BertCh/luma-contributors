@@ -50,8 +50,33 @@ it('backlog retained routing evidence keeps caller identities and exact converge
     ).toBe(props.baseline.status.converged);
     expect(result.status.stages?.map(stage => stage.stage)).toEqual([
       'baseline-routing',
-      'scenario-routing'
+      'scenario-routing',
+      'baseline-accessibility',
+      'scenario-accessibility',
+      'accessibility'
     ]);
+    const stage = (name: string) => result.status.stages!.find(entry => entry.stage === name)!;
+    expect(stage('baseline-routing').status.complete).toBe(result.status.baselineRoutingComplete);
+    expect(stage('scenario-routing').status.complete).toBe(result.status.scenarioRoutingComplete);
+    expect(stage('scenario-routing').status.converged?.length).toBe(1);
+    expect(stage('baseline-routing').status.converged).not.toBe(
+      stage('scenario-routing').status.converged
+    );
+    expect(stage('baseline-accessibility').status.complete).toBe(
+      result.status.baselineAccessibilityComplete
+    );
+    expect(stage('scenario-accessibility').status.complete).toBe(
+      result.status.scenarioAccessibilityComplete
+    );
+    expect(stage('baseline-accessibility').status.complete).not.toBe(
+      stage('scenario-accessibility').status.complete
+    );
+    expect(stage('accessibility').status.complete?.length).toBe(1);
+    expect(stage('accessibility').status.converged).toBeUndefined();
+    for (const name of ['baseline-accessibility', 'scenario-accessibility']) {
+      expect(stage(name).status.complete?.length).toBe(1);
+      expect(stage(name).status.converged).toBeUndefined();
+    }
   } finally {
     device.destroy();
   }
@@ -104,7 +129,7 @@ it('backlog prepared bands keep validity and separate fill versus final failure 
       input: {id: 'source', format: 'float32', storage: {kind: 'buffer', values}},
       maximumDistance: 1,
       filter: {radius: 1, noDataPolicy: 'propagate'},
-      outputs: {values: view('float32', 6), validity}
+      output: {values: view('float32', 6), validity}
     });
     expect(prepared.band.storage.values).toBe(prepared.outputs.values);
     expect(prepared.band.validity).toBe(validity);

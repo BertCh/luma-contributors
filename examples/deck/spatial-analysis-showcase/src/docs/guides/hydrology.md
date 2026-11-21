@@ -37,7 +37,7 @@ The relaxations are iterated by the GPU and stop when nothing changes. The *Conv
 - **Watersheds** label every cell with its nearest downstream pour point, so nested outlets give nested basins; with no pour points each outlet gets a basin.
 - **Strahler order** ranks the stream network: order rises when two streams of equal order meet.
 - **HAND** (height above nearest drainage) is the elevation difference to the stream cell you drain to; thresholding it at a stage gives a screening flood map with no hydraulic model. It depends on which cells count as streams, so it moves with the stream threshold.
-- **Hydrologic indices** combine specific catchment area `a` with slope: wetness `ln(a / tan β)`, stream power `a tan β`. Use the minimum-slope option to keep flat cells finite.
+- **Hydrologic indices** combine specific catchment area `a` with `descentTangent`, the dimensionless rise over run of the steepest D8 descent. The wetness index is `ln(a / tan β)` and stream power is `a tan β`. Use the minimum-slope option to keep flat cells finite.
 
 ## Wind and particles
 
@@ -45,7 +45,7 @@ The relaxations are iterated by the GPU and stop when nothing changes. The *Conv
 
 ## Cost, paths and distance
 
-`GPUCostDistance` needs a **friction raster**: the cost of crossing one metre of each cell. Build it from slope (Tobler’s hiking function in the story), land cover multipliers (a small table in a parameter buffer) and barriers (NaN friction). The contributor accumulates cost from one or more starts, with optional **back-links**, **isochrone bands**, a **cost limit**, per-start head starts and a per-frame friction **scale and offset** so a pace slider re-prices the map without a recompile. `GPUCostDistancePath` follows the back-links from any target in one GPU thread, which is why a draggable destination is free.
+`GPUCostDistance` needs a **friction raster**: the cost of crossing one metre of each cell. Build it from slope (Tobler’s hiking function in the story), land cover multipliers (a small table in a parameter buffer) and barriers (NaN friction). The contributor accumulates cost from one or more starts, with optional **back-links**, **isochrone bands**, a **cost limit**, per-start head starts and a per-frame friction **scale and offset** so a pace slider re-prices the map without a recompile. `GPUCostDistancePath` follows the back-links from a target. Its reference route uses one GPU thread only for grids with at most 256 total cells; larger grids, including the showcased grids, use parallel pointer doubling and prefix expansion. Dragging a destination reuses the cost field and reruns path extraction without repeating cost-distance relaxation. Read only the first `path.status.count` cell IDs; allocation tails are unspecified.
 
 `GPUDistanceField` is the unweighted partner: exact Euclidean distance (separable Felzenszwalb-Huttenlocher) or a jump-flood preview, with allocation to the nearest seed. Seeds can be points or a raster mask such as "all water cells".
 

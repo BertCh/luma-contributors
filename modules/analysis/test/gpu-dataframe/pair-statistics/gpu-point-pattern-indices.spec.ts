@@ -24,7 +24,12 @@ import {
   computePointPatternIndicesOnCPU,
   computeWindowPointPatternIndicesOnCPU,
   type PointPatternIndicesOracleResult,
-  type PointPatternOracleOptions
+  type PointPatternOracleOptions,
+  QUADRAT_ALIGNED_L_POSITIONS,
+  QUADRAT_ALIGNED_L_STATISTICS,
+  QUADRAT_ALIGNED_L_WINDOW,
+  QUADRAT_SPIKE_POSITIONS,
+  QUADRAT_SPIKE_WINDOW
 } from './point-pattern-indices-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
@@ -240,20 +245,25 @@ for (const [name, createScene, quadratGrid] of [
     try {
       const frames: (GPUPointPatternIndicesSettings &
         PointPatternOracleOptions &
-        PairStatisticsFrame)[] = [
-        {bounds: BOUNDS, maximumDistance: 3},
-        {bounds: BOUNDS, maximumDistance: 15},
+        Pick<PairStatisticsFrame, 'bounds'>)[] = [
+        {bounds: BOUNDS, indexCellSizeHint: 3},
+        {bounds: BOUNDS, indexCellSizeHint: 15},
         // Beyond the extent: the lattice collapses to one cell.
-        {bounds: BOUNDS, maximumDistance: 400},
-        {bounds: [10, 10, 90, 90], maximumDistance: 4},
+        {bounds: BOUNDS, indexCellSizeHint: 400},
+        {bounds: [10, 10, 90, 90], indexCellSizeHint: 4},
         // Plain Clark-Evans and the other tails.
-        {bounds: BOUNDS, maximumDistance: 15, clarkEvansCorrection: 'none'},
-        {bounds: BOUNDS, maximumDistance: 15, alternative: 'greater'},
-        {bounds: BOUNDS, maximumDistance: 15, clarkEvansCorrection: 'none', alternative: 'lesser'}
+        {bounds: BOUNDS, indexCellSizeHint: 15, clarkEvansCorrection: 'none'},
+        {bounds: BOUNDS, indexCellSizeHint: 15, analyticAlternative: 'greater'},
+        {
+          bounds: BOUNDS,
+          indexCellSizeHint: 15,
+          clarkEvansCorrection: 'none',
+          analyticAlternative: 'lesser'
+        }
       ];
       let firstDistances: number[] | undefined;
       for (const frame of frames) {
-        const label = `${name} D=${frame.maximumDistance} [${frame.bounds}] ${frame.clarkEvansCorrection ?? 'donnelly'} ${frame.alternative ?? 'two-sided'}`;
+        const label = `${name} D=${frame.indexCellSizeHint} [${frame.bounds}] ${frame.clarkEvansCorrection ?? 'donnelly'} ${frame.analyticAlternative ?? 'two-sided'}`;
         const result = await harness.run(getGPUPointPatternIndicesParameterValues(frame));
         const oracle = computePointPatternIndicesOnCPU(scene, frame, quadratGrid);
         expect(oracle.clarkEvans[0]).toBeGreaterThan(20);
@@ -285,7 +295,7 @@ for (const [name, createScene, quadratGrid] of [
 it('GPUPointPatternIndices separates clustered, random and regular patterns', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  const frame = {bounds: BOUNDS, maximumDistance: 6, clarkEvansCorrection: 'none'} as const;
+  const frame = {bounds: BOUNDS, indexCellSizeHint: 6, clarkEvansCorrection: 'none'} as const;
   const run = async (scene: Scene) => {
     const harness = createHarness(
       device,
@@ -326,7 +336,7 @@ it('GPUPointPatternIndices reproduces a hand-checked four-point pattern and its 
     const result = await harness.run(
       getGPUPointPatternIndicesParameterValues({
         bounds: [0, 0, 10, 10],
-        maximumDistance: 3,
+        indexCellSizeHint: 3,
         clarkEvansCorrection: 'none'
       })
     );
@@ -355,7 +365,7 @@ it('GPUPointPatternIndices reproduces a hand-checked four-point pattern and its 
   const tieHarness = createHarness(device, tieScene, [1, 1]);
   try {
     const result = await tieHarness.run(
-      getGPUPointPatternIndicesParameterValues({bounds: [0, 0, 5, 5], maximumDistance: 1})
+      getGPUPointPatternIndicesParameterValues({bounds: [0, 0, 5, 5], indexCellSizeHint: 1})
     );
     // Row 2 (x=1) is 1 from row 0 (x=2) and row 1 (x=0): the smaller row 0 wins. Row 0 is 1 from row 2.
     expect(result.nearestNeighborIds.slice(0, 3)).toEqual([2, 2, 0]);
@@ -374,13 +384,9 @@ it('GPUPointPatternIndices finds isolated points exactly beyond the search cells
   try {
     // Cells are about 3 wide, so the isolated points (tens of units from anything) need long rings.
     const result = await harness.run(
-      getGPUPointPatternIndicesParameterValues({bounds: BOUNDS, maximumDistance: 3})
+      getGPUPointPatternIndicesParameterValues({bounds: BOUNDS, indexCellSizeHint: 3})
     );
-    const oracle = computePointPatternIndicesOnCPU(
-      scene,
-      {bounds: BOUNDS, maximumDistance: 3},
-      [2, 2]
-    );
+    const oracle = computePointPatternIndicesOnCPU(scene, {bounds: BOUNDS}, [2, 2]);
     for (const row of [rows - 3, rows - 2, rows - 1]) {
       expect(oracle.nearestNeighborDistances[row]).toBeGreaterThan(30);
       expect(result.nearestNeighborIds[row]).toBe(oracle.nearestNeighborIds[row]);
@@ -404,7 +410,7 @@ it('GPUPointPatternIndices reports NaN and no neighbor with fewer than two inclu
   const harness = createHarness(device, scene, [2, 2]);
   try {
     const result = await harness.run(
-      getGPUPointPatternIndicesParameterValues({bounds: [0, 0, 4, 4], maximumDistance: 3})
+      getGPUPointPatternIndicesParameterValues({bounds: [0, 0, 4, 4], indexCellSizeHint: 3})
     );
     expect(result.nearestNeighborDistances.every(Number.isNaN)).toBe(true);
     expect(result.nearestNeighborIds).toEqual([0xffffffff, 0xffffffff, 0xffffffff]);
@@ -429,7 +435,7 @@ it('GPUPointPatternIndices builds each part on its own with the same results', a
   requireTestDevice(device);
   const scene = createRandomScene(21, 800);
   const rows = scene.positions.length / 2;
-  const frame = {bounds: BOUNDS, maximumDistance: 8};
+  const frame = {bounds: BOUNDS, indexCellSizeHint: 8};
   const full = createHarness(device, scene, [4, 4]);
   const summaryOnly = typeHarness(
     createPairStatisticsHarness(device, {
@@ -554,7 +560,7 @@ for (const [label, window] of [
     const bounds = getOracleWindowBounds(window ?? ORACLE_RECTANGLE);
     const frame = {
       bounds,
-      maximumDistance: 200,
+      indexCellSizeHint: 200,
       clarkEvansCorrection: 'guard' as const,
       guardDistance: 250
     };
@@ -599,7 +605,7 @@ it('GPUPointPatternIndices polygon-as-rectangle quadrats are bitwise equal to re
   const rectangle = createWindowIndicesHarness(device, positions);
   const polygon = createWindowIndicesHarness(device, positions, ORACLE_RECTANGLE);
   try {
-    const settings = {maximumDistance: 100, clarkEvansCorrection: 'none' as const};
+    const settings = {indexCellSizeHint: 100, clarkEvansCorrection: 'none' as const};
     const first = await rectangle.run(
       getGPUPointPatternIndicesParameterValues({
         ...settings,
@@ -615,5 +621,85 @@ it('GPUPointPatternIndices polygon-as-rectangle quadrats are bitwise equal to re
   } finally {
     rectangle.destroy();
     polygon.destroy();
+  }
+});
+
+it('GPUPointPatternIndices puts points on interior quadrat edges in the upper quadrat (PTS-109)', async () => {
+  // Closed form: on [0, 100] with 10 x 10 quadrats, x = 10 k (k = 1..9) and y = 5 lie in column k
+  // of row 0, and y = 10 k at x = 5 in row k of column 0. Where a / b compiles as a * (1 / b),
+  // floor((x - min) / width * columns) put 6 of the 9 x edges one column low.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const points: number[] = [];
+  for (let edge = 1; edge <= 9; edge++) points.push(10 * edge, 5);
+  for (let edge = 1; edge <= 9; edge++) points.push(5, 10 * edge);
+  const scene: Scene = {
+    positions: new Float32Array(points),
+    mask: new Uint32Array(points.length / 2).fill(1)
+  };
+  const harness = createHarness(device, scene, [10, 10]);
+  try {
+    const result = await harness.run(
+      getGPUPointPatternIndicesParameterValues({bounds: BOUNDS, indexCellSizeHint: 15})
+    );
+    const expected = new Array<number>(100).fill(0);
+    for (let edge = 1; edge <= 9; edge++) {
+      expected[edge] = 1;
+      expected[edge * 10] = 1;
+    }
+    expect(result.quadratCounts).toEqual(expected);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('GPUPointPatternIndices polygon quadrats match the independent clipped-area fixture (PTS-108)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createWindowIndicesHarness(
+    device,
+    QUADRAT_ALIGNED_L_POSITIONS,
+    QUADRAT_ALIGNED_L_WINDOW
+  );
+  try {
+    const actual = await harness.run(
+      getGPUPointPatternIndicesParameterValues({
+        bounds: 'study-window',
+        indexCellSizeHint: 100,
+        clarkEvansCorrection: 'none'
+      })
+    );
+    expect(actual.quadratCounts).toEqual([5, 1, 3, 0]);
+    expectWindowValues(actual.quadratAreas, [937500, 750000, 750000, 0]);
+    // float32 chi-square tails: 1e-5 relative, as in the other window cases.
+    expectWindowValues(actual.quadratStatistics, QUADRAT_ALIGNED_L_STATISTICS);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('GPUPointPatternIndices polygon quadrats are undefined when points fall in an unsampled quadrat (PTS-108)', async () => {
+  // Before the fix: chi-square 1.0 with 1 degree of freedom (p 0.317) from counts [45, 10, 45, 0],
+  // the ten strip points kept in n but their quadrat dropped. Exact areas give 182.4 (p 4.9e-40).
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createWindowIndicesHarness(device, QUADRAT_SPIKE_POSITIONS, QUADRAT_SPIKE_WINDOW);
+  try {
+    const actual = await harness.run(
+      getGPUPointPatternIndicesParameterValues({
+        bounds: 'study-window',
+        indexCellSizeHint: 100,
+        clarkEvansCorrection: 'none'
+      })
+    );
+    expect(actual.quadratCounts).toEqual([45, 10, 45, 0]);
+    expect(actual.quadratAreas[1]).toBe(0);
+    expect(actual.quadratStatistics[0]).toBe(2);
+    expect(actual.quadratStatistics[5]).toBe(1);
+    for (const index of [1, 2, 3, 4, 6]) {
+      expect(actual.quadratStatistics[index], `row ${index}`).toBeNaN();
+    }
+  } finally {
+    harness.destroy();
   }
 });

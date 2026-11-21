@@ -3,6 +3,8 @@
 
 import {
   getTypedArrayName,
+  getPackedUint32Values,
+  getPackedFloat32Values,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -29,13 +31,13 @@ export function getGPUKShortestPathsOutputLayout(options: GPUKShortestPathsOutpu
     routeCount,
     maximumPathLength = 64
   } = options;
-  validateCapacity(id, 'queryCount', queryCount);
+  validateCapacity(id, 'queryCount', queryCount, 0);
   validateCapacity(id, 'routeCount', routeCount);
   validateCapacity(id, 'maximumPathLength', maximumPathLength);
   const routeRows = queryCount * routeCount;
   const pathRows = routeRows * maximumPathLength;
-  validateCapacity(id, 'queryCount * routeCount', routeRows);
-  validateCapacity(id, 'queryCount * routeCount * maximumPathLength', pathRows);
+  validateCapacity(id, 'queryCount * routeCount', routeRows, 0);
+  validateCapacity(id, 'queryCount * routeCount * maximumPathLength', pathRows, 0);
   const unsigned = (length: number) => ({format: 'uint32' as const, length});
   return {
     vertices: unsigned(pathRows),
@@ -55,6 +57,8 @@ export function getGPUKShortestPathsOutputLayout(options: GPUKShortestPathsOutpu
 export type GPUKShortestPathsOutputLayout = ReturnType<typeof getGPUKShortestPathsOutputLayout>;
 
 /** Readback arrays for GPUKShortestPaths; views may have byte offsets and spare capacity. */
+export type RouteReadbackWords = Uint32Array | Uint8Array | ArrayBuffer;
+export type RouteReadbackFloats = Float32Array | Uint8Array | ArrayBuffer;
 export type GPUKShortestPathsReadback = {
   vertices: Uint32Array;
   edges: Uint32Array;
@@ -66,6 +70,20 @@ export type GPUKShortestPathsReadback = {
     iterationLimitReached: Uint32Array;
     candidateOverflow: Uint32Array;
     iterationCount: Uint32Array;
+  };
+};
+
+export type GPUKShortestPathsByteReadback = {
+  vertices: RouteReadbackWords;
+  edges: RouteReadbackWords;
+  lengths: RouteReadbackWords;
+  costs: RouteReadbackFloats;
+  counts: RouteReadbackWords;
+  status: {
+    converged: RouteReadbackWords;
+    iterationLimitReached: RouteReadbackWords;
+    candidateOverflow: RouteReadbackWords;
+    iterationCount: RouteReadbackWords;
   };
 };
 
@@ -92,35 +110,45 @@ export type GPUKShortestPathsDecodedResult = {
  * a caller must inspect status before treating them as a complete enumeration.
  */
 export function decodeGPUKShortestPaths(
-  output: GPUKShortestPathsReadback,
+  readback: GPUKShortestPathsByteReadback,
   options: GPUKShortestPathsOutputLayoutOptions
 ): GPUKShortestPathsDecodedResult {
   const {id = 'decodeGPUKShortestPaths', queryCount, routeCount, maximumPathLength = 64} = options;
-  const {status: statusLayout, ...columnLayout} = getGPUKShortestPathsOutputLayout({
+  getGPUKShortestPathsOutputLayout({
     id,
     queryCount,
     routeCount,
     maximumPathLength
   });
-  validateRequirement(
-    id,
-    output.status !== null && typeof output.status === 'object',
-    'output.status must contain the required status arrays'
-  );
-  for (const [name, descriptor] of Object.entries({...columnLayout, ...statusLayout})) {
-    const isStatus = Object.hasOwn(statusLayout, name);
-    const array = isStatus
-      ? output.status[name as keyof typeof output.status]
-      : output[name as keyof typeof columnLayout];
-    const path = `output.${isStatus ? 'status.' : ''}${name}`;
-    const ArrayType = descriptor.format === 'float32' ? Float32Array : Uint32Array;
-    validateRequirement(
-      id,
-      getTypedArrayName(array) === ArrayType.name,
-      `${path} must be a ${ArrayType.name}`
-    );
-    validateCapacity(id, `${path}.length`, array.length, descriptor.length);
-  }
+  const output = {
+    ...decodeRouteColumns(readback, queryCount, routeCount, maximumPathLength, id),
+    status: {
+      converged: readRouteWords(
+        readback.status?.converged,
+        'uint32',
+        1,
+        `${id} output.status.converged`
+      ),
+      iterationLimitReached: readRouteWords(
+        readback.status?.iterationLimitReached,
+        'uint32',
+        1,
+        `${id} output.status.iterationLimitReached`
+      ),
+      candidateOverflow: readRouteWords(
+        readback.status?.candidateOverflow,
+        'uint32',
+        1,
+        `${id} output.status.candidateOverflow`
+      ),
+      iterationCount: readRouteWords(
+        readback.status?.iterationCount,
+        'uint32',
+        1,
+        `${id} output.status.iterationCount`
+      )
+    }
+  };
   for (const name of ['converged', 'iterationLimitReached', 'candidateOverflow'] as const) {
     validateCapacity(id, `output.status.${name}[0]`, output.status[name][0], 0, 1);
   }
@@ -131,6 +159,92 @@ export function decodeGPUKShortestPaths(
     0,
     routeCount
   );
+  const queries = sliceRouteColumns(output, queryCount, routeCount, maximumPathLength, id);
+  return {
+    queries,
+    status: {
+      converged: output.status.converged[0] !== 0,
+      iterationLimitReached: output.status.iterationLimitReached[0] !== 0,
+      candidateOverflow: output.status.candidateOverflow[0] !== 0,
+      iterationCount: output.status.iterationCount[0]
+    }
+  };
+}
+
+/** @internal Decode byte readbacks using their exact byte range, including unaligned offsets. */
+export function readRouteWords(
+  input: RouteReadbackWords | RouteReadbackFloats | undefined,
+  format: 'uint32',
+  minimum: number,
+  id: string
+): Uint32Array;
+export function readRouteWords(
+  input: RouteReadbackWords | RouteReadbackFloats | undefined,
+  format: 'float32',
+  minimum: number,
+  id: string
+): Float32Array;
+export function readRouteWords(
+  input: RouteReadbackWords | RouteReadbackFloats | undefined,
+  format: 'uint32' | 'float32',
+  minimum: number,
+  id: string
+): Uint32Array | Float32Array {
+  const ArrayType = format === 'uint32' ? Uint32Array : Float32Array;
+  validateRequirement(
+    id,
+    Object.prototype.toString.call(input) === '[object ArrayBuffer]' ||
+      getTypedArrayName(input) === 'Uint8Array' ||
+      getTypedArrayName(input) === ArrayType.name,
+    `must be ${ArrayType.name}, Uint8Array or ArrayBuffer`
+  );
+  validateRequirement(
+    id,
+    input!.byteLength % 4 === 0 && input!.byteLength >= minimum * 4,
+    `must contain at least ${minimum} whole ${format} elements`
+  );
+  return format === 'uint32'
+    ? getPackedUint32Values(input!, minimum)
+    : getPackedFloat32Values(input!, minimum);
+}
+/** @internal Shared five-column reader for both route producers. */
+export function decodeRouteColumns(
+  output: Pick<
+    GPUKShortestPathsByteReadback,
+    'vertices' | 'edges' | 'lengths' | 'costs' | 'counts'
+  >,
+  queryCount: number,
+  routeCount: number,
+  maximumPathLength: number,
+  id: string
+) {
+  const rows = queryCount * routeCount;
+  return {
+    vertices: readRouteWords(
+      output.vertices,
+      'uint32',
+      rows * maximumPathLength,
+      `${id} output.vertices.length`
+    ),
+    edges: readRouteWords(
+      output.edges,
+      'uint32',
+      rows * maximumPathLength,
+      `${id} output.edges.length`
+    ),
+    lengths: readRouteWords(output.lengths, 'uint32', rows, `${id} output.lengths`),
+    costs: readRouteWords(output.costs, 'float32', rows, `${id} output.costs`),
+    counts: readRouteWords(output.counts, 'uint32', queryCount, `${id} output.counts`)
+  };
+}
+/** @internal Shared slicing preserves each producer's separate completion scope. */
+export function sliceRouteColumns(
+  output: ReturnType<typeof decodeRouteColumns>,
+  queryCount: number,
+  routeCount: number,
+  maximumPathLength: number,
+  id: string
+) {
   const queries: GPUKShortestPathsDecodedResult['queries'] = [];
   for (let query = 0; query < queryCount; query++) {
     const count = output.counts[query];
@@ -152,13 +266,5 @@ export function decodeGPUKShortestPaths(
     }
     queries.push({count, routes});
   }
-  return {
-    queries,
-    status: {
-      converged: output.status.converged[0] !== 0,
-      iterationLimitReached: output.status.iterationLimitReached[0] !== 0,
-      candidateOverflow: output.status.candidateOverflow[0] !== 0,
-      iterationCount: output.status.iterationCount[0]
-    }
-  };
+  return queries;
 }

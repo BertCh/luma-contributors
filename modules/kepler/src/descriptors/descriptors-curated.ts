@@ -6,7 +6,7 @@ import type {
   GPUAnalysisCaution,
   GPUAnalysisFieldRoleSpec,
   GPUAnalysisMeasurementLevel
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   KeplerOperationDescriptor,
   KeplerOperationParameterDescriptor,
@@ -304,7 +304,7 @@ export const CURATED_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
         },
         level: 'basic'
       },
-      describeConstant('minimumPoints', 'basic'),
+      describeConstant('minimumSamples', 'basic'),
       describeConstant('coordinateSystem', 'advanced')
     ],
     requirements: [

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUAnalysisResultClasses} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUAnalysisResultClasses} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {getKeplerResultRampColors, getKeplerResultToneColor} from '@luma-contributors/kepler';
 
 /** Color stops mirror the fixed palettes allocated by the analysis output classes (RGB, 0-255). */

@@ -58,7 +58,7 @@ async function runStandardizedIndex(options: {
   series: number[];
   window: number;
   distribution: 'gamma' | 'fisk';
-  zeroInflated: boolean;
+  zeroAtom: boolean;
   location: number;
   expected: (number | null)[];
   tolerance: number;
@@ -113,7 +113,7 @@ async function runStandardizedIndex(options: {
           chunkSliceCount: CHUNK,
           slotCount: SLOT_COUNT,
           distribution: options.distribution,
-          zeroInflated: options.zeroInflated,
+          zeroAtom: options.zeroAtom,
           values: seriesView,
           slotIndices: slotViews[chunk],
           parameters: harness.floats(
@@ -142,7 +142,7 @@ async function runStandardizedIndex(options: {
         chunkSliceCount: CHUNK,
         slotCount: SLOT_COUNT,
         distribution: options.distribution,
-        zeroInflated: options.zeroInflated,
+        zeroAtom: options.zeroAtom,
         values: seriesView,
         slotIndices: slotViews[chunk],
         fit,
@@ -182,7 +182,7 @@ for (const windowCase of reference.windows) {
       series: toFloat(reference.precipitation),
       window: windowCase.window,
       distribution: 'gamma',
-      zeroInflated: true,
+      zeroAtom: true,
       location: 0,
       expected: windowCase.index,
       tolerance: SPI_TOLERANCE
@@ -195,7 +195,7 @@ it('RTS-06 SPEI matches xclim 1.0.0 APP log-logistic', async () => {
     series: toFloat(reference.waterBalance),
     window: 1,
     distribution: 'fisk',
-    zeroInflated: false,
+    zeroAtom: false,
     location: reference.waterBalanceLocation,
     expected: reference.spei,
     tolerance: SPI_TOLERANCE

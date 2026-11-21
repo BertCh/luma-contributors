@@ -6,6 +6,7 @@ export {
   getMultipleTestingAdjustedPValues,
   GPUMultipleTestingAdjustment,
   GPU_MULTIPLE_TESTING_MAXIMUM_ROWS,
+  MAXIMUM_MULTIPLE_TESTING_EXACT_HARMONIC_TERMS,
   resolveGPUMultipleTestingMethod
 } from './gpu-multiple-testing-adjustment';
 export type {
@@ -37,3 +38,5 @@ export {
 } from './cpu-multiple-testing-adjustment-operation';
 export {GPUMultipleTestingAdjustmentOperation} from './gpu-multiple-testing-adjustment-operation';
 export type {MultipleTestingAdjustmentOperationProps} from './gpu-multiple-testing-adjustment-operation';
+
+export type {CPUMultipleTestingAdjustmentResult} from './cpu-multiple-testing-adjustment-operation';

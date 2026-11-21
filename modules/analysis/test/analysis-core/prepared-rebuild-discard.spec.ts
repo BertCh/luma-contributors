@@ -103,9 +103,11 @@ for (const kind of ['join', 'window'] as const) {
           if (prefix) {
             const execution = compiled.createExecution({
               maximumInvocationCount: 1_000_000,
-              maximumNodeCount: 1
+              maximumNodeCount: submitPrefix ? 2 : 1
             });
-            expect(execution.encodeNext(encoder, {parameters: undefined}).nodeCount).toBe(1);
+            expect(execution.encodeNext(encoder, {parameters: undefined}).nodeCount).toBe(
+              submitPrefix ? 2 : 1
+            );
           } else {
             compiled.encode(encoder, {parameters: undefined});
           }

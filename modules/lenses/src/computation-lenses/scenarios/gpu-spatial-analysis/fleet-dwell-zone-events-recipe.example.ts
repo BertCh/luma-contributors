@@ -35,7 +35,7 @@ export async function runExample(
     zones: {kind: 'polygons', ...zones},
     candidateCapacity: 1 << 17,
     trackEventCapacity,
-    outputs: {table: {counts: zoneVisits, sumValues: zoneDwell}}
+    output: {table: {counts: zoneVisits, sumValues: zoneDwell}}
   });
   // Draw the anchorages coloured by total dwell seconds; zoneVisits counts visiting tracks.
   const {sumValues} = dwell.table;

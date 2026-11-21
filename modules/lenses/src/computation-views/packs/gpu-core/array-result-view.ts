@@ -7,6 +7,7 @@ import type {DescriptionFacts} from '../../types';
 import {h, type ViewElementNode} from '../../view-node';
 import {provenancePatternDefs} from '../../encoding/provenance';
 import {getAdapterLabel} from '../../views/record-queries';
+import {groupTableColumns} from '../../views/table-column-groups';
 import {
   buildGPUCoreArrayResultModel,
   getArrayResultCaptures,
@@ -30,16 +31,7 @@ export function renderGPUCoreArrayResult(
     panel => getArrayTokenValue(panel.tokens, 'column') !== undefined
   );
   const panels = model.panels.filter(panel => !tablePanels.includes(panel));
-  const tableGroups = ['input', 'context', 'output'].flatMap(role => {
-    const groups = new Map<string | (typeof tablePanels)[number], typeof tablePanels>();
-    for (const panel of tablePanels.filter(candidate => candidate.role === role)) {
-      const key = panel.capture.keySpace || panel;
-      const columns = groups.get(key) ?? [];
-      columns.push(panel);
-      groups.set(key, columns);
-    }
-    return [...groups.values()];
-  });
+  const tableGroups = groupTableColumns(tablePanels);
   const classed = model.panels.filter(
     panel => panel.role === 'output' && (panel.shape || panel.tokens.includes('stencil'))
   );

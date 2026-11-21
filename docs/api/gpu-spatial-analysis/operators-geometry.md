@@ -7,9 +7,40 @@ description: "Geometry utilities contributors in @luma-contributors/analysis/gpu
 
 # Geometry utilities
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
 
-All of these are contributors: construct, then `graph.add`. Per-frame values go through a
-`GPUParameterBuffer` packed with the matching `getGPU...ParameterValues` helper, so nothing recompiles.
+Direct GPU classes are contributors: construct, then `graph.add`. Where a class accepts a
+parameter buffer, update it with the matching `getGPU...ParameterValues` helper for per-frame values.
+Operation forms below declare named graph inputs and outputs; see
+[operation forms and CPU twins](../operation-forms-and-cpu-twins.md) for compilation and execution.
+
+For equality after normalization, `GPUCanonicalGeometryEquality` and `GPUCanonicalPolygonEquality`
+default to `toleranceMetric: 'per-coordinate'`. Select `'euclidean'` to match the distance metric of
+[`GPUGeometryPredicates.equalsExact`](./operators-validity.md#gpugeometrypredicates).
+Tolerance uses planar position units: displacement `(0.75,0.75)` passes a per-coordinate tolerance
+of 1 but fails Euclidean tolerance 1. Canonicalization changes ordering policy independently of this metric.
+
+<a id="hull-construction"></a>
+
+## Build hulls from points
+
+For planar point sets, use `GPUGroupConvexHull` for an enclosing convex ring, or `GPUConcaveHull`
+and `GPUGroupConcaveHull` for an alpha-complex area hull: retain Delaunay triangles with
+`maximumCircumradius` in planar position units. Triangle and directed boundary-edge rows retain
+original source point indices; `triangleValidity` and `edgeValidity` mask their fixed reservations.
+The area hull may have holes and disconnected components; isolated points and collinear sets
+produce no area boundary. `status.converged` must pass before consuming it. The grouped packed
+route has separate triangle/edge ranges; see [group outlines and output limits](../gpu-raster/expansion.md#group-outlines-and-recipes).
+
+For ratio-based erosion instead, use [`GPURatioConcaveHull`](../gpu-geometry-refinement.md):
+`ratio` is a fraction in `[0,1]`, not a radius. It removes exposed Delaunay triangles in parallel
+rounds, so it can retain different triangles from GEOS's largest-first erosion. See that guide
+for hole policy, bounded status and input restrictions. For an existing valid planar polygon,
+[`GPUSubdividePolygons`](../gpu-geometry-refinement.md) produces bounded convex pieces rather than
+a new point-set hull. The [geometry refinement examples](./geometry-refinement-lenses.md#gpuratioconcavehull)
+include ratio erosion; historical C10 hull examples remain reachable at the
+[raster-expansion URL](../gpu-raster/expansion.md#operations-and-contracts).
+For a polygon interior mesh, go to [constrained Delaunay triangulation](#constrained-delaunay-triangulation).
 
 ### `GPUOutlineGeometry`
 
@@ -53,6 +84,8 @@ Pass optional `spatialContext` to `getGPUOutlineGeometryParameterValues(settings
 
 #### `GPUOutlineGeometry` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUOutlineGeometry`.
+
 - Packer: `getGPUOutlineGeometryParameterValues(settings)`, writes `GPU_OUTLINE_GEOMETRY_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUOutlineGeometryParameterValues`:
@@ -66,9 +99,29 @@ Settings of `getGPUOutlineGeometryParameterValues`:
 
 ### `GPUOffsetCurve` and `GPUVertexSnap`
 
-`GPUOffsetCurve`: Compact output layouts are opt-in; offsets and counts describe only emitted
-geometry. Position addressing is at most 2,147,483,647 and candidate/fragment word counts must fit
+`GPUOffsetCurve`: Compact output is opt-in; vertex offsets/counts bound written vertices while
+line/ring slots follow the input layout. Position addressing is at most 2,147,483,647 and candidate/fragment word counts must fit
 uint32.
+
+`GPUOffsetCurveOutput` is the default fixed-stride output: `positions` is `float32x2`, with
+`inputVertexCount * getGPUOffsetCurveRowsPerVertex(...)` rows, and optional `counts` is `uint32`
+with one row per input vertex. Each vertex's unused stride rows repeat its last point. This
+type has no compact count or overflow status; allocate the full fixed layout.
+
+`GPUOffsetCurveCompactOutput` (`layout: 'compact'`) has `float32x2` positions and `uint32`
+`lineOffsets`. It preserves one slot per input line or polygon ring, including empty or fully
+truncated lines: `count` and optional `requiredCount` equal the input line/ring count.
+`lineOffsets` must have exactly that count plus one rows, including the terminal offset; a shorter
+or longer view fails construction. Only vertex capacity can set this route's `overflow` word.
+Optional `status.vertexCount` and `status.requiredVertexCount` give written and required vertex
+counts. All these status words belong to the compact `GPUOffsetCurve` route only.
+Use adjacent offsets `[lineOffsets[i],lineOffsets[i+1])` to read each line's written vertices.
+For two two-vertex lines and two output vertex slots, offsets are `[0,2,2]`, both line-count
+words are 2 and overflow is 1: the second line slot has no written geometry.
+Unused position capacity is unspecified.
+Optional `sourceLineIndices` names input line/ring rows and `sourceRows` names input vertex rows.
+The compact type refuses `measures` and declares `status.approximation` as optional `never`,
+matching its runtime refusal even for prepared output variables.
 
 **`GPUOffsetCurve`** — Offsets lines or polygon rings to one side by a signed distance, with round, mitre or bevel joins.
 
@@ -84,7 +137,10 @@ layout; the ring count is preserved, so the input `featureOffsets` and `polygonO
 a positive distance is to the left of the path direction. Per vertex it writes a round arc
 (`quadSegments` per quarter circle, at most `GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS` = 256), a mitre (clipped beyond `mitreLimit`, default 5) or a bevel on the
 outside of a turn, the single intersection point on the inside, and a plain normal offset at path ends.
-The output has `getGPUOffsetCurveRowsPerVertex` rows per vertex (`2q + 1` round, 2 otherwise); the optional
+Size fixed-stride output with `getGPUOffsetCurveRowsPerVertex(joinStyle, quadSegments, insideTurns)`
+rows per input vertex. Round joins use `2q + 1` rows; bevel and mitre use 2 with the default
+`insideTurns: 'intersection'`, or 3 for `insideTurns: 'buffer'` (offset end, original vertex,
+offset start). The optional
 `output.counts` gives the distinct points per vertex and padding repeats the last point. Distance and mitre
 limit are per-frame. Which side of a vertex is the inside of its turn is an exact orientation sign, so
 the join is on the right side where two edges nearly reverse (the tip of a sliver thinner than one float32
@@ -98,6 +154,10 @@ Both `GPUOffsetCurve` and `GPUVertexSnap` measure distance and reject `local-lam
 `GPUVertexSnap` is the vertex-to-vertex subset of `shapely.snap`: each vertex with a reference vertex
 strictly closer than the per-frame `tolerance` moves to the nearest one (lowest row on ties) and the layout
 is unchanged. Optional pairwise mode (`featureOffsets` and `referenceOffsets`) and `output.referenceRows`.
+Its `GPUVertexSnapOutput` contains `positions: GraphDataView<'float32x2'>`, one row per input
+vertex, and optional `referenceRows: GraphDataView<'uint32'>` in that same input-vertex domain.
+The latter indexes `referencePositions`, or is `GPU_VERTEX_SNAP_NO_REFERENCE` (`0xffffffff`)
+when no reference wins. It has no compact status, offsets, count or overflow output.
 It is `O(V * R)`. Segment insertion and snapping onto segments, which GEOS also does, are out of scope.
 It matched Shapely on 60 random lines.
 
@@ -125,6 +185,8 @@ It matched Shapely on 60 random lines.
 
 #### `GPUOffsetCurve` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUOffsetCurve`.
+
 - Packer: `getGPUOffsetCurveParameterValues(settings)`, writes `GPU_OFFSET_CURVE_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUOffsetCurveParameterValues`:
@@ -139,6 +201,8 @@ Settings of `getGPUOffsetCurveParameterValues`:
 {/* parameters: GPUVertexSnap generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUVertexSnap` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUVertexSnap`.
 
 - Packer: `getGPUVertexSnapParameterValues(parameters)`, writes `GPU_VERTEX_SNAP_PARAMETER_LENGTH` (4) `float32` values.
 
@@ -214,6 +278,12 @@ integer division and ordered along the ray with 96-bit integer arithmetic. Nodin
 uncertain segment pairs, non-finite vertices and candidate loss from either intersection BVH
 through `candidateOverflow`, and final output capacity loss
 through `overflow`. An uncertainty counter is diagnostic; omitting it does not clear incompleteness.
+`uncertainCount` counts uncertifiable retained segment pairs, rather than rejected input vertices.
+The current snap-rounding path classifies finite integer endpoints in `[0, 2^22 + 1]`, within the
+exact predicate's supported exponent span, so its expected uncertainty count is zero. Non-finite
+or unrepresentable input still sets `candidateOverflow` even when `uncertainCount` is zero and
+even when the counter is omitted. After correcting the input, the next submission rewrites both
+diagnostics. Always inspect `candidateOverflow` as well as `overflow` before consuming results.
 The optional `output.status.requiredRingCount` is the unclamped ring (shell plus hole) requirement
 of the assembly, for sizing the output ring capacity, and the optional `ringCount` is the number of
 rings written. There is no `output.status.requiredCount`: contributor contract rule 8 reserves it
@@ -231,7 +301,37 @@ explicit polygon relation, such as positive-area interior intersection, and reco
 contacts separately. Attribute preservation requires a relation with output feature row, operand
 and source row. Optional `featureSources` reports a representative retained boundary owner and
 whether retained boundary ownership is mixed; it does not enumerate that membership relation.
+Boundary `sourceFeatureIds` maps each retained edge through its operand's caller `sourceIds` when
+supplied, falling back to its feature row otherwise. Representative `featureSources.sourceRows`
+always contains row indices, selected before caller identities are published. Assembly and
+representative-owner selection use source rows internally; the final row-to-caller-ID publication
+maps boundary `sourceFeatureIds` through the corresponding operand's `sourceIds`, after assembly
+and representative selection. Each supplied identity view must hold at least one entry per feature
+and be disjoint from output buffers.
+
+Both operand geometry maps and their view identities are captured once at construction,
+including inherited accessor-backed ID columns. Deleting or replacing caller map entries
+later does not change published boundary provenance. Buffer contents remain GPU-resident data.
+Assembly and representative selection retain source rows; only final boundary publication
+maps those rows through the captured caller-ID views.
 `GPUBufferSurface` has the same output and dissolves all features into one surface.
+Both classes accept only the status views they publish: top-level `count`, `overflow`,
+`candidateOverflow`, optional `ringCount`, `requiredRingCount`, `uncertainCount` and
+`nodedSegmentRequiredCount`; boundary status has `count`, `requiredCount`, `overflow` and
+`candidateOverflow`. Other status views throw at construction, including `invalidCount`,
+`iterationCount`, `converged`, `iterationLimitReached` and `approximation`, because this pipeline
+does not compute those diagnostics. Omit them and inspect the documented overflow flags and
+top-level uncertainty counter. Boundary uncertainty is included in `candidateOverflow`; a
+boundary `uncertainCount` view is refused.
+Status fields are captured once at construction, including inherited and non-enumerable known
+fields. Supplying a refused view through either form still throws. Replacing a status member on
+the caller's object afterwards does not redirect deferred graph construction.
+Declared constructor fields, the output descriptor and its boundary descriptor are also read
+once. Inherited options such as `fillRule` retain their value, and endpoint bindings use the same
+boundary descriptor as the validated status views. Result-only ring counters are refused at the
+boundary location, including inherited and non-enumerable views.
+The buffer and overlay demos suppress drawable rings while either completeness flag is set;
+clearing both flags allows retained geometry to be drawn on the next submission.
 Optional `output.status.nodedSegmentRequiredCount` reports the unclamped piece count for
 `capacity.nodedSegments` (exact when `candidateOverflow` is zero). Once boundary overflow is zero,
 size the three output offset arrays to `requiredRingCount + 1` and positions to
@@ -270,10 +370,52 @@ non-positive line distances produce an empty surface.
 Both contributors are planar float32 operations with explicit `intersections` and `nodedSegments`
 workspace capacities plus caller-owned boundary, ring, and vertex capacities. `candidateOverflow`
 means arrangement construction was incomplete, including uncertifiable predicates and non-finite
-input. Geometry and representative boundary provenance are eligible only when both flags are zero.
+input, as well as open assembly edges and continuation conflicts. Those assembly losses set
+`candidateOverflow` even when final vertex, ring and boundary capacities have spare room; increasing
+only final capacity does not certify the result. Geometry, boundary provenance and representative
+`featureSources` are eligible only when both `output.status.overflow` and
+`output.status.candidateOverflow` are zero.
 `overflow` covers capacity loss in noded segments, compact boundary or
 polygon capacity. Capacity, optional outputs, join/cap style, and topology are compile-time; distance
 and mitre limit remain GPU parameters and can change per encoding.
+
+Plan overlays before allocating recipe resources with the published dimensions-only planner, then
+preflight existing views before registering stages. Their public signatures are:
+
+```ts
+import type {Device} from '@luma.gl/core';
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {
+  GPUPolygonOverlayPlanningProps,
+  GPUPolygonOverlayProps,
+  GPUPolygonOverlayPlan
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare function planGPUPolygonOverlay(device: Device, props: GPUPolygonOverlayPlanningProps): GPUPolygonOverlayPlan;
+declare function preflightGPUPolygonOverlay<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPolygonOverlayProps
+): GPUPolygonOverlayPlan;
+```
+
+Import both functions and their overlay types from
+`@luma-contributors/analysis/gpu-spatial-analysis`; `Device` is from `@luma.gl/core` and
+`GPUCommandGraph` from `@luma.gl/graph/gpu-core`. The planner needs only the device and dimensions:
+`left: {vertexCount, ringCount}`, optional `right` with the same fields,
+`output: {vertexCapacity, ringCapacity, boundaryCapacity}`, `capacity: {intersections, nodedSegments}`,
+`operation` and `vertexTolerance`, plus optional `id`, `fillRule`, `leafCapacity`, `spatialContext`
+and `rightSpatialContext`. Operand counts are total allocated rows, including padding, not live
+counts; output capacities are vertex, ring and segment rows respectively. Dissolve accepts only
+`left`; other operations require `right`. The planner validates options, dimensions and derived
+device scratch-binding limits without a graph or allocation, so a recipe can plan every overlay
+before its first allocation. Resident preflight takes the full constructor props, additionally
+checks resident binding ranges and graph ownership, and does not mutate the graph.
+
+Both return a frozen `GPUPolygonOverlayPlan` with `expandedVertexCount`, `inputRingCount`,
+`hotPixelCapacity`, `nodedSegmentCapacity`, `boundaryCapacity`, `outputRingCapacity` and
+`outputVertexCapacity`. `expandedVertexCount` is allocated operand vertex rows plus input ring
+rows; `hotPixelCapacity` adds `capacity.intersections`. These allocation checks do not certify
+runtime completeness: read both overflow flags after each submission.
 
 #### How it computes
 
@@ -294,6 +436,8 @@ and mitre limit remain GPU parameters and can change per encoding.
 {/* parameters: GPUBufferSurface generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUBufferSurface` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUBufferSurface`.
 
 - Packer: `getGPUOffsetCurveParameterValues(settings)`, writes `GPU_OFFSET_CURVE_PARAMETER_LENGTH` (4) `float32` values.
   - Input port: `parameters`.
@@ -339,12 +483,43 @@ differs only for skew about the center. Agreement was within 0.03 at coordinates
 `GPUGeometryOrientation` is `shapely.reverse` (`mode: 'reverse'`, polygons or lines) or `orient_polygons`
 (`mode: 'orient-polygons'`, which needs the four-level polygon layout and a per-frame `exteriorClockwise`
 set by `getGPUGeometryOrientationParameterValues`). The layout is
-unchanged and `reversedRings` flags are optional. The sign comes from an f32 shoelace sum, which differs
-from GEOS only for self-intersecting rings.
+unchanged and `reversedRings` flags are optional. The sign comes from the exact turn at the
+lexicographically smallest vertex; self-intersecting rings still need an explicit fill convention.
 
 `GPUGeometryCleanup` is `remove_repeated_points(tolerance)` and `set_precision(grid_size, mode='pointwise')`:
-`gridSize` snaps half-up as GEOS does, and `tolerance` removes repeats with the exact GEOS semantics (first
-and last kept, inclusive tolerance against the previous kept vertex). Line and polygon output is compacted
+The cleanup grid origin is zero (coverage snapping instead uses its first ring vertex as origin).
+Grid rounding certifies half-grid boundaries against the original float32 operands, rather than
+trusting a rounded fractional quotient; this also handles reciprocal-division backends. Certification
+runs only when the magnitude of the computed float32 quotient is strictly below `2^24`.
+At or above that magnitude, the shader uses the rounded float32 quotient's half-up candidate
+without original-operand certification, then multiplies it by the packed spacing in float32.
+That fallback can differ from the nearest grid cell of the packed operands: for
+`x = 167772.1875` and `gridSize = 0.01`, the nearest cell is 16777219 and its coordinate rounds
+to 167772.1875, but the fallback emits 167772.203125. Accepted packer settings do not certify
+this larger cell range; `overflow` diagnoses output capacity, not snapping precision.
+Within the certified range, exact
+ties go toward positive infinity, including negative halves: at `gridSize = 1`, `-0.5` snaps to
+`0` and `-1.5` to `-1`. It preserves already integral grid coordinates instead of
+adding 0.5 in float32: with `gridSize = 1`, `8388609` stays `8388609`, the immediate float32
+predecessor of 0.5 (`0.4999999701976776`) rounds to 0, and 0.5 rounds to 1. At spacing 41,
+20.5 selects cell 1 (coordinate 41); at spacing 7, 58720228 stays in its exact cell 8388604.
+This is pointwise snapping, not polygon topology repair. Grid size and repeat tolerance use
+planar position units.
+`getGPUGeometryCleanupParameterValues` preserves explicit zero for `gridSize` (disable snapping)
+and `tolerance` (exact-repeat removal). Both settings must be nonnegative and finite before and
+after float32 conversion; a positive value that rounds to zero is rejected instead of becoming
+a disable control. NaN, infinity and finite values that convert to infinity are rejected before
+the target is written. `getGPULineSimplificationParameterValues` applies the same zero,
+positive-underflow and finite-conversion rules to its position-unit `tolerance`.
+`getGPURectangleClipParameterValues` rectangle bounds must also remain finite after float32 conversion;
+all four bounds use position units, and `maxX >= minX`, `maxY >= minY` are required.
+Within the certified range, `gridSize` snaps half-up on the packed operands; `tolerance` removes repeats with the exact GEOS semantics (first
+and last kept, inclusive tolerance against the previous kept vertex). Even when snapping makes every
+vertex coincide, a line with at least two input vertices retains both endpoints: its required vertex
+count is 2, so capacity 1 publishes `[count, requiredCount, overflow] = [1, 2, 1]`.
+Polygon inputs repeat the first vertex at the end: a closed triangle therefore has four coordinate
+rows and requires four output rows before any snapping or repeat removal changes it.
+Line and polygon output is compacted
 `positions` with republished `lineOffsets` (lines) or `ringOffsets` (polygons) and `status: {count, overflow,
 requiredCount, collapsedCount}` (polygon rings with fewer than 3 surviving vertices are emptied, where GEOS
 raises; the input `featureOffsets` and `polygonOffsets` stay valid). GEOS `set_precision(pointwise)`
@@ -391,6 +566,8 @@ cover dynamic snapping, ties, duplicate preservation and capacity overflow. `nor
 
 #### `GPUAffineTransform` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUAffineTransform`.
+
 - Packer: `getGPUAffineTransformParameterValues(settings?)`, writes `GPU_AFFINE_TRANSFORM_PARAMETER_LENGTH` (12) `float32` values.
 
 Settings of `getGPUAffineTransformParameterValues`:
@@ -402,13 +579,15 @@ Settings of `getGPUAffineTransformParameterValues`:
 | `scale` (optional) | `number \| readonly [number, number]` | Scale factors `[x, y]`, or one number for both. Default 1. |
 | `skew` (optional) | `readonly [number, number]` | Shear angles `[x, y]` (`shapely.affinity.skew`: `xs`, `ys`). Default 0. |
 | `translate` (optional) | `readonly [number, number]` | Translation `[x, y]` applied last. Default `[0, 0]`. |
-| `origin` (optional) | `'center' \| 'centroid' \| readonly [number, number]` | Fixed point of the scale, skew and rotation: a coordinate, the per-feature bounding box `'center'`, or the per-feature `'centroid'` of the input geometry. Default `[0, 0]` (shapely defaults to `'center'`; ask for it explicitly). `'center'` and `'centroid'` only work when the contributor was created with the matching entry in `origins`; otherwise they act as `[0, 0]`. |
+| `origin` (optional) | `readonly [number, number] \| 'center' \| 'centroid'` | Fixed point of the scale, skew and rotation: a coordinate, the per-feature bounding box `'center'`, or the per-feature `'centroid'` of the input geometry. Default `[0, 0]` (shapely defaults to `'center'`; ask for it explicitly). `'center'` and `'centroid'` only work when the contributor was created with the matching entry in `origins`; otherwise they act as `[0, 0]`. |
 
 {/* /parameters */}
 
 {/* parameters: GPUGeometryCleanup generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUGeometryCleanup` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUGeometryCleanup`.
 
 - Packer: `getGPUGeometryCleanupParameterValues(settings?)`, writes `GPU_GEOMETRY_CLEANUP_PARAMETER_LENGTH` (4) `float32` values.
 
@@ -426,6 +605,8 @@ Settings of `getGPUGeometryCleanupParameterValues`:
 
 #### `GPUGeometryOrientation` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUGeometryOrientation`.
+
 - Packer: `getGPUGeometryOrientationParameterValues(settings?)`, writes `GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUGeometryOrientationParameterValues`:
@@ -438,19 +619,20 @@ Settings of `getGPUGeometryOrientationParameterValues`:
 
 ### `GPUMinimumBounds`
 
-Computes each feature's minimum-area rotated rectangle, minimum bounding circle, longest line and envelope from
-its exact convex hull.
+Computes each feature's minimum-area rotated rectangle, minimum bounding circle and longest line
+from its hull, plus an envelope of the finite source coordinates.
 
 ::lens{scenario=gpu-spatial-analysis.minimum-bounds rung=result caption="Grey: 51 Chicago parks · blue: their minimum-area rotated rectangles"}
 
 Per polygon feature (the four-level layout: `positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`) or
 per `uint32` label group (`positions`, `labels` and `groupCount`; use it for points and lines): the minimum-area rotated rectangle (`rectangleCorners`, four counter-clockwise
 corners, and `rectangleSizes` = width, height, angle, area), the minimum bounding circle (`circles` = cx, cy,
-r), the longest line (`longestLines`, `diameters`) and the envelope (`bounds`). Equivalents: Shapely
+r), the longest line (`longestLines`, `diameters`) and the envelope (`sourceBounds`). Equivalents: Shapely
 `oriented_envelope`, `minimum_rotated_rectangle`, `minimum_bounding_circle`, `minimum_bounding_radius`;
 Sedona `ST_LongestLine`, `ST_MaxDistance`. It is built on `GPUGroupConvexHull` (exact lattice hull) with one
 thread per group over the hull. Hulls over `maximumHullVertices` (default 2048) set
-`output.status.overflow` to 1 and write NaN; optional `output.status.groupOverflow` names this hull-limit
+`output.status.overflow` to 1 and write NaN to hull-derived shape outputs; source bounds remain
+independent. Optional `output.status.groupOverflow` names this hull-limit
 condition and has the same 0/1 value. Both are rewritten each frame. `hullSizes` optionally reports the
 true hull vertex counts. The GPU and CPU operation forms accept the optional diagnostic; the CPU twin
 computes hulls without a size limit and reports both statuses as zero. Rectangle ties (areas
@@ -461,6 +643,40 @@ group, and near-collinear circumcenters fall back to the diametral circle.
 
 Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
 `createGPULocalFrame` and `GPULocalFrameProjection`. `output.status` has no `count`: every column has one row per group.
+
+#### Operation forms
+
+`GPUMinimumBoundsOperation` and `CPUMinimumBoundsOperation` are public from
+`@luma-contributors/analysis/gpu-spatial-analysis`, with `MinimumBoundsOperationProps`.
+They take graph value names for `positions` plus `rowCount`, and either `labels`/`groupCount`
+or the three polygon offset columns plus `featureCount`. Requested output names declare live
+columns: `rectangleCorners` has four `float32x2` rows per group; `rectangleSizes` (width, height,
+angle in radians, area), `sourceBounds` and `longestLines` are `float32x4`;
+`circles` is `float32x3`; `diameters` is `float32`; `hullSizes` and optional `precisionLimited`
+are `uint32`. All except corners have one row per group.
+The optional input `labelsComplete` and output `labelsComplete` each name one `uint32` word for the whole partition,
+independent of the number of groups. The input is a graph value name (declared internally as
+`inputLabelsComplete`); `output.labelsComplete` names the forwarded completion output.
+Zero means the labels are provisional, nonzero means complete; omitted input means complete.
+Bounds can be finite with `status.overflow = 0` and `labelsComplete = 0`: they describe the
+current partition, not its final groups. Check label completion independently of hull overflow
+before treating a grouped result as final. Request the completion output or retain the input
+completion value alongside the result.
+Lengths use planar position units, areas their square. Required `status.overflow` and optional
+`status.groupOverflow` each have one `uint32` row for the whole operation, not one per group.
+Both forms capture the shape, route and output names at construction; input values remain live.
+The GPU form lowers to the contributor and enforces its hull/device budgets. The CPU form uses
+float64 shape arithmetic, rounds output once, and has no hull budget: `maximumHullVertices` does
+not truncate it and both status words are zero. Hull quantization and zero-area residuals can
+differ between forms; compare area, radius and distance rather than corner order.
+
+`sourceBounds` reports source-position bounds `[minX,minY,maxX,maxY]`, reducing finite source
+coordinates per group independently of hull quantization and hull-capacity loss.
+A `[0,0.01]^2` square beside a distant group at `(10,000,000,0)` retains its source envelope
+`[0,0,f32(0.01),f32(0.01)]`; it no longer collapses with the quantized hull. Optional per-group
+`precisionLimited` is 1 when the shared lattice moved a finite source coordinate, warning that
+hull-dependent shapes may lose detail even when both overflow words are zero. Use separate
+conditioning per group when group extents differ greatly.
 
 #### How it computes
 
@@ -487,6 +703,11 @@ Earcut on the GPU (`earcut`, deck.gl `PolygonLayer` tessellation, geo `Triangula
 `triangleCount` are per polygon; the polygons of feature `f` are `[featureOffsets[f], featureOffsets[f + 1])`. The first ring is the shell and the others holes, with any winding.
 `GPUPolygonTriangulationOperation` and `CPUPolygonTriangulationOperation` capture their
 shape, work/routing options, spatial context and graph port names at construction.
+Both are public from `@luma-contributors/analysis/gpu-spatial-analysis`, with
+`PolygonTriangulationOperationProps`: geometry columns are graph value names, `polygonCount`
+and `indexCapacity` declare the shape, and output names declare `uint32` `indices`, per-polygon
+`valid` and optional `triangleCount`/`triangleOffsets` (the latter includes a terminal entry).
+There is no global compact count; read each polygon's live triangle prefix in its own slice.
 Later edits to the caller's props or output map cannot change the declared outputs or
 the lowered/executed operation. Input graph values still supply fresh geometry each run;
 construct a new operation to change its shape, options or ports.
@@ -534,7 +755,18 @@ polygon area), with the triangle count of the `earcut` package (3.2.4) where tha
 
 A result flagged `valid = 1` is a tiling of the polygon whenever the polygon is valid (simple rings, holes
 inside the shell and outside each other; any winding). Rings may touch at single points, vertex to vertex or
-a vertex of one ring inside an edge of another. Three departures from Earcut make this hold. Where Earcut
+a vertex of one ring inside an edge of another. More precisely, the positive-area triangles tile the polygon outside its holes;
+the monotone route may also emit counted zero-area rows at collinear vertices or touching holes.
+These counted zero-area rows retain their original source indices, including distinct input rows
+with equal coordinates. They are geometry rows, not failure padding: padding is outside `triangleCount`
+in each polygon's slice. In the ten-by-ten square with two two-by-two holes touching at `(4,4)`,
+monotone emits 14 rows (12 positive-area and 2 zero-area), versus Earcut's 12; both cover area 92.
+The zero-area source triples are `[9,6,8]` and `[11,8,6]`, with rows 6 and 8 coincident but distinct.
+Here input rows are the shell `[(0,0),(10,0),(10,10),(0,10)]`, then hole
+`[(2,2),(2,4),(4,4),(4,2)]`, then hole `[(4,4),(4,6),(6,6),(6,4)]`.
+Do not replace these triples with `(first,first,first)` or weld their source rows when preserving provenance.
+Consumers that require positive-area faces, such as an area-sampling frame, must filter these rows.
+Three departures from Earcut make the Earcut tiling contract hold. Where Earcut
 cures a local self-intersection of its working ring by writing a triangle across it, the port flags the
 polygon: that triangle is the only step after which the triangles written and the ring that remains no
 longer add up to the polygon boundary. A hole that cannot be joined to the shell flags the polygon instead of
@@ -551,8 +783,11 @@ ray meets at one point the one whose side holds the hole is taken. On 126,382 va
 twelve holes (90,985 on integer lattices and lattice shears with coordinates up to six million, 35,397 of
 them again at projected-metre magnitude, half of those at float32 resolution; four in five with touching
 rings) the Earcut port returned 126,381
-tilings and flagged one, a sliver at float32 resolution, where a candidate diagonal is judged at its float32
-midpoint, the one decision that is not exact. The `earcut` package (3.2.4) returned a wrong triangulation
+tilings and flagged one, a sliver at float32 resolution. That historical run preceded the exact
+diagonal-midpoint rule described above. The exact historical W2-02 fixture is unavailable:
+the requested 32-vertex, six-hole input is not the committed 23-vertex, three-hole record with the
+same number. Rescue of that specific input by the current default monotone retry remains unverified;
+the touching-hole and default-route controls do not establish that rescue. The `earcut` package (3.2.4) returned a wrong triangulation
 for 641 of them. Before these rules the port flagged 535 and returned 32 wrong triangulations as valid.
 The pinned sample is `gpu-polygon-triangulation-touching-rings.spec.ts` (Shapely validity and area,
 `test/oracles/polygon-triangulation-touching-rings.py`). Delaunay variants
@@ -614,6 +849,38 @@ Planar only: `spatialContext` defaults to native planar coordinates and a longit
 
 ::lens{scenario=gpu-spatial-analysis.polygon-triangulation rung=graph caption="Layout preparation, Earcut and monotone fallback, then the display gather"}
 
+<a id="constrained-delaunay-triangulation"></a>
+
+### `GPUConstrainedDelaunayTriangulation`
+
+Use `GPUConstrainedDelaunayTriangulation` for a valid planar polygon's interior mesh, retaining
+shell and hole boundaries as constraints. It starts with the polygon triangulation above, then
+performs bounded Lawson flips of strictly illegal interior edges; cocircular diagonals stay put.
+The input is the four-level polygon layout, not an unconstrained point cloud. Output indices
+refer to original position rows. `valid`, `triangleCount`, optional `triangleOffsets`, padding
+and counted zero-area rows follow [`GPUPolygonTriangulation`](#gpupolygontriangulation).
+The per-polygon `output.status.converged` is independent of `valid`: exhausting `maximumFlips`
+(default 4096) can leave a valid mesh with `converged = 0`, which is not certified Delaunay.
+The GPU's `flipMethod: 'auto' | 'serial' | 'parallel'` selects scheduling, not another constraint rule.
+
+`GPUConstrainedDelaunayTriangulationOperation` and `CPUConstrainedDelaunayTriangulationOperation`
+are public from `@luma-contributors/analysis/gpu-spatial-analysis`, with
+`ConstrainedDelaunayTriangulationOperationProps`. They take graph names for `positions`,
+`featureOffsets`, `polygonOffsets` and `ringOffsets`, compile-time `polygonCount`/`indexCapacity`,
+and graph output names for scalar `uint32` indices, per-polygon `valid`, optional `triangleCount`,
+optional terminal `triangleOffsets`, and required per-polygon `status.converged`.
+Read only `triangleCount[p]` triples from polygon `p`'s slice; indices outside that prefix are padding.
+Both graph forms require at least one polygon slot and one index row; empty polygon slots are
+allowed. Their pure CPU function also accepts zero-length outputs.
+
+The GPU form lowers to the bounded contributor. The CPU form uses budgeted un-hashed Earcut
+and the selected monotone route for the initial mesh, then flips to completion, ignoring
+`maximumFlips`. It uses arbitrary-precision predicate fallbacks for all finite float32 exponent
+spans, while the GPU's incircle fallback is bounded to span 55. Initial triangulations can differ
+with GPU hashing; successful CPU polygons report convergence 1. Both forms preserve slice allocation
+and hole exclusion. See the [historical raster-expansion route](../gpu-raster/expansion.md#operations-and-contracts)
+for capability C24; this task destination preserves that page's URL.
+
 ### `GPUDelaunayTessellation` and `GPUVoronoiDiagram`
 
 `GPUDelaunayTessellation`: Scratch triangles are bounded by 1,073,741,823 and output triangles by
@@ -642,6 +909,36 @@ rows are sorted by their first two indices.
 is one only for successful convergence, `status.iterationCount` counts active steps, and
 `status.iterationLimitReached` distinguishes budget exhaustion from invalid input. Use
 `getDelaunayMaximumTriangleCount(pointCount)` for the general-position upper bound.
+Grouped `triangleCounts` and `triangleOffsets` describe the unclamped required layout, even when
+output capacity truncates the stored triangles. Intersect each group's range
+`[triangleOffsets[g], triangleOffsets[g] + triangleCounts[g])` with `[0, status.count)` before
+indexing the triangle output. For required counts `[2,2,0]`, offsets `[0,2,4]` and capacity one,
+the readable group lengths are `[1,0,0]`.
+
+#### Delaunay operation forms
+
+`GPUDelaunayTessellationOperation` and `CPUDelaunayTessellationOperation` are public from
+`@luma-contributors/analysis/gpu-spatial-analysis`, with `DelaunayTessellationOperationProps`.
+They take a `positions` graph value name (`float32x2`, planar position units), triangle `capacity`,
+and optional `groups: {ids, count}` (`uint32` labels). `output.triangles` declares `capacity`
+`uint32x3` source-row triples. Required one-row `uint32` `status.count`, `requiredCount` and
+`overflow` delimit the readable prefix and its unclamped requirement. Optional diagnostics
+use the same status names described above. Grouped input and `output.groups` are supplied together;
+group `triangleCounts`, optional `triangleOffsets`, and `status.converged` have one `uint32` row
+per group. Their required ranges must still be intersected with the global readable prefix.
+
+The GPU form uses parallel insertion and bounded Lawson rounds. The CPU form uses sequential
+cavities, exact arbitrary-precision predicate fallbacks, and no GPU step/scratch/command budget;
+`iterationCount` counts inserted distinct finite sites rather than GPU active rounds, and
+`iterationLimitReached` is always zero. It retains first-row duplicate ownership and row-order
+cocircular tie breaking. CPU padding is zeroed; GPU rows beyond `status.count` are unspecified.
+Both Delaunay graph forms accept `capacity: 0`, as does the pure CPU function. This count-only
+route allocates no triangle rows; read `status.requiredCount` for demand, `status.count` for the
+stored prefix and `status.overflow` for truncation. Three noncollinear sites such as
+`(-1,0),(1,0),(0,3)` give `count = 0`, `requiredCount = 1`, `overflow = 1` at zero capacity.
+This measures the result's required triangle capacity without claiming that any triangles were stored.
+
+#### Construction and Voronoi consumption
 
 The first three steps insert a seed simplex: the first and last distinct sites in the coordinate-bit
 sort, then the first site not collinear with that edge (exact orientation). This puts a lone apex
@@ -654,16 +951,28 @@ and exact Lawson flipping converges from any planar triangulation, so no repair 
 needs star splaying only because its float flips are inexact). Steps stop on the GPU when every site is
 in and no edge is illegal: the remaining steps are indirect dispatches of nothing. The initial budget
 `B = 4 ceil(log2(n + 2)) + 32 + ceil(sqrt(n) / 2)` now continues on those same GPU state words up to
-`min(4096, max(B, 2n + 32))` steps. Up to 2,048 sites, only the first `B` rounds are encoded in
-parallel; two bounded GPU kernels finish any remaining insertion and then exact Lawson legalization
-with one active invocation each. They reuse the topology and predicates, without CPU readback or
-reducing the iteration limit. At 1,000 sites this encodes 794 iteration nodes instead of 18,288.
-Larger inputs retain nine nodes per allowed step. The GPU phase counter keeps parallel steps on
-the same nine pipelines; no host iteration enters shader source or overrides. Active work is O(n)
-per pass, with no universal logarithmic convergence claim. The rare small-input continuation trades
+`T = min(4096, max(B, 2n + 32))` steps for nonempty input. Eligibility for the short parallel
+schedule and serial GPU continuation requires both `pointCount ≤ 2048` sites and allocated scratch triangles
+`2 * pointCount + max(groupCount, 1) + 7 ≤ 4104`, including empty groups. On that route
+`P = min(B, T)` rounds are encoded in parallel. The two bounded GPU continuation kernels are added
+only when `P < T`; they finish any remaining insertion
+and then exact Lawson legalization with one active invocation each. They reuse the topology and
+predicates, without CPU readback or
+reducing the iteration limit. For 3 sites, `P = 45` and `T = 45`: no continuation kernels are
+encoded. For 10 sites, `P = 50` and `T = 52`: two continuation kernels are encoded.
+Empty input encodes zero rounds and no continuation kernels.
+At 1,000 sites this encodes 794 iteration nodes instead of 18,288.
+Exceeding either bound retains parallel execution for every allowed round, with nine nodes per
+round. For 2040 sites, 17 groups allocate 4104 scratch triangles and encode 99 parallel rounds;
+18 groups allocate 4105 scratch triangles and encode 4096 parallel rounds. The GPU phase counter
+keeps parallel steps on the same nine pipelines; no host iteration enters shader source or overrides.
+Active work is O(n) per pass, with no universal logarithmic convergence claim. The rare small-input continuation trades
 parallel throughput for fewer encoded dispatches; its worst-case latency remains input-dependent.
-At the documented maximum, unconverged work yields zero triangles, increments `invalidCount`, and
-publishes `converged = 0`, `iterationLimitReached = 1` and the actual `iterationCount`. This is a bounded
+At the documented maximum, unconverged work retains the currently accepted real triangles,
+increments `invalidCount`, and publishes `converged = 0`, `iterationLimitReached = 1`,
+`approximation = 1` and the actual `iterationCount`. This partial triangulation may omit sites
+and need further legalization; consumers requiring a complete Delaunay triangulation must reject it.
+This is a bounded
 safety net, not a proof that every arbitrary Lawson chain finishes in 4096 steps. The CPU WGSL executor
 checks 2000 collinear-plus-apex sites against `T = 2n - 2 - h` (1998 triangles) and exact empty circles.
 
@@ -679,6 +988,54 @@ supertriangle (corners at 32 extents) dropped hull triangles, for example 2 of a
 uniform points and 51 of 185 for a 1e-2-thick band.
 
 `GPUVoronoiDiagram` consumes those triangle rows and their GPU-resident count without readback.
+Optional Delaunay `candidateOverflow` and `uncertainCount` receive zero; `approximation` is one
+when iteration exhaustion retains partial topology and zero after a successful solve. These
+diagnostics are also available on the Delaunay GPU operation and CPU form.
+When triangles come from Delaunay, forward **both** producer words as `triangleStatus.overflow`
+and `triangleStatus.converged`. The fields remain optional, but each observes only its own failure:
+supplied `overflow != 0` detects triangle capacity loss, and supplied `converged = 0` detects
+solver exhaustion. With `triangleStatus` supplied, a requested count exceeding the triangle view
+is independently detectable and also suppresses segments. Merely supplying the object does not
+establish that all upstream failure evidence was forwarded.
+The reasons remain distinct: solver exhaustion alone clears both Voronoi capacity flags;
+triangle capacity loss sets both. Keep the original producer evidence to identify the reason.
+
+For otherwise valid triangles, let `R` be the required clipped segment count from complete input
+and `C` the final segment capacity. All counts below are segment rows. Each row assumes the
+specified input evidence is supplied; optional output fields are shown when their views are supplied:
+
+| Input/result condition | Required input evidence | `count` | `requiredCount` (demand) | Segments suppressed? | Solver evidence: `converged` | `complete` | `overflow` | `candidateOverflow` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Complete input, sufficient final capacity | Both producer words: `overflow = 0`, `converged = 1`; requested rows fit | `R` | `R` | No | `1` | `1` | `0` | `0` |
+| Solver exhausted, sufficient storage | Supplied `triangleStatus.converged = 0`, with no capacity loss | `0` | `0` | Yes | `0` | `0` | `0` | `0` |
+| Truncated triangle input | Supplied `triangleStatus.overflow != 0`, or oversized requested count with `triangleStatus` supplied | `0` | `0` | Yes | `0` | `0` | `1` | `1` |
+| Final segment overflow | Both producer words: `overflow = 0`, `converged = 1`; requested rows fit | `C` | `R > C` | No; only `C` rows fit | `1` | `0` | `1` | `0` |
+
+Forwarding only `overflow = 0` hides solver exhaustion; forwarding only `converged = 1` hides
+triangle truncation when the producer's count is already clamped. In either case, one readable
+triangle with enough segment storage can emit three segments and `complete = 1`. Output
+completeness certifies only the input evidence actually supplied, not an omitted producer word.
+
+Suppressed demand is zero, not an estimate of the full diagram's missing segments. Without
+`triangleStatus`, an oversized `triangleCount` retains the legacy readable-prefix behavior:
+`requiredCount` describes that prefix alone, `count` is clamped to `C`, `candidateOverflow = 1`,
+`converged = 0` and `complete = 0`; `overflow` then reflects only final segment capacity loss.
+A clamped count alone cannot establish triangle completeness. The Voronoi lens supplies both
+Delaunay overflow and convergence.
+
+Voronoi performs no iterative solve: optional `iterationCount`, `iterationLimitReached`,
+`uncertainCount` and `approximation` receive zero, even after upstream solver exhaustion. Those
+local zeros do not replace the producer's solver evidence. Optional `converged` is one only when
+no input triangle was rejected (`invalidCount = 0`), the requested triangle count fits the view
+and supplied upstream evidence is successful; it does not certify final capacity. Optional
+`complete` additionally requires the segment demand to fit the final capacity. Ordinary float32
+rounding still applies. `converged` must use a separate physical buffer from `invalidCount`. `complete` must use a
+separate physical buffer from both `invalidCount` and `requiredCount`, even for disjoint byte
+ranges, because its publication reads both diagnostics. A disjoint packed
+`requiredCount`/`converged` layout remains supported when no completeness destination aliases
+those reads. `count` and `overflow` must use a separate physical buffer from `requiredCount`.
+`unresolvedCount` is unsupported and rejected at construction. Status fields are
+rewritten on every submission. Output slots beyond `count` are not written.
 Internal edges connect adjacent circumcenters; hull bisectors extend to a dynamic one-row
 `clipBounds` view. Its compact `float32x4` segments retain the two source site IDs and canonical
 bounded status. Input triples may have either winding; hull rays always point away from the
@@ -690,6 +1047,35 @@ ray exits come from the clip bounds without a fixed distance cap.
 Collinear triangles, an uncertifiable orientation, or an unrepresentable final center produce no
 Voronoi edges and increment `status.invalidCount` when supplied. The solve remains float32;
 exact orientation does not promise an exact center for nearly collinear triangles.
+
+Circumcircle conditioning matters independently of the predicate sign. Two nearly cancelling
+products may produce a zero cross or a nonzero but inaccurate cross after edge subtraction rounds.
+The shared Voronoi/alpha-hull construction detects cancellation when the cross magnitude is at
+most `2^-10` times the sum of the product magnitudes. It chooses an origin incident to the edge
+with the smallest maximum component magnitude, preserving the nearby vertices' separation, and
+recomputes the product difference with integer significands. Correcting the products alone cannot
+recover an edge component already lost during subtraction. Scaled center restoration then adds
+that selected origin before returning to the original coordinate scale.
+
+The two integer controls are `(0,0),(8192,8191),(8191,8190)` and
+`(0,0),(8388608,8388607),(8388607,8388606)`: both have exact determinant -1 and
+exercise product cancellation. Separate symmetric dyadic probes use `(1,1),(u,0),(0,u)`,
+`u = 2^-26`, with analytic center `(0.5000000037252903,0.5000000037252903)`.
+The asymmetric dyadic probes use `(1,1),(0,2^-26),(2^-24,0)`, with center
+`(0.2000000247359275,0.7999999871850011)` and radius `0.8246211042342516`;
+an earlier construction returned `(0,1)` and radius 1 despite a nonzero cross. Both dyadic
+families test all three cyclic orders. Public-consumer probes separately check clipped Voronoi
+bisectors and alpha-hull retention at circumradius 0.9. The earlier thin-integer helper test log
+records a device pass for its tested revision; it does not qualify the later origin-selection
+change or public-consumer outputs. Only retained device readbacks qualify the specific fixture,
+revision and output fields read. Current dyadic/cyclic-order and public-consumer device readbacks
+remain pending; interpreter and arithmetic-model results are not device qualification.
+
+For adjacency, require a positive-length shared Voronoi boundary. Cocircular triangles can have
+equal circumcenters, so a Delaunay diagonal alone does not establish Voronoi neighbors. The square
+probes check both triangulations and retain active segment rows, site IDs and counts when run.
+No retained device observation here establishes whether a counted zero-length diagonal is emitted;
+do not infer one from the triangle indices or present it as an observed row.
 Both operations are deterministic for a fixed row order and use finite planar f32
 coordinates; they do not claim constrained Delaunay, polygonal Voronoi cells, or concave construction.
 Orientation and incircle tests are adaptive exact on the f32 coordinates. Both are planar only: a
@@ -726,16 +1112,43 @@ Finds an interior label point for each polygon, its pole of inaccessibility, wit
 A label point inside each polygon, the pole of inaccessibility (turf `pointOnFeature`, Shapely
 `representative_point`, polylabel). Props: the four-level polygon layout (`positions`, `featureOffsets`,
 `polygonOffsets`, `ringOffsets`), `initialGridSize` (16), `refinementGridSize` (8), `refinementRounds` (6), `refinementCandidates` (4) and
-`output: {points, distances?, degenerate?}`. The rule is even-odd across rings. It starts from seeds
+`output: {points, publishedCenterClearance?, precisionLimited?, degenerate?}`. The rule is even-odd across rings. It starts from seeds
 (scanline interval midpoints, guaranteed interior), then a coarse grid, then refines the best cells whose
 bound can still win. If no part of an archipelago is hit by the three feature scanlines, they are repeated
 through the bounds of the largest ring before the search falls back to the first vertex. The inside test
 is an f32 even-odd crossing that only places candidates (it is not a topology claim; the exact rule is
-`utils/exact-geometry-wgsl.ts`). `distances` is the inscribed radius and `degenerate` is 1 when no interior point
-exists. It is planar and greedy: on long multi-lobed shapes it can miss the true pole (the worst ratio to
+`utils/exact-geometry-wgsl.ts`). `publishedCenterClearance` is the inscribed radius at the written point,
+and `degenerate = 1` means the published point has no positive clearance (including empty or
+unusable labels). It tests label usability, not polygon validity or the mathematical existence
+of an interior point. It is planar and greedy: on long multi-lobed shapes it can miss the true pole (the worst ratio to
 Shapely `polylabel` was above 0.97 in the random test), so raise `initialGridSize` or
 `refinementCandidates`. Cost is sequential per feature, except that polygons with more than
 `smallFeatureVertexLimit` vertices (default 32) use a workgroup path with bit-identical results.
+
+Label bounds use the contiguous vertex interval from the feature's first ring offset to its final
+ring offset. If the final offset is at or below the first, the feature publishes a NaN point and
+clearance and sets `degenerate = 1`, even if an individual ring contains vertices.
+`CPULabelPointOperation` defaults to the GPU's resident offset semantics and accepts
+`storage: 'compact'` to check the full hierarchy. `computeLabelPointOnCPU` defaults to compact
+validation and accepts
+`storage: 'resident-capacity'` for resident snapshots.
+
+Clearance is recomputed at the published float32 center after rounding the search candidate.
+`publishedCenterClearance` has one `float32` row per feature, in planar
+position units; optional `precisionLimited` is one `uint32` row per feature and is 1 when the
+reported clearance is below the search clearance. Currently this includes clearance scalar rounding:
+the diamond `(±3,0),(0,±3)` keeps center `(0,0)` but sets the flag when `3/sqrt(2)` rounds downward.
+The flag alone does not prove the center moved. Both clearance spellings must use the same
+destination if supplied together.
+A square starting at
+`(1048576,1048576)` with side 0.125 has true center `(1048576.0625,1048576.0625)` and radius
+0.0625, but no float32 coordinate strictly between its edges. Its published point is a boundary
+corner: the CPU twin now reports clearance 0, `degenerate = 1` and `precisionLimited = 1`, rather
+than assigning the unrounded center's positive radius to that point. Subtract a common local origin before
+float32 upload, perform the search and downstream predicates in that frame, and restore the
+origin only for presentation. More search rounds cannot recover an unrepresentable coordinate.
+Representability and the distinction between search error and roundoff are described for
+[`GPUMaximumInscribedCircle`](../gpu-geometry-refinement.md#circle-outputs-and-coordinate-precision).
 
 Planar only: a longitude/latitude `spatialContext` throws at construction; project first with
 `createGPULocalFrame` and `GPULocalFrameProjection`. Declares `measure: 'distance'`: a Lambert
@@ -765,14 +1178,32 @@ polygon layout (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`; 
 `parameters` (`getGPUShapeDescriptorsParameterValues({sliverThreshold})`) and an `output` with any of `areas`,
 `perimeters`, `polsbyPopper`, `schwartzberg`, `elongation`, `orientation`, `convexity`, `clockwise` and
 `sliver`. It builds on `GPUGeometryMeasures` (area, perimeter, centroid) plus central second moments.
+Both shape operation backends capture supported output columns by name at construction,
+including prototype getters; inherited columns are declared and written like own properties.
 `elongation = 1 - sqrt(lambda2 / lambda1)`. `orientation` is the major axis in radians in `(-pi/2, pi/2]`, and exactly 0 when the second moments are
 isotropic (an axis-aligned square or a circle).
 `convexity = area / hull area` uses a private gift-wrapping hull (`O(n * h)` per feature) for small features and `GPUGroupConvexHull` (`O(n log n)`, balanced) for large ones: `convexityMethod: 'auto'` chooses the monotone chain when features average at least 256 vertices, or when the optional `maximumVerticesPerFeature` prop declares a largest feature of at least `GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_LARGEST_VERTICES` (1024) vertices, so one huge feature among many small ones is not walked by a single invocation. The moments node still integrates one feature per invocation; a segmented-sum version (per-edge terms reduced with `sorted-segment-sums`) would balance it. Outputs have one row per feature and no `status.count`. `clockwise` is
 read from the first ring (y up), and `sliver` is set when Polsby-Popper is below the per-frame threshold.
 Coordinates are planar and degenerate features give NaN. A longitude/latitude `spatialContext` throws at
-construction; project first with `createGPULocalFrame` and `GPULocalFrameProjection`. The resolved context,
-including its `frame` identity, reaches the internal `GPUGeometryMeasures`. The gift-wrapping hull picks
-each next vertex with the exact orientation predicate (`orientSign`) on the original positions.
+construction. Project first with `createGPULocalFrame` and `GPULocalFrameProjection`.
+If `frame.unit` or a recognized `frame.crs` identifies an angular unit in a planar context, the
+constructor rejects `areas`, `perimeters`, `polsbyPopper`, `schwartzberg`, `sliver` and `convexity`.
+Project the positions to a planar linear frame for those outputs. For `orientation` alone, use
+`coordinateSpace: 'planar'` and `metric: 'none'` with the angular frame and omit `units`. For example,
+a planar `EPSG:4326` frame works in that context. Changing its metric to `'native'` throws at
+construction. The resolved context, including its `frame` identity,
+reaches the internal `GPUGeometryMeasures`. The gift-wrapping hull picks each next vertex with the
+exact orientation predicate (`orientSign`) on the original positions.
+
+Both hull methods use the contiguous vertex interval from the first ring offset to the final ring
+offset. A final offset at or below the first gives an empty hull interval and NaN convexity. Area,
+perimeter and moments are computed from the individual rings, so an earlier ring can still
+contribute. If resident feature windows go out of order, the GPU uses per-feature gift wrapping
+so that each window can use all its vertices, including rows shared with another window.
+`CPUShapeDescriptorsOperation` defaults to these resident offset semantics and
+accepts `storage: 'compact'` to check the full hierarchy.
+`computeShapeDescriptorsOnCPU` checks the compact hierarchy by default and accepts
+`storage: 'resident-capacity'` for resident snapshots.
 
 #### How it computes
 
@@ -790,6 +1221,8 @@ each next vertex with the exact orientation predicate (`orientSign`) on the orig
 
 #### `GPUShapeDescriptors` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUShapeDescriptors`.
+
 - Packer: `getGPUShapeDescriptorsParameterValues(settings?)`, writes `GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUShapeDescriptorsParameterValues`:
@@ -801,6 +1234,12 @@ Settings of `getGPUShapeDescriptorsParameterValues`:
 {/* /parameters */}
 
 ### `GPULineDensity`
+
+`output.status.requiredCount` counts reserved traversal records, including zero-length records
+at an interior grid corner. For `(.5,.5)` to `(1.5,1.5)` on a unit `2 × 2` grid, two positive
+cell spans require three records because the traversal advances both axes at the corner.
+A `recordCapacity` of two therefore sets `overflow=1`; capacity three fits. Use the reserved
+count, rather than the number of positive cell contributions, when sizing this buffer.
 
 `GPU_LINE_DENSITY_PARAMETER_SCHEMA` exposes typed `GPUSpatialParameterSchema<'float32'>`
 metadata, including `wordLength` and `fields`, through the public spatial-analysis entry point.
@@ -823,9 +1262,59 @@ gives kilometers and square kilometers. A longitude/latitude segment is cut by t
 straight line between its vertices in degrees and each piece is measured as a great circle, so the
 total of a long segment depends on the grid (the segment (0, 60) to (90, 60) is 4,605 km as one piece and
 about 5,004 km when cut by 1 degree cells): densify long segments first. Exceeding `recordCapacity` sets `status.overflow` and under-counts the
-last segments. A segment on a cell boundary goes to the upper or right cell, and closed rings are not
-special (pass ring edges as lines). Length per polygon is
+last segments. The intended physical boundary policy assigns an interior horizontal boundary
+to the physical northern cell and an interior vertical boundary to the physical eastern cell.
+Output row and column order only permutes the classified cells; see the float32 classification
+limitation below. Closed rings are not special (pass ring edges as lines). Length per polygon is
 [`GPULineLengthPerPolygon`](#gpulinelengthperpolygon).
+
+For axis-aligned raster metadata, pair `getGPULineDensityParameterValues(grid)` with
+`getGPULineDensityRasterOutputMapping(grid)` and matching dimensions:
+
+```ts
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getGPULineDensityParameterValues,
+  getGPULineDensityRasterOutputMapping
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+const grid: GPURasterMetadata = {
+  width: 1,
+  height: 2,
+  affine: [1, 0, 0, 0, -1, 2],
+  pixelInterpretation: 'area'
+};
+const rasterSettings = {
+  columns: grid.width,
+  rows: grid.height,
+  ...getGPULineDensityRasterOutputMapping(grid)
+}; // Spread into GPULineDensity props; upload these packed parameters separately.
+const parameterValues = getGPULineDensityParameterValues(grid);
+```
+
+Both parameter overloads and the raster mapping helper reject a minimum whose float32 encoding
+moves it by at least one original or encoded cell size; subtract a common local origin from
+positions and grid placement. The mapping helper also rejects an independently encoded zero
+step even if the two corners round to different float32 values.
+
+The packer retains `[minimumX, minimumY, positiveCellWidth, positiveCellHeight]`; the mapping
+helper supplies `outputRowOrder: 'north-first' | 'south-first'` and
+`outputColumnOrder: 'east-first' | 'west-first'` to match raster storage. Legacy settings default
+to south-first rows and west-first columns. For a `1 × 2` north-up area grid with affine
+`[1,0,0,0,-1,2]`, the packed values are `[0,0,1,1]` and mapping is north-first/west-first.
+Interior segment `(.25,1.5) → (.75,1.5)` and boundary segment `(.25,1) → (.75,1)` each contribute
+length `.5` to the physical northern cell: both give `[.5,0]` north-first; the boundary gives
+`[0,.5]` south-first. Likewise, on a unit `2 × 1` grid, boundary segment
+`(1,.25) → (1,.75)` belongs to the physical eastern cell, giving `[0,.5]` west-first and
+`[.5,0]` east-first. Reversing storage order changes indices, not cell ownership or lengths.
+
+These unit-grid examples have exactly representable grid coordinates. General float32 grids can
+misclassify an exact physical boundary before permutation: for a `1 × 4` grid with
+`h = Math.fround(0.11)`, `minY = -h`, `cellHeight = h`, a horizontal segment of length `.5` at
+`y = 2*h` lies on boundary 3. Rounded division produces 2.999999761581421 before `floor`, so the
+current traversal assigns south-first row 2 or north-first row 1, rather than the intended rows
+3 and 0. The storage permutation cannot repair that earlier classification. The north/east
+ownership policy is therefore not an exact-boundary guarantee for arbitrary float32 spacing/origins.
 
 Maximum: `columns * rows` is at most `GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT` (16,777,215), a device-independent constant: the per-cell sum dispatches one 256-thread workgroup per cell and the invocation index is a `u32`.
 
@@ -856,9 +1345,13 @@ zero-boundary caveats as [`GPUPointDensity`](./operators-density.md#gpupointdens
 
 #### `GPULineDensity` parameters
 
-- Packer: `getGPULineDensityParameterValues(settings)`, writes `GPU_LINE_DENSITY_PARAMETER_LENGTH` (4) `float32` values.
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULineDensity`.
 
-Settings of `getGPULineDensityParameterValues`:
+- Packer: `getGPULineDensityParameterValues(settings)`, writes `GPU_LINE_DENSITY_PARAMETER_LENGTH` (4) `float32` values.
+- Packer: `getGPULineDensityParameterValues(grid)`, writes `GPU_LINE_DENSITY_PARAMETER_LENGTH` (4) `float32` values.
+  - `grid` (`GPURasterMetadata`): the frame grid, which supplies the cell size and row edges
+
+Settings of `getGPULineDensityParameterValues(settings)` for `GPULineDensitySettings`:
 
 | Field | Type | Description |
 |---|---|---|
@@ -873,6 +1366,18 @@ Settings of `getGPULineDensityParameterValues`:
 
 Sums the street length inside each polygon, with the count of segments that contribute.
 
+Optional `featureOffsets` maps feature rows to linestring parts, while `lineOffsets` still maps
+parts to vertices. Every part's clipped length contributes; empty features contribute zero.
+With grouping, `lineWeights` has one value per feature and weights every segment of every part
+of that feature. Without grouping it retains one value per linestring. `segmentCounts` counts
+contributing segments, including separate overlapping parts; it does not count distinct features.
+Candidate loss in any part sets `status.candidateOverflow` and `status.overflow` for the complete
+operation. Retained lengths remain partial when either status reports capacity loss.
+An edge with either endpoint nonfinite contributes nothing and consumes no candidate slot.
+An all-empty multiline batch clears the polygon outputs and capacity statuses. Boundary-coincident
+pieces use closed clipped-intersection semantics: outer/hole edges count, and a shared edge
+contributes to both polygons. Point-only touches have zero length and do not count as segments.
+
 ::lens{scenario=gpu-spatial-analysis.line-length-per-polygon rung=result caption="Grey: sampled streets crossing three community areas · blue: total clipped street length in metres"}
 
 The 448 sampled street centrelines span Lincoln Park (area 7), Logan Square (22), and West Town (24).
@@ -886,17 +1391,27 @@ Total line length inside each polygon (QGIS "Sum line lengths", PostGIS
 longitude-latitude with the great-circle metric, replacing the former `coordinateSystem` and `radius`),
 `pairCapacity`
 (default `max(1024, 8 * positions.length)`), `maximumCrossingCount` (default 64, at most 1024: the crossings live in private memory) and
-`output: {lengths, weightedLengths?, segmentCounts?, status: {overflow}}`. Every vertex row that is not the last of its path
+`output: {clippedLengths, weightedLengths?, segmentCounts?, status: {overflow}}`. Every vertex row that is not the last of its path
 is a segment. Segments meet polygons through `GPUSpatialJoinCandidates`, are cut at every ring-edge crossing, and
 each piece whose midpoint is inside (even-odd over all rings, so holes and multipolygons work, decided by the
 exact point-in-ring rule of `utils/exact-geometry-wgsl.ts`; the cut parameters are f32 and only place pieces) is kept. Lengths
 are summed per polygon by a stable sort and a fixed-order segmented sum, so results are bitwise reproducible
-(segment counts use integer atomics). `weightedLengths` is `sum(length * pathWeight)` (weights are per path, not
-per segment) and `segmentCounts` counts segments with positive length inside. A longitude-latitude context clips straight in
+(segment counts use integer atomics). `weightedLengths` is `sum(clipped segment length * featureWeight)`: with `featureOffsets`,
+one feature-row weight applies to every segment of every part owned by that feature; without it,
+each linestring is its own feature. `segmentCounts` counts segments with positive length inside. A longitude-latitude context clips straight in
 longitude/latitude, as `GPULineDensity` does, and measures each piece as the great-circle distance between its
 endpoints. `status.overflow` is 1 when the candidate, BVH or crossing capacity was exceeded, and lengths can then be low.
 Optional `status.candidateOverflow` isolates the candidate stage (pair capacity or BVH); it is 0 when only the
 crossing bound was exceeded. The output is per polygon, so there is no per-row flag.
+
+`computeLineLengthPerPolygonOnCPU` accepts the same typed-array line/feature offsets, polygon
+hierarchy, optional feature weights and explicit pair/crossing budgets. It returns `clippedLengths`,
+weighted lengths, contributing-segment counts and both overflow diagnostics. Float64 clipping and
+accumulation round once into float32 output; near-edge fractions may differ from the GPU.
+Boundary-coincident pieces use the same closed intersection on both backends. Invalid offset
+hierarchies throw and valid empty arrays are accepted.
+Internal `createLineLengthPerPolygonOperation` and `createCPULineLengthPerPolygonOperation` share
+one packed planar contract. Geographic lengths remain available through the contributor.
 
 Maxima: `positions` has at most `getGPULineLengthPerPolygonMaximumPositionCount(device)` (8,388,608 on a default device) rows and `pairCapacity` is at most `getGPULineLengthPerPolygonMaximumPairCapacity(device)` (16,777,216; the default is clamped to it). `maximumCrossingCount` is in [1, 1024].
 
@@ -911,13 +1426,27 @@ frame. Longitude/latitude requires `metric: 'great-circle'`; other metrics throw
 `resolveGPUSpatialContext` error. Lengths use the context's length unit (meters by default for
 longitude/latitude, kilometers with `units: 'kilometers'`).
 
-Limits: pieces lying exactly along a ring edge are ambiguous and may or may not count; lines are not
-unioned, so overlaps count once per line, as in QGIS; f32 precision (about 1e-6 of the segment length). The spec
+Limits: lines are not unioned, so overlaps count once per line, as in QGIS; f32 precision (about
+1e-6 of the segment length). The spec
 checks 150 paths against 40 polygons against a float64 oracle at 5e-4 relative with exact counts, and spherical
 lengths against a haversine oracle. No QGIS pin.
 
 ```ts
-graph.add(new GPULineLengthPerPolygon({positions, lineOffsets, polygons, output: {lengths, segmentCounts, status: {overflow}}}));
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPULineLengthPerPolygon,
+  type GPULineLengthPerPolygonProps
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// Fragment inputs: graph-owned geometry views and caller-owned output views.
+declare const graph: GPUCommandGraph;
+declare const positions: GraphDataView<'float32x2'>;
+declare const lineOffsets: GraphDataView<'uint32'>;
+declare const polygons: GPULineLengthPerPolygonProps['polygons'];
+declare const clippedLengths: GraphDataView<'float32'>;
+declare const segmentCounts: GraphDataView<'uint32'>;
+declare const overflow: GraphDataView<'uint32'>;
+graph.add(new GPULineLengthPerPolygon({positions, lineOffsets, polygons, output: {clippedLengths, segmentCounts, status: {overflow}}}));
 ```
 
 #### How it computes
@@ -947,6 +1476,35 @@ with `getGPUGridCornerCount`. Hexagons are pointy-top by default (`cellWidth` is
 alternating strips with half-cell row shifts (not turf's exact layout), and the point grid sits at cell
 centers. The cell counts are compile-time. The lattice is planar: `spatialContext` accepts only a planar
 context (the default) and throws for longitude/latitude, so project first or use `GPUPointToCell`.
+
+The bounded axes are `columns` and `rows`, not the total number of cells. Construction enforces
+these shape/orientation limits so every integer lattice index converted to float32 is at most
+`2^24`, where consecutive integers are exactly representable:
+
+| Grid shape and orientation | Maximum `columns` | Maximum `rows` |
+| --- | --- | --- |
+| Square without `output.centers` | 16,777,216 (`2^24`) | 16,777,216 (`2^24`) |
+| Point, or square with `output.centers` | 8,388,608 (`2^23`) | 8,388,608 (`2^23`) |
+| Triangle | 8,388,607 (`2^23 - 1`) | 16,777,216 (`2^24`) |
+| Pointy hexagon (default) | 8,388,607 | 5,592,405 |
+| Flat hexagon | 5,592,405 | 8,388,607 |
+
+Triangle columns use half-width lattice steps; hexagons use doubled and tripled indices, with
+the axes swapped for flat hexagons. These are index-precision bounds, not a promise that the
+allocation fits a device. Cell/output counts and storage bindings impose additional limits.
+Coordinate multiplication and addition still round: a large `minX`/`minY` with small cell dimensions
+can merge positions even inside these bounds. Use a local origin and representable cell dimensions.
+The center-specific admission bound applies to every point grid and to square grids requesting
+`output.centers`: construction rejects either axis above 8,388,608 cells so half-cell indices
+stay exact. Without this bound, even with origin zero and unit width, the center expressions at
+zero-based columns 8,388,609 and 8,388,610 would both round to 8,388,610. A local origin alone
+cannot fix this index-magnitude limit; split the grid into smaller locally indexed tiles.
+Square corner-only requests and square polygon output without centers retain the larger integer
+lattice bound. Before allocating views, call
+`GPUGridGenerator.getMaximumAxisCellCounts({gridType, hexOrientation, centers})`; it returns
+`{columns, rows}` maxima, where `centers` indicates whether center output is requested (point
+grids always use the smaller bound). Coordinate scaling and translation can still round even
+within these index limits; they do not promise distinct coordinates for arbitrary origins/sizes.
 
 - `hexOrientation: 'flat'` (GeoPandas `make_grid(flat_topped=True)`): `cellWidth` is still the
   flat-to-flat distance (GeoPandas `cell_size`), columns step `1.5 * R`, rows step `cellWidth`, odd
@@ -982,6 +1540,8 @@ context (the default) and throws for longitude/latitude, so project first or use
 
 #### `GPUGridGenerator` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUGridGenerator`.
+
 - Packer: `getGPUGridGeneratorParameterValues(settings)`, writes `GPU_GRID_GENERATOR_PARAMETER_LENGTH` (4) `float32` values.
 
 Settings of `getGPUGridGeneratorParameterValues`:
@@ -1008,8 +1568,35 @@ Props include `shape` (`GPUShapeType`), `centers`, `radii`, optional sector `bea
 the removed `coordinateSystem` prop and `GPU_SHAPE_GENERATOR_EARTH_RADIUS`), compile-time `maximumSegments` and per-frame `parameters`
 (`getGPUShapeGeneratorParameterValues`). The segment count and the radius scale are per-frame, up to
 `maximumSegments`; size outputs with `getGPUShapeVertexCount` and `getGPUShapeMinimumSegments`. The output
-is packed rings plus GeoArrow-style `offsets` (feature `f` starts at `f * V`) and an optional
-`vertexCount`. Circles and sectors match turf 7.4 exactly (pinned). Ellipses default to the original
+is packed rings plus GeoArrow-style vertex `offsets` (feature `f` starts at `f * V`) and an optional
+`vertexCount`. Use `output.offsets` as **`ringOffsets` only**. For one ring and one polygon per
+feature, `polygonOffsets` and `featureOffsets` are identity offsets `[0,1,...,featureCount]`;
+they index rings and polygons respectively, not vertices. For two closed four-segment diamonds,
+the three-level descriptor is:
+
+```ts
+import {
+  computeLabelPointOnCPU,
+  getGPUShapePolygonIdentityOffsets
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// Two generated rings, five stored XY vertices each (including closure).
+const generatedPolygons = {
+  positions: Float32Array.of(
+    1, 0, 0, 1, -1, 0, 0, -1, 1, 0,
+    11, 0, 10, 1, 9, 0, 10, -1, 11, 0
+  ),
+  ringOffsets: Uint32Array.of(0, 5, 10), // rings -> vertices
+  polygonOffsets: getGPUShapePolygonIdentityOffsets(2), // [0,1,2], polygons -> rings
+  featureOffsets: getGPUShapePolygonIdentityOffsets(2) // [0,1,2], features -> polygons
+};
+const labels = computeLabelPointOnCPU(generatedPolygons);
+// labels.points = [0, 0, 10, 0]; both features survive the handoff.
+```
+
+For graph consumers, import/upload these offset columns as `uint32` views alongside the generated
+`float32x2` positions. Changing the segment count changes vertex offsets, not identity offsets.
+Circles and sectors match turf 7.4 exactly (pinned). Ellipses default to the original
 equal-parameter sampling; `ellipseSpacing: 'arc-length'` builds a normalized 257-sample quarter-ellipse
 table per feature and inverts it for approximately equal edge lengths. The table is built before rotation
 and, for geodesic shapes, before spherical destination; it costs 1028 transient bytes per feature and one
@@ -1034,6 +1621,8 @@ azimuthal-equidistant frame.
 {/* parameters: GPUShapeGenerator generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUShapeGenerator` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUShapeGenerator`.
 
 - Packer: `getGPUShapeGeneratorParameterValues(settings)`, writes `GPU_SHAPE_GENERATOR_PARAMETER_LENGTH` (2) `float32` values.
 
@@ -1136,6 +1725,13 @@ also saturate at `0xffffffff`, preserving the written prefix after a uint32 carr
 scan arrays and topology metadata scale with input vertices and rings, without a `maximumPieceCount`
 multiplier. An overflowed intermediate result is incomplete; use the resized rerun for analysis.
 
+For example, a four-vertex square without seam crossings needs four output vertices. Capacity three
+already overflows the dense stream and reports the conservative requirement `8 * (4 + 3) = 56`.
+With sufficient capacity, disabling great-circle densification still writes the four original
+vertices and sets `approximation = 1`; this does not reject the feature or set `invalidCount`.
+Linear edges with no densification instead give `approximation = 0`. These status words and each
+full `ringFlags` word overwrite previous caller values on resubmission.
+
 Applications can format readback diagnostics with these exact messages (the library does not log):
 
 - `${n} features rejected: ambiguous or over-wide rings`
@@ -1189,9 +1785,16 @@ notes for the additional coordinate quantization error.
 
 #### `GPULonLatPolygonPreparation` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPULonLatPolygonPreparation`.
+
 - Packer: `getGPULonLatPolygonPreparationParameterValues(edgeModel, settings?)`, writes `GPU_LON_LAT_POLYGON_PREPARATION_PARAMETER_LENGTH` (4) `float32` values.
   - `edgeModel` (`GPUSpatialEdgeModel`)
-  - `settings` (`GPULonLatPolygonPreparationSettings`)
+
+Settings of `getGPULonLatPolygonPreparationParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `maximumSegmentDegrees` (optional) | `number` | Maximum longitude or central-angle step in degrees; zero disables densification. |
 
 {/* /parameters */}
 
@@ -1207,7 +1810,7 @@ Clips lines or polygon rings to an axis-aligned rectangle, rejoining the survivi
 Clips lines or polygons to a rectangle (turf `bboxClip`, Shapely `clip_by_rect`, PostGIS `ST_ClipByBox2D`).
 Props: `geometryType` (`'lines'` with `positions` and `lineOffsets`, or `'polygons'` with the four-level
 `positions`, `featureOffsets`, `polygonOffsets` and `ringOffsets`), `parameters`
-(`getGPURectangleClipParameterValues({minX, minY, maxX, maxY})`) and `output: GPULineGeometryOutput`
+(`getGPURectangleClipParameterValues({minX, minY, maxX, maxY})`) and `output: GPURectangleClipOutput`
 (`positions`, `lineOffsets`, `status` with `count` (output lines, or rings for polygons), `overflow`, optional `requiredCount` (unclamped lines or rings), `vertexCount` and `requiredVertexCount`, and, for lines,
 `sourceLineIndices`). Lines use Liang-Barsky, and the pieces are re-joined into lines, so a line that leaves and
 re-enters becomes several lines. Polygons use Sutherland-Hodgman in four count, scan and emit stages, with
@@ -1219,9 +1822,34 @@ bound itself in the clipped coordinate and are interpolated from the lexicograph
 the edge, so two polygons that share an edge get bit-identical clip points. Line clip points are
 `a + (b - a) * t` from the segment's own start and can be one float32 step off the rectangle edge.
 
+`output.sourceRows`, `output.measures` and `output.status.approximation` are refused and typed as
+optional `never`, including when callers prepare the output in a variable. Clipped
+vertices can lie between input rows, and this operation has no input measure column from which
+to interpolate measures. For line provenance request `sourceLineIndices`; omit vertex-row and
+measure views. No approximation diagnostic is computed; inspect `overflow` for capacity loss.
+The contributor-specific output type omits these three fields as well as rejecting them at runtime.
+
 `spatialContext` defaults to native planar coordinates. A longitude-latitude context is accepted: the rectangle is in the same degrees as the input and edges are straight in longitude and latitude (turf `bboxClip`), with no antimeridian handling; a context declaring great-circle edges throws.
 
 ```ts
+import type {Buffer} from '@luma.gl/core';
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPURectangleClip,
+  getGPURectangleClipParameterValues,
+  type GPURectangleClipOutput
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// parameters is the four-word float32 graph view of viewportBuffer.
+declare const graph: GPUCommandGraph;
+declare const positions: GraphDataView<'float32x2'>;
+declare const featureOffsets: GraphDataView<'uint32'>;
+declare const polygonOffsets: GraphDataView<'uint32'>;
+declare const ringOffsets: GraphDataView<'uint32'>;
+declare const parameters: GraphDataView<'float32'>;
+declare const output: GPURectangleClipOutput;
+declare const viewportBuffer: Buffer;
+declare const minX: number, minY: number, maxX: number, maxY: number;
 graph.add(new GPURectangleClip({positions, geometryType: 'polygons', featureOffsets, polygonOffsets, ringOffsets, parameters, output}));
 viewportBuffer.write(getGPURectangleClipParameterValues({minX, minY, maxX, maxY}));
 ```
@@ -1239,6 +1867,8 @@ viewportBuffer.write(getGPURectangleClipParameterValues({minX, minY, maxX, maxY}
 {/* parameters: GPURectangleClip generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPURectangleClip` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPURectangleClip`.
 
 - Packer: `getGPURectangleClipParameterValues(settings)`, writes `GPU_RECTANGLE_CLIP_PARAMETER_LENGTH` (4) `float32` values.
 

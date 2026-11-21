@@ -19,7 +19,7 @@ import {GPUContinuousSpatialSample} from '../../../src/gpu-spatial-analysis/poin
 import {GPUSpatialBalancedSample} from '../../../src/gpu-spatial-analysis/point-process/gpu-spatial-balanced-sample';
 import {
   GPUMaxPRegions,
-  GPU_MAX_P_STATUS
+  GPU_MAX_P_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions';
 import {GPUAZPRegions} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-azp-regions';
 import {
@@ -221,7 +221,7 @@ function createFixture(
       objective: options.packed
         ? graph.createDataView(storage.buffer, {format: 'float32', length: 1, byteOffset: rows * 4})
         : view('float32', 1),
-      status: view('uint32', GPU_MAX_P_STATUS.length)
+      status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
     };
     if (name === 'max-p')
       contributor = new GPUMaxPRegions({
@@ -314,7 +314,13 @@ for (const name of contributors) {
 
 for (const [name, options, limit, expected] of [
   ['lisa-markov', {}, 256, /padded period scratch.*512.*256/],
-  ['spatial-markov', {}, 2048, /lag classifier quantile histogram.*6144.*2048/],
+  // Four lag classes need three inner quantiles: 2 * 3 * 256 uint32 histogram words = 6144 bytes.
+  [
+    'spatial-markov',
+    {maximumLagClassCount: 4},
+    2048,
+    /lag classifier quantile histogram.*6144.*2048/
+  ],
   ['spatial-markov', {natural: true}, 2048, /lag classifier natural histogram.*40980.*2048/],
   ['max-p', {}, 256, /region records.*512.*256/],
   ['max-p', {improvement: true}, 256, /region records.*512.*256/],

@@ -3,9 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotRasterGrid} from '../raster-grid/raster-construction-snapshot';
+import {
+  validateRasterFractionalDistributionOptions,
+  snapshotRasterFractionalDistributionOutput
+} from './raster-fractional-distribution-options';
 import {
   resolveRasterOperationBand,
+  snapshotRasterOperationBand,
+  validateRasterOperationBand,
   type RasterOperationBand
 } from '../raster-grid/raster-operation-band';
 import {
@@ -42,7 +50,46 @@ export type RasterFractionalZonalDistributionOperationProps = {
 /** Operation form of the vector-backed fractional zonal distribution contributor. */
 export class GPURasterFractionalZonalDistributionOperation extends GPUContributorOperation {
   constructor(props: RasterFractionalZonalDistributionOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'zoneCount',
+      'probabilityCount',
+      'observationWeights',
+      'cellAreas',
+      'parameters',
+      'cellSizeMode',
+      'quantileMethod',
+      'coverage',
+      'probabilities',
+      'output'
+    ]);
+    const coverage = snapshotConstructionFields(props.coverage, [
+      'zoneIds',
+      'cellIds',
+      'fractions',
+      'zoneValidity',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      input: snapshotRasterOperationBand(props.input),
+      coverage: Object.freeze({
+        ...coverage,
+        status: snapshotConstructionFields(coverage.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow'
+        ])
+      }),
+      output: snapshotRasterFractionalDistributionOutput(props.output)
+    });
     const id = props.id ?? 'raster-fractional-zonal-distribution';
+    validateRasterOperationBand(id, props.input, props.grid);
+    validateRasterFractionalDistributionOptions(id, props, props.cellAreas !== undefined);
     super({
       id,
       inputs: {

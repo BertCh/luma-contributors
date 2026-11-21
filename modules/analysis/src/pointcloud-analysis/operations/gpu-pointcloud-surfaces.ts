@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -64,8 +66,10 @@ export type PointCloudRasterGrid = {
 };
 
 /**
- * Throws unless a raster grid has positive integer dimensions below `GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`
- * cells, a positive float32 cell size and a finite origin.
+ * Throws unless a raster grid has positive integer dimensions with the inclusive total
+ * width * height <= GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS = 4,294,967,294 cells, a positive
+ * float32 cell size and a finite origin. Each axis is independently limited to
+ * GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS = 16,777,216; actual GPU bindings impose a separate limit.
  *
  * @param grid Grid to check.
  * @param id Contributor ID, for the message.
@@ -88,8 +92,12 @@ export function validatePointCloudGrid(grid: PointCloudRasterGrid, id = 'pointcl
   );
   validateRequirement(
     id,
-    grid.origin.every(value => Number.isFinite(Math.fround(value))),
-    'grid.origin must hold finite numbers'
+    grid.origin.length === 2 &&
+      Number.isFinite(grid.origin[0]) &&
+      Number.isFinite(Math.fround(grid.origin[0])) &&
+      Number.isFinite(grid.origin[1]) &&
+      Number.isFinite(Math.fround(grid.origin[1])),
+    `grid.origin must hold exactly two finite float32 coordinates; received ${String(grid.origin)}`
   );
   validateRequirement(
     id,
@@ -100,6 +108,32 @@ export function validatePointCloudGrid(grid: PointCloudRasterGrid, id = 'pointcl
   );
 }
 
+/**
+ * Align a point-cloud raster array with its world footprint using the producer's float32-rounded origin and cell size. Southward rows start at
+ * [originX, originY + height * cellSize] with a negative Y step; northward rows start at origin.
+ * This aligns cell areas, not edge snapping: point-cloud points on an interior Y edge go into
+ * the cell north of that edge, even when a southward raster snap chooses the southern cell.
+ */
+export function getRasterMetadataFromPointCloudGrid(grid: PointCloudRasterGrid): GPURasterMetadata {
+  validatePointCloudGrid(grid, 'getRasterMetadataFromPointCloudGrid');
+  const south = getPointCloudRowDirection(grid) === 'south';
+  const [originX, originY] = grid.origin.map(Math.fround);
+  const cellSize = Math.fround(grid.cellSize);
+  return {
+    width: grid.width,
+    height: grid.height,
+    affine: [
+      cellSize,
+      0,
+      originX,
+      0,
+      south ? -cellSize : cellSize,
+      originY + (south ? grid.height * cellSize : 0)
+    ],
+    pixelInterpretation: 'area'
+  };
+}
+
 /** @internal */
 export function getPointCloudCellSource(
   grid: PointCloudRasterGrid,
@@ -108,8 +142,8 @@ export function getPointCloudCellSource(
 ): string {
   const origin = runtimeGrid
     ? 'vec2f(readGridParameters(0u),readGridParameters(1u))'
-    : `vec2f(${grid.origin.map(Math.fround).join(',')})`;
-  const cellSize = runtimeGrid ? 'readGridParameters(3u)' : `${Math.fround(grid.cellSize)}`;
+    : `vec2f(${grid.origin.map(getWGSLFloatLiteral).join(',')})`;
+  const cellSize = runtimeGrid ? 'readGridParameters(3u)' : getWGSLFloatLiteral(grid.cellSize);
   // `coordinate` is in cell units with y in row units: for 'south' rows count down from the top edge.
   // Membership is decided on the offset from the origin, exactly as in the north case, so a point
   // on a cell boundary belongs to the cell above it (half-open) in both directions: the south row
@@ -166,6 +200,8 @@ export const GPU_POINT_CLOUD_COVERAGE_GROUND = 2;
 
 /**
  * Explicit cell-min DTM and cell-max DSM, with no interpolation or implicit datum conversion.
+ * Total width * height <= GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS = 4,294,967,294 cells; each axis
+ * <= GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS = 16,777,216. Device binding limits apply separately.
  * Per-frame: input contents, parameters (groundClass), and gridParameters (origin/cellSize).
  * Compile-time: grid dimensions/row direction and view shapes.
  * Without parameters, groundClass retains its constructor-time behavior.
@@ -196,6 +232,7 @@ export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
       'height',
       'rowDirection'
     ]);
+    validatePointCloudGrid(grid, this.id);
     this.props = props = Object.freeze({
       ...props,
       grid: Object.freeze({
@@ -204,7 +241,6 @@ export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
       }),
       output: snapshotConstructionFields(props.output, ['terrain', 'surface', 'canopy', 'coverage'])
     });
-    validatePointCloudGrid(props.grid, this.id);
     validatePointCloudGridParameters(this.id, props.gridParameters);
     for (const [name, view, format] of [
       ['positions', props.positions, 'float32x3'],
@@ -363,7 +399,7 @@ ${this.props.gridParameters ? '' : 'writeCoverage(index, flags);'}`
             inputs: {},
             outputs: {terrain, surface, canopy, coverage},
             body: `let minimum = readTerrain(index); let maximum = readSurface(index);
-let hasGround = abs(minimum) <= 3.402823e38; let hasPoint = abs(maximum) <= 3.402823e38;
+let hasGround = (bitcast<u32>(minimum) & 0x7f800000u) != 0x7f800000u; let hasPoint = (bitcast<u32>(maximum) & 0x7f800000u) != 0x7f800000u;
 writeCoverage(index, u32(hasPoint) | (u32(hasGround) * 2u));
 writeTerrain(index, select(0.0, minimum, hasGround)); writeSurface(index, select(0.0, maximum, hasPoint));
 writeCanopy(index, select(0.0, maximum - minimum, hasGround && hasPoint));`

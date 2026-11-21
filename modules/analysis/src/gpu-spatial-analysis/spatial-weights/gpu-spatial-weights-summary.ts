@@ -25,6 +25,11 @@ import {
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSlotGroupingNodes} from './slot-grouping';
+import {createSpatialWeightsSuppressionNodes} from './spatial-weights-suppression';
+import {validateWeightsLossSources} from './spatial-weights-loss';
+import {snapshotWeightsFields, snapshotWeightsPort} from './weights-construction-snapshot';
+import {validateSpatialStatisticsWritableDispatches} from './spatial-statistics-writable-dispatches';
+import {validateWeightsLogicalAliases} from './spatial-weights-aliases';
 import {getGPUSpatialWeightsNeighborLoopWGSL, type GPUSpatialWeights} from './spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
@@ -115,6 +120,9 @@ export type GPUSpatialWeightsSummaryProps = {
  * Sums are fixed-order (row sums in slot order, column sums over a stable sort, a tree
  * reduction), so the results are bitwise reproducible. Slots with a neighbor ID `>= rows` are
  * ignored by the column sums and counted as one-way links. Self slots are included as in libpysal.
+ * If any matrix or chunk overflow/candidateOverflow flag is nonzero, the three statistics are
+ * NaN and the six counts and optional cardinalities are zero. Output tails are untouched. A
+ * later complete frame restores the results using the same compiled graph.
  */
 export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -124,10 +132,17 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
   private readonly toleranceValues?: Float32Array;
 
   constructor(props: GPUSpatialWeightsSummaryProps) {
+    props = snapshotWeightsFields(props, ['id', 'weights', 'output', 'symmetryTolerance']);
+    props = Object.freeze({
+      ...props,
+      weights: snapshotWeightsPort(props.weights),
+      output: snapshotWeightsFields(props.output, ['statistics', 'counts', 'cardinality'])
+    });
     const id = props.id ?? 'spatial-weights-summary';
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
+    validateWeightsLossSources(id, [props.weights]);
     validateSinglePackedView(props.output.statistics, ['float32'], `${id} statistics`);
     if (props.output.statistics.length < GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.statistics.length) {
       throw new Error(`${id} statistics must hold at least 3 values`);
@@ -162,8 +177,26 @@ export class GPUSpatialWeightsSummary implements GPUCommandNodeProducer {
       [props.output.statistics, props.output.counts, props.output.cardinality],
       [
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
+        ...validateWeightsLossSources(id, [props.weights]),
         typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined
       ]
+    );
+    validateSpatialStatisticsWritableDispatches(id, props.output, [['statistics', 'counts']]);
+    const statuses = [
+      props.weights.status,
+      ...getGPUSpatialWeightsChunkDispatches(props.weights).map(chunk => chunk.weights.status)
+    ];
+    validateWeightsLogicalAliases(
+      id,
+      props.output,
+      Object.fromEntries(
+        statuses.flatMap((status, index) =>
+          Object.entries(status ?? {}).map(([name, view]) => [
+            `input status ${index}.${name}`,
+            view
+          ])
+        )
+      )
     );
   }
 
@@ -572,7 +605,28 @@ var<workgroup> partialMaximum: array<u32, ${SUMMARY_WORKGROUP_SIZE}>;`,
   }`
       })
     );
-    return nodes;
+    return [
+      ...nodes,
+      // Cardinality and counts are otherwise used in separate passes, so callers
+      // may pack their disjoint logical views in one aligned storage range.
+      // Suppress one output per pass to preserve that existing layout contract.
+      ...(['statistics', 'counts', 'cardinality'] as const).flatMap(name =>
+        props.output[name]
+          ? createSpatialWeightsSuppressionNodes(
+              graph,
+              `${id}-${name}`,
+              OPERATION,
+              props.weights,
+              {[name]: props.output[name]},
+              {
+                statistics: GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.statistics.length,
+                counts: GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length,
+                cardinality: rows
+              }
+            )
+          : []
+      )
+    ];
   }
 
   /**

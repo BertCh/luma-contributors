@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
 import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   GPUParameterBuffer,
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -316,8 +320,20 @@ function declareRateClusterMapRecipe<Parameters>(
   props: GPURateClusterMapRecipeProps
 ): GPURateClusterMapRecipeResult {
   const id = props.id ?? 'rate-cluster-map';
+  const destinations = resolveRecipeDestinations(id, props);
   const builder = new RecipeBuilder(graph);
-  const outputs = props.outputs ?? {};
+  const outputs = destinations ?? {};
+  validateRequirement(
+    id,
+    outputs.permutation === undefined || Boolean(props.permutation),
+    'output.permutation requires permutation; received a destination for a disabled stage'
+  );
+  validateRequirement(
+    id,
+    outputs.analytic === undefined || !props.permutation,
+    'output.analytic requires permutation to be omitted for analytic inference; received a destination for a disabled stage'
+  );
+
   const scratch = props.scratch ?? {};
   const rowCount = props.polygons.featureOffsets.length - 1;
   const multipleTesting = props.multipleTesting ?? GPU_RATE_CLUSTER_MAP_DEFAULT_MULTIPLE_TESTING;
@@ -388,6 +404,7 @@ function declareRateClusterMapRecipe<Parameters>(
       scratch.weights?.offsets,
       scratch.weights?.neighbors,
       scratch.weights?.weights,
+      scratch.weights?.status?.count,
       outputs.status?.weightsOverflow ? undefined : scratch.weights?.status?.overflow,
       outputs.status?.weightsCandidateOverflow
         ? undefined
@@ -426,7 +443,7 @@ function declareRateClusterMapRecipe<Parameters>(
   );
   const analyzedRates = props.analyze === 'smoothed' ? smoothedRates : standardizedRates;
 
-  const weights = createTransientSpatialWeights(
+  const contiguityOutput = createTransientSpatialWeights(
     graph,
     `${id}-weights`,
     rowCount,
@@ -434,6 +451,7 @@ function declareRateClusterMapRecipe<Parameters>(
     {
       ...scratch.weights,
       status: {
+        count: scratch.weights?.status?.count,
         candidateOverflow:
           outputs.status?.weightsCandidateOverflow ??
           scratch.weights?.status?.candidateOverflow ??
@@ -444,21 +462,28 @@ function declareRateClusterMapRecipe<Parameters>(
       }
     }
   );
-  const weightsOverflow = weights.status.overflow;
-  const weightsRequiredCount = weights.status.requiredCount!;
-  builder.add(
+  const weightsOverflow = contiguityOutput.status.overflow;
+  const weightsRequiredCount = contiguityOutput.status.requiredCount!;
+  const contiguity = builder.add(
     new GPUContiguityWeights({
       id: `${id}-contiguity`,
       criterion: props.criterion ?? 'queen',
       polygons: props.polygons,
       snapTolerance: props.snapTolerance,
-      output: weights,
+      output: contiguityOutput,
       pairCapacity: props.pairCapacity
     })
   );
-  builder.add(
-    new GPUSpatialWeightsTransform({id: `${id}-row-standardize`, operation: 'row', weights})
+  const transform = builder.add(
+    new GPUSpatialWeightsTransform({
+      id: `${id}-row-standardize`,
+      operation: 'row',
+      weights: contiguity.outputWeights
+    })
   );
+  // The transform preserves the producer's required output status and adds the row description
+  // that lets consumers renormalize after excluding a nonfinite rate.
+  const weights = transform.outputWeights as GPUSpatialWeightsOutput;
 
   const zScores = getOrCreateView(graph, `${id}-z-scores`, 'float32', rowCount, outputs.zScores);
   const spatialLag = getOrCreateView(
@@ -613,15 +638,21 @@ function declareRateClusterMapRecipe<Parameters>(
     settings: GPURateClusterMapRecipeSettings
   ): GPUInferenceMetadata => {
     if (permutationTest && props.permutation) {
-      return permutationTest.getInferenceMetadata({
+      const plan = permutationTest.getInferenceMetadata({
         seed: settings.seed ?? 0,
         permutationCount: settings.permutationCount ?? props.permutation.maximumPermutations,
         significanceLevel: settings.significanceLevel
       });
+      return {...plan, permutationCount: plan.requestedPermutationCount};
     }
     return localMoran.getInferenceMetadata({significanceLevel: settings.significanceLevel});
   };
   const writeSettings = (settings: GPURateClusterMapRecipeSettings): GPUInferenceMetadata => {
+    settings = snapshotConstructionFields(settings, [
+      'significanceLevel',
+      'seed',
+      'permutationCount'
+    ]);
     // Pack (and validate) both views before writing either.
     const values = getGPUSpatialAutocorrelationParameterValues({
       significanceLevel: settings.significanceLevel

@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateRefinementOutputLength,
+  validateRefinementNumber
+} from './refinement-output-validation';
+import {snapshotRefinementSpatialContext} from './refinement-construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
-import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -68,9 +72,25 @@ export class GPUConvexStraightSkeleton implements GPUCommandNodeProducer {
   readonly segmentCapacity: number;
   constructor(props: GPUConvexStraightSkeletonProps) {
     this.id = props.id ?? 'convex-straight-skeleton';
+    props = {
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotRefinementSpatialContext(props.spatialContext)}
+        : {}),
+      output: {...props.output}
+    };
     this.props = props;
-    validateRefinementShaderNumber(this.id, 'offsetDistance', props.offsetDistance);
-    validateRefinementShaderNumber(this.id, 'eventTolerance', props.eventTolerance ?? 1e-5, true);
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPUConvexStraightSkeleton'},
+      'offsetDistance',
+      props.offsetDistance
+    );
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPUConvexStraightSkeleton'},
+      'eventTolerance',
+      props.eventTolerance ?? 1e-5,
+      true
+    );
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.maximumVertices = props.maximumVertices ?? 32;
     this.maximumIterations = props.maximumIterations ?? this.maximumVertices;
@@ -78,31 +98,53 @@ export class GPUConvexStraightSkeleton implements GPUCommandNodeProducer {
     validateCapacity(this.id, 'maximumVertices', this.maximumVertices, 3, 64);
     validateCapacity(this.id, 'maximumIterations', this.maximumIterations, 0, 128);
     validateCapacity(this.id, 'segmentCapacity', this.segmentCapacity, 1);
-    if (
-      !(
-        Number.isFinite(props.offsetDistance) &&
-        props.offsetDistance >= 0 &&
-        Number.isFinite(props.eventTolerance ?? 1e-5) &&
-        (props.eventTolerance ?? 1e-5) > 0
-      )
-    ) {
-      throw new Error('Invalid wavefront parameters');
-    }
-    validateSinglePackedView(props.positions, ['float32x2'], this.id);
-    validateSinglePackedView(props.ringOffsets, ['uint32'], this.id);
-    validateSinglePackedView(props.output.segments, ['float32x4'], this.id);
-    validateSinglePackedView(props.output.sourceEdges, ['uint32x2'], this.id);
-    validateSinglePackedView(props.output.offsetPositions, ['float32x2'], this.id);
-    validateSinglePackedView(props.output.status, ['uint32x4'], this.id);
+
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`, {
+      id: this.id,
+      contributor: 'GPUConvexStraightSkeleton'
+    });
+    validateSinglePackedView(props.ringOffsets, ['uint32'], `${this.id} ringOffsets`, {
+      id: this.id,
+      contributor: 'GPUConvexStraightSkeleton'
+    });
+    validateSinglePackedView(props.output.segments, ['float32x4'], `${this.id} output.segments`, {
+      id: this.id,
+      contributor: 'GPUConvexStraightSkeleton'
+    });
+    validateSinglePackedView(
+      props.output.sourceEdges,
+      ['uint32x2'],
+      `${this.id} output.sourceEdges`,
+      {id: this.id, contributor: 'GPUConvexStraightSkeleton'}
+    );
+    validateSinglePackedView(
+      props.output.offsetPositions,
+      ['float32x2'],
+      `${this.id} output.offsetPositions`,
+      {id: this.id, contributor: 'GPUConvexStraightSkeleton'}
+    );
+    validateSinglePackedView(props.output.status, ['uint32x4'], `${this.id} output.status`, {
+      id: this.id,
+      contributor: 'GPUConvexStraightSkeleton'
+    });
     const rings = props.ringOffsets.length - 1;
-    if (
-      props.output.segments.length !== rings * this.segmentCapacity ||
-      props.output.sourceEdges.length !== props.output.segments.length ||
-      props.output.offsetPositions.length !== rings * this.maximumVertices ||
-      props.output.status.length !== rings
-    ) {
-      throw new Error('Skeleton output capacity mismatch');
-    }
+    for (const [name, length, source] of [
+      ['segments', rings * this.segmentCapacity, '(ringOffsets.length - 1) * segmentCapacity'],
+      ['sourceEdges', rings * this.segmentCapacity, '(ringOffsets.length - 1) * segmentCapacity'],
+      [
+        'offsetPositions',
+        rings * this.maximumVertices,
+        '(ringOffsets.length - 1) * maximumVertices'
+      ],
+      ['status', rings, 'ringOffsets.length - 1']
+    ] as const)
+      validateRefinementOutputLength(
+        {id: this.id, contributor: 'GPUConvexStraightSkeleton'},
+        `output.${name}`,
+        props.output[name],
+        length,
+        source
+      );
     validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,

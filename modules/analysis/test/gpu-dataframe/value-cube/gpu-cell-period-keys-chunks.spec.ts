@@ -96,6 +96,7 @@ it('GPUCellPeriodKeys matches packed and independent keys/counts for three uneve
           mask: split(importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', 9)),
           periodCount: 4,
           fill,
+          layout: 'legacy-one-bit',
           output: {
             keys: split(importGraphBuffer(graph, 'keys', keysBuffer, 'uint32x2', 9)),
             status: {invalidCount: importGraphBuffer(graph, 'invalid', invalidBuffer, 'uint32', 1)}

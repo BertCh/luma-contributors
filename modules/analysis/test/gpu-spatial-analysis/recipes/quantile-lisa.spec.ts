@@ -6,6 +6,7 @@ import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {isGeodaTailSignificant} from './geoda-tail-significance';
 import {GPUQuantileLISA} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/gpu-quantile-lisa';
 import {getGPUPermutationParameterValues} from '../../../src/gpu-spatial-analysis/permutation-inference/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -16,13 +17,14 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   computeLocalPermutationOracle,
   createWeights,
   type CPUSpatialWeights
 } from '../permutation-inference/permutation-oracle';
 import {
+  QUANTILE_LISA_LEGACY_INFERENCE,
   computeQuantileLISAReference,
   QUANTILE_LISA_REFERENCE_CASES
 } from './quantile-lisa-reference';
@@ -102,6 +104,7 @@ function createHarness(
   };
   graph.add(
     new GPUQuantileLISA({
+      ...QUANTILE_LISA_LEGACY_INFERENCE,
       values: values.view,
       additionalVariables: additionalVariables.map(variable => ({
         values: variable.values.view,
@@ -218,13 +221,16 @@ function computeGeodaTailOracle(input: Parameters<typeof computeLocalPermutation
     count === 0xffffffff ? NaN : Math.fround((count + 1) / (input.permutationCount + 1))
   );
   result.significant = result.exceedances.map(count =>
-    count !== 0xffffffff &&
-    count + 1 <= Math.fround(Math.fround(input.significanceLevel) * (input.permutationCount + 1))
-      ? 1
-      : 0
+    isGeodaTailSignificant(count, input.permutationCount, input.significanceLevel) ? 1 : 0
   );
   return result;
 }
+
+it('the Geoda tail oracle preserves exact ratio boundaries', () => {
+  // 1/25 exceeds the stored .04 cutoff; 1/32 equals the exactly representable .03125.
+  expect(isGeodaTailSignificant(0, 24, 0.04)).toBe(false);
+  expect(isGeodaTailSignificant(0, 31, 0.03125)).toBe(true);
+});
 
 function expectNumbers(actual: number[], expected: readonly number[]) {
   expect(actual.length).toBe(expected.length);

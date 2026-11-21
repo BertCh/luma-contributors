@@ -15,9 +15,12 @@ the correlogram over contiguity orders and the spatial entropy.
 - Correlogram over contiguity orders: binary64 NumPy. Rings by breadth-first search (the
   `libpysal` `higher_order` definition), row-standardised weights, Moran's I with the `esda.Moran`
   expectation and the normality and randomization variances. libpysal and esda were not installed.
-- Spatial entropy: binary64 NumPy from the Shannon, Leibovici (2009) co-occurrence and Altieri,
-  Cocchi and Roli (2018) mutual information definitions. The R `spatentropy` package (GPL) was not
-  run.
+- Spatial entropy: binary64 NumPy Shannon category entropy and Leibovici (2009)
+  co-occurrence entropy. The mutual information computed here is
+  H(origin) + H(destination) - H(ordered pair), in nats, for the category at each
+  end of an ordered link. It is distinct from Altieri, Cocchi and Roli's (2018)
+  decomposition over unordered category pairs and distance classes, which is
+  not implemented here. The R `spatentropy` package (GPL) was not run.
 
 Every value array is rounded to float32 first, the data the GPU kernels read.
 

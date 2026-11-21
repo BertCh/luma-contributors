@@ -108,6 +108,7 @@ it.each([
   }
 });
 
+// RCP-102 diagnostics identify the first failing planned overlay; rejection must add no nodes.
 it('recipes reject oversized bindings before adding nodes', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -133,7 +134,9 @@ it('recipes reject oversized bindings before adding nodes', () => {
         vertexTolerance: 1 / 1024,
         capacity: {intersections: 1, nodedSegments: 8388609, vertices: 8, rings: 1}
       })
-    ).toThrow(/^building-tessellation overlay boundary needs 134217744 bytes in one binding/);
+    ).toThrow(
+      /^building-tessellation-building-0-dissolve nodedLatticeAndGroups needs 134217744 bytes in one binding/
+    );
     expect(getNodes(graph)).toHaveLength(0);
   } finally {
     device.destroy();

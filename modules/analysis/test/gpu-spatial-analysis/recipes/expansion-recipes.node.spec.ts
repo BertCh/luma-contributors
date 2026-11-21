@@ -81,6 +81,7 @@ it('new recipe kernels stay within core storage limits, including double-single 
     ).toEqual([
       'network-disruption-recipe-closures',
       'network-disruption-recipe-differences',
+      'network-disruption-recipe-accessibility-complete',
       'network-disruption-recipe-accessibility-delta'
     ]);
     addInterpolationDiagnosticsRecipe(graph, {

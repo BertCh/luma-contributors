@@ -202,6 +202,7 @@ async function runFuzzyContiguity(
     const added = output('uint32', capacity);
     const featureStatus = output('uint32', rows);
     const overflow = output('uint32', 1);
+    overflow.buffer.write(Uint32Array.of(99));
     const requiredCount = output('uint32', 1);
     graph.add(
       new GPUFuzzyContiguity({
@@ -246,6 +247,23 @@ async function runFuzzyContiguity(
     for (const buffer of buffers) buffer.destroy();
   }
 }
+
+it('multipart fuzzy contiguity reduces over all parts against Shapely', async () => {
+  // ../spatial-weights/multipart-polygon-contiguity.oracle.py; all distances are exact in f32.
+  const result = await runFuzzyContiguity(
+    [[[square(0, 0, 1)], [square(4, 0, 1)]], [[square(1, 0, 1)]], [[square(5.25, 0, 1)]], []],
+    0.25,
+    4
+  );
+  expect(result.featureStatus).toEqual([0, 0, 0, 1]);
+  expect(result.requiredCount).toBe(4);
+  expect(result.overflow).toBe(0);
+  expect(result.offsets).toEqual([0, 2, 3, 4, 4]);
+  expect(result.neighborRows).toEqual([[1, 2], [0], [0], []]);
+  expect(result.weights).toEqual([1, 1, 1, 1]);
+  expect(result.distances).toEqual([0, 0.25, 0, 0.25]);
+  expect(result.added).toEqual([0, 1, 0, 1]);
+});
 
 /** Every listed pair appears in both rows. */
 function expectSymmetric(neighborRows: number[][]): void {

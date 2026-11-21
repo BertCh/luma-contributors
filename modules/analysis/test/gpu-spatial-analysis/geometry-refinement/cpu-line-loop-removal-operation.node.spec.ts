@@ -251,7 +251,7 @@ it.each([
 });
 
 it('executes the CPU graph ports with the declared shapes and validates the offset length', async () => {
-  // Two independent crossings exceed the GPU's one-pair budget; exact CPU noding erases both.
+  // Two independent crossings exceed the explicit one-pair budget: suppress incomplete CPU geometry.
   const operation = new CPULineLoopRemovalOperation({...getProps(), intersectionCapacity: 1});
   const positions = Float32Array.of(0, 0, 4, 4, 0, 4, 4, 0, 10, 0, 14, 4, 10, 4, 14, 0);
   const lineOffsets = Uint32Array.of(0, 4, 8);
@@ -270,8 +270,8 @@ it('executes the CPU graph ports with the declared shapes and validates the offs
     }
   };
   const output = await operation.execute({inputs});
-  expect(Array.from(output['status'] as Uint32Array)).toEqual([6, 6, 0, 0]);
-  expect(Array.from(output['lineOffsets'] as Uint32Array)).toEqual([0, 3, 6]);
+  expect(Array.from(output['status'] as Uint32Array)).toEqual([0, 0, 0, 1]);
+  expect(Array.from(output['lineOffsets'] as Uint32Array)).toEqual([0, 0, 0]);
   expect((output['positions'] as Float32Array).length).toBe(24);
   expect(operation.outputs['positions']).toEqual({
     type: 'vector',
@@ -281,4 +281,54 @@ it('executes the CPU graph ports with the declared shapes and validates the offs
   expect(() =>
     new CPULineLoopRemovalOperation({...getProps(), lineCount: 1}).execute({inputs})
   ).toThrow(/lineOffsets/);
+});
+
+it('multipart loop removal direct and CPU operation forms preserve every output', async () => {
+  const positions = Float32Array.of(0, 0, 2, 2, 0, 2, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0);
+  const lineOffsets = Uint32Array.of(0, 4, 6, 8);
+  const featureOffsets = Uint32Array.of(0, 0, 2, 3);
+  const expected = {
+    positions: [0, 0, 1, 1, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0],
+    lineOffsets: [0, 3, 5, 7],
+    featureOffsets: [0, 0, 2, 3],
+    sourceEdges: [0, 2, 2, 4, 4, 6, 6],
+    status: [7, 7, 0, 0]
+  };
+  // Independent derivation: revisiting the exact crossing (1,1) erases the bowtie's upper
+  // triangle; the two unrelated two-vertex parts retain their endpoints and original edge rows.
+  const direct = computeLineLoopRemovalOnCPU(
+    {positions, lineOffsets, featureOffsets},
+    {vertexCapacity: 7, intersectionCapacity: 8}
+  );
+  for (const [name, values] of Object.entries(expected))
+    expect(Array.from(direct[name as keyof typeof direct]!), name).toEqual(values);
+  const props: LineLoopRemovalOperationProps = {
+    ...getProps(),
+    lineCount: 3,
+    featureCount: 3,
+    vertexCapacity: 7,
+    lines: {
+      positions: 'inputPositions',
+      lineOffsets: 'inputOffsets',
+      featureOffsets: 'inputFeatures'
+    },
+    output: {...getProps().output, featureOffsets: 'featureOffsets'}
+  };
+  const value = (format: 'float32x2' | 'uint32', values: Float32Array | Uint32Array) => ({
+    format,
+    length: values.length / (format === 'float32x2' ? 2 : 1),
+    chunks: [{values, length: values.length / (format === 'float32x2' ? 2 : 1)}],
+    pack: () => values
+  });
+  const operation = new CPULineLoopRemovalOperation(props);
+  props.lines.featureOffsets = 'changed';
+  const result = await operation.execute({
+    inputs: {
+      inputPositions: value('float32x2', positions),
+      inputOffsets: value('uint32', lineOffsets),
+      inputFeatures: value('uint32', featureOffsets)
+    }
+  });
+  for (const [name, values] of Object.entries(expected))
+    expect(Array.from(result[name] as Float32Array | Uint32Array), name).toEqual(values);
 });

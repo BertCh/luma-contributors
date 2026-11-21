@@ -250,7 +250,7 @@ export default defineScene<TopologicalOptions>({
     {
       id: 'anti',
       label: 'Anti join',
-      help: 'Left features with no match. It should be exactly the complement of the matched left features.'
+      help: 'Left features with no match. The complement is checked when both joins finish without overflow or uncertainty.'
     },
     {
       id: 'candidates',
@@ -277,8 +277,8 @@ export default defineScene<TopologicalOptions>({
     {id: 'parity', label: 'Reference (libpysal)'},
     {
       id: 'indexBuilds',
-      label: 'Right-index builds',
-      help: 'GPUSpatialJoinPrepared.encodedBuildCount against the number of join runs.'
+      label: 'CPU geometry refresh requests',
+      help: 'CPU geometry refresh requests, including discarded encodings, against join runs. Retained geometry feeds preparation kernels replayed on every encoding.'
     },
     {id: 'timing', label: 'Engine timing'}
   ],
@@ -340,33 +340,55 @@ export default defineScene<TopologicalOptions>({
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const prepared = new GPUSpatialJoinPrepared({geometry: ${right}});
-graph.add(prepared);                         // the right-hand BVH, built once
+graph.add(prepared);                         // retained geometry; preparation replays each encoding
+const common = {
+  spatialContext: projection.spatialContext,
+  left: ${left},
+  right: ${right},
+  predicate: '${state.predicate}',${
+    state.predicate === 'relate'
+      ? `\n  pattern: patternBuffer.importToGraph(graph), // per frame; packGPUSpatialRelatePattern(${JSON.stringify(state.pattern === 'queen' ? ['FT*******', 'F**T*****', 'F***T****'] : state.pattern === 'rook' ? ['F***1****'] : '...')}, 4)`
+      : state.predicate === 'dwithin'
+        ? '\n  distance: distanceBuffer.importToGraph(graph), // per frame float32'
+        : ''
+  }${['intersects', 'contains', 'within', 'dwithin'].includes(state.predicate) ? `\n  engine: '${state.engine}',` : ''}${state.combo === 'tracts-self' ? '\n  excludeSameRow: true,' : ''}
+  candidateCapacity,
+  prepared
+} as const;
 graph.add(
-  new GPUSpatialPredicateJoin({spatialContext: projection.spatialContext,
-    left: ${left},
-    right: ${right},
-    predicate: '${state.predicate}',${
-      state.predicate === 'relate'
-        ? `\n    pattern: patternBuffer.importToGraph(graph), // per frame; packGPUSpatialRelatePattern(${JSON.stringify(state.pattern === 'queen' ? ['FT*******', 'F**T*****', 'F***T****'] : state.pattern === 'rook' ? ['F***1****'] : '...')}, 4)`
-        : state.predicate === 'dwithin'
-          ? '\n    distance: distanceBuffer.importToGraph(graph), // per frame float32'
-          : ''
-    }${['intersects', 'contains', 'within', 'dwithin'].includes(state.predicate) ? `\n    engine: '${state.engine}',` : ''}${state.combo === 'tracts-self' ? '\n    excludeSameRow: true,' : ''}
-    candidateCapacity,
-    prepared,
+  new GPUSpatialPredicateJoin({
+    ...common,
+    id: 'inner',
     output: {
-      pairs: {leftRows, rightRows, status: {count, overflow, requiredCount}},${state.matrix && state.predicate !== 'dwithin' ? '\n      relate: matrices,                       // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n      weights: {offsets, neighbors, weights}, // cross weights, CSR (rows are features)' : ''}
+      pairs: {
+        leftRows, rightRows,
+        status: {count: pairCount, overflow: pairOverflow, requiredCount: pairTotal,
+          candidateOverflow: pairCandidateOverflow}
+      },${state.matrix && state.predicate !== 'dwithin' ? '\n      relate: matrices,                       // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n      weights: {offsets, neighbors, weights}, // cross weights, CSR (rows are features)' : ''}
       status: {uncertainCount, candidateCount}
     }
   })
 );
-graph.add(new GPUSpatialPredicateJoin({spatialContext: projection.spatialContext, ... how: 'anti', output: {unmatched: {ids, status: {count, overflow}}}}));
+graph.add(
+  new GPUSpatialPredicateJoin({
+    ...common,
+    id: 'anti',
+    how: 'anti',
+    output: {
+      unmatched: {
+        ids: antiIds,
+        status: {count: antiCount, overflow: antiOverflow, candidateOverflow: antiCandidateOverflow}
+      },
+      status: {uncertainCount: antiUncertainCount}
+    }
+  })
+);
 const compiled = await graph.compileAsync();  // once
 compiled.encode(commandEncoder, {parameters: undefined});`;
   },
 
   about: {
-    what: "`GPUSpatialPredicateJoin` joins two feature sets by an exact OGC predicate: all nine point, line and polygon combinations, evaluated with GEOS-compatible DE-9IM semantics. A BVH over the right side (prepared once with `GPUSpatialJoinPrepared`) yields bounding-box candidates, exact orientation tests decide them, and the result is a sorted pair table. `how: 'anti'` returns the left features that match nothing.",
+    what: "`GPUSpatialPredicateJoin` joins two feature sets by an exact OGC predicate: all nine point, line and polygon combinations, evaluated with GEOS-compatible DE-9IM semantics. A BVH over the right side (prepared each encoding from geometry retained by `GPUSpatialJoinPrepared`) yields bounding-box candidates, exact orientation tests decide them, and the result is a sorted pair table. `how: 'anti'` returns the left features that match nothing.",
     why: 'Overlay questions are topological: does this parcel lie within a zone, which roads cross a river, which counties touch. Exact predicates also catch data problems: a boundary that almost, but not quite, coincides makes a "within" fail where the eye sees nesting.',
     howToRead:
       'Orange features have a match under the predicate, gray ones do not; switch to the anti join to colour the opposite set. Click a left feature: its matches are outlined in cyan and the panel lists them with their DE-9IM matrices. The matrix reads row by row: interior, boundary, exterior of left against right.'
@@ -397,7 +419,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
       controls: ['show'],
       readouts: ['anti', 'selection'],
       title: 'The anti join: tracts that nest nowhere',
-      body: 'The same join also runs in **anti** mode and returns the left features with **no match**. It is the complement of the matched tracts, and the **Anti join** readout checks that on the CPU. Set **Colour left features by** to *Has no match (anti join)* to see the tracts that are not within any community area.\n\nCensus tracts and the city’s community areas come from different sources and the area boundaries are simplified, so boundaries that follow the same street need not coincide exactly and an exact `within` can fail on small slivers. Click a gray tract: its matches (if any) are outlined in cyan.',
+      body: 'The same join also runs in **anti** mode and returns the left features with **no match**. The **Anti join** readout checks that these are the complement of the matched tracts when both joins finish without overflow or uncertainty. Set **Colour left features by** to *Has no match (anti join)* to see the tracts that are not within any community area.\n\nCensus tracts and the city’s community areas come from different sources and the area boundaries are simplified, so boundaries that follow the same street need not coincide exactly and an exact `within` can fail on small slivers. Click a gray tract: its matches (if any) are outlined in cyan.',
       options: {show: 'anti'}
     },
     {

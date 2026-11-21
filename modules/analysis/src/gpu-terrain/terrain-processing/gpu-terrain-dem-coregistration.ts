@@ -17,6 +17,7 @@ import {
   validateRasterGridAxisAligned
 } from '../../raster-analysis/raster-band-utils';
 import {
+  validateGraphPorts,
   validateFiniteNumber,
   validateMaximumCount,
   validateGPUStorageBindingByteLength,
@@ -113,6 +114,17 @@ export type GPUTerrainDEMCoregistrationProps = {
 export class GPUTerrainDEMCoregistration implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUTerrainDEMCoregistrationProps) {
+    validateGraphPorts(props.id ?? 'terrain-dem-coregistration', props, {
+      reference: {required: true, viewType: 'data', formats: ['float32']},
+      moving: {required: true, viewType: 'data', formats: ['float32']},
+      validity: {required: false, viewType: 'data', formats: ['uint32']},
+      stableMask: {required: true, viewType: 'data', formats: ['uint32']},
+      differenceVariance: {required: true, viewType: 'data', formats: ['float32']},
+      'output.fit': {required: true, viewType: 'data', formats: ['float32']},
+      'output.differences': {required: true, viewType: 'data', formats: ['float32']},
+      'output.validity': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.volume': {required: true, viewType: 'data', formats: ['float32']}
+    });
     this.id = props.id ?? 'terrain-dem-coregistration';
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);

@@ -41,6 +41,8 @@ export type GPUVecchiaLikelihoodOutput = {
   logLikelihood: GraphDataView<'float32'>;
   /** Three words `[failedSiteCount, excludedSiteCount, usedSiteCount]`. Any failure fails the likelihood. */
   status: GraphDataView<'uint32'>;
+  /** Optional three words [complete, overflow, candidateOverflow] for the input CSR. */
+  neighborhoodStatus?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -205,6 +207,11 @@ if (!(observation.w > 0.0) || !isFiniteValue(observation.x) || !isFiniteValue(ob
   return;
 }
 let isMarginal = offsets[offsetsOffset + index] == offsets[offsetsOffset + index + 1u];
+if (conditionalStatus[conditionalStatusOffset + index] != 0u) {
+  siteStatus[siteStatusOffset + index] = 2u;
+  atomicAdd(&counters[countersOffset], 1u);
+  return;
+}
 var mean = 0.0;
 var variance = 0.0;
 if (isMarginal) {
@@ -215,11 +222,6 @@ if (isMarginal) {
   }
   variance = params[paramsOffset];
 } else {
-  if (conditionalStatus[conditionalStatusOffset + index] != 0u) {
-    siteStatus[siteStatusOffset + index] = 2u;
-    atomicAdd(&counters[countersOffset], 1u);
-    return;
-  }
   let conditional = read_conditionals(index);
   mean = conditional.x;
   variance = conditional.y;

@@ -5,6 +5,8 @@
 export {GPUColumnQuantiles} from './gpu-column-quantiles';
 export type {GPUColumnQuantilesOutput, GPUColumnQuantilesProps} from './gpu-column-quantiles';
 export {
+  getColumnQuantilesParameterValues,
+  getColumnQuantilesRationalProbabilityValues,
   getGPUColumnQuantilesParameterLength,
   getGPUColumnQuantilesParameterValues,
   getGPUColumnQuantilesRationalProbabilityLength,
@@ -20,7 +22,12 @@ export type {
   GPUColumnQuantilesSettings
 } from './column-quantiles-parameters';
 export {GPUClassBreaks} from './gpu-class-breaks';
-export type {GPUClassBreaksOutput, GPUClassBreaksProps} from './gpu-class-breaks';
+export type {
+  GPUClassBreaksOutput,
+  GPUClassBreaksProps,
+  GPUClassBreaksShape,
+  GPUClassBreaksDeviceLimits
+} from './gpu-class-breaks';
 export {
   getGPUClassBreaksParameterLength,
   getGPUClassBreaksParameterValues,
@@ -41,6 +48,7 @@ export {
 } from './color-scale-parameters';
 export type {
   GPUColorScaleInterpolation,
+  GPUColorScaleResidentThresholdSettings,
   GPUColorScaleSettings,
   GPUColorScaleType
 } from './color-scale-parameters';
@@ -75,7 +83,11 @@ export type {
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {computeClassBreaksOnCPU, CPUClassBreaksOperation} from './cpu-class-breaks-operation';
-export type {CPUClassBreaksOptions, CPUClassBreaksResult} from './cpu-class-breaks-operation';
+export type {
+  CPUClassBreaksOptions,
+  CPUClassBreaksResult,
+  CPUClassBreaksOperationProps
+} from './cpu-class-breaks-operation';
 export {
   computeColumnQuantilesOnCPU,
   CPUColumnQuantilesOperation
@@ -85,6 +97,9 @@ export type {
   CPUColumnQuantilesResult
 } from './cpu-column-quantiles-operation';
 export {GPUClassBreaksOperation} from './gpu-class-breaks-operation';
-export type {ClassBreaksOperationProps} from './gpu-class-breaks-operation';
+export type {
+  ClassBreaksOperationProps,
+  GPUClassBreaksOperationProps
+} from './gpu-class-breaks-operation';
 export {GPUColumnQuantilesOperation} from './gpu-column-quantiles-operation';
 export type {ColumnQuantilesOperationProps} from './gpu-column-quantiles-operation';

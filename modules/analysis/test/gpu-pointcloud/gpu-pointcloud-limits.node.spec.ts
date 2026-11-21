@@ -120,12 +120,43 @@ it('neighborhoods without a grid refuse more than the unindexed work limit and a
   expect(() => makeNeighborhoods(AT_LIMIT_QUERIES + 1, true)).not.toThrow();
 });
 
+// DPC-118: runtime parameters can enable supportBounds on any frame (word 8), so, like static
+// supportBounds, they need a status view to report status bit 4.
+it('neighborhoods with runtime parameters or static supportBounds require a status view', () => {
+  const base = {
+    positions: view('float32x3', 4),
+    radius: 1,
+    capacity: 2,
+    output: {
+      indices: view('uint32', 8),
+      squaredDistances: view('float32', 8),
+      counts: view('uint32', 4)
+    }
+  };
+  const supportBounds = {minimum: [0, 0, 0], maximum: [1, 1, 1]} as const;
+  expect(() => new GPUPointCloudNeighborhoods(base)).not.toThrow();
+  expect(() => new GPUPointCloudNeighborhoods({...base, supportBounds})).toThrow(
+    /^gpu-pointcloud-neighborhoods supportBounds requires a status view$/
+  );
+  expect(() => new GPUPointCloudNeighborhoods({...base, parameters: view('float32', 9)})).toThrow(
+    /^gpu-pointcloud-neighborhoods parameters requires a status view/
+  );
+  expect(
+    () =>
+      new GPUPointCloudNeighborhoods({
+        ...base,
+        parameters: view('float32', 9),
+        output: {...base.output, status: view('uint32', 4)}
+      })
+  ).not.toThrow();
+});
+
 const makeICP = (source: number, withGrid: boolean) =>
   new GPUPointCloudICP({
     source: view('float32x3', source),
     target: view('float32x3', 65536),
     maximumDistance: 1,
-    iterations: 2,
+    maximumIterations: 2,
     ...(withGrid ? {targetGrid: GRID} : {}),
     output: {
       transform: view('float32', 16),
@@ -167,4 +198,26 @@ it('change detection without a grid refuses more than the unindexed work limit a
     /^gpu-pointcloud-change cores x \(reference \+ comparison\) is \d+, above the 134217728 limit of a scan without an index; pass grid$/
   );
   expect(() => makeChange(AT_LIMIT_QUERIES + 1, true)).not.toThrow();
+});
+
+it('ERG-102: a search grid origin must remain finite in float32', () => {
+  const create = (coordinate: number) =>
+    new GPUPointCloudICP({
+      source: view('float32x3', 3),
+      target: view('float32x3', 3),
+      maximumDistance: 1,
+      maximumIterations: 1,
+      targetGrid: {...GRID, origin: [coordinate, 0, 0]},
+      output: {
+        transform: view('float32', 16),
+        history: view('float32x3', 1),
+        inlierMask: view('uint32', 3),
+        status: view('uint32', 1)
+      }
+    });
+  expect(Number.isFinite(1e40)).toBe(true);
+  expect(() => create(1e40)).toThrow(
+    'gpu-pointcloud-icp targetGrid.origin coordinates must remain finite when converted to float32'
+  );
+  expect(() => create(1e38)).not.toThrow();
 });

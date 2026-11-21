@@ -52,7 +52,9 @@ export type CPUMapMatchingInput = {
     offsets: Uint32Array;
     targets: Uint32Array;
     costs: Float32Array;
+    /** Current legacy horizon; captured builtCostLimit takes precedence when supplied. */
     costLimit: Float32Array;
+    builtCostLimit?: Float32Array;
     complete?: Uint32Array;
   };
 };
@@ -313,6 +315,7 @@ export function computeMapMatchingOnCPU(
   if (!positions.every(Number.isFinite)) throw new Error('positions coordinates must be finite');
   if (!nodePositions.every(Number.isFinite))
     throw new Error('topology.nodePositions coordinates must be finite');
+  const tableCostLimit = input.routeTable?.builtCostLimit ?? input.routeTable?.costLimit;
   if (input.routeTable) {
     const table = input.routeTable;
     if (table.offsets.length !== nodeCount + 1)
@@ -321,6 +324,12 @@ export function computeMapMatchingOnCPU(
       throw new Error('routeTable.costs length must equal routeTable.targets length');
     validateOffsets('routeTable.offsets', table.offsets, table.targets.length);
     if (table.costLimit.length !== 1) throw new Error('routeTable.costLimit must contain one row');
+    if (table.builtCostLimit)
+      validateRequirement(
+        'computeMapMatchingOnCPU',
+        table.builtCostLimit.length === 1,
+        'routeTable.builtCostLimit must contain one row'
+      );
     if (table.complete && table.complete.length !== 1)
       throw new Error('routeTable.complete must contain one row');
   }
@@ -466,8 +475,7 @@ export function computeMapMatchingOnCPU(
             .filter(to => !(to.edge === from.edge && to.fraction >= from.fraction))
             .map(to => sources[to.edge]);
           const search =
-            remaining >= 0 &&
-            !(input.routeTable?.complete?.[0] && remaining <= input.routeTable.costLimit[0])
+            remaining >= 0 && !(input.routeTable?.complete?.[0] && remaining <= tableCostLimit![0])
               ? searchRoute(
                   neighbors[from.edge],
                   targets,
@@ -491,7 +499,7 @@ export function computeMapMatchingOnCPU(
           const certified =
             remaining >= 0 &&
             Boolean(input.routeTable?.complete?.[0]) &&
-            remaining <= input.routeTable!.costLimit[0];
+            remaining <= tableCostLimit![0];
           here.forEach((to, toSlot) => {
             const network = search?.get(sources[to.edge]);
             const table = input.routeTable;

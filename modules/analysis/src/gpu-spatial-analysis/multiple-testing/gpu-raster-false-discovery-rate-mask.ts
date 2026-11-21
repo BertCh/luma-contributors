@@ -32,6 +32,12 @@ import {
   GPUMultipleTestingAdjustment,
   GPU_MULTIPLE_TESTING_MAXIMUM_ROWS
 } from './gpu-multiple-testing-adjustment';
+import {
+  MULTIPLE_TESTING_COUNT_OUTPUT_NAMES,
+  validateMultipleTestingCountPorts
+} from './multiple-testing-counts';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {MULTIPLE_TESTING_P_VALUE_WGSL} from './multiple-testing-p-value-wgsl';
 
 const OPERATION = 'GPURasterFalseDiscoveryRateMask';
 
@@ -58,6 +64,11 @@ export function getGPURasterFalseDiscoveryRateMaskParameterValues(
   settings: GPURasterFalseDiscoveryRateMaskSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_FALSE_DISCOVERY_RATE_MASK_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRequirement(
+    'getGPURasterFalseDiscoveryRateMaskParameterValues',
+    target.length >= GPU_RASTER_FALSE_DISCOVERY_RATE_MASK_PARAMETER_LENGTH,
+    `target required ${GPU_RASTER_FALSE_DISCOVERY_RATE_MASK_PARAMETER_LENGTH} words; supplied ${target.length} words`
+  );
   validateFiniteNumber(
     'getGPURasterFalseDiscoveryRateMaskParameterValues',
     'alpha',
@@ -69,14 +80,19 @@ export function getGPURasterFalseDiscoveryRateMaskParameterValues(
   return target;
 }
 
-/** Caller-owned outputs of {@link GPURasterFalseDiscoveryRateMask}. */
+/**
+ * Caller-owned outputs of {@link GPURasterFalseDiscoveryRateMask}.
+ * `finiteTestCount`, `effectiveFamilySize` and the other outputs use distinct writable storage.
+ */
 export type GPURasterFalseDiscoveryRateMaskOutput = {
   /** `uint32` per cell: 1 where the adjusted p-value is at most `alpha`, else 0 (also 0 where untested). */
   significant: GraphDataView<'uint32'>;
   /** Optional per-cell adjusted p-value in `[0, 1]` (statsmodels `multipletests`), NaN where untested. */
   adjustedPValues?: GraphDataView<'float32'>;
-  /** Optional one-row family size `m` used by the adjustment. */
-  testedCount?: GraphDataView<'uint32'>;
+  /** Optional one-row uint32: count of valid cells with finite p-values in [0, 1], before padding. */
+  finiteTestCount?: GraphDataView<'uint32'>;
+  /** Optional one-row uint32: max(finiteTestCount, minimumFamilySize), the denominator m. */
+  effectiveFamilySize?: GraphDataView<'uint32'>;
   /** Optional one-row count of significant cells. */
   significantCount?: GraphDataView<'uint32'>;
   /**
@@ -134,7 +150,30 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
   readonly method: GPURasterFalseDiscoveryRateMethod;
 
   constructor(readonly props: GPURasterFalseDiscoveryRateMaskProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'cellCount',
+      'pValues',
+      'validity',
+      'method',
+      'minimumFamilySize',
+      'parameters',
+      'output'
+    ]);
     const id = props.id ?? 'raster-false-discovery-rate-mask';
+    validateMultipleTestingCountPorts(id, props.output);
+    props = Object.freeze({
+      ...props,
+      output: snapshotConstructionFields(props.output, [
+        'significant',
+        'adjustedPValues',
+        ...MULTIPLE_TESTING_COUNT_OUTPUT_NAMES,
+        'significantCount',
+        'criticalPValue',
+        'histogram'
+      ])
+    });
+    this.props = props;
     this.id = id;
     this.method = props.method ?? 'benjamini-hochberg';
     validateRequirement(
@@ -183,12 +222,16 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
       );
     }
     for (const [name, view] of [
-      ['testedCount', output.testedCount],
+      ...MULTIPLE_TESTING_COUNT_OUTPUT_NAMES.map(name => [name, output[name]] as const),
       ['significantCount', output.significantCount]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
-        validateRequirement(id, view.length === 1, `${name} must hold one entry`);
+        validateRequirement(
+          id,
+          view.length === 1,
+          `output.${name} must hold exactly one uint32 word. Received ${view.length}`
+        );
       }
     }
     if (output.criticalPValue) {
@@ -214,7 +257,7 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
       [
         output.significant,
         output.adjustedPValues,
-        output.testedCount,
+        ...MULTIPLE_TESTING_COUNT_OUTPUT_NAMES.map(name => output[name]),
         output.significantCount,
         output.criticalPValue,
         output.histogram
@@ -235,7 +278,7 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
       props.parameters,
       output.significant,
       output.adjustedPValues,
-      output.testedCount,
+      ...MULTIPLE_TESTING_COUNT_OUTPUT_NAMES.map(name => output[name]),
       output.significantCount,
       output.criticalPValue,
       output.histogram
@@ -288,10 +331,10 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
           {name: 'tested', view: testedPValues, type: 'f32', access: 'read_write'}
         ],
         invocationCount: cellCount,
-        declarations: GET_NAN_WGSL,
-        body: `let p = pValues[pValuesOffset + index];
-let isTested = ${props.validity ? 'validity[validityOffset + index] != 0u && ' : ''}p >= 0.0 && p <= 1.0;
-tested[testedOffset + index] = select(getNaN(), p + 0.0, isTested);`
+        declarations: `${GET_NAN_WGSL}\n${MULTIPLE_TESTING_P_VALUE_WGSL}`,
+        body: `let bits = bitcast<u32>(pValues[pValuesOffset + index]);
+let isTested = ${props.validity ? 'validity[validityOffset + index] != 0u && ' : ''}isTestedBits(bits);
+tested[testedOffset + index] = select(getNaN(), bitcast<f32>(bits & 0x7fffffffu), isTested);`
       })
     );
 
@@ -304,7 +347,12 @@ tested[testedOffset + index] = select(getNaN(), p + 0.0, isTested);`
         pValues: testedPValues,
         method: this.method,
         minimumFamilySize: props.minimumFamilySize,
-        output: {adjustedPValues, testedCount: output.testedCount}
+        output: {
+          adjustedPValues,
+          ...Object.fromEntries(
+            MULTIPLE_TESTING_COUNT_OUTPUT_NAMES.map(name => [name, output[name]])
+          )
+        }
       }).getCommandNodes(graph)
     );
 

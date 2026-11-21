@@ -48,7 +48,7 @@ export default defineOperationRun({
         positions: positionBuffer.view,
         lineOffsets: builder.upload('line-offsets', 'uint32', offsets).view,
         polygons: {kind: 'polygons', ...uploadPackedPolygons(builder, getPackedPolygons(tracts))},
-        output: {lengths: lengths.view, status: {overflow: overflow.view}}
+        output: {clippedLengths: lengths.view, status: {overflow: overflow.view}}
       })
     );
     return {

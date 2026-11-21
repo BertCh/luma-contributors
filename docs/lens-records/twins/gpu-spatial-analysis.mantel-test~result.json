@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const searchValues = getGPUNeighborSearchParameterValues({bounds, radius: band});\nconst mantelValues = getGPUSpaceTimeParameterValues({seed: 1, permutationCount: 199});\nconst search = new GPUNeighborSearch({\n  spatialContext,\n  mode: 'radius',\n  positions: observations,\n  gridSize: [8, 8],\n  parameters: createParameters(searchValues),\n  output: everyPair\n});\ngraph.add(search);\ngraph.add(\n  new GPUMantelTest({\n    pairs: search.outputWeights,\n    times: days,\n    parameters: createParameters(mantelValues),\n    maximumPermutations: 199,\n    output: {statistics, summary}\n  })\n);\n// statistics[0]: observed correlation r; statistics[1..199]: r after permuting the days",
+    "code": "const searchValues = getGPUNeighborSearchParameterValues({bounds, searchRadius: band});\nconst mantelValues = getGPUSpaceTimeParameterValues({seed: 1, permutationCount: 199});\nconst search = new GPUNeighborSearch({\n  spatialContext,\n  mode: 'radius',\n  positions: observations,\n  gridSize: [8, 8],\n  parameters: createParameters(searchValues),\n  output: everyPair\n});\ngraph.add(search);\ngraph.add(\n  new GPUMantelTest({\n    pairs: search.outputWeights,\n    times: days,\n    parameters: createParameters(mantelValues),\n    maximumPermutations: 199,\n    output: {statistics, summary}\n  })\n);\n// statistics[0]: observed correlation r; statistics[1..199]: r after permuting the days",
     "language": "ts",
     "lineCount": 21
   },
@@ -46,12 +46,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:48.825Z",
-    "runId": "run-b5470965",
+    "date": "2026-11-20T23:50:06.718Z",
+    "runId": "run-0b5d9e12",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-b5470965",
+    "runId": "run-0b5d9e12",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -14,6 +14,46 @@ import {
 } from '../../../src/gpu-spatial-analysis/geometry-measures/gpu-geodesic-pairs-operation';
 import fixtures from './geodesic-pairs-fixture.json';
 
+it('reduces extreme equivalent longitudes before solving each inverse model', () => {
+  for (const metric of ['great-circle', 'rhumb', 'ellipsoidal'] as const) {
+    const result = computeGeodesicPairsOnCPU(
+      {origins: Float32Array.of(2 ** 62, 0, -176, 0), targets: new Float32Array(4)},
+      {coordinateSpace: 'longitude-latitude', metric, units: 'meters'}
+    );
+    // Integer remainder: 2^62 mod 360 = 184 = -176 degrees. On the equator,
+    // the short arc is 176*pi/180, with WGS84 equatorial radius 6378137 m.
+    const expected = Math.fround(
+      ((176 * Math.PI) / 180) * (metric === 'ellipsoidal' ? 6378137 : 6371008.8)
+    );
+    expect(Array.from(result.converged)).toEqual([1, 1]);
+    expect(Array.from(result.approximation)).toEqual([0, 0]);
+    expect(result.distances).toHaveLength(2);
+    for (const distance of result.distances) {
+      expect(Number.isFinite(distance)).toBe(true);
+      expect(distance).toBe(expected);
+    }
+  }
+});
+
+it('preserves a tiny trip from equivalent zero and whole-turn origins', () => {
+  for (const metric of ['great-circle', 'rhumb', 'ellipsoidal'] as const) {
+    const result = computeGeodesicPairsOnCPU(
+      {origins: Float32Array.of(0, 0, 360, 0), targets: Float32Array.of(1e-6, 0, 1e-6, 0)},
+      {coordinateSpace: 'longitude-latitude', metric, units: 'meters'}
+    );
+    expect(result.distances).toHaveLength(2);
+    const expected =
+      (((metric === 'ellipsoidal' ? 6378137 : 6371008.8) * Math.PI) / 180) * Math.fround(1e-6);
+    for (const distance of result.distances) {
+      expect(Number.isFinite(distance)).toBe(true);
+      expect(Math.abs(distance - expected)).toBeLessThan(1e-7);
+    }
+    expect(Array.from(result.converged)).toEqual([1, 1]);
+    expect(Array.from(result.approximation)).toEqual([0, 0]);
+    expect(Array.from(result.iterationLimitReached)).toEqual([0, 0]);
+  }
+});
+
 it('documents the CPU longitude convention for a coincident north-pole midpoint', () => {
   for (const metric of ['great-circle', 'ellipsoidal'] as const) {
     const result = computeGeodesicPairsOnCPU(

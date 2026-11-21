@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Classification methods supported by `GPUClassBreaks`. */
 export type GPUClassBreaksMethod =
@@ -96,14 +99,18 @@ export function getGPUClassBreaksParameterValues(
   }
   const {method} = settings;
   const methodCode = GPU_CLASS_BREAKS_METHOD_CODES[method];
-  if (methodCode === undefined) {
-    throw new Error(`GPUClassBreaks unknown method ${String(method)}`);
+  if (!Object.hasOwn(GPU_CLASS_BREAKS_METHOD_CODES, method)) {
+    throw new Error(
+      `GPUClassBreaks unknown method ${String(method)}; method must be ${GPU_CLASS_BREAKS_METHODS.join(', ')}`
+    );
   }
+  // Custom edges may alias the target data slice; retain them through target.fill().
+  const customEdges = method === 'custom' ? Array.from(settings.customEdges ?? []) : [];
   let classCount = settings.classCount ?? 5;
   if (method === 'box-plot') {
     classCount = GPU_CLASS_BREAKS_BOX_PLOT_CLASS_COUNT;
   } else if (method === 'custom') {
-    const edgeCount = settings.customEdges?.length ?? 0;
+    const edgeCount = customEdges.length;
     if (edgeCount < 2) {
       throw new Error('GPUClassBreaks custom needs at least two edges');
     }
@@ -119,8 +126,18 @@ export function getGPUClassBreaksParameterValues(
       throw new Error(`GPUClassBreaks ${name} must be finite`);
     }
   }
-  if (method === 'custom' && Array.from(settings.customEdges!).some(Number.isNaN)) {
+  if (method === 'custom' && customEdges.some(Number.isNaN)) {
     throw new Error('GPUClassBreaks custom edges must not be NaN');
+  }
+  if (method === 'custom') {
+    const edges = customEdges;
+    for (let index = 1; index < edges.length; index++) {
+      validateRequirement(
+        'GPUClassBreaks',
+        Math.fround(edges[index - 1]) <= Math.fround(edges[index]),
+        `customEdges[${index - 1}] (${edges[index - 1]}, packed ${Math.fround(edges[index - 1])}) must be <= customEdges[${index}] (${edges[index]}, packed ${Math.fround(edges[index])}); supply nondecreasing edges`
+      );
+    }
   }
   target.fill(NaN, 0, length);
   target[0] = methodCode;
@@ -141,7 +158,7 @@ export function getGPUClassBreaksParameterValues(
     target[data + 1] = 0.5;
     target[data + 2] = 0.75;
   } else if (method === 'custom') {
-    const edges = settings.customEdges!;
+    const edges = customEdges;
     for (let index = 0; index < edges.length; index++) {
       target[data + index] = edges[index];
     }

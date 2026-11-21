@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateCPUHostOffsets,
+  type CPUHostRowsOptions
+} from '../../analysis-core/operations/compact-host-offsets';
+
 import {canExhaustivelySnap, MAXIMUM_SEGMENT_SNAP_EXHAUSTIVE_WORK} from './gpu-segment-snap';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
@@ -33,6 +38,8 @@ const DEFAULT_CANDIDATE_CAPACITY = 1024;
 
 /** Input line vertices and planar reference vertices. */
 export type CPUSegmentSnapInput = {
+  /** Explicitly select clamped resident storage; compact host offsets are strict by default. */
+  storage?: CPUHostRowsOptions['storage'];
   positions: Float32Array;
   lineOffsets: Uint32Array;
   referencePositions: Float32Array;
@@ -84,8 +91,8 @@ function snapPoint(point: Point, references: Point[], tolerance: number): Point 
  * - Candidates are sorted once per segment instead of repeatedly scanning for the next winner.
  *   Reference duplicates retain their first row, exactly as on the GPU.
  * - Unused positions/sourceEdges slots are zero; the GPU leaves them unwritten. Only each line's
- *   written prefix is meaningful. Out-of-range offsets are clamped and reversed intervals are
- *   empty, as explicitly defined by the current kernel.
+ *   written prefix is meaningful. Compact host offsets must cover every source vertex. Explicit
+ *   resident-capacity storage retains clamped offsets and empty reversed intervals.
  * - Nothing else: nonfinite references invalidate every line, including empty lines; nonfinite
  *   input vertices invalidate their line. An empty line has validity=1; a collapsed line has
  *   issueCode bit 1 and validity=0.
@@ -103,8 +110,17 @@ export function computeSegmentSnapOnCPU(
   if (input.positions.length % 2 !== 0) throw new Error('positions must contain float32x2 rows');
   if (input.referencePositions.length % 2 !== 0)
     throw new Error('referencePositions must contain float32x2 rows');
-  if (input.lineOffsets.length < 2)
-    throw new Error('lineOffsets must contain at least two entries');
+  if (input.storage === 'resident-capacity') {
+    validateRequirement(
+      id,
+      input.lineOffsets.length >= 1,
+      'lineOffsets must include a terminal offset'
+    );
+  } else {
+    validateCPUHostOffsets(id, 'lineOffsets', input.lineOffsets, input.positions.length / 2, {
+      storage: input.storage
+    });
+  }
   const rowCount = input.positions.length / 2;
   const referenceCount = input.referencePositions.length / 2;
   if (options.searchStructure === 'brute-force')
@@ -117,7 +133,7 @@ export function computeSegmentSnapOnCPU(
   validateCapacity(id, 'positions.length', rowCount, 0, MAXIMUM_POSITION_COUNT);
   validateCapacity(id, 'referencePositions.length', referenceCount, 0, MAXIMUM_POSITION_COUNT);
   const lineCount = input.lineOffsets.length - 1;
-  validateCapacity(id, 'lineCount', lineCount, 1, MAXIMUM_LINE_COUNT);
+  validateCapacity(id, 'lineCount', lineCount, 0, MAXIMUM_LINE_COUNT);
   const capacity = options.maximumVerticesPerLine;
   validateCapacity(
     id,
@@ -233,13 +249,19 @@ export function computeSegmentSnapOnCPU(
 
 /** CPU segment snap twin; fixed slots and uint32 required-count limits are retained. */
 export class CPUSegmentSnapOperation extends GPUCPUOperation {
-  constructor(props: SegmentSnapOperationProps) {
+  constructor(props: SegmentSnapOperationProps & {storage?: 'compact' | 'resident-capacity'}) {
+    const storage = props.storage;
     props = snapshotSegmentSnapOperationProps(props);
     const id = props.id ?? 'segment-snap';
+    validateRequirement(
+      id,
+      storage === undefined || ['compact', 'resident-capacity'].includes(storage),
+      `storage must be compact or resident-capacity; received ${storage}`
+    );
     resolveGPUSpatialContext(id, props.spatialContext);
     validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'referenceCount', props.referenceCount, 0);
-    validateCapacity(id, 'lineCount', props.lineCount);
+    validateCapacity(id, 'lineCount', props.lineCount, 0);
     validateCapacity(id, 'maximumVerticesPerLine', props.maximumVerticesPerLine);
     if (props.searchStructure === 'brute-force')
       validateCapacity(
@@ -252,7 +274,7 @@ export class CPUSegmentSnapOperation extends GPUCPUOperation {
       id,
       'lineCount * maximumVerticesPerLine',
       props.lineCount * props.maximumVerticesPerLine,
-      1,
+      0,
       MAXIMUM_POSITION_COUNT
     );
     if (props.searchStructure === 'brute-force')
@@ -264,7 +286,7 @@ export class CPUSegmentSnapOperation extends GPUCPUOperation {
     validateCPUSegmentSnapOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount, 0, MAXIMUM_POSITION_COUNT);
     validateCapacity(id, 'referenceCount', props.referenceCount, 0, MAXIMUM_POSITION_COUNT);
-    validateCapacity(id, 'lineCount', props.lineCount, 1, MAXIMUM_LINE_COUNT);
+    validateCapacity(id, 'lineCount', props.lineCount, 0, MAXIMUM_LINE_COUNT);
     const operation = new GPUSegmentSnapOperation(props);
     const candidateOverflow =
       props.output.status?.candidateOverflow ?? props.output.candidateOverflow;
@@ -292,7 +314,10 @@ export class CPUSegmentSnapOperation extends GPUCPUOperation {
           throw new Error(`${id} referencePositions length must equal referenceCount`);
         if (lineOffsets.length !== props.lineCount + 1)
           throw new Error(`${id} lineOffsets length must equal lineCount + 1`);
-        const result = computeSegmentSnapOnCPU({positions, referencePositions, lineOffsets}, props);
+        const result = computeSegmentSnapOnCPU(
+          {positions, referencePositions, lineOffsets, storage},
+          props
+        );
         return {
           [props.output.positions]: result.positions,
           [props.output.sourceEdges]: result.sourceEdges,

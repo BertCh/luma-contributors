@@ -2,21 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validatePettittOperationPorts} from './change-point-shape';
+import {snapshotChangePointProps} from './change-point-construction';
+import {validateChangePointLayout} from './change-point-series-wgsl';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
 import {GPU_PETTITT_TEST_NO_CHANGE_SLICE} from './gpu-pettitt-test';
-import {
-  GPUPettittTestOperation,
-  type PettittTestOperationProps
-} from './gpu-pettitt-test-operation';
+import {type PettittTestOperationProps} from './gpu-pettitt-test-operation';
 
 /** Largest series for which floor(n² / 4), the largest possible K, fits a uint32 output. */
 export const CPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT = 131071;
 
 export type CPUPettittTestOptions = Pick<
   PettittTestOperationProps,
-  'cellCount' | 'sliceCount' | 'layout'
+  'id' | 'cellCount' | 'sliceCount' | 'layout'
 >;
 
 export type CPUPettittTestResult = {
@@ -27,7 +30,8 @@ export type CPUPettittTestResult = {
 
 /**
  * Computes Pettitt's statistic from average ranks, with the contributor's first-maximum rule.
- * Non-finite values are skipped. A constant series of length >= 2 returns its second finite slice.
+ * Non-finite values are skipped. Below two finite observations pValues is NaN (untested).
+ * A constant series of length >= 2 returns its second finite slice and pValues = 1.
  *
  * What differs from the GPU contributor:
  * - Uses float64 ranks and the p-value formula, rounding p-values once; compare within 2e-6 absolute.
@@ -39,20 +43,18 @@ export function computePettittTestOnCPU(
   options: CPUPettittTestOptions
 ): CPUPettittTestResult {
   const {cellCount, sliceCount, layout} = options;
-  validateCapacity('computePettittTestOnCPU', 'cellCount', cellCount);
-  validateCapacity(
-    'computePettittTestOnCPU',
-    'sliceCount',
-    sliceCount,
-    1,
-    CPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT
+  const id = options.id ?? 'computePettittTestOnCPU';
+  validateChangePointLayout(id, layout);
+  validateCapacity(id, 'cellCount', cellCount);
+  validateCapacity(id, 'sliceCount', sliceCount, 1, CPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT);
+  validateRequirement(
+    id,
+    values.length === cellCount * sliceCount,
+    `values length must equal cellCount * sliceCount (${cellCount * sliceCount}); received ${values.length}`
   );
-  if (values.length !== cellCount * sliceCount) {
-    throw new Error('computePettittTestOnCPU values length must equal cellCount * sliceCount');
-  }
   const statistic = new Uint32Array(cellCount);
   const changeSlice = new Uint32Array(cellCount).fill(GPU_PETTITT_TEST_NO_CHANGE_SLICE);
-  const pValues = new Float32Array(cellCount).fill(1);
+  const pValues = new Float32Array(cellCount).fill(NaN);
   for (let cell = 0; cell < cellCount; cell++) {
     const positions: number[] = [];
     const series: number[] = [];
@@ -101,12 +103,13 @@ export function computePettittTestOnCPU(
 /** CPU twin; the GPU's 512-slice private-array limit is replaced by the uint32 output limit. */
 export class CPUPettittTestOperation extends GPUCPUOperation {
   constructor(props: PettittTestOperationProps) {
+    props = snapshotChangePointProps(props);
     const id = props.id ?? 'pettitt-test';
+    validateChangePointLayout(id, props.layout);
     validateCapacity(id, 'cellCount', props.cellCount);
     validateCapacity(id, 'sliceCount', props.sliceCount, 1, CPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT);
     const shape = {length: props.cellCount};
-    // Reuse the graph-port shape and disjointness checks; this allocates no GPU resources.
-    new GPUPettittTestOperation(props);
+    validatePettittOperationPorts(id, props);
     super({
       id,
       inputs: {values: props.values},

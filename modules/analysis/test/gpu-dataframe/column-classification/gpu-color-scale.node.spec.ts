@@ -4,18 +4,127 @@
 
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {
+  createWGSLKernelNode,
+  getWGSLKernelNodeRecord,
+  recordWGSLKernelNodes
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {GPUColorScale} from '../../../src/dataframe-analysis/column-classification/gpu-color-scale';
 import type {GPUColorScaleProps} from '../../../src/dataframe-analysis/column-classification/gpu-color-scale';
 import {
   getGPUColorScaleParameterValues,
   GPU_COLOR_SCALE_CODES,
   GPU_COLOR_SCALE_PARAMETER_LENGTH,
-  packGPUColor
+  packGPUColor,
+  type GPUColorScaleResidentThresholdSettings,
+  type GPUColorScaleSettings
 } from '../../../src/dataframe-analysis/column-classification/color-scale-parameters';
 import {computeColorScaleOnCPU} from './color-scale-oracle';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {CLASSIFICATION_OUTPUT_SUBSETS, COLOR_OPTIONAL_FIXTURE} from './optional-output-fixtures';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../../gpu-spatial-analysis/segment-intersection/wgsl-graph-executor';
 
 let serial = 0;
+
+it('R4 color-scale snapshots the caller count-output selection', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const counts = props.output.classCounts!;
+    props.output = {classCounts: counts};
+    const contributor = new GPUColorScale(props);
+    const mutableOutput: Partial<GPUColorScaleProps['output']> = props.output;
+    delete mutableOutput.classCounts;
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.map(node => node.id)).toEqual([
+      'color-scale-init',
+      'color-scale-classify',
+      'color-scale-colorize'
+    ]);
+    expect(contributor.props.output.classCounts).toBe(counts);
+    expect(
+      nodes
+        .filter(node =>
+          node.resources?.some(
+            resource =>
+              'buffer' in resource &&
+              resource.buffer === counts &&
+              resource.usage !== 'storage-read'
+          )
+        )
+        .map(node => node.id)
+    ).toEqual(['color-scale-init', 'color-scale-colorize']);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('R6 color-scale count fixture distinguishes reversing the active bins', () => {
+  const counts = COLOR_OPTIONAL_FIXTURE.counts;
+  expect([counts[2], counts[1], counts[0], counts[3]]).not.toEqual(counts);
+});
+
+it('color-scale CPU reference matches every hand-derived output including unused capacity', () => {
+  const expected = COLOR_OPTIONAL_FIXTURE;
+  const actual = computeColorScaleOnCPU({
+    ...expected,
+    values: Float32Array.from(expected.values),
+    scale: 'threshold',
+    activeDomainCount: 4,
+    maximumDomainCount: 4,
+    maximumPaletteCount: 4,
+    paletteCount: 3,
+    noDataColor: 7
+  });
+  expect(Array.from(actual.classIndices)).toEqual(expected.classes);
+  expect(Array.from(actual.colors)).toEqual(expected.colors);
+  expect(Array.from(actual.classCounts)).toEqual(expected.counts);
+});
+
+it.each(
+  CLASSIFICATION_OUTPUT_SUBSETS
+)('color-scale optional bindings follow output use: %j', subset => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    // createProps without overrides allocates all three terminal views.
+    const colors = props.output.colors!;
+    const classIndices = props.output.classIndices!;
+    const classCounts = props.output.classCounts!;
+    const selected = {
+      colors: subset.colors ? colors : undefined,
+      classIndices: subset.classes ? classIndices : undefined,
+      classCounts: subset.counts ? classCounts : undefined
+    };
+    const output: GPUColorScaleProps['output'] = subset.colors
+      ? {...selected, colors}
+      : subset.classes
+        ? {...selected, classIndices}
+        : {...selected, classCounts};
+    const kernels = getGPUCommandNodeKernelSources(
+      new GPUColorScale({
+        ...props,
+        output
+      }).getCommandNodes(graph)
+    );
+    expect(kernels.length).toBe(1 + Number(subset.colors || subset.counts) + Number(subset.counts));
+    if (subset.colors || subset.counts) {
+      const colorize = kernels.at(-1)!;
+      expect(colorize.source.includes('var<storage, read> palette:')).toBe(subset.colors);
+      expect(colorize.source.includes('var<storage, read> positions:')).toBe(subset.colors);
+    }
+  } finally {
+    device.destroy();
+  }
+});
 
 function createProps(
   graph: GPUCommandGraph,
@@ -108,6 +217,95 @@ it('GPUColorScale parameter helper packs the documented layout', () => {
   expect(packGPUColor(255, 255, 255)).toBe(0xffffffff);
 });
 
+it('CMP-13 packs resident threshold settings without a numeric domain count', () => {
+  const settings = {scale: 'threshold', paletteCount: 2, noDataColor: 0x12345678} as const;
+  const target = new Float32Array(GPU_COLOR_SCALE_PARAMETER_LENGTH).fill(-1);
+  expect(getGPUColorScaleParameterValues(settings, target)).toBe(target);
+  expect(Array.from(target)).toEqual([6, 0, 2, 0, 0, 0x5678, 0x1234, Math.fround(1e-5), 1]);
+  expect(getGPUColorScaleParameterValues({...settings, domainCount: 3})[1]).toBe(3);
+  expect(() => getGPUColorScaleParameterValues({...settings, domainCount: -1})).toThrow(
+    /domainCount must be a non-negative integer/
+  );
+  expect(() => getGPUColorScaleParameterValues({...settings, paletteCount: -1})).toThrow(
+    /paletteCount must be a non-negative integer/
+  );
+  expect(() => {
+    // @ts-expect-error Only threshold settings can omit domainCount.
+    getGPUColorScaleParameterValues({scale: 'linear', paletteCount: 2});
+  }).toThrow(/domainCount must be a non-negative integer/);
+});
+
+it('CMP-13 accepts settings typed as either supported form', () => {
+  const pack = (settings: GPUColorScaleSettings | GPUColorScaleResidentThresholdSettings) =>
+    getGPUColorScaleParameterValues(settings);
+  expect(pack({scale: 'threshold', paletteCount: 2})[1]).toBe(0);
+  expect(pack({scale: 'linear', domainCount: 3, paletteCount: 2})[1]).toBe(3);
+});
+
+it('CMP-13 rejects unknown color options and lists their accepted values', () => {
+  const target = new Float32Array(GPU_COLOR_SCALE_PARAMETER_LENGTH).fill(-1);
+  const numeric = {scale: 'linear', domainCount: 3, paletteCount: 2} as const;
+  const resident = {scale: 'threshold', paletteCount: 2} as const;
+  expect(() => {
+    // @ts-expect-error Exercise an inherited property name from an untyped caller.
+    getGPUColorScaleParameterValues({...numeric, scale: 'constructor'}, target);
+  }).toThrow(
+    /scale 'constructor'.*linear, sqrt, pow, log, symlog, quantize, threshold, quantile, ordinal/
+  );
+  expect(() => {
+    // @ts-expect-error Exercise an unknown interpolation from an untyped caller.
+    getGPUColorScaleParameterValues({...resident, interpolation: 'nearest'}, target);
+  }).toThrow(/interpolation 'nearest'.*step, linear/);
+  expect(() => {
+    // @ts-expect-error Exercise an unknown log mode from an untyped caller.
+    getGPUColorScaleParameterValues({...numeric, scale: 'log', logMode: 'signed'}, target);
+  }).toThrow(/logMode 'signed'.*positive-floor, domain-sign/);
+  expect(target.every(value => value === -1)).toBe(true);
+});
+
+it('CMP-13 classifies two resident classes from three edges', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    recordWGSLKernelNodes(graph);
+    const classIndices = view(graph, 'uint32', 2);
+    const props = {
+      values: view(graph, 'float32', 2),
+      domain: view(graph, 'float32', 3),
+      classCount: view(graph, 'uint32', 1),
+      palette: view(graph, 'uint32', 2),
+      parameters: view(graph, 'float32', GPU_COLOR_SCALE_PARAMETER_LENGTH),
+      maximumDomainCount: 3,
+      maximumPaletteCount: 2,
+      output: {classIndices}
+    };
+    const [classification] = new GPUColorScale(props).getCommandNodes(graph);
+    const kernel = getWGSLKernelNodeRecord(graph, classification.id)!;
+    const memory = createCPUGraphMemory();
+    memory.write(props.values, Float32Array.of(0.5, 1.5));
+    memory.write(props.domain, Float32Array.of(0, 1, 2));
+    memory.write(props.classCount, Uint32Array.of(2));
+    memory.write(classIndices, Uint32Array.of(99, 99));
+    memory.write(
+      props.parameters,
+      getGPUColorScaleParameterValues({scale: 'threshold', paletteCount: 2})
+    );
+    // Keep the constructor's bindings and arithmetic, using launch uniforms the interpreter supports.
+    const replay = createWGSLKernelNode(graph, {
+      id: `${kernel.id}-arithmetic`,
+      operation: kernel.operation,
+      bindings: [...kernel.bindings],
+      invocationCount: kernel.invocationCount,
+      declarations: kernel.declarations,
+      body: kernel.body
+    });
+    executeCommandNodesOnCPU([replay], memory);
+    expect(Array.from(memory.readUint32(classIndices))).toEqual([0, 1]);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUColorScale accepts valid props and returns deterministic node IDs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -131,23 +329,40 @@ it('GPUColorScale accepts valid props and returns deterministic node IDs', () =>
   device.destroy();
 });
 
-it('GPUColorScale accepts uint32 ordinal values, domainCount views and masks', () => {
+it('GPUColorScale accepts uint32 ordinal values, classCount views and masks', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const contributor = new GPUColorScale(
     createProps(graph, {
       values: view(graph, 'uint32', 10),
       mask: view(graph, 'uint32', 10),
-      domainCount: view(graph, 'uint32', 1)
+      classCount: view(graph, 'uint32', 1)
     })
   );
   expect(contributor.getCommandNodes(graph).length).toBe(3);
   device.destroy();
 });
 
+it('GPUColorScale rejects an untyped resident domainCount view', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph, {id: 'scale'});
+    const legacy = {...props, domainCount: view(graph, 'uint32', 1)};
+    expect(() => new GPUColorScale(legacy)).toThrow(
+      /^scale domainCount was removed; use classCount/
+    );
+    const numeric = {...props, domainCount: 3};
+    expect(() => new GPUColorScale(numeric)).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUColorScale validates props', () => {
   expectThrows(() => ({maximumDomainCount: 0}), /maximumDomainCount/);
   expectThrows(() => ({maximumPaletteCount: 1.5}), /maximumPaletteCount/);
+  // @ts-expect-error JavaScript callers still receive the runtime empty-selection guard.
   expectThrows(() => ({output: {}}), /at least one output/);
   expectThrows(graph => ({values: view(graph, 'float32', 0)}), /at least one row/);
   expectThrows(graph => ({values: view(graph, 'float32x2' as 'float32', 10)}), /values/);
@@ -159,8 +374,8 @@ it('GPUColorScale validates props', () => {
   expectThrows(graph => ({palette: view(graph, 'float32' as 'uint32', 6)}), /palette/);
   expectThrows(graph => ({parameters: view(graph, 'float32', 8)}), /parameters must hold/);
   expectThrows(graph => ({parameters: view(graph, 'uint32' as 'float32', 9)}), /parameters/);
-  expectThrows(graph => ({domainCount: view(graph, 'uint32', 0)}), /domainCount/);
-  expectThrows(graph => ({domainCount: view(graph, 'float32' as 'uint32', 1)}), /domainCount/);
+  expectThrows(graph => ({classCount: view(graph, 'uint32', 0)}), /classCount/);
+  expectThrows(graph => ({classCount: view(graph, 'float32' as 'uint32', 1)}), /classCount/);
   expectThrows(graph => ({output: {colors: view(graph, 'uint32', 9)}}), /output.colors/);
   expectThrows(
     graph => ({output: {classIndices: view(graph, 'uint32', 9)}}),
@@ -182,9 +397,10 @@ it('GPUColorScale rejects aliased buffers and foreign graphs', () => {
     output: {...props.output, colors: props.mask as GraphDataView<'uint32'>}
   };
   expect(() => new GPUColorScale(aliased)).toThrow(/share buffers/);
+  const sharedColors = props.output.colors!;
   const sharedOutputs: GPUColorScaleProps = {
     ...props,
-    output: {colors: props.output.colors, classIndices: props.output.colors}
+    output: {colors: sharedColors, classIndices: sharedColors}
   };
   expect(() => new GPUColorScale(sharedOutputs)).toThrow(
     /aligned binding byte ranges must not overlap/

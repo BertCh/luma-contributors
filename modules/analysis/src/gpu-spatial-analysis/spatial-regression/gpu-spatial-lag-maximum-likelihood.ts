@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getSpatialLagConstantNodes} from './spatial-lag-constant-nodes';
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
-import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {snapshotRegressionConstructionPropsWithCompleteness as snapshotRegressionConstructionProps} from './regression-certificate-snapshot';
 import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
 import {getRegressionTraceLayout} from './regression-trace-layout';
+import {getSpatialErrorScalarCertificateWGSL} from './spatial-error-scalar-profile';
 
 import {
   validateRegressionAllocations,
@@ -33,6 +35,8 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -108,13 +112,22 @@ import {
   getTraceSeriesWGSL
 } from './spatial-maximum-likelihood-wgsl';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {getRegressionLikelihoodCommandNodeCount} from './regression-command-counts';
+import {
+  getRegressionTileLayout,
+  getRowTileMergeNodes,
+  getRowTileMergeScratchLength,
+  REGRESSION_TILE_MAXIMUM_TILE_COUNT,
+  REGRESSION_TILE_MERGE_GROUP_SIZE,
+  type RowTileMergePartial
+} from './regression-row-tiles';
 import {SPATIAL_SERIES_TAIL_MINIMUM_POWER, getSpatialSeriesTailWGSL} from './spatial-series-tail';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   getSpatialLogDeterminantWGSL,
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
@@ -126,8 +139,6 @@ import {
 } from './spatial-exact-log-determinant';
 
 const OPERATION = 'GPUSpatialLagMaximumLikelihood';
-const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
-const MINIMUM_DEFAULT_TILE_ROWS = 64;
 const TILE_WORKGROUP_SIZE = SPATIAL_MAXIMUM_LIKELIHOOD_TILE_WORKGROUP_SIZE;
 const LN_TWO_PI = Math.log(2 * Math.PI);
 /**
@@ -254,9 +265,10 @@ export type GPUSpatialLagMaximumLikelihoodProps = {
    * stored traces (`spatial-series-tail.ts`). The search interval then reaches the full
    * `0.99 / ||W||_inf` instead of stopping where the plain series loses accuracy (about 0.93 of
    * the bound for `Q = 128`), so strongly autocorrelated data can yield an interior estimate.
-   * It is an approximation that assumes the traces have converged by `Q` (true for a
-   * row-standardized `W`, whose traces tend to the number of components); with stochastic traces
-   * the tail inherits the probe noise. Defaults to false (the plain truncated series), which is a
+   * It is an approximation that assumes a geometric dominant spectral structure has emerged by
+   * `Q`. Row standardization alone does not guarantee this: periodic components can keep the
+   * traces oscillating. With stochastic traces the tail inherits the probe noise. Defaults to
+   * false (the plain truncated series), which is a
    * maintainer decision to revisit once enough measurements exist.
    */
   tailExtrapolation?: boolean;
@@ -345,8 +357,16 @@ export type GPUSpatialLagMaximumLikelihoodProps = {
  * `..._SUMMARY_TRUNCATION_BOUND` reports the worst-case remainder at the estimate. The
  * hand-written spreg search uses an `xatol` of `1e-7`, so `rho` agrees with it to about that.
  *
- * The float32 traces `tr(W^q)` grow like `n ||W||_inf^q`: for a raw (unstandardized) `W` choose
- * `maximumPower` with `||W||_inf^maximumPower < 1e36`, else they overflow and the status is 3.
+ * Row-tile numerics: above 4096 tiles, consecutive groups of at most 4096 partials are merged
+ * pairwise, then the groups are merged pairwise. The limit is REGRESSION_TILE_MAXIMUM_TILE_COUNT
+ * (16,777,216 = 4096 squared) tiles subject to device bindings and the command budget.
+ * Historical nodes and order remain through 4096 tiles; this is the default tile-count target.
+ * Nested trace layouts retain their historical widths; more than 4096 nonempty chunks use
+ * hierarchical merges rather than a separate chunk-count refusal, subject to the same tile limit.
+ *
+ * Power traces use `W / ||W||_inf`, so their magnitudes are bounded by `n` when the norm is
+ * representable and scaling succeeds. Raw-weight OLS, prediction and information moments still
+ * need to fit float32; non-finite moments give status 3.
  * What float32 leaves (measured on the test GPU against float64, residuals of 0.002 to 0.004
  * around a response mean of 10,000; `math-review-lag-conditioning.spec.ts`). Weights whose rows
  * share a row sum, exactly or up to the rounding of the weights (row-standardized or not, with
@@ -422,6 +442,8 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
   readonly tileRowCount: number;
   /** Number of accumulation tiles. */
   readonly tileCount: number;
+  /** Upper bound including nested OLS/BP, traces, chunk dispatches and information probes. */
+  readonly estimatedCommandNodeCount: number;
 
   private readonly traceTileRowCount: number;
   private readonly traceTileCount: number;
@@ -500,8 +522,8 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
     }
     this.traceMode =
       props.traceMode ??
-      (rows <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic');
-    if (this.traceMode === 'exact' && rows > GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT) {
+      (rows <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic');
+    if (this.traceMode === 'exact' && rows > GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS) {
       throw new Error(`${id} exact traces support at most 16384 rows; use traceMode 'stochastic'`);
     }
     if (props.traceProbeCount !== undefined) {
@@ -563,13 +585,38 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
-    this.tileRowCount =
-      props.tileRowCount ??
-      Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
+    this.tileRowCount = getRegressionTileLayout(rows, props.tileRowCount).tileRowCount;
     this.tileCount = Math.ceil(rows / this.tileRowCount);
+    validateMaximumCount(id, 'tileCount', this.tileCount, REGRESSION_TILE_MAXIMUM_TILE_COUNT);
+    validateMaximumCount(
+      id,
+      'weights tileCount',
+      getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount,
+      REGRESSION_TILE_MAXIMUM_TILE_COUNT
+    );
     const traceLayout = getRegressionTraceLayout(id, props.weights, rows);
     this.traceTileRowCount = traceLayout.tileRowCount;
     this.traceTileCount = traceLayout.tileCount;
+    this.estimatedCommandNodeCount =
+      getRegressionLikelihoodCommandNodeCount({
+        weights: props.weights,
+        rowCount: rows,
+        tileCount: getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount,
+        traceTileCount: traceLayout.tileCount,
+        maximumPower,
+        probeTotal:
+          this.traceMode === 'exact'
+            ? rows
+            : (props.traceProbeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT),
+        stochastic: this.traceMode === 'stochastic',
+        kind: 'lag'
+      }) +
+      (this.exactLogDeterminant
+        ? getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).dispatches.length
+        : 0);
+    this.estimatedCommandNodeCount +=
+      6 + getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).dispatches.length;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRegressionOutputDispatches(
       this.id,
       {...output, status: undefined, code: output.status.code, converged: output.status.converged},
@@ -598,6 +645,7 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       [
         props.predictors,
         props.response,
+        props.eigenvalues,
         ...Object.values(getRegressionWeightBindings(props.weights))
       ]
     );
@@ -665,19 +713,22 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
     const informationSize = p + 1;
     const stochastic = this.traceMode === 'stochastic';
     const packedCount = (k * (k + 1)) / 2;
-    // Final sums: [sum wp, sum xc_j wp (k), sum wp^2, Syy, Syu, Su, Suu, Sye, See, Se, gram (packed)].
+    // Final sums: weighted information moments, y², y*fitted, fitted², residual²,
+    // spatial-prediction moments, residual*lagResidual, fitted/y totals and packed design Gram.
     const sumWeighted = 0;
     const sumWeightedSquares = k + 1;
     const sumResponseSquares = k + 2;
-    const sumResponseResidual = k + 3;
-    const sumResidual = k + 4;
+    const sumResponseFitted = k + 3;
+    const sumFittedSquares = k + 4;
     const sumResidualSquares = k + 5;
     const sumResponsePrediction = k + 6;
     const sumPredictionSquares = k + 7;
     const sumPrediction = k + 8;
     // u'e1 of the published residuals and the second OLS residual (the first-order condition).
     const sumResidualLagged = k + 9;
-    const gramBase = k + 10;
+    const sumFittedTotal = k + 10;
+    const sumResponseTotal = k + 11;
+    const gramBase = k + 12;
     const finalSumCount = gramBase + packedCount;
 
     let slotCount = 0;
@@ -711,6 +762,8 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
     // e0'e0, e0'e1, e1'e1 and rho0 = e0'e1 / e1'e1, the minimizer of the residual sum of squares.
     allocate('MOMENTS', 3);
     allocate('PARAMETER_ZERO');
+    allocate('LAGGED_MEAN');
+    if (exact) allocate('SCALAR_WEIGHT');
     const slotConstants = Object.entries(slots)
       .map(([name, value]) => `const W_${name}: u32 = ${value}u;`)
       .join('\n');
@@ -728,16 +781,33 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
         probeCount: props.traceProbeCount
       }),
       ...Object.fromEntries(
-        Object.entries(getSpatialProbeAllocationLengths(rowCount, tileCount, probeTotal, 1)).map(
-          ([name, length]) => [`information ${name}`, length]
-        )
+        Object.entries(
+          getSpatialProbeAllocationLengths(
+            rowCount,
+            getGPUSpatialWeightsTilePlan(weights, tileRowCount).tileCount,
+            probeTotal,
+            1
+          )
+        ).map(([name, length]) => [`information ${name}`, length])
       ),
       'lag workspace': slotCount,
+      'lag scalar certificate': exact ? rowCount : 0,
       'lag row sums': 2 * rowCount,
+      'lag constant witness': rowCount,
+      'lag constant partials': getRegressionTileLayout(rowCount).tileCount,
       'lag norm partials': 2 * getGPUSpatialWeightsTilePlan(weights, tileRowCount).tileCount,
+      'lag norm merge groups': getRowTileMergeScratchLength(
+        getGPUSpatialWeightsTilePlan(weights, tileRowCount).tileCount,
+        2
+      ),
       'lag row scratch': rowCount,
+      'lag residual and fitted scratch': 2 * rowCount,
       'lag OLS outputs': Math.max(p, GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
       'lag mean partials': tileCount * (k + 1),
+      'lag merge groups': getRowTileMergeScratchLength(
+        tileCount,
+        Math.max(k + 1, finalSumCount, 3)
+      ),
       'lag moment partials': tileCount * 3,
       'lag final partials': tileCount * finalSumCount,
       'lag final sums': finalSumCount
@@ -749,6 +819,7 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
     const kernel = createKernelFactory(graph, id, OPERATION);
     const workspace = transient('workspace', slotCount);
+    const scalarDifferences = exact ? transient('scalar-differences', rowCount) : undefined;
     const constants = `const ROWS: u32 = ${rowCount}u;
 const K: u32 = ${k}u;
 const P: u32 = ${p}u;
@@ -771,13 +842,19 @@ ${IS_FINITE_VALUE_WGSL}`;
     // ---- First stage: the lag column, ||W||_inf tiles and the two OLS fits. ----
     // `lagged` holds W (y - ybar) after the tile pass and the lag column v after the shift pass.
     const lagged = transient('lagged-response', rowCount);
-    // Per row: the float32 row sum of W and what its additions dropped.
+    // Per row: the float32 row sum and its addition error. Constant-lag witnesses use a separate binding.
     const rowSums = transient('weights-row-sums', rowCount * 2);
+    const lagWitness = transient('constant-lag-witness', rowCount),
+      lagMismatch = transient('constant-lag-mismatch', 1),
+      lagConstantPartials = transient(
+        'constant-lag-partials',
+        getRegressionTileLayout(rowCount).tileCount
+      );
     // Per tile: the largest absolute row sum and the largest row sum.
     const partialNorm = transient('partial-weights-norm', normTileCount * 2);
     const olsResiduals = [
       transient('ols-residuals-response', rowCount),
-      transient('ols-residuals-lagged', rowCount)
+      transient('ols-residuals-lagged', 2 * rowCount)
     ];
     const olsCoefficients = [p, p].map((length, index) =>
       transient(`ols-coefficients-${index}`, length)
@@ -818,8 +895,64 @@ ${IS_FINITE_VALUE_WGSL}`;
     const partialWeightedMean = transient('partial-weighted-mean', tileCount);
     const partialFinal = transient('partial-final-sums', tileCount * finalSumCount);
     const finalSums = transient('final-sums', finalSumCount);
+    const mergeKernel = (
+      name: string,
+      bindings: WGSLKernelBinding[],
+      invocationCount: number,
+      declarations: string,
+      body: string
+    ) => {
+      const readsNorm = name === 'row-sum-merge' || name === 'rho-search';
+      const partials: RowTileMergePartial[] = readsNorm
+        ? [
+            {
+              name: 'partialNorm',
+              termCount: 2,
+              tileCount: normTileCount,
+              countConstant: 'NORM_TILE_COUNT',
+              maxima: {0: 0, 1: -3e38}
+            }
+          ]
+        : [];
+      if (name !== 'row-sum-merge') {
+        const source = bindings.find(binding => binding.name !== 'partialNorm')!;
+        partials.push({name: source.name, termCount: source.view.length / tileCount});
+      }
+      if (readsNorm && normTileCount > REGRESSION_TILE_MERGE_GROUP_SIZE) {
+        declarations += `\nconst NORM_TILE_COUNT: u32 = ${normTileCount}u;`;
+        body = body.replace(`tile < ${normTileCount}u`, 'tile < NORM_TILE_COUNT');
+      }
+      return getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-${name}`,
+          operation: OPERATION,
+          variant: name,
+          bindings,
+          invocationCount,
+          declarations,
+          body
+        },
+        {tileCount, partials}
+      );
+    };
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...(scalarDifferences
+        ? tilePlan.dispatches.map(dispatch =>
+            kernel(
+              `scalar-profile-certificate${dispatch.idSuffix}`,
+              [
+                ...getWeightBindings(dispatch.weights),
+                f32('eigenvalues', props.eigenvalues!, 'read'),
+                f32('scalarDifferences', scalarDifferences, 'read_write')
+              ],
+              dispatch.rowCount,
+              `${constants}${dispatch.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}\n${IS_FINITE_VALUE_WGSL}`,
+              wrapWeightsChunkRowBodyWGSL(dispatch, getSpatialErrorScalarCertificateWGSL())
+            )
+          )
+        : []),
       // The column means come first: the lag below is formed about the response mean.
       kernel(
         'means-tiles',
@@ -844,7 +977,7 @@ ${IS_FINITE_VALUE_WGSL}`;
   }`,
         {workgroupSize: TILE_WORKGROUP_SIZE}
       ),
-      kernel(
+      ...mergeKernel(
         'means-merge',
         [f32('partial', partialMeans, 'read'), f32('workspace', workspace, 'read_write')],
         k + 1,
@@ -918,7 +1051,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`,
       ),
       // The row sum the lag column is formed about: the largest row sum, which is the common row
       // sum of row-standardized weights (rows without neighbours sum to 0 and do not set it).
-      kernel(
+      ...mergeKernel(
         'row-sum-merge',
         [f32('partialNorm', partialNorm, 'read'), f32('workspace', workspace, 'read_write')],
         1,
@@ -934,10 +1067,15 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`,
       // intercept and is added back there. For rows that share the row sum s the second term is
       // ybar times the rounding of the row sum (a few 1e-8); for a row without neighbours v is
       // -ybar s, the lag 0 of that row on the same footing.
+      // Only use the rounded raw witness for a globally constant lag. Equal rows within a
+      // varying lag column must use the same centered arithmetic as all other rows.
+      ...getSpatialLagConstantNodes(graph, id, props, lagWitness, lagMismatch, lagConstantPartials),
       kernel(
         'lagged-response-shift',
         [
           f32('rowSums', rowSums, 'read'),
+          f32('lagWitness', lagWitness, 'read'),
+          f32('lagMismatch', lagMismatch, 'read'),
           f32('workspace', workspace, 'read'),
           f32('lagged', lagged, 'read_write')
         ],
@@ -947,10 +1085,32 @@ ${ROUNDED_DIFFERENCE_WGSL}`,
         `let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
   let rowSumDeviation = getRoundedDifference(rowSums[rowSumsOffset + 2u * index], workspace[workspaceOffset + W_ROW_SUM], runtimeZero)
     + rowSums[rowSumsOffset + 2u * index + 1u];
-  lagged[laggedOffset + index] = lagged[laggedOffset + index] + workspace[workspaceOffset + W_YBAR] * rowSumDeviation;`
+  if (lagMismatch[lagMismatchOffset] == 0.0) {
+    lagged[laggedOffset + index] = lagWitness[lagWitnessOffset] - workspace[workspaceOffset + W_YBAR] * workspace[workspaceOffset + W_ROW_SUM];
+  } else {
+    lagged[laggedOffset + index] = lagged[laggedOffset + index] + workspace[workspaceOffset + W_YBAR] * rowSumDeviation;
+  }`
       ),
       ...olsNodes[0],
       ...olsNodes[1],
+      kernel(
+        'constant-lag-coefficients',
+        [
+          f32('mismatch', lagMismatch, 'read'),
+          f32('lagged', lagged, 'read'),
+          f32('coefficients', olsCoefficients[1], 'read_write')
+        ],
+        p,
+        constants,
+        `if(mismatch[mismatchOffset]==0.0){coefficients[coefficientsOffset+index]=select(0.0,lagged[laggedOffset],index==0u);}`
+      ),
+      kernel(
+        'constant-lag-residuals',
+        [f32('mismatch', lagMismatch, 'read'), f32('residuals', olsResiduals[1], 'read_write')],
+        rowCount,
+        constants,
+        'if(mismatch[mismatchOffset]==0.0){residuals[residualsOffset+index]=0.0;}'
+      ),
       ...new GPUSpatialWeightsTraces({
         id: `${id}-traces`,
         tileRowCount: this.traceTileRowCount,
@@ -993,7 +1153,7 @@ ${ROUNDED_DIFFERENCE_WGSL}`,
         {workgroupSize: TILE_WORKGROUP_SIZE}
       ),
       // rho0 = e0'e1 / e1'e1, the minimizer of the residual sum of squares u(rho)'u(rho).
-      kernel(
+      ...mergeKernel(
         'moments-merge',
         [f32('partialMoments', partialMoments, 'read'), f32('workspace', workspace, 'read_write')],
         1,
@@ -1042,11 +1202,12 @@ ${ROUNDED_DIFFERENCE_WGSL}`,
   partial[partialOffset + index * 2u + 1u] = sumProducts;`,
         {workgroupSize: TILE_WORKGROUP_SIZE}
       ),
-      kernel(
+      ...mergeKernel(
         'rho-search',
         [
           f32('partialNorm', partialNorm, 'read'),
           f32('partialDirect', partialDirect, 'read'),
+          ...(scalarDifferences ? [f32('scalarDifferences', scalarDifferences, 'read')] : []),
           exact
             ? getF32Binding('eigenvalues', props.eigenvalues!, 'read')
             : f32('powerTraces', powerTraces, 'read'),
@@ -1104,6 +1265,12 @@ ${getParameterSearchWGSL()}`,
   workspace[workspaceOffset + W_VALID] = 0.0;
   workspace[workspaceOffset + W_CANDIDATES] = 0.0;
   workspace[workspaceOffset + W_AT_BOUNDARY] = 0.0;
+  ${
+    exact
+      ? `${getPairwiseSumWGSL({count: 'ROWS', name: 'scalarDifferenceSum', term: 'scalarDifferences[scalarDifferencesOffset + scalarDifferenceSumItem]'})}
+  workspace[workspaceOffset + W_SCALAR_WEIGHT] = select(0.0, eigenvalues[eigenvaluesOffset], scalarDifferenceSum == 0.0);`
+      : ''
+  }
   ${getMergeSumWGSL('partialDirect', '0u', '2u', 'TILE_COUNT', 'directSquares')}
   ${getMergeSumWGSL('partialDirect', '1u', '2u', 'TILE_COUNT', 'directProducts')}
   let momentA = workspace[workspaceOffset + W_MOMENTS];
@@ -1125,7 +1292,8 @@ ${getParameterSearchWGSL()}`,
   residualSquares = max(residualSquares, 0.0);
   if (validNorm && isFiniteValue(momentA) && isFiniteValue(parameterZero) && isFiniteValue(parameterCorrection)
       && isFiniteValue(residualSquares) && isFiniteValue(laggedSquares) && momentA > 0.0 && laggedSquares >= 0.0 && positiveSquares) {
-    let result = searchParameter(bound);
+    var result = searchParameter(bound);
+    ${exact ? 'if (workspace[workspaceOffset + W_SCALAR_WEIGHT] != 0.0) { result = SearchResult(-bound, 1u, true); }' : ''}
     workspace[workspaceOffset + W_PARAMETER] = result.parameter;
     workspace[workspaceOffset + W_VALID] = select(0.0, 1.0, isFiniteValue(result.parameter));
     workspace[workspaceOffset + W_CANDIDATES] = f32(result.localMaximumCount);
@@ -1165,6 +1333,11 @@ ${finiteDeclarations}`,
   // The second fit is of the lag column v = W y - ybar s (see lagged-response-shift), so its
   // intercept misses the constant ybar s of the lag.
   let lagShift = workspace[workspaceOffset + W_YBAR] * workspace[workspaceOffset + W_ROW_SUM];
+  var laggedMean = olsCoefficients1[olsCoefficients1Offset];
+  for (var column = 0u; column < K; column++) {
+    laggedMean += workspace[workspaceOffset + W_MEANS + column] * olsCoefficients1[olsCoefficients1Offset + 1u + column];
+  }
+  workspace[workspaceOffset + W_LAGGED_MEAN] = laggedMean;
   for (var column = 0u; column < P; column++) {
     var laggedCoefficient = olsCoefficients1[olsCoefficients1Offset + column];
     if (column == 0u) {
@@ -1179,18 +1352,28 @@ ${finiteDeclarations}`,
       kernel(
         'residuals',
         [
+          f32('design', props.predictors, 'read'),
           f32('response', props.response, 'read'),
           f32('lagged', lagged, 'read'),
           f32('residual0', olsResiduals[0], 'read'),
-          f32('residual1', olsResiduals[1], 'read'),
+          f32('residual1', olsResiduals[1], 'read_write'),
           f32('residualOut', residualView, 'read_write'),
           f32('reduced', reduced, 'read_write'),
           f32('workspace', workspace, 'read')
         ],
         rowCount,
-        constants,
+        `${constants}\n${ROUNDED_DIFFERENCE_WGSL}`,
         `let rho = workspace[workspaceOffset + W_PARAMETER];
   residualOut[residualOutOffset + index] = residual0[residual0Offset + index] - rho * residual1[residual1Offset + index];
+  let runtimeZero = bitcast<u32>(workspace[workspaceOffset + W_RUNTIME_ZERO]);
+  var fittedCentered = rho * getRoundedDifference(lagged[laggedOffset + index], workspace[workspaceOffset + W_LAGGED_MEAN], runtimeZero);
+  for (var column = 0u; column < K; column++) {
+    let centered = getRoundedDifference(design[designOffset + index * K + column], workspace[workspaceOffset + W_MEANS + column], runtimeZero);
+    fittedCentered += centered * workspace[workspaceOffset + W_BETA + 1u + column];
+  }
+  // Retain the original lag residual in the first half for the stationarity check. Packing
+  // the fitted deviation alongside it keeps final-moments within eight storage bindings.
+  residual1[residual1Offset + ROWS + index] = fittedCentered;
   // X b = (y - e0) - rho (W y - e1): the OLS fitted values of y and W y, with W y the lag column
   // plus the constant it was formed about.
   let lagShift = workspace[workspaceOffset + W_YBAR] * workspace[workspaceOffset + W_ROW_SUM];
@@ -1278,7 +1461,7 @@ ${finiteDeclarations}`,
   partial[partialOffset + index] = sum;`,
         {workgroupSize: TILE_WORKGROUP_SIZE}
       ),
-      kernel(
+      ...mergeKernel(
         'weighted-mean-merge',
         [f32('partial', partialWeightedMean, 'read'), f32('workspace', workspace, 'read_write')],
         1,
@@ -1320,8 +1503,6 @@ ${ROUNDED_DIFFERENCE_WGSL}`,
     sums[${sumWeighted}] += wp;
     sums[${sumWeightedSquares}] += wp * wp;
     sums[${sumResponseSquares}] += y * y;
-    sums[${sumResponseResidual}] += y * u;
-    sums[${sumResidual}] += u;
     sums[${sumResidualSquares}] += u * u;
     sums[${sumResponsePrediction}] += y * e;
     sums[${sumPredictionSquares}] += e * e;
@@ -1331,6 +1512,11 @@ ${ROUNDED_DIFFERENCE_WGSL}`,
       centered[column] = getRoundedDifference(design[designOffset + row * K + column], workspace[workspaceOffset + W_MEANS + column], runtimeZero);
       sums[1u + column] += centered[column] * wp;
     }
+    let fittedCentered = residual1[residual1Offset + ROWS + row];
+    sums[${sumResponseFitted}] += y * fittedCentered;
+    sums[${sumFittedSquares}] += fittedCentered * fittedCentered;
+    sums[${sumFittedTotal}] += fittedCentered;
+    sums[${sumResponseTotal}] += y;
     for (var first = 0u; first < K; first++) {
       for (var second = 0u; second <= first; second++) {
         sums[${gramBase}u + first * (first + 1u) / 2u + second] += centered[first] * centered[second];
@@ -1342,7 +1528,7 @@ ${ROUNDED_DIFFERENCE_WGSL}`,
   }`,
         {workgroupSize: TILE_WORKGROUP_SIZE}
       ),
-      kernel(
+      ...mergeKernel(
         'final-merge',
         [f32('partial', partialFinal, 'read'), f32('finalSums', finalSums, 'read_write')],
         finalSumCount,
@@ -1402,6 +1588,7 @@ ${getCholeskyWGSL(informationSize)}`,
   workspace[workspaceOffset + W_TRACES] = traceOne;
   workspace[workspaceOffset + W_TRACES + 1u] = traceTwo;
   workspace[workspaceOffset + W_TRACES + 2u] = traceThree;
+  ${exact ? 'if (workspace[workspaceOffset + W_SCALAR_WEIGHT] != 0.0) { return; }' : ''}
   if (!(sigma2 > 0.0) || !isFiniteValue(sigma2) || !isFiniteValue(traceThree) || !isFiniteValue(rho)) {
     return;
   }
@@ -1497,14 +1684,17 @@ ${getFinishWGSL({
   maximumPower,
   stochastic,
   sumResponseSquares,
-  sumResponseResidual,
-  sumResidual,
+  sumResponseFitted,
+  sumFittedSquares,
   sumResidualSquares,
   sumResponsePrediction,
   sumPredictionSquares,
   sumPrediction,
   sumResidualLagged,
+  sumFittedTotal,
+  sumResponseTotal,
   hasConverged: output.status.converged !== undefined,
+  tailExtrapolation,
   exact
 })}`,
         'finish();'
@@ -1512,7 +1702,22 @@ ${getFinishWGSL({
     );
     return [
       ...nodes,
-      ...getRegressionWeightsSuppressionNodes<Parameters>(graph, id, props.weights, props.output)
+      ...getRegressionWeightsSuppressionNodes<Parameters>(
+        graph,
+        id,
+        props.weights,
+        props.output,
+        undefined,
+        {
+          table: (k + 2) * GPU_SPATIAL_MAXIMUM_LIKELIHOOD_TABLE_STRIDE,
+          summary: GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH,
+          residuals: rowCount,
+          powerTraces: maximumPower,
+          powerSums: maximumPower,
+          powerTraceStandardErrors: maximumPower,
+          infinityNorm: 1
+        }
+      )
     ];
   }
 }
@@ -1522,14 +1727,17 @@ function getFinishWGSL(options: {
   maximumPower: number;
   stochastic: boolean;
   sumResponseSquares: number;
-  sumResponseResidual: number;
-  sumResidual: number;
+  sumResponseFitted: number;
+  sumFittedSquares: number;
   sumResidualSquares: number;
   sumResponsePrediction: number;
   sumPredictionSquares: number;
   sumPrediction: number;
   sumResidualLagged: number;
+  sumFittedTotal: number;
+  sumResponseTotal: number;
   hasConverged: boolean;
+  tailExtrapolation: boolean;
   exact: boolean;
 }): string {
   const {predictorCount: k} = options;
@@ -1595,12 +1803,12 @@ fn finish() {
   let logLikelihood = -0.5 * n * log(sigma2) + logDeterminant - 0.5 * n * (${getWGSLFloatLiteral(LN_TWO_PI)} + 1.0);
   let parameterCount = f32(P + 1u);
   // Squared correlations of y with y - u and with (I - rho W)^-1 X b.
-  let responseSquares = ${sum(options.sumResponseSquares)};
-  let responseResidual = ${sum(options.sumResponseResidual)};
-  let residualTotal = ${sum(options.sumResidual)};
-  let predictionCovariance = responseSquares - responseResidual;
-  let predictionVariance = responseSquares - 2.0 * responseResidual + sigma2 * n - residualTotal * residualTotal / n;
-  let spatialCovariance = ${sum(options.sumResponsePrediction)};
+  let predictionTotal = ${sum(options.sumFittedTotal)};
+  let responseTotal = ${sum(options.sumResponseTotal)};
+  let responseSquares = ${sum(options.sumResponseSquares)} - (responseTotal / n) * responseTotal;
+  let predictionCovariance = ${sum(options.sumResponseFitted)} - (predictionTotal / n) * responseTotal;
+  let predictionVariance = ${sum(options.sumFittedSquares)} - (predictionTotal / n) * predictionTotal;
+  let spatialCovariance = ${sum(options.sumResponsePrediction)} - (${sum(options.sumPrediction)} / n) * responseTotal;
   let spatialVariance = ${sum(options.sumPredictionSquares)} - ${sum(options.sumPrediction)} * ${sum(options.sumPrediction)} / n;
   let conditionNumber = workspace[workspaceOffset + W_CONDITIONING];
   let correlationCondition = workspace[workspaceOffset + W_CONDITIONING + 1u];
@@ -1633,6 +1841,7 @@ fn finish() {
     scaled < 1.0
   );
   ${options.exact ? `${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND)} = 0.0;` : ''}
+  ${!options.exact && options.tailExtrapolation ? `${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND)} += abs(getSeriesTailLogDeterminant(rho * workspace[workspaceOffset + W_NORM]));` : ''}
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_VARIANCE_DEFINED)} = select(0.0, 1.0, defined);
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOCAL_MAXIMUM_COUNT)} = workspace[workspaceOffset + W_CANDIDATES];
   ${summary(GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_DETERMINANT)} = logDeterminant;

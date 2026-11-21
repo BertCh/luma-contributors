@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterOperationArray} from '../raster-grid/raster-operation-band';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../raster-grid/raster-construction-snapshot';
 import {
   validateCapacity,
   validateRequirement
@@ -11,6 +14,8 @@ import {getCPUOperationUint32Rows} from '../../analysis-core/operations/cpu-oper
 import {
   calibrateRasterOperationBand,
   readRasterOperationBand,
+  snapshotRasterOperationBand,
+  validateRasterOperationOutputNames,
   validateRasterOperationBand,
   type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
@@ -38,8 +43,9 @@ const MAXIMUM_FOREST_CELL_COUNT = 0x3fffffff;
  * - Calibration and costs use float64 without intermediate float32 rounding; nearly equal
  *   calibrated elevations can therefore order differently. Calibrated elevations beyond float32
  *   range can participate instead of becoming GPU nodata.
- * - Flooding and forest merging run to completion, ignoring `maximumSteps`/`maximumIterations`.
- *   `converged` is always one and `iterationLimitReached` zero; no unresolved labels are emitted.
+ * - Explicit `maximumSteps` bounds FIFO pops and `maximumIterations` bounds synchronous rooted
+ *   Boruvka contractions, matching the GPU budgets. An incomplete run marks usable non-seeds
+ *   unresolved (0xfffffffe), with `converged=0` and `iterationLimitReached=1`.
  * - GPU FIFO cell and forest round limits are dropped. The forest's uint32 edge-ID cell bound
  *   remains so canonical edge identities retain their documented representation.
  *
@@ -51,23 +57,22 @@ export function computeRasterWatershedSegmentationOnCPU(
   options: CPURasterWatershedSegmentationOptions
 ): CPURasterWatershedSegmentationResult {
   const id = 'computeRasterWatershedSegmentationOnCPU';
+  validateRasterOperationArray(id, 'markers', markers, 'Uint32Array');
   validateRasterOperationBand(id, input, options.grid);
   validateWatershedOptions(id, options);
   const count = options.grid.width * options.grid.height;
   if (markers.length < count) throw new Error(`${id} markers must cover grid cells`);
   const elevations = calibrateRasterOperationBand(input, count);
-  const labels =
-    options.method === 'minimum-spanning-forest'
-      ? computeWatershedForest(elevations, markers, options)
-      : computeWatershedFlood(elevations, markers, options);
-  return {labels, converged: new Uint32Array([1]), iterationLimitReached: new Uint32Array([0])};
+  return options.method === 'minimum-spanning-forest'
+    ? computeWatershedForest(elevations, markers, options)
+    : computeWatershedFlood(elevations, markers, options);
 }
 
 function computeWatershedFlood(
   elevations: Float64Array,
   markers: Uint32Array,
   options: CPURasterWatershedSegmentationOptions
-): Uint32Array {
+): CPURasterWatershedSegmentationResult {
   const count = elevations.length;
   const labels = new Uint32Array(count);
   const costs = new Float64Array(count).fill(Infinity);
@@ -95,7 +100,10 @@ function computeWatershedFlood(
       insertCell(cell);
     }
   }
-  while (heap.length > 0) {
+  const maximumSteps = options.maximumSteps ?? count;
+  let processedCount = 0;
+  while (heap.length > 0 && processedCount < maximumSteps) {
+    processedCount++;
     const best = heap[0];
     const replacement = heap.pop()!;
     if (heap.length > 0) {
@@ -134,14 +142,20 @@ function computeWatershedFlood(
       }
     }
   }
-  return labels;
+  const converged = heap.length === 0;
+  if (!converged) {
+    for (let cell = 0; cell < count; cell++) {
+      if (Number.isFinite(elevations[cell]) && markers[cell] === 0) labels[cell] = 0xfffffffe;
+    }
+  }
+  return createWatershedResult(labels, converged);
 }
 
 function computeWatershedForest(
   elevations: Float64Array,
   markers: Uint32Array,
   options: CPURasterWatershedSegmentationOptions
-): Uint32Array {
+): CPURasterWatershedSegmentationResult {
   const count = elevations.length;
   const parents = Uint32Array.from({length: count}, (_, cell) => cell);
   const labels = Uint32Array.from(markers.subarray(0, count));
@@ -174,6 +188,14 @@ function computeWatershedForest(
     }
   }
   edges.sort((first, second) => first.cost - second.cost || first.identity - second.identity);
+  if (options.maximumIterations !== undefined) {
+    return computeBoundedWatershedForest(
+      edges,
+      markers.subarray(0, count),
+      usable,
+      options.maximumIterations
+    );
+  }
   for (const edge of edges) {
     const first = findRoot(edge.source);
     const second = findRoot(edge.target);
@@ -181,9 +203,81 @@ function computeWatershedForest(
     parents[second] = first;
     if (labels[first] === 0) labels[first] = labels[second];
   }
-  return Uint32Array.from({length: count}, (_, cell) =>
-    usable(cell) ? labels[findRoot(cell)] : 0
+  return createWatershedResult(
+    Uint32Array.from({length: count}, (_, cell) => (usable(cell) ? labels[findRoot(cell)] : 0)),
+    true
   );
+}
+
+/** Synchronous rooted contractions preserve the meaning of an explicit GPU round budget. */
+function computeBoundedWatershedForest(
+  edges: readonly {source: number; target: number}[],
+  markers: Uint32Array,
+  usable: (cell: number) => boolean,
+  maximumIterations: number
+): CPURasterWatershedSegmentationResult {
+  const count = markers.length;
+  let components = Uint32Array.from({length: count}, (_, cell) => cell);
+  for (let iteration = 0; iteration < maximumIterations; iteration++) {
+    const selectedEdges = new Float64Array(count).fill(-1);
+    for (const [edgeIndex, edge] of edges.entries()) {
+      const first = components[edge.source];
+      const second = components[edge.target];
+      if (first === second) continue;
+      // Edges arrive in total (cost, canonical ID) order, so the first is the minimum.
+      if (markers[first] === 0 && selectedEdges[first] === -1) selectedEdges[first] = edgeIndex;
+      if (markers[second] === 0 && selectedEdges[second] === -1) selectedEdges[second] = edgeIndex;
+    }
+    const parents = Uint32Array.from({length: count}, (_, cell) => cell);
+    let changed = false;
+    for (let component = 0; component < count; component++) {
+      const edgeIndex = selectedEdges[component];
+      if (edgeIndex === -1) continue;
+      changed = true;
+      const edge = edges[edgeIndex];
+      const first = components[edge.source];
+      const second = components[edge.target];
+      const neighbor = first === component ? second : first;
+      parents[component] =
+        selectedEdges[neighbor] === edgeIndex && component < neighbor ? component : neighbor;
+    }
+    if (!changed) break;
+    components = Uint32Array.from(components, component => {
+      let root = component;
+      while (parents[root] !== root) root = parents[root];
+      // Compress the shared parent forest while resolving it. Subsequent components can
+      // reuse the root instead of traversing the same flat-row chain from scratch.
+      let current = component;
+      while (parents[current] !== root) {
+        const parent = parents[current];
+        parents[current] = root;
+        current = parent;
+      }
+      return root;
+    });
+  }
+  const converged = !edges.some(edge => {
+    const first = components[edge.source];
+    const second = components[edge.target];
+    return first !== second && (markers[first] === 0 || markers[second] === 0);
+  });
+  const labels = Uint32Array.from({length: count}, (_, cell) => {
+    if (!usable(cell)) return 0;
+    if (!converged && markers[cell] === 0) return 0xfffffffe;
+    return markers[components[cell]];
+  });
+  return createWatershedResult(labels, converged);
+}
+
+function createWatershedResult(
+  labels: Uint32Array,
+  converged: boolean
+): CPURasterWatershedSegmentationResult {
+  return {
+    labels,
+    converged: Uint32Array.of(Number(converged)),
+    iterationLimitReached: Uint32Array.of(Number(!converged))
+  };
 }
 
 function validateWatershedOptions(
@@ -227,10 +321,44 @@ function validateWatershedOptions(
   }
 }
 
-/** CPU twin with complete flooding/merging and no GPU FIFO size or round caps. */
+/** CPU twin with binding caller budgets and no GPU FIFO size or command-node caps. */
 export class CPURasterWatershedSegmentationOperation extends GPUCPUOperation {
   constructor(props: RasterWatershedSegmentationOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'markers',
+      'connectivity',
+      'method',
+      'maximumSteps',
+      'maximumIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['labels', 'status']);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      input: snapshotRasterOperationBand(props.input),
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, ['converged', 'iterationLimitReached'])
+      })
+    });
     const id = props.id ?? 'raster-watershed-segmentation';
+    validateRasterOperationOutputNames(
+      id,
+      {
+        'output.labels': props.output.labels,
+        'output.status.converged': props.output.status.converged
+      },
+      {'output.status.iterationLimitReached': props.output.status.iterationLimitReached},
+      {
+        'input.storage.values': props.input.storage.values,
+        ...(props.input.validity !== undefined ? {'input.validity': props.input.validity} : {}),
+        markers: props.markers
+      }
+    );
     validateRasterOperationBand(id, props.input, props.grid);
     validateWatershedOptions(id, props);
     const iterationLimitReached = props.output.status.iterationLimitReached;

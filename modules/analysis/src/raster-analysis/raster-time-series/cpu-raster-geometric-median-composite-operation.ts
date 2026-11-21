@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
@@ -71,10 +72,15 @@ export function computeRasterGeometricMedianCompositeOnCPU(
     const numerator = new Float64Array(options.bandCount);
     for (const slice of slices)
       for (let band = 0; band < options.bandCount; band++)
-        estimate[band] += values[(cell * options.sliceCount + slice) * options.bandCount + band];
-    for (let band = 0; band < options.bandCount; band++) estimate[band] /= slices.length;
+        estimate[band] +=
+          values[(cell * options.sliceCount + slice) * options.bandCount + band] -
+          values[(cell * options.sliceCount + slices[0]) * options.bandCount + band];
+    for (let band = 0; band < options.bandCount; band++)
+      estimate[band] =
+        values[(cell * options.sliceCount + slices[0]) * options.bandCount + band] +
+        estimate[band] / slices.length;
     let step = 0;
-    for (let iteration = 0; iteration < options.iterationCount; iteration++) {
+    for (let iteration = 0; slices.length > 1 && iteration < options.iterationCount; iteration++) {
       numerator.fill(0);
       let weightSum = 0;
       for (const slice of slices) {
@@ -85,11 +91,11 @@ export function computeRasterGeometricMedianCompositeOnCPU(
         const weight = 1 / Math.max(Math.sqrt(squared), distanceEpsilon);
         weightSum += weight;
         for (let band = 0; band < options.bandCount; band++)
-          numerator[band] += weight * values[base + band];
+          numerator[band] += weight * (values[base + band] - estimate[band]);
       }
       let squaredStep = 0;
       for (let band = 0; band < options.bandCount; band++) {
-        const next = numerator[band] / weightSum;
+        const next = estimate[band] + numerator[band] / weightSum;
         squaredStep += (next - estimate[band]) ** 2;
         estimate[band] = next;
       }
@@ -106,6 +112,20 @@ export function computeRasterGeometricMedianCompositeOnCPU(
 export class CPURasterGeometricMedianCompositeOperation extends GPUCPUOperation {
   constructor(props: RasterGeometricMedianCompositeOperationProps) {
     const id = props.id ?? 'raster-geometric-median-composite';
+    validateOperationGraphNames(
+      id,
+      {
+        values: props.values,
+        parameters: props.parameters,
+        ...(props.mask !== undefined ? {mask: props.mask} : {})
+      },
+      {
+        composite: props.output.composite,
+        status: props.output.status,
+        ...(props.output.lastStep !== undefined ? {lastStep: props.output.lastStep} : {})
+      }
+    );
+    props = {...props, output: {...props.output}};
     validateCPUCompositeDimensions(id, props);
     validateCapacity(id, 'iterationCount', props.iterationCount);
     const lastStep = props.output.lastStep;

@@ -3,17 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
+import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
-  createTransientView,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma.gl/graph/gpu-core';
-import {GPUCellSetOutline} from '@luma-contributors/analysis/gpu-spatial-analysis';
+  GPUCellSetOutline,
+  type GPUCellSourceInput
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 /** Sorted, distinct H3 resolution-8 cell table produced by the lens scenario, with its row count. */
-export type CellSetOutlineExampleInput = {
-  cells: GraphDataView<'uint32x2'>;
-  count: GraphDataView<'uint32'>;
+export type CellSetOutlineExampleInput = GPUCellSourceInput & {
   /** Boundary edges the outline may emit, and rings the assembly may write. */
   segmentCapacity: number;
   ringCapacity: number;
@@ -22,7 +19,7 @@ export type CellSetOutlineExampleInput = {
 /** Traces the outer boundary of the cover cells and chains it into closed rings. */
 export async function runExample(
   graph: GPUCommandGraph<undefined>,
-  {cells, count, segmentCapacity, ringCapacity}: CellSetOutlineExampleInput
+  {cells, count, source, segmentCapacity, ringCapacity}: CellSetOutlineExampleInput
 ) {
   const usage = Buffer.STORAGE | Buffer.COPY_SRC;
   const make = <Format extends 'uint32' | 'uint32x2' | 'float32x2' | 'float32x4'>(
@@ -49,8 +46,8 @@ export async function runExample(
   graph.add(
     new GPUCellSetOutline({
       family: 'h3',
-      cells, // sorted, distinct keys
-      count, // valid rows of the table
+      // Retain bare cells/count calls and accept a counted source on its own.
+      ...(source ? {source, cells, count} : {cells: cells!, count}),
       output,
       rings: {normalizeWinding: true, output: rings}
     })

@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import type {Buffer} from '@luma.gl/core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
+import {
+  createWGSLKernelNode,
+  getWGSLKernelNodeRecord,
+  recordWGSLKernelNodes
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {AnalysisRig} from '../../gpu-spatial-analysis/catchment-accessibility/rig';
 import {
   createInputBuffer,
   createOutputBuffer,
@@ -14,7 +20,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {
   getGPUSpaceTimeVariogramParameterValues,
   GPUSpaceTimeVariogram
@@ -124,11 +130,44 @@ const DEFAULT_SHAPE = {
   temporalLagCount: TEMPORAL_LAG_COUNT
 };
 
+it('excluded positional outliers cannot change retained semivariances (R19 scale eligibility)', async () => {
+  // Six adjacent pairs have differences 1: each semivariance is exactly 1/2. The included
+  // distant sentinel sets the variance floor but forms no pair. Eight outside rows must
+  // enter neither the moments nor the robust IQR used for the fixed-point unit.
+  for (const excludedCount of [0, 8]) {
+    const values = [0, 1, 2, 3, 4, 5, 6, 1e6, ...Array<number>(excludedCount).fill(1e9)];
+    const scene: Scene = {
+      positions: [
+        ...Array.from({length: 7}, (_, row) => [row, 0]).flat(),
+        90,
+        90,
+        ...Array.from({length: excludedCount}, () => [200, 200]).flat()
+      ],
+      values,
+      secondValues: values,
+      times: values.map(() => 0),
+      mask: values.map(() => 1)
+    };
+    const actual = await runVariogram(scene, Float32Array.from(scene.times), false, {
+      bounds: [0, 0, 100, 100],
+      maximumDistance: 1.1,
+      maximumTimeLag: 1,
+      lagCount: 1,
+      temporalLagCount: 1
+    });
+    expect(actual.counts).toEqual([0, 0, 6, 0]);
+    expect(actual.status[2]).toBe(0);
+    expect(Number.isFinite(actual.semivariances[2])).toBe(true);
+    expect(actual.semivariances[2]).toBeCloseTo(0.5, 5);
+  }
+});
+
 async function runVariogram(
   scene: Scene,
   relativeTimes: Float32Array,
   useSecondValues: boolean,
-  shape = DEFAULT_SHAPE
+  shape = DEFAULT_SHAPE,
+  positionPrefix: readonly number[] = []
 ) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -141,16 +180,17 @@ async function runVariogram(
   ) => {
     const buffer = createInputBuffer(
       device,
-      format === 'uint32' ? Uint32Array.from(data) : Float32Array.from(data)
+      format === 'uint32'
+        ? Uint32Array.from(data)
+        : Float32Array.from(name === 'positions' ? [...positionPrefix, ...Array.from(data)] : data)
     );
     buffers.push(buffer);
-    return importGraphBuffer(
-      graph,
-      name,
-      buffer,
+    const view = importGraphBuffer(graph, name, buffer, format);
+    return graph.createDataView(view.buffer, {
       format,
-      data.length / (format === 'float32x2' ? 2 : 1)
-    );
+      byteOffset: name === 'positions' ? positionPrefix.length * 4 : 0,
+      length: data.length / (format === 'float32x2' ? 2 : 1)
+    });
   };
   const bins = (shape.lagCount + 1) * (shape.temporalLagCount + 1);
   const outputs = {
@@ -277,4 +317,180 @@ it('keeps the previous three-point values, moved to the zero-lag class layout', 
       : expect(actual.semivariances[bin]).toBeCloseTo(value, 3)
   );
   expect(actual.counts).toEqual(expectedValues.map(value => (Number.isNaN(value) ? 0 : 1)));
+});
+
+/** Shape of the complete-case fixtures: one positive spatial and temporal class, bin 3 = (1, 1). */
+const COMPLETE_CASE_SHAPE = {
+  bounds: [0, 0, 1, 1] as const,
+  maximumDistance: 2,
+  maximumTimeLag: 2,
+  lagCount: 1,
+  temporalLagCount: 1
+};
+
+function expectOnlyBinThree(
+  actual: Awaited<ReturnType<typeof runVariogram>>,
+  semivariance: number,
+  count: number
+) {
+  expect(Number.isFinite(actual.semivariances[3])).toBe(true);
+  expect(actual.semivariances[3]).toBeCloseTo(semivariance, 5);
+  expect(actual.counts).toEqual([0, 0, 0, count]);
+  expect(actual.status).toEqual([1, 1, 1, 0]);
+}
+
+it.each([
+  false,
+  true
+])('centers values on the complete-case rows only (DPC-112, second values: %s)', async useSecondValues => {
+  // Rows 0 and 1 form the only complete pair: (2 - 0)^2 / 2 = 2. Row 2 has a NaN time, so it is in
+  // no pair; centering on all value-finite rows put the center at about 3.3e8, where float32
+  // rounds both retained values to the same number and the semivariance to 0.
+  const scene: Scene = {
+    positions: [0, 0, 1, 0, 0, 1],
+    values: [0, 2, 1e9],
+    secondValues: [0, 2, 1e9],
+    times: [0, 1, NaN],
+    mask: [1, 1, 1]
+  };
+  const actual = await runVariogram(
+    scene,
+    Float32Array.from(scene.times),
+    useSecondValues,
+    COMPLETE_CASE_SHAPE
+  );
+  expectOnlyBinThree(actual, 2, 1);
+  // Masking out the already ineligible row leaves every retained bin unchanged.
+  const masked = await runVariogram(
+    {...scene, mask: [1, 1, 0]},
+    Float32Array.from(scene.times),
+    useSecondValues,
+    COMPLETE_CASE_SHAPE
+  );
+  expect(masked).toEqual(actual);
+});
+
+it('ignores an excluded high value near retained values of about 1 (DPC-112)', async () => {
+  // Expectation from float64 NumPy over the retained rows only
+  // (fixes/fix-pair-statistics/reference.py): values [1, 1.5, 1.25], pairs (0,1) (0,2) (1,2),
+  // terms [0.125, 0.03125, 0.03125], mean 0.0625. All three pairs have distance in (0, 2] and time
+  // lag in (0, 2], so they fall in bin 3.
+  const positions = [0, 0, 1, 0, 0, 1, 1, 1];
+  // Row 3 is excluded by a NaN time (first route) or a NaN second value (cross route).
+  const byTime: Scene = {
+    positions,
+    values: [1, 1.5, 1.25, 1e9],
+    secondValues: [1, 1.5, 1.25, 1e9],
+    times: [0, 1, 0.5, NaN],
+    mask: [1, 1, 1, 1]
+  };
+  expectOnlyBinThree(
+    await runVariogram(byTime, Float32Array.from(byTime.times), false, COMPLETE_CASE_SHAPE),
+    0.0625,
+    3
+  );
+  const bySecondValue: Scene = {
+    ...byTime,
+    secondValues: [1, 1.5, 1.25, NaN],
+    times: [0, 1, 0.5, 1.5]
+  };
+  expectOnlyBinThree(
+    await runVariogram(
+      bySecondValue,
+      Float32Array.from(bySecondValue.times),
+      true,
+      COMPLETE_CASE_SHAPE
+    ),
+    0.0625,
+    3
+  );
+});
+
+it('reports a pair count above 2^32 - 1 as status 3 (DPC-113)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new AnalysisRig(device);
+  recordWGSLKernelNodes(rig.graph);
+  const rows = 3;
+  const bins = 4;
+  const semivariances = rig.output('float32', bins);
+  const pairCounts = rig.output('uint32', bins);
+  const status = rig.output('uint32', bins);
+  try {
+    const nodes = new GPUSpaceTimeVariogram({
+      id: 'wide-count',
+      positions: createTransientView(rig.graph, 'positions', 'float32x2', rows),
+      values: createTransientView(rig.graph, 'values', 'float32', rows),
+      times: createTransientView(rig.graph, 'times', 'float32', rows),
+      parameters: rig.input(
+        getGPUSpaceTimeVariogramParameterValues(COMPLETE_CASE_SHAPE),
+        'float32'
+      ),
+      gridSize: [1, 1],
+      lagCount: COMPLETE_CASE_SHAPE.lagCount,
+      temporalLagCount: COMPLETE_CASE_SHAPE.temporalLagCount,
+      output: {semivariances, pairCounts, status}
+    }).getCommandNodes(rig.graph);
+    const finishNodes = nodes.filter(node => node.workload?.variant === 'finish');
+    expect(finishNodes).toHaveLength(1);
+    const record = getWGSLKernelNodeRecord(rig.graph, finishNodes[0].id)!;
+    const accumulators = record.bindings.find(binding => binding.name === 'accumulators')!.view;
+    const scale = record.bindings.find(binding => binding.name === 'scaleView')!.view;
+    // Five channels of two words per bin, then the accumulation-overflow word (left clear).
+    expect(accumulators.length).toBe(bins * 5 * 2 + 1);
+    // Bin 0: 92683 * 92682 / 2 = 4295022903 = 2^32 + 55607 unordered pairs (high word 1).
+    // Bin 1: the exact control 0xffffffff (high word 0). Bin 2: one pair. Bin 3: empty.
+    const inject = createWGSLKernelNode(rig.graph, {
+      id: 'synthetic-wide-count',
+      operation: 'PairCountOverflowTest',
+      invocationCount: accumulators.length,
+      bindings: [
+        {name: 'words', view: accumulators, type: 'u32', access: 'read_write'},
+        {name: 'scaleWord', view: scale, type: 'f32', access: 'read_write'}
+      ],
+      body: `var word = 0u;
+if (index == 0u) { word = 55607u; }
+if (index == 1u) { word = 1u; }
+if (index == 10u) { word = 0xffffffffu; }
+if (index == 20u) { word = 1u; }
+words[wordsOffset + index] = word;
+if (index == 0u) { scaleWord[scaleWordOffset] = 1.0; }`
+    });
+    rig.run({getCommandNodes: () => [inject, finishNodes[0]]});
+    expect(await rig.readUint(pairCounts)).toEqual([0xffffffff, 0xffffffff, 1, 0]);
+    expect(await rig.readUint(status)).toEqual([3, 0, 0, 1]);
+    const values = await rig.readFloat(semivariances);
+    expect(values.slice(0, 3)).toEqual([0, 0, 0]);
+    expect(values[3]).toBeNaN();
+  } finally {
+    rig.destroy();
+  }
+});
+
+it('PCK-01 retains semivariance two with an eight-byte positions prefix', async () => {
+  // Only rows 0 and 1 form a complete pair: (2 - 0)^2 / 2 = 2.
+  const scene: Scene = {
+    positions: [0, 0, 1, 0, 200, 200],
+    values: [0, 2, 1e9],
+    secondValues: [0, 2, 1e9],
+    times: [0, 1, NaN],
+    mask: [1, 1, 1]
+  };
+  const actual = await runVariogram(
+    scene,
+    Float32Array.from(scene.times),
+    false,
+    {
+      bounds: [0, 0, 10, 10],
+      maximumDistance: 2,
+      maximumTimeLag: 2,
+      lagCount: 1,
+      temporalLagCount: 1
+    },
+    [100, 100]
+  );
+  expect(actual.counts).toEqual([0, 0, 0, 1]);
+  expect(actual.status[3]).toBe(0);
+  expect(Number.isFinite(actual.semivariances[3])).toBe(true);
+  expect(actual.semivariances[3]).toBeCloseTo(2, 5);
 });

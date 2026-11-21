@@ -6,7 +6,11 @@
 // median, percentiles, mode, unique counts) are exact; moments are computed in float64 from the
 // true values and compared to the GPU with a stated float32 tolerance.
 
-import {getScaledValue} from '../../gpu-spatial-analysis/cell-aggregation/cell-aggregation-oracle';
+import {
+  getScaledValue,
+  isScaledValueSaturated
+} from '../../gpu-spatial-analysis/cell-aggregation/cell-aggregation-oracle';
+import {roundFloat32Units} from '../value-cube/value-cube-oracle';
 import {getLinearOrderStatistic} from '../order-statistic-oracle';
 
 /** Deterministic mulberry32 generator in [0, 1). */
@@ -24,9 +28,12 @@ export function createRandom(seed: number): () => number {
 export type OracleColumnStatistics = {
   /** Finite values. */
   count: number;
-  /** Exact fixed-point sum (`roundHalfEven(fround(v * sumScale))` summed), the `sums` words. */
+  /** Signed int64 publication of caller-scale, row-clamped values, wrapped once at the end. */
   sum: bigint;
-  /** Float64 sum of the values (`sumValues`). */
+  /** Exact caller-scale total before wrapping, retained for numeric-loss detection. */
+  wideSum: bigint;
+  sumOverflow: boolean;
+  /** Float64 decoding of the exact sum of float32 units (`sumValues` reference). */
   sumValue: number;
   mean: number;
   minimum: number;
@@ -103,20 +110,23 @@ export function computeColumnStatistics(
 ): OracleColumnStatistics {
   const finite = values.filter(Number.isFinite).map(canonicalizeValue);
   const count = finite.length;
-  let sum = 0n;
+  let wideSum = 0n;
+  let sumOverflow = false;
   for (const value of values.filter(Number.isFinite)) {
-    sum += getScaledValue(value, props.sumScale);
+    wideSum += getScaledValue(value, props.sumScale);
+    sumOverflow ||= isScaledValueSaturated(value, props.sumScale);
   }
+  const sum = BigInt.asIntN(64, wideSum);
+  sumOverflow ||= sum !== wideSum;
   const sorted = [...finite].sort((left, right) => left - right);
-  // The float sum and mean are those of the values themselves (float64), not of the
-  // `1 / sumScale` words: the kernel must be right to float32 at any magnitude.
-  let sumValue = 0;
-  for (const value of finite) {
-    sumValue += value;
-  }
-  const mean = count > 0 ? sumValue / count : NaN;
+  // Independent exact accumulation in the universal f32 unit 2^-149. Decode only after
+  // cancellation; a running Number sum would erase 3 in [2^56, 3, -2^56]. Do not derive
+  // either float reduction from the independently quantized caller-scale sum.
+  const exactUnits = finite.reduce((total, value) => total + getFloat32Units(value), 0n);
+  const sumValue = roundFloat32Units(exactUnits, 1);
+  const mean = count > 0 ? roundFloat32Units(exactUnits, count) : NaN;
   // Float64 central moments about the true mean of the values.
-  const trueMean = sumValue / Math.max(count, 1);
+  const trueMean = (Number(exactUnits) / Math.max(count, 1)) * 2 ** -149;
   const isConstant = count === 0 || sorted[0] === sorted[count - 1];
   let m2 = 0;
   let m3 = 0;
@@ -147,6 +157,8 @@ export function computeColumnStatistics(
   return {
     count,
     sum,
+    wideSum,
+    sumOverflow,
     sumValue,
     mean,
     minimum: count > 0 ? sorted[0] : NaN,
@@ -214,4 +226,14 @@ export function computeGroupStatisticsOnCPU(
     }
   }
   return {requiredCount: keys.length, groups, zScores};
+}
+
+/** Decode the uploaded binary32 value into an exact signed multiple of its least subnormal. */
+function getFloat32Units(value: number): bigint {
+  const floating = Float32Array.of(value);
+  const bits = new Uint32Array(floating.buffer)[0];
+  const exponent = (bits >>> 23) & 0xff;
+  const significand = BigInt((bits & 0x7fffff) | (exponent === 0 ? 0 : 0x800000));
+  const magnitude = significand << BigInt(exponent === 0 ? 0 : exponent - 1);
+  return bits >>> 31 === 0 ? magnitude : -magnitude;
 }

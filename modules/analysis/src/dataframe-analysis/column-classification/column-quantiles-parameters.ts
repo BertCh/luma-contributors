@@ -55,14 +55,28 @@ export function getGPUColumnQuantilesParameterValues(
   settings: GPUColumnQuantilesSettings,
   target?: Float32Array
 ): Float32Array {
-  const quantileCount = settings.quantileCount ?? settings.quantiles.length;
   validateCapacity(
     'GPUColumnQuantiles',
     'quantileCount',
-    quantileCount,
+    settings.quantileCount ?? settings.quantiles.length,
     1,
     GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT
   );
+  return getColumnQuantilesParameterValues(settings, target);
+}
+
+/**
+ * Packs the same float32 layout as getGPUColumnQuantilesParameterValues for either backend,
+ * without the GPU's 64-slot limit. quantileCount must be a positive uint32 count; the target
+ * must hold 4 + quantileCount words. Out-of-domain binary64 probabilities become NaN before
+ * narrowing, and unused slots are NaN. Interpolation defaults to linear.
+ */
+export function getColumnQuantilesParameterValues(
+  settings: GPUColumnQuantilesSettings,
+  target?: Float32Array
+): Float32Array {
+  const quantileCount = settings.quantileCount ?? settings.quantiles.length;
+  validateCapacity('GPUColumnQuantiles', 'quantileCount', quantileCount, 1);
   if (settings.quantiles.length > quantileCount) {
     throw new Error('GPUColumnQuantiles probabilities exceed quantileCount');
   }
@@ -73,17 +87,22 @@ export function getGPUColumnQuantilesParameterValues(
   }
   const interpolation = settings.interpolation ?? 'linear';
   const code = GPU_COLUMN_QUANTILE_INTERPOLATION_CODES[interpolation];
-  if (code === undefined) {
-    throw new Error(`GPUColumnQuantiles unknown interpolation ${String(interpolation)}`);
+  if (!Object.hasOwn(GPU_COLUMN_QUANTILE_INTERPOLATION_CODES, interpolation)) {
+    throw new Error(
+      `GPUColumnQuantiles unknown interpolation ${String(interpolation)}; interpolation must be lower, higher, nearest, linear or midpoint`
+    );
   }
+  // Capture controls before writing: quantiles may be a view into the reusable target.
+  const probabilities = Array.from(settings.quantiles);
   const [filterLower, filterUpper] = settings.filterRange ?? [0, 1];
   values[0] = code;
   values[1] = filterLower;
   values[2] = filterUpper;
   values[3] = 0;
   for (let index = 0; index < quantileCount; index++) {
+    const probability = index < probabilities.length ? probabilities[index] : NaN;
     values[GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH + index] =
-      index < settings.quantiles.length ? settings.quantiles[index] : NaN;
+      probability >= 0 && probability <= 1 ? probability : NaN;
   }
   return values;
 }
@@ -130,6 +149,21 @@ export function getGPUColumnQuantilesRationalProbabilityValues(
     1,
     GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT
   );
+  return getColumnQuantilesRationalProbabilityValues(probabilities, quantileCount, target);
+}
+
+/**
+ * Packs the same uint32 pairs as getGPUColumnQuantilesRationalProbabilityValues for either
+ * backend, without the GPU's 64-slot limit. quantileCount must be a positive uint32 count;
+ * target must hold 2 * quantileCount words. Validates all pairs before any target write.
+ * Unused slots are [0, 0] and produce NaN; ratios above 1 also produce NaN.
+ */
+export function getColumnQuantilesRationalProbabilityValues(
+  probabilities: readonly GPUColumnQuantileRationalProbability[],
+  quantileCount: number = probabilities.length,
+  target?: Uint32Array
+): Uint32Array {
+  validateCapacity('GPUColumnQuantiles', 'quantileCount', quantileCount, 1);
   if (probabilities.length > quantileCount) {
     throw new Error('GPUColumnQuantiles rational probabilities exceed quantileCount');
   }
@@ -156,6 +190,9 @@ export function getGPUColumnQuantilesRationalProbabilityValues(
         GPU_COLUMN_QUANTILES_MAXIMUM_RATIONAL_TERM
       );
     }
+  }
+  for (let index = 0; index < quantileCount; index++) {
+    const [numerator, denominator] = index < probabilities.length ? probabilities[index] : [0, 0];
     values[2 * index] = numerator;
     values[2 * index + 1] = denominator;
   }

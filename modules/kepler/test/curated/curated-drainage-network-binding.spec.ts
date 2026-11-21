@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
 import {requireTestDevice} from '../../../analysis/test/utils/require-test-device';
 import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
 import type {CatalogRasterInput} from '../../src/analysis/catalog-raster-input';
@@ -130,7 +131,43 @@ it('dispatches the real drainage recipe on its existing 3x3 fixture and independ
       expect(result.tables[1].columns['downstream_distance'][4]).toBe(2);
       expect(result.tables[1].columns['terminal_cell'][4]).toBe(8);
     }
-    expect(result.summary).toMatchObject({converged: 1, overflow: 0, uncertainCount: 0});
+    expect(result.summary).toMatchObject({
+      converged: 1,
+      overflow: 0,
+      unresolvedCount: 0
+    });
+    expect(result.summary).not.toHaveProperty('uncertainCount');
+    expect(result.summary['recipeStatus']).toContain('"unresolvedCount":0');
+    expect(result.summary['recipeStatus']).not.toContain('"uncertainCount"');
+  }
+});
+
+it.each([
+  'downstream-distance',
+  'stream-network'
+])('withholds unresolved-only %s device readbacks and publishes after recovery', async stage => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  let unresolvedCount = 1;
+  const originalRead = CatalogGpuSession.prototype.readUint32;
+  const read = vi
+    .spyOn(CatalogGpuSession.prototype, 'readUint32')
+    .mockImplementation(async function (this: CatalogGpuSession, output) {
+      const values = await originalRead.call(this, output);
+      if (output.buffer.id.endsWith(`${stage}-unresolvedCount`)) values[0] = unresolvedCount;
+      return values;
+    });
+  const run = () =>
+    CURATED_DRAINAGE_NETWORK_BINDING.runDataGpu!({device}, createDrainageNetworkSample(), {});
+  try {
+    await expect(run()).rejects.toThrow(new RegExp(`${stage}.*unresolvedCount`));
+    unresolvedCount = 0;
+    const recovered = await run();
+    expect(recovered.summary['unresolvedCount']).toBe(0);
+    // Hand-worked 3x3 D8 fixture: three vertical columns merge along the bottom row.
+    compareColumn(recovered, 'accumulation', [1, 1, 1, 2, 2, 2, 3, 6, 9]);
+  } finally {
+    read.mockRestore();
   }
 });
 
@@ -217,6 +254,6 @@ it('rejects GPU path truncation and stream geometry overflow before returning pu
         createDrainageNetworkSample(),
         {device}
       )
-    ).rejects.toThrow(/curated-drainage-network.*recipe status.*(overflow|uncertainCount)/);
+    ).rejects.toThrow(/curated-drainage-network.*recipe status.*(overflow|unresolvedCount)/);
   }
 });

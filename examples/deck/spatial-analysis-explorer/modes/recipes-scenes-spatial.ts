@@ -24,7 +24,7 @@ import {
   getGPUGeographicallyWeightedRegressionParameterValues,
   getGPUGeographicDistributionParameterValues,
   getGPUOrdinaryLeastSquaresParameterValues,
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
@@ -81,9 +81,9 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
   const paddedBounds = [bounds[0] - 10, bounds[1] - 10, bounds[2] + 10, bounds[3] + 10] as const;
 
   let epsilon = 150;
-  let minimumPoints = 5;
+  let minimumSamples = 5;
   const getParameters = () =>
-    getGPUSpatialClusteringParameterValues({bounds: paddedBounds, epsilon, minimumPoints});
+    getGPUDBSCANParameterValues({bounds: paddedBounds, epsilon, minimumSamples});
 
   const kit = new RecipeKit(context.device, 'recipe-cluster-outline');
   const pointsInput = kit.input('positions', positions, 'float32x2', pointCount);
@@ -111,7 +111,7 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
     maximumClusterCount: CLUSTER_MAXIMUM_COUNT,
     maximumVerticesPerHull: CLUSTER_MAXIMUM_HULL_VERTICES,
     hullCapacity: CLUSTER_HULL_CAPACITY,
-    outputs: {
+    output: {
       labels: labels.view,
       clusterCount: clusterCount.view,
       hullOffsets: hullOffsets.view,
@@ -220,14 +220,14 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
     },
     {
       kind: 'slider',
-      label: 'Minimum points per neighborhood',
+      label: 'Minimum samples per neighborhood',
       minimum: 2,
       maximum: 20,
       step: 1,
-      value: minimumPoints,
+      value: minimumSamples,
       format: value => `${value} points`,
       onChange: value => {
-        minimumPoints = value;
+        minimumSamples = value;
         writeParameters();
       }
     }
@@ -237,7 +237,7 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
     compiled,
     contributorCount: recipe.contributors.length,
     chain: [
-      'GPUSpatialClustering (DBSCAN labels)',
+      'GPUDBSCAN (DBSCAN labels)',
       'GPUGroupGeometry (counts, centers per cluster)',
       'GPUGroupConvexHull (hull per cluster)',
       'GPUGeometryMeasures (hull area, perimeter)',
@@ -477,7 +477,7 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
     settings: {significanceLevel},
     parameters: autocorrelation,
     olsParameters: olsParameters.view,
-    outputs: {
+    output: {
       ols: {
         coefficients: olsCoefficients.view,
         summary: olsSummary.view,
@@ -885,7 +885,7 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
     maximumIterations: 64,
     costBreaks: bandBreaks.view,
     bandCapacity: 8,
-    outputs: {
+    output: {
       nodeCosts: nodeCosts.view,
       demandTimes: demandTimes.view,
       demandBands: demandBands.view,
@@ -1210,7 +1210,7 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
     facilities: {kind: 'points', positions: seeds.view},
     facilityCount: seedCount.view,
     values: values.view,
-    outputs: {
+    output: {
       allocation: allocation.view,
       distances: distances.view,
       statistics: {

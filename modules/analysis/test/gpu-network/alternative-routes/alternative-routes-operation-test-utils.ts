@@ -78,3 +78,33 @@ export function enumerateAlternativeRoutes(
   }
   return {vertices, edges, lengths, costs, counts, complete: new Uint32Array(queryCount).fill(1)};
 }
+
+/** Six simple edge-slot paths: direct cost 0.5, then five cost-2 paths (including parallel slots).
+ * Query 1 starts at isolated vertex 4 and has no path. All sums are exact binary fractions.
+ */
+export function getTraversalEnumerationInput(): CPUAlternativeRoutesInput {
+  return {
+    topology: {
+      offsets: Uint32Array.of(0, 4, 6, 7, 7, 7),
+      neighbors: Uint32Array.of(1, 1, 2, 3, 2, 3, 3),
+      weights: Float32Array.of(1, 1, 1, 0.5, 0, 1, 1)
+    },
+    sources: Uint32Array.of(0, 4),
+    targets: Uint32Array.of(3, 3)
+  };
+}
+
+/** Read only the certified route prefix, preserving parallel CSR slot identity. */
+export function readTraversalRoutes(
+  rows: {edges: ArrayLike<number>; lengths: ArrayLike<number>; costs: ArrayLike<number>},
+  count: number,
+  maximumPathLength = 5
+): {edges: number[]; cost: number}[] {
+  return Array.from({length: count}, (_, route) => ({
+    edges: Array.from(
+      {length: rows.lengths[route] - 1},
+      (_, slot) => rows.edges[route * maximumPathLength + slot]
+    ),
+    cost: rows.costs[route]
+  }));
+}

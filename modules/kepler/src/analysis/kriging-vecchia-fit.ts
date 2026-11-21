@@ -7,7 +7,11 @@ import {
   buildVecchiaConditioningSets,
   type GPUVecchiaCovariance
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {evaluateValidationVecchia, fitValidationVecchia} from './catalog-validation-vecchia';
+import {
+  evaluateValidationVecchia,
+  fitValidationVecchia,
+  type ValidationVecchiaFit
+} from './catalog-validation-vecchia';
 import {makeLocalFrame} from './catalog-local-frame';
 import type {KeplerVariogramFit} from './kriging-variogram-fit';
 import {MAXIMUM_VALIDATION_ROWS} from './catalog-validation-common';
@@ -24,7 +28,13 @@ export async function fitKeplerVecchiaVariogram(
     neighborCount?: number;
     maximumIterations?: number;
   }
-): Promise<KeplerVariogramFit> {
+): Promise<
+  KeplerVariogramFit &
+    Pick<
+      ValidationVecchiaFit,
+      'stopReason' | 'stallReason' | 'iterationLimitReached' | 'history' | 'logLikelihood'
+    > & {nonconvergenceDiagnostic?: string}
+> {
   const rows = Array.from({length: values.length}, (_, index) => index).filter(
     index =>
       Number.isFinite(longitudes[index]) &&
@@ -66,7 +76,7 @@ export async function fitKeplerVecchiaVariogram(
   );
   if (result.failed)
     throw new Error(
-      'Vecchia variogram fitting failed; change the starting covariance or remove duplicate samples'
+      `Vecchia variogram fitting failed (${result.stopReason ?? 'unusable-likelihood'}); change the starting covariance or remove duplicate samples`
     );
   const evaluation = await evaluateValidationVecchia(
     device,
@@ -90,12 +100,29 @@ export async function fitKeplerVecchiaVariogram(
     candidates: [candidate],
     binCount: 0,
     pairCount: neighborhoods.neighbors.length,
+    ...(result.stopReason === undefined
+      ? {}
+      : {
+          stopReason: result.stopReason,
+          ...(result.stallReason === undefined ? {} : {stallReason: result.stallReason}),
+          iterationLimitReached: result.iterationLimitReached,
+          history: result.history,
+          logLikelihood: result.logLikelihood,
+          ...(!result.converged
+            ? {
+                nonconvergenceDiagnostic: `Vecchia fit stopped: ${result.stopReason}${result.stallReason ? ` (${result.stallReason})` : ''}; retained last usable covariance after ${result.budgetUsed} accepted steps`
+              }
+            : {})
+        }),
     diagnostics: {
       valid_rows: rows.length,
       excluded_rows: values.length - rows.length,
       known_mean: mean,
       neighbor_count: neighborCount,
       converged: Number(result.converged),
+      ...(result.iterationLimitReached === undefined
+        ? {}
+        : {iteration_limit: Number(result.iterationLimitReached)}),
       budget_used: result.budgetUsed,
       log_likelihood: evaluation.logLikelihood,
       failed_sites: evaluation.failedSiteCount

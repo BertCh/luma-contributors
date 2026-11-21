@@ -24,6 +24,7 @@ import {
   snapshotMantelOperationProps,
   type MantelTestOperationProps
 } from './gpu-mantel-test-operation';
+import {resolveGPUSpaceTimeTemporalContext} from './space-time-bands';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** CSR slots past the final offset are unused capacity; weights do not affect inference. */
@@ -41,19 +42,27 @@ export type CPUMantelTestInput = {
 /** Compile-time inference settings. */
 export type CPUMantelTestOptions = Pick<
   MantelTestOperationProps,
-  'maximumPermutations' | 'stopAfterExceedances' | 'distanceTransform' | 'timeTransform'
+  | 'maximumPermutations'
+  | 'stopAfterExceedances'
+  | 'distanceTransform'
+  | 'timeTransform'
+  | 'temporalContext'
 >;
 /** Every output, with unused statistics capacity zeroed. */
 export type CPUMantelTestResult = {
   statistics: Float32Array;
   summary: Float32Array;
+  /** Attempted statistics prefix, excluding observed slot 0. Zero for undefined observations. */
   permutationCount: Uint32Array;
+  /** Defined null correlations used by conditional inference. */
+  usablePermutationCount: Uint32Array;
 };
 
 /** One statistics row is reserved for the observed value in a uint32-sized vector. */
 export const CPU_MANTEL_TEST_MAXIMUM_PERMUTATIONS = 0xfffffffe;
 
 function validateOptions(id: string, rowCount: number, options: CPUMantelTestOptions): void {
+  resolveGPUSpaceTimeTemporalContext(id, options.temporalContext);
   validateCapacity(id, 'rowCount', rowCount, 2);
   validateCapacity(
     id,
@@ -92,7 +101,8 @@ function transformValue(
  * stream and optional Besag-Clifford stopping in permutation order.
  *
  * What differs from the GPU contributor:
- * - Correlations, threshold comparisons and summary moments use float64; only outputs round.
+ * - Correlations retain float64 residuals through threshold comparisons and centered null moments;
+ *   only the published statistics and summary words are rounded to float32.
  *   Correlations usually agree within 1e-4 absolute. Near ties can change counts and stopping.
  * - GPU-only row and permutation caps are dropped; uint32 indexing/output lengths remain.
  * - Scaled centered vectors avoid intermediate overflow for finite transformed data.
@@ -117,24 +127,50 @@ export function computeMantelTestOnCPU(
     const flag = status?.[name];
     if (flag) validateCapacity('mantel-test', `status.${name}.length`, flag.length, 1);
   }
-  if (offsets.length !== rows + 1 || offsets[0] !== 0)
-    throw new Error('offsets must have times.length + 1 words and start at zero');
-  if (weights.length !== neighbors.length)
-    throw new Error('weights length must equal neighbors.length');
-  if (distances.length !== neighbors.length)
-    throw new Error('distances length must equal neighbors.length');
-  if (parameters.length < GPU_SPACE_TIME_PARAMETER_LENGTH)
-    throw new Error('parameters must hold getGPUSpaceTimeParameterValues layout');
-  if (!times.every(Number.isFinite)) throw new Error('times must be finite');
-  for (let row = 0; row < rows; row++)
-    if (offsets[row + 1] < offsets[row] || offsets[row + 1] > neighbors.length)
-      throw new Error('offsets must be nondecreasing and within neighbors capacity');
+  validateRequirement(
+    'mantel-test',
+    offsets.length === rows + 1,
+    `offsets.length must equal times.length + 1 (${rows + 1}); received ${offsets.length}`
+  );
+  validateRequirement(
+    'mantel-test',
+    weights.length === neighbors.length,
+    `weights.length must equal neighbors.length (${neighbors.length}); received ${weights.length}`
+  );
+  validateRequirement(
+    'mantel-test',
+    distances.length === neighbors.length,
+    `distances.length must equal neighbors.length (${neighbors.length}); received ${distances.length}`
+  );
+  validateCapacity(
+    'mantel-test',
+    'parameters.length',
+    parameters.length,
+    GPU_SPACE_TIME_PARAMETER_LENGTH
+  );
   if ((status?.overflow?.[0] ?? 0) !== 0 || (status?.candidateOverflow?.[0] ?? 0) !== 0)
     return {
       statistics: new Float32Array(options.maximumPermutations + 1).fill(NaN),
       summary: new Float32Array(GPU_SPACE_TIME_SUMMARY_LENGTH).fill(NaN),
-      permutationCount: Uint32Array.of(0)
+      permutationCount: Uint32Array.of(0),
+      usablePermutationCount: Uint32Array.of(0)
     };
+  validateRequirement(
+    'mantel-test',
+    offsets[0] === 0,
+    `offsets[0] must be zero; received ${offsets[0]}`
+  );
+  validateRequirement(
+    'mantel-test',
+    times.every(Number.isFinite),
+    'times must contain finite values; received a nonfinite value'
+  );
+  for (let row = 0; row < rows; row++)
+    validateRequirement(
+      'mantel-test',
+      offsets[row + 1] >= offsets[row] && offsets[row + 1] <= neighbors.length,
+      `offsets[${row + 1}] must be nondecreasing and within neighbors capacity ${neighbors.length}; received ${offsets[row + 1]}`
+    );
   // Ascending row visitation makes the lower-row entry win even for asymmetric lists.
   const seen = new Set<bigint>();
   const firstRows: number[] = [];
@@ -148,19 +184,29 @@ export function computeMantelTestOnCPU(
       if (seen.has(key)) continue;
       seen.add(key);
       const distance = transformValue(distances[entry], options.distanceTransform);
-      if (!Number.isFinite(distances[entry]) || !Number.isFinite(distance))
-        throw new Error('distances and distanceTransform must give finite selected pair values');
+      validateRequirement(
+        'mantel-test',
+        Number.isFinite(distances[entry]) && Number.isFinite(distance),
+        `distances and distanceTransform must give finite selected pair values; received ${distance} at entry ${entry}`
+      );
       firstRows.push(row);
       secondRows.push(other);
       spatialValues.push(distance);
     }
   const count = firstRows.length;
-  const spatialScale =
-    spatialValues.reduce((scale, value) => Math.max(scale, Math.abs(value)), 0) || 1;
-  const spatial = spatialValues.map(value => value / spatialScale);
-  const spatialMean = spatial.reduce((sum, value) => sum + value, 0) / Math.max(1, count);
-  const spatialCentered = spatial.map(value => value - spatialMean);
-  const spatialNorm = Math.sqrt(spatialCentered.reduce((sum, value) => sum + value ** 2, 0));
+  // Power-of-two scaling preserves integer moment identities, including exact zero covariance.
+  // Center on a data anchor before taking moments; never introduce a rounded fractional mean.
+  const centerAndScale = (values: number[]) => {
+    const maximum = values.reduce((scale, value) => Math.max(scale, Math.abs(value)), 0);
+    const exponent = Math.max(-1022, Math.min(1023, Math.floor(Math.log2(maximum || 1))));
+    const scale = 2 ** exponent;
+    const anchor = (values[0] ?? 0) / scale;
+    return values.map(value => value / scale - anchor);
+  };
+  const spatial = centerAndScale(spatialValues);
+  const sumSpatial = spatial.reduce((sum, value) => sum + value, 0);
+  const spatialVariance =
+    count * spatial.reduce((sum, value) => sum + value ** 2, 0) - sumSpatial ** 2;
   // Destructure the packer's [seedLow, seedHigh, permutationCount, thresholdBits] layout.
   const [seedLow, seedHigh, requestedPermutationCount] = parameters;
   const permutations = Math.max(
@@ -191,25 +237,51 @@ export function computeMantelTestOnCPU(
         options.timeTransform
       )
     );
-    if (!temporal.every(Number.isFinite))
-      throw new Error('times and timeTransform must give finite selected pair values');
-    const temporalScale =
-      temporal.reduce((scale, value) => Math.max(scale, Math.abs(value)), 0) || 1;
-    const scaled = temporal.map(value => value / temporalScale);
-    const mean = scaled.reduce((sum, value) => sum + value, 0) / Math.max(1, count);
+    validateRequirement(
+      'mantel-test',
+      temporal.every(Number.isFinite),
+      'times and timeTransform must give finite selected pair values; received a nonfinite transformed gap'
+    );
+    const scaled = centerAndScale(temporal);
     let covariance = 0;
     let variance = 0;
+    let sumTemporal = 0;
     for (let pair = 0; pair < count; pair++) {
-      const centered = scaled[pair] - mean;
-      covariance += spatialCentered[pair] * centered;
-      variance += centered ** 2;
+      covariance += spatial[pair] * scaled[pair];
+      variance += scaled[pair] ** 2;
+      sumTemporal += scaled[pair];
     }
+    covariance = count * covariance - sumSpatial * sumTemporal;
+    variance = count * variance - sumTemporal ** 2;
     const correlation =
-      count > 1 && spatialNorm > 0 && variance > 0
-        ? Math.max(-1, Math.min(1, covariance / spatialNorm / Math.sqrt(variance)))
-        : 0;
+      count === 2
+        ? spatialValues[0] === spatialValues[1] || temporal[0] === temporal[1]
+          ? NaN
+          : (spatialValues[1] > spatialValues[0] ? 1 : -1) * (temporal[1] > temporal[0] ? 1 : -1)
+        : count > 1 && spatialVariance > 0 && variance > 0
+          ? covariance === 0
+            ? 0
+            : Math.max(
+                -1,
+                Math.min(1, covariance / Math.sqrt(spatialVariance) / Math.sqrt(variance))
+              )
+          : NaN;
     preciseStatistics[slot] = correlation;
-    if (slot === 0) continue;
+    if (slot === 0) {
+      if (!Number.isFinite(correlation)) {
+        const summary = new Float32Array(GPU_SPACE_TIME_SUMMARY_LENGTH).fill(NaN);
+        summary[GPU_SPACE_TIME_SUMMARY.pairCount] = count;
+        summary[GPU_SPACE_TIME_SUMMARY.timeClosePairs] = 0;
+        summary[GPU_SPACE_TIME_SUMMARY.expected] = 0;
+        return {
+          statistics: new Float32Array(options.maximumPermutations + 1).fill(NaN),
+          summary,
+          permutationCount: Uint32Array.of(0),
+          usablePermutationCount: Uint32Array.of(0)
+        };
+      }
+      continue;
+    }
     if (correlation >= preciseStatistics[0]) greater++;
     if (correlation <= preciseStatistics[0]) lesser++;
     if (options.stopAfterExceedances !== undefined && greater === options.stopAfterExceedances) {
@@ -218,22 +290,36 @@ export function computeMantelTestOnCPU(
       break;
     }
   }
-  let mean = 0;
-  for (let slot = 1; slot <= used; slot++) mean += preciseStatistics[slot] / used;
+  // Undefined null correlations keep their slot as NaN but are absent from both tails,
+  // moments and the pseudo-count denominator. Stopping still follows draw order.
+  const usableStatistics = Array.from(preciseStatistics.subarray(1, used + 1)).filter(
+    Number.isFinite
+  );
+  const attemptedCount = used;
+  used = usableStatistics.length;
+  const firstNullStatistic = usableStatistics[0] ?? NaN;
+  let sumDeviation = 0;
+  for (const value of usableStatistics) sumDeviation += value - firstNullStatistic;
+  const meanDeviation = sumDeviation / used;
+  const mean = firstNullStatistic + meanDeviation;
   let squared = 0;
-  for (let slot = 1; slot <= used; slot++) squared += (preciseStatistics[slot] - mean) ** 2;
-  const variance = used > 1 ? squared / (used - 1) : 0;
-  const greaterProbability = stopped
-    ? Math.min(1, options.stopAfterExceedances! / used)
-    : (greater + 1) / (used + 1);
-  const lesserProbability = (lesser + 1) / (used + 1);
+  for (const value of usableStatistics)
+    squared += (value - firstNullStatistic - meanDeviation) ** 2;
+  const variance = used > 1 ? squared / (used - 1) : used === 1 ? 0 : NaN;
+  const greaterProbability =
+    used === 0
+      ? NaN
+      : stopped
+        ? Math.min(1, options.stopAfterExceedances! / used)
+        : (greater + 1) / (used + 1);
+  const lesserProbability = used === 0 ? NaN : (lesser + 1) / (used + 1);
   const summary = new Float32Array(GPU_SPACE_TIME_SUMMARY_LENGTH);
   summary[GPU_SPACE_TIME_SUMMARY.observed] = preciseStatistics[0];
   summary[GPU_SPACE_TIME_SUMMARY.pairCount] = count;
   summary[GPU_SPACE_TIME_SUMMARY.permutationMean] = mean;
   summary[GPU_SPACE_TIME_SUMMARY.permutationVariance] = variance;
-  summary[GPU_SPACE_TIME_SUMMARY.greaterCount] = greater;
-  summary[GPU_SPACE_TIME_SUMMARY.lesserCount] = lesser;
+  summary[GPU_SPACE_TIME_SUMMARY.greaterCount] = used === 0 ? NaN : greater;
+  summary[GPU_SPACE_TIME_SUMMARY.lesserCount] = used === 0 ? NaN : lesser;
   summary[GPU_SPACE_TIME_SUMMARY.pseudoPGreater] = greaterProbability;
   summary[GPU_SPACE_TIME_SUMMARY.pseudoPLesser] = lesserProbability;
   summary[GPU_SPACE_TIME_SUMMARY.pseudoPTwoSided] = Math.min(
@@ -241,11 +327,14 @@ export function computeMantelTestOnCPU(
     2 * Math.min(greaterProbability, lesserProbability)
   );
   summary[GPU_SPACE_TIME_SUMMARY.zScore] =
-    variance > 0 ? (preciseStatistics[0] - mean) / Math.sqrt(variance) : NaN;
+    variance > 0
+      ? (preciseStatistics[0] - firstNullStatistic - meanDeviation) / Math.sqrt(variance)
+      : NaN;
   return {
     statistics: Float32Array.from(preciseStatistics),
     summary,
-    permutationCount: Uint32Array.of(used)
+    permutationCount: Uint32Array.of(attemptedCount),
+    usablePermutationCount: Uint32Array.of(used)
   };
 }
 
@@ -258,8 +347,8 @@ export class CPUMantelTestOperation extends GPUCPUOperation {
     validateOptions(id, props.rowCount, props);
     validateRequirement(
       id,
-      (props.stopAfterExceedances !== undefined) === (props.output.permutationCount !== undefined),
-      'output.permutationCount is required exactly when stopAfterExceedances is supplied'
+      props.stopAfterExceedances === undefined || props.output.permutationCount !== undefined,
+      'output.permutationCount is required when stopAfterExceedances is supplied'
     );
     super({
       id,
@@ -272,8 +361,11 @@ export class CPUMantelTestOperation extends GPUCPUOperation {
       ),
       execute({inputs}) {
         const times = getCPUOperationFloat32Rows(id, inputs, 'times');
-        if (times.length !== props.rowCount)
-          throw new Error(`${id} times length must equal rowCount`);
+        validateRequirement(
+          id,
+          times.length === props.rowCount,
+          `times.length must equal rowCount ${props.rowCount}; received ${times.length}`
+        );
         const result = computeMantelTestOnCPU(
           {
             times,

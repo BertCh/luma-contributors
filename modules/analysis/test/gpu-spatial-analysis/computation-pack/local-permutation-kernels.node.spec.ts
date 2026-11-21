@@ -33,6 +33,11 @@ import {findStatisticsNonFiniteConstants} from '../spatial-weights/statistics-wg
 // - 2026-11-16 (F-STATS): exact uint32 count helpers, runtime row parameters and safe scaled
 //   quotients replace the float32-count implementations. The complete fixture is refreshed;
 //   independent permutation oracles retain the numerical-result contract.
+// - 2026-11-20 (test round t1): retain the WGS-15 storage-binding address references and S3
+//   resident significance validation. Positive float32 encodings strictly between 0x00000000
+//   and 0x3f800000 represent exactly the accepted (0, 1) interval, including subnormals.
+//   The fixture changes only by these references, the validity helper and its row guard;
+//   permutation draws and statistic arithmetic retain their previous baseline text.
 it('preserves the complete permutation WGSL baseline byte for byte across 162 configurations', () => {
   const kernels: Record<string, string> = {};
   for (const statistic of [

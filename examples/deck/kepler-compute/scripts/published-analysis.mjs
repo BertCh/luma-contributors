@@ -244,7 +244,7 @@ try {
   assert.equal(quantileLisaRecipe.operation.permutationCount, 19);
   assert.equal(quantileLisaRecipe.operation.seed, 314159);
   assert.equal(quantileLisaRecipe.operation.quantileMethod, 'type-5');
-  assert.equal(quantileLisaRecipe.operation.inference, 'legacy-directed-pseudo');
+  assert.equal(quantileLisaRecipe.operation.alternative, 'geoda-legacy');
   assert.equal(quantileLisaRecipe.operation.multipleTesting, 'none');
   await panel.getByLabel('Operation', {exact: true}).selectOption('z-score');
   await panel.getByRole('button', {name: 'Restore recipe', exact: true}).click();

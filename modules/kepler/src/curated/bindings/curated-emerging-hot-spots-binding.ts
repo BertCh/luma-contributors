@@ -378,7 +378,7 @@ export const CURATED_EMERGING_HOT_SPOTS_BINDING: CatalogOperationBinding = {
           parameters,
           settings: prepared.settings,
           multipleTesting: prepared.values['multipleTesting'] as GPUMultipleTestingMethod,
-          outputs: {
+          output: {
             cube: cube.view,
             giZScores: giZScores.view,
             pValues: pValues.view,

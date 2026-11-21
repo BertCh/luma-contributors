@@ -142,7 +142,7 @@ it('GPUHotSpotAnalysis consumes weights written by GPUNeighborSearch in the same
     weights: {
       kind: 'neighbor-search',
       positions: scene.positions,
-      parameters: {bounds: BOUNDS, radius: 3},
+      parameters: {bounds: BOUNDS, searchRadius: 3},
       capacity: 2000 * 160
     }
   });
@@ -154,7 +154,11 @@ it('GPUHotSpotAnalysis consumes weights written by GPUNeighborSearch in the same
       [12, false],
       [7.5, true]
     ] as const) {
-      const result = await harness.run(undefined, {bounds: BOUNDS, radius, rowStandardize});
+      const result = await harness.run(undefined, {
+        bounds: BOUNDS,
+        searchRadius: radius,
+        rowStandardize
+      });
       const expected = createDistanceBandWeights(scene.positions, radius, {rowStandardize});
       expect(result.csr.offsets, `radius ${radius} offsets`).toEqual(Array.from(expected.offsets));
       expect(result.csr.neighbors, `radius ${radius} neighbors`).toEqual(

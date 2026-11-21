@@ -4,6 +4,7 @@
 
 import type {Device} from '@luma.gl/core';
 import {toRecordedLensFile} from './registry';
+import {getLensScenarioPresentation} from './scenario-presentations';
 import type {LensScenarioDescriptor, LensScenarioResult, RecordedLensFile} from './types';
 
 /** Describes the adapter a record was captured on, for the recorded envelope. */
@@ -28,7 +29,7 @@ export async function runLensScenario(
  * fromRecordedLensFile before accessing graphs or numeric capture values.
  */
 export async function captureLensScenarioRecord(
-  scenario: Pick<LensScenarioDescriptor, 'id' | 'load'>,
+  scenario: Pick<LensScenarioDescriptor, 'id' | 'load' | 'presentation'>,
   device: Device,
   options?: {signal?: AbortSignal; recordedAt?: string}
 ): Promise<RecordedLensFile> {
@@ -37,6 +38,7 @@ export async function captureLensScenarioRecord(
     scenarioId: scenario.id,
     recordedAt: options?.recordedAt ?? new Date().toISOString(),
     adapterLabel: getLensAdapterLabel(device),
-    variant: result.adapter.variant
+    variant: result.adapter.variant,
+    presentation: scenario.presentation ?? getLensScenarioPresentation(scenario.id)
   });
 }

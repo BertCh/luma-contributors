@@ -4,6 +4,12 @@
 
 import {join} from 'node:path';
 import typescript from 'typescript';
+import {groupPublicEntries} from '../../../../scripts/public-declaration-inventory.mjs';
+import {
+  getPublicDeclarations,
+  getPublicDeclarationNode,
+  type PublicDeclaration
+} from './public-declarations';
 import {
   ANALYSIS_DOC_PAGES,
   DOCS_ROOT,
@@ -124,24 +130,31 @@ export type ParameterField = {
 export type ClassPacker = {
   /** Call shown in the docs, for example `getGPUSpatialKMeansParameterValues(settings)`. */
   call: string;
+  /** Installed public entry exporting this function, including borrowed shared packers. */
+  entryPoint?: string;
   /** Public input port when the class uses another contributor's packer. */
   port?: string;
   /** Only these settings are read by a consumer of a shared layout. */
   consumedFields?: readonly string[];
   /** Packed view format, from the return type. */
-  format: 'float32' | 'uint32' | 'unknown';
+  format: 'float32' | 'uint32' | 'sint32' | 'uint32 | float32' | 'unknown';
   /** Length constant or function, with its value when it is a literal. */
   length: string | null;
   /** Public packer and length export names. */
   identifiers: string[];
-  /** Arguments other than the settings object and the optional output array. */
+  /** Arguments other than the settings object and an omittable trailing destination. */
   arguments: ParameterField[];
   /** Fields of the settings object (the first argument when it is an object type). */
   fields: ParameterField[];
+  /** Public overload or discriminated settings branch owning this table. */
+  settingsType?: string;
 };
 
 /** Generated parameter documentation for one class. */
 export type ClassParameters = {
+  /** Qualified source identity; omitted by hand-written rendering fixtures. */
+  entryPoint?: string;
+  declaration?: string;
   className: string;
   packers: ClassPacker[];
 };
@@ -162,30 +175,122 @@ export function collectClassParameters(): ClassParameters[] {
     new Map([[probePath, probe.join('\n')]]),
     getRepositoryCompilerOptions()
   );
-  const checker = program.getTypeChecker();
   const sourceFile = program.getSourceFile(probePath);
   if (!sourceFile) {
     throw new Error('parameter probe missing');
   }
 
-  const exports = new Map<string, typescript.Symbol>();
-  for (const statement of sourceFile.statements) {
-    if (
-      typescript.isExportDeclaration(statement) &&
-      statement.moduleSpecifier &&
-      typescript.isStringLiteral(statement.moduleSpecifier)
-    ) {
-      const moduleSymbol = checker.getSymbolAtLocation(statement.moduleSpecifier);
-      for (const symbol of moduleSymbol ? checker.getExportsOfModule(moduleSymbol) : []) {
-        const target =
-          symbol.flags & typescript.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
-        if (!exports.has(symbol.name)) {
-          exports.set(symbol.name, target);
-        }
+  return collectClassParametersFromInventory(
+    program,
+    getPublicDeclarations(program).filter(record =>
+      (PACKER_ENTRIES as readonly string[]).includes(record.entryPoint)
+    )
+  );
+}
+
+/** Parameter admission uses qualified declarations; it never drops a same-name public binding. */
+export function collectClassParametersFromInventory(
+  program: typescript.Program,
+  inventory: readonly PublicDeclaration[]
+): ClassParameters[] {
+  const checker = program.getTypeChecker();
+  const publicSymbols = new Map<string, Map<string, typescript.Symbol>>();
+  for (const record of inventory) {
+    const declaration = getPublicDeclarationNode(program, record.declaration);
+    const name =
+      declaration && 'name' in declaration
+        ? (declaration.name as typescript.Node | undefined)
+        : undefined;
+    const symbol = name && checker.getSymbolAtLocation(name);
+    if (!symbol) continue;
+    const declarations =
+      publicSymbols.get(record.exportName) ?? new Map<string, typescript.Symbol>();
+    declarations.set(record.declaration, symbol);
+    publicSymbols.set(record.exportName, declarations);
+  }
+  const parameters: ClassParameters[] = [];
+  const seen = new Set<string>();
+  for (const [entryPoint] of groupPublicEntries([...inventory])) {
+    const entryRecords = inventory.filter(record => record.entryPoint === entryPoint);
+    const targets = new Set(entryRecords.map(record => record.sourceTarget));
+    for (const sourceTarget of targets) {
+      const records = entryRecords.filter(record => record.sourceTarget === sourceTarget);
+      const grouped = groupPublicEntries([...records]).get(entryPoint)!;
+      const publicExports = new Map<string, string>();
+      const exports = new Map<string, typescript.Symbol>();
+      for (const [exportName, origins] of grouped) {
+        if (origins.size !== 1)
+          throw new Error(`ambiguous documentation source ${entryPoint}:${exportName}`);
+        const origin = [...origins][0];
+        publicExports.set(exportName, origin);
+        const declaration = getPublicDeclarationNode(program, origin);
+        const name =
+          declaration && 'name' in declaration
+            ? (declaration.name as typescript.Node | undefined)
+            : undefined;
+        const symbol = name && checker.getSymbolAtLocation(name);
+        if (symbol) exports.set(exportName, symbol);
+      }
+      const ownExportNames = new Set(exports.keys());
+      // Conventional packers remain local to this entry and condition. Only explicitly declared
+      // shared-port relationships may borrow a unique public packer from another entry.
+      for (const [className, ports] of Object.entries(SHARED_PARAMETER_PORTS)) {
+        if (!exports.has(className)) continue;
+        for (const packers of Object.values(ports))
+          for (const relationship of packers) {
+            const name = typeof relationship === 'string' ? relationship : relationship.name;
+            if (exports.has(name)) continue;
+            const candidates = publicSymbols.get(name);
+            if (candidates?.size !== 1)
+              throw new Error(`shared parameter packer ${name} needs a unique public declaration`);
+            exports.set(name, [...candidates.values()][0]);
+          }
+      }
+      // Shared packer length bindings can be referenced across entries too, but lending them
+      // never creates a conventional class/packer association.
+      for (const [name, declarations] of publicSymbols) {
+        if (
+          !/_PARAMETER_LENGTH$|^get\w+ParameterLength$/.test(name) ||
+          exports.has(name) ||
+          declarations.size !== 1
+        )
+          continue;
+        exports.set(name, [...declarations.values()][0]);
+      }
+      for (const parametersForClass of collectEntryClassParameters(
+        checker,
+        exports,
+        ownExportNames
+      )) {
+        const packers = parametersForClass.packers.map(packer => {
+          const name = packer.call.split('(')[0];
+          const symbol = exports.get(name);
+          const entries = inventory
+            .filter(
+              record =>
+                record.exportName === name &&
+                publicSymbols.get(name)?.get(record.declaration) === symbol
+            )
+            .map(record => record.entryPoint);
+          const packerEntry = entries.includes(entryPoint) ? entryPoint : entries[0];
+          return packerEntry ? {...packer, entryPoint: packerEntry} : packer;
+        });
+        const declaration = publicExports.get(parametersForClass.className);
+        const key = JSON.stringify([declaration, parametersForClass]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        parameters.push({...parametersForClass, packers, entryPoint, declaration});
       }
     }
   }
+  return parameters.sort((left, right) => left.className.localeCompare(right.className));
+}
 
+function collectEntryClassParameters(
+  checker: typescript.TypeChecker,
+  exports: Map<string, typescript.Symbol>,
+  ownExportNames: ReadonlySet<string>
+): ClassParameters[] {
   const classNames = [...exports]
     .filter(([name, symbol]) => /^GPU/.test(name) && symbol.flags & typescript.SymbolFlags.Class)
     .map(([name]) => name)
@@ -197,7 +302,8 @@ export function collectClassParameters(): ClassParameters[] {
 
   for (const [className, ports] of Object.entries(SHARED_PARAMETER_PORTS)) {
     const classSymbol = exports.get(className);
-    const declaration = classSymbol?.valueDeclaration;
+    if (!classSymbol) continue;
+    const declaration = classSymbol.valueDeclaration;
     const constructorSignature =
       classSymbol && declaration
         ? checker.getTypeOfSymbolAtLocation(classSymbol, declaration).getConstructSignatures()[0]
@@ -234,36 +340,79 @@ export function collectClassParameters(): ClassParameters[] {
       continue;
     }
     const stem = match[1];
-    const declaration = symbol.declarations?.find(typescript.isFunctionDeclaration);
+    const declarations = symbol.declarations?.filter(typescript.isFunctionDeclaration) ?? [];
+    const declaration = declarations.find(candidate => candidate.body) ?? declarations[0];
     if (!declaration) {
       continue;
     }
     const length = getLength(checker, exports, stem, declaration);
-    const packer = describePacker(checker, declaration, name, length?.text ?? null);
-    packer.identifiers = [name, ...(length?.ownConstant ? [length.ownConstant] : [])];
-    const owner = classNames.find(className => stem.startsWith(className));
-    if (owner) {
-      addPacker(owner, packer);
-    }
-    for (const [className, ports] of Object.entries(SHARED_PARAMETER_PORTS)) {
-      for (const [port, packers] of Object.entries(ports)) {
-        for (const relationship of packers) {
-          const sharedName = typeof relationship === 'string' ? relationship : relationship.name;
-          if (sharedName !== name || className === owner) continue;
-          const consumedFields = typeof relationship === 'string' ? undefined : relationship.fields;
-          for (const field of consumedFields ?? []) {
-            if (!packer.fields.some(candidate => candidate.name === field)) {
-              throw new Error(`shared parameter setting ${name}.${field} is not public`);
+    // Layout references live in the implementation; callers see only overload declarations.
+    const signatures =
+      declarations.length > 1 ? declarations.filter(candidate => !candidate.body) : declarations;
+    for (const signature of signatures) {
+      for (const packer of describePublicPackers(
+        checker,
+        signature,
+        name,
+        length?.text ?? null,
+        signatures.length > 1
+      )) {
+        packer.identifiers = [name, ...(length?.ownConstant ? [length.ownConstant] : [])];
+        // These public layouts vary independently of a function's stem. Keep the conditions
+        // explicit, pinned against real packer outputs in documentation-parameter-review.
+        if (
+          name === 'getGPURasterFractionalCoverageParameterValues' &&
+          signature.parameters.some(parameter => parameter.name.getText() === 'options')
+        ) {
+          const localLength = exports.get('GPU_RASTER_FRACTIONAL_COVERAGE_LOCAL_PARAMETER_LENGTH');
+          if (!localLength) throw new Error('missing public fractional coverage local layout');
+          packer.length = describeLengthConstant(checker, localLength);
+        }
+        if (name === 'getGPUNeighborSearchParameterValues') {
+          const temporalLength = exports.get('GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH');
+          if (!temporalLength || !length) throw new Error('missing public neighbor layouts');
+          packer.length = `${length.text.replace(/\)$/, '; without `timeRadius`)')} or ${describeLengthConstant(checker, temporalLength).replace(/\)$/, '; with `timeRadius` and `timeBounds`)')}`;
+        }
+        if (name === 'getGPUTerrainHorizonParameterValues') {
+          const baseLength = exports.get('GPU_TERRAIN_HORIZON_PARAMETER_LENGTH');
+          const anisotropicLength = exports.get('GPU_TERRAIN_HORIZON_ANISOTROPIC_PARAMETER_LENGTH');
+          const sweepLength = exports.get('GPU_TERRAIN_HORIZON_SWEEP_PARAMETER_LENGTH');
+          if (!baseLength || !anisotropicLength || !sweepLength) {
+            throw new Error('missing public terrain horizon layouts');
+          }
+          packer.length = `${describeLengthConstant(checker, baseLength)} for base settings; ${describeLengthConstant(checker, anisotropicLength)} with any anisotropy field or a target of at least 12 elements; ${describeLengthConstant(checker, sweepLength)} with explicit sweep settings`;
+          packer.identifiers = [name, baseLength.name, anisotropicLength.name, sweepLength.name];
+        }
+        const owner = ownExportNames.has(name)
+          ? classNames.find(className => stem.startsWith(className))
+          : undefined;
+        if (owner) {
+          addPacker(owner, packer);
+        }
+        for (const [className, ports] of Object.entries(SHARED_PARAMETER_PORTS)) {
+          if (!exports.has(className)) continue;
+          for (const [port, packers] of Object.entries(ports)) {
+            for (const relationship of packers) {
+              const sharedName =
+                typeof relationship === 'string' ? relationship : relationship.name;
+              if (sharedName !== name || className === owner) continue;
+              const consumedFields =
+                typeof relationship === 'string' ? undefined : relationship.fields;
+              for (const field of consumedFields ?? []) {
+                if (!packer.fields.some(candidate => candidate.name === field)) {
+                  throw new Error(`shared parameter setting ${name}.${field} is not public`);
+                }
+              }
+              addPacker(className, {
+                ...packer,
+                port,
+                consumedFields,
+                fields: consumedFields
+                  ? packer.fields.filter(field => consumedFields.includes(field.name))
+                  : packer.fields
+              });
             }
           }
-          addPacker(className, {
-            ...packer,
-            port,
-            consumedFields,
-            fields: consumedFields
-              ? packer.fields.filter(field => consumedFields.includes(field.name))
-              : packer.fields
-          });
         }
       }
     }
@@ -318,17 +467,46 @@ function getLength(
   }
   const symbol = constant ? exports.get(constant) : undefined;
   if (constant && symbol) {
-    const valueDeclaration = symbol.valueDeclaration;
-    const type = valueDeclaration
-      ? checker.getTypeOfSymbolAtLocation(symbol, valueDeclaration)
-      : null;
-    const text = type?.isNumberLiteral() ? `\`${constant}\` (${type.value})` : `\`${constant}\``;
-    return {text, ownConstant};
+    return {text: describeLengthConstant(checker, symbol), ownConstant};
   }
   const functionName = `get${stem}ParameterLength`;
   return exports.has(functionName)
     ? {text: `\`${functionName}(...)\``, ownConstant: functionName}
     : null;
+}
+
+function describeLengthConstant(
+  checker: typescript.TypeChecker,
+  symbol: typescript.Symbol
+): string {
+  const type = checker.getTypeOfSymbol(symbol);
+  return `\`${symbol.name}\`${type.isNumberLiteral() ? ` (${type.value})` : ''}`;
+}
+
+function getPackedArrayFormat(type: typescript.Type | undefined) {
+  switch (type?.getNonNullableType().getSymbol()?.name) {
+    case 'Float32Array':
+      return 'float32';
+    case 'Uint32Array':
+      return 'uint32';
+    case 'Int32Array':
+      return 'sint32';
+    default:
+      return undefined;
+  }
+}
+
+function getSettingsParameterIndex(
+  checker: typescript.TypeChecker,
+  declaration: typescript.SignatureDeclaration
+): number {
+  return declaration.parameters.findIndex(parameter => {
+    const text = parameter.type?.getText();
+    return (
+      text !== 'GPURasterMetadata' &&
+      isSettingsObject(checker, checker.getTypeAtLocation(parameter))
+    );
+  });
 }
 
 function describePacker(
@@ -339,12 +517,14 @@ function describePacker(
   isMethod = false
 ): ClassPacker {
   const signature = checker.getSignatureFromDeclaration(declaration);
-  const returnType = signature ? checker.typeToString(signature.getReturnType()) : '';
-  const format = /Float32Array/.test(returnType)
-    ? 'float32'
-    : /Uint32Array/.test(returnType)
-      ? 'uint32'
-      : 'unknown';
+  const returnType = signature?.getReturnType();
+  const returnFormats = (returnType?.isUnion() ? returnType.types : [returnType]).map(
+    getPackedArrayFormat
+  );
+  const format =
+    returnFormats.includes('float32') && returnFormats.includes('uint32')
+      ? 'uint32 | float32'
+      : (returnFormats.find(value => value !== undefined) ?? 'unknown');
   const parameterDocs = new Map(
     typescript
       .getJSDocTags(declaration)
@@ -354,22 +534,24 @@ function describePacker(
   const argumentsList: ParameterField[] = [];
   let fields: ParameterField[] = [];
   const shown: string[] = [];
+  const settingsIndex = getSettingsParameterIndex(checker, declaration);
   declaration.parameters.forEach((parameter, index) => {
     const parameterName = parameter.name.getText();
     const typeText = parameter.type ? normalizeText(parameter.type.getText()) : 'unknown';
     const optional = Boolean(parameter.questionToken || parameter.initializer);
-    // The trailing output array (`target`) is an allocation detail, not an input.
-    if (/^(Float32Array|Uint32Array)$/.test(typeText) && index > 0) {
+    const parameterType = checker.getTypeAtLocation(parameter);
+    // A middle destination keeps its positional slot even when callers pass undefined.
+    if (
+      optional &&
+      index > 0 &&
+      index === declaration.parameters.length - 1 &&
+      getPackedArrayFormat(parameterType)
+    ) {
       return;
     }
     shown.push(optional ? `${parameterName}?` : parameterName);
-    const parameterType = checker.getTypeAtLocation(parameter);
     // Raster metadata (`grid`) is a shared contract documented once, not a settings object.
-    if (
-      index === 0 &&
-      typeText !== 'GPURasterMetadata' &&
-      isSettingsObject(checker, parameterType)
-    ) {
+    if (index === settingsIndex) {
       fields = getFields(checker, parameterType);
       return;
     }
@@ -390,13 +572,44 @@ function describePacker(
   };
 }
 
+/** Split object unions after TypeScript distributes intersections, keeping conditional fields local. */
+function describePublicPackers(
+  checker: typescript.TypeChecker,
+  declaration: typescript.SignatureDeclaration,
+  name: string,
+  length: string | null,
+  overloaded: boolean
+): ClassPacker[] {
+  const packer = describePacker(checker, declaration, name, length);
+  const parameter = declaration.parameters[getSettingsParameterIndex(checker, declaration)];
+  if (!parameter) return [packer];
+  const type = checker.getTypeAtLocation(parameter).getNonNullableType();
+  if (!isSettingsObject(checker, type)) return [packer];
+  const variants = type.isUnion() ? type.types : [type];
+  return variants.map(variant => ({
+    ...packer,
+    fields: getFields(checker, variant),
+    ...(overloaded || variants.length > 1
+      ? {
+          settingsType: checker.typeToString(
+            variant,
+            undefined,
+            typescript.TypeFormatFlags.NoTruncation
+          )
+        }
+      : {})
+  }));
+}
+
 /** True for an object type with properties (not an array, number or raster metadata). */
 function isSettingsObject(checker: typescript.TypeChecker, type: typescript.Type): boolean {
   const target = type.getNonNullableType();
+  if (target.isUnion()) return target.types.every(variant => isSettingsObject(checker, variant));
   return (
     Boolean(target.flags & typescript.TypeFlags.Object || target.isIntersection()) &&
     !checker.isArrayType(target) &&
     !checker.isTupleType(target) &&
+    !getPackedArrayFormat(target) &&
     target.getCallSignatures().length === 0 &&
     checker.getPropertiesOfType(target).length > 0
   );
@@ -404,19 +617,27 @@ function isSettingsObject(checker: typescript.TypeChecker, type: typescript.Type
 
 function getFields(checker: typescript.TypeChecker, type: typescript.Type): ParameterField[] {
   return checker.getPropertiesOfType(type.getNonNullableType()).map(property => {
-    const declaration = property.valueDeclaration ?? property.declarations?.[0];
-    const typeNode =
-      declaration &&
-      (typescript.isPropertySignature(declaration) || typescript.isPropertyDeclaration(declaration))
-        ? declaration.type
-        : undefined;
-    const typeText = typeNode
-      ? typeNode.getText()
-      : checker.typeToString(
-          checker.getTypeOfSymbol(property),
-          undefined,
-          typescript.TypeFormatFlags.NoTruncation
-        );
+    // A symbol on an intersection can be narrower than either original property declaration.
+    // In particular number & never is forbidden, even when the original prop was optional.
+    const propertyType = checker.getTypeOfSymbol(property);
+    const forbidden =
+      Boolean(propertyType.flags & typescript.TypeFlags.Undefined) &&
+      property.declarations?.some(
+        declaration =>
+          (typescript.isPropertySignature(declaration) ||
+            typescript.isPropertyDeclaration(declaration)) &&
+          declaration.type?.kind === typescript.SyntaxKind.NeverKeyword
+      );
+    const typeText = forbidden
+      ? 'never'
+      : checker
+          .typeToString(
+            propertyType,
+            undefined,
+            typescript.TypeFormatFlags.NoTruncation |
+              typescript.TypeFormatFlags.UseSingleQuotesForStringLiteralType
+          )
+          .replace(/\s*\|\s*undefined\b/g, '');
     const defaultTag = property
       .getJsDocTags(checker)
       .find(tag => tag.name === 'defaultValue' || tag.name === 'default');
@@ -426,7 +647,12 @@ function getFields(checker: typescript.TypeChecker, type: typescript.Type): Para
       name: property.name,
       optional: Boolean(property.flags & typescript.SymbolFlags.Optional),
       type: normalizeText(typeText),
-      description: defaultText ? `${description} Default: ${defaultText}.`.trim() : description
+      description:
+        typeText === 'never'
+          ? 'Forbidden for this settings branch.'
+          : defaultText
+            ? `${description} Default: ${defaultText}.`.trim()
+            : description
     };
   });
 }
@@ -477,12 +703,17 @@ function escapeCell(text: string): string {
 /** Renders one class's subsection body (without the markers). */
 export function renderClassParameters(parameters: ClassParameters, headingLevel: number): string {
   const lines = [`${'#'.repeat(headingLevel)} \`${parameters.className}\` parameters`, ''];
+  if (parameters.entryPoint)
+    lines.push(`Import from \`${parameters.entryPoint}\`: \`${parameters.className}\`.`, '');
   for (const packer of parameters.packers) {
     const format = packer.format === 'unknown' ? '' : ` \`${packer.format}\``;
     const length = packer.length
       ? `${packer.length}${format} values`
       : `the${format} parameter view`;
     lines.push(`- Packer: \`${packer.call}\`, writes ${length}.`);
+    if (packer.entryPoint && packer.entryPoint !== parameters.entryPoint) {
+      lines.push(`  - Import \`${packer.call.split('(')[0]}\` from \`${packer.entryPoint}\`.`);
+    }
     if (packer.port) {
       lines.push(`  - Input port: \`${packer.port}\`.`);
     }
@@ -509,7 +740,11 @@ export function renderClassParameters(parameters: ClassParameters, headingLevel:
     return isNew;
   });
   for (const packer of tables) {
-    lines.push('', `Settings of \`${packer.call.replace(/\(.*$/, '')}\`:`, '');
+    lines.push(
+      '',
+      `Settings of \`${packer.settingsType ? packer.call : packer.call.replace(/\(.*$/, '')}\`${packer.settingsType ? ` for \`${packer.settingsType}\`` : ''}:`,
+      ''
+    );
     lines.push('| Field | Type | Description |', '|---|---|---|');
     for (const field of packer.fields) {
       const name = `\`${field.name}\`${field.optional ? ' (optional)' : ''}`;
@@ -527,6 +762,19 @@ export type ClassDocumentationOwner = {page: string; heading: string; occurrence
 
 /** Resolve intentionally repeated reference headings explicitly, independently of page order. */
 const CLASS_DOCUMENTATION_OWNERS: Record<string, ClassDocumentationOwner> = {
+  GPULagrangianFlowMap: {
+    page: 'gpu-raster/flow-map-and-particle-diagnostics.md',
+    heading: 'GPULagrangianFlowMap'
+  },
+  GPUFiniteTimeLyapunovExponent: {
+    page: 'gpu-raster/flow-map-and-particle-diagnostics.md',
+    heading: 'GPUFiniteTimeLyapunovExponent'
+  },
+  GPUScalarFieldRidges: {
+    page: 'gpu-raster/flow-map-and-particle-diagnostics.md',
+    heading: 'GPUScalarFieldRidges'
+  },
+  GPULineDensity: {page: 'gpu-spatial-analysis/operators-geometry.md', heading: 'GPULineDensity'},
   GPUChunkedSpatialWeightsTranspose: {
     page: 'gpu-spatial-analysis/chunked-spatial-weights-transpose.md',
     heading: 'GPUChunkedSpatialWeightsTranspose'
@@ -621,6 +869,9 @@ function findClassHeading(
     }
     return matches[0] ?? null;
   };
+  // An explicit owner may intentionally be a family heading. A new named heading elsewhere
+  // must not displace that contract or make the declared owner look nonexistent.
+  if (owners[className]) return selectOwner(headings);
   if (exact.length || partial.length) return selectOwner(exact.length ? exact : partial);
   const mentions: {heading: DocHeading; count: number}[] = [];
   for (const [page, headings] of candidates) {
@@ -661,7 +912,20 @@ export function generateDocPages(
   // Insertions per page: line index → blocks, applied bottom-up so indexes stay valid.
   const insertions = new Map<string, Map<number, string[]>>();
   for (const entry of classParameters) {
-    const heading = findClassHeading(entry.className, headingsByPage, linesByPage, owners);
+    const qualifiedName = `${entry.entryPoint}:${entry.className}`;
+    const qualifiedOwner = owners[qualifiedName];
+    const namesakes = classParameters.filter(candidate => candidate.className === entry.className);
+    if (new Set(namesakes.map(candidate => candidate.declaration)).size > 1 && !qualifiedOwner) {
+      throw new Error(
+        `ambiguous public class identity ${qualifiedName}: declare an entry-qualified documentation owner`
+      );
+    }
+    const heading = findClassHeading(
+      entry.className,
+      headingsByPage,
+      linesByPage,
+      qualifiedOwner ? {...owners, [entry.className]: qualifiedOwner} : owners
+    );
     if (!heading) {
       undocumented.push(entry.className);
       continue;

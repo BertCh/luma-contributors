@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
 import {Buffer} from '@luma.gl/core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -56,6 +56,156 @@ function createProps(capacity = 8, zoneCount = 2, probabilityCount = 3) {
   };
   return {graph, props, view, inputValues};
 }
+
+it('CCK-01 rejects wrong scalar formats on every named distribution port', () => {
+  const {props, view} = createProps();
+  for (const port of ['zoneIds', 'cellIds', 'fractions', 'zoneValidity'] as const) {
+    const original = props.coverage[port];
+    const wrong = view(original.format === 'uint32' ? 'float32' : 'uint32', original.length);
+    expect(
+      () =>
+        new GPURasterFractionalZonalDistribution({
+          ...props,
+          coverage: {...props.coverage, [port]: wrong} as typeof props.coverage
+        }),
+      port
+    ).toThrow();
+  }
+  for (const port of ['count', 'requiredCount', 'overflow', 'candidateOverflow'] as const) {
+    expect(
+      () =>
+        new GPURasterFractionalZonalDistribution({
+          ...props,
+          coverage: {
+            ...props.coverage,
+            status: {...props.coverage.status, [port]: view('float32', 1)}
+          } as typeof props.coverage
+        }),
+      port
+    ).toThrow();
+  }
+  for (const [port, original] of Object.entries(props.output)) {
+    const wrong = view(original.format === 'uint32' ? 'float32' : 'uint32', original.length);
+    expect(
+      () =>
+        new GPURasterFractionalZonalDistribution({
+          ...props,
+          output: {...props.output, [port]: wrong} as typeof props.output
+        }),
+      port
+    ).toThrow();
+  }
+  for (const port of ['observationWeights', 'cellAreas', 'parameters'] as const) {
+    expect(
+      () =>
+        new GPURasterFractionalZonalDistribution({
+          ...props,
+          [port]: view('uint32', 8)
+        } as unknown as GPURasterFractionalZonalDistributionProps),
+      port
+    ).toThrow();
+  }
+  expect(
+    () =>
+      new GPURasterFractionalZonalDistribution({
+        ...props,
+        input: {...props.input, validity: view('float32', 8)}
+      } as unknown as GPURasterFractionalZonalDistributionProps)
+  ).toThrow();
+  expect(
+    () =>
+      new GPURasterFractionalZonalDistribution({
+        ...props,
+        input: {...props.input, format: 'uint32'}
+      } as GPURasterFractionalZonalDistributionProps)
+  ).toThrow();
+});
+
+it('review B4 probabilities format rejection is independent of quantile output shape', () => {
+  const {props, view} = createProps();
+  expect(
+    () =>
+      new GPURasterFractionalZonalDistribution({
+        ...props,
+        probabilities: view('float32', props.probabilities.length)
+      })
+  ).not.toThrow();
+  expect(
+    () =>
+      new GPURasterFractionalZonalDistribution({
+        ...props,
+        probabilities: view('uint32', props.probabilities.length)
+      } as unknown as GPURasterFractionalZonalDistributionProps)
+  ).toThrow(/probabilities.*float32/);
+});
+
+for (const placement of ['inherited', 'non-enumerable'] as const) {
+  for (const port of ['means', 'fractions', 'count'] as const) {
+    it(`review B2 rejects a wrong-format ${placement} direct ${port} view`, () => {
+      const {props, view} = createProps();
+      const map =
+        port === 'means'
+          ? props.output
+          : port === 'fractions'
+            ? props.coverage
+            : props.coverage.status;
+      const original = map[port as keyof typeof map] as GraphDataView;
+      Reflect.deleteProperty(map, port);
+      const descriptor = {
+        get: () =>
+          view(port === 'fractions' || port === 'means' ? 'uint32' : 'float32', original.length),
+        enumerable: false
+      };
+      if (placement === 'inherited')
+        Object.setPrototypeOf(map, Object.defineProperty({}, port, descriptor));
+      else Object.defineProperty(map, port, descriptor);
+      expect(() => new GPURasterFractionalZonalDistribution(props)).toThrow(
+        new RegExp(`${port}.*${port === 'count' ? 'uint32' : 'float32'}`)
+      );
+    });
+  }
+}
+
+it('review B2 captures direct inherited output and coverage views once through dispatch', () => {
+  const {graph, props, view} = createProps();
+  const originalMeans = props.output.means;
+  const originalFractions = props.coverage.fractions;
+  const originalCount = props.coverage.status.count;
+  let means = originalMeans;
+  let fractions = originalFractions;
+  let count = originalCount;
+  const reads = {means: 0, fractions: 0, count: 0};
+  Reflect.deleteProperty(props.output, 'means');
+  Reflect.deleteProperty(props.coverage, 'fractions');
+  Reflect.deleteProperty(props.coverage.status, 'count');
+  Object.setPrototypeOf(props.output, {
+    get means() {
+      reads.means++;
+      return means;
+    }
+  });
+  Object.setPrototypeOf(props.coverage, {
+    get fractions() {
+      reads.fractions++;
+      return fractions;
+    }
+  });
+  Object.setPrototypeOf(props.coverage.status, {
+    get count() {
+      reads.count++;
+      return count;
+    }
+  });
+  const contributor = new GPURasterFractionalZonalDistribution(props);
+  means = view('float32', 2);
+  fractions = view('float32', 8);
+  count = view('uint32', 1);
+  expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+  expect(contributor.props.output.means).toBe(originalMeans);
+  expect(contributor.props.coverage.fractions).toBe(originalFractions);
+  expect(contributor.props.coverage.status.count).toBe(originalCount);
+  expect(reads).toEqual({means: 1, fractions: 1, count: 1});
+});
 
 for (const [capacity, zoneCount, probabilityCount] of [
   [8, 2, 3],

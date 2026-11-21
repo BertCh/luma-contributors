@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotVecchiaLossProps} from './vecchia-neighborhood-status';
+
+import {snapshotVecchiaFisherScoringOperationProps} from './interpolation-operation-snapshots';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   GPUVecchiaFisherScoring,
@@ -20,12 +24,14 @@ export type VecchiaFisherScoringOperationProps = Pick<
   observations: string;
   neighborhoodOffsets: string;
   neighborhoods: string;
+  neighborhoodStatus?: {overflow?: string; candidateOverflow?: string};
   parameters: string;
   output: {
     siteTerms: string;
     siteStatus: string;
     totals: string;
     status: string;
+    neighborhoodStatus?: string;
   };
 };
 
@@ -35,6 +41,7 @@ export type VecchiaFisherScoringOperationProps = Pick<
  */
 export class GPUVecchiaFisherScoringOperation extends GPUContributorOperation {
   constructor(props: VecchiaFisherScoringOperationProps) {
+    props = snapshotVecchiaLossProps(props, snapshotVecchiaFisherScoringOperationProps);
     const id = props.id ?? 'vecchia-fisher-scoring';
     super({
       id,
@@ -43,6 +50,12 @@ export class GPUVecchiaFisherScoringOperation extends GPUContributorOperation {
         observations: props.observations,
         neighborhoodOffsets: props.neighborhoodOffsets,
         neighborhoods: props.neighborhoods,
+        ...(props.neighborhoodStatus?.overflow !== undefined
+          ? {neighborhoodOverflow: props.neighborhoodStatus.overflow}
+          : {}),
+        ...(props.neighborhoodStatus?.candidateOverflow !== undefined
+          ? {neighborhoodCandidateOverflow: props.neighborhoodStatus.candidateOverflow}
+          : {}),
         parameters: props.parameters
       },
       outputs: {
@@ -57,6 +70,15 @@ export class GPUVecchiaFisherScoringOperation extends GPUContributorOperation {
           format: 'float32',
           length: GPU_VECCHIA_FISHER_CELL_COUNT * 2
         },
+        ...(props.output.neighborhoodStatus !== undefined
+          ? {
+              neighborhoodStatus: {
+                value: props.output.neighborhoodStatus,
+                format: 'uint32' as const,
+                length: 3
+              }
+            }
+          : {}),
         status: {value: props.output.status, format: 'uint32', length: 3}
       },
       createContributor: getView =>
@@ -69,10 +91,23 @@ export class GPUVecchiaFisherScoringOperation extends GPUContributorOperation {
           neighborhoodOffsets: getView<'uint32'>('neighborhoodOffsets'),
           neighborhoods: getView<'uint32'>('neighborhoods'),
           parameters: getView<'float32'>('parameters'),
+          neighborhoodStatus: {
+            overflow:
+              props.neighborhoodStatus?.overflow !== undefined
+                ? getView<'uint32'>('neighborhoodOverflow')
+                : undefined,
+            candidateOverflow:
+              props.neighborhoodStatus?.candidateOverflow !== undefined
+                ? getView<'uint32'>('neighborhoodCandidateOverflow')
+                : undefined
+          },
           output: {
             siteTerms: getView<'float32'>('siteTerms'),
             siteStatus: getView<'uint32'>('siteStatus'),
             totals: getView<'float32'>('totals'),
+            ...(props.output.neighborhoodStatus !== undefined
+              ? {neighborhoodStatus: getView<'uint32'>('neighborhoodStatus')}
+              : {}),
             status: getView<'uint32'>('status')
           }
         })

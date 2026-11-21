@@ -7,7 +7,7 @@ import {expect, it, vi} from 'vitest';
 import * as weightsLoss from '../../../src/gpu-spatial-analysis/spatial-weights/spatial-weights-loss';
 import {
   GPUSpatialWeightsMinimumSpanningTree,
-  GPU_MINIMUM_SPANNING_TREE_STATUS
+  GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
 import {GPUSkaterRegions} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions';
 import {GPURedcapSingleLinkage} from '../../../src/gpu-spatial-analysis/redcap-regions/gpu-redcap-single-linkage';
@@ -88,7 +88,7 @@ it('R2 component-only forest publishes adjacency loss independently of invalid a
     );
     expect(Array.from(memory.readUint32(labels))).toEqual([0xffffffff, 0xffffffff, 0xffffffff]);
     expect(Array.from(memory.readUint32(status))).toEqual([0, 1]);
-    expect(GPU_MINIMUM_SPANNING_TREE_STATUS).toMatchObject({
+    expect(GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT).toMatchObject({
       invalidCount: 0,
       candidateOverflow: 1,
       length: 2

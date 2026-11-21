@@ -26,11 +26,15 @@ it('xi uses the GPU cursor without specializing shader source or pipeline consta
           coreDistances: createTransientView(graph, 'core', 'float32', rows),
           reachability: createTransientView(graph, 'reachability', 'float32', rows),
           predecessors: createTransientView(graph, 'predecessors', 'uint32', rows),
-          labels: createTransientView(graph, 'labels', 'uint32', rows),
-          status: createTransientView(graph, 'status', 'uint32', 3)
+          labels: createTransientView(graph, 'labels', 'uint32', rows)
         }
       };
-      const nodes = createOPTICSXiNodes(graph, props, 'xi-pipeline-check');
+      const nodes = createOPTICSXiNodes(
+        graph,
+        props,
+        'xi-pipeline-check',
+        createTransientView(graph, 'status', 'uint32', 3)
+      );
       for (const variant of ['xi-extraction', 'xi-gate']) {
         const batches = nodes.filter(node => node.workload?.variant === variant);
         expect(batches.length).toBeGreaterThan(1);

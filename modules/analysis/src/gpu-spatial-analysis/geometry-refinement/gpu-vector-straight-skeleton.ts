@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateRefinementOutputLength,
+  validateRefinementNumber
+} from './refinement-output-validation';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
 import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
-import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -60,26 +63,36 @@ export class GPUVectorStraightSkeleton implements GPUCommandNodeProducer {
   readonly maximumEvents: number;
   constructor(props: GPUVectorStraightSkeletonProps) {
     this.id = props.id ?? 'vector-straight-skeleton';
+    props = {...props, output: {...props.output}};
     this.props = props;
-    validateRefinementShaderNumber(this.id, 'offsetDistance', props.offsetDistance);
-    validateRefinementShaderNumber(this.id, 'eventTolerance', props.eventTolerance ?? 1e-5, true);
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPUVectorStraightSkeleton'},
+      'offsetDistance',
+      props.offsetDistance
+    );
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPUVectorStraightSkeleton'},
+      'eventTolerance',
+      props.eventTolerance ?? 1e-5,
+      true
+    );
     this.maximumVertices = props.maximumVertices ?? 128;
     this.maximumEvents = props.maximumEvents ?? 128;
     validateCapacity(this.id, 'maximumVertices', this.maximumVertices, 3, 1024);
     validateCapacity(this.id, 'maximumEvents', this.maximumEvents, 0, 4096);
     validateCapacity(this.id, 'segmentCapacity', props.segmentCapacity, 1);
-    if (
-      !(
-        Number.isFinite(props.offsetDistance) &&
-        props.offsetDistance >= 0 &&
-        Number.isFinite(props.eventTolerance ?? 1e-5) &&
-        (props.eventTolerance ?? 1e-5) > 0
-      )
-    )
-      throw new Error('Invalid skeleton event parameters');
-    validateSinglePackedView(props.positions, ['float32x2'], this.id);
-    for (const view of [props.ringOffsets, props.polygonOffsets, props.featureOffsets])
-      validateSinglePackedView(view, ['uint32'], this.id);
+
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`, {
+      id: this.id,
+      contributor: 'GPUVectorStraightSkeleton'
+    });
+    for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const)
+      validateSinglePackedView(
+        props[name],
+        ['uint32'],
+        {id: this.id, contributor: 'GPUVectorStraightSkeleton'},
+        name
+      );
     const polygons = props.polygonOffsets.length - 1;
     const slots = this.maximumVertices + 2 * this.maximumEvents;
     for (const [name, format, length] of [
@@ -89,8 +102,21 @@ export class GPUVectorStraightSkeleton implements GPUCommandNodeProducer {
       ['offsetLinks', 'uint32x2', polygons * slots],
       ['status', 'uint32x4', polygons]
     ] as const) {
-      validateSinglePackedView(props.output[name], [format], this.id);
-      if (props.output[name].length !== length) throw new Error('Skeleton output size mismatch');
+      validateSinglePackedView(props.output[name], [format], `${this.id} output.${name}`, {
+        id: this.id,
+        contributor: 'GPUVectorStraightSkeleton'
+      });
+      validateRefinementOutputLength(
+        {id: this.id, contributor: 'GPUVectorStraightSkeleton'},
+        `output.${name}`,
+        props.output[name],
+        length,
+        name === 'status'
+          ? 'polygonOffsets.length - 1'
+          : name === 'segments' || name === 'sourceEdges'
+            ? '(polygonOffsets.length - 1) * segmentCapacity'
+            : '(polygonOffsets.length - 1) * (maximumVertices + 2 * maximumEvents)'
+      );
     }
     validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
@@ -203,6 +229,30 @@ fn snapshot(polygon:u32,base:u32,count:u32,time:f32)->u32 {
     put(base,vertex,15u,readWord(base,vertex,6u)); put(base,vertex,16u,readWord(base,vertex,7u)); activeCount++;
   } }
   return activeCount;
+}
+fn emitRidge(polygon:u32,base:u32,vertex:u32,end:vec2f,required:u32,count:u32,time:f32)->u32 {
+  let written=emit(polygon,base,vertex,end,required);
+  if(written==required || required>=${props.segmentCapacity}u) { return written; }
+  let start=vec2f(scalar(base,vertex,9u),scalar(base,vertex,10u));
+  // Containment uses the midpoint relative to each interval start: an absolute float32
+  // midpoint can round onto the boundary of the adjacent caller edge although both ridge
+  // endpoints are exact (8388608.5 is not representable).
+  let halfRidge=0.5*(end-start);
+  let first=readWord(base,vertex,5u); var second=0xffffffffu;
+  for(var candidate=0u;candidate<count;candidate++) {
+    if(readWord(base,candidate,8u)==0u) { continue; }
+    let edge=readWord(base,candidate,5u);
+    if(dot(normal(base,first),normal(base,edge))>=-0.999999) { continue; }
+    let intervalStart=at(base,candidate,time); let intervalEnd=at(base,readWord(base,candidate,7u),time);
+    let direction=intervalEnd-intervalStart; let lengthSquared=dot(direction,direction);
+    let separation=(start-intervalStart)+halfRidge; let fraction=dot(separation,direction)/max(lengthSquared,1e-30);
+    if(lengthSquared>TOLERANCE*TOLERANCE && fraction*sqrt(lengthSquared)>=-TOLERANCE && (fraction-1.0)*sqrt(lengthSquared)<=TOLERANCE && abs(cross(separation,direction))<=TOLERANCE*sqrt(lengthSquared)) { second=edge; break; }
+  }
+  let slot=polygon*${props.segmentCapacity}u+required;
+  sources[sourcesOffset+slot*2u]=0xffffffffu; sources[sourcesOffset+slot*2u+1u]=0xffffffffu;
+  if(first!=0xffffffffu) { sources[sourcesOffset+slot*2u]=readWord(base,first,14u); }
+  if(second!=0xffffffffu) { sources[sourcesOffset+slot*2u+1u]=readWord(base,second,14u); }
+  return written;
 }`,
         body: `let base=${getWorkspaceBase('index')};
 var count=0u; var flags=0u; var required=0u;
@@ -220,7 +270,7 @@ for(var ring=firstRing;ring<lastRing;ring++) {
     if(all(point(vertex)==point(before)) || all(point(vertex)==point(after))) { flags|=1u; continue; }
     if(count>=${this.maximumVertices}u) { flags|=1u; break; }
     let location=point(vertex); if(any((bitcast<vec2u>(location)&vec2u(0x7f800000u))==vec2u(0x7f800000u))) { flags|=1u; }
-    store(base,count,9u,location.x); store(base,count,10u,location.y); put(base,count,14u,vertex); count++;
+    store(base,count,9u,location.x); store(base,count,10u,location.y); put(base,count,14u,select(vertex,before,reverse)); count++;
   }
   if(count-ringStart<3u) { flags|=1u; continue; }
   for(var vertex=ringStart;vertex<count;vertex++) {
@@ -241,6 +291,8 @@ loop {
     let next=readWord(base,vertex,7u);
     if(next==vertex) { put(base,vertex,8u,0u); }
     else if(readWord(base,next,7u)==vertex) {
+      // The last two vertices retain the two surviving supports. They need not be parallel:
+      // a terminal arc of a convex pentagon is an ordinary bisector of oblique edges.
       required=emit(index,base,vertex,vec2f(scalar(base,next,9u),scalar(base,next,10u)),required); put(base,vertex,8u,0u); put(base,next,8u,0u);
     }
   } }
@@ -273,7 +325,7 @@ loop {
         if(other<vertex && ((distance(start,otherStart)<=TOLERANCE && distance(finish,otherFinish)<=TOLERANCE) || (distance(start,otherFinish)<=TOLERANCE && distance(finish,otherStart)<=TOLERANCE))) { keep=false; }
         other=otherNext; if(other==root) { break; }
       }
-      if(keep) { store(base,vertex,9u,start.x); store(base,vertex,10u,start.y); required=emit(index,base,vertex,finish,required); }
+      if(keep) { store(base,vertex,9u,start.x); store(base,vertex,10u,start.y); required=emitRidge(index,base,vertex,finish,required,count,time); }
       vertex=next; if(vertex==root) { break; }
     }
     vertex=root; loop { put(base,vertex,8u,0u); vertex=readWord(base,vertex,7u); if(vertex==root) { break; } }

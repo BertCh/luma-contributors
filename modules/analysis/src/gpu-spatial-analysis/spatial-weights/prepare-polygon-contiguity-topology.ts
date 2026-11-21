@@ -12,6 +12,7 @@ import {
   type CPUContiguityWeightsResult
 } from './cpu-contiguity-weights-operation';
 import type {GPUContiguityCriterion} from './gpu-contiguity-weights';
+import {prepareGeometryInput} from '../spatial-join/prepare-geometry-input';
 import {DataType, Vector} from 'apache-arrow';
 
 /** Bounded CPU ingestion and optional all-pairs CPU adjacency route. */
@@ -24,7 +25,7 @@ const MAXIMUM_MANIFEST_BYTES = 1024 * 1024;
 
 export type PreparedPolygonTopologySource = {
   metadata: {rowCount: number; invalidRows: readonly {sourceRowIndex: number; reason: string}[]};
-  /** Four-level Arrow lists: source row → polygon part → ring → fixed-size XY[Z…]. */
+  /** Native Polygon or MultiPolygon Arrow lists; XY[Z…] originals define equality. */
   batches: readonly {id: string; rowCount: number; sourceRowOffset: number; polygons: Vector}[];
 };
 
@@ -222,30 +223,45 @@ function readPolygonRow(
   rowIndex: number,
   accountVertices: (count: number) => void
 ): PolygonRow {
+  // Normalize the hierarchy through the shared schema adapter. Equality is still read from
+  // the original Arrow coordinates below, never its rounded metric Float32 positions.
+  let coordinateType = vector.type;
+  let depth = 0;
+  while (DataType.isList(coordinateType)) {
+    depth++;
+    coordinateType = coordinateType.children[0].type;
+  }
   const parts = readList(vector, rowIndex);
   if (parts === null || parts.length === 0) return [];
   if (parts.length > POLYGON_CONTIGUITY_MAXIMUM_VERTICES)
     throw new PolygonContiguityCapacityError();
   const row: PolygonRow = [];
-  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
-    const rings = readList(parts, partIndex);
+  const partCount = depth === 2 ? 1 : parts.length;
+  for (let partIndex = 0; partIndex < partCount; partIndex++) {
+    const rings = depth === 2 ? parts : readList(parts, partIndex);
     if (!rings || !rings.length) throw new Error('Invalid polygon part');
     if (rings.length > POLYGON_CONTIGUITY_MAXIMUM_VERTICES)
       throw new PolygonContiguityCapacityError();
     const polygon: Coordinate[][] = [];
-    for (let ringIndex = 0; ringIndex < rings.length; ringIndex++) {
+    const ringCount = rings.length;
+    for (let ringIndex = 0; ringIndex < ringCount; ringIndex++) {
       const vertices = readList(rings, ringIndex);
       if (!vertices) throw new Error('Invalid polygon ring');
       accountVertices(vertices.length);
-      if (!DataType.isFixedSizeList(vertices.type) || vertices.type.listSize < 2)
+      const separated = DataType.isStruct(vertices.type);
+      if (!separated && (!DataType.isFixedSizeList(vertices.type) || vertices.type.listSize < 2))
         throw new Error('Invalid polygon coordinate type');
       const ring: Coordinate[] = [];
       for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex++) {
         const coordinate = vertices.get(vertexIndex);
-        if (!(coordinate instanceof Vector) || coordinate.length < 2)
+        if (!separated && (!(coordinate instanceof Vector) || coordinate.length < 2))
           throw new Error('Invalid polygon coordinate');
-        const coordinateX: unknown = coordinate.get(0);
-        const coordinateY: unknown = coordinate.get(1);
+        const coordinateX: unknown = separated
+          ? (coordinate as Record<string, unknown> | null)?.['x']
+          : (coordinate as Vector).get(0);
+        const coordinateY: unknown = separated
+          ? (coordinate as Record<string, unknown> | null)?.['y']
+          : (coordinate as Vector).get(1);
         if (
           typeof coordinateX !== 'number' ||
           typeof coordinateY !== 'number' ||
@@ -274,6 +290,41 @@ function readPolygonRow(
       polygon.push(ring);
     }
     row.push(polygon);
+  }
+  // Account and validate original vertices before the shared adapter allocates metric arrays.
+  let normalized: ReturnType<typeof prepareGeometryInput> | undefined;
+  try {
+    normalized =
+      (DataType.isFixedSizeList(coordinateType) && coordinateType.listSize === 2) ||
+      DataType.isStruct(coordinateType)
+        ? prepareGeometryInput(vector.slice(rowIndex, rowIndex + 1), {
+            precision: 'allow-loss',
+            encoding: depth === 2 ? 'geoarrow.polygon' : 'geoarrow.multipolygon'
+          })
+        : undefined;
+  } catch (error) {
+    // Metric adaptation is optional for equality-only data outside float32's finite range.
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes('positions must remain finite float32 XY')
+    )
+      throw error;
+  }
+  if (normalized && normalized.geometry.kind !== 'polygons')
+    throw new Error('Polygon encoding required');
+  if (normalized) {
+    const geometry = normalized.geometry;
+    const featureOffsets = geometry.featureOffsets;
+    const polygonOffsets = geometry.polygonOffsets;
+    validateRequirement(
+      'preparePolygonContiguityTopology',
+      featureOffsets !== undefined && featureOffsets.length >= 2 && polygonOffsets !== undefined,
+      'normalized Polygon geometry requires featureOffsets and polygonOffsets'
+    );
+    const originalRings = row.flat();
+    return Array.from({length: featureOffsets[1]}, (_, part) =>
+      originalRings.slice(polygonOffsets[part], polygonOffsets[part + 1])
+    );
   }
   return row;
 }
@@ -325,21 +376,5 @@ export function computePolygonContiguityOnCPU(
     topology.topologyEncoding === 'source-xy-key-ids' && topology.equality === 'exact-source-xy',
     'topology must use exact-source-xy equality tokens'
   );
-  if (topology.rowCount === 0 || topology.vertexCount === 0) {
-    validateCapacity('computePolygonContiguityOnCPU', 'capacity', options.capacity, 0);
-    validateRequirement(
-      'computePolygonContiguityOnCPU',
-      options.criterion === 'queen' || options.criterion === 'rook',
-      "criterion must be 'queen' or 'rook'"
-    );
-    return {
-      offsets: new Uint32Array(topology.rowCount + 1),
-      neighbors: new Uint32Array(options.capacity),
-      weights: new Float32Array(options.capacity),
-      overflow: new Uint32Array(1),
-      requiredCount: new Uint32Array(1),
-      candidateOverflow: new Uint32Array(1)
-    };
-  }
   return computeContiguityWeightsOnCPU(topology, {...options, snapTolerance: 0});
 }

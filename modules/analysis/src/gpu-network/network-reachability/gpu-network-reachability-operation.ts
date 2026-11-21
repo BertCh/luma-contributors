@@ -6,8 +6,13 @@ import {
   GPUContributorOperation,
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUNetworkReachability} from './gpu-network-reachability';
 import {snapshotNetworkReachabilityConstructionProps} from './network-reachability-construction';
+import {
+  resolveNetworkRoutingCostPrecision,
+  type CPUNetworkRoutingCostPrecision
+} from '../../analysis-core/operations/cpu-network-routing';
 
 /** Graph values and explicit output dimensions shared by the GPU and CPU operations. */
 export type NetworkReachabilityOperationProps = {
@@ -20,6 +25,8 @@ export type NetworkReachabilityOperationProps = {
   startCount?: number | string;
   activeIterations?: string;
   costLimit?: string;
+  /** CPU default float64; GPU supports only float32-per-edge (its default). */
+  costPrecision?: CPUNetworkRoutingCostPrecision;
   costBreaks?: string;
   costBreakCount?: number;
   maximumIterations?: number;
@@ -28,6 +35,7 @@ export type NetworkReachabilityOperationProps = {
   output: {
     costs: string;
     predecessors?: string;
+    predecessorEdges?: string;
     bands?: string;
     bandCounts?: string;
     unresolvedCount?: string;
@@ -45,6 +53,20 @@ export type NetworkReachabilityOperationProps = {
 export class GPUNetworkReachabilityOperation extends GPUContributorOperation {
   constructor(props: NetworkReachabilityOperationProps) {
     props = snapshotNetworkReachabilityConstructionProps(props);
+    const costPrecision = resolveNetworkRoutingCostPrecision(
+      props.id ?? 'network-reachability',
+      props.costPrecision === undefined ? 'float32-per-edge' : props.costPrecision
+    );
+    validateRequirement(
+      props.id ?? 'network-reachability',
+      costPrecision === 'float32-per-edge',
+      `costPrecision must be float32-per-edge on GPU; received ${costPrecision}; use CPUNetworkReachabilityOperation for float64`
+    );
+    validateRequirement(
+      props.id ?? 'network-reachability',
+      !props.output.predecessorEdges || Boolean(props.output.predecessors),
+      'output.predecessorEdges requires output.predecessors'
+    );
     const inputs: Record<string, string> = {
       offsets: props.topology.offsets,
       neighbors: props.topology.neighbors,
@@ -64,7 +86,7 @@ export class GPUNetworkReachabilityOperation extends GPUContributorOperation {
       outputs[port] = {
         value,
         format: port === 'costs' ? 'float32' : 'uint32',
-        length: ['costs', 'predecessors', 'bands'].includes(port)
+        length: ['costs', 'predecessors', 'predecessorEdges', 'bands'].includes(port)
           ? length
           : port === 'bandCounts'
             ? (props.costBreakCount ?? 0)
@@ -107,6 +129,10 @@ export class GPUNetworkReachabilityOperation extends GPUContributorOperation {
           maximumTieIterations: props.maximumTieIterations,
           output: {
             costs: getView<'float32'>('costs'),
+            predecessorEdges:
+              props.output.predecessorEdges === undefined
+                ? undefined
+                : getView<'uint32'>('predecessorEdges'),
             predecessors:
               props.output.predecessors === undefined
                 ? undefined

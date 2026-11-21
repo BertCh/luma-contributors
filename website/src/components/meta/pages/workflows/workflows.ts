@@ -54,7 +54,7 @@ export type WorkflowRecord = {
   /** All recorded graph nodes, including compute and copy nodes. */
   nodeCount: number;
   dependencies: number;
-  buffers: number;
+  resourceCount: number;
   inventoryKnown?: boolean;
   bytes: number;
   bytesKind?: LensResourceBytesKind;
@@ -92,7 +92,7 @@ function makeRecord(
     title,
     nodeCount,
     dependencies,
-    buffers: resources.count,
+    resourceCount: resources.count,
     inventoryKnown: resources.inventoryKnown,
     bytes: resources.totalBytes,
     bytesKind: readRecordBytesKind(resources.totalBytesKind)

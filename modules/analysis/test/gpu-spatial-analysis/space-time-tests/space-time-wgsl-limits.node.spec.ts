@@ -24,6 +24,16 @@ const ROWS = 300;
 const MAXIMUM_PERMUTATIONS = 99;
 let serial = 0;
 
+it('mantel reduces pair counts and anchor selection before constant-work shift publication', () => {
+  const sources = getSources('mantel');
+  expect(sources.some(({id}) => id.includes('-pair-count-reduction-'))).toBe(true);
+  expect(sources.some(({id}) => id.includes('-first-anchor-reduction-'))).toBe(true);
+  const shift = sources.find(({id}) => id.endsWith('-shift'))!;
+  expect(shift.source.slice(shift.source.indexOf('fn main('))).not.toMatch(
+    /\b(?:for|while)\s*\(|\bloop\s*\{/
+  );
+});
+
 function getSources(kind: 'knox' | 'mantel'): ReturnType<typeof getGPUCommandNodeKernelSources> {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -91,9 +101,10 @@ for (const kind of ['knox', 'mantel'] as const) {
       body.indexOf('workgroupBarrier()')
     );
     expect(prologue).not.toContain('return');
-    // No kernel but the partials one (and the sort) pays for the workgroup memory.
+    // Partials and public sort/reduction primitives use workgroup memory. Their limits are
+    // checked above; the remaining domain kernels require none except Knox's two atomics.
     for (const {id, source, constants} of getSources(kind)) {
-      if (!id.endsWith('-partials') && !id.includes('-sort-')) {
+      if (!id.endsWith('-partials') && !id.includes('-sort-') && !id.includes('-reduction-')) {
         // Knox count-close keeps two atomics, each rounded to 16 bytes for the device limit.
         expect(getWorkgroupMemoryBytes(source, constants), id).toBe(
           id.endsWith('-count-close') ? 32 : 0

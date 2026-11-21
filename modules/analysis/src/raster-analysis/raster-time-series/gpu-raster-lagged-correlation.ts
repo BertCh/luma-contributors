@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateParameterTarget} from '../raster-band-utils';
 import type {
   GraphDataView,
   GPUCommandGraph,
@@ -19,6 +20,7 @@ import {
   type RasterTimeSeriesChunkPlan
 } from './raster-time-series-chunks-b';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -42,6 +44,11 @@ export function getGPURasterLaggedCorrelationParameterValues(
   settings: GPURasterLaggedCorrelationSettings = {},
   target: Float32Array = new Float32Array(GPU_RASTER_LAGGED_CORRELATION_PARAMETER_LENGTH)
 ): Float32Array {
+  validateParameterTarget(
+    'getGPURasterLaggedCorrelationParameterValues',
+    target,
+    GPU_RASTER_LAGGED_CORRELATION_PARAMETER_LENGTH
+  );
   target[0] = settings.minimumPairCount ?? 3;
   return target;
 }
@@ -67,7 +74,7 @@ export type GPURasterLaggedCorrelationProps<Rows extends RasterScalarView = Grap
   output: {
     /** `cell * lags.length + lagIndex`: Pearson correlation on the pairwise-complete samples; NaN unless status is 0. */
     correlations: RasterTimeSeriesView<'float32', Rows>;
-    /** Same layout: 0 computed, 1 fewer than `minimumPairCount` pairs, 2 zero variance. */
+    /** Same layout: 0 computed, 1 fewer than `minimumPairCount` pairs, 2 zero variance (every paired index or cell value equal). */
     status: RasterTimeSeriesView<'uint32', Rows>;
     /** Optional, same layout: valid pairs used. */
     pairCount?: RasterTimeSeriesView<'uint32', Rows>;
@@ -93,6 +100,15 @@ export class GPURasterLaggedCorrelation<Rows extends RasterScalarView = GraphDat
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPURasterLaggedCorrelationProps<Rows> & {values: Rows}) {
+    validateGraphPorts(props.id ?? 'raster-lagged-correlation', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      referenceIndex: {required: true, viewType: 'data', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'output.correlations': {required: true, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.pairCount': {required: false, viewType: 'either', formats: ['uint32']}
+    });
     this.props = props;
     const id = props.id ?? 'raster-lagged-correlation';
     this.id = id;
@@ -173,13 +189,27 @@ export class GPURasterLaggedCorrelation<Rows extends RasterScalarView = GraphDat
         ...(output.pairCount ? [rasterBinding('pairCount', output.pairCount, true)] : [])
       ],
       declarations: `${RASTER_FINITE_WGSL}
-const LAGS = array<i32, ${lagCount}>(${lags.map(lag => `${lag}`).join(', ')});`,
+const LAGS = array<i32, ${lagCount}>(${lags.map(lag => `${lag}`).join(', ')});
+// Exact 2^exponent for exponent in [-126, 127], built from its bits.
+fn laggedCorrelationPowerOfTwo(exponent: i32) -> f32 {
+  return bitcast<f32>(u32(exponent + 127i) << 23u);
+}
+// Two exact powers of two whose product scales a series of largest magnitude 'magnitude' into
+// [0.5, 1); the exponent comes from the bits, and a subnormal maximum counts as 2^-126.
+fn laggedCorrelationScaleFactors(magnitude: f32) -> vec2<f32> {
+  let exponent = max(i32((bitcast<u32>(magnitude) >> 23u) & 0xffu) - 126i, -125i);
+  let half = -exponent / 2i;
+  return vec2<f32>(laggedCorrelationPowerOfTwo(half), laggedCorrelationPowerOfTwo(-exponent - half));
+}`,
       body: `let minimumPairs = parameters[parametersOffset];
 for (var lagIndex = 0u; lagIndex < ${lagCount}u; lagIndex++) {
   let lag = LAGS[lagIndex];
+  // Pass 1: pair count and the range of each series.
   var count = 0u;
-  var indexTotal = 0.0;
-  var cellTotal = 0.0;
+  var indexMinimum = 0.0;
+  var indexMaximum = 0.0;
+  var cellMinimum = 0.0;
+  var cellMaximum = 0.0;
   for (var slice = 0i; slice < ${slices}i; slice++) {
     let targetSlice = slice + lag;
     if (targetSlice < 0i || targetSlice >= ${slices}i) { continue; }
@@ -187,13 +217,50 @@ for (var lagIndex = 0u; lagIndex < ${lagCount}u; lagIndex++) {
     let source = index * ${slices}u + u32(targetSlice);
     let cellValue = values[valuesOffset + source];
     if (!finite(indexValue) || !finite(cellValue) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
+    if (count == 0u) {
+      indexMinimum = indexValue;
+      indexMaximum = indexValue;
+      cellMinimum = cellValue;
+      cellMaximum = cellValue;
+    } else {
+      indexMinimum = min(indexMinimum, indexValue);
+      indexMaximum = max(indexMaximum, indexValue);
+      cellMinimum = min(cellMinimum, cellValue);
+      cellMaximum = max(cellMaximum, cellValue);
+    }
     count++;
-    indexTotal += indexValue;
-    cellTotal += cellValue;
   }
   var code = 1u;
   var correlation = missing();
   if (f32(count) >= minimumPairs) {
+    // Zero variance means zero spread: every paired value equal. Any other series is correlated,
+    // whatever its offset. Each series is scaled by powers of two (exact) to magnitude below 1 and
+    // shifted by its first paired value, so centred sums neither overflow, underflow nor lose the
+    // differences of a translated series to the rounding of a large mean.
+    let indexFactors = laggedCorrelationScaleFactors(max(abs(indexMinimum), abs(indexMaximum)));
+    let cellFactors = laggedCorrelationScaleFactors(max(abs(cellMinimum), abs(cellMaximum)));
+    var indexShift = 0.0;
+    var cellShift = 0.0;
+    var hasShift = false;
+    var indexTotal = 0.0;
+    var cellTotal = 0.0;
+    for (var slice = 0i; slice < ${slices}i; slice++) {
+      let targetSlice = slice + lag;
+      if (targetSlice < 0i || targetSlice >= ${slices}i) { continue; }
+      let indexValue = referenceIndex[referenceIndexOffset + u32(slice)];
+      let source = index * ${slices}u + u32(targetSlice);
+      let cellValue = values[valuesOffset + source];
+      if (!finite(indexValue) || !finite(cellValue) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
+      let indexScaled = indexValue * indexFactors.x * indexFactors.y;
+      let cellScaled = cellValue * cellFactors.x * cellFactors.y;
+      if (!hasShift) {
+        indexShift = indexScaled;
+        cellShift = cellScaled;
+        hasShift = true;
+      }
+      indexTotal += indexScaled - indexShift;
+      cellTotal += cellScaled - cellShift;
+    }
     let indexMean = indexTotal / f32(count);
     let cellMean = cellTotal / f32(count);
     var crossTotal = 0.0;
@@ -206,16 +273,16 @@ for (var lagIndex = 0u; lagIndex < ${lagCount}u; lagIndex++) {
       let source = index * ${slices}u + u32(targetSlice);
       let cellValue = values[valuesOffset + source];
       if (!finite(indexValue) || !finite(cellValue) ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
-      let indexAnomaly = indexValue - indexMean;
-      let cellAnomaly = cellValue - cellMean;
+      let indexAnomaly = (indexValue * indexFactors.x * indexFactors.y - indexShift) - indexMean;
+      let cellAnomaly = (cellValue * cellFactors.x * cellFactors.y - cellShift) - cellMean;
       crossTotal += indexAnomaly * cellAnomaly;
       indexSquares += indexAnomaly * indexAnomaly;
       cellSquares += cellAnomaly * cellAnomaly;
     }
-    // Float32 means carry rounding, so variance below it counts as zero rather than as a correlation.
-    if (indexSquares > f32(count) * indexMean * indexMean * 1e-12 && cellSquares > f32(count) * cellMean * cellMean * 1e-12) {
+    if (indexMinimum < indexMaximum && cellMinimum < cellMaximum && indexSquares > 0.0 && cellSquares > 0.0) {
       code = 0u;
-      correlation = clamp(crossTotal / sqrt(indexSquares * cellSquares), -1.0, 1.0);
+      // Square roots taken separately, so the denominator cannot overflow.
+      correlation = clamp(crossTotal / (sqrt(indexSquares) * sqrt(cellSquares)), -1.0, 1.0);
     } else {
       code = 2u;
     }

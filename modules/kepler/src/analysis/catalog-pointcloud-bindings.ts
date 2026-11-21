@@ -7,8 +7,13 @@ import {
   type CatalogOperationBinding,
   type CatalogParameterSpec
 } from './catalog-binding-types';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {runPointCloudOperation} from './catalog-pointcloud-gpu';
 import {MAXIMUM_POINT_CLOUD_ROWS} from './catalog-pointcloud-input';
+import {
+  POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER,
+  REMOVED_POINT_CLOUD_ICP_ITERATIONS_MESSAGE
+} from './catalog-pointcloud-icp-parameters';
 
 const numberParameter = (
   name: string,
@@ -158,7 +163,7 @@ const definitions: {
     inputs: ['source', 'target'],
     parameters: [
       numberParameter('maximumDistance', 'Maximum correspondence distance', 3, 0.000001, 1000000),
-      integerParameter('iterations', 'Registration iterations', 10, 1, 30)
+      POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER
     ],
     limitation:
       'Point-to-point ICP with identity initialization. Transform is source to target in the shared local metric frame. Inspect registration status before using an unconverged alignment.'
@@ -270,7 +275,15 @@ export const POINT_CLOUD_BINDINGS: readonly CatalogOperationBinding[] = definiti
     limitation:
       definition.limitation ??
       'Bounded catalog readback and native Sources publication; no streaming, implicit unit/datum conversion, CPU numerical fallback or new numerical implementation. Raster dimensions are at least two cells.',
-    runGpu: (context, inputs, parameters) =>
-      runPointCloudOperation(context, definition.id, inputs, parameters)
+    runGpu: (context, inputs, parameters) => {
+      if (definition.id === 'icp') {
+        validateRequirement(
+          'pointcloud-icp:',
+          !('iterations' in parameters),
+          REMOVED_POINT_CLOUD_ICP_ITERATIONS_MESSAGE
+        );
+      }
+      return runPointCloudOperation(context, definition.id, inputs, parameters);
+    }
   })
 );

@@ -16,6 +16,10 @@ import {
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {getRasterGridGeoreference} from '../../../src/analysis-core/contracts/raster-grid';
+import {
+  getWGSLKernelNodeRecord,
+  recordWGSLKernelNodes
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 const GRID = makeGPURasterMetadata({width: 6, height: 5});
@@ -74,6 +78,45 @@ it('GPUTerrainHydrologicIndices prefixes node ids', () => {
   device.destroy();
 });
 
+it('GPUTerrainHydrologicIndices rejects the untyped slope output', () => {
+  const {device, graph, create} = createFixture();
+  try {
+    const output = {
+      slope: createTransientView(graph, 'old-output', 'float32', 30),
+      wetnessIndex: createTransientView(graph, 'wetness-output', 'float32', 30)
+    };
+    expect(() => create({id: 'indices', output})).toThrow(
+      /^indices output\.slope was removed; use output\.descentTangent/
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
+it('GPUTerrainHydrologicIndices keeps the validated descent tangent destination', () => {
+  const {device, graph, create} = createFixture();
+  try {
+    recordWGSLKernelNodes(graph);
+    const descentTangent = createTransientView(graph, 'descent-tangent', 'float32', 30);
+    const output = {descentTangent};
+    const contributor = create({output});
+    const mutableOutput: Partial<GPUTerrainHydrologicIndicesOutput> = output;
+    delete mutableOutput.descentTangent;
+    const nodes = contributor.getCommandNodes(graph);
+    const kernel = getWGSLKernelNodeRecord(graph, nodes.at(-1)!.id);
+    expect(
+      kernel?.bindings.some(
+        binding =>
+          binding.name === 'descentTangent' &&
+          binding.view === descentTangent &&
+          binding.access === 'read_write'
+      )
+    ).toBe(true);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUTerrainHydrologicIndices validates its props', () => {
   const {device, graph, create} = createFixture();
   const view = <Format extends 'float32' | 'uint32'>(
@@ -87,13 +130,18 @@ it('GPUTerrainHydrologicIndices validates its props', () => {
     /^terrain-hydrologic-indices grid\.affine must have orthogonal pixel axes/
   );
   expect(() => create({grid: {...GRID, affine: [0.6, 0.8, 0, 0.8, -0.6, 0]}})).not.toThrow();
+  // @ts-expect-error Empty output is deliberately exercised through the JavaScript guard.
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({parameters: view('s7', 'float32', 7)})).toThrow(/parameters/);
   expect(() => create({cellSizeMode: 'polar' as never})).toThrow(/cellSizeMode/);
   expect(() => create({accumulation: view('short', 'float32', 29)})).toThrow(/one value per cell/);
-  expect(() => create({output: {slope: view('uint', 'uint32', 30) as never}})).toThrow(/float32/);
+  expect(() => create({output: {descentTangent: view('uint', 'uint32', 30) as never}})).toThrow(
+    /float32/
+  );
   const shared = view('shared', 'float32', 30);
-  expect(() => create({output: {wetnessIndex: shared, slope: shared}})).toThrow(/share buffers/);
+  expect(() => create({output: {wetnessIndex: shared, descentTangent: shared}})).toThrow(
+    /share buffers/
+  );
   const accumulation = view('input', 'float32', 30);
   expect(() => create({accumulation, output: {wetnessIndex: accumulation}})).toThrow(
     /share buffers/

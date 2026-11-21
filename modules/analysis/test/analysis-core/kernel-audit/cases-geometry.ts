@@ -331,7 +331,6 @@ function linePieces(
     status: {
       ...countStatus(context),
       candidateOverflow: scalar(context, 'candidate-overflow'),
-      uncertainCount: scalar(context, 'uncertain-count'),
       vertexCount: scalar(context, 'vertex-count'),
       requiredVertexCount: scalar(context, 'required-vertex-count')
     },
@@ -359,6 +358,24 @@ function lineGeometryOutput(
     sourceRows: columns.sourceRows ? view('uint32', vertexCapacity, 'line-source-rows') : undefined,
     measures: columns.measures ? view('float32', vertexCapacity, 'line-measures') : undefined
   };
+}
+
+/** Rectangle-clip outputs omit line-tool columns the clip route cannot write. */
+function rectangleClipOutput(
+  context: KernelAuditContext,
+  lineCapacity: number,
+  vertexCapacity: number
+): ConstructorParameters<typeof GPURectangleClip>[0]['output'] {
+  // Clipping does not support the optional source-row and measure columns of other line tools.
+  const {
+    sourceRows: _sourceRows,
+    measures: _measures,
+    ...output
+  } = lineGeometryOutput(context, lineCapacity, vertexCapacity, {
+    sourceRows: false,
+    measures: false
+  });
+  return output;
 }
 
 /** `GPUPolygonOverlayOutput` with every optional column wired. */
@@ -389,7 +406,7 @@ function overlayOutput(
       endpoints: view('float32x4', boundaryCapacity, 'boundary-endpoints'),
       operandIds: view('uint32', boundaryCapacity, 'boundary-operands'),
       sourceFeatureIds: view('uint32', boundaryCapacity, 'boundary-features'),
-      status: topologyStatus(context)
+      status: {...countStatus(context), candidateOverflow: scalar(context, 'candidate-overflow')}
     }
   };
 }
@@ -1133,7 +1150,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUGeometryPredicates({
+          context.construct(GPUGeometryPredicates, {
             geometry: joinGeometry(context, kind),
             other: joinGeometry(context, kind),
             parameters: view('float32', GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH),
@@ -1171,7 +1188,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const vertices = getGPUSegmentIntersectionMaximumVertexCount(context.device) + excess;
         const features = Math.floor(vertices / 8);
         graph.add(
-          new GPUGeometryPredicates({
+          context.construct(GPUGeometryPredicates, {
             geometry: polygonGeometry(context, vertices, features),
             other: polygonGeometry(context, vertices, features),
             parameters: view('float32', GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH),
@@ -1208,7 +1225,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPULineNoding({
+          context.construct(GPULineNoding, {
             lines: {...lineGeometry(context), sourceIds: view('uint32', ROWS)},
             intersectionCapacity: 4096,
             spatialSort,
@@ -1233,7 +1250,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           Math.floor((getGPULineSplitMaximumPieceBound(context.device) - 100000) / 4) +
           (excessCapacity as number);
         graph.add(
-          new GPULineNoding({
+          context.construct(GPULineNoding, {
             lines: lineGeometry(
               context,
               getGPUSegmentIntersectionMaximumVertexCount(context.device) +
@@ -1256,7 +1273,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUPolygonize({
+          context.construct(GPUPolygonize, {
             lines: {...lineGeometry(context), sourceIds: view('uint32', ROWS)},
             groupIds: grouped ? view('uint32', ROWS) : undefined,
             intersectionCapacity: 4096,
@@ -1279,7 +1296,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           (getGPULineSplitMaximumPieceBound(context.device) - 100000) / 4
         );
         graph.add(
-          new GPUPolygonize({
+          context.construct(GPUPolygonize, {
             lines: lineGeometry(
               context,
               getGPUSegmentIntersectionMaximumVertexCount(context.device) + excess,
@@ -1302,7 +1319,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUMakeValid({
+          context.construct(GPUMakeValid, {
             polygons: {...polygonGeometry(context), sourceIds: view('uint32', ROWS)},
             intersectionCapacity: 4096,
             precision: PRECISION,
@@ -1324,7 +1341,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           (getGPULineSplitMaximumPieceBound(context.device) - 200000) / 4
         );
         graph.add(
-          new GPUMakeValid({
+          context.construct(GPUMakeValid, {
             polygons: polygonGeometry(
               context,
               getGPUSegmentIntersectionMaximumVertexCount(context.device) - 200000 + excess,
@@ -1353,7 +1370,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUGeometryValidity({
+          context.construct(GPUGeometryValidity, {
             polygons: polygonGeometry(context),
             intersectionCapacity: 4096,
             leafCapacity: 2048,
@@ -1378,19 +1395,19 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       name: kind,
       build: context => {
         const {graph, view} = context;
-        graph.add(
-          new GPUGeometryValidity({
-            [kind]: joinGeometry(context, kind),
-            output: {
-              issueCode: view('uint32', ROWS),
-              validity: view('uint32', ROWS),
-              status: {
-                overflow: scalar(context, 'overflow'),
-                intersectionCount: scalar(context, 'count')
-              }
-            }
-          })
-        );
+        const output = {
+          issueCode: view('uint32', ROWS),
+          validity: view('uint32', ROWS),
+          status: {
+            overflow: scalar(context, 'overflow'),
+            intersectionCount: scalar(context, 'count')
+          }
+        };
+        const props =
+          kind === 'lines'
+            ? {lines: lineGeometry(context), output}
+            : {points: pointGeometry(context), output};
+        graph.add(context.construct(GPUGeometryValidity, props));
       }
     })
   ),
@@ -1403,7 +1420,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const vertices = getGPUSegmentIntersectionMaximumVertexCount(context.device) + excess;
         const features = Math.floor(vertices / 8);
         graph.add(
-          new GPUGeometryValidity({
+          context.construct(GPUGeometryValidity, {
             polygons: polygonGeometry(context, vertices, features),
             intersectionCapacity: maximumRows(16),
             ringClosure: 'explicit',
@@ -1429,7 +1446,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const vertices = Math.floor(maximumRows(32) / 2);
       const features = Math.floor(vertices / 8);
       graph.add(
-        new GPUGeometryPredicates({
+        context.construct(GPUGeometryPredicates, {
           geometry: polygonGeometry(context, vertices, features),
           other: polygonGeometry(context, vertices, features),
           parameters: view('float32', GPU_GEOMETRY_PREDICATES_PARAMETER_LENGTH),
@@ -1458,7 +1475,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const vertices = Math.floor(maximumRows(32) / 2);
       const features = Math.floor(vertices / 8);
       graph.add(
-        new GPUGeometryValidity({
+        context.construct(GPUGeometryValidity, {
           polygons: polygonGeometry(context, vertices, features),
           intersectionCapacity: maximumRows(64),
           ringClosure: 'explicit',
@@ -1480,7 +1497,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, maximumRows} = context;
       const capacity = maximumRows(144);
       graph.add(
-        new GPULineNoding({
+        context.construct(GPULineNoding, {
           lines: lineGeometry(context, maximumRows(32), 100000),
           intersectionCapacity: capacity,
           output: nodedSegments(context, capacity)
@@ -1495,7 +1512,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, maximumRows} = context;
       const segments = maximumRows(144);
       graph.add(
-        new GPUPolygonize({
+        context.construct(GPUPolygonize, {
           lines: lineGeometry(context, maximumRows(32), 100000),
           intersectionCapacity: segments,
           precision: PRECISION,
@@ -1511,7 +1528,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, maximumRows} = context;
       const segments = maximumRows(144);
       graph.add(
-        new GPUMakeValid({
+        context.construct(GPUMakeValid, {
           polygons: polygonGeometry(context, maximumRows(32) - 200000, 100000),
           intersectionCapacity: segments,
           precision: PRECISION,
@@ -1795,7 +1812,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           smallFeatureVertexLimit: 32,
           output: {
             points: view('float32x2', ROWS),
-            distances: view('float32', ROWS),
+            publishedCenterClearance: view('float32', ROWS),
             degenerate: view('uint32', ROWS)
           }
         })
@@ -1824,7 +1841,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             smallFeatureVertexLimit,
             output: {
               points: view('float32x2', ROWS),
-              distances: view('float32', ROWS),
+              publishedCenterClearance: view('float32', ROWS),
               degenerate: view('uint32', ROWS)
             }
           })
@@ -1844,7 +1861,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           ...polygonFields(context, vertices, features),
           output: {
             points: view('float32x2', features),
-            distances: view('float32', features),
+            publishedCenterClearance: view('float32', features),
             degenerate: view('uint32', features)
           }
         })
@@ -1860,7 +1877,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph} = context;
         graph.add(
-          new GPULineClipByPolygon({
+          context.construct(GPULineClipByPolygon, {
             lines: lineGeometry(context),
             polygons: polygonGeometry(context),
             mode,
@@ -1884,7 +1901,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, maximumRows} = context;
       const capacity = maximumRows(640);
       graph.add(
-        new GPULineClipByPolygon({
+        context.construct(GPULineClipByPolygon, {
           lines: lineGeometry(context, maximumRows(128), 100000),
           polygons: polygonGeometry(context, maximumRows(128), 100000),
           intersectionCapacity: capacity,
@@ -1910,7 +1927,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           (getGPULineClipByPolygonMaximumSubPieceBound(context.device) - lineVertices) / 2 +
           (excessCapacity as number);
         graph.add(
-          new GPULineClipByPolygon({
+          context.construct(GPULineClipByPolygon, {
             lines: lineGeometry(context, lineVertices + (excessLines as number), 100000),
             polygons: polygonGeometry(
               context,
@@ -1934,7 +1951,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPUSharedPaths({
+        context.construct(GPUSharedPaths, {
           left: lineGeometry(context),
           right: lineGeometry(context),
           intersectionCapacity: 4096,
@@ -1977,7 +1994,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const vertices =
           getGPUSegmentIntersectionMaximumVertexCount(context.device) + (excessVertices as number);
         graph.add(
-          new GPUSharedPaths({
+          context.construct(GPUSharedPaths, {
             left: lineGeometry(context, vertices, 100000),
             right: lineGeometry(context, vertices, 100000),
             intersectionCapacity: capacity,
@@ -2010,7 +2027,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const capacity = maximumRows(144);
       graph.add(
-        new GPUSharedPaths({
+        context.construct(GPUSharedPaths, {
           left: lineGeometry(context, maximumRows(32), 100000),
           right: lineGeometry(context, maximumRows(32), 100000),
           intersectionCapacity: capacity,
@@ -2037,7 +2054,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph} = context;
         graph.add(
-          new GPULineSplit({
+          context.construct(GPULineSplit, {
             lines: lineGeometry(context),
             intersectionCapacity: 4096,
             spatialSort,
@@ -2065,7 +2082,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           Math.floor((getGPULineSplitMaximumPieceBound(context.device) - 100000) / 4) +
           (excessCapacity as number);
         graph.add(
-          new GPULineSplit({
+          context.construct(GPULineSplit, {
             lines: lineGeometry(
               context,
               getGPUSegmentIntersectionMaximumVertexCount(context.device) +
@@ -2086,7 +2103,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, maximumRows} = context;
       const capacity = maximumRows(144);
       graph.add(
-        new GPULineSplit({
+        context.construct(GPULineSplit, {
           lines: lineGeometry(context, maximumRows(32), 100000),
           intersectionCapacity: capacity,
           output: {pieces: linePieces(context, capacity, capacity)}
@@ -2110,7 +2127,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const columns = 64;
         const rows = 32;
         graph.add(
-          new GPULineDensity({
+          context.construct(GPULineDensity, {
             ...lineFields(context),
             spatialContext,
             columns,
@@ -2138,7 +2155,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const columns = 4097;
       const rows = GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT / columns;
       graph.add(
-        new GPULineDensity({
+        context.construct(GPULineDensity, {
           ...lineFields(context, maximumRows(8), 100000),
           spatialContext: GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
           columns,
@@ -2165,7 +2182,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const columns = 4096;
       const rows = Math.floor((GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT + 1) / columns);
       graph.add(
-        new GPULineDensity({
+        context.construct(GPULineDensity, {
           ...lineFields(context, maximumRows(8), 100000),
           spatialContext: GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
           columns,
@@ -2193,7 +2210,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const columns = 4095;
       const rows = Math.min(4095, Math.floor(cells / columns));
       graph.add(
-        new GPULineDensity({
+        context.construct(GPULineDensity, {
           ...lineFields(context, maximumRows(8), 100000),
           spatialContext: GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
           columns,
@@ -2221,7 +2238,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPULineLengthPerPolygon({
+          context.construct(GPULineLengthPerPolygon, {
             ...lineFields(context),
             lineWeights: view('float32', ROWS),
             polygons: polygonGeometry(context),
@@ -2229,7 +2246,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             pairCapacity: 8192,
             maximumCrossingCount,
             output: {
-              lengths: view('float32', ROWS),
+              clippedLengths: view('float32', ROWS),
               weightedLengths: view('float32', ROWS),
               segmentCounts: view('uint32', ROWS),
               status: {overflow: scalar(context, 'overflow')}
@@ -2246,7 +2263,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const features = 100000;
       graph.add(
-        new GPULineLengthPerPolygon({
+        context.construct(GPULineLengthPerPolygon, {
           ...lineFields(
             context,
             getGPULineLengthPerPolygonMaximumPositionCount(context.device),
@@ -2256,7 +2273,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           polygons: polygonGeometry(context, maximumRows(8), features),
           pairCapacity: getGPULineLengthPerPolygonMaximumPairCapacity(context.device),
           output: {
-            lengths: view('float32', features),
+            clippedLengths: view('float32', features),
             weightedLengths: view('float32', features),
             segmentCounts: view('uint32', features),
             status: {overflow: scalar(context, 'overflow')}
@@ -2272,7 +2289,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const features = 100000;
       graph.add(
-        new GPULineLengthPerPolygon({
+        context.construct(GPULineLengthPerPolygon, {
           ...lineFields(
             context,
             getGPULineLengthPerPolygonMaximumPositionCount(context.device) + 1,
@@ -2282,7 +2299,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           polygons: polygonGeometry(context, maximumRows(8), features),
           pairCapacity: 8192,
           output: {
-            lengths: view('float32', features),
+            clippedLengths: view('float32', features),
             weightedLengths: view('float32', features),
             segmentCounts: view('uint32', features),
             status: {overflow: scalar(context, 'overflow')}
@@ -2298,13 +2315,13 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const features = 100000;
       graph.add(
-        new GPULineLengthPerPolygon({
+        context.construct(GPULineLengthPerPolygon, {
           ...lineFields(context, 4096, 100),
           lineWeights: view('float32', 100),
           polygons: polygonGeometry(context, 4096, features),
           pairCapacity: getGPULineLengthPerPolygonMaximumPairCapacity(context.device) + 1,
           output: {
-            lengths: view('float32', features),
+            clippedLengths: view('float32', features),
             weightedLengths: view('float32', features),
             segmentCounts: view('uint32', features),
             status: {overflow: scalar(context, 'overflow')}
@@ -2320,13 +2337,13 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const features = 100000;
       graph.add(
-        new GPULineLengthPerPolygon({
+        context.construct(GPULineLengthPerPolygon, {
           ...lineFields(context, maximumRows(32), 100000),
           lineWeights: view('float32', 100000),
           polygons: polygonGeometry(context, maximumRows(32), features),
           pairCapacity: maximumRows(64),
           output: {
-            lengths: view('float32', features),
+            clippedLengths: view('float32', features),
             weightedLengths: view('float32', features),
             segmentCounts: view('uint32', features),
             status: {overflow: scalar(context, 'overflow')}
@@ -2722,7 +2739,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPULinearReferencing({
+          context.construct(GPULinearReferencing, {
             ...lineFields(context),
             spatialContext,
             queryPositions: view('float32x2', ROWS),
@@ -2758,7 +2775,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const queries = getGPULinearReferencingMaximumQueryCount(context.device);
       graph.add(
-        new GPULinearReferencing({
+        context.construct(GPULinearReferencing, {
           ...lineFields(
             context,
             getGPULinearReferencingMaximumPlanarPositionCount(context.device),
@@ -2793,7 +2810,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const queries = ROWS;
       graph.add(
-        new GPULinearReferencing({
+        context.construct(GPULinearReferencing, {
           ...lineFields(
             context,
             getGPULinearReferencingMaximumPlanarPositionCount(context.device) + 1,
@@ -2828,7 +2845,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const queries = getGPULinearReferencingMaximumQueryCount(context.device) + 1;
       graph.add(
-        new GPULinearReferencing({
+        context.construct(GPULinearReferencing, {
           ...lineFields(
             context,
             getGPULinearReferencingMaximumPlanarPositionCount(context.device),
@@ -2862,7 +2879,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPULinearReferencing({
+        context.construct(GPULinearReferencing, {
           ...lineFields(
             context,
             getGPULinearReferencingMaximumSphericalPositionCount(context.device),
@@ -2893,7 +2910,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
     build: context => {
       const {graph, view} = context;
       graph.add(
-        new GPULinearReferencing({
+        context.construct(GPULinearReferencing, {
           ...lineFields(
             context,
             getGPULinearReferencingMaximumSphericalPositionCount(context.device) + 1,
@@ -2925,7 +2942,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const queries = maximumRows(64);
       graph.add(
-        new GPULinearReferencing({
+        context.construct(GPULinearReferencing, {
           ...lineFields(context, maximumRows(64), 100000),
           queryPositions: view('float32x2', queries),
           radius: view('float32', 1),
@@ -2965,7 +2982,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPULineLocate({
+          context.construct(GPULineLocate, {
             ...lineFields(context),
             spatialContext,
             eventLineIndices: view('uint32', ROWS),
@@ -2993,7 +3010,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const events = getGPULineLocateMaximumEventCount(context.device) + 1;
       graph.add(
-        new GPULineLocate({
+        context.construct(GPULineLocate, {
           ...lineFields(context, maximumRows(8), 100000),
           spatialContext: GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
           eventLineIndices: view('uint32', events),
@@ -3019,7 +3036,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const events = getGPULineLocateMaximumEventCount(context.device);
       graph.add(
-        new GPULineLocate({
+        context.construct(GPULineLocate, {
           ...lineFields(context, maximumRows(8), 100000),
           spatialContext: GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
           eventLineIndices: view('uint32', events),
@@ -3240,9 +3257,17 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
               output: {positions: view('float32x2', VERTICES * k), counts: view('uint32', VERTICES)}
             };
             if (geometryType === 'lines') {
-              graph.add(new GPUOffsetCurve({geometryType, ...lineFields(context), ...common}));
+              graph.add(
+                context.construct(GPUOffsetCurve, {geometryType, ...lineFields(context), ...common})
+              );
             } else {
-              graph.add(new GPUOffsetCurve({geometryType, ...polygonFields(context), ...common}));
+              graph.add(
+                context.construct(GPUOffsetCurve, {
+                  geometryType,
+                  ...polygonFields(context),
+                  ...common
+                })
+              );
             }
           }
         })
@@ -3256,7 +3281,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const quadSegments = GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS;
       graph.add(
-        new GPUOffsetCurve({
+        context.construct(GPUOffsetCurve, {
           positions: view('float32x2', 1),
           lineOffsets: view('uint32', 2),
           joinStyle: 'round',
@@ -3277,7 +3302,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const quadSegments = GPU_OFFSET_CURVE_MAXIMUM_QUAD_SEGMENTS + 1;
       graph.add(
-        new GPUOffsetCurve({
+        context.construct(GPUOffsetCurve, {
           positions: view('float32x2', 1),
           lineOffsets: view('uint32', 2),
           joinStyle: 'round',
@@ -3300,7 +3325,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const k = getGPUOffsetCurveRowsPerVertex('round', quadSegments, 'buffer');
       const vertices = Math.floor(maximumRows(8) / k);
       graph.add(
-        new GPUOffsetCurve({
+        context.construct(GPUOffsetCurve, {
           geometryType: 'polygons',
           ...polygonFields(context, vertices, Math.floor(vertices / 8)),
           quadSegments,
@@ -3329,7 +3354,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUBufferSurface({
+          context.construct(GPUBufferSurface, {
             geometry: geometryType === 'lines' ? lineGeometry(context) : polygonGeometry(context),
             parameters: view('float32', GPU_OFFSET_CURVE_PARAMETER_LENGTH),
             joinStyle: joinStyle as GPUOffsetCurveJoinStyle,
@@ -3352,7 +3377,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const capacity = maximumRows(768);
       graph.add(
-        new GPUBufferSurface({
+        context.construct(GPUBufferSurface, {
           // Raw rows 35 per vertex plus 3 per ring (two rings per feature) must fit the quarter table.
           geometry: polygonGeometry(
             context,
@@ -3376,7 +3401,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const capacity = 1 << 18;
       graph.add(
-        new GPUBufferSurface({
+        context.construct(GPUBufferSurface, {
           // Raw rows: (1 + 2 rowsPerVertex) per vertex and 3 per ring (two rings per feature).
           geometry: polygonGeometry(
             context,
@@ -3401,7 +3426,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const capacity = 1 << 18;
       graph.add(
-        new GPUBufferSurface({
+        context.construct(GPUBufferSurface, {
           geometry: polygonGeometry(
             context,
             Math.floor(
@@ -3433,7 +3458,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           (2 * getGPUOffsetCurveRowsPerVertex('round', 8, 'buffer'))
       );
       graph.add(
-        new GPUBufferSurface({
+        context.construct(GPUBufferSurface, {
           geometry: lineGeometry(context, vertices, lines),
           parameters: view('float32', GPU_OFFSET_CURVE_PARAMETER_LENGTH),
           vertexTolerance: 1e-5,
@@ -3459,7 +3484,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             (2 * getGPUOffsetCurveRowsPerVertex('round', 8, 'buffer'))
         ) + 1;
       graph.add(
-        new GPUBufferSurface({
+        context.construct(GPUBufferSurface, {
           geometry: lineGeometry(context, vertices, lines),
           parameters: view('float32', GPU_OFFSET_CURVE_PARAMETER_LENGTH),
           vertexTolerance: 1e-5,
@@ -3486,7 +3511,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUPolygonOverlay({
+          context.construct(GPUPolygonOverlay, {
             left: {...polygonGeometry(context), sourceIds: view('uint32', ROWS)},
             right:
               operation === 'dissolve'
@@ -3511,7 +3536,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph} = context;
         graph.add(
-          new GPUPolygonOverlay({
+          context.construct(GPUPolygonOverlay, {
             left: polygonGeometry(context),
             right: polygonGeometry(context),
             operation: 'union',
@@ -3533,7 +3558,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       // Snap rounding bounds hot pixels (vertices + crossings) by a quarter of the segment table.
       const vertices = getOverlayMaximumOperandVertices(context, OVERLAY_AUDIT_INTERSECTIONS);
       graph.add(
-        new GPUPolygonOverlay({
+        context.construct(GPUPolygonOverlay, {
           left: polygonGeometry(context, vertices, OVERLAY_AUDIT_FEATURES),
           right: polygonGeometry(context, vertices, OVERLAY_AUDIT_FEATURES),
           operation: 'symmetric-difference',
@@ -3560,7 +3585,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           ? getGPUSegmentIntersectionMaximumVertexCount(context.device) / 2
           : getOverlayMaximumOperandVertices(context, OVERLAY_AUDIT_INTERSECTIONS);
         graph.add(
-          new GPUPolygonOverlay({
+          context.construct(GPUPolygonOverlay, {
             left: polygonGeometry(
               context,
               vertices + (excessVertices as number),
@@ -3586,9 +3611,9 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const {graph, view} = context;
         const fields = polygonFields(context);
         graph.add(
-          new GPUCoverageSimplification({
+          context.construct(GPUCoverageSimplification, {
             ...fields,
-            snapTolerance: 1e-4,
+            snapGridSize: 1e-4,
             parameters: view('float32', GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH),
             simplifyBoundary,
             maximumIterations: GPU_LINE_SIMPLIFICATION_MAXIMUM_ITERATIONS,
@@ -3617,7 +3642,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view} = context;
       const fields = polygonFields(context);
       graph.add(
-        new GPUCoverageSimplification({
+        context.construct(GPUCoverageSimplification, {
           ...fields,
           parameters: view('float32', GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH),
           topologyIterationCount: 0,
@@ -3639,7 +3664,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const vertices = getGPUSegmentIntersectionMaximumVertexCount(context.device) + excess;
         const fields = polygonFields(context, vertices, Math.floor(vertices / 8));
         graph.add(
-          new GPUCoverageSimplification({
+          context.construct(GPUCoverageSimplification, {
             ...fields,
             parameters: view('float32', GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH),
             topologyIterationCount: 16,
@@ -3668,7 +3693,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const vertices = maximumRows(32);
       const fields = polygonFields(context, vertices, Math.floor(vertices / 8));
       graph.add(
-        new GPUCoverageSimplification({
+        context.construct(GPUCoverageSimplification, {
           ...fields,
           parameters: view('float32', GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH),
           topologyIterationCount: 16,
@@ -3700,7 +3725,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           new GPUCoverageDissolve({
             ...polygonFields(context),
             labels: view('uint32', ROWS),
-            snapTolerance: 1e-4,
+            snapGridSize: 1e-4,
             vertexTolerance: 1e-5,
             splitTouchingRings,
             output: {
@@ -3770,7 +3795,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       build: context => {
         const {graph, view} = context;
         graph.add(
-          new GPUCoverageValidity({
+          context.construct(GPUCoverageValidity, {
             ...polygonFields(context),
             parameters: view('float32', GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH),
             spatialSort,
@@ -3795,7 +3820,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const vertices = getGPUSegmentIntersectionMaximumVertexCount(context.device) + excess;
         const features = Math.floor(vertices / 8);
         graph.add(
-          new GPUCoverageValidity({
+          context.construct(GPUCoverageValidity, {
             ...polygonFields(context, vertices, features),
             parameters: view('float32', GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH),
             output: {
@@ -3817,7 +3842,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const vertices = maximumRows(32);
       const features = Math.floor(vertices / 8);
       graph.add(
-        new GPUCoverageValidity({
+        context.construct(GPUCoverageValidity, {
           ...polygonFields(context, vertices, features),
           parameters: view('float32', GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH),
           output: {
@@ -3845,7 +3870,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           fields.polygonOffsets.length - 1
         );
         graph.add(
-          new GPUPolygonTriangulation({
+          context.construct(GPUPolygonTriangulation, {
             ...fields,
             maximumWork: 0xffffffff,
             useZOrderHash,
@@ -3871,7 +3896,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const features = Math.floor(vertices / 8);
       const fields = polygonFields(context, vertices, features);
       graph.add(
-        new GPUPolygonTriangulation({
+        context.construct(GPUPolygonTriangulation, {
           ...fields,
           maximumWork: 0xffffffff,
           output: {
@@ -3902,7 +3927,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const features = Math.floor(vertices / 8);
       const fields = polygonFields(context, vertices, features);
       graph.add(
-        new GPUPolygonTriangulation({
+        context.construct(GPUPolygonTriangulation, {
           ...fields,
           maximumWork: 0xffffffff,
           output: {
@@ -3933,7 +3958,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const features = Math.floor(vertices / 8);
       const fields = polygonFields(context, vertices, features);
       graph.add(
-        new GPUPolygonTriangulation({
+        context.construct(GPUPolygonTriangulation, {
           ...fields,
           maximumWork: 0xffffffff,
           useZOrderHash: false,
@@ -3965,7 +3990,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const features = Math.floor(vertices / 8);
       const fields = polygonFields(context, vertices, features);
       graph.add(
-        new GPUPolygonTriangulation({
+        context.construct(GPUPolygonTriangulation, {
           ...fields,
           maximumWork: 0xffffffff,
           useZOrderHash: false,
@@ -3994,7 +4019,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const features = Math.floor(vertices / 8);
       const fields = polygonFields(context, vertices, features);
       graph.add(
-        new GPUPolygonTriangulation({
+        context.construct(GPUPolygonTriangulation, {
           ...fields,
           maximumWork: 0xffffffff,
           output: {
@@ -4025,7 +4050,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           geometryType: 'lines',
           ...lineFields(context),
           parameters: view('float32', GPU_RECTANGLE_CLIP_PARAMETER_LENGTH),
-          output: lineGeometryOutput(context, 2048, 4096, {sourceRows: false, measures: false})
+          output: rectangleClipOutput(context, 2048, 4096)
         })
       );
     }
@@ -4061,10 +4086,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
           geometryType: 'lines',
           ...lineFields(context, maximumRows(8), 100000),
           parameters: view('float32', GPU_RECTANGLE_CLIP_PARAMETER_LENGTH),
-          output: lineGeometryOutput(context, lineCapacity, maximumRows(8), {
-            sourceRows: false,
-            measures: false
-          })
+          output: rectangleClipOutput(context, lineCapacity, maximumRows(8))
         })
       );
     }
@@ -4108,7 +4130,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         build: context => {
           const {graph, view} = context;
           graph.add(
-            new GPUSegmentIntersection({
+            context.construct(GPUSegmentIntersection, {
               left: segmentGeometry(context, leftKind),
               right: rightKind ? segmentGeometry(context, rightKind) : undefined,
               sameFeatureOnly: rightKind === undefined,
@@ -4149,7 +4171,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         const pairs = maximumRows(8);
         const vertices = getGPUSegmentIntersectionMaximumVertexCount(context.device) + excess;
         graph.add(
-          new GPUSegmentIntersection({
+          context.construct(GPUSegmentIntersection, {
             left: polygonGeometry(context, vertices, 100000),
             right: polygonGeometry(context, vertices, 100000),
             output: {
@@ -4184,7 +4206,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const {graph, view, maximumRows} = context;
       const pairs = maximumRows(32);
       graph.add(
-        new GPUSegmentIntersection({
+        context.construct(GPUSegmentIntersection, {
           left: polygonGeometry(context, maximumRows(32), 100000),
           right: polygonGeometry(context, maximumRows(32), 100000),
           output: {
@@ -4336,7 +4358,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
                 circles: view('float32x3', groups),
                 longestLines: view('float32x4', groups),
                 diameters: view('float32', groups),
-                bounds: view('float32x4', groups),
+                sourceBounds: view('float32x4', groups),
                 hullSizes: view('uint32', groups),
                 status: {overflow: scalar(context, 'overflow')}
               }
@@ -4365,7 +4387,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
             circles: view('float32x3', groups),
             longestLines: view('float32x4', groups),
             diameters: view('float32', groups),
-            bounds: view('float32x4', groups),
+            sourceBounds: view('float32x4', groups),
             hullSizes: view('uint32', groups),
             status: {overflow: scalar(context, 'overflow')}
           }
@@ -4383,7 +4405,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
         build: context => {
           const {graph, view} = context;
           graph.add(
-            new GPUMinimumClearance({
+            context.construct(GPUMinimumClearance, {
               geometry: segmentGeometry(context, kind),
               leafCapacity: 2048,
               spatialSort,
@@ -4406,7 +4428,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const vertices = getGPUSegmentIntersectionMaximumVertexCount(context.device) + 1;
       const features = Math.floor(vertices / 8);
       graph.add(
-        new GPUMinimumClearance({
+        context.construct(GPUMinimumClearance, {
           geometry: polygonGeometry(context, vertices, features),
           output: {
             clearances: view('float32', features),
@@ -4425,7 +4447,7 @@ export const GEOMETRY_CASES: KernelAuditCase[] = [
       const vertices = getGPUSegmentIntersectionMaximumVertexCount(context.device);
       const features = Math.floor(vertices / 8);
       graph.add(
-        new GPUMinimumClearance({
+        context.construct(GPUMinimumClearance, {
           geometry: polygonGeometry(context, vertices, features),
           output: {
             clearances: view('float32', features),

@@ -4,9 +4,10 @@
 
 import type {GPUAnalysisOperator} from './spatial-analysis-ontology';
 import {freezeCatalog} from './freeze-catalog';
+import {resolveOperatorDescriptor} from './all-entry-points/resolve-operator-descriptor';
+import type {OperatorDescriptor} from './all-entry-points/resolve-operator-descriptor';
 
-/** Public analysis operations extracted from the Kepler host; arithmetic/upload helpers stay helpers. */
-export const REUSED_ANALYSIS_OPERATORS: readonly GPUAnalysisOperator[] = freezeCatalog([
+const REUSED_OPERATOR_DESCRIPTORS: readonly OperatorDescriptor[] = [
   {
     summary:
       'Runs parallel packed-word phases for exact wide-column summaries and narrowing diagnostics.',
@@ -259,4 +260,9 @@ export const REUSED_ANALYSIS_OPERATORS: readonly GPUAnalysisOperator[] = freezeC
       contract: 'PreparedPolygonContiguityTopology'
     }
   }
-]);
+];
+
+/** Public analysis operations extracted from the Kepler host; arithmetic/upload helpers stay helpers. */
+export const REUSED_ANALYSIS_OPERATORS: readonly GPUAnalysisOperator[] = freezeCatalog(
+  REUSED_OPERATOR_DESCRIPTORS.map(resolveOperatorDescriptor)
+);

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {expect, expectTypeOf, it} from 'vitest';
+import {selectBivariateOutput} from './select-classification-outputs.test-utils';
 import {GPUBivariateClassification} from '../../../src/dataframe-analysis/column-classification/gpu-bivariate-classification';
 import type {GPUBivariateClassificationProps} from '../../../src/dataframe-analysis/column-classification/gpu-bivariate-classification';
 import {
@@ -11,9 +12,101 @@ import {
   GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH
 } from '../../../src/dataframe-analysis/column-classification/bivariate-classification-parameters';
 import {computeBivariateClassificationOnCPU} from './bivariate-classification-oracle';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {
+  BIVARIATE_OPTIONAL_FIXTURE,
+  CLASSIFICATION_OUTPUT_SUBSETS
+} from './optional-output-fixtures';
 
 let serial = 0;
+
+it('R4 bivariate snapshots the caller count-output selection', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const counts = props.output.classCounts!;
+    props.output = {classCounts: counts};
+    const contributor = new GPUBivariateClassification(props);
+    const callerOutput: Partial<GPUBivariateClassificationProps['output']> = props.output;
+    delete callerOutput.classCounts;
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.map(node => node.id)).toEqual([
+      'bivariate-classification-init',
+      'bivariate-classification-classify',
+      'bivariate-classification-colorize'
+    ]);
+    expect(contributor.props.output.classCounts).toBe(counts);
+    expect(
+      nodes
+        .filter(node =>
+          node.resources?.some(
+            resource =>
+              'buffer' in resource &&
+              resource.buffer === counts &&
+              resource.usage !== 'storage-read'
+          )
+        )
+        .map(node => node.id)
+    ).toEqual(['bivariate-classification-init', 'bivariate-classification-colorize']);
+  } finally {
+    device.destroy();
+  }
+});
+
+it.each([
+  false,
+  true
+])('bivariate CPU reference matches all hand-derived outputs (alpha=%s)', includeAlpha => {
+  const expected = BIVARIATE_OPTIONAL_FIXTURE;
+  const actual = computeBivariateClassificationOnCPU({
+    ...expected,
+    valuesX: Float32Array.from(expected.valuesX),
+    valuesY: Float32Array.from(expected.valuesY),
+    classCountX: 2,
+    classCountY: 2,
+    maximumClassCount: 3,
+    alphaValues: includeAlpha ? expected.alphaValues : undefined,
+    valueByAlpha: includeAlpha ? {domain: [0, 1], minimumAlpha: 0.5} : undefined,
+    noDataColor: 7
+  });
+  expect(Array.from(actual.classIds)).toEqual(expected.classes);
+  expect(Array.from(actual.colors)).toEqual(includeAlpha ? expected.fadedColors : expected.colors);
+  expect(Array.from(actual.classCounts)).toEqual(expected.counts);
+});
+
+it.each(
+  CLASSIFICATION_OUTPUT_SUBSETS
+)('bivariate optional bindings follow output use: %j', subset => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const kernels = getGPUCommandNodeKernelSources(
+      new GPUBivariateClassification({
+        ...props,
+        alphaValues: view(graph, 'float32', 10),
+        output: selectBivariateOutput({
+          colors: subset.colors ? props.output.colors : undefined,
+          classIds: subset.classes ? props.output.classIds : undefined,
+          classCounts: subset.counts ? props.output.classCounts : undefined
+        })
+      }).getCommandNodes(graph)
+    );
+    expect(kernels.length).toBe(1 + Number(subset.colors || subset.counts) + Number(subset.counts));
+    const colorize = kernels.at(-1)!;
+    if (subset.colors || subset.counts) {
+      expect(colorize.source.includes('var<storage, read> palette:')).toBe(subset.colors);
+      expect(colorize.source.includes('var<storage, read> params:')).toBe(subset.colors);
+      expect(colorize.source.includes('var<storage, read> alphaValues:')).toBe(subset.colors);
+    }
+  } finally {
+    device.destroy();
+  }
+});
 
 const view = <Format extends 'uint32' | 'float32'>(
   graph: GPUCommandGraph,
@@ -111,7 +204,17 @@ it('GPUBivariateClassification validates props', () => {
   expectThrows(() => ({maximumClassCount: 0}), /maximumClassCount/);
   expectThrows(() => ({maximumClassCount: 17}), /maximumClassCount/);
   expectThrows(() => ({maximumClassCount: 2.5}), /maximumClassCount/);
-  expectThrows(() => ({output: {}}), /at least one output/);
+  const emptyOutput = {};
+  expectTypeOf(emptyOutput).not.toExtend<GPUBivariateClassificationProps['output']>();
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    expect(() =>
+      Reflect.construct(GPUBivariateClassification, [{...createProps(graph), output: emptyOutput}])
+    ).toThrow(/at least one output/);
+  } finally {
+    device.destroy();
+  }
   expectThrows(
     graph => ({
       valuesX: view(graph, 'float32', 0),
@@ -135,19 +238,21 @@ it('GPUBivariateClassification validates props', () => {
 it('GPUBivariateClassification rejects aliased buffers and foreign graphs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const props = createProps(graph, {mask: view(graph, 'uint32', 10)});
+  const mask = view(graph, 'uint32', 10);
+  const props = createProps(graph, {mask});
+  const aliasedOutput = view(graph, 'uint32', 10);
   expect(
     () =>
       new GPUBivariateClassification({
         ...props,
-        output: {...props.output, colors: props.mask as GraphDataView<'uint32'>}
+        output: {...props.output, colors: mask}
       })
   ).toThrow(/share buffers/);
   expect(
     () =>
       new GPUBivariateClassification({
         ...props,
-        output: {classIds: props.output.colors, colors: props.output.colors}
+        output: {classIds: aliasedOutput, colors: aliasedOutput}
       })
   ).toThrow(/aligned binding byte ranges must not overlap/);
   const contributor = new GPUBivariateClassification(createProps(graph));
@@ -186,4 +291,25 @@ it('computeBivariateClassificationOnCPU matches a hand-checked 2x2 grid', () => 
     valueByAlpha: {domain: [0, 1], minimumAlpha: 0.5}
   });
   expect(Array.from(faded.colors, color => color >>> 24)).toEqual([128, 255, 128]);
+});
+
+it('PCK-07 rejects collapsed ordered opacity domains before writing the target', () => {
+  const target = new Float32Array(8).fill(9);
+  expect(() =>
+    getGPUBivariateClassificationParameterValues(
+      {
+        classCountX: 1,
+        classCountY: 1,
+        valueByAlpha: {domain: [99.999999, 100.000001], minimumAlpha: 0}
+      },
+      target
+    )
+  ).toThrow(/99\.999999.*100\.000001.*100.*100/);
+  expect(Array.from(target)).toEqual(Array(8).fill(9));
+  const equal = getGPUBivariateClassificationParameterValues({
+    classCountX: 1,
+    classCountY: 1,
+    valueByAlpha: {domain: [100, 100], minimumAlpha: 0}
+  });
+  expect(Array.from(equal.slice(5, 7))).toEqual([100, 100]);
 });

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {snapshotNestedValidationProps} from './nested-validation-construction';
 import {solveCPUEquilibratedSystem} from '../../analysis-core/kernels/cpu-equilibrated-solve';
 import {
   validateCapacity,
@@ -334,6 +335,7 @@ export function computeNestedInterpolationValidationOnCPU(
   input: CPUNestedInterpolationValidationInput,
   options: CPUNestedInterpolationValidationOptions
 ): CPUNestedInterpolationValidationResult {
+  options = snapshotNestedValidationProps(options);
   const rowCount = input.response.length;
   if (input.positions.length !== rowCount * 2)
     throw new Error('positions length must equal response length * 2');
@@ -455,9 +457,13 @@ export function computeNestedInterpolationValidationOnCPU(
   };
 }
 
-/** CPU twin without GPU work caps; prefer it for the serial nested search. */
+/**
+ * Serial nested-search twin. Accepts up to 16,777,216 observations to keep count outputs exact.
+ * Prediction, inner-mask, candidate-score and metric array lengths each cap at 4,294,967,295.
+ */
 export class CPUNestedInterpolationValidationOperation extends GPUCPUOperation {
   constructor(props: NestedInterpolationValidationOperationProps) {
+    props = snapshotNestedValidationProps(props);
     const id = props.id ?? 'nested-interpolation-validation';
     validateOptions(props, props.rowCount);
     const operation = new GPUNestedInterpolationValidationOperation(props);

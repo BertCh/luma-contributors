@@ -66,7 +66,8 @@ export function makeInterpolationSheetDefaults(
         }
       : {}),
     width: settings?.grid.width ?? 32,
-    height: settings?.grid.height ?? 32
+    height: settings?.grid.height ?? 32,
+    ...(settings?.longitudeSearch === undefined ? {} : {longitudeSearch: settings.longitudeSearch})
   };
 }
 
@@ -135,6 +136,9 @@ export function getIDWSheetSettings(values: PointSheetValues): KeplerIDWSettings
     coordinateSpace: 'longitude-latitude',
     metric: 'great-circle',
     units: 'meters',
+    ...(values['longitudeSearch'] === undefined
+      ? {}
+      : {longitudeSearch: values['longitudeSearch']}),
     grid: {
       bounds: ['west', 'south', 'east', 'north'].map(number),
       width: number('width'),
@@ -219,9 +223,10 @@ export function InterpolationPanel({analysis}: {analysis: AnalysisRuntime}) {
       />
       <p className="hint">
         Up to 16.7 million source rows and cells (8,192 cells per axis); large grids run as tiled
-        GPU dispatches and are limited by device memory. Radius-expanded grids must stay away from
-        the poles and antimeridian. Float32 coordinates limit distance precision; source nulls and
-        nonfinite values are excluded.
+        GPU dispatches and are limited by device memory. With clipped longitude search,
+        radius-expanded grids must stay away from the poles and antimeridian. Wrapped search retains
+        neighbors across those boundaries. Float32 coordinates limit distance precision; source
+        nulls and nonfinite values are excluded.
       </p>
       <p className="hint">
         Exact center hits use the smallest original source row and override the minimum-sample

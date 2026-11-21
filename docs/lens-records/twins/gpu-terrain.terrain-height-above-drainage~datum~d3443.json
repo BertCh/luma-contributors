@@ -5,78 +5,94 @@
   "datum": 3443,
   "size": "full",
   "scenarioId": "gpu-terrain.terrain-height-above-drainage",
-  "viewId": "datum-receipt",
-  "caption": "Receipt of grid cells 3443. drainageCells: 3903. values read back from the GPU run. result: 6 quantities.",
-  "description": "Receipt of grid cells 3443. drainageCells: 3903. values read back from the GPU run. result: 6 quantities.",
-  "llms": "Receipt of grid cells 3443\n\n- drainageCells: 3903\n- result: 6 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "viewId": "terrain-d8-stencil",
+  "caption": "D8 stencil of cell 3443 (column 51, row 53). receiver: SE. values read back from the GPU run. neighbour distances use the captured affine step vectors (m).",
+  "description": "D8 stencil of cell 3443 (column 51, row 53). receiver: SE. values read back from the GPU run. neighbour distances use the captured affine step vectors (m).",
+  "llms": "D8 stencil of cell 3443 (column 51, row 53)\n\n- receiver: SE\n- neighbour distances use the captured affine step vectors (m)\n- drops are taken on filled elevation (m)\n- D8 assumes all input becomes runoff to a single neighbour\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
-    "label": "drainageCells",
-    "value": "3903"
+    "label": "receiver",
+    "value": "SE"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 3443</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1595.0999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-flowFilledElevation-0\" title=\"filled elevation (m)\">flowFilledElevation</button></td><td>1595.0999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-flowDirections-0\" title=\"D8 flow direction (ESRI code)\">flowDirections</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-flowStreams-0\" title=\"stream mask (1 where upstream cells ≥ 40)\">flowStreams</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-heightAboveDrainage-0\" title=\"height above drainage (m)\">heightAboveDrainage</button></td><td>458.9000244140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-drainageCells-0\" title=\"drainage cell index (first stream cell on the D8 path)\">drainageCells</button></td><td>3903</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-height-above-drainage-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-height-above-drainage-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-height-above-drainage-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3378\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3378: 1626</title><text x=\"6\" y=\"25\" fill=\"currentColor\">3378</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3379\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3379: 1613.699951171875</title><text x=\"76\" y=\"25\" fill=\"currentColor\">3379</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3380\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3380: 1575.199951171875</title><text x=\"146\" y=\"25\" fill=\"currentColor\">3380</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3442\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3442: 1621.9000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">3442</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3443\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3443: 1595.0999755859375</title><text x=\"76\" y=\"95\" fill=\"currentColor\">3443</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3444\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3444: 1559.300048828125</title><text x=\"146\" y=\"95\" fill=\"currentColor\">3444</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3506\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3506: 1589.5</title><text x=\"6\" y=\"165\" fill=\"currentColor\">3506</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3507\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3507: 1570.9000244140625</title><text x=\"76\" y=\"165\" fill=\"currentColor\">3507</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3508\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3508: 1537.199951171875</title><text x=\"146\" y=\"165\" fill=\"currentColor\">3508</text></g></g></svg><p>apple</p></section>",
-    "width": 230,
-    "height": 230
+    "html": "<section class=\"lens-view lens-d8-stencil\"><svg class=\"cv-figure\" viewBox=\"0 0 192 192\" role=\"img\" aria-label=\"D8 stencil of cell 3443\"><defs><pattern id=\"lens-gpu-terrain-terrain-height-above-drainage-datum-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g><rect x=\"65\" y=\"65\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"1\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"96\" y=\"88\" text-anchor=\"middle\" class=\"cv-label\">1,595</text><text x=\"96\" y=\"108\" text-anchor=\"middle\" class=\"cv-label\">centre</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3444\"><rect x=\"129\" y=\"65\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"160\" y=\"88\" text-anchor=\"middle\" class=\"cv-label\">1,559</text><text x=\"160\" y=\"108\" text-anchor=\"middle\" class=\"cv-label\">E 120 m</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3508\"><rect x=\"129\" y=\"129\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"1\" stroke-width=\"2.5\" class=\"cv-mark cv-mark--highlight\"></rect><text x=\"160\" y=\"152\" text-anchor=\"middle\" class=\"cv-label\">1,537</text><text x=\"160\" y=\"172\" text-anchor=\"middle\" class=\"cv-label\">SE 169.7 m</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3507\"><rect x=\"65\" y=\"129\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"96\" y=\"152\" text-anchor=\"middle\" class=\"cv-label\">1,571</text><text x=\"96\" y=\"172\" text-anchor=\"middle\" class=\"cv-label\">S 120 m</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3506\"><rect x=\"1\" y=\"129\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"32\" y=\"152\" text-anchor=\"middle\" class=\"cv-label\">1,590</text><text x=\"32\" y=\"172\" text-anchor=\"middle\" class=\"cv-label\">SW 169.7 m</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3442\"><rect x=\"1\" y=\"65\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"32\" y=\"88\" text-anchor=\"middle\" class=\"cv-label\">1,622</text><text x=\"32\" y=\"108\" text-anchor=\"middle\" class=\"cv-label\">W 120 m</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3378\"><rect x=\"1\" y=\"1\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"32\" y=\"24\" text-anchor=\"middle\" class=\"cv-label\">1,626</text><text x=\"32\" y=\"44\" text-anchor=\"middle\" class=\"cv-label\">NW 169.7 m</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3379\"><rect x=\"65\" y=\"1\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"96\" y=\"24\" text-anchor=\"middle\" class=\"cv-label\">1,614</text><text x=\"96\" y=\"44\" text-anchor=\"middle\" class=\"cv-label\">N 120 m</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3380\"><rect x=\"129\" y=\"1\" width=\"62\" height=\"62\" fill=\"none\" stroke=\"currentColor\" stroke-opacity=\"0.2\" stroke-width=\"1\" class=\"cv-mark cv-mark--context\"></rect><text x=\"160\" y=\"24\" text-anchor=\"middle\" class=\"cv-label\">1,575</text><text x=\"160\" y=\"44\" text-anchor=\"middle\" class=\"cv-label\">NE 169.7 m</text></g><line x1=\"96\" y1=\"96\" x2=\"134.4\" y2=\"134.4\" stroke=\"currentColor\" stroke-width=\"2\" class=\"cv-mark cv-mark--highlight\"></line></svg><table class=\"lens-receipt\"><thead><tr><th>neighbour</th><th>elevation</th><th>distance</th><th>drop / distance</th><th>chosen</th></tr></thead><tbody><tr data-key=\"3444\"><td>E</td><td>1,559</td><td>120 m</td><td>0.2983 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td></td></tr><tr data-key=\"3508\"><td>SE</td><td>1,537</td><td>169.7 m</td><td>0.3412 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td>receiver (GPU)</td></tr><tr data-key=\"3507\"><td>S</td><td>1,571</td><td>120 m</td><td>0.2017 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td></td></tr><tr data-key=\"3506\"><td>SW</td><td>1,590</td><td>169.7 m</td><td>0.033 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td></td></tr><tr data-key=\"3442\"><td>W</td><td>1,622</td><td>120 m</td><td>-0.2233 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td></td></tr><tr data-key=\"3378\"><td>NW</td><td>1,626</td><td>169.7 m</td><td>-0.1821 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td></td></tr><tr data-key=\"3379\"><td>N</td><td>1,614</td><td>120 m</td><td>-0.155 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td></td></tr><tr data-key=\"3380\"><td>NE</td><td>1,575</td><td>169.7 m</td><td>0.1173 <span class=\"lens-provenance lens-provenance--derived\" title=\"Values derived from recorded evidence.\">derived</span></td><td></td></tr></tbody></table><p class=\"lens-caption\">D8 sends all of a cell’s input to one neighbour; distances use the captured affine step vectors. GPU receiver: SE.</p><p class=\"lens-caption\">apple</p></section>",
+    "width": 640,
+    "height": 0
   },
   "receipt": {
     "columns": [
-      "stage",
-      "quantity",
-      "value",
-      "iteration",
-      "provenance"
+      "neighbour",
+      "elevation",
+      "distance",
+      "drop / distance",
+      "chosen"
     ],
     "rows": [
       [
-        "result",
-        "dem",
-        "1595.0999755859375",
-        "0",
-        "readback"
+        "E",
+        "1,559",
+        "120 m",
+        "0.2983",
+        "no"
       ],
       [
-        "result",
-        "flowFilledElevation",
-        "1595.0999755859375",
-        "0",
-        "readback"
+        "SE",
+        "1,537",
+        "169.7 m",
+        "0.3412",
+        "receiver"
       ],
       [
-        "result",
-        "flowDirections",
-        "2",
-        "0",
-        "readback"
+        "S",
+        "1,571",
+        "120 m",
+        "0.2017",
+        "no"
       ],
       [
-        "result",
-        "flowStreams",
-        "0",
-        "0",
-        "readback"
+        "SW",
+        "1,590",
+        "169.7 m",
+        "0.033",
+        "no"
       ],
       [
-        "result",
-        "heightAboveDrainage",
-        "458.9000244140625",
-        "0",
-        "readback"
+        "W",
+        "1,622",
+        "120 m",
+        "-0.2233",
+        "no"
       ],
       [
-        "result",
-        "drainageCells",
-        "3903",
-        "0",
-        "readback"
+        "NW",
+        "1,626",
+        "169.7 m",
+        "-0.1821",
+        "no"
+      ],
+      [
+        "N",
+        "1,614",
+        "120 m",
+        "-0.155",
+        "no"
+      ],
+      [
+        "NE",
+        "1,575",
+        "169.7 m",
+        "0.1173",
+        "no"
       ]
     ],
     "provenance": [
-      "readback",
-      "readback",
-      "readback",
-      "readback",
-      "readback",
-      "readback"
+      "derived",
+      "derived",
+      "derived",
+      "derived",
+      "derived",
+      "derived",
+      "derived",
+      "derived"
     ]
   },
   "verdicts": [
@@ -87,14 +103,14 @@
         "final-value",
         "wavefront"
       ],
-      "status": "pass",
-      "reason": "every gated loop reached its fixpoint"
+      "status": "unknown",
+      "reason": "no convergence word captured"
     }
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:15.554Z",
-    "runId": "run-28f392be",
+    "date": "2026-11-20T23:51:48.488Z",
+    "runId": "run-c55b74f6",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -102,7 +118,7 @@
     ]
   },
   "state": {
-    "runId": "run-28f392be",
+    "runId": "run-c55b74f6",
     "rung": "datum",
     "bindings": {
       "entity": 3443

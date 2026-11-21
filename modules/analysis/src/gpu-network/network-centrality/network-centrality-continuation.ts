@@ -145,15 +145,16 @@ export function createCentralityContinuationGraphs(
     maximumIterations: phase.maxRounds
   });
   validateNetworkCentralityBindings(originalGraph, validator);
+  props = {...props, reverseTopology: validator.props.reverseTopology};
   const externalViews = [
     props.pivotNodes,
     props.costLimit,
     props.topology.offsets,
     props.topology.neighbors,
     props.topology.weights,
-    props.reverseTopology.offsets,
-    props.reverseTopology.neighbors,
-    props.reverseTopology.weights,
+    props.reverseTopology!.offsets,
+    props.reverseTopology!.neighbors,
+    props.reverseTopology!.weights,
     props.output.betweenness,
     props.output.edgeBetweenness,
     props.output.closeness,
@@ -168,10 +169,51 @@ export function createCentralityContinuationGraphs(
         Boolean(view.buffer.defaultBuffer),
         'continuation inputs and outputs must use caller-owned imported buffers'
       );
+  const externalPortNames = [
+    'pivotNodes',
+    'costLimit',
+    'topology.offsets',
+    'topology.neighbors',
+    'topology.weights',
+    'reverseTopology.offsets',
+    'reverseTopology.neighbors',
+    'reverseTopology.weights',
+    'output.betweenness',
+    'output.edgeBetweenness',
+    'output.closeness',
+    'output.harmonicCloseness',
+    'output.reachedCounts',
+    ...Object.keys(props.output.status ?? {}).map(name => `output.status.${name}`)
+  ];
+  const logicalCapacities = new Map<
+    NonNullable<GraphDataView['buffer']['defaultBuffer']>,
+    number
+  >();
+  for (const view of externalViews)
+    if (view?.buffer.defaultBuffer) {
+      const identity = view.buffer.defaultBuffer;
+      logicalCapacities.set(
+        identity,
+        Math.max(logicalCapacities.get(identity) ?? 0, view.buffer.byteLength)
+      );
+    }
+  const physicalImports = new Map<Buffer, NonNullable<GraphDataView['buffer']['defaultBuffer']>>();
+  for (const [port, view] of externalViews.entries())
+    if (view?.buffer.defaultBuffer) {
+      const imported = view.buffer.defaultBuffer;
+      const physical = getCoreDefaultBuffer(imported);
+      const prior = physicalImports.get(physical);
+      validateRequirement(
+        id,
+        !prior || prior === imported,
+        `external port ${externalPortNames[port]} aliases a different imported wrapper; rebuild using the same buffer identity for all aliased ports`
+      );
+      physicalImports.set(physical, imported);
+    }
   const adjacencyLayout = getCentralityAdjacencyLayout(
     nodeCount,
     props.topology.neighbors.length,
-    props.reverseTopology.neighbors.length
+    props.reverseTopology!.neighbors.length
   );
   const lengths = {
     queues: 2 * expandedNodeCount,
@@ -264,18 +306,21 @@ export function createCentralityContinuationGraphs(
     function createViews(graph: GPUCommandGraph) {
       // Distinct caller handles may describe disjoint fields of one packed physical buffer.
       // Import that buffer once so luma.gl can track hazards across every rebound field.
-      const imported = new Map<Buffer, GraphDataView['buffer']>();
+      const imported = new Map<
+        NonNullable<GraphDataView['buffer']['defaultBuffer']>,
+        GraphDataView['buffer']
+      >();
       const rebind = <Format extends 'uint32' | 'float32'>(
         view: GraphDataView<Format>
       ): GraphDataView<Format> => {
-        const buffer = getCoreDefaultBuffer(view.buffer.defaultBuffer!);
+        const buffer = view.buffer.defaultBuffer!;
         let handle = imported.get(buffer);
         if (!handle) {
           handle = graph.importBuffer(
             {
               id: `${id}-external-${imported.size}`,
-              byteLength: buffer.byteLength,
-              usage: buffer.usage
+              byteLength: logicalCapacities.get(buffer)!,
+              usage: getCoreDefaultBuffer(buffer).usage
             },
             buffer
           );
@@ -320,9 +365,9 @@ export function createCentralityContinuationGraphs(
           weights: rebind(props.topology.weights!)
         },
         reverseTopology: {
-          offsets: rebind(props.reverseTopology.offsets),
-          neighbors: rebind(props.reverseTopology.neighbors),
-          weights: rebind(props.reverseTopology.weights!)
+          offsets: rebind(props.reverseTopology!.offsets),
+          neighbors: rebind(props.reverseTopology!.neighbors),
+          weights: rebind(props.reverseTopology!.weights!)
         },
         output: {
           betweenness: props.output.betweenness ? rebind(props.output.betweenness) : undefined,
@@ -643,12 +688,14 @@ export function createCentralityContinuationGraphs(
  * calls, and combine with planNetworkCentralitySchedule for arbitrarily many batches. Pad unused
  * lanes with 0xffffffff. Outputs and CSR slots retain GPUNetworkCentrality's layouts/tolerances.
  *
- * maximumIterations now bounds each phase across ALL windows (default nodeCount), independently
- * of roundsPerStep. Distances, sigma/exponents, counters, dependencies and frontier queues persist
+ * maximumIterations bounds each phase per pivot batch across ALL windows (1..4294967294,
+ * default nodeCount). roundsPerStep bounds rounds per submitted window (1..1023, default 64),
+ * independently of that total. Distances, sigma/exponents, counters, dependencies and frontier queues persist
  * on the GPU. Each window reads only one uint32 boundary-queue count. Completed phases stop;
  * exhausted phases publish incumbent values with iterationLimitReached=1. Zero cycles remain a
  * separate failure. reset=true or 1 starts a new run (the default); reset=false or 0 adds totals
- * and merges status. A planner descriptor can be passed directly to runBatch. Per-pivot
+ * and merges status: iterationLimitReached stays set through later successful batches until
+ * reset. A planner descriptor can be passed directly to runBatch. Per-pivot
  * outputs are overwritten by each batch. Changing topology/pivots mid-batch is unsupported.
  * The runner explicitly submits to the device queue; it is a host scheduler, not a contributor.
  */

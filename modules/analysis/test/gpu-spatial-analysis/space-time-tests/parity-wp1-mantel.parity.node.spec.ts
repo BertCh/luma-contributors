@@ -30,5 +30,11 @@ it('preserves independent Mantel provenance and every reconstructed f32 input di
   expect(fixture.cases[1].null).toHaveLength(4095);
   expect(fixture.cases[2].null).toHaveLength(720);
   expect(fixture.cases[2].exactNull).toBe(true);
-  expect(fixture.cases[3].null.every(value => value === 0)).toBe(true);
+  const constant = fixture.cases[3];
+  expect(constant.observed).toBeNull();
+  expect(constant.observedCorrelation).toBeNull();
+  expect(constant.inference).toBeNull();
+  expect(constant.null).toEqual([]);
+  expect(constant.usablePermutationCount).toBe(0);
+  expect(constant.pairCount).toBe(15);
 });

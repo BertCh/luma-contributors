@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect} from 'vitest';
+import {getParityScale, measureParity} from './parity-measurements';
 
 /** Full-array measurement; NaN/Infinity masks and lengths are always exact. */
 export function compareRasterParity(
@@ -14,29 +15,15 @@ export function compareRasterParity(
   expected: ArrayLike<number>,
   profile: 'L' | 'S' | 'E'
 ): void {
-  let scale = 1;
-  for (const value of Array.from(expected)) {
-    if (Number.isFinite(value)) scale = Math.max(scale, Math.abs(value));
-  }
+  const scale = getParityScale(expected);
   const absolute = profile === 'E' ? 0 : 1e-6 * scale;
   const relative = profile === 'E' ? 0 : 1e-4;
-  let maxAbs = 0;
-  let maxRel = 0;
-  let mismatches = Math.abs(actual.length - expected.length);
-  for (let index = 0; index < expected.length; index++) {
-    const wanted = expected[index];
-    const received = actual[index];
-    if (!Number.isFinite(wanted) || !Number.isFinite(received)) {
-      if (!(Object.is(received, wanted) || (Number.isNaN(received) && Number.isNaN(wanted)))) {
-        mismatches++;
-      }
-      continue;
-    }
-    const error = Math.abs(received - wanted);
-    maxAbs = Math.max(maxAbs, error);
-    maxRel = Math.max(maxRel, error / Math.max(Math.abs(wanted), 1e-300));
-    if (error > absolute + relative * Math.abs(wanted)) mismatches++;
-  }
+  const {maxAbs, maxRel, mismatches} = measureParity(
+    actual,
+    expected,
+    target => absolute + relative * Math.abs(target),
+    (error, target) => error / Math.max(Math.abs(target), 1e-300)
+  );
   const scaledResidual = maxAbs / scale;
   const tolerance = {profile, absolute, relative, scaledResidual: profile === 'L' ? 1e-4 : 0};
   console.log(

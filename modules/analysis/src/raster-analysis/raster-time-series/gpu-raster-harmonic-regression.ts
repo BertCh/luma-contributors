@@ -4,6 +4,7 @@
 
 import {Buffer} from '@luma.gl/core';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
+import {validateParameterTarget} from '../raster-band-utils';
 import type {
   GraphDataView,
   GraphVectorView,
@@ -21,6 +22,7 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  validateGraphPorts,
   GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE,
   validateCapacity,
   validateCommandNodeBudget,
@@ -63,6 +65,11 @@ export function getGPURasterHarmonicRegressionParameterValues(
   settings: GPURasterHarmonicRegressionSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_HARMONIC_REGRESSION_PARAMETER_LENGTH)
 ): Float32Array {
+  validateParameterTarget(
+    'getGPURasterHarmonicRegressionParameterValues',
+    target,
+    GPU_RASTER_HARMONIC_REGRESSION_PARAMETER_LENGTH
+  );
   validateFiniteNumber(
     'getGPURasterHarmonicRegressionParameterValues',
     'period',
@@ -130,6 +137,16 @@ export class GPURasterHarmonicRegression<
   private readonly ticksPerYear: number;
 
   constructor(readonly props: GPURasterHarmonicRegressionProps<Rows>) {
+    validateGraphPorts(props.id ?? 'raster-harmonic-regression', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'dateAxis.acquisitionTimes': {required: true, viewType: 'data', formats: ['uint32x2']},
+      'output.coefficients': {required: true, viewType: 'either', formats: ['float32']},
+      'output.summary': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.fitted': {required: false, viewType: 'either', formats: ['float32']},
+      'output.rmse': {required: false, viewType: 'either', formats: ['float32']}
+    });
     const id = props.id ?? 'raster-harmonic-regression';
     this.id = id;
     this.mode = props.mode ?? 'storage';

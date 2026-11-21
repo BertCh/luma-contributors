@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {runExample} from './temporal-reduction.example';
 import {
@@ -14,9 +15,9 @@ import {
 const SCENARIO_ID = 'gpu-dataframe.temporal-reduction';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
 /** Executes the recorded temporal reduction once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-nature');
+  const dataset = await loadDataFrameLensData('f-chicago-nature', options?.datasetResolver);
   const columns = dataset.columns;
   const graph = createDataFrameLensGraph<undefined>(device, 'gpu-dataframe-temporal-reduction');
   const example = await runExample(device, {

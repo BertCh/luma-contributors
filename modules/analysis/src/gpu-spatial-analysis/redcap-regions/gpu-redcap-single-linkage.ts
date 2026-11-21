@@ -8,6 +8,8 @@ import {
   snapshotWeightsPort
 } from '../spatial-weights/weights-construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getGPUSpatialWeightsLossViews} from '../spatial-weights/gpu-chunked-spatial-weights';
+import {validateRegionalizationWeightsCompleteness} from '../spatial-regionalization/adjacency-loss-suppression';
 import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
@@ -36,7 +38,7 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {
   GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS,
-  GPU_MINIMUM_SPANNING_TREE_STATUS,
+  GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT,
   GPUSpatialWeightsMinimumSpanningTree
 } from '../spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
 
@@ -140,6 +142,9 @@ export type GPURedcapSingleLinkageOutput = {
  * slot)` with a stable radix sort, the heaviest are dropped from a masked copy of the weights, and
  * the regions are the weak components of what remains. Every step is parallel; there is no
  * per-edge loop. Region counts are a prefix family: the regions for `k` refine those for `k - 1`.
+ * Accepts 1–32 attribute columns and 1–256 component rounds. The estimated graph is limited
+ * to 32,768 command nodes. The attribute, row, neighbor and edge scratch allocations must
+ * each fit one storage binding (33,554,432 32-bit entries at 128 MiB).
  *
  * **What this is not.** REDCAP as Guo (2008) describes it has two steps: build a spatially
  * contiguous tree by constrained agglomerative clustering, then partition that tree top-down,
@@ -161,9 +166,19 @@ export type GPURedcapSingleLinkageOutput = {
  * tree re-evaluated per region. Weights must be symmetric.
  *
  * **Reference.** There is no pinned REDCAP package. The reference is the definition of
- * constrained single linkage: the same partition as `sklearn.cluster.AgglomerativeClustering(
- * linkage='single', connectivity=W)`, evaluated as a minimum spanning tree plus a cut by SciPy
- * in binary64. Edge costs that tie make several partitions valid; compare on distinct costs.
+ * constrained single linkage, evaluated as a minimum spanning tree plus a cut by SciPy in
+ * binary64. On a connected graph with distinct edge costs it has the same partition as
+ * `sklearn.cluster.AgglomerativeClustering(linkage='single', connectivity=W)` on the same
+ * preprocessed attribute table only when preprocessing and numerical distance handling preserve
+ * the same edge order. Scikit-learn 1.6.1 temporarily replaces zero distances by machine epsilon
+ * in its single-linkage MST: on the connected cycle 0--1--2--3--0, values [0,0,1e-18,3e-18],
+ * standardize:false and k=3, its labels canonicalized to each cluster's smallest row are
+ * [0,1,1,3], while this class retains the true zero-cost edge
+ * and yields [0,0,2,3]. Scikit-learn also completes disconnected connectivity before
+ * clustering; this class never adds links, so its region count cannot fall below the original
+ * component count. The disconnected case is not equivalent. Connected and disconnected
+ * eight-row examples were checked with scikit-learn 1.6.1 in `redcap-audit-b.oracle.py`.
+ * Edge costs that tie make several partitions valid; compare on distinct costs.
  *
  * **float32 limits.** Costs are float32 squared distances, so two edges whose true costs differ
  * by less than about one part in `1e7` of the larger can swap order.
@@ -207,6 +222,7 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
+    validateRegionalizationWeightsCompleteness(id, props.weights);
     const columnCount = props.columnCount ?? 1;
     validateCapacity(id, 'columnCount', columnCount, 1, GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
@@ -234,6 +250,16 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       props.output.labels.length === rows,
       'output.labels length must equal the weights row count'
     );
+    for (const [name, view] of [
+      ['output.regionCount', props.output.regionCount],
+      ['output.status.converged', props.output.status?.converged],
+      ['output.status.iterationLimitReached', props.output.status?.iterationLimitReached]
+    ] as const) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+        validateCapacity(id, `${name} length`, view.length, 1);
+      }
+    }
     if (props.output.status?.iterationCount) {
       validateSinglePackedView(
         props.output.status.iterationCount,
@@ -262,7 +288,7 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       1 +
       (props.output.status?.iterationCount ? 1 : 0) +
       (props.output.status?.invalidCount ? 1 : 0) +
-      (getRedcapWeightLossFlags(props.weights).length
+      (getGPUSpatialWeightsLossViews(props.weights).length
         ? 1 +
           Number(Boolean(props.output.regionCount)) +
           Number(Boolean(props.output.status?.converged)) +
@@ -298,7 +324,7 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
-        ...getRedcapWeightLossFlags(props.weights)
+        ...getGPUSpatialWeightsLossViews(props.weights)
       ]
     );
   }
@@ -309,13 +335,13 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {weights, output} = props;
-    const lossFlags = getRedcapWeightLossFlags(weights);
+    const lossFlags = getGPUSpatialWeightsLossViews(weights);
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.parameters,
       weights.offsets,
       weights.neighbors,
-      ...getRedcapWeightLossFlags(weights),
+      ...lossFlags,
       output.labels,
       output.regionCount,
       ...Object.values(output.status ?? {})
@@ -328,9 +354,7 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       parameters: props.parameters,
       offsets: weights.offsets,
       neighbors: weights.neighbors,
-      ...Object.fromEntries(
-        getRedcapWeightLossFlags(weights).map((view, index) => [`loss${index}`, view])
-      ),
+      ...Object.fromEntries(lossFlags.map((view, index) => [`loss${index}`, view])),
       ...Object.fromEntries(
         getGraphOutputViews({
           ...output,
@@ -366,7 +390,7 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
           graph,
           `${id}-tree-status`,
           'uint32',
-          GPU_MINIMUM_SPANNING_TREE_STATUS.length
+          GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length
         )
       : undefined;
     const edgeIds = createTransientView(graph, `${id}-edge-ids`, 'uint32', edgeCapacity);
@@ -536,7 +560,7 @@ ${cutCountWGSL}`,
               access: 'read_write'
             }
           ],
-          body: `invalidCount[invalidCountOffset] = treeStatus[treeStatusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount}u];`
+          body: `invalidCount[invalidCountOffset] = treeStatus[treeStatusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.invalidCount}u];`
         })
       );
     for (const [name, view, value] of [
@@ -569,11 +593,4 @@ ${cutCountWGSL}`,
     }
     return nodes;
   }
-}
-
-/** Flags that make the retained contiguity graph incomplete. */
-function getRedcapWeightLossFlags(weights: GPUSpatialWeights): GraphDataView<'uint32'>[] {
-  return [weights.status?.overflow, weights.status?.candidateOverflow].filter(
-    (view): view is GraphDataView<'uint32'> => view !== undefined
-  );
 }

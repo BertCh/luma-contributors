@@ -370,9 +370,9 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
       describeCellSize('points', 1),
       // Silverman's normal-reference rule gives the standard deviation of a Gaussian kernel.
       // Only the `gaussian` kernel (the binding's default) takes its bandwidth as a standard
-      // deviation: `getKernelValue` in `catalog-platform3-b-grids.ts` is exp(-d^2 / (2 h^2)) /
+      // deviation: `createCatalogKernelDensityEvaluator` in `catalog-platform3-b-grids.ts` is exp(-d^2 / (2 h^2)) /
       // (2 pi h^2), truncated at 5 h. The `quartic` and `epanechnikov` kernels take `h` as the
-      // support radius (zero beyond d = h), so the rule's value undersmooths them; the factor that
+      // support radius (zero beyond d = h); bisquare uses the quartic support radius and canonical factor, so the rule's value undersmooths them; the factor that
       // converts a Gaussian-scale bandwidth to equal smoothing is
       // `getGPUKernelDensityCanonicalBandwidthScale` in the analysis package: epanechnikov
       // 192^(1/6), about 2.40, and quartic (2304/5)^(1/6), about 2.78 (the 2D canonical bandwidth
@@ -391,6 +391,7 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
             factors: {
               gaussian: 1,
               quartic: QUARTIC_BANDWIDTH_SCALE,
+              bisquare: QUARTIC_BANDWIDTH_SCALE,
               epanechnikov: EPANECHNIKOV_BANDWIDTH_SCALE
             }
           }

@@ -22,6 +22,7 @@ import {type CPURegressionWeights, validateCPURegressionWeights} from './cpu-reg
 import {getCPUErrorDot, getCPUErrorMean} from './cpu-spatial-error-regression';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import {getSpatialExactLogDeterminant} from './spatial-exact-log-determinant';
+import {hasPanelLagPoleOnCPU} from './panel-lag-pole-nodes';
 import {
   GPUSpatialPanelLagMaximumLikelihoodOperation,
   snapshotSpatialPanelLagOperationProps,
@@ -51,8 +52,6 @@ export type CPUSpatialPanelLagMaximumLikelihoodInput = {
         >
       >;
     };
-  /** Compatibility alias for weights.status.overflow, used only when that field is absent. */
-  overflow?: Uint32Array;
   predictors: Float32Array;
   response: Float32Array;
   /** Entity spectrum for tiled unit effects: one finite value per entity, |value| <= float32(1.00001). */
@@ -80,6 +79,7 @@ export type CPUSpatialPanelLagMaximumLikelihoodResult = {
   hausman?: {tests: Float32Array; status: Uint32Array};
 };
 type PanelFit = {
+  pole?: boolean;
   coefficients: number[];
   covariance: number[][];
   summary: number[];
@@ -225,7 +225,8 @@ function hasExactPanelFit(design: number[][], target: number[], estimate: number
 
 function minimizeProfile(
   objective: (parameter: number) => number,
-  maximumSearchIterations?: number
+  maximumSearchIterations: number | undefined,
+  tolerance: number
 ): {
   parameter: number;
   width: number;
@@ -257,10 +258,17 @@ function minimizeProfile(
     completed++;
   }
   let parameter = leftScore <= rightScore ? left : right;
-  // A true constrained boundary maximum is included, unlike the GPU's interior golden points.
-  if (maximumSearchIterations === undefined)
+  // Once the bracket has converged, retain a constrained boundary optimum even with an
+  // explicit budget. This does not spend more golden iterations or excuse a wide bracket.
+  if (upper - lower <= tolerance)
     for (const endpoint of [-RHO_BOUND, RHO_BOUND]) {
-      if (objective(endpoint) < objective(parameter)) parameter = endpoint;
+      if (
+        maximumSearchIterations === undefined
+          ? objective(endpoint) < objective(parameter)
+          : (endpoint === lower || endpoint === upper) &&
+            objective(endpoint) <= objective(parameter)
+      )
+        parameter = endpoint;
     }
   return {parameter, width: upper - lower};
 }
@@ -282,8 +290,9 @@ function minimizeProfile(
  *   status 3 with its iterate and bracket width, withholding covariance. When budgets are omitted,
  *   golden section continues to binary64 resolution including interval endpoints, and alternation
  *   continues to the same relative phi tolerance or a repeated complete state (status 3).
- *   Sweep counts, phi change and bracket width can differ. This retains the GPU's golden-section
- *   profiling method, not a guarantee of a global maximum on a multimodal profile.
+ *   Sweep counts, phi change and bracket width can differ. The CPU compares float64 profile
+ *   values; GPU fine brackets use the analytic likelihood derivative after eight coarse golden
+ *   steps. Neither bounded profile method guarantees a global maximum on a multimodal profile.
  * - The rho interval, phi floor 1e-8, boundary bits, and status-3 publication at that floor are
  *   retained. Covariance is withheld for status 3. Variance that rounds to nonpositive or
  *   nonfinite float32 is status 2, with covariance/fitted/residuals withheld. Hausman keeps
@@ -294,7 +303,12 @@ function minimizeProfile(
  *   with the iterate retained. Exact response copies of a design column are detected independently
  *   of QR. Other zero-variance poles with admissible rho are detected when the augmented QR
  *   estimate passes an exact dyadic residual certificate; this is not a complete symbolic rank
- *   test. Certified poles return status 2 rather than reporting a finite Gaussian maximum.
+ *   test. An additional original-input BigInt certificate checks within differences with
+ *   24 nonzero-preserving rounded slope/rho proposals plus 24 zero proposals, including
+ *   the original float32 tuple and exact products of rho, weights and response.
+ *   Both forms withhold every floating result for certified poles (status 2; Hausman status 1).
+ *   The CPU certificate retains subnormals and arbitrary exponent spans, where the GPU's
+ *   256-bit certificate supports normal/zero operands and a 168-bit product-exponent span.
  * - Weight normalization acceptance uses serial float32 addition and the shader's float32
  *   1e-5 predicate. Statistical lags and fitting still use the original float32 weights in float64.
  * - Non-finite observations and invalid active CSR rows return status 1; malformed row bounds
@@ -302,7 +316,8 @@ function minimizeProfile(
  *   are accepted by the pure function and produce status 1. Subnormals are retained.
  * - Optional weights distances and status arrays retain shape validation; information metadata
  *   retains contributor validation. The first overflow or candidateOverflow word invalidates
- *   the fit. Other status values and distances have no numerical effect, matching the contributor.
+ *   the fit. A supplied complete=0 invalidates the fit. Written count must agree with
+ *   offsets[entityCount]-offsets[0]; requiredCount must fit that accessible span and slot capacity. Other status values and distances have no numerical effect.
  * - A supplied spectrum follows the GPU mode selection and validation: one finite value per
  *   entity with absolute value at most float32(1.00001). Invalid values return status 1;
  *   a wrong length throws. The caller is responsible for matching the spectrum to W.
@@ -332,8 +347,6 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
     throw new Error(`${id} weights.weights length must equal weights.neighbors length`);
   if (input.weights.distances && input.weights.distances.length !== input.weights.neighbors.length)
     throw new Error(`${id} weights.distances length must equal weights.neighbors length`);
-  if (input.overflow && input.overflow.length < 1)
-    throw new Error(`${id} overflow must hold at least one value`);
   for (const [field, values] of Object.entries(input.weights.status ?? {})) {
     if (values && values.length < 1)
       throw new Error(`${id} weights.status.${field} must hold at least one value`);
@@ -392,8 +405,18 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
     return result;
   };
   if (
-    (input.weights.status?.overflow ?? input.overflow)?.[0] ||
+    input.weights.status?.overflow?.[0] ||
     input.weights.status?.candidateOverflow?.[0] ||
+    (input.weights.status?.complete !== undefined && input.weights.status.complete[0] === 0) ||
+    (input.weights.status?.count !== undefined &&
+      input.weights.status.count[0] !==
+        input.weights.offsets[entityCount] - input.weights.offsets[0]) ||
+    (input.weights.status?.count?.[0] ?? 0) > input.weights.neighbors.length ||
+    (input.weights.status?.requiredCount?.[0] ?? 0) >
+      Math.min(
+        input.weights.offsets[entityCount] - input.weights.offsets[0],
+        input.weights.neighbors.length
+      ) ||
     !input.response.every(Number.isFinite) ||
     !input.predictors.every(Number.isFinite) ||
     (input.eigenvalues &&
@@ -479,12 +502,17 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
       raw.map((_, row) =>
         Array.from({length: activeCount}, (_, column) => datum(row, column + firstColumn, phi))
       );
-    const pooled = fitCPURegressionWithQR(
-      designAt(1),
-      raw.map(row => row[columnCount])
-    );
-    if (!pooled) return fit;
-    let beta = pooled.estimate;
+    let beta = new Array<number>(activeCount).fill(0);
+    if (!unit) {
+      // Only random effects use pooled coefficients to initialize their first phi update.
+      // A unit fit must be identified by its within design, independently of entity levels.
+      const pooled = fitCPURegressionWithQR(
+        designAt(1),
+        raw.map(row => row[columnCount])
+      );
+      if (!pooled) return fit;
+      beta = pooled.estimate;
+    }
     let rho = 0.1;
     let phi = unit ? 0 : 0.1;
     let completed = 0;
@@ -553,7 +581,11 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
           ? (rowCount / 2) * Math.log(value) - periodCount * getPanelLogDeterminant(parameter)
           : INVALID_OBJECTIVE;
       };
-      const search = minimizeProfile(objective, options.maximumSearchIterations);
+      const search = minimizeProfile(
+        objective,
+        options.maximumSearchIterations,
+        options.tolerance ?? 1e-5
+      );
       rho = search.parameter;
       width = search.width;
       beta = firstFit.estimate.map((value, column) => value - rho * lagFit.estimate[column]);
@@ -579,6 +611,7 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
         ) &&
         hasExactPanelFit(augmentedDesign, target, exactCandidate)
       ) {
+        fit.pole = true;
         beta = exactCandidate.slice(0, activeCount);
         rho = exactCandidate[activeCount];
         variance = 0;
@@ -710,7 +743,19 @@ export function computeSpatialPanelLagMaximumLikelihoodOnCPU(
       }
     return fit;
   };
-  return finish(fitModel(options.effects === 'unit'), options.hausman ? fitModel(true) : undefined);
+  const rejectPole = (fit: PanelFit) => {
+    if (
+      fit.pole ||
+      ([0, 2, 3].includes(fit.status) &&
+        hasPanelLagPoleOnCPU(input, predictorCount, fit.coefficients))
+    )
+      return {...emptyFit(), status: 2};
+    return fit;
+  };
+  return finish(
+    rejectPole(fitModel(options.effects === 'unit')),
+    options.hausman ? rejectPole(fitModel(true)) : undefined
+  );
 }
 
 /** CPU twin; shader size caps are dropped and explicit search/iteration budgets are retained. */
@@ -765,10 +810,6 @@ export class CPUSpatialPanelLagMaximumLikelihoodOperation extends GPUCPUOperatio
                   )
                 : undefined
             },
-            overflow:
-              props.weights.overflow && !props.weights.status?.overflow
-                ? getCPUOperationUint32Rows(id, inputs, 'overflow')
-                : undefined,
             predictors: getCPUOperationFloat32Rows(id, inputs, 'predictors'),
             response: getCPUOperationFloat32Rows(id, inputs, 'response'),
             eigenvalues

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotSpatialAutocorrelationProps} from './spatial-autocorrelation-construction';
+
 import {
   createTransientView,
   validatePackedUint32View,
@@ -216,7 +218,7 @@ export type GPUHotSpotAnalysisProps = {
  *   moments, `z_i = (sum_j w_ij x_j - W_i mu_i) / (s_i * sqrt(((n - 1) S1_i - W_i^2) / (n - 2)))`.
  *   It equals esda's `G_Local(star=False)` analytic `Zs` for binary weights. z is NaN when
  *   `n < 3` or `s_i = 0`.
- * - A row with fewer than `minimumNeighbors` active neighbors (zero by default) has no z-score:
+ * - A row with fewer than `minimumNeighbors` active neighbors (one by default) has no z-score:
  *   a row never gets a z-score from its own value alone, under either island policy.
  * - p-values are two-sided normal. Bins use the 90/95/99% critical values, or the adjusted
  *   p-value when `multipleTesting` is set. Legend contract: bin level `L` always means the
@@ -255,6 +257,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
   private readonly selfWeightValues?: Float32Array;
 
   constructor(props: GPUHotSpotAnalysisProps) {
+    props = snapshotSpatialAutocorrelationProps(props);
     this.id = props.id ?? 'hot-spot-analysis';
     this.props = props;
     const id = this.id;
@@ -542,8 +545,10 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
     var weightedSum = 0.0;
     var weightSum = 0.0;
     var squareSum = 0.0;
+    var minimumWeight = 3.402823466e38; var maximumWeight = 0.0;
     ${getSpatialWeightsNeighborLoopWGSL(
       `weightedSum += weight * statistics[statisticsOffset + neighbor];
+      minimumWeight = min(minimumWeight, weight); maximumWeight = max(maximumWeight, weight);
       weightSum += weight;
       squareSum += weight * weight;
       neighborCount++;`,
@@ -564,12 +569,14 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
       // Ord-Getis Gi: standardize with the n - 1 other observations. The centered values of the
       // population sum to zero, so the others sum to -centered.
       let othersCount = max(exactCount, 1u) - 1u;
+      let constantWeightPopulation = neighborCount == othersCount && minimumWeight == maximumWeight;
       let others = f32(othersCount);
       let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
       let otherMean = divideBySpatialCount(-centered, othersCount);
       let otherVariance = divideBySpatialCount(sumOfSquares - centered * centered, othersCount) - otherMean * otherMean;
+      let constantOthers = (statistics[statisticsOffset + MOMENTS + 8u] != 0.0 && centered == statistics[statisticsOffset + MOMENTS + 7u]) || (statistics[statisticsOffset + MOMENTS + 9u] != 0.0 && centered == statistics[statisticsOffset + MOMENTS + 6u]);
       let spread = divideBySpatialCount(multiplyBySpatialCount(squareSum, othersCount) - weightSum * weightSum, max(othersCount, 1u) - 1u);
-      if (others >= 2.0 && otherVariance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
+      if (others >= 2.0 && !constantOthers && !constantWeightPopulation && otherVariance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
         zScore = (weightedSum - weightSum * otherMean) / (sqrt(otherVariance) * sqrt(spread));
       }
       } else {

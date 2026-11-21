@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
-  validatePackedView,
-  type GPUCommandGraph,
-  type GraphDataView
-} from '@luma.gl/graph/gpu-core';
-import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+  validateRequirement,
+  validateSinglePackedView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPURasterBufferBand,
   GPURasterMetadata,
@@ -76,13 +75,15 @@ export type GPURasterBandOptions = {
 
 /**
  * Wraps a packed per-pixel view, typically the output of one contributor, as a buffer raster band
- * on `grid`, so it can feed the next contributor (for example `GPUTerrainFlow` directions into
- * `GPUTerrainHeightAboveDrainage`) without a hand-written band literal.
+ * on `grid`, so it can feed the next contributor without a hand-written band literal. For
+ * `GPUTerrainHeightAboveDrainage`, wrap `GPUTerrainFlow`'s `filledElevation` as the `elevation`
+ * band and pass its `flowDirections` view directly as `flowDirections`.
  *
  * Borrows the grid-sized prefix when values or validity have spare capacity. No data is copied;
  * byte offsets and band metadata are preserved. Exact-sized views retain their identity.
  *
- * @throws If either packed view has fewer than one value per grid pixel, or belongs to another graph.
+ * Values must be packed float32, sint32 or uint32; validity must be packed uint32.
+ * @throws If a format is unsupported, either packed view is shorter than the grid, or graphs differ.
  */
 export function makeGPURasterBand<Format extends GPURasterScalarFormat>(
   values: GraphDataView<Format>,
@@ -94,9 +95,10 @@ export function makeGPURasterBand<Format extends GPURasterScalarFormat>(
   const graph = values.buffer.graph as GPUCommandGraph;
   const borrowPrefix = <ViewFormat extends GPURasterScalarFormat>(
     view: GraphDataView<ViewFormat>,
-    name: string
+    name: string,
+    expectedFormats: readonly GPURasterScalarFormat[]
   ) => {
-    validatePackedView(view, [view.format], `${id} ${name}`);
+    validateSinglePackedView(view, expectedFormats, {id, contributor: id}, name);
     validateRequirement(
       id,
       view.length >= pixelCount,
@@ -115,8 +117,10 @@ export function makeGPURasterBand<Format extends GPURasterScalarFormat>(
           length: pixelCount
         });
   };
-  const boundedValues = borrowPrefix(values, 'values');
-  const validity = options.validity ? borrowPrefix(options.validity, 'validity') : undefined;
+  const boundedValues = borrowPrefix(values, 'values', ['float32', 'sint32', 'uint32']);
+  const validity = options.validity
+    ? borrowPrefix(options.validity, 'validity', ['uint32'])
+    : undefined;
   return {
     id: options.id ?? 'band',
     format: values.format,

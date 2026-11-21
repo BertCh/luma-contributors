@@ -317,12 +317,16 @@ export function getGPUGeographicallyWeightedRegressionParameterValues(
   ) {
     throw new Error(`GWR bandwidths must hold 1 to ${maximumBandwidthCount} values`);
   }
-  const kernel = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_KERNEL[settings.kernel ?? 'bisquare'];
-  const mode =
-    GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_BANDWIDTH_MODE[settings.bandwidthMode ?? 'fixed'];
-  if (kernel === undefined || mode === undefined) {
+  const kernelName = settings.kernel ?? 'bisquare';
+  const modeName = settings.bandwidthMode ?? 'fixed';
+  if (
+    !Object.hasOwn(GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_KERNEL, kernelName) ||
+    !Object.hasOwn(GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_BANDWIDTH_MODE, modeName)
+  ) {
     throw new Error('GWR kernel or bandwidth mode is not recognized');
   }
+  const kernel = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_KERNEL[kernelName];
+  const mode = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_BANDWIDTH_MODE[modeName];
   const level =
     settings.significanceLevel === undefined ? undefined : Math.fround(settings.significanceLevel);
   if (level !== undefined) {

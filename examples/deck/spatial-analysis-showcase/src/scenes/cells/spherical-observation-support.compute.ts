@@ -173,7 +173,7 @@ export async function createSphericalObservationSupport(
       'neighbor-parameters',
       getGPUNeighborSearchParameterValues({
         bounds: [-180, -90, 180, 90],
-        radius: ctx.options.radiusKm * 1000,
+        searchRadius: ctx.options.radiusKm * 1000,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
           metric: 'great-circle',
@@ -516,7 +516,7 @@ export async function createSphericalObservationSupport(
     active.neighborParameters.write(
       getGPUNeighborSearchParameterValues({
         bounds: [-180, -90, 180, 90],
-        radius: ctx.options.radiusKm * 1000,
+        searchRadius: ctx.options.radiusKm * 1000,
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
           metric: 'great-circle',

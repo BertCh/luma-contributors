@@ -8,6 +8,7 @@ import {
   IS_FINITE_BITS_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {ATKINSON_WEIGHT_NORMALIZATION_THRESHOLD} from './inequality-parameters';
 
 /** Floats per zone in the interleaved statistics buffer. */
 export const INEQUALITY_STATS_STRIDE = 10;
@@ -34,6 +35,43 @@ ${GET_NAN_WGSL}
 ${IS_FINITE_BITS_WGSL}
 
 ${GET_ORDERED_KEY_WGSL}
+
+// Stable divided differences: keep the epsilon-near-one signal before float32 rounding.
+// The short Taylor branches avoid subtracting nearly equal exp/log values.
+fn getAtkinsonExpm1OverArgument(argument: f32) -> f32 {
+  if (abs(argument) < 0.01) {
+    return 1.0 + argument * (0.5 + argument * (1.0 / 6.0 + argument * (1.0 / 24.0 + argument / 120.0)));
+  }
+  return (exp(argument) - 1.0) / argument;
+}
+fn getAtkinsonLog1pOverArgument(argument: f32) -> f32 {
+  if (abs(argument) < 0.01) {
+    return 1.0 + argument * (-0.5 + argument * (1.0 / 3.0 + argument * (-0.25 + argument / 5.0)));
+  }
+  return log(1.0 + argument) / argument;
+}
+fn getAtkinsonCenteredTerm(logRatio: f32, power: f32) -> f32 {
+  return logRatio * getAtkinsonExpm1OverArgument(power * logRatio);
+}
+fn shouldNormalizeAtkinsonWeights(population: f32) -> bool {
+  // Below this threshold even the largest logarithmic and centered terms have exponent headroom.
+  // Above it, reduce fractional population contributions directly.
+  return isFiniteBits(population) && population > ${ATKINSON_WEIGHT_NORMALIZATION_THRESHOLD};
+}
+// value and mean are positive here. Forming their quotient can underflow even when both
+// logarithms are finite; retain the original ratio arithmetic on the ordinary path.
+fn getAtkinsonLogRatio(value: f32, mean: f32, ratio: f32) -> f32 {
+  if (ratio > 0.0 && isFiniteBits(ratio)) { return log(ratio); }
+  return log(value) - log(mean);
+}
+fn getAtkinsonFromCenteredMean(positiveCenteredMean: f32, power: f32, zeroFraction: f32) -> f32 {
+  // Positive rows contribute (r^power - 1)/power; each zero contributes -1/power.
+  // Keep the zero population fraction separate until after the positive reduction.
+  let centeredMean = positiveCenteredMean - zeroFraction / power;
+  let logarithm = centeredMean * getAtkinsonLog1pOverArgument(power * positiveCenteredMean - zeroFraction);
+  if (logarithm < -80.0) { return 1.0; }
+  return -logarithm * getAtkinsonExpm1OverArgument(logarithm);
+}
 
 fn interpolateLorenz(cut: f32, previousP: f32, nextP: f32, previousL: f32, nextL: f32) -> f32 {
   if (cut >= nextP) {
@@ -65,7 +103,10 @@ export const INEQUALITY_ZONE_KEYS_BODY = /* wgsl */ `let row = sortedRows[sorted
   let isValid = sortedValueKeys[sortedValueKeysOffset + index] != 0xffffffffu;
   zoneKeys[zoneKeysOffset + index] = select(ZONE_COUNT, zoneIds[zoneIdsOffset + row], isValid);`;
 
-/** Body of the per-zone statistics kernel (one thread per zone). */
+/**
+ * Legacy reference walk for the other indices (one thread per zone). Its Gini and zero-boundary
+ * Atkinson scratch slots are replaced by parallel kernels before GPUInequality publishes outputs.
+ */
 export function getInequalityZoneStatsBody(weightExpression: string): string {
   return /* wgsl */ `let zone = index;
   var searchLow = 0u;
@@ -112,6 +153,7 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
   var totalIncome = 0.0;
   var weightedXLogX = 0.0;
   var hasZero = false;
+  var zeroWeight = 0.0;
   for (var position = rangeStart; position < rangeEnd; position++) {
     let row = sortedRows[sortedRowsOffset + position];
     let x = values[valuesOffset + row];
@@ -122,6 +164,7 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
       weightedXLogX = weightedXLogX + w * x * log(x);
     } else {
       hasZero = true;
+      zeroWeight = zeroWeight + w;
     }
   }
   let mean = getScaledQuotient(totalIncome, totalWeight, 1.0, 0);
@@ -139,6 +182,9 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
   let palmaBottom = params[paramsOffset + 2u];
   let power = 1.0 - epsilon;
   let usePower = epsilon != 1.0;
+  let useCenteredPower = usePower && abs(power) <= 0.01 && (power > 0.0 || !hasZero);
+  let normalizeWeights = shouldNormalizeAtkinsonWeights(totalWeight);
+  let normalizeLogWeights = !usePower && normalizeWeights;
   let palmaBottomTarget = palmaBottom;
   let palmaTopTarget = 1.0 - palmaTop;
   var cumulativeWeight = 0.0;
@@ -167,11 +213,25 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
     trapezoidArea = trapezoidArea + (nextP - previousP) * (previousL + nextL);
     sumAbsolute = sumAbsolute + w * abs(x - mean);
     if (x > 0.0) {
-      let logRatio = log(getScaledQuotient(x, mean, 1.0, 0));
+      let ratio = getScaledQuotient(x, mean, 1.0, 0);
+      let logRatio = log(ratio);
       sumTheilT = sumTheilT + w * (getScaledQuotient(x, mean, 1.0, 0)) * logRatio;
-      sumLog = sumLog + w * logRatio;
+      if (normalizeLogWeights) {
+        let weightFraction = getScaledQuotient(w, totalWeight, 1.0, 0);
+        sumLog = sumLog + weightFraction * getAtkinsonLogRatio(x, mean, ratio);
+      } else {
+        sumLog = sumLog + w * logRatio;
+      }
       if (usePower) {
-        sumPower = sumPower + w * exp(power * logRatio);
+        if (useCenteredPower) {
+          var atkinsonWeight = w;
+          if (normalizeWeights) {
+            atkinsonWeight = getScaledQuotient(w, totalWeight, 1.0, 0);
+          }
+          sumPower = sumPower + atkinsonWeight * getAtkinsonCenteredTerm(getAtkinsonLogRatio(x, mean, ratio), power);
+        } else {
+          sumPower = sumPower + w * exp(power * logRatio);
+        }
       }
     }
     while (nextKnot < KNOT_COUNT && f32(nextKnot) / f32(KNOT_COUNT - 1u) <= nextP) {
@@ -203,15 +263,27 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
 
   stats[base + 1u] = 1.0 - trapezoidArea;
   stats[base + 2u] = getScaledQuotient(sumTheilT, totalWeight, 1.0, 0);
-  stats[base + 3u] = select(-getScaledQuotient(sumLog, totalWeight, 1.0, 0), nan, hasZero);
+  var weightedLogMean = sumLog;
+  if (!normalizeLogWeights) {
+    weightedLogMean = getScaledQuotient(sumLog, totalWeight, 1.0, 0);
+  }
+  stats[base + 3u] = select(-weightedLogMean, nan, hasZero);
   var atkinson = nan;
   if (!usePower) {
     if (!hasZero) {
-      atkinson = 1.0 - exp(getScaledQuotient(sumLog, totalWeight, 1.0, 0));
+      atkinson = 1.0 - exp(weightedLogMean);
     }
   } else if (power > 0.0 || !hasZero) {
-    let powerMean = getScaledQuotient(sumPower, totalWeight, 1.0, 0);
-    atkinson = 1.0 - pow(powerMean, 1.0 / power);
+    if (useCenteredPower) {
+      var centeredMean = sumPower;
+      if (!normalizeWeights) {
+        centeredMean = getScaledQuotient(sumPower, totalWeight, 1.0, 0);
+      }
+      atkinson = getAtkinsonFromCenteredMean(centeredMean, power, getScaledQuotient(zeroWeight, totalWeight, 1.0, 0));
+    } else {
+      let powerMean = getScaledQuotient(sumPower, totalWeight, 1.0, 0);
+      atkinson = 1.0 - pow(powerMean, 1.0 / power);
+    }
   }
   stats[base + 4u] = select(nan, atkinson, isFiniteBits(atkinson));
   stats[base + 5u] = getScaledQuotient(sumAbsolute, totalIncome, 2.0, 0);
@@ -321,7 +393,7 @@ export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let lane = localInvocatio
     }
   }`;
 
-/** Rows per tile of the tiled pooled-Gini passes. */
+/** Rows per tile of the retained legacy tiled pooled-Gini helpers (not used for publication). */
 export const INEQUALITY_GINI_TILE_ROWS = 256;
 
 /**

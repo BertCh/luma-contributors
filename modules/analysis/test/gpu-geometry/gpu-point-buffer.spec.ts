@@ -16,7 +16,7 @@ import {
   readFloat32,
   submitGraph
 } from '../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../utils/require-test-device';
+import {requireTestDevice} from '../../src/testing/require-test-device';
 
 const EARTH_RADIUS_METERS = 6371008.8;
 
@@ -68,7 +68,7 @@ it('GPUPointBuffer geographic offsets match the spherical destination formula', 
         centers.length * verticesPerRing
       ),
       verticesPerRing,
-      coordinateSystem: 'geographic'
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
     })
   );
   submitGraph(device, graph.compile(), undefined);
@@ -135,7 +135,7 @@ it('GPUPointBuffer geographic rings stay valid at the poles and across the antim
         centers.length * verticesPerRing
       ),
       verticesPerRing,
-      coordinateSystem: 'geographic'
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
     })
   );
   submitGraph(device, graph.compile(), undefined);
@@ -175,4 +175,46 @@ it('getGPUPointBufferParameterValues rejects non-positive radii', () => {
   expect(() => getGPUPointBufferParameterValues(-5)).toThrow();
   expect(() => getGPUPointBufferParameterValues(Number.NaN)).toThrow();
   expect(getGPUPointBufferParameterValues(5)[0]).toBe(5);
+});
+
+it('NAM-07 spatialContext selects spherical metre offsets', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const pointBuffer = createInputBuffer(device, Float32Array.of(0, 0));
+  const parameterBuffer = createInputBuffer(device, getGPUPointBufferParameterValues(1000));
+  const offsetBuffer = createOutputBuffer(device, 8);
+  let compiled: ReturnType<typeof graph.compile> | undefined;
+  try {
+    graph.add(
+      new GPUPointBuffer({
+        points: importGraphBuffer(graph, 'points', pointBuffer, 'float32x2', 1),
+        parameters: importGraphBuffer(graph, 'parameters', parameterBuffer, 'float32', 2),
+        offsets: importGraphBuffer(graph, 'offsets', offsetBuffer, 'float32x2', 4),
+        verticesPerRing: 4,
+        spatialContext: {
+          coordinateSpace: 'longitude-latitude',
+          metric: 'great-circle'
+        }
+      })
+    );
+    compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const offsets = await readFloat32(offsetBuffer, 8);
+    expect([...offsets].every(Number.isFinite)).toBe(true);
+    // Equatorial northward destination: 1000 / 6371008.8 * 180 / pi degrees.
+    const expected = [
+      0, 0.00899320363724538, 0.00899320363724538, 0, 0, -0.00899320363724538, -0.00899320363724538,
+      0
+    ];
+    expect(offsets).toHaveLength(expected.length);
+    for (let component = 0; component < expected.length; component++) {
+      expect(offsets[component]).toBeCloseTo(expected[component], 7);
+    }
+  } finally {
+    compiled?.destroy();
+    pointBuffer.destroy();
+    parameterBuffer.destroy();
+    offsetBuffer.destroy();
+  }
 });

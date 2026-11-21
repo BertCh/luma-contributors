@@ -5,7 +5,7 @@ import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {expect, test} from 'vitest';
 import {GPUTimeWindowFilter} from '../../src/dataframe-analysis/time-window-filter/gpu-time-window-filter';
 import {getGPUTimeWindowFilterParameterValues} from '../../src/dataframe-analysis/time-window-filter/time-window-parameters';
-import {GPUKeyJoin} from '../../src/dataframe-analysis/key-join/gpu-key-join';
+import {GPUKeyLookup} from '../../src/dataframe-analysis/key-join/gpu-key-join';
 import {GPUTemporalReduction} from '../../src/dataframe-analysis/temporal-reduction/gpu-temporal-reduction';
 import {GPUSpatialPredicateJoin} from '../../src/gpu-spatial-analysis/spatial-join/gpu-spatial-predicate-join';
 import {
@@ -81,10 +81,10 @@ test.each([
     const compact = {ids: scalar(), status};
     const contributor =
       kind === 'join'
-        ? new GPUKeyJoin({
+        ? new GPUKeyLookup({
             leftKeys: input,
             rightKeys: scalar(),
-            kind: 'inner',
+            compactMatchedLeftRows: true,
             output: {rows: compact}
           })
         : new GPUTemporalReduction({

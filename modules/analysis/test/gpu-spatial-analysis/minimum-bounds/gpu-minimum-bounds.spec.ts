@@ -15,7 +15,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 /*
  * Scene and oracle values come from shapely 2.1.2 (GEOS): minimum_rotated_rectangle /
@@ -191,7 +191,7 @@ async function runMinimumBounds(
         circles: importGraphBuffer(graph, 'o-circles', out.circles, 'float32x3', 6),
         longestLines: importGraphBuffer(graph, 'o-lines', out.lines, 'float32x4', 6),
         diameters: importGraphBuffer(graph, 'o-diameters', out.diameters, 'float32', 6),
-        bounds: importGraphBuffer(graph, 'o-bounds', out.bounds, 'float32x4', 6),
+        sourceBounds: importGraphBuffer(graph, 'o-bounds', out.bounds, 'float32x4', 6),
         hullSizes: importGraphBuffer(graph, 'o-hull-sizes', out.hullSizes, 'uint32', 6),
         status: {
           overflow: importGraphBuffer(graph, 'o-overflow', out.overflow, 'uint32', 1),
@@ -443,3 +443,102 @@ it('GPUMinimumBounds calipers on large hulls match a brute-force CPU scan', asyn
     expectClose(Math.hypot(x1 - x0, y1 - y0), diameter, 1e-5, 1e-3);
   });
 });
+
+// GEO-106: equilateral triangle of side 2^k with the apex float32-rounded. Closed-form
+// circumcircle of the rounded triangle (0, 0), (s, 0), (s/2, h): centre (s/2, (h^2 - s^2/4) / 2h),
+// radius sqrt(s^2/4 + cy^2), about 0.577 s. The former unscaled circumcentre overflowed above
+// extent 2^32 and took the diametral path (0.866 s), and collapsed below about 2^-42 (1.0 s).
+// These four scales qualify circumcenter construction only; the unscaled containment and
+// final squared-distance cover are not qualified across the float32 range. The extreme
+// 3-4-5 cases below separately probe their underflow/overflow at 2^-80 and 2^66.
+// One graph per scale: hulls share one global lattice per call.
+it('GPUMinimumBounds circles are the circumcircle at extents 2^40, 2^33, 2^-40 and 2^-45', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const exponent of [40, 33, -40, -45]) {
+    const side = 2 ** exponent;
+    const height = Math.fround((side * Math.sqrt(3)) / 2);
+    const graph = new GPUCommandGraph(device, {id: `minimum-bounds-scale-${exponent}`});
+    const positions = createInputBuffer(
+      device,
+      Float32Array.from([0, 0, side, 0, side / 2, height])
+    );
+    const labels = createInputBuffer(device, Uint32Array.from([0, 0, 0]));
+    const circles = createOutputBuffer(device, 3);
+    const overflow = createOutputBuffer(device, 1);
+    graph.add(
+      new GPUMinimumBounds({
+        id: 'mb-scale',
+        positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', 3),
+        labels: importGraphBuffer(graph, 'labels', labels, 'uint32', 3),
+        groupCount: 1,
+        output: {
+          circles: importGraphBuffer(graph, 'o-circles', circles, 'float32x3', 1),
+          status: {overflow: importGraphBuffer(graph, 'o-overflow', overflow, 'uint32', 1)}
+        }
+      })
+    );
+    const compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const [x, y, radius] = await readFloat32(circles, 3);
+    expect((await readUint32(overflow, 1))[0], `2^${exponent} overflow`).toBe(0);
+    const centerY = (height * height - (side * side) / 4) / (2 * height);
+    const expectedRadius = Math.hypot(side / 2, centerY);
+    for (const value of [x, y, radius]) expect(Number.isFinite(value), `2^${exponent}`).toBe(true);
+    expect(Math.abs(radius - expectedRadius), `2^${exponent} radius ${radius}`).toBeLessThanOrEqual(
+      1e-5 * expectedRadius
+    );
+    expect(Math.abs(x - side / 2), `2^${exponent} x ${x}`).toBeLessThanOrEqual(1e-5 * side);
+    expect(Math.abs(y - centerY), `2^${exponent} y ${y}`).toBeLessThanOrEqual(1e-5 * side);
+    compiled.destroy();
+    for (const buffer of [positions, labels, circles, overflow]) buffer.destroy();
+  }
+});
+
+for (const exponent of [-80, 66]) {
+  it(`GEO-106 minimum circle keeps a representable radius across squared-distance limits at 2^${exponent}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const scale = 2 ** exponent;
+    // The right 3-4-5 triangle has minimum circle at the hypotenuse midpoint, with
+    // center (1.5,2)*scale and radius 2.5*scale. All are exactly representable float32.
+    // Squaring that radius in float32 yields zero at 2^-80 and infinity at 2^66.
+    const graph = new GPUCommandGraph(device, {id: `minimum-circle-squared-range-${exponent}`});
+    const buffers: Buffer[] = [];
+    const positions = createInputBuffer(
+      device,
+      Float32Array.from([0, 0, 3 * scale, 0, 0, 4 * scale])
+    );
+    const labels = createInputBuffer(device, Uint32Array.of(0, 0, 0));
+    const circles = createOutputBuffer(device, 3);
+    const overflow = createOutputBuffer(device, 1);
+    buffers.push(positions, labels, circles, overflow);
+    let compiled: ReturnType<GPUCommandGraph['compile']> | undefined;
+    try {
+      graph.add(
+        new GPUMinimumBounds({
+          positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', 3),
+          labels: importGraphBuffer(graph, 'labels', labels, 'uint32', 3),
+          groupCount: 1,
+          output: {
+            circles: importGraphBuffer(graph, 'circles', circles, 'float32x3', 1),
+            status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+          }
+        })
+      );
+      compiled = graph.compile();
+      submitGraph(device, compiled, undefined);
+      const result = await readFloat32(circles, 3);
+      expect(result.length).toBe(3);
+      expect(await readUint32(overflow, 1)).toEqual([0]);
+      const expected = [1.5, 2, 2.5];
+      result.forEach((value, component) => {
+        expect(Number.isFinite(value), `circle component ${component} at 2^${exponent}`).toBe(true);
+        expect(Math.abs(value / scale - expected[component])).toBeLessThanOrEqual(2e-5);
+      });
+    } finally {
+      compiled?.destroy();
+      buffers.forEach(buffer => buffer.destroy());
+    }
+  });
+}

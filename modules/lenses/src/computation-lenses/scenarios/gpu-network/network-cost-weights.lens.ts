@@ -27,6 +27,7 @@ const scenario: NetworkElementScenario = {
   weights: 'travelTimeSeconds',
   seed: 0,
   retain: [
+    'weightComplete',
     'matrixCosts',
     'converged',
     'snappedEdges',
@@ -83,12 +84,15 @@ const scenario: NetworkElementScenario = {
     const example = await runExample(context.device, {
       graph: context.graph,
       matrixCosts: matrix.costs,
+      matrixComplete: matrix.converged,
+      matrixCostLimit: matrix.matrix.props.costLimit,
       parameters,
       facilityCount: facilities.length,
       nodeCount: context.data.nodeCount
     });
     return {
       views: {
+        weightComplete: example.status.complete!,
         facilityPositions,
         matrixCosts: matrix.costs,
         converged: matrix.converged,
@@ -106,6 +110,8 @@ const scenario: NetworkElementScenario = {
       throw new Error('Network cost matrix did not converge within maximumIterations = 24');
     if (final('weightOverflow').values[0] !== 0)
       throw new Error('Network cost weights overflowed the facility-by-node capacity');
+    if (final('weightComplete').values[0] !== 1)
+      throw new Error('Network cost weights: incomplete matrix, capacity or cutoff horizon');
     const positions = final('nodePositions');
     const offsets = final('weightOffsets');
     const facilityCount = facilities.length;

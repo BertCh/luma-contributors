@@ -31,6 +31,7 @@ export {
 export type {
   CPUConstrainedDelaunayTriangulationInput,
   CPUConstrainedDelaunayTriangulationOptions,
+  CPUConstrainedDelaunayTriangulationOperationProps,
   CPUConstrainedDelaunayTriangulationResult
 } from './cpu-constrained-delaunay-triangulation-operation';
 export {GPUConstrainedDelaunayTriangulationOperation} from './gpu-constrained-delaunay-triangulation-operation';
@@ -42,6 +43,7 @@ export {
 export type {
   CPUPolygonTriangulationInput,
   CPUPolygonTriangulationOptions,
+  CPUPolygonTriangulationOperationProps,
   CPUPolygonTriangulationResult
 } from '../../analysis-core/polygon-triangulation/cpu-polygon-triangulation-operation';
 export {GPUPolygonTriangulationOperation} from '../../analysis-core/polygon-triangulation/gpu-polygon-triangulation-operation';

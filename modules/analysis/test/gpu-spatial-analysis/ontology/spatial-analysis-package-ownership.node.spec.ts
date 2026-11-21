@@ -5,6 +5,7 @@
 import {expect, it} from 'vitest';
 import * as analysisCore from '../../../src/analysis-core/index';
 import * as spatialAnalysis from '../../../src/gpu-spatial-analysis/index';
+import * as spatialOntology from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import * as terrain from '../../../src/gpu-terrain/index';
 
 it('resolves every ontology operator from its declared public entry', () => {
@@ -14,7 +15,7 @@ it('resolves every ontology operator from its declared public entry', () => {
     '@luma-contributors/analysis/gpu-terrain': terrain
   };
 
-  for (const operator of spatialAnalysis.GPU_SPATIAL_ANALYSIS_OPERATORS) {
+  for (const operator of spatialOntology.GPU_SPATIAL_ANALYSIS_OPERATORS) {
     expect(
       entryModules[operator.package]?.[operator.exportName],
       `${operator.package}: ${operator.exportName}`
@@ -23,7 +24,7 @@ it('resolves every ontology operator from its declared public entry', () => {
 });
 
 it('discovers terrain prominence without exporting it from spatial analysis', () => {
-  const operator = spatialAnalysis.getGPUSpatialAnalysisOperator('GPUTerrainPeakProminence');
+  const operator = spatialOntology.getGPUSpatialAnalysisOperator('GPUTerrainPeakProminence');
   expect(operator?.package).toBe('@luma-contributors/analysis/gpu-terrain');
   expect(terrain.GPUTerrainPeakProminence).toBeTypeOf('function');
   expect('GPUTerrainPeakProminence' in spatialAnalysis).toBe(false);

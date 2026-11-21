@@ -22,7 +22,13 @@ export const KEPLER_ANALYSIS_OPERATORS: SpatialFamilyOperators = {
     guards: ['uncorrected-p', 'count-vs-rate'],
     choices: [
       {stage: 'operator', name: 'quantileParameters', sweepable: true},
-      {stage: 'inference', name: 'permutationCount', sweepable: true}
+      {stage: 'inference', name: 'permutationCount', sweepable: true},
+      {
+        stage: 'inference',
+        name: 'alternative',
+        sweepable: true,
+        alternatives: ['greater', 'two-sided', 'geoda-legacy']
+      }
     ],
     formula: {
       formula: 'none',
@@ -33,7 +39,10 @@ export const KEPLER_ANALYSIS_OPERATORS: SpatialFamilyOperators = {
       quantileConvention: 'type-5',
       boundaryConvention: 'lower-inclusive',
       pCorrection: 'none',
-      permutationTail: 'legacy-directed'
+      permutationTail: 'caller-selected',
+      legacyPermutationTail: 'strict-complement',
+      legacyPermutationFormula: '(min(upper, P-upper)+1)/(P+1)',
+      inclusiveTieRule: 'greater and two-sided return 1 when all draws tie'
     }
   },
   GPUDorlingCartogram: {

@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.spatial-clustering",
   "viewId": "formula-card",
-  "caption": "Formula Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumPoints. Clusters are the connected components of core points under that rel…",
-  "description": "Formula Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumPoints. Clusters are the connected components of core points under that rel…",
-  "llms": "Formula Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumPoints. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumSamples. Clusters are the connected components of core points under that re…",
+  "description": "Formula Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumSamples. Clusters are the connected components of core points under that re…",
+  "llms": "Formula Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumSamples. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
     "value": "4/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>dbscan-core-test</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{neighborCount}{\\lvert N_\\varepsilon(i)\\rvert}&amp;=\\sum_j \\bigl[\\,\\lVert x_j-x_i\\rVert^2\\le\\term{epsilonSquared}{\\varepsilon^2}\\,\\bigr]\\\\\n\\term{coreFlags}{\\mathrm{core}(i)}&amp;\\iff \\lvert N_\\varepsilon(i)\\rvert\\ \\ge\\ \\term{minimumPoints}{m}\n\\end{aligned}</pre><p class=\"lens-ascii\">Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 &lt;= epsilon^2 in f32; point i is core when |N(i)| &gt;= minimumPoints. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-core\" data-value=\"neighborCount\">neighborCount · intermediate · neighborCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-grid-positions\" data-value=\"epsilonSquared\">epsilonSquared · parameter · epsilonSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-core\" data-value=\"coreFlags\">coreFlags · output · coreFlags</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-grid-positions\" data-value=\"minimumPoints\">minimumPoints · parameter · minimumPoints</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>dbscan-core-test</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{neighborCount}{\\lvert N_\\varepsilon(i)\\rvert}&amp;=\\sum_j \\bigl[\\,\\lVert x_j-x_i\\rVert^2\\le\\term{epsilonSquared}{\\varepsilon^2}\\,\\bigr]\\\\\n\\term{coreFlags}{\\mathrm{core}(i)}&amp;\\iff \\lvert N_\\varepsilon(i)\\rvert\\ \\ge\\ \\term{minimumSamples}{m}\n\\end{aligned}</pre><p class=\"lens-ascii\">Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 &lt;= epsilon^2 in f32; point i is core when |N(i)| &gt;= minimumSamples. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-core\" data-value=\"neighborCount\">neighborCount · intermediate · neighborCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-grid-positions\" data-value=\"epsilonSquared\">epsilonSquared · parameter · epsilonSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-core\" data-value=\"coreFlags\">coreFlags · output · coreFlags</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-clustering-compiled:spatial-clustering-grid-positions\" data-value=\"minimumSamples\">minimumSamples · parameter · minimumSamples</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -48,9 +48,9 @@
         "metadata"
       ],
       [
-        "minimumPoints",
+        "minimumSamples",
         "parameter",
-        "minimumPoints",
+        "minimumSamples",
         "—",
         "metadata"
       ]
@@ -63,8 +63,8 @@
     ]
   },
   "formula": {
-    "tex": "\\begin{aligned}\n\\term{neighborCount}{\\lvert N_\\varepsilon(i)\\rvert}&=\\sum_j \\bigl[\\,\\lVert x_j-x_i\\rVert^2\\le\\term{epsilonSquared}{\\varepsilon^2}\\,\\bigr]\\\\\n\\term{coreFlags}{\\mathrm{core}(i)}&\\iff \\lvert N_\\varepsilon(i)\\rvert\\ \\ge\\ \\term{minimumPoints}{m}\n\\end{aligned}",
-    "ascii": "Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumPoints. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.",
+    "tex": "\\begin{aligned}\n\\term{neighborCount}{\\lvert N_\\varepsilon(i)\\rvert}&=\\sum_j \\bigl[\\,\\lVert x_j-x_i\\rVert^2\\le\\term{epsilonSquared}{\\varepsilon^2}\\,\\bigr]\\\\\n\\term{coreFlags}{\\mathrm{core}(i)}&\\iff \\lvert N_\\varepsilon(i)\\rvert\\ \\ge\\ \\term{minimumSamples}{m}\n\\end{aligned}",
+    "ascii": "Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumSamples. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.",
     "derivation": "curated"
   },
   "verdicts": [
@@ -82,12 +82,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:03.768Z",
-    "runId": "run-6896926c",
+    "date": "2026-11-20T23:50:55.351Z",
+    "runId": "run-c6fe28a6",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-6896926c",
+    "runId": "run-c6fe28a6",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

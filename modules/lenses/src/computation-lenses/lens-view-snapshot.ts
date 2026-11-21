@@ -109,6 +109,8 @@ export function addLensViewSnapshot<Parameters>(
   props: {
     id: string;
     views: LensSnapshotViews;
+    /** Number of submissions the arena can capture before readback. Defaults to one. */
+    frameCapacity?: number;
     /** Final names after host tagging; defaults to the copied view names. */
     captureNames?: readonly string[];
     elementTypes?: Readonly<Record<string, GPUComputationCaptureElementType>>;
@@ -134,7 +136,11 @@ export function addLensViewSnapshot<Parameters>(
       ...(components && {components: Number(components[1])})
     };
   });
-  const arena = new GPUSnapshotArena(device, {id: `${props.id}-snapshots`, slots, capacity: 1});
+  const arena = new GPUSnapshotArena(device, {
+    id: `${props.id}-snapshots`,
+    slots,
+    capacity: props.frameCapacity ?? 1
+  });
   graph.add(
     new GPUSnapshotTap({
       id: `${props.id}-snapshot-tap`,
@@ -155,7 +161,7 @@ export function addLensViewSnapshot<Parameters>(
   };
 }
 
-/** Reads the single snapshot frame after the compiled graph was submitted, then frees the arena. */
+/** Reads the snapshot frames after all graph submissions, then frees the arena. */
 export async function readLensViewSnapshot(
   snapshot: LensViewSnapshot,
   props: {graphId: string; runId?: string}

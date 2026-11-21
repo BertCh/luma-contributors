@@ -45,16 +45,22 @@ export function validateCellTableWritableViews(
     requiredCount: table.status.requiredCount
   };
   const candidateOverflow = table.status.candidateOverflow;
+  const sumOverflow = table.status.sumOverflow;
   const counts = Object.fromEntries(
     extraCounts.map((view, index) => [`extraCounts[${index}]`, view])
   );
   const finish = {sumValues: table.sumValues, minimums: table.minimums, maximums: table.maximums};
-  validateCellDispatchOutputs(id, {...columns, ...finalStatus, candidateOverflow, ...counts}, [
-    ...(options.separateColumns ? [] : [{cells: table.cells, counts: table.counts}, finish]),
-    ...(options.rollup && table.sums ? [{counts: table.counts, sums: table.sums}] : []),
-    {...finalStatus, ...counts},
-    {candidateOverflow}
-  ]);
+  validateCellDispatchOutputs(
+    id,
+    {...columns, ...finalStatus, candidateOverflow, sumOverflow, ...counts},
+    [
+      ...(options.separateColumns ? [] : [{cells: table.cells, counts: table.counts}, finish]),
+      ...(options.rollup && table.sums ? [{counts: table.counts, sums: table.sums}] : []),
+      {...finalStatus, ...counts},
+      {candidateOverflow},
+      {sumOverflow}
+    ]
+  );
   if (!options.separateColumns && table.sumValues && table.sums)
     validateCellReadWriteDispatch(id, {sums: table.sums}, finish);
 }

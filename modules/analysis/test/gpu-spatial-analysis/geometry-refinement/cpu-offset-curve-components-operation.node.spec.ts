@@ -78,6 +78,74 @@ function makeCPUInput(format: 'float32x2' | 'uint32', values: Float32Array | Uin
   return {format, length, chunks: [{values, length}], pack: () => values};
 }
 
+it('multipart offset components preserve feature and part provenance including an empty feature', () => {
+  // Shapely offset_curve(MULTILINESTRING ((0 0,2 0),(5 0,7 0),(10 0,12 0)), 1)
+  // is MULTILINESTRING ((0 1,2 1),(5 1,7 1),(10 1,12 1)). The feature map
+  // [0,0,2,3] gives part owners [1,1,2]. Each two-vertex part owns its start edge row.
+  const result = computeOffsetCurveComponentsOnCPU(
+    {
+      original: {
+        positions: Float32Array.of(0, 0, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0),
+        lineOffsets: Uint32Array.of(0, 2, 4, 6),
+        featureOffsets: Uint32Array.of(0, 0, 2, 3)
+      },
+      raw: {
+        positions: Float32Array.of(0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1),
+        lineOffsets: Uint32Array.of(0, 2, 4, 6),
+        featureOffsets: Uint32Array.of(0, 0, 2, 3)
+      }
+    },
+    {distance: 1, tolerance: 0, vertexCapacity: 6, componentCapacity: 3}
+  );
+  expect(Array.from(result.positions)).toEqual([0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1]);
+  expect(Array.from(result.components)).toEqual([0, 2, 0, 1, 2, 2, 1, 1, 4, 2, 2, 2]);
+  expect(Array.from(result.sourceEdges)).toEqual([0, 0, 2, 2, 4, 4]);
+  expect(Array.from(result.status)).toEqual([3, 6, 3, 6, 0, 0, 0, 0]);
+});
+
+it('multipart CPU offset operation resolves and snapshots both grouping input ports', async () => {
+  const props = {
+    ...getProps(),
+    lineCount: 3,
+    vertexCapacity: 6,
+    componentCapacity: 3,
+    original: {
+      positions: 'originalPositions',
+      lineOffsets: 'originalOffsets',
+      featureOffsets: 'originalFeatures'
+    },
+    raw: {positions: 'rawPositions', lineOffsets: 'rawOffsets', featureOffsets: 'rawFeatures'}
+  };
+  const operation = new CPUOffsetCurveComponentsOperation(props);
+  props.original.featureOffsets = 'changed-after-construction';
+  props.raw.featureOffsets = 'changed-after-construction';
+  const result = await operation.execute({
+    inputs: {
+      originalPositions: makeCPUInput(
+        'float32x2',
+        Float32Array.of(0, 0, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0)
+      ),
+      originalOffsets: makeCPUInput('uint32', Uint32Array.of(0, 2, 4, 6)),
+      originalFeatures: makeCPUInput('uint32', Uint32Array.of(0, 0, 2, 3)),
+      rawPositions: makeCPUInput(
+        'float32x2',
+        Float32Array.of(0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1)
+      ),
+      rawOffsets: makeCPUInput('uint32', Uint32Array.of(0, 2, 4, 6)),
+      rawFeatures: makeCPUInput('uint32', Uint32Array.of(0, 0, 2, 3))
+    }
+  });
+  // Same Shapely and hand-derived literals as multipart-offset-components.oracle.py.
+  expect(Array.from(result['positions'] as Float32Array)).toEqual([
+    0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1
+  ]);
+  expect(Array.from(result['components'] as Uint32Array)).toEqual([
+    0, 2, 0, 1, 2, 2, 1, 1, 4, 2, 2, 2
+  ]);
+  expect(Array.from(result['sourceEdges'] as Uint32Array)).toEqual([0, 0, 2, 2, 4, 4]);
+  expect(Array.from(result['status'] as Uint32Array)).toEqual([3, 6, 3, 6, 0, 0, 0, 0]);
+});
+
 it.each([1, 8])('honours operation segmentCapacity=%s', async segmentCapacity => {
   const output = await new CPUOffsetCurveComponentsOperation({
     ...getProps(),

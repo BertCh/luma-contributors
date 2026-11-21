@@ -87,7 +87,7 @@ export default defineOperationRun({
           method,
           output: {
             adjustedPValues: adjusted.view,
-            testedCount: builder.allocate(`tested-${method}`, 'uint32', 1).view
+            effectiveFamilySize: builder.allocate(`tested-${method}`, 'uint32', 1).view
           }
         })
       );

@@ -24,7 +24,7 @@ import {
   stretchPoints
 } from './shared/weights';
 
-const OPERATIONS = ['union', 'intersection', 'difference', 'symmetricDifference'] as const;
+const OPERATIONS = ['union', 'intersection', 'difference', 'symmetric-difference'] as const;
 const BAND_RADIUS = 0.1;
 
 export default defineOperationRun({

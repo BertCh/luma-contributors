@@ -5,14 +5,40 @@
 import type {Device} from '@luma.gl/core';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
+import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
+import {getGPUSpatialWeightsLossViews} from '../spatial-weights/gpu-chunked-spatial-weights';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   validateCapacity,
+  validateSinglePackedView,
   validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 type Views = Readonly<Record<string, GraphDataView | undefined>>;
+
+/** Accessibility accepts independent positive certificates as well as shared negative loss flags. @internal */
+export function getAccessibilityWeightsLossChecks(id: string, weights: GPUSpatialWeights) {
+  const complete = weights.status?.complete;
+  if (complete) {
+    validateSinglePackedView(complete, ['uint32'], `${id} weights.status.complete`);
+    validateRequirement(
+      id,
+      complete.length === 1,
+      `weights.status.complete length must equal 1; received ${complete.length}`
+    );
+  }
+  // The shared reader currently requires a failure-polarity companion for complete. Collect its
+  // ordinary flags without that metadata, then read the independent positive certificate itself.
+  const negative = getGPUSpatialWeightsLossViews({
+    ...weights,
+    status: weights.status ? {...weights.status, complete: undefined} : undefined
+  });
+  return [
+    ...negative.map(flag => ({flag, test: '!= 0u'})),
+    ...(complete ? [{flag: complete, test: '== 0u'}] : [])
+  ];
+}
 
 /** Validate logical separation globally, and aligned separation only for co-bound fields. @internal */
 export function validateCatchmentViews(

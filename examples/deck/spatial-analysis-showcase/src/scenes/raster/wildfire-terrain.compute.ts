@@ -75,6 +75,7 @@ const SLOPE_RANGE: [number, number] = [0, 40];
 
 /** Per-zone statistics read back from the zonal graph. Zone `2 * fire` is inside, `2 * fire + 1` the ring. */
 type ZonalTable = {
+  incomplete: Uint32Array;
   slopeCells: Uint32Array;
   slopeCount: Uint32Array;
   slopeSum: Float32Array;
@@ -223,6 +224,7 @@ export async function createWildfireTerrain(
   const steep = column('steep');
   const classes = column('classes');
   const rasterOverflow = column('raster-overflow', 1);
+  const zonalIncomplete = column('zonal-incomplete', 5);
   const rasterCrossings = column('raster-crossings', 1);
   const enabled = column('enabled', fireCount);
   const enabledFloat = column('enabled-float', fireCount);
@@ -522,7 +524,18 @@ export async function createWildfireTerrain(
       ...(noDataValue === undefined ? {} : {noDataValue}),
       storage: {kind: 'buffer' as const, values}
     });
-    const common = {grid: mercatorGrid, zoneCapacity, sumOrder: options.sumOrder};
+    const common = {
+      grid: mercatorGrid,
+      zoneCapacity,
+      sumOrder: options.sumOrder,
+      producerOverflow: imp('producer-overflow', rasterOverflow, 'uint32', 1)
+    };
+    const status = (index: number) => ({
+      incomplete: graph.createDataView(
+        imp('zonal-incomplete', zonalIncomplete, 'uint32', 5).buffer,
+        {format: 'uint32' as const, byteOffset: index * 4, length: 1}
+      )
+    });
     graph.add(
       new GPURasterZonalStatistics({
         id: 'zonal-slope',
@@ -530,6 +543,7 @@ export async function createWildfireTerrain(
         zones: zoneFireView,
         values: band('slope', slopeView),
         output: {
+          status: status(0),
           cellCounts: counts('z-slope-cells', zonalOutputs.slopeCells),
           valueCounts: counts('z-slope-count', zonalOutputs.slopeCount),
           sums: floats('z-slope-sum', zonalOutputs.slopeSum),
@@ -544,6 +558,7 @@ export async function createWildfireTerrain(
         zones: zoneFireView,
         values: band('southness', southView),
         output: {
+          status: status(1),
           valueCounts: counts('z-south-count', zonalOutputs.southCount),
           sums: floats('z-south-sum', zonalOutputs.southSum)
         }
@@ -556,6 +571,7 @@ export async function createWildfireTerrain(
         zones: zoneFireView,
         values: band('steep', steepView),
         output: {
+          status: status(2),
           valueCounts: counts('z-steep-count', zonalOutputs.steepCount),
           sums: floats('z-steep-sum', zonalOutputs.steepSum)
         }
@@ -568,6 +584,7 @@ export async function createWildfireTerrain(
         zones: zoneFireView,
         values: band('dem', imp('dem', demBuffer, 'float32', cellCount), spec.noData),
         output: {
+          status: status(3),
           valueCounts: counts('z-elevation-count', zonalOutputs.elevationCount),
           sums: floats('z-elevation-sum', zonalOutputs.elevationSum)
         }
@@ -576,12 +593,14 @@ export async function createWildfireTerrain(
     graph.add(
       new GPURasterZonalStatistics({
         id: 'zonal-rose',
+        producerOverflow: imp('rose-producer-overflow', rasterOverflow, 'uint32', 1),
         grid: mercatorGrid,
         zoneCapacity: roseCapacity,
         sumOrder: options.sumOrder,
         zones: zoneRoseView,
         values: band('slope-for-rose', slopeView),
         output: {
+          status: status(4),
           cellCounts: counts('z-rose', zonalOutputs.rose, roseCapacity)
         }
       })
@@ -610,7 +629,8 @@ export async function createWildfireTerrain(
     {buffer: zonalOutputs.steepSum, size: zoneCapacity * 4},
     {buffer: zonalOutputs.elevationCount, size: zoneCapacity * 4},
     {buffer: zonalOutputs.elevationSum, size: zoneCapacity * 4},
-    {buffer: zonalOutputs.rose, size: roseCapacity * 4}
+    {buffer: zonalOutputs.rose, size: roseCapacity * 4},
+    {buffer: zonalIncomplete, size: 20}
   ];
   let table: ZonalTable | null = null;
   let selected = -1;
@@ -640,7 +660,8 @@ export async function createWildfireTerrain(
       steepSum: take(Float32Array, zoneCapacity),
       elevationCount: take(Uint32Array, zoneCapacity),
       elevationSum: take(Float32Array, zoneCapacity),
-      rose: take(Uint32Array, roseCapacity)
+      rose: take(Uint32Array, roseCapacity),
+      incomplete: take(Uint32Array, 5)
     };
   };
 
@@ -656,6 +677,32 @@ export async function createWildfireTerrain(
   const analyze = () => {
     if (!table) return;
     const t = table;
+    if (t.incomplete.some(Boolean)) {
+      for (const name of [
+        'scope',
+        'cellsInside',
+        'cellsRing',
+        'slopeMean',
+        'comparable',
+        'steepShare',
+        'southShare',
+        'southness',
+        'elevation',
+        'steeperFires',
+        'medianDifference'
+      ])
+        ctx.setReadout(name, 'unavailable: incomplete rasterization');
+      for (const name of [
+        'slopeChart',
+        'steepChart',
+        'differenceChart',
+        'aspectChart',
+        'aspectDifferenceChart'
+      ])
+        ctx.setChart(name, null);
+      ctx.requestLayers();
+      return;
+    }
     const options = ctx.options;
     const comparable: number[] = [];
     for (let fire = 0; fire < fireCount; fire++) {
@@ -841,6 +888,10 @@ export async function createWildfireTerrain(
       return;
     }
     const t = table;
+    if (t?.incomplete.some(Boolean)) {
+      ctx.setReadout('selected', 'unavailable: incomplete rasterization');
+      return;
+    }
     if (!t) {
       ctx.setReadout('selected', describeFire(data, selected));
       return;

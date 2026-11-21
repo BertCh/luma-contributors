@@ -15,7 +15,7 @@ import {
   type GPUColumnQuantileInterpolation
 } from '../../../src/dataframe-analysis/column-classification/column-quantiles-parameters';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 // Four surviving values [-4, 0, 2, 8] give ranks 0, .75, 1.5, 2.25, 3.
 // The median is a half-even tie; always selecting lower now fails every other method.
@@ -122,3 +122,75 @@ for (const interpolation of [
     }
   }
 }
+
+it('TWN-41 pins packed 0.7 row selection in both operation forms', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // f32(10 * f32(.7)) = 7; quantile rank uses n-1, filter rank uses n.
+  for (const rowCount of [11, 10]) {
+    const props: ColumnQuantilesOperationProps = {
+      values: 'values',
+      parameters: 'parameters',
+      rowCount,
+      quantileCount: 1,
+      output: {
+        quantiles: 'quantiles',
+        validCount: 'validCount',
+        filterBounds: 'filterBounds',
+        outputMask: 'outputMask'
+      }
+    };
+    for (const Operation of [CPUColumnQuantilesOperation, GPUColumnQuantilesOperation]) {
+      const rows = await runOperationGraph(device, {
+        inputs: {
+          values: {
+            format: 'float32',
+            values: Float32Array.from({length: rowCount}, (_, row) => row)
+          },
+          parameters: {
+            format: 'float32',
+            values: getGPUColumnQuantilesParameterValues({
+              quantiles: [0.7],
+              interpolation: 'lower',
+              filterRange: [0.7, 1]
+            })
+          }
+        },
+        outputs: Object.values(props.output),
+        operations: [new Operation(props)]
+      });
+      if (rowCount === 11) expect(Array.from(rows['quantiles'])).toEqual([7]);
+      else {
+        expect(Array.from(rows['filterBounds'])).toEqual([7, 9]);
+        expect(Array.from(rows['outputMask'])).toEqual([0, 0, 0, 0, 0, 0, 0, 1, 1, 1]);
+      }
+    }
+  }
+});
+
+it('UDF-08 preserves invalid host probabilities in both operation forms', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: ColumnQuantilesOperationProps = {
+    values: 'values',
+    parameters: 'parameters',
+    rowCount: 3,
+    quantileCount: 2,
+    output: {quantiles: 'quantiles', validCount: 'validCount'}
+  };
+  for (const Operation of [CPUColumnQuantilesOperation, GPUColumnQuantilesOperation]) {
+    const rows = await runOperationGraph(device, {
+      inputs: {
+        values: {format: 'float32', values: Float32Array.of(0, 10, 20)},
+        parameters: {
+          format: 'float32',
+          values: getGPUColumnQuantilesParameterValues({quantiles: [-1e-50, 1 + Number.EPSILON]})
+        }
+      },
+      outputs: Object.values(props.output),
+      operations: [new Operation(props)]
+    });
+    expect(Array.from(rows['quantiles'])).toEqual([NaN, NaN]);
+    expect(Array.from(rows['validCount'])).toEqual([3]);
+  }
+});

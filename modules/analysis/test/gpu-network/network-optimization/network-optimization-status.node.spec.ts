@@ -244,18 +244,6 @@ it('optimizer status ports parse with at most eight bindings, even with all opti
           }
         })
     ).toThrow(/distinct/);
-    for (const contributor of [
-      new GPUNetworkFlow(flowProps),
-      new GPUNetworkTimeRouting(timeProps),
-      new GPUNetworkRationalAccess(rationalProps)
-    ]) {
-      const nodes = contributor.getCommandNodes(graph);
-      for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
-        expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
-        expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
-        expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
-      }
-    }
     for (const name of [
       'invalidCount',
       'iterationCount',
@@ -299,18 +287,54 @@ it('optimizer status ports parse with at most eight bindings, even with all opti
         output: {...timeProps.output, status: {converged: foreign}}
       }).getCommandNodes(graph)
     ).toThrow(/time-status.*graph/);
-    expect(
-      new GPUNetworkTimeRouting({
+    for (const withStatus of [false, true]) {
+      const configurationId = `time-status-${withStatus ? 'named' : 'plain'}`;
+      const nodes = new GPUNetworkTimeRouting({
         ...timeProps,
-        output: {...timeProps.output, status: {converged: status.converged}}
-      }).getCommandNodes(graph)
-    ).toHaveLength(2);
-    expect(
-      new GPUNetworkTimeRouting({
-        ...timeProps,
-        output: {...timeProps.output, status: undefined}
-      }).getCommandNodes(graph)
-    ).toHaveLength(1);
+        id: configurationId,
+        output: {
+          ...timeProps.output,
+          status: withStatus ? {converged: status.converged} : undefined
+        }
+      }).getCommandNodes(graph);
+      expect(nodes).toHaveLength(withStatus ? 3 : 2);
+      expect(nodes.map(node => node.id)).toEqual(
+        withStatus
+          ? [
+              `${configurationId}-elapsed`,
+              `${configurationId}-status`,
+              `${configurationId}-publish-arrivals`
+            ]
+          : [`${configurationId}-elapsed`, `${configurationId}-publish-arrivals`]
+      );
+      const kernels = getGPUCommandNodeKernelSources(nodes);
+      expect(kernels.find(kernel => kernel.id === `${configurationId}-elapsed`)?.source).toContain(
+        'fn elapsedArrival'
+      );
+      expect(
+        kernels.find(kernel => kernel.id === `${configurationId}-publish-arrivals`)?.source
+      ).toContain('departure[departureOffset] + duration');
+      const statusSource = kernels.find(
+        kernel => kernel.id === `${configurationId}-status`
+      )?.source;
+      if (withStatus)
+        expect(statusSource).toContain(
+          'converged[convergedOffset] = summary[summaryOffset] * summary[summaryOffset + 1u]'
+        );
+      else expect(statusSource).toBeUndefined();
+    }
+    for (const contributor of [
+      new GPUNetworkFlow(flowProps),
+      new GPUNetworkTimeRouting(timeProps),
+      new GPUNetworkRationalAccess(rationalProps)
+    ]) {
+      const nodes = contributor.getCommandNodes(graph);
+      for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
+        expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
+        expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
+        expect.soft(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
+      }
+    }
   } finally {
     device.destroy();
   }

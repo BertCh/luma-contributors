@@ -36,7 +36,7 @@ import {
   type DistanceFieldOracleResult,
   type DistanceFieldScene
 } from './distance-field-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const NONE = GPU_DISTANCE_FIELD_NONE;
 
@@ -48,14 +48,13 @@ type FixtureOptions = {
   /** Minimum-corner `[x, y]` of cell `(0, 0)`. Defaults to `[0, 0]`. */
   origin?: readonly [number, number];
   settings?: GPUDistanceFieldSettings;
-  positions?: Float32Array;
-  ids?: Uint32Array;
-  count?: number;
-  mask?: Uint32Array;
   mode?: GPUDistanceFieldMode;
   jumpFloodRefinementIterationCount?: 0 | 1 | 2;
   texture?: boolean;
-};
+} & (
+  | {positions: Float32Array; ids?: Uint32Array; count?: number; mask?: Uint32Array}
+  | {mask: Uint32Array; positions?: never; ids?: never; count?: never}
+);
 
 type FixtureResult = {
   distances: number[];
@@ -176,34 +175,43 @@ class Fixture {
           {mipLevelCount: 1}
         )
       : undefined;
-    const view = (name: keyof Fixture['outputs'], format: 'float32' | 'uint32') =>
-      importGraphBuffer(graph, `df-${name}`, this.outputs[name], format, this.cellCount);
-    this.contributor = new GPUDistanceField({
-      id: 'df',
-      grid: this.grid,
-      parameters: this.settings.importToGraph(graph),
-      seedPositions: this.positions
-        ? importGraphBuffer(
+    const view = <Format extends 'float32' | 'uint32'>(
+      name: keyof Fixture['outputs'],
+      format: Format
+    ) => importGraphBuffer(graph, `df-${name}`, this.outputs[name], format, this.cellCount);
+    const seedMask = this.mask
+      ? importGraphBuffer(graph, 'df-mask', this.mask, 'uint32', this.cellCount)
+      : undefined;
+    const seeds = this.positions
+      ? {
+          seedPositions: importGraphBuffer(
             graph,
             'df-positions',
             this.positions.buffer,
             'float32x2',
-            options.positions!.length / 2
-          )
-        : undefined,
-      seedIds: this.ids?.importToGraph(graph),
-      seedCount: this.count?.importToGraph(graph),
-      seedMask: this.mask
-        ? importGraphBuffer(graph, 'df-mask', this.mask, 'uint32', this.cellCount)
-        : undefined,
+            this.positions.length / 2
+          ),
+          seedIds: this.ids?.importToGraph(graph),
+          seedCount: this.count?.importToGraph(graph),
+          seedMask
+        }
+      : seedMask
+        ? {seedMask}
+        : undefined;
+    if (!seeds) throw new Error('Distance-field fixture requires positions or a mask');
+    this.contributor = new GPUDistanceField({
+      id: 'df',
+      grid: this.grid,
+      parameters: this.settings.importToGraph(graph),
+      ...seeds,
       mode: options.mode,
       jumpFloodRefinementIterationCount: options.jumpFloodRefinementIterationCount,
       output: {
-        distances: view('distances', 'float32') as never,
-        allocation: view('allocation', 'uint32') as never,
-        nearestCells: view('nearestCells', 'uint32') as never,
-        withinDistance: view('withinDistance', 'uint32') as never,
-        texture: textureView as never
+        distances: view('distances', 'float32'),
+        allocation: view('allocation', 'uint32'),
+        nearestCells: view('nearestCells', 'uint32'),
+        withinDistance: view('withinDistance', 'uint32'),
+        texture: textureView
       }
     });
     this.getCommandNodes = vi.spyOn(this.contributor, 'getCommandNodes');
@@ -713,4 +721,80 @@ it('GPUDistanceField reports rough wall-clock timings at 1024x1024', async () =>
   console.log(
     `distance-field 1024x1024, 1000 seeds, submit+drain per encoding: ${report.join(', ')}`
   );
+});
+
+it('UNI-04 aligns cloud/raster footprints but preserves their exact southward edge ties', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {GPUPointCloudSurfaces, getRasterMetadataFromPointCloudGrid} = await import(
+    '../../../src/pointcloud-analysis/operations/gpu-pointcloud-surfaces'
+  );
+  const cloudGrid = {width: 2, height: 2, cellSize: 10, origin: [100, 200] as const};
+  const grid = getRasterMetadataFromPointCloudGrid(cloudGrid);
+  expect(grid.affine).toEqual([10, 0, 100, 0, -10, 220]);
+  const graph = new GPUCommandGraph(device);
+  const cloudPositions = createInputBuffer(device, Float32Array.of(105, 205, 1));
+  const rasterPositions = createInputBuffer(device, Float32Array.of(105, 205));
+  const classifications = createInputBuffer(device, Uint32Array.of(2));
+  const parameters = createInputBuffer(device, getGPUDistanceFieldParameterValues({}, grid));
+  const coverage = createOutputBuffer(device, 4);
+  const distances = createOutputBuffer(device, 4);
+  const terrain = createOutputBuffer(device, 4);
+  const surface = createOutputBuffer(device, 4);
+  const canopy = createOutputBuffer(device, 4);
+  graph.add(
+    new GPUPointCloudSurfaces({
+      grid: cloudGrid,
+      positions: importGraphBuffer(graph, 'cloud-positions', cloudPositions, 'float32x3', 1),
+      classifications: importGraphBuffer(graph, 'classes', classifications, 'uint32', 1),
+      output: {
+        coverage: importGraphBuffer(graph, 'coverage', coverage, 'uint32', 4),
+        terrain: importGraphBuffer(graph, 'terrain', terrain, 'float32', 4),
+        surface: importGraphBuffer(graph, 'surface', surface, 'float32', 4),
+        canopy: importGraphBuffer(graph, 'canopy', canopy, 'float32', 4)
+      }
+    })
+  );
+  graph.add(
+    new GPUDistanceField({
+      grid,
+      seedPositions: importGraphBuffer(graph, 'raster-positions', rasterPositions, 'float32x2', 1),
+      parameters: importGraphBuffer(graph, 'parameters', parameters, 'float32', 8),
+      output: {distances: importGraphBuffer(graph, 'distances', distances, 'float32', 4)}
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    // Row-major centers differ by 10 on either axis. The far diagonal is sqrt(200).
+    for (const {y, coverageValues, distanceValues} of [
+      {y: 205, coverageValues: [0, 0, 3, 0], distanceValues: [10, Math.sqrt(200), 0, 10]},
+      {y: 210, coverageValues: [3, 0, 0, 0], distanceValues: [10, Math.sqrt(200), 0, 10]},
+      {y: 215, coverageValues: [3, 0, 0, 0], distanceValues: [0, 10, 10, Math.sqrt(200)]}
+    ]) {
+      cloudPositions.write(Float32Array.of(105, y, 1));
+      rasterPositions.write(Float32Array.of(105, y));
+      submitGraph(device, compiled);
+      expect(await readUint32(coverage)).toEqual(coverageValues);
+      const values = await readFloat32(distances);
+      expect(values).toHaveLength(4);
+      for (let cell = 0; cell < 4; cell++) {
+        expect(Number.isFinite(values[cell])).toBe(true);
+        expect(values[cell]).toBeCloseTo(distanceValues[cell], 5);
+      }
+    }
+  } finally {
+    compiled.destroy();
+    for (const resource of [
+      cloudPositions,
+      rasterPositions,
+      classifications,
+      parameters,
+      coverage,
+      distances,
+      terrain,
+      surface,
+      canopy
+    ])
+      resource.destroy();
+  }
 });

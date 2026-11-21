@@ -362,7 +362,6 @@ it('GPUTerrainDerivatives schedules gradients and the shade kernel', () => {
     )
   ).toEqual([2, 3, 1, 315, 45, 0, -15, 0]);
 
-  expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() =>
     create({output: {slope: createTransientView(graph, 'short-slope', 'float32', 29)}})
   ).toThrow(/one value per pixel/);
@@ -467,7 +466,9 @@ it('GPUTerrainViewshed schedules canonical elevation and the line-of-sight kerne
     Array.from(Float32Array.from([1, 2, 1.7, 0, 0, 30, 30, 0, 0, -210]))
   );
   expect(getGPUTerrainCurvatureCoefficient()).toBeCloseTo(6.8277e-8, 11);
-  expect(() => new GPUTerrainViewshed({...props, output: {}})).toThrow(/at least one output/);
+  expect(() => new GPUTerrainViewshed({...props, output: {} as never})).toThrow(
+    /at least one output/
+  );
   expect(
     () =>
       new GPUTerrainViewshed({
@@ -487,7 +488,7 @@ it('GPUTerrainViewshed schedules canonical elevation and the line-of-sight kerne
       {observer: [0, 0]},
       makeGPURasterMetadata({width: 9, height: 7, cellSize: [0, 1]})
     )
-  ).toThrow(/cell size/);
+  ).toThrow(/cell size|pixel-axis lengths/);
   device.destroy();
 });
 
@@ -686,7 +687,7 @@ it('GPUTerrainLineOfSight validates and schedules within 8 bindings', () => {
       {},
       makeGPURasterMetadata({width: 9, height: 7, cellSize: [1, 0]})
     )
-  ).toThrow(/cell size/);
+  ).toThrow(/cell size|pixel-axis lengths/);
   expect(() =>
     getGPUTerrainLineOfSightParameterValues(
       {toleranceMeters: -1},

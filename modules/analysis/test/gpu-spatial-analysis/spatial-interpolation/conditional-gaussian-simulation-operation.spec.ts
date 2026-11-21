@@ -11,7 +11,7 @@ import {
 import {CPUConditionalGaussianSimulationOperation} from '../../../src/gpu-spatial-analysis/spatial-interpolation/cpu-conditional-gaussian-simulation-operation';
 import type {GPUPredictionCovarianceModel} from '../../../src/gpu-spatial-analysis/spatial-interpolation/prediction-covariance';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {expectLikelihoodFloat} from './likelihoods-operation-test-utils';
 import fixture from './conditional-operation-fixture.json';
 
@@ -113,4 +113,42 @@ it('compares every output on singular duplicate noiseless observations', async (
     expect(rows['values'].every(Number.isNaN)).toBe(true);
     expect(rows['moments'].every(Number.isNaN)).toBe(true);
   }
+});
+
+it('B1 B6 executes the GPU simulation operation with custom ports and an exact declared replicate stride', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const operation = new GPUConditionalGaussianSimulationOperation({
+    id: 'round1-gpu-simulation',
+    observationCount: 1,
+    queryCount: 2,
+    replicateCount: 3,
+    seed: 7,
+    mean: 3,
+    covariance: {model: 'exponential', sill: 1, range: 3},
+    positions: 'sample-xy',
+    observations: 'measurements',
+    queries: 'query-xy',
+    output: {values: 'draws', moments: 'conditional-moments', status: 'draw-status'}
+  });
+  const result = await runOperationGraph(device, {
+    inputs: {
+      'sample-xy': {format: 'float32x2', values: Float32Array.of(0, 0)},
+      measurements: {format: 'float32x4', values: Float32Array.of(2, 0, 0, 1)},
+      'query-xy': {format: 'float32x2', values: Float32Array.of(0, 0, 1, 0)}
+    },
+    operations: [operation],
+    outputs: ['draws', 'conditional-moments', 'draw-status']
+  });
+  expect(result['draws']).toHaveLength(6);
+  expect(result['conditional-moments']).toHaveLength(4);
+  expect(result['draw-status']).toHaveLength(3);
+  expect(Array.from(result['draw-status'])).toEqual([0, 0, 0]);
+  expect(result['draws'].every(Number.isFinite)).toBe(true);
+  // Independent conditional moments: observation hit (2,0); at distance 1, C=exp(-1).
+  for (const [row, expected] of [2, 0, 2.6321205588285577, 0.8646647167633873].entries()) {
+    expect(Number.isFinite(result['conditional-moments'][row])).toBe(true);
+    expect(result['conditional-moments'][row]).toBeCloseTo(expected, 5);
+  }
+  expect([result['draws'][0], result['draws'][2], result['draws'][4]]).toEqual([2, 2, 2]);
 });

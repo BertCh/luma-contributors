@@ -154,7 +154,17 @@ it('RVT blend fixtures cover six modes, clipping thresholds, opacity and every e
 });
 
 it('SciPy peak fixtures preserve plateau left edges, empty CSR spans, ties, seams and complete transects', () => {
-  expect(PEAK_CASES).toHaveLength(5);
+  // Generator main: two full-transect cases, three synthetic topology cases, and
+  // buildPeakPrecisionCases()'s two independently derived float32 boundary cases.
+  expect(PEAK_CASES.map(fixture => fixture.name)).toEqual([
+    'alps-eight-full-transects-window-32',
+    'alps-eight-full-transects-window-128',
+    'plateaus-gaps-empty-and-short',
+    'prominence-ranked-tied-suppression',
+    'circular-seam-and-multiple-peaks',
+    'float32-inclusive-prominence',
+    'float32-prominence-suppression-tie'
+  ]);
   for (const fixture of PEAK_CASES) {
     const count = fixture.values.length;
     expect(fixture.offsets[0]).toBe(0);
@@ -177,6 +187,19 @@ it('SciPy peak fixtures preserve plateau left edges, empty CSR spans, ties, seam
       expect(fixture.offsets).toEqual(Array.from({length: 9}, (_, index) => index * 2048));
     }
   }
+  // The float32 predecessor of 1 is 1-2^-24. Subtracting 2^-25 is a midpoint
+  // tie to the even significand of 1; subtracting 2^-26 also rounds to 1.
+  expect(Math.fround(1 - 2 ** -25)).toBe(1);
+  expect(Math.fround(1 - 2 ** -26)).toBe(1);
+  const inclusive = PEAK_CASES.find(fixture => fixture.name === 'float32-inclusive-prominence')!;
+  expect(inclusive.expectedIds).toEqual([1]);
+  expect(inclusive.expected.prominence[1]).toBe(1);
+  const precisionTie = PEAK_CASES.find(
+    fixture => fixture.name === 'float32-prominence-suppression-tie'
+  )!;
+  expect(precisionTie.candidateCount).toBe(2);
+  expect(precisionTie.expectedIds).toEqual([1]);
+  expect(precisionTie.expected.prominence[1]).toBe(1);
   const plateaus = PEAK_CASES.find(fixture => fixture.name === 'plateaus-gaps-empty-and-short')!;
   expect(plateaus.offsets.slice(0, 4)).toEqual([0, 0, 1, 3]);
   // Odd plateau [4,4,4] and even plateau [4,4] both use the left edge;

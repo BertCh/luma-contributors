@@ -4,6 +4,8 @@
 
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../raster-band-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterRegionGrid} from './raster-region-snapshot';
 import {
   getMaskedRegistrationNodes,
   validateMaskedRegistrationProps,
@@ -26,6 +28,7 @@ import {
   type WGSLKernelProps
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateSinglePackedView,
   validatePowerOfTwo,
@@ -134,7 +137,70 @@ function createRegistrationKernel<Parameters>(
 export class GPURasterRegistration implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPURasterRegistrationProps) {
+    // Capture declared fields through ordinary reads, including inherited output getters.
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'reference',
+      'moving',
+      'mode',
+      'referenceMask',
+      'movingMask',
+      'maximumShift',
+      'minimumOverlapFraction',
+      'minimumOverlapCount',
+      'minimumCorrelation',
+      'upsampleFactor',
+      'ambiguityTolerance',
+      'output'
+    ]);
+    const output =
+      captured.output &&
+      snapshotConstructionFields(captured.output, [
+        'shift',
+        'peak',
+        'status',
+        'secondPeakRatio',
+        'overlap'
+      ]);
+    props = {
+      ...captured,
+      ...(captured.grid ? {grid: snapshotRasterRegionGrid(captured.grid)} : {}),
+      ...(captured.maximumShift
+        ? {maximumShift: [...captured.maximumShift] as [number, number]}
+        : {}),
+      output
+    };
+    this.props = props;
     this.id = props.id ?? 'raster-registration';
+    const identity = {id: this.id, contributor: 'GPURasterRegistration'};
+    const descriptors = {
+      reference: {required: true, viewType: 'data', formats: ['float32']},
+      moving: {required: true, viewType: 'data', formats: ['float32']},
+      referenceMask: {required: false, viewType: 'data', formats: ['uint32']},
+      movingMask: {required: false, viewType: 'data', formats: ['uint32']},
+      'output.shift': {required: true, viewType: 'data', formats: ['float32x2']},
+      'output.peak': {required: true, viewType: 'data', formats: ['float32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.secondPeakRatio': {required: false, viewType: 'data', formats: ['float32']},
+      'output.overlap': {required: false, viewType: 'data', formats: ['uint32']}
+    } as const;
+    const ports: Record<keyof typeof descriptors, GraphDataView | undefined> = {
+      reference: props.reference,
+      moving: props.moving,
+      referenceMask: props.referenceMask,
+      movingMask: props.movingMask,
+      'output.shift': props.output?.shift,
+      'output.peak': props.output?.peak,
+      'output.status': props.output?.status,
+      'output.secondPeakRatio': props.output?.secondPeakRatio,
+      'output.overlap': props.output?.overlap
+    };
+    validateGraphPorts(identity, ports, descriptors);
+    for (const [name, descriptor] of Object.entries(descriptors)) {
+      const view = ports[name as keyof typeof descriptors];
+      if (view) validateSinglePackedView(view, descriptor.formats, identity, name);
+    }
     validateRasterGrid(this.id, props.grid);
     validateRequirement(
       this.id,
@@ -193,7 +259,6 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
       props.moving,
       ...Object.values(props.output).filter(view => view !== undefined)
     ]) {
-      validateSinglePackedView(view, [view.format], this.id);
       validateRequirement(this.id, view.length > 0, 'input and output views must not be empty');
     }
     validateRegistrationWritableViews(props, this.id);

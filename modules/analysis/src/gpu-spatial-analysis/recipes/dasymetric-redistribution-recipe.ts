@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 
 import {
@@ -24,7 +26,7 @@ import {
   GPUArealInterpolation,
   type GPUArealInterpolationDenominator
 } from '../areal-interpolation/index';
-import {GPUSpatialLag} from '../spatial-weights/index';
+import {GPUSpatialLag, type GPUSpatialWeightsOutput} from '../spatial-weights/index';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createRecipeKernelNode, getRecipeView, validateRecipeBoundary} from './recipe-utils';
 import {addRecipeCountNodes, createTransientSpatialWeights, RecipeBuilder} from './recipe-utils';
@@ -68,7 +70,7 @@ export type GPUDasymetricRedistributionRecipeProps = {
   /** Default overlap allocates all mass with target support; zone retains uncovered residual. */
   denominator?: GPUArealInterpolationDenominator;
   pairCapacity: number;
-  outputs?: Partial<GPUDasymetricRedistributionOutput>;
+  output?: Partial<GPUDasymetricRedistributionOutput>;
 };
 
 /** Largest `targetZoneCount * tupleCapacity`; the per-target support kernel scans every tuple row once per target. */
@@ -99,6 +101,7 @@ function declareDasymetricRedistributionRecipe<Parameters>(
   props: GPUDasymetricRedistributionRecipeProps
 ) {
   const id = props.id ?? 'dasymetric-redistribution-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   const builder = new RecipeBuilder(graph);
   const sourceCount = props.sourceTotals.length;
   const targetCount = props.targetZoneCount;
@@ -183,49 +186,49 @@ function declareDasymetricRedistributionRecipe<Parameters>(
       `${id}-target-totals`,
       'float32',
       targetCount,
-      props.outputs?.targetTotals
+      destinations?.targetTotals
     ),
     targetSupportWeights: getRecipeView(
       graph,
       `${id}-target-support`,
       'float32',
       targetCount,
-      props.outputs?.targetSupportWeights
+      destinations?.targetSupportWeights
     ),
     sourceEligibleWeights: getRecipeView(
       graph,
       `${id}-source-eligible`,
       'float32',
       sourceCount,
-      props.outputs?.sourceEligibleWeights
+      destinations?.sourceEligibleWeights
     ),
     sourceTransferredFractions: getRecipeView(
       graph,
       `${id}-source-fractions`,
       'float32',
       sourceCount,
-      props.outputs?.sourceTransferredFractions
+      destinations?.sourceTransferredFractions
     ),
     sourceAllocatedTotals: getRecipeView(
       graph,
       `${id}-source-allocated`,
       'float32',
       sourceCount,
-      props.outputs?.sourceAllocatedTotals
+      destinations?.sourceAllocatedTotals
     ),
     sourceUnallocatedTotals: getRecipeView(
       graph,
       `${id}-source-unallocated`,
       'float32',
       sourceCount,
-      props.outputs?.sourceUnallocatedTotals
+      destinations?.sourceUnallocatedTotals
     ),
     sourceValidity: getRecipeView(
       graph,
       `${id}-source-validity`,
       'uint32',
       sourceCount,
-      props.outputs?.sourceValidity
+      destinations?.sourceValidity
     )
   };
   validateRecipeBoundary(
@@ -324,7 +327,7 @@ outputSources[outputSourcesOffset+index]=source;outputTargets[outputTargetsOffse
   );
   const pairOverflow = createView('pair-overflow', 'uint32', 1);
   const requiredPairCount = createView('pair-required', 'uint32', 1);
-  const weights = createTransientSpatialWeights(
+  const weights: GPUSpatialWeightsOutput = createTransientSpatialWeights(
     graph,
     `${id}-weights`,
     targetCount,
@@ -580,7 +583,10 @@ output[outputOffset+index]=select(missing,totals[totalsOffset+index],valid);supp
         {stage: 'fractional-source-coverage', status: coverage.status},
         {
           stage: 'coverage-validation',
-          status: {converged: coverageComplete, invalidCount: invalidTupleCount}
+          status: {
+            complete: coverageComplete,
+            invalidCount: invalidTupleCount
+          }
         },
         {
           stage: 'weighted-areal-interpolation',
@@ -590,7 +596,10 @@ output[outputOffset+index]=select(missing,totals[totalsOffset+index],valid);supp
         {stage: 'arithmetic', status: {invalidCount: arithmeticInvalidCount}},
         {
           stage: 'dasymetric-conservation',
-          status: {converged: complete, invalidCount: zeroEligibleCount}
+          status: {
+            complete,
+            zeroEligibleCount
+          }
         }
       ]
     }

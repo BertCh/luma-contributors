@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {
   createTransientView,
   getViewBindingRange,
@@ -115,7 +117,7 @@ export type GPUSpaceTimeKrigingProps<
   positions: GraphDataView<'float32x2'>;
   /** Relative float32 time per sample. */
   times: GraphDataView<'float32'>;
-  /** Rows `[value, observationErrorVariance, reserved, validity (0 skips)]`. */
+  /** Rows `[value, observationErrorVariance, reserved, validity (> 0 includes; zero, negative and NaN skip)]`. */
   observations: GraphDataView<'float32x4'>;
   /** Known mean or unknown constant mean. */
   mode: 'simple' | 'ordinary';
@@ -159,7 +161,12 @@ export type GPUSpaceTimeKrigingProps<
  *
  * Query positions, times and outputs may be chunked with matching row boundaries. Only the
  * final output chunk may have spare capacity. Each chunk dispatches its own workgroup count. Samples
- * and parameters remain packed. The grid walks expanding shells in anisotropy-scaled coordinates,
+ * and parameters remain packed. On the ordinary indexed route with one query and one neighbor,
+ * the 16-byte observation plane fits 8,388,608 samples in a 128 MiB storage binding at zero
+ * offset, or 8,388,607 after a 16-byte prefix; other bindings and scratch must also fit.
+ * Query chunking does not split samples. Auto scans at most 4,096 samples, forced brute-force
+ * scans at most 1,048,576 samples, and indexing requires at least eight storage bindings per stage.
+ * The grid walks expanding shells in anisotropy-scaled coordinates,
  * pruning only with conservative distance bounds. Coincident samples, very wide distance ties,
  * restrictive filters or unfilled octant quotas can require visiting the entire index.
  *
@@ -191,7 +198,29 @@ export class GPUSpaceTimeKriging<
   }[];
 
   constructor(props: GPUSpaceTimeKrigingProps<Rows>) {
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'id',
+        'mode',
+        'neighborCount',
+        'neighborSearch',
+        'neighborsPerOctant',
+        'observations',
+        'output',
+        'parameters',
+        'positions',
+        'queries',
+        'queryTemporalContext',
+        'queryTimes',
+        'sampleIndex',
+        'spatialContext',
+        'stagedCandidateCount',
+        'temporalContext',
+        'times'
+      ],
+      ['values', 'status']
+    );
     this.id = props.id ?? 'space-time-kriging';
     const {id} = this;
     resolveGPUSpatialContext(id, props.spatialContext, {

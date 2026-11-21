@@ -172,7 +172,13 @@ describe('exact geometry kernels', () => {
             polygonOffsets: view('uint32', 9),
             ringOffsets: view('uint32', 9)
           },
-          status: status(),
+          // The assembled geometry publishes count/loss; requiredCount belongs to the
+          // boundary segment census, not this assembled-geometry status.
+          status: {
+            count: view('uint32', 1),
+            overflow: view('uint32', 1),
+            candidateOverflow: view('uint32', 1)
+          },
           boundary: {
             endpoints: view('float32x4', 64),
             operandIds: view('uint32', 64),
@@ -180,7 +186,7 @@ describe('exact geometry kernels', () => {
             status: status()
           }
         }
-      } as never);
+      });
       const nodes = overlay.getCommandNodes(graph);
       // Both ray shoots (polygon and coverage levels) and the ring-assembly hole assignment.
       expect(expectExactKernels(nodes, `overlay ${fillRule}`)).toBeGreaterThanOrEqual(3);
@@ -311,7 +317,7 @@ describe('exact geometry kernels', () => {
           polygonOffsets: view('uint32', 2),
           ringOffsets: view('uint32', 2)
         },
-        output: {lengths: view('float32', 1), status: {overflow: view('uint32', 1)}}
+        output: {clippedLengths: view('float32', 1), status: {overflow: view('uint32', 1)}}
       } as never);
       expect(expectExactKernels(lengths.getCommandNodes(graph), 'line length')).toBe(1);
     }

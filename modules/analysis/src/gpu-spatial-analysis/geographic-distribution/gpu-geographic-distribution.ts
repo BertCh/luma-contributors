@@ -3,6 +3,27 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_GEOGRAPHIC_DISTRIBUTION_ROUTES,
+  GPU_GEOGRAPHIC_DISTRIBUTION_AUTO_CHUNKED_MAXIMUM_GROUPS
+} from './geographic-distribution-routes';
+export {
+  GPU_GEOGRAPHIC_DISTRIBUTION_ROUTES,
+  GPU_GEOGRAPHIC_DISTRIBUTION_AUTO_CHUNKED_MAXIMUM_GROUPS
+} from './geographic-distribution-routes';
+
+import type {
+  GPUAnalysisRoute,
+  GPUAnalysisExecutionPlanner
+} from '../ontology/spatial-analysis-ontology';
+import {
+  evaluateStatisticsRoute,
+  getStatisticsRequirementCheck,
+  getStatisticsViewBindingByteLength,
+  getStatisticsExecutionPlan,
+  validateStatisticsExecutionPlan,
+  type GPUStatisticsPlanDeviceLimits
+} from './statistics-execution-plan';
+import {
   getSpatialAnalysisPackedKernelNodes,
   validateSpatialAnalysisPackedOutputAllocations
 } from './spatial-analysis-packed-kernel';
@@ -58,6 +79,8 @@ import {
 } from './geographic-distribution-validation';
 
 import {SPATIAL_ANALYSIS_QUOTIENT_WGSL} from './spatial-analysis-quotient';
+import {MULTIPLICATION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/multiplication-rounding-error-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 
 const OPERATION = 'GPUGeographicDistribution';
 
@@ -76,7 +99,7 @@ const UPDATE_WORKGROUP_SIZE = 256;
 const MAXIMUM_MEDIAN_ITERATIONS = 256;
 /** float32x2 polygon vertices use two uint32 component indices per row. */
 const GEOGRAPHIC_DISTRIBUTION_MAXIMUM_VERTEX_ROWS = 0x7fffffff;
-/** Allowance for sorting, initial moments, optional direction/spread and output publication. */
+/** Allowance for sorting, initial moments, transverse ellipse projection, direction and publication. */
 const GEOGRAPHIC_DISTRIBUTION_BASE_COMMAND_NODE_ALLOWANCE = 256;
 /** Four segment sums, row transforms, update and gating fit within sixteen nodes per median step. */
 const GEOGRAPHIC_DISTRIBUTION_MEDIAN_COMMAND_NODES_PER_ITERATION = 16;
@@ -103,8 +126,6 @@ function getVardiZhangWGSL(pullX: string, pullY: string, coincidentWeight: strin
     stepY = stepY * (1.0 - gamma);
   }`;
 }
-/** Largest group count `reduction: 'auto'` reduces without sorting. */
-const AUTO_CHUNKED_MAXIMUM_GROUPS = 64;
 
 /**
  * Caller-owned outputs of {@link GPUGeographicDistribution}. Which views are present is
@@ -114,7 +135,7 @@ const AUTO_CHUNKED_MAXIMUM_GROUPS = 64;
  * An empty group (no included row, so a weight sum of 0) has `counts` 0, `weightSums` 0 and NaN in
  * every other output.
  */
-export type GPUGeographicDistributionOutput = {
+type GPUGeographicDistributionOutputFields = {
   /** Included rows per group. */
   counts?: GraphDataView<'uint32'>;
   /** Sum of the weights of the included rows per group. */
@@ -148,6 +169,12 @@ export type GPUGeographicDistributionOutput = {
   /** Counter-clockwise standard-distance circle ring, laid out like `ellipseVertices`. */
   circleVertices?: GraphDataView<'float32x2'>;
 };
+
+/** At least one terminal output must be present; JavaScript callers are checked at runtime. */
+export type GPUGeographicDistributionOutput = {
+  [Key in keyof GPUGeographicDistributionOutputFields]-?: GPUGeographicDistributionOutputFields &
+    Required<Pick<GPUGeographicDistributionOutputFields, Key>>;
+}[keyof GPUGeographicDistributionOutputFields];
 
 /**
  * Properties for {@link GPUGeographicDistribution}.
@@ -287,6 +314,18 @@ export type GPUGeographicDistributionProps = {
  * submits, or reads back.
  */
 export class GPUGeographicDistribution implements GPUCommandNodeProducer {
+  /** Numeric route metadata; hard limits and automatic crossovers are distinct. */
+  static get routes(): readonly GPUAnalysisRoute[] {
+    return GPU_GEOGRAPHIC_DISTRIBUTION_ROUTES;
+  }
+  /** Preflight topology and, when supplied, actual device binding/allocation limits. */
+  static getExecutionPlan(
+    props: GPUGeographicDistributionProps,
+    deviceLimits?: GPUStatisticsPlanDeviceLimits
+  ) {
+    return getGPUGeographicDistributionExecutionPlan(props, deviceLimits);
+  }
+
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -304,6 +343,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUGeographicDistributionProps) {
+    props = {...props, output: {...props.output}};
     this.id = props.id ?? 'geographic-distribution';
     this.props = props;
     const {id} = this;
@@ -371,12 +411,8 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
         `${id} chunked reduction supports at most ${GROUPED_SUM_MAXIMUM_GROUPS} groups`
       );
     }
-    this.reduction =
-      reduction === 'auto'
-        ? this.groupCount <= AUTO_CHUNKED_MAXIMUM_GROUPS
-          ? 'chunked'
-          : 'sorted'
-        : reduction;
+    const routePlan = getGPUGeographicDistributionExecutionPlan(props);
+    this.reduction = routePlan.route;
     this.polygonVertexCount = props.polygonVertexCount ?? DEFAULT_POLYGON_VERTEX_COUNT;
     validateCapacity(id, 'polygonVertexCount', this.polygonVertexCount, 3);
 
@@ -395,6 +431,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
         ? this.maximumMedianIterations * GEOGRAPHIC_DISTRIBUTION_MEDIAN_COMMAND_NODES_PER_ITERATION
         : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateStatisticsExecutionPlan(id, routePlan);
     const checks = [
       ['counts', output.counts, ['uint32'], groups],
       ['weightSums', output.weightSums, ['float32'], groups],
@@ -469,6 +506,10 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateStatisticsExecutionPlan(
+      this.id,
+      getGPUGeographicDistributionExecutionPlan(this.props, graph.device.limits)
+    );
     const {props, id, groupCount, polygonVertexCount} = this;
     const {output, positions, weights, groupIds, mask, lineEnds, parameters} = props;
     validateSpatialAnalysisPackedOutputAllocations(graph, id, output);
@@ -486,8 +527,10 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
     if (this.reduction === 'sorted') validateScratch('row scratch', positions.length * 4);
     validateScratch('group mean scratch', groupCount * 8);
     validateScratch('group offsets scratch', (groupCount + 1) * 4);
-    if (output.ellipses || output.ellipseVertices)
+    if (output.ellipses || output.ellipseVertices) {
       validateScratch('ellipse scratch', groupCount * 12);
+      validateScratch('ellipse projection scratch', groupCount * 20);
+    }
     if (output.medianCenters || output.medianConverged) {
       validateScratch('median records scratch', (4 * groupCount + 1) * 4);
       validateScratch('median dispatch scratch', 36);
@@ -613,6 +656,44 @@ fn loadRow(row: u32) -> RowData {
     const sumX = f32('sum-x', groupCount);
     const sumY = f32('sum-y', groupCount);
 
+    const ellipseProjection = ellipses ? f32('ellipse-projection', groupCount * 5) : undefined;
+    const projectionDeclarations = `${MULTIPLICATION_ROUNDING_ERROR_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}
+fn getTransverseResidual(dx: f32, dy: f32, slope: f32, swap: bool, opaqueZero: u32) -> f32 {
+  let primary = select(dx, dy, swap);
+  let secondary = select(dy, dx, swap);
+  let product = getRoundedDifference(slope * primary, 0.0, opaqueZero);
+  return getRoundedDifference(secondary, product, opaqueZero) - getMultiplicationRoundingError(slope, primary, product);
+}`;
+    const createProjectedSpreadNode = (
+      squared: GraphDataView<'float32'>,
+      cross: GraphDataView<'float32'>
+    ) =>
+      kernel(
+        'projection-publish',
+        groupCount,
+        [
+          read('projection', ellipseProjection!, 'f32'),
+          read('squared', squared, 'f32'),
+          read('cross', cross, 'f32'),
+          read('weightSums', weightSums, 'f32'),
+          read('parameters', parameters, 'f32'),
+          write('ellipses', ellipses!)
+        ],
+        `let total = weightSums[weightSumsOffset + index];
+  let primaryVariance = projection[projectionOffset + index * 5u + 1u];
+  let largeVariance = projection[projectionOffset + index * 5u + 2u];
+  if (total > 0.0) {
+    var smallVariance = 0.0;
+    if (primaryVariance > 0.0 && largeVariance > 0.0) {
+      let transverseVariance = getSpatialAnalysisQuotient(squared[squaredOffset + index], total);
+      let covariance = getSpatialAnalysisQuotient(cross[crossOffset + index], total);
+      smallVariance = (primaryVariance / largeVariance) * (transverseVariance - covariance * (covariance / primaryVariance));
+    }
+    let scale = parameters[parametersOffset + 2u] * parameters[parametersOffset + 3u];
+    ellipses[ellipsesOffset + index * 3u + 1u] = scale * sqrt(max(smallVariance, 0.0));
+  }`
+      );
+
     const createSpreadNode = (
       sumXX: GraphDataView<'float32'>,
       sumYY: GraphDataView<'float32'>,
@@ -629,7 +710,7 @@ fn loadRow(row: u32) -> RowData {
         finalizeBindings.push(write('standardDistances', standardDistances));
       }
       if (ellipses) {
-        finalizeBindings.push(write('ellipses', ellipses));
+        finalizeBindings.push(write('ellipses', ellipses), write('projection', ellipseProjection!));
       }
       return kernel(
         'spread',
@@ -649,9 +730,34 @@ fn loadRow(row: u32) -> RowData {
   }
   ${
     ellipses
-      ? `let halfSum = 0.5 * (varianceX + varianceY);
-  let halfDifference = 0.5 * (varianceX - varianceY);
-  let radius = sqrt(halfDifference * halfDifference + covariance * covariance);
+      ? `let halfDifference = 0.5 * (varianceX - varianceY);
+  // Squaring a representable variance can overflow even when both axes are finite.
+  let varianceScale = max(abs(halfDifference), abs(covariance));
+  var radius = 0.0;
+  if (varianceScale > 1.0e19) {
+    let normalizedDifference = halfDifference / varianceScale;
+    let normalizedCovariance = covariance / varianceScale;
+    radius = varianceScale * sqrt(normalizedDifference * normalizedDifference + normalizedCovariance * normalizedCovariance);
+  } else {
+    radius = sqrt(halfDifference * halfDifference + covariance * covariance);
+  }
+  // Jacobi eigenvalue correction avoids subtracting halfSum-radius when a
+  // narrow ellipse's smaller variance is below the larger variance's f32 ulp.
+  var correction = 0.0;
+  if (radius > 0.0) {
+    correction = covariance * (covariance / (abs(halfDifference) + radius));
+  }
+  let largeVariance = max(varianceX, varianceY) + correction;
+  // The rounded covariance matrix determines orientation and the large axis. A separate
+  // centered transverse projection retains variance below those covariance entries' ulps.
+  let primaryVariance = max(varianceX, varianceY);
+  var slope = 0.0;
+  if (primaryVariance > 0.0) { slope = covariance / primaryVariance; }
+  projection[projectionOffset + index * 5u] = slope;
+  projection[projectionOffset + index * 5u + 1u] = primaryVariance;
+  projection[projectionOffset + index * 5u + 2u] = largeVariance;
+  projection[projectionOffset + index * 5u + 3u] = select(0.0, 1.0, varianceY > varianceX);
+  projection[projectionOffset + index * 5u + 4u] = parameters[parametersOffset + 6u];
   var majorAngle = 0.0;
   if (radius > 0.0) {
     majorAngle = 0.5 * atan2(covariance, halfDifference);
@@ -662,10 +768,11 @@ fn loadRow(row: u32) -> RowData {
   }
   let nan = getQuietNaN(index);
   ellipses[ellipsesOffset + index * 3u] = select(angle, nan, isEmpty);
-  ellipses[ellipsesOffset + index * 3u + 1u] = select(scale * sqrt(max(halfSum - radius, 0.0)), nan, isEmpty);
-  ellipses[ellipsesOffset + index * 3u + 2u] = select(scale * sqrt(max(halfSum + radius, 0.0)), nan, isEmpty);`
+  ellipses[ellipsesOffset + index * 3u + 1u] = select(0.0, nan, isEmpty);
+  ellipses[ellipsesOffset + index * 3u + 2u] = select(scale * sqrt(max(largeVariance, 0.0)), nan, isEmpty);`
       : ''
-  }`
+  }`,
+        ''
       );
     };
     // Median record per group: [offsetX, offsetY, anchorX, anchorY]. The anchor is the group's
@@ -827,6 +934,33 @@ fn loadRow(row: u32) -> RowData {
           }),
           createSpreadNode(sumXX, sumYY, sumXY)
         );
+        if (ellipseProjection) {
+          const squared = f32('projection-squared', groupCount);
+          const cross = f32('projection-cross', groupCount);
+          nodes.push(
+            ...grouped('projection', {
+              bindings: [
+                read('mean', meanCenters, 'f32'),
+                read('projection', ellipseProjection, 'f32')
+              ],
+              declarations: projectionDeclarations,
+              rowSnippet: `let data = loadRow(row);
+      group = data.group;
+      if (group != NO_GROUP) {
+        let dx = data.x - mean[meanOffset + group * 2u];
+        let dy = data.y - mean[meanOffset + group * 2u + 1u];
+        let slope = projection[projectionOffset + group * 5u];
+        let swap = projection[projectionOffset + group * 5u + 3u] != 0.0;
+        let zero = bitcast<u32>(projection[projectionOffset + group * 5u + 4u]);
+        let residual = getTransverseResidual(dx, dy, slope, swap, zero);
+        value0 = data.weight * residual * residual;
+        value1 = data.weight * residual * select(dx, dy, swap);
+      }`,
+              outputs: [squared, cross]
+            }),
+            createProjectedSpreadNode(squared, cross)
+          );
+        }
       }
 
       // 5. Weiszfeld median centre: each iteration is one fused row pass plus a fold whose lane 0
@@ -1183,6 +1317,46 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
           sum('xy', contributionXY, sumXY)
         );
         nodes.push(createSpreadNode(sumXX, sumYY, sumXY));
+        if (ellipseProjection) {
+          const squared = f32('projection-squared', groupCount);
+          const cross = f32('projection-cross', groupCount);
+          for (const [name, result, squaredResidual] of [
+            ['squared', squared, true],
+            ['cross', cross, false]
+          ] as const) {
+            const contribution = f32(`projection-${name}-contributions`, rows);
+            nodes.push(
+              kernel(
+                `projection-${name}`,
+                rows,
+                [
+                  read('sortedKeys', sortedKeys, 'u32'),
+                  read('sortedX', sortedX, 'f32'),
+                  read('sortedY', sortedY, 'f32'),
+                  read('sortedWeights', sortedWeights, 'f32'),
+                  read('mean', meanCenters, 'f32'),
+                  read('projection', ellipseProjection, 'f32'),
+                  write('contribution', contribution)
+                ],
+                `let group = sortedKeys[sortedKeysOffset + index];
+  var value = 0.0;
+  if (group < GROUP_COUNT) {
+    let dx = sortedX[sortedXOffset + index] - mean[meanOffset + group * 2u];
+    let dy = sortedY[sortedYOffset + index] - mean[meanOffset + group * 2u + 1u];
+    let slope = projection[projectionOffset + group * 5u];
+    let swap = projection[projectionOffset + group * 5u + 3u] != 0.0;
+    let zero = bitcast<u32>(projection[projectionOffset + group * 5u + 4u]);
+    let residual = getTransverseResidual(dx, dy, slope, swap, zero);
+    value = sortedWeights[sortedWeightsOffset + index] * residual * ${squaredResidual ? 'residual' : 'select(dx, dy, swap)'};
+  }
+  contribution[contributionOffset + index] = value;`,
+                `${groupConstants}\n${projectionDeclarations}`
+              ),
+              sum(`projection-${name}`, contribution, result)
+            );
+          }
+          nodes.push(createProjectedSpreadNode(squared, cross));
+        }
       }
 
       // 5. Weiszfeld median centre, reusing the sorted order every iteration.
@@ -1411,7 +1585,9 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
               write('contributionWeight', contributionWeight)
             ]),
             `${lineSetup}
-  contributionLength[contributionLengthOffset + index] = weight * sqrt(dx * dx + dy * dy) * select(0.0, 1.0, weight > 0.0);
+  var weightedLength = 0.0;
+  if (weight > 0.0) { weightedLength = weight * sqrt(dx * dx + dy * dy); }
+  contributionLength[contributionLengthOffset + index] = weightedLength;
   contributionWeight[contributionWeightOffset + index] = weight;`,
             lineHelpers
           ),
@@ -1503,3 +1679,226 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
     return nodes.flat();
   }
 }
+
+export function getGPUGeographicDistributionExecutionPlan(
+  props: GPUGeographicDistributionProps,
+  deviceLimits?: GPUStatisticsPlanDeviceLimits
+) {
+  const requested = props.reduction ?? 'auto';
+  if (!['auto', 'chunked', 'sorted'].includes(requested))
+    throw new Error(
+      `${props.id ?? 'geographic-distribution'} reduction must be auto, chunked or sorted; received ${requested}`
+    );
+  const rows = props.positions.length;
+  const groups = props.groupCount ?? 1;
+  const route =
+    requested === 'auto'
+      ? groups <= GPU_GEOGRAPHIC_DISTRIBUTION_AUTO_CHUNKED_MAXIMUM_GROUPS
+        ? 'chunked'
+        : 'sorted'
+      : requested;
+  const median = Boolean(props.output.medianCenters || props.output.medianConverged);
+  const vertices = Boolean(props.output.ellipseVertices || props.output.circleVertices);
+  const iterations = props.maximumMedianIterations ?? DEFAULT_MEDIAN_ITERATIONS;
+  const descriptor = GPU_GEOGRAPHIC_DISTRIBUTION_ROUTES[0];
+  const checks = [
+    evaluateStatisticsRoute(descriptor, groups),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'domain-rows',
+        kind: 'hard-limit',
+        quantity: 'positions.length',
+        unit: 'rows',
+        maximum: GEOGRAPHIC_DISTRIBUTION_MAXIMUM_ROWS,
+        minimum: 1,
+        appliesWhen: 'all routes'
+      },
+      rows
+    ),
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'domain-groups',
+        kind: 'hard-limit',
+        quantity: 'groupCount',
+        maximum: GEOGRAPHIC_DISTRIBUTION_MAXIMUM_ROWS,
+        minimum: 1,
+        appliesWhen: 'all routes'
+      },
+      groups
+    )
+  ];
+  checks.push(
+    getStatisticsRequirementCheck(
+      descriptor,
+      'groupCount must be 1 without groupIds',
+      Boolean(props.groupIds) || groups === 1
+    )
+  );
+  checks.push(
+    getStatisticsRequirementCheck(
+      descriptor,
+      'directionalMeans requires lineEnds',
+      !props.output.directionalMeans || Boolean(props.lineEnds)
+    )
+  );
+  for (const [name, view, minimum] of [
+    ['counts', props.output.counts, groups],
+    ['weightSums', props.output.weightSums, groups],
+    ['meanCenters', props.output.meanCenters, groups],
+    ['medianCenters', props.output.medianCenters, groups],
+    ['medianConverged', props.output.medianConverged, groups],
+    ['standardDistances', props.output.standardDistances, groups],
+    ['ellipses', props.output.ellipses, groups * 3],
+    ['directionalMeans', props.output.directionalMeans, groups * 3],
+    [
+      'ellipseVertices',
+      props.output.ellipseVertices,
+      groups * (props.polygonVertexCount ?? DEFAULT_POLYGON_VERTEX_COUNT)
+    ],
+    [
+      'circleVertices',
+      props.output.circleVertices,
+      groups * (props.polygonVertexCount ?? DEFAULT_POLYGON_VERTEX_COUNT)
+    ]
+  ] as const)
+    if (view)
+      checks.push(
+        getStatisticsRequirementCheck(
+          descriptor,
+          `output.${name} must hold at least ${minimum} rows`,
+          view.length >= minimum
+        )
+      );
+  checks.push(
+    getStatisticsRequirementCheck(
+      descriptor,
+      'at least one output is required',
+      Object.values(props.output).some(Boolean)
+    )
+  );
+  for (const [name, view] of [
+    ['weights', props.weights],
+    ['groupIds', props.groupIds],
+    ['mask', props.mask],
+    ['lineEnds', props.lineEnds]
+  ] as const)
+    if (view)
+      checks.push(
+        evaluateStatisticsRoute(
+          {
+            ...descriptor,
+            name: `${name}.length`,
+            quantity: `${name}.length`,
+            kind: 'hard-limit',
+            unit: 'rows',
+            scope: 'domain',
+            minimum: rows,
+            maximum: rows,
+            appliesWhen: 'view supplied'
+          },
+          view.length
+        )
+      );
+  checks.push(
+    evaluateStatisticsRoute(
+      {
+        ...descriptor,
+        name: 'parameters.length',
+        quantity: 'parameters.length',
+        kind: 'hard-limit',
+        unit: 'elements',
+        scope: 'binding',
+        minimum: GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
+        maximum: undefined,
+        appliesWhen: 'all routes'
+      },
+      props.parameters.length
+    )
+  );
+  if (route === 'chunked')
+    checks.push(
+      evaluateStatisticsRoute(
+        {
+          ...descriptor,
+          name: 'chunked-groups',
+          kind: 'hard-limit',
+          maximum: GROUPED_SUM_MAXIMUM_GROUPS,
+          appliesWhen: 'reduction chunked'
+        },
+        groups
+      )
+    );
+  if (median)
+    checks.push(
+      evaluateStatisticsRoute(
+        {
+          ...descriptor,
+          name: 'median-budget',
+          kind: 'hard-limit',
+          quantity: 'maximumMedianIterations',
+          maximum: MAXIMUM_MEDIAN_ITERATIONS,
+          minimum: 1,
+          appliesWhen: 'medianCenters or medianConverged requested'
+        },
+        iterations
+      )
+    );
+  if (vertices)
+    checks.push(
+      evaluateStatisticsRoute(
+        {
+          ...descriptor,
+          name: 'vertex-product',
+          kind: 'hard-limit',
+          quantity: 'groupCount * polygonVertexCount',
+          maximum: GEOGRAPHIC_DISTRIBUTION_MAXIMUM_VERTEX_ROWS,
+          appliesWhen: 'ellipseVertices or circleVertices requested'
+        },
+        groups * (props.polygonVertexCount ?? DEFAULT_POLYGON_VERTEX_COUNT)
+      )
+    );
+  const bindings: Record<string, number> = {
+    'group mean scratch': groups * 8,
+    'group offsets scratch': (groups + 1) * 4
+  };
+  if (route === 'sorted') bindings['row scratch'] = rows * 4;
+  else
+    bindings['grouped partial sums scratch'] =
+      (props.output.directionalMeans || median ? 4 : 3) *
+      groups *
+      Math.min(1024, Math.max(1, Math.ceil(rows / 256))) *
+      4;
+  if (props.output.ellipses || props.output.ellipseVertices) {
+    bindings['ellipse scratch'] = groups * 12;
+    bindings['ellipse projection scratch'] = groups * 20;
+  }
+  if (median) {
+    bindings['median records scratch'] = (4 * groups + 1) * 4;
+    bindings['median dispatch scratch'] = 36;
+  }
+  for (const [name, view] of Object.entries({
+    positions: props.positions,
+    weights: props.weights,
+    groupIds: props.groupIds,
+    mask: props.mask,
+    lineEnds: props.output.directionalMeans ? props.lineEnds : undefined,
+    parameters: props.parameters,
+    ...props.output
+  }))
+    if (view) bindings[name] = getStatisticsViewBindingByteLength(view);
+  return getStatisticsExecutionPlan(
+    route,
+    checks,
+    GEOGRAPHIC_DISTRIBUTION_BASE_COMMAND_NODE_ALLOWANCE +
+      (median ? iterations * GEOGRAPHIC_DISTRIBUTION_MEDIAN_COMMAND_NODES_PER_ITERATION : 0),
+    bindings,
+    deviceLimits,
+    descriptor
+  );
+}
+export const GPU_GEOGRAPHIC_DISTRIBUTION_PLANNER: GPUAnalysisExecutionPlanner<
+  GPUGeographicDistributionProps,
+  GPUStatisticsPlanDeviceLimits | undefined
+> = {getExecutionPlan: getGPUGeographicDistributionExecutionPlan};

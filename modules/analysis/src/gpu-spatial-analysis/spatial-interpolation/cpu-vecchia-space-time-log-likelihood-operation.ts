@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotCPUVecchiaInput, snapshotVecchiaLossProps} from './vecchia-neighborhood-status';
+
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {snapshotVecchiaSpaceTimeLogLikelihoodOperationProps} from './interpolation-operation-snapshots';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   getCPUOperationFloat32Rows,
@@ -16,6 +22,7 @@ import {
   evaluateCPUVecchiaLikelihood,
   validateCPUVecchiaProps,
   type CPUVecchiaRows,
+  type PreparedCPUVecchiaLikelihoodRows,
   type CPUVecchiaLikelihoodRows
 } from './cpu-vecchia-evaluation';
 
@@ -23,6 +30,8 @@ import {
 export type CPUVecchiaSpaceTimeLogLikelihoodInput = CPUVecchiaRows & {times: Float32Array};
 /** Every output port, in the same row order and formats as the contributor. */
 export type CPUVecchiaSpaceTimeLogLikelihoodResult = CPUVecchiaLikelihoodRows;
+/** Numerical evaluator result with guaranteed neighborhood evidence. */
+export type PreparedCPUVecchiaSpaceTimeLogLikelihoodResult = PreparedCPUVecchiaLikelihoodRows;
 
 /**
  * Evaluates zero-mean Gaussian conditional predictions and likelihood in float64, rounding each
@@ -50,13 +59,18 @@ export type CPUVecchiaSpaceTimeLogLikelihoodResult = CPUVecchiaLikelihoodRows;
  */
 export function computeVecchiaSpaceTimeLogLikelihoodOnCPU(
   input: CPUVecchiaSpaceTimeLogLikelihoodInput
-): CPUVecchiaSpaceTimeLogLikelihoodResult {
-  return evaluateCPUVecchiaLikelihood(input, input.times);
+): PreparedCPUVecchiaSpaceTimeLogLikelihoodResult {
+  input = snapshotCPUVecchiaInput(input);
+  return evaluateCPUVecchiaLikelihood(
+    {...input, id: input.id ?? 'vecchia-space-time-log-likelihood'},
+    input.times
+  );
 }
 
 /** CPU twin; GPU-only neighborhood capacity is dropped. Counts and contexts are compile-time. */
 export class CPUVecchiaSpaceTimeLogLikelihoodOperation extends GPUCPUOperation {
   constructor(props: VecchiaSpaceTimeLogLikelihoodOperationProps) {
+    props = snapshotVecchiaLossProps(props, snapshotVecchiaSpaceTimeLogLikelihoodOperationProps);
     const id = props.id ?? 'vecchia-space-time-log-likelihood';
     validateCPUVecchiaProps(id, props);
     resolveGPUTemporalContext(id, props.temporalContext, {encodings: ['float32-relative']});
@@ -72,9 +86,23 @@ export class CPUVecchiaSpaceTimeLogLikelihoodOperation extends GPUCPUOperation {
       ),
       execute({inputs}) {
         const positions = getCPUOperationFloat32Rows(id, inputs, 'positions', 'float32x2');
-        if (positions.length !== props.rowCount * 2)
-          throw new Error(`${id} positions length must equal rowCount * 2`);
+        validateRequirement(
+          id,
+          !(positions.length !== props.rowCount * 2),
+          `positions length must equal rowCount * 2 (${props.rowCount * 2}); received ${positions.length}`
+        );
         const result = computeVecchiaSpaceTimeLogLikelihoodOnCPU({
+          id,
+          neighborhoodStatus: {
+            overflow:
+              props.neighborhoodStatus?.overflow !== undefined
+                ? getCPUOperationUint32Rows(id, inputs, 'neighborhoodOverflow')
+                : undefined,
+            candidateOverflow:
+              props.neighborhoodStatus?.candidateOverflow !== undefined
+                ? getCPUOperationUint32Rows(id, inputs, 'neighborhoodCandidateOverflow')
+                : undefined
+          },
           positions,
           times: getCPUOperationFloat32Rows(id, inputs, 'times'),
           observations: getCPUOperationFloat32Rows(id, inputs, 'observations', 'float32x4'),

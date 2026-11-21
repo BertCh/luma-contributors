@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.point-horizon-profile: dem, horizonObservers → pointHoriz…",
   "description": "Result of gpu-terrain.point-horizon-profile: dem, horizonObservers → pointHorizonSkylineAngle. cells: 108. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.point-horizon-profile: dem, horizonObservers → pointHorizonSkylineAngle\n\n- cells: 108\n- input dem: 4096 cells\n- input horizonObservers: 3 rows\n- Planar coordinates (unit unknown); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.point-horizon-profile: dem, horizonObservers → pointHorizonSkylineAngle\n\n- cells: 108\n- input dem: 4096 cells\n- input horizonObservers: 3 rows\n- Planar coordinates (unit unknown); uniform scale.\n- cell size 120 m\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "108"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:13.940Z",
-    "runId": "run-eedef9a2",
+    "date": "2026-11-20T23:51:41.485Z",
+    "runId": "run-13245d72",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-eedef9a2",
+    "runId": "run-13245d72",
     "rung": "result",
     "bindings": {},
     "clauses": [],

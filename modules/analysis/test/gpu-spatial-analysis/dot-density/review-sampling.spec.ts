@@ -25,17 +25,19 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {createPolygonColumns} from './dot-density-scene';
 import type {DotDensityCPUPolygons} from './dot-density-cpu';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 async function runSampling(
   polygons: DotDensityCPUPolygons,
-  requests: Uint32Array,
+  requests: Uint32Array | Float32Array,
   options: {
     route?: 'values' | 'counts';
     capacity?: number;
     normalize?: boolean;
     packed?: boolean;
     nextRequests?: Uint32Array;
+    seed?: number;
+    dotsPerUnit?: number;
   } = {}
 ) {
   const device = await getWebGPUTestDevice();
@@ -57,7 +59,7 @@ async function runSampling(
     return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
   };
   const featureCount = requests.length;
-  const capacity = options.capacity ?? requests.reduce((sum, value) => sum + value, 0);
+  const capacity = options.capacity ?? Array.from(requests).reduce((sum, value) => sum + value, 0);
   const coordinates = track(
     createOutputBuffer(device, options.packed ? 3 * capacity : 2 * capacity)
   );
@@ -92,7 +94,11 @@ async function runSampling(
     ringOffsets: input('rings', polygons.ringOffsets, 'uint32'),
     parameters: input(
       'parameters',
-      getGPUDotDensityParameterValues({seed: 123, maskExtent: [0, 0, 64, 16]}),
+      getGPUDotDensityParameterValues({
+        seed: options.seed ?? 123,
+        dotsPerUnit: options.dotsPerUnit ?? 1,
+        maskPlacement: {origin: [0, 0], cellSize: [64, 16]}
+      }),
       'uint32'
     ),
     mask: options.normalize
@@ -116,7 +122,7 @@ async function runSampling(
       },
       status: {failedCount: failed.view},
       slotCounts: slotCounts.view,
-      slotOffsets: slotOffsets.view
+      slotStarts: slotOffsets.view
     }
   };
   const requestBuffer = track(
@@ -266,6 +272,61 @@ it('samples multipolygons, holes and empty polygons against a CPU quantized-CDF 
 });
 
 for (const route of ['values', 'counts'] as const) {
+  it(`integer requests stay exact at the float32 subtraction boundary (${route}, B2)`, async () => {
+    const polygons = {
+      positions: Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0, 5, 0, 3, 2),
+      featureOffsets: Uint32Array.of(0, 1, 2),
+      polygonOffsets: Uint32Array.of(0, 1, 2),
+      ringOffsets: Uint32Array.of(0, 3, 6)
+    };
+    const result = await runSampling(polygons, Uint32Array.of(1, 16385), {
+      route,
+      capacity: 16385,
+      seed: 9
+    });
+    // No fractional remainder for either integer. The zero-area request fails before prefixing.
+    expect(result.slotCounts).toEqual([0, 16385]);
+    expect(result.slotOffsets).toEqual([0, 0]);
+    expect([result.count, result.required, result.failed]).toEqual([16385, 16385, 1]);
+    expect(result.ids).toEqual(new Array(16385).fill(1));
+    expect(result.positions.every(Number.isFinite)).toBe(true);
+  });
+}
+
+for (const route of ['values', 'counts'] as const) {
+  it(`zero-area integer requests have literal counts, offsets, IDs and failures (${route}, GEO-130)`, async () => {
+    const polygons = {
+      positions: Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0, 5, 0, 3, 2),
+      featureOffsets: Uint32Array.of(0, 1, 2),
+      polygonOffsets: Uint32Array.of(0, 1, 2),
+      ringOffsets: Uint32Array.of(0, 3, 6)
+    };
+    const result = await runSampling(polygons, Uint32Array.of(3, 2), {
+      route,
+      capacity: 8,
+      nextRequests: Uint32Array.of(0, 2)
+    });
+    // Hand areas are 0 and 2. Three clamped requests fail before the prefix; two dots
+    // from feature 1 remain. Explicit integer requests avoid any stochastic-rounding oracle.
+    expect(result.slotCounts).toEqual([0, 2]);
+    expect(result.slotOffsets).toEqual([0, 0]);
+    expect(result.ids.slice(0, 2)).toEqual([1, 1]);
+    expect([
+      result.count,
+      result.required,
+      result.overflow,
+      result.candidateOverflow,
+      result.failed
+    ]).toEqual([2, 2, 0, 0, 3]);
+    expect(result.positions.slice(0, 4).every(Number.isFinite)).toBe(true);
+    expect(result.next!.slotCounts).toEqual([0, 2]);
+    expect(result.next!.slotOffsets).toEqual([0, 0]);
+    expect(result.next!.ids.slice(0, 2)).toEqual([1, 1]);
+    expect([result.next!.count, result.next!.required, result.next!.failed]).toEqual([2, 2, 0]);
+  });
+}
+
+for (const route of ['values', 'counts'] as const) {
   it(`slot-prefix clamp with spare final capacity reports candidate loss and clears on reuse (${route})`, async () => {
     const polygons = createPolygonColumns([
       [
@@ -382,3 +443,36 @@ for (const route of ['values', 'counts'] as const) {
     }, 120000);
   }
 }
+
+it('S1 nonunit scaling rounds the product before the Bernoulli fractional comparison', async () => {
+  const polygons = createPolygonColumns([
+    [
+      [
+        [
+          [0, 0],
+          [2, 0],
+          [0, 2]
+        ]
+      ]
+    ]
+  ]);
+  const result = await runSampling(polygons, Float32Array.of(819.15), {
+    route: 'values',
+    capacity: 16383,
+    seed: 411,
+    dotsPerUnit: 20
+  });
+  // f32(819.15)*20 = 16383.00048828125 in binary64, but its rounded f32 product
+  // is the integer 16383. Fractional remainder must be zero. A contracted product-minus-floor
+  // gives 0.00048828125 > the pinned draw 0.0003591179847717285 and requests an extra dot.
+  expect(result.slotCounts).toEqual([16383]);
+  expect(result.slotOffsets).toEqual([0]);
+  expect([
+    result.count,
+    result.required,
+    result.failed,
+    result.candidateOverflow,
+    result.overflow
+  ]).toEqual([16383, 16383, 0, 0, 0]);
+  expect(result.ids).toEqual(new Array(16383).fill(0));
+});

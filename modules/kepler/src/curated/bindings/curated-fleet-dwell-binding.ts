@@ -32,6 +32,7 @@ import {
   TRAJECTORY_PARAMETERS,
   numberParameter,
   prepareCatalogTrajectory,
+  validateTrajectoryPublication,
   makeTrajectoryOutput
 } from '../../analysis/catalog-trajectory-common';
 
@@ -113,6 +114,7 @@ export function prepareFleetDwell(
     'tracks and zones inputs are required'
   );
   const trajectory = prepareCatalogTrajectory(inputs['tracks'], values);
+  validateTrajectoryPublication(trajectory);
   const collection = inputs['zones'];
   validateCapacity(
     BINDING_ID,
@@ -390,7 +392,7 @@ export const CURATED_FLEET_DWELL_BINDING: CatalogOperationBinding = {
   cleanup:
     'The catalog GPU session destroys its compiled graph and buffers in finally; plain output tables publish through native Sources.',
   declaredBehavior: [
-    'Reuse trajectory preparation: stable track/time sorting, signed Int64 epoch milliseconds, original source and vertex identities. Requires distinct increasing times per track; null geometries are skipped with a diagnostic.',
+    'Reuse trajectory preparation: stable track/time sorting, signed Int64 epoch milliseconds, original source and vertex identities. Requires distinct increasing times per track and distinct string spellings of track IDs before GPU allocation; null geometries are skipped with a diagnostic.',
     'Speed threshold is length/second (metres for EPSG:4326, declared planar units otherwise); minimum duration and all reported dwell are seconds. The GPU receives length/millisecond and milliseconds.',
     'Geographic tracks and zones share the trajectory local azimuthal equidistant frame. Planar coordinates share the shifted source frame. Holes and multipart zones are preserved; smallest containing feature row wins overlaps under half-open boundaries.',
     'A stop is a maximal slow-step run of sufficient duration, assigned by its arithmetic centroid. Stops outside zones remain visible. Every zone is retained, including empty zones with zero total and null mean/maximum.',
@@ -440,7 +442,7 @@ export const CURATED_FLEET_DWELL_BINDING: CatalogOperationBinding = {
           candidateCapacity: prepared.candidateCapacity
         },
         zoneCapacity: zoneCount,
-        outputs: {
+        output: {
           stops: {
             ids: tracks.view,
             startRows: startRows.view,

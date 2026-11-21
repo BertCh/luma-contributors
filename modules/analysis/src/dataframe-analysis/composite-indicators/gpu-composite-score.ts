@@ -20,8 +20,7 @@ import {
   validateMaximumCount,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
-  validateSinglePackedView,
-  getGraphViewChunks
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE,
@@ -34,6 +33,11 @@ import {
   GPU_COMPOSITE_SCORE_PRINCIPAL_COMPONENT_SUMMARY_LENGTH,
   GPU_COMPOSITE_SCORE_ZERO_SUM_TOLERANCE
 } from './composite-score-parameters';
+import {
+  FIXED_POINT_WGSL,
+  getFixedPointHeadroomBits
+} from '../../analysis-core/kernels/fixed-point-accumulator';
+import {FINITE_MEAN_WGSL} from '../key-join/finite-mean-wgsl';
 import {getSymmetricEigenWGSL} from '../../analysis-core/kernels/symmetric-eigen-wgsl';
 import {
   DECODE_ORDERED_KEY_WGSL,
@@ -164,8 +168,11 @@ export type GPUCompositeScoreProps = {
  *
  * Determinism: no atomics at all. Column min and max (order-preserving u32 keys, exact) and the
  * valid-row count are per-tile reductions merged in tile order. Means and centered (co)variances are
- * two-pass fixed-order sums: one thread per (256-row tile, column) sums in row order, then one 256-lane
- * workgroup per column merges tiles (strided, then a fixed binary tree). The covariance is symmetric, so only the upper triangle
+ * fixed-order sums around a stable reference. After the extrema pass, means are summed around
+ * a close same-sign endpoint (zero for wide/sparse columns), retaining a separate mean offset
+ * for moments and scoring even when the public mean rounds. Centered totals use 96-bit integers. One thread
+ * per (256-row tile, column) sums in row order, then one 256-lane workgroup per column merges
+ * tiles (strided, then a fixed binary tree). The covariance is symmetric, so only the upper triangle
  * of (column, column) pairs is accumulated and mirrored when merging.
  * The eigen decomposition runs in a single thread. Results are bitwise reproducible on one adapter.
  */
@@ -251,40 +258,17 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
         [output.loadings, output.principalComponentSummary],
         [output.columnStatistics, output.loadings, output.score, output.scaled]
       ];
-      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
-      const writableWordChunks = Object.values(writableOutputs)
-        .flatMap(view => (view ? getGraphViewChunks(view) : []))
-        .map(
-          view =>
-            new GraphDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset,
-              byteStride: 4,
-              rowByteLength: 4
-            })
-        );
-      const writableWordCount = writableWordChunks.reduce(
-        (total, chunk) => total + chunk.length,
-        0
-      );
-      validateDisjointWritableViews(id, {
-        outputs: new GraphVectorView({
-          id: `${id}-writable-ranges`,
-          name: 'outputs',
-          format: 'uint32',
-          length: writableWordCount,
-          valueLength: writableWordCount,
-          stride: 1,
-          byteStride: 4,
-          rowByteLength: 4,
-          data: writableWordChunks
-        })
-      });
+      validateDisjointWritableViews(id, writableOutputs, {separateDispatches: true});
       for (const fields of publicationPasses) {
         validateDisjointWritableViews(
           id,
-          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+          Object.fromEntries(
+            fields.map((view, index) => [
+              Object.entries(writableOutputs).find(([, candidate]) => candidate === view)?.[0] ??
+                String(index),
+              view
+            ])
+          )
         );
       }
     }
@@ -319,8 +303,8 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       ? (indicatorCount * (indicatorCount + 1)) / 2
       : indicatorCount;
     for (const [name, length] of Object.entries({
-      rowValid: rowCount,
-      tileSums: tileCount * indicatorCount,
+      rowValid: rowCount + 2 * indicatorCount,
+      tileSums: tileCount * indicatorCount * 3,
       tileCounts: tileCount,
       tileMoments: tileCount * maximumPairCount,
       moments: momentCount,
@@ -354,9 +338,18 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       format: Format,
       length: number
     ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
-    const rowValid = transient('row-valid', 'uint32', rowCount);
+    // Keep reference/mean-offset words after row validity, sharing its existing score binding.
+    // The fully enabled score kernel already uses all eight storage bindings.
+    const rowValid = transient('row-valid', 'uint32', rowCount + 2 * indicatorCount);
     const validCount = transient('valid-count', 'uint32', 1);
-    const tileSums = transient('tile-sums', 'float32', tileCount * indicatorCount);
+    const tileSums = transient('tile-sums', 'float32', tileCount * indicatorCount * 3);
+    const tileCenteredSums = new GraphDataView(tileSums.buffer, {
+      format: 'uint32',
+      length: tileSums.length,
+      byteOffset: 0,
+      byteStride: 4,
+      rowByteLength: 4
+    });
     // Per (tile, column) ordered-key extremes and per tile valid-row count, merged by 'means'.
     const tileMinKeys = transient('tile-min-keys', 'uint32', tileCount * indicatorCount);
     const tileMaxKeys = transient('tile-max-keys', 'uint32', tileCount * indicatorCount);
@@ -478,6 +471,7 @@ ${COMPOSITE_SCORE_WGSL}`;
           read('tileMaxKeys', tileMaxKeys, 'u32'),
           read('tileCounts', tileCounts, 'u32'),
           write('validCount', validCount, 'u32'),
+          write('rowValid', rowValid, 'u32'),
           write('statistics', statistics, 'f32')
         ],
         invocationCount: indicatorCount * REDUCTION_LANES,
@@ -524,9 +518,105 @@ var<workgroup> laneMaximumKeys: array<u32, ${REDUCTION_LANES}>;`,
     let nan = getNaN();
     let hasRows = totalCount != 0u;
     let base = statisticsOffset + column * 4u;
-    statistics[base] = select(nan, decodeOrderedKey(laneMinimumKeys[0]), hasRows);
-    statistics[base + 1u] = select(nan, decodeOrderedKey(laneMaximumKeys[0]), hasRows);
-    statistics[base + 2u] = select(nan, laneSums[0] / f32(max(totalCount, 1u)), hasRows);
+    let minimum = decodeOrderedKey(laneMinimumKeys[0]);
+    let maximum = decodeOrderedKey(laneMaximumKeys[0]);
+    // The float32 running sum drifts at large offsets (256 copies of 1e7 average to 9999980), so
+    // the mean is held inside [minimum, maximum]: a constant column gets its value exactly and
+    // therefore a zero deviation and zero standardized scores.
+    let mean = select(clamp(laneSums[0] / f32(max(totalCount, 1u)), minimum, maximum), minimum, minimum == maximum);
+    statistics[base] = select(nan, minimum, hasRows);
+    statistics[base + 1u] = select(nan, maximum, hasRows);
+    statistics[base + 2u] = select(nan, mean, hasRows);
+    // A close same-sign column uses an endpoint so subtraction preserves small differences.
+    // A wide or sparse column uses zero, avoiding many large artificial offset terms.
+    var reference = 0.0;
+    if (minimum > 0.0 && minimum >= maximum * 0.5) { reference = minimum; }
+    if (maximum < 0.0 && maximum <= minimum * 0.5) { reference = maximum; }
+    if (minimum == maximum) { reference = minimum; }
+    rowValid[rowValidOffset + ROW_COUNT + 2u * column] = bitcast<u32>(reference);
+    rowValid[rowValidOffset + ROW_COUNT + 2u * column + 1u] = 0u;
+  }`
+      })
+    );
+
+    // Reuse the raw tile sum allocation for 96-bit centered integer totals. This avoids
+    // reassociation-sensitive compensated arithmetic and preserves sparse totals too.
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-tile-centered-sums`,
+        operation: OPERATION,
+        variant: 'tile-centered-sums',
+        bindings: [
+          read('indicators', indicators, 'f32'),
+          read('rowValid', rowValid, 'u32'),
+          read('statistics', statistics, 'f32'),
+          write('tileSums', tileCenteredSums, 'u32')
+        ],
+        invocationCount: tileCount * indicatorCount,
+        declarations: `${declarations}
+${FIXED_POINT_WGSL}`,
+        body: `let tile = index / COLUMN_COUNT;
+  let column = index % COLUMN_COUNT;
+  let base = statisticsOffset + column * 4u;
+  let reference = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * column]);
+  let exponent = max(getFixedPointExponentBits(statistics[base]), getFixedPointExponentBits(statistics[base + 1u]));
+  let unitExponent = getFixedPointUnitExponent(exponent, ${getFixedPointHeadroomBits(rowCount)}u);
+  let firstRow = tile * TILE_ROWS;
+  let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
+  var sum = vec3<u32>(0u);
+  for (var row = firstRow; row < endRow; row++) {
+    if (rowValid[rowValidOffset + row] != 0u) {
+      let difference = indicators[indicatorsOffset + row * COLUMN_COUNT + column] - reference;
+      sum = addFixedPoint(sum, quantizeFixedPoint(difference, unitExponent));
+    }
+  }
+  tileSums[tileSumsOffset + 3u * index] = sum.x;
+  tileSums[tileSumsOffset + 3u * index + 1u] = sum.y;
+  tileSums[tileSumsOffset + 3u * index + 2u] = sum.z;`
+      })
+    );
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-centered-means`,
+        operation: OPERATION,
+        variant: 'centered-means',
+        bindings: [
+          read('tileSums', tileCenteredSums, 'u32'),
+          read('validCount', validCount, 'u32'),
+          write('statistics', statistics, 'f32'),
+          write('rowValid', rowValid, 'u32')
+        ],
+        invocationCount: indicatorCount * REDUCTION_LANES,
+        workgroupSize: REDUCTION_LANES,
+        guardIndex: false,
+        declarations: `${declarations}
+${FIXED_POINT_WGSL}
+${FINITE_MEAN_WGSL}
+var<workgroup> laneSums: array<vec3<u32>, ${REDUCTION_LANES}>;`,
+        body: `let column = workgroupIndex;
+  let lane = localInvocationIndex;
+  var sum = vec3<u32>(0u);
+  for (var tile = lane; tile < TILE_COUNT; tile += ${REDUCTION_LANES}u) {
+    let base = tileSumsOffset + 3u * (tile * COLUMN_COUNT + column);
+    sum = addFixedPoint(sum, vec3<u32>(tileSums[base], tileSums[base + 1u], tileSums[base + 2u]));
+  }
+  laneSums[lane] = sum;
+  workgroupBarrier();
+  for (var stride = ${REDUCTION_LANES / 2}u; stride > 0u; stride = stride >> 1u) {
+    if (lane < stride) { laneSums[lane] = addFixedPoint(laneSums[lane], laneSums[lane + stride]); }
+    workgroupBarrier();
+  }
+  if (lane == 0u) {
+    let count = validCount[validCountOffset];
+    let base = statisticsOffset + column * 4u;
+    let minimum = statistics[base];
+    let maximum = statistics[base + 1u];
+    let exponent = max(getFixedPointExponentBits(minimum), getFixedPointExponentBits(maximum));
+    let unitExponent = getFixedPointUnitExponent(exponent, ${getFixedPointHeadroomBits(rowCount)}u);
+    let reference = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * column]);
+    let meanOffset = getFiniteFixedPointMean(laneSums[0], unitExponent, count);
+    rowValid[rowValidOffset + ROW_COUNT + 2u * column + 1u] = bitcast<u32>(meanOffset);
+    statistics[base + 2u] = select(getNaN(), clamp(reference + meanOffset, minimum, maximum), count != 0u);
   }`
       })
     );
@@ -539,11 +629,11 @@ var<workgroup> laneMaximumKeys: array<u32, ${REDUCTION_LANES}>;`,
         bindings: [
           read('indicators', indicators, 'f32'),
           read('rowValid', rowValid, 'u32'),
-          read('statistics', statistics, 'f32'),
           write('tileMoments', tileMoments, 'f32')
         ],
         invocationCount: tileCount * pairCount,
-        declarations,
+        declarations: `${declarations}
+${CENTERED_DEVIATION_WGSL}`,
         body: `let tile = index / PAIR_COUNT;
   let pair = index % PAIR_COUNT;
   var left = pair;
@@ -558,15 +648,19 @@ var<workgroup> laneMaximumKeys: array<u32, ${REDUCTION_LANES}>;`,
     }
     right = left + remaining;
   }
-  let leftMean = statistics[statisticsOffset + left * 4u + 2u];
-  let rightMean = statistics[statisticsOffset + right * 4u + 2u];
+  let leftMean = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * left + 1u]);
+  let rightMean = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * right + 1u]);
+  let leftReference = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * left]);
+  let rightReference = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * right]);
   let firstRow = tile * TILE_ROWS;
   let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
   var sum = 0.0;
   for (var row = firstRow; row < endRow; row++) {
     if (rowValid[rowValidOffset + row] != 0u) {
       let base = indicatorsOffset + row * COLUMN_COUNT;
-      sum = sum + (indicators[base + left] - leftMean) * (indicators[base + right] - rightMean);
+      let leftDeviation = getCompositeDeviation(indicators[base + left], leftReference, leftMean);
+      let rightDeviation = getCompositeDeviation(indicators[base + right], rightReference, rightMean);
+      sum = sum + leftDeviation * rightDeviation;
     }
   }
   tileMoments[tileMomentsOffset + index] = sum;`
@@ -765,6 +859,7 @@ const LOADING_TIE_TOLERANCE: f32 = ${GPU_COMPOSITE_SCORE_LOADING_TIE_TOLERANCE};
         ],
         invocationCount: rowCount,
         declarations: `${declarations}
+${CENTERED_DEVIATION_WGSL}
 const HAS_RANK: bool = ${enableRank};
 const HAS_PRINCIPAL_COMPONENT: bool = ${enablePrincipalComponent};`,
         body: getScoreBody({hasRanks: enableRank, hasLoadings: Boolean(loadings), hasScaled})
@@ -950,6 +1045,17 @@ const RANK_SCATTER_BODY = /* wgsl */ `let rankColumn = rankColumnState[rankColum
   let row = sortedRows[sortedRowsOffset + index];
   ranks[ranksOffset + row * COLUMN_COUNT + rankColumn] = percentile;`;
 
+// A bit-level magnitude/sign boundary keeps Metal from folding the offset back into the
+// rounded reference when reassociating (value - reference) - meanOffset.
+const CENTERED_DEVIATION_WGSL = /* wgsl */ `
+fn getCompositeDeviation(value: f32, reference: f32, meanOffset: f32) -> f32 {
+  let bits = bitcast<u32>(value - reference);
+  let magnitude = bitcast<f32>(bits & 0x7fffffffu);
+  if ((bits & 0x80000000u) != 0u) { return -magnitude - meanOffset; }
+  return magnitude - meanOffset;
+}
+`;
+
 function getScoreBody(props: {
   hasRanks: boolean;
   hasLoadings: boolean;
@@ -984,7 +1090,9 @@ function getScoreBody(props: {
     var scaled = 0.0;
     if (isPrincipal || scaler == 1u) {
       let deviation = statistics[statisticBase + 3u];
-      scaled = select(0.0, (value - statistics[statisticBase + 2u]) / deviation, deviation > 0.0);
+      let reference = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * column]);
+      let meanOffset = bitcast<f32>(rowValid[rowValidOffset + ROW_COUNT + 2u * column + 1u]);
+      scaled = select(0.0, getCompositeDeviation(value, reference, meanOffset) / deviation, deviation > 0.0);
       scaled = select(scaled, -scaled, isReversed);
     } else {
       if (scaler == 0u) {

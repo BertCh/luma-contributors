@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {clamp} from '@math.gl/core';
+import {createCaptureValueInterpreter} from './capture-missing-values';
 import {renderRasterImage, getRasterSamplingNote} from '../encoding/raster-image';
 import {assert} from '@luma.gl/core';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
@@ -14,7 +15,12 @@ import {
   provenanceMarkAttributes,
   provenancePatternDefs
 } from '../encoding/provenance';
-import {coarsenValues, crispnessAttributes, crispnessDefs} from '../encoding/crispness';
+import {
+  coarsenValues,
+  coarsenCaptureText,
+  crispnessAttributes,
+  crispnessDefs
+} from '../encoding/crispness';
 import {getSelectionInk} from '../encoding/selection-ink';
 import {
   getAdapterLabel,
@@ -35,9 +41,18 @@ export type BufferStripModel = {
   indexSpace: '1d' | '2d' | 'csr';
   shape?: readonly number[];
   count: number;
+  /** Captured components interpreted once during this model build; raw storage is untouched. */
+  interpretedValues?: readonly number[];
   elementType: string;
   provenance: MarkProvenance;
-  stats: {min: number; max: number; nanCount: number; infCount: number; finiteCount: number};
+  stats: {
+    min: number;
+    max: number;
+    nanCount: number;
+    infCount: number;
+    finiteCount: number;
+    unknownCount?: number;
+  };
   histogram: {bins: 16; counts: number[]; edges: number[]};
   envelope?: {min: number[]; max: number[]};
   diff?: {
@@ -76,13 +91,37 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
   const components = capture.components ?? 1;
   const count = Math.floor(capture.values.length / components);
   const firstKey = getCaptureFirstKey(capture);
+  const interpreters = new Map<
+    GPUComputationCapture,
+    ReturnType<typeof createCaptureValueInterpreter>
+  >();
+  const interpreterFor = (candidate: GPUComputationCapture) => {
+    let interpreter = interpreters.get(candidate);
+    if (!interpreter) {
+      interpreter = createCaptureValueInterpreter(context.record, candidate);
+      interpreters.set(candidate, interpreter);
+    }
+    return interpreter;
+  };
+  const interpreter = interpreterFor(capture);
+  const interpretedValues = Array.from(capture.values, value =>
+    interpreter.interpret(Number(value))
+  );
   const keySpace = context.record.axes.keySpaces.find(
     candidate => candidate.id === capture.keySpace
   );
-  const stats = {min: Infinity, max: -Infinity, nanCount: 0, infCount: 0, finiteCount: 0};
+  const stats = {
+    min: Infinity,
+    max: -Infinity,
+    nanCount: 0,
+    infCount: 0,
+    finiteCount: 0,
+    unknownCount: 0
+  };
   for (let index = 0; index < capture.values.length; index++) {
     const value = Number(capture.values[index]);
-    if (Number.isNaN(value)) stats.nanCount++;
+    if (interpreter.isUnknown(value)) stats.unknownCount++;
+    else if (Number.isNaN(value)) stats.nanCount++;
     else if (!Number.isFinite(value)) stats.infCount++;
     else {
       stats.finiteCount++;
@@ -102,7 +141,7 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
     (_, index) => minimum + ((maximum - minimum) * index) / 16
   );
   for (let index = 0; index < capture.values.length; index++) {
-    const value = Number(capture.values[index]);
+    const value = interpretedValues[index];
     if (Number.isFinite(value))
       counts[
         maximum === minimum
@@ -127,26 +166,39 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
     for (let key = 0; key < count; key++) {
       const previousRow = firstKey + key - getCaptureFirstKey(previous);
       if (previousRow < 0 || previousRow >= getCaptureRowCount(previous)) continue;
-      comparedCount++;
       let changed = false;
+      let comparable = false;
       for (let component = 0; component < components; component++) {
         const index = key * components + component;
-        const value = Number(capture.values[index]);
-        const prior = previous.values[previousRow * (previous.components ?? 1) + component];
+        const value = interpretedValues[index];
+        const prior = interpreterFor(previous).interpret(
+          Number(previous.values[previousRow * (previous.components ?? 1) + component])
+        );
+        if (!Number.isFinite(value) || !Number.isFinite(prior)) continue;
+        comparable = true;
         if (!Object.is(value, prior) && value !== prior) changed = true;
         const delta = value - prior;
         if (!Number.isNaN(delta)) maxAbsDelta = Math.max(maxAbsDelta, Math.abs(delta));
       }
+      if (comparable) comparedCount++;
       if (changed) changedCount++;
     }
-    diff = {againstCaptureId: previous.id, comparedCount, changedCount, maxAbsDelta};
+    diff = {
+      againstCaptureId: previous.id,
+      comparedCount,
+      changedCount,
+      maxAbsDelta: comparedCount ? maxAbsDelta : NaN
+    };
   }
   let envelope: BufferStripModel['envelope'];
   if (new Set(iterations.map(candidate => candidate.iteration)).size >= 2 && count <= 4096) {
     envelope = {min: [], max: []};
     for (let key = 0; key < count; key++) {
       const values = iterations
-        .map(candidate => getCaptureValue(candidate, firstKey + key))
+        .map(candidate => {
+          const value = getCaptureValue(candidate, firstKey + key);
+          return value === undefined ? undefined : interpreterFor(candidate).interpret(value);
+        })
         .filter((value): value is number => value !== undefined && Number.isFinite(value));
       envelope.min.push(values.length ? Math.min(...values) : NaN);
       envelope.max.push(values.length ? Math.max(...values) : NaN);
@@ -163,10 +215,18 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
       Number(capture.values[(key - firstKey) * components + component])
     );
     const prior = previous && getCaptureValue(previous, key);
+    const missing = values.some(value => interpreter.isUnknown(value));
     return {
       key,
-      value: components === 1 ? values[0] : values.join(', '),
-      delta: prior === undefined ? undefined : values[0] - prior
+      value: missing
+        ? values.map(value => (interpreter.isUnknown(value) ? 'unknown' : value)).join(', ')
+        : components === 1
+          ? values[0]
+          : values.join(', '),
+      delta:
+        prior === undefined || missing || (previous && interpreterFor(previous).isUnknown(prior))
+          ? undefined
+          : values[0] - prior
     };
   });
   return {
@@ -183,6 +243,7 @@ export function buildBufferStripModel(context: ViewContext): BufferStripModel {
           : '1d',
     shape: keySpace?.shape,
     count,
+    interpretedValues,
     elementType: capture.elementType,
     provenance: getCaptureProvenance(capture),
     stats,
@@ -198,10 +259,13 @@ function renderIndexSpace(
   capture: GPUComputationCapture,
   context: ViewContext
 ): ViewElementNode {
-  const scale = resolveValueScale(context, model.name)?.scale;
+  const scale = resolveValueScale(context, model.name, capture)?.scale;
+  const interpreted =
+    model.interpretedValues ??
+    Array.from(capture.values, createCaptureValueInterpreter(context.record, capture).interpret);
   const values = Array.from(
     {length: model.count},
-    (_, index) => getCaptureValue(capture, getCaptureFirstKey(capture) + index)!
+    (_, index) => interpreted[index * (capture.components ?? 1)]
   );
   const provisional =
     capture.iteration !== undefined &&
@@ -335,6 +399,9 @@ export function renderBufferStrip(model: BufferStripModel, context: ViewContext)
       h('h3', null, model.name),
       h('span', null, `${model.keySpace} · ${model.count} × ${model.elementType}`),
       provenanceBadge(model.provenance),
+      model.stats.unknownCount
+        ? h('span', {class: 'lens-badge'}, `${model.stats.unknownCount} unknown`)
+        : null,
       model.stats.nanCount
         ? h('span', {class: 'lens-badge lens-badge--nan'}, `${model.stats.nanCount} NaN`)
         : null,
@@ -446,9 +513,7 @@ export function renderBufferStrip(model: BufferStripModel, context: ViewContext)
             h(
               'td',
               null,
-              provisional
-                ? coarsenValues(String(row.value).split(', ').map(Number), 'provisional').join(', ')
-                : String(row.value)
+              provisional ? coarsenCaptureText(row.value, 'provisional') : String(row.value)
             ),
             h(
               'td',
@@ -465,7 +530,7 @@ export function renderBufferStrip(model: BufferStripModel, context: ViewContext)
     h(
       'p',
       null,
-      `min ${model.stats.min} · max ${model.stats.max}${model.diff ? ` · ${model.diff.changedCount} of ${model.diff.comparedCount} shared keys changed vs ${model.diff.againstCaptureId}` : ''}`
+      `min ${model.stats.finiteCount ? model.stats.min : 'unavailable'} · max ${model.stats.finiteCount ? model.stats.max : 'unavailable'}${model.diff ? (model.diff.comparedCount ? ` · ${model.diff.changedCount} of ${model.diff.comparedCount} shared keys changed vs ${model.diff.againstCaptureId}` : ' · no comparable numeric keys') : ''}`
     ),
     h('p', null, getAdapterLabel(context.record))
   );
@@ -491,9 +556,9 @@ export const BUFFER_STRIP_VIEW: ViewRegistration<BufferStripModel> = {
     keyNumber:
       model.stats.nanCount > 0 && model.stats.finiteCount === 0 && model.stats.infCount === 0
         ? {label: 'NaN count', value: model.stats.nanCount}
-        : {label: 'max', value: model.stats.max},
+        : {label: 'max', value: model.stats.finiteCount ? model.stats.max : 'unavailable'},
     facts: [
-      `min ${model.stats.min}`,
+      `min ${model.stats.finiteCount ? model.stats.min : 'unavailable'}`,
       ...(model.shape?.length === 2
         ? [
             getRasterSamplingNote(
@@ -506,7 +571,9 @@ export const BUFFER_STRIP_VIEW: ViewRegistration<BufferStripModel> = {
       `${model.stats.nanCount} NaN, ${model.stats.infCount} Inf`,
       ...(model.diff
         ? [
-            `${model.diff.changedCount} of ${model.diff.comparedCount} shared keys changed vs previous iteration`
+            model.diff.comparedCount
+              ? `${model.diff.changedCount} of ${model.diff.comparedCount} shared keys changed vs previous iteration`
+              : 'no comparable numeric keys'
           ]
         : [])
     ],

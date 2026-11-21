@@ -17,7 +17,103 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {flattenLines, type Point} from '../../gpu-spatial-analysis/line-split/line-split-harness';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
+
+it('reuses noding outputs for intersecting lines then one smaller live road', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createOptimizationHarness(device);
+  const positions = harness.input('float32x2', Float32Array.of(0, 0, 4, 0, 2, -2, 2, 2));
+  const lineOffsets = harness.input('uint32', Uint32Array.of(0, 2, 4));
+  const pieceCapacity = 8;
+  const nodeCapacity = 8;
+  const pieces = {
+    geometry: {
+      kind: 'lines' as const,
+      positions: harness.output('float32x2', 32),
+      lineOffsets: harness.output('uint32', 9)
+    },
+    sourceIds: harness.output('uint32', pieceCapacity),
+    sourcePartRows: harness.output('uint32', pieceCapacity),
+    sourceFeatureRows: harness.output('uint32', pieceCapacity),
+    status: {count: harness.output('uint32', 1), overflow: harness.output('uint32', 1)}
+  };
+  const nodes = {
+    positions: harness.output('float32x2', nodeCapacity),
+    status: {count: harness.output('uint32', 1), requiredCount: harness.output('uint32', 1)}
+  };
+  const edges = {
+    fromNodes: harness.output('uint32', pieceCapacity),
+    toNodes: harness.output('uint32', pieceCapacity),
+    lengths: harness.output('float32', pieceCapacity)
+  };
+  const topology = {
+    offsets: harness.output('uint32', 9),
+    neighbors: harness.output('uint32', 16),
+    weights: harness.output('float32', 16),
+    edgeIds: harness.output('uint32', 16)
+  };
+  // These provenance ports require the staged line-feature/noding implementation.
+  const lines = {
+    kind: 'lines' as const,
+    positions,
+    lineOffsets,
+    sourceIds: harness.input('uint32', Uint32Array.of(101, 909))
+  };
+  const overflow = harness.output('uint32', 1);
+  const read = await harness.run(
+    new GPUNetworkNoding({
+      lines,
+      intersectionCapacity: 8,
+      tolerance: harness.input('float32', Float32Array.of(0)),
+      output: {pieces, nodes, edges, topology, status: {overflow}}
+    }),
+    read => {
+      // The two length-4 roads cross at (2,0): four length-2 pieces, five distinct nodes.
+      expect(read(pieces.status.count)).toEqual([4]);
+      expect(read(pieces.sourceIds)).toEqual([
+        101,
+        101,
+        909,
+        909,
+        ...new Array(4).fill(0xffffffff)
+      ]);
+      expect(read(pieces.sourcePartRows)).toEqual([0, 0, 1, 1, ...new Array(4).fill(0xffffffff)]);
+      expect(read(pieces.sourceFeatureRows)).toEqual([
+        0,
+        0,
+        1,
+        1,
+        ...new Array(4).fill(0xffffffff)
+      ]);
+      expect(read(nodes.status.count)).toEqual([5]);
+      expect(read(topology.offsets)[8]).toBe(8);
+      expect(read(edges.lengths).slice(0, 4)).toEqual([2, 2, 2, 2]);
+      // Keep the same geometry capacities. Only line 0 remains live, with endpoints 3 units apart.
+      harness.rewrite(positions, Float32Array.of(10, 0, 13, 0, 2, -2, 2, 2));
+      harness.rewrite(lineOffsets, Uint32Array.of(0, 2, 2));
+    }
+  );
+  expect(read(pieces.status.count)).toEqual([1]);
+  expect(read(pieces.status.overflow)).toEqual([0]);
+  expect(read(overflow)).toEqual([0]);
+  expect(read(pieces.sourceIds)).toEqual([101, ...new Array(7).fill(0xffffffff)]);
+  expect(read(pieces.sourcePartRows)).toEqual([0, ...new Array(7).fill(0xffffffff)]);
+  expect(read(pieces.sourceFeatureRows)).toEqual([0, ...new Array(7).fill(0xffffffff)]);
+  expect(read(pieces.geometry.lineOffsets)).toEqual([0, ...new Array(8).fill(2)]);
+  expect(read(pieces.geometry.positions).slice(0, 4)).toEqual([10, 0, 13, 0]);
+  expect(read(nodes.status.count)).toEqual([2]);
+  expect(read(nodes.status.requiredCount)).toEqual([2]);
+  expect(read(nodes.positions).slice(0, 4)).toEqual([10, 0, 13, 0]);
+  expect(read(edges.fromNodes)).toEqual([0, ...new Array(7).fill(0xffffffff)]);
+  expect(read(edges.toNodes)).toEqual([1, ...new Array(7).fill(0xffffffff)]);
+  expect(read(edges.lengths)).toEqual([3, ...new Array(7).fill(0)]);
+  expect(read(topology.offsets)).toEqual([0, 1, ...new Array(7).fill(2)]);
+  expect(read(topology.neighbors)).toEqual([1, 0, ...new Array(14).fill(0xffffffff)]);
+  expect(read(topology.edgeIds)).toEqual([0, 0, ...new Array(14).fill(0xffffffff)]);
+  expect(read(topology.weights)).toEqual([3, 3, ...new Array(14).fill(NaN)]);
+});
 
 type NodingResult = {
   nodeCount: number;

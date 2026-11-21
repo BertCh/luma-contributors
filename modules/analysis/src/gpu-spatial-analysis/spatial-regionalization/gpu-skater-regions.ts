@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegionalizationWeightsCompleteness} from './adjacency-loss-suppression';
 import type {Device} from '@luma.gl/core';
 import {
   snapshotWeightsFields,
@@ -26,6 +27,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -37,7 +39,7 @@ import {
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {REGIONALIZATION_CSR_WGSL, REGIONALIZATION_NONE_WGSL} from './regionalization-wgsl';
-import {GPU_MINIMUM_SPANNING_TREE_STATUS} from './gpu-spatial-weights-minimum-spanning-tree';
+import {GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT} from './gpu-spatial-weights-minimum-spanning-tree';
 
 const OPERATION = 'GPUSkaterRegions';
 
@@ -47,7 +49,7 @@ export const GPU_SKATER_MAXIMUM_COLUMNS = 16;
 /**
  * Largest `weights.neighbors` slot count (and row count) times `2 + columnCount` of
  * {@link GPUSkaterRegions} on `device`: the arc and region statistics tables hold `2 + columnCount`
- * float32 values per slot or row (the size, one unused word, and a sum per column) in one storage
+ * float32 values per slot or row (the size, a constant-feature mask word, and a sum per column) in one storage
  * binding, so 33554432 on a default device (128 MiB bindings). At 16 columns that is 1,864,135
  * slots.
  *
@@ -153,7 +155,7 @@ export type GPUSkaterRegionsProps = {
    * `GPU_SKATER_NO_CUT`. Without it, a region that holds a non-finite attribute has no finite
    * cut gain and is never cut, while the other regions are cut as usual.
    * Its `candidateOverflow` word instead suppresses the entire partition and cut log, just as
-   * either weights loss flag does. Allocate at least `GPU_MINIMUM_SPANNING_TREE_STATUS.length`
+   * either weights loss flag does. Allocate at least `GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length`
    * words; attribute invalidity and incomplete adjacency are independent conditions.
    */
   treeStatus?: GraphDataView<'uint32'>;
@@ -236,6 +238,9 @@ export type GPUSkaterRegionsOutput = {
  *
  * Non-goals: other tree-cut criteria, trace output of every intermediate partition, and weights
  * that are not symmetric.
+ * SKATER accepts 1–16 attribute columns. The arc and row statistic tables must each fit one
+ * storage binding (33,554,432 words at 128 MiB, with `2 + columnCount` words per slot or row).
+ * The estimated graph is limited to 32,768 command nodes.
  */
 export class GPUSkaterRegions implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -273,6 +278,7 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
+    validateRegionalizationWeightsCompleteness(id, props.weights);
     const columnCount = props.columnCount ?? 1;
     const {output} = props;
     validateCapacity(id, 'columnCount', columnCount, 1, GPU_SKATER_MAXIMUM_COLUMNS);
@@ -296,46 +302,77 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     if (props.values.length !== rows * columnCount) {
-      throw new Error(`${id} values length must equal rows * columnCount`);
+      validateRequirement(
+        id,
+        false,
+        `values length must equal rows * columnCount; received props.values.length=${props.values.length}`
+      );
     }
     validateSinglePackedView(props.treeEdgeFlags, ['uint32'], `${id} treeEdgeFlags`);
     if (props.treeEdgeFlags.length !== props.weights.neighbors.length) {
-      throw new Error(`${id} treeEdgeFlags length must equal the weights slot capacity`);
+      validateRequirement(
+        id,
+        false,
+        `treeEdgeFlags length must equal the weights slot capacity; received props.treeEdgeFlags.length=${props.treeEdgeFlags.length}, props.weights.neighbors.length=${props.weights.neighbors.length}`
+      );
     }
     validateSinglePackedView(props.componentLabels, ['uint32'], `${id} componentLabels`);
     if (props.componentLabels.length !== rows) {
-      throw new Error(`${id} componentLabels length must equal the weights row count`);
+      validateRequirement(
+        id,
+        false,
+        `componentLabels length must equal the weights row count; received props.componentLabels.length=${props.componentLabels.length}`
+      );
     }
     if (props.treeStatus) {
       validateSinglePackedView(props.treeStatus, ['uint32'], `${id} treeStatus`);
-      if (props.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length) {
-        throw new Error(
-          `${id} treeStatus must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS.length} word`
+      if (props.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length) {
+        validateRequirement(
+          id,
+          false,
+          `treeStatus must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length} word; received props.treeStatus.length=${props.treeStatus.length}, GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length=${GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length}`
         );
       }
     }
     validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     if (props.parameters.length < GPU_SKATER_REGIONS_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters must hold ${GPU_SKATER_REGIONS_PARAMETER_LENGTH} words`);
+      validateRequirement(
+        id,
+        false,
+        `parameters must hold ${GPU_SKATER_REGIONS_PARAMETER_LENGTH} words; received props.parameters.length=${props.parameters.length}`
+      );
     }
     validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
     if (output.labels.length !== rows) {
-      throw new Error(`${id} output.labels length must equal the weights row count`);
+      validateRequirement(
+        id,
+        false,
+        `output.labels length must equal the weights row count; received output.labels.length=${output.labels.length}`
+      );
     }
     if (output.regionCount) {
       validateSinglePackedView(output.regionCount, ['uint32'], `${id} output.regionCount`);
+      validateCapacity(id, 'output.regionCount length', output.regionCount.length, 1);
     }
     const stepCount = props.maximumRegionCount - 1;
     if (output.cutEdges) {
       validateSinglePackedView(output.cutEdges, ['uint32'], `${id} output.cutEdges`);
       if (output.cutEdges.length < stepCount) {
-        throw new Error(`${id} output.cutEdges must hold maximumRegionCount - 1 entries`);
+        validateRequirement(
+          id,
+          false,
+          `output.cutEdges must hold maximumRegionCount - 1 entries; received output.cutEdges.length=${output.cutEdges.length}`
+        );
       }
     }
     if (output.cutGains) {
       validateSinglePackedView(output.cutGains, ['float32'], `${id} output.cutGains`);
       if (output.cutGains.length < stepCount) {
-        throw new Error(`${id} output.cutGains must hold maximumRegionCount - 1 entries`);
+        validateRequirement(
+          id,
+          false,
+          `output.cutGains must hold maximumRegionCount - 1 entries; received output.cutGains.length=${output.cutGains.length}`
+        );
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -399,7 +436,8 @@ export class GPUSkaterRegions implements GPUCommandNodeProducer {
       ? graph.createDataView(props.treeStatus.buffer, {
           format: 'uint32',
           byteOffset:
-            props.treeStatus.byteOffset + 4 * GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow,
+            props.treeStatus.byteOffset +
+            4 * GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.candidateOverflow,
           length: 1
         })
       : undefined;
@@ -651,7 +689,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
   var word = 0u;
   if (index == STATE_TARGET) {
     // A nonzero invalid count from the tree sets the target to 0, so no step finds a candidate.
-    word = ${props.treeStatus ? `select(min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS), 0u, treeStatus[treeStatusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount}u] > 0u)` : `min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS)`};
+    word = ${props.treeStatus ? `select(min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS), 0u, treeStatus[treeStatusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.invalidCount}u] > 0u)` : `min(parameters[parametersOffset + ${PARAMETER_REGION_COUNT}u], MAXIMUM_REGIONS)`};
     ${loss.view ? 'if (weightsLoss[weightsLossOffset] != 0u) { word = 0u; }' : ''}
   } else if (index == STATE_MINIMUM_SIZE) {
     word = max(parameters[parametersOffset + ${PARAMETER_MINIMUM_REGION_SIZE}u], 1u);
@@ -746,8 +784,12 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
   // Rounding error of every addition into sums, so a sum over a whole tree is right to its last
   // place (a plain serial float32 sum of n rows can be off by n / 2 last places).
   var roundingErrors: array<f32, ${columnCount}>;
+  var constantColumns = 0u;
   for (var column = 0u; column < COLUMNS; column++) {
     sums[column] = values[valuesOffset + index * COLUMNS + column];
+    if ((bitcast<u32>(sums[column]) & 0x7fffffffu) < 0x7f800000u) {
+      constantColumns |= 1u << column;
+    }
   }
   var head = NONE;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
@@ -755,6 +797,28 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
       head = slot;
       break;
     }
+  }
+  // Identify finite columns constant within this tree before forming any sums. Such a
+  // column contributes exactly zero to every cut, even when n * its value would overflow.
+  // This scan is tree-local: a different constant on an island cannot erase useful features.
+  if (head != NONE) {
+    var arc = head;
+    for (var guard = 0u; guard < 2u * ROWS; guard++) {
+      let info = arcInfo[arcInfoOffset + arc];
+      if (isInfoDown(info)) {
+        let row = neighbors[neighborsOffset + arc];
+        for (var column = 0u; column < COLUMNS; column++) {
+          if (values[valuesOffset + row * COLUMNS + column] != sums[column]) {
+            constantColumns &= ~(1u << column);
+          }
+        }
+      }
+      arc = getInfoSuccessor(info);
+      if (arc == head) { break; }
+    }
+  }
+  for (var column = 0u; column < COLUMNS; column++) {
+    if ((constantColumns & (1u << column)) != 0u) { sums[column] = 0.0; }
   }
   if (head != NONE) {
     var arc = head;
@@ -764,7 +828,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
         let row = neighbors[neighborsOffset + arc];
         count += 1.0;
         for (var column = 0u; column < COLUMNS; column++) {
-          let value = values[valuesOffset + row * COLUMNS + column];
+          let value = select(values[valuesOffset + row * COLUMNS + column], 0.0, (constantColumns & (1u << column)) != 0u);
           let next = sums[column] + value;
           roundingErrors[column] += getAdditionRoundingError(sums[column], value, next);
           sums[column] = next;
@@ -778,8 +842,8 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
   }
   let base = regionStatsOffset + index * STRIDE;
   regionStats[base] = count;
-  // Word 1 is unused (it held the sum of squares the gain no longer needs); the stride is kept.
-  regionStats[base + 1u] = 0.0;
+  // At most 16 bits, exactly representable as f32. Descendant regions inherit this mask.
+  regionStats[base + 1u] = f32(constantColumns);
   for (var column = 0u; column < COLUMNS; column++) {
     regionStats[base + 2u + column] = sums[column] + roundingErrors[column];
   }`
@@ -795,6 +859,8 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
           {name: 'twin', view: twin, type: 'u32', access: 'read'},
           {name: 'arcInfo', view: arcInfo, type: 'u32', access: 'read'},
           {name: 'values', view: values, type: 'f32', access: 'read'},
+          {name: 'treeRoots', view: props.componentLabels, type: 'u32', access: 'read'},
+          {name: 'regionStats', view: regionStats, type: 'f32', access: 'read'},
           {name: 'arcStats', view: arcStats, type: 'f32', access: 'read_write'}
         ],
         invocationCount: capacity,
@@ -804,12 +870,14 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
     return;
   }
   let child = neighbors[neighborsOffset + index];
+  let root = treeRoots[treeRootsOffset + child];
+  let constantColumns = u32(regionStats[regionStatsOffset + root * STRIDE + 1u]);
   let end = twin[twinOffset + index];
   var count = 1.0;
   var sums: array<f32, ${columnCount}>;
   var roundingErrors: array<f32, ${columnCount}>;
   for (var column = 0u; column < COLUMNS; column++) {
-    sums[column] = values[valuesOffset + child * COLUMNS + column];
+    sums[column] = select(values[valuesOffset + child * COLUMNS + column], 0.0, (constantColumns & (1u << column)) != 0u);
   }
   var arc = getInfoSuccessor(startInfo);
   for (var guard = 0u; guard < 2u * ROWS && arc != end; guard++) {
@@ -818,7 +886,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
       let row = neighbors[neighborsOffset + arc];
       count += 1.0;
       for (var column = 0u; column < COLUMNS; column++) {
-        let value = values[valuesOffset + row * COLUMNS + column];
+        let value = select(values[valuesOffset + row * COLUMNS + column], 0.0, (constantColumns & (1u << column)) != 0u);
         let next = sums[column] + value;
         roundingErrors[column] += getAdditionRoundingError(sums[column], value, next);
         sums[column] = next;
@@ -878,14 +946,37 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
   // nA nB / (nA + nB) |mean A - mean B|^2 (the Ward increase). The three-term difference loses
   // the gain below the last place of the region's sum of squares; this has no such cancellation.
   var squaredDifference = 0.0;
+  var maximumDifference = 0.0;
+  var finiteDifferences = true;
   for (var column = 0u; column < COLUMNS; column++) {
     let regionSum = regionStats[base + 2u + column];
     let childSum = arcStats[childBase + 2u + column];
     let difference = childSum / count - (regionSum - childSum) / remainder;
+    maximumDifference = max(maximumDifference, abs(difference));
+    finiteDifferences = finiteDifferences && ((bitcast<u32>(difference) & 0x7fffffffu) < 0x7f800000u);
     squaredDifference += difference * difference;
   }
   // The division comes last so that small integer inputs give the exact gain.
-  let gain = count * remainder * squaredDifference / regionCount;
+  var gain = count * remainder * squaredDifference / regionCount;
+  if ((bitcast<u32>(gain) & 0x7fffffffu) >= 0x7f800000u && finiteDifferences && maximumDifference > 0.0) {
+    // A representable weighted norm can have an overflowing unweighted square. Keep the
+    // original arithmetic for ordinary gains; only this fallback separates mantissa/exponent.
+    // frexp/ldexp prevent fast-math reassociation from squaring the large difference first.
+    var scaledSquares = 0.0;
+    for (var column = 0u; column < COLUMNS; column++) {
+      let regionSum = regionStats[base + 2u + column];
+      let childSum = arcStats[childBase + 2u + column];
+      let difference = childSum / count - (regionSum - childSum) / remainder;
+      let scaled = difference / maximumDifference;
+      scaledSquares += scaled * scaled;
+    }
+    let magnitude = frexp(maximumDifference);
+    let weighted = frexp(magnitude.fract * magnitude.fract * (count * remainder / regionCount) * scaledSquares);
+    let exponent = 2i * magnitude.exp + weighted.exp;
+    // ldexp's finite f32 exponent range ends at 128; a larger exponent is a genuinely
+    // unrepresentable gain and retains the original nonfinite rejection below.
+    if (exponent <= 128i) { gain = ldexp(weighted.fract, exponent); }
+  }
   // A NaN or infinite gain (a non-finite attribute in the region, when no treeStatus stopped the
   // run) is not a candidate: as a key it would outrank every finite gain.
   if ((bitcast<u32>(gain) & 0x7fffffffu) >= 0x7f800000u) {
@@ -953,6 +1044,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
             {name: 'state', view: state, type: 'u32', access: 'read_write'},
             stepGate.binding
           ],
+          // contract-allow: single-invocation -- feature-column loop, columnCount <= GPU_SKATER_MAXIMUM_COLUMNS (16), enforced at construction.
           invocationCount: 1,
           declarations: infoDeclarations,
           // Ungated (it writes the gate). No cut: this and every later step changes nothing.
@@ -969,7 +1061,7 @@ ${ADDITION_ROUNDING_ERROR_WGSL}`;
   let childBase = regionStatsOffset + child * STRIDE;
   let removedBase = arcStatsOffset + down * STRIDE;
   regionStats[childBase] = arcStats[removedBase];
-  regionStats[childBase + 1u] = 0.0;
+  regionStats[childBase + 1u] = regionStats[regionBase + 1u];
   regionStats[regionBase] = regionStats[regionBase] - arcStats[removedBase];
   for (var column = 0u; column < COLUMNS; column++) {
     let sum = arcStats[removedBase + 2u + column];

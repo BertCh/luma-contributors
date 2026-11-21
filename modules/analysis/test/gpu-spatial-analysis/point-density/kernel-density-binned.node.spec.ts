@@ -125,7 +125,10 @@ it('every method resolves kernel support and rejects invalid options', () => {
   expect(() => createNodes('cascade' as never)).toThrow(/method must be/);
   expect(() => createNodes('binned', {binnedPadding: -1})).toThrow(/binnedPadding/);
   expect(() => createNodes('binned', {binnedPadding: 1.5})).toThrow(/binnedPadding/);
-  expect(() => createNodes('binned', {binnedPadding: 70000})).toThrow(/too large/);
+  // R1 B5: the oversized padded grid must name the effective contributor ID and numeric ceiling.
+  expect(() => createNodes('binned', {binnedPadding: 70000})).toThrow(
+    /^kernel-density binned grid cell count \d+ must be <= 11184810$/
+  );
   // The default pads by one grid side so bandwidths up to 40% of it have their margin.
   expect(createNodes('binned').kde.binnedPadding).toBe(24);
   expect(createNodes('binned', {binnedPadding: 0}).kde.binnedPadding).toBe(0);

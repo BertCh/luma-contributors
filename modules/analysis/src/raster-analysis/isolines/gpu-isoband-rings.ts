@@ -4,7 +4,10 @@
 
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {RING_SHELL_RECORD_WORDS} from '../../analysis-core/ring-assembly/ring-shell-index';
-import {validateRasterAlgebraInputBindings} from '../raster-algebra/raster-algebra-input';
+import {
+  validateRasterAlgebraInput,
+  validateRasterAlgebraInputBindings
+} from '../raster-algebra/raster-algebra-input';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -19,6 +22,7 @@ import {
 } from '../../analysis-core/ring-assembly/index';
 import {
   getStorageBindingElementLimit,
+  validateGraphPorts,
   validateCapacity,
   validateMaximumCount,
   validateRequirement,
@@ -29,7 +33,7 @@ import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPUIsobands} from './gpu-isobands';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {snapshotRasterBand} from '../raster-band-utils';
+import {snapshotRasterBand, validateRasterBand} from '../raster-band-utils';
 
 /**
  * Largest `edgeCapacity` of {@link GPUIsobandRings} on `device`: the boundary edge list holds one
@@ -136,8 +140,8 @@ export type GPUIsobandRingsProps = {
  * were too small.
  *
  * Row direction: row-zero sample centers are half a cell above `minY` of the outer extent; rows advance
- * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not, and nothing
- * is checked at construction. A north-up grid (row 0 at the top, the default of
+ * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not
+ * interpreted or validated. A north-up grid (row 0 at the top, the default of
  * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
  * the row order of the raster before upload. Mirroring the output instead (`y' = minY + maxY - y`)
  * also swaps the documented side: high values are then on the right of a segment, and ring
@@ -150,6 +154,83 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
   readonly props: GPUIsobandRingsProps;
 
   constructor(props: GPUIsobandRingsProps) {
+    const id = props.id ?? 'isoband-rings';
+    validateGraphPorts(id, props, {
+      breaks: {required: true, viewType: 'data', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      mask: {required: false, viewType: 'data', formats: ['uint32']},
+      'output.ringOffsets': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.positions': {required: true, viewType: 'data', formats: ['float32x2']},
+      'output.ringAreas': {required: false, viewType: 'data', formats: ['float32']},
+      'output.ringIsHole': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.ringShells': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.ringGroups': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.segmentRings': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.segmentVertices': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.segmentFlags': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.count': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status.overflow': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status.requiredCount': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.openSegmentCount': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.touchingSegmentCount': {
+        required: false,
+        viewType: 'data',
+        formats: ['uint32']
+      },
+      'output.status.edgeCount': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.edgeOverflow': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.candidateOverflow': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.polygonCount': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.status.complete': {required: false, viewType: 'data', formats: ['uint32']},
+      'output.polygons.positions': {
+        required: Boolean(props.output?.polygons),
+        viewType: 'data',
+        formats: ['float32x2']
+      },
+      'output.polygons.ringOffsets': {
+        required: Boolean(props.output?.polygons),
+        viewType: 'data',
+        formats: ['uint32']
+      },
+      'output.polygons.polygonOffsets': {
+        required: Boolean(props.output?.polygons),
+        viewType: 'data',
+        formats: ['uint32']
+      },
+      'output.polygons.featureOffsets': {
+        required: Boolean(props.output?.polygons),
+        viewType: 'data',
+        formats: ['uint32']
+      },
+      'output.polygons.sourceIds': {required: false, viewType: 'data', formats: ['uint32']}
+    });
+    if (props.values && 'storage' in props.values) {
+      validateGraphPorts(id, props, {
+        'values.validity': {required: false, viewType: 'data', formats: ['uint32']},
+        ...(props.values.storage?.kind === 'buffer'
+          ? {
+              'values.storage.values': {
+                required: true,
+                viewType: 'data' as const,
+                formats: ['float32', 'uint32', 'sint32'] as const
+              }
+            }
+          : {})
+      });
+      if (props.values.storage?.kind === 'buffer') {
+        validateRequirement(
+          id,
+          props.values.storage.values.format === props.values.format,
+          `values.storage.values format must match values.format ${props.values.format}; received ${props.values.storage.values.format}`
+        );
+      }
+      validateRasterBand(props.values, props.grid, `${id} values`);
+    } else {
+      validateGraphPorts(id, props, {
+        values: {required: true, viewType: 'data', formats: ['float32']}
+      });
+    }
+    validateRasterAlgebraInput(id, 'values', props.values, props.grid);
     const captured = snapshotConstructionFields(props, [
       'id',
       'grid',
@@ -203,6 +284,9 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
           'requiredCount',
           'openSegmentCount',
           'touchingSegmentCount',
+          'candidateOverflow',
+          'polygonCount',
+          'complete',
           'edgeCount',
           'edgeOverflow'
         ]),
@@ -349,6 +433,7 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
       id: `${id}-assembly`,
       endpoints: edges,
       count: edgeCount,
+      segmentStatus: {count: edgeCount, overflow: edgeOverflow},
       groups: edgeBands,
       vertexTolerance: props.vertexTolerance ?? 1e-4,
       interiorSide: 'left',

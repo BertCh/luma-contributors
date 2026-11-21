@@ -4,6 +4,10 @@
 
 import {expect, it} from 'vitest';
 import {
+  AREA_PACKET_CASES,
+  createAreaPackets
+} from './fractional-zonal-distribution/versioned-area-packets.test-utils';
+import {
   computeRasterFractionalZonalStatisticsOnCPU,
   CPURasterFractionalZonalStatisticsOperation
 } from '../../src/raster-analysis/raster-zonal-statistics/cpu-raster-fractional-zonal-statistics-operation';
@@ -16,6 +20,46 @@ import {
   createSingletonStatisticsInput,
   STATISTICS_PROPS
 } from './raster-fractional-zonal-statistics-operation-fixture';
+
+for (const {cellSizeMode, originY, area} of AREA_PACKET_CASES) {
+  it(`UNI-03 CPU statistics reads legacy padding and rebased ${cellSizeMode} area packets`, () => {
+    const {grid, packets} = createAreaPackets(originY);
+    expect(grid.affine[5]).not.toBe(originY);
+    for (const parameters of packets.filter(packet => packet.length >= 8)) {
+      const result = computeRasterFractionalZonalStatisticsOnCPU(
+        {
+          input: {id: 'band', format: 'float32', values: Float32Array.of(7)},
+          parameters,
+          coverage: {
+            zoneIds: Uint32Array.of(0),
+            cellIds: Uint32Array.of(0),
+            fractions: Float32Array.of(0.5),
+            zoneValidity: Uint32Array.of(1),
+            count: Uint32Array.of(1),
+            requiredCount: Uint32Array.of(1),
+            overflow: Uint32Array.of(0)
+          }
+        },
+        {grid, zoneCount: 1, quantity: 'density', cellSizeMode}
+      );
+      expect(
+        Object.fromEntries(Object.entries(result).map(([port, rows]) => [port, Array.from(rows)]))
+      ).toEqual({
+        totals: [Math.fround(3.5 * area)],
+        means: [7],
+        coveredArea: [Math.fround(0.5 * area)],
+        validArea: [Math.fround(0.5 * area)],
+        validity: [1]
+      });
+      expect(result.validity[0]).toBe(1);
+      expect(result.means[0]).toBe(7);
+      for (const actual of [result.coveredArea[0], result.validArea[0], result.totals[0] / 7]) {
+        expect(Number.isFinite(actual)).toBe(true);
+        expect(actual / (0.5 * area)).toBeCloseTo(1, 6);
+      }
+    }
+  });
+}
 
 it('matches hand-integrated disjoint cell pieces with unequal coverage and calibrated values', () => {
   // Zone 0: valid pieces at 5 and 9, weights 1/2 and 1/4, plus missing weight 3/4.
@@ -81,17 +125,16 @@ it('rounds the nodata sentinel and honors integer band formats and exact lengths
   input.coverage.requiredCount[0] = 1;
   expect(computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS).validity[0]).toBe(0);
   for (const format of ['sint32', 'uint32'] as const) {
-    input.input = {
-      id: 'band',
-      format,
-      values:
-        format === 'sint32' ? Int32Array.of(-2, 1, 2, 3, 4, 5) : Uint32Array.of(4, 1, 2, 3, 4, 5)
-    };
+    input.input =
+      format === 'sint32'
+        ? {id: 'band', format: 'sint32', values: Int32Array.of(-2, 1, 2, 3, 4, 5)}
+        : {id: 'band', format: 'uint32', values: Uint32Array.of(4, 1, 2, 3, 4, 5)};
     expect(computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS).totals[0]).toBe(
       format === 'sint32' ? -6 : 12
     );
   }
-  input.input.values = new Float32Array(7);
+  // Keep the last loop's uint32 format consistent so this isolates the row-length guard.
+  input.input.values = new Uint32Array(7);
   expect(() => computeRasterFractionalZonalStatisticsOnCPU(input, STATISTICS_PROPS)).toThrow(
     /input.values/
   );
@@ -218,4 +261,70 @@ it('continues to reject undersized zone validity, coverage columns and status ar
       new RegExp(`coverage.${port}`)
     );
   }
+});
+
+for (const defect of [
+  'empty-result',
+  'duplicate-result',
+  'input-result',
+  'empty-input',
+  'empty-input-validity'
+] as const) {
+  it(`FRM-01 CPURasterFractionalZonalStatisticsOperation rejects ${defect} before keying outputs`, () => {
+    const props = {
+      ...STATISTICS_PROPS,
+      input: {...STATISTICS_PROPS.input, storage: {...STATISTICS_PROPS.input.storage}},
+      output: {...STATISTICS_PROPS.output}
+    };
+    if (defect === 'empty-result') props.output.totals = '';
+    if (defect === 'duplicate-result') props.output.totals = props.output.validity;
+    if (defect === 'input-result') props.output.totals = props.input.storage.values;
+    if (defect === 'empty-input') props.input.storage.values = '';
+    if (defect === 'empty-input-validity') props.input.validity = '';
+    for (const Operation of [
+      CPURasterFractionalZonalStatisticsOperation,
+      GPURasterFractionalZonalStatisticsOperation
+    ]) {
+      expect(() => new Operation(props)).toThrow(/graph value/);
+    }
+  });
+}
+
+it('B3 captures a getter-backed means name for declarations and execution', async () => {
+  let destination = 'average';
+  let reads = 0;
+  const output = {...STATISTICS_PROPS.output};
+  Reflect.deleteProperty(output, 'means');
+  Object.setPrototypeOf(
+    output,
+    new (class {
+      get means() {
+        reads++;
+        return destination;
+      }
+    })()
+  );
+  const operation = new CPURasterFractionalZonalStatisticsOperation({...STATISTICS_PROPS, output});
+  expect(Object.keys(operation.outputs)).toContain('average');
+  destination = 'replaced';
+  const inputs = Object.fromEntries(
+    Object.entries(createStatisticsGraphInputs()).map(([name, input]) => [
+      name,
+      {
+        format: input.format,
+        length: input.values.length,
+        chunks: [{values: input.values, length: input.values.length}],
+        pack: () => input.values
+      }
+    ])
+  );
+  const result = await operation.execute({inputs});
+  expect(Array.from(result['average'] as Float32Array)).toEqual([
+    Math.fround(19 / 3),
+    Math.fround(93 / 5),
+    NaN,
+    NaN
+  ]);
+  expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+  expect(reads).toBe(1);
 });

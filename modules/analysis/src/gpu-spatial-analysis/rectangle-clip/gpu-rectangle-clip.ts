@@ -61,6 +61,8 @@ import {
   validateGraphChunkBindingRanges
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 
+import {validateGeometryFloat32Setting} from '../geometry-edit/float32-setting-validation';
+
 const OPERATION = 'GPURectangleClip';
 /** Each clip input vertex emits at most two vertices in a uint32 count scan. */
 const MAXIMUM_VERTEX_COUNT = 0x7fffffff;
@@ -107,8 +109,8 @@ export function getGPURectangleClipParameterValues(
     );
   }
   const {minX, minY, maxX, maxY} = settings;
-  if (![minX, minY, maxX, maxY].every(Number.isFinite)) {
-    throw new Error('Rectangle clip settings must be finite');
+  for (const [name, value] of Object.entries({minX, minY, maxX, maxY})) {
+    validateGeometryFloat32Setting(OPERATION, name, value);
   }
   if (maxX < minX || maxY < minY) {
     throw new Error('Rectangle clip requires maxX >= minX and maxY >= minY');
@@ -144,7 +146,13 @@ export type GPURectangleClipPolygonFeatures = {
 );
 
 /** Existing ring/line layout, with optional feature-level polygon publication. */
-export type GPURectangleClipOutput = GPULineGeometryOutput & {
+export type GPURectangleClipOutput = Omit<
+  GPULineGeometryOutput,
+  'sourceRows' | 'measures' | 'status'
+> & {
+  sourceRows?: never;
+  measures?: never;
+  status: Omit<GPULineGeometryOutput['status'], 'approximation'> & {approximation?: never};
   /**
    * Polygons only. One source row per input feature, including empty clipped features. Counts
    * here count features; the existing top-level status continues to count rings. The hierarchy
@@ -333,13 +341,13 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
         throw new Error(`${id} output.lineOffsets must hold ${this.boundaryOffsets.length} rows`);
       }
       for (const name of ['sourceLineIndices', 'sourceRows', 'measures'] as const) {
-        if (props.output[name]) {
+        if ((props.output as GPULineGeometryOutput)[name]) {
           throw new Error(`${id} output.${name} is not supported for polygons`);
         }
       }
     } else {
       for (const name of ['sourceRows', 'measures'] as const) {
-        if (props.output[name]) {
+        if ((props.output as GPULineGeometryOutput)[name]) {
           throw new Error(`${id} output.${name} is not supported`);
         }
       }

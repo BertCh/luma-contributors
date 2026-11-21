@@ -188,7 +188,7 @@ async function runDissolve(
       featureOffsets: rig.input(layout.featureOffsets, 'uint32', layout.featureOffsets.length),
       // One label: the features dissolve into one region.
       labels: rig.input(new Uint32Array(polygons.length), 'uint32', polygons.length),
-      snapTolerance: options.snapTolerance,
+      snapGridSize: options.snapTolerance,
       output: {
         ringOffsets: out.ringOffsets.view,
         positions: out.positions.view,

@@ -1,9 +1,18 @@
+import {resolveChoroplethOptions} from './choropleth-options';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
-import {validateSpatialJoinMultipartGeometry} from '../spatial-join/spatial-join-geometry';
+import {snapshotRecipeGeometryRows, createRecipeRowAssignments} from './recipe-utils';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  validateSinglePackedView,
+  validateRequirement,
+  validateGraphOutputsDisjointFromInputs
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
@@ -20,6 +29,7 @@ import {
 import type {
   GPUPackedGeometryPort,
   GPUPointGeometryPort,
+  GPUMultipartPointGeometryPort,
   GPUPolygonGeometryPort,
   GPURecipeStatusPort,
   GPUStatusScalar
@@ -132,9 +142,11 @@ export type GPUPointsInPolygonsChoroplethRecipeProps = GPURecipeOverrides<
   preparedPositionCapacity?: number;
   /** Per-frame getGPULonLatPolygonPreparationParameterValues view; required with preparation. */
   preparationParameters?: GraphDataView<'float32'>;
-  /** Points in the coordinates of `spatialContext` (planar unless declared otherwise). */
-  points: GPUPointGeometryPort;
-  /** Per-point values. Required unless `statistic` is `'count'`. */
+  /** Points in the spatial context. Multipart features contribute once to each polygon matched by any part, using polygons.boundaryRule. Both backends use the same feature reduction for multipart inputs. */
+  points: GPUPointGeometryPort | GPUMultipartPointGeometryPort;
+  /** Per-feature values, including empty multipart features. Required unless statistic is count.
+   * Multipart values must be packed float32 with one logical row per feature; offset views are allowed.
+   */
   values?: GraphDataView<'float32'>;
   /** Polygon features. */
   polygons: GPUChoroplethPolygons;
@@ -216,6 +228,7 @@ function declarePointsInPolygonsChoroplethRecipe<Parameters>(
   props: GPUPointsInPolygonsChoroplethRecipeProps
 ): GPUPointsInPolygonsChoroplethRecipeResult {
   const id = props.id ?? 'choropleth-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   let spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
   if (!props.prepare) {
     resolveGPUSecondarySpatialContext(
@@ -241,14 +254,71 @@ function declarePointsInPolygonsChoroplethRecipe<Parameters>(
     }
   }
 
-  const statistic = props.statistic ?? 'count';
-  const backend = props.backend ?? 'zonal';
-  const providedOutputs = props.outputs ?? {};
-  const {polygons, points} = props;
-  validateSpatialJoinMultipartGeometry(id, 'points', points);
+  const {statistic, backend} = resolveChoroplethOptions(id, {
+    statistic: props.statistic,
+    backend: props.backend,
+    boundaryRule: props.polygons.boundaryRule
+  });
+  const providedOutputs = destinations ?? {};
+  validateRequirement(
+    id,
+    !providedOutputs.color || Boolean(props.color),
+    'output.color requires color settings; supply color or omit output.color'
+  );
+  const polygonInput = props.polygons;
+  const polygons = {
+    ...snapshotRecipeGeometryRows(polygonInput),
+    candidateCapacity: polygonInput.candidateCapacity,
+    leafCapacity: polygonInput.leafCapacity,
+    boundaryRule: polygonInput.boundaryRule
+  };
+  const points = snapshotRecipeGeometryRows(props.points);
+  const multipart = points.featureOffsets !== undefined;
+  const queryCount = points.featureOffsets
+    ? points.featureOffsets.length - 1
+    : points.positions.length;
+  const usesFeatureJoin = multipart || queryCount === 0;
   // Rows are features: feature source IDs never index the outputs.
-  let polygonRows = {...polygons, sourceIds: undefined};
+  let polygonRows = polygons;
   const featureCount = polygons.featureOffsets.length - 1;
+  if (usesFeatureJoin) {
+    if (props.values) {
+      validateSinglePackedView(props.values, ['float32'], `${id} values`);
+      validateRequirement(
+        id,
+        props.values.length === queryCount,
+        'values needs one packed row per multipart feature'
+      );
+    }
+    if (providedOutputs.featureValues) {
+      validateSinglePackedView(
+        providedOutputs.featureValues,
+        ['float32'],
+        `${id} outputs.featureValues`
+      );
+      validateRequirement(
+        id,
+        providedOutputs.featureValues.length === featureCount,
+        `outputs.featureValues needs one row per polygon (${featureCount})`
+      );
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [providedOutputs.featureValues],
+        [
+          providedOutputs.counts,
+          providedOutputs.status?.overflow,
+          providedOutputs.status?.uncertainCount,
+          props.values,
+          points.positions,
+          points.featureOffsets,
+          polygons.positions,
+          polygons.featureOffsets,
+          polygons.polygonOffsets,
+          polygons.ringOffsets
+        ]
+      );
+    }
+  }
   assertRecipe(ID, featureCount >= 1, 'needs at least one feature');
   assertRecipe(ID, statistic === 'count' || props.values, `statistic ${statistic} needs values`);
   const builder = new RecipeBuilder(graph);
@@ -353,7 +423,111 @@ function declarePointsInPolygonsChoroplethRecipe<Parameters>(
   let groupRequiredCount: GraphDataView<'uint32'> | undefined;
   let groupOverflow: GraphDataView<'uint32'> | undefined;
 
-  if (backend === 'zonal') {
+  if (usesFeatureJoin) {
+    assertRecipe(
+      ID,
+      !props.values || props.values.length === queryCount,
+      'values needs one row per multipart feature'
+    );
+    const membership =
+      statistic === 'count'
+        ? undefined
+        : getOrCreateView(graph, `${id}-membership`, 'uint32', queryCount * featureCount);
+    const assignments = createRecipeRowAssignments(
+      graph,
+      `${id}-assignments`,
+      points.positions,
+      multipart ? queryCount : undefined
+    );
+    builder.add(
+      new GPUPointInPolygonJoin({
+        id: `${id}-join`,
+        points,
+        polygons: polygonRows,
+        spatialContext: getPointInPolygonContainmentContext(spatialContext),
+        candidateCapacity: polygons.candidateCapacity,
+        leafCapacity: polygons.leafCapacity,
+        boundaryRule: polygons.boundaryRule,
+        output: {
+          pointFeatureRows: assignments.output,
+          featurePolygonMembership: membership,
+          ...(multipart ? {polygonMembershipCounts: counts} : {polygonAssignmentCounts: counts}),
+          status: {overflow, uncertainCount}
+        }
+      })
+    );
+    if (statistic !== 'count' && queryCount === 0) {
+      // No observations: initialize every polygon without constructing a nonempty-key reducer.
+      builder.add({
+        getCommandNodes: targetGraph => [
+          createWGSLKernelNode(targetGraph, {
+            id: `${id}-empty-values`,
+            operation: ID,
+            invocationCount: featureCount,
+            bindings: [{name: 'values', view: featureValues, type: 'f32', access: 'read_write'}],
+            body: `values[valuesOffset + index] = ${statistic === 'sum' ? '0.0' : 'bitcast<f32>(0x7fc00000u | (index & 0u))'};`
+          })
+        ]
+      });
+    } else if (statistic !== 'count' && membership) {
+      const values = props.values!;
+      const keys = getOrCreateView(graph, `${id}-membership-keys`, 'uint32', membership.length);
+      const contributions = getOrCreateView(
+        graph,
+        `${id}-membership-values`,
+        'float32',
+        membership.length
+      );
+      builder.add({
+        getCommandNodes: targetGraph => [
+          createWGSLKernelNode(targetGraph, {
+            id: `${id}-membership-contributions`,
+            operation: ID,
+            bindings: [
+              {name: 'membership', view: membership, type: 'u32', access: 'read'},
+              {name: 'values', view: values, type: 'f32', access: 'read'},
+              {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
+              {name: 'contributions', view: contributions, type: 'f32', access: 'read_write'}
+            ],
+            invocationCount: membership.length,
+            body: `let valid = membership[membershipOffset + index] != 0u;
+  keys[keysOffset + index] = select(0xffffffffu, index % ${featureCount}u, valid);
+  contributions[contributionsOffset + index] = values[valuesOffset + index / ${featureCount}u];`
+          })
+        ]
+      });
+      const tableKeys = getOrCreateView(graph, `${id}-group-keys`, 'uint32', featureCount);
+      const tableCounts = getOrCreateView(graph, `${id}-finite-counts`, 'uint32', featureCount);
+      groupCount = getOrCreateView(graph, `${id}-group-count`, 'uint32', 1);
+      groupOverflow = getOrCreateView(graph, `${id}-group-overflow`, 'uint32', 1);
+      groupRequiredCount = getOrCreateView(graph, `${id}-group-required-count`, 'uint32', 1);
+      const columnOutput = {
+        sum: {sumValues: featureValues},
+        mean: {means: featureValues},
+        minimum: {minimums: featureValues},
+        maximum: {maximums: featureValues}
+      } as const;
+      builder.add(
+        new GPUGroupStatistics({
+          id: `${id}-multipart-group`,
+          keys,
+          keyCount: featureCount,
+          columns: [
+            {
+              values: contributions,
+              statistics: [statistic],
+              output: columnOutput[statistic] as GPUGroupStatisticsColumnOutput
+            }
+          ],
+          output: {
+            keys: tableKeys,
+            counts: tableCounts,
+            status: {count: groupCount, overflow: groupOverflow, requiredCount: groupRequiredCount}
+          }
+        })
+      );
+    }
+  } else if (backend === 'zonal') {
     const statisticOutput = {
       sum: 'sums',
       mean: 'means',
@@ -375,22 +549,18 @@ function declarePointsInPolygonsChoroplethRecipe<Parameters>(
       })
     );
   } else {
-    const pointFeatureRows = getOrCreateView(
-      graph,
-      `${id}-point-features`,
-      'uint32',
-      points.positions.length
-    );
+    const assignments = createRecipeRowAssignments(graph, `${id}-point-features`, points.positions);
+    const pointFeatureRows = assignments.values;
     builder.add(
       new GPUPointInPolygonJoin({
         id: `${id}-join`,
         spatialContext: getPointInPolygonContainmentContext(spatialContext),
-        points: {...points, sourceIds: undefined},
+        points,
         polygons: polygonRows,
         candidateCapacity: polygons.candidateCapacity,
         leafCapacity: polygons.leafCapacity,
         boundaryRule: polygons.boundaryRule,
-        output: {pointFeatureIds: pointFeatureRows, status: {overflow, uncertainCount}}
+        output: {pointFeatureRows: assignments.output, status: {overflow, uncertainCount}}
       })
     );
     const groupKeys = getOrCreateView(graph, `${id}-group-keys`, 'uint32', featureCount);
@@ -438,8 +608,23 @@ function declarePointsInPolygonsChoroplethRecipe<Parameters>(
     status: {
       overflow,
       uncertainCount,
-      stages:
-        backend === 'zonal'
+      stages: usesFeatureJoin
+        ? [
+            {stage: 'point-in-polygon', status: {overflow, uncertainCount}},
+            ...(groupOverflow
+              ? [
+                  {
+                    stage: 'group-statistics',
+                    status: {
+                      count: groupCount!,
+                      overflow: groupOverflow,
+                      requiredCount: groupRequiredCount!
+                    }
+                  }
+                ]
+              : [])
+          ]
+        : backend === 'zonal'
           ? [{stage: 'zonal-statistics', status: {overflow, uncertainCount}}]
           : [
               {stage: 'point-in-polygon', status: {overflow, uncertainCount}},
@@ -504,7 +689,7 @@ function declarePointsInPolygonsChoroplethRecipe<Parameters>(
         values: featureValues,
         integerValues: 'numeric',
         domain: outputs.breaks,
-        domainCount: outputs.classCount,
+        classCount: outputs.classCount,
         palette: color.palette,
         parameters: color.colorScaleParameters,
         maximumDomainCount: color.maximumClassCount + 1,

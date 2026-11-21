@@ -14,6 +14,9 @@ export const GPU_DISTANCE_FIELD_NONE = 0xffffffff;
 /** Largest supported grid width or height, so squared cell offsets fit in a `u32`. */
 export const GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION = 32768;
 
+/** Maximum extra jump-flood passes, in addition to at most fifteen halving steps. @internal */
+export const GPU_DISTANCE_FIELD_MAXIMUM_REFINEMENT_COUNT = 2;
+
 /**
  * CPU description of the per-frame settings packed by {@link getGPUDistanceFieldParameterValues}.
  * The grid origin and cell size come from the grid passed next to it.
@@ -43,8 +46,8 @@ export type GPUDistanceFieldSettings = {
  * `affine[4]`), so north-up grids (negative row step) and north-down grids both snap correctly.
  * Cell size and origin come from `grid`, which must be axis-aligned.
  *
- * Seed positions map to cells with `floor((position - origin) * inverseStep)` in f32, so the
- * inverse is computed once here instead of dividing on the GPU. Rewriting the values between
+ * Seed positions use the canonical float32 signed step. The reciprocal gives a candidate cell
+ * that the GPU corrects against its two cell edges to preserve exact interior-edge ownership. Rewriting the values between
  * encodings never recompiles the graph.
  *
  * @param settings Optional distance limit and local origin.

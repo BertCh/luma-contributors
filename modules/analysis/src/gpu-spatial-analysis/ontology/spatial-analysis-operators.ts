@@ -9,7 +9,12 @@ import {GPU_SPATIAL_ANALYSIS_DATA_KINDS} from './spatial-analysis-ontology';
 import {freezeCatalog} from './freeze-catalog';
 import {KEPLER_ANALYSIS_OPERATOR_OVERRIDES} from './kepler-analysis-catalog';
 import {COVERAGE_EXPANSION_OPERATOR_OVERRIDES} from './coverage-expansion-catalog';
-import {OPERATOR_ANNOTATIONS} from './all-entry-points/operator-annotations';
+import {
+  projectSpatialOperator,
+  resolveOperatorDescriptor
+} from './all-entry-points/resolve-operator-descriptor';
+import type {SpatialOperatorDescriptor} from './all-entry-points/resolve-operator-descriptor';
+import {VISIBILITY_GRAPH_LIMITS} from './all-entry-points/visibility-operator-metadata';
 import {SPATIOTEMPORAL_OPERATOR_NAMES} from './spatiotemporal-review-catalog';
 import {NESTED_VALIDATION_OPERATOR_OVERRIDE} from '../spatial-validation/spatial-validation-descriptors';
 import type {
@@ -36,15 +41,41 @@ type OperatorOverride = Partial<
     | 'cardinality'
     | 'semantics'
     | 'deterministic'
+    | 'limits'
     | 'status'
+    | 'summary'
     | 'readback'
   >
 > & {contract?: string; evidence?: GPUSpatialAnalysisOperator['evidence']['status']};
 
-type CompleteOperatorOverride = OperatorOverride & {tests?: string; documentation?: string};
+type CompleteOperatorOverride = OperatorOverride & {
+  tests?: string;
+  documentation?: string;
+  execution?: Pick<GPUSpatialAnalysisOperator['evidence'], 'transientMemory' | 'dispatch'>;
+};
 
 const BOUNDED_STATUS = ['count', 'requiredCount', 'overflow'] as const;
 const COMPACT_CANDIDATE_STATUS = [...BOUNDED_STATUS, 'candidateOverflow'] as const;
+const FORWARDED_WEIGHTS_STATUS = [
+  ...COMPACT_CANDIDATE_STATUS,
+  'uncertainCount',
+  'invalidCount',
+  'converged',
+  'iterationLimitReached',
+  'iterationCount',
+  'approximation'
+] as const;
+const PACKED_TRANSPOSE_STATUS = [
+  'overflow',
+  'candidateOverflow',
+  'uncertainCount',
+  'invalidCount',
+  'converged',
+  'iterationLimitReached',
+  'iterationCount',
+  'approximation'
+] as const;
+const LINE_GEOMETRY_STATUS = [...BOUNDED_STATUS, 'vertexCount', 'requiredVertexCount'] as const;
 
 /**
  * Material operator-level differences that cannot be inferred from a capability family.
@@ -53,6 +84,19 @@ const COMPACT_CANDIDATE_STATUS = [...BOUNDED_STATUS, 'candidateOverflow'] as con
  * the catalogue makes additions reviewable without importing any contributor constructor.
  */
 const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
+  // grid-generators/gpu-shape-generator.ts writes one optional vertexCount in its offsets pass.
+  GPUShapeGenerator: {status: ['vertexCount']},
+  // cell-aggregation/cell-table.ts publishes each table's one-row status, including requiredCount.
+  GPUCellAggregation: {status: BOUNDED_STATUS},
+  GPUCellRollup: {status: COMPACT_CANDIDATE_STATUS},
+  GPUCellPyramid: {status: COMPACT_CANDIDATE_STATUS},
+  // The optional legacy output.count aliases the exact included population, not emitted rows.
+  GPUEmergingHotSpots: {status: ['count']},
+  // Transforms preserve supplied input status views; chunked transforms keep outer and per-chunk
+  // status. Packed transpose strips input cardinalities because output columns can be dropped.
+  GPUSpatialWeightsTransform: {status: FORWARDED_WEIGHTS_STATUS},
+  GPUSpatialWeightsTranspose: {status: PACKED_TRANSPOSE_STATUS},
+  GPUChunkedSpatialWeightsTransform: {status: FORWARDED_WEIGHTS_STATUS},
   GPULocalMoran: {status: ['invalidCount', 'overflow', 'candidateOverflow']},
   GPUHotSpotAnalysis: {status: ['invalidCount', 'overflow', 'candidateOverflow']},
   GPUGlobalSpatialStatistics: {status: ['overflow', 'candidateOverflow']},
@@ -70,7 +114,118 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
   GPUTrajectoryClosestApproach: {status: COMPACT_CANDIDATE_STATUS},
   GPUBoundsFilter: {status: COMPACT_CANDIDATE_STATUS},
   addFleetDwellZoneEventsRecipe: {status: COMPACT_CANDIDATE_STATUS},
-  GPUHierarchicalDensityClustering: {
+  // GPULineGeometryOutput status (line-segmentize-types.ts); only segmentize and great-circle
+  // arcs accept `approximation`. Offset curve publishes it with `output.layout: 'compact'` only.
+  GPULineSegmentize: {status: [...LINE_GEOMETRY_STATUS, 'approximation']},
+  GPUGreatCircleArcs: {status: [...LINE_GEOMETRY_STATUS, 'approximation']},
+  GPULineSmooth: {status: LINE_GEOMETRY_STATUS},
+  GPULineChunk: {status: LINE_GEOMETRY_STATUS},
+  GPURectangleClip: {status: LINE_GEOMETRY_STATUS},
+  GPUOffsetCurve: {status: LINE_GEOMETRY_STATUS},
+  // Status audited against each class's output type and the members it writes (catalog CAT-101).
+  // Members that are not catalog kinds (for example `requiredPairCount`, `groupOverflow`,
+  // `collapsedCount`) are left out; a `candidateOverflow` that is always written as 0 is left out.
+  // Lines and geometry.
+  GPUCoverageDissolve: {status: [...BOUNDED_STATUS, 'uncertainCount']},
+  GPUCoverageSimplification: {status: ['requiredCount', 'overflow', 'uncertainCount', 'converged']},
+  GPUCoverageValidity: {status: ['invalidCount']},
+  GPUGeometryCleanup: {status: BOUNDED_STATUS},
+  GPUGeometryMeasures: {status: ['invalidCount']},
+  GPUGeometryPredicates: {status: ['overflow']},
+  GPUGeometryValidity: {status: ['overflow']},
+  GPUGroupConvexHull: {status: ['overflow']},
+  GPUGroupGeometry: {status: ['overflow']},
+  GPULineClipByPolygon: {
+    status: [...COMPACT_CANDIDATE_STATUS, 'uncertainCount', 'vertexCount', 'requiredVertexCount']
+  },
+  GPULineDensity: {status: ['requiredCount', 'overflow']},
+  GPULineLengthPerPolygon: {status: ['overflow', 'candidateOverflow']},
+  GPULineMerge: {status: LINE_GEOMETRY_STATUS},
+  // `count`, `requiredCount` and `overflow` belong to the optional kept-row selection.
+  GPULineSimplification: {status: [...BOUNDED_STATUS, 'converged', 'iterationCount']},
+  GPULinearReferencing: {status: ['candidateOverflow']},
+  GPUMinimumBounds: {status: ['overflow']},
+  GPUMinimumClearance: {status: ['candidateOverflow']},
+  GPUOffsetExpansion: {status: BOUNDED_STATUS},
+  GPUOutlineGeometry: {status: BOUNDED_STATUS},
+  GPUSegmentIntersection: {status: [...COMPACT_CANDIDATE_STATUS, 'uncertainCount']},
+  GPUSharedPaths: {
+    status: [...COMPACT_CANDIDATE_STATUS, 'uncertainCount', 'vertexCount', 'requiredVertexCount']
+  },
+  // Joins, regions and zones.
+  GPUSpatialJoinCandidates: {status: COMPACT_CANDIDATE_STATUS},
+  GPUArealInterpolation: {status: ['overflow', 'invalidCount']},
+  GPUPickRegionMask: {status: ['overflow']},
+  GPURegionMask: {status: ['overflow']},
+  GPUZonalStatistics: {status: ['overflow', 'candidateOverflow', 'uncertainCount']},
+  // Cells.
+  GPUCellCompaction: {status: BOUNDED_STATUS},
+  GPUCellCover: {status: [...COMPACT_CANDIDATE_STATUS, 'uncertainCount', 'invalidCount']},
+  GPUCellLevelSelection: {
+    status: ['count', 'requiredCount'],
+    summary:
+      'Selects the active pyramid level. Mandatory count and optional requiredCount both copy that level’s already-clamped occupied row count. They cannot recover the unclamped requirement: five occupied cells fitting three output slots publish three in both destinations.'
+  },
+  GPUCellSetOutline: {status: BOUNDED_STATUS},
+  GPUCellTableCompare: {status: COMPACT_CANDIDATE_STATUS},
+  // Spatial weights.
+  GPUChunkedSpatialWeightsAlgebra: {status: ['requiredCount', 'overflow', 'candidateOverflow']},
+  // Destination chunks publish cardinalities; the outer matrix forwards other diagnostics.
+  GPUChunkedSpatialWeightsTranspose: {status: FORWARDED_WEIGHTS_STATUS},
+  // Validation computes invalidCount and preserves other supplied status views in outputWeights.
+  GPUChunkedSpatialWeightsValidation: {status: FORWARDED_WEIGHTS_STATUS},
+  GPUContiguityWeights: {status: ['requiredCount', 'overflow', 'candidateOverflow']},
+  GPULatticeWeights: {status: ['requiredCount', 'overflow']},
+  GPUNeighborSearch: {status: ['requiredCount', 'overflow', 'invalidCount']},
+  GPUSpatialWeightsAlgebra: {status: ['requiredCount', 'overflow', 'candidateOverflow']},
+  // The optional compact `edges` list; the packed `status` words are codes, not catalog kinds.
+  GPUSpatialWeightsMinimumSpanningTree: {status: COMPACT_CANDIDATE_STATUS},
+  GPUSpatialWeightsTraces: {status: ['approximation']},
+  GPUSpatialWeightsValidation: {status: FORWARDED_WEIGHTS_STATUS},
+  // Statistics and regression.
+  GPUAssuncaoReisStandardization: {status: ['invalidCount']},
+  GPUEmpiricalBayesRates: {status: ['invalidCount']},
+  GPUGeographicallyWeightedRegression: {status: ['approximation']},
+  GPUGeographicallyWeightedRegressionNonstationarityTest: {status: ['approximation']},
+  GPUGlobalPermutationTest: {status: ['invalidCount']},
+  GPULocalPermutationTest: {status: ['overflow', 'invalidCount']},
+  GPULISAMarkov: {status: ['converged']},
+  GPUMapColoring: {status: ['converged', 'iterationCount']},
+  GPUSpatialErrorMaximumLikelihood: {status: ['converged']},
+  GPUSpatialLagMaximumLikelihood: {status: ['converged']},
+  GPUSpatialMarkov: {status: ['converged']},
+  GPUSpatialScanStatistic: {status: ['invalidCount']},
+  GPUTransitionDiagnostics: {status: ['converged']},
+  GPUTransitionMatrix: {status: ['converged']},
+  // Points, density and interpolation.
+  GPUKernelDensity: {status: ['invalidCount']},
+  GPUKriging: {status: ['uncertainCount', 'invalidCount']},
+  GPUNeighborhoodSummary: {status: ['overflow']},
+  GPUPointDensity: {status: ['overflow']},
+  GPUPycnophylacticInterpolation: {status: ['invalidCount', 'converged', 'iterationCount']},
+  GPUSimilarLocations: {status: ['count']},
+  GPUDBSCAN: {status: BOUNDED_STATUS},
+  GPUSpatialKMeans: {status: ['converged', 'iterationCount']},
+  // Trajectories: the optional compact `stops` and `activeTracks` lists.
+  GPUTrajectoryMetrics: {status: BOUNDED_STATUS},
+  GPUTrajectoryPlayhead: {status: BOUNDED_STATUS},
+  // Recipes: the union of the kinds in `result.status.stages`, including optional stages.
+  addChangeOfSupportRecipe: {
+    status: ['requiredCount', 'overflow', 'invalidCount', 'approximation']
+  },
+  addClockEncounters: {status: COMPACT_CANDIDATE_STATUS},
+  addClusterAndOutlineRecipe: {status: [...BOUNDED_STATUS, 'invalidCount']},
+  addHotSpotAnalysisRecipe: {
+    status: [...COMPACT_CANDIDATE_STATUS, 'uncertainCount', 'invalidCount', 'approximation']
+  },
+  addPeriodComparisonRecipe: {status: COMPACT_CANDIDATE_STATUS},
+  addRateClusterMapRecipe: {status: ['requiredCount', 'overflow', 'candidateOverflow']},
+  // Caller-supplied cell IDs retain cells.weights.status as the recipe's weights stage.
+  addSpaceTimeHotSpotsRecipe: {status: FORWARDED_WEIGHTS_STATUS},
+  // OLS and spatial diagnostics publish scalar solver codes; optional GWR uses rowCodes.
+  addSpatialRegressionRecipe: {status: ['invalidCount']},
+  addStraightLineCatchmentsRecipe: {status: ['overflow']},
+  GPUHDBSCAN: {
     inputs: ['points', 'attributes', 'parameters'],
     outputs: ['attributes', 'summary'],
     coordinateModels: ['planar'],
@@ -81,10 +236,18 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     status: ['count'],
     documentation: 'docs/api/gpu-spatial-analysis/space-time-clustering.md',
     tests: `${TEST_ROOT}/spatial-clustering/space-time-hdbscan.spec.ts`,
-    contract: 'GPUHierarchicalDensityClusteringProps'
+    contract: 'GPUHDBSCANProps'
   },
   ...KEPLER_ANALYSIS_OPERATOR_OVERRIDES,
   ...COVERAGE_EXPANSION_OPERATOR_OVERRIDES,
+  addVisibilityGraphRecipe: {
+    ...COVERAGE_EXPANSION_OPERATOR_OVERRIDES['addVisibilityGraphRecipe'],
+    limits: VISIBILITY_GRAPH_LIMITS
+  },
+  GPUSphericalArcOverlay: {
+    ...COVERAGE_EXPANSION_OPERATOR_OVERRIDES['GPUSphericalArcOverlay'],
+    execution: {transientMemory: 'quadratic-source', dispatch: 'multi-pass'}
+  },
   GPUGeodesicPairs: {
     coordinateModels: ['spherical', 'ellipsoidal'],
     dimensionality: '2d',
@@ -122,7 +285,9 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'mixed',
     semantics: 'approximate',
     deterministic: true,
-    status: ['invalidCount', 'overflow'],
+    status: ['invalidCount', 'overflow', 'complete'],
+    summary:
+      'Redistributes source totals using eligible raster support. Result complete certifies coverage, pair capacity and valid arithmetic; coverage-validation complete certifies the source coverage, while dasymetric-conservation complete shares the result certificate.',
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/dasymetric-redistribution.spec.ts',
     documentation: 'docs/api/gpu-spatial-analysis/dasymetric-redistribution.md',
@@ -398,7 +563,9 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     cardinality: 'mixed',
     semantics: 'approximate',
     deterministic: true,
-    status: ['invalidCount', 'overflow'],
+    status: ['count', 'overflow', 'converged', 'unresolvedCount'],
+    summary:
+      'Builds a drainage network. Stage unresolvedCount measures remaining distance cells at downstream-distance and remaining stream cells at stream-network.',
     evidence: 'partial',
     tests: 'modules/analysis/test/gpu-spatial-analysis/recipes/expansion-recipes.spec.ts',
     documentation: 'docs/api/gpu-spatial-analysis/expansion-recipes.md',
@@ -524,7 +691,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     outputs: ['pairs', 'attributes'],
     coordinateModels: ['none'],
     dimensionality: 'topology',
-    status: ['overflow', 'candidateOverflow', 'matchedCount'],
+    status: ['count', 'overflow', 'candidateOverflow', 'matchedCount'],
     contract: 'GPUCompactPairPort',
     evidence: 'proven',
     tests: 'modules/analysis/test/gpu-spatial-analysis/pair-gather/gpu-pair-gather.spec.ts'
@@ -828,21 +995,18 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
 function makeOperator(
   capability: GPUSpatialAnalysisCapability,
   exportName: string
-): GPUSpatialAnalysisOperator {
+): SpatialOperatorDescriptor {
   const override = OPERATOR_OVERRIDES[exportName] ?? {};
   const kindRecord = Object.hasOwn(GPU_ANALYSIS_OPERATOR_KIND_RECORDS, exportName)
     ? GPU_ANALYSIS_OPERATOR_KIND_RECORDS[exportName]
     : undefined;
-  const packageName = override.package ?? '@luma-contributors/analysis/gpu-spatial-analysis';
-  const annotation =
-    OPERATOR_ANNOTATIONS[`${packageName}:${exportName}`] ?? OPERATOR_ANNOTATIONS[exportName] ?? {};
   const capabilityEvidence = capability.evidence;
   if (!capabilityEvidence) {
     throw new Error(`available capability ${capability.id} needs execution evidence`);
   }
   return {
     exportName,
-    summary: SPATIAL_ANALYSIS_OPERATOR_SUMMARIES[exportName],
+    summary: override.summary ?? SPATIAL_ANALYSIS_OPERATOR_SUMMARIES[exportName],
     primaryCapability: capability.id,
     tags: override.tags ?? [],
     package: override.package ?? '@luma-contributors/analysis/gpu-spatial-analysis',
@@ -860,12 +1024,11 @@ function makeOperator(
     cardinality: override.cardinality ?? 'unspecified',
     semantics: override.semantics ?? 'unspecified',
     deterministic: override.deterministic ?? 'unspecified',
-    status: override.status ?? [],
+    status: override.status,
+    ...(override.limits ? {limits: override.limits} : {}),
     readback: override.readback ?? 'none',
-    role: annotation.role ?? 'operator',
-    tier: annotation.tier ?? 'scale',
-    ...(annotation.limits ? {limits: annotation.limits} : {}),
-    ...(annotation.limitation ? {limitation: annotation.limitation} : {}),
+    role: 'operator',
+    tier: 'scale',
     evidence: {
       status: override.evidence ?? 'partial',
       tests: override.tests ?? TEST_ROOT,
@@ -873,17 +1036,25 @@ function makeOperator(
       contract: override.contract ?? 'unaudited',
       representativeSourceRows: capabilityEvidence.representativeSourceRows,
       representativeOutputRows: capabilityEvidence.representativeOutputRows,
-      transientMemory: capabilityEvidence.transientMemory,
-      dispatch: capabilityEvidence.dispatch,
+      transientMemory: override.execution?.transientMemory ?? capabilityEvidence.transientMemory,
+      dispatch: override.execution?.dispatch ?? capabilityEvidence.dispatch,
       correctnessOracle: capabilityEvidence.correctnessOracle
     }
   };
 }
 
-/** Operator-level discovery catalogue. It contains names and metadata, never constructors. */
+/** Unprojected metadata: resolve each qualified identity before either public projection. */
+export const GPU_SPATIAL_ANALYSIS_OPERATOR_DESCRIPTORS: readonly SpatialOperatorDescriptor[] =
+  freezeCatalog(
+    GPU_SPATIAL_ANALYSIS_CAPABILITIES.flatMap(capability =>
+      capability.operators.map(exportName => makeOperator(capability, exportName))
+    )
+  );
+
+/** Historical projection: unknown status remains an empty array for compatibility. */
 export const GPU_SPATIAL_ANALYSIS_OPERATORS: readonly GPUSpatialAnalysisOperator[] = freezeCatalog(
-  GPU_SPATIAL_ANALYSIS_CAPABILITIES.flatMap(capability =>
-    capability.operators.map(exportName => makeOperator(capability, exportName))
+  GPU_SPATIAL_ANALYSIS_OPERATOR_DESCRIPTORS.map(descriptor =>
+    projectSpatialOperator(resolveOperatorDescriptor(descriptor))
   )
 );
 

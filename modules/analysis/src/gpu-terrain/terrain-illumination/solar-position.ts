@@ -2,6 +2,26 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Validates the common binary64 solar location before any output is allocated or written. @internal */
+export function validateSolarPositionLocation(
+  id: string,
+  longitude: number,
+  latitude: number
+): void {
+  validateRequirement(
+    id,
+    Number.isFinite(longitude),
+    `longitude must be finite degrees east; received ${longitude}`
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(latitude) && latitude >= -90 && latitude <= 90,
+    `latitude must be finite degrees north in [-90, 90]; received ${latitude}`
+  );
+}
+
 const MILLISECONDS_PER_DAY = 86400000;
 /** Unix epoch milliseconds of J2000.0, 2000-01-01T12:00:00Z. */
 const J2000_EPOCH_MILLISECONDS = 946728000000;
@@ -101,6 +121,7 @@ export function getSolarPosition(
   latitude: number,
   options: SolarPositionOptions = {}
 ): SolarPosition {
+  validateSolarPositionLocation('getSolarPosition', longitude, latitude);
   const {dayNumber, dayFraction} = getSolarTimeParameter(timestamp);
   const julianCentury = (dayNumber + dayFraction) / 36525;
   const meanLongitude = modulo(

@@ -12,6 +12,7 @@ import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {countRasterPipelines, getRasterPipelines} from '../../gpu-raster/raster-pipeline-count';
 import {createBand} from '../terrain-test-utils';
+import {AnalysisValidationError} from '../../../src/analysis-core/kernels/analysis-validation-error';
 
 function createViewshed(
   observerCount: number,
@@ -96,5 +97,31 @@ it('the batch table covers every (observer, pixel) pair exactly once', () => {
       // `pixelStart + index` stays a u32.
       expect(firstPixel + batchSize - 1).toBeLessThan(2 ** 32);
     }
+  }
+});
+
+it('review LUMA-118: cumulative viewshed admits its command nodes at construction', () => {
+  // One observer per dispatch: 40,000 observers are 40,000 batch kernels, over the shared 32,768
+  // budget. Before the check, construction accepted it.
+  expect(() => createViewshed(40000, {id: 'budget-viewshed', observersPerDispatch: 1})).toThrow(
+    // 40,000 one-observer batches + six fixed-node allowances; no pyramid on this route.
+    new AnalysisValidationError(
+      'budget-viewshed',
+      'estimated command node count must be at most 32768',
+      {
+        code: 'INTEGER_RANGE',
+        path: 'estimated command node count',
+        received: 40006,
+        expected: {maximum: 32768}
+      }
+    )
+  );
+  for (const traversal of ['march', 'pyramid'] as const) {
+    // 13 observers, 2 per dispatch: ceil(13 / 2) = 7 batch kernels.
+    const {graph, viewshed} = createViewshed(13, {observersPerDispatch: 2, traversal});
+    const nodes = viewshed.getCommandNodes(graph);
+    expect(nodes.filter(node => /-batch-\d+$/.test(String(node.id)))).toHaveLength(7);
+    expect(nodes.length, traversal).toBeLessThanOrEqual(viewshed.estimatedCommandNodeCount);
+    expect(viewshed.estimatedCommandNodeCount - nodes.length, traversal).toBeLessThanOrEqual(6);
   }
 });

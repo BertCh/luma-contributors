@@ -124,6 +124,14 @@ export type WorkflowParameterSpec = {
   description?: string;
   /** Physical unit; `crs` when it follows the declared coordinate system. */
   unit?: string;
+  /** Canonical name of a retained saved spelling. */
+  aliasFor?: string;
+  /** Retired name of this parameter, used in validation messages. */
+  renamedFrom?: string;
+  nonzero?: boolean;
+  /** The unscaled value and its product with this scale must each remain finite and nonzero as Float32. */
+  nonzeroFloat32Scale?: number;
+  coordinateModeUnits?: {geographic: string; planar: string};
   minimum?: number;
   maximum?: number;
   options?: readonly string[];
@@ -148,6 +156,8 @@ export type WorkflowInputPortSpec = {
   accepts: readonly WorkflowPortKind[];
   /** Scalar catalog ports reject known geometry; generic table operations can retain it. */
   geometryFree?: boolean;
+  /** Table is an alternative to these geometry kinds, rather than a generic geometry carrier. */
+  acceptsTable?: boolean;
   maximumRows: number;
   /** Cell capacity for raster inputs, independent of tabular row capacity. */
   maximumCells?: number;
@@ -162,6 +172,8 @@ export type WorkflowOutputPortSpec = {
   name: string;
   label: string;
   kind: WorkflowPortKind;
+  /** Input port whose geometry kind this output preserves, including a geometry-free table. */
+  kindFrom?: string;
   /** Columns that tie each row to its source feature and to its new identity. */
   identityColumns: readonly string[];
   maximumRows: number;
@@ -528,6 +540,8 @@ export type WorkflowRunRecord = {
   runId: string;
   /** Persisted unique execution identity; absent only in saved legacy runs. */
   executionId?: string;
+  /** Computational dependency recorded at execution time; absent on historical runs. */
+  dependencyRevision?: string;
   workflowId: string;
   /** Step the run was asked to reach; absent for a whole-workflow run. */
   target?: string;

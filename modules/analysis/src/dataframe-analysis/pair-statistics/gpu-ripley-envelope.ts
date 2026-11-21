@@ -188,6 +188,9 @@ export type GPURipleyEnvelopeProps = {
  *   `(1 + #{j: T_j >= T_obs}) / (s_valid + 1)`, the maximum absolute deviation (MAD) test. Radii
  *   with NaN are skipped per curve, so use an edge correction that is defined at every radius
  *   (`'isotropic'` or `'none'`; `'border'` is NaN once no point is r from the boundary).
+ *   With zero usable simulations, pValue is NaN; observed deviation and valid count remain.
+ * - This producer publishes no overflow word. Its statistics layout remains
+ *   `[n, validSimulationCount, observedMaximumDeviation, criticalMaximumDeviation, pValue, rank]`.
  * - Polygon CSR draws choose equal-area sampler cells and reject boundary-cell points outside W,
  *   with counter (row, simulationIndex, attempt, 0). Exhausted draws are masked and reported in
  *   unplacedCount. The theoretical value assumes the plug-in edge-corrected K is unbiased
@@ -366,6 +369,7 @@ ${getStudyWindowWGSL(windowOptions)}`
           id: `${id}-unplaced-clear`,
           operation: OPERATION,
           view: unplacedCount,
+          componentCount: 1,
           type: 'u32',
           value: '0u'
         })
@@ -689,6 +693,20 @@ fn fromL(lValue: f32, radius: f32) -> f32 {
   summary[summaryOffset + 3u] = select(nan, critical, validCount >= RANK);
   summary[summaryOffset + 4u] = pValue;
   summary[summaryOffset + 5u] = f32(RANK);`
+      })
+    );
+
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-probability-validity`,
+        operation: OPERATION,
+        variant: 'probability-validity',
+        invocationCount: 1,
+        bindings: [{name: 'summary', view: summary, type: 'f32', access: 'read_write'}],
+        declarations: PAIR_STATISTICS_FLOAT_WGSL,
+        body: `if (summary[summaryOffset + 1u] == 0.0) {
+    summary[summaryOffset + 4u] = getQuietNaN(index);
+  }`
       })
     );
 

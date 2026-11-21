@@ -741,9 +741,10 @@ export const entries: CatalogEntry[] = [
     kind: 'class',
     importPath: IMPORT_PATH,
     title: 'Conformal prediction intervals',
-    summary: 'Distribution-free prediction intervals from calibration residuals, split or CV+.',
+    summary:
+      'Split and CV+ interval estimates; coverage depends on assumptions about the data, folds and fitting.',
     explanation:
-      'Wraps any model: the interval half-width is the residual quantile of held-out calibration rows at `1 - miscoverage`. With `scales` the intervals are normalized; with folds it is CV+. Miscoverage changes per frame.',
+      'Computes split or CV+ bounds from held-out residuals; supplying folds selects CV+. Split coverage requires exchangeable scores from an independently fitted rule; CV+ requires exchangeable observations, balanced, data-independent folds and permutation-invariant fitting, with a finite-sample bound depending on fold count. Arbitrary spatial or group folds do not inherit a universal coverage bound; miscoverage changes per frame.',
     dataTypes: {input: ['table'], output: ['table']},
     useCases: ['model', 'measure'],
     domains: ['spatial-statistics', 'data-engineering'],
@@ -865,9 +866,12 @@ export const entries: CatalogEntry[] = [
       param('dimension', 'number', 'Number of sites of one field.', {
         required: true
       }),
-      param('fair', 'boolean | undefined', 'Fair (unbiased) CRPS and energy score.', {
-        default: 'false'
-      }),
+      param(
+        'estimator',
+        "'fair' | 'empirical' | undefined",
+        'Estimator for CRPS and energy score.',
+        {default: "'empirical'"}
+      ),
       param('variogramOrder', 'number | undefined', 'Order p of the variogram score.', {
         default: '0.5'
       }),
@@ -894,7 +898,7 @@ export const entries: CatalogEntry[] = [
         '    ensemble, // e.g. conditional simulation output.values',
         '    observations,',
         '    memberCount: 20, dimension: siteCount,',
-        '    fair: true,',
+        "    estimator: 'fair',",
         "    output: {crps: output('crps', 'float32', siteCount), energyScore: output('es', 'float32', 1)}",
         '  })',
         ');'

@@ -81,7 +81,7 @@ export type SpectralTextureOptions = {
   displayBins: '64' | '256';
   profileSpacing: '60' | '120' | '240';
   profileMethod: 'nearest' | 'bilinear';
-  profileNoData: 'strict' | 'renormalize';
+  profileNoData: 'propagate' | 'renormalize';
   transportChannel: 'R' | 'G' | 'B' | 'A';
 };
 

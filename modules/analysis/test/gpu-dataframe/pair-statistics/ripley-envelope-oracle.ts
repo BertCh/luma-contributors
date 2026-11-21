@@ -101,10 +101,11 @@ export function computeRipleyEnvelopeOnCPU(
     upper.push(defined ? fromK(column[column.length - rank], radii[b]) : NaN);
   }
   const observedDeviation = observedK ? getMaximumDeviation(observedK) : NaN;
-  const pValue = Number.isFinite(observedDeviation)
-    ? (1 + finiteDeviations.filter(value => value >= observedDeviation).length) /
-      (finiteDeviations.length + 1)
-    : NaN;
+  const pValue =
+    Number.isFinite(observedDeviation) && finiteDeviations.length > 0
+      ? (1 + finiteDeviations.filter(value => value >= observedDeviation).length) /
+        (finiteDeviations.length + 1)
+      : NaN;
   return {
     lower,
     upper,

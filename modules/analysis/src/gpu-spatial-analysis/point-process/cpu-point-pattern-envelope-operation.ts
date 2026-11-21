@@ -3,6 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {getPointPatternRejectionBudget} from './point-pattern-rejection-budget';
+import {
+  getPointPatternDyadicInteger,
+  roundPointPatternDyadicStatistic
+} from './point-pattern-exact-statistic-cpu';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  snapshotEnvelopeConstruction,
+  resolveEnvelopeSimulationCount,
+  resolveEnvelopeStatistic
+} from './point-pattern-envelope-construction';
 import {
   validateCapacity,
   validateRequirement
@@ -17,8 +28,8 @@ import {
 export type CPUPointPatternEnvelopeInput = {
   observed: Float32Array;
   simulations: Float32Array;
-  reference: Float32Array;
-  integrationWeights: Float32Array;
+  reference?: Float32Array;
+  integrationWeights?: Float32Array;
 };
 /** Inference settings, including the contributor's required exchangeability metadata. */
 export type CPUPointPatternEnvelopeOptions = Pick<
@@ -40,7 +51,7 @@ export const CPU_POINT_PATTERN_ENVELOPE_MAXIMUM_VALUE_COUNT = 0xffffffff;
 function validateOptions(
   id: string,
   curveRowCount: number,
-  options: CPUPointPatternEnvelopeOptions
+  options: CPUPointPatternEnvelopeOptions & {simulationCount: number}
 ): void {
   validateCapacity(id, 'curveRowCount', curveRowCount);
   validateCapacity(id, 'simulationCount', options.simulationCount, 2);
@@ -82,14 +93,15 @@ function validateOptions(
  * All curves participate, ties are conservative, and no invalid replicate is discarded.
  *
  * What differs from the GPU contributor:
- * - Float64 deviations and sums are rounded only at output; use 2e-6 relative tolerance on
- *   ordinary float outputs. Near arithmetic ties, exceedance counts and p-values can differ.
+ * - Both forms compare maximum and integrated deviations with exact dyadic
+ *   integer arithmetic on the stored float32 inputs. Displayed statistics remain
+ *   float32; use 2e-6 relative tolerance for ordinary CPU/GPU display comparisons.
  * - GPU-only 4096-row, 4096-simulation and quadratic rank-comparison caps are dropped;
  *   packed simulation length must still fit uint32. Sorting computes exact order statistics.
  * - Finite float64 statistics that overflow float32 round to Infinity with status=0, whereas
  *   the GPU's float32 intermediate overflow invalidates every inferential result.
  * - Extreme-rank mode ignores reference and integrationWeights values, exactly as the kernel
- *   does (their shapes are still required). Other modes reject nonfinite/nonpositive weights.
+ *   does. Maximum deviation ignores integrationWeights; integrated deviation requires positive finite weights.
  *
  * @throws If simulations, reference or integrationWeights have inconsistent lengths.
  */
@@ -98,19 +110,44 @@ export function computePointPatternEnvelopeOnCPU(
   options: CPUPointPatternEnvelopeOptions
 ): CPUPointPatternEnvelopeResult {
   const count = input.observed.length;
-  if (count === 0) throw new Error('observed must contain at least one ordinate');
-  validateOptions('point-pattern-envelope', count, options);
-  if (input.simulations.length !== count * options.simulationCount)
-    throw new Error('simulations length must equal observed.length * simulationCount');
-  if (input.reference.length !== count)
-    throw new Error('reference length must equal observed.length');
-  if (input.integrationWeights.length !== count)
-    throw new Error('integrationWeights length must equal observed.length');
-  const curves = options.simulationCount + 1;
+  const id = 'point-pattern-envelope';
+  const capturedOptions = snapshotConstructionFields(options, [
+    'simulationCount',
+    'rank',
+    'statistic',
+    'significanceLevel',
+    'nullModel',
+    'fittedParameters'
+  ]);
+  options = {
+    ...capturedOptions,
+    statistic: resolveEnvelopeStatistic(id, capturedOptions.statistic)
+  };
+  validateRequirement(id, count > 0, `observed.length must be at least 1; received ${count}`);
+  const simulationCount = resolveEnvelopeSimulationCount(
+    'point-pattern-envelope',
+    count,
+    input.simulations.length,
+    options.simulationCount
+  );
+  const resolvedOptions = {...options, simulationCount};
+  validateOptions('point-pattern-envelope', count, resolvedOptions);
+  validateRequirement(
+    id,
+    options.statistic === 'extreme-rank' || input.reference?.length === count,
+    `reference.length must equal observed.length ${count}; received ${input.reference?.length}`
+  );
+  validateRequirement(
+    id,
+    options.statistic !== 'integrated-squared-deviation' ||
+      input.integrationWeights?.length === count,
+    `integrationWeights.length must equal observed.length ${count}; received ${input.integrationWeights?.length}`
+  );
+  const curves = simulationCount + 1;
   const result: CPUPointPatternEnvelopeResult = {
     lower: new Float32Array(count).fill(NaN),
     upper: new Float32Array(count).fill(NaN),
-    statistics: Float32Array.of(NaN, NaN, 1 / curves, options.simulationCount),
+    statistics: Float32Array.of(NaN, NaN, 1 / curves, simulationCount),
     status: Uint32Array.of(1),
     pValueInterval: new Float32Array(2).fill(NaN)
   };
@@ -120,7 +157,7 @@ export function computePointPatternEnvelopeOnCPU(
     Array.from({length: curves}, (_, curve) => ({
       curve,
       value:
-        curve === options.simulationCount
+        curve === simulationCount
           ? input.observed[column]
           : input.simulations[curve * count + column]
     })).sort((first, second) => first.value - second.value || first.curve - second.curve)
@@ -138,56 +175,67 @@ export function computePointPatternEnvelopeOnCPU(
         start = end;
       }
     }
-    const observed = extremes[options.simulationCount];
+    const observed = extremes[simulationCount];
     const strict = extremes.filter(rank => rank < observed).length;
     const inclusive = extremes.filter(rank => rank <= observed).length;
     let criticalRank = 1;
-    for (let candidate = 1; candidate <= Math.ceil(curves / 2); candidate++)
+    for (const candidate of new Set(extremes))
       if (
         extremes.filter(rank => rank < candidate).length <=
-        Math.floor((options.significanceLevel ?? 0.05) * curves)
+        getPointPatternRejectionBudget(curves, options.significanceLevel ?? 0.05)
       )
-        criticalRank = candidate;
+        criticalRank = Math.max(criticalRank, candidate);
     result.statistics[0] = observed;
     result.statistics[1] = inclusive / curves;
     result.pValueInterval.set([strict / curves, inclusive / curves]);
     columns.forEach((column, index) => {
-      result.lower[index] = column[criticalRank - 1].value;
-      result.upper[index] = column[curves - criticalRank].value;
+      const retained = column.filter(entry => extremes[entry.curve] >= criticalRank);
+      result.lower[index] = retained[0]?.value ?? NaN;
+      result.upper[index] = retained[retained.length - 1]?.value ?? NaN;
     });
   } else {
     if (
-      !input.reference.every(Number.isFinite) ||
-      !input.integrationWeights.every(weight => Number.isFinite(weight) && weight > 0)
+      !input.reference!.every(Number.isFinite) ||
+      (options.statistic === 'integrated-squared-deviation' &&
+        !input.integrationWeights!.every(weight => Number.isFinite(weight) && weight > 0))
     )
       return result;
-    const statistics = new Float64Array(curves);
+    const exactStatistics: bigint[] = [];
+    const integrated = options.statistic === 'integrated-squared-deviation';
+    const referenceIntegers = Array.from(input.reference!, getPointPatternDyadicInteger);
+    const weightIntegers = integrated
+      ? Array.from(input.integrationWeights!, getPointPatternDyadicInteger)
+      : [];
     for (let curve = 0; curve < curves; curve++) {
-      let statistic = 0;
+      let exactStatistic = 0n;
       for (let column = 0; column < count; column++) {
         const value =
-          curve === options.simulationCount
+          curve === simulationCount
             ? input.observed[column]
             : input.simulations[curve * count + column];
-        const deviation = Math.abs(value - input.reference[column]);
-        statistic =
-          options.statistic === 'integrated-squared-deviation'
-            ? statistic + input.integrationWeights[column] * deviation ** 2
-            : Math.max(statistic, deviation);
+        const difference = getPointPatternDyadicInteger(value) - referenceIntegers[column];
+        if (integrated) {
+          exactStatistic += weightIntegers[column] * difference * difference;
+        } else {
+          const magnitude = difference < 0n ? -difference : difference;
+          if (magnitude > exactStatistic) exactStatistic = magnitude;
+        }
       }
-      statistics[curve] = statistic;
+      exactStatistics.push(exactStatistic);
     }
-    const observed = statistics[options.simulationCount];
-    const exceedances = statistics
-      .subarray(0, options.simulationCount)
-      .filter(value => value >= observed).length;
-    result.statistics[0] = observed;
-    result.statistics[1] = (exceedances + 1) / curves;
+    const observed = exactStatistics[simulationCount];
+    // The observed curve supplies the add-one count.
+    const inclusiveCount = exactStatistics.filter(value => value >= observed).length;
+    // Differences are in units of 2^-149; the weighted squared products are in units of 2^-447.
+    result.statistics[0] = integrated
+      ? roundPointPatternDyadicStatistic(observed)
+      : Number(observed) * 2 ** -149;
+    result.statistics[1] = inclusiveCount / curves;
     const rank = options.rank ?? 1;
     columns.forEach((column, index) => {
-      const simulations = column.filter(entry => entry.curve !== options.simulationCount);
+      const simulations = column.filter(entry => entry.curve !== simulationCount);
       result.lower[index] = simulations[rank - 1].value;
-      result.upper[index] = simulations[options.simulationCount - rank].value;
+      result.upper[index] = simulations[simulationCount - rank].value;
     });
   }
   result.status[0] = 0;
@@ -197,9 +245,13 @@ export function computePointPatternEnvelopeOnCPU(
 /** CPU twin, without GPU-only curve-size or comparison-budget limits. */
 export class CPUPointPatternEnvelopeOperation extends GPUCPUOperation {
   constructor(props: PointPatternEnvelopeOperationProps) {
+    props = snapshotEnvelopeConstruction(props);
     const operation = new GPUPointPatternEnvelopeOperation(props);
     const {id} = operation;
-    validateOptions(id, props.curveRowCount, props);
+    validateOptions(id, props.curveRowCount, {
+      ...props,
+      simulationCount: props.simulationCount ?? Math.max(2, 2 * (props.rank ?? 1))
+    });
     validateRequirement(
       id,
       props.output.pValueInterval === undefined || props.statistic === 'extreme-rank',
@@ -222,8 +274,14 @@ export class CPUPointPatternEnvelopeOperation extends GPUCPUOperation {
           {
             observed,
             simulations: getCPUOperationFloat32Rows(id, inputs, 'simulations'),
-            reference: getCPUOperationFloat32Rows(id, inputs, 'reference'),
-            integrationWeights: getCPUOperationFloat32Rows(id, inputs, 'integrationWeights')
+            reference:
+              props.statistic === 'extreme-rank'
+                ? undefined
+                : getCPUOperationFloat32Rows(id, inputs, 'reference'),
+            integrationWeights:
+              props.statistic === 'integrated-squared-deviation'
+                ? getCPUOperationFloat32Rows(id, inputs, 'integrationWeights')
+                : undefined
           },
           props
         );

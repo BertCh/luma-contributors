@@ -7,8 +7,14 @@ import type {
   GPUMultipleTestingMethod,
   GPUPermutationMetadata
 } from '../../analysis-core/contracts/index';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {resolvePermutationAlternative} from './permutation-alternative';
+
+/** Largest compile-time draw budget supported by local and global permutation contributors. */
+export const MAXIMUM_PERMUTATION_COUNT = 2 ** 20;
 
 /** Number of uint32 elements in a permutation-test parameter view. */
 export const GPU_PERMUTATION_PARAMETER_LENGTH = 4;
@@ -32,7 +38,7 @@ export type GPUPermutationSettings = {
    * the `maximumPermutations` option of {@link getGPUPermutationParameterValues}.
    */
   permutationCount: number;
-  /** Significance level for the local `significant` mask. Defaults to 0.05. Ignored by the global test. */
+  /** Significance level for the local mask, strictly in (0, 1) after float32 rounding. Defaults to 0.05. Ignored by the global test. */
   significanceLevel?: number;
 };
 
@@ -62,10 +68,12 @@ export function getGPUPermutationParameterValues(
   if (options.maximumPermutations !== undefined && permutationCount > options.maximumPermutations) {
     throw new Error('permutationCount exceeds maximumPermutations');
   }
-  const level = settings.significanceLevel ?? 0.05;
-  if (!(level > 0 && level < 1)) {
-    throw new Error('significanceLevel must be in (0, 1)');
-  }
+  const level = Math.fround(settings.significanceLevel ?? 0.05);
+  validateRequirement(
+    'getGPUPermutationParameterValues',
+    level > 0 && level < 1,
+    'significanceLevel must be in (0, 1) after float32 rounding'
+  );
   const values = new Uint32Array(GPU_PERMUTATION_PARAMETER_LENGTH);
   values[0] = seed % 2 ** 32;
   values[1] = Math.floor(seed / 2 ** 32);
@@ -88,17 +96,19 @@ export function getGPUPermutationMetadata(
   } = {}
 ): GPUPermutationMetadata {
   // Packing performs the canonical seed and count validation.
-  getGPUPermutationParameterValues(settings, {maximumPermutations: options.maximumPermutations});
+  const packed = getGPUPermutationParameterValues(settings, {
+    maximumPermutations: options.maximumPermutations
+  });
   return {
-    seed: settings.seed,
-    permutationCount: settings.permutationCount,
+    seed: packed[0] + packed[1] * 2 ** 32,
+    permutationCount: packed[2],
     alternative: resolvePermutationAlternative('getGPUPermutationMetadata', options.alternative),
     multipleTesting: options.multipleTesting ?? 'none',
     includeObserved: true
   };
 }
 
-/** Splits a seed into the two Philox key words, as the kernels do. @internal */
+/** Splits a seed into the two Philox key words, as the kernels do. */
 export function getPermutationSeedKey(seed: number): [number, number] {
   return [seed % 2 ** 32, Math.floor(seed / 2 ** 32)];
 }

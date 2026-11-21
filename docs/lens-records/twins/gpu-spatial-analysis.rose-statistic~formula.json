@@ -114,12 +114,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:01.075Z",
-    "runId": "run-11b13a25",
+    "date": "2026-11-20T23:50:51.536Z",
+    "runId": "run-08c036a5",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-11b13a25",
+    "runId": "run-08c036a5",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

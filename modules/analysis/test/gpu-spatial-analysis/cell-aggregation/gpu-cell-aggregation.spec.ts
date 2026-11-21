@@ -62,6 +62,7 @@ type TableBuffers = Record<
   | 'count'
   | 'overflow'
   | 'candidateOverflow'
+  | 'sumOverflow'
   | 'total',
   Buffer
 > & {capacity: number};
@@ -70,6 +71,7 @@ type ActualTable = {
   count: number;
   overflow: number;
   candidateOverflow: number;
+  sumOverflow: number;
   total: number;
   rows: OracleCell[];
   sumValues: number[];
@@ -105,6 +107,7 @@ class Fixture {
       count: this.output(1),
       overflow: this.output(1),
       candidateOverflow: this.output(1),
+      sumOverflow: this.output(1),
       total: this.output(1)
     };
   }
@@ -141,6 +144,13 @@ function importTable(graph: GPUCommandGraph, prefix: string, table: TableBuffers
         'uint32',
         1
       ),
+      sumOverflow: importGraphBuffer(
+        graph,
+        `${prefix}-sum-overflow`,
+        table.sumOverflow,
+        'uint32',
+        1
+      ),
       requiredCount: importGraphBuffer(graph, `${prefix}-total`, table.total, 'uint32', 1)
     }
   };
@@ -151,6 +161,7 @@ async function readTable(table: TableBuffers): Promise<ActualTable> {
   const [count] = await readUint32(table.count, 1);
   const [overflow] = await readUint32(table.overflow, 1);
   const [candidateOverflow] = await readUint32(table.candidateOverflow, 1);
+  const [sumOverflow] = await readUint32(table.sumOverflow, 1);
   const [total] = await readUint32(table.total, 1);
   const cells = await readUint32(table.cells, 2 * capacity);
   const counts = await readUint32(table.counts, capacity);
@@ -177,6 +188,7 @@ async function readTable(table: TableBuffers): Promise<ActualTable> {
     count,
     overflow,
     candidateOverflow,
+    sumOverflow,
     total,
     rows,
     sumValues: sumValues.slice(0, count),
@@ -190,6 +202,9 @@ function expectTable(actual: ActualTable, expected: OracleCell[], capacity: numb
   expect(actual.overflow, `${label} overflow`).toBe(expected.length > capacity ? 1 : 0);
   expect(actual.hasEmptyTail, `${label} empty tail`).toBe(true);
   const bounded = expected.slice(0, capacity);
+  expect(actual.sumOverflow, `${label} sum overflow`).toBe(
+    bounded.some(cell => cell.sumOverflow) ? 1 : 0
+  );
   const format = (cells: OracleCell[]) =>
     cells.map(cell => `${cell.key.toString(16)} ${cell.count} ${cell.sum}`);
   expect(format(actual.rows), `${label} keys, counts, sums`).toEqual(format(bounded));
@@ -334,6 +349,59 @@ it('GPUCellAggregation quadbin point keys and tables match the CPU reference', a
     }
     aggregation.compiled.destroy();
     fixture.destroy();
+  }
+});
+
+it('GPUCellAggregation saturates fixed-point sums and reports sumOverflow (DGGS-102)', async () => {
+  // At the default sumScale 65536, three rows of 7e13 in one cell summed past 2^63 and wrapped to
+  // -7.147e13, and a row of 1e14 clamped silently at 7.04e13. Expected tables come from the BigInt
+  // oracle (exact sums, saturated at +-(2^63 - 1)); the literals are derived in
+  // cell-aggregation.node.spec.ts. Packed and tiled paths (tiles of 4 rows split the hot cell, so
+  // the tile merge must detect the overflow too).
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const resolution = 2;
+  const columns = [0, 0, 0, 1, 2, 2, 2, 3, 3];
+  const keys = columns.map(column => quadbinTileToCell(column, 1, resolution));
+  // Tile centres of row 1 at zoom 2 (latitude 40.98 degrees is inside row 1).
+  const positions = Float32Array.from(columns.flatMap(column => [-135 + 90 * column, 40]));
+  expect(getQuadbinPointKeys(positions, resolution)).toEqual(keys);
+  for (const [label, values, sumOverflow] of [
+    ['saturating', Float32Array.of(7e13, 7e13, 7e13, 1e14, -7e13, -7e13, -7e13, 1.5, 2.5), 1],
+    ['in range', Float32Array.of(7e12, 7e12, 7e12, 1e13, -7e12, -7e12, -7e12, 1.5, 2.5), 0]
+  ] as const) {
+    const expected = aggregateCellsOnCPU({
+      family: 'quadbin',
+      resolution,
+      keys,
+      values,
+      sumScale: SUM_SCALE
+    });
+    expect(expected.some(cell => cell.sumOverflow) ? 1 : 0).toBe(sumOverflow);
+    for (const scratchTileSize of [undefined, 4]) {
+      const fixture = new Fixture(device);
+      const aggregation = createAggregation(fixture, {
+        family: 'quadbin',
+        resolution,
+        positions,
+        values,
+        capacity: 8,
+        scratchTileSize
+      });
+      const actual = await aggregation.run(values, new Uint32Array(values.length).fill(1));
+      const name = `${label} tile ${scratchTileSize ?? 'none'}`;
+      expectTable(actual, expected, 8, name);
+      expect(actual.sumOverflow, name).toBe(sumOverflow);
+      for (const sumValue of actual.sumValues) {
+        expect(Number.isFinite(sumValue), name).toBe(true);
+      }
+      if (sumOverflow) {
+        expect(actual.sumValues[0], name).toBeGreaterThan(1.4e14);
+        expect(actual.sumValues[2], name).toBeLessThan(-1.4e14);
+      }
+      aggregation.compiled.destroy();
+      fixture.destroy();
+    }
   }
 });
 
@@ -1427,3 +1495,228 @@ for (const wordOrder of ['little-endian', 'high-low'] as const) {
     }
   });
 }
+
+for (const scratchTileSize of [undefined, 2]) {
+  it(`GPUCellAggregation reconstructs 2^-100 at scale 2^127 (${scratchTileSize ? 'tiled' : 'packed'}) (DGGS-107)`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = new Fixture(device);
+    const graph = new GPUCommandGraph(device);
+    const table = fixture.createTable(1);
+    // Exact powers of two: 2^-100 * 2^127 = 2^27 (low word 0x08000000, high 0).
+    // Five rows force three tiles on the tiled route; zeros leave the exact sum unchanged.
+    graph.add(
+      new GPUCellAggregation({
+        family: 'quadbin',
+        resolution: 0,
+        sumScale: 2 ** 127,
+        scratchTileSize,
+        positions: importGraphBuffer(
+          graph,
+          'positions',
+          fixture.input(new Float32Array(10)),
+          'float32x2',
+          5
+        ),
+        values: importGraphBuffer(
+          graph,
+          'values',
+          fixture.input(Float32Array.of(2 ** -100, 0, 0, 0, 0)),
+          'float32',
+          5
+        ),
+        output: importTable(graph, 'table', table)
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      expect(await readUint32(table.sums, 2)).toEqual([0x08000000, 0]);
+      const [value] = await readFloat32(table.sumValues, 1);
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBe(2 ** -100);
+      expect(value).not.toBe(0);
+      expect(await readUint32(table.sumOverflow, 1)).toEqual([0]);
+      expect(await readUint32(table.counts, 1)).toEqual([5]);
+      expect(await readUint32(table.count, 1)).toEqual([1]);
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  });
+}
+
+it('GPUCellAggregation clips both longitude signs beyond 2^24 to the exact Quadbin column', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  const values = Float32Array.of(1, 1, 1, 1);
+  const aggregation = createAggregation(fixture, {
+    family: 'quadbin',
+    resolution: 26,
+    positions: Float32Array.of(-(2 ** 30), 0, 2 ** 30, 0, -1e30, 0, 1e30, 0),
+    values,
+    capacity: 1
+  });
+  try {
+    const actual = await aggregation.run(values, Uint32Array.of(1, 1, 1, 1));
+    // +/-180 both wrap to column 0; equator row 2^25. Morton bits and zoom header:
+    expect(actual.rows.map(row => row.key)).toEqual([0x49a8000000000000n]);
+    expect(actual.rows.map(row => row.count)).toEqual([4]);
+    expect([actual.count, actual.overflow, actual.sumOverflow]).toEqual([1, 0, 0]);
+  } finally {
+    aggregation.compiled.destroy();
+    fixture.destroy();
+  }
+});
+
+for (const sign of [1, -1]) {
+  it(`cell sums cancel across scratch tiles before saturation, sign ${sign} (B5)`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    for (const scratchTileSize of [undefined, 4]) {
+      const fixture = new Fixture(device);
+      const graph = new GPUCommandGraph(device);
+      const table = fixture.createTable(1);
+      const value = sign * 3 * 2 ** 60;
+      graph.add(
+        new GPUCellAggregation({
+          family: 'quadbin',
+          resolution: 0,
+          sumScale: 1,
+          scratchTileSize,
+          positions: importGraphBuffer(
+            graph,
+            'positions',
+            fixture.input(new Float32Array(16)),
+            'float32x2',
+            8
+          ),
+          values: importGraphBuffer(
+            graph,
+            'values',
+            fixture.input(Float32Array.of(value, value, value, value, -value, -value, 0, 0)),
+            'float32',
+            8
+          ),
+          output: importTable(graph, 'table', table)
+        })
+      );
+      const compiled = graph.compile();
+      try {
+        submitGraph(device, compiled, undefined);
+        // Hand-worked: 4v-2v = +/-6*2^60, representable signed int64; no row clamps.
+        expect(await readUint32(table.sums, 2)).toEqual([0, sign === 1 ? 0x60000000 : 0xa0000000]);
+        expect(await readUint32(table.sumOverflow, 1)).toEqual([0]);
+        const [sum] = await readFloat32(table.sumValues, 1);
+        expect(Number.isFinite(sum)).toBe(true);
+        expect(sum).toBe(sign * 6 * 2 ** 60);
+        expect(await readUint32(table.counts, 1)).toEqual([8]);
+      } finally {
+        compiled.destroy();
+        fixture.destroy();
+      }
+    }
+  });
+}
+
+it('a clamped row on a union-dropped key does not invalidate retained sums (earlier-fix note)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const scratchTileSize of [undefined, 4]) {
+    const fixture = new Fixture(device);
+    const graph = new GPUCommandGraph(device);
+    const table = fixture.createTable(1);
+    graph.add(
+      new GPUCellAggregation({
+        family: 'quadbin',
+        resolution: 1,
+        sumScale: 1,
+        scratchTileSize,
+        positions: importGraphBuffer(
+          graph,
+          'positions',
+          fixture.input(
+            Float32Array.from([-90, 45, -90, 45, -90, 45, -90, 45, 90, 45, 90, 45, 90, 45, 90, 45])
+          ),
+          'float32x2',
+          8
+        ),
+        values: importGraphBuffer(
+          graph,
+          'values',
+          fixture.input(Float32Array.of(1, 0, 0, 0, 2 ** 63, 0, 0, 0)),
+          'float32',
+          8
+        ),
+        output: importTable(graph, 'table', table)
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      // Lower Morton key x=0,y=0,z=1 is retained; the other key's clamped row is discarded.
+      expect(await readUint32(table.cells, 2)).toEqual([0xffffffff, 0x4813ffff]);
+      expect(await readUint32(table.sums, 2)).toEqual([1, 0]);
+      expect(await readUint32(table.sumOverflow, 1)).toEqual([0]);
+      expect(await readUint32(table.overflow, 1)).toEqual([1]);
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  }
+});
+
+it('pyramid reports fine-row saturation when only the coarsest flag is requested (B6)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers = [fixture.createTable(1), fixture.createTable(1), fixture.createTable(1)];
+  const levels = buffers.map((buffer, index): GPUCellTable => {
+    const table = importTable(graph, `level-${index}`, buffer);
+    if (index === 2) return table;
+    return {
+      cells: table.cells,
+      counts: table.counts,
+      status: {
+        count: table.status.count,
+        overflow: table.status.overflow,
+        candidateOverflow: table.status.candidateOverflow
+      }
+    };
+  });
+  graph.add(
+    new GPUCellPyramid({
+      family: 'quadbin',
+      resolutions: [2, 1, 0],
+      positions: importGraphBuffer(
+        graph,
+        'positions',
+        fixture.input(Float32Array.of(0, 0)),
+        'float32x2',
+        1
+      ),
+      values: importGraphBuffer(
+        graph,
+        'values',
+        fixture.input(Float32Array.of(2 ** 47)),
+        'float32',
+        1
+      ),
+      output: {levels}
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    // 2^47*65536=2^63 clamps the fine row to 2^62-2^38; rollups must retain that loss.
+    expect(await readUint32(buffers[2].sums, 2)).toEqual([0, 0x3fffffc0]);
+    expect(await readUint32(buffers[2].sumOverflow, 1)).toEqual([1]);
+    expect(levels[0].status.sumOverflow).toBeUndefined();
+    expect(levels[1].status.sumOverflow).toBeUndefined();
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+  }
+});

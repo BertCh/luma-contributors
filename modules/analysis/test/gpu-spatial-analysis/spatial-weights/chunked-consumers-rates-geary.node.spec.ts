@@ -81,10 +81,10 @@ it('generates one kernel per chunk for the rate, Geary and quantile LISA consume
       values: view('exact-values', 'float32', ROWS * 2),
       variableCount: 2,
       strategy: 'exact',
-      maximumPermutations: 9,
+      permutationCount: 9,
       output: {
         statistic: view('es', 'float32'),
-        pValues: view('ep', 'float32'),
+        pseudoPValues: view('ep', 'float32'),
         classes: view('ec', 'uint32')
       }
     }).getCommandNodes(graph),
@@ -95,14 +95,15 @@ it('generates one kernel per chunk for the rate, Geary and quantile LISA consume
       variableCount: 2,
       strategy: 'tiled',
       rowTileSize: 10,
-      maximumPermutations: 9,
+      permutationCount: 9,
       output: {
         statistic: view('ts', 'float32'),
-        pValues: view('tp', 'float32'),
+        pseudoPValues: view('tp', 'float32'),
         classes: view('tc', 'uint32')
       }
     }).getCommandNodes(graph),
     ...new GPUQuantileLISA({
+      alternative: 'geoda-legacy',
       id: 'quantile',
       weights,
       values: view('quantile-values', 'float32'),

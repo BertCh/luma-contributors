@@ -156,8 +156,15 @@ export function createMaxPRefinementInput(seed: number): CPUMaxPRegionsInput {
 export function getRegionalizationOperationInputs(
   input: CPUMaxPRegionsInput | CPUAZPRegionsInput
 ): Record<string, OperationGraphInput> {
+  const {status, ...vectors} = input;
   return Object.fromEntries(
-    Object.entries(input)
+    Object.entries({
+      ...vectors,
+      ...(status?.overflow === undefined ? {} : {weightsOverflow: status.overflow}),
+      ...(status?.candidateOverflow === undefined
+        ? {}
+        : {weightsCandidateOverflow: status.candidateOverflow})
+    })
       .filter(([, values]) => values !== undefined)
       .map(([name, values]) => [
         name,

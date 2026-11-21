@@ -6,26 +6,56 @@ import type {GraphDataView, GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
   getGraphViewChunks,
+  validateGraphPorts,
+  type GPUGraphPortDescriptor,
   validateGraphOutputsDisjointFromInputs,
   validateRequirement,
-  validateSinglePackedView
+  validateSinglePackedView,
+  type AnalysisValidationIdentity
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateDisjointWritableViews,
   type GraphChunkDispatchViews
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 
+/** Validate named shapes/formats first, then packed chunk layouts. */
+export function validateInterpolationPorts(
+  id: AnalysisValidationIdentity,
+  ports: object,
+  descriptors: Readonly<Record<string, GPUGraphPortDescriptor>>
+): void {
+  validateGraphPorts(id, ports as Readonly<Record<string, unknown>>, descriptors);
+  const identity = typeof id === 'string' ? {id, contributor: id} : id;
+  for (const [path, descriptor] of Object.entries(descriptors)) {
+    let value: unknown = ports;
+    for (const name of path.split('.'))
+      value =
+        value && typeof value === 'object' ? (value as Record<string, unknown>)[name] : undefined;
+    if (value)
+      for (const [chunkIndex, chunk] of getGraphViewChunks(
+        value as GraphDataView | GraphVectorView
+      ).entries())
+        validateSinglePackedView(
+          chunk,
+          descriptor.formats,
+          identity,
+          `${path} chunk ${chunkIndex}`
+        );
+  }
+}
+
 function getInterpolationBuffer(view: GraphDataView) {
   return view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer;
 }
 
-/** Checks packed ports without imposing whole-buffer separation on otherwise valid output subviews. */
+/** Checks shared interpolation layouts after callers validate named port formats. */
 export function validateInterpolationPredictionViews(
   id: string,
   inputs: readonly GraphDataView[],
   outputs: readonly GraphDataView[]
 ): void {
-  for (const view of [...inputs, ...outputs]) validateSinglePackedView(view, [view.format], id);
+  for (const view of [...inputs, ...outputs])
+    validateSinglePackedView(view, ['float32', 'float32x2', 'float32x4', 'uint32'], id);
   validateInterpolationOutputsDisjointFromInputs(id, outputs, inputs);
 }
 

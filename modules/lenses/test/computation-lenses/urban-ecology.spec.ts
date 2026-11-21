@@ -9,6 +9,10 @@ import {listLensScenarios} from '../../src/computation-lenses';
 import '../../src/computation-lenses/scenarios/gpu-spatial-analysis/urban-ecology.lens';
 import reference from '@luma-contributors/analysis/test/oracles/fixtures/urban-ecology.json';
 import landscapeReference from '@luma-contributors/analysis/test/oracles/fixtures/urban-landscape.json';
+import {expectLocalTessellationQuadrants} from './urban-ecology-tessellation.test-utils';
+import {buildResultViewModel} from '../../src/computation-views/views/result-view';
+import {createViewContext} from '../../src/computation-views/registry/view-registry';
+import {createSpatialElementPackData} from '../../src/gpu-spatial-analysis/computation-pack/pack';
 
 const elements = [
   'addStreetProfilesRecipe',
@@ -16,6 +20,7 @@ const elements = [
   'addIsovistsRecipe',
   'addVisibilityGraphRecipe',
   'addBuildingTessellationRecipe',
+  'addLocalBuildingTessellationRecipe',
   'addLandscapeMetricsRecipe',
   'addPatchProximityRecipe',
   'addResistanceConnectivityRecipe',
@@ -44,13 +49,35 @@ for (const element of elements)
     const close = (name: string, expected: number[]) => {
       const actual = read(name);
       expect(actual.length).toBe(expected.length);
-      expected.forEach((value, index) =>
-        Number.isNaN(value)
-          ? expect(actual[index]).toBeNaN()
-          : expect(actual[index]).toBeCloseTo(value, 4)
-      );
+      expected.forEach((value, index) => {
+        if (Number.isNaN(value)) expect(actual[index]).toBeNaN();
+        else {
+          expect(Number.isFinite(actual[index])).toBe(true);
+          expect(actual[index]).toBeCloseTo(value, 4);
+        }
+      });
     };
     switch (element) {
+      case 'addLocalBuildingTessellationRecipe': {
+        const model = buildResultViewModel(
+          createViewContext(result, {
+            options: scenario.presentation,
+            packs: [createSpatialElementPackData(element)]
+          })
+        );
+        expect(model.output.capture.name).toBe('output-cells');
+        expect(model.output.capture.id).toBe(scenario.presentation?.primaryOutputCaptureId);
+        expect(read('output-buildingStatus')).toEqual([1, 0, 0, 0]);
+        expect(read('status-count')).toEqual([1]);
+        expect(read('status-requiredCount')).toEqual([1]);
+        for (const name of ['overflow', 'candidateOverflow', 'invalidCount'])
+          expect(read(`status-${name}`)).toEqual([0]);
+        expect(read('status-sampling')).toEqual([4, 4, 0, 0]);
+        const cells = read('output-cells');
+        const positions = read('output-positions');
+        expectLocalTessellationQuadrants(cells, positions);
+        break;
+      }
       case 'GPUPopulationSupportAlignment':
         close('output-populations', [6, 4, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, 3, 7]);
         expect(read('output-alignmentCode')).toEqual([0, 2, 1, 2, 2, 0]);
@@ -73,6 +100,8 @@ for (const element of elements)
         break;
       case 'addBuildingAdjacencyRecipe': {
         const pairs = read('output-pairs');
+        // Two 1-by-2 rectangles share a wall of length 2; their union perimeter is 8.
+        for (const index of [4, 5, 6, 8]) expect(Number.isFinite(pairs[index])).toBe(true);
         expect(pairs[4]).toBeCloseTo(2, 5);
         expect(pairs[5]).toBeCloseTo(Math.PI * 0.02, 5);
         expect(pairs[6]).toBe(1);
@@ -80,6 +109,7 @@ for (const element of elements)
         expect(pairs[8]).toBeCloseTo(2, 5);
         expect(read('output-components')).toEqual([0, 0]);
         const morphology = read('output-morphology');
+        for (const index of [3, 7]) expect(Number.isFinite(morphology[index])).toBe(true);
         expect(morphology).toHaveLength(8);
         expect(morphology[3]).toBeCloseTo(8, 5);
         expect(morphology[7]).toBeCloseTo(8, 5);

@@ -325,7 +325,7 @@ export async function runSpacetimeEvents(
             neighbors: pairs,
             times,
             parameters,
-            k: neighborCount,
+            neighborCount,
             maximumPermutations: permutations,
             output: {
               statistics: session.output('statistics', 'uint32', permutations + 1).view,

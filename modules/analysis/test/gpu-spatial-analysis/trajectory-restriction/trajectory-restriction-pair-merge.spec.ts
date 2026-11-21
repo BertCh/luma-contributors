@@ -8,7 +8,7 @@ import {expect, it} from 'vitest';
 import {GPUTrajectoryEncounters} from '../../../src/gpu-spatial-analysis/trajectory-encounters/index';
 import {GPUTrajectoryRestriction} from '../../../src/gpu-spatial-analysis/trajectory-restriction/gpu-trajectory-restriction';
 import {createOptimizationHarness} from '../../gpu-network/network-optimization/optimization-test-harness';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {createRandom} from '../trajectory-interpolation/trajectory-interpolation-fixtures';
 
 type Interval = {start: number; end: number};
@@ -418,5 +418,35 @@ it('GPUTrajectoryRestriction merges tracks of tens of thousands of rows', async 
   for (let slot = 1; slot < written; slot++) {
     expect(intervals[2 * slot]).toBeGreaterThanOrEqual(intervals[2 * (slot - 1)]);
     expect(intervals[2 * slot]).toBeLessThanOrEqual(intervals[2 * (slot - 1) + 1] + 1e-3);
+  }
+});
+
+it('counts one arithmetic-unknown singleton pair independently of invalid rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const separation of [1e20, 2]) {
+    const harness = createOptimizationHarness(device);
+    const output = {
+      intervals: harness.output('float32x2', 1),
+      positions: harness.output('float32x4', 1),
+      status: harness.output('uint32', 1),
+      relationships: harness.output('uint32x4', 1)
+    };
+    const result = await harness.run(
+      new GPUTrajectoryRestriction({
+        positions: harness.input('float32x2', Float32Array.of(0, 0, separation, 0)),
+        times: harness.input('float32', Float32Array.of(0, 0)),
+        offsets: harness.input('uint32', Uint32Array.of(0, 1, 2)),
+        parameters: harness.input('float32', Float32Array.of(0, 0, 1, 0, 0, 0, 0)),
+        pairwiseTracks: [[0, 1]],
+        intervalsPerPair: 1,
+        output
+      })
+    );
+    // All input words are finite. (f32(1e20))^2 exceeds FLT_MAX; 2^2 is exactly 4.
+    expect(result(output.relationships)[2]).toBe(1);
+    expect(result(output.relationships)[3]).toBe(separation === 1e20 ? 1 : 0);
+    if (separation === 2) expect(result(output.relationships)).toEqual([0, 0, 1, 0]);
+    expect(result(output.status)[0] & 4).toBe(separation === 1e20 ? 4 : 0);
   }
 });

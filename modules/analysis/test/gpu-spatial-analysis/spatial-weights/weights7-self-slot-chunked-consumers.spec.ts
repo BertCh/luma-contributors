@@ -242,14 +242,14 @@ it('chunked multivariate local Geary with self slots matches the single CSR', as
           values: input('values', interleaved),
           variableCount: columns,
           mask: input('mask', scenario.mask),
-          maximumPermutations: 49,
+          permutationCount: 49,
           seed: [11, 0],
           strategy,
           rowTileSize: strategy === 'tiled' ? 7 : undefined,
           permutationTileSize: 16,
           output: {
             statistic: output('statistic', 'float32', ROW_COUNT),
-            pValues: output('pValues', 'float32', ROW_COUNT),
+            pseudoPValues: output('pValues', 'float32', ROW_COUNT),
             classes: output('classes', 'uint32', ROW_COUNT)
           }
         })
@@ -285,6 +285,7 @@ it('chunked quantile LISA with self slots matches the single CSR', async () => {
   }: Parameters<Parameters<typeof runConsumer>[3]>[0]) => {
     graph.add(
       new GPUQuantileLISA({
+        alternative: 'geoda-legacy',
         values: input('values', scenario.values),
         mask: input('mask', scenario.mask),
         quantileParameters: input('quantileParameters', new Uint32Array([4, 1])),

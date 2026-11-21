@@ -36,6 +36,40 @@ def rounded(values):
 def serial(values):
     return np.asarray(values).tolist()
 
+def calculate_marked_statistics(distances, category_pairs, intensity_weights, mark_products,
+                                mark_mean, radius_count, window_area, sum_values=sum):
+    """Standard-library directed-pair calculation; NumPy inputs also support row indexing.
+
+    The generator supplies np.sum to preserve its historical pairwise-reduction bytes.
+    Ordinary boundary regressions use the same population/aggregation code without NumPy.
+    """
+    import math
+    pairs = [(float(distances[row][other]), float(intensity_weights[row][other]),
+              float(mark_products[row][other]))
+             for row in range(len(distances)) for other in range(len(distances))
+             if row != other and category_pairs[row][other]]
+    marked_values = []
+    marked_counts = []
+    shell_counts = []
+    for radius_bin in range(radius_count):
+        lower = float(radius_bin)
+        upper = lower + 1.0
+        cumulative = [pair for pair in pairs if pair[0] <= upper]
+        shell = [pair for pair in cumulative if radius_bin == 0 or pair[0] > lower]
+        estimate = float(sum_values([pair[1] for pair in cumulative])) / window_area
+        shell_weight = float(sum_values([pair[1] for pair in shell]))
+        # Production leaves both shell correlations unavailable when no positive
+        # shell weight exists. Keep valid cumulative estimates/counts independently.
+        pair_correlation = (shell_weight / (window_area * math.pi * (upper**2 - lower**2))
+                            if shell_weight > 0 else None)
+        mark_correlation = (float(sum_values([pair[1] * pair[2] for pair in shell])) / shell_weight / mark_mean
+                            if shell_weight > 0 and mark_mean != 0 else None)
+        marked_values.extend([estimate, math.sqrt(estimate / math.pi), pair_correlation, mark_correlation])
+        marked_counts.append(len(cumulative))
+        shell_counts.append(len(shell))
+    return marked_values, marked_counts, shell_counts
+
+
 positions = rounded([[column, row] for row in range(4) for column in range(4)])
 predictors = rounded([np.sin(row * 1.7) + row % 3 * 0.2 for row in range(16)])[:, None]
 response = rounded(2.0 + 1.2 * predictors[:, 0] + 0.15 * positions[:, 0] + 0.2 * np.cos(np.arange(16)))[:, None]
@@ -169,18 +203,8 @@ overlap = (5.0 - delta[:, :, 0]) * (5.0 - delta[:, :, 1])
 intensity_weights = 25.0 / overlap / intensities[:, None] / intensities[None, :]
 mark_products = marks[:, None] * marks[None, :]
 mark_mean = np.mean(marks[focus_mask]) * np.mean(marks[neighbor_mask])
-marked_values = []
-marked_counts = []
-for radius_bin in range(3):
-    lower = float(radius_bin)
-    upper = lower + 1.0
-    cumulative = category_pairs & (distances <= upper)
-    shell = cumulative & (distances > lower)
-    estimate = np.sum(intensity_weights[cumulative]) / 25.0
-    pair_correlation = np.sum(intensity_weights[shell]) / (25.0 * np.pi * (upper**2 - lower**2))
-    mark_correlation = np.sum((intensity_weights * mark_products)[shell]) / np.sum(intensity_weights[shell]) / mark_mean
-    marked_values.extend([float(estimate), float(np.sqrt(estimate / np.pi)), float(pair_correlation), float(mark_correlation)])
-    marked_counts.append(int(np.sum(cumulative)))
+marked_values, marked_counts, _ = calculate_marked_statistics(
+    distances, category_pairs, intensity_weights, mark_products, mark_mean, 3, 25.0, sum_values=np.sum)
 marked = {'types': serial(point_types), 'marks': serial(marks), 'intensities': serial(intensities), 'parameters': [-1.0, -1.0, 4.0, 4.0, 3.0, 0.0], 'statistics': marked_values, 'counts': marked_counts}
 
 

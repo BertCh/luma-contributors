@@ -25,13 +25,15 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunks,
-  getGPUSpatialWeightsLossViews,
   getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
-import {GPU_PERMUTATION_PARAMETER_LENGTH} from './permutation-parameters';
+import {
+  GPU_PERMUTATION_PARAMETER_LENGTH,
+  MAXIMUM_PERMUTATION_COUNT
+} from './permutation-parameters';
 import {
   validateCapacity,
   validateGPUStorageBindingByteLength
@@ -42,9 +44,15 @@ import {
   validateFloat32OrUint32Values
 } from '../spatial-weights/float32-values';
 
+import {getOrderedPairMassNodes} from './ordered-pair-mass';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
+import {
+  getWeightsLossSources,
+  validateWeightsLossSources
+} from '../spatial-weights/spatial-weights-loss';
+import {getPermutationWeightsLossChecks} from './permutation-weights-loss';
 
 /** Rows reduced by one workgroup in the first level of the deterministic column sums. @internal */
 export const BLOCK_ROWS = 4096;
@@ -70,7 +78,9 @@ export const PERMUTATION_TOTAL = {
   mean: 6,
   meanY: 7,
   /** Sum over analysis rows of the squared active row weight sum, `1^T W^T W 1` (Lee's L denominator). */
-  s0Squared: 8
+  s0Squared: 8,
+  /** Scaled ordered off-diagonal raw-value mass for global General G. */
+  offDiagonalMass: 9
 } as const;
 
 /** Inputs shared by both permutation tests. @internal */
@@ -92,6 +102,10 @@ export type PermutationInputProps = {
    * join-count variables).
    */
   centerY?: boolean;
+  /** Normalize both columns before moments and pair products; homogeneous global statistics only. */
+  normalizeValues?: boolean;
+  /** Accumulate the raw scaled ordered off-diagonal mass needed by global General G. */
+  orderedPairMass?: boolean;
   /** Optional caller-owned one-row uint32 output: the number of islands among the included rows. */
   islandCount?: GraphDataView<'uint32'>;
 };
@@ -105,6 +119,8 @@ export type PermutationInputs<Parameters> = {
    * exact uint32.
    */
   rowPositions: GraphDataView<'uint32'>;
+  /** Original float32 source values before normalization; rowPositions gates inclusion. */
+  originalX: GraphDataView<'float32'>;
   /** Compacted `x` values (centered when `centerX`), `n` valid entries. */
   compactX: GraphDataView<'float32'>;
   /** Compacted `y` values, centered unless `centerY` is false (zero without `secondValues`). */
@@ -161,10 +177,9 @@ export function validatePermutationInputs(props: PermutationInputProps): number 
     validatePackedUint32View(props.islandCount, `${id} output.islandCount`);
     validateCapacity(id, 'output.islandCount length', props.islandCount.length);
   }
-  const weightsOverflow = props.weights.status?.overflow;
-  if (weightsOverflow) {
-    validatePackedUint32View(weightsOverflow, `${id} weights.status.overflow`);
-  }
+  validateWeightsLossSources(id, [props.weights], true);
+  for (const complete of getWeightsLossSources([props.weights], id, true).complete)
+    validateCapacity(id, 'weights.status.complete length', complete.length, 1, 1);
   validatePackedUint32View(props.parameters, `${id} parameters`);
   validateCapacity(
     id,
@@ -172,7 +187,13 @@ export function validatePermutationInputs(props: PermutationInputProps): number 
     props.parameters.length,
     GPU_PERMUTATION_PARAMETER_LENGTH
   );
-  validateCapacity(id, 'maximumPermutations', props.maximumPermutations, 1, 2 ** 20);
+  validateCapacity(
+    id,
+    'maximumPermutations',
+    props.maximumPermutations,
+    1,
+    MAXIMUM_PERMUTATION_COUNT
+  );
   return rows;
 }
 
@@ -188,7 +209,7 @@ export function validatePermutationInputBindings<Parameters>(
     props.id,
     Object.fromEntries(
       [
-        ...getGPUSpatialWeightsOrChunksViews(props.weights),
+        ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
         props.weights.status?.overflow,
         props.values,
         props.secondValues,
@@ -237,6 +258,11 @@ fn isPermutationCountValid() -> bool {
 fn readValidPermutationCount() -> u32 {
   return select(0u, parameters[parametersOffset + 2u], isPermutationCountValid());
 }
+// Positive, finite float32 strictly below one, including a positive subnormal cutoff.
+fn isPermutationSignificanceValid() -> bool {
+  let bits = parameters[parametersOffset + 3u];
+  return bits > 0u && bits < 0x3f800000u;
+}
 fn readSignificanceLevel() -> f32 {
   return bitcast<f32>(parameters[parametersOffset + 3u]);
 }
@@ -262,7 +288,8 @@ export const PERMUTATION_FLOAT_WGSL = SPATIAL_AUTOCORRELATION_FLOAT_WGSL;
  * - When the weights are row standardized, each analysis row's active weights are re-standardized
  *   to sum to 1 (see the returned `weights`), so masked or missing neighbors drop out of the lag
  *   instead of shrinking it toward 0.
- * - If `weights.status.overflow` or `candidateOverflow` is nonzero the weights are incomplete and no row is analyzed (all
+ * - If root or chunk `overflow` / `candidateOverflow` is nonzero, or supplied `complete` is zero,
+ *   the weights are incomplete and no row is analyzed (all
  *   statistics are NaN).
  * - The mean uses a fixed-order f32 tree sum followed by a second pass on the deviations from that
  *   first mean, so the centered values sum to zero to f32 accuracy for data with a large offset.
@@ -323,7 +350,10 @@ export function getPermutationInputNodes<Parameters>(
   const totalsA = createTransientView(graph, `${id}-totals-a`, 'float32', 2);
   const totalsB = createTransientView(graph, `${id}-totals-b`, 'float32', 2);
   const totalsC = createTransientView(graph, `${id}-totals-c`, 'float32', 4);
-  const totals = createTransientView(graph, `${id}-totals`, 'float32', 9);
+  const totals = createTransientView(graph, `${id}-totals`, 'float32', 10);
+  const valueScales = props.normalizeValues
+    ? createTransientView(graph, `${id}-value-scales`, 'float32', 2)
+    : undefined;
   const constantsWGSL = `const ROWS: u32 = ${rows}u;
 const INVALID_POSITION: u32 = ${PERMUTATION_INVALID_POSITION}u;
 ${PERMUTATION_FLOAT_WGSL}`;
@@ -418,7 +448,7 @@ ${PERMUTATION_FLOAT_WGSL}`;
   analysisFlags[analysisFlagsOffset + index] = select(0u, 1u, analyzed);`)
       });
     }),
-    ...getGPUSpatialWeightsLossViews(weights).map((loss, lossIndex) =>
+    ...getPermutationWeightsLossChecks(weights).map(({view: loss, incompleteWhen}, lossIndex) =>
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-incomplete-analysis-${lossIndex}`,
         operation,
@@ -428,9 +458,40 @@ ${PERMUTATION_FLOAT_WGSL}`;
           {name: 'analysisFlags', view: analysisFlags, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
-        body: 'if (loss[lossOffset] != 0u) { analysisFlags[analysisFlagsOffset + index] = 0u; }'
+        body: `if (loss[lossOffset] ${incompleteWhen} 0u) { analysisFlags[analysisFlagsOffset + index] = 0u; }`
       })
     ),
+    ...(valueScales
+      ? [0, 1].flatMap(variable => {
+          const source = variable === 0 ? values : secondValues;
+          const maximum = graph.createDataView(valueScales.buffer, {
+            format: 'float32',
+            byteOffset: valueScales.byteOffset + variable * 4,
+            length: 1
+          });
+          return [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-magnitudes-${variable}`,
+              operation,
+              invocationCount: rows,
+              bindings: [
+                ...(source
+                  ? [{name: 'source', view: source, type: 'f32' as const, access: 'read' as const}]
+                  : []),
+                {name: 'analysisFlags', view: analysisFlags, type: 'u32', access: 'read'},
+                {name: 'magnitudes', view: columns[variable], type: 'f32', access: 'read_write'}
+              ],
+              body: `magnitudes[magnitudesOffset + index] = select(0.0, ${source ? 'abs(source[sourceOffset + index])' : '0.0'}, analysisFlags[analysisFlagsOffset + index] != 0u);`
+            }),
+            ...new GPUReduction({
+              id: `${id}-maximum-${variable}`,
+              input: columns[variable],
+              output: maximum,
+              operation: 'max'
+            }).getCommandNodes(graph)
+          ];
+        })
+      : []),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-moment-inputs`,
       operation,
@@ -438,17 +499,36 @@ ${PERMUTATION_FLOAT_WGSL}`;
       bindings: [
         {name: 'values', view: values, type: 'f32', access: 'read'},
         ...secondBinding,
+        ...(valueScales
+          ? [
+              {
+                name: 'valueScales',
+                view: valueScales,
+                type: 'f32' as const,
+                access: 'read' as const
+              }
+            ]
+          : []),
         {name: 'analysisFlags', view: analysisFlags, type: 'u32', access: 'read'},
         columnBinding(0),
         columnBinding(1)
       ],
       invocationCount: rows,
-      declarations: constantsWGSL,
+      declarations: `${constantsWGSL}
+${
+  valueScales
+    ? `// Exact powers of two preserve representable spacings before centering.
+fn getPermutationInverseScale(maximum: f32) -> f32 {
+  let exponent = select(0i, clamp(i32((bitcast<u32>(maximum) >> 23u) & 255u) - 126i, -126i, 126i), maximum > 0.0);
+  return bitcast<f32>(u32(127i - exponent) << 23u);
+}`
+    : ''
+}`,
       body: `let analyzed = analysisFlags[analysisFlagsOffset + index] != 0u;
   column0[column0Offset + index] =
-    select(0.0, values[valuesOffset + index], analyzed);
+    select(0.0, values[valuesOffset + index]${valueScales ? ' * getPermutationInverseScale(valueScales[valueScalesOffset])' : ''}, analyzed);
   column1[column1Offset + index] =
-    select(0.0, ${secondValues ? 'secondValues[secondValuesOffset + index]' : '0.0'}, analyzed);`
+    select(0.0, ${secondValues ? 'secondValues[secondValuesOffset + index]' : '0.0'}${valueScales ? ' * getPermutationInverseScale(valueScales[valueScalesOffset + 1u])' : ''}, analyzed);`
     }),
     ...getSplitColumnSumNodes<Parameters>(graph, {
       id: `${id}-sum-a`,
@@ -631,6 +711,21 @@ ${PERMUTATION_FLOAT_WGSL}`,
   totals[totalsOffset + 8u] = totalsC[totalsCOffset + 3u];`
     })
   ];
+  if (props.orderedPairMass)
+    nodes.push(
+      ...getOrderedPairMassNodes<Parameters>(graph, {
+        id: `${id}-g-pair-mass`,
+        operation,
+        rows,
+        bindings: [
+          {name: 'compactX', view: compactX, type: 'f32', access: 'read'},
+          {name: 'positions', view: rowPositions, type: 'u32', access: 'read'}
+        ],
+        value: `select(0.0, compactX[compactXOffset + index], index < positions[positionsOffset + ${rows}u])`,
+        destination: {name: 'totals', view: totals, type: 'f32', access: 'read_write'},
+        write: 'totals[totalsOffset + 9u] = pairMass;'
+      })
+    );
   if (props.analysisCount)
     nodes.push(
       createWGSLKernelNode(graph, {
@@ -647,6 +742,7 @@ ${PERMUTATION_FLOAT_WGSL}`,
   return {
     nodes,
     rowPositions,
+    originalX: values,
     compactX,
     compactY,
     totals,
@@ -773,6 +869,8 @@ export function getNegativeValueCountNodes<Parameters>(
     operation: string;
     rows: number;
     compactX: GraphDataView<'float32'>;
+    /** When supplied, count original source signs instead of potentially underflowed compact values. */
+    originalX?: GraphDataView<'float32'>;
     rowPositions: GraphDataView<'uint32'>;
   }
 ): {nodes: GPUCommandNode<Parameters>[]; negativeCount: GraphDataView<'uint32'>} {
@@ -787,14 +885,19 @@ export function getNegativeValueCountNodes<Parameters>(
         operation,
         variant: 'negative-indicators',
         bindings: [
-          {name: 'compactX', view: props.compactX, type: 'f32', access: 'read'},
+          {
+            name: props.originalX ? 'sourceValues' : 'compactX',
+            view: props.originalX ?? props.compactX,
+            type: 'f32',
+            access: 'read'
+          },
           {name: 'rowPositions', view: props.rowPositions, type: 'u32', access: 'read'},
           {name: 'indicators', view: indicators, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: `const ROWS: u32 = ${rows}u;`,
         // Positions at or past the analysis count hold no value.
-        body: `indicators[indicatorsOffset + index] = select(0u, 1u, index < rowPositions[rowPositionsOffset + ROWS] && compactX[compactXOffset + index] < 0.0);`
+        body: `indicators[indicatorsOffset + index] = select(0u, 1u, ${props.originalX ? 'rowPositions[rowPositionsOffset + index] != 0xffffffffu' : 'index < rowPositions[rowPositionsOffset + ROWS]'} && ${props.originalX ? 'sourceValues[sourceValuesOffset + index]' : 'compactX[compactXOffset + index]'} < 0.0);`
       }),
       ...new GPUReduction({
         id: `${id}-negative-sum`,

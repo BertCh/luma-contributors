@@ -13,6 +13,7 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -61,6 +62,15 @@ export const MAXIMUM_UNMIXING_ITERATIONS = 4096;
 export class GPURasterSpectralUnmixing implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPURasterSpectralUnmixingProps) {
+    validateGraphPorts(props.id ?? 'raster-spectral-unmixing', props, {
+      values: {required: true, viewType: 'data', formats: ['float32']},
+      endmembers: {required: true, viewType: 'data', formats: ['float32']},
+      mask: {required: false, viewType: 'data', formats: ['uint32']},
+      'output.abundances': {required: true, viewType: 'data', formats: ['float32']},
+      'output.residual': {required: true, viewType: 'data', formats: ['float32']},
+      'output.status': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.iterationCounts': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     this.id = props.id ?? 'raster-spectral-unmixing';
     validateCapacity(this.id, 'cellCount', props.cellCount);
     validateCapacity(this.id, 'bandCount', props.bandCount, 1, MAXIMUM_UNMIXING_BAND_COUNT);
@@ -191,12 +201,27 @@ ${
   !constrained
     ? `let fit = leastSquares(design, response); code = 2u; if (fit.valid) { coefficients = fit.coefficients; residualValue = fit.residual; code = 0u; }`
     : `
+  // Normalize both sides by the design scale before forming products. The coefficient
+  // problem is unchanged, while its stopping criterion no longer depends on spectral units.
+  var designScale = 0.0;
+  for (var entry = 0u; entry < ${bands * members}u; entry++) { designScale = max(designScale, abs(design[entry])); }
+  if (designScale > 0.0) {
+    for (var entry = 0u; entry < ${bands * members}u; entry++) { design[entry] /= designScale; }
+    for (var band = 0u; band < ${bands}u; band++) { response[band] /= designScale; }
+  }
+  ${props.constraint === 'simplex' ? `for (var member = 0u; member < ${members}u; member++) { coefficients[member] = 1.0 / ${members}.0; }` : ''}
+  // Scale convergence by the gradient at the actual start (uniform in simplex mode),
+  // rather than at zero, whose gradient vanishes for dark pixels.
   var lipschitz = 0.0; var gradientScale = 0.0;
   for (var member = 0u; member < ${members}u; member++) {
     var gradient = 0.0;
-    for (var band = 0u; band < ${bands}u; band++) { let value = design[member * ${bands}u + band]; lipschitz += value * value; gradient += value * response[band]; }
+    for (var band = 0u; band < ${bands}u; band++) {
+      let value = design[member * ${bands}u + band]; lipschitz += value * value;
+      var initialError = -response[band];
+      for (var initialMember = 0u; initialMember < ${members}u; initialMember++) { initialError += design[initialMember * ${bands}u + band] * coefficients[initialMember]; }
+      gradient += value * initialError;
+    }
     gradientScale = max(gradientScale, abs(gradient));
-    ${props.constraint === 'simplex' ? `coefficients[member] = 1.0 / ${members}.0;` : ''}
   }
   code = 2u;
   if (lipschitz > 0.0 && finite(lipschitz)) {
@@ -221,10 +246,10 @@ ${
       var mapping = 0.0;
       for (var member = 0u; member < ${members}u; member++) { mapping = max(mapping, abs(candidate[member] - coefficients[member]) * lipschitz); }
       coefficients = candidate; performed = iteration + 1u;
-      if (mapping <= ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)} * max(1.0, gradientScale)) { code = 0u; break; }
+      if (mapping <= ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)} * gradientScale) { code = 0u; break; }
     }
     residualValue = 0.0;
-    for (var band = 0u; band < ${bands}u; band++) { var error = -response[band]; for (var member = 0u; member < ${members}u; member++) { error += design[member * ${bands}u + band] * coefficients[member]; } residualValue += error * error; }
+    for (var band = 0u; band < ${bands}u; band++) { var error = -response[band]; for (var member = 0u; member < ${members}u; member++) { error += design[member * ${bands}u + band] * coefficients[member]; } let originalError = error * designScale; residualValue += originalError * originalError; }
     if (!finite(residualValue)) { code = 2u; }
   }`
 }

@@ -148,3 +148,44 @@ describe('weights capacity plans match the allocation (A-15)', () => {
     });
   }
 });
+
+import {getGPUSpatialWeightsCapacityPlan} from '../../../src/gpu-spatial-analysis/spatial-weights/spatial-weights';
+import {computeContiguityWeightsOnCPU} from '../../../src/gpu-spatial-analysis/spatial-weights/cpu-contiguity-weights-operation';
+it('STA-09 retries candidate coverage before using partial or unknown final sizing', () => {
+  // A shared edge creates two directed links. A one-pair scratch retains only one.
+  const topology = {
+    positions: Float32Array.of(0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, -1),
+    ringOffsets: Uint32Array.of(0, 3, 6),
+    polygonOffsets: Uint32Array.of(0, 1, 2),
+    featureOffsets: Uint32Array.of(0, 1, 2)
+  };
+  const weights = computeContiguityWeightsOnCPU(topology, {
+    criterion: 'rook',
+    capacity: 2,
+    pairCapacity: 1
+  });
+  expect(weights.status.overflow[0]).toBe(0);
+  expect(weights.status.candidateOverflow[0]).toBe(1);
+  for (const requirement of [
+    {kind: 'unknown'},
+    {kind: 'lower-bound', value: weights.status.requiredCount[0]},
+    {kind: 'saturated', value: 0xffffffff}
+  ] as const) {
+    const plan = getGPUSpatialWeightsCapacityPlan({
+      rowCount: 2,
+      capacity: 2,
+      requiredCount: requirement
+    } as never);
+    expect(plan).toMatchObject({capacity: 2, limited: false, retryStage: 'candidates'});
+  }
+  expect(
+    getGPUSpatialWeightsCapacityPlan({
+      rowCount: 2,
+      capacity: 2,
+      requiredCount: {kind: 'exact', value: 2}
+    } as never)
+  ).toMatchObject({capacity: 2, limited: false, retryStage: 'none'});
+  expect(
+    getGPUSpatialWeightsCapacityPlan({rowCount: 2, capacity: 2, requiredCount: 4})
+  ).toMatchObject({capacity: 5, limited: false, retryStage: 'final'});
+});

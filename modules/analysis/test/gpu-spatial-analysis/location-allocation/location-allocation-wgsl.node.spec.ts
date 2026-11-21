@@ -8,7 +8,7 @@ import {expect, it} from 'vitest';
 import {findStatisticsNonFiniteConstants} from '../spatial-weights/statistics-wgsl-audit';
 import {
   GPULocationAllocation,
-  GPU_LOCATION_ALLOCATION_STATUS,
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT,
   type GPULocationAllocationOperation
 } from '../../../src/gpu-spatial-analysis/location-allocation/gpu-location-allocation';
 import {
@@ -64,7 +64,7 @@ function getKernelSources(
       assignments: view('uint32', DEMAND_COUNT),
       assignedCosts: view('float32', DEMAND_COUNT),
       objective: view('float32', 1),
-      status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+      status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
     }
   });
   const nodes = allocation.getCommandNodes(graph);
@@ -122,7 +122,7 @@ it('GPULocationAllocation pipeline count does not grow with swaps or steps (rule
         selectedFacilities: view('uint32', FACILITY_COUNT),
         assignments: view('uint32', DEMAND_COUNT),
         objective: view('float32', 1),
-        status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+        status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
       }
     }).getCommandNodes(graph) as readonly {id: string; condition?: {mode: string}}[];
   };
@@ -137,7 +137,14 @@ it('GPULocationAllocation pipeline count does not grow with swaps or steps (rule
     expect(distinct(3, 2), `${operation} sparse ${sparse}`).toBe(distinct(2, 2));
     expect(distinct(2, 3), `${operation} sparse ${sparse}`).toBe(distinct(2, 2));
     const nodes = build(operation, 2, 2, sparse);
-    for (const stage of ['list', 'prepare', sparse ? 'removal' : 'totals', 'score', 'choose']) {
+    for (const stage of [
+      'list-scan-0',
+      'list-scatter',
+      'prepare',
+      sparse ? 'removal' : 'totals',
+      'score',
+      'choose'
+    ]) {
       expect(nodes.find(node => node.id === `la-swap-1-${stage}`)?.condition?.mode).toBe(
         'indirect'
       );

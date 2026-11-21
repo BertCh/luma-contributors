@@ -60,7 +60,7 @@ for (const method of ['2sfca', '3sfca'] as const) {
               accessibility: accessibility.view,
               ratios: ratios.view,
               reachableFacilities: reachable.view,
-              validity: validity.view
+              demandValidity: validity.view
             }
           })
         );
@@ -288,7 +288,7 @@ it('GPUHuffTradeAreas skips a non-finite demand and reports the row invalid', as
       demand: rig.input(Float32Array.of(Number.NaN, 10, Number.POSITIVE_INFINITY), 'float32'),
       demandWeights: rig.weights(demandWeights),
       facilityWeights: rig.weights(facilityWeights),
-      output: {tradeArea, expectedDemand, validity}
+      output: {tradeArea, expectedDemand, demandValidity: validity}
     })
   );
   const captured = await rig.readFloat(expectedDemand);
@@ -322,7 +322,7 @@ it('GPUCatchmentAccessibility skips a non-finite demand and reports the row inva
       demand: rig.input(Float32Array.of(Number.NaN, 3, Number.NEGATIVE_INFINITY), 'float32'),
       facilityWeights: rig.weights(facilityWeights),
       demandWeights: rig.weights(demandWeights),
-      output: {accessibility, ratios, validity}
+      output: {accessibility, ratios, demandValidity: validity}
     })
   );
   expect(await rig.readFloat(ratios)).toEqual([2]);

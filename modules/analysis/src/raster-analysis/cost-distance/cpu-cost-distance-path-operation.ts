@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
@@ -9,8 +10,10 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationUint32Rows} from '../../analysis-core/operations/cpu-operation-rows';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPU_COST_DISTANCE_NONE, GPU_COST_DISTANCE_UNRESOLVED} from './gpu-cost-distance';
 import type {CostDistancePathOperationProps} from './gpu-cost-distance-path-operation';
+import {snapshotRasterGrid} from '../raster-grid/raster-construction-snapshot';
 
 /** Packed output rows; only `ids[0..count)` are a published path. */
 export type CPUCostDistancePathResult = {
@@ -18,6 +21,7 @@ export type CPUCostDistancePathResult = {
   count: Uint32Array;
   overflow: Uint32Array;
   requiredCount: Uint32Array;
+  candidateOverflow: Uint32Array;
   iterationLimitReached: Uint32Array;
 };
 
@@ -81,6 +85,7 @@ export function computeCostDistancePathOnCPU(
     count: new Uint32Array([Math.min(length, capacity)]),
     overflow: new Uint32Array([Number(length > capacity)]),
     requiredCount: new Uint32Array([length]),
+    candidateOverflow: new Uint32Array([0]),
     iterationLimitReached: new Uint32Array([unresolved])
   };
 }
@@ -100,10 +105,43 @@ function validatePathOptions(id: string, grid: GPURasterMetadata, capacity: numb
 /** CPU twin with the same graph ports and no additional GPU size restrictions. */
 export class CPUCostDistancePathOperation extends GPUCPUOperation {
   constructor(props: CostDistancePathOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'backLinks',
+      'target',
+      'capacity',
+      'output'
+    ]);
     const id = props.id ?? 'cost-distance-path';
     validatePathOptions(id, props.grid, props.capacity);
-    const {path} = props.output;
+    const capturedPath = snapshotConstructionFields(props.output.path, ['ids', 'status']);
+    const path = Object.freeze({
+      ...capturedPath,
+      status: snapshotConstructionFields(capturedPath.status, [
+        'count',
+        'overflow',
+        'requiredCount',
+        'candidateOverflow'
+      ])
+    });
+    const grid = snapshotRasterGrid(props.grid);
+    const capacity = props.capacity;
+    const requiredCount = path.status.requiredCount;
+    const candidateOverflow = path.status.candidateOverflow;
     const iterationLimitReached = props.output.status?.iterationLimitReached;
+    validateOperationGraphNames(
+      id,
+      {backLinks: props.backLinks, target: props.target},
+      {
+        ids: path.ids,
+        count: path.status.count,
+        overflow: path.status.overflow,
+        ...(requiredCount !== undefined ? {requiredCount} : {}),
+        ...(candidateOverflow !== undefined ? {candidateOverflow} : {}),
+        ...(iterationLimitReached !== undefined ? {iterationLimitReached} : {})
+      }
+    );
     super({
       id,
       inputs: {backLinks: props.backLinks, target: props.target},
@@ -111,7 +149,12 @@ export class CPUCostDistancePathOperation extends GPUCPUOperation {
         [path.ids]: gpuGraph.vector('uint32', {length: props.capacity}),
         [path.status.count]: gpuGraph.vector('uint32', {length: 1}),
         [path.status.overflow]: gpuGraph.vector('uint32', {length: 1}),
-        [path.status.requiredCount]: gpuGraph.vector('uint32', {length: 1}),
+        ...(requiredCount !== undefined
+          ? {[requiredCount]: gpuGraph.vector('uint32', {length: 1})}
+          : {}),
+        ...(candidateOverflow !== undefined
+          ? {[candidateOverflow]: gpuGraph.vector('uint32', {length: 1})}
+          : {}),
         ...(iterationLimitReached !== undefined
           ? {[iterationLimitReached]: gpuGraph.vector('uint32', {length: 1})}
           : {})
@@ -120,14 +163,17 @@ export class CPUCostDistancePathOperation extends GPUCPUOperation {
         const result = computeCostDistancePathOnCPU(
           getCPUOperationUint32Rows(id, inputs, 'backLinks'),
           getCPUOperationUint32Rows(id, inputs, 'target'),
-          props.grid,
-          props.capacity
+          grid,
+          capacity
         );
         return {
           [path.ids]: result.ids,
           [path.status.count]: result.count,
           [path.status.overflow]: result.overflow,
-          [path.status.requiredCount]: result.requiredCount,
+          ...(requiredCount !== undefined ? {[requiredCount]: result.requiredCount} : {}),
+          ...(candidateOverflow !== undefined
+            ? {[candidateOverflow]: result.candidateOverflow}
+            : {}),
           ...(iterationLimitReached !== undefined
             ? {[iterationLimitReached]: result.iterationLimitReached}
             : {})

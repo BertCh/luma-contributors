@@ -335,11 +335,11 @@ export async function createLassoExplorer(
   }
   for (const feature of areas.geojson?.features ?? []) {
     const properties = feature.properties ?? {};
-    const id = Number(properties.id ?? areaInfos.length + 1);
+    const id = Number(properties['id'] ?? areaInfos.length + 1);
     areaInfos.push({
       id,
-      name: String(properties.name ?? ''),
-      areaKm2: Number(properties.areaKm2 ?? 0),
+      name: String(properties['name'] ?? ''),
+      areaKm2: Number(properties['areaKm2'] ?? 0),
       records: recordsByAreaId[id] ?? 0,
       weekendRecords: weekendByAreaId[id] ?? 0
     });
@@ -480,19 +480,18 @@ export async function createLassoExplorer(
         buffers: pick
       });
       const mask = importGraphBuffer(graph, 'pick-mask', pick.mask, 'uint32', pointCount);
-      graph.add(
-        new GPUPickRegionMask({
-          id: 'lasso-pick-region-mask',
-          picks: result,
-          output: {
-            mask,
-            status: {
-              overflow: importGraphBuffer(graph, 'pick-overflow', pick.overflow, 'uint32', 1)
-            }
+      const maskProducer = new GPUPickRegionMask({
+        id: 'lasso-pick-region-mask',
+        picks: result,
+        output: {
+          mask,
+          status: {
+            overflow: importGraphBuffer(graph, 'pick-overflow', pick.overflow, 'uint32', 1)
           }
-        })
-      );
-      selection = {kind: 'mask', mask};
+        }
+      });
+      graph.add(maskProducer);
+      selection = {kind: 'mask', ...maskProducer.props.output};
     } else {
       const mask: GraphDataView<'uint32'> = importGraphBuffer(
         graph,
@@ -501,27 +500,26 @@ export async function createLassoExplorer(
         'uint32',
         pointCount
       );
-      graph.add(
-        new GPURegionMask({
-          spatialContext: projection.spatialContext,
-          id: 'lasso-region-mask',
-          positions: positionsView,
-          region: graphKey.startsWith('mask-polygon') ? polygonShape() : rectangleShape(),
-          output: {
-            mask,
-            status: {
-              overflow: importGraphBuffer(
-                graph,
-                'region-mask-overflow',
-                regionMaskOverflow,
-                'uint32',
-                1
-              )
-            }
+      const maskProducer = new GPURegionMask({
+        spatialContext: projection.spatialContext,
+        id: 'lasso-region-mask',
+        positions: positionsView,
+        region: graphKey.startsWith('mask-polygon') ? polygonShape() : rectangleShape(),
+        output: {
+          mask,
+          status: {
+            overflow: importGraphBuffer(
+              graph,
+              'region-mask-overflow',
+              regionMaskOverflow,
+              'uint32',
+              1
+            )
           }
-        })
-      );
-      selection = {kind: 'mask', mask};
+        }
+      });
+      graph.add(maskProducer);
+      selection = {kind: 'mask', ...maskProducer.props.output};
     }
     const wantsIds = options.selectedIds === 'ids';
     const idCapacity =

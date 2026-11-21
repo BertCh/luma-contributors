@@ -15,6 +15,7 @@ import {
   type WGSLDispatchGate
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
 
@@ -143,7 +144,8 @@ export class WardActiveGraph<Parameters> {
     iteration: number,
     gate: WGSLDispatchGate<Parameters>,
     regions: GraphDataView<'float32'>,
-    columnCount: number
+    columnCount: number,
+    rawFeatures = false
   ): {nodes: GPUCommandNode<Parameters>[]; adjacency: WardActiveAdjacency} {
     const {graph, capacity, rowCount, heads, links} = this;
     const prefix = `${this.id}-contract-${iteration}`;
@@ -151,6 +153,7 @@ export class WardActiveGraph<Parameters> {
     const destination = 1 - source;
     const edges = this.endpoints[destination];
     const costs = this.costs[destination];
+    const regionStride = rawFeatures ? 2 * columnCount + 2 : columnCount + 1;
     const edgeKernel = {
       operation: 'GPUWardRegions',
       invocationCount: capacity,
@@ -292,6 +295,7 @@ export class WardActiveGraph<Parameters> {
         id: `${prefix}-costs`,
         variant: 'contract-costs',
         ...edgeKernel,
+        declarations: rawFeatures ? ROUNDED_DIFFERENCE_WGSL : '',
         bindings: [
           countBinding,
           {name: 'edges', view: edges, type: 'u32', access: 'read'},
@@ -303,12 +307,18 @@ export class WardActiveGraph<Parameters> {
         body: `if (index >= counts[countsOffset]) { return; }
   let previous = previousCosts[previousCostsOffset + previousEdges[previousEdgesOffset + index]];
   if ((bitcast<u32>(previous) & 0x7fffffffu) <= 0x7f800000u) { costs[costsOffset + index] = previous; return; }
-  let first = edges[edgesOffset + 2u * index] * ${columnCount + 1}u;
-  let second = edges[edgesOffset + 2u * index + 1u] * ${columnCount + 1}u;
+  let first = edges[edgesOffset + 2u * index] * ${regionStride}u;
+  let second = edges[edgesOffset + 2u * index + 1u] * ${regionStride}u;
   let firstCount = regions[regionsOffset + first]; let secondCount = regions[regionsOffset + second];
+  ${rawFeatures ? `let runtimeZero = bitcast<u32>(regions[regionsOffset + first + ${regionStride - 1}u]);` : ''}
   var increase = 0.0;
   for (var column = 1u; column <= ${columnCount}u; column++) {
-    let difference = regions[regionsOffset + first + column] / firstCount - regions[regionsOffset + second + column] / secondCount;
+    ${
+      rawFeatures
+        ? `let originDifference = getRoundedDifference(regions[regionsOffset + first + ${columnCount}u + column], regions[regionsOffset + second + ${columnCount}u + column], runtimeZero);
+    let difference = originDifference + getRoundedDifference(regions[regionsOffset + first + column] / firstCount, regions[regionsOffset + second + column] / secondCount, runtimeZero);`
+        : 'let difference = regions[regionsOffset + first + column] / firstCount - regions[regionsOffset + second + column] / secondCount;'
+    }
     increase += firstCount * secondCount / (firstCount + secondCount) * difference * difference;
   }
   costs[costsOffset + index] = increase;`

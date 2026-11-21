@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterOperationArray} from '../raster-grid/raster-operation-band';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {getCPUOperationUint32Rows} from '../../analysis-core/operations/cpu-operation-rows';
 import type {RasterFillHolesOperationProps} from './gpu-raster-fill-holes-operation';
 import {
@@ -42,6 +45,7 @@ export function computeRasterFillHolesOnCPU(
   options: CPURasterFillHolesOptions
 ): CPURasterFillHolesResult {
   const id = 'computeRasterFillHolesOnCPU';
+  validateRasterOperationArray(id, 'input', input, 'Uint32Array');
   validateRasterMorphologyOptions(id, options);
   const {width, height} = options.grid;
   const length = width * height;
@@ -89,9 +93,42 @@ export function computeRasterFillHolesOnCPU(
 /** CPU boundary flood with the same distance budget and verification count as the GPU. */
 export class CPURasterFillHolesOperation extends GPUCPUOperation {
   constructor(props: RasterFillHolesOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'connectivity',
+      'maximumIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['values', 'status']);
+    props = {
+      ...props,
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'converged',
+          'iterationCount',
+          'iterationLimitReached'
+        ])
+      })
+    };
     props = captureRasterMorphologyOperationProps(props);
     const id = props.id ?? 'raster-fill-holes';
     validateRasterMorphologyOptions(id, props);
+    validateOperationGraphNames(
+      id,
+      {input: props.input},
+      {
+        values: props.output.values,
+        'status.converged': props.output.status.converged,
+        ...Object.fromEntries(
+          Object.entries(props.output.status)
+            .filter(([, value]) => value !== undefined)
+            .map(([port, value]) => [`status.${port}`, value])
+        )
+      }
+    );
     super({
       id,
       inputs: {input: props.input},

@@ -28,6 +28,13 @@ import {
   validateGraphChunkBindingRanges
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 
+import {
+  decodeRouteColumns,
+  sliceRouteColumns,
+  readRouteWords,
+  type GPUKShortestPathsByteReadback,
+  type RouteReadbackWords
+} from '../k-shortest-paths/k-shortest-paths-output';
 /** Two private vertex/edge arrays bound the reference search's per-invocation memory. */
 export const GPU_ALTERNATIVE_ROUTES_MAXIMUM_NODE_COUNT = 256;
 /** Bounds the per-query output initialization and retained exact routes. */
@@ -74,12 +81,19 @@ export type GPUAlternativeRoutesProps = {
  * No CPU result readback or fallback is used. Scratch is 4 * queries * frontier * (2 + 2 * nodes).
  *
  * Cap rationale: 256 nodes bounds the two private reconstruction arrays; 65536 frontier entries
- * bounds the serial heap and its full-path copies; 32 retained routes and 10000000 examinations
+ * bounds the serial heap and its full-path copies per query; 32 retained routes and 10000000 examinations
  * bound the exhaustive reference work. Raising these does not provide a parallel traversal.
  * GPUKShortestPaths is the large-graph alternative, but cannot silently replace this route:
  * Yen/reachability does not promise this class's global lexicographic edge order for tied costs,
  * and its batch status cannot reproduce independent per-query certification. The CPU twin keeps
  * the exact ordering without the GPU private-memory and binding bounds.
+ *
+ * Per query per encoding, `maximumExpansions` bounds examined outgoing CSR slots (including
+ * rejected slots), 1..10000000, default 100000. `maximumFrontierSize` bounds simultaneously
+ * pending simple-path prefixes, 1..65536, default 1024. These are independent of hop length
+ * and of `routeCount` (1..32). Each query's `output.complete` is 0 on either stop, and 1
+ * after k routes or exhaustive search. Only the first `output.counts[query]` routes are usable;
+ * they remain a certified prefix ordered by cost then lexicographic CSR edge slots.
  */
 export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
   readonly id: string;
@@ -124,7 +138,7 @@ export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
       ['targets', props.targets]
     ] as const)
       validateSinglePackedView(view, ['uint32'], `${this.id} ${name}`);
-    validateCapacity(this.id, 'sources rows', props.sources.length);
+    validateCapacity(this.id, 'sources rows', props.sources.length, 0);
     validateViewLength(this.id, 'targets', props.targets, props.sources.length);
     const routes = props.sources.length * props.routeCount;
     for (const [name, length] of Object.entries({
@@ -132,7 +146,7 @@ export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
       metadataWords: props.sources.length * (4 + props.routeCount * 2),
       frontierWords: props.sources.length * this.maximumFrontierSize * (2 + 2 * this.nodeCount)
     }))
-      validateCapacity(this.id, name, length);
+      validateCapacity(this.id, name, length, 0);
     for (const [name, view] of Object.entries(props.output)) {
       validateSinglePackedView(
         view,
@@ -157,6 +171,7 @@ export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    if (this.props.sources.length === 0) return [];
     const {id, props, nodeCount} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUNetworkTopologyViews(props.topology),
@@ -355,4 +370,59 @@ fn swapRecords(first: u32, second: u32) {
       })
     ];
   }
+}
+
+/** Alternative routes use nodeCount vertex slots per route and per-query completion. */
+export function getGPUAlternativeRoutesOutputLayout(options: {
+  id?: string;
+  queryCount: number;
+  routeCount: number;
+  nodeCount: number;
+}) {
+  const id = options.id ?? 'getGPUAlternativeRoutesOutputLayout';
+  validateCapacity(id, 'queryCount', options.queryCount, 0);
+  validateCapacity(id, 'routeCount', options.routeCount);
+  validateCapacity(id, 'nodeCount', options.nodeCount, 0);
+  const routeRows = options.queryCount * options.routeCount;
+  const pathRows = routeRows * options.nodeCount;
+  validateCapacity(id, 'queryCount * routeCount', routeRows, 0);
+  validateCapacity(id, 'queryCount * routeCount * nodeCount', pathRows, 0);
+  const unsigned = (length: number) => ({format: 'uint32' as const, length});
+  return {
+    vertices: unsigned(pathRows),
+    edges: unsigned(pathRows),
+    lengths: unsigned(routeRows),
+    costs: {format: 'float32' as const, length: routeRows},
+    counts: unsigned(options.queryCount),
+    complete: unsigned(options.queryCount)
+  };
+}
+/** Retained route rows with independent query certificates, including zero-route queries. */
+export function decodeGPUAlternativeRoutes(
+  output: Omit<GPUKShortestPathsByteReadback, 'status'> & {complete: RouteReadbackWords},
+  options: {id?: string; queryCount: number; routeCount: number; nodeCount: number}
+) {
+  getGPUAlternativeRoutesOutputLayout(options);
+  const id = options.id ?? 'decodeGPUAlternativeRoutes';
+  const columns = decodeRouteColumns(
+    output,
+    options.queryCount,
+    options.routeCount,
+    options.nodeCount,
+    id
+  );
+  const complete = readRouteWords(output.complete, 'uint32', options.queryCount, id);
+  const queries = sliceRouteColumns(
+    columns,
+    options.queryCount,
+    options.routeCount,
+    options.nodeCount,
+    id
+  );
+  return {
+    queries: queries.map((query, row) => {
+      validateCapacity(id, `complete[${row}]`, complete[row], 0, 1);
+      return {...query, complete: complete[row] !== 0};
+    })
+  };
 }

@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getCPUVecchiaNeighborhoodStatus,
+  snapshotCPUVecchiaInput,
+  snapshotVecchiaLossProps
+} from './vecchia-neighborhood-status';
+
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {snapshotVecchiaFisherScoringOperationProps} from './interpolation-operation-snapshots';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   getCPUOperationFloat32Rows,
@@ -30,10 +40,16 @@ import {
 export type CPUVecchiaFisherScoringInput = CPUVecchiaRows;
 /** Same flat ten-cell per-site and twenty-word total layouts as GPUVecchiaFisherScoring. */
 export type CPUVecchiaFisherScoringResult = {
+  neighborhoodStatus?: Uint32Array;
   siteTerms: Float32Array;
   siteStatus: Uint32Array;
   totals: Float32Array;
   status: Uint32Array;
+};
+
+/** Numerical evaluator result with guaranteed neighborhood evidence. */
+export type PreparedCPUVecchiaFisherScoringResult = CPUVecchiaFisherScoringResult & {
+  neighborhoodStatus: Uint32Array;
 };
 
 /**
@@ -56,13 +72,16 @@ export type CPUVecchiaFisherScoringResult = {
  */
 export function computeVecchiaFisherScoringOnCPU(
   input: CPUVecchiaFisherScoringInput
-): CPUVecchiaFisherScoringResult {
+): PreparedCPUVecchiaFisherScoringResult {
+  const captured = snapshotCPUVecchiaInput(input);
+  input = {...captured, id: captured.id ?? 'vecchia-fisher-scoring'};
   const rowCount = validateCPUVecchiaRows(input);
   const model = getCPUVecchiaCovariance(input);
   const cellCount = GPU_VECCHIA_FISHER_CELL_COUNT;
   const siteTerms = new Float64Array(rowCount * cellCount).fill(NaN);
   const siteStatus = new Uint32Array(rowCount);
   const status = new Uint32Array(3);
+  const neighborhoodStatus = getCPUVecchiaNeighborhoodStatus(input.id!, input.neighborhoodStatus);
   const derivative = (parameter: number, first: number, second: number): number => {
     const differenceX = input.positions[first * 2] - input.positions[second * 2];
     const differenceY = input.positions[first * 2 + 1] - input.positions[second * 2 + 1];
@@ -178,7 +197,8 @@ export function computeVecchiaFisherScoringOnCPU(
   return {
     siteTerms: Float32Array.from(siteTerms),
     siteStatus,
-    totals: sumCPUVecchiaCells(siteTerms, cellCount, status),
+    totals: sumCPUVecchiaCells(siteTerms, cellCount, status, neighborhoodStatus),
+    neighborhoodStatus,
     status
   };
 }
@@ -186,6 +206,7 @@ export function computeVecchiaFisherScoringOnCPU(
 /** CPU Fisher evaluation without the GPU-only conditioning capacity. */
 export class CPUVecchiaFisherScoringOperation extends GPUCPUOperation {
   constructor(props: VecchiaFisherScoringOperationProps) {
+    props = snapshotVecchiaLossProps(props, snapshotVecchiaFisherScoringOperationProps);
     const id = props.id ?? 'vecchia-fisher-scoring';
     validateCPUVecchiaProps(id, props);
     const operation = new GPUVecchiaFisherScoringOperation(props);
@@ -200,9 +221,23 @@ export class CPUVecchiaFisherScoringOperation extends GPUCPUOperation {
       ),
       execute({inputs}) {
         const positions = getCPUOperationFloat32Rows(id, inputs, 'positions', 'float32x2');
-        if (positions.length !== props.rowCount * 2)
-          throw new Error(`${id} positions length must equal rowCount * 2`);
+        validateRequirement(
+          id,
+          !(positions.length !== props.rowCount * 2),
+          `positions length must equal rowCount * 2 (${props.rowCount * 2}); received ${positions.length}`
+        );
         const result = computeVecchiaFisherScoringOnCPU({
+          id,
+          neighborhoodStatus: {
+            overflow:
+              props.neighborhoodStatus?.overflow !== undefined
+                ? getCPUOperationUint32Rows(id, inputs, 'neighborhoodOverflow')
+                : undefined,
+            candidateOverflow:
+              props.neighborhoodStatus?.candidateOverflow !== undefined
+                ? getCPUOperationUint32Rows(id, inputs, 'neighborhoodCandidateOverflow')
+                : undefined
+          },
           positions,
           observations: getCPUOperationFloat32Rows(id, inputs, 'observations', 'float32x4'),
           neighborhoodOffsets: getCPUOperationUint32Rows(id, inputs, 'neighborhoodOffsets'),

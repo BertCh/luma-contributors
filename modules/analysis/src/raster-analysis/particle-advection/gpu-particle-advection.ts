@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   validatePackedUint32View,
@@ -96,7 +98,9 @@ export type GPUParticleAdvectionProps = {
   uint32Parameters: GraphDataView<'uint32'>;
   /** Particle state, updated in place. All state views have `particleCount` rows. */
   state: {
-    /** Current particle positions. */
+    /** Current positions in the packed frame. With localOrigin, upload world minus origin
+     * before narrowing and keep this state local across encodings; previous positions and trails
+     * use the same frame. Add the origin in binary64 only for readback/display. */
     positions: GraphDataView<'float32x2'>;
     /** Frames since the particle spawned. */
     ages: GraphDataView<'uint32'>;
@@ -125,6 +129,9 @@ export type GPUParticleAdvectionProps = {
  * replay with the same parameter sequence is therefore bitwise identical, and a particle's spawn
  * points do not depend on the particle count or the dispatch order.
  *
+ * With packer localOrigin, state and all position outputs remain local across encodings.
+ * Legacy calls without localOrigin retain absolute world positions.
+ *
  * State is updated in place rather than ping-ponged: every invocation reads and writes only its
  * own particle's rows, so there is no cross-row hazard, and one copy of the state halves memory.
  * The trail ring is written by a second node after the step.
@@ -132,7 +139,7 @@ export type GPUParticleAdvectionProps = {
  * Precision: positions and the field extent are f32; use field-local or tile-local coordinates for
  * large worlds.
  *
- * Relation to `FlowParticleSimulation` (`@luma-contributors/analysis/experimental/simulation`): this contributor only
+ * Relation to `FlowParticleSimulation` (`@luma.gl/graph/experimental/simulation`): this contributor only
  * declares its resources and command nodes into a caller-owned `GPUCommandGraph`, so the caller
  * owns the device, the particle and velocity buffers, compilation, submission and the frame loop,
  * and can chain it after other contributors (for example `GPUTerrainFlowField`). The
@@ -144,9 +151,9 @@ export type GPUParticleAdvectionProps = {
  * Row direction: with positive cellHeight, row zero is on the smallest-y side of the field extent and
  * rows advance toward larger y; `v` is the velocity toward larger y. Signed cell sizes explicitly
  * reverse the corresponding index direction; sample centers are origin + (index + 0.5) * cell size. No grid affine is read and
- * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
- * must have its row order reversed by the caller before upload, or the flow is mirrored north to
- * south. Following a grid affine is deferred (roadmap 12.4).
+ * nothing is checked at construction. A north-up field (row 0 at the top) can be uploaded as is
+ * with a top-edge origin and negative cellHeight. Callers choosing positive cellHeight must
+ * reverse those rows and use a bottom-edge origin. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPUParticleAdvection implements GPUCommandNodeProducer {
   /** Prefix for graph node IDs. */
@@ -157,6 +164,31 @@ export class GPUParticleAdvection implements GPUCommandNodeProducer {
   readonly props: Readonly<GPUParticleAdvectionProps>;
 
   constructor(props: GPUParticleAdvectionProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'velocities',
+      'fieldWidth',
+      'fieldHeight',
+      'parameters',
+      'uint32Parameters',
+      'state',
+      'output'
+    ]);
+    const capturedOutput =
+      props.output &&
+      snapshotConstructionFields(props.output, ['previousPositions', 'speeds', 'trails']);
+    props = Object.freeze({
+      ...props,
+      state: snapshotConstructionFields(props.state, ['positions', 'ages', 'generations']),
+      output:
+        capturedOutput &&
+        Object.freeze({
+          ...capturedOutput,
+          trails:
+            capturedOutput.trails &&
+            snapshotConstructionFields(capturedOutput.trails, ['positions', 'length'])
+        })
+    });
     const id = props.id ?? 'particle-advection';
     const {fieldWidth, fieldHeight, state} = props;
     const output = props.output ?? {};

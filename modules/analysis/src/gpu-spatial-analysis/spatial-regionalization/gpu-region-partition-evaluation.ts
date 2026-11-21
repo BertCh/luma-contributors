@@ -8,6 +8,7 @@ import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-u
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
+  GPUReduction,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -30,10 +31,21 @@ import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
+  isGPUChunkedSpatialWeights,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 import {GET_NAN_WGSL, IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  createRegionalizationLossSuppressionNodes,
+  validateRegionalizationWeightsCompleteness
+} from './adjacency-loss-suppression';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
+import {REGIONAL_MOMENT_WGSL} from './regional-moment-wgsl';
+import {createRegionalMomentSumNodes} from './regional-moment-sums';
 
 const OPERATION = 'GPURegionPartitionEvaluation';
 /** Rows or labels reduced by one thread of a summary tile pass. */
@@ -123,7 +135,7 @@ export const GPU_REGION_PARTITION_EVALUATION_LAYOUT = {
  * Properties for {@link GPURegionPartitionEvaluation}.
  *
  * Compile-time: row count, `columnCount`, `labelCapacity` and which outputs exist. Per-frame: the
- * contents of `values`, `labels` and `weights`.
+ * contents of `values`, `labels`, `labelsComplete` and `weights`.
  */
 export type GPURegionPartitionEvaluationProps = {
   /** Prefix for generated node IDs. Defaults to `'region-partition-evaluation'`. */
@@ -143,11 +155,13 @@ export type GPURegionPartitionEvaluationProps = {
    */
   labels: GraphDataView<'uint32'>;
   /**
-   * Number of distinct label values `[0, labelCapacity)`. Defaults to the row count. At most
+   * Exclusive bound on label values `[0, labelCapacity)`, not the number of regions. Use `compactRegionLabels` when passing a region count. Defaults to the row count. At most
    * {@link getGPURegionPartitionEvaluationMaximumLabelCapacity}, and `labelCapacity * columnCount`
    * at most {@link getGPURegionPartitionEvaluationMaximumRegionValueCount}.
    */
   labelCapacity?: number;
+  /** Optional per-frame uint32 scalar: nonzero when solver labels are complete. Requires output.labelsComplete when supplied. Omission means ordinary complete labels. Scores remain available for provisional labels. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /** Optional weights for `crossLinkFraction` (a compactness proxy on the contiguity graph). */
   weights?: GPUSpatialWeights | GPUChunkedSpatialWeights;
   /** Caller-owned outputs. */
@@ -174,6 +188,8 @@ export type GPURegionPartitionEvaluationOutput = {
    * Optional one-row count of rows that carry a label in `[0, labelCapacity)` but were left out
    * because one of their values is NaN or infinite. They are part of `summary.ignoredRows`.
    */
+  /** Optional scalar provenance, independent of adjacency loss; defaults to 1 without an input word. */
+  labelsComplete?: GraphDataView<'uint32'>;
   invalidRowCount?: GraphDataView<'uint32'>;
 };
 
@@ -185,19 +201,32 @@ export type GPURegionPartitionEvaluationOutput = {
  * one unless they ran with `standardize: false`) to compare.
  *
  * Rows are grouped by label with a stable radix sort (ascending row inside a label), so every
- * label is a segment of the sorted rows. Its column sums, then its squared deviations about its
- * mean, are load-balanced segment sums (merge-path partitioning over the label segments), and the
- * contiguity link counts are load-balanced over the weights rows, so a huge region or a hub row
+ * label is a segment of the sorted rows. Its split column sums use a staged parallel segment
+ * scan; squared deviations use load-balanced segment sums (merge-path partitioning over label
+ * segments). The contiguity link counts are load-balanced over the weights rows, so a huge region or a hub row
  * spreads over many workgroups instead of serialising one thread. The summary is a tiled
- * reduction of 256 rows or labels per thread merged in tile order. Every association depends
- * only on the labels and offsets, so the result is bitwise reproducible and matches a sequential
- * CPU evaluation within f32 rounding. Work is `O(rows + links)` plus the sort, independent of
- * `labelCapacity` and of the region size distribution.
+ * reduction of 256 rows or labels per thread, followed by published parallel scalar reductions.
+ * Results match a sequential CPU evaluation within f32 rounding; reduction association can depend
+ * on the device's published reduction strategy. Split regional sums use `O(rows * log(rows))`
+ * parallel work per column, independent of the region size distribution; summary work is
+ * `O(rows + labels + links)`. Each regional sum stage combines at most two split moments.
+ * Regional and global coordinates use member origins for same-sign columns, preserving
+ * constants exactly; mixed-sign columns use zero. Subtraction and summation residuals survive
+ * cancellation and the final regional/global mean contrast. Pseudo-F uses
+ * normal mantissas and exponent differences, avoiding overflowing products or underflowing mean
+ * squares when the SSDs and final ratio are representable.
  *
  * **Missing values.** A labelled row with a NaN or infinite value in any column is treated as
  * unlabelled: it enters no sum, size, link count or mean, it is counted in `ignoredRows`, and
  * `output.invalidRowCount` says how many such rows there were. One missing value therefore
  * removes one row instead of turning every statistic into NaN.
+ * Nonzero weights.status overflow or candidateOverflow (including chunk-local flags) makes
+ * crossLinkFraction unavailable (NaN). All statistics depending only on labels/values remain usable.
+ * Optional labelsComplete provenance reports whether the supplied labels are final; provisional
+ * scores remain available, independently of adjacency loss.
+ * Accepts 1–32 attribute columns. At a 128 MiB storage binding limit, the enforced bounds
+ * are 16,777,216 label rows, a label capacity of 33,554,431, and 33,554,432 entries in
+ * `labelCapacity * columnCount`.
  */
 export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -206,6 +235,28 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
   readonly props: GPURegionPartitionEvaluationProps;
 
   constructor(props: GPURegionPartitionEvaluationProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'values',
+      'columnCount',
+      'labels',
+      'labelCapacity',
+      'labelsComplete',
+      'weights',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      weights: captured.weights ? snapshotWeightsPort(captured.weights) : undefined,
+      output: snapshotConstructionFields(captured.output, [
+        'summary',
+        'regionSizes',
+        'regionWithinSumOfSquares',
+        'regionMeans',
+        'labelsComplete',
+        'invalidRowCount'
+      ])
+    });
     const id = props.id ?? 'region-partition-evaluation';
     this.id = id;
     this.props = props;
@@ -220,25 +271,76 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
     );
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
+    validateRequirement(
+      id,
+      props.labelsComplete === undefined || output.labelsComplete !== undefined,
+      'output.labelsComplete is required when labelsComplete is supplied',
+      {
+        code: 'MISSING_PROP',
+        path: 'output.labelsComplete',
+        received: output.labelsComplete,
+        expected: 'a uint32 provenance output'
+      }
+    );
+    for (const [name, view] of [
+      ['labelsComplete', props.labelsComplete],
+      ['output.labelsComplete', output.labelsComplete]
+    ] as const) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+        validateCapacity(id, `${name}.length`, view.length, 1);
+      }
+    }
     const rows = props.labels.length;
     if (rows < 1 || props.values.length !== rows * columnCount) {
-      throw new Error(`${id} values length must equal labels.length * columnCount`);
+      validateRequirement(
+        id,
+        false,
+        `values length must equal labels.length * columnCount; received props.values.length=${props.values.length}`
+      );
     }
     const labelCapacity = props.labelCapacity ?? rows;
     validateCapacity(id, 'labelCapacity', labelCapacity);
+    if (props.weights && isGPUChunkedSpatialWeights(props.weights) && props.weights.status)
+      validateGPUStatusPort(`${id} weights.status`, props.weights.status);
+    if (props.weights) {
+      validateRegionalizationWeightsCompleteness(id, props.weights);
+      const statusPorts = [
+        {name: 'weights.status', status: props.weights.status},
+        ...(isGPUChunkedSpatialWeights(props.weights)
+          ? props.weights.chunks.map((chunk, index) => ({
+              name: `weights.chunks[${index}].weights.status`,
+              status: chunk.weights.status
+            }))
+          : [])
+      ];
+      for (const port of statusPorts)
+        for (const [name, scalar] of Object.entries(port.status ?? {}))
+          if (scalar) validateSinglePackedView(scalar, ['uint32'], `${id} ${port.name}.${name}`);
+    }
     if (props.weights && validateGPUSpatialWeightsOrChunks(id, props.weights) !== rows) {
-      throw new Error(`${id} weights row count must equal labels.length`);
+      validateRequirement(
+        id,
+        false,
+        `weights row count must equal labels.length; received rows=${rows}`
+      );
     }
     validateSinglePackedView(output.summary, ['float32'], `${id} output.summary`);
     if (output.summary.length < GPU_REGION_PARTITION_EVALUATION_LAYOUT.length) {
-      throw new Error(
-        `${id} output.summary must hold ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.length} words`
+      validateRequirement(
+        id,
+        false,
+        `output.summary must hold ${GPU_REGION_PARTITION_EVALUATION_LAYOUT.length} words; received output.summary.length=${output.summary.length}, GPU_REGION_PARTITION_EVALUATION_LAYOUT.length=${GPU_REGION_PARTITION_EVALUATION_LAYOUT.length}`
       );
     }
     if (output.regionSizes) {
       validateSinglePackedView(output.regionSizes, ['uint32'], `${id} output.regionSizes`);
       if (output.regionSizes.length < labelCapacity) {
-        throw new Error(`${id} output.regionSizes must hold labelCapacity entries`);
+        validateRequirement(
+          id,
+          false,
+          `output.regionSizes must hold labelCapacity entries; received output.regionSizes.length=${output.regionSizes.length}`
+        );
       }
     }
     if (output.regionWithinSumOfSquares) {
@@ -248,13 +350,21 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
         `${id} output.regionWithinSumOfSquares`
       );
       if (output.regionWithinSumOfSquares.length < labelCapacity) {
-        throw new Error(`${id} output.regionWithinSumOfSquares must hold labelCapacity entries`);
+        validateRequirement(
+          id,
+          false,
+          `output.regionWithinSumOfSquares must hold labelCapacity entries; received output.regionWithinSumOfSquares.length=${output.regionWithinSumOfSquares.length}`
+        );
       }
     }
     if (output.regionMeans) {
       validateSinglePackedView(output.regionMeans, ['float32'], `${id} output.regionMeans`);
       if (output.regionMeans.length < labelCapacity * columnCount) {
-        throw new Error(`${id} output.regionMeans must hold labelCapacity * columnCount entries`);
+        validateRequirement(
+          id,
+          false,
+          `output.regionMeans must hold labelCapacity * columnCount entries; received output.regionMeans.length=${output.regionMeans.length}`
+        );
       }
     }
     if (output.invalidRowCount) {
@@ -282,11 +392,13 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
         output.regionSizes,
         output.regionWithinSumOfSquares,
         output.regionMeans,
-        output.invalidRowCount
+        output.invalidRowCount,
+        output.labelsComplete
       ],
       [
         props.values,
         props.labels,
+        props.labelsComplete,
         ...(props.weights ? getGPUSpatialWeightsOrChunksViews(props.weights) : [])
       ]
     );
@@ -306,11 +418,14 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
       output.regionWithinSumOfSquares,
       output.regionMeans,
       output.invalidRowCount,
+      output.labelsComplete,
+      props.labelsComplete,
       ...(weights ? getGPUSpatialWeightsOrChunksViews(weights) : [])
     ]);
     validateGraphChunkBindingRanges(graph, id, {
       values,
       labels,
+      labelsComplete: props.labelsComplete,
       ...Object.fromEntries(
         getGraphOutputViews(output).map((view, index) => [`output[${index}]`, view])
       ),
@@ -324,6 +439,10 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
     const rows = labels.length;
     const columnCount = props.columnCount ?? 1;
     const labelCapacity = props.labelCapacity ?? rows;
+    const reductionStride = Math.max(
+      1,
+      Math.ceil(graph.device.limits.minStorageBufferOffsetAlignment / 4)
+    );
     validateMaximumCount(
       id,
       'labels rows',
@@ -345,12 +464,17 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
     );
     for (const [name, byteLength] of [
       ['region table scratch', labelCapacity * columnCount * 4],
+      ['region origin modes', labelCapacity * columnCount * 4],
+      ['region centroid scratch', labelCapacity * columnCount * 4],
+      ['global coordinate scratch', columnCount * 4],
       ['label offsets', (labelCapacity + 1) * 4],
       ['row scratch', rows * 4],
       ['link counts', weights ? rows * 8 : 0],
       ['row tile counts', Math.ceil(rows / SUMMARY_TILE) * 20],
-      ['row tile sums', Math.ceil(rows / SUMMARY_TILE) * columnCount * 4],
-      ['label tile counts', Math.ceil(labelCapacity / SUMMARY_TILE) * 12]
+      ['row tile sums', Math.ceil(rows / SUMMARY_TILE) * columnCount * 8],
+      ['label tile counts', Math.ceil(labelCapacity / SUMMARY_TILE) * 12],
+      ['summary integer result slots', 7 * reductionStride * 4],
+      ['summary square result slots', 3 * reductionStride * 4]
     ] as const)
       validateGPUStorageBindingByteLength(
         graph.device,
@@ -377,6 +501,48 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
     const regionSums = createTransientView(
       graph,
       `${id}-region-column-sums`,
+      'float32',
+      labelCapacity * columnCount
+    );
+    const regionResiduals = createTransientView(
+      graph,
+      `${id}-region-residuals`,
+      'float32',
+      labelCapacity * columnCount
+    );
+    const centroidResiduals = createTransientView(
+      graph,
+      `${id}-centroid-residuals`,
+      'float32',
+      labelCapacity * columnCount
+    );
+    const globalOrigins = createTransientView(
+      graph,
+      `${id}-global-origins`,
+      'float32',
+      columnCount
+    );
+    const regionOrigins = createTransientView(
+      graph,
+      `${id}-region-origins`,
+      'float32',
+      labelCapacity * columnCount
+    );
+    const regionOriginModes = createTransientView(
+      graph,
+      `${id}-region-origin-modes`,
+      'uint32',
+      labelCapacity * columnCount
+    );
+    const globalOriginModes = createTransientView(
+      graph,
+      `${id}-global-origin-modes`,
+      'uint32',
+      columnCount
+    );
+    const regionCentroids = createTransientView(
+      graph,
+      `${id}-region-centroids`,
       'float32',
       labelCapacity * columnCount
     );
@@ -468,25 +634,98 @@ fn getLowerBound(key: u32) -> u32 {
     labelOffsets[labelOffsetsOffset + LABELS] = end;
   }`
       }),
-      // Per-label column sums, then squared deviations about the label means, as load-balanced
-      // segment sums over the label segments (algorithms roadmap decision 3), so one huge region
-      // spreads over many workgroups instead of serialising one thread.
-      ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
-        id: `${id}-region-sums`,
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-region-origins`,
         operation: OPERATION,
-        offsets: labelOffsets,
-        itemCapacity: rows,
-        laneCount: columnCount,
-        accumulatorType: 'f32',
-        output: regionSums,
+        variant: 'region-origins',
+        invocationCount: labelCapacity * columnCount,
+        declarations,
         bindings: [
           {name: 'values', view: values, type: 'f32', access: 'read'},
-          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'}
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'},
+          {name: 'origins', view: regionOrigins, type: 'f32', access: 'read_write'},
+          {name: 'regionModes', view: regionOriginModes, type: 'u32', access: 'read_write'},
+          {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
+          {name: 'globalOrigins', view: globalOrigins, type: 'f32', access: 'read_write'},
+          {name: 'globalModes', view: globalOriginModes, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${declarations}
-fn getLoadBalancedContribution(label: u32, item: u32, column: u32) -> f32 {
-  return values[valuesOffset + sortedRows[sortedRowsOffset + item] * COLUMNS + column];
-}`
+        body: `let label = index / COLUMNS;
+  let begin = labelOffsets[labelOffsetsOffset + label];
+  var origin = 0.0;
+  if (begin < labelOffsets[labelOffsetsOffset + label + 1u]) {
+    origin = values[valuesOffset + sortedRows[sortedRowsOffset + begin] * COLUMNS + index % COLUMNS];
+  }
+  origins[originsOffset + index] = origin;
+  regionModes[regionModesOffset + index] = 0u;
+  if (index < COLUMNS) {
+    var globalOrigin = 0.0;
+    if (sortedKeys[sortedKeysOffset] < LABELS) {
+      globalOrigin = values[valuesOffset + sortedRows[sortedRowsOffset] * COLUMNS + index];
+    }
+    globalOrigins[globalOriginsOffset + index] = globalOrigin;
+    globalModes[globalModesOffset + index] = labelOffsets[labelOffsetsOffset];
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-origin-signs`,
+        operation: OPERATION,
+        invocationCount: rows * columnCount,
+        declarations,
+        bindings: [
+          {name: 'values', view: values, type: 'f32', access: 'read'},
+          {name: 'labels', view: usedLabels, type: 'u32', access: 'read'},
+          {name: 'origins', view: regionOrigins, type: 'f32', access: 'read'},
+          {name: 'regionModes', view: regionOriginModes, type: 'atomic<u32>', access: 'read_write'},
+          {name: 'globalOrigins', view: globalOrigins, type: 'f32', access: 'read'},
+          {name: 'globalModes', view: globalOriginModes, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        body: `let label = labels[labelsOffset + index / COLUMNS];
+  if (label >= LABELS) { return; }
+  let column = index % COLUMNS;
+  let value = values[valuesOffset + index];
+  let origin = origins[originsOffset + label * COLUMNS + column];
+  if ((value < 0.0 && origin > 0.0) || (value > 0.0 && origin < 0.0)) {
+    atomicOr(&regionModes[regionModesOffset + label * COLUMNS + column], 1u);
+  }
+  let globalOrigin = globalOrigins[globalOriginsOffset + column];
+  if ((value < 0.0 && globalOrigin > 0.0) || (value > 0.0 && globalOrigin < 0.0)) {
+    atomicOr(&globalModes[globalModesOffset + column], 1u);
+  }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-select-origins`,
+        operation: OPERATION,
+        invocationCount: labelCapacity * columnCount,
+        declarations,
+        bindings: [
+          {name: 'origins', view: regionOrigins, type: 'f32', access: 'read_write'},
+          {name: 'regionModes', view: regionOriginModes, type: 'u32', access: 'read'},
+          {name: 'globalOrigins', view: globalOrigins, type: 'f32', access: 'read_write'},
+          {name: 'globalModes', view: globalOriginModes, type: 'u32', access: 'read'}
+        ],
+        // Centering same-sign columns preserves constants; zero-origin signed sums preserve
+        // cancellation when subtracting a large first member would lose low bits.
+        body: `if (regionModes[regionModesOffset + index] != 0u) { origins[originsOffset + index] = 0.0; }
+  if (index < COLUMNS && globalModes[globalModesOffset + index] != 0u) {
+    globalOrigins[globalOriginsOffset + index] = 0.0;
+  }`
+      }),
+      // Per-label centered column sums, then deviations in the same coordinates. A constant
+      // region has exact zero deviations even when its value times its size rounds in float32.
+      // Staged parallel segment sums retain both rounding lanes, including errors in the input
+      // subtraction. One huge region spreads over many workgroups rather than one serial thread.
+      ...createRegionalMomentSumNodes<Parameters>(graph, {
+        id: `${id}-region-sums`,
+        operation: OPERATION,
+        values,
+        sortedRows,
+        sortedKeys,
+        offsets: labelOffsets,
+        origins: regionOrigins,
+        columnCount,
+        high: regionSums,
+        low: regionResiduals
       }),
       ...createLoadBalancedSegmentSumNodes<Parameters>(graph, {
         id: `${id}-region-deviations`,
@@ -500,35 +739,72 @@ fn getLoadBalancedContribution(label: u32, item: u32, column: u32) -> f32 {
           {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
           {name: 'regionSums', view: regionSums, type: 'f32', access: 'read'},
-          {name: 'sizes', view: sizes, type: 'u32', access: 'read'}
+          {name: 'residuals', view: regionResiduals, type: 'f32', access: 'read'},
+          {name: 'origins', view: regionOrigins, type: 'f32', access: 'read'}
         ],
         declarations: `${declarations}
+${REGIONAL_MOMENT_WGSL}
 fn getLoadBalancedContribution(label: u32, item: u32, column: u32) -> f32 {
   // A visited label has at least one row, so the count is positive.
-  let mean = regionSums[regionSumsOffset + label * COLUMNS + column] / f32(sizes[sizesOffset + label]);
-  let delta = values[valuesOffset + sortedRows[sortedRowsOffset + item] * COLUMNS + column] - mean;
+  let size = loadBalancedOffsets[loadBalancedOffsetsOffset + label + 1u] - loadBalancedOffsets[loadBalancedOffsetsOffset + label];
+  let zero = loadBalancedOffsets[loadBalancedOffsetsOffset];
+  let cell = label * COLUMNS + column;
+  let mean = divideRegionalMoment(vec2<f32>(regionSums[regionSumsOffset + cell], residuals[residualsOffset + cell]), f32(size), zero);
+  let centered = subtractRegionalValue(values[valuesOffset + sortedRows[sortedRowsOffset + item] * COLUMNS + column], origins[originsOffset + cell], zero);
+  let difference = addRegionalMoment(centered, -mean, zero);
+  let delta = difference.x + difference.y;
   return delta * delta;
 }`
       }),
-      ...(output.regionMeans
-        ? [
-            createWGSLKernelNode<Parameters>(graph, {
-              id: `${id}-region-means`,
-              operation: OPERATION,
-              variant: 'region-means',
-              bindings: [
-                {name: 'regionSums', view: regionSums, type: 'f32', access: 'read'},
-                {name: 'sizes', view: sizes, type: 'u32', access: 'read'},
-                {name: 'regionMeans', view: output.regionMeans, type: 'f32', access: 'read_write'}
-              ],
-              invocationCount: labelCapacity * columnCount,
-              declarations: `${declarations}
-${GET_NAN_WGSL}`,
-              body: `let size = sizes[sizesOffset + index / COLUMNS];
-  regionMeans[regionMeansOffset + index] = select(getNaN(), regionSums[regionSumsOffset + index] / f32(size), size > 0u);`
-            })
-          ]
-        : []),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-region-centroids`,
+        operation: OPERATION,
+        variant: 'region-means',
+        bindings: [
+          {name: 'regionSums', view: regionSums, type: 'f32', access: 'read'},
+          {name: 'residuals', view: regionResiduals, type: 'f32', access: 'read'},
+          {name: 'origins', view: regionOrigins, type: 'f32', access: 'read'},
+          {name: 'globalOrigins', view: globalOrigins, type: 'f32', access: 'read'},
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'},
+          {name: 'centroids', view: regionCentroids, type: 'f32', access: 'read_write'},
+          {name: 'centroidResiduals', view: centroidResiduals, type: 'f32', access: 'read_write'},
+          ...(output.regionMeans
+            ? [
+                {
+                  name: 'regionMeans',
+                  view: output.regionMeans,
+                  type: 'f32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
+        ],
+        invocationCount: labelCapacity * columnCount,
+        declarations: `${declarations}
+${GET_NAN_WGSL}
+${REGIONAL_MOMENT_WGSL}`,
+        body: `let label = index / COLUMNS;
+  let size = labelOffsets[labelOffsetsOffset + label + 1u] - labelOffsets[labelOffsetsOffset + label];
+  var globalFrameSum = 0.0;
+  var globalFrameResidual = 0.0;
+  var absoluteMean = getNaN();
+  if (size > 0u) {
+    let zero = labelOffsets[labelOffsetsOffset];
+    let mean = divideRegionalMoment(vec2<f32>(regionSums[regionSumsOffset + index], residuals[residualsOffset + index]), f32(size), zero);
+    // The regional sum in the global frame: local sum plus size times the origin offset, kept
+    // as a split sum so the between-region contrast can be formed before any division.
+    let relativeOrigin = subtractRegionalValue(origins[originsOffset + index], globalOrigins[globalOriginsOffset + index % COLUMNS], zero);
+    let relative = addRegionalMoment(vec2<f32>(regionSums[regionSumsOffset + index], residuals[residualsOffset + index]),
+      multiplyRegionalMoment(relativeOrigin, f32(size), zero), zero);
+    globalFrameSum = relative.x;
+    globalFrameResidual = relative.y;
+    let absolute = addRegionalMoment(vec2<f32>(origins[originsOffset + index], 0.0), mean, zero);
+    absoluteMean = absolute.x + absolute.y;
+  }
+  centroids[centroidsOffset + index] = globalFrameSum;
+  centroidResiduals[centroidResidualsOffset + index] = globalFrameResidual;
+  ${output.regionMeans ? 'regionMeans[regionMeansOffset + index] = absoluteMean;' : ''}`
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-region-within`,
         operation: OPERATION,
@@ -602,7 +878,7 @@ fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> vec2<u32> {
     }
     // The summary is a tiled reduction (fixed tile order, no atomics) rather than one thread
     // walking every row and label: tiles of rows and of labels in parallel, the column means,
-    // the deviations about those means, and a short merge over the tiles.
+    // the deviations about those means, and parallel scalar reductions of the tiles.
     const rowTileCount = Math.ceil(rows / SUMMARY_TILE);
     const labelTileCount = Math.ceil(labelCapacity / SUMMARY_TILE);
     // Per row tile: used rows, ignored rows, cross links, links, and ignored rows that had a label.
@@ -611,7 +887,7 @@ fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> vec2<u32> {
       graph,
       `${id}-row-sums`,
       'float32',
-      rowTileCount * columnCount
+      rowTileCount * columnCount * 2
     );
     const labelCounts = createTransientView(
       graph,
@@ -627,16 +903,98 @@ fn getLoadBalancedContribution(row: u32, item: u32, lane: u32) -> vec2<u32> {
       labelTileCount
     );
     const means = createTransientView(graph, `${id}-means`, 'float32', columnCount);
+    const meanResiduals = createTransientView(
+      graph,
+      `${id}-mean-residuals`,
+      'float32',
+      columnCount
+    );
     const deviations = createTransientView(
       graph,
       `${id}-deviations`,
       'float32',
       rowTileCount * columnCount
     );
+    const rowChannels = Array.from({length: 4}, (_, channel) =>
+      createTransientView(graph, `${id}-summary-row-channel-${channel}`, 'uint32', rowTileCount)
+    );
+    const labelChannels = Array.from({length: 3}, (_, channel) =>
+      createTransientView(graph, `${id}-summary-label-channel-${channel}`, 'uint32', labelTileCount)
+    );
+    const totalSquares = createTransientView(
+      graph,
+      `${id}-summary-total-squares`,
+      'float32',
+      rowTileCount
+    );
+    // Aligned scalar slots let published reductions write into shared result buffers while
+    // the loop-free publisher stays below the eight-storage-binding limit.
+    const countTotals = createTransientView(
+      graph,
+      `${id}-summary-count-totals`,
+      'uint32',
+      7 * reductionStride
+    );
+    const squareTotals = createTransientView(
+      graph,
+      `${id}-summary-square-totals`,
+      'float32',
+      3 * reductionStride
+    );
     const tileDeclarations = `${declarations}
 const SUMMARY_TILE: u32 = ${SUMMARY_TILE}u;
 const ROW_TILES: u32 = ${rowTileCount}u;
 const LABEL_TILES: u32 = ${labelTileCount}u;`;
+    let meanRows = rowCounts;
+    let meanSums = rowSums;
+    const meanReductionNodes: GPUCommandNode<Parameters>[] = [];
+    let meanTileCount = rowTileCount;
+    let meanStage = 0;
+    while (meanTileCount > 1) {
+      const nextCount = Math.ceil(meanTileCount / SUMMARY_TILE);
+      const nextRows = createTransientView(
+        graph,
+        `${id}-mean-rows-${meanStage}`,
+        'uint32',
+        nextCount * 5
+      );
+      const nextSums = createTransientView(
+        graph,
+        `${id}-mean-sums-${meanStage}`,
+        'float32',
+        nextCount * columnCount * 2
+      );
+      meanReductionNodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-mean-stage-${meanStage++}`,
+          operation: OPERATION,
+          invocationCount: nextCount * columnCount,
+          bindings: [
+            {name: 'rows', view: meanRows, type: 'u32', access: 'read'},
+            {name: 'sums', view: meanSums, type: 'f32', access: 'read'},
+            {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'},
+            {name: 'nextRows', view: nextRows, type: 'u32', access: 'read_write'},
+            {name: 'nextSums', view: nextSums, type: 'f32', access: 'read_write'}
+          ],
+          declarations: `${declarations}\n${REGIONAL_MOMENT_WGSL}`,
+          body: `let group = index / COLUMNS;
+  let column = index % COLUMNS;
+  var count = 0u;
+  var sum = vec2<f32>(0.0);
+  for (var tile = group * ${SUMMARY_TILE}u; tile < min((group + 1u) * ${SUMMARY_TILE}u, ${meanTileCount}u); tile++) {
+    count += rows[rowsOffset + 5u * tile];
+    let source = 2u * (tile * COLUMNS + column);
+    sum = addRegionalMoment(sum, vec2<f32>(sums[sumsOffset + source], sums[sumsOffset + source + 1u]), labelOffsets[labelOffsetsOffset]);
+  }
+  if (column == 0u) { nextRows[nextRowsOffset + 5u * group] = count; }
+  nextSums[nextSumsOffset + 2u * index] = sum.x;
+  nextSums[nextSumsOffset + 2u * index + 1u] = sum.y;`
+        })
+      );
+      meanRows = nextRows;
+      meanSums = nextSums;
+      meanTileCount = nextCount;
+    }
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-row-tiles`,
@@ -646,6 +1004,8 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
           {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'labels', view: usedLabels, type: 'u32', access: 'read'},
           {name: 'sourceLabels', view: labels, type: 'u32', access: 'read'},
+          {name: 'globalOrigins', view: globalOrigins, type: 'f32', access: 'read'},
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'},
           ...(links
             ? [{name: 'links', view: links, type: 'u32' as const, access: 'read' as const}]
             : []),
@@ -653,20 +1013,21 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
           {name: 'rowSums', view: rowSums, type: 'f32', access: 'read_write'}
         ],
         invocationCount: rowTileCount,
-        declarations: tileDeclarations,
+        declarations: `${tileDeclarations}\n${REGIONAL_MOMENT_WGSL}`,
         body: `var labelled = 0u;
   var ignored = 0u;
   var invalid = 0u;
   var cross = 0u;
   var total = 0u;
-  var sums: array<f32, ${columnCount}>;
+  var sums: array<vec2<f32>, ${columnCount}>;
   let firstRow = index * SUMMARY_TILE;
   for (var row = firstRow; row < min(firstRow + SUMMARY_TILE, ROWS); row++) {
     if (labels[labelsOffset + row] < LABELS) {
       labelled += 1u;
       ${links ? 'total += links[linksOffset + 2u * row]; cross += links[linksOffset + 2u * row + 1u];' : ''}
       for (var column = 0u; column < COLUMNS; column++) {
-        sums[column] += values[valuesOffset + row * COLUMNS + column];
+        let zero = labelOffsets[labelOffsetsOffset];
+        sums[column] = addRegionalMoment(sums[column], subtractRegionalValue(values[valuesOffset + row * COLUMNS + column], globalOrigins[globalOriginsOffset + column], zero), zero);
       }
     } else {
       ignored += 1u;
@@ -680,29 +1041,30 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
   rowCounts[rowCountsOffset + 5u * index + 3u] = total;
   rowCounts[rowCountsOffset + 5u * index + 4u] = invalid;
   for (var column = 0u; column < COLUMNS; column++) {
-    rowSums[rowSumsOffset + index * COLUMNS + column] = sums[column];
+    rowSums[rowSumsOffset + 2u * (index * COLUMNS + column)] = sums[column].x;
+    rowSums[rowSumsOffset + 2u * (index * COLUMNS + column) + 1u] = sums[column].y;
   }`
       }),
-      // The overall column means come before the label tiles, which need them for the
-      // between-region sum of squares.
+      ...meanReductionNodes,
+      // The overall column means, for the total deviations. The between-region tiles read the
+      // grand split sums and count directly.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-means`,
         operation: OPERATION,
         variant: 'means',
         bindings: [
-          {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
-          {name: 'rowSums', view: rowSums, type: 'f32', access: 'read'},
-          {name: 'means', view: means, type: 'f32', access: 'read_write'}
+          {name: 'rowCounts', view: meanRows, type: 'u32', access: 'read'},
+          {name: 'rowSums', view: meanSums, type: 'f32', access: 'read'},
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'},
+          {name: 'means', view: means, type: 'f32', access: 'read_write'},
+          {name: 'meanResiduals', view: meanResiduals, type: 'f32', access: 'read_write'}
         ],
         invocationCount: columnCount,
-        declarations: tileDeclarations,
-        body: `var labelled = 0u;
-  var sum = 0.0;
-  for (var tile = 0u; tile < ROW_TILES; tile++) {
-    labelled += rowCounts[rowCountsOffset + 5u * tile];
-    sum += rowSums[rowSumsOffset + tile * COLUMNS + index];
-  }
-  means[meansOffset + index] = sum / max(f32(labelled), 1.0);`
+        declarations: `${tileDeclarations}\n${REGIONAL_MOMENT_WGSL}`,
+        body: `let labelled = rowCounts[rowCountsOffset];
+  let mean = divideRegionalMoment(vec2<f32>(rowSums[rowSumsOffset + 2u * index], rowSums[rowSumsOffset + 2u * index + 1u]), max(f32(labelled), 1.0), labelOffsets[labelOffsetsOffset]);
+  means[meansOffset + index] = mean.x;
+  meanResiduals[meanResidualsOffset + index] = mean.y;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-label-tiles`,
@@ -711,17 +1073,13 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
         bindings: [
           {name: 'sizes', view: sizes, type: 'u32', access: 'read'},
           {name: 'within', view: within, type: 'f32', access: 'read'},
-          {name: 'regionSums', view: regionSums, type: 'f32', access: 'read'},
-          {name: 'means', view: means, type: 'f32', access: 'read'},
           {name: 'labelCounts', view: labelCounts, type: 'u32', access: 'read_write'},
-          {name: 'labelWithin', view: labelWithin, type: 'f32', access: 'read_write'},
-          {name: 'labelBetween', view: labelBetween, type: 'f32', access: 'read_write'}
+          {name: 'labelWithin', view: labelWithin, type: 'f32', access: 'read_write'}
         ],
         invocationCount: labelTileCount,
         declarations: tileDeclarations,
         body: `var regionCount = 0u;
   var withinSsd = 0.0;
-  var betweenSsd = 0.0;
   var minimumSize = 0xffffffffu;
   var maximumSize = 0u;
   let firstLabel = index * SUMMARY_TILE;
@@ -730,16 +1088,6 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
     if (size > 0u) {
       regionCount += 1u;
       withinSsd += within[withinOffset + label];
-      // Between-region sum of squares in its direct form, n_k |mean_k - mean|^2. As
-      // total - within it is a difference of two large sums and is lost when the partition
-      // explains little.
-      let count = f32(size);
-      var squaredDistance = 0.0;
-      for (var column = 0u; column < COLUMNS; column++) {
-        let delta = regionSums[regionSumsOffset + label * COLUMNS + column] / count - means[meansOffset + column];
-        squaredDistance += delta * delta;
-      }
-      betweenSsd += count * squaredDistance;
       minimumSize = min(minimumSize, size);
       maximumSize = max(maximumSize, size);
     }
@@ -747,7 +1095,48 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
   labelCounts[labelCountsOffset + 3u * index] = regionCount;
   labelCounts[labelCountsOffset + 3u * index + 1u] = minimumSize;
   labelCounts[labelCountsOffset + 3u * index + 2u] = maximumSize;
-  labelWithin[labelWithinOffset + index] = withinSsd;
+  labelWithin[labelWithinOffset + index] = withinSsd;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-between-tiles`,
+        operation: OPERATION,
+        invocationCount: labelTileCount,
+        declarations: `${tileDeclarations}\n${REGIONAL_MOMENT_WGSL}`,
+        bindings: [
+          {name: 'sizes', view: sizes, type: 'u32', access: 'read'},
+          {name: 'centroids', view: regionCentroids, type: 'f32', access: 'read'},
+          {name: 'centroidResiduals', view: centroidResiduals, type: 'f32', access: 'read'},
+          {name: 'grandCounts', view: meanRows, type: 'u32', access: 'read'},
+          {name: 'grandSums', view: meanSums, type: 'f32', access: 'read'},
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'},
+          {name: 'labelBetween', view: labelBetween, type: 'f32', access: 'read_write'}
+        ],
+        // The contrast mean_r - mean = (N S_r - n_r S) / (n_r N) is formed from split sums and
+        // exact products before the one division, so equal means give exactly zero rather than
+        // two differently rounded quotients. Both counts are scaled by one power of two at or
+        // above N, which is exact and keeps the products no larger than the sums.
+        body: `var betweenSsd = 0.0;
+  let zero = labelOffsets[labelOffsetsOffset];
+  let labelled = max(grandCounts[grandCountsOffset], 1u);
+  let countScale = ldexp(1.0, -i32(firstLeadingBit(labelled)) - 1);
+  let scaledTotal = f32(labelled) * countScale;
+  for (var label = index * SUMMARY_TILE; label < min((index + 1u) * SUMMARY_TILE, LABELS); label++) {
+    let size = sizes[sizesOffset + label];
+    if (size > 0u) {
+      var squaredDistance = 0.0;
+      let scaledSize = f32(size) * countScale;
+      for (var column = 0u; column < COLUMNS; column++) {
+        let cell = label * COLUMNS + column;
+        let regional = vec2<f32>(centroids[centroidsOffset + cell], centroidResiduals[centroidResidualsOffset + cell]);
+        let global = vec2<f32>(grandSums[grandSumsOffset + 2u * column], grandSums[grandSumsOffset + 2u * column + 1u]);
+        let difference = addRegionalMoment(multiplyRegionalMoment(regional, scaledTotal, zero),
+          -multiplyRegionalMoment(global, scaledSize, zero), zero);
+        let delta = (difference.x + difference.y) / (f32(size) * scaledTotal);
+        squaredDistance += delta * delta;
+      }
+      betweenSsd += f32(size) * squaredDistance;
+    }
+  }
   labelBetween[labelBetweenOffset + index] = betweenSsd;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -758,16 +1147,22 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
           {name: 'values', view: values, type: 'f32', access: 'read'},
           {name: 'labels', view: usedLabels, type: 'u32', access: 'read'},
           {name: 'means', view: means, type: 'f32', access: 'read'},
-          {name: 'deviations', view: deviations, type: 'f32', access: 'read_write'}
+          {name: 'meanResiduals', view: meanResiduals, type: 'f32', access: 'read'},
+          {name: 'deviations', view: deviations, type: 'f32', access: 'read_write'},
+          {name: 'globalOrigins', view: globalOrigins, type: 'f32', access: 'read'},
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'}
         ],
         invocationCount: rowTileCount,
-        declarations: tileDeclarations,
+        declarations: `${tileDeclarations}\n${REGIONAL_MOMENT_WGSL}`,
         body: `var squares: array<f32, ${columnCount}>;
   let firstRow = index * SUMMARY_TILE;
   for (var row = firstRow; row < min(firstRow + SUMMARY_TILE, ROWS); row++) {
     if (labels[labelsOffset + row] < LABELS) {
       for (var column = 0u; column < COLUMNS; column++) {
-        let delta = values[valuesOffset + row * COLUMNS + column] - means[meansOffset + column];
+        let zero = labelOffsets[labelOffsetsOffset];
+        let centered = subtractRegionalValue(values[valuesOffset + row * COLUMNS + column], globalOrigins[globalOriginsOffset + column], zero);
+        let difference = addRegionalMoment(centered, -vec2<f32>(means[meansOffset + column], meanResiduals[meanResidualsOffset + column]), zero);
+        let delta = difference.x + difference.y;
         squares[column] += delta * delta;
       }
     }
@@ -777,16 +1172,82 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-summary-row-channels`,
+        operation: OPERATION,
+        invocationCount: rowTileCount,
+        declarations: tileDeclarations,
+        bindings: [
+          {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
+          {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
+          ...rowChannels.map((view, channel) => ({
+            name: `channel${channel}`,
+            view,
+            type: 'u32' as const,
+            access: 'read_write' as const
+          })),
+          {name: 'totalSquares', view: totalSquares, type: 'f32', access: 'read_write'}
+        ],
+        body: `channel0[channel0Offset + index] = rowCounts[rowCountsOffset + 5u * index + 1u];
+  channel1[channel1Offset + index] = rowCounts[rowCountsOffset + 5u * index + 2u];
+  channel2[channel2Offset + index] = rowCounts[rowCountsOffset + 5u * index + 3u];
+  channel3[channel3Offset + index] = rowCounts[rowCountsOffset + 5u * index + 4u];
+  var sum = 0.0;
+  // Only the construction-validated attribute count (at most 32), never rows or tiles.
+  for (var column = 0u; column < COLUMNS; column++) {
+    sum += deviations[deviationsOffset + index * COLUMNS + column];
+  }
+  totalSquares[totalSquaresOffset + index] = sum;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-summary-label-channels`,
+        operation: OPERATION,
+        invocationCount: labelTileCount,
+        bindings: [
+          {name: 'labelCounts', view: labelCounts, type: 'u32', access: 'read'},
+          ...labelChannels.map((view, channel) => ({
+            name: `channel${channel}`,
+            view,
+            type: 'u32' as const,
+            access: 'read_write' as const
+          }))
+        ],
+        body: `channel0[channel0Offset + index] = labelCounts[labelCountsOffset + 3u * index];
+  channel1[channel1Offset + index] = labelCounts[labelCountsOffset + 3u * index + 1u];
+  channel2[channel2Offset + index] = labelCounts[labelCountsOffset + 3u * index + 2u];`
+      }),
+      ...[...labelChannels, ...rowChannels].flatMap((input, channel) =>
+        new GPUReduction({
+          id: `${id}-summary-count-${channel}`,
+          input,
+          operation: channel === 1 ? 'min' : channel === 2 ? 'max' : 'sum',
+          output: graph.createDataView(countTotals.buffer, {
+            format: 'uint32',
+            length: 1,
+            byteOffset: channel * reductionStride * 4
+          })
+        }).getCommandNodes(graph)
+      ),
+      ...[labelWithin, labelBetween, totalSquares].flatMap((input, channel) =>
+        new GPUReduction({
+          id: `${id}-summary-squares-${channel}`,
+          input,
+          operation: 'sum',
+          output: graph.createDataView(squareTotals.buffer, {
+            format: 'float32',
+            length: 1,
+            byteOffset: channel * reductionStride * 4
+          })
+        }).getCommandNodes(graph)
+      ),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-summary`,
         operation: OPERATION,
         variant: 'summary',
         bindings: [
-          {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
-          {name: 'labelCounts', view: labelCounts, type: 'u32', access: 'read'},
-          {name: 'labelWithin', view: labelWithin, type: 'f32', access: 'read'},
-          {name: 'labelBetween', view: labelBetween, type: 'f32', access: 'read'},
-          {name: 'deviations', view: deviations, type: 'f32', access: 'read'},
+          {name: 'countTotals', view: countTotals, type: 'u32', access: 'read'},
+          {name: 'squareTotals', view: squareTotals, type: 'f32', access: 'read'},
           {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'},
+          {name: 'labelOffsets', view: labelOffsets, type: 'u32', access: 'read'},
           ...(output.invalidRowCount
             ? [
                 {
@@ -799,37 +1260,21 @@ const LABEL_TILES: u32 = ${labelTileCount}u;`;
             : [])
         ],
         invocationCount: 1,
-        declarations: `${tileDeclarations}
-${GET_NAN_WGSL}`,
-        body: `var regionCount = 0u;
-  var withinSsd = 0.0;
-  var between = 0.0;
-  var minimumSize = 0xffffffffu;
-  var maximumSize = 0u;
-  for (var tile = 0u; tile < LABEL_TILES; tile++) {
-    regionCount += labelCounts[labelCountsOffset + 3u * tile];
-    withinSsd += labelWithin[labelWithinOffset + tile];
-    between += labelBetween[labelBetweenOffset + tile];
-    minimumSize = min(minimumSize, labelCounts[labelCountsOffset + 3u * tile + 1u]);
-    maximumSize = max(maximumSize, labelCounts[labelCountsOffset + 3u * tile + 2u]);
-  }
-  var ignored = 0u;
-  var invalid = 0u;
-  var cross = 0u;
-  var total = 0u;
-  for (var tile = 0u; tile < ROW_TILES; tile++) {
-    ignored += rowCounts[rowCountsOffset + 5u * tile + 1u];
-    cross += rowCounts[rowCountsOffset + 5u * tile + 2u];
-    total += rowCounts[rowCountsOffset + 5u * tile + 3u];
-    invalid += rowCounts[rowCountsOffset + 5u * tile + 4u];
-  }
+        declarations: `${declarations}
+const RESULT_STRIDE: u32 = ${reductionStride}u;
+${GET_NAN_WGSL}
+${ROUNDED_DIFFERENCE_WGSL}`,
+        body: `let regionCount = countTotals[countTotalsOffset];
+  let minimumSize = countTotals[countTotalsOffset + RESULT_STRIDE];
+  let maximumSize = countTotals[countTotalsOffset + 2u * RESULT_STRIDE];
+  let ignored = countTotals[countTotalsOffset + 3u * RESULT_STRIDE];
+  let cross = countTotals[countTotalsOffset + 4u * RESULT_STRIDE];
+  let total = countTotals[countTotalsOffset + 5u * RESULT_STRIDE];
+  let invalid = countTotals[countTotalsOffset + 6u * RESULT_STRIDE];
+  let withinSsd = squareTotals[squareTotalsOffset];
+  let between = squareTotals[squareTotalsOffset + RESULT_STRIDE];
+  let totalSsd = squareTotals[squareTotalsOffset + 2u * RESULT_STRIDE];
   ${output.invalidRowCount ? 'invalidRowCount[invalidRowCountOffset] = invalid;' : ''}
-  var totalSsd = 0.0;
-  for (var column = 0u; column < COLUMNS; column++) {
-    for (var tile = 0u; tile < ROW_TILES; tile++) {
-      totalSsd += deviations[deviationsOffset + tile * COLUMNS + column];
-    }
-  }
   summary[summaryOffset + 0u] = f32(regionCount);
   summary[summaryOffset + 1u] = withinSsd;
   summary[summaryOffset + 2u] = between;
@@ -843,11 +1288,65 @@ ${GET_NAN_WGSL}`,
   let regions = f32(regionCount);
   var pseudoF = getNaN();
   if (regionCount >= 2u && labelledRows > regions) {
-    pseudoF = select(between * (labelledRows - regions) / (withinSsd * (regions - 1.0)), 1.0, withinSsd == 0.0);
+    if (withinSsd == 0.0) {
+      pseudoF = 1.0;
+    } else if (between == 0.0) {
+      pseudoF = 0.0;
+    } else {
+      // Form the SSD ratio from normal mantissas. Neither between*(n-k) nor within/(n-k)
+      // is formed, avoiding the overflowing product and the underflowing mean square.
+      let betweenParts = frexp(between);
+      let withinParts = frexp(withinSsd);
+      let zero = labelOffsets[labelOffsetsOffset];
+      let ratio = getRoundedDifference(betweenParts.fract / withinParts.fract, 0.0, zero);
+      let degreesRatio = getRoundedDifference((labelledRows - regions) / (regions - 1.0), 0.0, zero);
+      let mantissa = getRoundedDifference(ratio * degreesRatio, 0.0, zero);
+      let exponentDifference = betweenParts.exp - withinParts.exp;
+      // Each ldexp exponent stays in its WGSL-defined range. All powers have the same sign,
+      // so an intermediate cannot overflow/underflow when the final result is representable.
+      let firstPower = clamp(exponentDifference, -126i, 126i);
+      let remainingPower = exponentDifference - firstPower;
+      let secondPower = clamp(remainingPower, -126i, 126i);
+      let scaled = ldexp(ldexp(mantissa, firstPower), secondPower);
+      pseudoF = ldexp(scaled, remainingPower - secondPower);
+    }
   }
   summary[summaryOffset + 8u] = pseudoF;`
       })
     );
+    if (weights)
+      nodes.push(
+        ...createRegionalizationLossSuppressionNodes(graph, id, OPERATION, weights, [
+          {
+            view: output.summary,
+            length: 1,
+            wordOffset: GPU_REGION_PARTITION_EVALUATION_LAYOUT.crossLinkFraction,
+            value: 'nan'
+          }
+        ])
+      );
+    if (output.labelsComplete)
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-labels-complete`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            ...(props.labelsComplete
+              ? [
+                  {
+                    name: 'input',
+                    view: props.labelsComplete,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []),
+            {name: 'complete', view: output.labelsComplete, type: 'u32', access: 'read_write'}
+          ],
+          body: `complete[completeOffset] = ${props.labelsComplete ? 'select(0u, 1u, input[inputOffset] != 0u)' : '1u'};`
+        })
+      );
     return nodes;
   }
 }

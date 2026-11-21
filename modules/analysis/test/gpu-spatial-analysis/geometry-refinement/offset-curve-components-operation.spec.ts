@@ -16,6 +16,58 @@ import {
   OFFSET_CURVE_ENDPOINT_CASES
 } from './offset-curve-components-test-utils';
 
+it('multipart offset operations preserve feature and part provenance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // See multipart-offset-components.oracle.py: straight offsets from Shapely; source rows by hand.
+  const props: OffsetCurveComponentsOperationProps = {
+    original: {
+      positions: 'originalPositions',
+      lineOffsets: 'originalOffsets',
+      featureOffsets: 'originalFeatures'
+    },
+    raw: {positions: 'rawPositions', lineOffsets: 'rawOffsets', featureOffsets: 'rawFeatures'},
+    lineCount: 3,
+    distance: 1,
+    tolerance: 0,
+    intersectionCapacity: 8,
+    segmentCapacity: 8,
+    vertexCapacity: 6,
+    componentCapacity: 3,
+    output: {
+      positions: 'positions',
+      components: 'components',
+      sourceEdges: 'sourceEdges',
+      status: 'status'
+    }
+  };
+  const inputs = {
+    originalPositions: {
+      format: 'float32x2' as const,
+      values: Float32Array.of(0, 0, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0)
+    },
+    originalOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 2, 4, 6)},
+    originalFeatures: {format: 'uint32' as const, values: Uint32Array.of(0, 0, 2, 3)},
+    rawPositions: {
+      format: 'float32x2' as const,
+      values: Float32Array.of(0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1)
+    },
+    rawOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 2, 4, 6)},
+    rawFeatures: {format: 'uint32' as const, values: Uint32Array.of(0, 0, 2, 3)}
+  };
+  for (const Operation of [GPUOffsetCurveComponentsOperation, CPUOffsetCurveComponentsOperation]) {
+    const result = await runOperationGraph(device, {
+      inputs,
+      operations: [new Operation(props)],
+      outputs: Object.values(props.output)
+    });
+    expect(Array.from(result['positions'])).toEqual([0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1]);
+    expect(Array.from(result['components'])).toEqual([0, 2, 0, 1, 2, 2, 1, 1, 4, 2, 2, 2]);
+    expect(Array.from(result['sourceEdges'])).toEqual([0, 0, 2, 2, 4, 4]);
+    expect(Array.from(result['status'])).toEqual([3, 6, 3, 6, 0, 0, 0, 0]);
+  }
+});
+
 it.each([
   1, 8
 ])('CPU/GPU honour segmentCapacity=%s with two noded segments', async segmentCapacity => {

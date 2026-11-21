@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   type GPUCommandGraph,
@@ -27,6 +28,7 @@ import {
   validateParameterTarget,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -105,6 +107,7 @@ export function getGPUGeomorphonsParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_GEOMORPHONS_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUGeomorphonsParameterValues', grid);
   validateParameterTarget(
     'getGPUGeomorphonsParameterValues',
     target,
@@ -118,7 +121,7 @@ export function getGPUGeomorphonsParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUGeomorphons}; at least one is required. */
-export type GPUGeomorphonsOutput = {
+export type GPUGeomorphonsOutput = TerrainAtLeastOne<{
   /** Optional landform per pixel, see {@link GPU_GEOMORPHON_FORMS}; 0 where invalid. */
   forms?: GraphDataView<'uint32'>;
   /** Optional rotation- and mirror-invariant ternary class (498 values); 0 where invalid. */
@@ -127,7 +130,7 @@ export type GPUGeomorphonsOutput = {
   pattern?: GraphDataView<'uint32'>;
   /** Optional per-pixel 1 where the geomorphon is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUGeomorphons}.
@@ -246,6 +249,8 @@ export class GPUGeomorphons implements GPUCommandNodeProducer {
     validateRasterParameters(id, props.parameters, GPU_GEOMORPHONS_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,

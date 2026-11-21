@@ -34,7 +34,7 @@ function createFixture() {
     id: 'binding-selection',
     points: {kind: 'points', positions},
     features: {kind: 'points', positions: createTransientView(graph, 'features', 'float32x2', 1)},
-    distance: createTransientView(graph, 'distance', 'float32', 1),
+    radius: createTransientView(graph, 'distance', 'float32', 1),
     candidateCapacity: 1,
     spatialSort: false,
     querySort: false,
@@ -64,11 +64,15 @@ function recordDeclarations(graph: GPUCommandGraph) {
 for (const kind of ['selection', 'prepared', 'candidates'] as const) {
   for (const defect of ['aligned range', 'STORAGE usage', 'scratch', 'sort scratch'] as const) {
     if (kind === 'candidates' && defect === 'sort scratch') continue;
-    it(`${kind} preflights ${defect} without declaring graph/device resources and permits retry`, () => {
+    const checkedDefect =
+      kind === 'prepared' && defect === 'sort scratch'
+        ? 'generation table before sort scratch'
+        : defect;
+    it(`${kind} preflights ${checkedDefect} without declaring graph/device resources and permits retry`, () => {
       const {device, graph, props} = createFixture();
       const limits = device.limits;
       let positions = props.points.positions as GraphDataView<'float32x2'>;
-      let distance = props.distance;
+      let distance = props.radius;
       if (defect === 'aligned range') {
         const backing = createTransientView(graph, 'offset-input', 'float32', 32);
         positions = graph.createDataView(backing.buffer, {
@@ -96,7 +100,7 @@ for (const kind of ['selection', 'prepared', 'candidates'] as const) {
           ? new GPUBufferSelection({
               ...props,
               points: {kind: 'points', positions},
-              distance,
+              radius: distance,
               candidateCapacity: defect === 'scratch' ? 64 : 1,
               ...(defect === 'sort scratch'
                 ? {features: {kind: 'points', positions: sortedPositions}, spatialSort: true}
@@ -124,7 +128,7 @@ for (const kind of ['selection', 'prepared', 'candidates'] as const) {
                   kind: 'points',
                   positions: defect === 'sort scratch' ? sortedPositions : positions
                 },
-                leafCapacity: defect === 'scratch' ? 16 : undefined,
+                leafCapacity: defect === 'scratch' ? 256 : undefined,
                 spatialSort: defect === 'sort scratch'
               });
       Object.defineProperty(device, 'limits', {
@@ -132,7 +136,13 @@ for (const kind of ['selection', 'prepared', 'candidates'] as const) {
         value: {
           ...limits,
           maxStorageBufferBindingSize:
-            defect === 'aligned range' ? 64 : defect === 'sort scratch' ? 32 : 128
+            kind === 'prepared' && defect === 'scratch'
+              ? 2048
+              : defect === 'aligned range'
+                ? 64
+                : defect === 'sort scratch'
+                  ? 32
+                  : 128
         }
       });
       const declarations = recordDeclarations(graph);
@@ -143,7 +153,9 @@ for (const kind of ['selection', 'prepared', 'candidates'] as const) {
             : defect === 'aligned range'
               ? /aligned|binding/
               : defect === 'sort scratch'
-                ? /radix histogram/
+                ? kind === 'prepared'
+                  ? /generation byte table needs 1024 bytes.*limit 32/
+                  : /radix histogram/
                 : /scratch|BVH/
         );
         declarations.expectUnchanged();
@@ -207,13 +219,15 @@ function createPolygon(graph: GPUCommandGraph, polygonOffsetCount = 2) {
 for (const defect of ['owner parameters', 'persistent entries'] as const) {
   it(`prepared preflights nested edge-slab ${defect} before persistent allocation`, () => {
     const {device, graph} = createFixture();
-    const geometry = createPolygon(graph, defect === 'owner parameters' ? 10 : 2);
+    const geometry = createPolygon(graph, defect === 'owner parameters' ? 130 : 2);
     const prepared = new GPUSpatialJoinPrepared({geometry, edgeSlabs: true});
     Object.defineProperty(device, 'limits', {
       value: {
         ...device.limits,
-        maxStorageBufferBindingSize: 64,
-        maxBufferSize: defect === 'persistent entries' ? 48 : device.limits.maxBufferSize
+        // The generation table needs 1024 bytes. Parameter stride is six words:
+        // 129 owners need 3096 bytes, independently exceeding this valid 2048-byte floor.
+        maxStorageBufferBindingSize: defect === 'persistent entries' ? 4096 : 2048,
+        maxBufferSize: defect === 'persistent entries' ? 2048 : device.limits.maxBufferSize
       }
     });
     const declarations = recordDeclarations(graph);
@@ -235,13 +249,13 @@ it('prepared accepts a zero optional slab-entry budget using the shared exact fa
   const {device, graph} = createFixture();
   const geometry = {
     ...createPolygon(graph),
-    positions: createTransientView(graph, 'six-vertices', 'float32x2', 6)
+    positions: createTransientView(graph, '128-vertices', 'float32x2', 128)
   };
   const prepared = new GPUSpatialJoinPrepared({geometry, edgeSlabs: true});
   Object.defineProperty(device, 'limits', {
-    // Four nonempty snapshot views need 48 dispatch bytes; six vertices use all six 8-byte
-    // slab slots, leaving zero optional entries without invalidating the snapshot binding.
-    value: {...device.limits, maxStorageBufferBindingSize: 48}
+    // The 1024-byte generation table fits; 128 vertices consume all 128 eight-byte slab
+    // slots. This leaves zero optional entries without invalidating any required binding.
+    value: {...device.limits, maxStorageBufferBindingSize: 1024}
   });
   try {
     const sources = getParsedKernelSources(prepared.getCommandNodes(graph));
@@ -279,7 +293,7 @@ it('binding preflight rejects duplicate imports of one physical buffer before gr
   const selection = new GPUBufferSelection({
     ...props,
     points: {kind: 'points', positions},
-    distance: radius
+    radius: radius
   });
   const declarations = recordDeclarations(graph);
   try {

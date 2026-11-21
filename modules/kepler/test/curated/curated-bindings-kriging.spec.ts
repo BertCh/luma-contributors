@@ -5,8 +5,9 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUKriging} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
-import {it, vi} from 'vitest';
-import {requireTestDevice} from '../../../analysis/test/utils/require-test-device';
+import {expect, it, vi} from 'vitest';
+import {requireTestDevice} from '../../../analysis/src/testing/require-test-device';
+import {computeCuratedKrigingGpu} from '../../src/curated/bindings/curated-kriging-with-diagnostics-gpu';
 import {
   getCatalogBinding,
   runCatalogOperation,
@@ -651,4 +652,47 @@ it('review finding 2: visibly falls back for distinct locations that coincide af
     true
   );
   finish(result);
+});
+
+it('curated kriging retains two invalid cells separately from eight failed validation samples', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Only center (0.5,0.5) has a sample within radius 0.01. The other two centers
+  // (1.5,0.5) and (2.5,0.5) have none. All eight distinct samples are separated by
+  // at least 0.1, so every leave-one-out prediction lacks a neighbour.
+  const output = await computeCuratedKrigingGpu(
+    {device},
+    {
+      count: 8,
+      droppedCount: 0,
+      x: new Float64Array([0.5, 0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8]),
+      y: new Float64Array([0.5, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]),
+      value: new Float64Array([7, 1, 2, 3, 4, 5, 6, 8]),
+      sourceIndex: Int32Array.from({length: 8}, (_, index) => index),
+      partIndex: new Int32Array(8)
+    },
+    {minX: 0, minY: 0, cellSize: 1, columns: 3, rows: 1},
+    {
+      model: 'spherical',
+      nugget: 0.2,
+      sill: 1,
+      range: 1,
+      neighborCount: 8,
+      searchRadius: 0.01
+    }
+  );
+  expect(output.field.values).toHaveLength(3);
+  expect(output.field.variances).toHaveLength(3);
+  expect(output.leaveOneOut.predicted).toHaveLength(8);
+  expect(output.leaveOneOut.variance).toHaveLength(8);
+  expect(output.field.invalidCount).toBe(2);
+  expect(output.field.uncertainCount).toBe(0);
+  expect(output.summary.gpuInvalidCellCount).toBe(2);
+  expect(output.summary.gpuUncertainCellCount).toBe(0);
+  expect(output.leaveOneOut.failedCount).toBe(8);
+  expect(output.summary.gpuInvalidValidationCount).toBe(8);
+  expect(Number.isFinite(output.field.values[0])).toBe(true);
+  expect(output.field.values[0]).toBeCloseTo(7, 6);
+  expect(Number.isNaN(output.field.values[1])).toBe(true);
+  expect(Number.isNaN(output.field.values[2])).toBe(true);
 });

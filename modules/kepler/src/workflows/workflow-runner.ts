@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createGPUComputationRecord} from '@luma-contributors/analysis/computation-record';
 import {validateCatalogRasterInput} from '../analysis/catalog-raster-input';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {countWorkflowVertices, getWorkflowDataKind} from './workflow-data';
@@ -38,6 +39,8 @@ export type WorkflowRunnerOptions = {
   maximumCachedRows?: number;
   /** Delay before an automatic run when `settings.autoRun` is on. Default 400. */
   autoRunDelayMilliseconds?: number;
+  /** Concrete execution dependency; defaults to the recorder's current integration revision. */
+  dependencyRevision?: string;
   now?: () => number;
 };
 
@@ -131,6 +134,7 @@ export class WorkflowRunner {
   private notifying = false;
   private destroyed = false;
   private sequence = 0;
+  private readonly dependencyRevision?: string;
   private activeTask?: RunTask;
   private readonly tasks = new Set<RunTask>();
   private tail?: Promise<WorkflowRunRecord>;
@@ -149,6 +153,7 @@ export class WorkflowRunner {
 
   constructor(options: WorkflowRunnerOptions) {
     this.host = options.host;
+    this.dependencyRevision = options.dependencyRevision;
     this.runtimeRevisionKey = this.host.getRuntimeRevisionKey?.();
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
@@ -261,6 +266,17 @@ export class WorkflowRunner {
     const document = this.currentDocument;
     const plan = document ? this.createPlan(document) : null;
     if (document === this.currentDocument) this.plan = plan;
+    // Resolve the recorder's available dependency identity now, while this execution is created.
+    // Converting a saved run later must not consult a newer default.
+    const provenance = createGPUComputationRecord({
+      id: document?.id || 'workflow',
+      runId: `${document?.id ?? 'workflow'}-${++this.sequence}`,
+      executionId: globalThis.crypto.randomUUID(),
+      dependencyRevision: this.dependencyRevision,
+      adapter: {backend: 'workflow'},
+      domains: ['kepler-workflow'],
+      graphs: []
+    });
     const task: RunTask = {
       document,
       plan,
@@ -271,8 +287,9 @@ export class WorkflowRunner {
       controller: new AbortController(),
       record: {
         schemaVersion: 1,
-        runId: `${document?.id ?? 'workflow'}-${++this.sequence}`,
-        executionId: globalThis.crypto.randomUUID(),
+        runId: provenance.runId,
+        executionId: provenance.executionId,
+        dependencyRevision: provenance.dependencyRevision,
         workflowId: document?.id ?? '',
         ...(options.target === undefined ? {} : {target: options.target}),
         startedAt: this.now(),

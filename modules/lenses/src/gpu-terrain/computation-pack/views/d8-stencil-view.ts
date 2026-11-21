@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
+import {
+  resolveGPUComputationCaptureGraph,
+  type GPUComputationCapture
+} from '@luma-contributors/analysis/computation-record';
 
 import {
   provenanceBadge,
@@ -56,6 +59,8 @@ export type D8StencilModel = {
   row: number;
   width: number;
   cellSize: number;
+  /** Full ground transform when distances use affine step vectors. */
+  affine?: readonly [number, number, number, number, number, number];
   unit: string;
   surfaceName: string;
   surfaceProvenance: MarkProvenance;
@@ -69,12 +74,29 @@ export type D8StencilModel = {
 };
 
 function isRasterCapture(capture: GPUComputationCapture): boolean {
-  return capture.geometry?.kind === 'raster' && capture.iteration === undefined;
+  return capture.geometry?.kind === 'raster';
+}
+
+function getSurfaceFrames(context: ViewContext): GPUComputationCapture[] {
+  const captures = getAllCaptures(context.record).filter(isRasterCapture);
+  const requested = context.bindings.iteration ?? context.options?.['iteration'];
+  if (typeof requested === 'number')
+    return captures.filter(capture => capture.iteration === requested);
+  return captures.filter(
+    capture =>
+      !captures.some(
+        candidate =>
+          candidate.name === capture.name &&
+          resolveGPUComputationCaptureGraph(context.record, candidate) ===
+            resolveGPUComputationCaptureGraph(context.record, capture) &&
+          (candidate.iteration ?? Infinity) > (capture.iteration ?? Infinity)
+      )
+  );
 }
 
 /** The elevation surface the D8 drops are taken on: filled elevation when captured, else the input. */
 function getSurfaceCapture(context: ViewContext): GPUComputationCapture | undefined {
-  const captures = getAllCaptures(context.record).filter(isRasterCapture);
+  const captures = getSurfaceFrames(context);
   const option = context.options?.['surface'];
   return (
     (typeof option === 'string' ? captures.find(capture => capture.name === option) : undefined) ??
@@ -85,9 +107,18 @@ function getSurfaceCapture(context: ViewContext): GPUComputationCapture | undefi
 
 /** The captured D8 code raster (`meaning` starts with `D8`). */
 function getDirectionCapture(context: ViewContext): GPUComputationCapture | undefined {
-  return getAllCaptures(context.record).find(
-    capture => isRasterCapture(capture) && capture.meaning?.startsWith('D8')
+  const surface = getSurfaceCapture(context);
+  if (!surface) return undefined;
+  const graph = resolveGPUComputationCaptureGraph(context.record, surface);
+  const candidates = getAllCaptures(context.record).filter(
+    capture =>
+      isRasterCapture(capture) &&
+      capture.meaning?.startsWith('D8') &&
+      graph !== undefined &&
+      resolveGPUComputationCaptureGraph(context.record, capture) === graph &&
+      capture.iteration === surface.iteration
   );
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 /** Builds the stencil from captured values only; gradients are arithmetic on readbacks. */
@@ -97,7 +128,11 @@ export function buildD8StencilModel(context: ViewContext): D8StencilModel {
   const geometry = surface.geometry;
   // satisfies() admits only raster surfaces, which always carry a shape.
   const [width, height] = geometry?.kind === 'raster' ? geometry.shape : [1, 1];
-  const cellSize = geometry?.kind === 'raster' ? (geometry.cellSize ?? 1) : 1;
+  const affine = geometry?.kind === 'raster' ? geometry.affine : undefined;
+  const cellSize =
+    geometry?.kind === 'raster'
+      ? (geometry.cellSize ?? (affine ? Math.hypot(affine[0], affine[3]) : 1))
+      : 1;
   const unit = geometry?.kind === 'raster' ? (geometry.unit ?? 'cell') : 'cell';
   const column = entity % width;
   const row = Math.floor(entity / width);
@@ -110,7 +145,12 @@ export function buildD8StencilModel(context: ViewContext): D8StencilModel {
     const cell = neighbourRow * width + neighbourColumn;
     const distanceFactor = direction.column !== 0 && direction.row !== 0 ? Math.SQRT2 : 1;
     const elevation = inside ? getCaptureValue(surface, cell) : undefined;
-    const distance = distanceFactor * cellSize;
+    const distance = affine
+      ? Math.hypot(
+          direction.column * affine[0] + direction.row * affine[1],
+          direction.column * affine[3] + direction.row * affine[4]
+        )
+      : distanceFactor * cellSize;
     return {
       direction: index,
       label: direction.label,
@@ -136,6 +176,7 @@ export function buildD8StencilModel(context: ViewContext): D8StencilModel {
     row,
     width,
     cellSize,
+    ...(affine ? {affine: [...affine] as const} : {}),
     unit,
     surfaceName: surface.meaning ?? surface.name,
     surfaceProvenance: getCaptureProvenance(surface),
@@ -195,7 +236,9 @@ export function renderD8Stencil(model: D8StencilModel, context: ViewContext): Vi
           ? h(
               'text',
               {x: x + CELL / 2, y: y + 44, 'text-anchor': 'middle', class: 'cv-label'},
-              `${neighbour.label} ×${neighbour.distanceFactor === 1 ? '1' : '1.414'}`
+              model.affine
+                ? `${neighbour.label} ${formatViewNumber(neighbour.distance)} ${model.unit}`
+                : `${neighbour.label} ×${neighbour.distanceFactor === 1 ? '1' : '1.414'}`
             )
           : h(
               'text',
@@ -229,11 +272,7 @@ export function renderD8Stencil(model: D8StencilModel, context: ViewContext): Vi
         null,
         neighbour.elevation === undefined ? 'outside grid' : formatViewNumber(neighbour.elevation)
       ),
-      h(
-        'td',
-        null,
-        `${neighbour.distanceFactor === 1 ? '1' : '√2 ≈ 1.414'} × ${formatViewNumber(model.cellSize)} ${model.unit}`
-      ),
+      h('td', null, formatNeighbourDistance(model, neighbour)),
       h(
         'td',
         null,
@@ -279,7 +318,9 @@ export function renderD8Stencil(model: D8StencilModel, context: ViewContext): Vi
     h(
       'p',
       {class: 'lens-caption'},
-      'D8 sends all of a cell’s input to one neighbour; diagonals are √2 ≈ 1.414 cells away, not 1. ',
+      model.affine
+        ? 'D8 sends all of a cell’s input to one neighbour; distances use the captured affine step vectors. '
+        : 'D8 sends all of a cell’s input to one neighbour; diagonals are √2 ≈ 1.414 cells away, not 1. ',
       model.chosenDirection === undefined
         ? h(
             'span',
@@ -323,7 +364,7 @@ export const D8_STENCIL_VIEW: ViewRegistration<D8StencilModel> = {
     rows: model.neighbours.map(neighbour => [
       neighbour.label,
       neighbour.elevation === undefined ? 'outside grid' : formatViewNumber(neighbour.elevation),
-      `${neighbour.distanceFactor === 1 ? '1' : '1.414'} × ${formatViewNumber(model.cellSize)} ${model.unit}`,
+      formatNeighbourDistance(model, neighbour),
       neighbour.gradient === undefined ? '—' : formatViewNumber(neighbour.gradient),
       neighbour.direction === model.chosenDirection ? 'receiver' : 'no'
     ]),
@@ -337,7 +378,9 @@ export const D8_STENCIL_VIEW: ViewRegistration<D8StencilModel> = {
         model.chosenDirection === undefined ? 'unknown' : D8_DIRECTIONS[model.chosenDirection].label
     },
     facts: [
-      `diagonal neighbours are 1.414 cell sizes away (${formatViewNumber(model.cellSize * Math.SQRT2)} ${model.unit})`,
+      model.affine
+        ? `neighbour distances use the captured affine step vectors (${model.unit})`
+        : `diagonal neighbours are 1.414 cell sizes away (${formatViewNumber(model.cellSize * Math.SQRT2)} ${model.unit})`,
       `drops are taken on ${model.surfaceName}`,
       'D8 assumes all input becomes runoff to a single neighbour'
     ],
@@ -345,3 +388,9 @@ export const D8_STENCIL_VIEW: ViewRegistration<D8StencilModel> = {
     adapterLabel: getAdapterLabel(context.record)
   })
 };
+
+function formatNeighbourDistance(model: D8StencilModel, neighbour: D8StencilNeighbour): string {
+  return model.affine
+    ? `${formatViewNumber(neighbour.distance)} ${model.unit}`
+    : `${neighbour.distanceFactor === 1 ? '1' : '1.414'} × ${formatViewNumber(model.cellSize)} ${model.unit}`;
+}

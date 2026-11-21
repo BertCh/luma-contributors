@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {assertUnitVector} from './assert-unit-vector';
+import {validateSphericalOverlayOperation} from './spherical-overlay-options';
+import {validateUnitVector} from './assert-unit-vector';
+import {validateGeometryReadWriteViews} from '../geometry-edit/geometry-storage-validation';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCommandGraph,
@@ -11,6 +13,10 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateGraphChunkBindingRanges,
   validateDisjointWritableViews
@@ -67,6 +73,7 @@ export type GPUSphericalArcOverlayProps = {
   output: {
     /** Open assembled unit-xyz rings, with result interior on the left. Capacity 3 to {@link GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES} (1024). */
     positions: GraphDataView<'float32x3'>;
+    /** Every spare offset is padded with the written vertex count; use a physical buffer separate from counts. */
     ringOffsets: GraphDataView<'uint32'>;
     /**
      * Four words: written vertices (`counts[0]`), written rings (`counts[1]`), required segments
@@ -84,22 +91,69 @@ export type GPUSphericalArcOverlayProps = {
 
 /**
  * Bounded reference spherical arc arrangement and ring assembly, including non-hemisphere regions.
- * The serial arrangement accepts at most GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES
- * input vertices and GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES output vertices.
+ * The serial arrangement accepts at most 128 total input vertices across both operands and
+ * 1024 output vertices in the whole result (not per ring). Buffer vectors pass the inclusive
+ * squared-length check `abs(dot(v,v)-1) <= 1e-4`; the host referencePoint passes the strict
+ * length check `abs(length(v)-1) < 1e-6`.
+ * Prefer CPUSphericalArcOverlayOperation when GPU graph composition is unnecessary.
+ * The parallel offset-padding dispatch requires output.counts and output.ringOffsets
+ * in separate physical buffers, including when their logical byte ranges are disjoint.
  */
 export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated coordinate space of the unit vectors. */
   readonly spatialContext: GPUSpatialContext;
   readonly referenceInside: boolean;
-  constructor(readonly props: GPUSphericalArcOverlayProps) {
+  readonly props: GPUSphericalArcOverlayProps;
+  constructor(props: GPUSphericalArcOverlayProps) {
+    // Keep buffer/view identities live, but capture every validated descriptor and
+    // compile-time scalar so replacing caller-owned nested props cannot bypass limits.
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'left',
+      'right',
+      'referencePoint',
+      'operation',
+      'tolerance',
+      'output'
+    ]);
+    this.props = Object.freeze({
+      ...captured,
+      left: snapshotConstructionFields(captured.left, [
+        'positions',
+        'ringOffsets',
+        'referenceInside'
+      ]),
+      right: snapshotConstructionFields(captured.right, [
+        'positions',
+        'ringOffsets',
+        'referenceInside'
+      ]),
+      output: snapshotConstructionFields(captured.output, [
+        'positions',
+        'ringOffsets',
+        'counts',
+        'status'
+      ]),
+      spatialContext: captured.spatialContext
+        ? snapshotConstructionSpatialContext(captured.spatialContext)
+        : undefined,
+      referencePoint: Object.freeze([...captured.referencePoint]) as readonly [
+        number,
+        number,
+        number
+      ]
+    });
+    props = this.props;
     this.id = props.id ?? 'spherical-arc-overlay';
+    validateSphericalOverlayOperation(this.id, props.operation);
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
       GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
     );
-    assertUnitVector(props.referencePoint, this.id, 'referencePoint');
+    validateUnitVector(props.referencePoint, this.id, 'referencePoint');
     validateAngularTolerance(
       this.id,
       props.tolerance ?? 1e-6,
@@ -148,6 +202,9 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
     ]);
     const left = props.left.referenceInside;
     validateDisjointWritableViews(this.id, props.output);
+    // The padding dispatch reads counts and writes offsets. Storage usage conflicts
+    // apply to the entire physical allocation, including disjoint logical slices.
+    validateGeometryReadWriteViews(this.id, [props.output.counts], [props.output.ringOffsets]);
     const right = props.right.referenceInside;
     this.referenceInside =
       props.operation === 'intersection'
@@ -169,21 +226,25 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
       rightOffsets: props.right.ringOffsets,
       ...props.output
     });
+    // Each edge can gain at most two split points per opposing edge. Retain every
+    // generated piece for duplicate detection even when the caller's output is smaller.
+    // Sum over both operands: L*(1+2R) + R*(1+2L) = L+R+4LR records.
+    const segmentCapacity = Math.max(
+      1,
+      props.left.positions.length +
+        props.right.positions.length +
+        4 * props.left.positions.length * props.right.positions.length
+    );
     // Every other arrangement record is private WGSL storage. These are the two GPU bindings.
-    for (const [name, bytes] of [
+    for (const [name, bytes, hint] of [
       [
         'packed ring offsets scratch',
-        4 * (props.left.ringOffsets.length + props.right.ringOffsets.length)
+        4 * (props.left.ringOffsets.length + props.right.ringOffsets.length),
+        'reduce input ring count'
       ],
-      ['arc segment scratch', 28 * props.output.positions.length]
+      ['arc segment scratch', 28 * segmentCapacity, 'reduce input vertex count']
     ] as const)
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        name,
-        bytes,
-        'reduce output capacity or ring count'
-      );
+      validateGPUStorageBindingByteLength(graph.device, id, name, bytes, hint);
     validateGraphViewsBelongToGraph(id, graph, [
       props.left.positions,
       props.right.positions,
@@ -198,7 +259,7 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
       'uint32',
       props.left.ringOffsets.length + props.right.ringOffsets.length
     );
-    const scratch = createTransientView(graph, `${id}-segments`, 'float32', capacity * 7);
+    const scratch = createTransientView(graph, `${id}-segments`, 'float32', segmentCapacity * 7);
     const nodes: GPUCommandNode<Parameters>[] = [];
     for (const [operand, offset] of [
       [props.left, 0],
@@ -224,6 +285,7 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
         id,
         operation: 'GPUSphericalArcOverlay',
         variant: props.operation,
+        // contract-allow: single-invocation -- bounded reference arrangement: captured total input <=128, output vertices <=1024, segments <=16512; reject >floor(vertices/3) input rings before scanning; output offset padding is parallel.
         invocationCount: 1,
         bindings: [
           {name: 'leftPositions', view: props.left.positions, type: 'f32', access: 'read'},
@@ -274,8 +336,9 @@ fn arcContains(operand:u32,point:vec3f)->vec2u{
   return vec2u(0u,4u);
 }
 fn arcDistance(first:vec3f,second:vec3f,point:vec3f)->f32{let normal=normalize(cross(first,second));let projected=cross(normal,cross(point,normal));var distance=min(arcLength(first,point),arcLength(second,point));if(length(projected)>1e-10){let nearest=normalize(projected);if(arcOn(first,second,nearest,0.0)){distance=min(distance,arcLength(nearest,point));}}return distance;}`,
-        body: `var failure=0u;var required=0u;for(var row=0u;row<${capacity}u;row++){scratch[scratchOffset+row*7u+6u]=0.0;}
+        body: `var failure=0u;var required=0u;for(var row=0u;row<${segmentCapacity}u;row++){scratch[scratchOffset+row*7u+6u]=0.0;}
 for(var operand=0u;operand<2u;operand++){
+  if(arcRingCount(operand)>arcVertexCount(operand)/3u){failure=1u;break;}
   if(arcOffset(operand,0u)!=0u||arcOffset(operand,arcRingCount(operand))!=arcVertexCount(operand)){failure=1u;}
   for(var ring=0u;ring<arcRingCount(operand);ring++){let begin=arcOffset(operand,ring);let end=arcOffset(operand,ring+1u);if(begin>end||end>arcVertexCount(operand)||end-begin<3u){failure=1u;}}
   if(failure!=0u){break;}
@@ -312,8 +375,8 @@ for(var operand=0u;operand<2u&&failure==0u;operand++){
       let leftInside=arcBoolean(firstLeft.x!=0u,secondLeft.x!=0u);let rightInside=arcBoolean(firstRight.x!=0u,secondRight.x!=0u);
       if(leftInside==rightInside){continue;}
       let startPoint=select(end,start,leftInside);let endPoint=select(start,end,leftInside);var duplicate=false;
-      for(var previous=0u;previous<min(required,${capacity}u);previous++){duplicate=duplicate||(distance(arcStart(previous),startPoint)<=4.0*ARC_TOLERANCE&&distance(arcEnd(previous),endPoint)<=4.0*ARC_TOLERANCE);}
-      if(!duplicate){if(required<${capacity}u){arcStore(required,startPoint,endPoint);}required+=1u;}
+      for(var previous=0u;previous<required;previous++){duplicate=duplicate||(distance(arcStart(previous),startPoint)<=4.0*ARC_TOLERANCE&&distance(arcEnd(previous),endPoint)<=4.0*ARC_TOLERANCE);}
+      if(!duplicate){arcStore(required,startPoint,endPoint);required+=1u;}
     }
   }
 }
@@ -337,8 +400,19 @@ if(failure==0u){for(var seed=0u;seed<required&&failure==0u;seed++){
 }}
 if(failure!=0u){vertexCount=0u;ringCount=0u;}
 for(var row=vertexCount;row<${capacity}u;row++){output[outputOffset+row*3u]=0.0;output[outputOffset+row*3u+1u]=0.0;output[outputOffset+row*3u+2u]=0.0;}
-for(var ring=ringCount+1u;ring<${props.output.ringOffsets.length}u;ring++){rings[ringsOffset+ring]=vertexCount;}rings[ringsOffset]=0u;
 counts[countsOffset]=vertexCount;counts[countsOffset+1u]=ringCount;counts[countsOffset+2u]=required;counts[countsOffset+3u]=${Number(this.referenceInside)}u;status[statusOffset]=failure;`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-pad-ring-offsets`,
+        operation: 'GPUSphericalArcOverlay',
+        variant: 'pad-ring-offsets',
+        invocationCount: props.output.ringOffsets.length,
+        bindings: [
+          {name: 'counts', view: props.output.counts, type: 'u32', access: 'read'},
+          {name: 'rings', view: props.output.ringOffsets, type: 'u32', access: 'read_write'}
+        ],
+        body: `let vertexCount=counts[countsOffset];let ringCount=counts[countsOffset+1u];
+if(index==0u){rings[ringsOffset]=0u;}else if(index>ringCount){rings[ringsOffset+index]=vertexCount;}`
       })
     ];
   }

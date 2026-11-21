@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 import {
   describeGPUAnalysisPermutationResolution,
@@ -11,8 +11,8 @@ import {
   getGPUAnalysisSignificanceAttainability,
   getGPUAnalysisQuestion,
   summarizeGPUAnalysisResult
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
-import type {GPUAnalysisDefaultResolution} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
+import type {GPUAnalysisDefaultResolution} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import type {
   CatalogOperationBinding,
@@ -1742,20 +1742,14 @@ describe('result report: the fused curated bindings on their samples', () => {
     // The binding computed the same attainability and wrote it to its summary.
     expect(result.summary['significanceNotAttainable']).toBe(1);
     const needed = result.summary['permutationsNeeded'] as number;
-    // The report passes the facts and the package words the sentence: nothing is reworded here.
+    // Hand-worked oracle: 144 tested areas, floor 1 / 1000 = 0.001, and
+    // Bonferroni cutoff 0.05 / 144 = 0.000347222... . Reaching it needs
+    // 1 / (permutations + 1) <= 0.05 / 144, hence at least 2879 draws.
+    expect(tested).toBe(144);
+    expect(needed).toBe(2879);
     const table = getTable(result, 'rate-clusters');
     expect(report.sentence).toBe(
-      summarizeGPUAnalysisResult('local-cluster-count', {
-        featureCount: tested,
-        highHighCount: 0,
-        lowLowCount: 0,
-        highLowCount: 0,
-        lowHighCount: 0,
-        significanceLevel: 0.05,
-        pValueKind: 'pseudo',
-        correction: 'bonferroni',
-        permutationCount: 999
-      })
+      'No feature could be significant at a pseudo p-value of 0.05 or less after Bonferroni correction: with 999 permutations the smallest pseudo p-value is 0.001, but a test needs 0.000347 or less to be declared significant under Bonferroni correction over 144 tests (0.05 / 144), so none can be; at least 2,879 permutations are needed.'
     );
     expect(
       countWhere(table.columns['cluster'], value =>
@@ -2543,27 +2537,27 @@ describe('review regressions: reports use the facts of the run', () => {
     expect(legend.reduce((total, entry) => total + (entry.count ?? 0), 0)).toBe(table.rowCount);
   });
 
-  it('does not describe tests that were not performed, or invent a correction for nine permutations', async () => {
+  it.each([
+    0, 9
+  ])('does not describe tests that were not performed, or invent a correction for nine permutations (%i permutations)', async permutations => {
     const binding = getBinding('local-moran-statistics');
-    for (const permutations of [0, 9]) {
-      const result = await runCatalogOperationAsync(
-        binding,
-        {valueProperty: 'value', neighborhood: 'queen', coordinateSystem: 'planar', permutations},
-        {features: makeLattice(8)},
-        {engine: 'cpu'}
-      );
-      const report = describeKeplerCatalogResult(result, binding, getDescriptor(binding.id));
-      if (permutations === 0) {
-        expect(getCautionIds(report)).not.toContain('multiple-testing-uncorrected');
-        expect(getCautionIds(report)).not.toContain('pseudo-p-values');
-        expect(formatKeplerResultReport(report)).not.toContain('Every location was tested');
-      }
-      const caution = report.cautions.find(
-        candidate => candidate.id === 'significance-not-attainable'
-      );
-      expect(caution).toBeDefined();
-      expect(caution?.text).not.toContain('correction over many tests');
+    const result = await runCatalogOperationAsync(
+      binding,
+      {valueProperty: 'value', neighborhood: 'queen', coordinateSystem: 'planar', permutations},
+      {features: makeLattice(8)},
+      {engine: 'cpu'}
+    );
+    const report = describeKeplerCatalogResult(result, binding, getDescriptor(binding.id));
+    if (permutations === 0) {
+      expect(getCautionIds(report)).not.toContain('multiple-testing-uncorrected');
+      expect(getCautionIds(report)).not.toContain('pseudo-p-values');
+      expect(formatKeplerResultReport(report)).not.toContain('Every location was tested');
     }
+    const caution = report.cautions.find(
+      candidate => candidate.id === 'significance-not-attainable'
+    );
+    expect(caution).toBeDefined();
+    expect(caution?.text).not.toContain('correction over many tests');
   });
 
   it('resolves measurement requirements by actual geometry, preserving point amounts', () => {

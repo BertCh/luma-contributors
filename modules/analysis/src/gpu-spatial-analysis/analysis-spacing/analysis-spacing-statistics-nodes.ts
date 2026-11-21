@@ -23,7 +23,7 @@ import {
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
-import {GPUNeighborSearch} from '../neighbor-search/index';
+import {GPUNeighborSearch, GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from '../neighbor-search/index';
 import {NEIGHBOR_SEARCH_CANONICAL_LONGITUDE_WGSL} from '../neighbor-search/neighbor-search-wgsl';
 import type {GPUAnalysisSpacing} from './gpu-analysis-spacing';
 
@@ -413,12 +413,12 @@ export function createAnalysisSpacingStatisticsNodes<Parameters>(
     );
   }
 
-  const parameters = floating('search-parameters', 12);
+  const parameters = floating('search-parameters', GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH);
   kernel(
     'search-parameters',
     [readState, bind('parameters', parameters, true)],
     `
-    for (var word = 0u; word < 12u; word++) { parameters[parametersOffset + word] = 0.0; }
+    for (var word = 0u; word < ${GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH}u; word++) { parameters[parametersOffset + word] = 0.0; }
     ${
       geographic
         ? `var west = -180.0; var east = 180.0; var south = -90.0; var north = 90.0;
@@ -524,7 +524,7 @@ export function createAnalysisSpacingStatisticsNodes<Parameters>(
         mask: distinct ? distinctMask : valid,
         queryMask: distinct ? undefined : queryMask,
         mode: 'knn',
-        k: rank,
+        neighborCount: rank,
         gridSize,
         parameters,
         spatialContext: contributor.spatialContext,

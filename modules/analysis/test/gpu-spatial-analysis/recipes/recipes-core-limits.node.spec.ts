@@ -570,7 +570,7 @@ describe('addChangeOfSupportRecipe at the core device limits', () => {
           sourceCategories: view('uint32', 256, 'categories'),
           categoryCount: 16
         },
-        outputs: {categoryShares: view('float32', 256 * 16, 'category-output')}
+        output: {categoryShares: view('float32', 256 * 16, 'category-output')}
       } as never);
       expectRecipeWithinCoreLimits(context);
     });

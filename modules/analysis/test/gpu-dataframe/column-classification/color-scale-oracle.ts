@@ -14,7 +14,7 @@ export type ColorScaleOracleInput = {
   values: ArrayLike<number>;
   mask?: ArrayLike<number>;
   domain: ArrayLike<number>;
-  /** Resolved active domain length (already `k + 1` on the `domainCount` view path). */
+  /** Resolved active domain length (already `k + 1` on the `classCount` view path). */
   activeDomainCount: number;
   palette: ArrayLike<number>;
   scale: GPUColorScaleType;

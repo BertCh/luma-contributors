@@ -443,7 +443,7 @@ export const CURATED_SURFACE_PREPARATION_BINDING: CatalogOperationBinding = {
               }
             }
           : {}),
-        outputs: {
+        output: {
           values: values.view,
           validity: validity.view,
           originalValidity: originalValidity.view,

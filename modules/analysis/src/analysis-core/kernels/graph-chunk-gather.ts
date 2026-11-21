@@ -7,7 +7,7 @@ import {
   createGPUCopyCommandNode,
   createTransientView,
   getViewBindingRange,
-  GraphVectorView,
+  type GraphVectorView,
   validatePackedView,
   type GPUCommandGraph,
   type GPUCopyCommandNode,
@@ -15,6 +15,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
+  isGraphVectorView,
   validateCapacity,
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
@@ -78,7 +79,7 @@ export function createGraphChunkGather<Format extends VertexFormat, Parameters>(
       `source chunk ${chunkIndex} rowByteLength must equal source.rowByteLength`
     );
   }
-  const isVector = source instanceof GraphVectorView;
+  const isVector = isGraphVectorView(source);
   const byteLength = isVector
     ? Math.max(source.length, 1) * source.rowByteLength
     : getViewBindingRange(source).size;

@@ -111,7 +111,7 @@ export function createPolygonStatusJoin(
     spatialContext,
     queries: options.polygonQueries ? polygons : points,
     features: polygons,
-    k: 1,
+    neighborCount: 1,
     neighborCapacity: 1,
     output: {neighborIds: result, neighborCounts: scalar('neighbor-counts'), status: outputStatus}
   });

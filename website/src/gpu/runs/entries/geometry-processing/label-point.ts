@@ -42,7 +42,7 @@ export default defineOperationRun({
         ringOffsets: polygons.ringOffsets.view,
         initialGridSize: values.initialGridSize,
         refinementRounds: values.refinementRounds,
-        output: {points: points.view, distances: distances.view}
+        output: {points: points.view, publishedCenterClearance: distances.view}
       })
     );
     return {

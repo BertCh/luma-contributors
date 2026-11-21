@@ -4,3 +4,4 @@
 
 export {makeGPURasterBand, makeGPURasterMetadata} from './gpu-raster-grid';
 export type {GPURasterBandOptions, GPURasterMetadataOptions} from './gpu-raster-grid';
+export type {CPURasterOperationBand} from './raster-operation-band';

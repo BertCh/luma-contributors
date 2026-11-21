@@ -20,6 +20,7 @@ import {
 } from './permutation-oracle';
 import {NEW_STATISTICS_REFERENCE as REFERENCE} from './new-statistics-reference';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {expectNumericArrayClose} from '../../../src/testing/expect-numeric-array-close';
 
 // Oracle: test/oracles/statistics-local-join-counts-and-bivariate.py (esda 2.10.0 / libpysal 4.15.0). Statistics are
 // pinned against esda; exceedance counts against the TypeScript twin of the Philox draws
@@ -302,6 +303,20 @@ it('GPULocalPermutationTest bivariate statistics exclude rows with a missing sec
   harness.destroy();
 });
 
+/**
+ * Every simulated Lee L value within 1e-4 of the twin's finite draw; the caller checks that the
+ * oracle is finite first. GPU NaN, missing and extra values then fail (TOOL-109).
+ */
+function expectLeeLDistributionMatchesTwin(
+  actual: ArrayLike<number>,
+  simulated: ArrayLike<number>
+): void {
+  expectNumericArrayClose(actual, simulated, {
+    absoluteTolerance: 1e-4,
+    label: 'Lee L permutation distribution versus the twin'
+  });
+}
+
 it('GPUGlobalPermutationTest Lee L matches esda Spatial_Pearson, the twin and its p-value', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -327,11 +342,9 @@ it('GPUGlobalPermutationTest Lee L matches esda Spatial_Pearson, the twin and it
   });
   expect(Math.abs(result.results[R.observed] - REFERENCE.leeGlobal)).toBeLessThan(1e-4);
   expect(Math.abs(result.results[R.observed] - oracle.observed)).toBeLessThan(1e-4);
-  for (let index = 0; index < PERMUTATIONS; index++) {
-    if (Math.abs(result.referenceDistribution[index] - oracle.simulated[index]) > 1e-4) {
-      throw new Error(`Lee L permutation ${index + 1} differs from the twin`);
-    }
-  }
+  expect(oracle.simulated).toHaveLength(PERMUTATIONS);
+  expect(oracle.simulated.every(Number.isFinite)).toBe(true);
+  expectLeeLDistributionMatchesTwin(result.referenceDistribution, oracle.simulated);
   const tolerance = 2e-4;
   const nearTies = oracle.simulated.filter(
     value => Math.abs(value - oracle.observed) <= tolerance

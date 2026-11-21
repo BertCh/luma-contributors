@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUInferenceMetadata} from '../../../analysis-core/contracts/inference';
+import {validateRequirement} from '../../../analysis-core/kernels/gpu-contributor-utils';
+
 import type {
   GPUAnalysisCaution,
   GPUAnalysisClassEncoding,
@@ -12,7 +15,7 @@ import type {
 
 // Host-neutral vocabulary for showing a result: the legend classes of a fixed class scheme, a
 // tally of a column against a scheme, one plain sentence per summary template, and the cautions
-// a statistician would attach to a run. Pure CPU code with no luma.gl dependency; every sentence
+// a statistician would attach to a run. Pure CPU logic; every sentence
 // is built from the numbers it is given and states no more than they support.
 
 // ---------------------------------------------------------------------------------------------
@@ -240,9 +243,9 @@ function validateOpenUnitInterval(functionName: string, name: string, value: num
 //   contributors' unsigned noise label to `-1`.
 
 /**
- * Noise label written by the density clustering contributors (`GPUSpatialClustering`,
- * `GPUOptics`, `GPUHierarchicalDensityClustering`, `GPUSpatialKMeans`) as an unsigned 32 bit
- * label. Source: `GPU_SPATIAL_CLUSTERING_NOISE`,
+ * Noise label written by the density clustering contributors (`GPUDBSCAN`,
+ * `GPUOptics`, `GPUHDBSCAN`, `GPUSpatialKMeans`) as an unsigned 32 bit
+ * label. Source: `GPU_DBSCAN_NOISE`,
  * `modules/analysis/src/gpu-spatial-analysis/spatial-clustering/spatial-clustering-parameters.ts:14`.
  */
 const CONTRIBUTOR_NOISE_LABEL = 0xffffffff;
@@ -347,7 +350,7 @@ export function getGPUAnalysisResultClasses(
       break;
     case 'cluster-membership':
       // Contributor: labels are uint32, compact cluster ids from 0, and 0xffffffff for noise
-      // (`gpu-spatial-clustering.ts:78`, `GPU_SPATIAL_CLUSTERING_NOISE`).
+      // (`gpu-spatial-clustering.ts:78`, `GPU_DBSCAN_NOISE`).
       if (encoding === 'contributor-integer') {
         return [
           {value: CONTRIBUTOR_NOISE_LABEL, label: 'Noise', tone: 'excluded'},
@@ -530,6 +533,7 @@ export type GPUAnalysisMultipleTestingCorrection =
   | 'sidak';
 
 function describeCorrection(correction: GPUAnalysisMultipleTestingCorrection): string {
+  validateMultipleTestingCorrection('summarizeGPUAnalysisResult', correction);
   switch (correction) {
     case 'none':
       return ' without correction for multiple testing';
@@ -561,6 +565,8 @@ export type GPUAnalysisSignificantHotColdFacts = {
    * as such instead of as "none significant".
    */
   permutationCount?: number;
+  /** Counting formula; omission retains the upper-tail add-one floor. */
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction'];
   /** What a feature is called (`cell`, `county`); defaults to feature. */
   featureNoun?: GPUAnalysisNoun;
 };
@@ -580,6 +586,8 @@ export type GPUAnalysisLocalClusterFacts = {
   correction: GPUAnalysisMultipleTestingCorrection;
   /** Permutations behind the pseudo p-values. */
   permutationCount?: number;
+  /** Counting formula; omission retains the upper-tail add-one floor. */
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction'];
   /**
    * False when the producer computed no p-values at all (zero permutations and no analytic
    * alternative); the sentence then says so instead of "no features to test". Defaults to true,
@@ -741,6 +749,8 @@ export type GPUAnalysisSignificanceAttainabilityFacts = {
   testCount: number;
   /** Permutations behind each pseudo p-value. */
   permutationCount: number;
+  /** Counting formula; omission retains the upper-tail add-one floor. */
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction'];
   /** Level before correction, for example 0.05. */
   significanceLevel: number;
 };
@@ -749,7 +759,7 @@ export type GPUAnalysisSignificanceAttainabilityFacts = {
 export type GPUAnalysisSignificanceAttainability = {
   /** False when no test can be declared significant whatever the data. */
   attainable: boolean;
-  /** Smallest pseudo p-value the run can report: `1 / (permutations + 1)`. */
+  /** Smallest pseudo p-value for the selected counting formula (capped at 1). */
   smallestPValue: number;
   /**
    * Bound on the smallest attainable p-value for any rejection to be possible: the level for
@@ -769,8 +779,39 @@ export type GPUAnalysisSignificanceAttainability = {
   reason: string;
 };
 
-function getRequiredPermutationCount(threshold: number): number {
-  return Math.max(0, Math.ceil((1 / threshold) * (1 - RESOLUTION_RELATIVE_TOLERANCE)) - 1);
+/** A few binary64 rounding errors, rather than a statistical tolerance that grows in draws. */
+const PERMUTATION_COMPARISON_RELATIVE_ROUNDOFF = 4 * Number.EPSILON;
+
+function isWithinPermutationThreshold(value: number, threshold: number): boolean {
+  return (
+    value <= threshold ||
+    value - threshold <= PERMUTATION_COMPARISON_RELATIVE_ROUNDOFF * Math.max(value, threshold)
+  );
+}
+
+function getRequiredPermutationCount(threshold: number, multiplier = 1): number {
+  let required = Math.max(0, Math.ceil(multiplier / threshold) - 1);
+  // Test adjacent integer budgets using the same forward formula as attainability. This handles
+  // a quotient rounded across an integer without subtracting a relative share of the budget.
+  if (required > 0 && isWithinPermutationThreshold(Math.min(1, multiplier / required), threshold)) {
+    required--;
+  }
+  if (!isWithinPermutationThreshold(Math.min(1, multiplier / (required + 1)), threshold)) {
+    required++;
+  }
+  return required;
+}
+
+function validateMultipleTestingCorrection(id: string, correction: unknown): void {
+  validateRequirement(
+    id,
+    correction === 'none' ||
+      correction === 'bonferroni' ||
+      correction === 'holm' ||
+      correction === 'sidak' ||
+      correction === 'false-discovery-rate',
+    `correction must be one of none, bonferroni, holm, sidak, false-discovery-rate; received ${String(correction)}`
+  );
 }
 
 function describeCorrectionClause(
@@ -796,13 +837,14 @@ function describeCorrectionClause(
 
 /**
  * Whether any test of a permutation run can be declared significant. The smallest pseudo p-value
- * is `1 / (permutations + 1)`, so with a correction that demands a small first-step threshold, a
- * run can be unable to find anything however strong the pattern is: 999 permutations give 0.001,
+ * is `1 / (permutations + 1)` by default, or twice that for doubled minimum tails (capped at 1).
+ * With a correction that demands a small first-step threshold, a run can be unable to find anything however strong the pattern is: 999 permutations give 0.001,
  * which can never reach `0.05 / 144` under Bonferroni.
  *
  * - `none`: the smallest p-value must be at most the level.
  * - `bonferroni`, `holm`: at most `level / testCount` (Holm's first step is the Bonferroni test).
- *   Permutations needed: `ceil(testCount / level) - 1`.
+ *   Permutations needed: `ceil(multiplier * testCount / level) - 1`, with multiplier 1 by
+ *   default and 2 for doubled minimum tails.
  * - `sidak`: at most `1 - (1 - level)^(1 / testCount)`.
  * - `false-discovery-rate` (Benjamini-Hochberg): a test is significant when its p-value is at most
  *   `rank * level / testCount` for some rank reached; with `k` tests tied at the smallest
@@ -817,6 +859,7 @@ export function getGPUAnalysisSignificanceAttainability(
   facts: GPUAnalysisSignificanceAttainabilityFacts
 ): GPUAnalysisSignificanceAttainability {
   const name = 'getGPUAnalysisSignificanceAttainability';
+  validateMultipleTestingCorrection(name, facts.correction);
   validateNonNegativeInteger(name, 'permutationCount', facts.permutationCount);
   validateOpenUnitInterval(name, 'significanceLevel', facts.significanceLevel);
   if (!Number.isInteger(facts.testCount) || facts.testCount < 1) {
@@ -826,7 +869,10 @@ export function getGPUAnalysisSignificanceAttainability(
   }
   const {correction, permutationCount, significanceLevel} = facts;
   const testCount = correction === 'none' ? 1 : facts.testCount;
-  const smallestPValue = 1 / (permutationCount + 1);
+  const smallestPValue = getGPUAnalysisSmallestPseudoPValue(
+    permutationCount,
+    facts.pValueConstruction
+  );
   const level = significanceLevel;
   let threshold: number;
   switch (correction) {
@@ -840,12 +886,15 @@ export function getGPUAnalysisSignificanceAttainability(
     default:
       threshold = level;
   }
-  const isAttainable = smallestPValue <= threshold * (1 + RESOLUTION_RELATIVE_TOLERANCE);
+  const isAttainable = isWithinPermutationThreshold(smallestPValue, threshold);
   const permutationsText = `${formatGPUAnalysisNumber(permutationCount)} ${permutationCount === 1 ? 'permutation' : 'permutations'}`;
   const clause = describeCorrectionClause(correction, testCount, level);
 
   if (!isAttainable) {
-    const requiredPermutationCount = getRequiredPermutationCount(threshold);
+    const requiredPermutationCount = getRequiredPermutationCount(
+      threshold,
+      facts.pValueConstruction === 'doubled-minimum-tail' ? 2 : 1
+    );
     const required = `at least ${formatGPUAnalysisNumber(requiredPermutationCount)} permutations are needed`;
     const reason =
       permutationCount === 0
@@ -855,10 +904,24 @@ export function getGPUAnalysisSignificanceAttainability(
   }
 
   if (correction === 'false-discovery-rate') {
-    const testsNeededAtMinimum = Math.max(
-      1,
-      Math.ceil((smallestPValue * testCount) / level - RESOLUTION_RELATIVE_TOLERANCE)
-    );
+    // Use the correction's forward arithmetic: a rounded quotient or a tolerance before
+    // ceil can claim that a rank just below the actual rejection boundary suffices.
+    if ((smallestPValue * testCount) / testCount > level) {
+      return {
+        attainable: false,
+        smallestPValue,
+        threshold,
+        reason: `with ${permutationsText} even all ${formatGPUAnalysisNumber(testCount)} tests tied at the minimum exceed the Benjamini-Hochberg cutoff ${formatGPUAnalysisMeasuredValue(level)}; no rank can be significant`
+      };
+    }
+    let lowerRank = 1;
+    let upperRank = testCount;
+    while (lowerRank < upperRank) {
+      const middleRank = Math.floor(lowerRank + (upperRank - lowerRank) / 2);
+      if ((smallestPValue * testCount) / middleRank <= level) upperRank = middleRank;
+      else lowerRank = middleRank + 1;
+    }
+    const testsNeededAtMinimum = lowerRank;
     const reason = `with ${permutationsText} the smallest pseudo p-value is ${formatGPUAnalysisMeasuredValue(smallestPValue)}; Benjamini-Hochberg over ${formatGPUAnalysisNumber(testCount)} tests rejects through the largest rank k whose k-th smallest p-value is at most k times ${formatLevel(level)} / ${formatGPUAnalysisNumber(testCount)}; ${formatGPUAnalysisNumber(testsNeededAtMinimum)} ${testsNeededAtMinimum === 1 ? 'test' : 'tests'} tied at the minimum would suffice, even if all remaining p-values were larger`;
     return {attainable: true, smallestPValue, threshold, testsNeededAtMinimum, reason};
   }
@@ -899,6 +962,7 @@ function summarizeSignificantHotCold(facts: GPUAnalysisSignificantHotColdFacts):
           correction: facts.correction,
           testCount: facts.featureCount,
           permutationCount: facts.permutationCount,
+          pValueConstruction: facts.pValueConstruction,
           significanceLevel: level
         });
         if (!attainability.attainable) {
@@ -960,6 +1024,7 @@ function summarizeLocalClusters(facts: GPUAnalysisLocalClusterFacts): string {
       correction: facts.correction,
       testCount: Math.max(analyzed, 1),
       permutationCount: 0,
+      pValueConstruction: facts.pValueConstruction,
       significanceLevel: facts.significanceLevel
     });
     const subject =
@@ -978,6 +1043,7 @@ function summarizeLocalClusters(facts: GPUAnalysisLocalClusterFacts): string {
         correction: facts.correction,
         testCount: facts.featureCount,
         permutationCount: facts.permutationCount,
+        pValueConstruction: facts.pValueConstruction,
         significanceLevel: facts.significanceLevel
       });
       if (!attainability.attainable) {
@@ -1244,6 +1310,8 @@ export type GPUAnalysisCautionTextFacts = {
   correction?: GPUAnalysisMultipleTestingCorrection;
   testCount?: number;
   permutationCount?: number;
+  /** Counting formula; omission retains the upper-tail add-one floor. */
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction'];
   /**
    * For `rows-without-neighbors`: true when the producer leaves such rows out of the classes,
    * false when it classifies them anyway (from their own value alone).
@@ -1333,10 +1401,17 @@ export function getGPUAnalysisCautionText(
   }
   let text = base.text;
   const name = 'getGPUAnalysisCautionText';
+  if (facts?.correction !== undefined) validateMultipleTestingCorrection(name, facts.correction);
   if (facts?.significanceLevel !== undefined) {
     validateOpenUnitInterval(name, 'significanceLevel', facts.significanceLevel);
   }
   switch (caution) {
+    case 'pseudo-p-values':
+      if (facts?.pValueConstruction === 'doubled-minimum-tail') {
+        text =
+          'These p-values are estimated from random permutations of the values, so they vary with the random seed, and they cannot be smaller than min(1, 2 / (permutations + 1)). A level below that cannot be reached however strong the pattern is.';
+      }
+      break;
     case 'multiple-testing-uncorrected':
       if (facts?.significanceLevel !== undefined) {
         const level = formatGPUAnalysisMeasuredValue(facts.significanceLevel);
@@ -1365,6 +1440,7 @@ export function getGPUAnalysisCautionText(
           correction: facts.correction,
           testCount: Math.max(1, facts.testCount),
           permutationCount: facts.permutationCount,
+          pValueConstruction: facts.pValueConstruction,
           significanceLevel: facts.significanceLevel
         });
         text = `${capitalizeFirst(attainability.reason)}. A result of none significant is then not a finding about the data.`;
@@ -1397,14 +1473,29 @@ export function getGPUAnalysisCautionText(
 /**
  * Smallest pseudo p-value a run of `permutationCount` permutations can report: with the observed
  * value counted among the permuted ones, `1 / (permutationCount + 1)`.
+ * Doubled minimum tails use `2 / (permutationCount + 1)`, capped at 1. Omission preserves
+ * the upper-tail-count formula regardless of scientific sidedness.
  */
-export function getGPUAnalysisSmallestPseudoPValue(permutationCount: number): number {
+export function getGPUAnalysisSmallestPseudoPValue(
+  permutationCount: number,
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction']
+): number {
   validateNonNegativeInteger(
     'getGPUAnalysisSmallestPseudoPValue',
     'permutationCount',
     permutationCount
   );
-  return 1 / (permutationCount + 1);
+  validateRequirement(
+    'getGPUAnalysisSmallestPseudoPValue',
+    pValueConstruction === undefined ||
+      pValueConstruction === 'upper-tail-count' ||
+      pValueConstruction === 'doubled-minimum-tail',
+    `pValueConstruction must be upper-tail-count or doubled-minimum-tail; received ${pValueConstruction}`
+  );
+  return Math.min(
+    1,
+    (pValueConstruction === 'doubled-minimum-tail' ? 2 : 1) / (permutationCount + 1)
+  );
 }
 
 /**
@@ -1415,16 +1506,17 @@ export function getGPUAnalysisSmallestPseudoPValue(permutationCount: number): nu
  */
 export function canResolveGPUAnalysisSignificanceLevel(
   permutationCount: number,
-  significanceLevel: number
+  significanceLevel: number,
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction']
 ): boolean {
   validateOpenUnitInterval(
     'canResolveGPUAnalysisSignificanceLevel',
     'significanceLevel',
     significanceLevel
   );
-  return (
-    getGPUAnalysisSmallestPseudoPValue(permutationCount) <=
-    significanceLevel * (1 + RESOLUTION_RELATIVE_TOLERANCE)
+  return isWithinPermutationThreshold(
+    getGPUAnalysisSmallestPseudoPValue(permutationCount, pValueConstruction),
+    significanceLevel
   );
 }
 
@@ -1434,12 +1526,25 @@ export function canResolveGPUAnalysisSignificanceLevel(
  */
 export function describeGPUAnalysisPermutationResolution(
   permutationCount: number,
-  significanceLevel: number
+  significanceLevel: number,
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction']
 ): string | undefined {
-  if (canResolveGPUAnalysisSignificanceLevel(permutationCount, significanceLevel)) return undefined;
-  const requiredPermutations = Math.ceil(1 / significanceLevel - RESOLUTION_RELATIVE_TOLERANCE) - 1;
-  const smallest = getGPUAnalysisSmallestPseudoPValue(permutationCount);
-  return `${formatGPUAnalysisNumber(permutationCount)} permutations cannot give a pseudo p-value below ${formatGPUAnalysisNumber(smallest, getPseudoPValueDigits(permutationCount), true)}, so no location can be significant at ${formatGPUAnalysisNumber(significanceLevel, 6, true)}; at least ${formatGPUAnalysisNumber(requiredPermutations)} permutations are needed.`;
+  if (
+    canResolveGPUAnalysisSignificanceLevel(permutationCount, significanceLevel, pValueConstruction)
+  )
+    return undefined;
+  const requiredPermutations = getRequiredPermutationCount(
+    significanceLevel,
+    pValueConstruction === 'doubled-minimum-tail' ? 2 : 1
+  );
+  const smallest = getGPUAnalysisSmallestPseudoPValue(permutationCount, pValueConstruction);
+  const rounded = formatGPUAnalysisNumber(smallest, getPseudoPValueDigits(permutationCount), true);
+  const multiplier = pValueConstruction === 'doubled-minimum-tail' ? 2 : 1;
+  const floorDescription =
+    Number(rounded) === smallest
+      ? rounded
+      : `${multiplier} / ${permutationCount + 1} (approximately ${rounded})`;
+  return `${formatGPUAnalysisNumber(permutationCount)} permutations cannot give a pseudo p-value below ${floorDescription}, so no location can be significant at ${formatGPUAnalysisNumber(significanceLevel, 6, true)}; at least ${formatGPUAnalysisNumber(requiredPermutations)} permutations are needed.`;
 }
 
 /** Facts of one run that decide which cautions apply. A member that is absent is unknown. */
@@ -1457,6 +1562,8 @@ export type GPUAnalysisCautionFacts = {
   testCount?: number;
   /** Permutations behind the p-values; above 0 raises `pseudo-p-values`. */
   permutationCount?: number;
+  /** Counting formula; omission retains the upper-tail add-one floor. */
+  pValueConstruction?: GPUInferenceMetadata['pValueConstruction'];
   /**
    * True when the producer has no p-values but permutation p-values; with `permutationCount` 0
    * that raises `significance-not-attainable` (no p-value is computed, so nothing can be tested).
@@ -1503,6 +1610,7 @@ export function deriveGPUAnalysisCautions(
   facts: GPUAnalysisCautionFacts
 ): readonly GPUAnalysisCaution[] {
   const name = 'deriveGPUAnalysisCautions';
+  if (facts.correction !== undefined) validateMultipleTestingCorrection(name, facts.correction);
   if (facts.featureCount !== undefined)
     validateNonNegativeInteger(name, 'featureCount', facts.featureCount);
   if (facts.testCount !== undefined) validateNonNegativeInteger(name, 'testCount', facts.testCount);
@@ -1535,6 +1643,7 @@ export function deriveGPUAnalysisCautions(
       correction,
       testCount: facts.testCount ?? 1,
       permutationCount: facts.permutationCount,
+      pValueConstruction: facts.pValueConstruction,
       significanceLevel: level
     }).attainable;
   }

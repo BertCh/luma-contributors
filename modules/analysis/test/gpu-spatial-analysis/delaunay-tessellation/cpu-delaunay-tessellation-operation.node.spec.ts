@@ -242,3 +242,56 @@ it('reports distinct-site iteration counts through both the pure function and th
     expect(outputs['iterationCount']).toEqual(Uint32Array.of(expectedIterations));
   }
 });
+
+it('admits count-only Delaunay operations and keeps scalar status mandatory', async () => {
+  // Three noncollinear sites have exactly one triangle, regardless of output capacity.
+  const positions = Float32Array.of(0, 0, 2, 0, 0, 2);
+  for (const capacity of [0, 1]) {
+    const props: DelaunayTessellationOperationProps = {
+      positions: 'positions',
+      capacity,
+      output: {
+        triangles: 'triangles',
+        status: {count: 'count', requiredCount: 'requiredCount', overflow: 'overflow'}
+      }
+    };
+    const gpuOperation = new GPUDelaunayTessellationOperation(props);
+    expect(gpuOperation.outputs['triangles'].length).toBe(capacity);
+    for (const port of ['count', 'requiredCount', 'overflow']) {
+      expect(gpuOperation.outputs[port].length).toBe(1);
+    }
+    const operation = new CPUDelaunayTessellationOperation(props);
+    const outputs = await operation.execute({
+      inputs: {
+        positions: {
+          format: 'float32x2',
+          length: 3,
+          chunks: [{values: positions, length: 3}],
+          pack: () => positions
+        }
+      }
+    });
+    expect(outputs['triangles']).toHaveLength(3 * capacity);
+    expect(outputs['requiredCount']).toEqual(Uint32Array.of(1));
+    expect(outputs['count']).toEqual(Uint32Array.of(capacity));
+    expect(outputs['overflow']).toEqual(Uint32Array.of(1 - capacity));
+  }
+});
+
+for (const port of ['count', 'requiredCount', 'overflow'] as const) {
+  it(`rejects omission of mandatory Delaunay status.${port} in both named forms`, () => {
+    for (const Operation of [GPUDelaunayTessellationOperation, CPUDelaunayTessellationOperation]) {
+      const status = {count: 'count', requiredCount: 'requiredCount', overflow: 'overflow'};
+      delete (status as Partial<typeof status>)[port];
+      expect(
+        () =>
+          new Operation({
+            id: 'required-delaunay',
+            positions: 'positions',
+            capacity: 0,
+            output: {triangles: 'triangles', status}
+          })
+      ).toThrow(new RegExp(`required-delaunay output.status.${port}`));
+    }
+  });
+}

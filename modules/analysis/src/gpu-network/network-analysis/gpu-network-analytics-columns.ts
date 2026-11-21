@@ -190,9 +190,6 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
         companions.push([`${name}.extent`, metric.extent, 2]);
         validateSinglePackedView(metric.extent, [format], `${id} ${name}.extent`);
       }
-      if (metric.extent && !metric.normalized) {
-        throw new Error(`${id} ${name}.extent requires ${name}.normalized`);
-      }
     }
     if (props.components) {
       nodeColumns.push(['components.output', props.components.output, 'uint32']);
@@ -253,8 +250,8 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     validateNetworkViewBindings(id, graph, getViews(props), {
       componentChanged: props.components ? 4 : 0,
       // Extent reduction has two words per partial row; later levels only shrink.
-      extent: this.metrics.some(metric => metric.normalized) ? 8 : 0,
-      extentPartials: this.metrics.some(metric => metric.normalized)
+      extent: this.metrics.some(metric => metric.extent || metric.normalized) ? 8 : 0,
+      extentPartials: this.metrics.some(metric => metric.extent || metric.normalized)
         ? Math.ceil(nodeCount / NETWORK_ANALYTICS_REDUCTION_WORKGROUP_SIZE) * 8
         : 0
     });
@@ -263,7 +260,7 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
       nodes.push(...metric.algorithm.getNodes(graph));
     }
     for (const metric of this.metrics) {
-      if (!metric.normalized || !metric.raw || !metric.format) {
+      if ((!metric.extent && !metric.normalized) || !metric.raw || !metric.format) {
         continue;
       }
       const extent =
@@ -277,6 +274,7 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
           operation: 'extent'
         }).getCommandNodes(graph)
       );
+      if (!metric.normalized) continue;
       const elementType = metric.format === 'uint32' ? 'u32' : 'f32';
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {

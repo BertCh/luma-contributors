@@ -1210,7 +1210,7 @@ it('GPUTerrainHorizon writes negative openness and anisotropic sky-view factor m
   ]) {
     const settings = {
       zFactor: 1.5,
-      anisotropyAzimuthDegrees: anisotropy.azimuthDegrees,
+      rvtDirectionDegrees: anisotropy.azimuthDegrees,
       anisotropyLevel: anisotropy.level,
       anisotropyMinimumWeight: anisotropy.minimumWeight
     };
@@ -1369,7 +1369,7 @@ it('GPUTerrainHorizon sweep algorithm matches the float64 digital-line oracle fo
     const settings = {
       zFactor: 1.3,
       curvatureCoefficient: 2e-4,
-      anisotropyAzimuthDegrees: anisotropy.azimuthDegrees,
+      rvtDirectionDegrees: anisotropy.azimuthDegrees,
       anisotropyLevel: anisotropy.level,
       anisotropyMinimumWeight: anisotropy.minimumWeight
     };

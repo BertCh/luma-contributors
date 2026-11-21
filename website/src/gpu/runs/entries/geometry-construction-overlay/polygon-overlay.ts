@@ -55,7 +55,9 @@ export default defineOperationRun({
         output: result.output
       })
     );
-    const drawing = addPolygonDrawing(builder, 'overlay', result.polygons, result.count);
+    const drawing = addPolygonDrawing(builder, 'overlay', result.polygons, result.count, {
+      status: result.output.status
+    });
     // Fill: the rings the overlay wrote are triangulated on the GPU, so the result reads as an area.
     const ringVertices = result.polygons.positions.length;
     const polygonCapacity = result.polygons.polygonOffsets.length - 1;

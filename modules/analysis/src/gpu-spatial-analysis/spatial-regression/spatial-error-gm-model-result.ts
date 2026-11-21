@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateRegressionStatusReadback,
+  type RegressionStatusReadback
+} from './regression-status-readback';
+
+import {
   createGPURegressionModelResult,
   getGPURegressionPredictorNames,
   type GPURegressionCoefficient,
@@ -30,6 +35,11 @@ export type GPUSpatialErrorGMReadback = {
   status: Uint32Array;
 };
 
+/** Status may also be supplied as an exact buffer read. */
+export type GPUSpatialErrorGMReadbackInput = Omit<GPUSpatialErrorGMReadback, 'status'> & {
+  status: RegressionStatusReadback;
+};
+
 /** Options of {@link getGPUSpatialErrorGMModelResult}. */
 export type GPUSpatialErrorGMModelResultOptions = {
   /** Fitted predictor count; required for a capacity-sized table. Omit only for an exact-length table. */
@@ -54,9 +64,13 @@ export type GPUSpatialErrorGMModelResultOptions = {
  * Conditioning is the final filtered regression's. A failed fit carries NaN estimates.
  */
 export function getGPUSpatialErrorGMModelResult(
-  readback: GPUSpatialErrorGMReadback,
+  readback: GPUSpatialErrorGMReadbackInput,
   options: GPUSpatialErrorGMModelResultOptions = {}
 ): GPURegressionModelResult {
+  const statusCode = validateRegressionStatusReadback(
+    'getGPUSpatialErrorGMModelResult',
+    readback.status
+  );
   const {table, summary} = readback;
   if (summary.length < GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH) {
     throw new Error(
@@ -100,7 +114,7 @@ export function getGPUSpatialErrorGMModelResult(
     rowCount: sampleSize,
     residualSumOfSquares: summary[GPU_SPATIAL_ERROR_GM_SUMMARY_SIGMA_SQUARED] * sampleSize,
     standardErrorSigmaSquared: 'maximum-likelihood',
-    statusCode: readback.status[0],
+    statusCode,
     pseudoRSquared: summary[GPU_SPATIAL_ERROR_GM_SUMMARY_PSEUDO_R_SQUARED],
     logLikelihood: null,
     conditioning: hasConditioning

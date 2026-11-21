@@ -50,17 +50,17 @@ for (const Operation of [GPUContiguityWeightsOperation, CPUContiguityWeightsOper
 it('final1 explicit pairCapacity binds the CPU twin while final slots remain sufficient', () => {
   const fixture = createPairStarvedContiguityFixture();
   const partial = computeContiguityWeightsOnCPU(fixture.input, fixture.options);
-  expect(Array.from(partial.candidateOverflow)).toEqual([1]);
-  expect(Array.from(partial.overflow)).toEqual([0]);
-  expect(Array.from(partial.requiredCount)).toEqual([1]);
+  expect(Array.from(partial.status.candidateOverflow)).toEqual([1]);
+  expect(Array.from(partial.status.overflow)).toEqual([0]);
+  expect(Array.from(partial.status.requiredCount)).toEqual([1]);
   expect(Array.from(partial.offsets)).toEqual([0, 1, 1]);
   expect(partial.neighbors[0]).toBe(1);
   const complete = computeContiguityWeightsOnCPU(fixture.input, {
     ...fixture.options,
     pairCapacity: 4
   });
-  expect(Array.from(complete.candidateOverflow)).toEqual([0]);
-  expect(Array.from(complete.requiredCount)).toEqual([2]);
+  expect(Array.from(complete.status.candidateOverflow)).toEqual([0]);
+  expect(Array.from(complete.status.requiredCount)).toEqual([2]);
 });
 
 it('checks adjacency-changing snaps and signed half-cells at a nonzero origin', () => {
@@ -170,9 +170,9 @@ it('checks adjacency-changing snaps and signed half-cells at a nonzero origin', 
           expect(Array.from(result.weights.slice(0, usedCount)), scene.name).toEqual(
             joins ? [1, 1] : []
           );
-          expect(result.requiredCount[0]).toBe(joins ? 2 : 0);
-          expect(result.overflow[0]).toBe(0);
-          expect(result.candidateOverflow[0]).toBe(0);
+          expect(result.status.requiredCount[0]).toBe(joins ? 2 : 0);
+          expect(result.status.overflow[0]).toBe(0);
+          expect(result.status.candidateOverflow[0]).toBe(0);
         }
       }
     }
@@ -300,9 +300,9 @@ it('matches hand-drawn 2x2 square adjacency for queen and rook, including trunca
       );
       expect(Array.from(result.neighbors)).toEqual(expectedNeighbors.slice(0, capacity));
       expect(Array.from(result.weights)).toEqual(new Array(capacity).fill(1));
-      expect(result.requiredCount[0]).toBe(expectedNeighbors.length);
-      expect(result.overflow[0]).toBe(Number(capacity < expectedNeighbors.length));
-      expect(result.candidateOverflow[0]).toBe(0);
+      expect(result.status.requiredCount[0]).toBe(expectedNeighbors.length);
+      expect(result.status.overflow[0]).toBe(Number(capacity < expectedNeighbors.length));
+      expect(result.status.candidateOverflow[0]).toBe(0);
     }
   }
 });
@@ -368,7 +368,7 @@ it('includes holes and multipart features, ignores bad vertices and deduplicates
     const result = computeContiguityWeightsOnCPU(polygons, {criterion, capacity: 4});
     expect(Array.from(result.offsets)).toEqual([0, 2, 3, 4, 4]);
     expect(Array.from(result.neighbors)).toEqual([1, 2, 0, 0]);
-    expect(result.requiredCount[0]).toBe(4);
+    expect(result.status.requiredCount[0]).toBe(4);
   }
 });
 
@@ -398,10 +398,11 @@ it('uses the first vertex as snap origin, half-up for negative coordinates and i
   ]);
   expect(
     computeContiguityWeightsOnCPU(polygons, {criterion: 'queen', capacity: 4, snapTolerance: 0.25})
-      .requiredCount[0]
+      .status.requiredCount[0]
   ).toBe(2);
   expect(
-    computeContiguityWeightsOnCPU(polygons, {criterion: 'queen', capacity: 4}).requiredCount[0]
+    computeContiguityWeightsOnCPU(polygons, {criterion: 'queen', capacity: 4}).status
+      .requiredCount[0]
   ).toBe(0);
   const broken = {...polygons, ringOffsets: Uint32Array.of(0, 20)};
   expect(() => computeContiguityWeightsOnCPU(broken, {criterion: 'rook', capacity: 1})).toThrow(
@@ -513,12 +514,50 @@ it('CPU contiguity uses the zero fallback for a non-finite owned origin and supp
     });
     expect(Array.from(result.offsets)).toEqual([0, 0, 1, 2]);
     expect(Array.from(result.neighbors)).toEqual([2, 1]);
-    expect(result.requiredCount[0]).toBe(2);
+    expect(result.status.requiredCount[0]).toBe(2);
     const empty = computeContiguityWeightsOnCPU(
       {...input, ringOffsets: Uint32Array.of(1, 1, 1, 1)},
       {criterion, capacity: 2, snapTolerance: 0.25}
     );
     expect(Array.from(empty.offsets)).toEqual([0, 0, 0, 0]);
-    expect(empty.requiredCount[0]).toBe(0);
+    expect(empty.status.requiredCount[0]).toBe(0);
   }
+});
+
+it('DGN-09 accepts terminal-only empty hierarchy levels and preserves one empty parent', () => {
+  for (const [ringOffsets, polygonOffsets, featureOffsets, expected] of [
+    [[0], [0], [0], [0]],
+    [[0], [0], [0, 0], [0, 0]],
+    [[0], [0, 0], [0, 1], [0, 0]],
+    [
+      [0, 0],
+      [0, 1],
+      [0, 1],
+      [0, 0]
+    ]
+  ]) {
+    const result = computeContiguityWeightsOnCPU(
+      {
+        positions: new Float32Array(),
+        ringOffsets: Uint32Array.from(ringOffsets),
+        polygonOffsets: Uint32Array.from(polygonOffsets),
+        featureOffsets: Uint32Array.from(featureOffsets)
+      },
+      {criterion: 'rook', capacity: 0}
+    );
+    expect([...result.offsets]).toEqual(expected);
+    expect([...result.status.requiredCount]).toEqual([0]);
+    expect([...result.status.overflow]).toEqual([0]);
+  }
+  expect(() =>
+    computeContiguityWeightsOnCPU(
+      {
+        positions: new Float32Array(),
+        ringOffsets: new Uint32Array(),
+        polygonOffsets: Uint32Array.of(0),
+        featureOffsets: Uint32Array.of(0)
+      },
+      {criterion: 'rook', capacity: 0}
+    )
+  ).toThrow(/terminal offset/);
 });

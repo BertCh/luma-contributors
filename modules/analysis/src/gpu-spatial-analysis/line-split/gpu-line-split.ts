@@ -1,7 +1,14 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotLineFeatureGeometry,
+  createLineFeatureProvenanceNode,
+  createLinePieceMetadataNodes,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {createCapacityPrefixNodes} from './capacity-prefix-nodes';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {
   createTransientView,
@@ -20,16 +27,16 @@ import {
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
+  validateRequirement,
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
-import {
-  getGPUSegmentIntersectionMaximumVertexCount,
-  GPUSegmentIntersection
-} from '../segment-intersection/index';
+import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/index';
+import {createSegmentPairNodes} from '../segment-intersection/segment-pair-nodes';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -38,7 +45,6 @@ import type {
   GPUBoundedResultStatusPort,
   GPUGeneratedGeometryPort,
   GPULineGeometryPort,
-  GPUPackedGeometryPort,
   GPUVertexCountStatusPort
 } from '../../analysis-core/contracts/index';
 
@@ -49,7 +55,7 @@ export const GPU_LINE_SPLIT_NONE = 0xffffffff;
 
 /**
  * Bit set in a `pieces.vertexSourceEdges` row when its input edge meets another segment of its own
- * line, or when the intersection pair list overflowed. The low 31 bits hold the edge index.
+ * line, or when the intersection pair list or its BVH leaf capacity overflowed. The low 31 bits hold the edge index.
  */
 export const GPU_LINE_SPLIT_SELF_CONTACT = 0x80000000;
 
@@ -73,11 +79,20 @@ const SPLIT_STRIDE = 4;
  * Caller-owned, capacity-bounded output pieces of {@link GPULineSplit}, in GeoArrow linestring
  * layout. Piece `q` is the vertex run `positions[offsets[q] .. offsets[q + 1])`.
  */
-export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> & {
-  geometry: GPULineGeometryPort & {
+export type GPULineSplitPieces = Omit<GPUGeneratedGeometryPort<GPULineGeometryPort>, 'geometry'> & {
+  geometry: Omit<GPULineGeometryPort, 'featureOffsets'> & {
     positions: GraphDataView<'float32x2'>;
+    /** Optional logical-feature-to-piece offsets; same feature count as input. Empty/truncated features remain explicit. */
+    featureOffsets?: GraphDataView<'uint32'>;
   };
+  /** Logical source caller identity per piece (feature row without input sourceIds). */
   sourceIds: GraphDataView<'uint32'>;
+  /** Original input line-part row per piece; unused capacity is 0xffffffff. */
+  sourcePartRows?: GraphDataView<'uint32'>;
+  /** Logical source feature row per piece; unused capacity is 0xffffffff. */
+  sourceFeatureRows?: GraphDataView<'uint32'>;
+  /** Optional logical source feature identity per piece (sourceIds input value, or feature row). */
+  sourceFeatureIds?: GraphDataView<'uint32'>;
   /**
    * Bounded-result status plus the vertex counts of the written pieces. `count` counts pieces
    * (linestrings), not vertices.
@@ -127,7 +142,7 @@ export type GPULineSplitProps = {
    */
   spatialContext?: GPUSpatialContext;
   /** Linestrings to split at their mutual and self intersections. */
-  lines: GPUPackedGeometryPort<GPULineGeometryPort>;
+  lines: GPULineFeatureGeometry;
   /**
    * Capacity of the internal `GPUSegmentIntersection` pair list. Splitting needs at most four
    * transient rows per pair. When the intersection overflows, pieces are produced from the sorted
@@ -190,10 +205,96 @@ export class GPULineSplit implements GPUCommandNodeProducer {
   readonly vertexCapacity: number;
 
   constructor(props: GPULineSplitProps) {
-    this.id = props.id ?? 'line-split';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'lines',
+      'intersectionCapacity',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    this.id = snapshot.id ?? 'line-split';
+    const outputSnapshot = snapshotConstructionFields(snapshot.output, ['pieces', 'status']);
+    const piecesSnapshot = snapshotConstructionFields(outputSnapshot.pieces, [
+      'geometry',
+      'sourceIds',
+      'sourceFeatureIds',
+      'sourcePartRows',
+      'sourceFeatureRows',
+      'vertexSourceEdges',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...snapshot,
+      lines: snapshotLineFeatureGeometry(this.id, snapshot.lines),
+      output: Object.freeze({
+        pieces: Object.freeze({
+          ...piecesSnapshot,
+          geometry: snapshotConstructionFields(piecesSnapshot.geometry, [
+            'kind',
+            'positions',
+            'lineOffsets',
+            'featureOffsets',
+            'sourceIds'
+          ]),
+          status: snapshotConstructionFields(piecesSnapshot.status, [
+            'count',
+            'requiredCount',
+            'overflow',
+            'candidateOverflow',
+            'complete',
+            'unresolvedCount',
+            'vertexCount',
+            'requiredVertexCount',
+            'uncertainCount',
+            'invalidCount',
+            'iterationCount',
+            'converged',
+            'iterationLimitReached',
+            'approximation',
+            'ringCount',
+            'requiredRingCount'
+          ])
+        }),
+        status:
+          outputSnapshot.status &&
+          snapshotConstructionFields(outputSnapshot.status, ['uncertainCount'])
+      })
+    });
     this.props = props;
+    validateRequirement(
+      this.id,
+      props.leafCapacity === undefined ||
+        props.leafCapacity >= props.lines.positions.length ||
+        Boolean(props.output.pieces.status.candidateOverflow),
+      `leafCapacity ${String(props.leafCapacity)} below the right segment slot count ${props.lines.positions.length} requires output.pieces.status.candidateOverflow`
+    );
+
+    validateRequirement(
+      this.id,
+      props.output.pieces.geometry.sourceIds === undefined,
+      'output.pieces.geometry.sourceIds is not a split output; use output.pieces.sourceFeatureIds for caller identities'
+    );
+    for (const name of [
+      'complete',
+      'unresolvedCount',
+      'uncertainCount',
+      'invalidCount',
+      'iterationCount',
+      'converged',
+      'iterationLimitReached',
+      'approximation',
+      'ringCount',
+      'requiredRingCount'
+    ] as const) {
+      validateRequirement(
+        this.id,
+        (props.output.pieces.status as Record<string, unknown>)[name] === undefined,
+        `output.pieces.status.${name} is not a split diagnostic; use output.status.uncertainCount and output.pieces.status.overflow`
+      );
+    }
+    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {lines} = props;
     const {pieces} = props.output;
@@ -222,6 +323,90 @@ export class GPULineSplit implements GPUCommandNodeProducer {
       `${id} pieces.geometry.positions`
     );
     this.pieceCapacity = pieces.sourceIds.length;
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [pieces.sourcePartRows, pieces.sourceFeatureRows],
+      [
+        lines.positions,
+        lines.lineOffsets,
+        lines.featureOffsets,
+        lines.sourceIds,
+        pieces.sourceIds,
+        pieces.sourceFeatureIds,
+        pieces.geometry.positions,
+        pieces.geometry.lineOffsets,
+        pieces.geometry.featureOffsets,
+        pieces.vertexSourceEdges,
+        props.output.status?.uncertainCount,
+        ...Object.values(pieces.status)
+      ]
+    );
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      {sourcePartRows: pieces.sourcePartRows},
+      {sourceFeatureRows: pieces.sourceFeatureRows}
+    );
+    for (const [name, view] of [
+      ['sourcePartRows', pieces.sourcePartRows],
+      ['sourceFeatureRows', pieces.sourceFeatureRows]
+    ] as const)
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} pieces.${name}`);
+        validateCapacity(
+          id,
+          `pieces.${name}.length`,
+          view.length,
+          this.pieceCapacity,
+          this.pieceCapacity
+        );
+      }
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [
+        pieces.geometry.positions,
+        pieces.geometry.lineOffsets,
+        pieces.geometry.featureOffsets,
+        pieces.sourceIds,
+        pieces.sourceFeatureIds,
+        pieces.vertexSourceEdges,
+        ...Object.values(pieces.status),
+        props.output.status?.uncertainCount
+      ],
+      [lines.positions, lines.lineOffsets, lines.featureOffsets, lines.sourceIds]
+    );
+    if (pieces.geometry.featureOffsets)
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [pieces.geometry.featureOffsets],
+        [pieces.sourceIds, pieces.sourceFeatureIds, pieces.status.count]
+      );
+    if (pieces.sourceFeatureIds) {
+      validateSinglePackedView(
+        pieces.sourceFeatureIds,
+        ['uint32'],
+        `${id} pieces.sourceFeatureIds`
+      );
+      if (pieces.sourceFeatureIds.length !== this.pieceCapacity)
+        throw new Error(`${id} pieces.sourceFeatureIds length must equal piece capacity`);
+      if (lines.sourceIds) {
+        validateSinglePackedView(lines.sourceIds, ['uint32'], `${id} lines.sourceIds`);
+        if (lines.sourceIds.length !== (lines.featureOffsets ?? lines.lineOffsets).length - 1)
+          throw new Error(`${id} lines.sourceIds length must equal the logical feature count`);
+      }
+    }
+    if (pieces.geometry.featureOffsets) {
+      validateSinglePackedView(
+        pieces.geometry.featureOffsets,
+        ['uint32'],
+        `${id} pieces.geometry.featureOffsets`
+      );
+      if (
+        pieces.geometry.featureOffsets.length !== (lines.featureOffsets ?? lines.lineOffsets).length
+      )
+        throw new Error(
+          `${id} pieces.geometry.featureOffsets length must equal input logical feature count plus one`
+        );
+    }
     this.vertexCapacity = pieces.geometry.positions.length;
     if (this.pieceCapacity < 1 || pieces.geometry.lineOffsets.length !== this.pieceCapacity + 1) {
       throw new Error(
@@ -267,7 +452,13 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       lines.positions,
       lines.lineOffsets,
+      lines.featureOffsets,
+      lines.sourceIds,
+      pieces.sourcePartRows,
+      pieces.sourceFeatureRows,
       pieces.sourceIds,
+      pieces.sourceFeatureIds,
+      pieces.geometry.featureOffsets,
       pieces.geometry.lineOffsets,
       pieces.geometry.positions,
       pieces.status.count,
@@ -346,7 +537,7 @@ ${IS_FINITE_BITS_WGSL}`,
     const points = T('points', 'float32x2', pairCapacity);
     const endPoints = T('end-points', 'float32x2', pairCapacity);
     nodes.push(
-      ...new GPUSegmentIntersection({
+      ...createSegmentPairNodes(graph, {
         id: `${id}-intersection`,
         left: lines,
         spatialSort: props.spatialSort,
@@ -362,7 +553,7 @@ ${IS_FINITE_BITS_WGSL}`,
           points,
           endPoints
         }
-      }).getCommandNodes(graph)
+      })
     );
 
     // 2. Split events: up to four per pair (both ends of an overlap, on both segments).
@@ -732,12 +923,28 @@ fn lineOfVertex(vertex: u32) -> u32 {
 
     // 6. Capacity clamp: the longest prefix of pieces that fits both capacities.
     const state = T('state', 'uint32', 8);
+    const fitting = createCapacityPrefixNodes(graph, {
+      id: `${id}-capacity-prefix`,
+      operation: OPERATION,
+      length: Math.min(pieceCapacity, pieceBound),
+      bindings: [
+        {name: 'pieceStarts', view: pieceStarts, type: 'u32', access: 'read'},
+        {name: 'pieceCounts', view: pieceCounts, type: 'u32', access: 'read'},
+        {name: 'vertexStarts', view: pieceVertexStarts, type: 'u32', access: 'read'},
+        {name: 'vertexCounts', view: pieceVertexCounts, type: 'u32', access: 'read'}
+      ],
+      body: `let total=pieceStarts[pieceStartsOffset+${lineCount - 1}u]+pieceCounts[pieceCountsOffset+${lineCount - 1}u];
+if(index>=total || vertexStarts[vertexStartsOffset+index]+vertexCounts[vertexCountsOffset+index]>${vertexCapacity}u) {return;}
+if(index+1u<min(total,${pieceCapacity}u) && vertexStarts[vertexStartsOffset+index+1u]+vertexCounts[vertexCountsOffset+index+1u]<=${vertexCapacity}u) {return;}`
+    });
+    nodes.push(...fitting.nodes);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize`,
         operation: OPERATION,
         variant: 'finalize',
         bindings: [
+          {name: 'fitting', view: fitting.count, type: 'u32', access: 'read'},
           {name: 'pieceStarts', view: pieceStarts, type: 'u32', access: 'read'},
           {name: 'pieceCounts', view: pieceCounts, type: 'u32', access: 'read'},
           {name: 'vertexStarts', view: pieceVertexStarts, type: 'u32', access: 'read'},
@@ -753,12 +960,7 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
         body: `let totalPieces = pieceStarts[pieceStartsOffset + LINE_COUNT - 1u] + pieceCounts[pieceCountsOffset + LINE_COUNT - 1u];
   var totalVertices = 0u;
   if (totalPieces > 0u) { totalVertices = pieceEnd(totalPieces - 1u); }
-  var low = 0u;
-  var high = min(totalPieces, PIECE_CAPACITY);
-  while (low < high) {
-    let middle = (low + high + 1u) / 2u;
-    if (pieceEnd(middle - 1u) <= VERTEX_CAPACITY) { low = middle; } else { high = middle - 1u; }
-  }
+  let low = fitting[fittingOffset];
   var written = 0u;
   if (low > 0u) { written = pieceEnd(low - 1u); }
   state[stateOffset] = low;
@@ -904,6 +1106,58 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
               : `${name}[${name}Offset] = state[stateOffset + ${word}u];`
           )
           .join('\n  ')
+      })
+    );
+    if (pieces.sourceFeatureIds)
+      nodes.push(
+        createLineFeatureProvenanceNode(graph, {
+          id: `${id}-feature-identities`,
+          geometry: lines,
+          partRows: pieces.sourceIds,
+          featureIds: pieces.sourceFeatureIds,
+          count: pieces.status.count
+        })
+      );
+    if (pieces.geometry.featureOffsets)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-feature-offsets`,
+          operation: OPERATION,
+          invocationCount: pieces.geometry.featureOffsets.length,
+          bindings: [
+            {name: 'parts', view: pieces.sourceIds, type: 'u32', access: 'read'},
+            {name: 'count', view: pieces.status.count, type: 'u32', access: 'read'},
+            ...(lines.featureOffsets
+              ? [
+                  {
+                    name: 'features',
+                    view: lines.featureOffsets,
+                    type: 'u32',
+                    access: 'read'
+                  } as const
+                ]
+              : []),
+            {
+              name: 'output',
+              view: pieces.geometry.featureOffsets,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: `let part = ${lines.featureOffsets ? 'features[featuresOffset + index]' : 'index'};
+var low=0u;var high=count[countOffset];
+while(low<high){let middle=(low+high)/2u;if(parts[partsOffset+middle]<part){low=middle+1u;}else{high=middle;}}
+output[outputOffset+index]=low;`
+        })
+      );
+    nodes.push(
+      ...createLinePieceMetadataNodes(graph, {
+        id,
+        geometry: lines,
+        sourceIds: pieces.sourceIds,
+        sourcePartRows: pieces.sourcePartRows,
+        sourceFeatureRows: pieces.sourceFeatureRows,
+        count: pieces.status.count
       })
     );
     return nodes;

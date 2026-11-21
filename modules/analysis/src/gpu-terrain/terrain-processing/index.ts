@@ -13,6 +13,7 @@ export * from './gpu-terrain-catchment-summary';
 export * from './gpu-terrain-dem-coregistration';
 export * from './gpu-terrain-tiled-flow';
 export * from './gpu-terrain-flow-fractions';
+export type {CPURasterOperationBand} from '../../raster-analysis/raster-grid/raster-operation-band';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {
@@ -37,6 +38,7 @@ export {
 export type {
   CPUTerrainCatchmentSummaryInput,
   CPUTerrainCatchmentSummaryOptions,
+  CPUTerrainCatchmentSummaryOperationProps,
   CPUTerrainCatchmentSummaryResult
 } from './cpu-terrain-catchment-summary-operation';
 export {

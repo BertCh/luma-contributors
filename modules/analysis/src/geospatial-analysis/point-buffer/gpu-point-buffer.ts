@@ -14,6 +14,11 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {Kernel} from '@luma.gl/graph';
 import type {GPUCommandNode, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {
+  resolveGPUSpatialContext,
+  getGPULengthUnits,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {
   createWGSLKernelNode,
@@ -62,7 +67,18 @@ export function getGPUPointBufferParameterValues(
   // The radius must be a positive finite number: zero collapses the ring, negative mirrors it.
   validateFiniteNumber('GPUPointBuffer', 'radius', radius);
   validateRequirement('GPUPointBuffer', radius > 0, 'radius must be positive');
-  target[0] = radius;
+  const encodedRadius = Math.fround(radius);
+  validateRequirement(
+    'GPUPointBuffer',
+    Number.isFinite(encodedRadius) && encodedRadius > 0,
+    `radius after float32 conversion must be finite and positive; received ${radius}, encoded ${encodedRadius}`
+  );
+  validateRequirement(
+    'GPUPointBuffer',
+    target.length >= GPU_POINT_BUFFER_PARAMETER_LENGTH,
+    `target.length received ${target.length}; must be at least GPU_POINT_BUFFER_PARAMETER_LENGTH (${GPU_POINT_BUFFER_PARAMETER_LENGTH})`
+  );
+  target[0] = encodedRadius;
   target[1] = 0;
   return target;
 }
@@ -86,8 +102,8 @@ export type GPUPointBufferProps<
   offsets: Rows;
   /** Vertices per ring, at least 3. */
   verticesPerRing: number;
-  /** `'geographic'` uses the spherical destination formula, `'planar'` a circle in coordinate units. */
-  coordinateSystem: 'geographic' | 'planar';
+  /** Native planar coordinates or longitude/latitude degrees with great-circle distances in meters. Captured at construction. */
+  spatialContext: GPUSpatialContext;
 };
 
 /**
@@ -116,8 +132,40 @@ export class GPUPointBuffer<
   /** Upper bound including the chunk parameter upload. */
   readonly estimatedCommandNodeCount: number;
   private readonly chunkPlan: GraphChunkDispatchPlan;
-  constructor(readonly props: GPUPointBufferProps<Rows>) {
+  readonly props: GPUPointBufferProps<Rows>;
+  private readonly coordinateSystem: 'geographic' | 'planar';
+  constructor(props: GPUPointBufferProps<Rows>) {
     this.id = props.id ?? 'point-buffer';
+    validateRequirement(
+      this.id,
+      !('coordinateSystem' in props),
+      'coordinateSystem was removed; use spatialContext'
+    );
+    const {spatialContext, ...remainingProps} = props;
+    validateRequirement(
+      this.id,
+      spatialContext != null,
+      spatialContext === null
+        ? 'spatialContext received null; supply a context object'
+        : 'spatialContext is required; supply a context object'
+    );
+    const context = resolveGPUSpatialContext(this.id, spatialContext, {
+      coordinateSpaces: ['planar', 'longitude-latitude'],
+      metricsByCoordinateSpace: {planar: ['native'], 'longitude-latitude': ['great-circle']},
+      measure: 'distance'
+    });
+    this.coordinateSystem = context.coordinateSpace === 'planar' ? 'planar' : 'geographic';
+    const lengthUnits = getGPULengthUnits(context);
+    validateRequirement(
+      this.id,
+      this.coordinateSystem === 'planar'
+        ? lengthUnits === 'native' || lengthUnits === 'meters'
+        : lengthUnits === 'meters' &&
+            (context.sphereRadius === undefined ||
+              context.sphereRadius === GPU_POINT_BUFFER_EARTH_RADIUS_METERS),
+      `spatialContext received units ${context.units} and sphereRadius ${context.sphereRadius}; use native planar units or great-circle meters on sphereRadius ${GPU_POINT_BUFFER_EARTH_RADIUS_METERS}`
+    );
+    this.props = {...remainingProps, spatialContext: structuredClone(spatialContext)};
     this.chunkPlan = planGraphChunkDispatch(this.id, {points: props.points});
     for (const [name, view] of [
       ['points', props.points],
@@ -135,12 +183,11 @@ export class GPUPointBuffer<
       'offsets must match points chunk count with whole rings per chunk'
     );
     // The public offset count and every local vertex index stay in the shared uint32 row domain.
-    validateCapacity(
+    const expandedRowCount = BigInt(props.points.length) * BigInt(props.verticesPerRing);
+    validateRequirement(
       this.id,
-      'offsets.length',
-      props.points.length * props.verticesPerRing,
-      0,
-      GRAPH_CHUNK_MAXIMUM_ROW_COUNT
+      expandedRowCount <= BigInt(GRAPH_CHUNK_MAXIMUM_ROW_COUNT),
+      `points.length * verticesPerRing (${expandedRowCount}) must not exceed GRAPH_CHUNK_MAXIMUM_ROW_COUNT (${GRAPH_CHUNK_MAXIMUM_ROW_COUNT})`
     );
     validateRequirement(
       this.id,
@@ -174,7 +221,8 @@ export class GPUPointBuffer<
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {points, parameters, offsets, verticesPerRing, coordinateSystem} = this.props;
+    const {points, parameters, offsets, verticesPerRing} = this.props;
+    const coordinateSystem = this.coordinateSystem;
     validateGraphChunkDispatchBindings(graph, this.id, this.chunkPlan);
     validateGraphChunkBindingRanges(graph, this.id, {parameters, offsets});
     if (this.chunkPlan.nonemptyChunkCount === 0) return [];

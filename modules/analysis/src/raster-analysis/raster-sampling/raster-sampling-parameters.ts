@@ -7,6 +7,7 @@ import {
   validateParameterTarget,
   validateRasterGrid
 } from '../raster-band-utils';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 
 /** Number of float32 elements in a {@link GPURasterSampling} parameter view. */
@@ -17,7 +18,7 @@ export const GPU_RASTER_PROFILE_PARAMETER_LENGTH = 12;
 /** Interpolation used by {@link GPURasterSampling} and {@link GPURasterProfile}. */
 export type GPURasterSamplingMethod = 'nearest' | 'bilinear' | 'bicubic';
 /** How interpolation treats nodata cells in its support. */
-export type GPURasterSamplingNoDataPolicy = 'strict' | 'renormalize';
+export type GPURasterSamplingNoDataPolicy = 'propagate' | 'renormalize';
 
 /**
  * Per-frame settings of {@link GPURasterSampling}. The raster extent comes from the grid passed
@@ -26,7 +27,7 @@ export type GPURasterSamplingNoDataPolicy = 'strict' | 'renormalize';
 export type GPURasterSamplingSettings = {
   /** Interpolation method. Defaults to `'bilinear'`. */
   method?: GPURasterSamplingMethod;
-  /** Nodata handling for bilinear and bicubic. Defaults to `'strict'`. */
+  /** Nodata handling for bilinear and bicubic. Defaults to `'propagate'`. */
   noDataPolicy?: GPURasterSamplingNoDataPolicy;
   /**
    * Float64 point that query positions (sampling points, profile line vertices) are given relative
@@ -74,13 +75,23 @@ function packSamplingParameters(
   const minY = Math.min(cornerY, rowEdgeY);
   const maxY = Math.max(cornerY, rowEdgeY);
   const method = settings.method ?? 'bilinear';
-  if (!(method in METHOD_CODES)) {
-    throw new Error(`${name} method ${method} is not supported`);
-  }
-  const noDataPolicy = settings.noDataPolicy ?? 'strict';
-  if (noDataPolicy !== 'strict' && noDataPolicy !== 'renormalize') {
-    throw new Error(`${name} noDataPolicy ${noDataPolicy} is not supported`);
-  }
+  validateRequirement(
+    name,
+    typeof method === 'string' &&
+      (method === 'nearest' || method === 'bilinear' || method === 'bicubic'),
+    `method must be nearest, bilinear or bicubic; received ${method}`
+  );
+  const noDataPolicy: unknown = settings.noDataPolicy ?? 'propagate';
+  validateRequirement(
+    name,
+    noDataPolicy !== 'strict',
+    "noDataPolicy 'strict' was removed; use 'propagate'"
+  );
+  validateRequirement(
+    name,
+    noDataPolicy === 'propagate' || noDataPolicy === 'renormalize',
+    `noDataPolicy must be propagate or renormalize; received ${noDataPolicy}`
+  );
   const [localOriginX, localOriginY] = readRasterParameterOrigin(name, settings.localOrigin);
   target.fill(0, 0, GPU_RASTER_SAMPLING_PARAMETER_LENGTH);
   target[0] = minX - localOriginX;
@@ -89,10 +100,10 @@ function packSamplingParameters(
   target[3] = maxY - localOriginY;
   target[4] = Math.fround(stepX);
   target[5] = Math.fround(Math.abs(stepY));
-  // Reciprocals are rounded from the double quotient so the GPU multiplies instead of dividing.
+  // Use the same float32 step for edges and reciprocals in sampling, profiles and seeding.
   // The row reciprocal is signed: positive when row 0 is at minY, negative when it is at maxY.
-  target[6] = 1 / stepX;
-  target[7] = 1 / stepY;
+  target[6] = 1 / Math.fround(stepX);
+  target[7] = 1 / Math.fround(stepY);
   target[8] = METHOD_CODES[method];
   target[9] = noDataPolicy === 'renormalize' ? 1 : 0;
   target[10] = spacing;

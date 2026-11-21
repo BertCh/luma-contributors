@@ -562,7 +562,7 @@ monthlyGraph.add(new GPUTemporalReduction({
 }));
 
 // Per change (parameter writes, no recompile):
-searchParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: ${state.spatialRadius * 1000}, weightKind: 'binary'}));
+searchParameters.write(getGPUNeighborSearchParameterValues({bounds, searchRadius: ${state.spatialRadius * 1000}, weightType: 'binary'}));
 testParameters.write(getGPUSpaceTimeParameterValues({seed, permutationCount: ${state.permutations}, timeThreshold: ${state.timeThreshold}}));
 reductionParameters.write(getGPUTemporalReductionParameterValues(0, 365.25 / 12));`,
 

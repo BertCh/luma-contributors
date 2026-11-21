@@ -15,6 +15,9 @@ import {createGPUSpatialFrameFromCRS} from '../../src/analysis-core/contracts/sp
 import {sliceGraphChunkGroupView} from '../../src/analysis-core/kernels/graph-chunk-groups';
 import {
   GPUParameterBuffer,
+  getPackedUint32Values,
+  getPackedFloat32Values,
+  readPackedBuffer,
   type GPUParameterBufferProps,
   type GPUParameterFormat,
   validateFiniteNumber
@@ -24,7 +27,12 @@ import {
   getWGSLKernelBinding
 } from '../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {getGPUTrajectoryMetricsParameterValues} from '../../src/gpu-spatial-analysis/trajectory-analysis/trajectory-metrics-parameters';
-import {createNullWebGPUDevice} from '../../src/testing/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  readCompactIds,
+  readFloat32,
+  readUint32
+} from '../../src/testing/gpu-contributor-test-utils';
 
 function createRecordingDevice() {
   const write = vi.fn();
@@ -458,4 +466,147 @@ it('round-trips kilometer frames through the native planar context validator', (
     })
   ).not.toThrow();
   expect(frame.unit?.metersPerUnit).toBe(1000);
+});
+
+// R19 OUT-02 / EGR-10: literal little-endian words, with unrelated sentinels on both sides.
+describe('bounded packed readback', () => {
+  it('decodes byte subviews without treating bytes as numeric words', () => {
+    const bytes = Uint8Array.of(99, 44, 1, 0, 0, 0, 0, 32, 64, 88);
+    expect(Array.from(getPackedUint32Values(bytes.subarray(1, 5), 1))).toEqual([300]);
+    expect(Array.from(getPackedFloat32Values(bytes.subarray(5, 9), 1))).toEqual([2.5]);
+    expect(Array.from(getPackedUint32Values([300, 2], 2))).toEqual([300, 2]);
+    expect(Array.from(getPackedFloat32Values([2.5], 1))).toEqual([2.5]);
+    expect(Array.from(getPackedUint32Values(Uint32Array.of(300).buffer, 1))).toEqual([300]);
+    expect(() => getPackedUint32Values(bytes.subarray(1, 4), 0)).toThrow(/whole/);
+    expect(() => getPackedUint32Values(bytes.subarray(1, 5), 2)).toThrow(/2/);
+    expect(() => getPackedFloat32Values(new ArrayBuffer(0), 1)).toThrow(/1/);
+  });
+
+  it('owns converted storage and honors a returned nonzero byte offset and length', async () => {
+    const bytes = new Uint8Array(Uint32Array.of(999, 300, 888).buffer);
+    const readAsync = vi.fn(async () => bytes.subarray(4, 8));
+    const buffer = {byteLength: 16, readAsync} as unknown as Buffer;
+    const values = await readPackedBuffer(buffer, 8, 'uint32', 1);
+    expect(readAsync).toHaveBeenCalledExactlyOnceWith(8, 4);
+    expect(Array.from(values)).toEqual([300]);
+    bytes.fill(0);
+    expect(Array.from(values)).toEqual([300]);
+    const short = {byteLength: 16, readAsync: vi.fn(async () => bytes.subarray(4, 8))};
+    await expect(readPackedBuffer(short as unknown as Buffer, 0, 'uint32', 2)).rejects.toThrow(
+      /returned|short/
+    );
+  });
+
+  it('bounds requests, rejects invalid formats and skips empty reads', async () => {
+    const readAsync = vi.fn(async () => Uint8Array.of(0, 0, 32, 64));
+    const buffer = {byteLength: 8, readAsync} as unknown as Buffer;
+    expect(Array.from(await readPackedBuffer(buffer, 4, 'float32', 1))).toEqual([2.5]);
+    expect(readAsync).toHaveBeenLastCalledWith(4, 4);
+    readAsync.mockClear();
+    expect(await readPackedBuffer(buffer, 8, 'uint32', 0)).toEqual(new Uint32Array(0));
+    expect(readAsync).not.toHaveBeenCalled();
+    for (const [offset, count] of [
+      [4, 2],
+      [-1, 1],
+      [0, 0.5],
+      [9, 0]
+    ]) {
+      await expect(readPackedBuffer(buffer, offset, 'uint32', count)).rejects.toThrow();
+    }
+    await expect(readPackedBuffer(buffer, 0, 'bad' as 'uint32', 1)).rejects.toThrow(
+      /uint32.*float32|float32.*uint32/
+    );
+    expect(readAsync).not.toHaveBeenCalled();
+  });
+
+  it('keeps test-reader array contracts and never reads IDs at zero count', async () => {
+    const readAsync = vi.fn(async () => Uint8Array.of(0, 0, 0, 0));
+    const count = {byteLength: 16, readAsync} as unknown as Buffer;
+    const idsRead = vi.fn(async () => Uint8Array.of(7, 0, 0, 0));
+    const ids = {byteLength: 16, readAsync: idsRead} as unknown as Buffer;
+    expect(await readCompactIds(ids, count)).toEqual([]);
+    expect(readAsync).toHaveBeenCalledExactlyOnceWith(0, 4);
+    expect(idsRead).not.toHaveBeenCalled();
+    expect(await readUint32(ids, 1)).toEqual([7]);
+    expect(idsRead).toHaveBeenLastCalledWith(0, 4);
+    const floats = {byteLength: 4, readAsync: vi.fn(async () => Uint8Array.of(0, 0, 32, 64))};
+    expect(await readFloat32(floats as unknown as Buffer)).toEqual([2.5]);
+    expect(floats.readAsync).toHaveBeenCalledWith(0, 4);
+    await expect(readUint32(ids, 2)).rejects.toThrow();
+  });
+});
+
+describe('LIF-12: parameter initialization ownership', () => {
+  it.each([
+    false,
+    true
+  ])('S2 preserves upload error identity when cleanup throws = %s', cleanupThrows => {
+    const failure = new Error('upload refused');
+    const destroy = vi.fn(() => {
+      if (cleanupThrows) throw new Error('cleanup refused');
+    });
+    const device = {
+      createBuffer: vi.fn(() => ({
+        write: () => {
+          throw failure;
+        },
+        destroy
+      }))
+    };
+    let caught: unknown;
+    try {
+      new GPUParameterBuffer(device as unknown as Device, {
+        id: 'initial-upload',
+        format: 'uint32',
+        length: 1,
+        values: Uint32Array.of(1)
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(failure);
+    expect(device.createBuffer).toHaveBeenCalledTimes(1);
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves zero-filled unwritten storage and caller destruction on success', () => {
+    let storage = new Uint8Array(0);
+    const destroy = vi.fn();
+    const write = vi.fn((values: Uint32Array, byteOffset: number) => {
+      storage.set(new Uint8Array(values.buffer, values.byteOffset, values.byteLength), byteOffset);
+    });
+    const device = {
+      createBuffer: vi.fn((props: {byteLength: number}) => {
+        storage = new Uint8Array(props.byteLength);
+        return {write, destroy};
+      })
+    };
+    const parameters = new GPUParameterBuffer(device as unknown as Device, {
+      id: 'short-upload',
+      format: 'uint32',
+      length: 3,
+      values: Uint32Array.of(7)
+    });
+    expect(Array.from(new Uint32Array(storage.buffer))).toEqual([7, 0, 0]);
+    expect(destroy).not.toHaveBeenCalled();
+    parameters.destroy();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('review B7 numeric readback words', () => {
+  it.each([
+    getPackedUint32Values,
+    getPackedFloat32Values
+  ])('rejects sparse and undefined numeric words before coercion', convert => {
+    // Model malformed values from an untyped caller without claiming undefined is a number.
+    const sparseValues: number[] = [1, 2, 3, 4];
+    Reflect.deleteProperty(sparseValues, 1);
+    const undefinedValues: number[] = [0];
+    Reflect.set(undefinedValues, 0, undefined);
+    expect(() => convert(new Array<number>(4), 4)).toThrow(/word|element/);
+    expect(() => convert(sparseValues, 4)).toThrow(/word|element/);
+    expect(() => convert(undefinedValues, 1)).toThrow(/word|element/);
+    expect(Array.from(convert([0, 300], 2))).toEqual([0, 300]);
+  });
 });

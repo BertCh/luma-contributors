@@ -600,3 +600,68 @@ it('GPUNetworkServiceAreas converges at default props on a large-diameter grid',
     destroyFixture(fixture);
   }
 }, 60000);
+
+it('duplicate facility seeds preserve the winning row and plateau predecessors', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createServiceFixture(
+    device,
+    buildCSR(4, [
+      [0, 1, 0],
+      [1, 2, 0],
+      [2, 0, 0]
+    ]),
+    4,
+    {facilities: [0, 0, 3], facilityCosts: [0, 0, -1], withPredecessors: true}
+  );
+  const compiled = fixture.graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readFloat32(fixture.costsBuffer, 4)).toEqual([0, 0, 0, Infinity]);
+    expect(await readUint32(fixture.assignmentsBuffer, 4)).toEqual([0, 0, 0, NONE]);
+    expect(await readUint32(fixture.predecessorsBuffer!, 4)).toEqual([NONE, 0, 1, NONE]);
+    expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([1]);
+  } finally {
+    compiled.destroy();
+    destroyFixture(fixture);
+  }
+});
+
+it('float32 facility ties and their adjacent representable cost have independent parents', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // At 2^24 the float32 ULP is 2. Round-to-nearest-even sends 2^24 + 1 to 2^24,
+  // but 2^24 + 2 is the next representable value. Row 0 reaches destination 4
+  // through node 2; row 1 reaches it through node 3 at exactly 2^24.
+  // Pin these literals before reading the device; no oracle consumes device costs.
+  for (const [increment, row, parent] of [
+    [1, 0, 2],
+    [2, 1, 3]
+  ]) {
+    const fixture = createServiceFixture(
+      device,
+      buildCSR(5, [
+        [0, 2, 16777216],
+        [2, 4, increment],
+        [1, 3, 16777216],
+        [3, 4, 0]
+      ]),
+      5,
+      {facilities: [0, 1], withPredecessors: true}
+    );
+    const compiled = fixture.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      expect((await readFloat32(fixture.costsBuffer, 5))[4]).toBe(16777216);
+      expect((await readUint32(fixture.assignmentsBuffer, 5))[4]).toBe(row);
+      const predecessors = await readUint32(fixture.predecessorsBuffer!, 5);
+      expect(predecessors[4]).toBe(parent);
+      expect(predecessors[parent]).toBe(row);
+      expect(predecessors[row]).toBe(NONE);
+      expect(await readUint32(fixture.convergedBuffer, 1)).toEqual([1]);
+    } finally {
+      compiled.destroy();
+      destroyFixture(fixture);
+    }
+  }
+});

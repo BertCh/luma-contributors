@@ -10,7 +10,7 @@
 
 import {NullDevice} from '@luma.gl/core/test-utils';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import {ScalarData, TypedData, WgslExec, WgslParser} from 'wgsl_reflect';
+import {ScalarData, TemplateInfo, TypedData, VectorData, WgslExec, WgslParser} from 'wgsl_reflect';
 
 type LogicalBuffer = {byteLength: number};
 type FakeBuffer = {backing: ArrayBuffer; byteLength: number};
@@ -134,11 +134,40 @@ function installInterpreterFixes(): () => void {
     [WgslExec.prototype, '_call'],
     [WgslExec.prototype, '_evalCall'],
     [WgslExec.prototype, '_evalBinaryOp'],
+    [WgslExec.prototype, '_callConstructorVec'],
     [TypedData.prototype, 'setDataValue']
   ] as const;
   const descriptors = originals.map(
     ([prototype, name]) => Object.getOwnPropertyDescriptor(prototype, name)!
   );
+  // TemplateInfo('vec2', u32) otherwise constructs Float32Array storage and rounds integer
+  // product limbs (0xc0000032 becomes 0xc0000000). Preserve the declared u32 constructor type.
+  const originalVectorConstructor = WgslExec.prototype._callConstructorVec;
+  WgslExec.prototype._callConstructorVec = function (node, context) {
+    if (!node.type) return originalVectorConstructor.call(this, node, context);
+    const type = this.getTypeInfo(node.type);
+    if (!type) return originalVectorConstructor.call(this, node, context);
+    const format = type instanceof TemplateInfo ? type.format?.name : undefined;
+    if (
+      'args' in node &&
+      node.args &&
+      (node.type.getTypeName().endsWith('u') || format === 'u32')
+    ) {
+      const words = node.args.flatMap(argument => {
+        const value = this.evalExpression(argument, context);
+        return value instanceof ScalarData
+          ? [value.value]
+          : value instanceof VectorData
+            ? Array.from(value.data)
+            : [];
+      });
+      const length = Number(/vec(\d)/.exec(node.type.getTypeName())![1]);
+      if (words.length === 0) while (words.length < length) words.push(0);
+      if (words.length === 1) while (words.length < length) words.push(words[0]);
+      return new VectorData(Uint32Array.from(words), type).getSubData(this, node.postfix, context);
+    }
+    return originalVectorConstructor.call(this, node, context);
+  };
   // wgsl_reflect 1.2.3 binds call arguments in the callee's scope, whose parent is the CALLER's
   // scope: an argument expression can read a parameter bound just before it, and a statement call
   // (`_call`) assigns parameters with `setVariable`, which overwrites a caller variable of the same
@@ -296,8 +325,20 @@ const programs = new Map<
 >();
 
 function getProgram(source: string) {
+  const originalSource = source;
   let program = programs.get(source);
   if (!program) {
+    // This one-workgroup queue has serial pops and parallel independent decrements.
+    // Interpret its same production body with one lane; this is not a general barrier emulator.
+    // GPU specs retain the 64-lane body and are required to qualify synchronization.
+    if (source.includes('var<workgroup> directPeelEdge:u32;')) {
+      source = source
+        .replace('const CONTACT_LANE_COUNT:u32=64u;', 'const CONTACT_LANE_COUNT:u32=1u;')
+        .replace('var<workgroup> directPeelEdge:u32;', 'var<private> directPeelEdge:u32;')
+        .replace(/@workgroup_size\([^)]*\)/g, '@workgroup_size(1, 1, 1)')
+        .replace(/\b(?:workgroupBarrier|storageBarrier)\s*\(\s*\)\s*;/g, '')
+        .replace('workgroupUniformLoad(&directPeelEdge)', 'directPeelEdge');
+    }
     const bindings = new Map<string, {location: number; type: string}>();
     for (const match of source.matchAll(
       /@group\(0\)\s*@binding\((\d+)\)\s*var<storage,\s*\w+>\s*(\w+)\s*:\s*array<([^;]+)>;/g
@@ -336,7 +377,7 @@ function getProgram(source: string) {
           `else if (${lane} == 1u) { ${vector}.y = ${value}; } ` +
           `else if (${lane} == 2u) { ${vector}.z = ${value}; } else { ${vector}.w = ${value}; }`
       );
-    if (/\bfrexp\(/.test(executable)) {
+    if (/\b(?:frexp|ldexp)\s*\(/.test(executable)) {
       executable =
         `struct ExecutorFractionExponent { fract: f32, exp: i32 }
 
@@ -351,10 +392,13 @@ fn executorLdexp(value: f32, power: i32) -> f32 {
   let first = power / 2i;
   return (value * exp2(f32(first))) * exp2(f32(power - first));
 }
-` + executable.replace(/\bfrexp\(/g, 'executorFrexp(').replace(/\bldexp\(/g, 'executorLdexp(');
+` +
+        executable
+          .replace(/\bfrexp\s*\(/g, 'executorFrexp(')
+          .replace(/\bldexp\s*\(/g, 'executorLdexp(');
     }
     program = {exec: new WgslExec(new WgslParser().parse(executable)), bindings};
-    programs.set(source, program);
+    programs.set(originalSource, program);
   }
   return program;
 }
@@ -441,10 +485,9 @@ export function executeCommandNodesOnCPU(
             run(x, y, z);
           }
         },
-        dispatchIndirect: () => {
-          throw new Error(
-            `CPU executor: node ${node.id} dispatched indirectly without a condition`
-          );
+        dispatchIndirect: (buffer: FakeBuffer, byteOffset = 0) => {
+          const command = new Uint32Array(buffer.backing, byteOffset, 3);
+          run(command[0], command[1], command[2]);
         }
       };
       const commandEncoder = {

@@ -6,6 +6,8 @@ import {assert, Buffer, type Device} from '@luma.gl/core';
 import {
   createGPUComputationCaptures,
   describeGPUCommandGraph,
+  GPUComputationRecorder,
+  createWGSLKernelNodeAnnotation,
   type GPUAnalysisChoice,
   type GPUComputationCapture,
   type GPUComputationKeySpace,
@@ -39,7 +41,10 @@ import {
   submitTimedLensGraph,
   type LensViewSnapshot
 } from '../../lens-view-snapshot';
-import {recordWGSLKernelNodes} from '@luma-contributors/analysis/analysis-core';
+import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
+} from '@luma-contributors/analysis/analysis-core';
 
 /** The prepared Chicago Loop road extract, or a deterministic transformation of it. */
 export type NetworkRoads = ReturnType<typeof loadChicagoLoopRoads>;
@@ -128,6 +133,8 @@ export type NetworkElementScenario = {
 // COPY_SRC is an observation-only allocation choice; structure-only runs drop compile callbacks
 // because null devices cannot create compute pipelines.
 class ElementLensGraph extends GPUCommandGraph {
+  /** Explicit declaration annotations for the null-device adapter, whose callbacks cannot compile. */
+  readonly structureRecorder = new GPUComputationRecorder({sourceText: LENS_RECORD_SOURCE_TEXT});
   readonly structureOnly: boolean;
   /** Every transient by id, so a scenario can observe a contributor's own scratch resource. */
   readonly transients = new Map<string, GraphBufferHandle>();
@@ -154,6 +161,14 @@ class ElementLensGraph extends GPUCommandGraph {
 
   override addComputePass(node: Omit<GPUCommandGraphComputeNode<void>, 'type'>): void {
     super.addComputePass(this.structureOnly ? withoutCompilation(node) : node);
+    if (this.structureOnly) {
+      const kernel = getWGSLKernelNodeRecord(this, node.id);
+      if (kernel)
+        this.structureRecorder.recordNode(
+          {...node, type: 'compute'},
+          createWGSLKernelNodeAnnotation(kernel, LENS_RECORD_SOURCE_TEXT)
+        );
+    }
   }
 
   override addCopyPass(node: Omit<GPUCommandGraphCopyNode<void>, 'type'>): void {
@@ -224,6 +239,7 @@ async function buildNetworkElement(
     const description = describeGPUCommandGraph(compiled, {
       domain: 'gpu-network',
       graph,
+      recorder: structureOnly ? graph.structureRecorder : undefined,
       sourceText: LENS_RECORD_SOURCE_TEXT
     });
     const graphs = [

@@ -16,6 +16,7 @@ import {
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateCellViewBindingRanges, validateCellWritableViews} from './cell-validation';
 
 /** Caller-owned outputs of {@link GPUCellLevelSelection}. */
@@ -59,6 +60,24 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
   readonly props: GPUCellLevelSelectionProps;
 
   constructor(props: GPUCellLevelSelectionProps) {
+    const fields = snapshotConstructionFields(props, [
+      'id',
+      'levelCounts',
+      'activeLevel',
+      'levelFirstRows',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(fields.output, [
+      'status',
+      'firstRow',
+      'drawArguments'
+    ]);
+    const status = snapshotConstructionFields(output.status, ['count', 'requiredCount']);
+    props = Object.freeze({
+      ...fields,
+      levelFirstRows: fields.levelFirstRows ? Object.freeze([...fields.levelFirstRows]) : undefined,
+      output: Object.freeze({...output, status})
+    });
     this.id = props.id ?? 'cell-level-selection';
     this.props = props;
     const id = this.id;
@@ -66,6 +85,17 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
     validatePackedUint32View(props.activeLevel, `${id} activeLevel`);
     validatePackedUint32View(props.output.status.count, `${id} output.status.count`);
     validateCapacity(id, 'output.status.count rows', props.output.status.count.length);
+    if (props.output.status.requiredCount) {
+      validatePackedUint32View(
+        props.output.status.requiredCount,
+        `${id} output.status.requiredCount`
+      );
+      validateCapacity(
+        id,
+        'output.status.requiredCount rows',
+        props.output.status.requiredCount.length
+      );
+    }
     if (props.levelCounts.length < 1 || props.activeLevel.length < 1) {
       throw new Error(`${id} levelCounts and activeLevel must hold at least one row`);
     }
@@ -89,12 +119,18 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
     }
     validateCellWritableViews(id, [
       ['output.status.count', props.output.status.count],
+      ['output.status.requiredCount', props.output.status.requiredCount],
       ['output.firstRow', props.output.firstRow],
       ['output.drawArguments', props.output.drawArguments]
     ]);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.output.status.count, props.output.firstRow, props.output.drawArguments],
+      [
+        props.output.status.count,
+        props.output.status.requiredCount,
+        props.output.firstRow,
+        props.output.drawArguments
+      ],
       [props.levelCounts, props.activeLevel]
     );
   }
@@ -109,6 +145,7 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
       props.levelCounts,
       props.activeLevel,
       output.status.count,
+      output.status.requiredCount,
       output.firstRow,
       output.drawArguments
     ]);
@@ -164,6 +201,16 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
             type: 'u32',
             access: 'read_write'
           },
+          ...(output.status.requiredCount
+            ? [
+                {
+                  name: 'requiredCountOut',
+                  view: output.status.requiredCount,
+                  type: 'u32',
+                  access: 'read_write'
+                } as const
+              ]
+            : []),
           ...(output.firstRow
             ? [
                 {
@@ -191,6 +238,7 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
   let count = levelCounts[levelCountsOffset + level];
   let firstRow = ${firstRows ? 'firstRows[firstRowsOffset + level]' : '0u'};
   countOut[countOutOffset] = count;
+  ${output.status.requiredCount ? 'requiredCountOut[requiredCountOutOffset] = count;' : ''}
   ${output.firstRow ? 'firstRowOut[firstRowOutOffset] = firstRow;' : ''}
   ${
     output.drawArguments

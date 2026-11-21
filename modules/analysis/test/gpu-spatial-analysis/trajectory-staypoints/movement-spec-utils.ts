@@ -45,12 +45,12 @@ export class GraphHarness<Parameters = undefined> {
   }
 
   /** Imports a fresh writable column and returns its buffer for readback. */
-  output<Format extends 'float32' | 'uint32' | 'float32x2'>(
+  output<Format extends 'float32' | 'uint32' | 'float32x2' | 'uint32x2'>(
     id: string,
     format: Format,
     length: number
   ): {view: GraphDataView<Format>; buffer: Buffer} {
-    const elements = format === 'float32x2' ? length * 2 : length;
+    const elements = format === 'float32x2' || format === 'uint32x2' ? length * 2 : length;
     const buffer = createOutputBuffer(this.device, elements);
     this.buffers.push(buffer);
     return {
@@ -60,11 +60,13 @@ export class GraphHarness<Parameters = undefined> {
   }
 
   /** Compiles and submits; call the reader while the buffers are alive. */
-  async run<Result>(read: () => Promise<Result>): Promise<Result> {
+  async run<Result>(
+    read: (compiled: ReturnType<GPUCommandGraph<Parameters>['compile']>) => Promise<Result>
+  ): Promise<Result> {
     const compiled = this.graph.compile();
     try {
       submitGraph(this.device, compiled, undefined);
-      return await read();
+      return await read(compiled);
     } finally {
       compiled.destroy();
       for (const buffer of this.buffers) {

@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
   createWGSLKernelNode,
@@ -208,7 +213,7 @@ fn isochronesFindSource(edge: u32) -> u32 {
 fn isochronesGetPosition(node: u32) -> vec2f {
   return vec2f(positions[positionsOffset + 2u * node], positions[positionsOffset + 2u * node + 1u]);
 }`,
-    body: `if (index >= offsets[offsetsOffset + NODE_COUNT]) { return; }
+    body: `if (index < offsets[offsetsOffset] || index >= offsets[offsetsOffset + NODE_COUNT]) { return; }
   let targetNode = neighbors[neighborsOffset + index];
   if (targetNode >= NODE_COUNT) { return; }
   let weight = weights[weightsOffset + index];
@@ -243,7 +248,12 @@ fn isochronesGetPosition(node: u32) -> vec2f {
     return;
   }
   let spacing = 0.5 * radius;
-  let sampleCount = clamp(u32(ceil(length(endPoint - startPoint) / spacing)) + 1u, 2u, MAXIMUM_SAMPLES);
+  let intervals = ceil(length(endPoint - startPoint) / spacing);
+  // Bound the float before conversion/addition: an overlong edge can exceed uint32.
+  var sampleCount = MAXIMUM_SAMPLES;
+  if (intervals < f32(MAXIMUM_SAMPLES - 1u)) {
+    sampleCount = max(u32(intervals) + 1u, 2u);
+  }
   ${isMin ? '' : ISOCHRONES_REVERSE_DIRECTION_WGSL}
   for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) {
     let t = f32(sampleIndex) / f32(sampleCount - 1u);
@@ -339,7 +349,7 @@ export function createIsochronesDecodeNode<Parameters>(
   });
 }
 
-/** One thread per node: mask of nodes with a finite cost at or below the cell cost limit. @internal */
+/** One thread per node: finite nonnegative costs at or below the cell cost limit. @internal */
 export function createIsochronesNodeMaskNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -361,7 +371,7 @@ export function createIsochronesNodeMaskNode<Parameters>(
     invocationCount: props.costs.length,
     declarations: IS_FINITE_BITS_WGSL,
     body: `let cost = costs[costsOffset + index];
-  let isReached = isFiniteBits(cost) && abs(cost) < ${getWGSLFloatLiteral(3.0e38)} && cost <= params[paramsOffset + 9u];
+  let isReached = isFiniteBits(cost) && cost >= 0.0 && abs(cost) < ${getWGSLFloatLiteral(3.0e38)} && cost <= params[paramsOffset + 9u];
   mask[maskOffset + index] = select(0u, 1u, isReached);`
   });
 }
@@ -486,24 +496,94 @@ fn isochronesFindCellRow(node: u32) -> u32 {
   ];
 }
 
+type TriangleFacilityProps = {
+  id: string;
+  width: number;
+  height: number;
+  triangles: GraphDataView<'float32x2'>;
+  triangleCount: GraphDataView<'uint32'>;
+  parameters: GraphDataView<'float32'>;
+  pixelFacilities: GraphDataView<'uint32'>;
+  triangleFacilities: GraphDataView<'uint32'>;
+  /** Optional internal search-work diagnostic, one evaluated-leaf count per triangle slot. */
+  visitedSamples?: GraphDataView<'uint32'>;
+};
+
+function getTriangleFacilityLevels(width: number, height: number) {
+  const levels = [{width, height, offset: 0}];
+  while (width > 1 || height > 1) {
+    const previous = levels[levels.length - 1];
+    width = Math.ceil(width / 2);
+    height = Math.ceil(height / 2);
+    levels.push({
+      width,
+      height,
+      offset: previous.offset + (levels.length === 1 ? 0 : previous.width * previous.height)
+    });
+  }
+  return levels;
+}
+
+/** Build a parallel min-label pyramid, then query its occupied spatial regions. @internal */
+export function createIsochronesTriangleFacilityNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: TriangleFacilityProps
+): GPUCommandNode<Parameters>[] {
+  const levels = getTriangleFacilityLevels(props.width, props.height);
+  const root = levels[levels.length - 1];
+  const hierarchy = createTransientView(graph, `${props.id}-hierarchy`, 'uint32', root.offset + 1);
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  for (let level = 1; level < levels.length; level++) {
+    const previous = levels[level - 1];
+    const current = levels[level];
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${props.id}-hierarchy-${level}`,
+        operation: OPERATION,
+        variant: 'facility-hierarchy-parent',
+        invocationCount: current.width * current.height,
+        bindings: [
+          {name: 'labels', view: hierarchy, type: 'u32', access: 'read_write'},
+          ...(level === 1
+            ? [
+                {
+                  name: 'pixels',
+                  view: props.pixelFacilities,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : [])
+        ],
+        declarations: `fn childLabel(column: u32, row: u32) -> u32 {
+  if (column >= ${previous.width}u || row >= ${previous.height}u) { return 0xffffffffu; }
+  return ${level === 1 ? 'pixels[pixelsOffset' : `labels[labelsOffset + ${previous.offset}u`} + row * ${previous.width}u + column];
+}`,
+        body: `let column = 2u * (index % ${current.width}u);
+  let row = 2u * (index / ${current.width}u);
+  labels[labelsOffset + ${current.offset}u + index] = min(
+    min(childLabel(column, row), childLabel(column + 1u, row)),
+    min(childLabel(column, row + 1u), childLabel(column + 1u, row + 1u)));`
+      })
+    );
+  }
+  nodes.push(createIsochronesTriangleFacilityNode(graph, {...props, hierarchy}));
+  return nodes;
+}
+
 /**
- * One thread per triangle slot: the facility of the cell sample nearest to the triangle centroid
- * among the four samples around it that carry a facility, `0xffffffff` when none does or past the
- * triangle count. @internal
+ * Exact spatial branch-and-bound, one invocation per triangle. Empty pyramid regions and regions
+ * beyond the current nearest distance are pruned. Local vertex displacements are summed before
+ * squaring: the common centroid divisor cancels, preserving ordinary fan ties and translations.
+ * Without a hierarchy, spatial distance pruning still applies (the standalone internal helper).
+ * Writes NONE for unlabelled rasters and inactive slots. @internal
  */
 export function createIsochronesTriangleFacilityNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    width: number;
-    height: number;
-    triangles: GraphDataView<'float32x2'>;
-    triangleCount: GraphDataView<'uint32'>;
-    parameters: GraphDataView<'float32'>;
-    pixelFacilities: GraphDataView<'uint32'>;
-    triangleFacilities: GraphDataView<'uint32'>;
-  }
+  props: TriangleFacilityProps & {hierarchy?: GraphDataView<'uint32'>}
 ): GPUCommandNode<Parameters> {
+  const levels = getTriangleFacilityLevels(props.width, props.height);
+  const levelCount = levels.length;
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
@@ -512,44 +592,90 @@ export function createIsochronesTriangleFacilityNode<Parameters>(
       {name: 'triangles', view: props.triangles, type: 'f32', access: 'read'},
       {name: 'triangleCount', view: props.triangleCount, type: 'u32', access: 'read'},
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
-      {name: 'pixelFacilities', view: props.pixelFacilities, type: 'u32', access: 'read'},
-      {name: 'facilitiesOut', view: props.triangleFacilities, type: 'u32', access: 'read_write'}
+      {name: 'pixels', view: props.pixelFacilities, type: 'u32', access: 'read'},
+      ...(props.hierarchy
+        ? [{name: 'labels', view: props.hierarchy, type: 'u32' as const, access: 'read' as const}]
+        : []),
+      {name: 'facilitiesOut', view: props.triangleFacilities, type: 'u32', access: 'read_write'},
+      ...(props.visitedSamples
+        ? [
+            {
+              name: 'visited',
+              view: props.visitedSamples,
+              type: 'u32' as const,
+              access: 'read_write' as const
+            }
+          ]
+        : [])
     ],
     invocationCount: props.triangleFacilities.length,
-    declarations: `const WIDTH: i32 = ${props.width};
-const HEIGHT: i32 = ${props.height};`,
-    body: `if (index >= triangleCount[triangleCountOffset]) {
+    declarations: `const WIDTH: u32 = ${props.width}u;
+const HEIGHT: u32 = ${props.height}u;
+const LEVEL_WIDTHS = array<u32, ${levelCount}>(${levels.map(level => `${level.width}u`).join(', ')});
+const LEVEL_HEIGHTS = array<u32, ${levelCount}>(${levels.map(level => `${level.height}u`).join(', ')});
+const LEVEL_OFFSETS = array<u32, ${levelCount}>(${levels.map(level => `${level.offset}u`).join(', ')});
+fn regionLabel(column: u32, row: u32, level: u32) -> u32 {
+  if (level == 0u) { return pixels[pixelsOffset + row * WIDTH + column]; }
+  ${props.hierarchy ? 'return labels[labelsOffset + LEVEL_OFFSETS[level] + row * LEVEL_WIDTHS[level] + column];' : 'return 0u;'}
+}`,
+    body: `${props.visitedSamples ? 'visited[visitedOffset + index] = 0u;' : ''}
+  if (index >= triangleCount[triangleCountOffset]) {
     facilitiesOut[facilitiesOutOffset + index] = 0xffffffffu;
     return;
   }
   let base = trianglesOffset + 6u * index;
-  let centroid = vec2f(
-    (triangles[base] + triangles[base + 2u] + triangles[base + 4u]) / 3.0,
-    (triangles[base + 1u] + triangles[base + 3u] + triangles[base + 5u]) / 3.0
-  );
   let minimum = vec2f(params[paramsOffset + 1u], params[paramsOffset + 2u]);
-  let cellSize = vec2f(
-    (params[paramsOffset + 3u] - minimum.x) / f32(WIDTH),
-    (params[paramsOffset + 4u] - minimum.y) / f32(HEIGHT)
-  );
-  // Sample (column, row) sits at minimum + (column + 0.5, row + 0.5) * cellSize.
-  let gridPosition = (centroid - minimum) / cellSize - vec2f(0.5);
-  let lower = vec2i(floor(gridPosition));
+  let cellSize = vec2f((params[paramsOffset + 3u] - minimum.x) / f32(WIDTH),
+    (params[paramsOffset + 4u] - minimum.y) / f32(HEIGHT));
+  let scale = max(abs(cellSize.x), abs(cellSize.y));
+  let relativeCellSize = cellSize / scale;
+  let first = (vec2f(triangles[base], triangles[base + 1u]) - minimum) / scale;
+  let second = (vec2f(triangles[base + 2u], triangles[base + 3u]) - minimum) / scale;
+  let third = (vec2f(triangles[base + 4u], triangles[base + 5u]) - minimum) / scale;
+  let vertexSum = first + second + third;
+  var stack: array<vec3u, ${3 * levelCount + 1}>;
+  stack[0] = vec3u(0u, 0u, ${levelCount - 1}u);
+  var stackCount = 1u;
   var best = 0xffffffffu;
-  var bestDistance = 1e30;
-  for (var corner = 0u; corner < 4u; corner++) {
-    let column = lower.x + i32(corner & 1u);
-    let row = lower.y + i32(corner >> 1u);
-    if (column < 0 || row < 0 || column >= WIDTH || row >= HEIGHT) { continue; }
-    let facility = pixelFacilities[pixelFacilitiesOffset + u32(row * WIDTH + column)];
-    if (facility == 0xffffffffu) { continue; }
-    let offset = gridPosition - vec2f(f32(column), f32(row));
-    let distance = dot(offset, offset);
-    if (distance < bestDistance || (distance == bestDistance && facility < best)) {
-      bestDistance = distance;
-      best = facility;
+  var bestDistance = 0.0;
+  var visits = 0u;
+  while (stackCount > 0u) {
+    stackCount--;
+    let region = stack[stackCount];
+    let label = regionLabel(region.x, region.y, region.z);
+    if (label == 0xffffffffu) { continue; }
+    let span = 1u << region.z;
+    let lower = (vec2f(region.xy * span) + vec2f(0.5)) * relativeCellSize;
+    let upper = (vec2f(min((region.xy + vec2u(1u)) * span, vec2u(WIDTH, HEIGHT))) - vec2f(0.5)) * relativeCellSize;
+    // Expand the bound by 32 f32 epsilons of its operands. This can only defer pruning;
+    // candidate comparisons below use no tolerance. It covers rounding/reassociation of sums.
+    let guard = max(abs(vertexSum), max(abs(3.0 * lower), abs(3.0 * upper))) * 0.000003814697265625;
+    let displacement = max(max(3.0 * lower - vertexSum, vertexSum - 3.0 * upper) - guard, vec2f(0.0));
+    if (best != 0xffffffffu && dot(displacement, displacement) > bestDistance) { continue; }
+    if (region.z == 0u) {
+      visits++;
+      let offset = (first - lower) + (second - lower) + (third - lower);
+      let distance = dot(offset, offset);
+      if (best == 0xffffffffu || distance < bestDistance || (distance == bestDistance && label < best)) {
+        best = label;
+        bestDistance = distance;
+      }
+    } else {
+      let childLevel = region.z - 1u;
+      let split = vec2f((region.xy * 2u + vec2u(1u)) * (span / 2u)) * relativeCellSize;
+      let preferred = select(0u, 1u, vertexSum.x >= 3.0 * split.x) | select(0u, 2u, vertexSum.y >= 3.0 * split.y);
+      // Push far quadrants first so the nearest child is popped first.
+      for (var order = 0u; order < 4u; order++) {
+        let quadrant = preferred ^ (3u - order);
+        let child = region.xy * 2u + vec2u(quadrant & 1u, quadrant >> 1u);
+        if (child.x < LEVEL_WIDTHS[childLevel] && child.y < LEVEL_HEIGHTS[childLevel]) {
+          stack[stackCount] = vec3u(child, childLevel);
+          stackCount++;
+        }
+      }
     }
   }
-  facilitiesOut[facilitiesOutOffset + index] = best;`
+  facilitiesOut[facilitiesOutOffset + index] = best;
+  ${props.visitedSamples ? 'visited[visitedOffset + index] = visits;' : ''}`
   });
 }

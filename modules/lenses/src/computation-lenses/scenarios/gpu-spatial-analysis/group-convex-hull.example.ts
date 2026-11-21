@@ -9,10 +9,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPUGroupConvexHull,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  GPUDBSCAN,
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUParameterBuffer,
@@ -50,12 +50,12 @@ export async function runExample(
   const clusteringParameters = new GPUParameterBuffer(graph.device, {
     id: 'clustering-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues({bounds, epsilon: 250, minimumPoints: 6})
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues({bounds, epsilon: 250, minimumSamples: 6})
   });
   const labels = create('labels', 'uint32', observations.length);
   graph.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       spatialContext,
       positions: observations,
       parameters: clusteringParameters.importToGraph(graph),
@@ -70,7 +70,7 @@ export async function runExample(
   const sizes = create('sizes', 'uint32', groupCount);
   const overflow = create('overflow', 'uint32', 1);
   // #region example
-  // labels: DBSCAN cluster ids from GPUSpatialClustering; noise (0xffffffff) is excluded
+  // labels: DBSCAN cluster ids from GPUDBSCAN; noise (0xffffffff) is excluded
   graph.add(
     new GPUGroupConvexHull({
       spatialContext,

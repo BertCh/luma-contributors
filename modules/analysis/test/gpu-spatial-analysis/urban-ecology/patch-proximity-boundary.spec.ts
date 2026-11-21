@@ -6,7 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {addPatchProximityRecipe} from '../../../src/gpu-spatial-analysis/landscape-ecology/patch-proximity';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {publishBuildingTessellationOutput as publish} from './building-tessellation-test-utils';
 
 it.each([
@@ -362,7 +362,25 @@ it.each([
     const metrics = publish(fixture, 'metrics', result.outputs.metrics);
     const flags = publish(fixture, 'validity', result.outputs.validity);
     const status = publish(fixture, 'status', result.status.candidateOverflow);
+    const count = publish(fixture, 'count', result.status.count);
+    const required = publish(fixture, 'required', result.status.requiredCount);
+    const overflow = publish(fixture, 'overflow', result.status.overflow);
+    const requirement = publish(fixture, 'requirement', result.intermediates.candidateRequirement);
+    const patchRecords = publish(fixture, 'patch-records', result.intermediates.patchRecords);
     fixture.run();
+    // Only patches 0 and 1 share a class: radius 1 admits the two directed cell pairs.
+    // A capacity of 1 drops one of them. Radius 0 admits neither, without exhausting capacity.
+    expect((await fixture.readUint32(requirement, 4)).slice(0, 2)).toEqual(
+      reason === 'capacity' ? [2, 1] : [0, 0]
+    );
+    if (reason === 'radius') {
+      const records = await fixture.readUint32(patchRecords, 12);
+      // No admitted neighbor: summary must test these stored words, including for singleton 2.
+      expect([records[2], records[6], records[10]]).toEqual([0x7f800000, 0x7f800000, 0x7f800000]);
+    }
+    expect(await fixture.readUint32(count, 1)).toEqual([reason === 'capacity' ? 0 : 1]);
+    expect(await fixture.readUint32(required, 1)).toEqual([3]);
+    expect(await fixture.readUint32(overflow, 1)).toEqual([0]);
     expect(await fixture.readUint32(status, 1)).toEqual([1]);
     expect(await fixture.readUint32(flags, 3)).toEqual(reason === 'radius' ? [0, 0, 1] : [0, 0, 0]);
     const values = await fixture.readFloat32(metrics, 12);
@@ -370,6 +388,50 @@ it.each([
       expect(values[4 * owner]).toBe(1);
       expect(values[4 * owner + 2]).toBeNaN();
       expect(values[4 * owner + 3]).toBeNaN();
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it.each([
+  true,
+  false
+])('S3 cell-center missing-neighbor sentinel distinguishes singleton=%s from uncertified radius', async singleton => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'missing-neighbor-word');
+  try {
+    const labels = singleton ? [0] : [0, 0xffffffff, 1];
+    const classes = singleton ? [0] : [0, 0];
+    const result = addPatchProximityRecipe(fixture.graph, {
+      mode: 'boundary',
+      patches: fixture.input('patches', Uint32Array.from(labels), 'uint32', labels.length),
+      patchClasses: fixture.input('classes', Uint32Array.from(classes), 'uint32', classes.length),
+      width: labels.length,
+      height: 1,
+      cellSize: [1, 1],
+      edgeDepth: 0,
+      searchRadius: 0,
+      distanceModel: 'cell-center',
+      candidateCapacity: 1
+    });
+    const records = publish(fixture, 'records', result.intermediates.patchRecords);
+    const validity = publish(fixture, 'validity', result.outputs.validity);
+    const metrics = publish(fixture, 'metrics', result.outputs.metrics);
+    const loss = publish(fixture, 'loss', result.status.candidateOverflow);
+    fixture.run();
+    const words = await fixture.readUint32(records, classes.length * 4);
+    const values = await fixture.readFloat32(metrics, classes.length * 4);
+    expect(await fixture.readUint32(validity, classes.length)).toEqual(singleton ? [1] : [0, 0]);
+    expect(await fixture.readUint32(loss, 1)).toEqual([Number(!singleton)]);
+    for (let patch = 0; patch < classes.length; patch++) {
+      expect(words[4 * patch + 2]).toBe(0x7f800000);
+      expect(Number.isFinite(values[4 * patch])).toBe(true);
+      expect(Number.isFinite(values[4 * patch + 1])).toBe(true);
+      // Unit cell area/core area are 1; singleton class has no partner and proximity 0.
+      // Two same-class patches have no admitted neighbor at radius 0, so both results are withheld.
+      expect(values.slice(4 * patch, 4 * patch + 4)).toEqual([1, 1, NaN, singleton ? 0 : NaN]);
     }
   } finally {
     fixture.destroy();

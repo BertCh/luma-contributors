@@ -165,12 +165,14 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
         ? 1
         : Math.max(1, Math.min(this.maximumPathLength - 1, this.nodeCount - 1));
     this.estimatedCommandNodeCount =
-      FIXED_COMMAND_NODE_COUNT +
-      props.routeCount * (ROUND_COMMAND_NODE_ALLOWANCE + 4 * this.maximumIterations);
+      props.sources.length === 0
+        ? 4
+        : FIXED_COMMAND_NODE_COUNT +
+          props.routeCount * (ROUND_COMMAND_NODE_ALLOWANCE + 4 * this.maximumIterations);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(props.sources, ['uint32'], `${id} sources`);
     validateSinglePackedView(props.targets, ['uint32'], `${id} targets`);
-    validateCapacity(id, 'queryCount', props.sources.length);
+    validateCapacity(id, 'queryCount', props.sources.length, 0);
     validateViewLength(id, 'targets', props.targets, props.sources.length);
     const {status: statusLayout, ...columnLayout} = getGPUKShortestPathsOutputLayout({
       id,
@@ -215,7 +217,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
           (props.routeCount + this.candidateCapacity + this.spurCount) *
             (2 + 2 * this.maximumPathLength))
     }))
-      validateCapacity(id, name, length, name === 'expandedEdges' ? 0 : 1);
+      validateCapacity(id, name, length, 0);
   }
 
   getCommandNodes<Parameters>(
@@ -223,6 +225,23 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount, maximumPathLength, candidateCapacity, spurCount} = this;
     const queryCount = props.sources.length;
+    if (queryCount === 0) {
+      return (
+        ['converged', 'iterationLimitReached', 'candidateOverflow', 'iterationCount'] as const
+      ).map(name =>
+        createWGSLKernelNode(graph, {
+          id: `${id}-empty-${name}`,
+          operation: 'GPUKShortestPaths',
+          variant: `empty-${name}`,
+          invocationCount: 1,
+          workgroupSize: 2,
+          bindings: [
+            {name: 'result', view: props.output.status[name], type: 'u32', access: 'read_write'}
+          ],
+          body: `result[resultOffset] = ${name === 'converged' ? 1 : 0}u;`
+        })
+      );
+    }
     const laneCount = queryCount * spurCount;
     const expandedNodes = laneCount * nodeCount;
     const edgeCount = props.topology.neighbors.length;

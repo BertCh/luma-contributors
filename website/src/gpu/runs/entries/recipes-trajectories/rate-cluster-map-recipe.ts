@@ -75,7 +75,7 @@ export default defineOperationRun({
         'uint32',
         Uint32Array.of(0xffc8c8c8, 0xff1c19d7, 0xffe9d9ab, 0xffb67b2c, 0xff61aefd)
       ).view,
-      outputs: {quadrants: quadrants.view}
+      output: {quadrants: quadrants.view}
     });
     return {
       outputs: {quadrants, mesh},

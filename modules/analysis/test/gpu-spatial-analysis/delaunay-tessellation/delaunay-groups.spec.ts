@@ -18,7 +18,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {checkLocallyDelaunay, mulberry32, toTriangleRows} from './delaunay-reference';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type RunResult = {
   triangles: number[][];
@@ -253,3 +253,19 @@ it('grouped Delaunay excludes leading, inter-group and trailing garbage from sit
     }
   }
 }, 120000);
+
+it('GPUDelaunayTessellation keeps group-heavy scratch on the parallel route', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const coordinates = new Float32Array(200);
+  coordinates.set([0, 0, 2, 0, 0, 2]);
+  // 3 distinct sites and 97 duplicates in group 0 give one triangle; 3999 groups are empty.
+  // 2*100 + 4000 + 7 = 4207 scratch slots exceeds the serial triangle bound 4104.
+  const result = await runDelaunay(device, coordinates, new Uint32Array(100), 4000);
+  expect(result.triangles).toEqual([[0, 1, 2]]);
+  expect(result.duplicates).toBe(97);
+  expect(result.invalid).toBe(0);
+  expect(result.counts).toEqual([1, ...new Array(3999).fill(0)]);
+  expect(result.offsets).toEqual([0, ...new Array(3999).fill(1)]);
+  expect(result.converged).toEqual(new Array(4000).fill(1));
+});

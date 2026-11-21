@@ -1,6 +1,16 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {
+  validateWeightsLossSources,
+  validateWeightsOverflowEvidence
+} from '../spatial-weights/spatial-weights-loss';
+import {getGeneralGProductMomentNodes} from './general-g-product-moments';
+import {getGearyPairDeviationNodes} from './geary-pair-deviations';
+
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotWeightsDescription} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotSpatialAutocorrelationProps} from '../spatial-autocorrelation/spatial-autocorrelation-construction';
 
 import {
   createTransientView,
@@ -21,7 +31,11 @@ import {
 } from './global-spatial-statistics-tiled';
 import {validateSpatialStatisticsWritableDispatches} from '../spatial-weights/spatial-statistics-writable-dispatches';
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
-import {createSegmentSumNode} from '../../analysis-core/kernels/sorted-segment-sums';
+import {
+  BLOCK_ROWS,
+  getColumnSumNodes
+} from '../permutation-inference/permutation-inference-kernels';
+import {getOrderedPairMassNodes} from '../permutation-inference/ordered-pair-mass';
 import {
   validateCommandNodeBudget,
   validateCapacity,
@@ -45,7 +59,7 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {
   GPU_DEFAULT_INFERENCE_ALTERNATIVE,
-  type GPUInferenceAlternative,
+  type GPUAnalyticAlternative,
   type GPUInferenceMetadata
 } from '../../analysis-core/contracts/inference';
 import {getSlotGroupingNodes} from '../spatial-weights/slot-grouping';
@@ -54,7 +68,7 @@ import {
   type GPUChunkedSpatialWeights,
   type GPUSpatialWeightsChunkDispatch,
   getGPUSpatialWeightsChunkDispatches,
-  getGPUSpatialWeightsOrChunksViews,
+  getGPUSpatialWeightsLossViews,
   validateGPUSpatialWeightsOrChunks,
   wrapGPUSpatialWeightsChunkBody
 } from '../spatial-weights/gpu-chunked-spatial-weights';
@@ -68,12 +82,12 @@ import {
   type GPUOverflowStatusPort,
   validateGPUStatusPort
 } from '../../analysis-core/contracts/status';
-import {getGlobalSpatialStatisticsStatusNodes} from './global-spatial-statistics-status';
+import {
+  getGlobalSpatialStatisticsStatusNodes,
+  getGlobalSpatialStatisticsInvalidCountNodes
+} from './global-spatial-statistics-status';
 
 const OPERATION = 'GPUGlobalSpatialStatistics';
-
-/** Rows reduced by one workgroup in the first level of the deterministic column sums. */
-const BLOCK_ROWS = 4096;
 
 /** Lanes of a workgroup that reduces per-row counters before one global atomic per counter. */
 const REDUCTION_WORKGROUP_SIZE = 256;
@@ -141,7 +155,7 @@ const MAGNITUDE_COLUMNS = {first: 0, count: 2} as const;
  * already bind the eight storage buffers a baseline device allows.
  */
 const VALUE_SCALE = {inverseX: 5, x: 6, inverseY: 7, y: 8} as const;
-const COUNTER_LENGTH = 9;
+const COUNTER_LENGTH = 32;
 
 /**
  * Rows are counted in u32 but compared and divided as f32 in the finalize kernel, and degrees and
@@ -173,7 +187,9 @@ export type GPUGlobalSpatialStatisticsProps = {
    * Either nonzero status flag (overflow or candidateOverflow) suppresses statistic and
    * inference blocks with NaN; output.status reports the producer's flags independently.
    * Chunk-local loss flags are rejected; aggregate them on the outer weights.status port.
-   * An input overflow view may have spare capacity; only its first word controls suppression.
+   * Bind overflow flags as one-row uint32 views. Each can select a word in a larger buffer.
+   * A requiredCount needs the producer's final overflow flag covering those slots. Verify
+   * convergence and unresolved work before passing a complete CSR without those status views.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
   /**
@@ -215,7 +231,7 @@ export type GPUGlobalSpatialStatisticsProps = {
    * autocorrelation of Moran's I) or `'lesser'` (lower tail of z).
    * `'directed'` and `'folded'` are permutation conventions and throw here. Compile-time.
    */
-  alternative?: GPUInferenceAlternative;
+  analyticAlternative?: GPUAnalyticAlternative;
   /** Caller-owned outputs. */
   output: GPUGlobalSpatialStatisticsOutput;
 };
@@ -228,7 +244,11 @@ export type GPUGlobalSpatialStatisticsOutput = {
    * independently as 0 or 1: overflow is final capacity and candidateOverflow is intermediate loss.
    * An absent input flag publishes 0.
    */
-  status?: Partial<GPUOverflowStatusPort> & GPUCandidateStatusPort;
+  status?: Partial<GPUOverflowStatusPort> &
+    GPUCandidateStatusPort & {
+      /** Negative analysis rows when G is requested (zero otherwise); G is NaN when nonzero. Overwritten per submission. */
+      invalidCount?: GraphDataView<'uint32'>;
+    };
   /**
    * Every statistic block, at least `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length` float32 values,
    * laid out by `GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT`.
@@ -246,9 +266,9 @@ export type GPUGlobalSpatialStatisticsOutput = {
 /**
  * Global spatial autocorrelation from a {@link GPUSpatialWeights} CSR and a value column: Moran's
  * I, Geary's C, Getis-Ord General G, bivariate Moran's I and join counts, each with its analytic
- * expectation, variance, z-score and normal p-value (`alternative`, default two-sided).
+ * expectation, variance, z-score and normal p-value (`analyticAlternative`, default two-sided).
  *
- * Neighbors: a slot is a neighbor when its weight is positive, it points to another analysis row
+ * Neighbors: a slot is a neighbor when its weight is finite and positive, it points to another analysis row
  * and it is not the row itself (zero-weight slots are not neighbors). Weights are used as given,
  * except when `weights.information.transform === 'row'`: each row is then re-standardized over its
  * active neighbors, `w'_ij = w_ij / sum_k w_ik`, everywhere (`S0`, `S1`, `S2`, the reverse
@@ -264,7 +284,9 @@ export type GPUGlobalSpatialStatisticsOutput = {
  * nonzero, every statistic block and the weight sums and moments of the summary are NaN.
  * Population, island and black counts stay informative; ordered-pair join counts become zero.
  * Optional output.status preserves both producer flags independently. Both tiled and reference
- * modes consume the flags on the GPU on every submission.
+ * modes consume the flags on the GPU on every submission. A supplied weights.status.complete
+ * certificate, at either matrix or child-chunk scope, is rejected at construction; this consumer
+ * does not interpret that certificate as either loss cause.
  *
  * Definitions (PySAL esda), over the `n` analysis rows (mask nonzero, every provided value finite
  * and, for `'exclude'`, not an island; excluded rows are neither foci nor neighbors), with
@@ -307,7 +329,7 @@ export type GPUGlobalSpatialStatisticsOutput = {
  * island and black counts are available in output.counts. The explicit reference mode retains
  * its exclusive 2^24 ceiling.
  *
- * Value scale: every statistic here is unchanged when the values are multiplied by a constant, so
+ * Value scale: every statistic here is unchanged when the values are multiplied by a positive constant, so
  * `values` (and `secondValues`) are divided by a power of two near their mean magnitude before the
  * moment sums, and only `summary.mean` and `summary.variance` are scaled back. Squares and fourth
  * powers of sums of ordinary large data (prices, populations) therefore stay inside the float32
@@ -329,17 +351,45 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
   readonly props: GPUGlobalSpatialStatisticsProps;
   /** Resolved island policy. */
   readonly islands: GPUIslandPolicy;
-  /** Resolved tail of the analytic p-values . */
-  readonly alternative: 'two-sided' | 'greater' | 'lesser';
+  /** Resolved analytic tail. */
+  readonly analyticAlternative: GPUAnalyticAlternative;
 
   constructor(props: GPUGlobalSpatialStatisticsProps) {
+    validateRequirement(
+      props.id ?? 'global-spatial-statistics',
+      !('alternative' in props),
+      'alternative was removed. Use analyticAlternative'
+    );
+    props = snapshotConstructionFields(props, [
+      'id',
+      'mode',
+      'symmetryStrategy',
+      'weights',
+      'values',
+      'secondValues',
+      'mask',
+      'statistics',
+      'islands',
+      'analyticAlternative',
+      'output'
+    ]);
+    const analyticAlternative = props.analyticAlternative;
+    const weights = snapshotWeightsDescription(props.weights);
+    props = Object.freeze({
+      ...snapshotSpatialAutocorrelationProps(props),
+      weights,
+      analyticAlternative
+    });
     const id = props.id ?? 'global-spatial-statistics';
     this.id = id;
     this.props = props;
+    validateWeightsLossSources(id, [props.weights]);
+    validateWeightsOverflowEvidence(id, props.weights);
     this.islands = resolveGPUIslandPolicy(id, props.islands);
-    this.alternative = resolveAnalyticAlternative(id, props.alternative);
+    this.analyticAlternative = resolveAnalyticAlternative(id, props.analyticAlternative);
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
     if ('chunks' in props.weights) {
+      validateGPUStatusPort(`${id} weights.status`, props.weights.status ?? {});
       for (const [index, chunk] of props.weights.chunks.entries()) {
         validateRequirement(
           id,
@@ -367,9 +417,11 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       );
     validateCommandNodeBudget(
       id,
-      getGPUSpatialWeightsChunkDispatches(props.weights).length ** 2 * 8 +
-        getGPUSpatialWeightsChunkDispatches(props.weights).length * 220 +
-        100
+      getGPUSpatialWeightsChunkDispatches(props.weights).length ** 2 *
+        (props.statistics.includes('geary') ? 11 : 8) +
+        getGPUSpatialWeightsChunkDispatches(props.weights).length *
+          (props.statistics.includes('geary') ? 230 : 220) +
+        (props.statistics.includes('geary') ? 300 : 100)
     );
     const capacity = getGPUSpatialWeightsChunkDispatches(props.weights).reduce(
       (sum, dispatch) => sum + dispatch.weights.neighbors.length,
@@ -382,13 +434,6 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
       0,
       GLOBAL_SPATIAL_STATISTICS_MAXIMUM_SLOTS
     );
-    for (const name of ['overflow', 'candidateOverflow'] as const) {
-      const view = props.weights.status?.[name];
-      if (view) {
-        validateSinglePackedView(view, ['uint32'], `${id} weights.status.${name}`);
-        validateCapacity(id, `weights.status.${name} length`, view.length, 1);
-      }
-    }
     if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
       throw new Error(`${id} values needs one row per weights row`);
     }
@@ -446,6 +491,7 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
         joinCounts: output.joinCounts,
         counts: output.counts,
         overflow: output.status?.overflow,
+        invalidCount: output.status?.invalidCount,
         candidateOverflow: output.status?.candidateOverflow
       },
       [
@@ -474,7 +520,7 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
    */
   getInferenceMetadata(): GPUInferenceMetadata {
     return {
-      alternative: this.alternative,
+      alternative: this.analyticAlternative,
       permutationCount: 0,
       multipleTesting: 'none',
       testedRowsDefinition: `included rows with finite values${
@@ -494,7 +540,7 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
         .map(([name, column]) => `const COLUMN_${toConstantCase(name)}: u32 = ${column}u;`)
         .join('\n')}
 ${GLOBAL_STATISTICS_FINALIZE_WGSL}
-${getPValueWGSL(this.alternative)}
+${getPValueWGSL(this.analyticAlternative)}
 fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
  for (var field = 0u; field < 8u; field++) { results[resultsOffset + offset + field] = select(getQuietNaN(field), statisticBlock[field], enabled); }
 }`;
@@ -514,7 +560,13 @@ fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
           '(blackCount - 1.0)',
           'f32(counters[countersOffset + 10u] - min(counters[countersOffset + 10u], 1u))'
         );
-      return getTiledGlobalSpatialStatisticsNodes(graph, props, declarations, body);
+      return getTiledGlobalSpatialStatisticsNodes(
+        graph,
+        props,
+        declarations,
+        body,
+        getPValueWGSL(this.analyticAlternative)
+      );
     }
     const referenceRows = getGPUSpatialWeightsChunkDispatches(weights).reduce(
       (sum, dispatch) => sum + dispatch.rowCount,
@@ -649,10 +701,12 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`;
       dispatch: GPUSpatialWeightsChunkDispatch,
       isIncluded: string,
       action: string
-    ) =>
-      dispatch.isWhole
-        ? getGPUSpatialWeightsNeighborLoopWGSL(isIncluded, action)
-        : getGPUSpatialWeightsNeighborLoopWGSL(isIncluded, action, 'index', 'WEIGHTS_ROW_START');
+    ) => {
+      const included = `isFiniteFloat(weight) && (${isIncluded})`;
+      return dispatch.isWhole
+        ? getGPUSpatialWeightsNeighborLoopWGSL(included, action)
+        : getGPUSpatialWeightsNeighborLoopWGSL(included, action, 'index', 'WEIGHTS_ROW_START');
+    };
     const getWeightBindings = (dispatch: GPUSpatialWeightsChunkDispatch): WGSLKernelBinding[] => [
       {name: 'offsets', view: dispatch.weights.offsets, type: 'u32', access: 'read'},
       {name: 'neighbors', view: dispatch.weights.neighbors, type: 'u32', access: 'read'},
@@ -821,7 +875,7 @@ var<workgroup> groupNegative: atomic<u32>;`,
   let neighbor = neighbors[neighborsOffset + index];
   var key = ROWS;
   if (source < ROWS && neighbor < ROWS && neighbor != source &&
-      weights[weightsOffset + index] > 0.0 &&
+      weights[weightsOffset + index] > 0.0 && isFiniteFloat(weights[weightsOffset + index]) &&
       isFiniteFloat(centered[centeredOffset + neighbor * 2u])) {
     key = neighbor;
   }
@@ -984,7 +1038,7 @@ fn findWeight(row: u32, column: u32) -> f32 {
   }
   if (low < end && neighbors[neighborsOffset + low] == column) {
     let weight = weights[weightsOffset + low];
-    return select(-1.0, weight * getRowScale(row), weight > 0.0);
+    return select(-1.0, weight * getRowScale(row), weight > 0.0 && isFiniteFloat(weight));
   }
   return -1.0;
 }`
@@ -1040,7 +1094,7 @@ fn findReverseWeight(row: u32, column: u32) -> f32 {
   }
   if (low < end && targetNeighbors[targetNeighborsOffset + low] == column) {
     let weight = targetWeights[targetWeightsOffset + low];
-    return select(-1.0, weight * getRowScale(column), weight > 0.0);
+    return select(-1.0, weight * getRowScale(column), weight > 0.0 && isFiniteFloat(weight));
   }
   return -1.0;
 }`,
@@ -1120,7 +1174,7 @@ fn findWeight(row: u32, column: u32) -> f32 {
   }
   if (low < end && targetNeighbors[targetNeighborsOffset + low] == column) {
     let weight = targetWeights[targetWeightsOffset + low];
-    return select(-1.0, weight * getRowScale(row), weight > 0.0);
+    return select(-1.0, weight * getRowScale(row), weight > 0.0 && isFiniteFloat(weight));
   }
   return -1.0;
 }`,
@@ -1287,6 +1341,7 @@ ${getRowScaleWGSL(standardized)}`,
       ...islandNodes,
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-a`,
+        operation: OPERATION,
         matrix,
         rows,
         blockCount,
@@ -1295,6 +1350,7 @@ ${getRowScaleWGSL(standardized)}`,
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-magnitudes`,
+        operation: OPERATION,
         matrix: magnitudes,
         rows,
         blockCount,
@@ -1362,6 +1418,7 @@ fn getPowerOfTwoBits(exponent: i32) -> u32 {
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-d`,
+        operation: OPERATION,
         matrix,
         rows,
         blockCount,
@@ -1405,6 +1462,7 @@ fn getPowerOfTwoBits(exponent: i32) -> u32 {
       ...columnNodes,
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-b`,
+        operation: OPERATION,
         matrix,
         rows,
         blockCount,
@@ -1441,12 +1499,41 @@ fn getSquaredDeviation(column: u32, row: u32, count: f32) -> f32 {
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-sum-c`,
+        operation: OPERATION,
         matrix,
         rows,
         blockCount,
         ...BATCH_C,
         totals: totalsC
       }),
+      ...getGlobalSpatialStatisticsInvalidCountNodes<Parameters>(graph, props, counters),
+      ...(props.statistics.includes('getisOrdG')
+        ? getOrderedPairMassNodes<Parameters>(graph, {
+            id: `${id}-g-pair-mass`,
+            operation: OPERATION,
+            rows,
+            bindings: [
+              {name: 'matrix', view: matrix, type: 'f32', access: 'read'},
+              {name: 'counters', view: counters, type: 'u32', access: 'read'}
+            ],
+            value: `select(0.0, matrix[matrixOffset + ${COLUMN.x * rows}u + index] * bitcast<f32>(counters[countersOffset + 5u]), matrix[matrixOffset + index] != 0.0)`,
+            destination: {name: 'counters', view: counters, type: 'u32', access: 'read_write'},
+            write: 'counters[countersOffset + 28u] = bitcast<u32>(pairMass);'
+          })
+        : []),
+      ...(props.statistics.includes('getisOrdG')
+        ? getGeneralGProductMomentNodes<Parameters>(graph, {
+            id: `${id}-g-product-moments`,
+            rows,
+            bindings: [
+              {name: 'matrix', view: matrix, type: 'f32', access: 'read'},
+              {name: 'counters', view: counters, type: 'u32', access: 'read'},
+              {name: 'totalsB', view: totalsB, type: 'f32', access: 'read'}
+            ],
+            value: `select(0.0, matrix[matrixOffset + ${COLUMN.x * rows}u + index] * bitcast<f32>(counters[countersOffset + 5u]), bitcast<f32>(counters[countersOffset + 28u]) < totalsB[totalsBOffset] * 0.001)`,
+            destination: {name: 'counters', view: counters, type: 'u32', access: 'read_write'}
+          })
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finalize`,
         operation: OPERATION,
@@ -1490,7 +1577,7 @@ fn readTotal(column: u32) -> f32 {
   }
   return totalsD[totalsDOffset + column - BATCH_D_FIRST];
 }
-${getPValueWGSL(this.alternative)}
+${getPValueWGSL(this.analyticAlternative)}
 fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
   for (var field = 0u; field < 8u; field++) {
     results[resultsOffset + offset + field] = select(getQuietNaN(field), statisticBlock[field], enabled);
@@ -1513,6 +1600,20 @@ fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
           body: `counts[countsOffset] = counters[countersOffset]; counts[countsOffset + 1u] = u32(totalsB[totalsBOffset + ${COLUMN.island - BATCH_B.first}u]); counts[countsOffset + 2u] = u32(totalsB[totalsBOffset + ${COLUMN.black - BATCH_B.first}u]);`
         })
       );
+    if (props.statistics.includes('geary'))
+      nodes.push(
+        ...getGearyPairDeviationNodes(graph, {
+          id,
+          weights,
+          values,
+          centered,
+          centeredStride: 2,
+          rowScale,
+          counters,
+          summary: output.summary,
+          pValueDeclarations: getPValueWGSL(this.analyticAlternative)
+        })
+      );
     return nodes;
   }
 }
@@ -1520,9 +1621,9 @@ fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
 /** Validates the analytic tail . */
 function resolveAnalyticAlternative(
   id: string,
-  alternative: GPUInferenceAlternative | undefined
+  alternative: GPUAnalyticAlternative | undefined
 ): 'two-sided' | 'greater' | 'lesser' {
-  const resolved = alternative ?? GPU_DEFAULT_INFERENCE_ALTERNATIVE;
+  const resolved = alternative === undefined ? GPU_DEFAULT_INFERENCE_ALTERNATIVE : alternative;
   switch (resolved) {
     case 'two-sided':
     case 'greater':
@@ -1530,80 +1631,18 @@ function resolveAnalyticAlternative(
     case 'lesser':
       return resolved;
     default:
-      throw new Error(`${id} alternative must be 'two-sided', 'greater' or 'lesser'`);
+      validateRequirement(
+        id,
+        false,
+        `analyticAlternative must be 'two-sided', 'greater' or 'lesser'; received ${String(resolved)}`
+      );
+      return 'two-sided';
   }
 }
 
 /** Converts a camelCase column name to CAPITAL_CASE for WGSL constants. */
 function toConstantCase(name: string): string {
   return name.replace(/([A-Z])/g, '_$1').toUpperCase();
-}
-
-/**
- * Sums `count` matrix columns starting at `first` into `totals` with two fixed-order workgroup
- * tree levels: one segment per (column, block of rows), then one per column over its blocks.
- */
-function getColumnSumNodes<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    matrix: GraphDataView<'float32'>;
-    rows: number;
-    blockCount: number;
-    first: number;
-    count: number;
-    totals: GraphDataView<'float32'>;
-  }
-): GPUCommandNode<Parameters>[] {
-  const {id, rows, blockCount, first, count} = props;
-  const segmentCount = count * blockCount;
-  const blockOffsets = createTransientView(
-    graph,
-    `${id}-block-offsets`,
-    'uint32',
-    segmentCount + 1
-  );
-  const columnOffsets = createTransientView(graph, `${id}-column-offsets`, 'uint32', count + 1);
-  const partials = createTransientView(graph, `${id}-partials`, 'float32', segmentCount);
-  return [
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-offsets`,
-      operation: OPERATION,
-      variant: 'sum-offsets',
-      bindings: [
-        {name: 'blockOffsets', view: blockOffsets, type: 'u32', access: 'read_write'},
-        {name: 'columnOffsets', view: columnOffsets, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: segmentCount + 1,
-      declarations: `const ROWS: u32 = ${rows}u;
-const BLOCK_ROWS: u32 = ${BLOCK_ROWS}u;
-const BLOCK_COUNT: u32 = ${blockCount}u;
-const FIRST_COLUMN: u32 = ${first}u;
-const COLUMN_COUNT: u32 = ${count}u;`,
-      body: `let column = index / BLOCK_COUNT;
-  let block = index % BLOCK_COUNT;
-  blockOffsets[blockOffsetsOffset + index] = (FIRST_COLUMN + column) * ROWS + min(block * BLOCK_ROWS, ROWS);
-  if (index <= COLUMN_COUNT) {
-    columnOffsets[columnOffsetsOffset + index] = index * BLOCK_COUNT;
-  }`
-    }),
-    createSegmentSumNode<Parameters>(graph, {
-      id: `${id}-blocks`,
-      operation: OPERATION,
-      segmentCount,
-      input: props.matrix,
-      segmentOffsets: blockOffsets,
-      output: partials
-    }),
-    createSegmentSumNode<Parameters>(graph, {
-      id: `${id}-columns`,
-      operation: OPERATION,
-      segmentCount: count,
-      input: partials,
-      segmentOffsets: columnOffsets,
-      output: props.totals
-    })
-  ];
 }
 
 /** Moment formulas evaluated by the single-invocation finalize kernel. */
@@ -1686,9 +1725,15 @@ const COLUMN_DEGREE_WGSL = `let degree = matrix[matrixOffset + getMatrixIndex(CO
 function getWeightsViews(
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights
 ): (GraphDataView<'uint32'> | GraphDataView<'float32'>)[] {
-  return getGPUSpatialWeightsOrChunksViews(weights).filter(
-    (view, index) => index % 4 !== 3 && view !== undefined
-  ) as (GraphDataView<'uint32'> | GraphDataView<'float32'>)[];
+  const chunks = getGPUSpatialWeightsChunkDispatches(weights);
+  return [
+    ...chunks.flatMap(chunk => [
+      chunk.weights.offsets,
+      chunk.weights.neighbors,
+      chunk.weights.weights
+    ]),
+    ...getGPUSpatialWeightsLossViews(weights)
+  ];
 }
 
 /** Row scale of the effective weights: the reciprocal active sum, or 1 for weights used as given. */
@@ -1789,11 +1834,23 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   }
   // Getis-Ord General G.
   {
-    let denominator = n * f32(count - min(count, 1u)) * mean * mean - sumSquares;
+    let denominator = bitcast<f32>(counters[countersOffset + 28u]);
     let statistic = divide(readTotal(COLUMN_G_CROSS), denominator);
     let expected = divide(s0, n * f32(count - min(count, 1u)));
-    let variance = select(getQuietNaN(1u), getFinite(getQuadraticFormVariance(count, s0, s1, s2,
-      degreeDeviation, mean, sumSquares, sumCubes, sumFourths) / denominator / denominator),
+    // Centered moments are stable for offset/near-constant data; sparse products need direct
+    // distinct-index moments because centered terms can cancel at the scale of the pair mass.
+    var varianceNumerical = getQuadraticFormVariance(count, s0, s1, s2,
+      degreeDeviation, mean, sumSquares, sumCubes, sumFourths) / denominator / denominator;
+    if (denominator < sumSquares * 0.001 && count >= 4u) {
+      let moment22 = bitcast<f32>(counters[countersOffset + 29u]);
+      let moment211 = bitcast<f32>(counters[countersOffset + 30u]);
+      let moment1111 = bitcast<f32>(counters[countersOffset + 31u]);
+      let secondMoment = (s1 / n / f32(count - 1u)) * moment22
+        + ((s2 - 2.0 * s1) / n / f32(count - 1u) / f32(count - 2u)) * moment211
+        + ((s0 * s0 + s1 - s2) / n / f32(count - 1u) / f32(count - 2u) / f32(count - 3u)) * moment1111;
+      varianceNumerical = max(0.0, secondMoment - expected * expected);
+    }
+    let variance = select(getQuietNaN(1u), getFinite(varianceNumerical),
       n >= 4.0 && s0 > 0.0 && denominator > 0.0);
     let z = getZScore(statistic, expected, variance);
     // esda calls these VG / z_norm; retain the randomization aliases for compatibility.
@@ -1806,7 +1863,7 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
     let scale = divideSpatialCountByValue(count, s0);
     let statistic = divide(scale * readTotal(COLUMN_BIVARIATE_CROSS), sqrt(sumSquares * sumSquaresY));
     let variance = select(getQuietNaN(1u), getFinite(scale * scale *
-      readTotal(COLUMN_COLUMN_LAG_DEVIATION) / (f32(count - min(count, 1u)) * sumSquares)), valid);
+      readTotal(COLUMN_COLUMN_LAG_DEVIATION) / (f32(count - min(count, 1u)) * sumSquares)), valid && sumSquaresY > 0.0 && isFiniteFloat(sumSquaresY));
     let z = getZScore(statistic, 0.0, variance);
     writeBlock(${layout.bivariateMoran}u, array<f32, 8>(statistic, 0.0, getQuietNaN(2u),
       getQuietNaN(2u), getQuietNaN(2u), variance, z, getPValue(z)), ${enabled('bivariateMoran')});

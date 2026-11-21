@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {prepareNullableArrowTimeFixture} from './nullable-arrow-time-fixture';
+import {makeGPUTimeVectorFromPreparedArrowColumn} from '../../../src/analysis-core/graph-support/arrow-analytics-time-upload';
+
 import {createTransientView, GPUCommandGraph, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {describe, expect, it, vi} from 'vitest';
 import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/index';
@@ -51,6 +54,22 @@ function expectThrows(
 }
 
 describe('GPUTimeWordsRelative', () => {
+  it('F6: masked-row NaN uses a runtime bitcast operand for WGSL constant evaluation', () => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    try {
+      const contributor = new GPUTimeWordsRelative(
+        createProps(graph, {
+          mask: createTransientView(graph, 'mask', 'uint32', 5)
+        })
+      );
+      const sources = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source).toContain('bitcast<f32>((index & 0u) | 0x7fc00000u)');
+    } finally {
+      device.destroy();
+    }
+  });
   it('exposes the input context as float32-relative counted from the origin', () => {
     const device = createNullWebGPUDevice();
     const graph = new GPUCommandGraph(device);
@@ -262,4 +281,61 @@ it('accepts 30 million chunked rows and keeps shader and pipeline counts constan
   expect(keys.size).toBe(1);
   expect(sources.size).toBe(1);
   expectValidShaderIdentifiers(sources);
+});
+
+it('validates the optional missing-time mask and aligns it with timestamp chunks (UNI-08)', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createChunkedProps(graph, [1, 2]);
+    const mask = createVectorView('mask', 'uint32', [
+      createTransientView(graph, 'mask-0', 'uint32', 2),
+      createTransientView(graph, 'mask-1', 'uint32', 1)
+    ]);
+    expect(() => new GPUTimeWordsRelative({...props, mask})).toThrow(/mask chunk 0.*topology/);
+    const alignedMask = createVectorView('aligned-mask', 'uint32', [
+      createTransientView(graph, 'aligned-mask-0', 'uint32', 1),
+      createTransientView(graph, 'aligned-mask-1', 'uint32', 2)
+    ]);
+    const nodes = new GPUTimeWordsRelative({...props, mask: alignedMask}).getCommandNodes(graph);
+    expect(getParsedKernelSources(nodes).size).toBe(2);
+    for (const {source} of getGPUCommandNodeKernelSources(nodes)) {
+      expect(source).toContain('timeValidity');
+      expect(source).toContain('bitcast<f32>((index & 0u) | 0x7fc00000u)');
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('preserves actual Arrow null validity and batch boundaries through upload (S2)', () => {
+  const device = createNullWebGPUDevice();
+  const {table, column} = prepareNullableArrowTimeFixture();
+  expect(table.batches.map(batch => batch.numRows)).toEqual([2, 1]);
+  expect(Array.from(table.getChild('time')!)).toEqual([0n, null, 1n]);
+  expect(column.validity.map(mask => Array.from(mask))).toEqual([[1, 0], [1]]);
+  const upload = makeGPUTimeVectorFromPreparedArrowColumn(device, column);
+  try {
+    const graph = new GPUCommandGraph(device);
+    const timestamps = graph.importGPUVector('arrow-times', upload.timestamps);
+    const mask = graph.importGPUVector('arrow-validity', upload.validity);
+    expect(timestamps.data.map(chunk => chunk.length)).toEqual([2, 1]);
+    expect(mask.data.map(chunk => chunk.length)).toEqual([2, 1]);
+    const output = createVectorView('arrow-relative', 'float32', [
+      createTransientView(graph, 'arrow-relative-0', 'float32', 2),
+      createTransientView(graph, 'arrow-relative-1', 'float32', 1)
+    ]);
+    expect(
+      new GPUTimeWordsRelative({
+        timestamps,
+        mask,
+        temporalContext: upload.temporalContext,
+        origin: 0n,
+        output
+      }).getCommandNodes(graph)
+    ).toHaveLength(2);
+  } finally {
+    upload.destroy();
+    device.destroy();
+  }
 });

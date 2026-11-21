@@ -6,7 +6,7 @@ import {describe, expect, it, vi} from 'vitest';
 import {
   GPU_ANALYSIS_REQUIREMENT_IDS,
   matchGPUAnalysisFieldRole
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   getCatalogBinding,
   KEPLER_CATALOG_BINDINGS,

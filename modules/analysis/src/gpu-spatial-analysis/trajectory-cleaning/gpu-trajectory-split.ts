@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   createTransientView,
   getViewBindingRange,
@@ -11,6 +12,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {
+  GPUCandidateStatusPort,
   GPUCardinalityPort,
   GPUOverflowStatusPort,
   GPUTrajectoryGeometryFields
@@ -97,10 +99,10 @@ export type GPUTrajectorySplitOutput = {
   segmentOffsets: GraphDataView<'uint32'>;
   /** Source track of each segment, `segmentCapacity` rows. */
   segmentTracks: GraphDataView<'uint32'>;
-  /** Source row of each output row, `rowCapacity` rows. */
+  /** Source row of each retained output row, `rowCapacity` rows. Read [0, segmentOffsets[status.count]); the unused capacity tail is unspecified. */
   rowIds: GraphDataView<'uint32'>;
   /** Segment count; `overflow` is 1 when segments or rows exceeded a capacity. */
-  status: GPUCardinalityPort & GPUOverflowStatusPort;
+  status: GPUCardinalityPort & GPUOverflowStatusPort & GPUCandidateStatusPort;
   /** Optional copied positions of the output rows, `rowCapacity` rows. */
   positions?: GraphDataView<'float32x2'>;
   /** Optional copied timestamps of the output rows, `rowCapacity` rows, the input format. */
@@ -117,6 +119,8 @@ export type GPUTrajectorySplitProps = GPUTrajectoryGeometryFields & {
   parameters?: GraphDataView<'float32'>;
   /** Mode `'stop'`: per-row staypoint index from `GPUTrajectoryStaypoints`. */
   staypointIds?: GraphDataView<'uint32'>;
+  /** Mode 'stop': source staypoint loss to propagate to output.status.candidateOverflow. */
+  staypointStatus?: GPUCandidateStatusPort & Partial<GPUOverflowStatusPort>;
   /** Mode `'value-change'`: one uint32 value per row. */
   values?: GraphDataView<'uint32'>;
   output: GPUTrajectorySplitOutput;
@@ -138,7 +142,8 @@ export type GPUTrajectorySplitProps = GPUTrajectoryGeometryFields & {
  *
  * A segment needs at least two rows; shorter ones are dropped (`len(df) > 1` in MovingPandas). The
  * rows of the new port are `rowIds`, optionally with copied `positions` and `timestamps`, so the
- * output feeds another trajectory contributor without readback.
+ * output feeds another trajectory contributor without readback. In stop mode, wire the source
+ * staypoint loss flags through `staypointStatus` into `output.status.candidateOverflow`.
  *
  * Two walks per track: count, then write after parallel saturated prefix scans.
  * Track walks remain serial; scans never wrap or overwrite an earlier output prefix.
@@ -152,6 +157,22 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUTrajectorySplitProps) {
+    const {staypointStatus, output: destinations} = props;
+    props = {
+      ...props,
+      staypointStatus:
+        staypointStatus &&
+        snapshotConstructionFields(staypointStatus, ['overflow', 'candidateOverflow']),
+      output: {
+        ...destinations,
+        status: snapshotConstructionFields(destinations.status, [
+          'count',
+          'overflow',
+          'requiredCount',
+          'candidateOverflow'
+        ])
+      }
+    };
     this.id = props.id ?? 'trajectory-split';
     this.props = props;
     const id = this.id;
@@ -160,7 +181,7 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
     validateCapacity(id, 'positions rows', positions.length, 0, SPLIT_MAXIMUM_ROW_COUNT);
-    validateCapacity(id, 'trackOffsets rows', trackOffsets.length, 2, SPLIT_MAXIMUM_ROW_COUNT);
+    validateCapacity(id, 'trackOffsets rows', trackOffsets.length, 1, SPLIT_MAXIMUM_ROW_COUNT);
     validateViewLength(id, 'timestamps', timestamps, positions.length);
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
@@ -184,6 +205,22 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
       validateRequirement(id, Boolean(props.values), "mode 'value-change' requires values");
       validateSinglePackedView(props.values!, ['uint32'], `${id} values`);
       validateViewLength(id, 'values', props.values!, positions.length);
+    }
+    const {overflow, candidateOverflow} = props.staypointStatus ?? {};
+    validateRequirement(
+      id,
+      !(overflow || candidateOverflow) || mode === 'stop',
+      "staypointStatus is supported in mode 'stop'"
+    );
+    validateRequirement(
+      id,
+      !(overflow || candidateOverflow) || Boolean(output.status.candidateOverflow),
+      'output.status.candidateOverflow is required with staypointStatus; pass a one-row uint32 view'
+    );
+    for (const [name, view] of Object.entries({overflow, candidateOverflow})) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${id} staypointStatus.${name}`);
+      validateViewLength(id, `staypointStatus.${name}`, view, 1);
     }
     validateSinglePackedView(output.segmentOffsets, ['uint32'], `${id} output.segmentOffsets`);
     validateSinglePackedView(output.segmentTracks, ['uint32'], `${id} output.segmentTracks`);
@@ -230,10 +267,17 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
         segmentTracks: output.segmentTracks,
         rowIds: output.rowIds
       },
-      {segmentOffsets: output.segmentOffsets, ...output.status},
+      {
+        segmentOffsets: output.segmentOffsets,
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount
+      },
+      {candidateOverflow: output.status.candidateOverflow},
       {positions: output.positions, timestamps: output.timestamps}
     ]);
-    this.estimatedCommandNodeCount = SPLIT_SCAN_COMMAND_NODE_ALLOWANCE + 6;
+    this.estimatedCommandNodeCount =
+      SPLIT_SCAN_COMMAND_NODE_ALLOWANCE + 6 + Number(Boolean(output.status.candidateOverflow));
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
@@ -245,6 +289,8 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
       props.trackOffsets,
       props.parameters,
       props.staypointIds,
+      props.staypointStatus?.overflow,
+      props.staypointStatus?.candidateOverflow,
       props.values
     ];
   }
@@ -258,6 +304,7 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
       output.status.count,
       output.status.overflow,
       output.status.requiredCount,
+      output.status.candidateOverflow,
       output.positions,
       output.timestamps
     ];
@@ -555,6 +602,33 @@ fn isExcludedRow(row: u32) -> bool {
         : ''
     }
   }`
+        })
+      );
+    }
+    if (output.status.candidateOverflow) {
+      const lossBindings = [
+        props.staypointStatus?.overflow,
+        props.staypointStatus?.candidateOverflow
+      ].flatMap((view, index) =>
+        view ? [{name: `loss${index}`, view, type: 'u32' as const, access: 'read' as const}] : []
+      );
+      const hasLoss =
+        lossBindings.map(({name}) => `${name}[${name}Offset] != 0u`).join(' || ') || 'false';
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-staypoint-loss-status`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            ...lossBindings,
+            {
+              name: 'candidateOverflow',
+              view: output.status.candidateOverflow,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, ${hasLoss});`
         })
       );
     }

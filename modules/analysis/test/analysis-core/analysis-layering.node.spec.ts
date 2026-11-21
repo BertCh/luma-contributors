@@ -17,7 +17,9 @@ import {dirname, join, relative, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import typescript from 'typescript';
 import {describe, expect, it} from 'vitest';
+import {getDocSections} from './doc-heading-sections.test-utils';
 import {ANALYSIS_DOC_PAGES} from './doc-program';
+import {getAnalysisContributors} from './kernel-audit/analysis-contributors';
 import {DOCUMENTED_PAGE_HEADINGS} from './documented-page-headings';
 
 // Rule 20 (A-4, A-13): shared contracts live below every analysis entry, the entries form a DAG,
@@ -77,6 +79,133 @@ const DOCUMENTED_ENTRIES = ANALYSIS_DOC_PAGES.map(page => {
   return {page, entry, requiredHeadings};
 });
 
+/** Verified grouped sections for contributors without their own heading, keyed by public entry. */
+const GROUPED_CONTRIBUTOR_DOCS: Readonly<Record<string, string>> = {
+  'raster-analysis/GPURasterEmbeddingProjection': 'gpu-raster/raster-embeddings.md#pca-to-rgb',
+  'raster-analysis/GPURasterStandardizedIndexCalibration':
+    'gpu-raster/raster-time-series.md#spi-and-spei',
+  'raster-analysis/GPURasterStandardizedIndex': 'gpu-raster/raster-time-series.md#spi-and-spei',
+  'gpu-spatial-analysis/GPURandomPointsOnLine':
+    'gpu-spatial-analysis/operators-density.md#gpudotdensity-and-gpurandompointsinpolygon',
+  'raster-analysis/GPURasterEmbeddingCovariance': 'gpu-raster/raster-embeddings.md#pca-to-rgb',
+  'gpu-spatial-analysis/GPUAreaOfApplicability':
+    'gpu-spatial-analysis/spatial-validation-advanced.md#area-of-applicability',
+  'gpu-spatial-analysis/GPUNestedInterpolationValidation':
+    'gpu-spatial-analysis/spatial-validation-advanced.md#nested-variogram-and-bandwidth-selection',
+  'gpu-spatial-analysis/GPUPickRegionMask':
+    'gpu-spatial-analysis/operators-statistics.md#gpuregionstatistics',
+  'gpu-spatial-analysis/GPURegionMask':
+    'gpu-spatial-analysis/operators-statistics.md#gpuregionstatistics',
+  'gpu-spatial-analysis/GPURoseStatistic':
+    'gpu-spatial-analysis/operators-statistics.md#additional-spatial-statistics-and-bounded-optimization',
+  'gpu-spatial-analysis/GPUTrackSimilaritySearch':
+    'gpu-spatial-analysis/track-similarity-measures.md#lower-bounds-and-pruned-search',
+  'gpu-spatial-analysis/GPUTrajectoryKalman':
+    'gpu-network/network-movement-coverage.md#bounded-network-optimization-and-trajectory-analysis',
+  'gpu-spatial-analysis/GPUTrajectoryRestriction':
+    'gpu-network/network-movement-coverage.md#bounded-network-optimization-and-trajectory-analysis',
+  'gpu-spatial-analysis/GPUTransitionDiagnostics':
+    'gpu-spatial-analysis/operators-dynamics.md#gputransitionmatrix',
+  'gpu-spatial-analysis/addDasymetricRedistributionRecipe':
+    'gpu-spatial-analysis/dasymetric-redistribution.md#dasymetric-redistribution',
+  'gpu-spatial-analysis/addExcessRiskRecipe':
+    'gpu-spatial-analysis/rate-mapping.md#rate-mapping-recipes',
+  'gpu-spatial-analysis/addFleetDwellZoneEventsRecipe': 'gpu-spatial-analysis/recipes.md#recipes',
+  'gpu-spatial-analysis/addSpatialRateRecipe':
+    'gpu-spatial-analysis/rate-mapping.md#rate-mapping-recipes',
+  'gpu-network/GPUAlternativeRoutes': 'gpu-network/alternative-routes.md#alternative-routes',
+  'gpu-network/GPUMapMatchedEdgeVolumes':
+    'gpu-network/map-matched-edge-volumes.md#edge-volumes-of-map-matched-tracks',
+  'gpu-network/GPUNetworkFacilityOptimization':
+    'gpu-network/network-movement-coverage.md#bounded-network-optimization-and-trajectory-analysis',
+  'gpu-network/GPUNetworkFlow':
+    'gpu-network/network-movement-coverage.md#bounded-network-optimization-and-trajectory-analysis',
+  'gpu-network/GPUNetworkPointRouting':
+    'gpu-network/network-movement-coverage.md#bounded-network-optimization-and-trajectory-analysis',
+  'gpu-network/GPUNetworkRationalAccess':
+    'gpu-network/network-movement-coverage.md#bounded-network-optimization-and-trajectory-analysis',
+  'gpu-network/GPUNetworkStronglyConnectedComponents':
+    'gpu-network/expansion.md#large-graph-strongly-connected-components',
+  'gpu-network/GPUNetworkStructure':
+    'gpu-network/expansion.md#directed-components-and-undirected-resilience',
+  'gpu-network/addFacilityScenarioRecipe':
+    'gpu-spatial-analysis/expansion-recipes.md#facility-scenario-evaluation',
+  'gpu-network/addNetworkDisruptionRecipe':
+    'gpu-spatial-analysis/expansion-recipes.md#network-disruption',
+  'gpu-network/addTrackQualityRecipe':
+    'gpu-network/expansion.md#track-quality-and-route-conformity',
+  'dataframe-analysis/GPUSpaceTimeKFunction':
+    'gpu-spatial-analysis/space-time-density-and-k-function.md#space-time-k-pair-correlation-local-statistics-gpuspacetimekfunction',
+  'dataframe-analysis/GPUSpaceTimeDiggleTest':
+    'gpu-spatial-analysis/space-time-density-and-k-function.md#diggle-test-of-space-time-interaction-gpuspacetimediggletest'
+};
+
+// These route references share a comparison section. They also have substantive named child
+// headings now, so they are navigation pins rather than exceptions to canonical-heading coverage.
+const PINNED_CONTRIBUTOR_REFERENCE_DOCS: Readonly<Record<string, string>> = {
+  'gpu-spatial-analysis/addBuildingTessellationReferenceRecipe':
+    'gpu-spatial-analysis/urban-morphology.md#addbuildingtessellationrecipe--ur01',
+  'gpu-spatial-analysis/addLocalBuildingTessellationRecipe':
+    'gpu-spatial-analysis/urban-morphology.md#addbuildingtessellationrecipe--ur01'
+};
+
+type ContributorDocPage = {page: string; entry: string | undefined; markdown: string};
+
+/** Every identity resolves on its own entry's page, or to one explicit, verified grouped anchor. */
+function getContributorDocIssues(
+  contributors: ReadonlyMap<string, string>,
+  pages: readonly ContributorDocPage[],
+  grouped: Readonly<Record<string, string>>
+): string[] {
+  const identities = new Map(
+    [...contributors].map(([key, entry]) => [
+      `${entry}/${key.split('/').pop()!}`,
+      key.split('/').pop()!
+    ])
+  );
+  const issues: string[] = [];
+  for (const key of Object.keys(grouped)) {
+    if (!identities.has(key)) issues.push(`${key}: stale grouped mapping`);
+  }
+  for (const [identity, name] of identities) {
+    const entry = identity.slice(0, identity.lastIndexOf('/'));
+    const hasNamedHeading = pages.some(
+      page =>
+        page.entry === entry &&
+        getDocSections(page.markdown).some(
+          section =>
+            !/ parameters$/i.test(section.heading) &&
+            Boolean(section.body.trim()) &&
+            section.heading.match(/\b(GPU[A-Z]\w+|add\w+Recipe)\b/g)?.includes(name)
+        )
+    );
+    const destination = grouped[identity];
+    if (!destination) {
+      if (!hasNamedHeading)
+        issues.push(`${identity}: missing canonical named heading or grouped destination`);
+      continue;
+    }
+    if (hasNamedHeading)
+      issues.push(`${identity}: grouped mapping is stale; canonical named heading exists`);
+    const [path, anchor] = destination.split('#');
+    const page = pages.find(candidate => candidate.page === path);
+    const section =
+      anchor &&
+      page &&
+      getDocSections(page.markdown).find(candidate => candidate.anchor === anchor);
+    if (!section) {
+      issues.push(`${identity}: missing grouped destination ${destination}`);
+    } else if (
+      !`${section.heading}\n${section.body}`
+        .match(/\b(GPU[A-Z]\w+|add\w+Recipe)\b/g)
+        ?.includes(name)
+    ) {
+      issues.push(`${identity}: ${destination} does not describe ${name}`);
+    }
+  }
+  return issues;
+}
+
 function getMissingHeadings(markdown: string, requiredHeadings: readonly string[]): string[] {
   const documented = getDocumentedNames(markdown);
   return requiredHeadings.filter(name => !documented.has(name));
@@ -92,8 +221,58 @@ function getDocumentedNames(markdown: string): Set<string> {
   return documented;
 }
 
-function getUnreachableNames(markdown: string, entryExports: ReadonlySet<string>): string[] {
-  return [...getDocumentedNames(markdown)].filter(name => !entryExports.has(name));
+/** Entry/Exports/Reference tables attribute only the exports on their own row. */
+function getCatalogEntriesByContributor(markdown: string): Map<string, Set<string>> {
+  const entries = new Map<string, Set<string>>();
+  let inCatalog = false;
+  for (const line of markdown.split('\n')) {
+    if (/^\|\s*Entry\s*\|\s*Exports\s*\|\s*Reference\s*\|\s*$/.test(line)) {
+      inCatalog = true;
+      continue;
+    }
+    if (!line.startsWith('|')) {
+      inCatalog = false;
+      continue;
+    }
+    if (!inCatalog) continue;
+    const row = /^\|\s*`([a-z-]+)`\s*\|([^|]+)\|/.exec(line);
+    if (!row) continue;
+    for (const name of row[2].match(/\b(GPU[A-Z]\w+|add\w+Recipe)\b/g) ?? []) {
+      const namedEntries = entries.get(name) ?? new Set<string>();
+      namedEntries.add(row[1]);
+      entries.set(name, namedEntries);
+    }
+  }
+  return entries;
+}
+
+function getUnreachableNames(
+  markdown: string,
+  entryExports: ReadonlySet<string>,
+  exportsByEntry: ReadonlyMap<string, ReadonlySet<string>> = new Map()
+): string[] {
+  const catalogEntries = getCatalogEntriesByContributor(markdown);
+  return [...getDocumentedNames(markdown)].filter(
+    name =>
+      !entryExports.has(name) &&
+      ![...(catalogEntries.get(name) ?? [])].some(entry => exportsByEntry.get(entry)?.has(name))
+  );
+}
+
+/** Resolve a page using imports plus contributor-specific catalog row attribution. */
+function getPageUnreachableNames(
+  markdown: string,
+  entry: string | undefined,
+  exportsByEntry: ReadonlyMap<string, ReadonlySet<string>>
+): string[] {
+  const documentedEntries = new Set<string>(entry ? [entry] : []);
+  for (const match of markdown.matchAll(/@luma-contributors\/analysis\/([a-z-]+)/g)) {
+    documentedEntries.add(match[1]);
+  }
+  const entryExports = new Set(
+    [...documentedEntries].flatMap(name => [...(exportsByEntry.get(name) ?? [])])
+  );
+  return getUnreachableNames(markdown, entryExports, exportsByEntry);
 }
 
 it('detects a documented contributor missing from its entry', () => {
@@ -267,16 +446,45 @@ function listSourceFiles(directory: string): string[] {
   return files;
 }
 
-function getRelativeImportLayers(file: string): Set<string> {
+function getRelativeImportLayers(
+  file: string,
+  source: string = readFileSync(file, 'utf8')
+): Set<string> {
   const layers = new Set<string>();
-  const source = readFileSync(file, 'utf8');
-  for (const match of source.matchAll(/(?:from|import)\s*\(?\s*'(\.{1,2}\/[^']*)'/g)) {
-    const target = relative(SOURCE_ROOT, resolve(dirname(file), match[1]));
+  const tree = typescript.createSourceFile(file, source, typescript.ScriptTarget.Latest, true);
+  const addSpecifier = (specifier: typescript.Node | undefined) => {
+    while (specifier && typescript.isParenthesizedExpression(specifier))
+      specifier = specifier.expression;
+    if (
+      !specifier ||
+      !typescript.isStringLiteralLike(specifier) ||
+      !/^\.{1,2}\//.test(specifier.text)
+    )
+      return;
+    const target = relative(SOURCE_ROOT, resolve(dirname(file), specifier.text));
     const layer = target.split(sep)[0];
-    if (!layer.startsWith('..')) {
-      layers.add(layer.replace(/\.ts$/, ''));
+    if (!layer.startsWith('..')) layers.add(layer.replace(/\.ts$/, ''));
+  };
+  const visit = (node: typescript.Node) => {
+    if (typescript.isImportDeclaration(node) || typescript.isExportDeclaration(node)) {
+      addSpecifier(node.moduleSpecifier);
+    } else if (typescript.isImportTypeNode(node) && typescript.isLiteralTypeNode(node.argument)) {
+      addSpecifier(node.argument.literal);
+    } else if (
+      typescript.isImportEqualsDeclaration(node) &&
+      typescript.isExternalModuleReference(node.moduleReference)
+    ) {
+      addSpecifier(node.moduleReference.expression);
+    } else if (
+      typescript.isCallExpression(node) &&
+      (node.expression.kind === typescript.SyntaxKind.ImportKeyword ||
+        (typescript.isIdentifier(node.expression) && node.expression.text === 'require'))
+    ) {
+      addSpecifier(node.arguments[0]);
     }
-  }
+    typescript.forEachChild(node, visit);
+  };
+  visit(tree);
   return layers;
 }
 
@@ -510,6 +718,25 @@ it('keeps the root-file gate guide aligned with the completed family migrations'
   }
 });
 
+it('finds family import edges in either quote style and in every import form', () => {
+  const file = join(SOURCE_ROOT, 'gpu-network', 'layering-fixture.ts');
+  const source = [
+    'import {a} from "../gpu-terrain/index";',
+    "import type {B} from '../raster-analysis/index';",
+    'export {c} from "../dataframe-analysis/index";',
+    'const d = import("../pointcloud-analysis/index");',
+    "import './local';",
+    "// import {e} from '../geospatial-analysis/index';"
+  ].join('\n');
+  expect([...getRelativeImportLayers(file, source)].sort()).toEqual([
+    'dataframe-analysis',
+    'gpu-network',
+    'gpu-terrain',
+    'pointcloud-analysis',
+    'raster-analysis'
+  ]);
+});
+
 describe('analysis layering', () => {
   it('never imports @luma-contributors/lenses', () => {
     for (const file of listSourceFiles(SOURCE_ROOT)) {
@@ -550,6 +777,7 @@ describe('analysis layering', () => {
 
 describe('analysis entry barrels', () => {
   const {exportsByFile, targetsByFile} = getEntryExports();
+  const spatialOntologyFile = join('gpu-spatial-analysis', 'ontology', 'index.ts');
 
   it.each([
     'pointcloud-analysis',
@@ -564,8 +792,9 @@ describe('analysis entry barrels', () => {
       const barrel = readFileSync(join(SOURCE_ROOT, entry, 'index.ts'), 'utf8');
       const entryFile = join(entry, 'index.ts');
       for (const index of getSubdirectoryIndexes(entry)) {
-        checked++;
         const familyFile = relative(SOURCE_ROOT, index);
+        if (familyFile === spatialOntologyFile) continue;
+        checked++;
         expect(
           getIncompleteFamilyExports(
             targetsByFile.get(entryFile)!,
@@ -587,11 +816,22 @@ describe('analysis entry barrels', () => {
     for (const entry of ENTRY_ORDER) {
       const entryExports = exportsByFile.get(join(entry, 'index.ts'))!;
       for (const index of getSubdirectoryIndexes(entry)) {
-        const subdirectoryExports = exportsByFile.get(relative(SOURCE_ROOT, index))!;
+        const familyFile = relative(SOURCE_ROOT, index);
+        if (familyFile === spatialOntologyFile) continue;
+        const subdirectoryExports = exportsByFile.get(familyFile)!;
         const missing = [...subdirectoryExports].filter(name => !entryExports.has(name));
-        expect(missing, relative(SOURCE_ROOT, index)).toEqual([]);
+        expect(missing, familyFile).toEqual([]);
       }
     }
+  });
+
+  it('publishes ontology exports exclusively through the ontology entry', () => {
+    const ontologyExports = exportsByFile.get(spatialOntologyFile)!;
+    const parentExports = exportsByFile.get(join('gpu-spatial-analysis', 'index.ts'))!;
+    expect(exportsByFile.get(`runtime:${spatialOntologyFile}`)).toContain(
+      'AnalysisGeographicExtentAccumulator'
+    );
+    expect([...ontologyExports].filter(name => parentExports.has(name))).toEqual([]);
   });
 
   it('reaches every documented contributor and recipe from its entry', () => {
@@ -604,24 +844,33 @@ describe('analysis entry barrels', () => {
       expect
         .soft(getMissingHeadings(markdown, requiredHeadings), `${page} lost required headings`)
         .toEqual([]);
-      // Some family guides explicitly document contributors imported from another entry.
-      const documentedEntries = new Set<string>(entry ? [entry] : []);
-      for (const match of markdown.matchAll(/@luma-contributors\/analysis\/([a-z-]+)/g)) {
-        documentedEntries.add(match[1]);
-      }
-      const entryExports = new Set(
-        [...documentedEntries].flatMap(name => [
-          ...(exportsByFile.get(`runtime:${join(name, 'index.ts')}`) ?? [])
+      documentedCount += getDocumentedNames(markdown).size;
+      if (requiredHeadings.length)
+        expect(
+          exportsByFile.get(`runtime:${join(entry!, 'index.ts')}`)?.size,
+          entry
+        ).toBeGreaterThan(0);
+      const exportsByEntry = new Map(
+        ['analysis-core', 'computation-record', ...ENTRY_ORDER].map(name => [
+          name,
+          exportsByFile.get(`runtime:${join(name, 'index.ts')}`) ?? new Set<string>()
         ])
       );
-      documentedCount += getDocumentedNames(markdown).size;
-      if (requiredHeadings.length) expect(entryExports.size, entry).toBeGreaterThan(0);
-      const unreachable = getUnreachableNames(markdown, entryExports);
-      expect
-        .soft(unreachable, `${page} names missing from ${[...documentedEntries].join(', ')}`)
-        .toEqual([]);
+      const unreachable = getPageUnreachableNames(markdown, entry, exportsByEntry);
+      expect.soft(unreachable, `${page} names missing from its declared entries`).toEqual([]);
     }
     expect(documentedCount, 'documented contributor and recipe headings').toBeGreaterThan(0);
+  });
+
+  it('resolves every public contributor identity to canonical docs (CORE-116)', () => {
+    const pages = DOCUMENTED_ENTRIES.map(({page, entry}) => ({
+      page,
+      entry,
+      markdown: readFileSync(join(DOCS_ROOT, page), 'utf8')
+    }));
+    expect(
+      getContributorDocIssues(getAnalysisContributors(), pages, GROUPED_CONTRIBUTOR_DOCS)
+    ).toEqual([]);
   });
 });
 
@@ -636,4 +885,257 @@ it('keeps reused analysis preparation independent of the Kepler host', () => {
       );
     }
   }
+});
+
+it('rejects a removed grouped anchor, the right name on the wrong entry, and stale mappings (CORE-116)', () => {
+  const contributors = new Map([['GPUExample', 'gpu-network']]);
+  const page = {
+    page: 'network.md',
+    entry: 'gpu-network',
+    markdown: '# Group\n\n`GPUExample` routes directed paths.'
+  };
+  const grouped = {'gpu-network/GPUExample': 'network.md#group'};
+  expect(getContributorDocIssues(contributors, [page], grouped)).toEqual([]);
+  expect(
+    getContributorDocIssues(
+      contributors,
+      [{...page, markdown: page.markdown.replace('# Group', '# Changed')}],
+      grouped
+    )
+  ).toEqual(['gpu-network/GPUExample: missing grouped destination network.md#group']);
+  expect(
+    getContributorDocIssues(
+      contributors,
+      [{...page, entry: 'gpu-spatial-analysis', markdown: '## `GPUExample`'}],
+      {}
+    )
+  ).toEqual(['gpu-network/GPUExample: missing canonical named heading or grouped destination']);
+  expect(getContributorDocIssues(new Map(), [page], grouped)).toEqual([
+    'gpu-network/GPUExample: stale grouped mapping'
+  ]);
+  expect(
+    getContributorDocIssues(
+      contributors,
+      [{...page, markdown: '# Group\n\nA different contributor.'}],
+      grouped
+    )
+  ).toEqual(['gpu-network/GPUExample: network.md#group does not describe GPUExample']);
+});
+
+it('keeps two entries exporting the same name distinct in documentation coverage (CORE-116)', () => {
+  const contributors = new Map([
+    ['gpu-network/addExampleRecipe', 'gpu-network'],
+    ['gpu-spatial-analysis/addExampleRecipe', 'gpu-spatial-analysis']
+  ]);
+  const pages = [
+    {
+      page: 'spatial.md',
+      entry: 'gpu-spatial-analysis',
+      markdown: '## `addExampleRecipe`\n\nBuilds a spatial graph.'
+    }
+  ];
+  expect(getContributorDocIssues(contributors, pages, {})).toEqual([
+    'gpu-network/addExampleRecipe: missing canonical named heading or grouped destination'
+  ]);
+  expect(
+    getContributorDocIssues(
+      new Map([['GPUExample', 'gpu-network']]),
+      [
+        {
+          page: 'network.md',
+          entry: 'gpu-network',
+          markdown: '## `GPUExample` parameters\n\nGenerated fields.'
+        }
+      ],
+      {}
+    )
+  ).toEqual(['gpu-network/GPUExample: missing canonical named heading or grouped destination']);
+});
+
+it('rejects grouped evidence consisting only of generated child parameters (B7)', () => {
+  const contributors = new Map([['GPUExample', 'gpu-network']]);
+  const grouped = {'gpu-network/GPUExample': 'network.md#group'};
+  const generated = `{/* parameters: GPUExample generated; do not edit */}
+#### \`GPUExample\` parameters
+
+| Field | Type | Description |
+|---|---|---|
+| capacity | number | Number of rows. |
+{/* /parameters */}`;
+  const page = {page: 'network.md', entry: 'gpu-network', markdown: `# Group\n\n${generated}`};
+  expect(getContributorDocIssues(contributors, [page], grouped)).toEqual([
+    'gpu-network/GPUExample: network.md#group does not describe GPUExample'
+  ]);
+  expect(
+    getContributorDocIssues(
+      contributors,
+      [
+        {
+          ...page,
+          markdown:
+            '# Group\n\n#### `GPUExample` parameters\n\n| Field | Type |\n|---|---|\n| capacity | number |'
+        }
+      ],
+      grouped
+    )
+  ).toEqual(['gpu-network/GPUExample: network.md#group does not describe GPUExample']);
+  expect(
+    getContributorDocIssues(
+      contributors,
+      [{...page, markdown: `# Group\n\nGPUExample routes paths.\n\n${generated}`}],
+      grouped
+    )
+  ).toEqual([]);
+});
+
+it('uses the site renderer heading text and duplicate slugs for linked headings (S4)', () => {
+  const contributors = new Map([['GPUExample', 'gpu-network']]);
+  const page = {
+    page: 'network.md',
+    entry: 'gpu-network',
+    markdown:
+      '# [Overview](url)\n\nGPUExample routes paths.\n\n# [Overview](other)\n\nGPUExample controls.'
+  };
+  expect(
+    getContributorDocIssues(contributors, [page], {'gpu-network/GPUExample': 'network.md#overview'})
+  ).toEqual([]);
+  expect(
+    getContributorDocIssues(contributors, [page], {
+      'gpu-network/GPUExample': 'network.md#overview-1'
+    })
+  ).toEqual([]);
+  expect(
+    getContributorDocIssues(contributors, [page], {
+      'gpu-network/GPUExample': 'network.md#overviewurl'
+    })
+  ).toEqual(['gpu-network/GPUExample: missing grouped destination network.md#overviewurl']);
+});
+
+it('attributes catalog entry exports only to the matching contributor row (S5)', () => {
+  const exportsByEntry = new Map([['analysis-core', new Set(['GPUExample', 'GPUOther'])]]);
+  const heading = '## `GPUExample`\n\n';
+  const catalog = (name: string) =>
+    `| Entry | Exports | Reference |\n|---|---|---|\n| \`analysis-core\` | \`${name}\` | [Contract](#gpuexample) |`;
+  expect(
+    getPageUnreachableNames(heading + catalog('GPUExample'), 'gpu-network', exportsByEntry)
+  ).toEqual([]);
+  expect(
+    getPageUnreachableNames(heading + catalog('GPUOther'), 'gpu-network', exportsByEntry)
+  ).toEqual(['GPUExample']);
+  expect(
+    getPageUnreachableNames(
+      heading + '| Entry | Details |\n|---|---|\n| `analysis-core` | unrelated |',
+      'gpu-network',
+      exportsByEntry
+    )
+  ).toEqual(['GPUExample']);
+});
+
+it('discovers parenthesized literal dynamic imports without treating expressions as imports (review import note)', () => {
+  const file = join(SOURCE_ROOT, 'gpu-spatial-analysis', 'parenthesized-fixture.ts');
+  expect([
+    ...getRelativeImportLayers(file, "const module = import((('../gpu-network/index')));")
+  ]).toEqual(['gpu-network']);
+  expect([
+    ...getRelativeImportLayers(file, "const module = import('../' + family + '/index');")
+  ]).toEqual([]);
+});
+
+it('DOC-108 pins Rose to its circular-statistics section rather than coordinate rejection', () => {
+  const identity = 'gpu-spatial-analysis/GPURoseStatistic';
+  const destination =
+    'gpu-spatial-analysis/operators-statistics.md#additional-spatial-statistics-and-bounded-optimization';
+  expect(GROUPED_CONTRIBUTOR_DOCS[identity]).toBe(destination);
+  const markdown = readFileSync(join(DOCS_ROOT, destination.split('#')[0]), 'utf8');
+  const target = getDocSections(markdown).find(
+    section => section.anchor === destination.split('#')[1]
+  );
+  expect(target?.body).toContain('GPURoseStatistic');
+  expect(GROUPED_CONTRIBUTOR_DOCS[identity]).not.toBe(
+    'gpu-spatial-analysis/operators-statistics.md#gpugeographicdistribution'
+  );
+});
+
+it('W5-15 resolves edge volumes and stop cubes to substantive canonical sections', () => {
+  const edgeDestination =
+    'gpu-network/map-matched-edge-volumes.md#edge-volumes-of-map-matched-tracks';
+  expect(GROUPED_CONTRIBUTOR_DOCS['gpu-network/GPUMapMatchedEdgeVolumes']).toBe(edgeDestination);
+  for (const [entry, name, destination] of [
+    ['gpu-network', 'GPUMapMatchedEdgeVolumes', edgeDestination],
+    [
+      'gpu-spatial-analysis',
+      'addStopValueCubeRecipe',
+      'gpu-spatial-analysis/movement-semantics.md#addstopvaluecuberecipe'
+    ]
+  ]) {
+    const [page, anchor] = destination.split('#');
+    const markdown = readFileSync(join(DOCS_ROOT, page), 'utf8');
+    const section = getDocSections(markdown).find(candidate => candidate.anchor === anchor);
+    expect(section, destination).toBeDefined();
+    expect(section!.body, destination).toContain(name);
+    expect(
+      getContributorDocIssues(
+        new Map([[name, entry]]),
+        [{page, entry, markdown}],
+        name === 'GPUMapMatchedEdgeVolumes' ? {[`${entry}/${name}`]: destination} : {}
+      )
+    ).toEqual([]);
+  }
+});
+
+it.each([
+  'addBuildingTessellationReferenceRecipe',
+  'addLocalBuildingTessellationRecipe'
+])('CORE-116 pins %s to substantive urban morphology documentation', name => {
+  const destination =
+    'gpu-spatial-analysis/urban-morphology.md#addbuildingtessellationrecipe--ur01';
+  expect(PINNED_CONTRIBUTOR_REFERENCE_DOCS[`gpu-spatial-analysis/${name}`]).toBe(destination);
+  expect(GROUPED_CONTRIBUTOR_DOCS[`gpu-spatial-analysis/${name}`]).toBeUndefined();
+  const markdown = readFileSync(
+    join(DOCS_ROOT, 'gpu-spatial-analysis/urban-morphology.md'),
+    'utf8'
+  );
+  const section = getDocSections(markdown).find(
+    candidate => candidate.anchor === 'addbuildingtessellationrecipe--ur01'
+  );
+  expect(section, 'rendered heading anchor').toBeDefined();
+  expect(section!.body).toContain(`\`${name}\``);
+  const route = name === 'addBuildingTessellationReferenceRecipe' ? 'reference' : 'local';
+  expect(section!.body).toMatch(new RegExp('`' + name + '`\\s+for the ' + route + ' route\\b'));
+  expect(
+    getContributorDocIssues(
+      new Map([[name, 'gpu-spatial-analysis']]),
+      [{page: 'urban.md', entry: 'gpu-spatial-analysis', markdown}],
+      {}
+    )
+  ).toEqual([]);
+});
+
+it('REVIEW B6 rejects empty tessellation route headings as substantive evidence', () => {
+  const markdown =
+    '## `addBuildingTessellationRecipe` — UR01\n\n### `addBuildingTessellationReferenceRecipe`\n\n### `addLocalBuildingTessellationRecipe`\n';
+  const parent = getDocSections(markdown).find(
+    section => section.anchor === 'addbuildingtessellationrecipe--ur01'
+  )!;
+  expect(parent.body).not.toContain('addBuildingTessellationReferenceRecipe');
+  expect(parent.body).not.toContain('addLocalBuildingTessellationRecipe');
+  const issues = getContributorDocIssues(
+    new Map([
+      ['addBuildingTessellationReferenceRecipe', 'gpu-spatial-analysis'],
+      ['addLocalBuildingTessellationRecipe', 'gpu-spatial-analysis']
+    ]),
+    [{page: 'urban.md', entry: 'gpu-spatial-analysis', markdown}],
+    {}
+  );
+  expect(issues).toHaveLength(2);
+});
+
+it('REVIEW B7 discovers literal CommonJS and parenthesized dynamic family imports', () => {
+  const file = join(SOURCE_ROOT, 'gpu-network', 'commonjs-fixture.ts');
+  expect([
+    ...getRelativeImportLayers(file, 'const module = require("../gpu-terrain/index");')
+  ]).toEqual(['gpu-terrain']);
+  expect([
+    ...getRelativeImportLayers(file, 'const module = import(("../gpu-terrain/index"));')
+  ]).toEqual(['gpu-terrain']);
 });

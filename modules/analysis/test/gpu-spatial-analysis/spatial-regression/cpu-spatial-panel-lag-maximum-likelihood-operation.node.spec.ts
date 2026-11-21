@@ -19,6 +19,69 @@ import {
 import fixtures from './spatial-panel-lag-maximum-likelihood-operation-fixtures.json';
 import edges from './spatial-panel-lag-maximum-likelihood-operation-edge-fixtures.json';
 import review from '../../oracles/fixtures/statistics-regression-panel-lag-conditioning.json';
+import {
+  createPanelAuditInput,
+  expectPanelAuditRows,
+  PANEL_AUDIT_EXPECTED
+} from './panel-audit.test-utils';
+
+it('review 2 R3 matching written/required counts retain the independent fit with spare capacity', () => {
+  const input = createPanelAuditInput();
+  const result = computeSpatialPanelLagMaximumLikelihoodOnCPU(
+    {
+      ...input,
+      weights: {
+        ...input.weights,
+        neighbors: Uint32Array.from([...input.weights.neighbors, 0, 0]),
+        weights: Float32Array.from([...input.weights.weights, 0, 0]),
+        status: {count: Uint32Array.of(8), requiredCount: Uint32Array.of(8)}
+      }
+    },
+    {effects: 'random', periodCount: 4, predictorCount: 1, hausman: true}
+  );
+  expect(Array.from(result.status)).toEqual([0]);
+  expect(Array.from(result.hausman!.status)).toEqual([0]);
+  for (const port of ['coefficients', 'covariance', 'fitted', 'residuals'] as const)
+    expectPanelAuditRows(result[port], PANEL_AUDIT_EXPECTED.random[port], 2e-6);
+  expectPanelAuditRows(result.summary.slice(0, 2), PANEL_AUDIT_EXPECTED.random.summary, 2e-6);
+  expectPanelAuditRows(result.hausman!.tests, PANEL_AUDIT_EXPECTED.random.hausman, 2e-6);
+});
+
+for (const countPresent of [false, true, 'spare', 'inflated'] as const)
+  it(`R3 refuses required edge loss without overflow, written count present=${countPresent}`, () => {
+    const input = createPanelAuditInput();
+    if (countPresent === 'spare' || countPresent === 'inflated') {
+      input.weights.neighbors = Uint32Array.from([...input.weights.neighbors, 0, 0]);
+      input.weights.weights = Float32Array.from([...input.weights.weights, 0, 0]);
+    }
+    const result = computeSpatialPanelLagMaximumLikelihoodOnCPU(
+      {
+        ...input,
+        weights: {
+          ...input.weights,
+          status: {
+            requiredCount: Uint32Array.of(9),
+            ...(countPresent ? {count: Uint32Array.of(countPresent === 'inflated' ? 9 : 8)} : {})
+          }
+        }
+      },
+      {periodCount: 4, predictorCount: 1, effects: 'random', hausman: true}
+    );
+    expect(
+      result.status[0],
+      JSON.stringify({rho: result.coefficients[2], hausman: result.hausman?.status[0]})
+    ).toBe(1);
+    expect(result.hausman!.status[0]).toBe(1);
+    for (const values of [
+      result.coefficients,
+      result.covariance,
+      result.summary,
+      result.fitted,
+      result.residuals,
+      result.hausman!.tests
+    ])
+      expect(Array.from(values).every(Number.isNaN)).toBe(true);
+  });
 
 function getInput(fixture = fixtures[0]) {
   return {
@@ -57,7 +120,8 @@ for (const scene of edges.reviewCases) {
       // The other scenes have exact solutions [1,0,0] and [1,0.5], hence zero RSS.
       expect(result.status[0]).toBe(2);
       const expectedVariance = scene.name === 'varianceOverflow' ? Infinity : 0;
-      expect(result.summary[0] === expectedVariance).toBe(true);
+      if (scene.name === 'varianceOverflow' || scene.name === 'varianceUnderflow')
+        expect(result.summary[0] === expectedVariance).toBe(true);
       if (scene.name === 'varianceOverflow' || scene.name === 'varianceUnderflow') {
         const scale = scene.name === 'varianceOverflow' ? 2 ** 70 : 2 ** -90;
         const expectedLikelihood = Math.fround(
@@ -67,10 +131,9 @@ for (const scene of edges.reviewCases) {
         expect(Math.abs(result.coefficients[1])).toBeLessThan(1e-6 * scale);
         expect(Math.abs(result.coefficients[2])).toBeLessThan(1e-7);
       }
-      if (scene.name === 'responseCopy')
-        expectRegressionRowsClose(result.coefficients.subarray(1), [1, 0, 0, 0], 0);
-      if (scene.name === 'originalPole')
-        expectRegressionRowsClose(result.coefficients.subarray(1), [1, 0.5, 0], 0);
+      if (scene.name === 'responseCopy' || scene.name === 'originalPole')
+        for (const port of ['coefficients', 'summary'] as const)
+          expect(result[port].every(Number.isNaN)).toBe(true);
     }
     for (const port of ['covariance', 'fitted', 'residuals'] as const)
       expect(result[port].every(Number.isNaN)).toBe(true);
@@ -247,10 +310,8 @@ it('does not call an exact zero-variance likelihood pole a finite maximum', () =
     {periodCount: 2, predictorCount: 1, effects: 'unit'}
   );
   expect(result.status[0]).toBe(2);
-  expectRegressionRowsClose(result.coefficients.subarray(1), [1, 0.5, 0], 0);
-  expect(result.summary[0]).toBe(0);
-  expect(result.covariance.every(Number.isNaN)).toBe(true);
-  expect(result.residuals.every(Number.isNaN)).toBe(true);
+  for (const port of ['coefficients', 'covariance', 'summary', 'fitted', 'residuals'] as const)
+    expect(result[port].every(Number.isNaN)).toBe(true);
 });
 
 it('follows a sub-1e-8 phi as a constrained fit with status 3, finite iterate and no covariance', () => {
@@ -369,7 +430,7 @@ it('returns defined failure layouts for incomplete weights and singular designs'
     hausman: true
   };
   const invalidCases = [
-    {...input, overflow: Uint32Array.of(1)},
+    {...input, weights: {...input.weights, status: {overflow: Uint32Array.of(1)}}},
     {
       ...input,
       response: Float32Array.from(input.response, (value, row) => (row === 0 ? NaN : value))
@@ -423,7 +484,7 @@ it('throws argument-naming errors for inconsistent arrays', () => {
     {predictors: new Float32Array(1)},
     {response: new Float32Array(1)},
     {weights: {...input.weights, weights: new Float32Array(1)}},
-    {overflow: new Uint32Array(0)}
+    {weights: {...input.weights, status: {overflow: new Uint32Array(0)}}}
   ])
     expect(() =>
       computeSpatialPanelLagMaximumLikelihoodOnCPU(
@@ -440,7 +501,12 @@ it('validates CPU construction and GPU contributor construction and shares graph
     entityCount: fixture.entityCount,
     periodCount: fixture.periodCount,
     predictorCount: fixture.predictorCount,
-    weights: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights', overflow: 'overflow'},
+    weights: {
+      offsets: 'offsets',
+      neighbors: 'neighbors',
+      weights: 'weights',
+      status: {overflow: 'overflow'}
+    },
     predictors: 'predictors',
     response: 'response',
     output: {
@@ -457,7 +523,7 @@ it('validates CPU construction and GPU contributor construction and shares graph
     offsets: {format: 'uint32' as const, length: fixture.entityCount + 1},
     neighbors: {format: 'uint32' as const, length: fixture.weights.neighbors.length},
     weights: {format: 'float32' as const, length: fixture.weights.weights.length},
-    overflow: {format: 'uint32' as const, length: 1},
+    weightsStatus_overflow: {format: 'uint32' as const, length: 1},
     predictors: {format: 'float32' as const, length: fixture.predictors.length},
     response: {format: 'float32' as const, length: fixture.response.length}
   };
@@ -559,7 +625,7 @@ it('forwards optional weights views and metadata and preserves their validation'
     neighbors: {format: 'uint32' as const, length: fixture.weights.neighbors.length},
     weights: {format: 'float32' as const, length: fixture.weights.weights.length},
     distances: {format: 'float32' as const, length: fixture.weights.neighbors.length},
-    weightsStatus_overflow: {format: 'uint32' as const, length: 2},
+    weightsStatus_overflow: {format: 'uint32' as const, length: 1},
     weightsStatus_requiredCount: {format: 'uint32' as const, length: 1},
     weightsStatus_candidateOverflow: {format: 'uint32' as const, length: 1},
     weightsStatus_approximation: {format: 'uint32' as const, length: 1},
@@ -578,7 +644,14 @@ it('forwards optional weights views and metadata and preserves their validation'
   expect(Object.keys(contributor.props.weights.status!).sort()).toEqual(
     ['overflow', 'requiredCount', 'candidateOverflow', 'approximation'].sort()
   );
-  expect(contributor.props.weights.status!.overflow!.length).toBe(2);
+  expect(contributor.props.weights.status!.overflow!.length).toBe(1);
+  // Status is a scalar contract; forwarding must not hide a wrongly sized port.
+  expect(() =>
+    constructRegressionOperationContributor(
+      new GPUSpatialPanelLagMaximumLikelihoodOperation(props),
+      {...shapes, weightsStatus_overflow: {...shapes.weightsStatus_overflow, length: 2}}
+    )
+  ).toThrow(/overflow must contain one uint32 row/);
   const operation = new CPUSpatialPanelLagMaximumLikelihoodOperation(props);
   expect(operation.inputs).toEqual(new GPUSpatialPanelLagMaximumLikelihoodOperation(props).inputs);
   // A one-element distances view cannot represent every neighbor slot.
@@ -601,8 +674,8 @@ it('forwards optional weights views and metadata and preserves their validation'
     predictors: input.predictors,
     response: input.response,
     distances: new Float32Array(1),
-    weightsStatus_overflow: Uint32Array.of(0, 1),
-    weightsStatus_requiredCount: Uint32Array.of(999),
+    weightsStatus_overflow: Uint32Array.of(0),
+    weightsStatus_requiredCount: Uint32Array.of(input.weights.neighbors.length),
     weightsStatus_candidateOverflow: Uint32Array.of(0),
     weightsStatus_approximation: Uint32Array.of(1)
   };
@@ -653,7 +726,7 @@ it('forwards optional weights views and metadata and preserves their validation'
       distances: new Float32Array(input.weights.neighbors.length),
       status: {
         overflow: Uint32Array.of(0, 1),
-        requiredCount: Uint32Array.of(999),
+        requiredCount: Uint32Array.of(input.weights.neighbors.length),
         candidateOverflow: Uint32Array.of(0),
         approximation: Uint32Array.of(1)
       }

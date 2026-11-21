@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {isUnknownCaptureValue} from './capture-missing-values';
 import {assert} from '@luma.gl/core';
+import {resolveGPUComputationCaptureGraph} from '@luma-contributors/analysis/computation-record';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import type {
   LensRecord,
@@ -17,9 +19,8 @@ import {
   provenanceMarkAttributes,
   provenancePatternDefs
 } from '../encoding/provenance';
-import {coarsenValues, crispnessAttributes, crispnessDefs} from '../encoding/crispness';
+import {coarsenCaptureText, crispnessAttributes, crispnessDefs} from '../encoding/crispness';
 import {
-  findNode,
   getAdapterLabel,
   getAllCaptures,
   getCaptureProvenance,
@@ -76,14 +77,9 @@ function getComponents(capture: GPUComputationCapture, entity: number): number[]
 }
 
 function getCaptureNode(record: LensRecord, capture: GPUComputationCapture) {
-  return capture.afterNode
-    ? findNode(
-        record,
-        capture.graph && !capture.afterNode.includes(':')
-          ? `${capture.graph}:${capture.afterNode}`
-          : capture.afterNode
-      )
-    : undefined;
+  const graph = resolveGPUComputationCaptureGraph(record, capture);
+  const node = graph?.nodes.find(candidate => candidate.id === capture.afterNode);
+  return graph && node ? {graph, node} : undefined;
 }
 
 function buildNeighbourhood(
@@ -94,6 +90,12 @@ function buildNeighbourhood(
   diagonalCost: string | number | boolean | undefined
 ): NeighbourhoodSlot {
   const captures = getAllCaptures(context.record);
+  const readValue = (capture: GPUComputationCapture, key: number) => {
+    const value = getCaptureValue(capture, key);
+    return value === undefined || isUnknownCaptureValue(context.record, capture, value)
+      ? undefined
+      : value;
+  };
   const findCapture = (reference: string) =>
     captures.find(capture => capture.id === reference) ??
     getFinalStateCapture(context.record, reference);
@@ -110,7 +112,11 @@ function buildNeighbourhood(
           value:
             value === undefined
               ? 'unknown — value not captured'
-              : getComponents(capture!, entity).join(', '),
+              : getComponents(capture!, entity)
+                  .map(value =>
+                    isUnknownCaptureValue(context.record, capture!, value) ? 'unknown' : value
+                  )
+                  .join(', '),
           provenance: capture && value !== undefined ? getCaptureProvenance(capture) : 'unknown'
         };
       })
@@ -134,7 +140,7 @@ function buildNeighbourhood(
           dx,
           dy,
           key,
-          value: key === undefined ? undefined : getCaptureValue(mainCapture, key),
+          value: key === undefined ? undefined : readValue(mainCapture, key),
           diagonalCost:
             dx !== 0 &&
             dy !== 0 &&
@@ -185,7 +191,7 @@ function buildNeighbourhood(
   }
   return {
     kind: family.kind,
-    neighbours: keys.map(key => ({key, value: getCaptureValue(mainCapture, key)}))
+    neighbours: keys.map(key => ({key, value: readValue(mainCapture, key)}))
   };
 }
 
@@ -212,7 +218,9 @@ export function buildDatumReceiptModel(context: ViewContext): DatumReceiptModel 
       stage,
       iteration: capture.iteration,
       afterNode: capture.afterNode,
-      value: getComponents(capture, entity).join(', '),
+      value: getComponents(capture, entity)
+        .map(value => (isUnknownCaptureValue(context.record, capture, value) ? 'unknown' : value))
+        .join(', '),
       provenance: getCaptureProvenance(capture),
       meaning: capture.meaning,
       provisional:
@@ -232,28 +240,48 @@ export function buildDatumReceiptModel(context: ViewContext): DatumReceiptModel 
       nodeOrder(first) - nodeOrder(second) ||
       (first.iteration ?? Infinity) - (second.iteration ?? Infinity)
   );
-  const writtenResources = new Set(
-    captures
-      .map(capture => capture.resource)
-      .filter((resource): resource is string => Boolean(resource))
+  const mainCapture =
+    captures.find(capture => capture.id === context.bindings.buffer) ??
+    captures.find(capture => capture.id === rows[0]?.captureId);
+  // Formula evidence follows the ordered result, while neighbourhood values keep their input.
+  // Timeless inputs do not outrank a numbered result merely because their iteration is absent.
+  const formulaCapture =
+    captures.find(capture => capture.id === context.bindings.buffer) ??
+    captures.find(capture => capture.id === rows.at(-1)?.captureId);
+  assert(mainCapture);
+  assert(formulaCapture);
+  const graphs = new Set(
+    captures.map(capture => resolveGPUComputationCaptureGraph(context.record, capture))
   );
-  const formulaNode = context.record.graphs
-    .flatMap(graph => graph.nodes)
-    .find(
+  const graph =
+    graphs.size === 1
+      ? resolveGPUComputationCaptureGraph(context.record, formulaCapture)
+      : undefined;
+  const resources = new Set(
+    captures
+      .filter(capture => capture.iteration === formulaCapture.iteration)
+      .map(capture => capture.resource)
+  );
+  const formulaNodes =
+    graph?.nodes.filter(
       node =>
         node.formula &&
         getFormula(context.record, node.formula) &&
-        node.writes.some(resource => writtenResources.has(resource))
-    );
+        node.writes.some(resource => resources.has(resource))
+    ) ?? [];
+  const formulaIds = new Set(formulaNodes.map(node => node.formula));
+  const formulaNode = formulaIds.size === 1 ? formulaNodes[0] : undefined;
   const formula = getFormula(context.record, formulaNode?.formula);
   const substitutions = new Map<string, string>();
   for (const symbol of formula?.symbols ?? []) {
-    const captured = getSymbolValueAt(context.record, symbol, entity);
+    const captured =
+      graph &&
+      getSymbolValueAt(context.record, symbol, entity, {
+        graph: graph.id,
+        iteration: formulaCapture.iteration
+      });
     if (captured) substitutions.set(symbol.id, formatTexValue(captured.value, symbol.role));
   }
-  const mainCapture = captures.find(capture => capture.id === rows[0]?.captureId);
-  // satisfies guarantees at least one captured value.
-  assert(mainCapture);
   const neighbourhoods = (context.packs ?? []).flatMap(pack => {
     const family = pack.neighbourhoods?.[keySpace];
     return family
@@ -521,9 +549,7 @@ export function renderDatumReceipt(
                 h(
                   'td',
                   null,
-                  row.provisional
-                    ? coarsenValues(row.value.split(', ').map(Number), 'provisional').join(', ')
-                    : row.value
+                  row.provisional ? coarsenCaptureText(row.value, 'provisional') : row.value
                 ),
                 h('td', null, row.iteration === undefined ? '—' : String(row.iteration)),
                 h('td', null, provenanceBadge(row.provenance))
@@ -590,9 +616,7 @@ export const DATUM_RECEIPT_VIEW: ViewRegistration<DatumReceiptModel> = {
     rows: model.rows.map(row => [
       row.stage,
       row.name,
-      row.provisional
-        ? coarsenValues(row.value.split(', ').map(Number), 'provisional').join(', ')
-        : row.value,
+      row.provisional ? coarsenCaptureText(row.value, 'provisional') : row.value,
       row.iteration === undefined ? '—' : String(row.iteration),
       row.provenance
     ]),

@@ -24,7 +24,6 @@ import {
   getGPUCellCoverContributorCapacityPlan
 } from '../../../src/analysis-core/contracts/capacity-planning';
 import {
-  assertCompatibleGPUPreparedIndexes,
   getGPUSpatialQueryCostPlan,
   getGPUTileSeamOwner,
   isGPUSeamResultOwner,
@@ -612,52 +611,6 @@ describe('partitioning', () => {
     expect(() => getGPUPartitionMemoryPlan(partitioning as never, 0.5)).toThrow(/bytesPerRow/);
   });
 
-  it('prepared-index compatibility compares every descriptor field', () => {
-    const context = {coordinateSpace: 'planar', metric: 'native'} as const;
-    const prepared = {
-      spatialContext: context,
-      partitioning: descriptor(4, [partition(0, 0, 4)]),
-      revision: 1
-    } as never;
-    const requested = (overrides: object) => ({...(prepared as object), ...overrides}) as never;
-    expect(() => assertCompatibleGPUPreparedIndexes('i', prepared, requested({}))).not.toThrow();
-    expect(() =>
-      assertCompatibleGPUPreparedIndexes('i', prepared, requested({revision: '1'}))
-    ).toThrow(/revision/);
-    expect(() =>
-      assertCompatibleGPUPreparedIndexes(
-        'i',
-        prepared,
-        requested({spatialContext: {...context, units: 'native'}})
-      )
-    ).toThrow(/spatial context/);
-    expect(() =>
-      assertCompatibleGPUPreparedIndexes(
-        'i',
-        prepared,
-        requested({partitioning: descriptor(4, [partition(0, 0, 4)], {haloDistance: 1})})
-      )
-    ).toThrow(/partitioning/);
-    expect(() =>
-      assertCompatibleGPUPreparedIndexes(
-        'i',
-        prepared,
-        requested({partitioning: descriptor(4, [partition(0, 0, 4, 0, 4), partition(1, 4, 4)])})
-      )
-    ).toThrow(/partitioning/);
-    expect(() =>
-      assertCompatibleGPUPreparedIndexes(
-        'i',
-        prepared,
-        requested({
-          partitioning: descriptor(4, [partition(0, 0, 4)], {
-            seamOwnership: {kind: 'source-core', sourceSide: 'left'}
-          })
-        })
-      )
-    ).toThrow(/partitioning/);
-  });
-
   it('chooses the cheapest query strategy, preferring scan on ties, and validates measurements', () => {
     // Scan is 10 * 10 = 100; grid is 10 + 10 + 5 + 0 = 25; BVH is 10 * 3 + 0 = 30.
     expect(
@@ -729,7 +682,15 @@ describe('measure model helpers', () => {
     expect(getGPUSphereRadius({...greatCircle, sphereRadius: 1})).toBe(1);
     const support = GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT;
     expect(resolveGPUSpatialContext('test', undefined, support).coordinateSpace).toBe('planar');
-    expect(resolveGPUSpatialContext('test', greatCircle, support)).toBe(greatCircle);
+    // Resolution captures caller-owned metadata as a frozen snapshot. Its declared values remain
+    // longitude/latitude and great-circle; callers do not retain the resolved object's identity.
+    const resolvedGreatCircle = resolveGPUSpatialContext('test', greatCircle, support);
+    expect(resolvedGreatCircle).toStrictEqual({
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle'
+    });
+    expect(resolvedGreatCircle).not.toBe(greatCircle);
+    expect(Object.isFrozen(resolvedGreatCircle)).toBe(true);
     expect(() =>
       resolveGPUSpatialContext(
         'test',

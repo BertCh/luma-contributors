@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
 import {requireTestDevice} from '../../../analysis/test/utils/require-test-device';
 import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
 import type {
@@ -186,7 +187,15 @@ it('dispatches actual disruption routing on the mapped recipe fixture and indepe
     expect(demand.columns['geometry']).toEqual(
       inputs['demand'].features.map(feature => JSON.stringify(feature.geometry))
     );
-    expect(result.summary).toMatchObject({converged: 1, costUnit: 'minutes'});
+    expect(result.summary).toMatchObject({
+      converged: 1,
+      costUnit: 'minutes',
+      complete: 1,
+      baselineRoutingConverged: 1,
+      scenarioRoutingConverged: 1,
+      baselineAccessibilityComplete: 1,
+      scenarioAccessibilityComplete: 1
+    });
     for (const table of result.tables) {
       expect(Object.values(table.columns).every(column => column.length === table.rowCount)).toBe(
         true
@@ -204,6 +213,44 @@ it('dispatches actual disruption routing on the mapped recipe fixture and indepe
     expect(arcs.columns['source_id']).toEqual(
       inputs['network'].features.map(feature => feature.id)
     );
+  }
+});
+
+it.each([
+  'baseline-accessibility',
+  'scenario-accessibility'
+])('refuses device publication when %s scoring evidence is incomplete', async failedStage => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const originalRead = CatalogGpuSession.prototype.readScalar;
+  const submitted = vi.spyOn(device, 'submit');
+  let matchingReadCompleted = false;
+  const read = vi
+    .spyOn(CatalogGpuSession.prototype, 'readScalar')
+    .mockImplementation(async function (this: CatalogGpuSession, output) {
+      const value = await originalRead.call(this, output);
+      if (output.buffer.id.endsWith(`${failedStage}-complete`)) {
+        matchingReadCompleted = true;
+        return 0;
+      }
+      return value;
+    });
+  try {
+    await expect(
+      CURATED_NETWORK_DISRUPTION_BINDING.runGpu!(
+        {device},
+        createNetworkDisruptionSample(),
+        NETWORK_DISRUPTION_SAMPLE.parameters
+      )
+    ).rejects.toThrow(
+      `${failedStage} must be complete before publishing accessibility comparisons`
+    );
+    expect(submitted).toHaveBeenCalledOnce();
+    expect(submitted.mock.results[0]?.type).toBe('return');
+    expect(matchingReadCompleted).toBe(true);
+  } finally {
+    read.mockRestore();
+    submitted.mockRestore();
   }
 });
 

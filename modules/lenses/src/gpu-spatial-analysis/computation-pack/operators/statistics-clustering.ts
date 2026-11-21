@@ -115,7 +115,7 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
     },
     metadata: PLANAR_METRES
   },
-  GPUSpatialClustering: {
+  GPUDBSCAN: {
     family: 'statistics',
     descriptor: {scope: 'focal', scopeSecondary: 'solver', reduction: 'count'},
     variables: {
@@ -135,22 +135,22 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
         unit: 'm',
         sweepable: true
       },
-      {name: 'minimumPoints', label: 'Minimum points', stage: 'operator', sweepable: true}
+      {name: 'minimumSamples', label: 'Minimum samples', stage: 'operator', sweepable: true}
     ],
     formula: {
       id: 'dbscan-core-test',
       derivation: 'curated',
       tex: String.raw`\begin{aligned}
 \term{neighborCount}{\lvert N_\varepsilon(i)\rvert}&=\sum_j \bigl[\,\lVert x_j-x_i\rVert^2\le\term{epsilonSquared}{\varepsilon^2}\,\bigr]\\
-\term{coreFlags}{\mathrm{core}(i)}&\iff \lvert N_\varepsilon(i)\rvert\ \ge\ \term{minimumPoints}{m}
+\term{coreFlags}{\mathrm{core}(i)}&\iff \lvert N_\varepsilon(i)\rvert\ \ge\ \term{minimumSamples}{m}
 \end{aligned}`,
       ascii:
-        'Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumPoints. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.',
+        'Core test, not the labelling: |N(i)| = number of valid points j (point i itself included) with dx^2 + dy^2 <= epsilon^2 in f32; point i is core when |N(i)| >= minimumSamples. Clusters are the connected components of core points under that relation, found by lock-free union-find; a border point (valid, not core, with a core neighbour) joins the adjacent cluster with the smallest root, every other point is noise (0xffffffff). Compact cluster ids follow the smallest core row, so labels are canonical.',
       symbols: [
         {id: 'neighborCount', role: 'intermediate', binding: 'wgsl:neighborCount'},
         {id: 'epsilonSquared', role: 'parameter', binding: 'wgsl:epsilonSquared'},
         {id: 'coreFlags', role: 'output', binding: 'wgsl:coreFlags'},
-        {id: 'minimumPoints', role: 'parameter', binding: 'wgsl:minimumPoints'}
+        {id: 'minimumSamples', role: 'parameter', binding: 'wgsl:minimumSamples'}
       ]
     },
     metadata: PLANAR_METRES
@@ -181,17 +181,24 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
         sweepable: true
       },
       {name: 'restartCount', label: 'Restarts', stage: 'operator', sweepable: true},
+      {
+        name: 'centerCoordinates',
+        label: "Accumulate relative to each cluster's origin",
+        stage: 'operator',
+        alternatives: [true, false],
+        sweepable: true
+      },
       SEED_CHOICE
     ],
     formula: {
       id: 'kmeans-inertia',
       derivation: 'curated',
       tex: String.raw`\begin{aligned}
-\term{inertia}{J}&=\sum_i \term{distance}{\lVert x_i-c_{\ell(i)}\rVert^2},\qquad \ell(i)=\arg\min_k\lVert x_i-c_k\rVert^2\\
-\term{center}{c_k}&\leftarrow\frac{\sum_{i:\,\ell(i)=k}x_i}{\term{size}{n_k}}
+\term{inertia}{J}&=\sum_i \term{distance}{\lVert (x_i-o)-\widetilde c_{\ell(i)}\rVert^2},\qquad \ell(i)=\arg\min_k\lVert(x_i-o)-\widetilde c_k\rVert^2\\
+\term{center}{\widetilde c_k}&\leftarrow\frac{\sum_{i:\,\ell(i)=k}(x_i-o)}{\term{size}{n_k}},\qquad c_k=o+\widetilde c_k
 \end{aligned}`,
       ascii:
-        'Objective, not the procedure: inertia J = sum over valid points i of |x_i - c_l(i)|^2, with l(i) the nearest center (lowest center id wins ties) in f32. Each Lloyd iteration reassigns every point, then moves each center to the mean of its members, c_k = sum x_i / n_k, summed in fixed order. A center that gets no point is relocated to the points farthest from their centers. Initial centers are k-means++ (seeded) or the first k valid points; with restarts the lowest J wins.',
+        "Objective, not the procedure: inertia J = sum over valid points i of |(x_i - o) - shiftedCenter_l(i)|^2, with l(i) the nearest center (lowest center id wins ties) in f32. With centerCoordinates: true (explicit in this scenario), o is the origin of each point's cluster (the point that cluster was seeded from or relocated to), each Lloyd update sums x_i - o in fixed order and divides by n_k, and assignments and squared distances retain the shifted centers. Published centers add o back and round to f32; recomputing distances from those rounded absolute centers can differ. An explicit false uses o = 0 and requests historical raw-coordinate arithmetic. A center that gets no point is relocated to the points farthest from their centers. Initial centers are k-means++ (seeded) or the first k valid points; with restarts the lowest J wins.",
       symbols: [
         {id: 'inertia', role: 'output', binding: 'wgsl:total'},
         {id: 'distance', role: 'intermediate', binding: 'wgsl:bestDistance'},
@@ -201,7 +208,7 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
     },
     metadata: PLANAR_METRES
   },
-  GPUHierarchicalDensityClustering: {
+  GPUHDBSCAN: {
     family: 'statistics',
     descriptor: {scope: 'pairwise', scopeSecondary: 'solver', reduction: 'select'},
     variables: {
@@ -366,7 +373,7 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
         name: 'standardization',
         label: 'Column standardization',
         stage: 'support',
-        alternatives: ['zscore', 'rank'],
+        alternatives: ['z-score', 'rank'],
         sweepable: true
       },
       {name: 'resultCount', label: 'Rows reported', stage: 'presentation', sweepable: false},
@@ -389,7 +396,8 @@ export const STATISTICS_CLUSTERING_OPERATORS: SpatialFamilyOperators = {
       ascii:
         'Per attribute column c over the valid rows: z_ic = (x_ic - mean_c) / s_c with s_c the population standard deviation (0 for a constant column); with standardization rank, z is the average-tie percentile rank (rank - 1) / (n - 1) instead. The reference vector r_c is the mean of the standardized values of the selected reference rows R. Distance d_i = sqrt(sum_c w_c (z_ic - r_c)^2) with non-negative column weights w_c. Rows are ranked by d (lowest row on ties; rank 0 is the most similar, or the least with direction least); invalid, masked and reference rows get no rank and a NaN distance.',
       symbols: [
-        {id: 'standardized', role: 'intermediate', binding: 'wgsl:standardized'},
+        // The z-score route computes differences directly rather than storing a z matrix.
+        {id: 'standardized', role: 'intermediate'},
         {id: 'deviation', role: 'intermediate', binding: 'wgsl:deviation'},
         {id: 'reference', role: 'intermediate', binding: 'wgsl:reference'},
         {id: 'distance', role: 'output', binding: 'wgsl:distance'},

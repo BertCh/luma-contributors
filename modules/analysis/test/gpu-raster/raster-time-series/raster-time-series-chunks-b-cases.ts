@@ -44,6 +44,8 @@ export const RASTER_TIME_SERIES_CHUNK_CASE_NAMES = [
   'medoid',
   'phenology',
   'rolling',
+  'rolling-short',
+  'rolling-short-mask',
   'standardized',
   'calibration',
   'streaming',
@@ -161,6 +163,42 @@ export function createRasterTimeSeriesChunkCase(
           rolling: cells(5, (cell, entry) => (entry === 0 ? NaN : cell + entry + 0.5)),
           ring: cells(2, (cell, entry) => cell + (entry === 0 ? 5 : 4)),
           seenCount: cells(1, () => 5)
+        }
+      };
+    case 'rolling-short':
+    case 'rolling-short-mask':
+      return {
+        contributor: new GPURasterRollingMean({
+          id: name,
+          cellCount,
+          chunkSliceCount: 2,
+          windowLength: 1,
+          // Short logical chunks keep the allocated pitch: cells 0/1 upload [12,pad,22,pad].
+          values: field('values', 'float32', 2, (cell, entry) =>
+            entry === 0 ? 12 + 10 * cell : -999
+          ),
+          // Both masks retain that same pitch; padding must never become cell 1's active mask.
+          mask: field('mask', 'uint32', 2, (cell, entry) =>
+            entry === 0 && (name === 'rolling-short' || cell % 2 === 0) ? 1 : 0
+          ),
+          parameters: shared(
+            getGPURasterStreamingAccumulatorParameterValues(
+              {reset: true, activeSliceCount: 1, maximumValueMagnitude: 10000},
+              2
+            )
+          ),
+          ring: field('ring', 'float32', 1),
+          seenCount: field('seenCount', 'uint32', 1),
+          output: field('rolling', 'float32', 2)
+        }),
+        expected: {
+          rolling: cells(2, (cell, entry) =>
+            entry === 0 && (name === 'rolling-short' || cell % 2 === 0) ? 12 + 10 * cell : NaN
+          ),
+          ring: cells(1, cell =>
+            name === 'rolling-short' || cell % 2 === 0 ? 12 + 10 * cell : NaN
+          ),
+          seenCount: cells(1, () => 1)
         }
       };
     case 'standardized':

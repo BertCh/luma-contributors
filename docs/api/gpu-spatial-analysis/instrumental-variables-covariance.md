@@ -30,6 +30,16 @@ matrix is distinct from the oblique structural IV hat matrix. No leverage conven
 from the endogenous raw design. `h_i < -1e-6`, nonfinite leverage, or `1-h_i <= 1e-6` fails
 inference, including when `u_i = 0`; values are never clipped.
 
+Column means are reduced from deviations from the first row's value. Gram moments then
+accumulate deviations from those means, retaining the residual sum correction through the rank
+decision, so a first-row outlier cannot turn positive centered variation into a negative norm
+(524,288 rows of one value and a single zero keep their centered sum of squares, 3.918, wherever
+the zero sits). Identical values contribute exact zeros, without a relative norm threshold that
+would discard a one-ULP variation. A nonpositive centered
+norm returns `SINGULAR_PROJECTION`, even if zero residuals would otherwise produce a zero
+covariance. The covariance child of spatial 2SLS consumes the active
+residual prefix, preserving its byte offset when the caller supplies spare capacity.
+
 ## Cluster input and limits
 
 `clusters` is one packed uint32 key per estimation row. `clusterCount` is a compile-time dense
@@ -56,9 +66,36 @@ while the point estimates, structural residuals and classical diagnostics remain
 This certifies the resulting small covariance, not every eigenvalue of a potentially huge HAC kernel.
 HAC callers must still supply a symmetric unit-diagonal nonnegative PSD kernel.
 
-Use `output.status: {code: statusView}` for the named solver port. The legacy scalar
-`output.status: statusView` remains supported. `GPU_INSTRUMENTAL_VARIABLES_COVARIANCE_STATUS`
-exports these names:
+An incomplete HAC kernel is unusable even when its retained weights form a valid PSD matrix.
+The direct contributors read `kernel.status.overflow` and `kernel.status.candidateOverflow` on
+every submission, together with an optional positive `kernel.status.complete` certificate.
+Either nonzero loss flag or a zero certificate returns covariance code 4 and NaN inference,
+even without `requiredCount`. Restoring all loss flags to zero and completeness to one restores
+inference on the same graph. Spatial 2SLS preserves its point estimates,
+structural residuals, classical summary and point-fit status while suppressing its robust table
+standard errors, statistics and p-values.
+`requiredCount` also proves loss when it exceeds the terminal kernel CSR offset, a supplied
+`count`, or capacity. Both named operation forms accept graph names under `robust.kernel.status`
+for `complete`, `count`, `requiredCount`, `overflow` and `candidateOverflow`. The pure CPU function accepts
+the corresponding arrays in the same map.
+This completeness decision is independent of the model-weights decision.
+
+Every CPU loss array holds one uint32 word. Kernel loss has the same code-4 precedence as invalid
+kernel structure. Capture preserves view identities. Buffer contents remain a per-run input,
+while editing the caller's props or nested output/kernel maps cannot redirect validated bindings.
+Kernel CSR offsets must start at zero; a nonzero first logical offset is invalid even when the
+remaining ranges contain a valid-looking symmetric matrix.
+
+When decoding robust output, supply `readback.robust: {method, status}` to
+`getGPUSpatialTwoStageLeastSquaresModelResult`; the pure CPU result includes this metadata.
+The reader returns `standardErrorSigmaSquared: 'robust'` and separate
+`covarianceInference: {method, status: {code, ok}}`. Its ordinary `status` continues to report the
+point fit, so `status.ok=true` with `covarianceInference.status.ok=false` explicitly represents a
+successful fit with failed inference. Classical tables retain the `'maximum-likelihood'` label.
+
+Use `output.status: {code: statusView}` for the named solver port. For spatial 2SLS, use
+`robust.output.status.code` for the covariance solver code. The operation forms take its graph name.
+`GPU_INSTRUMENTAL_VARIABLES_COVARIANCE_STATUS` exports the following names.
 
 | Code | Name | Meaning |
 | --- | --- | --- |
@@ -66,13 +103,12 @@ exports these names:
 | 1 | SINGULAR_PROJECTION | Projection system could not be solved |
 | 2 | INSUFFICIENT_ROWS | `n <= p` |
 | 3 | NONFINITE_INPUT | Input or computed covariance is nonfinite |
-| 4 | INVALID_KERNEL | Invalid HAC structure, symmetry, diagonal or overflow |
+| 4 | INVALID_KERNEL | Invalid HAC structure, symmetry, diagonal, incompleteness, overflow or candidateOverflow |
 | 5 | INVALID_LEVERAGE | HC2/HC3 denominator is unresolved or invalid |
 | 6 | INVALID_CLUSTERS | Invalid key or fewer than two occupied groups |
 | 7 | NOT_POSITIVE_SEMIDEFINITE | Covariance failed the shifted Cholesky certificate |
 
-The existing `robust.output.status` graph-value name maps to this covariance code. The point-fit
-solver code remains separate. GPU projection failures take precedence over leverage/cluster
+The point-fit solver reports its own code. GPU projection failures take precedence over leverage/cluster
 failures; invalid HAC kernels take precedence over projection failures, preserving existing behavior.
 The CPU twin uses the same numeric tolerances, with float64 arithmetic before its single output
 rounding. It can differ near the thresholds and retains its documented QR/rank differences.
@@ -86,3 +122,13 @@ Node specs compare CPU matrices, tables and diagnostics against those fixtures. 
 compare the direct contributor against NumPy and a hand-derived rank-one sandwich, and compare
 GPU/CPU operations on every output, including covariance failures. Zero covariance, unit leverage,
 invalid/missing keys, empty cluster slots and residual scales from `1e-12` to `1e12` are covered.
+
+`spatial-two-stage-least-squares-audit.oracle.py` adds 12-row dense NumPy fixtures with repeated
+predictor rows, directed links, an island, response rescaling and shifted predictors, for both
+instrument orders and all six robust methods. The CPU audit checks every covariance entry,
+table entry, summary slot and residual against those literals. The headless audit asserts the
+same independent expectations, and the direct covariance spec also covers HAC.
+Loss tests compare every surviving point-fit output and recovered covariance with those same
+NumPy literals; both named operations exercise loss followed by recovery on one compiled graph.
+Direct-contributor tests also mutate caller maps after construction and retain the independent
+covariance expectation.

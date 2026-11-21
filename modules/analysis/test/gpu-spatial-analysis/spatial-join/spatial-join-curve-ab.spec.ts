@@ -96,7 +96,7 @@ function createBufferSelectionRun(
         ),
         ends: input('ends', Float32Array.from(segments.flatMap(([, end]) => end)), featureCount)
       },
-      distance: distance.importToGraph(graph),
+      radius: distance.importToGraph(graph),
       candidateCapacity: options.candidateCapacity,
       spatialSort: options.spatialSort,
       spatialSortCurve: options.spatialSortCurve,

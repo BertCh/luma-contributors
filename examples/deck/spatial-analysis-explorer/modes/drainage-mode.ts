@@ -1052,7 +1052,10 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
           particleParameters.write(
             getGPUParticleAdvectionParameterValues(
               {
-                fieldExtent: [bounds[0], bounds[1], cellSize[0], cellSize[1]],
+                fieldPlacement: {
+                  origin: [bounds[0], bounds[1]],
+                  cellSize: [cellSize[0], cellSize[1]]
+                },
                 timeStep: PARTICLE_TIME_STEP,
                 speedScale: 1,
                 dropRate: PARTICLE_DROP_RATE,

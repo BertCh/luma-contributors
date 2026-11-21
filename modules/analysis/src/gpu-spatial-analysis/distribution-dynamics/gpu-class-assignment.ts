@@ -62,6 +62,8 @@ type GPUClassAssignmentRowView<
 
 /**
  * Properties for {@link GPUClassAssignment}.
+ * Use `const props = {...} satisfies GPUClassAssignmentProps` to check stored option objects
+ * before construction; `intervalClosure` accepts only 'left' and 'right'.
  *
  * Per-frame: the contents of every view. Topology: view lengths and whether `mask` is present.
  */
@@ -125,23 +127,45 @@ export class GPUClassAssignment<
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: Props & GPUClassAssignmentProps<Props['values']>;
+  readonly props: Props;
   /** Canonical classified-values port consumed by distribution and transition workflows. */
-  readonly classifiedValues: GPUClassifiedValuesPort & {
-    classes: GPUClassAssignmentProps<Props['values']>['output'];
-    mask?: GPUClassAssignmentProps<Props['values']>['mask'];
+  readonly classifiedValues: Omit<GPUClassifiedValuesPort, 'classes' | 'mask'> & {
+    classes: Props['output'];
+    mask: 'mask' extends keyof Props ? Props['mask'] : undefined;
   };
 
   readonly estimatedCommandNodeCount: number;
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: Props) {
+  constructor(
+    props: Props &
+      Record<
+        Exclude<keyof Props, keyof GPUClassAssignmentProps<GraphDataView | GraphVectorView>>,
+        never
+      >
+  ) {
+    props = {...props};
     const id = props.id ?? 'class-assignment';
     this.id = id;
-    this.props = props as Props & GPUClassAssignmentProps<Props['values']>;
+    const allowedKeys = [
+      'id',
+      'values',
+      'breaks',
+      'classCount',
+      'mask',
+      'intervalClosure',
+      'output'
+    ];
+    for (const key of Object.keys(props))
+      validateRequirement(
+        id,
+        allowedKeys.includes(key),
+        `unknown prop ${key}; accepted keys: ${allowedKeys.join(', ')}`
+      );
+    this.props = props;
     this.classifiedValues = {
       classes: this.props.output,
-      mask: this.props.mask,
+      mask: this.props.mask as 'mask' extends keyof Props ? Props['mask'] : undefined,
       classCount: props.classCount
     };
     const intervalClosure = props.intervalClosure ?? 'left';

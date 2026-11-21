@@ -79,8 +79,7 @@ export default defineOperationRun({
         output: {
           leftRows: leftRows.view,
           rightRows: rightRows.view,
-          rowCount: joinedCount.view,
-          status: {overflow: overflow.view}
+          status: {count: joinedCount.view, overflow: overflow.view}
         }
       })
     );

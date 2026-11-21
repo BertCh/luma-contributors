@@ -25,11 +25,20 @@ import {
   type CPUPolygonRing,
   type CPUPolygonFeatureRows
 } from '../shared/cpu-polygon-rows';
-import {GPULabelPointOperation, type LabelPointOperationProps} from './gpu-label-point-operation';
+import {
+  GPULabelPointOperation,
+  snapshotLabelPointOperationProps,
+  type LabelPointOperationProps
+} from './gpu-label-point-operation';
 
-/** Reads the four polygon ports shared by the geometry CPU operations. @internal */
-export function readCPUPolygonRows(id: string, inputs: CPUOperationInputs): CPUPolygonRows {
+/** Reads the four resident polygon ports shared by the geometry CPU operations. @internal */
+export function readCPUPolygonRows(
+  id: string,
+  inputs: CPUOperationInputs,
+  storage: CPUPolygonRows['storage'] = 'resident-capacity'
+): CPUPolygonRows {
   return {
+    storage,
     positions: getCPUOperationFloat32Rows(id, inputs, 'positions', 'float32x2'),
     ringOffsets: getCPUOperationUint32Rows(id, inputs, 'ringOffsets'),
     polygonOffsets: getCPUOperationUint32Rows(id, inputs, 'polygonOffsets'),
@@ -47,6 +56,32 @@ export type CPUPolygonPole = {
   error: number;
   status: number;
 };
+
+/** Exact collinearity of finite float32 vertices; independent of signed-area cancellation. @internal */
+export function areCPUPolygonVerticesCollinear(
+  positions: Float32Array,
+  rings: readonly CPUPolygonRing[]
+): boolean {
+  let first: readonly [bigint, bigint] | undefined;
+  let direction: readonly [bigint, bigint] | undefined;
+  for (const ring of rings) {
+    for (let row = ring.start; row < ring.end; row++) {
+      const positionX = positions[row * 2];
+      const positionY = positions[row * 2 + 1];
+      if (!Number.isFinite(positionX) || !Number.isFinite(positionY)) return false;
+      // Every finite float32 is an integer multiple of 2^-149. BigInt avoids subtraction
+      // and product rounding for arbitrarily separated finite float32 exponents.
+      const exactX = BigInt(positionX * 2 ** 149);
+      const exactY = BigInt(positionY * 2 ** 149);
+      if (!first) first = [exactX, exactY];
+      const deltaX = exactX - first[0];
+      const deltaY = exactY - first[1];
+      if (!direction && (deltaX !== 0n || deltaY !== 0n)) direction = [deltaX, deltaY];
+      if (direction && deltaX * direction[1] !== deltaY * direction[0]) return false;
+    }
+  }
+  return true;
+}
 
 function findScanlineSeed(
   positions: Float32Array,
@@ -140,7 +175,9 @@ export function findCPUPolygonPole(
   };
   const extent = Math.max(maximumX - minimumX, maximumY - minimumY);
   // A collapsed axis has no interior. The boundary fallback is an exact solution.
-  if (minimumX === maximumX || minimumY === maximumY) return best;
+  if (areCPUPolygonVerticesCollinear(positions, rings)) return best;
+  // A disk inside the feature must fit in both sides of its axis-aligned envelope.
+  const maximumRadius = 0.5 * Math.min(maximumX - minimumX, maximumY - minimumY);
   const precision = tolerance || Math.max(extent * 1e-6, extent * Number.EPSILON);
   type Cell = {centerX: number; centerY: number; halfSize: number; bound: number};
   const makeCell = (centerX: number, centerY: number, halfSize: number): Cell => {
@@ -155,7 +192,12 @@ export function findCPUPolygonPole(
         witnessY: result.witnessY
       };
     }
-    return {centerX, centerY, halfSize, bound: result.distance + Math.SQRT2 * halfSize};
+    return {
+      centerX,
+      centerY,
+      halfSize,
+      bound: Math.min(maximumRadius, result.distance + Math.SQRT2 * halfSize)
+    };
   };
   if (firstVertexFallback) {
     const seedScanlines = (centerY: number, height: number): boolean => {
@@ -238,17 +280,51 @@ export function findCPUPolygonPole(
   return best;
 }
 
+/** Publish a float32 center without turning an interior search candidate into an exterior result. @internal */
+export function publishCPUPolygonPole(
+  positions: Float32Array,
+  rings: readonly CPUPolygonRing[],
+  pole: CPUPolygonPole
+) {
+  let centerX = Math.fround(pole.centerX);
+  let centerY = Math.fround(pole.centerY);
+  let boundary = getCPUPolygonDistance(positions, rings, centerX, centerY);
+  let usedBoundaryFallback = false;
+  if (Number.isFinite(pole.radius) && boundary.distance < 0) {
+    // Source vertices are already representable and lie on the polygon boundary.
+    const firstRing = rings.find(ring => ring.end > ring.start);
+    if (firstRing) {
+      centerX = positions[firstRing.start * 2];
+      centerY = positions[firstRing.start * 2 + 1];
+      boundary = getCPUPolygonDistance(positions, rings, centerX, centerY);
+      usedBoundaryFallback = true;
+    }
+  }
+  const clearance = Number.isFinite(pole.radius) ? Math.max(0, boundary.distance) : NaN;
+  return {
+    centerX,
+    centerY,
+    clearance,
+    witnessX: boundary.witnessX,
+    witnessY: boundary.witnessY,
+    precisionLimited: usedBoundaryFallback || clearance < pole.radius
+  };
+}
+
 /** Result rows of GPULabelPoint, including all optional columns. */
 export type CPULabelPointResult = {
   points: Float32Array;
-  distances: Float32Array;
+  /** Clearance at the published float32 point. */
+  publishedCenterClearance: Float32Array;
+  /** Per feature: publication reduced the search clearance. */
+  precisionLimited: Uint32Array;
   degenerate: Uint32Array;
 };
 
 /**
  * Finds polygon poles with unbounded best-first subdivision in binary64.
  * Emptiness and bounds use the GPU's contiguous feature interval, while signed distances and
- * scanline seeds walk individual rings. This distinction also applies to descending offsets.
+ * scanline seeds walk individual rings. Descending offsets require explicit resident-capacity storage.
  *
  * What differs from the GPU contributor:
  * - Searches every cell whose distance bound can improve the answer, rather than a capped set
@@ -258,8 +334,10 @@ export type CPULabelPointResult = {
  *   their order; subsequent candidates use bounds-center/quadtree order instead of grid order.
  * - Non-finite features return NaN points/distances and degenerate = 1; GPU label arithmetic
  *   does not define a non-finite status. Empty features have that same output.
- * - Collapsed-axis features return the first vertex and zero distance without subdivision.
- * - Empty position storage is accepted for empty features; the GPU requires at least one row.
+ * - Exactly collinear float32 vertices return the boundary fallback with zero clearance.
+ * - Search bounds are capped by half the shorter envelope side; an attained cap proves optimality.
+ * - Published clearance is recomputed at the float32 point; precisionLimited reports a reduction.
+ * - Empty source storage preserves zero features and declared empty features in both backends.
  * - Computes in binary64 and rounds each output once; no float32 intermediate rounding.
  *
  * @throws If positions or any offsets array is inconsistent.
@@ -270,6 +348,7 @@ export function computeLabelPointOnCPU(input: CPUPolygonRows): CPULabelPointResu
   const points = new Float32Array(featureCount * 2);
   const distances = new Float32Array(featureCount);
   const degenerate = new Uint32Array(featureCount);
+  const precisionLimited = new Uint32Array(featureCount);
   for (let feature = 0; feature < featureCount; feature++) {
     const pole = findCPUPolygonPole(
       input.positions,
@@ -278,19 +357,26 @@ export function computeLabelPointOnCPU(input: CPUPolygonRows): CPULabelPointResu
       true,
       getCPUPolygonFeatureRows(input, feature)
     );
-    points.set([pole.centerX, pole.centerY], feature * 2);
-    distances[feature] = pole.radius;
-    degenerate[feature] = pole.radius > 0 ? 0 : 1;
+    const published = publishCPUPolygonPole(
+      input.positions,
+      getCPUPolygonRings(input, feature),
+      pole
+    );
+    points.set([published.centerX, published.centerY], feature * 2);
+    distances[feature] = published.clearance;
+    precisionLimited[feature] = published.precisionLimited ? 1 : 0;
+    degenerate[feature] = distances[feature] > 0 ? 0 : 1;
   }
-  return {points, distances, degenerate};
+  return {points, publishedCenterClearance: distances, precisionLimited, degenerate};
 }
 
 /** CPU twin; GPU grid sizes, candidate limits and refinement budgets are unused. */
 export class CPULabelPointOperation extends GPUCPUOperation {
   constructor(props: LabelPointOperationProps) {
+    props = snapshotLabelPointOperationProps(props);
     const operation = new GPULabelPointOperation(props);
     const {id} = operation;
-    validateCapacity(id, 'featureCount', props.featureCount, 1);
+    validateCapacity(id, 'featureCount', props.featureCount, 0);
     resolveGPUSpatialContext(id, props.spatialContext, {
       ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
       measure: 'distance'
@@ -305,7 +391,7 @@ export class CPULabelPointOperation extends GPUCPUOperation {
         ])
       ),
       execute({inputs}) {
-        const input = readCPUPolygonRows(id, inputs);
+        const input = readCPUPolygonRows(id, inputs, props.storage);
         validateRequirement(
           id,
           input.featureOffsets.length === props.featureCount + 1,

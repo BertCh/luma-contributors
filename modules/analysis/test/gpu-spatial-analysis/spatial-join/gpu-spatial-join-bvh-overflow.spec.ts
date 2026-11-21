@@ -184,13 +184,17 @@ async function runPredicateJoin(
           : {
               unmatched: {
                 ids: unmatchedIds.view,
-                status: {count: unmatchedCount.view, overflow: unmatchedOverflow.view}
+                status: {
+                  count: unmatchedCount.view,
+                  overflow: unmatchedOverflow.view,
+                  candidateOverflow: candidateOverflow.view
+                }
               }
             }),
         candidateTruncated: truncated.view,
         status: {
           overflow: overflow.view,
-          candidateOverflow: candidateOverflow.view,
+          candidateOverflow: how === 'inner' ? candidateOverflow.view : undefined,
           candidateTruncatedCount: truncatedCount.view
         }
       }
@@ -390,7 +394,7 @@ async function runNearestJoin(
       radius: radius.importToGraph(graph),
       leafCapacity,
       spatialSort: false,
-      ...(neighbors ? {k: 1} : {candidateCapacity: 16}),
+      ...(neighbors ? {neighborCount: 1} : {candidateCapacity: 16}),
       output: {
         ...(neighbors
           ? {neighborIds: ids.view, neighborCounts: counts.view}
@@ -544,7 +548,7 @@ async function runBufferSelection(
           NEAREST_FEATURES.length
         )
       },
-      distance: distance.importToGraph(graph),
+      radius: distance.importToGraph(graph),
       spatialSort: false,
       ...capacities,
       output: {
@@ -633,7 +637,7 @@ it('join consumers reject a candidateTruncated view of the wrong shape', async (
       new GPUBufferSelection({
         points,
         features: {kind: 'points', positions: points.positions},
-        distance: distance.importToGraph(fixture.graph),
+        radius: distance.importToGraph(fixture.graph),
         candidateCapacity: 16,
         output: {outputMask: pointRows, candidateTruncated: shortFlags}
       })
@@ -643,7 +647,7 @@ it('join consumers reject a candidateTruncated view of the wrong shape', async (
       new GPUNearestFeatureJoin({
         queries: points,
         features: {kind: 'points', positions: points.positions},
-        k: 1,
+        neighborCount: 1,
         output: {
           neighborIds: fixture.output('neighbor-ids', 4).view,
           neighborCounts: fixture.output('neighbor-counts', 4).view,

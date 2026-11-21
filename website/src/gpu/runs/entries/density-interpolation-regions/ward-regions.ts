@@ -6,7 +6,7 @@
 
 import {
   getGPUWardRegionsParameterValues,
-  GPU_WARD_STATUS,
+  GPU_WARD_STATUS_LAYOUT,
   GPUWardRegions
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
@@ -44,7 +44,7 @@ export default defineOperationRun({
         output: {
           labels: labels.view,
           objective: builder.allocate('objective', 'float32', 1).view,
-          status: builder.allocate('status', 'uint32', GPU_WARD_STATUS.length + 1).view
+          status: builder.allocate('status', 'uint32', GPU_WARD_STATUS_LAYOUT.length + 1).view
         }
       })
     );

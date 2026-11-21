@@ -46,10 +46,10 @@ function getClusterLegend(labels: number[], hasNoise: boolean, complete: boolean
 function getSnippet(state: ObservationHierarchyOptions): string {
   if (state.algorithm === 'hdbscan') {
     return `import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUHierarchicalDensityClustering} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUHDBSCAN} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'northerly-hdbscan'});
-graph.add(new GPUHierarchicalDensityClustering({
+graph.add(new GPUHDBSCAN({
   spatialContext: projection.spatialContext,
   positions,                         // 246 source records, projected to local metres
   minimumSamples: ${Number(state.minimumSamples)},
@@ -76,7 +76,8 @@ graph.add(new GPUOPTICS({
   maximumDistance: 1000,
   extractionMethod: '${extraction}',
   ${extractionOptions}
-  output: {ordering, coreDistances, reachability, predecessors, labels, status}
+  output: {ordering, coreDistances, reachability, predecessors, labels,
+    ports: {status: {iterationCount, converged, invalidCount}}}
 }));
 const compiled = await graph.compileAsync();
 compiled.encode(commandEncoder, {parameters: undefined});`;
@@ -89,7 +90,7 @@ export default defineScene<ObservationHierarchyOptions>({
   order: 6,
   summary:
     'Trace all 246 archived bird observations in a Northerly Island frame through OPTICS reachability, DBSCAN and Xi extraction, then compare HDBSCAN EOM clusters.',
-  contributors: ['GPUOPTICS', 'GPUHierarchicalDensityClustering'],
+  contributors: ['GPUOPTICS', 'GPUHDBSCAN'],
   datasets: [{id: 'chicago-nature', role: 'iNaturalist observations (2023)'}],
   initialView: {
     longitude: ISLAND.lngLat[0],
@@ -224,7 +225,7 @@ export default defineScene<ObservationHierarchyOptions>({
   },
   snippet: getSnippet,
   about: {
-    what: '`GPUOPTICS` computes core distances and a reachability ordering for the selected records. DBSCAN extraction cuts that structure at a chosen distance; Xi extraction identifies steep valleys. `GPUHierarchicalDensityClustering` builds a hierarchy and selects clusters with the fixed EOM rule. The map colours come from GPU-returned labels, and the reachability chart reorders GPU distances by the returned OPTICS visit sequence.',
+    what: '`GPUOPTICS` computes core distances and a reachability ordering for the selected records. DBSCAN extraction cuts that structure at a chosen distance; Xi extraction identifies steep valleys. `GPUHDBSCAN` builds a hierarchy and selects clusters with the fixed EOM rule. The map colours come from GPU-returned labels, and the reachability chart reorders GPU distances by the returned OPTICS visit sequence.',
     why: 'A point map can look clumped without explaining which records connect, or how a cluster boundary was chosen. Reachability exposes density structure before a single cut is applied; comparing extraction rules makes that modelling choice visible.',
     howToRead:
       'OPTICS roots have infinite reachability and appear as gaps. A DBSCAN distance cut groups connected valleys below that threshold; Xi searches for steep valleys; HDBSCAN EOM selects persistent groups without an epsilon cut. Shared-coordinate outlines identify exact coincident source positions. These are clusters in observation records, not bird abundance or habitat.'

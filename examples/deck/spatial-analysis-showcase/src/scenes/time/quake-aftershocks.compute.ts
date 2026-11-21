@@ -557,8 +557,8 @@ export async function createQuakeAftershocks(
     searchParameters.write(
       getGPUNeighborSearchParameterValues({
         bounds: current.knox.searchBounds,
-        radius: options.spatialRadius * 1000,
-        weightKind: 'binary'
+        searchRadius: options.spatialRadius * 1000,
+        weightType: 'binary'
       })
     );
     testParameters.write(

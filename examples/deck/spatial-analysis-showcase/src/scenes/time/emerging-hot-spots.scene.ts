@@ -498,7 +498,7 @@ const recipe = addSpaceTimeHotSpotsRecipe(graph, {
   },
   cellMask, parameters: hotSpotParameters,     // a GPUParameterBuffer the recipe fills from settings
   settings: hotSpotSettings,                    // also gives result.inference for the legend
-  outputs: {cube, giZScores, trendZ, trendP, trendS, category, hotSliceCount, coldSliceCount}
+  output: {cube, giZScores, trendZ, trendP, trendS, category, hotSliceCount, coldSliceCount}
 });`
 }
 const compiled = await graph.compileAsync();  // once

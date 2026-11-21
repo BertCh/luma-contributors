@@ -42,7 +42,7 @@ defineLensScenario({
             {id: 'statistic', label: 'topology statistic', size: 4, indexSpace: '1d'}
           ],
           choices: {
-            snapTolerance: 0,
+            snapGridSize: 0,
             tolerance: 50,
             simplifyBoundary: true,
             maximumIterations: 32,

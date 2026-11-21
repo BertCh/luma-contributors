@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {iterateCatalogPositions} from './catalog-geojson';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import type {LocalFrame} from './catalog-local-frame';
 import type {
@@ -129,14 +130,7 @@ export function readNumericProperty(feature: CatalogFeature, name: string): numb
 
 /** Every vertex of a collection, for frame construction. */
 export function collectAllPositions(collection: CatalogFeatureCollection): CatalogPosition[] {
-  const positions: CatalogPosition[] = [];
-  for (const feature of collection.features) {
-    positions.push(...getPointPositions(feature.geometry));
-    for (const part of getLineParts(feature.geometry)) positions.push(...part);
-    for (const polygon of getPolygonParts(feature.geometry))
-      for (const ring of polygon) positions.push(...ring);
-  }
-  return positions;
+  return Array.from(iterateCatalogPositions([collection]));
 }
 
 export type Sample = {

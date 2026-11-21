@@ -22,6 +22,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -47,6 +48,7 @@ import {
   getGPUSpaceTimeInferenceMetadata,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY_LENGTH,
+  type GPUSpaceTimePValueField,
   type GPUSpaceTimeSettings
 } from './space-time-parameters';
 import {
@@ -204,19 +206,13 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
     validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     validateSinglePackedView(props.output.statistics, ['uint32'], `${id} output.statistics`);
     validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
-    if (this.rows < 2) {
-      throw new Error(`${id} needs at least two rows`);
-    }
-    if (this.rows > SPACE_TIME_MAXIMUM_ROWS) {
-      // The swap-or-not shuffle has round capacity for domains below 2^24 rows.
-      throw new Error(`${id} supports at most ${SPACE_TIME_MAXIMUM_ROWS} rows`);
-    }
-    if (props.times.length !== this.rows) {
-      throw new Error(`${id} times needs one row per pairs row`);
-    }
-    if (props.parameters.length < GPU_SPACE_TIME_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
-    }
+    validateCapacity(id, 'pairs rowCount', this.rows, 2, SPACE_TIME_MAXIMUM_ROWS);
+    validateRequirement(id, props.times.length === this.rows, `times needs one row per pairs row`);
+    validateRequirement(
+      id,
+      props.parameters.length >= GPU_SPACE_TIME_PARAMETER_LENGTH,
+      `parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`
+    );
     validateCapacity(
       id,
       'maximumPermutations',
@@ -224,18 +220,22 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
       1,
       SPACE_TIME_MAXIMUM_PERMUTATIONS
     );
-    if (props.output.statistics.length < props.maximumPermutations + 1) {
-      throw new Error(`${id} output.statistics needs maximumPermutations + 1 rows`);
-    }
+    validateRequirement(
+      id,
+      props.output.statistics.length >= props.maximumPermutations + 1,
+      `output.statistics needs maximumPermutations + 1 rows`
+    );
     validateSpaceTimeStopping(
       id,
       props.stopAfterExceedances,
       props.maximumPermutations,
       props.output.permutationCount
     );
-    if (props.output.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
-      throw new Error(`${id} output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
-    }
+    validateRequirement(
+      id,
+      props.output.summary.length >= GPU_SPACE_TIME_SUMMARY_LENGTH,
+      `output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`
+    );
     validateTrajectoryOutputRanges(this.id, this.props.output);
     validateTrajectoryWritableDispatches(this.id, [
       {summary: props.output.summary, permutationCount: props.output.permutationCount}
@@ -253,14 +253,16 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
         props.pairs.status?.candidateOverflow
       ]
     );
-    if (
-      props.output.statistics.buffer === props.output.summary.buffer ||
-      (props.output.permutationCount &&
-        (props.output.permutationCount.buffer === props.output.statistics.buffer ||
-          props.output.permutationCount.buffer === props.output.summary.buffer))
-    ) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    validateRequirement(
+      id,
+      !(
+        props.output.statistics.buffer === props.output.summary.buffer ||
+        (props.output.permutationCount &&
+          (props.output.permutationCount.buffer === props.output.statistics.buffer ||
+            props.output.permutationCount.buffer === props.output.summary.buffer))
+      ),
+      `outputs must use separate buffers`
+    );
   }
 
   /**
@@ -272,12 +274,16 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
    * @param settings The per-frame settings packed into `parameters` (validated as
    * `getGPUSpaceTimeParameterValues` does; the count is clamped to `maximumPermutations`).
    */
-  getInferenceMetadata(settings: GPUSpaceTimeSettings): GPUSpaceTimeInferenceMetadata {
+  getInferenceMetadata(
+    settings: GPUSpaceTimeSettings,
+    summaryField: GPUSpaceTimePValueField = 'pseudoPGreater'
+  ): GPUSpaceTimeInferenceMetadata {
     return getGPUSpaceTimeInferenceMetadata(
       'knox',
       settings,
       this.props.maximumPermutations,
-      this.props.stopAfterExceedances
+      this.props.stopAfterExceedances,
+      summaryField
     );
   }
 

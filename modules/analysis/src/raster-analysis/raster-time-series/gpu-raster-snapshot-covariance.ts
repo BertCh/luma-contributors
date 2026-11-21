@@ -17,10 +17,15 @@ import {
   getFixedPointHeadroomBits
 } from '../../analysis-core/kernels/fixed-point-accumulator';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getRasterTemporalCenteringBody,
+  RASTER_TEMPORAL_CENTERING_WGSL
+} from './raster-temporal-centering';
 import {
   RASTER_FINITE_WGSL,
   createRasterCountNodes,
@@ -63,6 +68,11 @@ export function getGPURasterSnapshotCovarianceParameterValues(
   target: Float32Array = new Float32Array(GPU_RASTER_SNAPSHOT_COVARIANCE_PARAMETER_LENGTH)
 ): Float32Array {
   const id = 'getGPURasterSnapshotCovarianceParameterValues';
+  validateRequirement(
+    id,
+    target.length >= GPU_RASTER_SNAPSHOT_COVARIANCE_PARAMETER_LENGTH,
+    `target must hold at least ${GPU_RASTER_SNAPSHOT_COVARIANCE_PARAMETER_LENGTH} float32 words; received ${target.length}`
+  );
   validateFiniteNumber(id, 'maximumValueMagnitude', settings.maximumValueMagnitude, 0);
   const magnitude = settings.maximumValueMagnitude;
   // Rounded up slightly so float32 rounding of a product cannot exceed the bound's exponent.
@@ -99,10 +109,17 @@ export type GPURasterSnapshotCovarianceProps = {
  * is removed first, and only cells with no missing sample contribute. Terms are `weight * anomaly
  * * anomaly`, so an area weight `w` is applied as `sqrt(w)` on each cell of the data matrix.
  *
- * The sum uses the shared fixed-point accumulator, per block of 256 cells and matrix entry, so it
+ * Temporal centering uses a first-sample anchor only when every subtraction is exact by Sterbenz;
+ * otherwise it uses zero, preserving small signed observations. A local 96-bit sum preserves
+ * temporal cancellation.
+ *
+ * The cross-cell sum uses the shared fixed-point accumulator, per block of 256 cells and matrix entry, so it
  * is independent of thread order and accurate past float32. The eigenproblem is deliberately not
  * here: read `covarianceWords` back and call `getGPURasterSnapshotEOFDecomposition` on the CPU
  * (no contributor reads back), then upload the temporal modes to `GPURasterEOFProjection`.
+ *
+ * The GPU route accepts at most 256 slices per cell. Accumulation requires
+ * `ceil(cellCount / 256) * sliceCount * (sliceCount + 1) / 2 <= 16,776,960` invocations.
  *
  * Per-frame: `parameters`. Compile-time: `cellCount`, `sliceCount`, which optional views exist.
  */
@@ -114,6 +131,17 @@ export class GPURasterSnapshotCovariance implements GPUCommandNodeProducer {
   constructor(readonly props: GPURasterSnapshotCovarianceProps) {
     const id = props.id ?? 'raster-snapshot-covariance';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'data', formats: ['float32']},
+      mask: {required: false, viewType: 'data', formats: ['uint32']},
+      weights: {required: false, viewType: 'data', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'output.covarianceWords': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.keptCellCount': {required: true, viewType: 'data', formats: ['uint32']}
+    });
+    // Capture constructor options/maps while preserving graph resource identities.
+    props = {...props, output: {...props.output}};
+    this.props = props;
     const {cellCount, sliceCount} = props;
     validateCapacity(id, 'cellCount', cellCount);
     validateCapacity(id, 'sliceCount', sliceCount, 2, MAXIMUM_SNAPSHOT_COVARIANCE_SLICE_COUNT);
@@ -171,6 +199,7 @@ export class GPURasterSnapshotCovariance implements GPUCommandNodeProducer {
     const {cellCount, sliceCount: slices, values, mask, weights, parameters, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const cellMeans = createTransientView(graph, `${id}-means`, 'float32', cellCount);
+    const cellAnchors = createTransientView(graph, `${id}-anchors`, 'float32', cellCount);
     const cellKept = createTransientView(graph, `${id}-kept`, 'uint32', cellCount);
     const weightExpression = weights ? 'weights[weightsOffset + cell]' : '1.0';
     return [
@@ -185,20 +214,17 @@ export class GPURasterSnapshotCovariance implements GPUCommandNodeProducer {
           ...(mask ? [rasterBinding('mask', mask)] : []),
           ...(weights ? [rasterBinding('weights', weights)] : []),
           rasterBinding('cellMeans', cellMeans, true),
+          rasterBinding('cellAnchors', cellAnchors, true),
           rasterBinding('cellKept', cellKept, true)
         ],
-        declarations: RASTER_FINITE_WGSL,
+        declarations: `${RASTER_FINITE_WGSL}
+${FIXED_POINT_WGSL}`,
         body: `let cell = index;
 let limit = parameters[parametersOffset + 1u];
 var kept = ${weightExpression} > 0.0 && ${weightExpression} <= 1.0;
-var total = 0.0;
-for (var slice = 0u; slice < ${slices}u; slice++) {
-  let source = cell * ${slices}u + slice;
-  let value = values[valuesOffset + source];
-  if (!finite(value) || abs(value) > limit ${mask ? '|| mask[maskOffset + source] == 0u' : ''}) { kept = false; break; }
-  total += value;
-}
-cellMeans[cellMeansOffset + cell] = select(0.0, total / ${slices}.0, kept);
+${getRasterTemporalCenteringBody(slices, 'cell', Boolean(mask))}
+cellMeans[cellMeansOffset + cell] = select(0.0, meanOffset, kept);
+cellAnchors[cellAnchorsOffset + cell] = anchor;
 cellKept[cellKeptOffset + cell] = select(0u, 1u, kept);`
       }),
       createFixedPointClearNode<Parameters>(graph, {
@@ -216,6 +242,7 @@ cellKept[cellKeptOffset + cell] = select(0u, 1u, kept);`
           rasterBinding('parameters', parameters),
           ...(weights ? [rasterBinding('weights', weights)] : []),
           rasterBinding('cellMeans', cellMeans),
+          rasterBinding('cellAnchors', cellAnchors),
           rasterBinding('cellKept', cellKept),
           {
             name: 'covarianceWords',
@@ -225,21 +252,26 @@ cellKept[cellKeptOffset + cell] = select(0u, 1u, kept);`
           }
         ],
         declarations: `${FIXED_POINT_WGSL}
-${getFixedPointAtomicAddWGSL('covarianceWords')}`,
+${getFixedPointAtomicAddWGSL('covarianceWords')}
+${RASTER_TEMPORAL_CENTERING_WGSL}`,
         body: `let entry = index % ${entryCount}u;
-let block = index / ${entryCount}u;
+let cellBlock = index / ${entryCount}u;
 var row = 0u;
 var remaining = entry;
 while (remaining >= ${slices}u - row) { remaining -= ${slices}u - row; row++; }
 let column = row + remaining;
 let unitExponent = i32(parameters[parametersOffset]);
+let meanUnitExponent = getFixedPointUnitExponent(getFixedPointExponentBits(parameters[parametersOffset + 1u]), ${getFixedPointHeadroomBits(slices)}u);
 var total = vec3<u32>(0u);
-let firstCell = block * ${SNAPSHOT_COVARIANCE_CELL_BLOCK}u;
+let firstCell = cellBlock * ${SNAPSHOT_COVARIANCE_CELL_BLOCK}u;
 let endCell = min(firstCell + ${SNAPSHOT_COVARIANCE_CELL_BLOCK}u, ${cellCount}u);
 for (var cell = firstCell; cell < endCell; cell++) {
   if (cellKept[cellKeptOffset + cell] == 0u) { continue; }
-  let mean = cellMeans[cellMeansOffset + cell];
-  let term = (${weightExpression}) * (values[valuesOffset + cell * ${slices}u + row] - mean) * (values[valuesOffset + cell * ${slices}u + column] - mean);
+  let meanOffset = cellMeans[cellMeansOffset + cell];
+  let anchor = cellAnchors[cellAnchorsOffset + cell];
+  let rowAnomaly = getRasterTemporalCenteredValue(values[valuesOffset + cell * ${slices}u + row], anchor, meanOffset, meanUnitExponent);
+  let columnAnomaly = getRasterTemporalCenteredValue(values[valuesOffset + cell * ${slices}u + column], anchor, meanOffset, meanUnitExponent);
+  let term = (${weightExpression}) * rowAnomaly * columnAnomaly;
   total = addFixedPoint(total, quantizeFixedPoint(term, unitExponent));
 }
 addFixedPointToCovarianceWords(entry, total);`

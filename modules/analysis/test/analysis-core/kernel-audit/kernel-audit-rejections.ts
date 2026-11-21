@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {KERNEL_AUDIT_REJECTION_CONTRACTS} from './kernel-audit-rejection-contracts';
 import {COREGIONALIZATION_FIT_REJECTIONS} from './rejections-coregionalization-fit';
 import type {KernelAuditRejection} from './kernel-audit-rejection-type';
 import {CELLS_AND_JOINS_REJECTIONS} from './rejections-cells-and-joins';
@@ -34,7 +35,7 @@ export type {KernelAuditRejection} from './kernel-audit-rejection-type';
  * compiles. Each has a passing companion case at exactly the documented maximum. The maxima are
  * sized to the core limits (128 MiB storage bindings, `capacity x lanes <= 2^32 - 1`).
  */
-export const KERNEL_AUDIT_REJECTIONS: readonly KernelAuditRejection[] = [
+const rejectionTables: readonly KernelAuditRejection[] = [
   ...DATAFRAME_REJECTIONS,
   ...COREGIONALIZATION_FIT_REJECTIONS,
   ...STX06_CHANGE_POINTS_STX07_SCAN_REJECTIONS,
@@ -58,6 +59,21 @@ export const KERNEL_AUDIT_REJECTIONS: readonly KernelAuditRejection[] = [
   ...POINTS_AND_REGIONS_REJECTIONS,
   ...URBAN_ECOLOGY_REJECTIONS
 ];
+
+/** Explicit contracts cover every rejection; adding a case requires a reviewed phase. */
+export const KERNEL_AUDIT_REJECTIONS: readonly KernelAuditRejection[] = rejectionTables.map(
+  rejection => {
+    const key = `${rejection.exportName} ${rejection.name}`;
+    const contract = (
+      KERNEL_AUDIT_REJECTION_CONTRACTS as Record<
+        string,
+        Pick<KernelAuditRejection, 'phase' | 'validation'>
+      >
+    )[key];
+    if (!contract) throw new Error(`Missing rejection contract: ${key}`);
+    return {...rejection, ...contract};
+  }
+);
 
 /**
  * Messages of the generic declaration guards (`createWGSLKernelNode`, `GPUCommandGraph` buffers,

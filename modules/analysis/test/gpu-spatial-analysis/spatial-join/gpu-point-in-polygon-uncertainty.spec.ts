@@ -91,7 +91,7 @@ it('GPUPointInPolygonJoin assigns near-collinear points and reports no uncertain
           'uint32',
           pointCount
         ),
-        featureCounts: importGraphBuffer(
+        polygonAssignmentCounts: importGraphBuffer(
           graph,
           'feature-counts',
           buffers.featureCounts,
@@ -179,7 +179,7 @@ it('GPUPointInPolygonJoin skips empty parts and short rings instead of rejecting
       candidateCapacity: points.length * 2,
       output: {
         pointFeatureIds: view('pointFeatureIds', 'uint32', points.length),
-        featureCounts: view('featureCounts', 'uint32', 2),
+        polygonAssignmentCounts: view('featureCounts', 'uint32', 2),
         status: {
           overflow: view('overflow', 'uint32', 1),
           uncertainCount: view('uncertainCount', 'uint32', 1)

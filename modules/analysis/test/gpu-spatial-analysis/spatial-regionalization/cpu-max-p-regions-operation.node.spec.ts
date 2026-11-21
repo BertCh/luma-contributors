@@ -8,7 +8,7 @@ import {
   CPUMaxPRegionsOperation
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/cpu-max-p-regions-operation';
 import {GPUMaxPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions-operation';
-import {GPU_MAX_P_STATUS} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions';
+import {GPU_MAX_P_STATUS_LAYOUT} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions';
 import {getPhilox4x32, PHILOX_PURPOSES} from '../../../src/analysis-core/kernels/philox-random';
 import {getCSRFromAdjacency} from './azp-batched-mirror';
 import {
@@ -21,7 +21,7 @@ import {
 } from './regionalization-operation-test-utils';
 
 it('names packed word five for successful improvement iterations', () => {
-  expect(GPU_MAX_P_STATUS.improvementIterationCount).toBe(5);
+  expect(GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount).toBe(5);
   const input = createMaxPRefinementInput(2);
   const original = computeMaxPRegionsOnCPU(input, {standardize: false, startCount: 1});
   const refined = computeMaxPRegionsOnCPU(input, {
@@ -29,7 +29,8 @@ it('names packed word five for successful improvement iterations', () => {
     startCount: 1,
     maximumIterations: 1
   });
-  expect(refined.status[GPU_MAX_P_STATUS.improvementIterationCount]).toBe(1);
+  expect(refined.status[GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount]).toBe(1);
+  expect(Array.from(refined.evidence.slice(2))).toEqual([1, 0, 1]);
   expect(refined.labels).not.toEqual(original.labels);
 });
 
@@ -42,9 +43,9 @@ it('stops seed-four refinement at the explicit one-round or two-round budget', (
       maximumIterations
     })
   );
-  expect(results.map(result => result.status[GPU_MAX_P_STATUS.improvementIterationCount])).toEqual([
-    1, 2
-  ]);
+  expect(
+    results.map(result => result.status[GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount])
+  ).toEqual([1, 2]);
   expect(Array.from(results[0].labels)).toEqual([1, 0, 0, 1, 1, 2, 1, 2, 2]);
   // The first round transfers row 4 to region 1; only the second transfers row 0 to region 0.
   expect(Array.from(results[1].labels)).toEqual([0, 0, 0, 1, 1, 2, 1, 2, 2]);
@@ -128,7 +129,7 @@ it('uses the seed for start selection and bijective equal-distance growth ties',
     );
     expect(expectedStart).toBeDefined();
     const result = computeMaxPRegionsOnCPU(input, {columnCount: 2, standardize: false});
-    expect(result.status[GPU_MAX_P_STATUS.selectedStart]).toBe(expectedStart);
+    expect(result.status[GPU_MAX_P_STATUS_LAYOUT.selectedStart]).toBe(expectedStart);
     if (expectedStart! > 0) nonzeroSelectionCount++;
 
     // In a four-row clique with threshold two, the first seed must take the row with smallest
@@ -195,15 +196,15 @@ it('keeps long growth incomplete at one step and completes it with a sufficient 
     startCount: 4,
     maximumGrowthSteps: 1
   });
-  expect(result.status[GPU_MAX_P_STATUS.feasible]).toBe(0);
-  expect(result.status[GPU_MAX_P_STATUS.infeasibleRegionCount]).toBeGreaterThan(0);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(0);
+  expect(result.status[GPU_MAX_P_STATUS_LAYOUT.infeasibleRegionCount]).toBeGreaterThan(0);
   const completed = computeMaxPRegionsOnCPU(input, {
     standardize: false,
     startCount: 4,
     maximumGrowthSteps: 128
   });
-  expect(completed.status[GPU_MAX_P_STATUS.feasible]).toBe(1);
-  expect(completed.status[GPU_MAX_P_STATUS.regionCount]).toBe(1);
+  expect(completed.status[GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(1);
+  expect(completed.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]).toBe(1);
   expect([...new Set(completed.labels)]).toEqual([0]);
   // Closed form SSD of 0..n-1: n(n²-1)/12, independent of growth or enclave order.
   expect(completed.objective[0]).toBe((rowCount * (rowCount ** 2 - 1)) / 12);
@@ -272,11 +273,11 @@ it('refines a construction with real constrained moves and reports successful ro
     const options = {standardize: false, startCount: 1};
     const original = computeMaxPRegionsOnCPU(input, options);
     const refined = computeMaxPRegionsOnCPU(input, {...options, maximumIterations: 1});
-    expect(refined.status[GPU_MAX_P_STATUS.regionCount]).toBe(
-      original.status[GPU_MAX_P_STATUS.regionCount]
+    expect(refined.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]).toBe(
+      original.status[GPU_MAX_P_STATUS_LAYOUT.regionCount]
     );
-    expect(refined.status[GPU_MAX_P_STATUS.feasible]).toBe(
-      original.status[GPU_MAX_P_STATUS.feasible]
+    expect(refined.status[GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(
+      original.status[GPU_MAX_P_STATUS_LAYOUT.feasible]
     );
     expect(refined.objective[0]).toBeLessThanOrEqual(original.objective[0]);
     let pairwiseObjective = 0;
@@ -293,7 +294,7 @@ it('refines a construction with real constrained moves and reports successful ro
             (input.values[first] - input.values[second]) ** 2 / (2 * rows.length);
     }
     expect(refined.objective[0]).toBe(Math.fround(pairwiseObjective));
-    if (refined.status[GPU_MAX_P_STATUS.improvementIterationCount] > 0) {
+    if (refined.status[GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount] > 0) {
       improvedCount++;
       expect(refined.objective[0]).toBeLessThan(original.objective[0]);
     }
@@ -333,8 +334,10 @@ it('keeps Max-P refinement inside the same two-hop admissibility rule as AZP', (
 });
 
 it('validates both operation forms at construction or GPU contributor lowering', () => {
-  const props = createMaxPProps();
+  const base = createMaxPProps();
+  const props = {...base, output: {...base.output, evidence: 'evidence'}};
   const input = createMaxPInput();
+  expect(new GPUMaxPRegionsOperation(props).outputs['evidence'].length).toBe(5);
   expect(new CPUMaxPRegionsOperation(props).contract.outputs).toEqual(
     new GPUMaxPRegionsOperation(props).contract.outputs
   );

@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {PENTAGON_POSITIONS, expectPentagonSupports} from './pentagon-support-oracle';
+import {computeVectorStraightSkeletonOnCPU} from '../../../src/gpu-spatial-analysis/geometry-refinement/cpu-vector-straight-skeleton-operation';
 import {expect, it} from 'vitest';
 import {
   GPUConvexStraightSkeleton,
@@ -284,5 +286,30 @@ it('in-place convex compaction preserves later events and source attribution', (
         Array.from(referenceSources.slice(matches[0] * 2, matches[0] * 2 + 2))
       );
     }
+  }
+});
+
+it('terminal oblique pentagon arc retains both closest supports on CPU and interpreted GPU', () => {
+  const fixture = createFixture(PENTAGON_POSITIONS, [0, 5], [0, 1]);
+  try {
+    executeCommandNodesOnCPU(fixture.nodes, fixture.memory);
+    expectPentagonSupports({
+      segments: fixture.memory.readFloat32(fixture.output.segments),
+      sourceEdges: fixture.memory.readUint32(fixture.output.sourceEdges),
+      status: fixture.memory.readUint32(fixture.output.status)
+    });
+    expectPentagonSupports(
+      computeVectorStraightSkeletonOnCPU(
+        {
+          positions: Float32Array.from(PENTAGON_POSITIONS),
+          ringOffsets: Uint32Array.of(0, 5),
+          polygonOffsets: Uint32Array.of(0, 1),
+          featureOffsets: Uint32Array.of(0, 1)
+        },
+        {maximumVertices: 32, maximumEvents: 64, segmentCapacity: 128, offsetDistance: 0.25}
+      )
+    );
+  } finally {
+    fixture.graph.device.destroy();
   }
 });

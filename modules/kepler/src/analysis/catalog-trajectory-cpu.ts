@@ -93,6 +93,7 @@ function computeCatalogLocations(
     centroids: stays.centroids,
     tracks: stays.ids,
     count: stays.count,
+    staypointStatus: {overflow: stays.overflow, candidateOverflow: stays.candidateOverflow},
     parameters: getGPUTrajectoryLocationsParameterValues({epsilon: getNumber(values, 'epsilon')})
   });
 }
@@ -120,6 +121,7 @@ function makeStaypointTable(
   );
   for (let row = 0; row < stays.count[0]; row++) {
     const fix = trajectory.fixes[stays.startRows[row]];
+    const location = locations?.locationIds[row];
     appendCatalogRow(table, {
       staypoint_id: row,
       track_id: trajectory.trackIds[stays.ids[row]],
@@ -128,7 +130,7 @@ function makeStaypointTable(
       start_time: fix.timestamp,
       end_time: trajectory.fixes[stays.finishRows[row]].timestamp,
       duration_seconds: stays.durations[row] / 1000,
-      location_id: locations?.locationIds[row] ?? null,
+      location_id: location === MISSING_IDENTIFIER ? null : (location ?? null),
       geometry: makeCatalogGeometryText(
         'Point',
         trajectory.frame.inverse(stays.centroids[row * 2], stays.centroids[row * 2 + 1])
@@ -153,19 +155,25 @@ export function runTrajectorySplit(trajectory: CatalogTrajectory, values: Trajec
     if (!categories.has(value)) categories.set(value, categories.size);
     return categories.get(value)!;
   });
+  const stays = mode === 'stop' ? computeCatalogStaypoints(trajectory, values) : undefined;
   const result = computeTrajectorySplitOnCPU(
     {
       ...trajectory,
       parameters: getGPUTrajectorySplitParameterValues({
         maximumGap: getNumber(values, 'maximumGap') * 1000
       }),
-      ...(mode === 'stop'
-        ? {staypointIds: computeCatalogStaypoints(trajectory, values).staypointIds}
+      ...(stays
+        ? {
+            staypointIds: stays.staypointIds,
+            staypointStatus: {overflow: stays.overflow, candidateOverflow: stays.candidateOverflow}
+          }
         : {}),
       ...(mode === 'value-change' ? {values: categoryValues} : {})
     },
     {mode, segmentCapacity: trajectory.fixes.length, rowCapacity: trajectory.fixes.length * 2}
   );
+  if (result.candidateOverflow[0])
+    throw new Error('Trajectory split input staypoints are incomplete.');
   if (result.overflow[0])
     throw new Error('Trajectory split capacity exceeded; no partial result published.');
   const groups = Array.from({length: result.count[0]}, (_, index) =>
@@ -191,9 +199,11 @@ export function runTrajectoryThinning(trajectory: CatalogTrajectory, values: Tra
     },
     {mode, capacity: trajectory.fixes.length}
   );
-  const rows = Array.from(result.rowIds.subarray(0, result.count[0]));
+  if (result.overflow[0] || result.candidateOverflow[0])
+    throw new Error('Trajectory thinning result is incomplete.');
+  const rows = Array.from(result.sourceRows.subarray(0, result.count[0]));
   const groups = getTrajectoryTrackRows(trajectory).map(group =>
-    group.filter(row => result.validity[row] !== 0)
+    group.filter(row => result.sourceSelectionMask[row] !== 0)
   );
   return makeTrajectoryOutput(
     trajectory,
@@ -204,6 +214,8 @@ export function runTrajectoryThinning(trajectory: CatalogTrajectory, values: Tra
 
 export function runTrajectoryStaypoints(trajectory: CatalogTrajectory, values: TrajectoryValues) {
   const stays = computeCatalogStaypoints(trajectory, values);
+  if (stays.overflow[0] || stays.candidateOverflow[0])
+    throw new Error('Trajectory staypoint result is incomplete.');
   return makeTrajectoryOutput(trajectory, [makeStaypointTable(trajectory, stays)], {
     staypointCount: stays.count[0]
   });
@@ -233,6 +245,7 @@ export function runTrajectorySegments(trajectory: CatalogTrajectory, values: Tra
 export function runTrajectoryLocations(trajectory: CatalogTrajectory, values: TrajectoryValues) {
   const stays = computeCatalogStaypoints(trajectory, values);
   const locations = computeCatalogLocations(trajectory, values, stays);
+  if (!locations.complete[0]) throw new Error('Trajectory location result is incomplete.');
   const table = makeCatalogTable(
     'trajectory-locations',
     'Trajectory locations',
@@ -315,6 +328,8 @@ export function runTrajectoryRecursions(trajectory: CatalogTrajectory, values: T
 
 export function runTrajectoryMobility(trajectory: CatalogTrajectory, values: TrajectoryValues) {
   const stays = computeCatalogStaypoints(trajectory, values);
+  if (stays.overflow[0] || stays.candidateOverflow[0])
+    throw new Error('Trajectory mobility input staypoints are incomplete.');
   const locations = computeCatalogLocations(trajectory, values, stays);
   const segments = computeCatalogSegments(trajectory, values, stays);
   const result = computeMobilityIndicatorsOnCPU(
@@ -326,6 +341,7 @@ export function runTrajectoryMobility(trajectory: CatalogTrajectory, values: Tra
         startRows: stays.startRows,
         durations: stays.durations,
         locationIds: locations.locationIds,
+        locationIterationLimitReached: locations.iterationLimitReached,
         count: stays.count,
         overflow: stays.overflow,
         candidateOverflow: stays.candidateOverflow
@@ -390,13 +406,15 @@ export function runTrajectoryMobility(trajectory: CatalogTrajectory, values: Tra
     result.waitingTimes.subarray(0, stays.count[0]),
     value => (Number.isFinite(value) ? value / 1000 : null)
   );
-  return makeTrajectoryOutput(trajectory, [table, stayTable]);
+  return makeTrajectoryOutput(trajectory, [table, stayTable], {
+    excludedLocationCount: result.excludedLocationCount[0]
+  });
 }
 
 export function runTrajectoryModalSplit(trajectory: CatalogTrajectory, values: TrajectoryValues) {
   const segments = computeCatalogSegments(trajectory, values);
-  const modeSpeedBreaks = values['modeSpeedBreaks'] as readonly number[];
-  if (!modeSpeedBreaks.length || modeSpeedBreaks.some(value => value <= 0))
+  const modeSpeedUpperBoundsFloat32 = values['modeSpeedUpperBoundsFloat32'] as readonly number[];
+  if (!modeSpeedUpperBoundsFloat32.length || modeSpeedUpperBoundsFloat32.some(value => value <= 0))
     throw new Error('Modal speed breaks must be positive and strictly ascending.');
   const metric = values['metric'] as 'count' | 'distance' | 'duration';
   const result = computeModalSplitOnCPU(
@@ -412,9 +430,9 @@ export function runTrajectoryModalSplit(trajectory: CatalogTrajectory, values: T
       }
     },
     {
-      modeCount: modeSpeedBreaks.length,
+      modeCount: modeSpeedUpperBoundsFloat32.length,
       metric,
-      modeSpeedBreaks: modeSpeedBreaks.map(value => value / 1000)
+      modeSpeedUpperBoundsFloat32: modeSpeedUpperBoundsFloat32.map(value => value / 1000)
     }
   );
   const table = makeCatalogTable('trajectory-modal-split', 'Modal split', {
@@ -424,13 +442,15 @@ export function runTrajectoryModalSplit(trajectory: CatalogTrajectory, values: T
     value: 'float64'
   });
   trajectory.trackIds.forEach((trackId, trackIndex) =>
-    modeSpeedBreaks.forEach((_, mode) =>
+    modeSpeedUpperBoundsFloat32.forEach((_, mode) =>
       appendCatalogRow(table, {
         track_id: trackId,
         mode,
         metric,
-        value: Number.isFinite(result.modalSplit[trackIndex * modeSpeedBreaks.length + mode])
-          ? result.modalSplit[trackIndex * modeSpeedBreaks.length + mode] /
+        value: Number.isFinite(
+          result.modalSplit[trackIndex * modeSpeedUpperBoundsFloat32.length + mode]
+        )
+          ? result.modalSplit[trackIndex * modeSpeedUpperBoundsFloat32.length + mode] /
             (metric === 'duration' ? 1000 : 1)
           : null
       })
@@ -454,7 +474,6 @@ export function prepareTrajectoryHomeRange(
   trajectory: CatalogTrajectory,
   values: TrajectoryValues
 ) {
-  if (trajectory.fixes.length < 2) throw new Error('Brownian bridge requires at least two fixes.');
   const padding = getNumber(values, 'padding');
   const horizontal = Array.from(trajectory.positions.filter((_, index) => index % 2 === 0));
   const vertical = Array.from(trajectory.positions.filter((_, index) => index % 2 === 1));
@@ -506,7 +525,9 @@ export function makeTrajectoryHomeRange(
   const [minimumX, minimumY, maximumX, maximumY] = grid.extent;
   const cellWidth = (maximumX - minimumX) / width;
   const cellHeight = (maximumY - minimumY) / height;
+  let hasPositiveDensity = false;
   grid.density.forEach((density, index) => {
+    if (density > 0) hasPositiveDensity = true;
     if (inside && !inside[index]) return;
     const left = minimumX + (index % width) * cellWidth;
     const bottom = minimumY + Math.floor(index / width) * cellHeight;
@@ -524,7 +545,12 @@ export function makeTrajectoryHomeRange(
       geometry: makeCatalogGeometryText('Polygon', [ring])
     });
   });
-  return makeTrajectoryOutput(trajectory, [table], {cellCount: table.rowCount});
+  return makeTrajectoryOutput(trajectory, [table], {
+    cellCount: table.rowCount,
+    gridWidth: width,
+    gridHeight: height,
+    empty: Number(!hasPositiveDensity)
+  });
 }
 
 export function runTrajectoryBrownianBridge(

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRefinementOutputLength} from './refinement-output-validation';
+import {snapshotRefinementSpatialContext} from './refinement-construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
 import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
@@ -19,6 +21,7 @@ import {
 import type {GPUConcaveHullProps} from '../concave-hull/gpu-concave-hull';
 import {
   validateSinglePackedView,
+  validateRequirement,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   getGraphOutputViews
@@ -66,31 +69,74 @@ export class GPURatioConcaveHull implements GPUCommandNodeProducer {
   readonly props: GPURatioConcaveHullProps;
   constructor(props: GPURatioConcaveHullProps) {
     this.id = props.id ?? 'ratio-concave-hull';
+    props = {
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotRefinementSpatialContext(props.spatialContext)}
+        : {}),
+      output: {...props.output, status: {...props.output.status}}
+    };
     this.props = props;
     const capacity = getDelaunayMaximumTriangleCount(props.positions.length);
-    if (!(Number.isFinite(props.ratio) && props.ratio >= 0 && props.ratio <= 1)) {
-      throw new Error('Invalid hull ratio');
-    }
+    validateRequirement(
+      {id: this.id, contributor: 'GPURatioConcaveHull'},
+      Number.isFinite(props.ratio) && props.ratio >= 0 && props.ratio <= 1,
+      `ratio must be finite and in [0, 1]; received ${String(props.ratio)}`,
+      {
+        code: 'NUMBER_RANGE',
+        path: 'ratio',
+        received: props.ratio,
+        expected: {minimum: 0, maximum: 1}
+      }
+    );
     validateCapacity(this.id, 'maximumIterations', props.maximumIterations ?? capacity, 0);
-    validateSinglePackedView(props.positions, ['float32x2'], this.id);
-    validateSinglePackedView(props.output.triangles, ['uint32x3'], this.id);
-    validateSinglePackedView(props.output.boundaryEdges, ['uint32x2'], this.id);
-    for (const view of [
-      props.output.triangleValidity,
-      props.output.edgeValidity,
-      props.output.status.converged
-    ]) {
-      validateSinglePackedView(view, ['uint32'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`, {
+      id: this.id,
+      contributor: 'GPURatioConcaveHull'
+    });
+    validateSinglePackedView(props.output.triangles, ['uint32x3'], `${this.id} output.triangles`, {
+      id: this.id,
+      contributor: 'GPURatioConcaveHull'
+    });
+    validateSinglePackedView(
+      props.output.boundaryEdges,
+      ['uint32x2'],
+      `${this.id} output.boundaryEdges`,
+      {id: this.id, contributor: 'GPURatioConcaveHull'}
+    );
+    for (const [path, view] of [
+      ['output.triangleValidity', props.output.triangleValidity],
+      ['output.edgeValidity', props.output.edgeValidity],
+      ['output.status.converged', props.output.status.converged]
+    ] as const) {
+      validateSinglePackedView(view, ['uint32'], `${this.id} ${path}`, {
+        id: this.id,
+        contributor: 'GPURatioConcaveHull'
+      });
     }
-    if (
-      props.output.triangles.length !== capacity ||
-      props.output.triangleValidity.length !== capacity ||
-      props.output.boundaryEdges.length !== capacity * 3 ||
-      props.output.edgeValidity.length !== capacity * 3 ||
-      props.output.status.converged.length !== 1
-    ) {
-      throw new Error('Hull output capacity mismatch');
+    for (const name of [
+      'triangles',
+      'triangleValidity',
+      'boundaryEdges',
+      'edgeValidity'
+    ] as const) {
+      const expected =
+        name === 'triangles' || name === 'triangleValidity' ? capacity : capacity * 3;
+      validateRefinementOutputLength(
+        {id: this.id, contributor: 'GPURatioConcaveHull'},
+        `output.${name}`,
+        props.output[name],
+        expected,
+        `getDelaunayMaximumTriangleCount(positions.length)${expected === capacity ? '' : ' * 3'}`
+      );
     }
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPURatioConcaveHull'},
+      'output.status.converged',
+      props.output.status.converged,
+      1,
+      'one convergence scalar'
+    );
     validateOutlineOutputPasses(
       this.id,
       {...props.output, status: undefined, converged: props.output.status.converged},

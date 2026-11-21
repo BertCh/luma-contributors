@@ -158,6 +158,57 @@ test('recipe-zonal-distribution matches the CPU order statistics', async () => {
   expect((cpu.tables[0].columns['median'] as unknown[])[3]).toBeNull();
 });
 
+test('SEAM-108: recipe-zonal-distribution refuses GPU statistics after assignment loss', async () => {
+  const device = await getDevice();
+  const binding = getBinding('recipe-zonal-distribution');
+  // 100,000 points in 41 identical squares: 4,100,000 bounding-box pairs exceed the adapter's
+  // 4,000,000 candidate cap, so the GPU zone assignment must report overflow.
+  const pointCount = 100000;
+  const next = makeGenerator(108);
+  const points: CatalogFeatureCollection = {
+    type: 'FeatureCollection',
+    features: Array.from({length: pointCount}, (_, index) => ({
+      geometry: {type: 'Point', coordinates: [1 + next() * 8, 1 + next() * 8]},
+      properties: {v: index % 7}
+    }))
+  };
+  const square = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+    [0, 0]
+  ];
+  const polygons: CatalogFeatureCollection = {
+    type: 'FeatureCollection',
+    features: Array.from({length: 41}, () => ({
+      geometry: {type: 'Polygon', coordinates: [square]},
+      properties: {}
+    }))
+  };
+  const result = await runCatalogOperationAsync(
+    binding,
+    {valueProperty: 'v', probabilities: [0.5], coordinateSystem: 'planar'},
+    {points, polygons},
+    {device}
+  );
+  expect(result.engine).toBe('cpu-reference');
+  expect(result.fallbackReason).toMatch(/zone-assignment\.(overflow|candidateOverflow)/);
+  expect(result.diagnostics.some(item => item.code === 'gpu-fallback')).toBe(true);
+  // Closed form: every point belongs to the first (smallest-row) square. Values index % 7 over
+  // 100,000 rows give 14,286 each of 0..4 and 14,285 each of 5 and 6, so the linear median at
+  // sorted positions 49,999 and 50,000 is 3 and the smallest most frequent value is 0.
+  const table = result.tables[0];
+  const rowCounts = table.columns['row_count'] as number[];
+  expect(rowCounts[0]).toBe(pointCount);
+  expect(rowCounts.slice(1).every(count => count === 0)).toBe(true);
+  expect(table.columns['valid_count'][0]).toBe(pointCount);
+  expect(table.columns['median'][0]).toBe(3);
+  expect(table.columns['quantile_0'][0]).toBe(3);
+  expect(table.columns['mode'][0]).toBe(0);
+  expect(table.columns['unique_count'][0]).toBe(7);
+});
+
 test('recipe-straight-line-catchments matches the CPU allocation and statistics', async () => {
   const device = await getDevice();
   const binding = getBinding('recipe-straight-line-catchments');

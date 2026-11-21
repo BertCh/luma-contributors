@@ -1585,7 +1585,8 @@ parameters.write(getGPUTerrainCastShadowParameterValues(
       {
         name: 'slope',
         type: 'GraphDataView<"float32"> | undefined',
-        description: 'Adds a surface-facing term (with aspect).'
+        description:
+          'Horn or compatible slope in degrees. Pass with aspect for the surface-facing term.'
       },
       {
         name: 'aspect',
@@ -1758,7 +1759,8 @@ parameters.write(getGPUSolarPositionParameterValues(
       {
         name: 'slope',
         type: 'GraphDataView<"float32"> | undefined',
-        description: 'Surface tilt; pass with aspect for the incidence angle.'
+        description:
+          'Horn or compatible slope in degrees. Pass with aspect for the incidence angle.'
       },
       parametersParameter,
       {
@@ -1840,11 +1842,6 @@ parameters.write(getGPUSolarIrradianceParameterValues({sampleCount: 96}));`,
         name: 'curvature',
         type: 'GraphDataView<"float32"> | undefined',
         description: 'Adds ridge and valley emphasis.'
-      },
-      {
-        name: 'imhofSwing',
-        type: 'boolean | undefined',
-        description: 'Swing the light azimuth with aspect, Imhof style.'
       },
       {
         name: 'output',

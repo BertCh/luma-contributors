@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateTrajectoryBindings,
   validateTrajectoryWritableDispatches,
@@ -14,11 +15,16 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  ERFC_VALUE_WGSL,
+  GET_NAN_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
   validateCapacity,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -108,6 +114,28 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
   readonly rowCount: number;
 
   constructor(props: GPUSpaceTimeCrossCorrelationProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'first',
+      'second',
+      'layout',
+      'cellCount',
+      'periodCount',
+      'lags',
+      'multipleTesting',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      lags: Object.freeze([...captured.lags]),
+      output: snapshotConstructionFields(captured.output, [
+        'correlations',
+        'pValues',
+        'adjustedPValues',
+        'pairCounts',
+        'testedCount'
+      ])
+    });
     this.id = props.id ?? 'space-time-cross-correlation';
     this.props = props;
     const id = this.id;
@@ -121,9 +149,11 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
       1,
       GPU_SPACE_TIME_CROSS_CORRELATION_MAXIMUM_LAGS
     );
-    if (props.layout !== 'period-major' && props.layout !== 'cell-major') {
-      throw new Error(`${id} layout must be 'period-major' or 'cell-major'`);
-    }
+    validateRequirement(
+      id,
+      props.layout === 'period-major' || props.layout === 'cell-major',
+      `layout must be 'period-major' or 'cell-major'`
+    );
     for (const lag of lags) {
       validateCapacity(
         id,
@@ -133,9 +163,7 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
         periodCount - GPU_SPACE_TIME_CROSS_CORRELATION_MINIMUM_PAIRS
       );
     }
-    if (new Set(lags).size !== lags.length) {
-      throw new Error(`${id} lags must be distinct`);
-    }
+    validateRequirement(id, new Set(lags).size === lags.length, `lags must be distinct`);
     this.rowCount = cellCount * lags.length;
     // All cube addresses are uint32; periods and signed lags are converted to i32 in WGSL.
     validateCapacity(id, 'cube rows', cellCount * periodCount);
@@ -243,14 +271,7 @@ const MINIMUM_PAIRS: u32 = ${GPU_SPACE_TIME_CROSS_CORRELATION_MINIMUM_PAIRS}u;
 ${GET_NAN_WGSL}
 ${IS_FINITE_VALUE_WGSL}
 ${SCALED_QUOTIENT_WGSL}
-// Numerical Recipes erfcc, relative error below 1.2e-7 for x >= 0.
-fn erfcPositive(x: f32) -> f32 {
-  let t = 1.0 / (1.0 + 0.5 * x);
-  let polynomial = -x * x - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 +
-    t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 +
-    t * (-0.82215223 + t * 0.17087277))))))));
-  return t * exp(polynomial);
-}`,
+${ERFC_VALUE_WGSL}`,
         body: `let cell = index / LAG_COUNT;
   let lagIndex = index % LAG_COUNT;
   var lagTable = array<i32, ${lags.length}>(${lags.map(lag => `${lag}`).join(', ')});
@@ -319,7 +340,7 @@ fn erfcPositive(x: f32) -> f32 {
     return;
   }
   let z = abs(0.5 * log((1.0 + correlation) / (1.0 - correlation))) * sqrt(f32(pairs) - 3.0);
-  pValues[pValuesOffset + index] = clamp(erfcPositive(z * 0.70710678), 0.0, 1.0);`
+  pValues[pValuesOffset + index] = clamp(erfcValue(z * 0.70710678), 0.0, 1.0);`
       })
     ];
     // Both branches count privately so pValues and testedCount may occupy disjoint ranges of
@@ -333,7 +354,7 @@ fn erfcPositive(x: f32) -> f32 {
           id: `${id}-adjust`,
           pValues: output.pValues,
           method: props.multipleTesting ?? 'benjamini-hochberg',
-          output: {adjustedPValues: output.adjustedPValues, testedCount}
+          output: {adjustedPValues: output.adjustedPValues, effectiveFamilySize: testedCount}
         }).getCommandNodes(graph)
       );
     } else if (testedCount) {

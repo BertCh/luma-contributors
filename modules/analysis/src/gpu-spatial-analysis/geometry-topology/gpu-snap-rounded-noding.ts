@@ -1,7 +1,12 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotLineFeatureGeometry,
+  createLineFeatureProvenanceNode,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {clamp} from '@math.gl/core';
 import {
@@ -43,8 +48,8 @@ import {
   getGPUSegmentIntersectionMaximumVertexCount
 } from '../segment-intersection/index';
 import {getBoundsReductionNodes} from '../hilbert-keys/bounds-reduction';
-import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 import {GPU_TOPOLOGY_NONE, type GPUNodedSegmentPort} from './topology-types';
+import {validateSupportedTopologyStatus} from './topology-status';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -93,10 +98,7 @@ export type GPUSnapRoundedNodingProps = {
   /** Planar only (default: native planar coordinates); a longitude-latitude context throws. */
   spatialContext?: GPUSpatialContext;
   /** Arbitrary finite planar linework, as for `GPULineNoding`. */
-  lines: GPUPackedGeometryPort<GPULineGeometryPort> & {
-    /** Optional source feature ID per line, written to `output.sourceFeatureIds`. */
-    sourceIds?: GraphDataView<'uint32'>;
-  };
+  lines: GPULineFeatureGeometry;
   /**
    * Snap grid, finite and positive, in coordinate units. The lattice step is the smallest power of
    * two that is at least `gridSize`, at least `2^-22` of the extent of the input and at least
@@ -192,7 +194,42 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
   constructor(props: GPUSnapRoundedNodingProps) {
     this.id = props.id ?? 'snap-rounded-noding';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
-    props = {...props, lines: snapshotSinglePartGeometryPort(this.id, 'lines', props.lines)};
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'lines',
+      'gridSize',
+      'intersectionCapacity',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(snapshot.output, [
+      'endpoints',
+      'latticeEndpoints',
+      'lattice',
+      'sourceFeatureIds',
+      'sourceRingIds',
+      'sourceEdgeIds',
+      'sourceStartParameters',
+      'sourceEndParameters',
+      'status'
+    ]);
+    validateSupportedTopologyStatus(this.id, outputSnapshot.status, 'output.status');
+    props = Object.freeze({
+      ...snapshot,
+      lines: snapshotLineFeatureGeometry(this.id, snapshot.lines),
+      output: Object.freeze({
+        ...outputSnapshot,
+        status: snapshotConstructionFields(outputSnapshot.status, [
+          'count',
+          'requiredCount',
+          'overflow',
+          'candidateOverflow',
+          'uncertainCount'
+        ])
+      })
+    });
     this.props = props;
     const {id} = this;
     const {lines, output} = props;
@@ -270,6 +307,7 @@ export class GPUSnapRoundedNoding implements GPUCommandNodeProducer {
       lines.positions,
       lines.lineOffsets,
       lines.sourceIds,
+      lines.featureOffsets,
       output.endpoints,
       output.latticeEndpoints,
       output.lattice,
@@ -955,9 +993,10 @@ fn pieceRow(index: u32) -> u32 {
       type: 'u32',
       access: 'read'
     };
-    const sourceIdBinding: WGSLKernelBinding[] = lines.sourceIds
-      ? [{name: 'inputSourceIds', view: lines.sourceIds, type: 'u32', access: 'read'}]
-      : [];
+    const sourceIdBinding: WGSLKernelBinding[] =
+      lines.sourceIds && !lines.featureOffsets
+        ? [{name: 'inputSourceIds', view: lines.sourceIds, type: 'u32', access: 'read'}]
+        : [];
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize`,
@@ -1068,7 +1107,7 @@ ${lineWGSL}`,
   if (row == ROW_NONE) { return; }
   let segment = orderedSegments[orderedSegmentsOffset + index];
   let line = lineOfVertex(segment);
-  sourceFeatureIds[sourceFeatureIdsOffset + row] = ${lines.sourceIds ? 'inputSourceIds[inputSourceIdsOffset + line]' : 'line'};
+  sourceFeatureIds[sourceFeatureIdsOffset + row] = ${lines.sourceIds && !lines.featureOffsets ? 'inputSourceIds[inputSourceIdsOffset + line]' : 'line'};
   sourceRingIds[sourceRingIdsOffset + row] = line;
   sourceEdgeIds[sourceEdgeIdsOffset + row] = segment;`
       }),
@@ -1178,6 +1217,16 @@ ${latticePointWGSL.replace(/fn segmentUsable[\s\S]*$/, '')}`,
   overflow[overflowOffset] = select(0u, 1u, required > OUTPUT_CAPACITY);`
       })
     );
+    if (lines.featureOffsets)
+      nodes.push(
+        createLineFeatureProvenanceNode(graph, {
+          id: `${id}-feature-provenance`,
+          geometry: lines,
+          partRows: output.sourceRingIds,
+          featureIds: output.sourceFeatureIds,
+          count: output.status.count
+        })
+      );
     return nodes;
   }
 }

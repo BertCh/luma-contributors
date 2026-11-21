@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 /**
  * WGSL helpers shared by the regionalization contributors. Every helper expects bindings named
  * `offsets` and `neighbors` (a CSR spatial-weights matrix) declared by `createWGSLKernelNode`.
@@ -52,10 +57,18 @@ export const REGIONALIZATION_NONE_WGSL = 'const NONE: u32 = 0xffffffffu;';
  * regionalization kernels. The order is total on distinct tuples, so the winner does not depend
  * on the reduction tree. `reduceArgmin` contains barriers: call it from uniform control flow
  * with every invocation of the workgroup. It returns the winning `value` to all invocations.
+ * `workgroupSize` must be a positive power of two; one lane is supported. Pad other candidate
+ * counts with losing tuples and use the next power of two so every reduction branch participates.
  *
  * @internal
  */
 export function getWorkgroupArgminWGSL(workgroupSize: number): string {
+  validateCapacity('getWorkgroupArgminWGSL', 'workgroupSize', workgroupSize);
+  validateRequirement(
+    'getWorkgroupArgminWGSL',
+    (workgroupSize & (workgroupSize - 1)) === 0,
+    'workgroupSize must be a power of two; pad candidates to the next power of two'
+  );
   return /* wgsl */ `
 var<workgroup> argminScores: array<f32, ${workgroupSize}>;
 var<workgroup> argminKeys: array<u32, ${workgroupSize}>;
@@ -70,7 +83,7 @@ fn reduceArgmin(lane: u32, score: f32, key: u32, value: u32) -> u32 {
   argminKeys[lane] = key;
   argminValues[lane] = value;
   workgroupBarrier();
-  for (var stride = ${workgroupSize / 2}u; stride > 0u; stride = stride / 2u) {
+  for (var stride = ${Math.floor(workgroupSize / 2)}u; stride > 0u; stride = stride / 2u) {
     if (lane < stride) {
       let other = lane + stride;
       if (isArgminBetter(argminScores[other], argminKeys[other], argminValues[other],

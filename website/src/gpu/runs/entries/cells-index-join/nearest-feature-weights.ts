@@ -27,7 +27,7 @@ export default defineOperationRun({
     return {points, index: createPointIndex(points), held: -1};
   },
   build(builder, inputs, values) {
-    const k = values['k'];
+    const k = values['neighborCount'];
     const slotCapacity = k + 1;
     const points = builder.upload('points', 'float32x2', inputs.points);
     const radius = builder.upload('radius', 'float32', Float32Array.of(1e6));
@@ -45,7 +45,7 @@ export default defineOperationRun({
         queries: {kind: 'points', positions: points.view},
         features: {kind: 'points', positions: points.view},
         radius: radius.view,
-        k: slotCapacity,
+        neighborCount: slotCapacity,
         output: {
           neighborIds: neighborIds.view,
           neighborRows: neighborRows.view,
@@ -68,7 +68,7 @@ export default defineOperationRun({
         neighborCounts: neighborCounts.view,
         neighborDistances: neighborDistances.view,
         slotCapacity,
-        k,
+        neighborCount: k,
         excludeSelf: true,
         weightType: values['weightType'] === 0 ? 'binary' : 'inverse-distance',
         power: values['power'],
@@ -128,7 +128,7 @@ export default defineOperationRun({
       return {
         focus: row,
         glyphs,
-        readout: `row ${row} · k ${values['k']} · Σ weights ${total.toFixed(2)}`
+        readout: `row ${row} · k ${values['neighborCount']} · Σ weights ${total.toFixed(2)}`
       };
     }
   },
@@ -148,7 +148,9 @@ export default defineOperationRun({
       // Binary rows sum to k; inverse-distance rows sum to about k / typical distance ^ power.
       range: [
         0,
-        values['weightType'] === 0 ? values['k'] + 0.5 : values['k'] * 12 ** values['power']
+        values['weightType'] === 0
+          ? values['neighborCount'] + 0.5
+          : values['neighborCount'] * 12 ** values['power']
       ],
       radius: 6
     }

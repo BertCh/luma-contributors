@@ -5,15 +5,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.spatial-weights-transform",
   "viewId": "formula-card",
-  "caption": "Formula Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, symmetrize, double and variance are separate variants. bound symbols: 4/4. structure met…",
-  "description": "Formula Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, symmetrize, double and variance are separate variants. bound symbols: 4/4. structure met…",
-  "llms": "Formula Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, symmetrize, double and variance are separate variants.\n\n- bound symbols: 4/4\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "caption": "Formula Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, average-reciprocal, double and variance are separate variants. bound symbols: 4/4. struc…",
+  "description": "Formula Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, average-reciprocal, double and variance are separate variants. bound symbols: 4/4. struc…",
+  "llms": "Formula Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, average-reciprocal, double and variance are separate variants.\n\n- bound symbols: 4/4\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
     "value": "4/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-weights-transform</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{w\\prime_{ij}}=\\term{input}{w_{ij}}\\term{scale}{s_i},\\quad\\term{scale}{s_i}=\\begin{cases}1/\\term{sum}{S_i}&amp;S_i&gt;0\\text{ and finite}\\\\0&amp;\\text{otherwise}\\end{cases},\\quad\\term{sum}{S_i}=\\sum_j\\term{input}{w_{ij}}</pre><p class=\"lens-ascii\">Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, symmetrize, double and variance are separate variants.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:spatial-weights-transform-row\" data-value=\"output\">output · output · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:geometry-measures-features\" data-value=\"input\">input · input · source</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:spatial-weights-transform-row\" data-value=\"scale\">scale · intermediate · scale</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:geometry-measures-features\" data-value=\"sum\">sum · intermediate · sum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-weights-transform</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{w\\prime_{ij}}=\\term{input}{w_{ij}}\\term{scale}{s_i},\\quad\\term{scale}{s_i}=\\begin{cases}1/\\term{sum}{S_i}&amp;S_i&gt;0\\text{ and finite}\\\\0&amp;\\text{otherwise}\\end{cases},\\quad\\term{sum}{S_i}=\\sum_j\\term{input}{w_{ij}}</pre><p class=\"lens-ascii\">Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, average-reciprocal, double and variance are separate variants.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:spatial-weights-transform-row\" data-value=\"output\">output · output · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:geometry-measures-features\" data-value=\"input\">input · input · source</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:spatial-weights-transform-row\" data-value=\"scale\">scale · intermediate · scale</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-transform-compiled:geometry-measures-features\" data-value=\"sum\">sum · intermediate · sum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -64,7 +64,7 @@
   },
   "formula": {
     "tex": "\\term{output}{w\\prime_{ij}}=\\term{input}{w_{ij}}\\term{scale}{s_i},\\quad\\term{scale}{s_i}=\\begin{cases}1/\\term{sum}{S_i}&S_i>0\\text{ and finite}\\\\0&\\text{otherwise}\\end{cases},\\quad\\term{sum}{S_i}=\\sum_j\\term{input}{w_{ij}}",
-    "ascii": "Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, symmetrize, double and variance are separate variants.",
+    "ascii": "Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, average-reciprocal, double and variance are separate variants.",
     "derivation": "curated"
   },
   "verdicts": [
@@ -89,8 +89,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:09.720Z",
-    "runId": "run-60ce65f6",
+    "date": "2026-11-20T23:51:29.727Z",
+    "runId": "run-7af534c9",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -98,7 +98,7 @@
     ]
   },
   "state": {
-    "runId": "run-60ce65f6",
+    "runId": "run-7af534c9",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

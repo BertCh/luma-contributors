@@ -109,7 +109,7 @@ it('GPURasterFractionalCoverage reads its affine from parameters and accepts neg
   expect(() =>
     getGPURasterFractionalCoverageParameterValues({...GRID, affine: [1, 2, 0, 2, 4, 0]})
   ).toThrow(
-    /^getGPURasterFractionalCoverageParameterValues grid.affine must be finite and invertible/
+    /^getGPURasterFractionalCoverageParameterValues grid\.affine must be invertible \(finite nonzero determinant\)/
   );
 });
 

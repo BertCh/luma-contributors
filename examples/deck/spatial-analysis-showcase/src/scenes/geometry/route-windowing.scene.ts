@@ -235,7 +235,7 @@ export default defineScene<RouteWindowingOptions>({
   snippet: state =>
     state.view === 'bounds'
       ? `graph.add(new GPUMinimumBounds({positions, labels, groupCount: 1,
-  maximumHullVertices: 256, output: {rectangleCorners, longestLines, diameters, bounds, hullSizes, status: {overflow}}}));`
+  maximumHullVertices: 256, output: {rectangleCorners, longestLines, diameters, sourceBounds: bounds, hullSizes, status: {overflow}}}));`
       : state.view === 'subdivision'
         ? `graph.add(new GPUSubdividePolygons({positions, ringOffsets, polygonOffsets, featureOffsets,
   method: '${state.method}', maximumVertices: 16, output: {positions: pieces, pieces: pieceMetadata, status}}));`

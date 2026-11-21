@@ -18,9 +18,9 @@ import {
   GPUPointDensity,
   GPUFocalStatistics,
   GPUInverseDistanceWeighting,
-  GPUHierarchicalDensityClustering,
-  GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT,
-  GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES,
+  GPUHDBSCAN,
+  GPU_HDBSCAN_MAXIMUM_ROW_COUNT,
+  GPU_HDBSCAN_MAXIMUM_SAMPLES,
   GPUSpatialKMeans,
   GPUKriging,
   GPU_FOCAL_STATISTICS_PARAMETER_LENGTH,
@@ -37,13 +37,13 @@ import {
   GPU_AZP_MAXIMUM_ITERATIONS,
   getGPUAZPMaximumTableWordCount,
   GPU_AZP_REGIONS_PARAMETER_LENGTH,
-  GPU_AZP_STATUS,
+  GPU_AZP_STATUS_LAYOUT,
   GPU_MAX_P_MAXIMUM_COLUMNS,
   GPU_MAX_P_MAXIMUM_ROUNDS,
   getGPUMaxPMaximumSlotCount,
   GPU_MAX_P_MAXIMUM_START_COUNT,
   GPU_MAX_P_REGIONS_PARAMETER_LENGTH,
-  GPU_MAX_P_STATUS,
+  GPU_MAX_P_STATUS_LAYOUT,
   GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
   GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS,
@@ -55,13 +55,13 @@ import {
   GPU_SKATER_REGIONS_PARAMETER_LENGTH,
   GPU_WARD_MAXIMUM_COLUMNS,
   GPU_WARD_REGIONS_PARAMETER_LENGTH,
-  GPU_WARD_STATUS,
-  GPUSpatialClustering,
+  GPU_WARD_STATUS_LAYOUT,
+  GPUDBSCAN,
   GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS,
   GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
   GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS,
   GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
+  GPU_DBSCAN_PARAMETER_LENGTH,
   GPUSimilarLocations,
   GPU_SEGREGATION_MAXIMUM_GROUPS,
   getGPUSegregationLayout,
@@ -74,10 +74,10 @@ import {
   getGPULocationAllocationMaximumDemandCount,
   getGPULocationAllocationMaximumSparseEntryCount,
   GPU_LOCATION_ALLOCATION_MAXIMUM_SWAP_ITERATIONS,
-  GPU_LOCATION_ALLOCATION_STATUS,
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT,
   GPURoseStatistic,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPUPycnophylactic,
+  GPUPycnophylacticInterpolation,
   GPURandomPointsInPolygon,
   getGPUPolygonTriangulationMaximumNodeCount,
   GPURandomPointsOnLine,
@@ -208,7 +208,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           const targets = 20;
           const capacity = ROWS;
           graph.add(
-            new GPUArealInterpolation({
+            context.construct(GPUArealInterpolation, {
               grid: makeGPURasterMetadata({width: ROWS, height: 1}),
               sourceZones: view('uint32', ROWS),
               targetZones: view('uint32', ROWS),
@@ -251,7 +251,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       const width = 20;
       const cells = width * 15;
       graph.add(
-        new GPUArealInterpolation({
+        context.construct(GPUArealInterpolation, {
           grid: makeGPURasterMetadata({width, height: 15}),
           sourceZones: view('uint32', cells),
           targetZones: view('uint32', cells),
@@ -276,9 +276,9 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUArealInterpolation',
     name: 'unweighted fast path',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPUArealInterpolation({
+        construct(GPUArealInterpolation, {
           grid: makeGPURasterMetadata({width: ROWS, height: 1}),
           sourceZones: view('uint32', ROWS),
           targetZones: view('uint32', ROWS),
@@ -305,12 +305,12 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     ([name, trim, below]): KernelAuditCase => ({
       exportName: 'GPUArealInterpolation',
       name: String(name),
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const cells = maximumRows(4) - Number(below);
         const pairs = trim === 0 ? maximumRows(4) - 1 : (1 << 24) - 1;
         const targets = 1 << 20;
         graph.add(
-          new GPUArealInterpolation({
+          construct(GPUArealInterpolation, {
             grid: makeGPURasterMetadata({width: cells, height: 1}),
             sourceZones: view('uint32', cells),
             targetZones: view('uint32', cells),
@@ -339,7 +339,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   ...(['rook', 'box'] as const).flatMap(kernel =>
     [false, true].map(
       (geographic): KernelAuditCase => ({
-        exportName: 'GPUPycnophylactic',
+        exportName: 'GPUPycnophylacticInterpolation',
         name: `every option ${kernel} ${geographic ? 'geographic' : 'planar'}`,
         build: ({graph, view}) => {
           const width = 20;
@@ -347,7 +347,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           const cells = width * height;
           const zoneCount = 9;
           graph.add(
-            new GPUPycnophylactic({
+            new GPUPycnophylacticInterpolation({
               grid: makeGPURasterMetadata({width, height}),
               zones: view('uint32', cells),
               zoneCount,
@@ -374,7 +374,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   ),
   ...(['rook', 'box'] as const).map(
     (kernel): KernelAuditCase => ({
-      exportName: 'GPUPycnophylactic',
+      exportName: 'GPUPycnophylacticInterpolation',
       name: `raster at the binding limit ${kernel}`,
       build: ({graph, view, maximumRows}) => {
         const width = 4096;
@@ -382,7 +382,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         const cells = width * height;
         const zoneCount = 1 << 20;
         graph.add(
-          new GPUPycnophylactic({
+          new GPUPycnophylacticInterpolation({
             grid: makeGPURasterMetadata({width, height}),
             zones: view('uint32', cells),
             zoneCount,
@@ -467,11 +467,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUHuffTradeAreas',
     name: 'every output',
-    build: ({graph, view, weights}) => {
+    build: ({graph, view, weights, construct}) => {
       const facilities = ROWS;
       const demand = 500;
       graph.add(
-        new GPUHuffTradeAreas({
+        construct(GPUHuffTradeAreas, {
           attractiveness: view('float32', facilities),
           demandWeights: {...weights(demand, 8), distances: view('float32', demand * 8)},
           facilityWeights: weights(facilities, 8),
@@ -494,14 +494,14 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         extraDemandRows === 0
           ? 'rows and slots at the binding limit'
           : 'normalization scratch one row above the binding limit',
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         // Stable normalization keeps four float32 words per demand row. Facility offsets and
         // probability slots retain their independent 4-byte binding maxima in both cases.
         const demandRows = maximumRows(16) + extraDemandRows;
         const facilityRows = maximumRows(4) - 1;
         const slots = maximumRows(4);
         graph.add(
-          new GPUHuffTradeAreas({
+          construct(GPUHuffTradeAreas, {
             attractiveness: view('float32', facilityRows),
             demandWeights: {
               offsets: view('uint32', demandRows + 1),
@@ -537,7 +537,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       const categories = 6;
       const capacity = ROWS;
       graph.add(
-        new GPUDotDensity({
+        context.construct(GPUDotDensity, {
           ...polygons(context, features),
           values: view('float32', features * categories),
           categoryCount: categories,
@@ -550,7 +550,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             dots: compact(context, capacity),
             categories: view('uint32', capacity),
             slotCounts: view('uint32', features * categories),
-            slotOffsets: view('uint32', features * categories),
+            slotStarts: view('uint32', features * categories),
             status: {failedCount: view('uint32', 1)}
           }
         })
@@ -566,7 +566,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       const categories = 8;
       const capacity = getGPUDotDensityMaximumCapacity(graph.device) + 1;
       graph.add(
-        new GPUDotDensity({
+        context.construct(GPUDotDensity, {
           ...polygons(context, features),
           values: view('float32', features * categories),
           categoryCount: categories,
@@ -578,7 +578,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             dots: compact(context, capacity, true),
             categories: view('uint32', capacity),
             slotCounts: view('uint32', features * categories),
-            slotOffsets: view('uint32', features * categories),
+            slotStarts: view('uint32', features * categories),
             status: {failedCount: view('uint32', 1)}
           }
         })
@@ -594,7 +594,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       const categories = 8;
       const capacity = getGPUDotDensityMaximumCapacity(graph.device);
       graph.add(
-        new GPUDotDensity({
+        context.construct(GPUDotDensity, {
           ...polygons(context, features),
           values: view('float32', features * categories),
           categoryCount: categories,
@@ -616,7 +616,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       const features = 40;
       const capacity = ROWS;
       graph.add(
-        new GPURandomPointsInPolygon({
+        context.construct(GPURandomPointsInPolygon, {
           ...polygons(context, features),
           counts: view('uint32', features),
           parameters: view('uint32', GPU_DOT_DENSITY_PARAMETER_LENGTH),
@@ -627,7 +627,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             positions: view('float32x2', capacity),
             dots: compact(context, capacity),
             slotCounts: view('uint32', features),
-            slotOffsets: view('uint32', features),
+            slotStarts: view('uint32', features),
             status: {failedCount: view('uint32', 1)}
           }
         })
@@ -643,7 +643,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       const features = Math.floor(getGPUPolygonTriangulationMaximumNodeCount(context.device) / 16);
       const capacity = 4096;
       graph.add(
-        new GPURandomPointsInPolygon({
+        context.construct(GPURandomPointsInPolygon, {
           ...polygons(context, features, 4),
           counts: view('uint32', features),
           parameters: view('uint32', GPU_DOT_DENSITY_PARAMETER_LENGTH),
@@ -652,7 +652,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             positions: view('float32x2', capacity),
             dots: compact(context, capacity),
             slotCounts: view('uint32', features),
-            slotOffsets: view('uint32', features),
+            slotStarts: view('uint32', features),
             status: {failedCount: view('uint32', 1)}
           }
         })
@@ -669,7 +669,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         Math.floor(getGPUPolygonTriangulationMaximumNodeCount(context.device) / 16) + 1;
       const capacity = 4096;
       graph.add(
-        new GPURandomPointsInPolygon({
+        context.construct(GPURandomPointsInPolygon, {
           ...polygons(context, features, 4),
           counts: view('uint32', features),
           parameters: view('uint32', GPU_DOT_DENSITY_PARAMETER_LENGTH),
@@ -678,7 +678,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             positions: view('float32x2', capacity),
             dots: compact(context, capacity),
             slotCounts: view('uint32', features),
-            slotOffsets: view('uint32', features),
+            slotStarts: view('uint32', features),
             status: {failedCount: view('uint32', 1)}
           }
         })
@@ -899,11 +899,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (operation): KernelAuditCase => ({
       exportName: 'GPULocationAllocation',
       name: `every option ${operation}`,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const facilities = 40;
         const demand = 120;
         graph.add(
-          new GPULocationAllocation({
+          construct(GPULocationAllocation, {
             costs: view('float32', facilities * demand),
             facilityCount: facilities,
             demandWeights: view('float32', demand),
@@ -918,7 +918,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
               assignments: view('uint32', demand),
               assignedCosts: view('float32', demand),
               objective: view('float32', 1),
-              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
             }
           })
         );
@@ -929,7 +929,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (operation): KernelAuditCase => ({
       exportName: 'GPULocationAllocation',
       name: `facilities and demand at the documented maximum ${operation}`,
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const swapping = operation !== 'set-covering';
         // The swap phase allows maximumFacilityCount * facilityCount <= 2^24.
         const facilities = swapping
@@ -941,7 +941,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         const maximumFacilities = 4096;
         const demand = Math.floor(maximumRows(4) / facilities);
         graph.add(
-          new GPULocationAllocation({
+          construct(GPULocationAllocation, {
             costs: view('float32', facilities * demand),
             facilityCount: facilities,
             demandWeights: view('float32', demand),
@@ -956,7 +956,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
               assignments: view('uint32', demand),
               assignedCosts: view('float32', demand),
               objective: view('float32', 1),
-              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
             }
           })
         );
@@ -966,10 +966,10 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPULocationAllocation',
     name: 'facilities above the maximum set-covering',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const facilities = getGPULocationAllocationMaximumFacilityCount(graph.device) + 1;
       graph.add(
-        new GPULocationAllocation({
+        construct(GPULocationAllocation, {
           costs: view('float32', facilities),
           facilityCount: facilities,
           demandWeights: view('float32', 1),
@@ -981,7 +981,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             assignments: view('uint32', 1),
             assignedCosts: view('float32', 1),
             objective: view('float32', 1),
-            status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+            status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
           }
         })
       );
@@ -992,11 +992,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (operation): KernelAuditCase => ({
       exportName: 'GPULocationAllocation',
       name: `every option sparse ${operation}`,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const facilities = 40;
         const demand = 120;
         graph.add(
-          new GPULocationAllocation({
+          construct(GPULocationAllocation, {
             sparseCosts: {
               offsets: view('uint32', demand + 1),
               facilities: view('uint32', 600),
@@ -1015,7 +1015,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
               assignments: view('uint32', demand),
               assignedCosts: view('float32', demand),
               objective: view('float32', 1),
-              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
             }
           })
         );
@@ -1026,7 +1026,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (operation): KernelAuditCase => ({
       exportName: 'GPULocationAllocation',
       name: `sparse entries and demand at the documented maximum ${operation}`,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const swapping = operation !== 'set-covering';
         // The swap phase allows maximumFacilityCount * facilityCount <= 2^24; every step is an
         // unrolled set of command nodes, so the step count stays at 4096 (see the dense case).
@@ -1034,7 +1034,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         const demand = getGPULocationAllocationMaximumDemandCount(graph.device);
         const entries = getGPULocationAllocationMaximumSparseEntryCount(graph.device);
         graph.add(
-          new GPULocationAllocation({
+          construct(GPULocationAllocation, {
             sparseCosts: {
               offsets: view('uint32', demand + 1),
               facilities: view('uint32', entries),
@@ -1053,7 +1053,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
               assignments: view('uint32', demand),
               assignedCosts: view('float32', demand),
               objective: view('float32', 1),
-              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+              status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
             }
           })
         );
@@ -1063,12 +1063,12 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPULocationAllocation',
     name: 'sparse entries above the maximum',
-    build: ({graph, view}) => {
+    build: ({graph, view, construct}) => {
       const facilities = 4096;
       const demand = 1024;
       const entries = getGPULocationAllocationMaximumSparseEntryCount(graph.device) + 1;
       graph.add(
-        new GPULocationAllocation({
+        construct(GPULocationAllocation, {
           sparseCosts: {
             offsets: view('uint32', demand + 1),
             facilities: view('uint32', entries),
@@ -1081,7 +1081,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             selectedFacilities: view('uint32', facilities),
             assignments: view('uint32', demand),
             objective: view('float32', 1),
-            status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS.length)
+            status: view('uint32', GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
           }
         })
       );
@@ -1307,9 +1307,9 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       return {
         exportName: 'GPUKernelDensity',
         name: `every output ${kernel} ${edgeCorrection} ${normalization} ${bandwidthRule ?? 'fixed'}`,
-        build: ({graph, view}) =>
+        build: ({graph, view, construct}) =>
           graph.add(
-            new GPUKernelDensity({
+            construct(GPUKernelDensity, {
               positions: view('float32x2', 5000),
               weights: view('float32', 5000),
               parameters: view('float32', GPU_KERNEL_DENSITY_PARAMETER_LENGTH),
@@ -1342,11 +1342,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       ([name, indexGridSize]): KernelAuditCase => ({
         exportName: 'GPUKernelDensity',
         name,
-        build: ({graph, view, maximumRows}) => {
+        build: ({graph, view, maximumRows, construct}) => {
           const width = 8192;
           const height = Math.floor(maximumRows(4) / width);
           graph.add(
-            new GPUKernelDensity({
+            construct(GPUKernelDensity, {
               positions: view('float32x2', maximumRows(8)),
               weights: view('float32', maximumRows(8)),
               parameters: view('float32', GPU_KERNEL_DENSITY_PARAMETER_LENGTH),
@@ -1429,20 +1429,25 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     }
   },
   // Similar locations
-  ...(['zscore', 'rank'] as const).map(
+  ...(['z-score', 'rank'] as const).map(
     (standardization): KernelAuditCase => ({
       exportName: 'GPUSimilarLocations',
       name: `every option ${standardization}`,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const rows = 500;
         const columns = 12;
         graph.add(
-          new GPUSimilarLocations({
+          construct(GPUSimilarLocations, {
             values: view('float32', rows * columns),
             columnCount: columns,
             mask: view('uint32', rows),
             referenceMask: view('uint32', rows),
-            parameters: view('float32', getGPUSimilarLocationsParameterLength(columns)),
+            parameters: view(
+              'float32',
+              getGPUSimilarLocationsParameterLength(
+                Math.min(columns, GPU_SIMILAR_LOCATIONS_MAXIMUM_COLUMN_COUNT)
+              )
+            ),
             standardization,
             resultCapacity: rows,
             output: {
@@ -1456,14 +1461,14 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       }
     })
   ),
-  ...(['zscore', 'rank'] as const).map(
+  ...(['z-score', 'rank'] as const).map(
     (standardization): KernelAuditCase => ({
       exportName: 'GPUSimilarLocations',
       name: `rows and results at the binding limit ${standardization}`,
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const rows = maximumRows(4);
         graph.add(
-          new GPUSimilarLocations({
+          construct(GPUSimilarLocations, {
             values: view('float32', rows),
             columnCount: 1,
             mask: view('uint32', rows),
@@ -1492,13 +1497,18 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     ([name, columns]): KernelAuditCase => ({
       exportName: 'GPUSimilarLocations',
       name,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         graph.add(
-          new GPUSimilarLocations({
+          construct(GPUSimilarLocations, {
             values: view('float32', columns),
             columnCount: columns,
             referenceMask: view('uint32', 1),
-            parameters: view('float32', getGPUSimilarLocationsParameterLength(columns)),
+            parameters: view(
+              'float32',
+              getGPUSimilarLocationsParameterLength(
+                Math.min(columns, GPU_SIMILAR_LOCATIONS_MAXIMUM_COLUMN_COUNT)
+              )
+            ),
             standardization: 'rank',
             resultCapacity: 1,
             output: {
@@ -1520,16 +1530,16 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       {geographic: true, denseBoxShortcut: false}
     ].map(
       ({geographic, denseBoxShortcut}): KernelAuditCase => ({
-        exportName: 'GPUSpatialClustering',
+        exportName: 'GPUDBSCAN',
         name: `every output ${geographic ? 'geographic' : 'planar'} ${sumOrder} dense ${denseBoxShortcut}`,
         build: context => {
           const {graph, view} = context;
           const rows = 5000;
           const capacity = 512;
           graph.add(
-            new GPUSpatialClustering({
+            context.construct(GPUDBSCAN, {
               positions: view('float32x2', rows),
-              parameters: view('float32', GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH),
+              parameters: view('float32', GPU_DBSCAN_PARAMETER_LENGTH),
               gridSize: [128, 128],
               sourceIds: view('uint32', rows),
               sumOrder,
@@ -1541,7 +1551,6 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
                 coreFlags: view('uint32', rows),
                 clusterCount: view('uint32', 1),
                 clusters: compact(context, capacity),
-                drawInstanceCount: view('uint32', 1),
                 clusterSizes: view('uint32', capacity),
                 clusterCentroids: view('float32x2', capacity)
               }
@@ -1565,7 +1574,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       ] as const
     ).map(
       ([gridName, gridSize]): KernelAuditCase => ({
-        exportName: 'GPUSpatialClustering',
+        exportName: 'GPUDBSCAN',
         name: `rows and clusters, ${gridName} ${variant}`,
         build: context => {
           const {graph, view, maximumRows} = context;
@@ -1573,9 +1582,9 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           const rows = variant.includes('below') ? 2 ** 24 - 1 : maximumRows(8);
           const capacity = variant.includes('below') ? 2 ** 24 - 1 : maximumRows(8);
           graph.add(
-            new GPUSpatialClustering({
+            context.construct(GPUDBSCAN, {
               positions: view('float32x2', rows),
-              parameters: view('float32', GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH),
+              parameters: view('float32', GPU_DBSCAN_PARAMETER_LENGTH),
               gridSize,
               sourceIds: view('uint32', rows),
               sumOrder,
@@ -1586,7 +1595,6 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
                 coreFlags: view('uint32', rows),
                 clusterCount: view('uint32', 1),
                 clusters: compact(context, capacity),
-                drawInstanceCount: view('uint32', 1),
                 clusterSizes: view('uint32', capacity),
                 clusterCentroids: view('float32x2', capacity)
               }
@@ -1597,21 +1605,21 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     )
   ),
   // K-means
-  // ---------------------------------------------------------------- GPUHierarchicalDensityClustering
+  // ---------------------------------------------------------------- GPUHDBSCAN
   ...[
     {name: 'small', rows: 5000, minimumSamples: 5},
     {
       name: 'rows at the maximum',
-      rows: GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT,
-      minimumSamples: GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES
+      rows: GPU_HDBSCAN_MAXIMUM_ROW_COUNT,
+      minimumSamples: GPU_HDBSCAN_MAXIMUM_SAMPLES
     }
   ].map(
     ({name, rows, minimumSamples}): KernelAuditCase => ({
-      exportName: 'GPUHierarchicalDensityClustering',
+      exportName: 'GPUHDBSCAN',
       name: `${name} every output`,
       build: ({graph, view}) =>
         graph.add(
-          new GPUHierarchicalDensityClustering({
+          new GPUHDBSCAN({
             positions: view('float32x2', rows),
             minimumClusterSize: 2,
             minimumSamples,
@@ -1646,7 +1654,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         graph.add(
           new GPUSpatialKMeans({
             positions: view('float32x2', rows),
-            k,
+            clusterCount: k,
             maximumIterations: GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
             parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
             initialization,
@@ -1674,7 +1682,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         graph.add(
           new GPUSpatialKMeans({
             positions: view('float32x2', rows),
-            k,
+            clusterCount: k,
             maximumIterations: GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
             parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
             initialization,
@@ -1702,9 +1710,9 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       (neighbors): KernelAuditCase => ({
         exportName: 'GPUInverseDistanceWeighting',
         name: `every output ${geographic ? 'geographic' : 'planar'} ${neighbors} neighbors`,
-        build: ({graph, view}) =>
+        build: ({graph, view, construct}) =>
           graph.add(
-            new GPUInverseDistanceWeighting({
+            construct(GPUInverseDistanceWeighting, {
               positions: view('float32x2', 5000),
               values: view('float32', 5000),
               mask: view('uint32', 5000),
@@ -1729,11 +1737,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     ([name, indexGridSize]): KernelAuditCase => ({
       exportName: 'GPUInverseDistanceWeighting',
       name,
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const width = 8192;
         const height = Math.floor(maximumRows(4) / width);
         graph.add(
-          new GPUInverseDistanceWeighting({
+          construct(GPUInverseDistanceWeighting, {
             positions: view('float32x2', maximumRows(8)),
             values: view('float32', maximumRows(8)),
             mask: view('uint32', maximumRows(8)),
@@ -1757,10 +1765,10 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       (crossValidation): KernelAuditCase => ({
         exportName: 'GPUKriging',
         name: `every output ${geographic ? 'geographic' : 'planar'} ${crossValidation ? 'cross validation' : 'grid only'} 16 neighbors`,
-        build: ({graph, view}) => {
+        build: ({graph, view, construct}) => {
           const samples = 5000;
           graph.add(
-            new GPUKriging({
+            construct(GPUKriging, {
               positions: view('float32x2', samples),
               values: view('float32', samples),
               mask: view('uint32', samples),
@@ -1799,12 +1807,12 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     ([name, indexGridSize]): KernelAuditCase => ({
       exportName: 'GPUKriging',
       name,
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const width = 8192;
         const height = Math.floor(maximumRows(4) / width);
         const samples = maximumRows(8);
         graph.add(
-          new GPUKriging({
+          construct(GPUKriging, {
             positions: view('float32x2', samples),
             values: view('float32', samples),
             mask: view('uint32', samples),
@@ -1974,11 +1982,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (columnCount): KernelAuditCase => ({
       exportName: 'GPUSkaterRegions',
       name: `every output ${columnCount} columns 64 regions`,
-      build: ({graph, view, weights}) => {
+      build: ({graph, view, weights, construct}) => {
         const rows = 1000;
         const regions = 64;
         graph.add(
-          new GPUSkaterRegions({
+          construct(GPUSkaterRegions, {
             weights: weights(rows, 8),
             treeEdgeFlags: view('uint32', rows * 8),
             componentLabels: view('uint32', rows),
@@ -2007,7 +2015,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     ([name, columnCount, excess]): KernelAuditCase => ({
       exportName: 'GPUSkaterRegions',
       name: `slots ${name} 1024 regions`,
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const maximumStatisticCount = getGPUSkaterMaximumStatisticCount(graph.device);
         // Arc statistics hold `2 + columnCount` floats per slot: slots x (2 + columnCount) is capped.
         const slots = Math.floor(maximumStatisticCount / (2 + columnCount)) + excess;
@@ -2015,7 +2023,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         // Each region is one unrolled cut step of command nodes, so the region count is kept at 1024.
         const regions = 1024;
         graph.add(
-          new GPUSkaterRegions({
+          construct(GPUSkaterRegions, {
             weights: {
               offsets: view('uint32', rows + 1),
               neighbors: view('uint32', slots),
@@ -2043,11 +2051,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (withWeights): KernelAuditCase => ({
       exportName: 'GPURegionPartitionEvaluation',
       name: `every output 32 columns ${withWeights ? 'with' : 'without'} weights`,
-      build: ({graph, view, weights}) => {
+      build: ({graph, view, weights, construct}) => {
         const rows = 1000;
         const columnCount = GPU_REGION_PARTITION_EVALUATION_MAXIMUM_COLUMNS;
         graph.add(
-          new GPURegionPartitionEvaluation({
+          construct(GPURegionPartitionEvaluation, {
             values: view('float32', rows * columnCount),
             columnCount,
             labels: view('uint32', rows),
@@ -2073,7 +2081,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     ([name, columnCount, excess]): KernelAuditCase => ({
       exportName: 'GPURegionPartitionEvaluation',
       name,
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const rows =
           Math.min(
             getGPURegionPartitionEvaluationMaximumRowCount(graph.device),
@@ -2084,7 +2092,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           Math.floor(maximumRows(4) / columnCount)
         );
         graph.add(
-          new GPURegionPartitionEvaluation({
+          construct(GPURegionPartitionEvaluation, {
             values: view('float32', rows * columnCount),
             columnCount,
             labels: view('uint32', rows),
@@ -2110,10 +2118,10 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       (columnCount): KernelAuditCase => ({
         exportName: 'GPUAZPRegions',
         name: `every option ${columnCount} columns ${extensive ? 'with' : 'without'} threshold`,
-        build: ({graph, view, weights}) => {
+        build: ({graph, view, weights, construct}) => {
           const rows = 1000;
           graph.add(
-            new GPUAZPRegions({
+            construct(GPUAZPRegions, {
               weights: weights(rows, 8),
               values: view('float32', rows * columnCount),
               columnCount,
@@ -2129,7 +2137,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
               output: {
                 labels: view('uint32', rows),
                 objective: view('float32', 1),
-                status: view('uint32', GPU_AZP_STATUS.length)
+                status: view('uint32', GPU_AZP_STATUS_LAYOUT.length)
               }
             })
           );
@@ -2141,13 +2149,13 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (excess): KernelAuditCase => ({
       exportName: 'GPUAZPRegions',
       name: excess ? 'slots above the maximum' : 'rows and slots at the maximum',
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const columnCount = GPU_AZP_MAXIMUM_COLUMNS;
         // The widest table: one region per row at the region record (columns + extensive + count).
         const rows = Math.floor(getGPUAZPMaximumTableWordCount(graph.device) / (columnCount + 2));
         const slots = getGPURegionalizationMaximumSlotCount(graph.device) + excess;
         graph.add(
-          new GPUAZPRegions({
+          construct(GPUAZPRegions, {
             weights: {
               offsets: view('uint32', rows + 1),
               neighbors: view('uint32', slots),
@@ -2166,7 +2174,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             output: {
               labels: view('uint32', rows),
               objective: view('float32', 1),
-              status: view('uint32', GPU_AZP_STATUS.length)
+              status: view('uint32', GPU_AZP_STATUS_LAYOUT.length)
             }
           })
         );
@@ -2179,10 +2187,10 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       (standardize): KernelAuditCase => ({
         exportName: 'GPUWardRegions',
         name: `every option ${columnCount} columns standardize ${standardize}`,
-        build: ({graph, view, weights}) => {
+        build: ({graph, view, weights, construct}) => {
           const rows = 1000;
           graph.add(
-            new GPUWardRegions({
+            construct(GPUWardRegions, {
               weights: weights(rows, 8),
               values: view('float32', rows * columnCount),
               columnCount,
@@ -2193,7 +2201,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
               output: {
                 labels: view('uint32', rows),
                 objective: view('float32', 1),
-                status: view('uint32', GPU_WARD_STATUS.length)
+                status: view('uint32', GPU_WARD_STATUS_LAYOUT.length)
               }
             })
           );
@@ -2204,11 +2212,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUWardRegions',
     name: 'every option mutual-nearest schedule 8 columns round-count status word',
-    build: ({graph, view, weights}) => {
+    build: ({graph, view, weights, construct}) => {
       const rows = 1000;
       const columnCount = GPU_WARD_MAXIMUM_COLUMNS;
       graph.add(
-        new GPUWardRegions({
+        construct(GPUWardRegions, {
           weights: weights(rows, 8),
           values: view('float32', rows * columnCount),
           columnCount,
@@ -2220,7 +2228,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           output: {
             labels: view('uint32', rows),
             objective: view('float32', 1),
-            status: view('uint32', GPU_WARD_STATUS.length + 1)
+            status: view('uint32', GPU_WARD_STATUS_LAYOUT.length + 1)
           }
         })
       );
@@ -2229,11 +2237,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPUWardRegions',
     name: 'distributed mutual-nearest selection 8192 rows',
-    build: ({graph, view, weights}) => {
+    build: ({graph, view, weights, construct}) => {
       const rows = 8192;
       const columnCount = GPU_WARD_MAXIMUM_COLUMNS;
       graph.add(
-        new GPUWardRegions({
+        construct(GPUWardRegions, {
           weights: weights(rows, 8),
           values: view('float32', rows * columnCount),
           columnCount,
@@ -2245,7 +2253,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
           output: {
             labels: view('uint32', rows),
             objective: view('float32', 1),
-            status: view('uint32', GPU_WARD_STATUS.length + 1)
+            status: view('uint32', GPU_WARD_STATUS_LAYOUT.length + 1)
           }
         })
       );
@@ -2255,13 +2263,13 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (excess): KernelAuditCase => ({
       exportName: 'GPUWardRegions',
       name: excess ? 'slots above the maximum' : 'rows and slots at the maximum',
-      build: ({graph, view, maximumRows}) => {
+      build: ({graph, view, maximumRows, construct}) => {
         const columnCount = GPU_WARD_MAXIMUM_COLUMNS;
         const rows = maximumRows(4 * (columnCount + 1));
         const slots = getGPURegionalizationMaximumSlotCount(graph.device) + excess;
         // Every merge iteration is unrolled into command nodes; 2048 is kept to stay buildable.
         graph.add(
-          new GPUWardRegions({
+          construct(GPUWardRegions, {
             weights: {
               offsets: view('uint32', rows + 1),
               neighbors: view('uint32', slots),
@@ -2276,7 +2284,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             output: {
               labels: view('uint32', rows),
               objective: view('float32', 1),
-              status: view('uint32', GPU_WARD_STATUS.length)
+              status: view('uint32', GPU_WARD_STATUS_LAYOUT.length)
             }
           })
         );
@@ -2289,11 +2297,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       (startCount): KernelAuditCase => ({
         exportName: 'GPUMaxPRegions',
         name: `every option ${startCount} starts ${maximumIterations} iterations`,
-        build: ({graph, view, weights}) => {
+        build: ({graph, view, weights, construct}) => {
           const rows = 1000;
           const columnCount = GPU_MAX_P_MAXIMUM_COLUMNS;
           graph.add(
-            new GPUMaxPRegions({
+            construct(GPUMaxPRegions, {
               weights: weights(rows, 8),
               values: view('float32', rows * columnCount),
               columnCount,
@@ -2310,7 +2318,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
               output: {
                 labels: view('uint32', rows),
                 objective: view('float32', 1),
-                status: view('uint32', GPU_MAX_P_STATUS.length)
+                status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
               }
             })
           );
@@ -2322,7 +2330,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
     (excess): KernelAuditCase => ({
       exportName: 'GPUMaxPRegions',
       name: excess ? 'slots above the maximum' : 'rows and slots at the maximum',
-      build: ({graph, view}) => {
+      build: ({graph, view, construct}) => {
         const columnCount = GPU_MAX_P_MAXIMUM_COLUMNS;
         // No row cap: the region table of every start (columnCount + 3 words per row) fills one
         // 128 MiB storage binding.
@@ -2332,7 +2340,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
         );
         const slots = getGPUMaxPMaximumSlotCount(graph.device) + excess;
         graph.add(
-          new GPUMaxPRegions({
+          construct(GPUMaxPRegions, {
             weights: {
               offsets: view('uint32', rows + 1),
               neighbors: view('uint32', slots),
@@ -2348,7 +2356,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             output: {
               labels: view('uint32', rows),
               objective: view('float32', 1),
-              status: view('uint32', GPU_MAX_P_STATUS.length)
+              status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
             }
           })
         );
@@ -2373,7 +2381,7 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             });
             graph.add(studyWindow);
             graph.add(
-              new GPUKernelDensity({
+              context.construct(GPUKernelDensity, {
                 studyWindow,
                 method,
                 kernel,

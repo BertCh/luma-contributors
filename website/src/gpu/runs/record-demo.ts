@@ -195,7 +195,7 @@ export function buildRelaxation(
       }
     };
     const scope = options.scope?.(iteration);
-    if (recorder && scope) recorder.withScope(scope, addIteration);
+    if (recorder && scope) recorder.withSynchronousScope(scope, addIteration);
     else addIteration();
 
     const entry: RelaxationIteration = {

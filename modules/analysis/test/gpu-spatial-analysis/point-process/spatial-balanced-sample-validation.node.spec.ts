@@ -27,3 +27,32 @@ it('rejects aliasing between sampling status and later-published frame IDs', () 
       })
   ).toThrow();
 });
+
+it('DEF-14 balanced sampling accepts resident-only seed and keeps its source explicit', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = {
+    positions: createTransientView(graph, 'resident-positions', 'float32x2', 2),
+    frameIds: createTransientView(graph, 'resident-frame', 'uint32', 2),
+    allocations: [{stratumId: 0, sampleCount: 1}],
+    bounds: [0, 0, 1, 1] as const,
+    parameters: createTransientView(graph, 'resident-parameters', 'uint32', 2),
+    output: {
+      frameIds: createTransientView(graph, 'resident-result', 'uint32', 1),
+      inclusionProbabilities: createTransientView(graph, 'resident-probability', 'float32', 1),
+      designWeights: createTransientView(graph, 'resident-weight', 'float32', 1),
+      status: createTransientView(graph, 'resident-status', 'uint32', 2)
+    }
+  };
+  for (const seed of [undefined, 3, 9]) {
+    const sample = new GPUSpatialBalancedSample({
+      ...props,
+      seed,
+      id: `resident-seed-${seed ?? 'view'}`
+    });
+    expect(() => sample.getCommandNodes(graph)).not.toThrow();
+    expect(sample.provenance.effectiveSeedSource).toBe('resident-parameters');
+    expect([...sample.getReplayParameters(Uint32Array.of(17, 0))]).toEqual([17, 0]);
+    expect(() => sample.getReplayParameters()).toThrow(/parameters/);
+  }
+  expect(() => new GPUSpatialBalancedSample({...props, parameters: undefined})).toThrow(/seed/);
+});

@@ -6,6 +6,7 @@ import {type Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {close, getMaximumLikelihoodReadback} from './regression-readback-test-utils';
 import {
   GPUGeneralizedGeographicallyWeightedRegression,
   GPUInstrumentalVariablesCovariance,
@@ -29,9 +30,11 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import reference from '../../oracles/fixtures/statistics-upstream.json';
+import {getGPUSpatialPanelErrorMaximumLikelihoodModelResult} from '../../../src/gpu-spatial-analysis/spatial-regression/spatial-panel-error-maximum-likelihood-model-result';
 import blockReference from '../../oracles/fixtures/statistics-blockcv.json';
+import {decodeGPUGeneralizedGeographicallyWeightedRegressionStatusFields} from '../../../src/gpu-spatial-analysis/spatial-regression/regression-status-decoders';
 
 async function setup() {
   const device = await getWebGPUTestDevice();
@@ -76,16 +79,6 @@ async function setup() {
     }
   };
 }
-function close(actual: ArrayLike<number>, expected: number[], tolerance = 2e-4) {
-  expected.forEach((value, index) =>
-    Number.isNaN(value)
-      ? expect(actual[index]).toBeNaN()
-      : expect(
-          Math.abs(actual[index] - value),
-          `element ${index}: ${actual[index]} vs ${value}`
-        ).toBeLessThan(tolerance)
-  );
-}
 
 function uploadWeights(
   input: Awaited<ReturnType<typeof setup>>['input'],
@@ -125,7 +118,7 @@ for (const method of ['HC0', 'HC1', 'HAC'] as const)
                   }
                 }
               : {}),
-            output: {covariance: covariance.view, status: status.view}
+            output: {covariance: covariance.view, status: {code: status.view}}
           })
         );
         context.run();
@@ -357,6 +350,31 @@ for (const overflow of [undefined, 0, 1])
       const values = await readFloat32(table.buffer);
       expect(values[4]).toBeCloseTo(data.coefficient, 3);
       expect(values[8]).toBeCloseTo(data.parameter, 3);
+      const readback = getMaximumLikelihoodReadback(
+        values,
+        await readFloat32(summary.buffer),
+        await readUint32(status.buffer)
+      );
+      expect(readback.summary[4]).toBeNaN();
+      expect(readback.summary[5]).toBeNaN();
+      const model = getGPUSpatialPanelErrorMaximumLikelihoodModelResult(readback, {
+        entityCount: data.weights.offsets.length - 1
+      });
+      // Independent NumPy full-matrix ML on the same float32 inputs (N=6, T=8):
+      // demean each entity; A=I-lambda*(I_T kron W); GLS beta=(AX)'(Ay)/(AX)'(AX).
+      // sigma2=||Ay-AX beta||^2/48; ll=-24*(log(2*pi*sigma2)+1)+8*logdet(I-lambda W).
+      // beta SE=sqrt(diag(sigma2*((AX)'(AX))^-1)); lambda SE uses R=W_NT*A^-1:
+      // [tr(R^2)+tr(R'R)-2*tr(R)^2/48]^-1/2. Script in R19 stream scratch/panel_reference.py.
+      expect(Number.isFinite(model.sigmaSquaredMaximumLikelihood)).toBe(true);
+      expect(model.sigmaSquaredMaximumLikelihood).toBeCloseTo(0.6186034758310681, 4);
+      expect(Number.isFinite(model.logLikelihood)).toBe(true);
+      expect(model.logLikelihood).toBeCloseTo(-56.58435095759835, 3);
+      close([values[5], values[9]], [0.12526433131261488, 0.1881232881994557], 0.0003);
+      expect(Array.from(values.slice(0, 4)).every(Number.isNaN)).toBe(true);
+      expect(model.degreesOfFreedom).toBe(40);
+      expect(model.akaikeInformationCriterion).toBeNull();
+      expect(model.schwarzCriterion).toBeNull();
+      expect(model.correctedAkaikeInformationCriterion).toBeNull();
       expect(Array.from(await readUint32(diagnosticStatus.buffer))).toEqual([0]);
       close(await readFloat32(tests.buffer), data.diagnostics, 0.003);
     } finally {
@@ -385,11 +403,11 @@ for (const scenario of ['reference', 'weights-overflow', 'variance-overflow'])
             data.values.map(value => value * (scenario === 'variance-overflow' ? 1e20 : 1))
           ),
           variableCount: 2,
-          maximumPermutations: 19,
+          permutationCount: 19,
           tail: 'esda-min-tail',
           output: {
             statistic: statistic.view,
-            pValues: probabilities.view,
+            pseudoPValues: probabilities.view,
             classes: classes.view,
             simulations: simulations.view
           }
@@ -802,3 +820,44 @@ for (const mode of ['spatial', 'buffer'] as const)
       context.destroy();
     }
   });
+
+for (const [name, response, expectedCode] of [
+  ['degenerate-response', [1, 1, 1, 1], 5],
+  ['separation', [0, 0, 1, 1], 6]
+] as const) {
+  it(`decodes GGWR device words for ${name}`, async () => {
+    const context = await setup();
+    const {graph, input, output} = context;
+    try {
+      const codes = output('uint32', 4);
+      graph.add(
+        new GPUGeneralizedGeographicallyWeightedRegression({
+          family: 'logistic',
+          positions: input('float32x2', Array(8).fill(0)),
+          predictors: input('float32', [-2, -1, 1, 2]),
+          response: input('float32', [...response]),
+          predictorCount: 1,
+          parameters: input('float32', [1, 1e-6]),
+          maximumIterations: 128,
+          output: {
+            coefficients: output('float32', 8).view,
+            fitted: output('float32', 4).view,
+            status: {codes: codes.view, iterationCount: output('uint32', 4).view}
+          }
+        })
+      );
+      context.run();
+      // All-one Bernoulli data has its maximum at the response boundary. For [0,0,1,1]
+      // the direction beta=(0,1) strictly separates the signs at x=[-2,-1,1,2].
+      const actual = await readUint32(codes.buffer);
+      expect(Array.from(actual)).toEqual(Array(4).fill(expectedCode));
+      expect(
+        Array.from(actual, decodeGPUGeneralizedGeographicallyWeightedRegressionStatusFields).map(
+          status => status.name
+        )
+      ).toEqual(Array(4).fill(name));
+    } finally {
+      context.destroy();
+    }
+  });
+}

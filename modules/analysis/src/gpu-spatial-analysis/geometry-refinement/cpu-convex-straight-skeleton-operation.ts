@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRefinementOperationProps} from './refinement-construction-snapshot';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
@@ -30,7 +32,12 @@ export type CPUConvexStraightSkeletonInput = {
 /** Output block dimensions and planar wavefront parameters. */
 export type CPUConvexStraightSkeletonOptions = Pick<
   ConvexStraightSkeletonOperationProps,
-  'maximumVertices' | 'segmentCapacity' | 'offsetDistance' | 'eventTolerance' | 'spatialContext'
+  | 'maximumVertices'
+  | 'maximumIterations'
+  | 'segmentCapacity'
+  | 'offsetDistance'
+  | 'eventTolerance'
+  | 'spatialContext'
 >;
 
 /** Fixed polygon blocks, including zero-filled unused capacity. */
@@ -38,7 +45,7 @@ export type CPUConvexStraightSkeletonResult = {
   segments: Float32Array;
   sourceEdges: Uint32Array;
   offsetPositions: Float32Array;
-  /** [writtenArcs, requiredArcs, offsetVertexCount, flags]; flags: input=1, capacity=2, numerical=8. */
+  /** [writtenArcs, requiredArcs, offsetVertexCount, flags]; flags: input=1, capacity=2, work=4, numerical=8. */
   status: Uint32Array;
 };
 
@@ -63,6 +70,8 @@ function getIntersection(left: WavefrontEdge, right: WavefrontEdge, time: number
 function validateOptions(id: string, options: CPUConvexStraightSkeletonOptions): void {
   const maximumVertices = options.maximumVertices ?? 32;
   validateCapacity(id, 'maximumVertices', maximumVertices, 3);
+  if (options.maximumIterations !== undefined)
+    validateCapacity(id, 'maximumIterations', options.maximumIterations, 0);
   validateCapacity(id, 'segmentCapacity', options.segmentCapacity ?? maximumVertices * 2);
   validateFiniteNumber(id, 'offsetDistance', options.offsetDistance, 0);
   validateFiniteNumber(id, 'eventTolerance', options.eventTolerance ?? 1e-5, 0);
@@ -78,7 +87,8 @@ function validateOptions(id: string, options: CPUConvexStraightSkeletonOptions):
  *
  * What differs from the GPU contributor:
  * - Arithmetic is float64, rounded once at output; near event/tolerance boundaries topology can differ.
- * - Collapse events run to completion; maximumIterations is ignored and budget flag 4 is never set.
+ * - Collapse events run to completion when maximumIterations is omitted; an explicit budget
+ *   binds at the same point as the contributor, after offset capture and before arc emission.
  * - The GPU's 64-vertex ceiling and 3e38 event-time sentinel are removed. maximumVertices still
  *   determines output block size; larger rings receive input flag 1, as on the GPU.
  * - Unused output rows are zeroed. The contributor leaves those rows untouched on reused buffers.
@@ -176,6 +186,7 @@ export function computeConvexStraightSkeletonOnCPU(
       required++;
     };
     let time = 0;
+    let iterations = 0;
     while (flags === 0 && edges.length >= 3) {
       count = edges.length;
       const eventTimes = edges.map((edge, vertex) => {
@@ -219,6 +230,10 @@ export function computeConvexStraightSkeletonOnCPU(
             (polygon * maximumVertices + vertex) * 2
           );
         }
+      }
+      if (iterations >= (options.maximumIterations ?? Infinity)) {
+        flags |= 4;
+        break;
       }
       const epsilon = eventTolerance * Math.max(1, Math.abs(nextTime));
       const removed = eventTimes.map(eventTime => eventTime <= nextTime + epsilon);
@@ -275,6 +290,7 @@ export function computeConvexStraightSkeletonOnCPU(
         };
       });
       time = nextTime;
+      iterations++;
     }
     if (required > segmentCapacity) flags |= 2;
     result.status.set(
@@ -285,9 +301,10 @@ export function computeConvexStraightSkeletonOnCPU(
   return result;
 }
 
-/** CPU twin: no iteration budget or 64-vertex ceiling; maximumVertices retains its layout role. */
+/** CPU twin: explicit iteration budgets bind; maximumVertices retains its layout role. */
 export class CPUConvexStraightSkeletonOperation extends GPUCPUOperation {
   constructor(props: ConvexStraightSkeletonOperationProps) {
+    props = snapshotRefinementOperationProps(props, 'convex');
     const id = props.id ?? 'convex-straight-skeleton';
     validateOptions(id, props);
     validateCapacity(id, 'polygonCount', props.polygonCount);

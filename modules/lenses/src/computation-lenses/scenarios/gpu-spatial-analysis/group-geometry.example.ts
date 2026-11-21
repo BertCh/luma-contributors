@@ -10,11 +10,11 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   getGPUGeographicDistributionParameterValues,
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPUGroupGeometry,
-  GPUSpatialClustering,
+  GPUDBSCAN,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUParameterBuffer,
@@ -49,8 +49,8 @@ export async function runExample(
   const clusteringParameters = new GPUParameterBuffer(graph.device, {
     id: 'clustering-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues({bounds, epsilon: 250, minimumPoints: 6})
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues({bounds, epsilon: 250, minimumSamples: 6})
   });
   const geometryParameters = new GPUParameterBuffer(graph.device, {
     id: 'geometry-parameters',
@@ -60,7 +60,7 @@ export async function runExample(
   });
   const labels = create('labels', 'uint32', observations.length);
   graph.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       spatialContext,
       positions: observations,
       parameters: clusteringParameters.importToGraph(graph),
@@ -74,7 +74,7 @@ export async function runExample(
   const medoidIndices = create('medoidIndices', 'uint32', count);
   const standardDistances = create('standardDistances', 'float32', count);
   // #region example
-  // labels: DBSCAN cluster ids from GPUSpatialClustering; noise (0xffffffff) is excluded
+  // labels: DBSCAN cluster ids from GPUDBSCAN; noise (0xffffffff) is excluded
   graph.add(
     new GPUGroupGeometry({
       spatialContext,

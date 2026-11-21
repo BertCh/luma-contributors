@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphVectorView, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {type GraphVectorView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
+  isGraphVectorView,
   getGraphViewChunks,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -114,11 +115,11 @@ export function validateRasterWritableDispatches(
     // Different vector chunk indices execute separately, so compare only matching indices.
     for (const [outputIndex, output] of dispatch.outputs.entries()) {
       for (const [chunkIndex, outputChunk] of getGraphViewChunks(output).entries()) {
-        if (output instanceof GraphVectorView && outputChunk.length === 0) continue;
+        if (isGraphVectorView(output) && outputChunk.length === 0) continue;
         for (const [inputIndex, input] of dispatch.inputs.entries()) {
           const inputChunks = getGraphViewChunks(input);
           const boundInputs =
-            input instanceof GraphVectorView && output instanceof GraphVectorView
+            isGraphVectorView(input) && isGraphVectorView(output)
               ? [inputChunks[chunkIndex]]
               : inputChunks;
           for (const inputChunk of boundInputs) {

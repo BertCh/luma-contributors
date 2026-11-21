@@ -353,9 +353,11 @@ function getOpenChains(
 
 function getSignedArea(positions: readonly [number, number][]): number {
   let doubledArea = 0;
+  const [originX, originY] = positions[0];
   for (let index = 0; index + 1 < positions.length; index++) {
     doubledArea +=
-      positions[index][0] * positions[index + 1][1] - positions[index + 1][0] * positions[index][1];
+      (positions[index][0] - originX) * (positions[index + 1][1] - originY) -
+      (positions[index + 1][0] - originX) * (positions[index][1] - originY);
   }
   return doubledArea * 0.5;
 }

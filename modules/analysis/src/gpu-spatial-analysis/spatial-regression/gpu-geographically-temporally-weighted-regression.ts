@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {LOCAL_REGRESSION_INTERCEPT_WGSL} from './local-regression-intercept-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+
+import {createGTWRIndexedSummaryNodes} from './gtwr-indexed-summary';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -28,6 +33,10 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {type GPUIterationStatusPort} from '../../analysis-core/contracts/status';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPU_GTWR_SEARCH_PARAMETER_LENGTH,
   createGTWRBandwidthSearchNodes,
@@ -165,7 +174,7 @@ export type GPUGeographicallyTemporallyWeightedRegressionOutput = {
   fitted: GraphDataView<'float32'>;
   /** Hat-matrix diagonal `S_ii` per row; NaN for excluded or singular rows. */
   hatDiagonal: GraphDataView<'float32'>;
-  /** Optional residual `y_i - fitted_i` per row. */
+  /** Optional residual per row, computed before restoring/rounding the response origin. */
   residuals?: GraphDataView<'float32'>;
   /**
    * Global summary with the layout of `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY`
@@ -223,6 +232,107 @@ export type GPUGeographicallyTemporallyWeightedRegressionProps = {
 
 const OPERATION = 'GPUGeographicallyTemporallyWeightedRegression';
 const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
+// Synchronous composition-only destinations; do not expose low-word scratch as a public port.
+const composedResidualCorrections = new WeakMap<
+  GPUGeographicallyTemporallyWeightedRegression,
+  GraphDataView<'float32'>
+>();
+
+/** @internal Build the dense initializer with its low residual words retained for backfitting. */
+export function createGTWRResidualCorrectionNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUGeographicallyTemporallyWeightedRegressionProps,
+  corrections: GraphDataView<'float32'>
+): readonly GPUCommandNode<Parameters>[] {
+  const contributor = new GPUGeographicallyTemporallyWeightedRegression(props);
+  composedResidualCorrections.set(contributor, corrections);
+  try {
+    return contributor.getCommandNodes(graph);
+  } finally {
+    composedResidualCorrections.delete(contributor);
+  }
+}
+
+/** Capture compile-time records while retaining the caller-owned GPU views. @internal */
+export function snapshotGTWRProps<
+  Props extends Pick<
+    GPUGeographicallyTemporallyWeightedRegressionProps,
+    'temporalContext' | 'spatialContext' | 'bandwidthSearch'
+  > & {output: {status?: GPUIterationStatusPort}}
+>(props: Props): Props {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'positions',
+    'times',
+    'temporalContext',
+    'spatialContext',
+    'predictors',
+    'predictorCount',
+    'response',
+    'mask',
+    'kernel',
+    'adaptive',
+    'searchStructure',
+    'gaussianCutoff',
+    'bandwidthSearch',
+    'parameters',
+    'iterationCount',
+    'output'
+  ] as (keyof Props)[]);
+  const context = snapshotConstructionFields(snapshot.temporalContext, [
+    'unit',
+    'epoch',
+    'encoding',
+    'timeZone',
+    'axis'
+  ]);
+  const axis = context.axis;
+  const axisKind = axis?.kind;
+  const step = axisKind === 'regular' ? axis.step : undefined;
+  const output = snapshotConstructionFields<Props['output']>(snapshot.output, [
+    'coefficients',
+    'fitted',
+    'residuals',
+    'hatDiagonal',
+    'localStatus',
+    'summary',
+    'scores',
+    'selectedParameters',
+    'status'
+  ] as (keyof Props['output'])[]);
+  return Object.freeze({
+    ...snapshot,
+    temporalContext: Object.freeze({
+      ...context,
+      axis:
+        axisKind === 'regular'
+          ? Object.freeze({
+              kind: axisKind,
+              step:
+                typeof step === 'object' && step !== null
+                  ? snapshotConstructionFields(step, ['calendarUnit', 'interval'])
+                  : step
+            })
+          : axis && Object.freeze({kind: axisKind})
+    }),
+    spatialContext: snapshot.spatialContext
+      ? snapshotConstructionSpatialContext(snapshot.spatialContext)
+      : undefined,
+    bandwidthSearch: snapshot.bandwidthSearch
+      ? snapshotConstructionFields(snapshot.bandwidthSearch, ['parameters', 'maximumIterations'])
+      : undefined,
+    output: Object.freeze({
+      ...output,
+      status: output.status
+        ? snapshotConstructionFields(output.status, [
+            'iterationCount',
+            'converged',
+            'iterationLimitReached'
+          ])
+        : undefined
+    })
+  }) as Props;
+}
 
 /**
  * Geographically and temporally weighted regression (Huang, Wu and Barry 2010) at a fixed or adaptive
@@ -231,7 +341,10 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
  * and `GTWR` with a fixed bandwidth, the Gaussian `exp(-z^2 / 2)` and bisquare `(1 - z^2)^2`
  * kernels with `z = d / h`).
  *
- * The local system is solved in coordinates centered on the focal row, with the diagonally
+ * Predictors are centered on the focal row. Responses share the neighborhood's range midpoint
+ * when all responses are within a factor of two, otherwise zero or the range endpoint closest
+ * to zero. Negligible extreme responses cannot drag a small same-sign signal's origin outward. Fit-time
+ * residuals are retained before restoring and rounding fitted values. The local system uses the diagonally
  * equilibrated Cholesky factorization shared with the GWR family, so a near-collinear local
  * design reports `SINGULAR` per row rather than a wild coefficient. Optional `bandwidthSearch`
  * profiles bandwidth inside a time-scale golden-section search; `selectedParameters` publishes
@@ -259,7 +372,7 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
  * approaches the row count cannot win a profile search. mgtwr's own `aicc` is
  * `-2 llf + 2 (tr(S) + 1) (n - 1) / (n - tr(S) - 1)`; the value here is larger by
  * `2 n (k + 1) / (n - k - 2) - 2 (k + 1) (n - 1) / (n - k - 1)` with `k = tr(S)` (2.15 at
- * `n = 200`, `k = 60`; 0.05 at `n = 200`, `k = 10`). Residual sum of squares, trace, R squared,
+ * `n = 200`, `k = 60`; 0.24 at `n = 200`, `k = 10`). Residual sum of squares, trace, R squared,
  * sigma squared and log-likelihood are mgtwr's.
  */
 export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommandNodeProducer {
@@ -267,7 +380,10 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
   readonly rows: number;
   readonly estimatedCommandNodeCount: number;
   readonly searchStructure: 'grid' | 'brute-force';
-  constructor(readonly props: GPUGeographicallyTemporallyWeightedRegressionProps) {
+  readonly props: GPUGeographicallyTemporallyWeightedRegressionProps;
+  constructor(props: GPUGeographicallyTemporallyWeightedRegressionProps) {
+    props = snapshotGTWRProps(props);
+    this.props = props;
     this.id = props.id ?? 'geographically-temporally-weighted-regression';
     const {id} = this;
     const columns = props.predictorCount;
@@ -303,13 +419,13 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       this.searchStructure !== 'grid' || (hasCompactSupport && !props.bandwidthSearch),
       'searchStructure grid requires a compact kernel and no bandwidthSearch'
     );
+    const denseFitNodeCount = 7 + Number(props.response.length > 4096) + 1;
     this.estimatedCommandNodeCount =
       this.searchStructure === 'grid'
         ? GPU_GTWR_INDEXED_COMMAND_NODE_ALLOWANCE
-        : 3 +
-          Number(Boolean(props.output.residuals)) +
+        : denseFitNodeCount +
           (searchIterations
-            ? getGTWRBandwidthSearchNodeCount(searchIterations, 2) +
+            ? getGTWRBandwidthSearchNodeCount(searchIterations, denseFitNodeCount) +
               Number(Boolean(props.output.selectedParameters))
             : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -388,11 +504,16 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
         )
       },
       [
-        ['coefficients', 'fitted', 'hatDiagonal', 'localStatus'],
-        {read: ['fitted'], write: ['residuals']},
-        ...(this.searchStructure === 'brute-force'
-          ? [{read: ['fitted', 'hatDiagonal', 'localStatus'], write: ['summary']}]
-          : []),
+        [
+          'coefficients',
+          'fitted',
+          'hatDiagonal',
+          'localStatus',
+          ...(this.searchStructure === 'grid' ? ['residuals'] : [])
+        ],
+        ['fitted', 'residuals'],
+
+        {read: ['residuals', 'hatDiagonal', 'localStatus'], write: ['summary']},
         Object.keys(output.status ?? {}).map(name => `status.${name}`)
       ]
     );
@@ -422,6 +543,7 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const centeredResidualCorrections = composedResidualCorrections.get(this);
     validateGraphViewsBelongToGraph(this.id, graph, [
       ...this.getInputViews(),
       ...this.getOutputViews()
@@ -437,17 +559,43 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       this.rows * Math.max(3, this.props.predictorCount + 1) * 4,
       'reduce rows or predictorCount'
     );
+    if (centeredResidualCorrections) {
+      validateRequirement(
+        this.id,
+        this.searchStructure === 'brute-force',
+        'internal residual corrections require the dense route'
+      );
+      validateSinglePackedView(
+        centeredResidualCorrections,
+        ['float32'],
+        `${this.id} centeredResidualCorrections`
+      );
+      validateViewLength(
+        this.id,
+        'centeredResidualCorrections',
+        centeredResidualCorrections,
+        this.rows
+      );
+      validateGraphViewsBelongToGraph(this.id, graph, [centeredResidualCorrections]);
+      validateGraphChunkBindingRanges(graph, this.id, {centeredResidualCorrections});
+      validateGraphOutputsDisjointFromInputs(
+        this.id,
+        [centeredResidualCorrections],
+        [...this.getInputViews(), ...this.getOutputViews()]
+      );
+    }
     if (this.searchStructure === 'grid') {
       validateGTWRIndexedBindings(graph.device, this.id, this.rows, this.props.predictorCount);
       return createGTWRIndexedNodes(graph, this.id, this.props);
     }
-    return this.createNodes(graph);
+    return this.createNodes(graph, undefined, undefined, centeredResidualCorrections);
   }
 
   private createNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     gate?: WGSLDispatchGate<Parameters>,
-    preparedPoints?: GraphDataView<'float32'>
+    preparedPoints?: GraphDataView<'float32'>,
+    centeredResidualCorrections?: GraphDataView<'float32'>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rows} = this;
     const {output} = props;
@@ -524,13 +672,22 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       return [
         ...spaceTime.nodes,
         ...searchNodes,
-        ...finalFit.createNodes(graph, undefined, spaceTime.points)
+        ...finalFit.createNodes(graph, undefined, spaceTime.points, centeredResidualCorrections)
       ];
     }
     const spaceTime = preparedPoints
       ? {points: preparedPoints, nodes: []}
       : createSpaceTimePointNodes(graph, id, props, rows, gate);
     const points = spaceTime.points;
+    const fitWordCount = centeredResidualCorrections ? 3 : 2;
+    const fitValues = createTransientView(
+      graph,
+      `${id}-fit-values`,
+      'float32',
+      rows * fitWordCount
+    );
+    const centeredResiduals =
+      output.residuals ?? createTransientView(graph, `${id}-centered-residuals`, 'float32', rows);
     return [
       ...spaceTime.nodes,
       createWGSLKernelNode<Parameters>(graph, {
@@ -545,11 +702,13 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
           {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
           {name: 'response', view: props.response, type: 'f32', access: 'read'},
           {name: 'coefficients', view: output.coefficients, type: 'f32', access: 'read_write'},
-          {name: 'fitted', view: output.fitted, type: 'f32', access: 'read_write'},
+          {name: 'fitted', view: fitValues, type: 'f32', access: 'read_write'},
           {name: 'hatDiagonal', view: output.hatDiagonal, type: 'f32', access: 'read_write'},
           {name: 'localStatus', view: output.localStatus, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${IS_FINITE_BITS_WGSL}
+        declarations: `${LOCAL_REGRESSION_INTERCEPT_WGSL}
+${ROUNDED_DIFFERENCE_WGSL}
+${IS_FINITE_BITS_WGSL}
 ${IS_FINITE_VALUE_WGSL}
 ${GET_NAN_WGSL}
 ${getCholeskyWGSL(size, size)}
@@ -565,6 +724,8 @@ ${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
     coefficient[column] = getNaN();
   }
   var fittedValue = getNaN();
+  var centeredResidual = getNaN();
+  ${centeredResidualCorrections ? 'var residualCorrection = getNaN();' : ''}
   var hat = getNaN();
   if (!isFiniteBits(originX)) {
     code = ${STATUS.EXCLUDED}u;
@@ -572,6 +733,26 @@ ${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
     let originY = points[pointsOffset + 3u * index + 1u];
     let originTime = points[pointsOffset + 3u * index + 2u];
     let originBase = predictorsOffset + index * ${columns}u;
+    // Use the range endpoint closest to zero, or zero for mixed signs. A negligible extreme
+    // must not drag a small neighborhood's response origin toward its own magnitude.
+    var responseMinimum = response[responseOffset + index];
+    var responseMaximum = responseMinimum;
+    for (var row = 0u; row < ${rows}u; row++) {
+      let rowX = points[pointsOffset + 3u * row];
+      if (!isFiniteBits(rowX)) { continue; }
+      let deltaX = rowX - originX;
+      let deltaY = points[pointsOffset + 3u * row + 1u] - originY;
+      let deltaTime = points[pointsOffset + 3u * row + 2u] - originTime;
+      let distance = sqrt(deltaX * deltaX + deltaY * deltaY + timeScale * deltaTime * deltaTime);
+      if (!(getLocalKernelWeight(distance, bandwidth, ${props.kernel === 'bisquare' ? 'true' : 'false'}) > 0.0)) { continue; }
+      responseMinimum = min(responseMinimum, response[responseOffset + row]);
+      responseMaximum = max(responseMaximum, response[responseOffset + row]);
+    }
+    let closeResponses = (responseMinimum > 0.0 && responseMinimum >= responseMaximum * 0.5)
+      || (responseMaximum < 0.0 && responseMinimum * 0.5 >= responseMaximum);
+    let responseAnchor = select(max(responseMinimum, min(0.0, responseMaximum)), responseMinimum * 0.5 + responseMaximum * 0.5, closeResponses);
+    // A valid requested bandwidth is positive, so its buffer-loaded sign bit is runtime zero.
+    let runtimeZero = bitcast<u32>(parameters[parametersOffset]) & 0x80000000u;
     var a: array<f32, ${size * size}>;
     var b: array<f32, ${size}>;
     var z: array<f32, ${size}>;
@@ -591,7 +772,7 @@ ${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
       for (var column = 0u; column < ${columns}u; column++) {
         z[column + 1u] = predictors[rowBase + column] - predictors[originBase + column];
       }
-      let observed = response[responseOffset + row];
+      let observed = getRoundedDifference(response[responseOffset + row], responseAnchor, runtimeZero);
       for (var r = 0u; r < ${size}u; r++) {
         let weighted = weight * z[r];
         b[r] = b[r] + weighted * observed;
@@ -605,6 +786,32 @@ ${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
       let inverse00 = inverseDiagonalEquilibrated_${size}(&a, &scale, 0u);
       // b is X'Wy of the centered design; the solve is in place and unscales the coefficients.
       solveEquilibrated_${size}(&a, &scale, &b);
+      // When all responses lie within a factor of two, their differences are exact
+      // (Sterbenz). Refine the centered solve without losing small response terms.
+      if (closeResponses) {
+        for (var refinement = 0u; refinement < 2u; refinement++) {
+        var correction: array<f32, ${size}>;
+        for (var row = 0u; row < ${rows}u; row++) {
+          let rowX = points[pointsOffset + 3u * row];
+          if (!isFiniteBits(rowX)) { continue; }
+          let deltaX = rowX - originX;
+          let deltaY = points[pointsOffset + 3u * row + 1u] - originY;
+          let deltaTime = points[pointsOffset + 3u * row + 2u] - originTime;
+          let distance = sqrt(deltaX * deltaX + deltaY * deltaY + timeScale * deltaTime * deltaTime);
+          let weight = getLocalKernelWeight(distance, bandwidth, ${props.kernel === 'bisquare' ? 'true' : 'false'});
+          if (!(weight > 0.0)) { continue; }
+          var predicted = b[0];
+          for (var column = 0u; column < ${columns}u; column++) {
+            z[column + 1u] = predictors[predictorsOffset + row * ${columns}u + column] - predictors[originBase + column];
+            predicted += b[column + 1u] * z[column + 1u];
+          }
+          let residual = getRoundedDifference(response[responseOffset + row], responseAnchor, runtimeZero) - predicted;
+          for (var column = 0u; column < ${size}u; column++) { correction[column] += weight * z[column] * residual; }
+        }
+        solveEquilibrated_${size}(&a, &scale, &correction);
+        for (var column = 0u; column < ${size}u; column++) { b[column] += correction[column]; }
+        }
+      }
       var finite = isFiniteBits(inverse00) && inverse00 >= 0.0;
       for (var column = 0u; column < ${size}u; column++) {
         finite = finite && isFiniteBits(b[column]);
@@ -612,102 +819,60 @@ ${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
       if (finite) {
         code = ${STATUS.OK}u;
         // The centered intercept is the fitted value; uncentering it gives the raw intercept.
-        fittedValue = b[0];
+        centeredResidual = getRoundedDifference(response[responseOffset + index], responseAnchor, runtimeZero) - b[0];
+        ${
+          centeredResidualCorrections
+            ? `let observedDifference = getRoundedDifference(response[responseOffset + index], responseAnchor, runtimeZero);
+        residualCorrection = getAdditionRoundingError(response[responseOffset + index], -responseAnchor, observedDifference)
+          + getAdditionRoundingError(observedDifference, -b[0], centeredResidual);`
+            : ''
+        }
+        fittedValue = responseAnchor + b[0];
         hat = inverse00;
-        var intercept = b[0];
+        var intercept = vec2f(responseAnchor, b[0]);
         for (var column = 0u; column < ${columns}u; column++) {
           coefficient[column + 1u] = b[column + 1u];
-          intercept = intercept - b[column + 1u] * predictors[originBase + column];
+          intercept = subtractLocalRegressionInterceptProduct(intercept, b[column + 1u], predictors[originBase + column]);
         }
-        coefficient[0] = intercept;
+        coefficient[0] = intercept.x + intercept.y;
       }
     }
   }
   for (var column = 0u; column < ${size}u; column++) {
     coefficients[coefficientsOffset + index * ${size}u + column] = coefficient[column];
   }
-  fitted[fittedOffset + index] = fittedValue;
+  fitted[fittedOffset + ${fitWordCount}u * index] = fittedValue;
+  fitted[fittedOffset + ${fitWordCount}u * index + 1u] = centeredResidual;
+  ${centeredResidualCorrections ? `fitted[fittedOffset + ${fitWordCount}u * index + 2u] = residualCorrection;` : ''}
   hatDiagonal[hatDiagonalOffset + index] = hat;
   localStatus[localStatusOffset + index] = code;`
       }),
-      ...(output.residuals
-        ? [
-            createWGSLKernelNode<Parameters>(graph, {
-              id: `${id}-residuals`,
-              operation: OPERATION,
-              variant: 'residuals',
-              invocationCount: rows,
-              ...gate?.getGate(0),
-              bindings: [
-                {name: 'response', view: props.response, type: 'f32', access: 'read'},
-                {name: 'fitted', view: output.fitted, type: 'f32', access: 'read'},
-                {name: 'residuals', view: output.residuals, type: 'f32', access: 'read_write'}
-              ],
-              body: `residuals[residualsOffset + index] = response[responseOffset + index] - fitted[fittedOffset + index];`
-            })
-          ]
-        : []),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-summary`,
+      createWGSLKernelNode(graph, {
+        id: `${id}-publish-fit-values`,
         operation: OPERATION,
-        variant: 'summary',
-        invocationCount: 1,
-        ...gate?.getGate(1),
+        invocationCount: rows,
+        ...gate?.getGate(0),
         bindings: [
-          {name: 'response', view: props.response, type: 'f32', access: 'read'},
-          {name: 'fitted', view: output.fitted, type: 'f32', access: 'read'},
-          {name: 'hatDiagonal', view: output.hatDiagonal, type: 'f32', access: 'read'},
-          {name: 'localStatus', view: output.localStatus, type: 'u32', access: 'read'},
-          {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'}
+          {name: 'values', view: fitValues, type: 'f32', access: 'read'},
+          {name: 'fitted', view: output.fitted, type: 'f32', access: 'read_write'},
+          {name: 'residuals', view: centeredResiduals, type: 'f32', access: 'read_write'},
+          ...(centeredResidualCorrections
+            ? [
+                {
+                  name: 'corrections',
+                  view: centeredResidualCorrections,
+                  type: 'f32',
+                  access: 'read_write'
+                } as const
+              ]
+            : [])
         ],
-        declarations: GET_NAN_WGSL,
-        // Statistics over the non-singular included rows, as the GWR summary (mgwr / mgtwr formulas).
-        body: `var count = 0.0;
-  var singular = 0.0;
-  var included = 0.0;
-  var mean = 0.0;
-  var residualSquares = 0.0;
-  var trace = 0.0;
-  for (var row = 0u; row < ${rows}u; row++) {
-    let code = localStatus[localStatusOffset + row];
-    if (code == ${STATUS.EXCLUDED}u) { continue; }
-    included += 1.0;
-    if (code != ${STATUS.OK}u) { singular += 1.0; continue; }
-    count += 1.0;
-    let observed = response[responseOffset + row];
-    mean += (observed - mean) / count;
-    let residual = observed - fitted[fittedOffset + row];
-    residualSquares += residual * residual;
-    trace += hatDiagonal[hatDiagonalOffset + row];
-  }
-  var totalSquares = 0.0;
-  for (var row = 0u; row < ${rows}u; row++) {
-    if (localStatus[localStatusOffset + row] == ${STATUS.OK}u) {
-      let deviation = response[responseOffset + row] - mean;
-      totalSquares += deviation * deviation;
-    }
-  }
-  // Work in log space: 2 pi * RSS can overflow even when RSS and 2 pi * RSS / n are finite.
-  let logVariance = log(residualSquares) - log(count);
-  let logLikelihood = -0.5 * count * (logVariance + 1.8378770664093453 + 1.0);
-  // The AICc of GPUGeographicallyWeightedRegression (mgwr): -2 llf + 2 n (tr + 1) / (n - tr - 2),
-  // defined only while n - tr - 2 > 0. mgtwr's own aicc is 2 (tr + 1) (n - 1) / (n - tr - 1) in
-  // the penalty and is not published here.
-  let correctedDenominator = count - trace - 2.0;
-  let corrected = -2.0 * logLikelihood + 2.0 * count * (trace + 1.0) / correctedDenominator;
-  for (var slot = 0u; slot < ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH}u; slot++) {
-    summary[summaryOffset + slot] = getNaN();
-  }
-  summary[summaryOffset] = residualSquares;
-  summary[summaryOffset + 1u] = trace;
-  summary[summaryOffset + 2u] = select(getNaN(), corrected, count > 0.0 && correctedDenominator > 0.0);
-  summary[summaryOffset + 3u] = select(getNaN(), 1.0 - residualSquares / totalSquares, totalSquares > 0.0);
-  summary[summaryOffset + 4u] = count;
-  summary[summaryOffset + 6u] = singular;
-  summary[summaryOffset + 7u] = select(getNaN(), residualSquares / (count - trace), count > trace);
-  summary[summaryOffset + 10u] = select(getNaN(), logLikelihood, count > 0.0);
-  summary[summaryOffset + 11u] = included;`
-      })
+        body: `fitted[fittedOffset + index] = values[valuesOffset + ${fitWordCount}u * index];
+  residuals[residualsOffset + index] = values[valuesOffset + ${fitWordCount}u * index + 1u];
+  ${centeredResidualCorrections ? `corrections[correctionsOffset + index] = values[valuesOffset + ${fitWordCount}u * index + 2u];` : ''}`
+      }),
+      // Each reduction uses its own matching dispatch shape, armed by the candidate gate.
+      ...createGTWRIndexedSummaryNodes(graph, id, props, centeredResiduals, gate)
     ];
   }
 }

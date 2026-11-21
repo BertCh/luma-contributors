@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const output = {\n  rows: make('segmentRows', 'uint32', segmentCapacity),\n  cells: make('segmentCells', 'uint32x2', segmentCapacity),\n  edgeIndices: make('edgeIndices', 'uint32', segmentCapacity),\n  endpoints: make('endpoints', 'float32x4', segmentCapacity),\n  status: {\n    count: make('segmentCount', 'uint32', 1),\n    overflow: make('outlineOverflow', 'uint32', 1)\n  }\n};\nconst rings = {\n  ringOffsets: make('ringOffsets', 'uint32', ringCapacity + 1),\n  positions: make('ringPositions', 'float32x2', segmentCapacity + ringCapacity),\n  status: {count: make('ringCount', 'uint32', 1), overflow: make('ringOverflow', 'uint32', 1)}\n};\ngraph.add(\n  new GPUCellSetOutline({\n    family: 'h3',\n    cells, // sorted, distinct keys\n    count, // valid rows of the table\n    output,\n    rings: {normalizeWinding: true, output: rings}\n  })\n);\nconst {ringOffsets, positions} = rings; // closed rings, longitude/latitude degrees",
+    "code": "const output = {\n  rows: make('segmentRows', 'uint32', segmentCapacity),\n  cells: make('segmentCells', 'uint32x2', segmentCapacity),\n  edgeIndices: make('edgeIndices', 'uint32', segmentCapacity),\n  endpoints: make('endpoints', 'float32x4', segmentCapacity),\n  status: {\n    count: make('segmentCount', 'uint32', 1),\n    overflow: make('outlineOverflow', 'uint32', 1)\n  }\n};\nconst rings = {\n  ringOffsets: make('ringOffsets', 'uint32', ringCapacity + 1),\n  positions: make('ringPositions', 'float32x2', segmentCapacity + ringCapacity),\n  status: {count: make('ringCount', 'uint32', 1), overflow: make('ringOverflow', 'uint32', 1)}\n};\ngraph.add(\n  new GPUCellSetOutline({\n    family: 'h3',\n    // Retain bare cells/count calls and accept a counted source on its own.\n    ...(source ? {source, cells, count} : {cells: cells!, count}),\n    output,\n    rings: {normalizeWinding: true, output: rings}\n  })\n);\nconst {ringOffsets, positions} = rings; // closed rings, longitude/latitude degrees",
     "language": "ts",
     "lineCount": 25
   },
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:30.556Z",
-    "runId": "run-f2ab91f0",
+    "date": "2026-11-20T23:49:21.038Z",
+    "runId": "run-5c862d0e",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-f2ab91f0",
+    "runId": "run-5c862d0e",
     "rung": "result",
     "bindings": {},
     "clauses": [],

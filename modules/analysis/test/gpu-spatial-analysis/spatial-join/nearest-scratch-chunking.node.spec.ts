@@ -64,7 +64,7 @@ function buildNeighborNodes(graph: GPUCommandGraph, options: ScratchOptions, pre
       ends: view('ends', 'float32x2', 100)
     },
     featureCount: 100,
-    k,
+    neighborCount: k,
     capacity: k,
     leafCapacity: 128,
     spatialSort: false,
@@ -177,7 +177,7 @@ it('GPUNearestFeatureJoin neighbors mode builds at 900k queries with k = 8', () 
       starts: view('starts', 'float32x2', 10),
       ends: view('ends', 'float32x2', 10)
     },
-    k,
+    neighborCount: k,
     output: {
       neighborIds: view('ids', 'uint32', queryCount * k),
       neighborCounts: view('counts', 'uint32', queryCount),

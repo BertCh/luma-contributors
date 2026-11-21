@@ -171,14 +171,17 @@ struct FeatureAccumulators {
   boundsMax: vec2<f32>,
   extremeRows: vec4<u32>,
   vertexCount: u32,
+  fallbackSum:vec2<f32>,
+  fallbackCount:u32,
   isFirstRing: bool,
   invalidRings: u32
 }
 
 fn initRing() -> RingAccumulators {
+  // Finite sentinels avoid non-finite constant evaluation; row comparisons handle equality.
   return RingAccumulators(
     vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0),
-    vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(3.4e38), vec2<f32>(-3.4e38),
+    vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(bitcast<f32>(0x7f7fffffu)), vec2<f32>(bitcast<f32>(0xff7fffffu)),
     vec4<u32>(0xffffffffu), 0.0, 0u
   );
 }
@@ -186,8 +189,8 @@ fn initRing() -> RingAccumulators {
 fn initFeature() -> FeatureAccumulators {
   return FeatureAccumulators(
     vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0),
-    vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(3.4e38), vec2<f32>(-3.4e38),
-    vec4<u32>(0xffffffffu), 0u, true, 0u
+    vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(bitcast<f32>(0x7f7fffffu)), vec2<f32>(bitcast<f32>(0xff7fffffu)),
+    vec4<u32>(0xffffffffu), 0u, vec2<f32>(0.0),0u,true, 0u
   );
 }
 
@@ -204,12 +207,12 @@ fn accumulateRange(
   let firstPosition = getPosition(rowBegin);
   var firstLocal = firstPosition - origin;
   if (IS_GEOGRAPHIC) {
-    firstLocal.x = geodesicWrapLongitudeDelta(firstPosition.x - origin.x);
+    firstLocal.x = geodesicLongitudeDelta(origin.x, firstPosition.x);
   }
   var position = getPosition(rowBegin + vertexStart);
   var local = position - origin;
   if (IS_GEOGRAPHIC) {
-    local.x = select(startLocalX, geodesicWrapLongitudeDelta(position.x - origin.x), IS_POINT);
+    local.x = select(startLocalX, geodesicLongitudeDelta(origin.x, position.x), IS_POINT);
   }
   var areaX = local.x;
   if (IS_GEOGRAPHIC) {
@@ -218,28 +221,29 @@ fn accumulateRange(
   var areaY = getAreaY(position, origin);
   let edgeCount = select(rowCount - 1u, rowCount, IS_POLYGON);
   for (var vertex = vertexStart; vertex < vertexEnd; vertex++) {
-    // Strict comparisons keep the lowest vertex row on ties.
-    if (local.x < (*acc).boundsMin.x) {
+    // Coordinate order, then row order: FLT_MAX can equal the finite sentinel.
+    let boundsPosition=select(getPosition(rowBegin+vertex),local,IS_GEOGRAPHIC);
+    if (boundsPosition.x < (*acc).boundsMin.x || (boundsPosition.x == (*acc).boundsMin.x && rowBegin + vertex < (*acc).extremeRows.x)) {
       (*acc).extremeRows.x = rowBegin + vertex;
     }
-    if (local.y < (*acc).boundsMin.y) {
+    if (boundsPosition.y < (*acc).boundsMin.y || (boundsPosition.y == (*acc).boundsMin.y && rowBegin + vertex < (*acc).extremeRows.y)) {
       (*acc).extremeRows.y = rowBegin + vertex;
     }
-    if (local.x > (*acc).boundsMax.x) {
+    if (boundsPosition.x > (*acc).boundsMax.x || (boundsPosition.x == (*acc).boundsMax.x && rowBegin + vertex < (*acc).extremeRows.z)) {
       (*acc).extremeRows.z = rowBegin + vertex;
     }
-    if (local.y > (*acc).boundsMax.y) {
+    if (boundsPosition.y > (*acc).boundsMax.y || (boundsPosition.y == (*acc).boundsMax.y && rowBegin + vertex < (*acc).extremeRows.w)) {
       (*acc).extremeRows.w = rowBegin + vertex;
     }
-    (*acc).boundsMin = min((*acc).boundsMin, local);
-    (*acc).boundsMax = max((*acc).boundsMax, local);
+    (*acc).boundsMin = min((*acc).boundsMin, boundsPosition);
+    (*acc).boundsMax = max((*acc).boundsMax, boundsPosition);
     (*acc).vertexSum += local;
     if (IS_POINT) {
       if (vertex + 1u < vertexEnd) {
         let nextPoint = getPosition(rowBegin + vertex + 1u);
         local = nextPoint - origin;
         if (IS_GEOGRAPHIC) {
-          local.x = geodesicWrapLongitudeDelta(nextPoint.x - origin.x);
+          local.x = geodesicLongitudeDelta(origin.x, nextPoint.x);
         }
       }
       continue;
@@ -287,8 +291,9 @@ fn accumulateRange(
 }
 
 // Folds a finished ring into the feature (the serial kernel's end-of-ring step).
-fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, RingAccumulators>, ringIndex: u32, rowCount: u32) {
+fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, RingAccumulators>, ringIndex: u32, rowCount: u32,origin:vec2<f32>) {
   (*feature).vertexCount += rowCount;
+    if(!IS_POINT && !IS_POLYGON && rowCount>0u){let firstPosition=getPosition(getRingRows(ringIndex).x);var firstLocal=firstPosition-origin;if(IS_GEOGRAPHIC){firstLocal.x=geodesicLongitudeDelta(origin.x,firstPosition.x);}(*feature).fallbackSum+=firstLocal;(*feature).fallbackCount+=1u;}
   if (IS_GEOGRAPHIC && ((*ring).ambiguousEdges > 0u || (IS_POLYGON && (lonLatIsPoleWinding((*ring).winding) || (*ring).boundsMax.x - (*ring).boundsMin.x > 360.0)))) {
     (*feature).invalidRings += 1u;
   }
@@ -299,16 +304,16 @@ fn mergeRing(feature: ptr<function, FeatureAccumulators>, ring: ptr<function, Ri
   addCompensated(&(*feature).lineMomentY, (*ring).lineMomentY.x);
   addCompensated(&(*feature).lineMomentY, (*ring).lineMomentY.y);
   (*feature).vertexSum += (*ring).vertexSum;
-  if ((*ring).boundsMin.x < (*feature).boundsMin.x) {
+  if ((*ring).boundsMin.x < (*feature).boundsMin.x || ((*ring).boundsMin.x == (*feature).boundsMin.x && (*ring).extremeRows.x < (*feature).extremeRows.x)) {
     (*feature).extremeRows.x = (*ring).extremeRows.x;
   }
-  if ((*ring).boundsMin.y < (*feature).boundsMin.y) {
+  if ((*ring).boundsMin.y < (*feature).boundsMin.y || ((*ring).boundsMin.y == (*feature).boundsMin.y && (*ring).extremeRows.y < (*feature).extremeRows.y)) {
     (*feature).extremeRows.y = (*ring).extremeRows.y;
   }
-  if ((*ring).boundsMax.x > (*feature).boundsMax.x) {
+  if ((*ring).boundsMax.x > (*feature).boundsMax.x || ((*ring).boundsMax.x == (*feature).boundsMax.x && (*ring).extremeRows.z < (*feature).extremeRows.z)) {
     (*feature).extremeRows.z = (*ring).extremeRows.z;
   }
-  if ((*ring).boundsMax.y > (*feature).boundsMax.y) {
+  if ((*ring).boundsMax.y > (*feature).boundsMax.y || ((*ring).boundsMax.y == (*feature).boundsMax.y && (*ring).extremeRows.w < (*feature).extremeRows.w)) {
     (*feature).extremeRows.w = (*ring).extremeRows.w;
   }
   (*feature).boundsMin = min((*feature).boundsMin, (*ring).boundsMin);
@@ -344,17 +349,17 @@ fn addLanePartial(ring: ptr<function, RingAccumulators>, laneIndex: u32) {
   (*ring).vertexSum += laneVertexSum[laneIndex];
   (*ring).winding += laneWinding[laneIndex];
   (*ring).ambiguousEdges += laneAmbiguousEdges[laneIndex];
-  // Lanes own ascending chunks, so a strict comparison keeps the lowest row on ties.
-  if (laneBoundsMin[laneIndex].x < (*ring).boundsMin.x) {
+  // Empty lanes have sentinel rows; equality admits real FLT_MAX rows and keeps the lowest row.
+  if (laneBoundsMin[laneIndex].x < (*ring).boundsMin.x || (laneBoundsMin[laneIndex].x == (*ring).boundsMin.x && laneExtremeRows[laneIndex].x < (*ring).extremeRows.x)) {
     (*ring).extremeRows.x = laneExtremeRows[laneIndex].x;
   }
-  if (laneBoundsMin[laneIndex].y < (*ring).boundsMin.y) {
+  if (laneBoundsMin[laneIndex].y < (*ring).boundsMin.y || (laneBoundsMin[laneIndex].y == (*ring).boundsMin.y && laneExtremeRows[laneIndex].y < (*ring).extremeRows.y)) {
     (*ring).extremeRows.y = laneExtremeRows[laneIndex].y;
   }
-  if (laneBoundsMax[laneIndex].x > (*ring).boundsMax.x) {
+  if (laneBoundsMax[laneIndex].x > (*ring).boundsMax.x || (laneBoundsMax[laneIndex].x == (*ring).boundsMax.x && laneExtremeRows[laneIndex].z < (*ring).extremeRows.z)) {
     (*ring).extremeRows.z = laneExtremeRows[laneIndex].z;
   }
-  if (laneBoundsMax[laneIndex].y > (*ring).boundsMax.y) {
+  if (laneBoundsMax[laneIndex].y > (*ring).boundsMax.y || (laneBoundsMax[laneIndex].y == (*ring).boundsMax.y && laneExtremeRows[laneIndex].w < (*ring).extremeRows.w)) {
     (*ring).extremeRows.w = laneExtremeRows[laneIndex].w;
   }
   (*ring).boundsMin = min((*ring).boundsMin, laneBoundsMin[laneIndex]);
@@ -369,7 +374,7 @@ ${props.tail}
 fn getLongitudeStep(rowBegin: u32, vertex: u32, origin: vec2<f32>) -> f32 {
   let current = getPosition(rowBegin + vertex);
   if (vertex == 0u) {
-    return geodesicWrapLongitudeDelta(current.x - origin.x);
+    return geodesicLongitudeDelta(origin.x, current.x);
   }
   return lonLatRingStep(getPosition(rowBegin + vertex - 1u), current);
 }
@@ -404,9 +409,9 @@ fn measureFeatureCooperatively(feature: u32, lane: u32) {
           let firstPosition = getPosition(rows.x);
           accumulateRange(
             rows.x, rows.y, 0u, rows.y,
-            geodesicWrapLongitudeDelta(firstPosition.x - origin.x), origin, &smallRing
+            geodesicLongitudeDelta(origin.x, firstPosition.x), origin, &smallRing
           );
-          mergeRing(&accumulated, &smallRing, ring, rows.y);
+          mergeRing(&accumulated, &smallRing, ring, rows.y,origin);
         }
         ring++;
       }
@@ -468,7 +473,7 @@ fn measureFeatureCooperatively(feature: u32, lane: u32) {
       for (var laneIndex = 0u; laneIndex < COOPERATIVE_LANES; laneIndex++) {
         addLanePartial(&combined, laneIndex);
       }
-      mergeRing(&accumulated, &combined, current, rows.y);
+      mergeRing(&accumulated, &combined, current, rows.y,origin);
       ring = current + 1u;
     }
   }

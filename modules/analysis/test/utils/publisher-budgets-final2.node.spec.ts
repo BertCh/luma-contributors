@@ -162,8 +162,8 @@ test.each([
   const cpu = new CPUStreamlinesOperation(props),
     gpu = new GPUStreamlinesOperation(props);
   const settings = {
-    fieldExtent: [0, 0, 1, 1] as const,
-    gridExtent: [0, 0, 32 / 48, 32 / 48] as const,
+    fieldPlacement: {origin: [0, 0], cellSize: [1, 1]} as const,
+    gridPlacement: {origin: [0, 0], cellSize: [32 / 48, 32 / 48]} as const,
     stepLength: 0.3,
     minimumSpeed: 0.05,
     seed: 5,

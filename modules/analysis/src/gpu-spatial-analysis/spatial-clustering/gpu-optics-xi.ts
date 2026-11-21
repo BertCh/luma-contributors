@@ -8,7 +8,8 @@
 import {
   createTransientView,
   type GPUCommandGraph,
-  type GPUCommandNode
+  type GPUCommandNode,
+  type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLDispatchGate,
@@ -20,7 +21,8 @@ import {GPU_OPTICS_XI_BATCH_SIZE, type GPUOPTICSProps} from './gpu-optics';
 export function createOPTICSXiNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUOPTICSProps,
-  id: string
+  id: string,
+  frontierStatus: GraphDataView<'uint32'>
 ) {
   const rows = props.positions.length;
   const output = props.output;
@@ -46,7 +48,7 @@ export function createOPTICSXiNodes<Parameters>(
       invocationCount: rows,
       bindings: [
         {name: 'ordering', view: output.ordering, type: 'u32', access: 'read'},
-        {name: 'status', view: output.status, type: 'u32', access: 'read'},
+        {name: 'status', view: frontierStatus, type: 'u32', access: 'read'},
         {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
         {name: 'areas', view: areas, type: 'u32', access: 'read_write'},
         {name: 'intervals', view: intervals, type: 'u32', access: 'read_write'},

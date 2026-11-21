@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   GPUSpatialRegressionDiagnostics,
@@ -23,7 +24,13 @@ export type SpatialRegressionDiagnosticsOperationProps = Pick<
     offsets: string;
     neighbors: string;
     weights: string;
-    status?: {overflow?: string; candidateOverflow?: string};
+    status?: {
+      complete?: string;
+      overflow?: string;
+      candidateOverflow?: string;
+      count?: string;
+      requiredCount?: string;
+    };
   };
   predictors: string;
   response: string;
@@ -61,7 +68,15 @@ export function snapshotDiagnosticsOperationProps(
     weights: Object.freeze({
       ...weights,
       ...(weights.status
-        ? {status: snapshotConstructionFields(weights.status, ['overflow', 'candidateOverflow'])}
+        ? {
+            status: snapshotConstructionFields(weights.status, [
+              'complete',
+              'overflow',
+              'candidateOverflow',
+              'count',
+              'requiredCount'
+            ])
+          }
         : {})
     }),
     output: Object.freeze({...output, status: snapshotConstructionFields(output.status, ['code'])})
@@ -73,12 +88,28 @@ export class GPUSpatialRegressionDiagnosticsOperation extends GPUContributorOper
   constructor(props: SpatialRegressionDiagnosticsOperationProps) {
     props = snapshotDiagnosticsOperationProps(props);
     const id = props.id ?? 'spatial-regression-diagnostics';
+    for (const name of ['count', 'requiredCount', 'complete'] as const) {
+      const value = props.weights.status?.[name];
+      if (value !== undefined)
+        validateRequirement(
+          id,
+          typeof value === 'string' && value.length > 0,
+          `weights.status.${name} must name a non-empty graph value`
+        );
+    }
     super({
       id,
       inputs: {
         offsets: props.weights.offsets,
         neighbors: props.weights.neighbors,
         weights: props.weights.weights,
+        ...(props.weights.status?.complete !== undefined
+          ? {complete: props.weights.status.complete}
+          : {}),
+        ...(props.weights.status?.count ? {weightsCount: props.weights.status.count} : {}),
+        ...(props.weights.status?.requiredCount
+          ? {weightsRequiredCount: props.weights.status.requiredCount}
+          : {}),
         ...(props.weights.status?.overflow ? {weightsOverflow: props.weights.status.overflow} : {}),
         ...(props.weights.status?.candidateOverflow
           ? {weightsCandidateOverflow: props.weights.status.candidateOverflow}
@@ -101,8 +132,13 @@ export class GPUSpatialRegressionDiagnosticsOperation extends GPUContributorOper
         },
         code: {value: props.output.status.code, format: 'uint32', length: 1}
       },
-      createContributor: getView =>
-        new GPUSpatialRegressionDiagnostics({
+      createContributor: getView => {
+        validateRequirement(
+          id,
+          getView('response').length === props.rowCount,
+          'response length must equal rowCount'
+        );
+        return new GPUSpatialRegressionDiagnostics({
           ...props,
           id,
           weights: {
@@ -110,6 +146,14 @@ export class GPUSpatialRegressionDiagnosticsOperation extends GPUContributorOper
             neighbors: getView<'uint32'>('neighbors'),
             weights: getView<'float32'>('weights'),
             status: {
+              complete:
+                props.weights.status?.complete !== undefined
+                  ? getView<'uint32'>('complete')
+                  : undefined,
+              count: props.weights.status?.count ? getView<'uint32'>('weightsCount') : undefined,
+              requiredCount: props.weights.status?.requiredCount
+                ? getView<'uint32'>('weightsRequiredCount')
+                : undefined,
               overflow: props.weights.status?.overflow
                 ? getView<'uint32'>('weightsOverflow')
                 : undefined,
@@ -127,7 +171,8 @@ export class GPUSpatialRegressionDiagnosticsOperation extends GPUContributorOper
             summary: getView<'float32'>('summary'),
             status: {code: getView<'uint32'>('code')}
           }
-        })
+        });
+      }
     });
   }
 }

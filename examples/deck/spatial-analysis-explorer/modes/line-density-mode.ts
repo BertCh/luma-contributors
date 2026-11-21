@@ -388,7 +388,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
           },
           pairCapacity: Math.max(1024, 3 * vertexCount),
           output: {
-            lengths: lengthView,
+            clippedLengths: lengthView,
             segmentCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
             status: {
               overflow: importGraphBuffer(graph, 'overflow', polygonOverflow, 'uint32', 1)

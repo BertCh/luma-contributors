@@ -127,3 +127,39 @@ it('rejects inconsistent arrays and validates both operation constructions', () 
   // The GPU work cap is deliberately absent on the CPU.
   expect(() => new CPURadiationFlowModelOperation({...PROPS, zoneCount: 1025})).not.toThrow();
 });
+
+it('DGN-05 rejects unknown zone coordinates rather than inventing intervening population', () => {
+  const input = {
+    populations: Float32Array.of(1, 1, 1),
+    outflows: Float32Array.of(10, 0, 0),
+    normalization: 'finite-size' as const
+  };
+  for (const [coordinate, expected] of [
+    [0.5, [0, 2.5, 7.5]],
+    [2, [0, 7.5, 2.5]]
+  ] as const) {
+    expect(
+      Array.from(
+        computeRadiationFlowModelOnCPU({
+          ...input,
+          positions: Float32Array.of(0, 0, 1, 0, coordinate, 0)
+        }).flows.slice(0, 3)
+      )
+    ).toEqual(expected);
+  }
+  expect(() =>
+    computeRadiationFlowModelOnCPU({...input, positions: Float32Array.of(0, 0, 1, 0, NaN, 0)})
+  ).toThrow(/positions.*zone 2/);
+});
+
+it('DGN-06 sums outside opportunities without subtractive cancellation', () => {
+  // With one possible destination, finite-size normalization assigns all 100 trips to it.
+  expect(
+    computeRadiationFlowModelOnCPU({
+      positions: Float32Array.of(0, 0, 1, 0),
+      populations: Float32Array.of(2 ** 60, 1),
+      outflows: Float32Array.of(100, 100),
+      normalization: 'finite-size'
+    }).flows
+  ).toEqual(Float32Array.of(0, 100, 100, 0));
+});

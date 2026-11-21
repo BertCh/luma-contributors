@@ -95,10 +95,11 @@ fn countHits(owner: u32, y: f32) -> u32 {
         body: 'out[outOffset] = countHits(0u, 0.5);'
       });
       const sources = getParsedKernelSources([query]);
-      const source = sources.get('query')!;
-      expect(getStorageBindingCount(source)).toBe(5);
-      // One call site of the body.
-      expect(source.split('hits += edgeEnd').length - 1).toBe(1);
+      for (const {source} of sources.getConfigurations('query')) {
+        expect(getStorageBindingCount(source)).toBe(5);
+        // One call site of the body.
+        expect(source.split('hits += edgeEnd').length - 1).toBe(1);
+      }
       expect(getGPUCommandNodeKernelSources([query])).toHaveLength(1);
     });
   }

@@ -105,8 +105,8 @@ it('streamline parameter helpers pack the documented layout', () => {
   expect(
     Array.from(
       getGPUStreamlinesParameterValues({
-        fieldExtent: [1, 2, 3, 4],
-        gridExtent: [5, 6, 0.5, 0.25],
+        fieldPlacement: {origin: [1, 2], cellSize: [3, 4]},
+        gridPlacement: {origin: [5, 6], cellSize: [0.5, 0.25]},
         stepLength: 0.1,
         minimumSpeed: 0.2
       })
@@ -115,8 +115,8 @@ it('streamline parameter helpers pack the documented layout', () => {
   expect(Array.from(getGPUStreamlinesUint32ParameterValues({seed: 3}))).toEqual([3, 2, 0, 0]);
   expect(() =>
     getGPUStreamlinesParameterValues({
-      fieldExtent: [0, 0, 1, 1],
-      gridExtent: [0, 0, 0, 1],
+      fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+      gridPlacement: {origin: [0, 0], cellSize: [0, 1]},
       stepLength: 1
     })
   ).toThrow(/positive size/);
@@ -133,8 +133,8 @@ it('generateStreamlinesOnCPU spaces lines by the grid and orders priorities uniq
     pointCapacity: 144 * 61
   };
   const settings = {
-    fieldExtent: [0, 0, 1, 1] as const,
-    gridExtent: [0, 0, 0.5, 0.5] as const,
+    fieldPlacement: {origin: [0, 0], cellSize: [1, 1]} as const,
+    gridPlacement: {origin: [0, 0], cellSize: [0.5, 0.5]} as const,
     stepLength: 0.25,
     seed: 4,
     minimumPoints: 3
@@ -188,4 +188,22 @@ it('review C-09 and rule 12: undecided lines have a candidate flag; one gate sou
   expect(new Set(gates.map(pipeline => pipeline.key)).size).toBe(1);
   const decides = pipelines.filter(pipeline => /-round-\d+-decide$/.test(pipeline.id));
   expect(new Set(decides.map(pipeline => pipeline.key)).size).toBe(1);
+});
+
+it('OUT-09 pads offsets in a parallel kernel and captures nested output maps', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'offset-padding'});
+  const props = createProps(graph);
+  const positions = props.output.positions;
+  const count = props.output.lines.status.count;
+  const contributor = new GPUStreamlines(props);
+  props.fieldWidth = 100;
+  props.output.positions = createTransientView(graph, 'replacement-positions', 'float32x2', 66);
+  props.output.lines.status.count = createTransientView(graph, 'replacement-count', 'uint32', 1);
+  expect(contributor.props.fieldWidth).toBe(4);
+  expect(contributor.props.output.positions).toBe(positions);
+  expect(contributor.props.output.lines.status.count).toBe(count);
+  const pipelines = getRasterPipelines(contributor.getCommandNodes(graph));
+  const padding = pipelines.find(pipeline => pipeline.id.endsWith('-pad-offsets'));
+  expect(padding?.source).toContain('if (index > count)');
+  expect(padding?.source).toContain('pathOffsets[pathOffsetsOffset + index] = terminal;');
 });

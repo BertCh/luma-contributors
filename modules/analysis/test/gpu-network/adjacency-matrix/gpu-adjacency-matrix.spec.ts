@@ -27,7 +27,36 @@ import {
   createMatrixEdges,
   type MatrixOracleOptions
 } from './adjacency-matrix-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
+
+it('GPUAdjacencyMatrixOrder maps original nodes to positions in a non-self-inverse order', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createOptimizationHarness(device);
+  const groups = harness.input('uint32', Uint32Array.of(2, 0, 1));
+  const order = harness.output('uint32', 3);
+  const counts = harness.output('uint32', 9);
+  const offsets = harness.input('uint32', Uint32Array.of(0, 1, 1, 1));
+  const neighbors = harness.input('uint32', Uint32Array.of(1));
+  const read = await harness.run({
+    getCommandNodes(graph) {
+      return [
+        ...new GPUAdjacencyMatrixOrder({groups, output: {order}}).getCommandNodes(graph),
+        ...new GPUAdjacencyMatrix({
+          topology: {offsets, neighbors},
+          order,
+          directed: true,
+          resolution: 3,
+          output: {counts}
+        }).getCommandNodes(graph)
+      ];
+    }
+  });
+  // Sorted node IDs [1,2,0] give original-node positions [2,0,1]; edge 0->1 occupies (2,0).
+  expect(read(order)).toEqual([2, 0, 1]);
+  expect(read(counts)).toEqual([0, 0, 0, 0, 0, 0, 1, 0, 0]);
+});
 
 type FixtureOptions = {
   nodeCount: number;

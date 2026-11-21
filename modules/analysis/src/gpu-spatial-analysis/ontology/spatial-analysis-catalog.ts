@@ -11,7 +11,11 @@ import type {
 import {KEPLER_ANALYSIS_CAPABILITIES} from './kepler-analysis-catalog';
 import {COVERAGE_EXPANSION_CAPABILITIES} from './coverage-expansion-catalog';
 import {NESTED_VALIDATION_CAPABILITY} from '../spatial-validation/spatial-validation-descriptors';
-import {freezeCatalog} from './freeze-catalog';
+import {
+  freezeCatalog,
+  withCatalogStability,
+  type CatalogCapabilityDefinition
+} from './freeze-catalog';
 
 const AVAILABLE = 'available' as const;
 const OPPORTUNITY = 'opportunity' as const;
@@ -20,7 +24,7 @@ const OPPORTUNITY = 'opportunity' as const;
  * Runtime catalogue over the flat public exports. It intentionally stores export names rather than
  * constructors so importing discovery metadata does not pull every contributor into an application.
  */
-const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
+const CAPABILITY_DEFINITIONS: readonly CatalogCapabilityDefinition[] = [
   ...KEPLER_ANALYSIS_CAPABILITIES,
   ...COVERAGE_EXPANSION_CAPABILITIES,
   NESTED_VALIDATION_CAPABILITY,
@@ -515,8 +519,8 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     coordinateModels: ['planar', 'spherical', 'topological'],
     outputBound: 'capacity-bounded',
     operators: [
-      'GPUSpatialClustering',
-      'GPUHierarchicalDensityClustering',
+      'GPUDBSCAN',
+      'GPUHDBSCAN',
       'GPUSpatialKMeans',
       'GPUSpatialWeightsMinimumSpanningTree',
       'GPUSkaterRegions',
@@ -631,7 +635,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     outputs: ['attributes', 'surface', 'spatial-weights'],
     coordinateModels: ['planar', 'grid'],
     outputBound: 'capacity-bounded',
-    operators: ['GPUArealInterpolation', 'GPUPycnophylactic'],
+    operators: ['GPUArealInterpolation', 'GPUPycnophylacticInterpolation'],
     relatedCapabilities: ['spatial-neighborhoods', 'workflow-recipes']
   },
   {
@@ -1070,9 +1074,11 @@ const CAPABILITY_EVIDENCE: Readonly<Record<string, GPUSpatialAnalysisCapabilityE
 export const GPU_SPATIAL_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
   freezeCatalog(
     CAPABILITY_DEFINITIONS.map(capability =>
-      capability.status === AVAILABLE
-        ? {...capability, evidence: capability.evidence ?? CAPABILITY_EVIDENCE[capability.id]}
-        : capability
+      withCatalogStability(
+        capability.status === AVAILABLE
+          ? {...capability, evidence: capability.evidence ?? CAPABILITY_EVIDENCE[capability.id]}
+          : capability
+      )
     )
   );
 

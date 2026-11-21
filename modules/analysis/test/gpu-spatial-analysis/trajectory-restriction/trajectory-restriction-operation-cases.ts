@@ -20,8 +20,8 @@ export function createRectangleScene(): RestrictionScene {
   return {
     input: {
       positions: Float32Array.of(-2, 0, 2, 0, 2, 2, 0, 0, 0, 0),
-      times: Float32Array.of(0, 4, 6, 0, 3),
-      offsets: Uint32Array.of(0, 3, 5),
+      timestamps: Float32Array.of(0, 4, 6, 0, 3),
+      trackOffsets: Uint32Array.of(0, 3, 5),
       parameters: Float32Array.of(0, 6, -1, -1, 1, 1, 0)
     },
     options: {}
@@ -32,8 +32,8 @@ export function createPolygonScene(): RestrictionScene {
   return {
     input: {
       positions: Float32Array.of(-2, 0, 10, 0, 1, -1, 7, -1),
-      times: Float32Array.of(0, 12, 0, 6),
-      offsets: Uint32Array.of(0, 2, 4),
+      timestamps: Float32Array.of(0, 12, 0, 6),
+      trackOffsets: Uint32Array.of(0, 2, 4),
       parameters: Float32Array.of(
         0,
         12,
@@ -73,8 +73,8 @@ export function createPairScene(): RestrictionScene {
   return {
     input: {
       positions: Float32Array.of(-2, 0, 2, 0, 0, 0, 0, 0, 0, 2, 0, 2),
-      times: Float32Array.of(0, 4, 0, 4, 0, 4),
-      offsets: Uint32Array.of(0, 2, 4, 6),
+      timestamps: Float32Array.of(0, 4, 0, 4, 0, 4),
+      trackOffsets: Uint32Array.of(0, 2, 4, 6),
       parameters: Float32Array.of(0, 4, 1, 0, 0, 0, 0),
       pairs: {
         first: Uint32Array.of(0, 1, 0, 1, 0),
@@ -90,8 +90,8 @@ export function createStaggeredPairScene(): RestrictionScene {
   return {
     input: {
       positions: Float32Array.of(-2, 0, -1, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0),
-      times: Float32Array.of(0, 1, 3, 4, 0, 2, 4),
-      offsets: Uint32Array.of(0, 4, 7),
+      timestamps: Float32Array.of(0, 1, 3, 4, 0, 2, 4),
+      trackOffsets: Uint32Array.of(0, 4, 7),
       parameters: Float32Array.of(0, 4, 1, 0, 0, 0, 0)
     },
     options: {
@@ -109,9 +109,9 @@ export function createWordScene(): RestrictionScene {
   return {
     input: {
       positions: Float32Array.of(0, 0, 2, 0, 2, 0),
-      times: getInt64TimeWords(BigInt64Array.of(origin, origin + 2n, origin + 7n)),
+      timestamps: getInt64TimeWords(BigInt64Array.of(origin, origin + 2n, origin + 7n)),
       timeOrigin: getInt64TimeWords(BigInt64Array.of(origin)),
-      offsets: Uint32Array.of(0, 3),
+      trackOffsets: Uint32Array.of(0, 3),
       parameters: Float32Array.of(0, 7, 0, -1, 2, 1, 2)
     },
     options: {intervalsPerSegment: 1, compactCapacity: 4, mergeIntervals: true}
@@ -122,8 +122,8 @@ export function createDecreasingOffsetPairScene(): RestrictionScene {
   return {
     input: {
       positions: Float32Array.of(0, 0),
-      times: Float32Array.of(0),
-      offsets: Uint32Array.of(1, 0, 1),
+      timestamps: Float32Array.of(0),
+      trackOffsets: Uint32Array.of(1, 0, 1),
       parameters: Float32Array.of(0, 1, 1, 0, 0, 0, 0)
     },
     options: {pairwiseTracks: [[0, 1]], intervalsPerPair: 1}
@@ -134,8 +134,8 @@ export function createZeroRowScene(trackCount: 0 | 1 = 1): RestrictionScene {
   return {
     input: {
       positions: new Float32Array(0),
-      times: new Float32Array(0),
-      offsets: new Uint32Array(trackCount + 1),
+      timestamps: new Float32Array(0),
+      trackOffsets: new Uint32Array(trackCount + 1),
       parameters: Float32Array.of(0, 1, -1, -1, 1, 1, 0)
     },
     options: trackCount === 0 ? {compactCapacity: 0} : {}
@@ -154,8 +154,8 @@ export function createReversedRangeOrderGeometryScene(mergeTouching = false): Re
   return {
     input: {
       positions: Float32Array.of(0, 0, 0, 0),
-      times: Float32Array.of(0, mergeTouching ? 0 : 1),
-      offsets: Uint32Array.of(1, 2, 0, 1),
+      timestamps: Float32Array.of(0, mergeTouching ? 0 : 1),
+      trackOffsets: Uint32Array.of(1, 2, 0, 1),
       parameters: Float32Array.of(0, 1, -1, -1, 1, 1, 0)
     },
     options: {compactCapacity: 2, mergeIntervals: mergeTouching}
@@ -167,12 +167,12 @@ export function getSceneProps(scene: RestrictionScene): TrajectoryRestrictionOpe
   return {
     ...options,
     positions: 'sourcePositions',
-    times: 'times',
-    offsets: 'offsets',
+    timestamps: 'times',
+    trackOffsets: 'offsets',
     parameters: 'parameters',
     rowCount: input.positions.length / 2,
-    trackCount: input.offsets.length - 1,
-    timestampFormat: input.times instanceof Uint32Array ? 'uint32x2' : 'float32',
+    trackCount: input.trackOffsets.length - 1,
+    timestampFormat: input.timestamps instanceof Uint32Array ? 'uint32x2' : 'float32',
     timeOrigin: input.timeOrigin ? 'timeOrigin' : undefined,
     pairs: input.pairs
       ? {first: 'first', second: 'second', count: input.pairs.count ? 'pairCount' : undefined}
@@ -201,10 +201,10 @@ export function getSceneInputs(scene: RestrictionScene): Record<string, Operatio
   return {
     sourcePositions: {format: 'float32x2', values: input.positions},
     times: {
-      format: input.times instanceof Uint32Array ? 'uint32x2' : 'float32',
-      values: input.times
+      format: input.timestamps instanceof Uint32Array ? 'uint32x2' : 'float32',
+      values: input.timestamps
     },
-    offsets: {format: 'uint32', values: input.offsets},
+    offsets: {format: 'uint32', values: input.trackOffsets},
     parameters: {format: 'float32', values: input.parameters},
     ...(input.timeOrigin
       ? {timeOrigin: {format: 'uint32' as const, values: input.timeOrigin}}

@@ -8,7 +8,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  decodeGPUNetworkSubgraphFilterCounts,
+  decodeGPUNetworkSubgraphFilterCountsWords,
   getGPUNetworkSubgraphFilterParameterValues,
   GPUNetworkSubgraphFilter,
   type GPUNetworkSubgraphFilterState
@@ -29,8 +29,13 @@ import {
   createRandomNetwork,
   type NetworkEdge
 } from '../network-reachability/network-reachability-oracle';
-import {computeSubgraphOracle, type SubgraphOracleResult} from './network-subgraph-filter-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {
+  computeSubgraphOracle,
+  resolveSubgraphOracleState,
+  type SubgraphOracleResult
+} from './network-subgraph-filter-oracle';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {GPUAdjacencyMatrix} from '../../../src/gpu-network/adjacency-matrix/index';
 
 type FixtureOptions = {
   nodeCount: number;
@@ -246,11 +251,9 @@ class Fixture {
       vertexMask: options.vertexMask,
       edgeMask: options.edgeMask,
       vertexColumns: this.vertexColumns,
-      vertexRanges: state.nodeRanges,
+      ...resolveSubgraphOracleState(state),
       edgeColumns: this.edgeColumns,
-      edgeRanges: state.edgeRanges,
       edgeTimes: this.edgeTimes,
-      edgeTimeWindow: state.edgeTimeWindow,
       edgeTimeWords: this.edgeTimeWords,
       timeWordWindow: this.window,
       dropIsolated: options.dropIsolated,
@@ -299,11 +302,67 @@ class Fixture {
 
 type RunResult = Awaited<ReturnType<Fixture['run']>>;
 
+it('checks induced overflow before binding required CSR offsets to a matrix (NET-116)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const capacity of [1, 2]) {
+    const fixture = new Fixture(device, {
+      nodeCount: 3,
+      edges: [
+        [0, 1, 1],
+        [0, 2, 1]
+      ],
+      directed: true,
+      inducedCapacity: capacity
+    });
+    try {
+      const result = await fixture.run();
+      expect(result.inducedOffsets).toEqual([0, 2, 2, 2]);
+      expect(result.inducedOverflow).toBe(capacity === 1 ? 1 : 0);
+      if (result.inducedOverflow !== 0) {
+        expect(result.inducedOffsets[3]).toBeGreaterThan(capacity);
+        continue; // Required offsets are unsafe to bind until the producer fits its capacity.
+      }
+      const graph = new GPUCommandGraph(device);
+      const counts = createOutputBuffer(device, 9);
+      const compiled = (() => {
+        graph.add(
+          new GPUAdjacencyMatrix({
+            topology: {
+              offsets: importGraphBuffer(graph, 'offsets', fixture.buffer['io'], 'uint32', 4),
+              neighbors: importGraphBuffer(
+                graph,
+                'neighbors',
+                fixture.buffer['in'],
+                'uint32',
+                capacity
+              )
+            },
+            directed: true,
+            resolution: 3,
+            output: {counts: importGraphBuffer(graph, 'counts', counts, 'uint32', 9)}
+          })
+        );
+        return graph.compile();
+      })();
+      try {
+        submitGraph(device, compiled, undefined);
+        expect(await readUint32(counts, 9)).toEqual([0, 1, 1, 0, 0, 0, 0, 0, 0]);
+      } finally {
+        compiled.destroy();
+        counts.destroy();
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
+
 function expectMatches(actual: RunResult, expected: SubgraphOracleResult, caps = {}): void {
   expect(actual.vertexMask).toEqual(Array.from(expected.vertexMask));
   expect(actual.edgeMask).toEqual(Array.from(expected.edgeMask));
   expect(actual.counts).toEqual(expected.counts);
-  expect(decodeGPUNetworkSubgraphFilterCounts(actual.counts).liveSlotCount).toBe(
+  expect(decodeGPUNetworkSubgraphFilterCountsWords(actual.counts).liveSlotCount).toBe(
     expected.liveSlotIds.length
   );
   const lvCapacity = (caps as {lv?: number}).lv ?? Infinity;
@@ -327,12 +386,12 @@ function expectMatches(actual: RunResult, expected: SubgraphOracleResult, caps =
 }
 
 const RANGES: GPUNetworkSubgraphFilterState = {
-  nodeRanges: [
+  nodeAttributeRanges: [
     [10, 90],
     [0, 70]
   ],
-  edgeRanges: [[5, 95], null, [20, Infinity]],
-  edgeTimeWindow: [10, 80]
+  edgeAttributeRanges: [[5, 95], null, [20, Infinity]],
+  closedEdgeTimeWindow: [10, 80]
 };
 
 it('GPUNetworkSubgraphFilter matches the oracle on a directed random graph', async () => {
@@ -384,9 +443,9 @@ it('GPUNetworkSubgraphFilter matches the oracle on an undirected graph with cons
       dropIsolated
     });
     fixture.setState({
-      nodeRanges: [[0, 85], null],
-      edgeRanges: [[10, 90], [0, 100], null],
-      edgeTimeWindow: [5, 95]
+      nodeAttributeRanges: [[0, 85], null],
+      edgeAttributeRanges: [[10, 90], [0, 100], null],
+      closedEdgeTimeWindow: [5, 95]
     });
     const actual = await fixture.run();
     const expected = fixture.oracle();
@@ -403,7 +462,7 @@ it('GPUNetworkSubgraphFilter matches the oracle on an undirected graph with cons
       const [u, v] = key.split(':').map(Number);
       expect(actual.edgeMask[slot]).toBe(actual.edgeMask[slotOf.get(`${v}:${u}`)!]);
     }
-    const counts = decodeGPUNetworkSubgraphFilterCounts(actual.counts);
+    const counts = decodeGPUNetworkSubgraphFilterCountsWords(actual.counts);
     expect(counts.selfLoopSlotCount).toBeLessThanOrEqual(1);
     expect(counts.liveEdgeCount).toBe(
       (counts.liveSlotCount - counts.selfLoopSlotCount) / 2 + counts.selfLoopSlotCount
@@ -439,14 +498,14 @@ it('GPUNetworkSubgraphFilter changes ranges between encodings without recompilin
   });
   const states: GPUNetworkSubgraphFilterState[] = [
     {},
-    {nodeRanges: [[20, 60]]},
-    {edgeRanges: [[0, 30]], edgeTimeWindow: [0, 50]},
+    {nodeAttributeRanges: [[20, 60]]},
+    {edgeAttributeRanges: [[0, 30]], closedEdgeTimeWindow: [0, 50]},
     {
-      nodeRanges: [[0, 100.5]],
-      edgeRanges: [[40, 100]],
-      edgeTimeWindow: [25, 75]
+      nodeAttributeRanges: [[0, 100.5]],
+      edgeAttributeRanges: [[40, 100]],
+      closedEdgeTimeWindow: [25, 75]
     },
-    {nodeRanges: [[90, 10]]},
+    {nodeAttributeRanges: [[90, 10]]},
     {}
   ];
   let compiled: unknown;
@@ -508,8 +567,8 @@ it('GPUNetworkSubgraphFilter handles more columns than one kernel can bind', asy
     edgeColumnCount: 9
   });
   fixture.setState({
-    nodeRanges: Array.from({length: 8}, () => [5, 99] as const),
-    edgeRanges: Array.from({length: 9}, () => [3, 99] as const)
+    nodeAttributeRanges: Array.from({length: 8}, () => [5, 99] as const),
+    edgeAttributeRanges: Array.from({length: 9}, () => [3, 99] as const)
   });
   const actual = await fixture.run();
   expectMatches(actual, fixture.oracle());
@@ -530,7 +589,7 @@ it('GPUNetworkSubgraphFilter reports compact and induced overflow without corrup
     liveSlotCapacity: 50,
     inducedCapacity: 40
   });
-  fixture.setState({edgeRanges: [[0, 80]]});
+  fixture.setState({edgeAttributeRanges: [[0, 80]]});
   const actual = await fixture.run();
   const expected = fixture.oracle();
   expectMatches(actual, expected, {lv: 20, ls: 50});
@@ -577,7 +636,7 @@ it('GPUNetworkSubgraphFilter pairs undirected slots whose per-slot values differ
       edgeMask: createMask(slotCount, 0.1, 13),
       pairUndirectedSlots
     });
-    fixture.setState({edgeRanges: [[10, 90]], edgeTimeWindow: [10, 90]});
+    fixture.setState({edgeAttributeRanges: [[10, 90]], closedEdgeTimeWindow: [10, 90]});
     const actual = await fixture.run();
     expectMatches(actual, fixture.oracle());
     const slots = getSlotMap(fixture);
@@ -614,7 +673,7 @@ it('GPUNetworkSubgraphFilter pairs and compacts a star with a hub row and parall
     symmetric: true,
     dropIsolated: true
   });
-  fixture.setState({nodeRanges: [[0, 70]], edgeRanges: [[20, 80]]});
+  fixture.setState({nodeAttributeRanges: [[0, 70]], edgeAttributeRanges: [[20, 80]]});
   const actual = await fixture.run();
   const expected = fixture.oracle();
   expectMatches(actual, expected);

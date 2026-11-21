@@ -4,6 +4,20 @@
 
 import {describe, expect, test, vi} from 'vitest';
 import type {CatalogParameterValue} from '../../src/analysis/catalog-binding-types';
+import {getCatalogBinding} from '../../src/analysis/catalog-bindings';
+import {makeWorkflowOperationFromCatalogBinding} from '../../src/workflows/workflow-operations';
+import {resolveWorkflowParameters} from '../../src/workflows/workflow-plan';
+
+test('workflow ICP admission accepts canonical budgets and the FTLE nonzero constraint', () => {
+  const operation = makeWorkflowOperationFromCatalogBinding(getCatalogBinding('pointcloud-icp')!);
+  expect(operation.normalizeParameters({maximumIterations: 4})['maximumIterations']).toBe(4);
+  expect(() => operation.normalizeParameters({maximumIterations: 4, iterations: 5})).toThrow(
+    /iterations was removed; use maximumIterations/
+  );
+  const ftle = getCatalogBinding('raster-lagrangian-ftle')!.parameters[0];
+  expect(getWorkflowParameterProblem(ftle, 0)).toContain('must be nonzero');
+  expect(getWorkflowParameterProblem(ftle, -0.1)).toBeNull();
+});
 import {
   formatWorkflowParameterValue,
   getWorkflowParameterDefaults,
@@ -19,6 +33,31 @@ import {
   type WorkflowParameterKind,
   type WorkflowParameterSpec
 } from '../../src/workflows/workflow-types';
+import type {WorkflowDocument, WorkflowStep} from '../../src/workflows/workflow-types';
+
+test('saved ICP workflows retain their explicit budget through default materialization', () => {
+  const operation = makeWorkflowOperationFromCatalogBinding(getCatalogBinding('pointcloud-icp')!);
+  const step: WorkflowStep = {
+    id: 'register',
+    operationId: operation.id,
+    inputs: {},
+    parameters: {maximumIterations: {from: 'static', value: 4}},
+    position: {x: 0, y: 0}
+  };
+  const document: WorkflowDocument = {
+    schemaVersion: 1,
+    id: 'saved',
+    title: 'Saved ICP',
+    inputs: [],
+    steps: [step],
+    settings: {engine: 'auto', autoRun: false}
+  };
+  expect(
+    operation.normalizeParameters(resolveWorkflowParameters(document, step, operation))[
+      'maximumIterations'
+    ]
+  ).toBe(4);
+});
 
 const CONTEXT = {operationTitle: 'Buffer points'};
 

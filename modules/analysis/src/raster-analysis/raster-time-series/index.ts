@@ -43,6 +43,7 @@ export {
   CPURasterMedoidCompositeOperation
 } from './cpu-raster-medoid-composite-operation';
 export type {CPURasterMedoidCompositeResult} from './cpu-raster-medoid-composite-operation';
+export type {CPUCompositeDimensions} from './cpu-composite-observations';
 export {GPURasterGeometricMedianCompositeOperation} from './gpu-raster-geometric-median-composite-operation';
 export type {RasterGeometricMedianCompositeOperationProps} from './gpu-raster-geometric-median-composite-operation';
 export {GPURasterMedoidCompositeOperation} from './gpu-raster-medoid-composite-operation';

@@ -3,24 +3,84 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {Device} from '@luma.gl/core';
+import {getTerrainBranchingFlowCommandNodeCount} from './terrain-branching-flow-budget';
 import {
   validateCapacity,
   validateGPUStorageBindingByteLength,
-  validateMaximumCount
+  validateMaximumCount,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import type {GPUTerrainTiledFlowProps} from './gpu-terrain-tiled-flow';
 
 // Each wide-sum plane holds four uint32 words per tour edge (eight per forest cell).
-const TERRAIN_TILED_MAXIMUM_FOREST_CELL_COUNT = Math.floor(0xffffffff / 8);
+export const TERRAIN_TILED_MAXIMUM_FOREST_CELL_COUNT = Math.floor(0xffffffff / 8);
 // Index records and their scalar offsets are uint32-addressed.
-const TERRAIN_TILED_MAXIMUM_INDEX_WORD_COUNT = 0xffffffff;
+export const TERRAIN_TILED_MAXIMUM_INDEX_WORD_COUNT = 0xffffffff;
 // The published radix sort has no public command-node estimate; includes all its passes.
 const TERRAIN_TILED_PRIMITIVE_NODE_ALLOWANCE = 512;
 // Boundary extraction, summary, replay, publication and aggregate tally are one node per tile.
 const TERRAIN_TILED_COMMAND_NODES_PER_TILE = 5;
 // Neighbour coordinates use signed offsets of one, so both coordinate + 1 and the extent fit i32.
 export const TERRAIN_TILED_MAXIMUM_GRID_EXTENT = 0x7ffffffe;
+export const TERRAIN_TILED_MAXIMUM_CELL_COUNT = Math.floor(0xffffffff / 8);
+export const TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT = 0xffffffff;
+const TERRAIN_TILED_STATUS_NODE_ALLOWANCE = 6;
+
+/** Pure route selection and command bounds; never reads terrain rows or changes a graph. */
+export function getTerrainTiledFlowExecutionPlan(
+  props: GPUTerrainTiledFlowProps,
+  device: Pick<Device, 'limits'>
+) {
+  const id = props.id ?? 'terrain-tiled-flow';
+  validateRequirement(
+    id,
+    ['auto', 'resident', 'tiled'].includes(props.execution ?? 'auto'),
+    "execution must be 'auto', 'resident' or 'tiled'"
+  );
+  validateRequirement(
+    id,
+    ['d8', 'branching'].includes(props.routing ?? 'd8'),
+    "routing must be 'd8' or 'branching'"
+  );
+  validateRequirement(
+    id,
+    props.execution !== 'tiled' || props.routing !== 'branching',
+    "execution 'tiled' requires routing 'd8'"
+  );
+  const count = props.grid.width * props.grid.height;
+  const maximumIterations =
+    props.maximumIterations ?? Math.max(128, Math.min(1024, props.grid.width + props.grid.height));
+  const selectedExecution: 'resident' | 'tiled' =
+    props.routing !== 'branching' &&
+    props.execution !== 'resident' &&
+    (props.execution === 'tiled' ||
+      count > TERRAIN_TILED_MAXIMUM_CELL_COUNT ||
+      count * 32 > Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize))
+      ? 'tiled'
+      : 'resident';
+  const residentCommandNodeCount =
+    getTerrainBranchingFlowCommandNodeCount(maximumIterations) +
+    props.tiles.length * 2 +
+    1 +
+    Math.ceil(Math.log2(count)) +
+    TERRAIN_TILED_STATUS_NODE_ALLOWANCE;
+  const tiledCommandNodeCount = getTerrainD8TileCommandNodeCount(props.tiles.length);
+  return {
+    requestedExecution: props.execution ?? 'auto',
+    selectedExecution,
+    residentFractionsByteLength: count * 32,
+    estimatedCommandNodeCount:
+      selectedExecution === 'tiled' ? tiledCommandNodeCount : residentCommandNodeCount,
+    worstCaseCommandNodeCount:
+      props.routing === 'branching' || props.execution === 'resident'
+        ? residentCommandNodeCount
+        : props.execution === 'tiled'
+          ? tiledCommandNodeCount
+          : Math.max(residentCommandNodeCount, tiledCommandNodeCount)
+  };
+}
 
 /** Includes all published-sort passes and the fixed coarse-graph/status nodes. @internal */
 export function getTerrainD8TileCommandNodeCount(tileCount: number): number {

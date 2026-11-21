@@ -66,7 +66,7 @@ export async function runExample(device: Device, input: MultipleTestingAdjustmen
     new GPUMultipleTestingAdjustment({
       pValues,
       method: 'benjamini-hochberg',
-      output: {adjustedPValues, testedCount}
+      output: {adjustedPValues, effectiveFamilySize: testedCount}
     })
   );
   // #endregion example

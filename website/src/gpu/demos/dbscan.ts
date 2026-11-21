@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Demo: GPUSpatialClustering (DBSCAN) of Japanese earthquake epicenters. The epsilon and
-// minimum-points sliders relabel every point on the GPU, so clusters merge, split and shed noise.
+// Demo: GPUDBSCAN (DBSCAN) of Japanese earthquake epicenters. The epsilon and
+// minimum-samples sliders relabel every point on the GPU, so clusters merge, split and shed noise.
 
 import {
-  getGPUSpatialClusteringParameterValues,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  getGPUDBSCANParameterValues,
+  GPUDBSCAN,
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {getEarthquakes} from '../data/point-observations';
 import type {RunGlyph} from '../runs/interaction';
@@ -15,7 +15,7 @@ import {chooseSticky, createPointIndex} from '../runs/pick';
 import {createPointerDriver} from '../runs/pointer-driver';
 import type {GpuScene} from '../types';
 import {createJapanCoast} from './japan-coast';
-import {DBSCAN_PARAMETERS, readParameterValues} from './parameters';
+import {DBSCAN_PARAMETERS, readParameterValues, validateParameterRenames} from './parameters';
 import {
   assertWebGPU,
   createEmptyStorageBuffer,
@@ -51,20 +51,20 @@ const scene: GpuScene = async context => {
   const pointIndex = createPointIndex(positions, pointCount);
   let selected = -1;
   const positionBuffer = createStorageBuffer(device, positions);
-  const parameterBuffer = createEmptyStorageBuffer(device, GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH);
+  const parameterBuffer = createEmptyStorageBuffer(device, GPU_DBSCAN_PARAMETER_LENGTH);
   const labels = createEmptyStorageBuffer(device, pointCount);
   const clusterCount = createEmptyStorageBuffer(device, 1);
 
   const runner = await GraphRunner.create(device, 'demo-dbscan', graph => {
     graph.add(
-      new GPUSpatialClustering({
+      new GPUDBSCAN({
         positions: importBufferView(graph, 'positions', positionBuffer, 'float32x2', pointCount),
         parameters: importBufferView(
           graph,
           'parameters',
           parameterBuffer,
           'float32',
-          GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+          GPU_DBSCAN_PARAMETER_LENGTH
         ),
         gridSize: [64, 36],
         output: {
@@ -83,10 +83,10 @@ const scene: GpuScene = async context => {
     if (isDirty) {
       isDirty = false;
       parameterBuffer.write(
-        getGPUSpatialClusteringParameterValues({
+        getGPUDBSCANParameterValues({
           bounds,
           epsilon: values.epsilon / 100,
-          minimumPoints: Math.round(values.minimumPoints)
+          minimumSamples: Math.round(values.minimumSamples)
         })
       );
       runner.run();
@@ -129,13 +129,13 @@ const scene: GpuScene = async context => {
           to: [positions[index * 2], positions[index * 2 + 1]]
         });
       }
-      // A point counts itself toward minimumPoints; a border point is within epsilon of a core point.
-      const minimumPoints = Math.round(values.minimumPoints);
+      // A point counts itself toward minimumSamples; a border point is within epsilon of a core point.
+      const minimumSamples = Math.round(values.minimumSamples);
       const isCore = (index: number) =>
         pointIndex.within(positions[index * 2], positions[index * 2 + 1], epsilon).length >=
-        minimumPoints;
+        minimumSamples;
       const role =
-        inside.length + 1 >= minimumPoints ? 'core' : inside.some(isCore) ? 'border' : 'noise';
+        inside.length + 1 >= minimumSamples ? 'core' : inside.some(isCore) ? 'border' : 'noise';
       return {glyphs, readout: `${inside.length} within epsilon \u00b7 ${role}`};
     }
   });
@@ -147,6 +147,7 @@ const scene: GpuScene = async context => {
       scheduler.flush();
     },
     setParameters(update) {
+      validateParameterRenames(parameters, update);
       Object.assign(values, update);
       isDirty = true;
       driver.refresh();

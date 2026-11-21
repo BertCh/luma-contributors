@@ -1,1 +1,88 @@
-{}
+{
+  "raster-analysis": {
+    "@luma-contributors/analysis/raster-analysis:GPURasterNDWIProps@raster-analysis/spectral-indices/gpu-raster-ndwi.ts#GPURasterNDWIProps.width": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterNDWIProps inherits the published SpectralIndexProps width dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    },
+    "@luma-contributors/analysis/raster-analysis:GPURasterNDWIProps@raster-analysis/spectral-indices/gpu-raster-ndwi.ts#GPURasterNDWIProps.height": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterNDWIProps inherits the published SpectralIndexProps height dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    },
+    "@luma-contributors/analysis/raster-analysis:GPURasterNBRProps@raster-analysis/spectral-indices/gpu-raster-nbr.ts#GPURasterNBRProps.width": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterNBRProps inherits the published SpectralIndexProps width dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    },
+    "@luma-contributors/analysis/raster-analysis:GPURasterNBRProps@raster-analysis/spectral-indices/gpu-raster-nbr.ts#GPURasterNBRProps.height": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterNBRProps inherits the published SpectralIndexProps height dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    },
+    "@luma-contributors/analysis/raster-analysis:GPURasterEVIProps@raster-analysis/spectral-indices/gpu-raster-evi.ts#GPURasterEVIProps.width": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterEVIProps inherits the published SpectralIndexProps width dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    },
+    "@luma-contributors/analysis/raster-analysis:GPURasterEVIProps@raster-analysis/spectral-indices/gpu-raster-evi.ts#GPURasterEVIProps.height": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterEVIProps inherits the published SpectralIndexProps height dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    },
+    "@luma-contributors/analysis/raster-analysis:GPURasterSAVIProps@raster-analysis/spectral-indices/gpu-raster-savi.ts#GPURasterSAVIProps.width": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterSAVIProps inherits the published SpectralIndexProps width dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    },
+    "@luma-contributors/analysis/raster-analysis:GPURasterSAVIProps@raster-analysis/spectral-indices/gpu-raster-savi.ts#GPURasterSAVIProps.height": {
+      "rule": "raster grid",
+      "reason": "Compatibility: GPURasterSAVIProps inherits the published SpectralIndexProps height dimension used to size the band-math output. Keep this existing construction shape under the additive API policy; this exception does not cover another declaration or a new dimension name."
+    }
+  },
+  "gpu-terrain": {
+    "@luma-contributors/analysis/gpu-terrain:GPUPointHorizonProfileProps@gpu-terrain/point-horizon/gpu-point-horizon-profile.ts#GPUPointHorizonProfileProps.cellSize": {
+      "rule": "raster grid",
+      "reason": "Compatibility: inherited GPUPointHorizonModelOptions.cellSize is the nominal ground-meters-per-pixel step-rule parameter that sizes the distance lattice. The source explicitly keeps it independent of grid pixel size, which varies with latitude in Web Mercator; retain this published model parameter."
+    },
+    "@luma-contributors/analysis/gpu-terrain:GPUPointHorizonVisibilityProps@gpu-terrain/point-horizon/gpu-point-horizon-visibility.ts#GPUPointHorizonVisibilityProps.cellSize": {
+      "rule": "raster grid",
+      "reason": "Compatibility: inherited GPUPointHorizonModelOptions.cellSize is the nominal ground-meters-per-pixel step-rule parameter that sizes the distance lattice. The source explicitly keeps it independent of grid pixel size, which varies with latitude in Web Mercator; retain this published model parameter."
+    }
+  },
+  "gpu-spatial-analysis": {
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPUEmergingHotSpotsOutput@gpu-spatial-analysis/emerging-hot-spots/gpu-emerging-hot-spots.ts#GPUEmergingHotSpotsOutput.count": {
+      "rule": "status",
+      "reason": "Compatibility: SpatialStatisticsPopulationOutput.count is the documented compatibility alias of includedCount for the analytical input-population count, not compact-output cardinality. The constructor rejects both aliases together."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPUEmergingHotSpotsProps@gpu-spatial-analysis/emerging-hot-spots/gpu-emerging-hot-spots.ts#GPUEmergingHotSpotsProps.output.count": {
+      "rule": "status",
+      "reason": "Compatibility: SpatialStatisticsPopulationOutput.count is the documented compatibility alias of includedCount for the analytical input-population count, not compact-output cardinality. The constructor rejects both aliases together."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPUEmpiricalBayesRatesOutput@gpu-spatial-analysis/rate-smoothing/gpu-empirical-bayes-rates.ts#GPUEmpiricalBayesRatesOutput.count": {
+      "rule": "status",
+      "reason": "Compatibility: SpatialStatisticsPopulationOutput.count is the documented compatibility alias of includedCount for the analytical input-population count, not compact-output cardinality. The constructor rejects both aliases together."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPUEmpiricalBayesRatesProps@gpu-spatial-analysis/rate-smoothing/gpu-empirical-bayes-rates.ts#GPUEmpiricalBayesRatesProps.output.count": {
+      "rule": "status",
+      "reason": "Compatibility: SpatialStatisticsPopulationOutput.count is the documented compatibility alias of includedCount for the analytical input-population count, not compact-output cardinality. The constructor rejects both aliases together."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPURectangleClipProps@gpu-spatial-analysis/rectangle-clip/gpu-rectangle-clip.ts#GPURectangleClipProps.output.polygonFeatures.count": {
+      "rule": "status",
+      "reason": "Compatibility: GPURectangleClipPolygonFeatures.count is explicitly deprecated in favor of polygonFeatures.status.count; the original flat alias remains accepted and must identify the same supplied view. Retain this exact published projection under the additive policy."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPURectangleClipProps@gpu-spatial-analysis/rectangle-clip/gpu-rectangle-clip.ts#GPURectangleClipProps.output.polygonFeatures.requiredCount": {
+      "rule": "status",
+      "reason": "Compatibility: GPURectangleClipPolygonFeatures.requiredCount is explicitly deprecated in favor of polygonFeatures.status.requiredCount; the original flat alias remains accepted and must identify the same supplied view. Retain this exact published projection under the additive policy."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPURectangleClipOutput@gpu-spatial-analysis/rectangle-clip/gpu-rectangle-clip.ts#GPURectangleClipOutput.polygonFeatures.count": {
+      "rule": "status",
+      "reason": "Compatibility: GPURectangleClipPolygonFeatures.count is explicitly deprecated in favor of polygonFeatures.status.count; the original flat alias remains accepted and must identify the same supplied view. Retain this exact published projection under the additive policy."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPURectangleClipOutput@gpu-spatial-analysis/rectangle-clip/gpu-rectangle-clip.ts#GPURectangleClipOutput.polygonFeatures.requiredCount": {
+      "rule": "status",
+      "reason": "Compatibility: GPURectangleClipPolygonFeatures.requiredCount is explicitly deprecated in favor of polygonFeatures.status.requiredCount; the original flat alias remains accepted and must identify the same supplied view. Retain this exact published projection under the additive policy."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPUMultivariateLocalGearyProps@gpu-spatial-analysis/spatial-autocorrelation/gpu-local-variability.ts#GPUMultivariateLocalGearyProps.output.count": {
+      "rule": "status",
+      "reason": "Compatibility: inherited SpatialStatisticsPopulationOutput.count is the documented alias of includedCount for analytical input-population cardinality; resolveStatisticsPopulationCount rejects supplying both aliases. Retain this published projection, not a new output status name."
+    },
+    "@luma-contributors/analysis/gpu-spatial-analysis:GPUSegmentSnapProps@gpu-spatial-analysis/geometry-refinement/gpu-segment-snap.ts#GPUSegmentSnapProps.output.candidateOverflow": {
+      "rule": "status",
+      "reason": "Compatibility: the flat per-line candidateOverflow field is explicitly deprecated in favor of output.status.candidateOverflow. Both spellings must identify the same view; retain this exact published projection under the additive policy."
+    }
+  }
+}

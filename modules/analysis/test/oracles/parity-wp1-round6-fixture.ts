@@ -34,7 +34,7 @@ export type AlgebraCase = SparseCase & {
     | 'union'
     | 'intersection'
     | 'difference'
-    | 'symmetricDifference'
+    | 'symmetric-difference'
     | 'subgraph'
     | 'selfWeight'
     | 'higherOrder'

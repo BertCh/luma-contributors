@@ -190,6 +190,7 @@ export function computeIsolinesOnCPU(
   result.requiredCount[0] = requiredCount;
   result.count[0] = Math.min(requiredCount, capacity);
   result.overflow[0] = Number(requiredCount > capacity);
+  result.polylineOverflow[0] = result.overflow[0];
   if (options.vertexCapacity === undefined) return result;
   if (result.overflow[0]) {
     result.polylineOverflow[0] = 1;

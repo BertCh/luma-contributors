@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GraphVectorView, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  type GraphVectorView,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
+  isGraphVectorView,
+  isGraphDataView,
   validateCapacity,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -54,9 +60,9 @@ export function getTerrainBindingViews(
   const visit = (value: unknown, name: string): void => {
     if (!value || typeof value !== 'object' || visited.has(value)) return;
     visited.set(value, true);
-    if (value instanceof GraphVectorView) {
+    if (isGraphVectorView(value)) {
       views[name] = value;
-    } else if ('buffer' in value && 'rowByteLength' in value && 'byteOffset' in value) {
+    } else if (isGraphDataView(value)) {
       views[name] = value as GraphDataView;
     } else if ('words' in value) {
       visit(value.words, `${name}.words`);

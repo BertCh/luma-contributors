@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveProfileStandardization} from './similar-places-standardization';
 import type {Layer} from '@deck.gl/core';
 import {
   getGPUSimilarLocationsParameterLength,
@@ -388,7 +389,7 @@ export async function createSimilarPlaces(
       ctx.setReadout('topAttribute', null);
       return;
     }
-    const mode = options.standardization;
+    const mode = resolveProfileStandardization(options.standardization);
     const zValues = standardized[mode];
     const profile = getReferenceProfile(zValues, references);
     const total = contributions.reduce((sum, term) => sum + term.contribution, 0);
@@ -451,6 +452,7 @@ export async function createSimilarPlaces(
     } | null
   ) => {
     const options = ctx.options;
+    const mode = resolveProfileStandardization(options.standardization);
     const list: MapAnnotation[] = [];
     if (!latest || !notes) {
       ctx.setAnnotations('similar-places', null);
@@ -529,14 +531,9 @@ export async function createSimilarPlaces(
     }
     if (options.direction === 'least') {
       // The three least similar counties, each with the attribute that separates it most.
-      const profile = getReferenceProfile(standardized[options.standardization], references);
+      const profile = getReferenceProfile(standardized[mode], references);
       latest.topIds.slice(0, 3).forEach(row => {
-        const top = getContributions(
-          standardized[options.standardization],
-          profile,
-          getWeightValues(),
-          row
-        )[0];
+        const top = getContributions(standardized[mode], profile, getWeightValues(), row)[0];
         if (!top) return;
         const attribute = SIMILARITY_ATTRIBUTES[top.attribute];
         list.push({
@@ -579,7 +576,7 @@ export async function createSimilarPlaces(
     const matchCount = matchRows.length;
     const referenceSet = new Set(references);
     const excluded = options.excludeReference ? referenceSet : new Set<number>();
-    const mode = options.standardization;
+    const mode = resolveProfileStandardization(options.standardization);
     const zValues = standardized[mode];
     const profile = getReferenceProfile(zValues, references);
 
@@ -848,10 +845,11 @@ export async function createSimilarPlaces(
   const describeCounty = (row: number): TooltipContent | null => {
     if (!latest) return null;
     const options = ctx.options;
+    const mode = resolveProfileStandardization(options.standardization);
     const rings = geometry.getRings(row);
     const anchor = labelPointOf(row);
     const isReference = references.includes(row);
-    const zValues = standardized[options.standardization];
+    const zValues = standardized[mode];
     const profile = getReferenceProfile(zValues, references);
     const rows: TooltipRow[] = [];
     if (isReference) {
@@ -900,7 +898,7 @@ export async function createSimilarPlaces(
       {
         label: 'Distance in attribute space',
         value: latest.distances[row].toFixed(2),
-        unit: options.standardization === 'zscore' ? 'standard deviations' : 'percentile units'
+        unit: mode === 'zscore' ? 'standard deviations' : 'percentile units'
       },
       {label: 'From the reference', value: formatDistance(kilometers * 1000)}
     );

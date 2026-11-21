@@ -121,7 +121,7 @@ it('GPUParticleAdvection parameter helpers pack the documented layout', () => {
   expect(
     Array.from(
       getGPUParticleAdvectionParameterValues(
-        {fieldExtent: [10, 20, 2, 4], timeStep: 0.5, dropRate: 0.25},
+        {fieldPlacement: {origin: [10, 20], cellSize: [2, 4]}, timeStep: 0.5, dropRate: 0.25},
         [8, 4]
       )
     )
@@ -145,7 +145,7 @@ it('GPUParticleAdvection parameter helpers pack the documented layout', () => {
   ).toThrow(/seed/);
   expect(() =>
     getGPUParticleAdvectionParameterValues(
-      {fieldExtent: [0, 0, 1, 1], timeStep: 1},
+      {fieldPlacement: {origin: [0, 0], cellSize: [1, 1]}, timeStep: 1},
       [1, 1],
       new Float32Array(3)
     )
@@ -162,7 +162,7 @@ it('advanceParticlesOnCPU moves exactly along a uniform field and keys spawns by
   const field = {velocities, width, height: width};
   const parameters = getGPUParticleAdvectionParameterValues(
     {
-      fieldExtent: [0, 0, 1, 1],
+      fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
       timeStep: 2,
       speedScale: 1,
       spawnBounds: [3, 3, 5, 5]
@@ -232,7 +232,7 @@ it('advanceParticlesOnCPU drop rate is exact and independent between frames', ()
     height: 1
   };
   const parameters = getGPUParticleAdvectionParameterValues(
-    {fieldExtent: [0, 0, 100, 100], timeStep: 1, dropRate: 0.3},
+    {fieldPlacement: {origin: [0, 0], cellSize: [100, 100]}, timeStep: 1, dropRate: 0.3},
     [1, 1]
   );
   const state = createParticleAdvectionCPUState(4000);
@@ -263,4 +263,36 @@ it('advanceParticlesOnCPU drop rate is exact and independent between frames', ()
   expect(dropped / 4000).toBeLessThan(0.34);
   // Philox words are reproducible.
   expect(getPhilox4x32([1, 2, 3, 4], [5, 6])).toEqual(getPhilox4x32([1, 2, 3, 4], [5, 6]));
+});
+
+it('FLT-07 the particle CPU oracle retains local state across four quarter-metre frames', () => {
+  const origin = 10_000_000;
+  const state = createParticleAdvectionCPUState(1, 4);
+  // Subtract in binary64 before writing a float32 state buffer; never round world positions first.
+  state.positions.set([origin + 50 - origin, 50]);
+  const parameters = getGPUParticleAdvectionParameterValues(
+    {
+      fieldPlacement: {origin: [origin, 100], cellSize: [100, -100]},
+      localOrigin: [origin, 0],
+      timeStep: 0.25,
+      dropRate: 0
+    },
+    [1, 1]
+  );
+  for (let frame = 0; frame < 4; frame++) {
+    advanceParticlesOnCPU(
+      state,
+      {velocities: Float32Array.of(1, 0), width: 1, height: 1},
+      parameters,
+      getGPUParticleAdvectionUint32ParameterValues({seed: 1, frame, maximumAge: 0}),
+      4
+    );
+  }
+  // Closed form x(t)=x(0)+t with t=4*0.25. No drop, reset, expiry or unsupported landing.
+  expect(Array.from(state.positions)).toEqual([51, 50]);
+  expect(Array.from(state.previousPositions)).toEqual([50.75, 50]);
+  expect(Array.from(state.ages)).toEqual([4]);
+  expect(Array.from(state.generations)).toEqual([0]);
+  expect(Array.from(state.trails!)).toEqual([50.25, 50, 50.5, 50, 50.75, 50, 51, 50]);
+  expect(origin + state.positions[0]).toBe(10_000_051);
 });

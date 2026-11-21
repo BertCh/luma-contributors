@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const searchValues = getGPUNeighborSearchParameterValues({bounds, radius: 250});\nconst knoxValues = getGPUSpaceTimeParameterValues({\n  seed: 1,\n  permutationCount: 199,\n  timeThreshold: 7\n});\nconst search = new GPUNeighborSearch({\n  spatialContext,\n  mode: 'radius',\n  positions: observations,\n  gridSize: [32, 32],\n  parameters: createParameters(searchValues),\n  output: closeInSpace\n});\ngraph.add(search);\ngraph.add(\n  new GPUKnoxTest({\n    pairs: search.outputWeights,\n    times: days,\n    parameters: createParameters(knoxValues),\n    maximumPermutations: 199,\n    output: {statistics, summary}\n  })\n);\n// statistics[0]: observed Knox count; statistics[1..199]: counts after permuting the days",
+    "code": "const searchValues = getGPUNeighborSearchParameterValues({bounds, searchRadius: 250});\nconst knoxValues = getGPUSpaceTimeParameterValues({\n  seed: 1,\n  permutationCount: 199,\n  timeThreshold: 7\n});\nconst search = new GPUNeighborSearch({\n  spatialContext,\n  mode: 'radius',\n  positions: observations,\n  gridSize: [32, 32],\n  parameters: createParameters(searchValues),\n  output: closeInSpace\n});\ngraph.add(search);\ngraph.add(\n  new GPUKnoxTest({\n    pairs: search.outputWeights,\n    times: days,\n    parameters: createParameters(knoxValues),\n    maximumPermutations: 199,\n    output: {statistics, summary}\n  })\n);\n// statistics[0]: observed Knox count; statistics[1..199]: counts after permuting the days",
     "language": "ts",
     "lineCount": 25
   },
@@ -46,12 +46,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:43.847Z",
-    "runId": "run-9c19e9c1",
+    "date": "2026-11-20T23:49:54.694Z",
+    "runId": "run-30582231",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-9c19e9c1",
+    "runId": "run-30582231",
     "rung": "result",
     "bindings": {},
     "clauses": [],

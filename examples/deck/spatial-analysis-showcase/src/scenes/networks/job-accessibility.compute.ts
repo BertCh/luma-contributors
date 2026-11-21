@@ -142,6 +142,9 @@ type Built = {
     comparisonCumulativeBuffer: Buffer;
     comparisonGravityBuffer: Buffer;
     comparisonConverged: Buffer;
+    scoresComplete: Buffer;
+    comparisonScoresComplete: Buffer;
+    comparisonSnapOverflow: Buffer;
   };
 };
 
@@ -260,6 +263,10 @@ export async function createJobAccessibility(
   let snapDistances!: Buffer;
   let matrixBuffer!: Buffer;
   let matrixConverged!: Buffer;
+  let scoresReady = false;
+  let scoresComplete!: Buffer;
+  let comparisonScoresComplete!: Buffer;
+  let comparisonSnapOverflow!: Buffer;
   let snapOverflow!: Buffer;
   let comparisonWeightsBuffer: Buffer | null = null;
   let comparisonCumulativeBuffer!: Buffer;
@@ -287,6 +294,8 @@ export async function createJobAccessibility(
   let comparisonMatrixDirty = 2;
   let comparisonScoreDirty = 2;
   let comparisonGeneration = 0;
+  let encodedScoreGeneration = -1;
+  let encodedCompanionGeneration = -1;
   let activeScoreGeneration = -1;
   let companionScoreGeneration = -1;
   let companionMode = false;
@@ -415,6 +424,12 @@ export async function createJobAccessibility(
         description:
           'Readback-derived class counts for cumulative opportunities and 2SFCA; units are intentionally distinct.'
       });
+    } else {
+      ctx.setChart('competitionComparison', {
+        kind: 'bars',
+        values: [],
+        description: 'Unavailable until the current scores are complete.'
+      });
     }
   };
 
@@ -448,8 +463,14 @@ export async function createJobAccessibility(
   };
 
   const markMatrixDirty = () => {
+    scoresReady = false;
+    latestScores = null;
+    ctx.requestLayers();
+    for (const key of ['reached', 'median', 'mean', 'top'])
+      ctx.setReadout(key, 'pending: current scores unavailable');
     comparisonGeneration++;
     comparisonSnapshots.clear();
+    publishComparisons();
     companionMode = !ctx.options.transit;
     matrixPendingAt = performance.now() + MATRIX_DEBOUNCE_MILLISECONDS;
     matrixDirty = Math.max(matrixDirty, 1);
@@ -462,10 +483,16 @@ export async function createJobAccessibility(
 
   const writeScoring = () => {
     const options = ctx.options;
+    scoresReady = false;
+    latestScores = null;
+    ctx.requestLayers();
+    for (const key of ['reached', 'median', 'mean', 'top'])
+      ctx.setReadout(key, 'pending: current scores unavailable');
     comparisonGeneration++;
     comparisonSnapshots.clear();
+    publishComparisons();
     const parameters: GPUNetworkAccessibilitySettings = {
-      threshold: Math.min(options.thresholdMinutes, options.matrixLimitMinutes) * 60,
+      threshold: options.thresholdMinutes * 60,
       decay: 'none'
     };
     if (options.measure === 'gravity-exponential') {
@@ -479,7 +506,7 @@ export async function createJobAccessibility(
       });
     }
     scoring.write(getGPUNetworkAccessibilityParameterValues(parameters));
-    const threshold = Math.min(options.thresholdMinutes, options.matrixLimitMinutes);
+    const threshold = options.thresholdMinutes;
     const minutes = Array.from({length: 13}, (_, index) => index * Math.max(1, threshold / 12));
     ctx.setChart('decayChart', {
       kind: 'line',
@@ -545,6 +572,8 @@ export async function createJobAccessibility(
     let snapDistances!: Buffer;
     let matrixBuffer!: Buffer;
     let matrixConverged!: Buffer;
+    let scoresComplete!: Buffer;
+    let comparisonScoresComplete!: Buffer;
     let snapOverflow!: Buffer;
     let ratiosBuffer!: Buffer;
     let comparisonWeightsBuffer!: Buffer;
@@ -605,6 +634,8 @@ export async function createJobAccessibility(
     snapOverflow = track(resources.createBuffer('snap-overflow', 4));
     matrixBuffer = track(resources.createBuffer('matrix', matrixLength * 4));
     matrixConverged = track(resources.createBuffer('matrix-converged', 4));
+    scoresComplete = track(resources.createBuffer('scores-complete', 4));
+    comparisonScoresComplete = track(resources.createBuffer('comparison-scores-complete', 4));
     ratiosBuffer = track(resources.createBuffer('facility-ratios', rowCount * 4));
     comparisonWeightsBuffer = track(resources.createBuffer('comparison-weights', edgeCount * 4));
     const comparisonSnappedEdges = track(
@@ -712,6 +743,9 @@ export async function createJobAccessibility(
         new GPUNetworkAccessibility({
           id: 'score',
           costs: view(matrixBuffer, 'float32', matrixLength),
+          costsComplete: view(matrixConverged, 'uint32', 1),
+          costLimit: costLimitParameter.importToGraph(scoreGraph),
+          status: {complete: view(scoresComplete, 'uint32', 1)},
           opportunityWeights: view(opportunityWeights, 'float32', rowCount),
           parameters: scoring.importToGraph(scoreGraph),
           cumulative: view(cumulativeBuffer, 'float32', nodeCount),
@@ -789,6 +823,9 @@ export async function createJobAccessibility(
         new GPUNetworkAccessibility({
           id: 'comparison-score',
           costs: view(comparisonMatrixBuffer, 'float32', matrixLength),
+          costsComplete: view(comparisonConverged, 'uint32', 1),
+          costLimit: costLimitParameter.importToGraph(comparisonScoreGraph),
+          status: {complete: view(comparisonScoresComplete, 'uint32', 1)},
           opportunityWeights: view(opportunityWeights, 'float32', rowCount),
           parameters: scoring.importToGraph(comparisonScoreGraph),
           cumulative: view(comparisonCumulativeBuffer, 'float32', nodeCount),
@@ -836,7 +873,10 @@ export async function createJobAccessibility(
         comparisonMatrixBuffer,
         comparisonCumulativeBuffer,
         comparisonGravityBuffer,
-        comparisonConverged
+        comparisonConverged,
+        scoresComplete,
+        comparisonScoresComplete,
+        comparisonSnapOverflow
       }
     };
   }
@@ -855,6 +895,7 @@ export async function createJobAccessibility(
     const previous = built;
     snapReader?.stop();
     companionReader?.stop();
+    scoreRing.stop();
     built = next;
     ({
       opportunityPositions,
@@ -869,7 +910,10 @@ export async function createJobAccessibility(
       matrixBuffer,
       matrixConverged,
       comparisonWeightsBuffer,
-      comparisonCumulativeBuffer
+      comparisonCumulativeBuffer,
+      scoresComplete,
+      comparisonScoresComplete,
+      comparisonSnapOverflow
     } = next.buffers);
     const {rowCount: nextRowCount, laneCount, matrixLength, generation} = next;
     rowCount = nextRowCount;
@@ -904,12 +948,22 @@ export async function createJobAccessibility(
     companionReader = new SummaryReader(
       resources,
       `access-comparison-${rowCount}-${laneCount}-${generation}`,
-      [{buffer: comparisonCumulativeBuffer, size: nodeCount * 4}],
+      [
+        {buffer: comparisonCumulativeBuffer, size: nodeCount * 4},
+        {buffer: comparisonScoresComplete, size: 4},
+        {buffer: comparisonSnapOverflow, size: 4}
+      ],
       bytes => {
         if (destroyed || companionScoreGeneration !== comparisonGeneration) return;
+        const status = new Uint32Array(bytes, nodeCount * 4, 2);
+        if (status[0] !== 1 || status[1] !== 0) {
+          comparisonSnapshots.delete(comparisonKey(companionMode));
+          publishComparisons();
+          return;
+        }
         comparisonSnapshots.set(comparisonKey(companionMode), {
-          cumulative: new Float32Array(bytes.slice(0, nodeCount * 4)),
-          twoStep: new Float32Array(nodeCount)
+          cumulative: new Float32Array(bytes.slice(0, roadNodeCount * 4)),
+          twoStep: new Float32Array(roadNodeCount)
         });
         publishComparisons();
       }
@@ -963,6 +1017,8 @@ export async function createJobAccessibility(
       'opportunityShare',
       `${((100 * rowsJobs) / totalJobs).toFixed(0)}% of ${formatInteger(totalJobs)} jobs`
     );
+    scoresReady = false;
+    latestScores = null;
     matrixDirty = 2;
     scoreDirty = 2;
     comparisonMatrixDirty = 2;
@@ -989,19 +1045,34 @@ export async function createJobAccessibility(
   function readScores(
     commandEncoder: Parameters<SceneInstance<JobAccessibilityOptions>['encode']>[0]
   ) {
-    activeScoreGeneration = comparisonGeneration;
     scoreRing.request(commandEncoder);
   }
   function createScoreHolder() {
     let reader: SummaryReader | null = null;
     const process = (bytes: ArrayBuffer) => {
       if (destroyed || activeScoreGeneration !== comparisonGeneration) return;
+      const status = new Uint32Array(bytes, nodeCount * 12, 2);
+      scoresReady = status[0] === 1 && status[1] === 0;
+      if (!scoresReady) {
+        latestScores = null;
+        comparisonSnapshots.delete(comparisonKey(ctx.options.transit));
+        publishComparisons();
+        for (const key of ['reached', 'median', 'mean', 'top']) {
+          ctx.setReadout(key, 'withheld: routing, snapping or requested horizon incomplete');
+        }
+        ctx.requestLayers();
+        return;
+      }
+      ctx.requestLayers();
       const bytesPerColumn = nodeCount * 4;
       const cumulative = new Float32Array(bytes.slice(0, bytesPerColumn));
       const gravity = new Float32Array(bytes.slice(bytesPerColumn, bytesPerColumn * 2));
       const twoStep = new Float32Array(bytes.slice(bytesPerColumn * 2, bytesPerColumn * 3));
       latestScores = {cumulative, gravity, twoStep};
-      comparisonSnapshots.set(comparisonKey(ctx.options.transit), {cumulative, twoStep});
+      comparisonSnapshots.set(comparisonKey(ctx.options.transit), {
+        cumulative: cumulative.slice(0, roadNodeCount),
+        twoStep: twoStep.slice(0, roadNodeCount)
+      });
       publishComparisons();
       const scores =
         getScoreBuffer() === cumulativeBuffer
@@ -1043,14 +1114,20 @@ export async function createJobAccessibility(
             [
               {buffer: cumulativeBuffer, size: nodeCount * 4},
               {buffer: gravityBuffer, size: nodeCount * 4},
-              {buffer: twoStepBuffer, size: nodeCount * 4}
+              {buffer: twoStepBuffer, size: nodeCount * 4},
+              {buffer: scoresComplete, size: 4},
+              {buffer: snapOverflow, size: 4}
             ],
             process
           );
         }
+        if (encodedScoreGeneration !== comparisonGeneration) return;
+        if (!reader.isPending) activeScoreGeneration = encodedScoreGeneration;
         reader.request(commandEncoder);
       },
       flush(commandEncoder: Parameters<SceneInstance<JobAccessibilityOptions>['encode']>[0]) {
+        if (encodedScoreGeneration !== comparisonGeneration) return;
+        if (reader && !reader.isPending) activeScoreGeneration = encodedScoreGeneration;
         reader?.flush(commandEncoder);
       },
       stop() {
@@ -1136,6 +1213,7 @@ export async function createJobAccessibility(
           if (builtKey !== getBuildKey()) {
             // Records the requested key, so changing back while a build runs requests again.
             builtKey = getBuildKey();
+            markMatrixDirty();
             void graphSwap.request({
               build: buildGraphs,
               commit: next => {
@@ -1236,7 +1314,7 @@ export async function createJobAccessibility(
     },
 
     encode(commandEncoder) {
-      if (!built) return;
+      if (!built || graphSwap.pending) return;
       if (matrixDirty > 0 && performance.now() >= matrixPendingAt) {
         built.matrix.encode(commandEncoder, {parameters: undefined});
         for (let row = 0; row < built.rowCount; row++) {
@@ -1266,6 +1344,7 @@ export async function createJobAccessibility(
       }
       if (scoreDirty > 0 && matrixDirty === 0 && matrixEncodeCount > 0) {
         built.score.encode(commandEncoder, {parameters: undefined});
+        encodedScoreGeneration = comparisonGeneration;
         scoreDirty--;
         scoreEncodeCount++;
         ctx.setReadout('encodes', `${matrixEncodeCount} / ${scoreEncodeCount}`);
@@ -1273,15 +1352,21 @@ export async function createJobAccessibility(
       }
       if (comparisonScoreDirty > 0 && comparisonMatrixDirty === 0) {
         built.comparisonScore.encode(commandEncoder, {parameters: undefined});
+        encodedCompanionGeneration = comparisonGeneration;
         comparisonScoreDirty--;
         if (comparisonScoreDirty === 0) {
-          companionScoreGeneration = comparisonGeneration;
+          if (companionReader && !companionReader.isPending)
+            companionScoreGeneration = encodedCompanionGeneration;
           companionReader?.request(commandEncoder);
         }
       }
       snapReader?.flush(commandEncoder);
       scoreRing.flush(commandEncoder);
-      companionReader?.flush(commandEncoder);
+      if (encodedCompanionGeneration === comparisonGeneration) {
+        if (companionReader && !companionReader.isPending)
+          companionScoreGeneration = encodedCompanionGeneration;
+        companionReader?.flush(commandEncoder);
+      }
     },
 
     getLayers() {
@@ -1318,7 +1403,7 @@ export async function createJobAccessibility(
               id: `access-roads-score-${classIndex}`,
               coordinateOrigin,
               segments: segmentsBuffer,
-              instanceCount: segmentCount,
+              instanceCount: scoresReady ? segmentCount : 0,
               widthPixels,
               values: getScoreBuffer(),
               valueFormat: 'float32',
@@ -1332,7 +1417,7 @@ export async function createJobAccessibility(
             })
         )
       ];
-      if (options.showSnaps) {
+      if (options.showSnaps && scoresReady) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'access-selected-row-bands',
@@ -1407,7 +1492,7 @@ export async function createJobAccessibility(
           })
         );
       }
-      if (options.showSnaps) {
+      if (options.showSnaps && scoresReady) {
         layers.push(
           new SpatialAnalysisSegmentLayer({
             id: 'access-snap-segments',

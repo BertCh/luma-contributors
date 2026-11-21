@@ -19,7 +19,6 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
-  createWGSLDispatchGate,
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -36,9 +35,11 @@ import {
   type GPUTemporalContext
 } from '../../analysis-core/contracts/temporal-context';
 import {createOPTICSXiNodes} from './gpu-optics-xi';
-import {createOPTICSParallelFrontierNodes} from './gpu-optics-parallel-frontier';
+import {createOPTICSGridFrontierNodes} from './optics-grid-frontier';
+import {validateSpatialOutputViews} from './spatial-output-validation';
 import type {
   GPUCandidateStatusPort,
+  GPUInvalidStatusPort,
   GPUIterationStatusPort
 } from '../../analysis-core/contracts/status';
 import {GPUNeighborSearch} from '../neighbor-search/gpu-neighbor-search';
@@ -49,8 +50,29 @@ import {
   validatePointProcessView
 } from '../point-process/point-process-utils';
 
+/** Preserve the contributor identity and exact port through the shared structured validator. */
+function validateOPTICSPort(
+  id: string,
+  path: string,
+  view: GraphDataView,
+  format: 'uint32' | 'uint32x2' | 'float32' | 'float32x2',
+  expectedRows: number
+): void {
+  validatePointProcessView(id, path, view, [format], expectedRows);
+}
+
 /** Time buckets of the core-distance search; only its speed depends on this. */
 const OPTICS_TIME_BUCKET_COUNT = 8;
+
+/** Native distance with a normal squared-magnitude frame, shared by all OPTICS routes. @internal */
+export const OPTICS_PLANAR_DISTANCE_WGSL = `fn getPointDistance(first: vec2<f32>, second: vec2<f32>) -> f32 {
+  let delta = first - second;
+  let magnitude = max(abs(delta.x), abs(delta.y));
+  if (magnitude == 0.0 || (bitcast<u32>(magnitude) & 0x7fffffffu) >= 0x7f800000u) { return magnitude; }
+  let exponent = i32(max((bitcast<u32>(magnitude) >> 23u) & 255u, 1u)) - 127;
+  let normalized = vec2<f32>(ldexp(delta.x, -exponent), ldexp(delta.y, -exponent));
+  return ldexp(length(normalized), exponent);
+}`;
 
 /**
  * Largest row count of the exhaustive reachability step (`neighborIndex: 'brute-force'`).
@@ -124,6 +146,9 @@ const OPTICS_MAXIMUM_MINIMUM_SAMPLES = 256;
 const OPTICS_MAXIMUM_FRONTIER_BATCH_SIZE = 256;
 /** Radius-list offsets use signed 32-bit-compatible capacities. */
 const OPTICS_MAXIMUM_NEIGHBOR_CAPACITY = 2 ** 31 - 1;
+/** Leave headroom for a squared float32 radius and the grid frontier's widening margin. */
+const OPTICS_MAXIMUM_DIRECT_SEARCH_EXPONENT = 63;
+const OPTICS_MAXIMUM_DIRECT_SEARCH_RADIUS = 2 ** OPTICS_MAXIMUM_DIRECT_SEARCH_EXPONENT;
 
 /** Named iteration ports shared by the contributor and its graph operations. @internal */
 export const OPTICS_ITERATION_STATUS_FIELDS = [
@@ -132,15 +157,22 @@ export const OPTICS_ITERATION_STATUS_FIELDS = [
   'iterationLimitReached'
 ] as const;
 
+/** Named termination reasons. */
+export const GPU_OPTICS_REASON = {
+  complete: 0,
+  candidateOverflow: 1,
+  iterationLimitReached: 2
+} as const;
+
+/** @internal Optional status outputs shared with the operation form. */
+export const OPTICS_NAMED_STATUS_FIELDS = [
+  ...OPTICS_ITERATION_STATUS_FIELDS,
+  'reason',
+  'invalidCount'
+] as const;
+
 /** Default radius-neighbor slots per row of the grid reachability step. */
 export const GPU_OPTICS_DEFAULT_NEIGHBORS_PER_ROW = 64;
-
-/**
- * Relative widening of the grid search radius and time window. The search measures squared
- * distances (or its own haversine); the frontier re-tests every candidate with the exhaustive
- * step's distance, so a slightly wider candidate list keeps the relaxed set identical.
- */
-const OPTICS_CANDIDATE_RADIUS_MARGIN = 1e-4;
 
 /**
  * How {@link GPUOPTICS} finds the rows within `maximumDistance` of each visited row:
@@ -162,23 +194,23 @@ export type GPUOPTICSOutput = {
   predecessors: GraphDataView<'uint32'>;
   /** Selected extraction indexed by input row; noise is 0xffffffff. */
   labels: GraphDataView<'uint32'>;
-  /** [visitedCount, complete, invalidRowCount]. Invalid positions are excluded. */
-  status: GraphDataView<'uint32'>;
   /** Optional xi hierarchy, inclusive positions in ordering; capacity must equal input rows. */
   clusterIntervals?: GraphDataView<'uint32x2'>;
   /** Optional [number of xi intervals, overflow]. */
   clusterSummary?: GraphDataView<'uint32'>;
-  /**
-   * Optional named one-row status ports. `status` stays the packed `[visitedCount, complete,
-   * invalidRowCount]` view, so the named ports sit under `ports.status`.
-   */
+  /** Optional named one-row status ports. */
   ports?: {
     /**
      * candidateOverflow reports a truncated radius list. iterationCount is the visited
      * count; converged means all valid rows were visited. iterationLimitReached is set
-     * only for an exhausted visit budget, never for candidate overflow.
+     * only for an exhausted visit budget. invalidCount counts excluded position or time rows.
      */
-    status: GPUCandidateStatusPort & GPUIterationStatusPort;
+    status: GPUCandidateStatusPort &
+      Pick<GPUInvalidStatusPort, 'invalidCount'> &
+      GPUIterationStatusPort & {
+        /** GPU_OPTICS_REASON: completion, truncated candidates, or exhausted visit budget. */
+        reason?: GraphDataView<'uint32'>;
+      };
   };
 };
 
@@ -312,10 +344,19 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
   constructor(props: GPUOPTICSProps) {
     this.props = props;
     this.id = props.id ?? 'optics';
+    validateRequirement(
+      this.id,
+      !('status' in props.output),
+      'output.status was removed; use output.ports.status for iterationCount, converged and invalidCount'
+    );
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
       ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
       measure: 'distance'
     });
+    // Validate the positions port before deriving the row count from it, so a missing port is
+    // a structured diagnostic rather than a TypeError.
+    const positions = props.positions as GraphDataView | undefined;
+    validateOPTICSPort(this.id, `positions`, props.positions, 'float32x2', positions?.length ?? 0);
     const rows = props.positions.length;
     if (props.times) {
       validateRequirement(
@@ -326,7 +367,7 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
       this.temporalContext = resolveGPUTemporalContext(this.id, props.temporalContext, {
         encodings: ['float32-relative']
       });
-      validatePointProcessView(props.times, 'float32', rows, `${this.id} times`);
+      validateOPTICSPort(this.id, `times`, props.times, 'float32', rows);
       validatePointProcessPositive(
         props.maximumTimeDistance ?? NaN,
         this.id,
@@ -451,30 +492,45 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
       );
     }
     if (props.output.clusterIntervals)
-      validatePointProcessView(
+      validateOPTICSPort(
+        this.id,
+        `output.clusterIntervals`,
         props.output.clusterIntervals,
         'uint32x2',
-        rows,
-        `${this.id} output.clusterIntervals`
+        rows
       );
     if (props.output.clusterSummary)
-      validatePointProcessView(
+      validateOPTICSPort(
+        this.id,
+        `output.clusterSummary`,
         props.output.clusterSummary,
         'uint32',
-        2,
-        `${this.id} output.clusterSummary`
+        2
       );
-    validatePointProcessView(props.positions, 'float32x2', rows, `${this.id} positions`);
     for (const name of ['ordering', 'predecessors', 'labels'] as const) {
-      validatePointProcessView(props.output[name], 'uint32', rows, `${this.id} output.${name}`);
+      validateOPTICSPort(this.id, `output.${name}`, props.output[name], 'uint32', rows);
     }
     for (const name of ['coreDistances', 'reachability'] as const) {
-      validatePointProcessView(props.output[name], 'float32', rows, `${this.id} output.${name}`);
+      validateOPTICSPort(this.id, `output.${name}`, props.output[name], 'float32', rows);
     }
-    validatePointProcessView(props.output.status, 'uint32', 3, `${this.id} output.status`);
-    for (const [name, view] of Object.entries(props.output.ports?.status ?? {})) {
-      if (view)
-        validatePointProcessView(view, 'uint32', 1, `${this.id} output.ports.status.${name}`);
+    const status = props.output.ports?.status;
+    const statusEntries = Object.entries(status ?? {});
+    for (const [name, view] of statusEntries) {
+      if (view) validateOPTICSPort(this.id, `output.ports.status.${name}`, view, 'uint32', 1);
+    }
+    if (status) {
+      validateSpatialOutputViews(
+        this.id,
+        Object.fromEntries(
+          statusEntries.map(([name, view]) => [`output.ports.status.${name}`, view])
+        ),
+        [
+          {
+            read: status.reason || status.iterationLimitReached ? [status.candidateOverflow] : [],
+            write: OPTICS_NAMED_STATUS_FIELDS.map(name => status[name])
+          }
+        ]
+      );
     }
     validateGraphOutputsDisjointFromInputs(
       this.id,
@@ -513,12 +569,20 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
       ? [{name: 'times', view: times, type: 'f32' as const, access: 'read' as const}]
       : [];
     const processed = createTransientView(graph, `${id}-processed`, 'uint32', rows);
+    // Retain the actual candidate loss even when its public port is omitted.
+    const candidateOverflow =
+      this.neighborIndex === 'grid'
+        ? (output.ports?.status.candidateOverflow ??
+          createTransientView(graph, `${id}-reach-neighbor-overflow`, 'uint32', 1))
+        : undefined;
     const invalidRows = createTransientView(graph, `${id}-invalid-rows`, 'uint32', rows);
+    // The visit count, completion flag and invalid row count also gate frontier and extraction.
+    const frontierStatus = createTransientView(graph, `${id}-frontier-state`, 'uint32', 3);
     const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
     const distanceSource = geographic
       ? `${GEODESIC_WGSL}
 fn getPointDistance(first: vec2<f32>, second: vec2<f32>) -> f32 { return geodesicHaversineDistance(first, second, ${getWGSLFloatLiteral(getGPUSphereRadius(this.spatialContext))}); }`
-      : 'fn getPointDistance(first: vec2<f32>, second: vec2<f32>) -> f32 { return distance(first, second); }';
+      : OPTICS_PLANAR_DISTANCE_WGSL;
     const declarations = `${IS_FINITE_FLOAT_WGSL}
 ${distanceSource}
 const ROWS = ${rows}u;
@@ -539,15 +603,43 @@ fn isRelated(first: u32, second: u32) -> bool {
     : ''
 }`;
     const otherSamples = minimumSamples - 1;
+    // Both indexed searches use squared distances. Scale only as much as needed to keep
+    // the radius square finite, then publish core distances in the original coordinate units.
+    const positionScaleExponent =
+      !geographic &&
+      (otherSamples > 0 || this.neighborIndex === 'grid') &&
+      props.maximumDistance > OPTICS_MAXIMUM_DIRECT_SEARCH_RADIUS
+        ? OPTICS_MAXIMUM_DIRECT_SEARCH_EXPONENT - Math.ceil(Math.log2(props.maximumDistance))
+        : 0;
+    const searchRadius = props.maximumDistance * 2 ** positionScaleExponent;
+    const searchPositions =
+      positionScaleExponent === 0
+        ? positions
+        : createTransientView(graph, `${id}-search-positions`, 'float32x2', rows);
     const coreSearchNodes: GPUCommandNode<Parameters>[] = [];
+    if (positionScaleExponent !== 0) {
+      coreSearchNodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-normalize-search-positions`,
+          operation: 'GPUOPTICS',
+          invocationCount: rows,
+          bindings: [
+            {name: 'positions', view: positions, type: 'f32', access: 'read'},
+            {name: 'normalized', view: searchPositions, type: 'f32', access: 'read_write'}
+          ],
+          body: `normalized[normalizedOffset + 2u * index] = ldexp(positions[positionsOffset + 2u * index], ${positionScaleExponent});
+  normalized[normalizedOffset + 2u * index + 1u] = ldexp(positions[positionsOffset + 2u * index + 1u], ${positionScaleExponent});`
+        })
+      );
+    }
     let neighborOffsets: GraphDataView<'uint32'> | undefined;
     let neighborDistances: GraphDataView<'float32'> | undefined;
     if (otherSamples > 0) {
       const search = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
         id: `${id}-core-neighbors-setup`,
         operation: 'GPUOPTICS',
-        positions,
-        radius: props.maximumDistance,
+        positions: searchPositions,
+        radius: searchRadius,
         geographic,
         times,
         timeRadius: props.maximumTimeDistance
@@ -570,9 +662,9 @@ fn isRelated(first: u32, second: u32) -> bool {
         ...new GPUNeighborSearch({
           id: `${id}-core-neighbors`,
           mode: 'knn',
-          k: otherSamples,
+          neighborCount: otherSamples,
           spatialContext: this.spatialContext,
-          positions,
+          positions: searchPositions,
           times,
           temporalContext: this.temporalContext,
           timeBucketCount: times ? OPTICS_TIME_BUCKET_COUNT : undefined,
@@ -636,7 +728,7 @@ fn isRelated(first: u32, second: u32) -> bool {
       coreDistance = 0.0;
       for (var slot = begin; slot < end; slot++) {
         coreDistance = max(coreDistance, neighborDistances[neighborDistancesOffset + slot]);
-      }
+      }${positionScaleExponent ? `\n      coreDistance = ldexp(coreDistance, ${-positionScaleExponent});` : ''}
     }`
         : 'coreDistance = 0.0;'
     }
@@ -673,23 +765,34 @@ fn isRelated(first: u32, second: u32) -> bool {
         operation: 'GPUOPTICS',
         variant: 'frontier-initialize-status',
         invocationCount: 1,
-        bindings: [{name: 'status', view: output.status, type: 'u32', access: 'read_write'}],
+        bindings: [{name: 'status', view: frontierStatus, type: 'u32', access: 'read_write'}],
         body: `status[statusOffset] = 0u;
   status[statusOffset + 1u] = 0u;`
       }),
       ...new GPUReduction({
         id: `${id}-invalid-count`,
         input: invalidRows,
-        output: graph.createDataView(output.status.buffer, {
+        output: graph.createDataView(frontierStatus.buffer, {
           format: 'uint32',
-          byteOffset: output.status.byteOffset + 2 * Uint32Array.BYTES_PER_ELEMENT,
+          byteOffset: frontierStatus.byteOffset + 2 * Uint32Array.BYTES_PER_ELEMENT,
           length: 1
         }),
         operation: 'sum'
       }).getCommandNodes(graph)
     ];
     if (this.neighborIndex === 'grid') {
-      nodes.push(...this.getGridFrontierNodes(graph, distanceSource, timeBindings, processed));
+      nodes.push(
+        ...createOPTICSGridFrontierNodes(
+          graph,
+          this,
+          {positions: searchPositions, radius: searchRadius},
+          distanceSource,
+          timeBindings,
+          processed,
+          candidateOverflow!,
+          frontierStatus
+        )
+      );
     }
     for (
       let batch = 0;
@@ -717,7 +820,7 @@ fn isRelated(first: u32, second: u32) -> bool {
             {name: 'reachability', view: output.reachability, type: 'f32', access: 'read_write'},
             {name: 'predecessors', view: output.predecessors, type: 'u32', access: 'read_write'},
             {name: 'processed', view: processed, type: 'u32', access: 'read_write'},
-            {name: 'status', view: output.status, type: 'u32', access: 'read_write'}
+            {name: 'status', view: frontierStatus, type: 'u32', access: 'read_write'}
           ],
           declarations: `${declarations}
 var<workgroup> candidateRows: array<u32, 256>;
@@ -770,10 +873,18 @@ var<workgroup> visited: u32;`,
         })
       );
     }
-    const iterationStatus = OPTICS_ITERATION_STATUS_FIELDS.filter(
-      name => output.ports?.status[name]
+    const iterationStatus = OPTICS_NAMED_STATUS_FIELDS.filter(name => output.ports?.status[name]);
+    const needsCandidateLoss = iterationStatus.some(
+      name => name === 'reason' || name === 'iterationLimitReached'
     );
     if (iterationStatus.length) {
+      const statusExpressions = {
+        iterationCount: 'status[statusOffset]',
+        converged: 'status[statusOffset + 1u]',
+        invalidCount: 'status[statusOffset + 2u]',
+        reason: `select(select(2u, 0u, status[statusOffset + 1u] != 0u), 1u, ${candidateOverflow ? 'overflow[overflowOffset] != 0u' : 'false'})`,
+        iterationLimitReached: `u32(status[statusOffset + 1u] == 0u && status[statusOffset] == ${props.maximumIterations ?? rows}u${candidateOverflow ? ' && overflow[overflowOffset] == 0u' : ''})`
+      };
       nodes.push(
         createWGSLKernelNode(graph, {
           id: `${id}-iteration-status`,
@@ -781,12 +892,12 @@ var<workgroup> visited: u32;`,
           variant: 'iteration-status',
           invocationCount: 1,
           bindings: [
-            {name: 'status', view: output.status, type: 'u32', access: 'read'},
-            ...(output.ports?.status.candidateOverflow
+            {name: 'status', view: frontierStatus, type: 'u32', access: 'read'},
+            ...(candidateOverflow && needsCandidateLoss
               ? [
                   {
                     name: 'overflow',
-                    view: output.ports.status.candidateOverflow,
+                    view: candidateOverflow,
                     type: 'u32' as const,
                     access: 'read' as const
                   }
@@ -800,22 +911,13 @@ var<workgroup> visited: u32;`,
             }))
           ],
           body: iterationStatus
-            .map(
-              name =>
-                `${name}[${name}Offset] = ${
-                  name === 'iterationCount'
-                    ? 'status[statusOffset]'
-                    : name === 'converged'
-                      ? 'status[statusOffset + 1u]'
-                      : `u32(status[statusOffset + 1u] == 0u && status[statusOffset] == ${props.maximumIterations ?? rows}u${output.ports?.status.candidateOverflow ? ' && overflow[overflowOffset] == 0u' : ''})`
-                };`
-            )
+            .map(name => `${name}[${name}Offset] = ${statusExpressions[name]};`)
             .join('\n')
         })
       );
     }
     if (props.extractionMethod === 'xi') {
-      nodes.push(...createOPTICSXiNodes(graph, props, id));
+      nodes.push(...createOPTICSXiNodes(graph, props, id, frontierStatus));
       return nodes;
     }
     const clusterStarts = createTransientView(graph, `${id}-cluster-starts`, 'uint32', rows);
@@ -830,7 +932,7 @@ var<workgroup> visited: u32;`,
           {name: 'core', view: output.coreDistances, type: 'f32', access: 'read'},
           {name: 'ordering', view: output.ordering, type: 'u32', access: 'read'},
           {name: 'reachability', view: output.reachability, type: 'f32', access: 'read'},
-          {name: 'status', view: output.status, type: 'u32', access: 'read'},
+          {name: 'status', view: frontierStatus, type: 'u32', access: 'read'},
           {name: 'starts', view: clusterStarts, type: 'u32', access: 'read_write'}
         ],
         body: `var startsCluster = false;
@@ -856,7 +958,7 @@ var<workgroup> visited: u32;`,
           {name: 'counts', view: clusterCounts, type: 'u32', access: 'read'},
           {name: 'ordering', view: output.ordering, type: 'u32', access: 'read'},
           {name: 'reachability', view: output.reachability, type: 'f32', access: 'read'},
-          {name: 'status', view: output.status, type: 'u32', access: 'read'},
+          {name: 'status', view: frontierStatus, type: 'u32', access: 'read'},
           {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'}
         ],
         body: `if (status[statusOffset + 1u] == 0u || index >= status[statusOffset]) { return; }
@@ -864,327 +966,6 @@ var<workgroup> visited: u32;`,
   if (starts[startsOffset + index] != 0u || reachability[reachabilityOffset + row] <= ${Math.fround(props.extractionDistance!)}f) {
     labels[labelsOffset + row] = counts[countsOffset + index] - 1u;
   }`
-      })
-    );
-    return nodes;
-  }
-
-  /**
-   * Grid reachability: a widened radius self join lists candidate rows once; every visit relaxes
-   * its candidates after the exhaustive step's exact distance and time tests, and selects the next
-   * row by (reachability, row) from the seed list (rows with finite reachability that are not yet
-   * visited) or, when that list is empty, as the lowest unvisited row past a cursor. Every
-   * unvisited row outside the seed list has infinite reachability, so the selection equals the
-   * exhaustive argmin.
-   *
-   * Seven storage bindings per frontier batch: a packed `[x, y, time, coreDistance]` row copy, the
-   * CSR offsets and IDs, the three outputs, and one scratch view holding the seed list, the row
-   * states (unvisited, visited, or seed slot) and the frontier words.
-   */
-  private getGridFrontierNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>,
-    distanceSource: string,
-    timeBindings: {name: string; view: GraphDataView; type: 'f32'; access: 'read'}[],
-    processed: GraphDataView<'uint32'>
-  ): GPUCommandNode<Parameters>[] {
-    const {id, props, neighborCapacity} = this;
-    const {positions, output, times} = props;
-    const rows = positions.length;
-    const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
-    const search = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
-      id: `${id}-reach-neighbors-setup`,
-      operation: 'GPUOPTICS',
-      positions,
-      radius: props.maximumDistance * (1 + OPTICS_CANDIDATE_RADIUS_MARGIN),
-      geographic,
-      times,
-      timeRadius:
-        props.maximumTimeDistance === undefined
-          ? undefined
-          : props.maximumTimeDistance * (1 + OPTICS_CANDIDATE_RADIUS_MARGIN)
-    });
-    const offsets = createTransientView(graph, `${id}-reach-neighbor-offsets`, 'uint32', rows + 1);
-    const neighbors = createTransientView(
-      graph,
-      `${id}-reach-neighbor-ids`,
-      'uint32',
-      neighborCapacity
-    );
-    const overflow =
-      output.ports?.status.candidateOverflow ??
-      createTransientView(graph, `${id}-reach-neighbor-overflow`, 'uint32', 1);
-    const points = createTransientView(graph, `${id}-frontier-points`, 'float32', rows * 4);
-    // [seed rows (rows) | row states (rows) | seedCount, cursor, visited, overflow].
-    const scratch = createTransientView(graph, `${id}-frontier-scratch`, 'uint32', rows * 2 + 4);
-    const gate =
-      props.orderingMethod === 'parallel'
-        ? undefined
-        : createWGSLDispatchGate(graph, {
-            id: `${id}-frontier-dispatch`,
-            operation: 'GPUOPTICS',
-            shapes: [[256, 256]]
-          });
-    const declarations = `${IS_FINITE_FLOAT_WGSL}
-${distanceSource}
-const ROWS = ${rows}u;
-const MAXIMUM_DISTANCE = ${Math.fround(props.maximumDistance)}f;
-const ROW_STATES = ${rows}u;
-const SEED_COUNT = ${rows * 2}u;
-const CURSOR = ${rows * 2 + 1}u;
-const VISITED = ${rows * 2 + 2}u;
-const OVERFLOW = ${rows * 2 + 3}u;
-// A row state is UNVISITED, VISITED, or the row's slot in the seed list.
-const UNVISITED = 0xffffffffu;
-const VISITED_ROW = 0xfffffffeu;
-fn point(row: u32) -> vec2<f32> {
-  return vec2<f32>(points[pointsOffset + 4u * row], points[pointsOffset + 4u * row + 1u]);
-}
-${
-  times
-    ? `const MAXIMUM_TIME_DISTANCE = ${Math.fround(props.maximumTimeDistance!)}f;
-fn isRelated(first: u32, second: u32) -> bool {
-  return abs(points[pointsOffset + 4u * first + 2u] - points[pointsOffset + 4u * second + 2u]) <= MAXIMUM_TIME_DISTANCE;
-}`
-    : ''
-}`;
-    const nodes: GPUCommandNode<Parameters>[] = [
-      ...search.nodes,
-      ...new GPUNeighborSearch({
-        id: `${id}-reach-neighbors`,
-        mode: 'radius',
-        spatialContext: this.spatialContext,
-        positions,
-        times,
-        temporalContext: this.temporalContext,
-        timeBucketCount: times ? OPTICS_TIME_BUCKET_COUNT : undefined,
-        parameters: search.parameters,
-        gridSize: search.gridSize,
-        output: {
-          offsets,
-          neighbors,
-          weights: createTransientView(
-            graph,
-            `${id}-reach-neighbor-weights`,
-            'float32',
-            neighborCapacity
-          ),
-          status: {overflow}
-        }
-      }).getCommandNodes(graph),
-      createWGSLKernelNode(graph, {
-        id: `${id}-frontier-prepare`,
-        operation: 'GPUOPTICS',
-        variant: 'grid-frontier-prepare',
-        invocationCount: rows,
-        bindings: [
-          {name: 'positions', view: positions, type: 'f32', access: 'read'},
-          ...timeBindings,
-          {name: 'core', view: output.coreDistances, type: 'f32', access: 'read'},
-          {name: 'processed', view: processed, type: 'u32', access: 'read'},
-          {name: 'overflow', view: overflow, type: 'u32', access: 'read'},
-          {name: 'points', view: points, type: 'f32', access: 'read_write'},
-          {name: 'scratch', view: scratch, type: 'u32', access: 'read_write'},
-          ...(gate ? [gate.binding] : [])
-        ],
-        body: `points[pointsOffset + 4u * index] = positions[positionsOffset + 2u * index];
-  points[pointsOffset + 4u * index + 1u] = positions[positionsOffset + 2u * index + 1u];
-  points[pointsOffset + 4u * index + 2u] = ${times ? 'times[timesOffset + index]' : '0.0'};
-  points[pointsOffset + 4u * index + 3u] = core[coreOffset + index];
-  // Invalid rows were marked processed by the initialize pass.
-  scratch[scratchOffset + ${rows}u + index] = select(0xffffffffu, 0xfffffffeu, processed[processedOffset + index] != 0u);
-  if (index == 0u) {
-    scratch[scratchOffset + ${rows * 2}u] = 0u;
-    scratch[scratchOffset + ${rows * 2 + 1}u] = 0u;
-    scratch[scratchOffset + ${rows * 2 + 2}u] = 0u;
-    scratch[scratchOffset + ${rows * 2 + 3}u] = overflow[overflowOffset];
-    ${gate ? `${gate.armWGSL}\n    if (overflow[overflowOffset] != 0u) { ${gate.disarmWGSL} }` : ''}
-  }`
-      })
-    ];
-    if (props.orderingMethod === 'parallel') {
-      nodes.push(
-        ...createOPTICSParallelFrontierNodes(graph, props, {
-          distanceSource,
-          points,
-          offsets,
-          neighbors,
-          overflow,
-          processed
-        })
-      );
-      return nodes;
-    }
-    const batchSize = props.frontierBatchSize ?? GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE;
-    const iterations = props.maximumIterations ?? rows;
-    const bindings = [
-      {name: 'points', view: points, type: 'f32' as const, access: 'read' as const},
-      {name: 'offsets', view: offsets, type: 'u32' as const, access: 'read' as const},
-      {name: 'neighbors', view: neighbors, type: 'u32' as const, access: 'read' as const},
-      {
-        name: 'ordering',
-        view: output.ordering,
-        type: 'u32' as const,
-        access: 'read_write' as const
-      },
-      {
-        name: 'reachability',
-        view: output.reachability,
-        type: 'f32' as const,
-        access: 'read_write' as const
-      },
-      {
-        name: 'predecessors',
-        view: output.predecessors,
-        type: 'u32' as const,
-        access: 'read_write' as const
-      },
-      {name: 'scratch', view: scratch, type: 'u32' as const, access: 'read_write' as const}
-    ];
-    for (let batch = 0; batch < Math.ceil(iterations / batchSize); batch++) {
-      nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-frontier-${batch}`,
-          operation: 'GPUOPTICS',
-          variant: 'grid-frontier-batch',
-          invocationCount: 256,
-          workgroupSize: 256,
-          guardIndex: false,
-          ...gate!.getGate(0),
-          bindings,
-          declarations: `${declarations}
-var<workgroup> candidateRows: array<u32, 256>;
-var<workgroup> candidateDistances: array<f32, 256>;
-var<workgroup> visited: u32;
-var<workgroup> seedCount: u32;
-var<workgroup> cursor: u32;
-var<workgroup> focusRow: u32;
-var<workgroup> appendCount: atomic<u32>;
-var<workgroup> overflowed: u32;`,
-          body: `let infinity = bitcast<f32>(0x7f800000u | (index & 0u));
-  if (index == 0u) {
-    overflowed = scratch[scratchOffset + OVERFLOW];
-    visited = scratch[scratchOffset + VISITED];
-    seedCount = scratch[scratchOffset + SEED_COUNT];
-    cursor = scratch[scratchOffset + CURSOR];
-    atomicStore(&appendCount, 0u);
-  }
-  // A truncated candidate list would drop relaxations: leave the ordering incomplete.
-  if (workgroupUniformLoad(&overflowed) != 0u) { return; }
-  for (var iteration = 0u; iteration < ${Math.min(batchSize, iterations - batch * batchSize)}u; iteration++) {
-    let count = workgroupUniformLoad(&seedCount);
-    if (count > 0u) {
-      var selected = 0xffffffffu; var best = infinity;
-      for (var slot = index; slot < count; slot += 256u) {
-        let row = scratch[scratchOffset + slot];
-        let candidate = reachability[reachabilityOffset + row];
-        if (candidate < best || (candidate == best && row < selected)) { selected = row; best = candidate; }
-      }
-      candidateRows[index] = selected; candidateDistances[index] = best;
-      workgroupBarrier();
-      for (var stride = 128u; stride > 0u; stride /= 2u) {
-        if (index < stride) {
-          let otherDistance = candidateDistances[index + stride]; let otherRow = candidateRows[index + stride];
-          if (otherDistance < candidateDistances[index] || (otherDistance == candidateDistances[index] && otherRow < candidateRows[index])) {
-            candidateDistances[index] = otherDistance; candidateRows[index] = otherRow;
-          }
-        }
-        workgroupBarrier();
-      }
-      if (index == 0u) { focusRow = candidateRows[0]; }
-    } else {
-      // Every unvisited row has infinite reachability: the next root is the lowest unvisited row.
-      if (index == 0u) { focusRow = 0xffffffffu; }
-      loop {
-        let base = workgroupUniformLoad(&cursor);
-        if (base >= ROWS) { break; }
-        let row = base + index;
-        candidateRows[index] = select(0xffffffffu, row, row < ROWS && scratch[scratchOffset + ROW_STATES + min(row, ROWS - 1u)] == UNVISITED);
-        workgroupBarrier();
-        for (var stride = 128u; stride > 0u; stride /= 2u) {
-          if (index < stride) { candidateRows[index] = min(candidateRows[index], candidateRows[index + stride]); }
-          workgroupBarrier();
-        }
-        if (index == 0u) {
-          if (candidateRows[0] == 0xffffffffu) { cursor = base + 256u; } else { cursor = candidateRows[0]; focusRow = candidateRows[0]; }
-        }
-        if (workgroupUniformLoad(&focusRow) != 0xffffffffu) { break; }
-      }
-    }
-    let focus = workgroupUniformLoad(&focusRow);
-    if (focus == 0xffffffffu) { break; }
-    if (index == 0u) {
-      ordering[orderingOffset + visited] = focus; visited++;
-      let slot = scratch[scratchOffset + ROW_STATES + focus];
-      if (slot != UNVISITED) {
-        // The focus is a seed: move the last seed into its slot.
-        let last = scratch[scratchOffset + seedCount - 1u];
-        scratch[scratchOffset + slot] = last; scratch[scratchOffset + ROW_STATES + last] = slot;
-        seedCount--;
-      }
-      scratch[scratchOffset + ROW_STATES + focus] = VISITED_ROW;
-    }
-    storageBarrier(); workgroupBarrier();
-    let coreDistance = points[pointsOffset + 4u * focus + 3u];
-    let seedBase = workgroupUniformLoad(&seedCount);
-    if (isFiniteFloat(coreDistance)) {
-      let end = offsets[offsetsOffset + focus + 1u];
-      for (var slot = offsets[offsetsOffset + focus] + index; slot < end; slot += 256u) {
-        let row = neighbors[neighborsOffset + slot];
-        let state = scratch[scratchOffset + ROW_STATES + row];
-        if (state == VISITED_ROW) { continue; }
-        ${times ? 'if (!isRelated(focus, row)) { continue; }\n        ' : ''}let pairDistance = getPointDistance(point(focus), point(row));
-        if (pairDistance > MAXIMUM_DISTANCE) { continue; }
-        let candidate = max(coreDistance, pairDistance);
-        if (candidate < reachability[reachabilityOffset + row]) {
-          reachability[reachabilityOffset + row] = candidate; predecessors[predecessorsOffset + row] = focus;
-          if (state == UNVISITED) {
-            let seedSlot = seedBase + atomicAdd(&appendCount, 1u);
-            scratch[scratchOffset + seedSlot] = row; scratch[scratchOffset + ROW_STATES + row] = seedSlot;
-          }
-        }
-      }
-    }
-    storageBarrier(); workgroupBarrier();
-    if (index == 0u) { seedCount += atomicExchange(&appendCount, 0u); }
-    workgroupBarrier();
-  }
-  if (index == 0u) {
-    scratch[scratchOffset + SEED_COUNT] = seedCount;
-    scratch[scratchOffset + CURSOR] = cursor;
-    scratch[scratchOffset + VISITED] = visited;
-  }`
-        }),
-        createWGSLKernelNode(graph, {
-          id: `${id}-frontier-gate-${batch}`,
-          operation: 'GPUOPTICS',
-          variant: 'grid-frontier-gate',
-          invocationCount: 1,
-          bindings: [
-            {name: 'scratch', view: scratch, type: 'u32', access: 'read'},
-            {name: 'status', view: output.status, type: 'u32', access: 'read'},
-            gate!.binding
-          ],
-          body: `if (scratch[scratchOffset + ${rows * 2}u] == 0u &&
-      (scratch[scratchOffset + ${rows * 2 + 1}u] >= ${rows}u ||
-       scratch[scratchOffset + ${rows * 2 + 2}u] + status[statusOffset + 2u] == ${rows}u)) {
-    ${gate!.disarmWGSL}
-  }`
-        })
-      );
-    }
-    nodes.push(
-      createWGSLKernelNode(graph, {
-        id: `${id}-frontier-status`,
-        operation: 'GPUOPTICS',
-        variant: 'grid-frontier-status',
-        invocationCount: 1,
-        bindings: [
-          {name: 'scratch', view: scratch, type: 'u32', access: 'read'},
-          {name: 'status', view: output.status, type: 'u32', access: 'read_write'}
-        ],
-        body: `let visited = scratch[scratchOffset + ${rows * 2 + 2}u];
-  status[statusOffset] = visited;
-  status[statusOffset + 1u] = select(0u, 1u, visited + status[statusOffset + 2u] == ${rows}u);`
       })
     );
     return nodes;

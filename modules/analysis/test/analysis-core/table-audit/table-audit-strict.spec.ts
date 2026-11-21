@@ -598,7 +598,7 @@ it('GPULabelPoint keeps its candidate cell table from 1 to 16 refinement candida
     const harness = createOptimizationHarness(device);
     const output = {
       points: harness.output('float32x2', 2),
-      distances: harness.output('float32', 2),
+      publishedCenterClearance: harness.output('float32', 2),
       degenerate: harness.output('uint32', 2)
     };
     const result = await harness.run(
@@ -612,7 +612,7 @@ it('GPULabelPoint keeps its candidate cell table from 1 to 16 refinement candida
       })
     );
     const points = result(output.points);
-    const distances = result(output.distances);
+    const distances = result(output.publishedCenterClearance);
     for (let feature = 0; feature < 2; feature++) {
       const isRight =
         Math.hypot(points[2 * feature] - 13, points[2 * feature + 1] - 10) < 0.02 &&

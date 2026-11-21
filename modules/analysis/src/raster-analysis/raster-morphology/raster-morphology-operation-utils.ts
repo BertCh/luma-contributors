@@ -8,23 +8,72 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
-/** Captures operation topology and port names while retaining any input view identities. @internal */
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../raster-grid/raster-construction-snapshot';
+import {
+  snapshotRasterOperationBand,
+  type RasterOperationBand
+} from '../raster-grid/raster-operation-band';
+
+/** Captures documented operation fields, including inherited getters. @internal */
 export function captureRasterMorphologyOperationProps<
-  Props extends {grid: GPURasterMetadata; output: {status: object}}
->(props: Props): Props {
+  Props extends {
+    id?: string;
+    grid: GPURasterMetadata;
+    marker?: string | RasterOperationBand;
+    mask?: string | RasterOperationBand;
+    input?: string;
+    method?: 'dilation' | 'erosion';
+    connectivity?: 4 | 8;
+    maximumIterations?: number;
+    output: {
+      values: string;
+      validity?: string;
+      status: {converged: string; iterationLimitReached?: string; iterationCount?: string};
+    };
+  }
+>(props: Props, operation: 'reconstruction' | 'fill-holes' = 'fill-holes'): Props {
+  const captured = snapshotConstructionFields(
+    props,
+    operation === 'reconstruction'
+      ? ['id', 'grid', 'marker', 'mask', 'method', 'connectivity', 'maximumIterations', 'output']
+      : ['id', 'grid', 'input', 'connectivity', 'maximumIterations', 'output']
+  );
+  if (operation === 'reconstruction') {
+    validateRequirement(
+      captured.id ?? 'raster-reconstruction',
+      captured.method === undefined ||
+        captured.method === 'dilation' ||
+        captured.method === 'erosion',
+      'method must be dilation or erosion'
+    );
+  }
+  const output = snapshotConstructionFields(
+    captured.output,
+    operation === 'reconstruction' ? ['values', 'validity', 'status'] : ['values', 'status']
+  );
   return Object.freeze({
-    ...props,
-    grid: Object.freeze({...props.grid, affine: Object.freeze([...props.grid.affine])}),
-    ...('marker' in props ? {marker: captureOperationBand(props.marker)} : {}),
-    ...('mask' in props ? {mask: captureOperationBand(props.mask)} : {}),
-    output: Object.freeze({...props.output, status: Object.freeze({...props.output.status})})
+    ...captured,
+    grid: snapshotRasterGrid(captured.grid),
+    ...(operation === 'reconstruction' && captured.marker !== undefined
+      ? {marker: captureOperationBand(captured.marker)}
+      : {}),
+    ...(operation === 'reconstruction' && captured.mask !== undefined
+      ? {mask: captureOperationBand(captured.mask)}
+      : {}),
+    output: Object.freeze({
+      ...output,
+      status: snapshotConstructionFields(output.status, [
+        'converged',
+        'iterationLimitReached',
+        'iterationCount'
+      ])
+    })
   }) as Props;
 }
 
-function captureOperationBand(input: unknown): unknown {
-  return input && typeof input === 'object' && 'storage' in input
-    ? Object.freeze({...input, storage: Object.freeze({...(input.storage as object)})})
-    : input;
+function captureOperationBand(input: string | RasterOperationBand): string | RasterOperationBand {
+  return typeof input === 'string' ? input : snapshotRasterOperationBand(input);
 }
 /** Validates scalar morphology options at construction and at the pure-function boundary. @internal */
 export function validateRasterMorphologyOptions(

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {decodeGPUNetworkStatistics} from '../../../src/gpu-network/network-statistics/index';
+import {
+  decodeGPUNetworkStatisticsWords,
+  getGPUNetworkStatisticsLength
+} from '../../../src/gpu-network/network-statistics/index';
 import fixture from '../../oracles/fixtures/network-statistics.json';
 import type {NetworkEdge} from '../network-reachability/network-reachability-oracle';
 
@@ -60,10 +63,16 @@ export function getNetworkStatisticsReferenceEdges(
  */
 export function compareNetworkStatistics(
   scene: NetworkStatisticsReferenceScene,
-  words: ArrayLike<number>
+  words: Uint32Array | readonly number[]
 ): string | undefined {
   const binCount = 32;
-  const decoded = decodeGPUNetworkStatistics(words, {degreeBinCount: binCount});
+  const expectedLength = getGPUNetworkStatisticsLength(binCount);
+  if (words.length !== expectedLength) {
+    throw new Error(
+      `network statistics reference length must be ${expectedLength}, got ${words.length}`
+    );
+  }
+  const decoded = decodeGPUNetworkStatisticsWords(words, {degreeBinCount: binCount});
   const histogram = (degrees: number[]) => {
     const bins = new Array<number>(binCount).fill(0);
     for (const degree of degrees) {
@@ -96,7 +105,11 @@ export function compareNetworkStatistics(
       return `${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(actual)}`;
     }
   }
-  if (Math.abs(decoded.modularity - scene.modularity) > scene.tolerance.modularityAbsolute) {
+  // Written so that NaN fails: `NaN > tolerance` is false (TOOL-109).
+  if (
+    !Number.isFinite(decoded.modularity) ||
+    !(Math.abs(decoded.modularity - scene.modularity) <= scene.tolerance.modularityAbsolute)
+  ) {
     return `modularity: expected ${scene.modularity}, got ${decoded.modularity}`;
   }
   return undefined;

@@ -52,9 +52,14 @@ export function submitGPUCommandGraphWithTimings<Parameters>(
     querySet?.destroy();
     querySet = undefined;
   };
-  const commandEncoder = device.createCommandEncoder(
-    querySet ? {timeProfilingQuerySet: querySet} : {}
-  );
+  let commandEncoder: ReturnType<Device['createCommandEncoder']>;
+  try {
+    commandEncoder = device.createCommandEncoder(querySet ? {timeProfilingQuerySet: querySet} : {});
+  } catch (error) {
+    // The query set is already allocated; nothing else owns it yet.
+    destroy();
+    throw error;
+  }
   let encoding: GPUCommandGraphEncoding;
   try {
     encoding = compiled.encode(commandEncoder, encodeOptions);

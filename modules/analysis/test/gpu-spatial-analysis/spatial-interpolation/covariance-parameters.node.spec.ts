@@ -92,7 +92,10 @@ it('rejects invalid covariance settings and short targets', () => {
       new Float32Array(4)
     )
   ).toThrow();
-  expect(() => getGPULocalKrigingParameterValues({})).toThrow();
+  // @ts-expect-error Omission is intentionally rejected by the type and runtime contracts.
+  expect(() => getGPULocalKrigingParameterValues({})).toThrow(
+    'supply covariance or coregionalizationModels'
+  );
 });
 
 it('the per-frame kernel reuses the one pivot-ratio limit and adds no second rule', () => {
@@ -147,7 +150,7 @@ it('requires covariance or a parameter buffer, and validates the parameter lengt
           status: view('uint32', 1)
         }
       })
-  ).toThrow('Matern');
+  ).toThrow(/^conditional-gaussian-simulation covariance.model.*Matern/);
 });
 
 it('convenience covariance uses a runtime layout and changing the model keeps the shader identical', () => {

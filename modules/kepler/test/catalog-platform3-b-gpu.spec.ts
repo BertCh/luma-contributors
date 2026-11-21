@@ -162,7 +162,7 @@ test('point-density-grid runs on GPUPointDensity and matches the CPU oracle', as
   }
 });
 
-test('density-clustering runs on GPUSpatialClustering with identical canonical labels', async () => {
+test('density-clustering runs on GPUDBSCAN with identical canonical labels', async () => {
   const device = await getDevice();
   const next = makeGenerator(41);
   const blob = (centerX: number, centerY: number, count: number) =>
@@ -179,7 +179,7 @@ test('density-clustering runs on GPUSpatialClustering with identical canonical l
   const {gpu, cpu} = await runBoth(
     device,
     'density-clustering',
-    {epsilon: 17.3, minimumPoints: 4},
+    {epsilon: 17.3, minimumSamples: 4},
     {points: samples}
   );
   expect(gpu.tables[0].columns['cluster']).toEqual(cpu.tables[0].columns['cluster']);

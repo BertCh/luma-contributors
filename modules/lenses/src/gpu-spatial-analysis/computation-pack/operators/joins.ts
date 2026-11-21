@@ -141,7 +141,7 @@ export const JOINS_OPERATORS: SpatialFamilyOperators = {
     guards: ['coordinate-model'],
     choices: [
       {stage: 'neighbourhood', name: 'k', sweepable: false},
-      {stage: 'operator', name: 'ties', sweepable: false, alternatives: ['lowest-id', 'all']}
+      {stage: 'operator', name: 'ties', sweepable: false, alternatives: ['lowest-row', 'all']}
     ],
     // nearest-wgsl.ts getNearestPairWGSL / getNearestTraversalWGSL; nearest-nodes.ts columns takes square roots.
     formula: {

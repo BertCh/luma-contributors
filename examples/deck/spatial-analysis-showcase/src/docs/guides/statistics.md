@@ -13,7 +13,7 @@ Most maps of statistics fail in the same few ways: a rate computed from three pe
 3. **How separated are groups?** [`GPUSegregation`](#/reference/GPUSegregation) computes dissimilarity, entropy, isolation, interaction and Atkinson indices, globally, locally and across scales. Story: [How segregated is Chicago, and at what scale?](#/story/segregation).
 4. **How do I combine indicators, and how unequal is a distribution?** [`GPUCompositeScore`](#/reference/GPUCompositeScore) builds an index; [`GPUInequality`](#/reference/GPUInequality) measures Gini, Theil, Atkinson, Hoover, Palma and the Lorenz curve per zone. Story: [A vulnerability index you can reweight](#/story/vulnerability-index).
 5. **Which places are like this one?** [`GPUSimilarLocations`](#/reference/GPUSimilarLocations). Story: [Which counties are most like yours?](#/story/similar-places).
-6. **Group by and join?** [`GPUGroupStatistics`](#/reference/GPUGroupStatistics) and [`GPUKeyJoin`](#/reference/GPUKeyJoin). Story: [Wildlife by community area, joined to who lives there](#/story/group-statistics).
+6. **Group and look up values by key?** [`GPUGroupStatistics`](#/reference/GPUGroupStatistics) and [`GPUKeyLookup`](#/reference/GPUKeyLookup). Story: [Wildlife by community area, joined to who lives there](#/story/group-statistics).
 
 ## Choosing between them
 
@@ -30,8 +30,8 @@ Most maps of statistics fail in the same few ways: a rate computed from three pe
 | A weighted index from many columns | `GPUCompositeScore` | Scaler, aggregation, weights, directions |
 | Inequality inside zones | `GPUInequality` | Atkinson epsilon, Palma cuts, Lorenz knots |
 | Peers of a place | `GPUSimilarLocations` | Weights, standardisation, reference set |
-| Statistics per category or area | `GPUGroupStatistics` | Statistics set, percentiles, variance kind |
-| Attributes from another table | `GPUKeyJoin` | Left or inner, gather or aggregate |
+| Statistics per category or area | `GPUGroupStatistics` | Statistics set, quantile probabilities, variance kind |
+| Attributes from another table | `GPUKeyLookup` | Gather or aggregate, optionally compact matched left rows |
 
 ## Rates: why the raw number lies
 
@@ -59,4 +59,4 @@ Segregation indices depend on the **scale** at which a neighbourhood is defined,
 
 ## Using them in your own app
 
-Every contributor takes **packed float32 columns** (one value per place) and writes caller-owned output buffers. Per-frame options such as weights, class counts, percentiles and the reference place are parameter-buffer writes, so interactive sliders cost nothing. Compile-time options (the contiguity criterion, the permutation tail, the kernel, the standardisation, the join kind) select among graphs; every scene here compiles the default variant up front and the others the first time they are chosen, which the options panel marks as a rebuild.
+Every contributor takes **packed float32 columns** (one value per place) and writes caller-owned output buffers. Per-frame options such as weights, class counts, quantile probabilities and the reference place are parameter-buffer writes, so interactive sliders cost nothing. Compile-time options (the contiguity criterion, the permutation tail, the kernel, the standardisation, the join kind) select among graphs; every scene here compiles the default variant up front and the others the first time they are chosen, which the options panel marks as a rebuild.

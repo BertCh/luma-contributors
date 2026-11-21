@@ -426,7 +426,7 @@ export async function createCalendarPatterns(
         mask: brush,
         keyCount: AREA_COUNT,
         variance,
-        percentiles: percentileParameters.importToGraph(graph),
+        probabilities: percentileParameters.importToGraph(graph),
         columns: [
           {
             values: hourFloat,
@@ -436,7 +436,7 @@ export async function createCalendarPatterns(
               means: v('hour-means', hourMeansBuffer, 'float32', AREA_COUNT),
               medians: v('hour-medians', hourMediansBuffer, 'float32', AREA_COUNT),
               standardDeviations: v('hour-deviations', hourDeviationsBuffer, 'float32', AREA_COUNT),
-              percentiles: v('hour-percentiles', hourPercentilesBuffer, 'float32', AREA_COUNT),
+              quantiles: v('hour-percentiles', hourPercentilesBuffer, 'float32', AREA_COUNT),
               modes: v('hour-modes', hourModesBuffer, 'float32', AREA_COUNT)
             }
           },

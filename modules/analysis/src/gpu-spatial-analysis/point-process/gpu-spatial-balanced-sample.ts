@@ -23,6 +23,8 @@ import {
   validateRequirement,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getSamplingReplayParameters, validateSamplingSeed} from './sampling-seed';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
@@ -59,7 +61,8 @@ export type GPUSpatialBalancedSampleProps = {
   inclusionTickets?: GraphDataView<'uint32'>;
   /** [minX, minY, maxX, maxY], finite positive extent enclosing the complete frame. */
   bounds: readonly [number, number, number, number];
-  seed: number;
+  /** Scalar seed, required only without parameters. Resident words override this hint. */
+  seed?: number;
   /** Optional resident [seed, replicate] overrides, mutable between encodings without recompilation. */
   parameters?: GraphDataView<'uint32'>;
   /** Independent survey replicate, default 0; reproducible regardless of dispatch partitioning. */
@@ -97,13 +100,44 @@ export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
   readonly provenance: Readonly<{
     generator: 'Philox4x32-10';
     purpose: number;
+    /** Constructor hint only; inactive when parameterSource is resident-view. */
     seed: number;
     replicate: number;
     levels: 16;
     design: 'hierarchical-circular-systematic';
     parameterSource: 'constructor' | 'resident-view';
+    effectiveSeedSource: 'scalar' | 'resident-parameters';
   }>;
   constructor(props: GPUSpatialBalancedSampleProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'frameIds',
+      'strata',
+      'allocations',
+      'inclusionTickets',
+      'bounds',
+      'seed',
+      'parameters',
+      'replicate',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      allocations: Object.freeze(
+        captured.allocations.map(allocation =>
+          snapshotConstructionFields(allocation, ['stratumId', 'sampleCount'])
+        )
+      ),
+      bounds: Object.freeze([...captured.bounds]) as typeof captured.bounds,
+      output: snapshotConstructionFields(captured.output, [
+        'frameIds',
+        'inclusionProbabilities',
+        'designWeights',
+        'status'
+      ])
+    });
     const id = props.id ?? 'spatial-balanced-sample';
     this.id = id;
     this.props = props;
@@ -145,23 +179,41 @@ export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
         Math.fround(props.bounds[3]) > Math.fround(props.bounds[1]),
       'bounds must have a positive extent on both axes'
     );
-    validateCapacity(id, 'seed', props.seed, 0, 0xffffffff);
+    validateSamplingSeed(id, props.seed, props.parameters !== undefined);
     validateCapacity(id, 'replicate', props.replicate ?? 0, 0, 0xffffffff);
     if (props.parameters) {
-      validatePointProcessView(props.parameters, 'uint32', 2, id);
+      validatePointProcessView(id, 'parameters', props.parameters, ['uint32'], 2);
     }
-    validatePointProcessView(props.positions, 'float32x2', rows, id);
-    validatePointProcessView(props.frameIds, 'uint32', rows, id);
+    validatePointProcessView(id, 'positions', props.positions, ['float32x2'], rows);
+    validatePointProcessView(id, 'frameIds', props.frameIds, ['uint32'], rows);
     if (props.strata) {
-      validatePointProcessView(props.strata, 'uint32', rows, id);
+      validatePointProcessView(id, 'strata', props.strata, ['uint32'], rows);
     }
     if (props.inclusionTickets) {
-      validatePointProcessView(props.inclusionTickets, 'uint32', rows, id);
+      validatePointProcessView(id, 'inclusionTickets', props.inclusionTickets, ['uint32'], rows);
     }
-    validatePointProcessView(props.output.frameIds, 'uint32', sampleCount, id);
-    validatePointProcessView(props.output.inclusionProbabilities, 'float32', sampleCount, id);
-    validatePointProcessView(props.output.designWeights, 'float32', sampleCount, id);
-    validatePointProcessView(props.output.status, 'uint32', props.allocations.length * 2, id);
+    validatePointProcessView(id, 'output.frameIds', props.output.frameIds, ['uint32'], sampleCount);
+    validatePointProcessView(
+      id,
+      'output.inclusionProbabilities',
+      props.output.inclusionProbabilities,
+      ['float32'],
+      sampleCount
+    );
+    validatePointProcessView(
+      id,
+      'output.designWeights',
+      props.output.designWeights,
+      ['float32'],
+      sampleCount
+    );
+    validatePointProcessView(
+      id,
+      'output.status',
+      props.output.status,
+      ['uint32'],
+      props.allocations.length * 2
+    );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.frameIds,
@@ -184,12 +236,23 @@ export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
     this.provenance = Object.freeze({
       generator: 'Philox4x32-10',
       purpose: PHILOX_PURPOSES.spatialBalancedSampling.id,
-      seed: props.seed,
+      seed: props.seed ?? 0,
       replicate: props.replicate ?? 0,
       levels: 16,
       design: 'hierarchical-circular-systematic',
-      parameterSource: props.parameters ? 'resident-view' : 'constructor'
+      parameterSource: props.parameters ? 'resident-view' : 'constructor',
+      effectiveSeedSource: props.parameters ? 'resident-parameters' : 'scalar'
     });
+  }
+  /** Record the uploaded resident words from this encoding, or the active scalar defaults. */
+  getReplayParameters(words?: Uint32Array): Uint32Array {
+    return getSamplingReplayParameters(
+      this.id,
+      this.props.seed,
+      this.props.replicate,
+      this.props.parameters !== undefined,
+      words
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -495,3 +558,6 @@ fn random(counter: vec4<u32>) -> u32 { return philox4x32(counter, vec2<u32>(${pr
     return nodes;
   }
 }
+
+/** Caller-owned output map for {@link GPUSpatialBalancedSample}. */
+export type GPUSpatialBalancedSampleOutput = GPUSpatialBalancedSampleProps['output'];

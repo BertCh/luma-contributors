@@ -41,7 +41,7 @@ import {
   resolveGPUTemporalContext,
   type GPUTemporalContext
 } from '../../analysis-core/contracts/temporal-context';
-import {GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH} from './hierarchical-density-clustering-parameters';
+import {GPU_HDBSCAN_PARAMETER_LENGTH} from './hierarchical-density-clustering-parameters';
 import type {GPUCardinalityPort} from '../../analysis-core/contracts/index';
 import {GPUNeighborSearch} from '../neighbor-search/gpu-neighbor-search';
 import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from '../neighbor-search/neighbor-search-parameters';
@@ -86,26 +86,26 @@ const HIERARCHICAL_DENSITY_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
   measure: 'distance'
 } as const);
 
-const OPERATION = 'GPUHierarchicalDensityClustering';
+const OPERATION = 'GPUHDBSCAN';
 
 /** Upper bound for published BVH, scans, sorts and segment sums, which do not expose node counts. */
-const GPU_HIERARCHICAL_DENSITY_CLUSTERING_COMMAND_NODE_ALLOWANCE = 2048;
+const GPU_HDBSCAN_COMMAND_NODE_ALLOWANCE = 2048;
 
-/** Largest `minimumSamples` of {@link GPUHierarchicalDensityClustering}, bounding the per-query private top-k distance list. */
-export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES = 32;
+/** Largest `minimumSamples` of {@link GPUHDBSCAN}, bounding the per-query private top-k distance list. */
+export const GPU_HDBSCAN_MAXIMUM_SAMPLES = 32;
 
 /**
- * Largest `positions` row count of {@link GPUHierarchicalDensityClustering}, bounding the
+ * Largest `positions` row count of {@link GPUHDBSCAN}, bounding the
  * compact BVH binding to 128 MiB. Tree planes and MST records are smaller than that binding;
  * all integer counts (including the four-tour-events-per-row scan) stay below uint32.
  */
-export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT = 2 ** 22;
+export const GPU_HDBSCAN_MAXIMUM_ROW_COUNT = 2 ** 22;
 
 /** Packed neighbour-search reference route retains the old cap because its CSR scratch scales as rows × samples. */
-export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_REFERENCE_MAXIMUM_ROW_COUNT = 2 ** 20;
+export const GPU_HDBSCAN_REFERENCE_MAXIMUM_ROW_COUNT = 2 ** 20;
 
-/** Caller-owned outputs of {@link GPUHierarchicalDensityClustering}. */
-export type GPUHierarchicalDensityClusteringOutput = {
+/** Caller-owned outputs of {@link GPUHDBSCAN}. */
+export type GPUHDBSCANOutput = {
   /** One label per point: compact cluster ID `0..k-1`, or `0xffffffff` for noise. */
   labels: GraphDataView<'uint32'>;
   /**
@@ -113,24 +113,24 @@ export type GPUHierarchicalDensityClusteringOutput = {
    * the point itself included (+infinity for non-finite points or fewer neighbors).
    */
   coreDistances?: GraphDataView<'float32'>;
-  /** Optional scalar status; both `count` and `requiredCount` receive the selected cluster count. */
-  status?: Partial<GPUCardinalityPort>;
+  /** Optional selected-cluster count. The selected clusters always fit the label output. */
+  status?: Pick<Partial<GPUCardinalityPort>, 'count'>;
 };
 
 /**
- * Properties for {@link GPUHierarchicalDensityClustering}.
+ * Properties for {@link GPUHDBSCAN}.
  *
  * Per-frame (no recompile): the contents of `positions`. Compile-time: `positions.length`,
  * `minimumSamples`, `minimumClusterSize`, `coreDistanceSearch`, temporal/spatial contexts and which optional views are present.
  * With `times`, their contents and `parameters` are also per-frame.
  */
-export type GPUHierarchicalDensityClusteringProps = {
+export type GPUHDBSCANProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'hierarchical-density-clustering'`. */
   id?: string;
   /** Planar only (the default); project longitude/latitude first. Other contexts throw. */
   spatialContext?: GPUSpatialContext;
   /**
-   * Points, one row per point, at most {@link GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT}.
+   * Points, one row per point, at most {@link GPU_HDBSCAN_MAXIMUM_ROW_COUNT}.
    * Non-finite points are noise and take no part in the hierarchy.
    */
   positions: GraphDataView<'float32x2'>;
@@ -138,7 +138,7 @@ export type GPUHierarchicalDensityClusteringProps = {
   times?: GraphDataView<'float32'>;
   /** Describes times; only float32-relative encoding is supported. No unit conversion. */
   temporalContext?: GPUTemporalContext;
-  /** Per-frame [timeScale, 0, 0, 0], packed by getGPUHierarchicalDensityClusteringParameterValues. */
+  /** Per-frame [timeScale, 0, 0, 0], packed by getGPUHDBSCANParameterValues. */
   parameters?: GraphDataView<'float32'>;
   /**
    * Smallest condensed cluster, scikit-learn `min_cluster_size`, at least 2. Compile-time.
@@ -146,7 +146,7 @@ export type GPUHierarchicalDensityClusteringProps = {
   minimumClusterSize: number;
   /**
    * Neighbors of the core distance, scikit-learn `min_samples` (the point itself counts), from 1
-   * to {@link GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES}. Defaults to
+   * to {@link GPU_HDBSCAN_MAXIMUM_SAMPLES}. Defaults to
    * `min(minimumClusterSize, 32)`, scikit-learn's default when that is at most 32. Compile-time.
    */
   minimumSamples?: number;
@@ -157,7 +157,7 @@ export type GPUHierarchicalDensityClusteringProps = {
    */
   coreDistanceSearch?: 'bvh' | 'neighbor-search';
   /** Caller-owned outputs. */
-  output: GPUHierarchicalDensityClusteringOutput;
+  output: GPUHDBSCANOutput;
 };
 
 /**
@@ -205,11 +205,11 @@ export type GPUHierarchicalDensityClusteringProps = {
  * Non-goals: `allow_single_cluster`, `cluster_selection_epsilon`, `'leaf'` selection, membership
  * probabilities, outlier scores, other metrics and 3D points.
  */
-export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer {
+export class GPUHDBSCAN implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUHierarchicalDensityClusteringProps;
+  readonly props: GPUHDBSCANProps;
   /** Resolved spatial context (planar). */
   readonly spatialContext: GPUSpatialContext;
   /** Resolved `minimumSamples`. */
@@ -220,7 +220,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
   /** Conservative bound including logarithmic-squared tree contraction. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUHierarchicalDensityClusteringProps) {
+  constructor(props: GPUHDBSCANProps) {
     this.id = props.id ?? 'hierarchical-density-clustering';
     this.props = props;
     const {id} = this;
@@ -246,8 +246,8 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       validateSinglePackedView(props.parameters!, ['float32'], `${id} parameters`);
       validateRequirement(
         id,
-        props.parameters!.length === GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH,
-        `parameters length must equal ${GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH}`
+        props.parameters!.length === GPU_HDBSCAN_PARAMETER_LENGTH,
+        `parameters length must equal ${GPU_HDBSCAN_PARAMETER_LENGTH}`
       );
     } else {
       validateRequirement(
@@ -256,13 +256,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         'temporalContext and parameters require times'
       );
     }
-    validateCapacity(
-      id,
-      'positions rows',
-      rows,
-      1,
-      GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT
-    );
+    validateCapacity(id, 'positions rows', rows, 1, GPU_HDBSCAN_MAXIMUM_ROW_COUNT);
     validateRequirement(
       id,
       props.coreDistanceSearch === undefined ||
@@ -276,7 +270,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         'positions rows for coreDistanceSearch neighbor-search',
         rows,
         1,
-        GPU_HIERARCHICAL_DENSITY_CLUSTERING_REFERENCE_MAXIMUM_ROW_COUNT
+        GPU_HDBSCAN_REFERENCE_MAXIMUM_ROW_COUNT
       );
       validateRequirement(
         id,
@@ -286,51 +280,44 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     }
     validateCapacity(id, 'minimumClusterSize', props.minimumClusterSize, 2);
     this.minimumSamples =
-      props.minimumSamples ??
-      Math.min(props.minimumClusterSize, GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES);
-    validateCapacity(
-      id,
-      'minimumSamples',
-      this.minimumSamples,
-      1,
-      GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES
-    );
+      props.minimumSamples ?? Math.min(props.minimumClusterSize, GPU_HDBSCAN_MAXIMUM_SAMPLES);
+    validateCapacity(id, 'minimumSamples', this.minimumSamples, 1, GPU_HDBSCAN_MAXIMUM_SAMPLES);
     const {output} = props;
+    validateRequirement(
+      id,
+      !output.status || !('requiredCount' in output.status),
+      'output.status.requiredCount was removed; use output.status.count for the selected-cluster count'
+    );
     validateSinglePackedView(output.labels, ['uint32'], `${id} output.labels`);
-    if (output.labels.length !== rows) {
-      throw new Error(`${id} output.labels length must equal positions length`);
-    }
+    validateRequirement(
+      id,
+      !(output.labels.length !== rows),
+      `output.labels length must equal positions length`
+    );
     if (output.coreDistances) {
       validateSinglePackedView(output.coreDistances, ['float32'], `${id} output.coreDistances`);
-      if (output.coreDistances.length !== rows) {
-        throw new Error(`${id} output.coreDistances length must equal positions length`);
-      }
+      validateRequirement(
+        id,
+        !(output.coreDistances.length !== rows),
+        `output.coreDistances length must equal positions length`
+      );
     }
-    for (const [name, view] of [
-      ['output.status.count', output.status?.count],
-      ['output.status.requiredCount', output.status?.requiredCount]
-    ] as const) {
-      if (view) {
-        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
-        validateCapacity(id, `${name} length`, view.length, 1);
-      }
+    if (output.status?.count) {
+      validateSinglePackedView(output.status.count, ['uint32'], `${id} output.status.count`);
+      validateCapacity(id, 'output.status.count length', output.status.count.length, 1);
     }
     validateSpatialOutputViews(
       id,
       {
         labels: output.labels,
         coreDistances: output.coreDistances,
-        count: output.status?.count,
-        requiredCount: output.status?.requiredCount
+        count: output.status?.count
       },
-      [{read: [output.status?.count], write: [output.status?.requiredCount]}]
+      []
     );
-    const writableViews = [
-      output.labels,
-      output.coreDistances,
-      output.status?.count,
-      output.status?.requiredCount
-    ].filter((view): view is GraphDataView<'uint32'> | GraphDataView<'float32'> => Boolean(view));
+    const writableViews = [output.labels, output.coreDistances, output.status?.count].filter(
+      (view): view is GraphDataView<'uint32'> | GraphDataView<'float32'> => Boolean(view)
+    );
     for (let first = 0; first < writableViews.length; first++) {
       for (let second = first + 1; second < writableViews.length; second++) {
         validateRequirement(
@@ -343,10 +330,10 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     this.roundCount = Math.ceil(Math.log2(Math.max(rows, 2))) + 1;
     // Each light level has at most ceil(log2(2 rows)) + 1 three-node chain rounds.
     // The linear allowance covers Boruvka and the other pointer-jump passes. Each bounded
-    // splice round adds a gate and a work node; the final scalar publisher adds at most one node.
+    // splice round adds a gate and a work node.
     const treeRounds = Math.ceil(Math.log2(2 * Math.max(rows, 2))) + 1;
     this.estimatedCommandNodeCount =
-      GPU_HIERARCHICAL_DENSITY_CLUSTERING_COMMAND_NODE_ALLOWANCE +
+      GPU_HDBSCAN_COMMAND_NODE_ALLOWANCE +
       64 * treeRounds +
       4 * treeRounds * treeRounds +
       2 * getBoundedMergeTreeSpliceRoundCount(2 * rows) +
@@ -371,8 +358,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       props.parameters,
       output.labels,
       output.coreDistances,
-      output.status?.count,
-      output.status?.requiredCount
+      output.status?.count
     ]);
     const rows = props.positions.length;
     // Complete preflight before declaring any resource or node. Caller views can have a
@@ -383,8 +369,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       parameters: props.parameters,
       labels: output.labels,
       coreDistances: output.coreDistances,
-      count: output.status?.count,
-      requiredCount: output.status?.requiredCount
+      count: output.status?.count
     });
     const leafCapacity = getNextPowerOfTwo(rows);
     const clusterCapacity = Math.floor((2 * rows) / props.minimumClusterSize) + 1;
@@ -453,7 +438,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         ...new GPUNeighborSearch({
           id: `${id}-neighbors`,
           mode: 'knn',
-          k: otherSamples,
+          neighborCount: otherSamples,
           positions: props.positions,
           parameters: search.parameters,
           gridSize: search.gridSize,
@@ -764,26 +749,6 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         labels: output.labels
       })
     );
-    if (output.status?.requiredCount) {
-      nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-required-count`,
-          operation: OPERATION,
-          variant: 'required-count',
-          invocationCount: 1,
-          bindings: [
-            {name: 'selectedCount', view: selectedCount, type: 'u32', access: 'read'},
-            {
-              name: 'requiredCount',
-              view: output.status.requiredCount,
-              type: 'u32',
-              access: 'read_write'
-            }
-          ],
-          body: 'requiredCount[requiredCountOffset] = selectedCount[selectedCountOffset];'
-        })
-      );
-    }
     return nodes;
   }
 

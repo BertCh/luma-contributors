@@ -200,7 +200,9 @@ it('GPUNetworkLineGraph validates its views and parameters', () => {
         topology: {...props.topology, nodePositions: undefined} as never
       })
   ).toThrow(/topology\.nodePositions is required/);
-  expect(() => getGPUNetworkLineGraphParameterValues({angleCost: -1})).toThrow(/angleCost/);
+  expect(() => getGPUNetworkLineGraphParameterValues({turnCostPerRadian: -1})).toThrow(
+    /turnCostPerRadian/
+  );
   expect(getGPUNetworkLineGraphParameterValues({bannedTurnCount: 3})[5]).toBe(3);
 });
 

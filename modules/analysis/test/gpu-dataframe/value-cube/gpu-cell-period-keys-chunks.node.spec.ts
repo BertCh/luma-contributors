@@ -33,6 +33,7 @@ function createFixture(lengths: number[]) {
     mask: column('mask', 'uint32'),
     periodCount: 4,
     fill: 'ones' as const,
+    layout: 'legacy-one-bit' as const,
     output: {
       keys: column('keys', 'uint32x2'),
       status: {invalidCount: createTransientView(graph, 'invalid', 'uint32', 1)}
@@ -97,7 +98,7 @@ it('prechecks every binding including later output chunks and status before decl
   for (const failure of ['input', 'output', 'status']) {
     const {device, graph, props} = createFixture([1, 3, 2]);
     Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {
-      value: failure === 'input' ? 24 : 256
+      value: failure === 'input' ? 24 : failure === 'status' ? 128 : 256
     });
     if (failure === 'output') {
       const backing = createTransientView(graph, 'late-output', 'uint32x2', 64);
@@ -112,18 +113,25 @@ it('prechecks every binding including later output chunks and status before decl
         props.output.keys.data[2]
       ]);
     }
-    if (failure === 'status')
-      props.output.status.invalidCount = createTransientView(
-        graph,
-        'oversized-status',
-        'uint32',
-        65
-      );
+    if (failure === 'status') {
+      const backing = createTransientView(graph, 'oversized-status', 'uint32', 128);
+      // One uint32 row is a valid status scalar. Its binding starts at byte 0 after
+      // 256-byte alignment, so the 252-byte prefix plus 4-byte row exceeds the 128-byte limit.
+      props.output.status.invalidCount = graph.createDataView(backing.buffer, {
+        format: 'uint32',
+        byteOffset: 252,
+        length: 1
+      });
+    }
     const contributor = new GPUCellPeriodKeys(props);
     const allocate = vi.spyOn(graph, 'createTransientBuffer');
     const createView = vi.spyOn(graph, 'createDataView');
     const add = vi.spyOn(graph, 'add');
-    expect(() => contributor.getCommandNodes(graph)).toThrow(/needs .*bytes/);
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      failure === 'status'
+        ? /invalidCount chunk 0 needs 256 bytes in one binding \(limit 128\)/
+        : /needs .*bytes/
+    );
     expect(allocate).not.toHaveBeenCalled();
     expect(createView).not.toHaveBeenCalled();
     expect(add).not.toHaveBeenCalled();

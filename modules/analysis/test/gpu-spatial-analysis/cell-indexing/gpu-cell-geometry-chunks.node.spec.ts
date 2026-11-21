@@ -348,3 +348,15 @@ it('permits consecutive center chunks in the same aligned storage window', () =>
     )
   ).toHaveLength(4);
 });
+
+it('geometry shares the row-dispatch template without specializing unequal chunk shaders (DGGS-115)', () => {
+  const graph = new GPUCommandGraph(device);
+  const fields = createFields(graph, [1, 4, 2], 6);
+  const nodes = addCellChunkNodes(graph, new GPUCellGeometry({family: 'h3', ...fields}));
+  expect(getParsedKernelSources(nodes).size).toBe(1);
+  expect(
+    getGPUCommandNodeKernelSources(nodes).every(kernel =>
+      kernel.source.includes('let chunkParametersOffset = 0u;')
+    )
+  ).toBe(true);
+});

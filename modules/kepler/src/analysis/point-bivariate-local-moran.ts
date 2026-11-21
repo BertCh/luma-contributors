@@ -230,6 +230,11 @@ effectiveMask[effectiveMaskOffset + index] = select(0u, 1u, included);`
       pointWeights.status.overflow,
       weightsOverflow
     );
+    const inferencePlan = contributor.getInferenceMetadata({
+      seed: settings.seed,
+      permutationCount: settings.permutationCount,
+      significanceLevel: settings.significanceLevel
+    });
     return {
       operation: 'bivariate-local-moran' as const,
       source: Object.freeze({...props.source}),
@@ -241,11 +246,7 @@ effectiveMask[effectiveMaskOffset + index] = select(0u, 1u, included);`
       numericalPolicy: 'float32' as const,
       weightTransform: 'binary' as const,
       inferenceMethod: 'permutation-conditional-two-sided' as const,
-      inference: contributor.getInferenceMetadata({
-        seed: settings.seed,
-        permutationCount: settings.permutationCount,
-        significanceLevel: settings.significanceLevel
-      }),
+      inference: {...inferencePlan, permutationCount: inferencePlan.requestedPermutationCount},
       rowCount,
       effectiveMask,
       outputs: {localI, pValues, adjustedPValues, quadrants, significant},

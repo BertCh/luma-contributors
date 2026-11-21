@@ -153,8 +153,8 @@ export async function checkCompactPairCauses(
         output: {
           leftRows: bind(gatheredLeft.view),
           rightRows: bind(gatheredRight.view),
-          rowCount: bind(gatheredCount.view),
           status: {
+            count: bind(gatheredCount.view),
             overflow: bind(gatheredOverflow.view),
             candidateOverflow: bind(gatheredCandidateOverflow.view)
           }

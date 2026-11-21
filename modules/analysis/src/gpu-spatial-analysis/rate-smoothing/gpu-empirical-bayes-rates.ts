@@ -67,7 +67,7 @@ export const GPU_EMPIRICAL_BAYES_SUMMARY = {
 export type GPUEmpiricalBayesRatesOutput = SpatialStatisticsPopulationOutput & {
   // Exact population cardinality uses includedCount; legacy count remains an alias.
   // summary.count retains its compatible float32 layout.
-  /** Unmasked non-finite events or invalid populations (non-finite or non-positive). */
+  /** Unmasked negative or non-finite events or invalid populations (non-finite or non-positive). */
   status?: GPUInvalidStatusPort;
   /**
    * Optional caller-owned Assunção-Reis standardized rate per row (esda `assuncao_rate`), quiet NaN
@@ -124,7 +124,7 @@ export type GPUEmpiricalBayesRatesProps = {
  * esda `smoothing.assuncao_rate` (used by `Moran_Rate` and `Moran_Local_Rate` with
  * `adjusted=True`) and `smoothing.Empirical_Bayes`.
  *
- * Definitions over the `n` included rows (mask nonzero, finite `e`, finite `b > 0`; esda would
+ * Definitions over the `n` included rows (mask nonzero, finite nonnegative `e`, finite `b > 0`; esda would
  * return NaN for the whole result if any `b` were zero, so such rows are excluded here), with raw
  * rates `y = e / b`:
  * - `m = sum e / sum b`, `s2 = sum b (y - m)^2 / sum b`, `a = s2 - m / mean(b)`.
@@ -290,7 +290,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
     const maskBinding: WGSLKernelBinding[] = mask
       ? [{name: 'mask', view: mask, type: 'u32', access: 'read'}]
       : [];
-    const includedWGSL = `${mask ? 'mask[maskOffset + index] != 0u && ' : ''}isFiniteFloat(e) && isFiniteFloat(b) && b > 0.0`;
+    const includedWGSL = `${mask ? 'mask[maskOffset + index] != 0u && ' : ''}isFiniteFloat(e) && e >= 0.0 && isFiniteFloat(b) && b > 0.0`;
     // Reads this lane's row; `included` is false for the padding lanes of the last block.
     const readRowWGSL = `var e = 0.0;
   var b = 0.0;
@@ -444,7 +444,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
           ],
           declarations: constants,
           body: `let e = events[eventsOffset + index]; let b = populations[populationsOffset + index];
-  invalidFlags[invalidFlagsOffset + index] = u32(${mask ? 'mask[maskOffset + index] != 0u && ' : ''}!(isFiniteFloat(e) && isFiniteFloat(b) && b > 0.0));`
+  invalidFlags[invalidFlagsOffset + index] = u32(${mask ? 'mask[maskOffset + index] != 0u && ' : ''}!(isFiniteFloat(e) && e >= 0.0 && isFiniteFloat(b) && b > 0.0));`
         }),
         ...new GPUReduction({
           id: `${id}-invalid-count`,

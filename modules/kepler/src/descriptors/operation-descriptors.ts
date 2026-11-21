@@ -17,7 +17,7 @@ import {CURATED_DASYMETRIC_REDISTRIBUTION_DESCRIPTOR} from './descriptors-curate
 import {
   getGPUAnalysisDataKindForCatalogGeometry,
   type GPUAnalysisQuestion
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogOperationBinding} from '../analysis/catalog-binding-types';
 import {AGGREGATION_OPERATION_DESCRIPTORS} from './descriptors-aggregation';
 import {CLUSTERING_OPERATION_DESCRIPTORS} from './descriptors-clustering';

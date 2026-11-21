@@ -4,6 +4,8 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {snapshotContiguityOperationProps} from './weights-construction-snapshot';
+import {snapshotPolygonReviewProps} from './weights-review-snapshot';
+import {validateContiguityOperationOutput} from './contiguity-operation-output';
 import {
   validateCapacity,
   validateFiniteNumber,
@@ -62,6 +64,8 @@ export function validateContiguityWeightsOperationScalars(
  */
 export class GPUContiguityWeightsOperation extends GPUContributorOperation {
   constructor(props: ContiguityWeightsOperationProps) {
+    props = snapshotPolygonReviewProps(props);
+    validateContiguityOperationOutput(props.id ?? 'contiguity-weights', props.output);
     props = snapshotContiguityOperationProps(props);
     const id = props.id ?? 'contiguity-weights';
     validateContiguityWeightsOperationScalars(id, props);

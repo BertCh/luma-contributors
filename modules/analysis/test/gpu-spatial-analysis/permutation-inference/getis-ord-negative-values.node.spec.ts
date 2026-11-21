@@ -80,11 +80,12 @@ for (const permutationBatchSize of [undefined, 2]) {
         expect(findStatisticsNonFiniteConstants(record.source), record.id).toEqual([]);
         expect(findStatisticsBarrierRisks(record.source), record.id).toEqual([]);
       }
-      const totals = new Float32Array(9);
+      const totals = new Float32Array(PERMUTATION_TOTAL.offDiagonalMass + 1);
       const results = new Float32Array(12);
       const referenceDistribution = new Float32Array(3);
       const histogram = new Uint32Array(4);
       const negativeCount = new Uint32Array(1);
+      const positiveCount = new Uint32Array(1);
       const invalidCount = new Uint32Array(1);
       const buffers = {
         totals,
@@ -92,6 +93,7 @@ for (const permutationBatchSize of [undefined, 2]) {
         referenceDistribution,
         histogram,
         negativeCount,
+        positiveCount,
         invalidCount,
         pairSums: Float32Array.of(20, 15, 25, 30),
         rowPositions: Uint32Array.of(0, 1, 2, 3, 4),
@@ -103,7 +105,11 @@ for (const permutationBatchSize of [undefined, 2]) {
         totals[PERMUTATION_TOTAL.count] = 4;
         totals[PERMUTATION_TOTAL.mean] = 2.5;
         totals[PERMUTATION_TOTAL.sumSquares] = 5;
+        // For the valid values [1,2,3,4], sum_i!=j xi*xj = 10^2 - 30 = 70.
+        // The current General-G route reads this explicit mass instead of reconstructing it.
+        totals[PERMUTATION_TOTAL.offDiagonalMass] = 70;
         negativeCount[0] = rejectedRows;
+        positiveCount[0] = 4 - rejectedRows;
         histogram.fill(123);
         execute(reject, buffers);
         execute(finalize, buffers);

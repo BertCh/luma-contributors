@@ -4,12 +4,16 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
+import {ScalarData, WgslExec} from 'wgsl_reflect';
 import * as prefixKernels from '../../../src/gpu-spatial-analysis/line-segmentize/line-segmentize-kernels';
 import {
   GPULineChunk,
   getGPULineChunkParameterValues
 } from '../../../src/gpu-spatial-analysis/line-segmentize/gpu-line-chunk';
-import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {useCPUExecutorTestHooks} from '../segment-intersection/cpu-executor-test-hooks';
 import {
@@ -51,7 +55,7 @@ function createChunkCountFixture(lengths: number[], lineCapacity: number, withRe
         variant: 'exact-test-measures',
         invocationCount: lengths.length * 2,
         bindings: [{name: 'measures', view: props.rowMeasures!, type: 'f32', access: 'read_write'}],
-        declarations: `const MEASURES = array<f32, ${lengths.length * 2}>(${lengths.flatMap(length => ['0.0', `${length}.0`]).join(', ')});`,
+        declarations: `const MEASURES = array<f32, ${lengths.length * 2}>(${lengths.flatMap(length => ['0.0', getWGSLFloatLiteral(length)]).join(', ')});`,
         body: 'measures[measuresOffset + index] = MEASURES[index];'
       })
     );
@@ -109,6 +113,45 @@ it('reports the full requirement of lines that individually exceed output capaci
     const complete = fixture.run(100);
     expect(complete).toMatchObject({count: 2, requiredCount: 2, overflow: 0, sources: [0, 1]});
   } finally {
+    fixture.destroy();
+  }
+});
+
+it.each([
+  [21, 7], // 3 × 7 = 21. Reciprocal multiplication rounds the quotient above 3.
+  [50 + 2 ** -18, 25] // The length exceeds 2 × 25. Its reciprocal quotient rounds to 2.
+])('checks the chunk boundary for length %s and step %s under reciprocal division', (length, chunkLength) => {
+  const fixture = createChunkCountFixture([length], 3);
+  const original = WgslExec.prototype._evalBinaryOp;
+  const division = vi.spyOn(WgslExec.prototype, '_evalBinaryOp').mockImplementation(function (
+    this: WgslExec,
+    expression,
+    context
+  ) {
+    const result = original.call(this, expression, context);
+    if (
+      expression.operator === '/' &&
+      result instanceof ScalarData &&
+      result.typeInfo.name === 'f32'
+    ) {
+      const numerator = this.evalExpression(expression.left, context);
+      const denominator = this.evalExpression(expression.right, context);
+      if (numerator instanceof ScalarData && denominator instanceof ScalarData) {
+        result.value = Math.fround(numerator.value * Math.fround(1 / denominator.value));
+      }
+    }
+    return result;
+  });
+  try {
+    expect(fixture.run(chunkLength)).toEqual({
+      count: 3,
+      requiredCount: 3,
+      overflow: 0,
+      offsets: [0, 2, 4, 6],
+      sources: [0, 0, 0]
+    });
+  } finally {
+    division.mockRestore();
     fixture.destroy();
   }
 });

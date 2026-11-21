@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/// <reference path="../markdown-it.d.ts" />
+
 import MarkdownIt from 'markdown-it';
 import {registerLensDirective, registerLensCollapse} from '../docs/lens-directive';
 import {setLensCatalogResolver} from '../docs/lens-catalog';
@@ -102,10 +104,10 @@ export function parseActionLink(
   element: HTMLElement
 ): {verb: ActionVerb; params: Record<string, string>} | null {
   const link = element.closest<HTMLElement>('a.action-link[data-action]');
-  const verb = link?.dataset.action ?? '';
+  const verb = link?.dataset['action'] ?? '';
   if (!link || !isActionVerb(verb)) return null;
   const params: Record<string, string> = {};
-  for (const [key, value] of new URLSearchParams(link.dataset.params ?? '')) params[key] = value;
+  for (const [key, value] of new URLSearchParams(link.dataset['params'] ?? '')) params[key] = value;
   return {verb, params};
 }
 

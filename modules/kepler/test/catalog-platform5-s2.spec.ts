@@ -5,10 +5,19 @@
 import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
+import {S2_CONCAVE_INTERIOR_COORDINATES} from './s2-concave-interior-fixture';
 import {runCatalogOperationAsync, type CatalogRunResult} from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
+import {readS2Cell} from '../src/analysis/catalog-platform4-dggs-cells';
 import {PLATFORM5_S2_BINDINGS} from '../src/analysis/catalog-platform5-s2';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
+import {
+  FINE_S2_RECTANGLES,
+  FINE_S2_COVER_PARAMETERS,
+  getFineS2RectangleRing,
+  getThinSeamTriangleRing,
+  SEAM_S2_COVER_PARAMETERS
+} from './s2-catalog-cover-fixtures';
 
 // Oracle policy: the CPU reference engine of each binding is the oracle; the GPU path must run on
 // the named contributor (engine 'gpu') and match it.
@@ -44,6 +53,59 @@ function polygons(rings: number[][][]): CatalogFeatureCollection {
     }))
   };
 }
+
+test('W5-27 GPU catalog fine interiors have literal complete cells and refuse genuine invalid rings', {
+  timeout: 300000
+}, async () => {
+  const device = await getDevice();
+  const binding = getBinding('s2-polygon-covering');
+  for (const scene of FINE_S2_RECTANGLES) {
+    const ring = getFineS2RectangleRing(scene.first, scene.second);
+    for (const vertices of [ring, [...ring].reverse()]) {
+      const result = await runCatalogOperationAsync(
+        binding,
+        FINE_S2_COVER_PARAMETERS,
+        {polygons: polygons([vertices])},
+        {device}
+      );
+      expect(result.engine).toBe('gpu');
+      expect(result.dispatchedContributors).toEqual(['GPUS2PolygonCovering']);
+      expect(column(result, 'cell_id')).toEqual([scene.cellId]);
+      expect(result.summary['cellCount']).toBe(1);
+      expect(result.summary['truncatedCount']).toBe(0);
+      expect(result.diagnostics).toEqual([]);
+    }
+    // The bow tie is genuinely self-crossing. Call the GPU runner directly so CPU fallback
+    // cannot turn its refusal into an apparently successful GPU cover.
+    await expect(
+      binding.runGpu!(
+        {device},
+        {polygons: polygons([[ring[0], ring[2], ring[1], ring[3]]])},
+        FINE_S2_COVER_PARAMETERS
+      )
+    ).rejects.toThrow(/valid polygon parts/);
+  }
+});
+
+test('recheck-status-spatial-b-R1 GPU catalog thin seam exterior excludes antipodal faces', {
+  timeout: 300000
+}, async () => {
+  const device = await getDevice();
+  const result = await runCatalogOperationAsync(
+    getBinding('s2-polygon-covering'),
+    SEAM_S2_COVER_PARAMETERS,
+    {polygons: polygons([getThinSeamTriangleRing()])},
+    {device}
+  );
+  // The triangle straddles x=y on the positive hemisphere: faces 0 and 1 only.
+  // This expectation is independent of the CPU catalog route.
+  expect(result.engine).toBe('gpu');
+  expect(result.dispatchedContributors).toEqual(['GPUS2PolygonCovering']);
+  expect(column(result, 'cell_id')).toEqual(['1000000000000000', '3000000000000000']);
+  expect(result.summary['cellCount']).toBe(2);
+  expect(result.summary['truncatedCount']).toBe(0);
+  expect(result.diagnostics).toEqual([]);
+});
 
 async function runBoth(
   device: Device,
@@ -233,4 +295,40 @@ test('s2-polygon-covering GPU equals the CPU traversal', async () => {
   expect(bounded.gpu.diagnostics.map(diagnostic => diagnostic.code)).toContain(
     's2-cover-truncated'
   );
+});
+
+test('W2-01: GPU binding preserves 28 concave interior cells in either winding', async () => {
+  const device = await getDevice();
+  const ring = [
+    [-4, -4],
+    [4, -4],
+    [4, 4],
+    [1, 4],
+    [1, -1],
+    [-1, -1],
+    [-1, 4],
+    [-4, 4]
+  ];
+  const covers: CatalogRunResult[] = [];
+  for (const vertices of [ring, [...ring].reverse()]) {
+    const {gpu, cpu} = await runBoth(
+      device,
+      's2-polygon-covering',
+      {maximumLevel: 6, mode: 'interior'},
+      {polygons: polygons([vertices])}
+    );
+    for (const result of [gpu, cpu]) {
+      expect(result.tables[0].rowCount).toBe(28);
+      expect(
+        column(result, 'cell_id')
+          .map(cell => {
+            const {face, level, i, j} = readS2Cell(BigInt(`0x${cell}`));
+            return `${face}/${level}/${i}/${j}`;
+          })
+          .sort()
+      ).toEqual([...S2_CONCAVE_INTERIOR_COORDINATES].sort());
+    }
+    covers.push(gpu);
+  }
+  expect(column(covers[0], 'cell_id')).toEqual(column(covers[1], 'cell_id'));
 });

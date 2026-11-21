@@ -4,7 +4,11 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUModalSplit, type GPUModalSplitProps} from './gpu-modal-split';
-import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {resolveModalSpeedOptions, validateModalSpeedOptionName} from './modal-split-options';
+import {
+  snapshotConstructionSpatialContext,
+  snapshotConstructionFields
+} from '../../analysis-core/kernels/construction-snapshot';
 
 /**
  * Graph-value form. In prediction mode the optional input modes port is omitted: the contributor
@@ -12,7 +16,7 @@ import {snapshotConstructionFields} from '../../analysis-core/kernels/constructi
  */
 export type ModalSplitOperationProps = Pick<
   GPUModalSplitProps,
-  'id' | 'metric' | 'modeCount' | 'spatialContext' | 'temporalContext'
+  'id' | 'metric' | 'modeCount' | 'spatialContext' | 'temporalContext' | 'unknownModePolicy'
 > & {
   positions: string;
   timestamps: string;
@@ -29,15 +33,15 @@ export type ModalSplitOperationProps = Pick<
   };
   output: {modalSplit: string; predictedModes?: string};
 } & (
-    | {modes: string; modeSpeedBreaks?: never}
-    | {modes?: never; modeSpeedBreaks: readonly number[]}
+    | {modes: string; modeSpeedUpperBoundsFloat32?: never}
+    | {modes?: never; modeSpeedUpperBoundsFloat32: readonly number[]}
   );
 
 /** @internal Capture compile-time settings and nested port maps for both operation forms. */
 export function snapshotModalSplitOperationProps(
-  props: ModalSplitOperationProps
+  input: ModalSplitOperationProps
 ): ModalSplitOperationProps {
-  props = snapshotConstructionFields(props, [
+  const props = snapshotConstructionFields(input, [
     'id',
     'metric',
     'modeCount',
@@ -52,9 +56,11 @@ export function snapshotModalSplitOperationProps(
     'triplegCapacity',
     'triplegs',
     'modes',
-    'modeSpeedBreaks',
+    'modeSpeedUpperBoundsFloat32',
+    'unknownModePolicy',
     'output'
   ]);
+  validateModalSpeedOptionName(props.id ?? 'modal-split', input);
   const triplegs = snapshotConstructionFields(props.triplegs, [
     'tracks',
     'startRows',
@@ -63,6 +69,9 @@ export function snapshotModalSplitOperationProps(
   ]);
   const captured = {
     ...props,
+    spatialContext: props.spatialContext
+      ? snapshotConstructionSpatialContext(props.spatialContext)
+      : undefined,
     triplegs: {
       ...triplegs,
       status: snapshotConstructionFields(triplegs.status, [
@@ -73,9 +82,14 @@ export function snapshotModalSplitOperationProps(
     },
     output: snapshotConstructionFields(props.output, ['modalSplit', 'predictedModes'])
   };
-  return props.modeSpeedBreaks
-    ? {...captured, modes: undefined, modeSpeedBreaks: Object.freeze([...props.modeSpeedBreaks])}
-    : {...captured, modes: props.modes!, modeSpeedBreaks: undefined};
+  const bounds = resolveModalSpeedOptions(props.id ?? 'modal-split', props);
+  return bounds
+    ? {...captured, modes: undefined, modeSpeedUpperBoundsFloat32: bounds}
+    : {
+        ...captured,
+        modes: props.modes!,
+        modeSpeedUpperBoundsFloat32: undefined
+      };
 }
 
 /** GPU modal aggregation operation. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
@@ -83,9 +97,10 @@ export class GPUModalSplitOperation extends GPUContributorOperation {
   constructor(props: ModalSplitOperationProps) {
     props = snapshotModalSplitOperationProps(props);
     const id = props.id ?? 'modal-split';
-    const predictedModes = props.modeSpeedBreaks ? props.output.predictedModes : undefined;
+    const predictedModes = props.output.predictedModes;
     super({
       id,
+      emptyOutputPorts: ['modalSplit', 'predictedModes'],
       inputs: {
         positions: props.positions,
         timestamps: props.timestamps,
@@ -100,7 +115,9 @@ export class GPUModalSplitOperation extends GPUContributorOperation {
         ...(props.triplegs.status.candidateOverflow !== undefined
           ? {triplegCandidateOverflow: props.triplegs.status.candidateOverflow}
           : {}),
-        ...(!props.modeSpeedBreaks && props.modes !== undefined ? {modes: props.modes} : {})
+        ...(!props.modeSpeedUpperBoundsFloat32 && props.modes !== undefined
+          ? {modes: props.modes}
+          : {})
       },
       outputs: {
         modalSplit: {
@@ -125,7 +142,8 @@ export class GPUModalSplitOperation extends GPUContributorOperation {
           temporalContext: props.temporalContext,
           metric: props.metric,
           modeCount: props.modeCount,
-          modeSpeedBreaks: props.modeSpeedBreaks,
+          modeSpeedUpperBoundsFloat32: props.modeSpeedUpperBoundsFloat32,
+          unknownModePolicy: props.unknownModePolicy,
           positions: getView<'float32x2'>('positions'),
           timestamps:
             props.timestampFormat === 'uint32x2'
@@ -149,7 +167,7 @@ export class GPUModalSplitOperation extends GPUContributorOperation {
             }
           },
           modes:
-            !props.modeSpeedBreaks && props.modes !== undefined
+            !props.modeSpeedUpperBoundsFloat32 && props.modes !== undefined
               ? getView<'uint32'>('modes')
               : undefined,
           output: {

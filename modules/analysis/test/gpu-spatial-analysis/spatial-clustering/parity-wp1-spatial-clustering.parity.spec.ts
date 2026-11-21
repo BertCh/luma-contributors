@@ -5,9 +5,9 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
-  getGPUSpatialClusteringParameterValues,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_NOISE
+  getGPUDBSCANParameterValues,
+  GPUDBSCAN,
+  GPU_DBSCAN_NOISE
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import fixtureJson from '../../oracles/fixtures/parity-wp1-spatial-clustering.json';
 import {decodeOracleFixture} from '../../oracles/oracle-fixture';
@@ -33,7 +33,7 @@ const fixture = decodeOracleFixture<{cases: ClusteringCase[]}>(fixtureJson);
 function canonicalizeLabels(labels: number[], coreMask: number[]): number[] {
   const roots = new Map<number, number>();
   labels.forEach((label, row) => {
-    if (label !== GPU_SPATIAL_CLUSTERING_NOISE && coreMask[row] && !roots.has(label)) {
+    if (label !== GPU_DBSCAN_NOISE && coreMask[row] && !roots.has(label)) {
       roots.set(label, row);
     }
   });
@@ -42,9 +42,7 @@ function canonicalizeLabels(labels: number[], coreMask: number[]): number[] {
       .sort((left, right) => left[1] - right[1])
       .map(([label], index) => [label, index])
   );
-  return labels.map(label =>
-    label === GPU_SPATIAL_CLUSTERING_NOISE ? -1 : (mapping.get(label) ?? -2)
-  );
+  return labels.map(label => (label === GPU_DBSCAN_NOISE ? -1 : (mapping.get(label) ?? -2)));
 }
 
 function compareExact(
@@ -68,7 +66,7 @@ function compareExact(
   console.log(
     'PARITY',
     JSON.stringify({
-      class: 'GPUSpatialClustering',
+      class: 'GPUDBSCAN',
       case: testCase.name,
       reference: testCase.reference,
       n: testCase.n,
@@ -88,7 +86,7 @@ function compareExact(
 }
 
 for (const testCase of fixture.cases) {
-  it(`GPUSpatialClustering sklearn parity: ${testCase.name}`, async () => {
+  it(`GPUDBSCAN sklearn parity: ${testCase.name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     // The full data case exercises both the ordinary indexed path and dense-box optimization.
@@ -99,9 +97,16 @@ for (const testCase of fixture.cases) {
         const coreMask = rig.output('uint32', testCase.n);
         const clusterCount = rig.output('uint32', 1);
         rig.run(
-          new GPUSpatialClustering({
+          new GPUDBSCAN({
             positions: rig.input(Float32Array.from(testCase.positions), 'float32x2', testCase.n),
-            parameters: rig.input(getGPUSpatialClusteringParameterValues(testCase), 'float32'),
+            parameters: rig.input(
+              getGPUDBSCANParameterValues({
+                bounds: testCase.bounds,
+                epsilon: testCase.epsilon,
+                minimumSamples: testCase.minimumPoints
+              }),
+              'float32'
+            ),
             gridSize: [256, 256],
             denseBoxShortcut,
             output: {labels: labels.view, coreFlags: coreMask.view, clusterCount: clusterCount.view}
@@ -114,7 +119,7 @@ for (const testCase of fixture.cases) {
         compareExact(
           comparisonCase,
           'noise-mask',
-          actualLabels.map(label => Number(label === GPU_SPATIAL_CLUSTERING_NOISE)),
+          actualLabels.map(label => Number(label === GPU_DBSCAN_NOISE)),
           testCase.labels.map(label => Number(label === -1))
         );
         compareExact(

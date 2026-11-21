@@ -264,10 +264,11 @@ const grid = makeGPURasterMetadata({
   width, height, cellSize: [cellWidth, cellHeight], origin: [originX, originY], rowDirection: 'north'
 });
 extent.write(getGPUPolygonRasterizationParameterValues(grid));
+const extentView = extent.importToGraph(graph); // import once and share the view
 
 graph.add(
   new GPUPolygonRasterization({
-    grid, parameters: extent.importToGraph(graph),   // per frame: ${state.extent === 'viewport' ? 'follows the camera' : 'fixed to the city'}
+    grid, parameters: extentView,   // per frame: ${state.extent === 'viewport' ? 'follows the camera' : 'fixed to the city'}
     positions, featureOffsets, polygonOffsets, ringOffsets,
     crossingCapacity,                                    // sized from the crossing count
     output: {zones, boundary, status: {overflow, crossingCount}}
@@ -275,19 +276,25 @@ graph.add(
 );
 graph.add(
   new GPURasterJoin({
-    grid, parameters: extent.importToGraph(graph),
+    grid, parameters: extentView,
     points, values: researchGrade, zones, boundary, zoneCount: 77,
+    producerOverflow: overflow, // reuse the rasterizer view; import its buffer once per graph
     output: {counts, sums, boundaryCounts, unassignedBoundaryCount, outsideCount,
-             pointZones, pointBoundaryMask}              // error accounting
+             pointZones, pointBoundaryMask, status: {incomplete}} // error accounting
   })
 );
 // exact reference: GPUPointInPolygonJoin({
 //   spatialContext: projection.spatialContext,
 //   points: {kind: 'points', positions}, polygons: {kind: 'polygons', positions, featureOffsets, ...},
-//   output: {pointFeatureIds, featureCounts, status: {overflow}}
+//   output: {pointFeatureIds, polygonAssignmentCounts: featureCounts, status: {overflow}}
 // })
 const compiled = await graph.compileAsync();             // once per resolution
-compiled.encode(commandEncoder, {parameters: undefined});`,
+compiled.encode(commandEncoder, {parameters: undefined});
+// After device submission, before publishing counts, assignments or comparisons:
+const incompleteBytes = await incompleteBuffer.readAsync(0, 4); // backing buffer of incomplete
+if (new Uint32Array(incompleteBytes.buffer, incompleteBytes.byteOffset, 1)[0]) {
+  throw new Error('incomplete rasterization: results unavailable');
+}`,
 
   about: {
     what: '`GPUPolygonRasterization` scan-converts polygons into a dense zone raster: each cell holds the feature whose polygon contains the cell centre (smallest row wins, even-odd over rings). `GPURasterJoin` then assigns each point the zone of the cell it falls in, so the cost per point is O(1) and independent of polygon complexity. Cells touched by a polygon edge are flagged so the error can be bounded.',

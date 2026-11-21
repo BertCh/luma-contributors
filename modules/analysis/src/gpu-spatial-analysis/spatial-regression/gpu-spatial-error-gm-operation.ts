@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {snapshotRegressionOperationProps} from './regression-construction-snapshot';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {validateCompleteRegressionWeights} from './cpu-regression-weights';
@@ -65,8 +66,13 @@ export class GPUSpatialErrorGMOperation extends GPUContributorOperation {
             }
           : {})
       },
-      createContributor: getView =>
-        new GPUSpatialErrorGM({
+      createContributor: getView => {
+        validateRequirement(
+          id,
+          getView('response').length === props.rowCount,
+          'response length must equal rowCount'
+        );
+        return new GPUSpatialErrorGM({
           ...props,
           id,
           weights: {
@@ -83,7 +89,8 @@ export class GPUSpatialErrorGMOperation extends GPUContributorOperation {
             summary: getView<'float32'>('summary'),
             residuals: props.output.residuals ? getView<'float32'>('residuals') : undefined
           }
-        })
+        });
+      }
     });
   }
 }

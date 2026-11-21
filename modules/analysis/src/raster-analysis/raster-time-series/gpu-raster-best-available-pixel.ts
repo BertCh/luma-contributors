@@ -18,6 +18,7 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
@@ -75,13 +76,16 @@ export function getGPURasterBestAvailablePixelParameterValues(
   validateFiniteNumber(name, 'maximumYearDistance', settings.maximumYearDistance, Number.MIN_VALUE);
   validateFiniteNumber(name, 'yearWeight', settings.yearWeight, 0);
   validateFiniteNumber(name, 'minimumCloudDistance', settings.minimumCloudDistance, 0);
-  validateFiniteNumber(
-    name,
-    'maximumCloudDistance',
-    settings.maximumCloudDistance,
-    settings.minimumCloudDistance + Number.MIN_VALUE
-  );
+  validateFiniteNumber(name, 'maximumCloudDistance', settings.maximumCloudDistance, 0);
   validateFiniteNumber(name, 'cloudWeight', settings.cloudWeight, 0);
+  const encodedMinimum = Math.fround(settings.minimumCloudDistance);
+  const encodedMaximum = Math.fround(settings.maximumCloudDistance);
+  validateRequirement(
+    name,
+    settings.maximumCloudDistance > settings.minimumCloudDistance &&
+      encodedMaximum > encodedMinimum,
+    `minimumCloudDistance ${settings.minimumCloudDistance} and maximumCloudDistance ${settings.maximumCloudDistance} must be strictly increasing before and after float32 encoding; encoded endpoints [${encodedMinimum}, ${encodedMaximum}]`
+  );
   target.set([
     settings.targetDayOfYear,
     settings.dayOfYearSigma,
@@ -141,6 +145,8 @@ export type GPURasterBestAvailablePixelProps<
  * distance in days to the target day of year, and the cell takes the highest-scoring slice (the
  * earliest on ties). A missing cloud distance scores zero. The output is a real acquisition.
  *
+ * The GPU route accepts at most 256 slices per cell and at most 16 bands when a composite is requested.
+ *
  * Cell-major fields accept packed views or matching vector chunks of complete cell records.
  * Shared date, model and parameter tables remain packed.
  *
@@ -157,6 +163,19 @@ export class GPURasterBestAvailablePixel<
   constructor(readonly props: GPURasterBestAvailablePixelProps<Rows>) {
     const id = props.id ?? 'raster-best-available-pixel';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: props.bandCount > 0, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      cloudDistance: {required: false, viewType: 'either', formats: ['float32']},
+      sliceAttributes: {required: true, viewType: 'data', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'output.composite': {required: props.bandCount > 0, viewType: 'either', formats: ['float32']},
+      'output.bestSlice': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.bestScore': {required: true, viewType: 'either', formats: ['float32']}
+    });
+    // Capture constructor options/maps while preserving graph resource identities.
+    props = {...props, output: {...props.output}};
+    this.props = props;
     validateCapacity(id, 'cellCount', props.cellCount);
     validateCapacity(
       id,

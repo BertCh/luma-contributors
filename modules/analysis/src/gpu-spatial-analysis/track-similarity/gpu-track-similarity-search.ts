@@ -1,7 +1,12 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {PLANAR_TRACK_MEMBERSHIP_WGSL} from './planar-track-metric';
+import {
+  snapshotLineFeatureGeometry,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {createMultipartTrackLayout, validateMultipartTrackMeasures} from './multipart-track-layout';
 
 import {
   validateTrajectoryBindings,
@@ -18,7 +23,6 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 import {
   getGPUGreatCircleRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -66,8 +70,9 @@ export type GPUTrackSimilaritySearchProps = {
    * have no bound in this context (0), so every pair is evaluated.
    */
   spatialContext?: GPUSpatialContext;
-  linesA: GPUPackedGeometryPort<GPULineGeometryPort>;
-  linesB?: GPUPackedGeometryPort<GPULineGeometryPort>;
+  /** Track features; optional grouping is supported for Hausdorff and SSPD search. */
+  linesA: GPULineFeatureGeometry;
+  linesB?: GPULineFeatureGeometry;
   pairA: GraphDataView<'uint32'>;
   pairB: GraphDataView<'uint32'>;
   /**
@@ -120,9 +125,13 @@ export type GPUTrackSimilaritySearchProps = {
  * Batched planar threshold search composing the existing tiled dynamic programs. Endpoint
  * distance is an admissible lower bound for both discrete Frechet and sum-of-distances DTW,
  * including any band. LCSS uses a possible-match cardinality upper bound; evaluating it is O(n*m).
- * The other measures use `O(n + m)` bounds: Hausdorff and SSPD the distance of the vertices to the
+ * In planar contexts the other measures use `O(n + m)` bounds: Hausdorff and SSPD the distance of the vertices to the
  * bounding box of the other track, EDR a count of the vertices that can match inside the box
- * widened by the tolerance, ERP the difference of the two sums of gap distances (ERP is a metric).
+ * widened by the tolerance, ERP the difference of the two sums of gap distances. ERP is a
+ * pseudometric on raw tracks when the gap point can be a vertex; the reverse-triangle bound
+ * still holds. Inserting a gap vertex can give distinct tracks distance zero.
+ * Great-circle Hausdorff and SSPD use zero bounds, EDR the absolute vertex-count difference,
+ * and ERP the same reverse-triangle bound with great-circle gap distances.
  * Pruned pairs skip the measure and have NaN distance, never zero.
  * Input pair IDs are preserved; explicit query batches bound scratch. No approximate pruning.
  */
@@ -145,10 +154,41 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     props = {
       ...props,
-      linesA: snapshotSinglePartGeometryPort(this.id, 'linesA', props.linesA),
-      linesB: props.linesB && snapshotSinglePartGeometryPort(this.id, 'linesB', props.linesB)
+      linesA: snapshotLineFeatureGeometry(this.id, props.linesA),
+      linesB: props.linesB && snapshotLineFeatureGeometry(this.id, props.linesB),
+      output: Object.freeze({...props.output}),
+      editDistanceGapPoint:
+        props.editDistanceGapPoint &&
+        (Object.freeze([...props.editDistanceGapPoint]) as readonly [number, number])
     };
     this.props = props;
+    validateMultipartTrackMeasures(
+      this.id,
+      Boolean(props.linesA.featureOffsets || props.linesB?.featureOffsets),
+      [props.metric === 'symmetric-segment-path' ? 'symmetricSegmentPathDistance' : props.metric]
+    );
+    for (const name of props.metric === 'longest-common-subsequence'
+      ? (['distance', 'lowerBound'] as const)
+      : (['similarity', 'upperBound'] as const)) {
+      validateRequirement(
+        this.id,
+        props.output[name] === undefined,
+        `output.${name} is inactive for metric ${props.metric}; omit output.${name}`
+      );
+    }
+    validateRequirement(
+      this.id,
+      [
+        'dynamic-time-warping',
+        'frechet',
+        'longest-common-subsequence',
+        'hausdorff',
+        'edit-distance-on-real-sequence',
+        'edit-distance-with-real-penalty',
+        'symmetric-segment-path'
+      ].includes(props.metric),
+      `metric received ${props.metric}; accepted values: dynamic-time-warping, frechet, longest-common-subsequence, hausdorff, edit-distance-on-real-sequence, edit-distance-with-real-penalty, symmetric-segment-path`
+    );
     const value =
       props.metric === 'longest-common-subsequence'
         ? props.output.similarity
@@ -217,13 +257,13 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
         this.id,
         'output.topKIndices',
         props.output.topKIndices,
-        (props.linesA.lineOffsets.length - 1) * props.topK
+        ((props.linesA.featureOffsets ?? props.linesA.lineOffsets).length - 1) * props.topK
       );
       validateViewLength(
         this.id,
         'output.topKSummary',
         props.output.topKSummary,
-        props.linesA.lineOffsets.length - 1
+        (props.linesA.featureOffsets ?? props.linesA.lineOffsets).length - 1
       );
     } else {
       validateRequirement(
@@ -254,8 +294,10 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.linesA.positions,
       props.linesA.lineOffsets,
+      props.linesA.featureOffsets,
       props.linesB?.positions,
       props.linesB?.lineOffsets,
+      props.linesB?.featureOffsets,
       props.pairA,
       props.pairB,
       props.threshold
@@ -275,15 +317,17 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
     const linesB = props.linesB ?? props.linesA;
     const distanceExpression =
       sphereRadius === undefined
-        ? 'sqrt(dot(loadA(rowA) - loadB(rowB), loadA(rowA) - loadB(rowB)))'
+        ? 'pointWithin(loadA(rowA), loadB(rowB), f32(' + (props.lcssTolerance ?? 1) + '))'
         : 'pointDistance(loadA(rowA), loadB(rowB))';
     // Hausdorff and SSPD have no dynamic program, so the shorter-track cap does not apply.
     const isUncapped = props.metric === 'hausdorff' || props.metric === 'symmetric-segment-path';
     validateGraphViewsBelongToGraph(id, graph, [
       props.linesA.positions,
       props.linesA.lineOffsets,
+      props.linesA.featureOffsets,
       linesB.positions,
       linesB.lineOffsets,
+      linesB.featureOffsets,
       props.pairA,
       props.pairB,
       props.threshold,
@@ -296,6 +340,10 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
       'pair scratch': props.pairA.length * 4,
       ...(props.topK ? {'sort histograms': 16 * Math.ceil(props.pairA.length / 256) * 4} : {})
     });
+    const layoutA = createMultipartTrackLayout(graph, `${id}-bound-a`, props.linesA);
+    const layoutB = props.linesB
+      ? createMultipartTrackLayout(graph, `${id}-bound-b`, linesB)
+      : layoutA;
     const filteredA = createTransientView(graph, `${id}-filtered-a`, 'uint32', capacity);
     const filteredB = createTransientView(graph, `${id}-filtered-b`, 'uint32', capacity);
     const flags = createTransientView(graph, `${id}-flags`, 'uint32', props.pairA.length);
@@ -306,6 +354,8 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
       createTransientView(graph, `${id}-survivor-summary`, 'uint32', 3);
     const programStatus = createTransientView(graph, `${id}-program-status`, 'uint32', capacity);
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...layoutA.nodes,
+      ...(props.linesB ? layoutB.nodes : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-bound`,
         operation: 'GPUTrackSimilaritySearch',
@@ -317,9 +367,9 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
         invocationCount: props.pairA.length,
         bindings: [
           {name: 'positionsA', view: props.linesA.positions, type: 'f32', access: 'read'},
-          {name: 'offsetsA', view: props.linesA.lineOffsets, type: 'u32', access: 'read'},
+          {name: 'offsetsA', view: layoutA.offsets, type: 'u32', access: 'read'},
           {name: 'positionsB', view: linesB.positions, type: 'f32', access: 'read'},
-          {name: 'offsetsB', view: linesB.lineOffsets, type: 'u32', access: 'read'},
+          {name: 'offsetsB', view: layoutB.offsets, type: 'u32', access: 'read'},
           {name: 'pairA', view: props.pairA, type: 'u32', access: 'read'},
           {name: 'pairB', view: props.pairB, type: 'u32', access: 'read'},
           {name: 'bounds', view: bound, type: 'f32', access: 'read_write'}
@@ -328,16 +378,17 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
 fn loadA(row: u32) -> vec2<f32> { return vec2<f32>(positionsA[positionsAOffset + 2u * row], positionsA[positionsAOffset + 2u * row + 1u]); }
 fn loadB(row: u32) -> vec2<f32> { return vec2<f32>(positionsB[positionsBOffset + 2u * row], positionsB[positionsBOffset + 2u * row + 1u]); }${
           sphereRadius === undefined
-            ? TRACK_SIMILARITY_BOUND_DECLARATIONS
+            ? `${TRACK_SIMILARITY_BOUND_DECLARATIONS}
+${PLANAR_TRACK_MEMBERSHIP_WGSL}`
             : getTrackSimilarityGreatCircleBoundDeclarations(sphereRadius)
         }`,
         body: `var nanBits = 0x7fc00000u; bounds[boundsOffset + index] = bitcast<f32>(nanBits);
 let first = pairA[pairAOffset + index]; let second = pairB[pairBOffset + index];
-if (first >= ${props.linesA.lineOffsets.length - 1}u || second >= ${linesB.lineOffsets.length - 1}u) { return; }
+if (first >= ${layoutA.featureCount}u || second >= ${layoutB.featureCount}u) { return; }
 let startA = offsetsA[offsetsAOffset + first]; let endA = offsetsA[offsetsAOffset + first + 1u]; let startB = offsetsB[offsetsBOffset + second]; let endB = offsetsB[offsetsBOffset + second + 1u];
 if (startA >= endA || endA > ${props.linesA.positions.length}u || startB >= endB || endB > ${linesB.positions.length}u) { return; }
-for (var row = startA; row < endA; row++) { let position = loadA(row); if (!finite(position.x) || !finite(position.y)) { return; } }
-for (var row = startB; row < endB; row++) { let position = loadB(row); if (!finite(position.x) || !finite(position.y)) { return; } }
+for (var row = startA; row < endA; row++) { let position = loadA(row); if (!finite(position.x) || !finite(position.y) ${sphereRadius === undefined ? '' : '|| abs(position.y) > 90.0'}) { return; } }
+for (var row = startB; row < endB; row++) { let position = loadB(row); if (!finite(position.x) || !finite(position.y) ${sphereRadius === undefined ? '' : '|| abs(position.y) > 90.0'}) { return; } }
 ${sphereRadius === undefined ? 'let startDifference = loadA(startA) - loadB(startB); let endDifference = loadA(endA - 1u) - loadB(endB - 1u);' : ''}
 ${
   isBoxBounded
@@ -355,17 +406,17 @@ ${
       ? `var possibleA = 0u; var possibleB = 0u;
 for (var rowA = startA; rowA < endA; rowA++) {
   var possible = false;
-  for (var rowB = startB; rowB < endB; rowB++) { if (${distanceExpression} <= f32(${props.lcssTolerance ?? 1})) { possible = true; break; } }
+  for (var rowB = startB; rowB < endB; rowB++) { if (${sphereRadius === undefined ? distanceExpression : `${distanceExpression} <= f32(${props.lcssTolerance ?? 1})`}) { possible = true; break; } }
   if (possible) { possibleA++; }
 }
 for (var rowB = startB; rowB < endB; rowB++) {
   var possible = false;
-  for (var rowA = startA; rowA < endA; rowA++) { if (${distanceExpression} <= f32(${props.lcssTolerance ?? 1})) { possible = true; break; } }
+  for (var rowA = startA; rowA < endA; rowA++) { if (${sphereRadius === undefined ? distanceExpression : `${distanceExpression} <= f32(${props.lcssTolerance ?? 1})`}) { possible = true; break; } }
   if (possible) { possibleB++; }
 }
 bounds[boundsOffset + index] = f32(min(possibleA, possibleB)) / f32(min(endA - startA, endB - startB));`
       : sphereRadius === undefined
-        ? 'bounds[boundsOffset + index] = max(sqrt(dot(startDifference, startDifference)), sqrt(dot(endDifference, endDifference)));'
+        ? 'bounds[boundsOffset + index] = max(scaledNorm(startDifference), scaledNorm(endDifference));'
         : 'bounds[boundsOffset + index] = max(pointDistance(loadA(startA), loadB(startB)), pointDistance(loadA(endA - 1u), loadB(endB - 1u)));'
 }`
       }),
@@ -433,6 +484,10 @@ if (rank >= ${capacity}u) { status[statusOffset + index] = 8u; return; }
 filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filteredBOffset + rank] = pairB[pairBOffset + index];`
       })
     );
+    const compactDecision =
+      props.metric === 'frechet'
+        ? createTransientView(graph, `${id}-compact-decision`, 'uint32', Math.max(capacity, 1))
+        : undefined;
     if (capacity > 0)
       nodes.push(
         ...new GPUTrackSimilarity({
@@ -442,6 +497,7 @@ filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filter
           linesB,
           pairA: filteredA,
           pairB: filteredB,
+          frechetEpsilon: props.metric === 'frechet' ? props.threshold : undefined,
           maximumFrechetVertexCount: props.maximumFrechetVertexCount,
           dynamicTimeWarpingBandRadius: props.dynamicTimeWarpingBandRadius,
           lcssTolerance: props.lcssTolerance,
@@ -457,6 +513,7 @@ filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filter
             symmetricSegmentPathDistance:
               props.metric === 'symmetric-segment-path' ? compactValue : undefined,
             frechet: props.metric === 'frechet' ? compactValue : undefined,
+            frechetWithin: props.metric === 'frechet' ? compactDecision : undefined,
             dynamicTimeWarping: props.metric === 'dynamic-time-warping' ? compactValue : undefined,
             longestCommonSubsequence: subsequence ? compactValue : undefined,
             pairStatus: programStatus
@@ -472,8 +529,27 @@ filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filter
         bindings: [
           {name: 'distance', view: value, type: 'f32', access: 'read_write'},
           {name: 'compactValue', view: compactValue, type: 'f32', access: 'read'},
+          ...(props.metric === 'frechet'
+            ? [
+                {
+                  name: 'compactDecision',
+                  view: compactDecision!,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           {name: 'ranks', view: ranks, type: 'u32', access: 'read'},
-          {name: 'threshold', view: props.threshold, type: 'f32', access: 'read'},
+          ...(props.metric === 'frechet'
+            ? []
+            : [
+                {
+                  name: 'threshold',
+                  view: props.threshold,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]),
           {name: 'programStatus', view: programStatus, type: 'u32', access: 'read'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'},
           {name: 'matched', view: props.output.matched, type: 'u32', access: 'read_write'}
@@ -481,9 +557,9 @@ filteredA[filteredAOffset + rank] = pairA[pairAOffset + index]; filteredB[filter
         body: `var nanBits = 0x7fc00000u; distance[distanceOffset + index] = bitcast<f32>(nanBits);
 if (status[statusOffset + index] == 0u) { let rank = ranks[ranksOffset + index];
   distance[distanceOffset + index] = compactValue[compactValueOffset + rank];
-  if ((programStatus[programStatusOffset + rank] & ${isUncapped ? '5u' : '0xffffffffu'}) != 0u) { status[statusOffset + index] = select(2u, 4u, (programStatus[programStatusOffset + rank] & 2u) != 0u); }
+  if ((programStatus[programStatusOffset + rank] & ${isUncapped ? '13u' : '0xffffffffu'}) != 0u) { status[statusOffset + index] = select(2u, 4u, (programStatus[programStatusOffset + rank] & 2u) != 0u); }
 }
-matched[matchedOffset + index] = select(0u, 1u, status[statusOffset + index] == 0u && distance[distanceOffset + index] ${subsequence ? '>=' : '<='} threshold[thresholdOffset]);`
+matched[matchedOffset + index] = select(0u, 1u, status[statusOffset + index] == 0u && ${props.metric === 'frechet' ? 'compactDecision[compactDecisionOffset + ranks[ranksOffset + index]] != 0u' : `distance[distanceOffset + index] ${subsequence ? '>=' : '<='} threshold[thresholdOffset]`});`
       })
     );
     if (props.topK !== undefined && props.output.topKIndices && props.output.topKSummary) {
@@ -504,7 +580,7 @@ matched[matchedOffset + index] = select(0u, 1u, status[statusOffset + index] == 
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const topK = props.topK!;
-    const trackCount = props.linesA.lineOffsets.length - 1;
+    const trackCount = (props.linesA.featureOffsets ?? props.linesA.lineOffsets).length - 1;
     const pairCount = props.pairA.length;
     const identity = createTransientView(graph, `${id}-top-k-identity`, 'uint32', pairCount);
     const trackKeys = createTransientView(graph, `${id}-top-k-track-keys`, 'uint32', pairCount);

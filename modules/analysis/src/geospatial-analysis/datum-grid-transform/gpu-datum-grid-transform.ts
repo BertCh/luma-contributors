@@ -155,8 +155,32 @@ export class GPUDatumGridTransform<
   private readonly chunkPlan: GraphChunkDispatchPlan;
   /** The sample mask, `props.mask`. */
   readonly mask: GraphDataView<'uint32'>;
-  constructor(readonly props: GPUDatumGridTransformProps<Rows>) {
+  readonly props: GPUDatumGridTransformProps<Rows>;
+  constructor(props: GPUDatumGridTransformProps<Rows>) {
     this.id = props.id ?? 'datum-grid-transform';
+    validateRequirement(
+      this.id,
+      props.operation === 'horizontal' ||
+        props.operation === 'vertical' ||
+        props.operation === 'combined',
+      `operation received ${String(props.operation)}; accepted values are horizontal, vertical, combined`
+    );
+    validateRequirement(
+      this.id,
+      props.direction === undefined ||
+        props.direction === 'forward' ||
+        props.direction === 'inverse',
+      `direction received ${String(props.direction)}; accepted values are forward, inverse`
+    );
+    this.props = {
+      ...props,
+      output: {...props.output},
+      grids: props.grids.map(grid => ({
+        ...grid,
+        origin: [...grid.origin] as [number, number],
+        spacing: [...grid.spacing] as [number, number]
+      }))
+    };
     const {mask} = props;
     validateRequirement(this.id, mask !== undefined, 'mask must be given');
     this.mask = mask;

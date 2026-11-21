@@ -36,6 +36,7 @@ function packTracks(tracks: TrackSet) {
 }
 
 export type MeasureName =
+  | 'longestCommonSubsequence'
   | 'hausdorff'
   | 'dynamicTimeWarping'
   | 'editDistanceOnRealSequence'
@@ -50,6 +51,7 @@ export async function runMeasures(
   measures: readonly MeasureName[],
   options: {
     spatialContext?: GPUSpatialContext;
+    lcssTolerance?: number;
     editDistanceTolerance?: number;
     editDistanceGapPoint?: readonly [number, number];
     maximumFrechetVertexCount?: number;
@@ -89,6 +91,7 @@ export async function runMeasures(
       },
       pairA: importGraphBuffer(graph, 'pair-a', input(pairs), 'uint32'),
       pairB: importGraphBuffer(graph, 'pair-b', input(pairs), 'uint32'),
+      lcssTolerance: options.lcssTolerance,
       editDistanceTolerance: options.editDistanceTolerance,
       editDistanceGapPoint: options.editDistanceGapPoint,
       maximumFrechetVertexCount: options.maximumFrechetVertexCount,
@@ -142,6 +145,8 @@ export async function runSearch(
   pairB: Uint32Array,
   options: {
     metric: SearchMetric;
+    lcssTolerance?: number;
+    spatialContext?: GPUSpatialContext;
     threshold: number;
     topK: number;
     editDistanceTolerance?: number;
@@ -169,6 +174,8 @@ export async function runSearch(
   graph.add(
     new GPUTrackSimilaritySearch({
       metric: options.metric,
+      lcssTolerance: options.lcssTolerance,
+      spatialContext: options.spatialContext,
       editDistanceTolerance: options.editDistanceTolerance,
       editDistanceGapPoint: options.editDistanceGapPoint,
       topK: options.topK,
@@ -191,8 +198,39 @@ export async function runSearch(
         'float32'
       ),
       output: {
-        distance: importGraphBuffer(graph, 'o-distance', outputs.distance, 'float32', pairCount),
-        lowerBound: importGraphBuffer(graph, 'o-bound', outputs.lowerBound, 'float32', pairCount),
+        ...(options.metric === 'longest-common-subsequence'
+          ? {
+              similarity: importGraphBuffer(
+                graph,
+                'o-similarity',
+                outputs.distance,
+                'float32',
+                pairCount
+              ),
+              upperBound: importGraphBuffer(
+                graph,
+                'o-bound',
+                outputs.lowerBound,
+                'float32',
+                pairCount
+              )
+            }
+          : {
+              distance: importGraphBuffer(
+                graph,
+                'o-distance',
+                outputs.distance,
+                'float32',
+                pairCount
+              ),
+              lowerBound: importGraphBuffer(
+                graph,
+                'o-bound',
+                outputs.lowerBound,
+                'float32',
+                pairCount
+              )
+            }),
         matched: importGraphBuffer(graph, 'o-matched', outputs.matched, 'uint32', pairCount),
         status: importGraphBuffer(graph, 'o-status', outputs.status, 'uint32', pairCount),
         topKIndices: importGraphBuffer(

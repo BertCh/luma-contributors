@@ -593,6 +593,7 @@ fn windingContribution(other: u32, probe: ExactProbe) -> i32 {
           id: `${id}-clear-total`,
           operation: OPERATION,
           view: total,
+          componentCount: 1,
           type: 'u32',
           value: '0u'
         })

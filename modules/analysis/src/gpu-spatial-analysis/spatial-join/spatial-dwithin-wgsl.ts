@@ -21,7 +21,7 @@ export const SPATIAL_DWITHIN_WORKGROUP_SIZE = 64;
  * Lanes take every 64th edge of the left feature and stop at the first right edge within reach,
  * skipping edges whose bounding box is farther than `distance` from the right feature (the skip
  * threshold has a 0.1% margin so rounding never turns a match into a miss). Thresholds above
- * 2^63 use scaled linear distances without squared-box pruning. Every lane of the
+ * 2^63 skip squared-box pruning. Threshold decisions share the scalar exact fallback. Every lane of the
  * workgroup must call it with the same arguments from uniform control flow (it contains a
  * barrier); only lane 0 receives the merged result.
  *
@@ -37,12 +37,16 @@ export function getSpatialDwithinWorkgroupWGSL(
 var<private> relateLane: u32 = 0u;
 var<private> relateStride: u32 = 1u;
 var<workgroup> dwithinMatched: atomic<u32>;
+var<workgroup> dwithinUncertain: atomic<u32>;
 // Squared gap between the bounding boxes of segments a-b and c-d (zero when they overlap).
 fn boxGapSq(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> f32 {
   let gap = max(max(min(a, b) - max(c, d), min(c, d) - max(a, b)), vec2f(0.0));
   return dot(gap, gap);
 }
 fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
+  if (lane == 0u) { atomicStore(&dwithinMatched, 0u); atomicStore(&dwithinUncertain, 0u); }
+  workgroupBarrier();
+  uncertainOrientation = false;
   relateLane = lane;
   relateStride = ${size}u;
   let limit = distanceLimit();
@@ -50,7 +54,13 @@ fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
   let limitSq = distanceLimitSq();
   var reachSq = 0.0;
   if (!useLinearDistance) { reachSq = limitSq * 1.001 + 1e-30; }
-  if (valid && limit >= 0.0 && !(leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0)) {
+  if (valid && limit >= 0.0) {
+    if (limit == 0.0) {
+      // The scalar intersection scan is unstrided. Run it once; all lanes still reduce below.
+      if (lane == 0u) {
+        if (pairIntersects(l, r)) { atomicOr(&dwithinMatched, 1u); }
+      }
+    } else if (!(leftFirst(l).z == 0.0 || rightFirst(r).z == 0.0)) {
     // Bounding box of the right feature.
     var rightLow = vec2f(FLOAT32_MAXIMUM);
     var rightHigh = vec2f(-FLOAT32_MAXIMUM);
@@ -77,8 +87,7 @@ fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
       'c',
       'd',
       `if (!useLinearDistance && boxGapSq(a, b, c, d) > reachSq) { continue; }
-      if ((useLinearDistance && segmentDistance(a, b, c, d) <= limit) ||
-          (!useLinearDistance && segmentDistanceSq(a, b, c, d) <= limitSq)) { matched = true; break; }`
+      if (segmentWithinDistance(a, b, c, d, limit)) { matched = true; break; }`
     )}`,
       true
     )}
@@ -98,7 +107,9 @@ fn dwithinWorkgroupPair(l: u32, r: u32, valid: bool, lane: u32) -> bool {
         : ''
     }
     if (matched) { atomicOr(&dwithinMatched, 1u); }
+    }
   }
+  if (uncertainOrientation) { atomicOr(&dwithinUncertain, 1u); }
   workgroupBarrier();
   return atomicLoad(&dwithinMatched) != 0u;
 }`;

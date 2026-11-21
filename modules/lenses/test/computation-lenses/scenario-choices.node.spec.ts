@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test, vi} from 'vitest';
-import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
+import {createNullWebGPUDevice} from '../../../analysis/src/testing/gpu-contributor-test-utils';
 import {getLensScenario} from '../../src/computation-lenses/registry-implementation';
 import {runS2Lens} from '../../src/computation-lenses/scenarios/gpu-spatial-analysis/s2-lens-run';
 import {declareLensScenario} from './scenario-declaration.test-utils';
@@ -29,7 +29,10 @@ test('missing S2 choice fails before building or submitting the graph', async ()
 
 test.each([
   ['spatial-rate-recipe', {islandPolicy: 'undefined', scale: 1000}],
-  ['quantile-lisa', {quantileParameters: 'quantile 4 of 4', permutationCount: 199}],
+  [
+    'quantile-lisa',
+    {quantileParameters: 'quantile 4 of 4', permutationCount: 199, alternative: 'geoda-legacy'}
+  ],
   [
     'point-pattern-envelope',
     {statistic: 'integrated-squared-deviation', simulationCount: 3, fittedParameters: 'none'}

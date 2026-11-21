@@ -52,6 +52,7 @@ import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-cont
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
+import {snapshotLineSimplificationProps} from './line-simplification-snapshot';
 
 const OPERATION = 'GPULineSimplification';
 
@@ -185,8 +186,8 @@ export type GPULineSimplificationProps = GPULineGeometryFields & {
   spatialContext?: GPUSpatialContext;
   // `positions` (one row per vertex, sorted by line and then vertex order; use tile- or
   // view-local coordinates since distances are f32) and `lineOffsets` come from
-  // `GPULineGeometryFields`. Rows outside `[lineOffsets[0], lineOffsets[lineCount])` get
-  // importance 0 and are never kept.
+  // `GPULineGeometryFields`. Offsets are clamped to the row count. Rows outside the first and
+  // terminal offsets get importance 0 and are never kept.
   /**
    * Packed float32 times aligned with `positions`. Required for `metric: 'time-ratio'`, ignored
    * otherwise.
@@ -336,6 +337,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPULineSimplificationProps) {
+    props = snapshotLineSimplificationProps(props);
     this.id = props.id ?? 'line-simplification';
     this.method = props.method ?? 'douglas-peucker';
     this.spatialContext = resolveGPUSpatialContext(
@@ -491,6 +493,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
         selection?.ids,
         selection?.status.count,
         selection?.status.overflow,
+        selection?.status.candidateOverflow,
         selection?.status.requiredCount,
         selection?.outputMask,
         selection?.lineCounts,
@@ -525,6 +528,7 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
           selection?.ids,
           selection?.status.count,
           selection?.status.overflow,
+          selection?.status.candidateOverflow,
           selection?.status.requiredCount,
           selection?.outputMask,
           selection?.lineCounts,

@@ -151,8 +151,8 @@ it('SciPy point profiles match the public lattice convention at unchanged D boun
         projection: 'planar',
         cellSize: [input.cellSize, input.cellSize],
         azimuthCount: 4,
-        firstAzimuth: 0,
-        azimuthSpan: 4,
+        firstAzimuthIndex: 0,
+        azimuthBinCount: 4,
         curvature: settings.curvatureCoefficient,
         lattice: getGPUPointHorizonDistanceLattice(settings)
       },

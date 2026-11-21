@@ -10,12 +10,12 @@ import {
   formatGPUAnalysisNumber,
   getGPUAnalysisResultClasses,
   validateGPUAnalysisResultEncoding
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   GPUAnalysisClassEncoding,
   GPUAnalysisClassScheme,
   GPUAnalysisResultClass
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogRunResult} from '../analysis/catalog-binding-types';
 import type {CatalogOutputTable} from '../analysis/catalog-geojson';
 import type {

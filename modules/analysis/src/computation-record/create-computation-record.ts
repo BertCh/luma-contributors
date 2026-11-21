@@ -4,6 +4,7 @@
 
 import {GPU_COMPUTATION_RECORD_SCHEMA} from './computation-record-types';
 import {hashGPUComputationText} from './hash-computation-text';
+import {mergeGPUComputationSourceRefs} from './merge-computation-source';
 import {getGPUComputationIdentityIssues} from './computation-identity-validation';
 import type {
   GPUComputationGraph,
@@ -20,6 +21,9 @@ import type {
 
 // Bump when analysis correctness changes invalidate comparisons with earlier captures.
 const DEFAULT_IMPLEMENTATION_REVISION = 'analysis-2026-11-18-review-1';
+// Concrete integration target in dev-docs/release-package.md, not the accepted peer range.
+// Update alongside computational dependency upgrades; callers may supply a custom build revision.
+const DEFAULT_DEPENDENCY_REVISION = '@luma.gl/graph@10.0.0-alpha.16';
 
 /** A graph, optionally accompanied by the sources returned by its description. */
 export type GPUComputationGraphInput =
@@ -48,6 +52,8 @@ export type CreateGPUComputationRecordProps = {
   parameters?: GPUComputationAttributes;
   /** Implementation revision; defaults to `analysis-2026-11-18-review-1`. Change after correctness fixes. */
   implementationRevision?: string;
+  /** Concrete computational dependency revision; defaults to `@luma.gl/graph@10.0.0-alpha.16`. */
+  dependencyRevision?: string;
   createdAt?: string;
   datasetVersion?: string;
   seed?: string | number;
@@ -71,27 +77,41 @@ export function createGPUComputationRecord(
   const sources = new Map<string, GPUComputationSourceRef>();
   const addSource = (source: GPUComputationSourceRef): void => {
     const previous = sources.get(source.id);
-    if (
-      previous?.text !== undefined &&
-      source.text !== undefined &&
-      previous.text !== source.text
-    ) {
-      throw new Error(`Conflicting source text: ${source.id}`);
-    }
-    if (!previous || (previous.text === undefined && source.text !== undefined)) {
-      sources.set(source.id, source);
-    }
+    const merged = previous ? mergeGPUComputationSourceRefs(previous, source) : {...source};
+    // A shared default cannot represent a node whose entry point was unknown.
+    // Keep the shared default unknown and restate known node entry points below.
+    if (previous && (previous.entryPoint === undefined || source.entryPoint === undefined))
+      delete merged.entryPoint;
+    sources.set(source.id, merged);
   };
   props.sources?.forEach(addSource);
   for (const input of props.graphs) {
     if ('graph' in input) input.sources.forEach(addSource);
   }
-  return {
+  // Node entry points are stored only where they differ from the shared source ref; restate them
+  // against the merged ref, which may come from another graph's first node.
+  props.graphs.forEach((input, graphIndex) => {
+    const described = new Map(
+      ('graph' in input ? input.sources : (props.sources ?? [])).map(source => [source.id, source])
+    );
+    for (const node of graphs[graphIndex].nodes as {source?: string; entryPoint?: string}[]) {
+      const own = node.source === undefined ? undefined : described.get(node.source);
+      const merged = node.source === undefined ? undefined : sources.get(node.source);
+      if (!own || !merged) continue;
+      const entryPoint = node.entryPoint ?? own.entryPoint;
+      if (entryPoint === undefined || entryPoint === merged.entryPoint) delete node.entryPoint;
+      else node.entryPoint = entryPoint;
+    }
+  });
+  return structuredClone<GPUComputationRecord>({
     schema: GPU_COMPUTATION_RECORD_SCHEMA,
     id: props.id,
+    ...(props.datasetVersion !== undefined && {datasetVersion: props.datasetVersion}),
+    ...(props.seed !== undefined && {seed: props.seed}),
     runId: props.runId ?? getGPUComputationRunId({...props, graphs, adapter, choices}),
     executionId: props.executionId ?? globalThis.crypto.randomUUID(),
     implementationRevision: props.implementationRevision ?? DEFAULT_IMPLEMENTATION_REVISION,
+    dependencyRevision: props.dependencyRevision ?? DEFAULT_DEPENDENCY_REVISION,
     ...(props.parameters !== undefined && {parameters: {...props.parameters}}),
     createdAt: props.createdAt ?? new Date().toISOString(),
     adapter,
@@ -106,7 +126,7 @@ export function createGPUComputationRecord(
     decisions: props.decisions ?? [],
     choices,
     ...(props.workflow !== undefined && {workflow: props.workflow})
-  };
+  });
 }
 
 /** Hashes ordered graph/node ids, adapter, parameters, choices, revision, dataset and seed. */
@@ -117,6 +137,8 @@ export function getGPUComputationRunId(props: {
   seed?: string | number;
   parameters?: GPUComputationAttributes;
   implementationRevision?: string;
+  /** Concrete computational dependency revision; defaults to `@luma.gl/graph@10.0.0-alpha.16`. */
+  dependencyRevision?: string;
   choices?: readonly GPUAnalysisChoice[];
 }): string {
   validateIdentity(props);
@@ -133,6 +155,7 @@ export function getGPUComputationRunId(props: {
       props.datasetVersion ?? null,
       props.seed ?? null,
       props.implementationRevision ?? DEFAULT_IMPLEMENTATION_REVISION,
+      props.dependencyRevision ?? DEFAULT_DEPENDENCY_REVISION,
       Object.entries(props.parameters ?? {}).sort(([first], [second]) =>
         first < second ? -1 : first > second ? 1 : 0
       ),

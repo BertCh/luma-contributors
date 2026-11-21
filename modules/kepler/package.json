@@ -16,8 +16,8 @@
     }
   },
   "files": [
-    "src",
     "dist",
+    "!dist/.build-record.json",
     "README.md"
   ],
   "sideEffects": false,

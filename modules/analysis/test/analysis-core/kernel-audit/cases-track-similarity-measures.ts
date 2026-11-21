@@ -24,9 +24,9 @@ export const TRACK_SIMILARITY_MEASURE_AUDIT_CASES: readonly KernelAuditCase[] = 
       ({densify, maximumFrechetVertexCount}): KernelAuditCase => ({
         exportName: 'GPUTrackSimilarity',
         name: `edit measures ${name} densify ${densify} frechet ${maximumFrechetVertexCount} edr erp sspd`,
-        build: ({graph, view, maximumRows}) => {
+        build: ({graph, view, maximumRows, construct}) => {
           graph.add(
-            new GPUTrackSimilarity({
+            construct(GPUTrackSimilarity, {
               spatialContext,
               linesA: {
                 kind: 'lines',
@@ -55,10 +55,10 @@ export const TRACK_SIMILARITY_MEASURE_AUDIT_CASES: readonly KernelAuditCase[] = 
   {
     exportName: 'GPUTrackSimilarity',
     name: 'edit measures at the pair maximum',
-    build: ({graph, view, maximumRows}) => {
+    build: ({graph, view, maximumRows, construct}) => {
       const pairs = 16777215;
       graph.add(
-        new GPUTrackSimilarity({
+        construct(GPUTrackSimilarity, {
           linesA: {
             kind: 'lines',
             positions: view('float32x2', maximumRows(8)),

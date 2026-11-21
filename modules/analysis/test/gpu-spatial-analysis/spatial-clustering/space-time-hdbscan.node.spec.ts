@@ -5,8 +5,8 @@
 import {expect, it} from 'vitest';
 import {getGPUAnalysisOperator} from '../../../src/gpu-spatial-analysis/ontology/index';
 import {
-  GPUHierarchicalDensityClustering,
-  getGPUHierarchicalDensityClusteringParameterValues
+  GPUHDBSCAN,
+  getGPUHDBSCANParameterValues
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {createKernelAuditContext} from '../../analysis-core/kernel-audit/kernel-audit-context';
 import {
@@ -23,7 +23,7 @@ function createCase(rows = 257, minimumSamples = 32) {
   const context = createKernelAuditContext('space-time-hdbscan');
   const {view} = context;
   const props = {
-    id: 'GPUHierarchicalDensityClustering-test',
+    id: 'GPUHDBSCAN-test',
     positions: view('float32x2', rows),
     times: view('float32', rows),
     parameters: view('float32', 4),
@@ -47,58 +47,42 @@ function createCase(rows = 257, minimumSamples = 32) {
 it('validates space-time column presence, encoding, layouts and output aliases at construction', () => {
   const {device, view, props} = createCase();
   try {
-    expect(
-      () => new GPUHierarchicalDensityClustering({...props, temporalContext: undefined})
-    ).toThrow(/temporalContext/);
-    expect(() => new GPUHierarchicalDensityClustering({...props, parameters: undefined})).toThrow(
-      /parameters/
+    expect(() => new GPUHDBSCAN({...props, temporalContext: undefined})).toThrow(/temporalContext/);
+    expect(() => new GPUHDBSCAN({...props, parameters: undefined})).toThrow(/parameters/);
+    expect(() => new GPUHDBSCAN({...props, times: undefined})).toThrow(/require times/);
+    expect(() => new GPUHDBSCAN({...props, times: view('float32', 1)})).toThrow(/times length/);
+    expect(() => new GPUHDBSCAN({...props, parameters: view('float32', 3)})).toThrow(
+      /parameters length.*4/
     );
-    expect(() => new GPUHierarchicalDensityClustering({...props, times: undefined})).toThrow(
-      /require times/
-    );
-    expect(
-      () => new GPUHierarchicalDensityClustering({...props, times: view('float32', 1)})
-    ).toThrow(/times length/);
-    expect(
-      () => new GPUHierarchicalDensityClustering({...props, parameters: view('float32', 3)})
-    ).toThrow(/parameters length.*4/);
     expect(
       () =>
-        new GPUHierarchicalDensityClustering({
+        new GPUHDBSCAN({
           ...props,
           temporalContext: {...props.temporalContext, encoding: 'int64-words'}
         })
     ).toThrow(/int64-words.*float32-relative/);
     expect(
       () =>
-        new GPUHierarchicalDensityClustering({
+        new GPUHDBSCAN({
           ...props,
           output: {...props.output, coreDistances: props.times}
         })
     ).toThrow();
-    expect(() => new GPUHierarchicalDensityClustering({...props, minimumSamples: 33})).toThrow(
-      /minimumSamples.*32/
-    );
+    expect(() => new GPUHDBSCAN({...props, minimumSamples: 33})).toThrow(/minimumSamples.*32/);
   } finally {
     device.destroy();
   }
 });
 
 it('packs the per-frame scale after float32 rounding and rejects invalid scales', () => {
-  expect(Array.from(getGPUHierarchicalDensityClusteringParameterValues({timeScale: 2}))).toEqual([
-    2, 0, 0, 0
-  ]);
-  expect(Array.from(getGPUHierarchicalDensityClusteringParameterValues({timeScale: 0}))).toEqual([
-    0, 0, 0, 0
-  ]);
+  expect(Array.from(getGPUHDBSCANParameterValues({timeScale: 2}))).toEqual([2, 0, 0, 0]);
+  expect(Array.from(getGPUHDBSCANParameterValues({timeScale: 0}))).toEqual([0, 0, 0, 0]);
   for (const timeScale of [-1, -1e-50, NaN, Infinity, 1e40]) {
-    expect(() => getGPUHierarchicalDensityClusteringParameterValues({timeScale})).toThrow(
-      /^GPUHierarchicalDensityClustering.*timeScale/
-    );
+    expect(() => getGPUHDBSCANParameterValues({timeScale})).toThrow(/^GPUHDBSCAN.*timeScale/);
   }
-  expect(() =>
-    getGPUHierarchicalDensityClusteringParameterValues({timeScale: 1}, new Float32Array(3))
-  ).toThrow(/target length.*4/);
+  expect(() => getGPUHDBSCANParameterValues({timeScale: 1}, new Float32Array(3))).toThrow(
+    /target length.*4/
+  );
 });
 
 it('the generated scaled metric shares the BVH and tree, respects eight bindings and its node estimate', () => {
@@ -106,7 +90,7 @@ it('the generated scaled metric shares the BVH and tree, respects eight bindings
     for (const minimumSamples of [1, 32]) {
       const {device, graph, props} = createCase(rows, minimumSamples);
       try {
-        const contributor = new GPUHierarchicalDensityClustering(props);
+        const contributor = new GPUHDBSCAN(props);
         const nodes = contributor.getCommandNodes(graph);
         expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
         expect(nodes.some(node => node.id.endsWith('-space-time-core'))).toBe(minimumSamples > 1);
@@ -145,7 +129,7 @@ it('scaled-coordinate HDBSCAN model agrees with independent sklearn fixtures', (
 });
 
 it('catalogues the existing contributor as planar scaled space-time HDBSCAN with named limits', () => {
-  const operator = getGPUAnalysisOperator('GPUHierarchicalDensityClustering');
+  const operator = getGPUAnalysisOperator('GPUHDBSCAN');
   expect(operator?.dimensionality).toBe('2d+time');
   expect(operator?.coordinateModels).toEqual(['planar']);
   expect(operator?.tier).toBe('scale');

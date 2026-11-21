@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createOPTICSStatusFields,
+  getOPTICSStatusViews,
+  readOPTICSStatus
+} from '../spatial-clustering/optics-status-test-utils';
 import type {Buffer, Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -20,7 +25,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import opticsFixture from './point-process-fixtures.json';
 
 function createHarness(device: Device) {
@@ -47,6 +52,7 @@ function createHarness(device: Device) {
     const buffer = createOutputBuffer(device, length);
     buffers.push(buffer);
     return {
+      buffer,
       view: importGraphBuffer(graph, `output-${buffers.length}`, buffer, format, length),
       read: () => (format === 'uint32' ? readUint32(buffer, length) : readFloat32(buffer, length))
     };
@@ -68,6 +74,48 @@ function createHarness(device: Device) {
   };
 }
 
+it('boundary focus in the negative triangle uses quarter-disc intensity mass (R19)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createHarness(device);
+  const window = new GPUStudyWindowPreparation({
+    positions: harness.input('float32x2', [0, 0, -1, 0, 0, -1, 0, 0]),
+    ringOffsets: harness.input('uint32', [0, 4]),
+    polygonOffsets: harness.input('uint32', [0, 1]),
+    featureOffsets: harness.input('uint32', [0, 1]),
+    samplingGrid: [16, 16]
+  });
+  harness.graph.add(window);
+  const intensity = harness.output('float32', 1);
+  harness.graph.add(
+    new GPUInhomogeneousPointPattern({
+      positions: harness.input('float32x2', [0, 0]),
+      studyWindow: window,
+      bandwidth: 0.25,
+      selfContribution: 'include',
+      radii: harness.input('float32', [0.125]),
+      output: {
+        intensity: intensity.view,
+        k: harness.output('float32', 1).view,
+        pairCorrelation: harness.output('float32', 1).view,
+        status: harness.output('uint32', 1).view
+      }
+    })
+  );
+  const compiled = harness.run();
+  try {
+    // At (0,0) the support disc of radius 1/4 meets just the two perpendicular sides.
+    // Its Epanechnikov kernel mass is 1/4, central kernel 2/(pi*h²), so lambda=128/pi.
+    const actual = (await intensity.read())[0];
+    expect(Number.isFinite(actual)).toBe(true);
+    expect(actual).toBeCloseTo(40.74366543152521, 4);
+  } finally {
+    compiled.destroy();
+    window.destroy();
+    harness.destroy();
+  }
+});
+
 it('OPTICS matches sklearn 1.7.2 ordering, predecessors, distances and DBSCAN extraction', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -78,7 +126,7 @@ it('OPTICS matches sklearn 1.7.2 ordering, predecessors, distances and DBSCAN ex
   const reachability = harness.output('float32', count);
   const predecessors = harness.output('uint32', count);
   const labels = harness.output('uint32', count);
-  const status = harness.output('uint32', 3);
+  const status = createOPTICSStatusFields(() => harness.output('uint32', 1));
   harness.graph.add(
     new GPUOPTICS({
       positions: harness.input('float32x2', opticsFixture.positions.flat()),
@@ -91,7 +139,7 @@ it('OPTICS matches sklearn 1.7.2 ordering, predecessors, distances and DBSCAN ex
         reachability: reachability.view,
         predecessors: predecessors.view,
         labels: labels.view,
-        status: status.view
+        ports: {status: getOPTICSStatusViews(status)}
       }
     })
   );
@@ -115,7 +163,7 @@ it('OPTICS matches sklearn 1.7.2 ordering, predecessors, distances and DBSCAN ex
       }
     }
   }
-  expect(await status.read()).toEqual([count, 1, 0]);
+  expect(await readOPTICSStatus(status)).toEqual([count, 1, 0]);
   compiled.destroy();
   harness.destroy();
 });
@@ -125,7 +173,7 @@ it('OPTICS exposes an exhausted frontier and never presents partial cluster labe
   requireTestDevice(device);
   const harness = createHarness(device);
   const labels = harness.output('uint32', 4);
-  const status = harness.output('uint32', 3);
+  const status = createOPTICSStatusFields(() => harness.output('uint32', 1));
   harness.graph.add(
     new GPUOPTICS({
       positions: harness.input('float32x2', [0, 0, 0, 0, 0.1, 0, NaN, 0]),
@@ -139,12 +187,12 @@ it('OPTICS exposes an exhausted frontier and never presents partial cluster labe
         reachability: harness.output('float32', 4).view,
         predecessors: harness.output('uint32', 4).view,
         labels: labels.view,
-        status: status.view
+        ports: {status: getOPTICSStatusViews(status)}
       }
     })
   );
   const compiled = harness.run();
-  expect(await status.read()).toEqual([1, 0, 1]);
+  expect(await readOPTICSStatus(status)).toEqual([1, 0, 1]);
   expect(await labels.read()).toEqual([0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff]);
   compiled.destroy();
   harness.destroy();
@@ -251,7 +299,7 @@ it('network intensity conserves event mass over branches and disconnected suppor
   const harness = createHarness(device);
   const intensity = harness.output('float32', 4);
   const mass = harness.output('float32', 2);
-  const status = harness.output('uint32', 4);
+  const validity = harness.output('uint32', 4);
   // A branch represented by lengths 1,2,1, and a disconnected component represented by length 3.
   harness.graph.add(
     new GPUNetworkKernelDensity({
@@ -259,7 +307,11 @@ it('network intensity conserves event mass over branches and disconnected suppor
       eventCount: 2,
       quadratureLengths: harness.input('float32', [1, 2, 1, 3]),
       bandwidth: 2,
-      output: {intensity: intensity.view, kernelMass: mass.view, status: status.view}
+      output: {
+        intensity: intensity.view,
+        kernelMass: mass.view,
+        validity: validity.view
+      }
     })
   );
   const compiled = harness.run();
@@ -270,7 +322,7 @@ it('network intensity conserves event mass over branches and disconnected suppor
   expect(values[3]).toBeCloseTo(1 / 3);
   expect(values[0] + 2 * values[1] + values[2] + 3 * values[3]).toBeCloseTo(2);
   expect(await mass.read()).toEqual([1.25, 1.5]);
-  expect(await status.read()).toEqual([0, 0, 0, 0]);
+  expect(await validity.read()).toEqual([1, 1, 1, 1]);
   compiled.destroy();
   harness.destroy();
 });

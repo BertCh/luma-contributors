@@ -153,7 +153,8 @@ export const FAMILIES: Record<GPUCellIndexFamily, FamilySettings> = {
     maximumResolution: 30,
     tabular: false,
     maximumVertexCount: 4,
-    exactness: 'f32 vs f64: exact to level 10, ~5e-4 at 12, 2.6e-3 at 15 (use <= 20)'
+    exactness:
+      'Float32 geographic classification: zero observed mismatches through level 10; 6.6% at level 20 over 10,176 equal-area sample rows. No universal boundary guarantee. Integer key encoding is exact.'
   }
 };
 
@@ -322,8 +323,14 @@ export async function createH3Aggregation(
   const retiring = new Set<{resources: SpatialAnalysisResources; reader?: SummaryReader | null}>();
   /** Table rows of the last index summary, for the observation count of selected cells. */
   let tableLookup: Map<string, number> | null = null;
-  let tableSnapshot: {cells: Uint32Array; counts: Uint32Array; rows: number} | null = null;
+  let tableSnapshot: {
+    cells: Uint32Array;
+    counts: Uint32Array;
+    rows: number;
+    complete: boolean;
+  } | null = null;
   let coverAreaCells = new Uint32Array(areas.names.length);
+  let coverComplete = false;
   let lastSelectionWords: Uint32Array | null = null;
   let lastSelectionPipeline: SelectionPipeline | null = null;
 
@@ -497,7 +504,7 @@ export async function createH3Aggregation(
     const outlineErrors: string[] = [];
     let outline: OutlineBuffers | null = null;
     let groupOutline: OutlineBuffers | null = null;
-    if (tabular && tableCells && tableCounts && tableCount) {
+    if (tabular && tableCells && tableCounts && tableCount && tableOverflow) {
       const buildOutline = async (
         name: string,
         grouped: boolean,
@@ -542,6 +549,7 @@ export async function createH3Aggregation(
           const outlineOverflow = create(`${name}-overflow`, 4);
           let rings: OutlineBuffers['rings'] = null;
           let ringOptions: ConstructorParameters<typeof GPUCellSetOutline>[0]['rings'];
+          let ringCountsPass: Parameters<typeof addKernelPass>[1] | undefined;
           if (withRings) {
             const ringOffsets = create(`${name}-ring-offsets`, (RING_CAPACITY + 1) * 4);
             const ringCounts = create(`${name}-ring-counts`, RING_CAPACITY * 4);
@@ -568,7 +576,7 @@ export async function createH3Aggregation(
             };
             // Vertex count of every ring (offsets past the ring count repeat the last offset), which
             // the ring outline layer reads.
-            addKernelPass(graph, {
+            ringCountsPass = {
               id: `${name}-ring-counts`,
               invocationCount: RING_CAPACITY,
               bindings: [
@@ -581,14 +589,19 @@ export async function createH3Aggregation(
                 }
               ],
               body: `counts[countsOffset + index] = offsets[offsetsOffset + index + 1u] - offsets[offsetsOffset + index];`
-            });
+            };
           }
           graph.add(
             new GPUCellSetOutline({
               id: name,
               family: family as 'h3' | 'quadbin',
-              cells: tableCellsView,
-              count: tableCountView,
+              source: {
+                cells: tableCellsView,
+                status: {
+                  count: tableCountView,
+                  overflow: view('table-overflow', tableOverflow, 'uint32', 1)
+                }
+              },
               groups: tableGroupsView,
               rings: ringOptions,
               output: {
@@ -619,6 +632,7 @@ export async function createH3Aggregation(
               }
             })
           );
+          if (ringCountsPass) addKernelPass(graph, ringCountsPass);
           const compiled = owned.track(await graph.compileAsync());
           const drawCommands = owned.track(
             new DrawCommandBuffer(device, {
@@ -715,7 +729,8 @@ export async function createH3Aggregation(
     tableSnapshot = {
       cells: keys.slice(0, occupied * 2),
       counts: counts.slice(0, occupied),
-      rows: occupied
+      rows: occupied,
+      complete: words[1] === 0
     };
     tableLookup = null;
     ctx.setReadout(
@@ -794,6 +809,7 @@ export async function createH3Aggregation(
     const compactCells = create('compact-cells', COVER_CAPACITY * 8);
     const compactCount = create('compact-count', 4);
     const compactOverflow = create('compact-overflow', 4);
+    const compactCandidateOverflow = create('compact-candidate-overflow', 4);
     const uncompactCells = create('uncompact-cells', COVER_CAPACITY * 8);
     const uncompactCount = create('uncompact-count', 4);
     const uncompactOverflow = create('uncompact-overflow', 4);
@@ -824,6 +840,28 @@ export async function createH3Aggregation(
       COVER_CAPACITY
     );
     const compactCountView = importCellBuffer(graph, 'compact-count', compactCount, 'uint32', 1);
+    const coverOverflowView = importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1);
+    const coverCandidateOverflowView = importCellBuffer(
+      graph,
+      'cover-candidate-overflow',
+      coverCandidateOverflow,
+      'uint32',
+      1
+    );
+    const compactOverflowView = importCellBuffer(
+      graph,
+      'compact-overflow',
+      compactOverflow,
+      'uint32',
+      1
+    );
+    const compactCandidateOverflowView = importCellBuffer(
+      graph,
+      'compact-candidate-overflow',
+      compactCandidateOverflow,
+      'uint32',
+      1
+    );
     graph.add(
       new GPUCellCover({
         id: 'cover',
@@ -872,7 +910,7 @@ export async function createH3Aggregation(
           status: {
             count: coverCountView,
             requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1),
-            overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
+            overflow: coverOverflowView,
             invalidCount: importCellBuffer(
               graph,
               'cover-invalid-count',
@@ -887,13 +925,7 @@ export async function createH3Aggregation(
               'uint32',
               1
             ),
-            candidateOverflow: importCellBuffer(
-              graph,
-              'cover-candidate-overflow',
-              coverCandidateOverflow,
-              'uint32',
-              1
-            )
+            candidateOverflow: coverCandidateOverflowView
           }
         }
       })
@@ -907,13 +939,20 @@ export async function createH3Aggregation(
           resolution,
           minimumResolution: Math.max(0, resolution - compactDepth)
         },
-        cells: coverCellsView,
-        count: coverCountView,
+        source: {
+          cells: coverCellsView,
+          status: {
+            count: coverCountView,
+            overflow: coverOverflowView,
+            candidateOverflow: coverCandidateOverflowView
+          }
+        },
         output: {
           cells: compactCellsView,
           status: {
             count: compactCountView,
-            overflow: importCellBuffer(graph, 'compact-overflow', compactOverflow, 'uint32', 1)
+            overflow: compactOverflowView,
+            candidateOverflow: compactCandidateOverflowView
           }
         }
       })
@@ -923,8 +962,14 @@ export async function createH3Aggregation(
         id: 'uncompact',
         family,
         operation: {type: 'uncompact', resolution, maximumDepth: compactDepth},
-        cells: compactCellsView,
-        count: compactCountView,
+        source: {
+          cells: compactCellsView,
+          status: {
+            count: compactCountView,
+            overflow: compactOverflowView,
+            candidateOverflow: compactCandidateOverflowView
+          }
+        },
         output: {
           cells: importCellBuffer(
             graph,
@@ -965,6 +1010,8 @@ export async function createH3Aggregation(
         {buffer: uncompactDropped, size: 4},
         {buffer: coverInvalidCount, size: 4},
         {buffer: coverUncertainCount, size: 4},
+        {buffer: coverCandidateOverflow, size: 4},
+        {buffer: compactCandidateOverflow, size: 4},
         {buffer: coverCore, size: COVER_CAPACITY * 4},
         {buffer: coverFeatureIds, size: COVER_CAPACITY * 4}
       ],
@@ -990,11 +1037,12 @@ export async function createH3Aggregation(
     let coreCells = 0;
     const perArea = new Uint32Array(areas.names.length);
     for (let row = 0; row < coverRows; row++) {
-      if (words[10 + row] === 1) coreCells++;
-      const feature = words[10 + COVER_CAPACITY + row];
+      if (words[12 + row] === 1) coreCells++;
+      const feature = words[12 + COVER_CAPACITY + row];
       if (feature < perArea.length) perArea[feature]++;
     }
     coverAreaCells = perArea;
+    coverComplete = !words[1] && !words[10] && !words[8] && !words[9];
     const emptyAreas = perArea.reduce((total, value) => total + (value === 0 ? 1 : 0), 0);
     const invalidCount = words[8];
     const uncertainCount = words[9];
@@ -1007,7 +1055,7 @@ export async function createH3Aggregation(
     ctx.setReadout(
       'cover',
       [
-        `${formatCount(coverRows)} cells (${formatCount(words[2])} unclamped${words[1] ? ', OVERFLOW' : ''}); ${emptyAreas} of ${areas.names.length} areas get no cell`,
+        `${formatCount(coverRows)} cells (${formatCount(words[2])} unclamped${words[1] ? ', OVERFLOW' : ''}${words[10] ? ', CANDIDATE LOSS' : ''}); ${coverComplete ? `${emptyAreas} of ${areas.names.length} areas get no cell` : 'retained cells only; cover incomplete'}`,
         ...warnings
       ].join('; ')
     );
@@ -1018,13 +1066,21 @@ export async function createH3Aggregation(
     const fewer = words[0] > 0 ? (1 - words[3] / words[0]) * 100 : 0;
     ctx.setReadout(
       'compacted',
-      `${formatCount(words[3])} cells (${fewer.toFixed(0)}% fewer${words[4] ? ', OVERFLOW' : ''})`
+      `${formatCount(words[3])} cells (${fewer.toFixed(0)}% fewer${words[4] ? ', OVERFLOW' : ''}${words[11] ? ', INCOMPLETE SOURCE' : ''})`
     );
     ctx.setReadout(
       'roundTrip',
-      words[5] === words[0] && words[7] === 0
+      words[5] === words[0] &&
+        words[7] === 0 &&
+        !words[1] &&
+        !words[4] &&
+        !words[6] &&
+        !words[10] &&
+        !words[11]
         ? `uncompact gives back ${formatCount(words[5])} cells: identical count to the cover`
-        : `uncompact gives ${formatCount(words[5])} cells (cover ${formatCount(words[0])}, ${formatCount(words[7])} dropped${words[6] ? ', OVERFLOW' : ''})`
+        : words[1] || words[4] || words[10] || words[11]
+          ? 'round trip unavailable: source cells were lost'
+          : `uncompact gives ${formatCount(words[5])} cells (cover ${formatCount(words[0])}, ${formatCount(words[7])} dropped${words[6] ? ', OVERFLOW' : ''})`
     );
   };
 
@@ -1149,7 +1205,7 @@ export async function createH3Aggregation(
   };
 
   const getTableLookup = (): Map<string, number> | null => {
-    if (!tableSnapshot) return null;
+    if (!tableSnapshot || !tableSnapshot.complete) return null;
     if (!tableLookup) {
       tableLookup = new Map();
       for (let row = 0; row < tableSnapshot.rows; row++) {
@@ -1171,7 +1227,7 @@ export async function createH3Aggregation(
     const ownCount = lookup?.get(selectedKey);
     ctx.setReadout(
       'selected',
-      `${formatCellKey(words[0], words[1])}${ownCount !== undefined ? `: ${formatCount(ownCount)} observations` : lookup ? ': no observations' : ''}`
+      `${formatCellKey(words[0], words[1])}${ownCount !== undefined ? `: ${formatCount(ownCount)} observations` : lookup ? ': no observations' : tableSnapshot && !tableSnapshot.complete ? ': observation count unavailable (incomplete table)' : ''}`
     );
     const rows = Math.min(words[2], active.stride);
     const resultKeys = (index: number) => packKeyWords(words[3 + index * 2], words[4 + index * 2]);
@@ -1180,6 +1236,8 @@ export async function createH3Aggregation(
         'selection',
         `${formatCount(rows)} ${active.operation === 'parent' ? 'parent cell' : 'child cells'} (a different resolution than the table, so no observation count)`
       );
+    } else if (tableSnapshot && !tableSnapshot.complete) {
+      ctx.setReadout('selection', 'observation totals unavailable: incomplete cell table');
     } else if (lookup) {
       let observations = 0;
       let occupiedCells = 0;
@@ -1321,11 +1379,15 @@ export async function createH3Aggregation(
     if (built.index) {
       const previous = indexPipeline;
       indexPipeline = built.index;
+      tableSnapshot = null;
+      tableLookup = null;
       retire(previous);
     }
     if (built.zones !== undefined) {
       const previous = zonesPipeline;
       zonesPipeline = built.zones;
+      coverComplete = false;
+      coverAreaCells = new Uint32Array(areas.names.length);
       retire(previous);
     }
     if (built.selection !== undefined) {
@@ -1429,7 +1491,9 @@ export async function createH3Aggregation(
     const tabular = FAMILIES[ctx.options.family].tabular;
     const coverCells = coverAreaCells[area];
     return `${name}: ${formatCount(observations)} observations in the current filter${
-      tabular && zonesPipeline ? `; ${formatCount(coverCells ?? 0)} cover cells` : ''
+      tabular && zonesPipeline
+        ? `; ${formatCount(coverCells ?? 0)} ${coverComplete ? 'cover cells' : 'retained cover cells (incomplete cover)'}`
+        : ''
     }`;
   };
 

@@ -143,3 +143,105 @@ it('GPUColumnQuantiles validates rationalProbabilities and the row limits of the
     })
   ).toThrow(/column-quantiles/);
 });
+
+it('ROAD-113 rational total-row boundary admits 2^31-1 without payload allocation', () => {
+  expect(
+    construct(2 ** 31 - 1, view => ({rationalProbabilities: view('uint32', 6)})).props.values.length
+  ).toBe(2 ** 31 - 1);
+  expect(() => construct(2 ** 31, view => ({rationalProbabilities: view('uint32', 6)}))).toThrow(
+    /values length must be at most 2147483647 \(2\^31 - 1\) with rationalProbabilities/
+  );
+});
+
+it.each([
+  'outputMask',
+  'filterBounds'
+] as const)('ROAD-113 %s separately pins the rational filter boundary', port => {
+  const overrides: Parameters<typeof createProps>[2] = view => ({
+    rationalProbabilities: view('uint32', 6),
+    output: {
+      quantiles: view('float32', 3),
+      validCount: view('uint32', 1),
+      ...(port === 'outputMask'
+        ? {outputMask: view('uint32', 2 ** 24)}
+        : {filterBounds: view('float32', 2)})
+    }
+  });
+  expect(construct(2 ** 24, overrides).props.values.length).toBe(2 ** 24);
+  expect(() => construct(2 ** 24 + 1, overrides)).toThrow(
+    /^column-quantiles values length must be at most 16777216 \(2\^24\) when output\.outputMask or output\.filterBounds is requested/
+  );
+});
+
+it('ING-41 leaves the rational target untouched when a later pair is invalid', () => {
+  const target = new Uint32Array(4).fill(9);
+  expect(() =>
+    getGPUColumnQuantilesRationalProbabilityValues(
+      [
+        [1, 2],
+        [1, 0]
+      ],
+      2,
+      target
+    )
+  ).toThrow(/denominator/);
+  expect(Array.from(target)).toEqual([9, 9, 9, 9]);
+});
+
+it('UDF-08 rejects the first decreasing packed custom edge before publication', async () => {
+  const {getGPUClassBreaksParameterValues} = await import(
+    '../../../src/dataframe-analysis/column-classification/class-breaks-parameters'
+  );
+  const target = new Float32Array(12).fill(9);
+  expect(() =>
+    getGPUClassBreaksParameterValues({method: 'custom', customEdges: [0, 10, 5, 20]}, 3, target)
+  ).toThrow(/customEdges\[1\].*customEdges\[2\]/);
+  expect(Array.from(target)).toEqual(Array(12).fill(9));
+  expect(
+    Array.from(
+      getGPUClassBreaksParameterValues({method: 'custom', customEdges: [0, 5, 5, 20]}, 3).slice(8)
+    )
+  ).toEqual([0, 5, 5, 20]);
+});
+
+it('S3 packs overlapping probability controls without overwriting unread source lanes', async () => {
+  const {getGPUColumnQuantilesParameterValues} = await import(
+    '../../../src/dataframe-analysis/column-classification/column-quantiles-parameters'
+  );
+  const target = Float32Array.of(0.25, 0.75, 9, 9, 9, 9);
+  expect(
+    Array.from(getGPUColumnQuantilesParameterValues({quantiles: target.subarray(0, 2)}, target))
+  ).toEqual([3, 0, 1, 0, 0.25, 0.75]);
+});
+
+it('S3 packs custom edges from the reusable target data slice', async () => {
+  const {getGPUClassBreaksParameterValues} = await import(
+    '../../../src/dataframe-analysis/column-classification/class-breaks-parameters'
+  );
+  const target = new Float32Array(11).fill(9);
+  target.set([-2, 1, 4], 8);
+  expect(
+    Array.from(
+      getGPUClassBreaksParameterValues(
+        {method: 'custom', customEdges: target.subarray(8)},
+        2,
+        target
+      ).slice(8)
+    )
+  ).toEqual([-2, 1, 4]);
+});
+
+it('S4 rejects inherited names in both option lookups before publication', async () => {
+  const {getGPUClassBreaksParameterValues} = await import(
+    '../../../src/dataframe-analysis/column-classification/class-breaks-parameters'
+  );
+  const {getGPUColumnQuantilesParameterValues} = await import(
+    '../../../src/dataframe-analysis/column-classification/column-quantiles-parameters'
+  );
+  expect(() => getGPUClassBreaksParameterValues({method: 'constructor' as never}, 5)).toThrow(
+    /unknown method constructor/
+  );
+  expect(() =>
+    getGPUColumnQuantilesParameterValues({quantiles: [0.5], interpolation: 'toString' as never})
+  ).toThrow(/unknown interpolation toString/);
+});

@@ -14,6 +14,8 @@ import {
   getStorageBindingCount,
   createNullWebGPUDevice
 } from '../../utils/gpu-contributor-test-utils';
+import {computeEmpiricalBayesOracle} from './empirical-bayes-oracle';
+import {computeSpatialEmpiricalBayesOracle} from './spatial-empirical-bayes-oracle';
 
 it('rate mapping composes existing kernels within core binding limits', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
@@ -30,8 +32,13 @@ it('rate mapping composes existing kernels within core binding limits', () => {
   const spatial = addSpatialRateRecipe(graph, {events, populations, mask, weights, scale: 100000});
   expect(risk.status.stages.map(entry => entry.stage)).toEqual(['excess-risk']);
   expect(risk.status.stages[0].status.invalidCount?.length).toBe(1);
-  expect(spatial.status.stages).toEqual([{stage: 'weights', status: weights.status}]);
+  expect(spatial.status.stages.map(entry => entry.stage)).toEqual(['weights']);
+  expect(spatial.status.stages[0].status).toMatchObject(weights.status);
   expect(spatial.status.stages[0].status.overflow).toBe(weights.status.overflow);
+  expect(spatial.status.stages[0].status.candidateOverflow?.format).toBe('uint32');
+  expect(spatial.status.stages[0].status.candidateOverflow?.length).toBe(1);
+  // Review S1: a final-only producer gets a generated candidate word, never its final view.
+  expect(spatial.status.stages[0].status.candidateOverflow).not.toBe(weights.status.overflow);
   expect(risk.outputs.excessRisk.length).toBe(4);
   expect(spatial.outputs.spatialRates.length).toBe(4);
   const separate = new GPUCommandGraph(createNullWebGPUDevice());
@@ -84,4 +91,53 @@ it('excess risk alongside every existing EB output fits eight storage buffers', 
   for (const {source} of getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph))) {
     expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
   }
+});
+
+it('W5-15 supplied final and candidate weights diagnostics preserve singleton identity', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const overflow = createTransientView(graph, 'final-loss', 'uint32', 1);
+    const candidateOverflow = createTransientView(graph, 'candidate-loss', 'uint32', 1);
+    const status = {overflow, candidateOverflow};
+    const result = addSpatialRateRecipe(graph, {
+      events: createTransientView(graph, 'events', 'float32', 2),
+      populations: createTransientView(graph, 'populations', 'float32', 2),
+      weights: {
+        offsets: createTransientView(graph, 'offsets', 'uint32', 3),
+        neighbors: createTransientView(graph, 'neighbors', 'uint32', 2),
+        weights: createTransientView(graph, 'weights', 'float32', 2),
+        status
+      }
+    });
+    expect(result.status.stages.map(stage => stage.stage)).toEqual(['weights']);
+    expect(result.status.stages[0].status.overflow).toBe(overflow);
+    expect(result.status.stages[0].status.candidateOverflow).toBe(candidateOverflow);
+    expect(result.outputs.spatialRates.length).toBe(2);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('W5-19 negative events are excluded at the focus and donors while zero remains eligible', () => {
+  const global = computeEmpiricalBayesOracle({events: [6, -2], populations: [30, 10]});
+  // The sole eligible row has 6/30=.2. Pooling the negative sentinel would give 4/40=.1.
+  expect(global.count).toBe(1);
+  expect(global.pooledRate).toBe(0.2);
+  expect(global.raw).toEqual([0.2, NaN]);
+  const weights = {offsets: [0, 1, 2], neighbors: [1, 0], weights: [1, 1]};
+  const local = computeSpatialEmpiricalBayesOracle({
+    events: [6, -2],
+    populations: [30, 10],
+    ...weights
+  });
+  expect(local.spatialRate).toEqual([0.2, NaN]);
+  expect(
+    computeSpatialEmpiricalBayesOracle({events: [0, 2], populations: [30, 10], ...weights})
+      .spatialRate
+  ).toEqual([0.05, 0.05]);
+  expect(
+    computeSpatialEmpiricalBayesOracle({events: [0, 0], populations: [30, 10], ...weights})
+      .spatialRate
+  ).toEqual([0, 0]);
 });

@@ -20,10 +20,12 @@ import {
   GPU_ANALYSIS_SPACING_SUMMARY_LENGTH,
   decodeGPUAnalysisSpacingStatistics,
   GPUAnalysisContiguityStatistics,
-  decodeGPUAnalysisContiguityStatistics,
+  decodeGPUAnalysisContiguityStatistics
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
   guessGPUAnalysisMeasurementLevel,
   type GPUAnalysisColumnProfile
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {CatalogGpuSession, withCatalogGpuSession} from '../analysis/catalog-gpu-session';
 import {getKeplerDatasetProfileUndeclared} from './dataset-profile';
 import type {KeplerDatasetProfile} from './dataset-profile-types';
@@ -387,8 +389,7 @@ export function createKeplerDatasetProfileGpuRunner(
           counts: countValues,
           median: medianValues,
           validity: validityValues,
-          overflow: overflowValues,
-          candidateOverflow: candidateValues
+          weights: {status: {overflow: overflowValues, candidateOverflow: candidateValues}}
         });
         validateRequirement(
           OPERATION,

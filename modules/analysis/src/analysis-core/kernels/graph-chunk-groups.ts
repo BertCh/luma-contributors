@@ -4,7 +4,10 @@
 
 import {Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {registerWGSLKernelNodeRecord} from './wgsl-kernel-nodes';
+import {
+  registerWGSLKernelNodeRecord,
+  registerCompiledWGSLKernelNodeRecord
+} from './wgsl-kernel-nodes';
 import {getGPUVectorFormatInfo} from '@luma.gl/graph/gpu-data';
 import {
   createGPUComputeCommandNode,
@@ -29,8 +32,9 @@ import {
   validateRequirement,
   validateSinglePackedView
 } from './gpu-contributor-utils';
-import {validateWGSLIdentifier} from './wgsl-identifiers';
-import type {WGSLKernelProps} from './wgsl-kernel-nodes';
+import {validateKernelNamespace} from './kernel-namespace';
+import type {AnalysisValidationIdentity} from './analysis-validation-error';
+import type {WGSLKernelProps, WGSLKernelNodeRecord} from './wgsl-kernel-nodes';
 
 /** A fixed-size group (quadrature, drift columns, weights) that must stay with its query. */
 export type GraphChunkGroupField = {
@@ -44,12 +48,14 @@ export type GraphChunkGroupField = {
  * Plans query-aligned groups without allocating buffers, nodes, or views. The template may hold
  * several physical rows per query. Fields mirror its ordered chunk boundaries in query units.
  * No group may straddle a boundary. Empty groups/fields and zero-chunk vectors are accepted.
+ * Pass an explicit validation identity to retain the caller ID and contributor separately.
  */
 export function planGraphChunkGroups(
-  id: string,
+  id: AnalysisValidationIdentity,
   template: GraphChunkGroupField,
   fields: Readonly<Record<string, GraphChunkGroupField | undefined>>
 ): GraphChunkDispatchPlan {
+  const identity = typeof id === 'string' ? {id, contributor: id} : id;
   const templateWidth = template.rowsPerQuery ?? 1;
   validateCapacity(id, 'template rowsPerQuery', templateWidth);
   const sourceChunks = getGraphViewChunks(template.view);
@@ -88,7 +94,12 @@ export function planGraphChunkGroups(
   });
   let rowBase = 0;
   const chunks = sourceChunks.map((source, chunkIndex) => {
-    validateSinglePackedView(source, [template.view.format], `${id} template chunk ${chunkIndex}`);
+    validateSinglePackedView(
+      source,
+      [template.view.format],
+      identity,
+      `template chunk ${chunkIndex}`
+    );
     const length = source.length / templateWidth;
     validateCapacity(
       id,
@@ -103,7 +114,8 @@ export function planGraphChunkGroups(
       validateSinglePackedView(
         view,
         [column.field.view.format],
-        `${id} ${column.name} chunk ${chunkIndex}`
+        identity,
+        `${column.name} chunk ${chunkIndex}`
       );
       const requiredLength = length * column.width;
       const capacity =
@@ -114,7 +126,13 @@ export function planGraphChunkGroups(
       validateRequirement(
         id,
         capacity ? view.length >= requiredLength : view.length === requiredLength,
-        `${column.name} chunk ${chunkIndex} must ${capacity ? 'hold at least' : 'hold exactly'} ${requiredLength} rows for the query chunk topology`
+        `${column.name} chunk ${chunkIndex} must ${capacity ? 'hold at least' : 'hold exactly'} ${requiredLength} rows for the query chunk topology`,
+        {
+          code: 'VIEW_LENGTH',
+          path: `${column.name} chunk ${chunkIndex}`,
+          received: view.length,
+          expected: capacity ? {minimumRows: requiredLength} : {rows: requiredLength}
+        }
       );
       validateCapacity(id, `${column.name} chunk ${chunkIndex} rows`, view.length, 0);
       views[column.name] = view;
@@ -240,10 +258,18 @@ export function createGraphChunkGroupKernelNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GraphChunkGroupKernelProps<Parameters>
 ): GPUCommandNode<Parameters> {
-  for (const binding of props.bindings) {
-    validateWGSLIdentifier(props.id, 'binding name', binding.name);
-    validateWGSLIdentifier(props.id, 'binding offset', `${binding.name}Offset`);
-  }
+  validateKernelNamespace(
+    props.id,
+    props.bindings,
+    [],
+    [
+      'main',
+      'GraphChunkGroupParameters',
+      'graphChunkGroupParameters',
+      'getChunkParameter',
+      'workgroupCount'
+    ]
+  );
   const workgroupSize = props.workgroupSize ?? GRAPH_CHUNK_GROUP_WORKGROUP_SIZE;
   validateGraphChunkGroupKernelSupport(graph, props.id, props.bindings.length, workgroupSize);
   validateGraphChunkBindingRanges(
@@ -301,6 +327,7 @@ ${props.declarations ?? ''}
 fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
   @builtin(num_workgroups) workgroupCount: vec3<u32>,
   @builtin(local_invocation_index) localInvocationIndex: u32) {
+  ${props.bindings.map(binding => `_ = &${binding.name};`).join('\n  ')}
   let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
   if (workgroupIndex >= ${MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
   let index = workgroupIndex * ${workgroupSize}u + localInvocationIndex;
@@ -308,7 +335,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
   ${props.bindings.map((binding, bindingIndex) => `${binding.name}Offset = getChunkParameter(${4 + bindingIndex}u);`).join('\n  ')}
   ${props.body}
 }`;
-  registerWGSLKernelNodeRecord(graph, {
+  const record: WGSLKernelNodeRecord = {
     id: props.id,
     operation: props.operation,
     variant: props.variant,
@@ -323,7 +350,8 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
     bindings: props.bindings,
     textures: [],
     indirect: props.condition?.source === 'gpu' && props.condition.mode === 'indirect'
-  });
+  };
+  registerWGSLKernelNodeRecord(graph, record);
   return createGPUComputeCommandNode<Parameters>({
     id: props.id,
     condition: props.condition,
@@ -348,7 +376,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
         .filter(binding => binding.access !== 'read')
         .reduce((sum, binding) => sum + binding.view.length * binding.view.rowByteLength, 0)
     },
-    compile: ({device}) => {
+    compile: function compileRecordedKernel({device}) {
       const parameters = device.createBuffer({
         id: `${props.id}-row-parameters`,
         data: values,
@@ -377,6 +405,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
             ]
           }
         });
+        registerCompiledWGSLKernelNodeRecord(graph, record, compileRecordedKernel);
       } catch (error) {
         parameters.destroy();
         throw error;

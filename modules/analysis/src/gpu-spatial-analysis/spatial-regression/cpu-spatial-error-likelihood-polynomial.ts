@@ -93,7 +93,7 @@ function getIntegerCoefficients(values: readonly number[]): [Polynomial, bigint]
   return [dyadics.map(([numerator, divisor]) => numerator * (denominator / divisor)), denominator];
 }
 
-function getDeterminant(matrix: Polynomial[][]): Polynomial {
+function getDeterminant(matrix: Polynomial[][], reduce = true): Polynomial {
   const working = matrix.map(row => row.map(value => value.slice()));
   let previous: Polynomial = [1n];
   // Bareiss elimination: every division is exact, including polynomial cancellation.
@@ -112,7 +112,8 @@ function getDeterminant(matrix: Polynomial[][]): Polynomial {
     }
     previous = working[pivot][pivot];
   }
-  return reducePolynomial(working[working.length - 1][working.length - 1]);
+  const determinant = working[working.length - 1][working.length - 1];
+  return reduce ? reducePolynomial(determinant) : determinant;
 }
 
 function addRationalPolynomials(
@@ -254,18 +255,40 @@ function isExactMidpoint(lower: number, middle: number, upper: number): boolean 
 }
 
 /**
- * Exact zero-moment and zero-residual certificates for a full-rank float64 design. The augmented
- * Gram determinant vanishes exactly when the response lies in its span. Integer products avoid
- * turning a tiny, nonzero moment or residual into a zero by a floating tolerance.
+ * Exact centered covariance certificate for original dyadic observations with an intercept
+ * in column zero. Integer moments avoid rounding non-dyadic means or suppressing weak slopes.
  * @internal
  */
-export function getCPUSpatialErrorResponseRelation(
+export function hasCPUSpatialErrorCenteredOrthogonality(
   design: readonly number[][],
   response: readonly number[]
-): {orthogonal: boolean; exactFit: boolean} {
+): boolean {
   const width = design[0].length;
-  const size = width + 1;
+  const stride = width + 1;
   const [integers] = getIntegerCoefficients(
+    design.flatMap((row, position) => [...row, response[position]])
+  );
+  const count = BigInt(response.length);
+  let responseTotal = 0n;
+  for (let row = 0; row < response.length; row++) responseTotal += integers[row * stride + width];
+  // Column zero is the intercept. All moments use original dyadic observations, before
+  // subtracting a mean such as -2/7 that has no exact binary representation.
+  for (let column = 1; column < width; column++) {
+    let predictorTotal = 0n;
+    let crossProduct = 0n;
+    for (let row = 0; row < response.length; row++) {
+      const value = integers[row * stride + column];
+      predictorTotal += value;
+      crossProduct += value * integers[row * stride + width];
+    }
+    if (count * crossProduct !== predictorTotal * responseTotal) return false;
+  }
+  return true;
+}
+
+function getExactAugmentedGram(design: readonly number[][], response: readonly number[]) {
+  const size = design[0].length + 1;
+  const [integers, denominator] = getIntegerCoefficients(
     design.flatMap((row, position) => [...row, response[position]])
   );
   const gram = Array.from({length: size}, () => new Array<bigint>(size).fill(0n));
@@ -275,12 +298,43 @@ export function getCPUSpatialErrorResponseRelation(
         gram[row][column] += integers[position * size + row] * integers[position * size + column];
     }
   }
-  const orthogonal = gram[width].slice(0, width).every(value => value === 0n);
-  if (orthogonal) return {orthogonal, exactFit: gram[width][width] === 0n};
-  const matrix = gram.map((row, position) =>
-    row.map((value, column) => [column <= position ? value : gram[column][position]])
-  );
+  return {
+    matrix: gram.map((row, position) =>
+      row.map((value, column) => [column <= position ? value : gram[column][position]])
+    ),
+    denominator
+  };
+}
+
+/** Exact uncentered zero-moment and augmented-Gram rank certificates. @internal */
+export function getCPUSpatialErrorResponseRelation(
+  design: readonly number[][],
+  response: readonly number[]
+): {orthogonal: boolean; exactFit: boolean} {
+  const {matrix} = getExactAugmentedGram(design, response);
+  const width = matrix.length - 1;
+  const orthogonal = matrix[width].slice(0, width).every(entry => entry[0] === 0n);
+  if (orthogonal) return {orthogonal, exactFit: matrix[width][width][0] === 0n};
   return {orthogonal, exactFit: getDeterminant(matrix)[0] === 0n};
+}
+
+/** Exact dyadic Gram determinants give RSS via the Schur complement. Call with full rank design. @internal */
+export function getCPUDyadicLeastSquaresResidualSquares(
+  design: readonly number[][],
+  response: readonly number[]
+): number {
+  const {matrix, denominator} = getExactAugmentedGram(design, response);
+  const numerator = getDeterminant(matrix, false)[0];
+  if (numerator === 0n) return 0;
+  const normalMatrix = matrix.slice(0, -1).map(row => row.slice(0, -1));
+  const divisor = getDeterminant(normalMatrix, false)[0] * denominator ** 2n;
+  // Convert only the leading bits so large determinants never become Infinity before division.
+  const numeratorShift = Math.max(0, numerator.toString(2).length - 54);
+  const divisorShift = Math.max(0, divisor.toString(2).length - 54);
+  return (
+    (Number(numerator >> BigInt(numeratorShift)) / Number(divisor >> BigInt(divisorShift))) *
+    2 ** (numeratorShift - divisorShift)
+  );
 }
 
 /**
@@ -346,9 +400,13 @@ export function getCPUSpatialErrorLikelihoodCandidates(
   if (stationary.length === 1 && stationary[0] === 0n)
     return [{parameter: -bound, atBoundary: true}];
   const candidates: {parameter: number; atBoundary: boolean}[] = [];
-  if (evaluatePolynomial(stationary, -bound) <= 0n)
-    candidates.push({parameter: -bound, atBoundary: true});
   const initialCoefficients = getBernsteinCoefficients(stationary, -bound, bound);
+  const lowerSlope = evaluatePolynomial(stationary, -bound);
+  if (
+    lowerSlope < 0n ||
+    (lowerSlope === 0n && initialCoefficients.find(value => value !== 0n)! < 0n)
+  )
+    candidates.push({parameter: -bound, atBoundary: true});
   const stack = [{lower: -bound, upper: bound, coefficients: initialCoefficients}];
   while (stack.length) {
     const interval = stack.pop()!;
@@ -374,7 +432,8 @@ export function getCPUSpatialErrorLikelihoodCandidates(
         if (value > 0n) lower = middle;
         else upper = middle;
       }
-      candidates.push({parameter: lower + (upper - lower) / 2, atBoundary: false});
+      const parameter = lower + (upper - lower) / 2;
+      candidates.push({parameter, atBoundary: parameter === -bound || parameter === bound});
       continue;
     }
     const middle = lower + (upper - lower) / 2;
@@ -414,6 +473,6 @@ export function getCPUSpatialErrorLikelihoodCandidates(
       .reverse()
       .find(value => value !== 0n)! > 0n
   )
-    candidates.push({parameter: bound, atBoundary: false});
+    candidates.push({parameter: bound, atBoundary: true});
   return candidates.sort((first, second) => first.parameter - second.parameter);
 }

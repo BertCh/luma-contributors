@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.scalar-field-ridges: scalarFieldValues → ridgeMask.",
   "description": "Result of gpu-raster.scalar-field-ridges: scalarFieldValues → ridgeMask. cells: 49. values read back from the GPU run. input scalarFieldValues: 49 cells.",
-  "llms": "Result of gpu-raster.scalar-field-ridges: scalarFieldValues → ridgeMask\n\n- cells: 49\n- input scalarFieldValues: 49 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.scalar-field-ridges: scalarFieldValues → ridgeMask\n\n- cells: 49\n- input scalarFieldValues: 49 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- cell size 1 m\n- cell size 1 m\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "49"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:21.780Z",
-    "runId": "run-42a32b13",
+    "date": "2026-11-20T23:49:07.290Z",
+    "runId": "run-5be3b493",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-42a32b13",
+    "runId": "run-5be3b493",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {prepareNullableArrowTimeFixture} from './nullable-arrow-time-fixture';
+import {makeGPUTimeVectorFromPreparedArrowColumn} from '../../../src/analysis-core/graph-support/arrow-analytics-time-upload';
+
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {describe, expect, it} from 'vitest';
@@ -16,7 +19,7 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const INT64_MINIMUM = -(2n ** 63n);
 const INT64_MAXIMUM = 2n ** 63n - 1n;
@@ -25,7 +28,8 @@ async function convert(
   ticks: readonly bigint[],
   temporalContext: GPUTemporalContext,
   origin: bigint,
-  chunkLengths?: readonly number[]
+  chunkLengths?: readonly number[],
+  validity?: readonly number[]
 ): Promise<{relative: number[]; context: GPUTemporalContext}> {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -34,8 +38,12 @@ async function convert(
   const output = createOutputBuffer(device, ticks.length);
   const timestampView = importGraphBuffer(graph, 'times', timestamps, 'uint32x2', ticks.length);
   const outputView = importGraphBuffer(graph, 'relative', output, 'float32', ticks.length);
-  const split = <Format extends 'uint32x2' | 'float32'>(
-    view: typeof timestampView | typeof outputView,
+  const maskBuffer = validity ? createInputBuffer(device, Uint32Array.from(validity)) : undefined;
+  const maskView = maskBuffer
+    ? importGraphBuffer(graph, 'validity', maskBuffer, 'uint32', ticks.length)
+    : undefined;
+  const split = <Format extends 'uint32x2' | 'float32' | 'uint32'>(
+    view: typeof timestampView | typeof outputView | NonNullable<typeof maskView>,
     format: Format
   ) => {
     let rowBase = 0;
@@ -56,6 +64,7 @@ async function convert(
   const node = new GPUTimeWordsRelative({
     timestamps: chunkLengths ? split(timestampView, 'uint32x2') : timestampView,
     temporalContext,
+    mask: maskView ? (chunkLengths ? split(maskView, 'uint32') : maskView) : undefined,
     origin,
     output: chunkLengths ? split(outputView, 'float32') : outputView
   });
@@ -66,6 +75,7 @@ async function convert(
   compiled.destroy();
   timestamps.destroy();
   output.destroy();
+  maskBuffer?.destroy();
   return {relative, context: node.outputTemporalContext};
 }
 
@@ -208,5 +218,51 @@ it('GPUTimeWordsRelative converts more than the former packed binding limit with
   } finally {
     compiled.destroy();
     for (const buffer of [...inputBuffers, ...outputBuffers]) buffer.destroy();
+  }
+});
+
+it('preserves missing epoch rows across chunks with a mask (UNI-08)', async () => {
+  // Hand-worked: valid 0 - 0 = 0, missing has no time, valid 1 - 0 = 1.
+  const {relative} = await convert([0n, 0n, 1n], getContext('millisecond'), 0n, [1, 2], [1, 0, 1]);
+  expect(relative).toEqual([0, NaN, 1]);
+  const unmasked = await convert([0n, 0n, 1n], getContext('millisecond'), 0n, [1, 2]);
+  expect(unmasked.relative).toEqual([0, 0, 1]);
+});
+
+it('composes real two-batch nullable Arrow time preparation upload and conversion (S2)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {table, column} = prepareNullableArrowTimeFixture();
+  expect(table.batches.map(batch => batch.numRows)).toEqual([2, 1]);
+  const upload = makeGPUTimeVectorFromPreparedArrowColumn(device, column);
+  const graph = new GPUCommandGraph(device);
+  const output = createOutputBuffer(device, 3);
+  const whole = importGraphBuffer(graph, 'arrow-relative', output, 'float32', 3);
+  const outputRows = createVectorView('arrow-relative-chunks', 'float32', [
+    graph.createDataView(whole.buffer, {format: 'float32', length: 2}),
+    graph.createDataView(whole.buffer, {format: 'float32', length: 1, byteOffset: 8})
+  ]);
+  graph.add(
+    new GPUTimeWordsRelative({
+      timestamps: graph.importGPUVector('arrow-times', upload.timestamps),
+      mask: graph.importGPUVector('arrow-time-validity', upload.validity),
+      temporalContext: upload.temporalContext,
+      origin: 0n,
+      output: outputRows
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readFloat32(output, 3)).toEqual([0, NaN, 1]);
+    // The same real Arrow handoff must treat every nonzero mask as usable.
+    upload.validity.data[0].buffer.write(new Uint32Array([7, 0]));
+    upload.validity.data[1].buffer.write(new Uint32Array([3]));
+    submitGraph(device, compiled, undefined);
+    expect(await readFloat32(output, 3)).toEqual([0, NaN, 1]);
+  } finally {
+    compiled.destroy();
+    output.destroy();
+    upload.destroy();
   }
 });

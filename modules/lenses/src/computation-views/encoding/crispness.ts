@@ -31,3 +31,15 @@ export function coarsenValues(values: ArrayLike<number>, state: ProvisionalState
       : Number(value.toPrecision(state === 'provisional' ? 2 : 1))
   );
 }
+
+/** Coarsen numeric components without converting unavailable markers into numeric NaNs. */
+export function coarsenCaptureText(value: string | number, state: ProvisionalState): string {
+  return String(value)
+    .split(', ')
+    .map(component =>
+      Number.isFinite(Number(component))
+        ? String(coarsenValues([Number(component)], state)[0])
+        : component
+    )
+    .join(', ');
+}

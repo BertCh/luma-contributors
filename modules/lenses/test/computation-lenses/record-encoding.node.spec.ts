@@ -115,3 +115,157 @@ test('interned strings inside plain graph objects are restored', () => {
     nodes: [{id: 'scan-level-0', label: '~literal'}]
   });
 });
+
+test('UDF-04 delegates capture codec for every category and reads an existing archive', async () => {
+  const codec = await import('@luma-contributors/analysis/computation-record');
+  const {toRecordedLensFile, fromRecordedLensFile} = await import(
+    '../../src/computation-lenses/registry'
+  );
+  const {makeY2Record, makeY2Capture} = await import(
+    '../computation-views/fixtures/y2-card-records'
+  );
+  const {readFileSync} = await import('node:fs');
+  const {vi} = await import('vitest');
+  const serialize = vi.spyOn(codec, 'serializeGPUComputationCaptures');
+  const deserialize = vi.spyOn(codec, 'deserializeGPUComputationCaptures');
+  try {
+    const record = makeY2Record([]);
+    // Literal IEEE-754 words: 2, quiet NaN, +infinity, -infinity, negative zero.
+    const words = new Uint32Array([0x40000000, 0x7fc12345, 0x7f800000, 0xff800000, 0x80000000]);
+    for (const category of ['snapshots', 'stamps', 'replays'] as const) {
+      record.captures![category] = [
+        makeY2Capture(category, [], {
+          values: new Float32Array(words.buffer),
+          ...(category === 'replays' ? {provenance: 'gpu-replay'} : {})
+        })
+      ];
+    }
+    const file = toRecordedLensFile(record, {
+      scenarioId: 'gpu-core.scan',
+      recordedAt: '2026-11-20T00:00:00Z',
+      adapterLabel: 'test'
+    });
+    const restored = fromRecordedLensFile(JSON.parse(JSON.stringify(file))).record;
+    expect(serialize).toHaveBeenCalled();
+    expect(deserialize).toHaveBeenCalled();
+    for (const category of ['snapshots', 'stamps', 'replays'] as const) {
+      const capture = restored.captures![category][0];
+      const values = capture.values as Float32Array;
+      expect(Array.from(new Uint32Array(values.buffer, values.byteOffset, values.length))).toEqual(
+        Array.from(words)
+      );
+      expect(capture).not.toHaveProperty('role');
+    }
+    const archive = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../../docs/lens-records/gpu-spatial-analysis.pair-gather.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    );
+    expect(fromRecordedLensFile(archive).record.captures!.snapshots.length).toBeGreaterThan(0);
+  } finally {
+    serialize.mockRestore();
+    deserialize.mockRestore();
+  }
+});
+
+test('UDF-04 legacy arrays retain signed zero and tokens while malformed lanes reject', async () => {
+  const {toRecordedLensFile, fromRecordedLensFile} = await import(
+    '../../src/computation-lenses/registry'
+  );
+  const {makeY2Record, makeY2Capture} = await import(
+    '../computation-views/fixtures/y2-card-records'
+  );
+  const record = makeY2Record([makeY2Capture('legacy', [1, 2, 3, 4, 5])]);
+  const file = expandLensRecordEnvelope(
+    toRecordedLensFile(record, {
+      scenarioId: 'gpu-core.scan',
+      recordedAt: '2026-11-20T00:00:00Z',
+      adapterLabel: 'test'
+    })
+  ) as {
+    record: {captures: {snapshots: {values: unknown; valueCount?: number}[]}};
+  };
+  const capture = file.record.captures.snapshots[0];
+  delete capture.valueCount;
+  capture.values = [2, 'NaN', 'Infinity', '-Infinity', -0];
+  const values = fromRecordedLensFile(file).record.captures!.snapshots[0].values;
+  expect(values[0]).toBe(2);
+  expect(Number.isNaN(values[1])).toBe(true);
+  expect(values[2]).toBe(Infinity);
+  expect(values[3]).toBe(-Infinity);
+  expect(Object.is(values[4], -0)).toBe(true);
+  capture.values = [2, null];
+  expect(() => fromRecordedLensFile(file)).toThrow();
+  capture.values = [2, 3];
+  capture.valueCount = 3;
+  expect(() => fromRecordedLensFile(file)).toThrow('payload length does not match');
+});
+
+test('B10 unrelated schema-valued graph metadata is not a capture sidecar', async () => {
+  const {toRecordedLensFile, fromRecordedLensFile} = await import(
+    '../../src/computation-lenses/registry'
+  );
+  const {makeRecord} = await import('../computation-views/fixtures/v4-record');
+  const record = makeRecord();
+  record.graphs[0].attrs = {schema: 'luma.computation-captures/1', source: 'historical import'};
+  const restored = fromRecordedLensFile(
+    toRecordedLensFile(record, {
+      scenarioId: 'gpu-core.scan',
+      recordedAt: '2026-11-20T00:00:00Z',
+      adapterLabel: 'test'
+    })
+  ).record;
+  expect(restored.graphs[0].attrs).toEqual(record.graphs[0].attrs);
+});
+
+test('S2 shared capture save boundary rejects invalid lanes, component lengths and metadata', async () => {
+  const {toRecordedLensFile} = await import('../../src/computation-lenses/registry');
+  const {makeY2Record, makeY2Capture} = await import(
+    '../computation-views/fixtures/y2-card-records'
+  );
+  const save = (metadata: Parameters<typeof makeY2Capture>[2]) =>
+    toRecordedLensFile(makeY2Record([makeY2Capture('invalid', [1], metadata)]), {
+      scenarioId: 'gpu-core.scan',
+      recordedAt: '2026-11-20T00:00:00Z',
+      adapterLabel: 'test'
+    });
+  for (const values of [[1.5], [-1], [4294967296]])
+    expect(() => save({elementType: 'u32', values})).toThrow('invalid u32 lane');
+  for (const values of [[1.5], [-2147483649], [2147483648]])
+    expect(() => save({elementType: 'i32', values})).toThrow('invalid i32 lane');
+  expect(() => save({components: 2, values: [1, 2, 3]})).toThrow('whole components');
+  expect(() => save({name: ''})).toThrow('nonempty string');
+  expect(() => save({id: ''})).toThrow('nonempty string');
+  expect(() => save({components: 0})).toThrow('positive safe integer');
+});
+
+test('W5-22 file loading validates capture IDs across every sidecar category', async () => {
+  const {toRecordedLensFile, fromRecordedLensFile} = await import(
+    '../../src/computation-lenses/registry'
+  );
+  const {makeY2Record, makeY2Capture} = await import(
+    '../computation-views/fixtures/y2-card-records'
+  );
+  for (const category of ['snapshots', 'stamps', 'replays'] as const) {
+    const record = makeY2Record([makeY2Capture('first', [1], {id: 'duplicate'})]);
+    record.captures![category] = [
+      ...record.captures![category],
+      makeY2Capture('second', [2], {
+        id: 'duplicate',
+        provenance: category === 'replays' ? 'gpu-replay' : 'gpu-readback'
+      })
+    ];
+    const file = toRecordedLensFile(record, {
+      scenarioId: 'gpu-core.scan',
+      recordedAt: record.createdAt,
+      adapterLabel: 'fixture'
+    });
+    expect(() => fromRecordedLensFile(JSON.parse(JSON.stringify(file)))).toThrow(
+      'Duplicate capture id'
+    );
+  }
+});

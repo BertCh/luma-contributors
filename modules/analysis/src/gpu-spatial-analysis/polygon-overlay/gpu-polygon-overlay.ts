@@ -2,17 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUPolygonOverlayFillRule, GPUPolygonOverlayProps} from './polygon-overlay-types';
+import {validatePolygons, validateStatus, validateOverlayOptions} from './overlay-input-validation';
+import {getPolygonOverlayPlan} from './overlay-planning';
+import {createOverlayAssemblyCompletenessNode} from './overlay-assembly-completeness';
 import {
   createOverlayFeatureSourceNodes,
-  validateOverlayFeatureSourceOutput,
-  type GPUPolygonOverlayFeatureSources
+  validateOverlayFeatureSourceOutput
 } from './overlay-feature-sources';
-import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
-import {
-  validateOverlayScratchByteLengths,
-  getOverlayOutputViews
-} from './overlay-storage-validation';
+import {createOverlaySourceIdentityNodes} from './overlay-source-identities';
+
+import {snapshotOverlayStatusFields, getOverlayOutputViews} from './overlay-storage-validation';
 import {clamp} from '@math.gl/core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   createTransientView,
   GPUScan,
@@ -31,24 +33,17 @@ import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kerne
 import {
   getNextPowerOfTwo,
   validateCapacity,
-  validateGraphViewsBelongToGraph,
-  validateMaximumCount,
   validateSinglePackedView,
   validateRequirement,
-  validateFiniteNumber
+  validateFiniteNumber,
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {
-  GPUBoundedResultStatusPort,
-  GPUPackedGeometryPort,
-  GPUPolygonGeometryPort,
-  GPURingCountStatusPort
-} from '../../analysis-core/contracts/index';
+
 import {
   GPUSnapRoundedNoding,
-  getGPUSnapRoundedNodingMaximumVertexCount,
   type GPUSnapRoundedSegmentPort
 } from '../geometry-topology/gpu-snap-rounded-noding';
-import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/index';
+
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {GPUSegmentRingAssembly} from '../../analysis-core/ring-assembly/index';
 import {
@@ -88,192 +83,14 @@ const JUMP_INIT_BODY_WGSL = `let parent = parents[parentsOffset + index];
     values[valuesOffset + index * COMPONENTS + component] = value;
   }`;
 
-const FILL_RULES: readonly GPUPolygonOverlayFillRule[] = [
-  'even-odd',
-  'positive',
-  'negative',
-  'nonzero'
-];
-
-/** Boolean set operation applied by {@link GPUPolygonOverlay}. */
-export type GPUPolygonOverlayOperation =
-  | 'intersection'
-  | 'union'
-  | 'difference'
-  | 'symmetric-difference'
-  | 'dissolve';
-
-/**
- * Rule that decides whether a point is inside one polygon of an operand, from the winding number
- * `w` of all rings of that polygon about the point (counter-clockwise rings count +1, clockwise
- * rings -1). A point is inside the operand when it is inside any of its polygons.
- *
- * - `'even-odd'` (default): `w` is odd. For valid polygons this is the OGC shell-and-holes reading;
- *   it differs only for holes outside their shell or overlapping holes.
- * - `'positive'`, `'negative'` and `'nonzero'`: `w > 0`, `w < 0` or `w != 0`. Use them for raw,
- *   self-overlapping boundaries such as offset curves, where regions covered twice must stay inside
- *   (`'even-odd'` would carve them out as holes).
- */
-export type GPUPolygonOverlayFillRule = 'even-odd' | 'positive' | 'negative' | 'nonzero';
-
-/** Explicit capacities for the bounded arrangement built by {@link GPUPolygonOverlay}. */
-export type GPUPolygonOverlayCapacity = {
-  /**
-   * Crossings retained while noding both operands (each becomes a hot pixel). Both operands
-   * together have at most {@link getGPUSegmentIntersectionMaximumVertexCount} vertex rows plus
-   * one per ring, and those rows plus this capacity at most a quarter of that count (four diagonal
-   * vertices per hot pixel share one segment table), 1048576 on a default device.
-   */
-  intersections: number;
-  /** Atomic segments retained after noding. */
-  nodedSegments: number;
-};
-
-/** Boundary provenance emitted before the selected edges are assembled into rings. */
-export type GPUPolygonOverlayBoundaryPort = {
-  endpoints: GraphDataView<'float32x4'>;
-  /** Zero for the left operand and one for the right operand. */
-  operandIds: GraphDataView<'uint32'>;
-  /** Feature that owns the source edge within its operand. */
-  sourceFeatureIds: GraphDataView<'uint32'>;
-  status: GPUBoundedResultStatusPort & {
-    requiredCount: GraphDataView<'uint32'>;
-    candidateOverflow: GraphDataView<'uint32'>;
-  };
-};
-
-/**
- * Canonical, capacity-bounded polygon result of {@link GPUPolygonOverlay}.
- *
- * Features are polygons (one shell and its holes each); `status.count` counts them. The result is a
- * Boolean combination of operand unions, so one output polygon can lie over several input features
- * of each operand: it has no single source row, and `geometry` has no `sourceIds` (contributor
- * contract rule 8). Provenance is per boundary edge (`boundary.operandIds`,
- * `boundary.sourceFeatureIds`). A label point joined to each operand identifies only features
- * containing that point; it cannot enumerate an output polygon's sources (a dissolved shell can
- * cover adjacent input parcels). For source membership, join output polygons to each operand
- * with an explicitly chosen polygon relation, such as positive-area interior intersection,
- * keeping boundary-only contacts separate. Attribute-preserving membership needs a relation
- * carrying output feature row, operand and source row; `featureSources` is only a representative
- * retained boundary owner, not that relation.
- *
- * **Breaking (2026-11-10):** `geometry.sourceIds` (it held the output row index) is removed, and
- * `status.requiredCount`, which held the unclamped ring count, is removed: the unclamped feature
- * count is not known when rings were dropped, so there is no feature requirement distinct from
- * `count`. Size the ring capacity from `status.requiredRingCount`.
- */
-export type GPUPolygonOverlayOutput = {
-  /** Optional per-output-feature representative boundary source row. Mixed provenance is explicit;
-   * this does not enumerate interior features or every owner of coincident boundary edges.
-   * Valid only when both output.status.overflow and output.status.candidateOverflow are zero,
-   * like the generated polygon itself. */
-  featureSources?: GPUPolygonOverlayFeatureSources;
-  /** Geometry is complete only when both status.overflow and status.candidateOverflow are zero. */
-  geometry: Omit<GPUPackedGeometryPort<GPUPolygonGeometryPort>, 'sourceIds'>;
-  status: Omit<GPUBoundedResultStatusPort, 'requiredCount'> &
-    GPURingCountStatusPort & {
-      /**
-       * Optional one-row unclamped number of rings (shells plus holes) the assembly needed, which
-       * sizes every view of `geometry` (they share one ring capacity). `ringCount` (optional) is the
-       * number of rings written, at most the ring capacity.
-       */
-      requiredRingCount?: GraphDataView<'uint32'>;
-      candidateOverflow: GraphDataView<'uint32'>;
-      /**
-       * Optional one-row count of segment pairs the intersection predicates could not certify.
-       * They set `candidateOverflow` whether or not this view is given; `overflow` alone does
-       * not indicate noding uncertainty. Reject geometry and provenance while either flag is set.
-       */
-      uncertainCount?: GraphDataView<'uint32'>;
-      /** Optional unclamped noded-piece requirement; exact when candidateOverflow is zero. */
-      nodedSegmentRequiredCount?: GraphDataView<'uint32'>;
-    };
-  boundary: GPUPolygonOverlayBoundaryPort;
-};
-
-type PackedPolygons = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
-  /** Optional source feature ID per feature. */
-  sourceIds?: GraphDataView<'uint32'>;
-};
-
-/** Properties for {@link GPUPolygonOverlay}. */
-export type GPUPolygonOverlayProps = {
-  id?: string;
-  /**
-   * Planar only (default: native planar coordinates). A longitude-latitude context throws at
-   * construction: project positions to a planar frame first, for example with
-   * `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
-   * (`geometry-measures`), and pass the frame's context.
-   */
-  spatialContext?: GPUSpatialContext;
-  /**
-   * Context of `right` when declared separately from `spatialContext`. Must be compatible in
-   * datum, coordinate space, metric, units and planar frame.
-   * Omitted means `spatialContext` describes both inputs.
-   */
-  rightSpatialContext?: GPUSpatialContext;
-  left: PackedPolygons;
-  /** Required except for `dissolve`, which unions every polygon in `left`. */
-  right?: PackedPolygons;
-  operation: GPUPolygonOverlayOperation;
-  /**
-   * Inside rule applied to both operands. Default `'even-odd'`. Compile-time. See
-   * {@link GPUPolygonOverlayFillRule}.
-   */
-  fillRule?: GPUPolygonOverlayFillRule;
-  capacity: GPUPolygonOverlayCapacity;
-  /**
-   * Snap grid of the overlay. Every vertex and every crossing is rounded to a lattice of step
-   * `cell`, the smallest power of two that is at least `vertexTolerance`, at least 2^-22 of the
-   * input extent (the larger of the x and y extents of the finite vertices) and at least 2^-24 of
-   * the largest coordinate magnitude (one `float32` step there), anchored at a multiple of `cell`
-   * (a power-of-two `vertexTolerance` therefore reproduces shapely `grid_size` exactly whenever
-   * `float32` can store that grid at the coordinates of the data). The result lies on that
-   * lattice: its vertices are lattice points, every lattice point is a `float32` value, and edges
-   * closer than one cell collapse or merge. For data farther from zero than about four times its
-   * extent the last bound decides: at a projected northing of 4,000,000 the step is 0.25 to 0.5
-   * whatever the tolerance, so use coordinates relative to a local origin for a finer result.
-   * Finite and positive.
-   */
-  vertexTolerance: number;
-  output: GPUPolygonOverlayOutput;
-  spatialSort?: boolean;
-  leafCapacity?: number;
-};
-
-function validatePolygons(id: string, name: string, polygons: PackedPolygons): void {
-  if (polygons.kind !== 'polygons') {
-    throw new Error(`${id} ${name}.kind must be polygons`);
-  }
-  validateSinglePackedView(polygons.positions, ['float32x2'], `${id} ${name}.positions`);
-  for (const [field, view] of [
-    ['featureOffsets', polygons.featureOffsets],
-    ['polygonOffsets', polygons.polygonOffsets],
-    ['ringOffsets', polygons.ringOffsets]
-  ] as const) {
-    validatePackedUint32View(view, `${id} ${name}.${field}`);
-    if (view.length < 2) {
-      throw new Error(`${id} ${name}.${field} must contain at least two entries`);
-    }
-  }
-  if (polygons.sourceIds) {
-    validatePackedUint32View(polygons.sourceIds, `${id} ${name}.sourceIds`);
-  }
-  if (polygons.featureOffsets.length - 1 >= 0x80000000) {
-    throw new Error(`${id} ${name} has too many features for packed overlay provenance`);
-  }
-}
-
-function validateStatus(id: string, name: string, status: GPUPolygonOverlayOutput['status']): void {
-  for (const [field, view] of Object.entries(status)) {
-    if (view) {
-      validatePackedUint32View(view, `${id} ${name}.${field}`);
-      if (view.length < 1) {
-        throw new Error(`${id} ${name}.${field} must contain one row`);
-      }
-    }
-  }
-}
+export type {
+  GPUPolygonOverlayOperation,
+  GPUPolygonOverlayFillRule,
+  GPUPolygonOverlayCapacity,
+  GPUPolygonOverlayBoundaryPort,
+  GPUPolygonOverlayOutput,
+  GPUPolygonOverlayProps
+} from './polygon-overlay-types';
 
 /**
  * General polygon Boolean overlay over a snap-rounded planar arrangement.
@@ -298,7 +115,8 @@ function validateStatus(id: string, name: string, status: GPUPolygonOverlayOutpu
  * operands need not agree.
  *
  * Output and arrangement capacities are explicit. `candidateOverflow` means noding was incomplete,
- * including non-finite input and pairs the exact predicates could not certify; `overflow` covers
+ * including non-finite input, pairs the exact predicates could not certify, open assembly segments
+ * and continuation conflicts; `overflow` covers
  * capacity loss in the emitted noded segments, boundary, rings or vertices. Both flags must be zero
  * before accepting geometry or provenance. Boundary provenance is one row per group of coincident
  * pieces, from the first piece of the group in lattice order, and remains aligned with the compact
@@ -323,7 +141,59 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
   readonly fillRule: GPUPolygonOverlayFillRule;
 
   constructor(props: GPUPolygonOverlayProps) {
-    this.id = props.id ?? 'polygon-overlay';
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'rightSpatialContext',
+      'left',
+      'right',
+      'operation',
+      'fillRule',
+      'capacity',
+      'vertexTolerance',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    this.id = captured.id ?? 'polygon-overlay';
+    const captureOperand = (operand: GPUPolygonOverlayProps['left']) =>
+      snapshotConstructionFields(operand, [
+        'kind',
+        'positions',
+        'ringOffsets',
+        'polygonOffsets',
+        'featureOffsets',
+        'sourceIds'
+      ]);
+    const left = captureOperand(captured.left);
+    const right = captured.right && captureOperand(captured.right);
+    const outputFields = snapshotConstructionFields(captured.output, [
+      'geometry',
+      'boundary',
+      'status',
+      'featureSources'
+    ]);
+    const capturedBoundary = snapshotConstructionFields(outputFields.boundary, [
+      'endpoints',
+      'operandIds',
+      'sourceFeatureIds',
+      'status'
+    ]);
+    const capturedOutput = {...outputFields, boundary: capturedBoundary};
+    const statusSnapshot = snapshotOverlayStatusFields(this.id, capturedOutput);
+    props = Object.freeze({
+      ...captured,
+      left,
+      right,
+      output: Object.freeze({
+        ...capturedOutput,
+        status: statusSnapshot.status,
+        boundary: Object.freeze({
+          ...capturedBoundary,
+          status: statusSnapshot.boundaryStatus
+        })
+      })
+    });
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     if (props.rightSpatialContext !== undefined && !props.right) {
       throw new Error(`${this.id} rightSpatialContext needs right`);
@@ -352,6 +222,7 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
     this.fillRule = props.fillRule ?? 'even-odd';
     const {id} = this;
     const {output} = props;
+    validateOverlayOptions(id, props.operation, props.fillRule);
     validatePolygons(id, 'left', props.left);
     if (props.operation === 'dissolve') {
       if (props.right) {
@@ -362,9 +233,6 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
     }
     if (props.right) {
       validatePolygons(id, 'right', props.right);
-    }
-    if (props.fillRule && !FILL_RULES.includes(props.fillRule)) {
-      throw new Error(`${id} fillRule must be even-odd, positive, negative or nonzero`);
     }
     if (!(props.vertexTolerance > 0) || !Number.isFinite(props.vertexTolerance)) {
       throw new Error(`${id} vertexTolerance must be finite and positive`);
@@ -399,6 +267,15 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
     }
     validateStatus(id, 'output.status', output.status);
     validateStatus(id, 'output.boundary.status', boundary.status);
+    validateGraphOutputsDisjointFromInputs(id, getOverlayOutputViews(output), [
+      props.left.sourceIds,
+      props.right?.sourceIds
+    ]);
+  }
+
+  /** Checks every graph/device constraint without declaring scratch or command nodes. */
+  preflight<Parameters>(graph: GPUCommandGraph<Parameters>): GPUPolygonOverlayPlan {
+    return getPolygonOverlayPlan(graph, this.id, this.props);
   }
 
   getCommandNodes<Parameters>(
@@ -406,73 +283,7 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {left, right, output} = props;
-    validateGraphChunkBindingRanges(
-      graph,
-      id,
-      Object.fromEntries(
-        [
-          left.positions,
-          left.featureOffsets,
-          left.polygonOffsets,
-          left.ringOffsets,
-          right?.positions,
-          right?.featureOffsets,
-          right?.polygonOffsets,
-          right?.ringOffsets,
-          ...getOverlayOutputViews(output)
-        ].map((view, index) => [`binding.${index}`, view])
-      )
-    );
-    const inputRingCount = left.ringOffsets.length - 1 + (right ? right.ringOffsets.length - 1 : 0);
-    validateOverlayScratchByteLengths(graph, id, {
-      expandedVertexCount: left.positions.length + (right?.positions.length ?? 0) + inputRingCount,
-      inputRingCount,
-      intersections: props.capacity.intersections,
-      nodedSegments: props.capacity.nodedSegments,
-      boundaryCapacity: output.boundary.endpoints.length,
-      outputRingCapacity: output.geometry.ringOffsets.length - 1,
-      outputVertexCapacity: output.geometry.positions.length,
-      leafCapacity: props.leafCapacity
-    });
-    validateGraphViewsBelongToGraph(id, graph, [
-      left.positions,
-      left.featureOffsets,
-      left.polygonOffsets,
-      left.ringOffsets,
-      right?.positions,
-      right?.featureOffsets,
-      right?.polygonOffsets,
-      right?.ringOffsets,
-      output.geometry.positions,
-      output.geometry.featureOffsets,
-      output.geometry.polygonOffsets,
-      output.geometry.ringOffsets,
-      output.boundary.endpoints,
-      output.boundary.operandIds,
-      output.boundary.sourceFeatureIds,
-      ...Object.values(output.boundary.status),
-      ...Object.values(output.status)
-    ]);
-    // The operands are noded together as open lines, one repeated first vertex per ring, in one
-    // segment table and one piece table.
-    const operandRingCount =
-      props.left.ringOffsets.length - 1 + (props.right ? props.right.ringOffsets.length - 1 : 0);
-    validateMaximumCount(
-      id,
-      'left + right positions rows + rings',
-      props.left.positions.length + (props.right?.positions.length ?? 0) + operandRingCount,
-      getGPUSegmentIntersectionMaximumVertexCount(graph.device)
-    );
-    // Snap rounding keeps four diagonal vertices per hot pixel (a vertex or a crossing).
-    validateMaximumCount(
-      id,
-      'left + right positions rows + rings + capacity.intersections',
-      props.left.positions.length +
-        (props.right?.positions.length ?? 0) +
-        operandRingCount +
-        props.capacity.intersections,
-      getGPUSnapRoundedNodingMaximumVertexCount(graph.device, 0)
-    );
+    this.preflight(graph);
 
     const rightVertexCount = right?.positions.length ?? 0;
     const leftRingCount = left.ringOffsets.length - 1;
@@ -1339,6 +1150,8 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
     const ringCount = transient('ring-count', 'uint32', 1);
     const ringRequiredCount = transient('ring-required-count', 'uint32', 1);
     const ringOverflow = transient('ring-overflow', 'uint32', 1);
+    const openSegmentCount = transient('assembly-open-count', 'uint32', 1);
+    const segmentFlags = transient('assembly-flags', 'uint32', boundary.endpoints.length);
     // Optional ring-level status (rule 8 names), copied from the assembly's ring scalars.
     const ringStatusOutputs = [
       ['ringCount', 'ringCountInput', output.status.ringCount, ringCount],
@@ -1389,7 +1202,13 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
         output: {
           positions: ringPositions,
           ringOffsets,
-          status: {count: ringCount, requiredCount: ringRequiredCount, overflow: ringOverflow},
+          segmentFlags,
+          status: {
+            count: ringCount,
+            requiredCount: ringRequiredCount,
+            overflow: ringOverflow,
+            openSegmentCount
+          },
           polygons: output.geometry,
           ...featureSourceMapping
         }
@@ -1442,10 +1261,30 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
         `const RING_CAPACITY: u32 = ${ringCapacity}u;`
       )
     );
+    nodes.push(
+      createOverlayAssemblyCompletenessNode(graph, {
+        id,
+        segmentFlags,
+        segmentCount: boundary.status.count,
+        openSegmentCount,
+        candidateOverflow: output.status.candidateOverflow
+      })
+    );
     // A separate node, so the publish kernel stays within the storage-binding limit.
     if (ringStatusBindings.length > 0) {
       nodes.push(kernel(`ring-status${ringStatusVariant}`, ringStatusBindings, 1, ringStatusBody));
     }
+    nodes.push(
+      ...createOverlaySourceIdentityNodes(graph, {
+        id,
+        operation: OPERATION,
+        rows: boundary.sourceFeatureIds,
+        operands: boundary.operandIds,
+        count: boundary.status.count,
+        leftIds: left.sourceIds,
+        rightIds: right?.sourceIds
+      })
+    );
     return nodes;
   }
 
@@ -1535,3 +1374,23 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
     }
   }
 }
+
+/** Validates resident views and device limits without graph mutation. Use planGPUPolygonOverlay
+ * for dimension-only planning before allocating recipe inputs/outputs. */
+export function preflightGPUPolygonOverlay<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPolygonOverlayProps
+): GPUPolygonOverlayPlan {
+  return new GPUPolygonOverlay(props).preflight(graph);
+}
+
+/** Validated overlay allocation counts; no resources have been registered by preflight. */
+export type GPUPolygonOverlayPlan = Readonly<{
+  expandedVertexCount: number;
+  inputRingCount: number;
+  hotPixelCapacity: number;
+  nodedSegmentCapacity: number;
+  boundaryCapacity: number;
+  outputRingCapacity: number;
+  outputVertexCapacity: number;
+}>;

@@ -515,7 +515,7 @@ export async function createChoroplethClasses(
         values,
         mask: filter,
         domain: breaksView,
-        domainCount: classCountView,
+        classCount: classCountView,
         palette: bind.word(paletteBuffer, MAXIMUM_CLASS_COUNT),
         parameters: scaleParameters.importToGraph(graph),
         maximumDomainCount: MAXIMUM_CLASS_COUNT + 1,

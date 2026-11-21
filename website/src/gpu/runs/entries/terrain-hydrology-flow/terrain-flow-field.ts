@@ -83,8 +83,11 @@ export default defineOperationRun({
           )
         );
         const settings = {
-          fieldExtent: [0, 0, cellSize, cellSize] as const,
-          outputExtent: [0, 0, cellSize / OUTPUT_SCALE, cellSize / OUTPUT_SCALE] as const,
+          fieldPlacement: {origin: [0, 0], cellSize: [cellSize, cellSize]} as const,
+          outputPlacement: {
+            origin: [0, 0],
+            cellSize: [cellSize / OUTPUT_SCALE, cellSize / OUTPUT_SCALE]
+          } as const,
           stepLength: 0.5
         };
         licParameters.write(getGPULineIntegralConvolutionParameterValues(settings));

@@ -15,7 +15,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {RASTER_FINITE_WGSL, createRasterArgmaxNodes, rasterBinding} from './raster-kernel-utils';
@@ -94,7 +93,6 @@ export function validateMaskedRegistrationProps(
   );
   const outputs = Object.values(props.output).filter(view => view !== undefined);
   for (const view of inputs) {
-    validateSinglePackedView(view, [view.format], id);
     validateRequirement(
       id,
       view.length >= props.grid.width * props.grid.height,
@@ -102,7 +100,6 @@ export function validateMaskedRegistrationProps(
     );
   }
   for (const view of outputs) {
-    validateSinglePackedView(view, [view.format], id);
     validateRequirement(id, view.length >= 1, 'output views must not be empty');
   }
   validateRegistrationWritableViews(props, id);

@@ -408,9 +408,9 @@ it('spatial-4:G9 reserves final overflow for final capacity and reports inherite
       {weights, mask: Uint32Array.of(0, 0)},
       {operation: 'subgraph', capacity}
     );
-    expect(Array.from(result.requiredCount)).toEqual([0]);
-    expect(Array.from(result.overflow)).toEqual([0]);
-    expect(Array.from(result.candidateOverflow)).toEqual([1]);
+    expect(Array.from(result.status.requiredCount)).toEqual([0]);
+    expect(Array.from(result.status.overflow)).toEqual([0]);
+    expect(Array.from(result.status.candidateOverflow)).toEqual([1]);
   }
 });
 
@@ -474,10 +474,17 @@ it('spatial-4:G3 explorer and guide retain candidate diagnostics', () => {
 });
 
 it('spatial-4:G3 the executable lag guide binds both producer loss words', () => {
-  const {device, graph, view, weights} = scene();
+  const {device, graph, view, output} = scene();
   try {
     const guide = readFileSync('docs/api/gpu-spatial-analysis/operators-weights.md', 'utf8');
-    const snippet = /```ts\n(const contiguity = new GPUContiguityWeights[^]*?)```/.exec(guide)![1];
+    const lagGuide = guide.slice(guide.indexOf('### `GPUSpatialLag`'));
+    // The fenced example includes a typed import/declaration preamble. Execute its runtime body.
+    const match = /```ts\n[^]*?(const contiguity = new GPUContiguityWeights[^]*?)```/.exec(
+      lagGuide
+    );
+    expect(match, 'executable contiguity-to-lag guide').not.toBeNull();
+    if (!match) throw new Error('missing executable contiguity-to-lag guide');
+    const snippet = match[1];
     const contributors: {getCommandNodes: (graph: GPUCommandGraph) => readonly unknown[]}[] = [];
     Function(
       'GPUContiguityWeights',
@@ -502,7 +509,7 @@ it('spatial-4:G3 the executable lag guide binds both producer loss words', () =>
         polygonOffsets: view('uint32', 5),
         featureOffsets: view('uint32', 5)
       },
-      weights(),
+      output(),
       view('uint32', 1),
       view('float32', 4),
       view('float32', 4)
@@ -550,15 +557,15 @@ for (const criterion of ['queen', 'rook'] as const)
       capacity: 72,
       pairCapacity: 288
     });
-    expect(Array.from(partial.overflow)).toEqual([0]);
-    expect(Array.from(partial.candidateOverflow)).toEqual([1]);
+    expect(Array.from(partial.status.overflow)).toEqual([0]);
+    expect(Array.from(partial.status.candidateOverflow)).toEqual([1]);
     expect(Array.from(partial.offsets)).toEqual([0, 1, 2, 2]);
     const complete = computeContiguityWeightsOnCPU(polygons, {
       criterion,
       capacity: 72,
       pairCapacity: 1024
     });
-    expect(Array.from(complete.overflow)).toEqual([0]);
-    expect(Array.from(complete.candidateOverflow)).toEqual([0]);
+    expect(Array.from(complete.status.overflow)).toEqual([0]);
+    expect(Array.from(complete.status.candidateOverflow)).toEqual([0]);
     expect(Array.from(complete.offsets)).toEqual([0, 1, 3, 4]);
   });

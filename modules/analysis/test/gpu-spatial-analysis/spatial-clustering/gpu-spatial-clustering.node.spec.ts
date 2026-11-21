@@ -6,12 +6,13 @@ import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spati
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
-  getGPUSpatialClusteringParameterValues,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_NOISE,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-  type GPUSpatialClusteringOutput,
-  type GPUSpatialClusteringProps
+  getGPUDBSCANParameterValues,
+  GPUDBSCAN,
+  GPU_DBSCAN_NOISE,
+  GPU_DBSCAN_PARAMETER_LENGTH,
+  type GPUDBSCANOutput,
+  type GPUDBSCANProps,
+  type GPUDBSCANSettings
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {
   createNullWebGPUDevice,
@@ -31,8 +32,7 @@ import {
 } from './spatial-clustering-oracle';
 
 /** Input props and output views mixed in one flat object, split by {@link createProps}. */
-type ClusteringOverrides = Partial<Omit<GPUSpatialClusteringProps, 'output'>> &
-  Partial<GPUSpatialClusteringOutput>;
+type ClusteringOverrides = Partial<Omit<GPUDBSCANProps, 'output'>> & Partial<GPUDBSCANOutput>;
 
 const OUTPUT_KEYS = [
   'labels',
@@ -40,7 +40,6 @@ const OUTPUT_KEYS = [
   'coreFlags',
   'clusterCount',
   'clusters',
-  'drawInstanceCount',
   'clusterSizes',
   'clusterCentroids'
 ] as const;
@@ -49,7 +48,7 @@ function createProps(
   graph: GPUCommandGraph,
   overrides: ClusteringOverrides = {},
   rows: number = 16
-): GPUSpatialClusteringProps {
+): GPUDBSCANProps {
   const inputs: Record<string, unknown> = {};
   const output: Record<string, unknown> = {
     labels: createTransientView(graph, 'labels', 'uint32', rows)
@@ -66,7 +65,7 @@ function createProps(
     parameters: createTransientView(graph, 'parameters', 'float32', 8),
     gridSize: [8, 8],
     ...inputs,
-    output: output as GPUSpatialClusteringOutput
+    output: output as GPUDBSCANOutput
   };
 }
 
@@ -80,48 +79,58 @@ function createCluster(graph: GPUCommandGraph, capacity: number) {
   };
 }
 
-it('getGPUSpatialClusteringParameterValues packs and validates', () => {
-  expect(GPU_SPATIAL_CLUSTERING_NOISE).toBe(ORACLE_NOISE);
-  const values = getGPUSpatialClusteringParameterValues({
+it('getGPUDBSCANParameterValues packs and validates', () => {
+  expect(GPU_DBSCAN_NOISE).toBe(ORACLE_NOISE);
+  const values = getGPUDBSCANParameterValues({
     bounds: [1, 2, 3, 4],
     epsilon: 0.5,
-    minimumPoints: 7
+    minimumSamples: 7
   });
   expect(Array.from(values)).toEqual([1, 2, 3, 4, 0.5, 7, 0, 0]);
-  expect(values.length).toBe(GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH);
+  expect(values.length).toBe(GPU_DBSCAN_PARAMETER_LENGTH);
   const target = new Float32Array(10).fill(9);
-  const returned = getGPUSpatialClusteringParameterValues(
-    {bounds: [0, 0, 1, 1], epsilon: 1, minimumPoints: 1},
+  const returned = getGPUDBSCANParameterValues(
+    {bounds: [0, 0, 1, 1], epsilon: 1, minimumSamples: 1},
     target
   );
   expect(returned).toBe(target);
   expect(Array.from(target.slice(6))).toEqual([0, 0, 9, 9]);
 
-  const valid = {bounds: [0, 0, 1, 1], epsilon: 1, minimumPoints: 2} as const;
-  expect(() => getGPUSpatialClusteringParameterValues({...valid, epsilon: 0})).toThrow(/epsilon/);
-  expect(() => getGPUSpatialClusteringParameterValues({...valid, epsilon: -1})).toThrow(/epsilon/);
-  expect(() => getGPUSpatialClusteringParameterValues({...valid, epsilon: NaN})).toThrow(/finite/);
+  const valid = {bounds: [0, 0, 1, 1], epsilon: 1, minimumSamples: 2} as const;
+  expect(() => getGPUDBSCANParameterValues({...valid, epsilon: 0})).toThrow(/epsilon/);
+  expect(() => getGPUDBSCANParameterValues({...valid, epsilon: -1})).toThrow(/epsilon/);
+  expect(() => getGPUDBSCANParameterValues({...valid, epsilon: NaN})).toThrow(/finite/);
   expect(() =>
-    getGPUSpatialClusteringParameterValues({
+    getGPUDBSCANParameterValues({
       ...valid,
       bounds: [0, 0, Infinity, 1]
     })
   ).toThrow(/finite/);
-  for (const minimumPoints of [0, 1.5, -2, 2 ** 24 + 1, NaN]) {
-    expect(() => getGPUSpatialClusteringParameterValues({...valid, minimumPoints})).toThrow(
-      /minimumPoints/
+  for (const minimumSamples of [0, 1.5, -2, 2 ** 24 + 1, NaN]) {
+    expect(() => getGPUDBSCANParameterValues({...valid, minimumSamples})).toThrow(/minimumSamples/);
+  }
+  expect(() => getGPUDBSCANParameterValues(valid, new Float32Array(7))).toThrow(/target/);
+});
+
+it('packs minimumSamples with the existing DBSCAN layout', () => {
+  const settings = {bounds: [0, 0, 1, 1] as const, epsilon: 1, minimumSamples: 4};
+  expect(Array.from(getGPUDBSCANParameterValues(settings))).toEqual([0, 0, 1, 1, 1, 4, 0, 0]);
+});
+
+it('rejects the old DBSCAN threshold key from untyped settings', () => {
+  const settings = {bounds: [0, 0, 1, 1], epsilon: 1, minimumPoints: 4};
+  for (const untyped of [settings, {...settings, minimumSamples: 4}]) {
+    expect(() => getGPUDBSCANParameterValues(untyped as unknown as GPUDBSCANSettings)).toThrow(
+      /use minimumSamples/
     );
   }
-  expect(() => getGPUSpatialClusteringParameterValues(valid, new Float32Array(7))).toThrow(
-    /target/
-  );
 });
 
 it('clusterPointsOracle labels a tiny fixture canonically', () => {
   // Row 0 is noise, rows 1-3 form the first cluster by root order, row 4 is a border point.
   const result = clusterPointsOracle(
     [9, 9, 0, 0, 1, 0, 0, 1, 2.2, 0],
-    {bounds: [0, 0, 10, 10], epsilon: 1.5, minimumPoints: 3},
+    {bounds: [0, 0, 10, 10], epsilon: 1.5, minimumSamples: 3},
     [10, 11, 12, 13, 14]
   );
   expect(result.coreFlags).toEqual([0, 1, 1, 1, 0]);
@@ -131,12 +140,10 @@ it('clusterPointsOracle labels a tiny fixture canonically', () => {
   expect(result.clusterSizes).toEqual([4]);
 });
 
-it('GPUSpatialClustering schedules the label pipeline with prefixed unique IDs', () => {
+it('GPUDBSCAN schedules the label pipeline with prefixed unique IDs', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const ids = new GPUSpatialClustering(createProps(graph))
-    .getCommandNodes(graph)
-    .map(node => node.id);
+  const ids = new GPUDBSCAN(createProps(graph)).getCommandNodes(graph).map(node => node.id);
   expect(ids[0]).toBe('spatial-clustering-grid-positions');
   expect(ids.at(-1)).toBe('spatial-clustering-labels');
   expect(new Set(ids).size).toBe(ids.length);
@@ -165,10 +172,10 @@ it('GPUSpatialClustering schedules the label pipeline with prefixed unique IDs',
   device.destroy();
 });
 
-it('GPUSpatialClustering orders cluster outputs and publishes last', () => {
+it('GPUDBSCAN orders cluster outputs and publishes last', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const ids = new GPUSpatialClustering(
+  const ids = new GPUDBSCAN(
     createProps(
       graph,
       {
@@ -204,28 +211,28 @@ it('GPUSpatialClustering orders cluster outputs and publishes last', () => {
   device.destroy();
 });
 
-it('GPUSpatialClustering schedules only scalar and cluster nodes for empty input', () => {
+it('GPUDBSCAN schedules only scalar and cluster nodes for empty input', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const ids = new GPUSpatialClustering(createProps(graph, {clusters: createCluster(graph, 2)}, 0))
+  const ids = new GPUDBSCAN(createProps(graph, {clusters: createCluster(graph, 2)}, 0))
     .getCommandNodes(graph)
     .map(node => node.id);
   expect(ids).toEqual(['spatial-clustering-cluster-count', 'spatial-clustering-publish']);
   device.destroy();
 });
 
-it('GPUSpatialClustering validates props', () => {
+it('GPUDBSCAN validates props', () => {
   const device = createNullWebGPUDevice();
   const expectThrow = (build: (graph: GPUCommandGraph) => ClusteringOverrides, pattern: RegExp) => {
     const graph = new GPUCommandGraph(device);
-    expect(() => new GPUSpatialClustering(createProps(graph, build(graph)))).toThrow(pattern);
+    expect(() => new GPUDBSCAN(createProps(graph, build(graph)))).toThrow(pattern);
   };
 
   expectThrow(() => ({gridSize: [0, 4]}), /gridSize/);
   expectThrow(() => ({gridSize: [2.5, 4]}), /gridSize/);
   // The device-derived grid maximum is checked at declaration.
   const gridGraph = new GPUCommandGraph(device);
-  const largeGrid = new GPUSpatialClustering(createProps(gridGraph, {gridSize: [65536, 65536]}));
+  const largeGrid = new GPUDBSCAN(createProps(gridGraph, {gridSize: [65536, 65536]}));
   expect(() => largeGrid.getCommandNodes(gridGraph)).toThrow(
     /spatial-clustering gridSize cells must be at most 33554431/
   );
@@ -311,20 +318,20 @@ it('GPUSpatialClustering validates props', () => {
   device.destroy();
 });
 
-it('GPUSpatialClustering rejects views from another graph', () => {
+it('GPUDBSCAN rejects views from another graph', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const otherGraph = new GPUCommandGraph(device);
-  const contributor = new GPUSpatialClustering(createProps(graph));
+  const contributor = new GPUDBSCAN(createProps(graph));
   expect(() => contributor.getCommandNodes(otherGraph)).toThrow(/must belong to the target graph/);
   device.destroy();
 });
 
-it('GPUSpatialClustering schedules sort nodes for centroids only with sumOrder sorted', () => {
+it('GPUDBSCAN schedules sort nodes for centroids only with sumOrder sorted', () => {
   const device = createNullWebGPUDevice();
   const getIds = (overrides: ClusteringOverrides) => {
     const graph = new GPUCommandGraph(device);
-    return new GPUSpatialClustering(
+    return new GPUDBSCAN(
       createProps(
         graph,
         {
@@ -355,18 +362,18 @@ it('GPUSpatialClustering schedules sort nodes for centroids only with sumOrder s
   expect(sorted.length).toBeGreaterThan(defaults.length);
   const graph = new GPUCommandGraph(device);
   expect(
-    () => new GPUSpatialClustering(createProps(graph, {sumOrder: 'fast' as unknown as 'sorted'}))
+    () => new GPUDBSCAN(createProps(graph, {sumOrder: 'fast' as unknown as 'sorted'}))
   ).toThrow(/sumOrder must be atomic or sorted/);
   device.destroy();
 });
 
-it('GPUSpatialClustering resolves spatialContext: planar or great-circle only', () => {
+it('GPUDBSCAN resolves spatialContext: planar or great-circle only', () => {
   let serial = 0;
   const makeGraph = () =>
     new GPUCommandGraph(createNullWebGPUDevice(), {id: `clustering-context-${serial++}`});
   const build = (overrides: ClusteringOverrides = {}) => {
     const graph = makeGraph();
-    return {graph, producer: new GPUSpatialClustering(createProps(graph, overrides))};
+    return {graph, producer: new GPUDBSCAN(createProps(graph, overrides))};
   };
   const planar = build().producer;
   expect(planar.spatialContext.coordinateSpace).toBe('planar');
@@ -413,15 +420,15 @@ it('GPUSpatialClustering resolves spatialContext: planar or great-circle only', 
   expect(getSpatialClusteringSharedWGSL(8, 8)).not.toContain('geodesicHaversineTerm(');
 });
 
-// Oracle: scikit-learn 1.9.1 DBSCAN(eps=150 / 6371008.8, min_samples=5, metric='haversine') on the
-// f32 scene dumped by fix/work/C/U7/dump-geo.ts, via fix/work/C/U7/dbscan-haversine.py: 5 clusters,
-// 93 noise points, identical core flags, noise set and core partition.
+// Oracle: clustering-fixture-oracles.py beside this spec regenerates the Mulberry32-77 f32
+// scene and uses scikit-learn 1.6.1 DBSCAN(eps=150/6371008.8, min_samples=5, metric='haversine'),
+// f64 radians in latitude/longitude order: 5 clusters and 93 noise points, matching the old pins.
 it('geographic DBSCAN oracle matches scikit-learn haversine DBSCAN on the pinned scene', () => {
   const positions = createGeographicBlobScene();
   const result = clusterGeographicPointsOracle(positions, {
     bounds: [-180, -90, 180, 90],
     epsilon: 150,
-    minimumPoints: 5
+    minimumSamples: 5
   });
   expect(result.clusterCount).toBe(5);
   expect(result.labels.filter(label => label === ORACLE_NOISE).length).toBe(93);
@@ -467,12 +474,12 @@ it('geographic lattice cells bound every epsilon neighbor pair', () => {
   }
 });
 
-it('GPUSpatialClustering neighbor scans read cell-ordered copies (coalesced reads)', () => {
+it('GPUDBSCAN neighbor scans read cell-ordered copies (coalesced reads)', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const nodes = new GPUSpatialClustering(
-    createProps(graph, {denseBoxShortcut: true}, 64)
-  ).getCommandNodes(graph);
+  const nodes = new GPUDBSCAN(createProps(graph, {denseBoxShortcut: true}, 64)).getCommandNodes(
+    graph
+  );
   const kernels = getGPUCommandNodeKernelSources(nodes);
   getParsedKernelSources(nodes);
   const sourceOf = (id: string) => {
@@ -511,7 +518,7 @@ it('distance measurements reject Lambert frames and accept AEQD meters', () => {
     frame: {id: 'local-frame', kind: 'local-lambert-equal-area'}
   } as const;
   const create = (spatialContext: GPUSpatialContext) =>
-    new GPUSpatialClustering(createProps(new GPUCommandGraph(device), {spatialContext}));
+    new GPUDBSCAN(createProps(new GPUCommandGraph(device), {spatialContext}));
   expect(() => create(lambert)).toThrow(/measures distance/);
   expect(() =>
     create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})

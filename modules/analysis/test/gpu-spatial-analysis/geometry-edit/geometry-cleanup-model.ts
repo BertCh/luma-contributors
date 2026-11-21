@@ -26,8 +26,14 @@ const f32 = Math.fround;
 /** Mirrors `CLEANUP_REPEAT_CHUNK` of the flag pass. */
 const CLEANUP_MODEL_CHUNK = 32;
 
-function snapValue(value: number, gridSize: number): number {
-  return gridSize > 0 ? f32(f32(Math.floor(f32(f32(value / gridSize) + 0.5))) * gridSize) : value;
+export function snapValue(value: number, gridSize: number): number {
+  if (gridSize <= 0) return value;
+  // The shader certifies the cell against its original f32 operands. Binary64 retains enough
+  // precision for this model's f32 input ratio in the documented |steps| < 2^24 range.
+  const spacing = f32(gridSize);
+  const scaled = value / spacing;
+  const lower = Math.floor(scaled);
+  return f32((lower + (scaled - lower >= 0.5 ? 1 : 0)) * spacing);
 }
 
 function readSnappedPoint(input: CleanupModelInput, row: number): [number, number] {

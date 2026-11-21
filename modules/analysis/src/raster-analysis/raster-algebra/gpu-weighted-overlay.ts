@@ -118,6 +118,10 @@ export type GPUWeightedOverlayProps = {
  * the contributing layers. Weights, remap tables, and policies are per-frame parameters, so weight
  * sliders never recompile. `scoreRange` reduces the defined scores with order-preserving integer
  * atomics.
+ * The host packer rejects active unequal linear ramps whose encoded reciprocal scale is
+ * nonfinite or has magnitude below 2^-126 (the minimum normal float32 value). Table mode ignores
+ * inactive ramp settings; use a table remap for a wider domain. Deliberately equal endpoints
+ * retain their step rule.
  */
 export class GPUWeightedOverlay implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */

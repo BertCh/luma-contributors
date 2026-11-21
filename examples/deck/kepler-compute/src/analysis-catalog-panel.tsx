@@ -8,7 +8,6 @@ import type KeplerTable from '@kepler.gl/table';
 import type {Device} from '@luma.gl/core';
 import {
   KEPLER_CATALOG_BINDINGS,
-  completeNetworkCategoricalCatalogEntries,
   describeKeplerCatalogResult,
   getCatalogBinding,
   listCatalogEntries,
@@ -23,7 +22,8 @@ import {
   serializeKeplerDatasetProfileDeclarations,
   serializeCatalogInvocation,
   type CatalogLensScenario,
-  type CatalogFeatureCollection,
+  type CatalogDataInput,
+  type WorkflowHistoryInputReference,
   type CatalogOperationBinding,
   type CatalogOutputTable,
   type CatalogRunResult,
@@ -34,12 +34,19 @@ import {
   getAnalysisSensitivityUnavailableReason,
   type AnalysisSensitivityProvenance
 } from '@luma-contributors/kepler';
+import {
+  createAnalysisCatalogNextDraft,
+  makeAnalysisCatalogResultWorkflow
+} from './analysis-catalog-result-actions';
+import {
+  AnalysisCatalogBlockedEntries,
+  describeCatalogInput,
+  describeCatalogCapacity
+} from './analysis-catalog-display';
 import {AnalysisSensitivityCleanupStatus} from './analysis-sensitivity-strip';
 import {AnalysisResultCard} from './analysis-result-card';
 import {
   createAnalysisResultCardModel,
-  createAnalysisResultNextDraft,
-  makeAnalysisResultWorkflow,
   hasAnalysisResultStackEntry,
   keepAnalysisResultWorkflow,
   type AnalysisResultStackEntry,
@@ -47,7 +54,6 @@ import {
   type AnalysisResultNextAction
 } from './analysis-result-card-model';
 import type {WorkbenchState, WorkbenchStore} from './workflow/workbench-store';
-import {includeSpacetimeCatalogEntries} from './analysis-catalog-spacetime';
 import {
   prepareAnalysisResultPublication,
   showAnalysisResultReport,
@@ -79,7 +85,9 @@ import {
   findNativeGeometryFields,
   makeCatalogPointColumns,
   readCatalogPointColumns,
-  getCatalogSampleInputs
+  getCatalogSampleInputs,
+  readCatalogFeatureInputs,
+  readCatalogTextInput
 } from './analysis-catalog-input';
 
 import {
@@ -97,6 +105,8 @@ import {
 } from './analysis-suggestion-model';
 import {
   createAnalysisCatalogFormModel,
+  restoreAnalysisCatalogInvocation,
+  editAnalysisCatalogOverride,
   EMPTY_CATALOG_INPUT_DRAFT,
   profileAnalysisCatalogInput,
   resolveAnalysisCatalogInputProfiles,
@@ -179,13 +189,7 @@ export function AnalysisCatalogPanel({
     configurationGeneration.current++;
     cancelPendingRun();
   };
-  const entries = useMemo(
-    () =>
-      completeNetworkCategoricalCatalogEntries(
-        includeSpacetimeCatalogEntries(listCatalogEntries({lensScenarios}))
-      ),
-    [lensScenarios]
-  );
+  const entries = useMemo(() => listCatalogEntries({lensScenarios}), [lensScenarios]);
   const [operationId, setOperationId] = useState(KEPLER_CATALOG_BINDINGS[0].id);
   const binding = getCatalogBinding(operationId) as CatalogOperationBinding;
   const [overrides, setOverrides] = useState<Record<string, unknown>>({});
@@ -193,8 +197,9 @@ export function AnalysisCatalogPanel({
   const [result, setResult] = useState<CatalogRunResult | null>(null);
   const [completedRun, setCompletedRun] = useState<{
     model: AnalysisResultCardModel;
-    inputs: Record<string, CatalogFeatureCollection>;
+    inputs: Record<string, CatalogDataInput>;
     id: number;
+    references: Record<string, WorkflowHistoryInputReference>;
   }>();
   const [stackedRun, setStackedRun] = useState<{
     runId: number;
@@ -259,7 +264,7 @@ export function AnalysisCatalogPanel({
       operation?.scrollIntoView({block: 'nearest'});
     });
   }, [launchRequest, onLaunchConsumed]);
-  const lastInputs = useRef<Record<string, CatalogFeatureCollection>>({});
+  const lastInputs = useRef<Record<string, CatalogDataInput>>({});
   const runnableCount = entries.filter(entry => entry.runnable !== 'no').length;
   const blocked = entries.filter(entry => entry.runnable === 'no');
   const isTrajectory = isTrajectoryCatalogOperation(operationId);
@@ -515,7 +520,7 @@ export function AnalysisCatalogPanel({
       return;
     invalidateConfiguration();
     lastApply.current = apply;
-    setOverrides(current => ({...current, [name]: value}));
+    setOverrides(current => editAnalysisCatalogOverride(binding, current, name, value));
   };
   const createResultIdentityForSensitivity = createResultIdentity().isCurrent;
   const renderParameter = (row: (typeof sheet.rows)[number]) => (
@@ -536,7 +541,7 @@ export function AnalysisCatalogPanel({
               registry: registry!,
               parameters,
               revisionKey,
-              readInputs,
+              readInputs: () => readCatalogFeatureInputs(readInputs),
               isCurrent: () => !hasInvalidControls() && createResultIdentityForSensitivity(),
               onChoose: provenance => {
                 changeParameter(row.specification.name, provenance.chosenValue!, 'live');
@@ -562,7 +567,7 @@ export function AnalysisCatalogPanel({
     invoke(() => {
       invalidateConfiguration();
       setPreviewEnabled(false);
-      const restored = parseCatalogInvocation(record.invocation);
+      const restored = restoreAnalysisCatalogInvocation(record.invocation);
       restoredSensitivity.current = record.sensitivity;
       setOperationId(restored.binding.id);
       setOverrides({...restored.invocation.parameters});
@@ -616,14 +621,14 @@ export function AnalysisCatalogPanel({
     clearResult();
     setError('');
   };
-  const readInputs = async (): Promise<Record<string, CatalogFeatureCollection>> => {
+  const readInputs = async (): Promise<Record<string, CatalogDataInput>> => {
     const samples = getCatalogSampleInputs(binding.id);
-    const inputs: Record<string, CatalogFeatureCollection> = {};
+    const inputs: Record<string, CatalogDataInput> = {};
     for (const spec of binding.inputs) {
       const draft = getDraft(spec.name);
       if (draft.mode === 'sample')
         inputs[spec.name] = parseCatalogFeatureCollection(samples[spec.name]);
-      else if (draft.mode === 'text') inputs[spec.name] = parseCatalogFeatureCollection(draft.text);
+      else if (draft.mode === 'text') inputs[spec.name] = readCatalogTextInput(draft.text, spec);
       else {
         const resident = residentDatasets.find(dataset => dataset.id === draft.datasetId);
         const source = inputDatasets.find(dataset => dataset.id === draft.datasetId);
@@ -633,7 +638,8 @@ export function AnalysisCatalogPanel({
           field: draft.field,
           isTrajectory: isTrajectoryCatalogOperation(operationId, spec.name),
           parameters,
-          maximumFeatures: spec.maximumFeatures
+          maximumFeatures: spec.maximumFeatures,
+          acceptsTable: spec.acceptsTable || spec.dataKind === 'table'
         });
       }
     }
@@ -758,7 +764,25 @@ export function AnalysisCatalogPanel({
         featureInputsOnly: true,
         executionEngine: device && engineChoice !== 'cpu' ? 'gpu' : 'cpu'
       });
-      setCompletedRun({model, inputs, id: sequence});
+      setCompletedRun({
+        model,
+        inputs,
+        id: sequence,
+        references: Object.fromEntries(
+          Object.entries(inputs).map(([name, input]) => [
+            name,
+            input.type === 'FeatureCollection'
+              ? {
+                  mode: 'text' as const,
+                  text: JSON.stringify(input),
+                  ...(getDraft(name).profileDeclarations
+                    ? {profileDeclarations: getDraft(name).profileDeclarations}
+                    : {})
+                }
+              : {mode: 'native' as const, datasetId: getDraft(name).datasetId, field: ''}
+          ])
+        )
+      });
       setResult(output);
       setResultContext({
         revisionKey,
@@ -769,7 +793,7 @@ export function AnalysisCatalogPanel({
       });
       setError('');
     };
-    let inputs: Record<string, CatalogFeatureCollection> = {};
+    let inputs: Record<string, CatalogDataInput> = {};
     setRunning(true);
     try {
       inputs = await readInputs();
@@ -919,7 +943,7 @@ export function AnalysisCatalogPanel({
     invoke(() => {
       cancel();
       invalidateConfiguration();
-      const restored = parseCatalogInvocation(invocationText);
+      const restored = restoreAnalysisCatalogInvocation(invocationText);
       setOperationId(restored.binding.id);
       setOverrides({...restored.invocation.parameters});
       clearResult();
@@ -967,7 +991,7 @@ export function AnalysisCatalogPanel({
       return;
     invalidateConfiguration();
     setPreviewEnabled(false);
-    const next = createAnalysisResultNextDraft(completedRun.model, action);
+    const next = createAnalysisCatalogNextDraft(completedRun.model, action);
     setDrafts(current => ({...current, ...next.drafts}));
     setOperationId(next.operationId);
     setOverrides(next.overrides);
@@ -985,9 +1009,10 @@ export function AnalysisCatalogPanel({
     const {getWorkbenchStore} = await import('./workflow/workbench-app');
     if (hasInvalidControls() || !resultContext?.isCurrent()) return;
     const store = getWorkbenchStore();
-    const document = makeAnalysisResultWorkflow(
+    const document = makeAnalysisCatalogResultWorkflow(
       completedRun.model,
       completedRun.inputs,
+      completedRun.references,
       store.registry
     );
     const entry = keepAnalysisResultWorkflow(document, store, save);
@@ -1035,20 +1060,7 @@ export function AnalysisCatalogPanel({
       >
         {showBlocked ? 'Hide' : 'Show'} {blocked.length} not runnable
       </button>
-      {showBlocked && (
-        <ul
-          id="catalog-blocked-list"
-          data-testid="catalog-blocked"
-          style={{maxHeight: 160, overflow: 'auto', fontSize: 12}}
-        >
-          {blocked.slice(0, 300).map(entry => (
-            <li key={entry.contributorName} title={entry.reason}>
-              {entry.contributorName} · {entry.capabilityId}
-            </li>
-          ))}
-          <li>{blocked[0]?.reason}</li>
-        </ul>
-      )}
+      {showBlocked && <AnalysisCatalogBlockedEntries entries={blocked} />}
       <details data-testid="catalog-lens">
         <summary>Lens scenarios ({lensScenarios.length} loaded)</summary>
         <p className="hint">
@@ -1152,8 +1164,12 @@ export function AnalysisCatalogPanel({
             return (
               <fieldset key={spec.name} data-catalog-input={spec.name} style={{marginTop: 8}}>
                 <legend>
-                  {spec.label} ({spec.accepts.join('/')}, ≤ {spec.maximumFeatures} features, ≤{' '}
-                  {spec.maximumVertices} vertices)
+                  {describeCatalogInput(
+                    spec,
+                    (draft.mode === 'native' && !draft.field && Boolean(spec.acceptsTable)) ||
+                      (inputProfiles.profiles[spec.name]?.kind === 'attributes' &&
+                        Boolean(spec.acceptsTable || spec.dataKind === 'table'))
+                  )}
                 </legend>
                 {inputProfiles.profiles[spec.name] && (
                   <AnalysisRowMeaning
@@ -1186,12 +1202,14 @@ export function AnalysisCatalogPanel({
                   style={{width: '100%'}}
                 >
                   <option value="sample">Built-in sample</option>
-                  <option value="text">GeoJSON text</option>
+                  <option value="text">
+                    {spec.acceptsTable ? 'GeoJSON or table JSON' : 'GeoJSON text'}
+                  </option>
                   <option value="native">Native dataset</option>
                 </select>
                 {draft.mode === 'text' && (
                   <textarea
-                    aria-label={`${spec.label} GeoJSON`}
+                    aria-label={`${spec.label} ${spec.acceptsTable ? 'GeoJSON or table JSON' : 'GeoJSON'}`}
                     rows={4}
                     value={draft.text}
                     onChange={event => setDraft(spec.name, {text: event.target.value})}
@@ -1210,7 +1228,10 @@ export function AnalysisCatalogPanel({
                     >
                       <option value="">Choose dataset</option>
                       {geometryDatasets
-                        .filter(item => item.fields.length)
+                        .filter(
+                          item =>
+                            spec.acceptsTable || spec.dataKind === 'table' || item.fields.length
+                        )
                         .map(item => (
                           <option key={item.dataset.id} value={item.dataset.id}>
                             {item.dataset.label}
@@ -1227,7 +1248,11 @@ export function AnalysisCatalogPanel({
                       onChange={event => setDraft(spec.name, {field: event.target.value})}
                       style={{width: '100%'}}
                     >
-                      <option value="">Choose geometry field</option>
+                      <option value="">
+                        {spec.acceptsTable || spec.dataKind === 'table'
+                          ? 'No geometry (table rows)'
+                          : 'Choose geometry field'}
+                      </option>
                       {(selectedDataset?.fields ?? [])
                         .filter(
                           field =>
@@ -1294,12 +1319,20 @@ export function AnalysisCatalogPanel({
           <p role="status" data-testid="catalog-preflight-status">
             {form.status}
           </p>
-          {form.capacities.map(capacity => (
-            <p key={capacity.input} data-testid="catalog-input-capacity" className="hint">
-              {capacity.label}: {capacity.rows ?? 'unknown'} / {capacity.maximumRows} rows;{' '}
-              {capacity.vertices ?? 'unknown'} / {capacity.maximumVertices} vertices.
-            </p>
-          ))}
+          {form.capacities.map(capacity => {
+            const draft = getDraft(capacity.input);
+            const input = binding.inputs.find(candidate => candidate.name === capacity.input)!;
+            const tableSelected =
+              capacity.tableRoute ||
+              (draft.mode === 'native' &&
+                !draft.field &&
+                Boolean(input.acceptsTable || input.dataKind === 'table'));
+            return (
+              <p key={capacity.input} data-testid="catalog-input-capacity" className="hint">
+                {describeCatalogCapacity(capacity, tableSelected)}
+              </p>
+            );
+          })}
           <ul>
             {form.problems.map(problem => (
               <li key={problem}>Invalid input or setting: {problem}</li>

@@ -217,7 +217,7 @@ graph.add(new GPUClassBreaks({
   output: {breaks, classCount}
 }));
 graph.add(new GPUColorScale({
-  values, mask: filterMask, domain: breaks, domainCount: classCount,
+  values, mask: filterMask, domain: breaks, classCount,
   palette,                       // the exact ColorBrewer table of the scheme, packed rgba8
   parameters: scaleParameters, maximumDomainCount: 10, maximumPaletteCount: 9,
   output: {colors, classIndices, classCounts}   // colors: packed rgba8 for the layer

@@ -5,7 +5,7 @@
 import type {
   GPUAnalysisFieldRoleSpec,
   GPUAnalysisMeasurementLevel
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   KeplerOperationDescriptor,
   KeplerOperationFieldDescriptor,

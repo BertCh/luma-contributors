@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.nearest-feature-weights: observations, libraries…",
   "description": "Result of gpu-spatial-analysis.nearest-feature-weights: observations, libraries, librarySourceRows → candidateOverflow. rows: 1. values read back from the GPU run. input observations: 2344 points.",
-  "llms": "Result of gpu-spatial-analysis.nearest-feature-weights: observations, libraries, librarySourceRows → candidateOverflow\n\n- rows: 1\n- input observations: 2344 points\n- input libraries: 14 points\n- input librarySourceRows: 14 rows\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 14 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- no layout recorded: adjacency table instead of a node-link drawing\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.nearest-feature-weights: observations, libraries, librarySourceRows → candidateOverflow\n\n- rows: 1\n- input observations: 2344 points\n- input libraries: 14 points\n- input librarySourceRows: 14 rows\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 14 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 14 categories; 5 largest coloured\n- no layout recorded: adjacency table instead of a node-link drawing\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "1"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:50.299Z",
-    "runId": "run-783c6aa6",
+    "date": "2026-11-20T23:50:16.892Z",
+    "runId": "run-3a754b26",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-783c6aa6",
+    "runId": "run-3a754b26",
     "rung": "result",
     "bindings": {},
     "clauses": [],

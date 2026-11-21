@@ -51,7 +51,7 @@ it('matches the hand-computed two-income distribution and every summary field', 
     parameters: getGPUInequalityParameterValues({palmaTopShare: 0.5, palmaBottomShare: 0.5}),
     lorenzKnotCount: 5
   });
-  expect(result.gini[0]).toBe(0.25);
+  expect(result.weightedGini[0]).toBe(0.25);
   expect(result.theilT[0]).toBeCloseTo(Math.log(27 / 16) / 4, 6);
   expect(result.theilL[0]).toBeCloseTo(Math.log(4 / 3) / 2, 6);
   expect(result.atkinson[0]).toBeCloseTo(1 - Math.sqrt(3) / 2, 6);
@@ -60,7 +60,15 @@ it('matches the hand-computed two-income distribution and every summary field', 
   expect(result.mean[0]).toBe(2);
   expect(Array.from(result.counts)).toEqual([2, 0]);
   expect(Array.from(result.lorenzKnots.slice(0, 5))).toEqual([0, 0.125, 0.25, 0.625, 1]);
-  for (const name of ['gini', 'theilT', 'theilL', 'atkinson', 'hoover', 'palma', 'mean'] as const)
+  for (const name of [
+    'weightedGini',
+    'theilT',
+    'theilL',
+    'atkinson',
+    'hoover',
+    'palma',
+    'mean'
+  ] as const)
     expect(result[name][1]).toBeNaN();
   expect(result.lorenzKnots.slice(5).every(Number.isNaN)).toBe(true);
   expect(Array.from(result.globalSummary)).toEqual([
@@ -84,7 +92,7 @@ it('defines the empty-input extension by zero counts and totals and undefined st
   });
   expect(Array.from(result.counts)).toEqual([0]);
   for (const name of [
-    'gini',
+    'weightedGini',
     'theilT',
     'theilL',
     'atkinson',
@@ -125,7 +133,7 @@ it('matches an independent pairwise weighted Gini and preserves replication and 
     weights: undefined
   });
   for (const name of [
-    'gini',
+    'weightedGini',
     'theilT',
     'theilL',
     'atkinson',
@@ -149,7 +157,7 @@ it('handles zero income, filtering, alternate epsilon and mismatched input array
   const result = computeInequalityOnCPU(input);
   expect(result.counts[0]).toBe(2);
   expect(result.mean[0]).toBe(0);
-  expect(result.gini[0]).toBeNaN();
+  expect(result.weightedGini[0]).toBeNaN();
   expect(result.lorenzKnots.every(Number.isNaN)).toBe(true);
   expect(Array.from(result.globalSummary)).toEqual([NaN, NaN, NaN, NaN, 2, 0, 2, 0]);
   for (const [epsilon, expected] of [
@@ -190,11 +198,12 @@ it('validates operation shapes and keeps both graph output contracts identical',
   expect(() => new CPUInequalityOperation({...props, lorenzKnotCount: 1})).toThrow(
     /inequality-test lorenzKnotCount/
   );
+  // @ts-expect-error Deliberate runtime rejection of a selection with no terminal.
   expect(() => new CPUInequalityOperation({...props, output: {}})).toThrow(
     /inequality-test output/
   );
   expect(() => new GPUInequalityOperation({...props, zoneCount: 0})).toThrow(
-    /inequality-test outputs/
+    /inequality-test zoneCount/
   );
   expect(new CPUInequalityOperation(props).contract.outputs).toEqual(
     new GPUInequalityOperation(props).contract.outputs

@@ -1,7 +1,7 @@
 # luma.gl
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-"""Reference HDBSCAN labels and core distances for GPUHierarchicalDensityClustering.
+"""Reference HDBSCAN labels and core distances for GPUHDBSCAN.
 
 Writes fixtures/spatial-clustering-hdbscan.json next to this script, consumed by
 test/gpu-spatial-analysis/spatial-clustering/hierarchical-density-clustering-oracle.ts (and through

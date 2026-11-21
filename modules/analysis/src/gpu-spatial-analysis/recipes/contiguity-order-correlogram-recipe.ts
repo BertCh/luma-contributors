@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+import type {GPURecipeStageStatusPort} from '../../analysis-core/contracts/index';
+
 import {addPreparedRecipe} from './prepared-recipe';
 import {
   snapshotWeightsFields,
@@ -92,7 +95,7 @@ export type GPUContiguityOrderCorrelogramRecipeProps = {
    */
   workCapacity?: number;
   /** Caller-owned outputs; graph-owned when omitted. */
-  outputs?: Partial<GPUContiguityOrderCorrelogramRecipeOutputs>;
+  output?: Partial<GPUContiguityOrderCorrelogramRecipeOutputs>;
 };
 
 /** Result of {@link addContiguityOrderCorrelogramRecipe}. */
@@ -125,6 +128,7 @@ function declareContiguityOrderCorrelogramRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUContiguityOrderCorrelogramRecipeProps
 ): GPUContiguityOrderCorrelogramRecipeResult {
+  const destinations = resolveRecipeDestinations(props.id ?? 'contiguity-order-correlogram', props);
   const captured = snapshotWeightsFields(props, [
     'id',
     'weights',
@@ -132,15 +136,11 @@ function declareContiguityOrderCorrelogramRecipe<Parameters>(
     'mask',
     'maximumOrder',
     'slotCapacity',
-    'workCapacity',
-    'outputs'
+    'workCapacity'
   ]);
   props = Object.freeze({
     ...captured,
-    weights: snapshotWeightsPort(captured.weights),
-    ...(captured.outputs
-      ? {outputs: snapshotWeightsFields(captured.outputs, ['correlogram', 'incompleteOrders'])}
-      : {})
+    weights: snapshotWeightsPort(captured.weights)
   });
   const id = props.id ?? 'contiguity-order-correlogram';
   const {maximumOrder} = props;
@@ -170,14 +170,14 @@ function declareContiguityOrderCorrelogramRecipe<Parameters>(
       `${id}-correlogram`,
       'float32',
       maximumOrder * columns.length,
-      props.outputs?.correlogram
+      destinations?.correlogram
     ),
     incompleteOrders: getOrCreateView(
       graph,
       `${id}-incomplete-orders`,
       'uint32',
       maximumOrder,
-      props.outputs?.incompleteOrders
+      destinations?.incompleteOrders
     )
   };
   validateRecipeBoundary(
@@ -196,10 +196,9 @@ function declareContiguityOrderCorrelogramRecipe<Parameters>(
   );
   const builder = new RecipeBuilder(graph);
   const orderWeights: GPUSpatialWeights[] = [];
-  const stages: {
-    stage: string;
-    status: {overflow: GraphDataView<'uint32'>; candidateOverflow: GraphDataView<'uint32'>};
-  }[] = [];
+  const stages: GPURecipeStageStatusPort[] = [
+    {stage: 'weights', status: props.weights.status ?? {}}
+  ];
   for (let order = 1; order <= maximumOrder; order++) {
     const orderId = `${id}-order-${order}`;
     const ring = createTransientSpatialWeights(graph, `${orderId}-ring`, rows, slotCapacity);
@@ -221,25 +220,23 @@ function declareContiguityOrderCorrelogramRecipe<Parameters>(
       'float32',
       GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
     );
-    builder.add(
-      new GPUSpatialWeightsAlgebra({
-        id: `${orderId}-ring`,
-        operation: 'higherOrder',
-        weights: props.weights,
-        order,
-        workCapacity,
-        output: ring
-      })
-    );
-    builder.add(
-      new GPUSpatialWeightsTransform({
-        id: `${orderId}-standardize`,
-        operation: 'row',
-        weights: ring,
-        output: standardized
-      })
-    );
-    const orderRing = {...ring, weights: standardized};
+    const algebra = new GPUSpatialWeightsAlgebra({
+      id: `${orderId}-ring`,
+      operation: 'higherOrder',
+      weights: props.weights,
+      order,
+      workCapacity,
+      output: ring
+    });
+    builder.add(algebra);
+    const transform = new GPUSpatialWeightsTransform({
+      id: `${orderId}-standardize`,
+      operation: 'row',
+      weights: algebra.outputWeights,
+      output: standardized
+    });
+    builder.add(transform);
+    const orderRing = transform.outputWeights;
     orderWeights.push(orderRing);
     builder.add(
       new GPUGlobalSpatialStatistics({

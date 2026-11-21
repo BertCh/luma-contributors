@@ -99,7 +99,7 @@ const CROSS_CASES = [
 ];
 
 for (const testCase of CROSS_CASES)
-  it(`cross-variogram grid path matches the dense path: ${testCase.name}`, async () => {
+  it(`cross-variogram explicit lattice matches the default 256 x 256 lattice (both indexed): ${testCase.name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const data = createData(7, ROWS);
@@ -143,14 +143,16 @@ for (const testCase of CROSS_CASES)
         context.destroy();
       }
     }
-    const [dense, grid] = results;
-    expect(grid.pairCounts).toEqual(dense.pairCounts);
-    expect(grid.status).toEqual(dense.status);
-    expectClose(grid.semivariances, dense.semivariances);
+    const [defaultLattice, grid] = results;
+    expect(grid.pairCounts).toEqual(defaultLattice.pairCounts);
+    expect(grid.status).toEqual(defaultLattice.status);
+    expectClose(grid.semivariances, defaultLattice.semivariances);
     if (testCase.maximumDistance > 0) {
-      expect(dense.pairCounts.reduce((sum, count) => sum + count, 0)).toBeGreaterThan(1000);
+      expect(defaultLattice.pairCounts.reduce((sum, count) => sum + count, 0)).toBeGreaterThan(
+        1000
+      );
     } else {
-      expect(dense.status).toEqual(new Array(bins).fill(1));
+      expect(defaultLattice.status).toEqual(new Array(bins).fill(1));
     }
   });
 
@@ -350,7 +352,7 @@ async function runMarkedPointStatistics(
   }
 }
 
-it('cross-variogram grid path matches the dense path for pairs on cell and bin edges', async () => {
+it('cross-variogram explicit lattices match the default 256 x 256 lattice for pairs on cell and bin edges', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const data = createLatticeData();
@@ -358,14 +360,14 @@ it('cross-variogram grid path matches the dense path for pairs on cell and bin e
     [5, 5],
     [64, 64]
   ] as const) {
-    const dense = await runCrossVariogram(device, data, 4, 4);
+    const defaultLattice = await runCrossVariogram(device, data, 4, 4);
     const grid = await runCrossVariogram(device, data, 4, 4, gridSize);
-    expect(grid.pairCounts).toEqual(dense.pairCounts);
-    expect(grid.status).toEqual(dense.status);
-    expectClose(grid.semivariances, dense.semivariances);
+    expect(grid.pairCounts).toEqual(defaultLattice.pairCounts);
+    expect(grid.status).toEqual(defaultLattice.status);
+    expectClose(grid.semivariances, defaultLattice.semivariances);
   }
   // Bins are left-closed: distance 1 lands in bin 1, and the final edge (distance 4) is included.
-  const dense = await runCrossVariogram(device, data, 4, 4);
+  const defaultLattice = await runCrossVariogram(device, data, 4, 4);
   const rows = data.rows;
   let atMaximum = 0;
   for (let first = 0; first < rows; first++)
@@ -375,21 +377,21 @@ it('cross-variogram grid path matches the dense path for pairs on cell and bin e
       if (dx * dx + dy * dy === 16) atMaximum++;
     }
   expect(atMaximum).toBeGreaterThan(0);
-  expect(dense.pairCounts[0]).toBe(0);
+  expect(defaultLattice.pairCounts[0]).toBe(0);
 });
 
-it('cross-variogram grid path matches the dense path when the radius exceeds the extent', async () => {
+it('cross-variogram explicit lattice matches the default 256 x 256 lattice when the radius exceeds the extent', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const data = createLatticeData();
-  const dense = await runCrossVariogram(device, data, 500, 6);
+  const defaultLattice = await runCrossVariogram(device, data, 500, 6);
   const grid = await runCrossVariogram(device, data, 500, 6, [32, 32]);
-  expect(grid.pairCounts).toEqual(dense.pairCounts);
+  expect(grid.pairCounts).toEqual(defaultLattice.pairCounts);
   expect(grid.pairCounts.reduce((sum, count) => sum + count, 0)).toBe(
     (data.rows * (data.rows - 1)) / 2
   );
-  expect(grid.status).toEqual(dense.status);
-  expectClose(grid.semivariances, dense.semivariances);
+  expect(grid.status).toEqual(defaultLattice.status);
+  expectClose(grid.semivariances, defaultLattice.semivariances);
 });
 
 it('marked point statistics grid path matches the dense path for pairs on cell and shell edges', async () => {

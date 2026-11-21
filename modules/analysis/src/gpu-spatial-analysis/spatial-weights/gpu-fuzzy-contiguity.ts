@@ -1,7 +1,9 @@
+import {snapshotPolygonReviewProps} from './weights-review-snapshot';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createWeightsCountNodes} from './spatial-weights-count';
 import {
   createTransientView,
   doGraphDataViewsOverlap,
@@ -33,7 +35,7 @@ import {getFuzzyContiguityCSRNodes} from './gpu-fuzzy-contiguity-csr';
 import {getFuzzyContiguityPairSortNodes} from './gpu-fuzzy-contiguity-pair-sort';
 import {
   type GPUSpatialWeights,
-  type GPUSpatialWeightsOutput,
+  type GPUSpatialWeightsProducerOutput as GPUSpatialWeightsOutput,
   describeGPUSpatialWeights,
   validateGPUSpatialWeightsOutput,
   getGPUSpatialWeightsViews,
@@ -89,11 +91,15 @@ export type GPUFuzzyContiguityProps = {
  * dimension. Required pair counts and every CSR prefix saturate at 0xffffffff; overflow is set
  * and the bounded prefix stays valid even when more than uint32 pairs are required. Candidate
  * polygon complexity still determines the cost of each exact distance test.
+ * Optional output.status.count is written from the terminal CSR offset; tails beyond it are unspecified.
  */
 export class GPUFuzzyContiguity implements GPUCommandNodeProducer {
   readonly id: string;
   readonly outputWeights: GPUSpatialWeights;
-  constructor(readonly props: GPUFuzzyContiguityProps) {
+  readonly props: GPUFuzzyContiguityProps;
+  constructor(props: GPUFuzzyContiguityProps) {
+    props = snapshotPolygonReviewProps(props);
+    this.props = props;
     this.id = props.id ?? 'fuzzy-contiguity';
     const rows = props.polygons.featureOffsets.length - 1;
     validateCapacity(this.id, 'features', rows, 1, FUZZY_CONTIGUITY_MAXIMUM_FEATURES);
@@ -127,7 +133,7 @@ export class GPUFuzzyContiguity implements GPUCommandNodeProducer {
     if (!Number.isFinite(props.tolerance) || props.tolerance < 0 || props.tolerance > 1e18)
       throw new Error(`${this.id}: invalid tolerance`);
     if (
-      validateGPUSpatialWeightsOutput(this.id, props.output) !== rows ||
+      validateGPUSpatialWeightsOutput(this.id, props.output, undefined, true) !== rows ||
       props.output.featureStatus.length !== rows ||
       props.output.added.length !== props.output.neighbors.length
     )
@@ -152,7 +158,8 @@ export class GPUFuzzyContiguity implements GPUCommandNodeProducer {
       ['output.added', props.output.added],
       ['output.status.overflow', props.output.status.overflow],
       ['output.status.requiredCount', props.output.status.requiredCount],
-      ['output.status.candidateOverflow', props.output.status.candidateOverflow]
+      ['output.status.candidateOverflow', props.output.status.candidateOverflow],
+      ['output.status.count', props.output.status.count]
     ] as const;
     for (const [outputIndex, [name, view]] of outputs.entries()) {
       if (!view) continue;
@@ -170,7 +177,7 @@ export class GPUFuzzyContiguity implements GPUCommandNodeProducer {
       this.id,
       [
         ...getGPUSpatialWeightsViews(props.output),
-        ...getGPUSpatialWeightsStatusViews(props.output),
+        ...getGPUSpatialWeightsStatusViews(props.output, true),
         props.output.featureStatus,
         props.output.added
       ],
@@ -197,6 +204,15 @@ export class GPUFuzzyContiguity implements GPUCommandNodeProducer {
     });
   }
   getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    return [
+      ...this.getWeightsCommandNodes(graph),
+      ...createWeightsCountNodes(graph, this.id, this.props.output)
+    ];
+  }
+
+  private getWeightsCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
@@ -245,7 +261,7 @@ export class GPUFuzzyContiguity implements GPUCommandNodeProducer {
       ['polygons.polygonOffsets', polygons.polygonOffsets],
       ['polygons.ringOffsets', polygons.ringOffsets],
       ...getGPUSpatialWeightsViews(props.output).map(view => ['output weights', view] as const),
-      ...getGPUSpatialWeightsStatusViews(props.output).map(
+      ...getGPUSpatialWeightsStatusViews(props.output, true).map(
         view => ['output status', view] as const
       ),
       ['output.featureStatus', props.output.featureStatus],
@@ -381,7 +397,7 @@ fn getFeatureDistance(first:u32,second:u32)->f32{
       polygons.polygonOffsets,
       polygons.ringOffsets,
       ...getGPUSpatialWeightsViews(props.output),
-      ...getGPUSpatialWeightsStatusViews(props.output),
+      ...getGPUSpatialWeightsStatusViews(props.output, true),
       props.output.featureStatus,
       props.output.added
     ]);

@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Variogram model families supported by {@link fitVariogramModel}. */
 export type VariogramModelType =
@@ -88,6 +91,17 @@ const MAXIMUM_RANGE_STEPS = 1024;
 /** Match the ordered cooperative-refinement budget accepted by the GPU contributor. */
 const MAXIMUM_ITERATIONS = 64;
 const CRESSIE_PASSES = 3;
+
+/** CPU fit with the measured final-pass search diagnostics. */
+export type VariogramModelFitDiagnostics = {
+  model: VariogramModel;
+  /** Width of the final bracket in log(range), as in the operation twin. */
+  logRangeBracket: number;
+  /** Best ladder candidate was at a search-domain endpoint. */
+  atBoundary: boolean;
+  /** Interior optimum with final log-range bracket at most 1e-5. */
+  converged: boolean;
+};
 
 /** @internal Validate explicit CPU search budgets, including zero, before fitting. */
 export function getVariogramModelSearchOptions(
@@ -225,8 +239,7 @@ export function evaluateVariogramModel(
  * Fits a spherical, exponential, Gaussian or Matern model to empirical variogram bins by weighted least
  * squares, on the CPU.
  *
- * Fitting runs on at most a few hundred read-back bins and is nonlinear only in the range, so it
- * stays on the CPU: for each range on a log ladder (200 points by default) over `[minLag / 10, 3 * maxLag]` the
+ * For each range on a log ladder (200 points by default) over `[minLag / 10, 3 * maxLag]`, the
  * nugget and partial sill are the closed-form non-negative weighted linear least-squares solution,
  * and the best range is refined by golden-section search between its ladder neighbors. Cressie
  * weighting repeats the search three times with weights from the previous model. Every pass
@@ -236,7 +249,8 @@ export function evaluateVariogramModel(
  * @param input Empirical bins.
  * @param options Model family, weighting and search budgets.
  * @returns The fitted model.
- * @throws If fewer than two bins are usable, the model or weighting is unknown, or a budget is invalid.
+ * @throws If the bin arrays differ in length, fewer than two bins are usable, the model or
+ *   weighting is unknown, or a budget is invalid.
  */
 export function fitVariogramModel(
   input: VariogramModelInput,
@@ -245,11 +259,16 @@ export function fitVariogramModel(
   return fitVariogramModelWithDiagnostics(input, options).model;
 }
 
-/** @internal Share the CPU search and its measured bracket with the operation twin. */
+/** Fits a model and returns the measured final-pass bracket and boundary diagnostics. */
 export function fitVariogramModelWithDiagnostics(
   input: VariogramModelInput,
   options: VariogramModelOptions
-): {model: VariogramModel; logRangeBracket: number; atBoundary: boolean} {
+): VariogramModelFitDiagnostics {
+  validateRequirement(
+    'fitVariogramModel',
+    !('diagnostics' in options),
+    'diagnostics was removed. Use fitVariogramModelWithDiagnostics to return diagnostics'
+  );
   const searchOptions = getVariogramModelSearchOptions(options);
   const {model} = options;
   const weighting = options.weighting ?? 'cressie';
@@ -257,14 +276,17 @@ export function fitVariogramModelWithDiagnostics(
   if (weighting !== 'cressie' && weighting !== 'pairs' && weighting !== 'none') {
     throw new Error(`Unknown variogram weighting ${String(weighting)}`);
   }
+  const length = input.distances.length;
+  if (input.semivariances.length !== length || input.pairCounts.length !== length) {
+    throw new Error(
+      `fitVariogramModel distances, semivariances and pairCounts must have equal lengths, got ${length}, ${input.semivariances.length} and ${input.pairCounts.length}`
+    );
+  }
   const distances: number[] = [];
   const semivariances: number[] = [];
   const pairCounts: number[] = [];
-  const length = Math.min(
-    input.distances.length,
-    input.semivariances.length,
-    input.pairCounts.length
-  );
+  let minimumLag = Infinity;
+  let maximumLag = 0;
   for (let bin = 0; bin < length; bin++) {
     const distance = input.distances[bin];
     const semivariance = input.semivariances[bin];
@@ -278,27 +300,37 @@ export function fitVariogramModelWithDiagnostics(
       distances.push(distance);
       semivariances.push(semivariance);
       pairCounts.push(pairCount);
+      minimumLag = Math.min(minimumLag, distance);
+      maximumLag = Math.max(maximumLag, distance);
     }
   }
   if (distances.length < 2) {
     throw new Error('Variogram model fitting needs at least two non-empty bins');
   }
+  const rangeSearch = {
+    ...searchOptions,
+    lowest: Math.log(minimumLag / 10),
+    highest: Math.log(3 * maximumLag)
+  };
   let weights = pairCounts.map(count => (weighting === 'none' ? 1 : count));
-  let best = fitRange(model, distances, semivariances, weights, searchOptions);
-  if (weighting === 'cressie') {
+  let best = fitRange(model, distances, semivariances, weights, rangeSearch);
+  // Zero observations already have the exact zero fit. Reweighting would divide pair counts
+  // by Number.MIN_VALUE, overflow, and turn its zero objective into 0 * Infinity = NaN.
+  if (weighting === 'cressie' && !semivariances.every(value => value === 0)) {
     for (let pass = 0; pass < CRESSIE_PASSES; pass++) {
       const previous = best.fit;
       weights = pairCounts.map((count, bin) => {
         const fitted = evaluateVariogramModel({...previous, model}, distances[bin]);
         return count / Math.max(fitted * fitted, Number.MIN_VALUE);
       });
-      best = fitRange(model, distances, semivariances, weights, searchOptions);
+      best = fitRange(model, distances, semivariances, weights, rangeSearch);
     }
   }
   return {
     model: {model, ...best.fit},
     logRangeBracket: best.logRangeBracket,
-    atBoundary: best.atBoundary
+    atBoundary: best.atBoundary,
+    converged: !best.atBoundary && best.logRangeBracket <= 1e-5
   };
 }
 
@@ -309,12 +341,9 @@ function fitRange(
   distances: number[],
   semivariances: number[],
   weights: number[],
-  options: {rangeSteps: number; maximumIterations: number}
+  options: {rangeSteps: number; maximumIterations: number; lowest: number; highest: number}
 ): {fit: LinearFit; logRangeBracket: number; atBoundary: boolean} {
-  const minimumLag = Math.min(...distances);
-  const maximumLag = Math.max(...distances);
-  const lowest = Math.log(minimumLag / 10);
-  const highest = Math.log(3 * maximumLag);
+  const {lowest, highest} = options;
   const ladder: LinearFit[] = [];
   for (let step = 0; step < options.rangeSteps; step++) {
     const range = Math.exp(lowest + ((highest - lowest) * step) / (options.rangeSteps - 1));
@@ -385,27 +414,76 @@ function fitLinear(
     crossSum += weight * shape * semivariances[bin];
   }
   const determinant = weightSum * shapeSquareSum - shapeSum * shapeSum;
-  let nugget = 0;
-  let sill = 0;
-  if (Math.abs(determinant) > 1e-300) {
-    nugget = (shapeSquareSum * valueSum - shapeSum * crossSum) / determinant;
-    sill = (weightSum * crossSum - shapeSum * valueSum) / determinant;
-  }
-  if (!(nugget >= 0 && sill >= 0)) {
-    // Clamp one parameter at zero and re-solve the other; keep the better feasible candidate.
-    const sillOnly = shapeSquareSum > 0 ? Math.max(crossSum / shapeSquareSum, 0) : 0;
-    const nuggetOnly = weightSum > 0 ? Math.max(valueSum / weightSum, 0) : 0;
-    const sillOnlyResidual = getResidual(0, sillOnly, shapes, semivariances, weights);
-    const nuggetOnlyResidual = getResidual(nuggetOnly, 0, shapes, semivariances, weights);
-    if (sillOnlyResidual <= nuggetOnlyResidual) {
-      nugget = 0;
-      sill = sillOnly;
-    } else {
-      nugget = nuggetOnly;
-      sill = 0;
+  const fullRank = determinant > 1e-300;
+  if (fullRank) {
+    const nugget = (shapeSquareSum * valueSum - shapeSum * crossSum) / determinant;
+    const sill = (weightSum * crossSum - shapeSum * valueSum) / determinant;
+    if (nugget >= 0 && sill >= 0) {
+      return {
+        nugget,
+        sill,
+        range,
+        residual: getResidual(nugget, sill, shapes, semivariances, weights)
+      };
     }
   }
-  return {nugget, sill, range, residual: getResidual(nugget, sill, shapes, semivariances, weights)};
+  // Evaluate both one-parameter fits when the joint fit is singular or infeasible.
+  const nugget = weightSum > 0 ? Math.max(valueSum / weightSum, 0) : 0;
+  const sill = shapeSquareSum > 0 ? Math.max(crossSum / shapeSquareSum, 0) : 0;
+  const nuggetResidual = getResidual(nugget, 0, shapes, semivariances, weights);
+  const sillResidual = getResidual(0, sill, shapes, semivariances, weights);
+  let useSill = sillResidual < nuggetResidual;
+  if (fullRank && sillResidual === nuggetResidual) {
+    // Keep the legacy sill-first rule on a true tie. Rounded residuals can hide a difference.
+    useSill =
+      !Number.isFinite(sillResidual) ||
+      (nugget === 0 && sill === 0) ||
+      doesSillFitMatchOrBeatNugget(shapes, semivariances, weights);
+  }
+  return useSill
+    ? {nugget: 0, sill, range, residual: sillResidual}
+    : {nugget, sill: 0, range, residual: nuggetResidual};
+}
+
+/** Compares the exact constrained one-parameter objectives on the stored binary64 inputs. */
+function doesSillFitMatchOrBeatNugget(
+  shapes: number[],
+  semivariances: number[],
+  weights: number[]
+): boolean {
+  const word = new DataView(new ArrayBuffer(8));
+  const significandMask = (1n << 52n) - 1n;
+  function toInteger(value: number): bigint {
+    // All finite binary64 values are integer multiples of 2^-1074.
+    word.setFloat64(0, value);
+    const bits = word.getBigUint64(0);
+    const exponent = (bits >> 52n) & 0x7ffn;
+    const significand = bits & significandMask;
+    const magnitude =
+      exponent === 0n ? significand : (significand | (1n << 52n)) << (exponent - 1n);
+    return bits >> 63n ? -magnitude : magnitude;
+  }
+  let weightSum = 0n;
+  let valueSum = 0n;
+  let shapeSquareSum = 0n;
+  let crossSum = 0n;
+  for (let bin = 0; bin < shapes.length; bin++) {
+    const weight = toInteger(weights[bin]);
+    const shape = toInteger(shapes[bin]);
+    const weightedValue = weight * toInteger(semivariances[bin]);
+    weightSum += weight;
+    valueSum += weightedValue;
+    shapeSquareSum += weight * shape * shape;
+    crossSum += weightedValue * shape;
+  }
+  const nuggetProjection = valueSum > 0n ? valueSum : 0n;
+  const sillProjection = crossSum > 0n ? crossSum : 0n;
+  // Each fit subtracts its squared nonnegative projection divided by its basis norm
+  // from the same total squared error. The common dyadic scale cancels.
+  return (
+    sillProjection * sillProjection * weightSum >=
+    nuggetProjection * nuggetProjection * shapeSquareSum
+  );
 }
 
 function getResidual(

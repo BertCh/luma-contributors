@@ -10,9 +10,9 @@
  *   tiny second graph (`GPUCellLevelSelection`) runs every frame: the map zoom is written into a
  *   one-word buffer and the node publishes that level's cell count and an indirect draw record.
  * - Roll-up view: `GPUCellRollup` rolls the finest table (with fixed-point research-grade sums) up to a
- *   chosen parent resolution. Counts and sums are integers, so the roll-up conserves them exactly.
+ *   chosen parent resolution. Counts and unsaturated fixed-point sums are conserved exactly; saturated sums are unavailable.
  *   A resolution is a kernel constant, so each choice is its own small graph, compiled on first use.
- * - Class view: the roll-up table becomes a value column and a mask (`addCellTableColumnsNode`
+ * - Class view: the roll-up table becomes a value column and a mask (`addShowcaseCellTableColumnsNode`
  *   adapter), `GPUClassBreaks` classifies it and `GPUColorScale` colors it, all on the GPU.
  * - Compare view: `addPeriodComparisonRecipe` aggregates two periods (two masks over the same observation
  *   rows), outer-joins them with `GPUCellTableCompare` into delta, ratio, percent change and a
@@ -53,7 +53,10 @@ import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {findArea, readAreaPolygons} from './b8-areas';
-import {addCellTableColumnsNode} from './b8-cell-table-columns';
+import {
+  addShowcaseCellTableColumnsNode,
+  addShowcaseCertifiedSumCountsNode
+} from './cell-pyramid-sums';
 import {
   decodeQuadbin,
   fillObservationMask,
@@ -65,6 +68,11 @@ import {
 } from './b8-common';
 import {QuadbinTableLayer} from './b8-quadbin-layer';
 import {toRadians} from '@math.gl/core';
+import {
+  readCellComparisonSnapshot,
+  type CellComparisonIdentity,
+  type CellComparisonSnapshot
+} from './cell-pyramid-comparison';
 
 /** Option state of the cell-pyramid scene. */
 export type CellPyramidOptions = {
@@ -144,6 +152,8 @@ type ClassVariant = {
 };
 type CompareVariant = {
   key: string;
+  measure: 'count' | 'sum';
+  readIdentity: CellComparisonIdentity | null;
   resolution: number;
   resources: SpatialAnalysisResources;
   graph: CompiledGPUCommandGraph<void>;
@@ -195,9 +205,12 @@ export async function createCellPyramid(
     resources.createBuffer(`level-candidate-overflow-${parity}`, LEVEL_COUNT * 4)
   );
   // Fixed-point research-grade sums of the finest level only; coarser pyramid levels do not need them.
+  const finestSumOverflowBuffer = resources.createBuffer('finest-sum-overflow', 4);
+  const rollupSumOverflowBuffer = resources.createBuffer('rollup-sum-overflow', 4);
   const finestSumsBuffer = resources.createBuffer('finest-sums', capacity * 8);
   const rollupCellsBuffer = resources.createBuffer('rollup-cells', capacity * 8);
   const rollupCountsBuffer = resources.createBuffer('rollup-counts', capacity * 4);
+  const rollupSumCountsBuffer = resources.createBuffer('rollup-sum-counts', capacity * 4);
   const rollupSumsBuffer = resources.createBuffer('rollup-sums', capacity * 8);
   const rollupSumValuesBuffer = resources.createBuffer('rollup-sum-values', capacity * 4);
   const rollupOverflowBuffer = resources.createBuffer('rollup-overflow', 4);
@@ -263,7 +276,10 @@ export async function createCellPyramid(
           1
         ),
         ...(levelIndex === 0
-          ? {requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1)}
+          ? {
+              requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
+              sumOverflow: importSlice(finestSumOverflowBuffer, 'uint32', 4, 0, 1)
+            }
           : {})
       },
       ...(levelIndex === 0 ? {sums: importSlice(finestSumsBuffer, 'uint32x2', 8, 0, capacity)} : {})
@@ -367,7 +383,8 @@ export async function createCellPyramid(
           status: {
             count: view(tableCountBuffers[0], 'uint32', 4, 1),
             overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1),
-            candidateOverflow: view(levelCandidateOverflowBuffers[0], 'uint32', 4, 1)
+            candidateOverflow: view(levelCandidateOverflowBuffers[0], 'uint32', 4, 1),
+            sumOverflow: view(finestSumOverflowBuffer, 'uint32', 4, 1)
           }
         },
         sumScale: GPU_CELL_DEFAULT_SUM_SCALE,
@@ -384,10 +401,23 @@ export async function createCellPyramid(
               byteOffset: Uint32Array.BYTES_PER_ELEMENT
             }),
             overflow: view(rollupOverflowBuffer, 'uint32', 4, 1),
-            candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1)
+            candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1),
+            sumOverflow: view(rollupSumOverflowBuffer, 'uint32', 4, 1)
           }
         }
       })
+    );
+    addShowcaseCertifiedSumCountsNode(
+      graph,
+      'certified-rollup-sum-counts',
+      view(rollupCountsBuffer, 'uint32', 4, capacity),
+      {
+        count: graph.createDataView(drawView.buffer, {format: 'uint32', length: 1, byteOffset: 4}),
+        overflow: view(rollupOverflowBuffer, 'uint32', 4, 1),
+        candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1),
+        sumOverflow: view(rollupSumOverflowBuffer, 'uint32', 4, 1)
+      },
+      view(rollupSumCountsBuffer, 'uint32', 4, capacity)
     );
     const variant = {graph: resources.track(await graph.compileAsync())};
     rollupVariants.set(parentResolution, variant);
@@ -457,14 +487,32 @@ export async function createCellPyramid(
     const values = importGraphBuffer(graph, 'class-values', classValuesBuffer, 'float32', capacity);
     const mask = importGraphBuffer(graph, 'class-mask', classMaskBuffer, 'uint32', capacity);
     // Table to columns: observations per cell (counts) or research-grade observations per cell (the fixed-point sums as f32).
-    addCellTableColumnsNode(
+    addShowcaseCellTableColumnsNode(
       graph,
       `classes-${value}`,
-      value === 'confirmed'
-        ? {counts: rollupCounts, sumValues: rollupSumValues}
-        : {counts: rollupCounts},
-      {values, mask},
-      rowCount
+      {
+        counts: rollupCounts,
+        ...(value === 'confirmed' ? {sumValues: rollupSumValues} : {}),
+        status: {
+          count: rowCount,
+          overflow: importGraphBuffer(graph, 'rollup-overflow', rollupOverflowBuffer, 'uint32', 1),
+          candidateOverflow: importGraphBuffer(
+            graph,
+            'rollup-candidate-overflow',
+            rollupCandidateOverflowBuffer,
+            'uint32',
+            1
+          ),
+          sumOverflow: importGraphBuffer(
+            graph,
+            'rollup-sum-overflow',
+            rollupSumOverflowBuffer,
+            'uint32',
+            1
+          )
+        }
+      },
+      {values, mask}
     );
     const breaks = importGraphBuffer(
       graph,
@@ -491,7 +539,7 @@ export async function createCellPyramid(
         values,
         mask,
         domain: breaks,
-        domainCount: classCount,
+        classCount,
         palette: importGraphBuffer(graph, 'class-palette', classPalette, 'uint32', CLASS_CAPACITY),
         parameters: classColorScale.importToGraph(graph),
         maximumDomainCount: CLASS_CAPACITY + 1,
@@ -551,23 +599,38 @@ export async function createCellPyramid(
   // --- Compare variants (period comparison recipe) ------------------------------------------------
 
   const compareVariants = new Map<string, CompareVariant>();
-  let compareSnapshot: {
-    rows: number;
-    cells: Uint32Array;
-    before: Float32Array;
-    after: Float32Array;
-    delta: Float32Array;
-    zScore: Float32Array;
-    beforeCells: number;
-    afterCells: number;
-    overflow: boolean;
-    candidateOverflow: boolean;
-  } | null = null;
+  let compareSnapshot: CellComparisonSnapshot | null = null;
+  let comparisonInputGeneration = 0;
   let compareTileLookup: Map<number, number> | null = null;
   let maximumDelta = 20;
 
   const getCompareKey = (options: Readonly<CellPyramidOptions>) =>
     `${options.compareResolution}|${options.compareMeasure}|${options.zScoreKind}`;
+
+  const getComparisonIdentity = (): CellComparisonIdentity | null =>
+    ctx.options.view === 'compare' && !destroyed
+      ? {
+          key: getCompareKey(ctx.options),
+          inputGeneration: comparisonInputGeneration,
+          measure: ctx.options.compareMeasure,
+          resolution: ctx.options.compareResolution
+        }
+      : null;
+
+  const invalidateComparison = () => {
+    comparisonInputGeneration++;
+    compareSnapshot = null;
+    compareTileLookup = null;
+    for (const name of [
+      'compareCells',
+      'compareTotals',
+      'compareGainLoss',
+      'compareSignificant',
+      'compareLargestGain',
+      'compareLargestLoss'
+    ])
+      ctx.setReadout(name, 'pending current comparison');
+  };
 
   const writeCompareParameters = (variant: CompareVariant) => {
     const options = ctx.options;
@@ -613,6 +676,8 @@ export async function createCellPyramid(
       const count = output('union-count', 4, 1, 'uint32');
       const overflow = output('union-overflow', 4, 1, 'uint32');
       const candidateOverflow = output('union-candidate-overflow', 4, 1, 'uint32');
+      const sumOverflow = output('union-sum-overflow', 4, 1, 'uint32');
+      const visibleCount = output('visible-union-count', 4, 1, 'uint32');
       const colors = output('colors', 4, union, 'uint32');
       const beforeCellCount = output('before-table-count', 4, 1, 'uint32');
       const afterCellCount = output('after-table-count', 4, 1, 'uint32');
@@ -670,7 +735,7 @@ export async function createCellPyramid(
         },
         measure: options.compareMeasure,
         zScore: options.zScoreKind,
-        outputs: {
+        output: {
           comparison: {
             cells: cells.view,
             before: beforeValue.view,
@@ -682,7 +747,8 @@ export async function createCellPyramid(
             status: {
               count: count.view,
               overflow: overflow.view,
-              candidateOverflow: candidateOverflow.view
+              candidateOverflow: candidateOverflow.view,
+              sumOverflow: sumOverflow.view
             }
           },
           colors: colors.view
@@ -695,6 +761,18 @@ export async function createCellPyramid(
         colorScaleParameters: colorScale.importToGraph(graph),
         maximumPaletteCount: 5
       });
+      addShowcaseCertifiedSumCountsNode(
+        graph,
+        'certified-comparison-count',
+        count.view,
+        {
+          count: count.view,
+          overflow: overflow.view,
+          candidateOverflow: candidateOverflow.view,
+          ...(sum ? {sumOverflow: sumOverflow.view} : {})
+        },
+        visibleCount.view
+      );
       const compiled = owned.track(await graph.compileAsync());
       if (destroyed) {
         // The scene closed while the compile was in flight; nothing will own this variant.
@@ -710,6 +788,7 @@ export async function createCellPyramid(
           {buffer: beforeCellCount.buffer, size: 4},
           {buffer: afterCellCount.buffer, size: 4},
           {buffer: candidateOverflow.buffer, size: 4},
+          {buffer: sumOverflow.buffer, size: 4},
           {buffer: cells.buffer, size: union * 8},
           {buffer: beforeValue.buffer, size: union * 4},
           {buffer: afterValue.buffer, size: union * 4},
@@ -717,34 +796,31 @@ export async function createCellPyramid(
           {buffer: zScore.buffer, size: union * 4}
         ],
         bytes => {
-          const words = new Uint32Array(bytes);
-          const unionRows = Math.min(words[0], union);
-          const base = 5;
-          compareSnapshot = {
-            rows: unionRows,
-            cells: words.slice(base, base + unionRows * 2),
-            before: new Float32Array(bytes.slice((base + union * 2) * 4, (base + union * 3) * 4)),
-            after: new Float32Array(bytes.slice((base + union * 3) * 4, (base + union * 4) * 4)),
-            delta: new Float32Array(bytes.slice((base + union * 4) * 4, (base + union * 5) * 4)),
-            zScore: new Float32Array(bytes.slice((base + union * 5) * 4, (base + union * 6) * 4)),
-            beforeCells: words[2],
-            afterCells: words[3],
-            overflow: words[1] !== 0,
-            candidateOverflow: words[4] !== 0
-          };
+          const identity = variant.readIdentity;
+          if (!identity) return;
+          const snapshot = readCellComparisonSnapshot(
+            bytes,
+            union,
+            identity,
+            getComparisonIdentity()
+          );
+          if (!snapshot) return;
+          compareSnapshot = snapshot;
           compareTileLookup = null;
           updateCompareReadouts();
         }
       );
       const variant: CompareVariant = {
         key,
+        measure: sum ? 'sum' : 'count',
+        readIdentity: null,
         resolution,
         resources: owned,
         graph: compiled,
         classBreaks,
         colorScale,
         cells: cells.buffer,
-        count: count.buffer,
+        count: visibleCount.buffer,
         colors: colors.buffer,
         columns: {
           delta: delta.buffer,
@@ -773,7 +849,24 @@ export async function createCellPyramid(
     const snapshot = compareSnapshot;
     if (!snapshot) return;
     const options = ctx.options;
-    const unit = options.compareMeasure === 'sum' ? 'confirmed' : 'observations';
+    const unit = snapshot.measure === 'sum' ? 'confirmed' : 'observations';
+    if (
+      snapshot.overflow ||
+      snapshot.candidateOverflow ||
+      (snapshot.measure === 'sum' && snapshot.sumOverflow)
+    ) {
+      ctx.setReadout('compareCells', `${snapshot.rows} occupied cells (uncertified comparison)`);
+      for (const name of [
+        'compareTotals',
+        'compareGainLoss',
+        'compareSignificant',
+        'compareLargestGain',
+        'compareLargestLoss'
+      ])
+        ctx.setReadout(name, 'unavailable: input loss or sum saturation');
+      ctx.requestLayers();
+      return;
+    }
     const band = options.stableBand;
     let gained = 0;
     let lost = 0;
@@ -851,6 +944,7 @@ export async function createCellPyramid(
   let areaObservationCounts = new Uint32Array(areas.names.length + 1);
 
   const updateMasks = () => {
+    invalidateComparison();
     const options = ctx.options;
     const kept = fillObservationMask(columns, maskValues, {
       category: options.category,
@@ -961,7 +1055,7 @@ export async function createCellPyramid(
     for (let row = 0; row < rows; row++) total += words[row];
     return total;
   };
-  const TOTALS_HEADER_BYTES = 28;
+  const TOTALS_HEADER_BYTES = 36;
   let totalsResolution = DEFAULT_ROLLUP_RESOLUTION;
   const totalsReader = new SummaryReader(
     resources,
@@ -973,13 +1067,16 @@ export async function createCellPyramid(
       {buffer: rollupOverflowBuffer, size: 4},
       {buffer: levelCandidateOverflowBuffers[0], size: 4},
       {buffer: rollupCandidateOverflowBuffer, size: 4},
+      {buffer: finestSumOverflowBuffer, size: 4},
+      {buffer: rollupSumOverflowBuffer, size: 4},
       {buffer: countsSlabs[0], size: capacity * 4},
       {buffer: finestSumsBuffer, size: capacity * 8},
       {buffer: rollupCountsBuffer, size: capacity * 4},
       {buffer: rollupSumsBuffer, size: capacity * 8}
     ],
     bytes => {
-      const header = new Uint32Array(bytes, 0, 7);
+      const header = new Uint32Array(bytes, 0, 9);
+      const sumOverflow = Boolean(header[7] || header[8]);
       const incomplete = Boolean(header[1] || header[4] || header[5] || header[6]);
       const fineRows = header[0];
       const parentRows = header[3];
@@ -1006,7 +1103,9 @@ export async function createCellPyramid(
       );
       ctx.setReadout(
         'rollupSums',
-        `${formatCount(toConfirmed(fineSum))} to ${formatCount(toConfirmed(parentSum))} research-grade observations ${incomplete ? '(incomplete)' : fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)'}`
+        sumOverflow || incomplete
+          ? 'unavailable: input loss or fixed-point sum saturation'
+          : `${formatCount(toConfirmed(fineSum))} to ${formatCount(toConfirmed(parentSum))} research-grade observations ${incomplete ? '(incomplete)' : fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)'}`
       );
     }
   );
@@ -1096,6 +1195,10 @@ export async function createCellPyramid(
     },
 
     setOption(id) {
+      if (['view', 'compareResolution', 'compareMeasure', 'zScoreKind'].includes(id)) {
+        invalidateComparison();
+        compareStale = true;
+      }
       switch (id) {
         case 'category':
         case 'sampledPercent':
@@ -1201,7 +1304,20 @@ export async function createCellPyramid(
       pyramidReader.flush(commandEncoder);
       if (view === 'rollup' || view === 'classes') totalsReader.flush(commandEncoder);
       if (view === 'classes') classVariants.get(options.classValue)?.reader.flush(commandEncoder);
-      if (view === 'compare') getActiveCompare()?.reader.flush(commandEncoder);
+      if (view === 'compare') {
+        const variant = getActiveCompare();
+        if (variant) {
+          // Capture at copy encoding. Never overwrite a ticket's identity while it is pending.
+          if (!variant.reader.isPending)
+            variant.readIdentity = {
+              key: variant.key,
+              inputGeneration: comparisonInputGeneration,
+              measure: variant.measure,
+              resolution: variant.resolution
+            };
+          variant.reader.flush(commandEncoder);
+        }
+      }
     },
 
     getLayers() {
@@ -1228,7 +1344,8 @@ export async function createCellPyramid(
           new QuadbinTableLayer({
             id: 'cell-rollup-cells',
             cellsEven: rollupCellsBuffer,
-            countsEven: rollupCountsBuffer,
+            countsEven:
+              options.rollupColor === 'researchShare' ? rollupSumCountsBuffer : rollupCountsBuffer,
             values: rollupSumValuesBuffer,
             activeLevel: zeroWordBuffer,
             firstRow: zeroWordBuffer,
@@ -1298,8 +1415,14 @@ export async function createCellPyramid(
       const name = area >= 0 ? areas.names[area] : null;
       const options = ctx.options;
       if (options.view === 'compare' && compareSnapshot) {
+        if (
+          compareSnapshot.overflow ||
+          compareSnapshot.candidateOverflow ||
+          (compareSnapshot.measure === 'sum' && compareSnapshot.sumOverflow)
+        )
+          return 'Comparison unavailable: input loss or sum saturation';
         const lookup = getTileLookup();
-        const zoom = options.compareResolution;
+        const zoom = compareSnapshot.resolution;
         const tiles = 2 ** zoom;
         const tileX = Math.floor(((longitude + 180) / 360) * tiles);
         const sine = Math.sin(toRadians(latitude));
@@ -1308,7 +1431,7 @@ export async function createCellPyramid(
         if (row !== undefined) {
           const before = compareSnapshot.before[row];
           const after = compareSnapshot.after[row];
-          const unit = options.compareMeasure === 'sum' ? 'confirmed' : 'observations';
+          const unit = compareSnapshot.measure === 'sum' ? 'confirmed' : 'observations';
           const change = compareSnapshot.delta[row];
           return `${name ?? 'Outside the city'}: ${formatCount(before)} to ${formatCount(after)} ${unit} (${change >= 0 ? '+' : ''}${formatCount(change)}${before > 0 ? `, ${(((after - before) / before) * 100).toFixed(0)}%` : ''}, z ${compareSnapshot.zScore[row].toFixed(1)})`;
         }

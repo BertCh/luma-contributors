@@ -51,7 +51,7 @@ To measure patches, label a mask with `GPURasterConnectedComponents` and `GPURas
 
 ## Regions and points
 
-`GPURasterSampling` reads a raster at points with nearest, bilinear or bicubic (Catmull-Rom) interpolation and a strict or renormalizing nodata policy; the active point count is a parameter. `GPURasterZonalStatistics` summarises a raster by dense zone ids. Its `sumOrder` is compile-time: **sorted** sums are bitwise reproducible, **atomic** sums depend on accumulation order and are far slower when many neighbouring cells share a zone, which is the normal case for land cover. A zone id at or above the capacity sets an overflow flag.
+`GPURasterSampling` reads a raster at points with nearest, bilinear or bicubic (Catmull-Rom) interpolation and a nodata policy of `'propagate'` or `'renormalize'`; the active point count is a parameter. `GPURasterZonalStatistics` summarises a raster by dense zone ids. Its `sumOrder` is compile-time: **sorted** sums are bitwise reproducible, **atomic** sums depend on accumulation order and are far slower when many neighbouring cells share a zone, which is the normal case for land cover. A zone id at or above the capacity sets an overflow flag.
 
 ## Flow
 

@@ -27,7 +27,7 @@ export function createStatisticsKernelNode<Parameters>(
     ...props,
     body:
       props.guardIndex === false
-        ? `if (workgroupIndex >= (INVOCATION_COUNT - 1u) / ${workgroupSize}u + 1u) { return; }\n${props.body}`
+        ? `if (INVOCATION_COUNT == 0u) { return; }\nif (workgroupIndex >= (INVOCATION_COUNT - 1u) / ${workgroupSize}u + 1u) { return; }\n${props.body}`
         : props.body
   });
 }

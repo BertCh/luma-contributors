@@ -4,9 +4,9 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const radiusCount = 10;\nconst parameters = new GPUParameterBuffer(device, {\n  id: 'distance-function-parameters',\n  format: 'float32',\n  length: GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,\n  values: getGPURipleyDistanceFunctionsParameterValues({\n    bounds: studyWindow, // the study window from the data file\n    maximumDistance: 2000, // 10 radii of 200 m\n    edgeCorrection: 'border'\n  })\n});\nconst [g, f, j, radii] = ['g', 'f', 'j', 'radii'].map(id => view(id, radiusCount));\ngraph.add(\n  new GPURipleyDistanceFunctions({\n    positions,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [32, 32],\n    referenceGrid: [53, 47], // coprime with the window, F's reference locations\n    radiusCount,\n    output: {g, f, j, radii}\n  })\n);\n// g[b], f[b], j[b]: nearest-event and empty-space functions at radii[b]; j = (1 - g) / (1 - f)",
+    "code": "const radiusCount = 10;\nconst parameters = new GPUParameterBuffer(device, {\n  id: 'distance-function-parameters',\n  format: 'float32',\n  length: GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,\n  values: getGPURipleyDistanceFunctionsParameterValues({\n    bounds: studyWindow, // the study window from the data file\n    maximumDistance: 2000, // 10 radii of 200 m\n    edgeCorrection: 'border'\n  })\n});\nconst [g, f, j, radii] = ['g', 'f', 'j', 'radii'].map(id => view(id, radiusCount));\ngraph.add(\n  new GPURipleyDistanceFunctions({\n    positions,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [32, 32],\n    referenceGrid: [53, 47], // coprime with the window, F's reference locations\n    hanischSearch: 'capped',\n    radiusCount,\n    output: {g, f, j, radii}\n  })\n);\n// g[b], f[b], j[b]: nearest-event and empty-space functions at radii[b]; j = (1 - g) / (1 - f)",
     "language": "ts",
-    "lineCount": 23
+    "lineCount": 24
   },
   "scenarioId": "gpu-dataframe.ripley-distance-functions",
   "viewId": "result-view",
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:12.439Z",
-    "runId": "run-2288176e",
+    "date": "2026-11-20T23:48:35.941Z",
+    "runId": "run-a05ba5ae",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-2288176e",
+    "runId": "run-a05ba5ae",
     "rung": "result",
     "bindings": {},
     "clauses": [],

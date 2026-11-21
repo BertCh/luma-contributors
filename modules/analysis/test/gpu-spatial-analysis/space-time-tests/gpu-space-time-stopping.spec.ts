@@ -15,7 +15,7 @@ import {
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from '../../../src/gpu-spatial-analysis/space-time-tests/index';
 import {AnalysisRig, type CPUWeights} from '../catchment-accessibility/rig';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {computeKnoxOracle, computeSequentialStop} from './space-time-oracle';
 import {buildBand, createEvents, createStoppingEvents, uploadPairs} from './space-time-scenes';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -34,7 +34,8 @@ it('decodes unavailable zero-draw Mantel inference and recovers with seven compl
   let compiled: ReturnType<typeof rig.graph.compile> | undefined;
   try {
     const summary = rig.output('float32', 12),
-      used = rig.output('uint32', 1);
+      used = rig.output('uint32', 1),
+      usable = rig.output('uint32', 1);
     const settings = {seed: 17, permutationCount: 7};
     const contributor = new GPUMantelTest({
       pairs: {
@@ -48,7 +49,12 @@ it('decodes unavailable zero-draw Mantel inference and recovers with seven compl
       parameters: rig.input(getGPUSpaceTimeParameterValues(settings), 'uint32'),
       maximumPermutations: 9,
       stopAfterExceedances: 9,
-      output: {statistics: rig.output('float32', 10), summary, permutationCount: used}
+      output: {
+        statistics: rig.output('float32', 10),
+        summary,
+        permutationCount: used,
+        usablePermutationCount: usable
+      }
     });
     const metadata = contributor.getInferenceMetadata(settings);
     rig.graph.add(contributor);
@@ -58,7 +64,9 @@ it('decodes unavailable zero-draw Mantel inference and recovers with seven compl
       submitGraph(device, compiled, undefined);
       const count = (await rig.readUint(used))[0];
       expect(count).toBe(flag ? 0 : 7);
-      expect(decodeGPUSpaceTimeInferenceMetadata(metadata, count)).toMatchObject({
+      expect(
+        decodeGPUSpaceTimeInferenceMetadata(metadata, count, (await rig.readUint(usable))[0])
+      ).toMatchObject({
         permutationCount: count,
         available: !flag
       });
@@ -66,7 +74,7 @@ it('decodes unavailable zero-draw Mantel inference and recovers with seven compl
       if (flag) expect(values.every(Number.isNaN)).toBe(true);
       else expect(values[GPU_SPACE_TIME_SUMMARY.observed]).toBeCloseTo(Math.sqrt(3 / 28), 5);
     }
-    expect(() => decodeGPUSpaceTimeInferenceMetadata(metadata, 1)).toThrow(/permutationCount/);
+    expect(() => decodeGPUSpaceTimeInferenceMetadata(metadata, 1, 1)).toThrow(/permutationCount/);
   } finally {
     compiled?.destroy();
     rig.destroy();
@@ -80,6 +88,7 @@ type Run = {
   statistics: number[];
   summary: number[];
   permutationCount?: number;
+  usablePermutationCount?: number;
   milliseconds: number;
 };
 
@@ -101,6 +110,7 @@ async function runTest(
   const {maximumPermutations, stopAfterExceedances} = settings;
   const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
   const permutationCount = stopAfterExceedances === undefined ? undefined : rig.output('uint32', 1);
+  const usablePermutationCount = kind === 'mantel' ? rig.output('uint32', 1) : undefined;
   const parameters = rig.input(
     getGPUSpaceTimeParameterValues({
       seed: settings.seed,
@@ -143,7 +153,7 @@ async function runTest(
     const callerProps = {
       ...common,
       pairs: uploadPairs(rig, scene.csr),
-      output: {statistics: output, summary, permutationCount}
+      output: {statistics: output, summary, permutationCount, usablePermutationCount}
     };
     const contributor = new GPUMantelTest(callerProps);
     rig.run(contributor);
@@ -157,8 +167,18 @@ async function runTest(
   const summaryValues = await rig.readFloat(summary);
   const milliseconds = performance.now() - start;
   const used = permutationCount ? (await rig.readUint(permutationCount))[0] : undefined;
+  const usable = usablePermutationCount
+    ? (await rig.readUint(usablePermutationCount))[0]
+    : undefined;
   rig.destroy();
-  return {statistics, summary: summaryValues, permutationCount: used, milliseconds, inference};
+  return {
+    statistics,
+    summary: summaryValues,
+    permutationCount: used,
+    usablePermutationCount: usable,
+    milliseconds,
+    inference
+  };
 }
 
 const index = GPU_SPACE_TIME_SUMMARY;
@@ -248,14 +268,26 @@ for (const kind of ['knox', 'mantel'] as const) {
     expect(run.summary[index.pseudoPGreater]).toBeCloseTo(expected.pValue, 6);
   });
 
-  // Adversarial: a threshold that makes every time pair close (Knox) or identical times (Mantel
-  // correlation 0 for all): every permutation ties the observed, so the rule stops at L = h.
-  it(`${kind} stopAfterExceedances stops at L = h when every permutation ties the observed`, async () => {
+  // A threshold makes every Knox time pair close; Mantel uses defined observed r=-1,
+  // so every defined permutation exceeds or ties it and the rule stops at L=h.
+  it(`${kind} stopAfterExceedances stops at L = h when every defined permutation reaches the observed`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const {positions} = createEvents(120, 21);
-    const times = new Float32Array(120).fill(2);
-    const scene: Scene = {csr: buildBand(positions, 12), times};
+    const scene: Scene =
+      kind === 'knox'
+        ? {csr: buildBand(positions, 12), times: new Float32Array(120).fill(2)}
+        : // Three nonconstant pairs always have r >= -1. With observed r=-1 every defined
+          // permutation ties or exceeds it; no zero-norm vector is involved.
+          {
+            csr: {
+              offsets: [0, 2, 3, 3],
+              neighbors: [1, 2, 2],
+              weights: [1, 1, 1],
+              distances: [3, 1, 2]
+            },
+            times: Float32Array.of(0, 1, 3)
+          };
     const run = await runTest(device, kind, scene, {
       seed: 5,
       permutations: 150,
@@ -266,13 +298,17 @@ for (const kind of ['knox', 'mantel'] as const) {
     });
     expect(run.permutationCount).toBe(10);
     expect(run.inference.permutationCount).toBeUndefined();
-    expect(decodeGPUSpaceTimeInferenceMetadata(run.inference, run.permutationCount!)).toMatchObject(
-      {
-        permutationCount: 10,
-        requestedPermutationCount: 150,
-        stoppingRule: {method: 'besag-clifford', stopAfterExceedances: 10}
-      }
-    );
+    expect(
+      decodeGPUSpaceTimeInferenceMetadata(
+        run.inference,
+        run.permutationCount!,
+        run.usablePermutationCount
+      )
+    ).toMatchObject({
+      permutationCount: 10,
+      requestedPermutationCount: 150,
+      stoppingRule: {method: 'besag-clifford', stopAfterExceedances: 10}
+    });
     expect(run.summary[index.pseudoPGreater]).toBe(1);
     expect(run.statistics.slice(11).every(value => value === 0)).toBe(true);
   });

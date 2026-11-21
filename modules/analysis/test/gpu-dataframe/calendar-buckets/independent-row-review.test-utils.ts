@@ -253,6 +253,7 @@ export function createReviewScenario(
       mask,
       periodCount: 4,
       fill: 'ones',
+      layout: 'legacy-one-bit',
       output: {
         keys: output('keys', 'uint32x2', 2),
         status: {invalidCount: scalarOutput('invalid', 1)}
@@ -276,6 +277,7 @@ export function createReviewScenario(
       row % 13 === 0 ? NaN : row % 31 === 0 ? Infinity : (row % 9) - 3
     );
     contributor = new GPUClassAssignment({
+      id: 'class-assignment',
       values: input('values', 'float32', 1, () => values),
       mask,
       breaks: packed('breaks', 'float32', [0, 1, 2, 3]),

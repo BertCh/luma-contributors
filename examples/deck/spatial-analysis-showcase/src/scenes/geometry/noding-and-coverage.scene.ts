@@ -730,7 +730,7 @@ graph.add(new GPUCoverageValidity({
 graph.add(new GPUCoverageDissolve({
   spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
   positions, ringOffsets, polygonOffsets, featureOffsets, labels: stateFips,
-  snapTolerance: 0, vertexTolerance: 0.001, splitTouchingRings: true,
+  snapGridSize: 0, vertexTolerance: 0.001, splitTouchingRings: true,
   output: {
     ringOffsets: dissolvedRingOffsets, positions: dissolvedPositions, ringIsHole,
     polygons: {positions: polygonPositions, ringOffsets: polygonRingOffsets,
@@ -746,7 +746,7 @@ graph.add(new GPUCoverageDissolve({
 graph.add(new GPUCoverageSimplification({
   spatialContext: getAnalysisFrameSpatialContext(ALBERS_CONUS_FRAME),
   positions, featureOffsets, polygonOffsets, ringOffsets,   // Albers CONUS metres, one polygon port
-  snapTolerance: ${state.coverageSnap},
+  snapGridSize: ${state.coverageSnap},
   topologyIterationCount: ${state.topologyRounds}, maximumIterations: ${state.coverageRounds},
   parameters: tolerance.importToGraph(graph),
   output: {

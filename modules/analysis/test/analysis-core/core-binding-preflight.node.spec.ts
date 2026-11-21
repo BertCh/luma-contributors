@@ -395,7 +395,7 @@ it('does not bind or reject unused validity/count outputs when there are no poly
   }
 });
 
-it('accepts packed fitting features and validity while ignoring frequencies outside Fourier mode', () => {
+it('accepts packed fitting features and validity with valid spherical-harmonics props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   try {
@@ -404,24 +404,85 @@ it('accepts packed fitting features and validity while ignoring frequencies outs
       byteLength: 512,
       usage: Buffer.STORAGE
     });
-    const ignored = graph.createTransientBuffer({
-      id: 'ignored-frequencies',
-      byteLength: 4,
-      usage: Buffer.COPY_SRC
-    });
     const contributor = new GPUFittingCoordinateEncoder({
       encoding: 'spherical-harmonics',
       maximumDegree: 0,
       rowCount: 2,
       spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
       coordinates: createTransientView(graph, 'coordinates', 'float32', 4),
-      frequencies: graph.createDataView(ignored, {format: 'float32', length: 1}),
       output: {
         features: graph.createDataView(output, {format: 'float32', length: 2}),
         validity: graph.createDataView(output, {format: 'uint32', length: 2, byteOffset: 256})
       }
     });
-    expectDisjointStorageUsages(contributor.getCommandNodes(graph));
+    const assertEncoderBindings = (nodes: readonly GPUCommandNode[]): void => {
+      expect(nodes).toHaveLength(1);
+      const writes = nodes.flatMap(node =>
+        (node.resources ?? []).flatMap(resource =>
+          'buffer' in resource &&
+          'buffer' in resource.buffer &&
+          resource.buffer.buffer === output &&
+          resource.usage === 'storage-read-write'
+            ? [resource.buffer]
+            : []
+        )
+      );
+      expect(writes).toHaveLength(2);
+      expect(writes.map(view => view.byteOffset).sort((first, second) => first - second)).toEqual([
+        0, 256
+      ]);
+      expect(writes.map(view => view.length)).toEqual([2, 2]);
+      expectDisjointStorageUsages(nodes);
+    };
+    const nodes = contributor.getCommandNodes(graph);
+    assertEncoderBindings(nodes);
+    // The positive assertion must reject an omitted dispatch as well as missing/duplicate writes.
+    expect(() => assertEncoderBindings([])).toThrow();
+    const node = nodes[0];
+    const resources = node.resources ?? [];
+    const writes = resources.filter(resource => resource.usage === 'storage-read-write');
+    expect(writes).toHaveLength(2);
+    expect(() =>
+      assertEncoderBindings([
+        {
+          ...node,
+          resources: resources.filter(resource => resource !== writes[1])
+        }
+      ])
+    ).toThrow();
+    expect(() =>
+      assertEncoderBindings([
+        {
+          ...node,
+          resources: resources.map(resource => (resource === writes[1] ? writes[0] : resource))
+        }
+      ])
+    ).toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('refuses the branch-inapplicable frequency port for spherical harmonics', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    // Deliberately bypass the discriminated props type to exercise runtime refusal.
+    const props = {
+      encoding: 'spherical-harmonics',
+      maximumDegree: 0,
+      rowCount: 2,
+      spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
+      coordinates: createTransientView(graph, 'coordinates', 'float32', 4),
+      frequencies: createTransientView(graph, 'frequencies', 'float32', 1),
+      output: {
+        features: createTransientView(graph, 'features', 'float32', 2),
+        validity: createTransientView(graph, 'validity', 'uint32', 2)
+      }
+    };
+    expect(() => new GPUFittingCoordinateEncoder(props as never)).toThrow(
+      /^fitting-coordinate-encoder prop frequencies is not supported for encoding spherical-harmonics; use an option for the selected branch$/
+    );
   } finally {
     device.destroy();
   }

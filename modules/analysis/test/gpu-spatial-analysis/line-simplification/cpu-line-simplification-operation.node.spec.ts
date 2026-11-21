@@ -12,6 +12,88 @@ import {
   type LineSimplificationOperationProps
 } from '../../../src/gpu-spatial-analysis/line-simplification/gpu-line-simplification-operation';
 import {getGPULineSimplificationParameterValues} from '../../../src/gpu-spatial-analysis/line-simplification/line-simplification-parameters';
+import {makeCPUInputRows} from '../../analysis-core/mixed-execution/output-oracles-test-utils';
+
+for (const method of ['douglas-peucker', 'visvalingam'] as const) {
+  for (const empty of [false, true]) {
+    it(`simplifies ${empty ? 'empty lines' : 'a line'} in a nonzero vertex window (${method})`, async () => {
+      const positions = Float32Array.of(99, 99, 0, 0, 2, 1, 4, 0, 88, 88);
+      const lineOffsets = empty ? Uint32Array.of(1, 1, 1, 1) : Uint32Array.of(1, 1, 4, 4);
+      const parameters = getGPULineSimplificationParameterValues({method, tolerance: 1});
+      // The base-4, height-1 triangle has chord distance 1 and area 2. Only Visvalingam
+      // keeps the interior at tolerance 1. Capacity one publishes only the first endpoint ID.
+      const usesArea = method === 'visvalingam';
+      const keptCount = empty ? 0 : usesArea ? 3 : 2;
+      const expected = {
+        importance: empty
+          ? new Float32Array(5)
+          : Float32Array.of(0, Infinity, usesArea ? 2 : 1, Infinity, 0),
+        outputMask: empty ? new Uint32Array(5) : Uint32Array.of(0, 1, usesArea ? 1 : 0, 1, 0),
+        ids: Uint32Array.of(empty ? 0 : 1),
+        lineCounts: Uint32Array.of(0, keptCount, 0),
+        lineStarts: Uint32Array.of(0, 0, keptCount),
+        count: Uint32Array.of(empty ? 0 : 1),
+        requiredCount: Uint32Array.of(keptCount),
+        overflow: Uint32Array.of(empty ? 0 : 1),
+        candidateOverflow: Uint32Array.of(0),
+        converged: Uint32Array.of(1),
+        iterationCount: Uint32Array.of(1)
+      };
+      const operation = new CPULineSimplificationOperation({
+        positions: 'positions',
+        lineOffsets: 'offsets',
+        parameters: 'parameters',
+        importance: 'importance',
+        rowCount: 5,
+        lineCount: 3,
+        method,
+        capacity: 1,
+        output: {
+          ids: 'ids',
+          outputMask: 'outputMask',
+          lineCounts: 'lineCounts',
+          lineStarts: 'lineStarts',
+          status: {
+            count: 'count',
+            requiredCount: 'requiredCount',
+            overflow: 'overflow',
+            candidateOverflow: 'candidateOverflow',
+            converged: 'converged',
+            iterationCount: 'iterationCount'
+          }
+        }
+      });
+      const result = await operation.execute({
+        inputs: {
+          positions: makeCPUInputRows('float32x2', positions),
+          lineOffsets: makeCPUInputRows('uint32', lineOffsets),
+          parameters: makeCPUInputRows('float32', parameters)
+        }
+      });
+      expect(result).toEqual(expected);
+      expect(
+        computeLineSimplificationOnCPU({positions, lineOffsets, parameters}, {method, capacity: 1})
+      ).toEqual(expected);
+    });
+  }
+}
+
+it('accepts one in-bounds terminal for zero lines and validates explicit compact storage', () => {
+  const input = {positions: new Float32Array(8), lineOffsets: Uint32Array.of(2)};
+  const result = computeLineSimplificationOnCPU(input);
+  expect(result.importance).toEqual(new Float32Array(4));
+  expect(result.lineCounts).toHaveLength(0);
+  expect(result.count).toEqual(Uint32Array.of(0));
+  expect(() => computeLineSimplificationOnCPU({...input, storage: 'compact'})).toThrow(
+    /initial offset/
+  );
+  expect(() => computeLineSimplificationOnCPU({...input, lineOffsets: Uint32Array.of(5)})).toThrow(
+    /lineOffsets/
+  );
+  expect(() => computeLineSimplificationOnCPU({...input, lineOffsets: new Uint32Array()})).toThrow(
+    /terminal offset/
+  );
+});
 
 it('honors one explicit Visvalingam round and retains unresolved importance', () => {
   const result = computeLineSimplificationOnCPU(
@@ -236,6 +318,7 @@ it('supports selection-only, uncovered rows, empty lines and zero capacity', () 
     {
       positions: new Float32Array(10),
       lineOffsets: new Uint32Array([1, 1, 4]),
+      storage: 'resident-capacity',
       importance: new Float32Array([Infinity, Infinity, 0.5, Infinity, Infinity]),
       parameters: getGPULineSimplificationParameterValues({tolerance: 0.5})
     },
@@ -246,6 +329,20 @@ it('supports selection-only, uncovered rows, empty lines and zero capacity', () 
   expect(result.requiredCount[0]).toBe(2);
   expect(result.count[0]).toBe(0);
   expect(result.overflow[0]).toBe(1);
+});
+
+it('clamps resident line offsets before computing importance and selecting rows', () => {
+  const result = computeLineSimplificationOnCPU({
+    positions: Float32Array.of(99, 99, 0, 0, 1, 0),
+    lineOffsets: Uint32Array.of(1, 5, 4),
+    parameters: getGPULineSimplificationParameterValues({tolerance: 0}),
+    storage: 'resident-capacity'
+  });
+  // Clamping gives [1, 3, 3]. Only the two endpoints of the first line are covered.
+  expect(result.importance).toEqual(Float32Array.of(0, Infinity, Infinity));
+  expect(result.outputMask).toEqual(Uint32Array.of(0, 1, 1));
+  expect(result.ids.slice(0, result.count[0])).toEqual(Uint32Array.of(1, 2));
+  expect(result.lineCounts).toEqual(Uint32Array.of(2, 0));
 });
 
 it('throws for inconsistent inputs and validates both operation contracts', () => {
@@ -278,7 +375,9 @@ it('throws for inconsistent inputs and validates both operation contracts', () =
   };
   for (const Operation of [CPULineSimplificationOperation, GPULineSimplificationOperation]) {
     expect(() => new Operation(props)).not.toThrow();
-    expect(() => new Operation({...props, rowCount: 0})).toThrow(/^line-check/);
+    // Zero rows describe one empty line; negative cardinality is still invalid.
+    expect(() => new Operation({...props, rowCount: 0})).not.toThrow();
+    expect(() => new Operation({...props, rowCount: -1})).toThrow(/^line-check/);
     expect(() => new Operation({...props, importance: 'positions'})).toThrow(/^line-check/);
   }
   expect(() => new CPULineSimplificationOperation({...props, metric: 'time-ratio'})).toThrow(

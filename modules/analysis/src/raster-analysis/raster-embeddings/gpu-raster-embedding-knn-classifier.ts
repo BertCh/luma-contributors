@@ -201,14 +201,6 @@ export class GPURasterEmbeddingKNearestClassifier<
       validateSinglePackedView(props.trainingVectors, ['float32'], `${id} trainingVectors`);
     if (props.trainingLabels)
       validateSinglePackedView(props.trainingLabels, ['uint32'], `${id} trainingLabels`);
-    validateRasterEmbeddingViews(
-      id,
-      this.getInputs(),
-      this.getOutputs(),
-      props.searchStructure === 'brute-force'
-        ? undefined
-        : [{inputs: [props.trainingLabels], outputs: this.getOutputs()}]
-    );
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,
@@ -230,6 +222,14 @@ export class GPURasterEmbeddingKNearestClassifier<
       props.searchStructure === 'brute-force'
         ? 1
         : Math.ceil(props.trainingCount / RASTER_EMBEDDING_TRAINING_TILE_SIZE) + 1;
+    validateRasterEmbeddingViews(
+      id,
+      this.getInputs(),
+      this.getOutputs(),
+      props.searchStructure === 'brute-force'
+        ? undefined
+        : [{inputs: [props.trainingLabels], outputs: this.getOutputs()}]
+    );
     this.estimatedCommandNodeCount =
       1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * stages;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -340,47 +340,7 @@ var nearestDistance: array<f32, ${neighborCount}>;
 var nearestSample: array<u32, ${neighborCount}>;
 var filledNeighborCount = 0u;
 for (var sampleIndex = 0u; sampleIndex < ${trainingCount}u; sampleIndex++) {
-  var dotProduct = 0.0;
-  var sampleLength = 0.0;
-  var isSampleValid = true;
-  ${
-    isCosine
-      ? `var sampleScale = 0.0;
-  for (var band = 0u; band < ${dimensions}u; band++) {
-    let component = trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band];
-    isSampleValid = isSampleValid && finite(component);
-    sampleScale = max(sampleScale, abs(component));
-  }`
-      : ''
-  }
-  for (var band = 0u; band < ${dimensions}u; band++) {
-    let pixelComponent = ${isCosine ? `getScaledQuotient(vectors[vectorsOffset + index * ${dimensions}u + band], select(1.0, pixelScale, pixelScale > 0.0), 1.0, 0)` : `vectors[vectorsOffset + index * ${dimensions}u + band]`};
-    let component = ${isCosine ? `getScaledQuotient(trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band], select(1.0, sampleScale, sampleScale > 0.0), 1.0, 0)` : `trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band]`};
-    if (!finite(component)) { isSampleValid = false; }
-    ${isCosine ? 'dotProduct += pixelComponent * component;\n    sampleLength += component * component;' : 'dotProduct += (pixelComponent - component) * (pixelComponent - component);'}
-  }
-  if (!isSampleValid) { continue; }
-  ${
-    isCosine
-      ? `let denominator = sqrt(squaredLength * sampleLength);
-  // Zero vectors as in the published GPUSimilaritySearch: two zero vectors have similarity 1,
-  // exactly one zero vector gives 0.
-  let neighborDistance = 1.0 - select(select(0.0, 1.0, squaredLength == 0.0 && sampleLength == 0.0), dotProduct / denominator, denominator > 0.0);`
-      : 'let neighborDistance = dotProduct;'
-  }
-  if (!finite(neighborDistance)) { continue; }
-  // Strict comparison keeps the lower sample index on equal distances.
-  if (filledNeighborCount < ${neighborCount}u || neighborDistance < nearestDistance[${neighborCount - 1}u]) {
-    var slot = min(filledNeighborCount, ${neighborCount - 1}u);
-    while (slot > 0u && neighborDistance < nearestDistance[slot - 1u]) {
-      nearestDistance[slot] = nearestDistance[slot - 1u];
-      nearestSample[slot] = nearestSample[slot - 1u];
-      slot--;
-    }
-    nearestDistance[slot] = neighborDistance;
-    nearestSample[slot] = sampleIndex;
-    filledNeighborCount = min(filledNeighborCount + 1u, ${neighborCount}u);
-  }
+${getRasterEmbeddingNeighborWGSL(dimensions, neighborCount, isCosine)}
 }
 if (filledNeighborCount == 0u) {
   labels[labelsOffset + index] = ${RASTER_EMBEDDING_NO_LABEL}u;
@@ -475,47 +435,7 @@ for (var slot = 0u; slot < ${neighborCount}u; slot++) {
 for (var tileRow = 0u; tileRow < embeddingDispatch.words[0u][3u]; tileRow++) {
   if (!isValid) { break; }
   let sampleIndex = embeddingDispatch.words[0u][2u] + tileRow;
-  var dotProduct = 0.0;
-  var sampleLength = 0.0;
-  var isSampleValid = true;
-  ${
-    isCosine
-      ? `var sampleScale = 0.0;
-  for (var band = 0u; band < ${dimensions}u; band++) {
-    let component = trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band];
-    isSampleValid = isSampleValid && finite(component);
-    sampleScale = max(sampleScale, abs(component));
-  }`
-      : ''
-  }
-  for (var band = 0u; band < ${dimensions}u; band++) {
-    let pixelComponent = ${isCosine ? `getScaledQuotient(vectors[vectorsOffset + index * ${dimensions}u + band], select(1.0, pixelScale, pixelScale > 0.0), 1.0, 0)` : `vectors[vectorsOffset + index * ${dimensions}u + band]`};
-    let component = ${isCosine ? `getScaledQuotient(trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band], select(1.0, sampleScale, sampleScale > 0.0), 1.0, 0)` : `trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band]`};
-    if (!finite(component)) { isSampleValid = false; }
-    ${isCosine ? 'dotProduct += pixelComponent * component;\n    sampleLength += component * component;' : 'dotProduct += (pixelComponent - component) * (pixelComponent - component);'}
-  }
-  if (!isSampleValid) { continue; }
-  ${
-    isCosine
-      ? `let denominator = sqrt(squaredLength * sampleLength);
-  // Zero vectors as in the published GPUSimilaritySearch: two zero vectors have similarity 1,
-  // exactly one zero vector gives 0.
-  let neighborDistance = 1.0 - select(select(0.0, 1.0, squaredLength == 0.0 && sampleLength == 0.0), dotProduct / denominator, denominator > 0.0);`
-      : 'let neighborDistance = dotProduct;'
-  }
-  if (!finite(neighborDistance)) { continue; }
-  // Strict comparison keeps the lower sample index on equal distances.
-  if (filledNeighborCount < ${neighborCount}u || neighborDistance < nearestDistance[${neighborCount - 1}u]) {
-    var slot = min(filledNeighborCount, ${neighborCount - 1}u);
-    while (slot > 0u && neighborDistance < nearestDistance[slot - 1u]) {
-      nearestDistance[slot] = nearestDistance[slot - 1u];
-      nearestSample[slot] = nearestSample[slot - 1u];
-      slot--;
-    }
-    nearestDistance[slot] = neighborDistance;
-    nearestSample[slot] = sampleIndex;
-    filledNeighborCount = min(filledNeighborCount + 1u, ${neighborCount}u);
-  }
+${getRasterEmbeddingNeighborWGSL(dimensions, neighborCount, isCosine)}
 }
 for (var slot = 0u; slot < ${neighborCount}u; slot++) {
   savedSamples[savedSamplesOffset + index * ${neighborCount}u + slot] = nearestSample[slot];
@@ -565,4 +485,53 @@ ${output.probabilities ? `for (var classIndex = 0u; classIndex < ${classCount}u;
     });
     return kernels;
   }
+}
+
+/** Identical distance arithmetic and stable insertion for the reference and tiled scans. */
+function getRasterEmbeddingNeighborWGSL(
+  dimensions: number,
+  neighborCount: number,
+  isCosine: boolean
+): string {
+  return `  var dotProduct = 0.0;
+  var sampleLength = 0.0;
+  var isSampleValid = true;
+  ${
+    isCosine
+      ? `var sampleScale = 0.0;
+  for (var band = 0u; band < ${dimensions}u; band++) {
+    let component = trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band];
+    isSampleValid = isSampleValid && finite(component);
+    sampleScale = max(sampleScale, abs(component));
+  }`
+      : ''
+  }
+  for (var band = 0u; band < ${dimensions}u; band++) {
+    let pixelComponent = ${isCosine ? `getScaledQuotient(vectors[vectorsOffset + index * ${dimensions}u + band], select(1.0, pixelScale, pixelScale > 0.0), 1.0, 0)` : `vectors[vectorsOffset + index * ${dimensions}u + band]`};
+    let component = ${isCosine ? `getScaledQuotient(trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band], select(1.0, sampleScale, sampleScale > 0.0), 1.0, 0)` : `trainingVectors[trainingVectorsOffset + sampleIndex * ${dimensions}u + band]`};
+    if (!finite(component)) { isSampleValid = false; }
+    ${isCosine ? 'dotProduct += pixelComponent * component;\n    sampleLength += component * component;' : 'dotProduct += (pixelComponent - component) * (pixelComponent - component);'}
+  }
+  if (!isSampleValid) { continue; }
+  ${
+    isCosine
+      ? `let denominator = sqrt(squaredLength * sampleLength);
+  // Zero vectors as in the published GPUSimilaritySearch: two zero vectors have similarity 1,
+  // exactly one zero vector gives 0.
+  let neighborDistance = 1.0 - select(select(0.0, 1.0, squaredLength == 0.0 && sampleLength == 0.0), dotProduct / denominator, denominator > 0.0);`
+      : 'let neighborDistance = dotProduct;'
+  }
+  if (!finite(neighborDistance)) { continue; }
+  // Strict comparison keeps the lower sample index on equal distances.
+  if (filledNeighborCount < ${neighborCount}u || neighborDistance < nearestDistance[${neighborCount - 1}u]) {
+    var slot = min(filledNeighborCount, ${neighborCount - 1}u);
+    while (slot > 0u && neighborDistance < nearestDistance[slot - 1u]) {
+      nearestDistance[slot] = nearestDistance[slot - 1u];
+      nearestSample[slot] = nearestSample[slot - 1u];
+      slot--;
+    }
+    nearestDistance[slot] = neighborDistance;
+    nearestSample[slot] = sampleIndex;
+    filledNeighborCount = min(filledNeighborCount + 1u, ${neighborCount}u);
+  }`;
 }

@@ -5,7 +5,7 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it, vi} from 'vitest';
-import {requireTestDevice} from '../../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../../analysis/src/testing/require-test-device';
 import {createKeplerDatasetProfileCache} from '../../src/profile/dataset-profile-cache';
 import {createKeplerDatasetProfileStages} from '../../src/profile/dataset-profile-stages';
 import {createKeplerDatasetProfileGpuRunner} from '../../src/profile/dataset-profile-gpu';
@@ -253,8 +253,14 @@ it('profiles both locations of a single MultiPoint row', async () => {
 });
 
 it.each([
-  8, 1
-])('decodes queen counts including islands and refuses overflow at capacity %s', async neighborCapacity => {
+  {neighborCapacity: 8, pairCapacity: 32, incomplete: false},
+  {neighborCapacity: 1, pairCapacity: 32, incomplete: true},
+  {neighborCapacity: 8, pairCapacity: 1, incomplete: true}
+])('decodes queen counts and refuses independent loss $neighborCapacity/$pairCapacity', async ({
+  neighborCapacity,
+  pairCapacity,
+  incomplete
+}) => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const positions = upload(
@@ -273,34 +279,48 @@ it.each([
       vertexCount: 12
     };
     const cache = createKeplerDatasetProfileCache({maximumEntries: 1});
-    const job = createKeplerDatasetProfileStages({cache}).start({
-      metadata: source,
-      getRevision: () => 1,
-      runner: createKeplerDatasetProfileGpuRunner({
-        device,
-        rowCount: 3,
-        columns: [],
-        polygons: {
-          positions: {buffer: positions, length: 12},
-          ringOffsets: {buffer: ringOffsets, length: 4},
-          polygonOffsets: {buffer: polygonOffsets, length: 4},
-          featureOffsets: {buffer: featureOffsets, length: 4},
-          neighborCapacity,
-          pairCapacity: 32
-        }
-      })
-    });
-    if (neighborCapacity === 1) {
-      await expect(job.finished).rejects.toThrow(/overflow/);
-      expect(cache.get('resident', 1)?.contiguity).toBeUndefined();
-    } else {
-      const result = await job.finished;
-      check(
-        JSON.stringify(result?.contiguity) ===
-          JSON.stringify({minimum: 0, median: 1, maximum: 1, islandCount: 1}),
-        'Queen contiguity mismatch',
-        result
-      );
+    const stages = createKeplerDatasetProfileStages({cache});
+    // Reuse the profile identity, metadata object, cache and stage coordinator after failure.
+    // Raising capacities requires a newly constructed GPU contributor, not a new dataset/cache.
+    for (const capacities of [
+      {neighborCapacity, pairCapacity, incomplete},
+      {neighborCapacity: 8, pairCapacity: 32, incomplete: false}
+    ]) {
+      const job = stages.start({
+        metadata: source,
+        getRevision: () => 1,
+        runner: createKeplerDatasetProfileGpuRunner({
+          device,
+          rowCount: 3,
+          columns: [],
+          polygons: {
+            positions: {buffer: positions, length: 12},
+            ringOffsets: {buffer: ringOffsets, length: 4},
+            polygonOffsets: {buffer: polygonOffsets, length: 4},
+            featureOffsets: {buffer: featureOffsets, length: 4},
+            neighborCapacity: capacities.neighborCapacity,
+            pairCapacity: capacities.pairCapacity
+          }
+        })
+      });
+      if (capacities.incomplete) {
+        await expect(job.finished).rejects.toThrow(/overflow/);
+        expect(cache.get('resident', 1)?.contiguity).toBeUndefined();
+      } else {
+        const result = await job.finished;
+        check(
+          JSON.stringify(result?.contiguity) ===
+            JSON.stringify({minimum: 0, median: 1, maximum: 1, islandCount: 1}),
+          'Queen contiguity mismatch',
+          result
+        );
+        expect(cache.get('resident', 1)?.contiguity).toEqual({
+          minimum: 0,
+          median: 1,
+          maximum: 1,
+          islandCount: 1
+        });
+      }
     }
     check(
       allocated.mock.results

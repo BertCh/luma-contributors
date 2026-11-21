@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from '../raster-band-utils';
+import {validateParameterTarget, validateRasterOption} from '../raster-band-utils';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Number of float32 elements in a {@link GPURasterReclassify} parameter view. */
 export const GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH = 4;
@@ -40,11 +41,20 @@ export function getGPURasterReclassifyParameterValues(
     target,
     GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH
   );
-  if (!Number.isSafeInteger(settings.breakCount) || settings.breakCount < 0) {
-    throw new Error(
-      'getGPURasterReclassifyParameterValues breakCount must be a non-negative integer'
-    );
-  }
+  validateRequirement(
+    'getGPURasterReclassifyParameterValues',
+    Number.isInteger(settings.breakCount) &&
+      settings.breakCount >= 0 &&
+      settings.breakCount <= 0xffffffff &&
+      Math.fround(settings.breakCount) === settings.breakCount,
+    `breakCount must be an exact float32 integer in the uint32 domain (got ${settings.breakCount}); use GPURasterReclassify.activeBreakCount with a uint32 view for larger exact counts and pack breakCount: 0 here`
+  );
+  validateRasterOption(
+    'getGPURasterReclassifyParameterValues',
+    'closed',
+    settings.closed ?? 'left',
+    ['left', 'right']
+  );
   target[0] = settings.breakCount;
   target[1] = settings.closed === 'right' ? 1 : 0;
   target[2] = 0;

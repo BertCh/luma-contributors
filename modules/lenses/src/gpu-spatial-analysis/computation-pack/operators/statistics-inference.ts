@@ -26,7 +26,7 @@ export const STATISTICS_INFERENCE_OPERATORS: SpatialFamilyOperators = {
       },
       {name: 'islands', stage: 'neighbourhood', alternatives: ['exclude', 'keep'], sweepable: true},
       {
-        name: 'alternative',
+        name: 'analyticAlternative',
         label: 'Tail of the analytic p-value',
         stage: 'inference',
         alternatives: ['two-sided', 'greater', 'lesser'],
@@ -384,7 +384,7 @@ export const STATISTICS_INFERENCE_OPERATORS: SpatialFamilyOperators = {
     variables: {
       pValues: 'probability',
       adjustedPValues: 'probability',
-      testedCount: 'count'
+      effectiveFamilySize: 'count'
     },
     stages: ['inference'],
     datumKinds: [{kind: 'region', label: 'tract', indexSpace: 'csr'}],

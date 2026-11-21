@@ -89,7 +89,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         meaning: 'D8 predecessor code'
       });
       // Tree-cover targets checked in WorldCover: (15,15), (50,45), (20,50).
-      // Full-grid path capacity prevents truncation. Unwritten IDs stay UINT_MAX, outside the histogram domain.
+      // Full-grid path capacity prevents truncation. Membership reads only the count-bounded ID prefix; tails are unspecified.
       const targets = [
         [15, 15],
         [50, 45],

@@ -39,7 +39,9 @@ export const COREGIONALIZATION_FIT_AUDIT_CASES: KernelAuditCase[] = [
     exportName: 'GPUCoregionalizationFit',
     name: 'four variables, four structures, 256 bins and 1024 sweeps',
     build(context) {
-      context.graph.add(new GPUCoregionalizationFit(createCoregionalizationAuditProps(context)));
+      context.graph.add(
+        context.construct(GPUCoregionalizationFit, createCoregionalizationAuditProps(context))
+      );
     }
   }
 ];
@@ -57,7 +59,7 @@ for (const [property, maximum] of [
     build(context) {
       const props = createCoregionalizationAuditProps(context);
       context.graph.add(
-        new GPUCoregionalizationFit({
+        context.construct(GPUCoregionalizationFit, {
           ...props,
           ...(property === 'distances.length'
             ? {distances: context.view('float32', maximum + 1)}

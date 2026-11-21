@@ -862,6 +862,44 @@ it('skeleton and fill holes publish their current values when the iteration limi
   destroy();
 });
 
+it('RT-134 skeleton publishes the state at its iteration budget, not after the fixed-point test', async () => {
+  const {graph, input, output, run} = await setup();
+  const skeleton = output(25, 'uint32'),
+    converged = output(1, 'uint32'),
+    limit = output(1, 'uint32'),
+    iterationCount = output(1, 'uint32');
+  graph.add(
+    new GPURasterSkeleton({
+      id: 'thin-budget',
+      grid: grid(5, 5),
+      input: input(Array(25).fill(1), 'uint32'),
+      maximumIterations: 1,
+      output: {
+        skeleton: skeleton.view,
+        status: {
+          converged: converged.view,
+          iterationLimitReached: limit.view,
+          iterationCount: iterationCount.view
+        }
+      }
+    })
+  );
+  const destroy = run();
+  // Independent Zhang-Suen (1984) transcription in /usr/bin/python3: one iteration of a 5 x 5
+  // all-foreground block leaves ...../.###./.###./.##../..... (eight pixels); a second leaves
+  // only the centre. The fixed-point test (iteration 2) finds deletions, so it is unconverged.
+  const expected = ['.....', '.###.', '.###.', '.##..', '.....']
+    .join('')
+    .split('')
+    .map(pixel => Number(pixel === '#'));
+  expect(Array.from(await readUint32(skeleton.buffer, 25))).toEqual(expected);
+  expect((await readUint32(converged.buffer, 1))[0]).toBe(0);
+  expect((await readUint32(limit.buffer, 1))[0]).toBe(1);
+  // The count includes the fixed-point test, as for reconstruction.
+  expect((await readUint32(iterationCount.buffer, 1))[0]).toBe(2);
+  destroy();
+});
+
 it('reconstruction spreads through corner neighbours by default, as scikit-image does (raster-fields-08)', async () => {
   const {graph, input, output, run} = await setup();
   // A diagonal ridge of height 5 in the mask and a marker on its first cell. The ridge cells touch

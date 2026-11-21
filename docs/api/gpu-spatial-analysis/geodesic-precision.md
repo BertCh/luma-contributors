@@ -1,5 +1,7 @@
 # Geodesic precision (CR01)
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 See also the [global coordinate guide](global-coordinates.md).
 
 ## GPUGeodesicPairs
@@ -10,7 +12,8 @@ Requesting every optional column uses two bounded dispatches, keeping each withi
 WebGPU's portable eight-storage-binding budget without readback or scratch.
 Construction rejects overlapping output byte ranges across the entire output set,
 including columns written by different dispatches. Disjoint ranges in one buffer
-remain accepted; output/input buffer separation is also checked.
+remain accepted across separate dispatches; outputs co-bound within one dispatch must also
+have disjoint aligned storage-binding ranges. Output/input buffer separation is checked.
 The default iteration limit is 16, with accepted integer limits of 1–200. The named
 maximum bounds per-invocation work, not the number of pairs.
 
@@ -28,12 +31,51 @@ scalars. Their meanings are:
   rejected before iteration reports zero. A conditioning exclusion can therefore
   have `converged=0`, `approximation=1`, `iterationLimitReached=0`.
 
+The 0.02-radian exclusion measures the small angular gap **to the antipode directly**
+from the stored coordinates on both routes; it does not subtract a rounded central angle
+from pi. For `(0°,0°) → (180°,latitude)`, the independent cutoff oracle is
+`abs(latitude) * pi / 180`. Stored latitudes `1.1459144353866577°` and
+`1.1459163427352905°` give gaps `0.019999979843629` and `0.020000013133143`
+radians. At budget 32 their status triples are `[0,1,0]` and `[1,0,0]`, respectively.
+Their float32-published CPU distances are `19887694 m` (sphere fallback) and
+`19877222 m` (ellipsoid); GPU distance assertions allow the measured 12 m envelope.
+The longitude supplement is formed from canonical stored endpoints before a near-half-turn
+subtraction can round it. For `(1.1459152698516846°,0°) → (180°,0°)`, the equatorial gap
+is `0.019999994407791207` radians: budget 32 reports `[0,1,0]` and sphere distance
+`19887694 m` on both routes. Integer-grid subtraction for large longitude endpoints prevents
+backend reassociation from recreating the cancelled supplement.
+This fixes model selection and changes distances for previously misclassified boundary pairs.
+
 Fallback rows publish sphere distance and bearings; these **do not satisfy the
 ellipsoidal error envelope**. Use `CPUGeodesicPairsOperation` or the pure
 `computeGeodesicPairsOnCPU` for a float64 exact ellipsoidal inverse at antipodes.
-The twin has the same output columns. Its exact inverse has no iteration budget,
-so `iterationLimitReached` is always zero and valid ellipsoidal rows converge.
-It still marks spherical midpoint/bearing conditioning through `approximation`.
+The twin has the same output columns. Without an explicit `maximumIterations`, its exact inverse
+has no iteration budget, so `iterationLimitReached` is zero and valid ellipsoidal rows converge.
+An explicit budget (1–200) bounds auxiliary-longitude convergence using float32 updates,
+including reduced-latitude arithmetic and the GPU stopping criterion, before the exact solve.
+This matters at the stopping boundary: `(0,20)` to `(170,60)` falls back at budget two and
+converges at three; the sphere and ellipsoid distances are 11,073,359.15 m and 11,091,265.03 m.
+Exhaustion publishes the context-sphere distance and bearings
+with `[converged, approximation, iterationLimitReached] = [0,1,1]`. The pure helper accepts this
+budget as its third argument. Antipodal conditioning can trigger fallback before exhaustion.
+The twin also marks spherical midpoint/bearing conditioning through `approximation`.
+
+For a one-iteration ellipsoidal inverse from `(0,0)` to `(1,0)`, the first auxiliary-longitude
+change is `f * pi / 180`, about `5.85e-5` radians. Work remains at that budget, so the status
+triple is `[0,1,1]`. Coincident points instead give `[1,0,0]`; equatorial antipodes give
+`[0,1,0]` because singularity is detected before iteration. These distinctions apply to full
+status words, including zero values, on every execution.
+The stopping test scales with the iterated quantity. For a `0.01°` equatorial inverse,
+the first change is about `5.85176e-7` radians, above the relative threshold `8.40567e-11`.
+A 2,000 m northward direct trip from `(0,0)` changes by about `5.27660e-7`, above its
+`2.4e-7` threshold. Both report `[0,1,1]` after one iteration even though their changes
+are below an absolute `1e-6`.
+At `0.001°`, the inverse change is about `5.85176e-8`, still above its relative threshold
+`8.40567e-12`; retaining the coefficient `4.8e-7` as an absolute tolerance would stop too early.
+For a 19,500,000 m direct trip from `(0,0)` at bearing `85.75°`, float32 sigma changes from
+`3.0675757` to `3.067575`: change `7.15256e-7` is within the scaled threshold `7.36218e-7`,
+so one iteration reports `[1,0,0]`. This accepts a larger change than the unfinished 2,000 m
+trip, which requires a scale-dependent stopping decision.
 
 Midpoints are spherical even in ellipsoidal mode. Within 1e-6 radians of an
 antipode the great-circle path is nonunique or too ill-conditioned: both midpoint
@@ -184,8 +226,22 @@ inside the existing 1e-6-radian antipodal exclusion still return NaNs.
 Headless regressions cover the actual substring, both fractions, exact antipodes,
 interior rejection, antimeridian continuity and untouched dispatch padding.
 
+Exact longitude half-turn interpolation aligns interior longitude with the known unwrapped
+endpoint branch across a pole; float32 sin(pi) must not select an opposite-sign meridian and
+create a 360-degree final jump. The arcs and segmentize polar-branch tests require the lead's
+GPU rerun.
+
 The split-dispatch alias regression requests all seven geodesic-pair outputs and
 places distinct `converged` and `iterationLimitReached` views over the same bytes.
 Construction now rejects both exact and partial overlaps before any dispatch is
 created. Its Node regressions failed before the fix and pass afterward. Adjacent
 ranges remain accepted, and the existing positive pair-count limit is retained.
+
+## Planar measurement units
+
+`GPUGeometryMeasures` rejects known angular planar frames when `lengths` or `areas`
+are requested, including group columns, `metric: 'none'`, and omitted result units.
+Project positions into a planar linear frame before requesting those measurements.
+The check resolves both explicit angular frame units and recognized geographic CRS identifiers.
+Coordinate-only columns such as bounds remain accepted with `metric: 'none'`;
+unlabelled XY remains ambiguous, and valid linear frames retain their existing units.

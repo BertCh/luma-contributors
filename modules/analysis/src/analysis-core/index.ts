@@ -5,7 +5,12 @@
 // Public helpers shared by the sibling packages (lenses, kepler).
 export * from './graph-support/index';
 export {createWGSLKernelNode} from './kernels/wgsl-kernel-nodes';
-export type {WGSLKernelBinding, WGSLKernelProps} from './kernels/wgsl-kernel-nodes';
+export type {
+  WGSLKernelBinding,
+  WGSLKernelProps,
+  PublishNodeProps,
+  WGSLDispatchGate
+} from './kernels/wgsl-kernel-nodes';
 // Kernel facts for computation records (opt-in per graph; see computation-record).
 export {
   getWGSLKernelNodeRecord,
@@ -26,10 +31,25 @@ export * from './contracts/index';
 export type {
   GPUParameterBufferProps,
   GPUParameterFormat,
-  GPUParameterValues
+  GPUParameterValues,
+  GPUPackedReadbackValues,
+  GPUPackedReadbackFormat,
+  GPUGraphPortDescriptor,
+  AnalysisValidationCode,
+  AnalysisValidationIdentity,
+  AnalysisValidationDetails
 } from './kernels/gpu-contributor-utils';
 export {
+  AnalysisValidationError,
   GPUParameterBuffer,
+  getPackedUint32Values,
+  getPackedFloat32Values,
+  readPackedBuffer,
+  isGraphDataView,
+  isGraphVectorView,
+  validateGraphPorts,
+  validateOption,
+  validateNonZeroFiniteNumber,
   GPU_MAXIMUM_COMMAND_NODE_COUNT,
   getStorageBindingElementLimit,
   validateCapacity,
@@ -72,6 +92,7 @@ export {
 
 export {resolveGPURasterContext} from './contracts/raster-grid';
 export type {
+  RasterGridAffine,
   GPURasterContextOptions,
   GPUResolvedRasterContext,
   GPURasterCellSizeMode
@@ -80,3 +101,10 @@ export * from './graph-support/device-limits';
 export {createGraphChunkGather} from './kernels/graph-chunk-gather';
 export * from './kernels/graph-chunk-dispatch';
 export * from './kernels/graph-chunk-groups';
+
+export type {
+  GPUAnalysisPackage,
+  GPUAnalysisOperatorIdentity,
+  GPUAnalysisRoute,
+  GPUAnalysisExecutionPlanner
+} from './contracts/analysis-execution-planning';

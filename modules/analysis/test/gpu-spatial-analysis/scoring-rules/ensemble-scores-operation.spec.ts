@@ -22,7 +22,7 @@ for (const fair of [false, true]) {
         observations: 'observations',
         memberCount: 4,
         dimension: 3,
-        fair,
+        estimator: fair ? 'fair' : 'empirical',
         variogramOrder: 0.5,
         variogramPairs: 'pairs',
         variogramWeights: 'weights',

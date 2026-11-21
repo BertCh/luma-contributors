@@ -59,7 +59,7 @@ export default defineOperationRun<Inputs, Outputs>({
     worldWidth: world.width
   }),
   build(builder, events, values) {
-    const weights = createKnnWeights(events.positions, values.k);
+    const weights = createKnnWeights(events.positions, values.neighborCount);
     const times = builder.allocate('times', 'float32', events.count);
     const parameterBuffer = builder.allocate(
       'parameters',
@@ -73,7 +73,7 @@ export default defineOperationRun<Inputs, Outputs>({
         neighbors: uploadSpatialWeights(builder, weights),
         times: times.view,
         parameters: parameterBuffer.view,
-        k: values.k,
+        neighborCount: values.neighborCount,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
         output: {statistics: statistics.view, summary: summary.view}
       })
@@ -96,7 +96,7 @@ export default defineOperationRun<Inputs, Outputs>({
       }
     };
   },
-  rebuildOn: ['k'],
+  rebuildOn: ['neighborCount'],
   buildCache: 5,
   interaction: {
     kind: 'probe',
@@ -123,7 +123,7 @@ export default defineOperationRun<Inputs, Outputs>({
       inputs.focus.row = row;
       if (row < 0) return {glyphs: chart.glyphs, readout: total};
       const times = shuffleTimes(inputs.days, values.observedShare);
-      const temporal = getTemporalNeighbors(times, row, values.k);
+      const temporal = getTemporalNeighbors(times, row, values.neighborCount);
       const from = [inputs.positions[row * 2], inputs.positions[row * 2 + 1]] as const;
       const glyphs: RunGlyph[] = [...chart.glyphs, {shape: 'crosshair', at: from, size: 12}];
       let bothCount = 0;
@@ -136,7 +136,7 @@ export default defineOperationRun<Inputs, Outputs>({
       return {
         focus: row,
         glyphs,
-        readout: `${bothCount} of k ${values.k} also nearest in time · ${total}`
+        readout: `${bothCount} of k ${values.neighborCount} also nearest in time · ${total}`
       };
     }
   },

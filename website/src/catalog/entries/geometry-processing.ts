@@ -209,7 +209,7 @@ export const entries: CatalogEntry[] = [
     outputs: [
       makeOutput('points', 'GraphDataView<"float32x2">', 'Label anchor per polygon.'),
       makeOutput(
-        'distances',
+        'publishedCenterClearance',
         'GraphDataView<"float32">',
         'Distance from the anchor to the boundary.'
       ),
@@ -222,7 +222,7 @@ export const entries: CatalogEntry[] = [
     example: makeExample('GPULabelPoint', [
       'positions, featureOffsets, polygonOffsets, ringOffsets,',
       'refinementRounds: 3,',
-      'output: {points, distances}'
+      'output: {points, publishedCenterClearance}'
     ]),
     preview: {
       kind: 'polygons',
@@ -390,7 +390,7 @@ export const entries: CatalogEntry[] = [
       makeParam(
         'geometry',
         'GPUGeometryPredicatesGeometry',
-        'Single point or line features, or polygons; multipart input is rejected.',
+        'Point/line parts with optional featureOffsets, or polygon features.',
         {
           required: true
         }
@@ -401,7 +401,7 @@ export const entries: CatalogEntry[] = [
       makeParam(
         'other',
         'GPUGeometryPredicatesGeometry | undefined',
-        'Second geometry for element-wise tests; multipart input is rejected.'
+        'Aligned features; multipart accepted; same kind for structural equality.'
       ),
       makeParam(
         'parameters',
@@ -411,7 +411,7 @@ export const entries: CatalogEntry[] = [
       makeParam(
         'intersectionCapacity',
         'number | undefined',
-        'Capacity of the self-intersection list; required for polygons.'
+        'Capacity of the self-intersection list; required with isSimple or isRing.'
       ),
       makeParam('leafCapacity', 'number | undefined', 'Power-of-two BVH leaf slots.')
     ],
@@ -424,7 +424,21 @@ export const entries: CatalogEntry[] = [
       makeOutput('isRing', 'GraphDataView<"uint32">', '1 for a closed simple line.'),
       makeOutput('isCcw', 'GraphDataView<"uint32">', '1 for counter-clockwise rings.'),
       makeOutput('numCoordinates', 'GraphDataView<"uint32">', 'Coordinate count.'),
-      makeOutput('equalsExact', 'GraphDataView<"uint32">', 'Exact match against `other`.')
+      makeOutput(
+        'equalsExact',
+        'GraphDataView<"uint32">',
+        'Structural match against `other` within the supplied tolerance.'
+      ),
+      makeOutput(
+        'relate',
+        'GraphDataView<"uint32">',
+        'Packed aligned DE-9IM matrix; bit 31 marks uncertainty.'
+      ),
+      makeOutput(
+        'topological',
+        "GPUGeometryPredicatesOutput['topological']",
+        'Named topology columns, including equals; independent of part splits.'
+      )
     ],
     example: makeExample('GPUGeometryPredicates', [
       'geometry,',
@@ -1349,10 +1363,20 @@ export const entries: CatalogEntry[] = [
     useCases: ['transform'],
     domains: ['cartography', 'transport'],
     params: [
-      makeParam('original', 'GPULineGeometryFields', 'Source lines.', {required: true}),
-      makeParam('raw', 'GPULineGeometryFields', 'Raw offset of each source line, same order.', {
-        required: true
-      }),
+      makeParam(
+        'original',
+        "GPUOffsetCurveComponentsProps['original']",
+        'Source line parts with optional logical featureOffsets.',
+        {required: true}
+      ),
+      makeParam(
+        'raw',
+        "GPUOffsetCurveComponentsProps['raw']",
+        'Offset parts aligned with original, including optional featureOffsets.',
+        {
+          required: true
+        }
+      ),
       makeParam('distance', 'number', 'Offset distance.', {required: true}),
       makeParam('tolerance', 'number', 'Absolute geometric slack, including chord error.', {
         required: true
@@ -1367,7 +1391,11 @@ export const entries: CatalogEntry[] = [
     ],
     outputs: [
       makeOutput('positions', 'GraphDataView<"float32x2">', 'Vertices of the kept components.'),
-      makeOutput('components', 'GraphDataView<"uint32">', 'Component offsets per source line.'),
+      makeOutput(
+        'components',
+        'GraphDataView<"uint32x4">',
+        '[firstVertex, vertexCount, sourcePartRow, sourceFeatureRow]; last=0 ungrouped.'
+      ),
       makeOutput('sourceEdges', "GraphDataView<'uint32'>", 'Source edge of each output vertex.'),
       makeOutput(
         'status',
@@ -1376,7 +1404,7 @@ export const entries: CatalogEntry[] = [
       )
     ],
     example: makeExample('GPUOffsetCurveComponents', [
-      'original, raw, // GPULineGeometryFields',
+      'original, raw, // aligned positions, lineOffsets and optional featureOffsets',
       'distance: 20, tolerance: 0.5,',
       'intersectionCapacity: 4096, segmentCapacity: 4096,',
       'output // positions, components, ...'

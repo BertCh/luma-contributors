@@ -10,6 +10,8 @@ import {
   spheroidToCartesian
 } from '@math.gl/core';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import type {GPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
 
 const OPERATION = 'prepareGPUTrajectoryObservations';
 
@@ -123,17 +125,78 @@ export function prepareGPUTrajectoryObservations(props: GPUTrajectoryObservation
     timeWords[row * 2] = words.low;
     timeWords[row * 2 + 1] = words.high;
   }
+  const origin = Object.freeze([longitude, latitude] as const);
+  const wordUnit =
+    props.unitsPerSecond === 1n
+      ? 'second'
+      : props.unitsPerSecond === 1000n
+        ? 'millisecond'
+        : props.unitsPerSecond === 1000000n
+          ? 'microsecond'
+          : props.unitsPerSecond === 1000000000n
+            ? 'nanosecond'
+            : undefined;
+  const timeWordsTemporalContext: GPUTemporalContext | undefined = wordUnit
+    ? Object.freeze({
+        encoding: 'int64-words',
+        unit: wordUnit,
+        epoch: 'unix',
+        axis: Object.freeze({kind: 'irregular'})
+      })
+    : undefined;
+  const epochSeconds = props.epoch / props.unitsPerSecond;
+  const timesTemporalContext: GPUTemporalContext | undefined =
+    props.epoch % props.unitsPerSecond === 0n &&
+    epochSeconds >= -(1n << 63n) &&
+    epochSeconds < 1n << 63n
+      ? Object.freeze({
+          encoding: 'float32-relative',
+          unit: 'second',
+          epoch: epochSeconds,
+          axis: Object.freeze({kind: 'irregular'})
+        })
+      : undefined;
+  const spatialContext: GPUSpatialContext = Object.freeze({
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    datum: 'EPSG:4326',
+    frame: Object.freeze({
+      id: `wgs84-local-east-north:${longitude}:${latitude}:height-zero`,
+      kind: 'crs',
+      crs: 'LOCAL:WGS84-EAST-NORTH',
+      origin: Object.freeze([longitude, latitude]) as unknown as [number, number],
+      anchor: 'projection-center',
+      axisOrder: 'enu',
+      unit: Object.freeze({name: 'meter', metersPerUnit: 1})
+    })
+  });
   return {
     positions,
+    /** Elapsed seconds after the exact epochTicks / epochUnitsPerSecond origin in timesMetadata. */
     times,
-    /** Absolute Int64 `(low, high)` timestamp words, two per row: a `uint32x2` Kalman `times` column. */
+    /** Absolute source ticks as Int64 `(low, high)` words, two per row; not elapsed seconds. */
     timeWords,
+    /** Exact source epoch and rate remain meaningful when the epoch is a fractional second. */
+    timesMetadata: Object.freeze({
+      encoding: 'float32-relative' as const,
+      unit: 'second' as const,
+      epochTicks: props.epoch,
+      epochUnitsPerSecond: props.unitsPerSecond
+    }),
+    /** Available only when the epoch is an integral number of seconds. */
+    timesTemporalContext,
+    /** Available for source rates 1, 1000, 1000000 and 1000000000 ticks per second. */
+    timeWordsTemporalContext,
+    spatialContext,
     projection: {
       kind: 'wgs84-local-east-north' as const,
-      origin: props.origin,
+      origin,
       units: 'metres' as const
     },
+    /** Source epoch ticks; use timesMetadata to interpret the elapsed-seconds stream. */
     epoch: props.epoch,
+    /** Source tick rate, used by timeWords; times is already in seconds. */
     unitsPerSecond: props.unitsPerSecond
   };
 }

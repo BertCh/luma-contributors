@@ -7,7 +7,7 @@ import type {
   GPUAnalysisQuestion,
   GPUAnalysisRowSemantics,
   GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 
 // A curated analysis is a question-named, pre-configured way to run one catalog binding: typed

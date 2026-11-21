@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
-import {GPUOPTICS, OPTICS_ITERATION_STATUS_FIELDS, type GPUOPTICSProps} from './gpu-optics';
+import {GPUOPTICS, OPTICS_NAMED_STATUS_FIELDS, type GPUOPTICSProps} from './gpu-optics';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   snapshotConstructionFields,
   snapshotConstructionSpatialContext
@@ -20,15 +21,16 @@ export type OPTICSOperationProps = Omit<GPUOPTICSProps, 'positions' | 'times' | 
     reachability: string;
     predecessors: string;
     labels: string;
-    status: string;
     clusterIntervals?: string;
     clusterSummary?: string;
     ports?: {
       status: {
         candidateOverflow?: string;
+        reason?: string;
         iterationCount?: string;
         converged?: string;
         iterationLimitReached?: string;
+        invalidCount?: string;
       };
     };
   };
@@ -58,13 +60,17 @@ export function snapshotOPTICSOperationProps(props: OPTICSOperationProps): OPTIC
     'orderingMethod',
     'neighborCapacity'
   ]);
+  validateRequirement(
+    snapshot.id ?? 'optics',
+    !('status' in snapshot.output),
+    'output.status was removed; use output.ports.status for iterationCount, converged and invalidCount'
+  );
   const output = snapshotConstructionFields(snapshot.output, [
     'ordering',
     'coreDistances',
     'reachability',
     'predecessors',
     'labels',
-    'status',
     'clusterIntervals',
     'clusterSummary',
     'ports'
@@ -109,9 +115,7 @@ export function snapshotOPTICSOperationProps(props: OPTICSOperationProps): OPTIC
             ports: Object.freeze({
               status: snapshotConstructionFields(ports.status, [
                 'candidateOverflow',
-                'iterationCount',
-                'converged',
-                'iterationLimitReached'
+                ...OPTICS_NAMED_STATUS_FIELDS
               ])
             })
           }
@@ -136,7 +140,6 @@ export class GPUOPTICSOperation extends GPUContributorOperation {
         reachability: {value: output.reachability, format: 'float32', length},
         predecessors: {value: output.predecessors, format: 'uint32', length},
         labels: {value: output.labels, format: 'uint32', length},
-        status: {value: output.status, format: 'uint32', length: 3},
         ...(output.clusterIntervals
           ? {
               clusterIntervals: {
@@ -150,7 +153,7 @@ export class GPUOPTICSOperation extends GPUContributorOperation {
           ? {clusterSummary: {value: output.clusterSummary, format: 'uint32' as const, length: 2}}
           : {}),
         ...Object.fromEntries(
-          OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
+          OPTICS_NAMED_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(name => [
             name,
             {value: output.ports!.status[name]!, format: 'uint32' as const, length: 1}
           ])
@@ -177,7 +180,6 @@ export class GPUOPTICSOperation extends GPUContributorOperation {
             reachability: getView<'float32'>('reachability'),
             predecessors: getView<'uint32'>('predecessors'),
             labels: getView<'uint32'>('labels'),
-            status: getView<'uint32'>('status'),
             clusterIntervals: output.clusterIntervals
               ? getView<'uint32x2'>('clusterIntervals')
               : undefined,
@@ -185,7 +187,7 @@ export class GPUOPTICSOperation extends GPUContributorOperation {
             ports: {
               status: {
                 ...Object.fromEntries(
-                  OPTICS_ITERATION_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(
+                  OPTICS_NAMED_STATUS_FIELDS.filter(name => output.ports?.status[name]).map(
                     name => [name, getView<'uint32'>(name)]
                   )
                 ),

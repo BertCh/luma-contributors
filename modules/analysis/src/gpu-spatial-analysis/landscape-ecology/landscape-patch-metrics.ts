@@ -21,6 +21,7 @@ export function addLandscapePatchMetrics<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPULandscapeMetricsProps & {
     id: string;
+    patches: GraphDataView<'uint32'>;
     patchMetrics: GraphDataView<'float32x4'>;
     classAdjacency: GraphDataView<'uint32'>;
   }

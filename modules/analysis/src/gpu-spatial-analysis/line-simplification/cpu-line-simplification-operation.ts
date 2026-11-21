@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCPUHostOffsets} from '../../analysis-core/operations/compact-host-offsets';
+
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   resolveGPUSpatialContext,
@@ -24,6 +26,7 @@ import {
   wrapLongitude
 } from '../../analysis-core/kernels/cpu-geodesic';
 import {GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH} from './line-simplification-parameters';
+import {snapshotLineSimplificationOperationProps} from './line-simplification-snapshot';
 import {
   GPULineSimplificationOperation,
   type LineSimplificationOperationProps
@@ -31,6 +34,8 @@ import {
 
 /** Packed line rows; importance is required in selection-only mode. */
 export type CPULineSimplificationInput = {
+  /** By default offsets describe an in-bounds position window. Compact storage spans all rows. */
+  storage?: 'compact' | 'resident-capacity';
   positions: Float32Array;
   lineOffsets: Uint32Array;
   timestamps?: Float32Array;
@@ -57,9 +62,36 @@ export type CPULineSimplificationResult = {
   count: Uint32Array;
   requiredCount: Uint32Array;
   overflow: Uint32Array;
+  candidateOverflow: Uint32Array;
   converged: Uint32Array;
   iterationCount: Uint32Array;
 };
+
+function validateLineOffsets(
+  id: string,
+  {lineOffsets, storage}: CPULineSimplificationInput,
+  rowCount: number
+): void {
+  if (storage !== undefined) {
+    validateCPUHostOffsets(id, 'lineOffsets', lineOffsets, rowCount, {storage});
+    return;
+  }
+  validateRequirement(
+    id,
+    lineOffsets.length >= 1,
+    `lineOffsets length ${lineOffsets.length} must include a terminal offset`
+  );
+  let previousOffset = 0;
+  for (let index = 0; index < lineOffsets.length; index++) {
+    const offset = lineOffsets[index];
+    validateRequirement(
+      id,
+      offset >= previousOffset && offset <= rowCount,
+      `lineOffsets[${index}] must be nondecreasing and <= child count ${rowCount}; received ${offset}`
+    );
+    previousOffset = offset;
+  }
+}
 
 function resolveOptions(id: string, options: CPULineSimplificationOptions): number | undefined {
   validateRequirement(
@@ -162,6 +194,7 @@ function computeDistance(
  * Computes a complete Douglas-Peucker split tree or sequential Visvalingam-Whyatt effective
  * areas, then selects rows using the packed tolerance. Intermediates stay in float64, including
  * comparisons to tolerance; the returned importance column is rounded only after selection.
+ * Offsets can describe a window of the positions array. Selected IDs use the original row indices.
  *
  * What differs from the GPU contributor:
  * - An explicit maximumIterations binds the CPU rounds; omission leaves the CPU uncapped. Douglas-Peucker is
@@ -181,7 +214,7 @@ function computeDistance(
  * - Finite inputs whose GPU intermediates overflow are evaluated in float64. If the final
  *   importance exceeds the float32 range, it rounds to positive Infinity.
  *
- * @throws For inconsistent arrays, nonmonotone/out-of-range offsets, or unsupported options.
+ * @throws For inconsistent arrays, offsets invalid for the chosen storage, or unsupported options.
  */
 export function computeLineSimplificationOnCPU(
   input: CPULineSimplificationInput,
@@ -191,14 +224,7 @@ export function computeLineSimplificationOnCPU(
   const rowCount = input.positions.length / 2;
   if (!Number.isInteger(rowCount)) throw new Error('positions must contain float32x2 rows');
   if (!input.positions.every(Number.isFinite)) throw new Error('positions must be finite');
-  if (input.lineOffsets.length < 2)
-    throw new Error('lineOffsets must contain at least two entries');
-  for (let index = 0; index < input.lineOffsets.length; index++)
-    if (
-      input.lineOffsets[index] > rowCount ||
-      (index > 0 && input.lineOffsets[index] < input.lineOffsets[index - 1])
-    )
-      throw new Error('lineOffsets must be nondecreasing and within positions');
+  validateLineOffsets('computeLineSimplificationOnCPU', input, rowCount);
   if (input.timestamps && input.timestamps.length !== rowCount)
     throw new Error('timestamps length must equal positions row count');
   if (
@@ -233,8 +259,8 @@ export function computeLineSimplificationOnCPU(
   let converged = 1;
   if (options.computeImportance !== false)
     for (let line = 0; line < lineCount; line++) {
-      const first = input.lineOffsets[line];
-      const last = input.lineOffsets[line + 1] - 1;
+      const first = Math.min(input.lineOffsets[line], rowCount);
+      const last = Math.min(input.lineOffsets[line + 1], rowCount) - 1;
       if (last < first) continue;
       importance[first] = Infinity;
       importance[last] = Infinity;
@@ -325,6 +351,7 @@ export function computeLineSimplificationOnCPU(
     count: new Uint32Array(1),
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
+    candidateOverflow: new Uint32Array(1),
     converged: new Uint32Array([converged]),
     iterationCount: new Uint32Array([iterationCount])
   };
@@ -333,7 +360,9 @@ export function computeLineSimplificationOnCPU(
   let total = 0;
   for (let line = 0; line < lineCount; line++) {
     result.lineStarts[line] = total;
-    for (let row = input.lineOffsets[line]; row < input.lineOffsets[line + 1]; row++)
+    const start = Math.min(input.lineOffsets[line], rowCount);
+    const end = Math.min(input.lineOffsets[line + 1], rowCount);
+    for (let row = start; row < end; row++)
       if (importance[row] > tolerance) {
         result.outputMask[row] = 1;
         if (total < capacity) result.ids[total] = row;
@@ -349,11 +378,20 @@ export function computeLineSimplificationOnCPU(
 
 /** CPU simplification honors explicit iteration budgets; neighborhood scheduling remains sequential. */
 export class CPULineSimplificationOperation extends GPUCPUOperation {
-  constructor(props: LineSimplificationOperationProps) {
+  constructor(
+    props: LineSimplificationOperationProps & {storage?: 'compact' | 'resident-capacity'}
+  ) {
+    const storage = props.storage;
+    props = snapshotLineSimplificationOperationProps(props);
     const id = props.id ?? 'line-simplification';
+    validateRequirement(
+      id,
+      storage === undefined || ['compact', 'resident-capacity'].includes(storage),
+      `storage must be compact or resident-capacity; received ${storage}`
+    );
     resolveOptions(id, props);
-    validateCapacity(id, 'rowCount', props.rowCount);
-    validateCapacity(id, 'lineCount', props.lineCount);
+    validateCapacity(id, 'rowCount', props.rowCount, 0);
+    validateCapacity(id, 'lineCount', props.lineCount, 0);
     validateCapacity(id, 'capacity', props.capacity ?? props.rowCount, 0);
     validateCapacity(id, 'maximumIterations', props.maximumIterations ?? 64);
     if (props.method === 'visvalingam')
@@ -394,6 +432,7 @@ export class CPULineSimplificationOperation extends GPUCPUOperation {
           props.output?.lineStarts,
           props.output?.status?.count,
           props.output?.status?.overflow,
+          props.output?.status?.candidateOverflow,
           props.output?.status?.requiredCount
         ].every(value => value === undefined),
       'selection columns require output.ids'
@@ -419,6 +458,7 @@ export class CPULineSimplificationOperation extends GPUCPUOperation {
           {
             positions,
             lineOffsets,
+            storage,
             timestamps:
               props.timestamps !== undefined
                 ? getCPUOperationFloat32Rows(id, inputs, 'timestamps')

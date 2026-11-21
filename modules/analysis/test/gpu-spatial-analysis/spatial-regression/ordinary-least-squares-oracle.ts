@@ -262,8 +262,11 @@ export function fitOrdinaryLeastSquaresOnCPU(
       result.standardErrors[j] > 0 ? result.coefficients[j] / result.standardErrors[j] : NaN;
   }
   const rSquared = totalSumSquares > 0 ? 1 - sumSquares / totalSumSquares : NaN;
-  const logLikelihood =
-    -0.5 * n * (Math.log(2 * Math.PI) + Math.log(Math.max(sumSquares / n, 1.17549435e-38)) + 1);
+  // Positive RSS retains its response units, even below the normal float32 variance range.
+  // Only an exactly perfect fit uses the finite legacy zero-variance convention.
+  const logVariance =
+    sumSquares === 0 ? Math.log(1.17549435e-38) : Math.log(sumSquares) - Math.log(n);
+  const logLikelihood = -0.5 * n * (Math.log(2 * Math.PI) + logVariance + 1);
   const m2 = sumSquares / n;
   const skewness = sumCubes / n / m2 ** 1.5;
   const kurtosis = sumFourth / n / (m2 * m2);

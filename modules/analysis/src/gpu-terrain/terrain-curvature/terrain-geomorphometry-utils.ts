@@ -28,8 +28,8 @@ import {
  * and the explicit value, or `'south'`, is used.
  *
  * Only the row term is read. Columns are taken to advance east (`affine[0] > 0`), and on a
- * rotated `'uniform'` grid azimuths are measured clockwise from the grid's up axis, not from
- * true north.
+ * rotated `'uniform'` grid azimuths are measured clockwise from grid north: decreasing rows for
+ * resolved `rowDirection: 'south'`, increasing rows for `'north'`. This need not be true north.
  *
  * @param id Contributor ID, for the message.
  * @param grid Raster grid of the contributor.

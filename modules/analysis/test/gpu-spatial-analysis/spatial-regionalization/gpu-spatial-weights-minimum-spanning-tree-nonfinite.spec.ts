@@ -5,7 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
-  GPU_MINIMUM_SPANNING_TREE_STATUS,
+  GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT,
   GPUSpatialWeightsMinimumSpanningTree
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/index';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
@@ -52,7 +52,7 @@ it.each([
   const flags = rig.output('uint32', lattice.neighbors.length);
   const labels = rig.output('uint32', 9);
   const standardized = rig.output('float32', 9);
-  const status = rig.output('uint32', GPU_MINIMUM_SPANNING_TREE_STATUS.length);
+  const status = rig.output('uint32', GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length);
   rig.graph.add(
     new GPUSpatialWeightsMinimumSpanningTree({
       weights,
@@ -93,9 +93,9 @@ it.each([
   expect(treeFlags.flatMap((flag, slot) => (flag ? [slot] : []))).toEqual(expectedSlots);
   expect(expectedSlots).toHaveLength(8);
   expect(Array.from(await readUint32(labels.buffer, 9))).toEqual(new Array(9).fill(0));
-  expect((await readUint32(status.buffer, 1))[GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount]).toBe(
-    Object.keys(nonFinite).length
-  );
+  expect(
+    (await readUint32(status.buffer, 1))[GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.invalidCount]
+  ).toBe(Object.keys(nonFinite).length);
   compiled.destroy();
   rig.destroy();
 });

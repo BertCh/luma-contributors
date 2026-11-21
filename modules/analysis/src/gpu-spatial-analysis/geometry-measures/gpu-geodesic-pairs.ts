@@ -228,7 +228,25 @@ export class GPUGeodesicPairs<
       targets: props.targets,
       ...outputFields
     });
-    validateDisjointWritableViews(id, outputFields);
+    // Logical destinations must be disjoint even across dispatches. Aligned
+    // binding ranges need separation only among outputs actually co-bound.
+    validateDisjointWritableViews(id, outputFields, {separateDispatches: true});
+    const chunked =
+      !('buffer' in props.origins) ||
+      !('buffer' in props.targets) ||
+      Object.values(outputFields).some(view => view && !('buffer' in view));
+    const maximumOutputs = chunked ? MAXIMUM_CHUNK_OUTPUT_BINDINGS : MAXIMUM_OUTPUT_BINDINGS;
+    const orderedOutputs = Object.keys(formats).filter(name => outputFields[name] !== undefined);
+    for (let first = 0; first < orderedOutputs.length; first += maximumOutputs) {
+      validateDisjointWritableViews(
+        id,
+        Object.fromEntries(
+          orderedOutputs
+            .slice(first, first + maximumOutputs)
+            .map(name => [name, outputFields[name]])
+        )
+      );
+    }
     this.estimatedCommandNodeCount =
       1 +
       this.chunkPlan.nonemptyChunkCount *
@@ -335,6 +353,27 @@ export class GPUGeodesicPairs<
         ],
         invocationCount: props.origins.length,
         declarations: `${GEODESIC_WGSL}
+// Complement longitudes before subtracting near 180 degrees. The large
+// endpoint lies on the exact 2^-17-degree grid on [90,180]; integer subtraction
+// prevents Metal from reassociating (180-large)+small into 180-(large-small).
+fn antipodalLongitudeGap(source: f32, destination: f32) -> f32 {
+  let first = geodesicCanonicalLongitude(geodesicReduceLongitude(source));
+  let second = geodesicCanonicalLongitude(geodesicReduceLongitude(destination));
+  let larger = max(abs(first), abs(second));
+  let smaller = min(abs(first), abs(second));
+  let opposite = (first < 0.0) != (second < 0.0);
+  if (larger >= 90.0) {
+    let supplement = f32(23592960u - u32(larger * 131072.0)) * 0.00000762939453125;
+    return select(supplement + smaller, abs(supplement - smaller), opposite);
+  }
+  if (opposite && smaller >= 64.0) {
+    // Both endpoints near opposite quadrants of 90 degrees share that grid.
+    let units = 23592960 - i32(abs(first) * 131072.0) - i32(abs(second) * 131072.0);
+    return abs(f32(units)) * 0.00000762939453125;
+  }
+  // This branch is at least 26 degrees from an antipode; cutoff rounding is immaterial.
+  return 180.0 - abs(geodesicLongitudeDelta(first, second));
+}
 ${wgs84 ? getVincentyWGSL(this.maximumIterations, this.ellipsoid) : ''}
 ${SPHERE_PAIR_WGSL}
 ${rhumb ? RHUMB_WGSL : ''}
@@ -352,7 +391,11 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   var finalBearing = ${
     rhumb ? 'initialBearing' : 'sphereFinalBearingDegrees(origin, targetPosition)'
   };
-  let antipodal = GEODESIC_PI - geodesicCentralAngle(origin, targetPosition) < ${getWGSLFloatLiteral(GPU_GEODESIC_INVERSE_ANTIPODAL_MARGIN)};
+  // Resolve the small arc to the antipode from stored coordinates, avoiding
+  // cancellation between two rounded values near pi.
+  let antipodalLongitude = antipodalLongitudeGap(origin.x, targetPosition.x);
+  let antipodalGap = geodesicCentralAngle(vec2<f32>(0.0, origin.y), vec2<f32>(antipodalLongitude, -targetPosition.y));
+  let antipodal = antipodalGap < ${getWGSLFloatLiteral(GPU_GEODESIC_INVERSE_ANTIPODAL_MARGIN)};
   var isApproximation = ${rhumb ? 'false' : 'antipodal'};
   var isConverged = true;
   var isIterationLimitReached = false;

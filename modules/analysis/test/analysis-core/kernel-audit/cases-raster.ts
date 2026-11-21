@@ -799,7 +799,7 @@ const STREAMLINES_CASES: KernelAuditCase[] = [
 /* ------------------------------------------------------------------------------------------ */
 
 function addIsolines(
-  {graph, view}: Context,
+  {graph, view, construct}: Context,
   options: {
     width: number;
     height: number;
@@ -813,7 +813,7 @@ function addIsolines(
   const {segmentCapacity} = options;
   const cellCount = options.width * options.height;
   graph.add(
-    new GPUIsolines({
+    construct(GPUIsolines, {
       grid: makeGrid(options.width, options.height),
       tile: options.tile,
       values: view('float32', cellCount),
@@ -1072,7 +1072,7 @@ const ISOBANDS_CASES: KernelAuditCase[] = [
 ];
 
 function addIsobandRings(
-  {graph, view}: Context,
+  {graph, view, construct}: Context,
   options: {
     width: number;
     height: number;
@@ -1087,7 +1087,7 @@ function addIsobandRings(
   const cellCount = options.width * options.height;
   const {ringCapacity, vertexCapacity} = options;
   graph.add(
-    new GPUIsobandRings({
+    construct(GPUIsobandRings, {
       grid: makeGrid(options.width, options.height),
       values: view('float32', cellCount),
       mask: view('uint32', cellCount),
@@ -1383,7 +1383,7 @@ const POLYGON_RASTERIZATION_CASES: KernelAuditCase[] = [
 ];
 
 function addRasterJoin(
-  {graph, view}: Context,
+  {graph, view, construct}: Context,
   options: {
     width: number;
     height: number;
@@ -1396,7 +1396,7 @@ function addRasterJoin(
   const cellCount = options.width * options.height;
   const {pointCount, zoneCount} = options;
   graph.add(
-    new GPURasterJoin({
+    construct(GPURasterJoin, {
       grid: makeGrid(options.width, options.height),
       parameters: view('float32', 4),
       points: view('float32x2', pointCount),
@@ -2134,10 +2134,10 @@ type ProfileOptions = {
   sampleCapacity: number;
 };
 
-function addProfile({graph, view}: Context, options: ProfileOptions): void {
+function addProfile({graph, view, construct}: Context, options: ProfileOptions): void {
   const {sampleCapacity, lineCount} = options;
   graph.add(
-    new GPURasterProfile({
+    construct(GPURasterProfile, {
       grid: makeGrid(options.width, options.height),
       values: view('float32', options.width * options.height),
       noDataValue: -9999,
@@ -2185,9 +2185,9 @@ const PROFILE_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURasterProfile',
     name: 'status only with explicit sample capacity',
-    build: ({graph, view}) =>
+    build: ({graph, view, construct}) =>
       graph.add(
-        new GPURasterProfile({
+        construct(GPURasterProfile, {
           grid: makeGrid(200, 150),
           values: view('float32', 30000),
           positions: view('float32x2', 500),
@@ -2373,7 +2373,7 @@ function addZonalStatistics(context: Context, options: ZonalOptions): void {
   const uintColumn = () => view('uint32', zoneCapacity);
   const floatColumn = () => view('float32', zoneCapacity);
   graph.add(
-    new GPURasterZonalStatistics({
+    context.construct(GPURasterZonalStatistics, {
       grid,
       zones: view('uint32', options.width * options.height),
       values:
@@ -2383,6 +2383,7 @@ function addZonalStatistics(context: Context, options: ZonalOptions): void {
       zoneCapacity,
       ignoredZone: options.ignoredZone,
       cellSizeMode: options.cellSizeMode,
+      parameterLayoutVersion: options.cellSizeMode === 'geographic' ? 2 : undefined,
       parameters: options.cellSizeMode === 'geographic' ? view('float32', 8) : undefined,
       sumOrder: options.sumOrder,
       output: {

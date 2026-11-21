@@ -54,8 +54,28 @@ it('LOSH reduces the global residual mean without a serial row loop', () => {
     expect(scale.source).toContain('getScaledQuotient(finiteResiduals[');
     expect(finish.source).toContain('getScaledQuotient(weighted, total, mean[');
     expect(normalized.source).toContain('getScaledQuotient(residual, average, 1.0, 0)');
+    const residuals = kernels.find(kernel => kernel.id === 'losh-residuals')!;
+    // Every constant neighborhood has exactly zero residual, independent of an approximate
+    // GPU reciprocal in weighted/total. Do not normalize division noise into an LOSH pattern.
+    expect(residuals.source).toContain('var constantNeighborhood = true');
+    expect(residuals.source).toContain('constantNeighborhood = constantNeighborhood &&');
+    expect(residuals.source).toContain('if (constantNeighborhood) { deviation = 0.0; }');
   } finally {
     device.destroy();
+  }
+});
+
+it('constant LOSH fields have zero residuals rather than normalized reciprocal error', () => {
+  // Fraction definition: all neighbor means equal focus=4, hence every residual is zero.
+  // A Metal reciprocal one ulp below 1/3 makes 12/3 become 4-2^-22 for five rows in the
+  // audit graph. With five equal false residuals and two zeros, H_0=(2/3)/(5/7)=14/15,
+  // matching the lead's 0.9333333969. This is an arithmetic defect, not a loose tolerance.
+  const approximateReciprocal = 0.3333333134651184;
+  const falseDeviation = Math.abs(4 - Math.fround(12 * approximateReciprocal));
+  expect(falseDeviation).toBe(2 ** -22);
+  for (const power of [1, 2]) {
+    const falseResidual = falseDeviation ** power;
+    expect((2 * falseResidual) / 3 / ((5 * falseResidual) / 7)).toBeCloseTo(14 / 15, 14);
   }
 });
 

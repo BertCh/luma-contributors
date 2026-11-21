@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM. nodes: 619. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM. nodes: 619. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM\n\n- nodes: 619\n- 24 visible units vs budget 24\n- 619 hidden nodes\n- Edges by kind: raw 2833, war 891\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of GPUTerrainHeightAboveDrainage on the Dixie Fire DEM\n\n- nodes: 619\n- 24 visible units vs budget 24\n- 619 hidden nodes\n- Edges by kind: raw 2834, war 891\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "619"
@@ -25,14 +25,14 @@
         "final-value",
         "wavefront"
       ],
-      "status": "pass",
-      "reason": "every gated loop reached its fixpoint"
+      "status": "unknown",
+      "reason": "no convergence word captured"
     }
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:15.554Z",
-    "runId": "run-28f392be",
+    "date": "2026-11-20T23:51:48.488Z",
+    "runId": "run-c55b74f6",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -40,7 +40,7 @@
     ]
   },
   "state": {
-    "runId": "run-28f392be",
+    "runId": "run-c55b74f6",
     "rung": "graph",
     "bindings": {},
     "clauses": [],

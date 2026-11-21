@@ -7,6 +7,11 @@
  * first/warm encode+submit+queue completion, changed-input update and optional readback separately.
  * Every OPTICS size completes its full ordering through resident frontier batches.
  */
+import {
+  createOPTICSStatusFields,
+  getOPTICSStatusViews,
+  readOPTICSStatus
+} from '../spatial-clustering/optics-status-test-utils';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -101,7 +106,9 @@ async function measureContributor(
   };
   const sampleCount = Math.min(128, Math.ceil(rows / 4));
   const iterations = rows;
-  const status = output('uint32', operation === 'optics' ? 3 : 2);
+  const opticsStatus =
+    operation === 'optics' ? createOPTICSStatusFields(() => output('uint32', 1)) : undefined;
+  const sampleStatus = operation === 'optics' ? undefined : output('uint32', 2);
   const ids = output('uint32', operation === 'optics' ? rows : sampleCount);
   const coreDistances = operation === 'optics' ? output('float32', rows) : undefined;
   const reachability = operation === 'optics' ? output('float32', rows) : undefined;
@@ -120,7 +127,7 @@ async function measureContributor(
           reachability: reachability!.view,
           predecessors: output('uint32', rows).view,
           labels: output('uint32', rows).view,
-          status: status.view
+          ports: {status: getOPTICSStatusViews(opticsStatus!)}
         }
       })
     );
@@ -136,7 +143,7 @@ async function measureContributor(
           frameIds: ids.view,
           inclusionProbabilities: output('float32', sampleCount).view,
           designWeights: output('float32', sampleCount).view,
-          status: status.view
+          status: sampleStatus!.view
         }
       })
     );
@@ -165,7 +172,9 @@ async function measureContributor(
     await device.handle.queue.onSubmittedWorkDone();
     const changedInputMilliseconds = performance.now() - repeatStart;
     const readStart = performance.now();
-    const statusValues = await readUint32(status.buffer, status.view.length);
+    const statusValues = opticsStatus
+      ? await readOPTICSStatus(opticsStatus)
+      : await readUint32(sampleStatus!.buffer, 2);
     const selected = await readUint32(ids.buffer, ids.view.length);
     const readbackMilliseconds = performance.now() - readStart;
     if (operation === 'optics') {

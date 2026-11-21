@@ -273,7 +273,8 @@ export function getAnalysisRecipeSettings(
         selectedQuantile: operation.selectedQuantile,
         seed: operation.seed,
         permutationCount: operation.permutationCount,
-        significanceLevel: operation.significanceLevel
+        significanceLevel: operation.significanceLevel,
+        alternative: operation.alternative ?? 'geoda-legacy'
       }
     };
   if (operation.kind === 'multivariate-local-geary-points')

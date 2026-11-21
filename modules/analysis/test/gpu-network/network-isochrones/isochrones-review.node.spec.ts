@@ -467,3 +467,175 @@ it('ignores zero tableCapacity for a supplied table but rejects it for a transie
     device.destroy();
   }
 });
+
+it.each([
+  'startCosts',
+  'startCount',
+  'costLimit'
+] as const)('validates the supplied format of %s at construction (VAL-01)', port => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props = createProps(graph);
+    const wrongFormat = port === 'startCount' ? 'float32' : 'uint32';
+    const wrong = createTransientView(graph, 'wrong-search-port', wrongFormat, 1);
+    const create = () =>
+      new GPUNetworkIsochrones({
+        ...props,
+        id: 'search-formats',
+        [port]: wrong
+      } as GPUNetworkIsochronesProps);
+    expect(create).toThrow(new RegExp(`search-formats.*${port}.*received ${wrongFormat}`));
+    const validFormat = port === 'startCount' ? 'uint32' : 'float32';
+    expect(
+      () =>
+        new GPUNetworkIsochrones({
+          ...props,
+          [port]: createTransientView(graph, 'valid-search-port', validFormat, 1)
+        } as GPUNetworkIsochronesProps)
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it.each([
+  false,
+  true
+])('retains disjoint cell status slices (candidateDestination=%s, B6)', candidateDestination => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props = createCellProps(graph);
+    const storage = graph.createTransientBuffer({
+      id: 'shared-cell-status',
+      byteLength: 512,
+      usage: Buffer.STORAGE
+    });
+    props.cellOutline!.table!.status.overflow = graph.createDataView(storage, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: 0
+    });
+    const destination = graph.createDataView(storage, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: 256
+    });
+    if (candidateDestination) props.cellOutline!.output.status.candidateOverflow = destination;
+    else props.cellOutline!.output.status.count = destination;
+    expect(() => new GPUNetworkIsochrones(props).getCommandNodes(graph)).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('retains the cell polygonCount and sumOverflow writers (B4)', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props = createCellProps(graph);
+    const polygonCount = createTransientView(graph, 'polygon-count', 'uint32', 1);
+    const sumOverflow = createTransientView(graph, 'sum-overflow', 'uint32', 1);
+    props.cellOutline!.table!.status.sumOverflow = sumOverflow;
+    props.cellOutline!.rings = {
+      output: {
+        ringOffsets: createTransientView(graph, 'ring-offsets', 'uint32', 3),
+        positions: createTransientView(graph, 'ring-positions', 'float32x2', 12),
+        polygons: {
+          kind: 'polygons',
+          positions: createTransientView(graph, 'polygon-positions', 'float32x2', 12),
+          ringOffsets: createTransientView(graph, 'polygon-ring-offsets', 'uint32', 3),
+          polygonOffsets: createTransientView(graph, 'polygon-offsets', 'uint32', 3),
+          featureOffsets: createTransientView(graph, 'feature-offsets', 'uint32', 3)
+        },
+        status: {
+          count: createTransientView(graph, 'ring-count', 'uint32', 1),
+          overflow: createTransientView(graph, 'ring-overflow', 'uint32', 1),
+          polygonCount
+        }
+      }
+    };
+    const contributor = new GPUNetworkIsochrones(props);
+    expect(contributor.props.cellOutline!.table!.status.sumOverflow === sumOverflow).toBe(true);
+    expect(contributor.props.cellOutline!.rings!.output.status.polygonCount === polygonCount).toBe(
+      true
+    );
+    const views = contributor
+      .getCommandNodes(graph)
+      .flatMap(node => (node.resources ?? []).map(getResourceBuffer));
+    expect(views.includes(sumOverflow)).toBe(true);
+    expect(views.includes(polygonCount)).toBe(true);
+  } finally {
+    device.destroy();
+  }
+});
+
+it.each([
+  'startCosts',
+  'startCount',
+  'costLimit'
+] as const)('rejects a wrong row count for %s at construction (S1)', port => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props = createProps(graph);
+    const format = port === 'startCount' ? 'uint32' : 'float32';
+    const view = createTransientView(graph, 'two-search-rows', format, 2);
+    expect(
+      () => new GPUNetworkIsochrones({...props, [port]: view} as GPUNetworkIsochronesProps)
+    ).toThrow(new RegExp(`network-isochrones.*${port}.*(one row|startNodes).*2`));
+    const valid = createTransientView(graph, 'one-search-row', format, 1);
+    expect(
+      () => new GPUNetworkIsochrones({...props, [port]: valid} as GPUNetworkIsochronesProps)
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('captures the raster completeness and polygon destinations at the owned boundary (B5)', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props = createProps(graph);
+    const candidateOverflow = createTransientView(graph, 'raster-ring-candidate', 'uint32', 1);
+    const complete = createTransientView(graph, 'raster-ring-complete', 'uint32', 1);
+    const polygonCount = createTransientView(graph, 'raster-polygon-count', 'uint32', 1);
+    props.raster!.rings = {
+      edgeCapacity: 2,
+      output: {
+        ringOffsets: createTransientView(graph, 'raster-ring-offsets', 'uint32', 3),
+        positions: createTransientView(graph, 'raster-ring-positions', 'float32x2', 10),
+        polygons: {
+          kind: 'polygons',
+          positions: createTransientView(graph, 'raster-polygons', 'float32x2', 10),
+          ringOffsets: createTransientView(graph, 'raster-polygon-rings', 'uint32', 3),
+          polygonOffsets: createTransientView(graph, 'raster-polygon-offsets', 'uint32', 3),
+          featureOffsets: createTransientView(graph, 'raster-feature-offsets', 'uint32', 3)
+        },
+        status: {
+          count: createTransientView(graph, 'raster-ring-count', 'uint32', 1),
+          overflow: createTransientView(graph, 'raster-ring-overflow', 'uint32', 1),
+          edgeOverflow: createTransientView(graph, 'raster-edge-overflow', 'uint32', 1),
+          candidateOverflow,
+          complete,
+          polygonCount
+        }
+      }
+    };
+    const contributor = new GPUNetworkIsochrones(props);
+    const status = contributor.props.raster!.rings!.output.status;
+    expect(status.candidateOverflow === candidateOverflow).toBe(true);
+    expect(status.complete === complete).toBe(true);
+    expect(status.polygonCount === polygonCount).toBe(true);
+    const bound = contributor
+      .getCommandNodes(graph)
+      .flatMap(node => (node.resources ?? []).map(getResourceBuffer));
+    for (const destination of [candidateOverflow, complete, polygonCount]) {
+      expect(bound.includes(destination)).toBe(true);
+    }
+  } finally {
+    device.destroy();
+  }
+});

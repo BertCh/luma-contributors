@@ -85,8 +85,8 @@ it('a compile-time row-standardized distance band re-normalizes over masked neig
     length: GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
     values: getGPUNeighborSearchParameterValues({
       bounds: [-2, -2, 12, 12],
-      radius: RADIUS,
-      weightKind: 'binary',
+      searchRadius: RADIUS,
+      weightType: 'binary',
       rowStandardize: false
     })
   });

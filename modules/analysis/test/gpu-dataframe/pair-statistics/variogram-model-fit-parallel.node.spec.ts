@@ -44,9 +44,9 @@ it('parallel variogram search fits core binding and shader budgets at maximum se
         length: number
       ) => createTransientView(graph, `parallel-${serial++}`, format, length);
       const contributor = new GPUVariogramModelFit({
-        distances: view('float32', 256),
-        semivariances: view('float32', 256),
-        pairCounts: view('uint32', 256),
+        distances: view('float32', 1025),
+        semivariances: view('float32', 1025),
+        pairCounts: view('uint32', 1025),
         weighting,
         rangeSteps: 1024,
         maximumIterations: 64,
@@ -60,6 +60,29 @@ it('parallel variogram search fits core binding and shader budgets at maximum se
       expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
       const kernels = getGPUCommandNodeKernelSources(nodes);
       expect(kernels.length).toBeGreaterThan(1);
+      const tileKernel = kernels.find(kernel => kernel.id.endsWith('-prepare-tiles'));
+      expect(tileKernel?.source).toContain('@workgroup_size(64)');
+      expect(tileKernel?.constants?.['INVOCATION_COUNT']).toBe(128);
+      const mergeKernel = kernels.find(kernel => kernel.id.endsWith('-prepare'));
+      expect(mergeKernel?.constants?.['INVOCATION_COUNT']).toBe(64);
+      const layout = mergeKernel?.shaderLayout;
+      if (
+        !layout ||
+        typeof layout !== 'object' ||
+        !('bindings' in layout) ||
+        !Array.isArray(layout.bindings)
+      ) {
+        throw new Error('Expected the variogram preparation merge to record its binding layout.');
+      }
+      expect(layout.bindings).toHaveLength(6);
+      expect(layout.bindings).toMatchObject([
+        {name: 'scratch'},
+        {name: 'parameters'},
+        {name: 'diagnostics'},
+        {name: 'statuses'},
+        {name: 'partials'},
+        {name: 'roundParameters'}
+      ]);
       for (const kernel of kernels) {
         expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
         const usage = getWGSLModuleUsage(kernel.source, kernel.constants);
@@ -68,6 +91,40 @@ it('parallel variogram search fits core binding and shader budgets at maximum se
         expect(usage.functionBytes).toBeLessThanOrEqual(8192);
         expect(usage.workgroupStorageBytes).toBeLessThanOrEqual(16384);
       }
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('CORE-118 keeps the ordered preparation and upload through 1024 bins', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const binCount of [2, 1024]) {
+      // A whole Cressie parameter binding would fail this two-bin device configuration.
+      Object.assign(device.limits, {maxStorageBufferBindingSize: binCount === 2 ? 512 : 4096});
+      const graph = new GPUCommandGraph(device);
+      const contributor = new GPUVariogramModelFit({
+        distances: createTransientView(graph, 'distances', 'float32', binCount),
+        semivariances: createTransientView(graph, 'semivariances', 'float32', binCount),
+        pairCounts: createTransientView(graph, 'pair-counts', 'uint32', binCount),
+        models: ['spherical'],
+        weighting: 'cressie',
+        rangeSteps: 3,
+        output: {
+          parameters: createTransientView(graph, 'parameters', 'float32x4', 1),
+          diagnostics: createTransientView(graph, 'diagnostics', 'float32x4', 1),
+          status: createTransientView(graph, 'status', 'uint32', 1)
+        }
+      });
+      const nodes = contributor.getCommandNodes(graph);
+      expect(nodes).toHaveLength(contributor.estimatedCommandNodeCount);
+      expect(nodes[0]?.id).toMatch(/-round-parameters-upload$/);
+      const [prepare] = getGPUCommandNodeKernelSources(nodes);
+      expect(prepare?.id).toMatch(/-prepare$/);
+      expect(prepare?.constants?.['INVOCATION_COUNT']).toBe(1);
+      expect(prepare?.source).toContain('for (var bin = 0u; bin < BIN_COUNT; bin++)');
+      expect(prepare?.source).toContain('baseWeight += weight(bin);');
     }
   } finally {
     device.destroy();

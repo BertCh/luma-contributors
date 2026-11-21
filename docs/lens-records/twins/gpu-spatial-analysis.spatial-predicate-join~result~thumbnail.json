@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.spatial-predicate-join: parksVertices, parksFeat…",
   "description": "Result of gpu-spatial-analysis.spatial-predicate-join: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDispla…",
-  "llms": "Result of gpu-spatial-analysis.spatial-predicate-join: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts → joinedTracts\n\n- polygons: 199\n- input parksVertices: 1431 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- input tractsVertices: 2323 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- Planar coordinates (m); uniform scale.\n- parks: 1 of 102 polygons shown; evenly sampled features and vertices\n- tracts: 1 of 199 polygons shown; evenly sampled features and vertices\n- joinedTracts: 1 of 199 polygons shown; evenly sampled features and vertices\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.spatial-predicate-join: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts → joinedTracts\n\n- polygons: 199\n- input parksVertices: 1431 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- input tractsVertices: 2323 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- Planar coordinates (m); uniform scale.\n- parks: 1 of 102 polygons shown; evenly sampled features and vertices\n- tracts: 1 of 199 polygons shown; evenly sampled features and vertices\n- 101 categories; 5 largest coloured\n- 79 categories; 5 largest coloured\n- joinedTracts: 1 of 199 polygons shown; evenly sampled features and vertices\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "199"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:07.863Z",
-    "runId": "run-d77e091f",
+    "date": "2026-11-20T23:51:19.998Z",
+    "runId": "run-0a13fdaf",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-d77e091f",
+    "runId": "run-0a13fdaf",
     "rung": "result",
     "bindings": {},
     "clauses": [],

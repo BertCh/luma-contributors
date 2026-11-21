@@ -78,6 +78,13 @@ function makeInput(first: readonly Point[], second: readonly Point[]): CPUTrackS
   };
 }
 
+it('reports both pair lengths when the CPU helper rejects unequal pairs', () => {
+  const input = makeInput([[0, 0]], [[1, 0]]);
+  expect(() => computeTrackSimilarityOnCPU({...input, pairA: Uint32Array.of(0, 0)})).toThrow(
+    /^computeTrackSimilarityOnCPU pairB\.length must equal pairA\.length 2; received 1$/
+  );
+});
+
 it('does not densify maximum-distance-only or segment-path-only requests', () => {
   const input = makeInput(
     [
@@ -378,7 +385,7 @@ it('keeps inactive, invalid and empty pairs distinct, including all output missi
     frechetEpsilon: Float32Array.of(-1)
   };
   const result = computeTrackSimilarityOnCPU(input);
-  expect(Array.from(result.pairStatus)).toEqual([0, 1, 4, 4]);
+  expect(Array.from(result.pairStatus)).toEqual([16, 17, 4, 4]);
   for (const [port, values] of Object.entries(result)) {
     if (port === 'pairStatus') continue;
     if (port === 'frechetWithin') expect(Array.from(values)).toEqual([0, 0, 0, 0]);
@@ -470,7 +477,7 @@ it('throws with array names for inconsistent packed arrays', () => {
       linesA: {...input.linesA, positions: Float32Array.of(1)}
     })
   ).toThrow('linesA.positions');
-  for (const offsets of [Uint32Array.of(0), Uint32Array.of(0, 2), Uint32Array.of(1, 0)]) {
+  for (const offsets of [new Uint32Array(), Uint32Array.of(0, 2), Uint32Array.of(1, 0)]) {
     expect(() =>
       computeTrackSimilarityOnCPU({...input, linesA: {...input.linesA, lineOffsets: offsets}})
     ).toThrow('linesA.lineOffsets');
@@ -489,9 +496,7 @@ const PROPS: TrackSimilarityOperationProps = {
 describe('construction-time validation', () => {
   for (const Operation of [GPUTrackSimilarityOperation, CPUTrackSimilarityOperation]) {
     it(`${Operation.name} checks fixed output lengths and graph-value collisions`, () => {
-      expect(() => new Operation({...PROPS, pairCount: 0})).toThrow(
-        /^similarity-check.*(length|pairCount)/
-      );
+      expect(() => new Operation({...PROPS, pairCount: 0})).not.toThrow();
       expect(() => new Operation({...PROPS, pairCount: 1.5})).toThrow(
         /^similarity-check.*(length|pairCount)/
       );
@@ -531,4 +536,10 @@ describe('construction-time validation', () => {
         })
     ).not.toThrow();
   });
+});
+
+it('includes a non-axial equality in all threshold decisions', () => {
+  const input = {...makeInput([[0, 0]], [[3, 4]]), frechetEpsilon: Float32Array.of(5)};
+  const result = computeTrackSimilarityOnCPU(input, {editDistanceTolerance: 5, lcssTolerance: 5});
+  expect(Array.from(result.frechetWithin)).toEqual([1]);
 });

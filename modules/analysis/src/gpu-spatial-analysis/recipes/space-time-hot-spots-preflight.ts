@@ -34,6 +34,7 @@ import {
   type GPUEmergingHotSpotsSettings
 } from '../emerging-hot-spots/index';
 import {validateGPUSpatialWeightsOrChunks} from '../spatial-weights/index';
+import {resolveRecipeDestinations} from './recipe-utils';
 import type {GPUSpaceTimeHotSpotsRecipeProps} from './space-time-hot-spots-recipe';
 
 // The emerging-hot-spot contributor uses exact float32 cell indices and signed bin indices.
@@ -44,6 +45,7 @@ const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
 export function snapshotSpaceTimeHotSpotsRecipe(
   props: GPUSpaceTimeHotSpotsRecipeProps
 ): GPUSpaceTimeHotSpotsRecipeProps {
+  const destinations = resolveRecipeDestinations(props.id ?? 'space-time-hot-spots', props);
   const captured = snapshotConstructionFields(props, [
     'id',
     'timestamps',
@@ -62,10 +64,9 @@ export function snapshotSpaceTimeHotSpotsRecipe(
     'trendCorrectionMaximumLag',
     'trendCorrectionCriticalZ',
     'color',
-    'outputs',
     'scratch'
   ]);
-  const output = snapshotConstructionFields(captured.outputs ?? {}, [
+  const output = snapshotConstructionFields(destinations ?? {}, [
     'cube',
     'giZScores',
     'trendZ',
@@ -123,6 +124,7 @@ export function snapshotSpaceTimeHotSpotsRecipe(
                 'requiredCount',
                 'overflow',
                 'candidateOverflow',
+                'complete',
                 'invalidCount',
                 'uncertainCount',
                 'iterationCount',
@@ -153,7 +155,7 @@ export function snapshotSpaceTimeHotSpotsRecipe(
       'sporadicRequiresFinalSlice',
       'multipleTesting'
     ] as (keyof typeof captured.settings)[]),
-    outputs: {
+    output: {
       ...output,
       ...(output.status
         ? {
@@ -279,7 +281,7 @@ export function validateSpaceTimeHotSpotsRecipe<Parameters>(
       Math.fround(props.trendCorrectionCriticalZ),
       0
     );
-  if (multipleTesting !== 'none' || props.outputs?.pValues || props.outputs?.adjustedPValues) {
+  if (multipleTesting !== 'none' || props.output?.pValues || props.output?.adjustedPValues) {
     validateCapacity(
       id,
       'multiple-testing bin count',
@@ -289,7 +291,7 @@ export function validateSpaceTimeHotSpotsRecipe<Parameters>(
     );
   }
 
-  const output = props.outputs ?? {};
+  const output = props.output ?? {};
   const scratch = props.scratch ?? {};
   const inputs: Record<string, GraphDataView | undefined> = {
     timestamps: props.timestamps,

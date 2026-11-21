@@ -47,13 +47,11 @@ export default defineOperationRun({
       outputs: {values, speeds},
       update: next => {
         const settings = {
-          fieldExtent: [0, 0, field.cellSize, field.cellSize] as const,
-          outputExtent: [
-            0,
-            0,
-            field.cellSize / OUTPUT_SCALE,
-            field.cellSize / OUTPUT_SCALE
-          ] as const,
+          fieldPlacement: {origin: [0, 0], cellSize: [field.cellSize, field.cellSize]} as const,
+          outputPlacement: {
+            origin: [0, 0],
+            cellSize: [field.cellSize / OUTPUT_SCALE, field.cellSize / OUTPUT_SCALE]
+          } as const,
           stepLength: next.stepLength,
           seed: Math.round(next.seed)
         };

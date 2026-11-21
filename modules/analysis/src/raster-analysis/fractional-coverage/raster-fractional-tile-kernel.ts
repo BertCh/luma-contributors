@@ -5,6 +5,7 @@
 import {Kernel} from '@luma.gl/graph';
 import type {Device} from '@luma.gl/core';
 import {
+  isGraphDataView,
   validateGPUStorageBindingByteLength,
   validateMaximumCount,
   validateRequirement
@@ -16,7 +17,7 @@ import {
   getViewElementOffset,
   type GPUCommandGraph,
   type GPUCommandNode,
-  GraphDataView
+  type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
@@ -138,11 +139,11 @@ export function validateRasterFractionalWritableViews(
     );
   const writable: Record<string, GraphDataView> = {};
   for (const [name, value] of Object.entries(outputs)) {
-    if (value instanceof GraphDataView) {
+    if (isGraphDataView(value)) {
       writable[`output.${name}`] = value;
     } else if (name === 'status') {
       for (const [statusName, view] of Object.entries(value ?? {})) {
-        if (view instanceof GraphDataView) writable[`output.status.${statusName}`] = view;
+        if (isGraphDataView(view)) writable[`output.status.${statusName}`] = view;
       }
     }
   }

@@ -13,8 +13,12 @@ import {
   IS_FINITE_VALUE_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
-import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {
+  POLYGON_FEATURE_RING_RANGES_WGSL,
+  POLYGON_SHELL_RING_WGSL
+} from '../../analysis-core/ring-assembly/polygon-ring-ranges-wgsl';
 import {SHAPE_MOMENT_RANGE_WGSL} from './shape-moment-range-wgsl';
 
 /** Number of float32 elements in a `GPUShapeDescriptors` parameter buffer. */
@@ -60,39 +64,20 @@ fn getPosition(row: u32) -> vec2<f32> {
 }
 
 export function getRingDeclarations(props: FeatureRingInputs): string {
-  return /* wgsl */ `${getPositionDeclarations(props.positions.length)}
+  return `${getPositionDeclarations(props.positions.length)}${getRingOffsetDeclarations(props)}`;
+}
+
+export function getRingOffsetDeclarations(props: FeatureRingInputs): string {
+  return /* wgsl */ `
 const RING_COUNT: u32 = ${props.ringOffsets.length - 1}u;
 const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
 
 // Feature -> polygons -> rings: a feature owns the rings of its polygons.
-fn getRingStart(feature: u32) -> u32 {
-  let polygon = min(featureOffsets[featureOffsetsOffset + feature], POLYGON_COUNT);
-  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
-}
-
-fn getRingEnd(feature: u32) -> u32 {
-  let polygon = min(featureOffsets[featureOffsetsOffset + feature + 1u], POLYGON_COUNT);
-  return min(polygonOffsets[polygonOffsetsOffset + polygon], RING_COUNT);
-}
+${POLYGON_FEATURE_RING_RANGES_WGSL}
 
 // Ring role by position: ring 'ring' is a shell when it starts a polygon (binary search of
 // polygonOffsets). A ring outside the polygonOffsets range keeps the first-ring rule.
-fn isShellRing(ring: u32, isFirstRing: bool) -> bool {
-  if (ring < polygonOffsets[polygonOffsetsOffset] || ring >= polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT]) {
-    return isFirstRing;
-  }
-  var low = 0u;
-  var high = POLYGON_COUNT;
-  while (low < high) {
-    let middle = (low + high) / 2u;
-    if (polygonOffsets[polygonOffsetsOffset + middle] < ring) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
-  return polygonOffsets[polygonOffsetsOffset + low] == ring;
-}
+${POLYGON_SHELL_RING_WGSL}
 
 fn getRingRowStart(ring: u32) -> u32 {
   return min(ringOffsets[ringOffsetsOffset + ring], ROW_COUNT);
@@ -134,14 +119,12 @@ export function createMomentsNode<Parameters>(
 ${IS_NAN_BITS_WGSL}
 ${SHAPE_MOMENT_RANGE_WGSL}
 
-${ADDITION_ROUNDING_ERROR_WGSL}
+${COMPENSATED_SUM_WGSL}
 // accumulator = (sum, compensation). The compensation is the rounding error of each addition,
 // read off the integer significands: the float Neumaier term ((sum - total) + value) is
 // algebraically zero and the test GPU's shader compiler folds it away.
 fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
-  let sum = (*accumulator).x;
-  let total = sum + value;
-  *accumulator = vec2<f32>(total, (*accumulator).y + getAdditionRoundingError(sum, value, total));
+  addCompensated(accumulator, value);
 }`,
     body: /* wgsl */ `let ringStart = getRingStart(index);
   let ringEnd = max(getRingEnd(index), ringStart);
@@ -208,6 +191,7 @@ export function createConvexityNode<Parameters>(
   props: FeatureRingInputs & {
     areas: GraphDataView<'float32'>;
     convexities: GraphDataView<'float32'>;
+    unorderedWindows?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
@@ -217,12 +201,22 @@ export function createConvexityNode<Parameters>(
     bindings: [
       ...getRingBindings(props),
       {name: 'areas', view: props.areas, type: 'f32', access: 'read'},
-      {name: 'convexities', view: props.convexities, type: 'f32', access: 'read_write'}
+      {name: 'convexities', view: props.convexities, type: 'f32', access: 'read_write'},
+      ...(props.unorderedWindows
+        ? [
+            {
+              name: 'unorderedWindows',
+              view: props.unorderedWindows,
+              type: 'u32',
+              access: 'read'
+            } as const
+          ]
+        : [])
     ],
     invocationCount: props.featureCount,
     declarations: `${getRingDeclarations(props)}
 ${EXACT_ORIENTATION_WGSL}`,
-    body: /* wgsl */ `let ringStart = getRingStart(index);
+    body: /* wgsl */ `${props.unorderedWindows ? 'if (unorderedWindows[unorderedWindowsOffset] == 0u) { return; }\n  ' : ''}let ringStart = getRingStart(index);
   let ringEnd = max(getRingEnd(index), ringStart);
   let rowStart = getRingRowStart(ringStart);
   let rowEnd = max(getRingRowStart(ringEnd), rowStart);

@@ -5,14 +5,189 @@
 import {readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {expect, it} from 'vitest';
-import {ANALYSIS_DOC_PAGES, DOCS_ROOT, getSidebarPageIssues, readDocPage} from './doc-program';
-import {collectClassParameters, generateDocPages, type ClassParameters} from './doc-parameters';
+import {
+  ANALYSIS_DOC_PAGES,
+  DOCS_ROOT,
+  REPOSITORY_ROOT,
+  createVirtualProgram,
+  getSidebarPageIssues,
+  readDocPage
+} from './doc-program';
+import {
+  collectClassParameters,
+  collectClassParametersFromInventory,
+  generateDocPages,
+  renderClassParameters,
+  type ClassParameters
+} from './doc-parameters';
+import {getPublicDeclarationsFromSources} from './public-declarations';
+
+it('ENT-09 generates installed imports from qualified manifest identities despite route mismatches and namesakes', () => {
+  const sourceRoot = join(REPOSITORY_ROOT, 'modules/analysis/src');
+  const program = createVirtualProgram(
+    new Map([
+      [
+        join(sourceRoot, 'import-fixture-first.ts'),
+        'export class GPUExample {}\nexport function getGPUExampleParameterValues(settings: {first: number}): Float32Array {return new Float32Array([settings.first]);}'
+      ],
+      [
+        join(sourceRoot, 'import-fixture-second.ts'),
+        'export class GPUExample {}\nexport function getGPUExampleParameterValues(settings: {second: number}): Uint32Array {return new Uint32Array([settings.second]);}'
+      ]
+    ])
+  );
+  const inventory = getPublicDeclarationsFromSources(program, sourceRoot, {
+    name: '@luma-contributors/analysis',
+    exports: {
+      './raster-analysis': './dist/import-fixture-first.js',
+      './gpu-network': './dist/import-fixture-second.js'
+    }
+  });
+  const parameters = collectClassParametersFromInventory(program, inventory);
+  expect(parameters).toHaveLength(2);
+  const {pages} = generateDocPages(
+    parameters,
+    new Map([
+      ['gpu-raster/example.md', '# Raster\n\n## `GPUExample`\n\nFirst implementation.\n'],
+      ['network-example.md', '# Network\n\n## `GPUExample`\n\nSecond implementation.\n']
+    ]),
+    {
+      '@luma-contributors/analysis/raster-analysis:GPUExample': {
+        page: 'gpu-raster/example.md',
+        heading: 'GPUExample'
+      },
+      '@luma-contributors/analysis/gpu-network:GPUExample': {
+        page: 'network-example.md',
+        heading: 'GPUExample'
+      }
+    }
+  );
+  for (const [page, entryPoint] of [
+    ['gpu-raster/example.md', 'raster-analysis'],
+    ['network-example.md', 'gpu-network']
+  ]) {
+    expect(pages.get(page)).toContain(
+      `Import from \`@luma-contributors/analysis/${entryPoint}\`: \`GPUExample\`.`
+    );
+    expect(pages.get(page)).toContain('## `GPUExample`');
+    expect(pages.get(page)?.match(/parameters: GPUExample /g)).toHaveLength(1);
+  }
+});
 
 let reviewClasses: ClassParameters[] | undefined;
 function getReviewClasses(): ClassParameters[] {
   reviewClasses ??= collectClassParameters();
   return reviewClasses;
 }
+
+it('W5-16 reads calibration layout from the implementation and presents both public overloads', () => {
+  const entry = getReviewClasses().find(
+    candidate => candidate.className === 'GPURasterStandardizedIndexCalibration'
+  )!;
+  expect(entry.packers).toHaveLength(2);
+  expect(entry.packers.map(packer => packer.call)).toEqual([
+    'getGPURasterStandardizedIndexCalibrationParameterValues(settings, chunkSliceCount)',
+    'getGPURasterStandardizedIndexCalibrationParameterValues(plan, frame)'
+  ]);
+  for (const packer of entry.packers) {
+    // Seven words: reset, live slices, location, three exponents, magnitude bound.
+    expect(packer.length).toBe('`GPU_RASTER_STANDARDIZED_CALIBRATION_PARAMETER_LENGTH` (7)');
+  }
+});
+
+it('W5-16 documents the three public neighbor-search settings forms', () => {
+  const entry = getReviewClasses().find(candidate => candidate.className === 'GPUNeighborSearch')!;
+  const fields = entry.packers.map(packer => packer.fields);
+  expect(fields.map(branch => branch.find(field => field.name === 'mode')?.type)).toEqual([
+    "'radius'",
+    "'knn'",
+    'never'
+  ]);
+  const [radius, nearest, modeFree] = fields;
+  expect(radius).toContainEqual(
+    expect.objectContaining({name: 'searchRadius', type: 'number', optional: false})
+  );
+  expect(radius).toContainEqual(expect.objectContaining({name: 'maximumDistance', type: 'never'}));
+  expect(nearest).toContainEqual(expect.objectContaining({name: 'searchRadius', type: 'never'}));
+  expect(nearest).toContainEqual(
+    expect.objectContaining({name: 'maximumDistance', type: 'number', optional: true})
+  );
+  for (const name of ['searchRadius', 'maximumDistance']) {
+    expect(modeFree).toContainEqual(
+      expect.objectContaining({name, type: 'number', optional: true})
+    );
+  }
+  for (const branch of fields) expect(branch.map(field => field.name)).not.toContain('radius');
+});
+
+it('keeps the Vecchia destination slot before search anisotropy', () => {
+  const entry = getReviewClasses().find(
+    candidate => candidate.className === 'GPUVecchiaSpaceTimeLogLikelihood'
+  )!;
+  const rendered = renderClassParameters(entry, 3);
+  expect(rendered).toContain(
+    '`getGPUVecchiaSpaceTimeLogLikelihoodParameterValues(model, target?, searchAnisotropy?)`'
+  );
+  expect(rendered).toContain('`target` (`Float32Array`): Optional destination');
+});
+
+it('documents Calendar Buckets as a signed packer without a destination settings table', () => {
+  const entry = getReviewClasses().find(candidate => candidate.className === 'GPUCalendarBuckets')!;
+  const rendered = renderClassParameters(entry, 3);
+  expect(rendered).toContain(
+    '`getGPUCalendarBucketsParameterValues(utcOffsetMinutes, firstDayOfWeek?)`, writes `GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH` (2) `sint32` values.'
+  );
+  expect(rendered).not.toContain('Settings of');
+});
+
+it('W5-17 pins flow diagnostics to the canonical real page even with compatibility headings', () => {
+  const names = ['GPULagrangianFlowMap', 'GPUFiniteTimeLyapunovExponent', 'GPUScalarFieldRidges'];
+  const entries = getReviewClasses().filter(entry => names.includes(entry.className));
+  expect(entries).toHaveLength(3);
+  const canonical = 'gpu-raster/flow-map-and-particle-diagnostics.md';
+  const compatibility = 'gpu-raster/lagrangian-diagnostics-mob06.md';
+  const source = new Map([canonical, compatibility].map(page => [page, readDocPage(page)]));
+  for (const compatibilityHeadings of [false, true]) {
+    const input = new Map(source);
+    if (compatibilityHeadings)
+      input.set(
+        compatibility,
+        source.get(compatibility)! +
+          names.map(name => `\n## \`${name}\`\n\nCompatibility reference.\n`).join('')
+      );
+    const {pages, undocumented} = generateDocPages(entries, input);
+    expect(undocumented).toEqual([]);
+    for (const name of names) {
+      const marker = new RegExp(`parameters: ${name} `, 'g');
+      expect(pages.get(canonical)?.match(marker)).toHaveLength(1);
+      expect(pages.get(compatibility)).not.toContain(`parameters: ${name} `);
+      expect([...pages.values()].join('\n').match(marker)).toHaveLength(1);
+      expect(pages.get(canonical)).toContain(
+        `Import from \`@luma-contributors/analysis/raster-analysis\`: \`${name}\`.`
+      );
+    }
+  }
+});
+
+it('round 1 S1 distinguishes the class import from borrowed parameter packer entries', () => {
+  const entry = getReviewClasses().find(candidate => candidate.className === 'GPUFlowAggregation')!;
+  const {pages} = generateDocPages(
+    [entry],
+    new Map([['flow.md', '## `GPUFlowAggregation`\n\nFlow aggregation.\n']])
+  );
+  const markdown = pages.get('flow.md')!;
+  expect(markdown).toContain(
+    'Import from `@luma-contributors/analysis/gpu-network`: `GPUFlowAggregation`.'
+  );
+  for (const name of [
+    'getGPUTimeWindowFilterParameterValues',
+    'getGPUTimeWindowFilterWordParameterValues'
+  ]) {
+    expect(markdown).toContain(
+      `Import \`${name}\` from \`@luma-contributors/analysis/dataframe-analysis\`.`
+    );
+  }
+});
 
 it('R1 documents only seed for line sampling while retaining every dot-density setting', () => {
   const classes = getReviewClasses();
@@ -25,7 +200,7 @@ it('R1 documents only seed for line sampling while retaining every dot-density s
     classes
       .find(entry => entry.className === 'GPUDotDensity')
       ?.packers[0].fields.map(field => field.name)
-  ).toEqual(['seed', 'dotsPerUnit', 'maskExtent']);
+  ).toEqual(['seed', 'dotsPerUnit', 'maskPlacement']);
 });
 
 it('R3 generates Parameters blocks for the public fitting contributors', () => {
@@ -107,6 +282,28 @@ it('R4 refuses ambiguous exact owners instead of silently depending on page orde
   }
 });
 
+it('ENT-09 preserves a declared shared-section owner when another page adds a named heading', () => {
+  const entry: ClassParameters = {
+    entryPoint: '@luma-contributors/analysis/raster-analysis',
+    declaration: 'fixture.ts#GPUExample',
+    className: 'GPUExample',
+    packers: []
+  };
+  const {pages} = generateDocPages(
+    [entry],
+    new Map([
+      ['shared.md', '## Shared contract\n\nGPUExample owns the fractional tuples.\n'],
+      ['comparison.md', '## `GPUExample`\n\nA comparison with other contributors.\n']
+    ]),
+    {GPUExample: {page: 'shared.md', heading: 'Shared contract'}}
+  );
+  expect(pages.get('shared.md')).toContain('parameters: GPUExample ');
+  expect(pages.get('shared.md')).toContain(
+    'Import from `@luma-contributors/analysis/raster-analysis`: `GPUExample`.'
+  );
+  expect(pages.get('comparison.md')).not.toContain('parameters: GPUExample ');
+});
+
 it('R4 resolves every live class owner without ambiguity', () => {
   const source = new Map(ANALYSIS_DOC_PAGES.map(page => [page, readDocPage(page)]));
   const failures: string[] = [];
@@ -171,7 +368,7 @@ it('documents public shared packers without exposing composite implementation pa
   ).toEqual(['getGPUOffsetCurveParameterValues(settings)']);
   expect(
     classes
-      .find(entry => entry.className === 'GPUHierarchicalDensityClustering')
+      .find(entry => entry.className === 'GPUHDBSCAN')
       ?.packers.some(packer => packer.call.startsWith('getGPUNeighborSearch'))
   ).toBe(false);
 }, 600_000);

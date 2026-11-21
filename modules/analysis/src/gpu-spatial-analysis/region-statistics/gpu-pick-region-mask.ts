@@ -15,10 +15,34 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
-import type {GPURegionMaskOutput} from './region-statistics-types';
+import {
+  validateGPUStatusPort,
+  type GPULonLatPolygonStatusPort,
+  type GPUOverflowStatusPort
+} from '../../analysis-core/contracts/index';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
+/** Caller-owned outputs of {@link GPUPickRegionMask}, both written on every submission. */
+export type GPUPickRegionMaskOutput = {
+  /** Packed mask with one row per source row, set to 1 for picked rows and 0 otherwise. */
+  mask: GraphDataView<'uint32'>;
+  /** One-row overflow flag, normalized to 0 or 1 from the pick result. */
+  status: GPUOverflowStatusPort;
+};
+
+/** Validates pick storage before a composing contributor allocates graph resources. @internal */
+export function validateRegionPicks(
+  id: string,
+  picks: GraphDataView<'uint32'>,
+  batchIndex?: number
+): void {
+  validatePackedUint32View(picks, `${id} picks`);
+  validateCapacity(id, 'picks.length', picks.length, 4, Number.MAX_SAFE_INTEGER);
+  if (batchIndex !== undefined) validateCapacity(id, 'batchIndex', batchIndex, 0, 0x7fffffff);
+}
 
 /** Properties for {@link GPUPickRegionMask}. */
 export type GPUPickRegionMaskProps = {
@@ -31,12 +55,8 @@ export type GPUPickRegionMaskProps = {
   picks: GraphDataView<'uint32'>;
   /** Compile-time batch filter in `[0, 2^31 - 1]`. When omitted, every batch is accepted. */
   batchIndex?: number;
-  /**
-   * Caller-owned outputs: `mask`, whose length is the source row count (cleared, then set to 1
-   * for picked rows), and `status.overflow`, which copies the pick result's overflow word as 0 or
-   * 1. Both always written.
-   */
-  output: GPURegionMaskOutput;
+  /** Source-aligned mask and pick overflow flag. */
+  output: GPUPickRegionMaskOutput;
 };
 
 /**
@@ -51,17 +71,28 @@ export class GPUPickRegionMask implements GPUCommandNodeProducer {
   readonly props: GPUPickRegionMaskProps;
 
   constructor(props: GPUPickRegionMaskProps) {
-    this.id = props.id ?? 'pick-region-mask';
+    const construction = snapshotConstructionFields(props, ['id', 'picks', 'batchIndex', 'output']);
+    const id = construction.id ?? 'pick-region-mask';
+    const capturedOutput = snapshotConstructionFields(construction.output, ['mask', 'status']);
+    const status: GPUOverflowStatusPort & GPULonLatPolygonStatusPort = capturedOutput.status;
+    for (const name of ['antimeridianUncertainCount', 'poleUncertainCount'] as const) {
+      validateRequirement(
+        id,
+        status[name] === undefined,
+        `output.status.${name} must be omitted because the pick route has no geographic polygon diagnostics`
+      );
+    }
+    props = Object.freeze({
+      ...construction,
+      output: Object.freeze({
+        ...capturedOutput,
+        status: snapshotConstructionFields(status, ['overflow'])
+      })
+    });
+    this.id = id;
     this.props = props;
-    const {id} = this;
     const {picks, output} = props;
-    validatePackedUint32View(picks, `${id} picks`);
-    if (picks.length < 4) {
-      throw new Error(`${id} picks must hold at least one picked pair`);
-    }
-    if (props.batchIndex !== undefined) {
-      validateCapacity(id, 'batchIndex', props.batchIndex, 0, 0x7fffffff);
-    }
+    validateRegionPicks(id, picks, props.batchIndex);
     validatePackedUint32View(output.mask, `${id} output.mask`);
     validateGPUStatusPort(`${id} output.status`, output.status);
     if (output.mask.length < 1 || !output.status.overflow) {

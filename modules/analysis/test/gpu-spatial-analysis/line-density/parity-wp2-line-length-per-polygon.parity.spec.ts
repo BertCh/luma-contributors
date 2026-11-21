@@ -40,7 +40,7 @@ for (const entry of fixture.cases) {
             },
             pairCapacity,
             output: {
-              lengths: lengths.view,
+              clippedLengths: lengths.view,
               weightedLengths: weighted.view,
               segmentCounts: counts.view,
               status: {overflow: overflow.view}

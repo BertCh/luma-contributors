@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   getSpatialAnalysisPackedKernelNodes,
   validateSpatialAnalysisPackedOutputAllocations
@@ -35,6 +36,12 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getRecipeView} from '../recipes/expansion-recipe-utils';
+import {
+  prepareLandscapePatchInput,
+  addLandscapePatchInput,
+  validateLandscapePatchDestinations,
+  suppressUnresolvedLandscapeResults
+} from './landscape-patch-input';
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
 import {validateLandscapeStorage, validateLandscapeViews} from './landscape-validation';
 import type {GPUPatchProximityProps} from './patch-proximity';
@@ -61,9 +68,13 @@ export type GPUPatchProximityBoundaryOutput = {
   reconciledPatches: GraphDataView<'uint32'>;
   patchParents: GraphDataView<'uint32'>;
   status: {
+    /** Number of patches with validity = 1. */
     count: GraphDataView<'uint32'>;
+    /** Patch count, not the candidate-pair storage requirement. */
     requiredCount: GraphDataView<'uint32'>;
+    /** Always zero: patch output rows are fixed at construction. */
     overflow: GraphDataView<'uint32'>;
+    /** One on candidate capacity loss or an uncertified radius result. */
     candidateOverflow: GraphDataView<'uint32'>;
   };
 };
@@ -73,7 +84,10 @@ export type GPUPatchProximityBoundaryOutput = {
  * Per-frame: input contents. It retains core/metrics layouts but has no dense distance matrix or
  * patch-by-cell intermediate fields. The legacy overload retains those public outputs.
  */
-export type GPUPatchProximityBoundaryProps = Omit<GPUPatchProximityProps, 'mode' | 'output'> & {
+export type GPUPatchProximityBoundaryProps = Omit<
+  GPUPatchProximityProps,
+  'mode' | 'output' | 'outputs'
+> & {
   mode: 'boundary';
   /** Radius used to certify nearest neighbours; at least searchRadius. Defaults to searchRadius. */
   candidateRadius?: number;
@@ -93,12 +107,23 @@ export type GPUPatchProximityBoundaryProps = Omit<GPUPatchProximityProps, 'mode'
  * classes (0xffffffff) are invalid. Empty patches and singleton classes have infinity nearest
  * distance (NaN for cell-center, matching the reference) and zero proximity. Core/area stay valid
  * even on uncertified rows. Proximity sums use a fixed tree in target-patch order.
+ * Public status.requiredCount is the patch count and status.overflow is always zero.
+ * intermediates.candidateRequirement is uint32[4]: word 0 is the unclamped directed
+ * boundary-cell candidate count, word 1 is one on candidateCapacity exhaustion. These words
+ * distinguish capacity loss (all rows invalid) from insufficient radius (only uncertified rows
+ * invalid); status.candidateOverflow combines both. Words 2 and 3 are reserved scratch.
  * @internal Selected by the public addPatchProximityRecipe boundary overload.
  */
 export function addPatchProximityBoundaryRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPUPatchProximityBoundaryProps
+  inputProps: GPUPatchProximityBoundaryProps
 ) {
+  validateRequirement(
+    inputProps.id ?? 'patch-proximity',
+    !('outputs' in inputProps),
+    'outputs was removed; use output'
+  );
+  const props = prepareLandscapePatchInput(graph, inputProps.id ?? 'patch-proximity', inputProps);
   const id = props.id ?? 'patch-proximity';
   const {width, height, cellSize} = props;
   validateCapacity(id, 'width', width, 1, PATCH_PROXIMITY_BOUNDARY_MAXIMUM_ROWS);
@@ -214,7 +239,27 @@ export function addPatchProximityBoundaryRecipe<Parameters>(
     PATCH_PROXIMITY_BOUNDARY_MAXIMUM_CANDIDATES
   );
   validateCommandNodeBudget(id, PATCH_PROXIMITY_BOUNDARY_COMMAND_NODE_ALLOWANCE);
-  const provided = props.output;
+  const destinations =
+    props.output &&
+    snapshotConstructionFields(props.output, [
+      'core',
+      'metrics',
+      'validity',
+      'reconciledPatches',
+      'patchParents',
+      'status'
+    ]);
+  const provided = destinations && {
+    ...destinations,
+    status:
+      destinations.status &&
+      snapshotConstructionFields(destinations.status, [
+        'count',
+        'requiredCount',
+        'overflow',
+        'candidateOverflow'
+      ])
+  };
   const usedOutputs = {
     core: provided?.core,
     metrics: provided?.metrics,
@@ -224,6 +269,7 @@ export function addPatchProximityBoundaryRecipe<Parameters>(
       : {}),
     ...provided?.status
   };
+  validateLandscapePatchDestinations(graph, id, props, Object.values(usedOutputs));
   const inputs = {patches: props.patches, patchClasses: props.patchClasses};
   validateLandscapeViews(id, inputs, usedOutputs, [
     {
@@ -331,15 +377,17 @@ export function addPatchProximityBoundaryRecipe<Parameters>(
     overflow: scalar('overflow'),
     candidateOverflow: scalar('candidateOverflow')
   };
+  const inputPatches = addLandscapePatchInput(graph, id, props);
   const reconciled = props.reconcilePatches
     ? reconcileLandscapePatchLabels(graph, {
         ...props,
+        patches: inputPatches,
         id: `${id}-boundary`,
         connectivity: props.connectivity ?? 4,
         output: {patches: provided?.reconciledPatches, parents: provided?.patchParents}
       })
     : undefined;
-  const patches = reconciled?.patches ?? props.patches;
+  const patches = reconciled?.patches ?? inputPatches;
   const flags = view('boundary-flags', 'uint32', cellCount);
   const statistics = view('patch-records', 'uint32', 4 * patchCount);
   const control = view('control', 'uint32', 4);
@@ -591,11 +639,11 @@ if(distance==0.0){terms[termsOffset+index]=select(infinity(index),missing(index)
       ],
       `let category=classes[classesOffset+index];let first=lowerBoundSortedClasses(0u,PATCHES,category);let end=upperBoundSortedClasses(0u,PATCHES,category);
 var population=0u;if(end>first){population=prefix[prefixOffset+end-1u];if(first>0u){population-=prefix[prefixOffset+first-1u];}}
-let base=statisticsOffset+4u*index;let cells=statistics[base];let nearest=bitcast<f32>(statistics[base+2u]);
-let failed=control[controlOffset+1u]!=0u||(cells>0u&&population>1u&&nearest==infinity(index));let valid=!failed&&category!=0xffffffffu;
+let base=statisticsOffset+4u*index;let cells=statistics[base];let nearestWord=statistics[base+2u];let nearest=bitcast<f32>(nearestWord);let missingNeighbor=nearestWord==0x7f800000u;
+let failed=control[controlOffset+1u]!=0u||(cells>0u&&population>1u&&missingNeighbor);let valid=!failed&&category!=0xffffffffu;
 validity[validityOffset+index]=u32(valid);let destination=metricsOffset+4u*index;
 metrics[destination]=f32(cells)*CELL_AREA;metrics[destination+1u]=f32(statistics[base+1u])*CELL_AREA;
-metrics[destination+2u]=select(missing(index),${props.distanceModel === 'cell-center' ? 'select(nearest,missing(index),nearest==infinity(index))' : 'nearest'},valid);
+metrics[destination+2u]=select(missing(index),${props.distanceModel === 'cell-center' ? 'select(nearest,missing(index),missingNeighbor)' : 'nearest'},valid);
 metrics[destination+3u]=select(missing(index),proximity[proximityOffset+index],valid);`,
       constants + getBinarySearchWGSL('sortedClasses')
     )
@@ -643,17 +691,40 @@ metrics[destination+3u]=select(missing(index),proximity[proximityOffset+index],v
       `requiredCount[requiredCountOffset]=${patchCount}u;overflow[overflowOffset]=0u;`
     )
   );
+  suppressUnresolvedLandscapeResults(
+    graph,
+    id,
+    props,
+    [
+      core,
+      metrics,
+      validity,
+      status.count,
+      ...(reconciled ? [reconciled.patches, reconciled.parents] : [])
+    ],
+    [
+      {view: core, value: 0},
+      {view: validity, value: 0},
+      {view: status.count, value: 0}
+    ]
+  );
   return {
+    inputStatus: props.denseLabels?.status,
     outputs: {core, metrics, validity},
     status,
     intermediates: {
       candidateRecords: records,
+      /**
+       * uint32[4]: [unclamped directed candidate count, capacity-exhaustion flag, reserved, reserved].
+       * Public requiredCount counts patches; use these first two words to size candidateCapacity.
+       */
       candidateRequirement: control,
       patchRecords: statistics
     },
     estimatedCommandNodeCount: PATCH_PROXIMITY_BOUNDARY_COMMAND_NODE_ALLOWANCE,
     provenance: {
-      patches: props.patches,
+      patches: inputPatches,
+      denseLabels: props.denseLabels,
       patchClasses: props.patchClasses,
       reconciledPatches: reconciled?.patches,
       patchParents: reconciled?.parents,

@@ -216,7 +216,7 @@ it.each([
   ).toThrow(/^convex-test/);
 });
 
-it('executes every CPU graph port and ignores the GPU iteration budget', async () => {
+it('executes every CPU graph port and honors the explicit iteration budget', async () => {
   const positions = Float32Array.of(0, 0, 4, 0, 4, 2, 0, 2);
   const ringOffsets = Uint32Array.of(0, 4);
   const inputs = {
@@ -238,7 +238,7 @@ it('executes every CPU graph port and ignores the GPU iteration budget', async (
     maximumIterations: 0,
     offsetDistance: 0.5
   }).execute({inputs});
-  expect(Array.from(output['status'] as Uint32Array)).toEqual([5, 5, 4, 0]);
+  expect(Array.from(output['status'] as Uint32Array)).toEqual([0, 0, 4, 4]);
   expect((output['segments'] as Float32Array).length).toBe(40);
   expect((output['sourceEdges'] as Uint32Array).length).toBe(20);
   expect((output['offsetPositions'] as Float32Array).length).toBe(10);

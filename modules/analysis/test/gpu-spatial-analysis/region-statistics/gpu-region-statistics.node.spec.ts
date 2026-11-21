@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUPickRegionMask,
   GPURegionMask,
   GPURegionStatistics,
+  type GPUPickRegionMaskOutput,
   type GPURegionStatisticsOutput,
   type GPURegionStatisticsProps
 } from '../../../src/gpu-spatial-analysis/region-statistics/index';
@@ -148,6 +149,30 @@ it('GPURegionStatistics selects the region kernel per selection kind', () => {
   ).toEqual(['pick-clear', 'pick-scatter', 'pick-overflow']);
   expect(() => new GPUPickRegionMask({...pickProps, batchIndex: -1})).toThrow(/batchIndex/);
   device.destroy();
+});
+
+it.each([
+  'antimeridianUncertainCount',
+  'poleUncertainCount'
+] as const)('GPUPickRegionMask rejects output.status.%s before dispatch', counter => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const picks = createTransientView(graph, 'picks', 'uint32', 4);
+    const output: GPUPickRegionMaskOutput = {
+      mask: createTransientView(graph, 'mask', 'uint32', 1),
+      status: {overflow: createTransientView(graph, 'overflow', 'uint32', 1)}
+    };
+    // Untyped callers can pass an inactive diagnostic aliased to the live mask.
+    const incompatibleOutput = {...output, status: {...output.status, [counter]: output.mask}};
+    expect(
+      () => new GPUPickRegionMask({id: 'pick-diagnostics', picks, output: incompatibleOutput})
+    ).toThrow(
+      `pick-diagnostics output.status.${counter} must be omitted because the pick route has no geographic polygon diagnostics`
+    );
+  } finally {
+    device.destroy();
+  }
 });
 
 it('GPURegionStatistics validates props', () => {
@@ -306,7 +331,7 @@ it('region selections accept longitude/latitude except radius', () => {
   // Rectangle: a topological test, accepted in degree space.
   expect(
     new GPURegionStatistics(createProps(graph, 'b-', {spatialContext: lonLat})).spatialContext
-  ).toBe(lonLat);
+  ).toEqual(lonLat);
   // Radius: a planar distance in position units, so degrees are rejected at construction.
   const radius = {
     kind: 'radius',
@@ -390,7 +415,7 @@ it('radius regions require a distance frame while rectangle regions accept an eq
   );
   expect(
     new GPURegionStatistics(createProps(graph, 'rectangle-', {spatialContext})).spatialContext
-  ).toBe(spatialContext);
+  ).toEqual(spatialContext);
   expect(
     () =>
       new GPURegionStatistics(
@@ -404,4 +429,109 @@ it('radius regions require a distance frame while rectangle regions accept an eq
       )
   ).not.toThrow();
   device.destroy();
+});
+
+import {createRequire} from 'node:module';
+import {GPULatticeWeights} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-lattice-weights';
+it('ENT-02 preserves CommonJS view chunks and recognizes a view-valued lattice cellSize', () => {
+  const foreign = createRequire(import.meta.url)(
+    '@luma.gl/graph/gpu-core'
+  ) as typeof import('@luma.gl/graph/gpu-core');
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph, 'mixed-');
+    const foreignData = <Format extends 'float32' | 'float32x2'>(view: GraphDataView<Format>) =>
+      new foreign.GraphDataView(view.buffer, {...view});
+    const vector = <Format extends 'float32' | 'float32x2'>(format: Format) =>
+      new foreign.GraphVectorView({
+        id: `foreign-${format}`,
+        name: format,
+        format,
+        length: 12,
+        valueLength: format === 'float32' ? 12 : 24,
+        stride: format === 'float32' ? 1 : 2,
+        byteStride: format === 'float32' ? 4 : 8,
+        rowByteLength: format === 'float32' ? 4 : 8,
+        data: [
+          foreignData(foreign.createTransientView(graph, `foreign-${format}-a`, format, 6)),
+          foreignData(foreign.createTransientView(graph, `foreign-${format}-b`, format, 6))
+        ]
+      });
+    const positions = vector('float32x2'),
+      values = vector('float32');
+    const nodes = new GPURegionStatistics({
+      ...props,
+      id: 'foreign',
+      positions,
+      values
+    }).getCommandNodes(graph);
+    expect(nodes.map(node => node.id)).toContain('foreign-count-chunk-0');
+    expect(nodes.map(node => node.id)).toContain('foreign-count-chunk-1');
+    const maskGraph = new GPUCommandGraph(device);
+    const maskPositions = new foreign.GraphVectorView({
+      id: 'mask-vector',
+      name: 'positions',
+      format: 'float32x2',
+      length: 2,
+      valueLength: 4,
+      stride: 2,
+      byteStride: 8,
+      rowByteLength: 8,
+      data: [
+        foreign.createTransientView(maskGraph, 'mask-a', 'float32x2', 1),
+        foreign.createTransientView(maskGraph, 'mask-b', 'float32x2', 1)
+      ]
+    });
+    const mask = new GPURegionMask({
+      id: 'foreign-mask',
+      positions: maskPositions,
+      region: {
+        kind: 'rectangle',
+        bounds: foreign.createTransientView(maskGraph, 'mask-bounds', 'float32', 4)
+      },
+      output: {
+        mask: foreign.createTransientView(maskGraph, 'mask-output', 'uint32', 2),
+        status: {overflow: foreign.createTransientView(maskGraph, 'mask-overflow', 'uint32', 1)}
+      }
+    });
+    expect(mask.getCommandNodes(maskGraph).map(node => node.id)).toEqual(
+      expect.arrayContaining(['foreign-mask-chunk-0', 'foreign-mask-chunk-1'])
+    );
+    expect(
+      () =>
+        new GPULatticeWeights({
+          width: 2,
+          height: 1,
+          criterion: 'rook',
+          cellSize: foreignData(foreign.createTransientView(graph, 'foreign-size', 'float32', 2)),
+          output: {
+            offsets: createTransientView(graph, 'lattice-offsets', 'uint32', 3),
+            neighbors: createTransientView(graph, 'lattice-neighbors', 'uint32', 2),
+            weights: createTransientView(graph, 'lattice-weights', 'float32', 2),
+            status: {overflow: createTransientView(graph, 'lattice-overflow', 'uint32', 1)}
+          }
+        })
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('VAL-01 rejects wrong-format sourceIds on an otherwise valid rectangle', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph, 'format-');
+    expect(
+      () =>
+        new GPURegionStatistics({
+          ...props,
+          id: 'format-contract',
+          sourceIds: createTransientView(graph, 'wrong-source-ids', 'float32', 12) as never
+        })
+    ).toThrow(/format-contract.*sourceIds.*uint32/);
+  } finally {
+    device.destroy();
+  }
 });

@@ -147,7 +147,7 @@ describe('spatial weights at core limits', () => {
   const operations: GPUSpatialWeightsTransformOperation[] = [
     'row',
     'binary',
-    'symmetrize',
+    'average-reciprocal',
     'double',
     'variance'
   ];
@@ -247,7 +247,7 @@ describe('spatial weights at core limits', () => {
       'union',
       'intersection',
       'difference',
-      'symmetricDifference'
+      'symmetric-difference'
     ] as const) {
       for (const weightRule of [
         'left',

@@ -3,13 +3,20 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  type RegionalizationWeightsStatus,
+  validateRegionalizationWeightsStatus
+} from './adjacency-loss-suppression';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {GPU_SKATER_NO_CUT, GPU_SKATER_REGIONS_PARAMETER_LENGTH} from './gpu-skater-regions';
-import {GPU_MINIMUM_SPANNING_TREE_STATUS} from './gpu-spatial-weights-minimum-spanning-tree';
+import {GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT} from './gpu-spatial-weights-minimum-spanning-tree';
 import {validateSpatialWeightsOperationInformation} from '../spatial-weights/gpu-spatial-weights-algebra-operation';
 import {
   GPUSkaterRegionsOperation,
@@ -29,10 +36,14 @@ export type CPUSkaterRegionsInput = {
   parameters: Uint32Array;
   treeStatus?: Uint32Array;
   /** Weights loss scalars: either nonzero flag suppresses the whole partition and cut log. */
-  status?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
+  status?: RegionalizationWeightsStatus<Uint32Array>;
 };
 /** CPU dimensions. maximumRegionCount retains the cut-log layout and per-frame target clamp. */
-export type CPUSkaterRegionsOptions = {columnCount?: number; maximumRegionCount: number};
+export type CPUSkaterRegionsOptions = {
+  id?: string;
+  columnCount?: number;
+  maximumRegionCount: number;
+};
 /** Same row labels, region scalar and fixed-size cut log as GPUSkaterRegions. */
 export type CPUSkaterRegionsResult = {
   labels: Uint32Array;
@@ -74,25 +85,32 @@ export function computeSkaterRegionsOnCPU(
   input: CPUSkaterRegionsInput,
   options: CPUSkaterRegionsOptions
 ): CPUSkaterRegionsResult {
-  validateOptions('skater-regions', options);
+  const id = options.id ?? 'computeSkaterRegionsOnCPU';
+  validateRegionalizationWeightsStatus(id, input.status);
+  validateOptions(id, options);
   const {offsets, neighbors, values, componentLabels, treeEdgeFlags, parameters} = input;
   const rowCount = offsets.length - 1;
   const columnCount = options.columnCount ?? 1;
-  if (input.treeStatus && input.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length)
-    throw new Error('treeStatus must hold GPU_MINIMUM_SPANNING_TREE_STATUS.length words');
+  if (input.treeStatus && input.treeStatus.length < GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length)
+    validateRequirement(
+      id,
+      false,
+      `treeStatus must hold GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length words; received input.treeStatus.length=${input.treeStatus.length}, GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length=${GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'treeStatus.length',
+        received: input.treeStatus.length,
+        expected: 'treeStatus must hold GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length words'
+      }
+    );
   for (const name of ['overflow', 'candidateOverflow'] as const)
     if (input.status?.[name])
-      validateCapacity(
-        'skater-regions',
-        `weights.status.${name} length`,
-        input.status[name]!.length,
-        1
-      );
+      validateCapacity(id, `weights.status.${name} length`, input.status[name]!.length, 1);
   if (
     rowCount > 0 &&
     ((input.status?.overflow?.[0] ?? 0) !== 0 ||
       (input.status?.candidateOverflow?.[0] ?? 0) !== 0 ||
-      (input.treeStatus?.[GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow] ?? 0) !== 0)
+      (input.treeStatus?.[GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.candidateOverflow] ?? 0) !== 0)
   )
     return {
       labels: new Uint32Array(rowCount).fill(GPU_SKATER_NO_CUT),
@@ -100,34 +118,113 @@ export function computeSkaterRegionsOnCPU(
       cutEdges: new Uint32Array(options.maximumRegionCount - 1).fill(GPU_SKATER_NO_CUT),
       cutGains: new Float32Array(options.maximumRegionCount - 1).fill(Number.NaN)
     };
-  if (
-    rowCount < 1 ||
-    offsets[0] !== 0 ||
-    offsets.some(
-      (offset, row) => offset > neighbors.length || (row > 0 && offset < offsets[row - 1])
-    )
-  )
-    throw new Error(
-      'offsets must be nondecreasing CSR offsets within neighbors length, starting at zero'
+  validateCapacity(id, 'rowCount', rowCount);
+  validateRequirement(id, offsets[0] === 0, 'offsets must start at zero', {
+    code: 'REQUIREMENT',
+    path: 'offsets[0]',
+    received: offsets[0],
+    expected: 0
+  });
+  for (let row = 1; row <= rowCount; row++)
+    validateRequirement(
+      id,
+      offsets[row] >= offsets[row - 1] && offsets[row] <= neighbors.length,
+      'offsets must be nondecreasing CSR offsets within neighbors length',
+      {
+        code: 'REQUIREMENT',
+        path: `offsets[${row}]`,
+        received: offsets[row],
+        expected: {minimum: offsets[row - 1], maximum: neighbors.length}
+      }
     );
   if (input.weights.length !== neighbors.length)
-    throw new Error('weights length must equal neighbors length');
+    validateRequirement(
+      id,
+      false,
+      `weights length must equal neighbors length; received input.weights.length=${input.weights.length}, neighbors.length=${neighbors.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'weights.length',
+        received: input.weights.length,
+        expected: 'weights length must equal neighbors length'
+      }
+    );
   if (input.distances && input.distances.length !== neighbors.length)
-    throw new Error('distances length must equal neighbors length');
+    validateRequirement(
+      id,
+      false,
+      `distances length must equal neighbors length; received input.distances.length=${input.distances.length}, neighbors.length=${neighbors.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'distances.length',
+        received: input.distances.length,
+        expected: 'distances length must equal neighbors length'
+      }
+    );
   if (treeEdgeFlags.length !== neighbors.length)
-    throw new Error('treeEdgeFlags length must equal neighbors length');
+    validateRequirement(
+      id,
+      false,
+      `treeEdgeFlags length must equal neighbors length; received treeEdgeFlags.length=${treeEdgeFlags.length}, neighbors.length=${neighbors.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'treeEdgeFlags.length',
+        received: treeEdgeFlags.length,
+        expected: 'treeEdgeFlags length must equal neighbors length'
+      }
+    );
   if (componentLabels.length !== rowCount)
-    throw new Error('componentLabels length must equal row count');
+    validateRequirement(
+      id,
+      false,
+      `componentLabels length must equal row count; received componentLabels.length=${componentLabels.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'componentLabels.length',
+        received: componentLabels.length,
+        expected: 'componentLabels length must equal row count'
+      }
+    );
   if (values.length !== rowCount * columnCount)
-    throw new Error('values length must equal row count * columnCount');
+    validateRequirement(
+      id,
+      false,
+      `values length must equal row count * columnCount; received values.length=${values.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'values.length',
+        received: values.length,
+        expected: 'values length must equal row count * columnCount'
+      }
+    );
   if (parameters.length < GPU_SKATER_REGIONS_PARAMETER_LENGTH)
-    throw new Error('parameters must hold the getGPUSkaterRegionsParameterValues layout');
+    validateRequirement(
+      id,
+      false,
+      `parameters must hold the getGPUSkaterRegionsParameterValues layout; received parameters.length=${parameters.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'parameters.length',
+        received: parameters.length,
+        expected: 'parameters must hold the getGPUSkaterRegionsParameterValues layout'
+      }
+    );
   const rowSlots = Array.from({length: rowCount}, () => new Map<number, number>());
   for (let row = 0; row < rowCount; row++)
     for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
       const neighbor = neighbors[slot];
       if (neighbor >= rowCount || (slot > offsets[row] && neighbor <= neighbors[slot - 1]))
-        throw new Error('neighbors must be valid strictly ascending row IDs');
+        validateRequirement(
+          id,
+          false,
+          `neighbors must be valid strictly ascending row IDs; received rowCount=${rowCount}, neighbor=${neighbor}, row=${row}`,
+          {
+            code: 'REQUIREMENT',
+            path: `neighbors[${slot}]`,
+            received: neighbor,
+            expected: 'neighbors must be valid strictly ascending row IDs'
+          }
+        );
       rowSlots[row].set(neighbor, slot);
     }
   const edges: TreeEdge[] = [];
@@ -135,9 +232,31 @@ export function computeSkaterRegionsOnCPU(
   for (let row = 0; row < rowCount; row++)
     for (const [neighbor, slot] of rowSlots[row]) {
       const reverse = rowSlots[neighbor].get(row);
-      if (reverse === undefined) throw new Error('neighbors must list reciprocal links');
+      if (reverse === undefined)
+        validateRequirement(
+          id,
+          false,
+          `neighbors must list reciprocal links; received reverse=${reverse}`,
+          {
+            code: 'VIEW_LENGTH',
+            path: 'reverse',
+            received: reverse,
+            expected: 'neighbors must list reciprocal links'
+          }
+        );
       if (slot <= reverse && treeEdgeFlags[slot] !== 0) {
-        if (neighbor === row) throw new Error('treeEdgeFlags must not select self links');
+        if (neighbor === row)
+          validateRequirement(
+            id,
+            false,
+            `treeEdgeFlags must not select self links; received neighbor=${neighbor}, row=${row}`,
+            {
+              code: 'REQUIREMENT',
+              path: `treeEdgeFlags[${slot}]`,
+              received: treeEdgeFlags[slot],
+              expected: 'treeEdgeFlags must not select self links'
+            }
+          );
         adjacency[row].push(edges.length);
         adjacency[neighbor].push(edges.length);
         edges.push({first: row, second: neighbor, slot, child: GPU_SKATER_NO_CUT, live: true});
@@ -155,14 +274,35 @@ export function computeSkaterRegionsOnCPU(
     for (let cursor = 0; cursor < queue.length; cursor++) {
       const row = queue[cursor];
       if (componentLabels[row] !== root)
-        throw new Error('componentLabels must name the smallest row of each flagged tree');
+        validateRequirement(
+          id,
+          false,
+          `componentLabels must name the smallest row of each flagged tree; received row=${row}`,
+          {
+            code: 'REQUIREMENT',
+            path: `componentLabels[${row}]`,
+            received: componentLabels[row],
+            expected: 'componentLabels must name the smallest row of each flagged tree'
+          }
+        );
       for (let column = 0; column < columnCount; column++)
         if (!Number.isFinite(values[row * columnCount + column])) treeHasInvalidValues[root] = 1;
       for (const edgeIndex of adjacency[row]) {
         if (parentEdges.get(row) === edgeIndex) continue;
         const edge = edges[edgeIndex];
         const neighbor = edge.first === row ? edge.second : edge.first;
-        if (discovered[neighbor]) throw new Error('treeEdgeFlags must select an acyclic forest');
+        if (discovered[neighbor])
+          validateRequirement(
+            id,
+            false,
+            `treeEdgeFlags must select an acyclic forest; received neighbor=${neighbor}`,
+            {
+              code: 'REQUIREMENT',
+              path: `treeEdgeFlags[${edge.slot}]`,
+              received: treeEdgeFlags[edge.slot],
+              expected: 'treeEdgeFlags must select an acyclic forest'
+            }
+          );
         edge.child = neighbor;
         discovered[neighbor] = 1;
         parentEdges.set(neighbor, edgeIndex);
@@ -179,7 +319,7 @@ export function computeSkaterRegionsOnCPU(
     cutGains: new Float32Array(stepCount)
   };
   const [requestedRegionCount, requestedMinimumSize] = parameters;
-  const target = input.treeStatus?.[GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount]
+  const target = input.treeStatus?.[GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.invalidCount]
     ? 0
     : Math.min(requestedRegionCount, options.maximumRegionCount);
   const minimumSize = Math.max(requestedMinimumSize, 1);
@@ -266,9 +406,29 @@ export class CPUSkaterRegionsOperation extends GPUCPUOperation {
         const offsets = getCPUOperationUint32Rows(id, inputs, 'offsets');
         const neighbors = getCPUOperationUint32Rows(id, inputs, 'neighbors');
         if (offsets.length !== props.rowCount + 1)
-          throw new Error(`${id} offsets length must equal rowCount + 1`);
+          validateRequirement(
+            id,
+            false,
+            `offsets length must equal rowCount + 1; received offsets.length=${offsets.length}`,
+            {
+              code: 'VIEW_LENGTH',
+              path: 'offsets.length',
+              received: offsets.length,
+              expected: 'offsets length must equal rowCount + 1'
+            }
+          );
         if (neighbors.length !== props.edgeCount)
-          throw new Error(`${id} neighbors length must equal edgeCount`);
+          validateRequirement(
+            id,
+            false,
+            `neighbors length must equal edgeCount; received neighbors.length=${neighbors.length}`,
+            {
+              code: 'VIEW_LENGTH',
+              path: 'neighbors.length',
+              received: neighbors.length,
+              expected: 'neighbors length must equal edgeCount'
+            }
+          );
         const result = computeSkaterRegionsOnCPU(
           {
             offsets,
@@ -297,7 +457,7 @@ export class CPUSkaterRegionsOperation extends GPUCPUOperation {
                 ? undefined
                 : getCPUOperationUint32Rows(id, inputs, 'treeStatus')
           },
-          props
+          {...props, id}
         );
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [

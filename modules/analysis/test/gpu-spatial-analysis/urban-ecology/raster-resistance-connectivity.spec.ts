@@ -16,8 +16,9 @@ import {
 } from '../../../src/analysis-core/contracts/raster-grid';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
+import {expectUniformShearEdgeSlots} from './raster-resistance-shear.test-utils';
 
 type GridCase = {
   name: string;
@@ -661,4 +662,19 @@ it.each(HAND_CASES)('$test.name matches the circuit solved by hand', async hand 
     ).toBeLessThanOrEqual(1e-4);
   });
   expect(Math.abs(actual.diagnostics[0]! - scale)).toBeLessThanOrEqual(1e-4 * scale);
+});
+
+it('RT-102 uniform shear gives distinct conductances on both diagonals', async () => {
+  const actual = await runCase({
+    name: 'uniform-shear-two-diagonals',
+    grid: createGrid(2, 2, [1, 1, 0, 0, -1, 0]),
+    resistance: [1, 1, 1, 1],
+    validity: [1, 1, 1, 1],
+    neighborhood: 8,
+    source: 0,
+    sink: 3
+  });
+  // A * (1, 1) = (2, -1), length sqrt(5); A * (-1, 1) = (0, -1), length 1.
+  // Unit resistances give conductance 1 / length. Other edges have lengths 1 or sqrt(2).
+  expectUniformShearEdgeSlots(actual);
 });

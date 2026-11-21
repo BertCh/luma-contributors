@@ -139,7 +139,7 @@ it('retains the validated diagonal chunks when the caller changes the split befo
   }
 });
 
-it('refuses layouts above the norm-merge cap before adding GPU commands', async () => {
+it('accepts 4097-tile hierarchical layouts before adding GPU commands', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
@@ -176,5 +176,5 @@ it('refuses layouts above the norm-merge cap before adding GPU commands', async 
         output: {powerTraces: view('float32', 1), powerSums: view('float32', 1)}
       })
   ])
-    expect(create).toThrow(/^bounded-merge tileCount must be at most 4096$/);
+    expect(create().tileCount).toBe(4097);
 });

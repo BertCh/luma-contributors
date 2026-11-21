@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
+import {computeNaturalBreaksMirror} from './natural-breaks-mirror';
+import {
+  getComparisonFloat32Key,
+  getOrderedFloat32Key
+} from '../../../src/dataframe-analysis/column-classification/column-classification-shared';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {createOperationTestViewGetter} from '../../utils/statistics-dynamics-operation-test-utils';
@@ -210,7 +216,9 @@ function computeBreaks(values: number[], settings: GPUClassBreaksSettings) {
   );
 }
 
-it.each([0, 1])('both class-break forms require at least one inferred row: %s', rowCount => {
+it.each([
+  0, 1
+])('CPU class breaks accepts empty input while GPU requires positive inferred rows: %s', rowCount => {
   const props: ClassBreaksOperationProps = {
     ...PROPS,
     rowCount: undefined,
@@ -237,8 +245,10 @@ it.each([0, 1])('both class-break forms require at least one inferred row: %s', 
       });
     const runGPU = () => new GPUClassBreaksOperation(props).createContributor(getView);
     if (rowCount === 0) {
-      expect.soft(runCPU).toThrow(/values.*1/);
-      expect.soft(runGPU).toThrow(/values.*1/);
+      const result = runCPU() as Record<string, Float32Array | Uint32Array>;
+      expect(Array.from(result['breaks'])).toEqual([NaN, NaN, NaN]);
+      expect(Array.from(result['classCount'])).toEqual([0]);
+      expect(runGPU).toThrow(/skip the GPU operation/);
     } else {
       const result = runCPU() as Record<string, Float32Array | Uint32Array>;
       expect(Array.from(result['breaks']).slice(0, 2)).toEqual([7, 7]);
@@ -445,24 +455,52 @@ it('handles custom edges, repeated edges, missing/constant columns and integer c
   expect(huge.breaks[1]).toBe(0);
 });
 
-it('uses ordered keys for uploaded signed zeros in custom counts and maximum gaps', () => {
+it('uses numeric equality for signed zeros in custom counts and maximum gaps (DPC-110)', () => {
   const custom = computeClassBreaksOnCPU(
     new Float32Array([-0, +0]),
     getGPUClassBreaksParameterValues({method: 'custom', customEdges: [-1, +0, 1]}, 2),
     {maximumClassCount: 2, methods: ['custom']}
   );
-  // Negative zero's key is below positive zero's key, so each class receives one row.
+  // Both zeros equal the inner edge and therefore enter the upper class.
   expect(custom.classCount[0]).toBe(2);
-  expect(Array.from(custom.classCounts)).toEqual([1, 1]);
+  expect(Array.from(custom.classCounts)).toEqual([0, 2]);
   const maximum = computeClassBreaksOnCPU(
     new Float32Array([-1, -0, +0, 1]),
     getGPUClassBreaksParameterValues({method: 'maximum-breaks', classCount: 4}, 4),
     {maximumClassCount: 4, methods: ['maximum-breaks']}
   );
-  // Three key-distinct gaps have widths 1, 0, 1. All three are selected for four classes.
-  expect(maximum.classCount[0]).toBe(4);
-  expect(Array.from(maximum.classCounts)).toEqual([1, 1, 1, 1]);
-  [-1, -0.5, 0, 0.5, 1].forEach((value, edge) => expect(maximum.breaks[edge] === value).toBe(true));
+  // Three numeric distinct values have two gaps of width 1, giving three classes.
+  expect(maximum.classCount[0]).toBe(3);
+  expect(Array.from(maximum.classCounts)).toEqual([1, 2, 1, 0]);
+  [-1, -0.5, 0.5, 1].forEach((value, edge) => expect(maximum.breaks[edge] === value).toBe(true));
+});
+
+it.each([
+  {
+    values: [1, 1.0000001192092896],
+    edges: [1, 1.0000001192092896, 1.0000001192092896],
+    counts: [1, 1]
+  },
+  {
+    values: [7.703719777548943e-34, 7.703720695903905e-34],
+    edges: [7.703719777548943e-34, 7.703720695903905e-34, 7.703720695903905e-34],
+    counts: [1, 1]
+  },
+  {
+    values: [-1.9999998807907104, -2, -2, -1.9999998807907104, -2],
+    edges: [-2, -1.9999998807907104, -1.9999998807907104],
+    counts: [3, 2]
+  }
+])('W5-01 maximum breaks separates adjacent float32 observations: %j', fixture => {
+  const result = computeClassBreaksOnCPU(
+    Float32Array.from(fixture.values),
+    getGPUClassBreaksParameterValues({method: 'maximum-breaks', classCount: 2}, 2),
+    {maximumClassCount: 2, methods: ['maximum-breaks']}
+  );
+  // The exact midpoint 1 + 2^-24 rounds to 1. A lower edge must instead use the upper row.
+  expect(Array.from(result.classCount)).toEqual([2]);
+  expect(Array.from(result.breaks)).toEqual(fixture.edges);
+  expect(Array.from(result.classCounts)).toEqual(fixture.counts);
 });
 
 it('checks arrays, uncompiled methods, malformed parameter statuses and operation construction', () => {
@@ -496,11 +534,275 @@ it('checks arrays, uncompiled methods, malformed parameter statuses and operatio
     expect(new Operation(PROPS).id).toBe('breaks-check');
   }
   for (const replacement of [
-    {rowCount: 0},
+    {rowCount: -1},
     {maximumClassCount: 0},
-    {maximumClassCount: 5},
+    {maximumClassCount: 5, methods: ['box-plot'] as const},
     {methods: []},
     {naturalBreaksBinCount: 1}
   ])
     expect(() => new CPUClassBreaksOperation({...PROPS, ...replacement})).toThrow(/^breaks-check/);
+});
+
+it('DPC-110 ordering: normalizes only zero keys and retains adjacent floats, invalid rows and masks', () => {
+  expect(getOrderedFloat32Key(-0)).toBe(0x7fffffff);
+  expect(getOrderedFloat32Key(+0)).toBe(0x80000000);
+  expect(getComparisonFloat32Key(-0)).toBe(0x80000000);
+  expect(getComparisonFloat32Key(+0)).toBe(0x80000000);
+  // IEEE binary32 neighbors of +/-1 have a spacing of 2^-23 on the outer side.
+  const adjacent = 1 + 2 ** -23;
+  for (const value of [-adjacent, -1, 1, adjacent]) {
+    expect(getComparisonFloat32Key(value)).toBe(getOrderedFloat32Key(value));
+  }
+  expect(getComparisonFloat32Key(-adjacent)).toBeLessThan(getComparisonFloat32Key(-1));
+  expect(getComparisonFloat32Key(1)).toBeLessThan(getComparisonFloat32Key(adjacent));
+  const values = Float32Array.of(-adjacent, -1, -0, +0, 1, adjacent, NaN, adjacent);
+  const mask = Uint32Array.of(1, 1, 1, 1, 1, 1, 1, 0);
+  const result = computeClassBreaksOnCPU(
+    values,
+    getGPUClassBreaksParameterValues({method: 'custom', customEdges: [-2, -1, adjacent, 2]}, 3),
+    {maximumClassCount: 3, methods: ['custom']},
+    mask
+  );
+  expect(Array.from(result.classCounts)).toEqual([1, 4, 1]);
+});
+
+it('DPC-111: the float64 natural-break twin separates the two extreme finite clusters', () => {
+  // Independent exhaustive-partition reference: natural-reference.py in this stream's scratch
+  // evaluates all five splits. Split 3 has SSD 3.999998932932241e74; the next best is 2.4392500429471075e77.
+  const values = Float32Array.of(-3e38, -2.9e38, -2.8e38, 2.8e38, 2.9e38, 3e38);
+  const result = computeClassBreaksOnCPU(
+    values,
+    getGPUClassBreaksParameterValues({method: 'natural-breaks', classCount: 2}, 2),
+    {maximumClassCount: 2, methods: ['natural-breaks']}
+  );
+  expect(Array.from(result.classCounts)).toEqual([3, 3]);
+  expect(result.breaks.every(Number.isFinite)).toBe(true);
+  expect(result.breaks[1]).toBe(values[3]);
+});
+
+it('CMP-05: classifies only the declared four-row grid prefix, retaining explicit fifth observations', () => {
+  const allocation = Float32Array.of(2, 4, 6, 8, 1000);
+  const parameters = getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2);
+  for (const rows of [4, 5]) {
+    const result = computeClassBreaksOnCPU(allocation.subarray(0, rows), parameters, {
+      maximumClassCount: 2,
+      methods: ['equal-interval']
+    });
+    expect(Array.from(result.breaks)).toEqual(rows === 4 ? [2, 5, 8] : [2, 501, 1000]);
+    expect(Array.from(result.classCounts)).toEqual(rows === 4 ? [2, 2] : [4, 1]);
+  }
+});
+
+it('DEF-07: omitted methods admit two equal-interval classes in pure and graph forms', () => {
+  const parameters = getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2);
+  const result = computeClassBreaksOnCPU(Float32Array.of(0, 2, 4), parameters, {
+    maximumClassCount: 2
+  });
+  expect(Array.from(result.breaks)).toEqual([0, 2, 4]);
+  const operation = new CPUClassBreaksOperation({...PROPS, rowCount: 3, maximumClassCount: 2});
+  const graphResult = operation.execute({
+    inputs: {
+      values: createInputRows(Float32Array.of(0, 2, 4)),
+      parameters: createInputRows(parameters)
+    }
+  }) as Record<string, Float32Array | Uint32Array>;
+  expect(Array.from(graphResult['breaks'])).toEqual([0, 2, 4]);
+});
+
+it('FRM-10: both graph forms reject three approximate classes in two bins before resolving ports', () => {
+  const props: ClassBreaksOperationProps = {
+    ...PROPS,
+    maximumClassCount: 3,
+    methods: ['natural-breaks'],
+    naturalBreaksMode: 'approximate',
+    naturalBreaksBinCount: 2
+  };
+  for (const Operation of [GPUClassBreaksOperation, CPUClassBreaksOperation])
+    expect(() => new Operation(props)).toThrow(/maximumClassCount 3.*naturalBreaksBinCount 2/);
+  // The pure function remains the exact reference: six points form three pairs, SSD = 1.5.
+  const result = computeClassBreaksOnCPU(
+    Float32Array.of(0, 1, 2, 3, 4, 5),
+    getGPUClassBreaksParameterValues({method: 'natural-breaks', classCount: 3}, 3),
+    {maximumClassCount: 3, methods: ['natural-breaks']}
+  );
+  expect(Array.from(result.breaks)).toEqual([0, 2, 4, 5]);
+});
+
+it('DEF-06: reports the resolved mode and exact CPU algorithm for the twelve-value fixture', () => {
+  // Exhaustive Fisher-Jenks partitions separate [15,36,56], [79,104,114],
+  // [157,166,174,177,179] and [100000]: inner lower edges 79,157,100000.
+  const values = Float32Array.of(174, 15, 79, 177, 157, 114, 36, 56, 179, 166, 104, 100000);
+  const result = computeClassBreaksOnCPU(
+    values,
+    getGPUClassBreaksParameterValues({method: 'natural-breaks', classCount: 4}, 4),
+    {maximumClassCount: 4, methods: ['natural-breaks']}
+  );
+  expect(Array.from(result.breaks.subarray(1, 4))).toEqual([79, 157, 100000]);
+  expect(result).toHaveProperty('provenance.naturalBreaksMode', 'approximate');
+  expect(result).toHaveProperty('provenance.naturalBreaksAlgorithm', 'exact-fisher-jenks-float64');
+  expect(
+    new CPUClassBreaksOperation({...PROPS, maximumClassCount: 4, methods: ['natural-breaks']})
+  ).toHaveProperty('provenance.naturalBreaksAlgorithm', 'exact-fisher-jenks-float64');
+});
+
+it('FRM-12: the CPU graph publishes the pure empty-input result', () => {
+  const operation = new CPUClassBreaksOperation({
+    ...PROPS,
+    rowCount: 0,
+    maximumClassCount: 2,
+    methods: ['equal-interval']
+  });
+  const result = operation.execute({
+    inputs: {
+      values: createInputRows(new Float32Array()),
+      parameters: createInputRows(
+        getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+      )
+    }
+  }) as Record<string, Float32Array | Uint32Array>;
+  expect(Array.from(result['breaks'])).toEqual([NaN, NaN, NaN]);
+  expect(Array.from(result['classCount'])).toEqual([0]);
+  expect(Array.from(result['classCounts'])).toEqual([0, 0]);
+});
+
+it('FRM-12: the published mixed executor supports empty CPU class breaks', async () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const result = await runOperationGraph(device, {
+      operations: [
+        new CPUClassBreaksOperation({
+          ...PROPS,
+          rowCount: 0,
+          maximumClassCount: 2,
+          methods: ['equal-interval']
+        })
+      ],
+      outputs: ['breaks', 'classCount', 'classCounts'],
+      inputs: {
+        values: {format: 'float32', values: new Float32Array()},
+        parameters: {
+          format: 'float32',
+          values: getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2)
+        }
+      }
+    });
+    expect(Array.from(result['breaks'])).toEqual([NaN, NaN, NaN]);
+    expect(Array.from(result['classCount'])).toEqual([0]);
+    expect(Array.from(result['classCounts'])).toEqual([0, 0]);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('DEF-06: pins the approximate host-mirror observation separately from device evidence', () => {
+  const values = Float32Array.of(174, 15, 79, 177, 157, 114, 36, 56, 179, 166, 104, 100000);
+  expect(computeNaturalBreaksMirror(values, 15, 100000, 4, 2048).edges).toEqual([104, 157, 100000]);
+});
+
+it.each([
+  undefined,
+  ['maximum-breaks'] as const
+])('R1 B1: CPU maximum breaks packs chunks with methods=%s', methods => {
+  const operation = new CPUClassBreaksOperation({...PROPS, rowCount: 4, methods});
+  expect(operation.methods).toContain('maximum-breaks');
+  const result = operation.execute({
+    inputs: {
+      values: {
+        ...createInputRows(Float32Array.of(1, 2, 20, 21)),
+        chunks: [
+          {values: Float32Array.of(1, 2), length: 2},
+          {values: Float32Array.of(20, 21), length: 2}
+        ]
+      },
+      parameters: createInputRows(
+        getGPUClassBreaksParameterValues({method: 'maximum-breaks', classCount: 2}, 6)
+      )
+    }
+  }) as Record<string, Float32Array | Uint32Array>;
+  // Gaps 1,18,1; midpoint of the largest gap (2,20) is 11.
+  expect(Array.from(result['breaks']).slice(0, 3)).toEqual([1, 11, 21]);
+  expect(Array.from(result['classCount'])).toEqual([2]);
+  expect(Array.from(result['classCounts'])).toEqual([2, 2, 0, 0, 0, 0]);
+  expect(
+    Object.values(result).every(
+      value => value instanceof Float32Array || value instanceof Uint32Array
+    )
+  ).toBe(true);
+});
+
+it.each([
+  undefined,
+  2048,
+  4096
+])('R1 B2: CPU equal intervals preserves unused bins=%s at 2049 classes', naturalBreaksBinCount => {
+  const operation = new CPUClassBreaksOperation({
+    ...PROPS,
+    rowCount: 3,
+    maximumClassCount: 2049,
+    methods: naturalBreaksBinCount === 4096 ? ['equal-interval'] : undefined,
+    naturalBreaksBinCount
+  });
+  const result = operation.execute({
+    inputs: {
+      values: createInputRows(Float32Array.of(0, 2, 4)),
+      parameters: createInputRows(
+        getGPUClassBreaksParameterValues({method: 'equal-interval', classCount: 2}, 2049)
+      )
+    }
+  }) as Record<string, Float32Array | Uint32Array>;
+  expect(Array.from(result['breaks']).slice(0, 3)).toEqual([0, 2, 4]);
+  expect(Array.from(result['classCount'])).toEqual([2]);
+});
+
+it.each([
+  undefined,
+  'exact',
+  'monotone'
+] as const)('R1 S1: GPU operation exposes %s provenance before lowering', naturalBreaksMode => {
+  const operation = new GPUClassBreaksOperation({...PROPS, naturalBreaksMode});
+  expect(operation).toHaveProperty(
+    'provenance.naturalBreaksMode',
+    naturalBreaksMode ?? 'approximate'
+  );
+  expect(operation).toHaveProperty(
+    'provenance.naturalBreaksAlgorithm',
+    naturalBreaksMode === 'exact'
+      ? 'exact-fisher-jenks-normalized-float32'
+      : naturalBreaksMode === 'monotone'
+        ? 'monotone-quantized-dynamic-programming'
+        : 'histogram-refinement'
+  );
+});
+
+it('R1 B2: pure exact reference retains natural breaks beyond the graph bin default', () => {
+  const result = computeClassBreaksOnCPU(
+    Float32Array.of(0, 1, 2),
+    getGPUClassBreaksParameterValues({method: 'natural-breaks', classCount: 2}, 2049),
+    {maximumClassCount: 2049}
+  );
+  expect(Array.from(result.breaks).slice(0, 3)).toEqual([0, 1, 2]);
+  expect(result.provenance?.methods).toContain('natural-breaks');
+});
+
+it.each([
+  undefined,
+  2048
+])('R1 B2: CPU graph defaults preserve exact natural breaks with bins=%s', naturalBreaksBinCount => {
+  const operation = new CPUClassBreaksOperation({
+    ...PROPS,
+    rowCount: 3,
+    maximumClassCount: 2049,
+    naturalBreaksBinCount
+  });
+  const result = operation.execute({
+    inputs: {
+      values: createInputRows(Float32Array.of(0, 1, 2)),
+      parameters: createInputRows(
+        getGPUClassBreaksParameterValues({method: 'natural-breaks', classCount: 2}, 2049)
+      )
+    }
+  }) as Record<string, Float32Array | Uint32Array>;
+  expect(operation.methods).toContain('natural-breaks');
+  expect(Array.from(result['classCount'])).toEqual([2]);
+  expect(Array.from(result['breaks']).slice(0, 3)).toEqual([0, 1, 2]);
 });

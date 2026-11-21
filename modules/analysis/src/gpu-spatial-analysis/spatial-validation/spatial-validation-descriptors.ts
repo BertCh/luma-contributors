@@ -1,8 +1,8 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import type {GPUSpatialAnalysisCapability} from '../ontology/spatial-analysis-ontology';
-export const NESTED_VALIDATION_CAPABILITY: GPUSpatialAnalysisCapability = {
+import type {CatalogCapabilityDefinition} from '../ontology/freeze-catalog';
+export const NESTED_VALIDATION_CAPABILITY: CatalogCapabilityDefinition = {
   id: 'nested-interpolation-validation',
   title: 'Nested interpolation model selection',
   status: 'available',

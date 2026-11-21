@@ -32,7 +32,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import gstoolsFixture from '../../oracles/fixtures/space-time-metric-gstools.json';
 import {makeExtentGrid} from './extent-grid';
 import {solveReferenceKriging} from './matern-kriging-reference';
@@ -1103,5 +1103,51 @@ it('rebuilds bounds and membership after positions, times, values and validity c
     expect(harness.buildCount).toBe(1);
   } finally {
     harness.destroy();
+  }
+});
+
+it('PTS-119 PTS-139 retains only strictly positive float validity at both coordinate origins', async () => {
+  // One usable site y=2, C(0)=1, C(query,site)=exp(-1): analytic simple kriging.
+  for (const [originX, originY] of [
+    [0, 0],
+    [500000, 5000000]
+  ]) {
+    for (const sampleIndex of ['brute-force', 'grid'] as const) {
+      const harness = await createHarness({
+        scene: {
+          positions: [0, 1, 2, 3].map(x => [originX + x, originY] as const),
+          times: [0, 0, 0, 0],
+          observations: [
+            [2, 0],
+            [100, 0],
+            [200, 0],
+            [300, 0]
+          ],
+          queries: [[originX + 1, originY]],
+          queryTimes: [0]
+        },
+        mode: 'simple',
+        neighborCount: 4,
+        sampleIndex,
+        sampleValidity: [0.25, 0, -1, Number.NaN]
+      });
+      try {
+        const result = await harness.run({
+          covariance: {
+            type: 'metric',
+            joint: {model: 'exponential', sill: 1, nugget: 0, range: 3},
+            anisotropy: 1
+          }
+        });
+        expect(Array.from(result.status)).toEqual([0]);
+        expect(Number.isFinite(result.values[0])).toBe(true);
+        expect(Number.isFinite(result.values[1])).toBe(true);
+        expect(result.values[0]).toBeCloseTo(0.7357588823428847, 5);
+        expect(result.values[1]).toBeCloseTo(0.8646647167633873, 5);
+        expect(result.values[3]).toBe(1);
+      } finally {
+        harness.destroy();
+      }
+    }
   }
 });

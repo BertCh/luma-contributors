@@ -7,8 +7,9 @@ import type {DataFrameFamilyOperators} from '../types';
 /** Curated grouped statistics and key lookup formulas with the actual missing-key policy. */
 export const GROUPS_JOINS_OPERATORS: DataFrameFamilyOperators = {
   /**
-   * Primary: corrected two-pass variance; mean0 is the signed 64-bit fixed-point sum divided by
-   * sumScale*n. For d=x-mean0, S1=sum(d), S2=sum(d*d), M2=max(S2-S1*S1/n,0), snapped to zero
+   * Primary: corrected two-pass variance; mean0 is the adaptive 96-bit total divided by the
+   * exact integer count. The separate caller-scale sum is independent and uses sumScale.
+   * For d=x-mean0, S1=sum(d), S2=sum(d*d), M2=max(S2-S1*S1/n,0), snapped to zero
    * when M2<=2^-19*S2. Sample variance divides by n-1 (NaN for n<2); population divides by n.
    * Finite values only; keys/masks/capacity select the group. Other statistics include fixed-point
    * sums/means, extrema, Fisher-Pearson skewness, excess kurtosis, linear R-7 median/percentiles,
@@ -25,7 +26,7 @@ export const GROUPS_JOINS_OPERATORS: DataFrameFamilyOperators = {
       derivation: 'curated',
       tex: String.raw`\term{m2}{M_2}=\max\left(\term{momentSums}{S_2-S_1^2/n},0\right),\quad \term{m2}{M_2}\leftarrow0\ \text{if }\term{m2}{M_2}\leq2^{-19}\term{momentSums}{S_2},\quad \term{variances}{v}=\frac{\term{m2}{M_2}}{\term{counts}{n}-\mathbf{1}[\term{sampleVariance}{\mathrm{sample}}]}`,
       ascii:
-        'd=x-mean0; M2=max(sum(d*d)-sum(d)^2/n,0), snapped to 0 if <=2^-19*sum(d*d); variance=M2/(n-(variance==sample)).',
+        'mean0 is the adaptive 96-bit total divided by the exact integer count; the caller-scale sum is independent and uses sumScale. d=x-mean0; M2=max(sum(d*d)-sum(d)^2/n,0), snapped to 0 if <=2^-19*sum(d*d); variance=M2/(n-(variance==sample)).',
       symbols: [
         {id: 'm2', role: 'intermediate', binding: 'wgsl:m2'},
         {id: 'momentSums', role: 'intermediate', binding: 'wgsl:momentSums'},
@@ -58,9 +59,9 @@ export const GROUPS_JOINS_OPERATORS: DataFrameFamilyOperators = {
    * Primary: smallest matching right row. Right keys need NOT be unique: the index stores unique
    * keys plus ranges, gather picks the first row, and aggregates consume the whole range.
    * All-ones keys (both words for uint64) and masked rows never match. Empty matches write
-   * 0xffffffff; gathered values write NaN/all-ones. Inner joins also compact matched left IDs.
+   * 0xffffffff; gathered values write NaN/all-ones. Compaction lists each matched left index once.
    */
-  GPUKeyJoin: {
+  GPUKeyLookup: {
     family: 'groups-joins',
     descriptor: {scope: 'pairwise', scopeSecondary: 'zonal', reduction: 'select'},
     formula: {
@@ -79,11 +80,10 @@ export const GROUPS_JOINS_OPERATORS: DataFrameFamilyOperators = {
     stages: ['filter', 'order', 'group', 'join', 'select'],
     datumKinds: [
       {kind: 'row', label: 'Left rows', indexSpace: '1d'},
-      {kind: 'group', label: 'Unique right keys', indexSpace: '1d'},
-      {kind: 'pair', label: 'Matching rows', indexSpace: '1d'}
+      {kind: 'group', label: 'Unique right keys', indexSpace: '1d'}
     ],
     guards: [],
-    choices: ['kind', 'gather', 'aggregates', 'operation', 'sumScale'],
+    choices: ['compactMatchedLeftRows', 'gather', 'aggregates', 'operation', 'sumScale'],
     variables: {
       leftKeys: {level: 'nominal'},
       rightKeys: {level: 'nominal'},

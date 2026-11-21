@@ -17,9 +17,9 @@ const TEMPORAL_CONTEXT: GPUTemporalContext = {
   axis: {kind: 'irregular'}
 };
 
-function addCalendarPeriodIndex({graph, view}: KernelAuditContext, rows: number): void {
+function addCalendarPeriodIndex({graph, view, construct}: KernelAuditContext, rows: number): void {
   graph.add(
-    new GPUPeriodIndex({
+    construct(GPUPeriodIndex, {
       temporalContext: TEMPORAL_CONTEXT,
       periods: {
         kind: 'calendar',
@@ -39,9 +39,9 @@ function addCalendarPeriodIndex({graph, view}: KernelAuditContext, rows: number)
   );
 }
 
-function addFixedPeriodIndex({graph, view}: KernelAuditContext, rows: number): void {
+function addFixedPeriodIndex({graph, view, construct}: KernelAuditContext, rows: number): void {
   graph.add(
-    new GPUPeriodIndex({
+    construct(GPUPeriodIndex, {
       temporalContext: TEMPORAL_CONTEXT,
       periods: {kind: 'fixed', width: 2n ** 40n + 1n, origin: -(2n ** 50n), count: 0xfffffffd},
       timestamps: view('uint32x2', rows),
@@ -52,7 +52,7 @@ function addFixedPeriodIndex({graph, view}: KernelAuditContext, rows: number): v
 }
 
 function addTranspose(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   format: 'uint32' | 'float32',
   from: 'cell-major' | 'period-major',
   periodCount: number
@@ -60,7 +60,7 @@ function addTranspose(
   const cellCount = 4096;
   const length = cellCount * periodCount;
   graph.add(
-    new GPUCubeLayoutTranspose({
+    construct(GPUCubeLayoutTranspose, {
       values: view(format, length) as never,
       output: view(format, length) as never,
       from,
@@ -70,9 +70,9 @@ function addTranspose(
   );
 }
 
-function addTimeWordsRelative({graph, view}: KernelAuditContext, rows: number): void {
+function addTimeWordsRelative({graph, view, construct}: KernelAuditContext, rows: number): void {
   graph.add(
-    new GPUTimeWordsRelative({
+    construct(GPUTimeWordsRelative, {
       timestamps: view('uint32x2', rows),
       temporalContext: TEMPORAL_CONTEXT,
       origin: 1_700_000_000_000n,

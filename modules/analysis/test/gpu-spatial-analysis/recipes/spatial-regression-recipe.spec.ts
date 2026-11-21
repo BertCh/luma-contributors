@@ -4,6 +4,7 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
 import {
   addSpatialRegressionRecipe,
@@ -104,6 +105,12 @@ it.each([
     const decision = fixture.output('decision', 'uint32', 1);
     const moranZ = fixture.output('moran-z', 'float32', rowCount);
     const weightsLoss = fixture.output('weights-loss', 'uint32', 1);
+    const weightsCount = fixture.output('weights-count', 'uint32', 1);
+    const weightsRequiredCount = fixture.output('weights-required-count', 'uint32', 1);
+    const weightsComplete = fixture.output('weights-complete', 'uint32', 1);
+    weightsComplete.buffer.write(Uint32Array.of(1));
+    weightsCount.buffer.write(Uint32Array.of(scene.weights.neighbors.length));
+    weightsRequiredCount.buffer.write(Uint32Array.of(scene.weights.neighbors.length));
     const localCoefficients = fixture.output('local-coefficients', 'float32', rowCount * (k + 1));
     const selectedBandwidth = fixture.output('selected-bandwidth', 'float32', 2);
     const localSummary = fixture.output(
@@ -116,7 +123,12 @@ it.each([
       response: fixture.input('response', scene.response, 'float32', rowCount),
       predictorCount: k,
       weights: {
-        status: {candidateOverflow: weightsLoss.view},
+        status: {
+          complete: weightsComplete.view,
+          count: weightsCount.view,
+          requiredCount: weightsRequiredCount.view,
+          candidateOverflow: weightsLoss.view
+        },
         offsets: fixture.input('offsets', scene.weights.offsets, 'uint32', rowCount + 1),
         neighbors: fixture.input(
           'neighbors',
@@ -136,7 +148,7 @@ it.each([
         'float32',
         GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
       ),
-      outputs: {
+      output: {
         ols: {
           coefficients: coefficients.view,
           status: {code: olsStatus.view},
@@ -166,8 +178,8 @@ it.each([
         maximumBandwidthCount: LADDER_CAPACITY
       }
     });
-    // OLS, diagnostics, the specification decision kernel, residual local Moran, GWR.
-    expect(recipe.contributors.length).toBe(5);
+    // Weights loss, OLS, diagnostics, excluded-row counts, specification, residual Moran, GWR.
+    expect(recipe.contributors.length).toBe(7);
     fixture.run();
 
     expect((await fixture.readUint32(olsStatus, 1))[0]).toBe(0);
@@ -224,6 +236,8 @@ it.each([
     weightsLoss.buffer.write(Uint32Array.of(1));
     fixture.run();
     expect(await fixture.readUint32(diagnosticsStatus, 1)).toEqual([3]);
+    expect(await fixture.readUint32(olsStatus, 1)).toEqual([0]);
+    expect(await fixture.readFloat32(coefficients, k + 1)).toEqual(gpuCoefficients);
     expect(await fixture.readUint32(decision, 1)).toEqual([4]);
     const lostTests = await fixture.readFloat32(
       tests,
@@ -233,12 +247,44 @@ it.each([
       expect(lostTests[3 * test]).toBeNaN();
       expect(lostTests[3 * test + 2]).toBeNaN();
     }
-    expect((await fixture.readFloat32(moranZ, rowCount)).every(Number.isNaN)).toBe(true);
+    expect(await fixture.readFloat32(moranZ, rowCount)).toEqual(Array(rowCount).fill(NaN));
     weightsLoss.buffer.write(Uint32Array.of(0));
     fixture.run();
     expect(await fixture.readUint32(diagnosticsStatus, 1)).toEqual([0]);
     expect(await fixture.readUint32(decision, 1)).toEqual([gpuDecision]);
     expect(await fixture.readFloat32(moranZ, rowCount)).toEqual(z);
+
+    // W5-16: cardinality evidence is independent of OLS success and remains live on replay.
+    // One more required edge than retained is incomplete even with both overflow flags clear.
+    weightsRequiredCount.buffer.write(Uint32Array.of(scene.weights.neighbors.length + 1));
+    fixture.run();
+    expect(await fixture.readUint32(olsStatus, 1)).toEqual([0]);
+    expect(await fixture.readFloat32(coefficients, k + 1)).toEqual(gpuCoefficients);
+    expect(await fixture.readUint32(diagnosticsStatus, 1)).toEqual([3]);
+    expect(await fixture.readUint32(decision, 1)).toEqual([4]);
+    expect(await fixture.readFloat32(moranZ, rowCount)).toEqual(Array(rowCount).fill(NaN));
+    expect(await fixture.readUint32(weightsRequiredCount, 1)).toEqual([
+      scene.weights.neighbors.length + 1
+    ]);
+    weightsRequiredCount.buffer.write(Uint32Array.of(scene.weights.neighbors.length));
+    fixture.run();
+    expect(await fixture.readUint32(diagnosticsStatus, 1)).toEqual([0]);
+    expect(await fixture.readUint32(decision, 1)).toEqual([gpuDecision]);
+    expect(await fixture.readFloat32(moranZ, rowCount)).toEqual(z);
+
+    // B5: a false positive-polarity certificate suppresses spatial inference even with
+    // matching cardinalities and clear loss flags; the ordinary OLS fit stays independent.
+    for (const complete of [1, 0, 1]) {
+      weightsComplete.buffer.write(Uint32Array.of(complete));
+      fixture.run();
+      expect(await fixture.readUint32(olsStatus, 1)).toEqual([0]);
+      expect(await fixture.readFloat32(coefficients, k + 1)).toEqual(gpuCoefficients);
+      expect(await fixture.readUint32(diagnosticsStatus, 1)).toEqual([complete ? 0 : 3]);
+      expect(await fixture.readUint32(decision, 1)).toEqual([complete ? gpuDecision : 4]);
+      expect(await fixture.readFloat32(moranZ, rowCount)).toEqual(
+        complete ? z : Array(rowCount).fill(NaN)
+      );
+    }
 
     // Local fits at the selected bandwidth.
     const selected = await fixture.readFloat32(selectedBandwidth, 2);
@@ -291,7 +337,8 @@ it('addSpatialRegressionRecipe runs diagnostics after a masked OLS fit and write
     );
     const status = fixture.output('diagnostics-status', 'uint32', 1);
     const decision = fixture.output('decision', 'uint32', 1);
-    addSpatialRegressionRecipe(fixture.graph, {
+    const counts = fixture.output('excluded-counts', 'uint32', 2);
+    const recipe = addSpatialRegressionRecipe(fixture.graph, {
       predictors: fixture.input('predictors', scene.predictors, 'float32', rowCount * k),
       response: fixture.input('response', scene.response, 'float32', rowCount),
       mask: fixture.input('mask', mask, 'uint32', rowCount),
@@ -319,13 +366,36 @@ it('addSpatialRegressionRecipe runs diagnostics after a masked OLS fit and write
         'float32',
         GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
       ),
-      outputs: {
+      output: {
         diagnostics: {tests: tests.view, summary: summary.view, status: {code: status.view}},
         specification: {decision: decision.view}
       }
     });
+    const [olsStage, diagnosticsStage] = recipe.status.stages;
+    fixture.graph.add(
+      createWGSLKernelNode(fixture.graph, {
+        id: 'read-stage-excluded-counts',
+        operation: 'spatial-regression-recipe-test',
+        invocationCount: 1,
+        bindings: [
+          {name: 'ols', view: olsStage.status.invalidCount!, type: 'u32', access: 'read'},
+          {
+            name: 'diagnostics',
+            view: diagnosticsStage.status.invalidCount!,
+            type: 'u32',
+            access: 'read'
+          },
+          {name: 'counts', view: counts.view, type: 'u32', access: 'read_write'}
+        ],
+        body: `counts[countsOffset] = ols[olsOffset];
+  counts[countsOffset + 1u] = diagnostics[diagnosticsOffset];`
+      })
+    );
     fixture.run();
     expect((await fixture.readUint32(status, 1))[0]).toBe(0);
+    const excludedCount = mask.reduce((count, value) => count + Number(value === 0), 0);
+    expect(excludedCount).toBeGreaterThan(0);
+    expect(await fixture.readUint32(counts, 2)).toEqual([excludedCount, excludedCount]);
     const gpuTests = await fixture.readFloat32(
       tests,
       GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH

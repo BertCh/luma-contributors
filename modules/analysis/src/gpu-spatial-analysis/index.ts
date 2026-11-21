@@ -50,9 +50,6 @@ export * from './multiple-testing/index';
 export * from './neighbor-search/index';
 export * from './neighborhood-summary/index';
 export * from './offset-expansion/index';
-// @deprecated Import the ontology catalogs from '@luma-contributors/analysis/gpu-spatial-analysis/ontology'.
-// This barrel re-export is kept for compatibility and will be removed in a future release.
-export * from './ontology/index';
 export * from './outlier-detection/index';
 export * from './outline-geometry/index';
 export * from './pair-gather/index';
@@ -84,6 +81,9 @@ export * from './spatial-join/index';
 export * from './redcap-regions/index';
 export * from './spatial-regionalization/index';
 export * from './spatial-regression/index';
+export * from './spatial-regression/regression-status-decoders';
+export * from './spatial-regression/geographically-weighted-regression-model-result';
+export * from './spatial-regression/spatial-panel-error-maximum-likelihood-model-result';
 export * from './spatial-weights/index';
 export * from './study-window/index';
 export * from './track-similarity/index';
@@ -117,3 +117,5 @@ export * from './spatial-interaction/index';
 export * from './global-coordinates/index';
 
 export * from './dorling-cartogram/index';
+
+export type {RasterGridAffine} from '../analysis-core/contracts/raster-grid';

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUExecutionEvidence} from './timing-evidence';
 import {renderRasterImage, getRasterSamplingNote} from '../encoding/raster-image';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
@@ -34,6 +35,8 @@ export type RealizedViewModel = {
     label: string;
     maximumIterations?: number;
     executedIterations?: number;
+    /** Proven executed iterations when other declared iterations remain unresolved. */
+    executedIterationsLowerBound?: number;
     gated: boolean;
   }[];
   series: {name: string; unit?: string; values: number[]; logScale: boolean}[];
@@ -70,14 +73,13 @@ function getIterationCaptures(context: ViewContext): GPUComputationCapture[] {
 /** Builds a static trace using recorded iteration evidence only. */
 export function buildRealizedViewModel(context: ViewContext): RealizedViewModel {
   const loopMap = new Map<string, RealizedViewModel['loops'][number]>();
-  const executions = new Map<string, Set<number>>();
-  const measuredLoops = new Set<string>();
+  const executions = new Map<string, Map<number, boolean | undefined>>();
   for (const graph of context.record.graphs) {
     const metrics = getMetricsForGraph(context.record, graph.id);
     for (const node of graph.nodes) {
       if (!node.loop && node.kind !== 'loop') continue;
       const loopId = node.loop?.id ?? node.id;
-      const loop = loopMap.get(loopId) ?? {
+      const loop: RealizedViewModel['loops'][number] = loopMap.get(loopId) ?? {
         loopId,
         label: node.dedupName ?? node.label,
         gated: false
@@ -90,27 +92,35 @@ export function buildRealizedViewModel(context: ViewContext): RealizedViewModel 
           : undefined);
       if (maximum !== undefined)
         loop.maximumIterations = Math.max(loop.maximumIterations ?? 0, maximum);
-      if (metrics) {
-        const iterations = executions.get(loopId) ?? new Set<number>();
-        const measurement = metrics.nodes[node.id];
-        if (node.loop && measurement) measuredLoops.add(loopId);
-        if (
-          node.loop &&
-          measurement &&
-          (measurement.outcome === 'executed' ||
-            (measurement.outcome === undefined &&
-              measurement.gpuBegin !== undefined &&
-              measurement.gpuEnd !== undefined))
-        )
-          iterations.add(node.loop.iteration);
+      if (node.loop) {
+        const iterations = executions.get(loopId) ?? new Map<number, boolean | undefined>();
+        const evidence = getGPUExecutionEvidence(metrics?.nodes[node.id]);
+        const previous = iterations.get(node.loop.iteration);
+        const hadPrevious = iterations.has(node.loop.iteration);
+        // Any executed node proves its iteration ran. A skipped node cannot resolve an
+        // unmeasured sibling in the same iteration.
+        iterations.set(
+          node.loop.iteration,
+          previous === true || evidence === true
+            ? true
+            : !hadPrevious
+              ? evidence
+              : previous === false && evidence === false
+                ? false
+                : undefined
+        );
         executions.set(loopId, iterations);
       }
       loopMap.set(loopId, loop);
     }
   }
-  // Without per-node measurements an empty set means "not measured", not "zero iterations".
-  for (const [loopId, iterations] of executions)
-    if (measuredLoops.has(loopId)) loopMap.get(loopId)!.executedIterations = iterations.size;
+  for (const [loopId, iterations] of executions) {
+    const evidence = [...iterations.values()];
+    const count = evidence.filter(value => value === true).length;
+    const loop = loopMap.get(loopId)!;
+    if (evidence.every(value => value !== undefined)) loop.executedIterations = count;
+    else if (count > 0) loop.executedIterationsLowerBound = count;
+  }
   // A contributor's own GPU iteration counter, read back as `executed iterations: <loop id>`,
   // is direct evidence and wins over counting measured nodes.
   for (const capture of [
@@ -124,8 +134,13 @@ export function buildRealizedViewModel(context: ViewContext): RealizedViewModel 
       [...loopMap.keys()].find(id => id === loopReference) ??
       [...loopMap.keys()].find(id => id.endsWith(loopReference)) ??
       loopReference;
-    const loop = loopMap.get(loopId) ?? {loopId, label: loopReference, gated: true};
+    const loop: RealizedViewModel['loops'][number] = loopMap.get(loopId) ?? {
+      loopId,
+      label: loopReference,
+      gated: true
+    };
     loop.executedIterations = count;
+    delete loop.executedIterationsLowerBound;
     loopMap.set(loopId, loop);
   }
   const series = (context.record.metrics ?? [])
@@ -183,7 +198,9 @@ export function buildRealizedViewModel(context: ViewContext): RealizedViewModel 
   const iterations = [
     ...captures.map(capture => capture.iteration!),
     ...series.flatMap(item => item.values.map((_, index) => index)),
-    ...[...executions.values()].flatMap(iterations => [...iterations])
+    ...[...executions.values()].flatMap(iterations =>
+      [...iterations].flatMap(([iteration, executed]) => (executed === true ? [iteration] : []))
+    )
   ];
   const chaotic =
     context.record.graphs.some(graph => graph.nodes.some(node => node.attrs['chaotic'] === true)) ||
@@ -489,7 +506,14 @@ export const REALIZED_VIEW: ViewRegistration<RealizedViewModel> = {
     const hasLoop = record.graphs.some(graph =>
       graph.nodes.some(node => node.loop || node.kind === 'loop')
     );
+    const hasExecutionEvidence = record.graphs.some(graph => {
+      const metrics = getMetricsForGraph(record, graph.id);
+      return graph.nodes.some(
+        node => node.loop && getGPUExecutionEvidence(metrics?.nodes[node.id]) !== undefined
+      );
+    });
     const hasTrace =
+      hasExecutionEvidence ||
       record.metrics?.some(metrics =>
         metrics.series?.some(series => series.axis === 'iteration')
       ) ||
@@ -500,7 +524,7 @@ export const REALIZED_VIEW: ViewRegistration<RealizedViewModel> = {
       : {
           ok: false,
           reason:
-            'no realized iterations recorded (needs a loop trace: series, per-iteration snapshots or stamps)'
+            'no realized iterations recorded (needs a loop trace: execution measurements, series, per-iteration snapshots or stamps)'
         };
   },
   build: buildRealizedViewModel,
@@ -509,11 +533,20 @@ export const REALIZED_VIEW: ViewRegistration<RealizedViewModel> = {
     subject: `Realized iterations of ${model.loops.map(loop => loop.label).join(', ')}`,
     keyNumber: {
       label: 'iterations executed',
-      value: model.loops.some(loop => loop.executedIterations !== undefined)
-        ? model.loops.reduce((sum, loop) => sum + (loop.executedIterations ?? 0), 0)
-        : model.keyFrames.length
+      value:
+        model.loops.length > 0 && model.loops.every(loop => loop.executedIterations !== undefined)
+          ? model.loops.reduce((sum, loop) => sum + (loop.executedIterations ?? 0), 0)
+          : 'unknown'
     },
     facts: [
+      `captured key frames ${model.keyFrames.length}`,
+      ...model.loops.flatMap(loop =>
+        loop.executedIterationsLowerBound !== undefined
+          ? [
+              `${loop.label}: at least ${loop.executedIterationsLowerBound} iterations executed; remaining iterations unresolved`
+            ]
+          : []
+      ),
       ...model.series.map(
         series =>
           `${series.name}: ${series.values.length ? formatViewNumber(series.values[series.values.length - 1]) : 'unknown'}`

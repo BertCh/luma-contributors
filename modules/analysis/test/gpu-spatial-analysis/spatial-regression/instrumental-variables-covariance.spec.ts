@@ -8,11 +8,13 @@ import {GPUContributorOperation} from '../../../src/analysis-core/operations/gpu
 import {
   GPUInstrumentalVariablesCovariance,
   GPU_INSTRUMENTAL_VARIABLES_COVARIANCE_STATUS,
+  type GPUInstrumentalVariablesCovarianceProps,
   type GPUInstrumentalVariablesCovarianceMethod
 } from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-instrumental-variables-covariance';
 import {runOperationGraph, type OperationGraphInput} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import fixtures from './spatial-two-stage-least-squares-operation-fixtures.json';
+import auditFixtures from './spatial-two-stage-least-squares-audit-fixtures.json';
 
 type CovarianceInput = {
   design: Float32Array;
@@ -26,7 +28,14 @@ type CovarianceInput = {
   kernel?: {offsets: number[]; neighbors: number[]; weights: number[]};
 };
 
-async function runCovariance(input: CovarianceInput) {
+async function runCovariance(
+  input: CovarianceInput,
+  options: {
+    overflow?: Uint32Array;
+    candidateOverflow?: Uint32Array;
+    mutateAfterConstruction?: boolean;
+  } = {}
+) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const inputs: Record<string, OperationGraphInput> = {
@@ -42,6 +51,9 @@ async function runCovariance(input: CovarianceInput) {
       values: Uint32Array.from(input.kernel.neighbors)
     };
     inputs['kernelWeights'] = {format: 'float32', values: Float32Array.from(input.kernel.weights)};
+    if (options.overflow) inputs['overflow'] = {format: 'uint32', values: options.overflow};
+    if (options.candidateOverflow)
+      inputs['candidateOverflow'] = {format: 'uint32', values: options.candidateOverflow};
   }
   return await runOperationGraph(device, {
     inputs,
@@ -57,8 +69,8 @@ async function runCovariance(input: CovarianceInput) {
           },
           code: {value: 'code', format: 'uint32', length: 1}
         },
-        createContributor: getView =>
-          new GPUInstrumentalVariablesCovariance({
+        createContributor: getView => {
+          const props: GPUInstrumentalVariablesCovarianceProps = {
             ...input,
             design: getView<'float32'>('design'),
             instruments: getView<'float32'>('instruments'),
@@ -68,18 +80,74 @@ async function runCovariance(input: CovarianceInput) {
               ? {
                   offsets: getView<'uint32'>('kernelOffsets'),
                   neighbors: getView<'uint32'>('kernelNeighbors'),
-                  weights: getView<'float32'>('kernelWeights')
+                  weights: getView<'float32'>('kernelWeights'),
+                  status: {
+                    ...(options.overflow ? {overflow: getView<'uint32'>('overflow')} : {}),
+                    ...(options.candidateOverflow
+                      ? {candidateOverflow: getView<'uint32'>('candidateOverflow')}
+                      : {})
+                  }
                 }
               : undefined,
             output: {
               covariance: getView<'float32'>('covariance'),
               status: {code: getView<'uint32'>('code')}
             }
-          })
+          };
+          const contributor = new GPUInstrumentalVariablesCovariance(props);
+          if (options.mutateAfterConstruction) {
+            props.coefficientCount = 1;
+            props.instrumentCount = 1;
+            props.method = 'HC0';
+            props.design = props.residuals;
+            props.output.covariance = props.residuals;
+            props.output.status = {code: getView<'uint32'>('code')};
+            if (props.kernel?.status) {
+              delete props.kernel.status.overflow;
+              delete props.kernel.status.candidateOverflow;
+            }
+          }
+          return contributor;
+        }
       })
     ],
     outputs: ['covariance', 'code']
   });
+}
+
+it('direct IV covariance retains its validated model after caller-map mutation against NumPy', async () => {
+  const fixture = auditFixtures[0];
+  const result = await runCovariance(getFixtureInput('HC1', fixture), {
+    mutateAfterConstruction: true
+  });
+  expect(Array.from(result['code'])).toEqual([0]);
+  expect(result['covariance'].length).toBe(fixture.robust.HC1.covariance.length);
+  // 2e-4 covers float32 projection, score publication and the dense sandwich reduction.
+  fixture.robust.HC1.covariance.forEach((value, row) =>
+    expect(Math.abs(result['covariance'][row] - value)).toBeLessThanOrEqual(
+      2e-4 * Math.max(Math.abs(value), 1e-3)
+    )
+  );
+});
+
+for (const flag of ['overflow', 'candidateOverflow'] as const) {
+  for (const value of [1, 0]) {
+    it(`direct IV HAC captures ${flag}=${value} and preserves the NumPy loss/clean contract`, async () => {
+      const fixture = auditFixtures[0];
+      const result = await runCovariance(getFixtureInput('HAC', fixture), {
+        [flag]: Uint32Array.of(value),
+        mutateAfterConstruction: true
+      });
+      expect(Array.from(result['code'])).toEqual([value ? 4 : 0]);
+      if (value) expect(result['covariance'].every(Number.isNaN)).toBe(true);
+      else
+        fixture.robust.HAC.covariance.forEach((expected, row) =>
+          expect(Math.abs(result['covariance'][row] - expected)).toBeLessThanOrEqual(
+            2e-4 * Math.max(Math.abs(expected), 1e-3)
+          )
+        );
+    });
+  }
 }
 
 function getFixtureInput(
@@ -130,9 +198,9 @@ function getFixtureInput(
   };
 }
 
-for (const fixture of fixtures.slice(0, 2)) {
-  for (const method of ['HC0', 'HC1', 'HC2', 'HC3', 'CLUSTER'] as const) {
-    it(`matches the independent NumPy sandwich: order ${fixture.instrumentOrder}, ${method}`, async () => {
+for (const fixture of [...fixtures.slice(0, 2), ...auditFixtures]) {
+  for (const method of ['HC0', 'HC1', 'HC2', 'HC3', 'HAC', 'CLUSTER'] as const) {
+    it(`matches the independent NumPy sandwich: ${fixture.response.length} rows, ${fixture.name}, order ${fixture.instrumentOrder}, ${method}`, async () => {
       const result = await runCovariance(getFixtureInput(method, fixture));
       expect(result['code'][0]).toBe(GPU_INSTRUMENTAL_VARIABLES_COVARIANCE_STATUS.SUCCESS);
       const expected = fixture.robust[method].covariance;

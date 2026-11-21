@@ -48,7 +48,10 @@ export {
   computeRadiationFlowModelOnCPU,
   CPURadiationFlowModelOperation
 } from './cpu-radiation-flow-model-operation';
-export type {CPURadiationFlowModelInput} from './cpu-radiation-flow-model-operation';
+export type {
+  CPURadiationFlowModelInput,
+  CPURadiationFlowModelResult
+} from './cpu-radiation-flow-model-operation';
 export {GPURadiationFlowModelOperation} from './gpu-radiation-flow-model-operation';
 export type {RadiationFlowModelOperationProps} from './gpu-radiation-flow-model-operation';
 export {GPU_FLOW_AGGREGATION_MAXIMUM_PACKED_ZONE_COUNT} from './flow-aggregation-pairs';

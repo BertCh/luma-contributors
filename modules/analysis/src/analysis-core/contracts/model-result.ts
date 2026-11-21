@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUInferenceMetadata} from './inference';
+import {validateRequirement} from '../kernels/gpu-contributor-utils';
 
 /** Regression estimators that report a {@link GPURegressionModelResult}. */
 export type GPURegressionModelKind =
@@ -11,7 +12,16 @@ export type GPURegressionModelKind =
   | 'spatial-error-generalized-moments'
   | 'spatial-lag-maximum-likelihood'
   | 'spatial-error-maximum-likelihood'
-  | 'geographically-weighted-regression';
+  | 'geographically-weighted-regression'
+  | 'geographically-temporally-weighted-regression'
+  | 'spatial-panel-error-maximum-likelihood';
+
+/** Penalty applied to the fitted coefficients; this metadata does not alter their interpretation. */
+export type GPURegressionRegularization = {
+  kind: 'ridge';
+  /** Finite, non-negative ridge penalty in the estimator's documented design scale. */
+  lambda: number;
+};
 
 /** Reference distribution of a coefficient test statistic. */
 export type GPURegressionStatisticKind = 't' | 'z';
@@ -41,9 +51,10 @@ export type GPURegressionCoefficient = {
 /**
  * Residual-variance conventions. Every model result reports both: `sigmaSquared` is always
  * `RSS / (n - k)` and `sigmaSquaredMaximumLikelihood` is always `RSS / n`.
- * `standardErrorSigmaSquared` names the one the coefficient standard errors were scaled with.
+ * `standardErrorSigmaSquared` names the coefficient-error scale, or `'robust'` for a sandwich
+ * covariance that is not a scalar residual variance times an inverse normal matrix.
  */
-export type GPUSigmaSquaredConvention = 'degrees-of-freedom' | 'maximum-likelihood';
+export type GPUSigmaSquaredConvention = 'degrees-of-freedom' | 'maximum-likelihood' | 'robust';
 
 /**
  * Collinearity and float32 precision evidence of a model's normal equations.
@@ -92,6 +103,13 @@ export type GPURegressionModelStatus = {
   converged: boolean | null;
   /** Copy of `conditioning.illConditioned`, false when conditioning is not reported. */
   illConditioned: boolean;
+  /** Estimator-specific name supplied by its named status decoder. */
+  name?: string;
+  /** Optional explanation of the estimator-specific status. */
+  reason?: string;
+  /** Named decoder flags; these do not change `code` or the existing `ok` predicate. */
+  excluded?: boolean;
+  failed?: boolean;
 };
 
 /**
@@ -102,7 +120,10 @@ export type GPURegressionModelStatus = {
  * Conventions:
  * - `parameterCount` (k) counts every estimated coefficient row, including the intercept and the
  *   spatial parameter (`rho` or `lambda`), but not `sigma2`; for GWR it is the effective number
- *   of parameters `tr(S)` and `coefficients` is empty. `degreesOfFreedom` is `n - k`.
+ *   of parameters `tr(S)` and `coefficients` is empty (also for GTWR). Panel-error ML counts
+ *   all absorbed entity intercepts, predictors and lambda: `k = entityCount + predictorCount + 1`,
+ *   even though the coefficient table contains only one absorbed-intercept placeholder.
+ *   `degreesOfFreedom` is `n - k`.
  * - `sigmaSquared` is `RSS / (n - k)`; `sigmaSquaredMaximumLikelihood` is `RSS / n`.
  * - `logLikelihood`, `akaikeInformationCriterion` and `schwarzCriterion` are null where the
  *   estimator does not define a likelihood (2SLS, GM). Where defined, AIC is
@@ -128,7 +149,7 @@ export type GPURegressionModelResult = {
   akaikeInformationCriterion: number | null;
   schwarzCriterion: number | null;
   /**
-   * Corrected AIC, `AIC + 2 k (k + 1) / (n - k - 1)` for global models; for GWR the Hurvich form
+   * Corrected AIC, `AIC + 2 k (k + 1) / (n - k - 1)` for global models; for GWR/GTWR the Hurvich form
    * with `k = tr(S)` that bandwidth selection minimizes. The derived global correction is null
    * when no likelihood is defined or `n <= k + 1`, where `k` is the information-criterion
    * parameter count. Estimator-specific overrides are preserved.
@@ -139,6 +160,14 @@ export type GPURegressionModelResult = {
   tests: Record<string, GPURegressionTest>;
   status: GPURegressionModelStatus;
   inference: GPUInferenceMetadata;
+  /** Present when a penalty was applied; omission does not assert an unpenalized fit. */
+  regularization?: GPURegressionRegularization;
+  /**
+   * Estimator-supplied description of coefficient inference, for example `'ridge-approximate'`
+   * for the penalized inverse-normal-matrix uncertainty convention, rather than ridge sandwich
+   * covariance. Omission preserves the estimator's existing documented inference convention.
+   */
+  inferenceMethod?: string;
 };
 
 /** Inputs of {@link createGPURegressionModelResult}; derived fields are computed from these. */
@@ -154,16 +183,21 @@ export type GPURegressionModelResultInput = {
   pseudoRSquared?: number;
   logLikelihood?: number | null;
   /**
-   * Parameter count `k` for degrees of freedom and sigma squared. Defaults to
-   * `coefficients.length`; GWR passes the effective number of parameters `tr(S)`.
+   * Parameter count `k` for degrees of freedom and sigma squared. Required for panel-error ML
+   * (including every absorbed entity intercept) and GTWR (effective count `tr(S)`). Otherwise
+   * defaults to `coefficients.length`; GWR passes its effective number of parameters `tr(S)`.
    */
   parameterCount?: number;
-  /** Parameters counted by AIC and the Schwarz criterion. Defaults to `parameterCount`. */
+  /** Parameters counted by AIC and Schwarz: GTWR requires `tr(S) + 1`; otherwise defaults to k. */
   informationCriterionParameterCount?: number;
   /** Overrides the derived corrected AIC (GWR reports its own). */
   correctedAkaikeInformationCriterion?: number | null;
   conditioning?: Omit<GPURegressionConditioning, 'illConditioned'> | null;
   tests?: Record<string, GPURegressionTest>;
+  /** Penalty evidence carried into the result without changing fitted quantities. */
+  regularization?: GPURegressionRegularization;
+  /** Estimator-supplied description of the inference convention, including approximations. */
+  inferenceMethod?: string;
 };
 
 /**
@@ -174,13 +208,67 @@ export type GPURegressionModelResultInput = {
 export function createGPURegressionModelResult(
   input: GPURegressionModelResultInput
 ): GPURegressionModelResult {
-  const parameterCount = input.parameterCount ?? input.coefficients.length;
+  const id = 'createGPURegressionModelResult';
+  const suppliedRegularization = input.regularization;
+  const regularization =
+    suppliedRegularization === undefined ? undefined : {...suppliedRegularization};
+  if (regularization !== undefined) {
+    validateRequirement(
+      id,
+      regularization.kind === 'ridge',
+      `regularization.kind must be 'ridge'; received ${String(regularization.kind)}`
+    );
+    validateRequirement(
+      id,
+      typeof regularization.lambda === 'number' &&
+        Number.isFinite(regularization.lambda) &&
+        regularization.lambda >= 0,
+      `regularization.lambda must be finite and >= 0; received ${String(regularization.lambda)}`
+    );
+  }
+  const panelError = input.kind === 'spatial-panel-error-maximum-likelihood';
+  const geographicallyTemporallyWeighted =
+    input.kind === 'geographically-temporally-weighted-regression';
+  const suppliedParameterCount = input.parameterCount;
+  if (panelError) {
+    validateRequirement(
+      id,
+      suppliedParameterCount !== undefined &&
+        Number.isSafeInteger(suppliedParameterCount) &&
+        suppliedParameterCount > 0 &&
+        suppliedParameterCount >= input.coefficients.length,
+      `parameterCount must be a positive safe integer >= coefficients.length (${input.coefficients.length}) including all absorbed entity intercepts, predictors and lambda for panel-error ML; received ${String(suppliedParameterCount)}`
+    );
+  }
+  if (geographicallyTemporallyWeighted) {
+    validateRequirement(
+      id,
+      suppliedParameterCount !== undefined &&
+        Number.isFinite(suppliedParameterCount) &&
+        suppliedParameterCount >= 0,
+      `parameterCount must explicitly supply finite non-negative tr(S) for GTWR; received ${String(suppliedParameterCount)}`
+    );
+  }
+  const parameterCount = suppliedParameterCount ?? input.coefficients.length;
   const rowCount = input.rowCount;
   const degreesOfFreedom = rowCount - parameterCount;
   const residualSumOfSquares = input.residualSumOfSquares;
   const logLikelihood = input.logLikelihood ?? null;
-  const criterionParameterCount = input.informationCriterionParameterCount ?? parameterCount;
-  const correctionDenominator = rowCount - criterionParameterCount - 1;
+  const suppliedCriterionParameterCount = input.informationCriterionParameterCount;
+  if (geographicallyTemporallyWeighted) {
+    validateRequirement(
+      id,
+      suppliedCriterionParameterCount === undefined ||
+        suppliedCriterionParameterCount === parameterCount + 1,
+      `informationCriterionParameterCount must equal tr(S) + 1 (${parameterCount + 1}) for GTWR; received ${String(suppliedCriterionParameterCount)}`
+    );
+  }
+  const criterionParameterCount =
+    suppliedCriterionParameterCount ??
+    (geographicallyTemporallyWeighted ? parameterCount + 1 : parameterCount);
+  const correctionDenominator = geographicallyTemporallyWeighted
+    ? rowCount - parameterCount - 2
+    : rowCount - criterionParameterCount - 1;
   const conditioning = input.conditioning
     ? {
         ...input.conditioning,
@@ -203,19 +291,22 @@ export function createGPURegressionModelResult(
     pseudoRSquared: input.pseudoRSquared ?? NaN,
     logLikelihood,
     akaikeInformationCriterion:
-      logLikelihood === null ? null : 2 * criterionParameterCount - 2 * logLikelihood,
+      panelError || logLikelihood === null ? null : 2 * criterionParameterCount - 2 * logLikelihood,
     schwarzCriterion:
-      logLikelihood === null
+      panelError || logLikelihood === null
         ? null
         : criterionParameterCount * Math.log(rowCount) - 2 * logLikelihood,
-    correctedAkaikeInformationCriterion:
-      input.correctedAkaikeInformationCriterion !== undefined
+    correctedAkaikeInformationCriterion: panelError
+      ? null
+      : input.correctedAkaikeInformationCriterion !== undefined
         ? input.correctedAkaikeInformationCriterion
         : logLikelihood === null || correctionDenominator <= 0
           ? null
-          : 2 * criterionParameterCount -
-            2 * logLikelihood +
-            (2 * criterionParameterCount * (criterionParameterCount + 1)) / correctionDenominator,
+          : geographicallyTemporallyWeighted
+            ? -2 * logLikelihood + (2 * rowCount * (parameterCount + 1)) / correctionDenominator
+            : 2 * criterionParameterCount -
+              2 * logLikelihood +
+              (2 * criterionParameterCount * (criterionParameterCount + 1)) / correctionDenominator,
     conditioning,
     tests: input.tests ?? {},
     status: {
@@ -229,7 +320,9 @@ export function createGPURegressionModelResult(
       permutationCount: 0,
       multipleTesting: 'none',
       testedRowsDefinition: 'model coefficients'
-    }
+    },
+    ...(regularization === undefined ? {} : {regularization}),
+    ...(input.inferenceMethod === undefined ? {} : {inferenceMethod: input.inferenceMethod})
   };
 }
 

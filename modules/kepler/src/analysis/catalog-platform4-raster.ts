@@ -330,12 +330,18 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
     });
     // Every (edge, row) crossing needs a slot; one more row per edge covers the rounding.
     let crossingCapacity = 64;
-    for (let edge = 0; edge + 1 < joinInputs.positions.length / 2; edge++)
-      crossingCapacity +=
-        Math.ceil(
-          Math.abs(joinInputs.positions[2 * edge + 3] - joinInputs.positions[2 * edge + 1]) /
-            cellSize
-        ) + 1;
+    for (let ring = 0; ring + 1 < joinInputs.ringOffsets.length; ring++) {
+      const start = joinInputs.ringOffsets[ring];
+      const end = joinInputs.ringOffsets[ring + 1];
+      for (let vertex = start; vertex < end; vertex++) {
+        const next = vertex + 1 < end ? vertex + 1 : start;
+        crossingCapacity +=
+          Math.ceil(
+            Math.abs(joinInputs.positions[2 * next + 1] - joinInputs.positions[2 * vertex + 1]) /
+              cellSize
+          ) + 1;
+      }
+    }
     const totals = await withCatalogGpuSession(
       context.device,
       'catalog-raster-join',
@@ -344,6 +350,7 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
         const zones = session.output('zones', 'uint32', cellCount);
         const boundary = session.output('boundary', 'uint32', cellCount);
         const overflow = session.output('overflow', 'uint32', 1);
+        const incomplete = session.output('incomplete', 'uint32', 1);
         const parameters = session.input(
           'parameters',
           getGPUPolygonRasterizationParameterValues(raster),
@@ -376,10 +383,12 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
             ...(hasValues
               ? {values: session.input('values', joinInputs.pointValues, 'float32')}
               : {}),
+            producerOverflow: overflow.view,
             zones: zones.view,
             boundary: boundary.view,
             zoneCount: joinInputs.featureCount,
             output: {
+              status: {incomplete: incomplete.view},
               counts: counts.view,
               ...(hasValues ? {sums: sums.view} : {}),
               boundaryCounts: boundaryCounts.view,
@@ -389,7 +398,9 @@ const RASTER_JOIN_BINDING: CatalogOperationBinding = {
           })
         );
         session.run();
-        // The crossing capacity covers every edge row, so an overflow flag cannot be set.
+        if (await session.readScalar(incomplete)) {
+          throw new Error('catalog-raster-join: rasterization incomplete; use a coarser cellSize');
+        }
         return {
           counts: Array.from(await session.readUint32(counts)),
           sums: hasValues

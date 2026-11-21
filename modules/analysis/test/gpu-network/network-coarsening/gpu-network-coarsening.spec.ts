@@ -9,7 +9,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  decodeGPUNetworkCoarseningSummary,
+  decodeGPUNetworkCoarseningSummaryWords,
   GPUNetworkCoarsening
 } from '../../../src/gpu-network/network-coarsening/index';
 import {
@@ -27,8 +27,82 @@ import {
   type CoarseningCSR,
   type CoarseningOracleResult
 } from './network-coarsening-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {createOptimizationHarness} from '../network-optimization/optimization-test-harness';
 import {validateNetworkCoarseningCapture} from '../../../../lenses/src/computation-lenses/scenarios/gpu-network/network-coarsening.example';
+
+for (const optional of [
+  'groupCentroid',
+  'groupBounds',
+  'groupIntraWeight',
+  'groupValueSum'
+] as const) {
+  it(`writes ${optional} alone and clears smaller live input (NET-121)`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const harness = createOptimizationHarness(device);
+    const offsets = harness.input('uint32', Uint32Array.of(0, 1, 1, 2, 2));
+    const nodeMask = harness.input('uint32', Uint32Array.of(1, 1, 1, 1));
+    const centroid = optional === 'groupCentroid' ? harness.output('float32x2', 2) : undefined;
+    const bounds = optional === 'groupBounds' ? harness.output('float32x4', 2) : undefined;
+    const intraWeight = optional === 'groupIntraWeight' ? harness.output('float32', 2) : undefined;
+    const valueSum = optional === 'groupValueSum' ? harness.output('float32', 2) : undefined;
+    const selected = centroid ?? bounds ?? intraWeight ?? valueSum!;
+    const groupNodeCount = harness.output('uint32', 2);
+    const initial = {
+      groupCentroid: [2, 4, 12, 14],
+      groupBounds: [1, 2, 3, 6, 10, 10, 14, 18],
+      groupIntraWeight: [2, 6],
+      groupValueSum: [4, 12]
+    };
+    const smaller = {
+      groupCentroid: [1, 2, 0, 0],
+      groupBounds: [1, 2, 1, 2, 0, 0, 0, 0],
+      groupIntraWeight: [0, 0],
+      groupValueSum: [1, 0]
+    };
+    const read = await harness.run(
+      new GPUNetworkCoarsening({
+        directed: true,
+        groupCapacity: 2,
+        nodeMask,
+        topology: {
+          offsets,
+          neighbors: harness.input('uint32', Uint32Array.of(1, 3)),
+          weights: harness.input('float32', Float32Array.of(2, 6)),
+          nodePositions:
+            centroid || bounds
+              ? harness.input('float32x2', Float32Array.of(1, 2, 3, 6, 10, 10, 14, 18))
+              : undefined
+        },
+        labels: harness.input('uint32', Uint32Array.of(0, 0, 1, 1)),
+        nodeValues: valueSum ? harness.input('float32', Float32Array.of(1, 3, 5, 7)) : undefined,
+        output: {
+          groupNodeCount,
+          groupCentroid: centroid,
+          groupBounds: bounds,
+          groupIntraWeight: intraWeight,
+          groupValueSum: valueSum,
+          edges: {
+            ids: harness.output('uint32', 2),
+            status: {count: harness.output('uint32', 1), overflow: harness.output('uint32', 1)}
+          },
+          edgeTargetGroups: harness.output('uint32', 2),
+          edgeCounts: harness.output('uint32', 2)
+        }
+      }),
+      read => {
+        // Two pairs of nodes, one weighted intra-group edge each; only node 0 survives next.
+        expect(read(groupNodeCount)).toEqual([2, 2]);
+        expect(read(selected)).toEqual(initial[optional]);
+        harness.rewrite(nodeMask, Uint32Array.of(1, 0, 0, 0));
+        harness.rewrite(offsets, Uint32Array.of(0, 0, 0, 0, 0));
+      }
+    );
+    expect(read(groupNodeCount)).toEqual([1, 0]);
+    expect(read(selected)).toEqual(smaller[optional]);
+  });
+}
 
 type FixtureOptions = {
   nodeCount: number;
@@ -277,7 +351,7 @@ for (const directed of [false, true]) {
     const expected = expectMatches(result, fixture);
     expect(expected.edges.length).toBeGreaterThan(20);
     expect(expected.summary[4]).toBeGreaterThan(0);
-    const summary = decodeGPUNetworkCoarseningSummary(result.summary);
+    const summary = decodeGPUNetworkCoarseningSummaryWords(result.summary);
     expect(summary.liveNodeCount).toBe(300);
     expect(summary.groupCount).toBe(16);
     if (!directed) {
@@ -525,7 +599,7 @@ it('GPUNetworkCoarsening sums small weights, values and coordinates without roun
   expectRelative(result.groupCentroid[2], 499.5e-6);
   expectRelative(result.groupCentroid[3], 2e-4);
   // The node above the group capacity and its edge are reported, not summed.
-  const summary = decodeGPUNetworkCoarseningSummary(result.summary);
+  const summary = decodeGPUNetworkCoarseningSummaryWords(result.summary);
   expect(summary.overflowedNodeCount).toBe(1);
   expect(summary.droppedEdgeCount).toBe(1);
   expectMatches(result, fixture);
@@ -581,7 +655,6 @@ it('GPUNetworkCoarsening saturates a term too large for a fixed fixedPointScale'
 it('coarsens above 65535 groups with separate source and target keys', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const labels = new Uint32Array([0, 32768, 65536, 131071, 65536, 0]);
   const csr = buildCoarseningCSR(6, [
     [0, 1, 2],
@@ -635,7 +708,6 @@ it('coarsens above 65535 groups with separate source and target keys', async () 
 it('coarsening tuple runs cross 15/16, 255/256 and 511/512 with truncation and repeated encoding', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   const labels = new Uint32Array([0, 32768, 65536, 131071]);
   for (const lengths of [
     [18, 13],
@@ -687,7 +759,6 @@ it('coarsening tuple runs cross 15/16, 255/256 and 511/512 with truncation and r
 it('coarsening shared edge buffers reject adjacent slices and accept aligned independent columns', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
-  if (!device) return;
   for (const stride of [4, 256]) {
     const graph = new GPUCommandGraph(device);
     const buffers: Buffer[] = [];
@@ -751,4 +822,48 @@ it('coarsening shared edge buffers reject adjacent slices and accept aligned ind
       for (const buffer of buffers) buffer.destroy();
     }
   }
+});
+
+it('two-community incumbent quotient carries changing label completion (CPL-14)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createOptimizationHarness(device);
+  const labelsComplete = harness.input('uint32', Uint32Array.of(0));
+  const published = harness.output('uint32', 1);
+  const groupNodeCount = harness.output('uint32', 4);
+  const edgeCounts = harness.output('uint32', 1);
+  const contributor = new GPUNetworkCoarsening({
+    topology: {
+      offsets: harness.input('uint32', Uint32Array.of(0, 3, 6, 9, 12)),
+      neighbors: harness.input('uint32', Uint32Array.of(1, 2, 3, 0, 2, 3, 0, 1, 3, 0, 1, 2)),
+      weights: harness.input(
+        'float32',
+        Float32Array.of(2, 1.25, 1.25, 2, 1.25, 1.25, 1.25, 1.25, 2, 1.25, 1.25, 2)
+      )
+    },
+    // Louvain's one-level incumbent [1,1,3,3] on this four-node fixture is provisional.
+    labels: harness.input('uint32', Uint32Array.of(1, 1, 3, 3)),
+    labelsComplete,
+    groupCapacity: 4,
+    output: {
+      groupNodeCount,
+      labelsComplete: published,
+      edges: {
+        ids: harness.output('uint32', 1),
+        status: {count: harness.output('uint32', 1), overflow: harness.output('uint32', 1)}
+      },
+      edgeTargetGroups: harness.output('uint32', 1),
+      edgeCounts
+    }
+  });
+  const read = await harness.run(contributor, read => {
+    // Two nodes in each group and four unordered cross-pair edges, independent of completion.
+    expect(read(groupNodeCount)).toEqual([0, 2, 0, 2]);
+    expect(read(edgeCounts)).toEqual([4]);
+    expect(read(published)).toEqual([0]);
+    harness.rewrite(labelsComplete, Uint32Array.of(1));
+  });
+  expect(read(groupNodeCount)).toEqual([0, 2, 0, 2]);
+  expect(read(edgeCounts)).toEqual([4]);
+  expect(read(published)).toEqual([1]);
 });

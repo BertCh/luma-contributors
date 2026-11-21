@@ -128,8 +128,9 @@ export function getInt64TimeWords(values: BigInt64Array | BigUint64Array): Uint3
  *
  * @param settings Time window to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
- * @throws If an instant cannot be split, a fade duration is negative or not finite, or `target` is
- * too short.
+ * @throws If an instant cannot be split exactly into integer words and a float32 fraction, a fade is
+ * negative or not finite in float32, a positive fade rounds to zero, or `target` is too short.
+ * Exactly representable equal endpoints and reversed windows remain legal. Validation leaves `target` unchanged.
  */
 export function getGPUTimeWindowFilterWordParameterValues(
   settings: GPUTimeWindowFilterWordSettings,
@@ -155,6 +156,45 @@ export function getGPUTimeWindowFilterWordParameterValues(
     startFadeDuration,
     endFadeDuration
   ]);
+  for (const [instant, words] of [
+    [settings.start, start],
+    [settings.end, end]
+  ] as const) {
+    if (typeof instant === 'number') {
+      const whole = Math.floor(instant);
+      if (
+        joinTimeWords(words.low, words.high) !== BigInt(whole) ||
+        words.fraction !== instant - whole ||
+        Number(joinTimeWords(words.low, words.high)) + words.fraction !== instant
+      ) {
+        throw new Error(
+          'Time word window endpoints must have exactly representable float32 fractions'
+        );
+      }
+    }
+  }
+  const originalOrder = settings.end > settings.start ? 1 : settings.end < settings.start ? -1 : 0;
+  const startInteger = joinTimeWords(start.low, start.high);
+  const endInteger = joinTimeWords(end.low, end.high);
+  const packedOrder =
+    endInteger > startInteger
+      ? 1
+      : endInteger < startInteger
+        ? -1
+        : Math.sign(end.fraction - start.fraction);
+  if (originalOrder !== packedOrder) {
+    throw new Error('Time word window endpoint order must survive float32 fraction packing');
+  }
+  for (const [duration, rounded] of [
+    [startFadeDuration, floats[2]],
+    [endFadeDuration, floats[3]]
+  ]) {
+    if (!Number.isFinite(rounded) || (duration > 0 && !(rounded > 0))) {
+      throw new Error(
+        'Time window positive fade durations must remain finite and positive in float32'
+      );
+    }
+  }
   target.set([start.low, start.high, end.low, end.high]);
   target.set(new Uint32Array(floats.buffer), 4);
   return target;

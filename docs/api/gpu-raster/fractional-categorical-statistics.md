@@ -6,8 +6,28 @@ and returns class coverage, planar class area, composition and majority/minority
 It does not count intersected cells or apply observation weights.
 
 ```typescript
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterFractionalCategoricalStatisticsProps} from '@luma-contributors/analysis/raster-analysis';
 import {GPURasterFractionalCategoricalStatistics} from '@luma-contributors/analysis/raster-analysis';
 
+// Borrow inputs from the earlier coverage producer in this graph.
+declare const grid: GPURasterMetadata;
+declare const zoneCount: number;
+declare const coverage: GPURasterFractionalCategoricalStatisticsProps['coverage'];
+// categories and categoryValidity each cover width * height cells.
+declare const categories: GraphDataView<'uint32'>;
+declare const categoryValidity: GraphDataView<'uint32'>;
+// The three class columns hold zoneCount * 6 rows; other outputs hold zoneCount rows.
+declare const coverageSums: GraphDataView<'float32'>;
+declare const classAreas: GraphDataView<'float32'>;
+declare const proportions: GraphDataView<'float32'>;
+declare const coveredArea: GraphDataView<'float32'>;
+declare const validArea: GraphDataView<'float32'>;
+declare const missingArea: GraphDataView<'float32'>;
+declare const majority: GraphDataView<'uint32'>;
+declare const minority: GraphDataView<'uint32'>;
+declare const validity: GraphDataView<'uint32'>;
 graph.add(new GPURasterFractionalCategoricalStatistics({
   grid,
   input: {
@@ -34,7 +54,12 @@ graph.add(new GPURasterFractionalCategoricalStatistics({
 }));
 ```
 
-All arguments representing data are graph views over caller-owned buffers. `coverage` contains
+The input accepts a native uint32 buffer band or sampled uint32 texture band with a selected
+channel. Texture gathering uses public `GPURasterTextureToBuffer` with calibration disabled,
+preserving every uint32 ID and native nodata sentinel, including values above 2²⁴. Masks and
+texture contents are read on each submission. Category capacity remains at most 65,534; larger
+external codes require a dense dictionary, while nodata may use any uint32 value.
+Other data arguments are graph views over caller-owned buffers. `coverage` contains
 `zoneIds`, `cellIds`, `fractions`, `zoneValidity`, and `status: {count, requiredCount, overflow}`.
 The active tuples must contain unique `(zone, cell)` pairs with fractions in `[0, 1]`. Unused
 capacity after `status.count` is ignored. Duplicate pairs are not deduplicated: the producer's
@@ -83,15 +108,50 @@ buffers must be distinct; input updates are read on every execution of the same 
 
 ## Bounds and units
 
-- `categoryCapacity`: 1 through 65534.
-- `zoneCount`: positive, with `zoneCount * (categoryCapacity + 1) <= 65535`.
-- Coverage tuple capacity: 1 through 1,048,576, including unused capacity.
-- Cell area must be positive and representable in float32.
+| Route | Logical groups `zoneCount * (categoryCapacity + 1)` | Coverage tuple capacity | Sort tile size |
+| --- | --- | --- | --- |
+| Default `mode: 'tiled'` | At most 4,294,967,294 (`2^32 - 2`) | 1 through 4,294,967,294 | `tupleTileSize`: 1 through 1,048,576 |
+| Reference `mode: 'exact'` | At most 65,535 | 1 through 1,048,576 | One full sort; an explicit tile size must cover the tuple capacity |
 
-The extra group per zone stores missing support. Stable sorted segmented sums avoid a dense
-zone/category/tuple scan. These are bounded experimental workloads, not measured throughput
-claims. Category, coverage and area calculations use float32 support sums; tie decisions apply
-to these sums. No tolerance merges nearly equal categories.
+Both routes require `categoryCapacity` from 1 through 65,534 and positive `zoneCount`.
+The extra group per zone stores missing support. Tiling bounds one sort allocation, while
+caller-owned output bindings and dense group scratch must each fit the device. In particular,
+category columns have `zoneCount * categoryCapacity` float32 rows, and segment offsets need
+`4 * (groups + 1)` bytes. Each backing buffer must also fit `maxBufferSize`.
+
+The command estimate is `8 + 256 * ceil(tupleCapacity / tupleTileSize) <= 32768`, hence at most
+127 tiles per declaration. These are hard logical and allocation bounds, not throughput claims.
+Use the side-effect-free planner before graph declaration, with the same props and device limits:
+
+```typescript
+import type {Device} from '@luma.gl/core';
+import {
+  GPURasterFractionalCategoricalStatistics,
+  type GPURasterFractionalCategoricalStatisticsProps
+} from '@luma-contributors/analysis/raster-analysis';
+
+function planFractionalCategories(props: GPURasterFractionalCategoricalStatisticsProps, device: Device) {
+  const plan = GPURasterFractionalCategoricalStatistics.getExecutionPlan(props, device.limits);
+  if (!plan.feasible) {
+    console.log(plan.constraints.filter(constraint => !constraint.satisfied));
+  }
+  // plan.route, plan.tupleTileSize, plan.tiles, plan.estimatedCommandNodeCount
+  return plan;
+}
+```
+
+The planner uses the constructor's side-effect-free port, option, format, length and alias checks,
+and shares selection, binding/scratch expressions and per-stage device checks with declaration. It declares no graph resources. Invalid option spellings and invalid
+explicit tile sizes throw; supported shapes report fit through `feasible` and named constraints.
+Exact mode preserves the historical full-sort reduction order. Tiled mode uses the same planar
+coverage, merging support in tile order before normalization; changing the tile size can change
+float32 sum rounding and near-tie outcomes. No tolerance merges nearly equal categories.
+Cell area must be positive and representable in float32.
+
+Public coverage and patch-metrics packets retain the signed physical determinant of the original
+affine in word 6. Clipping inverts the packed axes independently. The analysis-core resolver's
+coordinate packet instead carries its packed-axes determinant and exposes `affineDeterminant`
+separately.
 
 Areas are squared coordinate units from the affine determinant. By default that is the
 determinant of `grid.affine`, fixed at compile time. Pass the optional `parameters` prop (the
@@ -100,7 +160,8 @@ every encoding instead, so `classAreas`, `coveredArea`, `validArea` and `missing
 georeference repacked for another cell size. By default geographic degree grids do not
 produce square meters; set `cellSizeMode: 'geographic'` (degrees) or `'web-mercator'` (EPSG:3857
 meters) for WGS84 ground square meters. Each coverage fraction is then weighted by the ground area
-per world area of its row (row edges from `grid.affine`, evaluated at the row center, so
+per world area of its row using the grid-derived WGS84 midpoint model (the product of
+the two local ground scales at the row midpoint, rather than an integrated geodesic cell area, so
 `coverageSums` holds weighted coverage and `proportions` are area proportions). The row edges are
 read from `parameters` (origin y and row step y, slots 1 and 5) on every encoding when it is given,
 so the ground scale follows a repacked georeference together with the cell area; without
@@ -150,3 +211,14 @@ double sum followed by one float32 rounding without copying the GPU reduction tr
 the captured fractions and class supports when these winners differ from ideal geometry. This is
 composition validation under represented weights; direct exactextract tie parity remains covered
 by the separate reference-tuple test. No near-tie epsilon changes the API's tie rule.
+
+
+For large absolute coordinates, pack coverage with
+`getGPURasterFractionalCoverageParameterValues(grid, {localOrigin: [originX, originY]})`
+and subtract that origin from the original binary64 polygon vertices before float32 upload.
+Pass this same georeference as `parameters`. This overload returns ten float32 words: the legacy
+first eight words (word 7 remains ignored padding), followed by layout discriminator `2` and the
+absolute Y offset in words 8 and 9. The explicit layout restores absolute Y for geographic and
+Web Mercator row-area weighting. The historical `(grid, target?)` overload still writes eight words,
+preserves destination identity across JavaScript realms, and ignores nonzero legacy padding.
+A reused destination for the options overload must have at least ten words.

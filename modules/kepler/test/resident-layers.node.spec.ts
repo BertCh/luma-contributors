@@ -205,12 +205,15 @@ function inaccessibleSource<Source extends object>(): Source {
 describe('Kepler resident layer overrides', () => {
   test('trip metadata retains the published all-part viewport bounds throughout native lifecycle', () => {
     const {binding, classes} = setup();
-    binding.bounds = getGeographicViewportBounds([
-      Float32Array.from([-74.03, 40.74, 0, -73.97, 40.74, 0]),
-      Float32Array.from([
-        -74.03, 40.77, 0, -73.97, 40.77, 0, -74.03, 40.78, 100, -73.97, 40.78, 200
-      ])
-    ])!;
+    binding.bounds = getGeographicViewportBounds(
+      [
+        Float32Array.from([-74.03, 40.74, 0, -73.97, 40.74, 0]),
+        Float32Array.from([
+          -74.03, 40.77, 0, -73.97, 40.77, 0, -74.03, 40.78, 100, -73.97, 40.78, 200
+        ])
+      ],
+      3
+    )!;
     const layer = new classes.trip({id: 'multipart-trips', dataId: 'resident'});
     const dataset = inaccessibleSource<Parameters<typeof layer.updateLayerMeta>[0]>();
     layer.setInitialLayerConfig(dataset);

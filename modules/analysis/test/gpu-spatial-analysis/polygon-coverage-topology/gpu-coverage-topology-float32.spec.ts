@@ -62,7 +62,7 @@ async function runDissolve(
       polygonOffsets: rig.input(layout.polygonOffsets, 'uint32', layout.polygonOffsets.length),
       featureOffsets: rig.input(layout.featureOffsets, 'uint32', layout.featureOffsets.length),
       labels: rig.input(Uint32Array.from(labels), 'uint32', labels.length),
-      snapTolerance,
+      snapGridSize: snapTolerance,
       output: {
         ringOffsets: out.ringOffsets.view,
         positions: out.positions.view,

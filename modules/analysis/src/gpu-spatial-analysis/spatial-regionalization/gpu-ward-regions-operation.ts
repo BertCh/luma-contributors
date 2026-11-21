@@ -4,7 +4,16 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
-import {GPUWardRegions, GPU_WARD_STATUS, type GPUWardMergeSchedule} from './gpu-ward-regions';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  type RegionalizationWeightsStatus,
+  validateRegionalizationWeightsStatus
+} from './adjacency-loss-suppression';
+import {
+  GPUWardRegions,
+  GPU_WARD_STATUS_LAYOUT,
+  type GPUWardMergeSchedule
+} from './gpu-ward-regions';
 
 /** Whole-CSR Ward graph values, including optional adjacency loss scalars. */
 export type WardRegionsOperationProps = {
@@ -13,7 +22,7 @@ export type WardRegionsOperationProps = {
     offsets: string;
     neighbors: string;
     weights: string;
-    status?: {overflow?: string; candidateOverflow?: string};
+    status?: RegionalizationWeightsStatus<string>;
   };
   /** Explicit count normally inferred from offsets. */
   rowCount: number;
@@ -54,13 +63,31 @@ export function snapshotWardOperationProps(
     'weights',
     'status'
   ]);
+  const status = weights.status
+    ? snapshotConstructionFields(weights.status, [
+        'overflow',
+        'candidateOverflow',
+        'requiredCount',
+        'complete',
+        'converged',
+        'iterationLimitReached',
+        'unresolvedCount'
+      ] as never[])
+    : undefined;
+  validateRegionalizationWeightsStatus(snapshot.id ?? 'ward-regions', status);
+  for (const name of ['overflow', 'candidateOverflow'] as const) {
+    const value = status?.[name];
+    validateRequirement(
+      snapshot.id ?? 'ward-regions',
+      value === undefined || (typeof value === 'string' && value.length > 0),
+      `weights.status.${name} must be a non-empty graph value name when supplied`
+    );
+  }
   return Object.freeze({
     ...snapshot,
     weights: Object.freeze({
       ...weights,
-      status: weights.status
-        ? snapshotConstructionFields(weights.status, ['overflow', 'candidateOverflow'])
-        : undefined
+      status
     }),
     output: snapshotConstructionFields(snapshot.output, ['labels', 'objective', 'status'])
   });
@@ -90,7 +117,7 @@ export class GPUWardRegionsOperation extends GPUContributorOperation {
         status: {
           value: props.output.status,
           format: 'uint32',
-          length: props.statusLength ?? GPU_WARD_STATUS.length
+          length: props.statusLength ?? GPU_WARD_STATUS_LAYOUT.length
         }
       },
       createContributor: getView =>

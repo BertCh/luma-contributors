@@ -7,13 +7,11 @@ unresolved in [THIRD-PARTY-DATA.md](../THIRD-PARTY-DATA.md).
 
 ## Tested dependencies and accepted peers
 
-The workspace pins and installed copies of `@luma.gl/core`, `@luma.gl/graph` and
-`@luma.gl/shaders` are **10.0.0-alpha.16**. This is the integration target for the release checks,
-not a claim that this stream ran the GPU suite. Root dev dependencies and resolutions keep those
-copies aligned. The analysis package accepts **`~10.0.0-alpha.16`** for each luma.gl peer: this
-intentionally permits later prereleases on 10.0.0, stable 10.0.0 and stable 10.0.x patches below
-10.1.0. Satisfying that range is not evidence that a version was tested. Prereleases on another
-patch or minor do not automatically satisfy it.
+Compatibility testing targets luma.gl `10.0.0-alpha.16` and Apache Arrow 17. Analysis, lenses
+and kepler declare `~10.0.0-alpha.16` for `@luma.gl/core`, `@luma.gl/shaders` and
+`@luma.gl/graph`, and `>=17.0.0` for `apache-arrow`. The luma.gl range permits later
+prereleases on 10.0.0 and stable 10.0.x below 10.1.0. Root dev dependencies and resolutions keep
+the installed luma.gl packages aligned with the integration target.
 
 “Tested with” must identify checks actually run against that exact version; it does not follow
 from a dependency pin or semver acceptance. On 2026-11-18 alpha.16 passed the source and test
@@ -23,10 +21,52 @@ yet passed as one command on alpha.16. The audit found and adapted grid-coordina
 compile-option forwarding, and the deck.gl package extension was aligned; see
 [the alpha.16 audit](./upstream-workarounds.md#alpha16-public-api-audit-2026-11-18).
 
+**Third-wave adoption check (2026-11-20, TWN-08):** the installed alpha.16 public
+`@luma.gl/graph/gpu-raster` entry does not export the proposed
+`createOriginPreservingIntegerRasterCalibration`. Its neighborhood shader still converts raw
+integers to float32 before calibration. For `sint32` samples `[16777216,16777217]`, scale `1`
+and offset `-16777216`, that expression produces `[0,0]` instead of `[0,1]`. This stream checked
+the installed versions, public runtime export and shader source, and reproduced the arithmetic
+on the host. It made no registry request and ran no build, packed consumer or GPU suite; it has
+no evidence of a published replacement supplying the helper. The integration target and peer
+floor therefore remain alpha.16, with this precision defect outstanding.
+
+Adoption requires a published release exporting the helper through a public entry and passing
+[proposal 16's acceptance controls](./upstream-proposals.md#16-origin-preserving-integer-raster-calibration-twn-08).
+For the `2×1` acceptance raster, upload the original `Int32Array` samples `[16777216,16777217]`
+as a `sint32` band and apply the qualified public calibration helper on the native GPU route.
+Use integer origin `16777216`, scale `1` and calibrated offset `0`, equivalent to the original
+scale `1` and offset `-16777216` without rebasing the uploaded samples.
+Read back calibrated samples `[0,1]` and `parentPeak=[1,0xffffffff]` (`NONE`), with the nodata
+and multiply/add cancellation controls also passing. Uploading a rebased `Float32Array` is
+workaround coverage only; it bypasses the defective integer conversion and cannot qualify the
+upstream fix. Record the exact release, export, adapter/backend and checks run before updating
+the root pins, matching resolutions and required peer floor together with the lead's lockfile
+regeneration. A proposal or an unpublished implementation does not satisfy this gate. Until
+then, subtract the integer origin exactly on the host before upload, adjust the offset, and
+rebase the raw nodata sentinel or preserve original validity as described in proposal 16.
+
+The adoption handoff must also have the respective owners align every other exact integration
+pin to that same qualified release: `.yarnrc.yml` pins graph in the deck.gl package extension;
+`website/package.json`, `examples/deck/kepler-compute/package.json`,
+`examples/deck/spatial-analysis-explorer/package.json` and
+`examples/deck/spatial-analysis-showcase/package.json` each pin core, engine, graph and shaders.
+Include those coordinated edits in the lead's lockfile regeneration; root resolutions alone do
+not update these declarations.
+
 `apache-arrow` is a **required peer**, with range `>=17.0.0`; the workspace currently installs
 17.0.0. Native imports of `analysis-core`, `gpu-spatial-analysis`, `gpu-network` and
 `dataframe-analysis` reach Arrow eagerly. Install the peer even when requesting only a validation
 helper or network contributor. Existing entry points and Arrow adapter exports are preserved.
+
+Analysis no longer declares a direct `probe.gl` dependency: its runtime uses the public
+`@luma.gl/core` logging API, and upstream core declares its own runtime dependency. The root
+development dependency remains. This manifest cleanup requires the lead to regenerate the
+analysis workspace lock entry and qualify the packed consumer against that dependency set.
+The manifest and regenerated lockfile must land in the same change: both CI jobs run
+`yarn install --immutable`, which cannot accept the stale analysis dependency entry. Preserve
+the root and upstream declarations and their shared lock records. The manifest edit alone does
+not establish package qualification.
 
 ## Verify the packed bytes
 
@@ -55,9 +95,42 @@ nonfinite values fail. A native `.mts` consumer is also compiled with NodeNext a
 path aliases. It reads the line-density schema's numeric `wordLength` and uses `@ts-expect-error`
 on an invented property; an unresolved reference that erases the schema to `any` therefore fails
 with TS2578. The schema uses an explicit imported type with a resolvable `.js` declaration reference.
+The checker also resolves every relative module specifier, `reference path` directive and
+`reference types` directive in every packed declaration under NodeNext, in the resolution mode
+TypeScript uses for that reference. Each counts as an edge; failures name the declaration line and
+reference. Every relative edge must resolve to a type-bearing TypeScript file inside the packed
+package, with containment checked on its real path. Path references use the compiler's supported
+extensions, including extensionless `.ts`/`.tsx`/`.d.ts` lookup. A JavaScript file alone cannot
+substitute for its missing declaration sidecar. Type-directive resolution and the native consumer
+program both use the isolated consumer as their current directory, so a local `./node` directive
+cannot select the checkout's `@types/node`. An explicit directive `resolution-mode` is respected.
+Legal in-package filenames beginning with two dots remain valid. An extensionless
+`import("../../analysis-core")` type degrades a public type to `any` without a diagnostic under
+`skipLibCheck`. A CommonJS `.cts` consumer is compiled beside the `.mts` one.
 This is a native CPU/type consumer check, not GPU execution or an exhaustive check of every
 declaration body. Empty exports, unsupported export patterns, missing files, unsatisfied peers and
-unequal ESM/CommonJS names fail explicitly.
+unequal ESM/CommonJS names fail explicitly. For each expanded JavaScript entry, export verification
+resolves and validates the physical ESM target and every applicable CommonJS target before either
+loader executes initialization. A CommonJS target mismatch therefore cannot initialize that entry's
+ESM module during preflight.
+
+The isolated native worker also exercises objects across the ESM/CommonJS boundary in both
+directions: a real two-chunk vector retains ordered IDs `two-chunk-0`, `two-chunk-1`
+and passes owning-graph validation; the opposite-format public `GPUZonalStatistics` receives
+those two float32 chunks, two feature rows, one feature and a sums destination, selects
+`sumOrder: 'atomic'`, and declares accumulation nodes that read each value chunk and update the
+supplied sums buffer on the owning graph. Preparation nodes alone do not qualify. An empty
+vector remains a separate zero-chunk control. A recorder retrieves the opposite-format kernel's
+actual node ID, WGSL and dispatch. Operation lowering receives a genuine opposite-format
+operation with a selected float32 input and uint32 output; its factory requests both ports and
+checks their formats and exact backing-view identities. The resolver returns real single-chunk
+graph vectors, including format and length, and accepts either port lookup order. The context
+receives its contributor once, and a type-string-only impostor is rejected. These declaration checks use a null device.
+Native `.mts` and `.cts` consumers check the public family props/output types and reject unsupported
+deep source and testing imports. These checks are covered by archive fixtures, including
+reverse-only zonal and selected-port defects. They have not yet qualified a newly built package in
+this wave. The lead must retain their passing output with the final dependency set before claiming
+cross-format package qualification.
 
 README links are extracted from parsed Markdown tokens, including nested reference links and HTML
 assets. Fenced and indented code examples do not contribute destinations. The checker uses the root
@@ -71,16 +144,29 @@ recording guide, while keeping historical benchmark versions outside that check.
 check distinguishes the unreleased analysis alpha from published upstream dependencies and keeps
 runtime/typecheck exclusion membership separate.
 
-The checker also verifies that the tarball ships the licence texts and that every shipped source
-SPDX expression is in the notice inventory. All shipped source text formats are inspected, including
-Markdown and JavaScript; TypeScript files must carry an SPDX header. Every source file with a
-non-MIT expression must have a
-path and exact SPDX expression in that inventory, with its copyright holders retained. The package
-licence expression is `MIT AND Apache-2.0 AND BSD-3-Clause`; the original file expressions remain
-unchanged. See [the shipped inventory](../modules/analysis/THIRD-PARTY-NOTICES.md).
+Package payloads come from `dist` and include ESM, CommonJS, declarations and JavaScript source
+maps. ESM maps embed their original source text. CommonJS maps compose the transformation with
+the compiler map so they point to the same original source. The packed consumer checks that both
+root entry-point maps are present and embed the original source text. Package metadata, READMEs
+and applicable licence files accompany the compiled output. Both archive gates reject paths under
+`src/` and `dist/testing/`, plus the internal `dist/.build-record.json`.
+
+The packed checker verifies the shipped licence texts and checks the shipped notice inventory
+against the package's build sources. TypeScript files must carry an SPDX header. The inventory
+must list each non-MIT source path, its exact SPDX expression and its copyright holders. The
+analysis package licence is `MIT AND Apache-2.0 AND BSD-3-Clause`. See the
+[shipped inventory](../modules/analysis/THIRD-PARTY-NOTICES.md).
 
 `--keep-artifact` prints the checked tarball and consumer paths; promote those checked bytes after
-all release gates pass. Without it, temporary files are removed on success or failure. The optional
+all release gates pass. `build.json` and `release-build-latest.json` identify the checked `analysis.tgz`
+by SHA-256 and byte length, and promotion refuses an archive whose bytes differ. Replacing or
+changing the input archive after extraction makes the checker exit 1, with or without
+`--keep-artifact`. It supplies the captured archive bytes on tar's standard input, checks the
+retained pathname immediately after extraction before the first package check, and checks it
+again after native runtime/type consumers complete. An early replacement must fail before package
+checks; a replacement during native loading must fail at the final archive check. Regression
+fixtures must distinguish those failure phases rather than accepting any exit 1. Without
+`--keep-artifact`, temporary files are removed on success or failure. The optional
 `--package-directory` and `--dependency-directory` switches support isolated regression fixtures.
 The checker does not build: run it after a clean build so a stale `dist` cannot be mistaken for
 the current source. It does not replace the lead's source/test typechecks, GPU tests or package
@@ -135,8 +221,10 @@ positive observation count as `rssSampleCount` alongside each interval's peak.
 All modes fingerprint input contents and timestamps before cold and after cold/warm. Configs and
 root lists are reparsed and imports, type references and standard-library references are resolved
 without creating a semantic compiler program. This catches edits, new roots and changed imported
-dependencies, including JSDoc-only `@import` and JavaScript comment import types collected from the
-parsed syntax tree. Implicit JSX runtime declarations are also tracked using the compiler's
+dependencies, including JSDoc-only `@import` and comment import types collected from JavaScript
+syntax trees. As in TypeScript, JSDoc in typed sources and declaration files does not introduce
+dependencies; editing a declaration mentioned only there preserves freshness. Implicit JSX runtime
+declarations are also tracked using the compiler's
 production/development runtime selection, `jsxImportSource` and per-file JSX pragmas, even when
 there is no explicit runtime import. Input checks run outside the timed compiler intervals.
 A changed fingerprint refuses publication and leaves compiler logs for diagnosis. Successful
@@ -247,3 +335,104 @@ TypeScript phase and existing package build pipeline, respectively. Run them seq
 for the package source snapshot and outputs above the 8 GiB floor; they do not authorize parallel
 builds, promotion, publication or wider gates.
 Retain fresh prototype configs and measurement reports with any experimental handoff.
+
+## Associate qualification with the retained archive
+
+Run the complete `yarn verify` after the final input edit, then `yarn build:release` (or
+`--promote`) on matching inputs. Verification publishes a durable receipt as described in [testing
+gates](./testing-gates.md#durable-qualification-evidence). Staging records the same
+`qualificationIdentity`: revision, working-tree content digest, lockfile digest, actual resolved
+luma.gl/Arrow/tool versions and Node/Yarn/npm versions, including the dev-tools configuration
+package and adapter-resolved Playwright driver. These describe the versions used, independently of
+accepted peer ranges. Package-local peer versions are retained as well as root resolutions. Staging
+independently resolves peers from its snapshot packages and records
+`stagedResolvedWorkspaceDependencies`; a split root/package-local installation cannot attach full
+qualification when the snapshot uses different versions.
+
+A matching full receipt can attach only when the packed checker also supplies the SHA-256 and byte
+length of the archive it extracted. The handoff protocol is a `checked tarball identity: <JSON>`
+line with `sha256` and `byteLength` alongside the existing `checked tarball: <path>` line. Staging
+verifies those supplied bytes before retaining the archive, independently of its own later digest.
+`archiveHandoff.kind` is `extracted-archive-digest` for that protocol; an older path-only checker
+leaves the stage as `build-package`, even with a full matching test receipt. The checker must
+hash the buffer supplied to extraction, revalidate the retained file immediately after extraction,
+and check it again immediately before success. The current checker emits this evidence; the
+retained copy's later digest alone does not establish which bytes were extracted.
+
+A matching full receipt is copied into the stage as `qualification.json`; the release record binds
+its digest and byte length to `qualification.tarballSha256`/`tarballByteLength`. The ordinary
+`tarballSha256`/`tarballByteLength` still identify the packed-consumer-checked archive. Input and
+receipt/archive identities are rechecked inside the existing publication/rollback window. An
+unmatched, partial, failed, running or unavailable receipt leaves `qualification.kind` equal to
+`build-package`. Such a stage remains useful build/export/packed-consumer evidence, and is not a
+full Node/GPU qualification. A previous full receipt cannot qualify an edited source/test/lockfile
+or different resolved dependency version. Promotion does not itself publish to a registry.
+
+After installing all three output trees, promotion reruns the export/build-record verifier against
+the live checkout, including native entry-point loading. This runs before either release record is
+published, with rollback still available. A failure restores previous outputs and developer caches
+and preserves the prior latest record. Input, archive and output digests are checked after loading.
+
+The live export check compares the physical ESM and CommonJS targets selected by native
+resolution with the expected installed package targets before loading them. Both paths are
+canonicalized with `realpath`, so a workspace link pointing to a second checkout fails with a
+target-mismatch error even if that checkout exports the same names. These checks run inside
+the promotion rollback window described above.
+
+Immediately before an explicitly tagged publication, the maintainer should inspect the retained
+receipt (including skips and device/backend evidence), confirm the intended version and registry,
+and check the exact retained bytes. From the original checkout, this read-only check refuses
+mismatched inputs, receipt bytes or archive bytes:
+
+```sh
+node --input-type=module <<'NODE'
+import {readFileSync} from 'node:fs';
+import {captureQualificationIdentity, isFullQualificationReceipt} from './scripts/verification-policy.mjs';
+import {verifyReleaseTarball} from './scripts/build-release.mjs';
+const record = JSON.parse(readFileSync('.typecheck/release-build-latest.json', 'utf8'));
+if (record.archiveHandoff?.kind !== 'extracted-archive-digest' || record.qualification?.kind !== 'full') throw new Error('stage has only build/package evidence');
+verifyReleaseTarball(record.qualification.receipt);
+const receipt = JSON.parse(readFileSync(record.qualification.receipt.path, 'utf8'));
+const identity = captureQualificationIdentity(process.cwd());
+if (!isFullQualificationReceipt(receipt, identity) ||
+    record.qualificationIdentity.identitySha256 !== identity.identitySha256 ||
+    record.qualification.identitySha256 !== identity.identitySha256 ||
+    record.qualification.receiptId !== receipt.id ||
+    record.archiveHandoff.sha256 !== record.tarballSha256 ||
+    record.archiveHandoff.byteLength !== record.tarballByteLength ||
+    record.qualification.tarballSha256 !== record.tarballSha256 ||
+    record.qualification.tarballByteLength !== record.tarballByteLength) {
+  throw new Error('stage and full qualification do not match');
+}
+verifyReleaseTarball({path: record.tarball, sha256: record.tarballSha256, byteLength: record.tarballByteLength});
+console.log('Checked retained archive:', record.tarball);
+NODE
+```
+
+The maintainer then explicitly publishes that printed archive, for example `npm publish
+/absolute/stage/path/analysis.tgz --tag alpha`, after choosing the intended tag. Do not repack the
+workspace for this handoff: publish the checked archive and repeat the check if its bytes, receipt
+or checkout change before publication. No publication is performed by verification or release
+staging. Keep the stage, full receipt and referenced command logs together.
+
+
+## Build-record freshness and configured outputs
+
+Incremental build/export records hash the resolved dependency declaration closure, not just package
+versions and timestamps. Linked declarations remain freshness inputs even if an edit preserves their
+version, byte length and timestamp. Dependency resolution also follows JS/JSDoc and transitive
+declaration references. Compiler, patcher and transformer contents are fingerprinted: changing
+TypeScript, the selected compiler executable, ts-patch, esbuild or build/transformer scripts
+invalidates stale records and CommonJS reuse even without a declared version change.
+
+Freshness inputs and emit roots have different roles. Dependency declarations can invalidate the
+build without becoming independent compiler roots or acquiring planned first-party output files. The
+parsed TypeScript project determines the emit roots; the shared output planner asks TypeScript for
+the configured outputs, including native `.mts`/`.cts`, preserved JSX, JSON and enabled source and
+declaration maps. Build repair and export verification use that same output inventory, so missing
+configured maps cannot be certified by checking only `.js` and `.d.ts` siblings.
+
+Version-1 records keep their shape and gain dependency/tool fingerprint entries. Records created
+before these additions are stale and require a rebuild; retaining their old source timestamps does
+not establish freshness. These build/package checks and their compiler-content hashes do not
+substitute for a matching full qualification receipt or claim that the GPU gate passed.

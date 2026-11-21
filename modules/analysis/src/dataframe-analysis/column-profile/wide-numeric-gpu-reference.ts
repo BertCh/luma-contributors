@@ -15,6 +15,7 @@ import {
   type NumericNarrowingReport,
   type WideNumericFormat
 } from './numeric-narrowing-diagnostics';
+import {getWideNumericWordPair} from './wide-numeric-word-readback';
 
 /** A 64-bit value as [low, high] unsigned 32-bit words (little-endian element order). */
 export type WordPair = [low: number, high: number];
@@ -30,7 +31,9 @@ export function splitBigIntToWords(value: bigint): WordPair {
   return [Number(bits & 0xffffffffn), Number(bits >> 32n)];
 }
 
-export function joinWordsToBigInt(pair: readonly number[], signed: boolean): bigint {
+/** Decode two little-endian words, or eight readback bytes, honoring logical subview bounds. */
+export function joinWordsToBigInt(input: ArrayLike<number> | ArrayBuffer, signed: boolean): bigint {
+  const pair = getWideNumericWordPair(input, 0, 'joinWordsToBigInt pair', true);
   const bits = (BigInt(pair[1] >>> 0) << 32n) | BigInt(pair[0] >>> 0);
   return signed ? BigInt.asIntN(64, bits) : bits;
 }

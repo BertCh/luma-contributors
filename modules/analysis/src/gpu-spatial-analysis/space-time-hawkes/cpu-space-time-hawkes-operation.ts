@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotHawkesBudgetProps as snapshotSpaceTimeHawkesProps} from './hawkes-budget-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -14,14 +15,20 @@ import {
   GPUSpaceTimeHawkesOperation,
   type SpaceTimeHawkesOperationProps
 } from './gpu-space-time-hawkes-operation';
-import {GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH} from './space-time-hawkes-parameters';
+import {
+  GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH,
+  SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS,
+  resolveSpaceTimeHawkesMaximumIterations
+} from './space-time-hawkes-parameters';
+import {fitHawkesFiniteWindowDecay, HAWKES_LIKELIHOOD_DECREASE_SLACK} from './hawkes-finite-window';
 import {
   GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR,
   GPU_SPACE_TIME_HAWKES_INTENSITY_FLOOR
 } from './space-time-hawkes-wgsl';
 
 /** Finite CPU work budget: sub-machine-precision tolerances can leave EM in a rounding cycle. */
-export const CPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS = 1000;
+export const CPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS =
+  SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS;
 
 /** Packed input vectors; parameters use getGPUSpaceTimeHawkesParameterValues' nine-value layout. */
 export type CPUSpaceTimeHawkesInput = {
@@ -42,6 +49,8 @@ export type CPUSpaceTimeHawkesResult = {
   converged: Uint32Array;
   iterationLimitReached: Uint32Array;
   iterationCount: Uint32Array;
+  /** Resolved work budget, alongside the actual iteration count. */
+  maximumIterations: Uint32Array;
   candidateOverflow: Uint32Array;
   invalidCount: Uint32Array;
   approximation: Uint32Array;
@@ -57,14 +66,16 @@ export type CPUSpaceTimeHawkesResult = {
  * with expm1 in float64.
  *
  * What differs from the GPU contributor:
- * - No parent capacity; candidateOverflow is always zero. A finite CPU iteration budget defaults
- *   to 1000, versus the GPU's default 100. An explicit maximumIterations is honored by both
+ * - No parent capacity; candidateOverflow is always zero. The iteration budget defaults
+ *   to 100 in both forms. An explicit maximumIterations is honored by both
  *   operations; CPU accepts budgets above the GPU's 1000-iteration unrolling cap, up to uint32.
  *   At the budget, the latest fit is published with converged zero and iterationLimitReached one
  *   unless that update converged. This also terminates floating-point rounding cycles.
  * - Float64 log-domain evaluation and sums replace float32 tiles. Compare fitted values and
  *   probabilities at relative 5e-4; convergence counts can differ near the tolerance threshold.
  * - The exact -expm1(-beta * remainingTime) replaces the GPU's second-order small-argument mass.
+ * - The finite-window decay root takes up to 64 bracketed Newton refinements, versus the GPU's
+ *   eight; both start at the entering decay and use the same likelihood-safeguard slack.
  * - The GPU's log-rate floors, branching-ratio floor and 1e-6 triggered-mass update guard are
  *   retained. Spatial/temporal cutoff approximation remains, so approximation is still one.
  * - The GPU-only 2^24 event cap is dropped; the uint32 iteration/status layout limit remains.
@@ -78,8 +89,7 @@ export function computeSpaceTimeHawkesOnCPU(
   input: CPUSpaceTimeHawkesInput,
   options: CPUSpaceTimeHawkesOptions = {}
 ): CPUSpaceTimeHawkesResult {
-  const maximumIterations =
-    options.maximumIterations ?? CPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_ITERATIONS;
+  const maximumIterations = resolveSpaceTimeHawkesMaximumIterations(options.maximumIterations);
   validateCapacity('computeSpaceTimeHawkesOnCPU', 'maximumIterations', maximumIterations);
   const {positions, times, parameters} = input;
   if (positions.length !== times.length * 2)
@@ -196,12 +206,22 @@ export function computeSpaceTimeHawkesOnCPU(
         break;
       }
       const nextBackground = backgroundSum / (area * duration);
-      const nextBranchingRatio = Math.max(
+      let nextBranchingRatio = Math.max(
         triggeredSum / windowMass,
         GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR
       );
       const updateKernel = triggeredSum > 1e-6 && lagSum > 0 && distanceSum > 0;
-      const nextDecayRate = updateKernel ? triggeredSum / lagSum : decayRate;
+      let nextDecayRate = decayRate;
+      if (updateKernel)
+        [nextDecayRate, nextBranchingRatio] = fitHawkesFiniteWindowDecay(
+          rows.map(row => duration - times[row]),
+          duration,
+          triggeredSum,
+          lagSum,
+          decayRate,
+          branchingRatio,
+          GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR
+        );
       const nextVariance = updateKernel ? distanceSum / (2 * triggeredSum) : variance;
       const previous = [background, branchingRatio, decayRate, variance];
       const next = [nextBackground, nextBranchingRatio, nextDecayRate, nextVariance];
@@ -213,6 +233,31 @@ export function computeSpaceTimeHawkesOnCPU(
         )
       );
       [background, branchingRatio, decayRate, variance] = next;
+      // EM's finite-window Q step should increase likelihood. Verify the actual objective
+      // too, restoring the entering fit when it falls by more than the rounding slack.
+      let candidateLogSum = 0;
+      let candidateMagnitude = 0;
+      for (let index = 0; index < rows.length; index++) {
+        const {logIntensity} = evaluateEvent(index);
+        candidateLogSum += logIntensity;
+        candidateMagnitude += Math.abs(logIntensity);
+      }
+      const candidateMass = rows.reduce(
+        (sum, row) => sum - Math.expm1(-decayRate * (duration - times[row])),
+        0
+      );
+      const candidateCompensator = background * area * duration + branchingRatio * candidateMass;
+      const candidateLikelihood = candidateLogSum - candidateCompensator;
+      // The GPU's float32 rounding slack, so both forms undo the same updates.
+      const slack =
+        HAWKES_LIKELIHOOD_DECREASE_SLACK *
+        (candidateMagnitude + Math.abs(candidateCompensator) + Math.abs(logLikelihood));
+      if (Number.isFinite(candidateLikelihood) && candidateLikelihood < logLikelihood - slack) {
+        [background, branchingRatio, decayRate, variance] = previous;
+        converged = change <= tolerance;
+        iterationLimitReached = !converged && iterations === maximumIterations;
+        continue;
+      }
       if (!next.every(Number.isFinite)) {
         background = branchingRatio = decayRate = variance = NaN;
         break;
@@ -241,6 +286,7 @@ export function computeSpaceTimeHawkesOnCPU(
     converged: Uint32Array.of(Number(converged)),
     iterationLimitReached: Uint32Array.of(Number(iterationLimitReached)),
     iterationCount: Uint32Array.of(iterations),
+    maximumIterations: Uint32Array.of(maximumIterations),
     candidateOverflow: Uint32Array.of(0),
     invalidCount: Uint32Array.of(validParameters ? times.length - rows.length : times.length),
     approximation: Uint32Array.of(1)
@@ -250,6 +296,7 @@ export function computeSpaceTimeHawkesOnCPU(
 /** CPU fit; maximumParents specializes only the GPU operation. Both honor maximumIterations. */
 export class CPUSpaceTimeHawkesOperation extends GPUCPUOperation {
   constructor(props: SpaceTimeHawkesOperationProps) {
+    props = snapshotSpaceTimeHawkesProps(props);
     const id = props.id ?? 'space-time-hawkes';
     validateCapacity(id, 'rowCount', props.rowCount, 2);
     if (props.maximumIterations !== undefined)

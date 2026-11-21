@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  captureDataframeConstructorProps,
+  type DataframePropKeys
+} from '../calendar-buckets/dataframe-constructor-contracts';
+
+import {
   createGraphChunkGroupKernelNode,
   validateGraphChunkGroupKernelSupport
 } from '../../analysis-core/kernels/graph-chunk-groups';
@@ -23,6 +28,7 @@ import {
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
+  isGraphVectorView,
   getGraphViewChunks,
   validateMaximumCount,
   validateRequirement,
@@ -144,7 +150,30 @@ export class GPUForestInference<
     validity?: GraphDataView;
   }[])[];
 
-  constructor(props: Props) {
+  constructor(
+    input: Props &
+      Record<
+        Exclude<
+          DataframePropKeys<Props>,
+          DataframePropKeys<GPUForestInferenceProps<GraphDataView | GraphVectorView>>
+        >,
+        never
+      >
+  ) {
+    const props = captureDataframeConstructorProps(input.id ?? OPERATION, input, [
+      'id',
+      'model',
+      'nodes',
+      'trees',
+      'leafValues',
+      'parameters',
+      'rowCount',
+      'mask',
+      'output',
+      'features',
+      'featureLayout',
+      'rasterStack'
+    ]);
     this.id = props.id ?? OPERATION;
     this.props = props as Props & GPUForestInferenceProps<Props['output']['predictions']>;
     const {id} = this;
@@ -168,10 +197,7 @@ export class GPUForestInference<
       'featureLayout must be row-major or feature-major'
     );
     // Keep the original packed-route work diagnostic before validating model/view lengths.
-    if (
-      !(props.features instanceof GraphVectorView) &&
-      !(output.predictions instanceof GraphVectorView)
-    ) {
+    if (!isGraphVectorView(props.features) && !isGraphVectorView(output.predictions)) {
       validateMaximumCount(
         id,
         'rowCount * treeCount * (maximumDepth + outputCount + 1) work',
@@ -315,40 +341,17 @@ export class GPUForestInference<
         | GraphVectorView
         | undefined
       )[])[] = [[output.predictions, output.validity, output.scores]];
-      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
-      const writableWordChunks = Object.values(writableOutputs)
-        .flatMap(view => (view ? getGraphViewChunks(view) : []))
-        .map(
-          view =>
-            new GraphDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset,
-              byteStride: 4,
-              rowByteLength: 4
-            })
-        );
-      const writableWordCount = writableWordChunks.reduce(
-        (total, chunk) => total + chunk.length,
-        0
-      );
-      validateDisjointWritableViews(id, {
-        outputs: new GraphVectorView({
-          id: `${id}-writable-ranges`,
-          name: 'outputs',
-          format: 'uint32',
-          length: writableWordCount,
-          valueLength: writableWordCount,
-          stride: 1,
-          byteStride: 4,
-          rowByteLength: 4,
-          data: writableWordChunks
-        })
-      });
+      validateDisjointWritableViews(id, writableOutputs, {separateDispatches: true});
       for (const fields of publicationPasses) {
         validateDisjointWritableViews(
           id,
-          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+          Object.fromEntries(
+            fields.map((view, index) => [
+              Object.entries(writableOutputs).find(([, candidate]) => candidate === view)?.[0] ??
+                String(index),
+              view
+            ])
+          )
         );
       }
     }

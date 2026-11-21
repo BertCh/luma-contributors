@@ -36,6 +36,7 @@ export async function runExample(_device: Device, input: NetworkCostMatrixExampl
     positions: facilityPositions,
     topology: roads,
     startDirection: 'forward',
+    intersectionAware: true,
     output: {snappedEdges, startNodes, startCosts}
   });
   const matrix = new GPUNetworkCostMatrix({

@@ -12,6 +12,11 @@ import {
   getKalmanTimeSource
 } from './trajectory-kalman-full-covariance';
 import {
+  createKalmanAbsolutePublicationNode,
+  createKalmanLocalMetadata,
+  KALMAN_LOCAL_ORIGIN_WGSL
+} from './kalman-local-publication';
+import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -62,8 +67,9 @@ export const GPU_TRAJECTORY_KALMAN_STATUS = {
    */
   invalid: 4,
   /**
-   * The backward smoother met a singular predicted covariance at this row, so its smoothed state
-   * and covariance are not valid. Only set when smoothed outputs are requested.
+   * The backward smoother met a singular predicted covariance or nonfinite correction at this
+   * row. Both smoothed outputs fall back to the filtered row; the next backward step consumes
+   * that fallback. Only set when smoothed outputs are requested.
    */
   smoothingSingular: 8
 } as const;
@@ -105,7 +111,7 @@ type GPUTrajectoryKalmanOptions = {
     filteredState: GraphDataView<'float32x4'>;
     /** Isotropic: one [positionVariance,covariance,covariance,velocityVariance] row per observation. Full: four column-major rows per observation. */
     filteredCovariance: GraphDataView<'float32x4'>;
-    /** One {@link GPU_TRAJECTORY_KALMAN_STATUS} bit set per observation: 1 reset, 2 prediction only, 4 invalid, 8 smoothing singular. */
+    /** Per-observation {@link GPU_TRAJECTORY_KALMAN_STATUS} bits: 1 reset, 2 prediction only, 4 invalid, 8 RTS fallback after a singular prediction or nonfinite backward correction. */
     status: GraphDataView<'uint32'>;
     smoothedState?: GraphDataView<'float32x4'>;
     smoothedCovariance?: GraphDataView<'float32x4'>;
@@ -128,7 +134,12 @@ export type GPUTrajectoryKalmanResolvedProps = GPUTrajectoryKalmanOptions &
 /** Ticks per second of each temporal context unit. */
 const TIME_UNITS_PER_SECOND = {second: 1, millisecond: 1e3, microsecond: 1e6, nanosecond: 1e9};
 
-/** Constant-velocity Kalman filter and optional Rauch–Tung–Striebel smoother, parallel across tracks. */
+/**
+ * Constant-velocity Kalman filter and optional Rauch–Tung–Striebel smoother, parallel across tracks.
+ * Position high parts and small residuals are retained through prediction, measurement updates and
+ * backward smoothing; absolute float32 positions are published afterward. Velocity, covariance,
+ * segment resets and finite-state/fallback rules retain their existing meanings.
+ */
 export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUTrajectoryKalmanResolvedProps;
@@ -136,6 +147,13 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   constructor(input: GPUTrajectoryKalmanProps) {
     this.id = input.id ?? 'trajectory-kalman';
+    validateRequirement(
+      this.id,
+      input.covarianceMode === undefined ||
+        input.covarianceMode === 'isotropic' ||
+        input.covarianceMode === 'full',
+      `covarianceMode must be isotropic or full; received ${input.covarianceMode}`
+    );
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       input.spatialContext,
@@ -159,6 +177,7 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
     );
     this.props = {
       ...input,
+      output: {...input.output},
       times,
       offsets,
       timeUnitsPerSecond: contextUnits ?? input.timeUnitsPerSecond
@@ -243,6 +262,7 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     validateTrajectoryBindings(graph, this.id, this.props);
     const {props, id} = this;
+    if (props.positions.length === 0) return [];
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.times,
@@ -250,7 +270,14 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
       props.parameters,
       ...Object.values(props.output)
     ]);
-    if (props.covarianceMode === 'full') return createFullCovarianceKalmanNodes(graph, id, props);
+    const metadata = createKalmanLocalMetadata(graph, id, props);
+    const {origins} = metadata;
+    if (props.covarianceMode === 'full')
+      return [
+        metadata.initialize,
+        ...createFullCovarianceKalmanNodes(graph, id, props, metadata),
+        createKalmanAbsolutePublicationNode(graph, id, props, origins)
+      ];
     const time = getKalmanTimeSource(props);
     const wordSuffix = time.bindingType === 'u32' ? '-words' : '';
     const declarations = `${GET_NAN_WGSL}
@@ -262,8 +289,10 @@ fn processCovariance(delta: f32, noise: f32) -> mat2x2<f32> {
 }
 fn unpackCovariance(packed: vec4<f32>) -> mat2x2<f32> { return mat2x2<f32>(packed.xy, packed.zw); }
 fn packCovariance(matrix: mat2x2<f32>) -> vec4<f32> { return vec4<f32>(matrix[0][0], (matrix[0][1] + matrix[1][0]) * 0.5, (matrix[0][1] + matrix[1][0]) * 0.5, matrix[1][1]); }
-${time.source}`;
+${time.source}
+${KALMAN_LOCAL_ORIGIN_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
+      metadata.initialize,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-filter`,
         operation: 'GPUTrajectoryKalman',
@@ -272,6 +301,7 @@ ${time.source}`;
         workgroupSize: 32,
         bindings: [
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+          {name: 'origins', view: origins, type: 'f32', access: 'read_write'},
           {name: 'times', view: props.times, type: time.bindingType, access: 'read'},
           {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
@@ -295,9 +325,12 @@ let parametersValid = finite(noise) && noise >= 0.0 && finite(measurementVarianc
 let invalidValue = getNaN();
 var initialized = false;
 var estimate = vec4<f32>(0.0);
+var origin = vec2<f32>(0.0);
 var uncertainty = mat2x2<f32>();
 var previousObservation = start;
 for (var observation = start; observation < end; observation++) {
+  origins[originsOffset + 4u * observation] = 0.0;
+  origins[originsOffset + 4u * observation + 1u] = 0.0;
   let position = vec2<f32>(positions[positionsOffset + 2u * observation], positions[positionsOffset + 2u * observation + 1u]);
   let measured = finite(position.x) && finite(position.y);
   let elapsed = rowElapsed(observation, previousObservation);
@@ -313,20 +346,25 @@ for (var observation = start; observation < end; observation++) {
   if (initialized && elapsed > maximumGap) { initialized = false; }
   if (!initialized) {
     if (!measured) { status[statusOffset + observation] = 6u; continue; }
-    estimate = vec4<f32>(position, 0.0, 0.0);
+    origin = position;
+    estimate = vec4<f32>(0.0);
     uncertainty = mat2x2<f32>(measurementVariance, 0.0, 0.0, velocityVariance);
     initialized = true;
     flags = 1u;
   } else {
     let prediction = transition(delta);
-    estimate = vec4<f32>(estimate.xy + delta * estimate.zw, estimate.zw);
+    let predictedPosition = kalmanPositionAdvance(KalmanPosition(origin, estimate.xy), estimate.zw, delta);
+    origin = predictedPosition.high;
+    estimate = vec4<f32>(predictedPosition.low, estimate.zw);
     uncertainty = prediction * uncertainty * transpose(prediction) + processCovariance(delta, noise);
     if (measured) {
       let innovationVariance = uncertainty[0][0] + measurementVariance;
       if (!finite(innovationVariance) || !(innovationVariance > 0.0)) { status[statusOffset + observation] = 4u; initialized = false; continue; }
       let gain = vec2<f32>(uncertainty[0][0], uncertainty[0][1]) / innovationVariance;
-      let residual = position - estimate.xy;
-      estimate = vec4<f32>(estimate.xy + gain.x * residual, estimate.zw + gain.y * residual);
+      let residual = kalmanPositionSubtract(KalmanPosition(position, vec2<f32>(0.0)), KalmanPosition(origin, estimate.xy));
+      let updatedPosition = kalmanPositionAdd(KalmanPosition(origin, estimate.xy), kalmanPositionScale(residual, vec2<f32>(gain.x)));
+      estimate = vec4<f32>(updatedPosition.low, estimate.zw + kalmanPositionValue(kalmanPositionScale(residual, vec2<f32>(gain.y))));
+      origin = updatedPosition.high;
       // Joseph form preserves positive semidefiniteness under f32 rounding.
       let correction = mat2x2<f32>(1.0 - gain.x, -gain.y, 0.0, 1.0);
       uncertainty = correction * uncertainty * transpose(correction) + mat2x2<f32>(gain * gain.x, gain * gain.y) * measurementVariance;
@@ -334,10 +372,13 @@ for (var observation = start; observation < end; observation++) {
   }
   previousObservation = observation;
   let packed = packCovariance(uncertainty);
-  if (!finite(estimate.x) || !finite(estimate.y) || !finite(estimate.z) || !finite(estimate.w) || !finite(packed.x) || !finite(packed.y) || !finite(packed.w)) {
+  let absolutePosition = estimate.xy + origin;
+  if (!finite(absolutePosition.x) || !finite(absolutePosition.y) || !finite(estimate.x) || !finite(estimate.y) || !finite(estimate.z) || !finite(estimate.w) || !finite(packed.x) || !finite(packed.y) || !finite(packed.w)) {
     status[statusOffset + observation] = 4u; initialized = false; continue;
   }
   storeState(observation, estimate);
+  origins[originsOffset + 4u * observation] = origin.x;
+  origins[originsOffset + 4u * observation + 1u] = origin.y;
   storeCovariance(observation, packed);
   status[statusOffset + observation] = flags;
 }`
@@ -354,7 +395,7 @@ for (var observation = start; observation < end; observation++) {
           bindings: [
             {name: 'times', view: props.times, type: time.bindingType, access: 'read'},
             {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-            {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+            {name: 'parameters', view: metadata.parameters, type: 'f32', access: 'read_write'},
             {name: 'state', view: props.output.filteredState, type: 'f32', access: 'read'},
             {
               name: 'covariance',
@@ -376,7 +417,7 @@ for (var observation = start; observation < end; observation++) {
               access: 'read_write'
             }
           ],
-          declarations: declarations + getStateAccessors(true),
+          declarations: declarations + metadata.originSource + getStateAccessors(true),
           body: `let start = min(offsets[offsetsOffset + index], OBSERVATION_COUNT);
 let end = min(offsets[offsetsOffset + index + 1u], OBSERVATION_COUNT);
 let noise = parameters[parametersOffset];
@@ -387,6 +428,7 @@ loop {
   let estimate = loadState(observation);
   let uncertainty = unpackCovariance(loadCovariance(observation));
   storeSmoothedState(observation, estimate);
+  storeSmoothedOrigin(observation, rowOrigin(observation));
   storeSmoothedCovariance(observation, packCovariance(uncertainty));
   if (observation + 1u >= end || (status[statusOffset + observation] & 4u) != 0u || (status[statusOffset + observation + 1u] & 5u) != 0u) { continue; }
   let elapsed = rowElapsed(observation + 1u, observation);
@@ -399,16 +441,28 @@ loop {
   let inverse = mat2x2<f32>(predictedCovariance[1][1], -predictedCovariance[0][1], -predictedCovariance[1][0], predictedCovariance[0][0]) * (1.0 / determinant);
   let gain = uncertainty * transpose(prediction) * inverse;
   let nextEstimate = loadSmoothedState(observation + 1u);
-  let residual = nextEstimate - vec4<f32>(estimate.xy + delta * estimate.zw, estimate.zw);
-  let correctionX = gain * vec2<f32>(residual.x, residual.z);
-  let correctionY = gain * vec2<f32>(residual.y, residual.w);
-  storeSmoothedState(observation, estimate + vec4<f32>(correctionX.x, correctionY.x, correctionX.y, correctionY.y));
+  let residualPosition = kalmanPositionSubtract(KalmanPosition(rowSmoothedOrigin(observation + 1u), nextEstimate.xy), kalmanPositionAdvance(KalmanPosition(rowOrigin(observation), estimate.xy), estimate.zw, delta));
+  let residualVelocity = nextEstimate.zw - estimate.zw;
+  let positionCorrection = kalmanPositionAdd(kalmanPositionScale(residualPosition, vec2<f32>(gain[0][0])), kalmanPositionProduct(residualVelocity, vec2<f32>(gain[1][0])));
+  let correctedPosition = kalmanPositionAdd(KalmanPosition(rowOrigin(observation), estimate.xy), positionCorrection);
+  let velocityCorrection = kalmanPositionAdd(kalmanPositionScale(residualPosition, vec2<f32>(gain[0][1])), kalmanPositionProduct(residualVelocity, vec2<f32>(gain[1][1])));
+  let correctedState = vec4<f32>(correctedPosition.low, estimate.zw + kalmanPositionValue(velocityCorrection));
   let nextCovariance = unpackCovariance(loadSmoothedCovariance(observation + 1u));
-  storeSmoothedCovariance(observation, packCovariance(uncertainty + gain * (nextCovariance - predictedCovariance) * transpose(gain)));
+  let correctedCovariance = packCovariance(uncertainty + gain * (nextCovariance - predictedCovariance) * transpose(gain));
+  let absolutePosition = kalmanPositionValue(correctedPosition);
+  if (!finite(absolutePosition.x) || !finite(absolutePosition.y) || !finite(correctedState.x) || !finite(correctedState.y) || !finite(correctedState.z) || !finite(correctedState.w) ||
+      !finite(correctedCovariance.x) || !finite(correctedCovariance.y) || !finite(correctedCovariance.z) || !finite(correctedCovariance.w)) {
+    status[statusOffset + observation] |= 8u;
+    continue;
+  }
+  storeSmoothedState(observation, correctedState);
+  storeSmoothedOrigin(observation, correctedPosition.high);
+  storeSmoothedCovariance(observation, correctedCovariance);
 }`
         })
       );
     }
+    nodes.push(createKalmanAbsolutePublicationNode(graph, id, props, origins));
     return nodes;
   }
 }

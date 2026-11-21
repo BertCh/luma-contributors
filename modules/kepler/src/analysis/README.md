@@ -10,6 +10,24 @@ rates, hot spots, Local Moran, Quantile LISA, interpolation, DBSCAN, OLS and bou
 cartograms. Named helpers expose contributor outputs, inference metadata and compact GPU
 diagnostics. Each operation records its own numerical controls and topology policy.
 
+The catalog `point-density-grid` CPU reference bins the same Float32-uploaded positions and bounds
+as `GPUPointDensity`. It uses inclusive bounds (the maximum is in the last cell), excludes
+nonfinite/outside positions, and uses the published bounds/count cell formula. For example,
+`0.99999999` uploads as `1` and belongs to cell 1 in a four-cell `[0,4]` domain on both engines.
+For a 4-column, 3-row unit grid the inclusive top-right bound is `(4,3)` and belongs to flat
+cell 11 through endpoint clamping; `(4,2)` lies on an interior row boundary.
+Normalization also matters after upload: the CPU's round-to-nearest binary32 evaluation puts
+`x = 2` in column 1 of a 41-column `[0,41]` domain, even with unit cells. The GPU formula uses
+WGSL division, which permits 2.5 ULP error and does not specify a rounding mode, so interior
+boundary membership can differ by a cell. For example, nominal CPU arithmetic puts `x = 40`
+in column 40; Chromium WebGPU on Metal was observed to put it in column 39. The independent
+quotient-error enumeration allows columns `[39,40]` for this point; GPU catalog tests additionally
+require exact agreement with the published builder on the same device. See the
+[WGSL accuracy rules](https://www.w3.org/TR/WGSL/#floating-point-accuracy).
+CPU weighted sums still accumulate in Float64 and can also differ in their last bits.
+Line-density segment cuts retain their physical `origin + k * cellSize`
+edges and Float64 midpoint lookup.
+
 ```ts
 const result = addKeplerAnalysisRecipe(graph, {
   schemaVersion: 1,

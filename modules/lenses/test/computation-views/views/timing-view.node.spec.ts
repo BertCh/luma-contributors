@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUComputationNodeMetrics} from '@luma-contributors/analysis/computation-record';
 import {describe, expect, test} from 'vitest';
 import {makeHost} from '../fixtures/v5-host';
 import {
@@ -106,4 +107,24 @@ test('timing mount replaces records and stops updating after destruction', () =>
   expect(host.getChildCount()).toBe(0);
   mounted.update(record);
   expect(host.getChildCount()).toBe(0);
+});
+
+test('ROAD-111 duration-only and measured zero stay distinct from unmeasured timestamps', () => {
+  const context = makeContext();
+  context.record.metrics![0].nodes = {
+    'relax-0': {cpuEncodeMs: 0, gpuTimeMs: 2},
+    'relax-1': {cpuEncodeMs: 0, gpuTimeMs: 0},
+    finish: {cpuEncodeMs: 1}
+  } satisfies Record<string, GPUComputationNodeMetrics>;
+  const model = buildTimingViewModel(context);
+  expect(model.durations).toEqual([
+    {id: 'relax-0', label: 'Relax', gpuTimeMs: 2},
+    {id: 'relax-1', label: 'Relax', gpuTimeMs: 0}
+  ]);
+  expect(model.untimed).toEqual(['finish']);
+  expect(model.tracks).toEqual([]);
+  const html = viewNodeToHtml(renderTimingView(model, context));
+  expect(html).toContain('2 ms');
+  expect(html).toContain('0 ms');
+  expect(html).toContain('GPU timestamps unknown');
 });

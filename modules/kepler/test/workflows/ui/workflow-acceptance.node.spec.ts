@@ -88,7 +88,7 @@ const accessibility = (await import(accessibilityPath)) as AccessibilityHelpers;
 const utilities = (await import(utilitiesPath)) as WorkflowHelpers;
 const editPath = new URL('workflow-edit.mjs', scriptDirectory).href;
 const edit = (await import(editPath)) as {
-  checkMinimumPointsProblem(message: string): void;
+  checkMinimumSamplesProblem(message: string): void;
   checkRunToHere(before: unknown, after: unknown, targetId: string): void;
   checkInvalidDraft(before: unknown, after: unknown, stepId: string, parameter: string): void;
 };
@@ -986,17 +986,17 @@ describe('workflow acceptance framing', () => {
 
 describe('workflow acceptance exact inline limit', () => {
   const message =
-    'Find clusters: Minimum points (including the point) must be between 1 and 1000; got 0.';
+    'Find clusters: Minimum samples (including the point) must be between 1 and 1000; got 0.';
   test('accepts the exact parameter range and rejected value', () => {
-    expect(() => edit.checkMinimumPointsProblem(message)).not.toThrow();
+    expect(() => edit.checkMinimumSamplesProblem(message)).not.toThrow();
   });
   test.each([
-    'Minimum points must be at least 10.',
+    'Minimum samples must be at least 10.',
     message.replace('1000', '100'),
     message.replace('got 0', 'got 10'),
     message.replace('Find clusters: ', '')
   ])('rejects a wrong or incomplete limit message: %s', incorrect => {
-    expect(() => edit.checkMinimumPointsProblem(incorrect)).toThrow(
+    expect(() => edit.checkMinimumSamplesProblem(incorrect)).toThrow(
       'exact range and rejected value'
     );
   });

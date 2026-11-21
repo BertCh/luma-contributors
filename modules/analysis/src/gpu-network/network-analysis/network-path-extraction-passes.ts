@@ -34,7 +34,7 @@ export function createPathStatusNode<Parameters>(
     operation: OPERATION,
     variant: 'status',
     bindings,
-    invocationCount: 2,
+    invocationCount: 3,
     body: `let isConverged = ${props.converged ? 'converged[convergedOffset] != 0u' : 'true'};
   status[statusOffset + index] = select(0u, select(0u, 1u, isConverged), index == 1u);`
   });
@@ -355,6 +355,7 @@ export function createPathResolveEdgesNode<Parameters>(
     linkTails: GraphDataView<'uint32'>;
     linkHeads: GraphDataView<'uint32'>;
     costs: GraphDataView<'float32'>;
+    predecessorEdges?: GraphDataView<'uint32'>;
     offsets: GraphDataView<'uint32'>;
     neighbors: GraphDataView<'uint32'>;
     weights: GraphDataView<'float32'>;
@@ -365,7 +366,16 @@ export function createPathResolveEdgesNode<Parameters>(
   const bindings: WGSLKernelBinding[] = [
     {name: 'linkTails', view: props.linkTails, type: 'u32', access: 'read'},
     {name: 'linkHeads', view: props.linkHeads, type: 'u32', access: 'read'},
-    {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
+    ...(props.predecessorEdges
+      ? [
+          {
+            name: 'predecessorEdges',
+            view: props.predecessorEdges,
+            type: 'u32' as const,
+            access: 'read' as const
+          }
+        ]
+      : [{name: 'costs', view: props.costs, type: 'f32' as const, access: 'read' as const}]),
     {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
     {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},
     {name: 'weights', view: props.weights, type: 'f32', access: 'read'},
@@ -387,10 +397,18 @@ const EDGE_COUNT: u32 = ${props.edgeCount}u;`,
   var result = NONE;
   if (tail < NODE_COUNT) {
     let head = linkHeads[linkHeadsOffset + index];
-    let tailCost = costs[costsOffset + tail];
-    let headCost = costs[costsOffset + head];
+
     let rangeStart = min(offsets[offsetsOffset + tail], EDGE_COUNT);
     let rangeEnd = min(offsets[offsetsOffset + tail + 1u], EDGE_COUNT);
+    ${
+      props.predecessorEdges
+        ? `let edge = predecessorEdges[predecessorEdgesOffset + head];
+    if (edge >= rangeStart && edge < rangeEnd && neighbors[neighborsOffset + edge] == head) {
+      let weightBits = bitcast<u32>(weights[weightsOffset + edge]);
+      if (weightBits < INFINITY_BITS || (weightBits & 0x7fffffffu) == 0u) { result = edge; }
+    }`
+        : `let tailCost = costs[costsOffset + tail];
+    let headCost = costs[costsOffset + head];
     var exact = NONE;
     var fallback = NONE;
     for (var edge = rangeStart; edge < rangeEnd; edge++) {
@@ -402,9 +420,79 @@ const EDGE_COUNT: u32 = ${props.edgeCount}u;`,
         break;
       }
     }
-    result = select(exact, fallback, exact == NONE);
+    result = select(exact, fallback, exact == NONE);`
+    }
     ${props.edgeIds ? 'if (result != NONE) { result = edgeIds[edgeIdsOffset + result]; }' : ''}
   }
   ids[idsOffset + index] = result;`
+  });
+}
+
+/** Each path length is <=65536, so every modular scan wrap crosses one checked interval. @internal */
+export function createPathCheckTotalsNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    starts: GraphDataView<'uint32'>;
+    lengths: GraphDataView<'uint32'>;
+    status: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters> {
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'check-totals',
+    invocationCount: props.starts.length,
+    bindings: [
+      {name: 'starts', view: props.starts, type: 'u32', access: 'read'},
+      {name: 'lengths', view: props.lengths, type: 'u32', access: 'read'},
+      {name: 'status', view: props.status, type: 'atomic<u32>', access: 'read_write'}
+    ],
+    body: `if (starts[startsOffset + index] > 0xffffffffu - lengths[lengthsOffset + index]) {
+      atomicOr(&status[statusOffset + 2u], 1u);
+    }`
+  });
+}
+
+/** Suppresses the entire batch before offsets, counts or payloads can expose modular addresses. @internal */
+export function createPathSuppressUnrepresentableNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    starts: GraphDataView<'uint32'>;
+    lengths: GraphDataView<'uint32'>;
+    edgeStarts?: GraphDataView<'uint32'>;
+    edgeLengths?: GraphDataView<'uint32'>;
+    status: GraphDataView<'uint32'>;
+    pathFound?: GraphDataView<'uint32'>;
+    pathCosts?: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters> {
+  const bindings: WGSLKernelBinding[] = [
+    {name: 'status', view: props.status, type: 'u32', access: 'read'}
+  ];
+  const statements: string[] = [];
+  for (const [name, view] of Object.entries({
+    starts: props.starts,
+    lengths: props.lengths,
+    edgeStarts: props.edgeStarts,
+    edgeLengths: props.edgeLengths,
+    pathFound: props.pathFound,
+    pathCosts: props.pathCosts
+  })) {
+    if (view) {
+      bindings.push({name, view, type: 'u32', access: 'read_write'});
+      statements.push(
+        `${name}[${name}Offset + index] = ${name === 'pathCosts' ? '0x7f800000u' : '0u'};`
+      );
+    }
+  }
+  return createWGSLKernelNode(graph, {
+    id: props.id,
+    operation: OPERATION,
+    variant: 'suppress-unrepresentable',
+    bindings,
+    invocationCount: props.starts.length,
+    body: `if (status[statusOffset + 2u] != 0u) { ${statements.join('\n')} }`
   });
 }

@@ -29,6 +29,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '../../gpu-spatial-analysis/point-density/point-density-hexagon';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {RECTANGULAR_GRID_COORDINATE_WGSL} from '../../analysis-core/kernels/rectangular-grid-coordinate';
 
 const OPERATION = 'GPUFlowAggregation';
 
@@ -180,8 +181,8 @@ export function createFlowZoneNode<Parameters>(
     }
   }`
       : `if (finite && inside) {
-    zone = getCoordinate(y, minimumY, maximumY, rows) * columns +
-      getCoordinate(x, minimumX, maximumX, columns);
+    zone = getRectangularGridCoordinate(y, minimumY, maximumY, rows) * columns +
+      getRectangularGridCoordinate(x, minimumX, maximumX, columns);
   }`;
   return createFlowChunkNode<Parameters>(graph, {
     id: props.id,
@@ -194,8 +195,8 @@ const ROWS: u32 = ${props.gridSize[1]}u;
 const NO_ZONE: u32 = 0xffffffffu;
 ${IS_FINITE_VALUE_WGSL}
 ${props.kind === 'hexagon' ? GPU_POINT_DENSITY_HEXAGON_WGSL : ''}
-// Same cell formula as GPUGridBinning: inclusive bounds, maximum edge in the last cell.
-${GPU_GRID_COORDINATE_WGSL}`,
+${GPU_GRID_COORDINATE_WGSL}
+${props.kind === 'grid' ? RECTANGULAR_GRID_COORDINATE_WGSL : ''}`,
     body: `${boundsSource}
   ${
     props.activeGridSize

@@ -2,6 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUPackedReadbackValues} from '../../analysis-core/kernels/packed-readback';
+import {getVecchiaReadbackValues, decodeVecchiaStatus} from './vecchia-readback';
+import {
+  snapshotVecchiaLossProps,
+  validateVecchiaPorts,
+  createVecchiaNeighborhoodStatusNodes,
+  type VecchiaNeighborhoodStatus
+} from './vecchia-neighborhood-status';
+import {MAXIMUM_VECCHIA_NEIGHBOR_COUNT} from './vecchia-conditioning-sets';
+import {getInterpolationNeighborhoodLossViews} from './interpolation-neighborhood-loss';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {
   validateInterpolationPredictionViews,
   validateInterpolationOutputPasses,
@@ -41,7 +54,7 @@ import {createVecchiaFixedPointSumNodes} from './vecchia-likelihood-nodes';
 import {GPU_VECCHIA_PARAMETER_LENGTH} from './vecchia-parameters';
 
 const OPERATION = 'GPUVecchiaFisherScoring';
-const MAXIMUM_NEIGHBOR_COUNT = 32;
+const MAXIMUM_NEIGHBOR_COUNT = MAXIMUM_VECCHIA_NEIGHBOR_COUNT;
 /** Number of parameters: log sill, log effective range, log nugget. */
 const PARAMETER_COUNT = 3;
 /** Summed cells: the log-likelihood, then the score, then the upper triangle of the information. */
@@ -60,6 +73,8 @@ export type GPUVecchiaFisherScoringOutput = {
   totals: GraphDataView<'float32'>;
   /** Three words `[failedSiteCount, excludedSiteCount, usedSiteCount]`. */
   status: GraphDataView<'uint32'>;
+  /** Optional three words [complete, overflow, candidateOverflow] for the input CSR. */
+  neighborhoodStatus?: GraphDataView<'uint32'>;
 };
 
 /** Distances are planar Euclidean in the native units of the positions. */
@@ -78,12 +93,14 @@ export type GPUVecchiaFisherScoringProps = {
    */
   spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
-  /** Rows `[value, observationErrorVariance, reserved, validity (0 excludes)]`, mean zero. */
+  /** Rows `[value, observationErrorVariance, reserved, validity (> 0 includes; zero, negative and NaN exclude)]`, mean zero. */
   observations: GraphDataView<'float32x4'>;
   neighborhoodOffsets: GraphDataView<'uint32'>;
   neighborhoods: GraphDataView<'uint32'>;
   /** Largest conditioning set, 1..32. Compile time. */
   neighborCount: number;
+  /** Optional producer loss flags; any supplied loss suppresses dependent totals. */
+  neighborhoodStatus?: VecchiaNeighborhoodStatus;
   /** Written by `getGPUVecchiaLogLikelihoodParameterValues`. Per-frame. */
   parameters: GraphDataView<'float32'>;
   output: GPUVecchiaFisherScoringOutput;
@@ -104,6 +121,8 @@ export type GPUVecchiaFisherScoringProps = {
  * are exact for the float32 per-site terms. Exponential and Matern 3/2 only: other model codes
  * have no range derivative here and report status 3.
  *
+ * The GPU route accepts at most 32 usable neighbors per site (MAXIMUM_VECCHIA_NEIGHBOR_COUNT),
+ * taking the first usable CSR entries. CPU evaluation uses all usable slots.
  * Compile-time: row count, conditioning-set width. Per-frame: the covariance `parameters`.
  */
 export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
@@ -114,7 +133,28 @@ export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
   readonly rowCount: number;
 
   constructor(props: GPUVecchiaFisherScoringProps) {
-    this.props = props;
+    validateVecchiaPorts(props.id ?? 'vecchia-fisher-scoring', props, true, false);
+    const originalProps = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'id',
+        'neighborCount',
+        'neighborhoodOffsets',
+        'neighborhoods',
+        'observations',
+        'output',
+        'parameters',
+        'positions',
+        'spatialContext'
+      ],
+      ['siteTerms', 'siteStatus', 'totals', 'status']
+    );
+    this.props = props = snapshotVecchiaLossProps(originalProps, () => props);
+    const lossViews = getInterpolationNeighborhoodLossViews(
+      props.id ?? 'vecchia-fisher-scoring',
+      props
+    );
     this.id = props.id ?? 'vecchia-fisher-scoring';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
@@ -124,6 +164,8 @@ export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
     const {id} = this;
     const {positions, observations, neighborhoodOffsets, neighborhoods, parameters, output} = props;
     this.rowCount = positions.length;
+    if (output.neighborhoodStatus)
+      validateViewLength(id, 'output.neighborhoodStatus', output.neighborhoodStatus, 3);
     validateCapacity(id, 'neighborCount', props.neighborCount, 1, MAXIMUM_NEIGHBOR_COUNT);
     validateViewLength(id, 'observations', observations, this.rowCount);
     validateViewLength(id, 'neighborhoodOffsets', neighborhoodOffsets, this.rowCount + 1);
@@ -139,19 +181,27 @@ export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
     validateViewLength(id, 'output.status', output.status, 3);
     validateInterpolationOutputPasses(id, output, [
       {write: {siteTerms: output.siteTerms, siteStatus: output.siteStatus, status: output.status}},
-      {read: {status: output.status}, write: {totals: output.totals}}
+      {read: {status: output.status}, write: {totals: output.totals}},
+      {write: {totals: output.totals, neighborhoodStatus: output.neighborhoodStatus}}
     ]);
     validateInterpolationOutputsDisjointFromInputs(id, Object.values(output), [
       positions,
       observations,
       neighborhoodOffsets,
       neighborhoods,
-      parameters
+      parameters,
+      ...lossViews
     ]);
     validateInterpolationPredictionViews(
       id,
-      [positions, observations, neighborhoodOffsets, neighborhoods, parameters],
-      [output.siteTerms, output.siteStatus, output.totals, output.status]
+      [positions, observations, neighborhoodOffsets, neighborhoods, parameters, ...lossViews],
+      [
+        output.siteTerms,
+        output.siteStatus,
+        output.totals,
+        output.status,
+        ...(output.neighborhoodStatus ? [output.neighborhoodStatus] : [])
+      ]
     );
   }
 
@@ -165,6 +215,12 @@ export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
       neighborhoodOffsets: props.neighborhoodOffsets,
       neighborhoods: props.neighborhoods,
       parameters: props.parameters,
+      ...Object.fromEntries(
+        getInterpolationNeighborhoodLossViews(id, props).map((view, index) => [
+          `neighborhoodLoss${index}`,
+          view
+        ])
+      ),
       ...props.output
     });
     validateGPUStorageBindingByteLength(
@@ -361,15 +417,22 @@ atomicAdd(&counters[countersOffset + 2u], 1u);`
         terms: output.siteTerms,
         counters: output.status,
         totals: output.totals
-      })
+      }),
+      ...createVecchiaNeighborhoodStatusNodes(
+        graph,
+        id,
+        props.neighborhoodStatus,
+        output.totals,
+        output.neighborhoodStatus
+      )
     ];
   }
 }
 
 /** Reads a {@link GPUVecchiaFisherScoring} result back into one evaluation. */
 export function getVecchiaFisherEvaluation(
-  totals: ArrayLike<number>,
-  status: ArrayLike<number>
+  totals: GPUPackedReadbackValues,
+  status: GPUPackedReadbackValues
 ): {
   logLikelihood: number;
   score: number[];
@@ -378,7 +441,15 @@ export function getVecchiaFisherEvaluation(
   excludedSiteCount: number;
   usedSiteCount: number;
 } {
-  const read = (cell: number): number => totals[cell * 2] + totals[cell * 2 + 1];
+  const components = getVecchiaReadbackValues(
+    'getVecchiaFisherEvaluation',
+    'totals',
+    totals,
+    GPU_VECCHIA_FISHER_CELL_COUNT * 2,
+    'float32'
+  );
+  status = getVecchiaReadbackValues('getVecchiaFisherEvaluation', 'status', status, 3, 'uint32');
+  const read = (cell: number): number => components[cell * 2] + components[cell * 2 + 1];
   return {
     logLikelihood: status[0] > 0 ? Number.NaN : read(0),
     score: [read(1), read(2), read(3)],
@@ -386,5 +457,41 @@ export function getVecchiaFisherEvaluation(
     failedSiteCount: status[0],
     excludedSiteCount: status[1],
     usedSiteCount: status[2]
+  };
+}
+
+/** Decodes solve counts separately from loss of the input CSR. */
+export function decodeGPUVecchiaFisherScoringStatus(
+  status: GPUPackedReadbackValues,
+  neighborhoodStatus?: GPUPackedReadbackValues
+) {
+  return decodeVecchiaStatus('decodeGPUVecchiaFisherScoringStatus', status, neighborhoodStatus);
+}
+
+/** Reads float32 totals and uint32 status from their respective typed or raw-byte ports. */
+export function decodeGPUVecchiaFisherScoringResult(ports: {
+  totals: Float32Array | Uint8Array | ArrayBuffer;
+  status: Uint32Array | Uint8Array | ArrayBuffer;
+  neighborhoodStatus?: Uint32Array | Uint8Array | ArrayBuffer;
+}) {
+  const totals = getVecchiaReadbackValues(
+    'decodeGPUVecchiaFisherScoringResult',
+    'totals',
+    ports.totals,
+    20,
+    'float32',
+    true
+  );
+  const result = getVecchiaFisherEvaluation(totals, ports.status);
+  const status = decodeGPUVecchiaFisherScoringStatus(ports.status, ports.neighborhoodStatus);
+  status.complete =
+    status.complete &&
+    [result.logLikelihood, ...result.score, ...result.information].every(Number.isFinite);
+  return {
+    ...result,
+    logLikelihood: status.complete ? result.logLikelihood : NaN,
+    score: status.complete ? result.score : result.score.map(() => NaN),
+    information: status.complete ? result.information : result.information.map(() => NaN),
+    status
   };
 }

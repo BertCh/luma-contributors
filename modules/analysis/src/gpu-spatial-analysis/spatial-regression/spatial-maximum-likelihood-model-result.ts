@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateRegressionStatusReadback,
+  type RegressionStatusReadback
+} from './regression-status-readback';
+
+import {
   createGPURegressionModelResult,
   getGPURegressionPredictorNames,
   type GPURegressionCoefficient,
@@ -10,6 +15,7 @@ import {
 } from '../../analysis-core/contracts/model-result';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import {getRegressionTablePredictorCount} from './regression-table-layout';
+import {readRegressionSummaryFlag} from './regression-summary-flag';
 import {
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_APPROXIMATION,
   GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AT_BOUNDARY,
@@ -42,6 +48,12 @@ export type GPUSpatialMaximumLikelihoodReadback = {
   status: Uint32Array;
 };
 
+/** Status may also be supplied as an exact buffer read. */
+export type GPUSpatialMaximumLikelihoodReadbackInput = Omit<
+  GPUSpatialMaximumLikelihoodReadback,
+  'status'
+> & {status: RegressionStatusReadback};
+
 /** Options of {@link getGPUSpatialLagMaximumLikelihoodModelResult}. */
 export type GPUSpatialMaximumLikelihoodModelResultOptions = {
   /** Fitted predictor count; required for a capacity-sized table. Omit only for an exact-length table. */
@@ -54,18 +66,18 @@ export type GPUSpatialMaximumLikelihoodModelResultOptions = {
 export type GPUSpatialMaximumLikelihoodDiagnostics = {
   /** The search interval `[-bound, bound]` of `rho` or `lambda`. */
   parameterBound: number;
-  /** True when the traces were Hutchinson estimates, so the likelihood carries stochastic error. */
-  approximation: boolean;
-  /** True when the maximum is an interior stationary point. */
-  converged: boolean;
-  /** True when the maximum is an end of the search interval (a boundary solution). */
-  atBoundary: boolean;
-  /** True when the log-determinant series limit, not `0.99 / ||W||_inf`, shortened the interval. */
-  seriesLimited: boolean;
+  /** True for Hutchinson estimates; null when the summary flag is unavailable. */
+  approximation: boolean | null;
+  /** True for an interior stationary point; null when unavailable. */
+  converged: boolean | null;
+  /** True for a boundary solution; null when unavailable. */
+  atBoundary: boolean | null;
+  /** True when the series limit shortened the interval; null when unavailable. */
+  seriesLimited: boolean | null;
   /** Worst-case log-determinant truncation error at the estimate, in log-likelihood units. */
   truncationBound: number;
-  /** True when the information matrix was positive definite (standard errors are defined). */
-  varianceDefined: boolean;
+  /** True for positive-definite information (defined standard errors); null when unavailable. */
+  varianceDefined: boolean | null;
   /** Local maxima of the concentrated likelihood on the scan grid; more than 1 is multimodal. */
   localMaximumCount: number;
   /** `ln|I - rho W|` at the estimate. */
@@ -85,12 +97,20 @@ export function getGPUSpatialMaximumLikelihoodDiagnostics(
   }
   return {
     parameterBound: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PARAMETER_BOUND],
-    approximation: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_APPROXIMATION] === 1,
-    converged: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONVERGED] === 1,
-    atBoundary: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AT_BOUNDARY] === 1,
-    seriesLimited: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SERIES_LIMITED] === 1,
+    approximation: readRegressionSummaryFlag(
+      summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_APPROXIMATION]
+    ),
+    converged: readRegressionSummaryFlag(summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONVERGED]),
+    atBoundary: readRegressionSummaryFlag(
+      summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_AT_BOUNDARY]
+    ),
+    seriesLimited: readRegressionSummaryFlag(
+      summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SERIES_LIMITED]
+    ),
     truncationBound: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_TRUNCATION_BOUND],
-    varianceDefined: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_VARIANCE_DEFINED] === 1,
+    varianceDefined: readRegressionSummaryFlag(
+      summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_VARIANCE_DEFINED]
+    ),
     localMaximumCount: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOCAL_MAXIMUM_COUNT],
     logDeterminant: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_DETERMINANT],
     pseudoRSquaredSpatial: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED_SPATIAL]
@@ -99,9 +119,15 @@ export function getGPUSpatialMaximumLikelihoodDiagnostics(
 
 function getModelResult(
   kind: 'spatial-lag-maximum-likelihood' | 'spatial-error-maximum-likelihood',
-  readback: GPUSpatialMaximumLikelihoodReadback,
+  readback: GPUSpatialMaximumLikelihoodReadbackInput,
   options: GPUSpatialMaximumLikelihoodModelResultOptions
 ): GPURegressionModelResult {
+  const statusCode = validateRegressionStatusReadback(
+    kind === 'spatial-lag-maximum-likelihood'
+      ? 'getGPUSpatialLagMaximumLikelihoodModelResult'
+      : 'getGPUSpatialErrorMaximumLikelihoodModelResult',
+    readback.status
+  );
   const {table, summary} = readback;
   const lag = kind === 'spatial-lag-maximum-likelihood';
   if (summary.length < GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH) {
@@ -155,11 +181,9 @@ function getModelResult(
       ? summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_RESIDUAL_SUM_OF_SQUARES]
       : sigmaSquared * sampleSize,
     standardErrorSigmaSquared: 'maximum-likelihood',
-    statusCode: readback.status[0],
+    statusCode,
     converged:
-      readback.status[0] === 0
-        ? summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONVERGED] === 1
-        : false,
+      statusCode === 0 ? summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_CONVERGED] === 1 : false,
     pseudoRSquared: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_PSEUDO_R_SQUARED],
     logLikelihood: summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LOG_LIKELIHOOD],
     // spreg counts rho for the lag model but not lambda for the error model.
@@ -192,7 +216,7 @@ function getModelResult(
  * interior maximum. Conditioning is that of the design `[1, X]`.
  */
 export function getGPUSpatialLagMaximumLikelihoodModelResult(
-  readback: GPUSpatialMaximumLikelihoodReadback,
+  readback: GPUSpatialMaximumLikelihoodReadbackInput,
   options: GPUSpatialMaximumLikelihoodModelResultOptions = {}
 ): GPURegressionModelResult {
   return getModelResult('spatial-lag-maximum-likelihood', readback, options);
@@ -212,7 +236,7 @@ export function getGPUSpatialLagMaximumLikelihoodModelResult(
  * regression at `lambda`.
  */
 export function getGPUSpatialErrorMaximumLikelihoodModelResult(
-  readback: GPUSpatialMaximumLikelihoodReadback,
+  readback: GPUSpatialMaximumLikelihoodReadbackInput,
   options: GPUSpatialMaximumLikelihoodModelResultOptions = {}
 ): GPURegressionModelResult {
   return getModelResult('spatial-error-maximum-likelihood', readback, options);

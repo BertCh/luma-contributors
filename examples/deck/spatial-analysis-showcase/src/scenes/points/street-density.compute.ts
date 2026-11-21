@@ -708,7 +708,7 @@ export async function createStreetDensity(
         },
         pairCapacity: Math.max(1024, 3 * road.vertexCount),
         output: {
-          lengths: lengthView,
+          clippedLengths: lengthView,
           weightedLengths: weightedView,
           segmentCounts: view('counts', state.counts, 'uint32', featureCount),
           status: {overflow: view('overflow', state.overflow, 'uint32', 1)}

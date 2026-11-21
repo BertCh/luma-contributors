@@ -277,7 +277,7 @@ function createJoin(options: {
     querySort: options.querySort ?? false,
     output: {
       pointFeatureIds: view('point-feature-ids', 'uint32', pointCount),
-      featureCounts: view('feature-counts', 'uint32', featureCount),
+      polygonAssignmentCounts: view('feature-counts', 'uint32', featureCount),
       status: {overflow: view('overflow', 'uint32', 1), uncertainCount: view('u', 'uint32', 1)}
     },
     prepared: options.prepared

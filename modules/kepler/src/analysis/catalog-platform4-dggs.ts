@@ -20,6 +20,7 @@ import type {
 } from './catalog-binding-types';
 import {
   appendCatalogRow,
+  addCatalogDiagnostic,
   getPointPositions,
   makeCatalogGeometryText,
   makeCatalogTable,
@@ -153,6 +154,7 @@ export type DggsCellRow = {
   key: bigint;
   count: number;
   sum: number;
+  sumOverflow?: boolean;
   minimum: number;
   maximum: number;
 };
@@ -194,6 +196,7 @@ type TableOutputs = {
   count: CatalogGpuOutput<'uint32'>;
   overflow: CatalogGpuOutput<'uint32'>;
   candidateOverflow: CatalogGpuOutput<'uint32'>;
+  sumOverflow: CatalogGpuOutput<'uint32'>;
 };
 
 function makeTableOutputs(
@@ -209,6 +212,7 @@ function makeTableOutputs(
   const count = session.output(`${name}-count`, 'uint32', 1);
   const overflow = session.output(`${name}-overflow`, 'uint32', 1);
   const candidateOverflow = session.output(`${name}-candidate-overflow`, 'uint32', 1);
+  const sumOverflow = session.output(`${name}-sum-overflow`, 'uint32', 1);
   return {
     table: {
       cells: cells.view,
@@ -219,7 +223,8 @@ function makeTableOutputs(
       status: {
         count: count.view,
         overflow: overflow.view,
-        candidateOverflow: candidateOverflow.view
+        candidateOverflow: candidateOverflow.view,
+        sumOverflow: sumOverflow.view
       }
     },
     cells,
@@ -229,7 +234,8 @@ function makeTableOutputs(
     maximums,
     count,
     overflow,
-    candidateOverflow
+    candidateOverflow,
+    sumOverflow
   };
 }
 
@@ -246,6 +252,7 @@ async function readTableRows(
       'Cell table is incomplete; increase the source or destination capacity'
     );
   }
+  const sumOverflow = Boolean(await session.readScalar(outputs.sumOverflow));
   const cellWords = await session.readUint32(outputs.cells, rowCount);
   const counts = await session.readUint32(outputs.counts, rowCount);
   const sumWords = await session.readUint32(outputs.sums, rowCount);
@@ -256,6 +263,7 @@ async function readTableRows(
     rows.push({
       key: joinDggsWords(cellWords[2 * row], cellWords[2 * row + 1]),
       count: counts[row],
+      sumOverflow,
       sum:
         Number(BigInt.asIntN(64, joinDggsWords(sumWords[2 * row], sumWords[2 * row + 1]))) /
         GPU_CELL_DEFAULT_SUM_SCALE,
@@ -279,7 +287,7 @@ function addAggregationNodes(
       id: `${name}-point-to-cell`,
       family,
       resolution,
-      precision: 'extended',
+      precision: family === 'h3' ? 'double-single' : 'float32',
       positions: session.input(`${name}-positions`, samples.positions, 'float32x2'),
       output: {cells: keys.view}
     })
@@ -348,6 +356,7 @@ const CELL_COLUMN_TYPES = {
   count: 'int32',
   sum: 'float64',
   mean: 'float64',
+  sum_overflow: 'boolean',
   min: 'float64',
   max: 'float64',
   geometry: 'string'
@@ -367,8 +376,9 @@ function appendCellRow(
     family,
     resolution,
     count: row.count,
-    sum: hasValues ? row.sum : null,
-    mean: hasValues ? row.sum / row.count : null,
+    sum: hasValues && !row.sumOverflow ? row.sum : null,
+    mean: hasValues && !row.sumOverflow ? row.sum / row.count : null,
+    sum_overflow: Boolean(row.sumOverflow),
     min: hasValues ? row.minimum : null,
     max: hasValues ? row.maximum : null,
     geometry,
@@ -477,7 +487,7 @@ const POINT_INDEX_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     ...DGGS_BEHAVIOR,
-    'The GPU kernels use f32 trigonometry: Quadbin, quadkey and geohash keys are exact, S2 keys match the CPU reference through level 10. H3 keys use double-float (extended) arithmetic and equal h3-js on the same float32 positions at every resolution 0-15 (verified on Metal; the float32 input itself is about a metre coarse, so finest resolutions index the rounded position).'
+    'The GPU kernels use f32 trigonometry: Quadbin, quadkey and geohash keys are exact, S2 keys match the CPU reference through level 10. H3 keys use double-single (double-float) arithmetic and equal h3-js on the same float32 positions at every resolution 0-15 (verified on Metal; the float32 input itself is about a metre coarse, so finest resolutions index the rounded position).'
   ],
   limitation:
     'Indexing only; use dggs-cell-aggregation to count per cell. Cell ids are published as hex text because the table schema has no 64-bit integer.',
@@ -514,7 +524,7 @@ const POINT_INDEX_BINDING: CatalogOperationBinding = {
             id: 'catalog-dggs-point-index',
             family,
             resolution,
-            precision: 'extended',
+            precision: family === 'h3' ? 'double-single' : 'float32',
             positions: session.input('positions', samples.positions, 'float32x2'),
             output: {cells: output.view}
           })
@@ -588,11 +598,12 @@ const CELL_AGGREGATION_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     ...DGGS_BEHAVIOR,
+    'GPU fixed-point saturation sets sum_overflow and suppresses sum and mean while preserving counts and extrema; sum comparisons suppress all numeric columns on saturated inputs.',
     'Only occupied cells are published, ascending by 64-bit key; more than 100,000 cells throws. Sums are exact 16-bit fixed point on the GPU, so they match the CPU float64 sum of float32 values to 2^-17 per row.',
     'This is the equal-area-capable replacement of the square lattice cell-aggregation: Quadbin cells are Web Mercator tiles, H3 cells are hexagons.'
   ],
   limitation:
-    'GPUCellAggregation indexes Quadbin and H3 only (quadkey, geohash and S2 keys come from dggs-point-index). H3 runs only on the GPU with extended-precision (double-float) point indexing, and H3 boundaries are float32.',
+    'GPUCellAggregation indexes Quadbin and H3 only (quadkey, geohash and S2 keys come from dggs-point-index). H3 runs only on the GPU with double-single (double-float) point indexing, and H3 boundaries are float32.',
   run: (inputs, values) => {
     const family = requireCpuFamily(values['family'] as string) as 'quadbin';
     const resolution = values['resolution'] as number;
@@ -727,6 +738,7 @@ const CELL_ROLLUP_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     ...DGGS_BEHAVIOR,
+    'GPU fixed-point saturation sets sum_overflow and suppresses sum and mean while preserving counts and extrema; sum comparisons suppress all numeric columns on saturated inputs.',
     'Level 0 is the base resolution and level n is resolution - n * levelStep; the GPU rolls each level up from the finer table, the CPU recomputes each level from the points (equal for the exactly nesting Quadbin pyramid, integer sums are associative).',
     'parent_cell_id is published for Quadbin only; H3 parents are not derived on the CPU. Output over 100,000 rows throws.'
   ],
@@ -823,6 +835,7 @@ const CELL_ROLLUP_BINDING: CatalogOperationBinding = {
 
 type CompareRow = {
   key: bigint;
+  delta?: number;
   before: number;
   after: number;
   presence: number;
@@ -849,10 +862,18 @@ function buildCompareOutput(
   measure: string,
   droppedCount: number,
   getGeometry: (key: bigint) => string | null,
-  dispatchedContributors?: readonly string[]
+  dispatchedContributors?: readonly string[],
+  sumOverflow = false
 ): CatalogRunOutput {
   const diagnostics: CatalogDiagnostic[] = [];
   addDroppedDiagnostic(diagnostics, droppedCount);
+  if (sumOverflow)
+    addCatalogDiagnostic(
+      diagnostics,
+      'sum-overflow',
+      'warning',
+      'Fixed-point sums saturated; sum comparisons are unavailable.'
+    );
   const table = makeCatalogTable(
     'cell-comparison',
     'DGGS cell comparison',
@@ -867,23 +888,25 @@ function buildCompareOutput(
       ratio: 'float64',
       percent_change: 'float64',
       z_score: 'float64',
+      sum_overflow: 'boolean',
       geometry: 'string'
     },
     'geometry'
   );
   rows.forEach((row, index) => {
-    const delta = row.after - row.before;
+    const delta = row.delta ?? row.after - row.before;
     appendCatalogRow(table, {
       cell_id: formatDggsCellId(row.key),
       family,
       resolution,
       status: row.presence === 1 ? 'disappeared' : row.presence === 2 ? 'appeared' : 'present',
-      before: row.before,
-      after: row.after,
-      delta,
-      ratio: row.before === 0 ? null : row.after / row.before,
-      percent_change: row.before === 0 ? null : (100 * delta) / row.before,
-      z_score: zScores[index],
+      before: sumOverflow ? null : row.before,
+      after: sumOverflow ? null : row.after,
+      delta: sumOverflow ? null : delta,
+      ratio: sumOverflow || row.before === 0 ? null : row.after / row.before,
+      percent_change: sumOverflow || row.before === 0 ? null : (100 * delta) / row.before,
+      z_score: sumOverflow ? null : zScores[index],
+      sum_overflow: sumOverflow,
       geometry: getGeometry(row.key)
     });
   });
@@ -961,6 +984,7 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     ...DGGS_BEHAVIOR,
+    'GPU fixed-point saturation sets sum_overflow and suppresses sum and mean while preserving counts and extrema; sum comparisons suppress all numeric columns on saturated inputs.',
     'The union of occupied cells is published; status is appeared (only after), disappeared (only before) or present, a missing side counts as zero and ratio and percent_change are null when before is zero.',
     'z_score is delta / sqrt(before + after) for counts (0 when both are zero) and the standardized delta over the union rows (population standard deviation) for sums.'
   ],
@@ -1023,9 +1047,11 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
         const beforeValues = session.output('compare-before', 'float32', capacity);
         const afterValues = session.output('compare-after', 'float32', capacity);
         const zScores = session.output('compare-z', 'float32', capacity);
+        const delta = session.output('compare-delta', 'float32', capacity);
         const count = session.output('compare-count', 'uint32', 1);
         const overflow = session.output('compare-overflow', 'uint32', 1);
         const candidateOverflow = session.output('compare-candidate-overflow', 'uint32', 1);
+        const sumOverflow = session.output('compare-sum-overflow', 'uint32', 1);
         session.graph.add(
           new GPUCellTableCompare({
             id: 'catalog-dggs-compare',
@@ -1038,10 +1064,12 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
               before: beforeValues.view,
               after: afterValues.view,
               zScore: zScores.view,
+              delta: delta.view,
               status: {
                 count: count.view,
                 overflow: overflow.view,
-                candidateOverflow: candidateOverflow.view
+                candidateOverflow: candidateOverflow.view,
+                sumOverflow: sumOverflow.view
               }
             }
           })
@@ -1060,18 +1088,21 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
             'Cell comparison is incomplete; increase the source or destination capacity'
           );
         }
+        const sumsSaturated = Boolean(await session.readScalar(sumOverflow));
         const words = await session.readUint32(cells, rowCount);
         const presenceValues = await session.readUint32(presence, rowCount);
         const beforeRead = await session.readFloat32(beforeValues, rowCount);
         const afterRead = await session.readFloat32(afterValues, rowCount);
         const zRead = await session.readFloat32(zScores, rowCount);
+        const deltaRead = await session.readFloat32(delta, rowCount);
         const rows: CompareRow[] = [];
         for (let row = 0; row < rowCount; row++)
           rows.push({
             key: joinDggsWords(words[2 * row], words[2 * row + 1]),
             before: beforeRead[row],
             after: afterRead[row],
-            presence: presenceValues[row]
+            presence: presenceValues[row],
+            delta: deltaRead[row]
           });
         const stubRows: DggsCellRow[] = rows.map(row => ({
           key: row.key,
@@ -1080,7 +1111,12 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
           minimum: 0,
           maximum: 0
         }));
-        return {rows, zScores: Array.from(zRead), boundaries: await geometry(stubRows)};
+        return {
+          rows,
+          zScores: Array.from(zRead),
+          boundaries: await geometry(stubRows),
+          sumOverflow: measure === 'sum' && sumsSaturated
+        };
       }
     );
     return buildCompareOutput(
@@ -1091,7 +1127,8 @@ const CELL_COMPARE_BINDING: CatalogOperationBinding = {
       measure,
       before.droppedCount + after.droppedCount,
       key => getBoundaryText(result.boundaries.get(key) ?? null),
-      ['GPUPointToCell', 'GPUCellAggregation', 'GPUCellTableCompare', 'GPUCellGeometry']
+      ['GPUPointToCell', 'GPUCellAggregation', 'GPUCellTableCompare', 'GPUCellGeometry'],
+      result.sumOverflow
     );
   }
 };

@@ -7,7 +7,7 @@ import {S2_DATASETS} from './s2-datasets';
 
 defineLensScenario({
   id: 'gpu-spatial-analysis.spatial-clustering',
-  element: 'GPUSpatialClustering',
+  element: 'GPUDBSCAN',
   title: 'DBSCAN clusters of iNaturalist observations, Chicago North Side',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.nature,
@@ -22,13 +22,13 @@ defineLensScenario({
       run: device =>
         runS2Lens(device, {
           scenarioId: 'gpu-spatial-analysis.spatial-clustering',
-          element: 'GPUSpatialClustering',
+          element: 'GPUDBSCAN',
           datasets: ['s2-chicago-north-nature'],
           keySpaces: [
             {id: 'observation', label: 'observation', size: points.count, indexSpace: '1d'},
             {id: 'status', label: 'run status', size: 1, indexSpace: '1d'}
           ],
-          choices: {epsilon: 250, minimumPoints: 6},
+          choices: {epsilon: 250, minimumSamples: 6},
           async build(graph, uploads) {
             const observations = uploads.view('observations', points.positions, 'float32x2');
             const result = await runExample(graph, {

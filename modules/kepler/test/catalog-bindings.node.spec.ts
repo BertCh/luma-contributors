@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, test} from 'vitest';
+import {listQualifiedCatalogEntries} from '../src/analysis/catalog-qualified-entries';
 import {
   getCatalogBinding,
   getCatalogDefaultParameters,
@@ -53,6 +54,42 @@ const square = (x: number, y: number, size: number) => [
   [x, y + size],
   [x, y]
 ];
+
+test('catalog list defaults and normalized lists belong to each invocation', () => {
+  const binding = {
+    id: 'capture',
+    parameters: [
+      {name: 'breaks', label: 'Breaks', kind: 'number-list' as const, defaultValue: [1, 2]}
+    ]
+  };
+  const first = getCatalogDefaultParameters(binding);
+  (first['breaks'] as number[])[0] = 222;
+  expect(getCatalogDefaultParameters(binding)['breaks']).toEqual([1, 2]);
+  const supplied = [3, 4];
+  const normalized = normalizeCatalogParameters(binding, {breaks: supplied});
+  supplied[0] = 999;
+  expect(normalized['breaks']).toEqual([3, 4]);
+});
+
+test('catalog admission names numeric constraints and refuses zero FTLE duration', () => {
+  expect(() => normalizeCatalogParameters(getCatalogBinding('idw-grid')!, {cellSize: -1})).toThrow(
+    'idw-grid: cellSize must be at least 0.000001; received -1'
+  );
+  const ftle = getCatalogBinding('raster-lagrangian-ftle')!;
+  expect(() => normalizeCatalogParameters(ftle, {timeStep: 0})).toThrow('timeStep must be nonzero');
+  for (const timeStep of [-0.1, 0.1])
+    expect(normalizeCatalogParameters(ftle, {timeStep})['timeStep']).toBe(timeStep);
+});
+
+test('clip binding distinguishes operand restrictions from subject holes', () => {
+  const binding = getCatalogBinding('geometry-convex-clip')!;
+  expect(binding.summary).toContain('one simple convex clip shell with no holes');
+  expect(binding.inputs.find(input => input.name === 'clip')?.label).toContain('no holes');
+  expect(binding.declaredBehavior.join(' ')).toContain('exactly one polygon and exactly one ring');
+  expect(binding.declaredBehavior.join(' ')).toContain(
+    'Holes in the subject geometry clip independently'
+  );
+});
 
 // A(0,0) B(10,0) C(30,0) D(30,10) E(0,5); G(-10,0); F(30,20); island at (100,100).
 const networkLines = lineCollection([
@@ -153,12 +190,43 @@ function computeReferenceCost(
 
 test('catalog entries report runnable bindings and a reason when not runnable', () => {
   const entries = listCatalogEntries();
-  const serviceAreas = entries.find(entry => entry.contributorName === 'GPUNetworkServiceAreas');
+  const serviceAreas = entries.find(
+    entry => entry.identity.exportName === 'GPUNetworkServiceAreas'
+  );
   expect(serviceAreas?.runnable).toBe('catalog-binding');
   expect(serviceAreas?.bindingIds).toEqual(['network-service-area', 'curated-drive-time-bands']);
   const unbound = entries.filter(entry => entry.runnable === 'no');
   expect(unbound.length).toBeGreaterThan(0);
   expect(unbound.every(entry => Boolean(entry.reason))).toBe(true);
+});
+
+test('UCO-10 network noding advertises both production execution routes', () => {
+  const graphBinding = requireBinding('network-build-graph');
+  const crossingBinding = requireBinding('network-crossing-noding');
+  const lines = lineCollection([
+    {
+      coordinates: [
+        [0, 0],
+        [10, 0]
+      ]
+    }
+  ]);
+  const result = runCatalogOperation(graphBinding, {coordinateSystem: 'planar'}, {lines});
+  expect(result.engine).toBe('cpu-reference');
+  expect(result.tables[0].rowCount).toBe(1);
+  expect(crossingBinding.engine).toBe('gpu');
+  expect(crossingBinding.runGpu).toBeTypeOf('function');
+
+  const noding = listCatalogEntries({lensScenarios: []}).find(
+    entry =>
+      entry.identity.package === '@luma-contributors/analysis/gpu-network' &&
+      entry.identity.exportName === 'GPUNetworkNoding'
+  );
+  expect(noding).toMatchObject({
+    bindingIds: [graphBinding.id, crossingBinding.id],
+    runnable: 'catalog-binding',
+    engine: 'gpu-or-cpu'
+  });
 });
 
 test('parameters are range checked and unknown names rejected', () => {
@@ -515,4 +583,131 @@ test('unsnappable origins produce an error diagnostic instead of results', () =>
   );
   expect(result.tables[0].rowCount).toBe(0);
   expect(result.diagnostics[0].severity).toBe('error');
+});
+
+test('UCO-10 qualified discovery keeps both visibility recipes and the complete raster catalog', () => {
+  const lensScenarios = [
+    {
+      id: 'network',
+      entry: 'gpu-network',
+      element: 'addVisibilityGraphRecipe',
+      title: 'Network',
+      audience: 'analyst' as const
+    },
+    {
+      id: 'spatial',
+      entry: 'gpu-spatial-analysis',
+      element: 'addVisibilityGraphRecipe',
+      title: 'Spatial',
+      audience: 'analyst' as const
+    }
+  ];
+  const entries = listCatalogEntries({lensScenarios});
+  const visibility = entries.filter(
+    entry => entry.identity.exportName === 'addVisibilityGraphRecipe'
+  );
+  expect(visibility).toHaveLength(2);
+  expect(
+    visibility.find(entry => entry.identity.package === '@luma-contributors/analysis/gpu-network')
+      ?.lensScenarioIds
+  ).toEqual(['network']);
+  expect(
+    visibility.find(
+      entry => entry.identity.package === '@luma-contributors/analysis/gpu-spatial-analysis'
+    )?.lensScenarioIds
+  ).toEqual(['spatial']);
+  expect(
+    entries.find(entry => entry.identity.exportName === 'GPURasterArithmetic')?.identity
+  ).toEqual({
+    package: '@luma-contributors/analysis/raster-analysis',
+    exportName: 'GPURasterArithmetic'
+  });
+  for (const exportName of ['GPURasterNeighborhood', 'GPURasterConnectedComponents']) {
+    const upstream = entries.find(
+      entry =>
+        entry.identity.package === '@luma.gl/graph/gpu-raster' &&
+        entry.identity.exportName === exportName
+    );
+    expect(upstream?.identity).toEqual({package: '@luma.gl/graph/gpu-raster', exportName});
+    expect(upstream?.runnable).toBe('catalog-binding');
+  }
+});
+
+test('UCO-10 qualified stages and extensions never bind the other package with the same name', () => {
+  const identity = {
+    package: '@luma-contributors/analysis/gpu-network',
+    exportName: 'addVisibilityGraphRecipe'
+  };
+  const extension = {package: '@luma.gl/graph', exportName: 'ExternalAnalysisStage'};
+  const binding: CatalogOperationBinding = {
+    ...getCatalogBinding('geometry-measures')!,
+    id: 'qualified-fixture',
+    stages: [
+      {identity, execution: 'gpu'},
+      {identity: extension, execution: 'cpu'}
+    ],
+    contributorNames: [identity.exportName, extension.exportName],
+    gpuContributorNames: [identity.exportName]
+  };
+  const entries = listQualifiedCatalogEntries([binding], [], []);
+  expect(
+    entries.find(
+      entry =>
+        entry.identity.package === identity.package &&
+        entry.identity.exportName === identity.exportName
+    )?.bindingIds
+  ).toEqual(['qualified-fixture']);
+  expect(
+    entries.find(
+      entry =>
+        entry.identity.package === '@luma-contributors/analysis/gpu-spatial-analysis' &&
+        entry.identity.exportName === identity.exportName
+    )?.bindingIds
+  ).toEqual([]);
+  expect(
+    entries.find(
+      entry =>
+        entry.identity.package === extension.package &&
+        entry.identity.exportName === extension.exportName
+    )?.engine
+  ).toBe('cpu-reference');
+});
+
+test('UCO-10 mixed binding declarations resolve each export independently', () => {
+  const networkPackage = '@luma-contributors/analysis/gpu-network';
+  const visibility = {package: networkPackage, exportName: 'addVisibilityGraphRecipe'};
+  const hostRaster = {package: '@host/raster', exportName: 'GPURasterNeighborhood'};
+  const binding: CatalogOperationBinding = {
+    ...requireBinding('geometry-measures'),
+    id: 'mixed-contributors',
+    engine: 'gpu',
+    contributorIdentities: [visibility, hostRaster],
+    stages: [{identity: visibility, execution: 'gpu'}],
+    contributorNames: [visibility.exportName, hostRaster.exportName, 'GPUNetworkReachability'],
+    gpuContributorNames: ['GPUNetworkReachability']
+  };
+  const entries = listQualifiedCatalogEntries([binding], [], []);
+  expect(entries.filter(entry => entry.identity.exportName === hostRaster.exportName)).toEqual([
+    expect.objectContaining({identity: hostRaster, bindingIds: [binding.id]})
+  ]);
+  expect(
+    entries.find(
+      entry =>
+        entry.identity.package === networkPackage &&
+        entry.identity.exportName === 'GPUNetworkReachability'
+    )
+  ).toMatchObject({bindingIds: [binding.id], runnable: 'catalog-binding', engine: 'gpu'});
+  expect(entries.filter(entry => entry.identity.exportName === visibility.exportName)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({identity: visibility, bindingIds: [binding.id], engine: 'gpu'}),
+      expect.objectContaining({
+        identity: {
+          package: '@luma-contributors/analysis/gpu-spatial-analysis',
+          exportName: visibility.exportName
+        },
+        bindingIds: [],
+        runnable: 'no'
+      })
+    ])
+  );
 });

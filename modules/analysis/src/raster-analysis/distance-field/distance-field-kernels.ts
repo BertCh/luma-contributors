@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {RASTER_CELL_INDEX_WGSL} from '../raster-sampling/raster-sampling-utils';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -181,7 +183,8 @@ export function createDistanceFieldSeedNodes<Parameters>(
       bindings: clearBindings,
       invocationCount: cellCount,
       body: props.seedMask
-        ? // Mask value v marks a seed with ID v - 1, so 0 is "no seed" and 0xffffffff wraps to NONE.
+        ? // External seed word v > 0 -> ID v - 1; 0 wraps to NONE (background).
+          // In particular 0xffffffff -> ID 0xfffffffe: a peak's unresolved sentinel is NOT background.
           'cellSeeds[cellSeedsOffset + index] = seedMask[seedMaskOffset + index] - 1u;'
         : `cellSeeds[cellSeedsOffset + index] = ${GPU_DISTANCE_FIELD_NONE}u;`
     })
@@ -221,12 +224,12 @@ export function createDistanceFieldSeedNodes<Parameters>(
         variant: 'seed-scatter',
         bindings,
         invocationCount: positions.length,
-        declarations: getDistanceFieldGridWGSL(grid, false),
+        declarations: `${getDistanceFieldGridWGSL(grid, false)}\n${RASTER_CELL_INDEX_WGSL}`,
         body: /* wgsl */ `${props.seedCount ? 'if (index >= seedCount[seedCountOffset]) { return; }' : ''}
   let seedId = ${props.seedIds ? 'seedIds[seedIdsOffset + index]' : 'index'};
   if (seedId == NONE) { return; }
-  let column = floor((positions[positionsOffset + index * 2u] - settings[settingsOffset]) * settings[settingsOffset + 4u]);
-  let row = floor((positions[positionsOffset + index * 2u + 1u] - settings[settingsOffset + 1u]) * settings[settingsOffset + 5u]);
+  let column = getRasterCellIndex(positions[positionsOffset + index * 2u], settings[settingsOffset], select(-settings[settingsOffset + 2u], settings[settingsOffset + 2u], settings[settingsOffset + 4u] > 0.0), settings[settingsOffset + 4u]);
+  let row = getRasterCellIndex(positions[positionsOffset + index * 2u + 1u], settings[settingsOffset + 1u], select(-settings[settingsOffset + 3u], settings[settingsOffset + 3u], settings[settingsOffset + 5u] > 0.0), settings[settingsOffset + 5u]);
   // Negated comparisons also reject NaN and infinite coordinates.
   if (!(column >= 0.0 && column < f32(GRID_WIDTH) && row >= 0.0 && row < f32(GRID_HEIGHT))) { return; }
   atomicMin(&cellSeedBits[cellSeedBitsOffset + u32(row) * GRID_WIDTH + u32(column)], seedId);`

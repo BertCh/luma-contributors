@@ -7,7 +7,35 @@ description: "Cells (DGGS) contributors in @luma-contributors/analysis/gpu-spati
 
 # Cells (DGGS)
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`.
+
 ## Cell system support
+
+S2's measured mismatch fractions against float64 were zero observed through level 10,
+`1e-4` at 11, `5e-4` at 12, `.0026` at 15, `.066` at 20, `.26` at 22, `.78` at 24,
+and nearly all at levels 26–30. The fixture (`gpu-point-to-cell.spec.ts`, `createPoints(5)`)
+has 10,176 equal-area random points in a 10,240-row fixture (64 additional special/fill rows),
+rounded to “10,000” in earlier descriptions. This sample does
+not prove exact classification at boundaries; choose a level for the required boundary tolerance.
+Quadbin row mismatches against float64 Mercator were `0.019%` at zoom 16 and `1.3%` at 26.
+Determinism is distinct from agreement with a continuous float64 formula.
+
+The longitude column below describes `longitudePolicy: 'family-default'`.
+
+| Point indexing family | Longitude convention | Precision at the trajectory handoff |
+| --- | --- | --- |
+| H3 | Periodic longitude reduction | Extended precision improves key agreement; boundary cases still require a tolerance policy |
+| S2 | Periodic direction on the sphere | float32; sampled mismatch series above |
+| Quadbin | Clips to ±180°, both endpoints map to column zero | Deterministic integer-defined tiles of float32 positions |
+| Quadkey | Clips to ±180°, both endpoints map to column zero | Deterministic integer-defined tiles of float32 positions |
+| Geohash | Clips to ±180°, preserves the endpoint distinction | Bisection of float32 positions |
+
+A resampled longitude may be unwrapped beyond ±180°. Choose and apply the intended longitude
+branch before indexing: clipping that value is not equivalent to periodic wrapping.
+Use `longitudePolicy: 'wrap'` on `GPUPointToCell` (and its CPU/operation forms) to bin an
+unwrapped trajectory consistently: geohash 190° and −170° at latitude 5° then have the same key.
+Use the canonical `precision: 'double-single'` spelling where supported.
+
 
 Shared cell operators support S2 topology, compaction, grid paths, center covering and outlines.
 The separate S2 compatibility API retains its own status words and unit-sphere units
@@ -33,7 +61,7 @@ remain unsupported.
 
 | Operation | H3 | Quadbin | S2 | quadkey / geohash | A5 |
 | --- | --- | --- | --- | --- | --- |
-| Point to cell | `GPUPointToCell`; extended precision exact | `GPUPointToCell`, also inside `GPUCellAggregation` | `GPUPointToCell`, f32 only, exact to about level 20 | `GPUPointToCell` | none |
+| Point to cell | `GPUPointToCell`; optional double-single arithmetic | `GPUPointToCell`, also inside `GPUCellAggregation` | `GPUPointToCell`, f32 only; see sampled precision below | `GPUPointToCell` | none |
 | Cell to center / boundary | `GPUCellGeometry` (6 to 10 vertices) | `GPUCellGeometry` | `GPUCellGeometry` | `GPUCellGeometry` | `GPUCellGeometry` |
 | Parent | `GPUCellTopology` | `GPUCellTopology` | `GPUCellTopology`; `GPUS2CellHierarchy` compatibility | none | none |
 | Children | `GPUCellTopology`, any depth to stride 4096 | same | `GPUCellTopology`, any depth to stride 4096; compatibility `GPUS2CellHierarchy` also provides leaf ranges | none | none |
@@ -48,6 +76,19 @@ remain unsupported.
 
 The separate `GPUS2PolygonCovering` and `GPUS2CapCovering` take unit xyz vectors and an optional `spatialContext` (longitude-latitude, great-circle
 edges); see [Global coordinates](./global-coordinates.md) for their limits and status words.
+
+For `GPUS2PolygonCovering`, both GPU refinement routes tile **4096 input edges or edge pairs
+per invocation** against four cell corners/edges; this is an input-work tile, not a maximum
+polygon size. Larger rings combine integer winding partials. Vertex reductions process one
+vertex per invocation per stage; range searches take at most 32 bisections. Independently,
+GPU traversal stops at level 15 and at `maximumVisitedCells` (default 65,536, maximum
+1,048,576 visited cells); the level-synchronous budget bounds retained plus pending frontier
+cells. DFS exhaustion keeps its ordered emitted prefix; level-synchronous exhaustion clears
+the cover. The CPU maximum level is 30 and an omitted CPU visit budget permits complete
+traversal. Tree scratch alone costs 40 bytes per budget cell per configured level (about
+40 MiB at the default budget and level 15, 640 MiB at the maximum); preparation, winding and
+scan scratch are additional. Node and device budgets still apply; the per-invocation work
+bound is not a device timing guarantee.
 
 
 ### `GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`, and `GPUCellLevelSelection`
@@ -112,7 +153,8 @@ table therefore feeds the projection directly.
   and status ports once, including inherited or getter-backed fields; unrelated metadata is
   ignored. Replacing caller fields afterwards
   does not change the declared graph. Buffer contents remain per-frame inputs.
-- **Accuracy of sums.** The integer sum is exact, order independent and equal under roll-up; the
+- **Accuracy of sums.** The integer sum is exact and order independent only when each scaled row stays within its row clamp,
+  the final signed 64-bit total fits, and no source keys or contributions have been lost; the
   values are not: each row is rounded to the nearest multiple of `1 / sumScale` before it is added.
   With the default 65536 that is an absolute error of up to `2^-17` (7.6e-6) per row, a value
   below it adds 0, and a column of constant `1e-4` sums 6.8% high (`7 / 65536` per row). The
@@ -130,7 +172,8 @@ table therefore feeds the projection directly.
   `GPUCellTableCompare`).
 - **Roll-up.** `GPUCellRollup` reduces a table to a coarser resolution without re-reading rows
   or sorting. Parent keys truncate the cell path (`cellToParent`), which preserves key order.
-  Counts and sums are integer sums, so a roll-up equals direct aggregation bit for bit. The
+  Counts and sums agree with direct aggregation when all contributions are retained and no
+  intermediate published signed sum saturates. The
   source table's `overflow` and inherited `candidateOverflow` are combined into the parent's
   `candidateOverflow`; its own `overflow` is set only when parent rows exceed its capacity.
   `requiredCount` counts parents formed from retained source cells, so it is a lower bound on
@@ -145,23 +188,54 @@ table therefore feeds the projection directly.
   its `levelCounts` entry still reports the number of retained rows.
 - **Level selection.** `GPUCellLevelSelection` reads a per-frame `activeLevel` (one `uint32`) and
   writes that level's `status.count`, first row, and the `instanceCount`/`firstInstance` words of indirect
-  draw arguments. Keep it in a small per-frame graph: switching levels rewrites one word and never
+  draw arguments. Optional `status.requiredCount` receives the same selected count; selection
+  performs no further capacity clamp, and the supplied level counts may already be clamped.
+  Keep it in a small per-frame graph: switching levels rewrites one word and never
   re-runs the pyramid.
 
 ```ts
-// Allocate every table with status: {count, overflow, candidateOverflow}.
-// Read both loss flags after execution; either makes that level incomplete.
-graph.add(new GPUCellPyramid({
-  family: 'quadbin',
-  positions, values, mask,                    // mask and values can change every frame
-  resolutions: [18, 14, 10, 6, 2],
-  output: {levels: tables, levelCounts}
-}));
-selectionGraph.add(new GPUCellLevelSelection({
-  levelCounts, activeLevel: activeLevel.importToGraph(selectionGraph),
-  output: {status: {count}, drawArguments}
-}));
-activeLevel.write(Uint32Array.of(levelForZoom(zoom)));   // no recompile
+import {Buffer, type Device} from '@luma.gl/core';
+import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
+import {GPUCellPyramid, GPUCellLevelSelection, type GPUCellTable} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function declareCellPyramid(device: Device) {
+  const graph = new GPUCommandGraph(device);
+  const selectionGraph = new GPUCommandGraph(device);
+  const positionsBuffer = device.createBuffer({data: Float32Array.of(0, 0, 1, 0, 2, 0),
+    usage: Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC});
+  const positions = graph.createDataView(graph.importBuffer(
+    {id: 'positions', byteLength: 24, usage: Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC}, positionsBuffer
+  ), {format: 'float32x2', length: 3});
+  const resolutions = [18, 14, 10, 6, 2];
+  const tables: GPUCellTable[] = resolutions.map((resolution) => ({
+    cells: createTransientView(graph, `cells-${resolution}`, 'uint32x2', 3),
+    counts: createTransientView(graph, `counts-${resolution}`, 'uint32', 3),
+    status: {
+      count: createTransientView(graph, `count-${resolution}`, 'uint32', 1),
+      overflow: createTransientView(graph, `overflow-${resolution}`, 'uint32', 1),
+      candidateOverflow: createTransientView(graph, `candidate-${resolution}`, 'uint32', 1)
+    }
+  }));
+  // One caller-owned buffer, imported separately into each graph.
+  const countsBuffer = device.createBuffer({byteLength: 20, usage: Buffer.STORAGE | Buffer.COPY_SRC});
+  const importCounts = (target: GPUCommandGraph) => target.createDataView(
+    target.importBuffer({id: 'level-counts', byteLength: 20, usage: Buffer.STORAGE | Buffer.COPY_SRC}, countsBuffer),
+    {format: 'uint32', length: 5}
+  );
+  graph.add(new GPUCellPyramid({family: 'quadbin', positions, resolutions,
+    output: {levels: tables, levelCounts: importCounts(graph)}}));
+  const activeLevelBuffer = device.createBuffer({data: Uint32Array.of(0), usage: Buffer.STORAGE | Buffer.COPY_DST});
+  const activeLevel = selectionGraph.createDataView(selectionGraph.importBuffer(
+    {id: 'active-level', byteLength: 4, usage: Buffer.STORAGE | Buffer.COPY_DST}, activeLevelBuffer
+  ), {format: 'uint32', length: 1});
+  const count = createTransientView(selectionGraph, 'selected-count', 'uint32', 1);
+  const drawArguments = createTransientView(selectionGraph, 'draw', 'uint32', 4);
+  selectionGraph.add(new GPUCellLevelSelection({levelCounts: importCounts(selectionGraph), activeLevel,
+    output: {status: {count}, drawArguments}}));
+  // After executing the producer graph, execute the selection graph for each chosen level index.
+  activeLevelBuffer.write(Uint32Array.of(1)); // index 1 selects resolution 14; no recompile
+  return {graph, selectionGraph, tables, countsBuffer, activeLevelBuffer, positionsBuffer};
+}
 ```
 
 - **Determinism.** Point keys use only integer arithmetic. The longitude column is exact. The
@@ -240,7 +314,7 @@ and `GPUH3CellProjection` read. The zero key means "no cell".
   | Family | Resolutions | Notes |
   | --- | --- | --- |
   | `'quadbin'` | 0-26 | integer keys, exact |
-  | `'h3'` | 0-15 | f32 input: exact to res 4 |
+  | `'h3'` | 0-15 | float32 input: zero mismatches observed through res 4 |
   | `'quadkey'` | 1-29 | packed: length in bits 58-63, base-4 digits |
   | `'geohash'` | 1-12 | packed: length in bits 60-63, base-32 characters, i.e. the lng/lat bit interleave |
   | `'s2'` | levels 0-30 | standard S2CellId |
@@ -271,23 +345,40 @@ and `GPUH3CellProjection` read. The zero key means "no cell".
     [H3 edge-deviation table](#gpucellsetoutline) below.
 
 ```ts
-graph.add(new GPUPointToCell({family: 'h3', resolution: 8, positions, output: {cells}}));
-graph.add(new GPUCellGeometry({
-  family: 'h3', cells, maximumVertexCount: GPU_CELL_GEOMETRY_H3_MAXIMUM_VERTEX_COUNT,
-  output: {centers, boundaries, vertexCounts}
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUPointToCell, GPUCellGeometry, GPU_CELL_GEOMETRY_H3_MAXIMUM_VERTEX_COUNT} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsCellsExample2(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPUPointToCell>[0]['positions']>;
+  cells: NonNullable<NonNullable<ConstructorParameters<typeof GPUPointToCell>[0]['output']>['cells']>;
+  centers: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellGeometry>[0]['output']>['centers']>;
+  boundaries: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellGeometry>[0]['output']>['boundaries']>;
+  vertexCounts: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellGeometry>[0]['output']>['vertexCounts']>;
+}) {
+  const {positions, cells, centers, boundaries, vertexCounts} = inputs;
+  graph.add(new GPUPointToCell({family: 'h3', resolution: 8, longitudePolicy: 'wrap', precision: 'double-single', positions, output: {cells}}));
+  graph.add(new GPUCellGeometry({
+    family: 'h3', cells, maximumVertexCount: GPU_CELL_GEOMETRY_H3_MAXIMUM_VERTEX_COUNT,
+    output: {centers, boundaries, vertexCounts}
+  }));
+}
 ```
 
 - **Exactness and accuracy.**
   - Quadbin, quadkey and geohash keying is integer-only and equals the BigInt oracles bit for bit
     on every device.
-  - S2 and H3 use f32 sphere math (polynomial sine/cosine, no trig builtins for H3) and are exact
-    at coarse resolutions. A mismatch is an edge neighbour of the f64 answer:
+  - The default float32 indexing routes for S2 and H3 use float32 sphere math. Zero mismatches in the coarse-resolution samples are
+    observations, not guarantees at arbitrary boundaries. The fixture's edge-neighbour observation
+    for S2 holds only through level 22; at finer levels a float32 face coordinate can skip many cells.
+    At `(7°, 0°)`, level 30, the float64 face-I coordinate is 628013611, while float32 `st * 2^30`
+    in that face region has a spacing of 64: even the nearest grid coordinate differs by 21 columns.
+    Use the sampled series above and the application's boundary-error tolerance, rather than a
+    universal usable-level recommendation.
 
-    | Family | Uniform-point mismatch rate vs the f64 reference (f32 inputs) | Usable limit |
-    | --- | --- | --- |
-    | H3 vs h3-js | 0 at res 0-4, 1e-4-4e-4 at 5-8, 1e-3 at 9, 2e-3 at 10, 1.8% at 12, 28% at 15 | res ≤ 12 |
-    | S2 | 0 at levels 0-10, 1e-4-3e-3 at 11-15, 1.8% at 18, 13% at 21 | level ≤ 20 |
+    | Family | Observed uniform-point mismatch rate vs float64 (float32 inputs) |
+    | --- | --- |
+    | H3 vs h3-js | 0 at res 0–4, 1e-4–4e-4 at 5–8, 1e-3 at 9, 2e-3 at 10, 1.8% at 12, 28% at 15 |
+    | S2 | 0 observed through 10, 1e-4 at 11, 5e-4 at 12, .0026 at 15, .066 at 20, .26 at 22, .78 at 24; nearly all at 26–30 |
 
   - Geometry matches h3-js / oracles within about 3e-5 degrees.
 
@@ -366,14 +457,30 @@ Both consume cell keys, not positions, so neither takes a `spatialContext`.
     input is in path order.
 
 ```ts
-graph.add(new GPUCellTopology({
-  family: 'h3', operation: {type: 'disk', k: 2},
-  cells, output: {cells: diskCells, distances, counts}   // diskCells.length = rows * 19
-}));
-graph.add(new GPUCellCompaction({
-  family: 'h3', operation: {type: 'compact', resolution: 9},
-  cells: polyfillCells, output: {cells: compacted, status: {count, overflow}}
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCellTopology, GPUCellCompaction} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsCellsExample4(graph: GPUCommandGraph, inputs: {
+  cells: NonNullable<ConstructorParameters<typeof GPUCellTopology>[0]['cells']>;
+  diskCells: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTopology>[0]['output']>['cells']>;
+  distances: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTopology>[0]['output']>['distances']>;
+  counts: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTopology>[0]['output']>['counts']>;
+  source: NonNullable<ConstructorParameters<typeof GPUCellCompaction>[0]['source']>;
+  candidateOverflow: GraphDataView<'uint32'>;
+  compacted: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCompaction>[0]['output']>['cells']>;
+  count: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCompaction>[0]['output']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCompaction>[0]['output']>['status']>['overflow']>;
+}) {
+  const {cells, diskCells, distances, counts, source, candidateOverflow, compacted, count, overflow} = inputs;
+  graph.add(new GPUCellTopology({
+    family: 'h3', operation: {type: 'disk', k: 2},
+    cells, output: {cells: diskCells, distances, counts}   // diskCells.length = rows * 19
+  }));
+  graph.add(new GPUCellCompaction({
+    family: 'h3', operation: {type: 'compact', resolution: 9},
+    source, output: {cells: compacted, status: {count, overflow, candidateOverflow}}
+  }));
+}
 ```
 
 - **Determinism.** All operations are integer-only, with fixed sort orders. GPU results equal the
@@ -448,14 +555,14 @@ H3/S2/Quadbin grid paths and cell measures, integer-exact where possible.
   of 3e-6 for S2/Quadbin GPU measures. The CPU twin `computeCellMeasuresOnCPU` and
   `CPUCellMeasuresOperation` support the same families, units, word orders and output layouts;
   binary64 vector differences serve as an independent S2 evaluation.
-  Set `precision: 'fp64'` to use the published luma.gl double-single shader module for H3
+  Set `precision: 'double-single'` to use the published luma.gl double-single shader module for H3
   boundary projection, face-edge intersections and spherical-vector differences, including
   pentagons and face-crossing cells above resolution 10. S2 uses double-single quadratic-map
   coordinates and local increments, and Quadbin uses double-single Mercator coordinates and
   hyperbolic functions. The option is compile-time; it changes neither ports nor float32 output
   formats. It defaults to `'float32'`, preserving the existing evaluation. GPU/CPU parity specs
   require relative tolerances of 2e-5 for H3 and 3e-6 for S2/Quadbin. The CPU twin accepts either option and computes
-  in binary64 for both. The fp64 path costs more arithmetic per row and should be selected when
+  in binary64 for both. The double-single path costs more arithmetic per row and should be selected when
   the precision is needed. Both graph operation forms
   infer the same default edge stride from `family`. Open: directed edges and vertexes.
 
@@ -493,7 +600,7 @@ Polyfills polygons into H3, Quadbin or S2 cells, emitting (feature id, cell) pai
 
 Polyfills polygons (with holes) into Quadbin, H3 or S2 cells, like CARTO `QUADBIN_POLYFILL` /
 `H3_POLYFILL` and h3-js `polygonToCells`. The result is `(feature id, cell)` pairs that feed
-`GPUCellAggregation` pre-keyed rows, `GPUKeyJoin` and `GPUCellCompaction`.
+`GPUCellAggregation` pre-keyed rows, `GPUKeyLookup` and `GPUCellCompaction`.
 
 Maximum: `candidateCapacity` is at most `getGPUCellCoverMaximumCandidateCapacity(device)` (2^24 on a default device), and with the edge-slab index `positions.length + edgeSlabEntryCapacity` is at most `getGPUCellCoverMaximumEdgeSlabEntryCount(device)` (2^24).
 
@@ -512,7 +619,11 @@ Maximum: `candidateCapacity` is at most `getGPUCellCoverMaximumCandidateCapacity
   provision `candidateCapacity` accordingly and inspect `candidateCount` and `candidateOverflow`.
   A feature reaching past the cover's latitude limit
   (89 degrees for H3, 85.051129 for Quadbin) loses its polar cells and is counted in the optional
-  `output.status.uncertainCount`. Both scalars are cleared on every encoding.
+  legacy `output.status.uncertainCount`. This is missing coverage, not resolved fallback.
+  Optional `status.complete` is zero for clipping or rejected features, independently of the
+  capacity flags. Without a `complete` destination, those conditions suppress `status.count`
+  to zero. Diagnostic selection never controls this behavior. Status is rewritten on every
+  encoding, so a clean replay restores completeness and readable output.
 - **Containment.**
   - `'center'`: the cell centre is inside the polygon.
   - `'full'`: the cell lies inside the polygon.
@@ -555,18 +666,65 @@ Maximum: `candidateCapacity` is at most `getGPUCellCoverMaximumCandidateCapacity
     bounding boxes of thin or sparse polygons. `output.status.candidateCount` (optional) reports the
     unclamped enumerated total.
 - **Output.** `{featureIds, cells (uint32x2 little-endian),
-  status: {count, requiredCount?, overflow, candidateOverflow, candidateCount?, invalidCount?, uncertainCount?}}`. `status.overflow` means only that accepted cells exceeded the final
-  cell capacity; `status.candidateOverflow` means `candidateCapacity` truncated enumeration, in which case
-  `requiredCount` is not an exact full-cover requirement. Order is by feature, then candidate order.
+  status: {count, requiredCount?, overflow, candidateOverflow, complete?, candidateCount?, invalidCount?, uncertainCount?}}`. `status.overflow` means only that accepted cells exceeded the final
+  cell capacity; `status.candidateOverflow` means only candidate-capacity truncation.
+  For H3/Quadbin, optional `complete` is 1 only without either capacity loss, latitude clipping
+  or rejected antimeridian features. Without that destination, clipping/rejection suppresses
+  count to zero. `requiredCount` still sizes accepted retained candidates, not the whole cover
+  after any loss. The S2 route rejects `complete`; use its capacity flags and diagnostics.
+  Order is by feature, then candidate order; keys may repeat across features.
+  Direct counted compaction accepts this order: pass `{cells, status}` as its `source`, including
+  `complete` when selected. Its shared loss reader recognizes zero completeness as inherited loss.
+  It publishes that loss through its optional `candidateOverflow`, or suppresses count when that
+  destination is absent. Its final capacity `overflow` stays separate.
+  An outline requires ascending, distinct keys. Prepare the live prefix with counted compaction
+  using `minimumResolution: resolution` to sort and deduplicate without merging to coarser cells,
+  then pass that counted output to the outline. `GPUCellCompactionInput` and
+  `GPUCellSetOutlineInput` name these two public constructor declarations, as illustrated below.
   The pipeline is count, scan, test, scan, write, with no atomic append, so it is deterministic.
 
 ```ts
-graph.add(new GPUCellCover({
-  family: 'h3', resolution: 8, containment: 'center',
-  positions, featureOffsets, polygonOffsets, ringOffsets,
-  candidateCapacity: 1 << 22,
-  output: {featureIds, cells, status: {count, overflow, candidateOverflow}}
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCellCover, GPUCellCompaction, GPUCellSetOutline,
+  type GPUCountedCellSource, type GPUCellCompactionInput, type GPUCellSetOutlineInput
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsCellsExample6(graph: GPUCommandGraph, inputs: {
+  positions: NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['positions']>;
+  featureOffsets: NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['featureOffsets']>;
+  polygonOffsets: NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['polygonOffsets']>;
+  ringOffsets: NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['ringOffsets']>;
+  featureIds: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['output']>['featureIds']>;
+  cells: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['output']>['cells']>;
+  count: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['output']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['output']>['status']>['overflow']>;
+  candidateOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellCover>[0]['output']>['status']>['candidateOverflow']>;
+}) {
+  const {positions, featureOffsets, polygonOffsets, ringOffsets, featureIds, cells, count, overflow, candidateOverflow} = inputs;
+  graph.add(new GPUCellCover({
+    family: 'h3', resolution: 8, containment: 'center',
+    positions, featureOffsets, polygonOffsets, ringOffsets,
+    candidateCapacity: 1 << 22,
+    output: {featureIds, cells, status: {count, overflow, candidateOverflow}}
+  }));
+}
+
+export function addCountedCoverOutline(graph: GPUCommandGraph, inputs: {
+  family: GPUCellCompactionInput['family'];
+  resolution: number;
+  cover: GPUCountedCellSource;
+  sorted: GPUCellCompactionInput['output'];
+  outline: GPUCellSetOutlineInput['output'];
+}) {
+  const {family, resolution, cover, sorted, outline} = inputs;
+  const compaction = new GPUCellCompaction({family, source: cover,
+    operation: {type: 'compact', resolution, minimumResolution: resolution}, output: sorted});
+  graph.add(compaction);
+  const boundary = new GPUCellSetOutline({family, source: sorted, output: outline});
+  graph.add(boundary);
+  return {compaction, boundary};
+}
 ```
 
 - **Accuracy.**
@@ -613,14 +771,31 @@ longitude/latitude degrees. `edgeModel` and `outputSpatialContext.edgeModel` are
 for H3 and `'linear'` for Quadbin; `outputSpatialContext.metric` is `'none'`.
 
 ```ts
-graph.add(new GPUCellSetOutline({
-  family: 'h3',
-  cells, // uint32x2 little-endian keys, sorted ascending and distinct, e.g. a GPUCellAggregation table
-  count: tableCount, // optional one-row valid row count
-  groups, // optional uint32 label per row: also emit edges between different groups
-  output: {rows, cells: segmentCells, edgeIndices, endpoints, groups: segmentGroups, status: {count, overflow, requiredCount}},
-  rings: {normalizeWinding: true, output: ringOutput} // optional, see below
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCellSetOutline} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsCellsExample8(graph: GPUCommandGraph, inputs: {
+  source: NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['source']>;
+  groups: NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['groups']>;
+  rows: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['rows']>;
+  segmentCells: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['cells']>;
+  edgeIndices: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['edgeIndices']>;
+  endpoints: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['endpoints']>;
+  segmentGroups: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['groups']>;
+  count: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['status']>['count']>;
+  candidateOverflow: GraphDataView<'uint32'>;
+  overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['status']>['overflow']>;
+  requiredCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['output']>['status']>['requiredCount']>;
+  ringOutput: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellSetOutline>[0]['rings']>['output']>;
+}) {
+  const {source, groups, rows, segmentCells, edgeIndices, endpoints, segmentGroups, count, overflow, candidateOverflow, requiredCount, ringOutput} = inputs;
+  graph.add(new GPUCellSetOutline({
+    family: 'h3', source, // source.status carries count, overflow and candidateOverflow
+    groups, // optional uint32 label per row: also emit edges between different groups
+    output: {rows, cells: segmentCells, edgeIndices, endpoints, groups: segmentGroups, status: {count, overflow, candidateOverflow, requiredCount}},
+    rings: {normalizeWinding: true, output: ringOutput} // optional, see below
+  }));
+}
 ```
 
 - The output columns share one capacity: `rows` (the input row, also the compact ID column), `cells`,
@@ -636,8 +811,11 @@ graph.add(new GPUCellSetOutline({
   cells. Quadbin: 0 north, 1 east, 2 south, 3 west; columns wrap, and rows beyond the poles are absent, so
   the map edge is an outline edge.
 - Membership is a binary search, so the input must be sorted and distinct. Invalid keys never emit.
-- Endpoints are f32. H3 cells that straddle the antimeridian keep their `cellToBoundary` longitudes, so a
-  segment can span more than 180 degrees. Other families (quadkey, geohash, S2, A5) are not supported.
+- Endpoints are f32 longitude/latitude degrees. H3 cells that straddle the antimeridian keep their
+  `cellToBoundary` longitudes, so a segment can span more than 180 degrees. S2 is supported for
+  same-level rows at levels 0–30, with exact integer face-transition neighbors; its output edges
+  are great-circle arcs. Other families (quadkey, geohash, A5) are not supported. Pass
+  `outline.outputSpatialContext` to downstream geometry consumers.
 - Segments are directed with the cell interior on a fixed side: `outline.interiorSide` is `'left'` for H3
   (counter-clockwise shells) and `'right'` for Quadbin (clockwise shells).
 - `rings: {vertexTolerance?, normalizeWinding?, output: GPUSegmentRingAssemblyOutput}` composes
@@ -645,6 +823,15 @@ graph.add(new GPUCellSetOutline({
   as its inputs, `outputSpatialContext` as its context and `interiorSide` taken from the family. Use `normalizeWinding: true` for
   counter-clockwise shells and clockwise holes in both families. Without `rings`, hole detection and ring
   orientation are left to the caller.
+  When local `output.status.overflow` or either `source.status.overflow`/`candidateOverflow`
+  is nonzero, nested assembly receives zero segments:
+  ring counts and offsets are cleared, and optional polygon assembly is empty. This suppresses a
+  closed retained prefix that could silently omit other components. Nested overflow describes
+  assembly's own capacity; inspect both outline `overflow` and `candidateOverflow` and the
+  producer's loss evidence to distinguish suppression from an empty cell set. Complete frames resume assembly automatically without recompiling.
+  Output maps and nested status views are captured at construction. Replacing or mutating the
+  caller's maps afterward cannot reconnect the writer, publisher, overflow gate or assembler;
+  update per-frame buffer contents through the original views instead.
 
 For an east-west edge of ground length `L` at latitude `phi`, the great-circle arc deviates from
 the degree-straight edge by approximately `tan(phi) * L² / (8R)`. For average H3 edge lengths at 45°N:
@@ -696,25 +883,53 @@ Prepare global or antimeridian-crossing rings with `GPULonLatPolygonPreparation`
 consumers, and prepare great-circle rings before consumers that require linear edges.
 
 ```ts
-graph.add(new GPUSegmentRingAssembly({
-  endpoints, // float32x4 (x0, y0, x1, y1), e.g. GPUCellSetOutline output.endpoints
-  count, // optional one-row valid segment count
-  groups, // optional uint32 per segment: rings never mix groups
-  vertexTolerance: 5e-5, // compile-time Chebyshev matching distance, input units
-  interiorSide: 'left', // side of each segment that is filled ('left': counter-clockwise shells)
-  normalizeWinding: true, // shells counter-clockwise, holes clockwise (RFC 7946)
-  splitTouchingRings: true, // default
-  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}, // cos(lat) in turn comparisons; omit for planar
-  output: {
-    ringOffsets, // uint32, ringCapacity + 1
-    positions, // float32x2, vertex capacity
-    ringAreas, ringIsHole, ringShells, ringGroups, // optional, ringCapacity rows
-    segmentRings, segmentVertices, segmentFlags, // optional, one row per input segment
-    polygons: {kind: 'polygons', positions: polygonPositions, ringOffsets: polygonRingOffsets,
-      polygonOffsets, featureOffsets}, // optional four-level polygon port
-    status: {count, overflow, requiredCount, openSegmentCount, touchingSegmentCount}
-  }
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUSegmentRingAssembly} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsCellsExample10(graph: GPUCommandGraph, inputs: {
+  endpoints: NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['endpoints']>;
+  segmentStatus: NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['segmentStatus']>;
+  ringCount: GraphDataView<'uint32'>;
+  groups: NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['groups']>;
+  ringOffsets: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['ringOffsets']>;
+  positions: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['positions']>;
+  ringAreas: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['ringAreas']>;
+  ringIsHole: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['ringIsHole']>;
+  ringShells: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['ringShells']>;
+  ringGroups: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['ringGroups']>;
+  segmentRings: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['segmentRings']>;
+  segmentVertices: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['segmentVertices']>;
+  segmentFlags: NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['segmentFlags']>;
+  polygonPositions: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['polygons']>['positions']>;
+  polygonRingOffsets: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['polygons']>['ringOffsets']>;
+  polygonOffsets: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['polygons']>['polygonOffsets']>;
+  featureOffsets: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['polygons']>['featureOffsets']>;
+  overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['status']>['overflow']>;
+  requiredCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['status']>['requiredCount']>;
+  openSegmentCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['status']>['openSegmentCount']>;
+  touchingSegmentCount: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUSegmentRingAssembly>[0]['output']>['status']>['touchingSegmentCount']>;
+}) {
+  const {endpoints, segmentStatus, ringCount, groups, ringOffsets, positions, ringAreas, ringIsHole, ringShells, ringGroups, segmentRings, segmentVertices, segmentFlags, polygonPositions, polygonRingOffsets, polygonOffsets, featureOffsets, overflow, requiredCount, openSegmentCount, touchingSegmentCount} = inputs;
+  graph.add(new GPUSegmentRingAssembly({
+    endpoints, // float32x4 (x0, y0, x1, y1), e.g. GPUCellSetOutline output.endpoints
+    segmentStatus, // producer count, overflow and candidateOverflow, separate from ring status
+    groups, // optional uint32 per segment: rings never mix groups
+    vertexTolerance: 5e-5, // compile-time Chebyshev matching distance, input units
+    interiorSide: 'left', // side of each segment that is filled ('left': counter-clockwise shells)
+    normalizeWinding: true, // shells counter-clockwise, holes clockwise (RFC 7946)
+    splitTouchingRings: true, // default
+    spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'}, // cos(lat) in turn comparisons; omit for planar
+    output: {
+      ringOffsets, // uint32, ringCapacity + 1
+      positions, // float32x2, vertex capacity
+      ringAreas, ringIsHole, ringShells, ringGroups, // optional, ringCapacity rows
+      segmentRings, segmentVertices, segmentFlags, // optional, one row per input segment
+      polygons: {kind: 'polygons', positions: polygonPositions, ringOffsets: polygonRingOffsets,
+        polygonOffsets, featureOffsets}, // optional four-level polygon port
+      status: {count: ringCount, overflow, requiredCount, openSegmentCount, touchingSegmentCount}
+    }
+  }));
+}
 ```
 
 - **Layout.** GeoArrow style: ring `r` is `positions[ringOffsets[r] .. ringOffsets[r + 1])`, closed (the last
@@ -832,11 +1047,48 @@ These contributors form the bounded planar geometry-topology substrate:
   whether or not `output.status.uncertainCount` is wired. Such input sets `candidateOverflow`;
   increasing final segment capacity cannot repair it. `GPULineSplit` reports the same incomplete
   split input in `pieces.status.overflow`.
+  Optional `lines.featureOffsets` groups line parts into logical features; empty features retain
+  their row. `sourceFeatureIds` uses the feature's optional `sourceIds` value, or its feature row.
+  `sourceRingIds` remains the input line-part row and `sourceEdgeIds` the global start-vertex row.
+  Each atomic segment retains the splitter's recorded source edge, including overlapping and
+  retraced traversals; provenance is not reassigned by geometric proximity. A retraced closing
+  edge retains the last ring vertex's row and its own forward parameter interval. Ordinary
+  projections retain their original dot-product arithmetic. When the operand exponents indicate
+  a risk of overflow or underflow, the projection scales the differences by a common power of two
+  and uses a coordinate ratio for an axis-aligned edge. For a horizontal edge from zero to `2^-63`,
+  a split at `2^-88` gives the exact parameter `2^-25`.
+  Noding inserts intersections across parts without adding a connecting edge between them.
+  Snap-rounded noding preserves this same feature/part provenance after routing segments
+  through the reported lattice; the feature level changes ownership, not the snap grid.
 - `GPUPolygonize` expands each noded segment into two directed edges, assigns deterministic left-face
   ownership, omits the unbounded and zero-area faces, and emits canonical polygon features. It
   emits every bounded face (shapely `polygonize` semantics): the hole of a holed ring comes back as
   its own polygon. Its diagnostics classify source edges as closed-ring, open-chain, cut, dangle,
   and unused.
+  Before face traversal, polygonize recursively removes degree-one edges within each group.
+  Edges whose endpoints collapse within the vertex tolerance contribute no degree but retain
+  their diagnostic rows. With a positive tolerance, pruning treats endpoint contacts as direct incidences: each endpoint
+  counts the live endpoints of other edges within the tolerance, never through an intermediate
+  endpoint, and an edge is peeled when one endpoint has no remaining contact. Two corners farther
+  apart than the tolerance are never identified, so at tolerance 1/8 the triangle
+  `(0,0),(3/16,0),(2,4)` keeps its area-3/8 face beside the exterior dangle
+  `(3/32,-1/16)->(3/32,-2)` in either source order. Overlapping tolerance neighborhoods preserve
+  valid continuations regardless of input order. Its lookup sorts by group and both spatial cell
+  coordinates, checking only nine neighboring cells with the true Chebyshev tolerance. Cell keys
+  depend on the declared `vertexTolerance` and endpoint coordinates, so adding a distant group
+  leaves a group's cell sizes unchanged. The lookup skips distant rows in the same coordinate column.
+  Removed edges remain in the noded and directed output rows and receive open-chain, dangle and
+  unused bits (`26`), rather than cut bits. Thus an inward spur cannot destroy its square's face,
+  and every edge of a three-edge open chain is a dangle, including its middle edge. Duplicate
+  geometric edges share a peeling decision and do not artificially increase vertex degree.
+  Retraced source edges keep separate diagnostic rows and inherit their traversal owner's flags;
+  caller buffer contents are replaced on every submission, including duplicate directed edges.
+  Multipart `lines.featureOffsets` makes each logical feature its own polygonization group by
+  default. Optional `groupIds` then has one row per logical feature and can combine features
+  deliberately. Polygon `sourceIds` carries the group value; noded/directed provenance separately
+  carries the input feature's caller ID. Without feature offsets, the existing shared default
+  group and per-line `groupIds` contract is unchanged. Both exact and snap-rounded noding routes
+  preserve feature grouping and part rows.
 - `GPUMakeValid` applies the same pipeline independently to every input polygon feature, then keeps a
   face only when the feature's source rings cover it an odd number of times. The fill rule is source
   parity (even-odd), the GEOS `make_valid` linework method that shapely uses: a valid polygon with a
@@ -865,9 +1117,23 @@ zero. For `GPUPolygonize` and `GPUMakeValid`, `status.requiredRingCount` is the 
 requirement (every directed face ring, including holes and unbounded walks), for sizing ring capacity
 when noding is complete. `status.count` counts written features, after parity filtering for make-valid.
 There is no `status.requiredCount`: an exact feature requirement is unknown after ring loss.
+Both polygonize and make-valid reject a final `requiredCount` at construction, even when
+`requiredRingCount` is also present. Noded and directed statuses retain their own `requiredCount`.
+For polygonize, `output.polygons.positions.length` also bounds the intermediate directed-ring
+vertex scratch, including each walk's closing vertex and unbounded walks. It must hold those
+walks to avoid vertex overflow even when the final bounded polygons need fewer vertices. For
+example, two disjoint triangles require 16 scratch vertices (four walks of four vertices) but
+publish only six polygon vertices. With only 12 rows, the fourth walk's directed `ringIds` are
+`GPU_TOPOLOGY_NONE`, `requiredRingCount` remains four, and final `overflow` is one.
 **Breaking (2026-11-17):** rename the former ring-valued `status.requiredCount` to `requiredRingCount`.
-Every supplied final status view is packed `uint32` with at least one row; final status ranges
-must be disjoint, including `count` and `requiredRingCount`.
+Every supplied status view at the top-level, noded and directed destinations must be packed
+`uint32` with at least one row; polygonize and make-valid validate these scalars at construction,
+before any optional uncertainty destination is replaced internally. Declared status fields,
+including inherited fields and retired names, are captured once; the validated views are the
+ones bound by the graph. Writable status ranges across all three destinations must be disjoint
+when they have different meanings or stages, including `count` and `requiredRingCount`.
+The three copies of `uncertainCount` may intentionally share storage, because each publishes
+the same count. Sharing an uncertainty counter with a capacity flag is refused at construction.
 `overflow` always describes the current port's final capacity: segments for noding, directed edges
 for the directed port, and rings/vertices for polygon publication. Directed requirements are twice
 the noded segment requirement, so a full directed buffer can still overflow. `candidateOverflow`
@@ -875,8 +1141,17 @@ reports intermediate loss or uncertainty separately. At polygon publication it i
 segment truncation as well as incomplete intersection/snap-rounding candidates. Check both flags
 before using geometry or trusting requirements. Every supplied `uncertainCount` destination
 (top-level, noded and directed) receives the same count on every submission, including zero.
+`GPUMakeValid` refuses `invalidCount`, `iterationCount`, `converged`, `iterationLimitReached`
+and `approximation` at all three status destinations: topology repair does not publish those
+inherited vocabulary fields. Omit them and inspect `candidateOverflow`, `uncertainCount` and
+the per-edge diagnostics for incomplete or collapsed input.
+`GPULineNoding`, `GPUSnapRoundedNoding` and `GPUPolygonize` also refuse those five fields
+at construction. Their `GPUTopologyStatusPort` exposes only cardinality, capacity and
+uncertainty: these fixed-pass operations do not publish validation or iterative solver status.
 Make-valid groups internally by feature row and maps retained rows to caller `sourceIds` only at
 publication; all uint32 identities, including `0xffffffff`, are accepted in the active prefix.
+Make-valid snapshots construction options and nested input/output maps while preserving GPU
+view identities. Later mutations of caller maps do not change the contributor's bindings.
 No CPU readback or compatibility adapter is involved.
 
 Maximum: `positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows, and the line (or ring) count plus four times `intersectionCapacity` is at most `getGPULineSplitMaximumPieceBound(device)` (4194304 on a default device, the 32-byte piece-table row). Each contributor validates both under its own ID.
@@ -909,6 +1184,113 @@ Planar only: `spatialContext` defaults to native planar coordinates and a longit
 
 ::lens{scenario=gpu-spatial-analysis.make-valid rung=graph caption="Noding, polygonize, parity filter and repacking as one graph"}
 
+
+### Sum saturation and downstream maps
+
+The per-row limit is `CELL_MAXIMUM_SCALED_VALUE = 2^62 - 2^38` (4611685743549480960).
+Even when a final total fits signed64, a scaled row can already have lost magnitude before merging:
+with `sumScale: 1`, one retained value `2^62` publishes 4611685743549480960 and sets `sumOverflow`.
+Exactness requires every rounded float32 scaled row to fit this row clamp, all retained contributions
+to be available, and every published intermediate/final signed sum to fit without saturation.
+
+Tiled aggregation retains a signed 96-bit accumulator through the retained-key merge and
+applies final accumulator saturation only once, to signed 64-bit, at final publication.
+This final-only rule does not remove the earlier per-row clamp. Tile boundaries do not change
+the merged sum of the already clamped/scaled contributions when its final total is representable. A clamped row belonging only to a dropped key does not set the retained
+table's `status.sumOverflow`; final `overflow` still reports dropped cells. Pyramids privately
+carry saturation through intermediate levels when a downstream sum flag is requested; public
+sum flags remain optional. A saturated published fine-level sum cannot later recover cancellation.
+
+Keep three loss domains separate: `sumOverflow` means signed-sum saturation,
+`candidateOverflow` means source-table loss, and `overflow` means this destination lost keys.
+Forward named source `overflow`, `candidateOverflow` and `sumOverflow` views with a table.
+For `measure: 'sum'`, saturation in either source suppresses all occupied numeric comparison
+columns to NaN, even without an output sum-status view. Period-comparison recipes allocate
+source and comparison sum flags and map suppressed sums to the no-data color. Count comparisons,
+retained keys, presence and cardinalities remain usable; the documented empty-tail values remain
+unchanged. A complete sum comparison requires all three loss domains clear.
+
+Signed cell sums share the little-endian word/scale layout of
+`decodeGPUGroupSum(words, row, sumScale)`: an exact signed `scaledInteger` and its binary64
+`value`. Check `sumOverflow` before treating that decoded integer as the unclamped sum.
+Plan allocation with `GPUCellPyramid.getExecutionPlan(shape, deviceLimits)`; level counts are
+retained counts, not full requirements after loss.
+
+The planner takes numeric shapes without allocating buffers: `rowCount` is the total input
+row count, `inputChunkRowCounts` are the ordered chunk lengths (default one chunk), and
+`levelCapacities` are allocated cell rows, finest first. `hasValues` declares a value column;
+`includeLevelCounts` requests the count slots. `levelColumns` has one selection per level,
+using booleans `sums`, `sumValues`, `minimums`, `maximums` and `requiredCount`. Omitting it
+conservatively plans every value column when `hasValues` is true, plus required counts;
+explicit selections infer the finer-level intermediates needed by coarser levels.
+
+Inspect `feasible`, `constraints`, `bindingRequirements` (bytes and scope), and
+`stageRequirements` (storage binding count and workgroup lanes per stage). Both packed and
+tiled routes require **256 lanes** within both `maxComputeInvocationsPerWorkgroup` and
+`maxComputeWorkgroupSizeX`; storage binding limits also apply (the table stage needs seven,
+and finishing all three float columns together needs eight). `GPUCellPyramid.limits` exposes
+the numeric contracts. The input domain maximum is **2,147,483,648 rows** across all chunks;
+the power-of-two scratch tile maximum is **1,073,741,824 rows per tile**; the finest aggregation
+stage budget is **32,768 command nodes**, not a whole-pyramid dispatch count.
+
+Without an explicit tile width, automatic scratch is packed at
+`rowCount * 4 <= min(maxStorageBufferBindingSize, maxBufferSize)` and tiled above it;
+`scratchMode: 'packed'` forces packed scratch. An explicit `scratchTileSize` in rows selects
+tiling when the input is larger, unless packed is forced. Coarser levels remain packed.
+An infeasible plan's optional `validAlternative` searches device-derived power-of-two tile
+widths independently of a rejected explicit width; inspect feasibility again with the returned
+settings. Planning does not validate actual view offsets, aliases, graph ownership or family/
+resolution and column relationships; construction and lowering still check them.
+
+For outline and compaction, `requiredCount` sizes the **retained input**, not the complete
+source after loss. In a zoom-2 Quadbin world with wrapped longitude, omit tile `(0,0)` from
+the 16 cells and the remaining 15 need 10 outline edges; omit tile `(0,1)` instead and they
+need 12. All 16 need eight (four north and four south). Three retained siblings
+compact to 3 rows, whereas all four siblings compact to 1 row. Recover missing input before
+using these requirements to allocate the complete-source result.
+
+```ts
+import type {Device} from '@luma.gl/core';
+import {GPUCellPyramid, type GPUCellPyramidShape} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {decodeGPUGroupSum} from '@luma-contributors/analysis/dataframe-analysis';
+
+export function planCells(shape: GPUCellPyramidShape, deviceLimits: Device['limits']) {
+  return GPUCellPyramid.getExecutionPlan(shape, deviceLimits);
+}
+
+export function planCellAllocationExample(deviceLimits: Device['limits']) {
+  return planCells({
+    rowCount: 16, inputChunkRowCounts: [8, 8], levelCapacities: [16, 4],
+    scratchMode: 'auto', scratchTileSize: 8, hasValues: true, includeLevelCounts: true,
+    levelColumns: [{sums: true}, {sums: true, sumValues: true, requiredCount: true}]
+  }, deviceLimits);
+}
+
+export function readCellSumExample(status = {
+  count: Uint32Array.of(2), overflow: Uint32Array.of(0),
+  candidateOverflow: Uint32Array.of(0), sumOverflow: Uint32Array.of(1)
+}) {
+  // Actual little-endian signed int64 words: row 0 is zero; row 1 is -80.
+  const words = Uint32Array.of(0, 0, 0xffffffb0, 0xffffffff);
+  const row = 1;
+  const sumScale = 16;
+  const decoded = decodeGPUGroupSum(words, row, sumScale); // {-80n, -5}
+  // Example status readbacks: all two cell rows fit, but their sums saturated upstream.
+  const cellsComplete = status.overflow[0] === 0 && status.candidateOverflow[0] === 0;
+  const sumSaturated = status.sumOverflow[0] !== 0;
+  const fixedPointSumUsable = cellsComplete && row < status.count[0] && !sumSaturated;
+  return {...decoded, cellsComplete, sumSaturated, fixedPointSumUsable};
+}
+```
+
+Here `scaledInteger` is exactly `-80n` and `value` is `-5` in the measure's units. Decoding
+cannot undo saturation: `sumSaturated` is true and `fixedPointSumUsable` is false even though
+cell-count completeness is true. Saturation is inspected independently even when cells were lost.
+Usable fixed-point sums still carry the documented quantization; they do not certify an
+unquantized measurement.
+The decoder also accepts `Uint8Array` or `ArrayBuffer` buffer readbacks with checked word pairs.
+`sumValues` remains a separate float32 column; this decoder reads fixed-point `sums`.
+
 ### `GPUCellTableCompare`
 
 Outer-joins two sorted cell tables into one union table of before, after, delta, ratio and z-score columns.
@@ -920,11 +1302,31 @@ Outer-joins two sorted cell tables into one union table of before, after, delta,
 It compares tables keyed by cell, so it takes no `spatialContext`.
 
 ```ts
-graph.add(new GPUCellTableCompare({
-  before: lastMonth, after: thisMonth,
-  measure: 'sum', sumScale: 65536,
-  output: {cells, presence, before, after, delta, ratio, percentChange, zScore, status: {count, overflow, candidateOverflow}}
-}));
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCellTableCompare} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export function addOperatorsCellsExample12(graph: GPUCommandGraph, inputs: {
+  lastMonth: NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['before']>;
+  thisMonth: NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['after']>;
+  cells: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['cells']>;
+  presence: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['presence']>;
+  before: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['before']>;
+  after: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['after']>;
+  delta: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['delta']>;
+  ratio: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['ratio']>;
+  percentChange: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['percentChange']>;
+  zScore: NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['zScore']>;
+  count: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['status']>['count']>;
+  overflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['status']>['overflow']>;
+  candidateOverflow: NonNullable<NonNullable<NonNullable<ConstructorParameters<typeof GPUCellTableCompare>[0]['output']>['status']>['candidateOverflow']>;
+}) {
+  const {lastMonth, thisMonth, cells, presence, before, after, delta, ratio, percentChange, zScore, count, overflow, candidateOverflow} = inputs;
+  graph.add(new GPUCellTableCompare({
+    before: lastMonth, after: thisMonth,
+    measure: 'sum', sumScale: 65536,
+    output: {cells, presence, before, after, delta, ratio, percentChange, zScore, status: {count, overflow, candidateOverflow}}
+  }));
+}
 ```
 
 - `output.cells` holds the union keys ascending (`uint32x2`, little-endian `(low, high)`); its length is the capacity. When the retained-input union is larger, the smallest keys are kept, `status.count` is clamped and `status.overflow` is 1. Required `status.candidateOverflow` receives the OR of both inputs' final and inherited loss; it is separate from destination overflow and is rewritten on every submission. Optional `status.requiredCount` receives the retained-input union requirement, a lower bound on the full union when input cells were lost. For one retained before-cell, an empty after-table and four union slots, source loss gives `count = requiredCount = 1`, `overflow = 0`, `candidateOverflow = 1`. Increase the source capacity to recover the missing cell.
@@ -951,3 +1353,44 @@ The merge is a binary-search merge path with an exclusive scan of matched rows, 
 ::lens{scenario=gpu-spatial-analysis.cell-table-compare rung=kernel caption="A merge path pairs the two tables and writes each union row once"}
 
 ::lens{scenario=gpu-spatial-analysis.cell-table-compare rung=graph caption="Merge, scan, statistics reduction and column writes as one graph"}
+
+### Operation forms: indexing and measures
+
+`GPUPointToCellOperation` / `CPUPointToCellOperation` take logical names for longitude/latitude
+`float32x2` positions and an optional uint32 mask, plus `rowCount` and the contributor's family/
+resolution settings. They publish uint32x2 `cells` and optional uint32 `validity`, one per row.
+`GPUCellMeasuresOperation` / `CPUCellMeasuresOperation` take a logical uint32x2 `cells` column
+and `rowCount`, with the same family, word order, precision and unit settings. Select `areas`,
+`perimeters`, `edgeLengths`, `edgeCounts` and `pentagons` by output name; there is no separate
+packed status port. Invalid-key results follow the contributor's metric/edge-count contract.
+Compile GPU operation stages with `GPU_CONTRIBUTOR_OPERATION_LOWERING`.
+
+### Counted geometry and value-cube handoffs
+
+Pass a table's live `status.count` into compaction and outlines, together with available
+`overflow` and `candidateOverflow` evidence. Never outline spare allocation rows. Nested-ring
+assembly can suppress geometry when upstream segments are incomplete; inspect source and
+assembly losses before interpreting an empty polygon as an empty cell set.
+
+For a cell-key lookup against a fixed dictionary, `GPUKeyLookup.output.rightRows` is the dictionary
+row per event. Bind it to `GPUValueCube.cells`, pass gathered event periods, a float32 value of
+one per event and the live event mask, and request `GPUValueCube.output.counts`. Those counts
+are cell-major (`cell * periodCount + period`), not raw dictionary row numbers. For an existing per-slice
+table, align every slice to one shared key dictionary and zero-fill absent keys before building
+the cube. Transpose from slice-major tables to the cube's declared row-major layout; independent
+compact slices cannot be concatenated as though their rows had matching identities.
+
+
+Counted compaction and outlines take `source: {cells, status: {count, overflow, candidateOverflow}}`.
+Publish both `output.status.overflow` and `output.status.candidateOverflow`: local `overflow` means
+that destination truncated its retained output; `candidateOverflow` propagates source loss. With
+an exposed candidate flag, the retained compact/segment prefix is readable, but incomplete. If the
+candidate destination is omitted, source loss suppresses the published count to zero; allocation
+rows cannot be treated as a complete result. Required counts describe only retained source keys.
+Nested outline rings are suppressed on either source loss flag even when local overflow is zero,
+and on local segment overflow. Check both flags before interpreting zero rings as an empty set.
+
+The stop-cube recipe takes `stops.status.overflow`, `stops.status.candidateOverflow`, optional
+`sliceStatuses[].overflow`/`.candidateOverflow`, and the weights port's loss fields. Its aggregate
+`status.overflow` and `status.candidateOverflow` OR the corresponding upstream losses. Either flag
+suppresses counts to zero: the zero-filled cube cannot certify empty observed bins on loss.

@@ -4,9 +4,9 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const queen = new GPUContiguityWeights({\n  polygons: tracts,\n  criterion: 'queen',\n  output: sourceOutput\n});\ngraph.add(queen);\nconst weights = queen.outputWeights;\ngraph.add(new GPUSpatialWeightsSummary({weights, symmetryTolerance: 0, output: summaryOutput}));\nconst result = {statistics, counts, neighborCounts};",
+    "code": "const queen = new GPUContiguityWeights({\n  polygons: tracts,\n  criterion: 'queen',\n  pairCapacity: input.pairCapacity,\n  output: sourceOutput\n});\ngraph.add(queen);\nconst weights = queen.outputWeights;\ngraph.add(new GPUSpatialWeightsSummary({weights, symmetryTolerance: 0, output: summaryOutput}));\nconst result = {statistics, counts, neighborCounts};",
     "language": "ts",
-    "lineCount": 9
+    "lineCount": 10
   },
   "scenarioId": "gpu-spatial-analysis.spatial-weights-summary",
   "viewId": "gpu-core-array-result",
@@ -35,8 +35,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:09.612Z",
-    "runId": "run-7e84831a",
+    "date": "2026-11-20T23:51:23.422Z",
+    "runId": "run-6a0f153d",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -44,7 +44,7 @@
     ]
   },
   "state": {
-    "runId": "run-7e84831a",
+    "runId": "run-6a0f153d",
     "rung": "result",
     "bindings": {},
     "clauses": [],

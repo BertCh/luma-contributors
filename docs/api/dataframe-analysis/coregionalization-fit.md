@@ -65,6 +65,18 @@ coefficients/objective/change. Usable-bin and weight diagnostics remain availabl
 `invalidCount` counts excluded lag matrices. Output views may have trailing capacity;
 only the documented result prefix is written. Views must be packed and output buffers distinct.
 
+Validity does not imply convergence. For example, at the default tolerance `1e-5`,
+at unit lag a unit spherical structure
+fits the positive-definite matrix `[[2, -1], [-1, 3]]` on its first sweep. That sweep still
+measures a nonzero coefficient change, so a one-sweep budget reports `iterationCount: 1`,
+`converged: 0`, `iterationLimitReached: 1`. A second sweep measures zero change and reports
+`iterationCount: 2`, `converged: 1`, `iterationLimitReached: 0`. A zero budget reports zero
+iterations, no convergence and a reached limit while the valid input retains validity 1.
+These status meanings apply to the contributor and both operation forms. Every execution
+rewrites the result prefix, including clearing earlier nonzero flags when inputs change.
+The stopping comparison is inclusive: with tolerance `1`, the first sweep's relative change
+`3 / 3 = 1` already satisfies it, giving one iteration, convergence 1 and limit 0.
+
 ## CPUCoregionalizationFitOperation and supplied kriging model
 
 Prefer the float64 CPU twin for small fits. It has the same graph ports and computes in
@@ -80,10 +92,21 @@ specs compare matrices and reconstructed factors with 0.3% relative/absolute tol
 and long-fit iteration counts within three sweeps. Ordinary cases agree more closely.
 
 ```typescript
-import {fitLinearModelOfCoregionalization} from '@luma-contributors/analysis/dataframe-analysis';
+import {
+  fitLinearModelOfCoregionalization,
+  type CPUCoregionalizationFitInput
+} from '@luma-contributors/analysis/dataframe-analysis';
+import type {GPULocalKrigingProps} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+// Three lags, each with the packed upper triangle (0,0), (0,1), (1,1).
+const input: Omit<CPUCoregionalizationFitInput, 'parameters'> = {
+  distances: Float32Array.of(50, 100, 200),
+  semivariances: Float32Array.of(1, -0.2, 2, 2, -0.5, 3, 3, -0.8, 4),
+  pairCounts: Uint32Array.of(20, 30, 40)
+};
 
 const fit = fitLinearModelOfCoregionalization(
-  {distances, semivariances, pairCounts},
+  input,
   {
     variableCount: 2,
     structures: [
@@ -96,7 +119,9 @@ const fit = fitLinearModelOfCoregionalization(
 // Inspect fit.validity[0], fit.converged[0] and fit.iterationLimitReached[0].
 if (!fit.validity[0]) throw new Error('Coregionalization fit is invalid');
 // Pass to GPULocalKriging (with positions, observations, supports and outputs):
-const suppliedModel = {
+const suppliedModel: Pick<
+  GPULocalKrigingProps, 'mode' | 'variableCount' | 'covariance' | 'coregionalizationModels'
+> = {
   mode: 'co-kriging',
   variableCount: 2,
   covariance: fit.coregionalizationModels[0].covariance,
@@ -113,6 +138,8 @@ factors in the same layout: read back each `p * p` slice to supply `loadings`.
 
 The graph operation uses `GPU_CONTRIBUTOR_OPERATION_LOWERING`; the CPU operation can
 replace it using the same properties, graph names, formats and lengths.
+Both operations reject empty graph names, duplicate output destinations and outputs that overwrite
+an input. Errors use the operation ID, including a custom `id`.
 Both operations capture their shape, iteration budget, input names and nested output/status
 names at construction, including getter-backed properties. Later edits to the caller's objects
 cannot change the declared contract or a subsequent execution/lowering. Construct a new

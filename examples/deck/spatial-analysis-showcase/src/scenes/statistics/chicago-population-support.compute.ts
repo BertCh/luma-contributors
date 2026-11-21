@@ -254,19 +254,20 @@ export async function createChicagoPopulationSupport(
   const populationGroups = importBuffer(populationGroupsBuffer, 'float32x2', SOURCE_COUNT);
   const sourceIds = importBuffer(sourceIdsBuffer, 'uint32', SOURCE_COUNT);
   const alignedTargetIds = importBuffer(targetIdsBuffer, 'uint32', SOURCE_COUNT);
+  const alignmentStatusBuffer = resources.createBuffer('alignment-status', 4 * 4);
+  const alignmentStatus = importBuffer(alignmentStatusBuffer, 'uint32x4', 1);
   const alignment = addPopulationSupportAlignmentRecipe(graph, {
     id: 'hyde-park-population-alignment',
     populations: populationGroups,
     sourceIds,
-    targetIds: alignedTargetIds
+    targetIds: alignedTargetIds,
+    output: {status: alignmentStatus}
   });
   const alignedGroupsBuffer = resources.createBuffer(
     'aligned-population-groups',
     SOURCE_COUNT * 2 * 4
   );
-  const alignmentStatusBuffer = resources.createBuffer('alignment-status', 4 * 4);
   const alignedGroups = importBuffer(alignedGroupsBuffer, 'float32x2', SOURCE_COUNT);
-  const alignmentStatus = importBuffer(alignmentStatusBuffer, 'uint32x4', 1);
   addKernelPass(graph, {
     id: 'aligned-population-export',
     invocationCount: SOURCE_COUNT,
@@ -275,15 +276,6 @@ export async function createChicagoPopulationSupport(
       {name: 'totals', view: alignedGroups, type: 'f32', access: 'read_write'}
     ],
     body: 'totals[totalsOffset+2u*index]=groups[groupsOffset+2u*index];totals[totalsOffset+2u*index+1u]=groups[groupsOffset+2u*index+1u];'
-  });
-  addKernelPass(graph, {
-    id: 'alignment-status-export',
-    invocationCount: 1,
-    bindings: [
-      {name: 'status', view: alignment.packedStatus, type: 'u32', access: 'read'},
-      {name: 'output', view: alignmentStatus, type: 'u32', access: 'read_write'}
-    ],
-    body: 'for(var word=0u;word<4u;word++){output[outputOffset+word]=status[statusOffset+word];}'
   });
   const totals = importBuffer(sourceTotalsBuffer, 'float32', SOURCE_COUNT);
   addKernelPass(graph, {
@@ -340,7 +332,7 @@ export async function createChicagoPopulationSupport(
     targetZoneCount: TARGET_COUNT,
     ancillary,
     pairCapacity: PAIR_CAPACITY,
-    outputs: {
+    output: {
       targetTotals: targetTotalsView,
       sourceAllocatedTotals: allocatedTotalsView,
       sourceUnallocatedTotals: unallocatedTotalsView,

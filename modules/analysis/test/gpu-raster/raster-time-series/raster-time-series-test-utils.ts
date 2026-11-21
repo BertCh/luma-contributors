@@ -31,8 +31,15 @@ export function createRasterTimeSeriesHarness(device: Device) {
     );
     return graph.createDataView(handle, {format, length});
   };
+  const destroy = () => {
+    outputs.clear();
+    for (const buffer of buffers.splice(0)) {
+      buffer.destroy();
+    }
+  };
   return {
     graph,
+    destroy,
     floats(values: ArrayLike<number>) {
       return importView(
         createInputBuffer(device, Float32Array.from(values)),
@@ -67,11 +74,12 @@ export function createRasterTimeSeriesHarness(device: Device) {
       return importView(buffer, format, length);
     },
     async run(contributors: GPUCommandNodeProducer | GPUCommandNodeProducer[]) {
-      for (const contributor of Array.isArray(contributors) ? contributors : [contributors]) {
-        graph.add(contributor);
-      }
-      const compiled = graph.compile();
+      let compiled: ReturnType<typeof graph.compile> | undefined;
       try {
+        for (const contributor of Array.isArray(contributors) ? contributors : [contributors]) {
+          graph.add(contributor);
+        }
+        compiled = graph.compile();
         submitGraph(device, compiled, undefined);
         const result: Record<string, number[]> = {};
         for (const [name, entry] of outputs) {
@@ -81,24 +89,38 @@ export function createRasterTimeSeriesHarness(device: Device) {
         }
         return result;
       } finally {
-        compiled.destroy();
-        buffers.forEach(buffer => buffer.destroy());
+        try {
+          compiled?.destroy();
+        } finally {
+          destroy();
+        }
       }
     }
   };
 }
 
-/** Largest absolute difference between two equally long series, treating NaN as equal to NaN. */
+/**
+ * Largest absolute difference between two equally long series, treating NaN as equal to NaN and
+ * equal infinities as equal. Throws when the lengths differ, so an empty or short readback cannot
+ * report zero error. A NaN on one side only returns `Infinity`, which fails every tolerance.
+ */
 export function getMaximumAbsoluteDifference(
   left: ArrayLike<number>,
   right: ArrayLike<number>
 ): number {
+  if (left.length !== right.length) {
+    throw new Error(
+      `getMaximumAbsoluteDifference: lengths differ (${left.length} and ${right.length})`
+    );
+  }
   let largest = 0;
   for (let index = 0; index < left.length; index++) {
     const a = left[index];
     const b = right[index];
-    if (Number.isNaN(a) && Number.isNaN(b)) continue;
-    largest = Math.max(largest, Math.abs(a - b));
+    if (a === b || (Number.isNaN(a) && Number.isNaN(b))) continue;
+    const difference = Math.abs(a - b);
+    if (Number.isNaN(difference)) return Infinity;
+    largest = Math.max(largest, difference);
   }
   return largest;
 }

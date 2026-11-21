@@ -215,7 +215,7 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
       },
       settings: {significanceLevel, seed: 5, permutationCount: permutations},
       palette: palette.view,
-      outputs: {
+      output: {
         status: {
           weightsOverflow: weightsOverflow.view,
           weightsCandidateOverflow: weightsCandidateOverflow.view
@@ -425,7 +425,7 @@ export function createChoroplethScene(backend: 'zonal' | 'group'): RecipeSceneBu
         ...geometry,
         candidateCapacity: Math.max(4096, pointCount * 4)
       },
-      outputs: {
+      output: {
         counts: counts.view,
         featureValues: meanValues?.view,
         status: {overflow: overflow.view},
@@ -651,7 +651,7 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
     cellWeights: cellWeights.view,
     pairCapacity,
     sourceValues: sourceInput.view,
-    outputs: {
+    output: {
       extensiveValues: extensive.view,
       intensiveValues: intensiveValues.view,
       status: {

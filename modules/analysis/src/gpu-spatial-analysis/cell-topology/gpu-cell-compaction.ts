@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  resolveCountedCellSource,
+  getCountedCellSourceLossNodes,
+  validateCountedCellSourceLossBindings,
+  type GPUCellSourceInput
+} from '../cell-aggregation/counted-cell-source';
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {dggs} from '@luma.gl/shaders';
 import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {
@@ -78,16 +85,19 @@ export type GPUCellUncompactOperation = {
 
 /** Caller-owned, capacity-bounded output of {@link GPUCellCompaction}. */
 export type GPUCellCompactionOutput = {
-  /** Output cell keys as little-endian `(low, high)` words; rows past `status.count` are zero. */
+  /** Output keys as little-endian `(low, high)` words; ordinary unused rows are zero (see class). */
   cells: GraphDataView<'uint32x2'>;
   /** Count, completeness and diagnostic scalars. */
   status: {
     /** One-row scalar receiving `min(requiredCount, cells.length)`. */
     count: GraphDataView<'uint32'>;
-    /** Optional one-row scalar receiving the unclamped number of output cells. */
+    /** Optional one-row scalar receiving the unclamped output size for the retained input.
+     * Missing siblings can increase this size: it is not a bound on the complete-source size. */
     requiredCount?: GraphDataView<'uint32'>;
     /** One-row scalar receiving 1 when more cells exist than `cells.length`, otherwise 0. */
     overflow: GraphDataView<'uint32'>;
+    /** Source cells were lost before this operation; requiredCount sizes only the retained input. */
+    candidateOverflow?: GraphDataView<'uint32'>;
     /**
      * Optional one-row scalar receiving the number of input rows (within `count`) that were
      * dropped: invalid keys, masked rows, other resolutions (`compact`), cells below the target
@@ -97,7 +107,7 @@ export type GPUCellCompactionOutput = {
   };
 };
 
-/** Properties for {@link GPUCellCompaction}. */
+/** Bare-cell props with required cells; use {@link GPUCellCompactionInput} for either constructor form. */
 export type GPUCellCompactionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-compaction'`. */
   id?: string;
@@ -105,7 +115,7 @@ export type GPUCellCompactionProps = {
   family: GPUCellTopologyFamily;
   /** Compact or uncompact. */
   operation: GPUCellCompactOperation | GPUCellUncompactOperation;
-  /** Input cell keys, two `uint32` words per row. */
+  /** Input cell keys, two `uint32` words per row; alternatively pass source. */
   cells: GraphDataView<'uint32x2'>;
   /** Word order of `cells`. Defaults to `'little-endian'` (`(low, high)`, Arrow layout). */
   wordOrder?: GPUCellWordOrder;
@@ -113,9 +123,15 @@ export type GPUCellCompactionProps = {
   mask?: GraphDataView<'uint32'>;
   /** Optional one-row scalar: only the first `count` rows of `cells` are read. */
   count?: GraphDataView<'uint32'>;
+  /** Counted source alternative to cells/count; the constructor accepts source alone. */
+  source?: GPUCellSourceInput['source'];
   /** Caller-owned bounded output. */
   output: GPUCellCompactionOutput;
 };
+
+/** Constructor declaration accepting either bare cells/count or a counted source. */
+export type GPUCellCompactionInput = Omit<GPUCellCompactionProps, 'cells' | 'count' | 'source'> &
+  GPUCellSourceInput;
 
 /** Saturated `7^depth` and pentagon subtree sizes `1 + 5 (7^depth - 1) / 6`, depth 0..11. */
 const H3_SUBTREE_DEPTH_LIMIT = 11;
@@ -213,6 +229,13 @@ fn getDescendantCount(compact: vec2u, resolution: u32, depth: u32) -> u32 {
  * are kept, `output.status.overflow` is written on the GPU, and rows past `status.count` are zero. Integer arithmetic
  * only, so results are identical on every device.
  *
+ * Pass `source: {cells, status}` for a counted producer, with count, overflow and optional
+ * candidateOverflow. Either source loss flag sets output.status.candidateOverflow, independently
+ * of local overflow and requiredCount (the requirement for the retained input, not a bound on the
+ * complete-source result). If the optional
+ * candidateOverflow output is absent, source loss suppresses count to zero; in that case cell
+ * contents are unspecified. A clean replay restores the ordinary prefix and zero tails.
+ *
  * Consumes cell keys and flags only, so it takes no `spatialContext`.
  */
 export class GPUCellCompaction implements GPUCommandNodeProducer {
@@ -223,7 +246,25 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
   /** Key layout of the input (`compact`) or output (`uncompact`) resolution. */
   readonly layout: CompactionCellLayout;
 
-  constructor(props: GPUCellCompactionProps) {
+  constructor(inputProps: GPUCellCompactionInput) {
+    const captured = snapshotCellConstruction(inputProps, [
+      'id',
+      'family',
+      ['operation', ['type', 'resolution', 'minimumResolution', 'sorted', 'maximumDepth']],
+      'cells',
+      'wordOrder',
+      'mask',
+      'count',
+      'source',
+      [
+        'output',
+        [
+          'cells',
+          ['status', ['count', 'requiredCount', 'overflow', 'droppedCount', 'candidateOverflow']]
+        ]
+      ]
+    ]);
+    const props = resolveCountedCellSource(captured.id ?? 'cell-compaction', captured);
     this.id = props.id ?? 'cell-compaction';
     this.props = props;
     const {id} = this;
@@ -269,6 +310,10 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     }
     for (const [name, view] of [
       ['count', props.count],
+      ['source.status.overflow', props.source?.status.overflow],
+      ['source.status.candidateOverflow', props.source?.status.candidateOverflow],
+      ['source.status.complete', props.source?.status.complete],
+      ['output.status.candidateOverflow', output.status.candidateOverflow],
       ['output.status.count', output.status.count],
       ['output.status.overflow', output.status.overflow],
       ['output.status.requiredCount', output.status.requiredCount],
@@ -284,6 +329,7 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     }
     validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     validateCapacity(id, 'output.cells.length', output.cells.length, 1, MAXIMUM_CELL_ROW_COUNT);
+    validateCountedCellSourceLossBindings(id, props.source, output.status);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -291,9 +337,17 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
         output.status.count,
         output.status.overflow,
         output.status.requiredCount,
-        output.status.droppedCount
+        output.status.droppedCount,
+        output.status.candidateOverflow
       ],
-      [props.cells, props.mask, props.count]
+      [
+        props.cells,
+        props.mask,
+        props.count,
+        props.source?.status.overflow,
+        props.source?.status.candidateOverflow,
+        props.source?.status.complete
+      ]
     );
     validateCellDispatchOutputs(
       id,
@@ -302,6 +356,7 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
         count: output.status.count,
         overflow: output.status.overflow,
         requiredCount: output.status.requiredCount,
+        candidateOverflow: output.status.candidateOverflow,
         droppedCount: output.status.droppedCount
       },
       [
@@ -324,6 +379,9 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       cells: props.cells,
       mask: props.mask,
       inputCount: props.count,
+      sourceOverflow: props.source?.status.overflow,
+      sourceCandidateOverflow: props.source?.status.candidateOverflow,
+      sourceComplete: props.source?.status.complete,
       outputCells: props.output.cells,
       ...props.output.status
     });
@@ -363,15 +421,22 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       props.cells,
       props.mask,
       props.count,
+      props.source?.status.overflow,
+      props.source?.status.candidateOverflow,
+      props.source?.status.complete,
       props.output.cells,
       props.output.status.count,
       props.output.status.overflow,
       props.output.status.requiredCount,
-      props.output.status.droppedCount
+      props.output.status.droppedCount,
+      props.output.status.candidateOverflow
     ]);
-    return props.operation.type === 'compact'
-      ? this.getCompactNodes(graph, props.operation)
-      : this.getUncompactNodes(graph, props.operation);
+    return [
+      ...(props.operation.type === 'compact'
+        ? this.getCompactNodes(graph, props.operation)
+        : this.getUncompactNodes(graph, props.operation)),
+      ...getCountedCellSourceLossNodes(graph, id, OPERATION, props.source, props.output.status)
+    ];
   }
 
   private getInputBindings(): {

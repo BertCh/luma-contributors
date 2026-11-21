@@ -18,6 +18,8 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
   'gpu-spatial-analysis/gpu-analysis-contiguity-statistics.md': [],
   'gpu-spatial-analysis/instrumental-variables-covariance.md': [],
   'gpu-terrain/height-above-drainage.md': [],
+  'gpu-terrain/output-oracles.md': [],
+  'gpu-terrain/status-and-count-evidence.md': [],
   'README.md': [],
   'analysis-catalog.md': [],
   'computation-record.md': ['GPUTransferMask'],
@@ -39,7 +41,7 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
     'GPUForestInference',
     'GPUGroupStatistics',
     'GPUInequality',
-    'GPUKeyJoin',
+    'GPUKeyLookup',
     'GPUMarkedPointStatistics',
     'GPUPeriodIndex',
     'GPUPointPatternIndices',
@@ -63,11 +65,20 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
   'gpu-network/concepts.md': [],
   'gpu-network/expansion.md': [],
   'gpu-network/flow-models-mob10.md': ['GPUKernelFlowSmoothing', 'GPURadiationFlowModel'],
+  'gpu-network/origin-destination-flow-models.md': [
+    'GPUKernelFlowSmoothing',
+    'GPURadiationFlowModel'
+  ],
   'gpu-network/k-shortest-paths.md': [],
   'gpu-network/map-matched-edge-volumes-mob05.md': [],
+  'gpu-network/map-matched-edge-volumes.md': [],
   'gpu-network/network-movement-benchmarks.md': [],
   'gpu-network/network-movement-coverage.md': ['GPUNetworkLouvain'],
   'gpu-network/network-time-geography-mob09.md': [
+    'GPUNetworkPotentialPathArea',
+    'GPUNetworkTravelTimePercentiles'
+  ],
+  'gpu-network/network-time-geography.md': [
     'GPUNetworkPotentialPathArea',
     'GPUNetworkTravelTimePercentiles'
   ],
@@ -99,6 +110,7 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
     'addDriveTimeCatchmentRecipe'
   ],
   'gpu-network/point-process.md': ['GPUNetworkInhomogeneousK', 'GPUNetworkKernelDensity'],
+  'gpu-network/status-oracles.md': [],
   'gpu-network/visibility-graph.md': ['addVisibilityGraphRecipe'],
   'gpu-raster/README.md': [],
   'gpu-raster/contrast-equalization.md': ['GPURasterContrastEqualization'],
@@ -112,7 +124,8 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
   'gpu-raster/focal-pairs.md': [],
   'gpu-raster/fractional-categorical-statistics.md': [],
   'gpu-raster/fractional-zonal-distribution.md': [],
-  'gpu-raster/lagrangian-diagnostics-mob06.md': [
+  'gpu-raster/lagrangian-diagnostics-mob06.md': [],
+  'gpu-raster/flow-map-and-particle-diagnostics.md': [
     'GPUFiniteTimeLyapunovExponent',
     'GPULagrangianFlowMap',
     'GPUScalarFieldRidges'
@@ -288,7 +301,8 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
     'GPUHealpixCellAggregation',
     'GPUHealpixPointToCell'
   ],
-  'gpu-spatial-analysis/home-range-and-recursion-mob07.md': [
+  'gpu-spatial-analysis/home-range-and-recursion-mob07.md': [],
+  'gpu-spatial-analysis/home-ranges-and-recursions.md': [
     'GPUBrownianBridgeUtilization',
     'GPUTrajectoryRecursions',
     'GPUUtilizationVolumeIsopleths'
@@ -306,6 +320,7 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
     'addSparseResistanceConnectivityRecipe'
   ],
   'gpu-spatial-analysis/losh-residual-permutation.md': [],
+  'gpu-spatial-analysis/spatial-weights-audit.md': [],
   'gpu-spatial-analysis/movement-coverage.md': [],
   'gpu-spatial-analysis/movement-semantics.md': [
     'GPUMobilityIndicators',
@@ -323,7 +338,7 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
     'GPUArealInterpolation',
     'GPUCatchmentAccessibility',
     'GPUHuffTradeAreas',
-    'GPUPycnophylactic',
+    'GPUPycnophylacticInterpolation',
     'GPUSegregation'
   ],
   'gpu-spatial-analysis/operators-cells.md': [
@@ -457,7 +472,7 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
     'GPUGlobalSpatialStatistics',
     'GPUGroupConvexHull',
     'GPUGroupGeometry',
-    'GPUHierarchicalDensityClustering',
+    'GPUHDBSCAN',
     'GPUHotSpotAnalysis',
     'GPULocalGeary',
     'GPULocalMoran',
@@ -473,7 +488,7 @@ export const DOCUMENTED_PAGE_HEADINGS: Readonly<Record<string, readonly string[]
     'GPURegionStatistics',
     'GPUSimilarLocations',
     'GPUSkaterRegions',
-    'GPUSpatialClustering',
+    'GPUDBSCAN',
     'GPUSpatialEmpiricalBayesRates',
     'GPUSpatialKMeans',
     'GPUSpatialPearson',

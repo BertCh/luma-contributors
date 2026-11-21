@@ -75,7 +75,7 @@ export async function runExample(
     id: 'catchment-search',
     format: 'float32',
     length: 12,
-    values: getGPUNeighborSearchParameterValues({bounds, radius: 2000, weightKind: 'binary'})
+    values: getGPUNeighborSearchParameterValues({bounds, searchRadius: 2000, weightType: 'binary'})
   });
   const search = {
     mode: 'radius',

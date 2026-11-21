@@ -157,8 +157,8 @@ const scene: GpuScene = async context => {
       neighborParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds,
-          radius: values.radius / 100,
-          weightKind: 'binary'
+          searchRadius: values.radius / 100,
+          weightType: 'binary'
         })
       );
       moranParameters.write(

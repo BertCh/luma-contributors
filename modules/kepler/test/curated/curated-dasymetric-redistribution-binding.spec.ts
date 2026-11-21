@@ -5,7 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
 import reference from '../../../analysis/test/oracles/fixtures/dasymetric-redistribution.json';
-import {requireTestDevice} from '../../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../../analysis/src/testing/require-test-device';
 import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
 import type {CatalogRunResult} from '../../src/analysis/catalog-binding-types';
 import type {
@@ -275,12 +275,41 @@ test.each([
   if (failure === 'invalid-geometry') {
     const coverageRow = evidence.columns['stage'].findIndex(
       (stage, index) =>
-        stage === 'coverage-validation' && evidence.columns['metric'][index] === 'converged'
+        stage === 'coverage-validation' && evidence.columns['metric'][index] === 'complete'
     );
     expect(coverageRow, JSON.stringify(result)).toBeGreaterThanOrEqual(0);
     expect(evidence.columns['value'][coverageRow], JSON.stringify(result)).toBe(0);
   }
   expect(result.summary['massBalanceError']).toBeUndefined();
+});
+
+test('valid zero ancillary support retains mass 7 with canonical conservation evidence', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const sample = createDasymetricRedistributionSample();
+  const sources = sample.inputs['sources'] as CatalogFeatureCollection;
+  sources.features = [{...sources.features[0], properties: {residents: 7}}];
+  const raster = sample.inputs['ancillary'] as CatalogRasterInput;
+  sample.inputs['ancillary'] = {...raster, band: {...raster.band, values: new Float32Array(6)}};
+  const result = await runCatalogOperationAsync(binding, sample.parameters, sample.inputs, {
+    device
+  });
+  // With no positive ancillary weight, all 7 source units remain unallocated.
+  expectNumbers(readTable(result, 'dasymetric-ledger'), 'unallocated_total', [7]);
+  expect(result.summary['complete']).toBe(1);
+  expect(result.summary['zeroEligibleCount']).toBe(1);
+  const evidence = readTable(result, 'dasymetric-status');
+  for (const stage of ['coverage-validation', 'dasymetric-conservation']) {
+    const row = evidence.columns['stage'].findIndex(
+      (value, index) => value === stage && evidence.columns['metric'][index] === 'complete'
+    );
+    expect(row).toBeGreaterThanOrEqual(0);
+    expect(evidence.columns['value'][row]).toBe(1);
+  }
+  const conservationMetrics = evidence.columns['metric'].filter(
+    (_, index) => evidence.columns['stage'][index] === 'dasymetric-conservation'
+  );
+  expect(conservationMetrics).toEqual(['complete', 'zeroEligibleCount']);
 });
 
 test('a collapsed source shell completes with zero support and retains its mass', async () => {

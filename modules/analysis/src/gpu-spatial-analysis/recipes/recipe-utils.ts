@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import type {VertexFormat} from '@luma.gl/core';
 import {
   registerRecipeContributor,
@@ -16,7 +18,8 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -25,6 +28,8 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   captureGraphCommandNodes,
+  getGraphViewChunks,
+  isGraphVectorView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -34,16 +39,95 @@ import {
 import type {GPUCellAggregationFamily, GPUCellTable} from '../cell-aggregation/index';
 import {GPUCellTopology, getCellTopologyStride} from '../cell-topology/index';
 import type {GPURecipeStatusPort} from '../../analysis-core/contracts/index';
-import {
-  getGPUSpatialWeightsCapacityPlan,
-  type GPUSpatialWeights,
-  type GPUSpatialWeightsOutput
-} from '../spatial-weights/index';
+import {getGPUSpatialWeightsCapacityPlan} from '../spatial-weights/spatial-weights';
+import type {GPUSpatialWeights, GPUSpatialWeightsOutput} from '../spatial-weights/index';
+
+/** Capture row-based recipe geometry without evaluating unused caller identifiers. @internal */
+export function snapshotRecipeGeometryRows<Geometry extends {kind: string}>(
+  geometry: Geometry
+): Geometry {
+  return snapshotConstructionFields(geometry, [
+    'kind',
+    'positions',
+    'lineOffsets',
+    'featureOffsets',
+    'polygonOffsets',
+    'ringOffsets'
+  ] as readonly (keyof Geometry)[]);
+}
+
+/** Packed reducer keys with join destinations preserving the ordinary point chunk layout. @internal */
+export function createRecipeRowAssignments<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  positions: GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>,
+  featureCount?: number
+): {values: GraphDataView<'uint32'>; output: GraphDataView<'uint32'> | GraphVectorView<'uint32'>} {
+  const length = featureCount ?? positions.length;
+  const values = getOrCreateView(graph, id, 'uint32', length);
+  if (featureCount !== undefined || !isGraphVectorView(positions)) return {values, output: values};
+  let rowOffset = 0;
+  const data = getGraphViewChunks(positions).map(chunk => {
+    const view = new GraphDataView(values.buffer, {
+      format: 'uint32',
+      length: chunk.length,
+      byteOffset: values.byteOffset + rowOffset * 4,
+      byteStride: 4,
+      rowByteLength: 4
+    });
+    rowOffset += chunk.length;
+    return view;
+  });
+  return {
+    values,
+    output: new GraphVectorView({
+      id,
+      name: id,
+      format: 'uint32',
+      length,
+      valueLength: length,
+      stride: 1,
+      byteStride: 4,
+      rowByteLength: 4,
+      data
+    })
+  };
+}
+
+/** Destination names, including inherited and nonenumerable ports. @internal */
+export function getRecipeDestinationKeys(...selections: (object | undefined)[]): string[] {
+  const names = new Set<string>();
+  for (const selection of selections) {
+    for (
+      let descriptor = selection;
+      descriptor && descriptor !== Object.prototype;
+      descriptor = Object.getPrototypeOf(descriptor)
+    ) {
+      // Stop at Object.prototype from the selection's realm. A caller-created null-prototype
+      // map still contributes its own ports, as do custom prototypes above this intrinsic.
+      const prototypeConstructor = Object.getOwnPropertyDescriptor(
+        descriptor,
+        'constructor'
+      )?.value;
+      if (
+        Object.getPrototypeOf(descriptor) === null &&
+        typeof prototypeConstructor === 'function' &&
+        Function.prototype.toString.call(prototypeConstructor) ===
+          Function.prototype.toString.call(Object) &&
+        prototypeConstructor.prototype === descriptor
+      )
+        break;
+      for (const name of Object.getOwnPropertyNames(descriptor))
+        if (name !== 'constructor') names.add(name);
+    }
+  }
+  return [...names];
+}
 
 /**
  * The only caller-ownership override categories accepted by recipes.
  *
- * `inputs` reuses a caller-owned value produced before the recipe, `outputs` publishes terminal
+ * `inputs` reuses a caller-owned value produced before the recipe, `output` publishes terminal
  * values, and `scratch` exposes storage that only connects recipe stages. Algorithm parameters
  * remain ordinary recipe properties because they are not ownership overrides.
  */
@@ -53,9 +137,65 @@ export type GPURecipeOverrides<
   Scratch extends object = Record<never, never>
 > = {
   inputs?: Inputs;
-  outputs?: Outputs;
+  /** Caller-owned terminal destinations. Omitted leaves use graph-owned transient storage. */
+  output?: Outputs;
   scratch?: Scratch;
 };
+
+/**
+ * Capture consumed destination paths without evaluating unrelated caller metadata.
+ * Graph views retain their identity and tuples are copied before allocating recipe storage.
+ * @internal
+ */
+export function resolveRecipeDestinations<Outputs extends object>(
+  id: string,
+  props: {output?: Outputs}
+): Outputs | undefined {
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
+  // Published CJS and ESM views have different constructors. Inspect their own data fields
+  // without evaluating a destination map's unrelated accessors during discrimination.
+  const isResource = (value: object): boolean => {
+    const field = (name: string): unknown => Object.getOwnPropertyDescriptor(value, name)?.value;
+    return (
+      value instanceof GraphDataView ||
+      (typeof field('format') === 'string' &&
+        typeof field('length') === 'number' &&
+        ((typeof field('buffer') === 'object' &&
+          field('buffer') !== null &&
+          typeof field('byteOffset') === 'number' &&
+          typeof field('byteStride') === 'number' &&
+          typeof field('rowByteLength') === 'number') ||
+          (Array.isArray(field('data')) && Array.isArray(field('chunks')))))
+    );
+  };
+  const capture = (value: unknown): unknown => {
+    if (Array.isArray(value)) return Array.from(value, capture);
+    if (value === null || typeof value !== 'object' || isResource(value)) return value;
+
+    const source = value as Record<string, unknown>;
+    const captured = new Map<string, unknown>();
+    const read = (key: string): unknown => {
+      if (!captured.has(key)) captured.set(key, capture(source[key]));
+      return captured.get(key);
+    };
+    // Read only paths consumed by the declaration, including inherited ports and get-only
+    // proxies whose unrelated metadata getters may not be safe to evaluate.
+    return new Proxy(
+      {},
+      {
+        get: (_target, key) => (typeof key === 'string' ? read(key) : undefined),
+        has: (_target, key) => typeof key === 'string' && read(key) !== undefined,
+        ownKeys: () => Object.keys(source),
+        getOwnPropertyDescriptor: (_target, key) =>
+          Object.prototype.hasOwnProperty.call(source, key)
+            ? {configurable: true, enumerable: true}
+            : undefined,
+        set: () => false
+      }
+    );
+  };
+  return capture(props.output) as Outputs | undefined;
+}
 
 /** Fields every recipe result carries. */
 export type GPURecipeResult<
@@ -164,6 +304,27 @@ export type RecipeCountNodesProps = {
   counts: readonly RecipeCount[];
 };
 
+/** Validate scalar storage interpretation independently of the supplied view's format. */
+function validateRecipeKernelBinding(id: string, binding: WGSLKernelBinding): void {
+  switch (binding.type) {
+    case 'f32':
+      validateSinglePackedView(
+        binding.view,
+        ['float32', 'float32x2', 'float32x3', 'float32x4'],
+        id
+      );
+      break;
+    case 'u32':
+    case 'atomic<u32>':
+      validateSinglePackedView(binding.view, ['uint32', 'uint32x2', 'uint32x3', 'uint32x4'], id);
+      break;
+    case 'i32':
+    case 'atomic<i32>':
+      validateSinglePackedView(binding.view, ['sint32', 'sint32x2', 'sint32x3', 'sint32x4'], id);
+      break;
+  }
+}
+
 /**
  * Adds a row-parallel kernel that writes one uint32 contribution per row for each count, then a
  * published `GPUReduction` sum per count. Replaces a single invocation looping over every row.
@@ -182,8 +343,7 @@ export function addRecipeCountNodes<Parameters>(
     graph,
     props.bindings.map(binding => binding.view)
   );
-  for (const binding of props.bindings)
-    validateSinglePackedView(binding.view, [binding.view.format], props.id);
+  for (const binding of props.bindings) validateRecipeKernelBinding(props.id, binding);
   validateGraphOutputsDisjointFromInputs(
     props.id,
     props.bindings.filter(binding => binding.access !== 'read').map(binding => binding.view),
@@ -275,6 +435,7 @@ export function createTransientSpatialWeights<Parameters>(
     weights: getOrCreateView(graph, `${id}-weights`, 'float32', slots, provided?.weights),
     ...(provided?.distances ? {distances: provided.distances} : {}),
     status: {
+      ...(provided?.status?.count ? {count: provided.status.count} : {}),
       overflow: getOrCreateView(graph, `${id}-overflow`, 'uint32', 1, provided?.status?.overflow),
       requiredCount: getOrCreateView(
         graph,
@@ -319,16 +480,20 @@ export function createIdentityOffsetsNode<Parameters>(
  * Adapter: turns a cell table into the per-row analysis columns the statistics read.
  *
  * `values[i]` is `sumValues[i]` when the table has it, else the row count as f32. `mask[i]` is 1
- * for occupied rows and 0 for the empty tail of the capacity-bounded table.
+ * for occupied rows and 0 for the empty tail of the capacity-bounded table. An optional
+ * status.sumOverflow suppresses occupied sum values with NaN, retaining the occupancy mask.
  * @internal
  */
 export function addCellTableColumnsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  table: Pick<GPUCellTable, 'counts' | 'sumValues'>,
+  table: Pick<GPUCellTable, 'counts' | 'sumValues'> & {
+    status?: Pick<GPUCellTable['status'], 'sumOverflow'>;
+  },
   output: {values: GraphDataView<'float32'>; mask: GraphDataView<'uint32'>}
 ): void {
   const rows = table.counts.length;
+  const sumOverflow = table.sumValues ? table.status?.sumOverflow : undefined;
   graph.add(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-cell-table-columns`,
@@ -338,13 +503,21 @@ export function addCellTableColumnsNode<Parameters>(
         ...(table.sumValues
           ? [{name: 'sumValues', view: table.sumValues, type: 'f32', access: 'read'} as const]
           : []),
+        ...(sumOverflow
+          ? [{name: 'sumOverflow', view: sumOverflow, type: 'u32', access: 'read'} as const]
+          : []),
         {name: 'columnValues', view: output.values, type: 'f32', access: 'read_write'},
         {name: 'columnMask', view: output.mask, type: 'u32', access: 'read_write'}
       ],
       invocationCount: rows,
+      declarations: sumOverflow ? GET_NAN_WGSL : undefined,
       body: `let rowCount = counts[countsOffset + index];
   columnValues[columnValuesOffset + index] = ${
-    table.sumValues ? 'sumValues[sumValuesOffset + index]' : 'f32(rowCount)'
+    table.sumValues
+      ? sumOverflow
+        ? 'select(sumValues[sumValuesOffset + index], getNaN(), rowCount > 0u && sumOverflow[sumOverflowOffset] != 0u)'
+        : 'sumValues[sumValuesOffset + index]'
+      : 'f32(rowCount)'
   };
   columnMask[columnMaskOffset + index] = select(0u, 1u, rowCount > 0u);`
     })
@@ -602,8 +775,7 @@ export function createRecipeKernelNode<Parameters>(
     graph,
     props.bindings.map(binding => binding.view)
   );
-  for (const binding of props.bindings)
-    validateSinglePackedView(binding.view, [binding.view.format], props.id);
+  for (const binding of props.bindings) validateRecipeKernelBinding(props.id, binding);
   validateGraphOutputsDisjointFromInputs(
     props.id,
     props.bindings.filter(binding => binding.access !== 'read').map(binding => binding.view),

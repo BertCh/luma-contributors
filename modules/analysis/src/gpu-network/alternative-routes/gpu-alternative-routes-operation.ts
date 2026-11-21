@@ -6,7 +6,8 @@ import {
   GPUContributorOperation,
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
-import {GPUAlternativeRoutes} from './gpu-alternative-routes';
+import {GPUAlternativeRoutes, getGPUAlternativeRoutesOutputLayout} from './gpu-alternative-routes';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Graph-value properties. Route and path padding dimensions are explicit. */
 export type AlternativeRoutesOperationProps = {
@@ -28,9 +29,52 @@ export type AlternativeRoutesOperationProps = {
     complete: string;
   };
 };
+/** Captures the same values for CPU execution and GPU descriptor construction. @internal */
+export function snapshotAlternativeRoutesOperationProps(
+  props: AlternativeRoutesOperationProps
+): AlternativeRoutesOperationProps {
+  const snapshot = snapshotConstructionFields(props, [
+    'id',
+    'nodeCount',
+    'queryCount',
+    'topology',
+    'sources',
+    'targets',
+    'routeCount',
+    'maximumExpansions',
+    'maximumFrontierSize',
+    'output'
+  ]);
+  return Object.freeze({
+    ...snapshot,
+    topology: snapshotConstructionFields(snapshot.topology, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'nodePositions'
+    ]),
+    output: snapshotConstructionFields(snapshot.output, [
+      'vertices',
+      'edges',
+      'lengths',
+      'costs',
+      'counts',
+      'complete'
+    ])
+  });
+}
+
 /** Vector operation form, retaining the contributor's per-query counts and complete flag. */
 export class GPUAlternativeRoutesOperation extends GPUContributorOperation {
   constructor(props: AlternativeRoutesOperationProps) {
+    props = snapshotAlternativeRoutesOperationProps(props);
+    const id = props.id ?? 'alternative-routes';
+    getGPUAlternativeRoutesOutputLayout({
+      id,
+      nodeCount: props.nodeCount,
+      queryCount: props.queryCount,
+      routeCount: props.routeCount
+    });
     const inputs: Record<string, string> = {
       offsets: props.topology.offsets,
       neighbors: props.topology.neighbors,
@@ -52,7 +96,8 @@ export class GPUAlternativeRoutesOperation extends GPUContributorOperation {
             : props.routeCount * (['vertices', 'edges'].includes(port) ? props.nodeCount : 1))
       };
     super({
-      id: props.id ?? 'alternative-routes',
+      emptyOutputPorts: ['vertices', 'edges', 'lengths', 'costs', 'counts', 'complete'],
+      id,
       inputs,
       outputs,
       createContributor: getView =>

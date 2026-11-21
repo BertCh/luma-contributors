@@ -76,6 +76,10 @@ export type PrecomputedLocalStatistics = {
   spatialLag?: ArrayLike<number>;
   /** Pseudo or analytic p-value per analysis row; NaN means untested. */
   pValue?: ArrayLike<number>;
+  /** Integer exceedances per analysis row from a fixed-draw producer; 0xffffffff is untested. */
+  pValueExceedances?: ArrayLike<number>;
+  /** Construction of supplied permutation p-values on the executed route. */
+  pValueConstruction?: 'upper-tail-count' | 'doubled-minimum-tail';
 };
 
 /** Pair work that the CPU reference accepts. */
@@ -484,6 +488,13 @@ export function runLocalMoran(
     adjusted_p_value: 'float64',
     cluster: 'string'
   });
+  const suppliedPValues =
+    precomputed?.pValue !== undefined || precomputed?.pValueExceedances !== undefined;
+  const pValueConstruction = suppliedPValues
+    ? (precomputed?.pValueConstruction ?? 'unknown')
+    : parameters.permutations > 0
+      ? 'upper-tail-count'
+      : 'unknown';
   const localResults = set.weights.neighbors.map((list, row) => {
     const weights = set.weights.weights[row];
     const lag = precomputed?.spatialLag
@@ -491,9 +502,19 @@ export function runLocalMoran(
       : list.reduce((sum, other, position) => sum + weights[position] * z[other], 0);
     const localI = precomputed ? precomputed.statistic[row] : z[row] * lag;
     let pValue: number | null = null;
-    if (precomputed?.pValue && list.length) {
+    if (precomputed?.pValueExceedances && pValueConstruction !== 'unknown' && list.length) {
+      const exceedances = precomputed.pValueExceedances[row];
+      pValue =
+        exceedances === 0xffffffff
+          ? null
+          : Math.min(
+              1,
+              ((pValueConstruction === 'doubled-minimum-tail' ? 2 : 1) * (exceedances + 1)) /
+                (parameters.permutations + 1)
+            );
+    } else if (precomputed?.pValue && list.length) {
       pValue = Number.isFinite(precomputed.pValue[row]) ? precomputed.pValue[row] : null;
-    } else if (parameters.permutations > 0 && list.length) {
+    } else if (!suppliedPValues && parameters.permutations > 0 && list.length) {
       let atLeast = 0;
       for (let draw = 0; draw < parameters.permutations; draw++) {
         const values = permuteNeighborValues(row, list.length, z, random);
@@ -543,7 +564,12 @@ export function runLocalMoran(
   return {
     tables: [table],
     diagnostics,
-    summary: {featureCount: n, permutations: parameters.permutations, multipleTesting}
+    summary: {
+      featureCount: n,
+      permutations: parameters.permutations,
+      multipleTesting,
+      pValueConstruction
+    }
   };
 }
 

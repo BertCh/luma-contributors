@@ -16,14 +16,21 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {getGWRGridScratchSizes} from './gwr-scalability-utils';
-import {createMultiscaleInference} from './multiscale-inference';
+import {
+  createMultiscaleInference,
+  MGWR_INFERENCE_MAXIMUM_ROW_COUNT,
+  MGWR_INFERENCE_MAXIMUM_WORK
+} from './multiscale-inference';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateCommandNodeBudget
+  validateCommandNodeBudget,
+  validateCapacity,
+  validateMaximumCount,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -43,6 +50,7 @@ import {
 import {GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS} from './geographically-weighted-regression-parameters';
 import {getDefaultGWRGridSize} from './gwr-grid-index';
 import {
+  MGWR_MAXIMUM_CANDIDATE_COUNT,
   getMultiscaleBandwidthAllocationLengths,
   createMultiscaleBandwidthSelection,
   createMultiscaleBandwidthWorkspace,
@@ -171,11 +179,14 @@ export type GPUMultiscaleGeographicallyWeightedRegressionProps = Omit<
  * uncertainty. Optional inference instead propagates the full coupled response Jacobian,
  * estimates residual variance and reports bandwidth-history-conditioned MGWR standard errors
  * and effective parameters. No readback or regularization.
- * Planar finite-support kernels automatically build the shared GWR grid from 1024 rows;
- * indexGridSize overrides it, and false forces dense traversal. Untruncated Gaussian and
+ * Planar finite-support kernels automatically build the shared GWR grid from 1,024 rows.
+ * An explicit grid sets its dimensions; `indexGridSize: false` forces dense traversal. Untruncated Gaussian and
  * great-circle fits use the dense fallback. Limits: 65,536 dense rows, 1,048,576 indexed rows,
  * 24 predictors, 128 backfit sweeps, 32 grid candidates, 64 search iterations and the shared
- * 32,768 command-node budget. Full inference retains its 128-row/cubic-work limits.
+ * 32,768 command-node budget. When full inference is requested, response.length is at most 128
+ * and response.length^3 * (predictorCount + 1) * maximumIterations is at most 268,435,456.
+ * Output and inference views require exact lengths; parameters permits spare capacity after
+ * its predictorCount + 2 values (tolerance plus one bandwidth per design column).
  * Compile-time: shapes, kernel, index, iteration limits, selection and inference modes.
  * Per-frame: data, mask, tolerance, bandwidths/candidates/bounds and noise variance.
  */
@@ -206,6 +217,12 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
         ? undefined
         : (props.indexGridSize ?? getDefaultGWRGridSize(props.response.length));
     this.props = {...props, indexGridSize};
+    validateCapacity(
+      this.id,
+      'parameters.length (tolerance plus predictorCount + 1 bandwidths)',
+      props.parameters.length,
+      props.predictorCount + 2
+    );
     validateRegressionInputs(
       this.id,
       {...props, indexGridSize: props.indexGridSize || indexGridSize},
@@ -232,23 +249,45 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       MGWR_FIXED_COMMAND_NODE_ALLOWANCE +
       (props.maximumIterations ?? 32) * (3 + (props.predictorCount + 1) * (3 + selectionNodeCount));
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
-    if (props.parameters.length < props.predictorCount + 2)
-      throw new Error(`${this.id}: supply tolerance and one bandwidth per coefficient`);
     if (props.bandwidthCandidates) {
-      const count = props.bandwidthCandidateCount;
-      if (!count || !Number.isInteger(count) || count > 32)
-        throw new Error(`${this.id}: candidate count must be 1 to 32`);
+      const count = props.bandwidthCandidateCount ?? 0;
+      validateCapacity(
+        this.id,
+        'bandwidthCandidateCount (when bandwidthCandidates is supplied)',
+        count,
+        1,
+        MGWR_MAXIMUM_CANDIDATE_COUNT
+      );
       validateSinglePackedView(props.bandwidthCandidates, ['float32'], this.id);
-      if (props.bandwidthCandidates.length !== (props.predictorCount + 1) * count)
-        throw new Error(`${this.id}: candidate grid shape mismatch`);
-    } else if (props.bandwidthCandidateCount !== undefined)
-      throw new Error(`${this.id}: candidate count requires candidates`);
-    if (props.output.conditionalStandardErrors && !props.noiseVariance)
-      throw new Error(`${this.id}: conditional inference requires known noise variance`);
+      const length = (props.predictorCount + 1) * count;
+      validateCapacity(
+        this.id,
+        'bandwidthCandidates.length ((predictorCount + 1) * bandwidthCandidateCount when candidates are supplied)',
+        props.bandwidthCandidates.length,
+        length,
+        length
+      );
+    } else {
+      validateRequirement(
+        this.id,
+        props.bandwidthCandidateCount === undefined,
+        'bandwidthCandidateCount requires bandwidthCandidates'
+      );
+    }
+    validateRequirement(
+      this.id,
+      !props.output.conditionalStandardErrors || Boolean(props.noiseVariance),
+      'output.conditionalStandardErrors requires noiseVariance'
+    );
     if (props.noiseVariance) {
       validateSinglePackedView(props.noiseVariance, ['float32'], this.id);
-      if (props.noiseVariance.length !== 1)
-        throw new Error(`${this.id}: noise variance must be scalar`);
+      validateCapacity(
+        this.id,
+        'noiseVariance.length (when noiseVariance is supplied)',
+        props.noiseVariance.length,
+        1,
+        1
+      );
     }
     for (const [name, view] of Object.entries(getOutputColumns(props.output))) {
       if (!view) continue;
@@ -272,21 +311,50 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
               (['coefficients', 'conditionalStandardErrors'].includes(name)
                 ? props.predictorCount + 1
                 : 1);
-      if (view.length !== length) throw new Error(`${this.id}: output length mismatch`);
+      const qualifiedName =
+        name === 'status'
+          ? 'status.codes'
+          : name === 'iterations'
+            ? 'status.iterationCount'
+            : name === 'componentSearchIterationLimitReached'
+              ? `status.${name}`
+              : name;
+      const condition =
+        name === 'iterations'
+          ? 'one completed-sweep scalar'
+          : name === 'selectedBandwidths' || name === 'componentSearchIterationLimitReached'
+            ? 'predictorCount + 1 design columns'
+            : ['coefficients', 'conditionalStandardErrors'].includes(name)
+              ? 'response.length * (predictorCount + 1)'
+              : 'response.length rows';
+      validateCapacity(
+        this.id,
+        `output.${qualifiedName}.length (${condition})`,
+        view.length,
+        length,
+        length
+      );
     }
     if (props.inference) {
-      if (
-        props.response.length > 128 ||
-        props.response.length ** 3 * (props.predictorCount + 1) * (props.maximumIterations ?? 32) >
-          268435456
-      )
-        throw new Error(`${this.id}: full inference work budget exceeded`);
-      if (
-        !['residual-df', 'smoother-df'].includes(
+      validateMaximumCount(
+        this.id,
+        'response.length (when inference is requested)',
+        props.response.length,
+        MGWR_INFERENCE_MAXIMUM_ROW_COUNT
+      );
+      validateMaximumCount(
+        this.id,
+        'inference work: response.length^3 * (predictorCount + 1) * maximumIterations (when inference is requested)',
+        props.response.length ** 3 * (props.predictorCount + 1) * (props.maximumIterations ?? 32),
+        MGWR_INFERENCE_MAXIMUM_WORK
+      );
+      validateRequirement(
+        this.id,
+        ['residual-df', 'smoother-df'].includes(
           props.inference.varianceConvention ?? 'residual-df'
-        )
-      )
-        throw new Error(`${this.id}: unsupported variance convention`);
+        ),
+        'inference.varianceConvention must be residual-df or smoother-df when inference is requested'
+      );
       for (const [name, view] of Object.entries(props.inference.output)) {
         validateSinglePackedView(view, [name === 'status' ? 'uint32' : 'float32'], this.id);
         const length =
@@ -297,7 +365,21 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
               : name === 'summary'
                 ? 4
                 : 1;
-        if (view.length !== length) throw new Error(`${this.id}: inference shape mismatch`);
+        const condition =
+          name === 'standardErrors'
+            ? 'response.length * (predictorCount + 1)'
+            : name === 'effectiveParameters'
+              ? 'predictorCount + 1 design columns'
+              : name === 'summary'
+                ? 'four inference statistics'
+                : 'one inference status scalar';
+        validateCapacity(
+          this.id,
+          `inference.output.${name}.length (${condition}; when inference is requested)`,
+          view.length,
+          length,
+          length
+        );
       }
     }
     validateRegressionOutputDispatches(
@@ -728,7 +810,7 @@ if (localInvocationIndex == 0u) {
           id: `${id}-convergence-decide-${iteration}`,
           operation: 'GPUMultiscaleGeographicallyWeightedRegression',
           variant: 'convergence-decide',
-          // contract-allow: single-invocation -- <=256 convergence workgroup partials, capped by CONVERGENCE_MAXIMUM_GROUP_COUNT.
+          // contract-allow: single-invocation -- convergence partials are capped by CONVERGENCE_MAXIMUM_GROUP_COUNT = 256.
           invocationCount: 1,
           bindings: [
             {name: 'parameters', view: workingParameters, type: 'f32', access: 'read'},

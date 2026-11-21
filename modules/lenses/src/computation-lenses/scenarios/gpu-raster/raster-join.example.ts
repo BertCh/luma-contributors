@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
-import {type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
@@ -27,6 +31,8 @@ export type RasterJoinExampleInput = {
   burnedCells: GraphDataView<'float32x2'>;
   zones: GraphDataView<'uint32'>;
   overflow: GraphDataView<'uint32'>;
+  /** Receives 1 on rasterization loss; otherwise a graph-owned status view is returned. */
+  incomplete?: GraphDataView<'uint32'>;
   counts: GraphDataView<'uint32'>;
   outsideCount: GraphDataView<'uint32'>;
   pointZones: GraphDataView<'uint32'>;
@@ -36,6 +42,7 @@ export type RasterJoinExampleInput = {
 export async function runExample(device: Device, input: RasterJoinExampleInput) {
   const {graph, grid, perimeter, burnedCells, zones, overflow} = input;
   const {counts, outsideCount, pointZones} = input;
+  const incomplete = input.incomplete ?? createTransientView(graph, 'join-incomplete', 'uint32', 1);
   // #region example
   const parameters = new GPUParameterBuffer(device, {
     id: 'join-parameters',
@@ -56,11 +63,12 @@ export async function runExample(device: Device, input: RasterJoinExampleInput) 
     new GPURasterJoin({
       ...raster,
       zones,
+      producerOverflow: overflow,
       zoneCount: 1, // one feature: the perimeter
       points: burnedCells, // centres of cells with dNBR above 0.27
-      output: {counts, outsideCount, pointZones}
+      output: {counts, outsideCount, pointZones, status: {incomplete}}
     })
   );
   // #endregion example
-  return {parameters};
+  return {parameters, incomplete};
 }

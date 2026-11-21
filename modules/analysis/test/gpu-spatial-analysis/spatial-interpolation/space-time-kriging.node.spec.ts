@@ -75,8 +75,12 @@ it('preserves packed public types and infers the supplied query and output view 
   const mixed = new GPUSpaceTimeKriging({...packedProps, output: chunked.props.output});
   expectTypeOf(mixed.props.queries).toEqualTypeOf<GraphDataView<'float32x2'>>();
   expectTypeOf(mixed.props.output.values).toEqualTypeOf<GraphVectorView<'float32x4'>>();
-  expect(packed.props.output).toBe(base.output);
-  expect(mixed.props.output).toBe(chunked.props.output);
+  expect(packed.props.output).not.toBe(base.output);
+  expect(packed.props.output.values).toBe(base.output.values);
+  expect(packed.props.output.status).toBe(base.output.status);
+  expect(mixed.props.output).not.toBe(chunked.props.output);
+  expect(mixed.props.output.values).toBe(chunked.props.output.values);
+  expect(mixed.props.output.status).toBe(chunked.props.output.status);
 });
 
 it('resolves the temporal context and checks sample and query compatibility', () => {
@@ -166,7 +170,7 @@ it('packs the documented space-time layout for each model and validates it', () 
       },
       searchAnisotropy: 1
     })
-  ).toThrow('Gneiting');
+  ).toThrow(/^getGPUSpaceTimeKrigingParameterValues Gneiting.*tau/);
   expect(() =>
     getGPUSpaceTimeKrigingParameterValues({
       covariance: {

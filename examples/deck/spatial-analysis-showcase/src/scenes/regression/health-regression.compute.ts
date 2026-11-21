@@ -61,13 +61,18 @@ import {
   type CompiledGPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {importGraphBuffer} from '../../engine/graph-buffers';
+import {createGraphBufferImporter, importGraphBuffer} from '../../engine/graph-buffers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {
+  createRegressionResidualDisplayNode,
+  getRegressionResidualForDisplay
+} from '../../../../spatial-analysis-shared/regression-residual-display';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance} from '../scene';
 import {createNamedReader} from './b6-reader';
+import {getOLSInferenceLabel} from './regression-inference';
 import {PolygonFillLayer} from './b6-fill-layer';
 import {
   buildOutlineSegments,
@@ -169,10 +174,13 @@ type Variant = {
   buffers: {
     predictors: Buffer;
     olsResiduals: Buffer;
+    olsDisplayResiduals: Buffer;
     fitted: Buffer;
     quadrants: Buffer;
     lagResiduals: Buffer;
     errorResiduals: Buffer;
+    lagDisplayResiduals: Buffer;
+    errorDisplayResiduals: Buffer;
   };
   addLag: (order: '1' | '2') => Promise<CompiledGPUCommandGraph<void>>;
   reader: ReturnType<typeof createNamedReader>;
@@ -310,6 +318,11 @@ export async function createHealthRegression(
     Uint32Array.from({length: rowCount}, (_, row) => row)
   );
   let validationGeneration = 0;
+  let modelGeneration = 0;
+  const modelGenerationBuffer = resources.createBuffer(
+    'model-generation',
+    Uint32Array.of(modelGeneration)
+  );
   const validationGenerationBuffer = resources.createBuffer(
     'validation-generation',
     Uint32Array.of(validationGeneration)
@@ -357,7 +370,18 @@ export async function createHealthRegression(
     spatialContext: projection.spatialContext,
     offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', rowCount + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', neighborsBuffer, 'uint32', capacity),
-    weights: importGraphBuffer(graph, 'weight-values', weightValuesBuffer, 'float32', capacity)
+    weights: importGraphBuffer(graph, 'weight-values', weightValuesBuffer, 'float32', capacity),
+    status: {
+      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+      candidateOverflow: importGraphBuffer(
+        graph,
+        'candidate-overflow',
+        candidateOverflowBuffer,
+        'uint32',
+        1
+      ),
+      requiredCount: importGraphBuffer(graph, 'total-neighbors', totalNeighborsBuffer, 'uint32', 1)
+    }
   });
   const weightsGraphs = new Map<WeightsKind, CompiledGPUCommandGraph<void>>();
   const getWeightsGraph = async (kind: WeightsKind): Promise<CompiledGPUCommandGraph<void>> => {
@@ -365,10 +389,7 @@ export async function createHealthRegression(
     if (compiled) return compiled;
     const graph = new GPUCommandGraph<void>(device, {id: `health-weights-${kind}`});
     const weights = importWeights(graph);
-    const status = {
-      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
-      requiredCount: importGraphBuffer(graph, 'total-neighbors', totalNeighborsBuffer, 'uint32', 1)
-    };
+    const status = weights.status;
     if (kind === 'queen' || kind === 'rook') {
       graph.add(
         new GPUContiguityWeights({
@@ -407,16 +428,7 @@ export async function createHealthRegression(
           },
           output: {
             ...weights,
-            status: {
-              ...status,
-              candidateOverflow: importGraphBuffer(
-                graph,
-                'candidate-overflow',
-                candidateOverflowBuffer,
-                'uint32',
-                1
-              )
-            }
+            status
           }
         })
       );
@@ -434,7 +446,7 @@ export async function createHealthRegression(
           spatialContext: projection.spatialContext,
           id: 'knn',
           mode: 'knn',
-          k: NEIGHBOR_COUNTS[kind],
+          neighborCount: NEIGHBOR_COUNTS[kind],
           gridSize: GRID_SIZE,
           positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
           parameters: searchParameters.importToGraph(graph),
@@ -449,8 +461,8 @@ export async function createHealthRegression(
   searchParameters.write(
     getGPUNeighborSearchParameterValues({
       bounds,
-      radius: Infinity,
-      weightKind: 'binary',
+      maximumDistance: Infinity,
+      weightType: 'binary',
       rowStandardize: true
     })
   );
@@ -488,6 +500,7 @@ export async function createHealthRegression(
     const tag = `${model}-`;
     const make = (name: string, bytes: number) => resources.createBuffer(`${tag}${name}`, bytes);
     const buffers = {
+      generation: make('model-generation-output', 4),
       predictors: resources.createBuffer(`${tag}predictors`, predictorValues),
       coefficients: make('coefficients', (predictorCount + 1) * 4),
       standardErrors: make('standard-errors', (predictorCount + 1) * 4),
@@ -495,6 +508,7 @@ export async function createHealthRegression(
       olsSummary: make('ols-summary', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4),
       olsStatus: make('ols-status', 4),
       olsResiduals: make('ols-residuals', rowCount * 4),
+      olsDisplayResiduals: make('ols-display-residuals', rowCount * 4),
       fitted: make('fitted', rowCount * 4),
       tests: make('tests', GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH * 4),
       diagnosticsSummary: make(
@@ -513,21 +527,66 @@ export async function createHealthRegression(
       lagSummary: make('lag-summary', GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH * 4),
       lagStatus: make('lag-status', 4),
       lagResiduals: make('lag-residuals', rowCount * 4),
+      lagDisplayResiduals: make('lag-display-residuals', rowCount * 4),
       errorTable: make('error-table', (predictorCount + 2) * GPU_SPATIAL_ERROR_GM_TABLE_STRIDE * 4),
       errorSummary: make('error-summary', GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH * 4),
       errorStatus: make('error-status', 4),
-      errorResiduals: make('error-residuals', rowCount * 4)
+      errorResiduals: make('error-residuals', rowCount * 4),
+      errorDisplayResiduals: make('error-display-residuals', rowCount * 4)
     };
 
     // Recipe graph: OLS, diagnostics and the residual local Moran in one compiled graph.
     const recipeGraph = new GPUCommandGraph<void>(device, {id: `health-recipe-${model}`});
+    addKernelPass(recipeGraph, {
+      id: `health-model-generation-${variantKey}`,
+      invocationCount: 1,
+      bindings: [
+        {
+          name: 'generation',
+          view: importGraphBuffer(
+            recipeGraph,
+            'generation-input',
+            modelGenerationBuffer,
+            'uint32',
+            1
+          ),
+          type: 'u32',
+          access: 'read'
+        },
+        {
+          name: 'generationOutput',
+          view: importGraphBuffer(
+            recipeGraph,
+            'generation-output',
+            buffers.generation,
+            'uint32',
+            1
+          ),
+          type: 'u32',
+          access: 'read_write'
+        }
+      ],
+      body: 'generationOutput[generationOutputOffset] = generation[generationOffset];'
+    });
+    // Estimators and display guards must share handles so their read/write dependency is explicit.
+    const importers = new WeakMap<
+      GPUCommandGraph<void>,
+      ReturnType<typeof createGraphBufferImporter>
+    >();
     const view = <F extends 'float32' | 'uint32'>(
       graph: GPUCommandGraph<void>,
       name: string,
       buffer: Buffer,
       format: F,
       length: number
-    ) => importGraphBuffer(graph, name, buffer, format, length) as GraphDataView<F>;
+    ) => {
+      let importer = importers.get(graph);
+      if (!importer) {
+        importer = createGraphBufferImporter(graph);
+        importers.set(graph, importer);
+      }
+      return importer(buffer, format, length) as GraphDataView<F>;
+    };
     const predictorView = (graph: GPUCommandGraph<void>) =>
       view(graph, 'predictors', buffers.predictors, 'float32', rowCount * predictorCount);
     const responseView = (graph: GPUCommandGraph<void>) =>
@@ -541,7 +600,7 @@ export async function createHealthRegression(
       settings: {significanceLevel: ctx.options.significance},
       parameters: moranParameters,
       olsParameters: olsParameters.importToGraph(recipeGraph),
-      outputs: {
+      output: {
         ols: {
           coefficients: view(
             recipeGraph,
@@ -602,6 +661,26 @@ export async function createHealthRegression(
         }
       }
     });
+    recipeGraph.add(
+      createRegressionResidualDisplayNode(recipeGraph, {
+        id: 'ols-residual-display',
+        residuals: view(
+          recipeGraph,
+          'display-ols-input',
+          buffers.olsResiduals,
+          'float32',
+          rowCount
+        ),
+        code: view(recipeGraph, 'display-ols-code', buffers.olsStatus, 'uint32', 1),
+        output: view(
+          recipeGraph,
+          'display-ols-output',
+          buffers.olsDisplayResiduals,
+          'float32',
+          rowCount
+        )
+      })
+    );
     const recipe = resources.track(await recipeGraph.compileAsync());
 
     // Spatial error model graph.
@@ -639,6 +718,26 @@ export async function createHealthRegression(
         }
       })
     );
+    errorGraph.add(
+      createRegressionResidualDisplayNode(errorGraph, {
+        id: 'error-residual-display',
+        residuals: view(
+          errorGraph,
+          'display-error-input',
+          buffers.errorResiduals,
+          'float32',
+          rowCount
+        ),
+        code: view(errorGraph, 'display-error-code', buffers.errorStatus, 'uint32', 1),
+        output: view(
+          errorGraph,
+          'display-error-output',
+          buffers.errorDisplayResiduals,
+          'float32',
+          rowCount
+        )
+      })
+    );
     const error = resources.track(await errorGraph.compileAsync());
 
     const lag = new Map<'1' | '2', CompiledGPUCommandGraph<void>>();
@@ -674,6 +773,20 @@ export async function createHealthRegression(
           }
         })
       );
+      lagGraph.add(
+        createRegressionResidualDisplayNode(lagGraph, {
+          id: 'lag-residual-display',
+          residuals: view(lagGraph, 'display-lag-input', buffers.lagResiduals, 'float32', rowCount),
+          code: view(lagGraph, 'display-lag-code', buffers.lagStatus, 'uint32', 1),
+          output: view(
+            lagGraph,
+            'display-lag-output',
+            buffers.lagDisplayResiduals,
+            'float32',
+            rowCount
+          )
+        })
+      );
       compiled = resources.track(await lagGraph.compileAsync());
       lag.set(order, compiled);
       return compiled;
@@ -683,6 +796,7 @@ export async function createHealthRegression(
       resources,
       `health-${model}`,
       [
+        {name: 'generation', buffer: buffers.generation, bytes: 4},
         {name: 'coefficients', buffer: buffers.coefficients, bytes: (predictorCount + 1) * 4},
         {name: 'standardErrors', buffer: buffers.standardErrors, bytes: (predictorCount + 1) * 4},
         {name: 'tStatistics', buffer: buffers.tStatistics, bytes: (predictorCount + 1) * 4},
@@ -1035,10 +1149,13 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
       buffers: {
         predictors: buffers.predictors,
         olsResiduals: buffers.olsResiduals,
+        olsDisplayResiduals: buffers.olsDisplayResiduals,
         fitted: buffers.fitted,
         quadrants: buffers.quadrants,
         lagResiduals: buffers.lagResiduals,
-        errorResiduals: buffers.errorResiduals
+        errorResiduals: buffers.errorResiduals,
+        lagDisplayResiduals: buffers.lagDisplayResiduals,
+        errorDisplayResiduals: buffers.errorDisplayResiduals
       },
       addLag,
       reader,
@@ -1056,6 +1173,7 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
   // ---- Result state (CPU copies for tooltips, legends and ranges). ----
   let olsSigma = 1;
   let latest: {
+    statuses: readonly number[];
     olsResiduals: Float32Array;
     fitted: Float32Array;
     lagResiduals: Float32Array;
@@ -1084,7 +1202,15 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
     variantKey: string,
     get: (name: string) => {f32: Float32Array; u32: Uint32Array}
   ) => {
-    if (model !== ctx.options.model || variantKey !== activeVariantKey) return;
+    if (
+      model !== ctx.options.model ||
+      variantKey !== activeVariantKey ||
+      variantKey !== getVariantKey(model) ||
+      activeWeights !== ctx.options.weights ||
+      activeOrder !== ctx.options.instruments ||
+      get('generation').u32[0] !== modelGeneration
+    )
+      return;
     const variant = variants.get(variantKey)!;
     const summary = get('olsSummary').f32;
     const coefficients = get('coefficients').f32;
@@ -1105,6 +1231,7 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
     olsSigma = Math.sqrt(Math.max(0, summary[GPU_ORDINARY_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED]));
     ctx.setLegendExtent('residual', [-2 * olsSigma, 2 * olsSigma]);
     latest = {
+      statuses,
       olsResiduals: get('olsResiduals').f32,
       fitted: get('fitted').f32,
       lagResiduals: get('lagResiduals').f32,
@@ -1218,7 +1345,7 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
       }
       ctx.setReadout(
         `coefficient${index}`,
-        `${variant.names[index]}: OLS ${describeCoefficient(olsResult.coefficients[index])}; lag ${describeCoefficient(lagResult.coefficients[index])}; error ${describeCoefficient(errorResult.coefficients[index])}`
+        `${variant.names[index]}: OLS ${describeCoefficient(olsResult.coefficients[index])} [${getOLSInferenceLabel(olsResult)}]; lag ${describeCoefficient(lagResult.coefficients[index])}; error ${describeCoefficient(errorResult.coefficients[index])}`
       );
     }
     const rho = lagResult.coefficients[predictorCount + 1];
@@ -1231,7 +1358,7 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
     const diagnosticsLag = getGPUSpatialTwoStageLeastSquaresDiagnostics(lagSummary);
     ctx.setReadout(
       'lagFit',
-      `pseudo R² ${formatNumber(lagResult.pseudoRSquared)}; Anselin-Kelejian ${formatNumber(lagResult.tests.anselinKelejian?.statistic ?? NaN, 1)}, ${formatP(lagResult.tests.anselinKelejian?.pValue ?? NaN)}; first-stage F ${formatNumber(diagnosticsLag.firstStageF, 1)}${diagnosticsLag.rhoOutsideAdmissibleRange ? '; ρ outside the admissible range' : ''}`
+      `pseudo R² ${formatNumber(lagResult.pseudoRSquared)}; Anselin-Kelejian ${formatNumber(lagResult.tests['anselinKelejian']?.statistic ?? NaN, 1)}, ${formatP(lagResult.tests['anselinKelejian']?.pValue ?? NaN)}; first-stage F ${formatNumber(diagnosticsLag.firstStageF, 1)}${diagnosticsLag.rhoOutsideAdmissibleRange ? '; ρ outside the admissible range' : ''}`
     );
     const lambda = errorResult.coefficients[predictorCount + 1];
     ctx.setReadout(
@@ -1240,7 +1367,7 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
         ? `λ ${formatNumber(lambda.estimate)} ± ${formatNumber(lambda.standardError)} (z ${formatNumber(lambda.statistic, 1)}, ${formatP(lambda.pValue)}); pseudo R² ${formatNumber(errorResult.pseudoRSquared)}`
         : `fit failed (status ${statuses[3]})`
     );
-    const conditioning = (name: string, result: typeof olsResult) =>
+    const conditioning = (name: string, result: Pick<typeof olsResult, 'conditioning'>) =>
       result.conditioning
         ? `${name} ${formatNumber(result.conditioning.conditionNumber, 1)}${result.conditioning.illConditioned ? ' (float32 precision warning)' : ''}`
         : `${name} n/a`;
@@ -1304,6 +1431,7 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
     return {weights, model, order, validationDesign, validationBuffer, variantKey};
   };
   const commitSelection = (next: Selection) => {
+    invalidateModelResult();
     if (next.weights !== activeWeights) weightsDirty = true;
     activeWeights = next.weights;
     activeModel = next.model;
@@ -1311,6 +1439,11 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
     activeOrder = next.order;
     modelDirty = true;
     ctx.requestLayers();
+  };
+  const invalidateModelResult = () => {
+    modelGeneration++;
+    modelGenerationBuffer.write(Uint32Array.of(modelGeneration));
+    latest = null;
   };
   // Graphs and variants stay cached (owned by `resources`), so a superseded build needs no discard.
   const graphSwap = resources.track(new GraphSwap());
@@ -1336,6 +1469,7 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
         ctx.requestLayers();
         return;
       }
+      invalidateModelResult();
       if (id === 'ridge') writeRidge();
       if (id === 'significance') writeSignificance();
       if (id === 'outcome') {
@@ -1466,10 +1600,11 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
             id: `health-${map}`,
             values:
               map === 'residuals'
-                ? variant.buffers.olsResiduals
+                ? variant.buffers.olsDisplayResiduals
                 : map === 'lag'
-                  ? variant.buffers.lagResiduals
-                  : variant.buffers.errorResiduals,
+                  ? variant.buffers.lagDisplayResiduals
+                  : variant.buffers.errorDisplayResiduals,
+            noDataColor: [0, 0, 0, 0],
             valueFormat: 'float32',
             colormap: 'diverging',
             valueRange: [-2 * olsSigma, 2 * olsSigma],
@@ -1525,15 +1660,28 @@ if (fold < FOLD_COUNT && foldStatus[foldStatusOffset + fold] == 0u) {
           `Design: ${latestValidation.design}; ${latestValidation.bufferDistance} m exclusion`
         );
       } else {
-        lines.push(
-          `Fitted (OLS): ${latest.fitted[row].toFixed(1)}%`,
-          `Residual: ${latest.olsResiduals[row] >= 0 ? '+' : ''}${latest.olsResiduals[row].toFixed(1)} points`
+        const residual = getRegressionResidualForDisplay(
+          latest.statuses[0],
+          latest.olsResiduals[row]
         );
+        if (residual !== undefined)
+          lines.push(
+            `Fitted (OLS): ${latest.fitted[row].toFixed(1)}%`,
+            `Residual: ${residual >= 0 ? '+' : ''}${residual.toFixed(1)} points`
+          );
       }
-      if (ctx.options.map === 'lag')
-        lines.push(`Lag-model residual: ${latest.lagResiduals[row].toFixed(1)}`);
-      if (ctx.options.map === 'error')
-        lines.push(`Error-model residual: ${latest.errorResiduals[row].toFixed(1)}`);
+      const lagResidual = getRegressionResidualForDisplay(
+        latest.statuses[2],
+        latest.lagResiduals[row]
+      );
+      const errorResidual = getRegressionResidualForDisplay(
+        latest.statuses[3],
+        latest.errorResiduals[row]
+      );
+      if (ctx.options.map === 'lag' && lagResidual !== undefined)
+        lines.push(`Lag-model residual: ${lagResidual.toFixed(1)}`);
+      if (ctx.options.map === 'error' && errorResidual !== undefined)
+        lines.push(`Error-model residual: ${errorResidual.toFixed(1)}`);
       return lines.join('\n');
     },
 

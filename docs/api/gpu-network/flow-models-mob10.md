@@ -1,89 +1,20 @@
-# Flow models on origin-destination aggregation
+# Flow models on origin-destination aggregation (legacy URL)
 
-Two contributors that work on zone-level flows: a parameter-free model that predicts flows from
-populations and distances, and a kernel smoother for observed flows. Both are reference-tier: work
-grows with the cube of the zone count, and construction rejects more than 1024 zones.
+## [Flow models on origin-destination aggregation](./origin-destination-flow-models.md)
 
-Both take zone centroids, planar or great-circle (`spatialContext`). Their inputs match what
-`GPUFlowAggregation` writes: `zoneOutWeights` is the `outflows` of the radiation model when the
-aggregation runs with `excludeSelfFlows: true` (`T_i` is the trips that leave zone `i`; without the
-option the zone totals also count trips that stay inside it), and the
-smoother reads `flowOriginZoneIds`, `flowDestinationZoneIds`, `flowWeights` and `status.count` (as `validPairCount`)
-directly.
+Use [Flow models on origin-destination aggregation](./origin-destination-flow-models.md), the canonical task guide. This compatibility page preserves
+the previous URL and heading fragments. Recording scenario and capability identifiers are unchanged.
 
-## `GPURadiationFlowModel`
+Import from `@luma-contributors/analysis/gpu-network`.
 
-The radiation model (Simini, Gonzalez, Maritan and Barabasi, Nature 2012). A trip leaving zone `i`
-is absorbed by zone `j` with probability `m_i n_j / ((m_i + s_ij)(m_i + n_j + s_ij))`, where `m_i`
-and `n_j` are the populations of the origin and destination and `s_ij` is the population of the
-zones strictly nearer to `i` than `j`, excluding both. The output is `T_i` times that probability,
-the expected flow, laid out `flows[i * zoneCount + j]` with a zero diagonal. It draws no random
-integers, unlike scikit-mobility's `Radiation.generate`.
+## [`GPURadiationFlowModel`](./origin-destination-flow-models.md#gpuradiationflowmodel)
 
-| Prop | Meaning |
-| --- | --- |
-| `positions`, `populations`, `outflows` | One row per zone. `outflows` is `T_i`, the trips leaving each zone, not counting trips that stay inside it |
-| `normalization` | `'none'` (default), or `'finite-size'`, which divides by `1 - m_i / M` so every row sums to `T_i` |
-| `output.flows` | `zoneCount^2` rows |
+[Inputs, outputs and limits](./origin-destination-flow-models.md#gpuradiationflowmodel).
 
-Ties in distance: zones at exactly the distance of the destination do not count in `s_ij`.
-Implementations that sort by distance count one of two tied zones and not the other, so they differ
-there.
+## [`GPUKernelFlowSmoothing`](./origin-destination-flow-models.md#gpukernelflowsmoothing)
 
-Verified against a hand-computed three-zone case, against a binary64 reference that sorts the
-zones per origin and takes a prefix sum of population (a different route from the kernel), and
-against the closed-form row sum `T_i (1 - m_i / M)`. scikit-mobility was not run.
+[Inputs, outputs and limits](./origin-destination-flow-models.md#gpukernelflowsmoothing).
 
-{/* lens:GPURadiationFlowModel */}
+### [`GPUKernelFlowSmoothing` parameters](./origin-destination-flow-models.md#gpukernelflowsmoothing-parameters)
 
-## `GPUKernelFlowSmoothing`
-
-Smoothing of OD flows: each flow is re-estimated as the kernel-weighted mean of the flows between
-neighbouring origins and neighbouring destinations. Smoothing over neighbourhoods of both ends is the idea
-of Guo and Zhu (IEEE TVCG 2014); this contributor does not reproduce their estimator. The definition used:
-
-1. The neighbourhood of zone `i` is every zone within the smallest distance `h_i` at which the
-   `locationWeights` of the zones within `h_i` (zone `i` included) sum to at least
-   `neighborhoodSize`. Ties at `h_i` are included.
-2. A neighbour `k` has the Gaussian weight `exp(-d_ik^2 / (2 sigma_i^2))` with
-   `sigma_i = bandwidthRatio * h_i`; `K_ii = 1`.
-3. `S_ij = sum_a sum_b K_ia K_jb M_ab / (sum_a K_ia * sum_b K_jb)`. Pairs without a flow count as
-   zero.
-
-This is a normalised kernel mean, so it does not conserve the total flow. Each row of weights is
-divided by its own sum; the columns are not. A zone that is a neighbour of many zones spreads its flows
-into all of them and the total grows, and a zone that is nobody's neighbour loses part of its flows. With
-zones at x = 0, 1 and 10, unit weights, `neighborhoodSize` 2 and `bandwidthRatio` 0.5, one flow of 100
-inside the middle zone sums to 125.3 after smoothing and one flow of 100 inside the far zone sums to 77.6.
-Rescale the output when totals must match the input.
-
-The neighbourhood size, the kernel and the bandwidth ratio are this library's own choices; the paper
-was not available to check them and no packaged implementation exists. The tests use a binary64
-reference written from the three points above, the three-zone case worked by hand, and closed-form
-limits (a zero-size neighbourhood returns the input; a very wide kernel returns the mean). Flow
-selection, which removes duplicate smoothed flows, is not provided.
-
-| Prop | Meaning |
-| --- | --- |
-| `flows` | `{kind: 'matrix', matrix}` with `zoneCount^2` rows, or `{kind: 'pairs', originZoneIds, destinationZoneIds, weights, validPairCount}` as written by `GPUFlowAggregation` (distinct pairs) |
-| `locationWeights` | Weight of each zone in the neighbourhood size |
-| `parameters` | Per-frame, `getGPUKernelFlowSmoothingParameterValues`: neighbourhood size, bandwidth ratio |
-| `output.smoothed` | `zoneCount^2` rows |
-| `output.radii` | Optional neighbourhood radius of each zone |
-
-{/* lens:GPUKernelFlowSmoothing */}
-
-{/* parameters: GPUKernelFlowSmoothing generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-### `GPUKernelFlowSmoothing` parameters
-
-- Packer: `getGPUKernelFlowSmoothingParameterValues(settings)`, writes `GPU_KERNEL_FLOW_SMOOTHING_PARAMETER_LENGTH` (4) `float32` values.
-
-Settings of `getGPUKernelFlowSmoothingParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `neighborhoodSize` | `number` | Weighted size `p` of a zone's neighbourhood, in the unit of `locationWeights`: the nearest zones are taken until their weights sum to at least `p`. A value of 0 or less keeps only the zone itself (and zones at distance 0), which reproduces the input. |
-| `bandwidthRatio` (optional) | `number` | Gaussian standard deviation as a fraction of the neighbourhood radius: `sigma = ratio * radius`. Defaults to 0.5. |
-
-{/* /parameters */}
+[Inputs, outputs and limits](./origin-destination-flow-models.md#gpukernelflowsmoothing-parameters).

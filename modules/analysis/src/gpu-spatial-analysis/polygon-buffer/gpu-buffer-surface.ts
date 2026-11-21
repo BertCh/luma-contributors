@@ -1,11 +1,16 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
+import {
+  snapshotLineFeatureGeometry,
+  type GPULineFeatureGeometry
+} from '../../analysis-core/contracts/line-feature-provenance';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   validateOverlayScratchByteLengths,
+  snapshotOverlayStatusFields,
   getOverlayOutputViews
 } from '../polygon-overlay/overlay-storage-validation';
 import {validateOverlayFeatureSourceOutput} from '../polygon-overlay/overlay-feature-sources';
@@ -19,17 +24,19 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
+  validateGraphOutputsDisjointFromInputs,
+  validateRequirement,
   validatePowerOfTwo,
   validateFiniteNumber,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
-  GPULineGeometryPort,
   GPUPackedGeometryPort,
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
@@ -70,6 +77,16 @@ const MINIMUM_VERTEX_TOLERANCE = 2 ** -126;
 /** Nested snap rounding rounds up to a power-of-two cell, at most 2^127 in f32. */
 const MAXIMUM_VERTEX_TOLERANCE = 2 ** 127;
 
+/** Buffer provenance distinguishes logical source rows from caller identities. */
+export type GPUBufferSurfaceOutput = Omit<GPUPolygonOverlayOutput, 'boundary'> & {
+  boundary: Omit<GPUPolygonOverlayOutput['boundary'], 'sourceFeatureIds'> & {
+    /** Caller input feature ID, or logical feature row when input sourceIds is absent. */
+    sourceFeatureIds: GraphDataView<'uint32'>;
+    /** Optional logical input feature row, independent of caller IDs. */
+    sourceFeatureRows?: GraphDataView<'uint32'>;
+  };
+};
+
 /**
  * Largest sum of boundary rows and `capacity.intersections` of {@link GPUBufferSurface} on
  * `device`: the raw boundary rows plus one closing vertex per raw boundary ring are noded by
@@ -104,7 +121,7 @@ export type GPUBufferSurfaceProps = {
    * rows derived from it (see {@link getGPUBufferSurfaceMaximumBoundaryRowCount}) are at most that
    * maximum minus `capacity.intersections` (1048576 before that subtraction on a default device).
    */
-  geometry: GPUPackedGeometryPort<GPULineGeometryPort | GPUPolygonGeometryPort>;
+  geometry: GPULineFeatureGeometry | GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /** `[distance, mitreLimit, 0, 0]`, matching `GPUOffsetCurve`. */
   parameters: GraphDataView<'float32'>;
   joinStyle?: GPUOffsetCurveJoinStyle;
@@ -113,7 +130,7 @@ export type GPUBufferSurfaceProps = {
   vertexTolerance: number;
   capacity: GPUPolygonOverlayCapacity;
   /** Caller-owned outputs; `output.status.uncertainCount` is the optional uncertain-pair counter. */
-  output: GPUPolygonOverlayOutput;
+  output: GPUBufferSurfaceOutput;
   spatialSort?: boolean;
   leafCapacity?: number;
 };
@@ -172,16 +189,73 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
   readonly rowsPerVertex: number;
 
   constructor(props: GPUBufferSurfaceProps) {
-    this.id = props.id ?? 'buffer-surface';
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'geometry',
+      'parameters',
+      'joinStyle',
+      'capStyle',
+      'quadSegments',
+      'vertexTolerance',
+      'capacity',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    this.id = snapshot.id ?? 'buffer-surface';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
-      props.spatialContext,
+      snapshot.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
-    props = {
-      ...props,
-      geometry: snapshotSinglePartGeometryPort(this.id, 'geometry', props.geometry)
-    };
+    const outputFields = snapshotConstructionFields(snapshot.output, [
+      'geometry',
+      'boundary',
+      'status',
+      'featureSources'
+    ]);
+    const capturedBoundary = snapshotConstructionFields(outputFields.boundary, [
+      'endpoints',
+      'operandIds',
+      'sourceFeatureIds',
+      'sourceFeatureRows',
+      'status'
+    ]);
+    const output = {...outputFields, boundary: capturedBoundary};
+    const statusSnapshot = snapshotOverlayStatusFields(this.id, output);
+    props = Object.freeze({
+      ...snapshot,
+      geometry:
+        snapshot.geometry.kind === 'lines'
+          ? snapshotLineFeatureGeometry(this.id, snapshot.geometry)
+          : snapshotConstructionFields(snapshot.geometry, [
+              'kind',
+              'positions',
+              'featureOffsets',
+              'polygonOffsets',
+              'ringOffsets',
+              'sourceIds'
+            ]),
+      capacity: snapshotConstructionFields(snapshot.capacity, ['intersections', 'nodedSegments']),
+      output: Object.freeze({
+        geometry: snapshotConstructionFields(output.geometry, [
+          'kind',
+          'positions',
+          'featureOffsets',
+          'polygonOffsets',
+          'ringOffsets'
+        ]),
+        boundary: Object.freeze({
+          ...capturedBoundary,
+          status: statusSnapshot.boundaryStatus
+        }),
+        status: statusSnapshot.status,
+        featureSources:
+          output.featureSources &&
+          snapshotConstructionFields(output.featureSources, ['sourceRows', 'operandIds', 'mixed'])
+      })
+    });
     this.props = props;
     validateFiniteNumber(
       this.id,
@@ -197,7 +271,44 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       MINIMUM_VERTEX_TOLERANCE,
       MAXIMUM_VERTEX_TOLERANCE
     );
+    const {id} = this;
     validateOverlayFeatureSourceOutput(this.id, props.output);
+    if (props.output.boundary.sourceFeatureRows) {
+      validateSinglePackedView(
+        props.output.boundary.sourceFeatureRows,
+        ['uint32'],
+        `${id} output.boundary.sourceFeatureRows`
+      );
+      validateCapacity(
+        id,
+        'output.boundary.sourceFeatureRows.length',
+        props.output.boundary.sourceFeatureRows.length,
+        props.output.boundary.sourceFeatureIds.length,
+        props.output.boundary.sourceFeatureIds.length
+      );
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [props.output.boundary.sourceFeatureIds],
+        [props.output.boundary.sourceFeatureRows]
+      );
+    }
+    if (props.geometry.sourceIds) {
+      validateSinglePackedView(props.geometry.sourceIds, ['uint32'], `${id} geometry.sourceIds`);
+      const count =
+        props.geometry.kind === 'lines'
+          ? (props.geometry.featureOffsets ?? props.geometry.lineOffsets).length - 1
+          : props.geometry.featureOffsets.length - 1;
+      validateRequirement(
+        id,
+        props.geometry.sourceIds.length === count,
+        'geometry.sourceIds length must equal logical feature count'
+      );
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [props.output.boundary.sourceFeatureIds, props.output.boundary.sourceFeatureRows],
+        [props.geometry.sourceIds]
+      );
+    }
     this.joinStyle = props.joinStyle ?? 'round';
     this.capStyle = props.capStyle ?? 'round';
     this.quadSegments = props.quadSegments ?? 8;
@@ -207,7 +318,6 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       this.quadSegments,
       'buffer'
     );
-    const {id} = this;
     const {geometry} = props;
     validateSinglePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);
     if (geometry.positions.length < 1) {
@@ -260,9 +370,12 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(this.id, graph, [
       geometry.positions,
       geometry.kind === 'lines' ? geometry.lineOffsets : geometry.featureOffsets,
+      geometry.kind === 'lines' ? geometry.featureOffsets : undefined,
       geometry.kind === 'lines' ? undefined : geometry.polygonOffsets,
       geometry.kind === 'lines' ? undefined : geometry.ringOffsets,
-      this.props.parameters
+      this.props.parameters,
+      geometry.sourceIds,
+      this.props.output.boundary.sourceFeatureRows
     ]);
     const capRows =
       this.capStyle === 'round' ? 2 * this.quadSegments - 1 : this.capStyle === 'square' ? 2 : 0;
@@ -275,9 +388,11 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
           geometry.positions,
           props.parameters,
           ...(geometry.kind === 'lines'
-            ? [geometry.lineOffsets]
+            ? [geometry.lineOffsets, geometry.featureOffsets]
             : [geometry.featureOffsets, geometry.polygonOffsets, geometry.ringOffsets]),
-          ...getOverlayOutputViews(props.output)
+          ...getOverlayOutputViews(props.output),
+          geometry.sourceIds,
+          props.output.boundary.sourceFeatureRows
         ].map((view, index) => [`binding.${index}`, view])
       )
     );
@@ -604,7 +719,8 @@ fn readNormalized(row: u32) -> vec2f {
           ringOffsets: rawRingOffsets,
           sourceIds: polygons.sourceIds
         },
-        'negative'
+        'negative',
+        prepared.invalidInput
       )
     );
     return nodes;
@@ -612,7 +728,7 @@ fn readNormalized(row: u32) -> vec2f {
 
   private _getLineNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    lines: GPUPackedGeometryPort<GPULineGeometryPort>
+    lines: GPULineFeatureGeometry
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const prepared = this._getCompactionNodes(
@@ -638,6 +754,7 @@ fn readNormalized(row: u32) -> vec2f {
       rawRowCount
     );
     const rawOffsets = createTransientView(graph, `${id}-raw-offsets`, 'uint32', lineCount + 1);
+    const rawCounts = createTransientView(graph, `${id}-raw-counts`, 'uint32', lineCount + 1);
     const identityOffsets = createTransientView(
       graph,
       `${id}-identity-offsets`,
@@ -691,15 +808,57 @@ fn readNormalized(row: u32) -> vec2f {
         variant: 'line-topology',
         bindings: [
           {name: 'lineOffsets', view: prepared.offsets, type: 'u32', access: 'read'},
-          {name: 'ringOffsets', view: rawOffsets, type: 'u32', access: 'read_write'},
+          ...(this.capStyle === 'flat'
+            ? []
+            : [
+                {
+                  name: 'originalOffsets',
+                  view: lines.lineOffsets,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                },
+                {
+                  name: 'positions',
+                  view: prepared.positions,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                },
+                {
+                  name: 'parameters',
+                  view: positiveParameters,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]),
+          {name: 'rawCounts', view: rawCounts, type: 'u32', access: 'read_write'},
           {name: 'identityOffsets', view: identityOffsets, type: 'u32', access: 'read_write'}
         ],
         invocationCount: lineCount + 1,
         declarations: `const ROWS_PER_VERTEX: u32 = ${this.rowsPerVertex}u;
-const CAP_ROWS: u32 = ${capRows}u;`,
-        body: `ringOffsets[ringOffsetsOffset + index] = 2u * ROWS_PER_VERTEX * lineOffsets[lineOffsetsOffset + index] + 2u * CAP_ROWS * index;
+const CAP_ROWS: u32 = ${capRows}u;
+const LINE_COUNT: u32 = ${lineCount}u;
+${IS_FINITE_BITS_WGSL}`,
+        body: `var count = 0u;
+  if (index < LINE_COUNT) {
+    let vertices = lineOffsets[lineOffsetsOffset + index + 1u] - lineOffsets[lineOffsetsOffset + index];
+    if (vertices >= 2u) { count = 2u * ROWS_PER_VERTEX * vertices + 2u * CAP_ROWS; }
+    ${
+      this.capStyle !== 'flat'
+        ? `else if (vertices == 1u && parameters[parametersOffset] > 0.0 && originalOffsets[originalOffsetsOffset + index + 1u] - originalOffsets[originalOffsetsOffset + index] >= 2u) {
+      let row = lineOffsets[lineOffsetsOffset + index];
+      if (isFiniteBits(positions[positionsOffset + 2u * row]) && isFiniteBits(positions[positionsOffset + 2u * row + 1u])) { count = ${this.capStyle === 'square' ? 4 : 4 * this.quadSegments}u; }
+    }`
+        : '// Flat caps have no area when a stored line collapses to a point.'
+    }
+  }
+  rawCounts[rawCountsOffset + index] = count;
   identityOffsets[identityOffsetsOffset + index] = index;`
       }),
+      ...new GPUScan({
+        id: `${id}-raw-offset-scan`,
+        input: rawCounts,
+        output: rawOffsets
+      }).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-line-boundaries`,
         operation: OPERATION,
@@ -727,7 +886,12 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
   let delta = b - a;
   return delta / max(length(delta), 1e-20);
 }`,
-        body: `var line = 0u;
+        body: `if (index >= ringOffsets[ringOffsetsOffset + LINE_COUNT]) {
+    output[outputOffset + index * 2u] = 0.0;
+    output[outputOffset + index * 2u + 1u] = 0.0;
+    return;
+  }
+  var line = 0u;
   var high = LINE_COUNT;
   while (line + 1u < high) {
     let middle = (line + high) / 2u;
@@ -739,8 +903,19 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
   let sideCount = vertexCount * ROWS_PER_VERTEX;
   let local = index - ringOffsets[ringOffsetsOffset + line];
   if (vertexCount < 2u) {
-    output[outputOffset + index * 2u] = 0.0;
-    output[outputOffset + index * 2u + 1u] = 0.0;
+    let center = point(&positions, positionsOffset, firstVertex);
+    let radius = parameters[parametersOffset];
+    ${
+      this.capStyle === 'square'
+        ? `let corner = vec2f(select(-1.0, 1.0, local >= 2u), select(-1.0, 1.0, local == 1u || local == 2u));
+    let capPoint = center + radius * corner;`
+        : this.capStyle === 'round'
+          ? `let angle = -2.0 * PI * f32(local) / ${4 * this.quadSegments}.0;
+    let capPoint = center + radius * vec2f(cos(angle), sin(angle));`
+          : 'let capPoint = center;'
+    }
+    output[outputOffset + index * 2u] = capPoint.x;
+    output[outputOffset + index * 2u + 1u] = capPoint.y;
     return;
   }
   var value = vec2f(0.0);
@@ -772,12 +947,13 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
         {
           kind: 'polygons',
           positions: rawPositions,
-          featureOffsets: identityOffsets,
+          featureOffsets: lines.featureOffsets ?? identityOffsets,
           polygonOffsets: identityOffsets,
           ringOffsets: rawOffsets,
           sourceIds: lines.sourceIds
         },
-        'negative'
+        'negative',
+        prepared.invalidInput
       )
     );
     return nodes;
@@ -798,10 +974,12 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
     nodes: GPUCommandNode<Parameters>[];
     positions: GraphDataView<'float32x2'>;
     offsets: GraphDataView<'uint32'>;
+    invalidInput: GraphDataView<'uint32'>;
   } {
     const {id} = this;
     const prefix = `${id}-${kind}-compact`;
     const keep = createTransientView(graph, `${prefix}-keep`, 'uint32', positions.length);
+    const invalidInput = createTransientView(graph, `${prefix}-invalid-input`, 'uint32', 1);
     const kept = createTransientView(graph, `${prefix}-kept`, 'uint32', positions.length);
     const compactPositions = createTransientView(
       graph,
@@ -818,17 +996,26 @@ fn unitDirection(a: vec2f, b: vec2f) -> vec2f {
     const lineCount = offsets.length - 1;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${prefix}-invalid-clear`,
+        operation: OPERATION,
+        invocationCount: 1,
+        bindings: [{name: 'invalidInput', view: invalidInput, type: 'u32', access: 'read_write'}],
+        body: 'invalidInput[invalidInputOffset] = 0u;'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${prefix}-flags`,
         operation: OPERATION,
         variant: `${kind}-compact-flags`,
         bindings: [
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
           {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
-          {name: 'keep', view: keep, type: 'u32', access: 'read_write'}
+          {name: 'keep', view: keep, type: 'u32', access: 'read_write'},
+          {name: 'invalidInput', view: invalidInput, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: positions.length,
         declarations: `const LINE_COUNT: u32 = ${lineCount}u;
 const DROP_CLOSING: bool = ${dropClosingVertex};
+${IS_FINITE_BITS_WGSL}
 
 fn isSame(first: u32, second: u32) -> bool {
   return positions[positionsOffset + 2u * first] == positions[positionsOffset + 2u * second] &&
@@ -842,7 +1029,10 @@ fn isSame(first: u32, second: u32) -> bool {
   }
   let begin = offsets[offsetsOffset + line];
   let end = offsets[offsetsOffset + line + 1u];
-  var flag = index < end;
+  var flag = index >= begin && index < end;
+  if (flag && (!isFiniteBits(positions[positionsOffset + 2u * index]) || !isFiniteBits(positions[positionsOffset + 2u * index + 1u]))) {
+    atomicOr(&invalidInput[invalidInputOffset], 1u);
+  }
   if (flag && index > begin && isSame(index - 1u, index)) { flag = false; }
   if (flag && DROP_CLOSING && index + 1u == end && index > begin && isSame(begin, index)) { flag = false; }
   keep[keepOffset + index] = select(0u, 1u, flag);`
@@ -883,7 +1073,7 @@ fn isSame(first: u32, second: u32) -> bool {
   output[outputOffset + 2u * row + 1u] = positions[positionsOffset + 2u * index + 1u];`
       })
     ];
-    return {nodes, positions: compactPositions, offsets: compactOffsets};
+    return {nodes, positions: compactPositions, offsets: compactOffsets, invalidInput};
   }
 
   private _getCapWGSL(
@@ -915,20 +1105,95 @@ fn isSame(first: u32, second: u32) -> bool {
   private _getDissolveNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     raw: GPUPackedGeometryPort<GPUPolygonGeometryPort>,
-    fillRule: GPUPolygonOverlayFillRule
+    fillRule: GPUPolygonOverlayFillRule,
+    invalidInput: GraphDataView<'uint32'>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    return new GPUPolygonOverlay({
-      id: `${id}-repair`,
-      spatialContext: this.spatialContext,
-      left: raw,
-      operation: 'dissolve',
-      fillRule,
-      capacity: props.capacity,
-      vertexTolerance: props.vertexTolerance,
-      output: props.output,
-      spatialSort: props.spatialSort,
-      leafCapacity: props.leafCapacity
-    }).getCommandNodes(graph);
+    const boundary = props.output.boundary;
+    const mapIds = Boolean(props.geometry.sourceIds || boundary.sourceFeatureRows);
+    const sourceRows =
+      boundary.sourceFeatureRows ??
+      (mapIds
+        ? createTransientView(
+            graph,
+            `${id}-boundary-source-rows`,
+            'uint32',
+            boundary.sourceFeatureIds.length
+          )
+        : boundary.sourceFeatureIds);
+    const overlayBoundary = snapshotConstructionFields(boundary, [
+      'endpoints',
+      'operandIds',
+      'sourceFeatureIds',
+      'status'
+    ]);
+    const nodes = [
+      ...new GPUPolygonOverlay({
+        id: `${id}-repair`,
+        spatialContext: this.spatialContext,
+        // Internal ownership is always a logical row, even if overlay later maps caller IDs.
+        // The buffer publishes the original caller identity in its own final pass.
+        left: mapIds ? {...raw, sourceIds: undefined} : raw,
+        operation: 'dissolve',
+        fillRule,
+        capacity: props.capacity,
+        vertexTolerance: props.vertexTolerance,
+        output: mapIds
+          ? {...props.output, boundary: {...overlayBoundary, sourceFeatureIds: sourceRows}}
+          : props.output,
+        spatialSort: props.spatialSort,
+        leafCapacity: props.leafCapacity
+      }).getCommandNodes(graph)
+    ];
+    if (mapIds)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-boundary-identities`,
+          operation: OPERATION,
+          invocationCount: boundary.sourceFeatureIds.length,
+          bindings: [
+            {name: 'rows', view: sourceRows, type: 'u32', access: 'read'},
+            {name: 'count', view: boundary.status.count, type: 'u32', access: 'read'},
+            {name: 'output', view: boundary.sourceFeatureIds, type: 'u32', access: 'read_write'},
+            ...(props.geometry.sourceIds
+              ? [
+                  {
+                    name: 'identities',
+                    view: props.geometry.sourceIds,
+                    type: 'u32',
+                    access: 'read'
+                  } as const
+                ]
+              : [])
+          ],
+          body: `output[outputOffset+index]=0xffffffffu;if(index>=count[countOffset]){return;}let row=rows[rowsOffset+index];output[outputOffset+index]=${props.geometry.sourceIds ? 'identities[identitiesOffset+row]' : 'row'};`
+        })
+      );
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-input-status`,
+        operation: OPERATION,
+        invocationCount: 1,
+        bindings: [
+          {name: 'invalidInput', view: invalidInput, type: 'u32', access: 'read'},
+          {
+            name: 'candidateOverflow',
+            view: props.output.status.candidateOverflow,
+            type: 'u32',
+            access: 'read_write'
+          },
+          {
+            name: 'boundaryCandidateOverflow',
+            view: boundary.status.candidateOverflow,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        body: `let invalid = invalidInput[invalidInputOffset];
+  candidateOverflow[candidateOverflowOffset] = candidateOverflow[candidateOverflowOffset] | invalid;
+  boundaryCandidateOverflow[boundaryCandidateOverflowOffset] = boundaryCandidateOverflow[boundaryCandidateOverflowOffset] | invalid;`
+      })
+    );
+    return nodes;
   }
 }

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createTransientView,
   getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -34,8 +35,17 @@ import {
 } from './spatial-weights';
 import {getChunkedSpatialWeightsSymmetryNodes} from './chunked-spatial-weights-symmetry';
 import {
+  createWeightsLossNodes,
+  getWeightsLossSources,
+  validateWeightsLossSources,
+  validateWeightsOverflowEvidence
+} from './spatial-weights-loss';
+import {snapshotWeightsFields, snapshotWeightsPort} from './weights-construction-snapshot';
+import {validateWeightsLogicalAliases} from './spatial-weights-aliases';
+import {
   getSpatialWeightsTransposeNodes,
   planSpatialWeightsTranspose,
+  getSpatialWeightsTransposeInputStatus,
   type GPUSpatialWeightsTransposeOutput
 } from './spatial-weights-transpose-pipeline';
 
@@ -71,6 +81,10 @@ export type GPUChunkedSpatialWeightsTransposeOutput = {
 };
 
 type TransposeOutput = GPUSpatialWeightsTransposeOutput | GPUChunkedSpatialWeightsTransposeOutput;
+type TransposeAggregateStatus = {
+  overflow: GraphDataView<'uint32'>;
+  candidateOverflow: GraphDataView<'uint32'>;
+};
 type DescribedOutput<Output extends TransposeOutput> =
   Output extends GPUChunkedSpatialWeightsTransposeOutput
     ? GPUChunkedSpatialWeights
@@ -82,7 +96,7 @@ export type GPUChunkedSpatialWeightsTransposeProps<
 > = {
   /** Prefix for generated node and transient IDs. Defaults to 'chunked-spatial-weights-transpose'. */
   id?: string;
-  /** Chunked W. Chunk-local loss ports are refused; use an outer aggregate status. Out-of-range neighbors are dropped. */
+  /** Chunked W. Root and chunk loss/certificates are aggregated on the output. Out-of-range neighbors are dropped. */
   weights: GPUChunkedSpatialWeights;
   /** Number of columns of W. Defaults to the total input row count. */
   columnCount?: number;
@@ -109,9 +123,19 @@ export type GPUChunkedSpatialWeightsTransposeProps<
  * it uses chunk-local reductions and input-chunk pairs, without packing the full matrix.
  *
  * Compile-time: view shapes, input/output chunk ranges, columnCount and optional outputs.
+ * A requiredCount needs the producer's final overflow flag covering those slots. Verify
+ * stopping evidence before supplying a complete CSR without those ports.
  * Per-frame: input CSR contents and symmetryTolerance, packed with
- * getGPUSpatialWeightsTransposeParameterValues (numeric defaults use the same GPUParameterBuffer layout). The output preserves spatial context and
- * input status at matrix level; each chunk has its own output capacity status. Row, variance and
+ * getGPUSpatialWeightsTransposeParameterValues (numeric defaults use the same GPUParameterBuffer layout). Packed output preserves spatial context and
+ * input status except count and requiredCount at matrix level; read offsets[columnCount] for
+ * the retained slot count. Chunked `outputWeights` aggregates loss at matrix level, as
+ * chunked algebra does: `status.overflow` is one when any output chunk dropped slots and
+ * `status.candidateOverflow` is one when the input reported `overflow` or `candidateOverflow`.
+ * Its chunk descriptions keep `count` and `requiredCount` but carry no loss flags, so local
+ * Moran, hot spot and the global statistics accept it. The caller's output chunk ports still
+ * receive their own `overflow`; a supplied chunk `candidateOverflow` is reset to zero each
+ * submission. Input `count` and `requiredCount` are omitted from the matrix description because
+ * they do not describe the retained output. Row, variance and
  * double transforms become unknown (chunk capacity can break global normalization). Chunked output symmetry metadata is unknown because it can truncate.
  */
 export class GPUChunkedSpatialWeightsTranspose<
@@ -126,10 +150,20 @@ export class GPUChunkedSpatialWeightsTranspose<
   readonly estimatedCommandNodeCount: number;
   /** Stable description whose CSR views follow the caller's output, including corrected views on retry. */
   readonly outputWeights: DescribedOutput<Output>;
+  private readonly portLayout: string;
+  private aggregateStatus?: TransposeAggregateStatus;
 
   constructor(props: GPUChunkedSpatialWeightsTransposeProps<Output>) {
+    props = snapshotWeightsFields(props, [
+      'id',
+      'weights',
+      'columnCount',
+      'output',
+      'symmetryTolerance'
+    ]);
     this.id = props.id ?? 'chunked-spatial-weights-transpose';
     this.props = props;
+    this.portLayout = this.getPortLayout(props);
     const tolerance = props.symmetryTolerance ?? 0;
     if (typeof tolerance === 'number') {
       validateFiniteNumber(this.id, 'symmetryTolerance', tolerance, 0);
@@ -147,15 +181,13 @@ export class GPUChunkedSpatialWeightsTranspose<
       this.toleranceValues = tolerance;
     }
     const {id} = this;
-    const {weights, output} = props;
+    // Validate declared fields by name, including prototype-backed ports. Keep this.props'
+    // live descriptors for the documented same-shaped correction path.
+    const weights = snapshotWeightsPort(props.weights);
+    const output = snapshotWeightsPort(props.output);
     this.rowCount = validateGPUChunkedSpatialWeights(id, weights);
-    for (const [index, chunk] of weights.chunks.entries()) {
-      validateRequirement(
-        id,
-        !chunk.weights.status?.overflow && !chunk.weights.status?.candidateOverflow,
-        `input chunk ${index} status loss ports must be aggregated on outer weights.status`
-      );
-    }
+    validateWeightsLossSources(id, [weights], true);
+    validateWeightsOverflowEvidence(id, weights);
     this.columnCount = props.columnCount ?? this.rowCount;
     validateCapacity(id, 'rowCount', this.rowCount);
     validateCapacity(id, 'columnCount', this.columnCount, 1, MAXIMUM_SLOT_COUNT - 1);
@@ -191,6 +223,17 @@ export class GPUChunkedSpatialWeightsTranspose<
     }
     const inputChunkCount = weights.chunks.length;
     const outputChunkCount = 'chunks' in output ? output.chunks.length : 1;
+    const inheritedLossBatchCount = Math.max(
+      1,
+      Math.ceil(Object.values(getWeightsLossSources([weights], id, true)).flat().length / 7)
+    );
+    const hasChildLoss = Object.values(
+      getWeightsLossSources(
+        weights.chunks.map(chunk => chunk.weights),
+        id,
+        true
+      )
+    ).some(views => views.length > 0);
     // Per output: clear, scan, offsets, status; per input: keys, sort, count, destinations,
     // scatter, fill. Symmetry includes chunk-pair checks, clears and hierarchical reductions.
     this.estimatedCommandNodeCount =
@@ -203,9 +246,27 @@ export class GPUChunkedSpatialWeightsTranspose<
           inputChunkCount * (1 + SCAN_OR_REDUCTION_COMMAND_NODE_ALLOWANCE) +
           SCAN_OR_REDUCTION_COMMAND_NODE_ALLOWANCE
         : 0) +
-      (output.asymmetricSlots && this.toleranceValues instanceof Float32Array ? 1 : 0);
+      (output.asymmetricSlots && this.toleranceValues instanceof Float32Array ? 1 : 0) +
+      // Chunked output: OR of the chunk overflows (batches of seven) and of the inherited loss.
+      ('chunks' in output
+        ? Math.max(1, Math.ceil(outputChunkCount / 7)) +
+          inheritedLossBatchCount +
+          output.chunks.filter(chunk => chunk.weights.status?.candidateOverflow).length
+        : hasChildLoss
+          ? inheritedLossBatchCount
+          : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     if (!('chunks' in output)) {
+      validateRequirement(
+        id,
+        !output.status || Object.values(output.status).every(view => !view),
+        'output.status is unsupported for packed transpose; input status is forwarded except count and requiredCount; read offsets[columnCount] for the retained count; omit output.status or use chunked output for destination diagnostics'
+      );
+      validateRequirement(
+        id,
+        !output.distances || weights.chunks.every(chunk => Boolean(chunk.weights.distances)),
+        'output.distances requires distances on every input chunk; omit output.distances otherwise'
+      );
       const description = planSpatialWeightsTranspose(id, OPERATION, {
         ...props,
         output
@@ -214,10 +275,20 @@ export class GPUChunkedSpatialWeightsTranspose<
         description,
         () => props.output as GPUSpatialWeightsTransposeOutput,
         () => {
-          const currentOutput = props.output as GPUSpatialWeightsTransposeOutput;
-          return currentOutput.status || props.weights.status
-            ? {...currentOutput.status, ...props.weights.status}
-            : undefined;
+          const sources = getWeightsLossSources(
+            props.weights.chunks.map(chunk => chunk.weights),
+            id,
+            true
+          );
+          const inherited = getSpatialWeightsTransposeInputStatus(props.weights.status);
+          if (![...sources.overflow, ...sources.candidateOverflow, ...sources.complete].length)
+            return inherited;
+          const graph = (props.output as GPUSpatialWeightsTransposeOutput).offsets.buffer
+            .graph as GPUCommandGraph;
+          return {
+            ...inherited,
+            candidateOverflow: this.getAggregateStatus(graph).candidateOverflow
+          };
         }
       ) as DescribedOutput<Output>;
       return;
@@ -226,6 +297,13 @@ export class GPUChunkedSpatialWeightsTranspose<
     let nextRow = 0;
     for (const [chunkIndex, chunk] of output.chunks.entries()) {
       const name = `output.chunks[${chunkIndex}]`;
+      for (const [field, view] of Object.entries(chunk.weights.status ?? {})) {
+        validateRequirement(
+          id,
+          !view || ['count', 'requiredCount', 'overflow', 'candidateOverflow'].includes(field),
+          `${name}.status.${field} is unsupported because transpose does not compute it; omit it and run the matching diagnostic contributor afterward`
+        );
+      }
       validateRequirement(id, chunk.rowStart === nextRow, `${name}.rowStart must equal ${nextRow}`);
       validateCapacity(id, `${name}.rowCount`, chunk.rowCount, 1, this.columnCount - nextRow);
       validateRequirement(
@@ -257,7 +335,7 @@ export class GPUChunkedSpatialWeightsTranspose<
     );
     const outputViews = this.getChunkedOutputViews(output);
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...getGPUSpatialWeightsOrChunksViews(weights, true),
       typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined,
       ...Object.values(weights.status ?? {}),
       ...weights.chunks.flatMap(chunk => Object.values(chunk.weights.status ?? {}))
@@ -268,6 +346,10 @@ export class GPUChunkedSpatialWeightsTranspose<
       new Set(outputViews.filter(view => view).map(view => view!.buffer)).size ===
         outputViews.filter(view => view).length,
       'output views must use separate buffers'
+    );
+    validateWeightsLogicalAliases(
+      id,
+      Object.fromEntries(outputViews.map((view, index) => [`output ${index}`, view]))
     );
     const inputTransform = weights.information?.transform ?? 'unknown';
     const information: NonNullable<GPUSpatialWeights['information']> = {
@@ -280,20 +362,46 @@ export class GPUChunkedSpatialWeightsTranspose<
       hasSelfWeights: weights.information?.hasSelfWeights,
       provenance: {...weights.information?.provenance, source: OPERATION, criterion: 'transpose'}
     };
+    // Loss is aggregated on the outer port, as for chunked algebra, so the statistics that refuse
+    // chunk-local loss flags accept this output: overflow when an output chunk dropped slots,
+    // candidateOverflow when the input was already incomplete.
+    const contributor = this;
+    const getChunkOutput = (chunkIndex: number) =>
+      (props.output as GPUChunkedSpatialWeightsTransposeOutput).chunks[chunkIndex].weights;
     const described: GPUChunkedSpatialWeights = {
       rowCount: this.columnCount,
-      spatialContext: weights.spatialContext,
+      spatialContext: props.weights.spatialContext,
       information,
-      status: weights.status,
+      get status() {
+        const currentWeights = snapshotWeightsPort(props.weights);
+        const currentOutput = snapshotWeightsPort(
+          props.output as GPUChunkedSpatialWeightsTransposeOutput
+        );
+        const graph = currentOutput.chunks[0].weights.offsets.buffer.graph as GPUCommandGraph;
+        validateGraphViewsBelongToGraph(
+          id,
+          graph,
+          contributor.getWiringViews(currentWeights, currentOutput)
+        );
+        return {
+          ...getSpatialWeightsTransposeInputStatus(currentWeights.status),
+          ...contributor.getAggregateStatus(graph)
+        };
+      },
       chunks: output.chunks.map((chunk, chunkIndex) => ({
         ...chunk,
         weights: this.describeOutputViews(
           {
             ...chunk.weights,
-            spatialContext: weights.spatialContext,
+            spatialContext: props.weights.spatialContext,
             information: {...information, rowCount: chunk.rowCount}
           },
-          () => (props.output as GPUChunkedSpatialWeightsTransposeOutput).chunks[chunkIndex].weights
+          () => getChunkOutput(chunkIndex),
+          () => ({
+            ...snapshotWeightsPort(getChunkOutput(chunkIndex)).status,
+            overflow: undefined,
+            candidateOverflow: undefined
+          })
         )
       }))
     };
@@ -351,13 +459,92 @@ export class GPUChunkedSpatialWeightsTranspose<
     ];
   }
 
+  private getWiringViews(
+    weights: GPUChunkedSpatialWeights,
+    output: GPUChunkedSpatialWeightsTransposeOutput
+  ): (GraphDataView | undefined)[] {
+    return [
+      ...getGPUSpatialWeightsOrChunksViews(weights, true),
+      ...Object.values(weights.status ?? {}),
+      ...weights.chunks.flatMap(chunk => Object.values(chunk.weights.status ?? {})),
+      ...this.getChunkedOutputViews(output),
+      typeof this.props.symmetryTolerance === 'object' ? this.props.symmetryTolerance : undefined
+    ];
+  }
+
+  /** Publish on validated current wiring; temporary retry validators allocate no graph resources. */
+  private getAggregateStatus<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): TransposeAggregateStatus {
+    if (!this.aggregateStatus) {
+      const output = this.props.output;
+      const offsets = 'chunks' in output ? output.chunks[0].weights.offsets : output.offsets;
+      const statusId = `${this.id}-${offsets.buffer.id}-${offsets.byteOffset}`;
+      this.aggregateStatus = {
+        overflow: createTransientView(graph, `${statusId}-overflow`, 'uint32', 1),
+        candidateOverflow: createTransientView(graph, `${statusId}-candidate-overflow`, 'uint32', 1)
+      };
+    }
+    validateGraphViewsBelongToGraph(this.id, graph, Object.values(this.aggregateStatus));
+    return this.aggregateStatus;
+  }
+
+  /** Corrections may replace views, but cannot change the declared ports or row layout. */
+  private getPortLayout(props: GPUChunkedSpatialWeightsTransposeProps<Output>): string {
+    const describe = (port: object): unknown => {
+      const captured = snapshotWeightsPort(port) as GPUSpatialWeightsTransposeOutput &
+        Partial<GPUChunkedSpatialWeights>;
+      return {
+        rowCount: captured.rowCount,
+        views: [
+          ...getGPUSpatialWeightsViews(captured),
+          captured.asymmetricSlots,
+          ...[
+            'count',
+            'requiredCount',
+            'overflow',
+            'candidateOverflow',
+            'invalidCount',
+            'uncertainCount',
+            'unresolvedCount',
+            'approximation',
+            'iterationCount',
+            'iterationLimitReached',
+            'converged'
+          ].map(field => captured.status?.[field as keyof NonNullable<GPUSpatialWeights['status']>])
+        ].map(view =>
+          view ? [view.format, view.length, view.byteStride, view.rowByteLength] : null
+        ),
+        chunks: captured.chunks?.map(chunk => [
+          chunk.rowStart,
+          chunk.rowCount,
+          describe(chunk.weights)
+        ])
+      };
+    };
+    return JSON.stringify([describe(props.weights), describe(props.output)]);
+  }
+
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
+    const {id} = this;
+    // The supported retry path changes opaque views. Re-run wiring validation on one captured
+    // correction before any scratch allocation, so aliases and missing optional ports cannot slip in.
+    const props = Object.freeze({
+      ...this.props,
+      weights: snapshotWeightsPort(this.props.weights),
+      output: snapshotWeightsPort(this.props.output)
+    });
+    new GPUChunkedSpatialWeightsTranspose<Output>(props);
+    validateRequirement(
+      id,
+      this.getPortLayout(props) === this.portLayout,
+      'corrected input/output ports and shapes must match construction; restore the declared views or rebuild the transpose'
+    );
     const {output, weights} = props;
     if (!('chunks' in output)) {
-      return getSpatialWeightsTransposeNodes(
+      const nodes = getSpatialWeightsTransposeNodes(
         graph,
         id,
         OPERATION,
@@ -369,13 +556,33 @@ export class GPUChunkedSpatialWeightsTranspose<
         },
         this.toleranceValues
       );
+      const childSources = getWeightsLossSources(
+        weights.chunks.map(chunk => chunk.weights),
+        id,
+        true
+      );
+      if (
+        ![...childSources.overflow, ...childSources.candidateOverflow, ...childSources.complete]
+          .length
+      )
+        return nodes;
+      const sources = getWeightsLossSources([weights], id, true);
+      return [
+        ...nodes,
+        ...createWeightsLossNodes(
+          graph,
+          `${id}-packed-inherited-loss`,
+          [...sources.overflow, ...sources.candidateOverflow],
+          this.getAggregateStatus(graph).candidateOverflow,
+          false,
+          sources.complete
+        )
+      ];
     }
-    const views = [
-      ...getGPUSpatialWeightsOrChunksViews(weights),
-      ...this.getChunkedOutputViews(output),
-      typeof props.symmetryTolerance === 'object' ? props.symmetryTolerance : undefined
-    ];
-    validateGraphViewsBelongToGraph(id, graph, views);
+    const views = this.getWiringViews(weights, output);
+    const aggregateViews = Object.values(this.aggregateStatus ?? {});
+    validateGraphViewsBelongToGraph(id, graph, [...views, ...aggregateViews]);
+    validateGraphOutputsDisjointFromInputs(`${id} aggregate status`, aggregateViews, views);
     // Do all device-dependent checks before creating any node, including symmetry scratch.
     for (const view of views) {
       if (view) {
@@ -395,6 +602,7 @@ export class GPUChunkedSpatialWeightsTranspose<
       weights.chunks.length * 4,
       'use fewer input chunks'
     );
+    const status = this.getAggregateStatus(graph);
     const runtime = output.asymmetricSlots
       ? createSpatialStatisticsParameterNodes(
           graph,
@@ -404,6 +612,16 @@ export class GPUChunkedSpatialWeightsTranspose<
       : undefined;
     const nodes: GPUCommandNode<Parameters>[] = [
       ...(runtime?.nodes ?? []),
+      ...output.chunks.flatMap((chunk, chunkIndex) =>
+        chunk.weights.status.candidateOverflow
+          ? createWeightsLossNodes(
+              graph,
+              `${id}-output${chunkIndex}-candidate-clear`,
+              [],
+              chunk.weights.status.candidateOverflow
+            )
+          : []
+      ),
       ...output.chunks.flatMap((chunk, chunkIndex) =>
         getSpatialWeightsTransposeNodes(
           graph,
@@ -428,6 +646,24 @@ export class GPUChunkedSpatialWeightsTranspose<
         )
       );
     }
+    const outputLoss = getWeightsLossSources(output.chunks.map(chunk => chunk.weights));
+    const inputLoss = getWeightsLossSources([weights], id, true);
+    nodes.push(
+      ...createWeightsLossNodes(
+        graph,
+        `${id}-aggregate-overflow`,
+        outputLoss.overflow,
+        status.overflow!
+      ),
+      ...createWeightsLossNodes(
+        graph,
+        `${id}-aggregate-candidate-overflow`,
+        [...inputLoss.overflow, ...inputLoss.candidateOverflow],
+        status.candidateOverflow!,
+        false,
+        inputLoss.complete
+      )
+    );
     return nodes;
   }
 }

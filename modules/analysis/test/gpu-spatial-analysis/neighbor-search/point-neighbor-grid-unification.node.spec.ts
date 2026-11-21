@@ -41,7 +41,7 @@ function createProps(
   ) => createTransientView(graph, `view-${serial++}`, format, length);
   return {
     mode: 'knn',
-    k: 4,
+    neighborCount: 4,
     positions: view('float32x2', ROWS),
     times: view('float32', ROWS),
     temporalContext: CONTEXT,
@@ -113,7 +113,30 @@ it('checks the bucketed cell count against the grid index limit', () => {
   const search = new GPUNeighborSearch(
     createProps(graph, {gridSize: [8192, 8192], timeBucketCount: 4096})
   );
-  expect(() => search.getCommandNodes(graph)).toThrow(/gridSize cells must be at most/);
+  // 8192 * 8192 * 4096 = 2^38 bucketed cells. The uint32 offset column
+  // includes its terminal word, so it needs 4 * (2^38 + 1) = 1,099,511,627,780
+  // bytes. Device admission now rejects this before the grid-index count guard.
+  const plan = GPUNeighborSearch.getExecutionPlan(
+    {
+      mode: 'knn',
+      neighborCount: 4,
+      targetRowCount: ROWS,
+      hasTimes: true,
+      gridSize: [8192, 8192],
+      timeBucketCount: 4096
+    },
+    graph.device.limits
+  );
+  expect(plan.gridCellCount).toBe(274877906944);
+  expect(plan.feasible).toBe(false);
+  expect(plan.constraints.find(constraint => constraint.name === 'gridSize cells')).toMatchObject({
+    received: 1099511627780,
+    maximum: 134217728,
+    satisfied: false
+  });
+  expect(() => search.getCommandNodes(graph)).toThrow(
+    /gridSize cells needs 1099511627780 bytes, above the device limit of 134217728/
+  );
 });
 
 it('packs the temporal words only for a time window, and needs both of them', () => {
@@ -136,14 +159,14 @@ it('packs the temporal words only for a time window, and needs both of them', ()
 
 it('stays inside the WGSL private memory limit at the largest k', () => {
   const graph = createGraph();
-  const k = GPU_NEIGHBOR_SEARCH_MAXIMUM_K;
+  const neighborCount = GPU_NEIGHBOR_SEARCH_MAXIMUM_K;
   const nodes = new GPUNeighborSearch(
     createProps(graph, {
-      k,
+      neighborCount,
       output: {
         offsets: createTransientView(graph, 'o', 'uint32', ROWS + 1),
-        neighbors: createTransientView(graph, 'n', 'uint32', ROWS * k),
-        weights: createTransientView(graph, 'w', 'float32', ROWS * k),
+        neighbors: createTransientView(graph, 'n', 'uint32', ROWS * neighborCount),
+        weights: createTransientView(graph, 'w', 'float32', ROWS * neighborCount),
         status: {overflow: createTransientView(graph, 'v', 'uint32', 1)}
       }
     })
@@ -158,14 +181,14 @@ it('stays inside the WGSL private memory limit at the largest k', () => {
 it('reports the k-nearest list against the storage binding at the largest k', () => {
   const graph = createGraph();
   const rows = 2 ** 24;
-  const k = GPU_NEIGHBOR_SEARCH_MAXIMUM_K;
+  const neighborCount = GPU_NEIGHBOR_SEARCH_MAXIMUM_K;
   const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     format: Format,
     length: number
   ) => createTransientView(graph, `large-${serial++}`, format, length);
   const search = new GPUNeighborSearch(
     createProps(graph, {
-      k,
+      neighborCount,
       positions: view('float32x2', rows),
       times: view('float32', rows),
       output: {

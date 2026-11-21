@@ -44,3 +44,21 @@ it('the hand scene pins the zero-weight plateau, impassable edge and cost limit'
   // the impassable edge or past the limit of 9; node 8 has no edges.
   expect(hand.costs).toEqual([0, 3, 1, 2.5, 5.5, 2.5, 2.5, null, null]);
 });
+
+it('unreached reference rows accept only positive infinity', () => {
+  const scene = {...SHORTEST_PATH_REFERENCE.scenes['hand'], nodeCount: 1, costs: [null]};
+  expect(compareShortestPathCosts(scene, [Infinity])).toBeUndefined();
+  for (const costs of [[NaN], [-Infinity], [], [0]]) {
+    expect(compareShortestPathCosts(scene, costs), String(costs)).toMatch(
+      /expected unreached|length/
+    );
+  }
+});
+
+it.each([
+  {costs: [0, Infinity]},
+  {costs: [0, Infinity, 7, 123]}
+])('reference costs reject a different output row count: $costs', ({costs}) => {
+  const scene = {...SHORTEST_PATH_REFERENCE.scenes['hand'], nodeCount: 3, costs: [0, null, 7]};
+  expect(compareShortestPathCosts(scene, costs)).toMatch(/length/);
+});

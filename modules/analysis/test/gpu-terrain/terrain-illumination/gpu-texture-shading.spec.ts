@@ -174,14 +174,20 @@ it('GPUTextureShading hasNodata false is exact on all-valid terrain', async () =
   });
 });
 
-it('GPUTextureShading returns zero on flat terrain and writes a texture', async () => {
+it('GPUTextureShading buffer returns zero on flat terrain', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const flat = new Float32Array(PIXEL_COUNT).fill(321);
   await runTextureShading(device, flat, 3, 1, [{detail: 0.5}]);
+});
+
+it('GPUTextureShading r32float storage-texture readback', async context => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
   if (!device.getTextureFormatCapabilities('r32float').store) {
-    return;
+    context.skip('device does not support r32float storage textures (store unavailable)');
   }
+
   const elevation = createSmoothTerrain(WIDTH, HEIGHT, 2);
   const elevationBuffer = createInputBuffer(device, elevation);
   const readbackBuffer = createOutputBuffer(device, PIXEL_COUNT);

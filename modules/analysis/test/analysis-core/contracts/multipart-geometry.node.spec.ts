@@ -3,6 +3,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, expectTypeOf, it} from 'vitest';
+import {validateCPULineFeatureLayout} from '../../../src/analysis-core/contracts/line-feature-provenance';
 import {
   createGPUMultipartRowOwnersNode,
   GPU_MULTIPART_NO_FEATURE_ROW,
@@ -22,6 +23,33 @@ import {
 import {useCPUExecutorTestHooks} from '../../gpu-spatial-analysis/segment-intersection/cpu-executor-test-hooks';
 
 useCPUExecutorTestHooks();
+
+it.each([
+  [Uint32Array.of(0), 0],
+  [Uint32Array.of(0, 0), 1]
+] as const)('W3-06 accepts empty multipart layout %s with %s features', (featureOffsets, featureCount) => {
+  expect(
+    validateCPULineFeatureLayout(
+      'empty-lines',
+      new Float32Array(),
+      Uint32Array.of(0),
+      featureOffsets
+    )
+  ).toBe(0);
+  // Offsets contain one terminal word in addition to the logical feature rows.
+  expect(featureOffsets.length - 1).toBe(featureCount);
+});
+
+it.each([
+  [Uint32Array.of(0), Uint32Array.of(0, 1)],
+  [Uint32Array.of(1), Uint32Array.of(0)],
+  [Uint32Array.of(0, 1), Uint32Array.of(0, 1)],
+  [Uint32Array.of(0, 0), Uint32Array.of(0, 1, 0)]
+] as const)('W3-06 rejects a nonzero or malformed empty hierarchy %s %s', (lineOffsets, featureOffsets) => {
+  expect(() =>
+    validateCPULineFeatureLayout('empty-lines', new Float32Array(), lineOffsets, featureOffsets)
+  ).toThrow(/empty-lines/);
+});
 
 expectTypeOf<GPUPackedGeometryPort<GPUMultipartGeometryPort>>().toExtend<GPUFeatureGeometryPort>();
 

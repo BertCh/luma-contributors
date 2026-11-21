@@ -4,15 +4,15 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const accessibility = new GPUNetworkAccessibility({\n  costs: matrixCosts,\n  orientation: 'opportunity-rows',\n  opportunityWeights,\n  parameters,\n  gravity: createTransientView(graph, 'gravity', 'float32', nodeCount)\n});\ngraph.add(accessibility);\nconst {gravity} = accessibility.props;",
+    "code": "const accessibility = new GPUNetworkAccessibility({\n  costs: matrixCosts,\n  costsComplete: matrixComplete,\n  costLimit: matrixCostLimit,\n  orientation: 'opportunity-rows',\n  opportunityWeights,\n  parameters,\n  status: {complete},\n  gravity: createTransientView(graph, 'gravity', 'float32', nodeCount)\n});\ngraph.add(accessibility);\nconst {gravity} = accessibility.props;",
     "language": "ts",
-    "lineCount": 9
+    "lineCount": 12
   },
   "scenarioId": "gpu-network.network-accessibility",
   "viewId": "result-view",
   "caption": "Result of gpu-network.network-accessibility: facility-positions → gravity-nodes. points: 1,199. values read back from the GPU run. input facility-positions: 4 points.",
   "description": "Result of gpu-network.network-accessibility: facility-positions → gravity-nodes. points: 1,199. values read back from the GPU run. input facility-positions: 4 points.",
-  "llms": "Result of gpu-network.network-accessibility: facility-positions → gravity-nodes\n\n- points: 1,199\n- input facility-positions: 4 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-network.network-accessibility: facility-positions → gravity-nodes\n\n- points: 1,199\n- input facility-positions: 4 points\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2810 edges; stride decimation for the figure budget\n- 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "points",
     "value": "1,199"
@@ -24,16 +24,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:15.308Z",
-    "runId": "run-bf5029d5",
+    "date": "2026-11-20T23:48:43.520Z",
+    "runId": "run-39716fce",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
+      "lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-bf5029d5",
+    "runId": "run-39716fce",
     "rung": "result",
     "bindings": {},
     "clauses": [],

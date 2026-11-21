@@ -373,7 +373,7 @@ export async function createWindFlow(
         velocities: view('velocity', velocityBuffer, 'float32x2', FIELD_CELLS),
         fieldWidth: FIELD_WIDTH,
         fieldHeight: FIELD_HEIGHT,
-        // Output raster size only: its extent in degrees is a per-frame `outputExtent` parameter.
+        // Output raster size only: its extent in degrees is a per-frame `outputPlacement` parameter.
         grid: makeGPURasterMetadata({width: LIC_WIDTH, height: LIC_HEIGHT}),
         stepCount,
         parameters: licParameters.importToGraph(graph),
@@ -489,13 +489,17 @@ export async function createWindFlow(
   ) => {
     licParameters.write(
       getGPULineIntegralConvolutionParameterValues({
-        fieldExtent: FIELD_EXTENT,
-        outputExtent: [
-          bounds.west,
-          bounds.south,
-          (bounds.east - bounds.west) / LIC_WIDTH,
-          (bounds.north - bounds.south) / LIC_HEIGHT
-        ],
+        fieldPlacement: {
+          origin: [FIELD_EXTENT[0], FIELD_EXTENT[1]],
+          cellSize: [FIELD_EXTENT[2], FIELD_EXTENT[3]]
+        },
+        outputPlacement: {
+          origin: [bounds.west, bounds.south],
+          cellSize: [
+            (bounds.east - bounds.west) / LIC_WIDTH,
+            (bounds.north - bounds.south) / LIC_HEIGHT
+          ]
+        },
         stepLength: state.licStep,
         // Degrees per second: one meter per second is DEGREES_PER_METER at the equator.
         minimumSpeed: state.licMinimumSpeed * DEGREES_PER_METER,
@@ -519,13 +523,17 @@ export async function createWindFlow(
     const cellY = cellX * Math.cos(toRadians(camera.latitude));
     streamParameters.write(
       getGPUStreamlinesParameterValues({
-        fieldExtent: FIELD_EXTENT,
-        gridExtent: [
-          camera.longitude - (STREAM_GRID_WIDTH * cellX) / 2,
-          camera.latitude - (STREAM_GRID_HEIGHT * cellY) / 2,
-          cellX,
-          cellY
-        ],
+        fieldPlacement: {
+          origin: [FIELD_EXTENT[0], FIELD_EXTENT[1]],
+          cellSize: [FIELD_EXTENT[2], FIELD_EXTENT[3]]
+        },
+        gridPlacement: {
+          origin: [
+            camera.longitude - (STREAM_GRID_WIDTH * cellX) / 2,
+            camera.latitude - (STREAM_GRID_HEIGHT * cellY) / 2
+          ],
+          cellSize: [cellX, cellY]
+        },
         stepLength: 0.4 * cellX,
         minimumSpeed: state.streamMinimumSpeed * DEGREES_PER_METER
       })
@@ -738,7 +746,10 @@ export async function createWindFlow(
         particleParameters.write(
           getGPUParticleAdvectionParameterValues(
             {
-              fieldExtent: FIELD_EXTENT,
+              fieldPlacement: {
+                origin: [FIELD_EXTENT[0], FIELD_EXTENT[1]],
+                cellSize: [FIELD_EXTENT[2], FIELD_EXTENT[3]]
+              },
               // Seconds of wind per frame: about 2 px for a 40 m/s wind at zoom 5, kept constant on screen.
               timeStep: 120 * zoomFactor,
               speedScale: state.speedScale,

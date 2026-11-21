@@ -40,8 +40,13 @@ import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
 import {getPanelLagTiledNodes} from './panel-lag-tiled-nodes';
+import {PANEL_LAG_PROFILE_WGSL} from './panel-lag-profile-wgsl';
+import {PANEL_LAG_PROFILE_SCORE_WGSL} from './panel-lag-profile-score-wgsl';
+import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {getPanelWithinNodes, getPanelWithinScratchLengths} from './panel-within-nodes';
+import {getPanelLagPoleAllocationLengths, getPanelLagPoleNodes} from './panel-lag-pole-nodes';
 import {GPU_SPATIAL_EXACT_LOG_DETERMINANT_MAXIMUM_ROW_COUNT} from './spatial-exact-log-determinant';
-import {REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
+import {getRegressionTileLayout, REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
 import {
   snapshotConstructionFields,
   snapshotConstructionSpatialContext
@@ -54,7 +59,6 @@ export function snapshotPanelLagWeights<
     neighbors: unknown;
     weights: unknown;
     distances?: unknown;
-    overflow?: unknown;
     status?: Partial<Record<keyof NonNullable<GPUSpatialWeights['status']>, unknown>>;
     information?: GPUSpatialWeights['information'];
     spatialContext?: GPUSpatialWeights['spatialContext'];
@@ -65,7 +69,6 @@ export function snapshotPanelLagWeights<
     'neighbors',
     'weights',
     'distances',
-    'overflow',
     'status',
     'information',
     'spatialContext'
@@ -83,6 +86,7 @@ export function snapshotPanelLagWeights<
     ...snapshot,
     status: snapshot.status
       ? snapshotConstructionFields(snapshot.status, [
+          'complete',
           'count',
           'requiredCount',
           'overflow',
@@ -208,6 +212,20 @@ export type GPUSpatialPanelLagMaximumLikelihoodProps = {
  * No hidden regularization or CPU solve. Hausman uses spreg's RE-minus-FE conditional variance
  * difference; indefinite/singular or negative-statistic comparisons are explicitly invalid.
  *
+ * An admissible zero-RSS profile minimum has no finite Gaussian maximum (status 2). A
+ * sufficient original-input integer certificate also checks nearby rounded fits: if the
+ * response differences within each entity equal X beta + rho W y differences exactly, all
+ * floating outputs are withheld as NaN and Hausman is status 1/all NaN. The certificate tests
+ * 24 rounded candidates; it never uses a variance cutoff. For a single predictor, temporal
+ * differences of y-rho*Wy are also checked for exact proportionality at those rho candidates
+ * and at zero, so a rational slope such as 1/3 need not be representable in f32.
+ * It supports normal/zero inputs with triple-product exponent span at most 168, or four-factor
+ * cross-product span at most 140; unsupported input gives no certificate. This
+ * is a sufficient degeneracy check, not a complete symbolic rank decision.
+ * Squared moments that underflow to zero also fail with status 2 and can leave every floating
+ * diagnostic NaN. The CPU twin can retain a finite float64 likelihood before its variance
+ * rounds to zero at float32 publication; failure diagnostics need not match across precisions.
+ *
  * The fit runs on centered data: the pooled mean of each predictor and of the response is
  * subtracted before quasi-demeaning (the spatial lag of the response is shifted by the same
  * response mean), so a predictor with a large mean (a year, an elevation, an income) costs no
@@ -222,7 +240,7 @@ export type GPUSpatialPanelLagMaximumLikelihoodProps = {
  * quasi-demeaned response and of its lag on the predictors, `rho0 = e0'e1 / e1'e1`,
  * `r = e0 - rho0 e1` summed per row, `rho* = rho0 + r'e1 / e1'e1` and
  * `S = r'r - (r'e1)^2 / e1'e1`: `u'u = S + e1'e1 (rho - rho*)^2`, two non-negative terms. The
- * golden section over `rho` and the published `sigma2`, log-likelihood and covariance all use
+ * bounded brackets over `rho` and the published `sigma2`, log-likelihood and covariance all use
  * it. The form `e0'e0 - 2 rho e0'e1 + rho^2 e1'e1` of three float32 sums is rounding once the
  * model fits well: with `u'u` at 3e-5 of `e0'e0` the published `sigma2` was 1% to 2% off, at
  * 3e-7 it was 36% low and 96% high, and at 3e-9 it was 10 to 241 times too large with status 0,
@@ -230,6 +248,10 @@ export type GPUSpatialPanelLagMaximumLikelihoodProps = {
  * `Panel_FE_Lag` and `Panel_RE_Lag`: now within 1e-5, 6.3e-5 and 1.7e-3, the last being the
  * float32 rounding of the fitted values). The pack node sums the lag of the response from
  * differences rounded as written and carries the row sum of the float32 weights exactly.
+ * After eight coarse golden steps, bracket decisions use the analytic likelihood derivative,
+ * `n (rho-rho*) / (S/(e1'e1)+(rho-rho*)^2) + T tr(W (I-rho W)^-1)`, rather than comparing
+ * nearly equal rounded logarithms. The same search-step budget and golden bracket geometry
+ * apply. This remains a local bounded profile method, not a proof of a global maximum.
  *
  * Quasi-demeaning. Entity effects survive the pooled centering. Each column is packed as its
  * within deviation (centered value less its entity mean, rounded as written) and its entity
@@ -237,14 +259,22 @@ export type GPUSpatialPanelLagMaximumLikelihoodProps = {
  * `deviation + phi mean`, whose terms do not cancel. Formed as written, the shader compiler of
  * the test GPU regrouped `(value - mean) - fitted` as `value - (mean + fitted)`: with entity
  * effects of +3000 and -3000 and residuals of 0.004 every published residual was a multiple of
- * the float32 step of 3000, and `rho` was 0.026 standard errors off (now 0.002;
+ * the float32 step of 3000, and `rho` was 0.026 standard errors off (an earlier fix reached 0.002;
  * `math-review-panel-lag-conditioning.spec.ts`, against spreg `Panel_FE_Lag`). The normal
  * equations of each step of the alternation are the polynomial in `phi` of three moment sums
  * (deviations, deviations with means, means) taken once, so they vary smoothly with `phi`.
- * What float32 leaves on that scene: the entity means are sequential float32 sums, off by up to
- * 6e-4 for an effect of 3000, which leaves a constant offset per entity in the residuals and
- * `sigma2` 0.6% high; the lag of the centered response is rounded to a float32 step of the
- * effect (2.4e-4), which leaves the within-entity part of a residual within 7e-5.
+ * Normal-equation moments use fixed pairwise row sums, including inside each tile on the tiled
+ * route. Serial sums lost small predictor squares after large ones and biased the slope even
+ * after rho profiling was accurate. CPU moments retain float64 accumulation.
+ * The reference pack now lags each neighbor's within response before reintroducing lagged
+ * entity means. Within values use the shared split-center transform, preserving constant
+ * columns and isolated extremes without subtracting a first-observation reference. The helper
+ * also exposes its two-part means internally so random effects retain the same mean/deviation
+ * decomposition.
+ * Temporal demeaning commutes with time-invariant W. Forming W y first rounded
+ * within variation to the step of an effect near 3000, biasing rho by 0.012 standard errors
+ * on a later Metal run. Entity means remain float32 sums; their error can still leave a
+ * constant entity offset. The new lag order preserves the small within variation itself.
  *
  * Random-effects `phi`. `phi` is followed down to 1e-8 (`RANDOM_EFFECTS_MINIMUM_PHI`; it was
  * held at 1e-5 and the constrained fit was returned with status 0: with entity effects of
@@ -359,7 +389,23 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
         'eigenvalues must hold one value per entity'
       );
     }
-    this.estimatedCommandNodeCount = this.fitMode === 'tiled' ? 5 * entities + 64 : 16;
+    const pivotPasses =
+      props.predictorCount === 1
+        ? Math.max(1, Math.ceil(Math.log2(getRegressionTileLayout(rows).tileCount)))
+        : 1;
+    this.estimatedCommandNodeCount =
+      this.fitMode === 'tiled'
+        ? 5 * entities +
+          78 +
+          Number(
+            Boolean(
+              props.weights.status?.count ||
+                props.weights.status?.requiredCount ||
+                props.weights.status?.complete
+            )
+          )
+        : 34 + Number(Boolean(props.weights.status?.complete));
+    this.estimatedCommandNodeCount += pivotPasses - 1;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, MAXIMUM_PREDICTOR_COUNT);
     validateCapacity(
@@ -427,6 +473,9 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
+        props.weights.status?.complete,
+        props.weights.status?.count,
+        props.weights.status?.requiredCount,
         props.weights.status?.overflow,
         props.weights.status?.candidateOverflow
       ]
@@ -453,6 +502,9 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
       offsets: props.weights.offsets,
       neighbors: props.weights.neighbors,
       weights: props.weights.weights,
+      count: props.weights.status?.count,
+      complete: props.weights.status?.complete,
+      requiredCount: props.weights.status?.requiredCount,
       overflow: props.weights.status?.overflow,
       candidateOverflow: props.weights.status?.candidateOverflow,
       ...props.output,
@@ -464,7 +516,14 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
       ['dense weights', entities * entities],
       ['model results', stride * (props.hausman ? 2 : 1)],
       ['spatial product', entities * entities * (props.hausman ? 2 : 1)],
-      ['pooled means', columns + 1]
+      ['pooled means', columns + 1],
+      ['within predictors', props.predictors.length],
+      ['within response', rows],
+      [
+        'split entity means',
+        getPanelWithinScratchLengths(entities, props.periodCount, props.predictorCount).meanLength
+      ],
+      ...Object.entries(getPanelLagPoleAllocationLengths(rows, props.predictorCount))
     ] as const) {
       validateGPUStorageBindingByteLength(
         graph.device,
@@ -492,6 +551,19 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
     // same model, so these need not be exact; the same float32 values are used to map back.
     // The last slot is a zero written at run time (the runtime zero of getRoundedDifference).
     const centers = createTransientView(graph, `${id}-pooled-means`, 'float32', columns + 1);
+    const withinPredictors = createTransientView(
+      graph,
+      `${id}-within-predictors`,
+      'float32',
+      props.predictors.length
+    );
+    const withinResponse = createTransientView(graph, `${id}-within-response`, 'float32', rows);
+    const entityCenters = createTransientView(
+      graph,
+      `${id}-entity-centers`,
+      'float32',
+      getPanelWithinScratchLengths(entities, props.periodCount, props.predictorCount).meanLength
+    );
     const runtimeZeroWGSL = `bitcast<u32>(centers[centersOffset + ${columns}u])`;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode(graph, {
@@ -522,6 +594,18 @@ if (index == 0u) { centers[centersOffset + ${columns}u] = 0.0; }`
           {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
           {name: 'weights', view: props.weights.weights, type: 'f32', access: 'read'},
           {name: 'dense', view: dense, type: 'f32', access: 'read_write'},
+          ...(['count', 'requiredCount'] as const).flatMap(name =>
+            props.weights.status?.[name]
+              ? [
+                  {
+                    name,
+                    view: props.weights.status[name]!,
+                    type: 'u32' as const,
+                    access: 'read' as const
+                  }
+                ]
+              : []
+          ),
           ...(props.weights.status?.overflow
             ? [
                 {
@@ -544,7 +628,39 @@ if (index == 0u) { centers[centersOffset + ${columns}u] = 0.0; }`
             : [])
         ],
         declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
-        body: `for (var column = 0u; column < ${entities}u; column++) { dense[denseOffset + index * ${entities}u + column] = 0.0; } var valid = ${props.weights.status?.overflow ? 'overflow[overflowOffset] == 0u' : 'true'} && ${props.weights.status?.candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] == 0u' : 'true'}; var total = 0.0; let begin = offsets[offsetsOffset + index]; let end = offsets[offsetsOffset + index + 1u]; if (end < begin || end > ${props.weights.neighbors.length}u) { valid = false; } else { for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot]; if (neighbor >= ${entities}u || neighbor == index || !(weight >= 0.0) || !isFiniteBits(weight) || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { valid = false; } else { dense[denseOffset + index * ${entities}u + neighbor] = weight; total += weight; } } } if (!valid || abs(total-1.0) > 1.0e-5) { dense[denseOffset + index * ${entities}u] = getNaN(); }`
+        body: `for (var column = 0u; column < ${entities}u; column++) { dense[denseOffset + index * ${entities}u + column] = 0.0; } var valid = ${props.weights.status?.overflow ? 'overflow[overflowOffset] == 0u' : 'true'} && ${props.weights.status?.candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] == 0u' : 'true'};
+${props.weights.status?.count ? `valid=valid && count[countOffset]==offsets[offsetsOffset+${entities}u]-offsets[offsetsOffset] && count[countOffset]<=${props.weights.neighbors.length}u;` : ''}
+${props.weights.status?.requiredCount ? `valid=valid && requiredCount[requiredCountOffset]<=min(offsets[offsetsOffset+${entities}u]-offsets[offsetsOffset],${props.weights.neighbors.length}u);` : ''}
+var total = 0.0; let begin = offsets[offsetsOffset + index]; let end = offsets[offsetsOffset + index + 1u]; if (end < begin || end > ${props.weights.neighbors.length}u) { valid = false; } else { for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot]; if (neighbor >= ${entities}u || neighbor == index || !(weight >= 0.0) || !isFiniteBits(weight) || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { valid = false; } else { dense[denseOffset + index * ${entities}u + neighbor] = weight; total += weight; } } } if (!valid || abs(total-1.0) > 1.0e-5) { dense[denseOffset + index * ${entities}u] = getNaN(); }`
+      }),
+      ...(props.weights.status?.complete
+        ? [
+            createWGSLKernelNode(graph, {
+              id: `${id}-validate-complete`,
+              operation: 'GPUSpatialPanelLagMaximumLikelihood',
+              invocationCount: entities,
+              bindings: [
+                {
+                  name: 'complete',
+                  view: props.weights.status.complete,
+                  type: 'u32',
+                  access: 'read'
+                },
+                {name: 'dense', view: dense, type: 'f32', access: 'read_write'}
+              ],
+              declarations: GET_NAN_WGSL,
+              body: `if(complete[completeOffset]==0u){dense[denseOffset+index*${entities}u]=getNaN();}`
+            })
+          ]
+        : []),
+      ...getPanelWithinNodes(graph, {
+        id: `${id}-within-pack`,
+        entityCount: entities,
+        periodCount: props.periodCount,
+        predictorCount: props.predictorCount,
+        predictors: props.predictors,
+        response: props.response,
+        output: {predictors: withinPredictors, response: withinResponse, means: entityCenters}
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-pack`,
@@ -552,8 +668,9 @@ if (index == 0u) { centers[centersOffset + ${columns}u] = 0.0; }`
         variant: 'pack-panel-means',
         invocationCount: rows,
         bindings: [
-          {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
-          {name: 'response', view: props.response, type: 'f32', access: 'read'},
+          {name: 'withinPredictors', view: withinPredictors, type: 'f32', access: 'read'},
+          {name: 'withinResponse', view: withinResponse, type: 'f32', access: 'read'},
+          {name: 'entityCenters', view: entityCenters, type: 'f32', access: 'read'},
           {name: 'dense', view: dense, type: 'f32', access: 'read'},
           {name: 'centers', view: centers, type: 'f32', access: 'read'},
           {name: 'data', view: data, type: 'f32', access: 'read_write'}
@@ -569,15 +686,30 @@ if (index == 0u) { centers[centersOffset + ${columns}u] = 0.0; }`
         // Each column is stored as its within deviation (centered value less its entity mean,
         // rounded as written) and its entity mean: the quasi-demeaned value is then
         // deviation + phi * mean, a sum whose terms do not cancel (see datum).
-        declarations: `${ROUNDED_DIFFERENCE_WGSL}\n${ADDITION_ROUNDING_ERROR_WGSL}`,
+        declarations: `${ROUNDED_DIFFERENCE_WGSL}\n${ADDITION_ROUNDING_ERROR_WGSL}
+fn getPanelCenteredEntityMean(entity:u32,component:u32,center:f32,runtimeZero:u32)->f32 {
+ let start=entityCentersOffset+2u*(entity*${columns}u+component);
+ return getRoundedDifference(entityCenters[start],center,runtimeZero)+entityCenters[start+1u];
+}`,
         body: `let entity = index % ${entities}u; let period = index / ${entities}u; let base = dataOffset + index * ${width * 2}u;
 let runtimeZero = ${runtimeZeroWGSL};
-for (var column = 0u; column < ${columns}u; column++) { var value = 1.0; var mean = 1.0; if (column > 0u) { let center = centers[centersOffset + column]; value = getRoundedDifference(predictors[predictorsOffset + index * ${columns - 1}u + column - 1u], center, runtimeZero); mean = 0.0; for (var time = 0u; time < ${props.periodCount}u; time++) { mean += getRoundedDifference(predictors[predictorsOffset + (time * ${entities}u + entity) * ${columns - 1}u + column - 1u], center, runtimeZero) / ${props.periodCount}.0; } } data[base + column] = getRoundedDifference(value, mean, runtimeZero); data[base + ${width}u + column] = mean; }
+data[base]=0.0;data[base+${width}u]=1.0;
+for (var column = 1u; column < ${columns}u; column++) {
+ data[base+column]=withinPredictors[withinPredictorsOffset+index*${columns - 1}u+column-1u];
+ data[base+${width}u+column]=getPanelCenteredEntityMean(entity,column,centers[centersOffset+column],runtimeZero);
+}
 let responseCenter = centers[centersOffset]; var rowSum = 0.0; var rowSumError = 0.0;
 for (var neighbor = 0u; neighbor < ${entities}u; neighbor++) { let weight = dense[denseOffset + entity * ${entities}u + neighbor]; let nextRowSum = rowSum + weight; rowSumError += getAdditionRoundingError(rowSum, weight, nextRowSum); rowSum = nextRowSum; }
 let lagShift = responseCenter * (getRoundedDifference(rowSum, 1.0, runtimeZero) + rowSumError);
-var meanResponse = 0.0; var lagResponse = lagShift; var meanLag = lagShift; for (var time = 0u; time < ${props.periodCount}u; time++) { meanResponse += getRoundedDifference(response[responseOffset + time * ${entities}u + entity], responseCenter, runtimeZero) / ${props.periodCount}.0; for (var neighbor = 0u; neighbor < ${entities}u; neighbor++) { meanLag += dense[denseOffset + entity * ${entities}u + neighbor] * getRoundedDifference(response[responseOffset + time * ${entities}u + neighbor], responseCenter, runtimeZero) / ${props.periodCount}.0; } } for (var neighbor = 0u; neighbor < ${entities}u; neighbor++) { lagResponse += dense[denseOffset + entity * ${entities}u + neighbor] * getRoundedDifference(response[responseOffset + period * ${entities}u + neighbor], responseCenter, runtimeZero); }
-data[base + ${columns}u] = getRoundedDifference(getRoundedDifference(response[responseOffset + index], responseCenter, runtimeZero), meanResponse, runtimeZero); data[base + ${columns + 1}u] = getRoundedDifference(lagResponse, meanLag, runtimeZero); data[base + ${width + columns}u] = meanResponse; data[base + ${width + columns + 1}u] = meanLag;`
+let meanResponse=getPanelCenteredEntityMean(entity,0u,responseCenter,runtimeZero);
+var meanLag=lagShift;var lagDeviation=0.0;
+for(var neighbor=0u;neighbor<${entities}u;neighbor++){
+ let weight=dense[denseOffset+entity*${entities}u+neighbor];
+ let neighborMean=getPanelCenteredEntityMean(neighbor,0u,responseCenter,runtimeZero);
+ let neighborDeviation=withinResponse[withinResponseOffset+period*${entities}u+neighbor];
+ lagDeviation+=weight*neighborDeviation;meanLag+=weight*neighborMean;
+}
+data[base + ${columns}u] = withinResponse[withinResponseOffset+index]; data[base + ${columns + 1}u] = lagDeviation; data[base + ${width + columns}u] = meanResponse; data[base + ${width + columns + 1}u] = meanLag;`
       })
     ];
     const addFit = (unit: boolean, model: number) => {
@@ -588,6 +720,7 @@ data[base + ${columns}u] = getRoundedDifference(getRoundedDifference(response[re
           id: `${id}-${unit ? 'unit' : 'random'}-fit`,
           operation: 'GPUSpatialPanelLagMaximumLikelihood',
           variant: unit ? 'unit-ml' : 'random-ml',
+          // contract-allow: single-invocation -- reference fit bounded by 32 entities, 32 periods, 7 predictors, 128 sweeps and 64 search steps.
           invocationCount: 1,
           bindings: [
             {name: 'data', view: data, type: 'f32', access: 'read'},
@@ -596,7 +729,7 @@ data[base + ${columns}u] = getRoundedDifference(getRoundedDifference(response[re
             {name: 'results', view: results, type: 'f32', access: 'read_write'},
             {name: 'spatialProduct', view: spatialProduct, type: 'f32', access: 'read_write'}
           ],
-          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}\n${getCholeskyWGSL(predictors)}\n${getEquilibratedCholeskyWGSL(predictors)}\n${getCholeskyWGSL(parameterCount)}\n${getEquilibratedCholeskyWGSL(parameterCount)}\n${getInverseWGSL(entities)}
+          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}\n${PANEL_LAG_PROFILE_WGSL}\n${PANEL_LAG_PROFILE_SCORE_WGSL}\n${getCholeskyWGSL(predictors)}\n${getEquilibratedCholeskyWGSL(predictors)}\n${getCholeskyWGSL(parameterCount)}\n${getEquilibratedCholeskyWGSL(parameterCount)}\n${getInverseWGSL(entities)}
 // The quasi-demeaned value, value - (1 - phi) mean, as the within deviation plus phi times the
 // entity mean. The pack node stores the deviation, value - mean, rounded as written
 // (getRoundedDifference). Entity effects survive the pooled centering, so for large effects of
@@ -623,24 +756,66 @@ fn getVariance(rho:f32,direct:vec4<f32>)->f32 {
  let offset=getRoundedDifference(rho,direct.z,${runtimeZeroWGSL})-direct.w;
  return (direct.x+direct.y*offset*offset)/${rows}.0;
 }
-fn objective(rho:f32,direct:vec4<f32>)->f32 {
+// Trace from LU solves, one inverse column at a time: no second dense local matrix.
+fn getPanelLagTrace(rho:f32)->vec2f {
+ var matrix:array<f32,${entities * entities}>;
+ for(var row=0u;row<${entities}u;row++){for(var column=0u;column<${entities}u;column++){matrix[row*${entities}u+column]=select(0.0,1.0,row==column)-rho*dense[denseOffset+row*${entities}u+column];}}
+ var factorization=factorDenseLU_${entities}(&matrix,${entities}u,0u,1.0e-10,0.0);
+ if(factorization.status!=0u){return vec2f(0.0);}
+ var trace=0.0;
+ for(var column=0u;column<${entities}u;column++){
+  var inverseColumn:array<f32,${entities}>;inverseColumn[column]=1.0;
+  if(!solveDenseLU_${entities}(&matrix,&factorization,&inverseColumn)){return vec2f(0.0);}
+  for(var other=0u;other<${entities}u;other++){trace+=dense[denseOffset+column*${entities}u+other]*inverseColumn[other];}
+ }
+ return vec2f(trace,1.0);
+}
+fn evaluatePanelObjective(rho:f32,direct:vec4<f32>,centered:bool)->f32 {
  let variance=getVariance(rho,direct); if (!(variance > 0.0)) {return 3.402823e38;}
  var matrix:array<f32,${entities * entities}>;for(var row=0u;row<${entities}u;row++){for(var column=0u;column<${entities}u;column++){matrix[row*${entities}u+column]=select(0.0,1.0,row==column)-rho*dense[denseOffset+row*${entities}u+column];}}
  let factorization=factorDenseLU_${entities}(&matrix,${entities}u,0u,1.0e-10,0.0);
  if(factorization.status!=0u){return 3.402823e38;}
  let determinant=factorization.logAbsDeterminant;
- return ${getWGSLFloatLiteral(rows / 2)}*log(variance)-${props.periodCount}.0*determinant;
+ let logarithm=select(log(variance),getPanelLagProfileLogVariance(rho,direct,${rows}.0,${runtimeZeroWGSL}),centered);
+ return ${getWGSLFloatLiteral(rows / 2)}*logarithm-${props.periodCount}.0*determinant;
+}
+fn objective(rho:f32,direct:vec4<f32>)->f32 {return evaluatePanelObjective(rho,direct,false);}
+fn profileObjective(rho:f32,direct:vec4<f32>)->f32 {return evaluatePanelObjective(rho,direct,true);
 }`,
           body: `let base=resultsOffset+${model * stride}u;for(var slot=0u;slot<${stride}u;slot++){results[base+slot]=getNaN();}results[base+${statusOffset}u]=1.0;
 for(var slot=0u;slot<${rows * width * 2}u;slot++){if(!isFiniteBits(data[dataOffset+slot])){return;}}for(var slot=0u;slot<${entities * entities}u;slot++){if(!isFiniteBits(dense[denseOffset+slot])){return;}}
 var beta:array<f32,${predictors}>;var pooled:array<f32,${predictors * predictors}>;
 // The moments of the normal equations, summed once from the within deviations d and the entity means m of every column: sum d d', sum (d m' + m d') and sum m m' for each predictor against each predictor, the response and its lag. At any phi the moment of two quasi-demeaned columns is their polynomial in phi (getQuasiMoment), so the normal equations are a smooth function of phi and the alternation settles; per-row values rounded afresh at every phi made the solve of nearly collinear predictors jitter (it did not settle below 1e-4 in phi for a squared cosine of 1 - 4e-6).
 var deviationMoments:array<f32,${predictors * (predictors + 2)}>;var crossMoments:array<f32,${predictors * (predictors + 2)}>;var meanMoments:array<f32,${predictors * (predictors + 2)}>;
-for(var row=0u;row<${rows}u;row++){let rowBase=dataOffset+row*${width * 2}u;for(var column=0u;column<${predictors}u;column++){let deviation=data[rowBase+column+${unit ? 1 : 0}u];let mean=data[rowBase+${width}u+column+${unit ? 1 : 0}u];
- for(var other=0u;other<${predictors + 2}u;other++){var otherColumn=other+${unit ? 1 : 0}u;if(other>=${predictors}u){otherColumn=other+${columns - predictors}u;}let otherDeviation=data[rowBase+otherColumn];let otherMean=data[rowBase+${width}u+otherColumn];let slot=column*${predictors + 2}u+other;
-  deviationMoments[slot]+=deviation*otherDeviation;crossMoments[slot]+=deviation*otherMean+mean*otherDeviation;meanMoments[slot]+=mean*otherMean;}}}
+// Serial row sums lose small squares after large ones, biasing the conditional slope even when
+// rho is accurate. Fixed pairwise reductions bound this error by the tree depth. Float Kahan
+// compensation is not safe under Metal reassociation; use the shared explicit reduction order.
+for(var column=0u;column<${predictors}u;column++){
+ for(var other=0u;other<${predictors + 2}u;other++){
+  var otherColumn=other+${unit ? 1 : 0}u;if(other>=${predictors}u){otherColumn=other+${columns - predictors}u;}
+  let slot=column*${predictors + 2}u+other;
+  ${[
+    ['deviation', `data[rowBase+column+${unit ? 1 : 0}u]*data[rowBase+otherColumn]`],
+    [
+      'cross',
+      `data[rowBase+column+${unit ? 1 : 0}u]*data[rowBase+${width}u+otherColumn]+data[rowBase+${width}u+column+${unit ? 1 : 0}u]*data[rowBase+otherColumn]`
+    ],
+    ['mean', `data[rowBase+${width}u+column+${unit ? 1 : 0}u]*data[rowBase+${width}u+otherColumn]`]
+  ]
+    .map(
+      ([name, term]) =>
+        `{${getPairwiseSumWGSL({count: `${rows}u`, name, setup: `let rowBase=dataOffset+${name}Item*${width * 2}u;`, term})}\n${name}Moments[slot]=${name};}`
+    )
+    .join('\n')}
+ }}
+var scale:array<f32,${predictors}>;results[base+${statusOffset}u]=2.0;
+${
+  unit
+    ? ''
+    : `// Only random effects need a pooled beta to initialize their first phi update.
 for(var column=0u;column<${predictors}u;column++){beta[column]=getQuasiMoment(deviationMoments[column*${predictors + 2}u+${predictors}u],crossMoments[column*${predictors + 2}u+${predictors}u],meanMoments[column*${predictors + 2}u+${predictors}u],1.0);for(var other=0u;other<=column;other++){let slot=column*${predictors + 2}u+other;pooled[column*${predictors}u+other]=getQuasiMoment(deviationMoments[slot],crossMoments[slot],meanMoments[slot],1.0);}}
-var scale:array<f32,${predictors}>;results[base+${statusOffset}u]=2.0;if(!factorEquilibrated_${predictors}(&pooled,&scale)){return;}solveEquilibrated_${predictors}(&pooled,&scale,&beta);
+if(!factorEquilibrated_${predictors}(&pooled,&scale)){return;}solveEquilibrated_${predictors}(&pooled,&scale,&beta);`
+}
 var rho=0.1;var phi=${unit ? '0.0' : '0.1'};var belowLimit=false;var state=3u;var completed=0u;var change=0.0;var bracketWidth=2.0;var first=0.0;var cross=0.0;var last=0.0;var direct=vec4<f32>(0.0,0.0,0.0,0.0);var gram:array<f32,${predictors * predictors}>;
 let runtimeZero=${runtimeZeroWGSL};
 for(var iteration=0u;iteration<${unit ? 1 : (props.maximumIterations ?? 64)}u;iteration++){
@@ -656,8 +831,14 @@ for(var iteration=0u;iteration<${unit ? 1 : (props.maximumIterations ?? 64)}u;it
  if(last>0.0){let parameterZero=cross/last;var remainderSquares=0.0;var remainderCross=0.0;
   for(var row=0u;row<${rows}u;row++){let pair=getRowResiduals(row,phi,&firstBeta,&lagBeta);let remainder=getRoundedDifference(pair.x,parameterZero*pair.y,runtimeZero);remainderSquares+=remainder*remainder;remainderCross+=remainder*pair.y;}
   let correction=remainderCross/last;direct=vec4<f32>(remainderSquares-remainderCross*correction,last,parameterZero,correction);}
- var lower=-0.999;var upper=0.999;var left=lower+0.38196601125*(upper-lower);var right=lower+0.61803398875*(upper-lower);var leftScore=objective(left,direct);var rightScore=objective(right,direct);
- for(var step=0u;step<${props.maximumSearchIterations ?? 32}u;step++){if(leftScore<=rightScore){upper=right;right=left;rightScore=leftScore;left=lower+0.38196601125*(upper-lower);leftScore=objective(left,direct);}else{lower=left;left=right;leftScore=rightScore;right=lower+0.61803398875*(upper-lower);rightScore=objective(right,direct);}}
+ // A nonpositive numerical minimum includes exact poles and squared-moment underflow.
+ if(direct.x<=0.0&&abs(direct.z+direct.w)<=0.999){results[base+${statusOffset}u]=2.0;return;}
+ var lower=-0.999;var upper=0.999;var left=lower+0.38196601125*(upper-lower);var right=lower+0.61803398875*(upper-lower);var leftScore=profileObjective(left,direct);var rightScore=profileObjective(right,direct);
+ for(var step=0u;step<${props.maximumSearchIterations ?? 32}u;step++){
+  var takeLeft=leftScore<=rightScore;
+  if(step>=8u){let midpoint=lower+0.5*(upper-lower);let score=getPanelLagProfileScore(midpoint,direct,getPanelLagTrace(midpoint),${rows}.0,${props.periodCount}.0,runtimeZero);if(score.y!=0.0){takeLeft=score.x>=0.0;}}
+  if(takeLeft){upper=right;right=left;rightScore=leftScore;left=lower+0.38196601125*(upper-lower);leftScore=profileObjective(left,direct);}else{lower=left;left=right;leftScore=rightScore;right=lower+0.61803398875*(upper-lower);rightScore=profileObjective(right,direct);}
+ }
  rho=select(right,left,leftScore<=rightScore);bracketWidth=upper-lower;for(var column=0u;column<${predictors}u;column++){beta[column]=firstBeta[column]-rho*lagBeta[column];}completed=iteration+1u;
  if(${unit ? 'true' : `change <= ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)} * min(1.0, phi / ${getWGSLFloatLiteral(RANDOM_EFFECTS_RELATIVE_PHI)})`}){state=0u;break;}
 }
@@ -754,7 +935,7 @@ for(var column=0u;column<${parameterCount}u;column++){for(var row=0u;row<${param
           body: `status[statusOffset]=1u;for(var slot=0u;slot<3u;slot++){tests[testsOffset+slot]=getNaN();}if(results[resultsOffset+${statusOffset}u]!=0.0||results[resultsOffset+${stride + statusOffset}u]!=0.0){return;}var difference:array<f32,${columns * columns}>;var contrast:array<f32,${columns}>;for(var row=0u;row<${columns}u;row++){contrast[row]=results[resultsOffset+${stride + 1}u+row]-results[resultsOffset+1u+row];for(var column=0u;column<${columns}u;column++){let offset=${covarianceOffset}u+(row+1u)*${columns + 1}u+column+1u;difference[row*${columns}u+column]=results[resultsOffset+offset]-results[resultsOffset+${stride}u+offset];}}status[statusOffset]=2u;var factor=difference;if(!choleskyFactor_${columns}(&factor)){return;}if(!inverse_${columns}(&difference)){return;}var statistic=0.0;for(var row=0u;row<${columns}u;row++){for(var column=0u;column<${columns}u;column++){statistic+=contrast[row]*difference[row*${columns}u+column]*contrast[column];}}tests[testsOffset]=statistic;tests[testsOffset+1u]=${columns + 1}.0;if(!(statistic>=0.0)||!isFiniteBits(statistic)){return;}tests[testsOffset+2u]=getChiSquareSurvivalValue(statistic,${columns + 1}.0);status[statusOffset]=0u;`
         })
       );
-    return nodes;
+    return [...nodes, ...getPanelLagPoleNodes(graph, id, props)];
   }
 }
 /** Panel-specific in-place adapter over the shared scale-aware LU inverse. */

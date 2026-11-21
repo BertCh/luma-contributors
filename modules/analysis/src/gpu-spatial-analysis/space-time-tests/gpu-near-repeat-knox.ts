@@ -7,6 +7,12 @@ import {
   validateTrajectoryOutputRanges
 } from '../trajectory-analysis/trajectory-binding-validation';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
+import {createSpatialWeightsSuppressionNodes} from '../spatial-weights/spatial-weights-suppression';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotSpaceTimeTemporalContext} from './space-time-construction';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -18,6 +24,9 @@ import type {GPUInferenceMetadata, GPUTemporalContext} from '../../analysis-core
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
+  validateGraphPorts,
+  validateViewLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
@@ -166,6 +175,11 @@ export type GPUNearRepeatKnoxProps = {
  * Reported per cell: the Knox ratio against the permutation mean (the NearRepeat median ratio is
  * not computed). The p-values are 'greater' tests, one per cell, with no multiple-testing
  * correction; {@link GPUNearRepeatKnox.getInferenceMetadata} says so.
+ *
+ * Incomplete pairs: when `pairs.status.overflow` or `pairs.status.candidateOverflow` is nonzero
+ * some pairs were dropped, so for that frame the owned `counts` words are 0 and the owned
+ * `summary` words are quiet NaN, as in `GPUKnoxTest`. Spare output words are untouched.
+ * Clearing the flags restores the ordinary tables next frame.
  */
 export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -184,38 +198,132 @@ export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
   readonly temporalContext?: GPUTemporalContext;
 
   constructor(props: GPUNearRepeatKnoxProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'pairs',
+      'times',
+      'temporalContext',
+      'parameters',
+      'distanceEdges',
+      'timeEdges',
+      'maximumPermutations',
+      'output'
+    ]);
+    const capturedId = captured.id ?? 'near-repeat-knox';
+    validateRequirement(
+      capturedId,
+      Boolean(captured.pairs && typeof captured.pairs === 'object'),
+      `pairs must be a port map; received ${String(captured.pairs)}`
+    );
+    validateRequirement(
+      capturedId,
+      Boolean(captured.output && typeof captured.output === 'object'),
+      `output must be a port map; received ${String(captured.output)}`
+    );
+    validateRequirement(
+      capturedId,
+      Array.isArray(captured.distanceEdges),
+      `distanceEdges must be an array of band edges; received ${String(captured.distanceEdges)}`
+    );
+    validateRequirement(
+      capturedId,
+      Array.isArray(captured.timeEdges),
+      `timeEdges must be an array of band edges; received ${String(captured.timeEdges)}`
+    );
+    // This contributor accepts a packed CSR, not the chunked weights union. Capture only its
+    // declared fields so unrelated caller properties cannot select different loss semantics.
+    const pairs = snapshotConstructionFields(captured.pairs, [
+      'offsets',
+      'neighbors',
+      'weights',
+      'distances',
+      'status',
+      'spatialContext',
+      'information'
+    ]);
+    const information =
+      pairs.information &&
+      snapshotConstructionFields(pairs.information, [
+        'rowCount',
+        'transform',
+        'symmetric',
+        'hasSelfWeights',
+        'provenance'
+      ]);
+    const provenance = information?.provenance;
+    props = Object.freeze({
+      ...captured,
+      pairs: Object.freeze({
+        ...pairs,
+        spatialContext:
+          pairs.spatialContext && snapshotConstructionSpatialContext(pairs.spatialContext),
+        information:
+          information &&
+          Object.freeze({
+            ...information,
+            provenance:
+              provenance &&
+              snapshotConstructionFields(provenance, [
+                'source',
+                'criterion',
+                'k',
+                'radius',
+                'order'
+              ])
+          }),
+        ...(pairs.status
+          ? {
+              status: snapshotConstructionFields(pairs.status, [
+                'count',
+                'requiredCount',
+                'overflow',
+                'candidateOverflow',
+                'invalidCount',
+                'uncertainCount',
+                'iterationCount',
+                'converged',
+                'iterationLimitReached',
+                'approximation'
+              ])
+            }
+          : {})
+      }),
+      temporalContext:
+        captured.temporalContext && snapshotSpaceTimeTemporalContext(captured.temporalContext),
+      distanceEdges: Object.freeze([...captured.distanceEdges]),
+      timeEdges: Object.freeze([...captured.timeEdges]),
+      output: snapshotConstructionFields(captured.output, ['counts', 'summary'])
+    });
     const id = props.id ?? 'near-repeat-knox';
     this.id = id;
     this.props = props;
+    validateGraphPorts(id, props, {
+      'pairs.distances': {required: true, viewType: 'data', formats: ['float32']},
+      times: {required: true, viewType: 'data', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['uint32']},
+      'output.counts': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.summary': {required: true, viewType: 'data', formats: ['float32']}
+    });
     this.rows = validateGPUSpatialWeights(id, props.pairs, 'pairs');
-    if (!props.pairs.distances) {
-      throw new Error(`${id} pairs.distances is required`);
-    }
     validateSinglePackedView(props.times, ['float32'], `${id} times`);
     validateSinglePackedView(props.parameters, ['uint32'], `${id} parameters`);
     validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
     validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
     this.temporalContext = resolveGPUSpaceTimeTemporalContext(id, props.temporalContext);
-    if (this.rows < 2) {
-      throw new Error(`${id} needs at least two rows`);
-    }
-    if (this.rows > SPACE_TIME_MAXIMUM_ROWS) {
-      throw new Error(`${id} supports at most ${SPACE_TIME_MAXIMUM_ROWS} rows`);
-    }
-    if (props.times.length !== this.rows) {
-      throw new Error(`${id} times needs one row per pairs row`);
-    }
-    if (props.parameters.length < GPU_SPACE_TIME_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters needs ${GPU_SPACE_TIME_PARAMETER_LENGTH} words`);
-    }
+    validateCapacity(id, 'pairs rowCount', this.rows, 2, SPACE_TIME_MAXIMUM_ROWS);
+    validateViewLength(id, 'times', props.times, this.rows);
+    validateCapacity(
+      id,
+      'parameters.length',
+      props.parameters.length,
+      GPU_SPACE_TIME_PARAMETER_LENGTH
+    );
     validateSpaceTimeBandEdges(id, 'distanceEdges', props.distanceEdges);
     validateSpaceTimeBandEdges(id, 'timeEdges', props.timeEdges);
     this.distanceBands = props.distanceEdges.length - 1;
     this.timeBands = props.timeEdges.length - 1;
     this.cells = this.distanceBands * this.timeBands;
-    if (this.cells > GPU_NEAR_REPEAT_MAXIMUM_CELLS) {
-      throw new Error(`${id} supports at most ${GPU_NEAR_REPEAT_MAXIMUM_CELLS} cells`);
-    }
+    validateCapacity(id, 'cells', this.cells, 1, GPU_NEAR_REPEAT_MAXIMUM_CELLS);
     validateCapacity(
       id,
       'maximumPermutations',
@@ -223,30 +331,38 @@ export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
       1,
       SPACE_TIME_MAXIMUM_PERMUTATIONS
     );
-    if (props.output.counts.length < (props.maximumPermutations + 1) * this.cells) {
-      throw new Error(`${id} output.counts needs (maximumPermutations + 1) * cells rows`);
-    }
-    if (props.output.summary.length < this.cells * GPU_NEAR_REPEAT_CELL_SUMMARY_LENGTH) {
-      throw new Error(
-        `${id} output.summary needs cells * ${GPU_NEAR_REPEAT_CELL_SUMMARY_LENGTH} rows`
-      );
-    }
+    validateCapacity(
+      id,
+      'output.counts.length',
+      props.output.counts.length,
+      (props.maximumPermutations + 1) * this.cells
+    );
+    validateCapacity(
+      id,
+      'output.summary.length',
+      props.output.summary.length,
+      this.cells * GPU_NEAR_REPEAT_CELL_SUMMARY_LENGTH
+    );
     validateTrajectoryOutputRanges(this.id, this.props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
-      [props.output.counts, props.output.summary],
-      [
-        props.times,
-        props.parameters,
-        props.pairs.offsets,
-        props.pairs.neighbors,
-        props.pairs.weights,
-        props.pairs.distances
-      ]
+      {'output.counts': props.output.counts, 'output.summary': props.output.summary},
+      {
+        times: props.times,
+        parameters: props.parameters,
+        'pairs.offsets': props.pairs.offsets,
+        'pairs.neighbors': props.pairs.neighbors,
+        'pairs.weights': props.pairs.weights,
+        'pairs.distances': props.pairs.distances,
+        'pairs.status.overflow': props.pairs.status?.overflow,
+        'pairs.status.candidateOverflow': props.pairs.status?.candidateOverflow
+      }
     );
-    if (props.output.counts.buffer === props.output.summary.buffer) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    validateRequirement(
+      id,
+      props.output.counts.buffer !== props.output.summary.buffer,
+      'outputs must use separate buffers'
+    );
   }
 
   /**
@@ -263,7 +379,10 @@ export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
     };
   }
 
-  /** Returns the nodes in order: `pair-mask`, `pair-band`, `histogram` and `summary`. */
+  /**
+   * Returns the nodes in order: `pair-mask`, `pair-band`, `histogram`, `summary`, then one
+   * `incomplete` node per pair loss flag.
+   */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -305,7 +424,7 @@ export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
       pairs.neighbors.length
     );
     const bandWGSL = `${getSpaceTimeBandWGSL('Distance', props.distanceEdges)}${getSpaceTimeBandWGSL('Time', props.timeEdges)}`;
-    return [
+    const nodes = [
       createSpaceTimePairMaskNode<Parameters>(graph, {
         id,
         operation: OPERATION,
@@ -433,6 +552,18 @@ const CELLS: u32 = ${cells}u;`,
     mean > 0.0
   );`
       })
+    ];
+    return [
+      ...nodes,
+      // Truncated pairs give truncated cell tables: zero the counts and NaN the summary.
+      ...createSpatialWeightsSuppressionNodes(
+        graph,
+        id,
+        OPERATION,
+        pairs,
+        {counts, summary},
+        {counts: slotCount * cells, summary: cells * GPU_NEAR_REPEAT_CELL_SUMMARY_LENGTH}
+      )
     ];
   }
 }

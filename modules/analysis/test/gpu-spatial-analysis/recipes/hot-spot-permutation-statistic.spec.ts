@@ -120,7 +120,7 @@ async function runRecipe(selfWeight: number | undefined) {
         height: HEIGHT,
         neighborCapacity: ROW_COUNT * 8
       },
-      outputs: {zScores: zScores.view, permutation: {observed: observed.view}}
+      output: {zScores: zScores.view, permutation: {observed: observed.view}}
     });
     fixture.run();
     return {
@@ -218,7 +218,7 @@ it('keeps the 25-row permutation correction family beside the 9-row analytic fam
         maximumPermutations: 199,
         multipleTesting: 'benjamini-hochberg'
       },
-      outputs: {
+      output: {
         zScores: zScores.view,
         permutation: {pseudoPValues: pseudoPValues.view, significant: significant.view}
       }
@@ -266,7 +266,7 @@ it('R6 excludes an isolated masked-lattice row at the effective minimum of one',
         'float32',
         GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
       ),
-      outputs: {zScores: zScores.view}
+      output: {zScores: zScores.view}
     });
     expect(result.inference.testedRowsDefinition).toBe(
       'included rows with at least 1 active neighbor (islands excluded) and a defined z-score'

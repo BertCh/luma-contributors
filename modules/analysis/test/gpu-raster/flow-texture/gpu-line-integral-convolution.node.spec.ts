@@ -73,8 +73,8 @@ it('LIC parameter helpers pack the documented layout', () => {
   expect(
     Array.from(
       getGPULineIntegralConvolutionParameterValues({
-        fieldExtent: [1, 2, 3, 4],
-        outputExtent: [5, 6, 7, 8],
+        fieldPlacement: {origin: [1, 2], cellSize: [3, 4]},
+        outputPlacement: {origin: [5, 6], cellSize: [7, 8]},
         stepLength: 0.25,
         phase: 0.5,
         period: 8
@@ -91,8 +91,8 @@ it('convolveLineIntegralOnCPU smooths along the flow and not across it', () => {
   // Horizontal flow: values along a row are strongly correlated, values down a column are not.
   const field = createUniformField(16, 16, 1, 0);
   const parameters = getGPULineIntegralConvolutionParameterValues({
-    fieldExtent: [0, 0, 1, 1],
-    outputExtent: [0, 0, 0.25, 0.25],
+    fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+    outputPlacement: {origin: [0, 0], cellSize: [0.25, 0.25]},
     stepLength: 1
   });
   const {values, noise} = convolveLineIntegralOnCPU(field, 64, 64, 10, parameters, 4);
@@ -115,4 +115,18 @@ it('convolveLineIntegralOnCPU smooths along the flow and not across it', () => {
   // Zero steps return the noise itself.
   const unsmoothed = convolveLineIntegralOnCPU(field, 64, 64, 0, parameters, 4);
   expect(Array.from(unsmoothed.values)).toEqual(Array.from(unsmoothed.noise));
+});
+
+it('B4 LIC always generates bounded noise; a test-only override is not a public input', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'lic-noise'});
+  const propsWithExtraField = {
+    ...createProps(graph),
+    noise: createTransientView(graph, 'noise', 'float32', 48)
+  };
+  const contributor = new GPULineIntegralConvolution(propsWithExtraField);
+  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+    'line-integral-convolution-noise',
+    'line-integral-convolution-convolve'
+  ]);
+  expect('noise' in contributor.props).toBe(false);
 });

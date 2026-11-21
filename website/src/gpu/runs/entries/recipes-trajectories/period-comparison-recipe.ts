@@ -63,7 +63,7 @@ export default defineOperationRun({
       before: {positions: before.view},
       after: {positions: after.view},
       zScore: 'poisson',
-      outputs: {
+      output: {
         comparison: {
           cells: cells.view,
           delta: delta.view,

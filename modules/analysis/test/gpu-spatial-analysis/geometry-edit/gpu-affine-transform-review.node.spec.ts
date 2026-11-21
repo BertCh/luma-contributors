@@ -182,7 +182,7 @@ function createScenario(
           offsets: rows('offsets', 'float32x2', true, 4),
           parameters: createTransientView(graph, 'parameters', 'float32', 2),
           verticesPerRing: 4,
-          coordinateSystem: 'planar'
+          spatialContext: {coordinateSpace: 'planar', metric: 'native'}
         })
       };
     case 'gaussian':
@@ -408,7 +408,7 @@ it('preserves packed public defaults and infers packed or vector output views fr
         parameters,
         offsets: packedOffsets,
         verticesPerRing: 3,
-        coordinateSystem: 'planar'
+        spatialContext: {coordinateSpace: 'planar', metric: 'native'}
       }).props.offsets
     ).toEqualTypeOf<GraphDataView<'float32x2'>>();
     expectTypeOf(
@@ -456,7 +456,7 @@ it('preserves packed public defaults and infers packed or vector output views fr
         parameters,
         offsets: vectorOffsets,
         verticesPerRing: 3,
-        coordinateSystem: 'planar'
+        spatialContext: {coordinateSpace: 'planar', metric: 'native'}
       }).props.offsets
     ).toEqualTypeOf<GraphVectorView<'float32x2'>>();
     expectTypeOf(

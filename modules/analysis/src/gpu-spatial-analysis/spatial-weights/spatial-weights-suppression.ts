@@ -24,6 +24,8 @@ export function createSpatialWeightsSuppressionNodes<Parameters>(
   const fields = Object.entries({
     output: outputs['output'],
     statistics: outputs['statistics'],
+    counts: outputs['counts'],
+    cardinality: outputs['cardinality'],
     summary: outputs['summary'],
     permutationCount: outputs['permutationCount']
   })

@@ -6,6 +6,7 @@
 // The forward H3 algorithm (`geoToFaceIjk`, `hex2dToCoordIjk`) is derived from Uber's Apache-2.0 H3.
 
 import {dggs} from '@luma.gl/shaders';
+import {getExactDegreeReductionWGSL} from './cell-index-wgsl';
 
 /** Rows of each H3 face table in the `dggs` shader source: one per icosahedron face. */
 const H3_FACE_COUNT = 20;
@@ -55,7 +56,7 @@ function formatDoubleFloat(value: number): string {
 
 /** Float64 face center, hex i axis and hex j axis unit vectors for each of the 20 icosahedron faces. */
 /** Binary64 face bases shared by forward indexing and inverse cell measures. @internal */
-export function getFaceBasisVectors(): number[][] {
+function createFaceBasisVectors(): number[][] {
   const centers = parseDggsFaceTable('dggs_h3_get_face_center_geo', 2);
   const azimuths = parseDggsFaceTable('dggs_h3_get_face_axis_azimuths', 3);
   const values: number[][] = [];
@@ -75,6 +76,13 @@ export function getFaceBasisVectors(): number[][] {
     );
   });
   return values;
+}
+
+const FACE_BASES = Object.freeze(createFaceBasisVectors().map(row => Object.freeze(row)));
+
+/** Binary64 H3 bases; copies preserve the historical mutable return type. @internal */
+export function getFaceBasisVectors(): number[][] {
+  return FACE_BASES.map(row => [...row]);
 }
 
 const FACE_BASES_WGSL = getFaceBasisVectors().flat().map(formatDoubleFloat).join(',\n  ');
@@ -214,9 +222,11 @@ fn cellIndexH3ExtIsGreater(a: vec2f, b: vec2f) -> bool {
 
 // (sin, cos) of an angle in degrees as double-floats, packed (sin.xy, cos.xy). The angle is reduced
 // to [-45, 45] degrees exactly, then converted to radians and summed with a double-float Taylor series.
+${getExactDegreeReductionWGSL('cellIndexH3ExtReduceDegrees')}
 fn cellIndexH3ExtSinCosDegrees(degrees: f32) -> vec4f {
-  let quadrant = round(degrees * (1.0 / 90.0));
-  let reducedDegrees = degrees - quadrant * 90.0;
+  let reducedInput = cellIndexH3ExtReduceDegrees(degrees);
+  let quadrant = round(reducedInput * (1.0 / 90.0));
+  let reducedDegrees = reducedInput - quadrant * 90.0;
   let reduced = cellIndexH3ExtMultiplyFloat(CELL_INDEX_H3_EXT_RADIANS_PER_DEGREE, reducedDegrees);
   let squared = cellIndexH3ExtMultiply(reduced, reduced);
   var sineSeries = CELL_INDEX_H3_EXT_SINE_COEFFICIENTS[9];

@@ -18,8 +18,11 @@ import {validatePredictionViews} from '../../analysis-core/kernels/gpu-predictio
 import {type GPUPredictionCovariance} from '../spatial-interpolation/gpu-local-kriging';
 import type {GPULocalRBFProps} from '../spatial-interpolation/gpu-local-rbf';
 import {getNestedValidationNodes} from './nested-validation-nodes';
+import {snapshotNestedValidationProps} from './nested-validation-construction';
 import {getGPULocalKrigingParameterValues} from '../spatial-interpolation/prediction-covariance';
 import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
+import {GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT} from './nested-validation-limits';
+export {GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT} from './nested-validation-limits';
 
 /** Exact bounded neighborhood scans retain their original small reference envelope. */
 export const GPU_NESTED_VALIDATION_REFERENCE_MAXIMUM_ROW_COUNT = 256;
@@ -35,8 +38,6 @@ export const GPU_NESTED_VALIDATION_MAXIMUM_NEIGHBOR_COUNT = 32;
 const MAXIMUM_FOLD_COUNT = 16;
 /** Each candidate is fitted separately for every inner split. */
 const MAXIMUM_INNER_FOLD_COUNT = 8;
-/** A bounded reference hyperparameter ladder limits graph expansion and score scratch. */
-const MAXIMUM_CANDIDATE_COUNT = 16;
 
 export type GPUNestedInterpolationCandidate =
   | {mode: 'ordinary-kriging'; covariance: GPUPredictionCovariance}
@@ -89,11 +90,20 @@ export type GPUNestedInterpolationValidationProps = {
  * Resident exact nested search with tiled row scores/metrics and a bounded exhaustive neighbor
  * search. Outer test outcomes never affect inner fits or selection. Fold/split indices are runtime
  * parameters; all folds share the same fixed set of shader sources and pipelines.
+ * Omitted mode and 'tiled' accept at most 4096 observations total; 'reference' accepts at most
+ * 256 observations in one tile. Both routes accept 2–16 outer folds, 2–8 inner folds per outer
+ * fold, 1–16 candidates per ladder, 2–32 neighbors per fit, and innerBufferDistance in [0, 1e18]
+ * native planar units. Multi-tile routes use a tile width of at least 64 rows and merge at most
+ * 64 metric partials per outer fold. Omitted mode retains one tile for at most 256 observations.
+ * The estimated graph is limited to 32,768 command nodes.
  */
 export class GPUNestedInterpolationValidation implements GPUCommandNodeProducer {
   readonly id: string;
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPUNestedInterpolationValidationProps) {
+  readonly props: GPUNestedInterpolationValidationProps;
+  constructor(props: GPUNestedInterpolationValidationProps) {
+    props = snapshotNestedValidationProps(props);
+    this.props = props;
     this.id = props.id ?? 'nested-interpolation-validation';
     const rows = props.response.length;
     validateRequirement(
@@ -118,7 +128,13 @@ export class GPUNestedInterpolationValidation implements GPUCommandNodeProducer 
       2,
       MAXIMUM_INNER_FOLD_COUNT
     );
-    validateCapacity(this.id, 'candidates', props.candidates.length, 1, MAXIMUM_CANDIDATE_COUNT);
+    validateCapacity(
+      this.id,
+      'candidates',
+      props.candidates.length,
+      1,
+      GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT
+    );
     validateCapacity(
       this.id,
       'neighborCount',

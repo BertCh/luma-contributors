@@ -910,6 +910,17 @@ export async function createHurricaneLandfall(
 
   function updateLandfallViews(): void {
     const options = ctx.options;
+    if (
+      eventSnapshot &&
+      (eventSnapshot.candidateOverflow || eventSnapshot.trackOverflow || eventSnapshot.listOverflow)
+    ) {
+      stateDisplayBuffer.write(new Float32Array(zoneCount + 1).fill(Number.NaN));
+      dotCount = 0;
+      for (const key of ['landfalls', 'strongest', 'selectedState'])
+        ctx.setReadout(key, 'unavailable: incomplete landfall events');
+      ctx.setChart('stateChart', null);
+      return;
+    }
     const kept = landfalls.filter(entry => entry.wind >= options.minimumLandfallWind);
     stateCounts = new Float64Array(zoneCount);
     stateStrongest = new Float64Array(zoneCount);
@@ -1054,6 +1065,11 @@ export async function createHurricaneLandfall(
   }
 
   function describeState(zone: number): string {
+    if (
+      eventSnapshot &&
+      (eventSnapshot.candidateOverflow || eventSnapshot.trackOverflow || eventSnapshot.listOverflow)
+    )
+      return 'unavailable: incomplete landfall events';
     const count = stateCounts[zone];
     if (!count) return `${zones.names[zone]}: no landfall at this minimum wind`;
     const storm = stateStrongestStorm[zone];

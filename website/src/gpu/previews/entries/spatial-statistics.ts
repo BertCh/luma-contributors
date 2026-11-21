@@ -1903,7 +1903,7 @@ function getNearestNeighbors(points: Point[], index: number, count: number): num
 function runDbscan(
   points: Point[],
   epsilon: number,
-  minimumPoints: number
+  minimumSamples: number
 ): {labels: number[]; core: boolean[]; neighbors: number[][]} {
   const neighbors = points.map((point, index) => {
     const found: number[] = [];
@@ -1912,7 +1912,7 @@ function runDbscan(
     });
     return found;
   });
-  const core = neighbors.map(list => list.length + 1 >= minimumPoints);
+  const core = neighbors.map(list => list.length + 1 >= minimumSamples);
   const labels = points.map(() => -1);
   let cluster = 0;
   points.forEach((_, start) => {
@@ -1936,7 +1936,7 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
     pointer: 'hover',
     parameters: [
       createSlider('epsilon', 'Radius (eps)', 4, 14, 0.5, 7.5, 'px'),
-      createSlider('minimumPoints', 'Min points', 3, 10, 1, 5)
+      createSlider('minimumSamples', 'Min points', 3, 10, 1, 5)
     ],
     build: ({fork, p, pointer}) => {
       const random = fork('points');
@@ -1948,7 +1948,7 @@ const CLUSTERING_PREVIEWS: Record<string, EntryPreview> = {
         ]),
         ...createScatterPoints(random, 22, 6)
       ];
-      const {labels, core, neighbors} = runDbscan(points, p.epsilon, p.minimumPoints);
+      const {labels, core, neighbors} = runDbscan(points, p.epsilon, p.minimumSamples);
       const links = new Map<Role, PathItem[]>();
       const items: SpriteItem[] = points.map(([x, y], index) => {
         const role: Role =

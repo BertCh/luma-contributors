@@ -48,7 +48,7 @@ export default defineOperationRun({
         parameters: parameterBuffer.view,
         offsets: offsets.view,
         verticesPerRing: values.verticesPerRing,
-        coordinateSystem: 'planar'
+        spatialContext: {coordinateSpace: 'planar', metric: 'native'}
       })
     );
     return {

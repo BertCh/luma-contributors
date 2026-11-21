@@ -60,7 +60,7 @@ it('matches compiled H3 on float32 positions at every resolution, including pent
     }
     const packed = Float32Array.from(positions);
     expect(packed.length / 2).toBeGreaterThan(boundaryStartRow);
-    for (const precision of ['float32', 'extended'] as const) {
+    for (const precision of ['float32', 'double-single'] as const) {
       const result = computePointToCellOnCPU(packed, {family: 'h3', resolution, precision});
       for (let row = 0; row < packed.length / 2; row++) {
         expect(getKey(result.cells, row), `resolution ${resolution}, row ${row}`).toBe(
@@ -90,7 +90,7 @@ it('checks the previously discarded H3 resolution-zero boundary row', () => {
   // Resolution zero, mode one, base cell 40, all fifteen unused digits equal seven.
   const expected = (1n << 59n) | (40n << 45n) | ((1n << 45n) - 1n);
   expect(expected).toBe(0x8051fffffffffffn);
-  for (const precision of ['float32', 'extended'] as const) {
+  for (const precision of ['float32', 'double-single'] as const) {
     const result = computePointToCellOnCPU(
       Float32Array.of(-121.33663177490234, 28.653018951416016),
       {family: 'h3', resolution: 0, precision}
@@ -270,7 +270,7 @@ it('validates arrays and construction of both operations, including deferred con
     constructNetworkOperationContributor(new GPUPointToCellOperation(PROPS), shapes)
   ).not.toThrow();
   for (const Operation of [GPUPointToCellOperation, CPUPointToCellOperation]) {
-    expect(() => new Operation({...PROPS, rowCount: 0})).toThrow(/point-test/);
+    expect(() => new Operation({...PROPS, rowCount: -1})).toThrow(/point-test/);
     expect(() => new Operation({...PROPS, output: {cells: 'positions'}})).toThrow(/point-test/);
     expect(() => new Operation({...PROPS, output: {cells: 'same', validity: 'same'}})).toThrow(
       /point-test/

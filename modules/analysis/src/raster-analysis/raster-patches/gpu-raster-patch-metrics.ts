@@ -48,7 +48,7 @@ import {
 const OPERATION = 'GPURasterPatchMetrics';
 const NO_ROW = '0xffffffffu';
 
-/** Float32 layout shared with fractional coverage: `[originX, originY, a, b, d, e, determinant, 0]`. */
+/** Legacy float32 layout: `[originX, originY, a, b, d, e, determinant, padding]`; word 7 is ignored. */
 export const GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH = 8;
 
 /**
@@ -56,6 +56,10 @@ export const GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH = 8;
  * Width, height, pixel interpretation and cellSizeMode remain fixed in the compiled graph.
  *
  * @param grid Raster grid whose affine will be measured.
+ * The physical determinant is rounded from the declared affine, separately from packed-axis
+ * coordinate metadata. It must be finite and nonzero in float32; validation precedes all writes.
+ * Reusing a ten-word version-2 target clears its discriminator and absolute-Y offset.
+ *
  * @param target Optional destination of at least eight float32 values.
  */
 export function getGPURasterPatchMetricsParameterValues(
@@ -68,7 +72,17 @@ export function getGPURasterPatchMetricsParameterValues(
     target.length >= GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH,
     `target must contain at least ${GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH} values`
   );
-  target.set(resolveGPURasterContext(id, {grid}).parameterValues);
+  const resolved = resolveGPURasterContext(id, {grid});
+  const physicalDeterminant = Math.fround(resolved.affineDeterminant!);
+  validateRequirement(
+    id,
+    Number.isFinite(physicalDeterminant) && physicalDeterminant !== 0,
+    `grid.affine physical area determinant must fit finite nonzero float32, received ${resolved.affineDeterminant}`
+  );
+  target.set(resolved.parameterValues);
+  target[6] = physicalDeterminant;
+  // Legacy repacking must not leave an active version-2 latitude offset in a reused target.
+  if (target.length >= 10) target.set([0, 0], 8);
   return target;
 }
 
@@ -136,7 +150,9 @@ export type GPURasterPatchMetricsProps = GPURasterPatchLabels & {
   cellSizeMode?: GPURasterCellSizeMode;
   /**
    * Per-frame affine packed by getGPURasterPatchMetricsParameterValues (also accepts the
-   * identical fractional-coverage layout). All modes read the determinant and both axis lengths;
+   * fractional-coverage layout, including its ten-word version 2). Legacy word 7 is ignored
+   * padding; word 8 = 2 selects word 9 as the absolute Y offset for rebased ground areas.
+   * All modes read the determinant and both axis lengths;
    * ground modes also read row latitude. A repacked grid must remain axis-aligned in ground
    * modes. Without this view the initial grid affine stays fixed for backwards compatibility.
    */

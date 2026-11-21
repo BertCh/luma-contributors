@@ -17,7 +17,8 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
-import {BIN_INDEX_WGSL} from '../shared/bin-index-wgsl';
+import {GWR_GRID_EXTENT_COMPONENTS, GWR_GRID_EXTENT_COMPONENT_COUNT} from './gwr-grid-layout';
+import {BIN_INDEX_WGSL} from './bin-index-wgsl';
 import {IS_FINITE_BITS_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 import {
@@ -85,21 +86,24 @@ export function createGridIndexNodes<Parameters>(
     length: number
   ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
   const tileStride = Math.ceil(tileCount / 64) * 64;
-  const tileBounds = transient('tile-bounds', 'float32', tileStride * 4);
-  const gridBounds = transient('grid-bounds', 'float32', 4);
-  const unitPositions = transient('unit-positions', 'float32x2', rowCount);
+  const tileBounds = transient(
+    'tile-bounds',
+    'float32',
+    tileStride * GWR_GRID_EXTENT_COMPONENT_COUNT
+  );
+  const gridBounds = transient('grid-bounds', 'float32', GWR_GRID_EXTENT_COMPONENT_COUNT);
+  // createTransientView reserves physical storage for an empty view while retaining length 0.
+  const unitPositions = createTransientView(graph, `${id}-unit-positions`, 'float32x2', rowCount);
   const cellOffsets = transient('cell-offsets', 'uint32', cellCount + 1);
   const objectIds = transient('object-ids', 'uint32', rowCount);
-  const sortedIds = transient('sorted-ids', 'uint32', rowCount + 4);
+  const sortedIds = transient('sorted-ids', 'uint32', rowCount + GWR_GRID_EXTENT_COMPONENT_COUNT);
   const indexCount = transient('index-count', 'uint32', 1);
   const indexOverflow = transient('index-overflow', 'uint32', 1);
-  const componentBounds = ['minimumX', 'minimumY', 'maximumX', 'maximumY'].map(name =>
-    transient(name, 'float32', 1)
-  );
+  const componentBounds = GWR_GRID_EXTENT_COMPONENTS.map(({name}) => transient(name, 'float32', 1));
   const boundReductions = componentBounds.flatMap((output, component) =>
     new GPUReduction({
       id: `${id}-extent-component-${component}`,
-      operation: component < 2 ? 'min' : 'max',
+      operation: GWR_GRID_EXTENT_COMPONENTS[component].operation,
       input: graph.createDataView(tileBounds.buffer, {
         format: 'float32',
         length: tileCount,
@@ -111,7 +115,7 @@ export function createGridIndexNodes<Parameters>(
   const common = `const ROW_COUNT: u32 = ${rowCount}u;
 const TILE_ROWS: u32 = ${BOUNDS_TILE_ROWS}u;
 const TILE_COUNT: u32 = ${tileCount}u;
-const SENTINEL: f32 = 3.0e38;
+const SENTINEL: f32 = 3.402823466e+38;
 ${IS_FINITE_BITS_WGSL}`;
   // The grid index scatters IDs with atomics, so in-cell order varies between runs. A stable sort
   // of the rows by cell restores ascending row order inside every cell in O(rows) work, however
@@ -146,7 +150,7 @@ ${IS_FINITE_BITS_WGSL}`;
       bounds = vec4f(min(bounds.x, x), min(bounds.y, y), max(bounds.z, x), max(bounds.w, y));
     }
   }
-  for (var component = 0u; component < 4u; component++) {
+  for (var component = 0u; component < ${GWR_GRID_EXTENT_COMPONENT_COUNT}u; component++) {
     tileBounds[tileBoundsOffset + component * ${tileStride}u + index] = bounds[component];
   }`
     }),
@@ -165,14 +169,12 @@ ${IS_FINITE_BITS_WGSL}`;
         })),
         {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read_write'}
       ],
-      invocationCount: 1,
+      invocationCount: GWR_GRID_EXTENT_COMPONENT_COUNT,
       declarations: common,
       body: `let bounds = vec4f(component0[component0Offset], component1[component1Offset], component2[component2Offset], component3[component3Offset]);
-  let isEmpty = bounds.x > bounds.z || bounds.y > bounds.w;
+  let isEmpty = ROW_COUNT == 0u || bounds.x > bounds.z || bounds.y > bounds.w;
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
-  for (var component = 0u; component < 4u; component++) {
-    gridBounds[gridBoundsOffset + component] = select(bounds[component], invalid, isEmpty);
-  }`
+  gridBounds[gridBoundsOffset + index] = select(bounds[index], invalid, isEmpty);`
     }),
     // The published grid index takes a literal [0, 1] domain, so positions are normalized by the
     // data-dependent extent first; non-finite or empty-extent rows become NaN and are ignored.
@@ -217,12 +219,12 @@ ${IS_FINITE_BITS_WGSL}`;
         {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read'},
         {name: 'sortedIds', view: sortedIds, type: 'u32', access: 'read_write'}
       ],
-      invocationCount: Math.max(rowCount, 4),
+      invocationCount: Math.max(rowCount, GWR_GRID_EXTENT_COMPONENT_COUNT),
       declarations: `const ROW_COUNT: u32 = ${rowCount}u;`,
       body: `if (index < ROW_COUNT) {
     sortedIds[sortedIdsOffset + index] = sortedRows[sortedRowsOffset + index];
   }
-  if (index < 4u) {
+  if (index < ${GWR_GRID_EXTENT_COMPONENT_COUNT}u) {
     sortedIds[sortedIdsOffset + ROW_COUNT + index] = bitcast<u32>(gridBounds[gridBoundsOffset + index]);
   }`
     })

@@ -12,9 +12,6 @@ defineLensScenario({
   title: 'Seeded population dots in Chicago tracts',
   rungs: DEFAULT_LENS_RUNGS,
   dataset: S2_DATASETS.tracts,
-  presentation: {
-    primaryOutputCaptureId: 'gpu-spatial-analysis-dot-density-snapshots-points-0'
-  },
   load: async () => {
     const [
       {runS2Lens, createS2ChicagoFrame, projectS2Positions, closeS2Rings},

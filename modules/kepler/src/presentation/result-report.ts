@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 import {
   deriveGPUAnalysisCautions,
@@ -14,7 +14,7 @@ import {
   getGPUAnalysisQuestion,
   GPU_ANALYSIS_CAUTIONS,
   summarizeGPUAnalysisResult
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   GPUAnalysisColumnProfile,
   GPUAnalysisDataProfile,
@@ -26,7 +26,7 @@ import type {
   GPUAnalysisSidedness,
   GPUAnalysisSummaryTemplate,
   GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   CatalogOperationBinding,
   CatalogParameterSpec,
@@ -445,6 +445,8 @@ type Facts = {template: GPUAnalysisSummaryTemplate; sentence: string};
 
 /** What the extractors learn about the run besides the sentence, for the cautions. */
 type RunDetails = {
+  pValueConstruction?: 'upper-tail-count' | 'doubled-minimum-tail';
+  pValueConstructionUnknown?: boolean;
   /** Features the statistic was computed on and classified. */
   testedCount?: number;
   significanceLevel?: number;
@@ -596,6 +598,18 @@ function extractLocalClusters(context: ExtractionContext): Facts | undefined {
   const significanceLevel = readNumber(parameters, source?.significanceParameter);
   if (correction === undefined || significanceLevel === undefined) return undefined;
   const permutations = readNumber(parameters, source?.permutationsParameter);
+  const construction = result.summary['pValueConstruction'];
+  const pValueConstruction =
+    construction === 'upper-tail-count' || construction === 'doubled-minimum-tail'
+      ? construction
+      : construction === undefined &&
+          result.operationId === 'local-moran-statistics' &&
+          result.engine === 'gpu' &&
+          result.dispatchedContributors.includes('GPULocalPermutationTest')
+        ? 'doubled-minimum-tail'
+        : undefined;
+  if (pValueConstruction) details.pValueConstruction = pValueConstruction;
+  else details.pValueConstructionUnknown = true;
   const notTested = sumLegendCounts(plan, ['excluded']);
   const analyzedCount = plan.rowCount - (plan.unrecognized ?? 0);
   const featureCount = analyzedCount - notTested;
@@ -608,9 +622,10 @@ function extractLocalClusters(context: ExtractionContext): Facts | undefined {
     significanceLevel,
     // A binding with a permutation parameter writes pseudo p-values, whatever the count.
     pValueKind: source?.permutationsParameter === undefined ? 'analytic' : 'pseudo',
+    ...(pValueConstruction ? {pValueConstruction} : {}),
     correction,
     // The package words a run that could not flag anything, or computed no p-values, itself.
-    ...(permutations !== undefined ? {permutationCount: permutations} : {}),
+    ...(permutations !== undefined && pValueConstruction ? {permutationCount: permutations} : {}),
     ...(permutations === 0 ? {pValuesComputed: false, analyzedCount} : {})
   });
   details.testedCount = permutations === 0 ? 0 : featureCount;
@@ -1081,6 +1096,8 @@ function readSummaryCautions(
 
 /** Facts the stock caution texts can state, from the run. */
 type CautionTextFacts = {
+  pValueConstruction?: 'upper-tail-count' | 'doubled-minimum-tail';
+  pValueConstructionUnknown?: boolean;
   permutationCount?: number;
   significanceLevel: number;
   correction?: GPUAnalysisMultipleTestingCorrection;
@@ -1097,6 +1114,7 @@ function describeCaution(id: GPUAnalysisCaution, facts: CautionTextFacts): Keple
     ...(facts.correction !== undefined ? {correction: facts.correction} : {}),
     ...(facts.testCount !== undefined ? {testCount: facts.testCount} : {}),
     ...(facts.permutationCount !== undefined ? {permutationCount: facts.permutationCount} : {}),
+    ...(facts.pValueConstruction ? {pValueConstruction: facts.pValueConstruction} : {}),
     ...(facts.rowsExcluded !== undefined ? {rowsExcluded: facts.rowsExcluded} : {}),
     ...(facts.smallDenominatorAreaCount !== undefined
       ? {smallDenominatorAreaCount: facts.smallDenominatorAreaCount}
@@ -1107,10 +1125,14 @@ function describeCaution(id: GPUAnalysisCaution, facts: CautionTextFacts): Keple
     ...(facts.reason !== undefined ? {reason: facts.reason} : {})
   });
   let text = stock.text;
-  if (id === 'pseudo-p-values' && facts.permutationCount !== undefined) {
+  if (id === 'pseudo-p-values' && facts.pValueConstructionUnknown) {
+    text =
+      'These p-values are estimated from random permutations and vary with the random seed. Their counting convention is unavailable, so a specific attainable p-value floor cannot be stated.';
+  } else if (id === 'pseudo-p-values' && facts.permutationCount !== undefined) {
     const resolution = describeGPUAnalysisPermutationResolution(
       facts.permutationCount,
-      facts.significanceLevel
+      facts.significanceLevel,
+      facts.pValueConstruction
     );
     if (resolution) text = `${text} ${resolution}`;
   }
@@ -1197,7 +1219,12 @@ export function describeKeplerCatalogResult(
     readNumber(parameters, source?.significanceParameter) ??
     STOCK_SIGNIFICANCE_LEVEL;
   const summaryCautions = readSummaryCautions(descriptor.bindingId, result.summary);
-  if (permutationCount !== undefined) cautionFacts.permutationCount = permutationCount;
+  if (
+    permutationCount !== undefined &&
+    (permutationCount === 0 || !details.pValueConstructionUnknown)
+  )
+    cautionFacts.permutationCount = permutationCount;
+  if (details.pValueConstruction) cautionFacts.pValueConstruction = details.pValueConstruction;
   cautionFacts.significanceLevel = significanceLevel;
   if (hasStatisticalOutput) {
     const firstInput = descriptor.inputs[0]?.name;
@@ -1293,11 +1320,15 @@ export function describeKeplerCatalogResult(
       : {
           ...(cautionFacts.correction !== undefined ? {correction: cautionFacts.correction} : {}),
           ...(cautionFacts.testCount !== undefined ? {testCount: cautionFacts.testCount} : {}),
-          ...(permutationCount !== undefined ? {permutationCount} : {})
+          ...(permutationCount !== undefined && !details.pValueConstructionUnknown
+            ? {permutationCount}
+            : {})
         };
   const cautions = cautionIds.map(id =>
     describeCaution(id, {
       significanceLevel,
+      ...(details.pValueConstructionUnknown ? {pValueConstructionUnknown: true} : {}),
+      ...(details.pValueConstruction ? {pValueConstruction: details.pValueConstruction} : {}),
       ...unattainableFacts,
       ...(details.producerExcludesIslands !== undefined
         ? {rowsExcluded: details.producerExcludesIslands}

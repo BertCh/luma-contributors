@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
 
 import {
@@ -48,7 +50,10 @@ import {
   type GPUSpatialContextSupport,
   type GPUStatusScalar
 } from '../../analysis-core/contracts/index';
-import {GPUParameterBuffer} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  GPUParameterBuffer,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUNeighborSearch} from '../neighbor-search/index';
 import {
   GPU_PERMUTATION_PARAMETER_LENGTH,
@@ -317,9 +322,13 @@ export type GPUHotSpotAnalysisRecipeProps = GPURecipeOverrides<
     };
   },
   {
-    /** The deduplicated study table (`cells`, `counts` = cover multiplicity, `status.count`, `status.overflow`). */
+    /**
+     * The deduplicated study table (`cells`, `counts` = cover multiplicity, `status.count`, `status.overflow`).
+     * A supplied candidateOverflow is the joined table's source-loss destination; the raw study
+     * aggregation retains a separate stage word.
+     */
     table?: ProvidedCellTable;
-    /** The occupied-cell table of the points. */
+    /** The occupied-cell table of the points. A supplied status.sumOverflow must be one uint32 row. */
     pointTable?: ProvidedCellTable;
     centers?: GraphDataView<'float32x2'>;
     values?: GraphDataView<'float32'>;
@@ -402,9 +411,9 @@ export type GPUHotSpotAnalysisRecipeIntermediates = Pick<
 >;
 
 /** Hot-spot outputs, intermediates and top-level convenience fields. */
-export type GPUHotSpotAnalysisRecipeResult = GPURecipeResult<
-  GPUHotSpotAnalysisRecipeOutputs,
-  GPUHotSpotAnalysisRecipeIntermediates
+export type GPUHotSpotAnalysisRecipeResult = Omit<
+  GPURecipeResult<GPUHotSpotAnalysisRecipeOutputs, GPUHotSpotAnalysisRecipeIntermediates>,
+  'status'
 > &
   GPUHotSpotAnalysisRecipeViews;
 
@@ -442,7 +451,7 @@ type GPUHotSpotAnalysisRecipeViews = {
     exceedances: GraphDataView<'uint32'>;
     pseudoPValues: GraphDataView<'float32'>;
     significant: GraphDataView<'uint32'>;
-    /** Present when `outputs.permutation.observed` was given. */
+    /** Present when `output.permutation.observed` was given. */
     observed?: GraphDataView<'float32'>;
     status: {overflow: GPUStatusScalar};
   };
@@ -461,7 +470,14 @@ type GPUHotSpotAnalysisRecipeViews = {
     invalidCount: GPUStatusScalar;
     /** Points outside the study area (points source only). */
     pointsOutsideStudyArea?: GPUStatusScalar;
-  } & GPURecipeStatusPort;
+  } & {
+    stages: readonly {
+      stage: string;
+      code?: GPUStatusScalar;
+      status: GPURecipeStatusPort['stages'][number]['status'] &
+        Pick<GPUCellTable['status'], 'sumOverflow'>;
+    }[];
+  };
   /** Present when `color` was requested. */
   color?: {
     breaks: GraphDataView<'float32'>;
@@ -530,7 +546,12 @@ function getDiskNeighborCount(family: GPUCellAggregationFamily, rings: number): 
  *
  * Statistical contract:
  * - Every study-area cell is a row, zeros included, so the global mean and deviation describe the
- *   whole area and clusters of empty cells can be cold spots.
+ *   whole area and clusters of empty cells can be cold spots. Weighted-point sum saturation
+ *   publishes the exact aggregation sumOverflow view on the point stage and joined table,
+ *   suppressing occupied sums with NaN while retaining counts and the study inclusion mask.
+ *   Arithmetic saturation or upstream capacity loss excludes all rows from dependent inference,
+ *   including fixed-moment inference. Joined candidateOverflow reports upstream table/cover loss
+ *   separately from the destination overflow and sumOverflow words.
  * - Neighbors are topological (grid disk), never a metric radius in degrees.
  * - Rows with fewer than `minimumNeighbors` (default 8) neighbors are NaN, not a plain
  *   standardized value, and are outside the multiple-testing family.
@@ -542,8 +563,8 @@ function getDiskNeighborCount(family: GPUCellAggregationFamily, rings: number): 
  *
  * Status: `status.stages` lists, in order, `study-area` (count, overflow, candidate overflow,
  * required count, rejected and latitude-limited features), `study-table` and `point-aggregation`
- * (count, overflow, required count) for a points source; `weights` (overflow, plus the unclamped
- * neighbor total for a lattice or distance band and the dropped rows of a distance band);
+ * (count, overflow, required count, plus point sumOverflow for weighted points) for a points source;
+ * `weights` (overflow, plus the unclamped neighbor total for a lattice or distance band and the dropped rows of a distance band);
  * `minimum-neighbors`; and with `permutation`, `permutation`.
  */
 export function addHotSpotAnalysisRecipe<Parameters>(
@@ -558,6 +579,7 @@ function declareHotSpotAnalysisRecipe<Parameters>(
   props: GPUHotSpotAnalysisRecipeProps
 ): GPUHotSpotAnalysisRecipeResult {
   const id = props.id ?? 'hot-spot-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   const spatialContext = props.spatialContext ?? {
     coordinateSpace: 'longitude-latitude',
     metric: 'none'
@@ -580,7 +602,34 @@ function declareHotSpotAnalysisRecipe<Parameters>(
     throw new Error(`${id} prepare needs a points source`);
   }
   const builder = new RecipeBuilder(graph);
-  const outputs = props.outputs ?? {};
+  const outputs = destinations ?? {};
+  validateRequirement(
+    id,
+    outputs.permutation === undefined || Boolean(props.permutation),
+    'output.permutation requires permutation; received a destination for a disabled stage'
+  );
+  validateRequirement(
+    id,
+    outputs.color === undefined || Boolean(props.color),
+    'output.color requires color; received a destination for a disabled stage'
+  );
+
+  validateRequirement(
+    id,
+    outputs.studyArea === undefined || props.source.kind === 'points',
+    'output.studyArea requires source.kind points; received a destination for a disabled stage'
+  );
+  validateRequirement(
+    id,
+    outputs.status?.pointsOutsideStudyArea === undefined || props.source.kind === 'points',
+    'output.status.pointsOutsideStudyArea requires source.kind points; received a destination for a disabled stage'
+  );
+  validateRequirement(
+    id,
+    outputs.status?.weightsInvalidCount === undefined ||
+      (props.source.kind === 'points' && Boolean(props.source.distanceBand)),
+    'output.status.weightsInvalidCount requires a points source with distanceBand; received a destination for a disabled stage'
+  );
   const scratch = props.scratch ?? {};
   const {source} = props;
   const minimumNeighbors = props.minimumNeighbors ?? GPU_HOT_SPOT_DEFAULT_MINIMUM_NEIGHBORS;
@@ -707,14 +756,14 @@ function declareHotSpotAnalysisRecipe<Parameters>(
         ),
         invalidCount: getOrCreateView(
           graph,
-          `${id}-cover-invalid-count`,
+          `${id}-study-invalid-count`,
           'uint32',
           1,
           outputs.studyArea?.status?.invalidCount
         ),
         uncertainCount: getOrCreateView(
           graph,
-          `${id}-cover-uncertain-count`,
+          `${id}-study-uncertain-count`,
           'uint32',
           1,
           outputs.studyArea?.status?.uncertainCount
@@ -834,7 +883,14 @@ function declareHotSpotAnalysisRecipe<Parameters>(
       status: {
         count: getOrCreateView(graph, `${id}-count`, 'uint32', 1, studyProvided.status?.count),
         ...(studyProvided.status?.candidateOverflow
-          ? {candidateOverflow: studyProvided.status.candidateOverflow}
+          ? {
+              candidateOverflow: createTransientView(
+                graph,
+                `${id}-study-candidate-overflow`,
+                'uint32',
+                1
+              )
+            }
           : {}),
         overflow: getOrCreateView(
           graph,
@@ -889,6 +945,17 @@ function declareHotSpotAnalysisRecipe<Parameters>(
           )
         : undefined,
       status: {
+        ...(source.values || pointProvided.status?.sumOverflow
+          ? {
+              sumOverflow: getOrCreateView(
+                graph,
+                `${id}-point-sum-overflow`,
+                'uint32',
+                1,
+                pointProvided.status?.sumOverflow
+              )
+            }
+          : {}),
         count: getOrCreateView(
           graph,
           `${id}-point-count`,
@@ -983,6 +1050,16 @@ function declareHotSpotAnalysisRecipe<Parameters>(
                 } as const
               ]
             : []),
+          ...(pointTable.sumValues && pointTable.status.sumOverflow
+            ? [
+                {
+                  name: 'sumOverflow',
+                  view: pointTable.status.sumOverflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
           {name: 'pointCount', view: pointTable.status.count, type: 'u32', access: 'read'},
           {name: 'joinedCounts', view: joinedCounts, type: 'u32', access: 'read_write'},
           ...(joinedSums
@@ -990,17 +1067,17 @@ function declareHotSpotAnalysisRecipe<Parameters>(
             : [])
         ],
         invocationCount: rowCount,
-        declarations: getCellKeySearchWGSL(
+        declarations: `${GET_QUIET_NAN_SEEDED_WGSL}\n${getCellKeySearchWGSL(
           'findPointCell',
           'pointCells',
           'pointCount[pointCountOffset]'
-        ),
+        )}`,
         body: `let key = vec2u(studyCells[studyCellsOffset + 2u * index + 1u], studyCells[studyCellsOffset + 2u * index]);
   let row = findPointCell(key);
   let found = row != 0xffffffffu;
   let safeRow = select(0u, row, found);
   joinedCounts[joinedCountsOffset + index] = select(0u, pointCounts[pointCountsOffset + safeRow], found);
-  ${joinedSums ? 'joinedSums[joinedSumsOffset + index] = select(0.0, pointSums[pointSumsOffset + safeRow], found);' : ''}`
+  ${joinedSums ? 'joinedSums[joinedSumsOffset + index] = select(select(0.0, pointSums[pointSumsOffset + safeRow], found), getQuietNaN(index), found && pointCounts[pointCountsOffset + safeRow] > 0u && sumOverflow[sumOverflowOffset] != 0u);' : ''}`
       })
     );
 
@@ -1147,7 +1224,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
           status: {...weightsStatus, invalidCount: weightsInvalidCount}
         },
         rowStandardize: distanceBand.rowStandardize ?? false,
-        // The band documents binary weights (`weightKind: 'binary'`).
+        // The band documents binary weights (`weightType: 'binary'`).
         weightTransform: distanceBand.rowStandardize ? 'row' : 'binary'
       });
       builder.add(search);
@@ -1175,11 +1252,50 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
       };
     }
 
+    const joinedCandidateOverflow = getOrCreateView(
+      graph,
+      `${id}-joined-candidate-overflow`,
+      'uint32',
+      1,
+      studyProvided.status?.candidateOverflow
+    );
+    const joinedLossSources = [
+      pointTable.status.overflow!,
+      pointTable.status.candidateOverflow,
+      studyTable.status.candidateOverflow,
+      cover.status.overflow,
+      cover.status.candidateOverflow
+    ].filter((view): view is GraphDataView<'uint32'> => Boolean(view));
+    builder.addGlue(
+      'joined-loss',
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-joined-loss`,
+        operation: ID,
+        invocationCount: 1,
+        bindings: [
+          ...joinedLossSources.map(
+            (view, index) => ({name: `loss${index}`, view, type: 'u32', access: 'read'}) as const
+          ),
+          {
+            name: 'candidateOverflow',
+            view: joinedCandidateOverflow,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        body: `candidateOverflow[candidateOverflowOffset] = select(0u, 1u, ${joinedLossSources.map((_, index) => `loss${index}[loss${index}Offset] != 0u`).join(' || ')});`
+      })
+    );
+
     table = {
       cells: studyTable.cells,
       counts: joinedCounts,
       sumValues: joinedSums,
-      status: studyTable.status
+      status: {
+        ...studyTable.status,
+        candidateOverflow: joinedCandidateOverflow,
+        ...(pointTable.status.sumOverflow ? {sumOverflow: pointTable.status.sumOverflow} : {})
+      }
     };
     stages.push(
       {
@@ -1227,6 +1343,44 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
     }
   });
 
+  // Public study occupancy remains stable; loss excludes every row from all dependent inference,
+  // even with fixed moments or finite zero-valued study cells.
+  let inferenceMask = mask;
+  if (table) {
+    inferenceMask = createTransientView(graph, `${id}-inference-mask`, 'uint32', rowCount);
+    builder.addGlue(
+      'inference-mask',
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-inference-mask`,
+        operation: ID,
+        invocationCount: rowCount,
+        bindings: [
+          {name: 'studyMask', view: mask!, type: 'u32', access: 'read'},
+          {name: 'destinationOverflow', view: table.status.overflow!, type: 'u32', access: 'read'},
+          {
+            name: 'candidateOverflow',
+            view: table.status.candidateOverflow!,
+            type: 'u32',
+            access: 'read'
+          },
+          ...(table.status.sumOverflow
+            ? [
+                {
+                  name: 'sumOverflow',
+                  view: table.status.sumOverflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
+          {name: 'inferenceMask', view: inferenceMask, type: 'u32', access: 'read_write'}
+        ],
+        body: `let complete = destinationOverflow[destinationOverflowOffset] == 0u && candidateOverflow[candidateOverflowOffset] == 0u${table.status.sumOverflow ? ' && sumOverflow[sumOverflowOffset] == 0u' : ''};
+  inferenceMask[inferenceMaskOffset + index] = select(0u, studyMask[studyMaskOffset + index], complete);`
+      })
+    );
+  }
+
   const zScores = getOrCreateView(graph, `${id}-z-scores`, 'float32', rowCount, outputs.zScores);
   const bins = getOrCreateView(graph, `${id}-bins`, 'sint32', rowCount, outputs.bins);
   const pValues = getOrCreateView(graph, `${id}-p-values`, 'float32', rowCount, outputs.pValues);
@@ -1250,7 +1404,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
       weights,
       selfWeight: props.selfWeight,
       values,
-      mask,
+      mask: inferenceMask,
       parameters,
       multipleTesting,
       minimumNeighbors: Math.max(1, minimumNeighbors),
@@ -1371,7 +1525,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         id: `${id}-permutation`,
         weights,
         values,
-        mask,
+        mask: inferenceMask,
         statistic: permutationStatistic,
         alternative: permutationAlternative,
         parameters: permutation.parameters.importToGraph(graph, `${id}-permutation-parameters`),
@@ -1410,7 +1564,8 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
         significanceLevel: autocorrelation.significanceLevel
       };
       permutationValues = permutationTest.getParameterValues(permutationSettings);
-      permutationInference = permutationTest.getInferenceMetadata(permutationSettings);
+      const plan = permutationTest.getInferenceMetadata(permutationSettings);
+      permutationInference = {...plan, permutationCount: plan.requestedPermutationCount};
     }
     writeRecipeParameters(graph, props.parameters, values);
     if (permutationValues) {
@@ -1460,7 +1615,7 @@ ${quadbinDensity ? getQuadbinAreaWGSL() : ''}`,
       values: zScores,
       mask,
       domain: colorOutputs.breaks,
-      domainCount: colorOutputs.classCount,
+      classCount: colorOutputs.classCount,
       palette: color.palette,
       parameters: color.colorScaleParameters,
       maximumDomainCount: color.maximumClassCount + 1,

@@ -187,7 +187,7 @@ it('final1 operation CPU and GPU preserve inherited loss and explicit higher-ord
 });
 
 const CASES: SpatialWeightsAlgebraOperationProps[] = [
-  ...(['union', 'intersection', 'difference', 'symmetricDifference'] as const).map(operation => ({
+  ...(['union', 'intersection', 'difference', 'symmetric-difference'] as const).map(operation => ({
     ...BASE,
     operation,
     left: SOURCE,

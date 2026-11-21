@@ -102,7 +102,7 @@ export const TRANSPORT_BINDING: CatalogOperationBinding = makeBinding({
             'float32'
           ),
           maximumIterations: getNumber(values, 'maximumIterations'),
-          blurRadius: Math.max(1, width - 1, height - 1),
+          transportRadius: Math.max(1, width - 1, height - 1),
           output: {
             divergence: divergence.view,
             components: components.view,

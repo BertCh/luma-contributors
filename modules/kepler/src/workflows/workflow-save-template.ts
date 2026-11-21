@@ -9,7 +9,7 @@ import {
   GPU_ANALYSIS_COLUMN_TYPES,
   GPU_ANALYSIS_MEASUREMENT_LEVELS,
   type GPUAnalysisQuestion
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import {getKeplerOperationDescriptor} from '../descriptors/operation-descriptors';
 import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';

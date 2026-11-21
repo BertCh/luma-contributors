@@ -73,7 +73,11 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       const converged = session.output(
         'handConverged',
         'uint32',
-        {role: 'intermediate', meaning: 'converged: terrain-height-above-drainage-pointer-round'},
+        {
+          role: 'intermediate',
+          meaning:
+            'final HAND convergence: dependency computation finished without unresolved drainage'
+        },
         1
       );
       const iterationCount = session.output(

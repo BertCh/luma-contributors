@@ -8,8 +8,10 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import type {GPUCompletenessStatusPort} from '../../analysis-core/contracts/status';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createFacilityScoreReductionNodes} from './facility-score-reduction';
+import {snapshotBoundedFacilityProps} from './location-allocation-construction';
 import {
   validateSinglePackedView,
   validateGraphViewsBelongToGraph,
@@ -22,6 +24,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getPackedUint32Values} from '../../analysis-core/kernels/packed-readback';
 
 /** Exhaustive subset generation uses bounded private selection and capacity arrays. */
 const BOUNDED_ALLOCATION_MAXIMUM_FACILITIES = 32;
@@ -33,6 +36,20 @@ const BOUNDED_ALLOCATION_MAXIMUM_CAPACITATED_DEMAND = 4096;
 /** Cooperative scoring rounds invocation counts to 64 and dense cost indices are uint32. */
 const BOUNDED_ALLOCATION_MAXIMUM_PARALLEL_DEMAND = 0xffffffc0;
 
+/** Caller-owned enumeration results and an optional additive decision certificate destination. */
+export type GPUBoundedFacilityAllocationOutput = {
+  selectedFacilities: GraphDataView<'uint32'>;
+  assignments: GraphDataView<'uint32'>;
+  /** Infinity when some demand cannot be assigned; otherwise maximum cost or weighted sum. */
+  objective: GraphDataView<'float32'>;
+  /** Three words: unassigned row count, valid-input flag, global-optimum certificate.
+   * Capacitated allocation never claims global optimality (fixed demand-order greedy assignment).
+   */
+  status: GraphDataView<'uint32'>;
+  /** Optional caller-owned destination for `contributor.status.complete`. */
+  ports?: {status: GPUCompletenessStatusPort};
+};
+
 export type GPUBoundedFacilityAllocationProps = {
   id?: string;
   operation: 'p-center' | 'capacitated-p-median';
@@ -40,20 +57,15 @@ export type GPUBoundedFacilityAllocationProps = {
   selectCount: number;
   /** Demand-major dense costs, nonnegative finite entries; other entries are unreachable. */
   costs: GraphDataView<'float32'>;
+  /** Optional one-row positive completeness certificate of the supplied travel costs. */
+  costsComplete?: GraphDataView<'uint32'>;
+  /** Optional one-row search horizon. Both objectives require +Infinity when supplied. */
+  costLimit?: GraphDataView<'float32'>;
   /** Nonnegative indivisible demand per row. Zero-demand rows consume no capacity. */
   demand: GraphDataView<'float32'>;
   /** Nonnegative finite capacity per candidate; ignored by p-center but still required. */
   capacities: GraphDataView<'float32'>;
-  output: {
-    selectedFacilities: GraphDataView<'uint32'>;
-    assignments: GraphDataView<'uint32'>;
-    /** Infinity when some demand cannot be assigned; otherwise maximum cost or weighted sum. */
-    objective: GraphDataView<'float32'>;
-    /** Three words: unassigned row count, valid-input flag, global-optimum certificate.
-     * Capacitated allocation never claims global optimality (fixed demand-order greedy assignment).
-     */
-    status: GraphDataView<'uint32'>;
-  };
+  output: GPUBoundedFacilityAllocationOutput;
 };
 
 /** Enumerates all facility subsets (at most 65536), evaluating subsets independently on the GPU.
@@ -66,11 +78,21 @@ export type GPUBoundedFacilityAllocationProps = {
  * Bounds: 32 facilities, 8 selected, 65536 subsets. Capacitated mode supports 4096 demand rows;
  * p-center demand rows are bounded by the device storage binding limit of the dense cost matrix.
  * Exhaustive subset growth still limits large candidate sets.
+ * Supplied costsComplete must be nonzero and a supplied costLimit must be +Infinity:
+ * a finite horizon alone cannot certify either unbounded objective. status.complete distinguishes
+ * a completed decision from local enumeration. Loss clears the global-optimum word but preserves
+ * unassigned counts and input validity. Clearing loss recovers on the next graph submission.
  */
 export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
   readonly id: string;
   readonly subsetCount: number;
-  constructor(readonly props: GPUBoundedFacilityAllocationProps) {
+  readonly props: GPUBoundedFacilityAllocationProps;
+  readonly status: {complete: GraphDataView<'uint32'>};
+  constructor(props: GPUBoundedFacilityAllocationProps) {
+    props = snapshotBoundedFacilityProps(props);
+    const {ports, ...output} = props.output;
+    const complete = ports?.status.complete;
+    this.props = props;
     this.id = props.id ?? 'bounded-facility-allocation';
     validateRequirement(
       this.id,
@@ -111,34 +133,70 @@ export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
       1,
       BOUNDED_ALLOCATION_MAXIMUM_SUBSETS
     );
-    for (const [view, format, length] of [
-      [props.costs, 'float32', props.demand.length * props.facilityCount],
-      [props.demand, 'float32', props.demand.length],
-      [props.capacities, 'float32', props.facilityCount],
-      [props.output.selectedFacilities, 'uint32', props.facilityCount],
-      [props.output.assignments, 'uint32', props.demand.length],
-      [props.output.objective, 'float32', 1],
-      [props.output.status, 'uint32', 3]
+    for (const [name, view, format, length] of [
+      ['costs', props.costs, 'float32', props.demand.length * props.facilityCount],
+      ['demand', props.demand, 'float32', props.demand.length],
+      ['capacities', props.capacities, 'float32', props.facilityCount],
+      ['output.selectedFacilities', props.output.selectedFacilities, 'uint32', props.facilityCount],
+      ['output.assignments', props.output.assignments, 'uint32', props.demand.length],
+      ['output.objective', props.output.objective, 'float32', 1],
+      ['output.status', props.output.status, 'uint32', 3]
     ] as const) {
-      validateSinglePackedView(view, [format], this.id);
-      if (view.length !== length)
-        throw new Error(`${this.id} ${format} view length must equal ${length}`);
+      validateSinglePackedView(view, [format], `${this.id} ${name}`);
+      validateRequirement(this.id, view.length === length, `${name} length must equal ${length}`);
     }
-    const outputBuffers = Object.values(props.output)
-      .filter(view => view !== undefined)
-      .map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length)
-      throw new Error(`${this.id} outputs must use distinct buffers`);
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+    for (const [name, view, format] of [
+      ['costsComplete', props.costsComplete, 'uint32'],
+      ['costLimit', props.costLimit, 'float32'],
+      ['output.ports.status.complete', complete, 'uint32']
+    ] as const) {
+      if (!view) continue;
+      validateSinglePackedView(view, [format], `${this.id} ${name}`);
+      validateRequirement(
+        this.id,
+        view.length === 1,
+        `${name} length must equal 1; received ${view.length}`
+      );
+    }
+    const outputViews = [...Object.values(output), complete];
+    const outputBuffers = outputViews.filter(view => view !== undefined).map(view => view.buffer);
+    validateRequirement(
+      this.id,
+      !(new Set(outputBuffers).size !== outputBuffers.length),
+      `outputs must use distinct buffers`
+    );
+    validateGraphOutputsDisjointFromInputs(this.id, outputViews, [
       props.costs,
       props.demand,
-      props.capacities
+      props.capacities,
+      props.costsComplete,
+      props.costLimit
     ]);
+    validateMaximumCount(
+      this.id,
+      'demandCount',
+      props.demand.length,
+      getStorageBindingElementLimit(
+        (props.costs.buffer.graph as GPUCommandGraph).device,
+        4 * props.facilityCount
+      )
+    );
+    this.status = Object.freeze({
+      complete:
+        complete ??
+        createTransientView(
+          props.costs.buffer.graph as GPUCommandGraph,
+          `${this.id}-complete`,
+          'uint32',
+          1
+        )
+    });
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, subsetCount} = this;
+    const {ports, ...output} = props.output;
     validateMaximumCount(
       id,
       'demandCount',
@@ -149,15 +207,19 @@ export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
       props.costs,
       props.demand,
       props.capacities,
-      ...Object.values(props.output)
+      props.costsComplete,
+      props.costLimit,
+      this.status.complete,
+      ...Object.values(output)
     ]);
     validateGraphChunkBindingRanges(graph, id, {
       costs: props.costs,
       demand: props.demand,
       capacities: props.capacities,
-      ...Object.fromEntries(
-        Object.entries(props.output).map(([name, view]) => [`output.${name}`, view])
-      )
+      costsComplete: props.costsComplete,
+      costLimit: props.costLimit,
+      'output.ports.status.complete': this.status.complete,
+      ...Object.fromEntries(Object.entries(output).map(([name, view]) => [`output.${name}`, view]))
     });
     validateGPUStorageBindingByteLength(
       graph.device,
@@ -345,9 +407,59 @@ var<workgroup> partialInvalid: array<u32, 64>;`,
   }
   assignments[assignmentsOffset + index] = assignment;`
             })
-          ])
+          ]),
+      createWGSLKernelNode(graph, {
+        id: `${id}-cost-certificate`,
+        operation: 'GPUBoundedFacilityAllocation',
+        variant: 'cost-certificate',
+        invocationCount: 2,
+        bindings: [
+          ...(props.costsComplete
+            ? [
+                {
+                  name: 'costsComplete',
+                  view: props.costsComplete,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          ...(props.costLimit
+            ? [
+                {
+                  name: 'costLimit',
+                  view: props.costLimit,
+                  type: 'f32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
+          {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'},
+          {name: 'complete', view: this.status.complete, type: 'u32', access: 'read_write'}
+        ],
+        body: `if (index == 0u) {
+  let whole = status[statusOffset + 1u] != 0u${props.costsComplete ? ' && costsComplete[costsCompleteOffset] != 0u' : ''}${props.costLimit ? ' && bitcast<u32>(costLimit[costLimitOffset]) == 0x7f800000u' : ''};
+  complete[completeOffset] = u32(whole);
+  if (!whole) { status[statusOffset + 2u] = 0u; }
+}`
+      })
     ];
   }
+}
+
+/** Decode the unchanged three-word diagnostic plus the separate decision completeness word. */
+export function decodeGPUBoundedFacilityAllocationStatus(
+  input: Uint32Array | Uint8Array | ArrayBuffer,
+  completeInput: Uint32Array | Uint8Array | ArrayBuffer
+): {unassignedDemandCount: number; validInput: number; globalOptimum: number; complete: number} {
+  const words = getPackedUint32Values(input, 3);
+  const complete = getPackedUint32Values(completeInput, 1)[0];
+  validateRequirement(
+    'decodeGPUBoundedFacilityAllocationStatus',
+    words[1] <= 1 && words[2] <= 1 && complete <= 1,
+    'validInput, globalOptimum and complete must be 0 or 1'
+  );
+  return {unassignedDemandCount: words[0], validInput: words[1], globalOptimum: words[2], complete};
 }
 
 function combinationCount(count: number, selected: number): number {

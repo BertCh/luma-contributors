@@ -72,6 +72,9 @@ export type GPURasterEmbeddingLinearProbeProps<
 };
 
 /**
+ * Float32 logit accumulation can change near-tie labels with band order or backend reassociation.
+ * Keep the decision margin larger than accumulation rounding error for stable labels.
+ *
  * Inference of a linear probe on an embedding raster: `softmax(W x + b)` per pixel, the
  * prediction of a multinomial `LogisticRegression` (scikit-learn `predict_proba`, with the argmax
  * as `predict`). Training stays on the host. A binary scikit-learn model has one row of `coef_`
@@ -83,6 +86,7 @@ export type GPURasterEmbeddingLinearProbeProps<
  *
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `classCount`
  * and which optional views exist.
+ * Pixel vectors accept 1–1,024 dimensions per complete pixel chunk; classCount is at most 64.
  */
 export class GPURasterEmbeddingLinearProbe<
   FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
@@ -94,6 +98,8 @@ export class GPURasterEmbeddingLinearProbe<
   readonly estimatedCommandNodeCount: number;
 
   constructor(readonly props: GPURasterEmbeddingLinearProbeProps<FloatRows, UintRows>) {
+    props = {...props, output: {...props.output}};
+    this.props = props;
     const id = props.id ?? 'raster-embedding-linear-probe';
     this.id = id;
     const {pixelCount, dimensions, output} = props;
@@ -136,7 +142,6 @@ export class GPURasterEmbeddingLinearProbe<
     if (props.bias) validateSinglePackedView(props.bias, ['float32'], `${id} bias`);
     const inputs = this.getInputs();
     const outputs = this.getOutputs();
-    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.chunks = planRasterEmbeddingChunks(
       id,
       pixelCount,
@@ -154,6 +159,7 @@ export class GPURasterEmbeddingLinearProbe<
       'vectors',
       1
     );
+    validateRasterEmbeddingViews(id, inputs, outputs, [{inputs, outputs}]);
     this.estimatedCommandNodeCount =
       1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * 1;
   }

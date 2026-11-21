@@ -552,10 +552,15 @@ it('emerging hot spots retains exact bin counts and shares Gi* sources across un
             (node as {workload: {maximumWorkgroupCount: number}}).workload.maximumWorkgroupCount
         )
     ).toEqual([1, 3, 4, 7]);
-    expect(kernels.find(({id}) => id.endsWith('-mean'))!.source).toContain('f32(count >> 16u)');
-    expect(kernels.find(({id}) => id.endsWith('-mean-correction'))!.source).toContain(
-      'divideBySpatialCount(partialSums[0], count)'
+    const mean = kernels.find(({id}) => id.endsWith('-mean'))!.source;
+    expect(mean).toContain('var<workgroup> partialCounts: array<u32,');
+    expect(mean).toContain('statistics[statisticsOffset + 4u] = f32(count >> 16u);');
+    expect(mean).toContain('statistics[statisticsOffset + 5u] = f32(count & 65535u);');
+    const meanCorrection = kernels.find(({id}) => id.endsWith('-mean-correction'))!.source;
+    expect(meanCorrection).toContain(
+      'let count = (u32(statistics[statisticsOffset + 4u]) << 16u) | u32(statistics[statisticsOffset + 5u]);'
     );
+    expect(meanCorrection).toContain('divideBySpatialCount(getCompensated(partialSums[0]), count)');
     for (const {id, source} of kernels) {
       expect(findReservedIdentifiers(stripWGSLComments(source)), id).toEqual([]);
       expect(() => new WgslReflect(source), id).not.toThrow();

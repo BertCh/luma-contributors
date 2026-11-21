@@ -96,7 +96,7 @@ it('R1 legacy padding is ignored in both sum orders', async () => {
       Float32Array.of(1, 1, 60, 59, 0, 0, 0, 0),
       Float32Array.of(1, 1, 60, 59, 13, 17, 23, 29)
     ]) {
-      const area = await readReviewWeight(device, grid, settings, 0, sumOrder);
+      const area = await readReviewWeight(device, grid, settings, 0, sumOrder, 1);
       expect(Number.isFinite(area)).toBe(true);
       expect(area / 6275297022.198418).toBeCloseTo(1, 5);
       weights.push(area);
@@ -136,6 +136,31 @@ it('R2 shifted polar windows preserve thin cell area in both sum orders', async 
       expect(Number.isFinite(area)).toBe(true);
       expect(area / 0.0005394961).toBeCloseTo(1, 5);
     }
+  }
+});
+
+it('RT-101 default props weigh a one-row thin geographic window by its area', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const grid: GPURasterMetadata = {
+    width: 1,
+    height: 1,
+    affine: [1e-6, 0, 10, 0, -1e-6, 60],
+    pixelInterpretation: 'area'
+  };
+  for (const sumOrder of ['sorted', 'atomic'] as const) {
+    // Default packer, no parameterLayoutVersion. Expected from /usr/bin/python3:
+    // R^2 dLon 2 cos(60 - 0.5e-6 degrees) sin(0.5e-6 degrees), R = 6371007.180918475 m,
+    // dLon = 1e-6 degrees: 0.00618216988533045 m2 (the legacy decoding gives 0).
+    const area = await readReviewWeight(
+      device,
+      grid,
+      getGPURasterZonalStatisticsParameterValues(grid),
+      0,
+      sumOrder
+    );
+    expect(Number.isFinite(area)).toBe(true);
+    expect(area / 0.00618216988533045).toBeCloseTo(1, 4);
   }
 });
 
@@ -242,8 +267,14 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
     } as GPURasterBand;
   }
   const columnBuffers = {} as Fixture['columnBuffers'];
-  const output: GPURasterZonalStatisticsProps['output'] = {};
+  const cellCountsBuffer = createOutputBuffer(device, zoneCapacity);
+  owned.push(cellCountsBuffer);
+  columnBuffers.cellCounts = cellCountsBuffer;
+  const output: GPURasterZonalStatisticsProps['output'] = {
+    cellCounts: importGraphBuffer(graph, 'cellCounts', cellCountsBuffer, 'uint32', zoneCapacity)
+  };
   for (const name of COLUMNS) {
+    if (name === 'cellCounts') continue;
     const buffer = createOutputBuffer(device, zoneCapacity);
     owned.push(buffer);
     columnBuffers[name] = buffer;
@@ -251,7 +282,7 @@ function createFixture(device: Device, options: FixtureOptions): Fixture {
       graph,
       name,
       buffer,
-      name === 'cellCounts' || name === 'valueCounts' ? 'uint32' : 'float32',
+      name === 'valueCounts' ? 'uint32' : 'float32',
       zoneCapacity
     );
   }
@@ -482,10 +513,11 @@ it('GPURasterZonalStatistics recomputes after per-frame rewrites without recompi
   destroyFixture(fixture);
 });
 
-it('GPURasterZonalStatistics aggregates a texture-backed value band', async () => {
+it('GPURasterZonalStatistics aggregates a texture-backed value band', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || !device.getTextureFormatCapabilities('r32float').store) {
-    return;
+  requireTestDevice(device);
+  if (!device.getTextureFormatCapabilities('r32float').store) {
+    context.skip('r32float storage textures are unsupported on this device');
   }
   const data = createRandomData(WIDTH, HEIGHT, 5);
   const texture = device.createTexture({
@@ -794,12 +826,19 @@ it('GPURasterZonalStatistics weights geographic cells by spherical area', async 
     const names = ['sums', 'means', 'weightSums', 'variances', 'standardDeviations'] as const;
     const outputBuffers = names.map(() => createOutputBuffer(device, 2));
     owned.push(...outputBuffers);
-    const output = Object.fromEntries(
-      names.map((name, index) => [
-        name,
-        importGraphBuffer(graph, name, outputBuffers[index], 'float32', 2)
-      ])
-    );
+    const output = {
+      sums: importGraphBuffer(graph, 'sums', outputBuffers[0], 'float32', 2),
+      means: importGraphBuffer(graph, 'means', outputBuffers[1], 'float32', 2),
+      weightSums: importGraphBuffer(graph, 'weightSums', outputBuffers[2], 'float32', 2),
+      variances: importGraphBuffer(graph, 'variances', outputBuffers[3], 'float32', 2),
+      standardDeviations: importGraphBuffer(
+        graph,
+        'standardDeviations',
+        outputBuffers[4],
+        'float32',
+        2
+      )
+    };
     graph.add(
       new GPURasterZonalStatistics({
         grid,
@@ -876,18 +915,23 @@ for (const sumOrder of ['sorted', 'atomic'] as const) {
     const outputBuffers = names.map(() => createOutputBuffer(device, zoneCapacity));
     const overflowBuffer = createOutputBuffer(device, 1);
     owned.push(...outputBuffers, overflowBuffer);
-    const output = Object.fromEntries(
-      names.map((name, index) => [
-        name,
-        importGraphBuffer(
-          graph,
-          name,
-          outputBuffers[index],
-          name === 'cellCounts' || name === 'valueCounts' ? 'uint32' : 'float32',
-          zoneCapacity
-        )
-      ])
-    );
+    const output = {
+      cellCounts: importGraphBuffer(graph, 'cellCounts', outputBuffers[0], 'uint32', zoneCapacity),
+      ...Object.fromEntries(
+        names
+          .slice(1)
+          .map((name, index) => [
+            name,
+            importGraphBuffer(
+              graph,
+              name,
+              outputBuffers[index + 1],
+              name === 'valueCounts' ? 'uint32' : 'float32',
+              zoneCapacity
+            )
+          ])
+      )
+    };
     const contributor = new GPURasterZonalStatistics({
       grid,
       zones: importGraphBuffer(graph, 'zones', owned[0], 'uint32', count),

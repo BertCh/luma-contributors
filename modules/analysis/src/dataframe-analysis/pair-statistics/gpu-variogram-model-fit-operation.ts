@@ -6,6 +6,7 @@ import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contri
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUVariogramModelFit} from './gpu-variogram-model-fit';
 import type {VariogramModelType, VariogramModelWeighting} from './variogram-model';
+import {validateVariogramModelFitChoices} from './variogram-model-fit-requirements';
 
 /** Model families fitted when `models` is omitted, in output row order. */
 export const VARIOGRAM_MODEL_FIT_DEFAULT_MODELS: readonly VariogramModelType[] = [
@@ -78,6 +79,11 @@ export class GPUVariogramModelFitOperation extends GPUContributorOperation {
   constructor(props: VariogramModelFitOperationProps) {
     props = snapshotVariogramModelFitOperationProps(props);
     const id = props.id ?? 'variogram-model-fit';
+    validateVariogramModelFitChoices(
+      id,
+      props.models ?? VARIOGRAM_MODEL_FIT_DEFAULT_MODELS,
+      props.weighting ?? 'cressie'
+    );
     const length = (props.models ?? VARIOGRAM_MODEL_FIT_DEFAULT_MODELS).length;
     super({
       id,

@@ -37,7 +37,9 @@ export function checkTerrainViews(
   outputs: GraphDataView[],
   dispatches: readonly TerrainViewDispatch[] = [{reads: inputs, writes: outputs}]
 ): void {
-  for (const view of [...inputs, ...outputs]) validateSinglePackedView(view, [view.format], id);
+  // Generic layout-only check: producers validate their named port formats first.
+  for (const view of [...inputs, ...outputs])
+    validateSinglePackedView(view, ['float32', 'uint32', 'sint32'], id);
   validateTerrainReadWriteRanges(id, inputs, outputs, false);
   validateTerrainOutputDispatches(id, outputs, dispatches);
 }

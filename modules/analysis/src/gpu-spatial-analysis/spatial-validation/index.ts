@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+export {GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT} from './nested-validation-limits';
+
 export {GPUSpatialCrossValidation} from './gpu-spatial-cross-validation';
 export type {GPUSpatialCrossValidationProps} from './gpu-spatial-cross-validation';
 export {GPUSpatialCrossValidatedOLS} from './gpu-spatial-cross-validated-ols';
@@ -18,7 +20,9 @@ export {
   GPU_CONFORMAL_STATUS_UPPER_UNBOUNDED,
   GPU_CONFORMAL_STATUS_INVALID_QUERY,
   GPU_CONFORMAL_STATUS_NO_CALIBRATION,
-  GPU_CONFORMAL_STATUS_NEIGHBORS_TRUNCATED
+  GPU_CONFORMAL_STATUS_NEIGHBORS_TRUNCATED,
+  GPU_CONFORMAL_STATUS_INPUT_INCOMPLETE,
+  decodeConformalStatus
 } from './gpu-conformal-prediction-intervals';
 export {
   GPUGeoConformalPredictionIntervals,

@@ -204,7 +204,12 @@ it('GPUPolygonOverlay validates fillRule and defaults to even-odd', () => {
   // The output row index is no longer written as `geometry.sourceIds` (rule 8, wave 2).
   expect(nodeIds).not.toContain('polygon-overlay-source-ids');
   expect(nodeIds).not.toContain('polygon-overlay-publish-required');
-  expect(nodeIds.at(-1)).toBe('polygon-overlay-publish');
+  // W5-09 regression: ordinary publication precedes assembly completeness.
+  expect(nodeIds).toContain('polygon-overlay-publish');
+  expect(nodeIds).toContain('polygon-overlay-assembly-completeness');
+  expect(nodeIds.indexOf('polygon-overlay-assembly-completeness')).toBeGreaterThan(
+    nodeIds.indexOf('polygon-overlay-publish')
+  );
   // A view passed as `geometry.sourceIds` would stay unwritten, so it is rejected.
   const withSourceIds = makeOutput();
   expect(

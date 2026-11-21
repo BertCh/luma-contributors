@@ -7,13 +7,16 @@
 - Typecheck tests: `yarn typecheck-tests` ([runner](scripts/typecheck-tests.mjs) preserves caller `NODE_OPTIONS`; defaults to an 8192 MiB heap when no heap limit is supplied; [typecheck exclusions](test/kepler-compute-example-specs.json) are separate from runtime exclusions)
 - Build packages (ESM + CommonJS + types): `yarn build`
 - Stage a clean release build: `yarn build:release` (see promotion rules below)
-- Verify every package entry point loads: `yarn verify-package-exports` (after `yarn build`)
-- Verify an isolated packed consumer: `yarn check-packed-consumer` (after `yarn build`)
+- Verify package entry points: `yarn verify-package-exports` (after `yarn build`; imports JavaScript entries and also requires those that declare a CommonJS target; only resolves non-JavaScript targets such as assets)
+- Verify an isolated packed consumer: `yarn check-packed-consumer` (after `yarn build`; checks relative module specifiers and `reference path` directives in packed declarations under NodeNext and type-checks an ES module and a CommonJS consumer)
 - Run the sequential local gate: `yarn verify` (see resource limits below)
 - Lint and formatting: `yarn lint`, fix with `yarn lint-fix`
-- Upstream-first rules: `yarn check-upstream-first` (fails on a luma.gl import that is not a published public entry point and on source outside the analysis-owned directories)
+- Upstream-first rules: `yarn check-upstream-first` (fails on a luma.gl import that is not a published public entry point and on source outside the permitted analysis source paths)
 - Contributor contract departures: `yarn check-contributor-contract` (fails on findings not in `scripts/contributor-contract-baseline.json`; `--all` lists everything, `--update-baseline` rewrites it)
-- Tests: `yarn test-node`, `yarn test-headless`, or `yarn test` for both
+- Tests: `yarn test-node`, `yarn test-headless`, or `yarn test` for both.
+  Node and headless projects reject focused `.only` tests by default. For one local focused run,
+  use `yarn test-node --allowOnly` or `yarn test-headless --allowOnly`.
+  The headed browser project has its own setting.
 - Benchmarks: `yarn test-benchmarks` (separate from ordinary correctness tests)
 - Examples: `cd examples/deck/spatial-analysis-showcase && yarn start`
 
@@ -22,8 +25,9 @@ runner prints the effective options for each sequential family project and the e
 projects, preserves all caller options, and keeps a separate incremental cache for each project.
 Ordinary test roots are grouped by package and the first two directory levels below its test root.
 Analysis runs before lenses, then kepler; analysis-core runs first inside analysis. Imported source
-dependencies remain part of each TypeScript program. `yarn typecheck` checks all source roots
-separately; test projects no longer add every source file as an unrelated root.
+dependencies remain part of each TypeScript program. `yarn typecheck` runs one combined source
+project (`tsconfig.check-src.json`, `modules/*/src`); test projects no longer add every source file
+as an unrelated root.
 `.typecheck/test-family-stages.json` records exact roots/configurations; caches/configurations live
 in `.typecheck/test-families/`, with separate example/website caches under `.typecheck/`.
 Family projects resolve the root configuration through TypeScript, including comments and inherited
@@ -45,7 +49,8 @@ without launching a compiler with `node scripts/typecheck-tests.mjs --generate-o
   sampled with `ps` once per second; exceeding it kills the active command's process group and fails
   the gate. Brief peaks between samples and OS/driver GPU memory are outside this accounting. This
   is an enforced sampled limit, not a measured claim about a full run on this machine.
-  Verify defaults to an **8192 MiB V8 heap** per Node process and rejects a larger explicit heap.
+  Verify defaults to an **8192 MiB V8 heap** per Node process; the 8192 MiB ceiling applies to the
+  effective absolute heap.
   Hyphen/underscore spellings and signed absolute values are recognized; percentage heap limits
   are rejected by verify because they override absolute limits. The typecheck runner preserves
   caller heap options using the same parser. A lower caller heap is preserved.
@@ -58,7 +63,10 @@ without launching a compiler with `node scripts/typecheck-tests.mjs --generate-o
   Caller command-line heap options take precedence over NODE_OPTIONS; loader options are not
   forwarded to the worker.
   Verify and release wrappers resolve this precedence at entry and forward the effective numeric
-  limit to every child, including the compiler and packed checker.
+  limit to every child, including the compiler and packed checker. The 8192 MiB ceiling applies to
+  the effective absolute heap: a lower command-line value can override a NODE_OPTIONS value above
+  8192 MiB; an effective value above 8192 MiB is rejected. Percentage and malformed heap options
+  are rejected in either position, even when overridden.
 - Node tests default to **one worker** in `vitest.config.ts`; verify also passes `--maxWorkers=1`.
   Headless tests run sequentially in directory chunks with a fresh browser command per chunk.
   `.typecheck/verify/headless-files.json` records the eligible files on disk; each JSON test report
@@ -96,8 +104,12 @@ without launching a compiler with `node scripts/typecheck-tests.mjs --generate-o
   all snapshot package entry points, and checks the packed analysis consumer. Local package links
   resolve to snapshot packages; installed third-party dependencies resolve from the parent checkout.
   Existing developer outputs/caches stay in place. The checked tarball and snapshot are retained,
-  with their paths in `.typecheck/release-build-latest.json`; Node/GPU qualification is still a
-  separate full verify gate. Do not publish lenses while its dataset licensing is unresolved.
+  with their paths in `.typecheck/release-build-latest.json`. Both the stage's `build.json` and
+  `.typecheck/release-build-latest.json` record the SHA-256 and byte length of `analysis.tgz`.
+  Promotion verifies the archive before installing outputs and again inside the rollback window
+  before committing records; staging also verifies it before committing records. Node/GPU
+  qualification is still a separate full verify gate. Do not publish lenses while its dataset
+  licensing is unresolved.
 - `yarn build:release --promote` installs the three output trees only after those build/package
   gates pass and both original and staged source/config/package bytes still match the snapshot.
   Inputs are also checked immediately after copying. Previous output
@@ -121,19 +133,26 @@ without launching a compiler with `node scripts/typecheck-tests.mjs --generate-o
 ## Relationship to luma.gl (upstream-first)
 - This repository contains only geospatial and analysis code. Everything else comes from **published**
   `@luma.gl/core`, `@luma.gl/shaders`, `@luma.gl/graph` (and, for examples and tests only,
-  `@luma.gl/engine`) through their public package entry points. The integration target and accepted
+  `@luma.gl/engine`) through their public package entry points. `yarn check-upstream-first` checks
+  the three packages, their tests and `examples/deck`; it does not traverse `website`, where ten
+  files import `@luma.gl/engine`. The integration target and accepted
   peer ranges are recorded separately in [the alpha package contract](dev-docs/release-package.md).
   The integration target is `10.0.0-alpha.16`; peers accept `~10.0.0-alpha.16`.
   A target or accepted range is not a claim that the complete GPU/release gate passed.
 - Never import a `@luma.gl/*` path with an `_internal` segment (even one listed in the package's
   exports), deep `dist` paths, or copied luma.gl source. Never fork,
   re-implement or re-export luma.gl APIs. See `dev-docs/upstream-first-plan.md`.
+  The checker detects exporting an imported luma.gl binding by name, as default, or through a value
+  alias. It allows a `CAPITAL_CASE` analysis constant equal to a `CAPITAL_CASE` upstream constant
+  to name an analysis-domain limit; this allowance does not permit re-exporting luma.gl APIs.
 - When luma.gl lacks something, in order: use the public API even if more verbose; adapt to
   luma.gl's design; drop the feature; last resort, a small helper named for the analysis domain.
 - luma.gl improvements go upstream as ordinary luma.gl pull requests. Do not carry them here.
-- Source lives only in analysis-owned directories of `modules/analysis/src`: `analysis-core`,
+- Source implementations live only in analysis-owned directories of `modules/analysis/src`: `analysis-core`,
   `computation-record`, `gpu-spatial-analysis`, `gpu-network`, `gpu-terrain`, `testing`,
   `dataframe-analysis`, `raster-analysis`, `pointcloud-analysis`, `geospatial-analysis`.
+  The forwarding barrel `modules/analysis/src/index.ts` is the only permitted file directly under
+  the source root.
 
 ## Plans and docs
 - Plans go in `dev-docs/roadmap.md`; see `dev-docs/README.md` for the dev-docs index.
@@ -157,7 +176,9 @@ without launching a compiler with `node scripts/typecheck-tests.mjs --generate-o
   ownership for generated, vendored or third-party files.
 - Never abbreviate variables. camelCase for variables and functions, PascalCase for types,
   CAPITAL_CASE for constants. Prefer verbNoun function names.
-- Contributors follow `dev-docs/contributor-contract.md`. Validate props once, at construction, with the
+- Contributors follow [dev-docs/contributor-contract.md](dev-docs/contributor-contract.md);
+  [dev-docs/authoring-walkthrough.md](dev-docs/authoring-walkthrough.md) is the worked
+  example. Validate props once, at construction, with the
   named-limit helpers (`validateCapacity`, `validateMaximumCount`, `validateRequirement`, ...); messages
   start with the contributor ID and name the prop and the limit. Do not use bare `assert`. Do not
   validate per frame or per row on the CPU.

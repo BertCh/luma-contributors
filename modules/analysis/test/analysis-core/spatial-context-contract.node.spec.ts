@@ -38,6 +38,20 @@ const GREAT_CIRCLE: GPUSpatialContext = {
 const LOCAL_FRAMES = ['azimuthal-equidistant', 'lambert-equal-area'] as const;
 
 describe('spatial context measurement contract', () => {
+  it('captures a frozen independent context rather than aliasing caller metadata', () => {
+    const supplied = {
+      coordinateSpace: 'planar' as const,
+      metric: 'native' as const,
+      frame: {kind: 'crs' as const, id: 'original', crs: 'EPSG:32633'}
+    };
+    const captured = resolveGPUSpatialContext('capture', supplied);
+    expect(captured).toStrictEqual(supplied);
+    expect(captured).not.toBe(supplied);
+    expect(captured.frame).not.toBe(supplied.frame);
+    expect(Object.isFrozen(captured)).toBe(true);
+    supplied.frame.id = 'changed';
+    expect(captured.frame?.id).toBe('original');
+  });
   it('rejects the wrong local frame for each measure with the exact diagnostic', () => {
     const cases = [
       {
@@ -81,7 +95,7 @@ describe('spatial context measurement contract', () => {
             ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
             measure
           })
-        ).toBe(context);
+        ).toStrictEqual(context);
       }
     }
   });
@@ -89,14 +103,14 @@ describe('spatial context measurement contract', () => {
   it.each(LOCAL_FRAMES)('accepts %s without a measure and declares meter output', kind => {
     const {spatialContext} = createGPULocalFrame({origin: [12, 45], kind});
     expect(spatialContext.units).toBe('meters');
-    expect(resolveGPUSpatialContext('op', spatialContext)).toBe(spatialContext);
+    expect(resolveGPUSpatialContext('op', spatialContext)).toStrictEqual(spatialContext);
     expect(
       resolveGPUSpatialContext(
         'op',
         spatialContext,
         GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
       )
-    ).toBe(spatialContext);
+    ).toStrictEqual(spatialContext);
   });
 
   it('accepts native planar meters and rejects kilometers', () => {
@@ -195,9 +209,9 @@ describe('spatial metric constants and units', () => {
         resolveGPUSpatialContext('op', planarNone, {coordinateSpaces: ['planar'], measure})
       ).toThrow('op planar positions need the native metric');
     }
-    expect(resolveGPUSpatialContext('op', planarNone, {coordinateSpaces: ['planar']})).toBe(
-      planarNone
-    );
+    expect(
+      resolveGPUSpatialContext('op', planarNone, {coordinateSpaces: ['planar']})
+    ).toStrictEqual(planarNone);
   });
 });
 
@@ -235,8 +249,8 @@ describe('spatial context edge model contract', () => {
     const context: GPUSpatialContext = {...GREAT_CIRCLE, metric};
     const linear: GPUSpatialContext = {...context, edgeModel: 'linear'};
     const greatCircle: GPUSpatialContext = {...context, edgeModel: 'great-circle'};
-    expect(resolveGPUSpatialContext('X', context, support)).toBe(context);
-    expect(resolveGPUSpatialContext('X', linear, support)).toBe(linear);
+    expect(resolveGPUSpatialContext('X', context, support)).toStrictEqual(context);
+    expect(resolveGPUSpatialContext('X', linear, support)).toStrictEqual(linear);
     expect(() => resolveGPUSpatialContext('X', greatCircle, support)).toThrowError(
       new Error('X needs linear edges; prepare polygons with GPULonLatPolygonPreparation')
     );
@@ -245,7 +259,7 @@ describe('spatial context edge model contract', () => {
         coordinateSpaces: support.coordinateSpaces,
         metrics: support.metrics
       })
-    ).toBe(greatCircle);
+    ).toStrictEqual(greatCircle);
   });
 
   it('compares omitted edges as linear and reports different edge models', () => {

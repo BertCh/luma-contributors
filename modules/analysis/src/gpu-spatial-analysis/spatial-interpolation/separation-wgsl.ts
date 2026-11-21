@@ -22,6 +22,7 @@ export type InterpolationSeparation = {
   context: GPUSpatialContext;
   /** True for longitude/latitude positions with great-circle distances. */
   geographic: boolean;
+  wrappedLongitude?: boolean;
   /** Sphere radius in the distance unit of the context (meters, or kilometers). */
   sphereRadius: number;
 };
@@ -34,11 +35,17 @@ export type InterpolationSeparation = {
  */
 export function resolveInterpolationSeparation(
   id: string,
-  context: GPUSpatialContext | undefined
+  context: GPUSpatialContext | undefined,
+  longitudeSearch: 'clipped' | 'wrapped' = 'clipped'
 ): InterpolationSeparation {
   const resolved = resolveGPUSpatialContext(id, context, SPATIAL_CONTEXT_SUPPORT);
   const geographic = resolved.coordinateSpace === 'longitude-latitude';
-  return {context: resolved, geographic, sphereRadius: getGPUSphereRadius(resolved)};
+  return {
+    context: resolved,
+    geographic,
+    wrappedLongitude: geographic && longitudeSearch === 'wrapped',
+    sphereRadius: getGPUSphereRadius(resolved)
+  };
 }
 
 /**
@@ -98,9 +105,18 @@ fn getPairMeters(a: vec2f, b: vec2f) -> f32 { return geodesicHaversineDistance(a
 fn isExactHit(key: f32, position: vec2f, query: vec2f) -> bool { return all(position == query); }
 // Conservative lon/lat box around the cap of the given radius: the latitude half-span is r / R,
 // the longitude half-span is that divided by the cosine of the highest latitude the box reaches
-// (1 percent slack for f32), and a box reaching a pole spans every longitude. No antimeridian
-// wrap: a cap crossing +-180 is cut at the index domain edge.
-fn getQueryBox(center: vec2f, radius: f32) -> QueryBox {
+// (1 percent slack for f32), and a box reaching a pole spans every longitude. The clipped
+// route intersects this box with the index; wrapped scans also visit its shifted intervals.
+fn getUnwrappedQueryBox(center: vec2f, radius: f32) -> QueryBox {
+  ${
+    separation.wrappedLongitude
+      ? `// Reduce the query before choosing shifted intervals. Avoid adding 180 before reduction:
+  // that addition can round a longitude just below +180 onto the seam in binary32.
+  var longitude = center.x - 360.0 * floor(center.x / 360.0);
+  if (longitude >= 180.0) { longitude -= 360.0; }
+  let queryCenter = vec2f(longitude, center.y);`
+      : 'let queryCenter = center;'
+  }
   let latitudeSpan = min(radius / SPHERE_RADIUS * 57.29577951308232 * 1.01, 180.0);
   let highestLatitude = min(abs(center.y) + latitudeSpan, 90.0);
   var longitudeSpan = 360.0;
@@ -108,6 +124,18 @@ fn getQueryBox(center: vec2f, radius: f32) -> QueryBox {
     longitudeSpan = min(latitudeSpan / geodesicCosLatitude(highestLatitude), 360.0);
   }
   let span = vec2f(longitudeSpan, latitudeSpan);
-  return QueryBox(center - span, center + span);
+  return QueryBox(queryCenter - span, queryCenter + span);
+}
+fn getQueryBox(center: vec2f, radius: f32) -> QueryBox {
+  var box = getUnwrappedQueryBox(center, radius);
+  ${
+    separation.wrappedLongitude
+      ? `if (box.minimum.x <= -180.0 || box.maximum.x >= 180.0) {
+    box.minimum.x = -180.0;
+    box.maximum.x = 180.0;
+  }`
+      : ''
+  }
+  return box;
 }`;
 }

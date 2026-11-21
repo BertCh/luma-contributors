@@ -26,6 +26,7 @@ import {
   type GPUSpatialWeightsTracesMode
 } from './spatial-weights-traces-parameters';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {getRowTileMergeNodes} from './regression-row-tiles';
 
 /** Workgroup size of the tile and probe passes (one invocation per tile). */
 export const SPATIAL_MAXIMUM_LIKELIHOOD_TILE_WORKGROUP_SIZE = 64;
@@ -375,20 +376,26 @@ ${last ? '  partial[partialOffset + probe * TILE_COUNT + tile] = squares;' : '  
       );
     }
     nodes.push(
-      kernel(
-        `probe-merge-${batchIndex}`,
-        [
-          getF32Binding('partial', partial, 'read'),
-          getF32Binding('dots', batches.getBlock(dots, batchIndex), 'read_write'),
-          batchInformation
-        ],
-        batchSize,
-        constants,
-        `if (index >= batchInformation[batchInformationOffset + 1u]) {
+      ...getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-probe-merge-${batchIndex}`,
+          operation: props.operation,
+          variant: 'probe-merge',
+          bindings: [
+            getF32Binding('partial', partial, 'read'),
+            getF32Binding('dots', batches.getBlock(dots, batchIndex), 'read_write'),
+            batchInformation
+          ],
+          invocationCount: batchSize,
+          declarations: constants,
+          body: `if (index >= batchInformation[batchInformationOffset + 1u]) {
     return;
   }
   ${getPairwiseSumWGSL({count: 'TILE_COUNT', term: 'partial[partialOffset + index * TILE_COUNT + sumItem]'})}
   dots[dotsOffset + index] = sum;`
+        },
+        {tileCount, partials: [{name: 'partial', termCount: batchSize, blockWidth: 1}]}
       )
     );
   }

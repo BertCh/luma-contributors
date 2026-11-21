@@ -151,7 +151,7 @@ export const STX08_SPATIAL_METHODS_AUDIT_CASES: readonly KernelAuditCase[] = [
         values: view('float32', 1000),
         mask: view('uint32', 1000),
         maximumOrder,
-        outputs: {
+        output: {
           correlogram: view(
             'float32',
             maximumOrder * GPU_CONTIGUITY_ORDER_CORRELOGRAM_COLUMNS.length

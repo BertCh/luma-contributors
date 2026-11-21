@@ -7,7 +7,8 @@ import {
   GPUMultiscaleGeographicallyTemporallyWeightedRegression,
   getGPUGTWRParameterValues,
   getGPUMGTWRParameterValues,
-  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM_PARAMETER} from './catalog-binding-types';
 import {withCatalogGpuSession} from './catalog-gpu-session';
@@ -231,12 +232,17 @@ export const VALIDATION_REGRESSION_BINDINGS = [false, true].map(multiscale => {
         session.run();
         const coefficientValues = await session.readFloat32(coefficients);
         const statusValues = await session.readUint32(status);
+        // Both GTWR and MGTWR publish GWR local-status words (MGTWR differs from MGWR).
         const metrics: Record<string, number> = {
           bandwidth: settings.bandwidth,
           time_scale: settings.timeScale,
           time_origin: values['timeOrigin'] as number,
-          singular_rows: statusValues.filter(value => value === 1).length,
-          excluded_rows: statusValues.filter(value => value === 2).length
+          singular_rows: statusValues.filter(
+            value => value === GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.SINGULAR
+          ).length,
+          excluded_rows: statusValues.filter(
+            value => value === GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED
+          ).length
         };
         if (multiscale)
           (await session.readFloat32(scores)).forEach((score, index) => {

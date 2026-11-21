@@ -168,7 +168,11 @@ export type GPUZoneVisitTableOutput = GPUCompactOutput & {
 /**
  * Optional one-row diagnostics of {@link GPUZoneEvents} that identify each capacity loss
  * and report the capacity the candidate scratch needed. Every view is optional and
- * independent.
+ * independent. Direct callers can certify candidate scratch completeness by checking supplied
+ * `candidateOverflow == 0`, or supplied `candidateCount <= candidateCapacity`. Scratch loss can
+ * leave plausible incomplete dense dwell/visit statistics. Event-list
+ * overflow alone does not invalidate dwell; it is distinct from scratch loss. Omitting this
+ * evidence does not make scratch-bounded results exact.
  */
 export type GPUZoneEventsStatus = GPUCandidateStatusPort & {
   /**

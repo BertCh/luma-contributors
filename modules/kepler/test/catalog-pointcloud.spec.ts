@@ -171,7 +171,7 @@ test('ICP: known translation, transformed native coordinates and local transform
       position.map((value, axis) => value + [1000000, 4000000, 100][axis])
     )
   );
-  const result = await run('icp', {source, target}, {maximumDistance: 2, iterations: 10});
+  const result = await run('icp', {source, target}, {maximumDistance: 2, maximumIterations: 10});
   expect([0, 1]).toContain(result.summary['registrationStatus']);
   const table = result.tables[0];
   for (let row = 0; row < 5; row++) {

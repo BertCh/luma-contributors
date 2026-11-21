@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -9,12 +10,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {
-  GPURasterBand,
-  GPURasterBorderMode,
-  GPURasterHaloStage,
-  GPURasterMetadata
-} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -34,6 +30,7 @@ import {
   validateParameterTarget,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -87,6 +84,7 @@ export function getGPUTerrainVectorRuggednessParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainVectorRuggednessParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainVectorRuggednessParameterValues',
     target,
@@ -107,12 +105,12 @@ export function getGPUTerrainVectorRuggednessParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUTerrainVectorRuggedness}; at least one is required. */
-export type GPUTerrainVectorRuggednessOutput = {
+export type GPUTerrainVectorRuggednessOutput = TerrainAtLeastOne<{
   /** Optional vector ruggedness measure per pixel in `[0, 1]`; NaN where invalid. */
   vectorRuggedness?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where the output is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainVectorRuggedness}.
@@ -154,7 +152,7 @@ export type GPUTerrainVectorRuggednessProps = {
    * Treatment of the raster border when computing Horn normals: `'clamp'` repeats edge samples
    * (default), `'nodata'` leaves border normals invalid.
    */
-  borderMode?: GPURasterBorderMode;
+  borderMode?: 'clamp' | 'nodata';
 };
 
 /**
@@ -212,6 +210,8 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer, GPURa
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     if (!['clamp', 'nodata'].includes(props.borderMode ?? 'clamp')) {
       throw new Error(`${id} borderMode must be clamp or nodata`);

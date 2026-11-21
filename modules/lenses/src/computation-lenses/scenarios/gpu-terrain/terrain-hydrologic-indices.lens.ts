@@ -54,10 +54,11 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         geometry: 'raster',
         meaning: 'upstream area (m²)'
       });
-      const slope = session.output('indicesSlope', 'float32', {
+      const descentTangent = session.output('indicesSlope', 'float32', {
         role: 'intermediate',
         geometry: 'raster',
-        meaning: 'tan β after the minimum-slope clamp (m/m)'
+        meaning:
+          'steepest D8 descent tangent, clamped to minimumSlope (dimensionless rise over run)'
       });
       const specificCatchmentArea = session.output('specificCatchmentArea', 'float32', {
         role: 'intermediate',
@@ -81,7 +82,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         dem,
         filledElevation,
         accumulation,
-        slope,
+        descentTangent,
         specificCatchmentArea,
         wetnessIndex,
         streamPowerIndex

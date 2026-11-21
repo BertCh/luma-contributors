@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {iterateCatalogPositions} from './catalog-geojson';
 import {toDegrees, toRadians} from '@math.gl/core';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {getGeodesicDestination, getInitialBearingDegrees} from './catalog-geodesy';
@@ -36,14 +37,7 @@ export type ExtraRunOutput = {
 };
 
 function collectPositions(collection: CatalogFeatureCollection): CatalogPosition[] {
-  const positions: CatalogPosition[] = [];
-  for (const feature of collection.features) {
-    positions.push(...getPointPositions(feature.geometry));
-    for (const part of getLineParts(feature.geometry)) positions.push(...part);
-    for (const polygon of getPolygonParts(feature.geometry))
-      for (const ring of polygon) positions.push(...ring);
-  }
-  return positions;
+  return Array.from(iterateCatalogPositions([collection]));
 }
 
 function makeTransformedGeometryText(
@@ -362,8 +356,13 @@ export function runLineMerge(
       const addition = [...parts[other.part].coordinates];
       // Orient so the shared vertex meets the chain end.
       if (atTail === !other.atStart) addition.reverse();
-      if (atTail) chain.push(...addition.slice(1));
-      else chain.unshift(...addition.slice(0, -1));
+      if (atTail) for (const position of addition.slice(1)) chain.push(position);
+      else {
+        const previous = chain.slice();
+        chain.length = 0;
+        for (let index = 0; index < addition.length - 1; index++) chain.push(addition[index]);
+        for (const position of previous) chain.push(position);
+      }
     }
   };
   parts.forEach((part, partIndex) => {
@@ -736,7 +735,7 @@ export function runGroupConvexHull(
       : undefined;
     const key = value === undefined || value === null ? '' : String(value);
     const list = groups.get(key) ?? [];
-    list.push(...getPointPositions(feature.geometry));
+    for (const position of getPointPositions(feature.geometry)) list.push(position);
     groups.set(key, list);
   }
   const table = makeCatalogTable(
@@ -1248,8 +1247,14 @@ export function runAffineTransform(
     if (positions.length) {
       const xs = positions.map(position => position[0]);
       const ys = positions.map(position => position[1]);
-      pivotX = (Math.min(...xs) + Math.max(...xs)) / 2;
-      pivotY = (Math.min(...ys) + Math.max(...ys)) / 2;
+      pivotX =
+        (xs.reduce((bound, value) => Math.min(bound, value), Infinity) +
+          xs.reduce((bound, value) => Math.max(bound, value), -Infinity)) /
+        2;
+      pivotY =
+        (ys.reduce((bound, value) => Math.min(bound, value), Infinity) +
+          ys.reduce((bound, value) => Math.max(bound, value), -Infinity)) /
+        2;
     }
   }
   const angle = toRadians(parameters.rotationDegrees);
@@ -1410,10 +1415,10 @@ export function runGridGenerator(
     );
     return {tables: [table], diagnostics, summary: {cellCount: 0}};
   }
-  const minX = Math.min(...positions.map(position => position[0]));
-  const maxX = Math.max(...positions.map(position => position[0]));
-  const minY = Math.min(...positions.map(position => position[1]));
-  const maxY = Math.max(...positions.map(position => position[1]));
+  const minX = positions.reduce((bound, position) => Math.min(bound, position[0]), Infinity);
+  const maxX = positions.reduce((bound, position) => Math.max(bound, position[0]), -Infinity);
+  const minY = positions.reduce((bound, position) => Math.min(bound, position[1]), Infinity);
+  const maxY = positions.reduce((bound, position) => Math.max(bound, position[1]), -Infinity);
   const columns = Math.max(1, Math.ceil((maxX - minX) / parameters.cellWidth - 1e-9));
   const rows = Math.max(1, Math.ceil((maxY - minY) / parameters.cellHeight - 1e-9));
   // Cell count would exceed the declared output capacity; stop before allocating rows.
@@ -1467,10 +1472,10 @@ export function runRandomPointsInPolygon(
     const parts = prepareProjectedGeometry(identity, feature.geometry).polygons;
     const positions = parts.flatMap(polygon => polygon.flatMap(ring => ring));
     if (!positions.length) return;
-    const minX = Math.min(...positions.map(position => position[0]));
-    const maxX = Math.max(...positions.map(position => position[0]));
-    const minY = Math.min(...positions.map(position => position[1]));
-    const maxY = Math.max(...positions.map(position => position[1]));
+    const minX = positions.reduce((bound, position) => Math.min(bound, position[0]), Infinity);
+    const maxX = positions.reduce((bound, position) => Math.max(bound, position[0]), -Infinity);
+    const minY = positions.reduce((bound, position) => Math.min(bound, position[1]), Infinity);
+    const maxY = positions.reduce((bound, position) => Math.max(bound, position[1]), -Infinity);
     const random = makeSeededRandom(makeFeatureSeed(parameters.seed, sourceIndex));
     let produced = 0;
     for (

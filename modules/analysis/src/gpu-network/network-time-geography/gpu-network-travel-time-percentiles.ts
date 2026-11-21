@@ -17,6 +17,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
   validateCommandNodeBudget,
@@ -27,6 +28,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUNetworkTimeRouting,
+  validateNetworkTimeRoutingInputs,
   type GPUNetworkTimeRoutingProps
 } from '../network-optimization/gpu-network-time-routing';
 import {getNetworkTravelTimePercentileRank} from './network-travel-time-percentile-rank';
@@ -47,7 +49,7 @@ const ROUTING_SUMMARY_LENGTH = 4;
  * Properties for {@link GPUNetworkTravelTimePercentiles}.
  *
  * Compile-time: the restriction automaton shape, `departureCount`, `percentiles`, `vertexCount`.
- * Per-frame: `window`, `costs` and `initialState`.
+ * Per-frame: `window`, `costs` and `initialState`. Percentiles are percentages in (0, 100].
  */
 export type GPUNetworkTravelTimePercentilesProps = Pick<
   GPUNetworkTimeRoutingProps,
@@ -64,10 +66,17 @@ export type GPUNetworkTravelTimePercentilesProps = Pick<
   /**
    * Percentiles in `(0, 100]`, ascending, at most 16. The `p`-th percentile of `n` departures is
    * the value of 1-based rank `ceil(p / 100 * n)` of the ascending travel times (nearest rank),
-   * departures that cannot reach a vertex counting as `+Infinity`.
+   * departures that cannot reach a vertex counting as `+Infinity`. The rank is exact for the
+   * percentile's shortest decimal (`String(p)`), so a typed decimal such as `99.9` behaves as
+   * written rather than as the binary64 just above it.
    */
+  /** Percentages in (0, 100], not fractions: probability .95 is percentile 95. */
   percentiles: readonly number[];
   /** Two rows: the first departure time and the step between departures (nonnegative, relative). */
+  /** Rebase t′ = t - origin together with affine base′ = base + slope * origin.
+   * For piecewise schedules subtract origin from both time columns, retaining nonnegative samples.
+   * Durations and departures share a time unit; slope has duration/time units.
+   */
   window: GraphDataView<'float32'>;
   /** Forwarded to {@link GPUNetworkTimeRouting.props.maximumRelaxations}. */
   maximumRelaxations?: number;
@@ -75,14 +84,16 @@ export type GPUNetworkTravelTimePercentilesProps = Pick<
     /**
      * `vertexCount * percentiles.length` rows, vertex-major: travel time (arrival minus departure,
      * minimum over the vertex's states) at each percentile; `+Infinity` when too few departures
-     * reach the vertex.
+     * reach the vertex. If status is omitted, any invalid or unconverged departure suppresses
+     * every travel-time row with NaN instead of publishing uncertified incumbents.
      */
     travelTimes: GraphDataView<'float32'>;
-    /** Optional `vertexCount` rows: how many departures reach each vertex. */
+    /** Optional `vertexCount` rows: how many departures reach each vertex; zero when suppressed. */
     reachedCounts?: GraphDataView<'uint32'>;
     /**
      * Optional `departureCount * 2` rows: per departure `[valid, converged]` from its routing run.
-     * A run that is not valid or not converged makes its row of the percentiles unreliable.
+     * A run that is not valid or not converged makes the percentiles unreliable. Requesting
+     * this certificate retains incumbent travelTimes and reachedCounts for inspection.
      */
     status?: GraphDataView<'uint32'>;
   };
@@ -95,19 +106,23 @@ export type GPUNetworkTravelTimePercentilesProps = Pick<
  *
  * The window is an unrolled batch: one {@link GPUNetworkTimeRouting} per departure, in the same
  * graph, each over the same restriction automaton. Because the arrival functions are FIFO, the
- * routing is exact for every departure; a vertex's travel time is the earliest arrival over its
- * states minus the departure. The percentile kernel then sorts the `departureCount` values of
- * each vertex (one thread per vertex, at most 60 values).
+ * routing is exact for each valid, converged departure. Travel times use the minimum elapsed
+ * label over a vertex's states directly, avoiding subtraction of rounded absolute arrivals. The
+ * percentile kernel then sorts the `departureCount` values of each vertex (one thread per vertex,
+ * at most 60 values).
  *
- * Reference tier (contributor contract rule 2): each routing is the single-invocation search of
- * {@link GPUNetworkTimeRouting} (at most 256 states and 4096 transitions), so a window costs
- * `departureCount` such dispatches. The window is regular; a list of arbitrary departures is not
- * supported.
+ * Reference tier (contributor contract rule 2): each departure uses one cooperative 64-lane
+ * workgroup, committing transitions in input order with a barrier per transition, plus a separate
+ * absolute-arrival publication (at most 256 states and 4096 transitions per departure). A window
+ * declares `2 + 2 * departureCount` nodes, including preparation and percentile publication. Each
+ * departure allows at most 65,536 relaxation rounds (default: the state count), and piecewise models
+ * allow at most 256 samples per transition. These shared routing limits are checked before any
+ * transient is declared. The window is regular; a list of arbitrary departures is not supported.
  */
 export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUNetworkTravelTimePercentilesProps;
-  /** One departure-window node, one solve per departure and one percentile publication. */
+  /** One window node, an elapsed solve and absolute publication per departure, and percentiles. */
   readonly estimatedCommandNodeCount: number;
 
   constructor(originalProps: GPUNetworkTravelTimePercentilesProps) {
@@ -140,7 +155,8 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
     this.props = props;
     validateNetworkWritableViews(this.id, props.output);
     const {id} = this;
-    this.estimatedCommandNodeCount = 2 + props.departureCount;
+    validateNetworkTimeRoutingInputs(id, props);
+    this.estimatedCommandNodeCount = 2 + 2 * props.departureCount;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateCapacity(
       id,
@@ -237,6 +253,12 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
       'float32',
       departureCount * stateStride
     );
+    const absoluteArrivals = createTransientView(
+      graph,
+      `${id}-absolute-arrivals`,
+      'float32',
+      departureCount * stateStride
+    );
     const predecessors = createTransientView(
       graph,
       `${id}-predecessors`,
@@ -293,7 +315,8 @@ if (index == 0u) { endpoints[endpointsOffset] = initialState[initialStateOffset]
           departure: slice(departures, departure * parameterStride, 1),
           maximumRelaxations: props.maximumRelaxations,
           output: {
-            arrivals: slice(arrivals, departure * stateStride, stateCount),
+            arrivals: slice(absoluteArrivals, departure * stateStride, stateCount),
+            elapsedTimes: slice(arrivals, departure * stateStride, stateCount),
             predecessorTransitions: slice(predecessors, departure * stateStride, stateCount),
             summary: slice(summaries, departure * parameterStride, ROUTING_SUMMARY_LENGTH)
           }
@@ -337,25 +360,37 @@ if (index == 0u) { endpoints[endpointsOffset] = initialState[initialStateOffset]
               ]
             : [])
         ],
-        declarations: `const RANKS = array<u32, ${percentileCount}>(${ranks.map(rank => `${rank}u`).join(',')});`,
+        declarations: `${IS_FINITE_VALUE_WGSL}
+const RANKS = array<u32, ${percentileCount}>(${ranks.map(rank => `${rank}u`).join(',')});`,
         // Insertion sort of at most 60 values. Infinity (unreached or invalid run) sorts last.
         body: `var infinityBits = 0x7f800000u; let infinity = bitcast<f32>(infinityBits);
 var values: array<f32, ${departureCount}>;
 var reached = 0u;
+${output.status ? '' : 'var complete = true;'}
 for (var departure = 0u; departure < ${departureCount}u; departure++) {
   var best = infinity;
+  ${output.status ? '' : `complete = complete && summaries[summariesOffset + departure * ${parameterStride}u] != 0u && summaries[summariesOffset + departure * ${parameterStride}u + 1u] != 0u;`}
   if ((summaries[summariesOffset + departure * ${parameterStride}u] & 1u) != 0u) {
     for (var state = 0u; state < ${stateCount}u; state++) {
       if (stateVertices[stateVerticesOffset + state] == index) {
         let arrival = arrivals[arrivalsOffset + departure * ${stateStride}u + state];
-        best = min(best, arrival - departures[departuresOffset + departure * ${parameterStride}u]);
+        best = min(best, arrival);
       }
     }
   }
-  if (best < infinity) { reached++; }
+  if (isFiniteValue(best)) { reached++; }
   var slot = departure;
   while (slot > 0u && values[slot - 1u] > best) { values[slot] = values[slot - 1u]; slot--; }
   values[slot] = best;
+}
+${
+  output.status
+    ? ''
+    : `if (!complete) {
+  for (var column = 0u; column < ${percentileCount}u; column++) { travelTimes[travelTimesOffset + index * ${percentileCount}u + column] = bitcast<f32>(0x7fc00000u | (index & 0u)); }
+  ${output.reachedCounts ? 'reachedCounts[reachedCountsOffset + index] = 0u;' : ''}
+  return;
+}`
 }
 for (var column = 0u; column < ${percentileCount}u; column++) { travelTimes[travelTimesOffset + index * ${percentileCount}u + column] = values[RANKS[column] - 1u]; }
 ${output.reachedCounts ? 'reachedCounts[reachedCountsOffset + index] = reached;' : ''}

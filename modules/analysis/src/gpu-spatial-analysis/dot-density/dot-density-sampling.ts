@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -109,7 +111,7 @@ export const DOT_SAMPLING_MAXIMUM_NORMALIZED_FEATURE_COUNT = Math.floor(
 /** Optional dasymetric constraint shared by {@link GPUDotDensity} and {@link GPURandomPointsInPolygon}. */
 export type GPUDotDensityMask = {
   /**
-   * Packed row-major weights in `[0, 1]`, `width * height` rows, placed by the `maskExtent`
+   * Packed row-major weights in `[0, 1]`, `width * height` rows, placed by the `maskPlacement`
    * parameter. A candidate is kept with probability equal to the weight of its (nearest) cell;
    * outside the raster or on NaN the weight is 0.
    *
@@ -156,8 +158,11 @@ export type GPUDotDensityOutput = {
   categories?: GraphDataView<'uint32'>;
   /** Optional per-slot dot counts, one row per slot. */
   slotCounts?: GraphDataView<'uint32'>;
-  /** Optional per-slot exclusive offsets into the dot list, one row per slot. */
-  slotOffsets?: GraphDataView<'uint32'>;
+  /**
+   * Per-slot pre-clamp starts, without a terminal. Read dot rows
+   * `[min(start, count), min(start + slotCounts[slot], count))`; double bounds for flat XY.
+   */
+  slotStarts?: GraphDataView<'uint32'>;
   /** Optional completeness scalars. */
   status?: {
     /**
@@ -169,6 +174,55 @@ export type GPUDotDensityOutput = {
     failedCount?: GraphDataView<'uint32'>;
   };
 };
+
+/** Captures output descriptors and resolves the slot-start alias once at construction. @internal */
+export function snapshotDotSamplingOutput(
+  id: string,
+  output: GPUDotDensityOutput
+): GPUDotDensityOutput {
+  validateRequirement(
+    id,
+    Boolean(output && typeof output === 'object'),
+    'output must be an output descriptor'
+  );
+  validateRequirement(
+    id,
+    !('slotOffsets' in output),
+    'output.slotOffsets was removed; use output.slotStarts'
+  );
+  const captured = snapshotConstructionFields(output, [
+    'positions',
+    'dots',
+    'categories',
+    'slotCounts',
+    'slotStarts',
+    'status'
+  ]);
+  validateRequirement(
+    id,
+    Boolean(captured.dots && typeof captured.dots === 'object'),
+    'output.dots must be a compact output descriptor'
+  );
+  const dots = snapshotConstructionFields(captured.dots, ['ids', 'status']);
+  validateRequirement(
+    id,
+    Boolean(dots.status && typeof dots.status === 'object'),
+    'output.dots.status must provide count and overflow views'
+  );
+  return Object.freeze({
+    ...captured,
+    dots: Object.freeze({
+      ...dots,
+      status: snapshotConstructionFields(dots.status, [
+        'count',
+        'overflow',
+        'candidateOverflow',
+        'requiredCount'
+      ])
+    }),
+    status: captured.status && snapshotConstructionFields(captured.status, ['failedCount'])
+  });
+}
 
 /** Internal configuration of the shared dot sampling graph. @internal */
 export type DotSamplingConfig = GPUPolygonGeometryFields & {
@@ -271,7 +325,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   }
   for (const [name, view] of [
     ['slotCounts', output.slotCounts],
-    ['slotOffsets', output.slotOffsets]
+    ['slotStarts', output.slotStarts]
   ] as const) {
     if (view) {
       validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
@@ -286,7 +340,7 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
     ids: output.dots.ids,
     categories: output.categories,
     slotCounts: output.slotCounts,
-    slotOffsets: output.slotOffsets
+    slotStarts: output.slotStarts
   });
   validateDisjointWritableViews(id, {
     slotCounts: output.slotCounts,
@@ -322,7 +376,7 @@ function getDotSamplingOutputs(config: DotSamplingConfig) {
     'output.categories': output.categories,
     'output.status.failedCount': output.status?.failedCount,
     'output.slotCounts': output.slotCounts,
-    'output.slotOffsets': output.slotOffsets
+    'output.slotStarts': output.slotStarts
   };
 }
 
@@ -446,7 +500,7 @@ export function getDotSamplingNodes<Parameters>(
   const slotCounts =
     output.slotCounts ?? createTransientView(graph, `${id}-slot-counts`, 'uint32', slotCount);
   const slotOffsets =
-    output.slotOffsets ?? createTransientView(graph, `${id}-slot-offsets`, 'uint32', slotCount);
+    output.slotStarts ?? createTransientView(graph, `${id}-slot-offsets`, 'uint32', slotCount);
   const clampFlag = createTransientView(graph, `${id}-clamped`, 'uint32', 1);
   const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
   const dotSlots = createTransientView(graph, `${id}-dot-slots`, 'uint32', capacity * DOT_WORDS);
@@ -638,8 +692,10 @@ var<workgroup> partialWeight: array<f32, ${MASK_MAXIMUM_WORKGROUP_SIZE}>;`,
   // Cell box of the feature (one cell of margin absorbs rounding of sampled points).
   let origin = vec2<f32>(bitcast<f32>(parameters[parametersOffset + 2u]), bitcast<f32>(parameters[parametersOffset + 3u]));
   let cell = vec2<f32>(bitcast<f32>(parameters[parametersOffset + 4u]), bitcast<f32>(parameters[parametersOffset + 5u]));
-  let low = (partialMinimum[0] - origin) / cell;
-  let high = (partialMaximum[0] - origin) / cell;
+  let firstCorner = (partialMinimum[0] - origin) / cell;
+  let oppositeCorner = (partialMaximum[0] - origin) / cell;
+  let low = min(firstCorner, oppositeCorner);
+  let high = max(firstCorner, oppositeCorner);
   var firstColumn = 0;
   var lastColumn = -1;
   var firstRow = 0;
@@ -758,7 +814,13 @@ const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
     let remainder = philoxUnitFloat(
       philox4x32(vec4<u32>(index, 0u, 0u, 0u), vec2<u32>(seed, ${DOT_DENSITY_REMAINDER_PURPOSE}u)).x
     );
-    let ceiling = ceil(scaled - remainder);
+    // Subtract only the integral part: subtracting the uniform from a large integer can
+    // round down before ceil. Preserve positive infinity's existing clamp path.
+    var ceiling = scaled;
+    if ((bitcast<u32>(scaled) & 0x7f800000u) != 0x7f800000u) {
+      let integral = floor(scaled);
+      ceiling = integral + select(0.0, 1.0, remainder < scaled - integral);
+    }
     if (ceiling > f32(SLOT_LIMIT)) {
       dots = SLOT_LIMIT;
       clamped = true;

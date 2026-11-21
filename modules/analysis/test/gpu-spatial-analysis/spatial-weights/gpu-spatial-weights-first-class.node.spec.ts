@@ -10,6 +10,7 @@ import {
   GPU_SPATIAL_WEIGHTS_VIOLATION,
   GPUContiguityWeights,
   GPUChunkedSpatialWeightsAlgebra,
+  GPUChunkedSpatialWeightsTransform,
   GPULatticeWeights,
   GPUSpatialWeightsAlgebra,
   GPUSpatialWeightsTransform,
@@ -201,17 +202,39 @@ it('GPUSpatialWeightsTransform.outputWeights describes the transform honestly', 
     });
   }
   const fixed = describe({operation: 'kernel', bandwidth: 2.5});
-  expect(fixed.information).toMatchObject({transform: 'kernel', symmetric: true});
+  expect(fixed.information).toMatchObject({transform: 'kernel', symmetric: 'unknown'});
   expect(fixed.information?.provenance?.radius).toBe(2.5);
-  const symmetrize = describe({operation: 'symmetrize', output: view('float32', 10)});
-  expect(symmetrize.information).toMatchObject({transform: 'symmetric', symmetric: true});
-  expect(symmetrize.weights).not.toBe(symmetricInput.weights);
+  const averaged = describe({operation: 'average-reciprocal', output: view('float32', 10)});
+  expect(averaged.information).toMatchObject({transform: 'symmetric', symmetric: true});
+  expect(averaged.weights).not.toBe(symmetricInput.weights);
   // Unknown symmetry on the input is never promoted.
   const unknown = new GPUSpatialWeightsTransform({
     operation: 'binary',
     weights: weights(4, 10)
   }).outputWeights;
   expect(unknown.information?.symmetric).toBe('unknown');
+});
+
+it('UST-15 rejects the removed reciprocal averaging name in both transform constructors', () => {
+  const {graph, view, weights} = setup();
+  try {
+    const source = weights(2, 1, false);
+    const output = view('float32', 1);
+    const operation = 'symmetrize' as never;
+    expect(() => new GPUSpatialWeightsTransform({operation, weights: source, output})).toThrow(
+      /operation.*symmetrize.*average-reciprocal.*averages w_ij and w_ji/
+    );
+    expect(
+      () =>
+        new GPUChunkedSpatialWeightsTransform({
+          operation,
+          weights: {rowCount: 2, chunks: [{rowStart: 0, rowCount: 2, weights: source}]},
+          output: [output]
+        })
+    ).toThrow(/operation.*symmetrize.*average-reciprocal.*averages w_ij and w_ji/);
+  } finally {
+    graph.device.destroy();
+  }
 });
 
 it('chunked algebra declarations with default IDs allocate independent loss outputs', () => {
@@ -387,4 +410,76 @@ it('GPUSpatialWeightsValidation validates props and declares nodes', () => {
   const bits = Object.values(GPU_SPATIAL_WEIGHTS_VIOLATION);
   expect(new Set(bits).size).toBe(bits.length);
   expect(bits.every(bit => (bit & (bit - 1)) === 0)).toBe(true);
+});
+
+it('NAM-09 rejects the removed symmetric difference spelling in both algebra constructors', () => {
+  const {graph, view, weights} = setup();
+  try {
+    const source = weights(2, 2, false);
+    const output = {...weights(2, 2, false), status: {overflow: view('uint32', 1)}};
+    const operation = 'symmetricDifference' as never;
+    expect(
+      () => new GPUSpatialWeightsAlgebra({operation, left: source, right: source, output})
+    ).toThrow(/operation.*symmetric-difference/);
+    const operand = {rowCount: 2, chunks: [{rowStart: 0, rowCount: 2, weights: source}]};
+    expect(
+      () =>
+        new GPUChunkedSpatialWeightsAlgebra({
+          operation,
+          left: operand,
+          right: operand,
+          output: {chunks: [{rowStart: 0, rowCount: 2, weights: output}]}
+        })
+    ).toThrow(/operation.*symmetric-difference/);
+  } finally {
+    graph.device.destroy();
+  }
+});
+
+it('NAM-09 uses symmetric-difference on ordinary and chunked graph contributors', () => {
+  const operation = 'symmetric-difference';
+  const {graph, view, weights} = setup();
+  try {
+    const source = weights(2, 2, false);
+    const output = {...weights(2, 2, false), status: {overflow: view('uint32', 1)}};
+    const producer = new GPUSpatialWeightsAlgebra({
+      operation,
+      left: source,
+      right: source,
+      output
+    });
+    expect(producer.props.operation).toBe('symmetric-difference');
+    expect(producer.getCommandNodes(graph).length).toBeGreaterThan(0);
+    const operand = {rowCount: 2, chunks: [{rowStart: 0, rowCount: 2, weights: source}]};
+    const chunked = new GPUChunkedSpatialWeightsAlgebra({
+      operation,
+      left: operand,
+      right: operand,
+      output: {
+        chunks: [
+          {
+            rowStart: 0,
+            rowCount: 2,
+            weights: {...weights(2, 2, false), status: {overflow: view('uint32', 1)}}
+          }
+        ]
+      }
+    });
+    expect(chunked.props.operation).toBe('symmetric-difference');
+    expect(chunked.getCommandNodes(graph).length).toBeGreaterThan(0);
+    expect(
+      () =>
+        new GPUSpatialWeightsAlgebra({
+          operation: 'Union',
+          left: source,
+          right: source,
+          output
+        } as never)
+    ).toThrow(/operation.*union.*intersection.*symmetric-difference/);
+    expect(
+      () => new GPUChunkedSpatialWeightsAlgebra({...chunked.props, operation: 'Union'} as never)
+    ).toThrow(/operation.*union.*intersection.*symmetric-difference/);
+  } finally {
+    graph.device.destroy();
+  }
 });

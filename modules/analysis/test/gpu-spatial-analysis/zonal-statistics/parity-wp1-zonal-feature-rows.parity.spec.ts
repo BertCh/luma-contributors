@@ -30,7 +30,10 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
           : (await decodeRound4Fixture<{cases: ZonalCase[]}>(smallFixture)).cases[caseIndex];
       const harness = createRound4Harness(device);
       try {
-        const output: GPUZonalStatisticsOutput = {extentStatistic: 'mean'};
+        const output: GPUZonalStatisticsOutput = {
+          extentStatistic: 'mean',
+          counts: harness.output('counts', testCase.featureCount, 'uint32')
+        };
         for (const key of ZONAL_FLOAT_OUTPUTS.filter(key => key !== 'featureAreas')) {
           output[key] = harness.output(
             key,
@@ -38,7 +41,6 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
             'float32'
           );
         }
-        output.counts = harness.output('counts', testCase.featureCount, 'uint32');
         output.valueCounts = harness.output('valueCounts', testCase.featureCount, 'uint32');
         output.status = {
           overflow: harness.output('overflow', 1, 'uint32'),

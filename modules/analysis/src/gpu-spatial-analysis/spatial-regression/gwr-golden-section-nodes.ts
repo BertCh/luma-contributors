@@ -424,7 +424,7 @@ ${stateConstants}`;
         gate.binding,
         ...(props.runningState ? [read('runningState', props.runningState, 'u32')] : [])
       ],
-      // contract-allow: single-invocation -- <=66 table rows x7 fields; GWR <=4096 bounds partials (large route pre-reduces to one); MGWR supplies bounds.
+      // contract-allow: single-invocation -- GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_SEARCH_ITERATIONS = 64 bounds 66 table rows including two endpoints, each with seven fields; MAXIMUM_DEFAULT_TILE_COUNT = 4096 bounds default-layout GWR partials (large route pre-reduces to one); MGWR supplies bounds.
       invocationCount: 1,
       declarations: searchCommon,
       body: `let nan = getNaN();
@@ -444,13 +444,13 @@ ${stateConstants}`;
     farthest = max(farthest, tileCandidates[base + 1u]);
     included = included + tileCandidates[base + 2u];
   }
-  // mgwr _init_section: adaptive [40 + 2 P, n] (n capped at the neighbour list), fixed
+  // Adaptive [min(40 + 2 P, n), n], n capped at the neighbour list; fixed
   // [min_dist / 2, 2 max_dist]; a positive caller bound replaces its default.
   var lower = 0.0;
   var upper = 0.0;
   if (isAdaptive) {
-    lower = f32(40u + 2u * P);
     upper = min(included, f32(MAXIMUM_NEIGHBORS));
+    lower = min(f32(40u + 2u * P), upper);
   } else if (included > 0.0 && nearest < SENTINEL) {
     lower = 0.5 * nearest;
     upper = 2.0 * farthest;

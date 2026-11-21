@@ -236,6 +236,39 @@ describe('curated zonal exposure publication and descriptor', () => {
     expect(result.diagnostics.some(diagnostic => diagnostic.code === 'recipe-overflow')).toBe(true);
   });
 
+  it('honors optional complete certificates through clean, loss, overflow and recovery', () => {
+    const prepared = prepare();
+    const readback = makeReadback();
+    const publish = () => publishZonalExposure(prepared, readback);
+    // Literal zone medians are hand-worked in the clean fixture: 3, 8, empty.
+    expect(publish().tables[0].columns['median']).toEqual([3, 8, null]);
+    readback.stages[0].fields['complete'] = 1;
+    expect(publish().tables[0].columns['median']).toEqual([3, 8, null]);
+    readback.stages[0].fields['complete'] = 0;
+    expect(publish().summary).toMatchObject({complete: 0, overflow: 0, candidateOverflow: 0});
+    expect(publish().diagnostics.some(item => item.code === 'recipe-overflow')).toBe(false);
+    expect(publish().diagnostics.some(item => item.code === 'recipe-incomplete')).toBe(true);
+    expect(publish().tables[0].columns['median']).toEqual([null, null, null]);
+    expect(publish().tables[0].columns['status']).toEqual([
+      'incomplete',
+      'incomplete',
+      'incomplete'
+    ]);
+    readback.stages[0].fields['complete'] = 1;
+    readback.stages[0].fields['overflow'] = 1;
+    expect(publish().summary).toMatchObject({complete: 0, overflow: 1, candidateOverflow: 0});
+    expect(publish().diagnostics.some(item => item.code === 'recipe-overflow')).toBe(true);
+    expect(publish().tables[0].columns['median']).toEqual([null, null, null]);
+    readback.stages[0].fields['overflow'] = 0;
+    expect(publish().summary).toMatchObject({complete: 1, overflow: 0, candidateOverflow: 0});
+    expect(publish().diagnostics.some(item => item.code === 'recipe-incomplete')).toBe(false);
+    readback.stages[0].fields['candidateOverflow'] = 1;
+    expect(publish().summary).toMatchObject({complete: 0, overflow: 0, candidateOverflow: 1});
+    expect(publish().tables[0].columns['median']).toEqual([null, null, null]);
+    readback.stages[0].fields['candidateOverflow'] = 0;
+    expect(publish().tables[0].columns['median']).toEqual([3, 8, null]);
+  });
+
   it('preserves population coverage but withholds invalid-threshold classification', () => {
     const readback = makeReadback();
     readback.stages[4].fields['invalidCount'] = 1;

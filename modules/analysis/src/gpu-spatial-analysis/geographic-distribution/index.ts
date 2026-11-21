@@ -22,3 +22,12 @@ export type {
   GPUGeographicDistributionEllipseConvention,
   GPUGeographicDistributionSettings
 } from './geographic-distribution-parameters';
+
+export {
+  getGPUGeographicDistributionExecutionPlan,
+  GPU_GEOGRAPHIC_DISTRIBUTION_ROUTES,
+  GPU_GEOGRAPHIC_DISTRIBUTION_PLANNER
+} from './gpu-geographic-distribution';
+
+export {GPU_GEOGRAPHIC_DISTRIBUTION_AUTO_CHUNKED_MAXIMUM_GROUPS} from './gpu-geographic-distribution';
+export type {GPUStatisticsPlanDeviceLimits} from './statistics-execution-plan';

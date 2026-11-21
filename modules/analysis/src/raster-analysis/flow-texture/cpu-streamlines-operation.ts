@@ -5,7 +5,8 @@
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateMaximumCount
+  validateMaximumCount,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
@@ -61,7 +62,8 @@ export type CPUStreamlinesResult = {
 /**
  * Traces jittered seeds using normalized RK2 and bilinear cell-centre sampling, then resolves
  * occupancy greedily in descending Philox priority. Publishes complete lines in ascending seed
- * order, stopping at the first line that exceeds either capacity. Only active rows are defined.
+ * order, stopping at the first line that exceeds either capacity. Unused offsets repeat
+ * positionCount; only active positions and IDs are defined.
  *
  * What differs from the GPU contributor:
  * - Pruning honors maximumIterations (default 32); unresolved seeds are dropped and reported by
@@ -71,12 +73,15 @@ export type CPUStreamlinesResult = {
  * - Seed placement, interpolation, normalization and RK2 arithmetic use float64,
  *   rounded once to float32 positions. Compare positions with absolute tolerance 3e-5 times
  *   placement magnitude; near field/grid boundaries integer selections can differ.
- *   Seeds and steps whose final float32 position is outside the grid are rejected/truncated.
+ *   Seeds and steps whose final float32 position has no field support or is outside the grid
+ *   are rejected/truncated. Supported below-minimumSpeed terminal landings are retained;
+ *   they cannot start a following step, matching the GPU streamline contributor.
  *   Occupancy uses published float32 coordinates with the GPU's correctly rounded subtraction
  *   and reciprocal multiplication, so the exclusive bound is checked in that representation.
  * - The 65535 seed limit remains because priorities reserve 16 bits for seed index. GPU dimension
  *   caps are dropped; field rows still fit uint32 and occupancy indices must be safe integers.
- *   Unused output rows are zero-initialized.
+ *   Unused offsets repeat positionCount; count bounds the live line prefix, and
+ *   position tails have no portable result meaning.
  * - NaN field corners invalidate a sample even at zero interpolation weight. Nonfinite
  *   directions/positions terminate tracing; subnormal finite velocities remain usable.
  *
@@ -108,6 +113,16 @@ export function computeStreamlinesOnCPU(
     stepLength,
     minimumSpeed
   ] = input.parameters;
+  for (const [name, reciprocal] of [
+    ['gridPlacement cellWidth', inverseGridWidth],
+    ['gridPlacement cellHeight', inverseGridHeight]
+  ] as const) {
+    validateRequirement(
+      'computeStreamlinesOnCPU',
+      Number.isFinite(reciprocal) && reciprocal > 0,
+      `${name} reciprocal must be positive and finite in float32; received ${reciprocal}`
+    );
+  }
   const [randomSeed, minimumPoints] = input.uint32Parameters;
   const seedCount = options.seedColumns * options.seedRows;
   const stride = 2 * options.stepsPerDirection + 1;
@@ -134,11 +149,8 @@ export function computeStreamlinesOnCPU(
   };
   // Float64 counterpart of vector-field-sampling.ts; its CPU helper intentionally rounds every
   // intermediate to float32 and therefore cannot implement this twin's arithmetic contract.
-  const getDirection = (
-    horizontal: number,
-    vertical: number,
-    sign: number
-  ): [number, number] | undefined => {
+  /** Bilinear velocity at a position, or undefined outside the field or on a missing corner. */
+  const getVelocity = (horizontal: number, vertical: number): [number, number] | undefined => {
     const localX = (horizontal - fieldOriginX) / fieldCellWidth;
     const localY = (vertical - fieldOriginY) / fieldCellHeight;
     if (
@@ -176,6 +188,15 @@ export function computeStreamlinesOnCPU(
         input.velocities[corners[3] * 2 + component] * fractionX;
       velocity[component] = bottom * (1 - fractionY) + top * fractionY;
     }
+    return velocity as [number, number];
+  };
+  const getDirection = (
+    horizontal: number,
+    vertical: number,
+    sign: number
+  ): [number, number] | undefined => {
+    const velocity = getVelocity(horizontal, vertical);
+    if (!velocity) return undefined;
     const speed = Math.hypot(...velocity);
     if (!(speed > 0) || speed < minimumSpeed || !Number.isFinite(speed)) return undefined;
     return [(sign * velocity[0]) / speed, (sign * velocity[1]) / speed];
@@ -192,6 +213,7 @@ export function computeStreamlinesOnCPU(
       (Math.floor(seed / options.seedColumns) + getPhiloxUnitFloat(random[1])) * seedCellHeight;
     if (
       !getDirection(startX, startY, 1) ||
+      !getVelocity(Math.fround(startX), Math.fround(startY)) ||
       getCell(startX, startY) < 0 ||
       getPublishedCell(startX, startY) < 0
     )
@@ -212,7 +234,15 @@ export function computeStreamlinesOnCPU(
         if (!middle) break;
         const nextX = horizontal + stepLength * middle[0];
         const nextY = vertical + stepLength * middle[1];
-        if (getCell(nextX, nextY) < 0 || getPublishedCell(nextX, nextY) < 0) break;
+        // The landing must have velocity support too: a step that leaves the field ends the
+        // line at the last supported point.
+        if (
+          !getVelocity(nextX, nextY) ||
+          !getVelocity(Math.fround(nextX), Math.fround(nextY)) ||
+          getCell(nextX, nextY) < 0 ||
+          getPublishedCell(nextX, nextY) < 0
+        )
+          break;
         horizontal = nextX;
         vertical = nextY;
         points.set([horizontal, vertical], (base + sign * step) * 2);
@@ -303,6 +333,7 @@ export function computeStreamlinesOnCPU(
     }
     result.lineOffsets[++count] = positionCount;
   }
+  result.lineOffsets.fill(positionCount, count + 1);
   result.count[0] = count;
   result.positionCount[0] = positionCount;
   result.requiredCount[0] = requiredCount;

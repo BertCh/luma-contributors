@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, expectTypeOf, it} from 'vitest';
 import {
   getGPUChangeDetectionParameterValues,
   GPUChangeDetection,
@@ -15,6 +15,21 @@ import {
   detectChangeOnCPU,
   studentTTwoSidedPOnCPU
 } from './change-detection-cpu';
+
+it('DEF-09 requires a terminal change output and accepts a minimal difference selection', () => {
+  expectTypeOf<{}>().not.toExtend<GPUChangeDetectionProps['output']>();
+  expectTypeOf<{difference: undefined}>().not.toExtend<GPUChangeDetectionProps['output']>();
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  try {
+    const props = createProps(graph);
+    const output = {
+      difference: createTransientView(graph, 'minimal-difference', 'float32', 3)
+    } satisfies GPUChangeDetectionProps['output'];
+    expect(() => new GPUChangeDetection({...props, output})).not.toThrow();
+  } finally {
+    graph.device.destroy();
+  }
+});
 
 let serial = 0;
 
@@ -64,6 +79,7 @@ it('GPUChangeDetection rejects invalid properties', () => {
   expectThrows(() => ({sliceCount: 1}), /sliceCount/);
   expectThrows(() => ({sliceCount: 257}), /sliceCount/);
   expectThrows(() => ({bandCount: 0}), /bandCount/);
+  // @ts-expect-error Deliberately invalid JavaScript call exercises the runtime output guard.
   expectThrows(() => ({output: {}}), /at least one output/);
   expectThrows(graph => ({slices: createTransientView(graph, 'short', 'float32', 17)}), /slices/);
   expectThrows(
@@ -263,4 +279,40 @@ it('detectChangeOnCPU handles two-slice edge cases and multiband vectors', () =>
   });
   // Band 0 increased (bit 0), band 1 decreased (bit 17), band 2 unchanged.
   expect(threeBands.changeDirection[0]).toBe(1 | (1 << 17));
+});
+
+it('B4 refuses typo-only JavaScript output selections', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  try {
+    const props = createProps(graph);
+    const output: GPUChangeDetectionProps['output'] = {
+      // @ts-expect-error Deliberately unknown JavaScript output name.
+      typo: createTransientView(graph, 'typo', 'float32', 3)
+    };
+    expect(() => new GPUChangeDetection({...props, output})).toThrow(/at least one output/);
+  } finally {
+    graph.device.destroy();
+  }
+});
+it('B4 captures a getter-only difference selection for graph wiring', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  try {
+    const props = createProps(graph);
+    const original = createTransientView(graph, 'getter-difference', 'float32', 3);
+    let destination = original;
+    let reads = 0;
+    const output = new (class {
+      get difference() {
+        reads++;
+        return destination;
+      }
+    })();
+    const contributor = new GPUChangeDetection({...props, output});
+    destination = createTransientView(graph, 'replacement', 'float32', 3);
+    expect(contributor.props.output.difference).toBe(original);
+    expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+    expect(reads).toBe(1);
+  } finally {
+    graph.device.destroy();
+  }
 });

@@ -35,25 +35,30 @@ import {getDataFrameOperatorEntry} from '../../../gpu-dataframe/computation-pack
 import {mergeGPUCoreFormulaRefsForGraphs} from '../../../computation-views/packs/gpu-core/formulas';
 import {type GPUComputationAxis} from '@luma-contributors/analysis/computation-record';
 
+import type {LensDatasetResolver} from '../../types';
 import {applyLensUserInput} from '../../user-input';
 import {assertValidLensRecord, assertValidLensSidecars} from '../../validate-lens-record';
 import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 
 /** Loads all Chicago tract columns, including nullable income. */
 export function loadDataFrameLensData(
-  name: 'f-chicago-tracts'
+  name: 'f-chicago-tracts',
+  resolver?: LensDatasetResolver
 ): Promise<typeof import('../../data/f-chicago-tracts.json')>;
 /** Loads the deterministic sample of Chicago observations. */
 export function loadDataFrameLensData(
-  name: 'f-chicago-nature'
+  name: 'f-chicago-nature',
+  resolver?: LensDatasetResolver
 ): Promise<typeof import('../../data/f-chicago-nature.json')>;
 /** Loads the deterministic sample of NOAA weather stations. */
 export function loadDataFrameLensData(
-  name: 'f-ghcn-stations'
+  name: 'f-ghcn-stations',
+  resolver?: LensDatasetResolver
 ): Promise<typeof import('../../data/f-ghcn-stations.json')>;
 /** Accepts a runtime choice of dataset as well as the precisely typed literal overloads. */
 export function loadDataFrameLensData(
-  name: 'f-chicago-tracts' | 'f-chicago-nature' | 'f-ghcn-stations'
+  name: 'f-chicago-tracts' | 'f-chicago-nature' | 'f-ghcn-stations',
+  resolver?: LensDatasetResolver
 ): Promise<
   | typeof import('../../data/f-chicago-tracts.json')
   | typeof import('../../data/f-chicago-nature.json')
@@ -61,20 +66,26 @@ export function loadDataFrameLensData(
 >;
 /** Loads a deterministic local dataset only when a dataframe lens is activated. */
 export async function loadDataFrameLensData(
-  name: 'f-chicago-tracts' | 'f-chicago-nature' | 'f-ghcn-stations'
+  name: 'f-chicago-tracts' | 'f-chicago-nature' | 'f-ghcn-stations',
+  resolver?: LensDatasetResolver
 ) {
   // While a host runs the scenario on user data (user-input.ts), mapped columns replace these.
   switch (name) {
     case 'f-chicago-tracts':
       return applyLensUserInput(
-        (await EMBEDDED_DATASET_LOADERS['f-chicago-tracts.json']()).default
+        (await EMBEDDED_DATASET_LOADERS['f-chicago-tracts.json']()).default,
+        resolver
       );
     case 'f-chicago-nature':
       return applyLensUserInput(
-        (await EMBEDDED_DATASET_LOADERS['f-chicago-nature.json']()).default
+        (await EMBEDDED_DATASET_LOADERS['f-chicago-nature.json']()).default,
+        resolver
       );
     case 'f-ghcn-stations':
-      return applyLensUserInput((await EMBEDDED_DATASET_LOADERS['f-ghcn-stations.json']()).default);
+      return applyLensUserInput(
+        (await EMBEDDED_DATASET_LOADERS['f-ghcn-stations.json']()).default,
+        resolver
+      );
   }
 }
 

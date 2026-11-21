@@ -63,7 +63,11 @@ export async function runExample(
       boundaryRule: 'half-open',
       edgeSlabs: false,
       candidateCapacity: input.observations.length * featureCounts.length,
-      output: {pointFeatureIds: tractIds, featureCounts, status: {overflow, uncertainCount}}
+      output: {
+        pointFeatureIds: tractIds,
+        polygonAssignmentCounts: featureCounts,
+        status: {overflow, uncertainCount}
+      }
     })
   );
   // tractIds colours observations; featureCounts counts assignments per tract.

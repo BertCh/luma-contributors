@@ -40,7 +40,7 @@ export default defineOperationRun({
       values: valueBuffer.view,
       parameters: parameterBuffer.view,
       residualPower: values.residualPower === 1 ? 1 : 2,
-      outputs: {losh: losh.view, quadrants: quadrants.view}
+      output: {losh: losh.view, quadrants: quadrants.view}
     });
     return {
       outputs: {losh, quadrants, mesh: uploadTractMesh(builder, tracts)},

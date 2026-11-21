@@ -376,10 +376,10 @@ it('GPURasterProfile matches the oracle bit-exactly on exact multi-line scenes f
   const extent = [0, 0, 64, 64] as const;
   let sawNaNValue = false;
   for (const [method, noDataPolicy, spacing] of [
-    ['nearest', 'strict', 0.75],
-    ['bilinear', 'strict', 1.5],
+    ['nearest', 'propagate', 0.75],
+    ['bilinear', 'propagate', 1.5],
     ['bilinear', 'renormalize', 0.5],
-    ['bicubic', 'strict', 2],
+    ['bicubic', 'propagate', 2],
     ['bicubic', 'renormalize', 1]
   ] as const) {
     const settings: ProfileCase = {

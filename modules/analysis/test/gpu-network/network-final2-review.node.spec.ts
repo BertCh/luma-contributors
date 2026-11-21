@@ -123,7 +123,7 @@ it('network:G6 empty starts require a positive round before certifying reachabil
   expect(result.iterationLimitReached[0]).toBe(1);
 });
 
-const PATH_PROPS: NetworkPathExtractionOperationProps = {
+const PATH_PROPS = {
   nodeCount: 2,
   targetCapacity: 1,
   predecessors: 'predecessors',
@@ -134,7 +134,7 @@ const PATH_PROPS: NetworkPathExtractionOperationProps = {
     ids: 'ids',
     status: {count: 'count', overflow: 'overflow', requiredCount: 'required'}
   }
-};
+} satisfies NetworkPathExtractionOperationProps;
 
 it('network:G9 rejects swapped row ports before lowering', () => {
   for (const Operation of [GPUNetworkPathExtractionOperation, CPUNetworkPathExtractionOperation]) {
@@ -152,6 +152,7 @@ it('network:G9 rejects swapped row ports before lowering', () => {
       () =>
         new Operation({
           ...PATH_PROPS,
+          predecessorEdges: 'predecessorEdges',
           edges: {
             edgeCount: 1,
             topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},

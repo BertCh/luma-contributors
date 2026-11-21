@@ -24,6 +24,7 @@ import {
 } from '../../analysis-core/contracts/status';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getLocalKernelWeightWGSL} from './local-weighted-least-squares-wgsl';
+import {LOCAL_REGRESSION_PAIRS_WGSL} from './local-regression-pairs-wgsl';
 import {
   createGoldenSectionIntervalNodes,
   getGoldenSectionIntervalNodeCount
@@ -287,6 +288,7 @@ export function createMGTWRComponentEvaluationNodes<Parameters>(
     points: GraphDataView<'float32'>;
     predictors: GraphDataView<'float32'>;
     partial: GraphDataView<'float32'>;
+    partialCorrections?: GraphDataView<'float32'>;
     parameters: GraphDataView<'float32'>;
     adaptive: boolean;
     bisquare: boolean;
@@ -294,7 +296,9 @@ export function createMGTWRComponentEvaluationNodes<Parameters>(
   }
 ): {nodes: GPUCommandNode<Parameters>[]; summary: GraphDataView<'float32'>} {
   const {id, rows, gate} = props;
-  const scratch = createTransientView(graph, `${id}-fit`, 'float32', rows * 3);
+  const scratch = createTransientView(graph, `${id}-fit`, 'float32', rows * 4);
+  const scoreScratch = createTransientView(graph, `${id}-score-fit`, 'float32', rows * 3);
+  const residuals = createTransientView(graph, `${id}-residuals`, 'float32', rows);
   const summary = createTransientView(graph, `${id}-summary`, 'float32', 12);
   const design = (row: string) =>
     props.component === 0
@@ -312,20 +316,52 @@ export function createMGTWRComponentEvaluationNodes<Parameters>(
           {name: 'points', view: props.points, type: 'f32', access: 'read'},
           {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
           {name: 'partial', view: props.partial, type: 'f32', access: 'read'},
+          ...(props.partialCorrections
+            ? [
+                {
+                  name: 'partialCorrections',
+                  view: props.partialCorrections,
+                  type: 'f32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'scratch', view: scratch, type: 'f32', access: 'read_write'}
         ],
-        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${getLocalKernelWeightWGSL()}\n${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
-        body: `let base = scratchOffset + index * 3u;
+        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${getLocalKernelWeightWGSL()}\n${LOCAL_REGRESSION_PAIRS_WGSL}\n${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}
+fn readPartialValue(row: u32) -> vec2f {
+  return vec2f(partial[partialOffset + row], ${props.partialCorrections ? 'partialCorrections[partialCorrectionsOffset + row]' : '0.0'});
+}`,
+        body: `let base = scratchOffset + index * 4u;
   scratch[base] = getNaN();
   scratch[base + 1u] = getNaN();
   scratch[base + 2u] = select(0.0, 1.0, isFiniteBits(points[pointsOffset + index * 3u]));
+  scratch[base + 3u] = getNaN();
   if (scratch[base + 2u] == 0.0) { return; }
   let timeScale = parameters[parametersOffset + 1u];
   let bandwidth = ${props.adaptive ? 'getAdaptiveBandwidth(index, parameters[parametersOffset], timeScale)' : 'parameters[parametersOffset]'};
   if (!(bandwidth > 0.0 && isFiniteBits(bandwidth) && timeScale >= 0.0 && isFiniteBits(timeScale))) { return; }
-  var numerator = 0.0;
-  var denominator = 0.0;
+  var numeratorPair = vec2f(0.0);
+  var denominatorPair = vec2f(0.0);
+  ${
+    props.component === 0
+      ? `var minimum = 3.402823466e+38;
+  var maximum = -3.402823466e+38;
+  for (var row = 0u; row < ${rows}u; row++) {
+    if (!isFiniteBits(points[pointsOffset + row * 3u])) { continue; }
+    let origin = pointsOffset + index * 3u;
+    let deltaX = points[pointsOffset + row * 3u] - points[origin];
+    let deltaY = points[pointsOffset + row * 3u + 1u] - points[origin + 1u];
+    let deltaTime = points[pointsOffset + row * 3u + 2u] - points[origin + 2u];
+    let distance = sqrt(deltaX * deltaX + deltaY * deltaY + timeScale * deltaTime * deltaTime);
+    if (!(getLocalKernelWeight(distance, bandwidth, ${props.bisquare ? 'true' : 'false'}) > 0.0)) { continue; }
+    minimum = min(minimum, partial[partialOffset + row]);
+    maximum = max(maximum, partial[partialOffset + row]);
+  }
+  let partialAnchor = getRegressionResponseOrigin(minimum, maximum);`
+      : 'let partialAnchor = 0.0;'
+  }
   for (var row = 0u; row < ${rows}u; row++) {
     let point = pointsOffset + row * 3u;
     let origin = pointsOffset + index * 3u;
@@ -336,17 +372,42 @@ export function createMGTWRComponentEvaluationNodes<Parameters>(
     let distance = sqrt(deltaX * deltaX + deltaY * deltaY + timeScale * deltaTime * deltaTime);
     let weight = getLocalKernelWeight(distance, bandwidth, ${props.bisquare ? 'true' : 'false'});
     let design = ${design('row')};
-    numerator += weight * design * partial[partialOffset + row];
-    denominator += weight * design * design;
+    if (!(weight > 0.0)) { continue; }
+    let centered = addRegressionPairs(readPartialValue(row), vec2f(-partialAnchor, 0.0));
+    numeratorPair = addRegressionPairs(numeratorPair, multiplyRegressionPair(multiplyRegressionPair(centered, design), weight));
+    denominatorPair = addRegressionPairs(denominatorPair, multiplyRegressionPair(multiplyRegressionPair(vec2f(design, 0.0), design), weight));
   }
   let ownDesign = ${design('index')};
+  let numerator = numeratorPair.x + numeratorPair.y;
+  let denominator = denominatorPair.x + denominatorPair.y;
   if (denominator > 0.0 && isFiniteBits(numerator) && isFiniteBits(denominator)) {
     // Divide before multiplying by the focal design, as in the final component smoother.
     // ownDesign * numerator can overflow even when the coefficient and fitted value are finite.
-    let coefficient = numerator / denominator;
-    scratch[base] = ownDesign * coefficient;
+    let coefficient = addRegressionPairs(vec2f(partialAnchor, 0.0), divideRegressionPair(numeratorPair, denominatorPair));
+    let fitted = multiplyRegressionPair(coefficient, ownDesign);
+    let residual = addRegressionPairs(readPartialValue(index), -fitted);
+    scratch[base] = fitted.x + fitted.y;
+    scratch[base + 3u] = residual.x + residual.y;
     scratch[base + 1u] = ownDesign * ownDesign / denominator;
   }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-retain-residuals`,
+        operation: 'MGTWRComponentBandwidthSearch',
+        invocationCount: rows,
+        ...gate.getGate(0),
+        bindings: [
+          {name: 'fit', view: scratch, type: 'f32', access: 'read'},
+          {name: 'scratch', view: scoreScratch, type: 'f32', access: 'read_write'},
+          {name: 'residuals', view: residuals, type: 'f32', access: 'read_write'}
+        ],
+        declarations: IS_FINITE_BITS_WGSL,
+        body: `let source = fitOffset + index * 4u;
+  let destination = scratchOffset + index * 3u;
+  scratch[destination] = select(fit[source], 0.0, isFiniteBits(fit[source]));
+  scratch[destination + 1u] = fit[source + 1u];
+  scratch[destination + 2u] = fit[source + 2u];
+  residuals[residualsOffset + index] = fit[source + 3u];`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-summary`,
@@ -354,8 +415,8 @@ export function createMGTWRComponentEvaluationNodes<Parameters>(
         invocationCount: 1,
         ...gate.getGate(1),
         bindings: [
-          {name: 'scratch', view: scratch, type: 'f32', access: 'read'},
-          {name: 'partial', view: props.partial, type: 'f32', access: 'read'},
+          {name: 'scratch', view: scoreScratch, type: 'f32', access: 'read'},
+          {name: 'partial', view: residuals, type: 'f32', access: 'read'},
           {name: 'summary', view: summary, type: 'f32', access: 'read_write'}
         ],
         declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,

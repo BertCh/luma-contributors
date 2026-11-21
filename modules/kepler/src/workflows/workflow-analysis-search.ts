@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUAnalysisQuestion} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {getGPUAnalysisQuestion} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {getCatalogBinding} from '../analysis/catalog-bindings';
 import {KEPLER_CURATED_ANALYSES} from '../curated/curated-analyses';
 import {

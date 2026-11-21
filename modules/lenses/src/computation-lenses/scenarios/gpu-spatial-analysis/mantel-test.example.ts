@@ -82,7 +82,7 @@ export async function runExample(
     (values: Uint32Array): GraphDataView<'uint32'>;
   };
   // #region example
-  const searchValues = getGPUNeighborSearchParameterValues({bounds, radius: band});
+  const searchValues = getGPUNeighborSearchParameterValues({bounds, searchRadius: band});
   const mantelValues = getGPUSpaceTimeParameterValues({seed: 1, permutationCount: 199});
   const search = new GPUNeighborSearch({
     spatialContext,

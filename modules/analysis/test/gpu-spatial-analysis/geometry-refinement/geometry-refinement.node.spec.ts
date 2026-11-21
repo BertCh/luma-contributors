@@ -16,7 +16,8 @@ import {
   GPUConvexStraightSkeleton,
   GPULineLoopRemoval,
   GPUPolygonPrecisionReduction,
-  GPUCanonicalPolygonEquality
+  GPUCanonicalPolygonEquality,
+  GPUCanonicalGeometryEquality
 } from '../../../src/gpu-spatial-analysis/geometry-refinement/index';
 import {
   createNullWebGPUDevice,
@@ -29,8 +30,116 @@ import {
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {createTopologyOutput} from './topology-output';
 import {useCPUExecutorTestHooks} from '../segment-intersection/cpu-executor-test-hooks';
+import {createEqualityMetricFixture, type EqualityView} from './canonical-equality-fixture';
 
 useCPUExecutorTestHooks();
+
+for (const kind of ['tree', 'polygon'] as const) {
+  it(`${kind} equality retains float32 upper-edge tolerance acceptance`, () => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const view: EqualityView = (format, values) =>
+      createTransientView(
+        graph,
+        `upper-${serial++}`,
+        format,
+        values.length / Number(format.match(/x(\d)$/)?.[1] ?? 1)
+      );
+    try {
+      const fixture = createEqualityMetricFixture(
+        kind,
+        'euclidean',
+        view,
+        [0.75, 0.75],
+        3.4028234663852894e38
+      );
+      expect(fixture.contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+    } finally {
+      device.destroy();
+    }
+  });
+  it.each([
+    {name: 'interior', delta: [3, 4] as const, tolerance: 6, expected: 1},
+    {
+      name: 'exact Pythagorean boundary',
+      delta: [3683, 7644] as const,
+      tolerance: 8485,
+      expected: 1
+    },
+    {name: 'exterior', delta: [3, 4] as const, tolerance: 4, expected: 0}
+  ])(`${kind} Euclidean equality accepts inclusive boundaries: $name`, fixture => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const memory = createCPUGraphMemory();
+    const view: EqualityView = (format, values) => {
+      const result = createTransientView(
+        graph,
+        `boundary-${serial++}`,
+        format,
+        values.length / Number(format.match(/x(\d)$/)?.[1] ?? 1)
+      );
+      memory.write(
+        result,
+        format.startsWith('float') ? Float32Array.from(values) : Uint32Array.from(values)
+      );
+      return result;
+    };
+    try {
+      const comparison = createEqualityMetricFixture(
+        kind,
+        'euclidean',
+        view,
+        fixture.delta,
+        fixture.tolerance
+      );
+      executeCommandNodesOnCPU(comparison.contributor.getCommandNodes(graph), memory);
+      // 3683^2 + 7644^2 = 71,995,225 = 8485^2 exactly; (3,4) has distance five.
+      expect(Array.from(memory.readUint32(comparison.output))).toEqual([fixture.expected]);
+    } finally {
+      device.destroy();
+    }
+  });
+}
+
+for (const kind of ['tree', 'polygon'] as const) {
+  it.each([
+    undefined,
+    'per-coordinate',
+    'euclidean'
+  ] as const)(`${kind} equality names its tolerance metric: %s`, metric => {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const memory = createCPUGraphMemory();
+    const view: EqualityView = (format, values) => {
+      const width = Number(format.match(/x(\d)$/)?.[1] ?? 1);
+      const result = createTransientView(
+        graph,
+        `equality-${serial++}`,
+        format,
+        values.length / width
+      );
+      memory.write(
+        result,
+        format.startsWith('float') ? Float32Array.from(values) : Uint32Array.from(values)
+      );
+      return result;
+    };
+    const fixture = createEqualityMetricFixture(kind, metric, view);
+    executeCommandNodesOnCPU(fixture.contributor.getCommandNodes(graph), memory);
+    // sqrt(.75^2 + .75^2) = sqrt(1.125) > 1; each coordinate separately is < 1.
+    expect(Array.from(memory.readUint32(fixture.output))).toEqual([metric === 'euclidean' ? 0 : 1]);
+    expect(() =>
+      fixture.contributor instanceof GPUCanonicalGeometryEquality
+        ? new GPUCanonicalGeometryEquality({
+            ...fixture.contributor.props,
+            toleranceMetric: 'taxicab' as never
+          })
+        : new GPUCanonicalPolygonEquality({
+            ...fixture.contributor.props,
+            toleranceMetric: 'taxicab' as never
+          })
+    ).toThrow(/metric-test.*toleranceMetric.*per-coordinate.*euclidean.*taxicab/);
+  });
+}
 let serial = 0;
 function createFixture(coordinates = [0, 0, 4, 0, 4, 4, 0, 4]) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());

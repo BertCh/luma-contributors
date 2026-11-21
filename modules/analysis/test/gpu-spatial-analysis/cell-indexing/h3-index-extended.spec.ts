@@ -26,7 +26,7 @@ import {requireTestDevice} from '../../utils/require-test-device';
 const ROWS = 20000;
 
 /** Compiles one `GPUPointToCell` H3 graph and returns a runner over up to ROWS points. */
-function createIndexer(device: Device, resolution: number, precision: 'float32' | 'extended') {
+function createIndexer(device: Device, resolution: number, precision: 'float32' | 'double-single') {
   const positions = createInputBuffer(device, new Float32Array(2 * ROWS));
   const cells = createOutputBuffer(device, 2 * ROWS);
   const graph = new GPUCommandGraph(device, {id: `h3-${precision}-${resolution}`});
@@ -87,7 +87,7 @@ it('GPUPointToCell H3 precision extended matches h3-js on the same f32 inputs', 
   requireTestDevice(device);
   const table: string[] = ['res | uniform  edge  pentagon  special | f32 uniform'];
   for (let resolution = 0; resolution <= 15; resolution++) {
-    const extended = createIndexer(device, resolution, 'extended');
+    const extended = createIndexer(device, resolution, 'double-single');
     const plain = createIndexer(device, resolution, 'float32');
     const sets = {
       uniform: createUniformSpherePoints(ROWS, 1000 + resolution),

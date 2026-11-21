@@ -5,6 +5,7 @@
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {decodeSavedLICSettings} from './flow-texture/saved-flow-parameters';
 import {expect, it} from 'vitest';
 import {convolveLineIntegralOnCPU} from '../oracles/line-integral-convolution-cpu';
 import {getGPULineIntegralConvolutionParameterValues} from '../../src/raster-analysis/flow-texture/index';
@@ -51,7 +52,7 @@ for (const scene of licCases) {
       scene.width,
       scene.height,
       scene.stepCount,
-      getGPULineIntegralConvolutionParameterValues(scene.settings),
+      getGPULineIntegralConvolutionParameterValues(decodeSavedLICSettings(scene.settings)),
       scene.settings.seed!
     );
     compareRasterParity(

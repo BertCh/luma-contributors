@@ -28,8 +28,7 @@ export function makeHierarchyProps(nodeCapacity = 8): TerrainDepressionHierarchy
       levels: 'levels',
       cellNodes: 'cellNodes',
       curves: 'curves',
-      status: 'status',
-      ports: {status: {requiredCount: 'requiredCount', overflow: 'overflow'}}
+      status: {count: 'count', requiredCount: 'requiredCount', overflow: 'overflow'}
     }
   };
 }

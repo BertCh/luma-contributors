@@ -42,13 +42,17 @@ export function buildKernelSourceModel(
     return {status: 'unavailable', reason: `source text not retained (only hash ${source.hash})`};
   }
   const lines = source.text.split(/\r?\n/);
+  // A source ref is shared by every node with the same module text; the node records its own
+  // entry point and explicit overrides. Absent node constants do not establish that this
+  // invocation used another pipeline's overrides retained on the shared source ref.
+  const entryPoint = node.entryPoint ?? source.entryPoint;
   return {
     sourceId: source.id,
     language: source.language,
     moduleId: source.moduleId,
-    entryPoint: source.entryPoint,
+    entryPoint,
     hashLabel: source.hash,
-    constants: source.constants,
+    constants: node.constants,
     bindings: [...(node.bindings ?? [])],
     truncatedLineCount: Math.max(0, lines.length - 200),
     lines: lines.slice(0, 200).map((text, index) => {
@@ -60,10 +64,7 @@ export function buildKernelSourceModel(
       )
         marks.push('binding');
       if (text.includes('@workgroup_size')) marks.push('workgroup-size');
-      if (
-        source.entryPoint &&
-        text.match(/\bfn\s+([A-Za-z_][A-Za-z_0-9]*)/)?.[1] === source.entryPoint
-      )
+      if (entryPoint && text.match(/\bfn\s+([A-Za-z_][A-Za-z_0-9]*)/)?.[1] === entryPoint)
         marks.push('entry-point');
       return {number: index + 1, text, marks};
     })

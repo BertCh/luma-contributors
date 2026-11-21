@@ -3,8 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export type {GPUIsolinesTile} from './isolines-tile';
-export {GPUIsolines} from './gpu-isolines';
+export {GPUIsolines, decodeGPUIsolinesPolylines} from './gpu-isolines';
 export type {
+  GPUIsolinesFloatReadback,
+  GPUIsolinesUintReadback,
+  GPUIsolinesPolylineReadback,
+  GPUIsolinesDecodedPolylines,
   GPUIsolinesOutput,
   GPUIsolinesPolylineOutput,
   GPUIsolinesProps,

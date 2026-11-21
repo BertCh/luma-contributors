@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  isUnknownCaptureValue,
+  getInterpretedCaptureValue,
+  isUncertifiedRasterJoinCapture
+} from './capture-missing-values';
+import {resolveCaptureCompanion, resolvePointCaptureWindow} from './capture-scope';
 import {renderRasterImage, getRasterSamplingNote} from '../encoding/raster-image';
 import type {
   GPUComputationCapture,
@@ -9,6 +15,7 @@ import type {
 } from '@luma-contributors/analysis/computation-record';
 import type {LensRecord, ViewContext, ViewRegistration} from '../registry/view-registration';
 import {h, findViewNodes, viewNodeToDom, type ViewElementNode} from '../view-node';
+import {groupTableColumns} from './table-column-groups';
 import {
   provenanceBadge,
   provenanceMarkAttributes,
@@ -85,13 +92,6 @@ function getResultCaptures(record: LensRecord): GPUComputationCapture[] {
     .filter(capture => ['input', 'output', 'context'].includes(capture.role ?? ''));
 }
 
-function resolveCapture(record: LensRecord, reference?: string): GPUComputationCapture | undefined {
-  return reference === undefined
-    ? undefined
-    : (getAllCaptures(record).find(capture => capture.id === reference) ??
-        getFinalStateCapture(record, reference));
-}
-
 /** Points per capture, so re-renders (scrubbing, highlight passes) do not rematerialise them. */
 const pointCache = new WeakMap<
   GPUComputationCapture,
@@ -121,20 +121,38 @@ function getRole(capture: GPUComputationCapture): ResultPanel['role'] {
 }
 
 function buildPanel(capture: GPUComputationCapture, context: ViewContext): ResultPanel {
-  const geometry = capture.geometry;
-  const resolve = (reference?: string) => {
-    const finalCapture = resolveCapture(context.record, reference);
-    return capture.iteration === undefined || !finalCapture || finalCapture.id === reference
-      ? finalCapture
-      : (getAllCaptures(context.record).find(
-          candidate =>
-            candidate.name === finalCapture.name && candidate.iteration === capture.iteration
-        ) ?? finalCapture);
-  };
+  // SVG raster placement currently supports square axis-aligned cells. Preserve the captured
+  // affine in the record, but state pixel space rather than inventing square ground footprints.
+  let geometry = capture.geometry;
+  let pixelSpace = false;
+  if (geometry?.kind === 'raster' && geometry.affine) {
+    const [columnX, rowX, originX, columnY, rowY, originY] = geometry.affine;
+    if (columnX > 0 && rowX === 0 && columnY === 0 && Math.abs(rowY) === columnX) {
+      const shift = geometry.pixelInterpretation === 'point' ? -0.5 : 0;
+      geometry = {
+        ...geometry,
+        cellSize: columnX,
+        rowDirection: rowY > 0 ? 'north' : 'south',
+        origin: [originX + shift * columnX, originY + shift * rowY]
+      };
+    } else {
+      pixelSpace = true;
+      geometry = {
+        ...geometry,
+        coordinateModel: 'projected',
+        unit: 'pixels',
+        origin: undefined,
+        cellSize: 1,
+        rowDirection: 'south'
+      };
+    }
+  }
+  const resolve = (reference?: string) =>
+    resolveCaptureCompanion(context.record, capture, reference);
   const offsets =
     geometry && 'offsetsCapture' in geometry ? resolve(geometry.offsetsCapture) : undefined;
   const targets = geometry?.kind === 'graph' ? resolve(geometry.targetsCapture) : undefined;
-  const values =
+  const resolvedValues =
     !geometry || geometry.kind === 'raster'
       ? capture
       : geometry.valuesCapture !== undefined
@@ -142,6 +160,9 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
         : geometry.kind === 'graph' && capture.values.length
           ? capture
           : undefined;
+  const uncertifiedJoin =
+    resolvedValues && isUncertifiedRasterJoinCapture(context.record, resolvedValues, capture);
+  const values = uncertifiedJoin ? undefined : resolvedValues;
   let points =
     geometry?.kind === 'graph'
       ? getPoints(resolve(geometry.layoutCapture))
@@ -150,34 +171,10 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
         : [];
   let pointCount: number | 'unknown' = points.length;
   if (geometry?.kind === 'points' && geometry.countCapture !== undefined) {
-    const count = resolve(geometry.countCapture);
-    const activeCount = count && getCaptureValue(count, getCaptureFirstKey(count));
-    const resource = context.record.graphs
-      .find(graph => graph.id === capture.graph)
-      ?.resources?.find(
-        resource =>
-          resource.id === capture.resource &&
-          resource.kind === 'buffer' &&
-          resource.bytesKind === 'logical'
-      );
-    const pointCapacity =
-      context.record.axes.keySpaces.find(space => space.id === capture.keySpace)?.size ??
-      (resource ? Math.floor(resource.bytes / ((capture.components ?? 2) * 4)) : undefined);
-    if (
-      count &&
-      getCaptureRowCount(count) === 1 &&
-      (count.components ?? 1) === 1 &&
-      activeCount !== undefined &&
-      Number.isSafeInteger(activeCount) &&
-      activeCount >= 0 &&
-      activeCount !== 0xffffffff &&
-      (pointCapacity === undefined || activeCount <= pointCapacity)
-    ) {
-      pointCount = activeCount;
-      points = points.slice(
-        0,
-        Math.min(points.length, Math.max(0, activeCount - getCaptureFirstKey(capture)))
-      );
+    const window = resolvePointCaptureWindow(context.record, capture);
+    if (window) {
+      pointCount = window.count;
+      points = points.slice(0, Math.max(0, window.end - window.first));
     } else {
       pointCount = 'unknown';
       points = [];
@@ -201,7 +198,7 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
     targets,
     values,
     palette,
-    scale: values ? resolveValueScale(context, values.name)?.scale : undefined,
+    scale: values ? resolveValueScale(context, values.name, values)?.scale : undefined,
     count: !geometry
       ? getCaptureRowCount(capture)
       : geometry.kind === 'raster'
@@ -221,9 +218,13 @@ function buildPanel(capture: GPUComputationCapture, context: ViewContext): Resul
           ? 'nodes'
           : geometry.kind,
     blockSize: 1,
-    notes: []
+    notes: pixelSpace
+      ? ['Ground affine recorded; rectangular or rotated placement is shown in pixel space.']
+      : []
   };
   if (pointCount === 'unknown') panel.unknown = 'active point count capture missing or invalid';
+  if (uncertifiedJoin)
+    panel.notes.push('unknown — raster join assignments are uncertified for this graph and frame');
   if (palette === 'nom' && values) {
     const frequencies = new Map<number, number>();
     const finalValues =
@@ -383,8 +384,24 @@ export function buildResultViewModel(context: ViewContext): ResultViewModel {
   );
   const candidates = snapshots.map(capture => buildPanel(capture, context));
   if (snapshots.length >= 2 && snapshots.at(-1)?.id !== outputCapture.id) candidates.push(output);
-  const signature = (panel: ResultPanel) =>
-    Array.from(panel.values?.values ?? panel.capture.values);
+  const signature = (panel: ResultPanel) => {
+    if (panel.geometry?.kind === 'lines' || panel.geometry?.kind === 'polygons') {
+      if (panel.unknown) return ['unknown', panel.unknown];
+      return getDrawablePanelFeatures(panel).flatMap(feature => [
+        feature.row,
+        feature.vertices.length,
+        ...feature.vertices.flat(),
+        panel.values ? getCaptureValue(panel.values, feature.row) : undefined
+      ]);
+    }
+    return [
+      panel.count,
+      ...(panel.geometry?.kind === 'points'
+        ? [getCaptureFirstKey(panel.capture), panel.points.length, ...panel.points.flat()]
+        : []),
+      ...Array.from(panel.values?.values ?? panel.capture.values)
+    ];
+  };
   const firstValues = candidates[0] && signature(candidates[0]);
   const changed =
     firstValues &&
@@ -401,6 +418,7 @@ export function buildResultViewModel(context: ViewContext): ResultViewModel {
     const note = getRasterSamplingNote(...output.geometry.shape, 96, output.palette === 'nom');
     if (note) output.notes.push(`Animation: ${note}`);
   }
+  alignPixelRasterCompanions([...new Set([...panels, ...frames])], output);
   const spatialPanels = (
     thumbnail
       ? [...panels.filter(panel => panel.role === 'context'), output]
@@ -461,6 +479,54 @@ export function buildResultViewModel(context: ViewContext): ResultViewModel {
   return model;
 }
 
+/** A ground-space companion must use the same displayed pixel frame as an affine raster. */
+function alignPixelRasterCompanions(panels: ResultPanel[], output: ResultPanel): void {
+  const isPixelRaster = (panel: ResultPanel) =>
+    panel.geometry?.kind === 'raster' &&
+    panel.geometry.unit === 'pixels' &&
+    panel.geometry.affine !== undefined;
+  const raster = isPixelRaster(output) ? output : panels.find(isPixelRaster);
+  const source = raster?.capture.geometry;
+  if (!raster || source?.kind !== 'raster' || !source.affine) return;
+  const [columnX, rowX, originX, columnY, rowY, originY] = source.affine;
+  const determinant = columnX * rowY - rowX * columnY;
+  const shift = source.pixelInterpretation === 'point' ? 0.5 : 0;
+  for (const panel of panels) {
+    const geometry = panel.geometry;
+    if (!geometry || panel === raster || panel.unknown) continue;
+    if (geometry.kind === 'raster') {
+      if (
+        JSON.stringify(geometry.affine) === JSON.stringify(source.affine) &&
+        geometry.pixelInterpretation === source.pixelInterpretation &&
+        geometry.crs === source.crs &&
+        geometry.frameId === source.frameId
+      )
+        continue;
+    } else if (
+      geometry.kind !== 'graph' &&
+      geometry.coordinateModel === source.coordinateModel &&
+      geometry.unit === source.unit &&
+      geometry.unit !== undefined &&
+      Number.isFinite(determinant) &&
+      determinant !== 0
+    ) {
+      panel.points = panel.points.map(([horizontal, vertical]): [number, number] => {
+        const deltaX = horizontal - originX;
+        const deltaY = vertical - originY;
+        return [
+          (rowY * deltaX - rowX * deltaY) / determinant + shift,
+          source.shape[1] - ((columnX * deltaY - columnY * deltaX) / determinant + shift)
+        ];
+      });
+      panel.geometry = {...geometry, coordinateModel: 'projected', unit: 'pixels'};
+      panel.notes.push('Ground coordinates transformed into the raster pixel frame.');
+      continue;
+    }
+    panel.unknown = 'cannot align this ground placement with the raster pixel frame';
+    panel.notes.push(panel.unknown);
+  }
+}
+
 /** Base geometry shares a vertex budget; selection and highlight overlays reuse its samples. */
 function getPanelVertexBudget(model: ResultViewModel): number {
   return Math.max(
@@ -472,15 +538,21 @@ function getPanelVertexBudget(model: ResultViewModel): number {
   );
 }
 
+function getPointStride(panel: ResultPanel, model: ResultViewModel): number {
+  return Math.max(1, Math.ceil(panel.points.length / Math.min(2000, getPanelVertexBudget(model))));
+}
+
 /** Only offset-delimited, finite, drawable spans contribute to the projection or sampling. */
 function getDrawablePanelFeatures(panel: ResultPanel): DrawableGeometryFeature[] {
   const polygons = panel.geometry?.kind === 'polygons';
   const candidates: DrawableGeometryFeature[] = [];
-  const offsets = panel.offsets!.values;
+  if (panel.unknown || !panel.offsets) return [];
+  const offsets = panel.offsets.values;
   const featureCount = Math.max(0, offsets.length - 1);
   for (let row = 0; row < featureCount; row++) {
-    const first = Number(offsets[row]);
-    const end = Number(offsets[row + 1]);
+    const vertexOrigin = getCaptureFirstKey(panel.capture);
+    const first = Number(offsets[row]) - vertexOrigin;
+    const end = Number(offsets[row + 1]) - vertexOrigin;
     if (
       !Number.isInteger(first) ||
       !Number.isInteger(end) ||
@@ -505,7 +577,7 @@ function getDrawablePanelFeatures(panel: ResultPanel): DrawableGeometryFeature[]
         : !vertices.some(point => point[0] !== vertices[0][0] || point[1] !== vertices[0][1])
     )
       continue;
-    candidates.push({row, vertices, minimumVertices});
+    candidates.push({row: row + getCaptureFirstKey(panel.offsets!), vertices, minimumVertices});
   }
   return candidates;
 }
@@ -688,7 +760,11 @@ function drawMark(
   selected = (!panel.keySpace || panel.keySpace === getDatumKeySpace(context)) &&
     getPinnedEntity(context) === key
 ): ViewElementNode {
-  const style = getMarkStyle(panel, shape, value, model, role);
+  const interpreted =
+    value === undefined
+      ? value
+      : getInterpretedCaptureValue(context.record, panel.values ?? panel.capture, value);
+  const style = getMarkStyle(panel, shape, interpreted, model, role);
   const provenance = provenanceMarkAttributes(
     getCaptureProvenance(panel.values ?? panel.capture),
     style['fill'],
@@ -807,7 +883,8 @@ function drawPanel(
       const point =
         panel.points[
           geometry.kind === 'lines' || geometry.kind === 'polygons'
-            ? Number(panel.offsets?.values[key])
+            ? Number(panel.offsets?.values[key - getCaptureFirstKey(panel.offsets!)]) -
+              getCaptureFirstKey(panel.capture)
             : key - (geometry.kind === 'points' ? getCaptureFirstKey(panel.capture) : 0)
         ];
       const position = point
@@ -838,7 +915,12 @@ function drawPanel(
           columns,
           rows,
           limit: model.thumbnail ? 64 : model.frames.length ? 96 : 160,
-          valueAt: key => getCaptureValue(panel.capture, key) ?? NaN,
+          valueAt: key =>
+            getInterpretedCaptureValue(
+              context.record,
+              panel.capture,
+              getCaptureValue(panel.capture, key) ?? NaN
+            ),
           categorical: panel.palette === 'nom',
           flipRows: firstEdge > lastEdge,
           colorFor: value => String(getMarkStyle(panel, 'cell', value, model)['fill']),
@@ -929,7 +1011,7 @@ function drawPanel(
         }
       }
     }
-    const pointStride = Math.max(1, Math.ceil(panel.points.length / Math.min(2000, panelBudget)));
+    const pointStride = getPointStride(panel, model);
     panel.points.forEach((point, row) => {
       if ((!highlightOnly && row % pointStride !== 0) || !point.every(Number.isFinite)) return;
       const key = row + (geometry.kind === 'points' ? getCaptureFirstKey(panel.capture) : 0);
@@ -1270,12 +1352,18 @@ function hasCaptureKey(capture: GPUComputationCapture, key: number): boolean {
   return index >= 0 && index < getCaptureRowCount(capture);
 }
 
-function formatCaptureEntity(capture: GPUComputationCapture, key: number): string {
+function formatCaptureEntity(
+  capture: GPUComputationCapture,
+  key: number,
+  context: ViewContext
+): string {
   if (!hasCaptureKey(capture, key)) return formatValue(undefined);
   const components = capture.components ?? 1;
   const index = (key - getCaptureFirstKey(capture)) * components;
   return Array.from({length: components}, (_, component) =>
-    formatValue(Number(capture.values[index + component]))
+    isUnknownCaptureValue(context.record, capture, Number(capture.values[index + component]))
+      ? 'unknown'
+      : formatValue(Number(capture.values[index + component]))
   ).join(', ');
 }
 
@@ -1410,7 +1498,7 @@ function renderStrips(model: ResultViewModel, context: ViewContext): ViewElement
           h(
             'text',
             {class: 'cv-cell-text', x: left + cellWidth / 2, y: top + rowHeight / 2},
-            formatCaptureEntity(panel.capture, key)
+            formatCaptureEntity(panel.capture, key, context)
           )
         );
     });
@@ -1438,43 +1526,53 @@ function renderStrips(model: ResultViewModel, context: ViewContext): ViewElement
   return renderSvg(model, context, groups);
 }
 
+/** Union readable windows without enumerating large or uncaptured gaps. */
+function getTableWindowSummary(columns: ResultPanel[]): {keys: number[]; rowCount: number} {
+  const windows = columns
+    .filter(panel => !panel.unknown && getCaptureRowCount(panel.capture) > 0)
+    .map(panel => ({
+      first: getCaptureFirstKey(panel.capture),
+      end: getCaptureFirstKey(panel.capture) + getCaptureRowCount(panel.capture)
+    }))
+    .sort((left, right) => left.first - right.first);
+  const merged: {first: number; end: number}[] = [];
+  for (const window of windows) {
+    const previous = merged.at(-1);
+    if (previous && window.first <= previous.end) previous.end = Math.max(previous.end, window.end);
+    else merged.push({...window});
+  }
+  const keys = merged
+    .flatMap(window =>
+      Array.from({length: Math.min(6, window.end - window.first)}, (_, row) => window.first + row)
+    )
+    .slice(0, 6);
+  return {keys, rowCount: merged.reduce((count, window) => count + window.end - window.first, 0)};
+}
+
 function renderTable(model: ResultViewModel, context: ViewContext): ViewElementNode {
   const columns = model.panels.filter(panel => !panel.geometry && panel.role !== 'context');
-  // A missing key space supplies no evidence of alignment, even for equally sized columns.
-  const groups = new Map<string | ResultPanel, ResultPanel[]>();
-  for (const panel of columns) {
-    const key = panel.capture.keySpace || panel;
-    const group = groups.get(key) ?? [];
-    group.push(panel);
-    groups.set(key, group);
-  }
+  const groups = groupTableColumns(columns);
   if (!model.thumbnail)
     return h(
       'div',
       {class: 'cv-result-tables'},
-      [...groups.values()].map(group => renderTableGroup(group, context))
+      groups.map(group => renderTableGroup(group, context))
     );
   // A picture of one domain must not imply a positional join with another domain.
-  const primaryColumns = [...groups.values()].find(group => group.includes(model.output)) ?? [
-    model.output
-  ];
-  const first = Math.min(...primaryColumns.map(panel => getCaptureFirstKey(panel.capture)));
-  const rowCount =
-    Math.max(
-      ...primaryColumns.map(
-        panel => getCaptureFirstKey(panel.capture) + getCaptureRowCount(panel.capture)
-      )
-    ) - first;
-  const count = Math.min(6, rowCount);
+  const primaryGroup = groups.find(group => group.includes(model.output)) ?? [model.output];
+  const primaryColumns = model.output.capture.keySpace
+    ? groups.filter(group => group[0].capture.keySpace === model.output.capture.keySpace).flat()
+    : primaryGroup;
+  const {keys} = getTableWindowSummary(primaryColumns);
   return renderSvg(
     model,
     context,
-    Array.from({length: count}, (_, row) =>
+    keys.map((key, row) =>
       h(
         'g',
         null,
         primaryColumns.map((panel, column) =>
-          !panel.unknown && hasCaptureKey(panel.capture, first + row)
+          !panel.unknown && hasCaptureKey(panel.capture, key)
             ? h('rect', {
                 ...getCardMarkAttributes(panel.role, 'cell', {
                   scale: CARD_FIGURE.thumbnailMarkScale
@@ -1493,18 +1591,8 @@ function renderTable(model: ResultViewModel, context: ViewContext): ViewElementN
 }
 
 function renderTableGroup(columns: ResultPanel[], context: ViewContext): ViewElementNode {
-  const usableColumns = columns.filter(panel => !panel.unknown);
-  const first = usableColumns.length
-    ? Math.min(...usableColumns.map(panel => getCaptureFirstKey(panel.capture)))
-    : 0;
-  const rowCount =
-    Math.max(
-      first,
-      ...usableColumns.map(
-        panel => getCaptureFirstKey(panel.capture) + getCaptureRowCount(panel.capture)
-      )
-    ) - first;
-  const count = Math.min(6, rowCount);
+  const {keys, rowCount} = getTableWindowSummary(columns);
+  const count = keys.length;
   const keySpace = columns[0].capture.keySpace;
   const label = context.record.axes.keySpaces.find(space => space.id === keySpace)?.label;
   const columnAttributes = (panel: ResultPanel) => ({
@@ -1532,7 +1620,7 @@ function renderTableGroup(columns: ResultPanel[], context: ViewContext): ViewEle
     h(
       'tbody',
       null,
-      Array.from({length: count}, (_, row) =>
+      keys.map(key =>
         h(
           'tr',
           null,
@@ -1542,7 +1630,7 @@ function renderTableGroup(columns: ResultPanel[], context: ViewContext): ViewEle
               {...columnAttributes(panel), 'data-provenance': getCaptureProvenance(panel.capture)},
               panel.unknown
                 ? formatValue(undefined)
-                : formatCaptureEntity(panel.capture, first + row)
+                : formatCaptureEntity(panel.capture, key, context)
             )
           )
         )
@@ -1693,10 +1781,43 @@ export const RESULT_VIEW: ViewRegistration<ResultViewModel> = {
       model.projection.statement,
       ...model.panels.flatMap(panel => panel.notes)
     ],
+    display: describePanelDisplays(model),
     provenance: getCaptureProvenance(model.output.capture),
     adapterLabel: getAdapterLabel(context.record)
   })
 };
+
+/** Concise forms identify suppressed inputs while still describing the headline output. */
+function describePanelDisplays(model: ResultViewModel): string | undefined {
+  const suppressedInputs = model.panels
+    .filter(panel => panel.role === 'input')
+    .map(panel => describeOutputDisplay(panel, model))
+    .filter((statement): statement is string => statement !== undefined);
+  const output = describeOutputDisplay(model.output, model);
+  if (!suppressedInputs.length) return output;
+  return [output ?? `${model.output.capture.name} drawn`, ...suppressedInputs].join('; ');
+}
+
+/** States when the headline output is not drawn, so concise text never implies a figure (LENS-103). */
+function describeOutputDisplay(output: ResultPanel, model: ResultViewModel): string | undefined {
+  if (output.unknown) return `${output.capture.name} not drawn: unknown — ${output.unknown}`;
+  const fallback =
+    output.featureSample?.fallback ??
+    (output.geometry?.kind === 'points' &&
+    !output.points.some(
+      (point, row) =>
+        point.every(Number.isFinite) &&
+        (row % getPointStride(output, model) === 0 ||
+          getHighlight(output)?.key === row + getCaptureFirstKey(output.capture))
+    )
+      ? output.points.length
+        ? 'no drawable captured features'
+        : 'empty captured geometry'
+      : undefined);
+  if (!fallback) return undefined;
+  const total = output.count === 'unknown' ? 'unknown' : output.count.toLocaleString('en-US');
+  return `${output.capture.name} not drawn: ${fallback} (0 of ${total} ${output.noun} shown)`;
+}
 
 let mountCounter = 0;
 

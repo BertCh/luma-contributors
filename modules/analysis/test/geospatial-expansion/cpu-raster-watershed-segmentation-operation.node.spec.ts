@@ -62,15 +62,13 @@ it('matches hand-derived FIFO and canonical-edge forest plateau ownership', () =
   const markers = new Uint32Array([1, 0, 0, 0, 0, 0, 2]);
   const input = {id: 'band', format: 'float32' as const, values};
   expect(
-    Array.from(
-      computeRasterWatershedSegmentationOnCPU(input, markers, {grid: GRID, maximumSteps: 1}).labels
-    )
+    Array.from(computeRasterWatershedSegmentationOnCPU(input, markers, {grid: GRID}).labels)
   ).toEqual([1, 1, 1, 1, 2, 2, 2]);
   // Internal elevation-2 edges join first. The left elevation-5 edge has lower ID than the right.
   const forest = computeRasterWatershedSegmentationOnCPU(input, markers, {
     grid: GRID,
     method: 'minimum-spanning-forest',
-    maximumIterations: 1
+    maximumIterations: 32
   });
   expect(Array.from(forest.labels)).toEqual([1, 1, 1, 1, 1, 1, 2]);
   expect(forest.converged[0]).toBe(1);

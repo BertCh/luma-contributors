@@ -60,7 +60,6 @@ export * from './analysis3-terrain-gpu';
 export * from './analysis5-terrain-resident-gpu';
 
 export * from './rate-cause-counts';
-export {completeNetworkCategoricalCatalogEntries} from './catalog-network-categorical-discovery';
 
 export * from './catalog-raster-embeddings-bindings';
 

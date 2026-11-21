@@ -36,7 +36,7 @@ function harmonicRegression(
   const {graph, view} = context;
   const columns = 2 + 2 * harmonicCount;
   graph.add(
-    new GPURasterHarmonicRegression({
+    context.construct(GPURasterHarmonicRegression, {
       cellCount: CELLS,
       sliceCount: slices,
       harmonicCount,
@@ -65,7 +65,7 @@ function coldMonitor(
   const {graph, view} = context;
   const segments = 8;
   graph.add(
-    new GPURasterCOLDMonitor({
+    context.construct(GPURasterCOLDMonitor, {
       cellCount: CELLS,
       sliceCount: slices,
       bandCount: bands,
@@ -95,7 +95,7 @@ function bfastMonitor(
   const {graph, view} = context;
   const columns = 2 + 2 * harmonics;
   graph.add(
-    new GPURasterBFASTMonitor({
+    context.construct(GPURasterBFASTMonitor, {
       cellCount: CELLS,
       sliceCount: slices,
       historySliceCount: history,
@@ -123,7 +123,7 @@ function snapshotCovariance(
 ): void {
   const {graph, view} = context;
   graph.add(
-    new GPURasterSnapshotCovariance({
+    context.construct(GPURasterSnapshotCovariance, {
       cellCount: cells,
       sliceCount: slices,
       values: view('float32', sizedViews ? cells * slices : 4),
@@ -141,7 +141,7 @@ function snapshotCovariance(
 function eofProjection(context: KernelAuditContext, slices: number, modes: number): void {
   const {graph, view} = context;
   graph.add(
-    new GPURasterEOFProjection({
+    context.construct(GPURasterEOFProjection, {
       cellCount: CELLS,
       sliceCount: slices,
       modeCount: modes,
@@ -159,7 +159,7 @@ function eofProjection(context: KernelAuditContext, slices: number, modes: numbe
 function laggedCorrelation(context: KernelAuditContext, slices: number, lagCount: number): void {
   const {graph, view} = context;
   graph.add(
-    new GPURasterLaggedCorrelation({
+    context.construct(GPURasterLaggedCorrelation, {
       cellCount: CELLS,
       sliceCount: slices,
       values: view('float32', CELLS * slices),

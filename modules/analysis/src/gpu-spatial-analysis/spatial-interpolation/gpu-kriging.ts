@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import {
   validateInterpolationOutputsDisjointFromInputs,
   validateInterpolationOutputPasses
@@ -38,7 +42,11 @@ import {
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GRID_COORDINATE_WGSL} from './gpu-inverse-distance-weighting';
-import {getRectangleScanWGSL, getRingScanWGSL} from './grid-neighbor-scan';
+import {
+  getRectangleScanWGSL,
+  getRingScanWGSL,
+  getWrappedRectangleScanWGSL
+} from './grid-neighbor-scan';
 import {
   getSeparationWGSL,
   resolveInterpolationSeparation,
@@ -144,10 +152,15 @@ export type GPUKrigingProps = {
    * search radius and variogram range are in meters (kilometers with `units: 'kilometers'`).
    * Neighbors are ordered by the haversine term; f32 absolute lon/lat limits accuracy to about 1 m
    * at Earth scale, and the local-origin offsets used in planar mode do not apply. The query box
-   * is conservative and does not wrap the antimeridian; an unbounded radius scans every sample
+   * is conservative and defaults to clipping at the antimeridian (opt into wrapping with `longitudeSearch: 'wrapped'`); an unbounded radius scans every sample
    * per cell (no early stop). Other longitude/latitude metrics throw.
    */
   spatialContext?: GPUSpatialContext;
+  /**
+   * Great-circle candidate search: default 'clipped'; 'wrapped' includes both seam sides and
+   * polar caps and requires index-bound longitudes within [-180, 180]. Ignored for planar input.
+   */
+  longitudeSearch?: 'clipped' | 'wrapped';
   /** Packed sample positions in the same units as the grid, radius and variogram range. */
   positions: GraphDataView<'float32x2'>;
   /** Packed float32 sample values. NaN values are skipped. */
@@ -238,14 +251,46 @@ export class GPUKriging implements GPUCommandNodeProducer {
 
   constructor(props: GPUKrigingProps) {
     this.id = props.id ?? 'kriging';
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'grid',
+        'id',
+        'indexBounds',
+        'indexGridSize',
+        'invocationTileSize',
+        'mask',
+        'maximumNeighborCount',
+        'output',
+        'parameters',
+        'positions',
+        'spatialContext',
+        'longitudeSearch',
+        'values'
+      ],
+      ['values', 'variance', 'crossValidationPrediction', 'crossValidationVariance', 'status'],
+      ['invalidCount', 'uncertainCount']
+    );
     const {id} = this;
-    this.separation = resolveInterpolationSeparation(id, props.spatialContext);
+    validateRequirement(
+      id,
+      props.longitudeSearch === undefined ||
+        props.longitudeSearch === 'clipped' ||
+        props.longitudeSearch === 'wrapped',
+      'longitudeSearch must be clipped or wrapped'
+    );
+    this.separation = resolveInterpolationSeparation(
+      id,
+      props.spatialContext,
+      props.longitudeSearch
+    );
     this.spatialContext = this.separation.context;
     this.cellCount = validateRasterGrid(id, props.grid);
-    if (props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0) {
-      throw new Error(`${id} needs an axis-aligned grid`);
-    }
+    validateRequirement(
+      id,
+      !(props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0),
+      `needs an axis-aligned grid`
+    );
     for (const [name, size] of [
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
@@ -253,14 +298,21 @@ export class GPUKriging implements GPUCommandNodeProducer {
       validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
     }
     const [minX, minY, maxX, maxY] = props.indexBounds;
-    if (
-      props.indexBounds.length !== 4 ||
-      !props.indexBounds.every(Number.isFinite) ||
-      minX > maxX ||
-      minY > maxY
-    ) {
-      throw new Error(`${id} indexBounds must be finite and ordered`);
-    }
+    validateRequirement(
+      id,
+      !this.separation.wrappedLongitude || (minX >= -180 && maxX <= 180),
+      'longitudeSearch wrapped needs indexBounds longitudes in [-180, 180]'
+    );
+    validateRequirement(
+      id,
+      !(
+        props.indexBounds.length !== 4 ||
+        !props.indexBounds.every(Number.isFinite) ||
+        minX > maxX ||
+        minY > maxY
+      ),
+      `indexBounds must be finite and ordered`
+    );
     for (const [index, value] of props.indexBounds.entries())
       validateFiniteNumber(id, `indexBounds[${index}]`, value);
     if (props.invocationTileSize !== undefined)
@@ -302,37 +354,45 @@ export class GPUKriging implements GPUCommandNodeProducer {
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     const sampleCount = props.values.length;
-    if (sampleCount < 1) {
-      throw new Error(`${id} needs at least one sample`);
-    }
-    if (props.positions.length !== sampleCount) {
-      throw new Error(`${id} positions length must equal values length`);
-    }
+    validateRequirement(id, !(sampleCount < 1), `needs at least one sample`);
+    validateRequirement(
+      id,
+      !(props.positions.length !== sampleCount),
+      `positions length must equal values length`
+    );
     if (props.mask) {
       validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
-      if (props.mask.length !== sampleCount) {
-        throw new Error(`${id} mask length must equal values length`);
-      }
-    }
-    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_KRIGING_PARAMETER_LENGTH) {
-      throw new Error(`${id} parameters must hold ${GPU_KRIGING_PARAMETER_LENGTH} float32 values`);
-    }
-    validateSinglePackedView(output.values, ['float32'], `${id} output.values`);
-    if (output.values.length < this.cellCount) {
-      throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
-    }
-    if (output.variance) {
-      validateSinglePackedView(output.variance, ['float32'], `${id} output.variance`);
-      if (output.variance.length < this.cellCount) {
-        throw new Error(`${id} output.variance must hold grid.width * grid.height rows`);
-      }
-    }
-    if (output.crossValidationVariance && !output.crossValidationPrediction) {
-      throw new Error(
-        `${id} output.crossValidationVariance needs output.crossValidationPrediction`
+      validateRequirement(
+        id,
+        !(props.mask.length !== sampleCount),
+        `mask length must equal values length`
       );
     }
+    validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateRequirement(
+      id,
+      !(props.parameters.length < GPU_KRIGING_PARAMETER_LENGTH),
+      `parameters must hold ${GPU_KRIGING_PARAMETER_LENGTH} float32 values`
+    );
+    validateSinglePackedView(output.values, ['float32'], `${id} output.values`);
+    validateRequirement(
+      id,
+      !(output.values.length < this.cellCount),
+      `output.values must hold grid.width * grid.height rows`
+    );
+    if (output.variance) {
+      validateSinglePackedView(output.variance, ['float32'], `${id} output.variance`);
+      validateRequirement(
+        id,
+        !(output.variance.length < this.cellCount),
+        `output.variance must hold grid.width * grid.height rows`
+      );
+    }
+    validateRequirement(
+      id,
+      !(output.crossValidationVariance && !output.crossValidationPrediction),
+      `output.crossValidationVariance needs output.crossValidationPrediction`
+    );
     if (output.crossValidationPrediction) {
       for (const [name, view] of [
         ['crossValidationPrediction', output.crossValidationPrediction],
@@ -342,9 +402,11 @@ export class GPUKriging implements GPUCommandNodeProducer {
           continue;
         }
         validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
-        if (view.length < sampleCount) {
-          throw new Error(`${id} output.${name} must hold one row per sample`);
-        }
+        validateRequirement(
+          id,
+          !(view.length < sampleCount),
+          `output.${name} must hold one row per sample`
+        );
       }
     }
     validateGPUStatusPort(id, {
@@ -652,7 +714,11 @@ const STATUS_UNCERTAIN: u32 = ${STATUS_UNCERTAIN}u;`,
 function getKrigingWGSL(separation: InterpolationSeparation): string {
   // Great-circle mode visits the whole query box: the ring scan's early stop compares distances
   // with index-cell extents in degrees, which has no cheap provably conservative meters bound.
-  const scan = separation.geographic ? getRectangleScanWGSL : getRingScanWGSL;
+  const scan = separation.geographic
+    ? separation.wrappedLongitude
+      ? getWrappedRectangleScanWGSL
+      : getRectangleScanWGSL
+    : getRingScanWGSL;
   return /* wgsl */ `
 ${getSeparationWGSL(separation)}
 struct KrigingEstimate {
@@ -776,9 +842,12 @@ fn estimateKriging(center: vec2f, localCenter: vec2f, origin: vec2f, excludeRow:
     }
   }
 
-  // Exact hit: the nearest distinct position coincides with the query.
-  if (isExactHit(uniqueDistances[0], uniquePositions[0], localCenter)) {
-    return KrigingEstimate(uniqueValueSums[0] / uniqueMultiplicities[0], 0.0, STATUS_OK);
+  // Distinct degree coordinates can share a zero haversine key at the seam or poles.
+  // Check all retained ties for an exact coordinate match before the minimum-neighbor gate.
+  for (var exactSite = 0u; exactSite < uniqueCount; exactSite++) {
+    if (isExactHit(uniqueDistances[exactSite], uniquePositions[exactSite], localCenter)) {
+      return KrigingEstimate(uniqueValueSums[exactSite] / uniqueMultiplicities[exactSite], 0.0, STATUS_OK);
+    }
   }
   if (uniqueCount < minimumNeighbors) {
     return estimate;

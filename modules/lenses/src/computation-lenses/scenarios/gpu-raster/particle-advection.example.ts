@@ -48,14 +48,14 @@ export async function runExample(device: Device, input: ParticleAdvectionExample
   // The grid is north-up; the contributor counts field rows from the southern edge.
   const [west, cell] = [grid.affine[2], grid.affine[0]];
   const south = grid.affine[5] - grid.height * cell;
+  const fieldPlacement = {origin: [west, south] as const, cellSize: [cell, cell] as const};
   // #region example
-  const extent = [west, south, cell, cell] as const; // degrees; the field's first row is the south
   const parameters = new GPUParameterBuffer(device, {
     id: 'advection-parameters',
     format: 'float32',
     length: GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
     values: getGPUParticleAdvectionParameterValues(
-      {fieldExtent: extent, timeStep: 2}, // 2 hours per step
+      {fieldPlacement, timeStep: 2}, // 2 hours per step
       [grid.width, grid.height]
     )
   });

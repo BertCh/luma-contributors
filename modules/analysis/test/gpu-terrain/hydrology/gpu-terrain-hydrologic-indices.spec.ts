@@ -16,10 +16,16 @@ import {
   importGraphBuffer
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
+  GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH,
   GPUTerrainHydrologicIndices,
   getGPUTerrainHydrologicIndicesParameterValues,
   type GPUTerrainHydrologicIndicesSettings
 } from '../../../src/gpu-terrain/hydrology/gpu-terrain-hydrologic-indices';
+import {
+  GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
+  GPUTerrainDerivatives,
+  getGPUTerrainDerivativesParameterValues
+} from '../../../src/gpu-terrain/terrain-analysis/gpu-terrain-derivatives';
 import type {GPURasterCellSizeMode} from '../../../src/analysis-core/contracts/raster-grid';
 import {
   createInputBuffer,
@@ -27,23 +33,15 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {
-  computeHydrologicIndices,
-  type HydrologicIndicesOracleResult
-} from './terrain-hydrologic-indices-oracle';
+import {computeHydrologicIndices} from './terrain-hydrologic-indices-oracle';
 import {getOracleWebMercatorY} from '../terrain-oracle-utils';
 import {TERRAIN_FLOW_DEMS as DEMS, computeTerrainFlow} from './terrain-flow-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
-const OUTPUTS = ['slope', 'specificCatchmentArea', 'wetnessIndex', 'streamPowerIndex'] as const;
-
-/**
- * Relative bound for slope, catchment and stream power (a few f32 operations plus the GPU
- * `sqrt`, and `cos`/`cosh` of the ground cell width on curved grids) and absolute bound for the
- * wetness index (`log` of those).
- */
-const RELATIVE_TOLERANCE = 2e-6;
-const WETNESS_TOLERANCE = 4e-6;
+import {
+  expectIndicesClose,
+  HYDROLOGIC_INDEX_OUTPUTS as OUTPUTS
+} from './terrain-indices-test-assertions';
 
 type IndicesOptions = {
   settings: GPUTerrainHydrologicIndicesSettings;
@@ -98,12 +96,22 @@ async function runIndices(
         cellCount
       ),
       parameters: settingsBuffer.importToGraph(graph),
-      output: Object.fromEntries(
-        OUTPUTS.map(name => [
-          name,
-          importGraphBuffer(graph, name, outputs[name], 'float32', cellCount)
-        ])
-      )
+      output: {
+        // Anchor one terminal for TypeScript; the loop supplies every named sibling.
+        descentTangent: importGraphBuffer(
+          graph,
+          'descentTangent',
+          outputs.descentTangent,
+          'float32',
+          cellCount
+        ),
+        ...Object.fromEntries(
+          OUTPUTS.filter(name => name !== 'descentTangent').map(name => [
+            name,
+            importGraphBuffer(graph, name, outputs[name], 'float32', cellCount)
+          ])
+        )
+      }
     })
   );
   const compiled = graph.compile();
@@ -118,25 +126,6 @@ async function runIndices(
   elevationBuffer.destroy();
   accumulationBuffer.destroy();
   return result;
-}
-
-function expectIndicesClose(
-  name: string,
-  actual: Record<(typeof OUTPUTS)[number], Float32Array>,
-  expected: HydrologicIndicesOracleResult
-): void {
-  for (const output of OUTPUTS) {
-    for (const [cell, value] of expected[output].entries()) {
-      const label = `${name} ${output} ${cell}`;
-      if (!Number.isFinite(value)) {
-        expect(actual[output][cell], label).toBe(value);
-        continue;
-      }
-      const tolerance =
-        output === 'wetnessIndex' ? WETNESS_TOLERANCE : RELATIVE_TOLERANCE * Math.abs(value);
-      expect(Math.abs(actual[output][cell] - value), label).toBeLessThanOrEqual(tolerance);
-    }
-  }
 }
 
 it('GPUTerrainHydrologicIndices matches the float64 oracle', async () => {
@@ -237,15 +226,15 @@ it('GPUTerrainHydrologicIndices handles flats, zero area, nodata, and the analyt
       settings
     })
   );
-  expect(actual.slope[0]).toBeCloseTo(0.3, 6);
+  expect(actual.descentTangent[0]).toBeCloseTo(0.3, 6);
   expect(actual.specificCatchmentArea[0]).toBeCloseTo(10, 5);
   expect(actual.wetnessIndex[0]).toBeCloseTo(Math.log(10 / 0.3), 5);
   expect(actual.streamPowerIndex[0]).toBeCloseTo(3, 5);
   expect(actual.wetnessIndex[7]).toBe(-Infinity);
   expect(actual.wetnessIndex[8]).toBeNaN();
-  expect(actual.slope[15]).toBeNaN();
+  expect(actual.descentTangent[15]).toBeNaN();
   // The lowest column (index 5) has no lower neighbor: zero slope, infinite wetness, no power.
-  expect(actual.slope[5]).toBe(0);
+  expect(actual.descentTangent[5]).toBe(0);
   expect(actual.wetnessIndex[5]).toBe(Infinity);
   expect(actual.streamPowerIndex[5]).toBe(0);
 
@@ -253,6 +242,103 @@ it('GPUTerrainHydrologicIndices handles flats, zero area, nodata, and the analyt
     settings: {},
     cellSize: 10
   });
-  expect(clamped.slope[5]).toBeCloseTo(0.001, 8);
+  expect(clamped.descentTangent[5]).toBeCloseTo(0.001, 8);
   expect(clamped.wetnessIndex[5]).toBeCloseTo(Math.log(60 / 0.001), 4);
+});
+
+it.each([
+  {
+    name: 'a unit-grade plane',
+    // At the center, the Horn gradient has magnitude 1 and the westward drop is 1 over 1.
+    elevation: [0, 1, 2, 0, 1, 2, 0, 1, 2],
+    expectedSlopeDegrees: 45,
+    expectedDescentTangent: 1
+  },
+  {
+    name: 'a northeast-corner spike',
+    // The two Horn gradient components have magnitude 8 / 8. The center has no lower
+    // D8 neighbor, so the descent tangent equals the default minimumSlope of 0.001.
+    elevation: [0, 0, 8, 0, 0, 0, 0, 0, 0],
+    expectedSlopeDegrees: 54.7356,
+    expectedDescentTangent: 0.001
+  }
+])('URT-10 reads paired Horn slope and hydrologic descent tangent on $name', async fixture => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const grid = makeGPURasterMetadata({width: 3, height: 3, cellSize: 1});
+  const cellCount = grid.width * grid.height;
+  const center = 4;
+  const graph = new GPUCommandGraph(device, {id: 'terrain-slope-comparison'});
+  const elevationBuffer = createInputBuffer(device, Float32Array.from(fixture.elevation));
+  const accumulationBuffer = createInputBuffer(device, new Float32Array(cellCount).fill(1));
+  const slopeBuffer = createOutputBuffer(device, cellCount);
+  const descentTangentBuffer = createOutputBuffer(device, cellCount);
+  const derivativeParameters = new GPUParameterBuffer(device, {
+    id: 'derivative-settings',
+    format: 'float32',
+    length: GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
+    values: getGPUTerrainDerivativesParameterValues({}, grid)
+  });
+  const hydrologicParameters = new GPUParameterBuffer(device, {
+    id: 'hydrologic-settings',
+    format: 'float32',
+    length: GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH,
+    values: getGPUTerrainHydrologicIndicesParameterValues({}, grid)
+  });
+  let compiled: ReturnType<typeof graph.compile> | undefined;
+  try {
+    const elevation = makeGPURasterBand(
+      importGraphBuffer(graph, 'elevation', elevationBuffer, 'float32', cellCount),
+      grid,
+      {id: 'elevation'}
+    );
+    graph.add(
+      new GPUTerrainDerivatives({
+        grid,
+        elevation,
+        slopeUnits: 'degrees',
+        parameters: derivativeParameters.importToGraph(graph),
+        output: {slope: importGraphBuffer(graph, 'slope', slopeBuffer, 'float32', cellCount)}
+      })
+    );
+    graph.add(
+      new GPUTerrainHydrologicIndices({
+        grid,
+        elevation,
+        accumulation: importGraphBuffer(
+          graph,
+          'accumulation',
+          accumulationBuffer,
+          'float32',
+          cellCount
+        ),
+        parameters: hydrologicParameters.importToGraph(graph),
+        output: {
+          descentTangent: importGraphBuffer(
+            graph,
+            'descentTangent',
+            descentTangentBuffer,
+            'float32',
+            cellCount
+          )
+        }
+      })
+    );
+    compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const slopeDegrees = (await readFloat32(slopeBuffer, cellCount))[center];
+    const descentTangent = (await readFloat32(descentTangentBuffer, cellCount))[center];
+    expect(Number.isFinite(slopeDegrees)).toBe(true);
+    expect(Number.isFinite(descentTangent)).toBe(true);
+    expect(slopeDegrees).toBeCloseTo(fixture.expectedSlopeDegrees, 4);
+    expect(descentTangent).toBeCloseTo(fixture.expectedDescentTangent, 8);
+  } finally {
+    compiled?.destroy();
+    hydrologicParameters.destroy();
+    derivativeParameters.destroy();
+    descentTangentBuffer.destroy();
+    slopeBuffer.destroy();
+    accumulationBuffer.destroy();
+    elevationBuffer.destroy();
+  }
 });

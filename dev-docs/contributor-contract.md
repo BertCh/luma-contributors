@@ -2,6 +2,8 @@
 
 Status date: 2026-11-09. The rules every contributor in `@luma-contributors/analysis` follows. They come from the [library review of 2026-11-09](./research/library-review-2026-11-09/README.md); open work to bring existing code up to them is in [roadmap.md](./roadmap.md) under "Contributor contracts and GPU-scale designs" (STD, GPU, DUP and GAP items). `node scripts/check-contributor-contract.mjs` reports departures.
 
+The [authoring walkthrough](./authoring-walkthrough.md) applies these rules to one worked contributor.
+
 Import the contract from `@luma-contributors/analysis/analysis-core`: the contract types, `validateCapacity`, `validateMaximumCount`, `validateRequirement`, `validateFiniteNumber`, `validateViewLength`, `validateCommandNodeBudget`, `validateCompactOutput`, `validateGPUStorageBindingByteLength`, `createWGSLKernelNode`, `getWGSLKernelBinding`, `createPublishNode`, `createFillNode`, `createWGSLDispatchGate`, `GPUParameterBuffer`.
 
 Checker allowances use a version-2 baseline with one file/site signature, stable description and
@@ -57,7 +59,21 @@ and the selected execution route; the [regression loop inventory](./regression-l
 records examples. The checker follows one local function/arrow layer forwarding invocation count
 and shader body, resolving each call's arguments separately. Put a reviewed
 `contract-allow: single-invocation` comment immediately before the `invocationCount` property of a
-direct kernel, or immediately before a wrapper call, with the axis and enforced bound in the reason.
+direct kernel, or immediately before a wrapper call, with the route, serial axis and enforced bound
+in the reason. Cite a statically resolved host bound as `NAME = value`, using its exact
+`CAPITAL_CASE` identifier and numeric value. For example, the baseline allowance for
+`GPUSpatialErrorGM`'s `weights-norm-merge` kernel names its CSR row-tile route and serial maximum
+over tile partials: `MAXIMUM_TILE_COUNT = 4096`; its constructor validates the total tile count,
+including the sum across input chunks. A changed resolved value invalidates that allowance, even
+when the shader fingerprint stays unchanged.
+
+A name-only citation verifies presence, not the value. A numeric citation whose host declaration
+is found must have a statically resolved value; an unevaluable expression invalidates the allowance
+instead of silently accepting the citation. The checker resolves a local/imported binding, otherwise
+the unique declaration in the directory or package. Ambiguous names, dynamic expressions and
+prose-only bounds do not establish that check; share the actual enforced constant or record the
+missing owner change instead of citing an unrelated limit. This syntax applies equally to baseline
+reasons and inline comments; it does not change the comment placement described above.
 Multiple invocations can still each perform a serial row scan, so this check is not a complete
 inventory of data-dependent work.
 
@@ -96,15 +112,30 @@ inventory of data-dependent work.
 - Variable-length output is a `GPUCompactOutput`: `count` is clamped to capacity, `status.requiredCount` holds the unclamped requirement, `status.overflow` is one when rows were dropped.
 - `count` is the number of output rows of the primary output (features for geometry, pairs for joins).
 - Geometry output carries the source row of each output feature. Output derived from two inputs carries both.
+- In `GPUCompactPairPort`, `leftRows` and `rightRows` are input row indices, never application IDs. Both arrays are readable only on `[0, status.count)`; tail bytes are unspecified across submissions.
 
 ## 9. Named status
 
-- Scalar status uses the port types in `analysis-core/contracts/status.ts`. Use the existing field names; do not invent synonyms (`candidateCount`, `truncated`, `complete`).
+- Scalar status uses the port types in `analysis-core/contracts/status.ts`. Use the existing field names; do not invent synonyms (`candidateCount`, `truncated`). `status.complete` is the published predicate that the promised result or named stage is complete; document which result or stage it certifies and account for supplied loss evidence before setting it.
+- `GPUCompletenessStatusPort.complete` is optional: 1 certifies the whole documented result and 0 does not. In `GPURecipeStageStatusPort.status`, it certifies only the stage named by `stage`, not the whole recipe. An absent certificate never implies completeness; existing optional status inputs remain optional.
+- A supplied `complete` certificate has the opposite polarity from loss flags: `complete = 0` means incomplete, while `complete = 1` certifies completeness. A consumer must account for this in whole and chunked inputs or reject the unsupported certificate; it must not ignore it or require every stage scalar to be zero. All status scalars and recipe codes contain exactly one uint32 row, never a per-row array.
+- The shared bounded-result vocabulary does not promise a writer for every optional word. Concrete writable status types select only supported fields and reject unsupported requested views before snapshotting; every accepted output word has a writer on every route.
+- `uncertainCount` is the exact number of classifications resolved through the documented fallback. `unresolvedCount` counts work still unresolved after the named stage; these counts describe different outcomes.
 - An intermediate capacity that was too small is `candidateOverflow`. It is not folded into `overflow`.
 - A consumer of a supplied incomplete-result status propagates it in its own status, suppresses dependent results, or refuses/falls back; it never ignores the flag. Compact `requiredCount` counts accepted rows reaching the final stage, before output truncation; it is a lower bound after candidate loss or uint32 saturation.
 - A deliberate approximation sets `approximation`.
 - Per-row status words document every bit in the output type.
 - Status is never read back inside a contributor.
+
+### Composing network and statistical results
+
+- `GPUNetworkTopology` is explicitly sized: `offsets.length - 1` is its node count. A noding result may have spare node capacity; pass the full result as a `GPUNodedNetworkTopologyPort` to a consumer supporting that port, retaining `nodes.status.count`, optional overall build status and required piece count/overflow, plus supplied candidate/vertex diagnostics, by view identity. Only node rows in `[0, nodes.status.count)` are live. Search convergence does not certify source-network completeness. Noding's legacy `status.uncertainCount` counts uncertified pairs left unsplit, not fallback successes; its overall `overflow` also includes tolerance-grid range failure. These producer-specific meanings remain on the handoff; a canonical stage adapter must map uncertified pairs to `unresolvedCount`.
+- Reusing network CSR as spatial weights requires strictly ascending, unique neighbors within each row, no self pairs, and finite non-negative weights. Check these with `GPUSpatialWeightsValidation` or `computeSpatialWeightsValidationOnCPU`, choose how to aggregate parallel edges and explicitly define statistical weights; travel costs do not automatically represent statistical influence.
+- `GPURegressionModelResult` includes GTWR and panel-error ML kinds. For panel-error ML, `parameterCount` includes every absorbed entity intercept, every predictor and lambda (`entityCount + predictorCount + 1`), even though there is only one absorbed-intercept placeholder in the coefficient table. Numeric status codes and coefficient/likelihood conventions remain estimator-specific; optional `name`, `reason`, `excluded` and `failed` add named evidence without replacing existing status fields.
+- The common panel-error builder requires an explicit positive integer `parameterCount` including all absorbed effects; it preserves finite likelihood with all three information criteria unavailable (`null`). The GTWR builder requires explicit finite non-negative `tr(S)` as `parameterCount`, counts `tr(S) + 1` for AIC and Schwarz, and uses the Hurvich AICc correction unless a published AICc override is supplied.
+- Model readers can supply `regularization: {kind: 'ridge', lambda}` (finite non-negative lambda in the estimator's design scale) and an `inferenceMethod` description such as `'ridge-approximate'` for penalized inverse-normal-matrix uncertainty. The common builder validates and copies this metadata; it does not change coefficients, likelihood or status. Unknown regularization kinds and invalid penalty values are rejected. Omitted metadata preserves the reader's documented convention and does not certify an unpenalized fit.
+- Analytic APIs use `GPUAnalyticAlternative` (`'two-sided'`, `'greater'`, `'lesser'`); permutation methods retain the wider `GPUInferenceAlternative`, including `'folded'` and `'directed'`. Quantile LISA can describe its inclusive rules or explicit `'geoda-legacy'` rule with `GPUInferenceMetadata<GPUQuantileLISAAlternative>`, without extending the shared tail union.
+- Optional inference metadata `pValueConstruction` distinguishes `'upper-tail-count'` from `'doubled-minimum-tail'`. Scientific sidedness alone does not determine the counting formula: with 19 draws and zero exceedances, one maximum statistic addressing a two-sided question has add-one floor `1/20 = 0.05`, while a doubled minimum tail has floor `2/20 = 0.1`. Existing metadata without this field remains valid and leaves the counting convention unspecified here.
 
 ## 10. Named limits
 
@@ -159,7 +190,7 @@ inventory of data-dependent work.
 
 Contributors can run in a published luma.gl `GPUGraph` beside CPU stages (`GPUCPUOperation`), and a contributor can have a CPU twin that takes its place in the graph. The survey behind this section, the measurements and the list of candidates are in [research/cpu-suitability-2026-11-11](./research/cpu-suitability-2026-11-11/README.md); open work is in the roadmap (CPU items). Import `GPUContributorOperation`, `GPU_CONTRIBUTOR_OPERATION_LOWERING` and the `getCPUOperation<Type>Rows` helpers from `@luma-contributors/analysis/analysis-core`.
 
-- **Operation form.** `GPU<Name>Operation extends GPUContributorOperation`, in `gpu-<name>-operation.ts` beside the contributor. Where `GPU<Name>Operation` is already an exported name of something else, the class is `GPU<Name>GraphOperation` (`GPULocationAllocationGraphOperation`). Its props type is `<Name>OperationProps`: the contributor's props with the name of a graph value wherever the contributor takes a view. The class declares the ports and builds the contributor; it adds no behaviour and no validation of its own. Compile the graph with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. When the contributor still sits in a package root, the two files go in the family directory that fits it (section 1: a root holds only `index.ts`). The operation keeps a contributor that owns GPU resources and destroys it when the next run replaces it; call the operation's `destroy()` after the compiled graph is destroyed.
+- **Operation form.** `GPU<Name>Operation extends GPUContributorOperation`, in `gpu-<name>-operation.ts` beside the contributor. Where `GPU<Name>Operation` is already an exported name of something else, the class is `GPU<Name>GraphOperation` (`GPULocationAllocationGraphOperation`). Its props type is `<Name>OperationProps`: the contributor's props with the name of a graph value wherever the contributor takes a view. The class declares the ports and builds the contributor. Operation preflight validates declared graph value names, output formats and output lengths at construction, then checks packed port shapes when views resolve. Algorithm-specific props validation remains in the contributor constructor, once per constructed contributor; command-node creation and per-row CPU loops do not repeat it. Compile the graph with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. When the contributor still sits in a package root, the two files go in the family directory that fits it (section 1: a root holds only `index.ts`). The operation keeps a contributor that owns GPU resources and destroys it when the next run replaces it; call the operation's `destroy()` after the compiled graph is destroyed.
 - **CPU twin.** `CPU<Name>Operation extends GPUCPUOperation`, in `cpu-<name>-operation.ts`, built from the same `<Name>OperationProps`. It reads and writes the same graph values as the operation form: the same formats, lengths and layouts, including status words, counts and missing-value codes. A props object that builds one builds the other.
 - **The computation is a function.** The twin's `execute` calls an exported pure function `compute<Name>OnCPU` in the same file, which takes and returns typed arrays and can be used without a graph. An existing public CPU function (such as `fitVariogramModel`) is called, not copied.
 - **When to write a twin.** When the contributor is serial by nature, capped at a few thousand rows, unrolls rounds into command nodes, or needs precision the shader lacks, and its inputs and outputs are plain vectors. Not for raster or texture work, and not for large data-parallel work: a CPU stage pays a readback and an upload (measured on the test GPU through luma.gl 10.0.0-alpha.12: 0.7 ms for 1,000 rows of `float32x2`, 11 ms for 100,000, 90 ms for one million).

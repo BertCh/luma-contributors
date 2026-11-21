@@ -50,7 +50,8 @@ fn getInfinity() -> f32 { var bits = 0x7f800000u; return bitcast<f32>(bits); }`;
  * Ties between equal masks keep the lowest luma D8 direction index (E, SE, S, SW, W, NW, N, NE),
  * which differs from RichDEM's neighbor order; the resulting flow field is equally valid. Cells
  * with infinite `towardLower` (flats without an outlet) stay `flat`. Each pass runs at most
- * `maxIterations` gated relaxations; `converged` is 1 only when all three reached their fixpoint.
+ * `maxIterations` gated relaxations; `converged` is 1 only when all three reached their fixpoint
+ * and the optional upstream fill completed.
  * Cell size mode does not matter: hop counts are unitless. Also returns the status views of the
  * three relaxations (word 3 is 1 once a relaxation reached its fixpoint).
  *
@@ -66,6 +67,8 @@ export function createTerrainFlowFlatNodes<Parameters>(
     elevation: GraphDataView<'float32'>;
     /** Routing surface (filled elevation or `elevation`), NaN for invalid cells. */
     surface: GraphDataView<'float32'>;
+    /** Upstream fill state, whose word 3 certifies completion; omitted without filling. */
+    fillStatus?: GraphDataView<'uint32'>;
     settings: GraphDataView<'float32'>;
     /** D8 classes written by the direction node; flat cells that get routed become `draining`. */
     classes: GraphDataView<'uint32'>;
@@ -402,6 +405,16 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
         operation: OPERATION,
         variant: 'flats-finalize',
         bindings: [
+          ...(props.fillStatus && props.converged
+            ? [
+                {
+                  name: 'fillStatus',
+                  view: props.fillStatus,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           {name: 'lowerStatus', view: lower.relaxation.state.status, type: 'u32', access: 'read'},
           {name: 'higherStatus', view: higher.relaxation.state.status, type: 'u32', access: 'read'},
           {
@@ -436,6 +449,7 @@ fn getRelaxationCandidate(neighborValue: f32, neighborAuxiliary: f32, centerAuxi
         body: `${
           props.converged
             ? `converged[convergedOffset] = select(0u, 1u,
+    ${props.fillStatus ? 'fillStatus[fillStatusOffset + 3u] == 1u &&' : ''}
     lowerStatus[lowerStatusOffset + 3u] == 1u &&
     higherStatus[higherStatusOffset + 3u] == 1u &&
     maximumStatus[maximumStatusOffset + 3u] == 1u);`

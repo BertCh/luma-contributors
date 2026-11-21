@@ -21,6 +21,7 @@ import {
   GPUParameterBuffer,
   validateCapacity,
   validateCommandNodeBudget,
+  validateGraphPorts,
   validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -63,6 +64,16 @@ export function planRasterEmbeddingChunks(
   templateName: string,
   stages: number
 ): readonly RasterEmbeddingChunk[] {
+  validateGraphPorts(
+    id,
+    Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, field.view])),
+    Object.fromEntries(
+      Object.entries(fields).map(([name, field]) => [
+        name,
+        {required: name === templateName, viewType: 'either' as const, formats: [field.format]}
+      ])
+    )
+  );
   const template = fields[templateName];
   const templateChunks = getGraphViewChunks(template.view!);
   const lastNonemptyChunkIndex = templateChunks.reduce(
@@ -129,7 +140,9 @@ export function getRasterEmbeddingChunkProps<Props extends {pixelCount: number; 
   return result as PackedEmbeddingProps<Props>;
 }
 
-/** Validates formats and writable separation once, including alignment within each dispatch. */
+/** Validates writable separation, including alignment within each dispatch.
+ * Row formats come from planRasterEmbeddingChunks fields; shared tables use their declared formats.
+ */
 export function validateRasterEmbeddingViews(
   id: string,
   inputs: readonly RasterEmbeddingScalarView[],
@@ -139,10 +152,6 @@ export function validateRasterEmbeddingViews(
     outputs: readonly RasterEmbeddingScalarView[];
   }[]
 ): void {
-  for (const view of [...inputs, ...outputs]) {
-    for (const chunk of getGraphViewChunks(view))
-      validateSinglePackedView(chunk, [view.format], id);
-  }
   validateRasterWritableDispatches(id, inputs, outputs, dispatches);
 }
 

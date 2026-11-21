@@ -2,6 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getEmptyGeometryNodes} from '../group-geometry/empty-geometry-nodes';
+
+import {validateGeometryAuxiliaryOutput} from '../group-geometry/geometry-output-destinations';
+
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+
+import {
+  captureGeometryPartitionProvenance,
+  getGeometryPartitionProvenanceNodes
+} from '../group-geometry/partition-provenance';
+
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -25,8 +39,12 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
+import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+import {TRIANGLE_CIRCUMCIRCLE_WGSL} from '../shared/triangle-circumcircle-wgsl';
 import {validateGroupConvexHullScratch} from '../group-geometry/gpu-group-convex-hull';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from '../geographic-distribution/index';
+import {GPUGroupGeometry} from '../group-geometry/gpu-group-geometry';
 import {GPUGroupConvexHull} from '../group-geometry/index';
 
 const OPERATION = 'GPUMinimumBounds';
@@ -39,9 +57,12 @@ const CALIPER_MINIMUM_HULL_VERTICES = 16;
 
 /**
  * Caller-owned outputs of {@link GPUMinimumBounds}. Every output is optional and rewritten on every
- * encoding. Rows of a group that is empty, or whose hull exceeded `maximumHullVertices`, hold NaN.
+ * encoding. Empty groups hold NaN shape rows. A hull exceeding `maximumHullVertices` suppresses
+ * hull-dependent shapes; sourceBounds still encloses every finite source position.
  */
 export type GPUMinimumBoundsOutput = {
+  /** Optional one-word partition completion; geometry remains available for provisional labels. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /**
    * Corners of the minimum-area rotated rectangle, 4 rows per group, counter-clockwise. The first
    * two corners lie on the side parallel to the hull edge that defined the rectangle.
@@ -59,8 +80,10 @@ export type GPUMinimumBoundsOutput = {
   longestLines?: GraphDataView<'float32x4'>;
   /** Length of {@link GPUMinimumBoundsOutput.longestLines} per group (the diameter). */
   diameters?: GraphDataView<'float32'>;
-  /** Axis-aligned envelope `[minX, minY, maxX, maxY]` per group. */
-  bounds?: GraphDataView<'float32x4'>;
+  /** Axis-aligned finite source envelope, independent of hull loss. */
+  sourceBounds?: GraphDataView<'float32x4'>;
+  /** Per group: the global lattice moved a finite source coordinate; hull shapes may lose detail. */
+  precisionLimited?: GraphDataView<'uint32'>;
   /** True convex hull vertex count per group, before the `maximumHullVertices` cap. */
   hullSizes?: GraphDataView<'uint32'>;
   /**
@@ -77,6 +100,8 @@ export type GPUMinimumBoundsOutput = {
 
 /** Props shared by both inputs of {@link GPUMinimumBounds}. */
 type GPUMinimumBoundsSharedProps = {
+  /** Optional solver completion word; omission denotes ordinary categorical labels. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /** Prefix for generated node and transient IDs. Defaults to `'minimum-bounds'`. */
   id?: string;
   /**
@@ -135,10 +160,10 @@ function isPolygonMinimumBoundsInput(
  *
  * ## Semantics
  *
- * - The exact lattice convex hull of every group comes from {@link GPUGroupConvexHull} (vertex to
- *   feature labels are derived from the offsets), so every shape depends only on hull vertices.
- *   Rectangle, circle, line and envelope are computed by one thread per group over its hull in
- *   group-relative coordinates, so large coordinate offsets do not cost float32 precision.
+ * - The lattice convex hull of every group comes from {@link GPUGroupConvexHull} (vertex to
+ *   feature labels are derived from the offsets). Rectangle, circle and line use hull vertices
+ *   in group-relative coordinates. Source envelopes independently reduce every finite source
+ *   position, including positions lost by lattice quantization or a hull cap.
  * - Rectangle: for every hull edge the bounding rectangle aligned with it is measured (rotating
  *   calipers: the three extreme vertices only move forward as the edge turns, so a hull costs O(h)
  *   instead of O(h^2); hulls of at most 16 vertices scan every vertex), and the
@@ -146,13 +171,17 @@ function isPolygonMinimumBoundsInput(
  *   equal areas (squares) resolve to the lowest edge index, counting hull edges counter-clockwise
  *   from the smallest `(x, y)` vertex. Rectangles agree with GEOS in area, not in corner order.
  *   A single point gives four equal corners; collinear points a zero-height rectangle.
- * - Circle: Welzl's algorithm on the hull vertices in a fixed hash-shuffled order (deterministic,
+ * - Circle: all distance squares use one power-of-two-scaled group frame; center and radius are
+ *   restored only after the search, so representable radii survive squared-distance overflow and
+ *   underflow. Welzl's algorithm uses the hull vertices in a fixed hash-shuffled order (deterministic,
  *   expected linear), then the radius is recomputed as the largest hull distance so the circle
  *   always covers the hull. Degenerate groups give radius 0.
  * - Longest line: the pair of hull vertices with the largest distance; ties go to the lowest
  *   vertex pair in hull order. Large hulls test only the antipodal candidates found by a rotating
  *   caliper (a farthest pair is always antipodal), O(h) instead of O(h^2).
- * - Envelope: from the hull vertices, so it equals the point extent.
+ * - Envelope: from all finite source positions, independently of the hull lattice and hull limits.
+ * Optional precisionLimited marks groups whose source coordinates moved on the global lattice;
+ * their hull sizes, diameters, rectangles and circles may lose detail.
  *
  * Output is fixed size per group. Hulls over `maximumHullVertices` are flagged in `overflow`.
  *
@@ -165,6 +194,8 @@ function isPolygonMinimumBoundsInput(
 export class GPUMinimumBounds implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  /** Solver provenance independent of hull/medoid limits; absent means categorical labels. */
+  readonly partitionProvenance: Readonly<{labelsComplete?: GraphDataView<'uint32'>}>;
   /** Validated properties. */
   readonly props: GPUMinimumBoundsProps;
   /** Resolved spatial context (planar). */
@@ -175,16 +206,69 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
   readonly maximumHullVertices: number;
 
   constructor(props: GPUMinimumBoundsProps) {
+    const captured = snapshotConstructionFields(
+      props as GPUMinimumBoundsProps & Partial<GPUPolygonGeometryFields>,
+      [
+        'id',
+        'spatialContext',
+        'positions',
+        'labels',
+        'labelsComplete',
+        'groupCount',
+        'ringOffsets',
+        'polygonOffsets',
+        'featureOffsets',
+        'maximumHullVertices',
+        'output'
+      ]
+    );
+    validateRequirement(
+      captured.id ?? 'minimum-bounds',
+      !('bounds' in captured.output),
+      'output.bounds was removed; use output.sourceBounds'
+    );
+    const capturedOutput = snapshotConstructionFields(captured.output, [
+      'rectangleCorners',
+      'rectangleSizes',
+      'circles',
+      'longestLines',
+      'diameters',
+      'sourceBounds',
+      'labelsComplete',
+      'precisionLimited',
+      'hullSizes',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      ...(captured.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+        : {}),
+      output: Object.freeze({
+        ...capturedOutput,
+        ...(capturedOutput.status
+          ? {
+              status: snapshotConstructionFields(capturedOutput.status, [
+                'overflow',
+                'groupOverflow'
+              ])
+            }
+          : {})
+      })
+    });
     this.id = props.id ?? 'minimum-bounds';
     this.props = props;
+    this.partitionProvenance = captureGeometryPartitionProvenance(
+      this.id,
+      props.labelsComplete,
+      props.output.labelsComplete
+    );
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
-    if (rows < 1) {
-      throw new Error(`${id} needs at least one row`);
-    }
+
     if (rows > MAXIMUM_ROWS) {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
@@ -193,13 +277,13 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       if (props.labels.length !== rows) {
         throw new Error(`${id} labels length must equal positions length`);
       }
-      validateCapacity(id, 'groupCount', props.groupCount ?? 0, 1, MAXIMUM_ROWS);
+      validateCapacity(id, 'groupCount', props.groupCount ?? 0, 0, MAXIMUM_ROWS);
       this.groupCount = props.groupCount;
     } else {
       for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
         validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
-        if (props[name].length < 2) {
-          throw new Error(`${id} ${name} must contain at least two rows`);
+        if (props[name].length < 1) {
+          throw new Error(`${id} ${name} must contain a terminal row`);
         }
       }
       this.groupCount = props.featureOffsets.length - 1;
@@ -208,12 +292,14 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     validateCapacity(id, 'maximumHullVertices', this.maximumHullVertices, 3);
     const groups = this.groupCount;
     const checks = [
+      ['labelsComplete', output.labelsComplete, ['uint32'], 1],
       ['rectangleCorners', output.rectangleCorners, ['float32x2'], groups * 4],
       ['rectangleSizes', output.rectangleSizes, ['float32x4'], groups],
       ['circles', output.circles, ['float32x3'], groups],
       ['longestLines', output.longestLines, ['float32x4'], groups],
       ['diameters', output.diameters, ['float32'], groups],
-      ['bounds', output.bounds, ['float32x4'], groups],
+      ['precisionLimited', output.precisionLimited, ['uint32'], groups],
+      ['sourceBounds', output.sourceBounds, ['float32x4'], groups],
       ['hullSizes', output.hullSizes, ['uint32'], groups],
       ['status.overflow', output.status.overflow, ['uint32'], 1],
       ['status.groupOverflow', output.status.groupOverflow, ['uint32'], 1]
@@ -235,10 +321,21 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       !output.circles &&
       !output.longestLines &&
       !output.diameters &&
-      !output.bounds
+      !output.sourceBounds
     ) {
       throw new Error(`${id} needs at least one shape output`);
     }
+    for (const name of ['labelsComplete', 'precisionLimited'] as const)
+      validateGeometryAuxiliaryOutput(
+        id,
+        name,
+        output[name],
+        Object.fromEntries(
+          checks
+            .filter(([otherName]) => otherName !== name)
+            .map(([otherName, view]) => [otherName, view])
+        )
+      );
     for (const [name, scalar] of Object.entries(output.status)) {
       if (!scalar) continue;
       for (const [otherName, other] of checks) {
@@ -262,7 +359,8 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
         'ringOffsets' in props ? props.ringOffsets : undefined,
         'polygonOffsets' in props ? props.polygonOffsets : undefined,
         'featureOffsets' in props ? props.featureOffsets : undefined,
-        props.labels
+        props.labels,
+        props.labelsComplete
       ]
     );
   }
@@ -284,6 +382,29 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
       ...columns,
       ...Object.fromEntries(Object.entries(status).map(([name, view]) => [`status.${name}`, view]))
     });
+    if (positions.length === 0)
+      return [
+        ...getGeometryPartitionProvenanceNodes(
+          graph,
+          id,
+          props.labelsComplete,
+          output.labelsComplete
+        ),
+        ...getEmptyGeometryNodes(
+          graph,
+          id,
+          OPERATION,
+          Object.fromEntries([
+            ...Object.entries(columns)
+              .filter(([name]) => name !== 'labelsComplete')
+              .map(([name, view]) => [
+                name,
+                {view, value: ['hullSizes', 'precisionLimited'].includes(name) ? 0 : NaN}
+              ]),
+            ...Object.entries(status).map(([name, view]) => [name, {view, value: 0}])
+          ])
+        )
+      ];
     validateGroupConvexHullScratch(graph.device, id, positions.length, groupCount);
     const rows = positions.length;
     const u32 = (name: string, length: number) =>
@@ -312,7 +433,12 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
         declarations,
         body
       });
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = getGeometryPartitionProvenanceNodes(
+      graph,
+      id,
+      props.labelsComplete,
+      output.labelsComplete
+    );
 
     // 1. Vertex to group labels.
     let labels = props.labels;
@@ -372,12 +498,14 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
         groupCount,
         maximumVerticesPerGroup: this.maximumHullVertices,
         vertexCapacity: rows,
+        labelsComplete: props.labelsComplete,
         output: {
           vertexIndices: hullIndices,
           vertexPositions: hullPositions,
           offsets: hullOffsets,
           counts: hullCounts,
           sizes: output.hullSizes,
+          precisionLimited: output.precisionLimited,
           status: {overflow: output.status.overflow, groupOverflow: output.status.groupOverflow}
         }
       }).getCommandNodes(graph)
@@ -548,9 +676,19 @@ fn findMaximum(begin: u32, count: u32, anchor: vec2<f32>, axis: vec2<f32>) -> u3
     circles[circlesOffset + index * 3u + 2u] = nan;
     return;
   }
+  // All containment, diameter and covering-radius squares use this shared group frame.
+  // A representable source radius can have a square below f32's minimum or above its maximum.
+  // Scaled edge descriptors also avoid overflowing source-minus-anchor for opposite extrema.
+  var circleExponent = -1000i;
   for (var slot = 0u; slot < count; slot++) {
+    let point = vec2f(hull[hullOffset + (begin + slot) * 2u], hull[hullOffset + (begin + slot) * 2u + 1u]);
+    let edge = getScaledTriangleEdge(anchor, point);
+    if (any(edge.direction != vec2f(0.0))) {
+      circleExponent = max(circleExponent, edge.exponent);
+    }
     order[orderOffset + begin + slot] = slot;
   }
+  if (circleExponent == -1000i) { circleExponent = 0i; }
   // Deterministic Fisher-Yates shuffle: one Philox block per (group, slot). The circle does not
   // depend on the order in exact arithmetic; the shuffle only bounds the expected running time.
   for (var slot = count - 1u; slot > 0u; slot--) {
@@ -559,20 +697,20 @@ fn findMaximum(begin: u32, count: u32, anchor: vec2<f32>, axis: vec2<f32>) -> u3
     order[orderOffset + begin + slot] = order[orderOffset + begin + pick];
     order[orderOffset + begin + pick] = held;
   }
-  var center = loadPoint(begin + order[orderOffset + begin], anchor);
+  var center = loadCirclePoint(begin + order[orderOffset + begin], anchor, circleExponent);
   var radiusSquared = 0.0;
   for (var i = 1u; i < count; i++) {
-    let pointI = loadPoint(begin + order[orderOffset + begin + i], anchor);
+    let pointI = loadCirclePoint(begin + order[orderOffset + begin + i], anchor, circleExponent);
     if (isOutside(pointI, center, radiusSquared)) {
       center = pointI;
       radiusSquared = 0.0;
       for (var j = 0u; j < i; j++) {
-        let pointJ = loadPoint(begin + order[orderOffset + begin + j], anchor);
+        let pointJ = loadCirclePoint(begin + order[orderOffset + begin + j], anchor, circleExponent);
         if (isOutside(pointJ, center, radiusSquared)) {
           center = 0.5 * (pointI + pointJ);
           radiusSquared = dot(pointI - center, pointI - center);
           for (var k = 0u; k < j; k++) {
-            let pointK = loadPoint(begin + order[orderOffset + begin + k], anchor);
+            let pointK = loadCirclePoint(begin + order[orderOffset + begin + k], anchor, circleExponent);
             if (isOutside(pointK, center, radiusSquared)) {
               center = getCircumcenter(pointI, pointJ, pointK);
               radiusSquared = max(
@@ -588,15 +726,24 @@ fn findMaximum(begin: u32, count: u32, anchor: vec2<f32>, axis: vec2<f32>) -> u3
   // Recompute the radius from the hull so the circle covers every vertex.
   var coverSquared = 0.0;
   for (var slot = 0u; slot < count; slot++) {
-    let delta = loadPoint(begin + slot, anchor) - center;
+    let delta = loadCirclePoint(begin + slot, anchor, circleExponent) - center;
     coverSquared = max(coverSquared, dot(delta, delta));
   }
-  circles[circlesOffset + index * 3u] = anchor.x + center.x;
-  circles[circlesOffset + index * 3u + 1u] = anchor.y + center.y;
-  circles[circlesOffset + index * 3u + 2u] = sqrt(coverSquared);`,
+  circles[circlesOffset + index * 3u] = sumTriangleCoordinate(anchor.x, center.x, circleExponent, 0.0, 0i);
+  circles[circlesOffset + index * 3u + 1u] = sumTriangleCoordinate(anchor.y, center.y, circleExponent, 0.0, 0i);
+  circles[circlesOffset + index * 3u + 2u] = scaleTriangleComponent(sqrt(coverSquared), circleExponent);`,
           `${declarations}
 ${PHILOX_WGSL}
+${EXACT_ORIENTATION_WGSL}
+${TRIANGLE_CIRCUMCIRCLE_WGSL}
 const CIRCLE_SHUFFLE_PURPOSE: u32 = ${PHILOX_PURPOSES.minimumBoundsCircleShuffle.id}u;
+fn loadCirclePoint(slot: u32, anchor: vec2f, exponent: i32) -> vec2f {
+  let point = vec2f(hull[hullOffset + slot * 2u], hull[hullOffset + slot * 2u + 1u]);
+  let edge = getScaledTriangleEdge(anchor, point);
+  let alignedExponent = edge.exponent - exponent;
+  // Tiny aligned terms may round to zero in the shared frame; do not pass an invalid ldexp power.
+  return vec2f(getTriangleAlignedTerm(edge.direction.x, alignedExponent), getTriangleAlignedTerm(edge.direction.y, alignedExponent));
+}
 fn isOutside(point: vec2<f32>, center: vec2<f32>, radiusSquared: f32) -> bool {
   let delta = point - center;
   return dot(delta, delta) > radiusSquared * (1.0 + 4.0e-6);
@@ -613,20 +760,22 @@ fn getDiametralCenter(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> vec2<f32> {
   }
   return 0.5 * (b + c);
 }
+// The near-collinear test and the circumcentre use power-of-two scaled edges (the shared
+// circumcircle of the hull and Voronoi kernels), so neither overflows above extent 2^32 nor
+// underflows below 2^-42.
 fn getCircumcenter(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> vec2<f32> {
-  let ab = b - a;
-  let ac = c - a;
+  let ab = getScaledTriangleEdge(a, b).direction;
+  let ac = getScaledTriangleEdge(a, c).direction;
   let determinant = 2.0 * (ab.x * ac.y - ab.y * ac.x);
   let lengths = sqrt(dot(ab, ab) * dot(ac, ac));
   if (abs(determinant) <= 2.0e-7 * lengths) {
     return getDiametralCenter(a, b, c);
   }
-  let abSquared = dot(ab, ab);
-  let acSquared = dot(ac, ac);
-  return a + vec2<f32>(
-    (ac.y * abSquared - ab.y * acSquared) / determinant,
-    (ab.x * acSquared - ac.x * abSquared) / determinant
-  );
+  let circle = getTriangleCircumcircle(a, b, c);
+  if (circle.orientation == 0 || circle.orientation == 2) {
+    return getDiametralCenter(a, b, c);
+  }
+  return circle.center;
 }`
         )
       );
@@ -713,27 +862,21 @@ fn considerPair(begin: u32, anchor: vec2<f32>, one: u32, other: u32) {
       );
     }
 
-    if (output.bounds) {
+    if (output.sourceBounds) {
       nodes.push(
-        kernel(
-          'bounds',
+        ...new GPUGroupGeometry({
+          id: `${id}-source-bounds`,
+          positions,
+          labels,
           groupCount,
-          [...hullBindings(), write('bounds', output.bounds)],
-          `${prelude}
-  var low = vec2<f32>(3.0e38, 3.0e38);
-  var high = vec2<f32>(-3.0e38, -3.0e38);
-  for (var slot = 0u; slot < count; slot++) {
-    let point = loadPoint(begin + slot, anchor);
-    low = min(low, point);
-    high = max(high, point);
-  }
-  let isValid = count > 0u;
-  bounds[boundsOffset + index * 4u] = select(nan, anchor.x + low.x, isValid);
-  bounds[boundsOffset + index * 4u + 1u] = select(nan, anchor.y + low.y, isValid);
-  bounds[boundsOffset + index * 4u + 2u] = select(nan, anchor.x + high.x, isValid);
-  bounds[boundsOffset + index * 4u + 3u] = select(nan, anchor.y + high.y, isValid);`,
-          declarations
-        )
+          parameters: createTransientView(
+            graph,
+            `${id}-unused-distribution-parameters`,
+            'float32',
+            GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH
+          ),
+          output: {bounds: output.sourceBounds}
+        }).getCommandNodes(graph)
       );
     }
     return nodes;

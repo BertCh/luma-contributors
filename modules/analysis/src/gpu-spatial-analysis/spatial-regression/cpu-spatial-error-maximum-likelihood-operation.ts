@@ -36,10 +36,11 @@ import {
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import * as likelihood from './spatial-maximum-likelihood-parameters';
 import {getSpatialExactLogDeterminant} from './spatial-exact-log-determinant';
+import {hasSpatialErrorScalarWeights} from './spatial-error-scalar-profile';
 import {getSpatialSeriesTailModel, SPATIAL_SERIES_TAIL_MINIMUM_POWER} from './spatial-series-tail';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getSpatialLogDeterminantFromTraces,
   getSpatialLogDeterminantTruncationBound,
@@ -123,6 +124,9 @@ function validateOptions(id: string, options: CPUSpatialErrorMaximumLikelihoodOp
  *   find every positive-to-negative stationary crossing to binary64 resolution, without the
  *   GPU's 1024-interval scan or 32-bisection limit. Equal objectives choose the lowest lambda;
  *   an identically flat profile chooses the lower boundary. localMaximumCount can exceed the GPU's.
+ *   For exact log determinant with structurally certified W=cI, both forms choose that lower
+ *   boundary, report one candidate and suppress the unidentifiable spatial SE/z/p regardless
+ *   of the inverse-series length. Coefficient inference remains defined.
  *   Weights are normalized before multiplication so a scalar identity retains its flat profile;
  *   the GPU's float32 search can choose another point on that profile.
  * - GPU-only predictor, power and exact-row caps are dropped; tileRowCount has no numerical effect.
@@ -173,7 +177,7 @@ export function computeSpatialErrorMaximumLikelihoodOnCPU(
     throw new Error(`${id} traceParameters must hold the packed seed`);
   const stochastic =
     (options.traceMode ??
-      (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic')) ===
+      (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic')) ===
     'stochastic';
   const probeCount = stochastic
     ? (options.traceProbeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT)
@@ -301,15 +305,21 @@ export function computeSpatialErrorMaximumLikelihoodOnCPU(
     eigenvalues
       ? getSpatialExactLogDeterminant(parameter, eigenvalues)
       : getSpatialLogDeterminantFromTraces(parameter, traces, 1, options.tailExtrapolation);
-  const candidates = getCPUSpatialErrorLikelihoodCandidates(
-    augmented,
-    lagged,
-    traces,
-    eigenvalues,
-    tail,
-    rowCount,
-    limit
-  );
+  const flatProfile =
+    exact &&
+    Array.from(input.eigenvalues!).every(value => value === input.eigenvalues![0]) &&
+    hasSpatialErrorScalarWeights(input.weights, rowCount, input.eigenvalues![0]);
+  const candidates = flatProfile
+    ? [{parameter: -limit, atBoundary: true}]
+    : getCPUSpatialErrorLikelihoodCandidates(
+        augmented,
+        lagged,
+        traces,
+        eigenvalues,
+        tail,
+        rowCount,
+        limit
+      );
   const evaluate = (parameter: number) => {
     const filtered = design.map((row, position) =>
       row.map((value, column) => value - parameter * lagged[position][column])
@@ -383,7 +393,7 @@ export function computeSpatialErrorMaximumLikelihoodOnCPU(
         options.tailExtrapolation
       );
   const information = traceTwo + traceThree - (2 * traceOne ** 2) / rowCount;
-  const varianceDefined = information > 0 && Number.isFinite(information);
+  const varianceDefined = !flatProfile && information > 0 && Number.isFinite(information);
   standardErrors.push(varianceDefined ? Math.sqrt(1 / information) / norm : NaN);
   coefficients.push(parameter / norm);
   coefficients.forEach((coefficient, row) => {
@@ -427,7 +437,10 @@ export function computeSpatialErrorMaximumLikelihoodOnCPU(
     Number(!atBoundary),
     Number(atBoundary),
     Number(limit < likelihood.GPU_SPATIAL_MAXIMUM_LIKELIHOOD_BOUND_FRACTION),
-    exact ? 0 : getSpatialLogDeterminantTruncationBound(parameter, maximumPower, rowCount),
+    exact
+      ? 0
+      : getSpatialLogDeterminantTruncationBound(parameter, maximumPower, rowCount) +
+        Math.abs(logDeterminant(parameter) - getSpatialLogDeterminantFromTraces(parameter, traces)),
     Number(varianceDefined),
     candidates.length,
     determinant

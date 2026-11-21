@@ -885,3 +885,137 @@ describe('review regressions: float32 kriging input conversion', () => {
     expect(() => prepareCuratedKrigingGpuSamples(prepared.sample, 1)).not.toThrow();
   });
 });
+
+it('curated GPU kriging keeps invalid cells, uncertain cells and validation failures distinct', async () => {
+  // Hand-worked status fixture: two invalid cells, one uncertain cell, and three failed
+  // leave-one-out predictions. The remaining 37 of the 40 observations are valid.
+  const binding = getCatalogBinding(ID)!;
+  const points = getPoints();
+  points.features.forEach((feature, index) => {
+    feature.properties = {z: index + 1};
+  });
+  const parameters = normalizeCatalogParameters(binding, {
+    ...STATED,
+    nugget: 0,
+    sill: 1,
+    neighborCount: 16
+  });
+  const prepared = prepareCuratedKriging({points}, parameters);
+  const device = createNullWebGPUDevice();
+  vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(() => {});
+  vi.spyOn(CatalogGpuSession.prototype, 'readFloat32').mockImplementation(async output => {
+    const values = new Float32Array(output.length);
+    const name = output.buffer.id;
+    if (name.endsWith('-predictions')) {
+      for (let index = 0; index < output.length; index++)
+        values[index] = prepared.sample.value[index] + 2;
+    } else if (name.endsWith('-prediction-variance') || name.endsWith('-variance')) values.fill(4);
+    else if (name.endsWith('-values')) values.fill(10);
+    // Three omitted cell rows (two invalid, one uncertain), and three failed validation rows.
+    if (
+      ['-predictions', '-prediction-variance', '-values', '-variance'].some(suffix =>
+        name.endsWith(suffix)
+      )
+    )
+      values.fill(NaN, 0, 3);
+    // Recipe residual is observed - predicted = -2; its variance is 4.
+    if (name.endsWith('-bias')) values[0] = -2;
+    if (name.endsWith('-mean-absolute-error') || name.endsWith('-root-mean-squared-error'))
+      values[0] = 2;
+    return values;
+  });
+  vi.spyOn(CatalogGpuSession.prototype, 'readScalar').mockImplementation(async output => {
+    const name = output.buffer.id;
+    if (name.endsWith('-kriging-invalidCount')) return 2;
+    if (name.endsWith('-kriging-uncertainCount')) return 1;
+    if (name.endsWith('-validation-summary-invalidCount')) return 3;
+    if (name.endsWith('-valid-count') || name.endsWith('-standardized-count')) return 37;
+    return 0;
+  });
+  try {
+    const result = await binding.runGpu!({device}, {points}, parameters);
+    const invalid = result.diagnostics.find(item => item.code === 'insufficient-kriging-neighbors');
+    const uncertain = result.diagnostics.find(item => item.code === 'singular-kriging-system');
+    expect(invalid?.count).toBe(2);
+    expect(invalid?.message).toMatch(/lack of data or invalid settings/);
+    expect(uncertain?.count).toBe(1);
+    expect(uncertain?.message).toMatch(/ill-conditioned/);
+    expect(uncertain?.message).toMatch(/materially negative variance/);
+    expect(result.diagnostics.find(item => item.code === 'leave-one-out-failed')?.count).toBe(3);
+    expect(result.summary['gpuInvalidCellCount']).toBe(2);
+    expect(result.summary['gpuUncertainCellCount']).toBe(1);
+    expect(result.summary['gpuInvalidValidationCount']).toBe(3);
+    // A direct GPU binding returns tables before the catalog adds its execution envelope.
+    const cells = getResultTable(result, 'kriging-cells');
+    const validation = getResultTable(result, 'cross-validation');
+    const grid = prepared.context.grid;
+    expect(cells.rowCount).toBe(grid.columns * grid.rows - 3);
+    expect(validation.rowCount).toBe(40);
+    expect(
+      Array.from(validation.columns['predicted']).filter(value => value === null)
+    ).toHaveLength(3);
+    expect(Array.from(validation.columns['error']).filter(value => value === null)).toHaveLength(3);
+    expect(
+      Array.from(validation.columns['kriging_variance']).filter(value => value === null)
+    ).toHaveLength(3);
+    const standardized = Array.from(validation.columns['standardized_error']);
+    expect(standardized.filter(value => value !== null)).toHaveLength(37);
+    for (const value of standardized.filter(value => value !== null)) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBe(1); // Error 2 divided by standard deviation sqrt(4).
+    }
+    expect(Array.from(cells.columns['value'])).toEqual(Array(cells.rowCount).fill(10));
+    expect(Array.from(cells.columns['variance'])).toEqual(Array(cells.rowCount).fill(4));
+    expect(result.summary['meanError']).toBe(2);
+    expect(result.summary['rootMeanSquareError']).toBe(2);
+    for (let row = 0; row < validation.rowCount; row++) {
+      const predicted = validation.columns['predicted'][row];
+      const error = validation.columns['error'][row];
+      const variance = validation.columns['kriging_variance'][row];
+      if (predicted === null) {
+        expect(error).toBeNull();
+        expect(variance).toBeNull();
+      } else {
+        expect(Number.isFinite(predicted)).toBe(true);
+        expect(predicted).toBe(Number(validation.columns['observed'][row]) + 2);
+        expect(error).toBe(2);
+        expect(variance).toBe(4);
+      }
+    }
+  } finally {
+    vi.restoreAllMocks();
+    device.destroy();
+  }
+});
+
+it('B3: CPU kriging fallback counts twelve empty cells separately from eight validation failures', async () => {
+  // Centers are (column+0.5,row+0.5) on a 4x3 grid, and every sample has integer
+  // coordinates. Their minimum distance sqrt(0.5) exceeds search radius 0.1.
+  // Eight distinct samples are at least 1 apart, so all eight leave-one-out solves fail.
+  const points = makePoints([0, 1, 2, 3, 0, 1, 2, 3], [0, 0, 0, 0, 2, 2, 2, 2], index => ({
+    z: index + 1
+  }));
+  const device = createNullWebGPUDevice();
+  try {
+    const binding = getCatalogBinding(ID)!;
+    const result = await runCatalogOperationAsync(
+      binding,
+      {...STATED, cellSize: 1, searchRadius: 0.1, neighborCount: 20},
+      {points},
+      {device}
+    );
+    expect(result.engine).toBe('cpu-reference');
+    expect(result.fallbackReason).toMatch(/neighborCount.*16/);
+    expect(getResultTable(result, 'kriging-cells').rowCount).toBe(0);
+    const validation = getResultTable(result, 'cross-validation');
+    expect(validation.rowCount).toBe(8);
+    expect(Array.from(validation.columns['predicted'])).toEqual(Array(8).fill(null));
+    expect(
+      result.diagnostics.find(item => item.code === 'insufficient-kriging-neighbors')?.count
+    ).toBe(12);
+    expect(result.diagnostics.find(item => item.code === 'leave-one-out-failed')?.count).toBe(8);
+    expect(result.diagnostics.some(item => item.code === 'singular-kriging-system')).toBe(false);
+  } finally {
+    device.destroy();
+  }
+});

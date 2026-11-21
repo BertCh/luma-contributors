@@ -51,7 +51,7 @@ export async function runExample(device: Device, input: SimilarLocationsExampleI
       columnCount: 5,
       referenceMask,
       parameters,
-      standardization: 'zscore',
+      standardization: 'z-score',
       output
     })
   );

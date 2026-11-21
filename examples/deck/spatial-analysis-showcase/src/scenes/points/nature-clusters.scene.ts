@@ -42,7 +42,7 @@ export default defineScene<NatureClusterOptions>({
   summary:
     'DBSCAN turns a haze of bird records into named hot spots coloured by size, and shows that its radius is a scale you can draw. Convex hulls, centres and a water check describe the winner; k-means and the centre of gravity answer different questions.',
   contributors: [
-    'GPUSpatialClustering',
+    'GPUDBSCAN',
     'GPUSpatialKMeans',
     'GPUGroupGeometry',
     'GPUGroupConvexHull',
@@ -129,8 +129,8 @@ export default defineScene<NatureClusterOptions>({
     },
     {
       kind: 'slider',
-      id: 'minimumPoints',
-      label: 'Minimum points (core threshold)',
+      id: 'minimumSamples',
+      label: 'Minimum samples (core threshold)',
       group: 'DBSCAN',
       apply: 'param',
       min: 2,
@@ -623,7 +623,7 @@ export default defineScene<NatureClusterOptions>({
 const graph = new GPUCommandGraph(device, {id: 'clusters'});
 graph.add(new GPUSpatialKMeans({spatialContext: projection.spatialContext,
   positions,                               // float32x2 meters of the chosen group
-  k: ${state.k},
+  clusterCount: ${state.k},
   maximumIterations: ${cap},                // compile-time cap: each cap is its own graph
   parameters: kmeansParameters,             // getGPUSpatialKMeansParameterValues({seed: ${state.seed}, tolerance: ${state.tolerance}}): meters a centre may still move
   initialization: '${state.initialization}',
@@ -641,24 +641,24 @@ const graph = new GPUCommandGraph(device, {id: 'cluster-outline'});
 addClusterAndOutlineRecipe(graph, {
   points: {kind: 'points', positions},
   spatialContext: projection.spatialContext,
-  clusteringParameters: clusteringParameters.importToGraph(graph),  // bounds, epsilon, minimumPoints
+  clusteringParameters: clusteringParameters.importToGraph(graph),  // bounds, epsilon, minimumSamples
   gridSize: [256, 256],
   geometryParameters: geometryParameters.importToGraph(graph),
   maximumClusterCount: 2048,
   maximumVerticesPerHull: 256,
   hullCapacity: 1 << 14,
-  outputs: {labels, hullPositions, hullOffsets, areas, perimeters, centroids, status: {hullOverflow}},
+  output: {labels, hullPositions, hullOffsets, areas, perimeters, centroids, status: {hullOverflow}},
   scratch: {counts, bounds, meanCenters, hullCounts}
 });
 const compiled = await graph.compileAsync();
-// each change of epsilon / minimumPoints:
-clusteringParameters.write(getGPUSpatialClusteringParameterValues({bounds, epsilon: ${state.epsilon}, minimumPoints: ${state.minimumPoints}}));
+// each change of epsilon / minimumSamples:
+clusteringParameters.write(getGPUDBSCANParameterValues({bounds, epsilon: ${state.epsilon}, minimumSamples: ${state.minimumSamples}}));
 compiled.encode(commandEncoder, {parameters: undefined});`;
     }
     return `const projection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
 // Project source longitude/latitude with projection; draw outputs with analysisFrame: projection.frame.
 const graph = new GPUCommandGraph(device, {id: 'clusters'});
-graph.add(new GPUSpatialClustering({spatialContext: projection.spatialContext,
+graph.add(new GPUDBSCAN({spatialContext: projection.spatialContext,
   positions, parameters: clusteringParameters.importToGraph(graph),
   gridSize: [256, 256],${state.denseBoxShortcut ? '\n  denseBoxShortcut: true,' : ''}${state.sumOrder === 'atomic' ? "\n  sumOrder: 'atomic'," : ''}
   output: {labels, coreFlags, clusterCount, clusterSizes, clusterCentroids,
@@ -671,8 +671,8 @@ shapes.add(new GPUGroupGeometry({spatialContext: projection.spatialContext, posi
 shapes.add(new GPUGroupConvexHull({spatialContext: projection.spatialContext, positions, labels, groupCount: 2048,
   maximumVerticesPerGroup: 256, vertexCapacity: 1 << 14, prefilterLevels: ${state.prefilterLevels},
   output: {vertexIndices, vertexPositions, offsets, counts, status: {overflow}}}));   // overflow is a bit set
-// Compiled once. Epsilon and minimumPoints are parameter words:
-clusteringParameters.write(getGPUSpatialClusteringParameterValues({bounds, epsilon: ${state.epsilon}, minimumPoints: ${state.minimumPoints}}));
+// Compiled once. Epsilon and minimumSamples are parameter words:
+clusteringParameters.write(getGPUDBSCANParameterValues({bounds, epsilon: ${state.epsilon}, minimumSamples: ${state.minimumSamples}}));
 clustersCompiled.encode(commandEncoder, {parameters: undefined});
 shapesCompiled.encode(commandEncoder, {parameters: undefined});
 // When the labels settle, read them back once: a class per record (size breaks 50 / 200 / 1,000).
@@ -680,7 +680,7 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
   },
 
   about: {
-    what: '`GPUSpatialClustering` runs DBSCAN on the GPU in five stages: a lattice of cells at least epsilon wide, a neighbour count that flags core records, a lock-free union-find that joins cores, borders that attach to the smallest root, and canonical labels. Epsilon and the minimum points are parameter words, so they never recompile. `GPUSpatialKMeans` assigns every record to the nearest of k moving centres. `GPUGroupGeometry` and `GPUGroupConvexHull` describe every cluster, and `GPUGeographicDistribution` summarises the whole pattern with a mean, a median, a standard distance and an ellipse.',
+    what: '`GPUDBSCAN` runs DBSCAN on the GPU in five stages: a lattice of cells at least epsilon wide, a neighbour count that flags core records, a lock-free union-find that joins cores, borders that attach to the smallest root, and canonical labels. Epsilon and the minimum points are parameter words, so they never recompile. `GPUSpatialKMeans` assigns every record to the nearest of k moving centres. `GPUGroupGeometry` and `GPUGroupConvexHull` describe every cluster, and `GPUGeographicDistribution` summarises the whole pattern with a mean, a median, a standard distance and an ellipse.',
     why: 'Clustering turns a cloud of sightings into places you can name, visit and compare. DBSCAN suits irregular patterns such as a park, a pond or a path and tells you what is not a hot spot; k-means is for dividing a city into balanced areas and never answers "nothing here". Epsilon is a scale: change it and places merge or vanish.',
     howToRead:
       'Hot spots are coloured by their size in four fixed classes (darker is bigger), never by an arbitrary id. Grey points are noise. A convex hull outlines a cluster and often swallows water; its area is not the footprint of the place. In the k-means view colours are nominal and only keep neighbouring groups apart. Counts follow observers, not only birds.'
@@ -726,16 +726,16 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
       headline: 'A place is enough neighbours within ε',
       textAlternative:
         'Zoomed map of the north lakefront with three dashed circles of equal radius, each labelled with the number of records inside and its role: core, border or noise.',
-      body: 'DBSCAN asks each record one question: how many records lie within **Neighbour radius (ε)**, drawn here true to scale? Enough, set by **Minimum points (core threshold)**, makes a *core*. A record that only a core reaches is a *border*; the rest is *noise*. This map holds **{{coreCount}}** core, **{{borderCount}}** border and **{{noiseCount}}** noise records.\n\n*Epsilon is a distance you can draw.*',
+      body: 'DBSCAN asks each record one question: how many records lie within **Neighbour radius (ε)**, drawn here true to scale? Enough, set by **Minimum samples (core threshold)**, makes a *core*. A record that only a core reaches is a *border*; the rest is *noise*. This map holds **{{coreCount}}** core, **{{borderCount}}** border and **{{noiseCount}}** noise records.\n\n*Epsilon is a distance you can draw.*',
       optionsMode: 'fresh',
       options: {
         epsilon: 150,
-        minimumPoints: 20,
+        minimumSamples: 20,
         showCore: true,
         showEpsilonDiscs: true,
         showHulls: false
       },
-      controls: ['epsilon', 'minimumPoints'],
+      controls: ['epsilon', 'minimumSamples'],
       readouts: ['coreCount', 'borderCount', 'noiseCount'],
       stage: 'core',
       camera: {
@@ -761,10 +761,10 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
       headline: 'Widen ε and hot spots merge',
       textAlternative:
         'Map of the north side with hot spots drawn as filled hulls in four blue size classes, beside a curve of the number of hot spots against epsilon.',
-      body: 'Colour is size, in four fixed classes, so a hot spot keeps its colour as the scale moves. Drag **Neighbour radius (ε)** or press Play: **{{clusters}}** hot spots hold **{{clusteredShare}}** of the records at this radius, and the curve shows eight radii run through one compiled graph. Raise **Minimum points (core threshold)** to keep only dense cores; **Name the biggest hot spots** adds notes.',
+      body: 'Colour is size, in four fixed classes, so a hot spot keeps its colour as the scale moves. Drag **Neighbour radius (ε)** or press Play: **{{clusters}}** hot spots hold **{{clusteredShare}}** of the records at this radius, and the curve shows eight radii run through one compiled graph. Raise **Minimum samples (core threshold)** to keep only dense cores; **Name the biggest hot spots** adds notes.',
       optionsMode: 'fresh',
       options: {labelHotSpots: true},
-      controls: ['epsilon', 'minimumPoints', 'labelHotSpots'],
+      controls: ['epsilon', 'minimumSamples', 'labelHotSpots'],
       readouts: ['clusters', 'clusteredShare', 'epsilonCurve', 'sizeBars'],
       stage: 'union',
       camera: {longitude: UPTOWN[0], latitude: UPTOWN[1], zoom: 10.9, transitionMs: 1600},
@@ -852,7 +852,7 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
       options: {
         category: 'Mammals',
         epsilon: 400,
-        minimumPoints: 8,
+        minimumSamples: 8,
         view: 'records',
         showDistribution: true,
         standardDeviations: '1'

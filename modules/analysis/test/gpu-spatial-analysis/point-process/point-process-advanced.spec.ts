@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createOPTICSStatusFields,
+  getOPTICSStatusViews,
+  readOPTICSStatus
+} from '../spatial-clustering/optics-status-test-utils';
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
@@ -58,7 +63,7 @@ for (const fixture of fixtures.xi) {
       reachability: state.view('reachability', 'float32', new Array(count).fill(0)),
       predecessors: state.view('predecessors', 'uint32', new Array(count).fill(0)),
       labels: state.view('labels', 'uint32', new Array(count).fill(0)),
-      status: state.view('status', 'uint32', [0, 0, 0]),
+      status: createOPTICSStatusFields(name => state.view(name, 'uint32', [0])),
       clusterIntervals: state.view('intervals', 'uint32x2', new Array(2 * count).fill(0)),
       clusterSummary: state.view('summary', 'uint32', [0, 0])
     };
@@ -78,7 +83,7 @@ for (const fixture of fixtures.xi) {
           reachability: output.reachability.view,
           predecessors: output.predecessors.view,
           labels: output.labels.view,
-          status: output.status.view,
+          ports: {status: getOPTICSStatusViews(output.status)},
           clusterIntervals: output.clusterIntervals.view,
           clusterSummary: output.clusterSummary.view
         }
@@ -101,7 +106,7 @@ for (const fixture of fixtures.xi) {
           fixture.intervals.length * 2
         )
       ).toEqual(fixture.intervals.flat());
-      expect(await readUint32(output.status.buffer, 3)).toEqual([count, 1, 0]);
+      expect(await readOPTICSStatus(output.status)).toEqual([count, 1, 0]);
     } finally {
       compiled.destroy();
       state.destroy();

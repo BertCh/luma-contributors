@@ -38,27 +38,26 @@ for (const scene of distanceCases) {
     const allocation = fixture.output('allocation', 'uint32', length);
     const nearest = fixture.output('nearest', 'uint32', length);
     const within = fixture.output('within', 'uint32', length);
+    const parameters = fixture.input(
+      'parameters',
+      'float32',
+      getGPUDistanceFieldParameterValues({maximumDistance: scene.maximumDistance}, grid)
+    );
+    const seedMask = fixture.input('mask', 'uint32', mask);
+    const seeds = scene.positions.length
+      ? {
+          seedMask,
+          seedPositions: fixture.input('positions', 'float32x2', new Float32Array(scene.positions)),
+          seedIds: fixture.input('seed-ids', 'uint32', new Uint32Array(scene.ids)),
+          seedCount: fixture.input('seed-count', 'uint32', Uint32Array.of(scene.count))
+        }
+      : {seedMask};
     graph.add(
       new GPUDistanceField({
         grid,
         mode: 'exact',
-        parameters: fixture.input(
-          'parameters',
-          'float32',
-          getGPUDistanceFieldParameterValues({maximumDistance: scene.maximumDistance}, grid)
-        ),
-        seedMask: fixture.input('mask', 'uint32', mask),
-        ...(scene.positions.length
-          ? {
-              seedPositions: fixture.input(
-                'positions',
-                'float32x2',
-                new Float32Array(scene.positions)
-              ),
-              seedIds: fixture.input('seed-ids', 'uint32', new Uint32Array(scene.ids)),
-              seedCount: fixture.input('seed-count', 'uint32', Uint32Array.of(scene.count))
-            }
-          : {}),
+        parameters,
+        ...seeds,
         output: {
           distances: distances.view,
           allocation: allocation.view,

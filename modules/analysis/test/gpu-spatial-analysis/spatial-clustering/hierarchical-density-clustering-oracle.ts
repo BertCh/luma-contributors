@@ -42,7 +42,7 @@ export function canonicalizeLabels(labels: ArrayLike<number>): number[] {
 }
 
 /**
- * float64 model of the GPU pipeline of `GPUHierarchicalDensityClustering`, stage by stage: core
+ * float64 model of the GPU pipeline of `GPUHDBSCAN`, stage by stage: core
  * distances, Boruvka with the `(weight, low, high)` edge order, the Kruskal dendrogram over the
  * sorted tree, condensing by "cluster start" and "lowest big ancestor", condensed-tree stability
  * and the excess-of-mass selection in cluster-ID order. The node spec checks it against

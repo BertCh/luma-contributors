@@ -2,12 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GraphDataView, GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  type GraphDataView,
+  type GPUCommandGraph,
+  type GPUCommandNode
+} from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {Buffer} from '@luma.gl/core';
 import {GPUKMeans} from '@luma.gl/graph/gpu-vector-search';
 import {
   captureGraphCommandNodes,
-  validateCapacity
+  validateCapacity,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createRasterEmbeddingMatrix,
@@ -28,6 +35,41 @@ export type GPURasterEmbeddingKMeansOutput = {
   counts: GraphDataView<'uint32'>;
   /** Optional `[executedIterations, changedLabels, converged]`. */
   status?: GraphDataView<'uint32'>;
+};
+
+/** Named stopping evidence for the last completed Lloyd assignment. */
+export type GPURasterEmbeddingKMeansStatus = {
+  executedIterations: number;
+  changedLabels: number;
+  converged: boolean;
+};
+
+/** Decodes `[executedIterations, changedLabels, converged]`; convergence means no changed labels. */
+export function decodeGPURasterEmbeddingKMeansStatus(
+  data: Uint32Array | Uint8Array | ArrayBuffer
+): GPURasterEmbeddingKMeansStatus {
+  const id = 'decodeGPURasterEmbeddingKMeansStatus';
+  const byteLength = data.byteLength;
+  validateRequirement(
+    id,
+    byteLength % 4 === 0 && byteLength >= 12,
+    `status must contain at least three whole uint32 elements; received ${byteLength} bytes`
+  );
+  // DataView also handles byte reads starting at an unaligned byte offset.
+  const bytes =
+    data instanceof ArrayBuffer
+      ? new DataView(data)
+      : new DataView(data.buffer, data.byteOffset, byteLength);
+  return {
+    executedIterations: bytes.getUint32(0, true),
+    changedLabels: bytes.getUint32(4, true),
+    converged: bytes.getUint32(8, true) !== 0
+  };
+}
+
+/** Outputs with stopping evidence, including graph-owned status when the caller omits it. */
+export type GPURasterEmbeddingKMeansResult = GPURasterEmbeddingKMeansOutput & {
+  status: GraphDataView<'uint32'>;
 };
 
 /** Properties of {@link GPURasterEmbeddingKMeans}. */
@@ -56,13 +98,17 @@ export type GPURasterEmbeddingKMeansProps = {
  *
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `clusterCount`,
  * `maximumIterations` and which optional views exist.
+ * Packed vectors accept 1–128 dimensions; maximumIterations is at most 64 for the whole raster.
  */
 export class GPURasterEmbeddingKMeans implements GPUCommandNodeProducer {
   readonly id: string;
   private readonly clustering: GPUKMeans;
+  private readonly results = new WeakMap<object, GPURasterEmbeddingKMeansResult>();
   private readonly commandNodes = new WeakMap<object, readonly GPUCommandNode[]>();
 
   constructor(readonly props: GPURasterEmbeddingKMeansProps) {
+    props = {...props, output: {...props.output}};
+    this.props = props;
     const id = props.id ?? 'raster-embedding-kmeans';
     this.id = id;
     const {pixelCount, dimensions, output} = props;
@@ -95,15 +141,49 @@ export class GPURasterEmbeddingKMeans implements GPUCommandNodeProducer {
     });
   }
 
+  /** Materializes unscheduled passes and exposes their output views for this graph. */
+  getResult<Parameters>(graph: GPUCommandGraph<Parameters>): GPURasterEmbeddingKMeansResult {
+    this.getCommandNodes(graph);
+    return this.results.get(graph)!;
+  }
+
   /** Returns the published k-means passes without scheduling them. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const cached = this.commandNodes.get(graph);
     if (cached) return cached as readonly GPUCommandNode<Parameters>[];
+    const {props} = this;
+    const status =
+      props.output.status ??
+      createTransientView(
+        graph,
+        `${this.id}-status`,
+        'uint32',
+        3,
+        Buffer.STORAGE | Buffer.COPY_SRC
+      );
+    const clustering = props.output.status
+      ? this.clustering
+      : new GPUKMeans({
+          id: this.id,
+          dataset: createRasterEmbeddingMatrix(
+            props.vectors,
+            props.pixelCount,
+            props.dimensions,
+            props.mask
+          ),
+          clusterCount: props.clusterCount,
+          centroids: props.output.centroids,
+          labels: props.output.labels,
+          counts: props.output.counts,
+          status,
+          maxIterations: props.maximumIterations
+        });
     const nodes = Object.freeze(
-      captureGraphCommandNodes(graph, () => this.clustering.addToGraph(graph))
+      captureGraphCommandNodes(graph, () => clustering.addToGraph(graph))
     );
+    this.results.set(graph, Object.freeze({...props.output, status}));
     this.commandNodes.set(graph, nodes as readonly GPUCommandNode[]);
     return nodes;
   }

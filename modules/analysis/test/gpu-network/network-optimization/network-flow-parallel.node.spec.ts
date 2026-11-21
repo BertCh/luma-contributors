@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  REVERSE_RESIDUAL_SCENE,
+  expectEnumeratedIntegralFlow
+} from './network-flow-integral-enumeration.test-utils';
 import {expect, it} from 'vitest';
 import {Buffer} from '@luma.gl/core';
 import {WgslExec, WgslParser, WgslReflect} from 'wgsl_reflect';
@@ -1211,3 +1215,43 @@ for (const costed of [false, true])
         expect(cpu.paths?.status.count[0]).toBe(diamond ? budget : 1);
       }
     });
+
+for (const solver of ['parallel'] as const)
+  for (const mode of ['successive-shortest-path', 'primal-dual'] as const)
+    for (const required of [1, 0xffffffff])
+      it(`independent integral enumeration checks ${solver} ${mode} request ${required}`, () => {
+        expectEnumeratedIntegralFlow(
+          executeScene({
+            ...REVERSE_RESIDUAL_SCENE,
+            solver,
+            mode,
+            required,
+            maximumAugmentations: 8,
+            maximumRelaxationRounds: 6,
+            maximumCostPhases: mode === 'primal-dual' ? 6 : undefined
+          }),
+          required
+        );
+      });
+
+for (const required of [1, 0xffffffff])
+  it(`independent integral enumeration checks CPU reference request ${required}`, () => {
+    const result = computeNetworkFlowOnCPU(
+      {
+        edges: Uint32Array.from(REVERSE_RESIDUAL_SCENE.edges),
+        capacities: Uint32Array.from(REVERSE_RESIDUAL_SCENE.capacities),
+        costs: Uint32Array.from(REVERSE_RESIDUAL_SCENE.costs),
+        parameters: Uint32Array.of(0, 5, required)
+      },
+      {nodeCount: 6}
+    );
+    expectEnumeratedIntegralFlow(
+      {
+        flow: Array.from(result.flow),
+        cut: Array.from(result.cut),
+        summary: Array.from(result.summary),
+        exactCost: Array.from(result.exactCost)
+      },
+      required
+    );
+  });

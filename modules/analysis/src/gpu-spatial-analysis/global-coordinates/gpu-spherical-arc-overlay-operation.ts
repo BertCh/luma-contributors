@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSphericalOverlayOperation} from './spherical-overlay-options';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   GPUSphericalArcOverlay,
@@ -23,15 +28,60 @@ export type SphericalArcOverlayOperationProps = Pick<
     ringOffsets: string;
     referenceInside: boolean;
   };
+  /** Maximum output vertices in the entire result. GPU-only ceiling: 1024; minimum 3 in both forms. CPU has no 1024-vertex ceiling. */
   capacity: number;
+  /** Maximum output rings in the entire result; output ringOffsets holds ringCapacity + 1 words. */
   ringCapacity: number;
   output: {positions: string; ringOffsets: string; counts: string; status: string};
 };
 
+/** Captures compile-time configuration while preserving per-frame graph input names. @internal */
+export function captureSphericalArcOverlayOperationProps(
+  props: SphericalArcOverlayOperationProps
+): SphericalArcOverlayOperationProps {
+  const captured = snapshotConstructionFields(props, [
+    'id',
+    'spatialContext',
+    'referencePoint',
+    'operation',
+    'tolerance',
+    'left',
+    'right',
+    'capacity',
+    'ringCapacity',
+    'output'
+  ]);
+  return Object.freeze({
+    ...captured,
+    left: snapshotConstructionFields(captured.left, [
+      'positions',
+      'ringOffsets',
+      'referenceInside'
+    ]),
+    right: snapshotConstructionFields(captured.right, [
+      'positions',
+      'ringOffsets',
+      'referenceInside'
+    ]),
+    output: snapshotConstructionFields(captured.output, [
+      'positions',
+      'ringOffsets',
+      'counts',
+      'status'
+    ]),
+    ...(captured.spatialContext
+      ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+      : {}),
+    referencePoint: Object.freeze([...captured.referencePoint]) as readonly [number, number, number]
+  });
+}
+
 /** GPU spherical arrangement as a graph operation; use GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUSphericalArcOverlayOperation extends GPUContributorOperation {
   constructor(props: SphericalArcOverlayOperationProps) {
+    props = captureSphericalArcOverlayOperationProps(props);
     const id = props.id ?? 'spherical-arc-overlay';
+    validateSphericalOverlayOperation(id, props.operation);
     super({
       id,
       inputs: {

@@ -18,6 +18,7 @@ import {
   VECCHIA_NUGGET_FLOOR_FRACTION,
   type GPUVecchiaCovariance,
   type VecchiaConditioningSets,
+  type VecchiaFisherFit,
   type SpaceTimeVariogramModel
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM_PARAMETER} from './catalog-binding-types';
@@ -172,6 +173,23 @@ export async function evaluateValidationVecchia(
   });
 }
 
+export type ValidationVecchiaFit = {
+  covariance: GPUVecchiaCovariance;
+  converged: boolean;
+  budgetUsed: number;
+  failed: boolean;
+} & Partial<
+  Pick<
+    VecchiaFisherFit,
+    | 'stopReason'
+    | 'stallReason'
+    | 'iterationLimitReached'
+    | 'history'
+    | 'logLikelihood'
+    | 'atNuggetFloor'
+  >
+>;
+
 /** Uses the library optimizers; no fitting mathematics lives in the host adapter. */
 export async function fitValidationVecchia(
   device: Device,
@@ -179,7 +197,7 @@ export async function fitValidationVecchia(
   initial: GPUVecchiaCovariance,
   method: 'likelihood' | 'fisher',
   maximumIterations: number
-) {
+): Promise<ValidationVecchiaFit> {
   if (!Number.isInteger(maximumIterations) || maximumIterations < 4 || maximumIterations > 128)
     throw new Error('Vecchia fitting maximumIterations must be 4 to 128');
   if (
@@ -225,7 +243,13 @@ export async function fitValidationVecchia(
       covariance: fit.covariance,
       converged: fit.converged,
       budgetUsed: fit.iterationCount,
-      failed: fit.failed
+      failed: fit.failed,
+      stopReason: fit.stopReason,
+      ...(fit.stallReason === undefined ? {} : {stallReason: fit.stallReason}),
+      iterationLimitReached: fit.iterationLimitReached,
+      history: fit.history.map(entry => ({...entry})),
+      logLikelihood: fit.logLikelihood,
+      atNuggetFloor: fit.atNuggetFloor
     };
   }
   const makeCovariance = (parameters: readonly number[]): GPUVecchiaCovariance => {
@@ -404,7 +428,12 @@ export const VALIDATION_VECCHIA_BINDINGS = ['likelihood', 'fisher', 'space-time'
         nugget: values['nugget'] as number,
         range: values['range'] as number
       };
-      let convergence = {converged: false, budgetUsed: 0, failed: false};
+      let convergence: ValidationVecchiaFit = {
+        covariance,
+        converged: false,
+        budgetUsed: 0,
+        failed: false
+      };
       if (values['fit']) {
         const fit = await fitValidationVecchia(
           device,
@@ -454,7 +483,7 @@ export const VALIDATION_VECCHIA_BINDINGS = ['likelihood', 'fisher', 'space-time'
         );
         columns['conditional_status'] = evaluation.conditionalStatus!;
       }
-      return makeValidationResult(
+      const result = makeValidationResult(
         id,
         'Vecchia sites',
         collection,
@@ -477,6 +506,9 @@ export const VALIDATION_VECCHIA_BINDINGS = ['likelihood', 'fisher', 'space-time'
           converged: Number(convergence.converged),
           budget_used: convergence.budgetUsed,
           fit_failed: Number(convergence.failed),
+          ...(convergence.iterationLimitReached === undefined
+            ? {}
+            : {iteration_limit: Number(convergence.iterationLimitReached)}),
           ...Object.fromEntries(evaluation.score.map((value, index) => [`score_${index}`, value])),
           ...Object.fromEntries(
             evaluation.information.map((value, index) => [`information_${index}`, value])
@@ -484,6 +516,28 @@ export const VALIDATION_VECCHIA_BINDINGS = ['likelihood', 'fisher', 'space-time'
         },
         [contributor]
       );
+      if (convergence.stopReason) {
+        result.summary['stop_reason'] = convergence.stopReason;
+        if (convergence.stallReason) result.summary['stall_reason'] = convergence.stallReason;
+        if (!convergence.converged)
+          result.diagnostics = [
+            ...(result.diagnostics ?? []),
+            convergence.failed
+              ? {
+                  code: 'vecchia-initial-failure',
+                  severity: 'error',
+                  count: 1,
+                  message: `Vecchia fit stopped: ${convergence.stopReason}; initial evaluation failed, no usable fit was obtained`
+                }
+              : {
+                  code: 'vecchia-nonconvergence',
+                  severity: 'warning',
+                  count: 1,
+                  message: `Vecchia fit stopped: ${convergence.stopReason}${convergence.stallReason ? ` (${convergence.stallReason})` : ''}; retained last usable covariance after ${convergence.budgetUsed} accepted steps`
+                }
+          ];
+      }
+      return result;
     }
   });
 });

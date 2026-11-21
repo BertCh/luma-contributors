@@ -32,6 +32,10 @@ export type NetworkLouvainOperationProps = Pick<
 /** GPU Louvain operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNetworkLouvainOperation extends GPUContributorOperation {
   constructor(props: NetworkLouvainOperationProps) {
+    // An optional status port present with value undefined is absent (NET-114).
+    const statusNames = Object.entries(props.output.status ?? {}).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined
+    );
     super({
       id: props.id ?? 'network-louvain',
       inputs: {
@@ -53,10 +57,7 @@ export class GPUNetworkLouvainOperation extends GPUContributorOperation {
         },
         summary: {value: props.output.summary, format: 'uint32', length: 4},
         ...Object.fromEntries(
-          Object.entries(props.output.status ?? {}).map(([name, value]) => [
-            name,
-            {value, format: 'uint32' as const, length: 1}
-          ])
+          statusNames.map(([name, value]) => [name, {value, format: 'uint32' as const, length: 1}])
         )
       },
       createContributor: getView =>
@@ -77,9 +78,7 @@ export class GPUNetworkLouvainOperation extends GPUContributorOperation {
             communities: getView<'uint32'>('communities'),
             objectiveTrace: getView<'float32'>('objectiveTrace'),
             summary: getView<'uint32'>('summary'),
-            status: Object.fromEntries(
-              Object.keys(props.output.status ?? {}).map(name => [name, getView<'uint32'>(name)])
-            )
+            status: Object.fromEntries(statusNames.map(([name]) => [name, getView<'uint32'>(name)]))
           }
         })
     });

@@ -2,9 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount} from './spatial-two-stage-least-squares-parameters';
+import {
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MORAN_I,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED,
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE,
+  getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount
+} from './spatial-two-stage-least-squares-parameters';
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {snapshotRegressionConstructionPropsWithCompleteness as snapshotPanelConstructionProps} from './regression-certificate-snapshot';
 
+import {
+  getRegressionCompletenessViews,
+  getRegressionWeightsLossNodes
+} from './regression-weights-completeness';
 import {getRegressionTwoStageAllocationLengths} from './regression-binding-plans';
 import {validateRegressionAllocations} from './spatial-likelihood-allocations';
 
@@ -31,8 +44,12 @@ import {
   GPUSpatialTwoStageLeastSquares,
   type GPUSpatialTwoStageLeastSquaresOutput
 } from './gpu-spatial-two-stage-least-squares';
+import {getPanelWithinNodes, getPanelWithinScratchLengths} from './panel-within-nodes';
 
-/** The serial reference within transform visits each period of one entity. */
+/** At most p+2=10 four-field coefficient rows; independent of the 16 instrument columns. */
+export const GPU_PANEL_REGRESSION_MAXIMUM_TABLE_ROW_COUNT =
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_PREDICTOR_COUNT + 2;
+/** Preserve the existing period limit while using the shared tiled within transform. */
 const PANEL_REGRESSION_MAXIMUM_PERIOD_COUNT = 1024;
 /** Preserve the existing strictly-below-2^24 capacity for exact float32 row counts. */
 const PANEL_REGRESSION_MAXIMUM_ROW_COUNT = 2 ** 24 - 1;
@@ -69,7 +86,25 @@ export type GPUSpatialPanelRegressionProps = {
  */
 export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
   readonly id: string;
-  constructor(readonly props: GPUSpatialPanelRegressionProps) {
+  readonly props: GPUSpatialPanelRegressionProps;
+  constructor(props: GPUSpatialPanelRegressionProps) {
+    props = snapshotPanelConstructionProps(
+      props,
+      [
+        'id',
+        'weights',
+        'periodCount',
+        'effects',
+        'predictorCount',
+        'predictors',
+        'response',
+        'instrumentOrder',
+        'output'
+      ],
+      ['table', 'summary', 'status', 'residuals'],
+      'spatial-panel-regression'
+    );
+    this.props = props;
     this.id = props.id ?? 'spatial-panel-regression';
     const entities = validateGPUSpatialWeights(this.id, props.weights);
     if (props.effects !== undefined && props.effects !== 'pooled' && props.effects !== 'unit') {
@@ -111,7 +146,12 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
       getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount(props.instrumentOrder ?? 1)
     );
     for (const [name, view, format, minimum] of [
-      ['table', props.output.table, 'float32', (props.predictorCount + 2) * 4],
+      [
+        'table',
+        props.output.table,
+        'float32',
+        (props.predictorCount + 2) * GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE
+      ],
       ['summary', props.output.summary, 'float32', 16],
       ['status.code', props.output.status.code, 'uint32', 1],
       ['residuals', props.output.residuals, 'float32', entities * props.periodCount]
@@ -143,7 +183,7 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
-        props.weights.status?.overflow,
+        ...getRegressionCompletenessViews(props.weights),
         props.predictors,
         props.response
       ]
@@ -163,6 +203,9 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
       neighbors: props.weights.neighbors,
       weights: props.weights.weights,
       overflow: props.weights.status?.overflow,
+      candidateOverflow: props.weights.status?.candidateOverflow,
+      requiredCount: props.weights.status?.requiredCount,
+      count: props.weights.status?.count,
       ...props.output,
       status: undefined,
       code: props.output.status.code
@@ -180,7 +223,16 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
       ...(props.effects === 'unit'
         ? {
             'within predictors': props.predictors.length,
-            'unit means': entities * (props.predictorCount + 1)
+            'panel mean partials': getPanelWithinScratchLengths(
+              entities,
+              props.periodCount,
+              props.predictorCount
+            ).partialLength,
+            'panel means': getPanelWithinScratchLengths(
+              entities,
+              props.periodCount,
+              props.predictorCount
+            ).meanLength
           }
         : {})
     });
@@ -201,11 +253,13 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
       props.weights.offsets,
       props.weights.neighbors,
       props.weights.weights,
-      props.weights.status?.overflow,
+      ...getRegressionCompletenessViews(props.weights),
       props.predictors,
       props.response
     ]);
+    const completeness = getRegressionWeightsLossNodes(graph, `${id}-entity`, props.weights);
     const nodes = [
+      ...completeness.nodes,
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-expand-weights`,
         operation: 'GPUSpatialPanelRegression',
@@ -232,25 +286,50 @@ for (var slot = start; slot < end; slot++) {
 }`
       })
     ];
-    let response = props.response;
-    if (props.weights.status?.overflow) {
-      response = createTransientView(graph, `${id}-checked-response`, 'float32', rows);
-      nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-check-weights`,
-          operation: 'GPUSpatialPanelRegression',
-          variant: 'check-weights',
-          invocationCount: rows,
-          bindings: [
-            {name: 'source', view: props.response, type: 'f32', access: 'read'},
-            {name: 'overflow', view: props.weights.status.overflow, type: 'u32', access: 'read'},
-            {name: 'response', view: response, type: 'f32', access: 'read_write'}
-          ],
-          declarations: GET_NAN_WGSL,
-          body: 'response[responseOffset + index] = select(source[sourceOffset + index], getNaN(), overflow[overflowOffset] != 0u);'
-        })
-      );
-    }
+    // Expansion clamps memory accesses, but clamping must not turn malformed CSR into a
+    // different, apparently complete spatial operator. Check original bounds before fitting.
+    let response = createTransientView(graph, `${id}-checked-response`, 'float32', rows);
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-check-weights`,
+        operation: 'GPUSpatialPanelRegression',
+        variant: 'check-weights',
+        invocationCount: rows,
+        bindings: [
+          {name: 'source', view: props.response, type: 'f32', access: 'read'},
+          {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
+          ...(props.weights.status?.overflow
+            ? [
+                {
+                  name: 'overflow',
+                  view: props.weights.status.overflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
+          ...(props.weights.status?.candidateOverflow
+            ? [
+                {
+                  name: 'candidateOverflow',
+                  view: props.weights.status.candidateOverflow,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
+          {name: 'response', view: response, type: 'f32', access: 'read_write'}
+        ],
+        declarations: GET_NAN_WGSL,
+        body: `let entity = index % ${entities}u;
+let begin = offsets[offsetsOffset + entity]; let end = offsets[offsetsOffset + entity + 1u];
+let edgeCount = offsets[offsetsOffset + ${entities}u];
+var invalid = offsets[offsetsOffset] != 0u || edgeCount > ${capacity}u || end < begin || end > edgeCount${props.weights.status?.overflow ? ' || overflow[overflowOffset] != 0u' : ''}${props.weights.status?.candidateOverflow ? ' || candidateOverflow[candidateOverflowOffset] != 0u' : ''};
+if(!invalid){for(var slot=begin;slot<end;slot++){invalid=invalid || neighbors[neighborsOffset+slot]>=${entities}u;}}
+response[responseOffset + index] = select(source[sourceOffset + index], getNaN(), invalid);`
+      })
+    );
     let predictors = props.predictors;
     if (props.effects === 'unit') {
       predictors = createTransientView(
@@ -260,53 +339,15 @@ for (var slot = start; slot < end; slot++) {
         props.predictors.length
       );
       const withinResponse = createTransientView(graph, `${id}-within-response`, 'float32', rows);
-      const means = createTransientView(
-        graph,
-        `${id}-unit-means`,
-        'float32',
-        entities * (props.predictorCount + 1)
-      );
       nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-unit-means`,
-          operation: 'GPUSpatialPanelRegression',
-          variant: 'unit-means',
-          invocationCount: entities,
-          bindings: [
-            {name: 'sourcePredictors', view: props.predictors, type: 'f32', access: 'read'},
-            {name: 'sourceResponse', view: response, type: 'f32', access: 'read'},
-            {name: 'means', view: means, type: 'f32', access: 'read_write'}
-          ],
-          body: `var responseMean = 0.0;
-for (var period = 0u; period < ${props.periodCount}u; period++) {
-  responseMean += sourceResponse[sourceResponseOffset + period * ${entities}u + index];
-}
-means[meansOffset + index * ${props.predictorCount + 1}u] = responseMean / ${props.periodCount}.0;
-for (var column = 0u; column < ${props.predictorCount}u; column++) {
-  var predictorMean = 0.0;
-  for (var period = 0u; period < ${props.periodCount}u; period++) {
-    predictorMean += sourcePredictors[sourcePredictorsOffset + (period * ${entities}u + index) * ${props.predictorCount}u + column];
-  }
-  means[meansOffset + index * ${props.predictorCount + 1}u + column + 1u] = predictorMean / ${props.periodCount}.0;
-}`
-        }),
-        createWGSLKernelNode(graph, {
-          id: `${id}-within`,
-          operation: 'GPUSpatialPanelRegression',
-          variant: 'unit-within',
-          invocationCount: rows,
-          bindings: [
-            {name: 'sourcePredictors', view: props.predictors, type: 'f32', access: 'read'},
-            {name: 'sourceResponse', view: response, type: 'f32', access: 'read'},
-            {name: 'means', view: means, type: 'f32', access: 'read'},
-            {name: 'predictors', view: predictors, type: 'f32', access: 'read_write'},
-            {name: 'response', view: withinResponse, type: 'f32', access: 'read_write'}
-          ],
-          body: `let entity = index % ${entities}u;
-response[responseOffset + index] = sourceResponse[sourceResponseOffset + index] - means[meansOffset + entity * ${props.predictorCount + 1}u];
-for (var column = 0u; column < ${props.predictorCount}u; column++) {
-  predictors[predictorsOffset + index * ${props.predictorCount}u + column] = sourcePredictors[sourcePredictorsOffset + index * ${props.predictorCount}u + column] - means[meansOffset + entity * ${props.predictorCount + 1}u + column + 1u];
-}`
+        ...getPanelWithinNodes(graph, {
+          id,
+          entityCount: entities,
+          periodCount: props.periodCount,
+          predictorCount: props.predictorCount,
+          predictors: props.predictors,
+          response,
+          output: {predictors, response: withinResponse}
         })
       );
       response = withinResponse;
@@ -314,7 +355,12 @@ for (var column = 0u; column < ${props.predictorCount}u; column++) {
     nodes.push(
       ...new GPUSpatialTwoStageLeastSquares({
         id: `${id}-pooled-lag`,
-        weights: {offsets, neighbors, weights, status: props.weights.status},
+        weights: {
+          offsets,
+          neighbors,
+          weights,
+          status: completeness.loss ? {overflow: completeness.loss} : undefined
+        },
         predictors,
         response,
         predictorCount: props.predictorCount,
@@ -323,10 +369,18 @@ for (var column = 0u; column < ${props.predictorCount}u; column++) {
       }).getCommandNodes(graph)
     );
     if (props.effects === 'unit') {
+      validateCapacity(
+        id,
+        'table rows',
+        props.predictorCount + 2,
+        1,
+        GPU_PANEL_REGRESSION_MAXIMUM_TABLE_ROW_COUNT
+      );
       const degrees = rows - entities - props.predictorCount - 1;
       const instrumentCount = ((props.instrumentOrder ?? 1) + 1) * props.predictorCount;
       nodes.push(
         createWGSLKernelNode(graph, {
+          // contract-allow: single-invocation -- GPU_PANEL_REGRESSION_MAXIMUM_TABLE_ROW_COUNT = 10 four-field rows (p+2); GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE = 4; GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH = 16 bounds summary endpoints; GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_MAXIMUM_CENTERED_INSTRUMENT_COLUMN_COUNT = 16 bounds instruments separately.
           id: `${id}-within-finish`,
           operation: 'GPUSpatialPanelRegression',
           variant: 'unit-finish',
@@ -341,24 +395,24 @@ ${ERFC_VALUE_WGSL}`,
           body: `let nan = getNaN();
 if (${degrees} <= 0) {
   status[statusOffset] = 2u;
-  for (var slot = 0u; slot < ${(props.predictorCount + 2) * 4}u; slot++) { table[tableOffset + slot] = nan; }
-  for (var slot = 1u; slot < 16u; slot++) { summary[summaryOffset + slot] = nan; }
+  for (var slot = 0u; slot < ${(props.predictorCount + 2) * GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE}u; slot++) { table[tableOffset + slot] = nan; }
+  for (var slot = ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_SIGMA_SQUARED}u; slot < ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH}u; slot++) { summary[summaryOffset + slot] = nan; }
 } else if (status[statusOffset] == 0u) {
   let scale = sqrt(${rows}.0 / ${Math.max(degrees, 1)}.0);
   summary[summaryOffset + 1u] *= scale * scale;
   for (var row = 1u; row < ${props.predictorCount + 2}u; row++) {
-    let standardError = table[tableOffset + row * 4u + 1u] * scale;
-    let statistic = table[tableOffset + row * 4u] / standardError;
-    table[tableOffset + row * 4u + 1u] = standardError;
-    table[tableOffset + row * 4u + 2u] = statistic;
-    table[tableOffset + row * 4u + 3u] = erfcValue(abs(statistic) * 0.70710678);
+    let standardError = table[tableOffset + row * ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE}u + 1u] * scale;
+    let statistic = table[tableOffset + row * ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE}u] / standardError;
+    table[tableOffset + row * ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE}u + 1u] = standardError;
+    table[tableOffset + row * ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE}u + 2u] = statistic;
+    table[tableOffset + row * ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE}u + 3u] = erfcValue(abs(statistic) * 0.70710678);
   }
   // First-stage residual degrees account for the absorbed entity intercepts.
   ${rows - entities - instrumentCount > 0 ? `summary[summaryOffset + 14u] *= ${rows - entities - instrumentCount}.0 / ${rows - instrumentCount - 1}.0;` : 'summary[summaryOffset + 14u] = nan;'}
 }
-for (var slot = 0u; slot < 4u; slot++) { table[tableOffset + slot] = nan; }
+for (var slot = 0u; slot < ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE}u; slot++) { table[tableOffset + slot] = nan; }
 // Pooled AK inference does not account for the within projection.
-for (var slot = 4u; slot < 7u; slot++) { summary[summaryOffset + slot] = nan; }`
+for (var slot = ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MORAN_I}u; slot < ${GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_CONDITION_NUMBER}u; slot++) { summary[summaryOffset + slot] = nan; }`
         })
       );
       if (degrees <= 0 && props.output.residuals) {

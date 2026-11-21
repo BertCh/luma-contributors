@@ -134,7 +134,7 @@ def get_fixture(name, matrix, predictors, response, maximum_power=32, stochastic
                np.corrcoef(response, design @ coefficients[:-1])[0, 1] ** 2,
                np.nan, residuals @ residuals, *conditioning, float(conditioning[1] > 1e4),
                bound, float(stochastic), float(not boundary), float(boundary), float(limit < 0.99),
-               0 if exact else row_count * abs(scaled) ** (maximum_power + 1) / ((maximum_power + 1) * (1 - abs(scaled))),
+               0 if exact else row_count * abs(scaled) ** (maximum_power + 1) / ((maximum_power + 1) * (1 - abs(scaled))) + abs(get_log_determinant(parameter) + sum(scaled ** (index + 1) * trace / (index + 1) for index, trace in enumerate(traces))),
                float(information > 0), len(candidates), get_log_determinant(parameter)]
     offsets, neighbors, weights = [0], [], []
     for row in matrix:

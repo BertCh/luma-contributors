@@ -2,17 +2,25 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {
+  CompiledGPUCommandGraph,
   GPUCommandGraph,
   GPUCommandNode,
   GraphBufferHandle,
   GraphExternalTextureHandle,
   GraphTextureHandle
 } from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+import {validateRequirement} from '../analysis-core/kernels/gpu-contributor-utils';
 import {recordWGSLKernelNodes} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import type {
   GPUComputationNodeAnnotation,
   GPUComputationRecordScope
 } from './computation-record-types';
+import {
+  buildGPUCommandGraphDescription,
+  type DescribeGPUCommandGraphOptions,
+  type GPUCommandGraphDescription
+} from './describe-command-graph';
 
 /** Construction options of a recorder. */
 export type GPUComputationRecorderProps = {
@@ -32,6 +40,9 @@ export type GPUComputationRecordedNode = GPUComputationNodeAnnotation & {
   dependsOn?: readonly string[];
 };
 
+// Weak links avoid retaining the compiled GPU resources or wrapping a builder twice.
+const RECORDED_COMPILATIONS = new WeakMap<object, WeakSet<object>>();
+
 /**
  * Analysis-side record of one command graph under construction. Published `GPUCommandGraph` has
  * no recording hooks, so analysis code passes each node through the recorder as it builds the graph.
@@ -41,15 +52,12 @@ export class GPUComputationRecorder {
   /** Whether recorded sources keep their full text. */
   readonly sourceText: boolean;
 
-  /** Graph whose `createWGSLKernelNode` kernels this recorder describes, set by `recordKernels`. */
-  get graph(): GPUCommandGraph<any> | undefined {
-    return this.kernelGraph;
-  }
-
-  private kernelGraph?: GPUCommandGraph<any>;
+  private state = {
+    kernelGraph: undefined as GPUCommandGraph<any> | undefined,
+    nodes: new Map<string, GPUComputationRecordedNode>(),
+    resources: new Map<string, GPUComputationRecordedResource>()
+  };
   private readonly scopes: GPUComputationRecordScope[] = [];
-  private readonly nodes = new Map<string, GPUComputationRecordedNode>();
-  private readonly resources = new Map<string, GPUComputationRecordedResource>();
 
   constructor(props: GPUComputationRecorderProps = {}) {
     this.sourceText = props.sourceText ?? false;
@@ -63,18 +71,99 @@ export class GPUComputationRecorder {
    */
   recordKernels<Graph extends GPUCommandGraph<any>>(graph: Graph): Graph {
     recordWGSLKernelNodes(graph);
-    this.kernelGraph = graph;
+    if (!RECORDED_COMPILATIONS.has(graph)) {
+      const compilations = new WeakSet<object>();
+      const compile = graph.compile.bind(graph);
+      const compileAsync = graph.compileAsync.bind(graph);
+      graph.compile = options => {
+        const compiled = compile(options);
+        compilations.add(compiled);
+        return compiled;
+      };
+      graph.compileAsync = async options => {
+        const compiled = await compileAsync(options);
+        compilations.add(compiled);
+        return compiled;
+      };
+      RECORDED_COMPILATIONS.set(graph, compilations);
+    }
+    this.state.kernelGraph = graph;
     return graph;
   }
 
-  /** Runs `callback`; nodes recorded inside inherit the scope. Scopes nest, innermost wins. */
-  withScope<Result>(scope: GPUComputationRecordScope, callback: () => Result): Result {
-    this.scopes.push(scope);
+  /**
+   * Describes the exact object returned by compiling the recorded graph. Returns undefined when
+   * `recordKernels` has not been called and rejects a compilation from another builder.
+   */
+  getRecordedGraphDescription(
+    compiled: Pick<CompiledGPUCommandGraph, 'id' | 'stats' | 'preflight'>,
+    options: Omit<DescribeGPUCommandGraphOptions, 'graph' | 'recorder'> = {}
+  ): GPUCommandGraphDescription | undefined {
+    const graph = this.state.kernelGraph;
+    if (!graph) return undefined;
+    validateRequirement(
+      'GPUComputationRecorder',
+      RECORDED_COMPILATIONS.get(graph)?.has(compiled) === true,
+      'compiled must come from the graph passed to recordKernels'
+    );
+    return buildGPUCommandGraphDescription(compiled, {...options, graph, recorder: this});
+  }
+
+  /**
+   * Runs a synchronous callback in a copied scope. Scopes nest, innermost wins, and unwind on throw.
+   * PromiseLike results are rejected; use `withAsyncScope` and its callback's scoped recorder for
+   * asynchronous authoring. A native async callback is rejected before it starts. Other callbacks
+   * returning thenables are rejected on return; their rejection is observed, but their already-started
+   * work cannot be cancelled.
+   */
+  withSynchronousScope<Result>(
+    scope: GPUComputationRecordScope,
+    callback: (() => Result) &
+      (Extract<Result, PromiseLike<unknown>> extends never ? unknown : never)
+  ): Result {
+    validateRequirement(
+      'GPUComputationRecorder',
+      Object.prototype.toString.call(callback) !== '[object AsyncFunction]',
+      'callback must be synchronous; use withAsyncScope(scope, scopedRecorder => ...)'
+    );
+    this.scopes.push(this.snapshotScope(scope));
     try {
-      return callback();
+      const result = callback();
+      const isPromiseLike =
+        result !== null &&
+        (typeof result === 'object' || typeof result === 'function') &&
+        'then' in result &&
+        typeof result.then === 'function';
+      // The boundary owns the returned promise once it rejects async use: the caller never receives
+      // it. Observe an already-started rejection (including an assimilated thenable) before throwing.
+      if (isPromiseLike) void Promise.resolve(result).catch(() => {});
+      validateRequirement(
+        'GPUComputationRecorder',
+        !isPromiseLike,
+        'callback must not return PromiseLike; use withAsyncScope(scope, scopedRecorder => ...)'
+      );
+      return result;
     } finally {
       this.scopes.pop();
     }
+  }
+
+  /**
+   * Authors asynchronously through a separate recorder with a captured scope stack. Use the recorder
+   * passed to `callback` for all nested authoring. It shares records, resources and kernel graph with
+   * this recorder, while concurrent callbacks keep independent namespaces across awaits and errors.
+   */
+  async withAsyncScope<Result>(
+    scope: GPUComputationRecordScope,
+    callback: (scopedRecorder: GPUComputationRecorder) => Result | PromiseLike<Result>
+  ): Promise<Result> {
+    const scopedRecorder = new GPUComputationRecorder({sourceText: this.sourceText});
+    scopedRecorder.state = this.state;
+    scopedRecorder.scopes.push(
+      ...this.scopes.map(value => this.snapshotScope(value)),
+      this.snapshotScope(scope)
+    );
+    return await callback(scopedRecorder);
   }
 
   /**
@@ -85,16 +174,16 @@ export class GPUComputationRecorder {
     node: Node,
     annotation: GPUComputationNodeAnnotation = {}
   ): Node {
-    this.nodes.set(node.id, this.mergeScopes(node, annotation));
+    this.state.nodes.set(node.id, this.mergeScopes(node, annotation));
     for (const use of node.resources ?? []) {
       if ('buffer' in use) {
         const handle = 'buffer' in use.buffer ? use.buffer.buffer : use.buffer;
-        this.resources.set(handle.id, handle);
+        this.state.resources.set(handle.id, handle);
       } else if ('texture' in use) {
         const handle = 'texture' in use.texture ? use.texture.texture : use.texture;
-        this.resources.set(handle.id, handle);
+        this.state.resources.set(handle.id, handle);
       } else {
-        this.resources.set(use.externalTexture.id, use.externalTexture);
+        this.state.resources.set(use.externalTexture.id, use.externalTexture);
       }
     }
     return node;
@@ -111,12 +200,37 @@ export class GPUComputationRecorder {
 
   /** Returns the merged annotation for a node id, when it was recorded. */
   getNodeRecord(nodeId: string): GPUComputationRecordedNode | undefined {
-    return this.nodes.get(nodeId);
+    return this.state.nodes.get(nodeId);
   }
 
   /** Returns the handle of a resource used by a recorded node. */
   getResource(resourceId: string): GPUComputationRecordedResource | undefined {
-    return this.resources.get(resourceId);
+    return this.state.resources.get(resourceId);
+  }
+
+  private snapshotScope(scope: GPUComputationRecordScope): GPUComputationRecordScope {
+    const snapshot = snapshotConstructionFields(scope, [
+      'namespace',
+      'derivedFrom',
+      'loop',
+      'op',
+      'datum'
+    ]);
+    return Object.freeze({
+      ...snapshot,
+      ...(snapshot.derivedFrom && {derivedFrom: Object.freeze([...snapshot.derivedFrom])}),
+      ...(snapshot.loop && {
+        loop: snapshotConstructionFields(snapshot.loop, [
+          'id',
+          'iteration',
+          'phase',
+          'maximumIterations'
+        ])
+      }),
+      ...(snapshot.datum && {
+        datum: snapshotConstructionFields(snapshot.datum, ['keySpace', 'relation'])
+      })
+    });
   }
 
   private mergeScopes(

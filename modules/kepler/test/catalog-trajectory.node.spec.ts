@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, test} from 'vitest';
+import {expect, test, vi} from 'vitest';
 import {
   KEPLER_CATALOG_BINDINGS,
   getCatalogDefaultParameters,
@@ -20,6 +20,80 @@ import {
   MAXIMUM_TRAJECTORY_TRACKS
 } from '../src/analysis/catalog-trajectory-common';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
+import {
+  prepareTrajectoryHomeRange,
+  makeTrajectoryHomeRange
+} from '../src/analysis/catalog-trajectory-cpu';
+import {resolveKeplerOperationParameters} from '../src/descriptors/default-parameters';
+import {resolveKeplerOperationDescriptor} from '../src/descriptors/operation-descriptors';
+import {getWorkflowOperationRegistry} from '../src/workflows/workflow-operations';
+import {normalizeWorkflowParameters} from '../src/workflows/workflow-parameters';
+import {planWorkflow} from '../src/workflows/workflow-plan';
+
+test('a singleton bridge keeps the requested zero raster and empty evidence through home-range publication', () => {
+  const tracks = observations([[7, 9]]);
+  const values = {
+    ...getCatalogDefaultParameters(getCatalogBinding('trajectory-brownian-bridge')!),
+    coordinateSystem: 'planar',
+    gridWidth: 2,
+    gridHeight: 3,
+    padding: 1
+  };
+  const trajectory = prepareCatalogTrajectory(tracks, values);
+  const grid = prepareTrajectoryHomeRange(trajectory, values);
+  // With no consecutive pair there are no positive-duration bridges: all six cells are zero.
+  expect(grid.gridSize).toEqual([2, 3]);
+  expect(grid.extent).toEqual([-1, -1, 1, 1]);
+  expect(Array.from(grid.density)).toEqual([0, 0, 0, 0, 0, 0]);
+  const bridge = run('trajectory-brownian-bridge', tracks, values);
+  expect(bridge.tables[0].columns['density']).toEqual([0, 0, 0, 0, 0, 0]);
+  expect(bridge.summary['empty']).toBe(1);
+  // Isopleths of a zero-mass raster have volume=1, inside=0 at every cell.
+  const isopleth = makeTrajectoryHomeRange(
+    trajectory,
+    grid,
+    new Float32Array(6).fill(1),
+    new Uint32Array(6)
+  );
+  expect(isopleth.tables[0].rowCount).toBe(0);
+  expect(isopleth.summary['empty']).toBe(1);
+  expect(isopleth.summary['gridWidth']).toBe(2);
+  expect(isopleth.summary['gridHeight']).toBe(3);
+  expect(() => prepareTrajectoryHomeRange(trajectory, {...values, padding: 0})).toThrow(
+    /extent.*max > min/
+  );
+});
+
+test('home-range publication detects positive density before isopleth filtering without rescanning (S3)', () => {
+  const values = {
+    ...getCatalogDefaultParameters(getCatalogBinding('trajectory-brownian-bridge')!),
+    coordinateSystem: 'planar',
+    gridWidth: 2,
+    gridHeight: 2,
+    padding: 1
+  };
+  const trajectory = prepareCatalogTrajectory(observations([[0, 0]]), values);
+  const grid = {
+    ...prepareTrajectoryHomeRange(trajectory, values),
+    density: Float32Array.of(0, 2, 0, 0)
+  };
+  const rescan = vi.spyOn(grid.density, 'some').mockImplementation(() => {
+    throw new Error('second serial raster scan');
+  });
+  try {
+    const result = makeTrajectoryHomeRange(
+      trajectory,
+      grid,
+      new Float32Array(4).fill(1),
+      new Uint32Array(4)
+    );
+    expect(result.tables[0].rowCount).toBe(0);
+    expect(result.summary['empty']).toBe(0);
+    expect(rescan).not.toHaveBeenCalled();
+  } finally {
+    rescan.mockRestore();
+  }
+});
 
 const ORIGIN = Date.UTC(2026, 0, 1);
 function observations(
@@ -75,7 +149,9 @@ test('all thirteen trajectory contributors are registered once, discoverable and
     ).toBe(binding);
     for (const contributorName of binding.contributorNames)
       expect(
-        entries.some(entry => entry.contributorName === contributorName && entry.runnable !== 'no'),
+        entries.some(
+          entry => entry.identity.exportName === contributorName && entry.runnable !== 'no'
+        ),
         contributorName
       ).toBe(true);
   }
@@ -366,12 +442,60 @@ test('mobility and modal split expose the library metrics with second-based UI u
   const modal = run('trajectory-modal-split', MOVEMENT, {
     ...STAY_PARAMETERS,
     metric: 'duration',
-    modeSpeedBreaks: [0.5, 2, 50]
+    modeSpeedUpperBoundsFloat32: [0.5, 2, 50]
   });
   expect(modal.tables[0].columns['value']).toEqual([0, 10, 0]);
   expect(modal.tables[1].columns['mode']).toEqual([1]);
-  expect(() => run('trajectory-modal-split', MOVEMENT, {modeSpeedBreaks: [2, 1]})).toThrow(
-    /ascending/
+  const binding = getCatalogBinding('trajectory-modal-split')!;
+  for (const candidate of [binding, {parameters: binding.parameters}]) {
+    expect(() => normalizeCatalogParameters(candidate, {modeSpeedBreaks: [1, 8, 50]})).toThrow(
+      /modeSpeedBreaks was removed.*modeSpeedUpperBoundsFloat32/
+    );
+  }
+  expect(() =>
+    run('trajectory-modal-split', MOVEMENT, {modeSpeedUpperBoundsFloat32: [2, 1]})
+  ).toThrow(/ascending/);
+});
+
+test('modal split rejects retired speed bounds in defaults and workflow validation', () => {
+  const operationId = 'trajectory-modal-split';
+  const binding = getCatalogBinding(operationId)!;
+  const {descriptor} = resolveKeplerOperationDescriptor(binding);
+  const registry = getWorkflowOperationRegistry();
+  const operation = registry.get(operationId)!;
+  const message = 'modeSpeedBreaks was removed (use modeSpeedUpperBoundsFloat32)';
+  const overrides = {modeSpeedBreaks: [2, 4]};
+  expect(() => resolveKeplerOperationParameters(binding, descriptor, {}, {overrides})).toThrow(
+    message
+  );
+  expect(() =>
+    normalizeWorkflowParameters(operation.parameters, overrides, {operationTitle: operation.title})
+  ).toThrow(message);
+  const plan = planWorkflow(
+    {
+      schemaVersion: 1,
+      id: 'modal-split',
+      title: 'Modal split',
+      inputs: [],
+      steps: [
+        {
+          id: 'modes',
+          operationId,
+          inputs: {},
+          parameters: {modeSpeedBreaks: {from: 'static', value: [2, 4]}},
+          position: {x: 0, y: 0}
+        }
+      ],
+      settings: {engine: 'cpu', autoRun: false}
+    },
+    {registry}
+  );
+  expect(plan.steps['modes'].issues).toContainEqual(
+    expect.objectContaining({
+      code: 'unknown-parameter',
+      parameter: 'modeSpeedBreaks',
+      message: `${operation.title}: ${message}`
+    })
   );
 });
 

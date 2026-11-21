@@ -94,7 +94,7 @@ export function computeNeighborhoodSummaryOracle(input: {
       }
     }
     // Slots valid for a member filter, re-standardized by their summed weight in slot order.
-    const withFocal = (filter: (member: {row: number}) => boolean) => {
+    const withFocal = (filter: (member: {row: number}) => boolean, rawCategories = false) => {
       const valid = slotMembers.filter(
         member => (!mask || mask[member.row] !== 0) && filter(member)
       );
@@ -105,15 +105,23 @@ export function computeNeighborhoodSummaryOracle(input: {
       const scale = input.standardized ? (sum > 0 ? f32(1 / sum) : 0) : 1;
       const scaled = valid.map(member => ({
         row: member.row,
-        weight: input.standardized ? f32(member.weight * scale) : member.weight
+        weight: input.standardized && !rawCategories ? f32(member.weight * scale) : member.weight
       }));
       const focal =
         input.includeFocal && (!mask || mask[row] !== 0) && filter({row})
-          ? [{row, weight: f32(input.focalWeight ?? 1)}]
+          ? [
+              {
+                row,
+                weight: f32(
+                  f32(input.focalWeight ?? 1) *
+                    (rawCategories && input.standardized && sum > 0 ? sum : 1)
+                )
+              }
+            ]
           : [];
       return [...focal, ...scaled];
     };
-    const included = withFocal(() => true);
+    const included = withFocal(member => categories[member.row] !== 0xffffffff, true);
     const numeric = withFocal(member => Number.isFinite(values[member.row]));
     let weightSum = 0;
     let weightedSum = 0;
@@ -121,34 +129,54 @@ export function computeNeighborhoodSummaryOracle(input: {
       weightSum = f32(weightSum + member.weight);
       weightedSum = f32(weightedSum + f32(member.weight * values[member.row]));
     }
+    const positive = numeric.filter(member => member.weight > 0);
+    const anchor = positive.length ? values[positive[0].row] : 0;
+    let relativeSum = 0;
+    for (const member of positive)
+      relativeSum = f32(relativeSum + f32(member.weight * f32(values[member.row] - anchor)));
+    const relativeMean = f32(relativeSum / weightSum);
     const mean = f32(weightedSum / weightSum);
     let squares = 0;
-    for (const member of numeric) {
-      const deviation = f32(values[member.row] - mean);
+    for (const member of positive) {
+      const deviation = f32(f32(values[member.row] - anchor) - relativeMean);
       squares = f32(squares + f32(f32(member.weight * deviation) * deviation));
     }
     const sorted = numeric.map(member => values[member.row]).sort((a, b) => a - b);
     const k = sorted.length;
     let median = NaN;
     if (k > 0 && k <= maximumNeighbors) {
-      median = k % 2 ? sorted[(k - 1) / 2] : f32(0.5 * f32(sorted[k / 2 - 1] + sorted[k / 2]));
+      median =
+        k % 2
+          ? sorted[(k - 1) / 2]
+          : Math.max(Math.abs(sorted[k / 2 - 1]), Math.abs(sorted[k / 2])) > 1.5e38
+            ? f32(f32(0.5 * sorted[k / 2 - 1]) + f32(0.5 * sorted[k / 2]))
+            : f32(0.5 * f32(sorted[k / 2 - 1] + sorted[k / 2]));
     }
     // Categories: any included member.
     let categoryWeightSum = 0;
-    const frequencies = new Map<number, number>();
+    const frequencies = new Map<number, [number, number]>();
     for (const member of included) {
       categoryWeightSum = f32(categoryWeightSum + member.weight);
       const category = categories[member.row];
-      frequencies.set(category, f32((frequencies.get(category) ?? 0) + member.weight));
+      const [high, low] = frequencies.get(category) ?? [0, 0];
+      const next = f32(high + member.weight);
+      const remainder = f32(low + (high + member.weight - next));
+      const normalized = f32(next + remainder);
+      frequencies.set(category, [normalized, f32(next + remainder - normalized)]);
     }
     let mode = 0xffffffff;
-    let bestFrequency = -1;
+    let bestFrequency: [number, number] = [-1, 0];
     let entropy = 0;
-    for (const [category, frequency] of frequencies) {
-      if (frequency > bestFrequency || (frequency === bestFrequency && category < mode)) {
-        bestFrequency = frequency;
+    for (const [category, mass] of frequencies) {
+      if (
+        mass[0] > bestFrequency[0] ||
+        (mass[0] === bestFrequency[0] &&
+          (mass[1] > bestFrequency[1] || (mass[1] === bestFrequency[1] && category < mode)))
+      ) {
+        bestFrequency = mass;
         mode = category;
       }
+      const frequency = f32(mass[0] + mass[1]);
       if (frequency > 0) {
         const share = frequency / categoryWeightSum;
         entropy -= share * Math.log(share);

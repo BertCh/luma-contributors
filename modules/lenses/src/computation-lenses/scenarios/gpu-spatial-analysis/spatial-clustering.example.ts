@@ -9,9 +9,9 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  getGPUSpatialClusteringParameterValues,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  getGPUDBSCANParameterValues,
+  GPUDBSCAN,
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
   GPUParameterBuffer,
@@ -19,7 +19,7 @@ import {
 } from '@luma-contributors/analysis/analysis-core';
 
 /** Inputs the lens scenario uploads from `s2-chicago-north-nature.json`. */
-export type SpatialClusteringExampleInput = {
+export type DBSCANExampleInput = {
   /** iNaturalist observations, projected to local-frame metres. */
   observations: GraphDataView<'float32x2'>;
   /** Planar context of the local frame. */
@@ -31,21 +31,21 @@ export type SpatialClusteringExampleInput = {
 /** DBSCAN of observations with a 250 m radius and a six point core. */
 export async function runExample(
   graph: GPUCommandGraph<undefined>,
-  {observations, spatialContext, bounds}: SpatialClusteringExampleInput
+  {observations, spatialContext, bounds}: DBSCANExampleInput
 ) {
   const usage = Buffer.STORAGE | Buffer.COPY_SRC;
   const parameters = new GPUParameterBuffer(graph.device, {
     id: 'clustering-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues({bounds, epsilon: 250, minimumPoints: 6})
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues({bounds, epsilon: 250, minimumSamples: 6})
   });
   const labels = createTransientView(graph, 'labels', 'uint32', observations.length, usage);
   const coreFlags = createTransientView(graph, 'coreFlags', 'uint32', observations.length, usage);
   const clusterCount = createTransientView(graph, 'clusterCount', 'uint32', 1, usage);
   // #region example
   graph.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       spatialContext,
       positions: observations,
       parameters: parameters.importToGraph(graph),

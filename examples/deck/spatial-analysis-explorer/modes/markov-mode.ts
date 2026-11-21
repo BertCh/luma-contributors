@@ -314,8 +314,8 @@ export const markovMode: SpatialAnalysisModeDefinition = {
           grid.bounds[2] + grid.cellMeters,
           grid.bounds[3] + grid.cellMeters
         ],
-        radius: grid.cellMeters * 1.5,
-        weightKind: 'binary',
+        searchRadius: grid.cellMeters * 1.5,
+        weightType: 'binary',
         rowStandardize: true
       })
     );

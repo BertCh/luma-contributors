@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.classification-fit",
   "viewId": "datum-receipt",
-  "caption": "Receipt of class (last row: all counties) 4. squaredDeviations: 72.90724182128906. values read back from the GPU run. result: 4 quantities.",
-  "description": "Receipt of class (last row: all counties) 4. squaredDeviations: 72.90724182128906. values read back from the GPU run. result: 4 quantities.",
-  "llms": "Receipt of class (last row: all counties) 4\n\n- squaredDeviations: 72.90724182128906\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of class (last row: all counties) 4. squaredDeviations: 72.9072494506836. values read back from the GPU run. result: 4 quantities.",
+  "description": "Receipt of class (last row: all counties) 4. squaredDeviations: 72.9072494506836. values read back from the GPU run. result: 4 quantities.",
+  "llms": "Receipt of class (last row: all counties) 4\n\n- squaredDeviations: 72.9072494506836\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "squaredDeviations",
-    "value": "72.90724182128906"
+    "value": "72.9072494506836"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of class (last row: all counties) 4</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-counts-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">counts</button></td><td>91</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-medians-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">medians</button></td><td>5.400000095367432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-absoluteDeviations-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">absoluteDeviations</button></td><td>58.399993896484375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-squaredDeviations-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">squaredDeviations</button></td><td>72.90724182128906</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of class (last row: all counties) 4</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-counts-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">counts</button></td><td>91</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-medians-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">medians</button></td><td>5.400000095367432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-absoluteDeviations-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">absoluteDeviations</button></td><td>58.399993896484375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-squaredDeviations-0\" title=\"gpu-spatial-analysis-classification-fit-snapshot-tap\">squaredDeviations</button></td><td>72.9072494506836</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -51,7 +51,7 @@
       [
         "result",
         "squaredDeviations",
-        "72.90724182128906",
+        "72.9072494506836",
         "0",
         "readback"
       ]
@@ -76,12 +76,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:31.423Z",
-    "runId": "run-0c403c3a",
+    "date": "2026-11-20T23:49:27.681Z",
+    "runId": "run-10c107c0",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-0c403c3a",
+    "runId": "run-10c107c0",
     "rung": "datum",
     "bindings": {
       "entity": 4

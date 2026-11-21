@@ -5,6 +5,13 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
+  GPULocalMoran,
+  GPUHotSpotAnalysis,
+  getGPUSpatialAutocorrelationParameterValues
+} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
+import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
+import {readFloat32, submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {
   GPU_LOCAL_MORAN_QUADRANT,
   type GPUSpatialAutocorrelationSettings
 } from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/index';
@@ -178,7 +185,7 @@ it('GPULocalMoran consumes weights written by GPUNeighborSearch in the same grap
     weights: {
       kind: 'neighbor-search',
       positions: scene.positions,
-      parameters: {bounds: BOUNDS, radius: 3, rowStandardize: true},
+      parameters: {bounds: BOUNDS, searchRadius: 3, rowStandardize: true},
       capacity: 2000 * 160
     }
   });
@@ -188,7 +195,11 @@ it('GPULocalMoran consumes weights written by GPUNeighborSearch in the same grap
       [7.5, true],
       [12, false]
     ] as const) {
-      const result = await harness.run(undefined, {bounds: BOUNDS, radius, rowStandardize});
+      const result = await harness.run(undefined, {
+        bounds: BOUNDS,
+        searchRadius: radius,
+        rowStandardize
+      });
       const expected = createDistanceBandWeights(scene.positions, radius, {rowStandardize});
       expect(result.csr.neighbors, `radius ${radius} neighbors`).toEqual(
         Array.from(expected.neighbors)
@@ -510,3 +521,62 @@ it("GPULocalMoran quadrantGating 'none' reports ungated quadrants from the signs
     ungated.destroy();
   }
 }, 120000);
+
+it('FST-01 keeps distinct Gi-star and Moran readouts on the same directed ring', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  try {
+    const weights = rig.uploadWeights({
+      offsets: [0, 1, 2, 3, 4],
+      neighbors: [1, 2, 3, 0],
+      weights: [1, 1, 1, 1],
+      distances: []
+    });
+    const values = rig.input(Float32Array.of(1, 2, 4, 8), 'float32', 4);
+    const parameters = rig.input(getGPUSpatialAutocorrelationParameterValues({}), 'float32', 8);
+    const giZ = rig.output('float32', 4);
+    const giP = rig.output('float32', 4);
+    const moranI = rig.output('float32', 4);
+    const moranZ = rig.output('float32', 4);
+    const moranP = rig.output('float32', 4);
+    rig.graph.add(
+      new GPUHotSpotAnalysis({
+        weights,
+        values,
+        parameters,
+        output: {zScores: giZ.view, pValues: giP.view}
+      })
+    );
+    rig.graph.add(
+      new GPULocalMoran({
+        weights,
+        values,
+        parameters,
+        output: {localI: moranI.view, zScores: moranZ.view, pValues: moranP.view}
+      })
+    );
+    const compiled = rig.graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      // Mean=3.75, SS=28.75. Gi*: (3-2*3.75)/sqrt((28.75/4)*4/3).
+      // Moran: I=3*(-2.75)*(-1.75)/28.75; conditional-normal z=1.0690449676.
+      // Two-sided normal tails from Python math.erfc(abs(z)/sqrt(2)).
+      for (const [output, expected] of [
+        [giZ, -1.4536311356],
+        [giP, 0.146048686],
+        [moranI, 0.502173913],
+        [moranZ, 1.0690449676],
+        [moranP, 0.2850494074]
+      ] as const) {
+        const actual = (await readFloat32(output.buffer, 4))[0];
+        expect(Number.isFinite(actual)).toBe(true);
+        expect(actual).toBeCloseTo(expected, 5);
+      }
+    } finally {
+      compiled.destroy();
+    }
+  } finally {
+    rig.destroy();
+  }
+});

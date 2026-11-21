@@ -14,7 +14,10 @@ import {
   GPUAdjacencyMatrixOrder,
   type GPUAdjacencyMatrixProps
 } from '../../../src/gpu-network/adjacency-matrix/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 function createContext(device: Device) {
   const graph = new GPUCommandGraph(device);
@@ -39,6 +42,14 @@ it('GPUAdjacencyMatrix validates shapes and options', () => {
   const device = createNullWebGPUDevice();
   const {view, props} = createContext(device);
   expect(() => new GPUAdjacencyMatrix(props())).not.toThrow();
+  expect(
+    () =>
+      new GPUAdjacencyMatrix(
+        props({
+          output: {counts: view('unknown-statistic', 'uint32', 16), textureStatistic: '' as never}
+        })
+      )
+  ).toThrow(/textureStatistic.*count.*weightSum.*received/);
   expect(() => new GPUAdjacencyMatrix(props({resolution: 0}))).toThrow(/resolution/);
   expect(() => new GPUAdjacencyMatrix(props({resolution: 4097}))).toThrow(/resolution/);
   expect(() => new GPUAdjacencyMatrix(props({output: {counts: view('c', 'uint32', 15)}}))).toThrow(
@@ -78,7 +89,7 @@ it('GPUAdjacencyMatrix validates shapes and options', () => {
           }
         })
       )
-  ).toThrow(/weightSums/);
+  ).not.toThrow();
 });
 
 it('GPUAdjacencyMatrix validates its topology', () => {
@@ -205,4 +216,69 @@ it('GPUAdjacencyMatrixOrder validates and names its nodes', () => {
   expect(ids[0]).toBe('adjacency-matrix-order-identity');
   expect(ids.at(-1)).toBe('adjacency-matrix-order-scatter');
   expect(ids).toContain('adjacency-matrix-order-sort-pass-1-gather');
+});
+
+it('scalar matrix fills write exactly one word (WRT-08)', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const {graph, view, props} = createContext(device);
+    const nodes = new GPUAdjacencyMatrix(
+      props({
+        topology: {
+          offsets: view('o', 'uint32', 3),
+          neighbors: view('n', 'uint32', 1),
+          weights: view('w', 'float32', 1)
+        },
+        output: {
+          counts: view('counts', 'uint32', 16),
+          weightSums: view('sums', 'uint32', 16),
+          maximumCount: view('maximum', 'uint32', 2),
+          maximumWeightSum: view('maximum-weight', 'uint32', 2)
+        }
+      })
+    ).getCommandNodes(graph);
+    for (const suffix of ['zero-max-count', 'zero-max-weight-sum']) {
+      const node = nodes.find(node => node.id.endsWith(suffix));
+      expect(node).toBeDefined();
+      expect(
+        getGPUCommandNodeKernelSources(nodes).find(kernel => kernel.id === node!.id)?.constants[
+          'INVOCATION_COUNT'
+        ]
+      ).toBe(1);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('weighted matrix maximum declares private bins without public sums (WRT-12)', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const {graph, view, props} = createContext(device);
+    const contributor = new GPUAdjacencyMatrix(
+      props({
+        topology: {
+          offsets: view('o', 'uint32', 3),
+          neighbors: view('n', 'uint32', 1),
+          weights: view('w', 'float32', 1)
+        },
+        resolution: 1,
+        weightScale: 1,
+        output: {
+          counts: view('counts-only', 'uint32', 1),
+          maximumWeightSum: view('weighted-maximum', 'uint32', 1)
+        }
+      })
+    );
+    expect(contributor.props.output.weightSums).toBeUndefined();
+    expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
+      'adjacency-matrix-zero-counts',
+      'adjacency-matrix-zero-weight-sums',
+      'adjacency-matrix-zero-max-weight-sum',
+      'adjacency-matrix-bin',
+      'adjacency-matrix-maxima'
+    ]);
+  } finally {
+    device.destroy();
+  }
 });

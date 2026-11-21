@@ -18,6 +18,10 @@ import {ESDA_SPATIAL_EB_LOW_DISPERSION} from './eb-low-dispersion-fixture';
 import {ESDA_SPATIAL_EB_LATTICE} from './esda-spatial-eb-fixture';
 import {computeSpatialEmpiricalBayesOracle} from './spatial-empirical-bayes-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {
+  createRateAuditInput,
+  RATE_AUDIT_EXPECTED
+} from './rate-smoothing-mathematical-audit-fixture';
 
 const GARBAGE = 0x7f7f7f7f;
 
@@ -31,6 +35,8 @@ async function run(
     /** Weight per slot; every slot has weight 1 when omitted. */
     weights?: number[];
     mask?: Uint32Array;
+    overflow?: number;
+    candidateOverflow?: number;
   }
 ) {
   const rows = input.events.length;
@@ -46,7 +52,13 @@ async function run(
       device,
       input.weights ? Float32Array.from(input.weights) : new Float32Array(slots).fill(1)
     ),
-    input.mask && createInputBuffer(device, input.mask)
+    input.mask && createInputBuffer(device, input.mask),
+    input.overflow === undefined
+      ? undefined
+      : createInputBuffer(device, Uint32Array.of(input.overflow)),
+    input.candidateOverflow === undefined
+      ? undefined
+      : createInputBuffer(device, Uint32Array.of(input.candidateOverflow))
   ];
   const outputs = {
     spatialRate: createOutputBuffer(device, rows),
@@ -64,7 +76,12 @@ async function run(
       weights: {
         offsets: importGraphBuffer(graph, 'offsets', buffers[2]!, 'uint32', rows + 1),
         neighbors: importGraphBuffer(graph, 'neighbors', buffers[3]!, 'uint32', slots),
-        weights: importGraphBuffer(graph, 'weights', buffers[4]!, 'float32', slots)
+        weights: importGraphBuffer(graph, 'weights', buffers[4]!, 'float32', slots),
+        status: {
+          overflow: buffers[6] && importGraphBuffer(graph, 'overflow', buffers[6], 'uint32', 1),
+          candidateOverflow:
+            buffers[7] && importGraphBuffer(graph, 'candidate-overflow', buffers[7], 'uint32', 1)
+        }
       },
       mask: buffers[5] && importGraphBuffer(graph, 'mask', buffers[5], 'uint32', rows),
       output: {
@@ -89,6 +106,7 @@ async function run(
 }
 
 function expectClose(actual: number[], expected: number[], label: string, relative = 2e-3): void {
+  expect(actual).toHaveLength(expected.length);
   for (const [row, value] of expected.entries()) {
     if (Number.isNaN(value)) {
       expect(actual[row], `${label} row ${row}`).toBeNaN();
@@ -122,6 +140,25 @@ it('GPUSpatialEmpiricalBayesRates matches the oracle on a hand-checked path grap
   expectClose(result.priorMean, oracle.priorMean, 'priorMean');
   expectClose(result.priorVariance, oracle.priorVariance, 'priorVariance', 1e-2);
   expect(result.smoothed.every(value => Number.isFinite(value))).toBe(true);
+});
+
+it('GPUSpatialEmpiricalBayesRates matches NumPy moments on every port with masked, invalid and island rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const scale of [1, 2]) {
+    const actual = await run(device, createRateAuditInput(scale));
+    for (const name of ['spatialRate', 'smoothed', 'priorMean', 'priorVariance'] as const) {
+      const expected = RATE_AUDIT_EXPECTED.spatial[name].map(value =>
+        value === null ? NaN : value
+      );
+      expectClose(
+        actual[name].map(value => value * (name === 'priorVariance' ? scale * scale : scale)),
+        expected,
+        name,
+        2e-5
+      );
+    }
+  }
 });
 
 it('GPUSpatialEmpiricalBayesRates matches the oracle with random weights, masks and bad rows', async () => {
@@ -211,4 +248,46 @@ it('GPUSpatialEmpiricalBayesRates does not pool a zero-weight slot', async () =>
   expect(result.priorVariance[0]).toBe(0);
   expect(result.smoothed[0]).toBeCloseTo(0.2, 6);
   expect(result.spatialRate[2]).toBeCloseTo(10, 5);
+});
+
+it('GPUSpatialEmpiricalBayesRates suppresses all four outputs when either weights loss flag is nonzero', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Eight rows, one linked pair and six islands. Complete neighborhoods pool
+  // to [0.2,0.2,0.4,0.5,0.6,0.7,0.8,0.9]; their Poisson-corrected variances clamp to zero.
+  const input = {
+    events: Float32Array.from([1, 3, 4, 5, 6, 7, 8, 9]),
+    populations: new Float32Array(8).fill(10),
+    offsets: [0, 1, 2, 2, 2, 2, 2, 2, 2],
+    neighbors: [1, 0]
+  };
+  const complete = await run(device, {...input, overflow: 0, candidateOverflow: 0});
+  const expected = [0.2, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+  for (const name of ['spatialRate', 'smoothed', 'priorMean'] as const)
+    expectClose(complete[name], expected, name, 1e-6);
+  expect(complete.priorVariance).toEqual(new Array(8).fill(0));
+  for (const flags of [
+    {overflow: 1, candidateOverflow: 0},
+    {overflow: 0, candidateOverflow: 1}
+  ]) {
+    const actual = await run(device, {...input, ...flags});
+    for (const output of Object.values(actual)) expect(output.every(Number.isNaN)).toBe(true);
+  }
+});
+
+it('UST-03 rejects a negative focus and excludes negative donors', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await run(device, {
+    events: Float32Array.of(-10, 2, 2, 2),
+    populations: Float32Array.of(10, 10, 10, 10),
+    offsets: [0, 1, 3, 5, 6],
+    neighbors: [1, 0, 2, 1, 3, 2]
+  });
+  expect(result.smoothed).toHaveLength(4);
+  expect(result.smoothed[0]).toBeNaN();
+  for (const value of result.smoothed.slice(1)) {
+    expect(Number.isFinite(value)).toBe(true);
+    expect(value).toBeCloseTo(0.2, 6);
+  }
 });

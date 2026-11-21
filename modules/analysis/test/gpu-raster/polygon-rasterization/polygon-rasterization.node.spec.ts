@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/index';
-import {WgslReflect} from 'wgsl_reflect';
+import {findConstantNonFiniteBitcasts} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+import {WgslReflect, WgslExec, WgslParser} from 'wgsl_reflect';
 import {getRasterPipelines} from '../raster-pipeline-count';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import {
@@ -150,7 +152,7 @@ it('GPUPolygonRasterization validates dimensions, capacities, and views', () => 
       const shared = createTransientView(graph, 'shared', 'uint32', 48);
       return {zones: shared, ringOffsets: shared};
     })
-  ).toThrow(/must not share buffers/);
+  ).toThrow(/must not share buffers|logical byte ranges must not overlap/);
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const otherGraph = new GPUCommandGraph(createNullWebGPUDevice());
   const foreign = new GPUPolygonRasterization(createRasterizationProps(otherGraph));
@@ -178,7 +180,14 @@ it('GPURasterJoin validates outputs and schedules only requested passes', () => 
     const joinGraph = new GPUCommandGraph(createNullWebGPUDevice());
     return new GPURasterJoin(createJoinProps(joinGraph, getOverrides(joinGraph)));
   };
-  expect(create(() => ({output: {}}))).toThrow(/at least one output/);
+  expect(
+    create(() => {
+      const overrides: Partial<GPURasterJoinProps> = {};
+      // Deliberately malformed JavaScript input: the empty map is outside the typed contract.
+      Reflect.set(overrides, 'output', {});
+      return overrides;
+    })
+  ).toThrow(/at least one output/);
   expect(
     create(joinGraph => ({output: {sums: createTransientView(joinGraph, 's', 'float32', 3)}}))
   ).toThrow(/sums require values/);
@@ -319,12 +328,16 @@ for (const operation of ['raster', 'join'] as const) {
       units: 'native'
     });
     const planar: GPUSpatialContext = {coordinateSpace: 'planar', metric: 'none'};
-    expect(create(planar).spatialContext).toBe(planar);
+    const capturedPlanar = create(planar).spatialContext;
+    expect(capturedPlanar).toEqual(planar);
+    expect(capturedPlanar).not.toBe(planar);
     const longitudeLatitude: GPUSpatialContext = {
       coordinateSpace: 'longitude-latitude',
       metric: 'none'
     };
-    expect(create(longitudeLatitude).spatialContext).toBe(longitudeLatitude);
+    const capturedLongitudeLatitude = create(longitudeLatitude).spatialContext;
+    expect(capturedLongitudeLatitude).toEqual(longitudeLatitude);
+    expect(capturedLongitudeLatitude).not.toBe(longitudeLatitude);
     expect(create({...longitudeLatitude, edgeModel: 'linear'}).spatialContext.edgeModel).toBe(
       'linear'
     );
@@ -369,4 +382,209 @@ it('longitude raster kernels parse and keep shifted positions out of persistent 
   for (const pipeline of getRasterPipelines(contributor.getCommandNodes(graph))) {
     expect(() => new WgslReflect(pipeline.source), pipeline.id).not.toThrow();
   }
+});
+
+it('RT-137 guards every requested join output and requires an observable incomplete flag', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const producerOverflow = createTransientView(graph, 'producer-overflow', 'uint32', 1);
+  const props = createJoinProps(graph, {producerOverflow});
+  expect(() => new GPURasterJoin(props)).toThrow(/incomplete/);
+  props.output.status = {incomplete: createTransientView(graph, 'incomplete', 'uint32', 1)};
+  props.output.pointZones = createTransientView(graph, 'point-zones', 'uint32', 10);
+  props.values = createTransientView(graph, 'join-values', 'float32', 10);
+  props.boundary = createTransientView(graph, 'join-boundary', 'uint32', 48);
+  props.output.sums = createTransientView(graph, 'join-sums', 'float32', 3);
+  props.output.boundaryCounts = createTransientView(graph, 'join-boundary-counts', 'uint32', 3);
+  props.output.unassignedBoundaryCount = createTransientView(graph, 'join-unassigned', 'uint32', 1);
+  props.output.outsideCount = createTransientView(graph, 'join-outside', 'uint32', 1);
+  props.output.pointBoundaryMask = createTransientView(graph, 'join-point-mask', 'uint32', 10);
+  const nodes = new GPURasterJoin(props).getCommandNodes(graph);
+  const ids = nodes.map(node => node.id);
+  for (const name of Object.keys(props.output).filter(name => name !== 'status')) {
+    expect(ids).toContain(`join-producer-${name}`);
+  }
+  for (const pipeline of getRasterPipelines(nodes)) {
+    expect(() => new WgslReflect(pipeline.source), pipeline.id).not.toThrow();
+  }
+  for (const pipeline of getRasterPipelines(nodes).filter(pipeline =>
+    pipeline.id.includes('-producer-')
+  )) {
+    expect(findConstantNonFiniteBitcasts(pipeline.source), pipeline.id).toEqual([]);
+  }
+  expect(ids).toContain('join-producer-counts');
+  expect(ids).toContain('join-producer-pointZones');
+  expect(ids.at(-1)).toBe('join-producer-incomplete');
+});
+
+it('RT-14 rejects every colliding polygon output pair before declaring graph nodes', () => {
+  const names = ['zones', 'boundary', 'overflow', 'crossingCount'] as const;
+  for (let first = 0; first < names.length; first++) {
+    for (let second = first + 1; second < names.length; second++) {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      const shared = createTransientView(graph, 'shared', 'uint32', 1);
+      const views = Object.fromEntries(
+        names.map(name => [name, createTransientView(graph, `output-${name}`, 'uint32', 1)])
+      );
+      views[names[first]] = shared;
+      views[names[second]] = shared;
+      const props = createRasterizationProps(graph, {}, {width: 1, height: 1});
+      props.output = {
+        zones: views['zones'],
+        boundary: views['boundary'],
+        status: {overflow: views['overflow'], crossingCount: views['crossingCount']}
+      };
+      expect(
+        () => new GPUPolygonRasterization(props),
+        `${names[first]} / ${names[second]}`
+      ).toThrow(/overlap/);
+    }
+  }
+});
+
+it('RT-14 rejects every colliding optional join column pair', () => {
+  const names = [
+    'counts',
+    'sums',
+    'boundaryCounts',
+    'unassignedBoundaryCount',
+    'outsideCount',
+    'pointZones',
+    'pointBoundaryMask',
+    'incomplete'
+  ] as const;
+  for (let first = 0; first < names.length; first++) {
+    for (let second = first + 1; second < names.length; second++) {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      const shared = createTransientView(graph, 'shared', 'uint32', 1);
+      const output = Object.fromEntries(
+        names.map((name, index) => [
+          name,
+          index === first || index === second
+            ? graph.createDataView(shared.buffer, {
+                format: name === 'sums' ? 'float32' : 'uint32',
+                length: 1
+              })
+            : createTransientView(
+                graph,
+                `output-${name}`,
+                name === 'sums' ? 'float32' : 'uint32',
+                1
+              )
+        ])
+      );
+      const props = createJoinProps(graph, {
+        grid: makeGPURasterMetadata({width: 1, height: 1}),
+        zoneCount: 1,
+        points: createTransientView(graph, 'single-point', 'float32x2', 1),
+        zones: createTransientView(graph, 'single-zone', 'uint32', 1),
+        boundary: createTransientView(graph, 'single-boundary', 'uint32', 1),
+        values: createTransientView(graph, 'single-value', 'float32', 1),
+        output: {
+          ...output,
+          status: {
+            incomplete: graph.createDataView(output['incomplete'].buffer, {
+              format: 'uint32',
+              byteOffset: output['incomplete'].byteOffset,
+              length: 1
+            })
+          }
+        }
+      });
+      delete (props.output as Record<string, unknown>)['incomplete'];
+      expect(() => new GPURasterJoin(props), `${names[first]} / ${names[second]}`).toThrow(
+        /overlap/
+      );
+    }
+  }
+});
+
+it('RT-14 distinguishes aligned output pools, simultaneous read/write bindings and duplicate physical imports', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const pool = createTransientView(graph, 'output-pool', 'uint32', 256);
+  const view = (byteOffset: number) =>
+    graph.createDataView(pool.buffer, {format: 'uint32', byteOffset, length: 1});
+  const polygonProps = createRasterizationProps(graph, {}, {width: 1, height: 1});
+  polygonProps.output = {
+    zones: view(0),
+    boundary: view(256),
+    status: {overflow: view(512), crossingCount: view(768)}
+  };
+  expect(() => new GPUPolygonRasterization(polygonProps)).not.toThrow();
+  polygonProps.output.boundary = view(4);
+  expect(() => new GPUPolygonRasterization(polygonProps)).toThrow(/overlap/);
+
+  const joinProps: GPURasterJoinProps = {
+    grid: polygonProps.grid,
+    parameters: polygonProps.parameters,
+    zones: createTransientView(graph, 'join-zones', 'uint32', 1),
+    zoneCount: 1,
+    points: createTransientView(graph, 'one-point', 'float32x2', 1),
+    values: createTransientView(graph, 'one-value', 'float32', 1),
+    output: {
+      counts: view(0),
+      sums: graph.createDataView(pool.buffer, {format: 'float32', byteOffset: 256, length: 1})
+    }
+  };
+  // Counts and sums publish in separate dispatches; aligned, disjoint ranges are safe.
+  expect(() => new GPURasterJoin(joinProps)).not.toThrow();
+  joinProps.output = {counts: view(0), pointZones: view(256)};
+  // Aggregation reads pointZones while counts is writable: WebGPU forbids one buffer for both.
+  expect(() => new GPURasterJoin(joinProps)).toThrow(/read-only and writable/);
+
+  const physical = device.createBuffer({byteLength: 1024, usage: Buffer.STORAGE});
+  try {
+    const importView = (id: string, byteOffset: number) =>
+      graph.createDataView(
+        graph.importBuffer({id, byteLength: physical.byteLength, usage: physical.usage}, physical),
+        {format: 'uint32', byteOffset, length: 1}
+      );
+    polygonProps.output = {
+      zones: importView('physical-zones', 0),
+      status: {overflow: importView('physical-status', 256)}
+    };
+    expect(() => new GPUPolygonRasterization(polygonProps)).toThrow(/one imported handle/);
+    joinProps.output = {
+      counts: importView('physical-counts', 0),
+      outsideCount: importView('physical-outside', 256)
+    };
+    expect(() => new GPURasterJoin(joinProps)).toThrow(/one imported handle/);
+  } finally {
+    physical.destroy();
+    device.destroy();
+  }
+});
+
+it('B4 populated assignments discriminate the point guard from a no-op', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createJoinProps(graph, {
+    producerOverflow: createTransientView(graph, 'producer-guard', 'uint32', 1),
+    points: createTransientView(graph, 'populated-point', 'float32x2', 1),
+    output: {
+      pointZones: createTransientView(graph, 'assigned-points', 'uint32', 1),
+      status: {incomplete: createTransientView(graph, 'incomplete', 'uint32', 1)}
+    }
+  });
+  const source = getRasterPipelines(new GPURasterJoin(props).getCommandNodes(graph)).find(kernel =>
+    kernel.id.endsWith('-producer-pointZones')
+  )!.source;
+  const check = (shader: string) => {
+    for (const guard of [0, 1, 0]) {
+      const assigned = new Uint32Array(1); // The populated zone lookup assigns zone zero each frame.
+      new WgslExec(
+        new WgslParser().parse(shader.replace(/^\s*_ = [^;]*;$/gm, ''))
+      ).dispatchWorkgroups(
+        'main',
+        1,
+        {0: {0: new Uint32Array([guard]), 1: assigned}},
+        {constants: {INVOCATION_COUNT: 1, WGSL_KERNEL_DISPATCH_X: 1, WGSL_KERNEL_DISPATCH_Y: 1}}
+      );
+      expect(Array.from(assigned)).toEqual(new Array(1).fill(guard === 0 ? 0 : 0xffffffff));
+    }
+  };
+  check(source);
+  // Mutation control: the previous overflow/background fixture would pass with this store removed.
+  expect(() =>
+    check(source.replace(/result\[resultOffset \+ index\] = 0xffffffffu;/, ''))
+  ).toThrow();
 });

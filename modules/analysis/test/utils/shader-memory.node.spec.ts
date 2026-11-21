@@ -12,23 +12,38 @@ import {auditWGSLModule} from '../analysis-core/kernel-audit/kernel-audit-wgsl';
 
 it('parsed-source budgets retain recorded override constants', () => {
   const source = 'override N: u32 = 1u; var<workgroup> scratch: array<u32, N>;';
-  const nodes = [
-    {
-      compile: ({device}: {device: Device}) => {
-        const shader = device.createShader({stage: 'compute', source});
-        device.createComputePipeline({
-          id: 'budget',
-          shader,
-          constants: {N: 8192}
-        });
-        return {destroy: () => shader.destroy()};
-      }
+  const nodes = [4, 8192].map(count => ({
+    compile: ({device}: {device: Device}) => {
+      const shader = device.createShader({stage: 'compute', source});
+      device.createComputePipeline({
+        id: 'budget',
+        shader,
+        constants: {N: count}
+      });
+      return {destroy: () => shader.destroy()};
     }
-  ];
+  }));
   const sources = getParsedKernelSources(nodes);
-  for (const kernel of sources.getConfigurations('budget')) {
-    expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants)).toBe(32768);
-  }
+  const bytes = sources
+    .getConfigurations('budget')
+    .map(kernel => getWorkgroupMemoryBytes(kernel.source, kernel.constants));
+  // u32 occupies four bytes: 4 * 4 = 16 and 8192 * 4 = 32768.
+  expect(bytes).toEqual([16, 32768]);
+  expect(bytes.map(size => size > 16384)).toEqual([false, true]);
+  expect(
+    sources
+      .getConfigurations('budget')
+      .map(kernel =>
+        auditWGSLModule(kernel.source, kernel.constants).some(
+          finding => finding.check === 'workgroup bytes'
+        )
+      )
+  ).toEqual([false, true]);
+  // Both recorded configurations contain exactly this WGSL. Dropping their overrides
+  // therefore uses the same default N=1: an aligned 16-byte allocation and no audit finding.
+  for (const kernel of sources.getConfigurations('budget')) expect(kernel.source).toBe(source);
+  expect(getWorkgroupMemoryBytes(source)).toBe(16);
+  expect(auditWGSLModule(source).some(finding => finding.check === 'workgroup bytes')).toBe(false);
 });
 
 it('resolves local constants only in their lexical block and keeps struct lengths at module scope', () => {

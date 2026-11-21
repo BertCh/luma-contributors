@@ -442,7 +442,10 @@ matrixGraph.add(new GPUNetworkCostMatrix({
 // Graph 2: encoded whenever a scoring parameter changes. No search is re-run.
 const scoreGraph = new GPUCommandGraph(device, {id: 'access-score'});
 scoreGraph.add(new GPUNetworkAccessibility({
-  costs: matrix, opportunityWeights: jobs, parameters: scoring.importToGraph(scoreGraph),
+// Import matrix and convergence buffers into this graph as matrixView and convergedView.
+  costs: matrixView, opportunityWeights: jobs, parameters: scoring.importToGraph(scoreGraph),
+  costsComplete: convergedView, costLimit: limit.importToGraph(scoreGraph),
+  status: {complete: scoresComplete}, // read before displaying scores or comparisons
   cumulative, gravity,
   catchment: {demand: workers, output: twoStep, ratios}   // 2SFCA
 }));

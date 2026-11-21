@@ -311,3 +311,26 @@ it('checks both constructions and identical graph contracts', () => {
     constructRegressionOperationContributor(new GPUSpatialWeightsTracesOperation(PROPS), shapes)
   ).not.toThrow();
 });
+
+it('STA-01 accepts clean explicit CPU status and refuses candidate loss or a retired flag', () => {
+  const weights = {
+    offsets: Uint32Array.of(0, 1, 2),
+    neighbors: Uint32Array.of(1, 0),
+    weights: Float32Array.of(1, 1),
+    status: {overflow: Uint32Array.of(0), candidateOverflow: Uint32Array.of(0)}
+  };
+  // W swaps two coordinates, so tr(W)=0 and tr(W²)=2.
+  expect([
+    ...computeSpatialWeightsTracesOnCPU({weights}, {maximumPower: 2, mode: 'exact'}).powerTraces
+  ]).toEqual([0, 2]);
+  expect(() =>
+    computeSpatialWeightsTracesOnCPU(
+      {weights: {...weights, status: {...weights.status, candidateOverflow: Uint32Array.of(1)}}},
+      {maximumPower: 2}
+    )
+  ).toThrow(/incomplete weights/);
+  const retired = {...weights, candidateOverflow: Uint32Array.of(1)};
+  expect(() => computeSpatialWeightsTracesOnCPU({weights: retired}, {maximumPower: 2})).toThrow(
+    /weights\.candidateOverflow was removed; use weights\.status\.candidateOverflow/
+  );
+});

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.cluster-and-outline-recipe: observations → clust…",
   "description": "Result of gpu-spatial-analysis.cluster-and-outline-recipe: observations → clusterCount. rows: 1. values read back from the GPU run. input observations: 2344 points.",
-  "llms": "Result of gpu-spatial-analysis.cluster-and-outline-recipe: observations → clusterCount\n\n- rows: 1\n- input observations: 2344 points\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- hullPositions: 2 of 128 polygons shown; evenly sampled features and vertices; 94 invalid or uncaptured features omitted\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.cluster-and-outline-recipe: observations → clusterCount\n\n- rows: 1\n- input observations: 2344 points\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 35 categories; 5 largest coloured\n- 35 categories; 5 largest coloured\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- hullPositions: 2 of 128 polygons shown; evenly sampled features and vertices; 94 invalid or uncaptured features omitted\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "1"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:31.976Z",
-    "runId": "run-bc5112da",
+    "date": "2026-11-20T23:49:28.211Z",
+    "runId": "run-a356cdd0",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-bc5112da",
+    "runId": "run-a356cdd0",
     "rung": "result",
     "bindings": {},
     "clauses": [],

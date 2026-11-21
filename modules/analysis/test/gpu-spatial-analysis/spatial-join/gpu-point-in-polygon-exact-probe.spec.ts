@@ -134,7 +134,13 @@ it('GPUPointInPolygonJoin resolves near-degenerate points exactly with no uncert
               'uint32',
               count
             ),
-            featureCounts: importGraphBuffer(graph, 'fc', buffers.featureCounts, 'uint32', 1),
+            polygonAssignmentCounts: importGraphBuffer(
+              graph,
+              'fc',
+              buffers.featureCounts,
+              'uint32',
+              1
+            ),
             status: {
               overflow: importGraphBuffer(graph, 'of', buffers.overflow, 'uint32', 1),
               uncertainCount: importGraphBuffer(graph, 'uc', buffers.uncertainCount, 'uint32', 1)

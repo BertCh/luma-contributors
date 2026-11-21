@@ -187,10 +187,10 @@ describe('curated-contiguity-correlogram declared behaviour', () => {
       /parameter valueProperty must name a column/
     );
     expect(() => runCorrelogram(CORRELOGRAM_LATTICE.values, {maximumOrder: 13})).toThrow(
-      /out of range/
+      /maximumOrder must be at most 12; received 13/
     );
     expect(() => runCorrelogram(CORRELOGRAM_LATTICE.values, {maximumOrder: 0})).toThrow(
-      /out of range/
+      /maximumOrder must be at least 1; received 0/
     );
   });
 

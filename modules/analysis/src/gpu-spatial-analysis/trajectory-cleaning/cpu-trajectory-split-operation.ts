@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -30,6 +31,7 @@ import {
 export type CPUTrajectorySplitInput = CPUTrajectoryRows & {
   parameters?: Float32Array;
   staypointIds?: Uint32Array;
+  staypointStatus?: {overflow?: Uint32Array; candidateOverflow?: Uint32Array};
   values?: Uint32Array;
 };
 
@@ -48,6 +50,7 @@ export type CPUTrajectorySplitResult = {
   count: Uint32Array;
   requiredCount: Uint32Array;
   overflow: Uint32Array;
+  candidateOverflow: Uint32Array;
   outputPositions: Float32Array;
   outputTimestamps: Float32Array | Uint32Array;
 };
@@ -81,7 +84,8 @@ export function computeTrajectorySplitOnCPU(
   input: CPUTrajectorySplitInput,
   options: CPUTrajectorySplitOptions
 ): CPUTrajectorySplitResult {
-  validateOptions('trajectory-split', options);
+  const id = 'trajectory-split';
+  validateOptions(id, options);
   const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input);
   const {mode, segmentCapacity, rowCapacity} = options;
   if (
@@ -97,6 +101,19 @@ export function computeTrajectorySplitOnCPU(
     throw new Error('staypointIds is required for stop mode');
   if (mode === 'value-change' && !input.values)
     throw new Error('values is required for value-change mode');
+  const {overflow, candidateOverflow} = input.staypointStatus ?? {};
+  validateRequirement(
+    id,
+    !(overflow || candidateOverflow) || mode === 'stop',
+    "staypointStatus is supported in mode 'stop'"
+  );
+  for (const [name, flag] of Object.entries({overflow, candidateOverflow})) {
+    validateRequirement(
+      id,
+      !flag || flag.length === 1,
+      `staypointStatus.${name} must contain one uint32 row`
+    );
+  }
   const [maximumGap = 0] = input.parameters ?? [];
   const isExcludedRow = (row: number) =>
     mode === 'stop' && input.staypointIds![row] !== GPU_MOVEMENT_SENTINEL;
@@ -113,6 +130,7 @@ export function computeTrajectorySplitOnCPU(
     count: new Uint32Array(1),
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
+    candidateOverflow: Uint32Array.of(Number(Boolean(overflow?.[0] || candidateOverflow?.[0]))),
     outputPositions: new Float32Array(rowCapacity * 2),
     outputTimestamps:
       input.timestamps instanceof Uint32Array
@@ -169,6 +187,13 @@ export function computeTrajectorySplitOnCPU(
 /** CPU split operation with the contributor's independent segment and row capacity rules. */
 export class CPUTrajectorySplitOperation extends GPUCPUOperation {
   constructor(props: TrajectorySplitOperationProps) {
+    const {staypointStatus} = props;
+    props = {
+      ...props,
+      staypointStatus:
+        staypointStatus &&
+        snapshotConstructionFields(staypointStatus, ['overflow', 'candidateOverflow'])
+    };
     const operation = new GPUTrajectorySplitOperation(props);
     const {id} = operation;
     validateOptions(id, props);
@@ -215,6 +240,7 @@ export class CPUTrajectorySplitOperation extends GPUCPUOperation {
         const result = computeTrajectorySplitOnCPU(
           {
             positions,
+            storage: 'resident-capacity',
             timestamps:
               props.timestampFormat === 'uint32x2'
                 ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')
@@ -228,6 +254,16 @@ export class CPUTrajectorySplitOperation extends GPUCPUOperation {
               props.staypointIds !== undefined
                 ? getCPUOperationUint32Rows(id, inputs, 'staypointIds')
                 : undefined,
+            staypointStatus: {
+              overflow:
+                props.staypointStatus?.overflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'stayOverflow')
+                  : undefined,
+              candidateOverflow:
+                props.staypointStatus?.candidateOverflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'stayCandidateOverflow')
+                  : undefined
+            },
             values:
               props.values !== undefined
                 ? getCPUOperationUint32Rows(id, inputs, 'values')

@@ -10,7 +10,7 @@ import {
   getAdjustedRandIndex,
   HIERARCHICAL_DENSITY_FIXTURE
 } from './hierarchical-density-clustering-oracle';
-import {runHierarchicalDensityClustering} from './hierarchical-density-clustering-harness';
+import {runHDBSCAN} from './hierarchical-density-clustering-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 // Oracle: test/oracles/spatial-clustering-hdbscan.py (scikit-learn HDBSCAN labels, core distances
@@ -18,12 +18,12 @@ import {requireTestDevice} from '../../utils/require-test-device';
 // hierarchical-density-clustering-oracle.ts, which uses the same (weight, low, high) tie order.
 const {tolerances} = HIERARCHICAL_DENSITY_FIXTURE;
 
-it('GPUHierarchicalDensityClustering matches scikit-learn HDBSCAN and the model', async () => {
+it('GPUHDBSCAN matches scikit-learn HDBSCAN and the model', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   for (const scene of HIERARCHICAL_DENSITY_FIXTURE.scenes) {
     const positions = Float32Array.from(scene.positions.flat());
-    const actual = await runHierarchicalDensityClustering(device, positions, {
+    const actual = await runHDBSCAN(device, positions, {
       minimumClusterSize: scene.minimumClusterSize,
       minimumSamples: scene.minimumSamples
     });
@@ -55,7 +55,7 @@ it('GPUHierarchicalDensityClustering matches scikit-learn HDBSCAN and the model'
   device.destroy?.();
 }, 300000);
 
-it('GPUHierarchicalDensityClustering treats non-finite points as noise', async () => {
+it('GPUHDBSCAN treats non-finite points as noise', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const scene = HIERARCHICAL_DENSITY_FIXTURE.scenes.find(entry => entry.name === 'moons');
@@ -63,7 +63,7 @@ it('GPUHierarchicalDensityClustering treats non-finite points as noise', async (
     throw new Error('moons scene missing');
   }
   const positions = Float32Array.from([...scene.positions.flat(), NaN, 0, Infinity, 1, 0, NaN]);
-  const actual = await runHierarchicalDensityClustering(device, positions, {
+  const actual = await runHDBSCAN(device, positions, {
     minimumClusterSize: scene.minimumClusterSize,
     minimumSamples: scene.minimumSamples
   });

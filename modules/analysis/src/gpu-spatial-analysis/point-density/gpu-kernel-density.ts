@@ -2,6 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUAnalysisRoute} from '../ontology/spatial-analysis-ontology';
+import {
+  makeDensityExecutionPlan,
+  hasDensityShapeRows,
+  type GPUDensityDeviceLimits,
+  type GPUDensityExecutionPlan
+} from './density-execution-plan';
+import {getDensityFrameRoute} from './density-auto-route';
+import {makeGPURasterBand} from '../../raster-analysis/raster-grid/gpu-raster-grid';
+import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import {resolveKernelShapeName} from '../shared/kernel-shape-name';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -22,7 +33,8 @@ import {
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -40,17 +52,21 @@ import {
 } from '../../analysis-core/contracts/study-window';
 import {getStudyWindowBinding} from '../../analysis-core/kernels/study-window-wgsl';
 import {FIXED_POINT_WORD_COUNT} from '../../analysis-core/kernels/fixed-point-accumulator';
-import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {getRasterGridCorners} from '../spatial-interpolation/spatial-interpolation-parameters';
 import {getRectangleScanWGSL} from '../spatial-interpolation/grid-neighbor-scan';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
-import {createPointNeighborGridIndexNodes} from '../shared/point-neighbor-grid-index';
-import {GRID_COORDINATE_WGSL} from '../spatial-interpolation/gpu-inverse-distance-weighting';
+import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
+import {GPU_GRID_COORDINATE_WGSL} from '@luma.gl/graph/gpu-core';
+import {
+  getDensityDomainConstantsWGSL,
+  getDensityNeighborBoundsWGSL,
+  DENSITY_VALUE_WGSL,
+  DENSITY_RECTANGLE_MEMBERSHIP_WGSL
+} from './density-neighbor-wgsl';
 import {
   GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION,
-  getGPUKernelDensityCanonicalBandwidthScale,
   type GPUKernelDensityBandwidthRule,
   type GPUKernelDensityKernel,
   type GPUKernelDensityKernelName,
@@ -64,6 +80,11 @@ import {
   GPU_KERNEL_DENSITY_BINNED_PLAN_BYTE_LENGTH,
   GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT
 } from './kernel-density-binned';
+import {
+  createKernelDensityBandwidthNodes,
+  validateKernelDensityBandwidthRule,
+  type GPUKernelDensityBandwidthPopulation
+} from './kernel-density-bandwidth';
 import {
   getKernelDensityResultWGSL,
   getKernelDensityStudyWindowWGSL,
@@ -93,8 +114,18 @@ import {
   needsDensitySplitScratch
 } from './density-scratch';
 
-/** Four point passes, seven fixed-point totals (two chunk passes each), scale and exclusion status. */
-const KERNEL_DENSITY_CHUNK_COMMAND_NODE_ALLOWANCE = 20;
+/** Five point passes, seven fixed-point totals (two chunk passes each), scale and exclusion status. */
+const KERNEL_DENSITY_CHUNK_COMMAND_NODE_ALLOWANCE = 23;
+function getKernelDensityChunkCommandAllowance(
+  bandwidthRule: GPUKernelDensityBandwidthRule | undefined,
+  populationCount: boolean
+): number {
+  return (
+    KERNEL_DENSITY_CHUNK_COMMAND_NODE_ALLOWANCE + (bandwidthRule ? 4 + Number(populationCount) : 0)
+  );
+}
+
+import {snapshotDensityConstructionProps} from './density-construction-snapshot';
 
 const OPERATION = 'GPUKernelDensity';
 
@@ -109,12 +140,6 @@ const KERNEL_DENSITY_MAXIMUM_INDEX_DIMENSION = 0xffffffff;
  * packed u32-indexed reduction needs at most 32 levels; chunk point passes are counted separately.
  */
 const KERNEL_DENSITY_BINNED_COMMAND_NODE_ALLOWANCE = 512;
-
-/** WGSL constants `DOMAIN_MIN` and `DOMAIN_MAX` of the index domain. */
-function getDomainConstantsWGSL(indexBounds: readonly [number, number, number, number]): string {
-  return `const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[0])}, ${getWGSLFloatLiteral(indexBounds[1])});
-const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[2])}, ${getWGSLFloatLiteral(indexBounds[3])});`;
-}
 
 /** Number of float32 elements in a {@link GPUKernelDensity} parameter view. */
 export const GPU_KERNEL_DENSITY_PARAMETER_LENGTH = 9;
@@ -162,41 +187,72 @@ export function getGPUKernelDensityParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_KERNEL_DENSITY_PARAMETER_LENGTH)
 ): Float32Array {
-  if (target.length < GPU_KERNEL_DENSITY_PARAMETER_LENGTH) {
-    throw new Error(
-      `Kernel density parameter target must hold ${GPU_KERNEL_DENSITY_PARAMETER_LENGTH} elements`
+  const id = 'getGPUKernelDensityParameterValues';
+  validateRequirement(
+    id,
+    target.length >= GPU_KERNEL_DENSITY_PARAMETER_LENGTH,
+    `target must hold ${GPU_KERNEL_DENSITY_PARAMETER_LENGTH} elements; received ${target.length}`
+  );
+  const bandwidth = Math.fround(settings.bandwidth);
+  validateRequirement(
+    id,
+    Number.isFinite(bandwidth) && bandwidth > 0,
+    `bandwidth must be positive and finite in float32; received ${settings.bandwidth} encoded as ${bandwidth}`
+  );
+  const original = getRasterGridCorners(id, grid, false);
+  const corners = original.map(Math.fround);
+  for (const [axis, startIndex, endIndex, count] of [
+    ['x', 0, 2, grid.width],
+    ['y', 1, 3, grid.height]
+  ] as const) {
+    const start = corners[startIndex];
+    const end = corners[endIndex];
+    const span = Math.fround(end - start);
+    const step = Math.fround(span / count);
+    validateRequirement(
+      id,
+      Number.isFinite(start) &&
+        Number.isFinite(end) &&
+        Number.isFinite(span) &&
+        Number.isFinite(step) &&
+        step !== 0 &&
+        Math.sign(span) === Math.sign(original[endIndex] - original[startIndex]),
+      `grid ${axis} corners ${original[startIndex]}, ${original[endIndex]} encoded as ${start}, ${end} must retain an oriented finite nonzero float32 step; subtract a common origin from positions, grid, index bounds and window before float32 conversion`
     );
   }
-  if (!Number.isFinite(settings.bandwidth) || settings.bandwidth <= 0) {
-    throw new Error('Kernel density bandwidth must be positive and finite');
-  }
-  const corners = getRasterGridCorners('getGPUKernelDensityParameterValues', grid);
   const [startX, startY, endX, endY] = corners;
-  if (!corners.every(Number.isFinite) || startX === endX || startY === endY) {
-    throw new Error('Kernel density grid must have a finite, nonzero cell size');
-  }
   const window = settings.window ?? [
     Math.min(startX, endX),
     Math.min(startY, endY),
     Math.max(startX, endX),
     Math.max(startY, endY)
   ];
-  if (
-    window !== 'study-window' &&
-    (window.length !== 4 ||
-      !window.every(Number.isFinite) ||
-      window[0] >= window[2] ||
-      window[1] >= window[3])
-  ) {
-    throw new Error('Kernel density window must be finite [minX, minY, maxX, maxY]');
+  let encodedWindow: number[] | undefined;
+  if (window !== 'study-window') {
+    encodedWindow = Array.from(window, Math.fround);
+    validateRequirement(
+      id,
+      encodedWindow.length === 4,
+      `window must contain four endpoints; received ${Array.from(window)}`
+    );
+    for (const [axis, low, high] of [
+      ['x', 0, 2],
+      ['y', 1, 3]
+    ] as const) {
+      validateRequirement(
+        id,
+        Number.isFinite(encodedWindow[low]) &&
+          Number.isFinite(encodedWindow[high]) &&
+          encodedWindow[low] < encodedWindow[high],
+        `window ${axis} endpoints ${window[low]}, ${window[high]} encoded as ${encodedWindow[low]}, ${encodedWindow[high]} must be finite and strictly ordered; subtract a common origin from positions, grid, index bounds and window before float32 conversion`
+      );
+    }
   }
+  // Publish only after validating every encoded word; target tails remain untouched.
   target.set(corners, 0);
-  target[4] = settings.bandwidth;
-  if (window === 'study-window') {
-    target.fill(Number.NaN, 5, 9);
-  } else {
-    target.set(window, 5);
-  }
+  target[4] = bandwidth;
+  if (encodedWindow) target.set(encodedWindow, 5);
+  else target.fill(Number.NaN, 5, 9);
   return target;
 }
 
@@ -210,9 +266,10 @@ export type GPUKernelDensityOutput = {
    * `y * grid.width + x` in the grid's row order (row 0 is the grid's first row: the top row of a
    * north-up grid, `minY` when rows advance north). Units: `'intensity'` is the sum of weights per unit area, position units to the
    * power -2 (points per square meter for a meter frame); `'probability'` is the same divided by
-   * the sum of included weights, a probability density that integrates to about one over the
-   * window. NaN where the cell center is outside the edge-correction window, the grid or
-   * bandwidth is invalid, or (probability) no weight is included.
+   * the sum of included weights, yielding a density in position units to the power -2. With uniform edge correction its integral
+   * depends on event locations; use diggle correction for mass conservation, allowing for truncation and raster quadrature. NaN where the cell center is outside the edge-correction window, the grid or
+   * bandwidth is invalid, or (probability) no weight is included. Rows beyond grid.width * grid.height
+   * are unspecified; outputBand exposes only the grid-sized prefix.
    */
   values: GraphDataView<'float32'>;
   /**
@@ -227,6 +284,8 @@ export type GPUKernelDensityOutput = {
    * effective sample size of one or less, or zero spread, in which case every cell is NaN).
    */
   bandwidth?: GraphDataView<'float32'>;
+  /** Optional one-row uint32 live row count of bandwidthPopulation, including zero weights. Requires bandwidthRule. */
+  bandwidthPopulationCount?: GraphDataView<'uint32'>;
   /** Optional diagnostic scalars. */
   status?: {
     /**
@@ -242,6 +301,11 @@ export type GPUKernelDensityOutput = {
      * back to the exact gather instead.
      */
     insufficientPadding?: GraphDataView<'uint32'>;
+    /** Optional one-row uint32 for binned/auto: 1 when the binned route runs with effective
+     * bandwidth below 3 cells on either axis, outside its stated error bound; 0 otherwise.
+     * Recomputed on every encoding, including GPU-selected bandwidths.
+     */
+    bandwidthBelowThreeCells?: GraphDataView<'uint32'>;
   };
 };
 
@@ -310,17 +374,19 @@ export type GPUKernelDensityProps<
    * Computes the bandwidth on the GPU every encoding instead of reading `parameters` slot 4, so
    * no read-back is needed. `'scott'` and `'silverman'` are the normal-reference rules of
    * `scipy.stats.gaussian_kde`; in two dimensions both give the factor `n_eff^(-1/6)` and so the
-   * same value: `h = n_eff^(-1/6) * sqrt((varianceX + varianceY) / 2)`, with the unbiased weighted
+   * same Gaussian-scale value: `h = n_eff^(-1/6) * sqrt((varianceX + varianceY) / 2)`, with the unbiased weighted
    * covariance (`numpy.cov(aweights = w)`) and `n_eff = (sum w)^2 / sum w^2`. Rows with a
    * non-finite position, or a non-finite or negative weight, are skipped (the index domain and
-   * the study window are not applied). A normal-reference rule oversmooths clustered data. For
+   * the study window are not applied by the default 'all-finite' population). A normal-reference rule oversmooths clustered data. For
    * the compact `'quartic'` and `'epanechnikov'` kernels the Gaussian-scale value is multiplied by
    * their canonical-bandwidth ratio (`getGPUKernelDensityCanonicalBandwidthScale`) so that the
-   * support radius smooths as much as the Gaussian rule. The
-   * moments use deterministic fixed-point totals in two centered passes, relative to the grid start corner.
+   * support radius smooths as much as the Gaussian rule (ratios 2.40187391 and 2.77919324). The
+   * moments use deterministic fixed-point totals in two centered passes, relative to a shared eligible-data minimum on each axis.
    * Topology: changing it needs a new graph.
    */
   bandwidthRule?: GPUKernelDensityBandwidthRule;
+  /** Population for automatic bandwidth: all-finite (default) retains legacy behavior; included uses the index domain and active edge window. */
+  bandwidthPopulation?: GPUKernelDensityBandwidthPopulation;
   /**
    * Kernel, `K_h(d) = K(d / h) / h^2`, normalised to integrate to one. Defaults to `'gaussian'`.
    * `'bisquare'` is an alias of `'quartic'` (the name neighbor search uses for the same shape).
@@ -331,7 +397,7 @@ export type GPUKernelDensityProps<
    * that falls outside the data region and underestimates the intensity.
    * - `'uniform'` (default): divide each cell by `e(u)`, the kernel mass inside the window
    *   (Diggle 1985; spatstat `density.ppp(edge = TRUE, diggle = FALSE)`). Unbiased in expectation
-   *   for a locally uniform intensity, deterministic, and cheap. It is the default because the
+   *   for a locally uniform intensity, deterministic, and cheap. Its window integral depends on event locations. It is the default because the
    *   uncorrected estimate is systematically low within one bandwidth of the window edge.
    * - `'diggle'`: weight each point by `1 / e(x_i)` (Diggle 1985; Jones 1993, `diggle = TRUE`):
    *   preserves the point total better but is noisier near the edge.
@@ -392,6 +458,22 @@ export type GPUKernelDensityProps<
   output: GPUKernelDensityOutput;
 };
 
+/** Numeric shape for route planning; bandwidth and cell size describe one encoded frame. */
+export type GPUKernelDensityExecutionShape = {
+  pointCount: number;
+  gridSize: readonly [number, number];
+  indexGridSize: readonly [number, number];
+  positionChunkLengths?: readonly number[];
+  weightChunkLengths?: readonly number[];
+  method?: GPUKernelDensityMethod;
+  kernel?: GPUKernelDensityKernelName;
+  binnedPadding?: number;
+  bandwidthRule?: GPUKernelDensityBandwidthRule;
+  bandwidthPopulationCount?: boolean;
+  bandwidth?: number;
+  cellSize?: readonly [number, number];
+};
+
 /**
  * Planar kernel density estimate on a raster, with the bandwidth in ground units.
  *
@@ -422,7 +504,9 @@ export type GPUKernelDensityProps<
  * Large bandwidths: the gather costs `(5 h / cell)^2` cells per point, which explodes when the
  * bandwidth spans many cells. `method: 'binned'` (or `'auto'`) replaces it with linear binning and
  * a separable almost-gaussian blur whose cost does not depend on the bandwidth, at the documented
- * error (see {@link GPUKernelDensityProps.method}). The binned route accepts chunked positions
+ * error (see {@link GPUKernelDensityProps.method}). The binned error bound requires the frame's
+ * effective bandwidth to be at least 3 cells on both axes; optional
+ * `output.status.bandwidthBelowThreeCells` reports a binned frame outside this condition. The binned route accepts chunked positions
  * and aligned weights, dispatching each chunk into the same fixed-point grid. Its global scale
  * and total row count make the cell accumulator bit-identical to packed input. The exact and
  * auto routes require packed inputs for indexed random access. Edge correction, normalization and the NaN
@@ -432,6 +516,10 @@ export type GPUKernelDensityProps<
  * fixed-point accumulation and can differ in the last float32 bits. Totals may exceed one
  * binding; individual input/scratch chunks and the packed grid scratch are checked against
  * the device storage-binding limit before any nodes are created.
+ * Total input rows are limited to 4,294,967,295 on every route. Binned and Gaussian auto
+ * declarations limit the entire padded grid to 11,184,810 cells (three words per cell in
+ * 128 MiB), and the actual scratch must also fit the device's binding and buffer limits.
+ * The binned route's estimated command-node budget is 32,768 across all input chunks.
  *
  * Bandwidth: choose it in ground units for the question being asked, or set `bandwidthRule` to
  * have the GPU compute Scott's/Silverman's rule of thumb from the points with no read-back.
@@ -452,6 +540,280 @@ export class GPUKernelDensity<
   Weights extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
 > implements GPUCommandNodeProducer
 {
+  /** Source-backed numeric limits; the planner resolves device-dependent byte constraints. */
+  static readonly limits: readonly GPUAnalysisRoute[] = Object.freeze([
+    {
+      name: 'point-count',
+      kind: 'hard-limit',
+      quantity: 'pointCount',
+      unit: 'rows',
+      appliesWhen: 'all routes',
+      minimum: 1,
+      maximum: GPU_KERNEL_DENSITY_MAXIMUM_POINT_COUNT,
+      scope: 'domain',
+      accuracyImplications: '',
+      source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+    },
+    {
+      name: 'auto-support',
+      kind: 'auto-crossover',
+      quantity: '5 * bandwidth / minimum cell width',
+      unit: 'elements',
+      appliesWhen: 'Gaussian auto route with sufficient padding',
+      maximum: 32,
+      scope: 'output',
+      alternative: 'binned',
+      accuracyImplications:
+        'Binned Gaussian approximation; see getGPUKernelDensityBinnedErrorBound.',
+      source: 'modules/analysis/src/gpu-spatial-analysis/point-density/kernel-density-binned.ts'
+    },
+    {
+      name: 'binned-cells',
+      kind: 'hard-limit',
+      quantity: 'padded grid cells',
+      unit: 'elements',
+      appliesWhen: 'binned or Gaussian auto',
+      maximum: GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT,
+      scope: 'binding',
+      alternative: 'exact',
+      accuracyImplications: 'Exact gathers truncate Gaussian support at five bandwidths.',
+      source: 'modules/analysis/src/gpu-spatial-analysis/point-density/kernel-density-binned.ts'
+    }
+  ]);
+
+  /** Inspect a numeric shape without declaring GPU work. Missing per-frame bandwidth keeps the route 'auto'. */
+  static getExecutionPlan(
+    shape: GPUKernelDensityExecutionShape,
+    deviceLimits: GPUDensityDeviceLimits
+  ): GPUDensityExecutionPlan {
+    const id = 'GPUKernelDensity.getExecutionPlan';
+    for (const [name, value] of [
+      ['pointCount', shape.pointCount],
+      ['gridSize[0]', shape.gridSize[0]],
+      ['gridSize[1]', shape.gridSize[1]],
+      ['indexGridSize[0]', shape.indexGridSize[0]],
+      ['indexGridSize[1]', shape.indexGridSize[1]]
+    ] as const)
+      validateCapacity(id, name, value, 1, Number.MAX_SAFE_INTEGER);
+    if (shape.binnedPadding !== undefined)
+      validateCapacity(id, 'binnedPadding', shape.binnedPadding, 0, Number.MAX_SAFE_INTEGER);
+    const kernel = resolveKernelShapeName(
+      'GPUKernelDensity.getExecutionPlan',
+      shape.kernel ?? 'gaussian',
+      ['gaussian', 'quartic', 'epanechnikov']
+    );
+    const method = shape.method ?? 'exact';
+    validateRequirement(
+      'GPUKernelDensity.getExecutionPlan',
+      ['exact', 'binned', 'auto'].includes(method),
+      `method received ${method}; expected exact, binned, or auto`
+    );
+    const declared = method === 'auto' && kernel !== 'gaussian' ? 'exact' : method;
+    const [width, height] = shape.gridSize;
+    const padding = shape.binnedPadding ?? getGPUKernelDensityDefaultBinnedPadding(width, height);
+    const {paddedWidth, paddedHeight, margin} = getGPUKernelDensityBinnedSize(
+      width,
+      height,
+      padding
+    );
+    const byteLimit = Math.min(
+      deviceLimits.maxBufferSize,
+      deviceLimits.maxStorageBufferBindingSize
+    );
+    let route: string = declared;
+    const frame = getDensityFrameRoute(shape.bandwidth ?? 1, shape.cellSize ?? [1, 1], margin);
+    if (declared === 'auto' && shape.bandwidth !== undefined && shape.cellSize)
+      route = frame.useBinned ? 'binned' : 'exact';
+    const chunks = shape.positionChunkLengths ?? [shape.pointCount];
+    const weights = shape.weightChunkLengths ?? [];
+    const indexCells = shape.indexGridSize[0] * shape.indexGridSize[1];
+    const limits: GPUAnalysisRoute[] = [
+      this.limits[0],
+      {
+        ...this.limits[2],
+        maximum:
+          declared !== 'exact'
+            ? GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT
+            : Number.MAX_SAFE_INTEGER
+      },
+      {
+        name: 'grid-scratch',
+        kind: 'allocation',
+        quantity: 'grid scratch',
+        unit: 'bytes',
+        appliesWhen: 'all routes',
+        maximum: byteLimit,
+        byteExpression: 'width * height * 4',
+        scope: 'binding',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      {
+        name: 'binned-scratch',
+        kind: 'allocation',
+        quantity: 'fixed-point grid scratch',
+        unit: 'bytes',
+        appliesWhen: 'binned and auto declarations',
+        maximum: byteLimit,
+        byteExpression: 'paddedCells * 12',
+        scope: 'binding',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      {
+        name: 'index-cells',
+        kind: 'hard-limit',
+        quantity: 'index cells',
+        unit: 'elements',
+        appliesWhen: 'all routes',
+        maximum: getGPUGridIndexMaximumCellCount({limits: deviceLimits} as Parameters<
+          typeof getGPUGridIndexMaximumCellCount
+        >[0]),
+        scope: 'binding',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      {
+        name: 'command-budget',
+        kind: 'hard-limit',
+        quantity: 'estimated command count',
+        unit: 'commands',
+        appliesWhen: 'binned declaration',
+        maximum: 32768,
+        scope: 'domain',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      ...chunks.map(
+        (_, index): GPUAnalysisRoute => ({
+          name: `positions-${index}`,
+          kind: 'allocation',
+          quantity: 'position chunk',
+          unit: 'bytes',
+          appliesWhen: 'all routes',
+          maximum: byteLimit,
+          byteExpression: 'chunkRows * 8',
+          scope: 'chunk',
+          accuracyImplications: '',
+          source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+        })
+      ),
+      ...weights.map(
+        (_, index): GPUAnalysisRoute => ({
+          name: `weights-${index}`,
+          kind: 'allocation',
+          quantity: 'weight chunk',
+          unit: 'bytes',
+          appliesWhen: 'weighted routes',
+          maximum: byteLimit,
+          byteExpression: 'chunkRows * 4',
+          scope: 'chunk',
+          accuracyImplications: '',
+          source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+        })
+      ),
+      {
+        name: 'packed-exact',
+        kind: 'hard-limit',
+        quantity: 'position chunk count',
+        unit: 'elements',
+        appliesWhen: 'exact and auto declarations',
+        maximum: declared === 'binned' ? Number.MAX_SAFE_INTEGER : 1,
+        scope: 'domain',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      {
+        name: 'chunk-row-counts',
+        kind: 'hard-limit',
+        quantity: 'invalid chunk row counts',
+        unit: 'elements',
+        appliesWhen: 'all routes',
+        maximum: 0,
+        scope: 'domain',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      {
+        name: 'weight-topology',
+        kind: 'hard-limit',
+        quantity: 'weight topology mismatch',
+        unit: 'elements',
+        appliesWhen: 'weights supplied',
+        maximum: 0,
+        scope: 'domain',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      {
+        name: 'frame-validity',
+        kind: 'hard-limit',
+        quantity: 'invalid encoded frame',
+        unit: 'elements',
+        appliesWhen: 'frame controls supplied',
+        maximum: 0,
+        scope: 'output',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      },
+      {
+        name: 'gaussian-binning',
+        kind: 'hard-limit',
+        quantity: 'unsupported kernel',
+        unit: 'elements',
+        appliesWhen: 'forced binned',
+        maximum: 0,
+        scope: 'domain',
+        accuracyImplications: '',
+        source: 'modules/analysis/src/gpu-spatial-analysis/point-density/gpu-kernel-density.ts'
+      }
+    ];
+    return makeDensityExecutionPlan(
+      route,
+      limits,
+      [
+        shape.pointCount,
+        paddedWidth * paddedHeight,
+        width * height * 4,
+        declared === 'exact' ? 0 : paddedWidth * paddedHeight * 12,
+        indexCells,
+        declared === 'binned'
+          ? KERNEL_DENSITY_BINNED_COMMAND_NODE_ALLOWANCE +
+            getKernelDensityChunkCommandAllowance(
+              shape.bandwidthRule,
+              Boolean(shape.bandwidthPopulationCount)
+            ) *
+              chunks.length
+          : 0,
+        ...chunks.map(length => length * 8),
+        ...weights.map(length => length * 4),
+        chunks.length,
+        hasDensityShapeRows(shape.pointCount, chunks) &&
+        (shape.weightChunkLengths === undefined || hasDensityShapeRows(shape.pointCount, weights))
+          ? 0
+          : 1,
+        shape.weightChunkLengths !== undefined &&
+        ((declared !== 'binned' && weights.length !== 1) ||
+          weights.length !== chunks.length ||
+          weights.some((length, index) => length !== chunks[index]))
+          ? 1
+          : 0,
+        shape.bandwidth !== undefined && shape.cellSize && !frame.valid ? 1 : 0,
+        method === 'binned' && kernel !== 'gaussian' ? 1 : 0
+      ],
+      [
+        route === 'binned'
+          ? 'Approximate Gaussian convolution; error bound requires bandwidth at least three cells and 2.5 bandwidths of padding.'
+          : route === 'auto'
+            ? 'Frame-dependent exact or approximate Gaussian route.'
+            : 'Exact support gather; Gaussian truncation loses less than 4e-6 mass.'
+      ]
+    );
+  }
+
+  /** Grid-sized view for classification and color scaling; preserves the allocation byte offset. */
+  readonly outputBand: GPURasterBufferBand<'float32'>;
+
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -477,6 +839,30 @@ export class GPUKernelDensity<
   readonly cellCount: number;
 
   constructor(props: GPUKernelDensityProps<Positions, Weights>) {
+    props = snapshotDensityConstructionProps(
+      props,
+      [
+        'bandwidthRule',
+        'bandwidthPopulation',
+        'binnedPadding',
+        'edgeCorrection',
+        'grid',
+        'id',
+        'indexBounds',
+        'indexGridSize',
+        'kernel',
+        'method',
+        'normalization',
+        'output',
+        'parameters',
+        'positions',
+        'spatialContext',
+        'studyWindow',
+        'weights'
+      ],
+      ['values', 'weightSum', 'bandwidth', 'bandwidthPopulationCount', 'status'],
+      ['invalidCount', 'insufficientPadding', 'bandwidthBelowThreeCells']
+    );
     this.id = props.id ?? 'kernel-density';
     this.props = props;
     const {id} = this;
@@ -486,37 +872,52 @@ export class GPUKernelDensity<
       SPATIAL_CONTEXT_SUPPORT
     );
     this.studyWindow = resolveGPUStudyWindow(id, props.studyWindow, this.spatialContext);
-    this.kernel = props.kernel === 'bisquare' ? 'quartic' : (props.kernel ?? 'gaussian');
+    this.kernel = resolveKernelShapeName(id, props.kernel ?? 'gaussian', [
+      'gaussian',
+      'quartic',
+      'epanechnikov'
+    ]);
     this.edgeCorrection = props.edgeCorrection ?? 'uniform';
-    if (this.studyWindow !== 'rectangle' && this.edgeCorrection === 'none') {
-      throw new Error(
-        `${id} studyWindow is ignored without edge correction; set edgeCorrection to 'uniform' or 'diggle'`
-      );
-    }
+    validateRequirement(
+      id,
+      !(this.studyWindow !== 'rectangle' && this.edgeCorrection === 'none'),
+      `studyWindow is ignored without edge correction; set edgeCorrection to 'uniform' or 'diggle'`
+    );
     this.normalization = props.normalization ?? 'intensity';
     this.binnedPadding =
       props.binnedPadding ??
       getGPUKernelDensityDefaultBinnedPadding(props.grid.width, props.grid.height);
     const requestedMethod = props.method ?? 'exact';
-    if (!['gaussian', 'quartic', 'epanechnikov'].includes(this.kernel)) {
-      throw new Error(`${id} kernel must be gaussian, quartic (alias bisquare), or epanechnikov`);
-    }
-    if (!['none', 'uniform', 'diggle'].includes(this.edgeCorrection)) {
-      throw new Error(`${id} edgeCorrection must be none, uniform, or diggle`);
-    }
-    if (!['intensity', 'probability'].includes(this.normalization)) {
-      throw new Error(`${id} normalization must be intensity or probability`);
-    }
-    if (!['exact', 'binned', 'auto'].includes(requestedMethod)) {
-      throw new Error(`${id} method must be exact, binned, or auto`);
-    }
-    if (requestedMethod === 'binned' && this.kernel !== 'gaussian') {
-      // The filter cascade approximates a gaussian, so it cannot stand in for the other kernels.
-      throw new Error(`${id} method binned needs the gaussian kernel`);
-    }
-    if (!Number.isSafeInteger(this.binnedPadding) || this.binnedPadding < 0) {
-      throw new Error(`${id} binnedPadding must be a nonnegative integer`);
-    }
+    validateRequirement(
+      id,
+      ['gaussian', 'quartic', 'epanechnikov'].includes(this.kernel),
+      `kernel must be gaussian, quartic (alias bisquare), or epanechnikov`
+    );
+    validateRequirement(
+      id,
+      ['none', 'uniform', 'diggle'].includes(this.edgeCorrection),
+      `edgeCorrection must be none, uniform, or diggle`
+    );
+    validateRequirement(
+      id,
+      ['intensity', 'probability'].includes(this.normalization),
+      `normalization must be intensity or probability`
+    );
+    validateRequirement(
+      id,
+      ['exact', 'binned', 'auto'].includes(requestedMethod),
+      `method must be exact, binned, or auto`
+    );
+    validateRequirement(
+      id,
+      !(requestedMethod === 'binned' && this.kernel !== 'gaussian'),
+      `method binned needs the gaussian kernel`
+    );
+    validateRequirement(
+      id,
+      !(!Number.isSafeInteger(this.binnedPadding) || this.binnedPadding < 0),
+      `binnedPadding must be a nonnegative integer`
+    );
     this.method =
       requestedMethod === 'auto' && this.kernel !== 'gaussian' ? 'exact' : requestedMethod;
     validateMaximumCount(
@@ -528,35 +929,55 @@ export class GPUKernelDensity<
     this.estimatedCommandNodeCount =
       this.method === 'binned'
         ? KERNEL_DENSITY_BINNED_COMMAND_NODE_ALLOWANCE +
-          KERNEL_DENSITY_CHUNK_COMMAND_NODE_ALLOWANCE * getGraphViewChunks(props.positions).length
+          getKernelDensityChunkCommandAllowance(
+            props.bandwidthRule,
+            Boolean(props.output.bandwidthPopulationCount)
+          ) *
+            getGraphViewChunks(props.positions).length
         : undefined;
     if (this.estimatedCommandNodeCount !== undefined) {
       validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     }
-    if (
-      props.bandwidthRule !== undefined &&
-      !['scott', 'silverman'].includes(props.bandwidthRule)
-    ) {
-      throw new Error(`${id} bandwidthRule must be scott or silverman`);
-    }
-    if (props.output.bandwidth && !props.bandwidthRule) {
-      throw new Error(`${id} output.bandwidth needs bandwidthRule`);
+    validateKernelDensityBandwidthRule(id, props.bandwidthRule, props.output.bandwidth);
+    validateRequirement(
+      id,
+      ['all-finite', 'included'].includes(props.bandwidthPopulation ?? 'all-finite'),
+      `bandwidthPopulation received ${props.bandwidthPopulation}; expected all-finite or included`
+    );
+    if (props.output.bandwidthPopulationCount) {
+      validateRequirement(
+        id,
+        Boolean(props.bandwidthRule),
+        'output.bandwidthPopulationCount needs bandwidthRule'
+      );
+      validateSinglePackedView(
+        props.output.bandwidthPopulationCount,
+        ['uint32'],
+        `${id} output.bandwidthPopulationCount`
+      );
+      validateRequirement(
+        id,
+        props.output.bandwidthPopulationCount.length === 1,
+        `output.bandwidthPopulationCount must contain exactly one uint32 row; received ${props.output.bandwidthPopulationCount.length}`
+      );
     }
     this.cellCount = validateRasterGrid(id, props.grid);
-    if (props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0) {
-      throw new Error(`${id} needs an axis-aligned grid`);
-    }
+    validateRequirement(
+      id,
+      !(props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0),
+      `needs an axis-aligned grid`
+    );
     if (this.method !== 'exact') {
       const {paddedWidth, paddedHeight} = getGPUKernelDensityBinnedSize(
         props.grid.width,
         props.grid.height,
         this.binnedPadding
       );
-      if (paddedWidth * paddedHeight > GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT) {
-        throw new Error(
-          `${id} binned grid of ${paddedWidth} by ${paddedHeight} cells is too large`
-        );
-      }
+      validateRequirement(
+        id,
+        !(paddedWidth * paddedHeight > GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT),
+        `binned grid cell count ${paddedWidth * paddedHeight} must be <= ${GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT}`
+      );
     }
     for (const [name, size] of [
       ['indexGridSize[0]', props.indexGridSize[0]],
@@ -568,14 +989,16 @@ export class GPUKernelDensity<
       validateFiniteNumber(id, `indexBounds[${index}]`, bound);
     }
     const [minX, minY, maxX, maxY] = props.indexBounds;
-    if (
-      props.indexBounds.length !== 4 ||
-      !props.indexBounds.every(Number.isFinite) ||
-      minX > maxX ||
-      minY > maxY
-    ) {
-      throw new Error(`${id} indexBounds must be finite and ordered`);
-    }
+    validateRequirement(
+      id,
+      !(
+        props.indexBounds.length !== 4 ||
+        !props.indexBounds.every(Number.isFinite) ||
+        minX > maxX ||
+        minY > maxY
+      ),
+      `indexBounds must be finite and ordered`
+    );
     for (const chunk of getGraphViewChunks(props.positions)) {
       validateSinglePackedView(chunk, ['float32x2'], `${id} positions`);
     }
@@ -585,33 +1008,38 @@ export class GPUKernelDensity<
         validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
       }
     }
-    if (props.positions.length < 1) {
-      throw new Error(`${id} needs at least one point`);
-    }
+    validateRequirement(id, !(props.positions.length < 1), `needs at least one point`);
     if (props.weights) {
       for (const chunk of getGraphViewChunks(props.weights)) {
         validateSinglePackedView(chunk, ['float32'], `${id} weights`);
       }
-      if (props.weights.length !== props.positions.length) {
-        throw new Error(`${id} weights length must equal positions length`);
-      }
+      validateRequirement(
+        id,
+        !(props.weights.length !== props.positions.length),
+        `weights length must equal positions length`
+      );
       validateGraphViewTopology(id, 'weights', props.positions, props.weights);
     }
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    if (props.parameters.length < GPU_KERNEL_DENSITY_PARAMETER_LENGTH) {
-      throw new Error(
-        `${id} parameters must hold ${GPU_KERNEL_DENSITY_PARAMETER_LENGTH} float32 values`
-      );
-    }
+    validateRequirement(
+      id,
+      !(props.parameters.length < GPU_KERNEL_DENSITY_PARAMETER_LENGTH),
+      `parameters must hold ${GPU_KERNEL_DENSITY_PARAMETER_LENGTH} float32 values`
+    );
     validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
-    if (props.output.values.length < this.cellCount) {
-      throw new Error(`${id} output.values must hold grid.width * grid.height rows`);
-    }
+    validateRequirement(
+      id,
+      !(props.output.values.length < this.cellCount),
+      `output.values must hold grid.width * grid.height rows`
+    );
+    this.outputBand = makeGPURasterBand(props.output.values, props.grid, {id: `${id}-output`});
     if (props.output.weightSum) {
       validateSinglePackedView(props.output.weightSum, ['float32'], `${id} output.weightSum`);
-      if (props.output.weightSum.length !== 1) {
-        throw new Error(`${id} output.weightSum must contain exactly one float32 row`);
-      }
+      validateRequirement(
+        id,
+        !(props.output.weightSum.length !== 1),
+        `output.weightSum must contain exactly one float32 row`
+      );
     }
     if (props.output.status?.invalidCount) {
       validateSinglePackedView(
@@ -619,36 +1047,53 @@ export class GPUKernelDensity<
         ['uint32'],
         `${id} output.status.invalidCount`
       );
-      if (props.output.status.invalidCount.length !== 1) {
-        throw new Error(`${id} output.status.invalidCount must contain exactly one uint32 row`);
-      }
+      validateRequirement(
+        id,
+        !(props.output.status.invalidCount.length !== 1),
+        `output.status.invalidCount must contain exactly one uint32 row`
+      );
     }
     if (props.output.status?.insufficientPadding) {
-      if (this.method === 'exact') {
-        throw new Error(`${id} output.status.insufficientPadding needs method binned or auto`);
-      }
+      validateRequirement(
+        id,
+        !(this.method === 'exact'),
+        `output.status.insufficientPadding needs method binned or auto`
+      );
       validateSinglePackedView(
         props.output.status.insufficientPadding,
         ['uint32'],
         `${id} output.status.insufficientPadding`
       );
-      if (props.output.status.insufficientPadding.length !== 1) {
-        throw new Error(
-          `${id} output.status.insufficientPadding must contain exactly one uint32 row`
-        );
-      }
+      validateRequirement(
+        id,
+        !(props.output.status.insufficientPadding.length !== 1),
+        `output.status.insufficientPadding must contain exactly one uint32 row`
+      );
     }
-    if (props.output.bandwidth) {
-      validateSinglePackedView(props.output.bandwidth, ['float32'], `${id} output.bandwidth`);
-      if (props.output.bandwidth.length !== 1) {
-        throw new Error(`${id} output.bandwidth must contain exactly one float32 row`);
-      }
+    if (props.output.status?.bandwidthBelowThreeCells) {
+      validateRequirement(
+        id,
+        !(this.method === 'exact' && props.method !== 'auto'),
+        `output.status.bandwidthBelowThreeCells needs method binned or auto`
+      );
+      validateSinglePackedView(
+        props.output.status.bandwidthBelowThreeCells,
+        ['uint32'],
+        `${id} output.status.bandwidthBelowThreeCells`
+      );
+      validateRequirement(
+        id,
+        !(props.output.status.bandwidthBelowThreeCells.length !== 1),
+        `output.status.bandwidthBelowThreeCells must contain exactly one uint32 row`
+      );
     }
     validateDensityWritableViews(id, {
       'output.values': props.output.values,
       'output.weightSum': props.output.weightSum,
       'output.status.invalidCount': props.output.status?.invalidCount,
       'output.status.insufficientPadding': props.output.status?.insufficientPadding,
+      'output.status.bandwidthBelowThreeCells': props.output.status?.bandwidthBelowThreeCells,
+      'output.bandwidthPopulationCount': props.output.bandwidthPopulationCount,
       'output.bandwidth': props.output.bandwidth
     });
     validateGraphOutputsDisjointFromInputs(
@@ -658,220 +1103,12 @@ export class GPUKernelDensity<
         props.output.weightSum,
         props.output.status?.invalidCount,
         props.output.status?.insufficientPadding,
-        props.output.bandwidth
+        props.output.status?.bandwidthBelowThreeCells,
+        props.output.bandwidth,
+        props.output.bandwidthPopulationCount
       ],
       [props.positions, props.weights, props.parameters]
     );
-  }
-
-  /**
-   * Two-stage moments for {@link GPUKernelDensityProps.bandwidthRule}: per-row terms,
-   * deterministic fixed-point totals (one accumulator across all chunks; workgroup-local
-   * pre-aggregation), the weighted mean, centered second moments, and a one-invocation finalize that
-   * writes the bandwidth. Positions are taken relative to the grid start corner.
-   */
-  private getBandwidthRuleNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>,
-    bandwidthState: GraphDataView<'float32'>
-  ): GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
-    const splitPointScratch = needsDensitySplitScratch(graph, props.positions.length);
-    const terms = ['weight', 'weight-square', 'x', 'y'].map(name =>
-      createDensityScalarScratch(
-        graph,
-        `${id}-bandwidth-term-${name}`,
-        props.positions,
-        'float32',
-        !splitPointScratch
-      )
-    );
-    const [termWeight, termWeightSquare, termX, termY] = terms;
-    const termChunks = terms.map(term => getGraphViewChunks(term));
-    const sums = ['weight', 'weight-square', 'x', 'y', 'spread-x', 'spread-y'].map(name =>
-      createTransientView(graph, `${id}-bandwidth-sum-${name}`, 'float32', 1)
-    );
-    const [sumWeight, sumWeightSquare, sumX, sumY, sumSpreadX, sumSpreadY] = sums;
-    const means = createTransientView(graph, `${id}-bandwidth-means`, 'float32', 2);
-    const positionChunks = getGraphViewChunks(props.positions);
-    const weightChunks = props.weights ? getGraphViewChunks(props.weights) : undefined;
-    const inputBindings = (chunkIndex: number): WGSLKernelBinding[] => [
-      {name: 'positions', view: positionChunks[chunkIndex], type: 'f32', access: 'read'},
-      ...(weightChunks
-        ? [
-            {
-              name: 'inputWeights',
-              view: weightChunks[chunkIndex],
-              type: 'f32',
-              access: 'read'
-            } as const
-          ]
-        : []),
-      {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
-    ];
-    let rowStart = 0;
-    // Rows with a non-finite position or a non-finite or negative weight contribute nothing.
-    const rowPrelude = `let origin = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
-  let position = vec2f(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
-  let rawWeight = ${props.weights ? 'inputWeights[inputWeightsOffset + index]' : '1.0'};
-  let included = isFiniteValue(position.x) && isFiniteValue(position.y) &&
-    isFiniteValue(rawWeight) && rawWeight >= 0.0;
-  let weight = select(0.0, rawWeight, included);
-  let relative = select(vec2f(0.0), position - origin, included);`;
-    const variantSuffix = props.weights ? 'weighted' : 'unweighted';
-    const nodes: GPUCommandNode<Parameters>[] = [
-      ...positionChunks.flatMap((chunk, chunkIndex) => {
-        const start = rowStart;
-        rowStart += chunk.length;
-        return chunk.length === 0
-          ? []
-          : [
-              createDensityPointPass<Parameters>(graph, {
-                id: `${id}-bandwidth-terms${positionChunks.length === 1 ? '' : `-${chunkIndex}`}`,
-                operation: OPERATION,
-                variant: `bandwidth-terms-${variantSuffix}`,
-                bindings: [
-                  ...inputBindings(chunkIndex),
-                  {
-                    name: 'termWeight',
-                    view: termChunks[0][splitPointScratch ? chunkIndex : 0],
-                    type: 'f32',
-                    access: 'read_write'
-                  },
-                  {
-                    name: 'termWeightSquare',
-                    view: termChunks[1][splitPointScratch ? chunkIndex : 0],
-                    type: 'f32',
-                    access: 'read_write'
-                  },
-                  {
-                    name: 'termX',
-                    view: termChunks[2][splitPointScratch ? chunkIndex : 0],
-                    type: 'f32',
-                    access: 'read_write'
-                  },
-                  {
-                    name: 'termY',
-                    view: termChunks[3][splitPointScratch ? chunkIndex : 0],
-                    type: 'f32',
-                    access: 'read_write'
-                  }
-                ],
-                invocationCount: chunk.length,
-                runtimeConstants: {ROW_START: splitPointScratch ? 0 : start},
-                declarations: IS_FINITE_VALUE_WGSL,
-                body: `${rowPrelude}
-  termWeight[termWeightOffset + ROW_START + index] = weight;
-  termWeightSquare[termWeightSquareOffset + ROW_START + index] = weight * weight;
-  termX[termXOffset + ROW_START + index] = weight * relative.x;
-  termY[termYOffset + ROW_START + index] = weight * relative.y;`
-              })
-            ];
-      })
-    ];
-    for (const [name, input, output] of [
-      ['weight', termWeight, sumWeight],
-      ['weight-square', termWeightSquare, sumWeightSquare],
-      ['x', termX, sumX],
-      ['y', termY, sumY]
-    ] as const) {
-      nodes.push(
-        ...createDensityWeightSumNodes(graph, `${id}-bandwidth-sum-${name}`, input, output)
-      );
-    }
-    rowStart = 0;
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-bandwidth-means`,
-        operation: OPERATION,
-        variant: 'bandwidth-means',
-        bindings: [
-          {name: 'sumWeight', view: sumWeight, type: 'f32', access: 'read'},
-          {name: 'sumX', view: sumX, type: 'f32', access: 'read'},
-          {name: 'sumY', view: sumY, type: 'f32', access: 'read'},
-          {name: 'means', view: means, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        body: `let total = sumWeight[sumWeightOffset];
-  let valid = total > 0.0;
-  means[meansOffset] = select(0.0, sumX[sumXOffset] / total, valid);
-  means[meansOffset + 1u] = select(0.0, sumY[sumYOffset] / total, valid);`
-      }),
-      // Second pass: centered terms overwrite the first-pass x and y term buffers, which the
-      // reductions above have already consumed (nodes execute in order).
-      ...positionChunks.flatMap((chunk, chunkIndex) => {
-        const start = rowStart;
-        rowStart += chunk.length;
-        return chunk.length === 0
-          ? []
-          : [
-              createDensityPointPass<Parameters>(graph, {
-                id: `${id}-bandwidth-spread${positionChunks.length === 1 ? '' : `-${chunkIndex}`}`,
-                operation: OPERATION,
-                variant: `bandwidth-spread-${variantSuffix}`,
-                bindings: [
-                  ...inputBindings(chunkIndex),
-                  {name: 'means', view: means, type: 'f32', access: 'read'},
-                  {
-                    name: 'termX',
-                    view: termChunks[2][splitPointScratch ? chunkIndex : 0],
-                    type: 'f32',
-                    access: 'read_write'
-                  },
-                  {
-                    name: 'termY',
-                    view: termChunks[3][splitPointScratch ? chunkIndex : 0],
-                    type: 'f32',
-                    access: 'read_write'
-                  }
-                ],
-                invocationCount: chunk.length,
-                runtimeConstants: {ROW_START: splitPointScratch ? 0 : start},
-                declarations: IS_FINITE_VALUE_WGSL,
-                body: `${rowPrelude}
-  let centered = relative - vec2f(means[meansOffset], means[meansOffset + 1u]);
-  termX[termXOffset + ROW_START + index] = select(0.0, weight * centered.x * centered.x, included);
-  termY[termYOffset + ROW_START + index] = select(0.0, weight * centered.y * centered.y, included);`
-              })
-            ];
-      })
-    );
-    for (const [name, input, output] of [
-      ['spread-x', termX, sumSpreadX],
-      ['spread-y', termY, sumSpreadY]
-    ] as const) {
-      nodes.push(
-        ...createDensityWeightSumNodes(graph, `${id}-bandwidth-sum-${name}`, input, output)
-      );
-    }
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-bandwidth-rule`,
-        operation: OPERATION,
-        variant: `bandwidth-rule-${this.kernel}`,
-        bindings: [
-          {name: 'sumWeight', view: sumWeight, type: 'f32', access: 'read'},
-          {name: 'sumWeightSquare', view: sumWeightSquare, type: 'f32', access: 'read'},
-          {name: 'sumSpreadX', view: sumSpreadX, type: 'f32', access: 'read'},
-          {name: 'sumSpreadY', view: sumSpreadY, type: 'f32', access: 'read'},
-          {name: 'bandwidthState', view: bandwidthState, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: 1,
-        declarations: `${IS_FINITE_VALUE_WGSL}${GET_NAN_WGSL}`,
-        // scipy: scotts_factor = n_eff^(-1/(d+4)); silverman_factor = (n_eff (d+2)/4)^(-1/(d+4));
-        // both n_eff^(-1/6) for d = 2. Covariance is the unbiased weighted one: the weighted
-        // spread divided by 1 - sum(w^2) / sum(w)^2.
-        body: `let total = sumWeight[sumWeightOffset];
-  let totalSquare = sumWeightSquare[sumWeightSquareOffset];
-  let effective = total * total / totalSquare;
-  let correction = 1.0 - totalSquare / (total * total);
-  let variance = 0.5 * (sumSpreadX[sumSpreadXOffset] + sumSpreadY[sumSpreadYOffset]) / (total * correction);
-  let bandwidth = ${getGPUKernelDensityCanonicalBandwidthScale(this.kernel)} * pow(effective, -1.0 / 6.0) * sqrt(variance);
-  let valid = total > 0.0 && totalSquare > 0.0 && effective > 1.0 && correction > 0.0 &&
-    isFiniteValue(bandwidth) && bandwidth > 0.0;
-  bandwidthState[bandwidthStateOffset] = select(getNaN(), bandwidth, valid);`
-      })
-    );
-    return nodes;
   }
 
   /**
@@ -941,8 +1178,10 @@ export class GPUKernelDensity<
         ['output.values', output.values],
         ['output.weightSum', output.weightSum],
         ['output.bandwidth', output.bandwidth],
+        ['output.bandwidthPopulationCount', output.bandwidthPopulationCount],
         ['output.status.invalidCount', output.status?.invalidCount],
-        ['output.status.insufficientPadding', output.status?.insufficientPadding]
+        ['output.status.insufficientPadding', output.status?.insufficientPadding],
+        ['output.status.bandwidthBelowThreeCells', output.status?.bandwidthBelowThreeCells]
       ],
       {skipEmptyChunks: true}
     );
@@ -1017,7 +1256,9 @@ export class GPUKernelDensity<
       output.weightSum,
       output.status?.invalidCount,
       output.status?.insufficientPadding,
-      output.bandwidth
+      output.status?.bandwidthBelowThreeCells,
+      output.bandwidth,
+      output.bandwidthPopulationCount
     ]);
     const staged = stageDensityOutputViews(
       graph,
@@ -1027,8 +1268,10 @@ export class GPUKernelDensity<
         values: output.values,
         weightSum: output.weightSum,
         bandwidth: output.bandwidth,
+        bandwidthPopulationCount: output.bandwidthPopulationCount,
         invalidCount: output.status?.invalidCount,
-        insufficientPadding: output.status?.insufficientPadding
+        insufficientPadding: output.status?.insufficientPadding,
+        bandwidthBelowThreeCells: output.status?.bandwidthBelowThreeCells
       },
       {values: this.cellCount}
     );
@@ -1038,11 +1281,32 @@ export class GPUKernelDensity<
       status: callerOutput.status
         ? {
             invalidCount: staged.views.invalidCount,
-            insufficientPadding: staged.views.insufficientPadding
+            insufficientPadding: staged.views.insufficientPadding,
+            bandwidthBelowThreeCells: staged.views.bandwidthBelowThreeCells
           }
         : undefined
     };
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (method === 'exact' && props.method === 'auto' && output.status?.bandwidthBelowThreeCells) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-bandwidth-resolution`,
+          operation: OPERATION,
+          variant: 'bandwidth-resolution-exact',
+          invocationCount: 1,
+          bindings: [
+            {
+              name: 'resolution',
+              view: output.status.bandwidthBelowThreeCells,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: 'resolution[resolutionOffset] = 0u;'
+        })
+      );
+    }
+
     // The binned path never reads the index; only the exact gather does.
     const exactIndex = needsExact ? this.getIndexNodes(graph) : undefined;
     if (exactIndex) {
@@ -1054,7 +1318,17 @@ export class GPUKernelDensity<
       ? (output.bandwidth ?? createTransientView(graph, `${id}-bandwidth-state`, 'float32', 1))
       : undefined;
     if (bandwidthState) {
-      nodes.push(...this.getBandwidthRuleNodes(graph, bandwidthState));
+      nodes.push(
+        ...createKernelDensityBandwidthNodes(graph, {
+          id,
+          props,
+          kernel,
+          bandwidthState,
+          populationCount: output.bandwidthPopulationCount,
+          studyWindow,
+          edgeCorrection
+        })
+      );
     }
     const bandwidthBindings: WGSLKernelBinding[] = bandwidthState
       ? [{name: 'bandwidthState', view: bandwidthState, type: 'f32', access: 'read'}]
@@ -1097,7 +1371,7 @@ export class GPUKernelDensity<
     const pointWeightChunks = getGraphViewChunks(pointWeights);
     const rawWeightChunks = getGraphViewChunks(rawWeights);
     const excludedChunks = excluded ? getGraphViewChunks(excluded) : undefined;
-    const domainConstants = getDomainConstantsWGSL(indexBounds);
+    const domainConstants = getDensityDomainConstantsWGSL(indexBounds);
     const hasEdgeCorrection = edgeCorrection !== 'none';
     const positionChunks = getGraphViewChunks(props.positions);
     const weightChunks = props.weights ? getGraphViewChunks(props.weights) : undefined;
@@ -1159,7 +1433,7 @@ export class GPUKernelDensity<
           invocationCount: positions.length,
           runtimeConstants: {ROW_START: splitPointScratch ? 0 : start},
           declarations: `${domainConstants}
-${GRID_COORDINATE_WGSL}
+${DENSITY_VALUE_WGSL}${DENSITY_RECTANGLE_MEMBERSHIP_WGSL}${GPU_GRID_COORDINATE_WGSL}
 ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'diggle' ? kernel : undefined) : edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
           body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
   let bandwidth = ${bandwidthExpression};
@@ -1171,7 +1445,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
     all(position >= DOMAIN_MIN) && all(position <= DOMAIN_MAX) &&
     isFiniteValue(weight) && weight >= 0.0;
   let relative = position - gridStart;
-  ${studyWindow ? 'included = included && isInsideStudyWindow(position);' : hasEdgeCorrection ? 'included = included && all(relative >= windowMin) && all(relative <= windowMax);' : ''}
+  ${studyWindow ? 'included = included && isInsideStudyWindow(position);' : hasEdgeCorrection ? 'included = included && isInsideDensityRectangle(position, vec2f(params[paramsOffset + 5u], params[paramsOffset + 6u]), vec2f(params[paramsOffset + 7u], params[paramsOffset + 8u]));' : ''}
   var corrected = select(0.0, weight, included);
   ${rawWeights !== pointWeights ? 'rawWeights[rawWeightsOffset + ROW_START + index] = corrected;' : ''}
   ${
@@ -1222,6 +1496,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
             height,
             padding: this.binnedPadding,
             insufficientPadding: output.status?.insufficientPadding,
+            bandwidthBelowThreeCells: output.status?.bandwidthBelowThreeCells,
             edgeCorrection,
             normalization,
             autoGate: method === 'auto'
@@ -1266,7 +1541,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
             invocationCount: this.cellCount,
             workgroupSize: 64,
             ...binned?.exactGate,
-            declarations: `${GRID_COORDINATE_WGSL}${getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'uniform' ? kernel : undefined)}`,
+            declarations: `${DENSITY_VALUE_WGSL}${DENSITY_RECTANGLE_MEMBERSHIP_WGSL}${GPU_GRID_COORDINATE_WGSL}${getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'uniform' ? kernel : undefined)}`,
             body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
   let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
   let cellSize = (gridEnd - gridStart) / vec2f(${width}.0, ${height}.0);
@@ -1310,7 +1585,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
     const {width, height} = grid;
     const {pointWeights, bandwidthBindings, bandwidthExpression, weightSum, gate} = inputs;
     const {cellOffsets, sortedIds} = inputs.exactIndex;
-    const domainConstants = getDomainConstantsWGSL(indexBounds);
+    const domainConstants = getDensityDomainConstantsWGSL(indexBounds);
     const gatherBindings: WGSLKernelBinding[] = [
       {
         name: 'positions',
@@ -1355,7 +1630,7 @@ const INDEX_WIDTH: u32 = ${indexGridSize[0]}u;
 const INDEX_HEIGHT: u32 = ${indexGridSize[1]}u;
 const SUPPORT_FACTOR: f32 = ${getWGSLFloatLiteral(supportRadiusFactor)};
 ${domainConstants}
-${GRID_COORDINATE_WGSL}
+${DENSITY_VALUE_WGSL}${DENSITY_RECTANGLE_MEMBERSHIP_WGSL}${GPU_GRID_COORDINATE_WGSL}
 ${getKernelValueWGSL(kernel)}
 ${edgeCorrection === 'none' ? '' : getWindowMassWGSL(kernel)}`,
       body: `let column = index % WIDTH;
@@ -1377,16 +1652,7 @@ ${edgeCorrection === 'none' ? '' : getWindowMassWGSL(kernel)}`,
     all(gridEnd != gridStart);
   var total = 0.0;
   if (valid && all(queryMax >= DOMAIN_MIN) && all(queryMin <= DOMAIN_MAX)) {
-    let clampedMin = max(queryMin, DOMAIN_MIN);
-    let clampedMax = min(queryMax, DOMAIN_MAX);
-    // Widen by one index cell per side to absorb f32 rounding in the binning pass; the exact
-    // distance test rejects the extra candidates.
-    var columnLow = getCoordinate(clampedMin.x, DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH);
-    var rowLow = getCoordinate(clampedMin.y, DOMAIN_MIN.y, DOMAIN_MAX.y, INDEX_HEIGHT);
-    columnLow = columnLow - min(columnLow, 1u);
-    rowLow = rowLow - min(rowLow, 1u);
-    let columnHigh = min(getCoordinate(clampedMax.x, DOMAIN_MIN.x, DOMAIN_MAX.x, INDEX_WIDTH) + 1u, INDEX_WIDTH - 1u);
-    let rowHigh = min(getCoordinate(clampedMax.y, DOMAIN_MIN.y, DOMAIN_MAX.y, INDEX_HEIGHT) + 1u, INDEX_HEIGHT - 1u);
+    ${getDensityNeighborBoundsWGSL()}
     ${getRectangleScanWGSL(visit)}
   }
   ${getKernelDensityResultWGSL(edgeCorrection, normalization)}`

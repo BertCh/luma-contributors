@@ -4,7 +4,10 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it} from 'vitest';
-import {GPUKeyJoin, type GPUKeyJoinAggregate} from '../../../src/dataframe-analysis/key-join/index';
+import {
+  GPUKeyLookup,
+  type GPUKeyLookupAggregate
+} from '../../../src/dataframe-analysis/key-join/index';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {decodeOracleFixture} from '../../oracles/oracle-fixture';
@@ -26,8 +29,8 @@ type Scene = {
 const fixture = decodeOracleFixture<{reference: string; cases: Scene[]}>(fixtureJson);
 
 for (const scene of fixture.cases) {
-  for (const kind of ['left', 'inner'] as const) {
-    it(`GPUKeyJoin pandas parity: ${scene.name}/${kind}`, async () => {
+  for (const compactMatchedLeftRows of [false, true]) {
+    it(`GPUKeyLookup pandas parity: ${scene.name}/${compactMatchedLeftRows ? 'compact' : 'aligned'}`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
       const harness = new ParityReductionHarness(device);
@@ -46,7 +49,7 @@ for (const scene of fixture.cases) {
       };
       const leftCount = scene.leftKeys.length;
       const values = harness.input('values', Float32Array.from(scene.values), 'float32');
-      const aggregates: GPUKeyJoinAggregate[] = [
+      const aggregates: GPUKeyLookupAggregate[] = [
         {operation: 'count', output: harness.output('countAll', leftCount, 'float32')},
         {
           operation: 'count',
@@ -63,12 +66,12 @@ for (const scene of fixture.cases) {
         }))
       ];
       harness.graph.add(
-        new GPUKeyJoin({
+        new GPUKeyLookup({
           leftKeys: keyView('left', scene.leftKeys),
           rightKeys: keyView('right', scene.rightKeys),
           leftMask: harness.input('left-mask', Uint32Array.from(scene.leftMask), 'uint32'),
           rightMask: harness.input('right-mask', Uint32Array.from(scene.rightMask), 'uint32'),
-          kind,
+          compactMatchedLeftRows,
           sumScale: 65536,
           gather: [{column: values, output: harness.output('gathered', leftCount, 'float32')}],
           aggregates,
@@ -77,7 +80,7 @@ for (const scene of fixture.cases) {
             matchCounts: harness.output('matchCounts', leftCount, 'uint32'),
             matched: harness.output('matched', leftCount, 'uint32'),
             rightMatched: harness.output('rightMatched', scene.rightKeys.length, 'uint32'),
-            ...(kind === 'inner'
+            ...(compactMatchedLeftRows
               ? {
                   rows: {
                     ids: harness.output('ids', scene.capacity, 'uint32'),
@@ -102,8 +105,8 @@ for (const scene of fixture.cases) {
             const expected = scene.expected[metric];
             const exact = !['sum', 'mean'].includes(metric);
             compareParity(
-              'GPUKeyJoin',
-              `${scene.name}/${kind}/encoding=${encoding}`,
+              'GPUKeyLookup',
+              `${scene.name}/${compactMatchedLeftRows ? 'compact' : 'aligned'}/encoding=${encoding}`,
               fixture.reference,
               scene.rightKeys.length,
               metric,

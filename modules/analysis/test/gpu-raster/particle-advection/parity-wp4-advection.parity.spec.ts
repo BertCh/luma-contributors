@@ -79,7 +79,14 @@ for (const scene of fixture.cases) {
     const words = new GPUParameterBuffer(device, {id: 'words', format: 'uint32', length: 4});
     parameters.write(
       getGPUParticleAdvectionParameterValues(
-        {fieldExtent: scene.extent, timeStep: scene.timeStep, spawnBounds: scene.spawnBounds},
+        {
+          fieldPlacement: {
+            origin: [scene.extent[0], scene.extent[1]],
+            cellSize: [scene.extent[2], scene.extent[3]]
+          },
+          timeStep: scene.timeStep,
+          spawnBounds: scene.spawnBounds
+        },
         [scene.width, scene.height]
       )
     );

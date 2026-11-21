@@ -33,7 +33,7 @@ it('compares every hierarchy output on merges, overflow, masked input and ground
       'levels',
       'cellNodes',
       'curves',
-      'status',
+      'count',
       'requiredCount',
       'overflow'
     ];
@@ -61,7 +61,7 @@ it('compares every hierarchy output on merges, overflow, masked input and ground
           expected = results[1][port][index];
         if (Number.isNaN(expected)) expect(actual).toBeNaN();
         else if (port !== 'curves' || expected === 0) expect(actual === expected).toBe(true);
-        // Only curve arithmetic is approximate; node IDs, copied levels and all status words are exact.
+        // Only curve arithmetic is approximate; node IDs, copied levels and all status ports are exact.
         else expect(Math.abs(actual - expected)).toBeLessThanOrEqual(Math.abs(expected) * 2e-5);
       }
     }
@@ -99,7 +99,7 @@ it('preserves exact activation IDs on plateaus, multifurcations, late outlets an
       'levels',
       'cellNodes',
       'curves',
-      'status',
+      'count',
       'requiredCount',
       'overflow'
     ];

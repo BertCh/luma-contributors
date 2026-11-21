@@ -8,7 +8,7 @@ import {
   type GraphDataView,
   type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
-import {expectTypeOf, it} from 'vitest';
+import {expect, expectTypeOf, it} from 'vitest';
 import {
   GPUScalarScale,
   type GPUScalarScaleProps
@@ -27,6 +27,74 @@ import {
 } from '../../../src/dataframe-analysis/column-classification/gpu-column-quantiles';
 import type {ClassificationRowView} from '../../../src/dataframe-analysis/column-classification/column-classification-rows';
 import {createNullWebGPUDevice, createVectorView} from '../../utils/gpu-contributor-test-utils';
+
+it('requires an actual terminal output and accepts each minimal classification selection', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'float32' | 'uint32'>(name: string, format: Format, length = 4) =>
+    createTransientView(graph, name, format, length);
+  try {
+    const values = view('values', 'float32');
+    const domain = view('domain', 'float32', 3);
+    const palette = view('palette', 'uint32');
+    const parameters = view('parameters', 'float32', 32);
+    const terminal = view('terminal', 'uint32');
+    const colorSelections: GPUColorScaleOutput[] = [
+      {colors: terminal},
+      {classIndices: terminal},
+      {classCounts: terminal}
+    ];
+    const bivariateSelections: GPUBivariateClassificationOutput[] = [
+      {colors: terminal},
+      {classIds: terminal},
+      {classCounts: terminal}
+    ];
+    for (const output of colorSelections) {
+      const contributor = new GPUColorScale({
+        id: `color-${Object.keys(output)[0]}`,
+        values,
+        domain,
+        palette,
+        parameters,
+        maximumDomainCount: 3,
+        maximumPaletteCount: 4,
+        output
+      });
+      expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+    }
+    for (const output of bivariateSelections) {
+      const contributor = new GPUBivariateClassification({
+        id: `bivariate-${Object.keys(output)[0]}`,
+        valuesX: values,
+        valuesY: values,
+        breaksX: domain,
+        breaksY: domain,
+        palette,
+        parameters,
+        maximumClassCount: 2,
+        output
+      });
+      expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+    }
+    // @ts-expect-error An empty top-level selection has no terminal output.
+    const emptyColor: GPUColorScaleOutput = {};
+    // @ts-expect-error An empty top-level selection has no terminal output.
+    const emptyBivariate: GPUBivariateClassificationOutput = {};
+    // @ts-expect-error An optional undefined view does not select an output.
+    const undefinedColor: GPUColorScaleOutput = {colors: undefined};
+    // @ts-expect-error An optional undefined view does not select an output.
+    const undefinedBivariate: GPUBivariateClassificationOutput = {classIds: undefined};
+    // @ts-expect-error Empty nested objects are not terminal views.
+    const nestedColor: GPUColorScaleOutput = {colors: {}};
+    // @ts-expect-error Empty nested objects are not terminal views.
+    const nestedBivariate: GPUBivariateClassificationOutput = {classCounts: {}};
+    expectTypeOf(emptyColor).toEqualTypeOf<GPUColorScaleOutput>();
+    expectTypeOf(emptyBivariate).toEqualTypeOf<GPUBivariateClassificationOutput>();
+    expect([undefinedColor, undefinedBivariate, nestedColor, nestedBivariate]).toHaveLength(4);
+  } finally {
+    device.destroy();
+  }
+});
 
 it('preserves legacy packed output declarations and inferred contributor props', () => {
   const device = createNullWebGPUDevice();

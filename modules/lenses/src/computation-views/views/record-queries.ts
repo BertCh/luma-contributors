@@ -15,6 +15,22 @@ import type {
 import type {MarkProvenance} from '../types';
 import type {LensRecord, ViewContext} from '../registry/view-registration';
 
+/** Look up current pack metadata without changing archived operator names. */
+export function getRecordedOperatorPackKey(operator: string): string {
+  switch (operator) {
+    case 'GPUSpatialClustering':
+      return 'GPUDBSCAN';
+    case 'GPUHierarchicalDensityClustering':
+      return 'GPUHDBSCAN';
+    case 'GPUKeyJoin':
+      return 'GPUKeyLookup';
+    case 'GPUPycnophylactic':
+      return 'GPUPycnophylacticInterpolation';
+    default:
+      return operator;
+  }
+}
+
 /** Graph forms from most concrete to most abstract. */
 const CONCRETE_FIRST: readonly GPUComputationGraphForm[] = [
   'encoded',

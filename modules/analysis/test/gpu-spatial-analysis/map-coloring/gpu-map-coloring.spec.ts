@@ -289,3 +289,81 @@ it('GPUMapColoring largest-degree-first matches networkx largest_first quality o
     expect(counts['largest-degree-first'], graph.name).toBeLessThanOrEqual(counts['random']);
   }
 });
+
+// GEO-107: a truncated adjacency (here the queen pattern of a 4 x 3 grid with every row's last
+// neighbor dropped) can be colored "properly" on the stored pairs while true neighbors share a
+// color. A nonzero weights `status.overflow` or `status.candidateOverflow` now suppresses the
+// coloring (decision LR-D4): every row uncolored, colorCount and conflictCount 0, converged 0.
+// With both flags 0 the complete pattern colors as before.
+it('GPUMapColoring suppresses the coloring when the weights status reports loss', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const complete = computeContiguityOracle(createSquareGrid(4, 3), 'queen');
+  const truncatedOffsets = [0];
+  const truncatedNeighbors: number[] = [];
+  for (let row = 0; row + 1 < complete.offsets.length; row++) {
+    const start = complete.offsets[row];
+    const end = complete.offsets[row + 1];
+    truncatedNeighbors.push(...complete.neighbors.slice(start, Math.max(start, end - 1)));
+    truncatedOffsets.push(truncatedNeighbors.length);
+  }
+  const truncated: OracleCSR = {
+    offsets: truncatedOffsets,
+    neighbors: truncatedNeighbors,
+    weights: truncatedNeighbors.map(() => 1),
+    distances: []
+  };
+  const cases = [
+    {name: 'overflow', csr: truncated, overflow: 1, candidateOverflow: 0},
+    {name: 'candidateOverflow', csr: truncated, overflow: 0, candidateOverflow: 1},
+    {name: 'complete', csr: complete, overflow: 0, candidateOverflow: 0}
+  ];
+  for (const {name, csr, overflow, candidateOverflow} of cases) {
+    const rig = new WeightsRig(device);
+    const rows = csr.offsets.length - 1;
+    const colors = rig.output('uint32', rows);
+    const colorCount = rig.output('uint32', 1);
+    const conflictCount = rig.output('uint32', 1);
+    const converged = rig.output('uint32', 1);
+    rig.run(
+      new GPUMapColoring({
+        weights: {
+          ...rig.uploadWeights(csr),
+          status: {
+            overflow: rig.input(Uint32Array.of(overflow), 'uint32', 1),
+            candidateOverflow: rig.input(Uint32Array.of(candidateOverflow), 'uint32', 1)
+          }
+        },
+        parameters: rig.input(
+          getGPUMapColoringParameterValues({seed: 0}),
+          'uint32',
+          GPU_MAP_COLORING_PARAMETER_LENGTH
+        ),
+        output: {
+          colors: colors.view,
+          colorCount: colorCount.view,
+          conflictCount: conflictCount.view,
+          status: {converged: converged.view}
+        }
+      })
+    );
+    const actualColors = await readUint32(colors.buffer, rows);
+    const actualColorCount = (await readUint32(colorCount.buffer, 1))[0];
+    const actualConflicts = (await readUint32(conflictCount.buffer, 1))[0];
+    const actualConverged = (await readUint32(converged.buffer, 1))[0];
+    rig.destroy();
+    if (name === 'complete') {
+      expect(actualColors, name).toEqual(computeMapColoringOracle(complete, 0));
+      expect(actualConverged, name).toBe(1);
+      expect(actualConflicts, name).toBe(0);
+      expect(actualColorCount, name).toBe(Math.max(...actualColors) + 1);
+    } else {
+      expect(actualColors, name).toEqual(
+        Array.from({length: rows}, () => GPU_MAP_COLORING_UNCOLORED)
+      );
+      expect(actualColorCount, name).toBe(0);
+      expect(actualConflicts, name).toBe(0);
+      expect(actualConverged, name).toBe(0);
+    }
+  }
+});

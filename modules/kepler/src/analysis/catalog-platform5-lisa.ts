@@ -210,6 +210,7 @@ async function runLocalLisaVariants(
       const observed = session.output('observed', 'float32', rowCount);
       const pseudo = session.output('pseudo-p-values', 'float32', rowCount);
       const exceedances = session.output('exceedances', 'uint32', rowCount);
+      const significant = session.output('significant', 'uint32', rowCount);
       const overflow = session.output('overflow', 'uint32', 1);
       const invalidCount = session.output('invalid-count', 'uint32', 1);
       session.graph.add(
@@ -238,6 +239,7 @@ async function runLocalLisaVariants(
             exceedances: exceedances.view,
             pseudoPValues: pseudo.view,
             observed: observed.view,
+            significant: significant.view,
             status: {overflow: overflow.view, invalidCount: invalidCount.view}
           }
         })
@@ -252,7 +254,8 @@ async function runLocalLisaVariants(
         throw new CatalogGpuUnsupportedError('Permutation test incomplete');
       return {
         observed: await session.readFloat32(observed),
-        pValues: await session.readFloat32(pseudo)
+        pValues: await session.readFloat32(pseudo),
+        significant: await session.readUint32(significant)
       };
     }
   );
@@ -283,7 +286,7 @@ async function runLocalLisaVariants(
       neighbor_count: set.weights.neighbors[row].length,
       statistic: finiteOrNull(result.observed[row]),
       p_value: finiteOrNull(pValue),
-      significant: Number.isFinite(pValue) && pValue <= significance,
+      significant: result.significant[row] !== 0,
       geometry: getFeatureGeometryText(collection.features[set.sourceIndex[row]])
     });
   }
@@ -361,6 +364,7 @@ const LOCAL_LISA_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     'G and G* and the bivariate Moran use row-standardized weights; local join counts use binary weights and need a 0/1 property.',
     'p-values are two-sided conditional-permutation pseudo p-values from GPULocalPermutationTest (a Philox stream keyed by seed), with no multiple-testing correction; rows with more than 32 neighbors fall back (the operation then fails: there is no CPU engine).',
+    'Significance uses the exact permutation-count comparison from the producer against the packed float32 significance level; displayed p-values are rounded float32 values.',
     'Islands stay in the moments and are not tested (null p-value).',
     'Local G and G* need non-negative values; a negative value fails the operation with a CatalogGpuUnsupportedError (there is no CPU engine to fall back to).'
   ],

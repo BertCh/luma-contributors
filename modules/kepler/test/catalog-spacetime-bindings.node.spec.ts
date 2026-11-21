@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {readFileSync} from 'node:fs';
+import {transpileModule, ScriptTarget} from 'typescript';
 import {expect, test} from 'vitest';
+import {
+  getWitnessLogLikelihood,
+  getWitnessLikelihoodScore,
+  HAWKES_WITNESS_FIRST_UPDATE,
+  HAWKES_WITNESS_FINAL
+} from './catalog-spacetime-hawkes-reference';
 import {
   getGPUAnalysisOperator,
   getGPUAnalysisCapabilityCatalog
@@ -10,6 +18,7 @@ import {
 import {
   getCatalogBinding,
   getCatalogDefaultParameters,
+  listCatalogEntries,
   normalizeCatalogParameters,
   runCatalogOperationAsync
 } from '../src/analysis/catalog-bindings';
@@ -26,10 +35,7 @@ import {
   makeCatalogPointColumns,
   readCatalogFeaturesFromNativeDataset
 } from '../../../examples/deck/kepler-compute/src/analysis-catalog-input';
-import {
-  getSpacetimeCatalogSample,
-  includeSpacetimeCatalogEntries
-} from '../../../examples/deck/kepler-compute/src/analysis-catalog-spacetime';
+import {getSpacetimeCatalogSample} from '../../../examples/deck/kepler-compute/src/analysis-catalog-spacetime';
 import {SPACETIME_TEST_PARAMETERS, SPACETIME_TEST_POINTS} from './catalog-spacetime-fixture';
 
 const CONTRIBUTORS = [
@@ -125,9 +131,9 @@ for (const binding of SPACETIME_BINDINGS) {
 }
 
 test('new ontology contributors appear in panel discovery with real capability IDs', () => {
-  const entries = includeSpacetimeCatalogEntries([]);
+  const entries = listCatalogEntries({lensScenarios: []});
   for (const contributor of CONTRIBUTORS) {
-    const entry = entries.find(candidate => candidate.contributorName === contributor)!;
+    const entry = entries.find(candidate => candidate.identity.exportName === contributor)!;
     expect(entry.runnable).toBe('catalog-binding');
     expect(entry.capabilityId).toBe(getGPUAnalysisOperator(contributor)!.primaryCapability);
   }
@@ -294,6 +300,126 @@ test('series periods recorded over months use their period spacing for the float
   const series = readSpacetimeSeries(points, parameters);
   expect(series.intervalSeconds).toBe(30 * 86400);
   expect(series.periodCount).toBe(8);
+});
+
+test('Hawkes catalog keeps an explicit budget and has an independent finite-window oracle', () => {
+  const binding = getCatalogBinding('space-time-hawkes')!;
+  // The catalog intentionally requests 20; it does not inherit the ordinary estimator default.
+  expect(getCatalogDefaultParameters(binding)['maximumIterations']).toBe(20);
+  expect(normalizeCatalogParameters(binding, {maximumIterations: 1})['maximumIterations']).toBe(1);
+  expect(getWitnessLogLikelihood([2 / 81, 0.5, 0.5, 4])).toBeCloseTo(-16.974445977916307, 10);
+  expect(getWitnessLogLikelihood(HAWKES_WITNESS_FIRST_UPDATE)).toBeCloseTo(-14.776229122727967, 10);
+  expect(getWitnessLogLikelihood(HAWKES_WITNESS_FINAL)).toBeCloseTo(-12.526952698424633, 10);
+  for (const score of getWitnessLikelihoodScore(HAWKES_WITNESS_FINAL)) {
+    expect(Number.isFinite(score)).toBe(true);
+    expect(Math.abs(score)).toBeLessThan(1e-5);
+  }
+});
+
+test('Pettitt catalog evidence excludes untested cells and preserves source row alignment', () => {
+  const source = readFileSync('modules/kepler/src/analysis/catalog-spacetime-series.ts', 'utf8');
+  const start = source.indexOf('    const tested =');
+  const end = source.indexOf("  if (kind === 'changes')", start);
+  const body = transpileModule(source.slice(start, end).replace(/\n  }\s*$/, ''), {
+    compilerOptions: {target: ScriptTarget.ES2022}
+  }).outputText;
+  const read = new Function(
+    'result',
+    'series',
+    `
+    const cellCount = series.cellCount, periodCount = series.periodCount, points = {}, summary = {};
+    const finiteSpacetimeValue = value => Number.isFinite(value) && value !== 0xffffffff ? value : null;
+    const expand = entries => series.sourceCells.map(cell => finiteSpacetimeValue(entries[cell]));
+    const makeSpacetimePointTable = (points, columns) => columns;
+    ${body}
+  `
+  );
+  // n=4, ranks [1,2,3,4]: K=4, p=2*exp(-6*16/(16*5))=.6023884.
+  // The middle cell has one finite observation; the last is tested and constant.
+  const series = {
+    cellCount: 3,
+    periodCount: 4,
+    periods: [0, 1, 2, 3],
+    cube: Float32Array.of(1, 2, 3, 4, NaN, 2, NaN, NaN, 7, 7, 7, 7),
+    sourceCells: [2, 1, 0, 0],
+    sourcePeriods: [3, 2, 1, 3]
+  };
+  const output = read(
+    {
+      statistic: Uint32Array.of(4, 0, 0),
+      changeSlice: Uint32Array.of(2, 0xffffffff, 1),
+      pValues: Float32Array.of(0.6023884, NaN, 1)
+    },
+    series
+  );
+  expect(output.summary['pValueMinimum']).toBeCloseTo(0.6023884, 6);
+  expect(output.summary['testedLocations']).toBe(2);
+  expect(output.tables[0]['p_value']).toEqual([
+    1,
+    null,
+    Math.fround(0.6023884),
+    Math.fround(0.6023884)
+  ]);
+  expect(output.tables[0]['change_slice']).toEqual([null, null, 2, 2]);
+  expect(output.tables[0]['change_time']).toEqual([null, null, 2, 2]);
+  expect(output.tables[0]['segment']).toEqual([null, null, 0, 1]);
+  // Eligibility is already encoded by changeSlice: do not scan the source cube again.
+  expect(() =>
+    read(
+      {statistic: Uint32Array.of(0), changeSlice: Uint32Array.of(1), pValues: Float32Array.of(1)},
+      {
+        cellCount: 1,
+        periodCount: 2,
+        periods: [0, 1],
+        sourceCells: [0],
+        sourcePeriods: [1],
+        get cube() {
+          throw new Error('source cube must not be reread');
+        }
+      }
+    )
+  ).not.toThrow();
+  const untested = read(
+    {
+      statistic: Uint32Array.of(0),
+      changeSlice: Uint32Array.of(0xffffffff),
+      pValues: Float32Array.of(NaN)
+    },
+    {
+      cellCount: 1,
+      periodCount: 2,
+      periods: [0, 1],
+      cube: Float32Array.of(NaN, 1),
+      sourceCells: [0, 0],
+      sourcePeriods: [0, 1]
+    }
+  );
+  expect(untested.summary['testedLocations']).toBe(0);
+  expect(untested.summary['pValueMinimum']).toBe('unavailable');
+  expect(untested.summary['statisticMaximum']).toBe('unavailable');
+  expect(untested.tables[0]['segment']).toEqual([null, null]);
+});
+
+test('B6 queued Pettitt constant fixture normalizes only its declared parameters', () => {
+  const source = readFileSync('modules/kepler/test/catalog-spacetime-gpu.spec.ts', 'utf8');
+  const start = source.indexOf(
+    '  const parameters = normalizeCatalogParameters(',
+    source.indexOf('// Catalog rows are a complete finite rectangle')
+  );
+  const end = source.indexOf('\n  const output =', start);
+  const body = transpileModule(source.slice(start, end), {
+    compilerOptions: {target: ScriptTarget.ES2022}
+  }).outputText;
+  const binding = getCatalogBinding('pettitt-test')!;
+  const resolve = new Function(
+    'binding',
+    'normalizeCatalogParameters',
+    'SPACETIME_TEST_PARAMETERS',
+    `${body} return parameters;`
+  );
+  expect(() =>
+    resolve(binding, normalizeCatalogParameters, SPACETIME_TEST_PARAMETERS)
+  ).not.toThrow();
 });
 
 test('Float32 closed-radius boundary retains pairs included by the uploaded distance', () => {

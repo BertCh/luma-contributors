@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-dataframe.inequality",
   "viewId": "formula-card",
-  "caption": "Formula P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. gini: 0.3067. values read back from the GPU run.",
-  "description": "Formula P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. gini: 0.3067. values read back from the GPU run.",
-  "llms": "Formula P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.\n\n- gini: 0.3067\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Formula P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. With a positive mean and a positive-weight zero income, Atkinson = 1 for ep…",
+  "description": "Formula P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. With a positive mean and a positive-weight zero income, Atkinson = 1 for ep…",
+  "llms": "Formula P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. With a positive mean and a positive-weight zero income, Atkinson = 1 for epsilon >= 1 (continuous extension); an all-zero population remains undefined. Theil L remains NaN when any positive-weight income is zero.\n\n- gini: 0.3067\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "gini",
     "value": "0.3067"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUInequality</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{G}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.</p></div><div class=\"lens-worked-example\"><h4>Entity 27</h4><div><pre class=\"lens-tex\">\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{0.306713}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"populationShare\">populationShare · intermediate · nextP</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-prefix\" data-value=\"cumulativeWeight\">cumulativeWeight · intermediate · cumulativeWeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-area\" data-value=\"totalWeight\">totalWeight · intermediate · totalWeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"incomeShare\">incomeShare · intermediate · nextL</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-prefix\" data-value=\"cumulativeIncome\">cumulativeIncome · intermediate · cumulativeIncome</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-gini-tile-area\" data-value=\"totalIncome\">totalIncome · intermediate · totalIncome</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-publish-indices\" data-value=\"gini\">gini · output · gini<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"previousP\">previousP · intermediate · previousP</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"previousL\">previousL · intermediate · previousL</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUInequality</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{gathered}\n\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{G}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})\\\\\n\\mu&gt;0,\\ \\exists i:w_i&gt;0,x_i=0,\\ \\epsilon\\ge1\\ \\Rightarrow A_\\epsilon=1;\\quad \\mu=0\\ \\Rightarrow A_\\epsilon=\\mathrm{undefined}\n\\end{gathered}</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. With a positive mean and a positive-weight zero income, Atkinson = 1 for epsilon &gt;= 1 (continuous extension); an all-zero population remains undefined. Theil L remains NaN when any positive-weight income is zero.</p></div><div class=\"lens-worked-example\"><h4>Entity 27</h4><div><pre class=\"lens-tex\">\\begin{gathered}\n\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{0.306713}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})\\\\\n\\mu&gt;0,\\ \\exists i:w_i&gt;0,x_i=0,\\ \\epsilon\\ge1\\ \\Rightarrow A_\\epsilon=1;\\quad \\mu=0\\ \\Rightarrow A_\\epsilon=\\mathrm{undefined}\n\\end{gathered}</pre><p class=\"lens-ascii\">P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. With a positive mean and a positive-weight zero income, Atkinson = 1 for epsilon &gt;= 1 (continuous extension); an all-zero population remains undefined. Theil L remains NaN when any positive-weight income is zero.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"populationShare\">populationShare · intermediate · nextP</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cumulativeWeight\">cumulativeWeight · intermediate · unknown — wgsl cumulativeWeight not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-sums\" data-value=\"totalWeight\">totalWeight · intermediate · totalWeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"incomeShare\">incomeShare · intermediate · nextL</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cumulativeIncome\">cumulativeIncome · intermediate · unknown — wgsl cumulativeIncome not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-global-sums\" data-value=\"totalIncome\">totalIncome · intermediate · totalIncome</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-publish-indices\" data-value=\"gini\">gini · output · gini<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"previousP\">previousP · intermediate · previousP</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.inequality-compiled:inequality-keys\" data-value=\"previousL\">previousL · intermediate · previousL</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -37,7 +37,7 @@
       [
         "cumulativeWeight",
         "intermediate",
-        "cumulativeWeight",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -58,7 +58,7 @@
       [
         "cumulativeIncome",
         "intermediate",
-        "cumulativeIncome",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -73,7 +73,7 @@
         "gini",
         "output",
         "gini",
-        "0.3067132830619812",
+        "0.3067133128643036",
         "readback"
       ],
       [
@@ -104,18 +104,18 @@
     ]
   },
   "formula": {
-    "tex": "\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{G}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})",
-    "ascii": "P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows.",
+    "tex": "\\begin{gathered}\n\\term{populationShare}{P_i}=\\frac{\\term{cumulativeWeight}{\\sum_{j\\leq i}w_j}}{\\term{totalWeight}{W}},\\quad \\term{incomeShare}{L_i}=\\frac{\\term{cumulativeIncome}{\\sum_{j\\leq i}w_jx_j}}{\\term{totalIncome}{S}},\\quad \\term{gini}{G}=1-\\sum_{\\text{value-sorted rows}}(\\term{populationShare}{P_i}-\\term{previousP}{P_{i-1}})(\\term{incomeShare}{L_i}+\\term{previousL}{L_{i-1}})\\\\\n\\mu>0,\\ \\exists i:w_i>0,x_i=0,\\ \\epsilon\\ge1\\ \\Rightarrow A_\\epsilon=1;\\quad \\mu=0\\ \\Rightarrow A_\\epsilon=\\mathrm{undefined}\n\\end{gathered}",
+    "ascii": "P_i=cumulativeWeight_i/W; L_i=cumulativeIncome_i/S; Gini=1-sum_sorted((P_i-P_(i-1))*(L_i+L_(i-1))); no finite-sample correction; Lorenz cuts interpolate within rows. With a positive mean and a positive-weight zero income, Atkinson = 1 for epsilon >= 1 (continuous extension); an all-zero population remains undefined. Theil L remains NaN when any positive-weight income is zero.",
     "derivation": "curated"
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:11.967Z",
-    "runId": "run-8039f86f",
+    "date": "2026-11-20T23:48:35.439Z",
+    "runId": "run-68da3c19",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-8039f86f",
+    "runId": "run-68da3c19",
     "rung": "formula",
     "bindings": {
       "entity": 27

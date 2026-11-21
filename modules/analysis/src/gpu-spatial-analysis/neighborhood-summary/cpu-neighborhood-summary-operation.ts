@@ -4,6 +4,11 @@
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
+  hasCPUWeightsLoss,
+  type CPUWeightsLossInput
+} from '../spatial-weights/cpu-spatial-weights-loss';
+import {
+  getTypedArrayName,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
@@ -18,14 +23,25 @@ import {
 } from './gpu-neighborhood-summary';
 import {
   GPUNeighborhoodSummaryOperation,
+  snapshotNeighborhoodSummaryOperationProps,
   type NeighborhoodSummaryOperationProps
 } from './gpu-neighborhood-summary-operation';
+import {
+  NEIGHBORHOOD_STOPPING_FIELDS,
+  validateNeighborhoodChunkLossBindings,
+  validateNeighborhoodWeightsLossEvidence
+} from './neighborhood-weights-status';
 
-export type CPUNeighborhoodSummaryInput = {
+export type CPUNeighborhoodSummaryInput = CPUWeightsLossInput & {
   offsets: Uint32Array;
   neighbors: Uint32Array;
   weights: Float32Array;
-  weightsOverflow?: Uint32Array;
+  status?: CPUWeightsLossInput['status'] & {
+    iterationLimitReached?: Uint32Array;
+    converged?: Uint32Array;
+  };
+  weightsIterationLimitReached?: Uint32Array;
+  weightsConverged?: Uint32Array;
   values?: Float32Array | Uint32Array;
   categories?: Uint32Array;
   mask?: Uint32Array;
@@ -66,6 +82,21 @@ function validateSummaryOptions(id: string, options: CPUNeighborhoodSummaryOptio
     'statistics must contain distinct supported statistics'
   );
   validateFiniteNumber(id, 'focalWeight', options.focalWeight ?? 1, 0);
+  validateRequirement(id, (options.focalWeight ?? 1) >= 0, 'focalWeight must be non-negative');
+}
+
+function validateCPUWeightsEvidence(
+  id: string,
+  input: CPUWeightsLossInput,
+  chunkPath?: string
+): void {
+  const path = chunkPath ?? 'weights';
+  const {status, chunks} = input;
+  validateNeighborhoodWeightsLossEvidence(id, `${path}.status`, status);
+  if (chunkPath !== undefined) validateNeighborhoodChunkLossBindings(id, `${path}.status`, status);
+  chunks?.forEach((chunk, index) =>
+    validateCPUWeightsEvidence(id, chunk.weights, `${path}.chunks[${index}].weights`)
+  );
 }
 
 /**
@@ -77,11 +108,16 @@ function validateSummaryOptions(id: string, options: CPUNeighborhoodSummaryOptio
  * - Arithmetic is float64 with one output rounding (relative tolerance 3e-5 for conditioned
  *   positive outputs). Uint32 values first undergo the contributor's float32 conversion.
  * - Medians have no member cap; maximumNeighbors is ignored and output overflow is always zero.
- *   Truncated input weights still invalidate included rows, and masked rows still have count zero.
- * - Min/max use the actual members even beyond the GPU's initial extrema of +/-3e38. Medians
- *   and weighted sums retain finite float64 intermediates where GPU float32 may overflow.
- * - Category 0xffffffff is treated as an ordinary category, matching the current kernel. Ties
- *   use the lowest category. Subnormal values and weights are retained rather than flushed.
+ *   Incomplete weights invalidate included rows. The helper reads `status.overflow`,
+ *   `status.candidateOverflow`, `status.requiredCount`, and `status.complete`. A nonzero
+ *   `status.iterationLimitReached` or zero `status.converged` also invalidates included rows.
+ *   Supply aggregate stopping flags at matrix scope. The existing `weightsIterationLimitReached`
+ *   and `weightsConverged` inputs also report matrix-level loss. The helper rejects
+ *   `status.unresolvedCount`, `status.invalidCount` and `status.approximation`.
+ *   Masked rows still have count zero.
+ * - Weighted sums retain finite float64 intermediates where GPU float32 may overflow.
+ * - Category 0xffffffff is reserved for missing categories/no mode and excluded from categorical
+ *   membership. Ties use the lowest category. Subnormal values and weights are retained.
  *
  * @throws If aligned arrays disagree in length, or a required numeric column is absent.
  */
@@ -89,8 +125,10 @@ export function computeNeighborhoodSummaryOnCPU(
   input: CPUNeighborhoodSummaryInput,
   options: CPUNeighborhoodSummaryOptions = {}
 ): CPUNeighborhoodSummaryResult {
-  validateSummaryOptions('computeNeighborhoodSummaryOnCPU', options);
-  const {offsets, neighbors, weights, values, categories, mask, weightsOverflow} = input;
+  const id = 'computeNeighborhoodSummaryOnCPU';
+  validateSummaryOptions(id, options);
+  validateCPUWeightsEvidence(id, input);
+  const {offsets, neighbors, weights, values, categories, mask} = input;
   if (offsets.length < 2) throw new Error('offsets must hold at least two values');
   const rows = offsets.length - 1;
   if (weights.length !== neighbors.length)
@@ -103,8 +141,27 @@ export function computeNeighborhoodSummaryOnCPU(
     if (array && array.length !== rows)
       throw new Error(`${name} length must equal offsets.length - 1`);
   }
-  if (weightsOverflow && weightsOverflow.length < 1)
-    throw new Error('weightsOverflow must hold one value');
+  for (const name of ['weightsIterationLimitReached', 'weightsConverged'] as const)
+    if (input[name] && input[name].length < 1) throw new Error(`${name} must hold one value`);
+  const stoppingStatus = {
+    iterationLimitReached: input.status?.iterationLimitReached,
+    converged: input.status?.converged
+  };
+  for (const field of NEIGHBORHOOD_STOPPING_FIELDS) {
+    const view = stoppingStatus[field];
+    if (view === undefined) continue;
+    validateRequirement(
+      id,
+      getTypedArrayName(view) === 'Uint32Array' && view.length >= 1,
+      `weights.status.${field} must hold at least one uint32; received ${getTypedArrayName(view)}`
+    );
+  }
+  const incomplete =
+    hasCPUWeightsLoss(id, input) ||
+    (stoppingStatus.iterationLimitReached?.[0] ?? 0) !== 0 ||
+    stoppingStatus.converged?.[0] === 0 ||
+    (input.weightsIterationLimitReached?.[0] ?? 0) !== 0 ||
+    input.weightsConverged?.[0] === 0;
   const statistics = options.statistics ?? [];
   if (statistics.length && !values) throw new Error('values is required for statistics');
   const table = new Float32Array(rows * statistics.length).fill(NaN);
@@ -118,7 +175,7 @@ export function computeNeighborhoodSummaryOnCPU(
       if (countColumn >= 0) table[row * statistics.length + countColumn] = 0;
       continue;
     }
-    if (weightsOverflow && weightsOverflow[0] !== 0) continue;
+    if (incomplete) continue;
     const begin = Math.min(offsets[row], neighbors.length);
     const end = Math.max(begin, Math.min(offsets[row + 1], neighbors.length));
     const getMembers = (numeric: boolean) => {
@@ -131,18 +188,29 @@ export function computeNeighborhoodSummaryOnCPU(
           neighbor === row ||
           !(weights[slot] > 0) ||
           (mask && mask[neighbor] === 0) ||
+          (!numeric && categories![neighbor] === GPU_NEIGHBORHOOD_SUMMARY_NO_MODE) ||
           (numeric && !Number.isFinite(readValue(neighbor)))
         )
           continue;
         members.push({row: neighbor, weight: weights[slot]});
         slotWeightSum += weights[slot];
       }
-      if (options.standardized) {
+      if (options.standardized && numeric) {
         const scale = slotWeightSum > 0 ? 1 / slotWeightSum : 0;
         for (const member of members) member.weight *= scale;
       }
-      if (options.includeFocal && (!numeric || Number.isFinite(readValue(row))))
-        members.unshift({row, weight: options.focalWeight ?? 1});
+      if (
+        options.includeFocal &&
+        (numeric
+          ? Number.isFinite(readValue(row))
+          : categories![row] !== GPU_NEIGHBORHOOD_SUMMARY_NO_MODE)
+      )
+        members.unshift({
+          row,
+          weight:
+            Math.fround(options.focalWeight ?? 1) *
+            (!numeric && options.standardized && slotWeightSum > 0 ? slotWeightSum : 1)
+        });
       return members;
     };
     if (values && statistics.length) {
@@ -204,9 +272,10 @@ export function computeNeighborhoodSummaryOnCPU(
   return {table, modes, entropy, overflow: Uint32Array.of(0)};
 }
 
-/** CPU twin with uncapped medians. Optional unused spatial-weights ports are omitted. */
+/** CPU twin with uncapped medians and the same upstream loss bindings as the named GPU form. */
 export class CPUNeighborhoodSummaryOperation extends GPUCPUOperation {
   constructor(props: NeighborhoodSummaryOperationProps) {
+    props = snapshotNeighborhoodSummaryOperationProps(props);
     const id = props.id ?? 'neighborhood-summary';
     const statistics = props.statistics ?? [];
     validateSummaryOptions(id, props);
@@ -270,6 +339,15 @@ export class CPUNeighborhoodSummaryOperation extends GPUCPUOperation {
         ...(props.weights.status?.overflow !== undefined
           ? {weightsOverflow: props.weights.status.overflow}
           : {}),
+        ...(props.weights.status?.candidateOverflow !== undefined
+          ? {weightsCandidateOverflow: props.weights.status.candidateOverflow}
+          : {}),
+        ...(props.weights.status?.iterationLimitReached !== undefined
+          ? {weightsIterationLimitReached: props.weights.status.iterationLimitReached}
+          : {}),
+        ...(props.weights.status?.converged !== undefined
+          ? {weightsConverged: props.weights.status.converged}
+          : {}),
         ...(props.values !== undefined ? {values: props.values} : {}),
         ...(props.categories !== undefined ? {categories: props.categories} : {}),
         ...(props.mask !== undefined ? {mask: props.mask} : {})
@@ -284,10 +362,24 @@ export class CPUNeighborhoodSummaryOperation extends GPUCPUOperation {
             offsets,
             neighbors: getCPUOperationUint32Rows(id, inputs, 'neighbors'),
             weights: getCPUOperationFloat32Rows(id, inputs, 'weights'),
-            weightsOverflow:
-              props.weights.status?.overflow !== undefined
-                ? getCPUOperationUint32Rows(id, inputs, 'weightsOverflow')
-                : undefined,
+            status: {
+              overflow:
+                props.weights.status?.overflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsOverflow')
+                  : undefined,
+              candidateOverflow:
+                props.weights.status?.candidateOverflow !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsCandidateOverflow')
+                  : undefined,
+              iterationLimitReached:
+                props.weights.status?.iterationLimitReached !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsIterationLimitReached')
+                  : undefined,
+              converged:
+                props.weights.status?.converged !== undefined
+                  ? getCPUOperationUint32Rows(id, inputs, 'weightsConverged')
+                  : undefined
+            },
             values:
               props.values !== undefined
                 ? props.valuesFormat === 'uint32'

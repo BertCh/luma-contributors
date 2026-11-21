@@ -3,28 +3,102 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUPolygonOverlayOutput} from './gpu-polygon-overlay';
+import type {Device} from '@luma.gl/core';
 import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   getNextPowerOfTwo,
   getGraphOutputViews,
   validateCapacity,
+  validateRequirement,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** Captures known status views once, including inherited and hidden refused fields. */
+export function snapshotOverlayStatusFields(
+  id: string,
+  output: GPUPolygonOverlayOutput
+): {
+  status: GPUPolygonOverlayOutput['status'];
+  boundaryStatus: GPUPolygonOverlayOutput['boundary']['status'];
+} {
+  const refused = [
+    'invalidCount',
+    'iterationCount',
+    'converged',
+    'iterationLimitReached',
+    'approximation',
+    'uncertainCount',
+    'requiredCount',
+    'ringCount',
+    'requiredRingCount',
+    'nodedSegmentRequiredCount'
+  ];
+  const snapshots: Record<string, unknown>[] = [];
+  for (const [path, status, supported] of [
+    [
+      'output.status',
+      output.status,
+      [
+        'count',
+        'overflow',
+        'candidateOverflow',
+        'ringCount',
+        'requiredRingCount',
+        'uncertainCount',
+        'nodedSegmentRequiredCount'
+      ]
+    ],
+    [
+      'output.boundary.status',
+      output.boundary.status,
+      ['count', 'requiredCount', 'overflow', 'candidateOverflow']
+    ]
+  ] as const) {
+    const fields = new Set([...supported, ...refused, ...Object.getOwnPropertyNames(status)]);
+    const captured: Record<string, unknown> = {};
+    for (const name of fields) {
+      if (!(name in status)) continue;
+      const view = (status as Record<string, unknown>)[name];
+      validateRequirement(
+        id,
+        view === undefined || (supported as readonly string[]).includes(name),
+        `${path}.${name} is unsupported because this pipeline does not publish it; omit the view and use the documented count and overflow diagnostics`
+      );
+      if ((supported as readonly string[]).includes(name)) captured[name] = view;
+    }
+    snapshots.push(Object.freeze(captured));
+  }
+  return {
+    status: snapshots[0] as GPUPolygonOverlayOutput['status'],
+    boundaryStatus: snapshots[1] as GPUPolygonOverlayOutput['boundary']['status']
+  };
+}
 
 /** Preflights the overlay and its noder, grid, scans, two BVHs and ring assembly without mutation. */
 export function validateOverlayScratchByteLengths<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  props: {
-    expandedVertexCount: number;
-    inputRingCount: number;
-    intersections: number;
-    nodedSegments: number;
-    boundaryCapacity: number;
-    outputRingCapacity: number;
-    outputVertexCapacity: number;
-    leafCapacity?: number;
-  }
+  props: OverlayScratchDimensions
+): void {
+  validateOverlayScratchByteLengthsForDevice(graph.device, id, props);
+}
+
+type OverlayScratchDimensions = {
+  expandedVertexCount: number;
+  inputRingCount: number;
+  intersections: number;
+  nodedSegments: number;
+  boundaryCapacity: number;
+  outputRingCapacity: number;
+  outputVertexCapacity: number;
+  leafCapacity?: number;
+};
+
+/** Checks each derived scratch binding without requiring a graph. @internal */
+export function validateOverlayScratchByteLengthsForDevice(
+  device: Device,
+  id: string,
+  props: OverlayScratchDimensions
 ): void {
   const hotCapacity = props.expandedVertexCount + props.intersections;
   const incidenceCapacity = Math.max(
@@ -59,13 +133,13 @@ export function validateOverlayScratchByteLengths<Parameters>(
   })) {
     const byteLength = Math.max(4, bytes);
     validateGPUStorageBindingByteLength(
-      graph.device,
+      device,
       id,
       name,
       byteLength,
       'reduce capacities or split input features'
     );
-    validateCapacity(id, `${name} byteLength`, byteLength, 4, graph.device.limits.maxBufferSize);
+    validateCapacity(id, `${name} byteLength`, byteLength, 4, device.limits.maxBufferSize);
   }
 }
 

@@ -15,7 +15,7 @@ import {distanceCases, decodePackedRuns} from '../../oracles/parity-wp4-round3-f
 import {ParityRasterGraph} from '../../oracles/parity-wp4-round3-graph';
 import {compareRasterParity} from '../../oracles/parity-wp4-compare';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const NONE = 0xffffffff;
 for (const scene of distanceCases) {
@@ -79,44 +79,49 @@ for (const scene of distanceCases) {
           const distances = owner.output('distances', 'float32', length);
           const nearest = owner.output('nearest', 'uint32', length);
           const allocation = owner.output('allocation', 'uint32', length);
+          const parameters = owner.input(
+            'parameters',
+            'float32',
+            getGPUDistanceFieldParameterValues({maximumDistance: scene.maximumDistance}, grid)
+          );
+          const getSeeds = () => {
+            if (pointMode) {
+              return {
+                seedPositions: owner.input(
+                  'points',
+                  'float32x2',
+                  new Float32Array(points.length ? points : [-1, -1])
+                ),
+                seedIds: owner.input(
+                  'ids',
+                  'uint32',
+                  new Uint32Array(identifiers.length ? identifiers : [NONE])
+                ),
+                seedCount: owner.input('count', 'uint32', Uint32Array.of(identifiers.length))
+              };
+            }
+            const seedMask = owner.input('mask', 'uint32', mask);
+            if (!scene.positions.length) return {seedMask};
+            return {
+              seedMask,
+              seedPositions: owner.input(
+                'positions',
+                'float32x2',
+                Float32Array.from(scene.positions, (value, index) =>
+                  reverseRows && index % 2 === 1 ? -value : value
+                )
+              ),
+              seedIds: owner.input('seed-ids', 'uint32', new Uint32Array(scene.ids)),
+              seedCount: owner.input('seed-count', 'uint32', Uint32Array.of(scene.count))
+            };
+          };
           owner.graph.add(
             new GPUDistanceField({
               grid,
               mode: refinement === -1 ? 'exact' : 'jump-flood',
               jumpFloodRefinementIterationCount: refinement === -1 ? undefined : refinement,
-              parameters: owner.input(
-                'parameters',
-                'float32',
-                getGPUDistanceFieldParameterValues({maximumDistance: scene.maximumDistance}, grid)
-              ),
-              seedMask: pointMode ? undefined : owner.input('mask', 'uint32', mask),
-              ...(pointMode
-                ? {
-                    seedPositions: owner.input(
-                      'points',
-                      'float32x2',
-                      new Float32Array(points.length ? points : [-1, -1])
-                    ),
-                    seedIds: owner.input(
-                      'ids',
-                      'uint32',
-                      new Uint32Array(identifiers.length ? identifiers : [NONE])
-                    ),
-                    seedCount: owner.input('count', 'uint32', Uint32Array.of(identifiers.length))
-                  }
-                : scene.positions.length
-                  ? {
-                      seedPositions: owner.input(
-                        'positions',
-                        'float32x2',
-                        Float32Array.from(scene.positions, (value, index) =>
-                          reverseRows && index % 2 === 1 ? -value : value
-                        )
-                      ),
-                      seedIds: owner.input('seed-ids', 'uint32', new Uint32Array(scene.ids)),
-                      seedCount: owner.input('seed-count', 'uint32', Uint32Array.of(scene.count))
-                    }
-                  : {}),
+              parameters,
+              ...getSeeds(),
               output: {
                 distances: distances.view,
                 texture: textureView,

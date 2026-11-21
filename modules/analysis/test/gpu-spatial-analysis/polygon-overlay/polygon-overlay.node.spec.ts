@@ -8,6 +8,7 @@ import {expect, it, vi} from 'vitest';
 import {
   GPUBufferSurface,
   GPUPolygonOverlay,
+  preflightGPUPolygonOverlay,
   type GPUPolygonOverlayOutput
 } from '../../../src/gpu-spatial-analysis/index';
 import {
@@ -84,7 +85,8 @@ it('GPUPolygonOverlay builds a noded Boolean boundary and compact polygon surfac
   expect(ids).toContain('polygon-overlay-classify-boundary');
   expect(ids).toContain('polygon-overlay-emit-boundary');
   expect(ids.some(id => id.startsWith('polygon-overlay-assemble-'))).toBe(true);
-  expect(ids.at(-1)).toBe('polygon-overlay-publish');
+  expect(ids).toContain('polygon-overlay-publish');
+  expect(ids.at(-1)).toBe('polygon-overlay-assembly-completeness');
   expect(ids).not.toContain('polygon-overlay-assemble-cancel');
   expect(ids).not.toContain('polygon-overlay-publish-required');
 });
@@ -331,4 +333,44 @@ it('GPUPolygonOverlay builds with the smallest capacities', () => {
       expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
     }
   }
+});
+
+it('RCP-102 preflights identical limits without registering nodes or resources', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const contributor = new GPUPolygonOverlay({
+    left: polygon(graph),
+    operation: 'dissolve',
+    vertexTolerance: 1,
+    capacity: {intersections: 32, nodedSegments: 64},
+    output: output(graph)
+  });
+  const add = vi.spyOn(graph, 'add');
+  const register = vi.spyOn(graph, 'createTransientBuffer');
+  expect(preflightGPUPolygonOverlay(graph, contributor.props)).toEqual(
+    contributor.preflight(graph)
+  );
+  expect(contributor.preflight(graph).expandedVertexCount).toBe(10);
+  expect(add).not.toHaveBeenCalled();
+  expect(register).not.toHaveBeenCalled();
+  const originalLimit = device.limits.maxStorageBufferBindingSize;
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {
+    value: 64,
+    configurable: true
+  });
+  let preflightError: unknown;
+  try {
+    contributor.preflight(graph);
+  } catch (error) {
+    preflightError = error;
+  }
+  expect(preflightError).toBeInstanceOf(Error);
+  expect(() => contributor.getCommandNodes(graph)).toThrow((preflightError as Error).message);
+  expect(add).not.toHaveBeenCalled();
+  expect(register).not.toHaveBeenCalled();
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {
+    value: originalLimit,
+    configurable: true
+  });
+  device.destroy();
 });

@@ -8,7 +8,10 @@ import {GPULineNoding} from '../../../src/gpu-spatial-analysis/geometry-topology
 import {GPUMakeValid} from '../../../src/gpu-spatial-analysis/geometry-topology/gpu-make-valid';
 import {GPUPolygonize} from '../../../src/gpu-spatial-analysis/geometry-topology/gpu-polygonize';
 import {GPULinearReferencing} from '../../../src/gpu-spatial-analysis/linear-referencing/index';
-import {GPUBufferSurface} from '../../../src/gpu-spatial-analysis/polygon-buffer/gpu-buffer-surface';
+import {
+  GPUBufferSurface,
+  type GPUBufferSurfaceProps
+} from '../../../src/gpu-spatial-analysis/polygon-buffer/gpu-buffer-surface';
 import {GPUBufferSelection} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-buffer-selection';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
@@ -157,10 +160,25 @@ const BUILDERS: Record<string, {names: string[]; build: Builder}> = {
             polygonOffsets: view('uint32', 9),
             ringOffsets: view('uint32', 9)
           },
-          status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+          boundary: {
+            endpoints: view('float32x4', 128),
+            operandIds: view('uint32', 128),
+            sourceFeatureIds: view('uint32', 128),
+            status: {
+              count: view('uint32', 1),
+              requiredCount: view('uint32', 1),
+              overflow: view('uint32', 1),
+              candidateOverflow: view('uint32', 1)
+            }
+          },
+          status: {
+            count: view('uint32', 1),
+            overflow: view('uint32', 1),
+            candidateOverflow: view('uint32', 1)
+          }
         },
         ...overrides
-      } as never)
+      } satisfies GPUBufferSurfaceProps)
   },
   'buffer-selection': {
     names: ['leafCapacity'],
@@ -169,7 +187,7 @@ const BUILDERS: Record<string, {names: string[]; build: Builder}> = {
         id: 'buffer-selection',
         points: {kind: 'points', positions: view('float32x2', 10)},
         features: {kind: 'segments', starts: view('float32x2', 3), ends: view('float32x2', 3)},
-        distance: view('float32', 1),
+        radius: view('float32', 1),
         candidateCapacity: 16,
         output: {outputMask: view('uint32', 10)},
         ...overrides

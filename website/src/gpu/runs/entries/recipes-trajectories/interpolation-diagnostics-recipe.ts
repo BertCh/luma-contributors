@@ -55,7 +55,7 @@ export default defineOperationRun({
         indexBounds: [0, 0, grid.width * grid.cellSize, grid.worldHeight],
         maximumNeighborCount: 16
       },
-      outputs: {
+      output: {
         values: surface.view,
         variance: variance.view,
         predictions: predictions.view,

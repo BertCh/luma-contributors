@@ -61,6 +61,37 @@ it('packs the parameter layout and rejects invalid settings', () => {
   expect(() => getGPUSpaceTimeDiggleRandomParameterValues(1.5)).toThrow(/seed/);
 });
 
+it('rejects settings that lose their width, order or finiteness in float32 (DPC-108)', () => {
+  // Spacing of float32 at 1e7 is 1, so 10000000.25 packs to 10000000: a zero X extent.
+  expect(Math.fround(10000000.25)).toBe(10000000);
+  for (const [bad, pattern] of [
+    [{...SETTINGS, bounds: [10000000, 0, 10000000.25, 1] as const}, /bounds .*float32/],
+    [{...SETTINGS, bounds: [0, 0, 1e39, 8] as const}, /bounds .*float32/],
+    [{...SETTINGS, timeWindow: [1e8, 1e8 + 1] as const}, /timeWindow .*float32/],
+    [{...SETTINGS, maximumDistance: 1e-50}, /maximumDistance .*float32/],
+    [{...SETTINGS, maximumTimeLag: 1e39}, /maximumTimeLag .*float32/],
+    [{...SETTINGS, spatialBandwidth: 1e-50}, /spatialBandwidth .*float32/],
+    [{...SETTINGS, temporalBandwidth: 1e39}, /temporalBandwidth .*float32/],
+    [{...SETTINGS, maximumDistance: 3e38, spatialBandwidth: 3e38}, /searchDistance .*float32/]
+  ] as const) {
+    expect(() => getGPUSpaceTimeKFunctionParameterValues(bad)).toThrow(
+      /^getGPUSpaceTimeKFunctionParameterValues /
+    );
+    expect(() => getGPUSpaceTimeKFunctionParameterValues(bad)).toThrow(pattern);
+  }
+  // Large but representable projected coordinates still pack.
+  expect(
+    Array.from(
+      getGPUSpaceTimeKFunctionParameterValues({...SETTINGS, bounds: [10000000, 0, 10000002, 1]})
+    ).slice(0, 4)
+  ).toEqual([10000000, 0, 10000002, 1]);
+});
+
+it('keeps the remaining Diggle seed checks', () => {
+  expect(() => getGPUSpaceTimeDiggleRandomParameterValues(-1)).toThrow(/seed/);
+  expect(() => getGPUSpaceTimeDiggleRandomParameterValues(1.5)).toThrow(/seed/);
+});
+
 function createViews(rows: number, overrides: Record<string, unknown> = {}) {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
@@ -108,9 +139,9 @@ it('GPUSpaceTimeKFunction validates props at construction with the ID and the pr
     build({intensities: view('intensities', 'float32', 20)}, {d: view('d', 'float32', 12)})
   ).toThrow(/homogeneous estimator only/);
   expect(build({parameters: view('short-parameters', 'float32', 10)})).toThrow(
-    /parameters must hold 11/
+    /parameters length 10 must hold at least 11 float32 values/
   );
-  expect(build({gridSize: [0, 8]})).toThrow(/gridSize/);
+  expect(build({gridSize: [0, 8]})).toThrow(/gridSize.*16777216/);
   // 64 x 64 classes cannot be held by the pair histogram accumulators.
   expect(
     build({distanceClassCount: 64, timeClassCount: 64}, {k: view('big-k', 'float32', 4096)})
@@ -134,7 +165,8 @@ it('GPUSpaceTimeKFunction emits audited kernels within eight storage bindings', 
       ['marginals', {marginals: true}, false],
       ['pair correlation', {pairCorrelation: true}, true],
       ['local', {local: true}, false],
-      ['everything', {marginals: true, pairCorrelation: true, local: true}, false]
+      ['everything', {marginals: true, pairCorrelation: true, local: true}, false],
+      ['inhomogeneous everything', {pairCorrelation: true, local: true}, true]
     ] as const) {
       const rows = 40;
       const {device, graph, view, props} = createViews(rows, {edgeCorrection});

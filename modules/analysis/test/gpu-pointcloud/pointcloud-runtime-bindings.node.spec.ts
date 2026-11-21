@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
-import {getPointCloudKernelNodes} from '../../src/pointcloud-analysis/operations/pointcloud-kernel-nodes';
+import {
+  getPointCloudKernelNodes,
+  validatePointCloudPackedViews
+} from '../../src/pointcloud-analysis/operations/pointcloud-kernel-nodes';
 import {afterAll, afterEach, expect, it, vi} from 'vitest';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -40,6 +43,28 @@ import {
 const device = createNullWebGPUDevice();
 afterAll(() => device.destroy());
 afterEach(() => vi.restoreAllMocks());
+
+it('checks shared declared point-cloud ports before layout and alias validation', () => {
+  const graph = new GPUCommandGraph(device);
+  const squaredDistances = createTransientView(graph, 'wrong-distance-port', 'uint32', 3);
+  const counts = createTransientView(graph, 'count-port', 'uint32', 3);
+  const descriptors = {
+    squaredDistances: {required: true, viewType: 'data' as const, formats: ['float32' as const]},
+    counts: {required: true, viewType: 'data' as const, formats: ['uint32' as const]}
+  };
+  expect(() =>
+    validatePointCloudPackedViews('lidar', {squaredDistances, counts}, {}, [], descriptors)
+  ).toThrow(/lidar squaredDistances.*float32.*received uint32/);
+  expect(() =>
+    validatePointCloudPackedViews(
+      'lidar',
+      {squaredDistances: createTransientView(graph, 'distance-port', 'float32', 3)},
+      {},
+      [],
+      descriptors
+    )
+  ).toThrow(/lidar counts.*uint32.*received undefined/);
+});
 const GRID = {
   origin: [0, 0] as const,
   cellSize: 1,
@@ -427,7 +452,7 @@ it('checks derived ICP moments against device binding size before allocating the
       source: positions,
       target: positions,
       maximumDistance: 1,
-      iterations: 1,
+      maximumIterations: 1,
       output: {
         transform: view('float32', 16),
         history: view('float32x3', 1),
@@ -649,7 +674,7 @@ it('ignores unused point-to-point normals and permits disjoint ICP outputs acros
     source: positions,
     target: positions,
     maximumDistance: 1,
-    iterations: 1,
+    maximumIterations: 1,
     targetNormals: graph.createDataView(backing.buffer, {format: 'float32x3', length: 1}),
     output: {
       transform: graph.createDataView(backing.buffer, {format: 'float32', length: 16}),
@@ -677,7 +702,7 @@ it('keeps ICP shader and pipeline counts fixed across iterations and merge level
         targetNormals: view('float32x3', 6),
         metric,
         maximumDistance: 1,
-        iterations,
+        maximumIterations: iterations,
         output: {
           transform: view('float32', 16),
           history: view('float32x3', iterations),

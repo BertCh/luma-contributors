@@ -26,6 +26,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  validateCommandNodeBudget,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -45,6 +46,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -65,6 +67,15 @@ export const GPU_TERRAIN_CUMULATIVE_VIEWSHED_SAMPLES_PER_DISPATCH = 2 ** 28;
 
 /** Elements between batch words: 256 bytes, so every batch binds at element offset 0. */
 const BATCH_STRIDE = 64;
+
+/**
+ * Command nodes besides the per-batch kernels and the pyramid levels: elevation canonicalization
+ * (up to two), two zero fills, the observer records and the batch table.
+ */
+const CUMULATIVE_VIEWSHED_FIXED_NODE_ALLOWANCE = 6;
+
+/** Pyramid command nodes besides one per level: the fused level parameter upload (up to two). */
+const CUMULATIVE_VIEWSHED_PYRAMID_NODE_ALLOWANCE = 2;
 
 /** Caller-owned outputs of {@link GPUTerrainCumulativeViewshed}, one count per pixel. */
 export type GPUTerrainCumulativeViewshedOutput = {
@@ -155,14 +166,18 @@ export type GPUTerrainCumulativeViewshedProps = {
  * {@link invocationsPerDispatch} pairs run one kernel each, one invocation per pair, and
  * accumulate with `atomicAdd`. Every batch kernel has the same WGSL: a batch reads its first
  * observer and pixel from a GPU-written batch word, so the whole loop compiles one pipeline.
- * Observers
- * outside the grid or on invalid cells contribute nothing, and neither do invalid targets or
- * targets beyond `maximumDistance`. The target elevation is the pixel value plus the target height
+ * Observers outside the grid contribute nothing. Ground-relative observers on invalid cells contribute nothing;
+ * absolute observers with finite supplied elevation can contribute over missing ground. Invalid
+ * targets and targets beyond `maximumDistance` contribute nothing. The target elevation is the pixel value plus the target height
  * (not bilinear), exactly as in {@link GPUTerrainViewshed}, so the counts equal the sum of the
  * single-observer viewsheds.
  *
  * Cell-size model: see {@link GPUTerrainCumulativeViewshedProps}. Cost is
  * O(observers * width * height * max(width, height)) samples for `'march'`.
+ * Construction allows at most 32,768 estimated command nodes per contributor in total, including
+ * locally built preparation, pyramid, fill, record and batch-table work. This total is distinct
+ * from observers or observer-target pairs per dispatch; increase the chunk size or partition
+ * observers to stay within it.
  */
 export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -178,6 +193,12 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
   readonly observersPerDispatch: number;
   /** (observer, pixel) pairs per dispatch; every batch dispatches this many invocations. */
   readonly invocationsPerDispatch: number;
+  /**
+   * Upper bound on the command nodes `getCommandNodes` returns: one kernel per batch of
+   * {@link invocationsPerDispatch} pairs plus canonicalization, pyramid, fill, record and
+   * batch-table nodes. Construction rejects more than `GPU_MAXIMUM_COMMAND_NODE_COUNT`.
+   */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUTerrainCumulativeViewshedProps) {
     this.id = props.id ?? 'terrain-cumulative-viewshed';
@@ -202,6 +223,8 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     const pixelCount = validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     validateSinglePackedView(props.observers, ['float32x2'], `${id} observers`);
     if (props.observerHeights) {
       validateSinglePackedView(props.observerHeights, ['float32'], `${id} observerHeights`);
@@ -242,6 +265,18 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     }
     this.observersPerDispatch = this.invocationsPerDispatch / pixelCount;
     this.pyramidLayout = getSightLinePyramidLayout(id, props.traversal, props.grid, props.pyramid);
+    const batchCount = Math.ceil(
+      (props.observers.length * pixelCount) / this.invocationsPerDispatch
+    );
+    const builtPyramid =
+      props.traversal === 'pyramid' && this.pyramidLayout && !props.pyramid
+        ? this.pyramidLayout
+        : undefined;
+    this.estimatedCommandNodeCount =
+      batchCount +
+      CUMULATIVE_VIEWSHED_FIXED_NODE_ALLOWANCE +
+      (builtPyramid ? builtPyramid.levels.length + CUMULATIVE_VIEWSHED_PYRAMID_NODE_ALLOWANCE : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRasterBuffersDistinct(
       id,
       [output.visibleCount, output.marginalCount],
@@ -463,7 +498,8 @@ fn isInsideGrid(position: vec2<f32>) -> bool {
   let tolerance = vec4<f32>(
     settings[settingsOffset + 6u], settings[settingsOffset + 7u],
     settings[settingsOffset + 8u], settings[settingsOffset + 9u]);
-  if (!isInsideGrid(observer) || !isValidPixel(column, row)) {
+  if (!isInsideGrid(observer) || !isFiniteValue(observerHeight) ||
+      !isFiniteValue(targetHeight) || !isValidPixel(column, row)) {
     return;
   }
 ${

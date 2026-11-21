@@ -93,7 +93,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
       const repairValidity = session.output('repairValidity', 'uint32', {
         role: 'intermediate',
         geometry: 'raster',
-        meaning: 'repair validity (0 or 1; 0xffffffff unresolved)'
+        meaning: 'repair usability (0 or 1; 0 while component labelling is unresolved)'
       });
       const repairLabels = session.output('repairLabels', 'uint32', {
         role: 'intermediate',

@@ -2,13 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {listQualifiedCatalogEntries} from './catalog-qualified-entries';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
+import {
+  getCatalogNumberProblem,
+  getCatalogParameterRenameMessage,
+  getCatalogValidationIdentity,
+  parseCatalogParameterNumber,
+  resolveCatalogParameterAliases
+} from './catalog-parameter-constraints';
+export {resolveCatalogParameterUnit} from './catalog-parameter-constraints';
 import type {Device} from '@luma.gl/core';
 import {planGpuPointBufferPreview} from './catalog-gpu-point-buffer';
-import {
-  GPU_SPATIAL_ANALYSIS_CAPABILITIES,
-  GPU_SPATIAL_ANALYSIS_OPERATORS
-} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   addCatalogDiagnostic,
   countCollectionVertices,
@@ -40,15 +45,18 @@ import {
 } from './catalog-binding-types';
 import {validateGeometryOutputCapacity} from './catalog-extra-geometry';
 import {EXTRA_CPU_BINDINGS} from './catalog-extra-bindings';
-import {listPointCloudCatalogEntries} from './catalog-pointcloud-entries';
 import {POINT_CLOUD_BINDINGS} from './catalog-pointcloud-bindings';
+import {
+  POINT_CLOUD_ICP_ID,
+  POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER,
+  REMOVED_POINT_CLOUD_ICP_ITERATIONS_MESSAGE
+} from './catalog-pointcloud-icp-parameters';
 import {PLATFORM3_A_BINDINGS} from './catalog-platform3-a-bindings';
 import {PLATFORM3_B_BINDINGS} from './catalog-platform3-b-bindings';
 import {PLATFORM4_GEOMETRY_GPU_RUNNERS} from './catalog-platform4-geometry-gpu';
 import {RASTER_TIMESERIES_PANEL_OPERATORS} from './catalog-raster-timeseries-bindings';
 import {PLATFORM4_NEW_BINDINGS} from './catalog-platform4-new-bindings';
 import {SPACETIME_BINDINGS} from './catalog-spacetime-bindings';
-import {appendValidationCatalogEntries} from './catalog-validation-bindings';
 import {RASTER_EMBEDDING_BINDINGS} from './catalog-raster-embeddings-bindings';
 import {PLATFORM5_NEW_BINDINGS} from './catalog-platform5-bindings';
 import {NETWORK_CATEGORICAL_BINDINGS} from './catalog-network-categorical-bindings';
@@ -72,6 +80,7 @@ import {listCatalogLensScenarios, type CatalogLensScenario} from './catalog-lens
 export type {
   CatalogEngine,
   CatalogEngineSupport,
+  CatalogExecutionStage,
   CatalogGpuContext,
   CatalogInputSpec,
   CatalogOperationBinding,
@@ -294,7 +303,7 @@ const CPU_BINDINGS: readonly CpuBinding[] = [
     title: 'Clip by convex polygon (overlay)',
     domain: 'geometry',
     summary:
-      'Intersection of polygons or lines with one convex clip polygon; outputs get new part identities.',
+      'Intersection of subject polygons or lines with one simple convex clip shell with no holes; outputs get new part identities.',
     capabilityIds: ['geometry-overlay', 'geometry-editing'],
     contributorNames: ['GPURectangleClip'],
     engine: 'cpu-reference',
@@ -308,7 +317,7 @@ const CPU_BINDINGS: readonly CpuBinding[] = [
       },
       {
         name: 'clip',
-        label: 'Convex clip polygon',
+        label: 'Clip operand: one simple convex shell, no holes',
         accepts: ['polygon'],
         maximumFeatures: 1,
         maximumVertices: 1000
@@ -320,6 +329,7 @@ const CPU_BINDINGS: readonly CpuBinding[] = [
         tableId: 'clipped',
         label: 'Clipped features',
         geometry: 'polygon',
+        geometryFromInput: 'features',
         identityColumns: ['output_id', 'source_index', 'source_id', 'part_index'],
         maximumRows: 40000
       }
@@ -327,9 +337,9 @@ const CPU_BINDINGS: readonly CpuBinding[] = [
     cleanup:
       'CPU only; no retained GPU resources. Published results are removed through native Sources.',
     declaredBehavior: [
-      'A non-convex or invalid clip polygon throws; the clip polygon is oriented counterclockwise.',
+      'The clip operand must contain exactly one polygon and exactly one ring: a simple convex shell with no holes. Multipart, holed, non-convex or invalid clip operands throw; the accepted shell is oriented counterclockwise.',
       'Features entirely outside the clip produce no row and are counted.',
-      'Holes clip independently; a hole outside the clip is dropped; concave shells are flagged.'
+      'Holes in the subject geometry clip independently; a subject hole outside the clip is dropped; concave subject shells are flagged.'
     ],
     limitation:
       'Intersection only (no union, difference or general polygon overlay); planar edges.',
@@ -557,11 +567,16 @@ export function getCatalogBinding(operationId: string): CatalogOperationBinding 
 export function getCatalogDefaultParameters(
   binding: Pick<CatalogOperationBinding, 'parameters'>
 ): Record<string, CatalogParameterValue> {
-  return Object.fromEntries(
-    binding.parameters.flatMap(spec =>
-      spec.defaultValue === undefined ? [] : [[spec.name, spec.defaultValue]]
-    )
+  const defaults: Record<string, CatalogParameterValue> = Object.fromEntries(
+    binding.parameters.flatMap(spec => {
+      const value = spec.defaultValue;
+      return value === undefined ? [] : [[spec.name, Array.isArray(value) ? [...value] : value]];
+    })
   );
+  return resolveCatalogParameterAliases(binding.parameters, defaults, (name, problem) => {
+    validateRequirement(getCatalogValidationIdentity('catalog'), false, `${name} ${problem}`);
+    throw new Error('unreachable');
+  });
 }
 
 /** Coerces and range-checks raw values; obsolete topology parameters in saved workflows are ignored. */
@@ -570,66 +585,120 @@ export function normalizeCatalogParameters(
     Partial<Pick<CatalogOperationBinding, 'id'>>,
   raw: Readonly<Record<string, unknown>>
 ): Record<string, CatalogParameterValue> {
+  if (
+    binding.id === 'trajectory-modal-split' ||
+    (binding.id === undefined &&
+      binding.parameters.some(parameter => parameter.name === 'modeSpeedUpperBoundsFloat32'))
+  ) {
+    validateRequirement(
+      getCatalogValidationIdentity('trajectory-modal-split'),
+      !('modeSpeedBreaks' in raw),
+      'modeSpeedBreaks was removed; use modeSpeedUpperBoundsFloat32'
+    );
+  }
+  if (
+    binding.id === POINT_CLOUD_ICP_ID ||
+    (binding.id === undefined &&
+      binding.parameters.includes(POINT_CLOUD_ICP_MAXIMUM_ITERATIONS_PARAMETER))
+  ) {
+    validateRequirement(
+      getCatalogValidationIdentity(POINT_CLOUD_ICP_ID),
+      !('iterations' in raw),
+      REMOVED_POINT_CLOUD_ICP_ITERATIONS_MESSAGE
+    );
+  }
+  const explicit = resolveCatalogParameterAliases(binding.parameters, raw, (name, problem) => {
+    const spec = binding.parameters.find(candidate => candidate.name === name);
+    validateRequirement(
+      getCatalogValidationIdentity(binding.id ?? 'catalog'),
+      false,
+      `${name} ${problem}`,
+      {
+        code: spec?.kind === 'integer' ? 'INTEGER_RANGE' : 'NUMBER_RANGE',
+        path: name,
+        received: raw[name],
+        expected: problem
+      }
+    );
+    throw new Error('unreachable');
+  });
   for (const name of Object.keys(raw)) {
     const obsoleteTopologyParameter =
       ['network-structure', 'network-line-graph', 'network-snap-points'].includes(
         binding.id ?? ''
       ) &&
       ['costMode', 'forwardCostProperty', 'reverseCostProperty', 'onewayProperty'].includes(name);
-    if (!binding.parameters.some(spec => spec.name === name) && !obsoleteTopologyParameter)
-      throw new Error(
-        `${binding.id ?? 'catalog'}: ${name} is an unknown parameter; use a declared parameter.`
-      );
+    if (!binding.parameters.some(spec => spec.name === name) && !obsoleteTopologyParameter) {
+      const problem =
+        getCatalogParameterRenameMessage(binding.parameters, name) ??
+        `${name} is an unknown parameter; use a declared parameter.`;
+      throw new Error(`${binding.id ?? 'catalog'}: ${problem}`);
+    }
   }
   const result: Record<string, CatalogParameterValue> = {};
+  const defaults = getCatalogDefaultParameters(binding);
   for (const spec of binding.parameters) {
-    const value = raw[spec.name] === undefined ? spec.defaultValue : raw[spec.name];
+    const value = explicit[spec.name] === undefined ? defaults[spec.name] : explicit[spec.name];
     if (value === undefined) continue;
     // Parameter value outside its declared type, range or options.
-    const reject = (): never => {
-      throw new Error('Parameter out of range');
+    const reject = (problem: string): never => {
+      validateRequirement(
+        getCatalogValidationIdentity(binding.id ?? 'catalog'),
+        false,
+        `${spec.name} ${problem}`,
+        {
+          code:
+            spec.kind === 'enum'
+              ? 'INVALID_OPTION'
+              : spec.kind === 'integer'
+                ? 'INTEGER_RANGE'
+                : spec.kind === 'number'
+                  ? 'NUMBER_RANGE'
+                  : 'REQUIREMENT',
+          path: spec.name,
+          received: value,
+          expected: problem
+        }
+      );
+      throw new Error('unreachable');
     };
     if (spec.kind === 'boolean') {
-      if (typeof value !== 'boolean') reject();
+      if (typeof value !== 'boolean') reject(`must be a boolean; received ${String(value)}`);
       result[spec.name] = value as boolean;
     } else if (spec.kind === 'enum') {
-      if (typeof value !== 'string' || !spec.options!.includes(value)) reject();
+      if (typeof value !== 'string' || !spec.options!.includes(value))
+        reject(`must be one of ${spec.options!.join(', ')}; received ${String(value)}`);
       result[spec.name] = value as string;
     } else if (spec.kind === 'string') {
-      if (typeof value !== 'string' || value.length > (spec.maximumLength ?? 64)) reject();
+      if (typeof value !== 'string' || value.length > (spec.maximumLength ?? 64))
+        reject(
+          `must be a string of at most ${spec.maximumLength ?? 64} characters; received ${String(value)}`
+        );
       result[spec.name] = value as string;
     } else if (spec.kind === 'number-list') {
       const list =
-        typeof value === 'string'
-          ? value
-              .split(',')
-              .filter(item => item.trim())
-              .map(Number)
-          : value;
+        typeof value === 'string' ? value.split(',').map(parseCatalogParameterNumber) : value;
       if (
         !Array.isArray(list) ||
         !list.length ||
         list.length > (spec.maximumLength ?? 8) ||
-        list.some(
-          item =>
-            typeof item !== 'number' ||
-            !Number.isFinite(item) ||
-            item < (spec.minimum ?? -Infinity) ||
-            item > (spec.maximum ?? Infinity)
-        )
+        (typeof value === 'string' && value.split(',').some(item => !item.trim()))
       )
-        reject();
-      result[spec.name] = list as number[];
+        reject(`must have 1 to ${spec.maximumLength ?? 8} numbers; received ${String(value)}`);
+      for (const item of list as unknown[]) {
+        if (typeof item !== 'number')
+          reject(`must contain finite numbers; received ${String(item)}`);
+        const problem = getCatalogNumberProblem(spec, item as number);
+        if (problem) reject(problem);
+      }
+      result[spec.name] = [...(list as number[])];
     } else {
-      const number = typeof value === 'string' && value.trim() ? Number(value) : value;
-      if (
-        typeof number !== 'number' ||
-        !Number.isFinite(number) ||
-        number < (spec.minimum ?? -Infinity) ||
-        number > (spec.maximum ?? Infinity) ||
-        (spec.kind === 'integer' && !Number.isInteger(number))
-      )
-        reject();
+      const number = parseCatalogParameterNumber(value);
+      if (typeof number !== 'number') reject(`must be a finite number; received ${String(value)}`);
+      const problem = getCatalogNumberProblem(spec, number as number);
+      if (problem) reject(problem);
+      if (spec.kind === 'integer' && !Number.isInteger(number))
+        reject(`must be a whole number; received ${String(number)}`);
       result[spec.name] = number as number;
     }
   }
@@ -649,6 +718,9 @@ export function validateCatalogInputs(
   inputs: Readonly<Record<string, CatalogDataInput | undefined>>
 ): void {
   const hasDataPorts = binding.inputs.some(
+    spec => spec.dataKind === 'table' || spec.dataKind === 'raster' || spec.acceptsTable
+  );
+  const hasExclusiveDataPorts = binding.inputs.some(
     spec => spec.dataKind === 'table' || spec.dataKind === 'raster'
   );
   validateRequirement(
@@ -658,7 +730,7 @@ export function validateCatalogInputs(
   );
   validateRequirement(
     binding.id,
-    !hasDataPorts || (!binding.run && !binding.runGpu),
+    !hasExclusiveDataPorts || (!binding.run && !binding.runGpu),
     'table and raster inputs must use typed engines exclusively'
   );
   for (const spec of binding.inputs) {
@@ -670,7 +742,7 @@ export function validateCatalogInputs(
       validateCatalogRasterInput(inputId, input, spec.maximumCells ?? 0);
       continue;
     }
-    if (spec.dataKind === 'table') {
+    if (spec.dataKind === 'table' || (spec.acceptsTable && input.type === 'table')) {
       validateRequirement(inputId, input.type === 'table', 'input must be a geometry-free table');
       validateCatalogTableInput(inputId, input, spec.maximumFeatures);
       if (!input.table.rowCount) throw new Error('Input required');
@@ -802,7 +874,7 @@ export async function runCatalogOperationAsync(
             parameters
           );
       output = gpu;
-      engine = 'gpu';
+      engine = 'engine' in gpu && gpu.engine === 'cpu-reference' ? 'cpu-reference' : 'gpu';
       dispatchedContributors = gpu.dispatchedContributors ?? binding.gpuContributorNames;
     } catch (failure) {
       options.signal?.throwIfAborted();
@@ -838,7 +910,8 @@ export async function runCatalogOperationAsync(
     parameters,
     tables: output.tables,
     diagnostics: output.diagnostics,
-    summary: output.summary
+    summary: output.summary,
+    ...(output.stages ? {stages: output.stages} : {})
   };
 }
 
@@ -912,7 +985,10 @@ export function serializeCatalogInvocation(
   return JSON.stringify(invocation);
 }
 
-export function parseCatalogInvocation(text: string): {
+export function parseCatalogInvocation(
+  text: string,
+  options: {deferParameterValidation?: boolean} = {}
+): {
   binding: CatalogOperationBinding;
   invocation: CatalogInvocation;
 } {
@@ -924,7 +1000,9 @@ export function parseCatalogInvocation(text: string): {
     binding,
     invocation: {
       ...invocation,
-      parameters: normalizeCatalogParameters(binding, invocation.parameters)
+      parameters: options.deferParameterValidation
+        ? {...invocation.parameters}
+        : normalizeCatalogParameters(binding, invocation.parameters)
     }
   };
 }
@@ -940,41 +1018,33 @@ export function matchCatalogInvocationInputs(
   );
 }
 
-/** Network contributors are exported by the graph package but are outside the ontology catalog. */
-export const KEPLER_NETWORK_CONTRIBUTOR_NAMES = [
-  'GPUNetworkNoding',
-  'GPUNetworkSnapping',
-  'GPUNetworkReachability',
-  'GPUNetworkCostMatrix',
-  'GPUNetworkCostTable',
-  'GPUNetworkCostWeights',
-  'GPUNetworkAccessibility',
-  'GPUNetworkServiceAreas',
-  'GPUNetworkIsochrones',
-  'GPUNetworkPathExtraction',
-  'GPUNetworkNeighborhood',
-  'GPUNetworkSubgraphFilter',
-  'GPUNetworkLineGraph',
-  'GPUNetworkStructure',
-  'GPUNetworkCentrality',
-  'GPUNetworkCoarsening',
-  'GPUAlternativeRoutes',
-  'GPUMapMatching',
-  'GPUFlowAggregation',
-  'GPUEdgeBundling',
-  'GPUNetworkKFunction',
-  'GPUNetworkStatistics'
-] as const;
-
 /** Host panels that already run an operator natively (not through these catalog bindings). */
-const NATIVE_PANEL_OPERATORS: Readonly<Record<string, string>> = {
-  ...RASTER_TIMESERIES_PANEL_OPERATORS,
-  GPUVariableStandardization: 'Analysis panel · Standardize',
-  GPUClassBreaks: 'Analysis panel · Classify',
-  GPUDorlingCartogram: 'Analysis panel · Cartogram'
-};
+const NATIVE_PANEL_OPERATORS = [
+  ...Object.entries(RASTER_TIMESERIES_PANEL_OPERATORS).map(([exportName, location]) => ({
+    package: '@luma-contributors/analysis/raster-analysis',
+    exportName,
+    location
+  })),
+  {
+    package: '@luma-contributors/analysis/dataframe-analysis',
+    exportName: 'GPUVariableStandardization',
+    location: 'Analysis panel · Standardize'
+  },
+  {
+    package: '@luma-contributors/analysis/dataframe-analysis',
+    exportName: 'GPUClassBreaks',
+    location: 'Analysis panel · Classify'
+  },
+  {
+    package: '@luma-contributors/analysis/gpu-spatial-analysis',
+    exportName: 'GPUDorlingCartogram',
+    location: 'Analysis panel · Cartogram'
+  }
+];
 
 export type CatalogEntry = {
+  /** Public package entry point and export name. */
+  identity: {package: string; exportName: string};
   contributorName: string;
   capabilityId: string;
   capabilityTitle: string;
@@ -990,102 +1060,16 @@ export type CatalogEntry = {
   reason?: string;
 };
 
-const NOT_BOUND_REASON =
-  'No executable host binding: declared inputs, units, capacities, output identity, cleanup and serialization are not defined for this contributor. Computation-pack operator and formula entries describe it but do not execute it.';
-
-const LENS_NOT_LOADED_REASON =
-  ' The lens scenario registry is empty here; loading it exposes embedded-dataset scenarios for contributors that have one.';
-
 export type CatalogEntryOptions = {
   /** Registered lens scenarios; defaults to whatever the registry holds now. */
   lensScenarios?: readonly CatalogLensScenario[];
 };
 
-/** One entry per ontology operator and network contributor, with runnability and the reason when not. */
+/** Lists the full analysis catalog and qualified binding extensions, with host runnability. */
 export function listCatalogEntries(options: CatalogEntryOptions = {}): CatalogEntry[] {
-  const entries: CatalogEntry[] = [];
-  const lensScenarios = options.lensScenarios ?? listCatalogLensScenarios();
-  const bindingsFor = (name: string) =>
-    BINDINGS.filter(
-      binding =>
-        binding.contributorNames.includes(name) || binding.gpuContributorNames.includes(name)
-    );
-  const describe = (
-    contributorName: string,
-    capabilityId: string,
-    capabilityTitle: string,
-    domain: string
-  ): CatalogEntry => {
-    const bindings = bindingsFor(contributorName);
-    const lensScenarioIds = lensScenarios
-      .filter(scenario => scenario.element === contributorName)
-      .map(scenario => scenario.id);
-    const base = {
-      contributorName,
-      capabilityId,
-      capabilityTitle,
-      domain,
-      bindingIds: bindings.map(binding => binding.id),
-      ...(lensScenarioIds.length ? {lensScenarioIds} : {})
-    };
-    if (bindings.length) {
-      const dispatching = bindings.filter(binding =>
-        binding.gpuContributorNames.includes(contributorName)
-      );
-      return {
-        ...base,
-        runnable: 'catalog-binding',
-        engine: dispatching.length
-          ? dispatching.some(binding => binding.engine === 'gpu')
-            ? 'gpu'
-            : 'gpu-or-cpu'
-          : 'cpu-reference'
-      };
-    }
-    const location = NATIVE_PANEL_OPERATORS[contributorName];
-    if (location) return {...base, runnable: 'native-panel', location};
-    if (lensScenarioIds.length)
-      return {...base, runnable: 'lens-scenario', engine: 'lens-scenario'};
-    return {
-      ...base,
-      runnable: 'no',
-      reason: lensScenarios.length ? NOT_BOUND_REASON : NOT_BOUND_REASON + LENS_NOT_LOADED_REASON
-    };
-  };
-  const seen = new Set<string>();
-  for (const operator of GPU_SPATIAL_ANALYSIS_OPERATORS) {
-    const capability = GPU_SPATIAL_ANALYSIS_CAPABILITIES.find(
-      candidate => candidate.id === operator.primaryCapability
-    );
-    seen.add(operator.exportName);
-    entries.push(
-      describe(
-        operator.exportName,
-        operator.primaryCapability,
-        capability?.title ?? operator.primaryCapability,
-        capability?.domain ?? 'workflow'
-      )
-    );
-  }
-  // Register domain ontology records before the fallback for newer bound contributors.
-  for (const entry of listPointCloudCatalogEntries(BINDINGS))
-    if (!seen.has(entry.contributorName)) {
-      seen.add(entry.contributorName);
-      entries.push(
-        describe(entry.contributorName, entry.capabilityId, entry.capabilityTitle, entry.domain)
-      );
-    }
-  // Newer bound contributors may be outside the original spatial ontology table.
-  for (const binding of BINDINGS)
-    for (const name of binding.contributorNames)
-      if (!seen.has(name)) {
-        seen.add(name);
-        entries.push(
-          describe(name, binding.capabilityIds[0] ?? binding.domain, binding.title, binding.domain)
-        );
-      }
-  for (const name of KEPLER_NETWORK_CONTRIBUTOR_NAMES)
-    if (!seen.has(name)) entries.push(describe(name, 'gpu-network', 'GPU network', 'network'));
-  appendValidationCatalogEntries(entries, seen, describe);
-  return entries;
+  return listQualifiedCatalogEntries(
+    BINDINGS,
+    options.lensScenarios ?? listCatalogLensScenarios(),
+    NATIVE_PANEL_OPERATORS
+  );
 }

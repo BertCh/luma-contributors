@@ -14,9 +14,10 @@ import {
   GPUMultipleTestingAdjustment,
   GPU_EMPIRICAL_BAYES_SUMMARY
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import {addCatalogDiagnostic, type CatalogCoordinateSystem} from './catalog-geojson';
+import type {CatalogCoordinateSystem} from './catalog-geojson';
 import {finishGrid, requireValueProperty} from './catalog-platform3-b-bindings';
 import {
+  addGpuKrigingStatusDiagnostics,
   computeKrigingFieldGpu,
   computeLineDensityGpu,
   makeGridRunOutput,
@@ -65,14 +66,10 @@ async function runGpuKriging(
   );
   const settings = resolveKrigingSettings(prepared.sample, values);
   const field = await computeKrigingFieldGpu(context, prepared.sample, prepared.grid, settings);
-  if (field.singularCount)
-    addCatalogDiagnostic(
-      prepared.diagnostics,
-      'singular-kriging-system',
-      'warning',
-      'Cells with a singular or ill-conditioned kriging system are nodata.',
-      field.singularCount
-    );
+  addGpuKrigingStatusDiagnostics(prepared.diagnostics, {
+    uncertainCount: field.singularCount,
+    invalidCount: field.invalidCount
+  });
   return finishGrid(
     prepared,
     field,

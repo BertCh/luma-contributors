@@ -78,7 +78,7 @@ export async function runExample(
     parameters: parameters.importToGraph(graph),
     facilities: {kind: 'points', positions: facilities},
     values: observationCounts,
-    outputs: {allocation, distances, statistics}
+    output: {allocation, distances, statistics}
   });
   // allocation colours each cell by its nearest facility; sums totals observations per catchment
   // #endregion example

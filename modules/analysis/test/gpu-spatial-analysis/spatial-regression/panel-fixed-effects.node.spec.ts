@@ -42,11 +42,14 @@ it('panel effects construct GPU nodes and preserve pooled default', () => {
     id: 'unit',
     effects: 'unit'
   }).getCommandNodes(graph);
-  expect(within.length).toBe(pooled.length + 3);
+  expect(within.length).toBe(pooled.length + 5);
   expect(within.some(node => node.id === 'unit-within')).toBe(true);
   const sources = getGPUCommandNodeKernelSources(within);
-  expect(sources.find(kernel => kernel.id === 'unit-unit-means')?.source).toContain(
-    'responseMean +='
+  expect(sources.find(kernel => kernel.id === 'unit-mean-tiles')?.source).toContain(
+    'getRoundedDifference'
+  );
+  expect(sources.find(kernel => kernel.id === 'unit-mean-merge')?.source).toContain(
+    'getAdditionRoundingError'
   );
   expect(sources.find(kernel => kernel.id === 'unit-within')?.source).not.toContain('var period');
   expect(() => new GPUSpatialPanelRegression({...props, response: view('float32', 19)})).toThrow(

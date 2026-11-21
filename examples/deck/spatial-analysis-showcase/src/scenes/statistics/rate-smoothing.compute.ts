@@ -456,7 +456,7 @@ export async function createRateSmoothing(
             }
           : undefined,
       palette: word('palette', paletteBuffer, GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH),
-      outputs: {
+      output: {
         standardizedRates: standardized,
         smoothedRates: smoothed,
         status: {
@@ -676,7 +676,7 @@ export async function createRateSmoothing(
       ctx.setReadout('localPool', null);
       return;
     }
-    const neighborCount = latest.offsets[selectedRow + 1] - latest.offsets[selectedRow];
+    const neighborCount = latest.local.eligibleNeighborCounts[selectedRow];
     ctx.setReadout(
       'selected',
       `${countyName(selectedRow)}: ${formatCount(events[selectedRow])} births / ${formatCount(
@@ -1611,7 +1611,7 @@ export async function createRateSmoothing(
       rows.push({
         label: 'Neighbourhood rate',
         value: (latest.local.pooledRates[row] * RATE_SCALE).toFixed(1),
-        unit: `per 1,000 (${latest.offsets[row + 1] - latest.offsets[row]} neighbours)`
+        unit: `per 1,000 (${latest.local.eligibleNeighborCounts[row]} neighbours)`
       });
     }
     if (map !== 'cluster' && map !== 'excess-risk' && map !== 'neighbor-rate') {

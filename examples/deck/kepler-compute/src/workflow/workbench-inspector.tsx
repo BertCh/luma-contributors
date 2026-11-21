@@ -683,8 +683,11 @@ function OperationContract({operation}: {operation: WorkflowOperation}): React.J
         ))}
         {operation.outputs.map(output => (
           <li key={`output-${output.name}`}>
-            Output: {output.label} · {WORKBENCH_PORT_LABELS[output.kind]} ·{' '}
-            {formatWorkbenchCapacity(output)}
+            Output: {output.label} ·{' '}
+            {output.kindFrom
+              ? `Same representation as input ${output.kindFrom}`
+              : WORKBENCH_PORT_LABELS[output.kind]}{' '}
+            · {formatWorkbenchCapacity(output)}
           </li>
         ))}
       </ul>

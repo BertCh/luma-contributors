@@ -3,18 +3,28 @@
 
 import type {GPUSpatialContext, GPUSpatialFrame} from '../contracts/spatial-context';
 
+const constructionSpatialContextSnapshots = new WeakSet<GPUSpatialContext>();
+
 /** @internal Capture declared fields, including inherited/non-enumerable getters, once. */
 export function snapshotConstructionFields<Props extends object>(
   props: Props,
   fields: readonly (keyof Props)[]
 ): Props {
-  return Object.freeze(
-    Object.fromEntries(fields.filter(field => field in props).map(field => [field, props[field]]))
-  ) as Props;
+  const entries: [keyof Props, unknown][] = [];
+  for (const field of fields) {
+    const value = props[field];
+    // A proxy may supply a value without reporting membership. Only an undefined value needs
+    // the presence check, so absent fields remain distinct from explicitly undefined fields.
+    if (value !== undefined || field in props) entries.push([field, value]);
+  }
+  return Object.freeze(Object.fromEntries(entries)) as Props;
 }
 
 /** @internal Copy and freeze context metadata without cloning graph views or buffers. */
 export function snapshotConstructionSpatialContext(context: GPUSpatialContext): GPUSpatialContext {
+  // Only reuse snapshots produced here. A caller-frozen descriptor may still have changing
+  // getters or mutable nested metadata, so Object.isFrozen alone is insufficient.
+  if (constructionSpatialContextSnapshots.has(context)) return context;
   const snapshot = snapshotConstructionFields(context, [
     'coordinateSpace',
     'metric',
@@ -27,11 +37,24 @@ export function snapshotConstructionSpatialContext(context: GPUSpatialContext): 
     'gridResolution',
     'frame'
   ]);
-  const frame = snapshot.frame;
+  const frame =
+    snapshot.frame &&
+    snapshotConstructionFields(snapshot.frame, [
+      'id',
+      'kind',
+      'origin',
+      'crs',
+      'signature',
+      'unit',
+      'axisOrder',
+      'areaOfUse',
+      'anchor',
+      'precision'
+    ]);
   const origin = frame?.origin;
   const areaOfUse = frame?.areaOfUse;
   const unit = frame?.unit;
-  return Object.freeze({
+  const resolved = Object.freeze({
     ...snapshot,
     ...(snapshot.ellipsoid
       ? {
@@ -41,18 +64,7 @@ export function snapshotConstructionSpatialContext(context: GPUSpatialContext): 
     ...(frame
       ? {
           frame: Object.freeze({
-            ...snapshotConstructionFields(frame, [
-              'id',
-              'kind',
-              'origin',
-              'crs',
-              'signature',
-              'unit',
-              'axisOrder',
-              'areaOfUse',
-              'anchor',
-              'precision'
-            ]),
+            ...frame,
             ...(origin
               ? {origin: Object.freeze([...origin]) as unknown as GPUSpatialFrame['origin']}
               : {}),
@@ -72,4 +84,6 @@ export function snapshotConstructionSpatialContext(context: GPUSpatialContext): 
         }
       : {})
   });
+  constructionSpatialContextSnapshots.add(resolved);
+  return resolved;
 }

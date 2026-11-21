@@ -5,7 +5,7 @@
 import {Buffer} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {describeOutputs} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   KeplerComputeSession,
   KeplerMemoryReservation,
@@ -28,8 +28,24 @@ export class AnalysisOLSOutputs {
 
   constructor(session: KeplerComputeSession, chunkLengths: readonly number[]) {
     const rowCount = chunkLengths.reduce((total, length) => total + length, 0);
+    const layout = describeOutputs(
+      {
+        package: '@luma-contributors/analysis/gpu-spatial-analysis',
+        exportName: 'GPUOrdinaryLeastSquares'
+      },
+      'default',
+      {rowCount: Math.max(1, rowCount), predictorCount: 15}
+    );
+    const capacity = (path: string) => {
+      const declaration = layout.outputs.find(output => output.path === `output.${path}`);
+      if (!declaration) throw new Error(`OLS output layout missing ${path}`);
+      return declaration.capacity;
+    };
     this.reservation = session.registry.reserveMemory(
-      Math.max(1, rowCount) * 4 + 3 * 16 * 4 + GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH * 4 + 4,
+      ['fitted', 'coefficients', 'standardErrors', 'tStatistics', 'summary', 'status.code'].reduce(
+        (bytes, path) => bytes + capacity(path) * 4,
+        0
+      ),
       'gpu',
       'output'
     );
@@ -49,11 +65,11 @@ export class AnalysisOLSOutputs {
         allocate('fitted', rowCount),
         chunkLengths
       );
-      this.coefficients = allocate('coefficients', 16);
-      this.standardErrors = allocate('standard-errors', 16);
-      this.tStatistics = allocate('t-statistics', 16);
-      this.summary = allocate('summary', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH);
-      this.status = allocate('status', 1);
+      this.coefficients = allocate('coefficients', capacity('coefficients'));
+      this.standardErrors = allocate('standard-errors', capacity('standardErrors'));
+      this.tStatistics = allocate('t-statistics', capacity('tStatistics'));
+      this.summary = allocate('summary', capacity('summary'));
+      this.status = allocate('status', capacity('status.code'));
       this.diagnostics = [
         this.coefficients,
         this.standardErrors,
@@ -73,11 +89,23 @@ export class AnalysisOLSOutputs {
     residuals: GraphDataView<'float32'>,
     predictorCount: number
   ): KeplerOLSOutputs {
+    const layout = describeOutputs(
+      {
+        package: '@luma-contributors/analysis/gpu-spatial-analysis',
+        exportName: 'GPUOrdinaryLeastSquares'
+      },
+      'default',
+      {rowCount: Math.max(1, this.fitted.length), predictorCount}
+    );
     const view = <Format extends 'float32' | 'uint32'>(
       name: string,
       format: Format,
-      length: number
+      path = name
     ): GraphDataView<Format> => {
+      const declaration = layout.outputs.find(output => output.path === `output.${path}`);
+      if (!declaration || declaration.format !== format || declaration.activeLength === undefined)
+        throw new Error(`OLS output layout missing active ${format} declaration for ${path}`);
+      const length = path === 'fitted' ? this.fitted.length : declaration.activeLength;
       const buffer = this.buffers.get(name)!;
       return graph.createDataView(
         graph.importBuffer(
@@ -89,12 +117,12 @@ export class AnalysisOLSOutputs {
     };
     return {
       residuals,
-      fitted: view('fitted', 'float32', this.fitted.length),
-      coefficients: view('coefficients', 'float32', predictorCount + 1),
-      standardErrors: view('standard-errors', 'float32', predictorCount + 1),
-      tStatistics: view('t-statistics', 'float32', predictorCount + 1),
-      summary: view('summary', 'float32', GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
-      status: {code: view('status', 'uint32', 1)}
+      fitted: view('fitted', 'float32'),
+      coefficients: view('coefficients', 'float32'),
+      standardErrors: view('standard-errors', 'float32', 'standardErrors'),
+      tStatistics: view('t-statistics', 'float32', 'tStatistics'),
+      summary: view('summary', 'float32'),
+      status: {code: view('status', 'uint32', 'status.code')}
     };
   }
 

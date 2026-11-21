@@ -76,6 +76,8 @@ const LOCAL_MODE: Record<LocalIndex, number> = {
 };
 
 /** Segregation demo: aspatial and multiscale segregation indices of synthetic group counts. */
+type SearchWeights = GPUSpatialWeights & {status: {overflow: GraphDataView<'uint32'>}};
+
 export const segregationMode: SpatialAnalysisModeDefinition = {
   id: 'segregation',
   title: 'Segregation',
@@ -240,7 +242,7 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
       );
       BANDWIDTH_LADDER.forEach((_, scale) => {
         const buffers = scaleBuffers[scale];
-        const weights: GPUSpatialWeights = {
+        const weights: SearchWeights = {
           offsets: importGraphBuffer(
             graph,
             `offsets-${scale}`,
@@ -268,7 +270,10 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
             buffers.distances,
             'float32',
             buffers.capacity
-          )
+          ),
+          status: {
+            overflow: importGraphBuffer(graph, `overflow-${scale}`, buffers.overflow, 'uint32', 1)
+          }
         };
         graph.add(
           new GPUNeighborSearch({
@@ -280,15 +285,7 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
             parameters: buffers.searchParameter.importToGraph(graph),
             output: {
               ...weights,
-              status: {
-                overflow: importGraphBuffer(
-                  graph,
-                  `overflow-${scale}`,
-                  buffers.overflow,
-                  'uint32',
-                  1
-                )
-              }
+              status: weights.status
             }
           })
         );
@@ -471,8 +468,8 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
               gridBounds[2] + cellSize,
               gridBounds[3] + cellSize
             ],
-            radius: BANDWIDTH_LADDER[index] * bandwidthUnit * cellSize,
-            weightKind: variant === 'kernel' ? 'kernel' : 'binary',
+            searchRadius: BANDWIDTH_LADDER[index] * bandwidthUnit * cellSize,
+            weightType: variant === 'kernel' ? 'kernel' : 'binary',
             kernel: 'epanechnikov'
           })
         );

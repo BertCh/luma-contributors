@@ -142,13 +142,13 @@ function getBoxBound(model: NeighborSearchBVHModel, node: number, x: number, y: 
 export function searchNeighborSearchBVHModel(
   model: NeighborSearchBVHModel,
   query: {x: number; y: number; skipRow: number},
-  options: {k?: number; radius: number},
+  options: {neighborCount?: number; radius: number},
   work: NeighborSearchBVHWork = {nodeBoundTests: 0, leafTests: 0}
 ): {id: number; distanceSquared: number}[] {
   const {x, y, skipRow} = query;
   const radiusSquared = f32(f32(options.radius) * f32(options.radius));
   const bounded =
-    options.k === undefined || (Number.isFinite(options.radius) && options.radius > 0);
+    options.neighborCount === undefined || (Number.isFinite(options.radius) && options.radius > 0);
   const found: {id: number; distanceSquared: number}[] = [];
   const isBefore = (a: {id: number; distanceSquared: number}, b: typeof a) =>
     a.distanceSquared < b.distanceSquared ||
@@ -163,8 +163,8 @@ export function searchNeighborSearchBVHModel(
     const {node, bound} = stack.pop()!;
     let limited = bounded;
     let limit = f32(radiusSquared * BOUND_SLACK);
-    if (options.k !== undefined && found.length === options.k) {
-      const kth = f32(found[options.k - 1].distanceSquared * BOUND_SLACK);
+    if (options.neighborCount !== undefined && found.length === options.neighborCount) {
+      const kth = f32(found[options.neighborCount - 1].distanceSquared * BOUND_SLACK);
       limit = limited ? Math.min(limit, kth) : kth;
       limited = true;
     }
@@ -179,7 +179,7 @@ export function searchNeighborSearchBVHModel(
       const secondBound = getBoxBound(model, second, x, y);
       const firstUsable = firstBound >= 0 && !(limited && firstBound > limit);
       const secondUsable = secondBound >= 0 && !(limited && secondBound > limit);
-      if (options.k === undefined) {
+      if (options.neighborCount === undefined) {
         // Radius traversal: order is irrelevant.
         if (firstUsable) stack.push({node: first, bound: firstBound});
         if (secondUsable) stack.push({node: second, bound: secondBound});
@@ -205,17 +205,20 @@ export function searchNeighborSearchBVHModel(
     const deltaX = f32(model.boxes[node * 4] - x);
     const deltaY = f32(model.boxes[node * 4 + 1] - y);
     const distanceSquared = f32(f32(deltaX * deltaX) + f32(deltaY * deltaY));
-    if (options.k !== undefined && bounded && !(distanceSquared <= radiusSquared)) {
+    if (options.neighborCount !== undefined && bounded && !(distanceSquared <= radiusSquared)) {
       continue;
     }
-    if (options.k === undefined) {
+    if (options.neighborCount === undefined) {
       if (distanceSquared <= radiusSquared) {
         found.push({id, distanceSquared});
       }
       continue;
     }
     const candidate = {id, distanceSquared};
-    if (found.length === options.k && !isBefore(candidate, found[options.k - 1])) {
+    if (
+      found.length === options.neighborCount &&
+      !isBefore(candidate, found[options.neighborCount - 1])
+    ) {
       continue;
     }
     let position = found.length;
@@ -223,7 +226,7 @@ export function searchNeighborSearchBVHModel(
       position--;
     }
     found.splice(position, 0, candidate);
-    if (found.length > options.k) {
+    if (found.length > options.neighborCount) {
       found.pop();
     }
   }
@@ -240,7 +243,7 @@ export function computeNeighborSearchBVHModel(
   const queries = input.queryPositions ?? positions;
   const queryMask = input.queryMask ?? (crossJoin ? undefined : input.mask);
   const bounds = parameters.bounds.map(f32);
-  const radius = f32(parameters.radius ?? Infinity);
+  const radius = f32(parameters.searchRadius ?? parameters.maximumDistance ?? Infinity);
   const inside = (x: number, y: number) =>
     Number.isFinite(x) &&
     Number.isFinite(y) &&
@@ -272,7 +275,7 @@ export function computeNeighborSearchBVHModel(
       const rowResult = searchNeighborSearchBVHModel(
         model,
         {x, y, skipRow: crossJoin ? -1 : row},
-        {k: input.mode === 'knn' ? (input.k ?? 1) : undefined, radius},
+        {neighborCount: input.mode === 'knn' ? (input.neighborCount ?? 1) : undefined, radius},
         work
       ).sort((a, b) => a.id - b.id);
       for (const entry of rowResult) {

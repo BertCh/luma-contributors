@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRadiationFlowModelNormalization} from './radiation-flow-model-normalization';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateNetworkViewBindings,
   validateNetworkOutputsDisjointFromInputs,
   validateNetworkWritableViews
 } from '../network-view-utils';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -23,10 +26,13 @@ import {
   validateCapacity,
   validateMaximumCount,
   validateSinglePackedView,
-  validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createFillNode,
+  createWGSLKernelNode,
+  getWGSLKernelBinding
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getMovementDistanceWGSL} from '../../gpu-spatial-analysis/trajectory-staypoints/movement-common';
 
 const OPERATION = 'GPURadiationFlowModel';
@@ -48,6 +54,8 @@ export type GPURadiationFlowModelNormalization =
   /**
    * The same flux divided by `1 - m_i / M` (`M` the total population), the finite-size correction
    * that makes each row sum to `T_i` when no two destinations are at the same distance from an origin.
+   * It is evaluated as `M / (M - m_i)`, with `M - m_i` summed over the other zones, so an origin
+   * holding nearly all of the population keeps its outflow.
    */
   | 'finite-size';
 
@@ -79,6 +87,8 @@ export type GPURadiationFlowModelProps = {
      * diagonal is 0. This is the expectation of the model, not a random draw.
      */
     flows: GraphDataView<'float32'>;
+    /** Optional one word per origin. Unknown coordinates invalidate all origin rows. */
+    status?: {invalidInput: GraphDataView<'uint32'>};
   };
 };
 
@@ -114,7 +124,26 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: Readonly<GPURadiationFlowModelProps>;
 
-  constructor(props: GPURadiationFlowModelProps) {
+  constructor(originalProps: GPURadiationFlowModelProps) {
+    const settings = snapshotConstructionFields(originalProps, [
+      'id',
+      'spatialContext',
+      'positions',
+      'populations',
+      'outflows',
+      'normalization',
+      'output'
+    ]);
+    const outputSettings = snapshotConstructionFields(settings.output, ['flows', 'status']);
+    const props = {
+      ...settings,
+      output: {
+        ...outputSettings,
+        ...(outputSettings.status
+          ? {status: snapshotConstructionFields(outputSettings.status, ['invalidInput'])}
+          : {})
+      }
+    };
     const id = props.id ?? 'radiation-flow-model';
     this.spatialContext = resolveGPUSpatialContext(
       id,
@@ -129,22 +158,33 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
     validateViewLength(id, 'populations', props.populations, this.zoneCount);
     validateSinglePackedView(props.outflows, ['float32'], `${id} outflows`);
     validateViewLength(id, 'outflows', props.outflows, this.zoneCount);
-    const normalization = props.normalization ?? 'none';
-    validateRequirement(
-      id,
-      normalization === 'none' || normalization === 'finite-size',
-      "normalization must be 'none' or 'finite-size'"
-    );
+    const normalization = resolveRadiationFlowModelNormalization(id, props.normalization);
     validateSinglePackedView(props.output.flows, ['float32'], `${id} output.flows`);
     validateViewLength(id, 'output.flows', props.output.flows, this.zoneCount * this.zoneCount);
-    validateNetworkWritableViews(id, props.output);
+    if (props.output.status) {
+      validateSinglePackedView(
+        props.output.status.invalidInput,
+        ['uint32'],
+        `${id} output.status.invalidInput`
+      );
+      validateViewLength(
+        id,
+        'output.status.invalidInput',
+        props.output.status.invalidInput,
+        this.zoneCount
+      );
+    }
+    validateNetworkWritableViews(id, {
+      flows: props.output.flows,
+      invalidInput: props.output.status?.invalidInput
+    });
     validateNetworkOutputsDisjointFromInputs(
       id,
-      [props.output.flows],
+      [props.output.flows, props.output.status?.invalidInput],
       [props.positions, props.populations, props.outflows]
     );
     this.id = id;
-    this.props = props;
+    this.props = {...props, normalization};
   }
 
   getCommandNodes<Parameters>(
@@ -154,11 +194,61 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
     validateNetworkViewBindings(
       id,
       graph,
-      [props.positions, props.populations, props.outflows, props.output.flows],
+      [
+        props.positions,
+        props.populations,
+        props.outflows,
+        props.output.flows,
+        props.output.status?.invalidInput
+      ],
       {}
     );
     const finiteSize = props.normalization === 'finite-size';
+    const invalid = createTransientView(graph, `${id}-invalid`, 'uint32', 1);
     return [
+      createFillNode<Parameters>(graph, {
+        id: `${id}-clear-invalid`,
+        operation: OPERATION,
+        view: invalid,
+        type: 'u32',
+        value: '0u'
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-validate-positions`,
+        operation: OPERATION,
+        variant: 'validate-positions',
+        invocationCount: zoneCount,
+        bindings: [
+          {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+          getWGSLKernelBinding('invalid', invalid, 'atomic')
+        ],
+        body: `if ((bitcast<u32>(positions[positionsOffset + index * 2u]) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(positions[positionsOffset + index * 2u + 1u]) & 0x7f800000u) == 0x7f800000u) { atomicOr(&invalid[invalidOffset], 1u); }`
+      }),
+      ...(props.output.status
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-invalid-input`,
+              operation: OPERATION,
+              variant: 'invalid-input',
+              invocationCount: zoneCount,
+              bindings: [
+                {
+                  name: 'invalid',
+                  view: invalid,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                },
+                {
+                  name: 'invalidInput',
+                  view: props.output.status.invalidInput,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ],
+              body: 'invalidInput[invalidInputOffset + index] = invalid[invalidOffset];'
+            })
+          ]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-flows`,
         operation: OPERATION,
@@ -168,6 +258,7 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
           {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
           {name: 'populations', view: props.populations, type: 'f32', access: 'read'},
           {name: 'outflows', view: props.outflows, type: 'f32', access: 'read'},
+          {name: 'invalid', view: invalid, type: 'u32', access: 'read'},
           {name: 'flows', view: props.output.flows, type: 'f32', access: 'read_write'}
         ],
         declarations: `${getMovementDistanceWGSL(getGPUGreatCircleRadius(this.spatialContext))}
@@ -175,29 +266,35 @@ const ZONE_COUNT: u32 = ${zoneCount}u;`,
         body: /* wgsl */ `
   let origin = index / ZONE_COUNT;
   let destination = index % ZONE_COUNT;
+  if (invalid[invalidOffset] != 0u && origin != destination) { var missingBits = 0x7fc00000u; flows[flowsOffset + index] = bitcast<f32>(missingBits); return; }
   var flow = 0.0;
   if (origin != destination) {
     let distance = rowDistance(origin, destination);
     var between = 0.0;
-    var total = 0.0;
+    var outside = 0.0;
     for (var zone = 0u; zone < ZONE_COUNT; zone = zone + 1u) {
       let population = populations[populationsOffset + zone];
-      total = total + population;
+      if (zone != origin) {
+        outside = outside + population;
+      }
       if (zone != origin && zone != destination && rowDistance(origin, zone) < distance) {
         between = between + population;
       }
     }
     let sourcePopulation = populations[populationsOffset + origin];
     let targetPopulation = populations[populationsOffset + destination];
-    let denominator = (sourcePopulation + between) * (sourcePopulation + targetPopulation + between);
-    if (denominator > 0.0) {
-      flow = outflows[outflowsOffset + origin] * sourcePopulation * targetPopulation / denominator;
-${
-  finiteSize
-    ? `      let remaining = 1.0 - sourcePopulation / total;
-      flow = select(0.0, flow / remaining, remaining > 0.0);`
-    : ''
-}
+    // Rearrange finite-size flux as T * m/(m+s) * n/outside * (m+outside)/(m+n+s).
+    // Independently scaled sums avoid overflowing a population product or cancelling outside.
+    let scale = max(sourcePopulation, max(targetPopulation, max(between, outside)));
+    if (scale > 0.0) {
+      let source = sourcePopulation / scale; let scaledTargetPopulation = targetPopulation / scale;
+      let intervening = between / scale; let other = outside / scale;
+      let firstScale = max(sourcePopulation, between);
+      let second = source + intervening + scaledTargetPopulation;
+      if (firstScale > 0.0 && second > 0.0) {
+        let sourceShare = (sourcePopulation / firstScale) / (sourcePopulation / firstScale + between / firstScale);
+        ${finiteSize ? `if (outside > 0.0) { flow = outflows[outflowsOffset + origin] * sourceShare * (targetPopulation / outside) * ((source + other) / second); }` : `flow = outflows[outflowsOffset + origin] * sourceShare * (scaledTargetPopulation / second);`}
+      }
     }
   }
   flows[flowsOffset + index] = flow;`

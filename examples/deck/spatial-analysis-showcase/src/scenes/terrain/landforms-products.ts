@@ -27,8 +27,7 @@ import {
   GPUGeomorphons,
   GPUTerrainCurvature,
   GPUTerrainTopographicPosition,
-  GPUTerrainWeissLandforms,
-  type GPUTerrainCurvatureKind
+  GPUTerrainWeissLandforms
 } from '@luma-contributors/analysis/gpu-terrain';
 import type {CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
@@ -36,6 +35,7 @@ import {addKernelPass} from '../../engine/mode-kernels';
 import type {SpatialAnalysisResources} from '../../engine/resources';
 import type {TerrainSession} from './b14a-session';
 import {Stage} from './b14a-session';
+import {createSingleCurvatureOutput} from './single-curvature-output';
 import {
   getCurvatureKind,
   SCALE_PRESETS,
@@ -234,7 +234,7 @@ export async function buildCurvature(
     builder.graph.add(
       new GPUTerrainCurvature({
         ...common,
-        output: {curvatures: {[kind as GPUTerrainCurvatureKind]: output}}
+        output: createSingleCurvatureOutput(kind, output)
       })
     );
     outputs.curvature = {buffer: builder.getBuffer('curvature'), format: 'float32'};

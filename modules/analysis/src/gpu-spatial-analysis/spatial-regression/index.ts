@@ -14,6 +14,7 @@ export type {
 export {GPUOrdinaryLeastSquares} from './gpu-ordinary-least-squares';
 export type {
   GPUOrdinaryLeastSquaresOutput,
+  GPUOrdinaryLeastSquaresInputProps,
   GPUOrdinaryLeastSquaresProps
 } from './gpu-ordinary-least-squares';
 export {
@@ -57,6 +58,7 @@ export {
 } from './ordinary-least-squares-statistics';
 export type {
   GPUOrdinaryLeastSquaresModelResultOptions,
+  GPUOrdinaryLeastSquaresModelResult,
   GPUOrdinaryLeastSquaresReadback
 } from './ordinary-least-squares-statistics';
 export {
@@ -105,11 +107,7 @@ export {
   type GPUGeographicallyWeightedRegressionModelResult,
   type GPUGeographicallyWeightedRegressionReadback
 } from './geographically-weighted-regression-model-result';
-export {
-  getCholeskyWGSL,
-  getSymmetricEigenvalueRangeWGSL,
-  SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT
-} from './spatial-regression-solve';
+export {SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT} from './spatial-regression-solve';
 export {
   GPUSpatialRegressionDiagnostics,
   getGPUSpatialRegressionDiagnosticsMaximumRowTableValueCount,
@@ -186,6 +184,7 @@ export {
 export type {
   GPUSpatialTwoStageLeastSquaresDiagnostics,
   GPUSpatialTwoStageLeastSquaresModelResultOptions,
+  GPUSpatialTwoStageLeastSquaresModelResult,
   GPUSpatialTwoStageLeastSquaresReadback
 } from './spatial-two-stage-least-squares-model-result';
 export {GPUSpatialErrorGM} from './gpu-spatial-error-gm';
@@ -243,13 +242,11 @@ export type {
 } from './gpu-spatial-lag-impacts';
 export {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
   GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_COLUMN_SQUARES,
   GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_LENGTH,
   GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTW,
   GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTWW,
   GPU_SPATIAL_WEIGHTS_TRACES_GRAM_TRACE_WTW_SQUARED,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
   GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER,
   GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getGPUSpatialWeightsTracesParameterValues,
@@ -263,8 +260,7 @@ export {
   getSpatialMultiplierTraceFromTraces,
   getSpatialMultiplierTraceWGSL,
   getSpatialMultiplierTruncationBound,
-  getSpatialWeightsTracesProbeValue,
-  getSpatialWeightsTracesProbeWGSL
+  getSpatialWeightsTracesProbeValue
 } from './spatial-weights-traces-parameters';
 export type {
   GPUSpatialWeightsTracesMode,
@@ -332,7 +328,8 @@ export {
 export type {
   GPUSpatialMaximumLikelihoodDiagnostics,
   GPUSpatialMaximumLikelihoodModelResultOptions,
-  GPUSpatialMaximumLikelihoodReadback
+  GPUSpatialMaximumLikelihoodReadback,
+  GPUSpatialMaximumLikelihoodReadbackInput
 } from './spatial-maximum-likelihood-model-result';
 export {
   GPUGeneralizedGeographicallyWeightedRegression,
@@ -352,13 +349,47 @@ export {GPUSpatialPanelRegression} from './gpu-spatial-panel-regression';
 export type {GPUSpatialPanelRegressionProps} from './gpu-spatial-panel-regression';
 export {GPUSpatialRegimeRegression} from './gpu-spatial-regime-regression';
 export type {GPUSpatialRegimeRegressionProps} from './gpu-spatial-regime-regression';
-export {GPURestrictedRegimeRegression} from './gpu-restricted-regime-regression';
+export {
+  GPURestrictedRegimeRegression,
+  MAXIMUM_RESTRICTED_REGIME_COEFFICIENT_COUNT,
+  RESTRICTED_REGIME_ROBUST_OK,
+  RESTRICTED_REGIME_ROBUST_FIT_UNAVAILABLE,
+  RESTRICTED_REGIME_ROBUST_INVALID_KERNEL,
+  RESTRICTED_REGIME_ROBUST_INVALID_COVARIANCE
+} from './gpu-restricted-regime-regression';
+export type {
+  RestrictedRegimeRobustOptions,
+  RestrictedRegimeRobustOutput
+} from './restricted-regime-robust';
 export type {GPURestrictedRegimeRegressionProps} from './gpu-restricted-regime-regression';
-export {GPUSpatialPanelErrorMaximumLikelihood} from './gpu-spatial-panel-error-maximum-likelihood';
+export {
+  GPUSpatialPanelErrorMaximumLikelihood,
+  GPU_PANEL_ERROR_DIAGNOSTIC_STATUS_OK,
+  GPU_PANEL_ERROR_DIAGNOSTIC_STATUS_INCOMPLETE,
+  GPU_PANEL_ERROR_DIAGNOSTIC_STATUS_DEGENERATE
+} from './gpu-spatial-panel-error-maximum-likelihood';
 export type {GPUSpatialPanelErrorMaximumLikelihoodProps} from './gpu-spatial-panel-error-maximum-likelihood';
+export {GPUSpatialPanelErrorMaximumLikelihoodOperation} from './gpu-spatial-panel-error-maximum-likelihood-operation';
+export type {SpatialPanelErrorMaximumLikelihoodOperationProps} from './gpu-spatial-panel-error-maximum-likelihood-operation';
+export {
+  CPUSpatialPanelErrorMaximumLikelihoodOperation,
+  computeSpatialPanelErrorMaximumLikelihoodOnCPU
+} from './cpu-spatial-panel-error-maximum-likelihood-operation';
+export type {
+  CPUSpatialPanelErrorMaximumLikelihoodInput,
+  CPUSpatialPanelErrorMaximumLikelihoodOptions,
+  CPUSpatialPanelErrorMaximumLikelihoodResult
+} from './cpu-spatial-panel-error-maximum-likelihood-operation';
 export {GPUSeeminglyUnrelatedRegression} from './gpu-seemingly-unrelated-regression';
+export {
+  getGPUSeeminglyUnrelatedRegressionParameterValues,
+  GPU_SUR_PARAMETER_LENGTH,
+  GPU_SUR_STATUS_INVALID_PARAMETERS
+} from './seemingly-unrelated-regression-parameters';
+export type {GPUSeeminglyUnrelatedRegressionSettings} from './seemingly-unrelated-regression-parameters';
 export type {GPUSeeminglyUnrelatedRegressionProps} from './gpu-seemingly-unrelated-regression';
 export {GPUProbitRegression} from './gpu-probit-regression';
+export {GPU_PROBIT_SPATIAL_LAG_STATUS} from './probit-spatial-lag-nodes';
 export type {GPUProbitRegressionProps} from './gpu-probit-regression';
 export {GPULocalCollinearity} from './gpu-local-collinearity';
 export type {GPULocalCollinearityProps} from './gpu-local-collinearity';
@@ -420,6 +451,7 @@ export {
 } from './cpu-restricted-regime-regression-operation';
 export type {
   CPURestrictedRegimeRegressionInput,
+  CPURestrictedRegimeKernel,
   CPURestrictedRegimeRegressionOptions,
   CPURestrictedRegimeRegressionResult
 } from './cpu-restricted-regime-regression-operation';
@@ -438,7 +470,8 @@ export {
 } from './cpu-spatial-lag-impacts-operation';
 export type {
   CPUSpatialLagImpactsInput,
-  CPUSpatialLagImpactsOptions
+  CPUSpatialLagImpactsOptions,
+  CPUSpatialLagImpactsResult
 } from './cpu-spatial-lag-impacts-operation';
 export {
   computeSpatialRegressionDiagnosticsOnCPU,
@@ -461,7 +494,10 @@ export type {
 export {GPUOrdinaryLeastSquaresOperation} from './gpu-ordinary-least-squares-operation';
 export type {OrdinaryLeastSquaresOperationProps} from './gpu-ordinary-least-squares-operation';
 export {GPURestrictedRegimeRegressionOperation} from './gpu-restricted-regime-regression-operation';
-export type {RestrictedRegimeRegressionOperationProps} from './gpu-restricted-regime-regression-operation';
+export type {
+  RestrictedRegimeRegressionOperationProps,
+  RestrictedRegimeKernelNames
+} from './gpu-restricted-regime-regression-operation';
 export {GPUSeeminglyUnrelatedRegressionOperation} from './gpu-seemingly-unrelated-regression-operation';
 export type {SeeminglyUnrelatedRegressionOperationProps} from './gpu-seemingly-unrelated-regression-operation';
 export {GPUSpatialLagImpactsOperation} from './gpu-spatial-lag-impacts-operation';
@@ -566,6 +602,7 @@ export {
 } from './geographically-weighted-regression-parameters';
 export {
   GPU_SUR_MAXIMUM_ROW_COUNT,
+  GPU_SUR_MAXIMUM_ITERATIONS,
   GPU_SPATIAL_SUR_MAXIMUM_ROW_COUNT
 } from './gpu-seemingly-unrelated-regression';
 export {
@@ -581,3 +618,27 @@ export {
   GPU_PANEL_LAG_TILED_MAXIMUM_ENTITY_COUNT,
   GPU_PANEL_LAG_TILED_MAXIMUM_ROW_COUNT
 } from './gpu-spatial-panel-lag-maximum-likelihood';
+export {REGRESSION_TILE_MAXIMUM_TILE_COUNT} from './regression-row-tiles';
+
+export {
+  createOrdinaryLeastSquaresDesign,
+  createOrdinaryLeastSquaresJoinedTableMask
+} from './ordinary-least-squares-composition';
+export type {OrdinaryLeastSquaresJoinedTable} from './ordinary-least-squares-composition';
+export * from './regression-status-decoders';
+export {getGPUGeographicallyTemporallyWeightedRegressionModelResult} from './geographically-weighted-regression-model-result';
+export type {
+  GPUGeographicallyTemporallyWeightedRegressionReadback,
+  GPUGeographicallyTemporallyWeightedRegressionModelResult
+} from './geographically-weighted-regression-model-result';
+export {getGPUSpatialPanelErrorMaximumLikelihoodModelResult} from './spatial-panel-error-maximum-likelihood-model-result';
+export type {
+  GPUSpatialPanelErrorMaximumLikelihoodModelResult,
+  GPUSpatialPanelErrorMaximumLikelihoodModelResultOptions
+} from './spatial-panel-error-maximum-likelihood-model-result';
+export {
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_MAXIMUM_ROWS
+} from './spatial-weights-traces-parameters';
+
+export {MAXIMUM_PROBIT_CONVERGENCE_TOLERANCE, MAXIMUM_PROBIT_TOLERANCE} from './probit-convergence';

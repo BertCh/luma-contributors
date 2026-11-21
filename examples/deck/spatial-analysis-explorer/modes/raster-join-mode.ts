@@ -99,6 +99,9 @@ type JoinSnapshot = {
   unassignedBoundaryCount: number;
   outsideCount: number;
   overflow: number;
+  incomplete: number;
+  exactOverflow: number;
+  exactUncertainCount: number;
   crossingCount: number;
 };
 
@@ -140,6 +143,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     const boundary = resources.createBuffer('boundary', cellCount * 4);
     const display = resources.createBuffer('display', cellCount * 4);
     const overflow = resources.createBuffer('overflow', 4);
+    const incomplete = resources.createBuffer('join-incomplete', 4);
     const crossingCount = resources.createBuffer('crossing-count', 4);
     const counts = resources.createBuffer('counts', zoneCount * 4);
     const sums = resources.createBuffer('sums', zoneCount * 4);
@@ -151,6 +155,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     const exactZones = resources.createBuffer('exact-zones', pointCount * 4);
     const exactCounts = resources.createBuffer('exact-counts', zoneCount * 4);
     const exactOverflow = resources.createBuffer('exact-overflow', 4);
+    const exactUncertainCount = resources.createBuffer('exact-uncertain-count', 4);
     const exactCandidates = resources.createBuffer('exact-candidates', 4);
     // Layer bounds `[minX, minY, maxX, maxY]` of the raster, rewritten with the extent.
     const rasterBounds = resources.createBuffer('raster-bounds', 16);
@@ -178,6 +183,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
       'uint32',
       zoneCount
     );
+    const rasterOverflowView = importGraphBuffer(rasterGraph, 'overflow', overflow, 'uint32', 1);
     rasterGraph.add(
       new GPUPolygonRasterization({
         id: 'rasterize',
@@ -216,7 +222,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
           zones: zonesView,
           boundary: boundaryView,
           status: {
-            overflow: importGraphBuffer(rasterGraph, 'overflow', overflow, 'uint32', 1),
+            overflow: rasterOverflowView,
             crossingCount: importGraphBuffer(
               rasterGraph,
               'crossing-count',
@@ -231,6 +237,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     rasterGraph.add(
       new GPURasterJoin({
         id: 'join',
+        producerOverflow: rasterOverflowView,
         grid: rasterGrid,
         parameters: extentView,
         points: importGraphBuffer(rasterGraph, 'points', positions, 'float32x2', pointCount),
@@ -239,6 +246,9 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
         boundary: boundaryView,
         zoneCount,
         output: {
+          status: {
+            incomplete: importGraphBuffer(rasterGraph, 'join-incomplete', incomplete, 'uint32', 1)
+          },
           counts: countsView,
           sums: sumsView,
           boundaryCounts: boundaryCountsView,
@@ -333,7 +343,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
             'uint32',
             pointCount
           ),
-          featureCounts: importGraphBuffer(
+          polygonAssignmentCounts: importGraphBuffer(
             exactGraph,
             'exact-counts',
             exactCounts,
@@ -342,6 +352,13 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
           ),
           status: {
             overflow: importGraphBuffer(exactGraph, 'exact-overflow', exactOverflow, 'uint32', 1),
+            uncertainCount: importGraphBuffer(
+              exactGraph,
+              'exact-uncertain-count',
+              exactUncertainCount,
+              'uint32',
+              1
+            ),
             candidateCount: importGraphBuffer(
               exactGraph,
               'exact-candidates',
@@ -357,7 +374,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
       await exactGraph.compileAsync()
     );
 
-    const summaryWords = zoneCount * 3 + pointCount * 3 + 4;
+    const summaryWords = zoneCount * 3 + pointCount * 3 + 7;
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'raster-join-summary', byteLength: summaryWords * 4})
     );
@@ -548,6 +565,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
 
     // --- Summary -------------------------------------------------------------------------------
     function getMetricValues(source: JoinSnapshot): Uint32Array | Float32Array {
+      if (source.incomplete || source.overflow) return new Float32Array(zoneCount).fill(NaN);
       if (metric === 'count') return source.counts;
       if (metric === 'sum') return source.sums;
       return Float32Array.from(source.counts, (count, zone) =>
@@ -565,6 +583,20 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
 
     /** Compares the raster join with the exact join using the snapshot's extent. */
     function refreshReadouts(source: JoinSnapshot): void {
+      if (source.incomplete || source.overflow) {
+        crossingReadout.setValue('OVERFLOW: rasterization incomplete');
+        for (const readout of [
+          insideReadout,
+          boundaryReadout,
+          exactReadout,
+          boundHoldsReadout,
+          worstShareReadout,
+          worstDifferenceReadout
+        ]) {
+          readout.setValue('unavailable: incomplete rasterization');
+        }
+        return;
+      }
       const [originX, originY, cellWidth, cellHeight] = source.extent;
       const exactInside = new Uint32Array(zoneCount);
       let inside = 0;
@@ -619,25 +651,30 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
           ? `${formatCount(insideBoundary)} (${((100 * insideBoundary) / inside).toFixed(1)}% of in-raster points)`
           : '-'
       );
-      exactReadout.setValue(
-        `${formatCount(differing)} points differ, ${formatCount(interiorDifferences)} in interior cells ` +
-          (interiorDifferences === 0 ? '(as guaranteed)' : '(VIOLATES THE GUARANTEE)')
-      );
-      boundHoldsReadout.setValue(
-        `${boundHolds} of ${zoneCount} ZIPs (exact count inside [c-b, c-b+${boundarySum}])`
-      );
       worstShareReadout.setValue(
         worstShareZone < 0
           ? '-'
           : `${getZoneName(worstShareZone)}: ${source.boundaryCounts[worstShareZone]} of ` +
               `${source.counts[worstShareZone]} points (${(100 * worstShare).toFixed(1)}%)`
       );
-      worstDifferenceReadout.setValue(
-        worstDifferenceZone < 0
-          ? '-'
-          : `${getZoneName(worstDifferenceZone)}: raster ${source.counts[worstDifferenceZone]} vs ` +
-              `exact ${exactInside[worstDifferenceZone]}`
-      );
+      if (source.exactOverflow || source.exactUncertainCount) {
+        for (const readout of [exactReadout, boundHoldsReadout, worstDifferenceReadout])
+          readout.setValue('unavailable: incomplete or uncertain reference');
+      } else {
+        exactReadout.setValue(
+          `${formatCount(differing)} points differ, ${formatCount(interiorDifferences)} in interior cells ` +
+            (interiorDifferences === 0 ? '(as guaranteed)' : '(VIOLATES THE GUARANTEE)')
+        );
+        boundHoldsReadout.setValue(
+          `${boundHolds} of ${zoneCount} ZIPs (exact count inside [c-b, c-b+${boundarySum}])`
+        );
+        worstDifferenceReadout.setValue(
+          worstDifferenceZone < 0
+            ? '-'
+            : `${getZoneName(worstDifferenceZone)}: raster ${source.counts[worstDifferenceZone]} vs ` +
+                `exact ${exactInside[worstDifferenceZone]}`
+        );
+      }
     }
 
     const readSummary = (commandEncoder: CommandEncoder): boolean => {
@@ -653,7 +690,10 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
         [unassignedBoundaryCount, 1],
         [outsideCount, 1],
         [overflow, 1],
-        [crossingCount, 1]
+        [crossingCount, 1],
+        [incomplete, 1],
+        [exactOverflow, 1],
+        [exactUncertainCount, 1]
       ];
       let wordOffset = 0;
       for (const [buffer, words] of sources) {
@@ -671,7 +711,8 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
       void (async () => {
         try {
           const bytes = await scheduleReadback(() => ticket.read());
-          if (destroyed) return;
+          if (destroyed || !requestedExtent.every((value, index) => value === extentValues[index]))
+            return;
           const words = new Uint32Array(
             bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + summaryWords * 4)
           );
@@ -695,7 +736,10 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
             unassignedBoundaryCount: take(1)[0],
             outsideCount: take(1)[0],
             overflow: take(1)[0],
-            crossingCount: take(1)[0]
+            crossingCount: take(1)[0],
+            incomplete: take(1)[0],
+            exactOverflow: take(1)[0],
+            exactUncertainCount: take(1)[0]
           };
           const previousMaximum = colorMaximum;
           updateColorMaximum();
@@ -724,14 +768,20 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
           ...options,
           completionBuffer: exactOverflow
         });
+        const flags = await Promise.all(
+          [incomplete, exactOverflow, exactUncertainCount].map(buffer => buffer.readAsync(0, 4))
+        );
+        if (flags.some(bytes => new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0]))
+          throw new Error('incomplete');
         if (destroyed) return;
         rasterTimingReadout.setValue(formatCompiledGraphTiming(raster));
         exactTimingReadout.setValue(formatCompiledGraphTiming(exact));
         speedupReadout.setValue(formatSpeedup(exact.milliseconds, raster.milliseconds));
       } catch {
         if (!destroyed) {
-          rasterTimingReadout.setValue('interrupted');
-          exactTimingReadout.setValue('interrupted');
+          rasterTimingReadout.setValue('unavailable: incomplete or interrupted computation');
+          exactTimingReadout.setValue('unavailable: incomplete or interrupted computation');
+          speedupReadout.setValue('unavailable: incomplete or interrupted computation');
         }
       } finally {
         measuring = false;
@@ -744,6 +794,8 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
       const [x, y] = projection.project(event.coordinate[0], event.coordinate[1]);
       const zone = findContainingFeature(zips, x, y);
       if (zone < 0 || !snapshot) return zone < 0 ? null : getZoneName(zone);
+      if (snapshot.incomplete || snapshot.overflow)
+        return `${getZoneName(zone)}: unavailable (incomplete rasterization)`;
       const count = snapshot.counts[zone];
       const boundaryPoints = snapshot.boundaryCounts[zone];
       let boundarySum = snapshot.unassignedBoundaryCount;
@@ -775,6 +827,8 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
           exactCompiled.encode(commandEncoder, {parameters: undefined});
         }
         if (dirty) {
+          snapshot = null;
+          context.updateLayers();
           rasterCompiled.encode(commandEncoder, {parameters: undefined});
           dirty = false;
           readbackWanted = true;
@@ -846,20 +900,23 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
             instanceCount: zips.outlineSegments.length / 4,
             widthPixels: 1.4,
             color: [255, 255, 255, 235]
-          }),
-          new SpatialAnalysisPointLayer({
-            id: 'raster-join-points',
-            coordinateOrigin,
-            positions,
-            instanceCount: pointCount,
-            values: pointBoundaryMask,
-            valueFormat: 'uint32',
-            colormap: 'mask',
-            color: BOUNDARY_COLOR,
-            noDataColor: [235, 240, 255, 230],
-            radiusPixels: 3
           })
         );
+        if (snapshot && !snapshot.overflow && !snapshot.incomplete)
+          layers.push(
+            new SpatialAnalysisPointLayer({
+              id: 'raster-join-points',
+              coordinateOrigin,
+              positions,
+              instanceCount: pointCount,
+              values: pointBoundaryMask,
+              valueFormat: 'uint32',
+              colormap: 'mask',
+              color: BOUNDARY_COLOR,
+              noDataColor: [235, 240, 255, 230],
+              radiusPixels: 3
+            })
+          );
         return layers;
       },
       getTooltip: describeZone,

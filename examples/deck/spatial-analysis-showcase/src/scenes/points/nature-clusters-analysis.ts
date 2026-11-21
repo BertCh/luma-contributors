@@ -20,7 +20,7 @@ import {matchStableColors, type StableHuePrevious} from '../../cartography/stabl
 /** Fixed class breaks of the hot-spot size classes (records per hot spot), shared by every toggle. */
 export const SIZE_BREAKS: readonly number[] = [50, 200, 1000];
 
-/** The uint32 label `GPUSpatialClustering` gives to a record that is in no hot spot. */
+/** The uint32 label `GPUDBSCAN` gives to a record that is in no hot spot. */
 export const NOISE_LABEL = 0xffffffff;
 
 /** Class index (0-3) of a cluster of `size` records: the number of breaks at or below it. */
@@ -432,11 +432,11 @@ export function pickEpsilonSamples(input: {
   labels: Uint32Array;
   coreFlags: Uint32Array;
   epsilon: number;
-  minimumPoints: number;
+  minimumSamples: number;
   centre: readonly [number, number];
   windowMeters: number;
 }): EpsilonSample[] {
-  const {positions, labels, coreFlags, epsilon, minimumPoints, centre, windowMeters} = input;
+  const {positions, labels, coreFlags, epsilon, minimumSamples, centre, windowMeters} = input;
   const count = labels.length;
   const roleOf = (row: number): DiscRole =>
     labels[row] === NOISE_LABEL ? 'noise' : coreFlags[row] ? 'core' : 'border';
@@ -461,9 +461,9 @@ export function pickEpsilonSamples(input: {
   };
   const samples: EpsilonSample[] = [];
   const targets: [DiscRole, number][] = [
-    ['core', 1.6 * minimumPoints],
-    ['border', 0.6 * minimumPoints],
-    ['noise', 0.3 * minimumPoints]
+    ['core', 1.6 * minimumSamples],
+    ['border', 0.6 * minimumSamples],
+    ['noise', 0.3 * minimumSamples]
   ];
   for (const [role, target] of targets) {
     // A deterministic thin sample of the candidates keeps the counting cheap.

@@ -98,3 +98,34 @@ it('the Poisson observed term matches o ln(o / e) - o + e in float64 on both sid
   });
   expect(mismatches.slice(0, 10)).toEqual([]);
 });
+
+// CORE-104: a large count over a tiny but normal float32 baseline overflowed d = (o - e) / e or
+// (1 + d) ln(1 + d), and the term was NaN or +inf. References: float64 o (ln o - ln e) - o + e of
+// the float32 inputs (/usr/bin/python3, NumPy float32 rounding of the inputs).
+it('the Poisson observed term stays finite when its ratio overflows (CORE-104)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const pairs: [number, number][] = [
+    [1e9, 1e-30],
+    [1e8, 1e-30],
+    [1e6, 1e-36],
+    [5e37, 1e-3]
+  ];
+  const inputs = Float32Array.from(pairs.flat());
+  const words = await runWGSLModuleKernel(device, {
+    id: 'poisson-observed-term-overflow',
+    inputs: {inputs},
+    outputLength: pairs.length,
+    invocationCount: pairs.length,
+    declarations: POISSON_OBSERVED_TERM_WGSL,
+    body: 'output[outputOffset + index] = bitcast<u32>(getObservedTerm(inputs[inputsOffset + 2u * index], inputs[inputsOffset + 2u * index + 1u]));'
+  });
+  const values = getFloatWords(words);
+  const references = [88800818623.5967, 8649823353.060265, 95708573.86981079];
+  references.forEach((reference, index) => {
+    expect(Number.isFinite(values[index]), `pair ${index}`).toBe(true);
+    expect(Math.abs(values[index] - reference)).toBeLessThanOrEqual(1e-5 * reference);
+  });
+  // 4.6e39 exceeds float32: +inf, not NaN.
+  expect(values[3]).toBe(Infinity);
+});

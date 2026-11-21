@@ -187,7 +187,7 @@ it('maps both band validities independently from output validity in the CPU call
       }
     ])
   );
-  const result = await new CPURasterWalkingCostOperation({...props, maximumIterations: 1}).execute({
+  const result = await new CPURasterWalkingCostOperation(props).execute({
     inputs
   });
   expect(Array.from(result['costs'] as Float32Array)).toEqual(fixtures.cases[0].expected);

@@ -11,7 +11,7 @@ import {
   type CatalogRunResult
 } from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 
 // Oracle policy: the CPU reference engines of the PLATFORM4 bindings are the oracle; each GPU path
 // must run on its named contributors (engine 'gpu', dispatchedContributors accurate) and match.
@@ -254,7 +254,7 @@ test('weights bindings run on their contributors and match the CPU oracle', asyn
     ['intersection', 'max'],
     ['intersection', 'product'],
     ['difference', 'left'],
-    ['symmetricDifference', 'binary']
+    ['symmetric-difference', 'binary']
   ] as const) {
     const {gpu, cpu} = await runBoth(
       device,
@@ -498,4 +498,163 @@ test('raster-join-points-in-polygons stays within its published boundary error b
   expect(
     cpuCounts.reduce((sum, count, zone) => sum + Math.abs(count - gpuCounts[zone]), 0)
   ).toBeLessThanOrEqual(allBoundary);
+});
+
+test('DGGS-105: GPU binding excludes clockwise holes and antipodes in either winding', async () => {
+  const device = await getDevice();
+  const shell = [
+    [-10, -10],
+    [10, -10],
+    [10, 10],
+    [-10, 10],
+    [-10, -10]
+  ];
+  const hole = [
+    [-2, -2],
+    [-2, 2],
+    [2, 2],
+    [2, -2],
+    [-2, -2]
+  ];
+  for (const reverse of [false, true]) {
+    const polygons: CatalogFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          geometry: {
+            type: 'Polygon',
+            coordinates: [shell, hole].map(ring => (reverse ? [...ring].reverse() : ring))
+          },
+          properties: {}
+        }
+      ]
+    };
+    const {gpu} = await runBoth(
+      device,
+      'spherical-point-in-polygon',
+      {},
+      {
+        points: points([{coordinates: [0, 0]}, {coordinates: [5, 0]}, {coordinates: [-175, 0]}]),
+        polygons
+      }
+    );
+    expect(gpu.tables[0].columns['point_feature_index']).toEqual([1]);
+  }
+});
+
+test('DGGS-102: GPU publication certifies sums independently of spare cell capacity', async () => {
+  const device = await getDevice();
+  for (const value of [2, 2 ** 47, 2]) {
+    const saturated = value > 2;
+    const data = points([
+      {coordinates: [10, 10], properties: {v: value}},
+      {coordinates: [10, 10], properties: {v: 4}}
+    ]);
+    for (const id of ['dggs-cell-aggregation', 'dggs-cell-rollup']) {
+      const result = await runCatalogOperationAsync(
+        getCatalogBinding(id)!,
+        {
+          family: 'quadbin',
+          resolution: 6,
+          valueProperty: 'v',
+          ...(id === 'dggs-cell-rollup' ? {levels: 1, levelStep: 1} : {})
+        },
+        {points: data},
+        {device}
+      );
+      expect(result.engine).toBe('gpu');
+      // Two input slots, one occupied cell: capacity overflow cannot explain saturation.
+      const expectedRows = id === 'dggs-cell-rollup' ? 2 : 1;
+      expect(result.tables[0].rowCount).toBe(expectedRows);
+      expect(result.tables[0].columns['count']).toEqual(Array(expectedRows).fill(2));
+      expect(result.tables[0].columns['sum']).toEqual(
+        Array(expectedRows).fill(saturated ? null : 6)
+      );
+      expect(result.tables[0].columns['sum_overflow']).toEqual(Array(expectedRows).fill(saturated));
+      if (id === 'dggs-cell-rollup') expect(result.tables[0].columns['level']).toEqual([0, 1]);
+    }
+    const comparison = runCatalogOperationAsync(
+      getCatalogBinding('dggs-cell-compare')!,
+      {family: 'quadbin', resolution: 6, valueProperty: 'v', measure: 'sum'},
+      {before: data, after: data},
+      {device}
+    );
+    const output = await comparison;
+    expect(output.engine).toBe('gpu');
+    expect(output.tables[0].columns['delta']).toEqual([saturated ? null : 0]);
+    expect(output.tables[0].columns['sum_overflow']).toEqual([saturated]);
+    expect(output.tables[0].columns['status']).toEqual(['present']);
+    const counts = await runCatalogOperationAsync(
+      getCatalogBinding('dggs-cell-compare')!,
+      {family: 'quadbin', resolution: 6, measure: 'count'},
+      {before: data, after: data},
+      {device}
+    );
+    expect(counts.engine).toBe('gpu');
+    expect(counts.tables[0].columns['before']).toEqual([2]);
+  }
+});
+
+test('DGGS-105 B2: GPU binding excludes off-axis city-scale holes in either winding', async () => {
+  const device = await getDevice();
+  const longitude = -87.63,
+    latitude = 41.88;
+  const square = (halfWidth: number) => [
+    [longitude - halfWidth, latitude - halfWidth],
+    [longitude + halfWidth, latitude - halfWidth],
+    [longitude + halfWidth, latitude + halfWidth],
+    [longitude - halfWidth, latitude + halfWidth],
+    [longitude - halfWidth, latitude - halfWidth]
+  ];
+  for (const reverse of [false, true]) {
+    const polygons: CatalogFeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          properties: {},
+          geometry: {
+            type: 'Polygon',
+            coordinates: [square(0.01), square(0.01 / 3).reverse()].map(ring =>
+              reverse ? [...ring].reverse() : ring
+            )
+          }
+        }
+      ]
+    };
+    const {gpu, cpu} = await runBoth(
+      device,
+      'spherical-point-in-polygon',
+      {},
+      {
+        points: points([
+          {coordinates: [longitude, latitude]},
+          {coordinates: [longitude + 0.007, latitude]},
+          {coordinates: [longitude + 180, -latitude]}
+        ]),
+        polygons
+      }
+    );
+    expect(gpu.tables[0].columns['point_feature_index']).toEqual([1]);
+    expect(cpu.tables[0].columns['point_feature_index']).toEqual([1]);
+  }
+});
+
+test('DGGS-102 B3: GPU publication retains a unit delta between rounded equal endpoints', async () => {
+  const device = await getDevice();
+  const before = points([{coordinates: [10, 10], properties: {v: 16777216}}]);
+  const after = points([
+    {coordinates: [10, 10], properties: {v: 16777216}},
+    {coordinates: [10, 10], properties: {v: 1}}
+  ]);
+  const output = await runCatalogOperationAsync(
+    getCatalogBinding('dggs-cell-compare')!,
+    {family: 'quadbin', resolution: 6, valueProperty: 'v', measure: 'sum'},
+    {before, after},
+    {device}
+  );
+  expect(output.engine).toBe('gpu');
+  expect(output.tables[0].columns['before']).toEqual([16777216]);
+  expect(output.tables[0].columns['after']).toEqual([16777216]);
+  expect(output.tables[0].columns['delta']).toEqual([1]);
+  expect(output.tables[0].columns['percent_change']).toEqual([0.0000059604644775390625]);
 });

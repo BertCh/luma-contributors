@@ -12,10 +12,10 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {createClusteredPoints} from './spatial-clustering-oracle';
 import {HIERARCHICAL_DENSITY_FIXTURE} from './hierarchical-density-clustering-oracle';
-import {runHierarchicalDensityClustering} from './hierarchical-density-clustering-harness';
+import {runHDBSCAN} from './hierarchical-density-clustering-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
 
-it('GPUHierarchicalDensityClustering A/B: 20k and 100k points against scikit-learn', async () => {
+it('GPUHDBSCAN A/B: 20k and 100k points against scikit-learn', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const lines: string[] = [];
@@ -27,7 +27,7 @@ it('GPUHierarchicalDensityClustering A/B: 20k and 100k points against scikit-lea
       blobSigma: 4,
       noiseFraction: 0.05
     });
-    const result = await runHierarchicalDensityClustering(device, positions, {
+    const result = await runHDBSCAN(device, positions, {
       minimumClusterSize: 50,
       timedEncodings: 3
     });

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from './terrain-output-selection';
+
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   type GPUCommandGraph,
@@ -70,14 +72,14 @@ export function getGPUSolarPositionParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUSolarPosition}; at least one is required. */
-export type GPUSolarPositionOutput = {
+export type GPUSolarPositionOutput = TerrainOutputSelection<{
   /** Sun azimuth per row, degrees clockwise from north in `[0, 360)`. */
   azimuth?: GraphDataView<'float32'>;
   /** Sun altitude per row in degrees (refracted when `refraction` is true). */
   altitude?: GraphDataView<'float32'>;
   /** 1 when the geometric altitude exceeds the parameters threshold, else 0. */
   daylight?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUSolarPosition}.

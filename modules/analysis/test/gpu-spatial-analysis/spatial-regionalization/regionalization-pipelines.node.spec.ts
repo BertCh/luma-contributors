@@ -8,7 +8,7 @@ import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgs
 import {expect, it, vi} from 'vitest';
 import {
   getGPUAZPMaximumTableWordCount,
-  GPU_MAX_P_STATUS,
+  GPU_MAX_P_STATUS_LAYOUT,
   GPUAZPRegions,
   GPUMaxPRegions,
   GPUSkaterRegions,
@@ -116,7 +116,7 @@ it('GPUAZPRegions, GPUMaxPRegions and GPUWardRegions keep one pipeline per kerne
       output: {
         labels: view('uint32', ROWS),
         objective: view('float32', 1),
-        status: view('uint32', GPU_MAX_P_STATUS.length)
+        status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
       }
     }).getCommandNodes(graph);
   };
@@ -206,7 +206,7 @@ it('GPUMaxPRegions has no row cap: 262,144 rows build, and scratch beyond one bi
       output: {
         labels: view('uint32', rows),
         objective: view('float32', 1),
-        status: view('uint32', GPU_MAX_P_STATUS.length)
+        status: view('uint32', GPU_MAX_P_STATUS_LAYOUT.length)
       }
     });
     const allocate = vi.spyOn(graph, 'createTransientBuffer');

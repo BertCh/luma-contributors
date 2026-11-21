@@ -12,6 +12,7 @@ import {
 import {
   createTransientView,
   GPUCompaction,
+  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -156,7 +157,9 @@ export type GPUTrajectorySegmentsProps = GPUTrajectoryGeometryFields & {
 
 /**
  * Triplegs and trips from positionfixes and staypoints, with trackintel's `between_staypoints`
- * tripleg rule and `generate_trips` state machine.
+ * tripleg rule and `generate_trips` state machine. Per-track trip counts use a public
+ * hierarchical exclusive scan; a separate constant-work node publishes the terminal offset
+ * and exact total. Scan nodes contribute their workload estimates to graph planning.
  *
  * A tripleg is a maximal run of rows outside every staypoint, broken wherever a step is strictly
  * longer than `maximumGap`, with at least two rows; a run that does not move (a tripleg whose
@@ -256,8 +259,8 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
     validateRequirement(
       id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     validateRequirement(
       id,
@@ -851,22 +854,26 @@ fn isGapBetween(a: u32, b: u32) -> bool {
         declarations: walkSource,
         body: walkBody(false)
       }),
+      ...new GPUScan({
+        id: `${id}-trip-offset-scan`,
+        input: tripCounts,
+        output: trackTripOffsets,
+        mode: 'exclusive'
+      }).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-trip-offsets`,
         operation: OPERATION,
         invocationCount: 1,
         bindings: [
-          {name: 'tripCounts', view: tripCounts, type: 'u32', access: 'read'},
+          ...(trackCount > 0
+            ? [{name: 'tripCounts', view: tripCounts, type: 'u32', access: 'read'} as const]
+            : []),
           {name: 'trackTripOffsets', view: trackTripOffsets, type: 'u32', access: 'read_write'},
           {name: 'tripTotal', view: tripTotal, type: 'u32', access: 'read_write'}
         ],
-        body: `var total = 0u;
-  for (var track = 0u; track < ${trackCount}u; track++) {
-    trackTripOffsets[trackTripOffsetsOffset + track] = total;
-    total += tripCounts[tripCountsOffset + track];
-  }
-  trackTripOffsets[trackTripOffsetsOffset + ${trackCount}u] = total;
-  tripTotal[tripTotalOffset] = total;`
+        body: `let required = ${trackCount > 0 ? `trackTripOffsets[trackTripOffsetsOffset + ${trackCount - 1}u] + tripCounts[tripCountsOffset + ${trackCount - 1}u]` : '0u'};
+  trackTripOffsets[trackTripOffsetsOffset + ${trackCount}u] = required;
+  tripTotal[tripTotalOffset] = required;`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-trip-write`,

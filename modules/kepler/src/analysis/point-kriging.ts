@@ -224,6 +224,7 @@ export function addKeplerPointKriging<Parameters>(
   try {
     const contributor = new GPUKriging({
       id,
+      longitudeSearch: settings.longitudeSearch ?? 'clipped',
       spatialContext,
       positions,
       values: props.values,

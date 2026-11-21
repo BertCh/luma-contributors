@@ -3,14 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Kernel} from '@luma.gl/graph';
-import {assertUnitVector} from './assert-unit-vector';
+import {validateUnitVector} from './assert-unit-vector';
+import {getSphericalRingOrientationWGSL} from './spherical-ring-orientation-wgsl';
 import {
   createTransientView,
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
   getViewBinding,
   getViewElementOffset,
-  GraphVectorView,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -23,6 +24,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getReadPoint3WGSL} from '../shared/spatial-wgsl-point-helpers';
 import {
+  isGraphVectorView,
   validateSinglePackedView,
   validateRequirement,
   validateCommandNodeBudget,
@@ -75,7 +77,11 @@ export type GPUSphericalPolygonContainsProps<
    * great-circle edges. Planar contexts are rejected. Defaults to longitude-latitude, no metric.
    */
   spatialContext?: GPUSpatialContext;
-  /** Unit xyz, simple CCW minor-arc rings, with no repeated closing vertex. */
+  /**
+   * Unit xyz, simple minor-arc rings, with no repeated closing vertex. Either orientation: each
+   * ring stands for the region it bounds inside its hemisphere, so counterclockwise shells with
+   * clockwise holes (GeoJSON order) and all-counterclockwise rings give the same result.
+   */
   positions: GraphDataView<'float32x3'>;
   ringOffsets: GraphDataView<'uint32'>;
   /** Ring offsets per polygon: first ring is the shell; subsequent rings are holes. */
@@ -125,6 +131,13 @@ const SPHERICAL_POLYGON_MAXIMUM_LINEAR_WORKGROUP_COUNT = 0x1000000;
  * mirror query lengths, including empty chunks. Two-word temporary results are reused between
  * chunks so query kernels stay within eight storage bindings; scatter keeps the public layout.
  *
+ * Rings may have either orientation. A ring lies in an open hemisphere (its own vertex mean or
+ * `hemisphereCenter`) and stands for the region it bounds there; the other region is selected
+ * explicitly with `complement`. The per-ring pass reads the orientation from the sign of the ring's
+ * gnomonic (central) projection area about that pole, where great arcs are straight segments, and
+ * the query pass orients the winding sum by it, so clockwise or counterclockwise shells and holes
+ * (GeoJSON order included) give the same result.
+ *
  * Status per query: `0` inside or outside, `1` invalid query, polygon index or ring (this includes
  * a ring with an edge whose cross product is within `tolerance`, i.e. an edge shorter than about
  * `tolerance` radians or nearly antipodal endpoints), `2` on the boundary within `tolerance`. The
@@ -165,7 +178,7 @@ export class GPUSphericalPolygonContains<
       GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
     );
     if (props.hemisphereCenter)
-      assertUnitVector(props.hemisphereCenter, this.id, 'hemisphereCenter');
+      validateUnitVector(props.hemisphereCenter, this.id, 'hemisphereCenter');
     validateSinglePackedView(props.positions, ['float32x3'], `${this.id} positions`);
     for (const [name, view] of Object.entries({
       ringOffsets: props.ringOffsets,
@@ -185,7 +198,7 @@ export class GPUSphericalPolygonContains<
     }
     validateDisjointWritableViews(this.id, props.output);
     this.chunked = [props.queries, props.polygonIndices, ...Object.values(props.output)].some(
-      view => view instanceof GraphVectorView
+      view => isGraphVectorView(view)
     );
     this.estimatedCommandNodeCount = this.chunked ? 3 + this.chunkPlan.nonemptyChunkCount * 2 : 3;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
@@ -286,10 +299,31 @@ export class GPUSphericalPolygonContains<
     );
     const declarations = `const POLYGON_TOLERANCE: f32 = ${tolerance};
 ${getReadPoint3WGSL('polygonPosition', 'positions')}
+${getSphericalRingOrientationWGSL('polygonPosition')}
 fn polygonUnit(point: vec3f) -> bool { let squared = dot(point, point); return (bitcast<u32>(squared) & 0x7f800000u) != 0x7f800000u && abs(squared - 1.0) <= 1e-4; }
+fn polygonEdgeNormal(first: vec3f, second: vec3f) -> vec3f {
+  let firstDirection = normalize(first);
+  let secondDirection = normalize(second);
+  // Form a small difference before the cross product to retain tiny off-axis arcs.
+  let difference = secondDirection - select(-firstDirection, firstDirection, dot(firstDirection, secondDirection) >= 0.0);
+  return cross(firstDirection, difference);
+}
 fn polygonOnArc(first: vec3f, second: vec3f, point: vec3f, margin: f32) -> bool {
-  let normal = normalize(cross(first, second));
-  return abs(dot(normal, point)) <= margin && dot(cross(first, point), normal) >= -margin && dot(cross(point, second), normal) >= -margin;
+  let firstDirection = normalize(first);
+  let secondDirection = normalize(second);
+  let pointDirection = normalize(point);
+  // Endpoint chord distance can be exactly zero while the incident plane residual
+  // rounds above the angular band. Accept the finite endpoint caps first.
+  if (min(distance(firstDirection, pointDirection), distance(secondDirection, pointDirection)) <= 2.0 * sin(margin * 0.5)) { return true; }
+  let normal = normalize(polygonEdgeNormal(first, second));
+  // The projection belongs to the finite minor arc only when both sides are
+  // nonnegative. Expanding both side tests by margin aliases a short arc's antipode.
+  let firstSide = dot(cross(firstDirection, pointDirection), normal);
+  let secondSide = dot(cross(pointDirection, secondDirection), normal);
+  if (firstSide >= 0.0 && secondSide >= 0.0) {
+    return abs(dot(normal, pointDirection)) <= sin(margin);
+  }
+  return false;
 }`;
     const sharedNodes = [
       createWGSLKernelNode(graph, {
@@ -314,8 +348,15 @@ else {
   ${props.hemisphereCenter ? `center = vec3f(${props.hemisphereCenter.join(',')});` : ''}
   if (length(center) <= POLYGON_TOLERANCE) { failure = 1u; } else { center = normalize(center); }
 }
+// Local projected differences retain small off-axis ring area without O(1) cancellation.
+var signedArea = 0.0;
+if (failure == 0u) {
+  signedArea = sphericalRingSignedArea(begin, end, center);
+}
+let clockwise = select(0u, 2u, signedArea < 0.0);
 ringCenters[ringCentersOffset + index * 3u] = center.x; ringCenters[ringCentersOffset + index * 3u + 1u] = center.y; ringCenters[ringCentersOffset + index * 3u + 2u] = center.z;
-atomicStore(&ringFailures[ringFailuresOffset + index], failure);`
+// Bit 0: failure. Bit 1: clockwise about the pole.
+atomicStore(&ringFailures[ringFailuresOffset + index], failure | clockwise);`
       }),
       createWGSLKernelNode(graph, {
         id: `${id}-ring-edges`,
@@ -338,12 +379,12 @@ for (var step = 0u; step < 32u && low + 1u < high; step++) {
 }
 let ring = low;
 let begin = ringOffsets[ringOffsetsOffset + ring]; let end = ringOffsets[ringOffsetsOffset + ring + 1u];
-if (index < begin || index >= end || atomicLoad(&ringFailures[ringFailuresOffset + ring]) != 0u) { return; }
+if (index < begin || index >= end || (atomicLoad(&ringFailures[ringFailuresOffset + ring]) & 1u) != 0u) { return; }
 let center = vec3f(ringCenters[ringCentersOffset + ring * 3u], ringCenters[ringCentersOffset + ring * 3u + 1u], ringCenters[ringCentersOffset + ring * 3u + 2u]);
 let edge = index;
 let next = select(edge + 1u, begin, edge + 1u == end);
 let first = polygonPosition(edge); let second = polygonPosition(next);
-let normal = cross(first, second);
+let normal = polygonEdgeNormal(first, second);
 var failure = 0u;
 if (length(normal) <= POLYGON_TOLERANCE || dot(center, first) <= POLYGON_TOLERANCE) { failure = 1u; }
 // Reject crossing/touching nonadjacent arcs instead of assigning an invalid ring a fill.
@@ -351,13 +392,14 @@ for (var other = begin; other < end && failure == 0u; other++) {
   let otherNext = select(other + 1u, begin, other + 1u == end);
   if (other == edge || other == next || otherNext == edge) { continue; }
   let third = polygonPosition(other); let fourth = polygonPosition(otherNext);
-  let crossing = cross(normal, cross(third, fourth));
+  let crossing = cross(normal, polygonEdgeNormal(third, fourth));
   if (length(crossing) > POLYGON_TOLERANCE * POLYGON_TOLERANCE) {
     let intersection = normalize(crossing);
     if ((polygonOnArc(first, second, intersection, POLYGON_TOLERANCE) && polygonOnArc(third, fourth, intersection, POLYGON_TOLERANCE)) || (polygonOnArc(first, second, -intersection, POLYGON_TOLERANCE) && polygonOnArc(third, fourth, -intersection, POLYGON_TOLERANCE))) { failure = 1u; }
   } else if (polygonOnArc(first, second, third, POLYGON_TOLERANCE) || polygonOnArc(first, second, fourth, POLYGON_TOLERANCE)) { failure = 1u; }
 }
-if (failure != 0u) { atomicMax(&ringFailures[ringFailuresOffset + ring], 1u); }`
+// Bit 1 holds the ring orientation; only bit 0 marks a failure.
+if (failure != 0u) { atomicOr(&ringFailures[ringFailuresOffset + ring], 1u); }`
       })
     ];
     if (!this.chunked)
@@ -570,27 +612,40 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
       ],
       declarations,
       body: `let queryOffset = queriesOffset + index * 3u;
-let point = vec3f(queries[queryOffset], queries[queryOffset + 1u], queries[queryOffset + 2u]);
+let queryPoint = vec3f(queries[queryOffset], queries[queryOffset + 1u], queries[queryOffset + 2u]);
+var point = queryPoint;
 let polygon = polygonIndices[polygonIndicesOffset + index];
 var failure = 0u; var inside = false; var boundary = false;
 if (!polygonUnit(point) || polygon >= ${props.polygonOffsets.length - 1}u) { failure = 1u; }
 if (failure == 0u) {
+  point = normalize(point);
   let firstRing = polygonOffsets[polygonOffsetsOffset + polygon]; let lastRing = polygonOffsets[polygonOffsetsOffset + polygon + 1u];
   if (firstRing > lastRing || lastRing >= ${props.ringOffsets.length}u) { failure = 1u; }
   for (var ring = firstRing; ring < lastRing && failure == 0u; ring++) {
     // Ring validity (range, unit vectors, hemisphere, arc crossings) is precomputed per ring.
-    if (ringFailures[ringFailuresOffset + ring] != 0u) { failure = 1u; break; }
+    // Bit 0: the ring failed validation. Bit 1: the ring is clockwise about its pole.
+    let ringFlags = ringFailures[ringFailuresOffset + ring];
+    if ((ringFlags & 1u) != 0u) { failure = 1u; break; }
     let begin = ringOffsets[ringOffsetsOffset + ring]; let end = ringOffsets[ringOffsetsOffset + ring + 1u];
     var winding = 0.0; var ringBoundary = false;
     for (var edge = begin; edge < end; edge++) {
       let next = select(edge + 1u, begin, edge + 1u == end);
       let first = polygonPosition(edge); let second = polygonPosition(next);
-      let normal = cross(first, second);
-      ringBoundary = ringBoundary || polygonOnArc(first, second, point, POLYGON_TOLERANCE);
-      let numerator = dot(point, normal); let denominator = dot(first, second) - dot(point, first) * dot(point, second);
-      if (abs(numerator) + abs(denominator) > 1e-12) { winding += atan2(numerator, denominator); }
+      // Boundary directions must be normalized once, just like the packed endpoints.
+      ringBoundary = ringBoundary || polygonOnArc(first, second, queryPoint, POLYGON_TOLERANCE);
+      // Use small differences near either the query or its antipode before tangent projection.
+      // Direct dot(first,second)-dot(point,first)*dot(point,second) loses tiny off-axis angles.
+      let firstDifference = first - select(-point, point, dot(point, first) >= 0.0);
+      let secondDifference = second - select(-point, point, dot(point, second) >= 0.0);
+      let firstTangent = cross(point, firstDifference); let secondTangent = cross(point, secondDifference);
+      let numerator = dot(point, cross(firstTangent, secondTangent)); let denominator = dot(firstTangent, secondTangent);
+      // Only the zero tangent pair has no angle; a fixed cutoff drops valid tiny rings.
+      if (abs(numerator) + abs(denominator) > 0.0) { winding += atan2(numerator, denominator); }
     }
-    let ringInside = winding > 3.141592653589793;
+    // A counterclockwise ring winds 2 pi around its region (and -2 pi around the antipodal mirror
+    // image of it); a clockwise ring the opposite, so its winding is negated first.
+    let orientedWinding = select(winding, -winding, (ringFlags & 2u) != 0u);
+    let ringInside = orientedWinding > 3.141592653589793;
     if (ring == firstRing) { inside = ringInside; } else { inside = inside && !ringInside; }
     boundary = boundary || ringBoundary;
   }

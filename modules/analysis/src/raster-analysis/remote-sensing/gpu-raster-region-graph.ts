@@ -11,10 +11,12 @@ import {
   getFixedPointHeadroomBits
 } from '../../analysis-core/kernels/fixed-point-accumulator';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {Device} from '@luma.gl/core';
 import {validateRasterGrid} from '../raster-band-utils';
 import {validateGPUStatusPort} from '../../analysis-core/contracts/status';
 import {
   createTransientView,
+  getViewBindingRange,
   type GraphDataView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -41,6 +43,12 @@ import {
   getRasterRegionBoruvkaRoundCount
 } from './raster-region-boruvka';
 import {RASTER_FINITE_WGSL, rasterBinding, validateRasterGraph} from './raster-kernel-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterRegionGrid} from './raster-region-snapshot';
+import type {
+  GPUAnalysisExecutionPlanner,
+  GPUAnalysisRoute
+} from '../../analysis-core/contracts/analysis-execution-planning';
 
 /** Regions: adjacency and weights are dense regionCount squared matrices and the merge scans a whole matrix row per round in one invocation (reference tier). */
 export const MAXIMUM_REGION_GRAPH_REGION_COUNT = 256;
@@ -56,6 +64,8 @@ export type GPURasterRegionGraphProps = {
   grid: GPURasterMetadata;
   /** Dense IDs 0..regionCount-1; other labels are background. */
   labels: GraphDataView<'uint32'>;
+  /** One uint32 word, nonzero for a complete source partition. Requires output.status.complete. */
+  labelsComplete?: GraphDataView<'uint32'>;
   values: GraphDataView<'float32'>;
   regionCount: number;
   /** Fixed single linkage (default) or one globally closest mean-updating merge per round. */
@@ -77,9 +87,160 @@ export type GPURasterRegionGraphProps = {
     status: {
       /** One word, 1 if another fixed propagation or adaptive merge is possible, otherwise 0. */
       iterationLimitReached: GraphDataView<'uint32'>;
+      /** Source-label completeness, independent of local merge-budget exhaustion. Incumbents remain available. */
+      complete?: GraphDataView<'uint32'>;
     };
   };
 };
+export type GPURasterRegionGraphOutput = GPURasterRegionGraphProps['output'];
+
+/** Pure device-specific admission and provenance, without graph mutation or cached device state. */
+export function getRasterRegionGraphExecutionPlan(
+  props: Pick<
+    GPURasterRegionGraphProps,
+    | 'id'
+    | 'grid'
+    | 'regionCount'
+    | 'maximumIterations'
+    | 'mergeMode'
+    | 'searchStructure'
+    | 'mergeThreshold'
+  > & {output?: {status: {complete?: GraphDataView<'uint32'>}}},
+  device: Pick<Device, 'limits'>
+) {
+  const id = props.id ?? 'raster-region-graph';
+  const count = validateRasterGrid(id, props.grid);
+  const requestedSearchStructure = props.searchStructure ?? 'auto';
+  validateRequirement(
+    id,
+    ['auto', 'dense', 'boruvka'].includes(requestedSearchStructure),
+    "searchStructure must be 'auto', 'dense' or 'boruvka'"
+  );
+  validateRequirement(
+    id,
+    ['fixed', 'adaptive'].includes(props.mergeMode ?? 'fixed'),
+    "mergeMode must be 'fixed' or 'adaptive'"
+  );
+  validateRequirement(
+    id,
+    props.mergeMode !== 'adaptive' || requestedSearchStructure !== 'boruvka',
+    "searchStructure 'boruvka' requires mergeMode 'fixed'"
+  );
+  validateCapacity(id, 'grid cell count', count, 1, MAXIMUM_REGION_GRAPH_CELL_COUNT);
+  validateCapacity(
+    id,
+    'maximumIterations',
+    props.maximumIterations,
+    1,
+    MAXIMUM_REGION_GRAPH_ITERATIONS
+  );
+  validateRequirement(
+    id,
+    Number.isFinite(Math.fround(props.mergeThreshold)) && props.mergeThreshold >= 0,
+    'mergeThreshold must be a nonnegative finite float32 value'
+  );
+  const bindingMaximum = Math.min(
+    device.limits.maxStorageBufferBindingSize,
+    device.limits.maxBufferSize
+  );
+  const selectedSearchStructure: 'dense' | 'boruvka' =
+    requestedSearchStructure === 'dense' ||
+    props.mergeMode === 'adaptive' ||
+    (requestedSearchStructure === 'auto' &&
+      props.regionCount <= MAXIMUM_REGION_GRAPH_REGION_COUNT &&
+      (props.maximumIterations < props.regionCount - 1 || count * 8 > bindingMaximum))
+      ? 'dense'
+      : 'boruvka';
+  validateCapacity(
+    id,
+    'regionCount',
+    props.regionCount,
+    1,
+    selectedSearchStructure === 'dense'
+      ? MAXIMUM_REGION_GRAPH_REGION_COUNT
+      : MAXIMUM_BORUVKA_REGION_GRAPH_REGION_COUNT
+  );
+  const resourceBounds = {
+    labelsByteLength: count * 4,
+    valuesByteLength: count * 4,
+    matrixByteLength: props.regionCount ** 2 * 4,
+    regionByteLength: props.regionCount * 4,
+    fixedPointSumsByteLength: props.regionCount * FIXED_POINT_WORD_COUNT * 4,
+    edgeEndpointsByteLength: selectedSearchStructure === 'boruvka' ? count * 8 : 0,
+    bindingMaximumByteLength: bindingMaximum
+  };
+  // Dense accumulation/means use five bindings; adaptive final publication and Boruvka's
+  // minimum-edge pass use six. Check this before any recipe assembly or inner allocation.
+  const peakStorageBindingCount =
+    props.mergeMode === 'adaptive' ||
+    (selectedSearchStructure === 'boruvka' &&
+      getRasterRegionBoruvkaRoundCount(props.regionCount, props.maximumIterations) > 0)
+      ? 6
+      : 5;
+  validateRequirement(
+    id,
+    peakStorageBindingCount <= device.limits.maxStorageBuffersPerShaderStage,
+    `${selectedSearchStructure} route needs ${peakStorageBindingCount} storage buffers per shader stage; received limit ${device.limits.maxStorageBuffersPerShaderStage}; use searchStructure 'dense' when its five bindings fit`
+  );
+  const constraints: (GPUAnalysisRoute & {received: number; satisfied: boolean})[] = [];
+  for (const [name, bytes] of Object.entries(resourceBounds)) {
+    if (name === 'bindingMaximumByteLength' || bytes === 0) continue;
+    const subject = name === 'edgeEndpointsByteLength' ? 'edge endpoints' : name;
+    validateGPUStorageBindingByteLength(
+      device as Device,
+      id,
+      subject,
+      bytes,
+      'reduce grid dimensions or regionCount'
+    );
+    validateCapacity(id, `${subject} (maxBufferSize)`, bytes, 0, device.limits.maxBufferSize);
+    constraints.push({
+      name: subject,
+      kind: 'allocation',
+      quantity: subject,
+      unit: 'bytes',
+      appliesWhen: `selectedSearchStructure === '${selectedSearchStructure}'`,
+      maximum: bindingMaximum,
+      scope: 'binding',
+      received: bytes,
+      satisfied: true,
+      accuracyImplications: 'Binding admission does not change linkage semantics.',
+      source: 'modules/analysis/src/raster-analysis/remote-sensing/gpu-raster-region-graph.ts'
+    });
+  }
+  const estimatedCommandNodeCount =
+    (props.mergeMode === 'adaptive'
+      ? 8 + 2 * (props.maximumIterations + 1)
+      : selectedSearchStructure === 'boruvka'
+        ? 13 + 4 * getRasterRegionBoruvkaRoundCount(props.regionCount, props.maximumIterations)
+        : 10 + props.maximumIterations) + Number(Boolean(props.output?.status.complete));
+  validateCommandNodeBudget(id, estimatedCommandNodeCount);
+  return {
+    route: selectedSearchStructure,
+    feasible: true,
+    constraints,
+    accuracyImplications: [
+      props.mergeMode === 'adaptive'
+        ? 'Adaptive mode merges one closest component pair per round and updates component means.'
+        : 'Fixed linkage uses original means; dense rounds propagate labels, Boruvka phases merge components. An unfinished budget can yield different incumbents.'
+    ],
+    requestedSearchStructure,
+    selectedSearchStructure,
+    resourceBounds,
+    peakStorageBindingCount,
+    estimatedCommandNodeCount
+  };
+}
+
+export type GPURasterRegionGraphExecutionPlan = ReturnType<
+  typeof getRasterRegionGraphExecutionPlan
+>;
+// Check the shared catalog planner contract without a runtime dependency on the catalog.
+const plannerContract: GPUAnalysisExecutionPlanner<
+  Parameters<typeof getRasterRegionGraphExecutionPlan>[0],
+  Pick<Device, 'limits'>
+> = {getExecutionPlan: getRasterRegionGraphExecutionPlan};
+void plannerContract;
 /** Four-neighbor region adjacency with bounded fixed or adaptive mean-difference merging. Explicit rounds use ping-pong graph scratch; no cross-workgroup barrier.
  *
  * Fixed linkage can use raster-boundary edge-list Boruvka: each component chooses its minimum
@@ -91,17 +252,49 @@ export type GPURasterRegionGraphProps = {
  * Auto also falls back to dense for small runs when boundary scratch exceeds the device binding
  * limit. Adaptive mode keeps its dense, one-pair-at-a-time reference route.
  *
- * Labels remain source IDs; missing observations exclude only mean contributions. Complete
- * domains are required: tile seams must be reconciled before this contributor.
+ * Labels remain source IDs; missing observations exclude only mean contributions. Tile seams
+ * must be reconciled before this contributor. Supply labelsComplete for provisional partitions
+ * together with output.status.complete; this certificate covers source labels for adjacency and
+ * the incumbent mapping, independently of iterationLimitReached. Omission assumes complete labels.
+ * getExecutionPlan(device) reports the actual selected route and bounds without declaring nodes.
  * All adaptive merges recompute observation-count-weighted component means; the closest
  * eligible pair wins, with lexicographic source-root ties. One adaptive round performs one merge.
  */
 export class GPURasterRegionGraph implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly searchStructure: 'dense' | 'boruvka';
+  private readonly preferredSearchStructure: 'dense' | 'boruvka';
   /** Upper bound: auto may fall back to dense on devices whose bindings cannot hold the boundary list. */
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPURasterRegionGraphProps) {
+  readonly props: GPURasterRegionGraphProps;
+  constructor(inputProps: GPURasterRegionGraphProps) {
+    const captured = snapshotConstructionFields(inputProps, [
+      'id',
+      'grid',
+      'labels',
+      'labelsComplete',
+      'values',
+      'regionCount',
+      'mergeMode',
+      'searchStructure',
+      'mergeThreshold',
+      'maximumIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(captured.output, [
+      'adjacency',
+      'weights',
+      'mapping',
+      'status'
+    ]);
+    const props = {
+      ...captured,
+      grid: snapshotRasterRegionGrid(captured.grid),
+      output: {
+        ...output,
+        status: snapshotConstructionFields(output.status, ['iterationLimitReached', 'complete'])
+      }
+    };
+    this.props = props;
     this.id = props.id ?? 'raster-region-graph';
     validateRequirement(
       this.id,
@@ -113,7 +306,7 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
       props.mergeMode !== 'adaptive' || props.searchStructure !== 'boruvka',
       "searchStructure 'boruvka' requires mergeMode 'fixed'"
     );
-    this.searchStructure =
+    this.preferredSearchStructure =
       props.searchStructure === 'dense' ||
       props.mergeMode === 'adaptive' ||
       ((props.searchStructure ?? 'auto') === 'auto' &&
@@ -136,7 +329,7 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
       'regionCount',
       props.regionCount,
       1,
-      this.searchStructure === 'dense'
+      this.preferredSearchStructure === 'dense'
         ? MAXIMUM_REGION_GRAPH_REGION_COUNT
         : MAXIMUM_BORUVKA_REGION_GRAPH_REGION_COUNT
     );
@@ -174,11 +367,11 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
     this.estimatedCommandNodeCount =
       props.mergeMode === 'adaptive'
         ? 8 + 2 * (props.maximumIterations + 1)
-        : this.searchStructure === 'boruvka'
+        : this.preferredSearchStructure === 'boruvka'
           ? 13 + 4 * getRasterRegionBoruvkaRoundCount(props.regionCount, props.maximumIterations)
           : 10 + props.maximumIterations;
     if (
-      this.searchStructure === 'boruvka' &&
+      this.preferredSearchStructure === 'boruvka' &&
       props.searchStructure !== 'boruvka' &&
       props.regionCount <= MAXIMUM_REGION_GRAPH_REGION_COUNT
     ) {
@@ -187,22 +380,59 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
         10 + props.maximumIterations
       );
     }
+    this.estimatedCommandNodeCount += Number(Boolean(props.output.status.complete));
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateGPUStatusPort(this.id, props.output.status);
-    const inputs = [props.labels, props.values];
+    validateRequirement(
+      this.id,
+      !props.labelsComplete || Boolean(props.output.status.complete),
+      'labelsComplete requires output.status.complete to retain source-label completeness'
+    );
+    for (const [name, view] of [
+      ['labelsComplete', props.labelsComplete],
+      ['output.status.complete', props.output.status.complete]
+    ] as const) {
+      if (view)
+        validateRequirement(
+          this.id,
+          view.length === 1,
+          `${name} must hold exactly one uint32 word; received ${view.length}`
+        );
+    }
+    const inputs = [
+      props.labels,
+      props.values,
+      ...(props.labelsComplete ? [props.labelsComplete] : [])
+    ];
     const outputs = [
       props.output.adjacency,
       props.output.weights,
       props.output.mapping,
-      props.output.status.iterationLimitReached
+      props.output.status.iterationLimitReached,
+      ...(props.output.status.complete ? [props.output.status.complete] : [])
     ];
-    for (const view of [...inputs, ...outputs])
-      validateSinglePackedView(view, [view.format], this.id);
+    for (const [name, view, format] of [
+      ['labels', props.labels, 'uint32'],
+      ['values', props.values, 'float32'],
+      ['output.adjacency', props.output.adjacency, 'uint32'],
+      ['output.weights', props.output.weights, 'float32'],
+      ['output.mapping', props.output.mapping, 'uint32'],
+      ['output.status.iterationLimitReached', props.output.status.iterationLimitReached, 'uint32'],
+      ['labelsComplete', props.labelsComplete, 'uint32'],
+      ['output.status.complete', props.output.status.complete, 'uint32']
+    ] as const)
+      if (view)
+        validateSinglePackedView(
+          view,
+          [format],
+          {id: this.id, contributor: 'GPURasterRegionGraph'},
+          name
+        );
     validateRasterWritableDispatches(
       this.id,
       inputs,
       outputs,
-      this.getDispatches(this.searchStructure)
+      this.getDispatches(this.preferredSearchStructure)
     );
   }
 
@@ -210,12 +440,17 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
     const {props} = this;
     const {adjacency, weights, mapping, status} = props.output;
     const boundary = {inputs: [props.labels], outputs: [adjacency]};
+    const completion: RasterWritableDispatch[] = status.complete
+      ? [{inputs: props.labelsComplete ? [props.labelsComplete] : [], outputs: [status.complete]}]
+      : [];
     if (props.mergeMode === 'adaptive')
       return [
+        ...completion,
         boundary,
         {inputs: [adjacency], outputs: [weights, mapping, status.iterationLimitReached]}
       ];
     return [
+      ...completion,
       boundary,
       {inputs: [adjacency], outputs: [weights]},
       ...(searchStructure === 'boruvka'
@@ -227,6 +462,39 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
     ];
   }
 
+  /** Device-resolved route and resource bounds for recording or admission, without declaration. */
+  getExecutionPlan(device: Pick<Device, 'limits'>): GPURasterRegionGraphExecutionPlan {
+    const plan = getRasterRegionGraphExecutionPlan(this.props, device);
+    const {props} = this;
+    for (const [name, view] of Object.entries({
+      labels: props.labels,
+      values: props.values,
+      labelsComplete: props.labelsComplete,
+      adjacency: props.output.adjacency,
+      weights: props.output.weights,
+      mapping: props.output.mapping,
+      ...props.output.status
+    })) {
+      if (!view) continue;
+      const range = getViewBindingRange(view);
+      validateGPUStorageBindingByteLength(
+        device as Device,
+        this.id,
+        `${name} aligned binding`,
+        range.size,
+        'reduce the view length or use an aligned byteOffset'
+      );
+      validateCapacity(
+        this.id,
+        `${name} aligned binding bytes (maxBufferSize)`,
+        range.size,
+        1,
+        device.limits.maxBufferSize
+      );
+    }
+    return plan;
+  }
+
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -235,35 +503,30 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
     const regions = props.regionCount;
     // Auto must not reject an existing small dense workload merely because sparse edge scratch
     // needs twice the input binding size. Explicit Boruvka keeps its predictable scratch contract.
-    const searchStructure =
-      this.searchStructure === 'boruvka' &&
-      props.searchStructure !== 'boruvka' &&
-      regions <= MAXIMUM_REGION_GRAPH_REGION_COUNT &&
-      count * 2 * 4 >
-        Math.min(graph.device.limits.maxStorageBufferBindingSize, graph.device.limits.maxBufferSize)
-        ? 'dense'
-        : this.searchStructure;
-    if (searchStructure !== this.searchStructure)
+    const searchStructure = this.getExecutionPlan(graph.device).selectedSearchStructure;
+    if (searchStructure !== this.preferredSearchStructure)
       validateRasterWritableDispatches(
         id,
-        [props.labels, props.values],
+        [props.labels, props.values, ...(props.labelsComplete ? [props.labelsComplete] : [])],
         [
           props.output.adjacency,
           props.output.weights,
           props.output.mapping,
-          props.output.status.iterationLimitReached
+          props.output.status.iterationLimitReached,
+          ...(props.output.status.complete ? [props.output.status.complete] : [])
         ],
         this.getDispatches(searchStructure)
       );
     validateRasterGraph(
       id,
       graph,
-      [props.labels, props.values],
+      [props.labels, props.values, ...(props.labelsComplete ? [props.labelsComplete] : [])],
       [
         props.output.adjacency,
         props.output.weights,
         props.output.mapping,
-        props.output.status.iterationLimitReached
+        props.output.status.iterationLimitReached,
+        ...(props.output.status.complete ? [props.output.status.complete] : [])
       ]
     );
     validateGraphChunkBindingRanges(graph, id, {
@@ -272,7 +535,9 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
       adjacency: props.output.adjacency,
       weights: props.output.weights,
       mapping: props.output.mapping,
-      iterationLimitReached: props.output.status.iterationLimitReached
+      iterationLimitReached: props.output.status.iterationLimitReached,
+      ...(props.labelsComplete ? {labelsComplete: props.labelsComplete} : {}),
+      ...(props.output.status.complete ? {complete: props.output.status.complete} : {})
     });
     // Check every derived allocation before declaring any graph resource or node.
     for (const [name, entries] of [
@@ -306,6 +571,21 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
     const mapping = createTransientView(graph, `${id}-mapping`, 'uint32', regions);
     const other = createTransientView(graph, `${id}-other`, 'uint32', regions);
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (props.output.status.complete)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-labels-complete`,
+          operation: 'GPURasterRegionGraph',
+          invocationCount: 1,
+          bindings: [
+            ...(props.labelsComplete
+              ? [rasterBinding('labelsComplete', props.labelsComplete)]
+              : []),
+            rasterBinding('complete', props.output.status.complete, true)
+          ],
+          body: `complete[completeOffset] = ${props.labelsComplete ? 'select(0u, 1u, labelsComplete[labelsCompleteOffset] != 0u)' : '1u'};`
+        })
+      );
     nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-clear`,
@@ -346,7 +626,11 @@ for (var direction = 0u; direction < 2u; direction++) { if (direction == 0u && i
       ...createFixedPointScaleNodes(graph, {
         id: `${id}-means-scale`,
         operation: 'GPURasterRegionGraph',
-        values: props.values,
+        values: graph.createDataView(props.values.buffer, {
+          format: 'float32',
+          byteOffset: props.values.byteOffset,
+          length: count
+        }),
         scale
       }),
       createFixedPointClearNode(graph, {

@@ -27,8 +27,7 @@ import {
   validateGraphViewTopology,
   validateRequirement,
   validateGraphOutputsDisjointFromInputs,
-  validateSinglePackedView,
-  validatePowerOfTwo
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CELL_KEY_WGSL,
@@ -44,7 +43,8 @@ import {
   hasCellKeyHighWord,
   validateCellTable,
   snapshotCellTable,
-  type GPUCellTable
+  type GPUCellTable,
+  type CellTableSumAccumulator
 } from './cell-table';
 import {
   GPU_CELL_DEFAULT_SUM_SCALE,
@@ -69,16 +69,12 @@ import {
   validateTiledKeyUnionRowCount
 } from '../../analysis-core/kernels/tiled-key-union';
 
-const OPERATION = 'GPUCellAggregation';
-/** Includes a full local sort/table, a scan, gather uploads and all optional merge columns. */
-const CELL_TILE_COMMAND_NODE_ALLOWANCE = 800;
-/** Two scalar words per cell and tile scan offsets must remain uint32-addressable. */
-const CELL_MAXIMUM_TILE_ROW_COUNT = 0x40000000;
+import {
+  getCellAggregationScratchPlan,
+  MAXIMUM_CELL_PYRAMID_ROW_COUNT as MAXIMUM_CELL_ROW_COUNT
+} from './cell-pyramid-planning';
 
-/** The published GPUSort accepts at most 2^31 rows; scratch must also fit the device binding. */
-const MAXIMUM_CELL_ROW_COUNT = 0x80000000;
-/** Upper bound for two radix sorts, their scans/gathers, and the cell-table reduction passes. */
-const CELL_TABLE_COMMAND_NODE_ALLOWANCE = 512;
+const OPERATION = 'GPUCellAggregation';
 
 /** Word order of pre-keyed 64-bit cell rows. */
 export type GPUCellWordOrder = 'little-endian' | 'high-low';
@@ -183,11 +179,13 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   private readonly extraCounts: readonly GraphDataView<'uint32'>[];
+  private readonly sumAccumulator?: CellTableSumAccumulator;
 
   constructor(props: GPUCellAggregationProps);
   constructor(
     props: GPUCellAggregationProps,
-    extraCounts: readonly GraphDataView<'uint32'>[] = []
+    extraCounts: readonly GraphDataView<'uint32'>[] = [],
+    sumAccumulator?: CellTableSumAccumulator
   ) {
     const fields = snapshotConstructionFields(props, [
       'id',
@@ -212,6 +210,7 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
         : undefined
     });
     this.extraCounts = [...extraCounts];
+    this.sumAccumulator = sumAccumulator;
     this.id = props.id ?? 'cell-aggregation';
     this.props = props;
     const id = this.id;
@@ -262,40 +261,23 @@ export class GPUCellAggregation implements GPUCommandNodeProducer {
     // Empty row chunks are never bound. Exclude them from the shared parameter planner's
     // binding checks too: an empty tail may start exactly at the end of its allocation.
     this.chunkPlan = {...chunkPlan, chunks: chunkPlan.chunks.filter(chunk => chunk.length > 0)};
-    validateRequirement(
-      id,
-      props.scratchMode === undefined ||
-        props.scratchMode === 'auto' ||
-        props.scratchMode === 'packed',
-      'scratchMode must be auto or packed'
-    );
     const limits = (getGraphViewChunks(rowView)[0].buffer.graph as GPUCommandGraph).device.limits;
-    const scratchByteLimit = Math.min(limits.maxStorageBufferBindingSize, limits.maxBufferSize);
-    this.scratchTileSize =
-      props.scratchTileSize ??
-      2 **
-        Math.floor(
-          Math.log2(Math.max(1, Math.min(CELL_MAXIMUM_TILE_ROW_COUNT, scratchByteLimit / 8)))
-        );
-    validateCapacity(id, 'scratchTileSize', this.scratchTileSize, 1, CELL_MAXIMUM_TILE_ROW_COUNT);
-    validatePowerOfTwo(id, 'scratchTileSize', this.scratchTileSize);
-    this.usesTiledScratch =
-      props.scratchMode !== 'packed' &&
-      (props.scratchTileSize !== undefined
-        ? rowView.length > this.scratchTileSize
-        : rowView.length * 4 > scratchByteLimit);
-    const tileCount = Math.ceil(rowView.length / this.scratchTileSize);
-    this.estimatedCommandNodeCount =
-      CELL_TABLE_COMMAND_NODE_ALLOWANCE +
-      1 +
-      getGraphViewChunks(rowView).filter(chunk => chunk.length > 0).length *
-        (props.values && getGraphViewChunks(props.values).length > 1 ? 2 : 1);
+    const scratchPlan = getCellAggregationScratchPlan(
+      {
+        rowCount: rowView.length,
+        scratchMode: props.scratchMode,
+        scratchTileSize: props.scratchTileSize,
+        chunkCount: this.chunkPlan.chunks.length,
+        splitValues: Boolean(props.values && getGraphViewChunks(props.values).length > 1)
+      },
+      limits,
+      id
+    );
+    this.scratchTileSize = scratchPlan.scratchTileSize;
+    this.usesTiledScratch = scratchPlan.usesTiledScratch;
+    this.estimatedCommandNodeCount = scratchPlan.estimatedCommandNodeCount;
     if (this.usesTiledScratch) {
-      validateTiledKeyUnionRowCount(id, tileCount * this.scratchTileSize);
-      this.estimatedCommandNodeCount =
-        CELL_TILE_COMMAND_NODE_ALLOWANCE * tileCount +
-        6 * tileCount * tileCount +
-        8 * this.chunkPlan.chunks.length;
+      validateTiledKeyUnionRowCount(id, scratchPlan.tileCount * this.scratchTileSize);
     }
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateCellTable(id, 'output', props.output);
@@ -550,7 +532,8 @@ ${IS_NAN_BITS_WGSL}`,
         source: {kind: 'rows', values},
         sumScale: this.sumScale,
         output: props.output,
-        extraCounts: this.extraCounts
+        extraCounts: this.extraCounts,
+        sumAccumulator: this.sumAccumulator
       })
     ];
   }
@@ -566,7 +549,14 @@ export function validateCellAggregationBindings<Parameters>(
 
 /** Adds composition-only destinations for a pyramid's level counts. @internal */
 export function createCellAggregation(
-  props: GPUCellAggregationProps & {extraCounts?: readonly GraphDataView<'uint32'>[]}
+  props: GPUCellAggregationProps & {
+    extraCounts?: readonly GraphDataView<'uint32'>[];
+    sumAccumulator?: CellTableSumAccumulator;
+  }
 ): GPUCellAggregation {
-  return Reflect.construct(GPUCellAggregation, [props, props.extraCounts]) as GPUCellAggregation;
+  return Reflect.construct(GPUCellAggregation, [
+    props,
+    props.extraCounts,
+    props.sumAccumulator
+  ]) as GPUCellAggregation;
 }

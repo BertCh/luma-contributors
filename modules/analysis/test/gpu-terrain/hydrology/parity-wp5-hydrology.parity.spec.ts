@@ -54,7 +54,7 @@ for (const fixture of HYDROLOGY_CASES) {
       heightAboveDrainage: createOutputBuffer(device, cellCount),
       drainageCells: createOutputBuffer(device, cellCount),
       streamOrder: createOutputBuffer(device, cellCount),
-      slope: createOutputBuffer(device, cellCount),
+      descentTangent: createOutputBuffer(device, cellCount),
       specificCatchmentArea: createOutputBuffer(device, cellCount),
       wetnessIndex: createOutputBuffer(device, cellCount),
       streamPowerIndex: createOutputBuffer(device, cellCount),
@@ -114,7 +114,7 @@ for (const fixture of HYDROLOGY_CASES) {
           accumulation: importGraphBuffer(graph, 'accumulation', inputs[3], 'float32', cellCount),
           parameters: parameters.importToGraph(graph),
           output: {
-            slope: outputView('slope', 'float32'),
+            descentTangent: outputView('descentTangent', 'float32'),
             specificCatchmentArea: outputView('specificCatchmentArea', 'float32'),
             wetnessIndex: outputView('wetnessIndex', 'float32'),
             streamPowerIndex: outputView('streamPowerIndex', 'float32')
@@ -157,7 +157,7 @@ for (const fixture of HYDROLOGY_CASES) {
             fixture.name,
             'Composite reference: pysheds.Grid.cell_slopes/accumulation + numpy.log; Beven/Kirkby, Moore et al.',
             metric,
-            await readFloat32(outputs[metric], cellCount),
+            await readFloat32(outputs[metric === 'slope' ? 'descentTangent' : metric], cellCount),
             fixture.expected[metric],
             fixture.tolerances[metric]
           );

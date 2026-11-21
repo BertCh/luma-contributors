@@ -47,9 +47,9 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUCellTopology:
     'Per-cell fixed fan-out topology of Quadbin, H3 and S2 cells: `gridDisk`, `gridDiskDistances`, `gridRing`, `cellToParent` and `cellToChildren`.',
   GPUChunkedSpatialWeightsAlgebra:
-    'The row-local operations of GPUSpatialWeightsAlgebra over chunked weights: `union`, `intersection`, `difference`, `symmetricDifference`, `selfWeight` and `subgraph`.',
+    'The row-local operations of GPUSpatialWeightsAlgebra over chunked weights: `union`, `intersection`, `difference`, `symmetric-difference`, `selfWeight` and `subgraph`.',
   GPUChunkedSpatialWeightsTransform:
-    'GPUSpatialWeightsTransform of chunked weights. `row`, `binary` and `kernel` are row-local and run the whole-CSR transform once per chunk. `double` and `variance` write per-row partials into one global array (chunks in source order), take one fixed-order sum and apply per chunk, so the totals do not depend on the chunking. `symmetrize` first transposes the chunks into one whole scratch CSR (linear in the chunk count, see GPUChunkedSpatialWeightsTranspose) and looks the reverse weight up there.',
+    'GPUSpatialWeightsTransform of chunked weights. `row`, `binary` and `kernel` are row-local and run the whole-CSR transform once per chunk. `double` and `variance` write per-row partials into one global array (chunks in source order), take one fixed-order sum and apply per chunk, so the totals do not depend on the chunking. `average-reciprocal` first transposes the chunks into one whole scratch CSR (linear in the chunk count, see GPUChunkedSpatialWeightsTranspose) and looks the reverse weight up there.',
   GPUChunkedSpatialWeightsTranspose:
     'Transposes chunked spatial weights into packed or chunked CSR.',
   GPUChunkedSpatialWeightsValidation: 'GPUSpatialWeightsValidation over a chunked CSR.',
@@ -73,6 +73,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
     'Gap-free polygon-coverage simplification (the Shapely `simplify_coverage` and PostGIS `ST_CoverageSimplify` idea): every arc shared by two polygons is simplified once, so both neighbours keep identical vertices along it.',
   GPUCoverageValidity:
     'Validates a polygon coverage: Shapely `coverage_is_valid` and `coverage_invalid_edges` (GEOS `CoverageValidator`), reported per ring segment.',
+  GPUDBSCAN: 'GPU DBSCAN density clustering of two-dimensional planar points.',
   GPUDelaunayTessellation:
     'Builds a planar Delaunay triangulation on the GPU by parallel insertion and flipping.',
   GPUDorlingCartogram:
@@ -80,7 +81,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUDotDensity:
     'Dasymetric dot-density map: places `value * dotsPerUnit` random dots inside each polygon, per category, without flicker when the dot value changes with zoom.',
   GPUEmergingHotSpots:
-    'ArcGIS-style emerging hot spot analysis over a dense space-time cube on a regular lattice.',
+    'ArcGIS-style emerging hot spot analysis over a dense space-time cube with lattice or CSR neighborhoods.',
   GPUEmpiricalBayesRates:
     'Global empirical-Bayes rate standardization and smoothing for rate variables, matching PySAL esda `smoothing.assuncao_rate` (used by `Moran_Rate` and `Moran_Local_Rate` with `adjusted=True`) and `smoothing.Empirical_Bayes`.',
   GPUFocalStatistics:
@@ -113,7 +114,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUGlobalPermutationTest:
     "Global permutation inference (esda `p_sim`, `z_sim`) for Moran's I, Geary's C, Getis-Ord General G, bivariate Moran's I and Lee's L, with the reference distribution and its histogram.",
   GPUGlobalSpatialStatistics:
-    "Global spatial autocorrelation from a GPUSpatialWeights CSR and a value column: Moran's I, Geary's C, Getis-Ord General G, bivariate Moran's I and join counts, each with its analytic expectation, variance, z-score and normal p-value (`alternative`, default two-sided).",
+    "Global spatial autocorrelation from a GPUSpatialWeights CSR and a value column: Moran's I, Geary's C, Getis-Ord General G, bivariate Moran's I and join counts, each with its analytic expectation, variance, z-score and normal p-value (`analyticAlternative`, default two-sided).",
   GPUGreatCircleArcs:
     'Tessellates great-circle arcs between many origin/destination pairs on the GPU (turf `greatCircle`, the CPU step behind flow maps drawn with `PathLayer`).',
   GPUGridGenerator:
@@ -125,7 +126,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
     'Per-label geometry summaries over a `uint32` label column: bounds, mean and weighted center, medoid, standard deviational ellipse, count.',
   GPUH3CellIdentities:
     'Exact integer H3 directed edge and canonical vertex identities, including pentagons and faces.',
-  GPUHierarchicalDensityClustering:
+  GPUHDBSCAN:
     "HDBSCAN density clustering of planar points, fully on the GPU, matching scikit-learn's `HDBSCAN` with its defaults (`cluster_selection_method='eom'`, `allow_single_cluster=False`, `cluster_selection_epsilon=0`, Euclidean metric) up to a relabeling of the clusters.",
   GPUHilbertKeys:
     'Computes 2D Hilbert curve indices for points or feature-box centers within bounds ("Hilbert keys next to `GPUBVH`") and, optionally, the curve-ordered permutation through the gpgpu radix sort.',
@@ -239,7 +240,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUOffsetCurve:
     'One-sided offset of lines and rings (`shapely.offset_curve`, GeoPandas `offset_curve`, geo `OffsetCurve`-style raw offset).',
   GPUOffsetCurveComponents:
-    'Node raw offsets, remove portions inside the source-distance band, select the requested side and compact multipart components.',
+    'Node raw offsets, trim source-distance bands and compact components in deterministic greedy order.',
   GPUOffsetExpansion:
     'Expands an offsets view into one owner index (and local index) per child row: the GPU equivalent of Shapely `get_coordinates(..., return_index=True)`, `get_parts(..., return_index=True)` and GeoPandas `explode(index_parts=True)` index maps.',
   GPUOrdinaryLeastSquares:
@@ -266,7 +267,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUPolygonize: 'General bounded polygonization of planar linework.',
   GPUProbitRegression:
     'Nonspatial binary probit with bounded Fisher scoring and monotone likelihood backtracking.',
-  GPUPycnophylactic:
+  GPUPycnophylacticInterpolation:
     "Tobler's pycnophylactic (volume-preserving) interpolation on a raster: a smooth density surface whose mass in every zone equals the zone total.",
   GPUQuantileLISA: 'Univariate or multivariate selected-quantile conditional local join counts.',
   GPURandomPointsInPolygon:
@@ -315,7 +316,6 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUSkaterRegions:
     'SKATER regionalization: greedy cuts of a minimum spanning forest into spatially contiguous regions that minimise within-region sum of squares (Assunção et al. 2006; PySAL `spopt` Skater).',
   GPUSpatialBalancedSample: 'Finite-point stratified spatially ordered probability sampling.',
-  GPUSpatialClustering: 'GPU DBSCAN density clustering of two-dimensional planar points.',
   GPUSpatialCrossValidatedOLS: 'Repeated resident OLS fits over spatially buffered block folds.',
   GPUSpatialCrossValidation:
     'Seeded spatial block holdouts with exact all-pairs planar buffer exclusion.',
@@ -341,7 +341,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUSpatialMarkov:
     "Spatial Markov (Rey 2001, giddy `Spatial_Markov`): transition counts of a variable's classes conditioned on the class of the spatial lag at the start of each transition.",
   GPUSpatialPanelErrorMaximumLikelihood:
-    'Unit fixed-effects spatial-error Gaussian ML: y_it = alpha_i + X_it beta + u_it, u_t = lambda W u_t + epsilon_t.',
+    'Fixed-effects spatial-error Gaussian ML: y_it = alpha_i + X_it beta + u_it, u_t = lambda W u_t + epsilon_t.',
   GPUSpatialPanelLagMaximumLikelihood: 'Balanced spatial lag ML, random or unit effects.',
   GPUSpatialPanelRegression:
     'Pooled spatial-lag panel 2SLS: y_t = rho W y_t + X_t beta + intercept + e_t.',
@@ -365,7 +365,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
   GPUSpatialWeightsTraces:
     "Powers of a spatial weights matrix: the traces `tr(W^q)` and the sums `1' W^q 1` for `q = 1..Q`, the inputs of spatial-lag log-determinants and of direct/indirect/total impacts (see getSpatialLogDeterminantWGSL and `GPUSpatialLagImpacts`).",
   GPUSpatialWeightsTransform:
-    'Transforms spatial weights on the GPU: row standardization, binarization, distance kernels and symmetrization of a GPUSpatialWeights (the PySAL `transform` and `Kernel` equivalents).',
+    'Transforms spatial weights on the GPU: row standardization, binarization, distance kernels and reciprocal weight averaging over the stored links of a GPUSpatialWeights.',
   GPUSpatialWeightsTranspose: 'Per-frame: CSR contents and symmetryTolerance.',
   GPUSpatialWeightsValidation:
     'Checks the GPUSpatialWeights invariants on the GPU, for CSR that was built elsewhere and uploaded (producers in this package already guarantee them).',
@@ -432,8 +432,7 @@ export const SPATIAL_ANALYSIS_OPERATOR_SUMMARIES: Readonly<Record<string, string
     'Cluster and outline recipe: DBSCAN clusters, per-cluster summaries, convex hulls and their area, perimeter and centroid.',
   addDasymetricRedistributionRecipe:
     'Fractional source support -> ancillary eligibility -> weighted areal interpolation -> mass ledger.',
-  addDrainageNetworkRecipe:
-    'One complete planar D8 domain; graph-owned outputs can feed rendering or explicit readback copies.',
+  addDrainageNetworkRecipe: 'Builds a drainage network on one complete D8 domain.',
   addExcessRiskRecipe: 'Appends observed/expected excess risk E_i / (P_i * sum(E) / sum(P)).',
   addExposureByZoneRecipe:
     'Denominators retain population with missing hazards; observed coverage is returned separately.',

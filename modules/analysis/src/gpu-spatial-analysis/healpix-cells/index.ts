@@ -16,6 +16,7 @@ export type {
 } from './gpu-healpix-cell-aggregation';
 export {
   createHealpixDGGSJSON,
+  createHealpixDGGSJSONFromReadback,
   DGGS_JSON_SCHEMA_URI,
   HEALPIX_DGGRS_URI,
   HEALPIX_DGGS_JSON_MAXIMUM_RELATIVE_DEPTH
@@ -23,7 +24,8 @@ export {
 export type {
   HealpixDGGSJSON,
   HealpixDGGSJSONProperty,
-  HealpixDGGSJSONProps
+  HealpixDGGSJSONProps,
+  HealpixDGGSJSONFromReadbackProps
 } from './healpix-dggs-json';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
@@ -31,6 +33,7 @@ export {
   computeHealpixPointToCellOnCPU,
   CPUHealpixPointToCellOperation
 } from './cpu-healpix-point-to-cell-operation';
+export type {CPUHealpixPointToCellResult} from './cpu-healpix-point-to-cell-operation';
 export {GPUHealpixPointToCellOperation} from './gpu-healpix-point-to-cell-operation';
 export type {HealpixPointToCellOperationProps} from './gpu-healpix-point-to-cell-operation';
 export {getHealpixCellBoundary} from './healpix-cell-boundary';

@@ -91,7 +91,7 @@ export default defineOperationRun({
       update: current => {
         parameterBuffer.write(
           getGPULagrangianFlowMapParameterValues({
-            fieldExtent: [0, 0, field.cellSize, field.cellSize],
+            fieldPlacement: {origin: [0, 0], cellSize: [field.cellSize, field.cellSize]},
             startTime: 0,
             timeStep: current.timeStep,
             sliceStartTime: 0,

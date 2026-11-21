@@ -15,6 +15,7 @@ import {
   type WGSLDispatchGate,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {GRID_HALF_UP_ROUNDING_WGSL} from './half-up-rounding';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
@@ -391,10 +392,11 @@ export type CleanupFlagNodeProps<Parameters = unknown> = {
 };
 
 /** WGSL `snapPoint` helper shared by the cleanup kernels. @internal */
-const SNAP_SOURCE = /* wgsl */ `
+export const SNAP_SOURCE = /* wgsl */ `
+${GRID_HALF_UP_ROUNDING_WGSL}
 fn snapValue(value: f32, gridSize: f32) -> f32 {
   if (gridSize > 0.0) {
-    return floor(value / gridSize + 0.5) * gridSize;
+    return roundGridHalfUp(value, 0.0, gridSize) * gridSize;
   }
   return value;
 }

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotPolygonTriangulationOperationProps} from '../../analysis-core/polygon-triangulation/gpu-polygon-triangulation-operation';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateCapacity, validateOption} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
@@ -119,11 +121,51 @@ export function computeConstrainedDelaunayTriangulationOnCPU(
   return result;
 }
 
+/** Host-only storage validation options for the named CPU constrained operation. */
+export type CPUConstrainedDelaunayTriangulationOperationProps =
+  ConstrainedDelaunayTriangulationOperationProps &
+    Pick<CPUConstrainedDelaunayTriangulationOptions, 'storage'>;
+
 /** CPU constrained triangulation twin; no GPU work, flip, scratch or exponent-span budgets. */
 export class CPUConstrainedDelaunayTriangulationOperation extends GPUCPUOperation {
-  constructor(props: ConstrainedDelaunayTriangulationOperationProps) {
+  constructor(props: CPUConstrainedDelaunayTriangulationOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'featureOffsets',
+      'polygonOffsets',
+      'ringOffsets',
+      'polygonCount',
+      'indexCapacity',
+      'maximumWork',
+      'storage',
+      'useZOrderHash',
+      'largePolygonMethod',
+      'monotoneMinimumVertices',
+      'monotoneMaximumVertices',
+      'maximumFlips',
+      'flipMethod',
+      'maximumVerticesPerPolygon',
+      'output'
+    ]);
+    const polygon = snapshotPolygonTriangulationOperationProps(props);
+    props = Object.freeze({
+      ...props,
+      ...polygon,
+      output: Object.freeze({
+        ...polygon.output,
+        status: snapshotConstructionFields(props.output.status, ['converged'])
+      })
+    });
     const operation = new GPUConstrainedDelaunayTriangulationOperation(props);
     const {id} = operation;
+    validateOption(
+      id,
+      'storage',
+      props.storage === undefined ? 'resident-capacity' : props.storage,
+      ['compact', 'resident-capacity']
+    );
     validateCapacity(id, 'polygonCount', props.polygonCount);
     validateCapacity(id, 'indexCapacity', props.indexCapacity);
     resolveGPUSpatialContext(id, props.spatialContext);

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-catchment-summary: elevation, basinIds, streams,…",
   "description": "Result of gpu-terrain.terrain-catchment-summary: elevation, basinIds, streams, flowDirections → profiles. cells: 9. values read back from the GPU run. input elevation: 9 cells.",
-  "llms": "Result of gpu-terrain.terrain-catchment-summary: elevation, basinIds, streams, flowDirections → profiles\n\n- cells: 9\n- input elevation: 9 cells\n- input basinIds: 9 cells\n- input streams: 9 cells\n- input flowDirections: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-catchment-summary: elevation, basinIds, streams, flowDirections → profiles\n\n- cells: 9\n- input elevation: 9 cells\n- input basinIds: 9 cells\n- input streams: 9 cells\n- input flowDirections: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- cell size 1 m\n- cell size 1 m\n- cell size 1 m\n- cell size 1 m\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "9"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:14.655Z",
-    "runId": "run-a5229f89",
+    "date": "2026-11-20T23:51:42.114Z",
+    "runId": "run-38ce0711",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-a5229f89",
+    "runId": "run-38ce0711",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -9,6 +9,7 @@ import {
   parseWorkflowDocument,
   serializeWorkflowDocument
 } from './workflow-document';
+import {getWorkflowOutputKind} from './workflow-plan';
 import {getWorkflowPortCompatibility} from './workflow-operations';
 import {
   WORKFLOW_LIMITS,
@@ -343,8 +344,10 @@ export function addWorkflowStep(
       options.connectTo ??
       operation.inputs.find(
         port =>
-          getWorkflowPortCompatibility(output.kind, port) !== 'no' &&
-          !Object.hasOwn(step.inputs, port.name)
+          getWorkflowPortCompatibility(
+            getWorkflowOutputKind(document, registry, upstream.id, output.name),
+            port
+          ) !== 'no' && !Object.hasOwn(step.inputs, port.name)
       )?.name;
     if (input !== undefined)
       result = connectWorkflowSteps(result, registry, {
@@ -417,10 +420,11 @@ function validateConnection(
     const step = document.steps.find(candidate => candidate.id === stepId);
     if (step) pending.push(...Object.values(step.inputs).map(upstream => upstream.stepId));
   }
-  if (getWorkflowPortCompatibility(output.kind, input) === 'no')
+  const kind = getWorkflowOutputKind(document, registry, source.id, output.name);
+  if (getWorkflowPortCompatibility(kind, input) === 'no')
     throw new WorkflowError(
       'incompatible-port',
-      `${label}: Input ${input.label} accepts ${input.accepts.join(', ')}; output ${output.label} has kind ${output.kind}.`,
+      `${label}: Input ${input.label} accepts ${input.accepts.join(', ')}; output ${output.label} has kind ${kind}.`,
       {stepId: target.id, port: input.name}
     );
 }
@@ -1259,7 +1263,10 @@ export function replaceWorkflowStepOperation(
       return (
         input !== undefined &&
         output !== undefined &&
-        getWorkflowPortCompatibility(output.kind, input) !== 'no'
+        getWorkflowPortCompatibility(
+          getWorkflowOutputKind(document, registry, connection.stepId, connection.output),
+          input
+        ) !== 'no'
       );
     })
   );

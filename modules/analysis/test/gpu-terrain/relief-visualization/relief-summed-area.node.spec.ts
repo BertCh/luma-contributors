@@ -196,6 +196,29 @@ describe('relief summed-area model', () => {
     }
   });
 
+  it('keeps a haloed core independent of a distant first valid elevation (RT-128)', () => {
+    // 5 x 5 ones, a distant first valid cell [0, 0] = 30000 and centre 1 + 32 * 2^-16 = 1 + 2^-11
+    // (exact in float32). The radius-1 window of the centre holds eight ones and the centre, so
+    // z - mean = 2^-11 * 8 / 9 = 1 / 2304 (closed form). The 3 x 3 crop around the centre has the
+    // same window; whole-raster and windowed runs must agree.
+    const quantum = GPU_RELIEF_DEFAULT_QUANTUM;
+    const expected = 1 / 2304;
+    const whole = new Float32Array(25).fill(1);
+    whole[0] = 30000;
+    whole[12] = 1 + 32 * quantum;
+    const crop = new Float32Array(9).fill(1);
+    crop[4] = 1 + 32 * quantum;
+    const wholeDeviation = modelReliefDeviation(whole, new Uint8Array(25).fill(1), 5, 5, 1, quantum)
+      .deviation[12];
+    const cropDeviation = modelReliefDeviation(crop, new Uint8Array(9).fill(1), 3, 3, 1, quantum)
+      .deviation[4];
+    expect(Number.isFinite(wholeDeviation)).toBe(true);
+    expect(Number.isFinite(cropDeviation)).toBe(true);
+    expect(Math.abs(cropDeviation - expected)).toBeLessThanOrEqual(getBound(expected, quantum));
+    expect(Math.abs(wholeDeviation - expected)).toBeLessThanOrEqual(getBound(expected, quantum));
+    expect(wholeDeviation).toBe(cropDeviation);
+  });
+
   it('treats offsets beyond the quantized relief range as invalid', () => {
     const model = modelReliefDeviation(
       Float32Array.from([1, 40000, 3, 4]),
@@ -235,9 +258,14 @@ describe('relief summed-area kernels', () => {
     const sources = getParsedKernelSources(nodes);
     const kernel = sources.get('simple-local-relief-mean-deviation');
     expect(kernel).toBeDefined();
-    expect(getStorageBindingCount(kernel as string)).toBeLessThanOrEqual(8);
+    for (const {source} of sources.getConfigurations('simple-local-relief-mean-deviation'))
+      expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
     expect(kernel).toContain('overhangLeft');
-    expect(kernel).toContain('anchor[anchorOffset]');
+    // RT-128: the deviation reads no anchor; the quantizer shifts by it exactly in 64 bits.
+    expect(kernel).not.toContain('anchor[anchorOffset]');
+    expect(sources.get('simple-local-relief-summed-area-quantize')).toContain(
+      'subtract64(getSigned64FromInteger(rounded), getSigned64FromInteger(anchorScaled))'
+    );
     expect(ids.indexOf('simple-local-relief-anchor-select')).toBeLessThan(
       ids.indexOf('simple-local-relief-summed-area-quantize')
     );

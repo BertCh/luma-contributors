@@ -61,7 +61,7 @@ export async function runExample(
   const search = new GPUNeighborSearch({
     spatialContext,
     mode: 'knn',
-    k: 10,
+    neighborCount: 10,
     positions: observations,
     parameters: searchParameters,
     gridSize: [32, 32],

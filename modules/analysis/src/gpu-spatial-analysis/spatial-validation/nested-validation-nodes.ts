@@ -19,12 +19,18 @@ import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgs
 import {GPULocalKriging} from '../spatial-interpolation/gpu-local-kriging';
 import {getGPULocalKrigingParameterValues} from '../spatial-interpolation/prediction-covariance';
 import {GPULocalRBF} from '../spatial-interpolation/gpu-local-rbf';
-import {getRegressionTileLayout} from '../spatial-regression/regression-row-tiles';
+import {
+  getRegressionTileLayout,
+  REGRESSION_TILE_MINIMUM_DEFAULT_ROW_COUNT
+} from '../spatial-regression/regression-row-tiles';
+import {GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT} from './nested-validation-limits';
 import {getPairwiseSumWGSL} from '../spatial-regression/pairwise-sum-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 import {validateRegressionAllocations} from '../spatial-regression/spatial-likelihood-allocations';
 import {GPUSpatialCrossValidation} from './gpu-spatial-cross-validation';
 import {
   GPU_NESTED_VALIDATION_REFERENCE_MAXIMUM_ROW_COUNT,
+  GPU_NESTED_VALIDATION_MAXIMUM_ROW_COUNT,
   type GPUNestedInterpolationValidationProps
 } from './gpu-nested-interpolation-validation';
 
@@ -40,11 +46,31 @@ export function getNestedValidationNodes<Parameters>(
   const rows = props.response.length;
   const innerCount = props.innerFoldCount ?? 3;
   const candidateCount = props.candidates.length;
+  validateCapacity(
+    id,
+    'candidates',
+    candidateCount,
+    1,
+    GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT
+  );
   // A single bounded tile retains the original sum order for existing small default calls.
   const {tileRowCount, tileCount} =
     rows <= GPU_NESTED_VALIDATION_REFERENCE_MAXIMUM_ROW_COUNT && props.mode !== 'tiled'
       ? {tileRowCount: rows, tileCount: 1}
       : getRegressionTileLayout(rows);
+  validateCapacity(
+    id,
+    'tileRowCount',
+    tileRowCount,
+    tileCount === 1 ? 1 : REGRESSION_TILE_MINIMUM_DEFAULT_ROW_COUNT
+  );
+  validateCapacity(
+    id,
+    'tileCount',
+    tileCount,
+    1,
+    Math.ceil(GPU_NESTED_VALIDATION_MAXIMUM_ROW_COUNT / REGRESSION_TILE_MINIMUM_DEFAULT_ROW_COUNT)
+  );
   const slotCount = props.foldCount * (1 + candidateCount * (innerCount + 1));
   validateGraphChunkBindingRanges(graph, id, {
     positions: props.positions,
@@ -323,6 +349,7 @@ partial[partialOffset + index * 3u] = squares; partial[partialOffset + index * 3
 var count = 0.0; var missing = 0.0; for (var tile = 0u; tile < ${tileCount}u; tile++) { count += partial[partialOffset + (index * ${tileCount}u + tile) * 3u + 1u]; missing += partial[partialOffset + (index * ${tileCount}u + tile) * 3u + 2u]; }
 scores[scoresOffset + index * 3u] = select(getNaN(), squares / count, count > 0.0 && missing == 0.0); scores[scoresOffset + index * 3u + 1u] = count; scores[scoresOffset + index * 3u + 2u] = missing;`
     );
+    // contract-allow: single-invocation -- selection visits at most GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT = 16 candidates, enforced above and by the constructor; no input-row scan.
     kernel(
       `${prefix}-select`,
       1,
@@ -349,6 +376,8 @@ selected[selectedOffset] = chosen; if (chosen == 0xffffffffu) { status[statusOff
     );
     const metricPartials = view(`${prefix}-metric-partials`, 'float32', tileCount * 9);
     const metrics = view(`${prefix}-metrics`, 'float32', 6);
+    // Retain an observed origin per tile: means of small deviations preserve half-step
+    // information that a float32 mean at the response's original magnitude would lose.
     kernel(
       `${prefix}-metric-tiles`,
       tileCount,
@@ -356,16 +385,22 @@ selected[selectedOffset] = chosen; if (chosen == 0xffffffffu) { status[statusOff
         binding('response', props.response),
         binding('testing', testing),
         binding('predictions', predictions),
+        binding('status', status),
         binding('partial', metricPartials, 'read_write')
       ],
-      `var count = 0u; var missing = 0u; var squares = 0.0; var absolute = 0.0; var bias = 0.0; var mean = 0.0; var total = 0.0;
+      `var count = 0u; var missing = 0u; var squares = 0.0; var absolute = 0.0; var bias = 0.0; var mean = 0.0; var total = 0.0; var origin = 0.0;
+// Only overlap/no-candidate bits (1/2) exist before metrics, so this buffer read is zero.
+let runtimeZero = status[statusOffset] >> 2u;
 for (var row = index * ${tileRowCount}u; row < min((index + 1u) * ${tileRowCount}u, ${rows}u); row++) {
 if (testing[testingOffset + row] == 0u) { continue; } let predicted = predictions[predictionsOffset + row]; let observed = response[responseOffset + row];
 if (!isFiniteBits(predicted) || !isFiniteBits(observed)) { missing++; continue; }
-count++; let error = predicted - observed; squares += error * error; absolute += abs(error); bias += error; let delta = observed - mean; mean += delta / f32(count); total += delta * (observed - mean);
+if (count == 0u) { origin = observed; }
+count++; let error = predicted - observed; squares += error * error; absolute += abs(error); bias += error; let centered = getRoundedDifference(observed, origin, runtimeZero); let delta = centered - mean; mean += delta / f32(count); total += delta * (centered - mean);
 }
-let start = partialOffset + index * 9u; partial[start] = f32(count); partial[start + 1u] = f32(missing); partial[start + 2u] = squares; partial[start + 3u] = absolute; partial[start + 4u] = bias; partial[start + 5u] = mean; partial[start + 6u] = total;`
+let start = partialOffset + index * 9u; partial[start] = f32(count); partial[start + 1u] = f32(missing); partial[start + 2u] = squares; partial[start + 3u] = absolute; partial[start + 4u] = bias; partial[start + 5u] = mean; partial[start + 6u] = total; partial[start + 7u] = origin;`,
+      ROUNDED_DIFFERENCE_WGSL
     );
+    // contract-allow: single-invocation -- metric merge visits at most 64 tiles: GPU_NESTED_VALIDATION_MAXIMUM_ROW_COUNT = 4096 rows / REGRESSION_TILE_MINIMUM_DEFAULT_ROW_COUNT = 64 rows per default tile. Reference uses one tile of at most GPU_NESTED_VALIDATION_REFERENCE_MAXIMUM_ROW_COUNT = 256 rows.
     kernel(
       `${prefix}-metric-merge`,
       1,
@@ -374,12 +409,14 @@ let start = partialOffset + index * 9u; partial[start] = f32(count); partial[sta
         binding('metrics', metrics, 'read_write'),
         binding('status', status, 'read_write')
       ],
-      `var count = 0.0; var missing = 0.0; var squares = 0.0; var absolute = 0.0; var bias = 0.0; var mean = 0.0; var total = 0.0;
-for (var tile = 0u; tile < ${tileCount}u; tile++) { let start = partialOffset + tile * 9u; let tileCount = partial[start]; missing += partial[start + 1u]; squares += partial[start + 2u]; absolute += partial[start + 3u]; bias += partial[start + 4u]; if (tileCount == 0.0) { continue; } if (count == 0.0) { count = tileCount; mean = partial[start + 5u]; total = partial[start + 6u]; continue; } let difference = partial[start + 5u] - mean; let combined = count + tileCount; total += partial[start + 6u] + difference * difference * (count / combined) * tileCount; mean += difference * (tileCount / combined); count = combined; }
+      `var count = 0.0; var missing = 0.0; var squares = 0.0; var absolute = 0.0; var bias = 0.0; var mean = 0.0; var total = 0.0; var origin = 0.0;
+let runtimeZero = status[statusOffset] >> 2u;
+for (var tile = 0u; tile < ${tileCount}u; tile++) { let start = partialOffset + tile * 9u; let tileCount = partial[start]; missing += partial[start + 1u]; squares += partial[start + 2u]; absolute += partial[start + 3u]; bias += partial[start + 4u]; if (tileCount == 0.0) { continue; } if (count == 0.0) { count = tileCount; origin = partial[start + 7u]; mean = partial[start + 5u]; total = partial[start + 6u]; continue; } let tileMean = getRoundedDifference(partial[start + 7u], origin, runtimeZero) + partial[start + 5u]; let difference = tileMean - mean; let combined = count + tileCount; total += partial[start + 6u] + difference * difference * (count / combined) * tileCount; mean += difference * (tileCount / combined); count = combined; }
 let determination = 1.0 - squares / total;
 let failed = !isFiniteBits(squares) || !isFiniteBits(absolute) || !isFiniteBits(bias) || !isFiniteBits(mean) || !isFiniteBits(total) || (total > 0.0 && !isFiniteBits(determination));
 metrics[metricsOffset] = count; metrics[metricsOffset + 1u] = missing; metrics[metricsOffset + 2u] = select(getNaN(), squares / count, count > 0.0 && !failed); metrics[metricsOffset + 3u] = select(getNaN(), absolute / count, count > 0.0 && !failed); metrics[metricsOffset + 4u] = select(getNaN(), bias / count, count > 0.0 && !failed); metrics[metricsOffset + 5u] = select(getNaN(), determination, total > 0.0 && !failed);
-status[statusOffset] |= select(0u, 4u, missing > 0.0) | select(0u, 8u, count + missing == 0.0) | select(0u, 16u, failed);`
+status[statusOffset] |= select(0u, 4u, missing > 0.0) | select(0u, 8u, count + missing == 0.0) | select(0u, 16u, failed);`,
+      ROUNDED_DIFFERENCE_WGSL
     );
     for (const [name, source, target, length] of [
       ['selected', selected, props.output.selected, 1],

@@ -44,13 +44,14 @@ function createProps(
     parameters: view('float32', 8),
     source: 0,
     sink: cellCount - 1,
+    ...overrides,
     output: {
       potentials: view('float32', cellCount),
       vertexCurrents: view('float32', cellCount),
       diagnostics: view('float32x4', 1),
-      solverStatus: view('uint32x4', 1)
-    },
-    ...overrides
+      solverStatus: view('uint32x4', 1),
+      ...overrides.output
+    }
   };
 }
 
@@ -169,4 +170,43 @@ it('packs the grid georeference into the per-frame parameters', () => {
       new Float32Array(7)
     )
   ).toThrow(/target must hold 8 values/);
+});
+
+it('RT-102 guards sheared per-frame updates in latitude-dependent modes', () => {
+  const {device, graph, view} = createContext();
+  try {
+    for (const cellSizeMode of ['geographic', 'web-mercator'] as const) {
+      const props = createProps(view, 2, 2, {id: `update-${cellSizeMode}`, cellSizeMode});
+      expect(() => addRasterResistanceConnectivityRecipe(graph, props)).not.toThrow();
+      const target = new Float32Array(8).fill(123);
+      expect(() =>
+        getRasterResistanceConnectivityParameterValues(
+          {...props.grid, affine: [1, 1, 0, 0, -1, 0]},
+          target,
+          cellSizeMode
+        )
+      ).toThrow(
+        `addRasterResistanceConnectivityRecipe ${cellSizeMode} cell sizes need an axis-aligned grid`
+      );
+      expect(Array.from(target)).toEqual(new Array(8).fill(123));
+      expect(() =>
+        getRasterResistanceConnectivityParameterValues(props.grid, target, cellSizeMode)
+      ).not.toThrow();
+    }
+    const sheared = {...createProps(view, 2, 2).grid, affine: [1, 1, 0, 0, -1, 0] as const};
+    expect(() =>
+      addRasterResistanceConnectivityRecipe(
+        graph,
+        createProps(view, 2, 2, {id: 'uniform-shear', grid: sheared})
+      )
+    ).not.toThrow();
+    expect(Array.from(getRasterResistanceConnectivityParameterValues(sheared)).slice(0, 4)).toEqual(
+      [1, 1, 0, -1]
+    );
+    expect(() =>
+      getRasterResistanceConnectivityParameterValues(sheared, new Float32Array(8), 'uniform')
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
 });

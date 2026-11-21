@@ -26,15 +26,17 @@ import {
   stitchIsolinesOnCPU,
   type IsolinesScene
 } from './isolines-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type HarnessOptions = {
   width: number;
   height: number;
   maximumLevelCount: number;
   segmentCapacity: number;
+  levelCapacity?: number;
   vertexCapacity?: number;
   polylines?: boolean;
+  combinedLoss?: boolean;
   noDataValue?: number;
   withValidity?: boolean;
 };
@@ -55,7 +57,7 @@ function createHarness(device: Device, options: HarnessOptions) {
   });
   const buffers = {
     segments: createOutputBuffer(device, 4 * capacity),
-    segmentLevels: createOutputBuffer(device, capacity),
+    segmentLevels: createOutputBuffer(device, options.levelCapacity ?? capacity),
     segmentEdges: createOutputBuffer(device, 2 * capacity),
     count: createOutputBuffer(device, 1),
     requiredCount: createOutputBuffer(device, 1),
@@ -68,6 +70,7 @@ function createHarness(device: Device, options: HarnessOptions) {
     vertexCount: createOutputBuffer(device, 1),
     polylineOverflow: createOutputBuffer(device, 1)
   };
+  if (options.combinedLoss) buffers.polylineOverflow.write(Uint32Array.of(99));
   const graph = new GPUCommandGraph(device, {id: 'isolines-graph'});
   const grid = makeGPURasterMetadata({width, height});
   const importView = <Format extends 'float32' | 'uint32' | 'float32x2' | 'float32x4' | 'uint32x2'>(
@@ -88,7 +91,12 @@ function createHarness(device: Device, options: HarnessOptions) {
       parameters: parameterBuffer.importToGraph(graph),
       output: {
         segments: importView('segments', buffers.segments, 'float32x4', capacity),
-        segmentLevels: importView('segment-levels', buffers.segmentLevels, 'uint32', capacity),
+        segmentLevels: importView(
+          'segment-levels',
+          buffers.segmentLevels,
+          'uint32',
+          options.levelCapacity ?? capacity
+        ),
         segmentEdges: importView('segment-edges', buffers.segmentEdges, 'uint32x2', capacity),
         polylines: options.polylines
           ? {
@@ -117,9 +125,10 @@ function createHarness(device: Device, options: HarnessOptions) {
           : undefined,
         status: {
           overflow: importView('overflow', buffers.overflow, 'uint32', 1),
-          polylineOverflow: options.polylines
-            ? importView('polyline-overflow', buffers.polylineOverflow, 'uint32', 1)
-            : undefined,
+          polylineOverflow:
+            options.polylines || options.combinedLoss
+              ? importView('polyline-overflow', buffers.polylineOverflow, 'uint32', 1)
+              : undefined,
           count: importView('count', buffers.count, 'uint32', 1),
           requiredCount: importView('total-count', buffers.requiredCount, 'uint32', 1)
         }
@@ -129,6 +138,15 @@ function createHarness(device: Device, options: HarnessOptions) {
   const compiled = graph.compile();
   let compileCount = 1;
   return {
+    async readCombinedLoss() {
+      return (await readUint32(buffers.polylineOverflow, 1))[0];
+    },
+    destroy() {
+      compiled.destroy();
+      parameterBuffer.destroy();
+      for (const buffer of [rasterBuffer, validityBuffer, levelsBuffer, ...Object.values(buffers)])
+        buffer?.destroy();
+    },
     get rebuildCount() {
       return compileCount - 1;
     },
@@ -174,7 +192,9 @@ function createHarness(device: Device, options: HarnessOptions) {
         })),
         polylineCount: 0,
         vertexCount: 0,
-        polylineOverflow: 0,
+        polylineOverflow: options.combinedLoss
+          ? (await readUint32(buffers.polylineOverflow, 1))[0]
+          : 0,
         offsets: [] as number[],
         polylineLevels: [] as number[],
         polylineClosed: [] as number[],
@@ -702,3 +722,77 @@ it('GPUIsolines places UTM-scale vertices to sub-decimetre with a local origin',
   }
   expect(maximumError).toBeLessThan(0.1);
 });
+
+for (const polylines of [false, true])
+  it(`WRT-01 reuses combined loss word with stitching ${polylines}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const harness = createHarness(device, {
+      width: 2,
+      height: 2,
+      maximumLevelCount: 1,
+      segmentCapacity: 1,
+      vertexCapacity: 4,
+      polylines,
+      combinedLoss: true
+    });
+    const scene = {
+      width: 2,
+      height: 2,
+      extent: [0, 0, 2, 2] as [number, number, number, number],
+      values: Float32Array.of(0, 1, 1, 0),
+      levels: [0.5]
+    };
+    try {
+      expect(await harness.readCombinedLoss()).toBe(99);
+      // The same word is preloaded with 99, then receives checkerboard loss and flat completeness.
+      const checkerboard = await harness.run(scene);
+      expect([
+        checkerboard.count,
+        checkerboard.requiredCount,
+        checkerboard.overflow,
+        checkerboard.polylineOverflow
+      ]).toEqual([1, 2, 1, 1]);
+      const flat = await harness.run({...scene, values: new Float32Array(4)});
+      expect([flat.count, flat.requiredCount, flat.overflow, flat.polylineOverflow]).toEqual([
+        0, 0, 0, 0
+      ]);
+    } finally {
+      harness.destroy();
+    }
+  });
+
+for (const polylines of [false, true])
+  it(`B1 retains segment capacity with a wider level column, stitching ${polylines}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const harness = createHarness(device, {
+      width: 3,
+      height: 2,
+      maximumLevelCount: 1,
+      segmentCapacity: 1,
+      levelCapacity: 3,
+      vertexCapacity: 4,
+      polylines,
+      combinedLoss: true
+    });
+    try {
+      const result = await harness.run({
+        width: 3,
+        height: 2,
+        extent: [0, 0, 3, 2],
+        values: Float32Array.of(0, 0, 0, 4, 4, 4),
+        levels: [2]
+      });
+      // Each of two adjacent marching cells contributes one segment; only one segment fits.
+      expect([
+        result.count,
+        result.requiredCount,
+        result.overflow,
+        result.polylineOverflow
+      ]).toEqual([1, 2, 1, 1]);
+      if (polylines) expect([result.polylineCount, result.vertexCount]).toEqual([0, 0]);
+    } finally {
+      harness.destroy();
+    }
+  });

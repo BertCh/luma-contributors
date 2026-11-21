@@ -10,6 +10,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  getGraphViewChunks,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
@@ -45,8 +46,14 @@ import {
   snapshotConstructionSpatialContext
 } from '../../analysis-core/kernels/construction-snapshot';
 
-/** Words per level-count slot: 64 words = 256 bytes, the storage binding offset alignment. */
-const LEVEL_COUNT_SLOT_STRIDE = 64;
+import {
+  GPU_CELL_PYRAMID_LIMITS,
+  getCellPyramidExecutionPlan,
+  CELL_PYRAMID_LEVEL_COUNT_SLOT_STRIDE as LEVEL_COUNT_SLOT_STRIDE,
+  type GPUCellPyramidShape,
+  type GPUCellPyramidDeviceLimits,
+  type GPUCellPyramidExecutionPlan
+} from './cell-pyramid-planning';
 
 /** Caller-owned outputs of {@link GPUCellPyramid}. */
 export type GPUCellPyramidOutput = {
@@ -88,8 +95,25 @@ export type GPUCellPyramidProps = Omit<
  * intermediate columns become graph transients. Every level is exact (see
  * {@link GPUCellRollup}). Each level's `overflow` describes only its own capacity;
  * `candidateOverflow` propagates losses from finer levels, making its requirement a lower bound.
+ * The input domain is at most MAXIMUM_CELL_PYRAMID_ROW_COUNT = 2147483648 rows.
+ * Auto scratch stays packed while rowCount * 4 fits the smaller storage-binding/buffer byte limit,
+ * or while rowCount <= an explicit scratchTileSize. Otherwise it uses exact tiled scratch.
+ * Each tile is at most MAXIMUM_CELL_PYRAMID_TILE_ROW_COUNT = 1073741824 rows; construction
+ * also enforces the aggregation command budget of 32768 nodes. Coarser level tables stay packed.
+ * Use limits and getExecutionPlan for the numeric constraints on the actual shape and device.
  */
 export class GPUCellPyramid implements GPUCommandNodeProducer {
+  /** Numeric route constraints, including the exact automatic scratch crossover. */
+  static readonly limits = GPU_CELL_PYRAMID_LIMITS;
+  /** Plan packed/tiled scratch and numeric requirements without creating graph resources. */
+  static getExecutionPlan(
+    shape: GPUCellPyramidShape,
+    deviceLimits: GPUCellPyramidDeviceLimits
+  ): GPUCellPyramidExecutionPlan {
+    return getCellPyramidExecutionPlan(shape, deviceLimits);
+  }
+  /** Construction-time numeric plan; lowering also validates the actual graph views. */
+  readonly executionPlan: GPUCellPyramidExecutionPlan;
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -176,7 +200,28 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
       props.mask
     ]);
     // Validate the finest level eagerly; roll-ups validate when nodes are built.
-    this.spatialContext = this.createAggregation(output.levels[0], []).spatialContext;
+    const aggregation = this.createAggregation(output.levels[0], []);
+    this.spatialContext = aggregation.spatialContext;
+    const chunks = getGraphViewChunks((props.positions ?? props.cells)!);
+    this.executionPlan = GPUCellPyramid.getExecutionPlan(
+      {
+        rowCount: (props.positions ?? props.cells)!.length,
+        inputChunkRowCounts: chunks.map(chunk => chunk.length),
+        levelCapacities: output.levels.map(table => table.cells.length),
+        scratchMode: props.scratchMode,
+        scratchTileSize: props.scratchTileSize,
+        hasValues: Boolean(props.values),
+        includeLevelCounts: Boolean(output.levelCounts),
+        levelColumns: output.levels.map(table => ({
+          sums: Boolean(table.sums),
+          sumValues: Boolean(table.sumValues),
+          minimums: Boolean(table.minimums),
+          maximums: Boolean(table.maximums),
+          requiredCount: Boolean(table.status.requiredCount)
+        }))
+      },
+      (chunks[0].buffer.graph as GPUCommandGraph).device.limits
+    );
   }
 
   /** Row offset of each level's `cells` within its buffer, for {@link GPUCellLevelSelection}. */
@@ -312,12 +357,19 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
   private getLevelTables<Parameters>(graph: GPUCommandGraph<Parameters>): GPUCellTable[] {
     const tables = this.props.output.levels.map(table => ({...table}));
     let needsSums = false;
+    let needsSumOverflow = false;
     let needsMinimums = false;
     let needsMaximums = false;
     for (let levelIndex = tables.length - 1; levelIndex >= 0; levelIndex--) {
       const table = tables[levelIndex];
       const capacity = table.cells.length;
       const prefix = `${this.id}-level-${levelIndex}`;
+      if (needsSumOverflow && !table.status.sumOverflow) {
+        table.status = {
+          ...table.status,
+          sumOverflow: createTransientView(graph, `${prefix}-sum-overflow`, 'uint32', 1)
+        };
+      }
       if (needsSums && !table.sums) {
         table.sums = createTransientView(graph, `${prefix}-sums`, 'uint32x2', capacity);
       }
@@ -327,6 +379,7 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
       if (needsMaximums && !table.maximums) {
         table.maximums = createTransientView(graph, `${prefix}-maximums`, 'float32', capacity);
       }
+      needsSumOverflow ||= Boolean(table.status.sumOverflow);
       needsSums ||= Boolean(table.sums || table.sumValues);
       needsMinimums ||= Boolean(table.minimums);
       needsMaximums ||= Boolean(table.maximums);

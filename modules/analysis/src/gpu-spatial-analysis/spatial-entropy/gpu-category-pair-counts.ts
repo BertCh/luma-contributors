@@ -24,6 +24,7 @@ import {
 
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotCategoricalStatisticsProps} from './categorical-construction-snapshot';
 
 const OPERATION = 'GPUCategoryPairCounts';
 
@@ -46,6 +47,8 @@ export type GPUCategoryPairCountsProps = {
    * another row, the neighbor rule shared by the spatial statistics. Self slots (for example from
    * `GPUSpatialWeightsAlgebra` `'selfWeight'`) and zero-weight slots are not links; the size of a
    * positive weight is not used.
+   * Supplied completeness status views are rejected because these outputs cannot qualify loss;
+   * verify the producer's evidence before supplying a complete CSR without those status ports.
    */
   weights: GPUSpatialWeights;
   /**
@@ -80,6 +83,7 @@ export type GPUCategoryPairCountsOutput = {
  *
  * One invocation per row walks its own links (a bounded neighbourhood) and adds to the counters
  * with integer atomics, so the counts are exact and independent of thread order (below 2^32).
+ * The table accepts 1–32 input categories.
  */
 export class GPUCategoryPairCounts implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -88,10 +92,22 @@ export class GPUCategoryPairCounts implements GPUCommandNodeProducer {
   readonly props: GPUCategoryPairCountsProps;
 
   constructor(props: GPUCategoryPairCountsProps) {
+    props = snapshotCategoricalStatisticsProps(props, ['pairCounts', 'categoryRowCounts']);
     const id = props.id ?? 'category-pair-counts';
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
+    validateRequirement(
+      id,
+      !props.weights.status?.overflow &&
+        !props.weights.status?.candidateOverflow &&
+        !props.weights.status?.requiredCount &&
+        !props.weights.status?.complete &&
+        !props.weights.status?.converged &&
+        !props.weights.status?.iterationLimitReached &&
+        !props.weights.status?.unresolvedCount,
+      'weights.status overflow, candidateOverflow, requiredCount, complete, converged, iterationLimitReached and unresolvedCount ports cannot be checked or propagated by the count outputs; provide a complete CSR after verifying all supplied completeness descriptors, then omit those ports'
+    );
     validateCapacity(
       id,
       'categoryCount',

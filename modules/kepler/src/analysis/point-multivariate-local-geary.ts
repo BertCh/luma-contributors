@@ -174,12 +174,12 @@ export function addKeplerPointMultivariateLocalGeary<Parameters>(
     values: interleaved,
     variableCount,
     mask: effectiveMask,
-    maximumPermutations: settings.permutationCount,
+    permutationCount: settings.permutationCount,
     seed: [settings.seed, 0],
-    significance: settings.significanceLevel,
+    significanceLevel: settings.significanceLevel,
     correction: settings.correction,
     tail: settings.tail,
-    output: {statistic, pValues, classes: ungatedClasses}
+    output: {statistic, adjustedPValues: pValues, classes: ungatedClasses}
   });
   graph.add(contributor);
   // 0xffffffff marks untested rows; report them as class 0 so palettes stay in range.

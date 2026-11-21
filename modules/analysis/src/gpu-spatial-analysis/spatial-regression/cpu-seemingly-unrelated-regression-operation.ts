@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotSURIterationOutput} from './sur-iteration-output';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -19,7 +20,10 @@ import {
   factorCPURegressionCorrelation,
   fitCPURegressionWithQR
 } from './cpu-regression-linear-algebra';
-import type {CPURegressionWeights} from './cpu-regression-weights';
+import {
+  validateCompleteRegressionWeights,
+  type CPURegressionWeights
+} from './cpu-regression-weights';
 import {GPU_SPATIAL_ERROR_GM_LAMBDA_BOUND_FRACTION} from './spatial-error-gm-parameters';
 
 /** Equation-major float32 rows, with common complete-case selection. */
@@ -28,12 +32,13 @@ export type CPUSeeminglyUnrelatedRegressionInput = {
   responses: Float32Array;
   mask?: Uint32Array;
   initialResiduals?: Float32Array;
+  parameters?: Float32Array;
   spatial?: {weights: CPURegressionWeights};
 };
 /** Shape of the aligned equation-major observations. */
 export type CPUSeeminglyUnrelatedRegressionOptions = Pick<
   SeeminglyUnrelatedRegressionOperationProps,
-  'equationCount' | 'predictorCount' | 'rowCount'
+  'equationCount' | 'predictorCount' | 'rowCount' | 'iteration'
 >;
 /** Same scalar vector output layouts as the contributor, including optional spatial outputs. */
 export type CPUSeeminglyUnrelatedRegressionResult = {
@@ -42,6 +47,7 @@ export type CPUSeeminglyUnrelatedRegressionResult = {
   residualCovariance: Float32Array;
   residuals: Float32Array;
   status: Uint32Array;
+  iterationCount: Uint32Array;
   spatial?: {parameters: Float32Array; status: Uint32Array};
 };
 
@@ -50,6 +56,7 @@ type SURFloat64Input = {
   responses: Float32Array | Float64Array;
   mask?: Uint32Array;
   initialResiduals?: Float32Array | Float64Array;
+  parameters?: Float32Array;
 };
 type SURFloat64Result = {
   coefficients: Float64Array;
@@ -57,6 +64,7 @@ type SURFloat64Result = {
   residualCovariance: Float64Array;
   residuals: Float64Array;
   status: Uint32Array;
+  iterationCount: Uint32Array;
   spatial?: {parameters: Float64Array; status: Uint32Array};
 };
 
@@ -64,13 +72,29 @@ function validateOptions(id: string, options: CPUSeeminglyUnrelatedRegressionOpt
   validateCapacity(id, 'equationCount', options.equationCount, 2);
   validateCapacity(id, 'predictorCount', options.predictorCount);
   validateCapacity(id, 'rowCount', options.rowCount);
+  if (options.iteration) {
+    validateCapacity(id, 'iteration.maximumIterations', options.iteration.maximumIterations, 1);
+    validateRequirement(
+      id,
+      Number.isFinite(options.iteration.tolerance ?? 1e-5) &&
+        (options.iteration.tolerance ?? 1e-5) > 0,
+      'iteration.tolerance must be a positive finite JavaScript number'
+    );
+  }
 }
 
 /**
- * One-step feasible GLS: equation OLS, joint residual covariance (divisor complete-case n),
+ * Feasible GLS: equation OLS, joint residual covariance (divisor complete-case n),
  * Cholesky whitening and a Householder QR system fit. All work is float64 until output.
+ * Optional iteration repeats covariance and GLS with exactly the caller's budget and tolerance.
+ * The first GLS counts as round 1; status 4 retains the last fit on budget exhaustion. Both
+ * covariance outputs are those used by the last round, not a post-fit covariance refresh.
  *
  * What differs from the GPU contributor:
+ * - GPU tolerance must round to a normal positive float32, avoiding zero after rounding or
+ *   subnormal flushing. CPU convenience tolerance accepts every positive finite JavaScript
+ *   number, including smaller tolerances and values above the float32 range, in float64.
+ *   Optional per-frame parameters retain the shared GPU float32 validity/layout convention.
  * - Spatial mode retains the contributor's OLS -> Kelejian-Prucha GM -> filtered joint GLS ->
  *   restored intercept/structural-residual sequence, entirely in float64. Its profiled quartic
  *   moment objective is minimized over both variance branches using all stationary points and
@@ -86,9 +110,11 @@ function validateOptions(id: string, options: CPUSeeminglyUnrelatedRegressionOpt
  * - Subnormals are retained. In nonspatial mode a non-finite value in any equation, including
  *   supplied initial residuals, excludes the aligned row. Spatial non-finite equation data returns
  *   equation status 3, except where insufficient-row status 2 or invalid-weight status 4 takes
- *   precedence. Error covariance is retained on joint status 3 as on the GPU.
+ *   precedence. Error covariance is retained on one-step joint status 3; an iterated singular
+ *   covariance clears numeric outputs to NaN, preserving the completed-round count.
  * - Spatial CSR shape mismatches throw by argument name. Invalid row offsets, links, ordering,
  *   or row sums covered by the GPU's weight-status check return equation status 4 instead.
+ *   Status-bearing spatial weights are refused because these forms cannot consume loss ports.
  *
  * @throws If predictors, responses, mask, initialResiduals or spatial CSR arrays are inconsistent.
  */
@@ -105,6 +131,7 @@ export function computeSeeminglyUnrelatedRegressionOnCPU(
     residualCovariance: Float32Array.from(result.residualCovariance),
     residuals: Float32Array.from(result.residuals),
     status: result.status,
+    iterationCount: result.iterationCount,
     ...(result.spatial
       ? {
           spatial: {
@@ -114,6 +141,22 @@ export function computeSeeminglyUnrelatedRegressionOnCPU(
         }
       : {})
   };
+}
+
+/** Residuals below the arithmetic error floor of their response/fit are numerically zero.
+ * The bound is relative to centered values, never an absolute variance cutoff.
+ */
+function computeSURResidual(
+  response: number,
+  design: readonly number[],
+  coefficients: readonly number[]
+): number {
+  const prediction = design.reduce((sum, value, column) => sum + value * coefficients[column], 0);
+  const magnitude =
+    Math.abs(response) +
+    design.reduce((sum, value, column) => sum + Math.abs(value * coefficients[column]), 0);
+  const residual = response - prediction;
+  return Math.abs(residual) <= 8 * design.length * Number.EPSILON * magnitude ? 0 : residual;
 }
 
 function computeOrdinarySUR(
@@ -133,13 +176,26 @@ function computeOrdinarySUR(
     throw new Error(`${id} mask length must equal rowCount`);
   if (input.initialResiduals && input.initialResiduals.length !== equationCount * rowCount)
     throw new Error(`${id} initialResiduals length must equal equationCount * rowCount`);
+  validateRequirement(
+    id,
+    !input.parameters || Boolean(options.iteration),
+    'parameters requires iteration; omit parameters for one-step SUR'
+  );
+  if (input.parameters && input.parameters.length !== 1)
+    throw new Error(`${id} parameters length must equal 1`);
   const result: SURFloat64Result = {
     coefficients: new Float64Array(coefficientCount).fill(NaN),
     covariance: new Float64Array(coefficientCount ** 2).fill(NaN),
     residualCovariance: new Float64Array(equationCount ** 2).fill(NaN),
     residuals: new Float64Array(equationCount * rowCount).fill(NaN),
-    status: Uint32Array.of(1)
+    status: Uint32Array.of(1),
+    iterationCount: Uint32Array.of(0)
   };
+  const tolerance = input.parameters?.[0] ?? options.iteration?.tolerance ?? 1e-5;
+  if (input.parameters && (!Number.isFinite(tolerance) || tolerance < 2 ** -126)) {
+    result.status[0] = 5;
+    return result;
+  }
   const usedRows: number[] = [];
   for (let row = 0; row < rowCount; row++) {
     if (input.mask && input.mask[row] === 0) continue;
@@ -196,6 +252,7 @@ function computeOrdinarySUR(
     usedRows.map(row => input.responses[equation * rowCount + row] - mean)
   );
   const initialResiduals: number[][] = [];
+  let previousEstimates: number[] = [];
   const dot = (first: readonly number[], second: readonly number[]) =>
     first.reduce((sum, value, column) => sum + value * second[column], 0);
   for (let equation = 0; equation < equationCount; equation++) {
@@ -208,75 +265,116 @@ function computeOrdinarySUR(
       usedRows.map((row, position) =>
         input.initialResiduals
           ? input.initialResiduals[equation * rowCount + row]
-          : responses[equation][position] - dot(designs[equation][position], fit.estimate)
+          : computeSURResidual(
+              responses[equation][position],
+              designs[equation][position],
+              fit.estimate
+            )
       )
     );
+    previousEstimates.push(
+      responseMeans[equation] + fit.estimate[0] - dot(means[equation], fit.estimate.slice(1)),
+      ...fit.estimate.slice(1)
+    );
   }
-  const errorCovariance = initialResiduals.map(first =>
-    initialResiduals.map(second => dot(first, second) / usedCount)
-  );
-  result.residualCovariance.set(errorCovariance.flat());
-  const errorScale = Math.max(...errorCovariance.map((row, equation) => row[equation]));
-  const factor =
-    errorScale > 0
-      ? factorCPURegressionCorrelation(
-          errorCovariance.map(row => row.map(value => value / errorScale))
-        )
-      : undefined;
-  if (!factor) {
-    result.status[0] = 3;
-    return result;
-  }
-  const whitenedDesign: number[][] = [];
-  const whitenedResponse: number[] = [];
-  for (let position = 0; position < usedCount; position++) {
-    const block: number[][] = [];
-    const blockResponse: number[] = [];
-    for (let equation = 0; equation < equationCount; equation++) {
-      const values = new Array<number>(coefficientCount).fill(0);
-      values.splice(equation * coefficientWidth, coefficientWidth, ...designs[equation][position]);
-      let value = responses[equation][position];
-      for (let previous = 0; previous < equation; previous++) {
-        value -= factor[equation][previous] * blockResponse[previous];
-        for (let column = 0; column < coefficientCount; column++)
-          values[column] -= factor[equation][previous] * block[previous][column];
+  for (let iteration = 0; iteration < (options.iteration?.maximumIterations ?? 1); iteration++) {
+    const errorCovariance = initialResiduals.map(first =>
+      initialResiduals.map(second => dot(first, second) / usedCount)
+    );
+    result.residualCovariance.set(errorCovariance.flat());
+    const errorScale = Math.max(...errorCovariance.map((row, equation) => row[equation]));
+    const factor =
+      errorScale > 0
+        ? factorCPURegressionCorrelation(
+            errorCovariance.map(row => row.map(value => value / errorScale))
+          )
+        : undefined;
+    if (!factor) {
+      result.status[0] = 3;
+      if (options.iteration) {
+        result.coefficients.fill(NaN);
+        result.covariance.fill(NaN);
+        result.residualCovariance.fill(NaN);
+        result.residuals.fill(NaN);
       }
-      block.push(values.map(entry => entry / factor[equation][equation]));
-      blockResponse.push(value / factor[equation][equation]);
+      return result;
     }
-    whitenedDesign.push(...block);
-    whitenedResponse.push(...blockResponse);
-  }
-  const fit = fitCPURegressionWithQR(whitenedDesign, whitenedResponse);
-  if (!fit) {
-    result.status[0] = 2;
-    return result;
-  }
-  const inverseRoot = fit.inverseRoot.map(row => row.slice());
-  const estimates = fit.estimate.slice();
-  for (let equation = 0; equation < equationCount; equation++) {
-    const intercept = equation * coefficientWidth;
-    estimates[intercept] += responseMeans[equation];
-    for (let column = 0; column < predictorCount; column++) {
-      estimates[intercept] -= means[equation][column] * fit.estimate[intercept + column + 1];
-      for (let target = 0; target < coefficientCount; target++)
-        inverseRoot[intercept][target] -=
-          means[equation][column] * fit.inverseRoot[intercept + column + 1][target];
+    const whitenedDesign: number[][] = [];
+    const whitenedResponse: number[] = [];
+    for (let position = 0; position < usedCount; position++) {
+      const block: number[][] = [];
+      const blockResponse: number[] = [];
+      for (let equation = 0; equation < equationCount; equation++) {
+        const values = new Array<number>(coefficientCount).fill(0);
+        values.splice(
+          equation * coefficientWidth,
+          coefficientWidth,
+          ...designs[equation][position]
+        );
+        let value = responses[equation][position];
+        for (let previous = 0; previous < equation; previous++) {
+          value -= factor[equation][previous] * blockResponse[previous];
+          for (let column = 0; column < coefficientCount; column++)
+            values[column] -= factor[equation][previous] * block[previous][column];
+        }
+        block.push(values.map(entry => entry / factor[equation][equation]));
+        blockResponse.push(value / factor[equation][equation]);
+      }
+      whitenedDesign.push(...block);
+      whitenedResponse.push(...blockResponse);
     }
-    usedRows.forEach((row, position) => {
-      result.residuals[equation * rowCount + row] =
-        responses[equation][position] -
-        dot(
+    const fit = fitCPURegressionWithQR(whitenedDesign, whitenedResponse);
+    if (!fit) {
+      result.status[0] = 2;
+      if (options.iteration) {
+        result.coefficients.fill(NaN);
+        result.covariance.fill(NaN);
+        result.residualCovariance.fill(NaN);
+        result.residuals.fill(NaN);
+      }
+      return result;
+    }
+    const inverseRoot = fit.inverseRoot.map(row => row.slice());
+    const estimates = fit.estimate.slice();
+    for (let equation = 0; equation < equationCount; equation++) {
+      const intercept = equation * coefficientWidth;
+      estimates[intercept] += responseMeans[equation];
+      for (let column = 0; column < predictorCount; column++) {
+        estimates[intercept] -= means[equation][column] * fit.estimate[intercept + column + 1];
+        for (let target = 0; target < coefficientCount; target++)
+          inverseRoot[intercept][target] -=
+            means[equation][column] * fit.inverseRoot[intercept + column + 1][target];
+      }
+      usedRows.forEach((row, position) => {
+        result.residuals[equation * rowCount + row] = computeSURResidual(
+          responses[equation][position],
           designs[equation][position],
           fit.estimate.slice(intercept, intercept + coefficientWidth)
         );
-    });
+      });
+    }
+    result.coefficients.set(estimates);
+    result.covariance.set(
+      inverseRoot.flatMap(first => inverseRoot.map(second => errorScale * dot(first, second)))
+    );
+    result.status[0] = 0;
+    result.iterationCount[0]++;
+    if (!options.iteration) break;
+    const change = Math.max(
+      ...estimates.map(
+        (value, index) =>
+          Math.abs(value - previousEstimates[index]) /
+          Math.max(1, Math.abs(previousEstimates[index]))
+      )
+    );
+    // A supplied covariance may reproduce OLS without matching the fitted residual covariance.
+    if ((!input.initialResiduals || iteration > 0) && change < tolerance) break;
+    result.status[0] = 4;
+    previousEstimates = estimates;
+    for (let equation = 0; equation < equationCount; equation++) {
+      initialResiduals[equation] = usedRows.map(row => result.residuals[equation * rowCount + row]);
+    }
   }
-  result.coefficients.set(estimates);
-  result.covariance.set(
-    inverseRoot.flatMap(first => inverseRoot.map(second => errorScale * dot(first, second)))
-  );
-  result.status[0] = 0;
   return result;
 }
 
@@ -398,6 +496,7 @@ function computeSpatialSUR(
 ): SURFloat64Result {
   const id = 'computeSeeminglyUnrelatedRegressionOnCPU';
   validateOptions(id, options);
+  validateCompleteRegressionWeights(id, input.spatial!.weights);
   const {rowCount, equationCount, predictorCount} = options;
   validateRequirement(
     id,
@@ -415,16 +514,17 @@ function computeSpatialSUR(
     throw new Error(
       `${id} spatial.weights.weights length must equal spatial.weights.neighbors length`
     );
-  if (offsets[0] !== 0) throw new Error(`${id} spatial.weights.offsets must start at zero`);
-  let validWeights = true;
+  let validWeights = offsets[0] === 0;
   let norm = 0;
   let trace = 0;
+  const rowTotals = new Float64Array(rowCount);
   for (let row = 0; row < rowCount; row++) {
     const begin = offsets[row];
     const end = offsets[row + 1];
     if (end < begin || end > neighbors.length) validWeights = false;
     let total = 0;
     let absoluteTotal = 0;
+    let rowSquares = 0;
     for (let slot = begin; slot < Math.min(end, neighbors.length); slot++) {
       const neighbor = neighbors[slot];
       const weight = weights[slot];
@@ -439,17 +539,20 @@ function computeSpatialSUR(
       total += weight;
       if (neighbor < rowCount) {
         absoluteTotal += Math.abs(weight);
-        trace += weight * weight;
+        rowSquares += weight * weight;
       }
     }
     if (Math.abs(total - 1) > 1e-5) validWeights = false;
-    norm = Math.max(norm, absoluteTotal);
+    rowTotals[row] = total > 0 && Number.isFinite(total) ? total : 1;
+    trace += rowSquares / rowTotals[row] ** 2;
+    norm = Math.max(norm, absoluteTotal / rowTotals[row]);
   }
   const multiply = (values: readonly number[]) =>
     Array.from({length: rowCount}, (_, row) => {
       let value = 0;
       for (let slot = offsets[row]; slot < Math.min(offsets[row + 1], neighbors.length); slot++) {
-        if (neighbors[slot] < rowCount) value += weights[slot] * values[neighbors[slot]];
+        if (neighbors[slot] < rowCount)
+          value += (weights[slot] / rowTotals[row]) * values[neighbors[slot]];
       }
       return value;
     });
@@ -477,10 +580,8 @@ function computeSpatialSUR(
         ? fitCPURegressionWithQR(design, shiftedResponse)
         : undefined;
     const residuals = fit
-      ? design.map(
-          (row, position) =>
-            shiftedResponse[position] -
-            row.reduce((sum, value, column) => sum + value * fit.estimate[column], 0)
+      ? design.map((row, position) =>
+          computeSURResidual(shiftedResponse[position], row, fit.estimate)
         )
       : new Array<number>(rowCount).fill(NaN);
     let status = !validWeights
@@ -521,17 +622,18 @@ function computeSpatialSUR(
     parameters[equation] = parameter;
     statuses[equation] = status;
     const packed = [
-      response,
+      shiftedResponse,
       residuals,
       ...design[0].slice(1).map((_, column) => design.map(row => row[column + 1]))
     ];
     for (let column = 0; column < packed.length; column++) {
       for (let row = 0; row < rowCount; row++) {
-        let value = packed[column][row];
+        // An island has no neighbor terms; invalid lambda must still suppress its row.
+        let value = Number.isFinite(parameter) ? packed[column][row] : NaN;
         // Keep the shader's ordered filter, including defined NaN propagation after status 4.
         for (let slot = offsets[row]; slot < Math.min(offsets[row + 1], neighbors.length); slot++) {
           if (neighbors[slot] < rowCount)
-            value -= parameter * weights[slot] * packed[column][neighbors[slot]];
+            value -= parameter * (weights[slot] / rowTotals[row]) * packed[column][neighbors[slot]];
         }
         if (column === 0) filteredResponses[equation * rowCount + row] = value;
         else if (column === 1) filteredResiduals[equation * rowCount + row] = value;
@@ -543,7 +645,8 @@ function computeSpatialSUR(
     {
       predictors: filteredPredictors,
       responses: filteredResponses,
-      initialResiduals: filteredResiduals
+      initialResiduals: filteredResiduals,
+      parameters: input.parameters
     },
     options
   );
@@ -554,6 +657,8 @@ function computeSpatialSUR(
   );
   for (let first = 0; first < size; first++) {
     result.coefficients[first] *= scales[first];
+    if (first % width === 0)
+      result.coefficients[first] += input.responses[Math.floor(first / width) * rowCount];
     for (let second = 0; second < size; second++)
       result.covariance[first * size + second] *= scales[first] * scales[second];
   }
@@ -576,7 +681,20 @@ function computeSpatialSUR(
 export class CPUSeeminglyUnrelatedRegressionOperation extends GPUCPUOperation {
   constructor(props: SeeminglyUnrelatedRegressionOperationProps) {
     const id = props.id ?? 'seemingly-unrelated-regression';
+    props = {
+      ...props,
+      iteration: props.iteration ? {...props.iteration} : undefined,
+      output: snapshotSURIterationOutput(id, props.output),
+      spatial: props.spatial
+        ? {...props.spatial, weights: {...props.spatial.weights}, output: {...props.spatial.output}}
+        : undefined
+    };
     validateOptions(id, props);
+    validateRequirement(
+      id,
+      !props.parameters || Boolean(props.iteration),
+      'parameters requires iteration; omit parameters for one-step SUR'
+    );
     validateRequirement(
       id,
       !props.spatial || (!props.mask && !props.initialResiduals),
@@ -601,6 +719,9 @@ export class CPUSeeminglyUnrelatedRegressionOperation extends GPUCPUOperation {
             initialResiduals: props.initialResiduals
               ? getCPUOperationFloat32Rows(id, inputs, 'initialResiduals')
               : undefined,
+            parameters: props.parameters
+              ? getCPUOperationFloat32Rows(id, inputs, 'parameters')
+              : undefined,
             spatial: props.spatial
               ? {
                   weights: {
@@ -619,6 +740,9 @@ export class CPUSeeminglyUnrelatedRegressionOperation extends GPUCPUOperation {
           [props.output.residualCovariance]: result.residualCovariance,
           [props.output.residuals]: result.residuals,
           [props.output.status]: result.status,
+          ...(props.output.iteration?.status.iterationCount
+            ? {[props.output.iteration?.status.iterationCount]: result.iterationCount}
+            : {}),
           ...(props.spatial
             ? {
                 [props.spatial.output.parameters]: result.spatial!.parameters,

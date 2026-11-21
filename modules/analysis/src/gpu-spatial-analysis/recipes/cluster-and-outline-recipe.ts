@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {snapshotSinglePartGeometryPort} from '../../analysis-core/contracts/ports';
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -22,7 +25,7 @@ import {getDelaunayMaximumTriangleCount} from '../delaunay-tessellation/gpu-dela
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GPUGeometryMeasures} from '../geometry-measures/index';
 import {GPUGroupConvexHull, GPUGroupGeometry} from '../group-geometry/index';
-import {GPUSpatialClustering} from '../spatial-clustering/index';
+import {GPUDBSCAN} from '../spatial-clustering/index';
 import {
   addRecipeCountNodes,
   assertRecipe,
@@ -79,7 +82,7 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
   outline?: {kind: 'convex'} | {kind: 'alpha'; maximumCircumradius: number};
   /**
    * Points in the coordinates of `spatialContext`; optional `sourceIds` become the cluster
-   * provenance IDs of `GPUSpatialClustering`.
+   * provenance IDs of `GPUDBSCAN`.
    */
   points: GPUPackedGeometryPort<GPUPointGeometryPort>;
   /**
@@ -91,7 +94,7 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
    * `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
-  /** `getGPUSpatialClusteringParameterValues` view: bounds, epsilon, minimum points. */
+  /** `getGPUDBSCANParameterValues` view: bounds, epsilon, minimum points. */
   clusteringParameters: GraphDataView<'float32'>;
   /** Maximum neighbor-search lattice of the clustering. */
   gridSize: readonly [number, number];
@@ -173,9 +176,9 @@ type GPUClusterAndOutlineRecipeViews = {
  * Cluster and outline recipe: DBSCAN clusters, per-cluster summaries, convex hulls and their
  * area, perimeter and centroid.
  *
- * Chain: `GPUSpatialClustering` -> `GPUGroupGeometry` (counts, bounds, mean centers) and
+ * Chain: `GPUDBSCAN` -> `GPUGroupGeometry` (counts, bounds, mean centers) and
  * `GPUGroupConvexHull` -> `GPUGeometryMeasures` with each hull as one single-ring polygon feature
- * (the hull's `offsets` is the ring offset list; feature and polygon offsets are the identity). With `minimumPoints = 1` the
+ * (the hull's `offsets` is the ring offset list; feature and polygon offsets are the identity). With `minimumSamples = 1` the
  * clusters are PostGIS `ST_ClusterWithin` groups.
  *
  * Status: `status.stages` reports `clustering`, `convex-hull` and `hull-measures` (`status.invalidCount`
@@ -193,6 +196,7 @@ function declareClusterAndOutlineRecipe<Parameters>(
   props: GPUClusterAndOutlineRecipeProps
 ): GPUClusterAndOutlineRecipeResult {
   const id = props.id ?? 'cluster-outline-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   const spatialContext = resolveGPUSpatialContext(
     id,
     props.spatialContext,
@@ -202,7 +206,17 @@ function declareClusterAndOutlineRecipe<Parameters>(
   const positions = props.points.positions;
   const pointCount = positions.length;
   const groupCount = props.maximumClusterCount;
-  const outputs = props.outputs ?? {};
+  const outputs = destinations ?? {};
+  validateRequirement(
+    id,
+    outputs.concaveHull === undefined || props.outline?.kind === 'alpha',
+    'output.concaveHull requires outline.kind alpha; received a destination for a disabled stage'
+  );
+  validateRequirement(
+    id,
+    outputs.hullPositions === undefined || props.outline?.kind !== 'alpha',
+    'output.hullPositions requires outline.kind convex; use output.concaveHull on the alpha route'
+  );
   const scratch = props.scratch ?? {};
   assertRecipe(ID, groupCount >= 1, 'maximumClusterCount must be positive');
   const builder = new RecipeBuilder(graph);
@@ -236,7 +250,7 @@ function declareClusterAndOutlineRecipe<Parameters>(
     outputs.status?.clusterOverflow
   );
   builder.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       id: `${id}-clustering`,
       spatialContext,
       positions,

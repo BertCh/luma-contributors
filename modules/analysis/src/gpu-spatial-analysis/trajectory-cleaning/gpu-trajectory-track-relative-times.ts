@@ -61,8 +61,8 @@ export class GPUTrajectoryTrackRelativeTimes implements GPUCommandNodeProducer {
     validateViewLength(id, 'output', props.output, props.timestamps.length);
     validateRequirement(
       id,
-      props.trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      props.trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     resolveGPUTrajectoryTemporalContext(id, props.timestamps, props.temporalContext);
     validateTrajectoryOutputRanges(this.id, this.props.output);

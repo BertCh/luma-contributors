@@ -4,7 +4,12 @@
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
-import {validateCapacity, validateRequirement} from '../kernels/gpu-contributor-utils';
+import {validateCPUHostOffsets, type CPUHostRowsOptions} from '../operations/compact-host-offsets';
+import {
+  validateCapacity,
+  validateRequirement,
+  validateOption
+} from '../kernels/gpu-contributor-utils';
 import {GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK} from './gpu-polygon-triangulation';
 import {computeTriangulationOrientation as computePolygonOrientation} from './cpu-triangulation-predicates';
 import {triangulateMonotoneOnCPU} from './cpu-monotone-triangulation';
@@ -29,6 +34,11 @@ export type CPUPolygonTriangulationInput = {
 
 /** CPU output allocation, coordinate context, Earcut budget and monotone routing options. */
 export type CPUPolygonTriangulationOptions = {
+  /**
+   * `storage: 'compact'` checks initial zero, monotonicity and exact terminal coverage at every
+   * offsets level. Omitted storage preserves the resident-capacity ring clamping used by the GPU.
+   */
+  storage?: CPUHostRowsOptions['storage'];
   indexCapacity: number;
   spatialContext?: GPUSpatialContext;
   /** Positive elementary-step budget per polygon; defaults to the contributor's 4M steps. */
@@ -635,7 +645,10 @@ function validatePolygonOffsets(name: string, offsets: Uint32Array, limit: numbe
  *   as their exact values. Invalid polygons are not repaired; no tiling is promised for them.
  * - Decreasing offsets and out-of-range feature/polygon offsets throw with the argument name;
  *   the GPU does not validate them. Ring ends beyond positions are clamped for reads, while
- *   slice capacities use the original offsets, as on the GPU. Output allocation limits remain.
+ *   slice capacities use the original offsets, as on the GPU. With `storage: 'compact'`, all
+ *   three offset levels must start at zero and end at their exact child counts instead.
+ *   Canonical empty geometry retains empty per-polygon arrays and a terminal zero offset.
+ *   Output allocation limits remain.
  *
  * @throws Error naming positions, featureOffsets, polygonOffsets, ringOffsets or indexCapacity
  * for inconsistent arrays or an invalid allocation.
@@ -647,9 +660,28 @@ export function computePolygonTriangulationOnCPU(
   const {positions, featureOffsets, polygonOffsets, ringOffsets} = input;
   if (positions.length % 2 !== 0) throw new Error('positions must hold float32x2 rows');
   const vertexCount = positions.length / 2;
-  validatePolygonOffsets('ringOffsets', ringOffsets, 0xffffffff);
-  validatePolygonOffsets('polygonOffsets', polygonOffsets, ringOffsets.length - 1);
-  validatePolygonOffsets('featureOffsets', featureOffsets, polygonOffsets.length - 1);
+  const storage = options.storage === undefined ? 'resident-capacity' : options.storage;
+  validateOption('polygon-triangulation', 'storage', storage, ['compact', 'resident-capacity']);
+  if (storage === 'compact') {
+    validateCPUHostOffsets('polygon-triangulation', 'ringOffsets', ringOffsets, vertexCount);
+    validateCPUHostOffsets(
+      'polygon-triangulation',
+      'polygonOffsets',
+      polygonOffsets,
+      ringOffsets.length - 1
+    );
+    validateCPUHostOffsets(
+      'polygon-triangulation',
+      'featureOffsets',
+      featureOffsets,
+      polygonOffsets.length - 1
+    );
+  } else {
+    // Raw monotonicity must be checked before ring ends are clamped for resident reads.
+    validatePolygonOffsets('ringOffsets', ringOffsets, 0xffffffff);
+    validatePolygonOffsets('polygonOffsets', polygonOffsets, ringOffsets.length - 1);
+    validatePolygonOffsets('featureOffsets', featureOffsets, polygonOffsets.length - 1);
+  }
   const polygonCount = polygonOffsets.length - 1;
   const maximumWork = options.maximumWork ?? GPU_POLYGON_TRIANGULATION_DEFAULT_MAXIMUM_WORK;
   validateCapacity('polygon-triangulation', 'maximumWork', maximumWork);
@@ -666,10 +698,10 @@ export function computePolygonTriangulationOnCPU(
   validateCapacity('polygon-triangulation', 'monotoneMinimumVertices', monotoneMinimumVertices);
   validateCapacity('polygon-triangulation', 'monotoneMaximumVertices', monotoneCapacity);
   validateCapacity('polygon-triangulation', 'indexCapacity', options.indexCapacity, 0);
-  const minimumIndexCount = Math.max(
-    0,
-    3 * (vertexCount + 2 * (ringOffsets.length - 1) - 4 * polygonCount)
-  );
+  const minimumIndexCount =
+    polygonCount === 0
+      ? 0
+      : Math.max(0, 3 * (vertexCount + 2 * (ringOffsets.length - 1) - 4 * polygonCount));
   validateRequirement(
     'polygon-triangulation',
     options.indexCapacity >= minimumIndexCount,
@@ -829,10 +861,21 @@ export function computePolygonTriangulationOnCPU(
   return result;
 }
 
+/** Host-only storage validation options for the named CPU operation. */
+export type CPUPolygonTriangulationOperationProps = PolygonTriangulationOperationProps &
+  Pick<CPUPolygonTriangulationOptions, 'storage'>;
+
 /** CPU twin with budgeted un-hashed Earcut, monotone rescue and the same polygon slices. */
 export class CPUPolygonTriangulationOperation extends GPUCPUOperation {
-  constructor(props: PolygonTriangulationOperationProps) {
-    props = snapshotPolygonTriangulationOperationProps(props);
+  constructor(props: CPUPolygonTriangulationOperationProps) {
+    const storage = props.storage;
+    props = Object.freeze({...snapshotPolygonTriangulationOperationProps(props), storage});
+    validateOption(
+      props.id ?? 'polygon-triangulation',
+      'storage',
+      storage === undefined ? 'resident-capacity' : storage,
+      ['compact', 'resident-capacity']
+    );
     const operation = new GPUPolygonTriangulationOperation(props);
     const {id} = operation;
     validateCapacity(id, 'polygonCount', props.polygonCount, 1);

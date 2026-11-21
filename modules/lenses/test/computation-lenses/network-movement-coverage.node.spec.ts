@@ -47,7 +47,7 @@ const coverageCases = COVERAGE_NETWORK_MOVEMENT_CASES.map(auditCase =>
 for (const auditCase of coverageCases) {
   it(`bounded coverage maximal shader audit: ${auditCase.exportName} ${auditCase.name}`, () => {
     const result = auditKernelCase(auditCase);
-    expect(result.findings).toEqual([]);
+    expect(result.findings, JSON.stringify(result.findings)).toEqual([]);
     expect(result.nodeCount).toBeGreaterThan(0);
   });
 }

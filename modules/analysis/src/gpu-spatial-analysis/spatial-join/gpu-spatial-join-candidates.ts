@@ -25,7 +25,8 @@ import {
   validateCapacity,
   validateRequirement,
   validateFiniteNumber,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createBoundsNode,
@@ -294,9 +295,18 @@ export class GPUSpatialJoinCandidates<Parameters = unknown> implements GPUComman
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, leftCount, rightCount, candidateCapacity} = this;
-    const {left, right, prepared, output: pairs} = props;
+    const {left, prepared, output: pairs} = props;
+    validateGraphViewsBelongToGraph(id, graph, [
+      ...getSpatialJoinGeometryViews(left),
+      ...getSpatialJoinGeometryViews(props.right),
+      left.sourceIds,
+      props.right.sourceIds
+    ]);
     if (prepared && !prepared.isDeclaredIn(graph))
       throw new Error(`${id} requires prepared to be added to the graph first`);
+    const right = prepared
+      ? {...prepared.getGeometry(graph), sourceIds: props.right.sourceIds}
+      : props.right;
     // Keep the public pair-capacity diagnostic before checking the allocation envelope.
     validateCapacity(
       id,

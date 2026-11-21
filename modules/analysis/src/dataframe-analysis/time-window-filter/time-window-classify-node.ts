@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  GraphVectorView,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -12,7 +12,10 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getGraphViewChunks,
+  isGraphVectorView
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH} from './time-window-parameters';
 import {
   GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
@@ -32,6 +35,20 @@ export const FLOAT_TIME_AT_LEAST_WGSL = /* wgsl */ `// Exact double-single a >= 
 // low parts, so acceptance compares the high parts first and uses the low parts only on ties.
 fn isTimeAtLeast(aHigh: f32, aLow: f32, bHigh: f32, bLow: f32) -> bool {
   return aHigh > bHigh || (aHigh == bHigh && aLow >= bLow);
+}`;
+
+/** Integer comparisons preserve every finite lane, including subnormals on FTZ backends. @internal */
+export const FLOAT_TIME_BITS_AT_LEAST_WGSL = /* wgsl */ `
+fn getTimeLaneOrderKey(bits: u32) -> u32 {
+  if ((bits & 0x7fffffffu) == 0u) { return 0x80000000u; }
+  return select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
+}
+fn isTimeBitsAtLeast(aHigh: u32, aLow: u32, bHigh: u32, bLow: u32) -> bool {
+  if ((aHigh & 0x7fffffffu) > 0x7f800000u || (aLow & 0x7fffffffu) > 0x7f800000u ||
+      (bHigh & 0x7fffffffu) > 0x7f800000u || (bLow & 0x7fffffffu) > 0x7f800000u) { return false; }
+  let firstHigh = getTimeLaneOrderKey(aHigh);
+  let secondHigh = getTimeLaneOrderKey(bHigh);
+  return firstHigh > secondHigh || (firstHigh == secondHigh && getTimeLaneOrderKey(aLow) >= getTimeLaneOrderKey(bLow));
 }`;
 
 /** Properties for {@link getTimeWindowClassifyNodes}. @internal */
@@ -67,7 +84,7 @@ export function getTimeWindowClassifyNodes<Parameters>(
   const nodes: GPUCommandNode<Parameters>[] = [];
   const isWordMode = props.timestamps.format === 'uint32x2';
   validateTimeWindowClassifyMode(props, isWordMode);
-  const isVector = props.timestamps instanceof GraphVectorView;
+  const isVector = isGraphVectorView(props.timestamps);
   const chunks = getGraphViewChunks(props.timestamps);
   const getChunk = <View extends GraphDataView | GraphVectorView>(
     view: View | undefined,
@@ -89,28 +106,28 @@ export function getTimeWindowClassifyNodes<Parameters>(
       continue;
     }
     const bindings: WGSLKernelBinding[] = [
-      {name: 'params', view: props.window, type: 'f32', access: 'read'},
-      {name: 'startHigh', view: chunk, type: 'f32', access: 'read'}
+      {name: 'params', view: props.window, type: 'u32', access: 'read'},
+      {name: 'startHigh', view: chunk, type: 'u32', access: 'read'}
     ];
     if (startLow)
       bindings.push({
         name: 'startLow',
         view: startLow,
-        type: 'f32',
+        type: 'u32',
         access: 'read'
       });
     if (endHigh)
       bindings.push({
         name: 'endHigh',
         view: endHigh,
-        type: 'f32',
+        type: 'u32',
         access: 'read'
       });
     if (endLow)
       bindings.push({
         name: 'endLow',
         view: endLow,
-        type: 'f32',
+        type: 'u32',
         access: 'read'
       });
     bindings.push({
@@ -135,7 +152,11 @@ export function getTimeWindowClassifyNodes<Parameters>(
         access: 'read_write'
       });
 
-    const rowEndLow = endLow ? 'endLow[endLowOffset + index]' : endHigh ? '0.0' : 'rowStartLow';
+    const rowEndLow = endLow
+      ? 'bitcast<f32>(endLow[endLowOffset + index])'
+      : endHigh
+        ? '0.0'
+        : 'rowStartLow';
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: isVector ? `${props.id}-chunk-${chunkIndex}` : props.id,
@@ -151,18 +172,26 @@ fn timeDifference(aHigh: f32, aLow: f32, bHigh: f32, bLow: f32) -> f32 {
   return (aHigh - bHigh) + (aLow - bLow);
 }
 
-${FLOAT_TIME_AT_LEAST_WGSL}`,
+${FLOAT_TIME_BITS_AT_LEAST_WGSL}`,
         body: /* wgsl */ `
-  let windowStartHigh = params[paramsOffset + 0u];
-  let windowStartLow = params[paramsOffset + 1u];
-  let windowEndHigh = params[paramsOffset + 2u];
-  let windowEndLow = params[paramsOffset + 3u];
-  let startFade = params[paramsOffset + 4u];
-  let endFade = params[paramsOffset + 5u];
+  let windowStartHighBits = params[paramsOffset + 0u];
+  let windowStartHigh = bitcast<f32>(windowStartHighBits);
+  let windowStartLowBits = params[paramsOffset + 1u];
+  let windowStartLow = bitcast<f32>(windowStartLowBits);
+  let windowEndHighBits = params[paramsOffset + 2u];
+  let windowEndHigh = bitcast<f32>(windowEndHighBits);
+  let windowEndLowBits = params[paramsOffset + 3u];
+  let windowEndLow = bitcast<f32>(windowEndLowBits);
+  let startFade = bitcast<f32>(params[paramsOffset + 4u]);
+  let endFade = bitcast<f32>(params[paramsOffset + 5u]);
 
-  let rowStartHigh = startHigh[startHighOffset + index];
-  let rowStartLow = ${startLow ? 'startLow[startLowOffset + index]' : '0.0'};
-  let rowEndHigh = ${endHigh ? 'endHigh[endHighOffset + index]' : 'rowStartHigh'};
+  let rowStartHighBits = startHigh[startHighOffset + index];
+  let rowStartHigh = bitcast<f32>(rowStartHighBits);
+  let rowStartLowBits = ${startLow ? 'startLow[startLowOffset + index]' : '0u'};
+  let rowStartLow = bitcast<f32>(rowStartLowBits);
+  let rowEndHighBits = ${endHigh ? 'endHigh[endHighOffset + index]' : 'rowStartHighBits'};
+  let rowEndLowBits = ${endLow ? 'endLow[endLowOffset + index]' : endHigh ? '0u' : 'rowStartLowBits'};
+  let rowEndHigh = bitcast<f32>(rowEndHighBits);
   let rowEndLow = ${rowEndLow};
 
   // Ordered comparisons are false for NaN, so NaN rows are rejected. A reversed window
@@ -170,9 +199,9 @@ ${FLOAT_TIME_AT_LEAST_WGSL}`,
   let endAfterWindowStart = timeDifference(rowEndHigh, rowEndLow, windowStartHigh, windowStartLow);
   let startBeforeWindowEnd = timeDifference(windowEndHigh, windowEndLow, rowStartHigh, rowStartLow);
   let accepted =
-    isTimeAtLeast(windowEndHigh, windowEndLow, windowStartHigh, windowStartLow) &&
-    isTimeAtLeast(rowEndHigh, rowEndLow, windowStartHigh, windowStartLow) &&
-    isTimeAtLeast(windowEndHigh, windowEndLow, rowStartHigh, rowStartLow);
+    isTimeBitsAtLeast(windowEndHighBits, windowEndLowBits, windowStartHighBits, windowStartLowBits) &&
+    isTimeBitsAtLeast(rowEndHighBits, rowEndLowBits, windowStartHighBits, windowStartLowBits) &&
+    isTimeBitsAtLeast(windowEndHighBits, windowEndLowBits, rowStartHighBits, rowStartLowBits);
   outputMask[outputMaskOffset + index] = select(0u, 1u, accepted);
   ${
     weights

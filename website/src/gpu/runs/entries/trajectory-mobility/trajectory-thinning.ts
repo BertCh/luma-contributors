@@ -20,8 +20,10 @@ const TRACK_COUNT = 4;
 type Outputs = {
   segments: RunBuffer;
   positions: RunBuffer;
-  rowIds: RunBuffer;
+  sourceRows: RunBuffer;
   count: RunBuffer;
+  overflow: RunBuffer;
+  candidateOverflow: RunBuffer;
 };
 
 export default defineOperationRun({
@@ -41,7 +43,7 @@ export default defineOperationRun({
   build(builder, fleet) {
     const buffers = uploadFleet(builder, fleet);
     const parameterBuffer = builder.allocate('thinning-parameters', 'float32', 4);
-    const rowIds = builder.allocate('kept-row-ids', 'uint32', fleet.rowCount);
+    const sourceRows = builder.allocate('kept-row-ids', 'uint32', fleet.rowCount);
     const keptOffsets = builder.allocate('kept-offsets', 'uint32', fleet.trackCount + 1);
     const count = builder.allocate('kept-count', 'uint32', 1);
     const overflow = builder.allocate('kept-overflow', 'uint32', 1);
@@ -54,7 +56,7 @@ export default defineOperationRun({
         trackOffsets: buffers.trackOffsets.view,
         parameters: parameterBuffer.view,
         output: {
-          rowIds: rowIds.view,
+          sourceRows: sourceRows.view,
           trackOffsets: keptOffsets.view,
           status: {
             count: count.view,
@@ -67,8 +69,10 @@ export default defineOperationRun({
     const outputs: Outputs & {keptOffsets: RunBuffer} = {
       segments: builder.upload('segments', 'float32x4', fleet.segments),
       positions: buffers.positions,
-      rowIds,
+      sourceRows,
       count,
+      overflow,
+      candidateOverflow,
       keptOffsets
     };
     return {
@@ -81,23 +85,27 @@ export default defineOperationRun({
   },
   // The thinned path joins consecutive kept fixes of each track.
   async afterRun({outputs, inputs, upload}) {
-    const [count, rowIds, offsets] = await Promise.all([
+    const [count, sourceRows, offsets, overflow, candidateOverflow] = await Promise.all([
       readUint32(outputs.count),
-      readUint32(outputs.rowIds),
-      readUint32(outputs.keptOffsets)
+      readUint32(outputs.sourceRows),
+      readUint32(outputs.keptOffsets),
+      readUint32(outputs.overflow),
+      readUint32(outputs.candidateOverflow)
     ]);
+    const keptCount = overflow[0] || candidateOverflow[0] ? 0 : count[0];
     const edges: number[] = [];
     for (let track = 0; track + 1 < offsets.length; track++) {
-      for (let kept = offsets[track]; kept + 1 < Math.min(offsets[track + 1], count[0]); kept++) {
-        edges.push(rowIds[kept], rowIds[kept + 1]);
+      for (let kept = offsets[track]; kept + 1 < Math.min(offsets[track + 1], keptCount); kept++) {
+        edges.push(sourceRows[kept], sourceRows[kept + 1]);
       }
     }
-    const kept = new Float32Array(Math.max(1, count[0]) * 2);
-    for (let row = 0; row < count[0]; row++) {
-      kept.set([inputs.positions[rowIds[row] * 2], inputs.positions[rowIds[row] * 2 + 1]], row * 2);
+    const kept = new Float32Array(Math.max(1, keptCount) * 2);
+    for (let row = 0; row < keptCount; row++) {
+      const sourceRow = sourceRows[row];
+      kept.set([inputs.positions[sourceRow * 2], inputs.positions[sourceRow * 2 + 1]], row * 2);
     }
     return {
-      keptCount: count[0],
+      keptCount,
       kept: upload('kept-positions', 'float32x2', kept),
       edgeCount: edges.length / 2,
       edges: upload('thinned-edges', 'uint32x2', Uint32Array.from(edges.length ? edges : [0, 0]))
@@ -127,7 +135,15 @@ export default defineOperationRun({
       );
       const at = inputs.starts[nearest] as [number, number];
       const count = peek(outputs.count);
-      const keptRows = peek(outputs.rowIds);
+      const overflow = peek(outputs.overflow);
+      const candidateOverflow = peek(outputs.candidateOverflow);
+      if (!count || !overflow || !candidateOverflow) return {values: {tolerance}};
+      if (overflow[0] || candidateOverflow[0])
+        return {
+          values: {tolerance},
+          readout: 'Thinned path unavailable due to an incomplete result'
+        };
+      const keptRows = peek(outputs.sourceRows);
       const keptOffsets = peek(outputs.keptOffsets);
       // The chain: a ring of the tolerance around every kept fix of this track.
       const chain: RunGlyph[] = [];
@@ -144,14 +160,14 @@ export default defineOperationRun({
       return {
         values: {tolerance},
         glyphs: [...chain, {shape: 'line', from: at, to: [pointer.x, pointer.y], dashed: true}],
-        readout: `tolerance ${formatDistance(tolerance, inputs.metersPerUnit)} · ${count ? count[0] : 0} of ${inputs.rowCount} fixes kept`
+        readout: `tolerance ${formatDistance(tolerance, inputs.metersPerUnit)} · ${count[0]} of ${inputs.rowCount} fixes kept`
       };
     }
   },
   draw: ({inputs, outputs, extra}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
     {layer: 'dots', context: true, positions: outputs.positions, radius: 2.5},
-    ...(extra
+    ...(extra?.edgeCount
       ? [
           {
             layer: 'segments' as const,
@@ -159,7 +175,11 @@ export default defineOperationRun({
             edges: extra.edges,
             radius: 2.5,
             color: [0.25, 0.8, 0.95, 1] as const
-          },
+          }
+        ]
+      : []),
+    ...(extra?.keptCount
+      ? [
           {
             layer: 'dots' as const,
             positions: extra.kept,

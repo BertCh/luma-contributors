@@ -8,6 +8,7 @@ import {
   GPUContributorOperation,
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateSinkhornTransportRadiusOption} from './sinkhorn-transport-radius';
 import {GPUSinkhornDivergence} from './gpu-sinkhorn-divergence';
 
 /** Shared graph-value props. Grid metadata is static; masses and packed parameters are vectors. */
@@ -19,7 +20,7 @@ export type SinkhornDivergenceOperationProps = {
   target: string;
   parameters: string;
   maximumIterations?: number;
-  blurRadius?: number;
+  transportRadius?: number;
   output: {
     divergence: string;
     components?: string;
@@ -37,6 +38,12 @@ export type SinkhornDivergenceOperationProps = {
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUSinkhornDivergenceOperation extends GPUContributorOperation {
   constructor(props: SinkhornDivergenceOperationProps) {
+    validateSinkhornTransportRadiusOption(props.id ?? 'sinkhorn-divergence', props);
+    props = {
+      ...props,
+      grid: {...props.grid},
+      output: {...props.output, status: {...props.output.status}}
+    };
     const outputs: Record<string, GPUContributorOperationOutput> = {
       divergence: {value: props.output.divergence, format: 'float32', length: 1}
     };

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getRefinementEmptyNodes} from './refinement-empty-nodes';
+
+import {validateRefinementOutputLength} from './refinement-output-validation';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
 import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
@@ -45,21 +48,33 @@ export class GPUNormalizePolygons implements GPUCommandNodeProducer {
   readonly props: GPUNormalizePolygonsProps;
   constructor(props: GPUNormalizePolygonsProps) {
     this.id = props.id ?? 'normalize-polygons';
+    props = {...props, output: {...props.output}};
     this.props = props;
-    validateSinglePackedView(props.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`, {
+      id: this.id,
+      contributor: 'GPUNormalizePolygons'
+    });
     for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
-      validateSinglePackedView(props[name], ['uint32'], this.id);
-      validateCapacity(this.id, name, props[name].length, 2);
+      validateSinglePackedView(props[name], ['uint32'], `${this.id} ${name}`, {
+        id: this.id,
+        contributor: 'GPUNormalizePolygons'
+      });
+      validateCapacity(this.id, name, props[name].length, 1);
     }
     for (const name of ['positions', 'ringOffsets', 'polygonOffsets'] as const) {
       validateSinglePackedView(
         props.output[name],
         [name === 'positions' ? 'float32x2' : 'uint32'],
-        this.id
+        `${this.id} output.${name}`,
+        {id: this.id, contributor: 'GPUNormalizePolygons'}
       );
-      if (props.output[name].length !== props[name].length) {
-        throw new Error('Canonical output length mismatch');
-      }
+      validateRefinementOutputLength(
+        {id: this.id, contributor: 'GPUNormalizePolygons'},
+        `output.${name}`,
+        props.output[name],
+        props[name].length,
+        `${name}.length`
+      );
     }
     validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
@@ -73,6 +88,7 @@ export class GPUNormalizePolygons implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    if (props.positions.length === 0) return this.getEmptyPositionNodes(graph);
     validateGraphChunkBindingRanges(
       graph,
       id,
@@ -266,6 +282,69 @@ for (var slot = 0u; slot < lastPolygon - firstPolygon; slot++) {
 if (index == ${props.featureOffsets.length - 2}u) {
   outPolygonOffsets[outPolygonOffsetsOffset + lastPolygon] = destinationRing;
   outRingOffsets[outRingOffsetsOffset + destinationRing] = destinationVertex;
+}`
+      })
+    ];
+  }
+
+  /**
+   * Without positions every declared ring is empty, so every output ring offset is zero and all
+   * rings compare equal. Parts still rank as on the regular route: more rings first, then input
+   * order. Only offset tables are bound, so zero-row position views need no backing.
+   */
+  private getEmptyPositionNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {props, id} = this;
+    const fill = getRefinementEmptyNodes(graph, id, 'GPUNormalizePolygons', {
+      ringOffsets: {view: props.output.ringOffsets, value: 0},
+      ...(props.featureOffsets.length === 1
+        ? {polygonOffsets: {view: props.output.polygonOffsets, value: 0}}
+        : {})
+    });
+    if (props.featureOffsets.length === 1) return fill;
+    validateGraphChunkBindingRanges(graph, id, {
+      polygonOffsets: props.polygonOffsets,
+      featureOffsets: props.featureOffsets,
+      'output.polygonOffsets': props.output.polygonOffsets
+    });
+    return [
+      ...fill,
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-empty-parts`,
+        operation: 'GPUNormalizePolygons',
+        variant: 'empty-parts',
+        invocationCount: props.featureOffsets.length - 1,
+        bindings: [
+          {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
+          {name: 'featureOffsets', view: props.featureOffsets, type: 'u32', access: 'read'},
+          {
+            name: 'outPolygonOffsets',
+            view: props.output.polygonOffsets,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        declarations: `fn ringCount(polygon: u32) -> u32 {
+  return polygonOffsets[polygonOffsetsOffset + polygon + 1u] - polygonOffsets[polygonOffsetsOffset + polygon];
+}`,
+        body: `let firstPolygon = featureOffsets[featureOffsetsOffset + index];
+let lastPolygon = featureOffsets[featureOffsetsOffset + index + 1u];
+var destinationRing = polygonOffsets[polygonOffsetsOffset + firstPolygon];
+for (var slot = 0u; slot < lastPolygon - firstPolygon; slot++) {
+  var polygon = firstPolygon;
+  for (var candidate = firstPolygon; candidate < lastPolygon; candidate++) {
+    var rank = 0u;
+    for (var other = firstPolygon; other < lastPolygon; other++) {
+      if (ringCount(other) > ringCount(candidate) || (ringCount(other) == ringCount(candidate) && other < candidate)) { rank++; }
+    }
+    if (rank == slot) { polygon = candidate; break; }
+  }
+  outPolygonOffsets[outPolygonOffsetsOffset + firstPolygon + slot] = destinationRing;
+  destinationRing += ringCount(polygon);
+}
+if (index == ${props.featureOffsets.length - 2}u) {
+  outPolygonOffsets[outPolygonOffsetsOffset + lastPolygon] = destinationRing;
 }`
       })
     ];

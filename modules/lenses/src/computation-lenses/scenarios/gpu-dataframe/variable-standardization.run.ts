@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {runExample} from './variable-standardization.example';
 import {
@@ -12,9 +13,9 @@ import {
 } from './dataframe-lens-support';
 
 /** Executes the GPU recipe and captures GPU-written normalized values for the lens. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-tracts');
+  const dataset = await loadDataFrameLensData('f-chicago-tracts', options?.datasetResolver);
   const graph = createDataFrameLensGraph<undefined>(
     device,
     'gpu-dataframe-variable-standardization'

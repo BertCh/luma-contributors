@@ -49,21 +49,26 @@ for (const searchStructure of STRUCTURES) {
     const cases: {
       label: string;
       mode: 'knn' | 'radius';
-      k?: number;
+      neighborCount?: number;
       parameters: GPUNeighborSearchSettings;
     }[] = [
-      {label: 'knn 1', mode: 'knn', k: 1, parameters: {bounds: BOUNDS}},
-      {label: 'knn 7', mode: 'knn', k: 7, parameters: {bounds: BOUNDS}},
-      {label: 'knn 7 within radius', mode: 'knn', k: 7, parameters: {bounds: BOUNDS, radius: 9}},
-      {label: 'radius 6', mode: 'radius', parameters: {bounds: BOUNDS, radius: 6}},
-      {label: 'radius 40', mode: 'radius', parameters: {bounds: BOUNDS, radius: 40}}
+      {label: 'knn 1', mode: 'knn', neighborCount: 1, parameters: {bounds: BOUNDS}},
+      {label: 'knn 7', mode: 'knn', neighborCount: 7, parameters: {bounds: BOUNDS}},
+      {
+        label: 'knn 7 within radius',
+        mode: 'knn',
+        neighborCount: 7,
+        parameters: {bounds: BOUNDS, maximumDistance: 9}
+      },
+      {label: 'radius 6', mode: 'radius', parameters: {bounds: BOUNDS, searchRadius: 6}},
+      {label: 'radius 40', mode: 'radius', parameters: {bounds: BOUNDS, searchRadius: 40}}
     ];
-    for (const {label, mode, k, parameters} of cases) {
-      const input = {mode, k, positions, queryPositions, parameters} as const;
+    for (const {label, mode, neighborCount, parameters} of cases) {
+      const input = {mode, neighborCount, positions, queryPositions, parameters} as const;
       const oracle = computeNeighborSearchOracle(input);
       const harness = createNeighborSearchHarness(device, {
         mode,
-        k,
+        neighborCount,
         positions,
         queryPositions,
         capacity: Math.max(oracle.neighbors.length, 1),
@@ -78,7 +83,7 @@ for (const searchStructure of STRUCTURES) {
         query => oracle.counts[query] > 0
       ).length;
       expect(outsideWithNeighbors, `${name} reference has outside rows`).toBeGreaterThan(
-        mode === 'knn' && parameters.radius === undefined ? 7 : 3
+        mode === 'knn' && parameters.maximumDistance === undefined ? 7 : 3
       );
       expect(result.overflow, `${name} overflow`).toBe(0);
       expect(result.offsets, `${name} offsets`).toEqual(oracle.offsets);
@@ -102,7 +107,7 @@ it('GPUNeighborSearch still counts non-finite cross-join queries and out-of-boun
   requireTestDevice(device);
   const harness = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 1,
+    neighborCount: 1,
     positions: new Float32Array([1, 1, 20, 20, 5, 5]),
     queryPositions: new Float32Array([2, 2, NaN, NaN, -30, -30, Infinity, 1]),
     capacity: 8,
@@ -198,7 +203,7 @@ for (const scene of [
         }
         const harness = createNeighborSearchHarness(device, {
           mode,
-          k: mode === 'knn' ? 3 : undefined,
+          neighborCount: mode === 'knn' ? 3 : undefined,
           positions,
           queryPositions: queries,
           queryMask,
@@ -209,7 +214,10 @@ for (const scene of [
             metric: 'great-circle',
             sphereRadius: 1
           },
-          parameters: {bounds: scene.bounds, radius}
+          parameters:
+            mode === 'radius'
+              ? {bounds: scene.bounds, searchRadius: radius}
+              : {bounds: scene.bounds, maximumDistance: radius}
         });
         try {
           const result = await harness.run();
@@ -240,7 +248,7 @@ for (const mode of ['radius', 'knn'] as const) {
     for (const longitude of [0, 36000, -36000, 3600000, -3600000]) {
       const harness = createNeighborSearchHarness(device, {
         mode,
-        k: mode === 'knn' ? 1 : undefined,
+        neighborCount: mode === 'knn' ? 1 : undefined,
         positions: Float32Array.from([0, 0]),
         queryPositions: Float32Array.from([longitude, 0]),
         gridSize: [64, 64],
@@ -250,7 +258,10 @@ for (const mode of ['radius', 'knn'] as const) {
           metric: 'great-circle',
           sphereRadius: 1
         },
-        parameters: {bounds: [-0.01, -0.01, 0.012, 0.01], radius: 5e-6}
+        parameters: {
+          bounds: [-0.01, -0.01, 0.012, 0.01],
+          ...(mode === 'radius' ? {searchRadius: 5e-6} : {maximumDistance: 5e-6})
+        }
       });
       try {
         const result = await harness.run();
@@ -280,7 +291,7 @@ for (const mode of ['radius', 'knn'] as const) {
     for (const longitude of [0, 36000, -36000, 3600000, -3600000]) {
       const harness = createNeighborSearchHarness(device, {
         mode,
-        k: mode === 'knn' ? 1 : undefined,
+        neighborCount: mode === 'knn' ? 1 : undefined,
         positions,
         queryPositions: Float32Array.from([longitude, 0]),
         gridSize: [64, 64],
@@ -290,7 +301,10 @@ for (const mode of ['radius', 'knn'] as const) {
           metric: 'great-circle',
           sphereRadius: 1
         },
-        parameters: {bounds: [-0.01, -0.01, 0.012, 0.01], radius: 2e-5}
+        parameters: {
+          bounds: [-0.01, -0.01, 0.012, 0.01],
+          ...(mode === 'radius' ? {searchRadius: 2e-5} : {maximumDistance: 2e-5})
+        }
       });
       try {
         const result = await harness.run();
@@ -320,7 +334,7 @@ it('great-circle unbounded kNN preserves the nearer target after many longitude 
   const expectedDistance = (positions[2] * Math.PI) / 180;
   const harness = createNeighborSearchHarness(device, {
     mode: 'knn',
-    k: 1,
+    neighborCount: 1,
     positions,
     queryPositions: Float32Array.from(queryLongitudes.flatMap(longitude => [longitude, 0])),
     gridSize: [64, 64],
@@ -365,7 +379,7 @@ it('great-circle outside queries retain clamped CSR offsets and report insuffici
       metric: 'great-circle',
       sphereRadius: 1
     },
-    parameters: {bounds: [-5, -5, 5, 5], radius: 0.3}
+    parameters: {bounds: [-5, -5, 5, 5], searchRadius: 0.3}
   });
   try {
     const result = await harness.run();
@@ -410,24 +424,24 @@ for (const searchStructure of STRUCTURES) {
       1e30, 1e30, -1e30, 25, 25, 3e38, -3e38, -3e38, 1e19, 1e19, 3.4e38, 0
     ]);
     const parameters: GPUNeighborSearchSettings = {bounds: [0, 0, 50, 50]};
-    for (const k of [1, 3]) {
-      const input = {mode: 'knn', k, positions, queryPositions, parameters} as const;
+    for (const neighborCount of [1, 3]) {
+      const input = {mode: 'knn', neighborCount, positions, queryPositions, parameters} as const;
       const oracle = computeNeighborSearchOracle(input);
       const harness = createNeighborSearchHarness(device, {
         mode: 'knn',
-        k,
+        neighborCount,
         positions,
         queryPositions,
-        capacity: (queryPositions.length / 2) * k,
+        capacity: (queryPositions.length / 2) * neighborCount,
         parameters,
         gridSize: [8, 8],
         searchStructure
       });
       const result = await harness.run();
-      expect(result.neighbors, `${searchStructure} k ${k}`).toEqual(oracle.neighbors);
+      expect(result.neighbors, `${searchStructure} k ${neighborCount}`).toEqual(oracle.neighbors);
       expect(result.offsets).toEqual(oracle.offsets);
       expect(result.invalidCount).toBe(0);
-      if (k === 1) {
+      if (neighborCount === 1) {
         // Query 4 at (1e19, 1e19) still has finite squared distances (about 2e38); the others overflow.
         result.distances.forEach((distance, query) => {
           expect(Number.isFinite(distance), `${searchStructure} query ${query}`).toBe(query === 4);
@@ -467,7 +481,7 @@ for (const scene of [
         const included = radius === undefined || radius > expectedDistance;
         const harness = createNeighborSearchHarness(device, {
           mode,
-          k: mode === 'knn' ? 1 : undefined,
+          neighborCount: mode === 'knn' ? 1 : undefined,
           positions: Float32Array.from([scene.targetLongitude ?? 0, 0]),
           queryPositions: Float32Array.from([scene.longitude, 0]),
           gridSize: [64, 64],
@@ -477,7 +491,10 @@ for (const scene of [
             metric: 'great-circle',
             sphereRadius: 1
           },
-          parameters: {bounds: scene.bounds, radius}
+          parameters:
+            mode === 'radius'
+              ? {bounds: scene.bounds, searchRadius: radius}
+              : {bounds: scene.bounds, maximumDistance: radius}
         });
         try {
           const result = await harness.run();

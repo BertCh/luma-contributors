@@ -6,6 +6,7 @@ import {GPU_WGS84_FLATTENING, GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from './earth';
 import {WEB_MERCATOR_EARTH_RADIUS} from '@luma.gl/graph/gpu-project';
 import {validateCapacity, validateRequirement} from '../kernels/gpu-contributor-utils';
 import {getWGSLFloatLiteral} from '../kernels/wgsl-kernel-nodes';
+import {snapshotConstructionFields} from '../kernels/construction-snapshot';
 
 /**
  * How raster and terrain kernels convert grid cell sizes into ground meters per pixel.
@@ -46,15 +47,18 @@ export type RasterGridGeoreference = {
 };
 
 /**
- * The part of `GPURasterMetadata` that georeferences a grid. Declared structurally so that
- * analysis-core does not import the raster entry.
- *
- * @internal
+ * Structural grid contract accepted by analysis-core raster helpers, also satisfied by
+ * `GPURasterMetadata`. The affine maps pixel `(column, row)` to world coordinates as
+ * `x = a * column + b * row + c`, `y = d * column + e * row + f`.
  */
 export type RasterGridAffine = {
+  /** Number of pixel columns. */
   width: number;
+  /** Number of pixel rows. */
   height: number;
+  /** `[a, b, c, d, e, f]` in grid world units; no CRS transformation is implied. */
   affine: readonly [number, number, number, number, number, number];
+  /** Area pixels use corner coordinates; point pixels use center coordinates. */
   pixelInterpretation: 'area' | 'point';
 };
 
@@ -314,7 +318,9 @@ export type GPUResolvedRasterContext = {
   cellSizeMode: GPURasterCellSizeMode;
   localOrigin: readonly [number, number];
   georeference: Required<RasterGridGeoreference>;
-  /** `[originX, originY, a, b, d, e, determinant, 0]`, origins relative to localOrigin. */
+  /** Signed determinant of the declared binary64 affine, for physical cell-area metadata. */
+  affineDeterminant?: number;
+  /** `[originX, originY, a, b, d, e, packedAxesDeterminant, 0]`, origins relative to localOrigin. */
   parameterValues: Float32Array;
 };
 
@@ -328,7 +334,21 @@ export function resolveGPURasterContext(
   id: string,
   options: GPURasterContextOptions
 ): GPUResolvedRasterContext {
-  const {grid} = options;
+  const capturedOptions = snapshotConstructionFields(options, [
+    'grid',
+    'cellSizeMode',
+    'localOrigin'
+  ]);
+  const capturedGrid = snapshotConstructionFields(capturedOptions.grid, [
+    'width',
+    'height',
+    'affine',
+    'pixelInterpretation'
+  ]);
+  const grid: RasterGridAffine = {
+    ...capturedGrid,
+    affine: Object.freeze([...capturedGrid.affine]) as RasterGridAffine['affine']
+  };
   validateCapacity(id, 'grid.width', grid.width, 1);
   validateCapacity(id, 'grid.height', grid.height, 1);
   validateCapacity(id, 'grid cells', grid.width * grid.height, 1);
@@ -342,21 +362,30 @@ export function resolveGPURasterContext(
     ['area', 'point'].includes(grid.pixelInterpretation),
     'grid.pixelInterpretation must be area or point'
   );
-  validateRasterCellSizeMode(id, options.cellSizeMode);
-  const cellSizeMode = options.cellSizeMode ?? 'uniform';
+  validateRasterCellSizeMode(id, capturedOptions.cellSizeMode);
+  const cellSizeMode = capturedOptions.cellSizeMode ?? 'uniform';
   const [columnX, rowX, originX, columnY, rowY, originY] = grid.affine;
   const determinant = columnX * rowY - rowX * columnY;
   validateRequirement(
     id,
     Number.isFinite(determinant) && determinant !== 0,
-    'grid.affine must be invertible (finite nonzero determinant)'
+    `grid.affine must be invertible (finite nonzero determinant), received determinant ${determinant}`,
+    {
+      code: 'REQUIREMENT',
+      path: 'grid.affine',
+      received: grid.affine,
+      expected: 'finite nonzero determinant'
+    }
   );
   validateRequirement(
     id,
     cellSizeMode === 'uniform' || (rowX === 0 && columnY === 0),
     'grid.affine must be axis-aligned for geographic or web-mercator cellSizeMode'
   );
-  const localOrigin = options.localOrigin ?? [0, 0];
+  const localOrigin = Object.freeze([...(capturedOptions.localOrigin ?? [0, 0])]) as readonly [
+    number,
+    number
+  ];
   validateRequirement(
     id,
     localOrigin.length === 2 && localOrigin.every(Number.isFinite),
@@ -372,10 +401,11 @@ export function resolveGPURasterContext(
     determinant,
     0
   );
-  // A separately rounded float64 determinant can stay nonzero after the packed axes collapse.
-  // Check those coefficients too, while preserving the existing determinant word's precision.
+  // Inversion must use the determinant of the axes it actually reads. Keep the original affine
+  // determinant separately for physical area, rather than mixing binary64 and packed geometry.
   const packedDeterminant =
     parameterValues[2] * parameterValues[5] - parameterValues[3] * parameterValues[4];
+  parameterValues[6] = packedDeterminant;
   validateRequirement(
     id,
     parameterValues.every(Number.isFinite) && parameterValues[6] !== 0 && packedDeterminant !== 0,
@@ -386,6 +416,7 @@ export function resolveGPURasterContext(
     cellSizeMode,
     localOrigin,
     georeference: getRasterGridGeoreference(grid),
+    affineDeterminant: determinant,
     parameterValues
   };
 }

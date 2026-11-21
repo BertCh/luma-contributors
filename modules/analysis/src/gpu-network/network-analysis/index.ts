@@ -5,9 +5,14 @@
 export {
   GPU_NETWORK_PATH_MAXIMUM_LENGTH,
   GPU_NETWORK_PATH_NO_EDGE,
+  decodeGPUNetworkPathExtractionOutput,
   GPUNetworkPathExtraction
 } from './gpu-network-path-extraction';
 export type {
+  NetworkPathExtractionCompactOutput,
+  NetworkPathReadbackWords,
+  NetworkPathReadbackInput,
+  NetworkPathReadbackPath,
   GPUNetworkPathExtractionEdges,
   GPUNetworkPathExtractionOutput,
   GPUNetworkPathExtractionProps
@@ -30,11 +35,13 @@ export type {
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {
+  MAXIMUM_PATH_OUTPUT_ROW_COUNT,
   computeNetworkPathExtractionOnCPU,
   CPUNetworkPathExtractionOperation
 } from './cpu-network-path-extraction-operation';
 export type {
   CPUNetworkPathExtractionInput,
+  CPUNetworkPathExtractionOperationProps,
   CPUNetworkPathExtractionCompactResult,
   CPUNetworkPathExtractionResult
 } from './cpu-network-path-extraction-operation';
@@ -51,6 +58,7 @@ export {
 } from './cpu-network-service-areas-operation';
 export type {
   CPUNetworkServiceAreasInput,
+  CPUNetworkServiceAreasOptions,
   CPUNetworkServiceAreasResult
 } from './cpu-network-service-areas-operation';
 export {GPUNetworkServiceAreasOperation} from './gpu-network-service-areas-operation';

@@ -10,7 +10,11 @@ export {addIsovistsRecipe, getGPUIsovistRayCount} from './isovists';
 export type {GPUIsovistsOutput, GPUIsovistsProps} from './isovists';
 export {addVisibilityGraphRecipe} from './visibility-graph';
 export type {GPUVisibilityGraphOutput, GPUVisibilityGraphProps} from './visibility-graph';
-export {addBuildingTessellationRecipe} from './building-tessellation';
+export {
+  addBuildingTessellationRecipe,
+  addBuildingTessellationReferenceRecipe
+} from './building-tessellation';
+export {addLocalBuildingTessellationRecipe} from './building-tessellation-local';
 export type {
   GPUBuildingTessellationOutput,
   GPUBuildingTessellationProps
@@ -31,6 +35,7 @@ export type {
 } from './building-tessellation';
 export {
   getGPUVisibilityGraphCSRParameterValues,
+  decodeGPUVisibilityGraphAdjacencyCSRStatus,
   GPU_VISIBILITY_GRAPH_CSR_PARAMETER_LENGTH,
   VISIBILITY_GRAPH_CSR_MAXIMUM_POINT_COUNT,
   VISIBILITY_GRAPH_CSR_MAXIMUM_EDGE_CAPACITY,
@@ -39,8 +44,8 @@ export {
   VISIBILITY_GRAPH_CSR_MAXIMUM_QUERY_CHUNK_COUNT
 } from './visibility-graph-csr';
 export type {
-  GPUVisibilityGraphCSRProps,
-  GPUVisibilityGraphCSROutput,
-  GPUVisibilityGraphCSRStatus
+  GPUVisibilityGraphAdjacencyCSRProps,
+  GPUVisibilityGraphAdjacencyCSROutput,
+  GPUVisibilityGraphAdjacencyCSRStatus
 } from './visibility-graph-csr';
 export {VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE} from './visibility-graph-csr';

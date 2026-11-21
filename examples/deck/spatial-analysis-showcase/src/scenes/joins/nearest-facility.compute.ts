@@ -5,6 +5,7 @@
 import {getWebMercatorMetersPerPixel} from '../../engine/web-mercator';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {
   GPUNearestFeatureJoin,
   GPUNearestFeatureWeights,
@@ -57,7 +58,7 @@ export type NearestFacilityOptions = {
   radius: number;
   maxDistance: number;
   kShown: number;
-  ties: 'lowest-id' | 'all';
+  ties: 'lowest-row' | 'all';
   spatialSort: boolean;
   weightK: number;
   weightType: 'binary' | 'inverse-distance';
@@ -119,6 +120,11 @@ type Variant = {
 export async function createNearestFacility(
   ctx: SceneContext<NearestFacilityOptions>
 ): Promise<SceneInstance<NearestFacilityOptions>> {
+  validateRequirement(
+    'nearest-facility',
+    (ctx.options.ties as unknown) !== 'lowest-id',
+    "ties 'lowest-id' was renamed; use 'lowest-row'"
+  );
   const {device} = ctx;
   const placesData = ctx.datasets.get('chicago-places');
   const facilitiesData = ctx.datasets.get('chicago-facilities');
@@ -297,6 +303,7 @@ export async function createNearestFacility(
   // --- state -----------------------------------------------------------------------------------
   let destroyed = false;
   let variant: Variant;
+  let nearestComplete = false;
   let dirty = true;
   let settle = 0;
   let measuring = false;
@@ -515,7 +522,7 @@ export async function createNearestFacility(
           id: 'neighbors',
           queries: {kind: 'points', positions: places},
           features,
-          k: NEIGHBOR_CAPACITY,
+          neighborCount: NEIGHBOR_CAPACITY,
           neighborCapacity: capacity,
           ties: state.ties,
           radius: limit.importToGraph(graph),
@@ -614,7 +621,7 @@ export async function createNearestFacility(
           id: 'weights-join',
           queries: {kind: 'points', positions: featuresView},
           features: {kind: 'points', positions: featuresView},
-          k: capacity,
+          neighborCount: capacity,
           output: {
             neighborIds: neighborIdsView,
             neighborRows: neighborRowsView,
@@ -633,7 +640,7 @@ export async function createNearestFacility(
           neighborCounts: neighborCountsView,
           neighborDistances: neighborDistancesView,
           slotCapacity: capacity,
-          k,
+          neighborCount: k,
           excludeSelf: true,
           weightType: state.weightType,
           power: state.weightPower,
@@ -834,6 +841,24 @@ export async function createNearestFacility(
       ctx.setReadout('overflow', new Uint32Array(bytes, 0, 1)[0] ? 'YES (capacity)' : 'no');
       return;
     }
+    const featureRows =
+      source.mode === 'nearest'
+        ? Math.max(
+            source.set.kind === 'lines' ? source.set.lines!.segments.length / 4 : source.set.count,
+            1
+          )
+        : 0;
+    const aggregateOverflow = new Uint32Array(bytes, (placeCount + featureRows) * 4, 1)[0];
+    nearestComplete = aggregateOverflow === 0;
+    if (!nearestComplete) {
+      displayDistances = new Float32Array(placeCount).fill(Number.NaN);
+      catchmentCounts = new Uint32Array(0);
+      for (const key of ['matched', 'median', 'walkable', 'catchment'])
+        ctx.setReadout(key, 'unavailable: incomplete nearest assignment');
+      ctx.setReadout('overflow', 'YES (capacity)');
+      ctx.requestLayers();
+      return;
+    }
     const distances = new Float32Array(bytes, 0, placeCount);
     displayDistances = Float32Array.from(distances);
     let shown = 0;
@@ -947,6 +972,7 @@ export async function createNearestFacility(
   function commitVariant(next: Variant, state: NearestFacilityOptions): void {
     const previous = variant;
     variant = next;
+    nearestComplete = false;
     dirty = true;
     tractCandidateFlags = state.mode === 'candidates' ? tractCandidateFlags : false;
     if (previous) {
@@ -1124,6 +1150,8 @@ export async function createNearestFacility(
     },
 
     getLayers() {
+      if ((variant.mode === 'nearest' || variant.mode === 'neighbors') && !nearestComplete)
+        return [];
       const state = ctx.options;
       const set = variant.set;
       const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
@@ -1287,6 +1315,8 @@ export async function createNearestFacility(
     },
 
     getTooltip(event) {
+      if ((variant.mode === 'nearest' || variant.mode === 'neighbors') && !nearestComplete)
+        return null;
       if (!event.coordinate) return null;
       const [x, y] = projection.project(event.coordinate[0], event.coordinate[1]);
       const set = variant.set;

@@ -94,7 +94,7 @@ export default defineOperationRun({
       update: values =>
         parameterBuffer.write(
           getGPUNetworkLineGraphParameterValues({
-            angleCost: values.angleCost,
+            turnCostPerRadian: values.turnCostPerRadian,
             leftTurnCost: values.leftTurnCost,
             rightTurnCost: values.rightTurnCost
           })
@@ -108,7 +108,7 @@ export default defineOperationRun({
     x: 'leftTurnCost',
     y: 'rightTurnCost',
     decorate: current => ({
-      readout: `left ${current.leftTurnCost.toFixed(2)} · right ${current.rightTurnCost.toFixed(2)} · angle ${current.angleCost.toFixed(2)}`
+      readout: `left ${current.leftTurnCost.toFixed(2)} · right ${current.rightTurnCost.toFixed(2)} · angle ${current.turnCostPerRadian.toFixed(2)}`
     })
   }),
   draw: ({outputs, theme}) => [

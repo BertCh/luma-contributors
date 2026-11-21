@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../raster-grid/raster-construction-snapshot';
+
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
@@ -84,7 +87,8 @@ export type GPULineIntegralConvolutionProps = {
  * The first node fills a `width x height` white-noise raster with
  * `philox((column, row, 0, 0), (seed, 1)).x`. The second traces, from each pixel centre, `L` RK2
  * midpoint steps forward and `L` backward along the normalised field, stopping at the field or
- * output edge, at NaN data, or where the speed is zero or below `minimumSpeed`. One step is the
+ * output edge, at NaN data, or where the speed is zero or below `minimumSpeed`. Every landing
+ * must have usable velocity support before its noise sample is accumulated. One step is the
  * unit world direction `d` times the scalar `stepLength / |(d.x / cellWidth, d.y / cellHeight)|`:
  * it is tangent to the field in world space and `stepLength` output pixels long, also when the
  * output cells are not square. The value is the weighted mean of the noise at the visited pixels with a
@@ -98,12 +102,16 @@ export type GPULineIntegralConvolutionProps = {
  * adapter. Across adapters, `cos` and `normalize` rounding can move a sample into a neighbouring
  * pixel near a pixel edge.
  *
+ * Integration stays in output-cell coordinates. The packer optionally subtracts localOrigin
+ * in binary64 (use the output origin) before narrowing placement origins. A landing contributes only
+ * after it has usable field support, nonzero speed and an in-bounds output pixel.
+ *
  * Row direction: with positive cellHeight, the field and output row-zero centers lie half a cell above originY and
  * rows advance toward larger y; `v` is the velocity toward larger y. Each lattice uses its own
  * signed cell sizes, which explicitly set index direction; the origin is an outer corner. No grid affine is read and
- * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
- * must have its row order reversed by the caller before upload, or the flow is mirrored north to
- * south. Following a grid affine is deferred (roadmap 12.4).
+ * nothing is checked at construction. A north-up field (row 0 at the top) can be uploaded as is
+ * with a top-edge origin and negative cellHeight. Callers choosing positive cellHeight must
+ * reverse those rows and use a bottom-edge origin. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
   /** Prefix for graph node and transient IDs. */
@@ -114,6 +122,22 @@ export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
   readonly props: Readonly<GPULineIntegralConvolutionProps>;
 
   constructor(props: GPULineIntegralConvolutionProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'velocities',
+      'fieldWidth',
+      'fieldHeight',
+      'grid',
+      'stepCount',
+      'parameters',
+      'uint32Parameters',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      output: snapshotConstructionFields(props.output, ['values', 'speeds', 'texture'])
+    });
     const id = props.id ?? 'line-integral-convolution';
     for (const [name, value] of [
       ['fieldWidth', props.fieldWidth],
@@ -209,7 +233,8 @@ export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
     }
     const pixelCount = width * height;
     const noise = createTransientView(graph, `${id}-noise`, 'float32', pixelCount);
-    const nodes: GPUCommandNode<Parameters>[] = [
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-noise`,
         operation: OPERATION,
@@ -232,7 +257,7 @@ const WIDTH: u32 = ${width}u;`,
     philox4x32(counter, vec2<u32>(seed, ${LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE}u)).x
   );`
       })
-    ];
+    );
     const bindings: WGSLKernelBinding[] = [
       {
         name: 'velocities',
@@ -285,7 +310,9 @@ fn getWeight(signedStep: f32, phase: f32, period: f32) -> f32 {
 }
 // Unit flow direction times sign, or (0, 0, 0) where the trace must stop.
 fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32, minimumSpeed: f32) -> vec3<f32> {
-  let sample = sampleField(position, fieldExtent);
+  let cell = vec2<f32>(readParameter(6u), readParameter(7u));
+  let origin = vec2<f32>(readParameter(4u), readParameter(5u));
+  let sample = sampleField(position * cell, vec4<f32>(fieldExtent.xy - origin, fieldExtent.zw));
   if (sample.z == 0.0) {
     return vec3<f32>(0.0);
   }
@@ -295,11 +322,11 @@ fn getDirection(position: vec2<f32>, fieldExtent: vec4<f32>, directionSign: f32,
   }
   return vec3<f32>(directionSign * sample.xy / speed, 1.0);
 }
-// World displacement of one step along the unit world direction: one positive scalar times the
-// direction, chosen so the step is stepLength output pixels long. Scaling each axis by its own
-// cell size instead would bend the trace away from the field on non-square cells.
+// Output-cell displacement of a world direction, normalized in pixel space. Mapping back by
+// the signed cell size preserves the world direction even for non-square or north-up cells.
 fn getStepVector(direction: vec2<f32>, cell: vec2<f32>, stepLength: f32) -> vec2<f32> {
-  return direction * (stepLength / length(direction / cell));
+  let pixelDirection = direction / cell;
+  return pixelDirection * (stepLength / length(pixelDirection));
 }`,
         body: /* wgsl */ `
   let fieldExtent = vec4<f32>(readParameter(0u), readParameter(1u), readParameter(2u), readParameter(3u));
@@ -311,8 +338,9 @@ fn getStepVector(direction: vec2<f32>, cell: vec2<f32>, stepLength: f32) -> vec2
   let period = readParameter(11u);
   let column = index % WIDTH;
   let row = index / WIDTH;
-  let centre = origin + (vec2<f32>(f32(column), f32(row)) + vec2<f32>(0.5)) * cell;
-  let centreSample = sampleField(centre, fieldExtent);
+  // Integration state is in output-cell coordinates, including on the legacy packed route.
+  let centre = vec2<f32>(f32(column), f32(row)) + vec2<f32>(0.5);
+  let centreSample = sampleField(centre * cell, vec4<f32>(fieldExtent.xy - origin, fieldExtent.zw));
   if (centreSample.z == 0.0) {
     var nanBits = 0x7fc00000u;
     values[valuesOffset + index] = bitcast<f32>(nanBits);
@@ -335,7 +363,10 @@ fn getStepVector(direction: vec2<f32>, cell: vec2<f32>, stepLength: f32) -> vec2
         break;
       }
       position = position + getStepVector(middle.xy, cell, stepLength);
-      let pixel = floor((position - origin) / cell);
+      if (getDirection(position, fieldExtent, directionSign, minimumSpeed).z == 0.0) {
+        break;
+      }
+      let pixel = floor(position);
       if (pixel.x < 0.0 || pixel.y < 0.0 || pixel.x >= f32(WIDTH) || pixel.y >= f32(HEIGHT)) {
         break;
       }

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateLocationChangeShape,
+  validateLocationChangeOperationPorts
+} from './change-point-shape';
+import {snapshotChangePointProps} from './change-point-construction';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import type {GPUSpaceTimeWeightsLayout} from '../spatial-weights/spatial-weights-space-time-stages';
 import {
@@ -28,9 +33,13 @@ export type LocationChangePointsOperationProps = {
   };
 };
 
-/** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
+/** Vector operation; enforces GPU slice/change capacities at construction. Compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPULocationChangePointsOperation extends GPUContributorOperation {
   constructor(props: LocationChangePointsOperationProps) {
+    props = snapshotChangePointProps(props);
+    const id = props.id ?? 'location-change-points';
+    validateLocationChangeShape(id, props);
+    validateLocationChangeOperationPorts(id, props);
     super({
       id: props.id ?? 'location-change-points',
       inputs: {values: props.values, parameters: props.parameters},

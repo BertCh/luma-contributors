@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotSpatialLagImpactsProps} from './spatial-lag-impacts-snapshot';
 
 import {
   type GPUCommandGraph,
@@ -128,6 +129,7 @@ export class GPUSpatialLagImpacts implements GPUCommandNodeProducer {
   readonly props: GPUSpatialLagImpactsProps;
 
   constructor(props: GPUSpatialLagImpactsProps) {
+    props = snapshotSpatialLagImpactsProps(props);
     const id = props.id ?? 'spatial-lag-impacts';
     this.id = id;
     this.props = props;

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, expectTypeOf, it} from 'vitest';
+import {AnalysisValidationError} from '../../../src/analysis-core/kernels/analysis-validation-error';
 import {
   validateGPUStatusPort,
   type GPULonLatPolygonStatusPort,
@@ -34,11 +35,25 @@ describe('longitude-latitude polygon status contract', () => {
   });
 
   it('rejects a float32 pole uncertainty count with the exact diagnostic', () => {
-    expect(() =>
+    let failure: unknown;
+    try {
       validateGPUStatusPort('X', {
         antimeridianUncertainCount: createStatusScalar('uint32'),
         poleUncertainCount: createStatusScalar('float32')
-      })
-    ).toThrowError(new Error('X poleUncertainCount must contain one uint32 row'));
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AnalysisValidationError);
+    expect(failure).toMatchObject({
+      name: 'AnalysisValidationError',
+      message: 'X poleUncertainCount must contain one uint32 row',
+      id: 'X',
+      contributor: 'X',
+      code: 'REQUIREMENT',
+      path: 'poleUncertainCount',
+      received: {format: 'float32', length: 1},
+      expected: {format: 'uint32', length: 1}
+    });
   });
 });

@@ -19,7 +19,7 @@ function makeContributor(
   const contributor = new GPUMultivariateLocalGearyPermutationTest({
     values: view('float32', rows * 3),
     variableCount: 3,
-    maximumPermutations: 500,
+    permutationCount: 500,
     weights: {
       offsets: view('uint32', rows + 1),
       neighbors: view('uint32', rows * 4),
@@ -27,7 +27,7 @@ function makeContributor(
     },
     output: {
       statistic: view('float32', rows),
-      pValues: view('float32', rows),
+      pseudoPValues: view('float32', rows),
       classes: view('uint32', rows)
     },
     ...options
@@ -38,7 +38,7 @@ function makeContributor(
 it('multivariate Geary selects the tiled strategy above 256 rows or 4096 permutations', () => {
   const small = makeContributor(256);
   const large = makeContributor(257);
-  const many = makeContributor(10, {maximumPermutations: 9999});
+  const many = makeContributor(10, {permutationCount: 9999});
   try {
     expect(small.contributor.getStrategy()).toBe('exact');
     expect(large.contributor.getStrategy()).toBe('tiled');
@@ -62,10 +62,29 @@ it('multivariate Geary tiled strategy tiles rows and permutations', () => {
   }
 });
 
+it('multivariate Geary admits tiled Bonferroni near the command node limit', () => {
+  const {device, graph, contributor} = makeContributor(255, {
+    strategy: 'tiled',
+    correction: 'bonferroni',
+    permutationCount: 125,
+    rowTileSize: 1,
+    permutationTileSize: 1
+  });
+  try {
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.filter(node => node.id.includes('-simulate-'))).toHaveLength(255 * 125);
+    expect(nodes).toHaveLength(32149);
+    expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    expect(contributor.estimatedCommandNodeCount).toBeLessThanOrEqual(32768);
+  } finally {
+    device.destroy();
+  }
+});
+
 it('multivariate Geary tiled strategy validates capacity and refuses simulations', () => {
   const context = makeContributor(10);
   try {
-    expect(() => makeContributor(300, {maximumPermutations: 10000})).toThrow();
+    expect(() => makeContributor(300, {permutationCount: 10000})).toThrow();
     expect(() => makeContributor(300, {maximumNeighbors: 129})).toThrow();
     expect(() => makeContributor(300, {strategy: 'exact'})).toThrow();
     const {view} = context;
@@ -73,7 +92,7 @@ it('multivariate Geary tiled strategy validates capacity and refuses simulations
       makeContributor(300, {
         output: {
           statistic: view('float32', 300),
-          pValues: view('float32', 300),
+          pseudoPValues: view('float32', 300),
           classes: view('uint32', 300),
           simulations: view('float32', 300 * 500)
         }

@@ -8,6 +8,13 @@ It composes shared `GPUReduction` passes and elementwise WGSL. It never submits,
 or computes statistics on the CPU. Add it to a `GPUCommandGraph` and compile/encode normally.
 
 ```typescript
+import {createTransientView, type GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUVariableStandardization} from '@luma-contributors/analysis/dataframe-analysis';
+
+declare const graph: GPUCommandGraph;
+declare const values: GraphDataView<'float32'>; // finite values in the source variable's unit
+declare const mask: GraphDataView<'uint32'>; // same row count; nonzero includes a row
+const output = createTransientView(graph, 'standardized', 'float32', values.length);
 const recipe = new GPUVariableStandardization({
   values, // GraphDataView<'float32'> or GraphVectorView<'float32'>
   mask, // optional uint32 view/vector: nonzero includes a row

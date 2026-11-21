@@ -63,7 +63,7 @@ it('clamps terminal offsets and evaluates a stationary unit-variance Gaussian', 
   expect(Array.from(result.density)).toEqual([Math.fround(1 / (2 * Math.PI))]);
 });
 
-it('accepts fewer than two fixes in the pure function and retains the graph minimum of two', () => {
+it('accepts fewer than two fixes in both the pure function and named form', () => {
   for (const rowCount of [0, 1]) {
     const result = computeBrownianBridgeUtilizationOnCPU(
       {
@@ -90,7 +90,7 @@ it('accepts fewer than two fixes in the pure function and retains the graph mini
           gridSize: [1, 1],
           output: {density: 'density'}
         })
-    ).toThrow(/rowCount/);
+    ).not.toThrow();
   }
 });
 

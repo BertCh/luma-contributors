@@ -92,3 +92,29 @@ it('retains explicit reference limits on the expanded shape and rejects unrepres
     })
   ).toThrow(/costs/);
 });
+
+it('rejects short, sparse and missing edge rows before packing aligned capacities', () => {
+  for (const edges of [[[1]], [[0, ,]], [, [0, 1]]]) {
+    expect(() =>
+      prepareGPUNetworkFlowDemands({
+        nodeCount: 2,
+        edges: edges as unknown as [number, number][],
+        capacities: edges.map(() => 8),
+        demands: [0, 0]
+      })
+    ).toThrow(/edges\[0\].*\[source, target\]/);
+  }
+  const result = prepareGPUNetworkFlowDemands({
+    nodeCount: 2,
+    edges: [
+      [1, 1],
+      [0, 1]
+    ],
+    capacities: [3, 8],
+    costs: [2, 4],
+    demands: [0, 0]
+  });
+  expect(Array.from(result.edges)).toEqual([1, 1, 0, 1]);
+  expect(Array.from(result.capacities)).toEqual([3, 8]);
+  expect(Array.from(result.costs!)).toEqual([2, 4]);
+});

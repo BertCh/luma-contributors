@@ -57,10 +57,24 @@ it('review D-13: layout validation and the line and point layouts', () => {
         ...base,
         geometryType: 'polygons',
         ringOffsets: view('ring-offsets', 'uint32', 3),
-        polygonOffsets: view('polygon-offsets-short', 'uint32', 1),
+        // A single terminal offset is valid; an absent terminal is malformed.
+        polygonOffsets: view('polygon-offsets-short', 'uint32', 0),
+        output: {lengths: view('negative-lengths', 'float32', 1)},
         featureOffsets: view('feature-offsets', 'uint32', 2)
       })
-  ).toThrow(/polygonOffsets must contain at least two rows/);
+  ).toThrow(/polygonOffsets must contain at least 1 rows/);
+  // One terminal offset describes zero polygons/rings inside one empty feature.
+  expect(
+    () =>
+      new GPUGeometryMeasures({
+        ...base,
+        geometryType: 'polygons',
+        ringOffsets: view('empty-ring-offsets', 'uint32', 1),
+        polygonOffsets: view('empty-polygon-offsets', 'uint32', 1),
+        featureOffsets: view('empty-feature-offsets', 'uint32', 2),
+        output: {lengths: view('empty-lengths', 'float32', 1)}
+      })
+  ).not.toThrow();
   // Multi-lines: two lines in the first feature, one in the second.
   const lines = new GPUGeometryMeasures({
     ...base,

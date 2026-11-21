@@ -1,6 +1,9 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {getOrderedPairMassNodes} from '../permutation-inference/ordered-pair-mass';
+import {getGeneralGProductMomentNodes} from './general-g-product-moments';
+import {getGearyPairDeviationNodes} from './geary-pair-deviations';
 
 import {Buffer} from '@luma.gl/core';
 import {
@@ -29,7 +32,10 @@ import {
 import {isGPUSpatialWeightsRowStandardized} from '../spatial-weights/spatial-weights';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import type {GPUGlobalSpatialStatisticsProps} from './gpu-global-spatial-statistics';
-import {getGlobalSpatialStatisticsStatusNodes} from './global-spatial-statistics-status';
+import {
+  getGlobalSpatialStatisticsStatusNodes,
+  getGlobalSpatialStatisticsInvalidCountNodes
+} from './global-spatial-statistics-status';
 
 /** A tile bounds serial sums to sixteen values per lane before a compensated binary tree. */
 const TILE_ROWS = 4096;
@@ -58,7 +64,8 @@ export function getTiledGlobalSpatialStatisticsNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUGlobalSpatialStatisticsProps,
   finalizeDeclarations: string,
-  finalizeBody: string
+  finalizeBody: string,
+  pValueDeclarations: string
 ): readonly GPUCommandNode<Parameters>[] {
   const id = props.id ?? 'global-spatial-statistics';
   const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
@@ -693,6 +700,40 @@ columnOffsets[columnOffsetsOffset + index] = low;`
       [bind('counters', control), bind('counts', exact, 'read_write')],
       'counts[countsOffset] = counters[countersOffset]; counts[countsOffset + 1u] = counters[countersOffset + 9u]; counts[countsOffset + 2u] = counters[countersOffset + 10u];'
     );
+  nodes.push(...getGlobalSpatialStatisticsInvalidCountNodes<Parameters>(graph, props, control));
+  if (props.statistics.includes('getisOrdG'))
+    nodes.push(
+      ...getOrderedPairMassNodes<Parameters>(graph, {
+        id: `${id}-g-pair-mass`,
+        operation: 'GPUGlobalSpatialStatistics',
+        rows,
+        bindings: [
+          bind('values', values),
+          bind('analysisStates', analysisStates),
+          bind('counters', control)
+        ],
+        value:
+          'select(0.0, values[valuesOffset + index] * bitcast<f32>(counters[countersOffset + 5u]), analysisStates[analysisStatesOffset + index] != 0u)',
+        destination: bind('counters', control, 'read_write'),
+        write: 'counters[countersOffset + 28u] = bitcast<u32>(pairMass);'
+      })
+    );
+  if (props.statistics.includes('getisOrdG'))
+    nodes.push(
+      ...getGeneralGProductMomentNodes<Parameters>(graph, {
+        id: `${id}-g-product-moments`,
+        rows,
+        bindings: [
+          bind('values', values),
+          bind('analysisStates', analysisStates),
+          bind('counters', control),
+          bind('totals', totals)
+        ],
+        value:
+          'select(0.0, values[valuesOffset + index] * bitcast<f32>(counters[countersOffset + 5u]), analysisStates[analysisStatesOffset + index] != 0u && bitcast<f32>(counters[countersOffset + 28u]) < (totals[totalsOffset + 6u] + totals[totalsOffset + 7u]) * 0.001)',
+        destination: bind('counters', control, 'read_write')
+      })
+    );
   node(
     'finalize-tiled',
     1,
@@ -708,5 +749,19 @@ columnOffsets[columnOffsetsOffset + index] = low;`
     finalizeBody,
     `${totalDeclarations}\n${finalizeDeclarations}`
   );
+  if (props.statistics.includes('geary'))
+    nodes.push(
+      ...getGearyPairDeviationNodes(graph, {
+        id,
+        weights: props.weights,
+        values,
+        centered: centeredX,
+        centeredStride: 1,
+        rowScale,
+        counters: control,
+        summary: props.output.summary,
+        pValueDeclarations
+      })
+    );
   return nodes;
 }

@@ -4,10 +4,10 @@
 
 import {Buffer, type Device} from '@luma.gl/core';
 import {createTransientView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUKeyJoin} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUKeyLookup} from '@luma-contributors/analysis/dataframe-analysis';
 
 /** Columns the lens scenario reads from `f-chicago-nature.json` and `f-chicago-tracts.json`. */
-export type KeyJoinExampleInput = {
+export type KeyLookupExampleInput = {
   graph: GPUCommandGraph<undefined>;
   observations: {
     /** Tract id of each iNaturalist observation; the left key. */
@@ -18,15 +18,15 @@ export type KeyJoinExampleInput = {
     tract: Uint32Array;
     /** Share of residents below 150% of the poverty line; suppressed estimates are NaN. */
     poverty150Pct: Float32Array;
-    /** 1 when the tract has a poverty estimate; tracts without one are masked out of the join. */
+    /** 1 when the tract has a poverty estimate; tracts without one are masked out of the lookup. */
     hasEstimate: Uint32Array;
   };
 };
 
-/** Left join of tract poverty onto each observation; tracts without an estimate never match. */
+/** Look up tract poverty for each observation; tracts without an estimate never match. */
 export async function runExample(
   device: Device,
-  {graph, observations, tracts}: KeyJoinExampleInput
+  {graph, observations, tracts}: KeyLookupExampleInput
 ) {
   const buffers: Buffer[] = [];
   const importColumn = <Format extends 'float32' | 'uint32'>(
@@ -61,11 +61,11 @@ export async function runExample(
     matched: view('matched', 'uint32', rowCount)
   };
   graph.add(
-    new GPUKeyJoin({
+    new GPUKeyLookup({
       leftKeys,
       rightKeys,
       rightMask,
-      kind: 'left', // 'inner' also compacts the matched row ids
+      compactMatchedLeftRows: false,
       gather: [{column: rightPoverty, output: joinedPoverty}],
       output
     })

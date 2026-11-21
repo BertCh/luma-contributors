@@ -8,6 +8,8 @@ import {cellToChildren, cellToLatLng, getRes0Cells, latLngToCell} from 'h3-js';
 import {describe, expect, it} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {H3_INDEX_WGSL} from '../../../src/gpu-spatial-analysis/cell-indexing/h3-index-wgsl';
+import {S2_INDEX_WGSL} from '../../../src/gpu-spatial-analysis/cell-indexing/cell-index-wgsl';
+import {HEALPIX_INDEX_WGSL} from '../../../src/gpu-spatial-analysis/healpix-cells/healpix-index-wgsl';
 import {
   CELL_INDEX_H3_BASE_CELL_PACKED_TABLE,
   CELL_INDEX_H3_CW_OFFSET_PENTAGON_FACES
@@ -145,6 +147,14 @@ describe('H3_INDEX_WGSL source', () => {
       expect(dggs.source.includes(` ${name}(`) || dggs.source.includes(` ${name}:`), name).toBe(
         false
       );
+    }
+  });
+
+  it('S2 and HEALPix forward sources with the exact degree reduction parse (DGGS-104, DGGS-106)', () => {
+    expect(() => new WgslReflect(S2_INDEX_WGSL)).not.toThrow();
+    expect(() => new WgslReflect(HEALPIX_INDEX_WGSL)).not.toThrow();
+    for (const source of [S2_INDEX_WGSL, H3_INDEX_WGSL, HEALPIX_INDEX_WGSL]) {
+      expect(source).toMatch(/fn cellIndex(S2|H3|Healpix)ReduceDegrees\(degrees: f32\) -> f32/);
     }
   });
 

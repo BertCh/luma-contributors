@@ -22,20 +22,31 @@ import {
 import {resolveGPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
 import {
   GPU_BROWNIAN_BRIDGE_DEFAULT_SUB_STEP_COUNT,
+  resolveBrownianBridgeTailPolicy,
+  type BrownianBridgeTailPolicy,
   GPU_BROWNIAN_BRIDGE_UTILIZATION_PARAMETER_LENGTH
 } from './gpu-brownian-bridge-utilization';
 import {
   GPUBrownianBridgeUtilizationOperation,
   type BrownianBridgeUtilizationOperationProps
 } from './gpu-brownian-bridge-utilization-operation';
+import {
+  getBrownianBridgeCellFixOffset,
+  isBrownianBridgeOutsideCutoff
+} from './brownian-bridge-coordinates';
 
 /** Packed views consumed by the bridge-density computation. */
 export type CPUBrownianBridgeUtilizationInput = CPUTrajectoryRows & {
+  /** Defaults to resident-capacity, preserving the bridge's historical offset clamping. */
+  storage?: CPUTrajectoryRows['storage'];
   motionVariances: Float32Array;
   locationErrors: Float32Array;
   /** Layout of getGPUBrownianBridgeUtilizationParameterValues: extent in float32. */
   parameters: Float32Array;
 };
+
+/** Row-major cell-centre density, with exactly gridSize[0] * gridSize[1] values. */
+export type CPUBrownianBridgeUtilizationResult = {density: Float32Array};
 
 /**
  * Computes time-weighted Gaussian bridge density at each row-major grid cell centre. Positive
@@ -43,13 +54,13 @@ export type CPUBrownianBridgeUtilizationInput = CPUTrajectoryRows & {
  * segments; non-positive durations are skipped. Negative motion variances clamp to zero.
  *
  * What differs from the GPU contributor:
- * - No seven-sigma cutoff: every positive-variance midpoint contributes its full Gaussian tail.
+ * - Omitted tailPolicy keeps the full Gaussian tail (GPU default: truncate-at-seven-sigma).
+ *   Explicit policies agree: truncation skips a segment outside its conservative seven-sigma box.
  * - Arithmetic uses float64 with one float32 output rounding; Int64 differences are exact before
  *   float64 conversion. Comparisons use absolute/relative tolerances, rather than bitwise equality.
  * - Fix-count and subStepCount GPU maxima are dropped. The requested positive integer midpoint
  *   count still defines the integration rule; this does not replace it with continuous quadrature.
- * - The pure function accepts zero or one fix and returns a zero density grid. The CPU graph
- *   operation retains the GPU contributor's minimum of two fixes.
+ * - All forms preserve the requested grid shape for zero or one fix, returning zero density.
  * - Offsets are clamped to the row count, then decreasing offsets throw. The GPU does not
  *   validate ordering; decreasing offsets can produce overlapping track ranges there.
  * - Non-finite motion variances are not defined by the GPU contributor. The twin clamps
@@ -62,10 +73,21 @@ export type CPUBrownianBridgeUtilizationInput = CPUTrajectoryRows & {
  */
 export function computeBrownianBridgeUtilizationOnCPU(
   input: CPUBrownianBridgeUtilizationInput,
-  options: {gridSize: readonly [number, number]; subStepCount?: number}
-): {density: Float32Array} {
+  options: {
+    gridSize: readonly [number, number];
+    subStepCount?: number;
+    tailPolicy?: BrownianBridgeTailPolicy;
+  }
+): CPUBrownianBridgeUtilizationResult {
   const {positions, motionVariances, locationErrors, parameters} = input;
-  const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input);
+  const tailPolicy = resolveBrownianBridgeTailPolicy(
+    'brownian-bridge-utilization',
+    options.tailPolicy,
+    'full'
+  );
+  const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input, {
+    storage: input.storage ?? 'resident-capacity'
+  });
   if (motionVariances.length !== rowCount)
     throw new Error('motionVariances length must match positions');
   if (locationErrors.length !== rowCount)
@@ -98,6 +120,37 @@ export function computeBrownianBridgeUtilizationOnCPU(
       const motion = Math.max(0, motionVariances[row]);
       const errorFrom = locationErrors[row];
       const errorTo = locationErrors[row + 1];
+      if (tailPolicy === 'truncate-at-seven-sigma') {
+        const offsetX = (fix: number) =>
+          getBrownianBridgeCellFixOffset(
+            positions[fix * 2],
+            minimumX,
+            maximumX,
+            cell % columns,
+            columns
+          );
+        const offsetY = (fix: number) =>
+          getBrownianBridgeCellFixOffset(
+            positions[fix * 2 + 1],
+            minimumY,
+            maximumY,
+            Math.floor(cell / columns),
+            lines
+          );
+        if (
+          isBrownianBridgeOutsideCutoff(
+            offsetX(row),
+            offsetY(row),
+            offsetX(row + 1),
+            offsetY(row + 1),
+            duration,
+            motion,
+            errorFrom,
+            errorTo
+          )
+        )
+          continue;
+      }
       let segmentDensity = 0;
       for (let step = 0; step < subStepCount; step++) {
         const fraction = (step + 0.5) / subStepCount;
@@ -124,9 +177,10 @@ export function computeBrownianBridgeUtilizationOnCPU(
 /** CPU bridge operation, preferred for small grids; no GPU fix-count or midpoint-count cap. */
 export class CPUBrownianBridgeUtilizationOperation extends GPUCPUOperation {
   constructor(props: BrownianBridgeUtilizationOperationProps) {
+    props = {...props, gridSize: [...props.gridSize], output: {...props.output}};
     const operation = new GPUBrownianBridgeUtilizationOperation(props);
     const {id} = operation;
-    validateCapacity(id, 'rowCount', props.rowCount, 2);
+    validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(id, 'gridSize columns', props.gridSize[0]);
     validateCapacity(id, 'gridSize rows', props.gridSize[1]);
     validateCapacity(

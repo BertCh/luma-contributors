@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {GPUPointCloudCoverageValidity} from '../../../src/pointcloud-analysis/operations/gpu-pointcloud-coverage-validity';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../../gpu-spatial-analysis/segment-intersection/wgsl-graph-executor';
 import {
   createTransientView,
   GPUCommandGraph,
@@ -110,7 +115,7 @@ it('matches independent sublevel connectivity for nested depressions, negative h
   }
 });
 
-it('fills to the pour point, adds epsilon per shortest escape step, and ignores GPU budgets', () => {
+it('fills to the pour point and confirms positive-epsilon filling within its explicit budget', () => {
   const grid = makeGrid(7, 7);
   const values = Float32Array.from({length: 49}, (_, cell) =>
     cell < 7 || cell >= 42 || cell % 7 === 0 || cell % 7 === 6 ? 10 : -5
@@ -119,8 +124,10 @@ it('fills to the pour point, adds epsilon per shortest escape step, and ignores 
     const result = computeTerrainFlowOnCPU(makeInput(values, grid, {fillEpsilon: epsilon}), {
       grid,
       fillDepressions: true,
-      maximumFillIterations: 1
+      maximumFillIterations: epsilon > 0 ? 2 : 1
     });
+    expect(Array.from(result.status.fillConverged)).toEqual([1]);
+    expect(Array.from(result.status.fillIterationCount)).toEqual([epsilon > 0 ? 2 : 0]);
     for (let cell = 0; cell < 49; cell++) {
       const row = Math.floor(cell / 7);
       const column = cell % 7;
@@ -172,8 +179,7 @@ it('resolves an open plateau by shortest hop masks with first-direction ties; cl
   const input = makeInput(new Float32Array(25).fill(10), grid);
   const result = computeTerrainFlowOnCPU(input, {
     grid,
-    resolveFlats: true,
-    maximumFlatIterations: 1
+    resolveFlats: true
   });
   // Border cells are low edges, mask 2. The inner ring has mask 4, center mask 6.
   expect(result.flowDirections[12]).toBe(1);
@@ -320,9 +326,9 @@ it('calibrates scalar bands, rounds float32 nodata, honors validity and treats a
       ...input,
       elevation: {
         ...input.elevation,
-        format,
-        noDataValue: format === 'uint32' ? 0xffffffff : -0x80000000,
-        values: format === 'uint32' ? new Uint32Array(9).fill(1) : new Int32Array(9).fill(1)
+        ...(format === 'uint32'
+          ? {format, noDataValue: 0xffffffff, values: new Uint32Array(9).fill(1)}
+          : {format, noDataValue: -0x80000000, values: new Int32Array(9).fill(1)})
       }
     };
     expect(computeTerrainFlowOnCPU(integer, {grid}).filledElevation[4]).toBe(1);
@@ -419,9 +425,14 @@ it('validates construction of both operation declarations and CPU static options
     expect(() => new CPUTerrainFlowOperation({...props, [maximum]: 0})).toThrow(
       new RegExp(`flow-validation.*${maximum}`)
     );
-    expect(() => new CPUTerrainFlowOperation({...props, [maximum]: 10000})).not.toThrow();
+    if (maximum === 'maximumFlatIterations') {
+      expect(() => new CPUTerrainFlowOperation({...props, [maximum]: 1024})).not.toThrow();
+      expect(() => new CPUTerrainFlowOperation({...props, [maximum]: 1025})).toThrow(
+        /maximumFlatIterations.*1024/
+      );
+    } else expect(() => new CPUTerrainFlowOperation({...props, [maximum]: 10000})).not.toThrow();
   }
-  expect(() => new CPUTerrainFlowOperation({...props, output: {}})).toThrow(
+  expect(() => Reflect.construct(CPUTerrainFlowOperation, [{...props, output: {}}])).toThrow(
     /flow-validation.*output/
   );
   expect(
@@ -467,7 +478,7 @@ it('throws argument-specific errors for inconsistent arrays', () => {
   const input = makeInput(new Float32Array(9), grid);
   expect(() =>
     computeTerrainFlowOnCPU(
-      {...input, elevation: {...input.elevation, values: new Float32Array(8)}},
+      {...input, elevation: {...input.elevation, format: 'float32', values: new Float32Array(8)}},
       {grid}
     )
   ).toThrow(/elevation.values/);
@@ -513,14 +524,12 @@ for (const [format, noDataValue] of [
     const input = makeInput([7], grid);
     input.elevation = {
       ...input.elevation,
-      format,
       noDataValue,
-      values:
-        format === 'uint32'
-          ? Uint32Array.of(7)
-          : format === 'sint32'
-            ? Int32Array.of(7)
-            : Float32Array.of(7)
+      ...(format === 'uint32'
+        ? {format, values: Uint32Array.of(7)}
+        : format === 'sint32'
+          ? {format, values: Int32Array.of(7)}
+          : {format, values: Float32Array.of(7)})
     };
     // An unsigned 32-bit sentinel is an integer in [0, 2^32-1], a signed one in
     // [-2^31, 2^31-1]. NaN is allowed only for float32, whose finite sentinels must
@@ -554,14 +563,12 @@ for (const [format, noDataValue] of [
       const input = makeInput([7], grid);
       input.elevation = {
         ...input.elevation,
-        format,
         noDataValue,
-        values:
-          format === 'uint32'
-            ? Uint32Array.of(value)
-            : format === 'sint32'
-              ? Int32Array.of(value)
-              : Float32Array.of(value)
+        ...(format === 'uint32'
+          ? {format, values: Uint32Array.of(value)}
+          : format === 'sint32'
+            ? {format, values: Int32Array.of(value)}
+            : {format, values: Float32Array.of(value)})
       };
       const result = computeTerrainFlowOnCPU(input, {grid});
       // A lone finite, unmasked cell is a terminal outlet and contributes itself once.
@@ -662,4 +669,60 @@ it('the CPU callback reads graph band/parameter/runoff ports and writes only req
     expect(Array.from(rows[name] as Uint32Array)).toEqual([1]);
   for (const name of ['fillRounds', 'flatRounds', 'accRounds'])
     expect(Array.from(rows[name] as Uint32Array)).toEqual([0]);
+});
+
+it('UNI-01 uses point-cloud ground validity for receivers and preserves genuine zero-height ground', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const coverage = createTransientView(graph, 'coverage', 'uint32', 2);
+  const output = {
+    surfaceValidity: createTransientView(graph, 'surface-validity', 'uint32', 2),
+    terrainValidity: createTransientView(graph, 'terrain-validity', 'uint32', 2),
+    canopyValidity: createTransientView(graph, 'canopy-validity', 'uint32', 2)
+  };
+  const memory = createCPUGraphMemory();
+  const converter = new GPUPointCloudCoverageValidity({coverage, output});
+  const nodes = converter.getCommandNodes(graph);
+  const grid = makeGrid(2, 1);
+  try {
+    for (const coverageRows of [Uint32Array.of(1, 3), Uint32Array.of(3, 3)]) {
+      memory.write(coverage, coverageRows);
+      executeCommandNodesOnCPU(nodes, memory);
+      const validity = memory.readUint32(output.terrainValidity);
+      const groundAtZero = coverageRows[0] === 3;
+      expect(Array.from(validity)).toEqual(groundAtZero ? [1, 1] : [0, 1]);
+      const input = makeInput([0, 5], grid);
+      // Raw coverage marks a non-ground cell as truthy and incorrectly permits westward flow.
+      if (!groundAtZero) {
+        const unsafe = computeTerrainFlowOnCPU(
+          {...input, elevation: {...input.elevation, validity: coverageRows}},
+          {grid}
+        );
+        expect(Array.from(unsafe.flowDirections)).toEqual([0, 16]);
+      }
+      const result = computeTerrainFlowOnCPU(
+        {...input, elevation: {...input.elevation, validity}},
+        {grid}
+      );
+      // Only genuine ground is a receiver. Sea-level ground remains a usable western outlet.
+      expect(Array.from(result.flowDirections)).toEqual(
+        groundAtZero ? [0, 16] : [GPU_TERRAIN_FLOW_NONE, 0]
+      );
+      expect(result.filledElevation[1]).toBe(5);
+      if (groundAtZero) expect(result.filledElevation[0]).toBe(0);
+      else expect(result.filledElevation[0]).toBeNaN();
+      expect(result.accumulation[1]).toBe(1);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('R1-N3 distinguishes dependency convergence from numeric area overflow', () => {
+  const grid = {...makeGrid(1, 1), affine: [1e20, 0, 0, 0, -1e20, 0] as const};
+  const result = computeTerrainFlowOnCPU(makeInput([5], grid), {grid, accumulationUnits: 'area'});
+  // A lone vertex has no pending donors, yet its area 10^40 exceeds binary32's finite range.
+  expect(result.status.accumulationConverged[0]).toBe(1);
+  expect(result.accumulation[0]).toBe(Infinity);
+  expect(result.streams[0]).toBe(0xffffffff);
 });

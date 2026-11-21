@@ -7,7 +7,7 @@
   "viewId": "command-graph-view",
   "caption": "compiled command graph of gpu-spatial-analysis-drainage-network-recipe. nodes: 165. structure metadata only. 24 visible units vs budget 24.",
   "description": "compiled command graph of gpu-spatial-analysis-drainage-network-recipe. nodes: 165. structure metadata only. 24 visible units vs budget 24.",
-  "llms": "compiled command graph of gpu-spatial-analysis-drainage-network-recipe\n\n- nodes: 165\n- 24 visible units vs budget 24\n- 165 hidden nodes\n- Edges by kind: raw 505, war 107, waw 4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "compiled command graph of gpu-spatial-analysis-drainage-network-recipe\n\n- nodes: 165\n- 24 visible units vs budget 24\n- 165 hidden nodes\n- Edges by kind: raw 506, war 107, waw 4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "nodes",
     "value": "165"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:37.030Z",
-    "runId": "run-7603bfb4",
+    "date": "2026-11-20T23:49:34.338Z",
+    "runId": "run-4992dac6",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-7603bfb4",
+    "runId": "run-4992dac6",
     "rung": "graph",
     "bindings": {},
     "clauses": [],

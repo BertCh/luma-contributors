@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotRefinementOperationProps} from './refinement-construction-snapshot';
+
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
   GPUConvexStraightSkeleton,
@@ -38,6 +40,7 @@ export type ConvexStraightSkeletonOperationProps = Pick<
 /** GPU wavefront operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUConvexStraightSkeletonOperation extends GPUContributorOperation {
   constructor(props: ConvexStraightSkeletonOperationProps) {
+    props = snapshotRefinementOperationProps(props, 'convex');
     const maximumVertices = props.maximumVertices ?? 32;
     const segmentCapacity = props.segmentCapacity ?? maximumVertices * 2;
     super({

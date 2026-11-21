@@ -13,7 +13,7 @@ import {
   type SkaterRegionsOperationProps
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions-operation';
 import {getGPUSkaterRegionsParameterValues} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions';
-import {GPU_MINIMUM_SPANNING_TREE_STATUS} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
+import {GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-spatial-weights-minimum-spanning-tree';
 import {
   getCPUVectorRows,
   makeCPUVector,
@@ -200,10 +200,11 @@ for (const scene of [
         cutGains: 'cutGains'
       }
     };
-    const treeStatus = new Uint32Array(GPU_MINIMUM_SPANNING_TREE_STATUS.length);
-    if (scene === 'invalid-tree') treeStatus[GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount] = 1;
+    const treeStatus = new Uint32Array(GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length);
+    if (scene === 'invalid-tree')
+      treeStatus[GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.invalidCount] = 1;
     if (scene === 'incomplete-tree')
-      treeStatus[GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow] = 9;
+      treeStatus[GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.candidateOverflow] = 9;
     const inputs: Record<string, OperationGraphInput> = {
       offsets: {format: 'uint32', values: Uint32Array.of(0, 1, 3, 5, 6, 7, 9, 11, 12)},
       neighbors: {format: 'uint32', values: Uint32Array.of(1, 0, 2, 1, 3, 2, 5, 4, 6, 5, 7, 6)},

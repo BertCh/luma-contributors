@@ -3,10 +3,10 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// `k`, `weightType` and `power` are GPUNearestFeatureWeights props (compile time). Dots are sized
+// `neighborCount`, `weightType` and `power` are compile-time GPUNearestFeatureWeights props. Dots are sized
 // by nothing but colored by each point's total weight (the row sum).
 export const parameters: GpuSceneParameter[] = [
-  {id: 'k', label: 'k', min: 1, max: 5, step: 1, default: 3},
+  {id: 'neighborCount', label: 'Neighbors', min: 1, max: 5, step: 1, default: 3},
   {
     id: 'weightType',
     label: 'weightType',

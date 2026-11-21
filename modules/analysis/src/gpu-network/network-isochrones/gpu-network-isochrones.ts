@@ -4,19 +4,21 @@
 
 import {
   createTransientView,
-  GraphDataView,
-  GraphVectorView,
+  type GraphDataView,
   type GPUCommandGraph,
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateRequirement,
   validateMaximumCount,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  isGraphDataView,
+  isGraphVectorView,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUNetworkTopology,
@@ -62,7 +64,7 @@ import {
   createIsochronesInclusiveBreaksNode,
   createIsochronesNodeMaskNode,
   createIsochronesSplatNode,
-  createIsochronesTriangleFacilityNode,
+  createIsochronesTriangleFacilityNodes,
   getIsochronesEncodedInitialValue,
   GPU_NETWORK_ISOCHRONES_MAXIMUM_RASTER_FACILITIES,
   type GPUNetworkIsochronesMode
@@ -147,8 +149,10 @@ export type GPUNetworkIsochronesRaster = {
     pixelFacilities?: GraphDataView<'uint32'>;
     /**
      * Optional facility row per isoband triangle (length `triangleBands.length`), taken from the
-     * raster sample nearest to the triangle centroid that has a facility; `0xffffffff` past
-     * `count`. Needs `pixelFacilities` and the triangle output.
+     * labelled raster sample nearest to the triangle centroid in world units across the full
+     * raster, breaking distance ties by smaller facility row. A spatial hierarchy prunes empty
+     * regions and regions beyond the nearest known distance. Writes
+     * `0xffffffff` when the raster has no labels or past `count`. Needs `pixelFacilities` and the triangle output.
      */
     triangleFacilities?: GraphDataView<'uint32'>;
   };
@@ -176,7 +180,10 @@ export type GPUNetworkIsochronesCellOutline = {
   resolution: number;
   /**
    * Optional caller-owned table that receives the reached cells (sorted, distinct). Provide it to
-   * read its `count` and `overflow`. Defaults to a graph transient of `tableCapacity` rows.
+   * read its `count`, `overflow` and optional `candidateOverflow`. The full status is forwarded
+   * to the outline: cell loss sets output.status.candidateOverflow, or suppresses the outline
+   * count when that view is omitted. Nested rings are suppressed until complete input returns.
+   * Defaults to a graph transient of `tableCapacity` rows.
    */
   table?: GPUCellTable;
   /** Row capacity of the transient table when `table` is omitted. Defaults to the node count. */
@@ -374,6 +381,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     this.id = props.id ?? DEFAULT_ID;
     this.props = props;
     const {id} = this;
+    const identity = {id, contributor: 'GPUNetworkIsochrones'};
     const {raster, cellOutline} = props;
     if (!raster && !cellOutline) {
       throw new Error(`${id} needs raster or cellOutline`);
@@ -398,7 +406,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       ['startNodes', props.startNodes],
       ['assignments', props.assignments]
     ] as const) {
-      if ((view as unknown) instanceof GraphVectorView) {
+      if (isGraphVectorView(view)) {
         throw new Error(`${id} ${name} must be a single packed view, not a chunked vector`);
       }
     }
@@ -442,6 +450,30 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       }
     } else {
       validateSinglePackedView(props.startNodes, ['uint32'], `${id} startNodes`);
+      if (props.startCosts) {
+        validateSinglePackedView(props.startCosts, ['float32'], identity, 'startCosts');
+        validateRequirement(
+          id,
+          props.startCosts.length === props.startNodes.length,
+          `startCosts length must equal startNodes.length (${props.startNodes.length}); received ${props.startCosts.length}`
+        );
+      }
+      if (props.costLimit) {
+        validateSinglePackedView(props.costLimit, ['float32'], identity, 'costLimit');
+        validateRequirement(
+          id,
+          props.costLimit.length === 1,
+          `costLimit must contain exactly one row; received ${props.costLimit.length}`
+        );
+      }
+      if (typeof props.startCount === 'object') {
+        validateSinglePackedView(props.startCount, ['uint32'], identity, 'startCount');
+        validateRequirement(
+          id,
+          props.startCount.length === 1,
+          `startCount must contain exactly one row; received ${props.startCount.length}`
+        );
+      }
       if (typeof props.startCount === 'number') {
         validateCapacity(id, 'startCount', props.startCount, 0, props.startNodes.length);
       }
@@ -584,6 +616,13 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     this.cellTableCapacity =
       cellOutline?.table?.cells.length ?? cellOutline?.tableCapacity ?? this.nodeCount;
     if (cellOutline) {
+      for (const name of ['sums', 'sumValues', 'minimums', 'maximums'] as const) {
+        validateRequirement(
+          id,
+          !cellOutline.table?.[name],
+          `cellOutline.table.${name} has no values input; use GPUCellAggregation with values for reductions`
+        );
+      }
       if (cellOutline.family !== 'h3' && cellOutline.family !== 'quadbin') {
         throw new Error(`${id} cellOutline.family must be 'h3' or 'quadbin'`);
       }
@@ -921,7 +960,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       );
       if (raster.output.triangleFacilities) {
         nodes.push(
-          createIsochronesTriangleFacilityNode<Parameters>(graph, {
+          ...createIsochronesTriangleFacilityNodes<Parameters>(graph, {
             id: `${id}-triangle-facilities`,
             width,
             height,
@@ -1030,12 +1069,38 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           );
         }
       }
+      // Snapshot source loss before publishing caller outputs: disjoint status slices may
+      // share an allocation, but a single WebGPU dispatch cannot read and write that allocation.
+      const outlineSourceStatus = {
+        count: table.status.count,
+        overflow: createTransientView(graph, `${id}-outline-source-overflow`, 'uint32', 1),
+        candidateOverflow: table.status.candidateOverflow
+          ? createTransientView(graph, `${id}-outline-source-candidate-overflow`, 'uint32', 1)
+          : undefined
+      };
+      for (const name of ['overflow', 'candidateOverflow'] as const) {
+        const source = table.status[name];
+        const destination = outlineSourceStatus[name];
+        if (!source || !destination) continue;
+        nodes.push(
+          createWGSLKernelNode(graph, {
+            id: `${id}-outline-capture-${name}`,
+            operation: 'GPUNetworkIsochrones',
+            variant: 'capture-cell-source-loss',
+            invocationCount: 1,
+            bindings: [
+              {name: 'source', view: source, type: 'u32', access: 'read'},
+              {name: 'destination', view: destination, type: 'u32', access: 'read_write'}
+            ],
+            body: 'destination[destinationOffset] = source[sourceOffset];'
+          })
+        );
+      }
       nodes.push(
         ...new GPUCellSetOutline({
           id: `${id}-outline`,
           family: cellOutline.family,
-          cells: table.cells,
-          count: table.status.count,
+          source: {cells: table.cells, status: outlineSourceStatus},
           groups: cellFacilities,
           output: cellOutline.output,
           rings: cellOutline.rings
@@ -1082,7 +1147,10 @@ const ISOCHRONE_RING_OUTPUT_FIELDS = {
     openSegmentCount: true,
     touchingSegmentCount: true,
     edgeCount: true,
-    edgeOverflow: true
+    edgeOverflow: true,
+    candidateOverflow: true,
+    complete: true,
+    polygonCount: true
   }
 } as const;
 /** Read declared fields by name so inherited/non-enumerable getters survive the snapshot. */
@@ -1142,7 +1210,7 @@ const ISOCHRONE_OPTION_FIELDS = {
       sumValues: true,
       minimums: true,
       maximums: true,
-      status: {...ISOCHRONE_COMPACT_STATUS_FIELDS, candidateOverflow: true}
+      status: {...ISOCHRONE_COMPACT_STATUS_FIELDS, candidateOverflow: true, sumOverflow: true}
     },
     output: {
       rows: true,
@@ -1150,7 +1218,7 @@ const ISOCHRONE_OPTION_FIELDS = {
       edgeIndices: true,
       endpoints: true,
       groups: true,
-      status: ISOCHRONE_COMPACT_STATUS_FIELDS
+      status: {...ISOCHRONE_COMPACT_STATUS_FIELDS, candidateOverflow: true}
     },
     rings: {vertexTolerance: true, normalizeWinding: true, output: ISOCHRONE_RING_OUTPUT_FIELDS}
   }
@@ -1173,10 +1241,15 @@ function snapshotIsochroneOptions<Value>(value: Value, fields: IsochroneOptionFi
 /** Retain caller-facing paths for ownership, usage, and alias diagnostics. */
 function collectNamedIsochroneViews(bag: object, prefix = ''): Record<string, GraphDataView> {
   return Object.fromEntries(
-    Object.entries(bag).flatMap(([field, value]) => {
+    Object.entries(bag).flatMap<readonly [string, GraphDataView]>(([field, value]) => {
       const name = prefix ? `${prefix}.${field}` : field;
-      if (value instanceof GraphDataView) return [[name, value]];
-      if (!value || typeof value !== 'object' || value instanceof GraphVectorView) return [];
+      if (isGraphDataView(value)) return [[name, value]];
+      if (isGraphVectorView(value)) {
+        return getGraphViewChunks(value).map(
+          (chunk, index) => [`${name}.chunks[${index}]`, chunk] as const
+        );
+      }
+      if (!value || typeof value !== 'object') return [];
       return Object.entries(collectNamedIsochroneViews(value, name));
     })
   );

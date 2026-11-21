@@ -56,7 +56,7 @@ defineLensScenario({
             {id: 'vertex', label: 'area vertex', size: vertexCount, indexSpace: '1d'},
             {id: 'ring', label: 'dissolved ring', size: RING_CAPACITY, indexSpace: '1d'}
           ],
-          choices: {snapTolerance: 0, vertexTolerance: 1e-6, splitTouchingRings: true},
+          choices: {snapGridSize: 0, vertexTolerance: 1e-6, splitTouchingRings: true},
           metadata: projectedMetadata(data.projected),
           async build(graph, uploads) {
             const areas = {

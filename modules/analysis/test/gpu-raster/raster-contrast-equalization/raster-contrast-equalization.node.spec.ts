@@ -17,6 +17,7 @@ import {createKernelAuditContext} from '../../analysis-core/kernel-audit/kernel-
 import {RASTER_CONTRAST_EQUALIZATION_CASES} from '../../analysis-core/kernel-audit/cases-raster-contrast-equalization';
 import {registerKernelAudit} from '../../analysis-core/kernel-audit/register-kernel-audit';
 import reference from './reference.json';
+import {getParsedKernelSources} from '../../utils/gpu-contributor-test-utils';
 
 registerKernelAudit('CART-03 raster contrast', RASTER_CONTRAST_EQUALIZATION_CASES);
 
@@ -45,6 +46,20 @@ function withProps(
     context.device.destroy();
   }
 }
+
+it('WGS-08 generates exponent-scaled histogram coordinates for finite wide domains', () => {
+  expect(getGPURasterContrastEqualizationParameterValues({inputDomain: [0, 2 ** 127]})[1]).toBe(
+    2 ** 127
+  );
+  withProps((props, {graph}) => {
+    const sources = getParsedKernelSources(
+      new GPURasterContrastEqualization(props).getCommandNodes(graph)
+    );
+    expect([...sources.values()].join('\n')).toContain(
+      'clamp(getScaledQuotient(clamp(value, minimum, maximum) - minimum, maximum - minimum, 1.0, 0), 0.0, 1.0)'
+    );
+  });
+});
 
 it('packs and validates float32 domains, target size and normalized clip limit', () => {
   expect(Array.from(getGPURasterContrastEqualizationParameterValues())).toEqual([

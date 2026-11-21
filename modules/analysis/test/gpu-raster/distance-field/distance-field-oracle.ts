@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {findHalfOpenRasterCell} from '../raster-sampling/half-open-raster-reference';
 import {GPU_DISTANCE_FIELD_NONE} from '../../../src/raster-analysis/distance-field/index';
 
 /** CPU description of one distance-field run. */
@@ -34,7 +35,7 @@ export type DistanceFieldOracleResult = {
 
 const NONE = GPU_DISTANCE_FIELD_NONE;
 
-/** Snaps seeds to cells exactly like the GPU scatter kernel (f32 subtract, f32 multiply, floor). */
+/** Independent half-open edge search over the canonical packed signed-step grid. */
 export function getCellSeeds(scene: DistanceFieldScene): Uint32Array {
   const {width, height, settings} = scene;
   const cellSeeds = new Uint32Array(width * height).fill(NONE);
@@ -51,11 +52,17 @@ export function getCellSeeds(scene: DistanceFieldScene): Uint32Array {
     if (id === NONE) {
       continue;
     }
-    const column = Math.floor(
-      Math.fround(Math.fround(positions[row * 2] - settings[0]) * settings[4])
+    const column = findHalfOpenRasterCell(
+      positions[row * 2],
+      settings[0],
+      settings[4] > 0 ? settings[2] : -settings[2],
+      width
     );
-    const gridRow = Math.floor(
-      Math.fround(Math.fround(positions[row * 2 + 1] - settings[1]) * settings[5])
+    const gridRow = findHalfOpenRasterCell(
+      positions[row * 2 + 1],
+      settings[1],
+      settings[5] > 0 ? settings[3] : -settings[3],
+      height
     );
     if (!(column >= 0 && column < width && gridRow >= 0 && gridRow < height)) {
       continue;

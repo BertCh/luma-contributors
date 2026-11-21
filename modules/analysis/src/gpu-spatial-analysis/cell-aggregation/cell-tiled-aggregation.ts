@@ -8,12 +8,13 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUCellAggregation, type GPUCellAggregationProps} from './gpu-cell-aggregation';
+import {createCellAggregation, type GPUCellAggregationProps} from './gpu-cell-aggregation';
 import {createCellLevelKernelNode} from './cell-level-kernel';
 import {getTiledKeyUnionNodes} from '../../analysis-core/kernels/tiled-key-union';
 import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/kernels/cell-key-wgsl';
-import {type GPUCellTable} from './cell-table';
+import {CELL_SUM_GUARD_WGSL, type GPUCellTable, type CellTableSumAccumulator} from './cell-table';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import type {
   WGSLKernelBinding,
   WGSLKernelProps
@@ -66,6 +67,7 @@ export function getTiledCellAggregationNodes<Parameters>(
   const rows = (props.positions ?? props.cells)!;
   const wantsSums = Boolean(props.output.sums || props.output.sumValues);
   const tables: GPUCellTable[] = [];
+  const accumulators: CellTableSumAccumulator[] = [];
   for (let tileIndex = 0; tileIndex < Math.ceil(rows.length / tileLength); tileIndex++) {
     const tileId = `${id}-tile-${tileIndex}`;
     const begin = tileIndex * tileLength;
@@ -147,14 +149,22 @@ export function getTiledCellAggregationNodes<Parameters>(
         candidateOverflow: createTransientView(graph, `${tileId}-candidate-overflow`, 'uint32', 1)
       }
     };
+    const sumAccumulator = wantsSums
+      ? {
+          guards: createTransientView(graph, `${tileId}-sum-guards`, 'uint32', tileLength),
+          rowOverflow: createTransientView(graph, `${tileId}-row-overflow`, 'uint32', tileLength)
+        }
+      : undefined;
+    if (sumAccumulator) accumulators.push(sumAccumulator);
     nodes.push(
-      ...new GPUCellAggregation({
+      ...createCellAggregation({
         ...props,
         ...inputs,
         id: tileId,
         scratchTileSize: undefined,
         scratchMode: 'packed',
-        output: table
+        output: table,
+        sumAccumulator
       }).getCommandNodes(graph)
     );
     tables.push(table);
@@ -180,11 +190,16 @@ export function getTiledCellAggregationNodes<Parameters>(
       createTransientView(graph, `${id}-merged-sums`, 'uint32x2', output.cells.length))
     : undefined;
   if (sums) {
+    // Guard words above the merged 64-bit sums detect a total outside the signed range.
+    const guards = createTransientView(graph, `${id}-merged-sum-guards`, 'uint32', sums.length);
+    const sumFlag = createTransientView(graph, `${id}-merged-sum-overflow`, 'uint32', 1);
     kernel({
       id: `${id}-sums-clear`,
       invocationCount: sums.length,
-      bindings: [write('sums', sums)],
-      body: 'sums[sumsOffset + 2u * index] = 0u; sums[sumsOffset + 2u * index + 1u] = 0u;'
+      bindings: [write('sums', sums), write('guards', guards), write('sumFlag', sumFlag)],
+      body: `sums[sumsOffset + 2u * index] = 0u; sums[sumsOffset + 2u * index + 1u] = 0u;
+  guards[guardsOffset + index] = 0u;
+  if (index == 0u) { sumFlag[sumFlagOffset] = 0u; }`
     });
     for (const [tileIndex, table] of tables.entries()) {
       kernel({
@@ -194,25 +209,72 @@ export function getTiledCellAggregationNodes<Parameters>(
           read('tileCounts', table.counts),
           read('rank', union.ranks[tileIndex]),
           read('sourceSums', table.sums!),
-          write('sums', sums)
+          read('sourceGuards', accumulators[tileIndex].guards),
+          write('sums', sums),
+          write('guards', guards)
         ],
-        declarations: getFixedPointWGSL(sumScale),
+        declarations: CELL_SUM_GUARD_WGSL,
         body: `let destination = rank[rankOffset + index];
   if (tileCounts[tileCountsOffset + index] == 0u || destination >= CAPACITY) { return; }
-  let previous = vec2u(sums[sumsOffset + 2u * destination + 1u], sums[sumsOffset + 2u * destination]);
-  let contribution = vec2u(sourceSums[sourceSumsOffset + 2u * index + 1u], sourceSums[sourceSumsOffset + 2u * index]);
-  let combined = cellAddI64(previous, contribution);
-  sums[sumsOffset + 2u * destination] = combined.y;
-  sums[sumsOffset + 2u * destination + 1u] = combined.x;`
+  let previous = vec3u(guards[guardsOffset + destination], sums[sumsOffset + 2u * destination + 1u], sums[sumsOffset + 2u * destination]);
+  let contribution = vec3u(sourceGuards[sourceGuardsOffset + index], sourceSums[sourceSumsOffset + 2u * index + 1u], sourceSums[sourceSumsOffset + 2u * index]);
+  let combined = cellAddI96(previous, contribution);
+  guards[guardsOffset + destination] = combined.x;
+  sums[sumsOffset + 2u * destination] = combined.z;
+  sums[sumsOffset + 2u * destination + 1u] = combined.y;`
+      });
+      // Only row clamps belonging to retained union keys affect the published sum status.
+      kernel({
+        id: `${id}-sums-flag-${tileIndex}`,
+        invocationCount: tileLength,
+        bindings: [
+          read('rank', union.ranks[tileIndex]),
+          read('tileCounts', table.counts),
+          read('rowOverflow', accumulators[tileIndex].rowOverflow),
+          {name: 'sumFlag', view: sumFlag, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        body: `let destination = rank[rankOffset + index];
+  if (destination < CAPACITY && tileCounts[tileCountsOffset + index] != 0u && rowOverflow[rowOverflowOffset + index] != 0u) {
+    atomicOr(&sumFlag[sumFlagOffset], 1u);
+  }`
       });
     }
+    kernel({
+      id: `${id}-sums-saturate`,
+      invocationCount: sums.length,
+      bindings: [
+        read('guards', guards),
+        write('sums', sums),
+        {name: 'sumFlag', view: sumFlag, type: 'atomic<u32>', access: 'read_write'}
+      ],
+      declarations: CELL_SUM_GUARD_WGSL,
+      body: `let guardWord = guards[guardsOffset + index];
+  if (cellIsI64Overflow(guardWord, sums[sumsOffset + 2u * index + 1u])) {
+    let saturated = cellGetSaturatedI64(guardWord);
+    sums[sumsOffset + 2u * index] = saturated.y;
+    sums[sumsOffset + 2u * index + 1u] = saturated.x;
+    atomicOr(&sumFlag[sumFlagOffset], 1u);
+  }`
+    });
+    if (callerOutput.status.sumOverflow)
+      kernel({
+        id: `${id}-sum-status`,
+        invocationCount: 1,
+        bindings: [
+          read('sumFlag', sumFlag),
+          write('sumOverflowOut', callerOutput.status.sumOverflow)
+        ],
+        body: 'sumOverflowOut[sumOverflowOutOffset] = select(0u, 1u, sumFlag[sumFlagOffset] != 0u);'
+      });
     if (output.sumValues)
       kernel({
         id: `${id}-sums-finish`,
         invocationCount: sums.length,
         bindings: [read('sums', sums), write('values', output.sumValues, 'f32')],
-        declarations: getFixedPointWGSL(sumScale),
-        body: 'values[valuesOffset + index] = cellI64ToF32(vec2u(sums[sumsOffset + 2u * index + 1u], sums[sumsOffset + 2u * index])) / SUM_SCALE;'
+        declarations: `${getFixedPointWGSL(sumScale)}\n${SCALED_QUOTIENT_WGSL}`,
+        // Exponent-scaled quotient: a division by SUM_SCALE may compile as a multiplication by a
+        // subnormal reciprocal, flushed to zero, for scales above 2^126.
+        body: 'values[valuesOffset + index] = getScaledQuotient(cellI64ToF32(vec2u(sums[sumsOffset + 2u * index + 1u], sums[sumsOffset + 2u * index])), SUM_SCALE, 1.0, 0);'
       });
   }
   for (const field of ['minimums', 'maximums'] as const) {
@@ -270,6 +332,13 @@ export function getTiledCellAggregationNodes<Parameters>(
       ).join('\n')
     });
   }
+  if (callerOutput.status.sumOverflow && !sums)
+    kernel({
+      id: `${id}-sum-status`,
+      invocationCount: 1,
+      bindings: [write('sumOverflowOut', callerOutput.status.sumOverflow)],
+      body: 'sumOverflowOut[sumOverflowOutOffset] = 0u;'
+    });
   if (callerOutput.status.candidateOverflow)
     kernel({
       id: `${id}-candidate-status`,

@@ -106,7 +106,7 @@ export function makeV8ResultRecord(
     createdAt: '2026-10-14T00:00:00.000Z',
     adapter: {backend: 'webgpu', description: 'Fixture adapter'},
     domains: ['gpu-core'],
-    graphs: [],
+    graphs: [{id: 'geometry', form: 'compiled', domain: 'gpu-core', nodes: [], edges: []}],
     axes: {axes: [{id: 'entity', label: 'entity', kind: 'data'}], keySpaces: [], relations: []},
     refs: {formulas: [], sources: []},
     decisions: [],

@@ -9,6 +9,7 @@ import {
   type GPUCommandNode,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -23,6 +24,7 @@ import {
   type RasterScalarView
 } from '../remote-sensing/raster-kernel-utils';
 import {createRasterEmbeddingUsableMask} from './raster-embedding-usable-mask';
+import {RASTER_EMBEDDING_CENTERING_WGSL} from './raster-embedding-centering';
 import {
   validateRasterEmbeddingShape,
   validateRasterEmbeddingVectors
@@ -72,12 +74,15 @@ export type GPURasterEmbeddingCovarianceProps = {
  *
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `rangeCount`
  * and which optional views exist.
+ * Packed vectors accept 1–128 dimensions; rangeCount is at most 256 for the whole raster.
  */
 export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
   readonly id: string;
   readonly rangeCount: number;
 
   constructor(readonly props: GPURasterEmbeddingCovarianceProps) {
+    props = {...props, output: {...props.output}};
+    this.props = props;
     const id = props.id ?? 'raster-embedding-covariance';
     this.id = id;
     const {pixelCount, dimensions, output} = props;
@@ -141,7 +146,10 @@ export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
     // Check the complete layout before creating even the shared usable-mask scratch.
     for (const [name, elementCount] of Object.entries({
       'usable scratch': pixelCount,
-      'partialSums scratch': rangeCount * dimensions,
+      'partialSums scratch': rangeCount * dimensions * 4,
+      'firstUsable scratch': rangeCount,
+      'anchor scratch': dimensions,
+      'meanOffset scratch': dimensions,
       'partialCounts scratch': rangeCount,
       'partialCovariance scratch': rangeCount * dimensions * dimensions,
       ...(!output.usableCount ? {'usableCount scratch': 1} : {})
@@ -166,11 +174,14 @@ export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
       vectors: props.vectors,
       mask: props.mask
     });
+    const firstUsable = createTransientView(graph, `${id}-first-usable`, 'uint32', rangeCount);
+    const anchor = createTransientView(graph, `${id}-anchor`, 'float32', dimensions);
+    const meanOffset = createTransientView(graph, `${id}-mean-offset`, 'float32', dimensions);
     const partialSums = createTransientView(
       graph,
       `${id}-partial-sums`,
       'float32',
-      rangeCount * dimensions
+      rangeCount * dimensions * 4
     );
     const partialCounts = createTransientView(graph, `${id}-partial-counts`, 'uint32', rangeCount);
     const partialCovariance = createTransientView(
@@ -187,29 +198,74 @@ let rangeEnd = min(rangeStart + ${pixelsPerRange}u, ${pixelCount}u);`;
     return [
       usableNode,
       createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-first-usable`,
+        operation,
+        variant: 'first-usable',
+        invocationCount: rangeCount,
+        workgroupSize: 64,
+        bindings: [
+          rasterBinding('usable', usable),
+          rasterBinding('firstUsable', firstUsable, true)
+        ],
+        body: `let range = index;
+${rangeStart}
+var first = 0xffffffffu;
+for (var pixel = rangeStart; pixel < rangeEnd; pixel++) {
+  if (usable[usableOffset + pixel] != 0u) { first = pixel; break; }
+}
+firstUsable[firstUsableOffset + index] = first;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-anchor`,
+        operation,
+        variant: 'anchor',
+        invocationCount: dimensions,
+        workgroupSize: 64,
+        bindings: [
+          rasterBinding('vectors', props.vectors),
+          rasterBinding('firstUsable', firstUsable),
+          rasterBinding('anchor', anchor, true)
+        ],
+        body: `var first = 0xffffffffu;
+for (var range = 0u; range < ${rangeCount}u; range++) {
+  first = min(first, firstUsable[firstUsableOffset + range]);
+}
+var value = 0.0;
+if (first != 0xffffffffu) { value = vectors[vectorsOffset + first * ${dimensions}u + index]; }
+anchor[anchorOffset + index] = value;`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-partial-sums`,
         operation,
         variant: 'partial-sums',
+        declarations: COMPENSATED_SUM_WGSL,
         invocationCount: rangeCount * dimensions,
         workgroupSize: 64,
         bindings: [
           rasterBinding('vectors', props.vectors),
           rasterBinding('usable', usable),
+          rasterBinding('anchor', anchor),
           rasterBinding('partialSums', partialSums, true),
           rasterBinding('partialCounts', partialCounts, true)
         ],
         body: `let range = index / ${dimensions}u;
 let band = index % ${dimensions}u;
 ${rangeStart}
-var total = 0.0;
+var total = vec2<f32>(0.0);
+var rawTotal = vec2<f32>(0.0);
 var count = 0u;
 for (var pixel = rangeStart; pixel < rangeEnd; pixel++) {
   if (usable[usableOffset + pixel] != 0u) {
-    total += vectors[vectorsOffset + pixel * ${dimensions}u + band];
+    let value = vectors[vectorsOffset + pixel * ${dimensions}u + band];
+    total = addCompensatedValue(total, value - anchor[anchorOffset + band]);
+    rawTotal = addCompensatedValue(rawTotal, value);
     count++;
   }
 }
-partialSums[partialSumsOffset + index] = total;
+partialSums[partialSumsOffset + index * 4u] = total.x;
+partialSums[partialSumsOffset + index * 4u + 1u] = total.y;
+partialSums[partialSumsOffset + index * 4u + 2u] = rawTotal.x;
+partialSums[partialSumsOffset + index * 4u + 3u] = rawTotal.y;
 if (band == 0u) { partialCounts[partialCountsOffset + range] = count; }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -218,32 +274,42 @@ if (band == 0u) { partialCounts[partialCountsOffset + range] = count; }`
         variant: 'mean',
         invocationCount: dimensions,
         workgroupSize: 64,
-        declarations: RASTER_FINITE_WGSL,
+        declarations: `${RASTER_FINITE_WGSL}\n${COMPENSATED_SUM_WGSL}`,
         bindings: [
           rasterBinding('partialSums', partialSums),
           rasterBinding('partialCounts', partialCounts),
+          rasterBinding('meanOffsetValues', meanOffset, true),
           rasterBinding('mean', mean, true),
           rasterBinding('usableCount', usableCount, true)
         ],
-        body: `var total = 0.0;
+        body: `var total = vec2<f32>(0.0);
+var rawTotal = vec2<f32>(0.0);
 var count = 0u;
 for (var range = 0u; range < ${rangeCount}u; range++) {
-  total += partialSums[partialSumsOffset + range * ${dimensions}u + index];
+  let position = partialSumsOffset + (range * ${dimensions}u + index) * 4u;
+  total = addCompensatedValue(total, partialSums[position]);
+  total = addCompensatedValue(total, partialSums[position + 1u]);
+  rawTotal = addCompensatedValue(rawTotal, partialSums[position + 2u]);
+  rawTotal = addCompensatedValue(rawTotal, partialSums[position + 3u]);
   count += partialCounts[partialCountsOffset + range];
 }
-mean[meanOffset + index] = select(missing(), total / f32(count), count > 0u);
+let offset = select(missing(), getCompensated(total) / f32(count), count > 0u);
+meanOffsetValues[meanOffsetValuesOffset + index] = offset;
+mean[meanOffset + index] = select(missing(), getCompensated(rawTotal) / f32(count), count > 0u);
 if (index == 0u) { usableCount[usableCountOffset] = count; }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-partial-covariance`,
         operation,
         variant: 'partial-covariance',
+        declarations: RASTER_EMBEDDING_CENTERING_WGSL,
         invocationCount: rangeCount * dimensions * dimensions,
         workgroupSize: 64,
         bindings: [
           rasterBinding('vectors', props.vectors),
           rasterBinding('usable', usable),
-          rasterBinding('mean', mean),
+          rasterBinding('anchor', anchor),
+          rasterBinding('meanOffsetValues', meanOffset),
           rasterBinding('partialCovariance', partialCovariance, true)
         ],
         body: `let range = index / ${dimensions * dimensions}u;
@@ -254,12 +320,12 @@ ${rangeStart}
 var total = 0.0;
 // Only the upper triangle is computed; the reduction mirrors it.
 if (column >= row) {
-  let rowMean = mean[meanOffset + row];
-  let columnMean = mean[meanOffset + column];
+  let rowMean = meanOffsetValues[meanOffsetValuesOffset + row];
+  let columnMean = meanOffsetValues[meanOffsetValuesOffset + column];
   for (var pixel = rangeStart; pixel < rangeEnd; pixel++) {
     if (usable[usableOffset + pixel] != 0u) {
-      total += (vectors[vectorsOffset + pixel * ${dimensions}u + row] - rowMean) *
-        (vectors[vectorsOffset + pixel * ${dimensions}u + column] - columnMean);
+      total += (getEmbeddingAnchorDifference(vectors[vectorsOffset + pixel * ${dimensions}u + row], anchor[anchorOffset + row]) - rowMean) *
+        (getEmbeddingAnchorDifference(vectors[vectorsOffset + pixel * ${dimensions}u + column], anchor[anchorOffset + column]) - columnMean);
     }
   }
 }

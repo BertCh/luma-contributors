@@ -6,6 +6,7 @@ import {
   GPUAreaOfApplicability,
   GPUConformalPredictionIntervals,
   GPUGeoConformalPredictionIntervals,
+  decodeConformalStatus,
   buildVecchiaPredictionNeighborhoods,
   getGPUConformalPredictionParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -24,6 +25,30 @@ import {
   readValidationPositions,
   VALIDATION_BEHAVIOR
 } from './catalog-validation-common';
+
+/** Diagnostic counters shared by both bindings; raw row words are published unchanged. */
+export function summarizeConformalStatuses(
+  statuses: Uint32Array,
+  geographic: boolean
+): Record<string, number> {
+  const summary = {
+    unbounded_rows: 0,
+    invalid_query_rows: 0,
+    no_calibration_rows: 0,
+    ...(geographic ? {neighbors_truncated_rows: 0, input_incomplete_rows: 0} : {})
+  };
+  for (const word of statuses) {
+    const status = decodeConformalStatus(word);
+    summary.unbounded_rows += Number(status.lowerUnbounded || status.upperUnbounded);
+    summary.invalid_query_rows += Number(status.invalidQuery);
+    summary.no_calibration_rows += Number(status.noCalibration);
+    if (geographic) {
+      summary.neighbors_truncated_rows! += Number(status.neighborsTruncated);
+      summary.input_incomplete_rows! += Number(status.inputIncomplete);
+    }
+  }
+  return summary;
+}
 
 const AREA_BINDING = makeValidationBinding({
   id: 'validation-area-of-applicability',
@@ -201,7 +226,12 @@ const CONFORMAL_BINDINGS = [false, true].map(geographic => {
     ],
     declaredBehavior: [
       ...VALIDATION_BEHAVIOR,
-      'Calibration predictions must come from a model that did not train on these calibration rows. Optional positive scale values normalize residuals and scale query intervals. Status bits: 1 lower unbounded, 2 upper unbounded, 4 invalid query, 8 no calibration, 16 neighbors truncated.'
+      'Calibration predictions must come from a model that did not train on these calibration rows. Optional positive scale values normalize residuals and scale query intervals. Status bits: 1 lower unbounded, 2 upper unbounded, 4 invalid query, 8 no calibration, 16 neighbors truncated.',
+      ...(geographic
+        ? [
+            'Geographic status bit 32 input incomplete reports loss in upstream calibration weights. input_incomplete_rows counts these query rows; it is independent of neighbors_truncated_rows, which counts internal truncation (bit 16). A row can contribute to both counters.'
+          ]
+        : [])
     ],
     limitation: geographic
       ? 'Gaussian weights over at most 256 nearest usable calibration points. Local weighting does not supply a distribution-free spatial coverage guarantee; unbounded endpoints publish null with explicit status bits.'
@@ -331,9 +361,7 @@ const CONFORMAL_BINDINGS = [false, true].map(geographic => {
               ? usable.reduce((sum, value) => sum + value, 0)
               : await session.readScalar(calibrationCount),
             miscoverage: values['miscoverage'] as number,
-            unbounded_rows: statuses.filter(value => (value & 3) !== 0).length,
-            invalid_query_rows: statuses.filter(value => (value & 4) !== 0).length,
-            no_calibration_rows: statuses.filter(value => (value & 8) !== 0).length
+            ...summarizeConformalStatuses(statuses, geographic)
           },
           [contributor]
         );

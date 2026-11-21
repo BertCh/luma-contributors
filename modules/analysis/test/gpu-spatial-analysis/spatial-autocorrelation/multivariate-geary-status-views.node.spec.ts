@@ -25,14 +25,14 @@ for (const invalidSource of ['aliased-output', 'foreign-graph'] as const) {
         new GPUMultivariateLocalGearyPermutationTest({
           values: view('float32', 8),
           variableCount: 2,
-          maximumPermutations: 3,
+          permutationCount: 3,
           weights: {
             offsets: view('uint32', 5),
             neighbors: view('uint32', 8),
             weights: view('float32', 8),
             status: {overflow}
           },
-          output: {statistic: view('float32', 4), pValues: view('float32', 4), classes}
+          output: {statistic: view('float32', 4), pseudoPValues: view('float32', 4), classes}
         }).getCommandNodes(graph)
       ).toThrow(
         invalidSource === 'aliased-output'

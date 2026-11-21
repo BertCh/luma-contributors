@@ -18,7 +18,7 @@ import {
   expectLineLineParity,
   getSphericalErrorMeters
 } from './line-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 function createChunkFixture(
   device: Device,
@@ -150,6 +150,142 @@ it('GPULineChunk extracts substrings by measure range', async () => {
   }
   expect(fixture.getCompileCount()).toBe(0);
   fixture.destroy();
+});
+
+it('GPULineChunk retains repeated vertices in row order between shared and terminal cuts', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines = createFlatLines([
+    [
+      [0, 0],
+      [0, 0],
+      [2, 0],
+      [2, 0],
+      [4, 0],
+      [4, 0]
+    ]
+  ]);
+  const chunked = createChunkFixture(device, lines, {mode: 'chunk', capacity: 7, lineCapacity: 2});
+  const substring = createChunkFixture(device, lines, {
+    mode: 'substring',
+    capacity: 4,
+    lineCapacity: 1
+  });
+  try {
+    // Measures are the x coordinates. The cuts at 0, 2 and 4 use source rows 0, 2 and 5.
+    const chunks = await chunked.run(getGPULineChunkParameterValues({chunkLength: 2}));
+    expect(chunks).toMatchObject({
+      count: 2,
+      requiredCount: 2,
+      vertexCount: 7,
+      requiredVertexCount: 7,
+      overflow: 0,
+      lineOffsets: [0, 3, 7],
+      sourceRows: [0, 1, 1, 2, 3, 4, 4],
+      measures: [0, 0, 2, 2, 2, 4, 4],
+      positions: [
+        [0, 0],
+        [0, 0],
+        [2, 0],
+        [2, 0],
+        [2, 0],
+        [4, 0],
+        [4, 0]
+      ]
+    });
+
+    const slice = await substring.run(
+      getGPULineChunkParameterValues({startMeasure: 2, endMeasure: 5})
+    );
+    expect(slice).toMatchObject({
+      count: 1,
+      requiredCount: 1,
+      vertexCount: 4,
+      requiredVertexCount: 4,
+      overflow: 0,
+      lineOffsets: [0, 4],
+      sourceRows: [2, 3, 4, 4],
+      measures: [2, 2, 4, 4],
+      positions: [
+        [2, 0],
+        [2, 0],
+        [4, 0],
+        [4, 0]
+      ]
+    });
+  } finally {
+    chunked.destroy();
+    substring.destroy();
+  }
+});
+
+it('GPULineChunk retains the final moving row at a rounded terminal measure', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines = createFlatLines([
+    [
+      [0, 0],
+      [1, 0],
+      [1, 2 ** -25]
+    ]
+  ]);
+  const fixture = createChunkFixture(device, lines, {
+    mode: 'substring',
+    capacity: 3,
+    lineCapacity: 1
+  });
+  try {
+    // The last measure is 1 + 2^-25, which publishes as 1. The terminal cut uses row 2.
+    const result = await fixture.run(
+      getGPULineChunkParameterValues({startMeasure: 0, endMeasure: 1})
+    );
+    expect(result).toMatchObject({
+      count: 1,
+      requiredVertexCount: 3,
+      overflow: 0,
+      lineOffsets: [0, 3],
+      measures: [0, 1, 1],
+      positions: [
+        [0, 0],
+        [1, 0],
+        [1, 2 ** -25]
+      ]
+    });
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('GPULineChunk fills exactly three pieces on a length-21 line with chunk length seven', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines = createFlatLines([
+    [
+      [0, 0],
+      [21, 0]
+    ]
+  ]);
+  const fixture = createChunkFixture(device, lines, {mode: 'chunk', capacity: 6, lineCapacity: 3});
+  try {
+    // The boundary at 3 × 7 reaches 21 exactly, so three slots suffice.
+    const result = await fixture.run(getGPULineChunkParameterValues({chunkLength: 7}));
+    expect(result).toMatchObject({
+      count: 3,
+      requiredCount: 3,
+      vertexCount: 6,
+      requiredVertexCount: 6,
+      overflow: 0,
+      lineOffsets: [0, 2, 4, 6],
+      sourceLineIndices: [0, 0, 0],
+      measures: [0, 7, 7, 14, 14, 21]
+    });
+    for (const [row, expectedX] of [0, 7, 7, 14, 14, 21].entries()) {
+      expect(result.positions[row][0]).toBeCloseTo(expectedX, 5);
+      expect(result.positions[row][1]).toBe(0);
+    }
+  } finally {
+    fixture.destroy();
+  }
 });
 
 it('GPULineChunk reports full piece requirements across empty lines and output padding', async () => {
@@ -357,4 +493,40 @@ it('GPULineChunk handles long lines whose prefix spans many scan tiles and piece
     expectLineLineParity(actual, expected, capacity, 2e-5 * 600, 2e-5);
   }
   substring.destroy();
+});
+
+it('GPULineChunk substring preserves the bend between measures one and three', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lines = createFlatLines([
+    [
+      [0, 0],
+      [2, 0],
+      [2, 2]
+    ]
+  ]);
+  const fixture = createChunkFixture(device, lines, {
+    mode: 'substring',
+    capacity: 3,
+    lineCapacity: 1
+  });
+  try {
+    const actual = await fixture.run(
+      getGPULineChunkParameterValues({startMeasure: 1, endMeasure: 3})
+    );
+    // Hand lengths: the bend is at measure 2; interpolating endpoints gives (1,0) and (2,1).
+    expect(actual.count).toBe(1);
+    expect(actual.overflow).toBe(0);
+    expect(actual.vertexCount).toBe(3);
+    expect(Array.from(actual.lineOffsets)).toEqual([0, 3]);
+    actual.positions.flat().forEach(value => expect(Number.isFinite(value)).toBe(true));
+    expect(actual.positions).toEqual([
+      [1, 0],
+      [2, 0],
+      [2, 1]
+    ]);
+    expect(Array.from(actual.measures)).toEqual([1, 2, 3]);
+  } finally {
+    fixture.destroy();
+  }
 });

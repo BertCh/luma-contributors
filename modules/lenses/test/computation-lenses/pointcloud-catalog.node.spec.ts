@@ -15,6 +15,7 @@ import {
   GPUPointCloudHeight
 } from '@luma-contributors/analysis/pointcloud-analysis';
 import {constructPointCloudShowcaseSnippet} from '../../../analysis/test/gpu-pointcloud/pointcloud-showcase-snippets';
+import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 
 test('final2 catalog-docs:G3 displayed SMRF and voxel merge use separate point and voxel statuses', () => {
   const device = createNullWebGPUDevice();
@@ -78,6 +79,17 @@ test('final2 catalog-docs:G4 displayed lidar ground and height require ground su
   const graph = new GPUCommandGraph(device);
   const unsigned = (id: string) => createTransientView(graph, id, 'uint32', 2);
   const scalar = (id: string) => createTransientView(graph, id, 'float32', 2);
+  const terrain = scalar('terrain');
+  const terrainBand = makeGPURasterBand(
+    terrain,
+    {
+      width: 2,
+      height: 1,
+      affine: [1, 0, 0, 0, 1, 0],
+      pixelInterpretation: 'area'
+    },
+    {validity: unsigned('terrain-validity')}
+  );
   const bindings = {
     GPUPointCloudGround,
     GPUPointCloudHeight,
@@ -87,7 +99,8 @@ test('final2 catalog-docs:G4 displayed lidar ground and height require ground su
     minimumSurface: scalar('minimum'),
     coverage: unsigned('coverage'),
     groundSeedCoverage: unsigned('ground-seed-coverage'),
-    terrain: scalar('terrain'),
+    terrain,
+    terrainBand,
     groundMask: unsigned('ground-mask'),
     outputClassifications: unsigned('ground-classes'),
     groundStatus: unsigned('ground-status'),
@@ -105,7 +118,10 @@ test('final2 catalog-docs:G4 displayed lidar ground and height require ground su
       'GPUPointCloudHeight',
       bindings
     );
-    expect(height.props.coverageBit).toBe(2);
+    // Canonical raster validity is a single 0/1 support mask, rather than the old bit-2 cube.
+    expect(height.props.coverageBit).toBe(1);
+    expect(height.props.terrain).toBe(terrainBand.storage.values);
+    expect(height.props.coverage).toBe(terrainBand.validity);
     expect(ground.props.coverage).toBe(bindings.groundSeedCoverage);
   } finally {
     device.destroy();

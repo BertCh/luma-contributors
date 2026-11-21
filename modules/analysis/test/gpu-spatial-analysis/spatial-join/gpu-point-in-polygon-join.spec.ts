@@ -143,7 +143,7 @@ function createJoinFixture(
         'uint32',
         pointCount
       ),
-      featureCounts: importGraphBuffer(
+      polygonAssignmentCounts: importGraphBuffer(
         graph,
         'feature-counts',
         buffers.featureCounts,

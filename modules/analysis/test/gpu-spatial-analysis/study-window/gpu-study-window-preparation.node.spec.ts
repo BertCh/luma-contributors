@@ -91,7 +91,10 @@ it('GPUStudyWindowPreparation registers persistent graph-local views and orders 
   expect(() => producer.getViews(new GPUCommandGraph(graph.device))).toThrow(message);
   const ids = nodes.map(node => node.id);
   expect(new Set(ids).size).toBe(ids.length);
-  expect(ids[0]).toBe('study-window-snapshot-prepare');
+  expect(ids.slice(0, 2)).toEqual([
+    'study-window-snapshot-request',
+    'study-window-snapshot-prepare'
+  ]);
   expect(ids.filter(id => !id.includes('-snapshot-')).slice(0, 7)).toEqual([
     'study-window-ring-terms',
     'study-window-ring-reduce-1',
@@ -196,18 +199,27 @@ it('GPUStudyWindowPreparation latches rebuild decisions once per encoding and re
   expect(() => producer.getViews(graph)).toThrow(
     'study-window study window needs graph.add before its consumers'
   );
-  // A new graph can import the same geometry buffers; use new graph-local views for this fixture.
+  // Construction captures immutable input identities. Fresh transient producers on another
+  // graph require a new handle; mutating the old handle's captured props is not a retry API.
   const next = createFixture<{changed: boolean}>();
-  Object.assign(producer.props, next.geometry);
-  const nextNodes = producer.getCommandNodes(next.graph);
-  expect(producer.getViews(next.graph).packed).not.toBe(views.packed);
-  for (const node of nextNodes) {
-    if (node.condition?.source === 'cpu') {
-      expect(node.condition.evaluate({changed: false})).toBe(true);
+  expect(Object.isFrozen(producer.props)).toBe(true);
+  expect(producer.props.positions).toBe(geometry.positions);
+  const nextProducer = new GPUStudyWindowPreparation({...producer.props, ...next.geometry});
+  try {
+    const nextNodes = nextProducer.getCommandNodes(next.graph);
+    expect(nextProducer.getViews(next.graph).packed).not.toBe(views.packed);
+    for (const node of nextNodes) {
+      if (node.condition?.source === 'cpu') {
+        expect(node.condition.evaluate({changed: false})).toBe(true);
+      }
     }
+    // The replacement's first encoding requests one build; the original retains its three.
+    expect(nextProducer.encodedBuildCount).toBe(1);
+    expect(producer.encodedBuildCount).toBe(3);
+  } finally {
+    nextProducer.destroy();
+    producer.destroy();
   }
-  expect(producer.encodedBuildCount).toBe(4);
-  producer.destroy();
 });
 
 it('GPUStudyWindowPreparation combines nested scan conditions without losing the encoding latch', () => {

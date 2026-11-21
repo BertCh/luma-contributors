@@ -22,6 +22,7 @@ import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from './ordinary-least-squares-parameters';
 import {getOrdinarySURScratchLength} from './ordinary-sur-nodes';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 
 /** Complete Kelejian-Prucha SUR composition plan; this route does not request Gram probes. */
 export function getSpatialSURAllocationLengths(
@@ -37,7 +38,11 @@ export function getSpatialSURAllocationLengths(
     ...getOrdinaryLeastSquaresAllocationLengths(rowCount, predictorCount),
     'SUR filtered predictors': equationCount * rowCount * predictorCount,
     'SUR filtered responses/residuals': equationCount * rowCount,
+    'SUR centered responses': equationCount * rowCount,
+    'SUR centered predictors': equationCount * rowCount * predictorCount,
     'SUR filtered coefficients': size,
+    'SUR convergence previous coefficients': size,
+    'SUR convergence disabled tolerance': 1,
     'SUR filtered covariance': size * size,
     'SUR unfiltered equation': rowCount * (predictorCount + 2),
     'SUR statistics scratch': getOrdinarySURScratchLength(equationCount, predictorCount, rowCount),
@@ -45,10 +50,11 @@ export function getSpatialSURAllocationLengths(
     'SUR GM table': (predictorCount + 2) * 4,
     'SUR GM summary': 13,
     'SUR OLS summary': GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
-    'SUR GM workspace': predictorCount + 4 + width + 16,
+    'SUR GM workspace': predictorCount + 4 + width + 18,
     'SUR GM mean partials': tileCount * width,
-    'SUR GM moment partials': tileCount * 7,
-    'SUR GM moments': 7,
+    'SUR GM moment partials': tileCount * 14,
+    'SUR GM moments': 14,
+    'SUR GM residual lag': 2 * rowCount,
     'SUR GM filtered partials': tileCount * filteredMoments,
     'SUR GM filtered moments': filteredMoments,
     'SUR GM residual partials': tileCount * 5,
@@ -85,19 +91,75 @@ export function getSpatialSURNodes<Parameters>(
     });
   const filteredPredictors = view('filtered-predictors', 'float32', equations * rows * columns);
   const filteredResponses = view('filtered-responses', 'float32', equations * rows);
+  const centeredPredictors = view('centered-predictors', 'float32', equations * rows * columns);
+  const centeredResponses = view('centered-responses', 'float32', equations * rows);
   const filteredResiduals = view('filtered-residuals', 'float32', equations * rows);
   const coefficients = view('filtered-coefficients', 'float32', size);
   const covariance = view('filtered-covariance', 'float32', size * size);
   const invalidWeights = view('invalid-weights', 'float32', 1);
+  // Its size equals the already-preflighted caller weights binding.
+  const normalizedValues = view('normalized-weights', 'float32', spatial.weights.weights.length);
+  const normalizedWeights = {...spatial.weights, weights: normalizedValues};
   const nodes: GPUCommandNode<Parameters>[] = getSpatialSURWeightValidationNodes(graph, {
     id,
     weights: spatial.weights,
     rowCount: rows,
     output: invalidWeights
   });
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-normalize-weights`,
+      operation: 'GPUSeeminglyUnrelatedRegression',
+      variant: 'normalize-accepted-rows',
+      invocationCount: rows,
+      bindings: [
+        {name: 'offsets', view: spatial.weights.offsets, type: 'u32', access: 'read'},
+        {name: 'sourceWeights', view: spatial.weights.weights, type: 'f32', access: 'read'},
+        {name: 'normalizedWeights', view: normalizedValues, type: 'f32', access: 'read_write'}
+      ],
+      body: `let begin = min(offsets[offsetsOffset + index], ${spatial.weights.weights.length}u);
+let end = min(offsets[offsetsOffset + index + 1u], ${spatial.weights.weights.length}u);
+var total = 0.0;
+for (var slot = begin; slot < end; slot++) { total += sourceWeights[sourceWeightsOffset + slot]; }
+let divisor = select(1.0, total, total > 0.0);
+for (var slot = begin; slot < end; slot++) { normalizedWeights[normalizedWeightsOffset + slot] = sourceWeights[sourceWeightsOffset + slot] / divisor; }`
+    })
+  );
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-center-responses`,
+      operation: 'GPUSeeminglyUnrelatedRegression',
+      variant: 'shift-spatial-responses',
+      invocationCount: equations * rows,
+      bindings: [
+        {name: 'responses', view: props.responses, type: 'f32', access: 'read'},
+        {name: 'centeredResponses', view: centeredResponses, type: 'f32', access: 'read_write'}
+      ],
+      declarations: IS_FINITE_BITS_WGSL,
+      body: `let origin = responses[responsesOffset + (index / ${rows}u) * ${rows}u];
+centeredResponses[centeredResponsesOffset + index] = responses[responsesOffset + index] - select(0.0, origin, isFiniteBits(origin));`
+    })
+  );
+  nodes.push(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-center-predictors`,
+      operation: 'GPUSeeminglyUnrelatedRegression',
+      variant: 'shift-spatial-predictors',
+      invocationCount: equations * rows * columns,
+      bindings: [
+        {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
+        {name: 'invalidWeights', view: invalidWeights, type: 'f32', access: 'read'},
+        {name: 'centered', view: centeredPredictors, type: 'f32', access: 'read_write'}
+      ],
+      declarations: ROUNDED_DIFFERENCE_WGSL,
+      body: `let equation = index / ${rows * columns}u;
+let column = index % ${columns}u;
+centered[centeredOffset + index] = getRoundedDifference(predictors[predictorsOffset + index], predictors[predictorsOffset + equation * ${rows * columns}u + column], bitcast<u32>(invalidWeights[invalidWeightsOffset]));`
+    })
+  );
   for (let equation = 0; equation < equations; equation++) {
-    const predictors = slice(props.predictors, equation * rows * columns, rows * columns);
-    const response = slice(props.responses, equation * rows, rows);
+    const predictors = slice(centeredPredictors, equation * rows * columns, rows * columns);
+    const response = slice(centeredResponses, equation * rows, rows);
     const residuals = view(`initial-residuals-${equation}`, 'float32', rows);
     nodes.push(
       ...new GPUOrdinaryLeastSquares({
@@ -117,7 +179,7 @@ export function getSpatialSURNodes<Parameters>(
           status: {code: view(`ols-status-${equation}`, 'uint32', 1)},
           residuals
         }
-      }).getCommandNodes(graph)
+      }).getCommandNodes(graph, true)
     );
     const table = view(`gm-table-${equation}`, 'float32', (columns + 2) * 4);
     const status = slice(spatial.output.status, equation, 1);
@@ -127,14 +189,14 @@ export function getSpatialSURNodes<Parameters>(
         predictors,
         response,
         predictorCount: columns,
-        weights: spatial.weights,
+        weights: normalizedWeights,
         estimator: 'kelejian-prucha',
         output: {
           table,
           summary: view(`gm-summary-${equation}`, 'float32', 13),
           status: {code: status}
         }
-      }).getCommandNodes(graph)
+      }).getCommandNodes(graph, true)
     );
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -173,7 +235,7 @@ if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffs
           {name: 'residuals', view: residuals, type: 'f32', access: 'read'},
           {name: 'packed', view: packed, type: 'f32', access: 'read_write'}
         ],
-        body: `packed[packedOffset + index * ${columns + 2}u] = response[responseOffset + index]; packed[packedOffset + index * ${columns + 2}u + 1u] = residuals[residualsOffset + index]; for (var column = 0u; column < ${columns}u; column++) { packed[packedOffset + index * ${columns + 2}u + column + 2u] = predictors[predictorsOffset + index * ${columns}u + column]; }`
+        body: `packed[packedOffset + index * ${columns + 2}u] = response[responseOffset + index] - response[responseOffset]; packed[packedOffset + index * ${columns + 2}u + 1u] = residuals[residualsOffset + index]; for (var column = 0u; column < ${columns}u; column++) { packed[packedOffset + index * ${columns + 2}u + column + 2u] = predictors[predictorsOffset + index * ${columns}u + column]; }`
       })
     );
     nodes.push(
@@ -185,7 +247,7 @@ if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffs
         bindings: [
           {name: 'offsets', view: spatial.weights.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: spatial.weights.neighbors, type: 'u32', access: 'read'},
-          {name: 'weights', view: spatial.weights.weights, type: 'f32', access: 'read'},
+          {name: 'weights', view: normalizedValues, type: 'f32', access: 'read'},
           {name: 'packed', view: packed, type: 'f32', access: 'read'},
           {
             name: 'parameter',
@@ -212,7 +274,23 @@ if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffs
             access: 'read_write'
           }
         ],
-        body: `let parameterValue = parameter[parameterOffset]; for (var column = 0u; column < ${columns + 2}u; column++) { var value = packed[packedOffset + index * ${columns + 2}u + column]; for (var slot = offsets[offsetsOffset + index]; slot < min(offsets[offsetsOffset + index + 1u], ${spatial.weights.neighbors.length}u); slot++) { let neighbor = neighbors[neighborsOffset + slot]; if (neighbor < ${rows}u) { value -= parameterValue * weights[weightsOffset + slot] * packed[packedOffset + neighbor * ${columns + 2}u + column]; } } if (column == 0u) { response[responseOffset + index] = value; } else if (column == 1u) { residuals[residualsOffset + index] = value; } else { predictors[predictorsOffset + index * ${columns}u + column - 2u] = value; } }`
+        declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`,
+        body: `let parameterValue = parameter[parameterOffset];
+let runtimeZero = offsets[offsetsOffset];  // Zero for every admitted spatial SUR graph.
+for (var column = 0u; column < ${columns + 2}u; column++) {
+  var lag = 0.0;
+  for (var slot = offsets[offsetsOffset + index]; slot < min(offsets[offsetsOffset + index + 1u], ${spatial.weights.neighbors.length}u); slot++) {
+    let neighbor = neighbors[neighborsOffset + slot];
+    if (neighbor < ${rows}u) { lag += weights[weightsOffset + slot] * packed[packedOffset + neighbor * ${columns + 2}u + column]; }
+  }
+  let original = packed[packedOffset + index * ${columns + 2}u + column];
+  // Keep the lag dot product separate from the update to the original value.
+  let roundedLag = bitcast<f32>(bitcast<u32>(lag) ^ runtimeZero);
+  let value = select(getNaN(), fma(-parameterValue, roundedLag, original), isFiniteBits(parameterValue));
+  if (column == 0u) { response[responseOffset + index] = value; }
+  else if (column == 1u) { residuals[residualsOffset + index] = value; }
+  else { predictors[predictorsOffset + index * ${columns}u + column - 2u] = value; }
+}`
       })
     );
   }
@@ -225,14 +303,17 @@ if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffs
       equationCount: equations,
       predictorCount: columns,
       rowCount: rows,
+      iteration: props.iteration,
+      parameters: props.parameters,
       output: {
         coefficients,
         covariance,
         residualCovariance: props.output.residualCovariance,
         residuals: view('filtered-final-residuals', 'float32', rows * equations),
-        status: props.output.status
+        status: props.output.status,
+        iteration: props.output.iteration
       }
-    }).getCommandNodes(graph)
+    }).getCommandNodes(graph, {predictors: props.predictors, parameters: spatial.output.parameters})
   );
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
@@ -242,12 +323,43 @@ if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffs
       invocationCount: size * size,
       bindings: [
         {name: 'parameters', view: spatial.output.parameters, type: 'f32', access: 'read'},
+        {name: 'responses', view: props.responses, type: 'f32', access: 'read'},
+        {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
         {name: 'sourceCoefficients', view: coefficients, type: 'f32', access: 'read'},
         {name: 'sourceCovariance', view: covariance, type: 'f32', access: 'read'},
         {name: 'coefficients', view: props.output.coefficients, type: 'f32', access: 'read_write'},
-        {name: 'covariance', view: props.output.covariance, type: 'f32', access: 'read_write'}
+        {name: 'covariance', view: props.output.covariance, type: 'f32', access: 'read_write'},
+        {name: 'invalidWeights', view: invalidWeights, type: 'f32', access: 'read'}
       ],
-      body: `let first = index / ${size}u; let second = index % ${size}u; let firstScale = select(1.0, 1.0 / (1.0 - parameters[parametersOffset + first / ${width}u]), first % ${width}u == 0u); let secondScale = select(1.0, 1.0 / (1.0 - parameters[parametersOffset + second / ${width}u]), second % ${width}u == 0u); covariance[covarianceOffset + index] = sourceCovariance[sourceCovarianceOffset + index] * firstScale * secondScale; if (index < ${size}u) { coefficients[coefficientsOffset + index] = sourceCoefficients[sourceCoefficientsOffset + index] * secondScale; }`
+      declarations: ROUNDED_DIFFERENCE_WGSL,
+      body: `let first = index / ${size}u; let second = index % ${size}u;
+let firstEquation = first / ${width}u; let secondEquation = second / ${width}u;
+let firstColumn = first % ${width}u; let secondColumn = second % ${width}u;
+// Each equation has A[0,:] = [1/(1-lambda), -xOrigin], identity slope rows.
+var transformed = 0.0;
+for (var left = 0u; left < ${width}u; left++) {
+ var leftFactor = select(0.0, 1.0, left == firstColumn);
+ if (firstColumn == 0u) { if (left == 0u) { leftFactor = 1.0 / (1.0 - parameters[parametersOffset + firstEquation]); } else { leftFactor = -predictors[predictorsOffset + firstEquation * ${rows * columns}u + left - 1u]; } }
+ for (var right = 0u; right < ${width}u; right++) {
+  var rightFactor = select(0.0, 1.0, right == secondColumn);
+  if (secondColumn == 0u) { if (right == 0u) { rightFactor = 1.0 / (1.0 - parameters[parametersOffset + secondEquation]); } else { rightFactor = -predictors[predictorsOffset + secondEquation * ${rows * columns}u + right - 1u]; } }
+  transformed += leftFactor * sourceCovariance[sourceCovarianceOffset + (firstEquation * ${width}u + left) * ${size}u + secondEquation * ${width}u + right] * rightFactor;
+ }
+}
+covariance[covarianceOffset + index] = transformed;
+if (index < ${size}u) {
+ let equation = index / ${width}u;
+ var value = sourceCoefficients[sourceCoefficientsOffset + index];
+ if (index % ${width}u == 0u) {
+  let centeredIntercept = value / (1.0 - parameters[parametersOffset + equation]);
+  var originDifference = responses[responsesOffset + equation * ${rows}u];
+  for (var column = 0u; column < ${columns}u; column++) {
+    originDifference = getRoundedDifference(originDifference, predictors[predictorsOffset + equation * ${rows * columns}u + column] * sourceCoefficients[sourceCoefficientsOffset + index + column + 1u], bitcast<u32>(invalidWeights[invalidWeightsOffset]));
+  }
+  value = originDifference + centeredIntercept;
+ }
+ coefficients[coefficientsOffset + index] = value;
+}`
     })
   );
   nodes.push(
@@ -257,12 +369,15 @@ if (status[statusOffset] == 0u) { parameters[parametersOffset] = table[tableOffs
       variant: 'structural-spatial-residuals',
       invocationCount: equations * rows,
       bindings: [
-        {name: 'predictors', view: props.predictors, type: 'f32', access: 'read'},
+        {name: 'predictors', view: centeredPredictors, type: 'f32', access: 'read'},
         {name: 'responses', view: props.responses, type: 'f32', access: 'read'},
-        {name: 'coefficients', view: props.output.coefficients, type: 'f32', access: 'read'},
+        {name: 'coefficients', view: coefficients, type: 'f32', access: 'read'},
+        {name: 'parameters', view: spatial.output.parameters, type: 'f32', access: 'read'},
+        {name: 'invalidWeights', view: invalidWeights, type: 'f32', access: 'read'},
         {name: 'residuals', view: props.output.residuals, type: 'f32', access: 'read_write'}
       ],
-      body: `let equation = index / ${rows}u; var residual = responses[responsesOffset + index] - coefficients[coefficientsOffset + equation * ${width}u]; for (var column = 0u; column < ${columns}u; column++) { residual -= predictors[predictorsOffset + index * ${columns}u + column] * coefficients[coefficientsOffset + equation * ${width}u + column + 1u]; } residuals[residualsOffset + index] = residual;`
+      declarations: ROUNDED_DIFFERENCE_WGSL,
+      body: `let equation = index / ${rows}u; var residual = getRoundedDifference(responses[responsesOffset + index], responses[responsesOffset + equation * ${rows}u], bitcast<u32>(invalidWeights[invalidWeightsOffset])); residual -= coefficients[coefficientsOffset + equation * ${width}u] / (1.0 - parameters[parametersOffset + equation]); for (var column = 0u; column < ${columns}u; column++) { residual -= predictors[predictorsOffset + index * ${columns}u + column] * coefficients[coefficientsOffset + equation * ${width}u + column + 1u]; } residuals[residualsOffset + index] = residual;`
     })
   );
   return nodes;
@@ -283,6 +398,7 @@ export function getSpatialSURWeightValidationNodes<Parameters>(
     neighbors: props.weights.neighbors,
     weights: props.weights.weights,
     overflow: props.weights.status?.overflow,
+    candidateOverflow: props.weights.status?.candidateOverflow,
     output: props.output
   });
   const layout = getRegressionTileLayout(props.rowCount);
@@ -321,13 +437,25 @@ export function getSpatialSURWeightValidationNodes<Parameters>(
               access: 'read' as const
             }
           ]
+        : []),
+      ...(props.weights.status?.candidateOverflow
+        ? [
+            {
+              name: 'candidateOverflow',
+              view: props.weights.status.candidateOverflow,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]
         : [])
     ],
     declarations: `${IS_FINITE_BITS_WGSL}
 fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
   ${props.weights.status?.overflow ? 'if (overflow[overflowOffset] != 0u) { (*terms)[0] = 1.0; return; }' : ''}
+  ${props.weights.status?.candidateOverflow ? 'if (candidateOverflow[candidateOverflowOffset] != 0u) { (*terms)[0] = 1.0; return; }' : ''}
   let begin = offsets[offsetsOffset + row];
   let end = offsets[offsetsOffset + row + 1u];
+  if (row == 0u && begin != 0u) { (*terms)[0] = 1.0; return; }
   if (end < begin || end > ${props.weights.neighbors.length}u) { (*terms)[0] = 1.0; return; }
   var total = 0.0;
   for (var slot = begin; slot < end; slot++) {

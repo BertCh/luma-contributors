@@ -3,6 +3,28 @@
 These contributors declare work in a `GPUCommandGraph`. They do not submit GPU work or read
 results back. Outputs are caller-owned packed `GraphDataView`s, and inputs remain GPU-resident.
 
+Choose by task; [the network landing page](./README.md#choose-a-network-task) also covers movement,
+flows, point processes and time geography.
+
+## Network structure and resilience
+
+- [Directed components and undirected resilience](#directed-components-and-undirected-resilience)
+- [Large-graph strongly connected components](#large-graph-strongly-connected-components)
+- [Edge betweenness](#edge-betweenness)
+- [Community detection with Louvain](./louvain.md)
+
+## Routes
+
+- [Alternative routes](./alternative-routes.md) and [K-shortest simple paths](./k-shortest-paths.md)
+- [Network time geography](./network-time-geography.md)
+- [Traversal phases, limits and usable results](./concepts.md#traversal-phases-limits-and-usable-results)
+
+## Network topology
+
+- [H3 identities and cell flows](#h3-identities-and-cell-flows)
+- [Visibility graphs](./visibility-graph.md)
+- [Construction, noding and turn-restricted line graphs](./operators.md)
+
 ## Edge betweenness
 
 `GPUNetworkCentrality.output.edgeBetweenness` accepts a `float32` column with one row per
@@ -12,8 +34,19 @@ betweenness. The existing convergence output covers both dependency phases. A va
 sum of shortest-path dependencies through that directed edge. Parallel CSR edges are distinct
 paths. For an undirected graph listing both directions, each directed slot equals the conventional unnormalized
 undirected edge centrality when all nodes are pivots; if combining paired slots, divide their
-sum by two. Zero-cost edges are excluded from tight-path counting, as in the original
-node implementation. Preserve a slot-to-source-edge mapping if CSR sorting changes edge order.
+sum by two. Zero-cost edges are tight only between distinct, reached vertices for the current pivot,
+with equal finite shortest-path costs. A zero-cost self-loop and an unreachable cycle do not
+set the cycle diagnostic. A reachable cycle of zero-weight tight edges makes path counts undefined:
+nodes on and after the cycle receive no path count, `status.zeroWeightCycle = 1` and
+`status.converged = 0`. A budget stop separately sets `status.iterationLimitReached`; inspect both
+before consuming betweenness. Preserve a slot-to-source-edge mapping if CSR sorting changes edge order.
+
+For continuation, `roundsPerStep` allows 1–1,023 rounds per submitted window (default 64), while
+`maximumIterations` allows 1–4,294,967,294 total rounds per phase per pivot batch across all
+windows (default vertex count). A new window carries phase state; it does not reset the total
+allowance. With `reset: false`, the aggregate batch `iterationLimitReached` flag is sticky across
+later successful batches until reset. See
+[Traversal and continuation budgets](./status-oracles.md#traversal-and-continuation-budgets).
 
 ## Directed components and undirected resilience
 
@@ -36,15 +69,19 @@ two parallel edges form a block and neither is a bridge. A self-loop pairs with 
 a singleton block. Invalid neighbor IDs are ignored; CSR offsets must remain monotone and
 within capacity. Isolated nodes are separate SCCs and are not articulation points.
 
-`strongComponents` uses an exact mutual-reachability kernel with O(V²) scratch and O(V(V+E))
-work, for at most 1024 nodes and 65536 slots. For larger graphs, use
-work, for at most 1024 nodes and 65536 slots. For larger directed graphs, use
-`GPUNetworkStronglyConnectedComponents` below.
+With `mode: 'exact'`, construction supports at most 1,024 nodes and 65,536 CSR slots.
+The SCC reference uses mutual reachability with O(V²) scratch and O(V(V+E)) work;
+resilience uses an iterative Tarjan traversal in one GPU invocation.
 
-The bounds of 1024 nodes and 65536 slots apply to the resilience outputs and to the
-SCC path. Resilience uses an iterative Tarjan traversal in one GPU invocation. These
-are exact bounded subgraph implementations; large-graph throughput and a lower-level generic graph
-adapter for resilience remain future optimization work.
+In `mode: 'auto'`, `strongComponents` uses exact SCC within 1,024 nodes and 65,536 slots,
+and switches to parallel SCC when either bound is exceeded. Select `mode: 'parallel'` to
+use budgeted SCCs even for a small graph; inspect the SCC status before consuming labels.
+
+Auto mode uses parallel resilience even for small graphs. Explicit `mode: 'parallel'` also uses
+parallel resilience. Both parallel routes obey their own uint32 indexing, scratch-storage,
+command and device binding limits; the exact SCC bounds
+do not impose a universal resilience limit. See the constructor's resource checks and
+`GPUNetworkStronglyConnectedComponents` below for the large-graph SCC contract.
 
 ## Large-graph strongly connected components
 
@@ -76,7 +113,8 @@ route), the CPU operation uses the trim/colour/backward/finalize state machine w
 With no mode or budget supplied, CPU SCCs remain exact Tarjan at every accepted size; a 1025-vertex
 chain does not acquire the GPU default budget just by crossing the GPU exact-route limit.
 The new class keeps this iterative SCC contract separate from
-`GPUNetworkStructure`'s bounded resilience outputs. The algorithm is adapted from the user's
+`GPUNetworkStructure`'s exact Tarjan resilience route; its auto/parallel resilience route has
+separate indexing, scratch and device limits. The algorithm is adapted from the user's
 luma.gl fork at `e0ed33791`, independently implemented for WebGPU and inspired by cuGraph.
 ## Large-graph directed components
 
@@ -126,12 +164,26 @@ Padding is `0xffffffff`. Distinct parallel edges define distinct routes. Ties fo
 lexicographic CSR edge order. Source equal to destination has one zero-edge path.
 
 Queries execute independently. A bounded min-heap frontier enumerates simple paths by
-nonnegative accumulated cost. `maximumFrontierSize` bounds retained frontier entries;
-`maximumExpansions` bounds popped states. Either exhausted budget leaves `complete` zero.
-A zero flag means retained paths are candidates, not certified k-shortest routes. Inspect it
-before reporting alternatives as optimal. See [Alternative routes](./alternative-routes.md)
+nonnegative accumulated cost. `maximumFrontierSize` accepts 1–65,536 simultaneous pending prefixes
+per query (default 1,024). `maximumExpansions` accepts 1–10,000,000 examined CSR slots per query per
+encoding (default 100,000), including rejected invalid/cyclic slots. A search stops incomplete when
+it would exceed either the examination allowance or the pending-prefix capacity while work remains;
+`complete` is then zero on GPU and explicitly budgeted CPU calls. Merely using the final allowed
+examination does not imply interruption: popping a destination costs no examination. For offsets
+`[0,3,3,3]`, neighbors `[0,1,2]`, weights `[0,1,2]` and query 0→1, the rejected self-loop still consumes an examination: budget 3 returns one route with `complete=1`; budget 2
+stops before the target can be popped and returns no route with `complete=0`.
+
+`counts[query]` bounds the usable prefix. GPU orders by accumulated float32 cost, then lexicographic
+CSR edge sequence; CPU orders by float64 cost and rounds to float32 only at publication. Retained
+routes are certified under their backend's arithmetic. The CPU can therefore order routes with
+different internal costs even when their published costs tie. For example, a direct cost 2^24
+precedes a detour costing 2^24+1 even when both payloads are 2^24. A retained CPU path with two
+2.5e38 edges has published cost Infinity; use `counts` and lengths to distinguish it from padding.
+An interrupted requested top-k result is incomplete; empty incomplete output does not establish
+unreachability. See
+[traversal phases, limits and usable results](./concepts.md#traversal-phases-limits-and-usable-results). See [Alternative routes](./alternative-routes.md)
 for tie ordering, capacities and scratch-memory limits. Negative, NaN and infinite edge costs
-and overflowed f32 accumulated costs are impassable.
+are impassable on both backends; overflowed accumulated float32 costs are also impassable on GPU.
 
 ## H3 identities and cell flows
 
@@ -152,7 +204,15 @@ coordinates have the existing f32 H3 precision limit, especially at resolutions 
 
 `validity` and `status.invalidCount` expose rejected rows. Sum(outgoing) and sum(incoming) equal the
 valid pair sum up to f32 accumulation error; the neighboring-edge sum may be smaller. The
-current direct-scan recipe costs O(cellCount × pairCount); preaggregate large pair tables.
+direct-scan recipe processes at most 4,096 OD pairs per cell or directed-edge slot **per pass**.
+Larger inputs continue in input order with the previous float32 accumulator, rather than reducing
+independent pass totals. Work is O(cellCount × pairCount), including six edge-slot scans per cell;
+preaggregate large pair tables.
+
+For `16777216 + 1 + 1`, input-order float32 accumulation gives 16,777,216 because each addition
+of one rounds back to 16,777,216. Grouping the two ones first gives 16,777,218. Carrying the
+accumulator across pass boundaries preserves input order; regrouping pairs or independently summing
+chunks can change totals. Conservation comparisons therefore allow float32 accumulation error.
 
 ## LCSS trajectory similarity
 
@@ -199,7 +259,8 @@ unassigned or an input is invalid. Inspect both feasibility and status before co
 
 ## Verification and reference contracts
 
-The focused suite `test/geospatial-expansion/network-expansion.spec.ts` runs real WebGPU kernels.
+The focused suite `modules/analysis/test/geospatial-expansion/network-expansion.spec.ts` contains
+real WebGPU correctness cases; their presence alone does not certify a GPU run.
 It compares H3 keys with h3-js 4.4 across all base cells and their first-level children plus
 resolutions 0–15; checks directed SCCs and undirected parallel-edge blocks; verifies route order
 and truncated-search flags; exercises edge-only centrality; checks p-center and capacities; and
@@ -210,7 +271,7 @@ LCSS also uses a NetworkX longest-chain oracle over the DAG of eligible match pa
 of the GPU dynamic-program recurrence. The node companion parses generated WGSL
 and verifies the eight-storage-binding limit.
 
-`test/oracles/network-expansion.py` generates independent fixtures using NetworkX 3.7 and
+`modules/analysis/test/oracles/network-expansion.py` generates independent fixtures using NetworkX 3.7 and
 Python `itertools` exhaustive facility subsets and capacitated assignments. Reference conventions are unnormalized directed
 edge betweenness, minimum-ID SCC labels, simple paths by total edge cost, and unweighted
 p-center. These bounded correctness fixtures are not throughput benchmarks or proof of broad
@@ -244,5 +305,58 @@ The executable synthetic directed-diamond scenario captures the workflow outputs
 four-observation example includes a repeated timestamp and a long time gap, and captures the
 actual GPU quality flags, step speeds and track summaries. The two threshold rows are maximum
 speed and maximum elapsed time. Optional reference-route similarity and map matching retain
-separate failure evidence. See [the recipe contract](../gpu-spatial-analysis/expansion-recipes.md#track-quality-and-route-conformity)
-for timestamp encodings, flag bits and bounded route-search semantics.
+separate failure evidence. The recipe similarity output requests Hausdorff, Fréchet, DTW and LCSS,
+plus `frechetWithin` when `frechetEpsilon` is supplied. Its `status.stages` includes a `similarity`
+entry even without map matching. The entry's `layout.kind` is `'per-pair-bits'`; `layout.view`
+is the same view as `outputs.similarity.pairStatus`. Read only `activePairCount` rows, or
+`pairCapacity` when that optional live count view is absent. Stage `status` is not a scalar
+certificate for these pair bits.
+
+Cap flag 2 invalidates Fréchet, DTW, LCSS and the optional `frechetWithin` decision while leaving
+Hausdorff usable. Flag 16 invalidates only that decision: all four distance/similarity measures
+remain usable when no other failure is present. Flags 1, 4 and 8 (empty track, invalid pair,
+invalid geometry) invalidate every measure. Decode the active prefix explicitly after the caller's
+submission/readback:
+
+```ts
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUTrackQualityRecipeStageStatusPort} from '@luma-contributors/analysis/gpu-network';
+import {decodeGPUTrackSimilarityPairStatus} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export async function readTrackQualitySimilarity(
+  stages: readonly GPUTrackQualityRecipeStageStatusPort[],
+  readUint32: (view: GraphDataView<'uint32'>) => Promise<Uint32Array>
+) {
+  const similarityStage = stages.find(stage => stage.stage === 'similarity');
+  const layout = similarityStage?.layout;
+  if (layout?.kind !== 'per-pair-bits') throw new Error('Similarity stage is absent');
+  const activePairCount = layout.activePairCount
+    ? (await readUint32(layout.activePairCount))[0]
+    : layout.pairCapacity;
+  if (activePairCount === undefined) throw new Error('Active pair count is missing');
+  const pairStatus = await readUint32(layout.view);
+  return decodeGPUTrackSimilarityPairStatus(pairStatus, activePairCount);
+}
+```
+
+For `[2,16]`, the first pair has `uncappedMeasuresValid: true`,
+`dynamicProgramMeasuresValid: false`, `decisionValid: false`; the second has both measure flags
+true and `decisionValid: false`. These per-pair diagnostics remain independent of map-matching
+stage flags. See [the recipe contract](../gpu-spatial-analysis/expansion-recipes.md#track-quality-and-route-conformity)
+for timestamp encodings and bounded route-search semantics.
+
+## Isochrone cell outlines and rings
+
+For `GPUNetworkIsochrones.cellOutline`, a caller-supplied reached-cell table exposes
+`table.status.count`, `overflow` and optional `candidateOverflow`. The full `table.status` is
+forwarded to the nested outline as its counted-cell source, so either source loss flag reaches
+`cellOutline.output.status.candidateOverflow` when that optional view is requested. Without
+that outline candidate-loss view, its segment count is suppressed to zero instead of publishing
+an apparently complete boundary. Local outline `overflow` and `requiredCount` still describe the
+retained cell prefix; zero local overflow does not clear source loss.
+
+Nested rings are suppressed on either cell-table loss or local outline segment overflow. Inspect
+the rings' candidate-loss and complete evidence as well as final-capacity overflow; these are
+separate conditions. A next complete submission clears source loss and lets outlines and rings
+recover. Counts bound only the usable prefixes for the current submission. See the
+[isochrone operator contract](./operators.md#gpunetworkisochrones) for routing, units and capacities.

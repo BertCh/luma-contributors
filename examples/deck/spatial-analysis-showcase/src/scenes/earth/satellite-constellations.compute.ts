@@ -18,7 +18,10 @@ import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {binValues, histogramChart} from '../movement/f-chart-helpers';
 import {SatelliteMarkerLayer, SatelliteTrailLayer} from './satellite-layers';
-import {createSatellitePlaybackCore} from './satellite-playback-core';
+import {
+  createSatellitePlaybackCore,
+  quantizeSatellitePlaybackTime
+} from './satellite-playback-core';
 import {
   formatSatelliteClock,
   loadSatelliteTracks,
@@ -175,7 +178,7 @@ export async function createSatelliteConstellations(
       new GPUSpatialKMeans({
         id: 'shells',
         positions: importGraphBuffer(graph, 'features', features, 'float32x2', count),
-        k: effectiveK,
+        clusterCount: effectiveK,
         maximumIterations: iterations,
         initialization: 'kmeans++',
         parameters: kmeansParameters.importToGraph(graph),
@@ -492,7 +495,7 @@ export async function createSatelliteConstellations(
 
     encode(commandEncoder, frame) {
       const options = ctx.options;
-      const playhead = clock.advance(frame);
+      const playhead = quantizeSatellitePlaybackTime(clock.advance(frame));
       ctx.setReadout('clock', formatSatelliteClock(tracks, playhead));
       if (active.dirty) {
         active.compiled.encode(commandEncoder, {parameters: undefined});

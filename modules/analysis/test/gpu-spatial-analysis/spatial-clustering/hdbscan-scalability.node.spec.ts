@@ -10,10 +10,10 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {expect, it, vi} from 'vitest';
 import {
-  GPUHierarchicalDensityClustering,
-  GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT,
-  GPU_HIERARCHICAL_DENSITY_CLUSTERING_REFERENCE_MAXIMUM_ROW_COUNT,
-  type GPUHierarchicalDensityClusteringProps
+  GPUHDBSCAN,
+  GPU_HDBSCAN_MAXIMUM_ROW_COUNT,
+  GPU_HDBSCAN_REFERENCE_MAXIMUM_ROW_COUNT,
+  type GPUHDBSCANProps
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {
   createNullWebGPUDevice,
@@ -34,7 +34,7 @@ function getReservedWGSLIdentifiers(source: string) {
   return findReservedIdentifiers(stripWGSLComments(source));
 }
 
-function createProps(graph: GPUCommandGraph, rows: number): GPUHierarchicalDensityClusteringProps {
+function createProps(graph: GPUCommandGraph, rows: number): GPUHDBSCANProps {
   return {
     positions: createTransientView(graph, 'positions', 'float32x2', rows),
     minimumClusterSize: 2,
@@ -43,8 +43,7 @@ function createProps(graph: GPUCommandGraph, rows: number): GPUHierarchicalDensi
       labels: createTransientView(graph, 'labels', 'uint32', rows),
       coreDistances: createTransientView(graph, 'core', 'float32', rows),
       status: {
-        count: createTransientView(graph, 'count', 'uint32', 1),
-        requiredCount: createTransientView(graph, 'required-count', 'uint32', 1)
+        count: createTransientView(graph, 'count', 'uint32', 1)
       }
     }
   };
@@ -53,11 +52,11 @@ function createProps(graph: GPUCommandGraph, rows: number): GPUHierarchicalDensi
 it('declares four million rows at 32 samples with every actual binding within 128 MiB', () => {
   const device = createNullWebGPUDevice();
   try {
-    for (const rows of [1, 257, 1_048_577, GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT]) {
+    for (const rows of [1, 257, 1_048_577, GPU_HDBSCAN_MAXIMUM_ROW_COUNT]) {
       const graph = new GPUCommandGraph(device);
       const props = createProps(graph, rows);
       const allocate = vi.spyOn(graph, 'createTransientBuffer');
-      const clustering = new GPUHierarchicalDensityClustering(props);
+      const clustering = new GPUHDBSCAN(props);
       const nodes = clustering.getCommandNodes(graph);
       expect(nodes.length, `rows=${rows}`).toBeLessThanOrEqual(
         clustering.estimatedCommandNodeCount
@@ -91,15 +90,12 @@ it('keeps the packed neighbour reference opt-in and its original named row cap',
   const device = createNullWebGPUDevice();
   try {
     const graph = new GPUCommandGraph(device);
-    const props = createProps(
-      graph,
-      GPU_HIERARCHICAL_DENSITY_CLUSTERING_REFERENCE_MAXIMUM_ROW_COUNT + 1
+    const props = createProps(graph, GPU_HDBSCAN_REFERENCE_MAXIMUM_ROW_COUNT + 1);
+    expect(() => new GPUHDBSCAN({...props, coreDistanceSearch: 'neighbor-search'})).toThrow(
+      /positions rows for coreDistanceSearch neighbor-search.*1048576/
     );
-    expect(
-      () => new GPUHierarchicalDensityClustering({...props, coreDistanceSearch: 'neighbor-search'})
-    ).toThrow(/positions rows for coreDistanceSearch neighbor-search.*1048576/);
     const referenceGraph = new GPUCommandGraph(device);
-    const nodes = new GPUHierarchicalDensityClustering({
+    const nodes = new GPUHDBSCAN({
       ...createProps(referenceGraph, 64),
       coreDistanceSearch: 'neighbor-search'
     }).getCommandNodes(referenceGraph);
@@ -124,12 +120,12 @@ it('rejects every overlapping pair of output fields at construction, while allow
     });
     const count = graph.createDataView(shared, {format: 'uint32', length: 1, byteOffset: 512});
     const output = {labels, coreDistances, status: {count}};
-    expect(() => new GPUHierarchicalDensityClustering({...props, output})).not.toThrow();
+    expect(() => new GPUHDBSCAN({...props, output})).not.toThrow();
     const overlap = (format: 'uint32' | 'float32', byteOffset: number) =>
       graph.createDataView(shared, {format, length: format === 'float32' ? 64 : 1, byteOffset});
     expect(
       () =>
-        new GPUHierarchicalDensityClustering({
+        new GPUHDBSCAN({
           ...props,
           output: {
             ...output,
@@ -140,7 +136,7 @@ it('rejects every overlapping pair of output fields at construction, while allow
     for (const byteOffset of [252, 508]) {
       expect(
         () =>
-          new GPUHierarchicalDensityClustering({
+          new GPUHDBSCAN({
             ...props,
             output: {
               ...output,
@@ -192,7 +188,7 @@ it('preflights aligned caller bindings and derived planes without changing the g
         device.limits.maxStorageBufferBindingSize =
           testCase === 'reference-parameters' ? 32 : 65536;
       }
-      const clustering = new GPUHierarchicalDensityClustering(props);
+      const clustering = new GPUHDBSCAN(props);
       const allocate = vi.spyOn(graph, 'createTransientBuffer');
       const createView = vi.spyOn(graph, 'createDataView');
       const add = vi.spyOn(graph, 'add');
@@ -219,7 +215,7 @@ it('adds query lanes and tree rounds without adding distinct iterative pipelines
   try {
     const getNodes = (rows: number) => {
       const graph = new GPUCommandGraph(device);
-      return new GPUHierarchicalDensityClustering(createProps(graph, rows)).getCommandNodes(graph);
+      return new GPUHDBSCAN(createProps(graph, rows)).getCommandNodes(graph);
     };
     const small = getNodes(1024);
     const large = getNodes(4097);
@@ -232,7 +228,7 @@ it('adds query lanes and tree rounds without adding distinct iterative pipelines
     // Audit all generated sources, including the reference route and the optional time binding.
     const graph = new GPUCommandGraph(device);
     const props = createProps(graph, 257);
-    const timed = new GPUHierarchicalDensityClustering({
+    const timed = new GPUHDBSCAN({
       ...props,
       times: createTransientView(graph, 'times', 'float32', 257),
       parameters: createTransientView(graph, 'parameters', 'float32', 4),
@@ -244,7 +240,7 @@ it('adds query lanes and tree rounds without adding distinct iterative pipelines
       }
     }).getCommandNodes(graph);
     const referenceGraph = new GPUCommandGraph(device);
-    const reference = new GPUHierarchicalDensityClustering({
+    const reference = new GPUHDBSCAN({
       ...createProps(referenceGraph, 257),
       coreDistanceSearch: 'neighbor-search'
     }).getCommandNodes(referenceGraph);
@@ -283,10 +279,9 @@ it('rejects numeric props that cannot become finite uint32 WGSL literals at cons
     const allocate = vi.spyOn(graph, 'createTransientBuffer');
     for (const name of ['minimumClusterSize', 'minimumSamples'] as const) {
       for (const value of [NaN, Infinity, -Infinity, 1.5, 2 ** 32, Number.MAX_VALUE]) {
-        expect(
-          () => new GPUHierarchicalDensityClustering({...props, [name]: value}),
-          `${name}=${value}`
-        ).toThrow(new RegExp(`^hierarchical-density-clustering ${name} must be an integer`));
+        expect(() => new GPUHDBSCAN({...props, [name]: value}), `${name}=${value}`).toThrow(
+          new RegExp(`^hierarchical-density-clustering ${name} must be an integer`)
+        );
       }
     }
     expect(allocate).not.toHaveBeenCalled();
@@ -295,87 +290,43 @@ it('rejects numeric props that cannot become finite uint32 WGSL literals at cons
   }
 });
 
-it('validates requiredCount scalar shape and the whole-buffer usage scope of simultaneous status bindings', () => {
+it('validates the named count and rejects the duplicate requiredCount destination', () => {
   const device = createNullWebGPUDevice();
   try {
     const graph = new GPUCommandGraph(device);
     const props = createProps(graph, 64);
-    const shared = createTransientView(graph, 'shared-status', 'uint32', 129).buffer;
-    const statusView = (byteOffset: number, length = 1, byteStride = 4) =>
-      graph.createDataView(shared, {
-        format: 'uint32',
-        byteOffset,
-        byteStride,
-        length
-      });
-    for (const requiredCount of [statusView(0, 0), statusView(0, 1, 8)]) {
-      expect(
-        () =>
-          new GPUHierarchicalDensityClustering({
-            ...props,
-            output: {
-              ...props.output,
-              status: {requiredCount}
-            }
-          })
-      ).toThrow(/requiredCount/);
+    const shared = createTransientView(graph, 'shared-status', 'uint32', 3).buffer;
+    const statusView = (length: number, byteStride: number) =>
+      graph.createDataView(shared, {format: 'uint32', length, byteStride});
+    for (const count of [statusView(0, 4), statusView(1, 8)]) {
+      expect(() => new GPUHDBSCAN({...props, output: {...props.output, status: {count}}})).toThrow(
+        /output.status.count/
+      );
     }
-    for (const other of [
-      props.output.labels,
-      props.output.coreDistances!,
-      props.output.status!.count!
-    ]) {
-      const requiredCount = graph.createDataView(other.buffer, {
+    for (const other of [props.output.labels, props.output.coreDistances!]) {
+      const count = graph.createDataView(other.buffer, {
         format: 'uint32',
         length: 1,
         byteOffset: other.byteOffset
       });
-      expect(
-        () =>
-          new GPUHierarchicalDensityClustering({
-            ...props,
-            output: {
-              ...props.output,
-              status: {...props.output.status, requiredCount}
-            }
-          })
-      ).toThrow(/writable byte ranges/);
+      expect(() => new GPUHDBSCAN({...props, output: {...props.output, status: {count}}})).toThrow(
+        /writable byte ranges/
+      );
     }
-    const count = statusView(0);
     expect(
       () =>
-        new GPUHierarchicalDensityClustering({
+        new GPUHDBSCAN({
           ...props,
           output: {
             ...props.output,
-            status: {count, requiredCount: statusView(4)}
+            status: {
+              // @ts-expect-error Exercise runtime rejection of the duplicate count output.
+              requiredCount: statusView(1, 4)
+            }
           }
         })
-    ).toThrow(/physical buffers/);
-    expect(
-      () =>
-        new GPUHierarchicalDensityClustering({
-          ...props,
-          output: {
-            ...props.output,
-            status: {count, requiredCount: statusView(256)}
-          }
-        })
-    ).toThrow(/physical buffers/);
-    const nodes = new GPUHierarchicalDensityClustering({
-      ...props,
-      output: {
-        ...props.output,
-        status: {requiredCount: props.output.status!.requiredCount}
-      }
-    }).getCommandNodes(graph);
-    expect(nodes.some(node => node.id.endsWith('-required-count'))).toBe(true);
-    const sources = getParsedKernelSources(
-      nodes.filter(node => node.id.endsWith('-required-count'))
-    );
-    expect([...sources.values()][0]).toContain(
-      'requiredCount[requiredCountOffset] = selectedCount[selectedCountOffset]'
-    );
+    ).toThrow(/output.status.requiredCount was removed; use output.status.count/);
+    expect(() => new GPUHDBSCAN(props).getCommandNodes(graph)).not.toThrow();
   } finally {
     device.destroy();
   }
@@ -386,7 +337,7 @@ it('bounds each reconstruction dispatch and keeps splice shader/pipeline counts 
   try {
     const build = (rows: number) => {
       const graph = new GPUCommandGraph(device);
-      return new GPUHierarchicalDensityClustering(createProps(graph, rows)).getCommandNodes(graph);
+      return new GPUHDBSCAN(createProps(graph, rows)).getCommandNodes(graph);
     };
     const small = build(1024);
     const large = build(8193);
@@ -450,7 +401,7 @@ it('rejects chunked inputs explicitly instead of specializing kernels or padding
       const positions = createVectorView('chunked-positions', 'float32x2', chunks);
       expect(
         () =>
-          new GPUHierarchicalDensityClustering({
+          new GPUHDBSCAN({
             ...props,
             positions: positions as unknown as GraphDataView<'float32x2'>
           })

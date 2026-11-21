@@ -22,8 +22,7 @@ import {
   validateMaximumCount,
   validateSinglePackedView,
   validateRequirement,
-  validateCommandNodeBudget,
-  getGraphViewChunks
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGraphChunkBindingRanges,
@@ -36,15 +35,9 @@ import {
   GPU_INEQUALITY_PARAMETER_LENGTH
 } from './inequality-parameters';
 import {
-  getInequalityGiniTileAreaBody,
-  getInequalityGiniTileTotalsBody,
   getInequalityKeysBody,
   getInequalityZoneStatsBody,
-  INEQUALITY_GINI_FINISH_BODY,
-  INEQUALITY_GINI_TILE_PREFIX_BODY,
   INEQUALITY_GINI_TILE_ROWS,
-  INEQUALITY_GINI_FINISH_DECLARATIONS,
-  INEQUALITY_GINI_TILE_PREFIX_DECLARATIONS,
   INEQUALITY_GLOBAL_SUMS_BODY,
   INEQUALITY_GLOBAL_SUMS_DECLARATIONS,
   INEQUALITY_REDUCTION_LANES,
@@ -56,8 +49,11 @@ import {
 
 import {createInequalityParallelStatisticsNodes} from './inequality-parallel-statistics';
 import {INEQUALITY_PREFIX_TILE_ROWS} from './inequality-lorenz-prefix';
+import {createInequalityGiniGapNodes} from './inequality-gini-gaps';
+import {validateInequalityOperationOutputNames} from './inequality-operation-output-names';
 import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 import {getBoundedDispatchLayout} from '@luma.gl/graph/gpu-core';
+import type {RequiredTerminalOutput} from '../column-classification/required-terminal-output';
 
 const OPERATION = 'GPUInequality';
 
@@ -65,8 +61,8 @@ const OPERATION = 'GPUInequality';
 const MAXIMUM_ROW_COUNT = 0x80000000;
 /** Two 32-bit published sorts, including their hierarchical histogram scans; conservatively bounded at 2^31 keys. */
 const SORT_COMMAND_NODE_ALLOWANCE = 2048;
-/** Four Lorenz summary levels plus carries, six term reductions and publication. */
-const STATISTICS_COMMAND_NODE_ALLOWANCE = 64;
+/** Four Lorenz summary levels plus carries, terms, two bidirectional gap reductions and publication. */
+const STATISTICS_COMMAND_NODE_ALLOWANCE = 128;
 
 /** Smallest number of Lorenz knots. */
 const MINIMUM_LORENZ_KNOT_COUNT = 2;
@@ -74,7 +70,7 @@ const MINIMUM_LORENZ_KNOT_COUNT = 2;
 const MAXIMUM_LORENZ_KNOT_COUNT = 1025;
 
 /** Caller-owned outputs of {@link GPUInequality}. Every output is optional; at least one is needed. */
-export type GPUInequalityOutput = {
+export type GPUInequalityOutput = RequiredTerminalOutput<{
   /** Gini coefficient per zone; NaN for an empty zone or zero total income. */
   gini?: GraphDataView<'float32'>;
   /** Theil T index per zone (0 at perfect equality, `ln n` at maximal inequality). */
@@ -82,8 +78,8 @@ export type GPUInequalityOutput = {
   /** Theil L (mean log deviation) per zone; NaN when the zone has a zero value. */
   theilL?: GraphDataView<'float32'>;
   /**
-   * Atkinson index per zone for the per-frame epsilon; NaN when epsilon is at least 1 and the zone
-   * has a zero value.
+   * Atkinson index per zone for the per-frame epsilon; 1 when epsilon is at least 1 and a
+   * positive-mean zone contains a positive-weight zero. NaN for empty or all-zero populations.
    */
   atkinson?: GraphDataView<'float32'>;
   /** Hoover (Robin Hood) index per zone, the share of income to redistribute for equality. */
@@ -101,7 +97,7 @@ export type GPUInequalityOutput = {
    * At least `GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH` values.
    */
   globalSummary?: GraphDataView<'float32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUInequality}.
@@ -152,8 +148,8 @@ export type GPUInequalityProps = {
  * weighted by `w` (1 without weights), with `W = sum w`, `S = sum w x` and `mu = S / W`. Zones with
  * `S = 0` report NaN for every index but the mean and count.
  *
- * - Gini: `1 - sum_i (P_i - P_(i-1)) (L_i + L_(i-1))`, the trapezoid area under the Lorenz curve
- *   of the rows sorted by value, `P` and `L` being the cumulative population and income shares.
+ * - Gini: `sum_i (x_(i+1) - x_i) W_left(i) W_right(i) / (W S)`, using directly accumulated
+ *   populations on both sides of each adjacent sorted income gap, avoiding area-complement loss.
  *   With unit weights this equals `2 sum_i i x_(i) / (n S) - (n + 1) / n`; one holder of all
  *   income among `n` rows gives `(n - 1) / n`.
  * - Theil T: `(1 / W) sum w r ln r` with `r = x / mu` and `0 ln 0 = 0`.
@@ -161,7 +157,11 @@ export type GPUInequalityProps = {
  *   dropped, so a result never silently describes a different population).
  * - Atkinson with epsilon `e`: `1 - ((1 / W) sum w r^(1 - e))^(1 / (1 - e))`, and
  *   `1 - exp((1 / W) sum w ln r)` at `e = 1`. For `e < 1` zeros are fine; for `e >= 1` a zero
- *   gives NaN. A result that overflows f32 is NaN.
+ *   gives 1 by continuous extension when the mean is positive. An empty or all-zero population
+ *   remains NaN. A result that overflows f32 is NaN.
+ *   For `abs(1 - e) <= 0.01`, zones with finite total weight above 2^112 use weight fractions
+ *   in the centered or geometric-mean reduction to avoid overflow. The zone weight and income
+ *   totals still use f32, with a maximum finite value of approximately 3.4028235e38.
  * - Hoover: `sum w |x - mu| / (2 S)`.
  * - Palma: `(1 - L(1 - top)) / L(bottom)` for the per-frame cuts (0.1 and 0.4 by default), where
  *   `L(p)` is the Lorenz curve of the rows sorted by value. The curve is linear inside each row
@@ -181,7 +181,7 @@ export type GPUInequalityProps = {
  * atomics are used. Float64-oracle tolerances are scaled by `max(1, abs(expected))`: 1e-4 for
  * means, 2e-4 for Gini/Hoover/Lorenz, 5e-4 for Theil/Atkinson/Palma and 1e-3 for global summaries.
  * The parallel route changes the float32 summation order within these tolerances.
- * `mode: 'reference'` retains the original two serial walks and their rounding order, bounded by
+ * `mode: 'reference'` retains the original two serial walks for the other indices, bounded by
  * the published sort maximum of 2^31 rows. Prefer the CPU twin for that reference route.
  * Every scalar row scratch binding and aligned caller binding must fit the device.
  */
@@ -199,7 +199,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
 
   constructor(props: GPUInequalityProps) {
     this.id = props.id ?? 'inequality';
-    this.props = props;
+    this.props = {...props, output: {...props.output}};
     const id = this.id;
     this.mode = props.mode ?? 'parallel';
     validateRequirement(
@@ -211,6 +211,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
       SORT_COMMAND_NODE_ALLOWANCE + STATISTICS_COMMAND_NODE_ALLOWANCE;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const {output, zoneCount} = props;
+    validateInequalityOperationOutputNames(id, output);
     // The device-dependent maximum is checked at declaration.
     validateCapacity(id, 'zoneCount', zoneCount, 1, 0xfffffffe);
     this.lorenzKnotCount = props.lorenzKnotCount ?? 11;
@@ -286,40 +287,17 @@ export class GPUInequality implements GPUCommandNodeProducer {
         ...(this.mode === 'reference' ? [[output.counts, output.lorenzKnots]] : []),
         ...(output.globalSummary ? [[output.counts, output.globalSummary]] : [])
       ];
-      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
-      const writableWordChunks = Object.values(writableOutputs)
-        .flatMap(view => (view ? getGraphViewChunks(view) : []))
-        .map(
-          view =>
-            new GraphDataView(view.buffer, {
-              format: 'uint32',
-              length: (view.length * view.rowByteLength) / 4,
-              byteOffset: view.byteOffset,
-              byteStride: 4,
-              rowByteLength: 4
-            })
-        );
-      const writableWordCount = writableWordChunks.reduce(
-        (total, chunk) => total + chunk.length,
-        0
-      );
-      validateDisjointWritableViews(id, {
-        outputs: new GraphVectorView({
-          id: `${id}-writable-ranges`,
-          name: 'outputs',
-          format: 'uint32',
-          length: writableWordCount,
-          valueLength: writableWordCount,
-          stride: 1,
-          byteStride: 4,
-          rowByteLength: 4,
-          data: writableWordChunks
-        })
-      });
+      validateDisjointWritableViews(id, writableOutputs, {separateDispatches: true});
       for (const fields of publicationPasses) {
         validateDisjointWritableViews(
           id,
-          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+          Object.fromEntries(
+            fields.map((view, index) => [
+              Object.entries(writableOutputs).find(([, candidate]) => candidate === view)?.[0] ??
+                String(index),
+              view
+            ])
+          )
         );
       }
     }
@@ -376,7 +354,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
         'reduce values length, zoneCount or lorenzKnotCount'
       );
     }
-    if (this.mode === 'parallel') {
+    {
       validateGraphChunkGroupKernelSupport(graph, id, 8);
       for (const length of [rowCount, zoneCount, zoneCount * lorenzKnotCount]) {
         getBoundedDispatchLayout(
@@ -538,6 +516,60 @@ ${INEQUALITY_HELPERS_WGSL}`;
       );
     }
 
+    // Requested zone Gini uses parallel gap reductions in both modes. The reference walk's
+    // legacy scratch Gini is replaced before publication; unrequested zone Gini is not consumed.
+    if (output.gini)
+      nodes.push(
+        ...createInequalityGiniGapNodes(graph, {
+          id: `${id}-zone-gini`,
+          sortedRows: zoneSortedRows,
+          sortedZones: sortedZoneKeys,
+          values,
+          weights,
+          zoneCount,
+          output: stats,
+          outputStride: INEQUALITY_STATS_STRIDE,
+          outputSlot: INEQUALITY_STAT.GINI
+        })
+      );
+    if (output.atkinson) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-atkinson-zero-boundary`,
+          operation: OPERATION,
+          variant: 'atkinson-zero-boundary',
+          invocationCount: zoneCount,
+          bindings: [
+            read('params', parameters, 'f32'),
+            read('zones', sortedZoneKeys, 'u32'),
+            read('rows', zoneSortedRows, 'u32'),
+            read('values', values, 'f32'),
+            write('stats', stats, 'f32')
+          ],
+          declarations,
+          body: `let base = statsOffset + index * STATS_STRIDE;
+  if (!(params[paramsOffset] >= 1.0)) { return; }
+  var low = 0u; var high = ROW_COUNT;
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    if (zones[zonesOffset + middle] < index) { low = middle + 1u; } else { high = middle; }
+  }
+  let begin = low;
+  high = ROW_COUNT;
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    if (zones[zonesOffset + middle] <= index) { low = middle + 1u; } else { high = middle; }
+  }
+  let end = low;
+  // Included weights are positive. Positive mean is equivalent to at least one positive income;
+  // testing the endpoints avoids relying on a weighted product that may underflow to zero.
+  if (end > begin && values[valuesOffset + rows[rowsOffset + begin]] == 0.0 && values[valuesOffset + rows[rowsOffset + end - 1u]] > 0.0) {
+    stats[base + 4u] = 1.0;
+  }`
+        })
+      );
+    }
+
     const publish = (
       step: string,
       entries: [string, number, GraphDataView<'float32'> | undefined][]
@@ -596,79 +628,28 @@ ${INEQUALITY_HELPERS_WGSL}`;
           body: INEQUALITY_GLOBAL_SUMS_BODY
         })
       );
-      // Pooled Gini by tiles: per-tile totals, a prefix over tiles only, per-tile Lorenz areas, and
-      // a sum over tiles. Depth is O(rows / tile + tile) instead of two serial passes over all rows.
-      const tileCount = Math.ceil(rowCount / INEQUALITY_GINI_TILE_ROWS);
-      const tileTotals = transient('gini-tile-totals', 'float32', 2 * tileCount);
-      const tileAreas = transient('gini-tile-areas', 'float32', tileCount);
-      const pooledTotals = transient('gini-pooled-totals', 'float32', 2);
-      const tileDeclarations = `${declarations}
-const GINI_TILE_ROWS: u32 = ${INEQUALITY_GINI_TILE_ROWS}u;
-const GINI_TILE_COUNT: u32 = ${tileCount}u;`;
-      const sortedReads = [
-        read('sortedValueKeys', sortedValueKeys, 'u32'),
-        read('sortedRows', sortedRows, 'u32'),
-        read('values', values, 'f32'),
-        ...(weights ? [read('weights', weights, 'f32')] : [])
-      ];
+      const pooledZones = transient('pooled-zones', 'uint32', rowCount);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-global-gini-tile-totals`,
+          id: `${id}-pooled-zones`,
           operation: OPERATION,
-          variant: 'global-gini-tile-totals',
-          bindings: [...sortedReads, write('tileTotals', tileTotals, 'f32')],
-          invocationCount: tileCount,
-          declarations: tileDeclarations,
-          body: getInequalityGiniTileTotalsBody(weightExpression)
+          variant: 'pooled-zones',
+          invocationCount: rowCount,
+          bindings: [read('keys', sortedValueKeys, 'u32'), write('zones', pooledZones, 'u32')],
+          body: 'zones[zonesOffset + index] = select(0u, 1u, keys[keysOffset + index] == 0xffffffffu);'
         })
       );
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-global-gini-tile-prefix`,
-          operation: OPERATION,
-          variant: 'global-gini-tile-prefix',
-          bindings: [
-            write('tileTotals', tileTotals, 'f32'),
-            write('pooledTotals', pooledTotals, 'f32')
-          ],
-          invocationCount: INEQUALITY_REDUCTION_LANES,
-          workgroupSize: INEQUALITY_REDUCTION_LANES,
-          guardIndex: false,
-          declarations: `${tileDeclarations}${INEQUALITY_GINI_TILE_PREFIX_DECLARATIONS}`,
-          body: INEQUALITY_GINI_TILE_PREFIX_BODY
-        })
-      );
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-global-gini-tile-area`,
-          operation: OPERATION,
-          variant: 'global-gini-tile-area',
-          bindings: [
-            ...sortedReads,
-            read('tileTotals', tileTotals, 'f32'),
-            read('pooledTotals', pooledTotals, 'f32'),
-            write('tileAreas', tileAreas, 'f32')
-          ],
-          invocationCount: tileCount,
-          declarations: tileDeclarations,
-          body: getInequalityGiniTileAreaBody(weightExpression)
-        })
-      );
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...createInequalityGiniGapNodes(graph, {
           id: `${id}-global-gini`,
-          operation: OPERATION,
-          variant: 'global-gini',
-          bindings: [
-            read('tileAreas', tileAreas, 'f32'),
-            read('pooledTotals', pooledTotals, 'f32'),
-            write('summary', output.globalSummary, 'f32')
-          ],
-          invocationCount: INEQUALITY_REDUCTION_LANES,
-          workgroupSize: INEQUALITY_REDUCTION_LANES,
-          guardIndex: false,
-          declarations: `${tileDeclarations}${INEQUALITY_GINI_FINISH_DECLARATIONS}`,
-          body: INEQUALITY_GINI_FINISH_BODY
+          sortedRows,
+          sortedZones: pooledZones,
+          values,
+          weights,
+          zoneCount: 1,
+          output: output.globalSummary,
+          outputStride: 8,
+          outputSlot: 3
         })
       );
     }

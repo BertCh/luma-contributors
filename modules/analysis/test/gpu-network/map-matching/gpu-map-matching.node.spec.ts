@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {createHash} from 'node:crypto';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getResourceBuffer} from '../network-resource-buffers';
 import {expect, it} from 'vitest';
 import {
@@ -332,4 +337,74 @@ it('GPUMapMatching validates routeTable', () => {
         output: {...props.output, status: {overflow: routeTable.status?.complete}}
       })
   ).toThrow(/outputs must not share buffers with inputs/);
+});
+
+it('NET-126 pins matcher search, sparse fallback, Viterbi and route publication before extraction', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const withTable of [false, true]) {
+      const graph = new GPUCommandGraph(device);
+      recordWGSLKernelNodes(graph);
+      const props = createProps(graph);
+      const contributor = new GPUMapMatching({
+        ...props,
+        traversedEdgeCapacity: 24,
+        ...(withTable ? {routeTable: createRouteTable(graph)} : {}),
+        output: {
+          ...props.output,
+          traversedEdges: {
+            edges: createTransientView(graph, 'pin-traversed', 'uint32', 24),
+            counts: createTransientView(graph, 'pin-counts', 'uint32', 1),
+            status: {overflow: createTransientView(graph, 'pin-overflow', 'uint32', 1)}
+          },
+          trackLogLikelihoods: createTransientView(graph, 'pin-likelihood', 'float32', 1)
+        }
+      });
+      const nodes = contributor.getCommandNodes(graph);
+      const digest = createHash('sha256')
+        .update(JSON.stringify([...getParsedKernelSources(nodes)]))
+        .digest('hex');
+      const bindings = new Map(
+        nodes.flatMap(
+          node =>
+            getWGSLKernelNodeRecord(graph, node.id)?.bindings.map(
+              binding => [`${node.id}:${binding.name}`, binding.view] as const
+            ) ?? []
+        )
+      );
+      const {output} = contributor.props;
+      const expectedBindings: Record<string, GraphDataView> = {
+        'map-matching-matched:matchedEdges': output.matchedEdges,
+        'map-matching-backward:logLikelihoods': output.trackLogLikelihoods!,
+        'map-matching-route-edges:traversedEdges': output.traversedEdges!.edges,
+        'map-matching-route-edges:traversedCounts': output.traversedEdges!.counts,
+        'map-matching-traversed-status:outputOverflow': output.traversedEdges!.status!.overflow!
+      };
+      const assertDeclaration = (bindingViews: ReadonlyMap<string, GraphDataView>) => {
+        for (const [name, expectedView] of Object.entries(expectedBindings)) {
+          expect(bindingViews.get(name), name).toBe(expectedView);
+        }
+        expect
+          .soft(digest, `withTable=${withTable}`)
+          .toBe(
+            withTable
+              ? 'fa1e5d52f0362b444e6eb5c412255a2bb7d6483bc329c73e8fdd048de3772fe1'
+              : 'b01b508b87fbbc33b67767dc46b51bd12b8a2caffdc38f894c09efa10a8fe73a'
+          );
+      };
+      assertDeclaration(bindings);
+      const swapped = new Map(bindings);
+      swapped.set(
+        'map-matching-matched:matchedEdges',
+        expectedBindings['map-matching-route-edges:traversedCounts']
+      );
+      swapped.set(
+        'map-matching-route-edges:traversedCounts',
+        expectedBindings['map-matching-matched:matchedEdges']
+      );
+      expect(() => assertDeclaration(swapped)).toThrow();
+    }
+  } finally {
+    device.destroy();
+  }
 });

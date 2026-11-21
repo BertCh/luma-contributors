@@ -7,7 +7,7 @@
   "viewId": "formula-card",
   "caption": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Inf…",
   "description": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Inf…",
-  "llms": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
     "value": "5/5"
@@ -77,16 +77,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:15.308Z",
-    "runId": "run-bf5029d5",
+    "date": "2026-11-20T23:48:43.520Z",
+    "runId": "run-39716fce",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
+      "lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-bf5029d5",
+    "runId": "run-39716fce",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

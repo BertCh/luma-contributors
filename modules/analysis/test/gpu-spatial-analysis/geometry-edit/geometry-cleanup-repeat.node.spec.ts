@@ -4,6 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {For, Function as WgslFunction, Loop, While, WgslParser} from 'wgsl_reflect';
 import {createGeometryCleanupForTesting} from '../../../src/gpu-spatial-analysis/geometry-edit/gpu-geometry-cleanup';
 import {createSeededRandom} from '../neighbor-search/neighbor-search-oracle';
 import {
@@ -361,16 +362,58 @@ it('the cleanup repeat kernels parse and stay within the core binding limit', ()
     'geometry-cleanup-repeat-resolve',
     'geometry-cleanup-repeat-apply'
   ]) {
-    const source = sources.get(id);
-    expect(source, id).toBeDefined();
-    expect(getStorageBindingCount(source!), id).toBeLessThanOrEqual(8);
+    for (const {source} of sources.getConfigurations(id))
+      expect(getStorageBindingCount(source), id).toBeLessThanOrEqual(8);
   }
   // The flag pass walks a constant-size chunk and issues atomics per ring segment, not per vertex.
   expect(sources.get('geometry-cleanup-repeat-flags')).toMatch(/const CHUNK: u32 = 32u;/);
   expect(sources.get('geometry-cleanup-repeat-flags')?.match(/atomicAdd|atomicMax/g)).toHaveLength(
     2
   );
-  expect(sources.get('geometry-cleanup-repeat-resolve')).not.toMatch(/for \(/);
+  // Resolve does constant work per ring. Its original-operand rounding helper has fixed-size
+  // integer loops; audit the entry point so those helpers do not masquerade as a ring walk.
+  const resolve = new WgslParser()
+    .parse(sources.get('geometry-cleanup-repeat-resolve')!)
+    .find(statement => statement instanceof WgslFunction && statement.name === 'main');
+  expect(resolve).toBeInstanceOf(WgslFunction);
+  if (!(resolve instanceof WgslFunction)) throw new Error('missing resolve entry point');
+  const resolveLoops: string[] = [];
+  resolve.search(statement => {
+    if (statement instanceof For || statement instanceof While || statement instanceof Loop) {
+      resolveLoops.push(statement.astNodeType);
+    }
+  });
+  expect(resolveLoops).toEqual([]);
+  // The only permitted helper loops have fixed word/term/correction bounds. Reject new loops
+  // elsewhere as well, so moving a geometry-sized walk into a helper cannot evade this audit.
+  const boundedRoundingLoops = new Map([
+    ['gridRoundAdd', /for \(var slot = index; slot < 10u && carry != 0u; slot\+\+\)/],
+    ['gridRoundTerm', /for \(var part = 0u; part < 3u; part\+\+\)/],
+    ['gridRoundCompare', /for \(var word = 9; word >= 0; word--\)/],
+    ['roundGridHalfUp', /for \(var correction = 0u; correction < 4u; correction\+\+\)/]
+  ]);
+  const resolveSource = sources.get('geometry-cleanup-repeat-resolve')!;
+  for (const statement of new WgslParser().parse(resolveSource)) {
+    if (!(statement instanceof WgslFunction)) continue;
+    const loops: string[] = [];
+    statement.search(node => {
+      if (node instanceof For || node instanceof While || node instanceof Loop) {
+        loops.push(node.astNodeType);
+      }
+    });
+    if (loops.length === 0) continue;
+    expect(loops, statement.name).toHaveLength(1);
+    const expectedBound = boundedRoundingLoops.get(statement.name);
+    expect(expectedBound, statement.name).toBeDefined();
+    if (!expectedBound) throw new Error(`unexpected loop in ${statement.name}`);
+    expect(
+      resolveSource
+        .split('\n')
+        .slice(statement.startLine - 1, statement.endLine)
+        .join('\n'),
+      statement.name
+    ).toMatch(expectedBound);
+  }
   expect(sources.get('geometry-cleanup-repeat-apply')).not.toMatch(/for \(var row/);
   // The tolerance choice is made on the GPU, from the parameters word.
   expect(sources.get('geometry-cleanup-repeat-gate')).toMatch(

@@ -16,9 +16,9 @@
  * "Measure spatialSort on vs off" times a temporary graph of the other setting outside the frame.
  *
  * "Prepared ZIP index" (compile-time: rebuilds the graph) hands the join a `GPUSpatialJoinPrepared`
- * handle over the ZIP polygons. Its bounds and BVH are built on the first encoding and reused while
- * the points move every frame; a readout counts the builds against the encoded frames, and the contrast
- * toggle invalidates the handle every frame to show the cost of rebuilding.
+ * handle over the ZIP polygons. It retains input geometry while bounds and BVH preparation replay each encoding.
+ * A readout counts CPU geometry refresh requests, including discarded encodings, and the contrast
+ * toggle invalidates the handle every frame to request a geometry refresh every frame.
  */
 
 import {scheduleReadback} from '../readback-scheduling';
@@ -139,7 +139,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
           zips.ringOffsets.length
         )
       };
-      // The ZIP polygons never change, so their bounds and BVH are built once and reused.
+      // The ZIP geometry is retained; bounds and BVH preparation replay on every encoding.
       const prepared = usePrepared
         ? new GPUSpatialJoinPrepared({id: 'zip-prepared', geometry: polygons, spatialSort})
         : null;
@@ -164,7 +164,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
               'uint32',
               pointCount
             ),
-            featureCounts: importGraphBuffer(
+            polygonAssignmentCounts: importGraphBuffer(
               graph,
               'feature-counts',
               featureCounts,
@@ -226,6 +226,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
     let measuring = false;
     let measureAgain = false;
     let readbackPending = false;
+    let joinComplete = false;
     let countRangeMaximum = Math.max(1, Math.ceil((pointCount / featureCount) * 3));
 
     const graphSwap = resources.track(new GraphSwap());
@@ -317,9 +318,13 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
     const sortedReadout = context.controls.addReadout('spatialSort on', '...');
     const unsortedReadout = context.controls.addReadout('spatialSort off', '...');
     const speedupReadout = context.controls.addReadout('Speedup', '...');
-    const preparedReadout = context.controls.addReadout('ZIP index builds', 'not prepared');
+    const preparedReadout = context.controls.addReadout(
+      'CPU geometry refresh requests',
+      'not prepared'
+    );
     context.controls.addNote(
-      'Timed outside the frame: GPU timestamps when the device has timestamp-query, otherwise wall clock / 8 repetitions (upper bound). ' +
+      'CPU geometry refresh requests include discarded request encodings; bounds, sort, BVH and optional slab preparation kernels replay every encoding against retained geometry. ' +
+        'Timed outside the frame: GPU timestamps when the device has timestamp-query, otherwise wall clock / 8 repetitions (upper bound). ' +
         'spatialSort pays off for thousands of incoherent features; 25 ZIPs gain nothing.'
     );
     context.controls.addReadout('Data', `${parking.attribution}; ${zips.attribution}`);
@@ -352,6 +357,14 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
         const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, summaryWords);
+        joinComplete = words[featureCount] === 0;
+        if (!joinComplete) {
+          topReadout.setValue('unavailable: incomplete assignment');
+          overflowReadout.setValue('YES');
+          candidateReadout.setValue(formatCount(words[featureCount + 1]));
+          context.updateLayers();
+          return;
+        }
         const ranked = Array.from({length: featureCount}, (_, row) => row)
           .sort((a, b) => words[b] - words[a])
           .slice(0, 5);
@@ -439,7 +452,9 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
         if (built.prepared && frame.frameIndex % READBACK_INTERVAL === 0) {
           preparedReadout.setValue(
             `${built.prepared.encodedBuildCount} in ${formatCount(builtFrames)} frames` +
-              (invalidateEveryFrame ? ' (rebuilding every frame)' : ' (reused)')
+              (invalidateEveryFrame
+                ? ' (requesting geometry refresh every frame)'
+                : ' (geometry retained; preparation replays)')
           );
         } else if (!built.prepared && frame.frameIndex % READBACK_INTERVAL === 0) {
           preparedReadout.setValue('not prepared (bounds and BVH rebuilt every frame)');
@@ -449,6 +464,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
         }
       },
       getLayers() {
+        if (!joinComplete) return [];
         const coordinateOrigin: [number, number, number] = [zips.origin[0], zips.origin[1], 0];
         const layers: Layer[] = [
           new SpatialAnalysisSegmentLayer({

@@ -21,12 +21,19 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
+  validateGraphPorts,
+  validateOption,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPULocalPermutationTest,
+  validateLocalPermutationSettings,
   type GPULocalPermutationTestProps
 } from '../permutation-inference/gpu-local-permutation-test';
+import {sliceGraphChunkGroupView} from '../../analysis-core/kernels/graph-chunk-groups';
+import {validatePermutationInputBindings} from '../permutation-inference/permutation-inference-kernels';
 import {snapshotLocalPermutationProps} from '../permutation-inference/permutation-construction';
 import {
   validateGPUSpatialWeights,
@@ -120,6 +127,20 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
     this.id = props.id ?? 'space-time-local-moran';
     this.props = props;
     const id = this.id;
+    validateRequirement(
+      id,
+      props.output.classes === undefined,
+      'output.classes applies only to localGeary; use output.quadrants for lagged Moran or GPULocalPermutationTest with statistic localGeary for classes'
+    );
+    validateRequirement(
+      id,
+      props.output.quadrants === undefined || props.variant === 'lagged',
+      'output.quadrants requires lagged Moran; use variant lagged or omit output.quadrants for differential Moran'
+    );
+    validateGraphPorts(id, props, {
+      cube: {required: true, viewType: 'data', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['uint32']}
+    });
     const cellCount = validateGPUSpatialWeights(id, props.weights);
     validateCapacity(id, 'periodCount', props.periodCount);
     const lag = props.lag ?? 1;
@@ -137,12 +158,23 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
       Object.values(getTrajectoryBindingViews(props.output)),
       Object.values(getTrajectoryBindingViews({...props, output: undefined}))
     );
-    if (props.layout !== 'period-major' && props.layout !== 'cell-major') {
-      throw new Error(`${id} layout must be 'period-major' or 'cell-major'`);
-    }
-    if (props.variant !== 'lagged' && props.variant !== 'differential') {
-      throw new Error(`${id} variant must be 'lagged' or 'differential'`);
-    }
+    validateOption(id, 'layout', props.layout, ['period-major', 'cell-major']);
+    validateOption(id, 'variant', props.variant, ['lagged', 'differential']);
+    if (props.direction !== undefined)
+      validateOption(id, 'direction', props.direction, ['inward', 'outward']);
+    // A read-only prefix has the delegated row shape without allocating slice scratch.
+    // Run the actual child's construction checks, including every optional output/setting.
+    validateLocalPermutationSettings(id, props);
+    // Validation-only prefix: public data views are immutable descriptors. Keep the buffer
+    // identity and packed layout while checking the delegated row shape without graph methods.
+    const values: GraphDataView<'float32'> = {...props.cube, length: cellCount};
+    new GPULocalPermutationTest({
+      ...props,
+      id,
+      values,
+      statistic: props.variant === 'differential' ? 'localMoran' : 'localBivariateMoran',
+      secondValues: props.variant === 'differential' ? undefined : values
+    });
   }
 
   /** Returns the slice kernel and the wrapped permutation test's nodes. */
@@ -155,6 +187,47 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
     const cellCount = weights.offsets.length - 1;
     const lag = props.lag ?? 1;
     validateGraphViewsBelongToGraph(id, graph, [cube]);
+    const values = sliceGraphChunkGroupView(graph, cube, 0, cellCount);
+    validatePermutationInputBindings(
+      graph,
+      {
+        ...props,
+        id,
+        operation: OPERATION,
+        values,
+        secondValues: variant === 'lagged' ? values : undefined,
+        analysisCount: props.output.analysisCount,
+        islandCount: props.output.islandCount
+      },
+      [
+        props.output.exceedances,
+        props.output.analysisCount,
+        props.output.permutationCounts,
+        props.output.pseudoPValues,
+        props.output.observed,
+        props.output.significant,
+        props.output.adjustedPValues,
+        props.output.classes,
+        props.output.quadrants,
+        props.output.islandCount,
+        ...Object.values(props.output.status)
+      ]
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'space-time slice scratch',
+      cellCount * 4,
+      'reduce cellCount or request larger device bindings'
+    );
+    if (variant === 'lagged' || props.stopAfterExceedances !== undefined)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'two-column local inference scratch',
+        cellCount * 8,
+        'reduce cellCount or request larger device bindings'
+      );
     const current = createTransientView(graph, `${id}-current`, 'float32', cellCount);
     const earlier = createTransientView(graph, `${id}-earlier`, 'float32', cellCount);
     const change = createTransientView(graph, `${id}-change`, 'float32', cellCount);

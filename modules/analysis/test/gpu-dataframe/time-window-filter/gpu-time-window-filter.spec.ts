@@ -439,10 +439,11 @@ it('GPUTimeWindowFilter reversed windows reject interval rows too (B-13)', async
   destroyAll([startsBuffer, endsBuffer, idsBuffer, countBuffer, overflowBuffer, maskBuffer]);
 });
 
-it('GPUTimeWindowFilter separates epoch timestamps with double-single parts', async () => {
+it('GPUTimeWindowFilter separates epoch timestamps with double-single parts', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || isSoftwareDevice(device)) {
-    return;
+  requireTestDevice(device);
+  if (isSoftwareDevice(device)) {
+    context.skip('double-single epoch separation requires a hardware-backed device');
   }
   const base = 1_700_000_000;
   expect(Math.fround(base + 10)).toBe(Math.fround(base + 20));

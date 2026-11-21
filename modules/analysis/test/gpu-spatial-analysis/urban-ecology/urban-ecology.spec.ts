@@ -19,7 +19,8 @@ import {
   addBuildingTessellationRecipe
 } from '../../../src/gpu-spatial-analysis/urban-morphology/index';
 import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {expectUrbanFloat32Output as expectClose} from './urban-ecology-assertions';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
 import reference from '../../oracles/fixtures/urban-ecology.json';
 import directReference from '../../oracles/fixtures/urban-ecology-advanced.json';
@@ -47,21 +48,6 @@ function publish(fixture: RecipeTestFixture, name: string, source: GraphDataView
     })
   );
   return output;
-}
-async function expectClose(
-  fixture: RecipeTestFixture,
-  output: ReturnType<typeof publish>,
-  values: number[],
-  tolerance = 1e-4
-) {
-  const actual = await fixture.readFloat32(output, values.length);
-  values.forEach((expected, index) => {
-    if (Number.isNaN(expected)) expect(actual[index]).toBeNaN();
-    else
-      expect(Math.abs(actual[index] - expected)).toBeLessThanOrEqual(
-        tolerance * (1 + Math.abs(expected))
-      );
-  });
 }
 const BOX_SEGMENTS = new Float32Array([-2, -2, 2, -2, 2, -2, 2, 2, 2, 2, -2, 2, -2, 2, -2, -2]);
 
@@ -235,7 +221,7 @@ it('sampled isovist agrees with independent Shapely ray intersections', async ()
       maximumDistance: 10
     });
     const endpoints = publish(fixture, 'endpoints', result.outputs.endpoints);
-    const measures = publish(fixture, 'measures', result.outputs.measures);
+    const measures = publish(fixture, 'measures', result.outputs.localMeasures);
     fixture.run();
     await expectClose(fixture, endpoints, [...reference.isovist.endpoints, ...Array(16).fill(NaN)]);
     await expectClose(fixture, measures, [...reference.isovist.measures, NaN, NaN, NaN, 0]);
@@ -277,7 +263,10 @@ it('shared wall and axial orientation distinguish positive wall length from poin
           rightSourceIds: fixture.input('right', new Uint32Array([1]), 'uint32', 1),
           forward: fixture.input('forward', new Uint32Array([0]), 'uint32', 1)
         },
-        status: {count: fixture.input('count', new Uint32Array([1]), 'uint32', 1)}
+        status: {
+          count: fixture.input('count', new Uint32Array([1]), 'uint32', 1),
+          overflow: fixture.input('shared-path-loss', new Uint32Array([0]), 'uint32', 1)
+        }
       },
       lineBuildingIds: fixture.input('owners', new Uint32Array([0, 1, 2]), 'uint32', 3),
       orientations: fixture.input(
@@ -466,6 +455,231 @@ it('tessellation sample overflow withholds completeness and exposes the exact re
     fixture.run();
     expect(await fixture.readUint32(sampling, 4)).toEqual([4, 8, 1, 0]);
     expect(await fixture.readUint32(complete, 2)).toEqual([0, 0]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+// URB-105: independently count orthogonal directed contacts on interior-background:
+// class areas 5,6, adjacency [[8,2],[2,14]]. Area weighting gives probabilities
+// [(5/11)*(8/10),(5/11)*(2/10),(6/11)*(2/16),(6/11)*(14/16)]; joint adjacency
+// gives [8/26,2/26,2/26,14/26]. Evaluate 100*(1+sum(p*ln(p))/(2*ln(2))) in
+// Python binary64. The explicit adjacency value also matches landscapemetrics 2.2.1.
+it.each([
+  [undefined, 19.066547909632227],
+  ['adjacency', 21.32987737911165]
+] as const)('URB-105 interior-background contagion has independent %s weighting', async (contagionWeighting, expected) => {
+  const fixture = await createFixture('contagion-weighting');
+  try {
+    const landscape = fixture.output('landscape', 'float32x4', 1);
+    const adjacency = fixture.output('adjacency', 'uint32', 4);
+    addLandscapeMetricsRecipe(fixture.graph, {
+      patches: fixture.input(
+        'patches',
+        new Uint32Array([0, 0, 1, 1, 0, 0xffffffff, 1, 1, 0, 0, 1, 1]),
+        'uint32',
+        12
+      ),
+      patchClasses: fixture.input('classes', new Uint32Array([0, 1]), 'uint32', 2),
+      width: 4,
+      height: 3,
+      classCount: 2,
+      cellSize: [1, 1],
+      connectivity: 4,
+      contagionWeighting,
+      output: {landscape: landscape.view, classAdjacency: adjacency.view}
+    });
+    fixture.run();
+    expect(await fixture.readUint32(adjacency, 4)).toEqual([8, 2, 2, 14]);
+    await expectClose(fixture, landscape, [expected, 5.545454545454546, 11, 2], 1e-5);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('URB-105 vertex-event isovist has distinct rectangle area and perimeter', async () => {
+  const fixture = await createFixture('vertex-square');
+  try {
+    const measures = fixture.output('measures', 'float32x4', 1);
+    addIsovistsRecipe(fixture.graph, {
+      positions: fixture.input('position', new Float32Array([1.5, 3.5]), 'float32x2', 1),
+      segments: fixture.input(
+        'segments',
+        new Float32Array([0, 0, 3, 0, 3, 0, 3, 7, 3, 7, 0, 7, 0, 7, 0, 0]),
+        'float32x4',
+        4
+      ),
+      sampling: 'vertices',
+      rayCount: 3,
+      maximumDistance: 10,
+      output: {localMeasures: measures.view}
+    });
+    fixture.run();
+    // The 3-by-7 rectangle has area 21, perimeter 20 and corner distance sqrt(14.5).
+    // All corners are endpoint events; the three base rays alone cannot recover its area.
+    await expectClose(fixture, measures, [21, 20, 3.8078865529319543, 1], 1e-5);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('URB-105 seeded Philox exchanges match independent integer counter/key draws and rational inference', async () => {
+  const fixture = await createFixture('seeded-exchange');
+  try {
+    const baseline = fixture.input(
+      'baseline',
+      new Float32Array([12, 3, 2, 9, 7, 4, 3, 11]),
+      'float32x2',
+      4
+    );
+    const final = fixture.input(
+      'final',
+      new Float32Array([5, 8, 6, 3, 8, 7, 4, 5]),
+      'float32x2',
+      4
+    );
+    const distribution = fixture.output('distribution', 'float32', 16);
+    const inference = fixture.output('inference', 'float32x4', 1);
+    addSegregationDecompositionRecipe(fixture.graph, {
+      populations: [baseline, baseline, final, final],
+      supportId: 'four-units',
+      counterfactualMethod: 'supplied',
+      randomization: {seed: 29, replicates: 16}, // No supplied masks: exercise the shader generator.
+      output: {distribution: distribution.view, inference: inference.view}
+    });
+    fixture.run();
+    // Independent Python arbitrary-precision products implement Random123 Philox4x32-10,
+    // counter=(unit,replicate,0,0), key=(29,604). Verified against Random123's zero
+    // vector 6627e8d5 e169c58d bc57ac4c 9b00dbd8. Ten rounds:
+    // a=0xd2511f53*c0; b=0xcd9e8d57*c2;
+    // c=(hi(b)^c1^k0,lo(b),hi(a)^c3^k1,lo(a));
+    // k+=(0x9e3779b9,0xbb67ae85) modulo 2^32; exchange iff c0 & 1.
+    // Four-bit masks (unit 0 first) are 0000,0110,1000,1110,1010,0010,1111,1000,
+    // 1110,1010,0110,1110,0001,0010,1111,1001. Fraction arithmetic evaluates
+    // D = 1/2 sum |focal/sum(focal)-complement/sum(complement)| after exchange.
+    // Replicates 0,6,14 tie |observed|; all others are strictly smaller: p=(3+1)/(16+1).
+    await expectClose(
+      fixture,
+      distribution,
+      [
+        -0.3584943639291465, -0.10573239021514884, -0.0642156862745098, 0.13513061650992686,
+        -0.07296113847837986, -0.22575757575757577, 0.3584943639291465, -0.0642156862745098,
+        0.13513061650992686, -0.07296113847837986, -0.10573239021514884, 0.13513061650992686,
+        -0.13513061650992686, -0.22575757575757577, 0.3584943639291465, 0.10573239021514884
+      ],
+      1e-6
+    );
+    await expectClose(fixture, inference, [-0.3584943639291465, 0.23529411764705882, 16, 3], 1e-6);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('URB-105 anisotropic cells reconcile diagonal tile seams with 8-connectivity', async () => {
+  const fixture = await createFixture('anisotropic-diagonal-seams');
+  try {
+    const result = addLandscapeMetricsRecipe(fixture.graph, {
+      patches: fixture.input('patches', new Uint32Array([0, 1, 2, 3, 4, 5, 6, 7, 8]), 'uint32', 9),
+      patchClasses: fixture.input(
+        'classes',
+        new Uint32Array([0, 1, 2, 1, 0, 2, 2, 2, 0]),
+        'uint32',
+        9
+      ),
+      width: 3,
+      height: 3,
+      cellSize: [2, 3],
+      classCount: 3,
+      connectivity: 8,
+      reconcilePatches: true
+    });
+    const labels = publish(fixture, 'labels', result.provenance.reconciledPatches!);
+    const parents = publish(fixture, 'parents', result.provenance.patchParents!);
+    const patches = publish(fixture, 'patch-metrics', result.outputs.patchMetrics);
+    const classes = publish(fixture, 'class-metrics', result.outputs.classMetrics);
+    const adjacency = publish(fixture, 'adjacency', result.outputs.classAdjacency);
+    const landscape = publish(fixture, 'landscape', result.outputs.landscape);
+    const horizontal = addLandscapeMetricsRecipe(fixture.graph, {
+      id: 'horizontal',
+      patches: fixture.input('horizontal-labels', new Uint32Array([0, 0]), 'uint32', 2),
+      patchClasses: fixture.input('horizontal-class', new Uint32Array([0]), 'uint32', 1),
+      width: 2,
+      height: 1,
+      cellSize: [2, 3],
+      classCount: 1,
+      connectivity: 8
+    });
+    const horizontalMetrics = publish(
+      fixture,
+      'horizontal-metrics',
+      horizontal.outputs.patchMetrics
+    );
+    fixture.run();
+    // Two horizontally adjacent cells form a 4-by-3 rectangle: area 12, perimeter 14,
+    // two cells, two directed like-side contacts. Exchanging cell axes would give perimeter 16.
+    await expectClose(fixture, horizontalMetrics, [12, 14, 2, 2]);
+    // Hand union of eight-neighbour same-class cells gives roots 0,1,2. Class 0 joins
+    // ONLY at corners, as do class-1 cells; 4-connectivity would keep those tiles apart.
+    // Areas are 3,2,4 cells times 6. Each cell has perimeter 10; class 2 shares one
+    // vertical side (length 2) and one horizontal side (length 3): perimeter=40-2*(2+3)=30.
+    // Directed orthogonal contacts remain [[0,4,4],[4,0,2],[4,2,4]], irrespective of
+    // connectivity. Python ln/sqrt on these counts gives the literals below:
+    // mesh_i=6*n_i^2/9; cohesion_i=100*(1-1/sqrt(n_i))/(1-1/sqrt(9)).
+    expect(await fixture.readUint32(labels, 9)).toEqual([0, 1, 2, 1, 0, 2, 2, 2, 0]);
+    expect(await fixture.readUint32(parents, 9)).toEqual([0, 1, 2, 1, 0, 2, 2, 2, 0]);
+    expect(await fixture.readUint32(adjacency, 9)).toEqual([0, 4, 4, 4, 0, 2, 4, 2, 4]);
+    await expectClose(fixture, patches, [
+      18,
+      30,
+      3,
+      0,
+      12,
+      20,
+      2,
+      0,
+      24,
+      30,
+      4,
+      4,
+      ...new Array(24).fill(0)
+    ]);
+    await expectClose(
+      fixture,
+      classes,
+      [
+        18, 30, 6, 63.39745962155612, 12, 20, 2.6666666666666665, 43.933982822017875, 24, 30,
+        10.666666666666666, 75
+      ]
+    );
+    await expectClose(fixture, landscape, [13.426828194365381, 19.333333333333332, 54, 3]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('URB-104 absent side retains the no-owner sentinel and finite range-censored distance', async () => {
+  const fixture = await createFixture('no-facade-hit');
+  try {
+    const result = addStreetProfilesRecipe(fixture.graph, {
+      positions: fixture.input('position', new Float32Array([0, 0]), 'float32x2', 1),
+      normals: fixture.input('normal', new Float32Array([0, 1]), 'float32x2', 1),
+      segments: fixture.input('segments', new Float32Array([-2, 20, 2, 20]), 'float32x4', 1),
+      segmentBuildingIds: fixture.input('owner', new Uint32Array([0]), 'uint32', 1),
+      buildingHeights: fixture.input('height', new Float32Array([6]), 'float32', 1),
+      streetSegment: fixture.input('street', new Float32Array([-4, 0, 4, 0]), 'float32x4', 1),
+      maximumDistance: 5,
+      sampleSpacing: 1
+    });
+    const profiles = publish(fixture, 'profiles', result.outputs.profiles);
+    const buildings = publish(fixture, 'buildings', result.outputs.buildings);
+    const lengths = publish(fixture, 'facades', result.facades!.lengths);
+    const frontage = publish(fixture, 'frontage', result.facades!.frontage);
+    fixture.run();
+    // Wall y=20 lies outside the +/-5 corridor. Neither ray has an owner.
+    await expectClose(fixture, profiles, [5, 5, NaN, NaN]);
+    expect(await fixture.readUint32(buildings, 2)).toEqual([0xffffffff, 0xffffffff]);
+    await expectClose(fixture, lengths, [0, 0]);
+    await expectClose(fixture, frontage, [0, 0]);
   } finally {
     fixture.destroy();
   }

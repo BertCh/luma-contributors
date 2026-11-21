@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateS2CoveringOptions} from './s2-covering-option-validation';
+import {snapshotS2CapOperationProps} from './s2-covering-construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -32,7 +34,7 @@ import {
   negateCoveringVector
 } from './cpu-s2-covering-geometry';
 
-/** Scheduling properties are accepted for compatibility and ignored by the CPU traversal. */
+/** CPU geometry; an explicit frontierCapacity applies the GPU refinement bound. */
 export type CPUS2CapCoveringOptions = Omit<
   S2CapCoveringOperationProps,
   'id' | 'caps' | 'capCount' | 'output'
@@ -47,8 +49,10 @@ export type CPUS2CapCoveringResult = {cells: Uint32Array; counts: Uint32Array; s
  * What differs from the GPU contributor:
  * - Float64 geometry replaces float32; classifications within GPU rounding error may differ.
  *   The exterior expansion/interior shrink tolerance and inclusive bounds are retained.
- * - Both refinement modes use an adaptive depth-first traversal without frontierCapacity or
- *   pruning slack. Status bit 4 is never set, and required counts describe complete covers.
+ *   The empty-interior guard compares radius with the float32-encoded tolerance, as on GPU.
+ * - Omitted frontierCapacity retains complete adaptive traversal, including level-synchronous
+ *   requests. An explicit frontierCapacity honors the GPU refinement bound and pruning slack;
+ *   frontier exhaustion writes zero cells/counts and status bit 4. The GPU defaults to a bound.
  * - Levels up to 30 are accepted, dropping both GPU level caps. The uint32 output-count layout
  *   remains; a complete count above 0xffffffff throws instead of wrapping.
  * - Empty arrays are accepted by the pure function; graph operations require at least one cap.
@@ -86,9 +90,48 @@ export function computeS2CapCoveringOnCPU(
       result.status[cap] = 1;
       continue;
     }
+    // The GPU compares the packed radius to a float32 tolerance before expanding
+    // its frontier. Equal encoded values describe an empty interior even when the
+    // caller's binary64 tolerance is slightly smaller than its float32 encoding.
+    if (options.mode === 'interior' && radius <= Math.fround(tolerance)) continue;
     const threshold = radius + (options.mode === 'interior' ? -tolerance : tolerance);
-    if (threshold < 0) continue;
+    if (threshold < 0 || (options.mode === 'interior' && threshold === 0)) continue;
     const opposite = negateCoveringVector(center);
+    if (options.refinement === 'level-synchronous' && options.frontierCapacity !== undefined) {
+      const frontierCapacity = options.frontierCapacity;
+      let frontier = Array.from({length: 6}, (_, face) => BigInt(2 * face + 1) << 60n);
+      for (let level = 0; level <= targetLevel; level++) {
+        const selected = frontier.filter(cell => {
+          const geometry = getCoveringCellGeometry(cell, level);
+          return level === targetLevel && options.mode === 'interior'
+            ? Math.PI - getCoveringCellDistance(geometry, opposite) <= threshold
+            : getCoveringCellDistance(geometry, center) <=
+                threshold + (level < targetLevel ? 1e-6 : 0);
+        });
+        if (level === targetLevel) {
+          const required = selected.length;
+          selected.slice(0, capacity).forEach((cell, row) => {
+            result.cells[(cap * capacity + row) * 2] = Number(cell & 0xffffffffn);
+            result.cells[(cap * capacity + row) * 2 + 1] = Number(cell >> 32n);
+          });
+          result.counts.set([Math.min(required, capacity), required], cap * 2);
+          result.status[cap] = Number(required > capacity) * 2;
+        } else {
+          if (selected.length * 4 > frontierCapacity) {
+            result.status[cap] = 4;
+            break;
+          }
+          const childMarker = 1n << BigInt(58 - 2 * level);
+          frontier = selected.flatMap(cell =>
+            Array.from(
+              {length: 4},
+              (_, child) => cell - 4n * childMarker + childMarker + BigInt(child) * 2n * childMarker
+            )
+          );
+        }
+      }
+      continue;
+    }
     const stack: {cell: bigint; level: number}[] = [];
     for (let face = 5; face >= 0; face--) stack.push({cell: BigInt(2 * face + 1) << 60n, level: 0});
     let required = 0;
@@ -138,9 +181,10 @@ export function computeS2CapCoveringOnCPU(
   return result;
 }
 
-/** CPU cover without enumeration/frontier caps; capacity still bounds stored rows per cap. */
+/** Complete CPU cover unless an explicit level-synchronous frontier budget is supplied. */
 export class CPUS2CapCoveringOperation extends GPUCPUOperation {
   constructor(props: S2CapCoveringOperationProps) {
+    props = snapshotS2CapOperationProps(props);
     const operation = new GPUS2CapCoveringOperation(props);
     const {id} = operation;
     validateOptions(id, props);
@@ -176,6 +220,7 @@ export class CPUS2CapCoveringOperation extends GPUCPUOperation {
 }
 
 function validateOptions(id: string, options: CPUS2CapCoveringOptions): void {
+  validateS2CoveringOptions(id, options, ['uniform', 'level-synchronous']);
   validateCapacity(id, 'level', options.level, 0, CPU_S2_COVERING_MAXIMUM_LEVEL);
   validateCapacity(
     id,
@@ -184,6 +229,20 @@ function validateOptions(id: string, options: CPUS2CapCoveringOptions): void {
     1,
     Math.min(0xffffffff, 6 * 4 ** options.level)
   );
+  if (options.refinement === 'level-synchronous' && options.frontierCapacity !== undefined)
+    validateCapacity(
+      id,
+      'frontierCapacity',
+      options.frontierCapacity,
+      Math.max(6, options.capacity),
+      Math.floor(0xffffffff / 2)
+    );
+  else if (options.refinement !== 'level-synchronous')
+    validateRequirement(
+      id,
+      options.frontierCapacity === undefined,
+      "frontierCapacity needs refinement 'level-synchronous'"
+    );
   validateAngularTolerance(
     id,
     options.tolerance ?? 1e-5,
@@ -194,11 +253,5 @@ function validateOptions(id: string, options: CPUS2CapCoveringOptions): void {
     id,
     options.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
     GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
-  );
-  validateRequirement(
-    id,
-    options.refinement === undefined ||
-      ['uniform', 'level-synchronous'].includes(options.refinement),
-    'refinement must be uniform or level-synchronous'
   );
 }

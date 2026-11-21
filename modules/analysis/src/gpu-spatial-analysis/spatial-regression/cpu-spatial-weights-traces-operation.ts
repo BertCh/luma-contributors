@@ -6,6 +6,7 @@ import {snapshotRegressionOperationProps} from './regression-construction-snapsh
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
+  getTypedArrayName,
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -19,7 +20,7 @@ import {
 } from './gpu-spatial-weights-traces-operation';
 import {
   GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
-  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT,
+  GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS,
   GPU_SPATIAL_WEIGHTS_TRACES_PARAMETER_LENGTH,
   getSpatialWeightsTracesProbeValue
 } from './spatial-weights-traces-parameters';
@@ -29,13 +30,19 @@ import {
   type CPURegressionWeights
 } from './cpu-regression-weights';
 
+type CPUSpatialWeightsTracesChunk = {
+  rowStart: number;
+  rowCount: number;
+  weights: CPURegressionWeights;
+};
+
 /** CSR input and the optional seed view packed by getGPUSpatialWeightsTracesParameterValues. */
 export type CPUSpatialWeightsTracesInput = {
   weights:
     | CPURegressionWeights
     | {
         rowCount: number;
-        chunks: readonly {rowStart: number; rowCount: number; weights: CPURegressionWeights}[];
+        chunks: readonly CPUSpatialWeightsTracesChunk[];
       };
   parameters?: Uint32Array;
 };
@@ -53,6 +60,41 @@ export type CPUSpatialWeightsTracesResult = {
   infinityNorm: Float32Array;
   approximation: Uint32Array;
 };
+
+function hasNumericalCSRWeights(
+  weights: CPUSpatialWeightsTracesInput['weights']
+): weights is CPURegressionWeights {
+  return (
+    'offsets' in weights &&
+    getTypedArrayName(weights.offsets) === 'Uint32Array' &&
+    'neighbors' in weights &&
+    getTypedArrayName(weights.neighbors) === 'Uint32Array' &&
+    'weights' in weights &&
+    getTypedArrayName(weights.weights) === 'Float32Array'
+  );
+}
+
+function validateTraceOperationCertificates(id: string, weights: object, path = 'weights'): void {
+  for (const name of [
+    'complete',
+    'count',
+    'requiredCount',
+    'overflow',
+    'candidateOverflow',
+    'weightsOverflow',
+    'weightsCandidateOverflow'
+  ] as const) {
+    validateRequirement(
+      id,
+      (weights as Record<string, unknown>)[name] === undefined,
+      `${path}.${name} is unsupported by CPUSpatialWeightsTracesOperation; use computeSpatialWeightsTracesOnCPU with concrete certificates or GPUSpatialWeightsTraces with GPU status views`
+    );
+  }
+  const chunks = (weights as {chunks?: readonly {weights: object}[]}).chunks;
+  for (const [index, chunk] of (chunks ?? []).entries()) {
+    validateTraceOperationCertificates(id, chunk.weights, `${path}.chunks[${index}].weights`);
+  }
+}
 
 function validateOptions(id: string, options: CPUSpatialWeightsTracesOptions): void {
   validateCapacity(id, 'maximumPower', options.maximumPower);
@@ -81,9 +123,11 @@ function validateOptions(id: string, options: CPUSpatialWeightsTracesOptions): v
  *   to stochastic above 4096 rows. tileRowCount and probeBatchSize have no computational effect.
  * - Whole and chunked CSR retain separate arrays; no implicit packing occurs. As on the GPU,
  *   Gram traces require whole CSR. Unused metadata ports are omitted.
- * - A finite positive infinity norm is retained even at/above 3e38, where the GPU falls back to 1.
- *   Empty weights scale by 1. A non-finite active weight makes the norm NaN and all floating
- *   results NaN; the GPU does not define portable NaN-reduction behavior. Subnormals are retained.
+ * - A finite positive infinity norm is used as the scale. Empty weights scale by 1.
+ *   The GPU checks weight and norm exponents before its cubic and quartic probe calculations.
+ *   Outside the scalar range, it uses raw weights and retains separate exponents through the
+ *   probe reductions. A non-finite active weight makes the CPU norm and floating results NaN.
+ *   The GPU does not define portable NaN-reduction behavior. The CPU retains subnormals.
  * - Empty slot arrays are accepted by the pure function; GPU weights require positive capacity.
  *
  * @throws If weights.offsets, weights.weights or parameters are inconsistent, naming the argument.
@@ -93,27 +137,35 @@ export function computeSpatialWeightsTracesOnCPU(
   options: CPUSpatialWeightsTracesOptions
 ): CPUSpatialWeightsTracesResult {
   const id = 'computeSpatialWeightsTracesOnCPU';
-  validateCompleteRegressionWeights(id, input.weights);
   validateOptions(id, options);
-  const chunked = 'chunks' in input.weights;
-  const rowCount =
-    'chunks' in input.weights
-      ? input.weights.rowCount
-      : validateCPURegressionWeights(id, input.weights);
-  validateCapacity(id, 'weights.rowCount', rowCount);
-  const chunks =
-    'chunks' in input.weights
-      ? input.weights.chunks
-      : [{rowStart: 0, rowCount, weights: input.weights}];
+  // Whole CSR may also carry recursive loss-only chunks; require its complete numerical shape.
+  let chunked = false;
+  let rowCount: number;
+  let chunks: readonly CPUSpatialWeightsTracesChunk[];
+  if (hasNumericalCSRWeights(input.weights)) {
+    rowCount = validateCPURegressionWeights(id, input.weights);
+    chunks = [{rowStart: 0, rowCount, weights: input.weights}];
+  } else {
+    chunked = true;
+    rowCount = input.weights.rowCount;
+    validateRequirement(
+      id,
+      Array.isArray(input.weights.chunks),
+      `weights.chunks must be an array of numerical CSR chunks; received type ${typeof input.weights.chunks}`
+    );
+    chunks = input.weights.chunks;
+  }
+  validateCompleteRegressionWeights(id, input.weights);
+  validateCapacity(id, 'weights.rowCount', rowCount, 0);
   validateRequirement(
     id,
     !chunked || !options.includeGramTraces,
     'weights chunks do not support Gram traces'
   );
   let nextRow = 0;
-  const rowChunks: (typeof chunks)[number][] = [];
+  const rowChunks: CPUSpatialWeightsTracesChunk[] = [];
   for (const [index, chunk] of chunks.entries()) {
-    validateCapacity(id, `weights.chunks[${index}].rowCount`, chunk.rowCount);
+    validateCapacity(id, `weights.chunks[${index}].rowCount`, chunk.rowCount, 0);
     validateRequirement(
       id,
       chunk.rowStart === nextRow,
@@ -142,7 +194,7 @@ export function computeSpatialWeightsTracesOnCPU(
   const [seed = 0] = input.parameters ?? [];
   const mode =
     options.mode ??
-    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_EXACT_ROW_COUNT ? 'exact' : 'stochastic');
+    (rowCount <= GPU_SPATIAL_WEIGHTS_TRACES_AUTO_EXACT_MAXIMUM_ROWS ? 'exact' : 'stochastic');
   const stochastic = mode === 'stochastic';
   const probeCount = stochastic
     ? (options.probeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT)
@@ -255,12 +307,17 @@ export function computeSpatialWeightsTracesOnCPU(
   return result;
 }
 
-/** CPU whole/chunked CSR twin; shader iteration and exact-size caps are dropped. */
+/**
+ * CPU whole/chunked CSR twin; shader iteration and exact-size caps are dropped.
+ * Named completeness ports are refused; use the pure function with concrete certificates
+ * or GPUSpatialWeightsTraces with GPU status views.
+ */
 export class CPUSpatialWeightsTracesOperation extends GPUCPUOperation {
   constructor(props: SpatialWeightsTracesOperationProps) {
-    props = snapshotRegressionOperationProps(props);
-    validateCompleteRegressionWeights(props.id ?? 'spatial-weights-traces', props.weights);
     const id = props.id ?? 'spatial-weights-traces';
+    validateTraceOperationCertificates(id, props.weights);
+    props = snapshotRegressionOperationProps(props, ['approximation']);
+    validateCompleteRegressionWeights(id, props.weights);
     const includeGramTraces = props.includeGramTraces ?? props.output.gramTraces !== undefined;
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount);
@@ -268,7 +325,7 @@ export class CPUSpatialWeightsTracesOperation extends GPUCPUOperation {
       validateRequirement(id, !includeGramTraces, 'weights chunks do not support Gram traces');
       let nextRow = 0;
       for (const [index, chunk] of props.weights.chunks.entries()) {
-        validateCapacity(id, `weights.chunks[${index}].rowCount`, chunk.rowCount);
+        validateCapacity(id, `weights.chunks[${index}].rowCount`, chunk.rowCount, 0);
         validateRequirement(
           id,
           chunk.rowStart === nextRow,

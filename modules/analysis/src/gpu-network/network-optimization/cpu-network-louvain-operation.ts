@@ -4,6 +4,8 @@
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
+  getPackedUint32Values,
+  getTypedArrayName,
   validateCapacity,
   validateMaximumCount,
   validateRequirement
@@ -30,6 +32,7 @@ export type CPUNetworkLouvainResult = {
   communities: Uint32Array;
   objectiveTrace: Float32Array;
   summary: Uint32Array;
+  status?: ReturnType<typeof decodeNetworkLouvainStatus>;
 };
 
 /**
@@ -61,14 +64,17 @@ export type CPUNetworkLouvainResult = {
 export function computeNetworkLouvainOnCPU(
   input: CPUNetworkLouvainInput,
   options: CPUNetworkLouvainOptions
-): CPUNetworkLouvainResult {
+): CPUNetworkLouvainResult & {status: ReturnType<typeof decodeNetworkLouvainStatus>} {
   validateLouvainOptions('computeNetworkLouvainOnCPU', options);
   validateRequirement(
     'computeNetworkLouvainOnCPU',
     Boolean(input.weights) !== Boolean(input.topology),
     'exactly one of weights or topology must be supplied'
   );
-  if (input.topology) return computeSparseNetworkLouvain(input.topology, input.parameters, options);
+  if (input.topology) {
+    const result = computeSparseNetworkLouvain(input.topology, input.parameters, options);
+    return {...result, status: decodeNetworkLouvainStatus(result.summary)};
+  }
   const {nodeCount} = options;
   const {weights, parameters} = input;
   const maximumLevels = options.maximumLevels ?? 8;
@@ -81,7 +87,14 @@ export function computeNetworkLouvainOnCPU(
   const groups = Uint32Array.from(communities);
   const objectiveTrace = new Float32Array(1 + maximumLevels * maximumIterations).fill(NaN);
   const summary = new Uint32Array(4);
-  const result = {communities, objectiveTrace, summary};
+  const result = {
+    communities,
+    objectiveTrace,
+    summary,
+    get status() {
+      return decodeNetworkLouvainStatus(summary);
+    }
+  };
   // No exported packer/layout exists in the contributor; this is its documented row order.
   const [resolution, tolerance] = parameters;
   if (
@@ -249,25 +262,35 @@ export class CPUNetworkLouvainOperation extends GPUCPUOperation {
           },
           props
         );
+        const {status, ...primaryRows} = result;
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
             output.value,
-            port in result
-              ? result[port as keyof CPUNetworkLouvainResult]
-              : Uint32Array.of(
-                  {
-                    iterationCount: result.summary[3],
-                    converged: result.summary[1],
-                    iterationLimitReached: Number(
-                      result.summary[0] !== 0 && result.summary[1] === 0
-                    ),
-                    invalidCount: Number(result.summary[0] === 0),
-                    approximation: 1
-                  }[port]!
-                )
+            port in primaryRows
+              ? primaryRows[port as keyof typeof primaryRows]
+              : status[port as keyof typeof status]
           ])
         );
       }
     });
   }
+}
+
+/** Decode the four summary words into the named CPU/graph diagnostics. */
+export function decodeNetworkLouvainStatus(summary: Uint32Array | Uint8Array | ArrayBuffer) {
+  validateRequirement(
+    'decodeNetworkLouvainStatus',
+    getTypedArrayName(summary) === 'Uint32Array' ||
+      getTypedArrayName(summary) === 'Uint8Array' ||
+      Object.prototype.toString.call(summary) === '[object ArrayBuffer]',
+    'summary must be Uint32Array, Uint8Array or ArrayBuffer'
+  );
+  const words = getPackedUint32Values(summary, 4);
+  return {
+    iterationCount: Uint32Array.of(words[3]),
+    converged: Uint32Array.of(words[1]),
+    iterationLimitReached: Uint32Array.of(Number(words[0] !== 0 && words[1] === 0)),
+    invalidCount: Uint32Array.of(Number(words[0] === 0)),
+    approximation: Uint32Array.of(1)
+  };
 }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateCapacity} from '@luma-contributors/analysis/analysis-core';
+import {validateCapacity, validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {parseKeplerIsoTimestamp} from '../profile/iso-timestamp';
 import type {
   CatalogParameterSpec,
@@ -117,7 +117,7 @@ export function prepareCatalogTrajectory(
   // Inspect only feature metadata before allocating or walking individual fixes. Each limit
   // is validated once for this preparation, outside the row loops and contributor execution.
   let fixCount = 0;
-  const inputTrackIds = new Set<string>();
+  const inputTrackIds = new Set<unknown>();
   for (const feature of collection.features) {
     if (!feature.geometry) continue;
     const geometry = feature.geometry;
@@ -125,9 +125,7 @@ export function prepareCatalogTrajectory(
       geometry.type === 'LineString' && Array.isArray(geometry.coordinates)
         ? geometry.coordinates.length
         : 1;
-    inputTrackIds.add(
-      String(feature.properties?.[values['trackProperty'] as string] ?? feature.id)
-    );
+    inputTrackIds.add(feature.properties?.[values['trackProperty'] as string] ?? feature.id);
   }
   validateCapacity('catalog-trajectory', 'fixCount', fixCount, 1, MAXIMUM_TRAJECTORY_FIXES);
   validateCapacity(
@@ -137,7 +135,7 @@ export function prepareCatalogTrajectory(
     1,
     MAXIMUM_TRAJECTORY_TRACKS
   );
-  const groups = new Map<string, TrajectoryFix[]>();
+  const groups = new Map<string | number, TrajectoryFix[]>();
   let skippedEmptyFeatureCount = 0;
   collection.features.forEach((feature, sourceIndex) => {
     if (!feature.geometry) {
@@ -159,8 +157,8 @@ export function prepareCatalogTrajectory(
     const coordinates = geometry.type === 'Point' ? [geometry.coordinates] : geometry.coordinates;
     if (!Array.isArray(coordinates) || !coordinates.length)
       throw new Error(`Trajectory source row ${sourceIndex} has no fixes.`);
-    const track = groups.get(trackId) ?? [];
-    groups.set(trackId, track);
+    const track = groups.get(identity) ?? [];
+    groups.set(identity, track);
     coordinates.forEach((coordinate: unknown, vertexIndex: number) => {
       if (
         !Array.isArray(coordinate) ||
@@ -197,9 +195,9 @@ export function prepareCatalogTrajectory(
   });
   const fixes: TrajectoryFix[] = [];
   const offsets = [0];
-  const trackIds = [...groups.keys()];
-  trackIds.forEach((trackId, trackIndex) => {
-    const track = groups.get(trackId)!;
+  const trackIds = [...groups.keys()].map(String);
+  [...groups.values()].forEach((track, trackIndex) => {
+    const trackId = trackIds[trackIndex];
     track.sort((first, second) => first.timestamp - second.timestamp);
     track.forEach((fix, index) => {
       if (index && fix.timestamp <= track[index - 1].timestamp)
@@ -236,6 +234,15 @@ export function prepareCatalogTrajectory(
   };
 }
 
+/** Existing string publication cannot distinguish numeric and text IDs with the same spelling. */
+export function validateTrajectoryPublication(trajectory: CatalogTrajectory): void {
+  validateRequirement(
+    'catalog-trajectory',
+    new Set(trajectory.trackIds).size === trajectory.trackIds.length,
+    'track identities require distinct string spellings for publication; write distinct string track IDs instead'
+  );
+}
+
 /** Restore source altitude even when a cleaning operation supplies a corrected XY position. */
 export function getTrajectoryFixPosition(
   fix: TrajectoryFix,
@@ -251,6 +258,7 @@ export function makeTrajectoryFixes(
   extra: (row: number) => Record<string, string | number | boolean | null> = () => ({}),
   positions?: readonly CatalogPosition[]
 ) {
+  validateTrajectoryPublication(trajectory);
   const table = makeCatalogTable(
     'trajectory-fixes',
     'Trajectory fixes',
@@ -299,6 +307,7 @@ export function makeTrajectoryTracks(
   groups = getTrajectoryTrackRows(trajectory),
   positions?: readonly CatalogPosition[]
 ) {
+  validateTrajectoryPublication(trajectory);
   const table = makeCatalogTable(
     'trajectory-tracks',
     'Trajectory tracks',

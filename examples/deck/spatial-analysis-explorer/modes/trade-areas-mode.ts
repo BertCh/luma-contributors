@@ -239,16 +239,16 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
       catchmentParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: searchBounds,
-          radius: bandwidth,
-          weightKind: decay === 'gaussian' ? 'kernel' : 'binary',
+          searchRadius: bandwidth,
+          weightType: decay === 'gaussian' ? 'kernel' : 'binary',
           kernel: 'gaussian'
         })
       );
       huffParameters.write(
         getGPUNeighborSearchParameterValues({
           bounds: searchBounds,
-          radius: bandwidth,
-          weightKind: 'inverseDistance',
+          searchRadius: bandwidth,
+          weightType: 'inverse-distance',
           power: huffDecayPower,
           distanceFloor: 100
         })
@@ -488,11 +488,19 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
         let weighted3 = 0;
         let unreached = 0;
         let reachedDemand = 0;
+        let unreachedDemand = 0;
+        let unknownDemand = 0;
+        let unknownCount = 0;
         for (let index = 0; index < demandCount; index++) {
           weighted2 += demandValues[index] * (access2[index] || 0);
           weighted3 += demandValues[index] * (access3[index] || 0);
-          if (reachableCounts[index] === 0) unreached++;
-          else reachedDemand += demandValues[index];
+          if (reachableCounts[index] === 0xffffffff) {
+            unknownCount++;
+            unknownDemand += demandValues[index];
+          } else if (reachableCounts[index] === 0) {
+            unreached++;
+            unreachedDemand += demandValues[index];
+          } else reachedDemand += demandValues[index];
         }
         let captured = 0;
         let busiest = 0;
@@ -516,10 +524,17 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
         capturedReadout.setValue(
           `${formatCount(captured)} of ${formatCount(reachedDemand)} (busiest ${formatCount(busiest)})`
         );
-        if (overflows.some(Boolean)) {
+        if (overflows.some(Boolean) || unknownCount > 0) {
           for (const readout of [unreachedReadout, conservationReadout, capturedReadout]) {
-            readout.setValue('n/a: incomplete weights');
+            readout.setValue(
+              overflows.some(Boolean) ? 'n/a: incomplete weights' : 'n/a: unknown reachability'
+            );
           }
+        }
+        if (!overflows.some(Boolean) && unknownCount > 0) {
+          unreachedReadout.setValue(
+            `${formatCount(unreachedDemand)} known unreached, ${formatCount(reachedDemand)} known reached, ${formatCount(unknownDemand)} unknown demand`
+          );
         }
         context.updateLayers();
       }

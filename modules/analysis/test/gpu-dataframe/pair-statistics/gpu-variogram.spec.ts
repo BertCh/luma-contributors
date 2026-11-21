@@ -203,8 +203,8 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
   const binCount = lagCount * directionCount;
   const harness = createHarness(device, scene, lagCount, directionCount);
   try {
-    for (const azimuthOffset of [-Math.PI / 8, 0.3]) {
-      const frame = {bounds: BOUNDS, maximumDistance: 12, azimuthOffset};
+    for (const sectorOffsetRadians of [-Math.PI / 8, 0.3]) {
+      const frame = {bounds: BOUNDS, maximumDistance: 12, sectorOffsetRadians};
       const result = await harness.run(getGPUVariogramParameterValues(frame));
       const oracle = computeVariogramOnCPU(scene, frame, lagCount, directionCount);
       // A-25: f32 atan2 (and f32 lag division) may move a pair lying within a few ulps of a sector
@@ -214,7 +214,7 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
       const sectorWidth = Math.PI / directionCount;
       let edgePairs = 0;
       forEachPair(scene, frame, 'unordered', ({deltaX, deltaY, distance}) => {
-        const angle = Math.atan2(deltaY, deltaX) - Math.fround(azimuthOffset);
+        const angle = Math.atan2(deltaY, deltaX) - Math.fround(sectorOffsetRadians);
         const scaled = (angle - Math.floor(angle / Math.PI) * Math.PI) / sectorWidth;
         const nearSectorEdge = Math.abs(scaled - Math.round(scaled)) * sectorWidth < 1e-5;
         if (nearSectorEdge || isNearBinEdge(distance, frame.maximumDistance, lagCount)) {
@@ -226,7 +226,7 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
         countDifference += Math.abs(result.pairCounts[bin] - oracle.pairCounts[bin]);
         if (result.pairCounts[bin] === oracle.pairCounts[bin]) {
           expectClose(
-            `offset ${azimuthOffset} gamma ${bin}`,
+            `offset ${sectorOffsetRadians} gamma ${bin}`,
             result.semivariances[bin],
             oracle.semivariances[bin],
             oracle.semivarianceTolerance + 2e-5 * Math.abs(oracle.semivariances[bin])
@@ -235,7 +235,7 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
       }
       expect(
         countDifference,
-        `offset ${azimuthOffset} edge pairs ${edgePairs}`
+        `offset ${sectorOffsetRadians} edge pairs ${edgePairs}`
       ).toBeLessThanOrEqual(2 * edgePairs);
       expect(
         result.pairCounts.reduce((sum, count) => sum + count, 0),
@@ -247,7 +247,7 @@ it('GPUVariogram splits pairs into direction sectors that resolve anisotropy', a
       getGPUVariogramParameterValues({
         bounds: BOUNDS,
         maximumDistance: 12,
-        azimuthOffset: -Math.PI / 8
+        sectorOffsetRadians: -Math.PI / 8
       })
     );
     const along = result.semivariances[0 * lagCount + 4];
@@ -391,17 +391,21 @@ it('GPUVariogram counts coincident pairs in sector 0 whatever the azimuth offset
       })
   });
   try {
-    for (const azimuthOffset of [0.3, -0.3, 1.2]) {
+    for (const sectorOffsetRadians of [0.3, -0.3, 1.2]) {
       const result = await harness.run(
-        getGPUVariogramParameterValues({bounds: [0, 0, 10, 10], maximumDistance: 4, azimuthOffset})
+        getGPUVariogramParameterValues({
+          bounds: [0, 0, 10, 10],
+          maximumDistance: 4,
+          sectorOffsetRadians
+        })
       );
       // Lags are 1 wide: the coincident pairs are in lag 0, the east pairs (distance 2) in lag 2.
       const expected = new Array<number>(binCount).fill(0);
       expected[0] = 3;
-      const eastAngle = (((0 - azimuthOffset) % Math.PI) + Math.PI) % Math.PI;
+      const eastAngle = (((0 - sectorOffsetRadians) % Math.PI) + Math.PI) % Math.PI;
       const eastSector = Math.floor((eastAngle / Math.PI) * directionCount);
       expected[eastSector * lagCount + 2] = 3;
-      expect(result.pairCounts, `offset ${azimuthOffset}`).toEqual(expected);
+      expect(result.pairCounts, `offset ${sectorOffsetRadians}`).toEqual(expected);
       // Coincident differences 1, 2 and 3: Matheron gamma = (1 + 4 + 9) / (2 * 3).
       expect(result.semivariances[0]).toBeCloseTo(14 / 6, 4);
     }
@@ -427,17 +431,17 @@ it('GPUVariogram bins vertical pairs with either sign of zero x difference', asy
         [1, 1]
       );
       try {
-        for (const azimuthOffset of [0.2, -0.2]) {
+        for (const sectorOffsetRadians of [0.2, -0.2]) {
           const result = await harness.run(
             getGPUVariogramParameterValues({
               bounds: [-2, -2, 2, 2],
               maximumDistance: 2,
-              azimuthOffset
+              sectorOffsetRadians
             })
           );
           // North and south share the same undirected axis pi/2. Offsets of +/-0.2 put
           // the single pair in sector 1/2 respectively, away from sector boundaries.
-          const sector = azimuthOffset > 0 ? 1 : 2;
+          const sector = sectorOffsetRadians > 0 ? 1 : 2;
           expect(result.pairCounts).toEqual(sector === 1 ? [0, 1, 0, 0] : [0, 0, 1, 0]);
           expect(result.semivariances[sector]).toBeCloseTo((3 - 1) ** 2 / 2, 5);
           expect(result.meanDistances[sector]).toBeCloseTo(1, 6);
@@ -462,7 +466,11 @@ it('GPUVariogram bins are bitwise independent of the cell lattice, including dir
   const scene = createAnisotropicScene(11, 1800);
   const lagCount = 8;
   const directionCount = 4;
-  const frame: GPUVariogramSettings = {bounds: BOUNDS, maximumDistance: 9, azimuthOffset: 0.2};
+  const frame: GPUVariogramSettings = {
+    bounds: BOUNDS,
+    maximumDistance: 9,
+    sectorOffsetRadians: 0.2
+  };
   let reference: Awaited<ReturnType<ReturnType<typeof createHarness>['run']>> | undefined;
   for (const gridSize of [
     [1, 1],

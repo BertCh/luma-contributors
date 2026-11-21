@@ -119,7 +119,9 @@ export type GPULineSegmentizeProps = {
  * and a publish kernel that clamps line offsets to the capacity. Deterministic; no atomics.
  *
  * Precision: f32. Interior spherical points come from f32 unit vectors, about 1e-7 rad (under a
- * meter on Earth) from the f64 slerp.
+ * meter on Earth) from the f64 slerp away from antipodal edges. On the great-circle route, when
+ * `pi - angle < 1e-6` radians for an edge's float32 central angle, its interior vertices have
+ * NaN longitude and latitude. Original input endpoints are retained with unwrapped longitudes.
  */
 export class GPULineSegmentize implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

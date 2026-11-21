@@ -80,8 +80,13 @@ export function summarizeDecimal128Reference(
   return summary;
 }
 
-/** Decimal text of an unscaled value, for example (-12345n, 2) is "-123.45". */
+/**
+ * Decimal text of an unscaled value times `10^-scale`, for example (-12345n, 2) is "-123.45" and
+ * (12n, -3) is "12000".
+ */
 export function formatDecimal128(unscaled: bigint, scale: number): string {
+  // A negative scale multiplies by a power of ten: append zeros instead of placing a point.
+  if (scale < 0) return (unscaled * 10n ** BigInt(-scale)).toString();
   const negative = unscaled < 0n;
   const digits = (negative ? -unscaled : unscaled).toString().padStart(scale + 1, '0');
   const point = digits.length - scale;

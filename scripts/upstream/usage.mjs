@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // Import-statement census, not a semantic reachability analysis. Run from the repository root.
+// Usage is attributed to the exact entry point named in each import (entry plus name); a value
+// imported through a re-exporting entry is reported under `usedThroughOtherEntries`.
 import {existsSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import typescript from 'typescript';
@@ -87,32 +89,55 @@ writeFileSync(usagePath, JSON.stringify({usage, specifierCounts}));
 console.log('SPECIFIERS (import statements per area)');
 for (const [specifier, counts] of Object.entries(specifierCounts).sort())
   console.log(' ', specifier.padEnd(44), JSON.stringify(counts));
-const usedNames = new Map();
+// Usage is joined by (entry, name): an import of `GPUScan` from `@luma.gl/graph/gpu-core` counts for
+// that entry only, even when the graph root re-exports the same declaration. A name imported only
+// through another entry that exports the same declaration file is listed separately as
+// `usedThroughOtherEntries` instead of being credited to this entry.
+const usedKeys = new Map();
 for (const [key, areasUsed] of Object.entries(usage)) {
-  const name = key.split('#')[1];
-  const total = usedNames.get(name) || {source: 0, other: 0};
+  const total = {source: 0, other: 0};
   for (const [area, count] of Object.entries(areasUsed)) {
     total[area.endsWith('-src') ? 'source' : 'other'] += count.value + count.type;
   }
-  usedNames.set(name, total);
+  usedKeys.set(key, total);
 }
+const getUsedEntries = (entry, name, declarationFile) =>
+  Object.entries(exportsByEntry)
+    .filter(
+      ([otherEntry, otherExports]) =>
+        otherEntry !== entry &&
+        otherExports?.[name] &&
+        (otherExports[name].file ?? '') === (declarationFile ?? '') &&
+        usedKeys.has(`${otherEntry}#${name}`)
+    )
+    .map(([otherEntry]) => otherEntry);
 const report = {};
 for (const [entry, exports] of Object.entries(exportsByEntry)) {
   if (!exports) continue;
   const values = Object.entries(exports).filter(([, value]) =>
     ['class', 'function', 'const'].includes(value.kind)
   );
+  const getUse = name => usedKeys.get(`${entry}#${name}`);
+  const unused = values.filter(([name]) => !getUse(name));
+  const usedThroughOtherEntries = Object.fromEntries(
+    unused
+      .map(([name, value]) => [name, getUsedEntries(entry, name, value.file)])
+      .filter(([, entries]) => entries.length > 0)
+  );
   report[entry] = {
     values: values.length,
-    usedInSrc: values.filter(([name]) => (usedNames.get(name)?.source ?? 0) > 0).length,
-    unused: values.filter(([name]) => !usedNames.has(name)).map(([name]) => name),
+    usedInSrc: values.filter(([name]) => (getUse(name)?.source ?? 0) > 0).length,
+    unused: unused.map(([name]) => name),
     testOnly: values
-      .filter(([name]) => usedNames.has(name) && usedNames.get(name).source === 0)
-      .map(([name]) => name)
+      .filter(([name]) => getUse(name) && getUse(name).source === 0)
+      .map(([name]) => name),
+    usedThroughOtherEntries
   };
 }
 writeFileSync(reportPath, JSON.stringify(report, null, 1));
-console.log('\nENTRY value exports / used in src / used only outside src / unused');
+console.log(
+  '\nENTRY value exports / used in src / used only outside src / unused (imported from this exact entry)'
+);
 for (const [entry, counts] of Object.entries(report))
   console.log(
     ' ',

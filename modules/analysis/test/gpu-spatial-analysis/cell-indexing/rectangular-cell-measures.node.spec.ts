@@ -5,7 +5,10 @@
 import {expect, it} from 'vitest';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
-import {GPUCellMeasures} from '../../../src/gpu-spatial-analysis/cell-indexing/gpu-cell-measures';
+import {
+  GPUCellMeasures,
+  type GPUCellMeasuresOutput
+} from '../../../src/gpu-spatial-analysis/cell-indexing/gpu-cell-measures';
 import {GPUCellMeasuresOperation} from '../../../src/gpu-spatial-analysis/cell-indexing/gpu-cell-measures-operation';
 import {
   createNullWebGPUDevice,
@@ -161,10 +164,15 @@ it.each([
       edgeCounts: view('uint32', 3),
       pentagons: view('uint32', 3)
     };
-    for (const [outputIndex, output] of [
+    const outputSelections: GPUCellMeasuresOutput[] = [
       outputs,
-      ...Object.entries(outputs).map(([name, value]) => ({[name]: value}))
-    ].entries()) {
+      {areas: outputs.areas},
+      {perimeters: outputs.perimeters},
+      {edgeLengths: outputs.edgeLengths},
+      {edgeCounts: outputs.edgeCounts},
+      {pentagons: outputs.pentagons}
+    ];
+    for (const [outputIndex, output] of outputSelections.entries()) {
       // Each declaration now owns its chunk-parameter resource in this shared graph.
       const contributor = new GPUCellMeasures({
         id: `cell-measures-${family}-${outputIndex}`,

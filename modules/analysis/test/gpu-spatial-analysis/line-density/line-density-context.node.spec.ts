@@ -43,6 +43,7 @@ function createFixture() {
     createLength: (spatialContext?: GPUSpatialContext) =>
       new GPULineLengthPerPolygon({
         ...props,
+        output: {clippedLengths: props.output.lengths, status: props.output.status},
         spatialContext,
         pairCapacity: 4,
         polygons: {
@@ -139,9 +140,12 @@ it('GPULineLengthPerPolygon validates great-circle and distance frames; planar i
   });
   expect(planar.radius).toBe(1);
   const kernels = getGPUCommandNodeKernelSources(planar.getCommandNodes(graph));
-  const clip = kernels.find(({source}) => source.includes('fn getPieceLength'))!.source;
-  expect(clip).toContain('return (t1 - t0) * length(b - a);');
+  const clippingKernel = kernels.find(({id}) => id === 'line-length-per-polygon-clip');
+  expect(clippingKernel).toBeDefined();
+  const clip = clippingKernel!.source;
+  expect(clip).toContain('inside += (end - start) * length(vec2f(1.0, slope));');
   expect(clip).not.toContain('* RADIUS');
+  expect(clip.match(/\bRADIUS\b/g)).toHaveLength(1); // The declaration has no planar use.
   expect(
     createLength({
       coordinateSpace: 'longitude-latitude',

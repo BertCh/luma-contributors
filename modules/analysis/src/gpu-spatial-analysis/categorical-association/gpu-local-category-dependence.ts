@@ -27,6 +27,11 @@ import {GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT} from '../spatial-entrop
 
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  snapshotCategoricalAssociationProps,
+  createCategoricalSuppressionNodes,
+  validateCategoricalCompleteness
+} from './categorical-association-contract';
 
 const OPERATION = 'GPULocalCategoryDependence';
 
@@ -108,10 +113,19 @@ export type GPULocalCategoryDependenceOutput = {
  * Not implemented: the local configuration part (local multi-category join counts and their
  * chi-square), the conditional permutation p-values and the unlike-neighbour tails.
  *
- * The binomial tail is a bounded sum over the row's own neighbourhood (at most its degree),
- * evaluated in log space in float32 (relative error about 1e-5).
+ * The binomial tail sums relative probabilities outward from the mode, normalizing by their
+ * total in float32. Both recurrences are bounded by the row's degree. The 2,190-neighbour
+ * regression checks an absolute tolerance of 2e-7 against SciPy; it is not a general error bound.
  *
  * Compile-time: row count, `categoryCount`, which outputs exist.
+ * Accepts 1–32 categories.
+ * Producer overflow/candidateOverflow flags remain live: either nonzero flag suppresses all
+ * six statistics per row to NaN. Category row counts and trailing storage are preserved.
+ * A requiredCount view is accepted only with the producer's overflow flag.
+ * Verify CSR completeness before supplying it and omit upstream convergence, iteration-limit
+ * and unresolved-work views.
+ * When supplied, status.complete is also live: zero suppresses the same dependent outputs,
+ * even when both overflow flags are clear; a nonzero certificate never overrides either loss.
  */
 export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -122,10 +136,12 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
   readonly rowCount: number;
 
   constructor(props: GPULocalCategoryDependenceProps) {
+    props = snapshotCategoricalAssociationProps(props, ['statistics', 'categoryRowCounts']);
     const id = props.id ?? 'local-category-dependence';
     this.id = id;
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(id, props.weights);
+    validateCategoricalCompleteness(id, props.weights);
     validateCapacity(
       id,
       'categoryCount',
@@ -162,7 +178,13 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.statistics, props.output.categoryRowCounts],
-      [props.categories, props.weights.offsets, props.weights.neighbors, props.weights.weights]
+      [
+        props.categories,
+        props.weights.offsets,
+        props.weights.neighbors,
+        props.weights.weights,
+        ...Object.values(props.weights.status ?? {})
+      ]
     );
   }
 
@@ -229,22 +251,31 @@ const CAPACITY: u32 = ${weights.neighbors.length}u;
 const CATEGORIES: u32 = ${categoryCount}u;
 const COLUMNS: u32 = ${columns.length}u;
 ${GET_NAN_WGSL}
-// P(X >= like), X ~ Binomial(count, p), by the log-space pmf recurrence over k = 0..count.
+// P(X >= like), X ~ Binomial(count, p). Normalize relative probabilities from the
+// mode, avoiding cancellation of O(count) log terms in a large neighborhood.
 fn getUpperTail(like: u32, count: u32, p: f32) -> f32 {
   if (like == 0u || p >= 1.0) {
     return 1.0;
   }
-  let logP = log(p);
-  let logQ = log(1.0 - p);
-  var logChoose = 0.0;
-  var tail = 0.0;
-  for (var k = 0u; k <= count; k++) {
-    if (k >= like) {
-      tail += exp(logChoose + f32(k) * logP + f32(count - k) * logQ);
-    }
-    logChoose += log(f32(count - k) / f32(k + 1u));
+  if (p <= 0.0 || like > count) { return 0.0; }
+  let mode = min(count, u32(floor((f32(count) + 1.0) * p)));
+  let odds = p / (1.0 - p);
+  let inverseOdds = (1.0 - p) / p;
+  var normalizer = 1.0;
+  var tail = select(0.0, 1.0, mode >= like);
+  var probability = 1.0;
+  for (var k = mode; k < count; k++) {
+    probability *= (f32(count - k) / f32(k + 1u)) * odds;
+    normalizer += probability;
+    if (k + 1u >= like) { tail += probability; }
   }
-  return min(tail, 1.0);
+  probability = 1.0;
+  for (var k = mode; k > 0u; k--) {
+    probability *= (f32(k) / f32(count - k + 1u)) * inverseOdds;
+    normalizer += probability;
+    if (k - 1u >= like) { tail += probability; }
+  }
+  return clamp(tail / normalizer, 0.0, 1.0);
 }`,
         body: `let own = categories[categoriesOffset + index];
   let base = statisticsOffset + index * COLUMNS;
@@ -278,7 +309,16 @@ fn getUpperTail(like: u32, count: u32, p: f32) -> f32 {
   statistics[base + ${columns.expectedProportion}u] = p;
   statistics[base + ${columns.upperTailProbability}u] = getUpperTail(likeCount, neighborCount, p);
   statistics[base + ${columns.standardizedScore}u] = select(nan, (f32(likeCount) - n * p) / sqrt(variance), variance > 0.0);`
-      })
+      }),
+      // Incomplete weights (status.overflow or status.candidateOverflow): NaN statistics.
+      ...createCategoricalSuppressionNodes(
+        graph,
+        id,
+        OPERATION,
+        weights,
+        output.statistics,
+        rowCount * columns.length
+      )
     ];
   }
 }

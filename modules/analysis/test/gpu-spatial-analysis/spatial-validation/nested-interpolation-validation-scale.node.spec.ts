@@ -10,6 +10,8 @@ import {
 } from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {expect, it, vi} from 'vitest';
 import {GPUNestedInterpolationValidation} from '../../../src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation';
+import {GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT} from '../../../src/gpu-spatial-analysis/spatial-validation/nested-validation-limits';
+import {REGRESSION_TILE_MINIMUM_DEFAULT_ROW_COUNT} from '../../../src/gpu-spatial-analysis/spatial-regression/regression-row-tiles';
 import {
   auditWGSLModule,
   stripWGSLComments,
@@ -52,6 +54,30 @@ function createFixture(rows: number, folds = 2) {
   };
   return {device, graph, props, view};
 }
+
+it('W3-03 shares the enforced candidate and default minimum tile-width declarations', () => {
+  expect(GPU_NESTED_VALIDATION_MAXIMUM_CANDIDATE_COUNT).toBe(16);
+  expect(REGRESSION_TILE_MINIMUM_DEFAULT_ROW_COUNT).toBe(64);
+  const fixture = createFixture(4096);
+  try {
+    expect(
+      () =>
+        new GPUNestedInterpolationValidation({
+          ...fixture.props,
+          candidates: Array.from({length: 17}, () => fixture.props.candidates[0])
+        })
+    ).toThrow(/candidates.*16/);
+    const nodes = new GPUNestedInterpolationValidation(fixture.props).getCommandNodes(
+      fixture.graph
+    );
+    const [metric] = getGPUCommandNodeKernelSources(
+      nodes.filter(node => node.id.endsWith('-metric-merge'))
+    );
+    expect(metric.source).toContain('tile < 64u');
+  } finally {
+    fixture.device.destroy();
+  }
+});
 
 it('tiles nested scores above 256 rows and retains the explicit reference envelope', () => {
   const fixture = createFixture(513);

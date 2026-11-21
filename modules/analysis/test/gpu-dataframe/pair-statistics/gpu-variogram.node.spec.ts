@@ -20,6 +20,11 @@ import {
   getGPUVariogramParameterValues,
   GPU_VARIOGRAM_PARAMETER_LENGTH
 } from '../../../src/dataframe-analysis/pair-statistics/variogram-parameters';
+import {getGPUSpatialCorrelogramParameterValues} from '../../../src/dataframe-analysis/pair-statistics/spatial-correlogram-parameters';
+import {getGPURipleyParameterValues} from '../../../src/dataframe-analysis/pair-statistics/ripley-parameters';
+import {getGPURipleyDistanceFunctionsParameterValues} from '../../../src/dataframe-analysis/pair-statistics/ripley-distance-parameters';
+import {getGPUPointPatternIndicesParameterValues} from '../../../src/dataframe-analysis/pair-statistics/point-pattern-indices-parameters';
+import {getGPUSpaceTimeVariogramParameterValues} from '../../../src/dataframe-analysis/pair-statistics/gpu-space-time-variogram';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodeKernelSources
@@ -81,7 +86,7 @@ it('getGPUVariogramParameterValues packs and validates the layout', () => {
       getGPUVariogramParameterValues({
         bounds: [0, 0, 1, 1],
         maximumDistance: 0.5,
-        azimuthOffset: 0.25
+        sectorOffsetRadians: 0.25
       })
     )
   ).toEqual([0, 0, 1, 1, 0.5, 0.25, 0, 0]);
@@ -92,11 +97,68 @@ it('getGPUVariogramParameterValues packs and validates the layout', () => {
     /minX/
   );
   expect(() =>
-    getGPUVariogramParameterValues({bounds, maximumDistance: 1, azimuthOffset: Infinity})
-  ).toThrow(/azimuthOffset/);
+    getGPUVariogramParameterValues({bounds, maximumDistance: 1, sectorOffsetRadians: Infinity})
+  ).toThrow(/sectorOffsetRadians/);
   expect(() =>
     getGPUVariogramParameterValues({bounds, maximumDistance: 1}, new Float32Array(4))
   ).toThrow(/8/);
+});
+
+it('pair-statistics packers reject values that float32 cannot hold (DPC-108)', () => {
+  // Math.fround(1e39) is Infinity and Math.fround(1e-50) is 0: finite or positive in float64 only.
+  expect(Math.fround(1e39)).toBe(Number.POSITIVE_INFINITY);
+  expect(Math.fround(1e-50)).toBe(0);
+  const bounds = [0, 0, 1, 1] as const;
+  const packers: [
+    string,
+    (settings: {
+      bounds: readonly [number, number, number, number];
+      maximumDistance: number;
+    }) => unknown
+  ][] = [
+    ['GPUVariogram', settings => getGPUVariogramParameterValues(settings)],
+    ['GPUSpatialCorrelogram', settings => getGPUSpatialCorrelogramParameterValues(settings)],
+    ['GPURipley', settings => getGPURipleyParameterValues(settings)],
+    [
+      'GPURipleyDistanceFunctions',
+      settings => getGPURipleyDistanceFunctionsParameterValues(settings)
+    ],
+    [
+      'GPUPointPatternIndices',
+      ({bounds, maximumDistance}) =>
+        getGPUPointPatternIndicesParameterValues({bounds, indexCellSizeHint: maximumDistance})
+    ],
+    [
+      'GPUSpaceTimeVariogram',
+      settings => getGPUSpaceTimeVariogramParameterValues({...settings, maximumTimeLag: 1})
+    ]
+  ];
+  for (const [name, pack] of packers) {
+    const prefix = new RegExp(`^${name} `);
+    const distanceField =
+      name === 'GPUPointPatternIndices' ? 'indexCellSizeHint' : 'maximumDistance';
+    const float32Error = new RegExp(`${distanceField} .*float32`);
+    expect(() => pack({bounds, maximumDistance: 1e-50})).toThrow(prefix);
+    expect(() => pack({bounds, maximumDistance: 1e-50})).toThrow(float32Error);
+    expect(() => pack({bounds, maximumDistance: 1e39})).toThrow(float32Error);
+    expect(() => pack({bounds: [0, 0, 1e39, 1], maximumDistance: 1})).toThrow(/bounds .*float32/);
+    expect(() => pack({bounds: [-1e39, 0, 1, 1], maximumDistance: 1})).toThrow(prefix);
+    expect(() => pack({bounds, maximumDistance: 1})).not.toThrow();
+  }
+  expect(() =>
+    getGPUVariogramParameterValues({bounds, maximumDistance: 1, sectorOffsetRadians: 1e39})
+  ).toThrow(/^GPUVariogram sectorOffsetRadians .*float32/);
+  expect(() =>
+    getGPUSpaceTimeVariogramParameterValues({bounds, maximumDistance: 1, maximumTimeLag: 1e-50})
+  ).toThrow(/^GPUSpaceTimeVariogram maximumTimeLag .*float32/);
+  expect(() =>
+    getGPUPointPatternIndicesParameterValues({
+      bounds,
+      indexCellSizeHint: 1,
+      clarkEvansCorrection: 'guard',
+      guardDistance: 1e-50
+    })
+  ).toThrow(/^GPUPointPatternIndices .*guardDistance .*float32/);
 });
 
 it('GPUVariogram validates its inputs and outputs', () => {
@@ -240,6 +302,28 @@ it('fitVariogramModel keeps nugget and sill non-negative and skips empty bins', 
   ).toThrow(/cubic/);
 });
 
+it('fitVariogramModel rejects bin arrays of unequal length (PTS-105)', () => {
+  // Before the fix, five distances with four pair counts silently fitted the first four bins.
+  expect(() =>
+    fitVariogramModel(
+      {
+        distances: [1, 2, 3, 4, 5],
+        semivariances: [0.2, 0.4, 0.6, 0.8, 5],
+        pairCounts: [10, 10, 10, 10]
+      },
+      {model: 'exponential', weighting: 'pairs'}
+    )
+  ).toThrow(
+    'fitVariogramModel distances, semivariances and pairCounts must have equal lengths, got 5, 5 and 4'
+  );
+  expect(() =>
+    fitVariogramModel(
+      {distances: [1, 2, 3], semivariances: [0.2, 0.4], pairCounts: [10, 10, 10]},
+      {model: 'spherical'}
+    )
+  ).toThrow(/got 3, 2 and 3/);
+});
+
 it('variogram model shapes follow the practical-range convention', () => {
   expect(getVariogramModelShape('spherical', 1)).toBe(1);
   expect(getVariogramModelShape('spherical', 0.5)).toBeCloseTo(0.6875, 12);
@@ -285,4 +369,14 @@ it('GPUVariogram requires a distance-compatible local frame', () => {
       )
   ).not.toThrow();
   device.destroy();
+});
+
+it('B3 explicitly labels the new variogram and point-pattern setting spellings', () => {
+  const bounds = [0, 0, 1, 1] as const;
+  expect(() => getGPUPointPatternIndicesParameterValues({bounds, indexCellSizeHint: 1e39})).toThrow(
+    /^GPUPointPatternIndices indexCellSizeHint .*float32/
+  );
+  expect(() =>
+    getGPUVariogramParameterValues({bounds, maximumDistance: 1, sectorOffsetRadians: 1e39})
+  ).toThrow(/^GPUVariogram sectorOffsetRadians .*float32/);
 });

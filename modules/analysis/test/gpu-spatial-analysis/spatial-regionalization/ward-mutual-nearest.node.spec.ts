@@ -7,7 +7,7 @@ import {WgslReflect} from 'wgsl_reflect';
 import {expect, it} from 'vitest';
 import {
   GPU_WARD_ROUND_COUNT_STATUS_WORD,
-  GPU_WARD_STATUS,
+  GPU_WARD_STATUS_LAYOUT,
   GPUWardRegions
 } from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions';
 import {
@@ -38,7 +38,7 @@ type NodeRecord = {id: string; condition?: {mode: string}};
 
 function buildWard(
   maximumIterations: number,
-  statusLength: number = GPU_WARD_STATUS.length,
+  statusLength: number = GPU_WARD_STATUS_LAYOUT.length,
   rowCount: number = ROWS
 ) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
@@ -114,7 +114,7 @@ it('GPUWardRegions mutual-nearest gates its rounds (rule 13) and stays within co
 });
 
 it('GPUWardRegions mutual-nearest writes the optional round-count status word only when present', () => {
-  expect(GPU_WARD_ROUND_COUNT_STATUS_WORD).toBe(GPU_WARD_STATUS.length);
+  expect(GPU_WARD_ROUND_COUNT_STATUS_WORD).toBe(GPU_WARD_STATUS_LAYOUT.length);
   const initialize = (statusLength: number) =>
     getGPUCommandNodeKernelSources(buildWard(2, statusLength)).find(kernel =>
       kernel.id.endsWith('initialize-status')

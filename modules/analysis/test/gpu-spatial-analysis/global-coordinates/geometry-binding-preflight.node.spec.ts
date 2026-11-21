@@ -238,8 +238,11 @@ const factories: Record<string, Factory> = {
         output: {
           leftRows: view('uint32', 4),
           rightRows: view('uint32', 4),
-          rowCount: view('uint32', 1),
-          status: {overflow: view('uint32', 1), matchedCount: view('uint32', 1)}
+          status: {
+            count: view('uint32', 1),
+            overflow: view('uint32', 1),
+            matchedCount: view('uint32', 1)
+          }
         }
       })
     };
@@ -510,9 +513,7 @@ it('rejects dissolve tolerances that cannot be represented by generated f32 valu
   const graph = new GPUCommandGraph(device);
   const props = (factories['GPUCoverageDissolve'](graph).producer as GPUCoverageDissolve).props;
   for (const value of [Infinity, 1e40])
-    expect(() => new GPUCoverageDissolve({...props, snapTolerance: value})).toThrow(
-      /snapTolerance/
-    );
+    expect(() => new GPUCoverageDissolve({...props, snapGridSize: value})).toThrow(/snapGridSize/);
   for (const value of [Infinity, 1e40, 1e-100])
     expect(() => new GPUCoverageDissolve({...props, vertexTolerance: value})).toThrow(
       /vertexTolerance/
@@ -547,4 +548,44 @@ it('ignores unused group weights when only an unweighted mean is requested', () 
     graph.add(new GPUGroupGeometry({...props, weights}).getCommandNodes(graph))
   ).not.toThrow();
   device.destroy();
+});
+
+it('NAM-09 rejects unknown spherical operations before reference membership and preserves XOR', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const arc = factories['GPUSphericalArcOverlay'](graph).producer as GPUSphericalArcOverlay;
+    const polygon = factories['GPUSphericalPolygonOverlay'](new GPUCommandGraph(device))
+      .producer as GPUSphericalPolygonOverlay;
+    for (const operation of ['Union', 'unrelated']) {
+      expect(
+        () => new GPUSphericalArcOverlay({...arc.props, operation: operation as 'union'})
+      ).toThrow(/operation.*intersection.*union.*difference.*symmetric-difference.*received/);
+      expect(
+        () => new GPUSphericalPolygonOverlay({...polygon.props, operation: operation as 'union'})
+      ).toThrow(/operation.*intersection.*union.*difference.*symmetric-difference.*received/);
+    }
+    // XOR truth table is independent of the arrangement algorithm.
+    for (const left of [false, true])
+      for (const right of [false, true]) {
+        expect(
+          new GPUSphericalArcOverlay({
+            ...arc.props,
+            operation: 'symmetric-difference',
+            left: {...arc.props.left, referenceInside: left},
+            right: {...arc.props.right, referenceInside: right}
+          }).referenceInside
+        ).toBe(left !== right);
+        expect(
+          new GPUSphericalPolygonOverlay({
+            ...polygon.props,
+            operation: 'symmetric-difference',
+            leftComplement: left,
+            rightComplement: right
+          }).complement
+        ).toBe(left !== right);
+      }
+  } finally {
+    device.destroy();
+  }
 });

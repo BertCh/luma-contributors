@@ -6,12 +6,17 @@ import type {
   GPUSpatialAnalysisCapability,
   GPUSpatialAnalysisOperator
 } from './spatial-analysis-ontology';
+import {
+  freezeCatalog,
+  withCatalogStability,
+  type CatalogCapabilityDefinition
+} from './freeze-catalog';
 
 const TEST_ROOT = 'modules/analysis/test/gpu-spatial-analysis';
 const DOCUMENTATION_ROOT = 'docs/api/gpu-spatial-analysis';
 
 /** Discovery keeps bounded numerical contracts separate from upstream API parity. */
-export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = [
+const KEPLER_CAPABILITY_DEFINITIONS: readonly CatalogCapabilityDefinition[] = [
   {
     id: 'quantile-local-association',
     title: 'Quantile local association',
@@ -26,7 +31,7 @@ export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability
     outputBound: 'source-sized',
     operators: ['GPUQuantileLISA'],
     limitation:
-      'Up to 64 variables with one selected class each; empty intersections stay empty; lower-inclusive boundaries, islands and missing observations retain explicit labels. Uses legacy directed pseudo p-values, which can be anti-conservative; no implicit multiple-testing correction.',
+      'Up to 64 variables with one selected class each; empty intersections stay empty; lower-inclusive boundaries, islands and missing observations retain explicit labels. Requires an explicit greater, two-sided or geoda-legacy alternative. Inclusive tails return 1 on all ties; only geoda-legacy uses the anti-conservative strict-complement pseudo p-value. No implicit multiple-testing correction.',
     evidence: {
       representativeSourceRows: 8,
       transientMemory: 'linear-source',
@@ -79,6 +84,10 @@ export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability
   }
 ];
 
+export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = freezeCatalog(
+  KEPLER_CAPABILITY_DEFINITIONS.map(withCatalogStability)
+);
+
 type OperatorOverride = Partial<
   Pick<
     GPUSpatialAnalysisOperator,
@@ -124,7 +133,8 @@ export const KEPLER_ANALYSIS_OPERATOR_OVERRIDES: Readonly<Record<string, Operato
     topology: 'fixed',
     cardinality: 'source-sized',
     dimensionality: '2d',
-    status: [],
+    // Stage `excess-risk` of `result.status.stages` (rate-mapping-recipes.ts).
+    status: ['invalidCount'],
     evidence: 'partial',
     tests: `${TEST_ROOT}/rate-smoothing/rate-mapping-recipes.spec.ts`,
     documentation: `${DOCUMENTATION_ROOT}/rate-mapping.md`,

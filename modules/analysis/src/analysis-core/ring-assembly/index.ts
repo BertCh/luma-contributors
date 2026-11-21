@@ -24,3 +24,5 @@ export type {
   SegmentPolygonizationDiagnosticsInput,
   SegmentPolygonizationRing
 } from './segment-polygonization-diagnostics';
+
+export type {GPUSegmentRingInputStatus} from './ring-input-completeness';

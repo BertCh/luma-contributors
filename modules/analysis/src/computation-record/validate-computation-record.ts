@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getCaptureMetadataIssues, isMatchingCaptureArray} from './capture-value-validation';
 import {getGPUComputationIdentityIssues} from './computation-identity-validation';
 import {
   GPU_COMPUTATION_RECORD_SCHEMA,
@@ -12,7 +13,9 @@ import {parseGPUComputationNodeRef} from './computation-node-ref';
 import type {
   GPUComputationRecord,
   GPUComputationMetrics,
-  GPUComputationCaptures
+  GPUComputationCaptures,
+  GPUComputationCapture,
+  GPUComputationGraph
 } from './computation-record-types';
 
 /** One diagnostic at a JSON-style record or sidecar path. */
@@ -104,10 +107,11 @@ export function validateGPUComputationRecord(record: unknown): GPUComputationVal
       seed: root['seed'],
       adapter: root['adapter'],
       datasetVersion: root['datasetVersion'],
-      implementationRevision: root['implementationRevision']
+      implementationRevision: root['implementationRevision'],
+      dependencyRevision: root['dependencyRevision']
     }))
       issue(identityIssue.path, identityIssue.message);
-    for (const field of ['executionId', 'implementationRevision']) {
+    for (const field of ['executionId', 'implementationRevision', 'dependencyRevision']) {
       if (root[field] !== undefined) strings(root, [field], '');
     }
     strings(object(root['adapter'], 'adapter'), ['backend'], 'adapter');
@@ -217,6 +221,41 @@ export function validateGPUComputationRecord(record: unknown): GPUComputationVal
         if (node['bindings'] !== undefined)
           objects(node['bindings'], `${nodePath}.bindings`).forEach((binding, index) => {
             strings(binding, ['name', 'resource', 'access'], `${nodePath}.bindings[${index}]`);
+            for (const field of ['bindingByteOffset', 'bindingByteLength']) {
+              if (
+                binding[field] !== undefined &&
+                (!Number.isSafeInteger(binding[field]) || Number(binding[field]) < 0)
+              )
+                issue(
+                  `${nodePath}.bindings[${index}].${field}`,
+                  'Expected a nonnegative safe integer byte count'
+                );
+            }
+            const bindingOffset = binding['bindingByteOffset'];
+            const bindingLength = binding['bindingByteLength'];
+            if (bindingOffset !== undefined && Number(bindingOffset) % 256 !== 0)
+              issue(
+                `${nodePath}.bindings[${index}].bindingByteOffset`,
+                'Expected a 256-byte-aligned binding window'
+              );
+            if (bindingLength !== undefined && Number(bindingLength) <= 0)
+              issue(
+                `${nodePath}.bindings[${index}].bindingByteLength`,
+                'Expected a positive binding window length'
+              );
+            const resource = resources?.find(candidate => candidate['id'] === binding['resource']);
+            if (
+              resource?.['bytesKind'] === 'logical' &&
+              typeof resource['bytes'] === 'number' &&
+              typeof bindingOffset === 'number' &&
+              typeof bindingLength === 'number' &&
+              (bindingOffset > resource['bytes'] ||
+                bindingLength > resource['bytes'] - bindingOffset)
+            )
+              issue(
+                `${nodePath}.bindings[${index}]`,
+                'Binding window exceeds the logical resource byte length'
+              );
             if (resourceIds)
               reference(
                 binding['resource'],
@@ -224,6 +263,20 @@ export function validateGPUComputationRecord(record: unknown): GPUComputationVal
                 `${nodePath}.bindings[${index}].resource`
               );
           });
+        if (node['declaredBindings'] !== undefined)
+          objects(node['declaredBindings'], `${nodePath}.declaredBindings`).forEach(
+            (binding, index) => {
+              const bindingPath = `${nodePath}.declaredBindings[${index}]`;
+              strings(binding, ['name', 'type'], bindingPath);
+              for (const field of ['group', 'location']) {
+                if (field === 'group' && binding[field] === undefined) continue;
+                if (!Number.isInteger(binding[field]) || Number(binding[field]) < 0)
+                  issue(`${bindingPath}.${field}`, 'Expected a nonnegative integer');
+              }
+            }
+          );
+        if (node['entryPoint'] !== undefined && typeof node['entryPoint'] !== 'string')
+          issue(`${nodePath}.entryPoint`, 'Expected a string');
         // Kernel facts are optional: records described without kernel facts omit all three.
         if (node['constants'] !== undefined)
           for (const [name, value] of Object.entries(
@@ -401,6 +454,20 @@ export function validateGPUComputationSidecars(
     for (const [id, node] of Object.entries(metrics.nodes)) {
       const nodePath = `${path}.nodes[${JSON.stringify(id)}]`;
       if (!nodeIds.has(id)) issue(nodePath, 'Unknown node');
+      if (
+        node.gpuTimeMs !== undefined &&
+        (typeof node.gpuTimeMs !== 'number' ||
+          !Number.isFinite(node.gpuTimeMs) ||
+          node.gpuTimeMs < 0)
+      )
+        issue(
+          `${nodePath}.gpuTimeMs`,
+          'Expected a finite nonnegative GPU duration in milliseconds'
+        );
+      for (const field of ['gpuBegin', 'gpuEnd'] as const) {
+        if (node[field] !== undefined && !Number.isFinite(node[field]))
+          issue(`${nodePath}.${field}`, 'Expected a finite GPU endpoint');
+      }
       if (node.gpuBegin !== undefined && node.gpuEnd !== undefined && node.gpuEnd < node.gpuBegin)
         issue(`${nodePath}.gpuEnd`, 'GPU end precedes begin');
     }
@@ -415,9 +482,12 @@ export function validateGPUComputationSidecars(
         'captures.executionId',
         'Execution id does not match (including missing legacy identity)'
       );
+    const captureIds = new Set<string>();
     for (const category of ['snapshots', 'stamps', 'replays'] as const) {
       captures[category].forEach((capture, index) => {
         const path = `captures.${category}[${index}]`;
+        if (captureIds.has(capture.id)) issue(`${path}.id`, 'Duplicate capture id across sidecar');
+        captureIds.add(capture.id);
         const graphs =
           capture.graph === undefined
             ? record.graphs
@@ -433,6 +503,11 @@ export function validateGPUComputationSidecars(
           !graphs.some(graph => graph.nodes.some(node => node.id === capture.afterNode))
         )
           issue(`${path}.afterNode`, 'Unknown node');
+        const candidates = getCaptureGraphCandidates(record, capture);
+        if (candidates.length === 0)
+          issue(`${path}.graph`, 'No graph contains all capture references');
+        else if (capture.graph === undefined && candidates.length !== 1)
+          issue(`${path}.graph`, 'Ambiguous capture references; supply an explicit graph');
         if (
           capture.keySpace !== undefined &&
           !record.axes.keySpaces.some(space => space.id === capture.keySpace)
@@ -446,7 +521,28 @@ export function validateGPUComputationSidecars(
           !record.axes.keySpaces.some(space => space.id === geometry.featureKeySpace)
         )
           issue(`${path}.geometry.featureKeySpace`, 'Unknown key space');
-        const components = capture.components ?? 1;
+        for (const entry of getCaptureMetadataIssues(capture))
+          issue(`${path}.${entry.field}`, entry.message);
+        if (!['f32', 'u32', 'i32'].includes(capture.elementType))
+          issue(`${path}.elementType`, 'Expected f32, u32 or i32');
+        if (!isMatchingCaptureArray(capture.values, capture.elementType))
+          for (let lane = 0; lane < capture.values.length; lane++) {
+            const value = capture.values[lane];
+            if (
+              typeof value !== 'number' ||
+              (capture.elementType !== 'f32' &&
+                (!Number.isInteger(value) ||
+                  value < (capture.elementType === 'u32' ? 0 : -2147483648) ||
+                  value > (capture.elementType === 'u32' ? 4294967295 : 2147483647)))
+            ) {
+              issue(
+                `${path}.values[${lane}]`,
+                'Expected a numeric lane representable by elementType'
+              );
+              break;
+            }
+          }
+        const components = capture.components === undefined ? 1 : capture.components;
         if (!Number.isInteger(components) || components <= 0)
           issue(`${path}.components`, 'Expected a positive integer');
         else if (capture.values.length % components !== 0)
@@ -455,4 +551,28 @@ export function validateGPUComputationSidecars(
     }
   }
   return validator.report();
+}
+
+/** Resolves all local capture references to one graph without modifying either input.
+ * Returns undefined for absent, contradictory or ambiguous graph identities.
+ */
+export function resolveGPUComputationCaptureGraph(
+  record: GPUComputationRecord,
+  capture: Pick<GPUComputationCapture, 'graph' | 'resource' | 'afterNode'>
+): GPUComputationGraph | undefined {
+  const candidates = getCaptureGraphCandidates(record, capture);
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function getCaptureGraphCandidates(
+  record: GPUComputationRecord,
+  capture: Pick<GPUComputationCapture, 'graph' | 'resource' | 'afterNode'>
+): readonly GPUComputationGraph[] {
+  return record.graphs.filter(
+    graph =>
+      (capture.graph === undefined || graph.id === capture.graph) &&
+      (capture.resource === undefined ||
+        graph.resources?.some(resource => resource.id === capture.resource)) &&
+      (capture.afterNode === undefined || graph.nodes.some(node => node.id === capture.afterNode))
+  );
 }

@@ -1,8 +1,9 @@
 # GPU compute adapters for kepler.gl
 
-The luma.gl integration target is `10.0.0-alpha.16`; peers accept `~10.0.0-alpha.16`.
-See the [alpha package contract](../../dev-docs/release-package.md#tested-dependencies-and-accepted-peers)
-for the distinction between the target, accepted range and completed checks.
+Compatibility testing targets luma.gl `10.0.0-alpha.16` and Apache Arrow 17. The required peer
+ranges are `~10.0.0-alpha.16` for `@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph`
+and `>=17.0.0` for `apache-arrow`. Completed checks are recorded in the
+[alpha package contract](https://github.com/visgl/luma-contributors/blob/master/dev-docs/release-package.md#tested-dependencies-and-accepted-peers).
 
 This private integration package connects application-owned datasets to luma compute. It keeps
 GPU resources outside serializable UI state, preserves source identity and makes CPU readback
@@ -186,7 +187,8 @@ coordinate roles provide XY, with tabular altitude and portable custom catalog a
 The analysis bindings append existing contributors to a caller-owned command graph. They cover
 standardization, classification, excess risk, spatial rates, hot spots and additional bounded
 statistical and geometry operations without introducing another numerical implementation. The
-[analysis API guide](src/analysis/README.md) documents explicit geographic/projected point weights
+[analysis API guide](https://github.com/visgl/luma-contributors/blob/master/modules/kepler/src/analysis/README.md)
+documents explicit geographic/projected point weights
 and source-aligned Dorling cartograms, including coordinate contracts, limits and output ownership.
 It also documents bounded geographic ordinary kriging with explicit manual variograms, separate
 prediction/variance rasters and finite-result diagnostics; model fitting and confidence intervals

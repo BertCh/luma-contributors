@@ -21,10 +21,10 @@ it('retains the one earlier parent for every member of a simultaneous group', as
   // Every time-2 event has exactly the same one parent. Compute the E/M step independently.
   const intensityTerm = (0.5 / (2 * Math.PI)) * Math.exp(-1.5);
   const responsibility = intensityTerm / (0.1 + intensityTerm);
-  const mass = -Math.expm1(-9) - 3 * Math.expm1(-8);
   expect(result.estimates.background).toBeCloseTo((4 - 3 * responsibility) / 20, 6);
-  expect(result.estimates.branchingRatio).toBeCloseTo((3 * responsibility) / mass, 6);
-  expect(result.estimates.decayRate).toBeCloseTo(1, 6);
+  // Independent SciPy score root with remaining times [9,8,8,8], S=3*r, L=S.
+  expect(result.estimates.branchingRatio).toBeCloseTo(0.11312306432164705, 6);
+  expect(result.estimates.decayRate).toBeCloseTo(0.9976705756605463, 6);
   expect(result.estimates.spatialStandardDeviation).toBeCloseTo(Math.SQRT1_2, 6);
   expect(result.candidateOverflow).toBe(0);
   expect(result.backgroundProbability[1]).toBeCloseTo(result.backgroundProbability[2], 6);
@@ -147,9 +147,12 @@ it('keeps large spatial variance in the log domain and scales its quotient by ex
   // is needed to compute the finite normal estimates and dimensionless responsibilities.
   const parentIntensity = (0.5 / (2 * Math.PI * variance)) * Math.exp(-1.5);
   const triggered = parentIntensity / (background + parentIntensity);
-  const mass = -Math.expm1(-9) - Math.expm1(-8);
+  // One parent pair with lag 1 gives S=L=triggered, so the finite-window decay solves
+  // 1/beta - 1 - sum(r exp(-beta r))/sum(1-exp(-beta r)) = 0 for remaining times r=[9,8]:
+  // SciPy brentq gives beta=0.9980755456722574, M(beta)=1.9995337668598476.
+  const mass = 1.9995337668598476;
   expect(result.estimates.background / ((2 - triggered) / (area * 10))).toBeCloseTo(1, 4);
   expect(result.estimates.branchingRatio / (triggered / mass)).toBeCloseTo(1, 4);
-  expect(result.estimates.decayRate).toBeCloseTo(1, 4);
+  expect(result.estimates.decayRate).toBeCloseTo(0.9980755456722574, 5);
   expect(result.estimates.spatialStandardDeviation / (distance * Math.SQRT1_2)).toBeCloseTo(1, 4);
 });

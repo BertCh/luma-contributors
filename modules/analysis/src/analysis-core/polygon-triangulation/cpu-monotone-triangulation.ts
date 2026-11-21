@@ -149,7 +149,14 @@ export function triangulateMonotoneOnCPU(
   // ---- Step 1b: sweep order. y descending, x ascending, compact index last. ----
   const order: number[] = [];
   for (let vertex = 0; vertex < vertexCount; vertex++) {
-    if (alive(vertex)) order.push(vertex);
+    if (!alive(vertex)) continue;
+    // Ignore discarded rings before checking the orientation helper's nonfinite sentinel.
+    // Every retained vertex must be finite before the sweep can interpret orientation signs.
+    const point = position(vertex);
+    if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+      return fail('nonfinite coordinate');
+    }
+    order.push(vertex);
   }
   order.sort((first, second) => {
     const a = position(first);

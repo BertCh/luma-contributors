@@ -2,7 +2,25 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Device} from '@luma.gl/core';
+import {snapshotDelaunayStatus} from './delaunay-construction-snapshot';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {
+  GPU_DELAUNAY_STATE_WORD_COUNT,
+  MAXIMUM_STEP_COUNT,
+  getDelaunayScratchTriangleCapacity,
+  validateDelaunayScratch,
+  getDelaunayParallelStepCount
+} from './delaunay-work-limits';
+export {
+  GPU_DELAUNAY_STATE_WORD_COUNT,
+  MAXIMUM_DELAUNAY_SERIAL_SITE_COUNT,
+  MAXIMUM_DELAUNAY_SERIAL_SCRATCH_TRIANGLE_COUNT,
+  getDelaunayScratchTriangleCapacity,
+  validateDelaunayScratch,
+  getDelaunayStepCount,
+  getDelaunayParallelStepCount
+} from './delaunay-work-limits';
+import {getDelaunayContinuationNodes} from './delaunay-continuation';
 import {clamp} from '@math.gl/core';
 import {
   resolveGPUSpatialContext,
@@ -20,12 +38,12 @@ import {
   validateCommandNodeBudget,
   validateCapacity,
   validateRequirement,
-  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
+  createFillNode,
   createWGSLDispatchGate,
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -75,45 +93,8 @@ export function validateDelaunayLogicalOutputs(
 }
 
 const OPERATION = 'GPUDelaunayTessellation';
-/** Four-word triangle records use uint32 word addresses in every topology kernel. */
-const DELAUNAY_MAXIMUM_SCRATCH_TRIANGLE_COUNT = Math.floor(0xffffffff / 4);
 /** Three-word caller triangle records also use uint32 word addresses. */
 const DELAUNAY_MAXIMUM_OUTPUT_TRIANGLE_COUNT = Math.floor(0xffffffff / 3);
-
-/** Validates uint32 topology addresses without needing a graph. @internal */
-export function getDelaunayScratchTriangleCapacity(
-  id: string,
-  pointCount: number,
-  groupCount = 0
-): number {
-  const capacity = 2 * pointCount + Math.max(groupCount, 1) + 7;
-  validateCapacity(
-    id,
-    'scratch triangle count',
-    capacity,
-    8,
-    DELAUNAY_MAXIMUM_SCRATCH_TRIANGLE_COUNT
-  );
-  return capacity;
-}
-
-/** Preflight for tessellation and enclosing alpha-hull contributors. @internal */
-export function validateDelaunayScratch(
-  device: Device,
-  id: string,
-  pointCount: number,
-  groupCount = 0
-): number {
-  const capacity = getDelaunayScratchTriangleCapacity(id, pointCount, groupCount);
-  validateGPUStorageBindingByteLength(
-    device,
-    id,
-    'triangle topology scratch',
-    16 * capacity,
-    'reduce positions rows or groups.count'
-  );
-  return capacity;
-}
 
 function getDelaunayOutputViews(output: GPUDelaunayTessellationOutput, hasGroups: boolean) {
   return {
@@ -128,8 +109,6 @@ function getDelaunayOutputViews(output: GPUDelaunayTessellationOutput, hasGroups
 }
 /** Command nodes per unrolled insertion-and-flip step: a gate, four insertion and four flip kernels. */
 const NODES_PER_STEP = 9;
-/** Largest step count of {@link getDelaunayStepCount}, which caps the unrolled steps. */
-const MAXIMUM_STEP_COUNT = 4096;
 /**
  * Command nodes added to {@link GPUDelaunayTessellation.estimatedCommandNodeCount} for everything
  * except the steps: status and group initialization, the site sorts, the exponent range, the
@@ -628,10 +607,13 @@ export type GPUDelaunayTessellationOutput = {
   /**
    * Per-group results, required when {@link GPUDelaunayTessellationProps.groups} is given.
    * Triangles are listed group by group (groups ascending, then `(first, second)` rows), packed in
-   * `triangles`; group `g` owns rows `[triangleOffsets[g], triangleOffsets[g] + triangleCounts[g])`.
+   * `triangles`. Counts and offsets describe the unclamped required layout. Group `g`'s
+   * readable stored range is the intersection of
+   * `[triangleOffsets[g], triangleOffsets[g] + triangleCounts[g])` with `[0, status.count)`.
+   * Never index a required group range directly after output capacity overflow.
    */
   groups?: {
-    /** One row per group: number of triangles of the group. */
+    /** One row per group: required triangle count before final output-capacity clamping. */
     triangleCounts: GraphDataView<'uint32'>;
     /** Optional one row per group: exclusive prefix sum of `triangleCounts`. */
     triangleOffsets?: GraphDataView<'uint32'>;
@@ -680,33 +662,6 @@ export function getDelaunayMaximumTriangleCount(pointCount: number): number {
 }
 
 /**
- * Maximum GPU insertion/flip steps. The initial logarithmic/square-root budget is extended to
- * `2n + 32`, capped at 4096 steps. Small inputs finish in two bounded GPU continuation kernels;
- * larger inputs use indirect parallel rounds throughout. No iteration index reaches shader text.
- * The cap is not a guarantee for arbitrary Lawson chains: status reports exhaustion explicitly.
- * @internal
- */
-export function getDelaunayStepCount(pointCount: number): number {
-  if (pointCount < 1) {
-    return 0;
-  }
-  const initialBudget =
-    4 * Math.ceil(Math.log2(pointCount + 2)) + 32 + Math.ceil(0.5 * Math.sqrt(pointCount));
-  return clamp(2 * pointCount + 32, initialBudget, MAXIMUM_STEP_COUNT);
-}
-
-/** Number of parallel steps before the small-input GPU continuation. @internal */
-export function getDelaunayParallelStepCount(pointCount: number): number {
-  const limit = getDelaunayStepCount(pointCount);
-  return pointCount <= 2048
-    ? Math.min(
-        limit,
-        4 * Math.ceil(Math.log2(pointCount + 2)) + 32 + Math.ceil(0.5 * Math.sqrt(pointCount))
-      )
-    : limit;
-}
-
-/**
  * Builds a planar Delaunay triangulation on the GPU by parallel insertion and flipping.
  *
  * The first three steps insert a distinct seed edge and a noncollinear site when one exists.
@@ -719,9 +674,11 @@ export function getDelaunayParallelStepCount(pointCount: number): number {
  * converges from any triangulation in the plane, so no repair stage (gDel2D's star splaying) is
  * needed. Steps run until every site is
  * inserted and no edge is illegal; unused steps are gated off on the GPU (an indirect dispatch of
- * nothing). Parallel steps do O(n) work in nine graph nodes. Up to 2048 sites, only
+ * nothing). Parallel steps do O(n) work in nine graph nodes. With at most 2,048 sites and
+ * 4,104 allocated scratch triangles (`2 * pointCount + max(groupCount, 1) + 7`), only
  * {@link getDelaunayParallelStepCount} steps are encoded this way; two GPU kernels finish any
- * remaining insertion and then exact flipping with one active invocation each. The total limit
+ * remaining insertion and then exact flipping with one active invocation each. Above either
+ * limit, including group-heavy inputs, every round remains parallel. The total limit
  * remains {@link getDelaunayStepCount} (4096). Arbitrary flip chains need not converge logarithmically.
  *
  * Exact duplicate coordinates use first-row ownership. Collinear inputs produce zero triangles.
@@ -770,8 +727,41 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUDelaunayTessellationProps) {
-    this.id = props.id ?? 'delaunay-tessellation';
-    this.props = props;
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'groups',
+      'output'
+    ]);
+    this.id = captured.id ?? 'delaunay-tessellation';
+    const outputFields = snapshotConstructionFields(captured.output, [
+      'triangles',
+      'status',
+      'groups'
+    ]);
+    const outputGroups =
+      outputFields.groups &&
+      snapshotConstructionFields(outputFields.groups, [
+        'triangleCounts',
+        'triangleOffsets',
+        'status'
+      ]);
+    this.props = Object.freeze({
+      ...captured,
+      groups: captured.groups && snapshotConstructionFields(captured.groups, ['ids', 'count']),
+      output: Object.freeze({
+        ...outputFields,
+        status: snapshotDelaunayStatus(this.id, outputFields.status),
+        groups:
+          outputGroups &&
+          Object.freeze({
+            ...outputGroups,
+            status: snapshotConstructionFields(outputGroups.status, ['converged'])
+          })
+      })
+    });
+    props = this.props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     const {id} = this;
     const {output} = props;
@@ -801,7 +791,8 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
       invalidCount: status.invalidCount,
       converged: status.converged,
       iterationCount: status.iterationCount,
-      iterationLimitReached: status.iterationLimitReached
+      iterationLimitReached: status.iterationLimitReached,
+      approximation: status.approximation
     });
     validateDisjointWritableViews(id, {
       requiredCount: status.requiredCount,
@@ -873,7 +864,9 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
       }
     }
     this.estimatedCommandNodeCount =
-      NODES_PER_STEP * getDelaunayParallelStepCount(props.positions.length) + FIXED_NODE_ALLOWANCE;
+      NODES_PER_STEP *
+        getDelaunayParallelStepCount(props.positions.length, props.groups?.count ?? 0) +
+      FIXED_NODE_ALLOWANCE;
     validateCommandNodeBudget(
       id,
       this.estimatedCommandNodeCount,
@@ -918,7 +911,7 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
     // [triangleCount, failed, remainingCount, phase, illegalCount, insertedCount, stepCount, unconverged].
     // The phase id (the stamp of the current insertion phase; its flip phase is phase + 1) lives in
     // GPU state, so every step shares one set of pipelines (rule 12).
-    const state = view('state', 8);
+    const state = view('state', GPU_DELAUNAY_STATE_WORD_COUNT);
     const invalidCount = status.invalidCount ?? view('invalid-count', 1);
     const duplicateCount = status.duplicateCount ?? view('duplicate-count', 1);
 
@@ -945,27 +938,33 @@ ${FLIP_PRIORITY_WGSL}`;
     ): WGSLKernelBinding => ({name, view: bindingView, type, access});
 
     const nodes: GPUCommandNode<Parameters>[] = [
+      createFillNode(graph, {
+        id: `${id}-initialize-state`,
+        operation: OPERATION,
+        view: state,
+        type: 'u32',
+        value: '0u',
+        componentCount: GPU_DELAUNAY_STATE_WORD_COUNT
+      }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize-status`,
         operation: OPERATION,
         variant: 'initialize-status',
         bindings: [
-          binding('state', state, 'read_write'),
           binding('seeds', seeds, 'read_write'),
           binding('invalidCount', invalidCount, 'read_write'),
           binding('duplicateCount', duplicateCount, 'read_write'),
           binding('requiredCount', status.requiredCount, 'read_write')
         ],
         invocationCount: 1,
-        body: `for (var word = 0u; word < 8u; word++) { state[stateOffset + word] = 0u; }
-  ${
-    groupCount
-      ? ''
-      : `seeds[seedsOffset] = 0xffffffffu;
+        body: `${
+          groupCount
+            ? ''
+            : `seeds[seedsOffset] = 0xffffffffu;
   seeds[seedsOffset + 1u] = 0xffffffffu;
   seeds[seedsOffset + 2u] = 0xffffffffu;
   seeds[seedsOffset + 3u] = 0u;`
-  }
+        }
   invalidCount[invalidCountOffset] = 0u;
   duplicateCount[duplicateCountOffset] = 0u;
   requiredCount[requiredCountOffset] = 0u;`
@@ -1105,6 +1104,20 @@ const GROUP_COUNT: u32 = ${groupCount}u;`,
         invalidCount
       })
     );
+    for (const name of ['candidateOverflow', 'uncertainCount'] as const) {
+      const view = props.output.status[name];
+      if (view)
+        nodes.push(
+          createFillNode<Parameters>(graph, {
+            id: `${id}-publish-${name}`,
+            operation: OPERATION,
+            view,
+            type: 'u32',
+            value: '0u',
+            componentCount: 1
+          })
+        );
+    }
     return nodes;
   }
 
@@ -1592,7 +1605,7 @@ const PHASE_OFFSET: u32 = ${phaseOffset}u;`,
       });
 
     const nodes: GPUCommandNode<Parameters>[] = [];
-    const stepCount = getDelaunayParallelStepCount(pointCount);
+    const stepCount = getDelaunayParallelStepCount(pointCount, context.groupCount);
     for (let step = 0; step < stepCount; step++) {
       const stepId = `${id}-step-${step}`;
       const insertionPerSite = insertionGate.getGate(0);
@@ -1724,98 +1737,22 @@ ${FLIP_PRIORITY_WGSL}`,
         relocate(`${stepId}-flip`, 1, flipPerSite)
       );
     }
-    if (stepCount < getDelaunayStepCount(pointCount)) {
-      // Finish rare long insertion chains first. With no uninserted sites, the flip loop needs
-      // no relocation; keeping these kernels separate also keeps one exact predicate call site.
-      // Both kernels run on the GPU with one invocation, using the existing storage topology.
-      const iterationLimit = `const ITERATION_LIMIT: u32 = ${getDelaunayStepCount(pointCount)}u;`;
-      const readAtomicState = (body: string) =>
-        body.replace(/state\[stateOffset(?: \+ \d+u)?\]/g, value => `atomicLoad(&${value})`);
-      const serialVotes = (body: string) =>
-        body.replace(/atomicMin\(&votes\[([^\]]+)\], ([^)]+)\)/g, 'votes[$1] = min(votes[$1], $2)');
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-continue-insertion`,
-          operation: OPERATION,
-          variant: 'serial-insertion-continuation',
-          bindings: [
-            positionsBinding,
-            binding('triangleVertices', triangleVertices, 'read_write'),
-            binding('triangleAdjacency', triangleAdjacency, 'read_write'),
-            binding('replacement', replacement, 'read_write'),
-            binding('children', children, 'read_write'),
-            binding('votes', votes, 'read_write'),
-            binding('pointLocations', pointLocations, 'read_write'),
-            binding('state', state, 'read_write', 'atomic<u32>')
-          ],
-          invocationCount: 1,
-          workgroupSize: 32,
-          declarations: `${context.orientationDeclarations}
-${iterationLimit}
-const PHASE_OFFSET: u32 = 0u;
-${TOPOLOGY_WRITE_WGSL}
-${INSERTION_PRIORITY_WGSL}
-fn voteForInsertion(index: u32) { ${serialVotes(INSERTION_VOTE_BODY_WGSL)} }
-fn splitInsertion(index: u32) { ${INSERTION_SPLIT_BODY_WGSL} }
-fn repairInsertion(index: u32) { ${readAtomicState(REPAIR_ADJACENCY_BODY_WGSL)} }
-fn relocateInsertion(index: u32) { ${RELOCATE_BODY_WGSL} }`,
-          body: `loop {
-    if (atomicLoad(&state[stateOffset + 1u]) != 0u || atomicLoad(&state[stateOffset + 2u]) == 0u ||
-        atomicLoad(&state[stateOffset + 6u]) >= ITERATION_LIMIT) { break; }
-    atomicAdd(&state[stateOffset + 3u], 2u);
-    atomicAdd(&state[stateOffset + 6u], 1u);
-    // Force legalization even if the last parallel round found no illegal edge.
-    atomicStore(&state[stateOffset + 4u], 1u);
-    atomicStore(&state[stateOffset + 5u], 0u);
-    for (var site = 0u; site < POINT_COUNT; site++) { voteForInsertion(site); }
-    for (var site = 0u; site < POINT_COUNT; site++) { splitInsertion(site); }
-    for (var triangle = 0u; triangle < atomicLoad(&state[stateOffset]); triangle++) { repairInsertion(triangle); }
-    for (var site = 0u; site < POINT_COUNT; site++) { relocateInsertion(site); }
-  }`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-continue-flips`,
-          operation: OPERATION,
-          variant: 'serial-flip-continuation',
-          bindings: [
-            positionsBinding,
-            binding('triangleVertices', triangleVertices, 'read_write'),
-            binding('triangleAdjacency', triangleAdjacency, 'read_write'),
-            binding('replacement', replacement, 'read_write'),
-            binding('children', children, 'read_write'),
-            binding('votes', votes, 'read_write'),
-            binding('state', state, 'read_write')
-          ],
-          invocationCount: 1,
-          workgroupSize: 32,
-          declarations: `${context.flipDeclarations}
-${iterationLimit}
-const PHASE_OFFSET: u32 = 1u;
-${TOPOLOGY_WRITE_WGSL}
-fn evaluateFlip(index: u32) {
-${serialVotes(FLIP_EVALUATE_BODY_WGSL)
-  .replace(/atomicLoad\(&([^)]*)\)/g, '$1')
-  .replace(
-    'atomicAdd(&state[stateOffset + 4u], 1u)',
-    'state[stateOffset + 4u] = state[stateOffset + 4u] + 1u'
-  )}
-}
-fn applyFlip(index: u32) { ${FLIP_APPLY_BODY_WGSL} }
-fn repairFlip(index: u32) { ${REPAIR_ADJACENCY_BODY_WGSL} }`,
-          body: `loop {
-    if (state[stateOffset + 1u] != 0u || state[stateOffset + 2u] != 0u ||
-        state[stateOffset + 4u] == 0u || state[stateOffset + 6u] >= ITERATION_LIMIT) { break; }
-    state[stateOffset + 3u] = state[stateOffset + 3u] + 2u;
-    state[stateOffset + 6u] = state[stateOffset + 6u] + 1u;
-    state[stateOffset + 4u] = 0u;
-    for (var triangle = 0u; triangle < state[stateOffset]; triangle++) { evaluateFlip(triangle); }
-    for (var triangle = 0u; triangle < state[stateOffset]; triangle++) { applyFlip(triangle); }
-    for (var triangle = 0u; triangle < state[stateOffset]; triangle++) { repairFlip(triangle); }
-  }
-  state[stateOffset + 7u] = select(0u, 1u, state[stateOffset + 2u] > 0u || state[stateOffset + 4u] > 0u);`
-        })
-      );
-    }
+    nodes.push(
+      ...getDelaunayContinuationNodes(
+        graph,
+        {...context, id},
+        {
+          TOPOLOGY_WRITE_WGSL,
+          INSERTION_PRIORITY_WGSL,
+          INSERTION_VOTE_BODY_WGSL,
+          INSERTION_SPLIT_BODY_WGSL,
+          REPAIR_ADJACENCY_BODY_WGSL,
+          RELOCATE_BODY_WGSL,
+          FLIP_EVALUATE_BODY_WGSL,
+          FLIP_APPLY_BODY_WGSL
+        }
+      )
+    );
     return nodes;
   }
 
@@ -1886,7 +1823,9 @@ const GROUP_COUNT: u32 = ${groupCount}u;`;
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read_write'},
           {name: 'invalidCount', view: invalidCount, type: 'u32', access: 'read_write'},
-          ...(['converged', 'iterationCount', 'iterationLimitReached'] as const).flatMap(name =>
+          ...(
+            ['converged', 'iterationCount', 'iterationLimitReached', 'approximation'] as const
+          ).flatMap(name =>
             status[name]
               ? [{name, view: status[name], type: 'u32' as const, access: 'read_write' as const}]
               : []
@@ -1901,7 +1840,8 @@ const GROUP_COUNT: u32 = ${groupCount}u;`;
   invalidCount[invalidCountOffset] += select(state[stateOffset + 1u], 1u, exhausted);
   ${status.converged ? 'converged[convergedOffset] = select(0u, 1u, invalidCount[invalidCountOffset] == 0u);' : ''}
   ${status.iterationCount ? 'iterationCount[iterationCountOffset] = state[stateOffset + 6u];' : ''}
-  ${status.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = select(0u, 1u, exhausted);' : ''}`
+  ${status.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = select(0u, 1u, exhausted);' : ''}
+  ${status.approximation ? 'approximation[approximationOffset] = select(0u, 1u, exhausted);' : ''}`
       }),
       ...(groupCount
         ? [

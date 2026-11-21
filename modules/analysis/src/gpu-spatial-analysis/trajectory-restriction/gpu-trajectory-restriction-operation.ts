@@ -4,6 +4,7 @@
 
 import type {GPUContributorOperationOutput} from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUTrajectoryRestriction,
   type GPUTrajectoryRestrictionProps
@@ -24,6 +25,8 @@ export type TrajectoryRestrictionOperationProps = Pick<
   | 'mergeIntervals'
 > & {
   positions: string;
+  timestamps: string;
+  trackOffsets: string;
   timestampFormat?: 'float32' | 'uint32x2';
   timeOrigin?: string;
   /** Seven scalars followed by polygon coordinates, as documented by GPUTrajectoryRestriction. */
@@ -46,10 +49,21 @@ export type TrajectoryRestrictionOperationProps = Pick<
     compactStatus?: string;
     compactSummary?: string;
   };
-} & (
-    | {times: string; offsets: string; timestamps?: never; trackOffsets?: never}
-    | {timestamps: string; trackOffsets: string; times?: never; offsets?: never}
+};
+
+/** @internal Validate the array and operation forms' trajectory input names. */
+export function validateRestrictionInputNames(
+  id: string,
+  input: {timestamps: unknown; trackOffsets: unknown}
+): void {
+  validateRequirement(id, !('times' in input), 'times was removed; use timestamps');
+  validateRequirement(id, !('offsets' in input), 'offsets was removed; use trackOffsets');
+  validateRequirement(
+    id,
+    input.timestamps !== undefined && input.trackOffsets !== undefined,
+    'timestamps and trackOffsets are required'
   );
+}
 
 /**
  * Vector operation form of GPUTrajectoryRestriction, including word time and optional compaction.
@@ -58,6 +72,7 @@ export type TrajectoryRestrictionOperationProps = Pick<
  */
 export class GPUTrajectoryRestrictionOperation extends GPUContributorOperation {
   constructor(props: TrajectoryRestrictionOperationProps) {
+    validateRestrictionInputNames(props.id ?? 'trajectory-restriction', props);
     const pairCount = props.pairs ? props.pairCapacity! : props.pairwiseTracks?.length;
     const intervalCount =
       pairCount === undefined
@@ -91,8 +106,8 @@ export class GPUTrajectoryRestrictionOperation extends GPUContributorOperation {
       id: props.id ?? 'trajectory-restriction',
       inputs: {
         sourcePositions: props.positions,
-        times: (props.times ?? props.timestamps)!,
-        offsets: (props.offsets ?? props.trackOffsets)!,
+        times: props.timestamps,
+        offsets: props.trackOffsets,
         parameters: props.parameters,
         ...(props.timeOrigin !== undefined ? {timeOrigin: props.timeOrigin} : {}),
         ...(props.pairs

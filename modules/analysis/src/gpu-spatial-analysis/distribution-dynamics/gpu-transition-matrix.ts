@@ -100,6 +100,118 @@ export type GPUTransitionMatrixProps = {
   output: GPUTransitionMatrixOutput;
 };
 
+/** Validates all declared transition output shapes without allocating graph stages. @internal */
+export function validateTransitionMatrixOutput(
+  id: string,
+  output: GPUTransitionMatrixOutput,
+  classCount: number,
+  conditionCount: number,
+  minimumTransitions?: number
+): GPUTransitionDiagnostics | undefined {
+  const buffers = [
+    output.counts,
+    output.probabilities,
+    output.rowTotals,
+    output.ignored,
+    output.homogeneity,
+    output.steadyStates,
+    output.stateSparsity,
+    output.status?.converged
+  ]
+    .filter(view => view !== undefined)
+    .map(view => view.buffer);
+  if (new Set(buffers).size !== buffers.length) {
+    throw new Error(`${id} outputs must use separate buffers`);
+  }
+  const cellCount = conditionCount * classCount * classCount;
+  validateMaximumCount(
+    id,
+    'conditionCount * classCount * classCount',
+    cellCount,
+    TRANSITION_MATRIX_MAXIMUM_COUNT
+  );
+  validatePackedUint32View(output.counts, `${id} output.counts`);
+  if (output.counts.length < cellCount) {
+    throw new Error(`${id} output.counts is too short`);
+  }
+  if (output.probabilities) {
+    validateSinglePackedView(output.probabilities, ['float32'], `${id} output.probabilities`);
+    if (output.probabilities.length < cellCount) {
+      throw new Error(`${id} output.probabilities is too short`);
+    }
+  }
+  if (output.rowTotals) {
+    validatePackedUint32View(output.rowTotals, `${id} output.rowTotals`);
+    if (output.rowTotals.length < conditionCount * classCount) {
+      throw new Error(`${id} output.rowTotals is too short`);
+    }
+  }
+  if (output.ignored) {
+    validatePackedUint32View(output.ignored, `${id} output.ignored`);
+    if (output.ignored.length < 1) {
+      throw new Error(`${id} output.ignored must hold one row`);
+    }
+  }
+  return output.homogeneity || output.steadyStates || output.stateSparsity || output.status
+    ? new GPUTransitionDiagnostics({
+        id: `${id}-diagnostics`,
+        counts: output.counts,
+        classCount,
+        conditionCount,
+        minimumTransitions,
+        output: {
+          homogeneity: output.homogeneity,
+          steadyStates: output.steadyStates,
+          stateSparsity: output.stateSparsity,
+          status: output.status
+        }
+      })
+    : undefined;
+}
+
+/** Device-independent topology checks shared with composed Markov producers. @internal */
+export function validateTransitionMatrixSettings(
+  id: string,
+  props: {
+    periodLag?: number;
+    periodCount: number;
+    classCount: number;
+    conditionCount?: number;
+  },
+  rows: number
+): void {
+  const periodLag = props.periodLag ?? 1;
+  const conditionCount = props.conditionCount ?? 1;
+  validateCapacity(id, 'periodLag', periodLag);
+  validateCapacity(id, 'periodCount', props.periodCount, periodLag + 1);
+  validateCapacity(
+    id,
+    'classCount',
+    props.classCount,
+    1,
+    GPU_TRANSITION_MATRIX_MAXIMUM_CLASS_COUNT
+  );
+  validateCapacity(id, 'conditionCount', conditionCount);
+  validateMaximumCount(
+    id,
+    'conditionCount * classCount * classCount',
+    conditionCount * props.classCount ** 2,
+    TRANSITION_MATRIX_MAXIMUM_COUNT
+  );
+  validateMaximumCount(
+    id,
+    'rowCount * (periodCount - periodLag)',
+    rows * (props.periodCount - periodLag),
+    TRANSITION_MATRIX_MAXIMUM_COUNT
+  );
+  validateMaximumCount(
+    id,
+    'classes.length',
+    rows * props.periodCount,
+    TRANSITION_MATRIX_MAXIMUM_COUNT
+  );
+}
+
 /**
  * Exact class transition counts across periods (giddy `Markov`): how many locations moved from
  * class `a` at period `t` to class `b` at period `t + periodLag`, summed over all `t`, with
@@ -134,16 +246,17 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
   readonly rowCount: number;
 
   constructor(props: GPUTransitionMatrixProps) {
+    props = {
+      ...props,
+      output: {...props.output, status: props.output.status ? {...props.output.status} : undefined}
+    };
     const id = props.id ?? 'transition-matrix';
     this.id = id;
     this.props = props;
     this.periodLag = props.periodLag ?? 1;
     this.conditionCount = props.conditionCount ?? 1;
     const {periodCount, classCount, output} = props;
-    validateCapacity(id, 'periodLag', this.periodLag);
-    validateCapacity(id, 'periodCount', periodCount, this.periodLag + 1);
-    validateCapacity(id, 'classCount', classCount, 1, GPU_TRANSITION_MATRIX_MAXIMUM_CLASS_COUNT);
-    validateCapacity(id, 'conditionCount', this.conditionCount);
+    validateTransitionMatrixSettings(id, props, props.classes.length / periodCount);
     if (!props.conditionClasses && this.conditionCount !== 1) {
       throw new Error(`${id} conditionCount needs conditionClasses`);
     }
@@ -165,48 +278,13 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal the row count`);
       }
     }
-    const cellCount = this.conditionCount * classCount * classCount;
-    validateMaximumCount(
+    this.diagnostics = validateTransitionMatrixOutput(
       id,
-      'conditionCount * classCount * classCount',
-      cellCount,
-      TRANSITION_MATRIX_MAXIMUM_COUNT
+      output,
+      classCount,
+      this.conditionCount,
+      props.minimumTransitions
     );
-    // Any count, ignored count or normalized row total is bounded by the total transitions.
-    validateMaximumCount(
-      id,
-      'rowCount * (periodCount - periodLag)',
-      rows * (periodCount - this.periodLag),
-      TRANSITION_MATRIX_MAXIMUM_COUNT
-    );
-    validateMaximumCount(
-      id,
-      'classes.length',
-      props.classes.length,
-      TRANSITION_MATRIX_MAXIMUM_COUNT
-    );
-    validatePackedUint32View(output.counts, `${id} output.counts`);
-    if (output.counts.length < cellCount) {
-      throw new Error(`${id} output.counts is too short`);
-    }
-    if (output.probabilities) {
-      validateSinglePackedView(output.probabilities, ['float32'], `${id} output.probabilities`);
-      if (output.probabilities.length < cellCount) {
-        throw new Error(`${id} output.probabilities is too short`);
-      }
-    }
-    if (output.rowTotals) {
-      validatePackedUint32View(output.rowTotals, `${id} output.rowTotals`);
-      if (output.rowTotals.length < this.conditionCount * classCount) {
-        throw new Error(`${id} output.rowTotals is too short`);
-      }
-    }
-    if (output.ignored) {
-      validatePackedUint32View(output.ignored, `${id} output.ignored`);
-      if (output.ignored.length < 1) {
-        throw new Error(`${id} output.ignored must hold one row`);
-      }
-    }
     const outputs = [
       output.counts,
       output.probabilities,
@@ -222,43 +300,10 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
       props.conditionClasses,
       props.mask
     ]);
-    const buffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-    if (new Set(buffers).size !== buffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
-    // Diagnostics validate their own shapes; construct once so errors surface at declaration.
-    this.diagnostics = this.hasDiagnostics()
-      ? new GPUTransitionDiagnostics(this.getDiagnosticsProps())
-      : undefined;
   }
 
   /** Diagnostics producer when any diagnostic output is requested. */
   private readonly diagnostics: GPUTransitionDiagnostics | undefined;
-
-  private hasDiagnostics(): boolean {
-    const {output} = this.props;
-    return Boolean(
-      output.homogeneity || output.steadyStates || output.stateSparsity || output.status
-    );
-  }
-
-  private getDiagnosticsProps() {
-    const {props, conditionCount, id} = this;
-    const {output} = props;
-    return {
-      id: `${id}-diagnostics`,
-      counts: output.counts,
-      classCount: props.classCount,
-      conditionCount,
-      minimumTransitions: props.minimumTransitions,
-      output: {
-        homogeneity: output.homogeneity,
-        steadyStates: output.steadyStates,
-        stateSparsity: output.stateSparsity,
-        status: output.status
-      }
-    };
-  }
 
   /** Returns `clear`, `count` and, when requested, `normalize` and diagnostics nodes in order. */
   getCommandNodes<Parameters>(

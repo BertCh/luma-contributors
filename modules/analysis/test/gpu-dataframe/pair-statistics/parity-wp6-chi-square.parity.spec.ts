@@ -47,9 +47,9 @@ for (const scene of fixture.cases) {
         const result = await harness.run(
           getGPUPointPatternIndicesParameterValues({
             bounds: [0, 0, columns, rows],
-            maximumDistance: 1,
+            indexCellSizeHint: 1,
             clarkEvansCorrection: 'none',
-            alternative
+            analyticAlternative: alternative
           })
         );
         compareParity(

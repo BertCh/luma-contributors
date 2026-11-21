@@ -7,7 +7,7 @@ import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile'
 import {profileKeplerDatasetNetwork} from '../../src/profile/dataset-network-profile';
 import {createKeplerCuratedAnalysisSample} from '../../src/curated/curated-analysis-samples';
 import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
-import type {GPUAnalysisColumnProfile} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {GPUAnalysisColumnProfile} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import type {CatalogOperationBinding} from '../../src/analysis/catalog-binding-types';
 import {
@@ -68,6 +68,30 @@ function evaluate(
     options
   );
 }
+
+it('column-only validation discovery admits geometry-free numeric rows', () => {
+  const profile = buildTableProfile(
+    'forecasts',
+    ['observed', 'predicted', 'variance', 'member1', 'member2', 'pvalue'].map(
+      (name): GPUAnalysisColumnProfile => ({
+        name,
+        type: 'number',
+        rowCount: 2,
+        nullCount: 0,
+        minimum: 0.01,
+        maximum: 3,
+        distinctCount: 2
+      })
+    ),
+    2
+  );
+  for (const id of ['validation-gaussian-scores', 'validation-ensemble-scores', 'validation-fdr']) {
+    const result = evaluate(id, [profile], {overrides: {}});
+    expect(result.inputAssignments['points']).toBe('forecasts');
+    expect(result.missing.map(item => item.what).join(' ')).not.toMatch(/geometry|point positions/);
+    expect(result.outputKinds[id]).toBe('attributes');
+  }
+});
 
 // ---------------------------------------------------------------------------------------------
 // Suggestion fixtures. This table was written BEFORE the engine was run: each row is what a
@@ -367,10 +391,15 @@ describe('suggestion fixtures', () => {
 
   it('suggests nothing spatial for a table without geometry and says what is needed', () => {
     const table = FIXTURES.find(fixture => fixture.name === 'a table with no geometry')!;
-    const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, table.datasets());
+    // Column-only scores now admit this representation; the separate positive fixtures pin
+    // their ready state. This negative fixture concerns operations that require geometry.
+    const result = suggestKeplerAnalyses(
+      KEPLER_CATALOG_BINDINGS.filter(binding => !binding.inputs.some(input => input.acceptsTable)),
+      table.datasets()
+    );
     expect(result.suggestions).toEqual([]);
     expect(result.total.ready).toBe(0);
-    expect(result.total.needsInput).toBe(0);
+    // Column-only scoring may need mappings or confirmation even without display geometry.
     expect(result.blocked.length).toBeGreaterThan(0);
     for (const entry of result.blocked) {
       expect(entry.applicability.missing.length).toBeGreaterThan(0);
@@ -1782,10 +1811,13 @@ describe('coordinates, engine and cost', () => {
     expect(result.missing.map(item => item.what).join(' ')).toMatch(/needs a GPU device/);
     const big = withRowCount(buildSampleProfile('incidents'), 8000);
     const onCpu = evaluate('density-clustering', [big], {executionEngine: 'cpu'});
-    expect(onCpu.status).toBe('blocked');
-    expect(onCpu.missing.map(item => item.what).join(' ')).toMatch(
-      /8,000 rows; at most 6,324 on the CPU engine/
-    );
+    expect(onCpu.status).not.toBe('blocked');
+    expect(
+      evaluate('density-clustering', [withRowCount(big, 20000)], {executionEngine: 'cpu'}).status
+    ).not.toBe('blocked');
+    expect(
+      evaluate('density-clustering', [withRowCount(big, 20001)], {executionEngine: 'cpu'}).status
+    ).toBe('blocked');
     expect(
       evaluate('density-clustering', [big])
         .missing.map(item => item.what)

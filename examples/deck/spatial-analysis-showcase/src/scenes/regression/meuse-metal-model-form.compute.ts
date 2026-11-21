@@ -153,7 +153,7 @@ export async function createMeuseMetalModelForm(
   const equationResponsesBuffer = resources.createBuffer('sur-responses', equationResponses);
   const neighborParametersBuffer = resources.createBuffer(
     'neighbor-parameters',
-    getGPUNeighborSearchParameterValues({bounds, weightKind: 'binary', rowStandardize: true})
+    getGPUNeighborSearchParameterValues({bounds, weightType: 'binary', rowStandardize: true})
   );
   const neighborOffsetsBuffer = resources.createBuffer('neighbor-offsets', (rowCount + 1) * 4);
   const neighborIdsBuffer = resources.createBuffer('neighbor-ids', rowCount * K_NEIGHBORS * 4);
@@ -424,7 +424,7 @@ export async function createMeuseMetalModelForm(
   const weightsSearch = new GPUNeighborSearch({
     id: 'meuse-local-metal-neighbor-search',
     mode: 'knn',
-    k: K_NEIGHBORS,
+    neighborCount: K_NEIGHBORS,
     positions: positionsView,
     parameters: neighborParametersView,
     gridSize: [64, 64],

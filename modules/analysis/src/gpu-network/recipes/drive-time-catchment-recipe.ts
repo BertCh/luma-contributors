@@ -10,7 +10,15 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateRequirement,
+  validateSinglePackedView,
+  isGraphDataView,
+  isGraphVectorView,
+  getGraphViewChunks,
+  validateGraphOutputsDisjointFromInputs
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
@@ -34,6 +42,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import type {
   GPUCardinalityPort,
+  GPUCandidateStatusPort,
   GPUOverflowStatusPort,
   GPURecipeStageStatusPort,
   GPURecipeStatusPort,
@@ -45,6 +54,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   assertRecipe,
   getRecipeView,
+  resolveRecipeDestinations,
   validateRecipeBoundary,
   getOrCreateView,
   RecipeBuilder,
@@ -119,7 +129,12 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
     };
     isochroneDemand?: {
       pointFeatureIds?: GraphDataView<'uint32'>;
-      status?: Pick<GPUOverflowStatusPort, 'overflow'> & GPUUncertaintyStatusPort;
+      /** Writable one-row diagnostics: join overflow, unresolved unassigned candidate-pair count and upstream geometry loss. */
+      status?: Partial<
+        Pick<GPUOverflowStatusPort, 'overflow'> &
+          Pick<GPUUncertaintyStatusPort, 'uncertainCount'> &
+          Pick<GPUCandidateStatusPort, 'candidateOverflow'>
+      >;
     };
     snapping?: {
       status?: {
@@ -158,12 +173,24 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
   spatialContext?: GPUSpatialContext;
   /**
    * Road network. `weights` are the travel cost per edge (also the cost used to split snapped
-   * edges) and `nodePositions` are planar in the coordinates of the facility and demand points.
+   * edges). `nodePositions`, facilities and demand share the declared spatialContext: planar
+   * coordinates use its length unit; longitude/latitude positions are degrees.
    */
   topology: GPUNetworkTopology & {nodePositions: GraphDataView<'float32x2'>};
-  /** Facility locations, snapped to the nearest edge. */
+  /**
+   * Facility row domain: forwarded to `snap-facilities.positions` (`NetworkSnapping.positions`),
+   * with pointCount = facilities.length. Each float32x2 row is a location in spatialContext:
+   * planar coordinates use its length unit; longitude/latitude coordinates are degrees.
+   * Snapping distances use the context's length unit (meters by default on longitude/latitude).
+   */
   facilities: GraphDataView<'float32x2'>;
-  /** Demand points (households, customers), snapped to the nearest edge. */
+  /**
+   * Demand row domain (households, customers): forwarded to `snap-demand.positions`
+   * (`NetworkSnapping.positions`), with pointCount = demand.length, independently of facilities.
+   * Each float32x2 row uses the same spatialContext as facilities and topology.nodePositions:
+   * planar coordinates use its length unit; longitude/latitude coordinates are degrees.
+   * Snapping distances use the context's length unit (meters by default on longitude/latitude).
+   */
   demand: GraphDataView<'float32x2'>;
   /** Optional per-demand-point value summarised per drive-time band. */
   demandValues?: GraphDataView<'float32'>;
@@ -206,7 +233,7 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
  * reported.
  */
 function getIsochroneStatusStages(
-  isochrones: GPUDriveTimeIsochroneOptions | undefined
+  isochrones: Pick<GPUDriveTimeIsochroneOptions, 'raster' | 'cellOutline'> | undefined
 ): GPURecipeStageStatusPort[] {
   const stages: GPURecipeStageStatusPort[] = [];
   const raster = isochrones?.raster;
@@ -239,6 +266,8 @@ function getIsochroneStatusStages(
       status: {
         count: bandRings.status.count,
         overflow: bandRings.status.overflow,
+        candidateOverflow: bandRings.status.edgeOverflow,
+        complete: bandRings.status.complete,
         requiredCount: bandRings.status.requiredCount
       }
     });
@@ -250,6 +279,7 @@ function getIsochroneStatusStages(
       status: {
         count: cellOutline.table.status.count,
         overflow: cellOutline.table.status.overflow,
+        candidateOverflow: cellOutline.table.status.candidateOverflow,
         requiredCount: cellOutline.table.status.requiredCount
       }
     });
@@ -260,6 +290,7 @@ function getIsochroneStatusStages(
       status: {
         count: cellOutline.output.status.count,
         overflow: cellOutline.output.status.overflow,
+        candidateOverflow: cellOutline.output.status.candidateOverflow,
         requiredCount: cellOutline.output.status.requiredCount
       }
     });
@@ -271,6 +302,8 @@ function getIsochroneStatusStages(
       status: {
         count: cellRings.status.count,
         overflow: cellRings.status.overflow,
+        candidateOverflow: cellRings.status.candidateOverflow,
+        complete: cellRings.status.complete,
         requiredCount: cellRings.status.requiredCount
       }
     });
@@ -418,7 +451,10 @@ export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
     /** One-row status words of stage `isochrone-demand`. */
     status: {
       overflow: GraphDataView<'uint32'>;
+      /** Number of unresolved, unassigned candidate pairs; these are incomplete matches. */
       uncertainCount: GraphDataView<'uint32'>;
+      /** Upstream cell/outline/ring loss; independent of the join's own capacity overflow. */
+      candidateOverflow?: GraphDataView<'uint32'>;
     };
   };
   /**
@@ -470,13 +506,26 @@ export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
  *
  * Spatial context: see `GPUDriveTimeCatchmentRecipeProps.spatialContext`. Costs are in the units
  * of `topology.weights`; distances (`maximumSnapDistance`) are in the context's length unit.
+ * Raster isochrones require planar positions; project geographic positions before requesting
+ * `isochrones.raster`. Geographic `isochrones.cellOutline` remains available.
+ *
+ * Recipe-to-stage input mapping (both inputs retain their own row domains):
+ * - `facilities` -> `snap-facilities.positions`, pointCount = facilities.length.
+ * - `demand` -> `snap-demand.positions`, pointCount = demand.length.
+ * Both stage props are `NetworkSnapping.positions`; the lengths are fixed point counts, not
+ * counts of network nodes or facility/demand IDs. Coordinates share spatialContext and the road
+ * positions' frame: context length units for planar, degrees for longitude/latitude. Snap
+ * distances are measured in the context length unit, including meters/kilometers geographically.
  *
  * Status: `status.stages` reports `snap-facilities` and `snap-demand` (candidate overflow, with
  * `candidateCapacity`), `service-areas` (convergence), the isochrone stages for the caller-owned
  * isochrone outputs that carry status (`isochrone-bands`, `isochrone-band-edges`,
  * `isochrone-band-rings` on the raster path; `isochrone-cells`, `isochrone-outline`,
  * `isochrone-rings` on the cell path), `band-statistics` (count, overflow, required count) and,
- * with a demand join, `isochrone-demand`. The service-area `assignments` are handed to
+ * with a demand join, `isochrone-demand`. Cell stages preserve supplied candidateOverflow; both cell and raster ring stages preserve
+ * supplied complete views. The demand stage publishes upstream geometry loss in candidateOverflow,
+ * independently of its own overflow; incomplete geometry suppresses pointFeatureIds to 0xffffffff.
+ * The service-area `assignments` are handed to
  * `GPUNetworkIsochrones`, so `raster.output.pixelFacilities`, `triangleFacilities` and
  * `cellOutline.byFacility` work through the recipe; facility rows there are start rows
  * (`2 * facility + endpoint`).
@@ -493,15 +542,121 @@ function declareDriveTimeCatchmentRecipe<Parameters>(
   props: GPUDriveTimeCatchmentRecipeProps
 ): GPUDriveTimeCatchmentRecipeOutput {
   const id = props.id ?? 'drive-time-catchment';
+  const identity = {id, contributor: ID};
+  const outputs = resolveRecipeDestinations(id, props) ?? {};
+  const joinStatus = outputs.isochroneDemand?.status;
+  for (const diagnostic of ['unresolvedCount', 'complete'] as const) {
+    const destination: unknown = joinStatus && Reflect.get(joinStatus, diagnostic);
+    validateRequirement(
+      identity,
+      destination === undefined,
+      `output.isochroneDemand.status.${diagnostic} is not supported; use overflow, uncertainCount or candidateOverflow; received a destination`
+    );
+  }
+  for (const [path, destination, enabled, requirement] of [
+    [
+      'output.isochroneDemand.status.candidateOverflow',
+      joinStatus?.candidateOverflow,
+      Boolean(props.isochrones?.joinDemand),
+      'isochrones.joinDemand'
+    ],
+    [
+      'output.isochroneDemand.pointFeatureIds',
+      outputs.isochroneDemand?.pointFeatureIds,
+      Boolean(props.isochrones?.joinDemand),
+      'isochrones.joinDemand'
+    ],
+    [
+      'output.isochroneDemand.status.overflow',
+      joinStatus?.overflow,
+      Boolean(props.isochrones?.joinDemand),
+      'isochrones.joinDemand'
+    ],
+    [
+      'output.isochroneDemand.status.uncertainCount',
+      joinStatus?.uncertainCount,
+      Boolean(props.isochrones?.joinDemand),
+      'isochrones.joinDemand'
+    ],
+    [
+      'output.bands.sumValues',
+      outputs.bands?.sumValues,
+      props.demandValues !== undefined,
+      'demandValues'
+    ],
+    ['output.bands.means', outputs.bands?.means, props.demandValues !== undefined, 'demandValues'],
+    [
+      'output.snapping.status.facilitiesOverflow',
+      outputs.snapping?.status?.facilitiesOverflow,
+      props.candidateCapacity !== undefined,
+      'candidateCapacity'
+    ],
+    [
+      'output.snapping.status.demandOverflow',
+      outputs.snapping?.status?.demandOverflow,
+      props.candidateCapacity !== undefined,
+      'candidateCapacity'
+    ]
+  ] as const) {
+    validateRequirement(
+      identity,
+      destination === undefined || enabled,
+      `${path} requires ${requirement}; received a destination with the stage disabled`
+    );
+  }
+  const capturedRaster =
+    props.isochrones?.raster &&
+    snapshotConstructionFields(props.isochrones.raster, [
+      'width',
+      'height',
+      'mode',
+      'maximumBufferPixels',
+      'maximumSamplesPerEdge',
+      'unreachedCost',
+      'sourcePaths',
+      'output',
+      'rings'
+    ]);
+  if (capturedRaster) {
+    validateRequirement(
+      identity,
+      (capturedRaster.mode ?? 'min') === 'min',
+      `isochrones.raster.mode accepts only min to include direct travel from snapped facilities; received ${String(capturedRaster.mode)}`
+    );
+    validateRequirement(
+      identity,
+      !capturedRaster.sourcePaths,
+      'isochrones.raster.sourcePaths is owned by the drive-time facility adapter'
+    );
+  }
   const spatialContext = resolveGPUSpatialContext(
     id,
     props.spatialContext,
     GPU_DRIVE_TIME_CATCHMENT_SPATIAL_CONTEXT_SUPPORT
   );
+  validateRequirement(
+    id,
+    !props.isochrones?.raster || spatialContext.coordinateSpace === 'planar',
+    `isochrones.raster needs planar positions; received ${spatialContext.coordinateSpace}; project to a planar frame first`
+  );
   const builder = new RecipeBuilder(graph);
   const {topology} = props;
-  const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
+  const inheritedLossOutput = outputs.isochroneDemand?.status?.candidateOverflow;
+  if (inheritedLossOutput) {
+    const path = 'output.isochroneDemand.status.candidateOverflow';
+    validateRequirement(
+      id,
+      Boolean(props.isochrones?.joinDemand),
+      `${path} requires isochrones.joinDemand; received no join`
+    );
+    validateSinglePackedView(inheritedLossOutput, ['uint32'], identity, path);
+    validateRequirement(
+      id,
+      inheritedLossOutput.length === 1,
+      `${path} must contain exactly one row; received ${inheritedLossOutput.length}`
+    );
+  }
   const {nodeCount} = validateGPUNetworkTopology(id, topology, {
     weights: true,
     nodePositions: true
@@ -510,50 +665,48 @@ function declareDriveTimeCatchmentRecipe<Parameters>(
   const demandCount = props.demand.length;
   const bandCount = props.costBreaks.length;
   assertRecipe(ID, bandCount >= 1, 'costBreaks must not be empty');
-  validateRecipeBoundary(
-    graph,
-    id,
-    [
-      topology.offsets,
-      topology.neighbors,
-      topology.weights,
-      topology.nodePositions,
-      props.facilities,
-      props.demand,
-      props.demandValues,
-      props.maximumSnapDistance,
-      props.costBreaks,
-      props.costLimit,
-      props.isochrones?.costBreaks,
-      props.isochrones?.parameters
-    ],
-    [
-      outputs.assignments,
-      outputs.nodeCosts,
-      outputs.status?.serviceAreaConverged,
-      outputs.demandTimes,
-      outputs.demandBands,
-      outputs.bands?.keys,
-      outputs.bands?.counts,
-      outputs.bands?.status?.count,
-      outputs.bands?.status?.overflow,
-      outputs.bands?.status?.requiredCount,
-      props.demandValues ? outputs.bands?.sumValues : undefined,
-      props.demandValues ? outputs.bands?.means : undefined,
-      props.isochrones?.joinDemand ? outputs.isochroneDemand?.pointFeatureIds : undefined,
-      props.isochrones?.joinDemand ? outputs.isochroneDemand?.status?.overflow : undefined,
-      props.isochrones?.joinDemand ? outputs.isochroneDemand?.status?.uncertainCount : undefined,
-      props.candidateCapacity ? outputs.snapping?.status?.facilitiesOverflow : undefined,
-      props.candidateCapacity ? outputs.snapping?.status?.demandOverflow : undefined,
-      scratch.startNodes,
-      scratch.startCosts,
-      scratch.facilityEdges,
-      scratch.demandEdges,
-      scratch.demandSourceCosts,
-      scratch.demandTargetCosts,
-      props.demandValues ? scratch.bandSumWords : undefined
-    ]
-  );
+  const recipeInputs = [
+    topology.offsets,
+    topology.neighbors,
+    topology.weights,
+    topology.nodePositions,
+    props.facilities,
+    props.demand,
+    props.demandValues,
+    props.maximumSnapDistance,
+    props.costBreaks,
+    props.costLimit,
+    props.isochrones?.costBreaks,
+    props.isochrones?.parameters
+  ];
+  const recipeWrites = [
+    outputs.assignments,
+    outputs.nodeCosts,
+    outputs.status?.serviceAreaConverged,
+    outputs.demandTimes,
+    outputs.demandBands,
+    outputs.bands?.keys,
+    outputs.bands?.counts,
+    outputs.bands?.status?.count,
+    outputs.bands?.status?.overflow,
+    outputs.bands?.status?.requiredCount,
+    props.demandValues ? outputs.bands?.sumValues : undefined,
+    props.demandValues ? outputs.bands?.means : undefined,
+    props.isochrones?.joinDemand ? outputs.isochroneDemand?.pointFeatureIds : undefined,
+    props.isochrones?.joinDemand ? outputs.isochroneDemand?.status?.overflow : undefined,
+    props.isochrones?.joinDemand ? outputs.isochroneDemand?.status?.uncertainCount : undefined,
+    props.isochrones?.joinDemand ? outputs.isochroneDemand?.status?.candidateOverflow : undefined,
+    props.candidateCapacity ? outputs.snapping?.status?.facilitiesOverflow : undefined,
+    props.candidateCapacity ? outputs.snapping?.status?.demandOverflow : undefined,
+    scratch.startNodes,
+    scratch.startCosts,
+    scratch.facilityEdges,
+    scratch.demandEdges,
+    scratch.demandSourceCosts,
+    scratch.demandTargetCosts,
+    props.demandValues ? scratch.bandSumWords : undefined
+  ];
+  validateRecipeBoundary(graph, id, recipeInputs, recipeWrites);
 
   // Edge source node per CSR edge, shared by the demand-time adapter (instead of a binary search).
   // The shared gpu-network nodes write every row, so rows past offsets[nodeCount] are never stale.
@@ -774,6 +927,8 @@ function declareDriveTimeCatchmentRecipe<Parameters>(
   );
 
   const isochrones = props.isochrones;
+  let isochroneStatusStages: GPURecipeStageStatusPort[] = [];
+  let capturedCellOutline = isochrones?.cellOutline;
   if (isochrones) {
     assertRecipe(
       ID,
@@ -785,18 +940,8 @@ function declareDriveTimeCatchmentRecipe<Parameters>(
       !isochrones.joinDemand || Boolean(isochrones.cellOutline?.rings?.output.polygons),
       'isochrones.joinDemand needs cellOutline.rings.output.polygons'
     );
-    let raster = isochrones.raster;
+    let raster = capturedRaster;
     if (raster) {
-      validateRequirement(
-        ID,
-        (raster.mode ?? 'min') === 'min',
-        'isochrones.raster.mode must be min to include direct travel from snapped facilities'
-      );
-      validateRequirement(
-        ID,
-        !raster.sourcePaths,
-        'isochrones.raster.sourcePaths is owned by the drive-time facility adapter'
-      );
       // Each facility contributes a zero-cost snapped origin and its two directed endpoint
       // paths. Reuse the isochrone splatter, so direct on-road travel reaches the raster even
       // when both original endpoint costs exceed an early band. No second routing search.
@@ -924,24 +1069,102 @@ function declareDriveTimeCatchmentRecipe<Parameters>(
         }
       };
     }
-    builder.add(
-      new GPUNetworkIsochrones({
-        id: `${id}-isochrones`,
-        topology,
-        costs: nodeCosts,
-        // Input from the service areas: enables the facility-labelled outputs
-        // (`raster.output.pixelFacilities`, `triangleFacilities`, `cellOutline.byFacility`). The
-        // facility row is the start row, `2 * facility + endpoint`.
-        assignments,
-        costBreaks: isochrones.costBreaks,
-        parameters: isochrones.parameters,
-        raster,
-        cellOutline: isochrones.cellOutline
-      })
-    );
+    let cellOutline = isochrones.cellOutline;
+    if (isochrones.joinDemand && cellOutline?.rings) {
+      cellOutline = snapshotConstructionFields(cellOutline, [
+        'family',
+        'resolution',
+        'table',
+        'tableCapacity',
+        'byFacility',
+        'cellFacilities',
+        'output',
+        'rings'
+      ]);
+      const rings = snapshotConstructionFields(cellOutline.rings!, [
+        'vertexTolerance',
+        'normalizeWinding',
+        'output'
+      ]);
+      const ringOutput = snapshotConstructionFields(rings.output, [
+        'ringOffsets',
+        'positions',
+        'ringAreas',
+        'ringIsHole',
+        'ringShells',
+        'ringGroups',
+        'segmentRings',
+        'segmentVertices',
+        'segmentFlags',
+        'polygons',
+        'status'
+      ]);
+      const ringStatus = snapshotConstructionFields(ringOutput.status, [
+        'count',
+        'overflow',
+        'requiredCount',
+        'openSegmentCount',
+        'touchingSegmentCount',
+        'candidateOverflow',
+        'complete',
+        'polygonCount'
+      ]);
+      cellOutline = {
+        ...cellOutline,
+        rings: {
+          ...rings,
+          output: {
+            ...ringOutput,
+            status: {
+              ...ringStatus,
+              candidateOverflow:
+                ringStatus.candidateOverflow ??
+                createTransientView(graph, `${id}-join-ring-candidate-loss`, 'uint32', 1),
+              complete:
+                ringStatus.complete ??
+                createTransientView(graph, `${id}-join-ring-complete`, 'uint32', 1)
+            }
+          }
+        }
+      };
+    }
+    const isochroneContributor = new GPUNetworkIsochrones({
+      id: `${id}-isochrones`,
+      // Omitted contexts retain legacy cell-only compatibility; explicit contexts must agree.
+      spatialContext: props.spatialContext,
+      topology,
+      costs: nodeCosts,
+      // Input from the service areas: enables the facility-labelled outputs
+      // (`raster.output.pixelFacilities`, `triangleFacilities`, `cellOutline.byFacility`). The
+      // facility row is the start row, `2 * facility + endpoint`.
+      assignments,
+      costBreaks: isochrones.costBreaks,
+      parameters: isochrones.parameters,
+      raster,
+      cellOutline
+    });
+    // Use the contributor's captured port maps, so only declared nested outputs participate.
+    const captured = isochroneContributor.props;
+    capturedCellOutline = captured.cellOutline;
+    const nestedWrites = collectIsochroneRecipeWrites({
+      raster: {output: captured.raster?.output, rings: captured.raster?.rings?.output},
+      cellOutline: {
+        table: captured.cellOutline?.table,
+        cellFacilities: captured.cellOutline?.byFacility
+          ? captured.cellOutline.cellFacilities
+          : undefined,
+        output: captured.cellOutline?.output,
+        rings: captured.cellOutline?.rings?.output
+      }
+    });
+    // The contributor owns nested-to-nested range/dispatch checks. Cross-stage retention requires
+    // whole-buffer separation only between nested writes and the surrounding recipe boundary.
+    validateGraphOutputsDisjointFromInputs(id, nestedWrites, [...recipeInputs, ...recipeWrites]);
+    isochroneStatusStages = getIsochroneStatusStages(captured);
+    builder.add(isochroneContributor);
   }
   let isochroneDemand: GPUDriveTimeCatchmentRecipeOutput['isochroneDemand'];
-  const polygons = isochrones?.cellOutline?.rings?.output.polygons;
+  const polygons = capturedCellOutline?.rings?.output.polygons;
   if (isochrones?.joinDemand && polygons) {
     const join = isochrones.joinDemand;
     const provided = outputs.isochroneDemand ?? {};
@@ -954,6 +1177,13 @@ function declareDriveTimeCatchmentRecipe<Parameters>(
         provided.pointFeatureIds
       ),
       status: {
+        candidateOverflow: getOrCreateView(
+          graph,
+          `${id}-isochrone-join-source-loss`,
+          'uint32',
+          1,
+          provided.status?.candidateOverflow
+        ),
         overflow: getOrCreateView(
           graph,
           `${id}-isochrone-join-overflow`,
@@ -984,8 +1214,58 @@ function declareDriveTimeCatchmentRecipe<Parameters>(
         candidateCapacity: join.candidateCapacity,
         output: {
           pointFeatureIds: isochroneDemand.pointFeatureIds,
-          status: isochroneDemand.status
+          status: {
+            overflow: isochroneDemand.status.overflow,
+            uncertainCount: isochroneDemand.status.uncertainCount
+          }
         }
+      })
+    );
+    const ringStatus = capturedCellOutline!.rings!.output.status;
+    // Ring completeness includes table and outline loss even when the caller omitted their
+    // optional diagnostics. Preserve the join's own overflow and publish inherited loss apart.
+    builder.addGlue(
+      'isochrone-join-source-loss',
+      createWGSLKernelNode(graph, {
+        id: `${id}-isochrone-join-source-loss`,
+        operation: 'GPURecipeDriveTimeCatchment',
+        variant: 'join-source-loss',
+        invocationCount: 1,
+        bindings: [
+          {name: 'candidate', view: ringStatus.candidateOverflow!, type: 'u32', access: 'read'},
+          {name: 'complete', view: ringStatus.complete!, type: 'u32', access: 'read'},
+          {
+            name: 'loss',
+            view: isochroneDemand.status.candidateOverflow!,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        body: 'loss[lossOffset] = select(0u, 1u, candidate[candidateOffset] != 0u || complete[completeOffset] == 0u);'
+      })
+    );
+    builder.addGlue(
+      'isochrone-join-suppress-incomplete',
+      createWGSLKernelNode(graph, {
+        id: `${id}-isochrone-join-suppress-incomplete`,
+        operation: 'GPURecipeDriveTimeCatchment',
+        variant: 'join-suppress-incomplete',
+        invocationCount: demandCount,
+        bindings: [
+          {
+            name: 'loss',
+            view: isochroneDemand.status.candidateOverflow!,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'matches',
+            view: isochroneDemand.pointFeatureIds,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        body: 'if (loss[lossOffset] != 0u) { matches[matchesOffset + index] = 0xffffffffu; }'
       })
     );
   }
@@ -1224,7 +1504,7 @@ ${getBinarySearchWGSL('sortedFacilityKeys')}`,
     demandTimes,
     demandBands,
     bands,
-    isochroneRings: isochrones?.cellOutline?.rings?.output,
+    isochroneRings: capturedCellOutline?.rings?.output,
     isochroneDemand,
     snapping,
     outputs: {
@@ -1248,7 +1528,7 @@ ${getBinarySearchWGSL('sortedFacilityKeys')}`,
             ]
           : []),
         {stage: 'service-areas', status: {converged: serviceAreaConverged}},
-        ...getIsochroneStatusStages(isochrones),
+        ...isochroneStatusStages,
         {
           stage: 'band-statistics',
           status: bands.status
@@ -1264,4 +1544,12 @@ ${getBinarySearchWGSL('sortedFacilityKeys')}`,
       ]
     }
   };
+}
+
+/** Walk output port maps, never physical buffers or per-row data. */
+function collectIsochroneRecipeWrites(value: unknown): readonly GraphDataView[] {
+  if (isGraphDataView(value)) return [value];
+  if (isGraphVectorView(value)) return getGraphViewChunks(value);
+  if (!value || typeof value !== 'object') return [];
+  return Object.values(value).flatMap(collectIsochroneRecipeWrites);
 }

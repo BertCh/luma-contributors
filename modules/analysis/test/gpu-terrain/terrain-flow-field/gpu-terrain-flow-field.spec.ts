@@ -402,7 +402,7 @@ it('GPUTerrainFlowField feeds GPUParticleAdvection in one graph', async () => {
   const compiled = graph.compile();
   // Particles live in raster-local cell coordinates, the frame the field is written in.
   const parameterValues = getGPUParticleAdvectionParameterValues(
-    {fieldExtent: [0, 0, 1, 1], timeStep: 0.5},
+    {fieldPlacement: {origin: [0, 0], cellSize: [1, 1]}, timeStep: 0.5},
     [width, height]
   );
   particleParameters.write(parameterValues);

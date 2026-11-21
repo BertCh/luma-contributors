@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import type {GPURipleyDistanceEdgeCorrection} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './ripley-distance-functions.example';
@@ -26,9 +27,9 @@ const EDGE_CORRECTIONS: readonly GPURipleyDistanceEdgeCorrection[] = [
 ];
 
 /** Runs G, F and J once over the Chicago observations and reads every radius back from the GPU. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-nature');
+  const dataset = await loadDataFrameLensData('f-chicago-nature', options?.datasetResolver);
   const {x, y} = dataset.columns;
   const positions = new Float32Array(x.length * 2);
   x.forEach((value, index) => {
@@ -91,6 +92,10 @@ export async function run(device: Device, options?: {signal?: AbortSignal}) {
         }),
         createDataFrameChoice('aggregate', 'radiusCount', RADIUS_COUNT, {sweepable: true}),
         createDataFrameChoice('aggregate', 'referenceGrid', REFERENCE_GRID.join('x')),
+        createDataFrameChoice('aggregate', 'hanischSearch', 'capped', {
+          alternatives: ['capped', 'exact'],
+          sweepable: true
+        }),
         createDataFrameChoice('aggregate', 'edgeCorrection', 'border', {
           alternatives: EDGE_CORRECTIONS,
           sweepable: true

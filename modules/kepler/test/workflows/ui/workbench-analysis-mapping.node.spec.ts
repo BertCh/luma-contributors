@@ -12,6 +12,7 @@ import {
   getKeplerCuratedAnalysis,
   getKeplerWorkbenchCuratedPresets,
   getWorkflowOperationRegistry,
+  planWorkflow,
   getWorkflowFeatures,
   makeWorkflowDataFromFeatures,
   profileKeplerFeatureCollection,
@@ -290,6 +291,9 @@ describe('question gallery and mapping', () => {
         expect(data.table.geometryColumn).toBeUndefined();
       }
     }
+    // First-run admission has no observed output kinds; native surface profiles establish raster transport.
+    const firstPlan = planWorkflow(document, {registry: store.registry, host: store.host});
+    expect(firstPlan.issues.filter(issue => issue.code === 'incompatible-port')).toEqual([]);
     const run = replaceExecution(store);
     await launchWorkbenchAnalysis(template, store);
     expect(run).toHaveBeenCalledOnce();

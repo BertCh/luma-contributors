@@ -4,6 +4,7 @@
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
@@ -12,6 +13,7 @@ import type {CPUNetworkReachabilityInput} from '../network-reachability/cpu-netw
 import {validateNetworkRoutingArrays} from '../../analysis-core/operations/cpu-network-routing';
 import {
   GPUAlternativeRoutesOperation,
+  snapshotAlternativeRoutesOperationProps,
   type AlternativeRoutesOperationProps
 } from './gpu-alternative-routes-operation';
 
@@ -22,7 +24,11 @@ export type CPUAlternativeRoutesInput = {
   targets: Uint32Array;
 };
 /** Number of routes retained per query. Path padding is the topology node count. */
-export type CPUAlternativeRoutesOptions = {routeCount: number};
+export type CPUAlternativeRoutesOptions = {
+  routeCount: number;
+  maximumExpansions?: number;
+  maximumFrontierSize?: number;
+};
 /** Padded path matrices, per-route lengths/costs, and per-query counts/certification. */
 export type CPUAlternativeRoutesResult = {
   vertices: Uint32Array;
@@ -51,8 +57,9 @@ function compareRoutePrefixes(first: RoutePrefix, second: RoutePrefix): number {
  * What differs from the GPU contributor:
  * - Float64 path costs are rounded once on output; near ties, subnormals and paths whose float32
  *   sums overflow can change route order and membership.
- * - Node, route, expansion, frontier and device limits imposed for GPU execution are dropped.
- *   The search certifies the requested top-k or exhausts all paths; complete is always 1.
+ * - Explicit expansion/frontier budgets bind as on GPU, retaining already published paths and
+ *   setting complete=0 on exhaustion. Omitted budgets are unbounded. GPU node/route/device
+ *   shape caps are dropped.
  * - This exact search remains exponential in the worst case and can require substantial CPU memory.
  * - Invalid endpoints are empty certified queries; invalid neighbors/weights are impassable,
  *   and offset values retain the GPU's per-row clamping interpretation.
@@ -63,8 +70,17 @@ export function computeAlternativeRoutesOnCPU(
   input: CPUAlternativeRoutesInput,
   options: CPUAlternativeRoutesOptions
 ): CPUAlternativeRoutesResult {
+  options = snapshotConstructionFields(options, [
+    'routeCount',
+    'maximumExpansions',
+    'maximumFrontierSize'
+  ]);
+  for (const name of ['maximumExpansions', 'maximumFrontierSize'] as const)
+    if (options[name] !== undefined)
+      validateCapacity('computeAlternativeRoutesOnCPU', name, options[name]);
+  const maximumExpansions = options.maximumExpansions ?? Infinity;
+  const maximumFrontierSize = options.maximumFrontierSize ?? Infinity;
   const nodeCount = validateNetworkRoutingArrays(input.topology);
-  if (!input.sources.length) throw new Error('sources must contain at least one query');
   if (input.targets.length !== input.sources.length)
     throw new Error('targets length must equal sources length');
   validateCapacity('computeAlternativeRoutesOnCPU', 'routeCount', options.routeCount);
@@ -73,7 +89,8 @@ export function computeAlternativeRoutesOnCPU(
   validateCapacity(
     'computeAlternativeRoutesOnCPU',
     'queryCount * routeCount * nodeCount',
-    queryCount * routeCount * nodeCount
+    queryCount * routeCount * nodeCount,
+    0
   );
   const result: CPUAlternativeRoutesResult = {
     vertices: new Uint32Array(queryCount * routeCount * nodeCount).fill(0xffffffff),
@@ -89,6 +106,8 @@ export function computeAlternativeRoutesOnCPU(
     const destination = input.targets[query];
     if (source >= nodeCount || destination >= nodeCount) continue;
     const heap: RoutePrefix[] = [{cost: 0, vertices: [source], edges: []}];
+    let expansions = 0;
+    let stopped = false;
     const pushPrefix = (prefix: RoutePrefix) => {
       let position = heap.length;
       heap.push(prefix);
@@ -100,7 +119,7 @@ export function computeAlternativeRoutesOnCPU(
       }
       heap[position] = prefix;
     };
-    while (heap.length && result.counts[query] < routeCount) {
+    while (heap.length && result.counts[query] < routeCount && !stopped) {
       const prefix = heap[0];
       const last = heap.pop()!;
       if (heap.length) {
@@ -129,6 +148,11 @@ export function computeAlternativeRoutesOnCPU(
         edge < Math.min(offsets[vertex + 1], neighbors.length);
         edge++
       ) {
+        if (expansions >= maximumExpansions) {
+          stopped = true;
+          break;
+        }
+        expansions++;
         const neighbor = neighbors[edge];
         const weight = weights[edge];
         if (
@@ -138,6 +162,10 @@ export function computeAlternativeRoutesOnCPU(
           prefix.vertices.includes(neighbor)
         )
           continue;
+        if (heap.length >= maximumFrontierSize) {
+          stopped = true;
+          break;
+        }
         pushPrefix({
           cost: prefix.cost + weight,
           vertices: [...prefix.vertices, neighbor],
@@ -145,21 +173,31 @@ export function computeAlternativeRoutesOnCPU(
         });
       }
     }
+    if (stopped) result.complete[query] = 0;
   }
   return result;
 }
 
-/** Exact CPU twin; the GPU search budgets are ignored and output dimensions remain caller-owned. */
+/** CPU twin retaining explicit search budgets; output dimensions remain caller-owned. */
 export class CPUAlternativeRoutesOperation extends GPUCPUOperation {
   constructor(props: AlternativeRoutesOperationProps) {
+    props = snapshotAlternativeRoutesOperationProps(props);
     const id = props.id ?? 'alternative-routes';
+    const options = snapshotConstructionFields(props, [
+      'routeCount',
+      'maximumExpansions',
+      'maximumFrontierSize'
+    ]);
+    for (const name of ['maximumExpansions', 'maximumFrontierSize'] as const)
+      if (options[name] !== undefined) validateCapacity(id, name, options[name]);
     validateCapacity(id, 'nodeCount', props.nodeCount);
-    validateCapacity(id, 'queryCount', props.queryCount);
+    validateCapacity(id, 'queryCount', props.queryCount, 0);
     validateCapacity(id, 'routeCount', props.routeCount);
     validateCapacity(
       id,
       'queryCount * routeCount * nodeCount',
-      props.queryCount * props.routeCount * props.nodeCount
+      props.queryCount * props.routeCount * props.nodeCount,
+      0
     );
     const operation = new GPUAlternativeRoutesOperation(props);
     super({
@@ -193,10 +231,7 @@ export class CPUAlternativeRoutesOperation extends GPUCPUOperation {
           throw new Error(`${id} topology.offsets length must equal nodeCount + 1`);
         if (sources.length !== props.queryCount)
           throw new Error(`${id} sources length must equal queryCount`);
-        const result = computeAlternativeRoutesOnCPU(
-          {topology, sources, targets},
-          {routeCount: props.routeCount}
-        );
+        const result = computeAlternativeRoutesOnCPU({topology, sources, targets}, options);
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
             output.value,

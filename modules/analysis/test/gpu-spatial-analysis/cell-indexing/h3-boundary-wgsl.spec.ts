@@ -275,6 +275,41 @@ function getRandomCell(random: () => number, resolution: number): string {
   return cell;
 }
 
+/**
+ * Vectors whose [longitude, latitude] pair is missing, extra, nonfinite or more than
+ * `MAXIMUM_DEGREE_ERROR` from the float32-rounded `Math.atan2` reference. Written so that NaN
+ * fails (TOOL-109).
+ */
+function getUnitVectorLngLatMismatches(
+  vectors: [number, number, number][],
+  points: ArrayLike<number>
+): string[] {
+  const mismatches: string[] = [];
+  if (points.length !== 2 * vectors.length) {
+    mismatches.push(`length ${points.length} != ${2 * vectors.length}`);
+  }
+  const isClose = (actual: number, expected: number) =>
+    Number.isFinite(actual) && Math.abs(actual - expected) <= MAXIMUM_DEGREE_ERROR;
+  vectors.forEach(([x, y, z], index) => {
+    const [fx, fy, fz] = [x, y, z].map(Math.fround);
+    const longitude = (Math.atan2(fy, fx) * 180) / Math.PI;
+    const latitude = (Math.atan2(fz, Math.hypot(fx, fy)) * 180) / Math.PI;
+    const actualLongitude = points[2 * index];
+    const actualLatitude = points[2 * index + 1];
+    if (!isClose(actualLongitude, longitude)) {
+      mismatches.push(
+        `(${Object.is(x, -0) ? '-0' : x}, ${y}) longitude ${actualLongitude} vs ${longitude}`
+      );
+    }
+    if (!isClose(actualLatitude, latitude)) {
+      mismatches.push(
+        `(${Object.is(x, -0) ? '-0' : x}, ${y}) latitude ${actualLatitude} vs ${latitude}`
+      );
+    }
+  });
+  return mismatches;
+}
+
 it('H3 boundary longitude guards atan2 against a signed-zero second argument', async () => {
   // Direct test of cellIndexH3BoundaryUnitVectorToLngLat, the guarded atan2 call site. The unit
   // vectors come from a storage buffer, so the compiler cannot fold the signed zeros. On the test
@@ -311,23 +346,6 @@ it('H3 boundary longitude guards atan2 against a signed-zero second argument', a
   output[outputOffset + 2u * index + 1u] = bitcast<u32>(point.y);`
   });
   const points = getFloatWords(words);
-  const mismatches: string[] = [];
-  vectors.forEach(([x, y, z], index) => {
-    const [fx, fy, fz] = [x, y, z].map(Math.fround);
-    const longitude = (Math.atan2(fy, fx) * 180) / Math.PI;
-    const latitude = (Math.atan2(fz, Math.hypot(fx, fy)) * 180) / Math.PI;
-    const actualLongitude = points[2 * index];
-    const actualLatitude = points[2 * index + 1];
-    if (Math.abs(actualLongitude - longitude) > MAXIMUM_DEGREE_ERROR) {
-      mismatches.push(
-        `(${Object.is(x, -0) ? '-0' : x}, ${y}) longitude ${actualLongitude} vs ${longitude}`
-      );
-    }
-    if (Math.abs(actualLatitude - latitude) > MAXIMUM_DEGREE_ERROR) {
-      mismatches.push(
-        `(${Object.is(x, -0) ? '-0' : x}, ${y}) latitude ${actualLatitude} vs ${latitude}`
-      );
-    }
-  });
+  const mismatches = getUnitVectorLngLatMismatches(vectors, points);
   expect(mismatches).toEqual([]);
 });

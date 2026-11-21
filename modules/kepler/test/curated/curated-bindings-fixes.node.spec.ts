@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
+import * as bindingUtilities from '../../src/curated/bindings/curated-binding-utils';
 import type {CatalogFeature, CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
 import {getFeatureAnchor, makeSeededGenerator} from '../../src/analysis/catalog-platform3-b-common';
 import {makeLocalFrame} from '../../src/analysis/catalog-local-frame';
-import {buildAnalysisSet} from '../../src/analysis/catalog-platform3-b-statistics';
+import {
+  buildAnalysisSet,
+  runMultipleTestingAdjustment
+} from '../../src/analysis/catalog-platform3-b-statistics';
+import {publishRateClusterMap} from '../../src/curated/bindings/curated-rate-cluster-map-binding';
 import {measureDistance} from '../../src/analysis/catalog-geojson';
 import {fitOrdinaryLeastSquares} from '../../src/analysis/catalog-platform4-regression';
 import {fitStandardizedLeastSquares} from '../../src/curated/bindings/curated-regression-with-diagnostics-binding';
@@ -16,6 +21,7 @@ import {planKeplerResultPresentation} from '../../src/presentation/result-presen
 import {
   getCanonicalOrder,
   getSignificanceAttainability,
+  readRateRows,
   runCanonicalMoranPermutationTest,
   runMoranPermutationTest,
   runConditionalLocalPermutationTest
@@ -377,7 +383,7 @@ describe('permutation inference does not depend on the order of the rows', () =>
     const random = makeSeededGenerator(9);
     const xs = Array.from({length: 120}, (_, i) => (i < 60 ? 0 : 50) + random() * 8);
     const ys = Array.from({length: 120}, () => random() * 8);
-    const clusterParameters = {epsilon: 3, minimumPoints: 4, ...PLANAR};
+    const clusterParameters = {epsilon: 3, minimumSamples: 4, ...PLANAR};
     const clusters = runCuratedBinding('curated-clusters-and-footprints', clusterParameters, {
       points: makePoints(xs, ys)
     });
@@ -468,6 +474,107 @@ function runCuratedBindingDefaults(id: string): number {
 }
 
 describe('corrections that cannot reject', () => {
+  it('verifies sufficient BH floor ties against CPU and GPU rank arithmetic (B2)', () => {
+    // CPU: .01*12/3=.04 exceeds .039999999999; rank 4 gives .03.
+    expect(
+      getSignificanceAttainability('benjamini-hochberg', 0.039999999999, 12, 99)
+        .sufficientMinimumPValueTieCount
+    ).toBe(4);
+    for (const [floorCount, rejectedCount] of [
+      [3, 0],
+      [4, 4]
+    ]) {
+      const areas = makeLattice(12, 1, index => ({p: index < floorCount ? 0.01 : 1}));
+      expect(
+        runMultipleTestingAdjustment(areas, {
+          pValueProperty: 'p',
+          method: 'benjamini-hochberg',
+          alpha: 0.039999999999
+        }).summary['rejectedCount']
+      ).toBe(rejectedCount);
+    }
+  });
+
+  it('advertises a safe GPU BH floor-tie rank at the float32 boundary (B2)', () => {
+    // IEEE float32: rank 30 gives .05000000447 (division) or .05000000820
+    // (reciprocal multiplication), both above packed alpha .05000000075; rank 31 is safe.
+    expect(
+      getSignificanceAttainability('benjamini-hochberg', Math.fround(0.05), 750, 999, 2, 'gpu')
+        .sufficientMinimumPValueTieCount
+    ).toBe(31);
+  });
+
+  it('uses the packed GPU floor when judging published significance (B3)', () => {
+    const areas = makeLattice(8, 1, index => ({cases: index + 1, population: 100}));
+    const floor = Math.fround(0.02);
+    const output = publishRateClusterMap(
+      {areas},
+      {
+        casesProperty: 'cases',
+        populationProperty: 'population',
+        permutations: 99,
+        significance: 0.02,
+        multipleTesting: 'benjamini-hochberg'
+      },
+      [],
+      {
+        ...readRateRows(areas, 'cases', 'population', []),
+        rawRates: Array.from({length: 8}, (_, index) => (index + 1) / 100),
+        shrinkages: Array(8).fill(1),
+        smoothedRates: Array.from({length: 8}, (_, index) => (index + 1) / 100),
+        localI: Array(8).fill(1),
+        spatialLag: Array(8).fill(1),
+        pValues: Array(8).fill(floor),
+        adjustedPValues: Array(8).fill(floor),
+        neighborCounts: Array(8).fill(2),
+        clusters: Array(8).fill('HH'),
+        tiedAnchorCount: 0,
+        effectiveSignificance: floor,
+        globalRate: 0.045,
+        priorVariance: 1
+      },
+      true
+    );
+    expect(output.summary['significantCount']).toBe(8);
+    expect(output.summary['minimumPseudoPValue']).toBe(0.019999999552965164);
+    expect(output.summary['significanceNotAttainable']).toBe(0);
+    expect(output.summary['permutationsNeeded']).toBe(99);
+    expect(output.diagnostics.some(item => item.code === 'significance-not-attainable')).toBe(
+      false
+    );
+  });
+
+  it('describes the BH floor-only boundary without promising alternative ranks (B4)', () => {
+    const areas = makeLattice(6, 1, index => ({cases: index < 3 ? 1 : 200, population: 1000}));
+    const permutation = vi
+      .spyOn(bindingUtilities, 'runConditionalLocalPermutationTest')
+      .mockReturnValue({pValues: [0.01, 0.01, 0.01, 0.01, 0.01, 0.02], tiedCount: 0});
+    try {
+      const parameters = {
+        casesProperty: 'cases',
+        populationProperty: 'population',
+        permutations: 99,
+        significance: 0.01,
+        multipleTesting: 'benjamini-hochberg',
+        ...PLANAR
+      };
+      const first = runCuratedBinding('curated-rate-cluster-map', parameters, {areas});
+      expect(first.summary['significantCount']).toBe(0);
+      const message = first.diagnostics.find(
+        item => item.code === 'significance-needs-ties'
+      )!.message;
+      expect(message).not.toContain('ties are not necessary');
+      expect(message).toContain('other ranks can allow rejection without floor ties');
+      permutation.mockReturnValue({pValues: Array(6).fill(0.01), tiedCount: 0});
+      expect(
+        runCuratedBinding('curated-rate-cluster-map', parameters, {areas}).summary[
+          'significantCount'
+        ]
+      ).toBe(6);
+    } finally {
+      permutation.mockRestore();
+    }
+  });
   it('getSignificanceAttainability follows the smallest pseudo p-value 1 / (permutations + 1)', () => {
     expect(getSignificanceAttainability('bonferroni', 0.05, 50, 999).attainable).toBe(true);
     expect(getSignificanceAttainability('bonferroni', 0.05, 51, 999).attainable).toBe(false);
@@ -475,11 +582,78 @@ describe('corrections that cannot reject', () => {
     expect(getSignificanceAttainability('sidak', 0.05, 144, 999).attainable).toBe(false);
     const benjamini = getSignificanceAttainability('benjamini-hochberg', 0.05, 144, 999);
     expect(benjamini.attainable).toBe(true);
-    expect(benjamini.requiredTiedMinimumCount).toBe(3);
+    expect(benjamini.sufficientMinimumPValueTieCount).toBe(3);
     expect(getSignificanceAttainability('benjamini-hochberg', 0.001, 10, 99).attainable).toBe(
       false
     );
     expect(getSignificanceAttainability('none', 0.05, 10, 99).attainable).toBe(true);
+  });
+
+  it('publishes eight BH rejections at .04 without any p-value at the .01 floor', () => {
+    const areas = makeLattice(8, 1, index => ({cases: index < 4 ? 1 : 200, population: 1000}));
+    // Two disconnected four-square chains. Each chain has a constant rate, one below the
+    // overall mean and one above it, giving four LL and four HH quadrants with local I > 0.
+    areas.features.slice(4).forEach((feature, index) => {
+      const horizontal = index + 14;
+      feature.geometry = {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [horizontal, 0],
+            [horizontal + 1, 0],
+            [horizontal + 1, 1],
+            [horizontal, 1],
+            [horizontal, 0]
+          ]
+        ]
+      };
+    });
+    // Hand-worked BH: p_(8)=.04 <= 8*.05/8=.05, so the step-up rejects all eight.
+    // None equals pMin=1/(99+1)=.01. Two ties at .01 would merely be sufficient.
+    const permutation = vi
+      .spyOn(bindingUtilities, 'runConditionalLocalPermutationTest')
+      .mockReturnValue({pValues: Array(8).fill(0.04), tiedCount: 0});
+    try {
+      const output = runCuratedBinding(
+        'curated-rate-cluster-map',
+        {
+          ...PLANAR,
+          casesProperty: 'cases',
+          populationProperty: 'population',
+          permutations: 99,
+          significance: 0.05,
+          multipleTesting: 'benjamini-hochberg'
+        },
+        {areas}
+      );
+      expect(permutation).toHaveBeenCalledOnce();
+      expect(new Set(output.tables[0].columns['smoothed_rate']).size).toBe(2);
+      expect(output.tables[0].columns['cluster']).toEqual([
+        'LL',
+        'LL',
+        'LL',
+        'LL',
+        'HH',
+        'HH',
+        'HH',
+        'HH'
+      ]);
+      for (const value of output.tables[0].columns['local_i']) {
+        expect(Number.isFinite(value)).toBe(true);
+        expect(Number(value)).toBeGreaterThan(0);
+      }
+      expect(output.summary['significantCount']).toBe(8);
+      expect(output.tables[0].columns['p_value']).toEqual(Array(8).fill(0.04));
+      expect(output.tables[0].columns['adjusted_p_value']).toEqual(Array(8).fill(0.04));
+      const message = output.diagnostics.find(
+        item => item.code === 'significance-needs-ties'
+      )!.message;
+      expect(message).toContain('p_(k) <= k * alpha / m');
+      expect(message).toMatch(/sufficient.*2 of the 8/);
+      expect(message).toContain('other ranks can allow rejection without floor ties');
+    } finally {
+      permutation.mockRestore();
+    }
   });
 
   it('rate-cluster-map says when no area could be flagged, and how many permutations would do', () => {
@@ -749,7 +923,7 @@ describe('DBSCAN boundaries', () => {
     for (const bindingId of ['density-clustering', 'curated-clusters-and-footprints']) {
       const result = runCuratedBinding(
         bindingId,
-        {epsilon: 1, minimumPoints: 2, ...PLANAR},
+        {epsilon: 1, minimumSamples: 2, ...PLANAR},
         {points}
       );
       const table = getResultTable(result, 'points');
@@ -761,10 +935,10 @@ describe('DBSCAN boundaries', () => {
     }
   });
 
-  const run = (xs: number[], ys: number[], epsilon: number, minimumPoints: number) =>
+  const run = (xs: number[], ys: number[], epsilon: number, minimumSamples: number) =>
     runCuratedBinding(
       'curated-clusters-and-footprints',
-      {epsilon, minimumPoints, ...PLANAR},
+      {epsilon, minimumSamples, ...PLANAR},
       {points: makePoints(xs, ys)}
     );
 
@@ -1180,7 +1354,7 @@ describe('AX-87: safeguards with distinct semantics', () => {
     const planar = makePoints([3, 4, 0.1], [0, 0, 100]);
     const exact = runCuratedBinding(
       'density-clustering',
-      {...PLANAR, epsilon: 1, minimumPoints: 2},
+      {...PLANAR, epsilon: 1, minimumSamples: 2},
       {points: planar}
     );
     expect(getNumbers(getResultTable(exact, 'points'), 'cluster')).toEqual([0, 0, -1]);

@@ -45,8 +45,8 @@ export async function runExample(device: Device, input: LineIntegralConvolutionE
   const south = field.affine[5] - field.height * cell; // field rows start at the south edge
   parameters.write(
     getGPULineIntegralConvolutionParameterValues({
-      fieldExtent: [west, south, cell, cell], // degrees
-      outputExtent: [west, south, pixel, pixel],
+      fieldPlacement: {origin: [west, south], cellSize: [cell, cell]}, // degrees
+      outputPlacement: {origin: [west, south], cellSize: [pixel, pixel]},
       stepLength: 0.5 // output pixels per step
     })
   );

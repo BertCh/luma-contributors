@@ -4,6 +4,8 @@
 
 import {CELL_MAXIMUM_SCALED_VALUE} from '../../../src/analysis-core/kernels/cell-key-wgsl';
 
+import {getFloat32Units, roundFloat32Units} from '../value-cube/value-cube-oracle';
+
 const f = Math.fround;
 
 /** Reserved "no key" values. */
@@ -66,15 +68,15 @@ export type OracleAggregateOperation =
   | 'maximum'
   | 'count-distinct';
 
-/** Inputs of {@link joinOnCPU}. */
-export type OracleJoinInput = {
+/** Inputs of {@link lookupKeysOnCPU}. */
+export type OracleLookupInput = {
   keyBits: 32 | 64;
   leftKeys: readonly bigint[];
   rightKeys: readonly bigint[];
   leftMask?: ArrayLike<number>;
   rightMask?: ArrayLike<number>;
-  kind: 'left' | 'inner';
-  /** Capacity of the inner-join row output. */
+  compactMatchedLeftRows: boolean;
+  /** Capacity of the compact matched left row output. */
   capacity?: number;
   sumScale: number;
   /** Right-aligned columns: raw 32-bit words of gathers, f32 values of aggregates. */
@@ -85,8 +87,8 @@ export type OracleJoinInput = {
   }[];
 };
 
-/** Result of {@link joinOnCPU}. */
-export type OracleJoinResult = {
+/** Result of {@link lookupKeysOnCPU}. */
+export type OracleLookupResult = {
   /** 0xffffffff when unmatched. */
   rightRows: number[];
   matchCounts: number[];
@@ -96,15 +98,15 @@ export type OracleJoinResult = {
   gathered: number[][];
   /** Aggregate values per aggregate (f32), and exact sums (null when unmatched or no sums). */
   aggregates: {values: number[]; sums: bigint[]}[];
-  innerRows: number[];
-  innerTotal: number;
-  innerOverflow: number;
+  compactRows: number[];
+  compactTotal: number;
+  compactOverflow: number;
 };
 
 const NAN_BITS = 0x7fc00000;
 
-/** Reference attribute join with the kernel's semantics. */
-export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
+/** Reference key lookup with the kernel's semantics. */
+export function lookupKeysOnCPU(input: OracleLookupInput): OracleLookupResult {
   const noKey = input.keyBits === 32 ? NO_KEY_32 : NO_KEY_64;
   const leftCount = input.leftKeys.length;
   const rightCount = input.rightKeys.length;
@@ -122,16 +124,16 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
       groups.set(key, [row]);
     }
   }
-  const result: OracleJoinResult = {
+  const result: OracleLookupResult = {
     rightRows: [],
     matchCounts: [],
     matched: [],
     rightMatched: new Array(rightCount).fill(0),
     gathered: (input.gatherColumns ?? []).map(() => []),
     aggregates: (input.aggregates ?? []).map(() => ({values: [], sums: []})),
-    innerRows: [],
-    innerTotal: 0,
-    innerOverflow: 0
+    compactRows: [],
+    compactTotal: 0,
+    compactOverflow: 0
   };
   for (let row = 0; row < leftCount; row++) {
     const key = input.leftKeys[row];
@@ -144,9 +146,11 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
       for (const rightRow of rows) {
         result.rightMatched[rightRow] = 1;
       }
-      result.innerTotal++;
-      if (result.innerRows.length < (input.capacity ?? 0)) {
-        result.innerRows.push(row);
+      if (input.compactMatchedLeftRows) {
+        result.compactTotal++;
+        if (result.compactRows.length < (input.capacity ?? 0)) {
+          result.compactRows.push(row);
+        }
       }
     }
     for (const [index, column] of (input.gatherColumns ?? []).entries()) {
@@ -167,13 +171,13 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
         ? rows.map(rightRow => aggregate.values![rightRow]).filter(Number.isFinite)
         : [];
       let sum = 0n;
-      // The float sum is that of the values (float64), not of the `1 / sumScale` words.
-      let floatSum = 0;
+      // Exact float32 units retain cancellation below binary64 precision.
+      let floatUnits = 0n;
       let minimum = NaN;
       let maximum = NaN;
       for (const [position, value] of finite.entries()) {
         sum = BigInt.asIntN(64, sum + getScaledValue(value, input.sumScale));
-        floatSum += value;
+        floatUnits += getFloat32Units(value);
         if (position === 0 || isLess(value, minimum)) {
           minimum = value;
         }
@@ -182,7 +186,7 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
         }
       }
       out.sums.push(sum);
-      const decoded = f(floatSum);
+      const decoded = roundFloat32Units(floatUnits, 1);
       switch (aggregate.operation) {
         case 'count':
           out.values.push(aggregate.values ? finite.length : rows.length);
@@ -194,7 +198,7 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
           out.values.push(decoded);
           break;
         case 'mean':
-          out.values.push(finite.length ? f(decoded / finite.length) : NaN);
+          out.values.push(finite.length ? roundFloat32Units(floatUnits, finite.length) : NaN);
           break;
         case 'minimum':
           out.values.push(minimum);
@@ -205,7 +209,7 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
       }
     }
   }
-  result.innerOverflow = result.innerTotal > (input.capacity ?? 0) ? 1 : 0;
+  result.compactOverflow = result.compactTotal > (input.capacity ?? 0) ? 1 : 0;
   return result;
 }
 

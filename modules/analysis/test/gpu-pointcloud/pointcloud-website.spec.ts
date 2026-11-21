@@ -2,13 +2,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it} from 'vitest';
+import {makeGPURasterBand} from '../../src/raster-analysis/raster-grid/gpu-raster-grid';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {
   GPUPointCloudVoxelMerge,
+  GPUPointCloudCoverageValidity,
   GPUPointCloudFeatures,
   GPUPointCloudNeighborhoods,
   GPUPointCloudChange,
   GPUPointCloudSurfaces,
+  getRasterMetadataFromPointCloudGrid,
   GPUPointCloudGround,
   GPUPointCloudHeight,
   GPUPointCloudICP,
@@ -271,13 +274,30 @@ it('F4 / final2 G4 displayed lidar height distinguishes genuine zero from unsupp
   try {
     const heights = fixture.view('float32', new Float32Array(2));
     const status = fixture.view('uint32', new Uint32Array(2));
+    const grid = {origin: [0, 0] as const, cellSize: 1, width: 2, height: 1};
+    const terrain = fixture.view('float32', new Float32Array([0, 0]));
+    const coverage = fixture.view('uint32', new Uint32Array([2, 1]));
+    const terrainValidity = fixture.view('uint32', new Uint32Array(2));
+    fixture.graph.add(
+      new GPUPointCloudCoverageValidity({
+        id: 'height-fixture-coverage-validity',
+        coverage: coverage.view,
+        output: {
+          surfaceValidity: fixture.view('uint32', new Uint32Array(2)).view,
+          terrainValidity: terrainValidity.view,
+          canopyValidity: fixture.view('uint32', new Uint32Array(2)).view
+        }
+      })
+    );
+    const terrainBand = makeGPURasterBand(terrain.view, getRasterMetadataFromPointCloudGrid(grid), {
+      validity: terrainValidity.view
+    });
     fixture.graph.add(
       constructPointCloudShowcaseSnippet<GPUPointCloudHeight>('lidar', 'GPUPointCloudHeight', {
         GPUPointCloudHeight,
         positions: fixture.view('float32x3', new Float32Array([0.25, 0.5, 0, 1.25, 0.5, 0])).view,
-        terrain: fixture.view('float32', new Float32Array([0, 0])).view,
-        coverage: fixture.view('uint32', new Uint32Array([2, 1])).view,
-        grid: {origin: [0, 0], cellSize: 1, width: 2, height: 1},
+        terrainBand,
+        grid,
         heights: heights.view,
         heightStatus: status.view
       })
@@ -292,6 +312,7 @@ it('F4 / final2 G4 displayed lidar height distinguishes genuine zero from unsupp
       })
     );
     await fixture.run();
+    expect(await readIntegers(terrainValidity.buffer)).toEqual([1, 0]);
     expect(await readFloats(heights.buffer)).toEqual([0, 0]);
     const codes = await readIntegers(status.buffer);
     expect(codes).toEqual([0, 2]);
@@ -319,7 +340,7 @@ it('F4 hides alignment with fewer than three matches', async () => {
         source: positions,
         target: positions,
         maximumDistance: 0.1,
-        iterations: 1,
+        maximumIterations: 1,
         output: {
           transform: fixture.view('float32', new Float32Array(16)).view,
           history: fixture.view('float32x3', new Float32Array(3)).view,

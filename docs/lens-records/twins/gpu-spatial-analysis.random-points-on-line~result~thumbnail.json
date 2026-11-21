@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.random-points-on-line: positions, ringOffsets, c…",
   "description": "Result of gpu-spatial-analysis.random-points-on-line: positions, ringOffsets, counts → fractions. rows: 1,442. values read back from the GPU run. input positions: 721 lines.",
-  "llms": "Result of gpu-spatial-analysis.random-points-on-line: positions, ringOffsets, counts → fractions\n\n- rows: 1,442\n- input positions: 721 lines\n- input ringOffsets: 722 rows\n- input counts: 721 rows\n- Coordinate model unknown: drawn as planar x, y.\n- positions: 3 of 721 lines shown; evenly sampled features and vertices; line endpoints retained\n- 1442 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.random-points-on-line: positions, ringOffsets, counts → fractions\n\n- rows: 1,442\n- input positions: 721 lines\n- input ringOffsets: 722 rows\n- input counts: 721 rows\n- Coordinate model unknown: drawn as planar x, y.\n- positions: 3 of 721 lines shown; evenly sampled features and vertices; line endpoints retained\n- 1442 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 721 categories; 5 largest coloured\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "1,442"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:59.692Z",
-    "runId": "run-adeae6e5",
+    "date": "2026-11-20T23:50:41.573Z",
+    "runId": "run-92831de5",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-adeae6e5",
+    "runId": "run-92831de5",
     "rung": "result",
     "bindings": {},
     "clauses": [],

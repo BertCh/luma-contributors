@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {it} from 'vitest';
+import {expect, it} from 'vitest';
 import {GPUGeodesicPairs} from '../../../src/gpu-spatial-analysis/geometry-measures/gpu-geodesic-pairs';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {compareParity} from '../../oracles/parity-wp2-assert';
 import {createParityGraph, compareGeodesicAngles} from '../../oracles/parity-wp2-geodesic-harness';
@@ -57,6 +57,39 @@ const fixtures: {reference: string; cases: PairCase[]}[] = [
   fixture14,
   fixture15
 ];
+
+it('selects spherical rhumb distance for the constant-latitude navigation example', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const metric of ['rhumb', 'great-circle'] as const) {
+    const fixture = createParityGraph(device);
+    const {graph, input, output} = fixture;
+    try {
+      const distances = output('distances', 1, 'float32');
+      graph.add(
+        new GPUGeodesicPairs({
+          spatialContext: {coordinateSpace: 'longitude-latitude', metric, units: 'meters'},
+          origins: input('origins', [0, 60], 'float32x2').view,
+          targets: input('targets', [90, 60], 'float32x2').view,
+          output: {distances: distances.view}
+        })
+      );
+      const compiled = graph.compile();
+      try {
+        submitGraph(device, compiled, undefined);
+        const distance = (await readFloat32(distances.buffer, 1))[0];
+        // R=6371008.8; rhumb R*cos(60)*pi/2=R*pi/4. Great circle R*acos(3/4).
+        const expected = metric === 'rhumb' ? 5003778.610508981 : 4604546.2528806515;
+        expect(Number.isFinite(distance)).toBe(true);
+        expect(Math.abs(distance - expected)).toBeLessThan(2);
+      } finally {
+        compiled.destroy();
+      }
+    } finally {
+      fixture.destroy();
+    }
+  }
+});
 for (const fixture of fixtures)
   for (const entry of fixture.cases)
     for (const model of ['sphere', 'wgs84'] as const) {

@@ -162,14 +162,20 @@ function fitGwrCpu(rows: RegressionRows, kernel: string, bandwidth: number): Gwr
     residuals: new Float64Array(count).fill(Number.NaN),
     hat: new Float64Array(count).fill(Number.NaN)
   };
-  const design = (row: number) => [
-    1,
-    ...Array.from(rows.predictors.subarray(row * predictorCount, (row + 1) * predictorCount))
-  ];
   const weights = new Float64Array(count);
   for (let location = 0; location < count; location++) {
-    const gram = Array.from({length: size}, () => new Float64Array(size));
-    const cross = Array.from({length: size}, () => new Float64Array(1));
+    // Center about the focal observation before accumulating means, then equilibrate each
+    // predictor to weighted unit variance. A coordinate translation must not imply singularity.
+    const origins = rows.predictors.slice(
+      location * predictorCount,
+      (location + 1) * predictorCount
+    );
+    const responseOrigin = rows.response[location];
+    const means = new Float64Array(predictorCount);
+    const momentMeans = new Float64Array(predictorCount);
+    const centeredMoments = new Float64Array(predictorCount);
+    let responseMean = 0;
+    let weightSum = 0;
     for (let row = 0; row < count; row++) {
       const weight = getGwrWeight(
         kernel,
@@ -181,9 +187,44 @@ function fitGwrCpu(rows: RegressionRows, kernel: string, bandwidth: number): Gwr
       );
       weights[row] = weight;
       if (!weight) continue;
+      const previousWeightSum = weightSum;
+      weightSum += weight;
+      const fraction = weight / weightSum;
+      const momentWeight = weight * (previousWeightSum / weightSum);
+      const differences = Array.from(
+        momentMeans,
+        (mean, column) => rows.predictors[row * predictorCount + column] - origins[column] - mean
+      );
+      for (let column = 0; column < predictorCount; column++) {
+        centeredMoments[column] += momentWeight * differences[column] * differences[column];
+        momentMeans[column] += fraction * differences[column];
+        means[column] +=
+          weight * (rows.predictors[row * predictorCount + column] - origins[column]);
+      }
+      responseMean += weight * (rows.response[row] - responseOrigin);
+    }
+    responseMean /= weightSum;
+    for (let column = 0; column < predictorCount; column++) means[column] /= weightSum;
+    const scales = Float64Array.from(centeredMoments, moment => Math.sqrt(moment / weightSum));
+    if (scales.some(scale => !(scale > 0))) continue;
+    const design = (row: number) => [
+      1,
+      ...Array.from(
+        scales,
+        (scale, column) =>
+          (rows.predictors[row * predictorCount + column] - origins[column] - means[column]) / scale
+      )
+    ];
+    const gram = Array.from({length: size}, () => new Float64Array(size));
+    const cross = Array.from({length: size}, () => new Float64Array(1));
+    // Re-evaluate centered cross moments after the means are fixed: online response covariance
+    // can lose a distant group's contribution when its weight is tiny relative to the focal group.
+    for (let row = 0; row < count; row++) {
+      const weight = weights[row];
+      if (!weight) continue;
       const x = design(row);
       for (let a = 0; a < size; a++) {
-        cross[a][0] += weight * x[a] * rows.response[row];
+        cross[a][0] += weight * x[a] * (rows.response[row] - responseOrigin - responseMean);
         for (let b = 0; b < size; b++) gram[a][b] += weight * x[a] * x[b];
       }
     }
@@ -212,23 +253,45 @@ function fitGwrCpu(rows: RegressionRows, kernel: string, bandwidth: number): Gwr
       fitted += x[a] * solution[a];
       for (let b = 0; b < size; b++) hat += x[a] * inverse[a][b] * x[b];
     }
-    for (let a = 0; a < size; a++) fit.coefficients[location * size + a] = solution[a];
-    fit.fitted[location] = fitted;
-    fit.residuals[location] = rows.response[location] - fitted;
+    // Transform the normalized coefficients and covariance to the caller's coordinates.
+    // Keep the large origin cancellation separate from the small centered correction.
+    let interceptOrigin = responseOrigin;
+    let interceptCorrection = responseMean + solution[0];
+    for (let column = 0; column < predictorCount; column++) {
+      const slope = solution[column + 1] / scales[column];
+      fit.coefficients[location * size + column + 1] = slope;
+      interceptOrigin -= origins[column] * slope;
+      interceptCorrection -= means[column] * slope;
+    }
+    fit.coefficients[location * size] = interceptOrigin + interceptCorrection;
+    fit.fitted[location] = responseOrigin + (responseMean + fitted);
+    fit.residuals[location] = rows.response[location] - responseOrigin - responseMean - fitted;
     fit.hat[location] = hat * weights[location];
-    // Covariance A^-1 X'W^2X A^-1, scaled later by sigma squared.
-    const middle = Array.from({length: size}, () => new Float64Array(size));
+    // Transform each weighted observation influence before squaring. W^2 can underflow even
+    // when the original-coordinate influence is substantial (e.g. a distant, unique group).
+    const inverseRows = Array.from({length: size}, () => new Float64Array(size));
+    for (let a = 0; a < size; a++) {
+      const inverseRow = inverseRows[a];
+      for (let b = 0; b < size; b++) {
+        if (a > 0) inverseRow[b] = inverse[a][b] / scales[a - 1];
+        else {
+          inverseRow[b] = inverse[0][b];
+          for (let column = 0; column < predictorCount; column++)
+            inverseRow[b] -=
+              ((origins[column] + means[column]) / scales[column]) * inverse[column + 1][b];
+        }
+      }
+      fit.standardErrors[location * size + a] = 0;
+    }
     for (let row = 0; row < count; row++) {
       if (!weights[row]) continue;
-      const xr = design(row);
-      for (let a = 0; a < size; a++)
-        for (let b = 0; b < size; b++) middle[a][b] += weights[row] ** 2 * xr[a] * xr[b];
-    }
-    for (let a = 0; a < size; a++) {
-      let variance = 0;
-      for (let b = 0; b < size; b++)
-        for (let c = 0; c < size; c++) variance += inverse[a][b] * middle[b][c] * inverse[a][c];
-      fit.standardErrors[location * size + a] = variance;
+      const weightedDesign = design(row).map(value => weights[row] * value);
+      for (let coefficient = 0; coefficient < size; coefficient++) {
+        let influence = 0;
+        for (let column = 0; column < size; column++)
+          influence += inverseRows[coefficient][column] * weightedDesign[column];
+        fit.standardErrors[location * size + coefficient] += influence * influence;
+      }
     }
   }
   // Scale the unit covariance by sigma squared = RSS / (n - tr(S)) over non-singular rows.

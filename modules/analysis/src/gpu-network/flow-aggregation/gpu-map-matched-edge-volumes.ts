@@ -98,7 +98,7 @@ export type GPUMapMatchedEdgeVolumesProps = {
      * traversals of `e` that continued onto another edge and `zoneInCounts[e]` the ones that
      * entered `e` from another edge. Requires `edgeCount <= 65535` (the flow aggregation pair key).
      */
-    transitions?: GPUFlowAggregationOutput;
+    transitions?: Omit<GPUFlowAggregationOutput, 'zoneOutWeights' | 'zoneInWeights'>;
     /** Required incompleteness diagnostic. With scoring/grid loss, counts are conditional on the retained match. */
     status: {candidateOverflow: GraphDataView<'uint32'>};
   };
@@ -149,7 +149,7 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
     ]);
     const transitions =
       output.transitions &&
-      snapshotConstructionFields(output.transitions, [
+      snapshotConstructionFields(output.transitions as GPUFlowAggregationOutput, [
         'ids',
         'status',
         'flowOriginZoneIds',
@@ -164,6 +164,14 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
         'zoneOutCountExtent',
         'zoneInCountExtent'
       ]);
+    const unsupportedWeight =
+      transitions &&
+      (['zoneOutWeights', 'zoneInWeights'] as const).find(name => transitions[name] !== undefined);
+    validateRequirement(
+      snapshot.id ?? 'map-matched-edge-volumes',
+      !unsupportedWeight,
+      `output.transitions.${unsupportedWeight} requires a weight input, but traversals are unweighted; use output.transitions.zoneOutCounts or output.transitions.zoneInCounts`
+    );
     props = Object.freeze({
       ...snapshot,
       traversedEdges: Object.freeze({

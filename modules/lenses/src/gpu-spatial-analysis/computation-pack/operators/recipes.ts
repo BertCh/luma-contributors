@@ -198,12 +198,12 @@ export const RECIPES_OPERATORS: SpatialFamilyOperators = {
     guards: ['coordinate-model'],
     choices: [
       {stage: 'neighbourhood', name: 'epsilon', label: 'epsilon', unit: 'm', sweepable: true},
-      {stage: 'neighbourhood', name: 'minimumPoints', sweepable: true}
+      {stage: 'neighbourhood', name: 'minimumSamples', sweepable: true}
     ],
     formula: {
       formula: 'none',
       reason:
-        'Composition of GPUSpatialClustering, GPUGroupGeometry, GPUGroupConvexHull and GPUGeometryMeasures; see each contributor card for its formula.'
+        'Composition of GPUDBSCAN, GPUGroupGeometry, GPUGroupConvexHull and GPUGeometryMeasures; see each contributor card for its formula.'
     },
     metadata: {coordinateModel: 'projected', metricUnit: 'm'}
   },

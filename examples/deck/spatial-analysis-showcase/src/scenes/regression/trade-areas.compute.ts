@@ -16,7 +16,7 @@ import {
   GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   type GPUNeighborSearchKernel,
-  type GPUNeighborSearchWeightKind
+  type GPUNeighborSearchWeightType
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
@@ -290,15 +290,15 @@ export async function createTradeAreas(
   };
   const writeParameters = () => {
     const {decay, bandwidth, power, alpha, showSpokes} = ctx.options;
-    const weightKind: GPUNeighborSearchWeightKind =
-      decay === 'binary' ? 'binary' : decay === 'inverse' ? 'inverseDistance' : 'kernel';
+    const weightType: GPUNeighborSearchWeightType =
+      decay === 'binary' ? 'binary' : decay === 'inverse' ? 'inverse-distance' : 'kernel';
     const kernel: GPUNeighborSearchKernel =
       decay === 'triangular' ? 'triangular' : decay === 'bisquare' ? 'bisquare' : 'gaussian';
     searchParameters.write(
       getGPUNeighborSearchParameterValues({
         bounds: searchBounds,
-        radius: bandwidth,
-        weightKind,
+        searchRadius: bandwidth,
+        weightType,
         kernel,
         power,
         distanceFloor: 100
@@ -469,6 +469,7 @@ export async function createTradeAreas(
     reachable: Uint32Array;
     tradeArea: Uint32Array;
     probability: Float32Array;
+    forwardWeightsIncomplete: boolean;
   } | null = null;
 
   const reader = createNamedReader(
@@ -494,20 +495,32 @@ export async function createTradeAreas(
       const probability = get('probability').f32;
       const expected = get('expected').f32;
       const ratios = get('ratios').f32;
-      latest = {access2: a2, access3: a3, reachable: counts, tradeArea: modal, probability};
+      latest = {
+        access2: a2,
+        access3: a3,
+        reachable: counts,
+        tradeArea: modal,
+        probability,
+        forwardWeightsIncomplete: get('overflows').u32[0] !== 0
+      };
       let total = 0;
       let weighted2 = 0;
       let weighted3 = 0;
       let unreached = 0;
       let unreachedDemand = 0;
       let reachedDemand = 0;
+      let unknownDemand = 0;
+      let unknownCount = 0;
       const group = {highDemand: 0, high2: 0, high3: 0, lowDemand: 0, low2: 0, low3: 0};
       for (let row = 0; row < demandCount; row++) {
         const weight = demandValues[row];
         total += weight;
         weighted2 += weight * (a2[row] || 0);
         weighted3 += weight * (a3[row] || 0);
-        if (counts[row] === 0) {
+        if (counts[row] === 0xffffffff) {
+          unknownCount++;
+          unknownDemand += weight;
+        } else if (counts[row] === 0) {
           unreached++;
           unreachedDemand += weight;
         } else reachedDemand += weight;
@@ -589,10 +602,16 @@ export async function createTradeAreas(
         `${formatInteger(captured)} of ${formatInteger(reachedDemand)} (busiest site ${formatInteger(busiest)})`
       );
       const overflow = get('overflows').u32[0] || get('facilityOverflow').u32[0];
-      if (overflow) {
+      if (overflow || unknownCount > 0) {
         for (const name of ['meanAccess', 'unreached', 'conservation', 'equity', 'captured']) {
-          ctx.setReadout(name, 'n/a: incomplete weights');
+          ctx.setReadout(name, overflow ? 'n/a: incomplete weights' : 'n/a: unknown reachability');
         }
+      }
+      if (!overflow && unknownCount > 0) {
+        ctx.setReadout(
+          'unreached',
+          `${formatInteger(unreachedDemand)} known unreached, ${formatInteger(reachedDemand)} known reached, ${formatInteger(unknownDemand)} unknown demand`
+        );
       }
       ctx.setReadout(
         'overflow',
@@ -746,9 +765,11 @@ export async function createTradeAreas(
         `${ctx.options.demand}: ${formatInteger(measures[ctx.options.demand][row])}, poverty ${Number.isFinite(poverty[row]) ? poverty[row].toFixed(0) : 'n/a'}%`,
         `Access per 1,000: 2SFCA ${per1000(latest.access2[row])}, 3SFCA ${per1000(latest.access3[row])}`,
         `Facilities in reach: ${latest.reachable[row] === 0xffffffff ? 'n/a: incomplete weights' : latest.reachable[row]}`,
-        latest.tradeArea[row] === GPU_HUFF_NO_TRADE_AREA
-          ? 'No Huff trade area'
-          : `Huff: site ${latest.tradeArea[row]}, probability ${(100 * latest.probability[row]).toFixed(0)}%`
+        latest.forwardWeightsIncomplete || latest.reachable[row] === 0xffffffff
+          ? 'Huff: unavailable: incomplete weights'
+          : latest.tradeArea[row] === GPU_HUFF_NO_TRADE_AREA
+            ? 'No Huff trade area'
+            : `Huff: site ${latest.tradeArea[row]}, probability ${(100 * latest.probability[row]).toFixed(0)}%`
       ].join('\n');
     },
 

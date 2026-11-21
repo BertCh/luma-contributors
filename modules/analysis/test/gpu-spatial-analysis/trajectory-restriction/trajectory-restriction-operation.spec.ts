@@ -34,7 +34,7 @@ function createScenes(): [string, RestrictionScene][] {
     [0, 2]
   ];
   const emptyTrack = createRectangleScene();
-  emptyTrack.input.offsets = Uint32Array.of(0, 0, 3, 5);
+  emptyTrack.input.trackOffsets = Uint32Array.of(0, 0, 3, 5);
   return [
     ['closed rectangle, moving and stationary tracks', createRectangleScene()],
     ['polygon hole, collinear edge, stable per-track union', polygon],

@@ -15,6 +15,34 @@ import {AnalysisRig} from '../catchment-accessibility/rig';
 
 const layout = GPU_SPATIAL_ENTROPY_LAYOUT;
 
+it.each([
+  [16, 5.545177444479562],
+  [26, 6.516193076042964]
+])('NUM-14 measures independent uniform %s-category entropy', async (categoryCount, expected) => {
+  // Disjoint origin and destination rows avoid self slots; each ordered category pair occurs once.
+  const offsets = Array.from(
+    {length: categoryCount * 2 + 1},
+    (_, row) => Math.min(row, categoryCount) * categoryCount
+  );
+  const neighbors = Array.from(
+    {length: categoryCount ** 2},
+    (_, slot) => categoryCount + (slot % categoryCount)
+  );
+  const categories = Array.from({length: categoryCount * 2}, (_, row) => row % categoryCount);
+  const result = await runEntropy({offsets, neighbors}, categories, categoryCount);
+  expect(result.pairs).toEqual(new Array(categoryCount ** 2).fill(1));
+  const joint = result.words[layout.cooccurrence],
+    mutual = result.words[layout.mutualInformation];
+  expect(Number.isFinite(joint)).toBe(true);
+  expect(Number.isFinite(mutual)).toBe(true);
+  console.info(
+    `NUM-14 K=${categoryCount}: joint absolute error=${Math.abs(joint - expected)}, MI absolute error=${Math.abs(mutual)}`
+  );
+  // Accuracy budgets for the queued device measurement; these are not measured device claims.
+  expect(Math.abs(joint - expected)).toBeLessThan(2e-6);
+  expect(Math.abs(mutual)).toBeLessThan(2e-6);
+});
+
 async function runEntropy(
   csr: {offsets: number[]; neighbors: number[]; weights?: number[]},
   categories: number[],

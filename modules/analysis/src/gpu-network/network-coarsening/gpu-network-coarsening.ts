@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getNetworkReadbackWords,
+  getNetworkReadbackBytes,
+  type NetworkReadbackBytes
+} from '../network-statistics/network-packed-readback';
+
+import {getFixedPointSource, getFixedPointAddSource} from './network-coarsening-fixed-point';
+import {createCoarseningPublicationNodes} from './network-coarsening-publication';
+import {snapshotCoarseningConstructionProps} from './network-coarsening-construction';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -45,11 +54,6 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
 } from '../../analysis-core/contracts/network-topology';
-import {createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
-  DECODE_ORDERED_KEY_WGSL,
-  GET_ORDERED_KEY_WGSL
-} from '../../analysis-core/kernels/wgsl-common';
 import {
   getWorkgroupCounterKernelSource,
   WORKGROUP_COUNTER_WORKGROUP_SIZE
@@ -110,13 +114,11 @@ export type GPUNetworkCoarseningSummary = {
   superedgeCount: number;
 };
 
-/** Decodes the `summary` words read back from the view. */
-export function decodeGPUNetworkCoarseningSummary(
-  words: Uint32Array | ArrayLike<number>
+/** Checked numeric-word reader for the 8-word record. */
+export function decodeGPUNetworkCoarseningSummaryWords(
+  values: Uint32Array | readonly number[]
 ): GPUNetworkCoarseningSummary {
-  if (words.length < GPU_NETWORK_COARSENING_SUMMARY_LENGTH) {
-    throw new Error('decodeGPUNetworkCoarseningSummary needs eight words');
-  }
+  const words = getNetworkReadbackWords('decodeGPUNetworkCoarseningSummaryWords', values, 8);
   const word = GPU_NETWORK_COARSENING_SUMMARY_WORD;
   return {
     liveNodeCount: words[word.liveNodeCount],
@@ -128,6 +130,15 @@ export function decodeGPUNetworkCoarseningSummary(
     groupCount: words[word.groupCount],
     superedgeCount: words[word.superedgeCount]
   };
+}
+
+/** Little-endian byte reader, accepting `{bytes: await buffer.readAsync()}`. */
+export function decodeGPUNetworkCoarseningSummaryFromBytes(
+  values: NetworkReadbackBytes
+): GPUNetworkCoarseningSummary {
+  return decodeGPUNetworkCoarseningSummaryWords(
+    getNetworkReadbackBytes('decodeGPUNetworkCoarseningSummaryFromBytes', values, 8)
+  );
 }
 
 /**
@@ -164,6 +175,8 @@ export type GPUNetworkCoarseningProps = {
    * propagation, a component or a spatial cell. Dense labels `< groupCapacity` are the group IDs.
    */
   labels: GraphDataView<'uint32'>;
+  /** Optional solver completion word, nonzero when labels are final. Incumbent groups remain available. */
+  labelsComplete?: GraphDataView<'uint32'>;
   /** Optional per-node finite `float32` value column summed per group. */
   nodeValues?: GraphDataView<'float32'>;
   /**
@@ -214,6 +227,9 @@ export type GPUNetworkCoarseningOutput = {
   edgeWeights?: GraphDataView<'float32'>;
   /** Optional {@link GPU_NETWORK_COARSENING_SUMMARY_LENGTH}-word diagnostic view. */
   summary?: GraphDataView<'uint32'>;
+  /** Optional one-word partition provenance: 1 for complete labels, 0 for provisional labels.
+   * Without an input labelsComplete word, categorical labels are complete. This does not alter quotient counts. */
+  labelsComplete?: GraphDataView<'uint32'>;
 };
 
 /** Counts and segment scans use uint32; no total can exceed the number of CSR slots. */
@@ -242,60 +258,6 @@ const SCALE_WORD = {
 const STATISTICS_LENGTH = GPU_NETWORK_COARSENING_SUMMARY_LENGTH + 3;
 /** Biased float32 exponent of 1.0, the only term of an unweighted sum. */
 const UNIT_WEIGHT_EXPONENT_BITS = 127;
-
-/**
- * Shared WGSL for the 64-bit signed fixed-point accumulators. Quantizing, the unit and decoding
- * are those of the shared fixed-point accumulator (`FIXED_POINT_WGSL`: integer bit manipulation,
- * round to nearest with ties to even, correctly rounded decode). A sum is stored in two words
- * here instead of three, so the unit is 2^32 times the shared one: every term is below
- * 2^(63 - headroomBits) units and no sum of at most 2^headroomBits - 1 terms can overflow.
- */
-function getFixedPointSource(saturates: boolean): string {
-  // With a data-derived unit no term can leave the two stored words. With a fixed unit
-  // (`fixedPointScale`) a large term can: it saturates at the float32 nearest 4e18 units, with
-  // its sign, as this contributor's fixed scale always did, instead of wrapping into the sign
-  // bit or vanishing. An infinite term saturates too; NaN adds nothing.
-  const saturationUnits = BigInt(Math.fround(4.0e18));
-  const quantizeSource = saturates
-    ? `const SATURATION_LOW: u32 = ${saturationUnits & 0xffffffffn}u;
-const SATURATION_HIGH: u32 = ${saturationUnits >> 32n}u;
-fn quantize(value: f32, unitExponent: i32) -> vec2<u32> {
-  let wide = quantizeFixedPoint(abs(value), unitExponent);
-  var magnitude = wide.xy;
-  let isInfinite = (bitcast<u32>(value) & 0x7fffffffu) == 0x7f800000u;
-  if (isInfinite || wide.z != 0u || wide.y > SATURATION_HIGH ||
-      (wide.y == SATURATION_HIGH && wide.x > SATURATION_LOW)) {
-    magnitude = vec2<u32>(SATURATION_LOW, SATURATION_HIGH);
-  }
-  if (value < 0.0) {
-    let low = ~magnitude.x + 1u;
-    magnitude = vec2<u32>(low, ~magnitude.y + select(0u, 1u, low == 0u));
-  }
-  return magnitude;
-}`
-    : `fn quantize(value: f32, unitExponent: i32) -> vec2<u32> {
-  return quantizeFixedPoint(value, unitExponent).xy;
-}`;
-  return `${FIXED_POINT_WGSL}
-fn getSumUnitExponent(maximumExponentBits: u32, headroomBits: u32) -> i32 {
-  return getFixedPointUnitExponent(maximumExponentBits, headroomBits) + 32;
-}
-${quantizeSource}
-fn dequantize(low: u32, high: u32, unitExponent: i32) -> f32 {
-  let signWord = select(0u, 0xffffffffu, (high & 0x80000000u) != 0u);
-  return getFixedPointFloat(vec3<u32>(low, high, signWord), unitExponent);
-}
-${GET_ORDERED_KEY_WGSL}${DECODE_ORDERED_KEY_WGSL}`;
-}
-
-/** WGSL statements that add `vec2<u32>` `quantized` into the atomic array words `index`, `index + 1`. */
-function getFixedPointAddSource(array: string, index: string, quantized: string): string {
-  return `{
-    let addendOld = atomicAdd(&${array}[${index}], ${quantized}.x);
-    let addendCarry = select(0u, 1u, addendOld + ${quantized}.x < addendOld);
-    atomicAdd(&${array}[${index} + 1u], ${quantized}.y + addendCarry);
-  }`;
-}
 
 /**
  * Coarsens a CSR network by a node group label into a summary graph for zoomed-out compound
@@ -335,6 +297,8 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
  * kept prefix on overflow, the counts and the weights are all deterministic. A bounded hash table
  * was rejected because a full table drops keys depending on atomic race order.
  *
+ * Construction snapshots controls, topology descriptors and nested output/status selections before
+ * validation, retaining graph view identities and live per-frame buffer contents.
  * The contributor owns no GPU resources; every transient belongs to the graph. Every output word is
  * rewritten on every encoding.
  */
@@ -350,13 +314,35 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
   /** Maximum number of superedge rows, `edges.ids.length`. */
   readonly edgeCapacity: number;
 
+  /** Completion evidence beside the incumbent quotient; absent for ordinary categorical labels unless requested. */
+  readonly partitionProvenance: Readonly<{labelsComplete?: GraphDataView<'uint32'>}>;
+
   constructor(props: GPUNetworkCoarseningProps) {
+    const labelsComplete = props.labelsComplete;
+    const outputLabelsComplete = props.output.labelsComplete;
+    const snapshot = snapshotCoarseningConstructionProps(props);
+    props = Object.freeze({
+      ...snapshot,
+      labelsComplete,
+      output: Object.freeze({...snapshot.output, labelsComplete: outputLabelsComplete})
+    });
+    this.partitionProvenance = Object.freeze({
+      labelsComplete: outputLabelsComplete ?? labelsComplete
+    });
     this.id = props.id ?? 'network-coarsening';
     this.props = props;
     const {id} = this;
     const {output} = props;
     const topologyShape = validateGPUNetworkTopology(id, props.topology);
     validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
+    for (const [name, view] of [
+      ['labelsComplete', props.labelsComplete],
+      ['output.labelsComplete', output.labelsComplete]
+    ] as const) {
+      if (!view) continue;
+      validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+      validateCapacity(id, `${name}.length`, view.length, 1, 1);
+    }
     validateCapacity(
       id,
       'topology.neighbors.length',
@@ -515,6 +501,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       props.nodeMask,
       props.edgeMask,
       props.labels,
+      props.labelsComplete,
       props.nodeValues
     ];
   }
@@ -536,7 +523,8 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       output.edgeTargetGroups,
       output.edgeCounts,
       output.edgeWeights,
-      output.summary
+      output.summary,
+      output.labelsComplete
     ];
   }
 
@@ -1369,135 +1357,51 @@ ${getFixedPointSource(!usesDataUnit)}`,
       );
     }
 
-    // Per-group finish: centroids, bounds, value sums and intra-group outputs.
-    const finishBindings: WGSLKernelBinding[] = [
-      {
-        name: 'groupCounts',
-        view: props.output.groupNodeCount,
-        type: 'u32',
-        access: 'read'
-      },
-      {name: 'groupAcc', view: groupAcc, type: 'u32', access: 'read'}
-    ];
-    const finishStatements: string[] = [];
-    if (props.output.groupCentroid) {
-      finishBindings.push({
-        name: 'centroidOut',
-        view: props.output.groupCentroid,
-        type: 'f32',
-        access: 'read_write'
-      });
-      finishStatements.push(`let positionUnitExponent = ${getUnitExponentSource(SCALE_WORD.positions, nodeCount, 'plain')};
-  centroidOut[centroidOutOffset + 2u * index] = select(0.0, dequantize(groupAcc[groupAccOffset + base], groupAcc[groupAccOffset + base + 1u], positionUnitExponent) / f32(count), count > 0u);
-  centroidOut[centroidOutOffset + 2u * index + 1u] = select(0.0, dequantize(groupAcc[groupAccOffset + base + 2u], groupAcc[groupAccOffset + base + 3u], positionUnitExponent) / f32(count), count > 0u);`);
-    }
-    if (props.output.groupBounds) {
-      finishBindings.push({
-        name: 'boundsOut',
-        view: props.output.groupBounds,
-        type: 'f32',
-        access: 'read_write'
-      });
-      finishStatements.push(`boundsOut[boundsOutOffset + 4u * index] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 6u]), count > 0u);
-  boundsOut[boundsOutOffset + 4u * index + 1u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 7u]), count > 0u);
-  boundsOut[boundsOutOffset + 4u * index + 2u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 8u]), count > 0u);
-  boundsOut[boundsOutOffset + 4u * index + 3u] = select(0.0, decodeOrderedKey(groupAcc[groupAccOffset + base + 9u]), count > 0u);`);
-    }
-    if (props.output.groupValueSum) {
-      finishBindings.push({
-        name: 'valueOut',
-        view: props.output.groupValueSum,
-        type: 'f32',
-        access: 'read_write'
-      });
-      finishStatements.push(
-        `valueOut[valueOutOffset + index] = dequantize(groupAcc[groupAccOffset + base + 4u], groupAcc[groupAccOffset + base + 5u], ${getUnitExponentSource(SCALE_WORD.values, nodeCount, 'plain')});`
-      );
-    }
-    if (usesDataUnit && (props.output.groupCentroid || props.output.groupValueSum)) {
-      finishBindings.push({name: 'stats', view: stats, type: 'u32', access: 'read'});
-    }
-    // The intra-group outputs are their own kernel: with the scale word of the weights one
-    // kernel for every group output would bind more storage buffers than a device allows.
-    if (intraAcc) {
-      const intraBindings: WGSLKernelBinding[] = [
-        {name: 'intraAcc', view: intraAcc, type: 'u32', access: 'read'}
-      ];
-      const intraStatements: string[] = [];
-      if (props.output.groupIntraEdgeCount) {
-        intraBindings.push({
-          name: 'intraCountOut',
-          view: props.output.groupIntraEdgeCount,
-          type: 'u32',
-          access: 'read_write'
-        });
-        intraStatements.push(
-          'intraCountOut[intraCountOutOffset + index] = intraAcc[intraAccOffset + 3u * index];'
-        );
-      }
-      if (props.output.groupIntraWeight) {
-        intraBindings.push({
-          name: 'intraWeightOut',
-          view: props.output.groupIntraWeight,
-          type: 'f32',
-          access: 'read_write'
-        });
-        if (needsWeightScale) {
-          intraBindings.push({name: 'stats', view: stats, type: 'u32', access: 'read'});
-        }
-        intraStatements.push(
-          `intraWeightOut[intraWeightOutOffset + index] = dequantize(intraAcc[intraAccOffset + 3u * index + 1u], intraAcc[intraAccOffset + 3u * index + 2u], ${getWeightUnitExponentSource('plain')});`
-        );
-      }
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-intra-groups`,
-          operation: OPERATION,
-          variant: 'intra-groups',
-          bindings: intraBindings,
-          invocationCount: groupCapacity,
-          declarations: getFixedPointSource(!usesDataUnit),
-          body: intraStatements.join('\n  ')
-        })
-      );
-    }
-    if (finishStatements.length > 0) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-groups`,
-          operation: OPERATION,
-          variant: 'groups',
-          bindings: finishBindings,
-          invocationCount: groupCapacity,
-          declarations: getFixedPointSource(!usesDataUnit),
-          body: `let base = index * ${GROUP_ACC_STRIDE}u;
-  let count = groupCounts[groupCountsOffset + index];
-  ${finishStatements.join('\n  ')}`
-        })
-      );
-    }
-
     nodes.push(
-      createPublishNode<Parameters>(graph, {
-        id: `${id}-publish`,
-        operation: OPERATION,
-        requiredCount: segmentTotal,
-        output: props.output.edges,
-        candidateOverflowSources: props.output.edges.status.candidateOverflow ? [overflowFlag] : []
+      ...createCoarseningPublicationNodes(graph, {
+        id,
+        output: props.output,
+        groupCapacity,
+        groupAccumulatorStride: GROUP_ACC_STRIDE,
+        summaryLength: GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
+        groupAcc,
+        intraAcc,
+        stats,
+        segmentTotal,
+        overflowFlag,
+        usesDataUnit,
+        needsWeightScale,
+        positionUnitExponent: getUnitExponentSource(SCALE_WORD.positions, nodeCount, 'plain'),
+        valueUnitExponent: getUnitExponentSource(SCALE_WORD.values, nodeCount, 'plain'),
+        weightUnitExponent: getWeightUnitExponentSource('plain')
       })
     );
-    if (props.output.summary) {
+    if (props.output.labelsComplete) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-summary`,
+          id: `${id}-partition-provenance`,
           operation: OPERATION,
-          variant: 'summary',
+          variant: 'partition-provenance',
           bindings: [
-            {name: 'stats', view: stats, type: 'u32', access: 'read'},
-            {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'}
+            ...(props.labelsComplete
+              ? [
+                  {
+                    name: 'completeIn',
+                    view: props.labelsComplete,
+                    type: 'u32',
+                    access: 'read'
+                  } as WGSLKernelBinding
+                ]
+              : []),
+            {
+              name: 'completeOut',
+              view: props.output.labelsComplete,
+              type: 'u32',
+              access: 'read_write'
+            }
           ],
-          invocationCount: GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
-          body: 'summary[summaryOffset + index] = stats[statsOffset + index];'
+          invocationCount: 1,
+          body: `completeOut[completeOutOffset] = ${props.labelsComplete ? 'select(0u, 1u, completeIn[completeInOffset] != 0u)' : '1u'};`
         })
       );
     }

@@ -49,7 +49,9 @@ it('bounds work per lane while activating wide two-row plateaus exactly', async 
     const tree = output('uint32', count * 4);
     const levels = output('float32', count * 2);
     const ownership = output('uint32', count);
-    const status = output('uint32', 3);
+    const storedCount = output('uint32', 1);
+    const requiredCount = output('uint32', 1);
+    const overflow = output('uint32', 1);
     const maximumWork = output('uint32', 1);
     const elevation = input('float32', new Float32Array(count));
     const outlets = input('uint32', new Uint32Array(count));
@@ -75,7 +77,11 @@ it('bounds work per lane while activating wide two-row plateaus exactly', async 
           nodes: createTransientView(graph, 'unused-nodes', 'uint32', 4),
           levels: createTransientView(graph, 'unused-levels', 'float32', 2),
           cellNodes: ownership.view,
-          status: status.view,
+          status: {
+            count: storedCount.view,
+            requiredCount: requiredCount.view,
+            overflow: overflow.view
+          },
           curves: createTransientView(graph, 'unused-curves', 'float32', 2)
         }
       }
@@ -87,7 +93,9 @@ it('bounds work per lane while activating wide two-row plateaus exactly', async 
       for (let repetition = 0; repetition < 2; repetition++) {
         submitGraph(device, compiled, undefined);
         // Hand-derived oracle: every cell joins the component born at cell zero, with no merge.
-        expect(Array.from(await readUint32(status.buffer, 3))).toEqual([1, 1, 0]);
+        expect(Array.from(await readUint32(storedCount.buffer, 1))).toEqual([1]);
+        expect(Array.from(await readUint32(requiredCount.buffer, 1))).toEqual([1]);
+        expect(Array.from(await readUint32(overflow.buffer, 1))).toEqual([0]);
         expect(Array.from(await readUint32(tree.buffer, 4))).toEqual([
           0xffffffff, 0, 0xffffffff, 1
         ]);

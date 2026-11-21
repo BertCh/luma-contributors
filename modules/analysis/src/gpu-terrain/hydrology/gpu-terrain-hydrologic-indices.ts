@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from './terrain-output';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   type GPUCommandGraph,
@@ -21,6 +23,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -89,16 +92,16 @@ export function getGPUTerrainHydrologicIndicesParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUTerrainHydrologicIndices}; at least one is required. */
-export type GPUTerrainHydrologicIndicesOutput = {
-  /** `tan(beta)` after the `minimumSlope` clamp. Presence is compile-time. */
-  slope?: GraphDataView<'float32'>;
+export type GPUTerrainHydrologicIndicesOutput = TerrainAtLeastOne<{
+  /** Tangent of the steepest D8 descent (rise over run, dimensionless), clamped to `minimumSlope`. Presence is compile-time. */
+  descentTangent?: GraphDataView<'float32'>;
   /** Specific catchment area `a = A / b` in meters. Presence is compile-time. */
   specificCatchmentArea?: GraphDataView<'float32'>;
   /** Topographic wetness index `ln(a / tan(beta))`. Presence is compile-time. */
   wetnessIndex?: GraphDataView<'float32'>;
   /** Stream power index `a * tan(beta)` in meters. Presence is compile-time. */
   streamPowerIndex?: GraphDataView<'float32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainHydrologicIndices}.
@@ -156,10 +159,33 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUTerrainHydrologicIndicesProps;
 
-  constructor(props: GPUTerrainHydrologicIndicesProps) {
-    this.id = props.id ?? 'terrain-hydrologic-indices';
+  constructor(inputProps: GPUTerrainHydrologicIndicesProps) {
+    const captured = snapshotConstructionFields(inputProps, [
+      'id',
+      'grid',
+      'elevation',
+      'accumulation',
+      'parameters',
+      'cellSizeMode',
+      'output'
+    ]);
+    const id = captured.id ?? 'terrain-hydrologic-indices';
+    validateRequirement(
+      id,
+      !('slope' in captured.output),
+      'output.slope was removed; use output.descentTangent'
+    );
+    const props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, [
+        'descentTangent',
+        'specificCatchmentArea',
+        'wetnessIndex',
+        'streamPowerIndex'
+      ])
+    });
+    this.id = id;
     this.props = props;
-    const {id} = this;
     const cellCount = validateRasterGrid(id, props.grid);
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_HYDROLOGIC_INDICES_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
@@ -222,7 +248,7 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
     const write = (value: (name: string) => string) =>
       outputs.map(([name]) => `${name}[${name}Offset + index] = ${value(name)};`).join('\n  ');
     const values: Record<string, string> = {
-      slope: 'tangent',
+      descentTangent: 'tangent',
       specificCatchmentArea: 'catchment',
       wetnessIndex: 'wetness',
       streamPowerIndex: 'catchment * tangent'
@@ -273,7 +299,7 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
   private getOutputs(): [string, GraphDataView<'float32'>][] {
     const {output} = this.props;
     const outputs: [string, GraphDataView<'float32'> | undefined][] = [
-      ['slope', output.slope],
+      ['descentTangent', output.descentTangent],
       ['specificCatchmentArea', output.specificCatchmentArea],
       ['wetnessIndex', output.wetnessIndex],
       ['streamPowerIndex', output.streamPowerIndex]

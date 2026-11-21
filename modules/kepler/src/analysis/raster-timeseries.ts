@@ -4,6 +4,7 @@
 
 import type {Device} from '@luma.gl/core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {
   GPURasterRollingMean,
   GPURasterWhittakerSmoother,
@@ -25,6 +26,8 @@ import {
   GPURasterEOFProjection,
   GPURasterClimateRunAccumulator,
   getGPURasterStreamingAccumulatorParameterValues,
+  decodeGPURasterStreamingAccumulatorStatus,
+  resolveGPURasterStandardizedIndexZeroAtom,
   getGPURasterWhittakerSmootherParameterValues,
   getGPURasterHANTSParameterValues,
   getGPURasterHarmonicRegressionParameterValues,
@@ -76,6 +79,12 @@ export type RasterTimeSeriesColumn = {
   scope: 'cell' | 'global';
 };
 export type RasterTimeSeriesResult = {
+  /** Count-loss certificates in cell-major slot order (cell * slotCount + slot).
+   * This reports observation-count saturation only, not moment quantization or numerical loss.
+   * Raw words are also available in columns.streamingStatus; affected published statistics are NaN.
+   * Equal codes share frozen decoded records; malformed certificate lengths reject the result.
+   */
+  streamingCountStatus?: readonly {complete: boolean; overflow: boolean}[];
   columns: Record<string, RasterTimeSeriesColumn>;
   contributors: readonly string[];
   readbackBytes: number;
@@ -124,7 +133,11 @@ function getCalibrationMagnitude(values: Float32Array, location = 0): number {
   return magnitude || 1;
 }
 
-/** Owns each finite graph execution through readback; all GPU buffers are released, also on failure. */
+/** Owns each finite graph execution through readback; all GPU buffers are released, also on failure.
+ * Rolling mean accepts windowLength in [1,128] slices and optional activeSliceCount in [0,sliceCount].
+ * Short chunks keep the allocated cell-major sliceCount pitch; inactive outputs are NaN.
+ * Calibration/anomaly operations default to min(12,sliceCount) baseline slices; explicit counts are validated.
+ */
 export async function runRasterTimeSeries(
   device: Device,
   stack: RasterTimeStack,
@@ -132,8 +145,15 @@ export async function runRasterTimeSeries(
   settings: RasterTimeSeriesSettings = {}
 ): Promise<RasterTimeSeriesResult> {
   validateRasterTimeStack(stack);
-  const binding = getRasterTimeSeriesBinding(operation);
-  const resolved: RasterTimeSeriesSettings = {...binding.defaults, ...settings};
+  const binding = getRasterTimeSeriesBinding(operation, settings);
+  const resolved: RasterTimeSeriesSettings = {
+    ...binding.defaults,
+    ...settings,
+    ...('calibrationSliceCount' in binding.defaults &&
+    settings['calibrationSliceCount'] === undefined
+      ? {calibrationSliceCount: Math.min(12, stack.sliceCount)}
+      : {})
+  };
   const number = (
     name: string,
     fallback: number,
@@ -167,9 +187,16 @@ export async function runRasterTimeSeries(
       throw new Error('Climate runs requires daily acquisitions');
   }
   const scalarCount = cellCount * sliceCount;
+  const rollingActiveSliceCount =
+    operation === 'rolling-mean'
+      ? count('activeSliceCount', sliceCount, 0, sliceCount)
+      : sliceCount;
   let maximumMagnitude = 0;
-  for (const value of stack.values)
+  for (let index = 0; index < stack.values.length; index++) {
+    if (operation === 'rolling-mean' && index % sliceCount >= rollingActiveSliceCount) continue;
+    const value = stack.values[index];
     if (Number.isFinite(value)) maximumMagnitude = Math.max(maximumMagnitude, Math.abs(value));
+  }
   maximumMagnitude ||= 1;
   if (maximumMagnitude > 1e15)
     throw new Error('Raster time stack magnitude exceeds 1e15; rescale the values');
@@ -183,6 +210,8 @@ export async function runRasterTimeSeries(
       integer: boolean;
     }[] = [];
     let readbackBytes = 0;
+    let streamingSlotCount = 0;
+    let streamingSlots: Uint32Array | undefined;
     let allocatedOutputBytes = 0;
     const allocateOutput = <Format extends GPUVectorFormat>(
       name: string,
@@ -243,7 +272,12 @@ export async function runRasterTimeSeries(
     const harmonicCount = () => count('harmonicCount', 1, 1, 3);
     const streamParameters = () =>
       getGPURasterStreamingAccumulatorParameterValues(
-        {reset: true, maximumValueMagnitude: maximumMagnitude, maximumStreamSliceCount: sliceCount},
+        {
+          reset: true,
+          activeSliceCount: rollingActiveSliceCount,
+          maximumValueMagnitude: maximumMagnitude,
+          maximumStreamSliceCount: sliceCount
+        },
         sliceCount
       );
     const smooth = () => {
@@ -266,7 +300,7 @@ export async function runRasterTimeSeries(
     };
     switch (operation) {
       case 'rolling-mean': {
-        const windowLength = count('windowLength', 3, 2, 128);
+        const windowLength = count('windowLength', 3, 1, 128);
         session.graph.add(
           new GPURasterRollingMean({
             cellCount,
@@ -509,7 +543,10 @@ export async function runRasterTimeSeries(
             calibrationCount
           );
           const accumulatorParameters = parameters(packed);
+          streamingSlotCount = slotCount;
+          streamingSlots = slots;
           const state = {
+            status: integers('streamingStatus', slotCount),
             counts: integers('counts', slotCount),
             sums: scratchIntegers('sums', cellCount * slotCount * 3),
             moments: scratchIntegers('moments', cellCount * slotCount * 3)
@@ -546,6 +583,13 @@ export async function runRasterTimeSeries(
           const distribution = resolved['distribution'] ?? 'gamma';
           if (distribution !== 'gamma' && distribution !== 'fisk')
             throw new Error('distribution must be gamma or fisk');
+          const zeroAtom = resolveGPURasterStandardizedIndexZeroAtom(
+            `raster-timeseries-${operation}`,
+            {
+              zeroAtom:
+                resolved.zeroAtom === undefined ? distribution === 'gamma' : resolved.zeroAtom
+            }
+          );
           const fit = floats('fit', slotCount * 3);
           const location = number('location', 0);
           session.graph.add(
@@ -554,7 +598,7 @@ export async function runRasterTimeSeries(
               chunkSliceCount: calibrationCount,
               slotCount,
               distribution,
-              zeroInflated: distribution === 'gamma',
+              zeroAtom,
               values: baselineValues,
               slotIndices: baselineSlots,
               parameters: parameters(
@@ -582,7 +626,7 @@ export async function runRasterTimeSeries(
                 chunkSliceCount: sliceCount,
                 slotCount,
                 distribution,
-                zeroInflated: distribution === 'gamma',
+                zeroAtom,
                 values,
                 slotIndices,
                 fit,
@@ -605,6 +649,7 @@ export async function runRasterTimeSeries(
           new GPURasterTemporalResample({
             ...common,
             gridCount,
+            gridEnd: years[sliceCount - 1],
             dateAxis,
             parameters: parameters(
               getGPURasterTemporalResampleParameterValues({
@@ -772,6 +817,50 @@ export async function runRasterTimeSeries(
       readbackBytes += values.byteLength;
       columns[entry.name] = {values, components: entry.components, scope: entry.scope};
     }
-    return {columns, contributors: binding.contributors, readbackBytes, settings: resolved};
+    const streamingWords = columns['streamingStatus']?.values;
+    let streamingCountStatus: RasterTimeSeriesResult['streamingCountStatus'];
+    if (streamingSlotCount > 0) {
+      const expectedCount = cellCount * streamingSlotCount;
+      validateRequirement(
+        `raster-timeseries-${operation}`,
+        streamingWords instanceof Uint32Array && streamingWords.length === expectedCount,
+        `streamingStatus must contain exactly ${expectedCount} uint32 words; received ${streamingWords?.length ?? 0}`
+      );
+      // Decode each valid code once per result. Frozen records can safely be shared by all slots.
+      const decodedStatuses = [
+        Object.freeze(decodeGPURasterStreamingAccumulatorStatus(Uint32Array.of(0))),
+        Object.freeze(decodeGPURasterStreamingAccumulatorStatus(Uint32Array.of(1)))
+      ] as const;
+      const statuses = new Array<{complete: boolean; overflow: boolean}>(expectedCount);
+      // Forward the optional certificate to supporting anomaly producers. Keep host suppression
+      // authoritative as well, using the submitted slot table rather than caller-owned dates.
+      for (let entry = 0; entry < expectedCount; entry++) {
+        const word = streamingWords[entry];
+        const status =
+          decodedStatuses[word] ??
+          decodeGPURasterStreamingAccumulatorStatus(streamingWords.subarray(entry, entry + 1));
+        statuses[entry] = status;
+        if (status.complete) continue;
+        for (const name of ['mean', 'standardDeviation']) {
+          if (columns[name]) columns[name].values[entry] = NaN;
+        }
+        const anomaly = columns['anomaly'];
+        if (anomaly) {
+          const cell = Math.floor(entry / streamingSlotCount);
+          const slot = entry % streamingSlotCount;
+          for (let slice = 0; slice < sliceCount; slice++) {
+            if (streamingSlots![slice] === slot) anomaly.values[cell * sliceCount + slice] = NaN;
+          }
+        }
+      }
+      streamingCountStatus = statuses;
+    }
+    return {
+      columns,
+      contributors: binding.contributors,
+      readbackBytes,
+      settings: resolved,
+      ...(streamingCountStatus ? {streamingCountStatus} : {})
+    };
   });
 }

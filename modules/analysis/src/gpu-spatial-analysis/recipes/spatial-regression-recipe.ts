@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateRequirement,
+  validateGraphViewsBelongToGraph
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
+import {
+  createWeightsLossNodes,
+  getWeightsLossSources,
+  validateWeightsLossSources
+} from '../spatial-weights/spatial-weights-loss';
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
 
 import type {
@@ -10,7 +22,11 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPUInferenceMetadata, GPUSpatialContext} from '../../analysis-core/contracts/index';
+import type {
+  GPUInferenceMetadata,
+  GPUSpatialContext,
+  GPURecipeStageStatusPort
+} from '../../analysis-core/contracts/index';
 import {GPUParameterBuffer} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -28,12 +44,16 @@ import {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
+  GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT,
+  GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TESTS_LENGTH,
   GPUGeographicallyWeightedRegression,
   GPUOrdinaryLeastSquares,
+  SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
   GPUSpatialRegressionDiagnostics
 } from '../spatial-regression/index';
+import {resolveOrdinaryLeastSquaresPredictorCount} from '../spatial-regression/ordinary-least-squares-parameters';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
 import {
   assertRecipe,
@@ -273,8 +293,10 @@ export type GPUSpatialRegressionRecipeProps = GPURecipeOverrides<
    */
   restandardizeRows?: boolean;
 
-  /** Number of predictor columns. At most 15 for the OLS and diagnostics, 7 with `localFits`. */
-  predictorCount: number;
+  /** Number of predictor columns, inferred from predictors.length / response.length when omitted.
+   * At most 15 for OLS and diagnostics, 11 with `localFits`. Zero-row layouts require an explicit count.
+   */
+  predictorCount?: number;
   /**
    * Square weights of the diagnostics and the residual local Moran. Any sparsity pattern is
    * accepted, including asymmetric ones such as plain k-nearest-neighbor weights (the diagnostics
@@ -312,11 +334,19 @@ export type GPUSpatialRegressionRecipeOutputs = Pick<
 >;
 
 /** Spatial-regression outputs and top-level convenience fields; no intermediate ports. */
-export type GPUSpatialRegressionRecipeResult = GPURecipeResult<
-  GPUSpatialRegressionRecipeOutputs,
-  Record<never, never>
-> &
-  GPUSpatialRegressionRecipeViews;
+export type GPUSpatialRegressionRecipeResult = Omit<
+  GPURecipeResult<GPUSpatialRegressionRecipeOutputs, Record<never, never>>,
+  'status'
+> & {
+  status: {
+    stages: readonly (GPURecipeStageStatusPort & {
+      /** Per-observation GWR codes, present only for the geographically-weighted-regression stage.
+       * Uses the contributor's localStatus codes; this is not a one-row stage code or count.
+       */
+      rowCodes?: GraphDataView<'uint32'>;
+    })[];
+  };
+} & GPUSpatialRegressionRecipeViews;
 
 type GPUSpatialRegressionRecipeViews = {
   rowCount: number;
@@ -380,9 +410,12 @@ type GPUSpatialRegressionRecipeViews = {
  * excluded row count. The recipe stops at the decision and does not estimate the lag or error
  * model; follow the decision with `GPUSpatialTwoStageLeastSquares` or `GPUSpatialErrorGM`.
  *
- * Status: stages `ordinary-least-squares` and `spatial-diagnostics` publish the contributor's
- * `code` word under `invalidCount`. It is 0 on success and otherwise the contributor's failure
- * code, not a number of rows: test it against 0, do not sum it.
+ * Stages `ordinary-least-squares` and `spatial-diagnostics` expose one solver word as `code`
+ * (0 on success) and one excluded-row count as `status.invalidCount`. OLS subtracts the
+ * summary's included-row count from the input row count. Diagnostics uses its summary's
+ * excluded-row count, which also accounts for unusable OLS residuals. Both counts are
+ * available after failed fits. Optional `geographically-weighted-regression` publishes
+ * `rowCodes`, one GWR `localStatus` code per observation.
  */
 export function addSpatialRegressionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -395,6 +428,12 @@ function declareSpatialRegressionRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSpatialRegressionRecipeProps
 ): GPUSpatialRegressionRecipeResult {
+  const destinations = resolveRecipeDestinations(props.id ?? 'spatial-regression', props);
+  validateRequirement(
+    props.id ?? 'spatial-regression',
+    destinations?.localFits === undefined || Boolean(props.localFits),
+    'output.localFits requires localFits; received a destination for a disabled stage'
+  );
   const captured = snapshotConstructionFields(props, [
     'id',
     'weights',
@@ -407,8 +446,7 @@ function declareSpatialRegressionRecipe<Parameters>(
     'restandardizeRows',
     'olsParameters',
     'tileRowCount',
-    'localFits',
-    'outputs'
+    'localFits'
   ]);
   const weights = snapshotConstructionFields(captured.weights, [
     'offsets',
@@ -419,7 +457,7 @@ function declareSpatialRegressionRecipe<Parameters>(
     'information',
     'status'
   ]);
-  const output = snapshotConstructionFields(captured.outputs ?? {}, [
+  const output = snapshotConstructionFields(destinations ?? {}, [
     'ols',
     'diagnostics',
     'specification',
@@ -451,6 +489,7 @@ function declareSpatialRegressionRecipe<Parameters>(
               'requiredCount',
               'overflow',
               'candidateOverflow',
+              'complete',
               'invalidCount',
               'uncertainCount',
               'iterationCount',
@@ -461,7 +500,7 @@ function declareSpatialRegressionRecipe<Parameters>(
           }
         : {})
     },
-    outputs: {
+    output: {
       ols: {
         ...olsPorts,
         ...(olsPorts.status ? {status: snapshotConstructionFields(olsPorts.status, ['code'])} : {})
@@ -513,17 +552,23 @@ function declareSpatialRegressionRecipe<Parameters>(
   };
   const id = props.id ?? 'spatial-regression';
   const writes: Record<string, GraphDataView | undefined> = {};
-  for (const [stage, ports] of Object.entries(props.outputs ?? {}))
+  for (const [stage, ports] of Object.entries(props.output ?? {}))
     for (const [name, view] of Object.entries(ports)) {
       if (!view) continue;
       if (name === 'status') {
         for (const [statusName, statusView] of Object.entries(view))
-          writes[`${stage}.status.${statusName}`] = statusView as GraphDataView;
+          writes[`${stage}.status.${statusName}`] =
+            statusName === 'code'
+              ? getStatusRows(graph, statusView as GraphDataView<'uint32'>, 1)
+              : (statusView as GraphDataView);
       } else writes[`${stage}.${name}`] = view as GraphDataView;
     }
   const lossInputs = {
+    'weights.status.count': props.weights.status?.count,
+    'weights.status.requiredCount': props.weights.status?.requiredCount,
     'weights.status.overflow': props.weights.status?.overflow,
-    'weights.status.candidateOverflow': props.weights.status?.candidateOverflow
+    'weights.status.candidateOverflow': props.weights.status?.candidateOverflow,
+    'weights.status.complete': props.weights.status?.complete
   };
   for (const [inputName, input] of Object.entries(lossInputs))
     for (const [outputName, outputView] of Object.entries(writes))
@@ -534,13 +579,46 @@ function declareSpatialRegressionRecipe<Parameters>(
           {separateDispatches: true}
         );
   const builder = new RecipeBuilder(graph);
-  const outputOverrides = props.outputs ?? {};
+  let spatialWeights = props.weights;
+  if (props.weights.status?.complete) {
+    const sources = getWeightsLossSources([props.weights], id, true);
+    validateGraphViewsBelongToGraph(
+      id,
+      graph,
+      validateWeightsLossSources(id, [props.weights], true)
+    );
+    const loss = createTransientView(graph, `${id}-weights-input-loss`, 'uint32', 1);
+    builder.addGlue(
+      'weights-input-completeness',
+      createWeightsLossNodes(
+        graph,
+        `${id}-weights-input`,
+        [...sources.overflow, ...sources.candidateOverflow],
+        loss,
+        false,
+        sources.complete
+      )
+    );
+    // Convert positive certificates into the shared negative-loss vocabulary before consumers
+    // whose snapshots may not yet preserve the positive word. Keep count evidence independent.
+    spatialWeights = {
+      ...props.weights,
+      status: {...props.weights.status, complete: undefined, overflow: loss}
+    };
+  }
+  const outputOverrides = props.output ?? {};
   const rowCount = props.response.length;
-  const {predictorCount} = props;
-  assertRecipe(
-    'addSpatialRegressionRecipe',
+  const predictorCount = resolveOrdinaryLeastSquaresPredictorCount(
+    id,
+    props.predictors.length,
+    rowCount,
+    props.predictorCount,
+    SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
+  );
+  validateRequirement(
+    id,
     props.predictors.length === rowCount * predictorCount,
-    'predictors must hold rowCount * predictorCount values'
+    `predictors.length must equal response.length * predictorCount (${rowCount * predictorCount}); received ${props.predictors.length}`
   );
   assertRecipe(
     'addSpatialRegressionRecipe',
@@ -625,7 +703,7 @@ function declareSpatialRegressionRecipe<Parameters>(
   builder.add(
     new GPUSpatialRegressionDiagnostics({
       id: `${id}-diagnostics`,
-      weights: props.weights,
+      weights: spatialWeights,
       predictors: props.predictors,
       response: props.response,
       residuals: ols.residuals,
@@ -634,6 +712,40 @@ function declareSpatialRegressionRecipe<Parameters>(
       predictorCount,
       tileRowCount: props.tileRowCount,
       output: diagnostics
+    })
+  );
+
+  const olsInvalidCount = createTransientView(graph, `${id}-ols-excluded-count`, 'uint32', 1);
+  const diagnosticsInvalidCount = createTransientView(
+    graph,
+    `${id}-diagnostics-excluded-count`,
+    'uint32',
+    1
+  );
+  builder.addGlue(
+    'excluded-row-counts',
+    createWGSLKernelNode(graph, {
+      id: `${id}-excluded-row-counts`,
+      operation: 'addSpatialRegressionRecipe',
+      invocationCount: 2,
+      bindings: [
+        {name: 'olsSummary', view: ols.summary, type: 'f32', access: 'read'},
+        {name: 'diagnosticsSummary', view: diagnostics.summary, type: 'f32', access: 'read'},
+        {name: 'olsInvalidCount', view: olsInvalidCount, type: 'u32', access: 'read_write'},
+        {
+          name: 'diagnosticsInvalidCount',
+          view: diagnosticsInvalidCount,
+          type: 'u32',
+          access: 'read_write'
+        }
+      ],
+      body: `if (index == 0u) {
+  olsInvalidCount[olsInvalidCountOffset] =
+    ${rowCount}u - u32(olsSummary[olsSummaryOffset + ${GPU_ORDINARY_LEAST_SQUARES_SUMMARY_ROW_COUNT}u]);
+} else {
+  diagnosticsInvalidCount[diagnosticsInvalidCountOffset] =
+    u32(diagnosticsSummary[diagnosticsSummaryOffset + ${GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_EXCLUDED_ROW_COUNT}u]);
+}`
     })
   );
 
@@ -672,7 +784,7 @@ function declareSpatialRegressionRecipe<Parameters>(
   const localMoran = builder.add(
     new GPULocalMoran({
       id: `${id}-residual-moran`,
-      weights: props.weights,
+      weights: spatialWeights,
       values: ols.residuals,
       mask: props.mask,
       parameters,
@@ -703,8 +815,16 @@ function declareSpatialRegressionRecipe<Parameters>(
     intermediates: {},
     status: {
       stages: [
-        {stage: 'ordinary-least-squares', status: {invalidCount: ols.status.code}},
-        {stage: 'spatial-diagnostics', status: {invalidCount: diagnostics.status.code}}
+        {
+          stage: 'ordinary-least-squares',
+          status: {invalidCount: olsInvalidCount},
+          code: getStatusRows(graph, ols.status.code, 1)
+        },
+        {
+          stage: 'spatial-diagnostics',
+          status: {invalidCount: diagnosticsInvalidCount},
+          code: getStatusRows(graph, diagnostics.status.code, 1)
+        }
       ]
     }
   };
@@ -767,6 +887,31 @@ function declareSpatialRegressionRecipe<Parameters>(
     );
     result.localFits = outputs;
     result.outputs['localFits'] = outputs;
+    result.status.stages = [
+      ...result.status.stages,
+      {
+        stage: 'geographically-weighted-regression',
+        status: {},
+        rowCodes: getStatusRows(graph, outputs.localStatus, rowCount)
+      }
+    ];
   }
   return result;
+}
+
+/** Publish only written status rows while retaining the caller's original output override. */
+function getStatusRows<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  view: GraphDataView<'uint32'>,
+  length: number
+): GraphDataView<'uint32'> {
+  return view.length === length
+    ? view
+    : graph.createDataView(view.buffer, {
+        format: view.format,
+        length,
+        byteOffset: view.byteOffset,
+        byteStride: view.byteStride,
+        rowByteLength: view.rowByteLength
+      });
 }

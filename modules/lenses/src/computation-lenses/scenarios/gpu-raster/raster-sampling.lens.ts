@@ -63,7 +63,7 @@ export async function run(device: Device): Promise<LensScenarioResult> {
         alternatives: ['nearest', 'bilinear', 'bicubic'],
         sweepable: true
       },
-      {stage: 'operator', name: 'noDataPolicy', value: 'strict', sweepable: false},
+      {stage: 'operator', name: 'noDataPolicy', value: 'propagate', sweepable: false},
       {stage: 'support', name: 'localOrigin', value: 'south-west corner', sweepable: false}
     ],
     build: async session => {

@@ -5,7 +5,8 @@
 import {
   createTransientView,
   type GPUCommandGraph,
-  type GPUCommandNode
+  type GPUCommandNode,
+  type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -43,6 +44,45 @@ const FLOAT32_RELATIVE_RESOLUTION = 2 ** -23;
 /** WGSL literal of the square root of the largest float32, `sqrt(3.4028235e38)`. */
 const FLOAT32_MAXIMUM_SQUARE_ROOT_WGSL = '1.8446743e19';
 
+/** Keep ordinary fits on the original float32 summation order. */
+const MAXIMUM_SERIAL_PREPARE_BIN_COUNT = 1024;
+const PREPARE_WORKGROUP_SIZE = 64;
+const PREPARE_BIN_TILE_SIZE = 1024;
+const PREPARE_SUMMARY_WORD_COUNT = 5;
+const PREPARE_SUMMARY_WGSL = /* wgsl */ `
+struct BinSummary {
+  minimumLag: f32,
+  maximumLag: f32,
+  largestValue: f32,
+  baseWeight: f32,
+  count: u32,
+}
+var<workgroup> binSummaries: array<BinSummary, ${PREPARE_WORKGROUP_SIZE}>;
+fn emptyBinSummary() -> BinSummary {
+  return BinSummary(bitcast<f32>(0x7f7fffffu), 0.0, 0.0, 0.0, 0u);
+}
+fn mergeBinSummaries(left: BinSummary, right: BinSummary) -> BinSummary {
+  return BinSummary(
+    min(left.minimumLag, right.minimumLag),
+    max(left.maximumLag, right.maximumLag),
+    max(left.largestValue, right.largestValue),
+    left.baseWeight + right.baseWeight,
+    left.count + right.count
+  );
+}
+fn reduceBinSummaries(lane: u32, partial: BinSummary) -> BinSummary {
+  binSummaries[lane] = partial;
+  workgroupBarrier();
+  for (var stride = ${PREPARE_WORKGROUP_SIZE / 2}u; stride > 0u; stride /= 2u) {
+    if (lane < stride) {
+      binSummaries[lane] = mergeBinSummaries(binSummaries[lane], binSummaries[lane + stride]);
+    }
+    workgroupBarrier();
+  }
+  return workgroupUniformLoad(&binSummaries[0]);
+}
+`;
+
 /** Parallel range ladder and cooperative bin reductions; refinement steps and rounds remain ordered. */
 export function getParallelVariogramModelFitNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -63,6 +103,10 @@ export function getParallelVariogramModelFitNodes<Parameters>(
   );
   const roundCount =
     props.weighting === undefined || props.weighting === 'cressie' ? CRESSIE_ROUND_COUNT : 1;
+  const roundParameterWordCount = roundCount * ROUND_PARAMETER_SLOT_WORD_COUNT;
+  const useTiledPrepare = props.distances.length > MAXIMUM_SERIAL_PREPARE_BIN_COUNT;
+  const tileCount = Math.ceil(props.distances.length / PREPARE_BIN_TILE_SIZE);
+  const partialWordCount = tileCount * PREPARE_SUMMARY_WORD_COUNT;
   const scratchWordCount = 4 + models.length * (rangeSteps + 1) * 4;
   validateGPUStorageBindingByteLength(
     graph.device,
@@ -80,28 +124,58 @@ export function getParallelVariogramModelFitNodes<Parameters>(
   validateGPUStorageBindingByteLength(
     graph.device,
     id,
-    'round parameter slot',
-    ROUND_PARAMETER_WORD_COUNT * 4,
-    'use a device with an eight-byte storage binding'
+    useTiledPrepare ? 'round parameter buffer' : 'round parameter slot',
+    (useTiledPrepare ? roundParameterWordCount : ROUND_PARAMETER_WORD_COUNT) * 4,
+    useTiledPrepare
+      ? 'use a device with a larger storage binding'
+      : 'use a device with an eight-byte storage binding'
   );
   validateMaximumCount(
     id,
     'round parameter buffer byteLength',
-    roundCount * ROUND_PARAMETER_SLOT_WORD_COUNT * 4,
+    roundParameterWordCount * 4,
     graph.device.limits.maxBufferSize
   );
-  const roundValues = new Uint32Array(roundCount * ROUND_PARAMETER_SLOT_WORD_COUNT);
-  for (let round = 0; round < roundCount; round++) {
-    roundValues.set(
-      [Number(round > 0), Number(round === roundCount - 1)],
-      round * ROUND_PARAMETER_SLOT_WORD_COUNT
+  if (useTiledPrepare) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'bin summary scratch',
+      partialWordCount * 4,
+      'reduce the empirical bin count'
+    );
+    validateMaximumCount(
+      id,
+      'bin summary scratch byteLength',
+      partialWordCount * 4,
+      graph.device.limits.maxBufferSize
     );
   }
-  const roundParameters = createSpatialStatisticsParameterNodes(
-    graph,
-    `${id}-round-parameters`,
-    roundValues
-  );
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  let roundParameters: GraphDataView<'uint32'>;
+  if (useTiledPrepare) {
+    roundParameters = createTransientView(
+      graph,
+      `${id}-round-parameters`,
+      'uint32',
+      roundParameterWordCount
+    );
+  } else {
+    const roundValues = new Uint32Array(roundParameterWordCount);
+    for (let round = 0; round < roundCount; round++) {
+      roundValues.set(
+        [Number(round > 0), Number(round === roundCount - 1)],
+        round * ROUND_PARAMETER_SLOT_WORD_COUNT
+      );
+    }
+    const upload = createSpatialStatisticsParameterNodes(
+      graph,
+      `${id}-round-parameters`,
+      roundValues
+    );
+    roundParameters = upload.parameters;
+    nodes.push(...upload.nodes);
+  }
   const modelCodes = models.map(model => MODEL_CODES[model]);
   const previousStart = 4;
   const candidateStart = previousStart + models.length * 4;
@@ -111,15 +185,24 @@ export function getParallelVariogramModelFitNodes<Parameters>(
     'float32',
     candidateStart + models.length * rangeSteps * 4
   );
-  const bindings = [
+  const inputs = [
     {name: 'distances', view: props.distances, type: 'f32', access: 'read'},
     {name: 'semivariances', view: props.semivariances, type: 'f32', access: 'read'},
-    {name: 'pairCounts', view: props.pairCounts, type: 'u32', access: 'read'},
+    {name: 'pairCounts', view: props.pairCounts, type: 'u32', access: 'read'}
+  ] as const;
+  const outputs = [
     {name: 'scratch', view: scratch, type: 'f32', access: 'read_write'},
     {name: 'parameters', view: props.output.parameters, type: 'f32', access: 'read_write'},
     {name: 'diagnostics', view: props.output.diagnostics, type: 'f32', access: 'read_write'},
     {name: 'statuses', view: props.output.status, type: 'u32', access: 'read_write'}
   ] as const;
+  const usableBinWGSL = `fn usable(bin: u32) -> bool { return pairCounts[pairCountsOffset + bin] > 0u && isFiniteValue(distances[distancesOffset + bin]) && distances[distancesOffset + bin] > 0.0 && isFiniteValue(semivariances[semivariancesOffset + bin]); }`;
+  const writeFitWGSL = `fn writeFit(offset: u32, value: vec4f) {
+  scratch[scratchOffset + offset] = value.x;
+  scratch[scratchOffset + offset + 1u] = value.y;
+  scratch[scratchOffset + offset + 2u] = value.z;
+  scratch[scratchOffset + offset + 3u] = value.w;
+}`;
   const declarations = `${getPackedPredictionAccessors({}, ['parameters', 'diagnostics'])}
 ${GET_NAN_WGSL}
 ${IS_FINITE_VALUE_WGSL}
@@ -128,12 +211,7 @@ const MODEL_CODES: array<u32, ${models.length}> = array<u32, ${models.length}>($
 fn readFit(offset: u32) -> vec4f {
   return vec4f(scratch[scratchOffset + offset], scratch[scratchOffset + offset + 1u], scratch[scratchOffset + offset + 2u], scratch[scratchOffset + offset + 3u]);
 }
-fn writeFit(offset: u32, value: vec4f) {
-  scratch[scratchOffset + offset] = value.x;
-  scratch[scratchOffset + offset + 1u] = value.y;
-  scratch[scratchOffset + offset + 2u] = value.z;
-  scratch[scratchOffset + offset + 3u] = value.w;
-}
+${writeFitWGSL}
 var<private> model: u32;
 var<private> previous: vec4<f32>;
 var<private> reweight: bool;
@@ -141,7 +219,7 @@ ${VARIOGRAM_MODEL_SHAPE_WGSL}
 // The shared float32 shapes: they keep their digits for bins at a small fraction of a candidate
 // range, where the direct 1 - exp(-x) forms cancel (interpolation-density-08).
 fn shape(scaled: f32) -> f32 { return getVariogramModelShape(model, scaled); }
-fn usable(bin: u32) -> bool { return pairCounts[pairCountsOffset + bin] > 0u && isFiniteValue(distances[distancesOffset + bin]) && distances[distancesOffset + bin] > 0.0 && isFiniteValue(semivariances[semivariancesOffset + bin]); }
+${usableBinWGSL}
 fn weight(bin: u32) -> f32 {
   var value = ${props.weighting === 'none' ? '1.0' : 'f32(pairCounts[pairCountsOffset + bin])'};
   if (reweight) { let fitted = previous.x + previous.y * shape(distances[distancesOffset + bin] / previous.z); value /= max(fitted * fitted, 1e-20); }
@@ -180,33 +258,7 @@ fn fitLinear(range: f32) -> vec4<f32> {
   return best;
 }
 `;
-  const nodes: GPUCommandNode<Parameters>[] = [
-    ...roundParameters.nodes,
-    createWGSLKernelNode(graph, {
-      id: `${id}-prepare`,
-      operation: 'GPUVariogramModelFit',
-      variant: 'prepare-search',
-      invocationCount: 1,
-      workgroupSize: 2,
-      bindings,
-      declarations,
-      body: `
-var minimumLag = 3.402823e38;
-var maximumLag = 0.0;
-var binCount = 0u;
-var largestValue = 0.0;
-var baseWeight = 0.0;
-reweight = false;
-for (var bin = 0u; bin < BIN_COUNT; bin++) {
-  if (usable(bin)) {
-    minimumLag = min(minimumLag, distances[distancesOffset + bin]);
-    maximumLag = max(maximumLag, distances[distancesOffset + bin]);
-    largestValue = max(largestValue, abs(semivariances[semivariancesOffset + bin]));
-    baseWeight += weight(bin);
-    binCount++;
-  }
-}
-let valid = binCount >= 2u && maximumLag > minimumLag;
+  const publishSearchWGSL = `let valid = binCount >= 2u && maximumLag > minimumLag;
 // The objective is a weighted sum of squared residuals in the caller's weights. A residual
 // cannot be smaller than the float32 resolution of the largest semivariance (2^-23 of it), so
 // when that resolution, squared and summed with the weights, is not finite, the objective of
@@ -227,17 +279,142 @@ for (var modelIndex = 0u; modelIndex < ${models.length}u; modelIndex++) {
   write_diagnostics(modelIndex, vec4f(getNaN()));
   statuses[statusesOffset + modelIndex] = select(1u, select(2u, 0u, isRepresentable), valid);
   writeFit(${previousStart}u + modelIndex * 4u, vec4f(0.0, 0.0, 1.0, 3.402823e38));
+}`;
+
+  if (useTiledPrepare) {
+    const partials = createTransientView(graph, `${id}-bin-summaries`, 'uint32', partialWordCount);
+    const partialsBinding = {name: 'partials', view: partials, type: 'u32'} as const;
+    const prepareTileCountWGSL = `const TILE_COUNT: u32 = ${tileCount}u;`;
+    const usableBinsWGSL = `${IS_FINITE_VALUE_WGSL}
+const BIN_COUNT: u32 = ${props.distances.length}u;
+${usableBinWGSL}
+fn getBaseWeight(bin: u32) -> f32 {
+  return ${props.weighting === 'none' ? '1.0' : 'f32(pairCounts[pairCountsOffset + bin])'};
+}`;
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-prepare-tiles`,
+        operation: 'GPUVariogramModelFit',
+        variant: 'prepare-bin-tiles',
+        invocationCount: tileCount * PREPARE_WORKGROUP_SIZE,
+        workgroupSize: PREPARE_WORKGROUP_SIZE,
+        guardIndex: false,
+        bindings: [...inputs, {...partialsBinding, access: 'read_write'}],
+        declarations: `${usableBinsWGSL}
+${PREPARE_SUMMARY_WGSL}
+${prepareTileCountWGSL}`,
+        body: `
+if (workgroupIndex >= TILE_COUNT) { return; }
+let firstBin = workgroupIndex * ${PREPARE_BIN_TILE_SIZE}u;
+let tileBinCount = min(BIN_COUNT - firstBin, ${PREPARE_BIN_TILE_SIZE}u);
+var partial = emptyBinSummary();
+for (var tileBin = localInvocationIndex; tileBin < tileBinCount; tileBin += ${PREPARE_WORKGROUP_SIZE}u) {
+  let bin = firstBin + tileBin;
+  if (usable(bin)) {
+    let lag = distances[distancesOffset + bin];
+    partial.minimumLag = min(partial.minimumLag, lag);
+    partial.maximumLag = max(partial.maximumLag, lag);
+    partial.largestValue = max(partial.largestValue, abs(semivariances[semivariancesOffset + bin]));
+    partial.baseWeight += getBaseWeight(bin);
+    partial.count++;
+  }
+}
+let summary = reduceBinSummaries(localInvocationIndex, partial);
+if (localInvocationIndex == 0u) {
+  let slot = partialsOffset + workgroupIndex * ${PREPARE_SUMMARY_WORD_COUNT}u;
+  partials[slot] = bitcast<u32>(summary.minimumLag);
+  partials[slot + 1u] = bitcast<u32>(summary.maximumLag);
+  partials[slot + 2u] = bitcast<u32>(summary.largestValue);
+  partials[slot + 3u] = bitcast<u32>(summary.baseWeight);
+  partials[slot + 4u] = summary.count;
 }`
-    })
-  ];
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-prepare`,
+        operation: 'GPUVariogramModelFit',
+        variant: 'prepare-search',
+        invocationCount: PREPARE_WORKGROUP_SIZE,
+        workgroupSize: PREPARE_WORKGROUP_SIZE,
+        guardIndex: false,
+        bindings: [
+          ...outputs,
+          {...partialsBinding, access: 'read'},
+          {name: 'roundParameters', view: roundParameters, type: 'u32', access: 'read_write'}
+        ],
+        declarations: `${getPackedPredictionAccessors({}, ['parameters', 'diagnostics'])}
+${GET_NAN_WGSL}
+${writeFitWGSL}
+${PREPARE_SUMMARY_WGSL}
+${prepareTileCountWGSL}`,
+        body: `
+// Initialize one aligned parameter slot per round on each encoding, including replays.
+let roundCount = (arrayLength(&roundParameters) - roundParametersOffset) / ${ROUND_PARAMETER_SLOT_WORD_COUNT}u;
+if (localInvocationIndex < roundCount) {
+  let slot = roundParametersOffset + localInvocationIndex * ${ROUND_PARAMETER_SLOT_WORD_COUNT}u;
+  roundParameters[slot] = u32(localInvocationIndex > 0u);
+  roundParameters[slot + 1u] = u32(localInvocationIndex + 1u == roundCount);
+}
+var partial = emptyBinSummary();
+for (var tile = localInvocationIndex; tile < TILE_COUNT; tile += ${PREPARE_WORKGROUP_SIZE}u) {
+  let slot = partialsOffset + tile * ${PREPARE_SUMMARY_WORD_COUNT}u;
+  partial = mergeBinSummaries(partial, BinSummary(
+    bitcast<f32>(partials[slot]),
+    bitcast<f32>(partials[slot + 1u]),
+    bitcast<f32>(partials[slot + 2u]),
+    bitcast<f32>(partials[slot + 3u]),
+    partials[slot + 4u]
+  ));
+}
+let summary = reduceBinSummaries(localInvocationIndex, partial);
+if (localInvocationIndex != 0u) { return; }
+let minimumLag = summary.minimumLag;
+let maximumLag = summary.maximumLag;
+let largestValue = summary.largestValue;
+let baseWeight = summary.baseWeight;
+let binCount = summary.count;
+${publishSearchWGSL}`
+      })
+    );
+  } else {
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-prepare`,
+        operation: 'GPUVariogramModelFit',
+        variant: 'prepare-search',
+        // contract-allow: single-invocation -- MAXIMUM_SERIAL_PREPARE_BIN_COUNT = 1024 bounds the original ordered scan. Larger inputs use the tiled route.
+        invocationCount: 1,
+        workgroupSize: 2,
+        bindings: [...inputs, ...outputs],
+        declarations,
+        body: `
+var minimumLag = 3.402823e38;
+var maximumLag = 0.0;
+var binCount = 0u;
+var largestValue = 0.0;
+var baseWeight = 0.0;
+reweight = false;
+for (var bin = 0u; bin < BIN_COUNT; bin++) {
+  if (usable(bin)) {
+    minimumLag = min(minimumLag, distances[distancesOffset + bin]);
+    maximumLag = max(maximumLag, distances[distancesOffset + bin]);
+    largestValue = max(largestValue, abs(semivariances[semivariancesOffset + bin]));
+    baseWeight += weight(bin);
+    binCount++;
+  }
+}
+${publishSearchWGSL}`
+      })
+    );
+  }
   for (let round = 0; round < roundCount; round++) {
-    const roundParameterView = graph.createDataView(roundParameters.parameters.buffer, {
+    const roundParameterView = graph.createDataView(roundParameters.buffer, {
       format: 'uint32',
       length: ROUND_PARAMETER_WORD_COUNT,
       byteOffset: round * ROUND_PARAMETER_SLOT_WORD_COUNT * 4
     });
     const roundBindings = [
-      ...bindings,
+      ...inputs,
+      ...outputs,
       {name: 'roundParameters', view: roundParameterView, type: 'u32', access: 'read'} as const
     ];
     nodes.push(

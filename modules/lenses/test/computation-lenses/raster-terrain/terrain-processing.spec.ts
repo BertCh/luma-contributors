@@ -39,7 +39,9 @@ it.each(
       break;
     }
     case 'GPUTerrainDepressionHierarchy':
-      expect(read('status')).toEqual([3, 3, 0]);
+      expect(read('count')).toEqual([3]);
+      expect(read('requiredCount')).toEqual([3]);
+      expect(read('overflow')).toEqual([0]);
       expect(read('curves').slice(8)).toEqual([2, 1, 3, 6]);
       break;
     case 'GPUTerrainCatchmentSummary':

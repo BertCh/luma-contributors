@@ -347,7 +347,7 @@ function buildNeighborNodes(options: NeighborOptions) {
     queryCount,
     features,
     featureCount: 100,
-    k,
+    neighborCount: k,
     capacity: k,
     leafCapacity: 128,
     spatialSort: false,
@@ -587,7 +587,7 @@ for (const queryKind of ['lines', 'polygons'] as const) {
         for (const kernel of sources) {
           expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
           expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
-          expect(auditWGSLModule(kernel.source), kernel.id).toEqual([]);
+          expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
         }
         const nodeIndex = (suffix: string) => nodes.findIndex(node => node.id === `n-${suffix}`);
         const traversal = sources.find(kernel => kernel.id.endsWith('-traverse'))!;

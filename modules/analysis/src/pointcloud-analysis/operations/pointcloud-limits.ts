@@ -23,7 +23,9 @@ export const GPU_POINT_CLOUD_MAXIMUM_ICP_ITERATIONS = 100;
  */
 export const GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS = 0x1000000;
 
-/** Largest total cell count of a grid. Cell keys and offsets are uint32 and 0xffffffff marks invalid points. */
+/** Inclusive total grid product limit: width * height <= 4,294,967,294 for 2-D grids;
+ * the 3-D dimensions product obeys the same limit. Axis and device binding limits apply separately.
+ * Cell keys and offsets are uint32 and 0xffffffff marks invalid points. */
 export const GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS = 0xfffffffe;
 
 /** Largest number of square-window radii of the progressive morphological filter; each radius adds three kernels. */

@@ -180,7 +180,7 @@ function expectMatchesOracle(
 }
 
 const TURN_SETTINGS: GPUNetworkLineGraphSettings = {
-  angleCost: 2,
+  turnCostPerRadian: 2,
   leftTurnCost: 1.5,
   rightTurnCost: 0.5,
   uTurnCost: -1

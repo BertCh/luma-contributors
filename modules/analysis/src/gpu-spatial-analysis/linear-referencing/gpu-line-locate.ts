@@ -79,7 +79,7 @@ export type GPULineLocateSettings = {
  * @throws If a value is not finite or `target` is too short.
  */
 export function getGPULineLocateParameterValues(
-  settings: GPULineLocateSettings,
+  settings: GPULineLocateSettings = {},
   target: Float32Array = new Float32Array(GPU_LINE_LOCATE_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_LINE_LOCATE_PARAMETER_LENGTH) {

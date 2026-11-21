@@ -4,7 +4,10 @@
 
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
-import {LIDAR_GROUND_DISPLAY_CATEGORIES} from './point-cloud-ground-support';
+import {
+  LIDAR_GROUND_DISPLAY_CATEGORIES,
+  LIDAR_FEATURE_DISPLAY_CATEGORIES
+} from './point-cloud-ground-support';
 
 export type LidarGroundOptions = {
   view: 'source' | 'outliers' | 'ground' | 'height' | 'features' | 'voxels';
@@ -25,6 +28,7 @@ export default defineScene<LidarGroundOptions>({
     'GPUPointCloudGround',
     'GPUPointCloudHeight',
     'GPUPointCloudFeatures',
+    'GPUPointCloudCoverageValidity',
     'GPUPointCloudVoxelDownsample'
   ],
   datasets: [{id: 'lidar-ground', role: 'classified lidar returns'}],
@@ -70,6 +74,8 @@ export default defineScene<LidarGroundOptions>({
     }
   ],
   readouts: [
+    {id: 'featureSupport', label: 'Shape diagnostics', layout: 'block'},
+    {id: 'filterSupport', label: 'Filter support', layout: 'block'},
     {
       id: 'samplePoints',
       label: 'Retained source returns',
@@ -106,13 +112,14 @@ export default defineScene<LidarGroundOptions>({
       headline: 'Unusually sparse returns separate from the main cloud',
       textAlternative:
         'Statistical filtering highlights returns whose mean distance to nearby points is unusually large.',
-      body: '`GPUPointCloudNeighborhoods` finds nearby returns in the bounded 3D grid using a 2.5 m radius and 16-neighbour cap. `GPUPointCloudStatisticalFilter` compares each return’s mean neighbour distance with the cloud-wide distribution; red marks have unusually sparse support.',
+      body: '`GPUPointCloudNeighborhoods` finds nearby returns in the bounded 3D grid using a 2.5 m radius and 16-neighbour cap. `GPUPointCloudStatisticalFilter` compares each return’s mean retained-neighbour distance with the cloud-wide distribution. Truncated rows use their nearest 16 retained neighbours; a complete threshold describes that retained sample, not uncapped or certified halo support.',
       evidence:
-        'The red marks are rows rejected by the statistical filter; green marks have typical local support.',
+        'Red marks are sparse outliers among retained neighbours; green marks have typical retained support. Suppressed classifications are hidden while the support readout explains the loss.',
       caveat:
-        'Sparse edges and genuine isolated objects can look like outliers. The 2.5 m radius and 16-neighbour cap define this result.',
+        'Sparse edges and genuine isolated objects can look like outliers. The 2.5 m radius and 16-neighbour cap define this result. Reported invalid or incomplete support suppresses all classifications; the support readout distinguishes this from outliers. The clipped sample halo remains uncertified.',
       options: {view: 'outliers'},
       controls: ['view'],
+      readouts: ['filterSupport'],
       stage: 'neighbourhoods'
     },
     {
@@ -150,14 +157,14 @@ export default defineScene<LidarGroundOptions>({
       title: 'Use neighbourhood shape as evidence',
       headline: 'Quality flags show where local shape estimates need caution',
       textAlternative:
-        'Gold points have incomplete, truncated, degenerate or unconverged local covariance estimates; pale green points have complete support.',
-      body: '`GPUPointCloudFeatures` fits the local covariance and estimates a normal plus linearity, planarity and scattering. The overlay marks neighbourhoods whose feature estimate is incomplete or truncated, where a shape label would be weak evidence.',
-      evidence:
-        'Gold indicates a neighborhood status flag; pale green marks rows with a complete feature estimate.',
+        'Green marks usable local fits, gold incomplete support, orange truncation, gray degeneracy and coral failed eigensolves. Halo completeness is not certified.',
+      body: '`GPUPointCloudFeatures` fits the local covariance and estimates a normal plus linearity, planarity and scattering. Both the feature fit and statistical filter receive row-aligned neighborhoodStatus. A usable fit with incomplete support is distinct from truncation, degeneracy and a failed eigensolve. Overlapping causes remain in the diagnostic counts; the map prioritises failed fits, then truncation, then incomplete support.',
+      evidence: '{{featureSupport}}',
       caveat:
-        'Feature shape depends on the 2.5 m radius and the capped neighbourhood. It describes local geometry, not object identity.',
+        'Feature shape depends on the 2.5 m radius and the capped neighbourhood. Halo completeness is not certified: the shipped clipped, one-per-cell sample supplies no authoritative supportBounds. A clear status therefore certifies only the local fit, not the source halo.',
       options: {view: 'features'},
       controls: ['view'],
+      readouts: ['featureSupport'],
       stage: 'features'
     },
     {
@@ -216,11 +223,11 @@ export default defineScene<LidarGroundOptions>({
         return [
           {
             id: 'point-status',
-            title: 'Mean neighbour distance',
+            title: 'Retained mean neighbour distance',
             kind: 'categories',
             entries: [
-              {label: 'Sparse outlier', color: [204, 109, 97]},
-              {label: 'Typical support', color: [150, 211, 166]}
+              {label: 'Sparse outlier (retained neighbours)', color: [204, 109, 97]},
+              {label: 'Typical retained support', color: [150, 211, 166]}
             ]
           }
         ];
@@ -250,12 +257,9 @@ export default defineScene<LidarGroundOptions>({
         return [
           {
             id: 'feature-support',
-            title: 'Feature support',
+            title: 'Local feature-fit status',
             kind: 'categories',
-            entries: [
-              {label: 'Complete neighbourhood', color: [150, 211, 166]},
-              {label: 'Incomplete, truncated or failed', color: [233, 181, 101]}
-            ]
+            entries: LIDAR_FEATURE_DISPLAY_CATEGORIES.map(({label, color}) => ({label, color}))
           }
         ];
       case 'source':
@@ -287,14 +291,36 @@ export default defineScene<LidarGroundOptions>({
   },
   snippet: state => `import {GPUPointCloudVoxelDownsample} from '@luma.gl/graph/gpu-pointcloud';
 import {
-  GPUPointCloudGround, GPUPointCloudHeight, GPUPointCloudFeatures
+  GPUPointCloudNeighborhoods, GPUPointCloudStatisticalFilter,
+  GPUPointCloudGround, GPUPointCloudHeight, GPUPointCloudFeatures,
+  GPUPointCloudSurfaces, GPUPointCloudCoverageValidity, getRasterMetadataFromPointCloudGrid
 } from '@luma-contributors/analysis/pointcloud-analysis';
+import {makeGPURasterBand} from '@luma-contributors/analysis/raster-analysis';
 import {GPUElementwise, GPUCompaction} from '@luma.gl/graph/gpu-core';
+import {createSupportedGroundClassesNode, createGroundDisplayClassesNode} from './point-cloud-ground-support';
 
 // One bounded USGS return sample, analysed in local metres.
+// No supportBounds: clipping/sampling bounds do not certify a complete source halo.
+graph.add(new GPUPointCloudNeighborhoods({positions, radius: 2.5, capacity: 16,
+  grid: neighborhoodGrid, output: {indices, squaredDistances, counts, status: neighborhoodStatus}}));
+graph.add(new GPUPointCloudStatisticalFilter({squaredDistances, counts, neighborhoodStatus,
+  capacity: 16, output: {meanDistances, validity: inliers, thresholdComplete}}));
+graph.add(new GPUPointCloudSurfaces({id: 'lidar-ground-seed-surfaces', positions, classifications, grid,
+  output: {terrain: minimumSurface, surface: seedSurface, canopy: seedCanopy, coverage: seedCoverage}}));
+graph.add(new GPUPointCloudCoverageValidity({id: 'lidar-ground-seed-support', coverage: seedCoverage,
+  output: {surfaceValidity: seedSurfaceValidity, terrainValidity: groundSeedCoverage, canopyValidity: seedCanopyValidity}}));
 graph.add(new GPUPointCloudGround({positions, classifications, minimumSurface, coverage: groundSeedCoverage, grid, radii: [1], initialThreshold: 0.3, slope: 0.1, maximumThreshold: 2, output: {groundMask, outputClassifications, status: groundStatus}}));
-graph.add(new GPUPointCloudHeight({positions, grid, terrain, coverage, coverageBit: 2, output: {heights, status: heightStatus}}));
-graph.add(new GPUPointCloudFeatures({positions, indices, counts, capacity: 16, output: {normals, eigenvalues, shapes, status: featureStatus}}));
+graph.add(createSupportedGroundClassesNode(graph, outputClassifications, groundStatus, supportedClassifications));
+graph.add(createGroundDisplayClassesNode(graph, groundMask, groundStatus, groundDisplay));
+graph.add(new GPUPointCloudSurfaces({id: 'lidar-ground-classified-surfaces', positions, classifications: supportedClassifications, grid,
+  output: {terrain, surface, canopy, coverage}}));
+graph.add(new GPUPointCloudCoverageValidity({id: 'lidar-ground-raster-validity', coverage, output: {surfaceValidity, terrainValidity, canopyValidity}}));
+const terrainBand = makeGPURasterBand(terrain, getRasterMetadataFromPointCloudGrid(grid), {validity: terrainValidity});
+if (!terrainBand.validity) throw new Error('lidar-ground terrain band must carry ground validity');
+// Zero metres is valid ground wherever terrainValidity is 1; occupancy alone is insufficient.
+graph.add(new GPUPointCloudHeight({positions, grid, terrain: terrainBand.storage.values,
+  coverage: terrainBand.validity, coverageBit: 1, output: {heights, status: heightStatus}}));
+graph.add(new GPUPointCloudFeatures({positions, indices, counts, neighborhoodStatus, capacity: 16, output: {normals, eigenvalues, shapes, status: featureStatus}}));
 graph.add(new GPUPointCloudVoxelDownsample({voxelSize: 2, gridSize: [110, 110, 45], ...voxelBuffers}));
 graph.add(new GPUElementwise({input: voxelCounts, inputB: ones, output: occupiedFlags, operation: 'min'}));
 graph.add(new GPUCompaction({input: representatives, flags: occupiedFlags, output: compactIndices, count: drawCount}));

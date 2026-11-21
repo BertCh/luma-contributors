@@ -4,7 +4,10 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it} from 'vitest';
-import {GPURasterZonalStatistics} from '../../../src/raster-analysis/raster-zonal-statistics/index';
+import {
+  GPURasterZonalStatistics,
+  type GPURasterZonalStatisticsProps
+} from '../../../src/raster-analysis/raster-zonal-statistics/index';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import {zonalCases, decodePackedNumbers} from '../../oracles/parity-wp4-round3-fixtures';
 import {ParityRasterGraph} from '../../oracles/parity-wp4-round3-graph';
@@ -42,6 +45,13 @@ for (const scene of zonalCases) {
           standardDeviations: fixture.output('standard-deviations', 'float32', scene.zoneCapacity)
         };
         const overflow = fixture.output('overflow', 'uint32', 1);
+        const selectedColumns = Object.fromEntries(
+          outputNames.map(name => [name, outputs[name].view])
+        );
+        const selectedOutput: GPURasterZonalStatisticsProps['output'] =
+          outputNames[0] === 'cellCounts'
+            ? {...selectedColumns, cellCounts: outputs.cellCounts.view}
+            : {...selectedColumns, valueCounts: outputs.valueCounts.view};
         graph.add(
           new GPURasterZonalStatistics({
             grid: makeGPURasterMetadata({width: scene.width, height: scene.height}),
@@ -62,7 +72,7 @@ for (const scene of zonalCases) {
             ignoredZone: scene.ignoredZone,
             sumOrder,
             output: {
-              ...Object.fromEntries(outputNames.map(name => [name, outputs[name].view])),
+              ...selectedOutput,
               status: {overflow: overflow.view}
             }
           })

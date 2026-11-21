@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getPackedUint32Values,
+  type GPUPackedReadbackValues
+} from '../../analysis-core/kernels/packed-readback';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getGPURasterFixedPointValues} from './gpu-raster-streaming-accumulator';
 
 /** Cyclic Jacobi sweeps before giving up; binary64 converges well within this for 256 x 256. */
 const MAXIMUM_JACOBI_SWEEP_COUNT = 64;
+/** Leaves binary64 headroom for the sum of squares and the relative convergence threshold. */
+const MAXIMUM_JACOBI_NORM_EXPONENT = 450;
 
 /**
  * Temporal eigendecomposition of a snapshot covariance (the CPU eigenproblem of the method of
@@ -25,11 +31,14 @@ export type GPURasterSnapshotEOFDecomposition = {
 
 /** Decodes the packed upper triangle of `covarianceWords` into a symmetric binary64 matrix. */
 export function getGPURasterSnapshotCovarianceMatrix(
-  covarianceWords: ArrayLike<number>,
+  covarianceWords: GPUPackedReadbackValues,
   sliceCount: number,
   unitExponent: number
 ): Float64Array {
-  const packed = getGPURasterFixedPointValues(covarianceWords, unitExponent);
+  validateCapacity('getGPURasterSnapshotCovarianceMatrix', 'sliceCount', sliceCount, 1);
+  const entryCount = (sliceCount * (sliceCount + 1)) / 2;
+  const words = getPackedUint32Values(covarianceWords, entryCount * 3);
+  const packed = getGPURasterFixedPointValues(words.subarray(0, entryCount * 3), unitExponent);
   const matrix = new Float64Array(sliceCount * sliceCount);
   let entry = 0;
   for (let row = 0; row < sliceCount; row++) {
@@ -64,41 +73,92 @@ export function getGPURasterSnapshotEOFDecomposition(
   validateCapacity('getGPURasterSnapshotEOFDecomposition', 'modeCount', modeCount, 1, sliceCount);
   const size = sliceCount;
   const matrix = Float64Array.from(covariance);
+  let maximumMagnitude = 0;
+  for (const entry of matrix) maximumMagnitude = Math.max(maximumMagnitude, Math.abs(entry));
+  const matrixExponent = Math.floor(Math.log2(maximumMagnitude || 1));
+  const normExponent = Math.max(
+    -MAXIMUM_JACOBI_NORM_EXPONENT,
+    Math.min(matrixExponent, MAXIMUM_JACOBI_NORM_EXPONENT)
+  );
+  const normScale = Number.isFinite(matrixExponent) ? 2 ** (matrixExponent - normExponent) : 1;
+  // Scale tiny matrices up before rotating. For large matrices, scale only the norm unless
+  // eigenvalues or rotation intermediates could overflow.
+  let matrixScale = Math.min(normScale, 1);
+  const rotationHeadroom = 2 * size;
+  if (Number.isFinite(maximumMagnitude) && maximumMagnitude > Number.MAX_VALUE / rotationHeadroom) {
+    matrixScale = 2 ** Math.ceil(Math.log2(rotationHeadroom));
+  }
+  // An isolated diagonal is already an eigenvalue. Keep its exact value if downscaling rounds it.
+  const preservedDiagonals = new Map<number, number>();
+  if (matrixScale > 1) {
+    for (let row = 0; row < size; row++) {
+      const rowOffset = row * size;
+      const diagonal = matrix[rowOffset + row];
+      if ((diagonal / matrixScale) * matrixScale === diagonal) continue;
+      const rowEntries = matrix.subarray(rowOffset, rowOffset + size);
+      if (rowEntries.every((entry, column) => column === row || entry === 0)) {
+        preservedDiagonals.set(row, diagonal);
+      }
+    }
+  }
+  if (matrixScale !== 1) {
+    for (let index = 0; index < matrix.length; index++) matrix[index] /= matrixScale;
+  }
   const vectors = new Float64Array(size * size);
   for (let diagonal = 0; diagonal < size; diagonal++) vectors[diagonal * size + diagonal] = 1;
-  const scale = Math.max(
-    ...Array.from({length: size}, (_, i) => Math.abs(matrix[i * size + i])),
-    1
-  );
+  // Use the same power-of-two shift for both squared norms in the relative convergence test.
+  const normDivisor = normScale / matrixScale;
+  let squaredNorm = 0;
+  for (const entry of matrix) {
+    const scaledEntry = entry / normDivisor;
+    squaredNorm += scaledEntry * scaledEntry;
+  }
   for (let sweep = 0; sweep < MAXIMUM_JACOBI_SWEEP_COUNT; sweep++) {
     let offDiagonalTotal = 0;
     for (let row = 0; row < size; row++) {
       for (let column = row + 1; column < size; column++) {
-        offDiagonalTotal += matrix[row * size + column] ** 2;
+        offDiagonalTotal += (matrix[row * size + column] / normDivisor) ** 2;
       }
     }
-    if (offDiagonalTotal <= 1e-28 * scale * scale) break;
+    if (offDiagonalTotal <= 1e-28 * squaredNorm) break;
     for (let row = 0; row < size - 1; row++) {
       for (let column = row + 1; column < size; column++) {
         rotateJacobi(matrix, vectors, size, row, column);
       }
     }
   }
-  const order = Array.from({length: size}, (_, index) => index).sort(
-    (left, right) => matrix[right * size + right] - matrix[left * size + left]
-  );
+  const order = Array.from({length: size}, (_, index) => index).sort((left, right) => {
+    const leftValue = matrix[left * size + left];
+    const rightValue = matrix[right * size + right];
+    const difference = rightValue - leftValue;
+    if (difference !== 0 || preservedDiagonals.size === 0) return difference;
+    // Downscaling can round distinct subnormal eigenvalues to the same working value.
+    const originalLeft = preservedDiagonals.get(left) ?? leftValue * matrixScale;
+    const originalRight = preservedDiagonals.get(right) ?? rightValue * matrixScale;
+    return originalRight - originalLeft;
+  });
   const singularValues = new Float32Array(modeCount);
   const explainedVariance = new Float64Array(modeCount);
   const explainedVarianceRatio = new Float64Array(modeCount);
   const temporalModes = new Float32Array(modeCount * size);
+  const singularValueScale = Math.sqrt(matrixScale);
+  const sampleDivisor = Math.max(sliceCount - 1, 1);
+  const varianceDivisor = sampleDivisor / matrixScale;
   let trace = 0;
   for (let diagonal = 0; diagonal < size; diagonal++)
     trace += Math.max(matrix[diagonal * size + diagonal], 0);
   for (let mode = 0; mode < modeCount; mode++) {
     const source = order[mode];
     const eigenvalue = Math.max(matrix[source * size + source], 0);
-    singularValues[mode] = Math.sqrt(eigenvalue);
-    explainedVariance[mode] = eigenvalue / Math.max(sliceCount - 1, 1);
+    const preservedDiagonal = preservedDiagonals.get(source);
+    if (preservedDiagonal === undefined) {
+      singularValues[mode] = Math.sqrt(eigenvalue) * singularValueScale;
+      explainedVariance[mode] = eigenvalue / varianceDivisor;
+    } else {
+      const originalEigenvalue = Math.max(preservedDiagonal, 0);
+      singularValues[mode] = Math.sqrt(originalEigenvalue);
+      explainedVariance[mode] = originalEigenvalue / sampleDivisor;
+    }
     explainedVarianceRatio[mode] = trace > 0 ? eigenvalue / trace : 0;
     let largest = 0;
     for (let slice = 0; slice < size; slice++) {

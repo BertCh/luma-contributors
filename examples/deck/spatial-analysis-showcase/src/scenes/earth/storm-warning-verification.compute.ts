@@ -110,6 +110,8 @@ type JoinVariant = {
   compiled: CompiledGPUCommandGraph<void>;
   reader: SummaryReader;
   resources: SpatialAnalysisResources;
+  encodedRevision: number;
+  readRevision: number;
 };
 
 type PhenomenonMatrix = readonly (readonly string[])[];
@@ -229,6 +231,7 @@ export async function createStormWarningVerification(
   const pairOverflow = resources.createBuffer('pair-overflow', 4);
   const pairTotal = resources.createBuffer('pair-total', 4);
   const candidateCount = resources.createBuffer('candidate-count', 4);
+  const candidateOverflow = resources.createBuffer('candidate-overflow', 4);
   const reportResults = resources.createBuffer('report-results', reportCount * 16);
   const verdictCodes = resources.createBuffer('verdict-codes', reportCount * 4);
   const verifiedReportIds = resources.createBuffer('verified-report-ids', reportCount * 4);
@@ -268,7 +271,9 @@ export async function createStormWarningVerification(
   const variants = new Map<string, JoinVariant>();
   let current: JoinVariant | null = null;
   let verifyDirty = true;
+  let verificationRevision = 0;
   let destroyed = false;
+  let resultsIncomplete = true;
   let results: {
     verdict: Uint8Array;
     leadMinutes: Float32Array;
@@ -341,6 +346,13 @@ export async function createStormWarningVerification(
             status: {
               count: countView,
               overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+              candidateOverflow: importGraphBuffer(
+                graph,
+                'candidate-overflow',
+                candidateOverflow,
+                'uint32',
+                1
+              ),
               requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
             }
           },
@@ -469,17 +481,26 @@ export async function createStormWarningVerification(
       {buffer: pairOverflow, size: 4},
       {buffer: pairTotal, size: 4},
       {buffer: candidateCount, size: 4},
+      {buffer: candidateOverflow, size: 4},
       {buffer: reportResults, size: reportCount * 16},
       {buffer: polygonHits, size: warningCount * 4}
     ];
     const built: JoinVariant = {
       key: spatialTest,
+      encodedRevision: -1,
+      readRevision: -1,
       compiled: undefined as never,
       reader: undefined as never,
       resources: own
     };
     built.reader = new SummaryReader(own, `summary-${spatialTest}`, sources, bytes => {
-      if (destroyed || current !== built) return;
+      if (
+        destroyed ||
+        current !== built ||
+        built.key !== ctx.options.spatialTest ||
+        built.readRevision !== verificationRevision
+      )
+        return;
       handleSummary(bytes);
     });
     built.compiled = own.track(await graph.compileAsync());
@@ -640,10 +661,34 @@ export async function createStormWarningVerification(
     `${formatInteger(reportCount)} reports, ${formatInteger(warningCount)} polygon versions of ${formatInteger(chainCount)} warnings`
   );
 
+  function invalidateVerification(): void {
+    verificationRevision++;
+    verifyDirty = true;
+    resultsIncomplete = true;
+    results = null;
+    verifiedReportCount = 0;
+    mismatchReportCount = 0;
+    missedReportCount = 0;
+    for (const key of [
+      'verifiedShare',
+      'anyWarningShare',
+      'unwarned',
+      'warningsVerified',
+      'medianLead',
+      'pairs',
+      'selected'
+    ]) {
+      ctx.setReadout(key, 'pending: verification unavailable');
+    }
+    for (const chart of ['leadChart', 'kindChart', 'funnelChart', 'timelineChart'])
+      ctx.setChart(chart, null);
+    ctx.requestLayers();
+  }
+
   /** Makes a compiled join variant the current one. */
   function commitVariant(next: JoinVariant): void {
     current = next;
-    verifyDirty = true;
+    invalidateVerification();
   }
   const graphSwap = resources.track(new GraphSwap());
   commitVariant(await buildVariant(ctx.options.spatialTest));
@@ -709,7 +754,8 @@ export async function createStormWarningVerification(
   function handleSummary(bytes: ArrayBuffer): void {
     const words = new Uint32Array(bytes);
     const floats = new Float32Array(bytes);
-    const resultStart = 4;
+    const resultStart = 5;
+    resultsIncomplete = words[1] !== 0 || words[4] !== 0;
     const hitStart = resultStart + reportCount * 4;
     const verdict = new Uint8Array(reportCount);
     const leadMinutes = new Float32Array(reportCount).fill(Number.NaN);
@@ -755,6 +801,44 @@ export async function createStormWarningVerification(
     }
     let warningsVerified = 0;
     for (const hit of chainHit) warningsVerified += hit;
+    if (resultsIncomplete) {
+      // Retained compatible hits establish lower bounds. Missing pairs cannot establish misses,
+      // hazard mismatches, or the earliest matching issue time, even with spare pair capacity.
+      results = null;
+      verifiedReportCount = 0;
+      mismatchReportCount = 0;
+      missedReportCount = 0;
+      ctx.setReadout(
+        'verifiedShare',
+        `at least ${formatInteger(verified)} of ${formatInteger(reportCount)} reports (incomplete)`
+      );
+      ctx.setReadout(
+        'anyWarningShare',
+        `at least ${formatInteger(anyActive)} of ${formatInteger(reportCount)} (incomplete)`
+      );
+      ctx.setReadout(
+        'warningsVerified',
+        `at least ${formatInteger(warningsVerified)} of ${formatInteger(chainCount)} warnings (incomplete)`
+      );
+      ctx.setReadout('unwarned', 'unavailable: incomplete join cannot establish misses');
+      ctx.setReadout('medianLead', 'unavailable: incomplete join can omit earlier warnings');
+      ctx.setReadout(
+        'pairs',
+        `at least ${formatCount(words[0])} pairs of ${formatCount(PAIR_CAPACITY)} (OVERFLOW: ${[words[4] ? 'candidates' : '', words[1] ? 'pairs' : ''].filter(Boolean).join(', ')}; results are incomplete); ${formatCount(words[3])} candidates of ${formatCount(CANDIDATE_CAPACITY)}`
+      );
+      for (const chart of ['leadChart', 'kindChart', 'funnelChart']) {
+        ctx.setChart(chart, {
+          kind: 'bars',
+          values: [],
+          labels: [],
+          description: 'Unavailable: incomplete join.'
+        });
+      }
+      updateTimelineChart(true);
+      describeSelection();
+      ctx.requestLayers();
+      return;
+    }
     results = {verdict, leadMinutes, warning, spatial, polygonHits: hits};
     const share = verified / Math.max(1, reportCount);
     ctx.setReadout(
@@ -781,7 +865,7 @@ export async function createStormWarningVerification(
     );
     ctx.setReadout(
       'pairs',
-      `${formatCount(words[0])} pairs of ${formatCount(PAIR_CAPACITY)} (${words[1] ? 'OVERFLOW' : 'no overflow'}); ${formatCount(words[3])} candidates of ${formatCount(CANDIDATE_CAPACITY)}`
+      `${formatCount(words[0])} pairs of ${formatCount(PAIR_CAPACITY)} (no overflow); ${formatCount(words[3])} candidates of ${formatCount(CANDIDATE_CAPACITY)}`
     );
     const medianLead = leads.length ? quantile(leads, 0.5) : Number.NaN;
     const leadClasses = ['<0 late', '0–5', '5–10', '10–20', '20–30', '30–45', '45+ min', 'miss'];
@@ -883,6 +967,7 @@ export async function createStormWarningVerification(
     const kind = KIND_LABELS[kindNames[reportKinds[report]]] ?? kindNames[reportKinds[report]];
     const magnitude = reportMagnitude[report];
     let text = `${kind}${Number.isFinite(magnitude) && magnitude > 0 ? ` ${magnitude}` : ''} at ${formatStormHourMinute(reportTimes[report])} UTC`;
+    if (resultsIncomplete) text += ': classification and lead unavailable (incomplete join)';
     if (results) {
       const verdict = results.verdict[report];
       text += `: ${VERDICT_LABELS[verdict].toLowerCase()}`;
@@ -930,6 +1015,7 @@ export async function createStormWarningVerification(
     setOption(id) {
       switch (id) {
         case 'spatialTest':
+          invalidateVerification();
           writeVerifyParameters();
           // The variant cache is destroyed with the resources, so a superseded build is kept.
           void graphSwap.request({
@@ -941,7 +1027,7 @@ export async function createStormWarningVerification(
         case 'graceMinutes':
         case 'matching':
           writeVerifyParameters();
-          verifyDirty = true;
+          invalidateVerification();
           break;
         case 'time':
         case 'play':
@@ -965,12 +1051,21 @@ export async function createStormWarningVerification(
       const options = ctx.options;
       playhead = clock.advance(frame);
       ctx.setReadout('clock', `${formatStormClock(playhead)}`);
-      if (current && verifyDirty) {
+      if (current && current.key === options.spatialTest && verifyDirty) {
         current.compiled.encode(commandEncoder, {parameters: undefined});
+        current.encodedRevision = verificationRevision;
+        if (!current.reader.isPending) current.readRevision = current.encodedRevision;
         current.reader.request(commandEncoder);
         verifyDirty = false;
       } else {
-        current?.reader.flush(commandEncoder);
+        if (
+          current &&
+          current.key === options.spatialTest &&
+          current.encodedRevision === verificationRevision
+        ) {
+          if (!current.reader.isPending) current.readRevision = current.encodedRevision;
+          current.reader.flush(commandEncoder);
+        }
       }
       warningWindow.write(getGPUTimeWindowFilterParameterValues({start: playhead, end: playhead}));
       reportWindow.write(
@@ -1022,8 +1117,8 @@ export async function createStormWarningVerification(
           })
         );
       }
-      if (options.showReports) {
-        const byVerdict = options.colorReportsBy === 'verdict';
+      if (options.showReports && !(resultsIncomplete && options.colorReportsBy === 'verdict')) {
+        const byVerdict = options.colorReportsBy === 'verdict' && !resultsIncomplete;
         const palette = byVerdict
           ? VERDICT_COLORS
           : kindNames.map(name => KIND_COLORS[name] ?? KIND_COLORS.other);

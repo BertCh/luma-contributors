@@ -45,6 +45,38 @@ decode to `undefined`. Inputs are bounded at one million rows; rank is 1–64, a
 scratch is bounded by the device storage limit. Only the k-distance display curve is reduced
 (to 512 quantiles); searches use every valid row. Destroy the compiled graph to release scratch.
 
+Decoded statistics include `invalidCount`, the input rows rejected for invalid coordinates.
+`decodeGPUAnalysisSpacingStatisticsDetailed` retains `pointCount`, `invalidCount`, `overflow`,
+`candidateOverflow`, `requiredCount` and `complete`, even when `statistics` is unavailable.
+`unavailableReason` distinguishes `empty`, `all-invalid`, `incomplete` and `nonfinite-statistics`.
+The convenience decoder still returns `undefined` for empty/all-invalid input and throws for
+loss or nonfinite results. The detailed decoder suppresses numerical statistics on loss;
+malformed lengths and unknown layout versions throw in both decoders.
+
+Read the logical view's offset and exactly its 2,176 bytes from the backing buffer after execution:
+
+```ts
+import type {Buffer} from '@luma.gl/core';
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPU_ANALYSIS_SPACING_SUMMARY_LENGTH,
+  decodeGPUAnalysisSpacingStatistics
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const summaryBuffer: Buffer;
+declare const summaryView: GraphDataView<'uint32'>;
+
+const bytes = await summaryBuffer.readAsync(summaryView.byteOffset, 2176);
+// readAsync returns bytes; bound the word view to this read, including its byte offset.
+const words = new Uint32Array(
+  bytes.buffer,
+  bytes.byteOffset,
+  GPU_ANALYSIS_SPACING_SUMMARY_LENGTH
+);
+const statistics = decodeGPUAnalysisSpacingStatistics(words);
+// Passing bytes directly is also supported, including byte subviews.
+```
+
 Position, mask and identity contents can change per frame; lengths, rank, grid shape,
 capacities and context require rebuilding. F32 input quantization bounds geographic accuracy;
 planar centre distances use coordinates relative to the extent minimum, and decoding adds
@@ -71,7 +103,7 @@ The composition packs its internal search bounds itself; there is no caller para
 ::lens{scenario=gpu-spatial-analysis.analysis-spacing rung=formula caption="The connectivity floor is the maximum nearest-other-row distance across the full population."}
 ::lens{scenario=gpu-spatial-analysis.analysis-spacing rung=graph caption="Trace indexed searches, duplicate handling and reductions into one bounded summary."}
 
-`@luma-contributors/analysis/gpu-spatial-analysis` exports a host-neutral vocabulary for getting from
+`@luma-contributors/analysis/gpu-spatial-analysis/ontology` exports a host-neutral vocabulary for getting from
 "this is my data" to "this is a suitable analysis, with sensible settings, read correctly". It is plain
 TypeScript: types, tables and pure functions on the CPU. The optional `GPUAnalysisSpacing`
 contributor described above computes resident statistics for this vocabulary. The
@@ -154,6 +186,8 @@ This is an early warning for a host. It does not replace a contributor's own con
 antimeridian), mean centre, standard distance, nearest-neighbour quartiles and upper fence, the
 k-distance curve and duplicate locations. Distances are metres for geographic coordinates. It is exact
 up to a sample limit and uses a hashed sample above it, reporting `sampled`.
+Its statistics include `invalidCount`. `computeGPUAnalysisSpacingStatisticsDetailed` retains
+accepted and invalid counts when all input is invalid or no rows were supplied.
 
 `resolveGPUAnalysisDefault(rule, profile, factor, options)` derives one value with an explanation:
 
@@ -167,6 +201,23 @@ up to a sample limit and uses a hashed sample above it, reporting `sampled`.
 | `column-variance`, `column-standard-deviation`, `column-range`, `column-sum` | Statistics of one column |
 
 A rule returns no value when the profile lacks what it needs; the caller keeps its constant and says so.
+
+## Accessibility demand and completeness
+
+`GPUCatchmentAccessibility` and `GPUHuffTradeAreas` expose `output.demandValidity`, one `uint32`
+per demand location: 1 for finite demand, 0 for missing demand. The old spelling `output.validity`
+is deprecated and remains supported. Supplying both spellings requires the same destination.
+This mask describes demand, so it must not hide a reachable trade-area assignment or accessibility
+score. With one reachable attractive facility and demand `NaN`, Huff still assigns facility row 0,
+while `demandValidity` is 0 and expected demand is 0. Missing demand contributes nothing to the
+catchment facility-ratio denominator or Huff expected demand.
+
+Pass described weights handles to preserve producer evidence. In catchment accessibility, an
+explicit `costsComplete=0` suppresses accessibility and ratios with NaN and reachable counts with
+`0xffffffff`; it leaves `demandValidity` unchanged.
+Write a nonzero `costsComplete` word once the costs are complete
+and resubmit to restore ordinary results. Weights loss also suppresses dependent results;
+validity of demand alone does not certify complete accessibility.
 
 ## Reading a result
 

@@ -17,13 +17,17 @@ import {
 } from '../../gpu-spatial-analysis/trajectory-analysis/trajectory-metrics-kernels';
 import {
   GPUTrackSimilarity,
+  GPU_TRACK_SIMILARITY_STATUS,
   type GPUTrackSimilarityProps
 } from '../../gpu-spatial-analysis/track-similarity/gpu-track-similarity';
 import {GPUMapMatching, type GPUMapMatchingProps} from '../map-matching/gpu-map-matching';
 import {snapshotMapMatchingConstructionProps} from '../map-matching/map-matching-construction';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {resolveGPUTrajectoryTemporalContext} from '../../gpu-spatial-analysis/trajectory-analysis/trajectory-common';
-import type {GPURecipeStageStatusPort} from '../../analysis-core/contracts/index';
+import type {
+  GPURecipeStageStatusPort,
+  GPUSpatialContext
+} from '../../analysis-core/contracts/index';
 import {createRecipeKernelNode as createWGSLKernelNode} from '../../gpu-spatial-analysis/recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {RecipeBuilder} from '../../gpu-spatial-analysis/recipes/recipe-utils';
@@ -64,6 +68,24 @@ fn isExcessiveStep(row: u32) -> bool {
   let speed = speeds[speedsOffset + row];
   return isFiniteValue(elapsed) && elapsed > 0.0 && (!isFiniteValue(speed) || speed > thresholds[thresholdsOffset]);
 }`;
+
+/** Recipe-stage evidence, including the similarity contributor's per-pair bit layout. */
+export type GPUTrackQualityRecipeStageStatusPort = GPURecipeStageStatusPort & {
+  /**
+   * Similarity has one word per pair, not one recipe-wide scalar. Read the active prefix with
+   * `decodeGPUTrackSimilarityPairStatus`. emptyTrack, invalidPair and invalidGeometry affect all
+   * measures. frechetCapExceeded affects Frechet, DTW, EDR, ERP, LCSS and frechetWithin; Hausdorff,
+   * SSPD and maximumDistance remain usable. invalidDecisionThreshold affects only frechetWithin.
+   */
+  layout?: {
+    kind: 'per-pair-bits';
+    view: GraphDataView<'uint32'>;
+    /** Live pair prefix; omitted means all pairCapacity rows. */
+    activePairCount?: GraphDataView<'uint32'>;
+    pairCapacity: number;
+    flags: typeof GPU_TRACK_SIMILARITY_STATUS;
+  };
+};
 
 /** Raw quality flags, optional route distances and optional map-matching completeness. */
 export function addTrackQualityRecipe<Parameters>(
@@ -196,7 +218,7 @@ for (var row = begin; row < end; row++) {
       body: `var total = 0u; for (var row = min(offsets[offsetsOffset + index], ${count}u); row < min(offsets[offsetsOffset + index + 1u], ${count}u); row++) { total += select(0u, 1u, flags[flagsOffset + row] != 0u); } counts[countsOffset + index] = total;`
     })
   );
-  const stages: GPURecipeStageStatusPort[] = [];
+  const stages: GPUTrackQualityRecipeStageStatusPort[] = [];
   const similarity = props.similarity
     ? {
         hausdorff: getOrCreateView(
@@ -229,7 +251,7 @@ for (var row = begin; row < end; row++) {
         )
       }
     : undefined;
-  if (props.similarity && similarity)
+  if (props.similarity && similarity) {
     builder.add(
       new GPUTrackSimilarity({
         ...props.similarity,
@@ -243,6 +265,18 @@ for (var row = begin; row < end; row++) {
         output: similarity
       })
     );
+    stages.push({
+      stage: 'similarity',
+      status: {},
+      layout: {
+        kind: 'per-pair-bits',
+        view: similarity.pairStatus,
+        activePairCount: props.similarity.activePairCount,
+        pairCapacity: props.similarity.pairA.length,
+        flags: GPU_TRACK_SIMILARITY_STATUS
+      }
+    });
+  }
   const matching = props.mapMatching
     ? {
         matchedEdges: getOrCreateView(graph, `${id}-matched-edges`, 'uint32', count),
@@ -274,13 +308,15 @@ for (var row = begin; row < end; row++) {
       {stage: 'map-matching-routes', status: {candidateOverflow: matching.status.routeOverflow}}
     );
   }
+  // Named so the emitted declaration references the imported type, not an extensionless path.
+  const spatialContext: GPUSpatialContext | undefined = trajectory.spatialContext;
   return {
     contributors: builder.contributors,
     outputs: {metrics, flags, flaggedCounts, similarity, matching},
     intermediates: {
       positions: trajectory.positions,
       trackOffsets: trajectory.trackOffsets,
-      spatialContext: trajectory.spatialContext
+      spatialContext
     },
     status: {stages}
   };

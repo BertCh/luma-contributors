@@ -12,8 +12,10 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
+  getAccessibilityWeightsLossChecks,
   validateCatchmentViews,
   validateCatchmentStorage
 } from './catchment-accessibility-validation';
@@ -81,7 +83,7 @@ export type GPUHuffTradeAreasOutput = {
   /**
    * Optional expected demand `E_j = sum_i P_i p_ij` captured per facility. Needs `facilityWeights`
    * and `demand`. A demand location whose `demand` is NaN or infinite is missing: it adds nothing
-   * to any facility (the rule of `GPUCatchmentAccessibility`) and its `validity` row is 0.
+   * to any facility (the rule of `GPUCatchmentAccessibility`) and its `demandValidity` row is 0.
    * Nonzero supplied overflow/candidateOverflow on either weights table suppresses this view
    * with NaN. Contributions incorporate demand scale before rounding a small share to float32.
    */
@@ -91,7 +93,7 @@ export type GPUHuffTradeAreasOutput = {
    * and was left out of `expectedDemand`. Needs `demand`. The trade area and the probabilities of
    * a flagged row do not read `demand` and remain valid.
    */
-  validity?: GraphDataView<'uint32'>;
+  demandValidity?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -103,11 +105,16 @@ export type GPUHuffTradeAreasOutput = {
 export type GPUHuffTradeAreasProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'huff-trade-areas'`. */
   id?: string;
-  /** Attractiveness `A_j` (floor area, capacity) per facility, non-negative. */
+  /**
+   * Attractiveness `A_j` (floor area, capacity) per facility, positive and finite to count. A
+   * facility whose attractiveness is zero, negative, NaN or infinite is excluded from every row
+   * (probability 0, never the trade area, no captured demand).
+   */
   attractiveness: GraphDataView<'float32'>;
   /**
    * Demand-to-facility weights: row `i` lists facilities `j` demand location `i` can reach, with
    * the distance-decay value `w_ij = f(c_ij)` as weight. Neighbor IDs index `attractiveness`.
+   * A slot whose weight is not positive and finite is excluded like a zero attractiveness.
    */
   demandWeights: GPUSpatialWeights;
   /**
@@ -138,14 +145,17 @@ export type GPUHuffTradeAreasProps = {
  * `GPUNeighborSearch` gives the classic distance-decay Huff model. Rows accumulate in slot order,
  * so results are deterministic within f32 rounding. Relative log scores are computed from the
  * original mantissas before exponentiation, preserving close values when attractiveness units change.
- * Facilities with zero attractiveness have probability 0. A non-finite `demand` is missing: it adds
- * nothing to `expectedDemand` and its `validity` row is 0, the no-data rule of
+ * Facilities with zero attractiveness have probability 0; a slot whose attractiveness or weight is
+ * negative, NaN or infinite is invalid and excluded the same way. A non-finite `demand` is missing: it adds
+ * nothing to `expectedDemand` and its `demandValidity` row is 0, the no-data rule of
  * `GPUCatchmentAccessibility`.
  *
  * When both weights declare spatial contexts, they must be compatible.
  * Supplied overflow/candidateOverflow on demandWeights suppresses trade areas to NO_TRADE_AREA
  * and their probabilities to NaN. Either weights table's loss flags suppress expectedDemand to
- * NaN. Demand validity still describes only whether demand is finite. Clearing the flags restores
+ * NaN. A supplied zero status.complete independently suppresses the same dependent outputs.
+ * Demand validity still describes only whether demand is finite. Clear negative loss flags and
+ * write nonzero completeness once the input is whole to restore
  * ordinary results on the next submission without recompiling.
  *
  * Spatial context: this operator reads no positions, only the weights, so it has no
@@ -163,6 +173,31 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
 
   constructor(props: GPUHuffTradeAreasProps) {
     const id = props.id ?? 'huff-trade-areas';
+    validateRequirement(
+      id,
+      !('validity' in props.output),
+      'output.validity was removed. Use output.demandValidity'
+    );
+    props = {
+      ...props,
+      demandWeights: {
+        ...props.demandWeights,
+        status: props.demandWeights.status ? {...props.demandWeights.status} : undefined
+      },
+      facilityWeights: props.facilityWeights
+        ? {
+            ...props.facilityWeights,
+            status: props.facilityWeights.status ? {...props.facilityWeights.status} : undefined
+          }
+        : undefined,
+      output: snapshotConstructionFields(props.output, [
+        'tradeArea',
+        'probabilities',
+        'tradeAreaProbability',
+        'expectedDemand',
+        'demandValidity'
+      ])
+    };
     this.id = id;
     this.props = props;
     this.demandCount = validateGPUSpatialWeights(id, props.demandWeights, 'demandWeights');
@@ -205,13 +240,14 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     if (props.parameters && props.parameters.length < GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must hold ${GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH} word`);
     }
-    if (output.validity) {
-      validateSinglePackedView(output.validity, ['uint32'], `${id} output.validity`);
-      validateRequirement(id, props.demand !== undefined, 'output.validity needs demand');
+    if (output.demandValidity) {
+      validateSinglePackedView(output.demandValidity, ['uint32'], `${id} output.demandValidity`);
+      validateRequirement(id, props.demand !== undefined, 'output.demandValidity needs demand');
       validateRequirement(
         id,
-        props.demand?.length === this.demandCount && output.validity.length === this.demandCount,
-        'demand and output.validity must have one row per demand location'
+        props.demand?.length === this.demandCount &&
+          output.demandValidity.length === this.demandCount,
+        'demand and output.demandValidity must have one row per demand location'
       );
     }
     if (output.expectedDemand) {
@@ -252,7 +288,7 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
       },
       {reads: demandInputs, writes: {probabilities: output.probabilities}},
       {reads: facilityInputs, writes: {expectedDemand: output.expectedDemand}},
-      {reads: {demand: props.demand}, writes: {validity: output.validity}}
+      {reads: {demand: props.demand}, writes: {demandValidity: output.demandValidity}}
     ]);
   }
 
@@ -261,7 +297,8 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, facilityCount, demandCount} = this;
-    const {attractiveness, demandWeights, parameters, output} = props;
+    const {attractiveness, demandWeights, parameters} = props;
+    const {output} = props;
     validateSpatialAnalysisPackedOutputAllocations(graph, id, output);
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(output)]);
     validateGraphChunkBindingRanges(graph, id, {
@@ -321,12 +358,17 @@ fn getHuffScore(value: f32, weight: f32, reference: f32, referenceWeight: f32, e
   }
   return exponent * getHuffLogRatio(value, reference) + getHuffLogRatio(weight, referenceWeight);
 }
+// A facility slot counts only with positive finite attractiveness and weight. Infinity would pass a
+// positive test and reach frexp, whose result is undefined for it; NaN fails the comparison.
+fn isHuffCandidate(value: f32, weight: f32) -> bool {
+  return value > 0.0 && weight > 0.0 && isFiniteValue(value) && isFiniteValue(weight);
+}
 fn getHuffShare(value: f32, weight: f32, reference: f32, referenceWeight: f32, maximum: f32, exponent: f32) -> f32 {
-  if (!(value > 0.0) || !(weight > 0.0)) { return 0.0; }
+  if (!isHuffCandidate(value, weight)) { return 0.0; }
   return exp(min(getHuffScore(value, weight, reference, referenceWeight, exponent) - maximum, 0.0));
 }
 fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight: f32, maximum: f32, total: f32, exponent: f32, demand: f32) -> f32 {
-  if (!(value > 0.0) || !(weight > 0.0) || demand == 0.0) { return 0.0; }
+  if (!isHuffCandidate(value, weight) || demand == 0.0) { return 0.0; }
   let score = min(getHuffScore(value, weight, reference, referenceWeight, exponent) - maximum, 0.0);
   // Below exp(-256), even the largest finite demand cannot produce a float32 subnormal.
   // This also keeps conversion to an integer exponent finite and in range.
@@ -343,7 +385,7 @@ fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight:
     if (partner < FACILITIES) {
       let value = attraction[attractionOffset + partner];
       let weight = weights[weightsOffset + slot];
-      if (value > 0.0 && weight > 0.0) {
+      if (isHuffCandidate(value, weight)) {
       ${inner}
       }
     }
@@ -494,7 +536,7 @@ fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight:
         })
       );
     }
-    if (output.validity && props.demand) {
+    if (output.demandValidity && props.demand) {
       nodes.push(
         getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-validity`,
@@ -502,7 +544,7 @@ fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight:
           variant: 'validity',
           bindings: [
             {name: 'demand', view: props.demand, type: 'f32', access: 'read'},
-            {name: 'validity', view: output.validity, type: 'u32', access: 'read_write'}
+            {name: 'validity', view: output.demandValidity, type: 'u32', access: 'read_write'}
           ],
           invocationCount: demandCount,
           declarations: IS_FINITE_VALUE_WGSL,
@@ -512,10 +554,10 @@ fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight:
     }
     // Incomplete forward weights invalidate the normalized row and every derived capture.
     // Incomplete reverse weights affect only expected demand. Never publish either partial sum.
-    const forwardLoss = getHuffWeightLossFlags(demandWeights);
+    const forwardLoss = getAccessibilityWeightsLossChecks(id, demandWeights);
     const reverseLoss =
       output.expectedDemand && props.facilityWeights
-        ? getHuffWeightLossFlags(props.facilityWeights)
+        ? getAccessibilityWeightsLossChecks(id, props.facilityWeights)
         : [];
     for (const [name, view, flags, type, value] of [
       ['tradeArea', output.tradeArea, forwardLoss, 'u32', `${GPU_HUFF_NO_TRADE_AREA}u`],
@@ -530,7 +572,7 @@ fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight:
           operation: OPERATION,
           variant: 'incomplete-input',
           bindings: [
-            ...flags.map((flag, index) => ({
+            ...flags.map(({flag}, index) => ({
               name: `loss${index}`,
               view: flag,
               type: 'u32' as const,
@@ -540,7 +582,7 @@ fn getHuffContribution(value: f32, weight: f32, reference: f32, referenceWeight:
           ],
           invocationCount: view.length,
           declarations: type === 'f32' ? GET_NAN_WGSL : undefined,
-          body: `if (${flags.map((_, index) => `loss${index}[loss${index}Offset] != 0u`).join(' || ')}) {
+          body: `if (${flags.map(({test}, index) => `loss${index}[loss${index}Offset] ${test}`).join(' || ')}) {
   result[resultOffset + index] = ${value};
 }`
         })
@@ -557,7 +599,7 @@ function getOutputs(output: GPUHuffTradeAreasOutput): (GraphDataView | undefined
     output.tradeArea,
     output.tradeAreaProbability,
     output.expectedDemand,
-    output.validity
+    output.demandValidity
   ];
 }
 
@@ -565,26 +607,26 @@ function getOutputs(output: GPUHuffTradeAreasOutput): (GraphDataView | undefined
 function getInputs(props: GPUHuffTradeAreasProps): (GraphDataView | undefined)[] {
   return [
     props.attractiveness,
-    props.output.expectedDemand || props.output.validity ? props.demand : undefined,
+    props.output.expectedDemand || props.output.demandValidity ? props.demand : undefined,
     props.parameters,
     props.demandWeights.offsets,
     props.demandWeights.neighbors,
     props.demandWeights.weights,
-    ...getHuffWeightLossFlags(props.demandWeights),
+    ...getAccessibilityWeightsLossChecks(props.id ?? 'huff-trade-areas', props.demandWeights).map(
+      check => check.flag
+    ),
     ...(props.output.expectedDemand
       ? [
           props.facilityWeights?.offsets,
           props.facilityWeights?.neighbors,
           props.facilityWeights?.weights,
-          ...(props.facilityWeights ? getHuffWeightLossFlags(props.facilityWeights) : [])
+          ...(props.facilityWeights
+            ? getAccessibilityWeightsLossChecks(
+                props.id ?? 'huff-trade-areas',
+                props.facilityWeights
+              ).map(check => check.flag)
+            : [])
         ]
       : [])
   ];
-}
-
-/** The supplied loss flags are GPU inputs, not host-side metadata. */
-function getHuffWeightLossFlags(weights: GPUSpatialWeights): GraphDataView<'uint32'>[] {
-  return [weights.status?.overflow, weights.status?.candidateOverflow].filter(
-    (view): view is GraphDataView<'uint32'> => view !== undefined
-  );
 }

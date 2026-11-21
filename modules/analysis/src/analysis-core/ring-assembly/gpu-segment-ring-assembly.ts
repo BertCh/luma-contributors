@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSegmentRingAssemblyProps} from './segment-ring-assembly-types';
+import {captureRingAssemblyProps, validateRingAssemblyProps} from './ring-assembly-validation';
+import {getRingAssemblyPlan} from './ring-assembly-planning';
+import {getRingStatusNodes} from './ring-status-publication';
+import {RING_EXACT_TURN_WGSL} from './ring-exact-turn-wgsl';
+
+import {getRingInputCompletenessNodes} from './ring-input-completeness';
 import {
   createTransientView,
   GPUScan,
   GPUSort,
-  validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -17,40 +23,19 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../kernels/wgsl-kernel-nodes';
-import {
-  validateGPUStorageBindingByteLength,
-  validateCapacity,
-  validateFiniteNumber,
-  validateGraphOutputsDisjointFromInputs,
-  validateSinglePackedView
-} from '../kernels/gpu-contributor-utils';
-import type {
-  GPUCardinalityPort,
-  GPUOverflowStatusPort,
-  GPUPackedGeometryPort,
-  GPUPolygonGeometryPort
-} from '../contracts/index';
+
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../contracts/spatial-context';
-import {
-  validateDisjointWritableViews,
-  validateGraphChunkBindingRanges
-} from '../kernels/graph-chunk-dispatch';
+
 import {IS_FINITE_VALUE_WGSL} from '../kernels/wgsl-common';
 import {getRingQuantizerWGSL} from './ring-vertex-quantizer';
 import {getRingShellIndexNodes, RING_SHELL_RECORD_WORDS} from './ring-shell-index';
 import {EXACT_ORIENTATION_WGSL} from '../kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../kernels/exact-geometry-wgsl';
-import {
-  snapshotConstructionFields,
-  snapshotConstructionSpatialContext
-} from '../kernels/construction-snapshot';
-
-/** A positive float32 tolerance must survive rounding before division in the vertex quantizer. */
-const GPU_SEGMENT_RING_ASSEMBLY_MINIMUM_VERTEX_TOLERANCE = 2 ** -149;
+import {snapshotConstructionSpatialContext} from '../kernels/construction-snapshot';
 
 /** Planar coordinates, or longitude-latitude positions that only need a cos(latitude) turn scale. */
 const GPU_RING_ASSEMBLY_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
@@ -61,188 +46,6 @@ const GPU_RING_ASSEMBLY_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
 const OPERATION = 'GPUSegmentRingAssembly';
 /** Lanes per workgroup; a workgroup owns this many rings and sums its larger rings cooperatively. */
 const RING_LANES = 64;
-
-/**
- * Exact turn classification for the planar successor choice (`match` kernel).
- *
- * `ringExactTurnClass(origin, vertex, end, side)` places the turn from `vertex - origin` to
- * `end - vertex` in the order of its angle toward the interior side, in (-pi, pi]: 0 for a turn
- * away from the interior side, 1 for straight on (also a zero-length incoming or outgoing
- * segment), 2 for a turn toward the interior side or a u-turn. The caller supplies `side` through
- * its single `exactOrientSigns` call chain and disables exact choice when it cannot be certified.
- * It agrees with the sign classes of `ringTurnKey`, so the exact order
- * (class, then `orientSign` between two candidates of one open half-plane) is the f32 key order
- * without its rounding. The collinear case compares coordinates only.
- *
- * The two interior sides are mirror images: the orientation signs are multiplied by `SIDE_ORDER`
- * (1 for `'left'`, -1 for `'right'`) before they are classed or compared, so the kernel for
- * `'right'` decides as the kernel for `'left'` does on the mirror image of the input. In
- * particular an exact u-turn is the last class for both: the face rule takes the first edge met
- * when turning from the reversed incoming direction toward the interior side, and an edge that
- * exactly reverses the incoming one is met first whichever way that turn goes. (Until the
- * re-review of 2026-11-11 the turn was classed left or right and the order reversed for
- * `'right'`, which put the u-turn first for `'left'` and last for `'right'`.)
- *
- * `ringSegmentTurnClass(origin, vertex, start, end)` gives the same classes for the turn from the
- * segment `origin -> vertex` to the segment `start -> end`, which need not start at `vertex`. It
- * is used when a candidate starts within the tolerance of the end vertex but not on it, so that
- * there is no common vertex to measure the turn at. The order is that of the directions
- * `vertex - origin` and `end - start` as real vectors, not of their f32 differences:
- * `ringCrossSign(a, b, c, d)` is the exact sign of `cross(b - a, d - c)` for four f32 points
- * (`-1`, `0`, `1`, or `2` when it cannot be certified). The eight products of raw coordinates of
- *
- *     bx dy - bx cy - ax dy + ax cy - by dx + by cx + ay dx - ay cx
- *
- * are summed exactly with the integer machinery of `orientSign` (`multiply24`,
- * `accumulateShifted`: 48-bit products aligned to the smallest exponent in two 256-bit
- * accumulators), behind a float filter on the rounded differences. With `c == b` it is
- * `orientSign(a, b, d)`. The float filter and the exact sum hold no table: the terms are
- * recomputed instead of stored in a local array (contributor contract, section 11).
- *
- * None of these signs changes when one axis is scaled by a positive factor, so the same order
- * holds for longitude/latitude input, whose turns are measured with longitude differences scaled
- * by the cosine of the latitude.
- */
-const RING_EXACT_TURN_WGSL = /* wgsl */ `${EXACT_ORIENTATION_WGSL}
-${EXACT_GEOMETRY_WGSL}
-fn ringExactTurnClass(origin: vec2f, vertex: vec2f, end: vec2f, side: i32) -> i32 {
-  // Positive toward the interior side.
-  let toward = side * SIDE_ORDER;
-  if (toward < 0) { return 0; }
-  if (toward > 0) { return 2; }
-  // Collinear: behind the vertex (dot product negative) is the u-turn.
-  var behind = false;
-  if (vertex.x != origin.x) {
-    behind = (vertex.x > origin.x && end.x < vertex.x) || (vertex.x < origin.x && end.x > vertex.x);
-  } else if (vertex.y != origin.y) {
-    behind = (vertex.y > origin.y && end.y < vertex.y) || (vertex.y < origin.y && end.y > vertex.y);
-  }
-  return select(1, 2, behind);
-}
-// Bit patterns of the two factors of term 'term' of
-// cross(b - a, d - c) = bx dy - bx cy - ax dy + ax cy - by dx + by cx + ay dx - ay cx.
-// The sign of the term is folded into the first factor.
-fn ringCrossFactors(term: u32, a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec2u {
-  let negate = 0x80000000u;
-  switch (term) {
-    case 0u: { return vec2u(bitcast<u32>(b.x), bitcast<u32>(d.y)); }
-    case 1u: { return vec2u(bitcast<u32>(b.x) ^ negate, bitcast<u32>(c.y)); }
-    case 2u: { return vec2u(bitcast<u32>(a.x) ^ negate, bitcast<u32>(d.y)); }
-    case 3u: { return vec2u(bitcast<u32>(a.x), bitcast<u32>(c.y)); }
-    case 4u: { return vec2u(bitcast<u32>(b.y) ^ negate, bitcast<u32>(d.x)); }
-    case 5u: { return vec2u(bitcast<u32>(b.y), bitcast<u32>(c.x)); }
-    case 6u: { return vec2u(bitcast<u32>(a.y), bitcast<u32>(d.x)); }
-    default: { return vec2u(bitcast<u32>(a.y) ^ negate, bitcast<u32>(c.x)); }
-  }
-}
-
-// One term as an exact 48-bit product times 2^exponent; 'present' is false for a zero term.
-struct RingCrossTerm {
-  low: u32,
-  high: u32,
-  exponent: i32,
-  negative: bool,
-  present: bool,
-}
-
-fn ringCrossTerm(term: u32, a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> RingCrossTerm {
-  let factors = ringCrossFactors(term, a, b, c, d);
-  var result = RingCrossTerm(0u, 0u, 0, false, false);
-  let firstMagnitude = factors.x & 0x7fffffffu;
-  let secondMagnitude = factors.y & 0x7fffffffu;
-  if (firstMagnitude == 0u || secondMagnitude == 0u) { return result; }
-  let firstExponentBits = firstMagnitude >> 23u;
-  let secondExponentBits = secondMagnitude >> 23u;
-  let firstFraction = firstMagnitude & 0x7fffffu;
-  let secondFraction = secondMagnitude & 0x7fffffu;
-  let firstSignificand = select(0x800000u | firstFraction, firstFraction, firstExponentBits == 0u);
-  let secondSignificand = select(0x800000u | secondFraction, secondFraction, secondExponentBits == 0u);
-  let firstExponent = select(i32(firstExponentBits) - 150, -149, firstExponentBits == 0u);
-  let secondExponent = select(i32(secondExponentBits) - 150, -149, secondExponentBits == 0u);
-  let product = multiply24(firstSignificand, secondSignificand);
-  result.low = product.x;
-  result.high = product.y;
-  result.exponent = firstExponent + secondExponent;
-  result.negative = ((factors.x ^ factors.y) >> 31u) == 1u;
-  result.present = true;
-  return result;
-}
-
-fn ringCrossExact(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> i32 {
-  var minimumExponent = 100000;
-  var maximumExponent = -100000;
-  for (var term = 0u; term < 8u; term++) {
-    let value = ringCrossTerm(term, a, b, c, d);
-    if (!value.present) { continue; }
-    minimumExponent = min(minimumExponent, value.exponent);
-    maximumExponent = max(maximumExponent, value.exponent);
-  }
-  if (minimumExponent > maximumExponent) { return 0; }
-  if (maximumExponent - minimumExponent > ORIENT_MAXIMUM_SPAN) { return 2; }
-  var positive: array<u32, 8>;
-  var negative: array<u32, 8>;
-  for (var term = 0u; term < 8u; term++) {
-    let value = ringCrossTerm(term, a, b, c, d);
-    if (!value.present) { continue; }
-    let shift = u32(value.exponent - minimumExponent);
-    if (value.negative) {
-      accumulateShifted(&negative, value.low, value.high, shift);
-    } else {
-      accumulateShifted(&positive, value.low, value.high, shift);
-    }
-  }
-  for (var slot = 8u; slot > 0u; slot--) {
-    let plus = positive[slot - 1u];
-    let minus = negative[slot - 1u];
-    if (plus != minus) { return select(-1, 1, plus > minus); }
-  }
-  return 0;
-}
-
-// Exact sign of cross(b - a, d - c) for four f32 points: -1, 0, 1, or 2 when it cannot be
-// certified (non-finite coordinates, or terms that span more than 200 binary orders).
-fn ringCrossSign(a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> i32 {
-  if (!(orientIsFinite(a.x) && orientIsFinite(a.y) && orientIsFinite(b.x) && orientIsFinite(b.y) &&
-        orientIsFinite(c.x) && orientIsFinite(c.y) && orientIsFinite(d.x) && orientIsFinite(d.y))) {
-    return 2;
-  }
-  // Each difference is rounded once and each product once, so the float determinant is within
-  // 2.5e-7 of the magnitude sum of the exact one; the bound keeps a factor of two. Products near
-  // the smallest f32 values lose more than that and go to the exact sum.
-  let first = b - a;
-  let second = d - c;
-  let detLeft = first.x * second.y;
-  let detRight = first.y * second.x;
-  let det = detLeft - detRight;
-  let magnitude = abs(detLeft) + abs(detRight);
-  let bound = 5.0e-7 * magnitude;
-  if (magnitude > 1.0e-30) {
-    if (det > bound) { return 1; }
-    if (-det > bound) { return -1; }
-  }
-  return ringCrossExact(a, b, c, d);
-}
-
-// The same classes for the turn from segment origin -> vertex to segment start -> end (neither
-// of zero length), by the exact sign of the cross product of their directions.
-fn ringSegmentTurnClass(origin: vec2f, vertex: vec2f, start: vec2f, end: vec2f) -> i32 {
-  let side = ringCrossSign(origin, vertex, start, end);
-  if (side == 2) { return -1; }
-  // Positive toward the interior side.
-  let toward = side * SIDE_ORDER;
-  if (toward < 0) { return 0; }
-  if (toward > 0) { return 2; }
-  // Parallel: opposite signs of a non-zero component are the u-turn. A component of one
-  // direction is zero exactly when it is zero in the other.
-  var behind = false;
-  if (vertex.x != origin.x) {
-    behind = (vertex.x > origin.x) != (end.x > start.x);
-  } else {
-    behind = (vertex.y > origin.y) != (end.y > start.y);
-  }
-  return select(1, 2, behind);
-}
-`;
 
 /** Sentinel for "no ring", "no segment" and "no shell" in uint32 outputs (`0xffffffff`). */
 export const GPU_SEGMENT_RING_ASSEMBLY_NONE = 0xffffffff;
@@ -263,189 +66,23 @@ export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_CONFLICT = 4;
  */
 export const GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED = 8;
 
-/** Which side of a directed segment the filled region lies on. */
-export type GPUSegmentRingAssemblyInteriorSide = 'left' | 'right';
-
-/**
- * Polygon layout of {@link GPUSegmentRingAssemblyOutput}: rings regrouped so every polygon feature
- * is its shell followed by its holes, in GeoArrow layout with implicitly closed rings (the repeated
- * closing vertex is dropped). Offsets are GPU-written and padded flat past the data, so views of
- * fixed length stay valid for compile-time topologies: unused polygons and rings are empty. Holes
- * with no enclosing shell are left out. The ordering is deterministic: polygons by shell ring
- * index, holes by ring index.
- */
-export type GPUSegmentRingPolygonOutput = GPUPackedGeometryPort<GPUPolygonGeometryPort> & {
-  /** Ring vertices in polygon order, without closing duplicates. Length at most `positions.length`. */
-  positions: GraphDataView<'float32x2'>;
-  /** Ring-to-vertex offsets, length `ringCapacity + 1`. */
-  ringOffsets: GraphDataView<'uint32'>;
-  /** Polygon-to-ring offsets, length `ringCapacity + 1` (the first ring of a polygon is its shell). */
-  polygonOffsets: GraphDataView<'uint32'>;
-  /** Identity feature-to-polygon offsets, padded with `polygonCount`; one feature per polygon. */
-  featureOffsets: GraphDataView<'uint32'>;
-  /**
-   * Optional stable source ID of each polygon feature (its shell's group). Unused rows hold
-   * `0xffffffff` ({@link GPU_SEGMENT_RING_ASSEMBLY_NONE}). Needs the `groups` input.
-   */
-  sourceIds?: GraphDataView<'uint32'>;
-};
-
-/**
- * Caller-owned, capacity-bounded outputs of {@link GPUSegmentRingAssembly}.
- *
- * Ring capacity is `ringOffsets.length - 1`; vertex capacity is `positions.length`. Rings are
- * written whole or not at all: the written rings are a prefix of the full ring list, `status.count` is
- * the number written and `status.overflow` is 1 when more rings existed.
- */
-export type GPUSegmentRingAssemblyOutput = {
-  /**
-   * Ring `r` owns `positions[ringOffsets[r] .. ringOffsets[r + 1])`, closed (the last vertex
-   * repeats the first, GeoJSON style). Entries past `status.count` repeat the final offset. Length
-   * `ringCapacity + 1`.
-   */
-  ringOffsets: GraphDataView<'uint32'>;
-  /** Ring vertices in ring order. */
-  positions: GraphDataView<'float32x2'>;
-  /**
-   * Optional signed shoelace measure per ring in input units squared; counter-clockwise positive.
-   * For longitude/latitude input this is an orientation-only measure in degrees², not an area.
-   * Use it for winding/sign only and measure areas with `GPUGeometryMeasures`. Zero means an
-   * empty walk (out and back along one path), and such rings are left out of `polygons`. A ring
-   * whose float32 sum is exactly 0 although it encloses area (a face thinner than one float32
-   * step; it has an exact non-zero turn at a lowest vertex it passes once) reports the smallest
-   * normal float, `1.17549435e-38`, with the sign of that turn, so it is never taken for empty.
-   */
-  ringAreas?: GraphDataView<'float32'>;
-  /**
-   * Optional 1 for rings that are holes (interior on the outside of the ring), else 0. The ring's
-   * orientation is the exact turn at its lowest vertex (smallest y, then x), so it is correct for
-   * thin rings whose f32 `ringAreas` sign is not; a zero turn falls back to the area sign.
-   */
-  ringIsHole?: GraphDataView<'uint32'>;
-  /**
-   * Optional owning shell per ring: a shell's own ring index; a hole's innermost enclosing shell
-   * (same group when `groups` is set), or {@link GPU_SEGMENT_RING_ASSEMBLY_NONE} when no shell
-   * contains it. Containment is the exact ray test of a point beside the hole's first edge. Of two
-   * shells that contain it, the inner one is the one whose bounding box lies inside the other's
-   * (exact for a planar boundary, whose rings do not cross); only shells whose boxes are equal or
-   * do not nest are ordered by float32 area (smaller first, lowest index on ties). Float32 areas
-   * are not otherwise used: a thin shell and its hole can have areas that round to the same value
-   * or the wrong order. A full-coordinate Morton-sorted BVH supplies shells whose boxes contain
-   * the hole box; only those candidates receive the exact vertex walk.
-   */
-  ringShells?: GraphDataView<'uint32'>;
-  /** Optional group label per ring (needs the `groups` input). */
-  ringGroups?: GraphDataView<'uint32'>;
-  /** Optional ring index per input segment, or NONE when the segment is in no written ring. */
-  segmentRings?: GraphDataView<'uint32'>;
-  /** Optional index into `positions` of each segment's start vertex, or NONE. */
-  segmentVertices?: GraphDataView<'uint32'>;
-  /** Optional `GPU_SEGMENT_RING_ASSEMBLY_FLAG_*` bits per input segment. */
-  segmentFlags?: GraphDataView<'uint32'>;
-  /**
-   * Optional polygon layout of the written rings for consumers that need GeoArrow polygon
-   * topology, such as `GPUPointInPolygonJoin`.
-   */
-  polygons?: GPUSegmentRingPolygonOutput;
-  /**
-   * One-row status scalars. `count` receives the number of rings written. `overflow` receives 1
-   * when ring or vertex capacity dropped rings, or when a valid segment has a non-finite
-   * coordinate (such vertices cannot be matched). The optional `requiredCount` receives the
-   * unclamped ring count.
-   */
-  status: GPUCardinalityPort &
-    GPUOverflowStatusPort & {
-      /** Optional one-row scalar receiving the number of valid segments that lie on no closed ring. */
-      openSegmentCount?: GraphDataView<'uint32'>;
-      /** Optional one-row scalar receiving the number of segments whose end vertex is shared. */
-      touchingSegmentCount?: GraphDataView<'uint32'>;
-    };
-};
-
-/** Properties for {@link GPUSegmentRingAssembly}. */
-export type GPUSegmentRingAssemblyProps = {
-  /** Prefix for generated node and transient IDs. Defaults to `'segment-ring-assembly'`. */
-  id?: string;
-  /** Directed segments `(x0, y0, x1, y1)`, for example `GPUCellSetOutline` `output.endpoints`. */
-  endpoints: GraphDataView<'float32x4'>;
-  /** Optional one-row count of valid segment rows. Defaults to every row. */
-  count?: GraphDataView<'uint32'>;
-  /** Optional group label per segment; a ring never mixes groups. */
-  groups?: GraphDataView<'uint32'>;
-  /**
-   * Treat consecutive even/odd segment rows as opposite directed half-edges, collapse duplicate
-   * directed geometry within a group for ring traversal, and never immediately return along any
-   * geometrically equivalent reverse edge. Duplicate input rows remain present and receive their
-   * owner's ring, vertex and flag outputs. Directed duplicates require exact stored-coordinate
-   * equality; vertex matching for ring connectivity still uses `vertexTolerance`. Used by general
-   * polygonization. Defaults to false.
-   */
-  pairedOpposites?: boolean;
-  /**
-   * Compile-time vertex matching distance (Chebyshev, input units). Two vertices match when
-   * both coordinates differ by at most this value. Choose at least four times the f32 spacing of
-   * the coordinates (7.6e-6 degrees near longitude 100) and well below the shortest segment.
-   * Defaults to four f32 ulps of the frame extent (`extent * 2^-21`, measured on the GPU), so only
-   * separately rounded copies of one vertex match (**behavior change:** the default was an
-   * absolute 5e-5). Vertex cells are never smaller than this, and grow with the frame extent so
-   * that projected coordinates cannot collide (see {@link GPUSegmentRingAssembly}).
-   */
-  vertexTolerance?: number;
-  /**
-   * Which side of each segment is filled. Decides which ring is a shell and the rule at shared
-   * vertices. `GPUCellSetOutline` of H3 is `'left'` (counter-clockwise shells), of Quadbin
-   * `'right'`. Defaults to `'left'`.
-   */
-  interiorSide?: GPUSegmentRingAssemblyInteriorSide;
-  /**
-   * Reverse rings of `interiorSide: 'right'` input so every shell is counter-clockwise and every
-   * hole clockwise (RFC 7946). Defaults to false (rings follow the segment direction).
-   */
-  normalizeWinding?: boolean;
-  /**
-   * Coordinate context of the segment endpoints, default native planar. A `longitude-latitude`
-   * context (metric `'none'`) scales x differences by `cos(y)` when comparing turn angles at
-   * shared vertices (degrees), so a turn is judged on the ground and not in stretched degrees;
-   * the factor is clamped at 0.01 near the poles. The order of the turns at a vertex does not
-   * depend on that scale (it is positive), so the continuation is chosen by the same exact
-   * orientation tests as for planar input and the scale only enters the f32 pseudo-angle that
-   * orders non-finite coordinates. This replaces the former `geographic` flag,
-   * which defaulted to true: omitting the context is now planar. The output context preserves the
-   * input `edgeModel` for longitude/latitude; an omitted model stays omitted. Prepare global or
-   * antimeridian-crossing rings with `GPULonLatPolygonPreparation` before polygon consumers.
-   * Only turn comparison is affected; `vertexTolerance` stays in position units.
-   */
-  spatialContext?: GPUSpatialContext;
-  /**
-   * Remove pairs of exactly opposite segments (`a -> b` and `b -> a` in one group, within the
-   * vertex tolerance) before chaining. Such pairs are zero-width slits or ridges where a region is
-   * cut by a line of zero thickness, for example band boundaries of `GPUIsobandRings` on samples
-   * that equal a break; left in, they pinch rings into spikes and strand chains. Pairs match one
-   * to one by lowest segment index; both segments get
-   * {@link GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}. Defaults to false.
-   */
-  cancelOpposingSegments?: boolean;
-  /**
-   * Split rings that touch themselves at a vertex into separate rings (two holes meeting at a
-   * corner, a hole pinched to its shell) at the cost of a second tracing pass. Regions touching at
-   * a vertex are always separate rings. Without it the rule keeps interior wedges tight, so
-   * touching holes join into one self-touching ring. Defaults to true.
-   */
-  splitTouchingRings?: boolean;
-  /** Caller-owned output. */
-  output: GPUSegmentRingAssemblyOutput;
-};
+export type {
+  GPUSegmentRingAssemblyInteriorSide,
+  GPUSegmentRingAssemblyOutput,
+  GPUSegmentRingPolygonOutput,
+  GPUSegmentRingAssemblyProps
+} from './segment-ring-assembly-types';
 
 /**
  * Chains directed boundary segments into closed rings on the GPU.
  *
  * Every segment's end vertex is matched to the segment starting there (coordinates within
  * `vertexTolerance`, found through a sort of quantized vertex hashes and a 3 x 3 neighborhood
- * lookup). Vertices are quantized relative to the start vertex of segment row 0 into unsigned cell
- * indices whose size is `max(vertexTolerance, extent * 2^-22)` (extent: the largest coordinate
- * offset from that origin, measured on the GPU), so large projected coordinates (UTM, Web
- * Mercator) hash to distinct cells at any tolerance; candidates are still compared by their true
- * distance against `vertexTolerance`. Only non-finite coordinates set `output.status.overflow`. At a vertex shared by several rings (cells touching at a corner) the continuation is
+ * lookup). Cells depend on the matching tolerance and the float32 spacing at each coordinate.
+ * With an explicit tolerance, distant groups leave local cells unchanged. Candidate coordinate
+ * differences are checked against the true tolerance. Non-finite offsets from the first vertex
+ * set `output.status.overflow`.
+ * At a vertex shared by several rings (cells touching at a corner) the continuation is
  * the outgoing segment that turns tightest toward the interior side (the face-traversal rule, a
  * bijection on planar boundaries), which keeps regions that touch only at a point as separate
  * rings. A candidate that exactly reverses the incoming segment is the tightest turn for either
@@ -506,56 +143,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUSegmentRingAssemblyProps) {
-    props = Object.freeze({
-      ...snapshotConstructionFields(props, [
-        'id',
-        'endpoints',
-        'count',
-        'groups',
-        'pairedOpposites',
-        'vertexTolerance',
-        'interiorSide',
-        'normalizeWinding',
-        'spatialContext',
-        'cancelOpposingSegments',
-        'splitTouchingRings',
-        'output'
-      ]),
-      spatialContext:
-        props.spatialContext && snapshotConstructionSpatialContext(props.spatialContext),
-      output: Object.freeze({
-        ...snapshotConstructionFields(props.output, [
-          'ringOffsets',
-          'positions',
-          'ringAreas',
-          'ringIsHole',
-          'ringShells',
-          'ringGroups',
-          'segmentRings',
-          'segmentVertices',
-          'segmentFlags',
-          'polygons',
-          'status'
-        ]),
-        status: snapshotConstructionFields(props.output.status, [
-          'count',
-          'overflow',
-          'requiredCount',
-          'openSegmentCount',
-          'touchingSegmentCount'
-        ]),
-        polygons:
-          props.output.polygons &&
-          snapshotConstructionFields(props.output.polygons, [
-            'kind',
-            'positions',
-            'ringOffsets',
-            'polygonOffsets',
-            'featureOffsets',
-            'sourceIds'
-          ])
-      })
-    });
+    props = captureRingAssemblyProps(props);
     this.id = props.id ?? 'segment-ring-assembly';
     this.spatialContext = snapshotConstructionSpatialContext(
       resolveGPUSpatialContext(
@@ -565,125 +153,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
       )
     );
     this.props = props;
-    const id = this.id;
-    const {output} = props;
-    validateSinglePackedView(props.endpoints, ['float32x4'], `${id} endpoints`);
-    const segments = props.endpoints.length;
-    if (segments < 1) {
-      throw new Error(`${id} needs at least one segment row`);
-    }
-    if (props.vertexTolerance !== undefined) {
-      validateFiniteNumber(
-        id,
-        'vertexTolerance',
-        props.vertexTolerance,
-        GPU_SEGMENT_RING_ASSEMBLY_MINIMUM_VERTEX_TOLERANCE
-      );
-    }
-    if (props.interiorSide !== undefined && !['left', 'right'].includes(props.interiorSide)) {
-      throw new Error(`${id} interiorSide must be 'left' or 'right'`);
-    }
-    for (const [name, view] of [
-      ['count', props.count],
-      ['output.status.count', output.status.count],
-      ['output.status.overflow', output.status.overflow],
-      ['output.status.requiredCount', output.status.requiredCount],
-      ['output.status.openSegmentCount', output.status.openSegmentCount],
-      ['output.status.touchingSegmentCount', output.status.touchingSegmentCount]
-    ] as const) {
-      if (view) {
-        validatePackedUint32View(view, `${id} ${name}`);
-        if (view.length < 1) {
-          throw new Error(`${id} ${name} must contain one uint32 row`);
-        }
-      }
-    }
-    if (props.groups) {
-      validatePackedUint32View(props.groups, `${id} groups`);
-      if (props.groups.length !== segments) {
-        throw new Error(`${id} groups length must equal the segment row count`);
-      }
-    }
-    if (output.ringGroups && !props.groups) {
-      throw new Error(`${id} output.ringGroups needs the groups input`);
-    }
-    validatePackedUint32View(output.ringOffsets, `${id} output.ringOffsets`);
-    if (output.ringOffsets.length < 2) {
-      throw new Error(`${id} output.ringOffsets needs at least two rows (one ring)`);
-    }
-    validateSinglePackedView(output.positions, ['float32x2'], `${id} output.positions`);
-    if (output.positions.length < 1) {
-      throw new Error(`${id} output.positions must not be empty`);
-    }
-    const ringCapacity = output.ringOffsets.length - 1;
-    for (const [name, view] of [
-      ['ringIsHole', output.ringIsHole],
-      ['ringShells', output.ringShells],
-      ['ringGroups', output.ringGroups]
-    ] as const) {
-      if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
-        if (view.length !== ringCapacity) {
-          throw new Error(`${id} output.${name} length must equal the ring capacity`);
-        }
-      }
-    }
-    if (output.ringAreas) {
-      validateSinglePackedView(output.ringAreas, ['float32'], `${id} output.ringAreas`);
-      if (output.ringAreas.length !== ringCapacity) {
-        throw new Error(`${id} output.ringAreas length must equal the ring capacity`);
-      }
-    }
-    if (output.polygons) {
-      const {polygons} = output;
-      validateSinglePackedView(
-        polygons.positions,
-        ['float32x2'],
-        `${id} output.polygons.positions`
-      );
-      if (polygons.positions.length !== output.positions.length) {
-        throw new Error(`${id} output.polygons.positions must match output.positions length`);
-      }
-      if (polygons.sourceIds) {
-        if (!props.groups) {
-          throw new Error(`${id} output.polygons.sourceIds needs the groups input`);
-        }
-        validatePackedUint32View(polygons.sourceIds, `${id} output.polygons.sourceIds`);
-        if (polygons.sourceIds.length !== ringCapacity) {
-          throw new Error(
-            `${id} output.polygons.sourceIds must have ${ringCapacity} rows (the ring capacity)`
-          );
-        }
-      }
-      for (const [name, view, length] of [
-        ['ringOffsets', polygons.ringOffsets, ringCapacity + 1],
-        ['polygonOffsets', polygons.polygonOffsets, ringCapacity + 1],
-        ['featureOffsets', polygons.featureOffsets, ringCapacity + 1]
-      ] as const) {
-        validatePackedUint32View(view, `${id} output.polygons.${name}`);
-        if (view.length !== length) {
-          throw new Error(`${id} output.polygons.${name} must have ${length} rows`);
-        }
-      }
-    }
-    for (const [name, view] of [
-      ['segmentRings', output.segmentRings],
-      ['segmentVertices', output.segmentVertices],
-      ['segmentFlags', output.segmentFlags]
-    ] as const) {
-      if (view) {
-        validatePackedUint32View(view, `${id} output.${name}`);
-        if (view.length !== segments) {
-          throw new Error(`${id} output.${name} length must equal the segment row count`);
-        }
-      }
-    }
-    validateRingOutputDispatches(id, output, Boolean(props.pairedOpposites));
-    validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
-      props.endpoints,
-      props.count,
-      props.groups
-    ]);
+    validateRingAssemblyProps(this.id, props);
   }
 
   /** Returns the hash, sort, match, pointer jumping, ranking, placement and ring-stat nodes. */
@@ -692,42 +162,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
-    validateGraphChunkBindingRanges(graph, id, {
-      endpoints: props.endpoints,
-      count: props.count,
-      groups: props.groups,
-      ...Object.fromEntries(getOutputViews(output).map((view, index) => [`output ${index}`, view]))
-    });
-    const segments = props.endpoints.length;
-    const ringCapacity = output.ringOffsets.length - 1;
-    const vertexCapacity = output.positions.length;
-    const validateScratch = (name: string, byteLength: number) => {
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        name,
-        byteLength,
-        'reduce the segment or ring capacity'
-      );
-      validateCapacity(id, `${name} byteLength`, byteLength, 0, graph.device.limits.maxBufferSize);
-    };
-    // Endpoint storage bounds per-segment sort/scan words. Ring words can be wider when callers
-    // reserve more output rings than input segments; include every fixed/derived allocation.
-    validateScratch('ring counters scratch', 6 * Uint32Array.BYTES_PER_ELEMENT);
-    validateScratch('segment word scratch', segments * Uint32Array.BYTES_PER_ELEMENT);
-    validateScratch('ring word scratch', ringCapacity * Uint32Array.BYTES_PER_ELEMENT);
-    if (output.ringShells || output.polygons) {
-      const leafCapacity = 2 ** Math.ceil(Math.log2(ringCapacity));
-      validateScratch(
-        'shell records',
-        ringCapacity * RING_SHELL_RECORD_WORDS * Uint32Array.BYTES_PER_ELEMENT
-      );
-      validateScratch('shell bounds', ringCapacity * 4 * Float32Array.BYTES_PER_ELEMENT);
-      validateScratch(
-        'shell BVH nodes',
-        (2 * leafCapacity - 1) * 2 * Float32Array.BYTES_PER_ELEMENT
-      );
-    }
+    const {segments, ringCapacity, vertexCapacity} = getRingAssemblyPlan(graph, id, props);
     // Without an explicit tolerance, vertices match within 4 ulps of the frame extent (derived on
     // the GPU from the measured extent, rule 4), so separately rounded copies of one vertex meet.
     const tolerance = props.vertexTolerance ?? 0;
@@ -812,9 +247,8 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
 
     const nodes: GPUCommandNode<Parameters>[] = [];
 
-    // 0. Zero the counters, then measure the frame extent: the largest |x - ox| or |y - oy| of any
-    // endpoint relative to the origin (non-negative f32 bits order like u32, so atomicMax works).
-    // Non-finite vertices are counted into counters[3] and reported as overflow.
+    // 0. Measure the frame extent from the first vertex. Non-finite relative coordinates
+    // contribute to counters[3], which is published as overflow.
     nodes.push(
       kernel(
         'quantize-init',
@@ -1037,13 +471,15 @@ fn findReverse(index: u32) -> u32 {
     }
 
     if (duplicateOwner) {
+      // Without cancellation there was no earlier flags initialization. A duplicate must start
+      // with only its marker, or caller bytes can masquerade as the public cancelled flag.
       nodes.push(
         kernel(
           'mark-duplicate-owners',
           [read('duplicateOwner', duplicateOwner), write('flags', segmentFlags)],
           segments,
           `if (duplicateOwner[duplicateOwnerOffset + index] != index ${cancelOpposing ? `&& (flags[flagsOffset + index] & ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u) == 0u` : ''}) {
-    flags[flagsOffset + index] = flags[flagsOffset + index] | 0x80000000u;
+    flags[flagsOffset + index] = ${cancelOpposing ? 'flags[flagsOffset + index] | ' : ''}0x80000000u;
   } ${cancelOpposing ? '' : `else { flags[flagsOffset + index] = 0u; }`}`
         )
       );
@@ -2102,45 +1538,16 @@ ${getExactRingWindingWGSL('getShellWinding', 'getRingVertex')}`
       );
     }
 
-    // 9. Publish scalars.
+    nodes.push(...getRingStatusNodes(graph, {id, output, ringScan, ringCount, counters, segments}));
     nodes.push(
-      kernel(
-        'publish',
-        [
-          read('ringScan', ringScan),
-          read('ringCount', ringCount),
-          read('counters', counters),
-          write('outCount', output.status.count),
-          write('outOverflow', output.status.overflow),
-          ...(output.status.requiredCount ? [write('outTotal', output.status.requiredCount)] : [])
-        ],
-        1,
-        `let total = ringScan[ringScanOffset + ${segments - 1}u];
-  let written = ringCount[ringCountOffset];
-  outCount[outCountOffset] = written;
-  outOverflow[outOverflowOffset] = select(0u, 1u, written < total || counters[countersOffset + 3u] != 0u);
-  ${output.status.requiredCount ? 'outTotal[outTotalOffset] = total;' : ''}`
-      )
+      ...getRingInputCompletenessNodes(graph, {
+        id,
+        input: props.segmentStatus,
+        output,
+        counters,
+        segmentFlags
+      })
     );
-    if (output.status.openSegmentCount || output.status.touchingSegmentCount) {
-      nodes.push(
-        kernel(
-          'publish-counters',
-          [
-            read('counters', counters),
-            ...(output.status.openSegmentCount
-              ? [write('outOpen', output.status.openSegmentCount)]
-              : []),
-            ...(output.status.touchingSegmentCount
-              ? [write('outTouching', output.status.touchingSegmentCount)]
-              : [])
-          ],
-          1,
-          `${output.status.openSegmentCount ? 'outOpen[outOpenOffset] = counters[countersOffset] - counters[countersOffset + 2u];' : ''}
-  ${output.status.touchingSegmentCount ? 'outTouching[outTouchingOffset] = counters[countersOffset + 1u];' : ''}`
-        )
-      );
-    }
     return nodes;
 
     function createJumpNode(mode: 'min' | 'sum', round: string, source: number) {
@@ -2172,70 +1579,4 @@ ${getExactRingWindingWGSL('getShellWinding', 'getRingVertex')}`
       });
     }
   }
-}
-
-/** Construction-time caller-output access plan; private scratch never aliases these views. */
-function validateRingOutputDispatches(
-  id: string,
-  output: GPUSegmentRingAssemblyOutput,
-  pairedOpposites: boolean
-): void {
-  validateDisjointWritableViews(id, Object.fromEntries(getOutputViewEntries(output)), {
-    separateDispatches: true
-  });
-  const validateDispatch = (
-    inputs: readonly (GraphDataView | undefined)[],
-    writable: Readonly<Record<string, GraphDataView | undefined>>
-  ) => {
-    validateDisjointWritableViews(id, writable);
-    // A disjoint byte range is still a conflicting read-only/write usage of one buffer.
-    validateGraphOutputsDisjointFromInputs(id, Object.values(writable), inputs);
-  };
-  validateDispatch([], {
-    segmentRings: output.segmentRings,
-    segmentVertices: output.segmentVertices,
-    segmentFlags: pairedOpposites ? output.segmentFlags : undefined
-  });
-  validateDispatch([output.segmentVertices], {positions: output.positions});
-  validateDispatch([output.positions, output.ringOffsets], {
-    ringAreas: output.ringAreas,
-    ringIsHole: output.ringIsHole
-  });
-  validateDispatch([output.positions, output.ringOffsets], {ringShells: output.ringShells});
-  if (output.polygons) {
-    validateDispatch([output.ringGroups], {sourceIds: output.polygons.sourceIds});
-    validateDispatch([], {
-      'polygons.ringOffsets': output.polygons.ringOffsets,
-      'polygons.polygonOffsets': output.polygons.polygonOffsets,
-      'polygons.featureOffsets': output.polygons.featureOffsets
-    });
-    validateDispatch([output.positions, output.ringOffsets, output.polygons.ringOffsets], {
-      'polygons.positions': output.polygons.positions
-    });
-  }
-  validateDispatch([], {
-    'status.count': output.status.count,
-    'status.overflow': output.status.overflow,
-    'status.requiredCount': output.status.requiredCount
-  });
-  validateDispatch([], {
-    'status.openSegmentCount': output.status.openSegmentCount,
-    'status.touchingSegmentCount': output.status.touchingSegmentCount
-  });
-}
-
-function getOutputViewEntries(output: GPUSegmentRingAssemblyOutput) {
-  const {kind: _kind, ...polygonViews} = output.polygons ?? {};
-  const {status, polygons: _polygons, ...views} = output;
-  return [
-    ...Object.entries(views).map(([name, view]) => [`output.${name}`, view] as const),
-    ...Object.entries(polygonViews).map(
-      ([name, view]) => [`output.polygons.${name}`, view] as const
-    ),
-    ...Object.entries(status).map(([name, view]) => [`output.status.${name}`, view] as const)
-  ];
-}
-
-function getOutputViews(output: GPUSegmentRingAssemblyOutput) {
-  return getOutputViewEntries(output).map(([, view]) => view);
 }

@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  type RegionalizationWeightsStatus,
+  validateRegionalizationWeightsStatus
+} from './adjacency-loss-suppression';
+
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialWeightsInformation} from '../spatial-weights/spatial-weights';
 
 /** Packed regionalization inputs shared by the Max-P and AZP twins. @internal */
@@ -13,32 +21,101 @@ export type CPURegionInput = {
   distances?: Float32Array;
   values: Float32Array;
   parameters: Uint32Array;
+  status?: RegionalizationWeightsStatus<Uint32Array>;
 };
+
+/** Adjacency loss is unavailable input, not an invalid feature or neighbor ID. @internal */
+export function hasCPURegionInputLoss(input: CPURegionInput, id = 'regionalization'): boolean {
+  validateRegionalizationWeightsStatus(id, input.status);
+  let incomplete = false;
+  for (const name of ['overflow', 'candidateOverflow'] as const) {
+    const flag = input.status?.[name];
+    if (flag) {
+      validateCapacity(id, `status.${name} length`, flag.length, 1);
+      incomplete ||= flag[0] !== 0;
+    }
+  }
+  return incomplete;
+}
 
 /** Checks array shapes; invalid neighbor IDs remain status-bearing input. @internal */
 export function validateCPURegionInput(
   input: CPURegionInput,
   columnCount: number,
-  parameterLength: number
+  parameterLength: number,
+  id = 'regionalization'
 ): number {
   const {offsets, neighbors, weights, distances, values, parameters} = input;
   const rowCount = offsets.length - 1;
-  validateCapacity('regionalization', 'columnCount', columnCount);
-  if (
-    rowCount < 1 ||
-    offsets[0] !== 0 ||
-    offsets.some(
-      (offset, row) => offset > neighbors.length || (row > 0 && offset < offsets[row - 1])
-    )
-  )
-    throw new Error('offsets must be nondecreasing CSR offsets starting at zero within neighbors');
+  validateCapacity(id, 'columnCount', columnCount);
+  validateCapacity(id, 'rowCount', rowCount);
+  validateRequirement(id, offsets[0] === 0, 'offsets must start at zero', {
+    code: 'REQUIREMENT',
+    path: 'offsets[0]',
+    received: offsets[0],
+    expected: 0
+  });
+  for (let row = 1; row <= rowCount; row++) {
+    validateRequirement(
+      id,
+      offsets[row] >= offsets[row - 1] && offsets[row] <= neighbors.length,
+      'offsets must be nondecreasing CSR offsets within neighbors',
+      {
+        code: 'REQUIREMENT',
+        path: `offsets[${row}]`,
+        received: offsets[row],
+        expected: {minimum: offsets[row - 1], maximum: neighbors.length}
+      }
+    );
+  }
   if (weights.length !== neighbors.length)
-    throw new Error('weights length must equal neighbors length');
+    validateRequirement(
+      id,
+      false,
+      `weights length must equal neighbors length; received weights.length=${weights.length}, neighbors.length=${neighbors.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'weights.length',
+        received: weights.length,
+        expected: 'weights length must equal neighbors length'
+      }
+    );
   if (distances && distances.length !== neighbors.length)
-    throw new Error('distances length must equal neighbors length');
+    validateRequirement(
+      id,
+      false,
+      `distances length must equal neighbors length; received distances.length=${distances.length}, neighbors.length=${neighbors.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'distances.length',
+        received: distances.length,
+        expected: 'distances length must equal neighbors length'
+      }
+    );
   if (values.length !== rowCount * columnCount)
-    throw new Error('values length must equal rowCount * columnCount');
-  if (parameters.length < parameterLength) throw new Error('parameters must hold the seed layout');
+    validateRequirement(
+      id,
+      false,
+      `values length must equal rowCount * columnCount; received values.length=${values.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'values.length',
+        received: values.length,
+        expected: 'values length must equal rowCount * columnCount'
+      }
+    );
+  if (parameters.length < parameterLength)
+    validateRequirement(
+      id,
+      false,
+      `parameters must hold the seed layout; received parameters.length=${parameters.length}`,
+      {
+        code: 'VIEW_LENGTH',
+        path: 'parameters.length',
+        received: parameters.length,
+        expected: 'parameters must hold the seed layout'
+      }
+    );
   return rowCount;
 }
 
@@ -63,7 +140,7 @@ export function getCPURegionAdjacency(
   return adjacency;
 }
 
-/** Float64 population standardization, including the GPU's tiny-deviation rule. @internal */
+/** Float64 population standardization: only zero deviation makes a constant column. @internal */
 export function getCPURegionTable(
   values: Float32Array,
   columnCount: number,
@@ -76,24 +153,34 @@ export function getCPURegionTable(
     let origin = 0;
     let count = 0;
     let sum = 0;
+    let compensation = 0;
     for (let row = 0; row < rowCount; row++) {
       const value = values[row * columnCount + column];
       if (!Number.isFinite(value)) continue;
       if (count === 0) origin = value;
-      sum += value - origin;
+      const term = value - origin;
+      const next = sum + term;
+      compensation += Math.abs(sum) >= Math.abs(term) ? sum - next + term : term - next + sum;
+      sum = next;
       count++;
     }
-    const mean = sum / Math.max(count, 1);
+    const divisor = Math.max(count, 1);
+    const mean = sum / divisor;
+    // Retain the correction separately: adding it to a large mean can erase a real residual.
+    const meanResidual = (sum - mean * divisor + compensation) / divisor;
     let squares = 0;
     for (let row = 0; row < rowCount; row++) {
       const value = values[row * columnCount + column];
-      if (Number.isFinite(value)) squares += (value - origin - mean) ** 2;
+      if (Number.isFinite(value)) squares += (value - origin - mean - meanResidual) ** 2;
     }
     const deviation = Math.sqrt(squares / Math.max(count, 1));
-    const inverse = deviation > 1e-20 ? 1 / deviation : 0;
+    // Float32 input differences and their squares fit float64 even at the smallest positive
+    // float32 scale. An absolute cutoff would erase information after changing column units.
+    const inverse = deviation > 0 ? 1 / deviation : 0;
     for (let row = 0; row < rowCount; row++) {
       const index = row * columnCount + column;
-      if (Number.isFinite(values[index])) table[index] = (values[index] - origin - mean) * inverse;
+      if (Number.isFinite(values[index]))
+        table[index] = (values[index] - origin - mean - meanResidual) * inverse;
     }
   }
   return table;

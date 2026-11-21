@@ -92,6 +92,7 @@ it('raster-algebra contributors validate props', () => {
     const values = view(graph, 'float32', 12);
     const breaks = view(graph, 'float32', 4);
     const parameters = view(graph, 'float32', 8);
+    // @ts-expect-error W3-10 empty terminal selection is rejected for typed callers too.
     expect(() => new GPURasterReclassify({values, breaks, parameters, output: {}})).toThrow(
       /at least one output/
     );

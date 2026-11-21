@@ -3,9 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
-import {snapshotRegressionConstructionProps} from './regression-construction-snapshot';
+import {sliceGraphChunkGroupView} from '../../analysis-core/kernels/graph-chunk-groups';
+import {snapshotRegressionConstructionPropsWithCompleteness as snapshotRegressionConstructionProps} from './regression-certificate-snapshot';
 import {getRegressionWeightsSuppressionNodes} from './regression-weights-completeness';
-import {getRegressionLossViews} from './regression-weights-completeness';
+import {
+  getRegressionCompletenessViews,
+  getRegressionCountGroups,
+  getRegressionLossFoldCount
+} from './regression-weights-completeness';
 
 import {getInstrumentalVariablesCovarianceAllocationLengths} from './instrumental-variables-covariance-parameters';
 
@@ -70,11 +75,15 @@ import {
   type GPUInstrumentalVariablesCovarianceProps
 } from './gpu-instrumental-variables-covariance';
 import {
-  getInstrumentalVariablesCovarianceStatusView,
   getInstrumentalVariablesCovarianceCommandNodeEstimate,
   validateInstrumentalVariablesCovarianceOptions
 } from './instrumental-variables-covariance-parameters';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {
+  getRegressionTileLayout,
+  getRowTileMergeNodes,
+  REGRESSION_TILE_MAXIMUM_TILE_COUNT
+} from './regression-row-tiles';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {MULTIPLICATION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/multiplication-rounding-error-wgsl';
@@ -84,10 +93,6 @@ const OPERATION = 'GPUSpatialTwoStageLeastSquares';
 // radix sort, scan and gather internals (32-bit CSR keys). Tested against the generated graph.
 const SPATIAL_TWO_STAGE_LEAST_SQUARES_BASE_NODE_ALLOWANCE = 512;
 const TILE_WORKGROUP_SIZE = 64;
-const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
-// Bounds the serial norm merge to the regression family's 4096-partial merge budget.
-const MAXIMUM_TILE_COUNT = 4096;
-const MINIMUM_DEFAULT_TILE_ROWS = 64;
 /** Residual sums per tile: `u'u`, `sum u`, `sum (y - ybar) u`, `sum (y - ybar)^2`. */
 const RESIDUAL_SUM_COUNT = 4;
 /** Anselin-Kelejian sums besides the `k + 1` products `u'W z`: `u'Wu`, `u'W1`, `S0`, `tr W'W`, `tr WW`. */
@@ -114,7 +119,8 @@ export type GPUSpatialTwoStageLeastSquaresOutput = {
   table: GraphDataView<'float32'>;
   /** At least 16 float32 values; see the `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_*` slots. */
   summary: GraphDataView<'float32'>;
-  /** Optional per-row structural residuals `u = y - rho W y - X b`; NaN for a failed fit. */
+  /** Optional per-row structural residuals `u = y - rho W y - X b`. A late failure can retain
+   * finite residuals; check `status.code` before reusing them in downstream diagnostics. */
   residuals?: GraphDataView<'float32'>;
 };
 
@@ -233,6 +239,9 @@ export type GPUSpatialTwoStageLeastSquaresProps = {
  * `GPUOrdinaryLeastSquares`: tile moments `H'H`, `H'Z`, `H'y` and `diag(Z'Z)`, a single-invocation
  * solve (Cholesky of the scaled `H'H`, then of the scaled `Z'PZ`), a per-row residual pass and a
  * finish kernel for the table. Nothing is read back.
+ * Above 4096 tiles, consecutive groups of at most 4096 partials are merged pairwise, followed
+ * by a pairwise merge over groups. The limit is REGRESSION_TILE_MAXIMUM_TILE_COUNT (2^24) tiles,
+ * subject to device binding limits; the historical order is unchanged through 4096 tiles.
  *
  * The Anselin-Kelejian test of the structural residuals (spreg `AKtest(case='gen')`) is written to
  * `summary`: `AK = n I^2 / phi2` with `I = (n / S0) u'Wu / u'u`,
@@ -298,7 +307,8 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         'output'
       ],
       ['table', 'summary', 'residuals', 'status'],
-      'spatial-two-stage-least-squares'
+      'spatial-two-stage-least-squares',
+      ['code']
     );
     const id = props.id ?? 'spatial-two-stage-least-squares';
     this.id = id;
@@ -360,7 +370,20 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
           validateGPUSpatialWeights(id, robust.kernel) === rows,
           'robust.kernel row count must equal response.length'
         );
-      const robustStatus = getInstrumentalVariablesCovarianceStatusView(robust.output.status);
+      validateRequirement(
+        id,
+        Boolean(robust.output.status?.code),
+        'robust.output.status.code is required'
+      );
+      const robustStatus = robust.output.status.code;
+      for (const view of robust.kernel ? getRegressionCompletenessViews(robust.kernel) : []) {
+        validateSinglePackedView(view, ['uint32'], `${id} robust.kernel.status`);
+        validateRequirement(
+          id,
+          view.length >= 1,
+          'robust.kernel.status must hold at least one uint32'
+        );
+      }
       for (const [name, view, format, length] of [
         [
           'robust.output.covariance',
@@ -387,14 +410,15 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
             predictorCount + 1,
             Boolean(props.robust.clusters)
           )
+        : 0) +
+      (props.robust?.kernel && getRegressionCountGroups(props.robust.kernel).length
+        ? getRegressionLossFoldCount(props.robust.kernel) + 1
         : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     this.rowCount = rows;
-    this.tileRowCount =
-      props.tileRowCount ??
-      Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
+    this.tileRowCount = getRegressionTileLayout(rows, props.tileRowCount).tileRowCount;
     this.tileCount = Math.ceil(rows / this.tileRowCount);
-    validateMaximumCount(id, 'tileCount', this.tileCount, MAXIMUM_TILE_COUNT);
+    validateMaximumCount(id, 'tileCount', this.tileCount, REGRESSION_TILE_MAXIMUM_TILE_COUNT);
     validateRegressionOutputDispatches(
       this.id,
       {
@@ -402,9 +426,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         status: undefined,
         code: output.status.code,
         covariance: props.robust?.output.covariance,
-        covarianceStatus: props.robust
-          ? getInstrumentalVariablesCovarianceStatusView(props.robust.output.status)
-          : undefined
+        covarianceStatus: props.robust ? props.robust.output.status.code : undefined
       },
       [
         ['table', 'summary', 'code'],
@@ -420,9 +442,7 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         output.status.code,
         output.residuals,
         props.robust?.output.covariance,
-        props.robust
-          ? getInstrumentalVariablesCovarianceStatusView(props.robust.output.status)
-          : undefined
+        props.robust ? props.robust.output.status.code : undefined
       ],
       [
         props.predictors,
@@ -430,11 +450,13 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
-        ...getRegressionLossViews(props.weights),
+        ...getRegressionCompletenessViews(props.weights),
         props.robust?.kernel?.offsets,
         props.robust?.kernel?.neighbors,
         props.robust?.kernel?.weights,
         props.robust?.kernel?.status?.overflow,
+        props.robust?.kernel?.status?.candidateOverflow,
+        ...(props.robust?.kernel ? getRegressionCompletenessViews(props.robust.kernel) : []),
         props.robust?.clusters
       ]
     );
@@ -460,21 +482,28 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       neighbors: weights.neighbors,
       weights: weights.weights,
       ...Object.fromEntries(
-        getRegressionLossViews(weights).map((view, index) => [`weights loss ${index}`, view])
+        getRegressionCompletenessViews(weights).map((view, index) => [
+          `weights loss ${index}`,
+          view
+        ])
       ),
       table: output.table,
       summary: output.summary,
       code: output.status.code,
       residuals: output.residuals,
       robustCovariance: props.robust?.output.covariance,
-      robustStatus: props.robust
-        ? getInstrumentalVariablesCovarianceStatusView(props.robust.output.status)
-        : undefined,
+      robustStatus: props.robust ? props.robust.output.status.code : undefined,
       robustClusters: props.robust?.clusters,
       robustKernelOffsets: props.robust?.kernel?.offsets,
       robustKernelNeighbors: props.robust?.kernel?.neighbors,
       robustKernelWeights: props.robust?.kernel?.weights,
-      robustKernelOverflow: props.robust?.kernel?.status?.overflow
+      robustKernelOverflow: props.robust?.kernel?.status?.overflow,
+      robustKernelCandidateOverflow: props.robust?.kernel?.status?.candidateOverflow,
+      ...Object.fromEntries(
+        (props.robust?.kernel ? getRegressionCompletenessViews(props.robust.kernel) : []).map(
+          (view, index) => [`kernel completeness ${index}`, view]
+        )
+      )
     });
     validateRegressionAllocations(
       graph.device,
@@ -504,6 +533,8 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       weights.offsets,
       weights.neighbors,
       weights.weights,
+      ...getRegressionCompletenessViews(weights),
+      ...(props.robust?.kernel ? getRegressionCompletenessViews(props.robust.kernel) : []),
       output.table,
       output.summary,
       output.status.code,
@@ -603,6 +634,35 @@ const W_CORRECTION_OFFSET: u32 = ${meanCount + 2 * q + 5}u;`;
       });
     const lagDeclarations = `${constants}
 ${getLagWGSL()}`;
+    const mergeKernel = (
+      name: string,
+      bindings: WGSLKernelBinding[],
+      invocationCount: number,
+      declarations: string,
+      body: string
+    ) =>
+      getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-${name}`,
+          operation: OPERATION,
+          variant: name,
+          bindings,
+          invocationCount,
+          declarations,
+          body
+        },
+        {
+          tileCount,
+          partials: [
+            {
+              name: 'partial',
+              termCount: bindings[0].view.length / tileCount,
+              ...(name === 'weights-norm-merge' ? {maxima: {0: 0, 1: -3e38}} : {})
+            }
+          ]
+        }
+      );
     const rowDeclarations = `${lagDeclarations}
 ${getCenteredRowWGSL()}`;
     const residualDeclarations = `${rowDeclarations}
@@ -650,7 +710,7 @@ ${getStructuralResidualWGSL()}`;
   partial[partialOffset + 3u * index + 2u] = responseSum;`,
         TILE_WORKGROUP_SIZE
       ),
-      kernel(
+      ...mergeKernel(
         'weights-norm-merge',
         [f32('partial', partialNorm, 'read'), f32('workspace', workspace, 'read_write')],
         1,
@@ -702,7 +762,7 @@ ${getStructuralResidualWGSL()}`;
   }`,
         TILE_WORKGROUP_SIZE
       ),
-      kernel(
+      ...mergeKernel(
         'means-merge',
         [f32('partial', partialMeans, 'read'), f32('workspace', workspace, 'read_write')],
         meanCount,
@@ -755,7 +815,7 @@ ${getStructuralResidualWGSL()}`;
   }`,
         TILE_WORKGROUP_SIZE
       ),
-      kernel(
+      ...mergeKernel(
         'moments-merge',
         [f32('partial', partialMoments, 'read'), f32('moments', moments, 'read_write')],
         momentStride,
@@ -820,7 +880,7 @@ ${getSolveWGSL(m, q)}`,
   }`,
         TILE_WORKGROUP_SIZE
       ),
-      kernel(
+      ...mergeKernel(
         'refinement-merge',
         [f32('partial', partialRefinement, 'read'), f32('refinement', refinement, 'read_write')],
         m + 1,
@@ -892,7 +952,7 @@ ${getSolveWGSL(m, q, 'refinement')}`,
   }`,
         TILE_WORKGROUP_SIZE
       ),
-      kernel(
+      ...mergeKernel(
         'residuals-merge',
         [f32('partial', partialResiduals, 'read'), f32('residualSums', residualSums, 'read_write')],
         RESIDUAL_SUM_COUNT,
@@ -1010,7 +1070,7 @@ ${getSolveWGSL(m, q, 'refinement')}`,
   }`,
         TILE_WORKGROUP_SIZE
       ),
-      kernel(
+      ...mergeKernel(
         'anselin-kelejian-merge',
         [f32('partial', partialAk, 'read'), f32('akSums', akSums, 'read_write')],
         akCount,
@@ -1070,7 +1130,7 @@ robustDesign[robustDesignOffset + index * Q + K] = lagResponse + workspace[works
           coefficientCount: q,
           instruments,
           instrumentCount: m,
-          residuals: residualView,
+          residuals: sliceGraphChunkGroupView(graph, residualView, 0, rowCount),
           ...props.robust
         }).getCommandNodes(graph)
       );
@@ -1081,7 +1141,7 @@ robustDesign[robustDesignOffset + index * Q + K] = lagResponse + workspace[works
             f32('covariance', props.robust.output.covariance, 'read'),
             {
               name: 'robustStatus',
-              view: getInstrumentalVariablesCovarianceStatusView(props.robust.output.status),
+              view: props.robust.output.status.code,
               type: 'u32',
               access: 'read'
             },
@@ -1106,7 +1166,12 @@ table[tableOffset + index * 4u + 3u] = erfcValue(abs(statistic) * 0.70710678);`
         id,
         props.weights,
         props.output,
-        props.robust?.output
+        props.robust?.output,
+        {
+          table: (k + 2) * GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE,
+          summary: GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
+          residuals: rowCount
+        }
       )
     ];
   }
@@ -1414,7 +1479,10 @@ fn solveSystem(
     }
     let total = getRegressorSquares(K);
     let excluded = explainedFull - explainedRestricted;
-    (*diagnostics)[4] = (excluded / f32(M - K)) / ((total - explainedFull) / (f32(ROWS) - f32(M) - 1.0));
+    (*diagnostics)[4] = getNaN();
+    if (ROWS > M + 1u) {
+      (*diagnostics)[4] = (excluded / f32(M - K)) / ((total - explainedFull) / (f32(ROWS) - f32(M) - 1.0));
+    }
     (*diagnostics)[5] = excluded / (total - explainedRestricted);
   }
   // x1 = (H'H)^-1 H'Z column by column, x2 = (H'H)^-1 H'y (scaled instrument space).

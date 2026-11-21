@@ -315,7 +315,7 @@ export async function createGlobalAutocorrelation(
       snapTolerance: 0,
       bandFactor: o.bandFactor,
       knnCapFactor: 0,
-      weightKind: 'binary',
+      weightType: 'binary',
       kernel: 'triangular',
       power: 1,
       distanceFloor: 0,

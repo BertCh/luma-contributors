@@ -185,8 +185,11 @@ export function makeWorkflowOperationFromCatalogBinding(
       accepts:
         input.dataKind === 'table' || input.dataKind === 'raster'
           ? [input.dataKind]
-          : input.accepts,
+          : input.acceptsTable
+            ? [...input.accepts, 'table']
+            : input.accepts,
       ...(input.dataKind === 'table' ? {geometryFree: true} : {}),
+      ...(input.acceptsTable ? {acceptsTable: true} : {}),
       maximumRows: input.dataKind === 'raster' ? 0 : input.maximumFeatures,
       ...(input.dataKind === 'raster' ? {maximumCells: input.maximumCells} : {}),
       maximumVertices: input.maximumVertices
@@ -202,13 +205,15 @@ export function makeWorkflowOperationFromCatalogBinding(
             : output.geometry === 'mixed'
               ? 'features'
               : output.geometry,
+      ...(output.geometryFromInput ? {kindFrom: output.geometryFromInput} : {}),
       identityColumns: output.identityColumns,
       maximumRows: output.maximumRows
     })),
     parameters,
     normalizeParameters: raw => {
       const normalized = normalizeWorkflowParameters(parameters, raw, {
-        operationTitle: binding.title
+        operationTitle: binding.title,
+        operationId: binding.id
       });
       try {
         return normalizeCatalogParameters(binding, normalized);
@@ -227,6 +232,10 @@ export function makeWorkflowOperationFromCatalogBinding(
         if (!Object.hasOwn(inputs, input.name)) continue;
         const data = inputs[input.name];
         if (!data) continue;
+        if (input.acceptsTable && data.kind === 'table') {
+          collections[input.name] = getWorkflowCatalogInput(data, input.maximumFeatures);
+          continue;
+        }
         if (input.dataKind === 'table' || input.dataKind === 'raster') {
           if (data.kind !== input.dataKind)
             throw new WorkflowError(
@@ -405,7 +414,7 @@ export function getWorkflowOperationRegistry(): WorkflowOperationRegistry {
  */
 export function getWorkflowPortCompatibility(
   outputKind: WorkflowPortKind,
-  input: Pick<WorkflowInputPortSpec, 'accepts' | 'geometryFree'>
+  input: Pick<WorkflowInputPortSpec, 'accepts' | 'geometryFree' | 'acceptsTable'>
 ): WorkflowPortCompatibility {
   if (input.geometryFree && outputKind !== 'table')
     return outputKind === 'features' ? 'maybe' : 'no';
@@ -413,6 +422,7 @@ export function getWorkflowPortCompatibility(
   if (outputKind === 'raster') return 'no';
   // Dataset sources historically declare features before their actual representation is read.
   if (outputKind === 'features' && input.accepts.includes('raster')) return 'maybe';
+  if (input.acceptsTable) return outputKind === 'features' ? 'maybe' : 'no';
   if (input.accepts.includes('table')) return 'yes';
   const acceptsGeometry = input.accepts.some(kind => kind !== 'table' && kind !== 'raster');
   if (!acceptsGeometry) return 'no';

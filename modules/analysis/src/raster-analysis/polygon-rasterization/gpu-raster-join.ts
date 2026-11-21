@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RequireRasterOutput} from '../raster-zonal-statistics/raster-required-output';
+import {
+  validateRasterProducerCompleteness,
+  getRasterProducerCompletenessNodes
+} from '../raster-zonal-statistics/raster-producer-completeness';
+import {validateRasterWritableDispatches} from '../raster-grid/raster-view-validation';
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   GPU_LINEAR_EDGE_MODELS,
@@ -25,6 +31,7 @@ import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segme
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getStorageBindingElementLimit,
+  getGraphOutputViews,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -68,9 +75,11 @@ const AGGREGATE_WORKGROUP_SIZE = 256;
  * required. Per-zone columns hold exactly `zoneCount` rows; per-point columns one row per point;
  * scalars one row.
  */
-export type GPURasterJoinOutput = {
+type RasterJoinColumns = {
   /** Per zone: points whose cell holds the zone. Exact integer atomics. */
   counts?: GraphDataView<'uint32'>;
+  /** New guarded route: 1 when producerOverflow is nonzero, otherwise 0. */
+  status?: {incomplete?: GraphDataView<'uint32'>};
   /**
    * Per zone: sum of finite `values` of the zone's points (non-finite values contribute 0).
    * Requires `values`. Reduced in sorted order, so bitwise reproducible across encodings.
@@ -99,6 +108,11 @@ export type GPURasterJoinOutput = {
    */
   pointBoundaryMask?: GraphDataView<'uint32'>;
 };
+
+/** At least one terminal column or the supported nested incomplete status. */
+export type GPURasterJoinOutput =
+  | (RequireRasterOutput<Omit<RasterJoinColumns, 'status'>> & Pick<RasterJoinColumns, 'status'>)
+  | (RasterJoinColumns & {status: {incomplete: GraphDataView<'uint32'>}});
 
 /**
  * Properties for {@link GPURasterJoin}.
@@ -131,6 +145,8 @@ export type GPURasterJoinProps = {
   values?: GraphDataView<'float32'>;
   /** Packed row-major zone raster (`grid.width * grid.height`), for example from `GPUPolygonRasterization`. */
   zones: GraphDataView<'uint32'>;
+  /** Rasterization status. When supplied, requires output.status.incomplete; failed frames publish NaN floats and 0xffffffff integers. */
+  producerOverflow?: GraphDataView<'uint32'>;
   /** Optional boundary flags (`grid.width * grid.height`), for example from `GPUPolygonRasterization`. */
   boundary?: GraphDataView<'uint32'>;
   /**
@@ -221,7 +237,13 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
         }
       }
     }
-    const outputViews = Object.values(output).filter(Boolean);
+    const outputViews = getGraphOutputViews(output);
+    validateRasterProducerCompleteness(
+      id,
+      props.producerOverflow,
+      output.status?.incomplete,
+      outputViews
+    );
     if (outputViews.length === 0) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -239,6 +261,7 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
       ['boundaryCounts', output.boundaryCounts, props.zoneCount],
       ['unassignedBoundaryCount', output.unassignedBoundaryCount, 1],
       ['outsideCount', output.outsideCount, 1],
+      ['incomplete', output.status?.incomplete, 1],
       ['pointZones', output.pointZones, pointCount],
       ['pointBoundaryMask', output.pointBoundaryMask, pointCount]
     ] as const) {
@@ -256,11 +279,40 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
         throw new Error(`${id} output.sums must contain zoneCount rows`);
       }
     }
+    const inputs = getGraphOutputViews(props);
+    const writes = (columns: object) => getGraphOutputViews(columns);
+    validateRasterWritableDispatches(id, inputs, outputViews, [
+      {
+        inputs,
+        outputs: writes({
+          pointZones: output.pointZones,
+          pointBoundaryMask: output.pointBoundaryMask
+        })
+      },
+      {
+        inputs: writes({pointZones: output.pointZones}),
+        outputs: writes({counts: output.counts, boundaryCounts: output.boundaryCounts})
+      },
+      {
+        inputs: [],
+        outputs: writes({unassigned: output.unassignedBoundaryCount, outside: output.outsideCount})
+      },
+      {inputs: [], outputs: writes({sums: output.sums})},
+      {
+        inputs: writes({producerOverflow: props.producerOverflow}),
+        outputs: writes({incomplete: output.status?.incomplete})
+      },
+      ...outputViews.map(view => ({
+        inputs: writes({producerOverflow: props.producerOverflow}),
+        outputs: [view]
+      }))
+    ]);
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       props.parameters,
       props.points,
       props.values,
       props.zones,
+      props.producerOverflow,
       props.boundary
     ]);
   }
@@ -288,8 +340,9 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
         storageProps.points,
         storageProps.output.sums ? storageProps.values : undefined,
         storageProps.zones,
+        storageProps.producerOverflow,
         storageProps.boundary,
-        ...Object.values(storageProps.output)
+        ...getGraphOutputViews(storageProps.output)
       ],
       {
         'point scalar planes and sort scratch': storageProps.points.length * 4,
@@ -308,8 +361,9 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
       props.points,
       props.values,
       props.zones,
+      props.producerOverflow,
       boundary,
-      ...Object.values(output)
+      ...getGraphOutputViews(output)
     ]);
     const pointCount = props.points.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -523,6 +577,15 @@ ${IS_FINITE_VALUE_WGSL}`,
         })
       );
     }
+    nodes.push(
+      ...getRasterProducerCompletenessNodes(
+        graph,
+        id,
+        props.producerOverflow,
+        output.status?.incomplete,
+        output
+      )
+    );
     return nodes;
   }
 }

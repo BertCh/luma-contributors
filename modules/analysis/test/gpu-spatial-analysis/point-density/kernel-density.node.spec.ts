@@ -18,7 +18,7 @@ import {
 import {
   evaluateGPUKernelDensityKernel,
   getGPUKernelDensitySupportRadius,
-  getGPUKernelDensityWindowMass,
+  getGPUKernelDensityWindowOverlap,
   type GPUKernelDensityKernel
 } from '../../../src/gpu-spatial-analysis/point-density/kernel-density-math';
 import {makeExtentGrid} from '../spatial-interpolation/extent-grid';
@@ -55,7 +55,7 @@ it('kernels integrate to one over the plane (Silverman 1986, Table 3.1)', () => 
 
 it('window mass matches scipy.integrate.dblquad of the kernel over the window', () => {
   for (const testCase of KERNEL_DENSITY_ORACLE.massCases) {
-    const actual = getGPUKernelDensityWindowMass(
+    const actual = getGPUKernelDensityWindowOverlap(
       testCase.kernel,
       testCase.bandwidth,
       testCase.point as unknown as [number, number],
@@ -190,7 +190,9 @@ it('getGPUKernelDensityParameterValues reads the corners and window from the gri
   );
   expect(() =>
     getGPUKernelDensityParameterValues({bandwidth: 1}, {...north, affine: [0, 0, 0, 0, 1, 0]})
-  ).toThrow(/nonzero cell size/);
+  ).toThrow(
+    /grid x.*nonzero float32 step.*common origin.*positions, grid, index bounds and window/
+  );
   expect(() =>
     getGPUKernelDensityParameterValues({bandwidth: 1, window: [5, 5, 4, 6]}, north)
   ).toThrow(/window/);

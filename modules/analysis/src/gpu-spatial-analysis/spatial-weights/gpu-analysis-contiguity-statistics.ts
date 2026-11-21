@@ -1,3 +1,5 @@
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {snapshotPolygonReviewProps} from './weights-review-snapshot';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
@@ -11,6 +13,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  getPackedUint32Values,
+  getTypedArrayName,
+  getPackedFloat32Values,
+  type GPUPackedReadbackValues,
   validateCapacity,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
@@ -36,7 +42,7 @@ import {
 import {
   getGPUSpatialWeightsStatusViews,
   getGPUSpatialWeightsViews,
-  type GPUSpatialWeightsOutput
+  type GPUSpatialWeightsProducerOutput as GPUSpatialWeightsOutput
 } from './spatial-weights';
 
 const OPERATION = 'GPUAnalysisContiguityStatistics';
@@ -47,7 +53,7 @@ export const GPU_ANALYSIS_CONTIGUITY_STATISTICS_MAXIMUM_FEATURE_COUNT = 2 ** 24;
 /** Counts have exactly the layout used by the existing spatial weights summary. */
 export const GPU_ANALYSIS_CONTIGUITY_STATISTICS_COUNTS = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts;
 
-/** Caller-owned outputs; a zero validity refuses an exact profile, including island claims. */
+/** Caller-owned outputs; an exact profile, including island claims, requires validity of one. */
 export type GPUAnalysisContiguityStatisticsOutput = {
   /**
    * Binary CSR, retained for reuse. All three status words are required for capacity recovery.
@@ -92,32 +98,94 @@ export type GPUAnalysisContiguityStatisticsResult = {
     }
 );
 
-/** Decodes scalar readback without treating truncated topology as evidence of islands. */
-export function decodeGPUAnalysisContiguityStatistics(values: {
-  counts: ArrayLike<number>;
-  median: ArrayLike<number>;
-  validity: ArrayLike<number>;
-  overflow: ArrayLike<number>;
-  candidateOverflow: ArrayLike<number>;
-}): GPUAnalysisContiguityStatisticsResult {
-  for (const name of ['counts', 'median', 'validity', 'overflow', 'candidateOverflow'] as const) {
-    validateCapacity(OPERATION, `${name}.length`, values[name].length, name === 'counts' ? 6 : 1);
-  }
-  const overflow = values.overflow[0] !== 0;
-  const candidateOverflow = values.candidateOverflow[0] !== 0;
-  if (values.validity[0] === 0 || overflow || candidateOverflow) {
+/** A logical scalar-port read, or an explicit byte read. */
+type ContiguityRead = GPUPackedReadbackValues | {bytes: Uint8Array | ArrayBuffer};
+type ContiguityProfileReads = {
+  counts: ContiguityRead;
+  median: ContiguityRead;
+  validity: ContiguityRead;
+} & (
+  | {overflow: ContiguityRead; candidateOverflow: ContiguityRead}
+  | {
+      weights: {status: {overflow: ContiguityRead; candidateOverflow: ContiguityRead}};
+    }
+);
+
+/** Decodes numeric words, logical byte slices, or the producer-shaped port object. */
+export function decodeGPUAnalysisContiguityStatistics(
+  input: ContiguityProfileReads | {bytes: ContiguityProfileReads}
+): GPUAnalysisContiguityStatisticsResult {
+  const values = 'bytes' in input ? input.bytes : input;
+  const unpack = (value: ContiguityRead): GPUPackedReadbackValues =>
+    value && typeof value === 'object' && 'bytes' in value ? value.bytes : value;
+  const read = (
+    value: ContiguityRead,
+    name: string,
+    format: 'uint32' | 'float32',
+    minimumLength = 1
+  ) => {
+    const raw = unpack(value);
+    const bytes =
+      Object.prototype.toString.call(raw) === '[object ArrayBuffer]' ||
+      getTypedArrayName(raw) === 'Uint8Array';
+    if (!bytes) {
+      validateCapacity(
+        OPERATION,
+        `${name}.length`,
+        (raw as ArrayLike<number>)?.length,
+        minimumLength
+      );
+      if (format === 'uint32')
+        for (let index = 0; index < minimumLength; index++) {
+          const word = (raw as ArrayLike<number>)[index];
+          validateRequirement(
+            OPERATION,
+            Number.isInteger(word) && word >= 0 && word <= 0xffffffff,
+            `${name}[${index}] must be a uint32 word; received ${word}`
+          );
+        }
+    }
+    return format === 'uint32'
+      ? getPackedUint32Values(raw, minimumLength)
+      : getPackedFloat32Values(raw, minimumLength);
+  };
+  const counts = read(values.counts, 'counts', 'uint32', 6);
+  const median = read(values.median, 'median', 'float32');
+  const validity = read(values.validity, 'validity', 'uint32');
+  const status = 'weights' in values ? values.weights.status : undefined;
+  const flatOverflow =
+    'overflow' in values ? read(values.overflow, 'overflow', 'uint32') : undefined;
+  const flatCandidateOverflow =
+    'candidateOverflow' in values
+      ? read(values.candidateOverflow, 'candidateOverflow', 'uint32')
+      : undefined;
+  validateRequirement(
+    OPERATION,
+    Boolean(status || (flatOverflow && flatCandidateOverflow)),
+    'overflow and candidateOverflow readbacks are required'
+  );
+  const nestedOverflow = status && read(status.overflow, 'weights.status.overflow', 'uint32');
+  const nestedCandidateOverflow =
+    status && read(status.candidateOverflow, 'weights.status.candidateOverflow', 'uint32');
+  const overflow = Boolean(flatOverflow?.[0] || nestedOverflow?.[0]);
+  const candidateOverflow = Boolean(flatCandidateOverflow?.[0] || nestedCandidateOverflow?.[0]);
+  if (validity[0] !== 1 || overflow || candidateOverflow)
     return {exact: false, overflow, candidateOverflow};
-  }
+  validateRequirement(
+    OPERATION,
+    Number.isFinite(median[0]),
+    `median must be finite for an exact profile; received ${median[0]}`
+  );
   const layout = GPU_ANALYSIS_CONTIGUITY_STATISTICS_COUNTS;
   return {
     exact: true,
     overflow,
     candidateOverflow,
-    slots: values.counts[layout.slots],
-    islands: values.counts[layout.isolates],
-    minimum: values.counts[layout.minimumCardinality],
-    median: values.median[0],
-    maximum: values.counts[layout.maximumCardinality]
+    slots: counts[layout.slots],
+    islands: counts[layout.isolates],
+    minimum: counts[layout.minimumCardinality],
+    median: median[0],
+    maximum: counts[layout.maximumCardinality]
   };
 }
 
@@ -139,6 +207,7 @@ export function decodeGPUAnalysisContiguityStatistics(values: {
  * CSR/status remain available for recovery through getWeightsCapacityPlan. There is no readback
  * inside the contributor and no persistent owned GPU resource; scratch belongs to the graph.
  * The median is rounded once to float32 (half-integers above 2^23 may round).
+ * Optional output.weights.status.count is the retained CSR slot count, including on incomplete runs.
  */
 export class GPUAnalysisContiguityStatistics implements GPUCommandNodeProducer {
   readonly id: string;
@@ -146,6 +215,7 @@ export class GPUAnalysisContiguityStatistics implements GPUCommandNodeProducer {
   private readonly contiguity: GPUContiguityWeights;
 
   constructor(props: GPUAnalysisContiguityStatisticsProps) {
+    props = snapshotPolygonReviewProps(props);
     this.id = props.id ?? 'analysis-contiguity-statistics';
     this.props = props;
     const {id} = this;
@@ -177,7 +247,16 @@ export class GPUAnalysisContiguityStatistics implements GPUCommandNodeProducer {
     validateCapacity(id, 'output.counts.length', output.counts.length, 6);
     validateCapacity(id, 'output.median.length', output.median.length, 1);
     validateCapacity(id, 'output.validity.length', output.validity.length, 1);
-    const outputs = this.getOutputViews();
+    const count = output.weights.status.count;
+    if (count)
+      validateDisjointWritableViews(id, {
+        count,
+        counts: output.counts,
+        cardinality: output.cardinality,
+        median: output.median,
+        validity: output.validity
+      });
+    const outputs = this.getOutputViews(false);
     const inputs = this.getPolygonViews();
     for (let outputIndex = 0; outputIndex < outputs.length; outputIndex++) {
       validateGraphOutputsDisjointFromInputs(
@@ -306,11 +385,11 @@ export class GPUAnalysisContiguityStatistics implements GPUCommandNodeProducer {
     ];
   }
 
-  private getOutputViews(): (GraphDataView | undefined)[] {
+  private getOutputViews(includeCount = true): (GraphDataView | undefined)[] {
     const {output} = this.props;
     return [
       ...getGPUSpatialWeightsViews(output.weights),
-      ...getGPUSpatialWeightsStatusViews(output.weights),
+      ...getGPUSpatialWeightsStatusViews(output.weights, includeCount),
       output.cardinality,
       output.counts,
       output.median,

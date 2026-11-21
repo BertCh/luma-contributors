@@ -28,7 +28,7 @@ export const TRAJECTORY_COVERAGE_OPERATORS: SpatialFamilyOperators = {
     formula: {
       formula: 'none',
       reason:
-        'Forward state/covariance prediction and Joseph measurement updates precede a backward RTS solve; missing observations, gap resets and singular smoothing flags are explicit.'
+        'Forward state/covariance prediction and Joseph measurement updates precede a backward RTS solve; missing observations, gap resets and RTS fallback (bit 8) after a singular prediction or nonfinite backward correction is explicit.'
     }
   },
   GPUTrajectoryRestriction: {

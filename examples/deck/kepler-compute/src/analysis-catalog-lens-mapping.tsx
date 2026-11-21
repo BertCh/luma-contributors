@@ -44,10 +44,10 @@ export function readLensUserData(
   return mapCatalogLensUserData(mapping, rowCount, fieldName => {
     const columnIndex = dataset.fields.findIndex(field => field.name === fieldName);
     if (columnIndex < 0 || !numeric.has(fieldName)) return undefined;
-    const values = new Array<number | null>(rowCount);
+    const values = new Array<unknown>(rowCount);
     for (let row = 0; row < rowCount; row++) {
-      const value = Number(dataset.dataContainer.valueAt(row, columnIndex));
-      values[row] = Number.isFinite(value) ? value : null;
+      const value = dataset.dataContainer.valueAt(row, columnIndex);
+      values[row] = value;
     }
     return values;
   });
@@ -106,6 +106,8 @@ export function AnalysisCatalogLensMapping({
           <div key={role.role}>
             <label htmlFor={`lens-role-${role.role}`}>
               {role.role}
+              {role.required ? ' (required)' : ''}
+              {role.missing === 'exclude' ? ' — missing values excluded' : ''}
               {role.example === null ? '' : ` (e.g. ${role.example})`}
             </label>
             <select

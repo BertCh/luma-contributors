@@ -3,6 +3,7 @@
 
 // Adapt the public ontology source entry point, so development and extraction see unbuilt changes.
 import {
+  GPU_ANALYSIS_WEBSITE_HELPER_KINDS,
   getGPUAnalysisOperatorCatalog,
   getGPUAnalysisOperatorQuestions,
   getGPUAnalysisWebsiteDataTypes,
@@ -41,6 +42,7 @@ function findCatalogOperator(symbol: string, importPath?: string) {
 // describe the real helper contract; keeping exceptions explicit makes new omissions fail closed.
 export const CATALOG_HELPER_KINDS: Readonly<Record<string, CatalogAnalysisMetadata['dataKinds']>> =
   {
+    ...GPU_ANALYSIS_WEBSITE_HELPER_KINDS,
     createNetworkCentralityContinuation: {
       input: ['network', 'attributes', 'parameters'],
       output: ['attributes', 'summary']
@@ -141,7 +143,7 @@ const NAMED_METHOD_CAUTIONS: Readonly<Record<string, readonly string[]>> = {
   GPUKernelDensity: [
     'Bandwidth changes the apparent pattern. Grid boundaries can truncate the kernel support.'
   ],
-  GPUSpatialClustering: [
+  GPUDBSCAN: [
     'Radius and minimum points define density groups; noise points are not assigned to a cluster.'
   ],
   addClusterAndOutlineRecipe: [

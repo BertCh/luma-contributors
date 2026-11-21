@@ -260,7 +260,7 @@ describe('SC3-RTS-B complete cell chunks', () => {
                   chunkSliceCount: 4,
                   slotCount: 2,
                   distribution: 'fisk',
-                  zeroInflated: true,
+                  zeroAtom: true,
                   values: field('values', 'float32', 4),
                   mask: field('mask', 'uint32', 4),
                   slotIndices: createTransientView(graph, `slots-${update}`, 'uint32', 4),
@@ -1308,11 +1308,44 @@ it('normalizes standardized-index observations with exponent-scaled division on 
       });
       const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
       expect(kernels).toHaveLength(1);
-      expect(kernels[0].source).toContain('getScaledQuotient(positive, fitScale, 1.0, 0)');
+      expect(kernels[0].source).toContain(
+        'getRasterClimateShiftedRatio(value, parameters[parametersOffset + 1u], fitScale)'
+      );
+      expect(kernels[0].source).toContain('getScaledQuotient(difference, scale, 1.0, exponent)');
       expect(kernels[0].source).not.toContain('positive / fitScale');
       expect(kernels[0].source).toContain('fitShape > 0.0 && fitScale > 0.0');
       expect(auditWGSLModule(kernels[0].source, kernels[0].constants)).toEqual([]);
     }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('checks named required chunk ports before discarding absent fields', () => {
+  const ports = {
+    values: {required: true, viewType: 'either', formats: ['float32']},
+    mask: {required: false, viewType: 'either', formats: ['uint32']}
+  } as const;
+  expect(() =>
+    planRasterTimeSeriesChunks(
+      'required-second',
+      1,
+      {values: {view: undefined, entriesPerCell: NaN}},
+      ports
+    )
+  ).toThrow(/required-second.*values.*received undefined/);
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const values = createTransientView(graph, 'values-required', 'float32', 1);
+    expect(
+      planRasterTimeSeriesChunks(
+        'optional-mask',
+        1,
+        {values: {view: values, entriesPerCell: 1}, mask: {view: undefined, entriesPerCell: 1}},
+        ports
+      ).chunks
+    ).toHaveLength(1);
   } finally {
     device.destroy();
   }

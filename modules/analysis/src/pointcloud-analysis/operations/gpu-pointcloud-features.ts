@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getPointCloudReadbackLaneReader} from './pointcloud-readback';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import type {
@@ -13,6 +14,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCommandNodeBudget,
+  validateGraphPorts,
   validateSinglePackedView,
   validateRequirement,
   validateCapacity,
@@ -33,6 +35,7 @@ import {
   validateGraphChunkBindingRanges,
   type GraphChunkDispatchPlan
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {inferPointCloudNeighborCapacity} from './pointcloud-neighbor-capacity';
 
 // Eight sweeps cover 24 three-axis pair rotations, the previous rotation budget.
 const POINT_CLOUD_FEATURES_MAXIMUM_EIGEN_SWEEPS = 8;
@@ -66,9 +69,11 @@ export type GPUPointCloudFeaturesOutput = {
   /**
    * Per-row bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE`): fewer
    * than three neighbors, or collinear or coincident neighbors (middle eigenvalue at most 1e-6 of the
-   * largest, or largest at most 1e-30); normals and shapes are zero. Bit 2 (`..._TRUNCATED`): `counts` exceeded `capacity`, so only the nearest
-   * `capacity` neighbors were used. Bit 4 (`..._NOT_CONVERGED`): the Jacobi eigensolve did
-   * not reach its tolerance within eight cyclic sweeps (24 pair rotations); the outputs are the last iterate. Bits above 4 are zero.
+   * largest, or largest at most 1e-30); normals and shapes are zero. Bit 2 (`..._TRUNCATED`): `counts` exceeded `capacity`, or supplied neighborhoodStatus reports truncation,
+   * so only the retained nearest neighbors were used. Bit 4 (`..._NOT_CONVERGED`): the Jacobi eigensolve did
+   * not reach its tolerance within eight cyclic sweeps (24 pair rotations); the outputs are the last iterate.
+   * Bit 8 (`..._INCOMPLETE_SUPPORT`): supplied neighborhoodStatus reports invalid or unsupported
+   * support. Features describe the available population and are qualified by this bit. Bits above 8 are zero.
    */
   status: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 };
@@ -80,7 +85,10 @@ export type GPUPointCloudFeaturesProps = {
   positions: GraphDataView<'float32x3'>;
   indices: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   counts: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
-  capacity: number;
+  /** Optional neighborhood flags aligned with query rows, including chunk topology. */
+  neighborhoodStatus?: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
+  /** 1–64 slots per query; inferred from exact indices/counts lengths for nonempty inputs. Zero query rows require an explicit capacity. */
+  capacity?: number;
   /** Normal orientation toward this point; default chooses nonnegative z (then y, then x). */
   viewpoint?: readonly [number, number, number];
   /** Caller-owned result views; their contents are written by the graph. */
@@ -93,37 +101,99 @@ export const GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE = 1;
 export const GPU_POINT_CLOUD_FEATURES_STATUS_TRUNCATED = 2;
 /** `GPUPointCloudFeatures` status bit 4: the eigensolve did not converge. */
 export const GPU_POINT_CLOUD_FEATURES_STATUS_NOT_CONVERGED = 4;
+/** Supplied neighborhood support is invalid or extends outside certified bounds. */
+export const GPU_POINT_CLOUD_FEATURES_STATUS_INCOMPLETE_SUPPORT = 8;
+
+/** Decode one query's feature status; pass a one-word subview for a later query.
+ * `notConverged` is the observed eigensolve flag. A degenerate row does not certify an attempted
+ * solve, so `converged` requires both nondegeneracy and a clear failure flag. `supportComplete`
+ * describes neighborhood support; `featureComplete` additionally requires a usable converged fit.
+ */
+export function decodeGPUPointCloudFeaturesStatus(values: Uint32Array | Uint8Array | ArrayBuffer): {
+  degenerate: boolean;
+  truncated: boolean;
+  converged: boolean;
+  notConverged: boolean;
+  incompleteSupport: boolean;
+  supportComplete: boolean;
+  featureComplete: boolean;
+} {
+  const flags = getPointCloudReadbackLaneReader(
+    'decodeGPUPointCloudFeaturesStatus',
+    'status',
+    values,
+    'uint32',
+    1
+  )(0);
+  const supportComplete =
+    (flags &
+      (GPU_POINT_CLOUD_FEATURES_STATUS_TRUNCATED |
+        GPU_POINT_CLOUD_FEATURES_STATUS_INCOMPLETE_SUPPORT)) ===
+    0;
+  return {
+    degenerate: (flags & GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE) !== 0,
+    truncated: (flags & GPU_POINT_CLOUD_FEATURES_STATUS_TRUNCATED) !== 0,
+    converged:
+      (flags &
+        (GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE |
+          GPU_POINT_CLOUD_FEATURES_STATUS_NOT_CONVERGED)) ===
+      0,
+    notConverged: (flags & GPU_POINT_CLOUD_FEATURES_STATUS_NOT_CONVERGED) !== 0,
+    incompleteSupport: (flags & GPU_POINT_CLOUD_FEATURES_STATUS_INCOMPLETE_SUPPORT) !== 0,
+    supportComplete,
+    featureComplete: flags === 0
+  };
+}
 
 /**
  * Centered 3D covariance and the shared symmetric Jacobi eigensolve on GPU neighborhoods.
  * Per-frame: input contents and parameters (orientation). Compile-time: capacity, view shapes and
  * optional outputs. Counts, fixed-stride indices, normals, eigenvalues, shapes, covariance and status
  * accept aligned chunks; positions remain a resident packed cloud and indices are global rows.
+ * Capacity is 1–64 retained slots per query (GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY), across all routes.
  * Without parameters, viewpoint retains its constructor-time behavior.
  */
 export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
   readonly id: string;
   readonly estimatedCommandNodeCount: number;
+  readonly props: GPUPointCloudFeaturesProps & {capacity: number};
   private readonly chunkPlan: GraphChunkDispatchPlan;
-  constructor(readonly props: GPUPointCloudFeaturesProps) {
+  constructor(props: GPUPointCloudFeaturesProps) {
+    this.id = props.id ?? 'gpu-pointcloud-features';
+    validateGraphPorts(this.id, props, {
+      positions: {required: true, viewType: 'data', formats: ['float32x3']},
+      indices: {required: true, viewType: 'either', formats: ['uint32']},
+      counts: {required: true, viewType: 'either', formats: ['uint32']},
+      neighborhoodStatus: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: false, viewType: 'data', formats: ['float32']},
+      'output.normals': {required: true, viewType: 'either', formats: ['float32x3']},
+      'output.eigenvalues': {required: true, viewType: 'either', formats: ['float32x3']},
+      'output.shapes': {required: true, viewType: 'either', formats: ['float32x3']},
+      'output.covariance': {required: false, viewType: 'either', formats: ['float32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
     props = snapshotConstructionFields(props, [
       'parameters',
       'id',
       'positions',
       'indices',
       'counts',
+      'neighborhoodStatus',
       'capacity',
       'viewpoint',
       'output'
     ]);
-    this.id = props.id ?? 'gpu-pointcloud-features';
     validateRequirement(
       this.id,
       props.output !== undefined && props.output !== null,
       'output must be given'
     );
-    this.props = props = Object.freeze({
+    const capacity =
+      props.capacity ??
+      inferPointCloudNeighborCapacity(this.id, props.counts.length, props.indices.length);
+    this.props = Object.freeze({
       ...props,
+      capacity,
       output: snapshotConstructionFields(props.output, [
         'normals',
         'eigenvalues',
@@ -132,14 +202,16 @@ export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
         'status'
       ])
     });
-    validateCapacity(
-      this.id,
-      'capacity',
-      props.capacity,
-      1,
-      GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY
-    );
-    validateViewLength(this.id, 'indices', props.indices, props.counts.length * props.capacity);
+    props = this.props;
+    validateCapacity(this.id, 'capacity', capacity, 1, GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY);
+    validateViewLength(this.id, 'indices', props.indices, props.counts.length * capacity);
+    if (props.neighborhoodStatus)
+      validateViewLength(
+        this.id,
+        'neighborhoodStatus',
+        props.neighborhoodStatus,
+        props.counts.length
+      );
     validateViewLength(this.id, 'normals', props.output.normals, props.counts.length);
     validateViewLength(this.id, 'eigenvalues', props.output.eigenvalues, props.counts.length);
     validateViewLength(this.id, 'shapes', props.output.shapes, props.counts.length);
@@ -165,20 +237,21 @@ export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
       this.id,
       planGraphChunkDispatch(this.id, {
         counts: props.counts,
+        ...(props.neighborhoodStatus ? {neighborhoodStatus: props.neighborhoodStatus} : {}),
         normals: props.output.normals,
         eigenvalues: props.output.eigenvalues,
         shapes: props.output.shapes,
         status: props.output.status
       }),
       {
-        indices: {view: props.indices, stride: props.capacity},
+        indices: {view: props.indices, stride: capacity},
         covariances: {view: props.output.covariance, stride: 6}
       }
     );
     validatePointCloudChunkViews(
       this.id,
       this.chunkPlan,
-      ['counts', 'indices'],
+      ['counts', 'indices', 'neighborhoodStatus'],
       ['normals', 'eigenvalues', 'shapes', 'status', 'covariances'],
       {positions: props.positions, parameters: props.parameters},
       [
@@ -188,6 +261,9 @@ export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
           inputs: {positions: props.positions}
         },
         {inputNames: ['eigenvalues', 'status'], outputNames: ['shapes']},
+        ...(props.neighborhoodStatus
+          ? [{inputNames: ['neighborhoodStatus'], outputNames: ['status']}]
+          : []),
         ...(props.parameters
           ? [
               {
@@ -200,7 +276,8 @@ export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
       ]
     );
     this.estimatedCommandNodeCount =
-      (props.parameters ? 3 : 2) * (1 + this.chunkPlan.nonemptyChunkCount);
+      ((props.parameters ? 3 : 2) + (props.neighborhoodStatus ? 1 : 0)) *
+      (1 + this.chunkPlan.nonemptyChunkCount);
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
@@ -321,6 +398,21 @@ writeNormals(index, normal);`
         })
       );
     }
+    if (this.props.neighborhoodStatus)
+      nodes.push(
+        ...getPointCloudChunkKernelNodes(graph, {
+          id: `${this.id}-support`,
+          length: counts.length,
+          plan: this.chunkPlan,
+          inputs: {neighborhoodStatus: rowViews['neighborhoodStatus'] as GraphDataView<'uint32'>},
+          outputs: {status: rowViews['status'] as GraphDataView<'uint32'>},
+          body: `let upstream = readNeighborhoodStatus(index);
+var flags = readStatus(index);
+if ((upstream & 5u) != 0u) { flags |= ${GPU_POINT_CLOUD_FEATURES_STATUS_INCOMPLETE_SUPPORT}u; }
+if ((upstream & 2u) != 0u) { flags |= ${GPU_POINT_CLOUD_FEATURES_STATUS_TRUNCATED}u; }
+writeStatus(index, flags);`
+        })
+      );
     return nodes;
   }
 }

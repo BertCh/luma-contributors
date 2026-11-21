@@ -4,7 +4,7 @@
 import type {GpuSceneParameter} from '../../../types';
 
 // Bound to GPUMultivariateLocalGearyPermutationTest's `variableCount`, `tail` and
-// `maximumPermutations`, plus the data noise.
+// `permutationCount`, plus the data noise.
 export const parameters: GpuSceneParameter[] = [
   {id: 'variableCount', label: 'variableCount', min: 1, max: 5, step: 1, default: 3},
   {
@@ -17,8 +17,8 @@ export const parameters: GpuSceneParameter[] = [
     options: ['equal-tail', 'esda-min-tail']
   },
   {
-    id: 'maximumPermutations',
-    label: 'maximumPermutations',
+    id: 'permutationCount',
+    label: 'permutationCount',
     min: 49,
     max: 499,
     step: 50,

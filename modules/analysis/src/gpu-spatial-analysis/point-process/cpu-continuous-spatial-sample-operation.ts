@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSamplingSeed} from './sampling-seed';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotContinuousSampleFrame} from './continuous-sample-frame-construction';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
@@ -20,6 +23,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPUContinuousSpatialSampleOperation,
+  snapshotContinuousSampleOperation,
   type ContinuousSpatialSampleOperationProps
 } from './gpu-continuous-spatial-sample-operation';
 
@@ -54,10 +58,16 @@ export type CPUContinuousSpatialSampleResult = {
 function validateOptions(
   options: CPUContinuousSpatialSampleOptions,
   frameRowCount: number,
-  legacySiteCount: number
+  legacySiteCount: number,
+  resident = false
 ): void {
   const id = options.id ?? 'continuous-spatial-sample';
   resolveGPUSpatialContext(id, options.spatialContext);
+  validateRequirement(
+    id,
+    ['line', 'area'].includes(options.frame.type),
+    `frame.type must be line or area; received ${options.frame.type}`
+  );
   validateCapacity(id, 'frameRowCount', frameRowCount, options.frame.type === 'area' ? 3 : 2);
   validateRequirement(
     id,
@@ -75,7 +85,7 @@ function validateOptions(
   validateCapacity(id, 'capacity', options.capacity);
   validateMaximumCount(id, 'waves times capacity', (options.waves ?? 1) * options.capacity, NONE);
   validateCapacity(id, 'legacySiteCount', legacySiteCount, 0);
-  validateCapacity(id, 'seed', options.seed, 0);
+  validateSamplingSeed(id, options.seed, resident);
   validateCapacity(id, 'replicate', options.replicate ?? 0, 0, NONE - (options.waves ?? 1) + 1);
   if (options.frame.type === 'area') {
     const bounds = options.frame.bounds;
@@ -128,6 +138,24 @@ export function computeContinuousSpatialSampleOnCPU(
   input: CPUContinuousSpatialSampleInput,
   options: CPUContinuousSpatialSampleOptions
 ): CPUContinuousSpatialSampleResult {
+  const capturedOptions = snapshotConstructionFields(options, [
+    'id',
+    'spatialContext',
+    'spacing',
+    'seed',
+    'replicate',
+    'waves',
+    'capacity',
+    'maximumCandidates',
+    'frame'
+  ]);
+  options = {
+    ...capturedOptions,
+    frame: snapshotContinuousSampleFrame(
+      capturedOptions.id ?? 'continuous-spatial-sample',
+      capturedOptions.frame
+    )
+  };
   const {positions, legacySites, parameters} = input;
   const area = options.frame.type === 'area';
   if (positions.length % 2 !== 0) throw new Error('positions must contain xy pairs');
@@ -137,10 +165,10 @@ export function computeContinuousSpatialSampleOnCPU(
     throw new Error('parameters must contain [seed, replicate]');
   const frameRowCount = positions.length / 2;
   const legacySiteCount = (legacySites?.length ?? 0) / (area ? 2 : 1);
-  validateOptions(options, frameRowCount, legacySiteCount);
+  validateOptions(options, frameRowCount, legacySiteCount, parameters !== undefined);
   const waves = options.waves ?? 1;
   const {spacing, capacity} = options;
-  const [seed, initialReplicate] = parameters ?? [options.seed, options.replicate ?? 0];
+  const [seed, initialReplicate] = parameters ?? [options.seed!, options.replicate ?? 0];
   const bounds = options.frame.type === 'area' ? options.frame.bounds : undefined;
   const columns = bounds ? Math.ceil((bounds[2] - bounds[0]) / spacing) + 1 : 0;
   const rows = bounds ? Math.ceil((bounds[3] - bounds[1]) / spacing) + 1 : 0;
@@ -332,9 +360,10 @@ export function computeContinuousSpatialSampleOnCPU(
 /** CPU twin; enumerate complete waves without the GPU's candidate or reference-tier work caps. */
 export class CPUContinuousSpatialSampleOperation extends GPUCPUOperation {
   constructor(props: ContinuousSpatialSampleOperationProps) {
+    props = snapshotContinuousSampleOperation(props);
     const id = props.id ?? 'continuous-spatial-sample';
     const legacySiteCount = props.legacySiteCount ?? 0;
-    validateOptions(props, props.frameRowCount, legacySiteCount);
+    validateOptions(props, props.frameRowCount, legacySiteCount, props.parameters !== undefined);
     validateRequirement(
       id,
       props.frame.legacySites !== undefined || legacySiteCount === 0,

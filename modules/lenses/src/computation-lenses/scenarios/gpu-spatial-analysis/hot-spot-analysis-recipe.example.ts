@@ -71,7 +71,7 @@ export async function runExample(
     },
     parameters,
     settings: {significanceLevel: 0.05},
-    outputs: {zScores, pValues, bins, neighborCounts, status: {pointsOutsideStudyArea}},
+    output: {zScores, pValues, bins, neighborCounts, status: {pointsOutsideStudyArea}},
     scratch: {centers, values}
   });
   // zScores at centers: bins +-1, 2, 3 are 90, 95, 99% confidence hot or cold spots

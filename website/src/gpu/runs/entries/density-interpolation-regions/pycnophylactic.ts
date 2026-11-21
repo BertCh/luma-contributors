@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// GPUPycnophylactic turns zone totals into a smooth surface whose cells still sum to each zone's
+// GPUPycnophylacticInterpolation turns zone totals into a smooth surface whose cells still sum to each zone's
 // total. The muted raster shows tract totals before redistribution.
 
-import {GPUPycnophylactic} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUPycnophylacticInterpolation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
 import {makeRandom} from '../../../demos/kit';
 import {createTracts} from '../../inputs';
@@ -28,7 +28,7 @@ export default defineOperationRun({
     });
     const surface = builder.allocate('surface', 'float32', grid.columns * grid.rows);
     builder.graph.add(
-      new GPUPycnophylactic({
+      new GPUPycnophylacticInterpolation({
         grid: grid.grid,
         zones: zones.view,
         zoneCount: tracts.count,

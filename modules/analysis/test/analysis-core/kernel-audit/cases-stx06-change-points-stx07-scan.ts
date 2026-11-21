@@ -34,7 +34,7 @@ const PETTITT_SLICES = GPU_PETTITT_TEST_MAXIMUM_SLICE_COUNT;
 const CHANGE_POINTS = GPU_LOCATION_CHANGE_POINTS_MAXIMUM_CHANGE_POINTS;
 
 function buildLocationChangePoints(
-  {graph, view, maximumRows}: KernelAuditContext,
+  {graph, view, maximumRows, construct}: KernelAuditContext,
   cost: GPULocationChangePointCost,
   layout: 'cell-major' | 'period-major',
   sliceCount: number,
@@ -42,7 +42,7 @@ function buildLocationChangePoints(
 ): void {
   const cellCount = Math.floor(maximumRows(4) / sliceCount) + extraCells;
   graph.add(
-    new GPULocationChangePoints({
+    construct(GPULocationChangePoints, {
       values: view('float32', cellCount * sliceCount),
       layout,
       cellCount,
@@ -62,13 +62,13 @@ function buildLocationChangePoints(
 }
 
 function buildPettitt(
-  {graph, view, maximumRows}: KernelAuditContext,
+  {graph, view, maximumRows, construct}: KernelAuditContext,
   sliceCount: number,
   extraCells = 0
 ): void {
   const cellCount = Math.floor(maximumRows(4) / sliceCount) + extraCells;
   graph.add(
-    new GPUPettittTest({
+    construct(GPUPettittTest, {
       values: view('float32', cellCount * sliceCount),
       layout: 'period-major',
       cellCount,
@@ -113,7 +113,7 @@ function buildCorrectedHotSpots(
 }
 
 function buildExpectationBasedScan(
-  {graph, view, maximumRows}: KernelAuditContext,
+  {graph, view, maximumRows, construct}: KernelAuditContext,
   extraZones = 0
 ): void {
   const maximumNeighbors = GPU_EXPECTATION_BASED_SCAN_MAXIMUM_NEIGHBORS;
@@ -123,7 +123,7 @@ function buildExpectationBasedScan(
   const maximumReplicates = 99;
   getGPUExpectationBasedScanParameterValues({seed: 1, replicateCount: 1});
   graph.add(
-    new GPUExpectationBasedSpaceTimeScan({
+    construct(GPUExpectationBasedSpaceTimeScan, {
       positions: view('float32x2', zones),
       cases: view('uint32', zones * timeBuckets),
       baseline: view('float32', zones * timeBuckets),

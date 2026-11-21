@@ -1024,7 +1024,10 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
     advectionParameters.write(
       getGPUParticleAdvectionParameterValues(
         {
-          fieldExtent: FIELD.extent,
+          fieldPlacement: {
+            origin: [FIELD.extent[0], FIELD.extent[1]],
+            cellSize: [FIELD.extent[2], FIELD.extent[3]]
+          },
           timeStep: 1,
           speedScale: scale,
           // Particles that leave the data stay parked outside the field instead of respawning.

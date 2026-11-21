@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUVisibilityWorkflow,
+  GPUReduction,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -62,6 +63,13 @@ export type GPUPairGatherNeighbors = {
   counts: GraphDataView<'uint32'>;
   /** Slots per query: `rows.length` is `counts.length * capacity`. */
   capacity: number;
+  /** Nearest producer completeness. Its aggregate overflow includes BVH, candidate and tie loss. */
+  status?: {
+    overflow: GraphDataView<'uint32'>;
+    candidateOverflow?: GraphDataView<'uint32'>;
+  };
+  /** Nearest producer per-query search loss; one uint32 per query. */
+  candidateTruncated?: GraphDataView<'uint32'>;
 };
 
 /** Caller-owned row outputs of {@link GPUPairGather}. */
@@ -70,15 +78,15 @@ export type GPUPairGatherOutput = {
   leftRows: GraphDataView<'uint32'>;
   /** Right row per output row, {@link GPU_PAIR_GATHER_NO_ROW} for unmatched left rows. Same length. */
   rightRows: GraphDataView<'uint32'>;
-  /** One-row scalar receiving `min(matched + unmatched, leftRows.length)`. */
-  rowCount: GraphDataView<'uint32'>;
   /** Completeness and diagnostic scalars. */
   status: {
+    /** One-row live gathered count, including emitted unmatched rows and clamped to output capacity. */
+    count: GraphDataView<'uint32'>;
     /** One-row scalar receiving `1` when final output capacity (including the inputs') was too small. */
     overflow: GraphDataView<'uint32'>;
     /** Candidate loss inherited from inputs; required when any supplied input carries candidateOverflow. */
     candidateOverflow?: GraphDataView<'uint32'>;
-    /** Optional one-row scalar receiving the matched pair count that fed the output. */
+    /** Optional one-row input matched pair count, before clamping to output capacity. */
     matchedCount?: GraphDataView<'uint32'>;
   };
 };
@@ -100,7 +108,8 @@ export type GPUPairGatherProps = {
   neighbors?: GPUPairGatherNeighbors;
   /**
    * Left rows without a match, for `how: 'left'`: the `unmatched` output of a predicate join with
-   * `how: 'anti'`. With `neighbors` it is optional: queries with no neighbor are derived.
+   * `how: 'anti'` or an inner join with output.unmatched. With `neighbors` it is optional:
+   * queries with no neighbor are derived.
    */
   unmatchedLeft?: GPUCompactOutput;
   /** Left attribute columns, gathered by `leftRows`. Unmatched rows are never missing on the left. */
@@ -133,7 +142,11 @@ export type GPUPairGatherProps = {
  *
  * With `neighbors`, filled slots (`slot < counts[query]`, feature not `GPU_SPATIAL_JOIN_NO_FEATURE`)
  * are flattened by a stable compaction. Columns are copied as raw 32-bit words, so NaN payloads
- * survive. Bounded by `output.leftRows.length`; surplus rows set `output.status.overflow`. Deterministic, no atomics.
+ * survive. Supplied nearest BVH, candidate and tie loss propagates as candidateOverflow.
+ * Derived unmatched rows exclude queries flagged by candidateTruncated; without per-query flags,
+ * aggregate loss withholds all derived unmatched rows. Legacy candidateOverflowSources also
+ * withholds all derived unmatched rows because those flags have no query attribution.
+ * Bounded by `output.leftRows.length`; surplus rows set `output.status.overflow`. Deterministic, no atomics.
  *
  * Consumes join row indices and attribute columns only, so it takes no `spatialContext`.
  */
@@ -144,6 +157,8 @@ export class GPUPairGather implements GPUCommandNodeProducer {
   readonly props: GPUPairGatherProps;
   /** Resolved join type. */
   readonly how: GPUPairGatherHow;
+  /** The captured output.status.count view. */
+  readonly outputCount: GraphDataView<'uint32'>;
 
   constructor(props: GPUPairGatherProps) {
     // Capture compile-time maps and scalar options; retain view identities for per-frame writes.
@@ -175,17 +190,46 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       props.pairs && snapshotConstructionFields(props.pairs, ['leftRows', 'rightRows', 'status']);
     const unmatchedLeft =
       props.unmatchedLeft && snapshotConstructionFields(props.unmatchedLeft, ['ids', 'status']);
-    const outputMap = snapshotConstructionFields(props.output, [
-      'leftRows',
-      'rightRows',
-      'rowCount',
-      'status'
-    ]);
+    const outputMap =
+      props.output && snapshotConstructionFields(props.output, ['leftRows', 'rightRows', 'status']);
+    const outputStatus =
+      outputMap?.status &&
+      snapshotConstructionFields(outputMap.status, [
+        'count',
+        'overflow',
+        'candidateOverflow',
+        'matchedCount'
+      ]);
+    validateRequirement(id, Boolean(outputStatus?.count), 'output.status.count is required');
+    validateRequirement(
+      id,
+      !('rowCount' in props.output),
+      'output.rowCount was removed; use output.status.count'
+    );
+    const neighborsMap =
+      props.neighbors &&
+      snapshotConstructionFields(props.neighbors, [
+        'rows',
+        'counts',
+        'capacity',
+        'status',
+        'candidateTruncated'
+      ]);
     props = Object.freeze({
       ...props,
-      ...(props.neighbors
+      ...(neighborsMap
         ? {
-            neighbors: snapshotConstructionFields(props.neighbors, ['rows', 'counts', 'capacity'])
+            neighbors: Object.freeze({
+              ...neighborsMap,
+              ...(neighborsMap.status
+                ? {
+                    status: snapshotConstructionFields(neighborsMap.status, [
+                      'overflow',
+                      'candidateOverflow'
+                    ])
+                  }
+                : {})
+            })
           }
         : {}),
       ...(pairs
@@ -249,11 +293,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
         : {}),
       output: Object.freeze({
         ...outputMap,
-        status: snapshotConstructionFields(outputMap.status, [
-          'overflow',
-          'candidateOverflow',
-          'matchedCount'
-        ])
+        status: outputStatus
       })
     });
     this.id = id;
@@ -261,6 +301,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     this.how = props.how ?? 'inner';
     const {how} = this;
     const {output} = props;
+    this.outputCount = output.status.count;
     if (how !== 'inner' && how !== 'left') {
       throw new Error(`${id} how must be 'inner' or 'left'`);
     }
@@ -269,7 +310,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     }
     if (how === 'left' && !props.unmatchedLeft && !props.neighbors) {
       throw new Error(
-        `${id} how 'left' with pairs needs unmatchedLeft (a predicate join anti output)`
+        `${id} how 'left' with pairs needs unmatchedLeft (predicate join output.unmatched)`
       );
     }
     if (how === 'inner' && props.unmatchedLeft) {
@@ -278,7 +319,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['leftRows', output.leftRows],
       ['rightRows', output.rightRows],
-      ['rowCount', output.rowCount],
+      ['status.count', this.outputCount],
       ['status.overflow', output.status.overflow],
       ['status.candidateOverflow', output.status.candidateOverflow],
       ['status.matchedCount', output.status.matchedCount]
@@ -295,7 +336,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       throw new Error(`${id} output.rightRows length must equal output.leftRows length`);
     }
     for (const [name, view] of [
-      ['rowCount', output.rowCount],
+      ['status.count', this.outputCount],
       ['status.overflow', output.status.overflow],
       ['status.candidateOverflow', output.status.candidateOverflow],
       ['status.matchedCount', output.status.matchedCount]
@@ -329,6 +370,18 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       if (neighbors!.rows.length !== neighbors!.counts.length * neighbors!.capacity) {
         throw new Error(`${id} neighbors.rows length must equal counts length * capacity`);
       }
+      if (neighbors!.candidateTruncated) {
+        validateSinglePackedView(
+          neighbors!.candidateTruncated,
+          ['uint32'],
+          `${id} neighbors.candidateTruncated`
+        );
+        validateRequirement(
+          id,
+          neighbors!.candidateTruncated.length === neighbors!.counts.length,
+          'neighbors.candidateTruncated needs one row per query'
+        );
+      }
       slotCount = neighbors!.rows.length;
     }
     if (slotCount < 1) {
@@ -344,18 +397,14 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     ] as const) {
       for (const [index, column] of (columns ?? []).entries()) {
         const label = `${id} ${name}[${index}]`;
-        validateSinglePackedView(
-          column.source,
-          [column.source.format as 'float32' | 'uint32'],
-          label
-        );
+        validateSinglePackedView(column.source, ['float32', 'uint32'], label);
         if (column.source.format !== 'float32' && column.source.format !== 'uint32') {
           throw new Error(`${label} must be float32 or uint32`);
         }
         if (column.output.format !== column.source.format) {
           throw new Error(`${label} output format must equal source format`);
         }
-        validateSinglePackedView(column.output, [column.output.format], `${label} output`);
+        validateSinglePackedView(column.output, ['float32', 'uint32'], `${label} output`);
         if (column.output.length !== rows) {
           throw new Error(`${label} output length must equal output.leftRows length`);
         }
@@ -370,7 +419,8 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     const candidateFlags = this._getCandidateFlags();
     validateRequirement(
       id,
-      candidateFlags.length === 0 || Boolean(output.status.candidateOverflow),
+      (candidateFlags.length === 0 && !props.neighbors?.candidateTruncated) ||
+        Boolean(output.status.candidateOverflow),
       'output.status.candidateOverflow is required when inputs supply candidate overflow'
     );
     for (const flag of candidateFlags) {
@@ -391,9 +441,9 @@ export class GPUPairGather implements GPUCommandNodeProducer {
         {
           reads: {},
           writes: {
-            rowCount: output.rowCount,
-            overflow: output.status.overflow,
-            matchedCount: output.status.matchedCount
+            'output.status.count': this.outputCount,
+            'output.status.overflow': output.status.overflow,
+            'output.status.matchedCount': output.status.matchedCount
           }
         }
       ]
@@ -415,7 +465,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
     return [
       output.leftRows,
       output.rightRows,
-      output.rowCount,
+      this.outputCount,
       output.status.overflow,
       ...(output.status.candidateOverflow ? [output.status.candidateOverflow] : []),
       ...(output.status.matchedCount ? [output.status.matchedCount] : []),
@@ -447,6 +497,7 @@ export class GPUPairGather implements GPUCommandNodeProducer {
         : []),
       ...(props.overflowSources ?? []),
       ...this._getCandidateFlags(),
+      ...(props.neighbors?.candidateTruncated ? [props.neighbors.candidateTruncated] : []),
       ...[
         ...(props.leftColumns ?? []),
         ...(props.rightColumns ?? []),
@@ -461,6 +512,10 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       ...(props.pairs?.status.candidateOverflow ? [props.pairs.status.candidateOverflow] : []),
       ...(props.unmatchedLeft?.status.candidateOverflow
         ? [props.unmatchedLeft.status.candidateOverflow]
+        : []),
+      ...(props.neighbors?.status ? [props.neighbors.status.overflow] : []),
+      ...(props.neighbors?.status?.candidateOverflow
+        ? [props.neighbors.status.candidateOverflow]
         : []),
       ...(props.candidateOverflowSources ?? [])
     ];
@@ -564,12 +619,60 @@ const NO_FEATURE: u32 = ${NO_FEATURE}u;`,
             variant: 'unmatched',
             bindings: [
               {name: 'neighborCounts', view: neighbors!.counts, type: 'u32', access: 'read'},
+              ...(neighbors!.candidateTruncated
+                ? [
+                    {
+                      name: 'truncated',
+                      view: neighbors!.candidateTruncated,
+                      type: 'u32',
+                      access: 'read'
+                    } as WGSLKernelBinding
+                  ]
+                : []),
               {name: 'maskOut', view: emptyMask, type: 'u32', access: 'read_write'}
             ],
             invocationCount: queryCount,
             body: `maskOut[maskOutOffset + index] =
-    select(0u, 1u, neighborCounts[neighborCountsOffset + index] == 0u);`
-          }),
+    select(0u, 1u, neighborCounts[neighborCountsOffset + index] == 0u${neighbors!.candidateTruncated ? ' && truncated[truncatedOffset + index] == 0u' : ''});`
+          })
+        );
+        // Per-query flags establish absence for unaffected queries. Extra legacy loss sources
+        // have no row attribution and conservatively withhold every derived unmatched row.
+        const globalLoss = [
+          ...(neighbors!.candidateTruncated
+            ? []
+            : [
+                ...(neighbors!.status ? [neighbors!.status.overflow] : []),
+                ...(neighbors!.status?.candidateOverflow
+                  ? [neighbors!.status.candidateOverflow]
+                  : [])
+              ]),
+          ...(props.candidateOverflowSources ?? [])
+        ];
+        for (let start = 0; start < globalLoss.length; start += 7) {
+          const group = globalLoss.slice(start, start + 7);
+          nodes.push(
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-unmatched-loss-${start / 7}`,
+              operation: OPERATION,
+              variant: 'unmatched-loss',
+              invocationCount: queryCount,
+              bindings: [
+                ...group.map(
+                  (view, flagIndex): WGSLKernelBinding => ({
+                    name: `loss${flagIndex}`,
+                    view,
+                    type: 'u32',
+                    access: 'read'
+                  })
+                ),
+                {name: 'maskOut', view: emptyMask, type: 'u32', access: 'read_write'}
+              ],
+              body: `if (${group.map((_, flagIndex) => `loss${flagIndex}[loss${flagIndex}Offset] != 0u`).join(' || ')}) { maskOut[maskOutOffset + index] = 0u; }`
+            })
+          );
+        }
+        nodes.push(
           ...new GPUVisibilityWorkflow({
             id: `${id}-unmatched`,
             predicates: [{kind: 'selection', mask: emptyMask}],
@@ -749,7 +852,7 @@ const FILL: u32 = ${column.source.format === 'float32' ? '0x7fc00000u' : '0xffff
       publishBindings.push({name: `flagIn${flagIndex}`, view: flag, type: 'u32', access: 'read'})
     );
     publishBindings.push(
-      {name: 'rowCountOut', view: output.rowCount, type: 'u32', access: 'read_write'},
+      {name: 'rowCountOut', view: this.outputCount, type: 'u32', access: 'read_write'},
       {name: 'overflowOut', view: output.status.overflow, type: 'u32', access: 'read_write'}
     );
     if (output.status.matchedCount) {
@@ -783,6 +886,18 @@ const FILL: u32 = ${column.source.format === 'float32' ? '0x7fc00000u' : '0xffff
     // separately, seven inputs per pass so each pass stays within eight storage bindings.
     if (output.status.candidateOverflow) {
       const candidateFlags = this._getCandidateFlags();
+      if (neighbors?.candidateTruncated) {
+        const truncatedMaximum = createTransientView(graph, `${id}-truncated-maximum`, 'uint32', 1);
+        nodes.push(
+          ...new GPUReduction({
+            id: `${id}-truncated`,
+            input: neighbors.candidateTruncated,
+            output: truncatedMaximum,
+            operation: 'max'
+          }).getCommandNodes(graph)
+        );
+        candidateFlags.push(truncatedMaximum);
+      }
       for (let start = 0; start < Math.max(candidateFlags.length, 1); start += 7) {
         const group = candidateFlags.slice(start, start + 7);
         const expression =

@@ -95,7 +95,7 @@ export function createPolygonConsumer(
       pairCapacity: 8,
       lineOffsets: options.lineOffsets ?? createTransientView(graph, 'line-offsets', 'uint32', 2),
       output: {
-        lengths: options.lengths ?? createTransientView(graph, 'lengths', 'float32', 1),
+        clippedLengths: options.lengths ?? createTransientView(graph, 'lengths', 'float32', 1),
         status: outputStatus
       }
     });
@@ -199,12 +199,17 @@ export function registerPolygonConsumerNodeTests(operation: PolygonConsumerName)
         ).toThrow(`${operation} output.status${separator}${name} must contain one uint32 row`);
         const aliasGraph = new GPUCommandGraph(device);
         const input = createTransientView(aliasGraph, 'aliased', 'uint32', 2);
+        // A status has one row; its first four bytes still overlap the input offsets.
+        const aliasedScalar = aliasGraph.createDataView(input.buffer, {
+          format: 'uint32',
+          length: 1
+        });
         expect(() =>
           createPolygonConsumer(
             aliasGraph,
             operation,
             context,
-            {[name]: input},
+            {[name]: aliasedScalar},
             {
               polygons: {
                 kind: 'polygons',
@@ -213,7 +218,7 @@ export function registerPolygonConsumerNodeTests(operation: PolygonConsumerName)
                 polygonOffsets: input,
                 ringOffsets: input
               },
-              vertexCount: input
+              vertexCount: aliasedScalar
             }
           )
         ).toThrow(/overlap|share buffers/);

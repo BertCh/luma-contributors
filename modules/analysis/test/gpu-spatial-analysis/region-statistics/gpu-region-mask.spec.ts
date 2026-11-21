@@ -95,10 +95,11 @@ it('GPURegionMask selects a world lasso with a per-frame vertex count', async ()
   for (const buffer of [positionsBuffer, maskBuffer, overflowBuffer]) buffer.destroy();
 });
 
-it('GPURegionMask matches world results in screen space and rejects points behind the camera', async () => {
+it('GPURegionMask matches world results in screen space and rejects points behind the camera', async context => {
   const device = await getWebGPUTestDevice();
-  if (!device || isSoftwareDevice(device)) {
-    return;
+  requireTestDevice(device);
+  if (isSoftwareDevice(device)) {
+    context.skip('the screen-space region mask comparison requires a hardware-backed device');
   }
   const positionsBuffer = createInputBuffer(device, POSITIONS);
   const rectangleMaskBuffer = createOutputBuffer(device, ROW_COUNT);
@@ -214,6 +215,34 @@ it('GPURegionMask preserves vector position chunks', async () => {
   compiled.destroy();
   for (const buffer of [firstBuffer, secondBuffer, bounds, maskBuffer, overflowBuffer]) {
     buffer.destroy();
+  }
+});
+
+it('GPUPickRegionMask writes the single picked row and zero overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const picksBuffer = createInputBuffer(device, Uint32Array.of(1, 0, 0, 0));
+  const maskBuffer = createOutputBuffer(device, 1);
+  const overflowBuffer = createOutputBuffer(device, 1);
+  const graph = new GPUCommandGraph(device, {id: 'single-pick-region-mask'});
+  graph.add(
+    new GPUPickRegionMask({
+      picks: importGraphBuffer(graph, 'picks', picksBuffer, 'uint32', 4),
+      output: {
+        mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', 1),
+        status: {overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)}
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    overflowBuffer.write(Uint32Array.of(1));
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(maskBuffer, 1)).toEqual([1]);
+    expect(await readUint32(overflowBuffer, 1)).toEqual([0]);
+  } finally {
+    compiled.destroy();
+    for (const buffer of [picksBuffer, maskBuffer, overflowBuffer]) buffer.destroy();
   }
 });
 

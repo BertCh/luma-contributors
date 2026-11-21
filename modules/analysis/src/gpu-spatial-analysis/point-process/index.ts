@@ -4,17 +4,27 @@
 
 export {GPUInhomogeneousPointPattern} from './gpu-inhomogeneous-point-pattern';
 export type {GPUInhomogeneousPointPatternProps} from './gpu-inhomogeneous-point-pattern';
-export {GPUPointPatternEnvelope} from './gpu-point-pattern-envelope';
-export type {GPUPointPatternEnvelopeProps} from './gpu-point-pattern-envelope';
+export {
+  GPUPointPatternEnvelope,
+  MAXIMUM_CURVE_ROW_COUNT,
+  MAXIMUM_SIMULATION_COUNT,
+  MAXIMUM_RANK_COMPARISON_COUNT
+} from './gpu-point-pattern-envelope';
+export type {
+  GPUPointPatternEnvelopeProps,
+  GPUPointPatternEnvelopeOutput
+} from './gpu-point-pattern-envelope';
 export {GPUSpatialBalancedSample} from './gpu-spatial-balanced-sample';
 export type {
   GPUSpatialBalancedSampleProps,
+  GPUSpatialBalancedSampleOutput,
   GPUSpatialSampleAllocation
 } from './gpu-spatial-balanced-sample';
 
 export {GPUContinuousSpatialSample} from './gpu-continuous-spatial-sample';
 export type {
   GPUContinuousSpatialSampleProps,
+  GPUContinuousSpatialSampleOutput,
   GPUContinuousSpatialFrame
 } from './gpu-continuous-spatial-sample';
 
@@ -53,3 +63,11 @@ export type {
 } from './cpu-point-pattern-envelope-operation';
 export {GPUPointPatternEnvelopeOperation} from './gpu-point-pattern-envelope-operation';
 export type {PointPatternEnvelopeOperationProps} from './gpu-point-pattern-envelope-operation';
+
+export {
+  decodeGPUPointPatternEnvelopeStatistics,
+  decodeGPUPointPatternEnvelopeStatus,
+  decodeGPUSpatialBalancedSampleStatus,
+  decodeGPUContinuousSpatialSampleStatus,
+  decodeGPUContinuousSpatialSampleProvenance
+} from './point-process-decoders';

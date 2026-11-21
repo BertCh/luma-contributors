@@ -14,6 +14,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS,
   GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS
@@ -28,8 +29,11 @@ export type PointCloudGrid = {
 };
 
 /**
- * Throws unless a 3-D search grid is usable: finite origin and cell size, integer axis counts up to
- * `GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS` and a total below `GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`.
+ * Throws unless a 3-D search grid is usable: origin coordinates finite after float32 conversion,
+ * finite cell size, integer axis counts up to
+ * `GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS` and an inclusive dimensions product <= GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS = 4,294,967,294.
+ * For 2-D raster grids this is width * height <= 4,294,967,294 independently of the
+ * 16,777,216-cell axis limit and the device storage-binding byte limit.
  *
  * @param id Contributor ID, for the message.
  * @param name Prop name of the grid, for the message.
@@ -40,7 +44,7 @@ export function validatePointCloudSearchGrid(id: string, name: string, grid: Poi
   validateRequirement(
     id,
     grid.origin.every(value => Number.isFinite(Math.fround(value))),
-    `${name}.origin must hold finite numbers`
+    `${name}.origin coordinates must remain finite when converted to float32`
   );
   for (const [axis, dimension] of grid.dimensions.entries()) {
     validateCapacity(
@@ -151,13 +155,13 @@ export function createPointCloudGridIndex<Parameters>(
   // row height - 1 - floor(y), in integers, the arithmetic of getPointCloudCellSource, so the key
   // of a point equals its raster cell index (`height - y` in float32 would round up just below a
   // row boundary).
-  const cellSize = gridParameters ? 'readGridParameters(3u)' : `${Math.fround(grid.cellSize)}`;
+  const cellSize = gridParameters ? 'readGridParameters(3u)' : getWGSLFloatLiteral(grid.cellSize);
   const origin2D = gridParameters
     ? 'vec2f(readGridParameters(0u),readGridParameters(1u))'
-    : `vec2f(${grid.origin.slice(0, 2).map(Math.fround).join(',')})`;
+    : `vec2f(${grid.origin.slice(0, 2).map(getWGSLFloatLiteral).join(',')})`;
   const origin3D = gridParameters
     ? 'vec3f(readGridParameters(0u),readGridParameters(1u),readGridParameters(2u))'
-    : `vec3f(${grid.origin.map(Math.fround).join(',')})`;
+    : `vec3f(${grid.origin.map(getWGSLFloatLiteral).join(',')})`;
   const rasterOffset = `getPointCloudQuotient2(position.xy-${origin2D},${cellSize})`;
   const coordinate = raster
     ? `vec3f(${rasterOffset},0.0)`

@@ -4,7 +4,7 @@
 
 import {useId, useMemo, useRef, useState, useSyncExternalStore} from 'react';
 import styled from 'styled-components';
-import {GPU_ANALYSIS_QUESTION_RECORDS} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPU_ANALYSIS_QUESTION_RECORDS} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {
   createKeplerCuratedAnalysisMapping,
   getKeplerCuratedAnalysis,

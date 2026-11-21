@@ -416,7 +416,10 @@ it('chunked transpose equals the whole transpose and detects asymmetry', async (
       const weights = rig.weights(first, 'csr', chunking);
       const capacity = first.neighbors.length + (chunking ? chunking.length : 0);
       const output = {
-        ...outputCSR(rig, 'transpose', ROW_COUNT, capacity),
+        offsets: rig.output('transpose-offsets', 'uint32', ROW_COUNT + 1),
+        neighbors: rig.output('transpose-neighbors', 'uint32', capacity),
+        weights: rig.output('transpose-weights', 'float32', capacity),
+        distances: rig.output('transpose-distances', 'float32', capacity),
         asymmetricSlots: rig.output('asymmetric', 'uint32', 1)
       };
       rig.graph.add(
@@ -447,7 +450,7 @@ const TRANSFORMS: GPUSpatialWeightsTransformOperation[] = [
   'kernel',
   'double',
   'variance',
-  'symmetrize'
+  'average-reciprocal'
 ];
 
 for (const operation of TRANSFORMS) {
@@ -489,7 +492,7 @@ for (const operation of TRANSFORMS) {
 }
 
 it('chunked algebra equals the whole algebra for every row-local operation', async () => {
-  const binaryOperations = ['union', 'intersection', 'difference', 'symmetricDifference'] as const;
+  const binaryOperations = ['union', 'intersection', 'difference', 'symmetric-difference'] as const;
   for (const operation of binaryOperations) {
     for (const weightRule of ['left', 'sum'] as const) {
       await compareToWhole(

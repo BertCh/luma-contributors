@@ -2,8 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {defineGPUSpatialParameterSchema} from '../../analysis-core/contracts/index';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  defineGPUSpatialParameterSchema,
+  type GPUSpatialParameterSchema
+} from '../../analysis-core/contracts/index';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Number of float32 elements in a spatial-autocorrelation parameter buffer. */
 export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH = 8;
@@ -15,7 +21,7 @@ export const GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_FIXED_COUNT = 0xffffffff;
 export const GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_LEGACY_FIXED_COUNT = 2 ** 24;
 
 /** Declarative layout shared by local Moran and hot-spot analysis. */
-export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
+const spatialAutocorrelationParameterSchema = defineGPUSpatialParameterSchema({
   id: 'spatial-autocorrelation',
   format: 'float32',
   wordLength: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
@@ -26,7 +32,7 @@ export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA = defineGPUSpatialPara
       wordOffset: 0,
       defaultValue: 0.05,
       minimum: Number.MIN_VALUE,
-      maximum: 1,
+      maximum: 1 - Number.EPSILON / 2,
       dynamic: true
     },
     {
@@ -85,6 +91,10 @@ export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA = defineGPUSpatialPara
   ]
 });
 
+/** Declarative layout shared by local Moran and hot-spot analysis. */
+export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA: GPUSpatialParameterSchema<'float32'> =
+  spatialAutocorrelationParameterSchema;
+
 /**
  * Number of float32 values written to an optional `globalStatistics` output:
  * `[n, mean, variance, standardDeviation, islandCount]`.
@@ -120,7 +130,8 @@ export const GPU_LOCAL_MORAN_QUADRANT = {
  * Global moments that replace the moments computed from the current rows.
  *
  * Use them to pin the reference distribution, for example to moments measured once over the
- * full dataset, so that z-scores do not change when a viewport mask changes the row set.
+ * full dataset. This pins the population moments, but changing a mask can still change active
+ * neighbors, their weights and the resulting local statistic or z-score.
  */
 export type GPUSpatialAutocorrelationFixedMoments = {
   /** Population size `n`, at least 2. */
@@ -168,34 +179,38 @@ export function getGPUSpatialAutocorrelationParameterValues(
   settings: GPUSpatialAutocorrelationSettings = {},
   target: Float32Array = new Float32Array(GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH)
 ): Float32Array {
+  const id = 'getGPUSpatialAutocorrelationParameterValues';
   validateCapacity(
-    'getGPUSpatialAutocorrelationParameterValues',
+    id,
     'target length',
     target.length,
     GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
   );
   const significanceLevel = settings.significanceLevel ?? 0.05;
-  if (!(Math.fround(significanceLevel) > 0 && Math.fround(significanceLevel) < 1)) {
-    throw new Error('Spatial autocorrelation significanceLevel must be in (0, 1)');
-  }
+  validateRequirement(
+    id,
+    Math.fround(significanceLevel) > 0 && Math.fround(significanceLevel) < 1,
+    'significanceLevel must remain in (0, 1) after float32 packing'
+  );
   const fixedMoments = settings.fixedMoments;
   if (fixedMoments) {
     validateCapacity(
-      'spatial-autocorrelation',
+      id,
       'fixedMoments.count',
       fixedMoments.count,
       2,
       GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_FIXED_COUNT
     );
-    if (
-      !Number.isFinite(fixedMoments.count) ||
-      !Number.isFinite(Math.fround(fixedMoments.mean)) ||
-      !Number.isFinite(Math.fround(fixedMoments.variance)) ||
-      fixedMoments.count < 2 ||
-      Math.fround(fixedMoments.variance) <= 0
-    ) {
-      throw new Error('Spatial autocorrelation fixedMoments are invalid');
-    }
+    validateRequirement(
+      id,
+      Number.isFinite(Math.fround(fixedMoments.mean)),
+      'fixedMoments.mean must be finite after float32 packing'
+    );
+    validateRequirement(
+      id,
+      Number.isFinite(Math.fround(fixedMoments.variance)) && Math.fround(fixedMoments.variance) > 0,
+      'fixedMoments.variance must be finite and positive after float32 packing'
+    );
   }
   const useExtendedFixedCount = Boolean(
     fixedMoments && fixedMoments.count > GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_LEGACY_FIXED_COUNT

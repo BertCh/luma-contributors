@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileCopyrightText: Copyright (c) Relief Visualization Toolbox (RVT) contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {usesReliefSummedArea} from './relief-visualization-utils';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
@@ -159,12 +160,12 @@ export function getGPUMultiScaleReliefParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUMultiScaleRelief}; at least one is required. */
-export type GPUMultiScaleReliefOutput = {
+export type GPUMultiScaleReliefOutput = TerrainAtLeastOne<{
   /** Optional relief per pixel, in elevation units times exaggeration, NaN where invalid. */
   relief?: GraphDataView<'float32'>;
   /** Optional per-pixel 1 where the center elevation is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUMultiScaleRelief}.
@@ -233,8 +234,10 @@ export type GPUMultiScaleReliefProps = GPUMultiScaleReliefScales & {
  * use one exact 64-bit summed-area table (built once for both filters) of elevations quantized to
  * `quantum`: O(1) per pixel, error at most `quantum / 2` per filter (zero for `|z| >= 128` at the
  * default) plus a few float32 ULP of the deviation; the coarsest radius is then at most 23170.
- * Larger grids use the separable O(radius) float filter. Table-path pixels with
- * `|z - anchor| >= 2^31 * quantum` are invalid.
+ * Larger grids use the separable O(radius) float filter. On the table path the GPU selects the
+ * quantum-snapped first finite valid anchor and forms quantized offsets by exact 64-bit integer
+ * subtraction. Inclusive integer offsets `[-2147483520, 2147483520]` are accepted (elevation
+ * offsets `±32767.998046875` at the default quantum); absolute `|z / quantum| >= 2^62` is invalid.
  */
 export class GPUMultiScaleRelief implements GPUCommandNodeProducer, GPURasterHaloStage {
   /** Prefix for every node and transient ID. */

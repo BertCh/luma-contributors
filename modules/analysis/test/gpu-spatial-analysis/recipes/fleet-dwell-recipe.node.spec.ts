@@ -127,9 +127,25 @@ it('zone events rejects a low time part and forwards a supported declaration', (
         temporalContext: {...props.trajectories.temporalContext, encoding: 'float32-relative'}
       },
       candidateCapacity: 4,
-      trackEventCapacity: 4
+      trackEventCapacity: 4,
+      scratch: {
+        visitTable: {
+          ids: createTransientView(graph, 'visit-ids', 'uint32', 4),
+          status: {
+            count: createTransientView(graph, 'visit-count', 'uint32', 1),
+            overflow: createTransientView(graph, 'visit-overflow', 'uint32', 1)
+          }
+        }
+      }
     });
     const events = result.contributors.find(contributor => contributor instanceof GPUZoneEvents);
+    const statistics = result.status.stages.find(stage => stage.stage === 'zone-statistics');
+    expect(statistics?.status.candidateOverflow).toBe(result.status.candidateOverflow);
+    expect(statistics?.status.candidateOverflow).not.toBe(result.events.status.candidateOverflow);
+    expect(
+      result.status.stages.find(stage => stage.stage === 'visit-table')?.status
+        .candidateOverflow === result.status.candidateOverflow
+    ).toBe(true);
     expect((events as GPUZoneEvents).props.tracks.temporalContext).toEqual(
       props.trajectories.temporalContext
     );

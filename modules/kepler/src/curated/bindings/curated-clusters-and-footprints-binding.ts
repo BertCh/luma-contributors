@@ -42,15 +42,18 @@ const BINDING_ID = 'curated-clusters-and-footprints';
 
 const PARAMETERS: readonly CatalogParameterSpec[] = [
   makeNumberParameter('epsilon', 'Search distance', 200, 1e-9, 1e9, 'crs'),
-  makeNumberParameter(
-    'minimumPoints',
-    'Minimum points (including the point)',
-    4,
-    1,
-    1000,
-    undefined,
-    'integer'
-  ),
+  {
+    ...makeNumberParameter(
+      'minimumSamples',
+      'Minimum samples (including the point)',
+      4,
+      1,
+      1000,
+      undefined,
+      'integer'
+    ),
+    renamedFrom: 'minimumPoints'
+  },
   COORDINATE_SYSTEM_PARAMETER
 ];
 
@@ -74,10 +77,10 @@ function publishClustersAndFootprints(
   const points = inputs['points'];
   const coordinateSystem = values['coordinateSystem'] as CatalogCoordinateSystem;
   const epsilon = values['epsilon'] as number;
-  const minimumPoints = values['minimumPoints'] as number;
+  const minimumSamples = values['minimumSamples'] as number;
   const {frame, sample, diagnostics} = context;
   // The CPU engine remains the binary64 reference. The GPU engine never calls the CPU DBSCAN.
-  const {labels, coreFlags} = gpu ?? computeDbscanLabels(sample, epsilon, minimumPoints);
+  const {labels, coreFlags} = gpu ?? computeDbscanLabels(sample, epsilon, minimumSamples);
 
   // Table 1: the labelled points, as the catalog's own DBSCAN publishes them (cluster, is_core).
   const clustered = makeClusterOutput(points, frame, sample, labels, coreFlags, diagnostics);
@@ -212,7 +215,7 @@ function publishClustersAndFootprints(
       degenerateClusterCount: degenerateCount,
       noiseCount,
       epsilon,
-      minimumPoints
+      minimumSamples
     }
   };
 }
@@ -228,7 +231,7 @@ async function runClustersAndFootprintsGpu(
     context.sample,
     context.frame,
     values['epsilon'] as number,
-    values['minimumPoints'] as number
+    values['minimumSamples'] as number
   );
   return publishClustersAndFootprints(inputs, values, context, gpu);
 }
@@ -236,6 +239,8 @@ async function runClustersAndFootprintsGpu(
 /**
  * Clusters and footprints: DBSCAN groups, and a convex hull polygon with the point count, area and
  * perimeter of each group.
+ * Both routes admit at most MAXIMUM_CURATED_CLUSTER_POINTS = 6000 total input points.
+ * The CPU route uses bucketed DBSCAN, sorted hulls and linear measurements, not a distance matrix.
  */
 export const CURATED_CLUSTERS_AND_FOOTPRINTS_BINDING: CatalogOperationBinding = {
   id: BINDING_ID,
@@ -244,14 +249,9 @@ export const CURATED_CLUSTERS_AND_FOOTPRINTS_BINDING: CatalogOperationBinding = 
   summary:
     'Finds dense groups of points with DBSCAN, labels every point with its group or as noise, and draws the convex hull of each group with its point count, area and perimeter.',
   capabilityIds: ['group-and-regional-analysis'],
-  contributorNames: [
-    'GPUSpatialClustering',
-    'GPUGroupGeometry',
-    'GPUGroupConvexHull',
-    'GPUGeometryMeasures'
-  ],
+  contributorNames: ['GPUDBSCAN', 'GPUGroupGeometry', 'GPUGroupConvexHull', 'GPUGeometryMeasures'],
   gpuContributorNames: [
-    'GPUSpatialClustering',
+    'GPUDBSCAN',
     'GPUGroupGeometry',
     'GPUGroupConvexHull',
     'GPUGeometryMeasures'

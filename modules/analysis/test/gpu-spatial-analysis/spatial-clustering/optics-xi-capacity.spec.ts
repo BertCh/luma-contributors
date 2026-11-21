@@ -72,13 +72,12 @@ it('xi extracts a plateau spanning the full 65536-row capacity and every dispatc
       coreDistances: createTransientView(graph, 'unused-core', 'float32', rows),
       reachability,
       predecessors,
-      status,
       labels: labels.view,
       clusterIntervals: intervals.view,
       clusterSummary: summary.view
     }
   };
-  graph.add(createOPTICSXiNodes(graph, props, 'xi-capacity'));
+  graph.add(createOPTICSXiNodes(graph, props, 'xi-capacity', status));
   const compiled = graph.compile();
   try {
     submitGraph(device, compiled, undefined);

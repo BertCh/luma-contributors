@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const dwell = addFleetDwellRecipe(graph, {\n  spatialContext,\n  trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},\n  parameters: parameters.importToGraph(graph),\n  stopCapacity,\n  zones: {...anchorages, candidateCapacity: 4096},\n  outputs: {stops, table},\n  scratch: {stopZones}\n});\n// table.counts and table.sumValues give stops and total dwell seconds per anchorage",
+    "code": "const dwell = addFleetDwellRecipe(graph, {\n  spatialContext,\n  trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},\n  parameters: parameters.importToGraph(graph),\n  stopCapacity,\n  zones: {...anchorages, candidateCapacity: 4096},\n  output: {stops, table},\n  scratch: {stopZones}\n});\n// table.counts and table.sumValues give stops and total dwell seconds per anchorage",
     "language": "ts",
     "lineCount": 10
   },
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:37.704Z",
-    "runId": "run-68a6ae45",
+    "date": "2026-11-20T23:49:34.981Z",
+    "runId": "run-748e266d",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-68a6ae45",
+    "runId": "run-748e266d",
     "rung": "result",
     "bindings": {},
     "clauses": [],

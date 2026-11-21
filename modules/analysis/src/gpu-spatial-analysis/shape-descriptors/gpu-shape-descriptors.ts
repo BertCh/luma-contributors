@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {RequiredGeometryOutput} from '../group-geometry/required-geometry-output';
+import {validateShapeDescriptorMeasurements} from './shape-descriptors-measurement-validation';
+
+import {getEmptyGeometryNodes} from '../group-geometry/empty-geometry-nodes';
+
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -149,7 +154,7 @@ export const GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_AVERAGE_VERTICES = 256;
 export const GPU_SHAPE_DESCRIPTORS_MONOTONE_CHAIN_LARGEST_VERTICES = 1024;
 
 /** Per-feature output columns of {@link GPUShapeDescriptors}. Every column is optional. */
-export type GPUShapeDescriptorsOutput = {
+export type GPUShapeDescriptorsOutput = RequiredGeometryOutput<{
   /** Polygon area (`|signed area|`), the same column `GPUGeometryMeasures` writes. */
   areas?: GraphDataView<'float32'>;
   /** Perimeter over every ring, the same column `GPUGeometryMeasures` writes as `lengths`. */
@@ -177,7 +182,7 @@ export type GPUShapeDescriptorsOutput = {
   clockwise?: GraphDataView<'uint32'>;
   /** `1` when the perimeter is positive and Polsby-Popper is below the threshold or area is 0. */
   sliver?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUShapeDescriptors}.
@@ -195,8 +200,10 @@ export type GPUShapeDescriptorsProps = GPUPolygonGeometryFields & {
   id?: string;
   /**
    * Planar only. Spatial context of `positions`; omitted means native planar coordinates.
-   * Longitude/latitude (or any other non-planar) contexts throw at construction: project
-   * positions to a planar frame first, for example with `createGPULocalFrame` and
+   * Longitude/latitude (or any other non-planar) contexts throw at construction.
+   * Selected area/perimeter/compactness/convexity outputs also reject known angular planar
+   * frames, including with metric none. Project positions to a planar linear frame first,
+   * for example with `createGPULocalFrame` and
    * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
    * Measures both distance and area, so neither local frame is exact: use an
    * azimuthal-equidistant frame for study areas small enough that its area distortion is
@@ -269,15 +276,14 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     this.id = props.id ?? 'shape-descriptors';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    validateShapeDescriptorMeasurements(this.id, this.spatialContext, props.output);
     const {id} = this;
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length < 1) {
-      throw new Error(`${id} needs at least one position`);
-    }
+
     for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
       validateSinglePackedView(props[name], ['uint32'], `${id} ${name}`);
-      if (props[name].length < 2) {
-        throw new Error(`${id} ${name} must contain at least two rows`);
+      if (props[name].length < 1) {
+        throw new Error(`${id} ${name} must contain a terminal row`);
       }
     }
     this.featureCount = props.featureOffsets.length - 1;
@@ -388,6 +394,18 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
       parameters: props.parameters,
       ...Object.fromEntries(Object.entries(output).map(([name, view]) => [`output.${name}`, view]))
     });
+    if (props.positions.length === 0)
+      return getEmptyGeometryNodes(
+        graph,
+        id,
+        OPERATION,
+        Object.fromEntries(
+          Object.entries(output).map(([name, view]) => [
+            name,
+            {view, value: ['areas', 'perimeters', 'clockwise', 'sliver'].includes(name) ? 0 : NaN}
+          ])
+        )
+      );
     // The nested geometry measure's feature record is larger than our scalar, centroid and
     // four-word moment planes. Validate it before declaring even those smaller resources.
     validateGPUStorageBindingByteLength(

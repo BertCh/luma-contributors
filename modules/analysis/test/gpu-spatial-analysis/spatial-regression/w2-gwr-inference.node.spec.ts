@@ -30,8 +30,12 @@ fn main(@builtin(global_invocation_id) invocation: vec3u) {
   LARGE_SAMPLE_QUANTILE_CASES.forEach(([, , expected], index) => {
     expect(Math.abs(output[index * 2] - expected), `case ${index}`).toBeLessThan(2e-5);
   });
-  // Demonstrates the float32 defect in the historical evaluator, rather than comparing routes.
-  expect(Math.abs(output[9] - LARGE_SAMPLE_QUANTILE_CASES[4][2])).toBeGreaterThan(2e-5);
+  // The general Student evaluator now uses the repaired large-sample route too. Pin each
+  // returned value to the independent reference, rather than requiring the old defect to persist.
+  LARGE_SAMPLE_QUANTILE_CASES.forEach(([, , expected], index) => {
+    expect(Number.isFinite(output[index * 2 + 1])).toBe(true);
+    expect(Math.abs(output[index * 2 + 1] - expected), `general case ${index}`).toBeLessThan(2e-5);
+  });
 });
 
 it('aggregates raw tail statistics even when a motif has no standalone AICc', () => {

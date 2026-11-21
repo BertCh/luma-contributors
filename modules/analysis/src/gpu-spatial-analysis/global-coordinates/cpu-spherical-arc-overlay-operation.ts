@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {validateSphericalOverlayOperation} from './spherical-overlay-options';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateMaximumCount,
-  validateRequirement
+  validateMaximumCount
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
@@ -20,7 +24,7 @@ import {
   negateCoveringVector,
   type CPUCoveringVector
 } from '../cell-topology/cpu-s2-covering-geometry';
-import {assertUnitVector} from './assert-unit-vector';
+import {validateUnitVector} from './assert-unit-vector';
 import {
   GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
   GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT,
@@ -35,6 +39,7 @@ import {
 } from './gpu-spherical-arc-overlay';
 import {
   GPUSphericalArcOverlayOperation,
+  captureSphericalArcOverlayOperationProps,
   type SphericalArcOverlayOperationProps
 } from './gpu-spherical-arc-overlay-operation';
 
@@ -70,15 +75,15 @@ type Segment = {start: Vector; end: Vector; used: boolean};
  * - Geometry and predicates use float64, rounded only when output positions are stored. Results
  *   near tolerance thresholds or tied junctions can differ from float32; compare positions with
  *   absolute tolerance 3e-6 on well-separated inputs. Integer fields agree on those inputs.
- * - The GPU-only 128-input, 130-split-point and 1024-output limits are dropped. All split points
- *   and unique segments are retained before capacity is checked; on overflow counts[2] is the
- *   complete unique segment count, including duplicates beyond GPU scratch capacity only once.
+ * - The GPU-only 128-input, 130-split-point and 1024-output limits are dropped. Both forms retain
+ *   every unique segment before output capacity is checked, so counts[2] is independent of the
+ *   caller's output capacity, including on coincident boundaries.
  * - Tolerance-based invalid/unresolved rules and the seven reference-anchored containment paths
  *   are retained as the contributor's definition of numerical separation. Status bits 1, 2 and 4
  *   retain their meanings; a capacity failure publishes zero vertices and rings, not a prefix.
  * - Malformed ring ranges and non-unit/non-finite coordinates return status 1 as on GPU;
  *   inconsistent packed positions or missing offset arrays throw an Error naming the argument.
- * - Unknown runtime operation values throw; the GPU contributor falls through to symmetric-difference.
+ * - Unknown runtime operation values throw in every form.
  *
  * @throws For inconsistent packed arrays, invalid options, or an unrepresentable uint32 count.
  */
@@ -86,6 +91,25 @@ export function computeSphericalArcOverlayOnCPU(
   input: CPUSphericalArcOverlayInput,
   options: CPUSphericalArcOverlayOptions
 ): CPUSphericalArcOverlayResult {
+  const captured = snapshotConstructionFields(options, [
+    'spatialContext',
+    'referencePoint',
+    'operation',
+    'tolerance',
+    'capacity',
+    'ringCapacity'
+  ]);
+  options = Object.freeze({
+    ...captured,
+    referencePoint: Object.freeze([...captured.referencePoint]) as readonly [
+      number,
+      number,
+      number
+    ],
+    ...(captured.spatialContext
+      ? {spatialContext: snapshotConstructionSpatialContext(captured.spatialContext)}
+      : {})
+  });
   validateOptions('spherical-arc-overlay', options);
   for (const name of ['left', 'right'] as const) {
     if (input[name].positions.length % 3)
@@ -132,6 +156,8 @@ export function computeSphericalArcOverlayOnCPU(
   for (const source of [input.left, input.right]) {
     const {positions, ringOffsets} = source;
     const vertexCount = positions.length / 3;
+    if (ringOffsets.length - 1 > Math.floor(vertexCount / 3))
+      return failResult(GPU_SPHERICAL_ARC_OVERLAY_STATUS_INVALID);
     if (ringOffsets[0] !== 0 || ringOffsets[ringOffsets.length - 1] !== vertexCount)
       return failResult(GPU_SPHERICAL_ARC_OVERLAY_STATUS_INVALID);
     const vertices: Vector[] = Array.from({length: vertexCount}, (_, row) => [
@@ -398,6 +424,7 @@ export function computeSphericalArcOverlayOnCPU(
  */
 export class CPUSphericalArcOverlayOperation extends GPUCPUOperation {
   constructor(props: SphericalArcOverlayOperationProps) {
+    props = captureSphericalArcOverlayOperationProps(props);
     const operation = new GPUSphericalArcOverlayOperation(props);
     const {id} = operation;
     validateOptions(id, props);
@@ -434,7 +461,7 @@ export class CPUSphericalArcOverlayOperation extends GPUCPUOperation {
 function validateOptions(id: string, options: CPUSphericalArcOverlayOptions): void {
   validateCapacity(id, 'capacity', options.capacity, 3);
   validateCapacity(id, 'ringCapacity', options.ringCapacity, 1, 0xfffffffe);
-  assertUnitVector(options.referencePoint, id, 'referencePoint');
+  validateUnitVector(options.referencePoint, id, 'referencePoint');
   validateAngularTolerance(
     id,
     options.tolerance ?? 1e-6,
@@ -446,11 +473,7 @@ function validateOptions(id: string, options: CPUSphericalArcOverlayOptions): vo
     options.spatialContext ?? GPU_SPHERICAL_DEFAULT_SPATIAL_CONTEXT,
     GPU_SPHERICAL_SPATIAL_CONTEXT_SUPPORT
   );
-  validateRequirement(
-    id,
-    ['intersection', 'union', 'difference', 'symmetric-difference'].includes(options.operation),
-    'operation must be intersection, union, difference or symmetric-difference'
-  );
+  validateSphericalOverlayOperation(id, options.operation);
 }
 function addVectors(first: Vector, second: Vector): Vector {
   return [first[0] + second[0], first[1] + second[1], first[2] + second[2]];

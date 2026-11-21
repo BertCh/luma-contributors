@@ -36,15 +36,20 @@ export type {
 } from './gpu-mantel-test';
 export {
   decodeGPUSpaceTimeInferenceMetadata,
+  decodeGPUMantelTestSummary,
   getGPUSpaceTimeParameterValues,
   getGPUSpaceTimeRelativeTimes,
   getKnoxPoissonPValue,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY,
+  GPU_MANTEL_TEST_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH
 } from './space-time-parameters';
 export type {
   GPUSpaceTimeInferenceMetadata,
+  GPUMantelTestInferenceMetadata,
+  GPUSpaceTimeDecodedInferenceMetadata,
+  GPUSpaceTimePValueField,
   GPUSpaceTimeSettings,
   GPUSpaceTimeRelativeTimes
 } from './space-time-parameters';

@@ -91,7 +91,7 @@ function captureKernel(
   }
 }
 
-it('sight-line uniform declarations, bodies and variants retain the pre-cellSizeMode snapshot', () => {
+it('sight-line uniform declarations, bodies and variants retain the reviewed validity and sampling snapshot', () => {
   const hash = (source: string | undefined) =>
     createHash('sha256')
       .update(source ?? '')
@@ -101,6 +101,27 @@ it('sight-line uniform declarations, bodies and variants retain the pre-cellSize
     expect(kernel).toEqual(captureKernel(kernelCase, {cellSizeMode: 'uniform'}));
     expect(kernel.declarations).not.toContain('getRayGroundCell');
     expect(kernel.body).not.toContain('getRayGroundCell');
+    // The old fingerprints predated the approved finite-height and positive-weight fixes.
+    // Keep full declaration/body fingerprints, and explicitly pin their sampling contracts:
+    // zero-weight corners cannot affect interpolation, and integer lattice hits avoid reciprocal
+    // rounding. These are policy assertions, not values inferred from a GPU readback.
+    expect(kernel.declarations).toContain('if (weights.x > 0.0)');
+    expect(kernel.declarations).toContain('if (weights.y > 0.0)');
+    expect(kernel.declarations).toContain('if (weights.z > 0.0)');
+    expect(kernel.declarations).toContain('if (weights.w > 0.0)');
+    expect(kernel.declarations).toContain(
+      'if (fraction == 0.0 || first == second) { return first; }'
+    );
+    expect(kernel.declarations).toContain('if (integerDelta % divisor == 0u)');
+    if (kernelCase[0] === 'viewshed' || kernelCase[0] === 'cumulative') {
+      expect(kernel.body).toContain('!isFiniteValue(observerHeight)');
+      expect(kernel.body).toContain('!isFiniteValue(targetHeight)');
+    }
+    if (kernelCase[0] !== 'viewshed' || kernelCase[1] === 'pyramid' || kernelCase[2]) {
+      expect(kernel.declarations).toContain(
+        'if (!isFiniteValue(eye) || !isFiniteValue(targetTop))'
+      );
+    }
     return {
       variant: kernel.variant,
       declarations: hash(kernel.declarations),
@@ -110,47 +131,81 @@ it('sight-line uniform declarations, bodies and variants retain the pre-cellSize
   expect(snapshots).toMatchInlineSnapshot(`
     [
       {
-        "body": "d1363442f69b2d11dc61ad2ad4821c2382b996c9f1b8788f8a8f326b854d6f3c",
-        "declarations": "d4f51fb51f4fc5479a7b44a523d566ceacc54da947d7f847d8f1b6effe7f2b6e",
+        "body": "d538b04ef8326092911ab7933a51084f05afcc4c820e43d336f95167664f036c",
+        "declarations": "bef2d61ccb28243d99fae80f034561b011309221ee1750a7eae0c0fdf4cd54e6",
         "variant": "line-of-sight",
       },
       {
-        "body": "a9d5700f6cdeebe7f3be9d4fe5b497e4df1b32dda98634b7e7b4234fd8b65363",
-        "declarations": "1258582b39d0f20f09045b876493b6663fe42fc0a13ab1c12c20e0750113d883",
+        "body": "7aa5ed301c35ced7447e480e1966ee71b2f3cee85eec4a523ec4ffc107907010",
+        "declarations": "8dd309be100c0624b2f68b114014709c506f44a16d3fa135a050fd5419adef04",
         "variant": "tolerance",
       },
       {
-        "body": "070e70062226699927161edf927a95217e807a7f266909f36cef071d81cc73ce",
-        "declarations": "b969f1312cb22a57d7fbecd1448b2e619e41eed68809c7956790be74a496ed5d",
+        "body": "1f807151993f7835a8aafc9795e183f5846865b406269c5b6c7102b29cb150c8",
+        "declarations": "d67ab8863cda2a547872d66d26e69de4d30516754240d63e7f3fab6f645050bb",
         "variant": "pyramid",
       },
       {
-        "body": "a9d5700f6cdeebe7f3be9d4fe5b497e4df1b32dda98634b7e7b4234fd8b65363",
-        "declarations": "b969f1312cb22a57d7fbecd1448b2e619e41eed68809c7956790be74a496ed5d",
+        "body": "7aa5ed301c35ced7447e480e1966ee71b2f3cee85eec4a523ec4ffc107907010",
+        "declarations": "d67ab8863cda2a547872d66d26e69de4d30516754240d63e7f3fab6f645050bb",
         "variant": "pyramid",
       },
       {
         "body": "79e8d4029a7f0ff1b1f0619d46413b04cfc5a3a94b539ad222710a2cc79cbadc",
-        "declarations": "648a7e56682fe09d98830604ffa89e2d87f4e02bef759851568b8a305c250bfb",
+        "declarations": "bcd5f4ca2b85a0fe4e9e6f2b6696f2b1c9278b1e8e57c836bd8f6074c5dcad28",
         "variant": "march",
       },
       {
         "body": "79e8d4029a7f0ff1b1f0619d46413b04cfc5a3a94b539ad222710a2cc79cbadc",
-        "declarations": "75f31b3e1f1b67b55dfc9bcfd400be951c460931fa8927d125cd2c6b2f1f3428",
+        "declarations": "f3160a287ff86fb419f54fb4b59527f963a55f17fcee1bea56d05b82da319354",
         "variant": "pyramid",
       },
       {
-        "body": "3e8c6c5cde8bb54ee2e1445b2d6e22c9195340c436f5c7b029249325c9d667c9",
-        "declarations": "cde29dc57bcabc6184522e01c520f6d432145a9ef13991968d5b916670e42b7d",
+        "body": "043a29e482c192ac5c1135c8c31879e2055d4bb2999b03dfd1c7a3d7f571ce74",
+        "declarations": "1379cb5be0154fdd50f9c5ca60359a4801af145b55000c8361907657a82506e4",
         "variant": "march",
       },
       {
-        "body": "3e8c6c5cde8bb54ee2e1445b2d6e22c9195340c436f5c7b029249325c9d667c9",
-        "declarations": "7fedf362880a40129bea37ce1ac5c4cb3c4ebb821c750336e916e85ddcd7317b",
+        "body": "043a29e482c192ac5c1135c8c31879e2055d4bb2999b03dfd1c7a3d7f571ce74",
+        "declarations": "2111f055f7291883d91bca636968edf5bb769929125dca1eaa17f72b7c273424",
         "variant": "pyramid",
       },
     ]
   `);
+});
+
+it('uniform sight-line validity follows hand-worked endpoint and ridge fixtures', () => {
+  const grid = makeGPURasterMetadata({width: 3, height: 1, cellSize: 1});
+  const settings = getGPUTerrainViewshedParameterValues(
+    {observer: [0, 0], observerHeight: 0},
+    grid
+  );
+  // Integer centers have one nonzero bilinear weight. The unused NaN neighbor cannot invalidate
+  // the first two cells: the eye sees itself and the adjacent 10 m cell; the NaN target is noData.
+  const terrain = [0, 10, NaN];
+  expect(computeTerrainViewshed(terrain, undefined, 3, 1, settings)).toEqual([1, 1, 3]);
+  expect(
+    computeTerrainViewshedWithTolerance(terrain, undefined, 3, 1, settings, [0, 0, 0, 0]).map(
+      result => result.code
+    )
+  ).toEqual([1, 1, 3]);
+  const pairSettings = getGPUTerrainLineOfSightParameterValues({observerHeight: 0}, grid);
+  expect(computeTerrainSightLine(terrain, undefined, 3, 1, [0, 0], [1, 0], pairSettings).code).toBe(
+    1
+  );
+  // At column 1.5, both 10 m and NaN have positive weights, so this target is noData.
+  expect(
+    computeTerrainSightLine(terrain, undefined, 3, 1, [0, 0], [1.5, 0], pairSettings).code
+  ).toBe(3);
+  // A 2 m ridge at x=1 lies above the zero-height line joining x=0 and x=2.
+  expect(computeTerrainViewshed([0, 2, 0], undefined, 3, 1, settings)).toEqual([1, 1, 0]);
+  settings[2] = NaN;
+  expect(computeTerrainViewshed(terrain, undefined, 3, 1, settings)).toEqual([3, 3, 3]);
+  expect(
+    computeTerrainViewshedWithTolerance(terrain, undefined, 3, 1, settings, [0, 0, 0, 0]).map(
+      result => result.code
+    )
+  ).toEqual([3, 3, 3]);
 });
 
 it.each([

@@ -149,7 +149,7 @@ export const TERRAIN_DECODE_OPERATORS: RasterOperatorTable = {
       id: 'gpu-terrain.terrain-spike-repair.component-shift',
       tex: String.raw`\term{multiple}{k}=\operatorname{round}(\term{difference}{\Delta h}/\term{step}{s}),\quad V(k)=\mathbf{1}[0<|k|\le127\land|\Delta h-sk|<\term{tolerance}{\epsilon}],\quad\term{output}{h_i\prime}=\term{input}{h_i}-s\,k_C\,\mathbf{1}[\term{shift}{\operatorname{shift}(C)}]`,
       ascii:
-        'Join 4-neighbours with abs(dh)<=jump, label components and choose the largest (ties lowest label) as main. For each ordered seam, k=round(dh*f32(1/step)); vote iff 0<abs(k)<=127 and abs(dh-step*k)<tolerance. Reconstruct candidate k by strict majority bits, recount agreeing seams. Shift a converged nonempty non-main component only if size*100<=validCount*maximumComponentPercent, seams>0, candidate exists and agreeCount*100>=seams*agreementPercent; replace h by h-step*k, otherwise keep h. Invalid cells stay NaN/validity 0. Nonconvergence gives valid cells +Infinity, validity and labels 0xffffffff, convergence 0.',
+        'Join 4-neighbours with abs(dh)<=jump, label components and choose the largest (ties lowest label) as main. For each ordered seam, k=round(dh*f32(1/step)); vote iff 0<abs(k)<=127 and abs(dh-step*k)<tolerance. Reconstruct candidate k by strict majority bits, recount agreeing seams. Shift a converged nonempty non-main component only if size*100<=validCount*maximumComponentPercent, seams>0, candidate exists and agreeCount*100>=seams*agreementPercent; replace h by h-step*k, otherwise keep h. Invalid cells stay NaN/validity 0. Nonconvergence gives valid input cells +Infinity, validity 0, labels 0xffffffff and convergence 0.',
       derivation: 'curated',
       symbols: [
         {

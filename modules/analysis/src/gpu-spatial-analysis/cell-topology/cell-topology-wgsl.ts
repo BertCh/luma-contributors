@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getCellSpread16WGSL} from '../cell-aggregation/cell-keys';
+
 /**
  * Quadbin integer tile and hierarchy helpers shared by topology and grid paths.
  *
@@ -16,15 +18,7 @@
 export const QUADBIN_TILE_WGSL = /* wgsl */ `
 const CELL_TOPOLOGY_QUADBIN_HEADER_HIGH: u32 = 0x48000000u;
 
-fn cellTopologyQuadbinSpread16(value: u32) -> u32 {
-  var x = value & 0xffffu;
-  x = (x | (x << 8u)) & 0x00ff00ffu;
-  x = (x | (x << 4u)) & 0x0f0f0f0fu;
-  x = (x | (x << 2u)) & 0x33333333u;
-  x = (x | (x << 1u)) & 0x55555555u;
-  return x;
-}
-
+${getCellSpread16WGSL('cellTopologyQuadbinSpread16')}
 fn cellTopologyQuadbinCompact16(value: u32) -> u32 {
   var x = value & 0x55555555u;
   x = (x | (x >> 1u)) & 0x33333333u;

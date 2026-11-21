@@ -23,7 +23,7 @@ import {
   getRasterIterationCondition,
   validateRasterIterations
 } from '../../raster-analysis/cost-distance/raster-relaxation';
-import {HASH_UINT32_WGSL} from '../shared/hash-uint32';
+import {HASH_UINT32_WGSL} from '../../analysis-core/kernels/hash-uint32';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGeographicDistributionViews} from '../geographic-distribution/geographic-distribution-validation';
@@ -31,12 +31,15 @@ import {validateGeometryReadWriteViews} from '../geometry-edit/geometry-storage-
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
+  getGPUSpatialWeightsLossViews,
   getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 import {wrapWeightsChunkRowBodyWGSL} from '../spatial-regression/chunked-weights-kernels';
 import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
 
 const OPERATION = 'GPUMapColoring';
 
@@ -93,14 +96,15 @@ export function getGPUMapColoringParameterValues(
 export type GPUMapColoringOutput = {
   /**
    * Color index per row, from 0. A row that did not finish within `maximumIterations` holds
-   * {@link GPU_MAP_COLORING_UNCOLORED}.
+   * {@link GPU_MAP_COLORING_UNCOLORED}; every row does when the weights status reports loss.
    */
   colors: GraphDataView<'uint32'>;
   /** Optional one-row output: number of colors used (largest color plus one). */
   colorCount?: GraphDataView<'uint32'>;
   /**
    * Optional one-row output: number of neighbor pairs `(i, j)` with `j > i` whose rows share a
-   * color. 0 means the coloring is proper (for a symmetric pattern). Uncolored rows never conflict.
+   * color. 0 certifies a proper coloring only for symmetric adjacency and completed coloring
+   * (`converged` is 1). Uncolored rows never conflict.
    */
   conflictCount?: GraphDataView<'uint32'>;
   /**
@@ -123,9 +127,14 @@ export type GPUMapColoringProps = {
    * Square self-join adjacency, usually `GPUContiguityWeights` output (rook for maps, queen to also
    * separate polygons that touch at a point). Only the pattern is used, so weights of any value
    * work. The pattern must be symmetric (`j` in row `i` implies `i` in row `j`); an asymmetric
-   * pattern can yield a color conflict, which `conflictCount` reports.
+   * pattern can yield a color conflict. `conflictCount` counts an equal-color CSR entry only
+   * when `neighbor > row`; descending entries such as `1 -> 0` are not counted. Zero reported
+   * conflicts therefore do not certify a proper coloring for an asymmetric pattern.
    * Weights from `GPUNeighborSearch` carry their own `spatialContext`; topology-only weights
    * may omit it. No context check is needed because coloring uses only adjacency.
+   * When `weights.status` (or a chunk's status) carries `overflow` or `candidateOverflow`, a
+   * nonzero flag suppresses the coloring: every row is uncolored, `colorCount` and
+   * `conflictCount` are 0 and `converged` is 0.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
   /**
@@ -172,6 +181,8 @@ export type GPUMapColoringProps = {
  *
  * **Verification.** `conflictCount` counts neighbor pairs that share a color; it is 0 for a symmetric
  * pattern. `output.status.converged` reports whether every row finished within `maximumIterations`.
+ * Incomplete adjacency (a nonzero `overflow` or `candidateOverflow` in the weights status)
+ * suppresses the coloring: every row is uncolored and `converged` is 0.
  *
  * Consumes a contiguity (adjacency) pattern only, so it takes no `spatialContext`.
  */
@@ -186,6 +197,35 @@ export class GPUMapColoring implements GPUCommandNodeProducer {
   readonly priority: GPUMapColoringPriority;
 
   constructor(props: GPUMapColoringProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'weights',
+      'parameters',
+      'maximumIterations',
+      'priority',
+      'output'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(captured.output, [
+      'colors',
+      'colorCount',
+      'conflictCount',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      weights: snapshotWeightsPort(captured.weights),
+      output: Object.freeze({
+        ...outputSnapshot,
+        ...(outputSnapshot.status
+          ? {
+              status: snapshotConstructionFields(outputSnapshot.status, [
+                'converged',
+                'iterationCount'
+              ])
+            }
+          : {})
+      })
+    });
     const id = props.id ?? 'map-coloring';
     this.id = id;
     this.props = props;
@@ -511,7 +551,71 @@ fn outranks(other: u32, otherDegree: u32, index: u32, rowDegree: u32, seed: u32)
         )
       );
     }
+    nodes.push(...this.getIncompleteWeightsNodes(graph));
     return nodes;
+  }
+
+  /**
+   * Suppresses the coloring when the adjacency may be incomplete (decision LR-D4): a truncated
+   * neighbor list can let neighbors share a color while `conflictCount`, which checks only the
+   * stored pairs, reports none. When any `status.overflow` or `status.candidateOverflow` of the
+   * weights (whole or per chunk) is nonzero, every row is written
+   * {@link GPU_MAP_COLORING_UNCOLORED}, `colorCount` and `conflictCount` are 0 and `converged`
+   * is 0. The normal writers restore the outputs on the next complete frame.
+   */
+  private getIncompleteWeightsNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): GPUCommandNode<Parameters>[] {
+    const {id, props} = this;
+    const {output} = props;
+    const losses = getGPUSpatialWeightsLossViews(props.weights);
+    if (losses.length === 0) {
+      return [];
+    }
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(losses.map((view, index) => [`weights loss ${index}`, view]))
+    );
+    const scalars: (readonly [string, GraphDataView<'uint32'>])[] = [];
+    for (const [name, view] of [
+      ['colorCount', output.colorCount],
+      ['conflictCount', output.conflictCount],
+      ['converged', output.status?.converged]
+    ] as const) {
+      if (view) {
+        scalars.push([name, view]);
+      }
+    }
+    return losses.flatMap((loss, lossIndex) => [
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-incomplete-${lossIndex}`,
+        operation: OPERATION,
+        variant: 'incomplete-input',
+        bindings: [
+          {name: 'loss', view: loss, type: 'u32', access: 'read'},
+          {name: 'colors', view: output.colors, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: output.colors.length,
+        body: `if (loss[lossOffset] != 0u) {
+    colors[colorsOffset + index] = ${GPU_MAP_COLORING_UNCOLORED}u;
+  }`
+      }),
+      // Scalar outputs may share a buffer: their ordinary writers also run separately.
+      ...scalars.map(([name, view]) =>
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-incomplete-${lossIndex}-${name}`,
+          operation: OPERATION,
+          variant: `incomplete-input-${name}`,
+          bindings: [
+            {name: 'loss', view: loss, type: 'u32', access: 'read'},
+            {name, view, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: 1,
+          body: `if (loss[lossOffset] != 0u) { ${name}[${name}Offset] = 0u; }`
+        })
+      )
+    ]);
   }
 }
 

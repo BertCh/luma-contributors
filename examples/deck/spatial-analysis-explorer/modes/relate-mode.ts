@@ -5,8 +5,8 @@
 /**
  * Relate: `GPUSpatialPredicateJoin` evaluates a topological predicate (or any DE-9IM pattern) between
  * a small set of movable query shapes (the left side) and the San Francisco ZIP-code polygons (the
- * right side). The ZIP side is a `GPUSpatialJoinPrepared` handle: its bounds and BVH are built once and
- * reused while the queries move every frame, and a readout counts the builds. An anti join over the
+ * right side). The ZIP side is a `GPUSpatialJoinPrepared` handle: it retains geometry while preparation replays
+ * every encoding, and a readout counts CPU geometry refresh requests including discarded encodings. An anti join over the
  * same predicate lists the queries that match nothing, and `GPUSpatialJoinCandidates` shows the bounding
  * box candidates that the exact predicate filters down.
  *
@@ -95,6 +95,7 @@ const PATTERNS: readonly {value: string; label: string}[] = [
 ];
 /** Most patterns an any-of list may hold: slots of the per-frame pattern buffer. */
 const PATTERN_SLOTS = 4;
+const SUMMARY_WORDS = 10;
 const MAXIMUM_DISTANCE = 3000;
 const DEFAULT_DISTANCE = 400;
 /** Frame at which the graph time is measured once, outside the frame. */
@@ -439,6 +440,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       const antiIds = build.createBuffer('anti-ids', leftCount * 4);
       const antiCount = build.createBuffer('anti-count', 4);
       const antiOverflow = build.createBuffer('anti-overflow', 4);
+      const antiUncertainCount = build.createBuffer('anti-uncertain-count', 4);
       const candidateLeft = build.createBuffer('candidate-left', candidateCapacity * 4);
       const candidateRight = build.createBuffer('candidate-right', candidateCapacity * 4);
       const candidatePairCount = build.createBuffer('candidate-pair-count', 4);
@@ -492,7 +494,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         ),
         ringOffsets: view('zip-ring-offsets', zipRingOffsets, 'uint32', zips.ringOffsets.length)
       };
-      // One handle for every join in the graph: the right-side BVH is built once and reused.
+      // One retained geometry handle shares preparation among joins within each encoding.
       const prepared = new GPUSpatialJoinPrepared({id: 'relate-prepared', geometry: right});
       graph.add(prepared);
       const common = {
@@ -544,7 +546,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
               count: view('anti-count', antiCount, 'uint32', 1),
               overflow: view('anti-overflow', antiOverflow, 'uint32', 1)
             }
-          }
+          },
+          status: {uncertainCount: view('anti-uncertain-count', antiUncertainCount, 'uint32', 1)}
         }
       });
       graph.add(antiJoin);
@@ -588,8 +591,8 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         frames: 0,
         pairs: []
       };
-      // Header words: count, overflow, total, uncertain, candidates, anti count, anti overflow,
-      // candidate pair count, candidate overflow; then pairs, relate and anti ids.
+      // Header words: count, overflow, total, inner uncertainty, candidates, anti count,
+      // anti overflow, candidate pair count, candidate overflow, anti uncertainty.
       result.reader = new SummaryReader(
         build,
         'relate',
@@ -603,6 +606,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           {buffer: antiOverflow, size: 4},
           {buffer: candidatePairCount, size: 4},
           {buffer: candidateOverflow, size: 4},
+          {buffer: antiUncertainCount, size: 4},
           {buffer: leftRows, size: pairCapacity * 4},
           {buffer: rightRows, size: pairCapacity * 4},
           {buffer: relateBuffer, size: pairCapacity * 4},
@@ -625,7 +629,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         flags: context.controls.addReadout('Overflow / uncertain', '...'),
         engine: context.controls.addReadout('Engine path', '...'),
         timing: context.controls.addReadout('Graph time (joins + candidates)', '...'),
-        reuse: context.controls.addReadout('Right-side BVH builds', '...')
+        reuse: context.controls.addReadout('CPU geometry refresh requests', '...')
       };
       return handles;
     })();
@@ -644,10 +648,13 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       const capacity = build.pairCapacity;
       const leftCount = build.scene.shapes.length;
       const count = Math.min(words[0], capacity);
-      const leftRows = words.subarray(9, 9 + capacity);
-      const rightRows = words.subarray(9 + capacity, 9 + capacity * 2);
-      const matrices = words.subarray(9 + capacity * 2, 9 + capacity * 3);
-      const antiIds = words.subarray(9 + capacity * 3, 9 + capacity * 3 + leftCount);
+      const leftRows = words.subarray(SUMMARY_WORDS, SUMMARY_WORDS + capacity);
+      const rightRows = words.subarray(SUMMARY_WORDS + capacity, SUMMARY_WORDS + capacity * 2);
+      const matrices = words.subarray(SUMMARY_WORDS + capacity * 2, SUMMARY_WORDS + capacity * 3);
+      const antiIds = words.subarray(
+        SUMMARY_WORDS + capacity * 3,
+        SUMMARY_WORDS + capacity * 3 + leftCount
+      );
       const matchedFlags = new Float32Array(leftCount);
       const rightCounts = new Float32Array(zipCount);
       const histogram = new Map<string, number>();
@@ -670,10 +677,11 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       build.matchedFlags.write(matchedFlags);
       build.unmatchedFlags.write(unmatchedFlags);
       build.rightCounts.write(rightCounts);
-      let complement = true;
-      for (let row = 0; row < leftCount; row++) {
-        if (matchedFlags[row] === unmatchedFlags[row]) complement = false;
-      }
+      const overflow = words[1] !== 0 || words[6] !== 0 || words[8] !== 0;
+      const uncertain = words[3] !== 0 || words[9] !== 0;
+      const canCompare = !overflow && !uncertain;
+      const complement =
+        canCompare && matchedFlags.every((value, row) => value !== unmatchedFlags[row]);
       const topMatrices = [...histogram.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 3)
@@ -685,8 +693,11 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           ` of ${zipCount} ZIPs`
       );
       pairsReadout.anti.setValue(
-        `${formatCount(words[5])} of ${leftCount}; ${complement ? 'equals' : 'DIFFERS FROM'} ` +
-          'the complement of the pairs'
+        canCompare
+          ? `${formatCount(words[5])} of ${leftCount} · ${complement ? 'equals' : 'DIFFERS FROM'} the complement of the pairs`
+          : uncertain
+            ? 'Unknown due to uncertain predicates'
+            : 'Unknown due to exceeded capacity'
       );
       pairsReadout.candidates.setValue(
         `${formatCount(words[4])} candidate pairs, ${formatCount(words[2])} pass ${describePredicate()}`
@@ -695,13 +706,15 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         predicate === 'dwithin' ? 'none: dwithin has no matrix' : topMatrices || 'none'
       );
       pairsReadout.flags.setValue(
-        `${words[1] || words[6] || words[8] ? 'OVERFLOW' : 'no'} / ${formatCount(words[3])} pairs`
+        `${overflow ? 'OVERFLOW' : 'no'} / ${formatCount(words[3])} inner, ${formatCount(words[9])} anti uncertain pairs`
       );
       pairsReadout.engine.setValue(build.engineText);
       const builds = build.prepared.encodedBuildCount;
       pairsReadout.reuse.setValue(
         `${builds} in ${formatCount(build.frames)} frames` +
-          (invalidateEveryFrame ? ' (rebuilding every frame)' : ' (reused)')
+          (invalidateEveryFrame
+            ? ' (requesting geometry refresh every frame)'
+            : ' (geometry retained; preparation replays)')
       );
     };
 
@@ -822,14 +835,14 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addToggle({
-      label: 'Drift the queries (BVH is reused)',
+      label: 'Drift the queries (geometry retained)',
       value: animate,
       onChange: value => {
         animate = value;
       }
     });
     context.controls.addToggle({
-      label: 'Invalidate the prepared BVH every frame (contrast)',
+      label: 'Request geometry refresh every frame (contrast)',
       value: invalidateEveryFrame,
       onChange: value => {
         invalidateEveryFrame = value;
@@ -856,7 +869,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
     });
     context.controls.addNote(
       'The ZIP index is a GPUSpatialJoinPrepared handle shared by the predicate join, the anti join and the candidate stage. ' +
-        'It builds on the first frame only; tick the contrast toggle to rebuild it every frame. ' +
+        'Preparation replays every encoding against retained geometry. CPU refresh requests include discarded encodings; the contrast toggle requests a geometry refresh every frame. ' +
         'Pattern and distance are parameter buffers written every frame; only the predicate, the engine and the query kind rebuild. ' +
         'The graph time is measured outside the frame after the first frames and shortly after a pattern or distance change.'
     );

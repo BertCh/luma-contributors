@@ -10,13 +10,17 @@ import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH
 } from './geographically-weighted-regression-parameters';
+import {getPackedFloat32Values} from '../../analysis-core/kernels/packed-readback';
 
 /** Read-back arrays of a `GPUGeographicallyWeightedRegression` fit. */
 export type GPUGeographicallyWeightedRegressionReadback = {
-  /** `output.summary`, at least `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH` values. */
-  summary: ArrayLike<number>;
-  /** Optional `output.selectedBandwidth`, `[candidate index, ladder value]`. */
-  selectedBandwidth?: ArrayLike<number>;
+  /** `output.summary`: numeric words or logical float32 bytes/buffer, with at least 12 words.
+   * Numeric inputs retain their precision; only the required prefix is read. Byte lengths must
+   * be whole float32 words, including for unaligned views and foreign JavaScript realms. */
+  summary: ArrayLike<number> | ArrayBuffer;
+  /** Optional `output.selectedBandwidth`, `[candidate index, ladder value]`: at least two numeric
+   * words or logical float32 bytes/buffer, with the same byte rules as summary. */
+  selectedBandwidth?: ArrayLike<number> | ArrayBuffer;
 };
 
 /**
@@ -64,12 +68,7 @@ export type GPUGeographicallyWeightedRegressionModelResult = GPURegressionModelR
 export function getGPUGeographicallyWeightedRegressionModelResult(
   readback: GPUGeographicallyWeightedRegressionReadback
 ): GPUGeographicallyWeightedRegressionModelResult {
-  const {summary} = readback;
-  if (summary.length < GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH) {
-    throw new Error(
-      `GWR summary must hold ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH} values`
-    );
-  }
+  const summary = readSummary(readback.summary, 'GWR');
   const SUMMARY = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY;
   const hasValid = summary[SUMMARY.HAS_VALID_CANDIDATE] > 0.5;
   const traceOfHat = summary[SUMMARY.TRACE_OF_HAT];
@@ -87,7 +86,10 @@ export function getGPUGeographicallyWeightedRegressionModelResult(
     informationCriterionParameterCount: traceOfHat + 1,
     correctedAkaikeInformationCriterion: hasValid ? summary[SUMMARY.AICC] : null
   });
-  const selected = readback.selectedBandwidth;
+  const selected =
+    readback.selectedBandwidth === undefined
+      ? undefined
+      : readLocalValues(readback.selectedBandwidth, 'GWR selectedBandwidth', 2);
   return {
     ...result,
     effectiveParameterCount: traceOfHat,
@@ -97,4 +99,94 @@ export function getGPUGeographicallyWeightedRegressionModelResult(
     criticalT: summary[SUMMARY.CRITICAL_T],
     selectedBandwidth: selected ? {index: selected[0], value: selected[1]} : null
   };
+}
+
+/** Dense and indexed GTWR share the published GWR statistics slots, but do not publish slot 5. */
+export type GPUGeographicallyTemporallyWeightedRegressionReadback = Pick<
+  GPUGeographicallyWeightedRegressionReadback,
+  'summary'
+>;
+
+/** GTWR summary status describes usable rows, independently of bandwidth selection or AICc. */
+export type GPUGeographicallyTemporallyWeightedRegressionModelResult = Omit<
+  GPUGeographicallyWeightedRegressionModelResult,
+  'kind'
+> & {kind: 'geographically-temporally-weighted-regression'};
+
+/**
+ * Reads either dense or indexed GTWR summaries, including historical summaries with NaN in slot 5.
+ * `status.code` is 0 when at least one row is usable, otherwise 1. Read `singularRowCount` for
+ * included rows with unsuccessful local fits. A valid fit may have undefined AICc (`null`);
+ * its published likelihood is retained. Only NaN AICc maps to null; published infinite values
+ * (including exact-fit -Infinity) are preserved. The Gaussian variance and AIC conventions match GWR.
+ * GTWR does not publish adjusted alpha, critical t or a selected bandwidth in this summary.
+ */
+export function getGPUGeographicallyTemporallyWeightedRegressionModelResult(
+  readback: GPUGeographicallyTemporallyWeightedRegressionReadback
+): GPUGeographicallyTemporallyWeightedRegressionModelResult {
+  const summary = readSummary(readback.summary, 'GTWR');
+  const SUMMARY = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY;
+  const hasUsableRows = summary[SUMMARY.OBSERVATION_COUNT] > 0;
+  // Adapt only the host copy: the GWR reader's candidate-selection contract remains unchanged.
+  const normalizedSummary = Float64Array.from(
+    {length: GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH},
+    (_, index) => summary[index]
+  );
+  normalizedSummary[SUMMARY.HAS_VALID_CANDIDATE] = hasUsableRows ? 1 : 0;
+  const result = getGPUGeographicallyWeightedRegressionModelResult({summary: normalizedSummary});
+  return {
+    ...result,
+    kind: 'geographically-temporally-weighted-regression',
+    correctedAkaikeInformationCriterion:
+      hasUsableRows && !Number.isNaN(summary[SUMMARY.AICC]) ? summary[SUMMARY.AICC] : null
+  };
+}
+
+/** Preserve numeric-element callers; buffer reads contain float32 words, not numeric bytes. */
+function readSummary(input: ArrayLike<number> | ArrayBuffer, producer: string): ArrayLike<number> {
+  return readLocalValues(
+    input,
+    `${producer} summary`,
+    GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH
+  );
+}
+
+function readLocalValues(
+  input: ArrayLike<number> | ArrayBuffer,
+  label: string,
+  minimumLength: number
+): ArrayLike<number> {
+  let summary: ArrayLike<number>;
+  if (isLocalReadbackBytes(input)) {
+    try {
+      summary = getPackedFloat32Values(input, minimumLength);
+    } catch (error) {
+      throw new Error(`${label}: ${String(error)}`);
+    }
+  } else {
+    summary = input;
+  }
+  if (!Number.isInteger(summary.length) || summary.length < minimumLength) {
+    throw new Error(`${label} must hold ${minimumLength} values`);
+  }
+  for (let index = 0; index < minimumLength; index++) {
+    if (typeof summary[index] !== 'number') {
+      throw new Error(`${label} is missing numeric value ${index}`);
+    }
+  }
+  return summary;
+}
+
+/** Realm-independent runtime detection also narrows the numeric-word branch for TypeScript. */
+function isLocalReadbackBytes(
+  input: ArrayLike<number> | ArrayBuffer
+): input is Uint8Array | ArrayBuffer {
+  const typedArrayTag = Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(Uint8Array.prototype),
+    Symbol.toStringTag
+  )!.get!;
+  return (
+    (ArrayBuffer.isView(input) && typedArrayTag.call(input) === 'Uint8Array') ||
+    Object.prototype.toString.call(input) === '[object ArrayBuffer]'
+  );
 }

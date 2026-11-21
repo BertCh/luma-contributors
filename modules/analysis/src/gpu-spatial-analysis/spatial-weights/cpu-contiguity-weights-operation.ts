@@ -1,8 +1,11 @@
+import {snapshotPolygonReviewProps} from './weights-review-snapshot';
+import {validateContiguityOperationOutput} from './contiguity-operation-output';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import type {CPUWeightsStatus} from './cpu-spatial-weights-loss';
 import {snapshotContiguityOperationProps} from './weights-construction-snapshot';
 import {
   validateCapacity,
@@ -30,14 +33,19 @@ export type CPUContiguityWeightsResult = {
   offsets: Uint32Array;
   neighbors: Uint32Array;
   weights: Float32Array;
-  overflow: Uint32Array;
-  requiredCount: Uint32Array;
-  candidateOverflow: Uint32Array;
+  status: Required<Pick<CPUWeightsStatus, 'overflow' | 'requiredCount' | 'candidateOverflow'>>;
 };
 
 function validatePolygonOffsets(name: string, offsets: Uint32Array, maximum: number): void {
-  if (offsets.length < 2)
-    throw new Error(`computeContiguityWeightsOnCPU ${name} must contain at least two offsets`);
+  if (offsets.length < 1)
+    throw new Error(
+      `computeContiguityWeightsOnCPU ${name} must contain at least the terminal offset`
+    );
+  validateRequirement(
+    'computeContiguityWeightsOnCPU',
+    offsets.length !== 1 || offsets[0] === 0,
+    `${name} terminal-only empty offsets must be [0]; received ${offsets[0]}`
+  );
   let previous = 0;
   for (const offset of offsets) {
     if (offset < previous || offset > maximum)
@@ -177,19 +185,24 @@ export function computeContiguityWeightsOnCPU(
   });
   if (requiredCount > 0xffffffff)
     throw new Error('computeContiguityWeightsOnCPU requiredCount exceeds uint32 layout');
+  const status = {
+    requiredCount: Uint32Array.of(requiredCount),
+    overflow: Uint32Array.of(Number(requiredCount > capacity)),
+    candidateOverflow: Uint32Array.of(Number(candidateCount > pairCapacity))
+  };
   return {
     offsets,
     neighbors,
     weights,
-    requiredCount: Uint32Array.of(requiredCount),
-    overflow: Uint32Array.of(Number(requiredCount > capacity)),
-    candidateOverflow: Uint32Array.of(Number(candidateCount > pairCapacity))
+    status
   };
 }
 
 /** CPU twin. Explicit pairCapacity is honored; the GPU snap-range restriction is dropped. */
 export class CPUContiguityWeightsOperation extends GPUCPUOperation {
   constructor(props: ContiguityWeightsOperationProps) {
+    props = snapshotPolygonReviewProps(props);
+    validateContiguityOperationOutput(props.id ?? 'contiguity-weights', props.output);
     props = snapshotContiguityOperationProps(props);
     const id = props.id ?? 'contiguity-weights';
     // Validate names before duplicate object keys can erase a diagnostic in the CPU schema.
@@ -227,12 +240,12 @@ export class CPUContiguityWeightsOperation extends GPUCPUOperation {
           [props.output.offsets]: result.offsets,
           [props.output.neighbors]: result.neighbors,
           [props.output.weights]: result.weights,
-          [props.output.status.overflow]: result.overflow,
+          [props.output.status.overflow]: result.status.overflow,
           ...(props.output.status.requiredCount
-            ? {[props.output.status.requiredCount]: result.requiredCount}
+            ? {[props.output.status.requiredCount]: result.status.requiredCount}
             : {}),
           ...(props.output.status.candidateOverflow
-            ? {[props.output.status.candidateOverflow]: result.candidateOverflow}
+            ? {[props.output.status.candidateOverflow]: result.status.candidateOverflow}
             : {})
         };
       }

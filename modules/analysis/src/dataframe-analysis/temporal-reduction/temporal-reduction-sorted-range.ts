@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getSortedTimeRangeMaximumSearchSteps} from './sorted-range-bounds';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -31,6 +32,9 @@ export type TemporalReductionRangeProps = {
  * negative, above when the exact 64-bit by 64-bit quotient reaches `bucketCount`. Invalid
  * parameters (NaN, non-positive or infinite width, zero 64-bit word width) give an empty range.
  *
+ * Each search takes at most SORTED_TIME_RANGE_MAXIMUM_SEARCH_STEPS = 32 midpoint steps
+ * for SORTED_TIME_RANGE_MAXIMUM_ROW_COUNT = 4294967295 rows. Word quotient division has
+ * its separate fixed 64-bit bound.
  * @internal
  */
 export function createTemporalReductionRangeNode<Parameters>(
@@ -39,6 +43,7 @@ export function createTemporalReductionRangeNode<Parameters>(
 ): GPUCommandNode<Parameters> {
   const isWordMode = props.timestamps.format === 'uint32x2';
   const rows = props.timestamps.length;
+  getSortedTimeRangeMaximumSearchSteps(rows);
   const declarations = isWordMode
     ? /* wgsl */ `${TIME_WORDS_WGSL}
 ${TEMPORAL_REDUCTION_WORD_DIVISION_WGSL}

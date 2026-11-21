@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import type {Buffer, VertexFormat} from '@luma.gl/core';
+import {createLocalKrigingForTesting} from './local-kriging-test-assembly';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
@@ -10,7 +11,6 @@ import {
   GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT,
   GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK,
   GPULocalKriging,
-  createLocalKrigingForTesting,
   type GPULocalKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
 import {
@@ -21,7 +21,7 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type Scenario = {
   name: string;
@@ -550,4 +550,59 @@ it('local kriging explicit grid rejects bindings beyond the device limits by nam
   );
   // Within the limits the explicit grid builds; its candidate rows are chunked to fit.
   expect(create(64, 8, false).getCommandNodes(graph).length).toBeGreaterThan(1);
+});
+
+it('local kriging translated cell-edge ties keep the independently known first-row predictor', async () => {
+  // With one ordinary neighbor, its weight is 1. Two equidistant rows at (-2,-.5) and (0,.5) select the lower row (11).
+  // Bounds [-3,3] x [-1.5,1.5], three cells per axis: their cells are (0,1)/(1,2).
+  // Variance is 2 * (1.32 - 1.3*exp(-3*sqrt(1.25)/4)) = 1.5158963601814628.
+  for (const [originX, originY] of [
+    [0, 0],
+    [500000, 5000000]
+  ]) {
+    const scenario: Scenario = {
+      name: 'translated cell edges',
+      positions: [
+        [-2, -0.5],
+        [0, 0.5],
+        ...Array.from({length: 16}, (_, row) => [row % 2 === 0 ? -3 : 3, row % 4 < 2 ? -1.5 : 1.5])
+      ].flatMap(([x, y]) => [originX + x, originY + y]),
+      observations: Array.from({length: 18}, (_, row) => [11 + row * 7, 0, 0, 1]).flat(),
+      supports: [originX - 1, originY],
+      supportCount: 1,
+      supportFormat: 'float32x2',
+      props: {mode: 'ordinary', neighborCount: 1}
+    };
+    for (const sampleIndex of ['brute-force', 'grid'] as const) {
+      const result = await runLocalKriging(scenario, sampleIndex);
+      expect(result.status).toEqual([0]);
+      expect(Number.isFinite(result.values[0])).toBe(true);
+      expect(Number.isFinite(result.values[1])).toBe(true);
+      expect(result.values[0]).toBeCloseTo(11, 5);
+      expect(result.values[1]).toBeCloseTo(1.5158963601814628, 5);
+      expect(result.values[3]).toBe(1);
+      expect(result.weights).toEqual([1]);
+    }
+  }
+});
+
+it('PTS-119 local kriging float validity has the same strictly positive rule in scanning and indexed forms', async () => {
+  const scenario: Scenario = {
+    name: 'float validity',
+    positions: [1, 0, 0, 0, 2, 0, 3, 0],
+    observations: [11, 0, 0, 0.25, 100, 0, 0, 0, 200, 0, 0, -1, 300, 0, 0, NaN],
+    supports: [0, 0],
+    supportFormat: 'float32x2',
+    supportCount: 1,
+    props: {mode: 'ordinary', neighborCount: 4}
+  };
+  for (const sampleIndex of ['brute-force', 'grid'] as const) {
+    const result = await runLocalKriging(scenario, sampleIndex);
+    expect(result.status).toEqual([0]);
+    expect(Number.isFinite(result.values[0])).toBe(true);
+    expect(Number.isFinite(result.values[1])).toBe(true);
+    expect(result.values[0]).toBeCloseTo(11, 5);
+    expect(result.values[1]).toBeCloseTo(1.4118469628733618, 5);
+    expect(result.values[3]).toBe(1);
+  }
 });

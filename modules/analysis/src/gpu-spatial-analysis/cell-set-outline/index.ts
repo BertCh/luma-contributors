@@ -11,5 +11,6 @@ export type {
   GPUCellSetOutlineFamily,
   GPUCellSetOutlineOutput,
   GPUCellSetOutlineProps,
+  GPUCellSetOutlineInput,
   GPUCellSetOutlineRings
 } from './gpu-cell-set-outline';

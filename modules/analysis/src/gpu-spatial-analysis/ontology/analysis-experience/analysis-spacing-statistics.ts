@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../analysis-core/contracts/earth';
 import {AnalysisGeographicExtentAccumulator} from './analysis-geographic-extent';
 import type {
@@ -99,8 +100,8 @@ export type GPUAnalysisSpacingOptions = {
  * default rules in `analysis-default-rules.ts`.
  *
  * Input: `coordinates` holds `x0, y0, x1, y1, ...`. A row with a non-finite coordinate is skipped
- * and not counted in `pointCount`. In `geographic` mode a row whose latitude lies outside
- * [-90, 90] degrees is skipped too, because no great-circle distance exists for it. An odd length
+ * and counted in `invalidCount`, rather than `pointCount`. In `geographic` mode a row whose
+ * latitude lies outside [-90, 90] degrees is skipped too, because no great-circle distance exists for it. An odd length
  * throws a `RangeError`.
  *
  * Distances
@@ -222,7 +223,30 @@ export function computeGPUAnalysisSpacingStatistics(
   coordinates: Float64Array | Float32Array | readonly number[],
   options: GPUAnalysisSpacingOptions
 ): GPUAnalysisSpacingStatistics | undefined {
+  return computeGPUAnalysisSpacingStatisticsDetailed(coordinates, options).statistics;
+}
+
+/** Input acceptance evidence, including when no extent or spacing can be computed. */
+export type GPUAnalysisSpacingStatisticsDetailed = {
+  /** Accepted input rows before sampling. */
+  pointCount: number;
+  /** Non-finite pairs or geographic pairs outside the latitude range, before sampling. */
+  invalidCount: number;
+  /** Absent when pointCount is zero, as in the convenience API. */
+  statistics?: GPUAnalysisSpacingStatistics;
+};
+
+/** Like computeGPUAnalysisSpacingStatistics, retaining counts for empty or all-invalid input. */
+export function computeGPUAnalysisSpacingStatisticsDetailed(
+  coordinates: Float64Array | Float32Array | readonly number[],
+  options: GPUAnalysisSpacingOptions
+): GPUAnalysisSpacingStatisticsDetailed {
   const functionName = 'computeGPUAnalysisSpacingStatistics';
+  validateRequirement(
+    functionName,
+    options.coordinateModel === 'planar' || options.coordinateModel === 'geographic',
+    `coordinateModel must be planar or geographic; received ${String(options.coordinateModel)}`
+  );
   const neighborRank = options.neighborRank ?? GPU_ANALYSIS_DEFAULT_NEIGHBOR_RANK;
   const maximumSampleSize = options.maximumSampleSize ?? GPU_ANALYSIS_DEFAULT_MAXIMUM_SAMPLE_SIZE;
   if (coordinates.length % 2 !== 0) {
@@ -248,9 +272,10 @@ export function computeGPUAnalysisSpacingStatistics(
   const isGeographic = options.coordinateModel === 'geographic';
   const valid = gatherValidPoints(coordinates, isGeographic);
   const pointCount = valid.count;
+  const invalidCount = coordinates.length / 2 - pointCount;
   const unit = isGeographic ? 'metre' : 'coordinate-unit';
   if (pointCount === 0) {
-    return undefined;
+    return {pointCount, invalidCount};
   }
 
   const extent = isGeographic
@@ -366,6 +391,7 @@ export function computeGPUAnalysisSpacingStatistics(
 
   const statistics: GPUAnalysisSpacingStatistics = {
     pointCount,
+    invalidCount,
     sampleSize,
     sampled,
     coordinateModel: options.coordinateModel,
@@ -385,7 +411,7 @@ export function computeGPUAnalysisSpacingStatistics(
   if (kDistance) {
     statistics.kDistance = kDistance;
   }
-  return statistics;
+  return {pointCount, invalidCount, statistics};
 }
 
 /**

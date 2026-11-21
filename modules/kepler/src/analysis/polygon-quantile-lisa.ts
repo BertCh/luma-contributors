@@ -16,7 +16,7 @@ export type KeplerPolygonQuantileLISAProps = Omit<WeightedQuantileLISAProps, 'to
 /**
  * Selected-quantile joins on exact source-XY polygon contiguity. Geometry validity is applied
  * before type-5 quantiles; valid islands affect boundaries but remain excluded from inference.
- * P-values retain the existing anti-conservative legacy directed rule, without correction.
+ * P-values use the requested alternative, without multiple-testing correction. The deprecated
  */
 export function addKeplerPolygonQuantileLISA<Parameters>(
   graph: GPUCommandGraph<Parameters>,

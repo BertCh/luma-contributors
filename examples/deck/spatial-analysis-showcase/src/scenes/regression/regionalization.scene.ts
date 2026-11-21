@@ -336,7 +336,7 @@ graph.add(new GPURegionPartitionEvaluation({
   values: standardizedValues, columnCount: 8, labels, weights, output: {summary}
 }));
 graph.add(new GPUSpatialKMeans({
-  positions: principalPlane, k: ${state.kmeansClusters}, maximumIterations: 24, initialization: 'kmeans++',
+  positions: principalPlane, clusterCount: ${state.kmeansClusters}, maximumIterations: 24, initialization: 'kmeans++',
   parameters: kmeansParameters,                // getGPUSpatialKMeansParameterValues({seed: 7})
   output: {labels: kLabels, centers, status: {iterationCount, converged}}
 }));`,

@@ -50,7 +50,7 @@ it('getGPUReliefShadingParameterValues packs the Imhof, curvature, and contrast 
   expect(Array.from(custom.slice(20, 76))).toEqual(Array.from(plain.slice(20, 76)));
 });
 
-it('GPUReliefShading wires the swing and detail nodes and validates curvature', () => {
+it('GPUReliefShading uses the hillshade pass for Imhof and validates curvature', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const width = 6;
@@ -77,7 +77,6 @@ it('GPUReliefShading wires the swing and detail nodes and validates curvature', 
     elevation,
     parameters,
     curvature: view('curvature'),
-    imhofSwing: true,
     textureShade: view('texture-shade'),
     skyViewFactor: view('svf'),
     output: {
@@ -87,12 +86,22 @@ it('GPUReliefShading wires the swing and detail nodes and validates curvature', 
       outputValidity: createTransientView(graph, 'curved-validity', 'uint32', width * height)
     }
   }).getCommandNodes(graph);
-  // The default node list is unchanged; the detail pre-kernel and swing node are additions.
+  // The detail pre-kernel is the only extra node.
   expect(withoutCurvature.some(node => node.id.includes('swing'))).toBe(false);
   expect(withoutCurvature.some(node => node.id.includes('detail'))).toBe(false);
-  expect(withCurvature.length).toBe(withoutCurvature.length + 2);
+  expect(withCurvature.length).toBe(withoutCurvature.length + 1);
   expect(withCurvature.some(node => node.id === 'curved-detail')).toBe(true);
-  expect(withCurvature.some(node => node.id === 'curved-hillshade-swing')).toBe(true);
+  expect(withCurvature.some(node => node.id === 'curved-hillshade-swing')).toBe(false);
+  const retiredSwitch = {
+    grid,
+    elevation,
+    parameters,
+    imhofSwing: true,
+    output: {hillshade: view('old-switch-shade')}
+  };
+  expect(() => new GPUReliefShading(retiredSwitch)).toThrow(
+    /imhofSwing.*removed.*lightWeighting.*imhof-swing/
+  );
   expect(
     () =>
       new GPUReliefShading({

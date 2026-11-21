@@ -232,7 +232,7 @@ it('isovists classify the same viewpoints with the segment BVH as with every seg
         });
         const words = await readAll(fixture, {
           viewpointClassifications: result.outputs.viewpointClassifications,
-          measures: result.outputs.measures
+          measures: result.outputs.localMeasures
         });
         results[obstacleIndex] = [...words['viewpointClassifications'], ...words['measures']];
       } finally {

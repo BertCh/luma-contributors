@@ -55,8 +55,8 @@ expectTypeOf<GPUMultipartPointGeometryPort>().not.toExtend<GPUPointGeometryPort>
 expectTypeOf<GPUMultipartLineGeometryPort>().not.toExtend<GPULineGeometryPort>();
 
 for (const backend of ['zonal', 'group'] as const)
-  it(`x1 X3 ${backend} choropleth rejects grouped points before graph mutation`, () => {
-    const {device, graph, positions, integers} = createFixture();
+  it(`x1 X3 ${backend} choropleth counts a grouped feature once per polygon`, () => {
+    const {device, graph, memory, positions, integers} = createFixture();
     const points = {
       kind: 'points' as const,
       positions: positions([1, 1, 2, 2]),
@@ -70,16 +70,22 @@ for (const backend of ['zonal', 'group'] as const)
       ringOffsets: integers([0, 4]),
       candidateCapacity: 8
     };
-    const add = vi.spyOn(graph, 'add');
+    const nodes: unknown[] = [];
+    const add = vi.spyOn(graph, 'add').mockImplementation(source => {
+      if (Array.isArray(source)) nodes.push(...source);
+      else if ('getCommandNodes' in source) nodes.push(...source.getCommandNodes(graph));
+    });
     try {
-      expect(() =>
-        addPointsInPolygonsChoroplethRecipe(graph, {
-          backend,
-          points: {...points},
-          polygons
-        } as never)
-      ).toThrow(/points.featureOffsets.*multipart/);
-      expect(add).not.toHaveBeenCalled();
+      const result = addPointsInPolygonsChoroplethRecipe(graph, {
+        backend,
+        points: {...points},
+        polygons
+      });
+      executeCommandNodesOnCPU(adaptUniforms(nodes), memory);
+      // Two interior point parts belong to one feature: the count is one, not two.
+      expect(Array.from(memory.readUint32(result.counts))).toEqual([1]);
+      expect(Array.from(memory.readUint32(result.status.overflow!))).toEqual([0]);
+      expect(Array.from(memory.readUint32(result.status.uncertainCount!))).toEqual([0]);
     } finally {
       add.mockRestore();
       device.destroy();
@@ -88,31 +94,62 @@ for (const backend of ['zonal', 'group'] as const)
 
 for (const kind of ['points', 'lines'] as const)
   for (const outputCount of [1, 2])
-    it(`x1 X3 validity rejects multipart ${kind} with ${outputCount} output rows and spread input`, () => {
-      const {device, positions, integers} = createFixture();
-      const geometry = {
-        kind,
-        positions: positions([1, 1, 2, 2]),
-        featureOffsets: integers([0, kind === 'points' ? 2 : 1]),
-        ...(kind === 'lines' ? {lineOffsets: integers([0, 2])} : {})
+    it(`x1 X3 validity checks multipart ${kind} with ${outputCount} output rows and spread input`, () => {
+      const {device, graph, memory, positions, integers} = createFixture();
+      const coordinates = positions([1, 1, 2, 2]);
+      const geometry =
+        kind === 'points'
+          ? {
+              points: {
+                kind,
+                positions: coordinates,
+                featureOffsets: integers([0, 2])
+              }
+            }
+          : {
+              lines: {
+                kind,
+                positions: coordinates,
+                featureOffsets: integers([0, 1]),
+                lineOffsets: integers([0, 2])
+              }
+            };
+      const output = {
+        issueCode: integers(Array(outputCount).fill(99)),
+        validity: integers(Array(outputCount).fill(99))
       };
       try {
-        expect(
-          () =>
-            new GPUGeometryValidity({
-              [kind]: {...geometry},
-              output: {
-                issueCode: integers(Array(outputCount).fill(0)),
-                validity: integers(Array(outputCount).fill(0))
-              }
-            } as never)
-        ).toThrow(/featureOffsets.*multipart/);
+        if (outputCount === 2) {
+          expect(() => new GPUGeometryValidity({...geometry, output})).toThrow(
+            /output.issueCode length must equal the feature count/
+          );
+          expect(
+            () =>
+              new GPUGeometryValidity({
+                ...geometry,
+                output: {...output, issueCode: integers([99])}
+              })
+          ).toThrow(/output.validity length must equal the feature count/);
+        } else {
+          const contributor = new GPUGeometryValidity({...geometry, output});
+          const nodes = adaptUniforms(contributor.getCommandNodes(graph));
+          executeCommandNodesOnCPU(nodes, memory);
+          // One feature: two finite point parts, or one line with two distinct finite vertices.
+          // Both satisfy the structural validity definition: no issue and a usable flag.
+          expect(Array.from(memory.readUint32(output.issueCode))).toEqual([0]);
+          expect(Array.from(memory.readUint32(output.validity))).toEqual([1]);
+          memory.write(coordinates, Float32Array.of(1, 1, NaN, 2));
+          executeCommandNodesOnCPU(nodes, memory);
+          // A nonfinite part/endpoint invalidates the whole feature: nonFinite bit 1, unusable.
+          expect(Array.from(memory.readUint32(output.issueCode))).toEqual([1]);
+          expect(Array.from(memory.readUint32(output.validity))).toEqual([0]);
+        }
       } finally {
         device.destroy();
       }
     });
 
-it('x1 X9 website geometry predicate parameters match the multipart refusal', () => {
+it('x1 X9 website geometry predicate parameters match multipart support', () => {
   const entry = geometryProcessingEntries.find(entry => entry.symbol === 'GPUGeometryPredicates')!;
   expect(entry.params!.find(parameter => parameter.name === 'geometry')!.type).toBe(
     'GPUGeometryPredicatesGeometry'
@@ -120,10 +157,12 @@ it('x1 X9 website geometry predicate parameters match the multipart refusal', ()
   expect(entry.params!.find(parameter => parameter.name === 'other')!.type).toBe(
     'GPUGeometryPredicatesGeometry | undefined'
   );
-  for (const name of ['geometry', 'other'])
-    expect(entry.params!.find(parameter => parameter.name === name)!.description).toMatch(
-      /multipart.*reject/i
-    );
+  expect(entry.params!.find(parameter => parameter.name === 'geometry')!.description).toMatch(
+    /optional featureOffsets/
+  );
+  expect(entry.params!.find(parameter => parameter.name === 'other')!.description).toMatch(
+    /multipart accepted/i
+  );
 });
 
 it('x1 X10 prepared sort docs follow the 255/256 logical-feature threshold and consumers', () => {
@@ -455,10 +494,10 @@ it('x1 X8 one-query sorted preflight does not pack metadata', () => {
 });
 expectTypeOf<
   GPUPackedGeometryPort<GPUMultipartPointGeometryPort>
->().not.toExtend<GPUGeometryPredicatesGeometry>();
+>().toExtend<GPUGeometryPredicatesGeometry>();
 expectTypeOf<
   GPUPackedGeometryPort<GPUMultipartLineGeometryPort>
->().not.toExtend<GPUGeometryPredicatesGeometry>();
+>().toExtend<GPUGeometryPredicatesGeometry>();
 
 it('internal feature-join operation factories are absent from the family barrel', () => {
   for (const name of [
@@ -627,7 +666,7 @@ for (const targets of [
       const join = new GPUNearestFeatureJoin({
         queries,
         features,
-        k: 2,
+        neighborCount: 2,
         spatialSort: false,
         output: {
           neighborRows,
@@ -719,24 +758,36 @@ for (const kind of ['points', 'lines'] as const)
 
 for (const kind of ['points', 'lines'] as const)
   for (const operand of ['geometry', 'other'] as const)
-    it(`R6 geometry predicates refuses spread multipart ${kind} ${operand}`, () => {
-      const {device, positions, integers} = createFixture();
-      const ordinary = {
-        kind,
-        positions: positions(kind === 'points' ? [0, 0, 2, 0] : [0, 0, 1, 0, 2, 0, 3, 0]),
-        lineOffsets: integers([0, 2, 4])
-      };
-      const multipart = {...ordinary, featureOffsets: integers([0, 2])};
+    it(`R6 geometry predicates preserves spread multipart ${kind} ${operand}`, () => {
+      const {device, graph, memory, positions, integers} = createFixture();
+      const ordinary: GPUSpatialJoinGeometry =
+        kind === 'points'
+          ? {kind, positions: positions([0, 0])}
+          : {kind, positions: positions([0, 0, 1, 0]), lineOffsets: integers([0, 2])};
+      const multipart: GPUSpatialJoinGeometry =
+        kind === 'points'
+          ? {kind, positions: positions([0, 0, 2, 0]), featureOffsets: integers([0, 2])}
+          : {
+              kind,
+              positions: positions([0, 0, 1, 0, 2, 0, 3, 0]),
+              lineOffsets: integers([0, 2, 4]),
+              featureOffsets: integers([0, 2])
+            };
+      const numGeometries = integers([99]);
+      const equalsIdentical = integers([99]);
       try {
-        expect(
-          () =>
-            new GPUGeometryPredicates({
-              geometry: ordinary,
-              other: ordinary,
-              [operand]: {...multipart},
-              output: {numGeometries: integers([0, 0])}
-            })
-        ).toThrow(/featureOffsets.*multipart.*unsupported/);
+        const contributor = new GPUGeometryPredicates({
+          geometry: operand === 'geometry' ? {...multipart} : ordinary,
+          other: operand === 'other' ? {...multipart} : ordinary,
+          output: {numGeometries, equalsIdentical}
+        });
+        executeCommandNodesOnCPU(adaptUniforms(contributor.getCommandNodes(graph)), memory);
+        // Hand oracle: one feature contains two point/line parts, the other contains one.
+        // Each geometry has one feature row. Their structures and coordinate sets differ.
+        expect(Array.from(memory.readUint32(numGeometries))).toEqual([
+          operand === 'geometry' ? 2 : 1
+        ]);
+        expect(Array.from(memory.readUint32(equalsIdentical))).toEqual([0]);
       } finally {
         device.destroy();
       }

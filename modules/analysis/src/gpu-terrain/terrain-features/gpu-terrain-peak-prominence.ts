@@ -66,6 +66,13 @@ export function getGPUTerrainPeakProminenceMaximumCellCount(device: Device): num
  * have zero prominence. A disconnected component's surviving peak has infinite prominence.
  * Nodata is a barrier and the raster boundary is closed: no artificial sea-level reference.
  *
+ * Native integer samples currently pass through the published raster float32 conversion before
+ * scale/offset calibration. Large raw integers can therefore collapse into an artificial plateau.
+ * For offset-encoded DEMs, subtract the integer origin before upload, retain raw-domain nodata in
+ * a separate validity mask, and upload the small differences with the corresponding calibration.
+ * For example, [16777216, 16777217] with offset -16777216 becomes [0, 1] with offset 0.
+ * The equal-height tie rule above applies only after conversion.
+ *
  * Uses the depression-fill spill graph's unordered neighbor edges and ordered float keys.
  * The graph is refined to one label per cell: collapsing a tile to its
  * boundary outlets would discard peaks born inside that tile. Edge saddle = min(z(a), z(b)).

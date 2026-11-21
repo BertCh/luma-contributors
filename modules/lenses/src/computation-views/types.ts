@@ -234,6 +234,12 @@ export type DescriptionFacts = {
   keyNumber: DescriptionKeyNumber;
   /** Further facts in reading order, each a short sentence without trailing period. */
   facts: readonly string[];
+  /**
+   * What the figure withholds from the subject it names: a suppressed, undrawable or unknown
+   * output ("geometry not drawn: no drawable captured features"). Every concise form (alt,
+   * live region, thumbnail caption) carries it so they never report the key number alone.
+   */
+  display?: string;
   /** Lineage of the shown values. */
   provenance: MarkProvenance;
   /** Observer effects and caveats ("timestamps disabled pass coalescing"). */

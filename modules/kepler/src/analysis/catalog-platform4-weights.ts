@@ -32,6 +32,7 @@ import {
   type Values
 } from './catalog-platform3-b-common';
 import {makeLocalFrame} from './catalog-local-frame';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 
 const MAXIMUM_WEIGHT_POINTS = 4000;
 const MAXIMUM_EDGE_ROWS = 200000;
@@ -150,7 +151,7 @@ export function buildDistanceBandWeights(points: WeightPoints, radius: number): 
 // CPU references
 
 export type WeightsCombineRule = 'left' | 'right' | 'sum' | 'min' | 'max' | 'product' | 'binary';
-export type WeightsSetOperation = 'union' | 'intersection' | 'difference' | 'symmetricDifference';
+export type WeightsSetOperation = 'union' | 'intersection' | 'difference' | 'symmetric-difference';
 
 export function computeWeightsAlgebra(
   left: WeightsCsr,
@@ -158,6 +159,16 @@ export function computeWeightsAlgebra(
   operation: WeightsSetOperation,
   rule: WeightsCombineRule
 ): WeightsCsr {
+  validateRequirement(
+    'weights-algebra',
+    ['union', 'intersection', 'difference', 'symmetric-difference'].includes(operation),
+    `operation must be union, intersection, difference or symmetric-difference; received ${String(operation)}`
+  );
+  validateRequirement(
+    'weights-algebra',
+    ['left', 'right', 'sum', 'min', 'max', 'product', 'binary'].includes(rule),
+    `weightRule must be left, right, sum, min, max, product or binary; received ${rule}`
+  );
   const rowCount = left.offsets.length - 1;
   const rows: {id: number; weight: number}[][] = [];
   const getRow = (csr: WeightsCsr, row: number) =>
@@ -179,7 +190,7 @@ export function computeWeightsAlgebra(
         union: true,
         intersection: a !== undefined && b !== undefined,
         difference: a !== undefined && b === undefined,
-        symmetricDifference: (a !== undefined) !== (b !== undefined)
+        'symmetric-difference': (a !== undefined) !== (b !== undefined)
       }[operation];
       if (!keep) continue;
       let weight: number;
@@ -388,7 +399,7 @@ const ALGEBRA_PARAMETERS: CatalogParameterSpec[] = [
     name: 'operation',
     label: 'Set operation',
     kind: 'enum',
-    options: ['union', 'intersection', 'difference', 'symmetricDifference'],
+    options: ['union', 'intersection', 'difference', 'symmetric-difference'],
     defaultValue: 'union'
   },
   {
@@ -425,6 +436,7 @@ const WEIGHTS_ALGEBRA_BINDING: CatalogOperationBinding = {
   cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     ...WEIGHTS_BEHAVIOR,
+    'symmetric-difference keeps each neighbor present in exactly one operand.',
     'Neighbors present in both operands take the chosen rule (binary gives 1); neighbors present in one operand keep that operand weight (1 for the left, the decayed weight for the right), except for rule binary.'
   ],
   limitation:
@@ -547,7 +559,7 @@ const WEIGHTS_TRANSFORM_BINDING: CatalogOperationBinding = {
     'Row standardization leaves an all-zero row at zero; double divides by the global sum, variance follows libpysal V.'
   ],
   limitation:
-    'Runs GPUChunkedSpatialWeightsTransform over row chunks (chunkRows); double and variance sums are float32 partials combined in a fixed order. The kernel and symmetrize transforms are not exposed (kernel needs distances, symmetrize needs a symmetric pattern and a whole scratch CSR).',
+    'Runs GPUChunkedSpatialWeightsTransform over row chunks (chunkRows); double and variance sums are float32 partials combined in a fixed order. The kernel and average-reciprocal transforms are not exposed (kernel needs distances, and average-reciprocal uses a whole scratch CSR).',
   run: (inputs, values) => {
     const points = readOperands(inputs, values);
     const csr = buildNearestNeighborWeights(

@@ -97,7 +97,7 @@ export function createSeededRandom(seed: number): () => number {
 
 /**
  * Two-sided normal p-value `erfc(|z| / sqrt(2))` with the same Numerical Recipes erfcc fit as the
- * WGSL, evaluated in double precision.
+ * WGSL, evaluated in double precision and floored to the smallest normal float32.
  */
 export function getTwoSidedPValue(zScore: number): number {
   const x = Math.abs(zScore) / Math.SQRT2;
@@ -118,7 +118,7 @@ export function getTwoSidedPValue(zScore: number): number {
                         t *
                           (-1.13520398 +
                             t * (1.48851587 + t * (-0.82215223 + t * 0.17087277))))))));
-  return Math.min(t * Math.exp(exponent), 1);
+  return Math.max(2 ** -126, Math.min(t * Math.exp(exponent), 1));
 }
 
 /** Whether each row takes part in the analysis (mask nonzero and finite value). */
@@ -357,11 +357,53 @@ function getMethod(options: SpatialAutocorrelationOracleOptions): GPUMultipleTes
   return options.multipleTesting ?? 'none';
 }
 
+function getPopulationExtrema(input: SpatialAutocorrelationOracleInput, rows: boolean[]) {
+  let minimum = Infinity,
+    maximum = -Infinity,
+    minimumCount = 0,
+    maximumCount = 0,
+    count = 0;
+  if (!input.parameters?.fixedMoments)
+    for (let row = 0; row < rows.length; row++) {
+      if (!rows[row]) continue;
+      const value = input.values[row];
+      count++;
+      if (value < minimum) {
+        minimum = value;
+        minimumCount = 1;
+      } else if (value === minimum) minimumCount++;
+      if (value > maximum) {
+        maximum = value;
+        maximumCount = 1;
+      } else if (value === maximum) maximumCount++;
+    }
+  return {minimum, maximum, minimumCount, maximumCount, count};
+}
+
+function hasConstantOtherValues(
+  extrema: ReturnType<typeof getPopulationExtrema>,
+  value: number
+): boolean {
+  return (
+    extrema.count > 1 &&
+    ((value === extrema.maximum && extrema.minimumCount >= extrema.count - 1) ||
+      (value === extrema.minimum && extrema.maximumCount >= extrema.count - 1))
+  );
+}
+
 function getAdjustedPValues(
   pValues: number[],
   options: SpatialAutocorrelationOracleOptions
 ): number[] {
   return Array.from(getMultipleTestingAdjustedPValues(pValues, getMethod(options)));
+}
+
+function hasConstantFullWeightPopulation(weights: readonly number[], count: number): boolean {
+  return (
+    weights.length === count - 1 &&
+    weights.length > 0 &&
+    weights.every(weight => weight === weights[0])
+  );
 }
 
 /**
@@ -380,6 +422,7 @@ export function computeHotSpotOracle(
   const islands = getIslandRows(input);
   const momentRows = getMomentRows(input);
   const moments = getOracleMoments(input, momentRows);
+  const populationExtrema = getPopulationExtrema(input, momentRows);
   const selfWeight = input.selfWeight ?? 1;
   const minimumNeighbors = input.minimumNeighbors ?? 1;
   const zScores = new Array<number>(rows).fill(NaN);
@@ -409,7 +452,13 @@ export function computeHotSpotOracle(
       const otherMean = -centered / others;
       const otherVariance = (moments.sumOfSquares - centered * centered) / others - otherMean ** 2;
       const spread = (others * squareSum - weightSum * weightSum) / (others - 1);
-      if (others >= 2 && otherVariance > 0 && spread > 0) {
+      if (
+        others >= 2 &&
+        !hasConstantOtherValues(populationExtrema, input.values[row]) &&
+        !hasConstantFullWeightPopulation(weights, count) &&
+        otherVariance > 0 &&
+        spread > 0
+      ) {
         zScores[row] = (weightedSum - weightSum * otherMean) / Math.sqrt(otherVariance * spread);
       }
     } else {
@@ -469,6 +518,7 @@ export function computeLocalMoranOracle(
   const islands = getIslandRows(input);
   const momentRows = getMomentRows(input);
   const moments = getOracleMoments(input, momentRows);
+  const populationExtrema = getPopulationExtrema(input, momentRows);
   const significanceLevel = input.parameters?.significanceLevel ?? 0.05;
   const minimumNeighbors = input.minimumNeighbors ?? 1;
   const zScores = new Array<number>(rows).fill(NaN);
@@ -503,7 +553,9 @@ export function computeLocalMoranOracle(
       moments.count - 1 >= 2 &&
       centered !== 0 &&
       neighbors.length >= Math.max(1, minimumNeighbors) &&
-      variance > 0
+      variance > 0 &&
+      !hasConstantFullWeightPopulation(weights, moments.count) &&
+      !hasConstantOtherValues(populationExtrema, input.values[row])
     ) {
       const lagZ = (lag - mean) / Math.sqrt(variance);
       zScores[row] = centered < 0 ? -lagZ : lagZ;

@@ -60,7 +60,7 @@ defineLensScenario({
               ref: {layout: 'index', resource: 'neighborIds', capture: 'neighborIds'}
             }
           ],
-          choices: {k: 1, ties: 'lowest-id'},
+          choices: {k: 1, ties: 'lowest-row'},
           async build(graph, uploads) {
             const observations = uploads.view('observations', projected, 'float32x2');
             const captures: Record<string, S2CaptureSpec> = {

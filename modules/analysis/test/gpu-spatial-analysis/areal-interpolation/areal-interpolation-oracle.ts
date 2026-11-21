@@ -216,7 +216,7 @@ export type PycnophylacticOracleResult = {
 };
 
 /**
- * Float64 reference for `GPUPycnophylactic` (same restore, clamp, rescale cycle) on a density
+ * Float64 reference for `GPUPycnophylacticInterpolation` (same restore, clamp, rescale cycle) on a density
  * surface: optional cell areas (spherical cells), relative tolerance and zone anchors. Mirrors
  * the numpy oracle `pycnophylactic.py`.
  */
@@ -330,7 +330,7 @@ export function computePycnophylacticDetailedOracle(props: {
   };
 }
 
-/** Float64 reference for `GPUPycnophylactic` (planar, no tolerance or anchors): mass per cell. */
+/** Float64 reference for `GPUPycnophylacticInterpolation` (planar, no tolerance or anchors): mass per cell. */
 export function computePycnophylacticOracle(props: {
   width: number;
   height: number;

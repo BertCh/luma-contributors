@@ -4,7 +4,11 @@
 
 import {addPreparedRecipe, writeRecipeParameters} from './prepared-recipe';
 
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   GPUCalendarBuckets,
   type GPUCalendarBucketsTimeZone
@@ -42,6 +46,7 @@ import {
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUSpatialWeights} from '../spatial-weights/index';
+import {snapshotEmergingHotSpotSettings} from '../emerging-hot-spots/emerging-hot-spot-parameters';
 import {
   validateSpaceTimeHotSpotsRecipe,
   snapshotSpaceTimeHotSpotsRecipe
@@ -250,6 +255,12 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
   /** Optional per-cell mask (one row per cell). */
   cellMask?: GraphDataView<'uint32'>;
   /**
+   * Include only cells with at least one eligible event across all slices, intersected with
+   * cellMask. Defaults to false. Zero-count bins in an occupied cell remain eligible.
+   * Rebuilt on every submission for either cube route.
+   */
+  occupiedCellsOnly?: boolean;
+  /**
    * Per-frame emerging hot spot settings (`temporalWindow`, `radius`, `confidenceLevel` or
    * `criticalZ`, `trendSignificanceLevel`). The recipe packs them into `parameters` and derives
    * `result.inference` from the same object; change them per frame with `result.setSettings`.
@@ -311,6 +322,8 @@ export type GPUSpaceTimeHotSpotsRecipeIntermediates = {
   calendarDayOfMonth?: GraphDataView<'uint32'>;
   calendarHour?: GraphDataView<'uint32'>;
   periods: GraphDataView<'uint32'>;
+  /** Effective ever-occupied mask, intersected with the caller mask; present with occupiedCellsOnly. */
+  cellMask?: GraphDataView<'uint32'>;
   keys?: GraphDataView<'uint32'>;
   keyMask?: GraphDataView<'uint32'>;
   groupKeys?: GraphDataView<'uint32'>;
@@ -372,11 +385,16 @@ type GPUSpaceTimeHotSpotsRecipeViews = {
  * `inference` object (`GPUInferenceMetadata`).
  *
  * Passing any of `scratch.keys`, `scratch.keyMask`, `scratch.groupKeys`, `scratch.groupCounts`,
- * `scratch.groupCount` or `outputs.status.groupOverflow` selects the sorted path instead: an adapter
+ * `scratch.groupCount` or `output.status.groupOverflow` selects the sorted path instead: an adapter
  * writes the key per event, `GPUGroupStatistics` counts the events per key, and an adapter
  * scatters the sparse counts into the cube. Only that path fills those views, adds the
  * `GPUGroupStatistics` contributor and reports the `cube-counts` status stage. Both paths produce
- * the same cube, bit for bit.
+ * the same cube, bit for bit. With `occupiedCellsOnly: true`, parallel event and cell passes derive
+ * an ever-occupied mask directly from eligible events across every slice and intersect it with `cellMask`.
+ * It is rebuilt each submission. Zero bins in those cells remain in the population, neighborhoods
+ * and multiple-testing family; never-occupied and caller-excluded cells do not. Sorted group
+ * truncation remains visible in cube-counts and excludes all cells from inference until a
+ * complete submission; it does not alter the independently derived occupancy mask.
  *
  * The roadmap chain names `GPUCellAggregation` for the per-slice counts. Its keys must be valid
  * Quadbin or H3 cells and cannot carry a slice index, so the recipe counts with
@@ -394,7 +412,15 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUSpaceTimeHotSpotsRecipeProps
 ): GPUSpaceTimeHotSpotsRecipeResult {
+  // Capture this additive option once alongside the existing preflight snapshot.
+  const occupiedCellsOnly = props.occupiedCellsOnly;
   props = snapshotSpaceTimeHotSpotsRecipe(props);
+  props = {...props, settings: snapshotEmergingHotSpotSettings(props.settings)};
+  assertRecipe(
+    ID,
+    occupiedCellsOnly === undefined || typeof occupiedCellsOnly === 'boolean',
+    'occupiedCellsOnly must be a boolean'
+  );
   assertRecipe(
     ID,
     props.utcOffsets === undefined || props.timeZone === undefined,
@@ -402,7 +428,7 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
   );
   const id = props.id ?? 'space-time-hot-spots';
   const builder = new RecipeBuilder(graph, true);
-  const outputOverrides = props.outputs ?? {};
+  const outputOverrides = props.output ?? {};
   const scratch = props.scratch ?? {};
   const {slices, cells} = props;
   const spatialContext =
@@ -606,7 +632,7 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
   // Every cube value is an integer count, so a `u32` atomic increment per event builds the cube
   // exactly and deterministically (integer addition commutes), with no sort. The sorted
   // `GPUGroupStatistics` path runs only when the caller asks for its intermediates (keys, key
-  // mask, group keys, counts or count) or for `outputs.status.groupOverflow`. Both paths write identical
+  // mask, group keys, counts or count) or for `output.status.groupOverflow`. Both paths write identical
   // cubes: counts never exceed `eventCount`, which is far below 2^32. `GPUEmergingHotSpots` reads
   // a count as `f32(count)`, exact below 2^24 events per bin, the same in both paths.
   const useGroupStatistics =
@@ -631,6 +657,7 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
         : [])
     ]
   };
+  let groupLoss: GPUStatusScalar | undefined;
   if (!useGroupStatistics) {
     builder.addGlue(
       'cube-count',
@@ -693,6 +720,7 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
       1,
       outputOverrides.status?.groupOverflow
     );
+    groupLoss = groupOverflow;
     const groupRequiredCount = getOrCreateView(
       graph,
       `${id}-group-required-count`,
@@ -747,6 +775,74 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
     };
   }
 
+  let cellMask = props.cellMask;
+  if (occupiedCellsOnly) {
+    const occupied = createTransientView(graph, `${id}-occupied`, 'uint32', cellCount);
+    builder.addGlue(
+      'occupied-clear',
+      createFillNode<Parameters>(graph, {
+        id: `${id}-occupied-clear`,
+        operation: 'GPUSpaceTimeHotSpotsCube',
+        view: occupied,
+        type: 'u32',
+        value: '0u'
+      })
+    );
+    builder.addGlue(
+      'occupied-events',
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-occupied-events`,
+        operation: 'GPUSpaceTimeHotSpotsCube',
+        invocationCount: eventCount,
+        bindings: [
+          ...periodBindings,
+          ...cellBindings,
+          {name: 'occupied', view: occupied, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        body: `${eventBinSource}
+  if (valid) { atomicOr(&occupied[occupiedOffset + cell], 1u); }`
+      })
+    );
+    cellMask = createTransientView(graph, `${id}-occupied-cell-mask`, 'uint32', cellCount);
+    builder.addGlue(
+      'occupied-cell-mask',
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-occupied-cell-mask`,
+        operation: 'GPUSpaceTimeHotSpotsCube',
+        invocationCount: cellCount,
+        bindings: [
+          {name: 'occupied', view: occupied, type: 'u32', access: 'read'},
+          ...(props.cellMask
+            ? [{name: 'callerMask', view: props.cellMask, type: 'u32', access: 'read'} as const]
+            : []),
+          {name: 'cellMask', view: cellMask, type: 'u32', access: 'read_write'}
+        ],
+        body: `cellMask[cellMaskOffset + index] = select(0u, 1u, occupied[occupiedOffset + index] != 0u${props.cellMask ? ' && callerMask[callerMaskOffset + index] != 0u' : ''});`
+      })
+    );
+    intermediates = {...intermediates, cellMask};
+  }
+  let inferenceMask = cellMask;
+  if (groupLoss) {
+    inferenceMask = createTransientView(graph, `${id}-inference-mask`, 'uint32', cellCount);
+    builder.addGlue(
+      'inference-mask',
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-inference-mask`,
+        operation: 'GPUSpaceTimeHotSpotsCube',
+        invocationCount: cellCount,
+        bindings: [
+          {name: 'groupLoss', view: groupLoss, type: 'u32', access: 'read'},
+          ...(cellMask
+            ? [{name: 'cellMask', view: cellMask, type: 'u32', access: 'read'} as const]
+            : []),
+          {name: 'inferenceMask', view: inferenceMask, type: 'u32', access: 'read_write'}
+        ],
+        body: `inferenceMask[inferenceMaskOffset + index] = select(0u, ${cellMask ? 'cellMask[cellMaskOffset + index]' : '1u'}, groupLoss[groupLossOffset] == 0u);`
+      })
+    );
+  }
+
   // 4. Emerging hot spots.
   const parameterView = props.parameters.importToGraph(graph, `${id}-parameters`);
   const outputs = {
@@ -799,7 +895,7 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
             maximumRadius: cells.maximumRadius
           }),
       sliceCount,
-      mask: props.cellMask,
+      mask: inferenceMask,
       parameters: parameterView,
       multipleTesting: props.multipleTesting,
       finalSlice: props.finalSlice,
@@ -812,8 +908,9 @@ function declareSpaceTimeHotSpotsRecipe<Parameters>(
   // One source of truth (rule 19): the recipe packs `settings` and derives the metadata from the
   // same object; both validate before anything is written.
   const writeSettings = (settings: GPUSpaceTimeHotSpotsRecipeSettings): GPUInferenceMetadata => {
-    const values = emerging.getParameterValues(settings);
-    const metadata = emerging.getInferenceMetadata(settings);
+    const capturedSettings = snapshotEmergingHotSpotSettings(settings);
+    const values = emerging.getParameterValues(capturedSettings);
+    const metadata = emerging.getInferenceMetadata(capturedSettings);
     writeRecipeParameters(graph, props.parameters, values);
     return metadata;
   };

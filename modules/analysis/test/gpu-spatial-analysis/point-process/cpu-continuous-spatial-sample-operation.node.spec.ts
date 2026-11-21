@@ -246,3 +246,22 @@ it('rejects malformed arrays and validates CPU and deferred GPU construction', (
       })
   ).not.toThrow();
 });
+
+it('DEF-14 resident parameter words satisfy the seed contract and override scalar hints', () => {
+  const input = {positions: Float32Array.of(0, 0, 2, 0), parameters: Uint32Array.of(17, 0)};
+  const options = {
+    ...PROPS,
+    frame: {type: 'line' as const},
+    spacing: 1,
+    capacity: 2,
+    seed: undefined
+  };
+  const result = computeContinuousSpatialSampleOnCPU(input, options);
+  // Philox seed 17 gives phase .93040454; spacing 1 yields these two arc-length sites.
+  expect([...result.positions]).toEqual([Math.fround(0.93040454), 0, Math.fround(1.93040454), 0]);
+  expect([...result.status]).toEqual([2, 2, 2, 0]);
+  expect(computeContinuousSpatialSampleOnCPU(input, {...options, seed: 9})).toEqual(result);
+  expect(() => computeContinuousSpatialSampleOnCPU({positions: input.positions}, options)).toThrow(
+    /seed/
+  );
+});

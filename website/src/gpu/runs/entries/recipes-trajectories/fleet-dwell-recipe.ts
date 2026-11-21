@@ -61,7 +61,7 @@ export default defineOperationRun({
         ringOffsets: builder.upload('zone-rings', 'uint32', ZONE_RING_OFFSETS).view,
         candidateCapacity: 4096
       },
-      outputs: {
+      output: {
         stops: {centroids: centroids.view, durations: durations.view},
         table: {sumValues: zoneTotals.view}
       }

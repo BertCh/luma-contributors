@@ -713,7 +713,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           ...partStructure,
           initialGridSize: options.initialGridSize,
           refinementCandidates: options.refinementCandidates,
-          output: {points, distances: radii, degenerate}
+          output: {points, publishedCenterClearance: radii, degenerate}
         })
       );
       const view = (name: string, buffer: Buffer) => imp(name, buffer, 'float32', featureCount);
@@ -1417,6 +1417,13 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
   function publishColoring(active: DatasetState): void {
     const summary = active.coloringTable;
     if (!summary) return;
+    if (summary.overflow) {
+      ctx.setReadout('coloring', 'unavailable: incomplete contiguity');
+      ctx.setReadout('adjacencies', `at least ${summary.adjacencies} (incomplete)`);
+      ctx.setChart('coloringRounds', null);
+      ctx.setStatus('Contiguity capacity overflowed.');
+      return;
+    }
     ctx.setReadout(
       'coloring',
       `${summary.colorCount} colors, ${summary.conflictCount} conflicts, ${summary.roundCount} rounds${summary.converged ? '' : ' (not converged)'}`

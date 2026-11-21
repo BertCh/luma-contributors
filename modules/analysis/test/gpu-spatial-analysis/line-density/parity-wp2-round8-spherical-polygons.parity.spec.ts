@@ -52,7 +52,7 @@ for (const entry of fixture.cases) {
             },
             pairCapacity,
             output: {
-              lengths: lengths.view,
+              clippedLengths: lengths.view,
               // The API requires lineWeights whenever weightedLengths is requested.
               ...(entry.useWeights ? {weightedLengths: weighted.view} : {}),
               segmentCounts: counts.view,

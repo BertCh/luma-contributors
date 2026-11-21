@@ -54,7 +54,7 @@ it('review circumcircle and ray-clipping shader modules pass the static WGSL aud
   try {
     const fixture = createFixture(new GPUCommandGraph(device), [0, 0, 1, 0, 0, 1]);
     for (const kernel of getGPUCommandNodeKernelSources([fixture.centers, fixture.clip])) {
-      expect(auditWGSLModule(kernel.source)).toEqual([]);
+      expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
     }
   } finally {
     device.destroy();

@@ -319,6 +319,44 @@ it('GPUCellSetOutline h3 finds the neighbor across every edge at resolutions 0 a
   expect(checked).toBeGreaterThan(80);
 });
 
+it('GPUCellSetOutline h3 picks the spherical neighbor near the poles and on coarse cells', async () => {
+  // DGGS-101: the planar nearest-centre rule (longitude differences scaled by cos(latitude))
+  // picked 8005fffffffffff across edge 5 of 8003fffffffffff (the true neighbor 8001fffffffffff is
+  // absent), so 9 segments came out instead of 10, and over-counted polar disks (53 instead of 44
+  // at resolution 5, 46 at resolution 8). Expected counts come from the h3-js directed-edge oracle;
+  // counts are compared per cell because f32 longitudes near the pole are coarse.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scenes: [string, string[], number][] = [
+    ['two coarse cells', ['8003fffffffffff', '8005fffffffffff'], 10],
+    ...[3, 5, 8].map(
+      resolution =>
+        [
+          `polar res ${resolution}`,
+          gridDisk(latLngToCell(89.9, 0, resolution), 2).filter((_, index) => index % 4 !== 1),
+          44
+        ] as [string, string[], number]
+    )
+  ];
+  for (const [label, h3Cells, expectedCount] of scenes) {
+    const cells = sortKeys(h3Cells.map(h3ToBigInt));
+    const expected = outlineH3OnCPU(cells);
+    expect(expected.length, `${label} oracle`).toBe(expectedCount);
+    const run = await runOutline(device, 'h3', cells, {capacity: expected.length + 32});
+    expect(run.overflow, label).toBe(0);
+    expect(run.count, label).toBe(expectedCount);
+    const countByCell = (segments: OutlineSegment[]) => {
+      const counts = new Map<string, number>();
+      for (const segment of segments) {
+        const cell = segment.cell.toString(16);
+        counts.set(cell, (counts.get(cell) ?? 0) + 1);
+      }
+      return Object.fromEntries([...counts].sort());
+    };
+    expect(countByCell(run.segments), label).toEqual(countByCell(expected));
+  }
+});
+
 it('GPUCellSetOutline emits group borders when groups are given', async () => {
   const device = await getWebGPUTestDevice('core');
   requireTestDevice(device);
@@ -456,4 +494,67 @@ it('S2 outlines remove shared cube-face edges and use the independent float64 co
     overflow: 1
   });
   device.destroy();
+});
+
+it('GPUCellSetOutline matches spherical boundary membership at antimeridian and both poles (DGGS-114)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const unit = ([longitude, latitude]: [number, number]) => {
+    const longitudeRadians = (longitude * Math.PI) / 180;
+    const latitudeRadians = (latitude * Math.PI) / 180;
+    return [
+      Math.cos(latitudeRadians) * Math.cos(longitudeRadians),
+      Math.cos(latitudeRadians) * Math.sin(longitudeRadians),
+      Math.sin(latitudeRadians)
+    ];
+  };
+  const distanceSquared = (left: number[], right: number[]) =>
+    left.reduce((sum, value, axis) => sum + (value - right[axis]) ** 2, 0);
+  for (const resolution of [0, 3, 5, 8]) {
+    for (const [latitude, longitude] of [
+      [89.99, 0],
+      [-89.99, 0],
+      [0, 179.99]
+    ]) {
+      const cells = sortKeys(
+        gridDisk(latLngToCell(latitude, longitude, resolution), 2)
+          .filter((_, index) => index % 4 !== 1)
+          .map(h3ToBigInt)
+      );
+      // The oracle enumerates only h3-js directed edges whose destination is absent.
+      const expected = outlineH3OnCPU(cells);
+      const remaining = expected.map(segment => ({
+        cell: segment.cell,
+        a: unit(segment.a),
+        b: unit(segment.b)
+      }));
+      const run = await runOutline(device, 'h3', cells, {capacity: expected.length + 16});
+      expect([run.count, run.total, run.overflow]).toEqual([expected.length, expected.length, 0]);
+      const shortestEdge = Math.sqrt(
+        Math.min(...remaining.map(segment => distanceSquared(segment.a, segment.b)))
+      );
+      // Bound tolerance by 5% of the shortest true edge, so nearby polar endpoints cannot
+      // substitute for a missing edge. Unit vectors make +/-180 and polar longitude harmless.
+      const toleranceSquared = Math.min(2e-6, shortestEdge / 20) ** 2;
+      for (const segment of run.segments) {
+        expect([...segment.a, ...segment.b].every(Number.isFinite)).toBe(true);
+        const firstVector = unit(segment.a),
+          secondVector = unit(segment.b);
+        const found = remaining.findIndex(
+          candidate =>
+            candidate.cell === segment.cell &&
+            ((distanceSquared(candidate.a, firstVector) <= toleranceSquared &&
+              distanceSquared(candidate.b, secondVector) <= toleranceSquared) ||
+              (distanceSquared(candidate.a, secondVector) <= toleranceSquared &&
+                distanceSquared(candidate.b, firstVector) <= toleranceSquared))
+        );
+        expect(
+          found,
+          `res ${resolution} at ${latitude},${longitude}, cell ${segment.cell.toString(16)}`
+        ).toBeGreaterThanOrEqual(0);
+        remaining.splice(found, 1);
+      }
+      expect(remaining).toEqual([]);
+    }
+  }
 });

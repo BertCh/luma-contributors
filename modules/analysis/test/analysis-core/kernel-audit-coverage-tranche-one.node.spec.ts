@@ -154,9 +154,11 @@ it('coverage tranche one refuses documented scalar and capacity bounds one step 
         () => new GPURasterFractionalCategoricalStatistics({...props, mode: 'exact'}),
         `${label} exact`
       ).toThrow(
-        tupleCount > 1048576
-          ? /coverage.zoneIds length in exact mode.*1048576/
-          : /zoneCount times.*65535/
+        categoryCapacity > 65534
+          ? /categoryCapacity.*65534/
+          : tupleCount > 1048576
+            ? /coverage.zoneIds length in exact mode.*1048576/
+            : /zoneCount times.*65535/
       );
       if (categoryCapacity === 65535) {
         expect(() => new GPURasterFractionalCategoricalStatistics(props), label).toThrow(

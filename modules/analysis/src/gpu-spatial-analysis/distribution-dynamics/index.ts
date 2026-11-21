@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-export {GPURankMarkov} from './gpu-rank-markov';
+export {
+  GPURankMarkov,
+  GPU_RANK_MARKOV_ROUTES,
+  getGPURankMarkovExecutionPlan,
+  GPU_RANK_MARKOV_PLANNER
+} from './gpu-rank-markov';
 export type {GPURankMarkovProps} from './gpu-rank-markov';
 
 export {GPUClassAssignment, GPU_CLASS_ASSIGNMENT_NO_CLASS} from './gpu-class-assignment';

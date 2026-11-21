@@ -27,6 +27,7 @@ import {
   cross,
   dot,
   getUnitVector,
+  getRingSignedArea,
   isOnArc,
   isRingValid,
   normalize,
@@ -791,22 +792,9 @@ const COVER_TOLERANCE = 1e-6;
 
 type CoverPolygon = {rings: Vector3[][]; featureIndex: number; partIndex: number};
 
-/** Rings counter-clockwise around their own vertex mean, as the contributor requires. */
+/** Rings counter-clockwise in their own hemisphere, including concave rings. */
 function orientRing(ring: Vector3[]): Vector3[] {
-  const sum = ring.reduce<Vector3>(
-    (total, vertex) => [total[0] + vertex[0], total[1] + vertex[1], total[2] + vertex[2]],
-    [0, 0, 0]
-  );
-  const center = normalize(sum);
-  let winding = 0;
-  ring.forEach((first, index) => {
-    const second = ring[(index + 1) % ring.length];
-    winding += Math.atan2(
-      dot(center, cross(first, second)),
-      dot(first, second) - dot(center, first) * dot(center, second)
-    );
-  });
-  return winding < 0 ? [...ring].reverse() : ring;
+  return getRingSignedArea(ring) < 0 ? [...ring].reverse() : ring;
 }
 
 function readCoverPolygons(polygons: CatalogFeatureCollection) {
@@ -823,7 +811,14 @@ function readCoverPolygons(polygons: CatalogFeatureCollection) {
           getUnitVector(longitude, latitude)
         );
       });
-      if (rings.length && rings.every(isRingValid))
+      if (
+        rings.length &&
+        rings.every(ring => {
+          if (!isRingValid(ring)) return false;
+          const area = getRingSignedArea(ring);
+          return Number.isFinite(area) && area !== 0;
+        })
+      )
         shapes.push({rings: rings.map(orientRing), featureIndex, partIndex});
       else invalidCount++;
     });

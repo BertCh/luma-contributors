@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRationalAccessOptions} from './optimization-cost-completeness';
 import {
   getNetworkOptimizationCPUStatus,
   type NetworkOptimizationCPUStatus
@@ -9,9 +10,13 @@ import {
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateMaximumCount
+  validateMaximumCount,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
+import {
+  getCPUOperationFloat32Rows,
+  getCPUOperationUint32Rows
+} from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPUNetworkRationalAccessOperation,
   type NetworkRationalAccessOperationProps
@@ -22,6 +27,8 @@ const MAXIMUM_TOTAL_DEMAND = 16777216;
 
 export type CPUNetworkRationalAccessInput = {
   costs: Float32Array;
+  costsComplete?: Uint32Array;
+  costLimit?: Float32Array;
   demand: Float32Array;
   supply: Float32Array;
   parameters: Float32Array;
@@ -38,7 +45,7 @@ export type CPUNetworkRationalAccessResult = {
   unservedDemand: Float32Array;
   /** [valid, gapWithinTolerance, completedCycles, float32 maximum-gap bits]. */
   summary: Uint32Array;
-  status: NetworkOptimizationCPUStatus;
+  status: NetworkOptimizationCPUStatus & {complete: Uint32Array};
 };
 
 /**
@@ -65,6 +72,14 @@ export function computeNetworkRationalAccessOnCPU(
   options: CPUNetworkRationalAccessOptions = {}
 ): CPUNetworkRationalAccessResult {
   const {costs, demand, supply, parameters} = input;
+  validateRationalAccessOptions('computeNetworkRationalAccessOnCPU', options);
+  for (const name of ['costsComplete', 'costLimit'] as const)
+    if (input[name])
+      validateRequirement(
+        'computeNetworkRationalAccessOnCPU',
+        input[name]!.length === 1,
+        `${name} must contain one row`
+      );
   const originCount = demand.length;
   const facilityCount = supply.length;
   if (!originCount) throw new Error('demand must contain at least one origin');
@@ -92,7 +107,17 @@ export function computeNetworkRationalAccessOnCPU(
     scores: Float32Array.from(scores),
     unservedDemand: Float32Array.from(unservedDemand),
     summary,
-    status: getNetworkOptimizationCPUStatus(summary, summary[2])
+    status: {
+      ...getNetworkOptimizationCPUStatus(summary, summary[2]),
+      complete: Uint32Array.of(
+        Number(
+          summary[0] !== 0 &&
+            summary[1] !== 0 &&
+            (!input.costsComplete || input.costsComplete[0] !== 0) &&
+            (!input.costLimit || input.costLimit[0] === Infinity)
+        )
+      )
+    }
   });
   // The contributor has no exported parameter packer/layout. Its documented six-row layout:
   const [travelScale, supplyScale, initialStep, minimumStep, halfLife, tolerance] = parameters;
@@ -254,6 +279,12 @@ export class CPUNetworkRationalAccessOperation extends GPUCPUOperation {
       execute({inputs}) {
         const input = {
           costs: getCPUOperationFloat32Rows(id, inputs, 'costs'),
+          costsComplete: props.costsComplete
+            ? getCPUOperationUint32Rows(id, inputs, 'costsComplete')
+            : undefined,
+          costLimit: props.costLimit
+            ? getCPUOperationFloat32Rows(id, inputs, 'costLimit')
+            : undefined,
           demand: getCPUOperationFloat32Rows(id, inputs, 'demand'),
           supply: getCPUOperationFloat32Rows(id, inputs, 'supply'),
           parameters: getCPUOperationFloat32Rows(id, inputs, 'parameters')

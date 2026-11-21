@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from './terrain-output-selection';
+
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -24,6 +26,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
+  validateRequirement,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -145,14 +148,14 @@ function getLevelScaleLog2(sigmas: readonly number[], downsample: boolean): numb
 }
 
 /** Caller-owned outputs of {@link GPUTextureShading}; at least one is required. */
-export type GPUTextureShadingOutput = {
+export type GPUTextureShadingOutput = TerrainOutputSelection<{
   /** Texture shade per pixel, in elevation units times `gain`. */
   textureShade?: GraphDataView<'float32'>;
   /** Per-pixel 1 where the center elevation is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
   /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the texture shade. */
   textureShadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTextureShading}.
@@ -235,7 +238,7 @@ export class GPUTextureShading implements GPUCommandNodeProducer, GPURasterHaloS
   readonly levelScaleLog2: readonly number[];
   /** Nominal full-resolution kernel of each cascade level. */
   readonly kernels: readonly Float32Array[];
-  /** Source-pixel radius including scaled blur kernels and bilinear reconstruction support. */
+  /** Source-pixel radius including blur and reconstruction; decimated tiles also require origins aligned to the largest grid scale in both axes. See getCommandNodesForTile. */
   readonly requiredHalo: number;
 
   constructor(props: GPUTextureShadingProps) {
@@ -300,6 +303,31 @@ export class GPUTextureShading implements GPUCommandNodeProducer, GPURasterHaloS
       [output.textureShade, output.outputValidity],
       [...getRasterBandViews(props.elevation), props.parameters]
     );
+  }
+
+  /**
+   * Safe tile route: `expandedOrigin` is the expanded window's integer [column, row] in a
+   * common source-pixel frame, whose origin defines the full cascade's decimation phase.
+   * Both coordinates must be multiples of the largest decimated scale. Without decimation,
+   * every integer origin is supported. Supply at least requiredHalo source pixels around the
+   * retained core; physical source borders retain the ordinary replicated-edge convention.
+   * Validation happens before adding any nodes. The radius-only halo assembler cannot check phase.
+   */
+  getCommandNodesForTile<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    expandedOrigin: readonly [number, number]
+  ): readonly GPUCommandNode<Parameters>[] {
+    const scale = 2 ** this.levelScaleLog2[this.levelCount - 1];
+    validateRequirement(
+      this.id,
+      expandedOrigin.length === 2 &&
+        Number.isSafeInteger(expandedOrigin[0]) &&
+        expandedOrigin[0] % scale === 0 &&
+        Number.isSafeInteger(expandedOrigin[1]) &&
+        expandedOrigin[1] % scale === 0,
+      `expandedOrigin must have exactly two safe integer column and row coordinates divisible by ${scale}`
+    );
+    return this.getCommandNodes(graph);
   }
 
   /** Returns canonicalization, premultiply, two passes plus one accumulate per level, and finalize nodes. */

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSinkhornTransportRadiusOption} from './sinkhorn-transport-radius';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -19,7 +20,7 @@ import {
 
 export type CPUSinkhornDivergenceOptions = Pick<
   SinkhornDivergenceOperationProps,
-  'grid' | 'spatialContext' | 'maximumIterations' | 'blurRadius'
+  'grid' | 'spatialContext' | 'maximumIterations' | 'transportRadius'
 >;
 export type CPUSinkhornDivergenceResult = {
   divergence: Float32Array;
@@ -48,7 +49,8 @@ function validateTransportOptions(id: string, options: CPUSinkhornDivergenceOpti
     options.maximumIterations ?? GPU_SINKHORN_DIVERGENCE_DEFAULT_MAXIMUM_ITERATIONS,
     1
   );
-  if (options.blurRadius !== undefined) validateCapacity(id, 'blurRadius', options.blurRadius, 0);
+  const radius = options.transportRadius;
+  if (radius !== undefined) validateCapacity(id, 'transportRadius', radius, 0);
 }
 
 // Full separable log-sum-exp: zeros are -Infinity, so no finite stand-in drops a distant term.
@@ -59,14 +61,20 @@ function computeSoftMinimum(
   height: number,
   cellWidth: number,
   cellHeight: number,
-  epsilon: number
+  epsilon: number,
+  radius: number,
+  reachable?: Uint8Array
 ): Float64Array {
   const horizontal = new Float64Array(potential.length).fill(-Infinity);
   for (let row = 0; row < height; row++) {
     for (let column = 0; column < width; column++) {
       let maximum = -Infinity;
       let sum = 0;
-      for (let other = 0; other < width; other++) {
+      for (
+        let other = Math.max(0, column - radius);
+        other <= Math.min(width - 1, column + radius);
+        other++
+      ) {
         const cellIndex = row * width + other;
         if (logMass[cellIndex] === -Infinity) continue;
         const distance = (other - column) * cellWidth;
@@ -85,7 +93,11 @@ function computeSoftMinimum(
     for (let column = 0; column < width; column++) {
       let maximum = -Infinity;
       let sum = 0;
-      for (let other = 0; other < height; other++) {
+      for (
+        let other = Math.max(0, row - radius);
+        other <= Math.min(height - 1, row + radius);
+        other++
+      ) {
         const value = horizontal[other * width + column];
         if (value === -Infinity) continue;
         const distance = (other - row) * cellHeight;
@@ -95,14 +107,15 @@ function computeSoftMinimum(
           maximum = term;
         } else sum += Math.exp(term - maximum);
       }
-      output[row * width + column] = -epsilon * (maximum + Math.log(sum));
+      if (reachable) reachable[row * width + column] = Number(sum > 0);
+      output[row * width + column] = sum > 0 ? -epsilon * (maximum + Math.log(sum)) : 1e30;
     }
   }
   return output;
 }
 
 /**
- * Runs the full-kernel log-domain Sinkhorn method in float64, including the symmetric self
+ * Runs the separable log-domain Sinkhorn method in float64, including the symmetric self
  * updates, epsilon schedule, all-three-plan marginal stopping test, and the final half-update on a
  * budget-limited run. The explicit maximumIterations is a solver budget, with no GPU unroll cap.
  *
@@ -110,7 +123,7 @@ function computeSoftMinimum(
  * - Arithmetic and normalization use float64 with one output rounding. Stopping near tolerance
  *   can change iterationCount and convergence flags; no universal relative bound exists near
  *   zero divergence or marginal error. Well-conditioned values agree within 3e-4 relative.
- * - Full blurs are always evaluated: blurRadius is ignored and approximation is always zero.
+ * - Omitting transportRadius evaluates full support; an explicit transportRadius bounds each axis.
  *   No finite masked-log cutoff discards a term. The explicit solver
  *   budget is retained, including iterationLimitReached; its GPU maximum of 1000 is dropped.
  * - The GPU's grid-side, row-count and storage-binding limits are dropped; uint32 grid dimensions
@@ -126,6 +139,7 @@ export function computeSinkhornDivergenceOnCPU(
   parameters: Float32Array,
   options: CPUSinkhornDivergenceOptions
 ): CPUSinkhornDivergenceResult {
+  validateSinkhornTransportRadiusOption('computeSinkhornDivergenceOnCPU', options);
   validateTransportOptions('computeSinkhornDivergenceOnCPU', options);
   const {width, height} = options.grid;
   const count = width * height;
@@ -135,6 +149,7 @@ export function computeSinkhornDivergenceOnCPU(
     throw new Error('parameters must hold the Sinkhorn parameter layout');
   // Layout of getGPUSinkhornDivergenceParameterValues.
   const [cellWidth, cellHeight, finalEpsilon, tolerance, epsilonStart, scalingFactor] = parameters;
+  const radius = options.transportRadius ?? Math.max(width, height) - 1;
   const result: CPUSinkhornDivergenceResult = {
     divergence: Float32Array.of(NaN),
     components: new Float32Array(3).fill(NaN),
@@ -143,7 +158,7 @@ export function computeSinkhornDivergenceOnCPU(
     iterationLimitReached: Uint32Array.of(0),
     iterationCount: Uint32Array.of(0),
     invalidCount: Uint32Array.of(0),
-    approximation: Uint32Array.of(0)
+    approximation: Uint32Array.of(Number(radius < Math.max(width, height) - 1))
   };
   const normalize = (masses: Float32Array) => {
     let total = 0;
@@ -181,6 +196,7 @@ export function computeSinkhornDivergenceOnCPU(
   const targetMass = Float64Array.from(second.logarithms, Math.exp);
   const maximumIterations =
     options.maximumIterations ?? GPU_SINKHORN_DIVERGENCE_DEFAULT_MAXIMUM_ITERATIONS;
+  const targetReachable = new Uint8Array(count);
   let epsilon = epsilonStart;
   let marginalError = NaN;
   for (let iteration = 1; iteration <= maximumIterations; iteration++) {
@@ -191,7 +207,9 @@ export function computeSinkhornDivergenceOnCPU(
       height,
       cellWidth,
       cellHeight,
-      epsilon
+      epsilon,
+      radius,
+      targetReachable
     );
     const nextSourceSelf = computeSoftMinimum(
       sourceOfSelf,
@@ -200,7 +218,8 @@ export function computeSinkhornDivergenceOnCPU(
       height,
       cellWidth,
       cellHeight,
-      epsilon
+      epsilon,
+      radius
     );
     const nextTargetSelf = computeSoftMinimum(
       targetOfSelf,
@@ -209,7 +228,8 @@ export function computeSinkhornDivergenceOnCPU(
       height,
       cellWidth,
       cellHeight,
-      epsilon
+      epsilon,
+      radius
     );
     let error = 0;
     let sourceSelfError = 0;
@@ -225,7 +245,7 @@ export function computeSinkhornDivergenceOnCPU(
       error += getMarginalResidual(
         targetMass[cell],
         second.logarithms[cell],
-        (targetOfCross[cell] - nextTarget[cell]) / epsilon
+        targetReachable[cell] === 0 ? -Infinity : (targetOfCross[cell] - nextTarget[cell]) / epsilon
       );
       // The symmetric plan uses the same potential on both sides; its row and column
       // residuals agree. Measure before damping, just as for the cross-plan update.
@@ -263,7 +283,8 @@ export function computeSinkhornDivergenceOnCPU(
       height,
       cellWidth,
       cellHeight,
-      epsilon
+      epsilon,
+      radius
     );
   }
   let cross = 0;
@@ -284,10 +305,16 @@ export function computeSinkhornDivergenceOnCPU(
   return result;
 }
 
-/** CPU twin without blur truncation or GPU unroll/storage caps; retains the explicit solver budget. */
+/** CPU twin with optional transport truncation and without GPU unroll/storage caps; retains the explicit solver budget. */
 export class CPUSinkhornDivergenceOperation extends GPUCPUOperation {
   constructor(props: SinkhornDivergenceOperationProps) {
     const id = props.id ?? 'sinkhorn-divergence';
+    validateSinkhornTransportRadiusOption(id, props);
+    props = {
+      ...props,
+      grid: {...props.grid},
+      output: {...props.output, status: {...props.output.status}}
+    };
     validateTransportOptions(id, props);
     const operation = new GPUSinkhornDivergenceOperation(props);
     super({

@@ -235,53 +235,60 @@ graph.add(new GPULatticeWeights({
   output: {offsets, neighbors, weights, status: {overflow, requiredCount}}
 }));`
         : `// 1. ${kind === 'knn' ? `The ${state.k} nearest centroids of every place` : 'Every centroid within the distance band'}.
-graph.add(new GPUNeighborSearch({spatialContext: geography.analysisFrame.spatialContext,
-  mode: '${kind === 'knn' ? 'knn' : 'radius'}',${kind === 'knn' ? `\n  k: ${state.k},` : ''}
+const search = new GPUNeighborSearch({spatialContext: geography.analysisFrame.spatialContext,
+  mode: '${kind === 'knn' ? 'knn' : 'radius'}',${kind === 'knn' ? `\n  neighborCount: ${state.k},` : ''}
   gridSize: [256, 256], positions: centroids,
-  parameters,                          // radius, weightKind, kernel, rowStandardize: buffer writes
+  parameters,                          // searchRadius, weightType, kernel, rowStandardize: buffer writes
   output: {offsets, neighbors, weights, distances, status: {overflow, requiredCount}}
-}));
+});
+graph.add(search);
 parameters.write(getGPUNeighborSearchParameterValues({
-  bounds, ${kind === 'band' ? `radius: ${state.bandFactor} * medianSpacing, ` : ''}weightKind: '${state.weightKind}'${state.weightKind === 'kernel' ? `, kernel: '${state.kernel}'` : ''}${state.rowStandardize ? ', rowStandardize: true' : ''}
+  bounds, ${kind === 'band' ? `searchRadius: ${state.bandFactor} * medianSpacing, ` : ''}weightType: '${state.weightKind}'${state.weightKind === 'kernel' ? `, kernel: '${state.kernel}'` : ''}${state.rowStandardize ? ', rowStandardize: true' : ''}
 }));`;
   const transform =
     state.transform === 'none'
       ? ''
       : `\n\n// 2. Rewrite the weights in place.
-graph.add(new GPUSpatialWeightsTransform({spatialContext: geography.analysisFrame.spatialContext,
+const transform = new GPUSpatialWeightsTransform({spatialContext: geography.analysisFrame.spatialContext,
   operation: '${state.transform}',${state.transform === 'kernel' ? `\n  kernel: '${state.transformKernel}', bandwidth: ${state.bandwidth === 'adaptive' ? (state.source === 'knn' ? "'adaptive'" : 'bandRadius') : `${state.bandwidth} * medianSpacing`},` : ''}${state.transform === 'double' ? `\n  doubleSum: '${state.doubleSum}',` : ''}
-  weights: {offsets, neighbors, weights${state.transform === 'kernel' ? ', distances' : ''}}
-}));`;
+  weights: ${kind === 'knn' || kind === 'band' ? 'search.outputWeights' : 'sourceWeights'}
+});
+graph.add(transform);`;
   const algebra =
     state.combine === 'none'
       ? ''
       : `\n\n// 3. Combine neighbourhoods on the GPU.
-graph.add(new GPUSpatialWeightsAlgebra({
+const algebra = new GPUSpatialWeightsAlgebra({
   operation: '${state.combine}',${
-    ['union', 'intersection', 'difference', 'symmetricDifference'].includes(state.combine)
+    ['union', 'intersection', 'difference', 'symmetric-difference'].includes(state.combine)
       ? `\n  left: queenWeights, right: nearestWeights, weightRule: '${state.weightRule}',`
       : state.combine === 'higherOrder'
-        ? `\n  weights, order: ${state.order}, cumulative: ${state.cumulative},`
+        ? `\n  weights: ${state.transform === 'none' ? 'sourceWeights' : 'transform.outputWeights'}, order: ${state.order}, cumulative: ${state.cumulative},`
         : state.combine === 'selfWeight'
-          ? '\n  weights, selfWeight: perRowSelfWeight,   // a per-row view, so it is a buffer write'
+          ? `\n  weights: ${state.transform === 'none' ? 'sourceWeights' : 'transform.outputWeights'}, selfWeight: perRowSelfWeight,   // a per-row view, so it is a buffer write`
           : state.combine === 'subgraph'
-            ? '\n  weights, mask: populationMask,'
+            ? `\n  weights: ${state.transform === 'none' ? 'sourceWeights' : 'transform.outputWeights'}, mask: populationMask,`
             : `\n  groupIds, groupCount: ${state.geography === 'us-counties' ? 49 : 78},`
   }
-  output: {...analysisWeights, status: {overflow, requiredCount}}
-}));`;
+  output: {...analysisWeights, status: {overflow: combinedOverflow, requiredCount: combinedRequiredCount, candidateOverflow: combinedCandidateOverflow}}
+});
+graph.add(algebra);`;
   return `import {${imports.join(', ')}} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
-${producer}${transform}${algebra}
+${producer}
+const sourceWeights = ${kind === 'knn' || kind === 'band' ? 'search.outputWeights' : `{offsets, neighbors, weights${state.transform === 'kernel' ? ', distances' : ''}, status: {overflow, requiredCount${kind === 'queen' || kind === 'rook' ? ', candidateOverflow' : ''}}}`} ;${transform}${algebra}
+const resultWeights = ${state.combine !== 'none' ? 'algebra.outputWeights' : state.transform !== 'none' ? 'transform.outputWeights' : 'sourceWeights'};
 
 // Diagnostics, lag and neighbourhood statistics read the same CSR.
-graph.add(new GPUSpatialWeightsSummary({weights, output: {statistics, counts, cardinality}}));
-graph.add(new GPUSpatialWeightsTranspose({weights, output: {...transposed, asymmetricSlots}}));
-graph.add(new GPUSpatialLag({weights, values, normalize: ${state.lagNormalize}, output: lag}));
+graph.add(new GPUSpatialWeightsSummary({weights: resultWeights, output: {statistics, counts, cardinality}}));
+graph.add(new GPUSpatialWeightsTranspose({weights: resultWeights, output: {...transposed, asymmetricSlots}}));
+graph.add(new GPUSpatialLag({weights: resultWeights, values, normalize: ${state.lagNormalize}, output: lag}));
+// requiredCount is for capacity planning; the summary certifies completeness from the loss flags.
 graph.add(new GPUNeighborhoodSummary({
-  weights, values, categories: stateIds, includeFocal: ${state.includeFocal},${state.includeFocal ? ` focalWeight: ${state.focalWeight},` : ''}
+  weights: {...resultWeights, status: {overflow: resultWeights.status.overflow, candidateOverflow: resultWeights.status.candidateOverflow}},
+  values, categories: stateIds, includeFocal: ${state.includeFocal},${state.includeFocal ? ` focalWeight: ${state.focalWeight},` : ''}
   statistics: ['count', 'weightSum', 'sum', 'mean', 'min', 'max', 'standardDeviation', 'median'],
-  maximumNeighbors: 64, output: {table, modes, entropy, status: {overflow}}
+  maximumNeighbors: 64, output: {table, modes, entropy, status: {overflow: summaryOverflow}}
 }));`;
 }
 
@@ -531,6 +538,7 @@ export default defineScene<SpatialWeightsOptions>({
     {
       kind: 'select',
       id: 'weightKind',
+      aliases: {inverseDistance: 'inverse-distance'},
       label: 'Weights inside the search',
       group: 'Distance weights',
       apply: 'param',
@@ -540,7 +548,7 @@ export default defineScene<SpatialWeightsOptions>({
       options: [
         {value: 'binary', label: 'Binary (1)', help: 'Every neighbour counts the same.'},
         {
-          value: 'inverseDistance',
+          value: 'inverse-distance',
           label: 'Inverse distance',
           help: 'max(d, floor)^-power: near neighbours weigh more.'
         },
@@ -568,7 +576,7 @@ export default defineScene<SpatialWeightsOptions>({
       max: 4,
       step: 0.5,
       default: 1,
-      disabledWhen: state => !isDistance(state) || state.weightKind !== 'inverseDistance',
+      disabledWhen: state => !isDistance(state) || state.weightKind !== 'inverse-distance',
       help: 'Exponent p of d^-p. Larger values concentrate weight on the nearest neighbour.'
     },
     {
@@ -581,7 +589,7 @@ export default defineScene<SpatialWeightsOptions>({
       max: 0.5,
       step: 0.05,
       default: 0,
-      disabledWhen: state => !isDistance(state) || state.weightKind !== 'inverseDistance',
+      disabledWhen: state => !isDistance(state) || state.weightKind !== 'inverse-distance',
       format: value => `${value.toFixed(2)} x spacing`,
       help: 'Distances below the floor count as the floor, which keeps coincident points finite.'
     },
@@ -623,8 +631,8 @@ export default defineScene<SpatialWeightsOptions>({
           help: 'Tiefelsdorf, Boots and Kozak 1999: s = w / sqrt(sum w^2), rescaled to sum to n.'
         },
         {
-          value: 'symmetrize',
-          label: 'Symmetrise ((w + w^T) / 2)',
+          value: 'average-reciprocal',
+          label: 'Average reciprocal weights ((w + w^T) / 2)',
           help: 'Averages each link with its reverse; a missing reverse counts as 0.'
         },
         {
@@ -693,7 +701,7 @@ export default defineScene<SpatialWeightsOptions>({
           help: 'A neighbour in both lists.'
         },
         {value: 'difference', label: 'A but not B (difference)'},
-        {value: 'symmetricDifference', label: 'In exactly one (symmetric difference)'},
+        {value: 'symmetric-difference', label: 'In exactly one (symmetric difference)'},
         {
           value: 'higherOrder',
           label: 'Higher order (neighbours of neighbours)',
@@ -727,7 +735,7 @@ export default defineScene<SpatialWeightsOptions>({
       step: 1,
       default: 6,
       disabledWhen: state =>
-        !['union', 'intersection', 'difference', 'symmetricDifference'].includes(state.combine),
+        !['union', 'intersection', 'difference', 'symmetric-difference'].includes(state.combine),
       help: 'k of the second neighbourhood used by the binary operations.'
     },
     {
@@ -738,7 +746,7 @@ export default defineScene<SpatialWeightsOptions>({
       apply: 'compile',
       default: 'left',
       disabledWhen: state =>
-        !['union', 'intersection', 'difference', 'symmetricDifference'].includes(state.combine),
+        !['union', 'intersection', 'difference', 'symmetric-difference'].includes(state.combine),
       help: 'How the two weights of a shared link combine. "Binary" reproduces libpysal 4.15, which gives every set-operation link weight 1.',
       options: [
         {value: 'left', label: 'Weight of A'},

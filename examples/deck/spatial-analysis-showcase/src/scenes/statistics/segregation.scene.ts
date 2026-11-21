@@ -116,7 +116,7 @@ function getSnippet(state: SegregationOptions): string {
       ? ''
       : `
   graph.add(new GPUSpatialWeightsTransform({spatialContext: projection.spatialContext,
-    operation: 'kernel', kernel: '${state.weights}', bandwidth: 'adaptive', weights
+    operation: 'kernel', kernel: '${state.weights}', bandwidth: bandwidthParameters, weights
   }));`;
   const row = state.rowStandardize
     ? `
@@ -124,11 +124,17 @@ function getSnippet(state: SegregationOptions): string {
     : '';
   return `import {
   GPUNeighborSearch, GPUSegregation, GPUSpatialWeightsTransform,
-  getGPUSegregationLayout, getGPUNeighborSearchParameterValues
+  getGPUSegregationLayout, getGPUNeighborSearchParameterValues, getGPUSpatialWeightsTransformParameterValues
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 // One distance band per radius; the radius is a parameter-buffer write.
-scales.forEach(({weights, searchParameters}) => {
+// bandwidthParameters is the imported one-float transform parameter view, in meters.
+// Update each scale's owners whenever its distance-band radius changes:
+scales.forEach(({searchParameterOwner, bandwidthParameterOwner, radius}) => {
+  searchParameterOwner.write(getGPUNeighborSearchParameterValues({bounds, searchRadius: radius, weightType: 'binary'}));
+  bandwidthParameterOwner.write(getGPUSpatialWeightsTransformParameterValues({bandwidth: radius}));
+});
+scales.forEach(({weights, searchParameters, bandwidthParameters}) => {
   graph.add(new GPUNeighborSearch({spatialContext: projection.spatialContext,
     mode: 'radius', gridSize: [32, 32], positions: tractPoints,
     parameters: searchParameters, output: {...weights, status: {overflow}}

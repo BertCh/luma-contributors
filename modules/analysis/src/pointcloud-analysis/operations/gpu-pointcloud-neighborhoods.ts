@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getPointCloudReadbackLaneReader} from './pointcloud-readback';
+import {POINT_CLOUD_NORM_COMPARISON_WGSL} from './pointcloud-norm-comparison-wgsl';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {createTransientView} from '@luma.gl/graph/gpu-core';
+import {fp64arithmetic} from '@luma.gl/shaders';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -13,6 +16,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateGraphPorts,
   validateSinglePackedView,
   validateFiniteNumber,
   validateRequirement,
@@ -39,6 +43,8 @@ import {
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 import {validatePointCloudGridParameters} from './pointcloud-grid-parameters';
+import {inferPointCloudNeighborCapacity} from './pointcloud-neighbor-capacity';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 // Radius and its float32 square, six support bounds and a support-bounds-enabled flag.
 export const GPU_POINT_CLOUD_NEIGHBORHOODS_PARAMETER_LENGTH = 9;
@@ -87,8 +93,9 @@ function validatePointCloudNeighborhoodsSettings(
 }
 
 export type GPUPointCloudNeighborhoodsOutput = {
-  /** Row-major fixed-stride original IDs; missing slots contain 0xffffffff. */
+  /** Query-major fixed-stride source-row indices into positions; missing slots contain 0xffffffff. */
   indices: GraphDataView<'uint32'>;
+  /** Query-major squared Euclidean distances in squared coordinate units. Read min(counts[query], capacity) slots; missing slots hold float32 bits 0x7f7fffff. */
   squaredDistances: GraphDataView<'float32'>;
   /** Actual radius support, including candidates omitted by capacity. */
   counts: GraphDataView<'uint32'>;
@@ -106,7 +113,7 @@ export type GPUPointCloudNeighborhoodsOutput = {
 export type GPUPointCloudNeighborhoodsProps = {
   /** Runtime grid origin/cellSize; grid dimensions stay fixed. Requires grid. */
   gridParameters?: GraphDataView<'float32'>;
-  /** Runtime radius/supportBounds, packed by getGPUPointCloudNeighborhoodsParameterValues. */
+  /** Runtime radius/supportBounds, packed by getGPUPointCloudNeighborhoodsParameterValues. Requires `output.status`. */
   parameters?: GraphDataView<'float32'>;
   id?: string;
   positions: GraphDataView<'float32x3'>;
@@ -119,8 +126,8 @@ export type GPUPointCloudNeighborhoodsProps = {
   };
   /** Inclusive Euclidean 3D search radius. */
   radius: number;
-  /** Retain the nearest 1–64 other points; ties prefer smaller original IDs. */
-  capacity: number;
+  /** Retain the nearest 1–64 other points; exact norm ties prefer smaller original IDs. Omitted infers exact output slots per query; zero queries require an explicit capacity. */
+  capacity?: number;
   /** Cooperative workgroups target dense candidate sets; serial remains the default. */
   strategy?: 'serial' | 'cooperative';
   /**
@@ -144,15 +151,42 @@ export const GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_TRUNCATED = 2;
 /** `GPUPointCloudNeighborhoods` status bit 4: the search radius exceeds `supportBounds`. */
 export const GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_UNSUPPORTED = 4;
 
+/** Decode one query's neighborhood status; pass a one-word subview for a later query. */
+export function decodeGPUPointCloudNeighborhoodsStatus(
+  values: Uint32Array | Uint8Array | ArrayBuffer
+): {
+  invalidInput: boolean;
+  truncated: boolean;
+  incompleteSupport: boolean;
+  complete: boolean;
+} {
+  const flags = getPointCloudReadbackLaneReader(
+    'decodeGPUPointCloudNeighborhoodsStatus',
+    'status',
+    values,
+    'uint32',
+    1
+  )(0);
+  return {
+    invalidInput: (flags & GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY) !== 0,
+    truncated: (flags & GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_TRUNCATED) !== 0,
+    incompleteSupport: (flags & GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_UNSUPPORTED) !== 0,
+    complete: (flags & 7) === 0
+  };
+}
+
 /**
  * Exact 3D neighborhoods with observable truncation. Per-frame: parameters (radius/supportBounds)
- * and input/gridParameters contents. Compile-time: grid dimensions, capacity, strategy and view shapes. With a `grid` the search visits only the
+ * and input/gridParameters contents. Compile-time: grid dimensions, capacity, strategy and view shapes.
+ * Capacity is 1–64 retained slots per query (GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY), across serial and cooperative routes.
+ * With a `grid` the search visits only the
  * cells the radius can reach; without one every query scans every point, which the constructor
  * allows only up to `GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK` queries times points.
  */
 export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
   readonly id: string;
-  constructor(readonly props: GPUPointCloudNeighborhoodsProps) {
+  readonly props: GPUPointCloudNeighborhoodsProps & {capacity: number};
+  constructor(props: GPUPointCloudNeighborhoodsProps) {
     props = snapshotConstructionFields(props, [
       'gridParameters',
       'parameters',
@@ -167,13 +201,26 @@ export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
       'output'
     ]);
     this.id = props.id ?? 'gpu-pointcloud-neighborhoods';
+    validateGraphPorts(this.id, props, {
+      positions: {required: true, viewType: 'data', formats: ['float32x3']},
+      queryRows: {required: false, viewType: 'data', formats: ['uint32']},
+      'output.indices': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.squaredDistances': {required: true, viewType: 'data', formats: ['float32']},
+      'output.counts': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.status': {required: false, viewType: 'data', formats: ['uint32']}
+    });
     validateRequirement(
       this.id,
       props.output !== undefined && props.output !== null,
       'output must be given'
     );
-    this.props = props = Object.freeze({
+    const queryCount = props.queryRows?.length ?? props.positions.length;
+    const capacity =
+      props.capacity ??
+      inferPointCloudNeighborCapacity(this.id, queryCount, props.output.indices.length);
+    this.props = Object.freeze({
       ...props,
+      capacity,
       output: snapshotConstructionFields(props.output, [
         'indices',
         'squaredDistances',
@@ -181,6 +228,7 @@ export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
         'status'
       ])
     });
+    props = this.props;
     validatePointCloudGridParameters(this.id, props.gridParameters);
     validateRequirement(
       this.id,
@@ -194,13 +242,7 @@ export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
         props.strategy === 'cooperative',
       "strategy must be 'serial' or 'cooperative'"
     );
-    validateCapacity(
-      this.id,
-      'capacity',
-      props.capacity,
-      1,
-      GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY
-    );
+    validateCapacity(this.id, 'capacity', capacity, 1, GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY);
     validatePointCloudNeighborhoodsSettings(this.id, props);
     for (const [name, view, format] of [
       ['positions', props.positions, 'float32x3'],
@@ -256,16 +298,15 @@ export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
           ]
         : [{inputs, outputs}]
     );
-    const queryCount = props.queryRows?.length ?? props.positions.length;
     if (props.gridParameters)
       validateCapacity(
         this.id,
         'runtime-grid packed neighbor words',
-        queryCount * (2 * props.capacity + 1),
+        queryCount * (2 * capacity + 1),
         0,
         GRAPH_CHUNK_MAXIMUM_ROW_COUNT
       );
-    validateViewLength(this.id, 'indices', props.output.indices, queryCount * props.capacity);
+    validateViewLength(this.id, 'indices', props.output.indices, queryCount * capacity);
     validateViewLength(
       this.id,
       'squaredDistances',
@@ -283,6 +324,13 @@ export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
         'supportBounds requires a status view'
       );
     }
+    // Runtime parameters can enable supportBounds on any frame, so they need the same destination
+    // for status bit 4 as static supportBounds.
+    validateRequirement(
+      this.id,
+      !props.parameters || Boolean(props.output.status),
+      'parameters requires a status view (runtime supportBounds report status bit 4 there)'
+    );
     if (props.grid) {
       validatePointCloudSearchGrid(this.id, 'grid', props.grid);
       validateRequirement(
@@ -334,8 +382,8 @@ export class GPUPointCloudNeighborhoods implements GPUCommandNodeProducer {
       validatePointCloudScratchBindings(graph, this.id, {
         'runtime-grid neighborhood scratch': counts.length * (2 * capacity + 1) * 4
       });
-    const radiusValue = parameters ? 'readParameters(0u)' : `${Math.fround(radius)}`;
-    const radiusSquared = parameters ? 'readParameters(1u)' : `${Math.fround(radius * radius)}`;
+    const radiusValue = parameters ? 'readParameters(0u)' : getWGSLFloatLiteral(radius);
+    const radiusSquared = parameters ? 'readParameters(1u)' : getWGSLFloatLiteral(radius * radius);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const packedNeighbors = gridParameters
       ? createTransientView(
@@ -421,17 +469,22 @@ var<workgroup> supportCounts: array<u32, ${workgroupSize}>;`
         outputs: packedNeighbors
           ? {packedNeighbors}
           : {indices, squaredDistances, counts, ...(!deferredStatus && status ? {status} : {})},
-        declarations: packedNeighbors
-          ? `
+        modules: [fp64arithmetic],
+        declarations: `${getPointCloudNeighborComparisonWGSL()}
+${!deferredStatus && this.props.supportBounds ? getPointCloudSupportWGSL() : ''}
+${
+  packedNeighbors
+    ? `
 fn writeIndices(row: u32, value: u32) { writePackedNeighbors((row / ${capacity}u) * ${2 * capacity + 1}u + row % ${capacity}u, value); }
 fn writeSquaredDistances(row: u32, value: f32) { writePackedNeighbors((row / ${capacity}u) * ${2 * capacity + 1}u + ${capacity}u + row % ${capacity}u, bitcast<u32>(value)); }
 fn writeCounts(row: u32, value: u32) { writePackedNeighbors(row * ${2 * capacity + 1}u + ${2 * capacity}u, value); }`
-          : undefined,
+    : ''
+}`,
         body: `
 var nearestIds: array<u32, ${capacity}>;
 var nearestDistances: array<f32, ${capacity}>;
 for (var slot = 0u; slot < ${capacity}u; slot++) {
-  nearestIds[slot] = 0xffffffffu; nearestDistances[slot] = 3.402823e38;
+  nearestIds[slot] = 0xffffffffu; nearestDistances[slot] = bitcast<f32>(0x7f7fffffu);
 }
 let queryRow = ${this.props.queryRows ? 'readQueryRows(index)' : 'index'};
 let position = readPositions(min(queryRow,${Math.max(positions.length - 1, 0)}u));
@@ -441,20 +494,25 @@ let validQuery = queryRow < ${positions.length}u && (${validQuery});
 if (validQuery) {
   ${startCandidates}
     if (candidate == queryRow) { continue; }
-    let difference = readPositions(candidate) - position;
+    let candidatePosition = readPositions(candidate);
+    if (!all((bitcast<vec3u>(candidatePosition) & vec3u(0x7fffffffu)) < vec3u(0x7f800000u))) { continue; }
+    let difference = candidatePosition - position;
+    // An overflowing coordinate difference is larger than every legal finite-radius search.
+    if (!all((bitcast<vec3u>(difference) & vec3u(0x7fffffffu)) < vec3u(0x7f800000u))) { continue; }
     let distanceSquared = dot(difference, difference);
-    if (!(distanceSquared <= ${radiusSquared})) { continue; }
+    if (pointCloudNormKeysSeparated(distanceSquared, ${radiusSquared})) {
+      if (distanceSquared > ${radiusSquared}) { continue; }
+    } else if (comparePointCloudNorms(candidatePosition, position, vec3f(${radiusValue}, 0.0, 0.0), vec3f(0.0)) > 0) { continue; }
     count++;
     ${
       cooperative
         ? `// Count every radius match before rejecting a noncompetitive candidate.
-    if (distanceSquared > nearestDistances[${capacity - 1}u] ||
-        (distanceSquared == nearestDistances[${capacity - 1}u] && candidate >= nearestIds[${capacity - 1}u])) { continue; }`
+    if (!pointCloudNeighborBefore(candidate, distanceSquared, nearestIds[${capacity - 1}u], nearestDistances[${capacity - 1}u], position)) { continue; }`
         : ''
     }
     var insertion = ${capacity}u;
     for (var slot = 0u; slot < ${capacity}u; slot++) {
-      if (distanceSquared < nearestDistances[slot] || (distanceSquared == nearestDistances[slot] && candidate < nearestIds[slot])) {
+      if (pointCloudNeighborBefore(candidate, distanceSquared, nearestIds[slot], nearestDistances[slot], position)) {
         insertion = slot; break;
       }
     }
@@ -488,8 +546,7 @@ for (var mergeStride = 1u; mergeStride < ${workgroupSize}u; mergeStride *= 2u) {
       let secondDistance = retainedDistances[secondStart + min(secondSlot, ${capacity - 1}u)];
       let secondId = retainedIds[secondStart + min(secondSlot, ${capacity - 1}u)];
       let takeFirst = secondSlot == ${capacity}u ||
-        (firstSlot < ${capacity}u && (firstDistance < secondDistance ||
-          (firstDistance == secondDistance && firstId <= secondId)));
+        (firstSlot < ${capacity}u && (firstId == secondId || pointCloudNeighborBefore(firstId, firstDistance, secondId, secondDistance, position)));
       nearestIds[slot] = select(secondId, firstId, takeFirst);
       nearestDistances[slot] = select(secondDistance, firstDistance, takeFirst);
       firstSlot += u32(takeFirst);
@@ -509,7 +566,12 @@ count = supportCounts[0];
     : ''
 }
 writeCounts(index, count);
-${!deferredStatus && status ? `writeStatus(index,select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY}u,0u,validQuery)|select(0u,${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_TRUNCATED}u,count>${capacity}u)${this.props.supportBounds ? `|select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_UNSUPPORTED}u,0u,all(position-vec3f(${Math.fround(radius)})>=vec3f(${this.props.supportBounds.minimum.map(Math.fround).join(',')}))&&all(position+vec3f(${Math.fround(radius)})<=vec3f(${this.props.supportBounds.maximum.map(Math.fround).join(',')})))` : ''});` : ''}
+${
+  !deferredStatus && status
+    ? `if (queryRow >= ${positions.length}u) { writeStatus(index, ${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY}u); }
+else { writeStatus(index,select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY}u,0u,validQuery)|select(0u,${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_TRUNCATED}u,count>${capacity}u)${this.props.supportBounds ? `|select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_UNSUPPORTED}u,0u,pointCloudSupportContainsSphere(position, vec3f(${this.props.supportBounds.minimum.map(getWGSLFloatLiteral).join(',')}), vec3f(${this.props.supportBounds.maximum.map(getWGSLFloatLiteral).join(',')}), ${radiusValue}))` : ''}); }`
+    : ''
+}
 for (var slot = 0u; slot < ${capacity}u; slot++) {
   writeIndices(index * ${capacity}u + slot, nearestIds[slot]);
   writeSquaredDistances(index * ${capacity}u + slot, nearestDistances[slot]);
@@ -544,16 +606,19 @@ for (var slot = 0u; slot < ${capacity}u; slot++) {
             ...(this.props.queryRows ? {queryRows: this.props.queryRows} : {})
           },
           outputs: {status},
+          modules: [fp64arithmetic],
+          declarations: getPointCloudSupportWGSL(),
           body: `let queryRow = ${this.props.queryRows ? 'readQueryRows(index)' : 'index'};
 let position = readPositions(min(queryRow,${Math.max(positions.length - 1, 0)}u));
 ${querySetup}
 let validQuery = queryRow < ${positions.length}u && (${validQuery});
+if (queryRow >= ${positions.length}u) { writeStatus(index, ${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY}u); return; }
 ${
   parameters
     ? `let lower = vec3f(readParameters(2u), readParameters(3u), readParameters(4u));
 let upper = vec3f(readParameters(5u), readParameters(6u), readParameters(7u));
-let supported = readParameters(8u) == 0.0 || (all(position - vec3f(${radiusValue}) >= lower) && all(position + vec3f(${radiusValue}) <= upper));`
-    : `let supported = ${this.props.supportBounds ? `all(position - vec3f(${radiusValue}) >= vec3f(${this.props.supportBounds.minimum.map(Math.fround).join(',')})) && all(position + vec3f(${radiusValue}) <= vec3f(${this.props.supportBounds.maximum.map(Math.fround).join(',')}))` : 'true'};`
+let supported = readParameters(8u) == 0.0 || pointCloudSupportContainsSphere(position, lower, upper, ${radiusValue});`
+    : `let supported = ${this.props.supportBounds ? `pointCloudSupportContainsSphere(position, vec3f(${this.props.supportBounds.minimum.map(getWGSLFloatLiteral).join(',')}), vec3f(${this.props.supportBounds.maximum.map(getWGSLFloatLiteral).join(',')}), ${radiusValue})` : 'true'};`
 }
 writeStatus(index, select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY}u, 0u, validQuery) | select(0u, ${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_TRUNCATED}u, readCounts(index) > ${capacity}u) | select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_UNSUPPORTED}u, 0u, supported));`
         })
@@ -561,4 +626,40 @@ writeStatus(index, select(${GPU_POINT_CLOUD_NEIGHBORHOODS_STATUS_INVALID_QUERY}u
     }
     return nodes;
   }
+}
+
+/** Higher precision resolves overlapping float32 rounding-error intervals. Scaling by an exact power of two keeps
+ * squared norms finite, including the maximum legal radius. Published integer fp64 arithmetic
+ * prevents Metal reassociation from erasing the low words that decide membership and order.
+ */
+function getPointCloudNeighborComparisonWGSL(): string {
+  return `
+${POINT_CLOUD_NORM_COMPARISON_WGSL}
+fn pointCloudNeighborBefore(firstId: u32, firstDistance: f32, secondId: u32, secondDistance: f32, query: vec3f) -> bool {
+  if (firstId == 0xffffffffu) { return false; }
+  if (secondId == 0xffffffffu) { return true; }
+  if (pointCloudNormKeysSeparated(firstDistance, secondDistance)) { return firstDistance < secondDistance; }
+  let comparison = comparePointCloudNorms(readPositions(firstId), query, readPositions(secondId), query);
+  return comparison < 0 || (comparison == 0 && firstId < secondId);
+}`;
+}
+
+/** Compare radius to exact coordinate margins; rounded position +/- radius can hide halo loss. */
+function getPointCloudSupportWGSL(): string {
+  return `
+fn pointCloudMarginContainsRadius(maximum: f32, minimum: f32, radius: f32) -> bool {
+  let margin = maximum - minimum;
+  // This separated case also handles a positive overflowing margin without fp64 overflow.
+  if (margin >= radius * 2.0) { return true; }
+  if (margin < 0.0) { return false; }
+  let exactMargin = sub_fp64(vec2f(maximum, 0.0), vec2f(minimum, 0.0));
+  return exactMargin.x > radius || (exactMargin.x == radius && exactMargin.y >= 0.0);
+}
+fn pointCloudSupportContainsSphere(position: vec3f, lower: vec3f, upper: vec3f, radius: f32) -> bool {
+  for (var axis = 0u; axis < 3u; axis++) {
+    if (!pointCloudMarginContainsRadius(position[axis], lower[axis], radius) ||
+        !pointCloudMarginContainsRadius(upper[axis], position[axis], radius)) { return false; }
+  }
+  return true;
+}`;
 }

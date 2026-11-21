@@ -149,3 +149,86 @@ it('bounds the actual clustered command count at the maximum dense-system and ro
     device.destroy();
   }
 });
+
+it('captures covariance scalars, inputs and nested output maps before caller mutation', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props: GPUInstrumentalVariablesCovarianceProps = {
+      id: 'capture-iv',
+      coefficientCount: 1,
+      instrumentCount: 1,
+      method: 'HC1',
+      design: createTransientView(graph, 'design', 'float32', 8),
+      instruments: createTransientView(graph, 'instruments', 'float32', 8),
+      residuals: createTransientView(graph, 'residuals', 'float32', 8),
+      output: {
+        covariance: createTransientView(graph, 'covariance', 'float32', 4),
+        status: {code: createTransientView(graph, 'code', 'uint32', 1)}
+      }
+    };
+    const covariance = props.output.covariance;
+    const code = props.output.status.code;
+    const contributor = new GPUInstrumentalVariablesCovariance(props);
+    props.coefficientCount = 15;
+    props.instrumentCount = 16;
+    props.method = 'CLUSTER';
+    props.output.covariance = props.design;
+    props.output.status.code = createTransientView(graph, 'replacement-status', 'uint32', 1);
+    expect(contributor.props.coefficientCount).toBe(1);
+    expect(contributor.props.instrumentCount).toBe(1);
+    expect(contributor.props.method).toBe('HC1');
+    expect(contributor.props.output.covariance).toBe(covariance);
+    expect(contributor.props.output.status.code).toBe(code);
+    const finish = contributor
+      .getCommandNodes(graph)
+      .find(node => node.id === 'capture-iv-finish')!;
+    expect(
+      finish.resources?.some(resource => 'buffer' in resource && resource.buffer === covariance)
+    ).toBe(true);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('declares both HAC kernel loss flags and captures their nested map', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const overflow = createTransientView(graph, 'overflow', 'uint32', 1);
+    const candidateOverflow = createTransientView(graph, 'candidate-overflow', 'uint32', 1);
+    const kernel = {
+      offsets: createTransientView(graph, 'offsets', 'uint32', 9),
+      neighbors: createTransientView(graph, 'neighbors', 'uint32', 8),
+      weights: createTransientView(graph, 'weights', 'float32', 8),
+      status: {overflow, candidateOverflow}
+    };
+    const contributor = new GPUInstrumentalVariablesCovariance({
+      coefficientCount: 1,
+      instrumentCount: 1,
+      method: 'HAC',
+      kernel,
+      design: createTransientView(graph, 'design', 'float32', 8),
+      instruments: createTransientView(graph, 'instruments', 'float32', 8),
+      residuals: createTransientView(graph, 'residuals', 'float32', 8),
+      output: {
+        covariance: createTransientView(graph, 'covariance', 'float32', 4),
+        status: {code: createTransientView(graph, 'code', 'uint32', 1)}
+      }
+    });
+    const validation = contributor
+      .getCommandNodes(graph)
+      .find(node => node.id.endsWith('-validate-kernel'))!;
+    for (const flag of [overflow, candidateOverflow])
+      expect(
+        validation.resources?.some(
+          resource =>
+            'buffer' in resource && resource.buffer === flag && resource.usage === 'storage-read'
+        )
+      ).toBe(true);
+    kernel.status.candidateOverflow = createTransientView(graph, 'replacement-loss', 'uint32', 1);
+    expect(contributor.props.kernel?.status?.candidateOverflow).toBe(candidateOverflow);
+  } finally {
+    device.destroy();
+  }
+});

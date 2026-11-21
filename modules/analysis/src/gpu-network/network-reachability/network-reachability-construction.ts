@@ -20,6 +20,7 @@ export function snapshotNetworkReachabilityConstructionProps<
     'maximumTieIterations',
     'activeIterations',
     'costLimit',
+    'costPrecision',
     'laneCount',
     'costBreaks',
     'output',
@@ -29,6 +30,7 @@ export function snapshotNetworkReachabilityConstructionProps<
   const output = snapshotConstructionFields(snapshot.output, [
     'costs',
     'predecessors',
+    'predecessorEdges',
     'bands',
     'bandCounts',
     'unresolvedCount',

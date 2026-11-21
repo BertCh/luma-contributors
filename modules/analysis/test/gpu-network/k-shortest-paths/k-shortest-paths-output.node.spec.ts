@@ -234,7 +234,7 @@ it('uses the same layout for CPU results including a query with no accepted rout
 
 it('rejects invalid layout dimensions and uint32-overflowing output lengths', () => {
   for (const options of [
-    {queryCount: 0, routeCount: 1},
+    {queryCount: -1, routeCount: 1},
     {queryCount: 1, routeCount: 1.5},
     {queryCount: 1, routeCount: 1, maximumPathLength: 0},
     {queryCount: 0xffffffff, routeCount: 2}
@@ -441,4 +441,11 @@ it('R5 rejects overflowing path-slot products even when route rows fit uint32', 
       maximumPathLength: 4
     })
   ).toThrow(/queryCount \* routeCount \* maximumPathLength/);
+});
+
+it('describes a zero-query batch with defined scalar status', () => {
+  const layout = getGPUKShortestPathsOutputLayout({queryCount: 0, routeCount: 2});
+  expect(layout.counts.length).toBe(0);
+  expect(layout.vertices.length).toBe(0);
+  expect(layout.status.converged.length).toBe(1);
 });

@@ -2,7 +2,7 @@
 
 The package as a whole is distributed under `MIT AND Apache-2.0 AND BSD-3-Clause`.
 Individual files keep their SPDX expressions; this package expression does not replace them.
-Files with `MIT` are covered by [LICENSE](LICENSE). The remaining shipped source files are
+Files with `MIT` are covered by [LICENSE](LICENSE). The remaining sources for the shipped output are
 listed below. Their compiled ESM, CommonJS and declaration counterparts retain the same provenance.
 Dependencies and peers retain their own licences and notices in their respective packages.
 

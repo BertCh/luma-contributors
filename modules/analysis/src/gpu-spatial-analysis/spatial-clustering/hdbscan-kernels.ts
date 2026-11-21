@@ -19,7 +19,7 @@ export const HDBSCAN_NODE_WORDS = 4;
 /** Parent, subtree size and merge weight; the two children live in a separate plane. @internal */
 export const HDBSCAN_DENDROGRAM_WORDS = 3;
 
-const OPERATION = 'GPUHierarchicalDensityClustering';
+const OPERATION = 'GPUHDBSCAN';
 
 function getConstants(shape: HierarchicalDensityShape): string {
   return `const ROW_COUNT: u32 = ${shape.rowCount}u;

@@ -38,13 +38,13 @@ export default defineOperationRun({
       builder,
       'search',
       points.count,
-      points.count * (isRadius ? 24 : values.k),
+      points.count * (isRadius ? 24 : values.neighborCount),
       true
     );
     builder.graph.add(
       new GPUNeighborSearch({
         mode: isRadius ? 'radius' : 'knn',
-        k: isRadius ? undefined : values.k,
+        neighborCount: isRadius ? undefined : values.neighborCount,
         positions: positions.view,
         gridSize: [24, 24],
         parameters: parameterBuffer.view,
@@ -59,12 +59,13 @@ export default defineOperationRun({
         parameterBuffer.write(
           getGPUNeighborSearchParameterValues({
             bounds: [0, 0, ...worldBounds(points.positions)],
-            radius: current.radius
+            searchRadius: current.mode === 1 ? current.radius : undefined,
+            maximumDistance: current.mode === 0 ? current.radius : undefined
           })
         )
     };
   },
-  rebuildOn: ['mode', 'k'],
+  rebuildOn: ['mode', 'neighborCount'],
   // The pointer picks a point; the links the operation found for it are drawn bright.
   interaction: {
     kind: 'probe',
@@ -101,7 +102,7 @@ export default defineOperationRun({
         glyphs,
         readout: isRadius
           ? `point ${row} · ${neighborCount} neighbors within radius ${values.radius}`
-          : `point ${row} · k ${values.k} nearest, farthest at ${reach.toFixed(3)}`
+          : `point ${row} · k ${values.neighborCount} nearest, farthest at ${reach.toFixed(3)}`
       };
     }
   },

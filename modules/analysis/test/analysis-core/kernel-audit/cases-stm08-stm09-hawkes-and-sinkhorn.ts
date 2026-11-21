@@ -19,12 +19,12 @@ import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 const MAXIMUM_HAWKES_ROWS = 8388608;
 
 function addHawkes(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   options: {rows: number; maximumIterations?: number; maximumParents?: number; allOutputs?: boolean}
 ): void {
   const {rows} = options;
   graph.add(
-    new GPUSpaceTimeHawkes({
+    construct(GPUSpaceTimeHawkes, {
       positions: view('float32x2', rows),
       times: view('float32', rows),
       parameters: view('float32', GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH),
@@ -51,24 +51,24 @@ function addHawkes(
 }
 
 function addSinkhorn(
-  {graph, view}: KernelAuditContext,
+  {graph, view, construct}: KernelAuditContext,
   options: {
     width: number;
     height: number;
     maximumIterations?: number;
-    blurRadius?: number;
+    transportRadius?: number;
     allOutputs?: boolean;
   }
 ): void {
   const cells = options.width * options.height;
   graph.add(
-    new GPUSinkhornDivergence({
+    construct(GPUSinkhornDivergence, {
       grid: makeGPURasterMetadata({width: options.width, height: options.height}),
       source: view('float32', cells),
       target: view('float32', cells),
       parameters: view('float32', GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH),
       maximumIterations: options.maximumIterations,
-      blurRadius: options.blurRadius,
+      transportRadius: options.transportRadius,
       output:
         options.allOutputs === false
           ? {divergence: view('float32', 1)}
@@ -132,7 +132,7 @@ export const STM08_STM09_HAWKES_AND_SINKHORN_AUDIT_CASES: KernelAuditCase[] = [
       addSinkhorn(context, {
         width: 2048,
         height: 512,
-        blurRadius: 64,
+        transportRadius: 64,
         maximumIterations: 20,
         allOutputs: false
       })

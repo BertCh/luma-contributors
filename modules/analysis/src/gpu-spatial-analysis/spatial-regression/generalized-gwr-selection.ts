@@ -35,6 +35,23 @@ import {
 /** Finish narrow adaptive brackets by evaluating all at most five integer candidates. */
 const INTEGER_FINISH_MAXIMUM_SPAN = 4;
 const COMMON = `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`;
+// For nearby means, 2y * (delta - log1p(delta)) starts at delta². Evaluate its
+// convergent series directly, avoiding subtraction of count-sized likelihood terms.
+const POISSON_DEVIANCE_WGSL = `fn getPoissonDeviance(observed: f32, linear: f32) -> f32 {
+  let mean = exp(linear);
+  if (observed == 0.0) { return 2.0 * mean; }
+  let relativeDifference = (mean - observed) / observed;
+  if (abs(relativeDifference) < 0.125) {
+    var power = relativeDifference * relativeDifference;
+    var series = 0.0;
+    for (var degree = 2u; degree <= 12u; degree++) {
+      series += select(-power, power, degree % 2u == 0u) / f32(degree);
+      power *= relativeDifference;
+    }
+    return 2.0 * observed * series;
+  }
+  return 2.0 * (observed * (log(observed) - linear) - observed + mean);
+}`;
 const OPERATION = 'GPUGeneralizedGeographicallyWeightedRegression';
 
 /** GPU-only training-mask bandwidth selection. @internal */
@@ -238,7 +255,7 @@ export function getGeneralizedSelectionNodes<Parameters>(
           ...(influence ? [read('influence', influence)] : []),
           write('tiles', tileScores)
         ],
-        declarations: COMMON,
+        declarations: `${COMMON}\n${props.family === 'poisson' ? POISSON_DEVIANCE_WGSL : ''}`,
         body: `var deviance = 0.0; var trace = 0.0; var count = 0.0; var failed = 0.0;
         let endRow = min((index + 1u) * ${GENERALIZED_GWR_SCORE_TILE_ROWS}u, ${rows}u);
         for (var row = index * ${GENERALIZED_GWR_SCORE_TILE_ROWS}u; row < endRow; row++) {
@@ -248,7 +265,7 @@ export function getGeneralizedSelectionNodes<Parameters>(
           let observed = response[responseOffset + row]; let linear = fitted[fittedOffset + row];
           ${
             props.family === 'poisson'
-              ? `let score = 2.0 * (select(0.0, observed * (log(max(observed, 1.0e-30)) - linear), observed > 0.0) - observed + exp(linear));`
+              ? 'let score = getPoissonDeviance(observed, linear);'
               : `let opposed = select(linear, -linear, observed == 1.0);
           let score = 2.0 * (max(opposed, 0.0) + log(1.0 + exp(-abs(opposed))));`
           }
@@ -293,7 +310,7 @@ export function getGeneralizedSelectionNodes<Parameters>(
       createWGSLKernelNode(graph, {
         id: `${id}-candidate-${candidate}-score`,
         operation: OPERATION,
-        // contract-allow: single-invocation; fixed 256-slot capacity; excess score tiles merge in parallel first.
+        // contract-allow: single-invocation; GENERALIZED_GWR_MAXIMUM_FINAL_SCORE_TILES = 256 bounds score slots; excess tiles merge in parallel first.
         invocationCount: 1,
         ...(candidateGate?.getGate(1) ?? {}),
         bindings: [

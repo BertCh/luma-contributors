@@ -171,15 +171,21 @@ export class GPUInhomogeneousPointPattern implements GPUCommandNodeProducer {
     if (!props.suppliedIntensity) {
       validatePointProcessPositive(props.bandwidth ?? NaN, id, 'bandwidth');
     }
-    validatePointProcessView(props.positions, 'float32x2', rows, id);
-    validatePointProcessView(props.radii, 'float32', radiusCount, id);
+    validatePointProcessView(id, 'positions', props.positions, ['float32x2'], rows);
+    validatePointProcessView(id, 'radii', props.radii, ['float32'], radiusCount);
     if (props.suppliedIntensity) {
-      validatePointProcessView(props.suppliedIntensity, 'float32', rows, id);
+      validatePointProcessView(id, 'suppliedIntensity', props.suppliedIntensity, ['float32'], rows);
     }
-    validatePointProcessView(props.output.intensity, 'float32', rows, id);
-    validatePointProcessView(props.output.k, 'float32', radiusCount, id);
-    validatePointProcessView(props.output.pairCorrelation, 'float32', radiusCount, id);
-    validatePointProcessView(props.output.status, 'uint32', radiusCount, id);
+    validatePointProcessView(id, 'output.intensity', props.output.intensity, ['float32'], rows);
+    validatePointProcessView(id, 'output.k', props.output.k, ['float32'], radiusCount);
+    validatePointProcessView(
+      id,
+      'output.pairCorrelation',
+      props.output.pairCorrelation,
+      ['float32'],
+      radiusCount
+    );
+    validatePointProcessView(id, 'output.status', props.output.status, ['uint32'], radiusCount);
     validateSpatialOutputViews(this.id, props.output, [
       ...(props.edgeCorrection === 'translation'
         ? [[props.output.k, props.output.pairCorrelation, props.output.status]]

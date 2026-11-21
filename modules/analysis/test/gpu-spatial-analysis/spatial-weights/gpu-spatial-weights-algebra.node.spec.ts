@@ -333,7 +333,7 @@ it('CPU oracles match libpysal 4.15 Graph reference values (generated with real 
       [2, 0],
       [4, 3]
     ],
-    symmetricDifference: [
+    'symmetric-difference': [
       [0, 2],
       [0, 3],
       [2, 0],

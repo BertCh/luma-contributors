@@ -396,7 +396,7 @@ it('every generated WGSL identifier avoids the full specification reserved-word 
   const graph = new GPUCommandGraph(device);
   for (const family of ['quadbin', 'quadkey', 'geohash', 's2', 'h3'] as const) {
     for (const precision of family === 'h3'
-      ? (['float32', 'extended'] as const)
+      ? (['float32', 'double-single'] as const)
       : (['float32'] as const)) {
       const rows = createRows(graph);
       const point = new GPUPointToCell({

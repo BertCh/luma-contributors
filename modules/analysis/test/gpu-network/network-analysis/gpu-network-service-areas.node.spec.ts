@@ -188,6 +188,79 @@ it('GPUNetworkServiceAreas derives predecessors inside each service area after l
   expect(sources.get('areas-finalize')).toMatch(/control\[controlOffset \+ \d+u\] == 0u/);
 });
 
+function createBindingLimitProps(
+  graph: GPUCommandGraph,
+  nodeCount: number,
+  edgeCount: number,
+  withPredecessors: boolean
+): GPUNetworkServiceAreasProps {
+  return {
+    id: 'service-binding-limit',
+    topology: {
+      offsets: createTransientView(graph, 'offsets', 'uint32', nodeCount + 1),
+      neighbors: createTransientView(graph, 'neighbors', 'uint32', edgeCount),
+      weights: createTransientView(graph, 'weights', 'float32', edgeCount)
+    },
+    facilities: createTransientView(graph, 'facilities', 'uint32', 1),
+    maximumIterations: 1,
+    maximumLabelIterations: 1,
+    maximumTieIterations: 1,
+    output: {
+      assignments: createTransientView(graph, 'assignments', 'uint32', nodeCount),
+      predecessors: withPredecessors
+        ? createTransientView(graph, 'predecessors', 'uint32', nodeCount)
+        : undefined
+    }
+  };
+}
+
+it('checks the portable predecessor binding boundary at construction', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const oversized = createBindingLimitProps(graph, 16_777_216, 16_777_217, true);
+    expect(() => new GPUNetworkServiceAreas(oversized)).toThrow(
+      expect.objectContaining({
+        name: 'AnalysisValidationError',
+        id: 'service-binding-limit',
+        code: 'INTEGER_RANGE',
+        path: 'output.predecessors',
+        received: 134_217_732,
+        expected: {maximum: 134_217_728, source: 'GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE'},
+        message:
+          'service-binding-limit output.predecessors tieLabelsAndWeights needs 134217732 bytes in one binding (limit 134217728); omit output.predecessors or reduce the topology size'
+      })
+    );
+
+    const boundaryGraph = new GPUCommandGraph(device);
+    const boundary = createBindingLimitProps(boundaryGraph, 16_777_216, 16_777_216, true);
+    expect(
+      new GPUNetworkServiceAreas(boundary).getCommandNodes(boundaryGraph).map(node => node.id)
+    ).toContain('service-binding-limit-tie-level-0');
+
+    const withoutPredecessors = {...oversized, output: {assignments: oversized.output.assignments}};
+    const nodes = new GPUNetworkServiceAreas(withoutPredecessors).getCommandNodes(graph);
+    expect(nodes.map(node => node.id)).toContain('service-binding-limit-label-round-0');
+    expect(nodes.map(node => node.id)).not.toContain('service-binding-limit-tie-level-0');
+  } finally {
+    device.destroy();
+  }
+});
+
+it('checks a smaller device binding limit when declaring predecessor commands', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 1024});
+    const graph = new GPUCommandGraph(device);
+    const service = new GPUNetworkServiceAreas(createBindingLimitProps(graph, 64, 200, true));
+    expect(() => service.getCommandNodes(graph)).toThrow(
+      /service-binding-limit tieLabelsAndWeights needs 1056 bytes in one binding \(limit 1024\)/
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUNetworkServiceAreas bakes a numeric facilityCount without a binding', () => {
   const device = createNullWebGPUDevice();
   const getSeedSource = (facilityCount: GPUNetworkServiceAreasProps['facilityCount']) => {

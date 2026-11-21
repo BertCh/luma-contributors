@@ -605,10 +605,10 @@ export function createPolygonPublishNode<Parameters>(
     bindings,
     invocationCount: 1,
     body: `let finalTotal = stageFlags[stageFlagsOffset + 3u];
-  var overflow = false;
-  for (var stage = 0u; stage < 4u; stage++) {
-    overflow = overflow || stageFlags[stageFlagsOffset + stage] > ${props.capacity}u;
-  }
+  let overflow = stageFlags[stageFlagsOffset] > ${props.capacity}u ||
+    stageFlags[stageFlagsOffset + 1u] > ${props.capacity}u ||
+    stageFlags[stageFlagsOffset + 2u] > ${props.capacity}u ||
+    finalTotal > ${props.capacity}u;
   overflowOut[overflowOutOffset] = select(0u, 1u, overflow);
   ${props.vertexCount ? `countOut[countOutOffset] = min(finalTotal, ${props.capacity}u);` : ''}
   ${props.requiredVertexCount ? `totalOut[totalOutOffset] = stageFlags[stageFlagsOffset + ${props.requiredVertexCountIndex ?? 3}u];` : ''}`

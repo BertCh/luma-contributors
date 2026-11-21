@@ -70,6 +70,26 @@ it('honors all direction numberings, terminals, unknown paths, invalid barriers 
   expect(intercepted.converged[0]).toBe(1);
 });
 
+it('explicit pointer budgets suppress unfinished labels and require an unchanged confirmation', () => {
+  // Initial [1,2,3,4,4], then [2,3,4,4,4], then [4,4,4,4,4], then unchanged.
+  for (const [maximumIterations, labels, status] of [
+    [1, [UNRESOLVED, UNRESOLVED, 4, 4, 4], [0, 1, 1]],
+    [2, [4, 4, 4, 4, 4], [0, 1, 2]],
+    [3, [4, 4, 4, 4, 4], [1, 0, 3]]
+  ] as const) {
+    const result = computeTerrainWatershedsOnCPU(Uint32Array.of(1, 1, 1, 1, 0), {
+      grid: GRID,
+      maximumIterations
+    });
+    expect(Array.from(result.labels)).toEqual(labels);
+    expect([
+      result.converged[0],
+      result.iterationLimitReached[0],
+      result.iterationCount[0]
+    ]).toEqual(status);
+  }
+});
+
 it('validates both operation declarations and inconsistent array lengths', () => {
   const props: TerrainWatershedsOperationProps = {
     id: 'watershed-validation',
@@ -78,6 +98,10 @@ it('validates both operation declarations and inconsistent array lengths', () =>
     output: {labels: 'labels'}
   };
   for (const Operation of [GPUTerrainWatershedsOperation, CPUTerrainWatershedsOperation]) {
+    expect(() => new Operation({...props, maximumIterations: 1024})).not.toThrow();
+    expect(() => new Operation({...props, maximumIterations: 1025})).toThrow(
+      /watershed-validation.*maximumIterations.*1024/
+    );
     expect(() => new Operation({...props, grid: {...GRID, width: 0}})).toThrow(
       /^watershed-validation/
     );
@@ -88,9 +112,21 @@ it('validates both operation declarations and inconsistent array lengths', () =>
   expect(() => new CPUTerrainWatershedsOperation({...props, maximumIterations: 0})).toThrow(
     /watershed-validation.*maximumIterations/
   );
-  expect(
-    () => new CPUTerrainWatershedsOperation({...props, maximumIterations: 2000})
-  ).not.toThrow();
+  const cycleGrid = {...GRID, width: 2, height: 2};
+  const cycle = Uint32Array.of(1, 8, 64, 0);
+  // The three-cycle rotates forever under synchronous doubling; every permitted round runs.
+  const boundedCycle = computeTerrainWatershedsOnCPU(cycle, {
+    grid: cycleGrid,
+    maximumIterations: 1024
+  });
+  expect([
+    boundedCycle.converged[0],
+    boundedCycle.iterationLimitReached[0],
+    boundedCycle.iterationCount[0]
+  ]).toEqual([0, 1, 1024]);
+  expect(() =>
+    computeTerrainWatershedsOnCPU(cycle, {grid: cycleGrid, maximumIterations: 1025})
+  ).toThrow(/computeTerrainWatershedsOnCPU.*maximumIterations.*1024/);
   expect(() => computeTerrainWatershedsOnCPU(new Uint32Array(4), {grid: GRID})).toThrow(
     /flowDirections/
   );

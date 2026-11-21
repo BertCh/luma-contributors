@@ -174,14 +174,18 @@ async function runPredicateJoin(
           ? {
               unmatched: {
                 ids: unmatchedIds.view,
-                status: {count: unmatchedCount.view, overflow: unmatchedOverflow.view}
+                status: {
+                  count: unmatchedCount.view,
+                  overflow: unmatchedOverflow.view,
+                  candidateOverflow: candidateOverflow.view
+                }
               }
             }
           : {}),
         candidateTruncated: truncated.view,
         status: {
           overflow: overflow.view,
-          candidateOverflow: candidateOverflow.view,
+          candidateOverflow: how === 'inner' ? candidateOverflow.view : undefined,
           candidateTruncatedCount: truncatedCount.view
         }
       }

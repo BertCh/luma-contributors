@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import type {Device} from '@luma.gl/core';
 import {
   type GPUCommandGraph,
@@ -66,7 +67,7 @@ export type GPUTerrainTopographicPositionScale = {
 };
 
 /** Caller-owned outputs of {@link GPUTerrainTopographicPosition}; at least one is required. */
-export type GPUTerrainTopographicPositionOutput = {
+export type GPUTerrainTopographicPositionOutput = TerrainAtLeastOne<{
   /**
    * Optional TPI planes: `scales.length * width * height` values, plane `k` holding
    * `z - mean(annulus k)` in elevation units. NaN where the centre or the whole annulus is invalid.
@@ -84,7 +85,7 @@ export type GPUTerrainTopographicPositionOutput = {
   maximumDeviationRadius?: GraphDataView<'uint32'>;
   /** Optional per-pixel 1 where the centre elevation is valid, else 0. */
   outputValidity?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUTerrainTopographicPosition}.

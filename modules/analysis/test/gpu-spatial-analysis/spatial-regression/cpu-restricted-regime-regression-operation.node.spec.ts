@@ -63,6 +63,61 @@ it('keeps a small regime response variation beside a 1e20 response origin', () =
   expect(result.chow[0]).toBeNaN();
 });
 
+it('keeps Chow inference when the unrestricted fit has a small positive RSS', () => {
+  const perturbation = 2 ** -20;
+  const result = computeRestrictedRegimeRegressionOnCPU(
+    {
+      predictors: Float32Array.of(-1, 1, -1, 1, -1, 1, -1, 1),
+      regimes: Uint32Array.of(0, 0, 0, 0, 1, 1, 1, 1),
+      response: Float32Array.of(1e20, 1e20, 1e20, 1e20, 0, 2, 0, 2 + perturbation)
+    },
+    {predictorCount: 1, regimeCount: 2, common: [false, true]}
+  );
+  // The two observations at x=1 in regime 1 contribute RSS = perturbation²/2.
+  // The unrestricted slopes are 0 and 1 + perturbation/4, so imposing a common slope
+  // increases RSS by 2(1 + perturbation/4)². The numerator and denominator DF are 1 and 4.
+  const expected = (16 * (1 + perturbation / 4) ** 2) / perturbation ** 2;
+  expect(result.status[0]).toBe(0);
+  expect(result.chow[1]).toBe(1);
+  expect(result.chow[2]).toBe(4);
+  expect(Math.abs(result.chow[0] / expected - 1)).toBeLessThan(1e-7);
+});
+
+it('withholds Chow inference for exact unrestricted lines after translating the predictors', () => {
+  const offsets = [0, 1, 4, 5, 9, 10];
+  const result = computeRestrictedRegimeRegressionOnCPU(
+    {
+      predictors: Float32Array.from([...offsets, ...offsets], value => 10_000 + value),
+      regimes: Uint32Array.of(0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1),
+      response: Float32Array.from([
+        ...offsets.map(value => 1 + 3 * value),
+        ...offsets.map(value => 3 - 2 * value)
+      ])
+    },
+    {predictorCount: 1, regimeCount: 2, common: [false, true]}
+  );
+  expect(result.status[0]).toBe(0);
+  expect(Array.from(result.chow)).toEqual([NaN, 1, 8]);
+});
+
+it('recovers positive unrestricted RSS below the QR roundoff scale', () => {
+  const perturbation = 2 ** -52;
+  const result = computeRestrictedRegimeRegressionOnCPU(
+    {
+      predictors: Float32Array.of(-1, 1, -1, 1, -1, 1, -1, 1),
+      regimes: Uint32Array.of(0, 0, 0, 0, 1, 1, 1, 1),
+      response: Float32Array.of(6, 6, 6, 6, 0, 2, perturbation, 2)
+    },
+    {predictorCount: 1, regimeCount: 2, common: [false, true]}
+  );
+  // The two observations at x=-1 in regime 1 give RSS = perturbation²/2.
+  // Constraining the slopes 0 and 1-perturbation/4 adds 2(1-perturbation/4)² to RSS.
+  // With DF 1 and 4, the F statistic rounds to 16/perturbation².
+  expect(result.status[0]).toBe(0);
+  expect(Array.from(result.chow.subarray(1))).toEqual([1, 4]);
+  expect(Math.abs(result.chow[0] / (16 / perturbation ** 2) - 1)).toBeLessThan(1e-7);
+});
+
 for (const fixture of fixtures) {
   it(`matches independent SciPy SVD fits and Wald tests: ${fixture.name}`, () => {
     const result = computeRestrictedRegimeRegressionOnCPU(

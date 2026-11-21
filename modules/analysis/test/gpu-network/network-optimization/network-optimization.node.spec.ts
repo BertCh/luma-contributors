@@ -143,10 +143,9 @@ it('network and movement kernels parse, avoid reserved names, and respect portab
           threshold: view('float32', 1),
           maximumFrechetVertexCount: 8,
           output: {
-            distance: view('float32', 2),
-            lowerBound: view('float32', 2),
-            similarity: view('float32', 2),
-            upperBound: view('float32', 2),
+            ...(metric === 'longest-common-subsequence'
+              ? {similarity: view('float32', 2), upperBound: view('float32', 2)}
+              : {distance: view('float32', 2), lowerBound: view('float32', 2)}),
             matched: view('uint32', 2),
             status: view('uint32', 2)
           }
@@ -158,7 +157,7 @@ it('network and movement kernels parse, avoid reserved names, and respect portab
       for (const kernel of getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph))) {
         expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
         expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
-        expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
+        expect.soft(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
       }
     }
   } finally {
@@ -167,24 +166,24 @@ it('network and movement kernels parse, avoid reserved names, and respect portab
 });
 
 it('restriction-state topology excludes complete forbidden histories while preserving parallel edge IDs', () => {
-  const prepared = prepareGPUNetworkRestrictionStates(
-    3,
-    [
-      {source: 0, target: 1},
-      {source: 1, target: 2},
-      {source: 0, target: 1},
-      {source: 2, target: 0}
+  const prepared = prepareGPUNetworkRestrictionStates({
+    nodeCount: 3,
+    edges: [
+      [0, 1],
+      [1, 2],
+      [0, 1],
+      [2, 0]
     ],
-    [
+    restrictions: [
       [0, 1],
       [1, 3, 0]
     ]
-  );
+  });
   const walk = (edges: number[]) => {
     let state = 0;
     for (const originalEdge of edges) {
       let next = -1;
-      for (let transition = 0; transition < prepared.originalEdges.length; transition++) {
+      for (let transition = 0; transition < prepared.transitionCount; transition++) {
         if (
           prepared.transitions[2 * transition] === state &&
           prepared.originalEdges[transition] === originalEdge

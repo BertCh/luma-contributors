@@ -1,6 +1,10 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {getLocalVariabilityCenteringNodes} from './local-variability-centering';
+import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {MULTIPLICATION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/multiplication-rounding-error-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
 
 import {
   createTransientView,
@@ -277,14 +281,46 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
             {name: 'parameters', view: runtime.parameters, type: 'f32', access: 'read'},
             {name: 'residuals', view: residuals, type: 'f32', access: 'read_write'}
           ],
-          declarations: getCommon(props, rows, 1, dispatch),
+          declarations: `${getCommon(props, rows, 1, dispatch)}\n${ADDITION_ROUNDING_ERROR_WGSL}\n${MULTIPLICATION_ROUNDING_ERROR_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}`,
           body: `var result = getNaN();
 if (included(index)) {
+  let focus = values[valuesOffset + index];
   var weighted = 0.0;
+  var weightedError = 0.0;
+  var weightedErrorLow = 0.0;
+  let runtimeZero = bitcast<u32>(parameters[parametersOffset]) >> 31u;
   var total = 0.0;
-  ${neighborLoop(`weighted += weight * values[valuesOffset + neighbor]; total += weight;`, dispatch)}
+  var constantNeighborhood = true;
+  ${neighborLoop(
+    `let difference = getRoundedDifference(values[valuesOffset + neighbor], focus, runtimeZero);
+    // The rounded subtraction can lose the entire harmonic residual before multiplication.
+    // Carry its low part as well as the product and running-sum rounding errors.
+    let differenceError = getAdditionRoundingError(values[valuesOffset + neighbor], -focus, difference);
+    let term = getRoundedDifference(weight * difference, 0.0, runtimeZero);
+    let next = getRoundedDifference(weighted + term, 0.0, runtimeZero);
+    let scaledDifferenceError = getRoundedDifference(weight * differenceError, 0.0, runtimeZero);
+    weightedErrorLow += getMultiplicationRoundingError(weight, differenceError, scaledDifferenceError);
+    // The corrections are themselves summed with compensation: their own rounding can be as
+    // large as a harmonic residual's last place (review B1, R19 W5-16).
+    for (var part = 0u; part < 3u; part++) {
+      let correction = select(select(scaledDifferenceError, getMultiplicationRoundingError(weight, difference, term), part == 1u), getAdditionRoundingError(weighted, term, next), part == 0u);
+      let nextError = getRoundedDifference(weightedError + correction, 0.0, runtimeZero);
+      weightedErrorLow += getAdditionRoundingError(weightedError, correction, nextError);
+      weightedError = nextError;
+    }
+    weighted = next; total += weight;
+    constantNeighborhood = constantNeighborhood && values[valuesOffset + neighbor] == values[valuesOffset + index];`,
+    dispatch
+  )}
   if (total > 0.0) {
-    let deviation = abs(values[valuesOffset + index] - weighted / total);
+    // weighted + weightedError + weightedErrorLow, adding the two leading parts with their error.
+    let leading = getRoundedDifference(weighted + weightedError, 0.0, runtimeZero);
+    let trailing = getAdditionRoundingError(weighted, weightedError, leading) + weightedErrorLow;
+    var deviation = abs((leading + trailing) / total);
+    // Equal finite values have exactly zero residual. An approximate GPU reciprocal in the
+    // weighted mean must not create a residual field that later gets normalized into a pattern.
+    // The weighted differences also preserve harmonic zero residuals with unequal neighbors.
+    if (constantNeighborhood) { deviation = 0.0; }
     result = select(deviation * deviation, deviation, parameters[parametersOffset] == 1.0);
   }
 }
@@ -544,8 +580,17 @@ export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
     const valueBindings = bindings.filter(binding =>
       ['values', 'mask', 'overflow'].includes(binding.name)
     );
+    const centered = getLocalVariabilityCenteringNodes(graph, {
+      id,
+      rows,
+      columns: props.variableCount,
+      values: props.values,
+      bindings: valueBindings,
+      declarations: common
+    });
     const nodes: GPUCommandNode<Parameters>[] = [
       ...loss.nodes,
+      ...centered.nodes,
       ...(props.mode === 'reference'
         ? [
             createWGSLKernelNode<Parameters>(graph, {
@@ -555,6 +600,7 @@ export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
               invocationCount: props.variableCount,
               bindings: [
                 ...valueBindings,
+                {name: 'centered', view: centered.values, type: 'f32', access: 'read'},
                 {name: 'variance', view: variance, type: 'f32', access: 'read_write'},
                 ...(this.populationCount
                   ? [
@@ -571,7 +617,7 @@ export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
               body: `var count = 0.0; var mean = 0.0; var squared = 0.0;
 for (var row = 0u; row < ${rows}u; row++) {
   if (!included(row)) { continue; }
-  let value = values[valuesOffset + row * ${props.variableCount}u + index];
+  let value = centered[centeredOffset + row * ${props.variableCount}u + index];
   count += 1.0; let difference = value - mean; mean += difference / count; squared += difference * (value - mean);
 }
 variance[varianceOffset + index] = select(getNaN(), squared / count, count > 0.0);
@@ -585,6 +631,7 @@ ${this.populationCount ? 'if (index == 0u) { populationCount[populationCountOffs
             bindings: valueBindings,
             declarations: common,
             variance,
+            centered: centered.values,
             count: this.populationCount
           })),
       ...dispatches.map(dispatch =>

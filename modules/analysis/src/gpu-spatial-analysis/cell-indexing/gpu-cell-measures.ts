@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveCellPrecision, type CellPrecision} from './cell-precision';
+import {snapshotCellConstruction} from './cell-construction-snapshot';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -17,6 +19,9 @@ import {dggs, fp64, WGSLShaderAssembler} from '@luma.gl/shaders';
 
 import {
   getWGSLFloatLiteral,
+  registerWGSLKernelNodeRecord,
+  registerCompiledWGSLKernelNodeRecord,
+  type WGSLKernelNodeRecord,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -68,7 +73,7 @@ const MAXIMUM_LINEAR_WORKGROUP_COUNT = 16777216;
 export const GPU_CELL_MEASURES_H3_MAXIMUM_EDGE_COUNT = 10;
 
 /** Caller-owned outputs of {@link GPUCellMeasures}, all row-aligned with the input cells. */
-export type GPUCellMeasuresOutput = {
+type CellMeasuresOutputPorts = {
   /**
    * One `float32` area per cell: square meters by default, square kilometers with `units:
    * 'kilometers'` (H3 `cellAreaM2` / `cellAreaKm2`); 0 for invalid cells.
@@ -92,6 +97,12 @@ export type GPUCellMeasuresOutput = {
   /** One `uint32` per cell: 1 for the 12 pentagons of the resolution, 0 for other cells and invalid cells. */
   pentagons?: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 };
+
+/** Caller-owned measure outputs; select at least one terminal measure. */
+export type GPUCellMeasuresOutput = CellMeasuresOutputPorts &
+  {
+    [Port in keyof CellMeasuresOutputPorts]-?: Required<Pick<CellMeasuresOutputPorts, Port>>;
+  }[keyof CellMeasuresOutputPorts];
 
 /**
  * Properties for {@link GPUCellMeasures}.
@@ -119,11 +130,11 @@ export type GPUCellMeasuresProps = {
    */
   units?: Exclude<GPUSpatialUnit, 'native'>;
   /**
-   * Geometry arithmetic: 'float32' (default) or the published 'fp64' double-single module.
-   * Use 'fp64' for H3 pentagons and face crossings above resolution 10. S2/Quadbin retain
+   * Geometry arithmetic: 'float32' (default) or the published 'double-single' module.
+   * Use 'double-single' for H3 pentagons and face crossings above resolution 10. S2/Quadbin retain
    * their cancellation-free formulas. Outputs remain float32; this is compile-time topology.
    */
-  precision?: 'float32' | 'fp64';
+  precision?: CellPrecision;
   /** Caller-owned outputs; at least one. */
   output: GPUCellMeasuresOutput;
 };
@@ -151,7 +162,7 @@ export type GPUCellMeasuresProps = {
  * which resolve about 6e-8 radians (0.4 m). Their measured relative error is 6e-7 at resolution
  * 0, 5e-5 at 3 and 4, at most 5e-4 up to resolution 8 and 2e-2 at 9 and 10 (areas: 2e-5 at 4,
  * 1.5e-4 at 8, 5e-3 at 9 and 10): treat them as unreliable beyond resolution 10. Pentagon
- * flags and edge counts are exact. With `precision: 'fp64'`, boundary projection and
+ * flags and edge counts are exact. With `precision: 'double-single'`, boundary projection and
  * face-edge intersections retain double-single coordinates through the published fp64 module;
  * differences are taken before output rounding. The CPU/GPU specs use 2e-5 relative tolerance
  * for all H3 resolutions, including pentagons and face crossings. S2 uses cancellation-free quadratic-map increments through
@@ -177,7 +188,19 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
   private readonly chunkPlan: GraphChunkDispatchPlan;
   private readonly edgeLengthChunks: readonly GraphDataView[];
 
+  private readonly precision: 'float32' | 'double-single';
+
   constructor(props: GPUCellMeasuresProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'family',
+      'cells',
+      'wordOrder',
+      'maximumEdgeCount',
+      'units',
+      'precision',
+      ['output', ['areas', 'perimeters', 'edgeLengths', 'edgeCounts', 'pentagons']]
+    ]);
     this.id = props.id ?? 'cell-measures';
     this.props = props;
     const id = this.id;
@@ -191,11 +214,7 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
       props.wordOrder === undefined || ['little-endian', 'high-low'].includes(props.wordOrder),
       "wordOrder must be 'little-endian' or 'high-low'"
     );
-    validateRequirement(
-      id,
-      props.precision === undefined || ['float32', 'fp64'].includes(props.precision),
-      "precision must be 'float32' or 'fp64'"
-    );
+    this.precision = resolveCellPrecision(id, props.precision);
     this.units = props.units ?? 'meters';
     validateRequirement(
       id,
@@ -379,7 +398,7 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
       metric: 'great-circle',
       units: this.units
     });
-    const usesFP64 = props.precision === 'fp64';
+    const usesFP64 = this.precision === 'double-single';
     const geometrySource = usesFP64
       ? `${CELL_MEASURES_FP64_WGSL}\n${props.family === 'h3' ? H3_MEASURES_FP64_WGSL : props.family === 's2' ? S2_CELL_MEASURES_FP64_WGSL : QUADBIN_CELL_MEASURES_FP64_WGSL}`
       : props.family === 'h3'
@@ -462,6 +481,22 @@ fn main(
             : source);
         sharedKernelSource = kernelSource;
         const layout = layouts[chunk.chunkIndex];
+        const kernelRecord: WGSLKernelNodeRecord = {
+          id: `${id}-measures-${chunk.chunkIndex}`,
+          operation: OPERATION,
+          variant: `${props.family}${usesFP64 ? '-fp64' : ''}`,
+          source: kernelSource,
+          body: props.family === 'h3' ? h3Body : rectangularBody,
+          entryPoint: 'main',
+          workgroupSize: [CHUNK_WORKGROUP_SIZE, 1, 1],
+          workgroups: [layout.x, layout.y, layout.z],
+          invocationCount: chunk.length,
+          constants: {},
+          bindings,
+          textures: [],
+          indirect: false
+        };
+        registerWGSLKernelNodeRecord(graph, kernelRecord);
         return createGPUComputeCommandNode<Parameters>({
           id: `${id}-measures-${chunk.chunkIndex}`,
           resources: bindings.map(binding => ({
@@ -475,7 +510,7 @@ fn main(
             maximumWorkgroupCount: layout.x * layout.y * layout.z,
             maximumInvocationCount: chunk.length
           },
-          compile: ({device}) => {
+          compile: function compileRecordedKernel({device}) {
             const kernel = new Kernel(device, {
               id: `${OPERATION}-${props.family}${usesFP64 ? '-fp64' : ''}`,
               source: kernelSource,
@@ -488,6 +523,7 @@ fn main(
                 }))
               }
             });
+            registerCompiledWGSLKernelNodeRecord(graph, kernelRecord, compileRecordedKernel);
             return {
               encode: ({computePass, getBuffer}) =>
                 kernel.dispatch(computePass, {

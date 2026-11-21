@@ -176,7 +176,7 @@ it('matches hand-computed rectangle provenance, ordering, snapshot links and one
   expect(Array.from(result.segments.subarray(0, 20))).toEqual([
     4, 0, 3, 1, 4, 2, 3, 1, 0, 0, 1, 1, 0, 2, 1, 1, 1, 1, 3, 1
   ]);
-  expect(Array.from(result.sourceEdges.subarray(0, 10))).toEqual([0, 1, 1, 2, 3, 0, 2, 3, 3, 0]);
+  expect(Array.from(result.sourceEdges.subarray(0, 10))).toEqual([0, 1, 1, 2, 3, 0, 2, 3, 0, 2]);
   expect(Array.from(result.offsetLinks.subarray(0, 8))).toEqual([3, 1, 0, 2, 1, 3, 2, 0]);
   expect(Array.from(result.offsetPositions.subarray(0, 8))).toEqual(
     Array.from(
@@ -278,10 +278,9 @@ it('keeps polygon blocks, reversed closure, hole merging, capacity counts and ex
   expect(regrouped).toEqual(result);
 });
 
-it('removes the iteration budget but retains the historical output-slot limit', () => {
+it('honors the event budget and retains the historical output-slot limit', () => {
   const input = createInput([0, 0, 4, 0, 4, 2, 0, 2]);
-  // The early snapshot fits the initial slots. Later events need no output slots and finish
-  // even with a zero event budget and no initial-vertex padding.
+  // Capture precedes the budget check, but no event or arc work is allowed afterward.
   expect(
     Array.from(
       computeVectorStraightSkeletonOnCPU(input, {
@@ -291,7 +290,7 @@ it('removes the iteration budget but retains the historical output-slot limit', 
         offsetDistance: 0.25
       }).status
     )
-  ).toEqual([5, 5, 4, 0]);
+  ).toEqual([0, 0, 4, 4]);
   expect(
     Array.from(
       computeVectorStraightSkeletonOnCPU(input, {
@@ -304,7 +303,27 @@ it('removes the iteration budget but retains the historical output-slot limit', 
   ).toEqual([0, 0, 0, 4]);
 });
 
-it('terminates a repeated wavefront at the same time and retains the zero-distance snapshot', () => {
+it('terminates a repeating wavefront as numerical failure and preserves its seven original snapshot vertices', () => {
+  const input = createInput([5, 3.5, 1.5, 2.5, 1, 8, -6.5, -3.7, -1.6, -2.2, -1, -5, 3, -2]);
+  const result = computeVectorStraightSkeletonOnCPU(input, {
+    ...createProps(),
+    maximumVertices: 32,
+    maximumEvents: 16,
+    segmentCapacity: 128,
+    offsetDistance: 0,
+    eventTolerance: 0.1
+  });
+  // A repeated state at unchanged time makes no geometric progress: it is a numerical
+  // failure (8), independently of the larger work budget (4). Capture at t=0 is exact.
+  expect(result.status[3]).toBe(8);
+  expect(result.status[2]).toBe(7);
+  expect(Array.from(result.offsetPositions.subarray(0, 14))).toEqual(Array.from(input.positions));
+  expect(Array.from(result.offsetLinks.subarray(0, 14))).toEqual([
+    6, 1, 0, 2, 1, 3, 2, 4, 3, 5, 4, 6, 5, 0
+  ]);
+});
+
+it('honors zero event work while retaining the zero-distance snapshot', () => {
   const input = createInput([5, 3.5, 1.5, 2.5, 1, 8, -6.5, -3.7, -1.6, -2.2, -1, -5, 3, -2]);
   const props = {
     ...createProps(),
@@ -317,10 +336,9 @@ it('terminates a repeated wavefront at the same time and retains the zero-distan
   const result = computeVectorStraightSkeletonOnCPU(input, props);
   // The signed shoelace sum is positive (about 116.73), so initial slot order is unchanged.
   // At distance zero all seven original corners and their circular links must survive capture.
-  // A repeated same-time state cannot make progress: the CPU reports numerical failure (8).
-  expect(Array.from(result.status.subarray(2))).toEqual([7, 8]);
+  expect(Array.from(result.status)).toEqual([0, 0, 7, 4]);
   expect(result.status[0]).toBe(result.status[1]);
-  expect(result.status[0]).toBeGreaterThan(0);
+  expect(result.status[0]).toBe(0);
   expect(result.status[0]).toBeLessThan(128);
   expect(Array.from(result.offsetPositions.subarray(0, 14))).toEqual(Array.from(input.positions));
   expect(Array.from(result.offsetLinks.subarray(0, 14))).toEqual([
@@ -559,6 +577,12 @@ it.each([
     polygonOffsets: scene === 'empty' ? Uint32Array.of(0, 0, 0) : Uint32Array.of(0, 2, 3),
     featureOffsets: Uint32Array.of(0, 2)
   };
+  // Two declared empty polygons own no rings or rows: compact terminal coverage (UGE-10)
+  // rejects uncovered children, so the empty scene declares none.
+  if (scene === 'empty') {
+    input.positions = new Float32Array();
+    input.ringOffsets = Uint32Array.of(0);
+  }
   const props: VectorStraightSkeletonOperationProps = {
     ...createProps(),
     polygonCount: 2,

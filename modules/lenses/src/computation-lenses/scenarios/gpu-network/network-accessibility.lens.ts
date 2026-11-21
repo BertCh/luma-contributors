@@ -33,7 +33,15 @@ const scenario: NetworkElementScenario = {
   // Rows search the reversed roads, so a matrix entry is the travel time from a node to a facility.
   prepareRoads: reverseRoads,
   seed: 0,
-  retain: ['matrixCosts', 'converged', 'snappedEdges', 'startNodes', 'startCosts', 'gravity'],
+  retain: [
+    'accessibilityComplete',
+    'matrixCosts',
+    'converged',
+    'snappedEdges',
+    'startNodes',
+    'startCosts',
+    'gravity'
+  ],
   formulas: ['gpu-network.accessibility.gravity', 'gpu-network.snapping.nearest'],
   keySpaces: getSearchKeySpaces(roads, facilities.length),
   entityKeySpace: 'node',
@@ -76,6 +84,8 @@ const scenario: NetworkElementScenario = {
     const example = await runExample(context.device, {
       graph: context.graph,
       matrixCosts: matrix.costs,
+      matrixComplete: matrix.converged,
+      matrixCostLimit: matrix.matrix.props.costLimit,
       opportunityWeights,
       parameters,
       nodeCount: context.data.nodeCount
@@ -84,6 +94,7 @@ const scenario: NetworkElementScenario = {
       views: {
         matrixCosts: matrix.costs,
         converged: matrix.converged,
+        accessibilityComplete: example.complete!,
         gravity: example.gravity
       }
     };
@@ -91,6 +102,8 @@ const scenario: NetworkElementScenario = {
   capture(final) {
     if (final('converged').values[0] === 0)
       throw new Error('Network accessibility: the cost matrix did not converge');
+    if (final('accessibilityComplete').values[0] !== 1)
+      throw new Error('Network accessibility: incomplete matrix or scoring horizon');
     const positions = final('nodePositions');
     const gravity = final('gravity');
     const scores = Array.from(gravity.values);

@@ -21,6 +21,8 @@ export type PairwiseSumWGSLProps = {
  * WGSL statements that declare `var ${name}: f32`, the sum of `count` terms in a fixed pairwise
  * (cascade) order: term `i` is merged with the running blocks of equal size, as a binary counter
  * carries, and the at most 32 leftover blocks are folded from the smallest to the largest.
+ * Row-tile merges above 4096 tiles apply this order separately to consecutive groups of at most
+ * 4096 partials, then apply it again to the group totals in group order (see getRowTileMergeNodes).
  *
  * Why not a compensated sum: a float Kahan or Neumaier correction `(next - sum) - term` is zero
  * in real arithmetic, and the shader compiler of at least one supported GPU (Metal with fast

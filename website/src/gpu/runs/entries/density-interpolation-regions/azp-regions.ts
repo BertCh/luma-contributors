@@ -7,7 +7,7 @@
 
 import {
   getGPUAZPRegionsParameterValues,
-  GPU_AZP_STATUS,
+  GPU_AZP_STATUS_LAYOUT,
   GPUAZPRegions
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {defineOperationRun} from '../../define-run';
@@ -65,7 +65,7 @@ export default defineOperationRun({
         output: {
           labels: labels.view,
           objective: builder.allocate('objective', 'float32', 1).view,
-          status: builder.allocate('status', 'uint32', GPU_AZP_STATUS.length).view
+          status: builder.allocate('status', 'uint32', GPU_AZP_STATUS_LAYOUT.length).view
         }
       })
     );

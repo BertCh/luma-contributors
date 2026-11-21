@@ -19,9 +19,482 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {constructSamplingContributor} from '../point-process/validation-sampling-operation-test-utils';
 import fixtures from './spatial-cross-validation-operation-fixtures.json';
+import {
+  BLOCK_AUDIT_POSITIONS,
+  BLOCK_AUDIT_BLOCKS,
+  BLOCK_AUDIT_MASK,
+  BLOCK_AUDIT_EXPECTED
+} from './spatial-design-audit.test-utils';
+
+it.each([
+  'cpu',
+  'gpu'
+] as const)('W5-25 %s retains close standardized groups and constant columns', async form => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const standardize of [true, false]) {
+    for (const featureCount of [1, 2]) {
+      const low = Math.fround(0.1),
+        high = low + 2 ** -25;
+      const props: SpatialCrossValidationOperationProps = {
+        rowCount: 8,
+        positions: 'positions',
+        blocks: 'blocks',
+        foldCount: 3,
+        seed: 0,
+        design: {
+          mode: 'environmental',
+          features: 'features',
+          featureCount,
+          standardize,
+          diagnostics: 'diagnostics'
+        },
+        output: {
+          folds: 'folds',
+          training: 'training',
+          testing: 'testing',
+          counts: 'counts',
+          status: 'status'
+        }
+      };
+      const actual = await runOperationGraph(device, {
+        inputs: {
+          positions: {
+            format: 'float32x2',
+            values: Float32Array.from({length: 16}, (_, index) => (index % 2 === 0 ? index / 2 : 0))
+          },
+          blocks: {format: 'uint32', values: new Uint32Array(8)},
+          features: {
+            format: 'float32',
+            values: Float32Array.from(
+              [3, low, high, 3, 3, high, high, high].flatMap(value =>
+                featureCount === 1 ? [value] : [value, 7]
+              )
+            )
+          }
+        },
+        operations: [
+          form === 'cpu'
+            ? new CPUSpatialCrossValidationOperation(props)
+            : new GPUSpatialCrossValidationOperation(props)
+        ],
+        outputs: ['folds', 'training', 'testing', 'counts', 'status', 'diagnostics']
+      });
+      // Seeds 3, low, high give three constant clusters: SSE=0 and all 8 rows retained.
+      for (const [port, expected] of Object.entries({
+        folds: [0, 1, 2, 0, 0, 2, 2, 2],
+        counts: [5, 3, 0, 7, 1, 0, 4, 4, 0],
+        training: [0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0],
+        testing: [1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1],
+        status: [0, 0, 0],
+        diagnostics: [0, 2, 0, NaN]
+      }))
+        expect(
+          Array.from(actual[port]),
+          `${port}; standardized ${standardize}; columns ${featureCount}`
+        ).toEqual(expected);
+    }
+  }
+});
+
+it.each([
+  'cpu',
+  'gpu'
+] as const)('review B1/B2 %s retains residual centroids and tiny seed separations', async form => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixtures = [
+    {
+      features: [0, 1, 1 + 2 ** -23, 1 + 2 ** -22, 1 + 2 ** -22, 1 + 2 ** -22, 1 + 2 ** -21],
+      folds: [0, 2, 2, 1, 1, 1, 1],
+      counts: [6, 1, 0, 3, 4, 0, 5, 2, 0],
+      objective: 7 * 2 ** -47
+    },
+    {
+      features: [0, 2 ** -78, 1, 0, 2 ** -78, 1],
+      folds: [0, 2, 1, 0, 2, 1],
+      counts: [4, 2, 0, 4, 2, 0, 4, 2, 0],
+      objective: 0
+    }
+  ];
+  for (const fixture of fixtures) {
+    for (const standardize of [false, true]) {
+      const rows = fixture.features.length;
+      const props: SpatialCrossValidationOperationProps = {
+        rowCount: rows,
+        positions: 'positions',
+        blocks: 'blocks',
+        foldCount: 3,
+        seed: 0,
+        design: {
+          mode: 'environmental',
+          features: 'features',
+          featureCount: 1,
+          standardize,
+          diagnostics: 'diagnostics'
+        },
+        output: {
+          folds: 'folds',
+          training: 'training',
+          testing: 'testing',
+          counts: 'counts',
+          status: 'status'
+        }
+      };
+      const actual = await runOperationGraph(device, {
+        inputs: {
+          positions: {
+            format: 'float32x2',
+            values: Float32Array.from({length: rows * 2}, (_, index) =>
+              index % 2 === 0 ? index / 2 : 0
+            )
+          },
+          blocks: {format: 'uint32', values: new Uint32Array(rows)},
+          features: {format: 'float32', values: Float32Array.from(fixture.features)}
+        },
+        operations: [
+          form === 'cpu'
+            ? new CPUSpatialCrossValidationOperation(props)
+            : new GPUSpatialCrossValidationOperation(props)
+        ],
+        outputs: ['folds', 'training', 'testing', 'counts', 'status', 'diagnostics']
+      });
+      // Hand Lloyd means: (0,1+2.5u,1+.5u), SSE=3.5u²; tiny fixture has three constant groups.
+      expect(Array.from(actual['folds'])).toEqual(fixture.folds);
+      expect(Array.from(actual['counts'])).toEqual(fixture.counts);
+      expect(Array.from(actual['status'])).toEqual([0, 0, 0]);
+      expect(actual['diagnostics'][0]).toBe(0);
+      expect(Number.isFinite(actual['diagnostics'][2])).toBe(true);
+      if (!standardize)
+        expect(Math.abs(actual['diagnostics'][2] - fixture.objective)).toBeLessThanOrEqual(
+          fixture.objective * 2e-6
+        );
+      for (let fold = 0; fold < 3; fold++) {
+        expect(Array.from(actual['testing'].slice(fold * rows, (fold + 1) * rows))).toEqual(
+          fixture.folds.map(value => Number(value === fold))
+        );
+        expect(Array.from(actual['training'].slice(fold * rows, (fold + 1) * rows))).toEqual(
+          fixture.folds.map(value => Number(value !== fold))
+        );
+      }
+    }
+  }
+});
+
+it.each([
+  'cpu',
+  'gpu'
+] as const)('review 2 R1 %s preserves three distinct packed environmental groups', async form => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const [low, high] of [
+    [1, 1 + 2 ** -22],
+    [1 + 2 ** -21, 10 + 2 ** -20]
+  ]) {
+    const props: SpatialCrossValidationOperationProps = {
+      rowCount: 8,
+      positions: 'positions',
+      blocks: 'blocks',
+      foldCount: 3,
+      seed: 0,
+      design: {
+        mode: 'environmental',
+        features: 'features',
+        featureCount: 1,
+        standardize: false,
+        diagnostics: 'diagnostics'
+      },
+      output: {
+        folds: 'folds',
+        training: 'training',
+        testing: 'testing',
+        counts: 'counts',
+        status: 'status'
+      }
+    };
+    const actual = await runOperationGraph(device, {
+      inputs: {
+        positions: {
+          format: 'float32x2',
+          values: Float32Array.from({length: 16}, (_, index) => (index % 2 === 0 ? index / 2 : 0))
+        },
+        blocks: {format: 'uint32', values: new Uint32Array(8)},
+        features: {
+          format: 'float32',
+          values: Float32Array.of(10, low, high, low, high, 10, low, high)
+        }
+      },
+      operations: [
+        form === 'cpu'
+          ? new CPUSpatialCrossValidationOperation(props)
+          : new GPUSpatialCrossValidationOperation(props)
+      ],
+      outputs: ['folds', 'training', 'testing', 'counts', 'status', 'diagnostics']
+    });
+    // Three distinct constant-value groups: their fitted means reproduce every value,
+    // hence SSE=0. Farthest-first seed order is 10, low, high; buffers have radius zero.
+    for (const [port, expected] of Object.entries({
+      folds: [0, 1, 2, 1, 2, 0, 1, 2],
+      training: [0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0],
+      testing: [1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1],
+      counts: [6, 2, 0, 5, 3, 0, 5, 3, 0],
+      status: [0, 0, 0],
+      diagnostics: [0, 2, 0, NaN]
+    }))
+      expect(
+        Array.from(actual[port]),
+        `${port}; low ${low}; high ${high}; diagnostics ${Array.from(actual['diagnostics'])}`
+      ).toEqual(expected);
+  }
+});
+
+it.each([
+  'cpu',
+  'gpu'
+] as const)('R8 %s environmental folds preserve a representable translation without standardization', async form => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const shift of [0, 500000, -500000]) {
+    const props: SpatialCrossValidationOperationProps = {
+      rowCount: 8,
+      positions: 'positions',
+      blocks: 'blocks',
+      foldCount: 2,
+      seed: 0,
+      design: {
+        mode: 'environmental',
+        features: 'features',
+        featureCount: 1,
+        standardize: false,
+        diagnostics: 'diagnostics'
+      },
+      output: {
+        folds: 'folds',
+        training: 'training',
+        testing: 'testing',
+        counts: 'counts',
+        status: 'status'
+      }
+    };
+    const actual = await runOperationGraph(device, {
+      inputs: {
+        positions: {
+          format: 'float32x2',
+          values: Float32Array.from({length: 16}, (_, index) => (index % 2 === 0 ? index / 2 : 0))
+        },
+        blocks: {format: 'uint32', values: new Uint32Array(8)},
+        features: {
+          format: 'float32',
+          values: Float32Array.from([0, 1, 2, 5, 6, 7, 9, 11], value => shift + value / 32)
+        }
+      },
+      operations: [
+        form === 'cpu'
+          ? new CPUSpatialCrossValidationOperation(props)
+          : new GPUSpatialCrossValidationOperation(props)
+      ],
+      outputs: ['folds', 'training', 'testing', 'counts', 'status', 'diagnostics']
+    });
+    // Stable centers 2/32 and 8.25/32; hand SSE=(14+14.75)/1024.
+    for (const [port, expected] of Object.entries({
+      folds: [0, 0, 0, 0, 1, 1, 1, 1],
+      training: [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+      testing: [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
+      counts: [4, 4, 0, 4, 4, 0],
+      status: [0, 0],
+      diagnostics: [0, 2, 0.028076171875, NaN]
+    }))
+      expect(Array.from(actual[port]), `${port} shift ${shift}`).toEqual(expected);
+  }
+});
+
+it('R8 GPU centering overflow reports arithmetic failure without dropping finite rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: SpatialCrossValidationOperationProps = {
+    rowCount: 8,
+    positions: 'positions',
+    blocks: 'blocks',
+    foldCount: 2,
+    seed: 0,
+    design: {
+      mode: 'environmental',
+      features: 'features',
+      featureCount: 1,
+      standardize: false,
+      diagnostics: 'diagnostics'
+    },
+    output: {
+      folds: 'folds',
+      training: 'training',
+      testing: 'testing',
+      counts: 'counts',
+      status: 'status'
+    }
+  };
+  const actual = await runOperationGraph(device, {
+    inputs: {
+      positions: {
+        format: 'float32x2',
+        values: Float32Array.from({length: 16}, (_, index) => (index % 2 === 0 ? index / 2 : 0))
+      },
+      blocks: {format: 'uint32', values: new Uint32Array(8)},
+      features: {
+        format: 'float32',
+        values: Float32Array.of(-3e38, -3e38, -3e38, -3e38, 3e38, 3e38, 3e38, 3e38)
+      }
+    },
+    operations: [new GPUSpatialCrossValidationOperation(props)],
+    outputs: ['folds', 'training', 'testing', 'counts', 'status', 'diagnostics']
+  });
+  // All raw features are finite, but differences overflow. Omitting the overflowed
+  // rows would give an infeasible constant cluster (status 2), rather than arithmetic status 1.
+  for (const [port, expected] of Object.entries({
+    folds: new Array(8).fill(0xffffffff),
+    training: new Array(16).fill(0),
+    testing: new Array(16).fill(0),
+    counts: [0, 0, 0, 0, 0, 0],
+    status: [3, 3],
+    diagnostics: [1, 0, NaN, NaN]
+  }))
+    expect(Array.from(actual[port]), port).toEqual(expected);
+});
+
+it.each([
+  'cpu',
+  'gpu'
+] as const)('R2 %s NNDM excludes the explicit buffer beyond its matched radius', async form => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: SpatialCrossValidationOperationProps = {
+    rowCount: 8,
+    positions: 'positions',
+    blocks: 'blocks',
+    foldCount: 8,
+    bufferDistance: 3,
+    design: {
+      mode: 'nndm',
+      predictionPositions: 'predictionPositions',
+      predictionRowCount: 1,
+      maximumDistance: 0,
+      diagnostics: 'diagnostics'
+    },
+    output: {
+      folds: 'folds',
+      training: 'training',
+      testing: 'testing',
+      counts: 'counts',
+      status: 'status'
+    }
+  };
+  const actual = await runOperationGraph(device, {
+    inputs: {
+      positions: {
+        format: 'float32x2',
+        values: Float32Array.from({length: 16}, (_, index) => (index % 2 === 0 ? index / 2 : 0))
+      },
+      blocks: {format: 'uint32', values: new Uint32Array(8)},
+      predictionPositions: {format: 'float32x2', values: Float32Array.of(0, 0)}
+    },
+    operations: [
+      form === 'cpu'
+        ? new CPUSpatialCrossValidationOperation(props)
+        : new GPUSpatialCrossValidationOperation(props)
+    ],
+    outputs: ['folds', 'training', 'testing', 'counts', 'status', 'diagnostics']
+  });
+  // Hand oracle: each fold tests its row; matched radius=1, explicit buffer=3,
+  // so training is exactly |row-fold|>3. All eight diagnostic radii remain 1.
+  const expected = {
+    folds: [0, 1, 2, 3, 4, 5, 6, 7],
+    training: [
+      0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+      1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0,
+      0, 0
+    ],
+    testing: [
+      1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+      0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+      0, 1
+    ],
+    counts: [4, 1, 3, 3, 1, 4, 2, 1, 5, 1, 1, 6, 1, 1, 6, 2, 1, 5, 3, 1, 4, 4, 1, 3],
+    status: [0, 0, 0, 0, 0, 0, 0, 0],
+    diagnostics: [0, 0, NaN, NaN, 1, 1, 1, 1, 1, 1, 1, 1]
+  };
+  for (const [port, values] of Object.entries(expected))
+    expect(Array.from(actual[port]), port).toEqual(values);
+});
+
+it.each([
+  'cpu',
+  'gpu'
+] as const)('captures the %s fold operation before caller mutation and keeps every SciPy oracle port', async form => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: SpatialCrossValidationOperationProps = {
+    id: 'captured-fold-operation',
+    rowCount: 8,
+    positions: 'positions',
+    blocks: 'blocks',
+    mask: 'mask',
+    foldCount: 2,
+    seed: 0,
+    bufferDistance: 0,
+    design: {
+      mode: 'environmental',
+      features: 'features',
+      featureCount: 1,
+      standardize: false,
+      maximumIterations: 2,
+      diagnostics: 'diagnostics'
+    },
+    output: {
+      folds: 'folds',
+      training: 'training',
+      testing: 'testing',
+      counts: 'counts',
+      status: 'status'
+    }
+  };
+  const operation =
+    form === 'gpu'
+      ? new GPUSpatialCrossValidationOperation(props)
+      : new CPUSpatialCrossValidationOperation(props);
+  props.rowCount = 1;
+  props.bufferDistance = -1;
+  props.mask = undefined;
+  if (props.design?.mode === 'environmental') {
+    props.design.featureCount = 2;
+    props.design.maximumIterations = 1;
+  }
+  props.output.folds = 'changed';
+  const actual = await runOperationGraph(device, {
+    inputs: {
+      positions: {
+        format: 'float32x2',
+        values: Float32Array.from([0, 0, 1, 0, 2, 0, 3, 0, 10, 0, 11, 0, 12, 0, 13, 0])
+      },
+      blocks: {format: 'uint32', values: new Uint32Array(8)},
+      mask: {format: 'uint32', values: new Uint32Array(8).fill(1)},
+      features: {format: 'float32', values: Float32Array.from([0, 1, 1, 2, 10, 11, 11, 12])}
+    },
+    operations: [operation],
+    outputs: ['folds', 'training', 'testing', 'counts', 'status', 'diagnostics']
+  });
+  // spatial-design-audit.oracle.py, SciPy vq at the two stable means: squared error 4.
+  for (const [port, expected] of Object.entries({
+    folds: [0, 0, 0, 0, 1, 1, 1, 1],
+    training: [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+    testing: [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
+    counts: [4, 4, 0, 4, 4, 0],
+    status: [0, 0],
+    diagnostics: [0, 2, 4, NaN]
+  }))
+    expect(Array.from(actual[port]), port).toEqual(expected);
+});
 
 for (const mode of [
   'blocks',
@@ -163,8 +636,132 @@ for (const mode of [
       else if (mode === 'nndm')
         expect(Array.from(cpu['counts'])).toEqual([0, 1, 3, 0, 1, 3, 0, 1, 3, 1, 1, 2]);
       else expect(new Set(cpu['folds']).size).toBe(props.foldCount);
+      if (!empty && (mode === 'environmental' || mode === 'knndm')) {
+        // Compare the GPU directly with the independent SciPy/NumPy fixture on every port.
+        for (const [port, expected] of Object.entries({
+          folds: fixture.expectedFolds,
+          training: fixture.expectedTraining,
+          testing: fixture.expectedTesting,
+          counts: fixture.expectedCounts,
+          status: fixture.expectedStatus
+        }))
+          expect(Array.from(gpu[port]), port).toEqual(expected);
+        const expectedObjective =
+          mode === 'environmental'
+            ? fixtures.environmental.objective
+            : fixtures.knndm.objectives[fixtures.knndm.selected]!;
+        expect(Number.isFinite(gpu['diagnostics'][2])).toBe(true);
+        expect(Math.abs(gpu['diagnostics'][2] - expectedObjective)).toBeLessThanOrEqual(
+          2e-6 + 2e-5 * Math.abs(expectedObjective)
+        );
+      }
     });
   }
+
+it('audit-validation environmental iteration budgets match the independent two-step fixture', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const inputs = {
+    positions: {
+      format: 'float32x2' as const,
+      values: new Float32Array([0, 0, 1, 0, 2, 0, 3, 0, 10, 0, 11, 0, 12, 0, 13, 0, 99, 0])
+    },
+    blocks: {format: 'uint32' as const, values: new Uint32Array(9)},
+    mask: {format: 'uint32' as const, values: new Uint32Array([1, 1, 1, 1, 1, 1, 1, 1, 0])},
+    features: {
+      format: 'float32' as const,
+      values: new Float32Array([0, 1, 1, 2, 10, 11, 11, 12, 99])
+    }
+  };
+  for (const maximumIterations of [1, 2]) {
+    const props: SpatialCrossValidationOperationProps = {
+      rowCount: 9,
+      positions: 'positions',
+      blocks: 'blocks',
+      mask: 'mask',
+      foldCount: 2,
+      design: {
+        mode: 'environmental',
+        features: 'features',
+        featureCount: 1,
+        standardize: false,
+        maximumIterations,
+        diagnostics: 'diagnostics'
+      },
+      output: {
+        folds: 'folds',
+        training: 'training',
+        testing: 'testing',
+        counts: 'counts',
+        status: 'status'
+      }
+    };
+    const actual = await runOperationGraph(device, {
+      inputs,
+      operations: [new GPUSpatialCrossValidationOperation(props)],
+      outputs: [...Object.values(props.output), 'diagnostics']
+    });
+    const converged = maximumIterations === 2;
+    // spatial-design-audit.oracle.py: all arithmetic is exact on these dyadic inputs.
+    expect(Array.from(actual['diagnostics'])).toEqual([
+      converged ? 0 : 3,
+      maximumIterations,
+      converged ? 4 : 12,
+      NaN
+    ]);
+    expect(Array.from(actual['folds'])).toEqual(
+      converged ? [0, 0, 0, 0, 1, 1, 1, 1, 0xffffffff] : new Array(9).fill(0xffffffff)
+    );
+    expect(Array.from(actual['training'])).toEqual(
+      converged ? [0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0] : new Array(18).fill(0)
+    );
+    expect(Array.from(actual['testing'])).toEqual(
+      converged ? [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0] : new Array(18).fill(0)
+    );
+    expect(Array.from(actual['counts'])).toEqual(
+      converged ? [4, 4, 0, 4, 4, 0] : [0, 0, 0, 0, 0, 0]
+    );
+    expect(Array.from(actual['status'])).toEqual(converged ? [0, 0] : [3, 3]);
+  }
+});
+
+it('audit-validation GPU block folds match exact Philox and inclusive SciPy buffer masks', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props: SpatialCrossValidationOperationProps = {
+    rowCount: 9,
+    positions: 'positions',
+    blocks: 'blocks',
+    mask: 'mask',
+    foldCount: 4,
+    seed: 1234,
+    bufferDistance: 1,
+    output: {
+      folds: 'folds',
+      training: 'training',
+      testing: 'testing',
+      counts: 'counts',
+      status: 'status'
+    }
+  };
+  for (const shift of [0, 32]) {
+    const actual = await runOperationGraph(device, {
+      inputs: {
+        positions: {
+          format: 'float32x2',
+          values: Float32Array.from(BLOCK_AUDIT_POSITIONS, value => value + shift)
+        },
+        blocks: {format: 'uint32', values: Uint32Array.from(BLOCK_AUDIT_BLOCKS)},
+        mask: {format: 'uint32', values: Uint32Array.from(BLOCK_AUDIT_MASK)}
+      },
+      operations: [new GPUSpatialCrossValidationOperation(props)],
+      outputs: Object.values(props.output)
+    });
+    // Distances 0 and exactly 1 are excluded, on either translated copy.
+    for (const [port, expected] of Object.entries(BLOCK_AUDIT_EXPECTED))
+      expect(Array.from(actual[port]), port).toEqual(expected);
+  }
+});
 
 it('keeps the last GPU-supported candidate index in range and rejects the reported excessive count', async () => {
   const device = await getWebGPUTestDevice();

@@ -40,6 +40,8 @@ import {
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
+import {validateGeometryFloat32Setting} from './float32-setting-validation';
+
 const OPERATION = 'GPUGeometryCleanup';
 
 /** Number of float32 elements in a `GPUGeometryCleanup` parameter buffer. */
@@ -85,9 +87,8 @@ export function getGPUGeometryCleanupParameterValues(
   }
   const gridSize = settings.gridSize ?? 0;
   const tolerance = settings.tolerance ?? 0;
-  if (!Number.isFinite(gridSize) || !Number.isFinite(tolerance) || gridSize < 0 || tolerance < 0) {
-    throw new Error('Geometry cleanup gridSize and tolerance must be finite and non-negative');
-  }
+  validateGeometryFloat32Setting(OPERATION, 'gridSize', gridSize, true, true);
+  validateGeometryFloat32Setting(OPERATION, 'tolerance', tolerance, true, true);
   target.set([gridSize, tolerance, settings.removeRepeatedPoints === false ? 0 : 1, 0]);
   return target;
 }
@@ -229,9 +230,12 @@ export type GPUGeometryCleanupProps = GPUGeometryCleanupSharedProps &
  * affected flags. Both paths give bitwise identical output at `tolerance = 0`. Positions with
  * subnormal differences are outside this guarantee if the device flushes subnormals.
  *
- * Precision: f32. Snapping computes `floor(x / gridSize + 0.5) * gridSize`, exact for
- * `|x / gridSize| < 2^24`; ties in f32 may differ from the f64 GEOS decision for grid sizes that are
- * not powers of two.
+ * Precision: f32. When the computed float32 quotient has magnitude strictly below 2^24,
+ * snapping certifies half-cell boundaries against the original packed coordinate and spacing,
+ * with exact half ties toward positive infinity. At or above that magnitude it uses the
+ * rounded quotient's half-up candidate without original-operand certification. The final
+ * cell-times-spacing product also rounds to f32. These decisions use packed f32 operands,
+ * which can differ from the f64 operands used by GEOS; overflow reports capacity, not precision.
  */
 export class GPUGeometryCleanup implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */

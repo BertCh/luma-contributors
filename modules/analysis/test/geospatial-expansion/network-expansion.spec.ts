@@ -333,7 +333,7 @@ it('cell-flow recipe conserves arbitrary OD totals and matches H3 shared boundar
       origins: input([0, 0, 1, 0, 0, 5], 'uint32'),
       destinations: input([1, 1, 0, 2, 0, 1], 'uint32'),
       values: input([2, 3, 4, 7, 11, 17], 'float32'),
-      outputs: {
+      output: {
         outgoingTotals: outgoing.view,
         incomingTotals: incoming.view,
         edgeFlows: edgeFlows.view,

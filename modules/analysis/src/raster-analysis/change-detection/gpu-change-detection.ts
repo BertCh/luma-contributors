@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -29,6 +30,7 @@ import {validateRasterParameters} from '../raster-band-utils';
 import {GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from './change-detection-parameters';
 import {ERFC_VALUE_WGSL, GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {NAN_WGSL, STUDENT_T_WGSL} from './change-detection-wgsl';
+import type {RasterAlgebraAtLeastOne} from '../raster-algebra/raster-algebra-output';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
@@ -57,42 +59,43 @@ export type GPUChangeDetectionSignificanceSource = 't-test' | 'mann-kendall';
  * enough valid slices write NaN (float outputs), 0 (`mannKendallS`, `significance`) or
  * `0xffffffff` (the multiband direction code).
  */
-export type GPUChangeDetectionOutput<Rows extends RasterTimeSeriesScalarView = GraphDataView> = {
-  /** `after - before`; NaN when either slice is NaN. */
-  difference?: RasterTimeSeriesView<'float32', Rows>;
-  /** `ln((after + epsilon) / (before + epsilon))`; NaN when either side is `<= -epsilon`. */
-  logRatio?: RasterTimeSeriesView<'float32', Rows>;
-  /** `100 * (after - before) / |before|`; NaN when `before` is 0. */
-  percentChange?: RasterTimeSeriesView<'float32', Rows>;
-  /** Welch t statistic `(mean(after group) - mean(before group)) / se`. Single band only. */
-  tStatistic?: RasterTimeSeriesView<'float32', Rows>;
-  /** Welch-Satterthwaite degrees of freedom. Single band only. */
-  tDegreesOfFreedom?: RasterTimeSeriesView<'float32', Rows>;
-  /** Two-sided Student-t p-value of the Welch statistic. Single band only. */
-  tPValue?: RasterTimeSeriesView<'float32', Rows>;
-  /** Theil-Sen slope: median of `(x_j - x_i) / (j - i)` over valid slice pairs. Single band only. */
-  senSlope?: RasterTimeSeriesView<'float32', Rows>;
-  /** Mann-Kendall S statistic, integer exact. Single band only. */
-  mannKendallS?: RasterTimeSeriesView<'sint32', Rows>;
-  /** Tie-corrected Mann-Kendall Z with continuity correction. Single band only. */
-  mannKendallZ?: RasterTimeSeriesView<'float32', Rows>;
-  /** Two-sided normal p-value of the Mann-Kendall Z. Single band only. */
-  mannKendallP?: RasterTimeSeriesView<'float32', Rows>;
-  /** Euclidean norm of the band difference vector. Requires `bandCount >= 2`. */
-  changeMagnitude?: RasterTimeSeriesView<'float32', Rows>;
-  /**
-   * Change direction. Float32 `atan2(d1, d0)` in radians (0 for a zero vector) when `bandCount`
-   * is 2; uint32 sign-pattern code when `bandCount` is 3 to 16: bit `b` is set when band `b`
-   * increased and bit `16 + b` when it decreased.
-   */
-  changeDirection?: RasterTimeSeriesView<'float32', Rows> | RasterTimeSeriesView<'uint32', Rows>;
-  /**
-   * Class per cell: 0 no significant change (or not computable), 1 significant increase, 2
-   * significant decrease. Increase and decrease follow the sign of the t statistic or of
-   * Mann-Kendall S. Single band only; see `significanceSource`.
-   */
-  significance?: RasterTimeSeriesView<'uint32', Rows>;
-};
+export type GPUChangeDetectionOutput<Rows extends RasterTimeSeriesScalarView = GraphDataView> =
+  RasterAlgebraAtLeastOne<{
+    /** `after - before`; NaN when either slice is NaN. */
+    difference?: RasterTimeSeriesView<'float32', Rows>;
+    /** `ln((after + epsilon) / (before + epsilon))`; NaN when either side is `<= -epsilon`. */
+    logRatio?: RasterTimeSeriesView<'float32', Rows>;
+    /** `100 * (after - before) / |before|`; NaN when `before` is 0. */
+    percentChange?: RasterTimeSeriesView<'float32', Rows>;
+    /** Welch t statistic `(mean(after group) - mean(before group)) / se`. Single band only. */
+    tStatistic?: RasterTimeSeriesView<'float32', Rows>;
+    /** Welch-Satterthwaite degrees of freedom. Single band only. */
+    tDegreesOfFreedom?: RasterTimeSeriesView<'float32', Rows>;
+    /** Two-sided Student-t p-value of the Welch statistic. Single band only. */
+    tPValue?: RasterTimeSeriesView<'float32', Rows>;
+    /** Theil-Sen slope: median of `(x_j - x_i) / (j - i)` over valid slice pairs. Single band only. */
+    senSlope?: RasterTimeSeriesView<'float32', Rows>;
+    /** Mann-Kendall S statistic, integer exact. Single band only. */
+    mannKendallS?: RasterTimeSeriesView<'sint32', Rows>;
+    /** Tie-corrected Mann-Kendall Z with continuity correction. Single band only. */
+    mannKendallZ?: RasterTimeSeriesView<'float32', Rows>;
+    /** Two-sided normal p-value of the Mann-Kendall Z. Single band only. */
+    mannKendallP?: RasterTimeSeriesView<'float32', Rows>;
+    /** Euclidean norm of the band difference vector. Requires `bandCount >= 2`. */
+    changeMagnitude?: RasterTimeSeriesView<'float32', Rows>;
+    /**
+     * Change direction. Float32 `atan2(d1, d0)` in radians (0 for a zero vector) when `bandCount`
+     * is 2; uint32 sign-pattern code when `bandCount` is 3 to 16: bit `b` is set when band `b`
+     * increased and bit `16 + b` when it decreased.
+     */
+    changeDirection?: RasterTimeSeriesView<'float32', Rows> | RasterTimeSeriesView<'uint32', Rows>;
+    /**
+     * Class per cell: 0 no significant change (or not computable), 1 significant increase, 2
+     * significant decrease. Increase and decrease follow the sign of the t statistic or of
+     * Mann-Kendall S. Single band only; see `significanceSource`.
+     */
+    significance?: RasterTimeSeriesView<'uint32', Rows>;
+  }>;
 
 /**
  * Properties for {@link GPUChangeDetection}.
@@ -205,6 +208,37 @@ export class GPUChangeDetection<Rows extends RasterTimeSeriesScalarView = GraphD
   private readonly ticksPerYear: number;
 
   constructor(props: GPUChangeDetectionProps<Rows> & {slices: Rows}) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'slices',
+      'parameters',
+      'cellCount',
+      'sliceCount',
+      'bandCount',
+      'mask',
+      'observationMask',
+      'significanceSource',
+      'dateAxis',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...props,
+      output: snapshotConstructionFields(props.output ?? {}, [
+        'difference',
+        'logRatio',
+        'percentChange',
+        'tStatistic',
+        'tDegreesOfFreedom',
+        'tPValue',
+        'senSlope',
+        'mannKendallS',
+        'mannKendallZ',
+        'mannKendallP',
+        'changeMagnitude',
+        'changeDirection',
+        'significance'
+      ])
+    });
     this.id = props.id ?? 'change-detection';
     this.props = props;
     const id = this.id;

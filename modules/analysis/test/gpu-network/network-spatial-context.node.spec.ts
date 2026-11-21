@@ -28,7 +28,10 @@ import {
   GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH,
   GPUNetworkLineGraph
 } from '../../src/gpu-network/network-line-graph/index';
-import {GPUNetworkNoding} from '../../src/gpu-network/network-noding/index';
+import {
+  GPUNetworkNoding,
+  type GPUNetworkNodingProps
+} from '../../src/gpu-network/network-noding/index';
 import {createNullWebGPUDevice, getParsedKernelSources} from '../utils/gpu-contributor-test-utils';
 import {
   getLineGraphEdgeDirections,
@@ -54,7 +57,9 @@ function expectDistanceFrames(
   createContributor: (spatialContext: GPUSpatialContext) => {spatialContext: GPUSpatialContext}
 ): void {
   expect(EQUIDISTANT.units).toBe('meters');
-  expect(createContributor(EQUIDISTANT).spatialContext).toBe(EQUIDISTANT);
+  // Construction captures value metadata. Resource identity is retained, while a spatial
+  // descriptor may be copied so later caller edits cannot change a compiled contributor.
+  expect(createContributor(EQUIDISTANT).spatialContext).toStrictEqual(EQUIDISTANT);
   expect(() => createContributor(EQUAL_AREA)).toThrow(
     `${id} measures distance; project into an azimuthal-equidistant frame, not lambert-equal-area`
   );
@@ -68,6 +73,47 @@ function createView<Format extends 'uint32' | 'float32' | 'float32x2' | 'float32
   length: number
 ) {
   return createTransientView(graph, `view-${serial++}`, format, length);
+}
+
+function createNodingProps(graph: GPUCommandGraph): GPUNetworkNodingProps {
+  const pieceCapacity = 8;
+  const nodeCapacity = 8;
+  return {
+    id: 'noding',
+    lines: {
+      kind: 'lines',
+      positions: createView(graph, 'float32x2', 8),
+      lineOffsets: createView(graph, 'uint32', 4)
+    },
+    intersectionCapacity: 16,
+    tolerance: createView(graph, 'float32', 1),
+    output: {
+      pieces: {
+        geometry: {
+          kind: 'lines',
+          positions: createView(graph, 'float32x2', 32),
+          lineOffsets: createView(graph, 'uint32', pieceCapacity + 1)
+        },
+        sourceIds: createView(graph, 'uint32', pieceCapacity),
+        status: {count: createView(graph, 'uint32', 1), overflow: createView(graph, 'uint32', 1)}
+      },
+      nodes: {
+        positions: createView(graph, 'float32x2', nodeCapacity),
+        status: {count: createView(graph, 'uint32', 1)}
+      },
+      edges: {
+        fromNodes: createView(graph, 'uint32', pieceCapacity),
+        toNodes: createView(graph, 'uint32', pieceCapacity),
+        lengths: createView(graph, 'float32', pieceCapacity)
+      },
+      topology: {
+        offsets: createView(graph, 'uint32', nodeCapacity + 1),
+        neighbors: createView(graph, 'uint32', pieceCapacity * 2),
+        weights: createView(graph, 'float32', pieceCapacity * 2)
+      },
+      status: {overflow: createView(graph, 'uint32', 1)}
+    }
+  };
 }
 
 // Reference values from python3 -I with the math module, R = 6371008.8 m:
@@ -195,7 +241,7 @@ describe('network contributor spatial contexts', () => {
       id: 'kilometers',
       spatialContext: KILOMETERS
     });
-    expect(kilometers.spatialContext).toBe(KILOMETERS);
+    expect(kilometers.spatialContext).toStrictEqual(KILOMETERS);
     expect(kilometers.getCommandNodes(graph).map(node => node.id)).toContain('kilometers-scan');
     // The BVH candidate path passes the context to GPUNearestFeatureJoin (great-circle search).
     const joined = new GPUNetworkSnapping({
@@ -314,7 +360,7 @@ describe('network contributor spatial contexts', () => {
       id: 'kilometers',
       spatialContext: KILOMETERS
     });
-    expect(kilometers.spatialContext).toBe(KILOMETERS);
+    expect(kilometers.spatialContext).toStrictEqual(KILOMETERS);
     expect(kilometers.getCommandNodes(graph).length).toBeGreaterThan(0);
     const kFunction = new GPUNetworkKFunction({...props, spatialContext: GREAT_CIRCLE});
     expect(kFunction.spatialContext).toEqual(GREAT_CIRCLE);
@@ -369,7 +415,7 @@ describe('network contributor spatial contexts', () => {
       id: 'kilometers',
       spatialContext: KILOMETERS
     });
-    expect(kilometers.spatialContext).toBe(KILOMETERS);
+    expect(kilometers.spatialContext).toStrictEqual(KILOMETERS);
     expect(kilometers.getCommandNodes(graph).length).toBeGreaterThan(0);
     const lineGraph = new GPUNetworkLineGraph({...props, spatialContext: GREAT_CIRCLE});
     expect(lineGraph.spatialContext).toEqual(GREAT_CIRCLE);
@@ -386,58 +432,17 @@ describe('network contributor spatial contexts', () => {
   it('GPUNetworkNoding is planar only', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     expect(
-      () =>
-        new GPUNetworkNoding({
-          spatialContext: GREAT_CIRCLE,
-          tolerance: createView(graph, 'float32', 1)
-        } as never)
+      () => new GPUNetworkNoding({...createNodingProps(graph), spatialContext: GREAT_CIRCLE})
     ).toThrow(/does not support longitude-latitude coordinates; project positions to a planar/);
   });
 
   it('GPUNetworkNoding reduces the snap origin before keying end points', () => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
-    const pieceCapacity = 8;
-    const nodeCapacity = 8;
-    const noding = new GPUNetworkNoding({
-      id: 'noding',
-      lines: {
-        kind: 'lines',
-        positions: createView(graph, 'float32x2', 8),
-        lineOffsets: createView(graph, 'uint32', 4)
-      },
-      intersectionCapacity: 16,
-      tolerance: createView(graph, 'float32', 1),
-      output: {
-        pieces: {
-          geometry: {
-            kind: 'lines',
-            positions: createView(graph, 'float32x2', 32),
-            lineOffsets: createView(graph, 'uint32', pieceCapacity + 1)
-          },
-          sourceIds: createView(graph, 'uint32', pieceCapacity),
-          status: {count: createView(graph, 'uint32', 1), overflow: createView(graph, 'uint32', 1)}
-        },
-        nodes: {
-          positions: createView(graph, 'float32x2', nodeCapacity),
-          status: {count: createView(graph, 'uint32', 1)}
-        },
-        edges: {
-          fromNodes: createView(graph, 'uint32', pieceCapacity),
-          toNodes: createView(graph, 'uint32', pieceCapacity),
-          lengths: createView(graph, 'float32', pieceCapacity)
-        },
-        topology: {
-          offsets: createView(graph, 'uint32', nodeCapacity + 1),
-          neighbors: createView(graph, 'uint32', pieceCapacity * 2),
-          weights: createView(graph, 'float32', pieceCapacity * 2)
-        },
-        status: {overflow: createView(graph, 'uint32', 1)}
-      }
+    const noding = new GPUNetworkNoding(createNodingProps(graph));
+    expectDistanceFrames('noding', spatialContext => {
+      const contextGraph = new GPUCommandGraph(createNullWebGPUDevice());
+      return new GPUNetworkNoding({...createNodingProps(contextGraph), spatialContext});
     });
-    expectDistanceFrames(
-      'noding',
-      spatialContext => new GPUNetworkNoding({...noding.props, spatialContext})
-    );
     expect(() => new GPUNetworkNoding({...noding.props, spatialContext: KILOMETERS})).toThrow(
       /does not support longitude-latitude/
     );
@@ -462,7 +467,9 @@ describe('network contributor spatial contexts', () => {
       output: {paths: createView(graph, 'float32x2', 6 * 16)}
     };
     for (const spatialContext of [EQUIDISTANT, EQUAL_AREA, KILOMETERS]) {
-      expect(new GPUEdgeBundling({...props, spatialContext}).spatialContext).toBe(spatialContext);
+      expect(new GPUEdgeBundling({...props, spatialContext}).spatialContext).toStrictEqual(
+        spatialContext
+      );
     }
     const getCoordinateSpace = (bundling: GPUEdgeBundling) =>
       bundling.spatialContext.coordinateSpace;
@@ -544,7 +551,7 @@ describe('network contributor spatial contexts', () => {
     ).toThrow(/raster needs planar positions/);
     expect(
       new GPUNetworkIsochrones({...props, cellOutline, spatialContext: KILOMETERS}).spatialContext
-    ).toBe(KILOMETERS);
+    ).toStrictEqual(KILOMETERS);
     expect(
       new GPUNetworkIsochrones({...props, raster, spatialContext: PLANAR}).spatialContext
     ).toEqual(PLANAR);

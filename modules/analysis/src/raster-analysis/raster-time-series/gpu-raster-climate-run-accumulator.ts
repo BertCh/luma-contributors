@@ -19,6 +19,8 @@ import {
 } from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateGraphPorts,
+  validateOption,
   validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
@@ -29,6 +31,15 @@ import {
   MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT,
   getGPURasterFixedPointUnitExponent
 } from './gpu-raster-streaming-accumulator';
+import {
+  validateRasterStreamFrame,
+  validateRasterStreamParameterTarget,
+  validateRasterStreamEncodingPlan,
+  validateRasterStreamHeadroom,
+  getRasterStreamPositiveFloat,
+  validateRasterStreamPlanFrame,
+  type GPURasterStreamFrameSettings
+} from './raster-stream-parameters';
 import {FIXED_POINT_WGSL} from '../../analysis-core/kernels/fixed-point-accumulator';
 
 /** Comparison of a sample against the threshold; missing samples never match it. */
@@ -41,29 +52,106 @@ export const GPU_RASTER_CLIMATE_RUN_ACCUMULATOR_PARAMETER_LENGTH = 4;
  * Packs `[reset, activeSliceCount, threshold, degreeDayUnitExponent]`. `maximumIncrement` bounds a
  * single degree-day term `max(0, value - threshold)`; it sets the fixed-point unit of the sum.
  */
+export type GPURasterClimateRunAccumulatorSettings = {
+  reset: boolean;
+  activeSliceCount?: number;
+  threshold: number;
+  maximumIncrement: number;
+  maximumStreamSliceCount?: number;
+};
+
+/** Immutable model settings and units; replace only when resetting all retained state. */
+export type GPURasterClimateRunAccumulatorEncodingPlan = Readonly<{
+  kind: 'raster-climate-run-accumulator';
+  chunkSliceCount: number;
+  maximumStreamSliceCount: number;
+  threshold: number;
+  maximumIncrement: number;
+  degreeDayUnitExponent: number;
+}>;
+
+export function createGPURasterClimateRunAccumulatorEncodingPlan(
+  settings: Omit<GPURasterClimateRunAccumulatorSettings, 'reset' | 'activeSliceCount'>,
+  chunkSliceCount: number
+): GPURasterClimateRunAccumulatorEncodingPlan {
+  const id = 'createGPURasterClimateRunAccumulatorEncodingPlan';
+  validateRasterStreamFrame(id, chunkSliceCount, 0, MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT);
+  validateFiniteNumber(id, 'threshold', settings.threshold);
+  const threshold = Math.fround(settings.threshold);
+  const maximumIncrement = getRasterStreamPositiveFloat(
+    id,
+    'maximumIncrement',
+    settings.maximumIncrement
+  );
+  const maximumStreamSliceCount =
+    settings.maximumStreamSliceCount ?? DEFAULT_MAXIMUM_RASTER_STREAM_SLICE_COUNT;
+  validateRasterStreamHeadroom(id, maximumStreamSliceCount);
+  return Object.freeze({
+    kind: 'raster-climate-run-accumulator',
+    chunkSliceCount,
+    maximumStreamSliceCount,
+    threshold,
+    maximumIncrement,
+    degreeDayUnitExponent: getGPURasterFixedPointUnitExponent(
+      maximumIncrement,
+      maximumStreamSliceCount
+    )
+  });
+}
+
+/** Pack legacy settings with fixed encoding until reset, or reuse an immutable encoding plan. */
 export function getGPURasterClimateRunAccumulatorParameterValues(
-  settings: {
-    reset: boolean;
-    activeSliceCount?: number;
-    threshold: number;
-    maximumIncrement: number;
-    maximumStreamSliceCount?: number;
-  },
+  settings: GPURasterClimateRunAccumulatorSettings,
   chunkSliceCount: number,
+  target?: Float32Array
+): Float32Array;
+export function getGPURasterClimateRunAccumulatorParameterValues(
+  plan: GPURasterClimateRunAccumulatorEncodingPlan,
+  frame: GPURasterStreamFrameSettings,
+  target?: Float32Array
+): Float32Array;
+export function getGPURasterClimateRunAccumulatorParameterValues(
+  settings: GPURasterClimateRunAccumulatorSettings | GPURasterClimateRunAccumulatorEncodingPlan,
+  chunkOrFrame: number | GPURasterStreamFrameSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_CLIMATE_RUN_ACCUMULATOR_PARAMETER_LENGTH)
 ): Float32Array {
-  validateFiniteNumber(
-    'getGPURasterClimateRunAccumulatorParameterValues',
-    'threshold',
-    settings.threshold
+  const id = 'getGPURasterClimateRunAccumulatorParameterValues';
+  validateRasterStreamParameterTarget(
+    id,
+    target,
+    GPU_RASTER_CLIMATE_RUN_ACCUMULATOR_PARAMETER_LENGTH
   );
-  target[0] = settings.reset ? 1 : 0;
-  target[1] = settings.activeSliceCount ?? chunkSliceCount;
-  target[2] = settings.threshold;
-  target[3] = getGPURasterFixedPointUnitExponent(
-    settings.maximumIncrement,
-    settings.maximumStreamSliceCount ?? DEFAULT_MAXIMUM_RASTER_STREAM_SLICE_COUNT
+  const legacy = typeof chunkOrFrame === 'number';
+  const plan = legacy
+    ? createGPURasterClimateRunAccumulatorEncodingPlan(
+        settings as GPURasterClimateRunAccumulatorSettings,
+        chunkOrFrame
+      )
+    : (settings as GPURasterClimateRunAccumulatorEncodingPlan);
+  if (!legacy)
+    validateRasterStreamEncodingPlan(id, plan, 'raster-climate-run-accumulator', () =>
+      createGPURasterClimateRunAccumulatorEncodingPlan(plan, plan.chunkSliceCount)
+    );
+  const frame =
+    typeof chunkOrFrame === 'number'
+      ? (settings as GPURasterClimateRunAccumulatorSettings)
+      : chunkOrFrame;
+  validateRequirement(
+    id,
+    typeof frame.reset === 'boolean',
+    `reset must be boolean; received ${String(frame.reset)}`
   );
+  if (typeof chunkOrFrame !== 'number') validateRasterStreamPlanFrame(id, plan, frame);
+  const activeSliceCount = frame.activeSliceCount ?? plan.chunkSliceCount;
+  validateRasterStreamFrame(
+    id,
+    plan.chunkSliceCount,
+    activeSliceCount,
+    MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT,
+    plan.maximumStreamSliceCount,
+    frame.reset
+  );
+  target.set([frame.reset ? 1 : 0, activeSliceCount, plan.threshold, plan.degreeDayUnitExponent]);
   return target;
 }
 
@@ -116,8 +204,17 @@ export class GPURasterClimateRunAccumulator<
   readonly condition: GPURasterClimateCondition;
   readonly minimumSpellLength: number;
   constructor(readonly props: GPURasterClimateRunAccumulatorProps<Rows>) {
+    props = {...props, state: {...props.state}};
+    this.props = props;
     const id = props.id ?? 'raster-climate-run-accumulator';
     this.id = id;
+    validateGraphPorts(id, props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'state.runs': {required: false, viewType: 'either', formats: ['uint32']},
+      'state.degreeDays': {required: false, viewType: 'either', formats: ['uint32']}
+    });
     this.condition = props.condition ?? 'at-or-above';
     this.minimumSpellLength = props.minimumSpellLength ?? 1;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -129,11 +226,12 @@ export class GPURasterClimateRunAccumulator<
       MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT
     );
     validateCapacity(id, 'minimumSpellLength', this.minimumSpellLength, 1, 0xffffffff);
-    validateRequirement(
-      id,
-      ['above', 'at-or-above', 'below', 'at-or-below'].includes(this.condition),
-      "condition must be 'above', 'at-or-above', 'below' or 'at-or-below'"
-    );
+    validateOption(id, 'condition', this.condition, [
+      'above',
+      'at-or-above',
+      'below',
+      'at-or-below'
+    ]);
     validateRequirement(
       id,
       !!props.state.runs || !!props.state.degreeDays,

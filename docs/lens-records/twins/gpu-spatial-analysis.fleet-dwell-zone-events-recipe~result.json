@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "// Planar UTM 18N metres, seconds: dwell inside each of 13 anchorage polygons.\nconst dwell = addFleetDwellZoneEventsRecipe(graph, {\n  trajectories: {kind: 'trajectories', ...tracks},\n  zones: {kind: 'polygons', ...zones},\n  candidateCapacity: 1 << 17,\n  trackEventCapacity,\n  outputs: {table: {counts: zoneVisits, sumValues: zoneDwell}}\n});\n// Draw the anchorages coloured by total dwell seconds; zoneVisits counts visiting tracks.\nconst {sumValues} = dwell.table;",
+    "code": "// Planar UTM 18N metres, seconds: dwell inside each of 13 anchorage polygons.\nconst dwell = addFleetDwellZoneEventsRecipe(graph, {\n  trajectories: {kind: 'trajectories', ...tracks},\n  zones: {kind: 'polygons', ...zones},\n  candidateCapacity: 1 << 17,\n  trackEventCapacity,\n  output: {table: {counts: zoneVisits, sumValues: zoneDwell}}\n});\n// Draw the anchorages coloured by total dwell seconds; zoneVisits counts visiting tracks.\nconst {sumValues} = dwell.table;",
     "language": "ts",
     "lineCount": 10
   },
@@ -35,12 +35,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:37.985Z",
-    "runId": "run-36509ceb",
+    "date": "2026-11-20T23:49:35.260Z",
+    "runId": "run-09ae2edb",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-36509ceb",
+    "runId": "run-09ae2edb",
     "rung": "result",
     "bindings": {},
     "clauses": [],

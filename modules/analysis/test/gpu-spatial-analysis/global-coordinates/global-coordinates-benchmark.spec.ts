@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GPUCommandNodeProducer
+} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {getBenchmarkSettings, getBenchmarkDistribution} from '../../utils/benchmark-settings';
@@ -16,9 +20,19 @@ import {requireTestDevice} from '../../utils/require-test-device';
 import {GPUS2CellMeasures} from '../../../src/gpu-spatial-analysis/cell-topology/gpu-s2-cell-measures';
 import {GPUS2PolygonCovering} from '../../../src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering';
 import {GPUSphericalArcOverlay} from '../../../src/gpu-spatial-analysis/global-coordinates/gpu-spherical-arc-overlay';
-import arcReference from './fixtures/spherical-arc-overlay.json';
 import reference from './fixtures/global-coordinates.json';
 import orderedReference from './fixtures/s2-covering-ordered-parity.json';
+import {
+  ARC_SCALING_CASES,
+  getArcScalingOperand,
+  DATUM_SCALING_GRID_COUNTS,
+  getDatumScalingGrids
+} from './global-coordinate-scaling-fixtures';
+import {
+  expectArcScalingOutput,
+  expectDatumGridCountPositions,
+  expectDatumSelectionPositions
+} from './global-coordinate-output-assertions';
 
 type Format = 'float32x2' | 'float32x3' | 'float32x4' | 'uint32' | 'uint32x2';
 type Values = Float32Array | Uint32Array;
@@ -36,6 +50,7 @@ class GlobalBenchmarkScope {
   readonly initialWrites: Write[] = [];
   readonly updateWrites: Write[] = [];
   readonly outputs: {name: string; buffer: Buffer; format: Format; length: number}[] = [];
+  declarationMilliseconds: number | null = null;
   constructor(
     readonly device: Device,
     readonly name: string
@@ -49,6 +64,12 @@ class GlobalBenchmarkScope {
     });
     this.buffers.push(buffer);
     return buffer;
+  }
+  /** Expand a contributor into command nodes, excluding argument evaluation and GPU compile. */
+  declare(contributor: GPUCommandNodeProducer) {
+    const start = performance.now();
+    this.graph.add(contributor);
+    this.declarationMilliseconds = (this.declarationMilliseconds ?? 0) + performance.now() - start;
   }
   input<DataFormat extends Format>(
     name: string,
@@ -404,35 +425,26 @@ function createWorkloads(): Workload[] {
       };
     }
   }));
-  const intrinsicOverlay: Workload[] = [1, 4].map(subdivisions => ({
-    name: `spherical-intrinsic-overlay-${subdivisions * 8}`,
-    shape: {inputVertices: subdivisions * 8, capacity: 256},
+  const intrinsicOverlay: Workload[] = ARC_SCALING_CASES.map(reference => ({
+    name: `spherical-intrinsic-overlay-${reference.totalVertices}`,
+    shape: {
+      inputVertices: reference.totalVertices,
+      verticesPerOperand: reference.totalVertices / 2,
+      capacity: 256
+    },
     updateKind: 'rotate both spherical regions about the north reference',
     construct(scope) {
       const expand = (vertices: number[][], updated: boolean) =>
         vertices
-          .flatMap((first, index) => {
-            const second = vertices[(index + 1) % vertices.length];
-            const angle = Math.acos(
-              first.reduce((sum, value, component) => sum + value * second[component], 0)
-            );
-            return Array.from({length: subdivisions}, (_, part) => {
-              const fraction = part / subdivisions;
-              const point = first.map(
-                (value, component) =>
-                  (value * Math.sin((1 - fraction) * angle) +
-                    second[component] * Math.sin(fraction * angle)) /
-                  Math.sin(angle)
-              );
-              return updated
-                ? [
-                    point[0] * Math.cos(0.1) - point[1] * Math.sin(0.1),
-                    point[0] * Math.sin(0.1) + point[1] * Math.cos(0.1),
-                    point[2]
-                  ]
-                : point;
-            });
-          })
+          .map(point =>
+            updated
+              ? [
+                  point[0] * Math.cos(0.1) - point[1] * Math.sin(0.1),
+                  point[0] * Math.sin(0.1) + point[1] * Math.cos(0.1),
+                  point[2]
+                ]
+              : point
+          )
           .flat();
       const operand = (name: string, vertices: number[][]) => ({
         positions: scope.input(
@@ -441,17 +453,13 @@ function createWorkloads(): Workload[] {
           'float32x3',
           Float32Array.from(expand(vertices, true))
         ),
-        ringOffsets: scope.input(
-          name + 'Rings',
-          Uint32Array.from([0, vertices.length * subdivisions]),
-          'uint32'
-        ),
+        ringOffsets: scope.input(name + 'Rings', Uint32Array.from([0, vertices.length]), 'uint32'),
         referenceInside: true
       });
-      scope.graph.add(
+      scope.declare(
         new GPUSphericalArcOverlay({
-          left: operand('left', arcReference.left),
-          right: operand('right', arcReference.right),
+          left: operand('left', getArcScalingOperand(reference.totalVertices, false)),
+          right: operand('right', getArcScalingOperand(reference.totalVertices, true)),
           referencePoint: [0, 0, 1],
           operation: 'intersection',
           output: {
@@ -462,29 +470,105 @@ function createWorkloads(): Workload[] {
           }
         })
       );
-      return output => {
-        expect(output['status']).toEqual([0]);
-        let area = 0;
-        for (let ring = 0; ring < output['counts'][1]; ring++)
-          for (let row = output['rings'][ring]; row < output['rings'][ring + 1]; row++) {
-            const first = output['positions'].slice(row * 3, row * 3 + 3);
-            const next = row + 1 === output['rings'][ring + 1] ? output['rings'][ring] : row + 1;
-            const second = output['positions'].slice(next * 3, next * 3 + 3);
-            area +=
-              2 *
-              Math.atan2(
-                first[0] * second[1] - first[1] * second[0],
-                1 +
-                  first[2] +
-                  second[2] +
-                  first.reduce((sum, value, component) => sum + value * second[component], 0)
-              );
+      return (output, updated) => expectArcScalingOutput(output, reference, updated);
+    }
+  }));
+  const datumGridCounts: Workload[] = DATUM_SCALING_GRID_COUNTS.map(gridCount => ({
+    name: `datum-grid-count-${gridCount}`,
+    shape: {gridCount, sampleCount: 4, queryCount: 4},
+    updateKind: 'move queries from the last covering grid to no coverage; all metadata is fixed',
+    construct(scope) {
+      const positions = (covered: boolean) =>
+        Array.from({length: 4}, () => [covered ? gridCount + 9.5 : 0, 0.5, 10]).flat();
+      scope.declare(
+        new GPUDatumGridTransform({
+          positions: scope.input(
+            'positions',
+            Float32Array.from(positions(true)),
+            'float32x3',
+            Float32Array.from(positions(false))
+          ),
+          samples: scope.input(
+            'samples',
+            Float32Array.from(Array(4).fill([0.25, -0.125, 2]).flat()),
+            'float32x3'
+          ),
+          mask: scope.input('mask', new Uint32Array(4).fill(1), 'uint32'),
+          grids: getDatumScalingGrids(gridCount),
+          operation: 'horizontal',
+          output: {
+            positions: scope.output('positions', 4, 'float32x3'),
+            status: scope.output('status', 4, 'uint32')
           }
-        if (area < 0) area += 4 * Math.PI;
-        expect(Math.abs(area - arcReference.cases[0].area)).toBeLessThan(2e-5);
+        })
+      );
+      return (output, updated) => {
+        expect(output['status']).toEqual(new Array(4).fill(updated ? 2 : 0));
+        expectDatumGridCountPositions(output['positions'], gridCount, updated);
       };
     }
   }));
+  // Large ordered/nodata fixtures are opt-in compilation workloads, not ordinary correctness runs.
+  const datumSelection: Workload[] = DATUM_SCALING_GRID_COUNTS.flatMap(gridCount =>
+    [false, true].flatMap(reverse =>
+      [false, true].map(nodata => ({
+        name: `datum-grid-selection-${gridCount}-reverse-${reverse}-nodata-${nodata}`,
+        shape: {gridCount, sampleCount: 8, queryCount: 2},
+        updateKind:
+          'toggle first-covering-grid nodata, retaining selection order and no-coverage row',
+        construct(scope: GlobalBenchmarkScope) {
+          const covering = [0, 4].map(sampleOffset => ({
+            width: 2,
+            height: 2,
+            sampleOffset,
+            origin: [0, 0] as const,
+            spacing: [1, 1] as const
+          }));
+          const mask = (invalid: boolean) => {
+            const values = new Uint32Array(8).fill(1);
+            if (invalid) values[reverse && gridCount > 1 ? 4 : 0] = 0;
+            return values;
+          };
+          scope.declare(
+            new GPUDatumGridTransform({
+              positions: scope.input(
+                'positions',
+                Float32Array.from([0.5, 0.5, 10, -2, -2, 10]),
+                'float32x3'
+              ),
+              samples: scope.input(
+                'samples',
+                Float32Array.from([
+                  ...Array(4).fill([0.25, -0.125, 2]).flat(),
+                  ...Array(4).fill([-0.5, 0.5, 9]).flat()
+                ]),
+                'float32x3'
+              ),
+              mask: scope.input('mask', mask(nodata), 'uint32', mask(!nodata)),
+              grids: [
+                ...getDatumScalingGrids(Math.max(0, gridCount - 2)),
+                ...(gridCount === 1
+                  ? covering.slice(0, 1)
+                  : reverse
+                    ? covering.reverse()
+                    : covering)
+              ],
+              operation: 'horizontal',
+              output: {
+                positions: scope.output('positions', 2, 'float32x3'),
+                status: scope.output('status', 2, 'uint32')
+              }
+            })
+          );
+          return (output: Output, updated: boolean) => {
+            const invalid = updated ? !nodata : nodata;
+            expect(output['status']).toEqual([invalid ? 4 : 0, 2]);
+            expectDatumSelectionPositions(output['positions'], reverse && gridCount > 1, invalid);
+          };
+        }
+      }))
+    )
+  );
   return [
     ...neighbors,
     ...datum,
@@ -492,7 +576,9 @@ function createWorkloads(): Workload[] {
     ...overlap,
     ...fineMeasures,
     ...adaptiveCovers,
-    ...intrinsicOverlay
+    ...intrinsicOverlay,
+    ...datumGridCounts,
+    ...datumSelection
   ];
 }
 
@@ -562,6 +648,7 @@ async function measure(
       updateKind: workload.updateKind,
       phases: {
         setupMilliseconds,
+        declarationMilliseconds: scope.declarationMilliseconds,
         uploadMilliseconds,
         compileHostMilliseconds,
         firstExecution,

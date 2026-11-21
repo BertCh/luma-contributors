@@ -497,7 +497,7 @@ export async function createRailSupportAllocation(
       'objectiveResult',
       converged
         ? `${selectedNames} · ${objective}`
-        : costsConverged && status[0] === 1 && status[2] === 1
+        : costsConverged && status[0] === 1 && status[1] === 0 && status[2] === 1
           ? 'No feasible placement under this threshold'
           : 'withheld until exact search completes'
     );
@@ -505,7 +505,7 @@ export async function createRailSupportAllocation(
       'optimizerStatus',
       converged
         ? `enumerated ${status[3].toLocaleString()} candidates · feasible incumbent`
-        : status[0] === 1 && status[2] === 1
+        : costsConverged && status[0] === 1 && status[1] === 0 && status[2] === 1
           ? `search complete · no feasible incumbent`
           : 'cost search or optimizer incomplete; result withheld'
     );
@@ -568,7 +568,9 @@ export async function createRailSupportAllocation(
       'scenarioSummary',
       placementResults.costsConverged && status[0] === 1 && status[1] === 1 && status[2] === 1
         ? `${scenario.covered.toFixed(0)} units within ${ctx.options.scenarioLimitMinutes} min · ${scenario.uncovered.toFixed(0)} outside · ${scenario.invalid} invalid`
-        : 'no feasible selected pair'
+        : placementResults.costsConverged && status[0] === 1 && status[1] === 0 && status[2] === 1
+          ? 'no feasible selected pair'
+          : 'incomplete routing or optimization; scenario withheld'
     );
   }
   const summaryBuffers = [
@@ -899,13 +901,18 @@ export async function createRailSupportAllocation(
           {label: 'Selected objective', value: ctx.options.objective},
           {
             label: 'Facility scenario nearest cost',
-            value: Number.isFinite(lastScenarioCosts[nearest])
-              ? `${lastScenarioCosts[nearest].toFixed(1)} min`
-              : 'unreachable'
+            value: !outputReady
+              ? 'withheld: placement incomplete'
+              : Number.isFinite(lastScenarioCosts[nearest])
+                ? `${lastScenarioCosts[nearest].toFixed(1)} min`
+                : 'unreachable'
           },
           {
             label: 'Rational-access mean score',
-            value: Number.isFinite(lastRationalScore) ? lastRationalScore.toFixed(2) : 'pending'
+            value:
+              rationalReady && Number.isFinite(lastRationalScore)
+                ? lastRationalScore.toFixed(2)
+                : 'pending'
           },
           {
             label: 'Allocation by desk',

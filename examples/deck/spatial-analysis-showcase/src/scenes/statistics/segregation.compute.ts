@@ -6,6 +6,8 @@ import type {Layer} from '@deck.gl/core';
 import {
   getGPUNeighborSearchParameterValues,
   getGPUSegregationLayout,
+  getGPUSpatialWeightsTransformParameterValues,
+  GPU_SPATIAL_WEIGHTS_TRANSFORM_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPUNeighborSearch,
   GPUSegregation,
@@ -66,6 +68,8 @@ import {
   RELATIVE_CLIP,
   SEGREGATION_GROUPS
 } from './segregation.style';
+
+type SearchWeights = GPUSpatialWeights & {status: {overflow: GraphDataView<'uint32'>}};
 
 /** Option state of the segregation scene. */
 export type SegregationOptions = {
@@ -237,7 +241,7 @@ export async function createSegregation(
   const communityArea = tracts.column<Uint8Array>('communityArea');
   const areaOf = Int32Array.from(communityArea, id => id - 1);
   const areaName = (index: number): string =>
-    String(areaFeatures[index]?.properties?.name ?? `Area ${index + 1}`);
+    String(areaFeatures[index]?.properties?.['name'] ?? `Area ${index + 1}`);
   const tractAreaName = (row: number): string => areaName(areaOf[row]);
   const citywide = getAspatialIndices(groupCountsHost, n);
   const areaCountsHost = sumRowsByUnit(groupCountsHost, n, areaOf, areaCount);
@@ -295,7 +299,7 @@ export async function createSegregation(
 
   // The tract each focus place stands for: its most populous tract.
   const getFocusRow = (name: string): number => {
-    const area = areaFeatures.findIndex(feature => feature.properties?.name === name);
+    const area = areaFeatures.findIndex(feature => feature.properties?.['name'] === name);
     let best = -1;
     for (let row = 0; row < n; row++) {
       if (areaOf[row] === area && (best < 0 || totals[row] > totals[best])) best = row;
@@ -392,6 +396,11 @@ export async function createSegregation(
       'float32',
       GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
     ),
+    kernelParameter: resources.createParameterBuffer(
+      `kernel-parameter-${scale}`,
+      'float32',
+      GPU_SPATIAL_WEIGHTS_TRANSFORM_PARAMETER_LENGTH
+    ),
     offsets: resources.createBuffer(`offsets-${scale}`, (n + 1) * 4),
     neighbors: resources.createBuffer(`neighbors-${scale}`, neighborCapacity * 4),
     weights: resources.createBuffer(`weights-${scale}`, neighborCapacity * 4),
@@ -399,7 +408,7 @@ export async function createSegregation(
     overflow: resources.createBuffer(`overflow-${scale}`, 4)
   }));
 
-  const importWeights = (graph: GPUCommandGraph<void>, scale: number): GPUSpatialWeights => {
+  const importWeights = (graph: GPUCommandGraph<void>, scale: number): SearchWeights => {
     const buffers = scaleBuffers[scale];
     return {
       spatialContext: projection.spatialContext,
@@ -424,7 +433,10 @@ export async function createSegregation(
         buffers.distances,
         'float32',
         buffers.capacity
-      )
+      ),
+      status: {
+        overflow: importGraphBuffer(graph, `overflow-${scale}`, buffers.overflow, 'uint32', 1)
+      }
     };
   };
 
@@ -448,16 +460,7 @@ export async function createSegregation(
         positions: positionsView,
         parameters: buffers.searchParameter.importToGraph(searchGraph),
         output: {
-          ...importWeights(searchGraph, scale),
-          status: {
-            overflow: importGraphBuffer(
-              searchGraph,
-              `overflow-${scale}`,
-              buffers.overflow,
-              'uint32',
-              1
-            )
-          }
+          ...importWeights(searchGraph, scale)
         }
       })
     );
@@ -488,7 +491,7 @@ export async function createSegregation(
             operation: 'kernel',
             weights,
             kernel: options.weights,
-            bandwidth: 'adaptive'
+            bandwidth: scaleBuffers[scale].kernelParameter.importToGraph(graph)
           })
         );
       }
@@ -807,11 +810,15 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
 
   const writeSearchParameters = () => {
     scaleBuffers.forEach((buffers, index) => {
+      const radius = RADIUS_LADDER[index] * ctx.options.bandwidth * 1000;
+      buffers.kernelParameter.write(
+        getGPUSpatialWeightsTransformParameterValues({bandwidth: radius})
+      );
       buffers.searchParameter.write(
         getGPUNeighborSearchParameterValues({
           bounds: searchBounds,
-          radius: RADIUS_LADDER[index] * ctx.options.bandwidth * 1000,
-          weightKind: 'binary'
+          searchRadius: radius,
+          weightType: 'binary'
         })
       );
     });
@@ -940,7 +947,7 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
       const rowsOfArea = (area: number) =>
         Array.from({length: n}, (_, row) => row).filter(row => areaOf[row] === area);
       for (const name of MIXING_AREAS) {
-        const area = areaFeatures.findIndex(feature => feature.properties?.name === name);
+        const area = areaFeatures.findIndex(feature => feature.properties?.['name'] === name);
         const point = areaMesh.labelPoints[area];
         if (area < 0 || !point || !Number.isFinite(point[0])) continue;
         const mean = getWeightedMean(latest.display, totals, rowsOfArea(area));
@@ -1121,7 +1128,7 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
     }
     const focal = getFocalIndex();
     const {scale} = ctx.options;
-    const geoid = tractFeatures[selectedRow]?.properties?.GEOID ?? selectedRow;
+    const geoid = tractFeatures[selectedRow]?.properties?.['GEOID'] ?? selectedRow;
     ctx.setReadout(
       'selected',
       `${tractAreaName(selectedRow)}, tract ${geoid}: ${formatCount(totals[selectedRow])} residents`
@@ -1472,7 +1479,7 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
     const ground = ctx.ground();
     const total = totals[row];
     const displayScale = isCounterfactualComparison() ? 0 : o.scale;
-    const geoid = tractFeatures[row]?.properties?.GEOID ?? row;
+    const geoid = tractFeatures[row]?.properties?.['GEOID'] ?? row;
     const labelPoint = tractMesh.labelPoints[row];
     const rows: TooltipRow[] = [];
     if (total <= 0) {

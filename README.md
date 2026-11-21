@@ -11,6 +11,15 @@ Then run [point density from device to readback](docs/api/operation-forms-and-cp
 for a complete browser GPU computation, including allocation, submission and cleanup.
 The [API index](docs/api/README.md) links the domain guides.
 
+From the workspace root after `nvm use` and `yarn install`, execute the literal CPU
+walkthrough and display its fitted model and parameters:
+
+```bash
+yarn vitest run --project node modules/analysis/test/analysis-core/first-run-docs.node.spec.ts -t 'CPU variogram walkthrough'
+```
+
+Find an operation through the [API task chooser](docs/api/README.md#find-an-operation).
+
 | Package | Contents |
 | --- | --- |
 | `@luma-contributors/analysis` | Spatial analysis, network, terrain, dataframe, raster and point-cloud operations |
@@ -24,7 +33,9 @@ Examples are in `examples/deck/spatial-analysis-showcase` and
 
 This repository holds only geospatial and analysis code. It builds on published `@luma.gl/core`,
 `@luma.gl/shaders` and `@luma.gl/graph` through their public entry points, and carries no copies
-of luma.gl code. See `dev-docs/upstream-first-plan.md`.
+of luma.gl APIs. A few small WGSL helpers are pinned copies, each registered in
+`dev-docs/upstream-workarounds.md` and compared with upstream text by a test. See
+`dev-docs/upstream-first-plan.md`.
 
 `apache-arrow >=17.0.0` is a required peer of analysis, including for native imports of the
 authoring and network entry points. The accepted luma.gl peer range is `~10.0.0-alpha.16`,
@@ -42,7 +53,7 @@ Plans go in `dev-docs/roadmap.md`; see `dev-docs/README.md` for the dev-docs ind
 | `docs/api` | API documentation by domain; `docs/table-of-contents.json` orders it |
 | `docs/lens-records` | Generated lens records used by the docs and lens tests |
 | `dev-docs` | Roadmap, contributor contract, coverage matrix, upstream workarounds and proposals, research |
-| `examples/deck` | Spatial analysis showcase and explorer (kepler-compute is parked) |
+| `examples/deck` | Spatial analysis showcase and explorer; `kepler-compute` is a registered workspace whose deck.gl 10 port is still being qualified |
 | `website` | Static docs site (TanStack Start, prerendered); `yarn website-dev`, `yarn website-build` |
 | `scripts` | Build, export verification, upstream-first guard and the original split scripts |
 | `CHANGELOG.md` | Release history |

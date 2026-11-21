@@ -12,7 +12,12 @@ import {
 import {getPointInPolygonContainmentContext} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-point-in-polygon-join';
 import {getZonalStatisticsPlan} from '../../../src/gpu-spatial-analysis/zonal-statistics/zonal-statistics-passes';
 import {getSortKeyBits} from '../../../src/analysis-core/kernels/sorted-segment-sums';
-import {createNullWebGPUDevice, createVectorView} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  createVectorView,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {POLYGON_FEATURES} from '../spatial-join/spatial-join-oracle';
 import {
   computeExtent,
@@ -92,6 +97,7 @@ it('GPUZonalStatistics validates props', () => {
   ) => view(graph, name, format, length);
   const create = (props: GPUZonalStatisticsProps) => new GPUZonalStatistics(props);
 
+  // @ts-expect-error Exercise the JavaScript guard for an empty destination map.
   expect(() => create(createProps(graph, {}, {}))).toThrow(/at least one output/);
   expect(() => create(createProps(graph, {values: undefined}))).toThrow(/require values/);
   expect(() => create(createProps(graph, {}, {weightSums: out('weight-sums')}))).toThrow(
@@ -597,6 +603,57 @@ it('GPUZonalStatistics variances add a second pass and validate their inputs', (
   ).toThrow(/packed/);
 });
 
+// GEO-105: a float32 mean of values near 1e7 over many rows is several units off, so the former
+// single deviation pass around it reported `n * error^2` too much. The variance now refines the
+// mean with a first deviation pass and uses the corrected two-pass term; the numeric check is the
+// headless case "variances stay accurate at 1e7 over 100,000 rows".
+it('GPUZonalStatistics variances refine the mean and subtract the corrected two-pass term', () => {
+  for (const sumOrder of ['atomic', 'sorted'] as const) {
+    for (const weighted of [false, true]) {
+      const graph = new GPUCommandGraph(createNullWebGPUDevice());
+      const nodes = new GPUZonalStatistics(
+        createRowsProps(
+          graph,
+          {
+            sumOrder,
+            weights: weighted ? view(graph, 'weights', 'float32', POINT_COUNT) : undefined
+          },
+          {
+            variances: view(graph, 'variances', 'float32', FEATURE_COUNT),
+            standardDeviations: view(graph, 'deviations', 'float32', FEATURE_COUNT)
+          }
+        )
+      ).getCommandNodes(graph);
+      const ids = nodes.map(node => node.id);
+      const label = `${sumOrder} ${weighted ? 'weighted' : 'unweighted'}`;
+      expect(ids.indexOf('z-first-deviation'), label).toBeGreaterThanOrEqual(0);
+      expect(ids.indexOf('z-refined-means'), label).toBeGreaterThan(
+        ids.indexOf('z-first-deviation')
+      );
+      expect(ids.indexOf('z-deviation'), label).toBeGreaterThan(ids.indexOf('z-refined-means'));
+      expect(ids.indexOf('z-variances'), label).toBeGreaterThan(ids.indexOf('z-deviation'));
+      const sources = getGPUCommandNodeKernelSources(nodes);
+      const refine = sources.filter(({source}) => source.includes('refinedMeans['));
+      expect(refine, label).toHaveLength(1);
+      expect(refine[0].source).toContain('mean + getZonalQuotient(linearDeviationSums[');
+      const variance = sources.filter(({source}) => source.includes('variances['));
+      expect(variance, label).toHaveLength(1);
+      expect(variance[0].source).toContain(
+        'squaredDeviationSum = squaredDeviationSum - correction'
+      );
+      expect(variance[0].source).toContain('max(0.0, squaredDeviationSum)');
+      if (weighted) {
+        expect(variance[0].source).toContain('minimumWeights[minimumWeightsOffset + index] >= 0.0');
+      }
+      const deviationPasses = sources.filter(({source}) => source.includes('linearDeviations['));
+      expect(deviationPasses, label).toHaveLength(2);
+      for (const {source, constants} of sources) {
+        expect(auditWGSLModule(source, constants), label).toEqual([]);
+      }
+    }
+  }
+});
+
 it('GPUZonalStatistics spatial context: planar default, longitude-latitude needs areas', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const out = (name: string) => view(graph, name, 'float32', FEATURE_COUNT);
@@ -690,10 +747,15 @@ it.each([
     units: 'meters',
     frame: {id: 'f', kind: 'local-azimuthal-equidistant'}
   } as const;
-  const output =
+  const featureView = view(graph, statistic, 'float32', FEATURE_COUNT);
+  const output: GPUZonalStatisticsOutput =
     statistic === 'extent'
-      ? {extent: view(graph, 'extent', 'float32', 2), extentStatistic: 'density' as const}
-      : {[statistic]: view(graph, statistic, 'float32', FEATURE_COUNT)};
+      ? {extent: view(graph, 'extent', 'float32', 2), extentStatistic: 'density'}
+      : statistic === 'densities'
+        ? {densities: featureView}
+        : statistic === 'weightedDensities'
+          ? {weightedDensities: featureView}
+          : {featureAreas: featureView};
   const props = createProps(
     graph,
     {spatialContext, weights: view(graph, 'weights', 'float32', POINT_COUNT)},

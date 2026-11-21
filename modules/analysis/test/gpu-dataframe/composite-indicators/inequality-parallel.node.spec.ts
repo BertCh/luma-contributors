@@ -44,8 +44,11 @@ it('weighted Lorenz hierarchy keeps four pipelines as prefix levels grow', () =>
 });
 
 it.each([
-  1, 257, 65537
-])('parallel inequality audits all generated identifiers at %i rows', rows => {
+  {rows: 1, mode: 'parallel'},
+  {rows: 257, mode: 'parallel'},
+  {rows: 65537, mode: 'parallel'},
+  {rows: 257, mode: 'reference'}
+] as const)('inequality audits all generated identifiers: %j', ({rows, mode}) => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let serial = 0;
@@ -54,12 +57,14 @@ it.each([
   try {
     const output = {
       gini: view('float32', 3),
+      atkinson: view('float32', 3),
       mean: view('float32', 3),
       lorenzKnots: view('float32', 33),
       counts: view('uint32', 3),
       globalSummary: view('float32', 8)
     };
     const contributor = new GPUInequality({
+      mode,
       values: view('float32', rows),
       weights: view('float32', rows),
       zoneIds: view('uint32', rows),
@@ -71,7 +76,9 @@ it.each([
     expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
     for (const kernel of getGPUCommandNodeKernelSources(nodes))
       expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
-    expect(contributor.mode).toBe('parallel');
+    expect(contributor.mode).toBe(mode);
+    expect(nodes.some(node => node.id === 'inequality-zone-gini-publish')).toBe(true);
+    expect(nodes.some(node => node.id === 'inequality-global-gini-publish')).toBe(true);
   } finally {
     device.destroy();
   }

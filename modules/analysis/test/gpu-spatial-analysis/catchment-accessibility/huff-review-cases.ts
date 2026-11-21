@@ -64,5 +64,25 @@ export const HUFF_REVIEW_CASES = [
     winner: 1,
     probabilities: [0, 1],
     captured: [sign * 2 ** -25, sign * 2 ** 127]
-  }))
+  })),
+  // PTS-110: a non-finite attractiveness or weight is invalid and excluded like a NaN or
+  // non-positive one, so the only remaining facility takes the whole row: p = [0, 1] by the
+  // definition p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik over the valid facilities.
+  ...[undefined, 2].flatMap(exponent =>
+    [
+      {label: 'attractiveness', attractiveness: [Infinity, 1], weights: [1, 1]},
+      {label: 'attractiveness', attractiveness: [-Infinity, 1], weights: [1, 1]},
+      {label: 'attractiveness', attractiveness: [NaN, 1], weights: [1, 1]},
+      {label: 'weight', attractiveness: [1, 1], weights: [Infinity, 1]}
+    ].map(({label, attractiveness, weights}) => ({
+      name: `non-finite ${label} ${attractiveness[0]}/${weights[0]} is excluded, exponent ${exponent ?? 1}`,
+      attractiveness,
+      weights,
+      exponent,
+      demand: 1,
+      winner: 1,
+      probabilities: [0, 1],
+      captured: [0, 1]
+    }))
+  )
 ];

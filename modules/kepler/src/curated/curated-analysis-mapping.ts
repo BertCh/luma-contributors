@@ -2,19 +2,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 import {
   assignGPUAnalysisFieldRoles,
   matchGPUAnalysisFieldRole,
   tokenizeGPUAnalysisColumnName,
   getGPUAnalysisCatalogGeometryForDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import type {
   GPUAnalysisColumnProfile,
   GPUAnalysisFieldRoleSpec,
   GPUSpatialAnalysisDataKind
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {isKeplerDatasetCompatibleWithInput} from '../descriptors/applicability';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import {getCatalogBinding} from '../analysis/catalog-bindings';

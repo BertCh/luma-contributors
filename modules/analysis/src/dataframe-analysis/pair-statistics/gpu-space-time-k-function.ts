@@ -27,6 +27,7 @@ import {
 import {resolveGPUTemporalContext} from '../../analysis-core/contracts/temporal-context';
 import {validatePairHistogramShape} from './pair-histogram';
 import {validatePairStatisticsInputs} from './pair-statistics-grid';
+import {snapshotSpaceTimePairProps} from './space-time-pair-construction';
 import {
   createSpaceTimeKNodes,
   GPU_SPACE_TIME_K_FUNCTION_PARAMETER_LENGTH,
@@ -76,7 +77,7 @@ export type GPUSpaceTimeKFunctionOutput = {
    * excluded rows. At most {@link GPU_SPACE_TIME_K_MAXIMUM_LOCAL_BINS} classes.
    */
   local?: GraphDataView<'float32'>;
-  /** Optional one-row uint32: 0 valid, 1 undefined (outputs are NaN), 3 integer accumulation overflowed. */
+  /** Optional one-row uint32: 0 valid, 1 undefined, 3 accumulation overflow or precision loss (estimates NaN). */
   status?: GraphDataView<'uint32'>;
 };
 
@@ -86,7 +87,9 @@ export type GPUSpaceTimeKFunctionOutput = {
  * Per-frame (no recompile): the contents of `positions`, `times`, `intensities`, `mask` and
  * `parameters` (window, maximum distance and lag, time window, bandwidths). Compile-time: the row
  * count, `gridSize`, both class counts, `edgeCorrection`, the kernel, and which optional inputs and
- * outputs are present.
+ * outputs are present. Construction captures these fields, context metadata and output mappings;
+ * subsequent changes to caller objects do not change the graph. The referenced buffer contents
+ * remain live per-frame inputs.
  */
 export type GPUSpaceTimeKFunctionProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'space-time-k-function'`. */
@@ -136,6 +139,11 @@ export type GPUSpaceTimeKFunctionProps = {
  * compares with a binary64 brute-force reference of the definitions below. Where stpp's exact
  * finite-sample factor or temporal weight differs from the definitions here it is not matched.
  *
+ * On this route, getGPUSpaceTimeKFunctionParameterValues requires the derived float32
+ * width, height, duration, area and space-time volume to be finite and normal (at least
+ * 2^-126), after each subtraction/product is rounded to float32. Finite ordered endpoints
+ * alone do not ensure usable normalizers; rescale coordinates or time units when needed.
+ *
  * Definitions, with `W` the rectangle (area `|W|`), `T = [timeStart, timeEnd]` (length `|T|`),
  * `n` the included events, ordered pairs `i != j`, `d_ij` the distance and `t_ij = |t_i - t_j|`:
  * - Included events: mask nonzero, finite position inside `W`, finite time inside `T`, and (with
@@ -171,11 +179,16 @@ export type GPUSpaceTimeKFunctionProps = {
  * {@link GPUSpaceTimeDiggleTest} follows splancs, so on times recorded as whole days its `K`,
  * `K_s`, `K_t` and `D` can differ from the outputs of this class.
  * Pair counts and the temporal marginal are exact integers; weighted sums are accumulated as
- * fixed-point integers (2^-16 units) in the shared deterministic pair histogram, so results are
+ * fixed-point integers in the shared deterministic pair histogram, so results are
  * reproducible. LISTA sums add in float32 in the fixed neighbor order. The pair search is the
  * 3 x 3 lattice neighborhood within `maximumDistance` (plus `spatialBandwidth` for the pair
  * correlation); the temporal marginal costs `n V log n`. Cost is the number of indexed pairs, not
  * `n^2`.
+ * Homogeneous K uses 2^-16 units; inhomogeneous K adapts the power-of-two scale from the
+ * smallest inverse relative intensity while its required exponent is in [-100,100]. PCF uses
+ * an additional 2^24 scale because its kernel products can be arbitrarily small. A positive PCF
+ * term below half a scaled unit, an unsupported intensity scale, or integer overflow reports
+ * status 3 and suppresses all estimates (also when the optional status output is absent).
  *
  * The permutation test of `D` is {@link GPUSpaceTimeDiggleTest}. A permutation test of the local
  * statistics is not implemented.
@@ -193,6 +206,26 @@ export class GPUSpaceTimeKFunction implements GPUCommandNodeProducer {
   readonly edgeCorrection: GPUSpaceTimeKEdgeCorrection;
 
   constructor(props: GPUSpaceTimeKFunctionProps) {
+    props = snapshotSpaceTimePairProps(
+      props,
+      [
+        'id',
+        'spatialContext',
+        'temporalContext',
+        'positions',
+        'times',
+        'intensities',
+        'mask',
+        'parameters',
+        'gridSize',
+        'distanceClassCount',
+        'timeClassCount',
+        'edgeCorrection',
+        'pairCorrelationKernel',
+        'output'
+      ],
+      ['k', 'spatialK', 'temporalK', 'd', 'pairCorrelation', 'pairCounts', 'local', 'status']
+    );
     this.id = props.id ?? 'space-time-k-function';
     this.props = props;
     const {id} = this;

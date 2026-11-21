@@ -224,6 +224,19 @@ function getConstantArraySource(name: string, values: readonly number[]): string
   return `const ${name} = array<u32, ${values.length}>(${values.map(value => `${value}u`).join(', ')});`;
 }
 
+/** Morton bit spreading shared by indexing and topology, with caller-owned symbols. @internal */
+export function getCellSpread16WGSL(name: string): string {
+  return `fn ${name}(value: u32) -> u32 {
+  var x = value & 0xffffu;
+  x = (x | (x << 8u)) & 0x00ff00ffu;
+  x = (x | (x << 4u)) & 0x0f0f0f0fu;
+  x = (x | (x << 2u)) & 0x33333333u;
+  x = (x | (x << 1u)) & 0x55555555u;
+  return x;
+}
+`;
+}
+
 /**
  * Longitude/latitude to Quadbin tile column, row and Morton path with integer arithmetic only.
  *
@@ -431,15 +444,7 @@ fn quadbinGetTileY(latitude: f32, resolution: u32) -> u32 {
   return u32(clamp(row, 0i, i32((1u << resolution) - 1u)));
 }
 
-fn quadbinSpread16(value: u32) -> u32 {
-  var x = value & 0xffffu;
-  x = (x | (x << 8u)) & 0x00ff00ffu;
-  x = (x | (x << 4u)) & 0x0f0f0f0fu;
-  x = (x | (x << 2u)) & 0x33333333u;
-  x = (x | (x << 1u)) & 0x55555555u;
-  return x;
-}
-
+${getCellSpread16WGSL('quadbinSpread16')}
 /** Morton path (compact key) of tile (x, y): x bits at even, y bits at odd positions. */
 fn quadbinGetCompactKey(x: u32, y: u32) -> vec2u {
   let low = quadbinSpread16(x) | (quadbinSpread16(y) << 1u);

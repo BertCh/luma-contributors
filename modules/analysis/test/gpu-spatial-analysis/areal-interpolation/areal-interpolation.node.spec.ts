@@ -7,7 +7,7 @@ import {expect, it} from 'vitest';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {
   GPUArealInterpolation,
-  GPUPycnophylactic
+  GPUPycnophylacticInterpolation
 } from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
 import {getSphericalRasterCellArea} from '../../../src/gpu-spatial-analysis/areal-interpolation/index';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
@@ -87,7 +87,7 @@ it('GPUArealInterpolation declares nodes and validates its props', () => {
   ).toThrow(/needs output.categoryShares/);
 });
 
-it('GPUPycnophylactic declares nodes per iteration and validates its props', () => {
+it('GPUPycnophylacticInterpolation declares nodes per iteration and validates its props', () => {
   const {graph, view} = setup();
   const props = {
     grid: makeGPURasterMetadata({width: 8, height: 4}),
@@ -97,9 +97,9 @@ it('GPUPycnophylactic declares nodes per iteration and validates its props', () 
     maximumIterations: 2,
     output: {mass: view('float32', 32)}
   };
-  const few = new GPUPycnophylactic(props).getCommandNodes(graph).length;
+  const few = new GPUPycnophylacticInterpolation(props).getCommandNodes(graph).length;
   const {graph: other, view: otherView} = setup();
-  const many = new GPUPycnophylactic({
+  const many = new GPUPycnophylacticInterpolation({
     ...props,
     zones: otherView('uint32', 32),
     totals: otherView('float32', 3),
@@ -107,10 +107,12 @@ it('GPUPycnophylactic declares nodes per iteration and validates its props', () 
     maximumIterations: 4
   }).getCommandNodes(other).length;
   expect(many).toBeGreaterThan(few);
-  expect(() => new GPUPycnophylactic({...props, maximumIterations: -1})).toThrow(
+  expect(() => new GPUPycnophylacticInterpolation({...props, maximumIterations: -1})).toThrow(
     /maximumIterations/
   );
-  expect(() => new GPUPycnophylactic({...props, totals: view('float32', 2)})).toThrow(/totals/);
+  expect(() => new GPUPycnophylacticInterpolation({...props, totals: view('float32', 2)})).toThrow(
+    /totals/
+  );
 });
 
 it('GPUSpatialLag accepts cross weights with the source count derived from values', () => {
@@ -368,7 +370,7 @@ it('GPUArealInterpolation resolves spatial context, denominators and diagnostics
   ).toThrow(/sourceAnchorCells/);
 });
 
-it('GPUPycnophylactic resolves spatial context, tolerance, anchors and status', () => {
+it('GPUPycnophylacticInterpolation resolves spatial context, tolerance, anchors and status', () => {
   const {graph, view} = setup();
   const props = {
     grid: makeGPURasterMetadata({width: 8, height: 6}),
@@ -378,31 +380,37 @@ it('GPUPycnophylactic resolves spatial context, tolerance, anchors and status', 
     maximumIterations: 4,
     output: {mass: view('float32', 48)}
   };
-  expect(new GPUPycnophylactic(props).spatialContext.coordinateSpace).toBe('planar');
+  expect(new GPUPycnophylacticInterpolation(props).spatialContext.coordinateSpace).toBe('planar');
   const longitudeLatitude = {
     coordinateSpace: 'longitude-latitude',
     metric: 'great-circle'
   } as const;
   const parameters = view('float32', 4);
-  expect(() => new GPUPycnophylactic({...props, spatialContext: longitudeLatitude})).toThrow(
-    /need parameters/
+  expect(
+    () => new GPUPycnophylacticInterpolation({...props, spatialContext: longitudeLatitude})
+  ).toThrow(/need parameters/);
+  expect(() => new GPUPycnophylacticInterpolation({...props, parameters})).toThrow(
+    /longitude-latitude/
   );
-  expect(() => new GPUPycnophylactic({...props, parameters})).toThrow(/longitude-latitude/);
   expect(
     () =>
-      new GPUPycnophylactic({
+      new GPUPycnophylacticInterpolation({
         ...props,
         output: {...props.output, status: {converged: view('uint32', 1)}}
       })
   ).toThrow(/need a tolerance/);
-  expect(() => new GPUPycnophylactic({...props, zoneAnchorCells: view('uint32', 5)})).toThrow(
-    /zoneCount rows/
-  );
   expect(
-    () => new GPUPycnophylactic({...props, output: {...props.output, density: view('float32', 47)}})
+    () => new GPUPycnophylacticInterpolation({...props, zoneAnchorCells: view('uint32', 5)})
+  ).toThrow(/zoneCount rows/);
+  expect(
+    () =>
+      new GPUPycnophylacticInterpolation({
+        ...props,
+        output: {...props.output, density: view('float32', 47)}
+      })
   ).toThrow(/density/);
 
-  const baseline = new GPUPycnophylactic(props).getCommandNodes(graph).length;
+  const baseline = new GPUPycnophylacticInterpolation(props).getCommandNodes(graph).length;
   const rich = setup();
   const richProps = {
     ...props,
@@ -422,15 +430,15 @@ it('GPUPycnophylactic resolves spatial context, tolerance, anchors and status', 
     tolerance: rich.view('float32', 1),
     zoneAnchorCells: rich.view('uint32', 6)
   };
-  expect(new GPUPycnophylactic(richProps).getCommandNodes(rich.graph).length).toBeGreaterThan(
-    baseline * 1.5
-  );
+  expect(
+    new GPUPycnophylacticInterpolation(richProps).getCommandNodes(rich.graph).length
+  ).toBeGreaterThan(baseline * 1.5);
 });
 
-it('GPUPycnophylactic gates converged iterations (rule 13), copies nothing forward and keeps one pipeline per kernel (rule 12)', () => {
+it('GPUPycnophylacticInterpolation gates converged iterations (rule 13), copies nothing forward and keeps one pipeline per kernel (rule 12)', () => {
   const build = (iterations: number) => {
     const {graph, view} = setup();
-    return new GPUPycnophylactic({
+    return new GPUPycnophylacticInterpolation({
       id: 'pycno',
       grid: makeGPURasterMetadata({width: 8, height: 4}),
       zones: view('uint32', 32),
@@ -491,7 +499,7 @@ it('longitude/latitude cell areas mirror stored rows for a north-up placement an
     }
   });
   const pycnophylacticSetup = setup();
-  const pycnophylactic = new GPUPycnophylactic({
+  const pycnophylactic = new GPUPycnophylacticInterpolation({
     id: 'mirror-pycno',
     grid: makeGPURasterMetadata({width: 8, height: 6}),
     zones: pycnophylacticSetup.view('uint32', 48),
@@ -548,7 +556,7 @@ for (const operator of ['areal', 'pycnophylactic'] as const) {
               status: {overflow: view('uint32', 1)}
             }
           })
-        : new GPUPycnophylactic({
+        : new GPUPycnophylacticInterpolation({
             ...common,
             zones: view('uint32', 4),
             zoneCount: 1,

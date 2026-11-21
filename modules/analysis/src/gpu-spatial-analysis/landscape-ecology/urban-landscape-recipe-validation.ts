@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {VertexFormat} from '@luma.gl/core';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
 import {
@@ -10,6 +11,7 @@ import {
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateLandscapeViews} from './landscape-validation';
 
 type Views = Readonly<Record<string, GraphDataView | undefined>>;
@@ -23,6 +25,23 @@ type OutputLayouts = Readonly<
     }
   >
 >;
+
+/**
+ * Check caller-owned output views exactly as `getRecipeView` will, with the same view IDs and
+ * messages, so a recipe can reject them before it adds its first node. Entries are
+ * `[viewId, format, length, provided]`; absent views are skipped. @internal
+ */
+export function validateProvidedRecipeViews<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  entries: readonly (readonly [string, VertexFormat, number, GraphDataView | undefined])[]
+): void {
+  for (const [viewId, format, length, view] of entries) {
+    if (!view) continue;
+    validateSinglePackedView(view, [format], viewId);
+    validateViewLength(viewId, 'provided output', view, length);
+    validateGraphViewsBelongToGraph(viewId, graph, [view]);
+  }
+}
 
 /** Preflight the isovist/counterfactual boundary without allocating resources or adding nodes. @internal */
 export function validateUrbanLandscapeRecipeViews<Parameters>(
@@ -41,6 +60,14 @@ export function validateUrbanLandscapeRecipeViews<Parameters>(
     Object.entries(layouts).map(([name, layout]) => [name, layout.view])
   );
   validateGraphViewsBelongToGraph(id, graph, [...Object.values(inputs), ...Object.values(outputs)]);
+  validateGraphChunkBindingRanges(
+    graph,
+    id,
+    Object.fromEntries([
+      ...Object.entries(inputs).map(([name, view]) => [`input.${name}`, view]),
+      ...Object.entries(outputs).map(([name, view]) => [`output.${name}`, view])
+    ])
+  );
   validateLandscapeViews(id, inputs, outputs, dispatches);
 
   const physical = (view: GraphDataView) =>

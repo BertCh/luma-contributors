@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "// labels: DBSCAN cluster ids from GPUSpatialClustering; noise (0xffffffff) is excluded\ngraph.add(\n  new GPUGroupGeometry({\n    spatialContext,\n    positions: observations,\n    labels,\n    groupCount: 64,\n    parameters: geometryParameters.importToGraph(graph),\n    output: {counts, bounds: bounds4, meanCenters, medoidIndices, standardDistances}\n  })\n);\n// meanCenters[g] and medoidIndices[g] are the centre and the most central observation of group g",
+    "code": "// labels: DBSCAN cluster ids from GPUDBSCAN; noise (0xffffffff) is excluded\ngraph.add(\n  new GPUGroupGeometry({\n    spatialContext,\n    positions: observations,\n    labels,\n    groupCount: 64,\n    parameters: geometryParameters.importToGraph(graph),\n    output: {counts, bounds: bounds4, meanCenters, medoidIndices, standardDistances}\n  })\n);\n// meanCenters[g] and medoidIndices[g] are the centre and the most central observation of group g",
     "language": "ts",
     "lineCount": 12
   },
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:41.222Z",
-    "runId": "run-e32a2c5b",
+    "date": "2026-11-20T23:49:45.675Z",
+    "runId": "run-b491e2ab",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-e32a2c5b",
+    "runId": "run-b491e2ab",
     "rung": "result",
     "bindings": {},
     "clauses": [],

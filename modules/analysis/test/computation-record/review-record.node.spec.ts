@@ -176,3 +176,238 @@ test('R10 legacy and explicitly logical imported resources print different certa
   expect(text).toContain('legacy unknown 8B (precision unknown)');
   expect(text).toContain('known imported 8B');
 });
+
+// Literal fixtures below use the two disjoint graphs in the hand-built record.
+import {computationRecordFixture, computationCapturesFixture} from './computation-record-fixture';
+import {validateGPUComputationSidecars} from '../../src/computation-record/validate-computation-record';
+import {createGPUComputationMetrics} from '../../src/computation-record/computation-metrics';
+import {toChromeTraceEvents} from '../../src/computation-record/export-chrome-trace';
+
+test('UDF-04 rejects null legacy lanes instead of restoring them as zero', () => {
+  const captures = structuredClone(computationCapturesFixture);
+  captures.snapshots[0].values = [null, 0] as never;
+  expect(validateGPUComputationSidecars(computationRecordFixture, {captures}).valid).toBe(false);
+});
+
+test('UDF-09 intersects local references and requires unambiguous inference and unique ids', () => {
+  const captures = structuredClone(computationCapturesFixture);
+  Object.assign(captures.snapshots[0], {graph: undefined, resource: 'first', afterNode: 'prepare'});
+  expect(validateGPUComputationSidecars(computationRecordFixture, {captures}).valid).toBe(false);
+  Object.assign(captures.snapshots[0], {resource: undefined, afterNode: undefined});
+  expect(validateGPUComputationSidecars(computationRecordFixture, {captures}).valid).toBe(false);
+  captures.snapshots[0].resource = 'first';
+  expect(validateGPUComputationSidecars(computationRecordFixture, {captures}).valid).toBe(true);
+  captures.replays = [{...captures.snapshots[0], provenance: 'gpu-replay'}];
+  expect(validateGPUComputationSidecars(computationRecordFixture, {captures}).valid).toBe(false);
+});
+
+test('UDF-05 snapshots all plain metadata after mixed graph source merging', () => {
+  const input = structuredClone(computationRecordFixture);
+  const record = createGPUComputationRecord({
+    ...input,
+    graphs: [input.graphs[0], {graph: input.graphs[1], sources: input.refs.sources}],
+    formulas: input.refs.formulas
+  });
+  // Literal expectations come from the fixture, before any mutation (not from the result).
+  expect(record.graphs[1].nodes[1].attrs).toEqual({variant: 'portable'});
+  expect(record.graphs[1].resources![0].bytes).toBe(16);
+  expect(record.graphs[1].edges[0]).toEqual({
+    from: 'init',
+    to: 'step:0',
+    kind: 'raw',
+    resource: 'first'
+  });
+  expect(record.axes.axes[0].label).toBe('Lane');
+  expect(record.refs.formulas[0].ascii).toBe('x');
+  expect(record.decisions[0].chosen).toBe('portable');
+  expect(record.workflow).toEqual({
+    id: 'solve',
+    invocations: [{graph: 'compiled', reason: 'Solve input'}]
+  });
+  const before = structuredClone(record);
+  (input.graphs[1].nodes[0].attrs as Record<string, number>)['radius'] = 9;
+  Object.assign(input.graphs[1].resources![0], {bytes: 999});
+  Object.assign(input.graphs[1].edges[0], {kind: 'explicit'});
+  Object.assign(input.axes.axes[0], {label: 'changed'});
+  Object.assign(input.refs.formulas[0], {ascii: 'changed'});
+  Object.assign(input.decisions[0], {chosen: 'changed'});
+  Object.assign(input.workflow!.invocations[0], {reason: 'changed'});
+  expect(record).toEqual(before);
+});
+
+test('UDF-12 invalid endpoints cannot poison the independent 3-to-4 ms node or measured zero', () => {
+  const metrics = createGPUComputationMetrics({
+    runId: computationRecordFixture.runId,
+    graph: 'compiled',
+    encoding: {coalesced: false, timestamped: true, taps: 0, lensTwin: false},
+    timing: {
+      nodes: [
+        {
+          id: 'init',
+          cpuEncodeTimeMilliseconds: 0,
+          gpuStartTimeMilliseconds: NaN,
+          gpuEndTimeMilliseconds: 2,
+          gpuTimeMilliseconds: 0
+        },
+        {
+          id: 'step:0',
+          cpuEncodeTimeMilliseconds: 0,
+          gpuStartTimeMilliseconds: 3,
+          gpuEndTimeMilliseconds: 4
+        }
+      ]
+    }
+  });
+  expect(metrics.nodes['step:0']).toMatchObject({gpuBegin: 0, gpuEnd: 1});
+  expect(metrics.nodes['init'].gpuTimeMs).toBe(0);
+  expect(metrics.nodes['init'].gpuBegin).toBeUndefined();
+  const trace = toChromeTraceEvents(computationRecordFixture, [metrics]);
+  expect(trace.traceEvents.filter(event => event.ph === 'X')).toMatchObject([{ts: 0, dur: 1000}]);
+  expect(trace.traceEvents.every(event => Number.isFinite(event.ts))).toBe(true);
+  const invalid = {...metrics, nodes: {init: {cpuEncodeMs: 0, gpuBegin: NaN, gpuEnd: 2}}};
+  expect(
+    validateGPUComputationSidecars(computationRecordFixture, {metrics: [invalid]}).issues.some(
+      issue => issue.path.endsWith('.gpuBegin')
+    )
+  ).toBe(true);
+  expect(
+    toChromeTraceEvents(computationRecordFixture, [invalid]).traceEvents.filter(
+      event => event.ph === 'X'
+    )
+  ).toEqual([]);
+});
+
+test('UDF-13 saved identity reproduces run id including zero seed', () => {
+  const record = createGPUComputationRecord({...identity, datasetVersion: 'table-v4', seed: 0});
+  const saved = JSON.parse(JSON.stringify(record));
+  expect(saved.datasetVersion).toBe('table-v4');
+  expect(saved.seed).toBe(0);
+  expect(getGPUComputationRunId(saved)).toBe(record.runId);
+});
+
+import * as captureValidation from '../../src/computation-record/validate-computation-record';
+import * as rasterValidation from '../../src/computation-record/capture-raster-validation';
+
+test('B5: legacy southward omitted origin keeps the top outer edge at height times cell size', () => {
+  const geometry = {kind: 'raster' as const, shape: [1, 2] as const, cellSize: 3};
+  // Existing raster support [0,3] x [0,6]; first sample is (1.5,4.5).
+  expect(rasterValidation.getGPUComputationRasterSamplePosition(geometry, 0, 0)).toEqual([
+    1.5, 4.5
+  ]);
+  expect(
+    rasterValidation.getGPUComputationRasterSamplePosition({...geometry, origin: [0, 6]}, 0, 0)
+  ).toEqual([1.5, 4.5]);
+  expect(
+    rasterValidation.getGPUComputationRasterSamplePosition(
+      {...geometry, rowDirection: 'north'},
+      0,
+      0
+    )
+  ).toEqual([1.5, 1.5]);
+});
+
+test('B6: graph resolver intersects references without mutating the capture', () => {
+  const record = structuredClone(computationRecordFixture);
+  const capture = {
+    ...computationCapturesFixture.snapshots[0],
+    graph: undefined,
+    resource: 'first',
+    afterNode: 'step:0'
+  };
+  record.graphs[0].nodes = [...record.graphs[0].nodes, {...record.graphs[1].nodes[1]}];
+  const before = structuredClone(capture);
+  expect(captureValidation.resolveGPUComputationCaptureGraph(record, capture)?.id).toBe('compiled');
+  expect(capture).toEqual(before);
+  expect(
+    captureValidation.resolveGPUComputationCaptureGraph(record, {...capture, resource: undefined})
+  ).toBeUndefined();
+  expect(
+    captureValidation.resolveGPUComputationCaptureGraph(record, {...capture, graph: 'intent'})
+  ).toBeUndefined();
+});
+
+test.each([
+  [1, 16],
+  [512, 16],
+  [256, 0]
+])('B7: binding window %s/%s must be aligned, positive and within logical resource', (bindingByteOffset, bindingByteLength) => {
+  const record = structuredClone(computationRecordFixture);
+  Object.assign(record.graphs[1].resources![0], {bytes: 512, bytesKind: 'logical'});
+  Object.assign(record.graphs[1].nodes[1].bindings![0], {
+    bindingByteOffset,
+    bindingByteLength,
+    elementType: 'u32',
+    length: 4
+  });
+  expect(validateGPUComputationRecord(record).valid).toBe(false);
+});
+
+test('S4: rejected endpoint pairs cannot change duration or counter placement', () => {
+  const metrics = createGPUComputationMetrics({
+    runId: computationRecordFixture.runId,
+    graph: 'compiled',
+    encoding: {coalesced: false, timestamped: true, taps: 0, lensTwin: false},
+    timing: {
+      nodes: [
+        {
+          id: 'init',
+          cpuEncodeTimeMilliseconds: 0,
+          gpuStartTimeMilliseconds: -1e20,
+          gpuEndTimeMilliseconds: NaN
+        },
+        {
+          id: 'step:0',
+          cpuEncodeTimeMilliseconds: 0,
+          gpuStartTimeMilliseconds: 7,
+          gpuEndTimeMilliseconds: 9
+        }
+      ]
+    }
+  });
+  expect(metrics.nodes['step:0']).toMatchObject({gpuBegin: 0, gpuEnd: 2});
+  const direct = {
+    ...metrics,
+    nodes: {
+      'step:0': {cpuEncodeMs: 0, gpuBegin: -100, gpuEnd: NaN},
+      'step:1': {cpuEncodeMs: 0, gpuBegin: 7, gpuEnd: 9}
+    },
+    series: [{name: 'residual', axis: 'iteration', values: [1, 2]}]
+  };
+  const record = structuredClone(computationRecordFixture);
+  Object.assign(record.graphs[1].nodes[2].loop!, {iteration: 0});
+  const trace = toChromeTraceEvents(record, [direct]);
+  expect(trace.traceEvents.find(event => event.ph === 'C')?.ts).toBe(7000);
+});
+
+test.each([
+  false,
+  true
+])('N1: source merging never invents an unknown entry point (reverse=%s)', reverse => {
+  const source = {
+    id: 'multi-entry',
+    language: 'wgsl' as const,
+    moduleId: 'multi-entry',
+    hash: 'same',
+    text: '@compute @workgroup_size(1) fn dry() {} @compute @workgroup_size(1) fn wet() {}'
+  };
+  const graph = {
+    ...computationRecordFixture.graphs[0],
+    nodes: [{...computationRecordFixture.graphs[0].nodes[0], source: source.id}],
+    edges: []
+  };
+  const unknown = {graph: {...graph, id: 'unknown'}, sources: [source]};
+  const known = {graph: {...graph, id: 'known'}, sources: [{...source, entryPoint: 'wet'}]};
+  const record = createGPUComputationRecord({
+    ...identity,
+    graphs: reverse ? [known, unknown] : [unknown, known]
+  });
+  const effective = (id: string) => {
+    const node = record.graphs.find(candidate => candidate.id === id)!.nodes[0];
+    return (
+      node.entryPoint ??
+      record.refs.sources.find(candidate => candidate.id === node.source)?.entryPoint
+    );
+  };
+  expect(effective('unknown')).toBeUndefined();
+  expect(effective('known')).toBe('wet');
+});

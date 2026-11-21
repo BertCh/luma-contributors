@@ -17,7 +17,11 @@ export default defineScene<ChangeOfSupportOptions>({
   order: 2,
   summary:
     'GPU areal interpolation transfers Chicago census-tract counts, rates and categories to hexagons or community areas, with optional street-density weighting. The output depends on raster resolution, zone alignment and the selected denominator.',
-  contributors: ['GPUArealInterpolation', 'GPUPycnophylactic', 'addChangeOfSupportRecipe'],
+  contributors: [
+    'GPUArealInterpolation',
+    'GPUPycnophylacticInterpolation',
+    'addChangeOfSupportRecipe'
+  ],
   datasets: [
     {
       id: 'chicago-tracts',
@@ -346,7 +350,7 @@ import {
   getGPUPolygonRasterizationParameterValues, makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
 import {
-  addChangeOfSupportRecipe, GPUGridGenerator, GPUPycnophylactic
+  addChangeOfSupportRecipe, GPUGridGenerator, GPUPycnophylacticInterpolation
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'change-of-support'});
@@ -380,9 +384,9 @@ const result = addChangeOfSupportRecipe(graph, {
   pairCapacity: 1 << 15,
   sourceValues, columnCount: 3,   // numerator, denominator, the tract's own rate
   categories: {sourceCategories, categoryCount: 5},
-  outputs: {extensiveValues, intensiveValues, categoryShares: shares}
+  output: {extensiveValues, intensiveValues, categoryShares: shares}
 });
-graph.add(new GPUPycnophylactic({
+graph.add(new GPUPycnophylacticInterpolation({
   spatialContext: projection.spatialContext,
   grid, zones: sourceZones, zoneCount: 791, totals,
   maximumIterations: ${ITERATION_LADDER[state.iterations]}, kernel: '${state.kernel}', output: {mass: surface}
@@ -392,7 +396,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
 // rule: extensive = rows of extensiveValues; rate = extensive[0] / extensive[1] * scale`,
 
   about: {
-    what: '`addChangeOfSupportRecipe` rasterizes a source and a target zone system onto one raster, lets `GPUArealInterpolation` count (or weight) how much of each source lies in each target, and transfers values through `GPUSpatialLag` over those area-share weights. Extensive transfer splits a source total by area: `w = a_st / A_s`. Intensive transfer takes an area-weighted mean: `w = a_st / B_t`. `GPUPycnophylactic` builds Tobler’s smooth surface that keeps every tract total.',
+    what: '`addChangeOfSupportRecipe` rasterizes a source and a target zone system onto one raster, lets `GPUArealInterpolation` count (or weight) how much of each source lies in each target, and transfers values through `GPUSpatialLag` over those area-share weights. Extensive transfer splits a source total by area: `w = a_st / A_s`. Intensive transfer takes an area-weighted mean: `w = a_st / B_t`. `GPUPycnophylacticInterpolation` builds Tobler’s smooth surface that keeps every tract total.',
     why: 'Data arrive in the zones someone else drew: tracts, ZIP codes, school districts. Plans, models and grids need other zones. Moving a number across mismatched boundaries is the modifiable areal unit problem in practice, and the method (count versus rate, uniform versus dasymetric) decides the answer. It matches tobler’s area_interpolate and pycno in Python.',
     howToRead:
       'Each target zone shows the transferred value in the legend units. A hexagon over several tracts is an area-share blend; thick outlines are the targets and thin lines the tracts. The Totals readout tells you whether the transfer conserved mass, and the Resolution readout bounds the error at the zone boundaries.'
@@ -508,7 +512,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
       textAlternative:
         'A continuous population-density raster smooths tract interiors while retaining each tract total.',
       title: 'A smooth surface that keeps every total, then try your own',
-      body: '**`GPUPycnophylactic`** (Tobler 1979) builds a continuous density surface instead of zones. It starts with each tract’s density, repeatedly replaces every cell by the average of its neighbours, then rescales each tract so its total is restored and nothing goes negative. Boundaries between tracts melt away and people are spread smoothly, yet **every tract total is exact**; the readout sums the surface over every tract to prove it.\n\n**Pycnophylactic iterations** is compile-time (each step is its own cached graph): 0 is the flat tract density, 512 is nearly a smooth hill. Limits: it assumes people spread smoothly, ignoring parks and the lake, and it has no ancillary data or barriers; the dasymetric weights above do not apply to it. Try the *Introduced share of observations (rate)* variable, **Smoothing neighbourhood** *Box (3 × 3)*.',
+      body: '**`GPUPycnophylacticInterpolation`** (Tobler 1979) builds a continuous density surface instead of zones. It starts with each tract’s density, repeatedly replaces every cell by the average of its neighbours, then rescales each tract so its total is restored and nothing goes negative. Boundaries between tracts melt away and people are spread smoothly, yet **every tract total is exact**; the readout sums the surface over every tract to prove it.\n\n**Pycnophylactic iterations** is compile-time (each step is its own cached graph): 0 is the flat tract density, 512 is nearly a smooth hill. Limits: it assumes people spread smoothly, ignoring parks and the lake, and it has no ancillary data or barriers; the dasymetric weights above do not apply to it. Try the *Introduced share of observations (rate)* variable, **Smoothing neighbourhood** *Box (3 × 3)*.',
       camera: {longitude: -87.7, latitude: 41.84, zoom: 10.0, transitionMs: 1500},
       options: {variable: 'population', view: 'surface', iterations: 3, ramp: 'cividis'},
       controls: ['view', 'iterations', 'kernel', 'variable'],

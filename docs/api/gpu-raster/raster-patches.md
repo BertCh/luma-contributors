@@ -5,6 +5,8 @@ description: Per-patch shape metrics and small-patch removal over dense label ra
 
 # Raster patch metrics and sieving
 
+Import from `@luma-contributors/analysis/raster-analysis`.
+
 `GPURasterPatchMetrics` and `GPURasterSieve` are companions to upstream `GPURasterConnectedComponents` and
 `GPURasterDenseComponents` (`@luma.gl/graph/gpu-raster`). Both read dense labels (`0` is background) and take the same optional
 `mask` (an input row filter: zero turns the pixel into background), `converged`, `componentCount`,
@@ -39,18 +41,77 @@ and `overflow` guards, the last three as in `GPURasterRegionMeasurements`; the s
   touching labels, so `'merge'` is meant for segmentation label rasters.
 
 ```ts
+import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {GPURasterPatchMetrics, GPURasterSieve, getGPURasterSieveParameterValues} from '@luma-contributors/analysis/raster-analysis';
+
+declare const rasterMetadata: GPURasterMetadata;
+// Dense labels and mask cover the grid; the three status inputs each have one row.
+declare const denseLabels: GraphDataView<'uint32'>;
+declare const mask: GraphDataView<'uint32'>;
+declare const converged: GraphDataView<'uint32'>;
+declare const componentCount: GraphDataView<'uint32'>;
+declare const overflow: GraphDataView<'uint32'>;
+// Per-patch columns have capacity 256. sievedLabels covers the grid; sievedCount is scalar.
+declare const pixelCounts: GraphDataView<'uint32'>;
+declare const minColumns: GraphDataView<'uint32'>;
+declare const minRows: GraphDataView<'uint32'>;
+declare const maxColumns: GraphDataView<'uint32'>;
+declare const maxRows: GraphDataView<'uint32'>;
+declare const sievedLabels: GraphDataView<'uint32'>;
+declare const sievedCount: GraphDataView<'uint32'>;
+declare const areas: GraphDataView<'float32'>;
+declare const perimeters: GraphDataView<'float32'>;
+const sieveParameters = new GPUParameterBuffer(device, {
+  id: 'sieve-settings', format: 'uint32', length: 4,
+  values: getGPURasterSieveParameterValues({minimumPixels: 8})
+});
 graph.add(new GPURasterPatchMetrics({
   grid: rasterMetadata, labels: denseLabels, mask,
   status: {converged, componentCount, overflow}, // the labeling passes' status scalars
   output: {pixelCounts, areas, perimeters, minColumns, minRows, maxColumns, maxRows}
 }));
 graph.add(new GPURasterSieve({
-  grid: rasterMetadata, labels: denseLabels, patchCapacity: 256,
+  grid: rasterMetadata, labels: denseLabels, mask, patchCapacity: 256,
+  status: {converged, componentCount, overflow},
   parameters: sieveParameters.importToGraph(graph),
   mode: 'merge', connectivity: 8, output: {labels: sievedLabels, sievedCount}
 }));
+// Between encodings; destroy the compiled graph before sieveParameters.destroy().
 sieveParameters.write(getGPURasterSieveParameterValues({minimumPixels: 16}));
 ```
+
+## Handoff to landscape metrics
+
+Pass the complete `GPURasterPatchLabels` port as `denseLabels` to the landscape adapter.
+Raster labels use zero for background and IDs `1..N`; the legacy `patches` prop instead uses
+zero-based patch rows, so passing the raw raster labels under that name changes membership.
+
+```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPURasterPatchLabels} from '@luma-contributors/analysis/raster-analysis';
+import {addLandscapeMetricsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const graph: GPUCommandGraph;
+// Three unit cells, labels [0,1,1], no mask, converged [1], overflow [0], componentCount [1].
+declare const patchLabels: GPURasterPatchLabels;
+// One row, class [0], for dense label 1.
+declare const patchClasses: GraphDataView<'uint32'>;
+declare const patchMetrics: GraphDataView<'float32x4'>;
+addLandscapeMetricsRecipe(graph, {
+  width: 3, height: 1, cellSize: [1,1], classCount: 1, connectivity: 4,
+  denseLabels: patchLabels, patchClasses, output: {patchMetrics}
+});
+```
+
+`patchLabels` includes `grid`, `labels`, optional `mask`, and
+`status: {converged, overflow, componentCount}` from the producer. Carry all available guards:
+`converged = 0` or `overflow != 0` suppresses downstream metrics; `componentCount` bounds accepted
+IDs. The complete fixture `[0,1,1]` yields area **2** in `patchMetrics` row 0, first component,
+because the background cell contributes nothing. With unit cells and the default boundary count,
+the row is `[2,6,2,2]` (area, perimeter, cell count, directed like-adjacent sides).
+See [landscape metrics and proximity](../gpu-spatial-analysis/landscape-ecology.md).
 
 #### `GPURasterPatchMetrics`
 
@@ -61,9 +122,19 @@ between encodings. The eight-word layout matches fractional coverage. Uniform mo
 absolute determinant for area and both affine axis lengths for perimeter, including rotated and
 sheared cells. Ground modes also read each row's latitude; they require axis-aligned grids on every
 encoding. Their fixed-point weights and perimeter normalization follow the new resolution.
+The ten-word layout from
+`getGPURasterFractionalCoverageParameterValues(absoluteGrid, {localOrigin})` is also accepted:
+word 7 stays ignored legacy padding, word 8 is `2`, and word 9 restores absolute Y for ground
+areas/perimeters. Subtract the same local origin in binary64 before uploading polygon vertices;
+reuse those ten words for clipping and area consumers, as in the
+[shared-frame example](./expansion.md#geometry-and-coverage). Legacy padded packets retain their
+absolute origin in word 1; nonzero padding never shifts their row latitude.
 Dimensions, pixel interpretation and `cellSizeMode` stay fixed. Without `parameters`, the initial
 affine remains fixed for compatibility.
-The packer and parameter-driven path require a nonsingular affine representable in float32.
+The packer requires a nonsingular packed affine and a physical area determinant that remains
+finite and nonzero after float32 rounding. It validates before writing any target word. A legacy
+write into a reused target of at least ten words clears words 8 and 9, deactivating a previous
+version-2 absolute-Y extension. The parameter-driven path requires a nonsingular affine representable in float32.
 Fixed-affine pixel counts do not depend on that packing, so an underflowing determinant does
 not prevent counting patches.
 
@@ -73,8 +144,10 @@ not prevent counting patches.
 
 ##### `GPURasterPatchMetrics` parameters
 
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterPatchMetrics`.
+
 - Packer: `getGPURasterPatchMetricsParameterValues(grid)`, writes `GPU_RASTER_PATCH_METRICS_PARAMETER_LENGTH` (8) `float32` values.
-  - `grid` (`GPURasterMetadata`): Raster grid whose affine will be measured.
+  - `grid` (`GPURasterMetadata`): Raster grid whose affine will be measured. The physical determinant is rounded from the declared affine, separately from packed-axis coordinate metadata. It must be finite and nonzero in float32; validation precedes all writes. Reusing a ten-word version-2 target clears its discriminator and absolute-Y offset.
 
 {/* /parameters */}
 
@@ -96,6 +169,8 @@ Removes patches smaller than a pixel threshold from a patch label raster.
 {/* parameters: GPURasterSieve generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ##### `GPURasterSieve` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterSieve`.
 
 - Packer: `getGPURasterSieveParameterValues(settings)`, writes `GPU_RASTER_SIEVE_PARAMETER_LENGTH` (4) `uint32` values.
 

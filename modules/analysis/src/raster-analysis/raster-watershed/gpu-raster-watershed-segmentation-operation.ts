@@ -4,8 +4,12 @@
 
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../raster-grid/raster-construction-snapshot';
 import {
   resolveRasterOperationBand,
+  snapshotRasterOperationBand,
+  validateRasterOperationOutputNames,
   type RasterOperationBand
 } from '../raster-grid/raster-operation-band';
 import {GPURasterWatershedSegmentation} from '../gpu-raster-watershed-segmentation';
@@ -26,7 +30,41 @@ export type RasterWatershedSegmentationOperationProps = {
 /** Operation form of the buffer-backed watershed contributor. */
 export class GPURasterWatershedSegmentationOperation extends GPUContributorOperation {
   constructor(props: RasterWatershedSegmentationOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'input',
+      'markers',
+      'connectivity',
+      'method',
+      'maximumSteps',
+      'maximumIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['labels', 'status']);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      input: snapshotRasterOperationBand(props.input),
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, ['converged', 'iterationLimitReached'])
+      })
+    });
     const id = props.id ?? 'raster-watershed-segmentation';
+    validateRasterOperationOutputNames(
+      id,
+      {
+        'output.labels': props.output.labels,
+        'output.status.converged': props.output.status.converged
+      },
+      {'output.status.iterationLimitReached': props.output.status.iterationLimitReached},
+      {
+        'input.storage.values': props.input.storage.values,
+        ...(props.input.validity !== undefined ? {'input.validity': props.input.validity} : {}),
+        markers: props.markers
+      }
+    );
     const iterationLimitReached = props.output.status.iterationLimitReached;
     super({
       id,

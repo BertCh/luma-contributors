@@ -11,6 +11,11 @@ Times are float32 relative to a nearby origin, in one unit (see
 converted. Every time length below (`temporalBandwidth`, `sliceInterval`, `maximumTimeLag`, the time
 window) is in that unit.
 
+Density constructors capture their used construction options, nested grids, contexts and
+output/status routing once. Mutating the original options before graph declaration does not change
+the graph. Input and parameter graph views keep their identity; their buffer contents remain live
+and can be rewritten between submissions without recompilation.
+
 ## References and status of the oracles
 
 The references are R-only and GPL. R is not installed on the development machines, so there are no
@@ -33,7 +38,23 @@ this page says a convention is unverified, it was not checked against the packag
 ## Space-time kernel density: `GPUSpaceTimeKernelDensity`
 
 ```ts
-const grid = makeGPURasterMetadata({width: 256, height: 256, /* cellSize, origin */});
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import {getGPUSpaceTimeKernelDensityParameterValues, GPUSpaceTimeKernelDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const parameterBuffer: GPUParameterBuffer<'float32'>;
+const parameters = parameterBuffer.importToGraph(graph);
+declare const positions: GraphDataView<'float32x2'>;
+declare const times: GraphDataView<'float32'>;
+declare const weights: GraphDataView<'float32'>;
+declare const values: GraphDataView<'float32'>;
+declare const weightSum: GraphDataView<'float32'>;
+declare const invalidCount: GraphDataView<'uint32'>;
+const [minX, minY, maxX, maxY] = [0, 0, 256_000, 256_000];
+
+const grid = makeGPURasterMetadata({width: 256, height: 256, cellSize: [1000, 1000], origin: [minX, maxY]});
 const parameterValues = getGPUSpaceTimeKernelDensityParameterValues(
   {bandwidth: 500, temporalBandwidth: 3, firstSliceTime: 0, sliceInterval: 1, timeWindow: [0, 63]},
   grid,
@@ -73,7 +94,88 @@ For the voxel at cell center `u` and slice time `t_k = firstSliceTime + k * slic
   by default) under `'uniform'` correction, and 1 under `'none'`. Points outside a corrected window
   are excluded and counted in `status.invalidCount`; voxels whose center or slice time is outside a
   corrected window are NaN. This is the `sedge` / `tedge = "uniform"` of sparr.
-- `'probability'` divides by the sum of included weights.
+- `'probability'` divides by the sum of included weights. With uniform edge correction the
+  integral over the observation window depends on event locations. For spatial mass conservation,
+  fixed `GPUKernelDensity` offers event-wise `'diggle'` correction, allowing for truncation and
+  raster quadrature; the space-time contributors currently offer only `'none'` and `'uniform'`.
+
+Both axes accept `'quartic'` and its old synonym `'bisquare'`, with the same bandwidth convention
+and normalization on that axis. Spatial quartic is `3/pi (1-r²)²` per unit area; temporal quartic
+is `15/16 (1-s²)²` per time unit. An unrecognized kernel name throws at construction, including
+through `GPUSpaceTimeRelativeRisk`, and the host kernel/overlap helpers reject it too.
+
+### Encoded coordinates, time slices and overlap
+
+All three density packers validate the float32 values before writing the destination. Grid X and
+Y endpoints must remain finite, retain their direction, and yield finite nonzero cell steps.
+Bandwidths must remain finite and positive, and explicit spatial and temporal windows must remain
+strictly ordered after encoding. A positive binary64 value such as `Number.MIN_VALUE` is too small
+for a float32 bandwidth. A grid at projected origin `[500000, 6000000]` with `cellSize: 0.1` can lose
+its Y extent. Subtract one common origin from positions, grid placement, index bounds and spatial
+window before converting any of them to float32; subtracting it after conversion cannot restore
+the lost extent. Errors identify the axis and encoded endpoints.
+
+The slice expression uses encoded controls and explicit float32 `fma(slice, interval, first)`, with
+one rounding after the multiply-add, including on Metal. The
+default temporal window uses those same first and last slice values, shared by space-time density
+and relative risk. An exponent-bin representability check avoids walking every slice while still
+locating the first adjacent time that does not advance. For example, eight slices with first `.1`
+and interval `.05` end at `0.45000001788139343`, including that final voxel under uniform correction.
+For example, `firstSliceTime: 0.7, sliceInterval: 1e-9, sliceCount: 3` repeats its first encoded
+instant; move the time origin to `0.7` and use `firstSliceTime: 0` with correspondingly recentered
+event times and explicit window. A single slice still defaults to a zero-duration window at its
+encoded instant: give it an explicit window when requesting uniform temporal correction.
+
+`getGPUKernelDensityWindowOverlap(kernel, bandwidth, point, window)` and
+`getGPUSpaceTimeTemporalWindowOverlap(kernel, bandwidth, time, window)` return dimensionless kernel
+overlap, including when the query lies outside the window. Gaussian overlap uses stable narrow
+interval integration and survival differences in the tails. Compact support caps are evaluated in
+remaining support width rather than by subtracting nearly equal cumulative masses. Partially
+clipped chords split at rectangle-edge crossings; centered compact temporal intervals use their
+centered polynomial instead of subtracting two half-masses. Gaussian shader overlaps retain the
+original encoded window width before translating either endpoint to the query origin. The density
+estimator separately rejects a correction mass at or below
+`1e-6`; the overlap helpers return the smaller positive mass itself.
+
+### Fixed-density bandwidth and downstream rasters
+
+For fixed `GPUKernelDensity`, `bandwidthPopulation: 'all-finite'` is the default and preserves the
+existing automatic-bandwidth population: finite positions with finite nonnegative weights,
+including events outside the index domain and active correction window. Set
+`bandwidthPopulation: 'included'` to apply those same inclusion filters used by the density.
+With `bandwidthRule`, optional `output.bandwidthPopulationCount` is one uint32 live row count in
+the chosen population, including zero-weight rows; `output.bandwidth` is one float32 bandwidth in
+position units. `output.weightSum` retains the original included weight units under either
+population. Weight moments use a common power-of-two scale internally, so switching equal weight
+units between `1`, `1e20` and `1e-24` preserves Scott/Silverman bandwidth. The triangle
+`(0,0), (1,0), (0,1)` has Gaussian bandwidth `0.4807498568`; adding excluded `(1000,1000)` changes
+only the all-finite population's bandwidth to `396.718156`. Compact support bandwidths multiply
+the Gaussian-scale rule by `2.40187391` for Epanechnikov and `2.77919324` for quartic/bisquare.
+
+A fixed density's `outputBand.storage.values` borrows exactly `grid.width * grid.height` rows,
+preserving the allocation's byte offset without copying. Pass this **same view** as `values` to
+both `GPUClassBreaks` and `GPUColorScale`; using the larger output allocation can include spare
+pixels in the legend. Rows beyond the grid prefix are unspecified.
+
+`GPUPointDensity.limits` and `GPUKernelDensity.limits` expose source-backed numeric route metadata;
+their static `getExecutionPlan(shape, deviceLimits)` methods inspect rows, grid dimensions, chunk
+bytes, scratch bytes and command budgets without allocating GPU resources. Point density defaults
+to deterministic workgroup sums; atomic sums require explicit selection and have order-dependent
+float32 rounding. Gaussian KDE auto mode selects binned evaluation only above 32 support cells
+and with at least 2.5 bandwidths of padding; otherwise it gathers exactly. The planner and
+parallel shader gate compare single-rounded products `5*h > 32*minimumCell` and
+`5*h <= 2*margin*minimumCell`, avoiding reciprocal-dependent decisions at the boundary. A frame
+with zero/nonfinite encoded cell area is invalid. Plans include the packed mask binding, requested
+sum/mean scratch and weight chunk topology; count-only outputs do not allocate sum scratch. The binned error bound
+requires at least three cells per bandwidth. Supply encoded `bandwidth` and `cellSize` in the
+KDE shape to inspect one frame's route; without them the planner reports `'auto'`. Construction
+and graph declaration additionally validate port formats, layouts and graph ownership.
+Both density classes cap total input rows at 4,294,967,295. Point density's weighted
+workgroup route, when sum/mean results are requested, caps the whole grid at 11,184,810 cells; larger weighted grids require explicit
+atomic sums. KDE's binned and Gaussian auto declarations cap the entire padded grid at
+11,184,810 cells. Both limits reserve three words per cell within 128 MiB; actual scratch and
+each input chunk must also fit the device binding and buffer byte limits. Point density and the
+binned KDE route cap their estimated command budget at 32,768 across all chunks and tiles.
 
 The output is cell-major, row `(y * width + x) * sliceCount + slice`, the layout
 `GPUCubeLayoutTranspose` calls `'cell-major'`.
@@ -113,6 +215,8 @@ every voxel is then NaN, so pass `timeWindow` for a single slice (or use `'none'
 
 ### `GPUSpaceTimeKernelDensity` parameters
 
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUSpaceTimeKernelDensity`.
+
 - Packer: `getGPUSpaceTimeKernelDensityParameterValues(settings, grid, sliceCount)`, writes `GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH` (14) `float32` values.
   - `grid` (`GPURasterMetadata`): The output grid, as for `getGPUKernelDensityParameterValues`.
   - `sliceCount` (`number`): Number of slices (a positive integer), to default the time window.
@@ -124,7 +228,7 @@ Settings of `getGPUSpaceTimeKernelDensityParameterValues`:
 | `bandwidth` | `number` | Kernel bandwidth `h` in position units (ground units). Positive and finite. Ignored (the GPU computes it) when `GPUKernelDensityProps.bandwidthRule` is set; pass any positive value. |
 | `window` (optional) | `GPUKernelDensityWindow \| 'study-window'` | Study window `[minX, minY, maxX, maxY]` of the edge correction. Defaults to the ordered rectangle of the output grid. Ignored without edge correction. Use `'study-window'` with a polygon `studyWindow`; it writes NaN rectangle slots, so a rectangle-mode operator with edge correction yields NaN cells. |
 | `temporalBandwidth` | `number` | Temporal kernel bandwidth, positive and finite, in the unit of the relative `times`. |
-| `firstSliceTime` | `number` | Time of slice 0 in the unit and origin of `times`. Slice `k` is evaluated at `firstSliceTime + k * sliceInterval`. |
+| `firstSliceTime` | `number` | Time of slice 0 in the unit and origin of `times`. Slice `k` uses one float32 fused multiply-add, `fma(float32(k), sliceInterval, firstSliceTime)`. |
 | `sliceInterval` | `number` | Time between slices, positive and finite. |
 | `timeWindow` (optional) | `readonly [number, number]` | `[start, end]` of the temporal edge correction window, `start < end`. Defaults to the first and last slice time. Ignored without `temporalEdgeCorrection: 'uniform'`. With one slice the default is the instant of that slice, which holds no kernel mass: under the uniform temporal correction every voxel is then NaN, so give one slice an explicit window. |
 
@@ -141,7 +245,9 @@ index, and writes one ratio kernel:
 - `scale: 'ratio'`: `f / g`.
 - NaN where either density is NaN or the control density is not positive.
 
-Under equal distributions the risk is 1 (log 0). Optional outputs `caseDensity` and `controlDensity`
+Under equal distributions the risk is 1 (log 0). The risk `output.values` must hold at least `grid.width * grid.height * sliceCount` rows,
+including when both intermediate density outputs are supplied; construction rejects a short view.
+Optional outputs `caseDensity` and `controlDensity`
 expose the two densities, and `status.caseInvalidCount` / `controlInvalidCount` the excluded rows.
 
 Not implemented: time-static controls (a spatial-only control density with the conditional case
@@ -153,6 +259,8 @@ and Hazelton, which was not verified), and separate case and control bandwidths.
 {/* parameters: GPUSpaceTimeRelativeRisk generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUSpaceTimeRelativeRisk` parameters
+
+Import from `@luma-contributors/analysis/gpu-spatial-analysis`: `GPUSpaceTimeRelativeRisk`.
 
 - Packer: `getGPUSpaceTimeKernelDensityParameterValues(settings, grid, sliceCount)`, writes `GPU_SPACE_TIME_KERNEL_DENSITY_PARAMETER_LENGTH` (14) `float32` values.
   - Input port: `parameters`.
@@ -166,7 +274,7 @@ Settings of `getGPUSpaceTimeKernelDensityParameterValues`:
 | `bandwidth` | `number` | Kernel bandwidth `h` in position units (ground units). Positive and finite. Ignored (the GPU computes it) when `GPUKernelDensityProps.bandwidthRule` is set; pass any positive value. |
 | `window` (optional) | `GPUKernelDensityWindow \| 'study-window'` | Study window `[minX, minY, maxX, maxY]` of the edge correction. Defaults to the ordered rectangle of the output grid. Ignored without edge correction. Use `'study-window'` with a polygon `studyWindow`; it writes NaN rectangle slots, so a rectangle-mode operator with edge correction yields NaN cells. |
 | `temporalBandwidth` | `number` | Temporal kernel bandwidth, positive and finite, in the unit of the relative `times`. |
-| `firstSliceTime` | `number` | Time of slice 0 in the unit and origin of `times`. Slice `k` is evaluated at `firstSliceTime + k * sliceInterval`. |
+| `firstSliceTime` | `number` | Time of slice 0 in the unit and origin of `times`. Slice `k` uses one float32 fused multiply-add, `fma(float32(k), sliceInterval, firstSliceTime)`. |
 | `sliceInterval` | `number` | Time between slices, positive and finite. |
 | `timeWindow` (optional) | `readonly [number, number]` | `[start, end]` of the temporal edge correction window, `start < end`. Defaults to the first and last slice time. Ignored without `temporalEdgeCorrection: 'uniform'`. With one slice the default is the instant of that slice, which holds no kernel mass: under the uniform temporal correction every voxel is then NaN, so give one slice an explicit window. |
 
@@ -175,6 +283,25 @@ Settings of `getGPUSpaceTimeKernelDensityParameterValues`:
 ## Space-time K, pair correlation, local statistics: `GPUSpaceTimeKFunction`
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {getGPUSpaceTimeKFunctionParameterValues, GPUSpaceTimeKFunction} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+
+declare const graph: GPUCommandGraph;
+declare const parameterBuffer: GPUParameterBuffer<'float32'>;
+const parameters = parameterBuffer.importToGraph(graph);
+declare const positions: GraphDataView<'float32x2'>;
+declare const times: GraphDataView<'float32'>;
+declare const mask: GraphDataView<'uint32'>;
+declare const k: GraphDataView<'float32'>;
+declare const spatialK: GraphDataView<'float32'>;
+declare const temporalK: GraphDataView<'float32'>;
+declare const d: GraphDataView<'float32'>;
+declare const pairCorrelation: GraphDataView<'float32'>;
+declare const local: GraphDataView<'float32'>;
+declare const pairCounts: GraphDataView<'uint32'>;
+declare const statusView: GraphDataView<'uint32'>;
+
 const parameterValues = getGPUSpaceTimeKFunctionParameterValues({
   bounds: [0, 0, 10_000, 8_000],
   maximumDistance: 1_500,
@@ -188,7 +315,7 @@ graph.add(
   new GPUSpaceTimeKFunction({
     positions,
     times,
-    intensities, // optional: inhomogeneous estimator
+    // Homogeneous estimator: omit intensities when requesting marginals and d.
     mask, // optional
     parameters, // GPU_SPACE_TIME_K_FUNCTION_PARAMETER_LENGTH (11) values
     gridSize: [64, 64],
@@ -205,6 +332,17 @@ included events, ordered pairs `i != j`, `d_ij` the distance and `t_ij = |t_i - 
 
 - Included events have a nonzero mask, a finite position inside `W`, a finite time inside `T`, and
   with intensities a finite positive one.
+- `getGPUSpaceTimeKFunctionParameterValues` checks the settings after rounding to float32, the
+  values the shaders read. It throws when the bounds or the time window lose their strict order,
+  when a value overflows, or when a positive maximum, bandwidth or search radius rounds to 0. For
+  example, bounds `[1e7, 0, 1e7 + 0.25, 1]` pack to a zero X extent. Recenter such coordinates and
+  times on a local origin. On this space-time K route, the derived float32 width, height,
+  duration, area (`width * height`) and space-time volume (`area * duration`) must each remain
+  finite and normal, at least `2^-126`. These checks apply after each subtraction and product
+  is rounded to float32. Individually finite, ordered endpoints can still produce an overflowing
+  difference, or an area or volume that underflows, becomes subnormal or overflows. Rescale
+  coordinates or time units so every derived quantity meets that limit; usable endpoints alone
+  do not ensure usable normalizers.
 - Grid: `u_a = maximumDistance (a + 1) / distanceClassCount`, `v_b = maximumTimeLag (b + 1) /
   timeClassCount`. A pair is in distance class `a` when `d / maximumDistance * U` is in `(a, a +
   1]` (distance 0 is class 0), the right-closed convention of `GPURipley`, and likewise for lags.
@@ -245,8 +383,43 @@ against the package; the fixture will decide.
 ### How it runs
 
 The row filter, the 3 x 3 lattice neighborhood of the shared pair histogram and the temporal
-marginal. Pair counts and the temporal marginal are exact integers; weighted sums are fixed point
-(2^-16 units) in the deterministic pair histogram; results are bitwise reproducible. LISTA sums add
+marginal. Pair counts are accumulated as exact multiword integers within accumulator capacity;
+the published `uint32` pair-count port saturates at 4,294,967,295 (`2^32 - 1`). For example,
+65,537 events in one class have 4,295,032,832 ordered nonself pairs, so that port returns the cap.
+The temporal marginal starts from integer counts; its normalized estimates are float32.
+Weighted sums use fixed point in the deterministic pair histogram; results are bitwise reproducible. Homogeneous terms use
+2^-16 units. Inhomogeneous terms (K and the pair correlation with `intensities`) use a per-frame
+power-of-two scale `S` set from the smallest included `1 / lambda'`. For untapered
+inhomogeneous **K** pair terms (edge weights at least 1), an unclamped scale keeps the smallest
+term at least 2^16 accumulator units: integer quantization contributes at most 2^-17 relative
+error, in addition to float32 arithmetic error. The supported **K scale exponent** is `[-100, 100]`.
+The scale is chosen from `e = floor(log2(minimum inverse intensity))`, with exponent `16 - 2e`.
+Admission is checked for **every included row**, separate from the minimum used to choose that scale:
+its inverse relative intensity must be positive and finite and its own exponent `e_i` must satisfy
+`16 - 2e_i` in `[-100, 100]` (`e_i` in `[-42, 58]`). Any row failing that condition reports loss
+and suppresses dependent estimates. For example, inverse intensities `[1, 2^59]` have a supported
+minimum-derived exponent of 16, but the second row requires -102 and makes the frame incomplete.
+
+Pair-correlation terms also multiply the spatial and temporal kernel tapers. A positive tapered
+term may be arbitrarily small. PCF therefore uses an additional `2^24` scale: its effective scale
+is `S_PCF = S * 2^24`. Its **absolute quantization** error in the small channel is at most
+`0.5 / (S * 2^24)`, plus float32 rounding of the scaled term and addition of 0.5. The coarse
+(large) channel quantizes in 4096-unit steps, with absolute error at most
+`2048 / (S * 2^24)` plus float32 rounding. These are bounds per raw weighted contribution before
+final output normalization, assuming no accumulator or term overflow. For example, at `S = 2^16`, these absolute bounds are `2^-41` (small) and `2^-29`
+(coarse). They are not a relative error guarantee for arbitrarily small tapers.
+
+A disappearing positive product (including a positive tapered product below half a scaled unit),
+an unsupported intensity scale, or accumulator overflow marks the frame incomplete. Optional
+`output.status` reports **3** for this loss on an otherwise usable frame. Dependent estimates are
+suppressed as NaN, including K, pair correlation and local estimates, even when the optional status
+view is omitted. Published pair counts remain exact only below their uint32 saturation cap,
+including when a weighted estimate is suppressed. Count-port saturation alone does not set status 3;
+weighted-accumulator overflow and unsupported/disappearing weighted terms do. An unusable frame
+reports status 1 with precedence over loss.
+
+The former fixed 2^-16 unit gave +6.8 % at a relative intensity `lambda'` of 100, +37 % at 300
+and lost every term from 363. LISTA sums add
 in float32 in the fixed neighbor order. The temporal marginal uses the sorted times and a binary
 search per event and class, with the same class test as the pair pass, so the two agree on every
 boundary; its cost is `n V log n`. The pair search radius is `maximumDistance`, plus
@@ -261,6 +434,8 @@ window, bandwidths and the buffers. Compile-time: row count, `gridSize`, class c
 {/* parameters: GPUSpaceTimeKFunction generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUSpaceTimeKFunction` parameters
+
+Import from `@luma-contributors/analysis/dataframe-analysis`: `GPUSpaceTimeKFunction`.
 
 - Packer: `getGPUSpaceTimeKFunctionParameterValues(settings)`, writes `GPU_SPACE_TIME_K_FUNCTION_PARAMETER_LENGTH` (11) `float32` values.
 
@@ -280,6 +455,21 @@ Settings of `getGPUSpaceTimeKFunctionParameterValues`:
 ## Diggle test of space-time interaction: `GPUSpaceTimeDiggleTest`
 
 ```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUSpaceTimeDiggleTest} from '@luma-contributors/analysis/dataframe-analysis';
+
+declare const graph: GPUCommandGraph;
+declare const positions: GraphDataView<'float32x2'>;
+declare const times: GraphDataView<'float32'>;
+declare const mask: GraphDataView<'uint32'>;
+declare const parameters: GraphDataView<'float32'>;
+declare const randomParameters: GraphDataView<'uint32'>;
+declare const d: GraphDataView<'float32'>;
+declare const statistics: GraphDataView<'float32'>;
+declare const summary: GraphDataView<'float32'>;
+declare const permutationMean: GraphDataView<'float32'>;
+declare const permutationStandardDeviation: GraphDataView<'float32'>;
+
 graph.add(
   new GPUSpaceTimeDiggleTest({
     positions, times, mask,
@@ -345,6 +535,8 @@ permutation test of the local statistics (the local statistics are observed valu
 {/* parameters: GPUSpaceTimeDiggleTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUSpaceTimeDiggleTest` parameters
+
+Import from `@luma-contributors/analysis/dataframe-analysis`: `GPUSpaceTimeDiggleTest`.
 
 - Packer: `getGPUSpaceTimeDiggleRandomParameterValues(seed)`, writes `GPU_SPACE_TIME_DIGGLE_RANDOM_PARAMETER_LENGTH` (2) `uint32` values.
   - Input port: `randomParameters`.

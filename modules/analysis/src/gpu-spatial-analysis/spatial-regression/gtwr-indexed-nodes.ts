@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {LOCAL_REGRESSION_INTERCEPT_WGSL} from './local-regression-intercept-wgsl';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -17,7 +20,8 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
 import {getBoundsReductionNodes} from '../hilbert-keys/bounds-reduction';
-import {BIN_INDEX_WGSL} from '../shared/bin-index-wgsl';
+import {BIN_INDEX_WGSL} from './bin-index-wgsl';
+import {GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS} from './geographically-weighted-regression-parameters';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {
   getEquilibratedCholeskyWGSL,
@@ -33,7 +37,7 @@ import type {GPUGeographicallyTemporallyWeightedRegressionProps} from './gpu-geo
 
 /** Target occupancy controls grid memory; no cell or neighborhood is truncated. */
 const GPU_GTWR_GRID_ROWS_PER_CELL = 8;
-/** Packed records add x, y, time and response to the predictors (fit records use the same stride). */
+/** Input records add x, y, time and response to predictors. Fit records add one centered residual word. */
 const GPU_GTWR_RECORD_EXTRA_WORDS = 4;
 
 /** A cubic grid over the data extent; timeScale zero collapses assignments to the first time slice. @internal */
@@ -52,7 +56,7 @@ export function validateGTWRIndexedBindings(
   const boundsPartialCount = Math.min(256, Math.ceil(rows / 4096));
   const sumPartialCount = Math.min(1024, Math.ceil(rows / 256));
   for (const [name, byteLength] of [
-    ['packed input and fit records', rows * (predictorCount + GPU_GTWR_RECORD_EXTRA_WORDS) * 4],
+    ['packed input and fit records', rows * (predictorCount + GPU_GTWR_RECORD_EXTRA_WORDS + 1) * 4],
     ['grid cell offsets', (dimension ** 3 + 1) * 4],
     ['grid keys and source rows', rows * 4],
     ['grid radix histogram and scan scratch', Math.ceil(rows / 256) * 16 * 4],
@@ -84,13 +88,19 @@ export function createGTWRIndexedNodes<Parameters>(
   const cellCount = dimension ** 3;
   const operation = 'GPUGeographicallyTemporallyWeightedRegression';
   const records = createTransientView(graph, `${id}-records`, 'float32', rows * stride);
-  const fits = createTransientView(graph, `${id}-fits`, 'float32', rows * stride);
+  const fits = createTransientView(graph, `${id}-fits`, 'float32', rows * (stride + 1));
+  const centeredResiduals =
+    props.output.residuals ??
+    createTransientView(graph, `${id}-centered-residuals`, 'float32', rows);
   const spatialBounds = createTransientView(graph, `${id}-spatial-bounds`, 'float32', 4);
   const temporalBounds = createTransientView(graph, `${id}-temporal-bounds`, 'float32', 4);
   const cellKeys = createTransientView(graph, `${id}-cell-keys`, 'uint32', rows);
   const sourceRows = createTransientView(graph, `${id}-source-rows`, 'uint32', rows);
   const common = `const RECORD_WORDS: u32 = ${stride}u;
+const FIT_WORDS: u32 = ${stride + 1}u;
 const GRID_DIMENSION: u32 = ${dimension}u;
+${LOCAL_REGRESSION_INTERCEPT_WGSL}
+${ROUNDED_DIFFERENCE_WGSL}
 ${IS_FINITE_BITS_WGSL}
 ${GET_NAN_WGSL}
 ${BIN_INDEX_WGSL}
@@ -243,33 +253,20 @@ fn getCellRange(origin: f32, reach: f32, lower: f32, upper: f32) -> vec2u {
         {name: 'coefficients', view: output.coefficients, type: 'f32', access: 'read_write'},
         {name: 'fitted', view: output.fitted, type: 'f32', access: 'read_write'},
         {name: 'hatDiagonal', view: output.hatDiagonal, type: 'f32', access: 'read_write'},
-        {name: 'localStatus', view: output.localStatus, type: 'u32', access: 'read_write'}
+        {name: 'localStatus', view: output.localStatus, type: 'u32', access: 'read_write'},
+        {name: 'residuals', view: centeredResiduals, type: 'f32', access: 'read_write'}
       ],
-      body: `let base = fitsOffset + index * ${stride}u;
+      body: `let base = fitsOffset + index * ${stride + 1}u;
   for (var column = 0u; column < ${size}u; column++) {
     coefficients[coefficientsOffset + index * ${size}u + column] = fits[base + column];
   }
   fitted[fittedOffset + index] = fits[base + ${size}u];
   hatDiagonal[hatDiagonalOffset + index] = fits[base + ${size + 1}u];
-  localStatus[localStatusOffset + index] = u32(fits[base + ${size + 2}u]);`
+  localStatus[localStatusOffset + index] = u32(fits[base + ${size + 2}u]);
+  residuals[residualsOffset + index] = fits[base + ${size + 3}u];`
     })
   );
-  if (output.residuals) {
-    nodes.push(
-      createWGSLKernelNode(graph, {
-        id: `${id}-residuals`,
-        operation,
-        invocationCount: rows,
-        bindings: [
-          {name: 'response', view: props.response, type: 'f32', access: 'read'},
-          {name: 'fitted', view: output.fitted, type: 'f32', access: 'read'},
-          {name: 'residuals', view: output.residuals, type: 'f32', access: 'read_write'}
-        ],
-        body: 'residuals[residualsOffset + index] = response[responseOffset + index] - fitted[fittedOffset + index];'
-      })
-    );
-  }
-  nodes.push(...createGTWRIndexedSummaryNodes(graph, id, props));
+  nodes.push(...createGTWRIndexedSummaryNodes(graph, id, props, centeredResiduals));
   return nodes;
 }
 
@@ -284,15 +281,16 @@ function getIndexedFitBody(
   return `let timeScale = parameters[parametersOffset + 1u];
   let bandwidth = ${adaptive ? 'getAdaptiveBandwidth(index, parameters[parametersOffset], timeScale)' : 'parameters[parametersOffset]'};
   let originX = records[recordsOffset + RECORD_WORDS * index];
-  var code = 1u;
+  var code = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.SINGULAR}u;
   var coefficient: array<f32, ${size}>;
   for (var column = 0u; column < ${size}u; column++) {
     coefficient[column] = getNaN();
   }
   var fittedValue = getNaN();
+  var centeredResidual = getNaN();
   var hat = getNaN();
   if (!isFiniteBits(originX)) {
-    code = 2u;
+    code = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED}u;
   } else if (bandwidth > 0.0 && isFiniteBits(bandwidth) && timeScale >= 0.0 && isFiniteBits(timeScale)) {
     let originY = records[recordsOffset + RECORD_WORDS * index + 1u];
     let originTime = records[recordsOffset + RECORD_WORDS * index + 2u];
@@ -312,6 +310,32 @@ function getIndexedFitBody(
       let timeReach = max(max(radius / sqrt(timeScale), ${GPU_GTWR_MINIMUM_CANDIDATE_RADIUS}), ${GPU_GTWR_MINIMUM_NORMAL_VALUE} / timeScale);
       timeRange = getCellRange(originTime, timeReach, temporalBounds[temporalBoundsOffset], temporalBounds[temporalBoundsOffset + 2u]);
     }
+    var responseMinimum = records[recordsOffset + index * RECORD_WORDS + 3u];
+    var responseMaximum = responseMinimum;
+    for (var timeCell = timeRange.x; timeCell <= timeRange.y; timeCell++) {
+      for (var gridRow = rowRange.x; gridRow <= rowRange.y; gridRow++) {
+        let cellBase = (timeCell * GRID_DIMENSION + gridRow) * GRID_DIMENSION;
+        let firstSlot = cellOffsets[cellOffsetsOffset + cellBase + columnRange.x];
+        let endSlot = cellOffsets[cellOffsetsOffset + cellBase + columnRange.y + 1u];
+        for (var slot = firstSlot; slot < endSlot; slot++) {
+          let row = sortedRows[sortedRowsOffset + slot];
+          let rowX = records[recordsOffset + RECORD_WORDS * row];
+          if (!isFiniteBits(rowX)) { continue; }
+          let deltaX = rowX - originX;
+          let deltaY = records[recordsOffset + RECORD_WORDS * row + 1u] - originY;
+          let deltaTime = records[recordsOffset + RECORD_WORDS * row + 2u] - originTime;
+          let distance = sqrt(deltaX * deltaX + deltaY * deltaY + timeScale * deltaTime * deltaTime);
+          if (!(getLocalKernelWeight(distance, bandwidth, ${bisquare ? 'true' : 'false'}) > 0.0)) { continue; }
+          let observed = records[recordsOffset + row * RECORD_WORDS + 3u];
+          responseMinimum = min(responseMinimum, observed);
+          responseMaximum = max(responseMaximum, observed);
+        }
+      }
+    }
+    let closeResponses = (responseMinimum > 0.0 && responseMinimum >= responseMaximum * 0.5)
+      || (responseMaximum < 0.0 && responseMinimum * 0.5 >= responseMaximum);
+    let responseAnchor = select(max(responseMinimum, min(0.0, responseMaximum)), responseMinimum * 0.5 + responseMaximum * 0.5, closeResponses);
+    let runtimeZero = bitcast<u32>(parameters[parametersOffset]) & 0x80000000u;
     for (var timeCell = timeRange.x; timeCell <= timeRange.y; timeCell++) {
       for (var gridRow = rowRange.x; gridRow <= rowRange.y; gridRow++) {
         let cellBase = (timeCell * GRID_DIMENSION + gridRow) * GRID_DIMENSION;
@@ -331,7 +355,7 @@ function getIndexedFitBody(
           for (var column = 0u; column < ${columns}u; column++) {
             design[column + 1u] = records[rowBase + column] - records[originBase + column];
           }
-          let observed = records[recordsOffset + row * RECORD_WORDS + 3u];
+          let observed = getRoundedDifference(records[recordsOffset + row * RECORD_WORDS + 3u], responseAnchor, runtimeZero);
           for (var firstColumn = 0u; firstColumn < ${size}u; firstColumn++) {
             let weighted = weight * design[firstColumn];
             normalResponse[firstColumn] = normalResponse[firstColumn] + weighted * observed;
@@ -347,28 +371,63 @@ function getIndexedFitBody(
       let inverse00 = inverseDiagonalEquilibrated_${size}(&normalMatrix, &scale, 0u);
       // normalResponse is X'Wy of the centered design; the solve is in place and unscales the coefficients.
       solveEquilibrated_${size}(&normalMatrix, &scale, &normalResponse);
+      // Refine only when response differences satisfy Sterbenz's exact-subtraction interval.
+      if (closeResponses) {
+        for (var refinement = 0u; refinement < 2u; refinement++) {
+        var correction: array<f32, ${size}>;
+        for (var timeCell = timeRange.x; timeCell <= timeRange.y; timeCell++) {
+          for (var gridRow = rowRange.x; gridRow <= rowRange.y; gridRow++) {
+            let cellBase = (timeCell * GRID_DIMENSION + gridRow) * GRID_DIMENSION;
+            let firstSlot = cellOffsets[cellOffsetsOffset + cellBase + columnRange.x];
+            let endSlot = cellOffsets[cellOffsetsOffset + cellBase + columnRange.y + 1u];
+            for (var slot = firstSlot; slot < endSlot; slot++) {
+              let row = sortedRows[sortedRowsOffset + slot];
+              let rowX = records[recordsOffset + RECORD_WORDS * row];
+              if (!isFiniteBits(rowX)) { continue; }
+              let deltaX = rowX - originX;
+              let deltaY = records[recordsOffset + RECORD_WORDS * row + 1u] - originY;
+              let deltaTime = records[recordsOffset + RECORD_WORDS * row + 2u] - originTime;
+              let distance = sqrt(deltaX * deltaX + deltaY * deltaY + timeScale * deltaTime * deltaTime);
+              let weight = getLocalKernelWeight(distance, bandwidth, ${bisquare ? 'true' : 'false'});
+              if (!(weight > 0.0)) { continue; }
+              var predicted = normalResponse[0];
+              for (var column = 0u; column < ${columns}u; column++) {
+                design[column + 1u] = records[recordsOffset + row * RECORD_WORDS + 4u + column] - records[originBase + column];
+                predicted += normalResponse[column + 1u] * design[column + 1u];
+              }
+              let residual = getRoundedDifference(records[recordsOffset + row * RECORD_WORDS + 3u], responseAnchor, runtimeZero) - predicted;
+              for (var column = 0u; column < ${size}u; column++) { correction[column] += weight * design[column] * residual; }
+            }
+          }
+        }
+        solveEquilibrated_${size}(&normalMatrix, &scale, &correction);
+        for (var column = 0u; column < ${size}u; column++) { normalResponse[column] += correction[column]; }
+        }
+      }
       var finite = isFiniteBits(inverse00) && inverse00 >= 0.0;
       for (var column = 0u; column < ${size}u; column++) {
         finite = finite && isFiniteBits(normalResponse[column]);
       }
       if (finite) {
-        code = 0u;
+        code = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u;
         // The centered intercept is the fitted value; uncentering it gives the raw intercept.
-        fittedValue = normalResponse[0];
+        centeredResidual = getRoundedDifference(records[recordsOffset + index * RECORD_WORDS + 3u], responseAnchor, runtimeZero) - normalResponse[0];
+        fittedValue = responseAnchor + normalResponse[0];
         hat = inverse00;
-        var intercept = normalResponse[0];
+        var intercept = vec2f(responseAnchor, normalResponse[0]);
         for (var column = 0u; column < ${columns}u; column++) {
           coefficient[column + 1u] = normalResponse[column + 1u];
-          intercept = intercept - normalResponse[column + 1u] * records[originBase + column];
+          intercept = subtractLocalRegressionInterceptProduct(intercept, normalResponse[column + 1u], records[originBase + column]);
         }
-        coefficient[0] = intercept;
+        coefficient[0] = intercept.x + intercept.y;
       }
     }
   }
   for (var column = 0u; column < ${size}u; column++) {
-    fits[fitsOffset + index * RECORD_WORDS + column] = coefficient[column];
+    fits[fitsOffset + index * FIT_WORDS + column] = coefficient[column];
   }
-  fits[fitsOffset + index * RECORD_WORDS + ${size}u] = fittedValue;
-  fits[fitsOffset + index * RECORD_WORDS + ${size + 1}u] = hat;
-  fits[fitsOffset + index * RECORD_WORDS + ${size + 2}u] = f32(code);`;
+  fits[fitsOffset + index * FIT_WORDS + ${size}u] = fittedValue;
+  fits[fitsOffset + index * FIT_WORDS + ${size + 1}u] = hat;
+  fits[fitsOffset + index * FIT_WORDS + ${size + 2}u] = f32(code);
+  fits[fitsOffset + index * FIT_WORDS + ${size + 3}u] = centeredResidual;`;
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createOPTICSStatusFields, getOPTICSStatusValues} from './optics-status-test-utils';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -42,7 +43,7 @@ const PROPS: OPTICSOperationProps = {
     reachability: 'reachability',
     predecessors: 'predecessors',
     labels: 'labels',
-    status: 'status'
+    ports: {status: createOPTICSStatusFields(name => name)}
   }
 };
 
@@ -62,7 +63,7 @@ it.each([
     expect(Array.from(result.ordering)).toEqual(
       budget === 1 ? [0, 0xffffffff, 0xffffffff, 0xffffffff] : [0, 1, 2, 3]
     );
-    expect(Array.from(result.status)).toEqual([budget, budget === 4 ? 1 : 0, 0]);
+    expect(getOPTICSStatusValues(result)).toEqual([budget, budget === 4 ? 1 : 0, 0]);
     expect(Array.from(result.iterationCount)).toEqual([budget]);
     expect(Array.from(result.converged)).toEqual([budget === 4 ? 1 : 0]);
     expect(Array.from(result.iterationLimitReached)).toEqual([budget === 1 ? 1 : 0]);
@@ -107,7 +108,7 @@ it('X7 GPU operation retains the visit budget until contributor lowering', () =>
       reachability: {format: 'float32', length: 4},
       predecessors: {format: 'uint32', length: 4},
       labels: {format: 'uint32', length: 4},
-      status: {format: 'uint32', length: 3}
+      ...createOPTICSStatusFields(() => ({format: 'uint32' as const, length: 1}))
     });
     expect(operation.createContributor(getView)).toMatchObject({props: {maximumIterations: 1}});
   } finally {
@@ -145,7 +146,7 @@ for (const scene of fixture.scenes) {
     expect(Array.from(dbscan.labels)).toEqual(scene.dbscan.labels);
     expectDistances(dbscan.coreDistances, scene.coreDistances);
     expectDistances(dbscan.reachability, scene.reachability);
-    expect(Array.from(dbscan.status)).toEqual([scene.ordering.length, 1, 0]);
+    expect(getOPTICSStatusValues(dbscan)).toEqual([scene.ordering.length, 1, 0]);
     expect(Array.from(dbscan.candidateOverflow)).toEqual([0]);
     for (const extraction of scene.xi) {
       const result = computeOPTICSOnCPU(
@@ -157,7 +158,7 @@ for (const scene of fixture.scenes) {
       expect(Array.from(result.predecessors)).toEqual(scene.predecessors);
       expectDistances(result.coreDistances, scene.coreDistances);
       expectDistances(result.reachability, scene.reachability);
-      expect(Array.from(result.status)).toEqual([scene.ordering.length, 1, 0]);
+      expect(getOPTICSStatusValues(result)).toEqual([scene.ordering.length, 1, 0]);
       expect(Array.from(result.labels)).toEqual(extraction.labels);
       expect(Array.from(result.clusterSummary)).toEqual([extraction.intervals.length, 0]);
       expect(
@@ -184,7 +185,7 @@ it('matches hand-computed duplicate, inclusive-boundary, missing-value and inval
   expect(Array.from(result.reachability)).toEqual([Infinity, 0, 1, Infinity]);
   expect(Array.from(result.predecessors)).toEqual([0xffffffff, 0, 0, 0xffffffff]);
   expect(Array.from(result.labels)).toEqual([0, 0, 0, 0xffffffff]);
-  expect(Array.from(result.status)).toEqual([3, 1, 1]);
+  expect(getOPTICSStatusValues(result)).toEqual([3, 1, 1]);
   const times = computeOPTICSOnCPU(
     Float32Array.of(0, 0, 1, 0),
     {
@@ -196,7 +197,7 @@ it('matches hand-computed duplicate, inclusive-boundary, missing-value and inval
     },
     Float32Array.of(0, NaN)
   );
-  expect(Array.from(times.status)).toEqual([1, 1, 1]);
+  expect(getOPTICSStatusValues(times)).toEqual([1, 1, 1]);
   expect(Array.from(times.labels)).toEqual([0, 0xffffffff]);
 });
 
@@ -218,7 +219,7 @@ it('matches an equatorial closed form across the antimeridian and excludes inval
   expect(Array.from(result.ordering)).toEqual([0, 1, 0xffffffff]);
   expect(Array.from(result.predecessors)).toEqual([0xffffffff, 0, 0xffffffff]);
   expect(Array.from(result.labels)).toEqual([0, 0, 0xffffffff]);
-  expect(Array.from(result.status)).toEqual([2, 1, 1]);
+  expect(getOPTICSStatusValues(result)).toEqual([2, 1, 1]);
   for (const coincident of [
     [180, 0, -180, 0],
     [0, 90, 123, 90]
@@ -244,7 +245,7 @@ it('drops GPU scheduling and neighbor caps while preserving the explicit visit b
     neighborIndex: 'grid',
     neighborCapacity: 1
   });
-  expect(Array.from(result.status)).toEqual([1, 0, 0]);
+  expect(getOPTICSStatusValues(result)).toEqual([1, 0, 0]);
   expect(Array.from(result.candidateOverflow)).toEqual([0]);
   expect(Array.from(result.labels)).toEqual([0xffffffff, 0xffffffff, 0xffffffff]);
   const invalid = computeOPTICSOnCPU(new Float32Array(4097 * 2).fill(NaN), {
@@ -253,7 +254,7 @@ it('drops GPU scheduling and neighbor caps while preserving the explicit visit b
     extractionMethod: 'xi',
     minimumClusterSize: 2
   });
-  expect(Array.from(invalid.status)).toEqual([0, 1, 4097]);
+  expect(getOPTICSStatusValues(invalid)).toEqual([0, 1, 4097]);
   expect(invalid.ordering.every(value => value === 0xffffffff)).toBe(true);
   expect(invalid.labels.every(value => value === 0xffffffff)).toBe(true);
   expect(invalid.coreDistances.every(value => value === Infinity)).toBe(true);
@@ -308,7 +309,7 @@ it('rejects inconsistent array lengths and invalid operation props at constructi
       reachability: {format: 'float32', length: 3},
       predecessors: {format: 'uint32', length: 3},
       labels: {format: 'uint32', length: 3},
-      status: {format: 'uint32', length: 3}
+      ...createOPTICSStatusFields(() => ({format: 'uint32' as const, length: 1}))
     });
     expect(() =>
       new GPUOPTICSOperation({...PROPS, minimumSamples: 257}).createContributor(getView)

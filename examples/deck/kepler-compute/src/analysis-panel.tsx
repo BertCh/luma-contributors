@@ -10,6 +10,7 @@ import {PointWeightsPanel} from './analysis-point-weights-panel';
 import {PointHotspotPanel} from './analysis-point-hotspot-panel';
 import {LocalMoranPanel} from './analysis-local-moran-panel';
 import {QuantileLisaPanel} from './analysis-quantile-lisa-panel';
+import {getQuantileLisaPValueLabel} from './analysis-quantile-lisa-inference';
 import {InterpolationPanel, InterpolationResults} from './interpolation-panel';
 import {DBSCANPanel} from './analysis-dbscan-panel';
 import {OLSPanel, OLSResults} from './analysis-ols-panel';
@@ -315,8 +316,8 @@ function AnalysisControls({analysis}: {analysis: AnalysisRuntime}) {
                 </p>
               )}
               <p className="hint">
-                Missing values and nonpositive populations are excluded. This operation uses source
-                values as supplied, including negative events.
+                Missing values, negative events and nonpositive populations are excluded. Zero
+                events are eligible; source values are used as supplied.
               </p>
               {settings.mode === 'excess-risk' && (
                 <p className="hint">All-zero events produce undefined ratios.</p>
@@ -461,7 +462,7 @@ function AnalysisControls({analysis}: {analysis: AnalysisRuntime}) {
                             : 'Interpolated grid value'
                           : settings.mode === 'quantile-lisa-points' ||
                               settings.mode === 'quantile-lisa-polygons'
-                            ? 'Legacy pseudo p-value'
+                            ? getQuantileLisaPValueLabel(summary.quantileLisa?.alternative)
                             : settings.mode === 'local-moran-points' ||
                                 settings.mode === 'local-moran-polygons'
                               ? 'Local Moran I'
@@ -516,7 +517,8 @@ function AnalysisControls({analysis}: {analysis: AnalysisRuntime}) {
                     observations · {summary.quantileLisa.islandCount.toLocaleString()} isolated
                   </div>
                   <p>
-                    Reported pseudo p-values use the legacy directed rule without correction.
+                    Reported pseudo p-values use{' '}
+                    {summary.quantileLisa.alternative ?? 'geoda-legacy'} without correction.
                     Undefined values include nonmembers, zero local joins, excluded observations and
                     islands. Class 0 combines nonsignificant and untested rows; class 1 is
                     significant under this rule; class 2 is undefined input; class 3 is isolated.

@@ -512,3 +512,42 @@ it('combines localIterations 16, nonzero views and padded invalid pivots in cont
   expect(result.zeroWeightCycle).toEqual([0]);
   expect(result.approximation).toEqual([0]);
 });
+
+it('keeps round exhaustion sticky through a successful accumulated batch and clears it on reset', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const {snapshots} = await runContinuation(
+    device,
+    13,
+    [
+      ...Array.from({length: 8}, (_, node) => [node, node + 1, 1] as [number, number, number]),
+      [10, 11, 1],
+      [11, 12, 1]
+    ],
+    [0],
+    {
+      roundsPerStep: 3,
+      maximumIterations: 4,
+      localIterations: 1,
+      batches: [
+        {pivots: [0], reset: true},
+        {pivots: [10], reset: false},
+        {pivots: [10], reset: true}
+      ]
+    }
+  );
+  expect(snapshots.map(snapshot => snapshot['iterationLimitReached'])).toEqual([[1], [1], [0]]);
+  expect(snapshots.map(snapshot => snapshot['converged'])).toEqual([[0], [0], [1]]);
+  expect(snapshots[0].betweenness.slice(10)).toEqual([0, 0, 0]);
+  for (const snapshot of snapshots.slice(1)) {
+    // Pivot 10 has exactly one path to 11 and 12: vertex 11 contributes 1,
+    // edge 10->11 contributes 2 and edge 11->12 contributes 1 (Brandes, unnormalized).
+    expect(snapshot.betweenness.slice(10)).toEqual([0, 1, 0]);
+    expect(snapshot.edgeBetweenness.slice(8)).toEqual([2, 1]);
+    expect(snapshot.reachedCounts).toEqual([3]);
+    expectRelative(snapshot.closeness, [2 / 3]);
+    expect(snapshot['zeroWeightCycle']).toEqual([0]);
+  }
+  // Reset also discards the exhausted component's incumbent contributions.
+  expect(snapshots[2].betweenness.slice(0, 10)).toEqual(new Array(10).fill(0));
+});

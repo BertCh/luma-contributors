@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect, it, vi} from 'vitest';
+import {createKernelAuditContext} from '../analysis-core/kernel-audit/kernel-audit-context';
+import type {GPURasterFillHoles} from '../../src/raster-analysis/gpu-raster-reconstruction';
 import * as neighbors from '../../src/raster-analysis/raster-morphology/raster-morphology-operation-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
@@ -169,3 +171,138 @@ it('ignores surplus input rows and returns only the unit-grid boundary backgroun
   ).not.toThrow();
   expect(() => computeRasterFillHolesOnCPU(new Uint32Array(0), {grid})).toThrow(/input/);
 });
+
+for (const defect of [
+  'empty-result',
+  'empty-status',
+  'duplicate-status',
+  'duplicate-result',
+  'input-result',
+  'input-status',
+  'empty-input'
+] as const) {
+  it(`FRM-01 CPURasterFillHolesOperation rejects ${defect} before keying outputs`, () => {
+    const props = {...PROPS, output: {...PROPS.output, status: {...PROPS.output.status}}};
+    if (defect === 'empty-result') props.output.values = '';
+    if (defect === 'empty-status') props.output.status.iterationCount = '';
+    if (defect === 'duplicate-status')
+      props.output.status.iterationCount = props.output.status.converged;
+    if (defect === 'duplicate-result') props.output.values = props.output.status.converged;
+    if (defect === 'input-result') props.output.values = 'input';
+    if (defect === 'input-status') props.output.status.iterationCount = 'input';
+    if (defect === 'empty-input') props.input = '';
+    for (const Operation of [CPURasterFillHolesOperation, GPURasterFillHolesOperation]) {
+      expect(() => new Operation(props)).toThrow(/graph value/);
+    }
+  });
+}
+
+it('B3 captures inherited iterationCount from the documented status map', async () => {
+  let destination = 'rounds';
+  const status = {...PROPS.output.status};
+  Reflect.deleteProperty(status, 'iterationCount');
+  Object.setPrototypeOf(
+    status,
+    new (class {
+      get iterationCount() {
+        return destination;
+      }
+    })()
+  );
+  const operation = new CPURasterFillHolesOperation({
+    ...PROPS,
+    maximumIterations: 1,
+    output: {...PROPS.output, status}
+  });
+  expect(Object.keys(operation.outputs)).toContain('rounds');
+  destination = 'replaced';
+  const values = new Uint32Array(63);
+  const inputs = {
+    input: {
+      format: 'uint32' as const,
+      length: 63,
+      chunks: [{values, length: 63}],
+      pack: () => values
+    }
+  };
+  const result = await operation.execute({inputs});
+  expect(result['rounds']).toEqual(Uint32Array.of(2));
+  expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+});
+it('B3 ignores unrelated shared status fields in both declaration and execution', async () => {
+  const status = {converged: 'done', invalidCount: 'invalid'};
+  const operation = new CPURasterFillHolesOperation({...PROPS, output: {...PROPS.output, status}});
+  const values = new Uint32Array(63);
+  const inputs = {
+    input: {
+      format: 'uint32' as const,
+      length: 63,
+      chunks: [{values, length: 63}],
+      pack: () => values
+    }
+  };
+  const result = await operation.execute({inputs});
+  expect(Object.keys(operation.outputs)).not.toContain('invalid');
+  expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+});
+
+it('W5-09 GPU fill holes captures inherited status through lowering', () => {
+  let destination = 'rounds';
+  let reads = 0;
+  const status = new (class {
+    get converged() {
+      return 'done';
+    }
+    get iterationCount() {
+      reads++;
+      return destination;
+    }
+    get iterationLimitReached() {
+      return 'limited';
+    }
+  })();
+  const operation = new GPURasterFillHolesOperation({...PROPS, output: {values: 'filled', status}});
+  destination = 'changed';
+  expect(reads).toBe(1);
+  expect(operation.outputs['iterationCount']?.value).toBe('rounds');
+  expect(operation.outputs['iterationLimitReached']?.value).toBe('limited');
+  const context = createKernelAuditContext('W5-09-fill');
+  try {
+    const views = Object.fromEntries(
+      Object.entries(operation.outputs).map(([port, descriptor]) => [
+        port,
+        context.view(descriptor.format, descriptor.length)
+      ])
+    );
+    views['input'] = context.view('uint32', GRID.width * GRID.height);
+    const contributor = operation.createContributor(
+      port => views[port] as never
+    ) as GPURasterFillHoles;
+    expect(contributor.props.output.status.iterationCount).toBe(views['iterationCount']);
+    expect(contributor.props.output.status.iterationLimitReached).toBe(
+      views['iterationLimitReached']
+    );
+  } finally {
+    context.device.destroy();
+    operation.destroy();
+  }
+  expect(reads).toBe(1);
+});
+
+for (const Operation of [CPURasterFillHolesOperation, GPURasterFillHolesOperation]) {
+  it(`B2 ${Operation.name} ignores unrelated reconstruction fields`, () => {
+    const props = {...PROPS, mask: Uint32Array.of(0), marker: Uint32Array.of(0)};
+    expect(() => new Operation(props)).not.toThrow();
+    Object.defineProperty(props, 'mask', {
+      get() {
+        throw new Error('unrelated mask was read');
+      }
+    });
+    Object.defineProperty(props, 'marker', {
+      get() {
+        throw new Error('unrelated marker was read');
+      }
+    });
+    expect(() => new Operation(props)).not.toThrow();
+  });
+}

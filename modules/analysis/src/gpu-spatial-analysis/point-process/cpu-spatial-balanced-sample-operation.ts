@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSamplingSeed} from './sampling-seed';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
@@ -15,6 +16,7 @@ import {
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {
   GPUSpatialBalancedSampleOperation,
+  snapshotBalancedSampleOperation,
   type SpatialBalancedSampleOperationProps
 } from './gpu-spatial-balanced-sample-operation';
 
@@ -49,7 +51,8 @@ export type CPUSpatialBalancedSampleResult = {
 function validateOptions(
   options: CPUSpatialBalancedSampleOptions,
   rowCount: number,
-  hasStrata: boolean
+  hasStrata: boolean,
+  resident = false
 ): void {
   const id = options.id ?? 'spatial-balanced-sample';
   resolveGPUSpatialContext(id, options.spatialContext);
@@ -96,7 +99,7 @@ function validateOptions(
       Math.fround(options.bounds[3]) > Math.fround(options.bounds[1]),
     'bounds must have a positive extent on both axes'
   );
-  validateCapacity(id, 'seed', options.seed, 0);
+  validateSamplingSeed(id, options.seed, resident);
   validateCapacity(id, 'replicate', options.replicate ?? 0, 0);
 }
 
@@ -134,8 +137,8 @@ export function computeSpatialBalancedSampleOnCPU(
     throw new Error('inclusionTickets length must equal frameIds length');
   if (parameters && parameters.length !== 2)
     throw new Error('parameters must contain [seed, replicate]');
-  validateOptions(options, rowCount, strata !== undefined);
-  const [seed, replicate] = parameters ?? [options.seed, options.replicate ?? 0];
+  validateOptions(options, rowCount, strata !== undefined, parameters !== undefined);
+  const [seed, replicate] = parameters ?? [options.seed!, options.replicate ?? 0];
   const drawWord = (first: number, second: number) =>
     getPhilox4x32(
       [first, second, replicate, 0],
@@ -247,8 +250,14 @@ export function computeSpatialBalancedSampleOnCPU(
 /** CPU twin; reference-tier GPU work caps are dropped, with identical graph values. */
 export class CPUSpatialBalancedSampleOperation extends GPUCPUOperation {
   constructor(props: SpatialBalancedSampleOperationProps) {
+    props = snapshotBalancedSampleOperation(props);
     const id = props.id ?? 'spatial-balanced-sample';
-    validateOptions(props, props.rowCount, props.strata !== undefined);
+    validateOptions(
+      props,
+      props.rowCount,
+      props.strata !== undefined,
+      props.parameters !== undefined
+    );
     const operation = new GPUSpatialBalancedSampleOperation(props);
     super({
       id,

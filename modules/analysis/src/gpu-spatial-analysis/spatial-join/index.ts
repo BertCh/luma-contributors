@@ -24,22 +24,41 @@ export type {
 } from './gpu-nearest-feature-join';
 export {GPUBufferSelection} from './gpu-buffer-selection';
 export type {
+  GPUBufferSelectionMatches,
   GPUBufferSelectionOutput,
   GPUBufferSelectionProps
 } from './gpu-buffer-selection';
-export {GPUSpatialPredicateJoin} from './gpu-spatial-predicate-join';
+export {
+  GPUSpatialPredicateJoin,
+  GPU_SPATIAL_PREDICATE_JOIN_PLANNER,
+  GPU_SPATIAL_PREDICATE_JOIN_ROUTES,
+  getGPUSpatialPredicateJoinExecutionPlan
+} from './gpu-spatial-predicate-join';
 export type {
   GPUSpatialJoinHow,
+  GPUSpatialJoinLeftStatus,
   GPUSpatialPredicate,
   GPUSpatialPredicateJoinObservation,
   GPUSpatialPredicateJoinOutput,
-  GPUSpatialPredicateJoinProps
+  GPUSpatialPredicateJoinProps,
+  GPUSpatialPredicateJoinRouteShape
 } from './gpu-spatial-predicate-join';
-export {GPUSpatialJoinPrepared} from './gpu-spatial-join-prepared';
+export {
+  GPUSpatialJoinPrepared,
+  getGPUSpatialJoinPreparedMemoryPlan,
+  GPU_SPATIAL_JOIN_PREPARED_PLANNER,
+  GPU_SPATIAL_JOIN_PREPARED_ROUTES
+} from './gpu-spatial-join-prepared';
 export type {
+  GPUSpatialJoinPreparedShape,
+  GPUSpatialJoinPreparedDeviceLimits,
   GPUSpatialJoinPreparedProps,
   GPUSpatialJoinPreparedStorage
 } from './gpu-spatial-join-prepared';
+/** Whole-domain allocation and binding checks returned before preparing a spatial index. */
+export type GPUSpatialJoinPreparedMemoryPlan = ReturnType<
+  typeof import('./spatial-join-prepared-planning.js').getGPUSpatialJoinPreparedMemoryPlan
+>;
 export {
   GPUSpatialJoinCandidates,
   getGPUSpatialJoinCandidatesMaximumPairCapacity
@@ -49,6 +68,7 @@ export {
   formatGPUSpatialRelate,
   GPU_SPATIAL_RELATE_CELLS,
   GPU_SPATIAL_RELATE_PATTERN_WORDS,
+  MAXIMUM_SPATIAL_RELATE_PATTERN_SLOT_COUNT,
   GPU_SPATIAL_RELATE_UNCERTAIN_BIT,
   packGPUSpatialRelate,
   packGPUSpatialRelatePattern
@@ -70,4 +90,28 @@ export type {
   GPUSpatialJoinCapacityPlanningOptions
 } from './spatial-join-capacity-plan';
 export {computeSpatialPredicateJoinOnCPU, computeNearestFeatureJoinOnCPU} from './cpu-feature-join';
-export type {CPUSpatialJoinGeometry, MultipartJoinPredicate} from './cpu-feature-join';
+export type {
+  CPUSpatialJoinGeometry,
+  CPUSpatialPredicateJoinResult,
+  CPUNearestFeatureJoinResult,
+  MultipartJoinPredicate,
+  CPUFeatureJoinOptions
+} from './cpu-feature-join';
+export {prepareGeometryInput} from './prepare-geometry-input';
+export type {PrepareGeometryInputOptions, PreparedGeometryInput} from './prepare-geometry-input';
+export {decodeGPUSpatialJoinGeometry} from './spatial-join-geometry';
+export type {GPUSpatialJoinGeometryReadback} from './spatial-join-geometry';
+export {computeBufferSelectionOnCPU} from './cpu-buffer-selection-operation';
+export type {
+  CPUBufferSelectionInput,
+  CPUBufferSelectionOptions
+} from './cpu-buffer-selection-operation';
+export {
+  computePointInPolygonJoinOnCPU,
+  computePointInPolygonCountsOnCPU
+} from './cpu-point-in-polygon-join-operation';
+export type {
+  CPUPointInPolygonJoinOptions,
+  CPUPointInPolygonJoinResult,
+  CPUPointInPolygonCountsResult
+} from './cpu-point-in-polygon-join-operation';

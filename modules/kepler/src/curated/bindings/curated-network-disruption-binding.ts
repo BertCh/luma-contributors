@@ -317,20 +317,49 @@ export type CuratedNetworkDisruptionReadback = {
   baselineAccessibility: ArrayLike<number>;
   scenarioAccessibility: ArrayLike<number>;
   accessibilityDifferences: ArrayLike<number>;
-  stages: readonly {stage: string; converged: number}[];
+  stages: readonly {stage: string; converged?: number; complete?: number}[];
 };
 
-/** Only converged full-network results can become native publication tables. */
+/** Require exactly one certificate per stage, converged routing and complete accessibility scoring. */
 export function publishCuratedNetworkDisruption(
   prepared: PreparedCuratedNetworkDisruption,
   readback: CuratedNetworkDisruptionReadback
 ): CatalogRunOutput {
+  for (const stage of [
+    'baseline-routing',
+    'scenario-routing',
+    'baseline-accessibility',
+    'scenario-accessibility'
+  ])
+    validateRequirement(
+      BINDING_ID,
+      readback.stages.filter(status => status.stage === stage).length === 1,
+      `${stage} must have exactly one certificate before publication`
+    );
   for (const stage of ['baseline-routing', 'scenario-routing'])
     validateRequirement(
       BINDING_ID,
       readback.stages.some(status => status.stage === stage && status.converged === 1),
       `${stage} did not converge within 64 routing iterations; reduce the network before publishing`
     );
+  for (const stage of ['baseline-accessibility', 'scenario-accessibility'])
+    validateRequirement(
+      BINDING_ID,
+      readback.stages.some(status => status.stage === stage && status.complete === 1),
+      `${stage} must be complete before publishing accessibility comparisons`
+    );
+  for (const status of readback.stages) {
+    validateRequirement(
+      BINDING_ID,
+      status.complete === undefined || status.complete === 1,
+      `${status.stage} must be complete before publishing accessibility comparisons`
+    );
+    validateRequirement(
+      BINDING_ID,
+      status.converged === undefined || status.converged === 1,
+      `${status.stage} must be converged before publishing comparisons`
+    );
+  }
   const demandCount = prepared.demand.features.length;
   const facilityCount = prepared.facilities.features.length;
   for (const name of [
@@ -545,7 +574,12 @@ export function publishCuratedNetworkDisruption(
       cutOffCount,
       maximumCost: prepared.maximumCost,
       costUnit: prepared.costUnit,
-      converged: 1
+      converged: 1,
+      complete: 1,
+      baselineRoutingConverged: 1,
+      scenarioRoutingConverged: 1,
+      baselineAccessibilityComplete: 1,
+      scenarioAccessibilityComplete: 1
     }
   };
 }
@@ -613,7 +647,7 @@ export const CURATED_NETWORK_DISRUPTION_BINDING: CatalogOperationBinding = {
   declaredBehavior: [
     'Closures mask every allowed direction of a source feature without compacting nodes, physical edges, parallel edges or CSR slots.',
     'All three nonempty inputs and separate physical-edge, node, directed-arc and matrix bounds are checked before GPU allocation.',
-    'Nonconverged baseline or scenario routing refuses publication; unreachable costs and undefined cost differences are null.',
+    'Nonconverged baseline or scenario routing, or incomplete baseline or scenario accessibility scoring, refuses publication; unreachable costs and undefined cost differences are null.',
     `Each float32 arc cost must be at most ${MAXIMUM_NETWORK_DISRUPTION_ARC_COST}; rescale larger routing costs before execution to keep supported path sums finite.`
   ],
   limitation:
@@ -672,20 +706,27 @@ export const CURATED_NETWORK_DISRUPTION_BINDING: CatalogOperationBinding = {
         }
       });
       const statuses = recipe.status.stages.map(stage => {
-        const output = session.output(`${stage.stage}-converged`, 'uint32', 1);
+        const field = stage.stage.endsWith('-routing') ? 'converged' : 'complete';
+        const source = stage.status[field];
+        validateRequirement(
+          BINDING_ID,
+          Boolean(source),
+          `${stage.stage} must supply ${field} evidence`
+        );
+        const output = session.output(`${stage.stage}-${field}`, 'uint32', 1);
         session.graph.add(
           createWGSLKernelNode(session.graph, {
             id: `publish-${stage.stage}`,
             operation: BINDING_ID,
             invocationCount: 1,
             bindings: [
-              {name: 'source', view: stage.status.converged!, type: 'u32', access: 'read'},
+              {name: 'source', view: source!, type: 'u32', access: 'read'},
               {name: 'destination', view: output.view, type: 'u32', access: 'read_write'}
             ],
             body: 'destination[destinationOffset + index] = source[sourceOffset + index];'
           })
         );
-        return {stage: stage.stage, output};
+        return {stage: stage.stage, field, output};
       });
       session.run();
       const readback: CuratedNetworkDisruptionReadback = {
@@ -699,7 +740,7 @@ export const CURATED_NETWORK_DISRUPTION_BINDING: CatalogOperationBinding = {
         stages: await Promise.all(
           statuses.map(async status => ({
             stage: status.stage,
-            converged: await session.readScalar(status.output)
+            [status.field]: await session.readScalar(status.output)
           }))
         )
       };

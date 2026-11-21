@@ -64,3 +64,25 @@ it('GPUMinimumClearance reduces each feature with one workgroup and no atomics',
     expect([...kernels.keys()].some(id => /minimum-distance|minimum-row/.test(id))).toBe(false);
   }
 });
+
+it('GPUMinimumClearance groups multiline parts into one feature reduction', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const contributor = new GPUMinimumClearance({
+      geometry: {
+        kind: 'lines',
+        positions: view(graph, 'float32x2', 4),
+        lineOffsets: view(graph, 'uint32', 3),
+        featureOffsets: view(graph, 'uint32', 2)
+      },
+      output: {clearances: view(graph, 'float32', 1)}
+    });
+    expect(contributor.featureCount).toBe(1);
+    const kernels = getParsedKernelSources(contributor.getCommandNodes(graph));
+    const reduction = [...kernels].find(([id]) => id.includes('feature-minimum'))![1];
+    expect(reduction).toContain('featureOffsets');
+  } finally {
+    device.destroy();
+  }
+});

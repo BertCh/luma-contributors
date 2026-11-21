@@ -136,7 +136,7 @@ export async function buildStatisticsCoverageScenario(
         kernel: weights,
         output: {
           covariance: output('covariance', 'float32', 9),
-          status: output('status', 'uint32', 1)
+          status: {code: output('status', 'uint32', 1)}
         }
       });
       break;
@@ -185,13 +185,13 @@ export async function buildStatisticsCoverageScenario(
         weights,
         values: input('values', 'float32', 48),
         variableCount: 2,
-        maximumPermutations: 19,
+        permutationCount: 19,
         correction: 'bonferroni',
         tail: 'esda-min-tail',
         mask: input('mask', 'uint32', 24),
         output: {
           statistic: output('statistic', 'float32', 24),
-          pValues: output('pValues', 'float32', 24),
+          adjustedPValues: output('pValues', 'float32', 24),
           classes: output('classes', 'uint32', 24)
         }
       });

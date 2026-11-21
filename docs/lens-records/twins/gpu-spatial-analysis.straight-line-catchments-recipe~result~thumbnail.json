@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.straight-line-catchments-recipe: facilities, obs…",
   "description": "Result of gpu-spatial-analysis.straight-line-catchments-recipe: facilities, observationCounts → means. rows: 150. values read back from the GPU run. input facilities: 150 points.",
-  "llms": "Result of gpu-spatial-analysis.straight-line-catchments-recipe: facilities, observationCounts → means\n\n- rows: 150\n- input facilities: 150 points\n- input observationCounts: 2236 cells\n- Coordinate model unknown: drawn as planar x, y.\n- 150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 250 m\n- cell size 250 m\n- cell size 250 m\n- 150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.straight-line-catchments-recipe: facilities, observationCounts → means\n\n- rows: 150\n- input facilities: 150 points\n- input observationCounts: 2236 cells\n- Coordinate model unknown: drawn as planar x, y.\n- 150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 250 m\n- 145 categories; 5 largest coloured\n- cell size 250 m\n- cell size 250 m\n- 150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "150"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:10.874Z",
-    "runId": "run-96c9134b",
+    "date": "2026-11-20T23:51:31.063Z",
+    "runId": "run-56fe2b5c",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-96c9134b",
+    "runId": "run-56fe2b5c",
     "rung": "result",
     "bindings": {},
     "clauses": [],

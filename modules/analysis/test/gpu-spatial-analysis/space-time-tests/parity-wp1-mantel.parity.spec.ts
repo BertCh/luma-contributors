@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {it} from 'vitest';
+import {expect, it} from 'vitest';
 import {
   GPUMantelTest,
   getGPUSpaceTimeParameterValues,
@@ -11,7 +11,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/space-time-tests/index';
 import fixture from '../../oracles/fixtures/parity-wp1-mantel.json';
 import {compareParity} from '../../oracles/parity-wp1-compare';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {AnalysisRig} from '../catchment-accessibility/rig';
 import {makeMantelPairs} from './parity-wp1-mantel-input';
 
@@ -26,6 +26,7 @@ for (const testCase of fixture.cases) {
         const pairs = makeMantelPairs(testCase.positions);
         const statistics = rig.output('float32', testCase.permutationCount + 3);
         const summary = rig.output('float32', GPU_SPACE_TIME_SUMMARY_LENGTH);
+        const usablePermutationCount = rig.output('uint32', 1);
         rig.run(
           new GPUMantelTest({
             pairs: {
@@ -40,17 +41,45 @@ for (const testCase of fixture.cases) {
               'uint32'
             ),
             maximumPermutations: testCase.permutationCount + 2,
-            output: {statistics, summary}
+            output: {statistics, summary, usablePermutationCount}
           })
         );
         const actual = await rig.readFloat(statistics);
         const actualSummary = await rig.readFloat(summary);
+        const usableCount = await rig.readUint(usablePermutationCount);
+        const observed = testCase.observed;
+        if (observed === null) {
+          expect(usableCount).toEqual([0]);
+          expect(testCase.null).toEqual([]);
+          expect(testCase.inference).toBeNull();
+          expect(Number.isNaN(actual[0])).toBe(true);
+          expect(Number.isNaN(actualSummary[0])).toBe(true);
+          for (const value of actualSummary.slice(4)) expect(Number.isNaN(value)).toBe(true);
+          // Pearson of a constant vector is undefined (not a measured zero correlation).
+          compareParity(
+            'GPUMantelTest',
+            comparison,
+            'undefined-statistics',
+            actual,
+            Array(testCase.permutationCount + 3).fill(NaN),
+            'E'
+          );
+          compareParity(
+            'GPUMantelTest',
+            comparison,
+            'undefined-summary',
+            actualSummary,
+            [NaN, pairs.neighbors.length, 0, 0, ...Array(8).fill(NaN)],
+            'E'
+          );
+          return;
+        }
         compareParity(
           'GPUMantelTest',
           comparison,
           'observed-r',
           [actual[0], actualSummary[0]],
-          [testCase.observed, testCase.observed]
+          [observed, observed]
         );
         compareParity(
           'GPUMantelTest',
@@ -60,7 +89,8 @@ for (const testCase of fixture.cases) {
           [0, 0],
           'E'
         );
-        const draws = actual.slice(1, testCase.permutationCount + 1);
+        const draws = actual.slice(1, testCase.permutationCount + 1).filter(Number.isFinite);
+        expect(usableCount).toEqual([draws.length]);
         const mean = draws.reduce((sum, value) => sum + value, 0) / draws.length;
         const variance =
           draws.length > 1
@@ -113,16 +143,7 @@ for (const testCase of fixture.cases) {
           draws.map(() => 1),
           'E'
         );
-        if (testCase.constant) {
-          compareParity(
-            'GPUMantelTest',
-            comparison,
-            'constant-null',
-            draws,
-            draws.map(() => 0),
-            'E'
-          );
-        } else if (testCase.null.length > 0) {
+        if (testCase.null.length > 0) {
           const expected = testCase.null;
           // DKW: P(sup|F_n-F| > e) <= 2 exp(-2 n e^2).
           // Union of two samples at alpha=1e-5 (per comparison). Exact null needs
@@ -151,7 +172,7 @@ for (const testCase of fixture.cases) {
             0
           );
           const referenceUpper =
-            expected.filter(value => value >= testCase.observed).length / expected.length;
+            expected.filter(value => value >= observed).length / expected.length;
           // Binomial standard error of TWO independent samples, with 1/n floor
           // for zero observed counts; five sigma plus the pseudo-p resolution.
           const error = Math.sqrt(

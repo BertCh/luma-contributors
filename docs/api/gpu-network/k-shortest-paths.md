@@ -23,11 +23,13 @@ Compile-time properties:
 | `routeCount` | Required | 1–32 | Number of requested routes per query |
 | `maximumPathLength` | 64 | 1–1,024 | Vertex slots per route, root comparisons and spur lanes |
 | `candidateCapacity` | 256 | 1–4,096 | Persistent pending routes per query |
-| `maximumIterations` | 64 | 1–1,024 | Rounds for each shortest-path and zero-cost tie phase |
+| `maximumIterations` | 64 | 1–1,024 | Rounds per shortest-path phase and, separately, per equal-cost predecessor phase in each Yen round |
 
 The shared command-node budget of 32,768 also applies. `estimatedCommandNodeCount` is a
 conservative upper bound, `8 + routeCount * (16 + 4 * maximumIterations)`. Each shortest-path
-round chains up to 64 local hops. Relaxation and tie rounds use GPU-written indirect dispatch.
+round chains up to 64 local hops per workgroup; a round is not a guaranteed 64-hop advance.
+The same per-phase round bound applies independently to each spur lane, with no shared total
+across Yen rounds. Relaxation and tie rounds use GPU-written indirect dispatch.
 Finished Yen batches gate every composed shortest-path pass as well as edge filtering and
 reconstruction on the GPU. Batch predicates are combined with the live frontier dispatches, so
 skipped initialization cannot reuse stale dispatch arguments from an earlier encoding. No status
@@ -76,7 +78,11 @@ Every output uses its own buffer, separate from inputs.
 | `candidateOverflow` | A query's persistent candidate pool could not retain a new distinct candidate |
 | `iterationCount` | Maximum Yen rounds attempted by any query, at most `routeCount` |
 
-On either budget stop, previously certified routes remain published. A path-length stop is a
+On either budget stop, only the first `counts[query]` routes of each query are usable;
+these previously certified routes remain published in nondecreasing cost order. Empty padded
+slots do not establish that no further path exists. `iterationCount` counts Yen rounds attempted,
+not frontier rounds, examined edges or path hops. Candidate capacity bounds simultaneously
+pending distinct full routes per query; it does not bound the number of CSR edges examined. A path-length stop is a
 budget interruption, **not** enumeration restricted to paths of at most that length: simply dropping
 an overlong spur could skip a cheaper path. A shortest-search interruption conservatively stops
 all queries still active in that batch. Candidate overflow affects only its own query. Status
@@ -154,3 +160,30 @@ Independent oracle fixtures come from NetworkX `shortest_simple_paths`, using ed
 to preserve distinct parallel edges. Regenerate with
 `/usr/bin/python3 modules/analysis/test/oracles/k-shortest-paths.py`. Headless specs cover these
 fixtures, 700-vertex networks, a 300-vertex path, graph reuse, input padding, ties and budget stops.
+
+## Empty queries and byte readback
+
+`decodeGPUKShortestPaths` also accepts `Uint8Array` and `ArrayBuffer` readbacks, including subviews
+and values from another JavaScript realm. Numeric vertex/edge/count arrays must be uint32;
+cost arrays must be float32. Partial elements and missing status words are rejected.
+A query with no accepted routes decodes to `{count: 0, routes: []}`. Completion remains on the
+returned batch `status`, independently of that query's count; inspect convergence and interruption
+flags before treating empty output as proof of unreachability. Alternative routes instead uses
+`nodeCount` as its path stride and returns `complete` on each query.
+
+Zero-query batches over a valid nonempty topology have empty data columns and scalar status
+`{converged: true, iterationLimitReached: false, candidateOverflow: false, iterationCount: 0}`.
+An explicit CPU search budget still binds; omitted CPU budgets retain the unbounded reference route.
+
+```ts
+import {computeKShortestPathsOnCPU, decodeGPUKShortestPaths}
+  from '@luma-contributors/analysis/gpu-network';
+const options = {queryCount: 2, routeCount: 1, maximumPathLength: 2};
+const result = computeKShortestPathsOnCPU({
+  topology: {offsets: Uint32Array.of(0, 1, 1), neighbors: Uint32Array.of(1), weights: Float32Array.of(2)},
+  sources: Uint32Array.of(0, 1), targets: Uint32Array.of(1, 0)
+}, options);
+const decoded = decodeGPUKShortestPaths({...result, status: result}, options);
+console.log(decoded.queries[1]); // {count: 0, routes: []}
+console.log(decoded.status.converged); // true: the whole batch completed
+```

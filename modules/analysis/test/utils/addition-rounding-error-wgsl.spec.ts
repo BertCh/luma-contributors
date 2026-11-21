@@ -13,7 +13,7 @@ import {requireTestDevice} from './require-test-device';
 import {createSeededRandom, getFloatWords, runWGSLModuleKernel} from './wgsl-module-harness';
 
 // getAdditionRoundingError against float64, and the reason it exists: on the test GPU the float
-// form of a compensated sum is removed by the shader compiler. Expected values are float64
+// form of a compensated sum is removed by the shader compiler (another backend may keep it). Expected values are float64
 // arithmetic on float32 inputs chosen so that float64 is exact; nothing here repeats the kernel's
 // integer arithmetic.
 
@@ -244,19 +244,52 @@ it('a million signed terms: the integer correction recovers the float64 sum', as
   }
 });
 
-it('the float form of the same correction is removed by the shader compiler of the test GPU', async () => {
-  const {terms, exactSums} = createTerms();
+/** What the shader compiler did with the float form of the Neumaier correction. */
+type FloatCompensationBehaviour = 'erased' | 'preserved';
+
+/**
+ * Classifies the float correction `(sum - next) + term`, which is algebraically zero. `erased`:
+ * the compiler folded it (Metal fast math on the test GPU), so the correction is 0 and the
+ * "compensated" sum is the plain sum bit for bit, more than 1000 from the true sum. `preserved`:
+ * the compiler kept it, so the running sum is the IEEE serial sum and sum plus correction is
+ * within 4 of the true sum, as the integer form is. Anything else (a partly folded or non-finite
+ * correction) is described as a mismatch (CORE-120).
+ */
+function getFloatCompensationBehaviour(
+  result: Pick<SerialSums, 'plain' | 'floatSum' | 'floatCompensation'>,
+  exact: number,
+  serial: number
+): FloatCompensationBehaviour | string {
+  const {plain, floatSum, floatCompensation} = result;
+  if (floatCompensation === 0 && floatSum === plain && Math.abs(floatSum - exact) > 1000) {
+    return 'erased';
+  }
+  if (
+    floatSum === serial &&
+    Number.isFinite(floatCompensation) &&
+    Math.abs(floatSum + floatCompensation - exact) < 4
+  ) {
+    return 'preserved';
+  }
+  return `neither: sum ${floatSum}, correction ${floatCompensation}, plain ${plain}, serial ${serial}, exact ${exact}`;
+}
+
+it('the float form of the same correction is erased or kept by the shader compiler; the integer form is right either way', async context => {
+  const {terms, exactSums, serialSums} = createTerms();
   const results = await sumOnGPU(terms);
+  const behaviours = results.map((result, dataset) =>
+    getFloatCompensationBehaviour(result, exactSums[dataset], serialSums[dataset])
+  );
+  // On the test GPU (Metal fast math) both datasets are 'erased': 16,115 from the true sum. A
+  // backend that keeps the expression is 'preserved'; both are accepted, a mixture is not.
+  expect([
+    ['erased', 'erased'],
+    ['preserved', 'preserved']
+  ]).toContainEqual(behaviours);
+  await context.annotate(`float compensation ${behaviours[0]} by this shader compiler`);
   for (const [dataset, result] of results.entries()) {
-    // (sum - next) + term is algebraically zero. The compiler folds it, so the "compensated"
-    // sum is the plain sum of the same kernel bit for bit, 16,115 from the true sum here. If a
-    // device ever keeps the expression this expectation fails; the integer form is right on both.
-    expect(result.floatCompensation).toBe(0);
-    expect(result.floatSum).toBe(result.plain);
-    expect(
-      Math.abs(result.floatSum + result.floatCompensation - exactSums[dataset])
-    ).toBeGreaterThan(1000);
-    // The integer form in the same kernel and loop is not affected.
+    // The integer form in the same kernel and loop does not depend on the compiler.
+    expect(Number.isFinite(result.integerCompensation)).toBe(true);
     expect(
       Math.abs(result.integerSum + result.integerCompensation - exactSums[dataset])
     ).toBeLessThan(4);

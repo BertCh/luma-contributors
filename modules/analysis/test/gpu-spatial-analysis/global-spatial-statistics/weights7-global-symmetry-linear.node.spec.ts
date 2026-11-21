@@ -46,7 +46,13 @@ function countNodes(chunkCount: number, symmetryStrategy: 'auto' | 'transpose' |
     }
   }).getCommandNodes(graph);
   serial++;
-  return nodes.length;
+  // Geary's stable complete-support pass deliberately visits every chunk pair for three
+  // fields (high, low, factor). It is independent of symmetryStrategy and is documented as
+  // quadratic. Keep checking its exact combinatorial count, and measure the original symmetry
+  // pipeline separately so a Geary request cannot invalidate the transpose growth contract.
+  const gearyPairs = nodes.filter(node => node.id.includes('-geary-deviations-pairs-'));
+  expect(gearyPairs).toHaveLength(3 * chunkCount ** 2);
+  return nodes.filter(node => !node.id.includes('-geary-deviations-')).length;
 }
 
 it('the transpose symmetry strategy adds a constant number of kernels per chunk', () => {

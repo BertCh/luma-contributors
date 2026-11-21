@@ -3,10 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  isGraphDataView,
+  isGraphVectorView,
   validateCapacity,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {GraphDataView, GraphVectorView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {type GraphDataView, GraphVectorView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateDisjointWritableViews,
   validateGraphChunkBindingRanges,
@@ -17,7 +19,7 @@ import {
 export function getTrajectoryBindingViews(value: object): GraphChunkDispatchViews {
   const views: Record<string, GraphDataView | GraphVectorView> = {};
   const visit = (item: unknown, path: string): void => {
-    if (item instanceof GraphDataView || item instanceof GraphVectorView) {
+    if (isGraphDataView(item) || isGraphVectorView(item)) {
       views[path] = item;
     } else if (
       item &&
@@ -51,7 +53,7 @@ export function validateTrajectoryWritableDispatches(
   groups: readonly GraphChunkDispatchViews[]
 ): void {
   const fields = [...new Map(groups.flatMap(group => Object.entries(group))).values()].filter(
-    (view): view is GraphDataView => view instanceof GraphDataView && view.length > 0
+    (view): view is GraphDataView => isGraphDataView(view) && view.length > 0
   );
   const data = fields.map(view =>
     (view.buffer.graph as GPUCommandGraph).createDataView(view.buffer, {

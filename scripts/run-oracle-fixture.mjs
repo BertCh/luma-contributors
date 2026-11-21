@@ -4,7 +4,7 @@
 
 // PLAT-06. Regenerates one oracle fixture family and diffs it against the committed fixtures.
 //
-//   yarn oracle-fixture <generator> [--python <path>] [--rscript <path>] [--write] [--keep]
+//   yarn oracle-fixture <generator> [--python <path>] [--rscript <path>] [--write] [--keep] [--evidence <new-path>]
 //   yarn oracle-fixture --list
 //
 // <generator> is a file in modules/analysis/test/oracles, with or without its extension
@@ -17,6 +17,7 @@
 // Exit codes: 0 identical or written, 1 differences (without --write), 2 environment problem
 // (missing interpreter, Python package or R), 3 generator failure, 64 usage error.
 import {spawnSync} from 'node:child_process';
+import {createHash, randomUUID} from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -119,6 +120,60 @@ export function diffJson(committed, regenerated) {
   };
 }
 
+/**
+ * @typedef {{path: string, regenerated: boolean, comparison: 'not-compared'|'matching'|'differing', committedSha256?: string, regeneratedSha256?: string}} OracleRunOutput
+ * @typedef {{version: 1, runId: string, startedAt: string, completedAt: string, generator: string, generatorSha256: string, declaredOutputs: string[], outputs: OracleRunOutput[]}} OracleRunEvidence
+ * @typedef {{path: string, committedBytes?: import('node:buffer').Buffer, regeneratedBytes?: import('node:buffer').Buffer}} OracleOutputBytes
+ * @typedef {{runId: string, startedAt: string, completedAt: string, generator: string, generatorBytes: import('node:buffer').Buffer, declaredOutputs: string[], outputs: OracleOutputBytes[]}} OracleRunInput
+ */
+
+/**
+ * A run receipt describes bytes actually recreated; partial runs certify no comparisons.
+ * @param {OracleRunInput} input
+ * @returns {OracleRunEvidence}
+ */
+export function createOracleRunEvidence({
+  runId,
+  startedAt,
+  completedAt,
+  generator,
+  generatorBytes,
+  declaredOutputs,
+  outputs
+}) {
+  const hashBytes = bytes => createHash('sha256').update(bytes).digest('hex');
+  const byPath = new Map(outputs.map(output => [output.path, output]));
+  const complete = declaredOutputs.every(
+    output => byPath.get(output)?.regeneratedBytes !== undefined
+  );
+  return {
+    version: 1,
+    runId,
+    startedAt,
+    completedAt,
+    generator,
+    generatorSha256: hashBytes(generatorBytes),
+    declaredOutputs: [...declaredOutputs],
+    outputs: declaredOutputs.map(output => {
+      const bytes = byPath.get(output);
+      const regenerated = bytes?.regeneratedBytes !== undefined;
+      const compared = complete && bytes?.committedBytes !== undefined;
+      return {
+        path: output,
+        regenerated,
+        comparison: !compared
+          ? 'not-compared'
+          : bytes.committedBytes.equals(bytes.regeneratedBytes)
+            ? 'matching'
+            : 'differing',
+        committedSha256:
+          bytes?.committedBytes === undefined ? undefined : hashBytes(bytes.committedBytes),
+        regeneratedSha256: regenerated ? hashBytes(bytes.regeneratedBytes) : undefined
+      };
+    })
+  };
+}
+
 /** Classifies interpreter stderr into an environment problem, or undefined for a generator failure. */
 export function classifyFailure(extension, standardError) {
   if (extension === '.py') {
@@ -175,7 +230,11 @@ function parseArguments(argv) {
     if (argument === '--write') options.write = true;
     else if (argument === '--keep') options.keep = true;
     else if (argument === '--list') options.list = true;
-    else if (argument === '--python') options.python = argv[++index];
+    else if (argument === '--evidence') {
+      options.evidence = argv[++index];
+      if (!options.evidence || options.evidence.startsWith('--'))
+        return {error: '--evidence needs a new receipt path'};
+    } else if (argument === '--python') options.python = argv[++index];
     else if (argument === '--rscript') options.rscript = argv[++index];
     else if (argument.startsWith('--')) return {error: `unknown option ${argument}`};
     else if (options.generator === undefined) options.generator = argument;
@@ -224,6 +283,14 @@ export function validateOracleManifest(manifest) {
     if (declaration.kind !== 'fixture') {
       if (typeof declaration.reason !== 'string' || !declaration.reason.trim())
         throw new Error(`${file}: a reason is required for ${declaration.kind}`);
+      if (declaration.outputs !== undefined) {
+        if (
+          !Array.isArray(declaration.outputs) ||
+          new Set(declaration.outputs).size !== declaration.outputs.length
+        )
+          throw new Error(`${file}: declared outputs must be a unique path array`);
+        for (const output of declaration.outputs) validatePath(output);
+      }
       continue;
     }
     if (
@@ -394,6 +461,24 @@ function main() {
     commandArguments.push(option, value);
   }
 
+  const startedAt = new Date().toISOString();
+  const runId = randomUUID();
+  const generatorBytes = fs.readFileSync(path.join(REPOSITORY_ROOT, generatorPath));
+  const recordEvidence = outputs => {
+    if (!options.evidence) return;
+    const receipt = createOracleRunEvidence({
+      runId,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      generator: resolved.file,
+      generatorBytes,
+      declaredOutputs: expectedPaths,
+      outputs
+    });
+    // Never overwrite an existing file, including a fixture or an earlier run's evidence.
+    fs.writeFileSync(options.evidence, `${JSON.stringify(receipt, null, 2)}\n`, {flag: 'wx'});
+    console.log(`oracle-fixture: run ${runId} evidence written to ${options.evidence}`);
+  };
   const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oracle-fixture-'));
   try {
     createSandbox(sandboxRoot);
@@ -440,8 +525,19 @@ function main() {
           `NOT WRITTEN ${path.relative(sandboxTest, file)} (required by oracle-fixtures.json for ${resolved.file})`
         );
       console.error('oracle-fixture: incomplete generation; no fixtures compared or copied back');
+      if (options.evidence)
+        recordEvidence(
+          written.map((file, index) => ({
+            path: expectedPaths[index],
+            committedBytes: fs.readFileSync(
+              path.join(REPOSITORY_ROOT, TEST_DIRECTORY, expectedPaths[index])
+            ),
+            regeneratedBytes: missing.includes(file) ? undefined : fs.readFileSync(file)
+          }))
+        );
       return 3;
     }
+    const evidenceOutputs = [];
     let differenceCount = 0;
     for (const file of written) {
       const relative = path.relative(sandboxTest, file);
@@ -454,6 +550,8 @@ function main() {
       }
       const committedBytes = fs.readFileSync(committedPath);
       const regeneratedBytes = fs.readFileSync(file);
+      if (options.evidence)
+        evidenceOutputs.push({path: relative, committedBytes, regeneratedBytes});
       if (committedBytes.equals(regeneratedBytes)) {
         console.log(`IDENTICAL  ${label}`);
         continue;
@@ -477,6 +575,7 @@ function main() {
       for (const key of diff.added.slice(0, 3)) console.log(`             + ${key}`);
       for (const key of diff.removed.slice(0, 3)) console.log(`             - ${key}`);
     }
+    recordEvidence(evidenceOutputs);
     if (options.write && differenceCount > 0) {
       for (const file of written) {
         const relative = path.relative(sandboxTest, file);

@@ -23,6 +23,24 @@ import type {GPUAnalysisQuestion} from '../../../../src/gpu-spatial-analysis/ont
 import {GPU_SPATIAL_ANALYSIS_DOMAINS} from '../../../../src/gpu-spatial-analysis/ontology/spatial-analysis-ontology';
 import type {GPUAnalysisOperator} from '../../../../src/gpu-spatial-analysis/ontology/spatial-analysis-ontology';
 
+it('W3-01 discovers all qualified building tessellation routes as preparation', () => {
+  const matches = queryGPUAnalysisOperatorsByQuestion('prepare-data', {primaryOnly: true});
+  for (const exportName of [
+    'addBuildingTessellationRecipe',
+    'addBuildingTessellationReferenceRecipe',
+    'addLocalBuildingTessellationRecipe'
+  ]) {
+    expect(
+      matches.some(
+        operator =>
+          operator.package === '@luma-contributors/analysis/gpu-spatial-analysis' &&
+          operator.exportName === exportName
+      ),
+      exportName
+    ).toBe(true);
+  }
+});
+
 /**
  * Operators labelled by hand from their documentation and source, across all sixteen domains, before
  * the rules were run against them. The value is the full expected list, primary first.
@@ -36,6 +54,7 @@ const LABELLED_OPERATORS: readonly (readonly [string, readonly GPUAnalysisQuesti
   ['GPURipley', ['where-concentrated']],
   // A dot-density map builds render points from counts: preparation, not an answer.
   ['GPUDotDensity', ['prepare-data']],
+  ['GPUKeyLookup', ['prepare-data']],
   // where-significant
   ['GPUHotSpotAnalysis', ['where-significant']],
   ['GPULocalMoran', ['where-significant']],
@@ -101,7 +120,7 @@ const LABELLED_OPERATORS: readonly (readonly [string, readonly GPUAnalysisQuesti
   ['GPUPointCloudFeatures', ['shape-of-the-surface']],
   ['GPUGeomorphons', ['shape-of-the-surface']],
   // which-groups-or-regions
-  ['GPUSpatialClustering', ['which-groups-or-regions', 'where-concentrated']],
+  ['GPUDBSCAN', ['which-groups-or-regions', 'where-concentrated']],
   ['GPUSpatialKMeans', ['which-groups-or-regions']],
   ['GPUSkaterRegions', ['which-groups-or-regions']],
   ['GPUAZPRegions', ['which-groups-or-regions']],
@@ -364,8 +383,8 @@ const BASELINE_OPERATOR_NAMES: readonly string[] = [
   'GPUPickRegionMask',
   'GPURegionStatistics',
   'GPURegionStatisticsReadback',
-  'GPUSpatialClustering',
-  'GPUHierarchicalDensityClustering',
+  'GPUDBSCAN',
+  'GPUHDBSCAN',
   'GPUSpatialKMeans',
   'GPUSpatialWeightsMinimumSpanningTree',
   'GPUSkaterRegions',
@@ -408,7 +427,7 @@ const BASELINE_OPERATOR_NAMES: readonly string[] = [
   'GPUHuffTradeAreas',
   'GPUSegregation',
   'GPUArealInterpolation',
-  'GPUPycnophylactic',
+  'GPUPycnophylacticInterpolation',
   'GPUTrajectoryMetrics',
   'GPUTrajectoryPlayhead',
   'GPUTrajectoryResample',
@@ -625,7 +644,7 @@ const BASELINE_OPERATOR_NAMES: readonly string[] = [
   'GPUScalarScale',
   'GPUVariableStandardization',
   'GPUGroupStatistics',
-  'GPUKeyJoin',
+  'GPUKeyLookup',
   'GPUColumnProfile',
   'GPUCompositeScore',
   'GPUInequality',
@@ -720,6 +739,7 @@ function makeSyntheticOperator(
 ): GPUAnalysisOperator {
   return {
     exportName,
+    stability: 'experimental',
     primaryCapability,
     tags: [],
     package: '@luma-contributors/analysis/gpu-spatial-analysis',
@@ -957,7 +977,7 @@ describe('getGPUAnalysisOperatorQuestions on operators the catalogue does not co
   });
 
   it('never returns more than three questions even with many tags', () => {
-    const operator = makeSyntheticOperator('GPUSpatialClustering', 'group-and-regional-analysis', {
+    const operator = makeSyntheticOperator('GPUDBSCAN', 'group-and-regional-analysis', {
       tags: ['movement-analysis', 'spatial-regression', 'terrain-morphometry', 'network-routing']
     });
     expect(getGPUAnalysisOperatorQuestions(operator).length).toBeLessThanOrEqual(3);

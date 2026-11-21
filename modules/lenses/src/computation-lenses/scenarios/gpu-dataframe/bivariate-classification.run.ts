@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {runExample} from './bivariate-classification.example';
 import {
@@ -14,9 +15,9 @@ import {
 const SCENARIO_ID = 'gpu-dataframe.bivariate-classification';
 /** Transient outputs the capture reads; they must be retained because transients can alias. */
 /** Executes the recorded bivariate classification once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-tracts');
+  const dataset = await loadDataFrameLensData('f-chicago-tracts', options?.datasetResolver);
   const poverty = Float32Array.from(dataset.columns.poverty150Pct, value => value ?? NaN);
   const uninsured = Float32Array.from(dataset.columns.uninsuredPct, value => value ?? NaN);
   const graph = createDataFrameLensGraph<undefined>(

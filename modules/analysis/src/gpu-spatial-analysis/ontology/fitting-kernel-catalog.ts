@@ -4,11 +4,18 @@
 
 import type {GPUAnalysisOperator, GPUSpatialAnalysisCapability} from './spatial-analysis-ontology';
 
+import {resolveOperatorDescriptor} from './all-entry-points/resolve-operator-descriptor';
+import {
+  freezeCatalog,
+  withCatalogStability,
+  type CatalogCapabilityDefinition
+} from './freeze-catalog';
+
 const SOURCE = 'modules/analysis/src/analysis-core/kernels/';
 const TEST = 'modules/analysis/test/analysis-core/fitting/fitting-kernels.spec.ts';
 
 /** Shared fitting support, below every domain entry point. */
-export const FITTING_KERNEL_CAPABILITY: GPUSpatialAnalysisCapability = {
+const FITTING_KERNEL_CAPABILITY_DEFINITION: CatalogCapabilityDefinition = {
   id: 'model-fitting-kernels',
   title: 'Model fitting kernels',
   status: 'available',
@@ -27,6 +34,10 @@ export const FITTING_KERNEL_CAPABILITY: GPUSpatialAnalysisCapability = {
     'GPUFittingCoordinateEncoder'
   ]
 };
+
+export const FITTING_KERNEL_CAPABILITY: GPUSpatialAnalysisCapability = freezeCatalog(
+  withCatalogStability(FITTING_KERNEL_CAPABILITY_DEFINITION)
+);
 
 /** LRN-02 kernels: algorithm references and precision conventions are recorded in the linked page. */
 export const FITTING_KERNEL_OPERATORS: readonly GPUAnalysisOperator[] = (
@@ -89,27 +100,27 @@ export const FITTING_KERNEL_OPERATORS: readonly GPUAnalysisOperator[] = (
     }
   ] satisfies readonly Partial<GPUAnalysisOperator>[]
 ).map(
-  (detail): GPUAnalysisOperator => ({
-    primaryCapability: FITTING_KERNEL_CAPABILITY.id,
-    tags: [],
-    package: '@luma-contributors/analysis/analysis-core',
-    inputs: ['attributes', 'parameters'],
-    outputs: ['attributes', 'summary'],
-    dimensionality: 'mixed',
-    topology: 'unspecified',
-    cardinality: 'fixed-sized',
-    semantics: 'unspecified',
-    deterministic: true,
-    status: [],
-    readback: 'none',
-    role: 'helper',
-    tier: 'scale',
-    evidence: {
-      status: 'partial',
-      tests: TEST,
-      documentation: 'docs/api/analysis-core/fitting-kernels.md',
-      contract: 'GPUCommandNodeProducer; caller-supplied fitting state; no bundled weights'
-    },
-    ...detail
-  })
+  (detail): GPUAnalysisOperator =>
+    resolveOperatorDescriptor({
+      primaryCapability: FITTING_KERNEL_CAPABILITY.id,
+      tags: [],
+      package: '@luma-contributors/analysis/analysis-core',
+      inputs: ['attributes', 'parameters'],
+      outputs: ['attributes', 'summary'],
+      dimensionality: 'mixed',
+      topology: 'unspecified',
+      cardinality: 'fixed-sized',
+      semantics: 'unspecified',
+      deterministic: true,
+      readback: 'none',
+      role: 'helper',
+      tier: 'scale',
+      evidence: {
+        status: 'partial',
+        tests: TEST,
+        documentation: 'docs/api/analysis-core/fitting-kernels.md',
+        contract: 'GPUCommandNodeProducer; caller-supplied fitting state; no bundled weights'
+      },
+      ...detail
+    })
 );

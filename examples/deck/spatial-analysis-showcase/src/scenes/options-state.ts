@@ -84,6 +84,16 @@ export class OptionsStore {
   /** Sets one option and notifies listeners when the value changed. */
   set(id: string, value: OptionValue, source: OptionChangeSource = 'user'): void {
     if (!(id in this.defaults)) return;
+    const spec = this.specs.find(candidate => candidate.id === id);
+    if (spec?.kind === 'select' && typeof value === 'string') {
+      value = spec.aliases?.[value] ?? value;
+      if (
+        id === 'standardization' &&
+        value === 'zscore' &&
+        spec.options.some(option => option.value === 'z-score')
+      )
+        value = 'z-score';
+    }
     const next = Array.isArray(value) ? ([value[0], value[1]] as const) : value;
     if (areValuesEqual(this.values[id], next)) return;
     this.values[id] = next;

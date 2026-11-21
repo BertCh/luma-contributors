@@ -19,15 +19,18 @@ import {
 } from '../../../src/gpu-spatial-analysis/spatial-regression/gtwr-bandwidth-search';
 import {
   createWGSLDispatchGate,
-  createWGSLKernelNode
+  createWGSLKernelNode,
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
 } from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {getSerialAuditBody} from './local-regression-serial-audit';
 import {
   createCPUGraphMemory,
   executeCommandNodesOnCPU
 } from '../segment-intersection/wgsl-graph-executor';
 import fixture from '../../oracles/fixtures/gtwr-bandwidth-search.json';
 
-function createScene() {
+function createScene(rows = 16) {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   let serial = 0;
@@ -42,27 +45,27 @@ function createScene() {
   });
   const props: GPUGeographicallyTemporallyWeightedRegressionProps = {
     id: 'gtwr-search',
-    positions: view('float32x2', 16),
-    times: view('float32', 16),
+    positions: view('float32x2', rows),
+    times: view('float32', rows),
     temporalContext: {
       unit: 'second',
       epoch: 0n,
       encoding: 'float32-relative',
       axis: {kind: 'irregular'}
     },
-    predictors: view('float32', 16),
+    predictors: view('float32', rows),
     predictorCount: 1,
-    response: view('float32', 16),
+    response: view('float32', rows),
     parameters: view('float32', 4),
     adaptive: true,
     bandwidthSearch: {parameters: view('float32', 6), maximumIterations: 1},
     output: {
-      coefficients: view('float32', 32),
-      localStatus: view('uint32', 16),
-      fitted: view('float32', 16),
-      hatDiagonal: view('float32', 16),
+      coefficients: view('float32', rows * 2),
+      localStatus: view('uint32', rows),
+      fitted: view('float32', rows),
+      hatDiagonal: view('float32', rows),
       summary: view('float32', 12),
-      residuals: view('float32', 16),
+      residuals: view('float32', rows),
       selectedParameters: view('float32', 2),
       status: status()
     }
@@ -103,9 +106,25 @@ it('validates budgets, spatial context, packed bounds, output lengths and status
   try {
     const maximum = new GPUGeographicallyTemporallyWeightedRegression({
       ...scene.props,
-      bandwidthSearch: {...scene.props.bandwidthSearch!, maximumIterations: 32}
+      bandwidthSearch: {...scene.props.bandwidthSearch!, maximumIterations: 8}
     });
     expect(maximum.estimatedCommandNodeCount).toBeLessThanOrEqual(32768);
+    // The independent command ceiling applies even within the allowed iteration range.
+    const allocationSizes = () =>
+      Object.fromEntries(
+        Object.entries(scene.graph)
+          .filter(([, value]) => value instanceof Map || Array.isArray(value))
+          .map(([name, value]) => [name, value instanceof Map ? value.size : value.length])
+      );
+    const buffersBefore = allocationSizes();
+    expect(
+      () =>
+        new GPUGeographicallyTemporallyWeightedRegression({
+          ...scene.props,
+          bandwidthSearch: {...scene.props.bandwidthSearch!, maximumIterations: 32}
+        })
+    ).toThrow(/estimated command node count.*32768/);
+    expect(allocationSizes()).toEqual(buffersBefore);
 
     for (const maximumIterations of [0, 33, 1.5]) {
       expect(
@@ -168,7 +187,7 @@ it('validates budgets, spatial context, packed bounds, output lengths and status
 it('bounds actual command counts and gates every candidate data pass', () => {
   const scene = createScene();
   try {
-    for (const maximumIterations of [1, 2, 3]) {
+    for (const maximumIterations of [1, 2, 3, 8]) {
       const contributor = new GPUGeographicallyTemporallyWeightedRegression({
         ...scene.props,
         id: `gtwr-${maximumIterations}`,
@@ -176,8 +195,28 @@ it('bounds actual command counts and gates every candidate data pass', () => {
       });
       const nodes = contributor.getCommandNodes(scene.graph);
       expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
-      const candidates = nodes.filter(node => /evaluate-\d+-(points|fit|summary)$/.test(node.id));
+      const candidates = nodes.filter(node =>
+        /evaluate-\d+-(fit|publish-fit-values|response-anchor-bounds|statistics-(partial|fold)|variance-(partial|summary))$/.test(
+          node.id
+        )
+      );
       expect(candidates.length).toBeGreaterThan(0);
+      const fitNodes = candidates.filter(node => node.id.endsWith('-fit'));
+      expect(candidates.length).toBe(fitNodes.length * 7);
+      for (const fit of fitNodes) {
+        const prefix = fit.id.slice(0, -4);
+        for (const suffix of [
+          'fit',
+          'publish-fit-values',
+          'response-anchor-bounds',
+          'statistics-partial',
+          'statistics-fold',
+          'variance-partial',
+          'variance-summary'
+        ]) {
+          expect(candidates.some(node => node.id === `${prefix}-${suffix}`)).toBe(true);
+        }
+      }
       for (const node of candidates) {
         expect(node.condition, node.id).toMatchObject({source: 'gpu', mode: 'indirect'});
       }
@@ -244,6 +283,59 @@ function replayIntegerSearch(lower: number, scores: number[]) {
     scene.device.destroy();
   }
 }
+
+it('S2 each candidate owns correctly shaped summary gates across the 4096-row boundary', () => {
+  for (const rows of [4096, 4097]) {
+    const scene = createScene(rows);
+    recordWGSLKernelNodes(scene.graph);
+    try {
+      const contributor = new GPUGeographicallyTemporallyWeightedRegression({
+        ...scene.props,
+        output: {...scene.props.output, selectedParameters: undefined}
+      });
+      const nodes = contributor.getCommandNodes(scene.graph);
+      expect(nodes.length).toBe(rows === 4096 ? 223 : 240);
+      expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
+      const memory = createCPUGraphMemory();
+      const candidateBuffers = new Set();
+      for (const fit of nodes.filter(node => /evaluate-\d+-fit$/.test(node.id))) {
+        const prefix = fit.id.slice(0, -4);
+        const arm = nodes.find(node => node.id === `${prefix}-summary-arm`)!;
+        const armRecord = getWGSLKernelNodeRecord(scene.graph, arm.id)!;
+        const parent = armRecord.bindings.find(binding => binding.name === 'parent')!.view;
+        const dispatch = armRecord.bindings.find(binding => binding.name === 'dispatch')!.view;
+        expect(fit.condition).toMatchObject({buffer: parent.buffer, byteOffset: parent.byteOffset});
+        expect(candidateBuffers.has(dispatch.buffer)).toBe(false);
+        candidateBuffers.add(dispatch.buffer);
+        const reductions = nodes.filter(
+          node =>
+            node.id.startsWith(`${prefix}-`) &&
+            /-(bounds-blocks|bounds|partial|fold|summary)$/.test(node.id)
+        );
+        expect(reductions).toHaveLength(rows === 4096 ? 5 : 6);
+        memory.write(parent, new Uint32Array([1, 1, 1, 1, 1, 1]));
+        executeCommandNodesOnCPU([arm], memory);
+        const triples = memory.readUint32(dispatch);
+        reductions.forEach((node, slot) => {
+          expect(node.condition).toMatchObject({
+            source: 'gpu',
+            mode: 'indirect',
+            buffer: dispatch.buffer,
+            byteOffset: dispatch.byteOffset + slot * 12
+          });
+          const record = getWGSLKernelNodeRecord(scene.graph, node.id)!;
+          expect([...triples.slice(slot * 3, slot * 3 + 3)]).toEqual([...record.workgroups]);
+        });
+        memory.write(parent, new Uint32Array(6));
+        executeCommandNodesOnCPU([arm], memory);
+        for (let slot = 0; slot < reductions.length; slot++)
+          expect(memory.readUint32(dispatch)[slot * 3]).toBe(0);
+      }
+    } finally {
+      scene.device.destroy();
+    }
+  }
+});
 
 it('executes rounded integer search kernels without discarding the NumPy optimum 18', () => {
   const result = replayIntegerSearch(15, fixture.roundedCandidates.aicc);
@@ -318,6 +410,111 @@ it('executes division-first MGTWR component scoring without an overflowing inter
   }
 });
 
+it('W5-54 intercept search evaluator preserves a constant million-unit partial response', () => {
+  const scene = createScene();
+  recordWGSLKernelNodes(scene.graph);
+  try {
+    const memory = createCPUGraphMemory();
+    const points = scene.view('float32', 42);
+    const partial = scene.view('float32', 14);
+    const parameters = scene.view('float32', 4);
+    memory.write(
+      points,
+      Array.from({length: 14}, (_, row) => [row < 6 ? 0 : 2, 0, row < 6 ? 0 : 3]).flat()
+    );
+    memory.write(partial, Array(14).fill(1000000));
+    memory.write(parameters, [5, 1.25, 0, 0]);
+    const gate = createWGSLDispatchGate(scene.graph, {
+      id: 'intercept-search-gate',
+      operation: 'Test',
+      shapes: [[14], [1]]
+    });
+    memory.write(gate.view, new Uint32Array([1, 1, 1, 1, 1, 1]));
+    const evaluation = createMGTWRComponentEvaluationNodes(scene.graph, {
+      id: 'intercept-search',
+      rows: 14,
+      predictorCount: 1,
+      component: 0,
+      points,
+      predictors: scene.view('float32', 14),
+      partial,
+      parameters,
+      adaptive: false,
+      bisquare: false,
+      gate
+    });
+    executeCommandNodesOnCPU([evaluation.nodes[0]], memory);
+    const record = getWGSLKernelNodeRecord(scene.graph, evaluation.nodes[0].id)!;
+    const scratch = record.bindings.find(binding => binding.name === 'scratch')!.view;
+    const actual = memory.readFloat32(scratch);
+    for (let row = 0; row < 14; row++) expect(actual[row * (scratch.length / 14)]).toBe(1000000);
+  } finally {
+    scene.device.destroy();
+  }
+});
+
+for (const scenario of ['mixed', 'rounded'] as const) {
+  it(`B3 B4 intercept search evaluator retains ${scenario} partial-response evidence`, () => {
+    const scene = createScene();
+    recordWGSLKernelNodes(scene.graph);
+    try {
+      const memory = createCPUGraphMemory();
+      const points = scene.view('float32', 24);
+      const partial = scene.view('float32', 8);
+      const parameters = scene.view('float32', 4);
+      memory.write(
+        points,
+        Array.from({length: 8}, (_, row) => [
+          scenario === 'rounded' && row >= 4 ? 2 : 0,
+          0,
+          0
+        ]).flat()
+      );
+      memory.write(
+        partial,
+        scenario === 'mixed'
+          ? [33554432, -33554432, 1, 1, 1, 1, 1, 1]
+          : [1e6, 1e6, 1e6, 1e6, 1e6 + 1 / 16, 1e6 + 1 / 16, 1e6 + 1 / 16, 1e6 + 1 / 16]
+      );
+      memory.write(parameters, [1, 0, 0, 0]);
+      const gate = createWGSLDispatchGate(scene.graph, {
+        id: `review-${scenario}-gate`,
+        operation: 'Test',
+        shapes: [[8], [1]]
+      });
+      memory.write(gate.view, new Uint32Array([1, 1, 1, 1, 1, 1]));
+      const evaluation = createMGTWRComponentEvaluationNodes(scene.graph, {
+        id: `review-${scenario}`,
+        rows: 8,
+        predictorCount: 1,
+        component: 0,
+        points,
+        predictors: scene.view('float32', 8),
+        partial,
+        parameters,
+        adaptive: false,
+        bisquare: false,
+        gate
+      });
+      executeCommandNodesOnCPU(evaluation.nodes, memory);
+      if (scenario === 'mixed') {
+        const fit = getWGSLKernelNodeRecord(scene.graph, evaluation.nodes[0].id)!;
+        const scratch = fit.bindings.find(binding => binding.name === 'scratch')!.view;
+        const values = memory.readFloat32(scratch);
+        const stride = scratch.length / 8;
+        for (let row = 0; row < 8; row++) expect(values[row * stride]).toBeCloseTo(0.75, 6);
+      } else {
+        // r=(1/16)*exp(-2)/(1+exp(-2)); RSS=8*r*r; tr(S)=2/(1+exp(-2)).
+        const summary = memory.readFloat32(evaluation.summary);
+        expect(Number.isFinite(summary[2])).toBe(true);
+        expect(summary[2]).toBeCloseTo(-45.26422157, 4);
+      }
+    } finally {
+      scene.device.destroy();
+    }
+  });
+}
+
 for (const model of ['component', 'gtwr'] as const) {
   it(`preserves a finite large-response ${model} AICc`, () => {
     const scene = createScene();
@@ -366,14 +563,24 @@ for (const model of ['component', 'gtwr'] as const) {
         });
         executeCommandNodesOnCPU(nodes, memory);
       } else {
+        recordWGSLKernelNodes(scene.graph);
         const parameters = scene.view('float32', 4);
         memory.write(parameters, [100, 0, 0, 0]);
         const fitted = scene.view('float32', 8);
         const hatDiagonal = scene.view('float32', 8);
         const localStatus = scene.view('uint32', 8);
+        const residuals = scene.view('float32', 8);
         memory.write(fitted, fixture.largeResponse.expected.gtwr.fitted);
         memory.write(hatDiagonal, fixture.largeResponse.expected.gtwr.hat);
         memory.write(localStatus, new Uint32Array(8));
+        // Independent float64 QR oracle values, before either prediction or residual is
+        // rounded to float32. Never subtract the buffer's rounded fitted values.
+        memory.write(
+          residuals,
+          fixture.largeResponse.response.map(
+            (value, row) => value - fixture.largeResponse.expected.gtwr.fitted[row]
+          )
+        );
         const contributor = new GPUGeographicallyTemporallyWeightedRegression({
           ...scene.props,
           positions,
@@ -388,18 +595,30 @@ for (const model of ['component', 'gtwr'] as const) {
             fitted,
             hatDiagonal,
             localStatus,
+            residuals,
             summary
           }
         });
-        // Isolate the production summary from the Cholesky kernels, whose pointer-to-array
-        // assignments are not supported by the WGSL interpreter. The headless case runs the fit.
-        const summaryNode = contributor
+        const summaryNodes = contributor
           .getCommandNodes(scene.graph)
-          .find(node => node.id.endsWith('-summary'));
-        if (!summaryNode) {
-          throw new Error('GTWR summary node missing');
-        }
-        executeCommandNodesOnCPU([summaryNode], memory);
+          .filter(node =>
+            /-(response-anchor-bounds|statistics-(partial|fold)|variance-(partial|summary))$/.test(
+              node.id
+            )
+          )
+          .map(node => {
+            const record = getWGSLKernelNodeRecord(scene.graph, node.id)!;
+            return createWGSLKernelNode(scene.graph, {
+              id: `${node.id}-serial-audit`,
+              operation: record.operation,
+              invocationCount: 1,
+              bindings: record.bindings,
+              declarations: record.declarations,
+              body: getSerialAuditBody(record)
+            });
+          });
+        expect(summaryNodes).toHaveLength(5);
+        executeCommandNodesOnCPU(summaryNodes, memory);
       }
       expect(memory.readFloat32(summary)[2]).toBeCloseTo(
         fixture.largeResponse.expected[model].aicc,

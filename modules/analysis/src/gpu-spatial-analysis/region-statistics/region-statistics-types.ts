@@ -119,20 +119,24 @@ export type GPURegionPickSelection = {
 export type GPURegionMaskSelection = {
   /** Selection discriminator. */
   kind: 'mask';
-  /** Source-aligned mask. */
+  /** Packed source-aligned mask (byte stride 4); an aligned nonzero byte offset is supported. */
   mask: GraphDataView<'uint32'>;
+  /** Optional producer truncation flag; nonzero overflow marks the summary region truncated. */
+  status?: GPUOverflowStatusPort;
+  /** Optional producer statistics summary. Its region/candidate loss flags describe mask membership;
+   * compact-ID capacity loss is ignored. Takes precedence over aggregate status.overflow. */
+  summary?: GraphDataView<'uint32'>;
 };
 
 /**
- * Caller-owned outputs of `GPURegionMask` and `GPUPickRegionMask`: a source-aligned 0/1 mask and a
+ * Caller-owned outputs of `GPURegionMask`: a source-aligned 0/1 mask and a
  * one-row truncation flag, both rewritten every encoding.
  */
 export type GPURegionMaskOutput = {
   /** Packed mask with one row per source row. Every row is written with 0 or 1. */
   mask: GraphDataView<'uint32'>;
   /**
-   * `overflow`: one row, 1 when the region input was truncated (lasso vertex count above capacity,
-   * or a pick-region overflow), else 0.
+   * `overflow`: one row, 1 when the lasso vertex count exceeds capacity, else 0.
    * `antimeridianUncertainCount` counts unprepared crossing rings; `poleUncertainCount` counts
    * uncapped pole rings. These optional counters are rewritten for world-space lon/lat lassos
    * only; planar, screen-space and non-polygon selections leave them untouched.
@@ -155,7 +159,8 @@ export type GPURegionStatisticsStatusPort = Partial<GPUOverflowStatusPort> &
     /**
      * 1 when the `spatialIndex` candidate stage may have missed rows (flag `candidatesTruncated`):
      * the grid query overflowed `candidateCapacity` or the index, or the index holds fewer rows
-     * than the source. Always 0 without `spatialIndex`. Not folded into `overflow`.
+     * than the source, or an input mask's producer summary reports candidate loss.
+     * Not folded into `overflow`.
      */
     candidateOverflow?: GPUStatusScalar;
   };

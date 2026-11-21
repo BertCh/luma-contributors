@@ -13,7 +13,11 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createScanNearestZonesKernelNode} from './scan-statistic-nearest-zones';
+import {
+  createScanNearestZonesKernelNode,
+  getScanBoundaryPopulationWGSL,
+  type ScanBoundaryPopulation
+} from './scan-statistic-nearest-zones';
 
 /** Compile-time exact neighbor discovery. Auto indexes lists of at most 65 rows, including lookahead. */
 export type GPUScanNearestZoneSearch = 'auto' | 'indexed' | 'full-scan';
@@ -31,6 +35,14 @@ export function getScanNearestZoneSearchPlan(
 ): {
   nearestZoneSearch: 'indexed' | 'full-scan';
   estimatedFullScanSeparationCount: number;
+  /** Per frame: each query visits each candidate at most once, including equal-latitude rows. */
+  estimatedIndexedCandidateSeparationCount: number;
+  /** Per frame: up to two axis projections on each of at most zones + 1 loop entries per query. */
+  estimatedIndexedAxisSeparationCount: number;
+  /** Candidate plus axis separation calls; excludes key generation, binary search and sorting. */
+  estimatedIndexedSeparationCount: number;
+  /** Two coordinate radix sorts; their comparisons/passes are not separation evaluations. */
+  indexedRadixSortCount: number;
 } {
   validateRequirement(
     id,
@@ -52,8 +64,19 @@ export function getScanNearestZoneSearchPlan(
     );
   return {
     nearestZoneSearch,
-    estimatedFullScanSeparationCount: zones * zones * (listLength < zones ? 5 : 1)
+    estimatedFullScanSeparationCount: zones * zones * (listLength < zones ? 5 : 1),
+    estimatedIndexedCandidateSeparationCount: zones * zones,
+    estimatedIndexedAxisSeparationCount: 2 * zones * (zones + 1),
+    estimatedIndexedSeparationCount: zones * zones + 2 * zones * (zones + 1),
+    indexedRadixSortCount: 2
   };
+}
+
+/** Largest single radix binding for the published 4-bit, 256-row radix route. @internal */
+export function getScanIndexedRadixBindingByteLength(zones: number): number {
+  // One-row sorts copy without radix scratch. Otherwise each digit has 16 histogram/offset
+  // words per 256-row workgroup; scan partials are smaller than their histogram input.
+  return zones < 2 ? zones * 4 : Math.max(zones, 16 * Math.ceil(zones / 256)) * 4;
 }
 
 /** Shared exact scan discovery: published radix-sort indexes or the original exhaustive route. @internal */
@@ -70,6 +93,7 @@ export function createScanNearestZoneNodes<Parameters>(
     separationWGSL: string;
     geographic: boolean;
     nearestZoneSearch: 'indexed' | 'full-scan';
+    boundaryPopulation?: ScanBoundaryPopulation;
   }
 ): GPUCommandNode<Parameters>[] {
   const {
@@ -83,6 +107,7 @@ export function createScanNearestZoneNodes<Parameters>(
     separationWGSL,
     geographic
   } = props;
+  const population = props.boundaryPopulation;
   const view = (name: string, length = zones) =>
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
   // Both callers preflight zones * listLength words. Every coordinate index buffer is
@@ -156,10 +181,21 @@ fn getPositionValue(key: u32) -> f32 {
         {name: 'sortedRowsX', view: sortedRowsX, type: 'u32', access: 'read'},
         {name: 'sortedRowsY', view: sortedRowsY, type: 'u32', access: 'read'},
         {name: 'neighbors', view: neighbors, type: 'u32', access: 'read_write'},
-        {name: 'distances', view: distances, type: 'u32', access: 'read_write'}
+        {name: 'distances', view: distances, type: 'u32', access: 'read_write'},
+        ...(population
+          ? [
+              {
+                name: 'population',
+                view: population.view,
+                type: population.integer ? ('u32' as const) : ('f32' as const),
+                access: 'read' as const
+              }
+            ]
+          : [])
       ],
       declarations: `${separationWGSL}
 ${positionKeyWGSL}
+${getScanBoundaryPopulationWGSL(population)}
 const ZONES: u32 = ${zones}u;
 const LIST: u32 = ${listLength}u;
 const GEOGRAPHIC: bool = ${geographic};
@@ -215,6 +251,12 @@ fn getAxisBound(rank: u32, axis: u32, center: vec2f, canPrune: bool) -> u32 {
   var filled = 0u;
   var selectedKeys: array<u32, LIST>;
   var selectedRows: array<u32, LIST>;
+  ${
+    population
+      ? `${population.integer ? 'var discardedPopulation = 0u;' : 'resetBoundaryPopulation();'}
+  var discardedCount = 0u;`
+      : ''
+  }
   loop {
     if (left == 0u && right == ZONES) { break; }
     var leftBound = 0xffffffffu;
@@ -236,6 +278,18 @@ fn getAxisBound(rank: u32, axis: u32, center: vec2f, canPrune: bool) -> u32 {
     let zone = getSortedRow(rank, axis);
     let key = getZoneSeparationKey(zone, centerX, centerY);
     var destination = min(filled, LIST - 1u);
+    ${
+      population
+        ? `let wasFull = filled == LIST;
+    let previousWorstKey = selectedKeys[LIST - 1u];
+    let previousWorstRow = selectedRows[LIST - 1u];
+    if (wasFull && key == previousWorstKey && zone >= previousWorstRow) {
+      ${population.integer ? 'discardedPopulation += getZonePopulation(zone);' : 'addZoneBoundaryPopulation(zone);'}
+      discardedCount++;
+      continue;
+    }`
+        : ''
+    }
     if (filled == LIST && (key > selectedKeys[destination] ||
         (key == selectedKeys[destination] && zone >= selectedRows[destination]))) { continue; }
     while (destination > 0u) {
@@ -248,6 +302,34 @@ fn getAxisBound(rank: u32, axis: u32, center: vec2f, canPrune: bool) -> u32 {
     selectedKeys[destination] = key;
     selectedRows[destination] = zone;
     filled = min(filled + 1u, LIST);
+    ${
+      population
+        ? `if (wasFull) {
+      if (selectedKeys[LIST - 1u] < previousWorstKey) {
+        ${population.integer ? 'discardedPopulation = 0u;' : 'resetBoundaryPopulation();'}
+        discardedCount = 0u;
+      } else {
+        ${population.integer ? 'discardedPopulation += getZonePopulation(previousWorstRow);' : 'addZoneBoundaryPopulation(previousWorstRow);'}
+        discardedCount++;
+      }
+    }`
+        : ''
+    }
+  }
+  ${
+    population
+      ? `${population.integer ? 'var boundaryPopulation = discardedPopulation;' : ''}
+  for (var slot = 0u; slot < LIST; slot++) { ${population.integer ? 'boundaryPopulation += getZonePopulation(selectedRows[slot]);' : 'addZoneBoundaryPopulation(selectedRows[slot]);'} }
+  distances[distancesOffset + ZONES * LIST + index] = ${population.integer ? 'boundaryPopulation' : 'bitcast<u32>(readBoundaryPopulation())'};
+  distances[distancesOffset + ZONES * (LIST + 1u) + index] = LIST + discardedCount;
+  ${
+    population.exact && !population.integer
+      ? `for (var word = 0u; word < 10u; word++) {
+    distances[distancesOffset + ZONES * (LIST + 2u) + index * 10u + word] = boundaryPopulationWords[word];
+  }`
+      : ''
+  }`
+      : ''
   }
   for (var slot = 0u; slot < LIST; slot++) {
     neighbors[neighborsOffset + row + slot] = selectedRows[slot];

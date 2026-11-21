@@ -41,8 +41,8 @@ it('matches independent GEOS intersections for concavity, a hole, reversal and e
   const result = computeTrajectoryRestrictionOnCPU(
     {
       positions: Float32Array.from(shapelyFixture.tracks.flat(2)),
-      times: Float32Array.from(shapelyFixture.tracks.flatMap(() => [0, 16])),
-      offsets: Uint32Array.from({length: trackCount + 1}, (_, track) => track * 2),
+      timestamps: Float32Array.from(shapelyFixture.tracks.flatMap(() => [0, 16])),
+      trackOffsets: Uint32Array.from({length: trackCount + 1}, (_, track) => track * 2),
       parameters: Float32Array.from([0, 16, 0, 0, 0, 0, 0, ...shapelyFixture.rings.flat(2)])
     },
     {
@@ -218,8 +218,8 @@ it('handles time-open and geometry-open pair boundaries and a tangent singleton'
   const tangentInput = {
     ...input,
     positions: Float32Array.of(-2, 1, 2, 1, 0, 0, 0, 0),
-    times: Float32Array.of(0, 4, 0, 4),
-    offsets: Uint32Array.of(0, 2, 4),
+    timestamps: Float32Array.of(0, 4, 0, 4),
+    trackOffsets: Uint32Array.of(0, 2, 4),
     pairs: undefined
   };
   const tangentOptions = {intervalsPerPair: 4, pairwiseTracks: [[0, 1] as const]};
@@ -251,8 +251,8 @@ it('retains measured endpoints across strict gaps with Int64 origin carry and me
 it('counts invalid segments once and gap-overlap unknowns separately for pairwise tracks', () => {
   const input = {
     positions: Float32Array.of(0, 0, NaN, 0, 2, 0, 0, 0, 2, 0, 4, 0),
-    times: Float32Array.of(0, 1, 2, 0, 2, 4),
-    offsets: Uint32Array.of(0, 3, 6),
+    timestamps: Float32Array.of(0, 1, 2, 0, 2, 4),
+    trackOffsets: Uint32Array.of(0, 3, 6),
     parameters: Float32Array.of(0, 10, 1, 0, 0, 0, 0)
   };
   const result = computeTrajectoryRestrictionOnCPU(input, {
@@ -269,15 +269,16 @@ it('counts invalid segments once and gap-overlap unknowns separately for pairwis
     },
     {pairwiseTracks: [[0, 1]], intervalsPerPair: 16}
   );
-  expect(gap.relationships[3]).toBeGreaterThan(0);
+  // Both [0,1] and [1,2] overlap the other track's [0,2] gap for positive duration.
+  expect(gap.relationships[3]).toBe(2);
   expect(gap.status[0] & 8).toBe(8);
 });
 
 it('handles open time endpoints, empty tracks, degenerate boxes and collapsed rings', () => {
   const input = {
     positions: Float32Array.of(0, 0, 0, 0),
-    times: Float32Array.of(0, 2),
-    offsets: Uint32Array.of(0, 0, 2),
+    timestamps: Float32Array.of(0, 2),
+    trackOffsets: Uint32Array.of(0, 0, 2),
     parameters: Float32Array.of(0, 2, 0, 0, 0, 0, 0)
   };
   const closed = computeTrajectoryRestrictionOnCPU(input);
@@ -314,8 +315,8 @@ it('uses exact orientation for a hand-constructed vertex touch and no tolerance 
   // Interior is y>x. This track is 18 float32 steps below the long diagonal and strictly outside.
   const outside = {
     positions: Float32Array.of(50000, 49999.9296875, 60000, 59999.9296875),
-    times: Float32Array.of(0, 4),
-    offsets: Uint32Array.of(0, 2),
+    timestamps: Float32Array.of(0, 4),
+    trackOffsets: Uint32Array.of(0, 2),
     parameters
   };
   expect(getPresentIntervals(computeTrajectoryRestrictionOnCPU(outside, options))).toEqual([]);
@@ -354,8 +355,8 @@ it('drops GPU-only maxima while preserving outputs and accepting truly empty inp
   const empty = computeTrajectoryRestrictionOnCPU(
     {
       positions: new Float32Array(0),
-      times: new Float32Array(0),
-      offsets: Uint32Array.of(0),
+      timestamps: new Float32Array(0),
+      trackOffsets: Uint32Array.of(0),
       parameters: input.parameters
     },
     {compactCapacity: 1}
@@ -370,8 +371,8 @@ it('rejects malformed arrays with their argument names and clamps excessive offs
   const {input} = createRectangleScene();
   for (const [argument, replacement] of [
     ['positions', new Float32Array(3)],
-    ['times', new Float32Array(1)],
-    ['offsets', new Uint32Array(0)],
+    ['timestamps', new Float32Array(1)],
+    ['trackOffsets', new Uint32Array(0)],
     ['parameters', new Float32Array(6)]
   ] as const)
     expect(() => computeTrajectoryRestrictionOnCPU({...input, [argument]: replacement})).toThrow(
@@ -386,11 +387,14 @@ it('rejects malformed arrays with their argument names and clamps excessive offs
   expect(() =>
     computeTrajectoryRestrictionOnCPU({...input, timeOrigin: Uint32Array.of(0, 0)})
   ).toThrow(/timeOrigin/);
-  const clamped = computeTrajectoryRestrictionOnCPU({...input, offsets: Uint32Array.of(0, 3, 999)});
+  const clamped = computeTrajectoryRestrictionOnCPU({
+    ...input,
+    trackOffsets: Uint32Array.of(0, 3, 999)
+  });
   expect(clamped).toEqual(computeTrajectoryRestrictionOnCPU(input));
   expect(() =>
-    computeTrajectoryRestrictionOnCPU({...input, offsets: Uint32Array.of(0, 3, 1, 5)})
-  ).toThrow(/offsets/);
+    computeTrajectoryRestrictionOnCPU({...input, trackOffsets: Uint32Array.of(0, 3, 1, 5)})
+  ).toThrow(/trackOffsets/);
 });
 
 it('preserves reversed empty pair ranges instead of rejecting decreasing clamped offsets', () => {
@@ -409,7 +413,7 @@ it('preserves reversed empty pair ranges instead of rejecting decreasing clamped
   expect(Array.from(surviving.relationships)).toEqual([1, 1, 1, 0]);
   expect(Array.from(surviving.intervals)).toEqual([0, 0]);
   expect(Array.from(surviving.status)).toEqual([50]);
-  expect(Array.from(scene.input.offsets)).toEqual([1, 0, 1]);
+  expect(Array.from(scene.input.trackOffsets)).toEqual([1, 0, 1]);
 });
 
 it('keeps decreasing geometry ranges empty and compacts remaining output slots in source order', () => {
@@ -539,9 +543,9 @@ it('executes every CPU graph port and checks explicit row, track and pair counts
     expect(() =>
       new CPUTrajectoryRestrictionOperation({
         ...getSceneProps(scene),
-        trackCount: scene.input.offsets.length
+        trackCount: scene.input.trackOffsets.length
       }).execute({inputs})
-    ).toThrow(/offsets/);
+    ).toThrow(/trackOffsets/);
     const pairs = scene.input.pairs;
     if (pairs)
       expect(() =>
@@ -551,4 +555,22 @@ it('executes every CPU graph port and checks explicit row, track and pair counts
         }).execute({inputs})
       ).toThrow(/pairs.first/);
   }
+});
+
+it('binary64 singleton separation remains evaluable when float32 squared distance overflows', () => {
+  const separation = Math.fround(1e20);
+  // Independent closed form: separation^2 is finite in binary64 and greater than radius^2 = 1.
+  expect(Number.isFinite(separation * separation)).toBe(true);
+  expect(separation * separation).toBeGreaterThan(1);
+  const result = computeTrajectoryRestrictionOnCPU(
+    {
+      positions: Float32Array.of(0, 0, separation, 0),
+      timestamps: Float32Array.of(0, 0),
+      trackOffsets: Uint32Array.of(0, 1, 2),
+      parameters: Float32Array.of(0, 0, 1, 0, 0, 0, 0)
+    },
+    {pairwiseTracks: [[0, 1]], intervalsPerPair: 1}
+  );
+  expect(Array.from(result.relationships)).toEqual([0, 0, 1, 0]);
+  expect(result.status[0] & 4).toBe(0);
 });

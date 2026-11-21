@@ -8,17 +8,15 @@ import {
   addClusterAndOutlineRecipe,
   getGPUGeographicDistributionParameterValues,
   getGPUSpatialKMeansParameterValues,
-  getGPUSpatialClusteringParameterValues,
+  getGPUDBSCANParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
-  GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
-  GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
   GPU_SPATIAL_KMEANS_PARAMETER_LENGTH,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
+  GPU_DBSCAN_PARAMETER_LENGTH,
   GPUGeographicDistribution,
   GPUGroupConvexHull,
   GPUGroupGeometry,
   GPUSpatialKMeans,
-  GPUSpatialClustering
+  GPUDBSCAN
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {type GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
@@ -83,7 +81,7 @@ export type NatureClusterOptions = {
   method: 'dbscan' | 'kmeans';
   pipeline: 'assembled' | 'recipe';
   epsilon: number;
-  minimumPoints: number;
+  minimumSamples: number;
   denseBoxShortcut: boolean;
   sumOrder: 'sorted' | 'atomic';
   k: number;
@@ -257,7 +255,7 @@ export async function createNatureClusters(
   let loadToken = 0;
   const retired: ClusterSet[] = [];
   let appliedEpsilon = Number.NaN;
-  let appliedMinimumPoints = Number.NaN;
+  let appliedMinimumSamples = Number.NaN;
   /** Class indices an interactive legend isolates; `null` shows everything. */
   let legendClasses: number[] | null = null;
   /** The city limit, loaded in the background for the hull-over-water estimate. */
@@ -275,9 +273,9 @@ export async function createNatureClusters(
     awaiting: false,
     index: 0,
     stale: false,
-    minimumPoints: 0,
+    minimumSamples: 0,
     counts: [] as number[],
-    result: null as {minimumPoints: number; counts: number[]} | null
+    result: null as {minimumSamples: number; counts: number[]} | null
   };
 
   const getKey = (options: NatureClusterOptions) =>
@@ -383,7 +381,7 @@ export async function createNatureClusters(
     const clusteringParameters = resources.createParameterBuffer(
       'clustering-parameters',
       'float32',
-      GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+      GPU_DBSCAN_PARAMETER_LENGTH
     );
     const geometryParameters = resources.createParameterBuffer(
       'geometry-parameters',
@@ -416,6 +414,8 @@ export async function createNatureClusters(
     const hullOffsets = resources.createBuffer('hull-offsets', (groupCount + 1) * 4);
     const hullCounts = resources.createBuffer('hull-counts', groupCount * 4);
     const hullOverflow = resources.createBuffer('hull-overflow', 4);
+    const hullGroupOverflow = resources.createBuffer('hull-group-overflow', 4);
+    const hullVertexOverflow = resources.createBuffer('hull-vertex-overflow', 4);
     const areas = resources.createBuffer('areas', groupCount * 4);
     const perimeters = resources.createBuffer('perimeters', groupCount * 4);
     const hullCentroids = resources.createBuffer('hull-centroids', groupCount * 8);
@@ -461,7 +461,7 @@ export async function createNatureClusters(
         maximumClusterCount: CLUSTER_CAPACITY,
         maximumVerticesPerHull: HULL_MAXIMUM_VERTICES,
         hullCapacity: HULL_CAPACITY,
-        outputs: {
+        output: {
           labels: view('labels', labels, 'uint32', pointCount),
           clusterCount: view('cluster-count', clusterCount, 'uint32', 1),
           hullPositions: view('hull-positions', hullPositions, 'float32x2', HULL_CAPACITY),
@@ -485,7 +485,7 @@ export async function createNatureClusters(
         const graph = new GPUCommandGraph<void>(device, {id: `nature-dbscan-${setSerial}`});
         const clusterIds = resources.createBuffer('cluster-ids', CLUSTER_CAPACITY * 4);
         graph.add(
-          new GPUSpatialClustering({
+          new GPUDBSCAN({
             spatialContext: projection.spatialContext,
             id: 'clusters',
             positions: importGraphBuffer(
@@ -565,7 +565,7 @@ export async function createNatureClusters(
               'float32x2',
               pointCount
             ),
-            k: options.k,
+            clusterCount: options.k,
             maximumIterations: getIterationCap(options),
             parameters: kmeansParameters.importToGraph(graph),
             initialization: options.initialization,
@@ -686,7 +686,21 @@ export async function createNatureClusters(
             ),
             counts: importGraphBuffer(shapes, 'hull-counts', hullCounts, 'uint32', groupCount),
             status: {
-              overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1)
+              overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1),
+              groupOverflow: importGraphBuffer(
+                shapes,
+                'hull-group-overflow',
+                hullGroupOverflow,
+                'uint32',
+                1
+              ),
+              vertexOverflow: importGraphBuffer(
+                shapes,
+                'hull-vertex-overflow',
+                hullVertexOverflow,
+                'uint32',
+                1
+              )
             }
           }
         })
@@ -785,6 +799,8 @@ export async function createNatureClusters(
       {name: 'clusterOverflow', buffer: clusterOverflow, size: 4},
       {name: 'geometryOverflow', buffer: geometryOverflow, size: 4},
       {name: 'hullOverflow', buffer: hullOverflow, size: 4},
+      {name: 'hullGroupOverflow', buffer: hullGroupOverflow, size: 4},
+      {name: 'hullVertexOverflow', buffer: hullVertexOverflow, size: 4},
       {name: 'iterationCount', buffer: iterationCount, size: 4},
       {name: 'converged', buffer: converged, size: 4},
       {name: 'hullOffsets', buffer: hullOffsets, size: (groupCount + 1) * 4},
@@ -910,7 +926,7 @@ export async function createNatureClusters(
     const parameters = resources.createParameterBuffer(
       'sweep-parameters',
       'float32',
-      GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+      GPU_DBSCAN_PARAMETER_LENGTH
     );
     const labels = resources.createBuffer('sweep-labels', set.pointCount * 4);
     const count = resources.createBuffer('sweep-count', 4);
@@ -918,7 +934,7 @@ export async function createNatureClusters(
     const stored = resources.createBuffer('sweep-stored', 4);
     const overflow = resources.createBuffer('sweep-overflow', 4);
     graph.add(
-      new GPUSpatialClustering({
+      new GPUDBSCAN({
         spatialContext: projection.spatialContext,
         id: 'sweep',
         positions: importGraphBuffer(
@@ -966,7 +982,10 @@ export async function createNatureClusters(
     sweepState.index++;
     if (sweepState.index >= SWEEP_EPSILONS.length) {
       sweepState.running = false;
-      sweepState.result = {minimumPoints: sweepState.minimumPoints, counts: [...sweepState.counts]};
+      sweepState.result = {
+        minimumSamples: sweepState.minimumSamples,
+        counts: [...sweepState.counts]
+      };
       publishCharts(set);
       publishCost(set);
     }
@@ -1096,7 +1115,7 @@ export async function createNatureClusters(
     ctx.setReadout(
       'parameters',
       isDbscan
-        ? `DBSCAN ${ctx.options.epsilon} m / ${ctx.options.minimumPoints} points${set.config.denseBoxShortcut ? ', dense-box' : ''}${isRecipe ? ', recipe' : ''}`
+        ? `DBSCAN ${ctx.options.epsilon} m / ${ctx.options.minimumSamples} points${set.config.denseBoxShortcut ? ', dense-box' : ''}${isRecipe ? ', recipe' : ''}`
         : `K-means k = ${set.config.k}, ${set.config.initialization}${set.config.initialization === 'kmeans++' ? ` seed ${set.config.seed}` : ''}, cap ${getIterationCap(set.config)}`
     );
     const iterationCount = detail.u32('iterationCount')[0];
@@ -1125,12 +1144,20 @@ export async function createNatureClusters(
     } else {
       ctx.setReadout('farthest', 'n/a (DBSCAN leaves noise)');
     }
-    const hullFlags = [
-      detail.u32('hullOverflow')[0] & GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW
-        ? 'a hull over 256 vertices (dropped)'
-        : '',
-      detail.u32('hullOverflow')[0] & GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW ? 'total capacity' : ''
-    ].filter(Boolean);
+    // The recipe exposes only aggregate loss; direct hulls provide the separate causes.
+    const hullFlags = isRecipe
+      ? detail.u32('hullOverflow')[0]
+        ? ['hull loss']
+        : []
+      : [
+          detail.u32('hullGroupOverflow')[0] ? 'a hull over 256 vertices (dropped)' : '',
+          detail.u32('hullVertexOverflow')[0] ? 'total capacity' : '',
+          detail.u32('hullOverflow')[0] &&
+          !detail.u32('hullGroupOverflow')[0] &&
+          !detail.u32('hullVertexOverflow')[0]
+            ? 'hull loss'
+            : ''
+        ].filter(Boolean);
     ctx.setReadout(
       'hulls',
       `${formatCount(analysis.hulls.length)} hulls${hullFlags.length ? `, OVERFLOW: ${hullFlags.join(', ')}` : ''}`
@@ -1146,9 +1173,18 @@ export async function createNatureClusters(
         const gpuAreas = detail.f32('areas');
         let areaTotal = 0;
         for (const group of analysis.ranked) areaTotal += gpuAreas[group];
+        const winnerVertices = detail.u32('hullCounts')[winner];
+        const winnerArea =
+          winnerVertices >= 3
+            ? formatArea(gpuAreas[winner])
+            : winnerVertices > 0
+              ? `degenerate (${winnerVertices} hull vertices)`
+              : 'unavailable (polygon not retained)';
+        const winnerPerimeter =
+          winnerVertices >= 3 ? formatDistance(detail.f32('perimeters')[winner]) : 'unavailable';
         ctx.setReadout(
           'recipeHulls',
-          `GPU areas: largest ${formatArea(gpuAreas[winner])}, all ${formatArea(areaTotal)}; largest perimeter ${formatDistance(detail.f32('perimeters')[winner])}`
+          `GPU areas: largest ${winnerArea}, ${detail.u32('hullOverflow')[0] ? 'retained total' : 'all'} ${formatArea(areaTotal)}; largest perimeter ${winnerPerimeter}`
         );
       } else {
         const weighted = detail.f32('weightedCenters');
@@ -1202,7 +1238,13 @@ export async function createNatureClusters(
     ctx.setReadout('winnerSize', formatCount(size));
     const hull = getRankedHull(set, winner);
     if (!hull) {
-      ctx.setReadout('hullArea', 'hull over the vertex cap');
+      const winnerVertices = set.detail?.u32('hullCounts')[winner] ?? 0;
+      ctx.setReadout(
+        'hullArea',
+        winnerVertices > 0 && winnerVertices < 3
+          ? `degenerate (${winnerVertices} hull vertices; no polygon)`
+          : 'unavailable: polygon not retained'
+      );
       ctx.setReadout('hullWaterShare', null);
       ctx.setReadout('density', null);
       return;
@@ -1261,7 +1303,7 @@ export async function createNatureClusters(
       options.showEpsilonDiscs &&
       set.config.pipeline === 'assembled'
     ) {
-      const key = `${set.serial}|${options.epsilon}|${options.minimumPoints}`;
+      const key = `${set.serial}|${options.epsilon}|${options.minimumSamples}`;
       if (set.discs?.key !== key) {
         set.discs = {
           key,
@@ -1270,7 +1312,7 @@ export async function createNatureClusters(
             labels: detail.u32('labels'),
             coreFlags: detail.u32('coreFlags'),
             epsilon: options.epsilon,
-            minimumPoints: options.minimumPoints,
+            minimumSamples: options.minimumSamples,
             centre: montroseMeters,
             windowMeters: DISC_WINDOW_METERS
           })
@@ -1383,7 +1425,7 @@ export async function createNatureClusters(
         kind: 'line',
         series: [
           {
-            label: `Hot spots at ${result.minimumPoints} points`,
+            label: `Hot spots at ${result.minimumSamples} points`,
             x: SWEEP_EPSILONS,
             y: result.counts,
             points: true,
@@ -1455,7 +1497,7 @@ export async function createNatureClusters(
     const subtitle = !hotspots
       ? undefined
       : isDbscan
-        ? `DBSCAN, ε ${options.epsilon} m, at least ${options.minimumPoints} records · ${group}`
+        ? `DBSCAN, ε ${options.epsilon} m, at least ${options.minimumSamples} records · ${group}`
         : `k-means, k ${set.config.k}, up to ${getIterationCap(set.config)} iterations · ${group}`;
     const tick = hotspots && isDbscan ? options.epsilon : null;
     const key = `${subtitle}|${tick}|${set.pointCount}`;
@@ -1521,7 +1563,7 @@ export async function createNatureClusters(
           const previous = active;
           active = next;
           appliedEpsilon = Number.NaN;
-          appliedMinimumPoints = Number.NaN;
+          appliedMinimumSamples = Number.NaN;
           furnitureKey = '';
           sweepState.running = false;
           sweepState.awaiting = false;
@@ -1560,10 +1602,10 @@ export async function createNatureClusters(
     const scratch = new SpatialAnalysisResources(device, `nature-timing-${set.serial}`);
     try {
       set.clusteringParameters.write(
-        getGPUSpatialClusteringParameterValues({
+        getGPUDBSCANParameterValues({
           bounds: set.bounds,
           epsilon: ctx.options.epsilon,
-          minimumPoints: ctx.options.minimumPoints
+          minimumSamples: ctx.options.minimumSamples
         })
       );
       const results: {milliseconds: number; label: string}[] = [];
@@ -1575,7 +1617,7 @@ export async function createNatureClusters(
         const stored = scratch.createBuffer(`stored-${denseBoxShortcut}`, 4);
         const overflow = scratch.createBuffer(`overflow-${denseBoxShortcut}`, 4);
         graph.add(
-          new GPUSpatialClustering({
+          new GPUDBSCAN({
             spatialContext: projection.spatialContext,
             id: 'clusters',
             positions: importGraphBuffer(
@@ -1618,7 +1660,7 @@ export async function createNatureClusters(
       const ratio = plain.milliseconds / Math.max(dense.milliseconds, 1e-6);
       ctx.setReadout(
         'timing',
-        `plain ${plain.label}, dense-box ${dense.label} (${ratio.toFixed(2)}x) at ${ctx.options.epsilon} m / ${ctx.options.minimumPoints}`
+        `plain ${plain.label}, dense-box ${dense.label} (${ratio.toFixed(2)}x) at ${ctx.options.epsilon} m / ${ctx.options.minimumSamples}`
       );
     } catch {
       // Interrupted by a rebuild or destroy.
@@ -1732,7 +1774,7 @@ export async function createNatureClusters(
         active.dirty = true;
       } else if (id === 'epsilon') {
         // Applied in encode.
-      } else if (id === 'minimumPoints') {
+      } else if (id === 'minimumSamples') {
         sweepState.stale = true;
       } else {
         if (id === 'zoomToWinner' && value) pendingFit = true;
@@ -1766,20 +1808,20 @@ export async function createNatureClusters(
 
     encode(commandEncoder) {
       const set = active;
-      const {epsilon, minimumPoints} = ctx.options;
+      const {epsilon, minimumSamples} = ctx.options;
       if (
         set.config.method === 'dbscan' &&
-        (epsilon !== appliedEpsilon || minimumPoints !== appliedMinimumPoints)
+        (epsilon !== appliedEpsilon || minimumSamples !== appliedMinimumSamples)
       ) {
         appliedEpsilon = epsilon;
-        appliedMinimumPoints = minimumPoints;
+        appliedMinimumSamples = minimumSamples;
         set.dirty = true;
       }
       if (set.dirty) {
         set.dirty = false;
         if (set.config.method === 'dbscan') {
           set.clusteringParameters.write(
-            getGPUSpatialClusteringParameterValues({bounds: set.bounds, epsilon, minimumPoints})
+            getGPUDBSCANParameterValues({bounds: set.bounds, epsilon, minimumSamples})
           );
         }
         set.clusterGraph.encode(commandEncoder, {parameters: undefined});
@@ -1795,14 +1837,14 @@ export async function createNatureClusters(
           sweepState.running = true;
           sweepState.index = 0;
           sweepState.counts = [];
-          sweepState.minimumPoints = ctx.options.minimumPoints;
+          sweepState.minimumSamples = ctx.options.minimumSamples;
         }
         if (sweepState.running && !sweepState.awaiting && !sweep.reader.isPending) {
           sweep.parameters.write(
-            getGPUSpatialClusteringParameterValues({
+            getGPUDBSCANParameterValues({
               bounds: set.bounds,
               epsilon: SWEEP_EPSILONS[sweepState.index],
-              minimumPoints: sweepState.minimumPoints
+              minimumSamples: sweepState.minimumSamples
             })
           );
           sweep.graph.encode(commandEncoder, {parameters: undefined});
@@ -1838,7 +1880,7 @@ export async function createNatureClusters(
           return {
             title: 'Not in a hot spot',
             subtitle: 'Noise',
-            note: `Fewer than ${options.minimumPoints} neighbours within ${options.epsilon} m, and no core point among them.`
+            note: `Fewer than ${options.minimumSamples} neighbours within ${options.epsilon} m, and no core point among them.`
           };
         }
       }

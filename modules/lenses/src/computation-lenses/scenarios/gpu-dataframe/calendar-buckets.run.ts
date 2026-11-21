@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {GPU_CALENDAR_BUCKETS_MATRIX_LENGTH} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './calendar-buckets.example';
@@ -18,9 +19,9 @@ const SCENARIO_ID = 'gpu-dataframe.calendar-buckets';
 const EPOCH_2023_MILLISECONDS = Date.UTC(2023, 0, 1);
 
 /** Executes the recorded calendar decode once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-nature');
+  const dataset = await loadDataFrameLensData('f-chicago-nature', options?.datasetResolver);
   // The dataset stores Chicago local clock seconds as if they were UTC, so the offset is zero.
   const epochMilliseconds = BigInt64Array.from(dataset.columns.timestamp, seconds =>
     BigInt(EPOCH_2023_MILLISECONDS + seconds * 1000)

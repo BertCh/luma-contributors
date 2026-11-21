@@ -3,7 +3,8 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// Bound to GPUNeighborSearch's `mode` and `k` props and the per-frame `radius` parameter.
+// Bound to GPUNeighborSearch's `mode` and `neighborCount` props and the per-frame
+// `searchRadius` or `maximumDistance`.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'mode',
@@ -14,7 +15,7 @@ export const parameters: GpuSceneParameter[] = [
     default: 0,
     options: ['knn', 'radius']
   },
-  {id: 'k', label: 'k', min: 1, max: 8, step: 1, default: 4},
+  {id: 'neighborCount', label: 'Neighbors', min: 1, max: 8, step: 1, default: 4},
   {
     id: 'radius',
     label: 'radius',

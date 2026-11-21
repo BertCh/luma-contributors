@@ -12,7 +12,7 @@ import {
 } from '../../../src/raster-analysis/isolines/gpu-isolines-operation';
 import {getGPUIsolinesParameterValues} from '../../../src/raster-analysis/isolines/isolines-parameters';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 for (const capacity of [32, 1])
   it(`isolines operations agree with segment capacity ${capacity}`, async () => {
@@ -146,5 +146,66 @@ it('isolines operations use every active input level despite a stale maximumLeve
     expect(Array.from(result['count'])).toEqual([2]);
     expect(Array.from(result['requiredCount'])).toEqual([2]);
     expect(Array.from(result['overflow'])).toEqual([0]);
+  }
+});
+
+it('WRT-01 named operations rewrite combined segment loss without stitching on reuse', async () => {
+  const {GPUGraph, gpuGraph} = await import('@luma.gl/graph/gpu-core');
+  const {GPU_CONTRIBUTOR_OPERATION_LOWERING} = await import(
+    '../../../src/analysis-core/operations/gpu-contributor-operation'
+  );
+  const {makeCPUVector, getCPUVectorRows} = await import('../../utils/mixed-execution-test-utils');
+  const {CPUVector} = await import('@luma.gl/graph/gpu-data');
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const grid = makeGPURasterMetadata({width: 2, height: 2});
+  for (const Operation of [CPUIsolinesOperation, GPUIsolinesOperation]) {
+    const graph = new GPUGraph({id: 'combined-loss-reuse'});
+    graph.addInput('values', gpuGraph.vector('float32', {length: 4}));
+    graph.addInput('levels', gpuGraph.vector('float32', {length: 1}));
+    graph.addInput('parameters', gpuGraph.vector('float32', {length: 8}));
+    const operation = new Operation({
+      grid,
+      segmentCapacity: 1,
+      values: 'values',
+      levels: 'levels',
+      parameters: 'parameters',
+      output: {
+        segments: 'segments',
+        segmentLevels: 'segmentLevels',
+        status: {count: 'count', overflow: 'overflow', polylineOverflow: 'polylineOverflow'}
+      }
+    });
+    graph.add(operation);
+    const compiled = graph.compile(device, {
+      outputs: ['polylineOverflow'],
+      outputLocations: {polylineOverflow: 'cpu'},
+      lowerings: [GPU_CONTRIBUTOR_OPERATION_LOWERING]
+    });
+    const observed = [99];
+    try {
+      for (const values of [Float32Array.of(0, 1, 1, 0), new Float32Array(4)]) {
+        const output = await compiled.run({
+          inputs: {
+            values: makeCPUVector('float32', values),
+            levels: makeCPUVector('float32', Float32Array.of(0.5)),
+            parameters: makeCPUVector(
+              'float32',
+              getGPUIsolinesParameterValues({levelCount: 1, extent: [0, 0, 2, 2]}, grid)
+            )
+          }
+        });
+        const loss: unknown = output['polylineOverflow'];
+        if (!(loss instanceof CPUVector))
+          throw new Error('polylineOverflow must return on the CPU');
+        expect(loss.format).toBe('uint32');
+        const rows = getCPUVectorRows(loss);
+        expect(Array.from(rows)).toEqual(observed.length === 1 ? [1] : [0]);
+        observed.push(rows[0]);
+      }
+      expect(observed).toEqual([99, 1, 0]);
+    } finally {
+      compiled.destroy();
+    }
   }
 });

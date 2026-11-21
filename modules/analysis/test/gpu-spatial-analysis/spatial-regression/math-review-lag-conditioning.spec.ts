@@ -6,7 +6,9 @@ import {it, expect} from 'vitest';
 import type {GPUCommandGraph, GPUCommandNodeProducer, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
-  getWGSLFloatLiteral
+  getWGSLFloatLiteral,
+  getWGSLKernelNodeRecord,
+  recordWGSLKernelNodes
 } from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
 import {readFloat32, readUint32} from '../../utils/gpu-contributor-test-utils';
 import {GPUOrdinaryLeastSquares} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-ordinary-least-squares';
@@ -178,6 +180,65 @@ type Estimator =
  * constant; `spatial-maximum-likelihood-nodes.node.spec.ts` pins the value in the kernel text).
  */
 const LAG_PARAMETER_SLOT = 2;
+
+it('keeps row-zero lag ties in the centered column when other rows differ', async () => {
+  const context = await createRegressionTestContext();
+  const {graph, input, output} = context;
+  try {
+    const rowCount = 8;
+    const lag = output('float32', rowCount);
+    recordWGSLKernelNodes(graph);
+    const model = new GPUSpatialLagMaximumLikelihood({
+      id: 'varying-lag',
+      maximumPower: 4,
+      predictorCount: 1,
+      predictors: input('float32', [0, 1, 2, 3, 4, 5, 6, 7]),
+      response: input(
+        'float32',
+        [1, -1, 0, 0, 2, -2, 1, -1].map(offset => 10_000 + offset / 1024)
+      ),
+      weights: {
+        offsets: input('uint32', [0, 2, 4, 6, 8, 10, 12, 14, 16]),
+        neighbors: input('uint32', [3, 6, 4, 7, 0, 4, 1, 4, 2, 5, 1, 7, 0, 2, 1, 3]),
+        weights: input('float32', new Float32Array(16).fill(0.5))
+      },
+      output: {
+        table: output('float32', 12).view,
+        summary: output('float32', GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH).view,
+        status: {code: output('uint32', 1).view}
+      }
+    });
+    const nodes = model.getCommandNodes(graph);
+    const shiftId = 'varying-lag-lagged-response-shift';
+    const shiftIndex = nodes.findIndex(node => node.id === shiftId);
+    expect(shiftIndex).toBeGreaterThan(0);
+    const centeredLag = getWGSLKernelNodeRecord(graph, shiftId)?.bindings.find(
+      binding => binding.name === 'lagged'
+    )?.view as GraphDataView<'float32'> | undefined;
+    expect(centeredLag).toBeDefined();
+    graph.add(nodes.slice(0, shiftIndex + 1));
+    graph.add(
+      createWGSLKernelNode(graph, {
+        id: 'read-centered-lag',
+        operation: 'math-review-lag-conditioning',
+        invocationCount: rowCount,
+        bindings: [
+          {name: 'source', view: centeredLag!, type: 'f32', access: 'read'},
+          {name: 'publishedLag', view: lag.view, type: 'f32', access: 'read_write'}
+        ],
+        body: 'publishedLag[publishedLagOffset + index] = source[sourceOffset + index];'
+      })
+    );
+    context.run();
+    // The mean is 10,000 and each row averages two neighbors. Row zero and row one both
+    // have raw lag 10,000 + 1/2048, a tie that would round to 10,000 before centering.
+    expect(await readFloat32(lag.buffer, rowCount)).toEqual(
+      [1, 1, 3, 1, -2, -2, 1, -1].map(sum => sum / 2048)
+    );
+  } finally {
+    context.destroy();
+  }
+});
 
 /**
  * The lag maximum likelihood nodes with one more node right after the `rho` search, which adds
@@ -535,6 +596,17 @@ for (const scene of fixture.scenes) {
       bounds.interceptOverStandardError
     );
     expect(errors.sigmaSquaredError, message).toBeLessThan(bounds.sigmaSquared);
+    // Concentrated ML uses the mean squared residual at the final rho, including on scenes
+    // where some rows share an exact raw lag and other rows do not.
+    const residualVariance =
+      result.residuals.reduce((sum, residual) => sum + residual ** 2, 0) / result.residuals.length;
+    expect(
+      getRelativeError(
+        result.summary[GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_SIGMA_SQUARED],
+        residualVariance
+      ),
+      message
+    ).toBeLessThan(2e-6);
     expect(Math.abs(logLikelihood - reference.logLikelihood), message).toBeLessThan(
       bounds.logLikelihood
     );

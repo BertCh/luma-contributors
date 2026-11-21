@@ -49,7 +49,8 @@ function runDelaunayOnCPU(
     duplicateCount: scalar('duplicate-count'),
     converged: scalar('converged'),
     iterationCount: scalar('iteration-count'),
-    iterationLimitReached: scalar('iteration-limit-reached')
+    iterationLimitReached: scalar('iteration-limit-reached'),
+    approximation: scalar('approximation')
   };
   const nodes = new GPUDelaunayTessellation({
     positions,
@@ -83,10 +84,37 @@ function runDelaunayOnCPU(
     converged: read(status.converged),
     iterationCount: read(status.iterationCount),
     iterationLimitReached: read(status.iterationLimitReached),
+    approximation: read(status.approximation),
+    replay: () => {
+      executeCommandNodesOnCPU(nodes, memory);
+      return {
+        approximation: read(status.approximation),
+        converged: read(status.converged),
+        count: read(status.count)
+      };
+    },
     indices: Array.from(memory.readUint32(triangles, 3 * written)),
     activeSteps
   };
 }
+
+it('marks the retained seed simplex approximate on exhaustion and clears it on successful replay', () => {
+  const actual = runDelaunayOnCPU(new Float32Array([0, 0, 1, 0, 0, 1, 0.25, 0.25]), 3, 3);
+  expect(actual.indices).toEqual([0, 1, 2]);
+  expect(actual.written).toBe(1);
+  expect(actual.iterationLimitReached).toBe(1);
+  expect(actual.converged).toBe(0);
+  expect(actual.approximation).toBe(1);
+  expect(actual.replay()).toEqual({approximation: 0, converged: 1, count: 3});
+  // A coincident replay finishes without real triangles on the same three-step schedule.
+  const complete = runDelaunayOnCPU(new Float32Array(8), 3, 3);
+  expect(complete).toMatchObject({
+    written: 0,
+    converged: 1,
+    iterationLimitReached: 0,
+    approximation: 0
+  });
+});
 
 function expectCanonicalOrder(indices: number[]): void {
   for (let row = 0; row < indices.length / 3; row++) {

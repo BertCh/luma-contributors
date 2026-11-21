@@ -634,7 +634,7 @@ it('GPUPointToCell preserves offset boundary batches, signed zeros and repeated 
         new GPUPointToCell({
           family,
           resolution,
-          precision: family === 'h3' ? 'extended' : undefined,
+          precision: family === 'h3' ? 'double-single' : undefined,
           positions: packed
             ? positionChunks[0]
             : createVectorView('positions', 'float32x2', positionChunks),

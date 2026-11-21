@@ -3,7 +3,10 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUOffsetCurveComponents} from '../../../src/gpu-spatial-analysis/geometry-refinement/gpu-offset-curve-components';
+import {
+  decodeGPUOffsetCurveComponentsStatus,
+  GPUOffsetCurveComponents
+} from '../../../src/gpu-spatial-analysis/geometry-refinement/gpu-offset-curve-components';
 import {
   GPUOffsetCurve,
   getGPUOffsetCurveRowsPerVertex
@@ -14,9 +17,167 @@ import {
   createCPUGraphMemory,
   executeCommandNodesOnCPU
 } from '../segment-intersection/wgsl-graph-executor';
-import {OFFSET_CURVE_ENDPOINT_CASES} from './offset-curve-components-test-utils';
+import {
+  OFFSET_CURVE_ENDPOINT_CASES,
+  PROJECTED_OBLIQUE_OFFSET_CASES,
+  expectCompleteObliqueOffset
+} from './offset-curve-components-test-utils';
 
 useCPUExecutorTestHooks();
+
+it.each([
+  4, 32
+])('rejects an unbounded source-edge span with segment capacity %i', segmentCapacity => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const memory = createCPUGraphMemory();
+    const original = {
+      positions: createTransientView(graph, 'original', 'float32x2', 4),
+      lineOffsets: createTransientView(graph, 'original-offsets', 'uint32', 3)
+    };
+    const raw = {
+      positions: createTransientView(graph, 'raw', 'float32x2', 4),
+      lineOffsets: createTransientView(graph, 'raw-offsets', 'uint32', 3)
+    };
+    memory.write(original.positions, Float32Array.of(0, 0, 2, 0, 5, 0, 7, 0));
+    memory.write(raw.positions, Float32Array.of(0, 1, 2, 1, 5, 1, 7, 1));
+    memory.write(original.lineOffsets, Uint32Array.of(0, 2, 0xffffffff));
+    memory.write(raw.lineOffsets, Uint32Array.of(0, 2, 4));
+    const output = {
+      positions: createTransientView(graph, 'positions', 'float32x2', 8),
+      components: createTransientView(graph, 'components', 'uint32x4', 4),
+      sourceEdges: createTransientView(graph, 'edges', 'uint32', 8),
+      status: createTransientView(graph, 'status', 'uint32x4', 2)
+    };
+    const nodes = new GPUOffsetCurveComponents({
+      original,
+      raw,
+      output,
+      distance: 1,
+      tolerance: 0,
+      intersectionCapacity: 4,
+      segmentCapacity
+    }).getCommandNodes(graph);
+    executeCommandNodesOnCPU(nodes, memory);
+    // The first line contributes one horizontal component. The second edge range would need
+    // billions of reads, so the graph marks iterationLimit and suppresses publication.
+    expect(Array.from(memory.readUint32(output.status))).toEqual([0, 0, 1, 2, 0, 0, 1, 0]);
+    expect(decodeGPUOffsetCurveComponentsStatus(memory.readUint32(output.status))).toMatchObject({
+      iterationLimit: true,
+      complete: false
+    });
+    memory.write(original.lineOffsets, Uint32Array.of(0, 2, 4));
+    executeCommandNodesOnCPU(nodes, memory);
+    expect(Array.from(memory.readUint32(output.status))).toEqual([2, 4, 2, 4, 0, 0, 0, 0]);
+  } finally {
+    device.destroy();
+  }
+});
+
+it.each(
+  PROJECTED_OBLIQUE_OFFSET_CASES
+)('interpreted projected offset kernels retain both endpoints: $name', fixture => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const memory = createCPUGraphMemory();
+  const original = {
+    positions: createTransientView(graph, 'original', 'float32x2', 2),
+    lineOffsets: createTransientView(graph, 'original-offsets', 'uint32', 2)
+  };
+  const raw = {
+    positions: createTransientView(graph, 'raw', 'float32x2', 2),
+    lineOffsets: createTransientView(graph, 'raw-offsets', 'uint32', 2)
+  };
+  memory.write(original.positions, fixture.originalPositions);
+  memory.write(raw.positions, fixture.expectedPositions);
+  memory.write(original.lineOffsets, Uint32Array.of(0, 2));
+  memory.write(raw.lineOffsets, Uint32Array.of(0, 2));
+  const output = {
+    positions: createTransientView(graph, 'positions', 'float32x2', 8),
+    components: createTransientView(graph, 'components', 'uint32x4', 4),
+    sourceEdges: createTransientView(graph, 'edges', 'uint32', 8),
+    status: createTransientView(graph, 'status', 'uint32x4', 2)
+  };
+  try {
+    executeCommandNodesOnCPU(
+      new GPUOffsetCurveComponents({
+        original,
+        raw,
+        output,
+        distance: 5,
+        tolerance: fixture.tolerance,
+        intersectionCapacity: 4,
+        segmentCapacity: 4
+      }).getCommandNodes(graph),
+      memory
+    );
+    expectCompleteObliqueOffset(
+      {
+        positions: memory.readFloat32(output.positions),
+        components: memory.readUint32(output.components),
+        sourceEdges: memory.readUint32(output.sourceEdges),
+        status: memory.readUint32(output.status)
+      },
+      fixture.expectedPositions
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
+it('interpreted multipart offset kernels preserve every feature and part provenance word', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const memory = createCPUGraphMemory();
+  const featureOffsets = createTransientView(graph, 'features', 'uint32', 4);
+  const original = {
+    positions: createTransientView(graph, 'original', 'float32x2', 6),
+    lineOffsets: createTransientView(graph, 'original-lines', 'uint32', 4),
+    featureOffsets
+  };
+  const raw = {
+    positions: createTransientView(graph, 'raw', 'float32x2', 6),
+    lineOffsets: createTransientView(graph, 'raw-lines', 'uint32', 4),
+    featureOffsets
+  };
+  memory.write(featureOffsets, Uint32Array.of(0, 0, 2, 3));
+  memory.write(original.positions, Float32Array.of(0, 0, 2, 0, 5, 0, 7, 0, 10, 0, 12, 0));
+  memory.write(raw.positions, Float32Array.of(0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1));
+  memory.write(original.lineOffsets, Uint32Array.of(0, 2, 4, 6));
+  memory.write(raw.lineOffsets, Uint32Array.of(0, 2, 4, 6));
+  const output = {
+    positions: createTransientView(graph, 'positions', 'float32x2', 6),
+    components: createTransientView(graph, 'components', 'uint32x4', 3),
+    sourceEdges: createTransientView(graph, 'sources', 'uint32', 6),
+    status: createTransientView(graph, 'status', 'uint32x4', 2)
+  };
+  try {
+    executeCommandNodesOnCPU(
+      new GPUOffsetCurveComponents({
+        original,
+        raw,
+        output,
+        distance: 1,
+        tolerance: 0,
+        intersectionCapacity: 4,
+        segmentCapacity: 4
+      }).getCommandNodes(graph),
+      memory
+    );
+    // multipart-offset-components.oracle.py: Shapely offsets; part/feature row mapping by hand.
+    expect(Array.from(memory.readFloat32(output.positions))).toEqual([
+      0, 1, 2, 1, 5, 1, 7, 1, 10, 1, 12, 1
+    ]);
+    expect(Array.from(memory.readUint32(output.components))).toEqual([
+      0, 2, 0, 1, 2, 2, 1, 1, 4, 2, 2, 2
+    ]);
+    expect(Array.from(memory.readUint32(output.sourceEdges))).toEqual([0, 0, 2, 2, 4, 4]);
+    expect(Array.from(memory.readUint32(output.status))).toEqual([3, 6, 3, 6, 0, 0, 0, 0]);
+  } finally {
+    device.destroy();
+  }
+});
 
 it.each([
   {

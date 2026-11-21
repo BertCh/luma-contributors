@@ -47,7 +47,7 @@ export function clusterSpaceTimeDBSCAN(
   points: SpaceTimePoints,
   spatialRadius: number,
   timeRadius: number,
-  minimumPoints: number
+  minimumSamples: number
 ): SpaceTimeDBSCANResult {
   const count = points.times.length;
   const neighbors: number[][] = [];
@@ -66,7 +66,7 @@ export function clusterSpaceTimeDBSCAN(
     }
     neighbors.push(list);
   }
-  const core = neighbors.map(list => list.length >= minimumPoints);
+  const core = neighbors.map(list => list.length >= minimumSamples);
   const root: number[] = new Array(count).fill(-1);
   for (let row = 0; row < count; row++) {
     if (!core[row] || root[row] >= 0) {

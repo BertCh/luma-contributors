@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
+import {resolveGPUComputationCaptureGraph} from '@luma-contributors/analysis/computation-record';
 import type {GPUComputationEdgeKind} from '@luma-contributors/analysis/computation-record';
 import type {
   LensReceiptTable,
@@ -93,12 +94,7 @@ export function buildCommandGraphViewModel(context: ViewContext): CommandGraphVi
   const focusMembers = new Set(focusUnit?.memberIds);
   const references = new Set([...focusMembers].map(id => `${graph.id}:${id}`));
   const captures = getAllCaptures(context.record).filter(
-    capture =>
-      capture.graph === graph.id ||
-      (!capture.graph &&
-        context.record.graphs.filter(candidate =>
-          candidate.nodes.some(node => node.id === capture.afterNode)
-        ).length === 1)
+    capture => resolveGPUComputationCaptureGraph(context.record, capture) === graph
   );
   const edgeKinds: CommandGraphViewModel['edgeKinds'] = {};
   for (const edge of graph.edges) edgeKinds[edge.kind] = (edgeKinds[edge.kind] ?? 0) + 1;

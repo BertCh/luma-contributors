@@ -80,8 +80,23 @@ export const joinCases = [joinReal, joinSynthetic].flatMap(
 export const patchCases = [patchesFour, patchesEight, patchesSynthetic].flatMap(
   fixture => decodeOracleFixture<{cases: PatchCase[]}>(fixture).cases
 );
-export const samplingCases = [samplingReal, samplingSynthetic].flatMap(
-  fixture => decodeOracleFixture<{cases: SamplingCase[]}>(fixture).cases
+type SamplingFrame = SamplingCase['frames'][number];
+type SavedSamplingCase = Omit<SamplingCase, 'frames'> & {
+  frames: (Omit<SamplingFrame, 'noDataPolicy'> & {
+    noDataPolicy: SamplingFrame['noDataPolicy'] | 'strict';
+  })[];
+};
+
+export const samplingCases: SamplingCase[] = [samplingReal, samplingSynthetic].flatMap(fixture =>
+  decodeOracleFixture<{cases: SavedSamplingCase[]}>(fixture).cases.map(scene => ({
+    ...scene,
+    frames: scene.frames.map(
+      (frame): SamplingFrame => ({
+        ...frame,
+        noDataPolicy: frame.noDataPolicy === 'strict' ? 'propagate' : frame.noDataPolicy
+      })
+    )
+  }))
 );
 export const roundSixFixtures = [
   joinReal,

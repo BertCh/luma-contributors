@@ -398,7 +398,7 @@ it('CPU panel graph rejects a spectrum with the wrong entity count like the GPU 
       new GPUSpatialPanelLagMaximumLikelihoodOperation(props),
       shapes
     )
-  ).toThrowError(new Error(message));
+  ).toThrowError(message);
   await expect(
     executeCPU(
       new Float32Array(FIXTURE.entityCount - 1),

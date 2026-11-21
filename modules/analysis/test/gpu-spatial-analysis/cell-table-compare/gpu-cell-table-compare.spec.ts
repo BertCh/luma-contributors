@@ -78,6 +78,7 @@ type InputTable = {
   count: Buffer;
   overflow: Buffer;
   candidateOverflow: Buffer;
+  sumOverflow: Buffer;
 };
 
 function createInputTable(fixture: Fixture, capacity: number): InputTable {
@@ -88,7 +89,8 @@ function createInputTable(fixture: Fixture, capacity: number): InputTable {
     sums: fixture.input(new Uint32Array(2 * capacity)),
     count: fixture.input(new Uint32Array(1)),
     overflow: fixture.input(new Uint32Array(1)),
-    candidateOverflow: fixture.input(new Uint32Array(1))
+    candidateOverflow: fixture.input(new Uint32Array(1)),
+    sumOverflow: fixture.input(new Uint32Array(1))
   };
 }
 
@@ -129,6 +131,7 @@ function importInputTable(graph: GPUCommandGraph, name: string, table: InputTabl
     sums: importGraphBuffer(graph, `${name}-sums`, table.sums, 'uint32x2', capacity),
     status: {
       count: importGraphBuffer(graph, `${name}-count`, table.count, 'uint32', 1),
+      sumOverflow: importGraphBuffer(graph, `${name}-sum-overflow`, table.sumOverflow, 'uint32', 1),
       overflow: importGraphBuffer(graph, `${name}-overflow`, table.overflow, 'uint32', 1),
       candidateOverflow: importGraphBuffer(
         graph,
@@ -154,6 +157,7 @@ type CompareBuffers = Record<
   | 'count'
   | 'overflow'
   | 'candidateOverflow'
+  | 'sumOverflow'
   | 'total',
   Buffer
 >;
@@ -177,19 +181,25 @@ function createCompareBuffers(
     count: fixture.output(1),
     overflow: flags ?? fixture.output(1),
     candidateOverflow: flags ?? fixture.output(1),
+    sumOverflow: fixture.output(1),
     total: fixture.output(1)
   };
 }
 
-function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, capacity: number) {
+function importCompareOutput(
+  graph: GPUCommandGraph,
+  buffers: CompareBuffers,
+  capacity: number,
+  prefix = 'out'
+) {
   const view = <Format extends 'uint32' | 'float32'>(
     name: keyof CompareBuffers,
     format: Format,
     length = capacity
-  ) => importGraphBuffer(graph, `out-${name}`, buffers[name], format, length);
+  ) => importGraphBuffer(graph, `${prefix}-${name}`, buffers[name], format, length);
   const overflow = view('overflow', 'uint32', 1);
   return {
-    cells: importGraphBuffer(graph, 'out-cells', buffers.cells, 'uint32x2', capacity),
+    cells: importGraphBuffer(graph, `${prefix}-cells`, buffers.cells, 'uint32x2', capacity),
     presence: view('presence', 'uint32'),
     mask: view('mask', 'uint32'),
     before: view('before', 'float32'),
@@ -200,6 +210,7 @@ function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, ca
     zScore: view('zScore', 'float32'),
     status: {
       count: view('count', 'uint32', 1),
+      sumOverflow: view('sumOverflow', 'uint32', 1),
       overflow,
       candidateOverflow:
         buffers.overflow === buffers.candidateOverflow
@@ -806,6 +817,7 @@ it('GPUCellTableCompare compares two real GPUCellAggregation periods in one grap
         sums: view('sums', 'uint32x2', tableCapacity),
         status: {
           count: view('count', 'uint32', 1),
+          sumOverflow: view('sumOverflow', 'uint32', 1),
           overflow: view('overflow', 'uint32', 1),
           candidateOverflow: view('candidate-overflow', 'uint32', 1)
         }
@@ -978,3 +990,78 @@ it('sum comparison preserves finite measures, ratios and percentages at extreme 
   }
   device.destroy();
 });
+
+for (const saturatedPeriod of ['before', 'after'] as const) {
+  it(`GPUCellTableCompare preserves keys and counts with ${saturatedPeriod}-only sum saturation`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = new Fixture(device);
+    const graph = new GPUCommandGraph(device);
+    const before = createInputTable(fixture, 1);
+    const after = createInputTable(fixture, 1);
+    const buffers = createCompareBuffers(fixture, 4);
+    // Hand-worked union: {1, 2}, each present in exactly one period. Neither table lost cells.
+    writeInputTable(before, [
+      {key: 1n, count: 7, sum: saturatedPeriod === 'before' ? (1n << 63n) - 1n : 3n}
+    ]);
+    writeInputTable(after, [
+      {key: 2n, count: 9, sum: saturatedPeriod === 'after' ? (1n << 63n) - 1n : 3n}
+    ]);
+    ({before, after})[saturatedPeriod].sumOverflow.write(new Uint32Array([1]));
+    const countBuffers = createCompareBuffers(fixture, 4);
+    graph.add(
+      new GPUCellTableCompare({
+        id: 'count-compare',
+        measure: 'count',
+        before: importInputTable(graph, 'count-before', before),
+        after: importInputTable(graph, 'count-after', after),
+        output: importCompareOutput(graph, countBuffers, 4, 'count-out')
+      })
+    );
+    graph.add(
+      new GPUCellTableCompare({
+        measure: 'sum',
+        before: importInputTable(graph, 'before', before),
+        after: importInputTable(graph, 'after', after),
+        output: importCompareOutput(graph, buffers, 4)
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      const actual = await readCompare(buffers, 4);
+      const counts = await readCompare(countBuffers, 4);
+      expect(counts.keys).toEqual([1n, 2n]);
+      expect(counts.columns.presence).toEqual([1, 2, 0, 0]);
+      expect(counts.tailIsEmpty).toBe(true);
+      expect(counts.columns.before).toEqual([7, 0, 0, 0]);
+      expect(counts.columns.after).toEqual([0, 9, 0, 0]);
+      expect(counts.columns.delta).toEqual([-7, 9, NaN, NaN]);
+      expect(await readUint32(countBuffers.sumOverflow, 1)).toEqual([1]);
+      expect(actual.keys).toEqual([1n, 2n]);
+      expect(actual.columns.presence).toEqual([1, 2, 0, 0]);
+      expect(actual.tailIsEmpty).toBe(true);
+      expect([actual.count, actual.total, actual.overflow, actual.candidateOverflow]).toEqual([
+        2, 2, 0, 0
+      ]);
+      expect(await readUint32(buffers.sumOverflow, 1)).toEqual([1]);
+      for (const name of [
+        'before',
+        'after',
+        'delta',
+        'ratio',
+        'percentChange',
+        'zScore'
+      ] as const) {
+        expect(actual.columns[name], name).toHaveLength(4);
+        expect(actual.columns[name].slice(0, 2), name).toEqual([NaN, NaN]);
+        expect(actual.columns[name].slice(2), name).toEqual(
+          name === 'before' || name === 'after' ? [0, 0] : [NaN, NaN]
+        );
+      }
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  });
+}

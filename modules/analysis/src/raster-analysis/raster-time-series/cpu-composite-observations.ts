@@ -4,7 +4,7 @@
 
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 
-/** Compile-time packed stack dimensions shared by CPU compositors. @internal */
+/** Compile-time packed stack dimensions shared by CPU compositors. */
 export type CPUCompositeDimensions = {cellCount: number; sliceCount: number; bandCount: number};
 
 /** Validates shape products against uint32 indexing, without GPU per-invocation caps. @internal */

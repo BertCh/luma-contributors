@@ -19,6 +19,7 @@ import {
   type RasterTimeSeriesChunkPlan
 } from './raster-time-series-chunks-b';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
@@ -107,8 +108,23 @@ export function getGPURasterPhenologyMetricsParameterValues(
   validateFiniteNumber(name, 'minimumAmplitude', settings.minimumAmplitude, 0);
   const larger = Math.max(settings.startFraction, settings.endFraction);
   const second = settings.secondSeasonMinimumFraction ?? larger;
-  validateFiniteNumber(name, 'secondSeasonMinimumFraction', second, larger, 1);
-  target.set([settings.startFraction, settings.endFraction, settings.minimumAmplitude, second]);
+  validateRequirement(
+    name,
+    Number.isFinite(second) && second >= larger && second <= 1,
+    `secondSeasonMinimumFraction must be at least max(startFraction, endFraction) ${larger} and at most 1; received ${second}`
+  );
+  const packedStart = Math.fround(settings.startFraction);
+  const packedEnd = Math.fround(settings.endFraction);
+  const packedSecond =
+    settings.secondSeasonMinimumFraction === undefined
+      ? Math.max(packedStart, packedEnd)
+      : Math.fround(second);
+  validateRequirement(
+    name,
+    packedSecond >= Math.max(packedStart, packedEnd) && packedSecond <= 1,
+    `encoded secondSeasonMinimumFraction must be at least encoded startFraction/endFraction ${Math.max(packedStart, packedEnd)} and at most 1; received ${packedSecond}`
+  );
+  target.set([packedStart, packedEnd, settings.minimumAmplitude, packedSecond]);
   return target;
 }
 
@@ -156,6 +172,8 @@ export type GPURasterPhenologyMetricsProps<Rows extends RasterScalarView = Graph
  * end 15% of the amplitude) on the curve; it is not TIMESAT, and it does not fit double logistic or
  * asymmetric Gaussian functions, which are ill-conditioned in float32.
  *
+ * The GPU route accepts 2–256 slices and at most two seasons per cell.
+ *
  * Per-frame: `parameters` and the contents of the views. Compile-time: `cellCount`, `sliceCount`,
  * `maximumSeasonCount` and whether `dateAxis` exists.
  *
@@ -174,6 +192,26 @@ export class GPURasterPhenologyMetrics<Rows extends RasterScalarView = GraphData
     this.props = props;
     const id = props.id ?? 'raster-phenology-metrics';
     this.id = id;
+    validateGraphPorts(id, props, {
+      'dateAxis.acquisitionTimes': {
+        required: props.dateAxis !== undefined,
+        viewType: 'data',
+        formats: ['uint32x2']
+      },
+      smoothed: {required: true, viewType: 'either', formats: ['float32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'output.metrics': {required: true, viewType: 'either', formats: ['float32']},
+      'output.flags': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.seasonCount': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']}
+    });
+    // Capture constructor options/maps while preserving graph resource identities.
+    props = {
+      ...props,
+      output: {...props.output},
+      ...(props.dateAxis ? {dateAxis: {...props.dateAxis}} : {})
+    };
+    this.props = props;
     validateCapacity(id, 'cellCount', props.cellCount);
     validateCapacity(id, 'sliceCount', props.sliceCount, 2, MAXIMUM_PHENOLOGY_SLICE_COUNT);
     validateCapacity(

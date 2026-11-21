@@ -85,3 +85,70 @@ it('validates CPU construction, GPU port construction and deferred contributor c
     computeCostDistancePathOnCPU(new Uint32Array(6), new Uint32Array(0), GRID, 3)
   ).toThrow(/target/);
 });
+
+for (const defect of [
+  'empty-result',
+  'empty-count',
+  'empty-limit',
+  'duplicate-result',
+  'duplicate-status',
+  'input-result',
+  'input-status',
+  'empty-input'
+] as const) {
+  it(`FRM-01 cost path rejects ${defect} before keying outputs`, () => {
+    const props = {
+      ...PROPS,
+      output: {
+        path: {...PROPS.output.path, status: {...PROPS.output.path.status}},
+        status: {...PROPS.output.status}
+      }
+    };
+    if (defect === 'empty-result') props.output.path.ids = '';
+    if (defect === 'empty-count') props.output.path.status.count = '';
+    if (defect === 'empty-limit') props.output.status.iterationLimitReached = '';
+    if (defect === 'duplicate-result') props.output.path.ids = props.output.path.status.count;
+    if (defect === 'duplicate-status')
+      props.output.path.status.requiredCount = props.output.path.status.count;
+    if (defect === 'input-result') props.output.path.ids = props.backLinks;
+    if (defect === 'input-status') props.output.status.iterationLimitReached = props.target;
+    if (defect === 'empty-input') props.backLinks = '';
+    for (const Operation of [CPUCostDistancePathOperation, GPUCostDistancePathOperation]) {
+      expect(() => new Operation(props)).toThrow(/^path .*graph value/);
+    }
+  });
+}
+
+it('B3 captures inherited requiredCount before copying the compact status', async () => {
+  let destination = 'required';
+  const status = {...PROPS.output.path.status};
+  Reflect.deleteProperty(status, 'requiredCount');
+  Object.setPrototypeOf(
+    status,
+    new (class {
+      get requiredCount() {
+        return destination;
+      }
+    })()
+  );
+  const operation = new CPUCostDistancePathOperation({
+    ...PROPS,
+    output: {...PROPS.output, path: {...PROPS.output.path, status}}
+  });
+  expect(Object.keys(operation.outputs)).toContain('required');
+  destination = 'replaced';
+  const wrap = (values: Uint32Array) => ({
+    format: 'uint32' as const,
+    length: values.length,
+    chunks: [{values, length: values.length}],
+    pack: () => values
+  });
+  const result = await operation.execute({
+    inputs: {
+      backLinks: wrap(Uint32Array.of(0, 16, 0xffffffff, 0xffffffff, 0xffffffff, 32)),
+      target: wrap(Uint32Array.of(5))
+    }
+  });
+  expect(result['required']).toEqual(Uint32Array.of(3));
+  expect(Object.keys(result).sort()).toEqual(Object.keys(operation.outputs).sort());
+});

@@ -7,7 +7,7 @@
   "viewId": "dispatch-view",
   "caption": "Dispatch of network-snapping-edge-sources-clear. invocations: 2,816. structure metadata only. workgroups 11.",
   "description": "Dispatch of network-snapping-edge-sources-clear. invocations: 2,816. structure metadata only. workgroups 11.",
-  "llms": "Dispatch of network-snapping-edge-sources-clear\n\n- invocations: 2,816\n- workgroups 11\n- lanes per workgroup 256\n- Lane grid rasterized; first 15 and pinned lane labelled\n- idle lanes 6\n- expanded workgroup 0\n- id probe not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Dispatch of network-snapping-edge-sources-clear\n\n- invocations: 2,816\n- workgroups 11\n- lanes per workgroup 256\n- Lane grid rasterized; first 15 and pinned lane labelled\n- idle lanes 6\n- expanded workgroup 0\n- id probe not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "invocations",
     "value": "2,816"
@@ -19,16 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:15.308Z",
-    "runId": "run-bf5029d5",
+    "date": "2026-11-20T23:48:43.520Z",
+    "runId": "run-39716fce",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
+      "lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-bf5029d5",
+    "runId": "run-39716fce",
     "rung": "kernel",
     "bindings": {},
     "clauses": [],

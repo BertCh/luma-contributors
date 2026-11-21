@@ -131,7 +131,8 @@ export function getS2CellCoverNodes<Parameters>(
           operation: 'GPUCellCover',
           view,
           type: 'u32',
-          value: '0u'
+          value: '0u',
+          componentCount: 1
         })
       );
   }

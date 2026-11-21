@@ -39,7 +39,7 @@ for (const empty of [false, true]) {
         circles: 'circles',
         longestLines: 'lines',
         diameters: 'diameters',
-        bounds: 'bounds',
+        sourceBounds: 'bounds',
         hullSizes: 'hullSizes',
         status: {overflow: 'overflow', groupOverflow: 'groupOverflow'}
       }

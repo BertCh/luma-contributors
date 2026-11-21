@@ -191,7 +191,7 @@ it('permutation and multiple-testing contributors reject writable aliases at con
           method: 'holm',
           output: {
             adjustedPValues: first,
-            testedCount: graph.createDataView(first.buffer, {
+            effectiveFamilySize: graph.createDataView(first.buffer, {
               format: 'uint32',
               length: 1,
               byteOffset: 20
@@ -328,9 +328,9 @@ for (const Contributor of [GPUSpatialPearson, GPUGammaStatistic]) {
     const first = build([1000, 1048]);
     const second = build([1, 255, 256, 1536]);
     try {
-      expect(getGPUCommandNodePipelineKeys(first.nodes).size).toBe(3);
-      expect(getGPUCommandNodePipelineKeys(second.nodes).size).toBe(3);
-      for (const stage of ['-moments', '-centered']) {
+      expect(getGPUCommandNodePipelineKeys(first.nodes).size).toBe(4);
+      expect(getGPUCommandNodePipelineKeys(second.nodes).size).toBe(4);
+      for (const stage of ['-anchors', '-moments', '-centered']) {
         const nodes = second.nodes.filter(node => node.id.includes(stage));
         expect(
           nodes.map(

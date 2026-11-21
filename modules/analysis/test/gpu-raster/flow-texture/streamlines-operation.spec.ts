@@ -99,12 +99,11 @@ for (const scene of [
             parameters: {
               format: 'float32',
               values: getGPUStreamlinesParameterValues({
-                fieldExtent: [0, 0, 1, 1],
-                gridExtent: bounded
-                  ? [0, 0, 8, 8]
-                  : scene === 'varying'
-                    ? [0, 0, 4, 4]
-                    : [0, 0, 1, 1],
+                fieldPlacement: {origin: [0, 0], cellSize: [1, 1]},
+                gridPlacement: {
+                  origin: [0, 0],
+                  cellSize: bounded ? [8, 8] : scene === 'varying' ? [4, 4] : [1, 1]
+                },
                 stepLength: scene === 'varying' ? 0.05 : 0.25,
                 seed: 1,
                 minimumPoints: 2
@@ -229,8 +228,8 @@ for (const scene of ['interior', 'boundary-seed', 'boundary-step'] as const)
             parameters: {
               format: 'float32',
               values: getGPUStreamlinesParameterValues({
-                fieldExtent: extent,
-                gridExtent: extent,
+                fieldPlacement: {origin: [extent[0], extent[1]], cellSize: [extent[2], extent[3]]},
+                gridPlacement: {origin: [extent[0], extent[1]], cellSize: [extent[2], extent[3]]},
                 stepLength: scene === 'boundary-step' ? 7.925207614898682 : 0.125
               })
             },

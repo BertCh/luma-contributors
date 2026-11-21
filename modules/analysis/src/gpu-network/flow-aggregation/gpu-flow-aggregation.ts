@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotFlowAggregationConstructionProps} from './flow-aggregation-construction';
 import {
   validateNetworkViewBindings,
   validateNetworkOutputsDisjointFromInputs
@@ -323,6 +324,8 @@ export type GPUFlowAggregationOutput = GPUCompactOutput & {
  * and the legacy packed IDs through 65535 zones are preserved. The hash probe count
  * `rows * maximumProbeCount` remains bounded by 4294967295.
  *
+ * Construction snapshots controls, zone literals and nested time/output/status port maps before
+ * validation. Graph views retain their identities and their contents remain live across submissions.
  * Non-goals: geodesic zones, flow bundling, chunked zone IDs, masks or timestamps, table resizing.
 
  */
@@ -342,6 +345,7 @@ export class GPUFlowAggregation implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUFlowAggregationProps) {
+    props = snapshotFlowAggregationConstructionProps(props);
     this.id = props.id ?? 'flow-aggregation';
     this.props = props;
     const id = this.id;

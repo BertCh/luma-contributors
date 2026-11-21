@@ -5,7 +5,7 @@
 import type {SpatialFamilyOperators} from '../types';
 
 /** Spatial weights operators, with formulas scoped to the variants demonstrated by their cards. */
-export const WEIGHTS_OPERATORS: SpatialFamilyOperators = {
+const LEGACY_WEIGHTS_OPERATORS: SpatialFamilyOperators = {
   GPUAnalysisSpacing: {
     family: 'weights',
     descriptor: {scope: 'global', reduction: 'scan-sort'},
@@ -110,7 +110,7 @@ export const WEIGHTS_OPERATORS: SpatialFamilyOperators = {
         name: 'operation',
         stage: 'neighbourhood',
         sweepable: true,
-        alternatives: ['row', 'binary', 'kernel', 'symmetrize', 'double', 'variance']
+        alternatives: ['row', 'binary', 'kernel', 'average-reciprocal', 'double', 'variance']
       }
     ],
     formula: {
@@ -118,7 +118,7 @@ export const WEIGHTS_OPERATORS: SpatialFamilyOperators = {
       derivation: 'curated',
       tex: String.raw`\term{output}{w\prime_{ij}}=\term{input}{w_{ij}}\term{scale}{s_i},\quad\term{scale}{s_i}=\begin{cases}1/\term{sum}{S_i}&S_i>0\text{ and finite}\\0&\text{otherwise}\end{cases},\quad\term{sum}{S_i}=\sum_j\term{input}{w_{ij}}`,
       ascii:
-        'Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, symmetrize, double and variance are separate variants.',
+        'Row variant: S_i = sum_j w_ij; scale = 1/S_i for positive finite S_i, otherwise 0; output = input * scale. The CSR pattern is unchanged. Binary, kernel, average-reciprocal, double and variance are separate variants.',
       symbols: [
         {id: 'output', role: 'output', binding: 'wgsl:values'},
         {id: 'input', role: 'input', binding: 'wgsl:source'},
@@ -199,7 +199,7 @@ export const WEIGHTS_OPERATORS: SpatialFamilyOperators = {
           'union',
           'intersection',
           'difference',
-          'symmetricDifference',
+          'symmetric-difference',
           'higherOrder',
           'selfWeight',
           'subgraph',
@@ -298,6 +298,43 @@ export const WEIGHTS_OPERATORS: SpatialFamilyOperators = {
       formula: 'none',
       reason:
         'Jones–Plassmann rounds greedily color independent priority maxima, using largest degree first with seeded-hash and row-ID tie breaks.'
+    }
+  }
+};
+
+/** Own-name declarations retain the named executable whole-CSR family scenarios as evidence. */
+export const WEIGHTS_OPERATORS: SpatialFamilyOperators = {
+  ...LEGACY_WEIGHTS_OPERATORS,
+  GPUChunkedSpatialWeightsValidation: {
+    ...LEGACY_WEIGHTS_OPERATORS['GPUSpatialWeightsValidation'],
+    formula: {
+      formula: 'none',
+      reason:
+        'Dispatch the demonstrated CSR validation checks over consecutive row chunks, preserving global row indices. Flags retain offset, order, range, diagonal and weight violations; count invalid rows across chunks.'
+    }
+  },
+  GPUChunkedSpatialWeightsTranspose: {
+    ...LEGACY_WEIGHTS_OPERATORS['GPUSpatialWeightsTranspose'],
+    formula: {
+      formula: 'none',
+      reason:
+        'Transpose every consecutive source-row chunk into reversed links by stable target-column sorting, boundary search and gathering. The demonstrated family variant transposes the same CSR; chunk output capacities additionally report loss, while the optional symmetry diagnostic describes the input.'
+    }
+  },
+  GPUChunkedSpatialWeightsTransform: {
+    ...LEGACY_WEIGHTS_OPERATORS['GPUSpatialWeightsTransform'],
+    formula: {
+      id: 'chunked-spatial-weights-transform',
+      derivation: 'curated',
+      tex: String.raw`\term{output}{w\prime_{ij}}=\term{input}{w_{ij}}\term{scale}{s_i},\quad\term{scale}{s_i}=\begin{cases}1/\term{sum}{S_i}&S_i>0\text{ and finite}\\0&\text{otherwise}\end{cases},\quad\term{sum}{S_i}=\sum_j\term{input}{w_{ij}}`,
+      ascii:
+        'Demonstrated row variant: each complete row belongs to one consecutive chunk; S_i=sum_j w_ij, scale=1/S_i for positive finite S_i, otherwise zero; output=input*scale, preserving the CSR pattern. Binary, kernel, average-reciprocal, double and variance are separate choices. Double and variance use global totals over all chunks; average-reciprocal requires a packed scratch transpose.',
+      symbols: [
+        {id: 'output', role: 'output', binding: 'wgsl:values'},
+        {id: 'input', role: 'input', binding: 'wgsl:source'},
+        {id: 'scale', role: 'intermediate', binding: 'wgsl:scale'},
+        {id: 'sum', role: 'intermediate', binding: 'wgsl:sum'}
+      ]
     }
   }
 };

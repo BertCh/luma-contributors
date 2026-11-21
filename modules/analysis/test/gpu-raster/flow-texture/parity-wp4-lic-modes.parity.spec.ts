@@ -5,6 +5,7 @@
 import {Texture, type Buffer} from '@luma.gl/core';
 import {GPURasterTextureToBuffer} from '@luma.gl/graph/gpu-raster';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {decodeSavedLICSettings} from './saved-flow-parameters';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it} from 'vitest';
 import {
@@ -43,7 +44,9 @@ for (const scene of licCases) {
       };
       const length = scene.width * scene.height;
       const valuesBuffer = trackBuffer(createOutputBuffer(device, length));
-      const parameters = getGPULineIntegralConvolutionParameterValues(scene.settings);
+      const parameters = getGPULineIntegralConvolutionParameterValues(
+        decodeSavedLICSettings(scene.settings)
+      );
       const words = getGPULineIntegralConvolutionUint32ParameterValues(scene.settings);
       const texture = withTexture
         ? device.createTexture({

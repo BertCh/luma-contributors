@@ -102,7 +102,7 @@ it('R2 a complete radius search clears a stale candidate flag before Moran on ev
     const candidateOverflow = rig.output('uint32', 1);
     const searchParameters = getGPUNeighborSearchParameterValues({
       bounds: [-1, -1, 4, 1],
-      radius: 1.1
+      searchRadius: 1.1
     });
     const search = new GPUNeighborSearch({
       mode: 'radius',
@@ -195,37 +195,50 @@ it('R3 a candidate-bounded self-join supplies the candidate signal even when the
 });
 
 for (const mode of ['tiled', 'reference'] as const) {
-  it(`R5 global ${mode} reads only the first word of a spare-capacity overflow view`, async () => {
+  it(`R5 global ${mode} reads a one-word overflow view in a larger buffer`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const rig = new WeightsRig(device);
     try {
-      const overflow = rig.input(new Uint32Array([0, 1]), 'uint32', 2);
+      const backing = rig.input(Uint32Array.of(1, 0, 1), 'uint32', 3);
+      const overflow = rig.graph.createDataView(backing.buffer, {
+        format: 'uint32',
+        byteOffset: 4,
+        length: 1
+      });
       const summary = rig.output('float32', GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length);
+      const weights = rig.uploadWeights(CSR);
+      const props = {
+        mode,
+        values: rig.input(VALUES, 'float32', 4),
+        statistics: ['moran'] as const,
+        output: {summary: summary.view}
+      };
+      expect(
+        () =>
+          new GPUGlobalSpatialStatistics({
+            ...props,
+            weights: {...weights, status: {overflow: backing}}
+          })
+      ).toThrow(/weights\.status overflow must contain one uint32 row/);
       rig.graph.add(
-        new GPUGlobalSpatialStatistics({
-          mode,
-          weights: {...rig.uploadWeights(CSR), status: {overflow}},
-          values: rig.input(VALUES, 'float32', 4),
-          statistics: ['moran'],
-          output: {summary: summary.view}
-        })
+        new GPUGlobalSpatialStatistics({...props, weights: {...weights, status: {overflow}}})
       );
       const compiled = rig.graph.compile();
       try {
         for (const words of [
-          [0, 1],
-          [1, 0],
-          [0, 1]
+          [1, 0, 1],
+          [0, 1, 0],
+          [1, 0, 1]
         ]) {
-          rig.bufferOf(overflow).write(new Uint32Array(words));
+          rig.bufferOf(backing).write(new Uint32Array(words));
           submitGraph(device, compiled, undefined);
           const result = await readFloat32(
             summary.buffer,
             GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
           );
           const statistic = result[GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.moran];
-          if (words[0]) expect(Number.isNaN(statistic)).toBe(true);
+          if (words[1]) expect(Number.isNaN(statistic)).toBe(true);
           else {
             expect(Number.isFinite(statistic)).toBe(true);
             expect(statistic).toBeCloseTo(29 / 115, 5);
@@ -254,7 +267,7 @@ for (const Contributor of [GPULocalMoran, GPUHotSpotAnalysis]) {
         const overflow = rig.output('uint32', 1);
         const searchParameters = getGPUNeighborSearchParameterValues({
           bounds: [-1, -1, 4, 1],
-          radius: 1.1
+          searchRadius: 1.1
         });
         rig.graph.add(
           new GPUNeighborSearch({

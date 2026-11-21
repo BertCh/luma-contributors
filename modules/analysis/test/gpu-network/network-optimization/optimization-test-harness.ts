@@ -61,13 +61,14 @@ export function createOptimizationHarness(device: Device) {
     },
     async run(
       producer: GPUCommandNodeProducer,
-      repeat?: (read: (view: GraphDataView) => number[]) => void
+      repeat?: (read: (view: GraphDataView) => number[], encoding: number) => void,
+      encodingCount = repeat ? 2 : 1
     ) {
       graph.add(producer);
       const compiled = graph.compile();
       try {
         const result = new Map<GraphDataView, number[]>();
-        for (let encoding = 0; encoding < (repeat ? 2 : 1); encoding++) {
+        for (let encoding = 0; encoding < encodingCount; encoding++) {
           submitGraph(device, compiled, undefined);
           for (const [view, buffer] of outputs) {
             const count = (view.length * getGPUVectorFormatInfo(view.format).byteLength) / 4;
@@ -76,7 +77,7 @@ export function createOptimizationHarness(device: Device) {
               : await readUint32(buffer, count);
             result.set(view, Array.from(values));
           }
-          if (encoding === 0 && repeat) repeat(view => result.get(view)!);
+          if (encoding + 1 < encodingCount && repeat) repeat(view => result.get(view)!, encoding);
         }
         return (view: GraphDataView): number[] => result.get(view)!;
       } finally {

@@ -15,8 +15,79 @@ import {
   getGPUCommandNodeKernelSources,
   getGPUCommandNodePipelineKeys
 } from '../../utils/gpu-contributor-test-utils';
+import {getMonotoneChainConvexityNodes} from '../../../src/gpu-spatial-analysis/shape-descriptors/convexity-hull';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
+import {useCPUExecutorTestHooks} from '../segment-intersection/cpu-executor-test-hooks';
 
 import {WGSL_RESERVED_WORDS} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+
+useCPUExecutorTestHooks();
+
+it('retains both hulls when resident feature windows move backwards, then checks order again', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const memory = createCPUGraphMemory();
+    const positions = createTransientView(graph, 'positions', 'float32x2', 6);
+    const ringOffsets = createTransientView(graph, 'rings', 'uint32', 4);
+    const polygonOffsets = createTransientView(graph, 'polygons', 'uint32', 4);
+    const featureOffsets = createTransientView(graph, 'features', 'uint32', 4);
+    const areas = createTransientView(graph, 'areas', 'float32', 3);
+    const convexities = createTransientView(graph, 'convexities', 'float32', 3);
+    memory.write(polygonOffsets, Uint32Array.of(0, 1, 2, 3));
+    memory.write(featureOffsets, Uint32Array.of(0, 1, 2, 3));
+    const id = 'resident-hulls';
+    const nodes = getMonotoneChainConvexityNodes(graph, {
+      id,
+      operation: 'GPUShapeDescriptors',
+      featureCount: 3,
+      positions,
+      ringOffsets,
+      polygonOffsets,
+      featureOffsets,
+      areas,
+      convexities
+    });
+    // The interpreter cannot execute the group hull's cooperative workgroups.
+    const fallbackNodes = ['reset-window-order', 'check-window-order', 'unordered-hull'].map(
+      suffix => nodes.find(node => node.id === `${id}-${suffix}`)!
+    );
+    const triangles = [0, 0, 2, 0, 0, 2, 10, 0, 14, 0, 10, 4];
+    for (const {coordinates, offsets, ringAreas, expected} of [
+      {
+        coordinates: triangles,
+        offsets: [3, 6, 0, 3],
+        ringAreas: [8, 0, 2],
+        expected: [1, NaN, 1]
+      },
+      {
+        coordinates: [0, 0, 2, 0, 2, 2, 0, 2, -2, 0, -99, -99],
+        offsets: [0, 4, 1, 5],
+        // The square and trapezoid overlap in three rows, which belong to both hulls.
+        ringAreas: [4, 0, 6],
+        expected: [1, NaN, 1]
+      },
+      {
+        coordinates: triangles,
+        offsets: [0, 3, 3, 6],
+        ringAreas: [2, 0, 8],
+        expected: [99, 99, 99]
+      }
+    ]) {
+      memory.write(positions, Float32Array.from(coordinates));
+      memory.write(ringOffsets, Uint32Array.from(offsets));
+      memory.write(areas, Float32Array.from(ringAreas));
+      memory.write(convexities, Float32Array.of(99, 99, 99));
+      executeCommandNodesOnCPU(fallbackNodes, memory);
+      expect(memory.readFloat32(convexities)).toEqual(Float32Array.from(expected));
+    }
+  } finally {
+    device.destroy();
+  }
+});
 
 it('review D-19: orientation guards atan2(0, 0) and keeps the kernel parseable', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'shape-descriptors'});

@@ -118,7 +118,8 @@ export type GPUCompositeScoreSettings = {
  * @param settings Scaler, aggregation, weights and directions.
  * @param target Optional destination of at least {@link GPU_COMPOSITE_SCORE_PARAMETER_LENGTH} elements.
  * @throws If more than 16 weights or directions are given, a weight is not finite, a weight is
- * negative with `'weighted-geometric-mean'`, epsilon is not positive, or `target` is too short.
+ * negative with `'weighted-geometric-mean'`, epsilon is not finite and positive in float32,
+ * or `target` is too short. Packed weights must be finite. Validation leaves `target` unchanged.
  */
 export function getGPUCompositeScoreParameterValues(
   settings: GPUCompositeScoreSettings,
@@ -135,7 +136,12 @@ export function getGPUCompositeScoreParameterValues(
     throw new Error(`Composite score supports at most ${maximum} weights and directions`);
   }
   const epsilon = settings.epsilon ?? 1e-6;
-  if (!(epsilon > 0) || !Number.isFinite(epsilon)) {
+  if (
+    !(epsilon > 0) ||
+    !Number.isFinite(epsilon) ||
+    !Number.isFinite(Math.fround(epsilon)) ||
+    !(Math.fround(epsilon) > 0)
+  ) {
     throw new Error('Composite score epsilon must be finite and positive');
   }
   const scaler = GPU_COMPOSITE_SCORE_SCALER[settings.scaler ?? 'min-max'];
@@ -143,21 +149,22 @@ export function getGPUCompositeScoreParameterValues(
   if (scaler === undefined || aggregation === undefined) {
     throw new Error('Composite score scaler or aggregation is not recognized');
   }
-  target.fill(0, 0, GPU_COMPOSITE_SCORE_PARAMETER_LENGTH);
-  target[0] = scaler;
-  target[1] = aggregation;
-  target[2] = epsilon;
+  const packed = new Float32Array(GPU_COMPOSITE_SCORE_PARAMETER_LENGTH);
+  packed[0] = scaler;
+  packed[1] = aggregation;
+  packed[2] = epsilon;
   for (let column = 0; column < maximum; column++) {
     const weight = column < weights.length ? weights[column] : 0;
-    if (!Number.isFinite(weight)) {
-      throw new Error('Composite score weights must be finite');
+    if (!Number.isFinite(weight) || !Number.isFinite(Math.fround(weight))) {
+      throw new Error('Composite score weights must be finite in float32');
     }
     if (weight < 0 && aggregation === GPU_COMPOSITE_SCORE_AGGREGATION['weighted-geometric-mean']) {
       throw new Error('Composite score geometric mean weights must be non-negative');
     }
-    target[4 + column] = weight;
+    packed[4 + column] = weight;
     const direction = directions && column < directions.length ? directions[column] : 1;
-    target[4 + maximum + column] = direction < 0 ? -1 : 1;
+    packed[4 + maximum + column] = direction < 0 ? -1 : 1;
   }
+  target.set(packed);
   return target;
 }

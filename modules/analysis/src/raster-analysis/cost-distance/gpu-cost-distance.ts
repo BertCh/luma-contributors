@@ -135,7 +135,12 @@ export type GPUCostDistanceStatus = {
    * back-links then read `GPU_COST_DISTANCE_UNRESOLVED`.
    */
   converged?: GraphDataView<'uint32'>;
-  /** One row: number of relaxation iterations executed. */
+  /**
+   * One row: logical cost-relaxation rounds, including the first unchanged round on convergence.
+   * Schedule-dependent: neighboring workgroups can observe updates within the same round.
+   * At most `maximumIterations` new rounds per execution; cumulative with continuation. Compare final
+   * costs and poll `converged`, rather than requiring equal counts between executions or devices.
+   */
   iterationCount?: GraphDataView<'uint32'>;
   /**
    * One row: 1 when an iteration limit (`maximumIterations`, or `maximumTieIterations` with
@@ -181,7 +186,8 @@ export type GPUCostDistanceOutput = {
   /**
    * Optional diagnostic stamps: per cell, the 1-based gated relaxation round in which its cost last decreased
    * (0 for source cells and cells whose cost never decreased). For a converged run this is the round in which the
-   * cell settled, so it draws the propagation wavefront. Adds one store per improved cell; omit it in production.
+   * cell settled, so it draws the propagation wavefront. Stamps depend on workgroup scheduling,
+   * even when final costs are identical. Adds one store per improved cell; omit it in production.
    * With continuation, stamps use cumulative rounds and persist until a restart. Import this
    * output from a caller-owned buffer, like the other continuation state, so it survives submissions.
    */

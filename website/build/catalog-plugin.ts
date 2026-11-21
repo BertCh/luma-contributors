@@ -60,7 +60,7 @@ export function catalogPlugin({entriesDirectory}: {entriesDirectory: string}): P
 }
 
 /** Entry files only have type imports, so stripping types is enough to evaluate them. */
-async function loadEntries(filePath: string): Promise<Record<string, unknown>[]> {
+export async function loadEntries(filePath: string): Promise<Record<string, unknown>[]> {
   const source = fs.readFileSync(filePath, 'utf8');
   const {code} = await transform(source, {loader: 'ts', format: 'esm'});
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;

@@ -103,7 +103,7 @@ async function runDriveTimeCatchment(
         'float32',
         costBreaks.length
       ),
-      outputs: {
+      output: {
         nodeCosts: outputs.nodeCosts.view,
         demandTimes: outputs.demandTimes.view,
         demandBands: outputs.demandBands.view,

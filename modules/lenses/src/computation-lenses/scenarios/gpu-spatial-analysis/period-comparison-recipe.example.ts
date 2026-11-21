@@ -94,7 +94,7 @@ export async function runExample(
     methods: ['custom'],
     maximumClassCount: 5,
     maximumPaletteCount: 5,
-    outputs: {comparison: {cells, delta, zScore, status: {count, overflow}}, classIndices, colors}
+    output: {comparison: {cells, delta, zScore, status: {count, overflow}}, classIndices, colors}
   });
   // delta is autumn minus spring per cell; classIndices holds its diverging class
   // #endregion example

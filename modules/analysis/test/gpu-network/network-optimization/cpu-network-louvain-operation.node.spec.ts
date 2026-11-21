@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
+import {GPUNetworkLouvain} from '../../../src/gpu-network/network-optimization/gpu-network-louvain';
+import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {expect, it} from 'vitest';
 import {
   computeNetworkLouvainOnCPU,
@@ -248,4 +251,83 @@ it('rejects inconsistent arrays and validates both operation constructions', () 
     expect(
       () => new Operation({...PROPS, output: {...PROPS.output, communities: 'weights'}})
     ).toThrow(/louvain-test/);
+});
+
+it('treats a status port present with value undefined as absent (NET-114)', () => {
+  const shapes = {
+    weights: {format: 'float32' as const, length: 16},
+    parameters: {format: 'float32' as const, length: 2}
+  };
+  const props: NetworkLouvainOperationProps = {
+    ...PROPS,
+    output: {...PROPS.output, status: {converged: undefined, iterationCount: 'iterations'}}
+  };
+  const gpuOperation = new GPUNetworkLouvainOperation(props);
+  expect(Object.keys(gpuOperation.outputs).sort()).toEqual(
+    ['communities', 'iterationCount', 'objectiveTrace', 'summary'].sort()
+  );
+  expect(() => constructNetworkOperationContributor(gpuOperation, shapes)).not.toThrow();
+  const cpuOperation = new CPUNetworkLouvainOperation(props);
+  expect(Object.keys(cpuOperation.outputs).sort()).toEqual(
+    ['communities', 'iterations', 'summary', 'trace'].sort()
+  );
+  expect(
+    () =>
+      new CPUNetworkLouvainOperation({
+        ...PROPS,
+        output: {...PROPS.output, status: {converged: undefined}}
+      })
+  ).not.toThrow();
+});
+
+it('NET-114 retains the supplied invalidCount view while undefined iterationLimitReached disappears', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props: NetworkLouvainOperationProps = {
+    ...PROPS,
+    output: {...PROPS.output, status: {iterationLimitReached: undefined, invalidCount: 'invalid'}}
+  };
+  const gpuOperation = new GPUNetworkLouvainOperation(props);
+  const cpuOperation = new CPUNetworkLouvainOperation(props);
+  expect(Object.keys(gpuOperation.outputs).sort()).toEqual(
+    ['communities', 'invalidCount', 'objectiveTrace', 'summary'].sort()
+  );
+  expect(Object.keys(cpuOperation.outputs).sort()).toEqual(
+    ['communities', 'invalid', 'summary', 'trace'].sort()
+  );
+  const views = {
+    weights: createTransientView(graph, 'louvain-note-weights', 'float32', 16),
+    parameters: createTransientView(graph, 'louvain-note-parameters', 'float32', 2),
+    communities: createTransientView(graph, 'louvain-note-communities', 'uint32', 4),
+    objectiveTrace: createTransientView(
+      graph,
+      'louvain-note-trace',
+      'float32',
+      gpuOperation.outputs['objectiveTrace'].length
+    ),
+    summary: createTransientView(graph, 'louvain-note-summary', 'uint32', 4),
+    invalidCount: createTransientView(graph, 'louvain-note-invalid', 'uint32', 1)
+  };
+  try {
+    const lower = () =>
+      gpuOperation.createContributor(
+        name => views[name as keyof typeof views] as never
+      ) as GPUNetworkLouvain;
+    const assertLowering = (construct: () => GPUNetworkLouvain) => {
+      const contributor = construct();
+      expect(contributor.props.output.status?.invalidCount).toBe(views.invalidCount);
+      expect(Object.keys(contributor.props.output.status ?? {})).toEqual(['invalidCount']);
+    };
+    assertLowering(lower);
+    const dropped = () => {
+      const contributor = lower();
+      return new GPUNetworkLouvain({
+        ...contributor.props,
+        output: {...contributor.props.output, status: undefined}
+      });
+    };
+    expect(() => assertLowering(dropped)).toThrow();
+  } finally {
+    device.destroy();
+  }
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateParameterTarget} from '../raster-band-utils';
 import type {
   GraphDataView,
   GraphVectorView,
@@ -18,6 +19,7 @@ import {
   type RasterTimeSeriesScalarView
 } from './raster-time-series-chunks';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
@@ -64,6 +66,11 @@ export function getGPURasterBFASTMonitorParameterValues(
   settings: GPURasterBFASTMonitorSettings,
   target: Float32Array = new Float32Array(GPU_RASTER_BFAST_MONITOR_PARAMETER_LENGTH)
 ): Float32Array {
+  validateParameterTarget(
+    'getGPURasterBFASTMonitorParameterValues',
+    target,
+    GPU_RASTER_BFAST_MONITOR_PARAMETER_LENGTH
+  );
   const id = 'getGPURasterBFASTMonitorParameterValues';
   validateFiniteNumber(id, 'criticalValue', settings.criticalValue, 0);
   target[0] = settings.period ?? 1;
@@ -137,6 +144,16 @@ export class GPURasterBFASTMonitor<
   private readonly ticksPerYear: number;
 
   constructor(readonly props: GPURasterBFASTMonitorProps<Rows>) {
+    validateGraphPorts(props.id ?? 'raster-bfast-monitor', props, {
+      values: {required: true, viewType: 'either', formats: ['float32']},
+      mask: {required: false, viewType: 'either', formats: ['uint32']},
+      parameters: {required: true, viewType: 'data', formats: ['float32']},
+      'dateAxis.acquisitionTimes': {required: true, viewType: 'data', formats: ['uint32x2']},
+      'output.coefficients': {required: true, viewType: 'either', formats: ['float32']},
+      'output.scores': {required: true, viewType: 'either', formats: ['float32']},
+      'output.cellSummary': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.process': {required: false, viewType: 'either', formats: ['float32']}
+    });
     const id = props.id ?? 'raster-bfast-monitor';
     this.id = id;
     this.harmonicCount = props.harmonicCount ?? 3;

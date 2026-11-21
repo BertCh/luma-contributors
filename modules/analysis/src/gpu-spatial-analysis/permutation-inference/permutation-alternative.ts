@@ -83,22 +83,29 @@ export function getAlternativeMultiplier(
  *
  * @param alternative Tail; `undefined` is `'two-sided'`.
  * @param counts `greater = #{sim >= observed}`, `lesser = #{sim <= observed}` and, for `'folded'`
- * only, `folded = #{|sim - mean| >= |observed - mean|}`.
+ * only, `folded = #{|sim - mean| >= |observed - mean|}`. Folded inference requires this explicit
+ * integer count in [0, R]; omission or an out-of-range count throws.
  * @param permutations Number of simulations `R`.
  * @returns The exceedance count `M` and `p = min(m (M + 1), R + 1) / (R + 1)`.
  */
-export function getPermutationPValue(
-  alternative: GPUInferenceAlternative | undefined,
-  counts: {greater: number; lesser: number; folded?: number},
+export function getPermutationPValue<Alternative extends GPUInferenceAlternative | undefined>(
+  alternative: Alternative,
+  counts: {greater: number; lesser: number} & ('folded' extends NoInfer<Alternative>
+    ? {folded: number}
+    : {folded?: number}),
   permutations: number
 ): {exceedances: number; pValue: number} {
   const resolved = resolvePermutationAlternative('getPermutationPValue', alternative);
+  const {greater, lesser} = counts;
+  const folded = resolved === 'folded' ? counts.folded : undefined;
+  if (resolved === 'folded')
+    validateCapacity('getPermutationPValue', 'folded', folded as number, 0, permutations);
   const exceedances = {
-    greater: counts.greater,
-    lesser: counts.lesser,
-    'two-sided': Math.min(counts.greater, counts.lesser),
-    folded: counts.folded ?? 0,
-    directed: Math.min(counts.greater, counts.lesser)
+    greater,
+    lesser,
+    'two-sided': Math.min(greater, lesser),
+    folded: folded as number,
+    directed: Math.min(greater, lesser)
   }[resolved];
   const multiplier = getAlternativeMultiplier(resolved);
   return {

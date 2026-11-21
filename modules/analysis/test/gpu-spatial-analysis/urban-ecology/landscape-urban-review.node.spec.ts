@@ -11,11 +11,70 @@ import {
   type GPUIsovistsOutput
 } from '../../../src/gpu-spatial-analysis/urban-morphology/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
 
 function getNodeCount(graph: GPUCommandGraph): number {
   return (graph as unknown as {nodes: unknown[]}).nodes.length;
 }
+
+it('UCT-03 local measures use polar rays and keep the supplied destination', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const localMeasures = createTransientView(graph, 'local', 'float32x4', 1);
+    const result = addIsovistsRecipe(graph, {
+      positions: createTransientView(graph, 'origins', 'float32x2', 1),
+      segments: createTransientView(graph, 'obstacles', 'float32x4', 1),
+      rayCount: 4,
+      maximumDistance: 0.1,
+      output: {localMeasures}
+    });
+    expect(result.outputs.localMeasures).toBe(localMeasures);
+    const measures = getGPUCommandNodeKernelSources(
+      (graph as unknown as {nodes: unknown[]}).nodes
+    ).find(kernel => kernel.id.endsWith('-measures'))!;
+    expect(measures.source).toContain('cos(');
+    expect(measures.source).not.toContain('endpoints[');
+    // Float32 spacing at this origin is 0.5: all four drawing endpoints round to the origin.
+    expect(Math.fround(5_000_000 + 0.1) - 5_000_000).toBe(0);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('UCT-03 retired isovist destinations reject before allocating recipe storage', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = {
+      positions: createTransientView(graph, 'origins', 'float32x2', 1),
+      segments: createTransientView(graph, 'obstacles', 'float32x4', 1),
+      rayCount: 4,
+      maximumDistance: 0.1,
+      output: {localMeasures: createTransientView(graph, 'new-measures', 'float32x4', 1)}
+    };
+    const state = graph as unknown as {buffers: Map<string, unknown>};
+    const before = [...state.buffers.keys()];
+    const removedMeasures = {
+      ...props,
+      output: {...props.output, measures: props.output.localMeasures}
+    };
+    expect(() => addIsovistsRecipe(graph, removedMeasures)).toThrow(
+      /output.measures was removed; use output.localMeasures/
+    );
+    const removedOutputs = {...props, outputs: props.output};
+    expect(() => addIsovistsRecipe(graph, removedOutputs)).toThrow(
+      /outputs was removed; use output/
+    );
+    expect(getNodeCount(graph)).toBe(0);
+    expect([...state.buffers.keys()]).toEqual(before);
+  } finally {
+    device.destroy();
+  }
+});
 
 it.each([
   ['positions', 'strided'],
@@ -137,7 +196,7 @@ it('R4 isovists reject aliased angle and measure outputs before adding nodes', (
         segments: createTransientView(graph, 'wall', 'float32x4', 1),
         rayCount: 4,
         maximumDistance: 1,
-        output: {angles, measures}
+        output: {angles, localMeasures: measures}
       })
     ).toThrow(/logical byte ranges must not overlap/);
     expect(getNodeCount(graph)).toBe(0);
@@ -324,7 +383,7 @@ it.each([
   ['angles', 'float32', 3, 9],
   ['segments', 'uint32', 3, 9],
   ['validity', 'uint32', 3, 9],
-  ['measures', 'float32x4', 2, 1],
+  ['localMeasures', 'float32x4', 2, 1],
   ['viewpointClassifications', 'uint32', 2, 1]
 ] as const)('isovists preflight %s before graph work', (name, format, length, expectedLength) => {
   const device = createNullWebGPUDevice();
@@ -379,7 +438,7 @@ it('isovists use the sizing helper count for all ray views and retain base spaci
     for (const name of ['endpoints', 'distances', 'segments', 'validity', 'angles'] as const) {
       expect(result.outputs[name].length).toBe(18);
     }
-    expect(result.outputs.measures.length).toBe(2);
+    expect(result.outputs.localMeasures.length).toBe(2);
     expect(result.outputs.viewpointClassifications.length).toBe(2);
     expect(result.provenance.baseRayCount).toBe(3);
     expect(result.provenance.rayCount).toBe(getGPUIsovistRayCount(3, 1, 'vertices'));

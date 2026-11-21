@@ -13,6 +13,7 @@ import {
 import {
   DEFAULT_DOT_MAXIMUM_ATTEMPTS,
   getDotSamplingNodes,
+  snapshotDotSamplingOutput,
   validateDotSamplingConfig,
   type DotSamplingConfig,
   type GPUDotDensityMask,
@@ -95,7 +96,7 @@ export class GPURandomPointsInPolygon implements GPUCommandNodeProducer {
       parameters: props.parameters,
       maximumAttempts: props.maximumAttempts ?? DEFAULT_DOT_MAXIMUM_ATTEMPTS,
       mask: props.mask,
-      output: props.output
+      output: snapshotDotSamplingOutput(id, props.output)
     };
     this.featureCount = validateDotSamplingConfig(this.config);
     this.id = id;

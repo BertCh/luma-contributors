@@ -21,11 +21,11 @@ import {
   waitForWorkbench
 } from './workflow-utils.mjs';
 
-export function checkMinimumPointsProblem(message) {
+export function checkMinimumSamplesProblem(message) {
   assert.equal(
     message,
-    'Find clusters: Minimum points (including the point) must be between 1 and 1000; got 0.',
-    'Invalid Minimum points must name the step, parameter, exact range and rejected value'
+    'Find clusters: Minimum samples (including the point) must be between 1 and 1000; got 0.',
+    'Invalid Minimum samples must name the step, parameter, exact range and rejected value'
   );
 }
 
@@ -278,8 +278,8 @@ async function runEditScenario(page, directory) {
   await screenshot(page, directory, 'workflow-edit-refused-connection');
   await dock(page).getByTestId(TEST_IDS.node('clusters')).click();
   const beforeInvalid = await getWorkbenchState(page);
-  await setParameter(page, 'minimumPoints', 0);
-  const problem = dock(page).getByTestId(TEST_IDS.parameterError('minimumPoints'));
+  await setParameter(page, 'minimumSamples', 0);
+  const problem = dock(page).getByTestId(TEST_IDS.parameterError('minimumSamples'));
   await problem.waitFor();
   assert.equal(await problem.isVisible(), true, 'Invalid parameter problem must be visible');
   assert.equal(
@@ -287,13 +287,13 @@ async function runEditScenario(page, directory) {
     'alert',
     'Invalid parameter problem must be an alert'
   );
-  checkMinimumPointsProblem(await problem.innerText());
+  checkMinimumSamplesProblem(await problem.innerText());
   assert.equal(
-    await dock(page).getByTestId(TEST_IDS.parameter('minimumPoints')).getAttribute('aria-invalid'),
+    await dock(page).getByTestId(TEST_IDS.parameter('minimumSamples')).getAttribute('aria-invalid'),
     'true',
     'Invalid draft must mark the control aria-invalid'
   );
-  checkInvalidDraft(beforeInvalid, await getWorkbenchState(page), 'clusters', 'minimumPoints');
+  checkInvalidDraft(beforeInvalid, await getWorkbenchState(page), 'clusters', 'minimumSamples');
   await screenshot(page, directory, 'workflow-edit-invalid-parameter');
 
   // Changing selection discards the local draft without committing a new parameter binding.

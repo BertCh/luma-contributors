@@ -61,6 +61,12 @@ import {readFileSync} from 'node:fs';
 const binding = CURATED_NETWORK_DISRUPTION_BINDING;
 const sampleParameters = NETWORK_DISRUPTION_SAMPLE.parameters;
 
+// Accessibility is independently hand-counted in the sample; both scoring stages must certify it.
+const scoringStages = [
+  {stage: 'baseline-accessibility', complete: 1},
+  {stage: 'scenario-accessibility', complete: 1}
+];
+
 /** Closed cost-1 shortcut; the only scenario route is the two-arc detour. */
 function makeOverflowDetour(arcCost: number): Record<string, CatalogFeatureCollection> {
   const nodes = [
@@ -153,7 +159,8 @@ function computeReference(
     ),
     stages: [
       {stage: 'baseline-routing', converged: 1},
-      {stage: 'scenario-routing', converged: 1}
+      {stage: 'scenario-routing', converged: 1},
+      ...scoringStages
     ]
   };
 }
@@ -636,6 +643,51 @@ describe('curated network disruption preparation and mappings', () => {
 });
 
 describe('curated network disruption execution and publication', () => {
+  it.each([
+    'baseline-accessibility',
+    'scenario-accessibility'
+  ])('reaches submission and refuses incomplete %s readback', async failedStage => {
+    const device = createNullWebGPUDevice();
+    const submitted = vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(() => {});
+    vi.spyOn(CatalogGpuSession.prototype, 'readFloat32').mockImplementation(async output => {
+      const values = {
+        'baseline-costs': NETWORK_DISRUPTION_EXPECTATIONS.baselineCosts,
+        'scenario-costs': NETWORK_DISRUPTION_EXPECTATIONS.scenarioCosts,
+        'cost-differences': NETWORK_DISRUPTION_EXPECTATIONS.costDifferences,
+        'baseline-accessibility': NETWORK_DISRUPTION_EXPECTATIONS.baselineAccessibility,
+        'scenario-accessibility': NETWORK_DISRUPTION_EXPECTATIONS.scenarioAccessibility,
+        'accessibility-differences': NETWORK_DISRUPTION_EXPECTATIONS.accessibilityDifferences
+      };
+      const entry = Object.entries(values).find(([name]) => output.buffer.id.endsWith(`-${name}`));
+      expect(entry).toBeDefined();
+      return Float32Array.from(entry![1]);
+    });
+    vi.spyOn(CatalogGpuSession.prototype, 'readUint32').mockResolvedValue(
+      Uint32Array.from(NETWORK_DISRUPTION_EXPECTATIONS.newlyUnreachable)
+    );
+    const readStatus = vi
+      .spyOn(CatalogGpuSession.prototype, 'readScalar')
+      .mockImplementation(async output =>
+        Number(!output.buffer.id.endsWith(`${failedStage}-complete`))
+      );
+    try {
+      await expect(
+        binding.runGpu!({device}, createNetworkDisruptionSample(), sampleParameters)
+      ).rejects.toThrow(failedStage);
+      expect(submitted).toHaveBeenCalledOnce();
+      expect(readStatus.mock.calls.map(([output]) => output.buffer.id)).toEqual(
+        expect.arrayContaining([
+          'curated-network-disruption-baseline-routing-converged',
+          'curated-network-disruption-scenario-routing-converged',
+          'curated-network-disruption-baseline-accessibility-complete',
+          'curated-network-disruption-scenario-accessibility-complete'
+        ])
+      );
+    } finally {
+      vi.restoreAllMocks();
+      device.destroy();
+    }
+  });
   it('keeps every active basic descriptor parameter exposed by the supplied curated record', () => {
     // Simulate only registration, without editing stream X's shared descriptor registry.
     const originalLookup = operationDescriptorRegistry.getKeplerOperationDescriptor;
@@ -675,7 +727,9 @@ describe('curated network disruption execution and publication', () => {
         'network-disruption-recipe-differences',
         'network-disruption-recipe-accessibility-delta',
         'publish-baseline-routing',
-        'publish-scenario-routing'
+        'publish-scenario-routing',
+        'publish-baseline-accessibility',
+        'publish-scenario-accessibility'
       ])
         expect(
           kernels.some(kernel => kernel.id === id),
@@ -808,14 +862,26 @@ describe('curated network disruption execution and publication', () => {
       createNetworkDisruptionSample(),
       sampleParameters
     );
-    for (const stage of ['baseline-routing', 'scenario-routing'])
+    for (const stage of [
+      'baseline-routing',
+      'scenario-routing',
+      'baseline-accessibility',
+      'scenario-accessibility'
+    ])
       expect(() =>
         publishCuratedNetworkDisruption(prepared, {
           ...NETWORK_DISRUPTION_EXPECTATIONS,
           stages: NETWORK_DISRUPTION_EXPECTATIONS.stages.map(status => ({
             ...status,
-            converged: status.stage === stage ? 0 : 1
+            ...(status.stage === stage ? {converged: 0, complete: 0} : {})
           }))
+        })
+      ).toThrow(new RegExp(stage));
+    for (const stage of ['baseline-accessibility', 'scenario-accessibility'])
+      expect(() =>
+        publishCuratedNetworkDisruption(prepared, {
+          ...NETWORK_DISRUPTION_EXPECTATIONS,
+          stages: NETWORK_DISRUPTION_EXPECTATIONS.stages.filter(status => status.stage !== stage)
         })
       ).toThrow(new RegExp(stage));
     expect(() =>
@@ -839,6 +905,44 @@ describe('curated network disruption execution and publication', () => {
         newlyUnreachable: Array(10).fill(0)
       })
     ).toThrow(/inconsistent/);
+  });
+
+  it('rejects conflicting duplicate stage certificates in either order (B5)', () => {
+    const prepared = prepareCuratedNetworkDisruption(
+      createNetworkDisruptionSample(),
+      sampleParameters
+    );
+    for (const stage of [
+      'baseline-routing',
+      'scenario-routing',
+      'baseline-accessibility',
+      'scenario-accessibility'
+    ]) {
+      const loss = stage.endsWith('-routing') ? {stage, converged: 0} : {stage, complete: 0};
+      for (const stages of [
+        [loss, ...NETWORK_DISRUPTION_EXPECTATIONS.stages],
+        [...NETWORK_DISRUPTION_EXPECTATIONS.stages, loss]
+      ])
+        expect(() =>
+          publishCuratedNetworkDisruption(prepared, {
+            ...NETWORK_DISRUPTION_EXPECTATIONS,
+            stages
+          })
+        ).toThrow(new RegExp(`${stage}.*exactly one`));
+    }
+  });
+
+  it('honors optional aggregate accessibility loss alongside four clean certificates', () => {
+    const prepared = prepareCuratedNetworkDisruption(
+      createNetworkDisruptionSample(),
+      sampleParameters
+    );
+    expect(() =>
+      publishCuratedNetworkDisruption(prepared, {
+        ...NETWORK_DISRUPTION_EXPECTATIONS,
+        stages: [...NETWORK_DISRUPTION_EXPECTATIONS.stages, {stage: 'accessibility', complete: 0}]
+      })
+    ).toThrow(/accessibility.*complete before publishing/);
   });
 
   it('has complete policies, typed workflow ports, and a recorded synthetic licence for both fixtures', () => {

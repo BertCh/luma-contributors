@@ -15,7 +15,7 @@ import {
   executeCommandNodesOnCPU
 } from '../segment-intersection/wgsl-graph-executor';
 
-it('accepts adjacent independently written count and candidate status subviews', () => {
+it('captures inherited output views and accepts adjacent count and candidate status subviews', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   try {
@@ -26,25 +26,45 @@ it('accepts adjacent independently written count and candidate status subviews',
       byteOffset: 4,
       length: 1
     });
-    expect(() =>
-      new GPUTrajectoryThinning({
-        mode: 'minimum-time',
-        maximumSearchRows: 1,
-        positions: createTransientView(graph, 'positions', 'float32x2', 4),
-        timestamps: createTransientView(graph, 'timestamps', 'float32', 4),
-        trackOffsets: createTransientView(graph, 'offsets', 'uint32', 2),
-        parameters: createTransientView(graph, 'parameters', 'float32', 4),
-        output: {
-          rowIds: createTransientView(graph, 'rows', 'uint32', 4),
-          trackOffsets: createTransientView(graph, 'out-offsets', 'uint32', 2),
-          status: {
-            count,
-            candidateOverflow,
-            overflow: createTransientView(graph, 'overflow', 'uint32', 1)
-          }
-        }
-      }).getCommandNodes(graph)
-    ).not.toThrow();
+    const overflow = createTransientView(graph, 'overflow', 'uint32', 1);
+    let reads = 0;
+    const status = new (class {
+      count = count;
+      overflow = overflow;
+      get candidateOverflow() {
+        reads++;
+        return candidateOverflow;
+      }
+    })();
+    const sourceRows = createTransientView(graph, 'rows', 'uint32', 4);
+    const sourceSelectionMask = createTransientView(graph, 'selection', 'uint32', 4);
+    let sourceRowsReads = 0;
+    const output = new (class {
+      trackOffsets = createTransientView(graph, 'out-offsets', 'uint32', 2);
+      status = status;
+      get sourceRows() {
+        sourceRowsReads++;
+        return sourceRows;
+      }
+      get sourceSelectionMask() {
+        return sourceSelectionMask;
+      }
+    })();
+    const contributor = new GPUTrajectoryThinning({
+      mode: 'minimum-time',
+      maximumSearchRows: 1,
+      positions: createTransientView(graph, 'positions', 'float32x2', 4),
+      timestamps: createTransientView(graph, 'timestamps', 'float32', 4),
+      trackOffsets: createTransientView(graph, 'offsets', 'uint32', 2),
+      parameters: createTransientView(graph, 'parameters', 'float32', 4),
+      output
+    });
+    expect(contributor.props.output.sourceRows).toBe(sourceRows);
+    expect(contributor.props.output.sourceSelectionMask).toBe(sourceSelectionMask);
+    expect(sourceRowsReads).toBe(1);
+    expect(contributor.props.output.status.candidateOverflow).toBe(candidateOverflow);
+    expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+    expect(reads).toBe(1);
   } finally {
     device.destroy();
   }
@@ -65,10 +85,11 @@ it('computes independent track boundaries with empty tracks and a clamped compac
       trackOffsets,
       parameters: createTransientView(graph, 'parameters', 'float32', 4),
       output: {
-        rowIds: createTransientView(graph, 'ids', 'uint32', 3),
+        sourceRows: createTransientView(graph, 'ids', 'uint32', 3),
         trackOffsets: outOffsets,
         status: {
           count: createTransientView(graph, 'count', 'uint32', 1),
+          candidateOverflow: createTransientView(graph, 'candidateOverflow', 'uint32', 1),
           overflow: createTransientView(graph, 'overflow', 'uint32', 1)
         }
       }

@@ -15,6 +15,7 @@ import {
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {getRasterPipelines} from '../../gpu-raster/raster-pipeline-count';
 import {createBand} from '../terrain-test-utils';
+import {AnalysisValidationError} from '../../../src/analysis-core/kernels/analysis-validation-error';
 
 function getChunkPipelines(kind: 'profile' | 'visibility', itemsPerDispatch: number) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
@@ -87,4 +88,55 @@ it('review C-05: the target ignore distance defaults to one ground pixel, 150 m 
     /select\(packedIgnoreDistance, targetPixelLength, packedIgnoreDistance < 0\.0\)/
   );
   expect(classify.source).toMatch(/let targetPixelLength = 1\.0 \/ length\(/);
+});
+
+function createProfile(
+  observerCount: number,
+  raysPerDispatch: number,
+  traversal: 'march' | 'pyramid'
+) {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const profile = new GPUPointHorizonProfile({
+    id: 'budget-horizon',
+    grid: makeGPURasterMetadata({width: 64, height: 48, cellSize: 10}),
+    elevation: createBand(graph, 'terrain', 64 * 48),
+    maximumDistance: 1000,
+    cellSize: 10,
+    traversal,
+    observers: createTransientView(graph, 'observers', 'float32x4', observerCount),
+    parameters: createTransientView(graph, 'settings', 'float32', 8),
+    output: {
+      tangent: createTransientView(graph, 'tangent', 'float32', observerCount * 720),
+      skylineAngle: createTransientView(graph, 'skyline', 'float32', observerCount * 720)
+    },
+    raysPerDispatch
+  });
+  return {graph, profile};
+}
+
+it('review LUMA-118: the profile admits its command nodes at construction', () => {
+  // 56 observers * 720 azimuths = 40,320 rays; one ray per dispatch is 40,320 march nodes, over
+  // the shared 32,768 budget. Before the check, construction accepted it.
+  expect(() => createProfile(56, 1, 'march')).toThrow(
+    // 40,320 march nodes + four fixed-node allowances; no pyramid on this route.
+    new AnalysisValidationError(
+      'budget-horizon',
+      'estimated command node count must be at most 32768',
+      {
+        code: 'INTEGER_RANGE',
+        path: 'estimated command node count',
+        received: 40324,
+        expected: {maximum: 32768}
+      }
+    )
+  );
+  for (const traversal of ['march', 'pyramid'] as const) {
+    // 3 * 720 = 2160 rays in chunks of 700: ceil(2160 / 700) = 4 march nodes.
+    const {graph, profile} = createProfile(3, 700, traversal);
+    const nodes = profile.getCommandNodes(graph);
+    expect(nodes.filter(node => /-march-\d+$/.test(String(node.id)))).toHaveLength(4);
+    expect(nodes.length, traversal).toBeLessThanOrEqual(profile.estimatedCommandNodeCount);
+    // A conservative bound: the pyramid allowance counts every level as its own node.
+    expect(profile.estimatedCommandNodeCount - nodes.length, traversal).toBeLessThanOrEqual(8);
+  }
 });

@@ -14,6 +14,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -126,7 +127,16 @@ export function getGPUEdgeBundlingParameterValues(
 export function getGPUEdgeBundlingParameterValues(
   settings: GPUEdgeBundlingSettings,
   format: 'uint32' | 'float32'
+): Uint32Array | Float32Array;
+export function getGPUEdgeBundlingParameterValues(
+  settings: GPUEdgeBundlingSettings,
+  format: 'uint32' | 'float32'
 ): Uint32Array | Float32Array {
+  validateRequirement(
+    'GPUEdgeBundling',
+    format === 'uint32' || format === 'float32',
+    `format must be 'uint32' or 'float32'; received ${format}`
+  );
   const floats = Float32Array.of(
     settings.activeIterations ?? GPU_EDGE_BUNDLING_MAXIMUM_ITERATIONS,
     settings.kernelRadius ?? GPU_EDGE_BUNDLING_DEFAULTS.kernelRadius,

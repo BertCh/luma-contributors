@@ -63,7 +63,7 @@ type Inputs = {
   neighborWeights?: number[];
 };
 
-async function createRunner(layout: Layout, localized = false) {
+async function createRunner(layout: Layout, localized = false, mutateConfiguration = false) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
@@ -112,29 +112,43 @@ async function createRunner(layout: Layout, localized = false) {
   const neighborIndices = localized ? input(layout.neighbors ?? 1, 'uint32') : undefined;
   const neighborWeights = localized ? input(layout.neighbors ?? 1, 'float32') : undefined;
   if (localized) {
-    graph.add(
-      new GPUGeoConformalPredictionIntervals({
-        calibration,
-        query,
-        neighbors: {
-          offsets: neighborOffsets!.view,
-          indices: neighborIndices!.view,
-          weights: neighborWeights!.view
-        },
-        parameters: parameters.view,
-        output: {intervals: intervals.view, status: status.view}
-      })
-    );
+    const props = {
+      calibration,
+      query,
+      neighbors: {
+        offsets: neighborOffsets!.view,
+        indices: neighborIndices!.view,
+        weights: neighborWeights!.view
+      },
+      parameters: parameters.view,
+      output: {intervals: intervals.view, status: status.view}
+    };
+    const contributor = new GPUGeoConformalPredictionIntervals(props);
+    if (mutateConfiguration) {
+      props.calibration.observations = input(1, 'float32').view;
+      props.query.predictions = input(1, 'float32').view;
+      props.neighbors.weights = input(1, 'float32').view;
+      props.parameters = input(1, 'float32').view;
+      props.output.intervals = output(1, 'float32').view;
+    }
+    graph.add(contributor);
   } else {
-    graph.add(
-      new GPUConformalPredictionIntervals({
-        calibration,
-        query,
-        foldCount,
-        parameters: parameters.view,
-        output: {intervals: intervals.view, status: status.view, calibrationCount: count.view}
-      })
-    );
+    const props = {
+      calibration,
+      query,
+      foldCount,
+      parameters: parameters.view,
+      output: {intervals: intervals.view, status: status.view, calibrationCount: count.view}
+    };
+    const contributor = new GPUConformalPredictionIntervals(props);
+    if (mutateConfiguration) {
+      props.calibration.observations = input(1, 'float32').view;
+      props.query.predictions = input(1, 'float32').view;
+      props.parameters = input(1, 'float32').view;
+      props.output.intervals = output(1, 'float32').view;
+      props.output.calibrationCount = output(1, 'uint32').view;
+    }
+    graph.add(contributor);
   }
   const compiled = graph.compile();
   return {
@@ -168,6 +182,36 @@ async function createRunner(layout: Layout, localized = false) {
     }
   };
 }
+
+it.each([
+  false,
+  true
+])('captures conformal configuration while retaining live oracle inputs (localized=%s)', async localized => {
+  const runner = await createRunner({rows: 8, queryRows: 2, neighbors: 8}, localized, true);
+  try {
+    for (const scale of [1, 2]) {
+      const actual = await runner.execute({
+        alpha: 0.25,
+        observations: [1, 2, 2, 3, 4, 5, 6, 7].map(value => scale * value),
+        predictions: new Array(8).fill(0),
+        queryPredictions: [10, 20],
+        neighborOffsets: [0, 8, 8],
+        neighborIndices: [0, 1, 2, 3, 4, 5, 6, 7],
+        neighborWeights: new Array(8).fill(1)
+      });
+      // Hand oracle: rank ceil(3/4 * 9)=7, tied sorted scores give 6*scale.
+      expect(actual.intervals.slice(0, 2)).toEqual(scale === 1 ? [4, 16] : [-2, 22]);
+      expect(actual.status).toEqual(localized ? [0, 8] : [0, 0]);
+      if (localized) expect(actual.intervals.slice(2).every(Number.isNaN)).toBe(true);
+      else {
+        expect(actual.intervals.slice(2)).toEqual(scale === 1 ? [14, 26] : [8, 32]);
+        expect(actual.count).toBe(8);
+      }
+    }
+  } finally {
+    runner.destroy();
+  }
+});
 
 // ---- Independent binary64 references. ----
 const f = Math.fround;
@@ -609,6 +653,149 @@ it('reports truncated neighbour lists', async () => {
     );
     // The first 256 entries are scores 0 to 255; rank ceil(0.75 * 257) = 193 gives score 192.
     expect(result.intervals).toEqual([-192, 192]);
+  } finally {
+    runner.destroy();
+  }
+});
+
+it('R6 group-fold counterexample computes [1,1] without implying a coverage guarantee', async () => {
+  const runner = await createRunner({rows: 31, queryRows: 1, foldCount: 8, folds: true});
+  try {
+    // The exhaustive 32-query argument is beside the rank cases in the Node audit.
+    // Here query 31 is in group 7; its three same-group candidates are 0, the other 28 are 1.
+    const actual = await runner.execute({
+      alpha: 0.25,
+      observations: new Array(31).fill(0),
+      predictions: Array.from({length: 8}, (_, fold) =>
+        Array.from({length: 31}, (_, row) => (Math.floor(row / 4) === fold ? 0 : 1))
+      ).flat(),
+      folds: Array.from({length: 31}, (_, row) => Math.floor(row / 4)),
+      queryPredictions: [1, 1, 1, 1, 1, 1, 1, 0]
+    });
+    expect(actual.intervals).toEqual([1, 1]);
+    expect(actual.status).toEqual([0]);
+    expect(actual.count).toBe(31);
+  } finally {
+    runner.destroy();
+  }
+});
+
+it('audit-validation CV+ matches rational oracle literals with ties, masking and affine equivariance', async () => {
+  const runner = await createRunner({
+    rows: 10,
+    queryRows: 3,
+    foldCount: 2,
+    folds: true,
+    scales: true,
+    mask: true,
+    queryScales: true
+  });
+  try {
+    // conformal-validation-audit.oracle.py enumerates all eight usable candidates.
+    // All values and arithmetic are exactly representable in float32; no tolerance is needed.
+    for (const [shift, factor, endpoints] of [
+      [0, 1, [0, 30, -8.5, 0.5]],
+      [32, 4, [32, 152, -2, 34]]
+    ] as const) {
+      const actual = await runner.execute({
+        alpha: 0.25,
+        observations: [1, 4, 2, 6, 5, 3, 7, 8, 9, 10].map(value => shift + factor * value),
+        predictions: [...new Array(10).fill(0), ...new Array(10).fill(1)].map(
+          value => shift + factor * value
+        ),
+        folds: [0, 1, 0, 1, 0, 1, 0, 1, 0, 2],
+        scales: [1, 1, 2, 1, 1, 2, 1, 1, 1, 1],
+        mask: [1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+        queryPredictions: [10, -2, 0, 20, -6, 0].map(value => shift + factor * value),
+        queryScales: [2, 0.5, 0]
+      });
+      expect(actual.count).toBe(8);
+      expect(actual.status).toEqual([0, 0, 4]);
+      expect(actual.intervals.slice(0, 4)).toEqual(endpoints);
+      expect(actual.intervals[4]).toBeNaN();
+      expect(actual.intervals[5]).toBeNaN();
+    }
+  } finally {
+    runner.destroy();
+  }
+});
+
+it('R9 localized nonuniform finite weights preserve endpoints under common scaling', async () => {
+  const runner = await createRunner({rows: 8, queryRows: 1, neighbors: 8}, true);
+  try {
+    for (const factor of [1, 2 ** 126]) {
+      for (const [selfWeight, quantile] of [
+        [factor, 8],
+        [-0, 7]
+      ]) {
+        const actual = await runner.execute({
+          alpha: 0.25,
+          selfWeight,
+          observations: [1, 2, 3, 4, 5, 6, 7, 8],
+          predictions: new Array(8).fill(0),
+          queryPredictions: [0],
+          neighborOffsets: [0, 8],
+          neighborIndices: [0, 1, 2, 3, 4, 5, 6, 7],
+          neighborWeights: [1, 1, 1, 1, 1, 1, 1, 2].map(weight => factor * weight)
+        });
+        // Rational target is 7.5 with unit self mass, 6.75 with signed-zero self mass.
+        expect(actual.intervals).toEqual([-quantile, quantile]);
+        expect(actual.status).toEqual([0]);
+      }
+    }
+  } finally {
+    runner.destroy();
+  }
+});
+
+it('review 2 R5 localized positive subnormal masses retain the rational quantile', async () => {
+  const runner = await createRunner({rows: 8, queryRows: 1, neighbors: 8}, true);
+  try {
+    for (const factor of [1, 2 ** -149, 2 ** -100, 2 ** 126]) {
+      const actual = await runner.execute({
+        alpha: 0.25,
+        selfWeight: factor,
+        observations: [1, 2, 3, 4, 5, 6, 7, 8],
+        predictions: new Array(8).fill(0),
+        queryPredictions: [0],
+        neighborOffsets: [0, 8],
+        neighborIndices: [0, 1, 2, 3, 4, 5, 6, 7],
+        neighborWeights: [1, 1, 1, 1, 1, 1, 2, 2].map(weight => factor * weight)
+      });
+      // Exact rational target=8.25*factor, versus cumulative mass 8*factor at score 7.
+      expect(actual.intervals, `scale ${factor}`).toEqual([-8, 8]);
+      expect(actual.status, `scale ${factor}`).toEqual([0]);
+    }
+  } finally {
+    runner.destroy();
+  }
+});
+
+it('audit-validation localized weighted CDF matches oracle literals and empty-group status', async () => {
+  const runner = await createRunner(
+    {rows: 9, queryRows: 3, mask: true, queryScales: true, neighbors: 18},
+    true
+  );
+  try {
+    const actual = await runner.execute({
+      alpha: 0.25,
+      selfWeight: 1,
+      observations: [1, 3, 1, 5, 5, 1, 7, 7, 999],
+      predictions: new Array(9).fill(0),
+      mask: [1, 1, 1, 1, 1, 1, 1, 1, 0],
+      queryPredictions: [10, 10, 10],
+      queryScales: [2, 2, 0],
+      neighborOffsets: [0, 9, 9, 18],
+      neighborIndices: [
+        ...Array.from({length: 9}, (_, row) => row),
+        ...Array.from({length: 9}, (_, row) => row)
+      ],
+      neighborWeights: [1, 2, 1, 1, 2, 1, 1, 1, 10, 1, 2, 1, 1, 2, 1, 1, 1, 10]
+    });
+    // Independent rational weighted CDF in conformal-validation-audit.oracle.py: q = 7.
+    expect(actual.intervals.slice(0, 2)).toEqual([-4, 24]);
+    expect(actual.intervals.slice(2).every(Number.isNaN)).toBe(true);
+    expect(actual.status).toEqual([0, 8, 4]);
   } finally {
     runner.destroy();
   }

@@ -3,6 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export {
+  getGPUNeighborSearchExecutionPlan,
+  GPU_NEIGHBOR_SEARCH_ROUTES
+} from './neighbor-search-planning';
+export type {
+  GPUNeighborSearchShape,
+  GPUNeighborSearchDeviceLimits,
+  GPUNeighborSearchExecutionPlan
+} from './neighbor-search-planning';
+
+export {
   GPUNeighborSearch,
   GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT,
   GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
@@ -22,10 +32,11 @@ export {
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA,
   GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH,
-  GPU_NEIGHBOR_SEARCH_WEIGHT_KIND
+  GPU_NEIGHBOR_SEARCH_WEIGHT_TYPE
 } from './neighbor-search-parameters';
 export type {
   GPUNeighborSearchKernel,
+  GPUNeighborSearchModeSettings,
   GPUNeighborSearchSettings,
-  GPUNeighborSearchWeightKind
+  GPUNeighborSearchWeightType
 } from './neighbor-search-parameters';

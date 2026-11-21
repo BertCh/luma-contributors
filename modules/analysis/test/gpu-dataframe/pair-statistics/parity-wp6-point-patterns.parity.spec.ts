@@ -158,10 +158,10 @@ for (const scene of scenes) {
         parameters.write(
           getGPUPointPatternIndicesParameterValues({
             bounds: scene.bounds,
-            maximumDistance:
+            indexCellSizeHint:
               Math.max(scene.bounds[2] - scene.bounds[0], scene.bounds[3] - scene.bounds[1]) / 256,
             clarkEvansCorrection: 'none',
-            alternative: run.alternative
+            analyticAlternative: run.alternative
           })
         );
         submitGraph(device, compiled, undefined);

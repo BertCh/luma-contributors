@@ -504,3 +504,83 @@ it('a CPU cost table feeds GPU matching at the inclusive float32 cutoff without 
   expect(Array.from(mixed['edges'])).toEqual(Array.from(astar['edges']));
   expect(Array.from(mixed['breaks'])).toEqual([0, 0]);
 });
+
+it('LIF-01 retains the build cutoff across separate table and matching graphs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const inputs = {
+    offsets: {format: 'uint32' as const, values: Uint32Array.of(0, 1, 2, 3, 3)},
+    neighbors: {format: 'uint32' as const, values: Uint32Array.of(1, 2, 3)},
+    weights: {format: 'float32' as const, values: Float32Array.of(1, 1, 1)},
+    nodes: {format: 'float32x2' as const, values: Float32Array.of(0, 0, 1, 0, 2, 0, 3, 0)},
+    cutoff: {format: 'float32' as const, values: Float32Array.of(0)}
+  };
+  const tableProps: NetworkCostTableOperationProps = {
+    nodeCount: 4,
+    capacity: 16,
+    topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+    costLimit: 'cutoff',
+    output: {
+      offsets: 'tableOffsets',
+      targets: 'tableTargets',
+      costs: 'tableCosts',
+      builtCostLimit: 'built',
+      status: {complete: 'tableComplete'}
+    }
+  };
+  const build = () =>
+    runOperationGraph(device, {
+      inputs,
+      operations: [new GPUNetworkCostTableOperation(tableProps)],
+      outputs: ['tableOffsets', 'tableTargets', 'tableCosts', 'built', 'tableComplete']
+    });
+  const retained = await build();
+  inputs.cutoff.values[0] = 10;
+  const fresh = await build();
+  expect(retained['tableComplete'][0]).toBe(1);
+  expect(fresh['tableComplete'][0]).toBe(1);
+  expect(retained['built'][0]).toBe(0);
+  expect(fresh['built'][0]).toBe(10);
+  for (const table of [retained, fresh]) {
+    const result = await runOperationGraph(device, {
+      inputs: {
+        ...inputs,
+        tableOffsets: {format: 'uint32', values: table['tableOffsets']},
+        tableTargets: {format: 'uint32', values: table['tableTargets']},
+        tableCosts: {format: 'float32', values: table['tableCosts']},
+        built: {format: 'float32', values: table['built']},
+        tableComplete: {format: 'uint32', values: table['tableComplete']},
+        points: {format: 'float32x2', values: Float32Array.of(0.5, 0, 2.5, 0)},
+        tracks: {format: 'uint32', values: Uint32Array.of(0, 2)},
+        parameters: {format: 'float32', values: PARAMETERS}
+      },
+      operations: [
+        new GPUMapMatchingOperation({
+          nodeCount: 4,
+          edgeCount: 3,
+          pointCount: 2,
+          trackCount: 1,
+          positions: 'points',
+          trackOffsets: 'tracks',
+          parameters: 'parameters',
+          topology: {offsets: 'offsets', neighbors: 'neighbors', nodePositions: 'nodes'},
+          candidateCount: 1,
+          cellSize: 1,
+          bounds: {minimum: [-1, -1], maximum: [4, 1]},
+          routeTable: {
+            entryCount: 16,
+            offsets: 'tableOffsets',
+            targets: 'tableTargets',
+            costs: 'tableCosts',
+            costLimit: 'built',
+            status: {complete: 'tableComplete'}
+          },
+          output: {matchedEdges: 'matched', breaks: 'breaks'}
+        })
+      ],
+      outputs: ['matched', 'breaks']
+    });
+    expect(Array.from(result['matched'])).toEqual([0, 2]);
+    expect(Array.from(result['breaks'])).toEqual([0, 0]);
+  }
+});

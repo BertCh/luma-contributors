@@ -28,7 +28,7 @@ it('rejects overflowing dispatch and squared-grid counts at construction', () =>
   const props = createProps(graph, 67_108_864);
   const allocate = vi.spyOn(graph, 'createTransientBuffer');
   expect(() => new GPULabelPoint(props)).toThrow(
-    /label feature count must be an integer in \[1, 67108863\]/
+    /label feature count must be an integer in \[0, 67108863\]/
   );
   expect(allocate).not.toHaveBeenCalled();
   vi.restoreAllMocks();

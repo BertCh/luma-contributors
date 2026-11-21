@@ -5,7 +5,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {CPUMaxPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/cpu-max-p-regions-operation';
-import {GPU_MAX_P_STATUS} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions';
+import {GPU_MAX_P_STATUS_LAYOUT} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions';
 import {GPUMaxPRegionsOperation} from '../../../src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
@@ -62,7 +62,7 @@ it('spatial-3:F7 bounds enclave propagation separately from seed growth on both 
     // Only row 0 has enough extensive mass; one synchronous enclave step reaches row 1, not row 2.
     expect(result['labels'][1]).toBe(result['labels'][0]);
     expect(result['labels'][2]).not.toBe(result['labels'][0]);
-    expect(result['status'][GPU_MAX_P_STATUS.feasible]).toBe(0);
+    expect(result['status'][GPU_MAX_P_STATUS_LAYOUT.feasible]).toBe(0);
     expect(Number.isFinite(result['objective'][0])).toBe(true);
   }
 });
@@ -86,7 +86,9 @@ for (const maximumIterations of [1, 2]) {
         operations: [new Operation(props)],
         outputs: Object.values(props.output)
       });
-      expect(result['status'][GPU_MAX_P_STATUS.improvementIterationCount]).toBe(maximumIterations);
+      expect(result['status'][GPU_MAX_P_STATUS_LAYOUT.improvementIterationCount]).toBe(
+        maximumIterations
+      );
       expect(Array.from(result['labels'])).toEqual(
         maximumIterations === 1 ? [1, 0, 0, 1, 1, 2, 1, 2, 2] : [0, 0, 0, 1, 1, 2, 1, 2, 2]
       );

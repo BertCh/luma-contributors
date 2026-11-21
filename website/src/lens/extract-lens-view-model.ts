@@ -48,6 +48,7 @@ type RecordGraph = {
   edges: readonly {from: string; to: string; kind?: string; resource?: string}[];
   resources?: readonly {
     id: string;
+    kind?: string;
     bytes: number;
     ownership: LensResourceOwnership;
     bytesKind?: LensResourceBytesKind;
@@ -58,6 +59,8 @@ type RecordGraph = {
 type RecordCapture = {
   id: string;
   name: string;
+  graph?: string;
+  resource?: string;
   role?: string;
   keySpace?: string;
   elementType: string;
@@ -233,7 +236,7 @@ export function extractLensViewModel(scenarioId: string, record: LensRecordLike)
     },
     formulas,
     parameters,
-    ...extractMap(scenarioId, snapshots, record.axes?.keySpaces),
+    ...extractMap(scenarioId, snapshots, record.axes?.keySpaces, record.graphs),
     series: extractSeries(snapshots),
     ...(rounds.length > 0 ? {rounds} : {}),
     ...(gatedNodeCount > 0 ? {gatedNodeCount} : {}),
@@ -524,7 +527,8 @@ function summarizeLargest(
 function extractMap(
   scenarioId: string,
   snapshots: readonly RecordCapture[],
-  keySpaces: readonly {id: string; size?: number}[] = []
+  keySpaces: readonly {id: string; size?: number}[] = [],
+  graphs: readonly RecordGraph[] = []
 ): {map?: LensMap} {
   const byName = new Map(snapshots.map(capture => [capture.name, capture]));
   const byId = new Map(snapshots.map(capture => [capture.id, capture]));
@@ -579,7 +583,21 @@ function extractMap(
     if (countReference !== undefined) {
       const count = lookup(byName, byId, countReference);
       const active = count?.values[0];
-      const capacity = keySpaces.find(space => space.id === source.capture.keySpace)?.size;
+      const resource = graphs
+        .find(graph => graph.id === source.capture.graph)
+        ?.resources?.find(
+          resource =>
+            resource.id === source.capture.resource &&
+            resource.kind === 'buffer' &&
+            resource.bytesKind === 'logical'
+        );
+      // Domain size is authoritative. Without it, only exact logical buffer bytes certify a
+      // maximum count; a lower bound or an estimate cannot prove that a count exceeds capacity.
+      const capacity =
+        keySpaces.find(space => space.id === source.capture.keySpace)?.size ??
+        (resource
+          ? Math.floor(resource.bytes / ((source.capture.components ?? 2) * 4))
+          : undefined);
       // A missing/invalid published count withholds the points, including finite spare slots.
       rows =
         count &&

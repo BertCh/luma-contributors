@@ -10,7 +10,7 @@ import type {GPUComputationKeySpace} from '@luma-contributors/analysis/computati
 
 defineLensScenario({
   id: 'gpu-spatial-analysis.pycnophylactic',
-  element: 'GPUPycnophylactic',
+  element: 'GPUPycnophylacticInterpolation',
   title: 'Smooth population surface from Chicago North Side tracts',
   rungs: FORMULA_LENS_RUNGS,
   dataset: S2_DATASETS.tracts,
@@ -52,7 +52,7 @@ defineLensScenario({
         ];
         return runS2Lens(device, {
           scenarioId: 'gpu-spatial-analysis.pycnophylactic',
-          element: 'GPUPycnophylactic',
+          element: 'GPUPycnophylacticInterpolation',
           datasets: ['s2-chicago-north-tracts'],
           keySpaces,
           choices: {

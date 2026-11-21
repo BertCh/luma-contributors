@@ -50,7 +50,7 @@ export function getEditDistanceDeclarations(
   return finishMetric(pointMetric(point, GAP_POINT));`;
   const substitutionCost =
     kind === 'edr'
-      ? `return select(1.0, 0.0, finishMetric(coupledMetric(swapped, startA, countA, startB, countB, rowLong, rowShort)) <= f32(${getFloatLiteral(tolerance)}));`
+      ? `return select(1.0, 0.0, coupledWithin(swapped, startA, countA, startB, countB, rowLong, rowShort, f32(${getFloatLiteral(tolerance)})));`
       : 'return finishMetric(coupledMetric(swapped, startA, countA, startB, countB, rowLong, rowShort));';
   return `const WORKGROUP_SIZE: u32 = ${lanes}u;
 const LANES: u32 = ${lanes}u;
@@ -150,13 +150,17 @@ export function getEditDistanceBody(prologue: string): string {
 }
 
 /** Declarations of the SSPD kernel; the contributor adds `WORKGROUP_SIZE`. @internal */
-export function getSymmetricSegmentPathDeclarations(lanes: number): string {
+export function getSymmetricSegmentPathDeclarations(
+  lanes: number,
+  multipartA = false,
+  multipartB = false
+): string {
   const nearest = (
     side: 'A' | 'B'
   ) => `// Metric value from a point to the polyline of track ${side}: every segment, in order.
 fn nearestMetricTo${side}(point: vec2<f32>, start: u32, count: u32) -> f32 {
   if (count == 1u) { return pointMetric(point, load${side}(start)); }
-  var nearest = 3.402823466e+38;
+  var nearest = ${(side === 'A' ? multipartA : multipartB) ? `pointMetric(point,load${side}(start+count-1u))` : '3.402823466e+38'};
   for (var segment = 0u; segment + 1u < count; segment++) {
     nearest = min(nearest, pointSegmentMetric(point, load${side}(start + segment), load${side}(start + segment + 1u)));
   }

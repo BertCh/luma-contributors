@@ -91,7 +91,7 @@ it('getGPUSolarIrradianceParameterValues packs and validates settings', () => {
   expect(() => getGPUSolarIrradianceParameterValues({sampleCount: 1.5})).toThrow(/sampleCount/);
   expect(() =>
     getGPUSolarIrradianceParameterValues({sampleCount: 1, angularRadiusDegrees: -1})
-  ).toThrow(/radius/);
+  ).toThrow(/angularRadiusDegrees/);
   expect(() =>
     getGPUSolarIrradianceParameterValues({sampleCount: 1, diffuseIrradiance: -1})
   ).toThrow(/diffuse/);
@@ -158,6 +158,7 @@ it('GPUSolarIrradiance validates props and schedules chunked nodes', () => {
   expect(() => create({sampleCapacity: 0})).toThrow(/sampleCapacity/);
   expect(() => create({samplesPerNode: 0})).toThrow(/samplesPerNode/);
   expect(() => create({sampleCapacity: 11})).toThrow(/sunTable/);
+  // @ts-expect-error Intentional empty selection exercises the JavaScript runtime guard.
   expect(() => create({}, {})).toThrow(/at least one output/);
   expect(() => create({slope: float('lonely-slope')})).toThrow(/together/);
   const shared = float('shared');

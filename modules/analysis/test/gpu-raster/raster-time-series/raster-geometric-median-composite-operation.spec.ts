@@ -11,7 +11,7 @@ import {
 } from '../../../src/raster-analysis/raster-time-series/gpu-raster-geometric-median-composite-operation';
 import {getGPURasterGeometricMedianCompositeParameterValues} from '../../../src/raster-analysis/raster-time-series/gpu-raster-geometric-median-composite';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 for (const missing of [false, true]) {
   for (const distanceEpsilon of [1e-5, 10]) {
@@ -159,6 +159,42 @@ for (const lastStep of [false, true]) {
           }
         }
       }
+    }
+  });
+}
+
+for (const sliceCount of [1, 3]) {
+  it(`TWN-41 preserves ${sliceCount} identical nonzero observations with exact zero step`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    for (const Operation of [
+      GPURasterGeometricMedianCompositeOperation,
+      CPURasterGeometricMedianCompositeOperation
+    ]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          values: {format: 'float32', values: new Float32Array(sliceCount).fill(456787.5)},
+          parameters: {
+            format: 'float32',
+            values: getGPURasterGeometricMedianCompositeParameterValues()
+          }
+        },
+        operations: [
+          new Operation({
+            cellCount: 1,
+            sliceCount,
+            bandCount: 1,
+            iterationCount: 1,
+            values: 'values',
+            parameters: 'parameters',
+            output: {composite: 'composite', status: 'status', lastStep: 'lastStep'}
+          })
+        ],
+        outputs: ['composite', 'status', 'lastStep']
+      });
+      expect(Array.from(result['composite'])).toEqual([456787.5]);
+      expect(Array.from(result['status'])).toEqual([0]);
+      expect(Array.from(result['lastStep'])).toEqual([0]);
     }
   });
 }

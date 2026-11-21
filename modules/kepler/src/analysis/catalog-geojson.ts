@@ -73,6 +73,32 @@ function isPosition(value: unknown): value is CatalogPosition {
   );
 }
 
+/** Rejects malformed raw XY before a reader can silently remove a vertex. */
+export function validateCatalogGeometryPositions(
+  geometry: CatalogGeometry,
+  id = 'geometry-input'
+): void {
+  if (!geometry) return;
+  const depths: Record<string, number> = {
+    Point: 0,
+    MultiPoint: 1,
+    LineString: 1,
+    MultiLineString: 2,
+    Polygon: 2,
+    MultiPolygon: 3
+  };
+  const depth = depths[geometry.type];
+  if (depth === undefined) return;
+  const visit = (value: unknown, remaining: number): void => {
+    if (!Array.isArray(value) || (remaining === 0 && !isPosition(value)))
+      throw new Error(
+        `${id}: input coordinates require numeric XY positions before projection and float32 conversion`
+      );
+    if (remaining > 0) for (const child of value) visit(child, remaining - 1);
+  };
+  visit(geometry.coordinates, depth);
+}
+
 export function getLineParts(geometry: CatalogGeometry): CatalogPosition[][] {
   if (!geometry) return [];
   if (geometry.type === 'LineString')
@@ -275,4 +301,30 @@ export function validatePolygonTriangulationCapacity(polygons: CatalogFeatureCol
         );
     }
   }
+}
+
+/** Visits every position in feature, part, ring and vertex order without argument spreading. */
+export function* iterateCatalogPositions(
+  collections: readonly CatalogFeatureCollection[]
+): IterableIterator<CatalogPosition> {
+  for (const collection of collections)
+    for (const feature of collection.features) {
+      yield* getPointPositions(feature.geometry);
+      for (const part of getLineParts(feature.geometry)) yield* part;
+      for (const polygon of getPolygonParts(feature.geometry))
+        for (const ring of polygon) yield* ring;
+    }
+}
+
+/** Source-coordinate diagnostic shared by validity engines: raw XY must fit finite float32. */
+export function getCatalogFloat32CoordinateDiagnostic(
+  geometry: CatalogGeometry
+): 'non-finite-coordinate' | undefined {
+  validateCatalogGeometryPositions(geometry);
+  for (const [x, y] of iterateCatalogPositions([
+    {type: 'FeatureCollection', features: [{geometry}]}
+  ]))
+    if (!Number.isFinite(Math.fround(x)) || !Number.isFinite(Math.fround(y)))
+      return 'non-finite-coordinate';
+  return undefined;
 }

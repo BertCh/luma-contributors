@@ -10,6 +10,7 @@ import {
   CELL_INDEX_H3_BASE_CELL_PACKED_TABLE,
   CELL_INDEX_H3_CW_OFFSET_PENTAGON_FACES
 } from './h3-index-tables';
+import {getExactDegreeReductionWGSL, getDegreeSinCosWGSL} from './cell-index-wgsl';
 
 const BASE_CELL_TABLE_WGSL = CELL_INDEX_H3_BASE_CELL_PACKED_TABLE.map(value =>
   value < 0 ? '65535u' : `${value}u`
@@ -53,7 +54,9 @@ const SQRT7_POWERS_WGSL = Array.from({length: 16}, (_, resolution) =>
  * though normally a grid neighbor. Resolution 15 is effectively unusable from f32 positions: the
  * f32 input itself is coarser than the cell. A mismatch is nearly always a grid neighbor.
  *
- * Latitude is expected in [-90, 90]; longitude may be any finite value (it wraps).
+ * Latitude is expected in [-90, 90]; longitude may be any finite value below 3e38 in magnitude
+ * (it wraps exactly modulo 360, also above 2^24 where f32 longitudes are integers); larger
+ * magnitudes give the zero key.
  */
 export const H3_INDEX_WGSL: string = /* wgsl */ `\
 const CELL_INDEX_H3_BASE_CELL_TABLE = array<u32, 540>(${BASE_CELL_TABLE_WGSL});
@@ -68,29 +71,11 @@ fn cellIndexH3IsCwOffset(baseCell: u32, face: u32) -> bool {
   return ${CW_OFFSET_CONDITION_WGSL};
 }
 
-// (sin, cos) of an angle in degrees. The angle is reduced to [-45, 45] degrees exactly in degrees,
-// then a Taylor polynomial gives full f32 accuracy independent of the builtin sin/cos precision.
-fn cellIndexH3SinCosDegrees(degrees: f32) -> vec2f {
-  let quadrant = round(degrees * (1.0 / 90.0));
-  let reduced = (degrees - quadrant * 90.0) * 0.017453292519943295;
-  let x2 = reduced * reduced;
-  let sine = reduced * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 +
-    x2 * (1.0 / 362880.0 + x2 * (-1.0 / 39916800.0))))));
-  let cosine = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 +
-    x2 * (1.0 / 40320.0 + x2 * (-1.0 / 3628800.0 + x2 * (1.0 / 479001600.0))))));
-  let turn = u32(i32(quadrant)) & 3u;
-  if (turn == 1u) {
-    return vec2f(cosine, -sine);
-  }
-  if (turn == 2u) {
-    return vec2f(-sine, -cosine);
-  }
-  if (turn == 3u) {
-    return vec2f(-cosine, sine);
-  }
-  return vec2f(sine, cosine);
-}
-
+${getExactDegreeReductionWGSL('cellIndexH3ReduceDegrees')}
+// (sin, cos) of an angle in degrees. The angle is reduced to [-45, 45] degrees exactly in degrees
+// (magnitudes from 2^24 up first modulo 360 exactly), then a Taylor polynomial gives full f32
+// accuracy independent of the builtin sin/cos precision.
+${getDegreeSinCosWGSL('cellIndexH3SinCosDegrees', 'cellIndexH3ReduceDegrees', 'h3')}
 fn cellIndexH3GetNearestFace(point: vec3f) -> u32 {
   var face = 0u;
   var bestAlignment = -2.0;

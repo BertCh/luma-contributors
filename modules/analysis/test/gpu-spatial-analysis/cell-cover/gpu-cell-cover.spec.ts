@@ -44,7 +44,7 @@ import {coverS2OnCPU} from './cell-cover-s2-oracle';
 import {getS2TopologyCell} from '../cell-topology/s2-topology-oracle';
 import {s2CellToCenter, s2CellToBoundary} from '../cell-indexing/cell-indexing-oracle';
 import {isInsideRingsExact} from '../segment-intersection/exact-geometry-reference';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type CoverRun = CoverResult & {
   count: number;
@@ -96,6 +96,7 @@ async function runCover(
     candidateCount: output(1),
     invalidCount: output(1),
     uncertainCount: output(1),
+    complete: output(1),
     total: output(1)
   };
   const graph = new GPUCommandGraph(device, {id: 'cell-cover-graph'});
@@ -162,6 +163,10 @@ async function runCover(
         ),
         core: importGraphBuffer(graph, 'out-core', outputBuffers.core, 'uint32', outputCapacity),
         status: {
+          complete:
+            options.family === 's2'
+              ? undefined
+              : importGraphBuffer(graph, 'complete', outputBuffers.complete, 'uint32', 1),
           candidateCount: importGraphBuffer(
             graph,
             'candidate-count',
@@ -350,6 +355,43 @@ it('GPUCellCover reports overflow, clamps count and uses feature ids', async () 
   expect(limited.candidateOverflow).toBe(1);
   const limitedExpected = coverQuadbinOnCPU(flattenCoverFeatures(features), 9, 'center', 50);
   expect(limited.cells).toEqual(limitedExpected.cells);
+});
+
+it('GPUCellCover saturates candidate totals at or above 2^32 (DGGS-103)', async () => {
+  // 65,536 identical rectangles, each with over 220,000 Quadbin zoom-10 bounding-box cells, so
+  // every feature counts candidateCapacity + 1 = 65,537 candidates. The true total
+  // 65536 * 65537 = 4295032832 is above 2^32 - 1: the uint32 scan used to wrap to 65,536, which
+  // reported no candidate overflow and a candidate count of 65,536. Saturated, the total is
+  // 0xffffffff and the overflow flag is set; the first feature takes every candidate, so the cells
+  // are the CPU oracle's cells of that feature alone with the same candidate capacity.
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const featureCount = 65536;
+  const candidateCapacity = 65536;
+  const rectangle: CoverFeature = [[createRectangleRing([-90, -60, 90, 60])]];
+  const features = Array.from({length: featureCount}, () => rectangle);
+  const expected = coverQuadbinOnCPU(
+    flattenCoverFeatures([rectangle]),
+    10,
+    'center',
+    candidateCapacity
+  );
+  // The first bounding-box row straddles latitude 60, so 65,409 of the 65,536 candidates pass.
+  expect(expected.cells.length).toBe(65409);
+  const actual = await runCover(device, features, {
+    family: 'quadbin',
+    resolution: 10,
+    candidateCapacity,
+    outputCapacity: candidateCapacity,
+    candidateEnumeration: 'bounds',
+    edgeSlabs: false
+  });
+  expect(actual.candidateOverflow).toBe(1);
+  expect(actual.candidateCount).toBe(0xffffffff);
+  expect(actual.overflow).toBe(0);
+  expect(actual.count).toBe(expected.cells.length);
+  expect(new Set(actual.featureRows)).toEqual(new Set([0]));
+  expect(actual.cells).toEqual(expected.cells);
 });
 
 it('GPUCellCover h3 center matches h3-js polygonToCells', async () => {
@@ -654,9 +696,12 @@ for (const edgeSlabs of [false, true]) {
     submitGraph(device, compiled, undefined);
     expect((await readUint32(invalidCount, 1))[0]).toBe(1);
     expect((await readUint32(uncertainCount, 1))[0]).toBe(1);
+    expect((await readUint32(candidateOverflow, 1))[0]).toBe(0);
+    expect((await readUint32(overflow, 1))[0]).toBe(0);
     const written = (await readUint32(count, 1))[0];
     const ids = (await readUint32(featureIds, capacity)).slice(0, written);
-    expect(ids.includes(0)).toBe(true);
+    // No complete destination: clipped/rejected coverage suppresses the whole prefix.
+    expect(written).toBe(0);
     expect(ids.includes(1)).toBe(false);
     compiled.destroy();
     buffers.forEach(buffer => buffer.destroy());
@@ -704,6 +749,7 @@ it('GPUCellCover accepts full-width Antarctica and reports candidates and polar 
   // Bounds [-180, -90, 180, -70] span all 16 columns and Mercator rows 12 through 15.
   expect(result.candidateCount).toBe(64);
   expect(result.candidateOverflow).toBe(0);
+  expect(result.overflow).toBe(0);
   expect(
     countCoverDisagreements(result, coverQuadbinOnCPU(flattenCoverFeatures(features), 4, 'center'))
   ).toBe(0);

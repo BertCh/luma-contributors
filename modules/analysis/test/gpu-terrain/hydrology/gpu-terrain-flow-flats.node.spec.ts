@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   makeGPURasterBand,
   makeGPURasterMetadata
@@ -98,6 +98,54 @@ it('GPUTerrainFlow validates maximumFlatIterations', () => {
   expect(() => createFlow(() => ({resolveFlats: true, maximumFlatIterations: 0}))).toThrow(
     /maximumFlatIterations/
   );
+});
+
+it('filled-only flow still schedules requested flat diagnostics', () => {
+  const {graph, flow} = createFlow(graph => ({
+    fillDepressions: true,
+    resolveFlats: true,
+    maximumFillIterations: 1,
+    maximumFlatIterations: 1,
+    output: {
+      flowDirections: undefined,
+      filledElevation: createTransientView(graph, 'filled', 'float32', 30),
+      status: {
+        flatsConverged: createTransientView(graph, 'converged', 'uint32', 1),
+        flatsIterationCount: createTransientView(graph, 'rounds', 'uint32', 1)
+      }
+    }
+  }));
+  expect(flow.getCommandNodes(graph).map(node => node.id)).toContain('flow-flats-finalize');
+});
+
+it('filled-only flat diagnostics preflight the routing gate table before allocating nodes', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const grid = makeGPURasterMetadata({width: 20, height: 10});
+  const flow = new GPUTerrainFlow({
+    id: 'flat-preflight',
+    grid,
+    fillDepressions: true,
+    resolveFlats: true,
+    maximumFillIterations: 1,
+    maximumFlatIterations: 4,
+    elevation: makeGPURasterBand(createTransientView(graph, 'elevation', 'float32', 200), grid),
+    parameters: createTransientView(graph, 'parameters', 'float32', 8),
+    output: {
+      filledElevation: createTransientView(graph, 'filled', 'float32', 200),
+      status: {flatsConverged: createTransientView(graph, 'converged', 'uint32', 1)}
+    }
+  });
+  // Canonical planes fit (800 bytes), the spill tree does not (1608), so fill alone
+  // needs two gate slots (512). Flat routing needs five aligned slots (1280).
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 1024});
+  const allocations = vi.spyOn(graph, 'createTransientBuffer');
+  try {
+    expect(() => flow.getCommandNodes(graph)).toThrow(/flat-preflight.*gate table.*1280.*1024/);
+    expect(allocations).not.toHaveBeenCalled();
+  } finally {
+    allocations.mockRestore();
+  }
 });
 
 it('GPUTerrainFlow iteration outputs add finalize nodes and need their stage', () => {

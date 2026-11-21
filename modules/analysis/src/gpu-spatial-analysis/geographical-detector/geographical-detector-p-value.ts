@@ -225,7 +225,8 @@ export function getNonCentralFUpperTail(
 /**
  * P-value of the geographical detector q statistic, `1 - F_ncf(F; L - 1, N - L, lambda)`, from the
  * read-back `output.summary` of `GPUGeographicalDetector` (`geodetector` 0.2.0
- * `q_significance_test`). NaN where the summary is undefined (`F` is NaN); 0 for `q = 1`.
+ * `q_significance_test`). NaN where the summary is undefined (`F` is NaN); 0 for `F = Infinity`.
+ * A finite F can have a positive tail even when float32 q rounds to 1.
  * The supported non-centrality range and convergence errors are those of
  * {@link getNonCentralFUpperTail}.
  *

@@ -27,9 +27,10 @@ const PIECE_COPY = 1;
 export type LinePieceMode = 'chunk' | 'substring';
 
 /**
- * Per-input-line piece count: chunks `min(ceil(length / chunkLength), maximumPieces)` (one piece
- * for zero-length lines or a non-positive chunk length), substrings one piece. Empty lines have
- * no pieces.
+ * Per-input-line piece count: chunks use the first float32 boundary that covers the line
+ * within the exact integer index range, then cap the layout count at maximumPieces.
+ * Substrings, zero-length lines, and non-positive chunk lengths use one piece. Empty lines
+ * have no pieces.
  *
  * @internal
  */
@@ -72,7 +73,41 @@ export function createPieceCountNode<Parameters>(
     invocationCount: props.lineOffsets.length - 1,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;
 const MAXIMUM_PIECES: u32 = ${props.maximumPieces}u;
-const IS_CHUNK: bool = ${props.mode === 'chunk'};`,
+const IS_CHUNK: bool = ${props.mode === 'chunk'};
+const LAST_EXACT_CHUNK_INDEX: u32 = 16777216u;
+
+fn getChunkBoundaryBits(chunkIndex: u32, chunkLength: f32) -> u32 {
+  return bitcast<u32>(f32(chunkIndex) * chunkLength);
+}
+
+fn checkChunkRequirement(lineLength: f32, chunkLength: f32, estimate: u32) -> u32 {
+  // Past 2^24, different indices can round to the same f32. Keep the division-based count there.
+  let lengthBits = bitcast<u32>(lineLength);
+  if (lengthBits >= 0x7f800000u ||
+      getChunkBoundaryBits(LAST_EXACT_CHUNK_INDEX, chunkLength) < lengthBits) {
+    return estimate;
+  }
+  // Compare the same rounded products the range kernel uses. Positive float bits sort by value,
+  // and comparing bits keeps the compiler from algebraically rewriting the boundary check.
+  let candidate = min(estimate, LAST_EXACT_CHUNK_INDEX);
+  let coversLine = getChunkBoundaryBits(candidate, chunkLength) >= lengthBits;
+  if (coversLine && (candidate == 1u || getChunkBoundaryBits(candidate - 1u, chunkLength) < lengthBits)) {
+    return candidate;
+  }
+  // Division can land on either side of an exact multiple. If needed, search only the side
+  // that can contain the first covering boundary.
+  var low = select(candidate + 1u, 1u, coversLine);
+  var high = select(LAST_EXACT_CHUNK_INDEX, candidate - 1u, coversLine);
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (getChunkBoundaryBits(middle, chunkLength) < lengthBits) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}`,
     body: /* wgsl */ `let start = min(lineOffsets[lineOffsetsOffset + index], ROW_COUNT);
   let end = min(max(lineOffsets[lineOffsetsOffset + index + 1u], start), ROW_COUNT);
   var count = 0u;
@@ -88,6 +123,7 @@ const IS_CHUNK: bool = ${props.mode === 'chunk'};`,
       if (requirement < 4294967296.0) {
         count = max(u32(requirement), 1u);
       }
+      count = checkChunkRequirement(lineLength, chunkLength, count);
     }
   }
   ${props.requiredPieceCounts ? 'requiredPieceCounts[requiredPieceCountsOffset + index] = count;' : ''}
@@ -97,8 +133,9 @@ const IS_CHUNK: bool = ${props.mode === 'chunk'};`,
 
 /**
  * Per output piece slot: finds the source line by binary search over the scanned piece starts,
- * resolves the piece's measure range, the interior vertex rows strictly inside it (two binary
- * searches over the cumulative measures) and its vertex count. Slot 0 also writes the unclamped
+ * resolves the piece's measure range and interior rows between common first-row cuts (with the
+ * original last vertex at the terminal cut), retaining moving rows on rounded measure plateaus.
+ * Slot 0 also writes the unclamped
  * piece total.
  *
  * @internal
@@ -215,8 +252,13 @@ fn findRow(low: u32, high: u32, value: f32, strict: bool) -> u32 {
       firstInterior = start;
       interiorEnd = start;
     } else {
-      firstInterior = findRow(start, end, startMeasure, true);
-      interiorEnd = max(findRow(start, end, endMeasure, false), firstInterior);
+      let startBoundary = select(findRow(start, end, startMeasure, false), end - 1u, startMeasure >= lineLength);
+      firstInterior = startBoundary;
+      if (startBoundary < end && getMeasure(startBoundary) == startMeasure) {
+        firstInterior = startBoundary + 1u;
+      }
+      let endBoundary = select(findRow(start, end, endMeasure, false), end - 1u, endMeasure >= lineLength);
+      interiorEnd = max(endBoundary, firstInterior);
       vertexCount = 2u + interiorEnd - firstInterior;
     }
   }
@@ -326,6 +368,21 @@ fn interpolate(segmentRow: u32, measure: f32) -> vec2<f32> {
   }
 }
 
+// Both sides of a cut use one coordinate, without changing source-segment provenance.
+// Known endpoints take precedence over a rounded measure plateau.
+fn cutPosition(segmentRow: u32, measure: f32, first: u32, last: u32) -> vec2<f32> {
+  if (measure <= getMeasure(first)) { return getVertex(first); }
+  if (measure >= getMeasure(last - 1u)) { return getVertex(last - 1u); }
+  var low = first + 1u;
+  var high = last - 1u;
+  while (low < high) {
+    let middle = (low + high) / 2u;
+    if (getMeasure(middle) < measure) { low = middle + 1u; } else { high = middle; }
+  }
+  if (getMeasure(low) == measure) { return getVertex(low); }
+  return interpolate(segmentRow, measure);
+}
+
 fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) {
   if (outputRow >= CAPACITY) {
     return;
@@ -353,17 +410,16 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
   let lineEnd = pieces[base + 8u];
   let startMeasure = bitcast<f32>(pieces[base + 1u]);
   let endMeasure = bitcast<f32>(pieces[base + 2u]);
-  // A measure lies on the segment ending at the first row past it, clamped to the line's
-  // segments (the line has at least two rows because its length is positive).
+  // Positive-length pieces have at least two source rows. Preserve their segment provenance.
   let startSegment = clamp(firstInterior, lineStart + 1u, lineEnd - 1u) - 1u;
   let endSegment = clamp(interiorEnd, lineStart + 1u, lineEnd - 1u) - 1u;
   if (local == 0u) {
-    writeVertex(index, interpolate(startSegment, startMeasure), startMeasure, startSegment);
+    writeVertex(index, cutPosition(startSegment, startMeasure, lineStart, lineEnd), startMeasure, startSegment);
   } else if (local <= interiorEnd - firstInterior) {
     let row = firstInterior + local - 1u;
     writeVertex(index, getVertex(row), getMeasure(row), row);
   } else {
-    writeVertex(index, interpolate(endSegment, endMeasure), endMeasure, endSegment);
+    writeVertex(index, cutPosition(endSegment, endMeasure, lineStart, lineEnd), endMeasure, endSegment);
   }`
   });
 }

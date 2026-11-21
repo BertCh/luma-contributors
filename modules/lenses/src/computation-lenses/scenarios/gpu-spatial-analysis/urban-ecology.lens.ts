@@ -3,15 +3,18 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {registerS2LensScenarios} from './define-s2-lens-scenarios';
+import {defineLensScenario} from '../../define-lens-scenarios';
+
+const URBAN_ECOLOGY_DATASET = {
+  id: 'urban-ecology-illustrative/1',
+  source:
+    'Repository-authored synthetic geometry in arbitrary planar units and explicit categorical/population fixtures.',
+  licence: 'MIT (repository-authored illustrative inputs)'
+};
 
 registerS2LensScenarios(
   {
-    dataset: {
-      id: 'urban-ecology-illustrative/1',
-      source:
-        'Repository-authored synthetic geometry in arbitrary planar units and explicit categorical/population fixtures.',
-      licence: 'MIT (repository-authored illustrative inputs)'
-    },
+    dataset: URBAN_ECOLOGY_DATASET,
     loadBuilder: async () => (await import('./urban-ecology-examples')).buildUrbanEcologyScenario
   },
   [
@@ -70,6 +73,36 @@ registerS2LensScenarios(
     }
   ]
 );
+
+// This route publishes several certificates after its geometry. Pin the cell result explicitly
+// rather than making the headline depend on capture insertion order.
+defineLensScenario({
+  id: 'gpu-spatial-analysis.local-building-tessellation-recipe',
+  element: 'addLocalBuildingTessellationRecipe',
+  title: 'One building covers a square enclosure as four certified sample cells',
+  dataset: URBAN_ECOLOGY_DATASET,
+  presentation: {
+    primaryOutputCaptureId:
+      'gpu-spatial-analysis-local-building-tessellation-recipe-snapshots-output-cells-0'
+  },
+  async load() {
+    const [{runS2Lens}, {buildUrbanEcologyScenario}] = await Promise.all([
+      import('./s2-lens-run'),
+      import('./urban-ecology-examples')
+    ]);
+    return {
+      run: device =>
+        runS2Lens(device, {
+          scenarioId: 'gpu-spatial-analysis.local-building-tessellation-recipe',
+          element: 'addLocalBuildingTessellationRecipe',
+          datasets: [URBAN_ECOLOGY_DATASET.id],
+          choices: {sampleSpacing: 2, candidateRadius: 16, vertexTolerance: 1 / 1024},
+          build: (graph, uploads) =>
+            buildUrbanEcologyScenario('addLocalBuildingTessellationRecipe', graph, uploads)
+        })
+    };
+  }
+});
 registerS2LensScenarios(
   {
     dataset: {

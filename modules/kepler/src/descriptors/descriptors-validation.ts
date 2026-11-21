@@ -426,6 +426,11 @@ export const VALIDATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
         'Calibration observations must be held out from model training. Supply predictions from that same model on calibration and query rows; no model is fitted here and query observations are not read.',
         'Prediction and optional scale names are shared across inputs. Positive scales normalize calibration residuals and rescale query intervals; empty uses unit scale.',
         'Read lower and upper together. Null endpoints can be unbounded, not zero-width intervals. Status bits: 1 lower unbounded, 2 upper unbounded, 4 invalid query, 8 no calibration, 16 neighbors truncated. Diagnostics report calibration_count, miscoverage and invalid/unbounded rows.',
+        ...(geographic
+          ? [
+              'Geographic status bit 32 input incomplete reports loss in upstream calibration weights. input_incomplete_rows counts these query rows independently of neighbors_truncated_rows (internal truncation, bit 16); one row can contribute to both counters.'
+            ]
+          : []),
         geographic
           ? 'Gaussian weighting uses at most 256 nearest usable calibration points. Local weighting does not provide a distribution-free spatial coverage guarantee; bandwidth is an extent-based starting policy, not a calibrated optimum.'
           : 'Split holdout conformal requires exchangeability for marginal coverage. Marginal coverage does not guarantee coverage at every location or for each subgroup.'
@@ -444,7 +449,7 @@ export const VALIDATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       inputs: [
         {
           name: 'points',
-          kind: 'points',
+          kind: 'attributes',
           fields: [
             describeNumericField('observation', 'observationProperty', 'Held-out observation'),
             ...(ensemble
@@ -479,6 +484,7 @@ export const VALIDATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       outputs: [describeOutput(bindingId, 'points', 'crps'), describeDiagnostics(bindingId)],
       notes: [
         ...NUMERICAL_NOTES,
+        'Numeric roles accept native table columns or point feature properties. Rows retain input order and feature_index is the zero-based input row. Geometry is optional passthrough and is absent from a geometry-free result.',
         'Lower CRPS means a better predictive distribution, in response units. Use observations independent of model training to measure predictive performance. Diagnostics include mean_crps, scored_rows and invalid_rows.',
         ...(ensemble
           ? [
@@ -499,8 +505,10 @@ export const VALIDATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     inputs: [
       {
         name: 'points',
-        kind: 'points',
-        fields: [describeNumericField('p-value', 'pValueProperty', 'P-value (one point per test)')]
+        kind: 'attributes',
+        fields: [
+          describeNumericField('p-value', 'pValueProperty', 'P-value (one input row per test)')
+        ]
       }
     ],
     parameters: [
@@ -522,6 +530,7 @@ export const VALIDATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     ],
     notes: [
       ...NUMERICAL_NOTES,
+      'Each numeric p-value is one input row, from a native table or point feature properties. feature_index preserves row order; geometry is optional passthrough and geometry-free input produces geometry-free output.',
       'The selected input is the complete testing family. Filtering it changes the adjustment; recompute the full population before keeping an inferential result.',
       'Only finite p-values in [0, 1] enter the family. Invalid rows are untested, with null adjusted_pvalue and significant = 0; that zero does not establish a nonsignificant test.',
       'Benjamini-Yekutieli is the binding default for dependent tests. Benjamini-Hochberg requires its dependence assumptions; Holm and Bonferroni control family-wise error rather than false discovery rate.',

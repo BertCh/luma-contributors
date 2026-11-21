@@ -12,13 +12,13 @@
   "viewId": "result-view",
   "caption": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces. rows: 48. values read back from the GPU run. input patchLabels: 4096 cells.",
   "description": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces. rows: 48. values read back from the GPU run. input patchLabels: 4096 cells.",
-  "llms": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces\n\n- rows: 48\n- input patchLabels: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 45 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces\n\n- rows: 48\n- input patchLabels: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- 45 categories; 5 largest coloured\n- cell size 120 m\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "48"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"patches\"><caption>burn patches (patches) · 48 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">patchPixelCounts</th><th class=\"cv-col--output\" scope=\"col\">patchAreas</th><th class=\"cv-col--output\" scope=\"col\">patchPerimeters</th><th class=\"cv-col--output\" scope=\"col\">patchPerimeterFaces</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2199</td><td class=\"cv-col--output\" data-provenance=\"readback\">31665600</td><td class=\"cv-col--output\" data-provenance=\"readback\">114960</td><td class=\"cv-col--output\" data-provenance=\"readback\">958</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">14400</td><td class=\"cv-col--output\" data-provenance=\"readback\">480</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">42</td><td class=\"cv-col--output\" data-provenance=\"readback\">604800</td><td class=\"cv-col--output\" data-provenance=\"readback\">3840</td><td class=\"cv-col--output\" data-provenance=\"readback\">32</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">14400</td><td class=\"cv-col--output\" data-provenance=\"readback\">480</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">43200</td><td class=\"cv-col--output\" data-provenance=\"readback\">960</td><td class=\"cv-col--output\" data-provenance=\"readback\">8</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">28800</td><td class=\"cv-col--output\" data-provenance=\"readback\">720</td><td class=\"cv-col--output\" data-provenance=\"readback\">6</td></tr><tr><td colspan=\"4\">… 42 more rows</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input patchLabels · blue: output patchPixelCounts, patchAreas, patchPerimeters, patchPerimeterFaces</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded · 45 categories; 5 largest coloured · cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"patches\"><caption>burn patches (patches) · 48 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">patchPixelCounts</th><th class=\"cv-col--output\" scope=\"col\">patchAreas</th><th class=\"cv-col--output\" scope=\"col\">patchPerimeters</th><th class=\"cv-col--output\" scope=\"col\">patchPerimeterFaces</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2199</td><td class=\"cv-col--output\" data-provenance=\"readback\">31665600</td><td class=\"cv-col--output\" data-provenance=\"readback\">114960</td><td class=\"cv-col--output\" data-provenance=\"readback\">958</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">14400</td><td class=\"cv-col--output\" data-provenance=\"readback\">480</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">42</td><td class=\"cv-col--output\" data-provenance=\"readback\">604800</td><td class=\"cv-col--output\" data-provenance=\"readback\">3840</td><td class=\"cv-col--output\" data-provenance=\"readback\">32</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">14400</td><td class=\"cv-col--output\" data-provenance=\"readback\">480</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">43200</td><td class=\"cv-col--output\" data-provenance=\"readback\">960</td><td class=\"cv-col--output\" data-provenance=\"readback\">8</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">28800</td><td class=\"cv-col--output\" data-provenance=\"readback\">720</td><td class=\"cv-col--output\" data-provenance=\"readback\">6</td></tr><tr><td colspan=\"4\">… 42 more rows</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input patchLabels · blue: output patchPixelCounts, patchAreas, patchPerimeters, patchPerimeterFaces</p><p class=\"cv-note\">cell size 120 m · 45 categories; 5 largest coloured · cell size 120 m</p></section>",
     "width": 640,
     "height": 0
   },
@@ -36,8 +36,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:20.724Z",
-    "runId": "run-6dd2e00d",
+    "date": "2026-11-20T23:49:00.212Z",
+    "runId": "run-fa61db1d",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -45,7 +45,7 @@
     ]
   },
   "state": {
-    "runId": "run-6dd2e00d",
+    "runId": "run-fa61db1d",
     "rung": "result",
     "bindings": {},
     "clauses": [],

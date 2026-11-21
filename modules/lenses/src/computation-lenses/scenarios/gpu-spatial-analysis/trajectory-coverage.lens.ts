@@ -102,7 +102,7 @@ export function runTrajectoryCoverage(device: Device, kind: TrajectoryCoverageKi
               'status',
               'uint32',
               2,
-              'Reset, prediction-only, invalid and singular-smoothing bits'
+              'Status bits: 1 reset, 2 prediction-only, 4 invalid, 8 RTS fallback after a singular prediction or nonfinite backward state/covariance correction'
             )
           }
         });

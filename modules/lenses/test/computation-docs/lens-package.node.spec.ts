@@ -23,6 +23,8 @@ import {build, transform} from 'esbuild';
 import typescript from 'typescript';
 import {transformCommonJSModule} from '../../../../scripts/build-commonjs.mjs';
 import {REPOSITORY_ROOT} from './lens-directives';
+import {BUILT_LENS_CASE} from './qualify-built-lenses.mjs';
+import {writeNativeWorkspaceLoader} from './native-workspace-loader';
 
 function collectBareJSONImports(source: string, filename: string): string[] {
   const parsed = typescript.createSourceFile(
@@ -196,30 +198,28 @@ describe('lenses package registration', () => {
     expect(failures).toEqual([]);
   });
 
-  it.runIf(process.env['LENS_VERIFY_BUILT'] === '1')(
-    'checks emitted relative links and public role loading after a build',
-    () => {
-      const root = join(REPOSITORY_ROOT, 'modules/lenses/dist');
-      expect(existsSync(root)).toBe(true);
-      const failures: string[] = [];
-      let checkedCount = 0;
-      for (const file of readdirSync(root, {recursive: true, encoding: 'utf8'})) {
-        if (!file.endsWith('.js')) continue;
-        const source = readFileSync(join(root, file), 'utf8');
-        for (const match of source.matchAll(/(?:from\s*|import\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g)) {
-          checkedCount++;
-          if (!existsSync(resolve(root, dirname(file), match[1])))
-            failures.push(`${file}: ${match[1]}`);
-        }
+  it.runIf(process.env['LENS_VERIFY_BUILT'] === '1')(BUILT_LENS_CASE, () => {
+    const root = join(REPOSITORY_ROOT, 'modules/lenses/dist');
+    expect(existsSync(root)).toBe(true);
+    const failures: string[] = [];
+    let checkedCount = 0;
+    for (const file of readdirSync(root, {recursive: true, encoding: 'utf8'})) {
+      if (!file.endsWith('.js')) continue;
+      const source = readFileSync(join(root, file), 'utf8');
+      for (const match of source.matchAll(/(?:from\s*|import\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g)) {
+        checkedCount++;
+        if (!existsSync(resolve(root, dirname(file), match[1])))
+          failures.push(`${file}: ${match[1]}`);
       }
-      expect(checkedCount).toBeGreaterThan(0);
-      expect(failures).toEqual([]);
-      const output = execFileSync(
-        process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          `import {listLensUserInputRoles} from '@luma-contributors/lenses/computation-lenses';
+    }
+    expect(checkedCount).toBeGreaterThan(0);
+    expect(failures).toEqual([]);
+    const output = execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import {listLensUserInputRoles} from '@luma-contributors/lenses/computation-lenses';
        import '@luma-contributors/lenses/computation-lenses/scenarios/index';
        const {getLensScenario} = await import('@luma-contributors/lenses/computation-lenses');
        for (const id of ['gpu-network.flow-aggregation', 'gpu-network.network-reachability']) {
@@ -228,27 +228,27 @@ describe('lenses package registration', () => {
        }
        const result = await listLensUserInputRoles({entry:'gpu-dataframe', dataset:{id:'f-chicago-tracts'}});
        console.log(result.roles.length);`
-        ],
-        {cwd: REPOSITORY_ROOT, encoding: 'utf8'}
-      );
-      expect(Number(output.trim())).toBeGreaterThan(0);
-      const commonJSOutput = execFileSync(
-        process.execPath,
-        [
-          '-e',
-          `const {listLensUserInputRoles} = require('@luma-contributors/lenses/computation-lenses');
+      ],
+      {cwd: REPOSITORY_ROOT, encoding: 'utf8'}
+    );
+    expect(Number(output.trim())).toBeGreaterThan(0);
+    const commonJSOutput = execFileSync(
+      process.execPath,
+      [
+        '-e',
+        `const {listLensUserInputRoles} = require('@luma-contributors/lenses/computation-lenses');
        listLensUserInputRoles({entry:'gpu-dataframe', dataset:{id:'f-chicago-tracts'}})
          .then(result => console.log(result.roles.length));`
-        ],
-        {cwd: REPOSITORY_ROOT, encoding: 'utf8'}
-      );
-      expect(Number(commonJSOutput.trim())).toBeGreaterThan(0);
-    }
-  );
+      ],
+      {cwd: REPOSITORY_ROOT, encoding: 'utf8'}
+    );
+    expect(Number(commonJSOutput.trim())).toBeGreaterThan(0);
+  });
 
   it('loads public user-input roles in native Node ESM', async () => {
     const root = join(REPOSITORY_ROOT, 'modules/lenses/src/computation-lenses');
     const temporary = mkdtempSync(join(tmpdir(), 'lens-native-'));
+    const workspaceLoader = writeNativeWorkspaceLoader(temporary);
     try {
       mkdirSync(join(temporary, 'data'));
       cpSync(join(root, 'data'), join(temporary, 'data'), {recursive: true});
@@ -264,6 +264,8 @@ describe('lenses package registration', () => {
       const output = execFileSync(
         process.execPath,
         [
+          '--import',
+          workspaceLoader,
           '--input-type=module',
           '-e',
           `import {listLensUserInputRoles} from ${JSON.stringify(pathToFileURL(join(temporary, 'user-input.mjs')).href)};
@@ -287,6 +289,7 @@ describe('lenses package registration', () => {
   ] as const)('loads every embedded dataset through production %s emission', async format => {
     const root = join(REPOSITORY_ROOT, 'modules/lenses/src/computation-lenses');
     const temporary = mkdtempSync(join(tmpdir(), 'lens-emission-'));
+    const workspaceLoader = writeNativeWorkspaceLoader(temporary);
     try {
       cpSync(join(root, 'data'), join(temporary, 'data'), {recursive: true});
       writeFileSync(join(temporary, 'package.json'), '{"type":"module"}');
@@ -318,6 +321,8 @@ describe('lenses package registration', () => {
       const output = execFileSync(
         process.execPath,
         [
+          '--import',
+          workspaceLoader,
           '-e',
           `
         (async () => {

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.huff-trade-areas: tractsVertices, tractsFeatureO…",
   "description": "Result of gpu-spatial-analysis.huff-trade-areas: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffs…",
-  "llms": "Result of gpu-spatial-analysis.huff-trade-areas: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, attractiveness, population → parkOverflow\n\n- rows: 1\n- input tractsVertices: 2323 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input parksVertices: 1431 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- input attractiveness: 102 rows\n- input population: 199 rows\n- Coordinate model unknown: drawn as planar x, y.\n- tracts: 1 of 199 polygons shown; evenly sampled features and vertices\n- parks: 1 of 102 polygons shown; evenly sampled features and vertices\n- resultTracts: 1 of 199 polygons shown; evenly sampled features and vertices\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.huff-trade-areas: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, attractiveness, population → parkOverflow\n\n- rows: 1\n- input tractsVertices: 2323 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input parksVertices: 1431 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- input attractiveness: 102 rows\n- input population: 199 rows\n- Coordinate model unknown: drawn as planar x, y.\n- tracts: 1 of 199 polygons shown; evenly sampled features and vertices\n- parks: 1 of 102 polygons shown; evenly sampled features and vertices\n- resultTracts: 1 of 199 polygons shown; evenly sampled features and vertices\n- 54 categories; 5 largest coloured\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "1"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:42.877Z",
-    "runId": "run-20432e9a",
+    "date": "2026-11-20T23:49:53.198Z",
+    "runId": "run-1e0f4682",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-20432e9a",
+    "runId": "run-1e0f4682",
     "rung": "result",
     "bindings": {},
     "clauses": [],

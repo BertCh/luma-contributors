@@ -36,7 +36,10 @@ export {GPUCanonicalGeometryEquality} from './gpu-canonical-geometry-equality';
 export type {GPUCanonicalGeometryEqualityProps} from './gpu-canonical-geometry-equality';
 export {GPUVectorStraightSkeleton} from './gpu-vector-straight-skeleton';
 export type {GPUVectorStraightSkeletonProps} from './gpu-vector-straight-skeleton';
-export {GPUOffsetCurveComponents} from './gpu-offset-curve-components';
+export {
+  GPUOffsetCurveComponents,
+  decodeGPUOffsetCurveComponentsStatus
+} from './gpu-offset-curve-components';
 export type {GPUOffsetCurveComponentsProps} from './gpu-offset-curve-components';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).

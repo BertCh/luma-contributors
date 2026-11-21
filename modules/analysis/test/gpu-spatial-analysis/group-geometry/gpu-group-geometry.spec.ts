@@ -31,7 +31,8 @@ import {
   createRandom,
   getOracleGroupKeys
 } from './group-geometry-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {expectGroupColumnShapes} from '../geometry-refinement/geometry-output-review-test-utils';
 
 const ORIGIN: [number, number] = [100000, 200000];
 
@@ -265,4 +266,45 @@ it('GPUGroupGeometry medoid breaks exact ties with the lowest row index and flag
   expect(actual.overflow[0]).toBe(1);
   expect(actual.bounds.slice(0, 4)).toEqual([-4, 0, 4, 3]);
   expect(actual.bounds.slice(4, 8)).toEqual([100, 50, 107, 50]);
+});
+
+it('GPUGroupGeometry matches hand-computed unequal weights and empty values', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const actual = await run(
+    device,
+    {
+      positions: Float32Array.of(100000, 200000, 100004, 200000, 100000, 200008),
+      labels: Uint32Array.of(0, 0, 0),
+      weights: Float32Array.of(1, 1, 2),
+      groupCount: 2
+    },
+    {weighted: true}
+  );
+  expectGroupColumnShapes(actual);
+  // Relative coordinates (0,0),(4,0),(0,8): mean (4/3,8/3), weighted mean
+  // ((0+4+0)/4,(0+0+16)/4)=(1,4), weight sum 4. No implementation oracle is used.
+  expect(actual.counts).toEqual([3, 0]);
+  expect(actual.bounds.slice(0, 4)).toEqual([100000, 200000, 100004, 200008]);
+  // The empty sum is zero, matching the delegated GPUGeographicDistribution contract.
+  // GPUGroupGeometry's blanket 'every float output is NaN' wording needs this exception.
+  expect(actual.weightSums).toEqual([4, 0]);
+  expect(actual.weightedCenters.slice(0, 2)).toEqual([100001, 200004]);
+  const expectedMean = [100001.3359375, 200002.671875]; // nearest f32 to the rational mean above
+  expect(actual.meanCenters.slice(0, 2)).toEqual(expectedMean);
+  // The first point has medoid cost 4+8=12, less than 4+sqrt(80) and 8+sqrt(80).
+  expect(actual.medoids).toEqual([0, GPU_GROUP_GEOMETRY_NO_MEDOID]);
+  // Weighted E[|X|^2]-|E[X]|^2 = (16+2*64)/4 - (1+16) = 19.
+  expect(Number.isFinite(actual.standardDistances[0])).toBe(true);
+  expect(actual.standardDistances[0]).toBeCloseTo(Math.sqrt(19), 4);
+  for (const values of [
+    actual.bounds.slice(4, 8),
+    actual.meanCenters.slice(2, 4),
+    actual.weightedCenters.slice(2, 4),
+    actual.ellipses.slice(3, 6),
+    actual.standardDistances.slice(1, 2)
+  ]) {
+    values.forEach(value => expect(value).toBeNaN());
+  }
+  expect(actual.overflow).toEqual([0]);
 });

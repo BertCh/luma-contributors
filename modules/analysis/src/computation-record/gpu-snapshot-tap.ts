@@ -43,6 +43,11 @@ export type GPUSnapshotTapProps = {
  * graph hooks. Add each tap right after the node it observes, because resource hazards follow
  * authoring order. Taps end compute-pass coalescing (an observer effect), so list the tap count in
  * the record's `GPUComputationEncodingFlags.taps`. Call `arena.read()` after the encoding is submitted.
+ * For cancellable encodings, take `arena.checkpoint()` before encoding and call `arena.discard(token)`
+ * when abandoning the encoder permanently. Call `arena.markSubmitted()` immediately before submitting
+ * the contiguous encoded prefix to prevent reuse of submitted or in-flight frame numbers. If later
+ * encoders already have reservations, pass a checkpoint taken at the submitted prefix's end to
+ * `arena.markSubmitted(checkpoint)`. Neither submission nor discard may split one encoder's frames.
  */
 export class GPUSnapshotTap implements GPUCommandNodeProducer<any> {
   readonly props: GPUSnapshotTapProps;

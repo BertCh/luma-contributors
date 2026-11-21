@@ -2,12 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {measureBuildingStructures, type GPUBuildingStructureGeometry} from './building-structures';
+import {captureUrbanLandscapeDestinations} from '../landscape-ecology/urban-landscape-destinations';
+import {
+  measureBuildingStructures,
+  validateBuildingStructures,
+  type GPUBuildingStructureGeometry
+} from './building-structures';
+import {validateProvidedRecipeViews} from '../landscape-ecology/urban-landscape-recipe-validation';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPUSharedPathsOutput} from '../line-clip/gpu-shared-paths';
+import type {GPUCompletenessStatusPort} from '../../analysis-core/contracts/status';
+import type {GPUPolygonOverlayOutput} from '../polygon-overlay/index';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {addPreparedRecipe} from '../recipes/prepared-recipe';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
+  validateGraphViewsBelongToGraph,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -57,6 +67,16 @@ export function addBuildingAdjacencyRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUBuildingAdjacencyProps
 ) {
+  if ('outputs' in props) {
+    validateRequirement(props.id ?? 'building-adjacency', false, 'outputs was removed; use output');
+  }
+  return addPreparedRecipe(graph, props, declareBuildingAdjacencyRecipe);
+}
+
+function declareBuildingAdjacencyRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUBuildingAdjacencyProps
+) {
   const id = props.id ?? 'building-adjacency';
   const count = props.orientations.length;
   const {runs, status} = props.sharedPaths;
@@ -77,7 +97,43 @@ export function addBuildingAdjacencyRecipe<Parameters>(
     runs.leftSourceIds.length
   );
   validateViewLength(id, 'sharedPaths.runs.offsets', runs.offsets, runs.leftSourceIds.length + 1);
-  const output = props.output;
+  const output = captureUrbanLandscapeDestinations(id, {output: props.output}, [
+    'pairs',
+    'lengths',
+    'morphology',
+    'components',
+    'complete',
+    'structurePerimeters'
+  ]);
+  // Inputs, supplied outputs and structures are otherwise checked between kernels: reject them
+  // before the first node.
+  validateGraphViewsBelongToGraph(id, graph, [
+    runs.positions,
+    runs.offsets,
+    runs.leftSourceIds,
+    runs.rightSourceIds,
+    runs.forward,
+    status.count,
+    status.overflow,
+    status.uncertainCount,
+    status.candidateOverflow,
+    status.requiredCount,
+    status.vertexCount,
+    status.requiredVertexCount,
+    props.lineBuildingIds,
+    props.orientations,
+    props.contiguity
+  ]);
+  validateProvidedRecipeViews(graph, [
+    [`${id}-run-lengths`, 'float32', runs.leftSourceIds.length, output?.lengths],
+    [`${id}-pairs`, 'float32x4', count * count, output?.pairs],
+    [`${id}-complete`, 'uint32', 1, output?.complete],
+    [`${id}-components`, 'uint32', count, output?.components],
+    [`${id}-morphology`, 'float32x4', count, output?.morphology]
+  ]);
+  if (props.structures) {
+    validateBuildingStructures(graph, id, count, props.structures, output?.structurePerimeters);
+  }
   const lengths = getRecipeView(
     graph,
     `${id}-run-lengths`,
@@ -114,11 +170,39 @@ export function addBuildingAdjacencyRecipe<Parameters>(
               }
             ]
           : []),
+        ...(
+          ['candidateOverflow', 'requiredCount', 'vertexCount', 'requiredVertexCount'] as const
+        ).flatMap(name =>
+          status[name]
+            ? [{name, view: status[name]!, type: 'u32' as const, access: 'read' as const}]
+            : []
+        ),
         {name: 'complete', view: complete, type: 'u32', access: 'read_write'}
       ],
-      body: `complete[completeOffset]=u32(count[countOffset]<=${runs.leftSourceIds.length}u${status.overflow ? '&&overflow[overflowOffset]==0u' : ''}${status.uncertainCount ? '&&uncertain[uncertainOffset]==0u' : ''});`
+      body: `complete[completeOffset]=u32(count[countOffset]<=${runs.leftSourceIds.length}u${status.overflow ? '&&overflow[overflowOffset]==0u' : ''}${status.uncertainCount ? '&&uncertain[uncertainOffset]==0u' : ''}${status.candidateOverflow ? '&&candidateOverflow[candidateOverflowOffset]==0u' : ''}${status.requiredCount ? '&&requiredCount[requiredCountOffset]<=count[countOffset]' : ''}${status.vertexCount ? `&&vertexCount[vertexCountOffset]<=${runs.positions.length}u` : ''}${status.requiredVertexCount ? `&&requiredVertexCount[requiredVertexCountOffset]<=${status.vertexCount ? 'vertexCount[vertexCountOffset]' : `${runs.positions.length}u`}` : ''});`
     })
   );
+  // Without the producer's aggregate loss word, count alone only describes fitting runs.
+  // Keep the input optional, but publish an uncertified result instead of proving completeness.
+  if (
+    !status.overflow &&
+    !(
+      status.requiredCount &&
+      status.vertexCount &&
+      status.requiredVertexCount &&
+      status.candidateOverflow &&
+      status.uncertainCount
+    )
+  )
+    graph.add(
+      createRecipeKernelNode(graph, {
+        id: `${id}-uncertified-shared-paths`,
+        operation: id,
+        invocationCount: 1,
+        bindings: [{name: 'certificate', view: complete, type: 'u32', access: 'read_write'}],
+        body: 'certificate[certificateOffset]=0u;'
+      })
+    );
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-measure-paths`,
@@ -225,7 +309,10 @@ for(var vertex=0u;vertex<${count}u;vertex++){
 }`
     })
   );
-  const structures = props.structures
+  // Named so the emitted declaration references the imported type, not an extensionless path.
+  const structures:
+    | {perimeters: GraphDataView<'float32'>; overlays: GPUPolygonOverlayOutput[]}
+    | undefined = props.structures
     ? measureBuildingStructures(
         graph,
         id,
@@ -264,10 +351,14 @@ fn cardinal(angle:f32)->f32{let quadrant=angle-1.5707963267948966*floor(angle/1.
       body: `let orientation=orientations[orientationsOffset+index];let own=cardinal(orientation);var sharedLength=0.0;var sum=0.0;var neighborCount=0.0;var neighborhoodValid=neighbors[neighborsOffset+index*${count}u+index]!=0xffffffffu;var valid=complete[completeOffset]!=0u&&isFiniteValue(orientation)&&neighborhoodValid;for(var other=0u;other<${count}u;other++){sharedLength+=pairs[pairsOffset+4u*(index*${count}u+other)];if(neighbors[neighborsOffset+index*${count}u+other]==1u){let angle=orientations[orientationsOffset+other];valid=valid&&isFiniteValue(angle);sum+=abs(own-cardinal(angle));neighborCount+=1.0;}}let missing=bitcast<f32>(0x7fc00000u | (index & 0u));output[outputOffset+4u*index]=select(missing,sharedLength,complete[completeOffset]!=0u);output[outputOffset+4u*index+1u]=select(missing,own,isFiniteValue(orientation));output[outputOffset+4u*index+2u]=select(missing,sum/max(1.0,neighborCount),valid);output[outputOffset+4u*index+3u]=${structures ? 'select(missing,perimeters[perimetersOffset+index],complete[completeOffset]!=0u&&neighborhoodValid)' : 'missing'};`
     })
   );
+  /** Certifies the supplied shared-path runs, including their vertex and candidate coverage. */
+  const sharedPathStatus: GPUCompletenessStatusPort & {complete: GraphDataView<'uint32'>} = {
+    complete
+  };
   return {
     outputs: {pairs, lengths, morphology, components},
     structures,
-    status: {complete},
+    status: sharedPathStatus,
     provenance: {
       sharedPaths: props.sharedPaths,
       lineBuildingIds: props.lineBuildingIds,

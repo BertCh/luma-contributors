@@ -103,7 +103,7 @@ async function runNeighbors(
         positions: input('positions', Float32Array.from(vertices.flat()), 'float32x2'),
         lineOffsets: input('line-offsets', Uint32Array.from(lineOffsets), 'uint32')
       },
-      k: options.k,
+      neighborCount: options.k,
       radius: maxDistance?.importToGraph(graph),
       output: {
         neighborIds: importGraphBuffer(graph, 'ids', ids, 'uint32', slots),

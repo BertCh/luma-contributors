@@ -112,7 +112,15 @@ import {
 import {type GPUSpatialJoinGeometry, type GPUSpatialJoinOnAttribute} from './spatial-join-types';
 import type {GPUCompactPairPort} from '../../analysis-core/contracts/index';
 import {
-  getDefaultSpatialJoinCandidateCapacity,
+  resolveSpatialPredicateCandidateCapacity,
+  getSpatialPredicateCandidatePagePlan,
+  getSpatialPredicateScratchByteLengths
+} from './spatial-predicate-capacity-plan';
+import {
+  addSpatialPredicateUnmatchedNodes,
+  type SpatialPredicateUnmatchedContext
+} from './spatial-predicate-unmatched';
+import {
   getGPUSpatialJoinCapacityPlan,
   type GPUSpatialJoinCapacityPlan
 } from './spatial-join-capacity-plan';
@@ -141,9 +149,29 @@ import {
 } from './spatial-join-construction-snapshot';
 
 const OPERATION = 'GPUSpatialPredicateJoin';
+// Diagnostic contributor IDs may be reused by replacements before either producer is added.
+let predicateOutputAllocation = 0;
 
-/** Preserve the signed-compatible global cutoff below the saturated uint32 requirement sentinel. */
-const GPU_SPATIAL_PREDICATE_JOIN_MAXIMUM_CANDIDATES = 0x7ffffffe;
+import {
+  createSpatialJoinLiveInputNodes,
+  createSpatialJoinLiveTruncationNode,
+  createSpatialJoinLiveRingOffsets,
+  validateSpatialJoinLeftInput,
+  type GPUSpatialJoinLeftStatus
+} from './spatial-join-live-input';
+export type {GPUSpatialJoinLeftStatus} from './spatial-join-live-input';
+import {
+  getGPUSpatialPredicateJoinExecutionPlan,
+  validateSpatialPredicateRelateOutput
+} from './spatial-predicate-route-plan';
+export {
+  SPATIAL_JOIN_RELATE_ENGINE_MINIMUM_VERTEX_PRODUCT,
+  getGPUSpatialPredicateJoinExecutionPlan,
+  GPU_SPATIAL_PREDICATE_JOIN_PLANNER,
+  GPU_SPATIAL_PREDICATE_JOIN_ROUTES
+} from './spatial-predicate-route-plan';
+export type {GPUSpatialPredicateJoinRouteShape} from './spatial-predicate-route-plan';
+
 /** Numeric distances are emitted as f32 WGSL literals, which cannot represent larger finite values. */
 const GPU_SPATIAL_PREDICATE_JOIN_MAXIMUM_DISTANCE = 3.4028234663852886e38;
 
@@ -196,32 +224,9 @@ const RELATE_PREDICATES: readonly SpatialPredicateName[] = [
   'relate'
 ];
 
-/**
- * Product of the average vertex counts per feature from which `engine: 'auto'` evaluates
- * `intersects`, `contains` and `within` with the relate engine. Measured crossover: about 32 by 32
- * vertices (see the spatial relate benchmark).
- */
-export const SPATIAL_JOIN_RELATE_ENGINE_MINIMUM_VERTEX_PRODUCT = 1024;
-
 /** Whether a `distance` or `pattern` prop is a graph view (per-frame) rather than a plain value. */
 function isGraphView<View extends GraphDataView>(value: unknown): value is View {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Average vertices per feature of a non-point geometry. */
-function getAverageVertexCount(geometry: GPUSpatialJoinGeometry): number {
-  return geometry.positions.length / Math.max(getSpatialJoinFeatureCount(geometry), 1);
-}
-
-/** Whether `engine: 'auto'` picks the relate engine for a legacy predicate on these sides. */
-function prefersRelateEngine(left: GPUSpatialJoinGeometry, right: GPUSpatialJoinGeometry): boolean {
-  if (left.kind === 'points' || right.kind === 'points') {
-    return false;
-  }
-  return (
-    getAverageVertexCount(left) * getAverageVertexCount(right) >=
-    SPATIAL_JOIN_RELATE_ENGINE_MINIMUM_VERTEX_PRODUCT
-  );
 }
 
 /** Caller-owned outputs of {@link GPUSpatialPredicateJoin}. */
@@ -236,7 +241,7 @@ export type GPUSpatialPredicateJoinOutput = {
    * `status.candidateOverflow`.
    */
   candidateTruncated?: GraphDataView<'uint32'>;
-  /** Compact left rows without a match, ascending. Required for, and only for, `how: 'anti'`. */
+  /** Compact left rows without a match, ascending. Required for `how: 'anti'`; optional with inner pairs/weights. Computed before final pair truncation; unknown rows are excluded. Any uncertified classification conservatively withholds every unmatched row; request uncertainCount to distinguish this case. */
   unmatched?: GPUCompactOutput;
   /** Matched pairs sorted by `(left, right)`. With `how: 'inner'`, at least one of `pairs` and `weights` is required. */
   pairs?: GPUCompactPairPort;
@@ -259,8 +264,16 @@ export type GPUSpatialPredicateJoinOutput = {
    * Longitude/latitude with `metric: 'none'` cannot produce distances.
    * Pass the contributor's outputWeights to consumers: it always carries overflow and
    * candidateOverflow, allocating graph-owned scalar views when the caller omitted them.
+   * The optional status map accepts only count, requiredCount, overflow, candidateOverflow and
+   * uncertainCount. Other captured bounded-result and join-status diagnostics are rejected at
+   * construction; unrelated metadata keys are omitted from the captured status.
    */
-  weights?: GPUSpatialWeights;
+  weights?: Omit<GPUSpatialWeights, 'status'> & {
+    status?: Pick<
+      NonNullable<GPUSpatialWeights['status']>,
+      'count' | 'requiredCount' | 'overflow' | 'candidateOverflow' | 'uncertainCount'
+    >;
+  };
   /**
    * Completeness scalars. Optional `antimeridianUncertainCount` counts unprepared crossing rings;
    * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
@@ -273,7 +286,8 @@ export type GPUSpatialPredicateJoinOutput = {
       /**
        * Optional one-row count of left rows that lost candidates to `candidateCapacity` or to a
        * BVH overflow (the rows flagged in `output.candidateTruncated`; every left row after a BVH
-       * overflow). Non-zero exactly when `candidateOverflow` is 1. With `how: 'anti'` these rows
+       * overflow), restricted to leftFeatureCount when supplied. Nonzero implies candidate loss;
+       * aggregate loss may still be set for an empty live prefix. With `how: 'anti'` these rows
        * are unknown, so they are kept out of `output.unmatched`.
        */
       candidateTruncatedCount?: GraphDataView<'uint32'>;
@@ -295,8 +309,7 @@ export type GPUSpatialPredicateJoinOutput = {
        * ({@link GPU_SPATIAL_RELATE_UNCERTAIN_BIT}) of a matched pair's value is set when that pair was
        * uncertain (a matched pair only; an uncertain pair that did not match is counted but has no
        * row). Eight-binding scalar kernels retain the diagnostic in candidate flags and count it
-       * in a subsequent pass. Not tracked, so reported as 0: the workgroup `dwithin` kernel
-       * (`engine: 'relate'`).
+       * in a subsequent pass, including cooperative `dwithin` (`engine: 'relate'`).
        */
       uncertainCount?: GraphDataView<'uint32'>;
     };
@@ -316,6 +329,10 @@ export type GPUSpatialPredicateJoinProps<Parameters = unknown> = {
   id?: string;
   /** Left features. Output rows (and CSR rows of `weights`) are left features. */
   left: GPUSpatialJoinGeometry;
+  /** Resident live left feature count, bounded by the left geometry capacity. Spare slots are ignored. */
+  leftFeatureCount?: GraphDataView<'uint32'>;
+  /** Upstream loss propagates as candidate loss; unknown rows are never reported unmatched. */
+  leftStatus?: GPUSpatialJoinLeftStatus;
   /** Right features, indexed by a BVH. Prefer the side with more features or larger extent. */
   right: GPUSpatialJoinGeometry;
   /**
@@ -451,8 +468,10 @@ export type GPUSpatialPredicateJoinProps<Parameters = unknown> = {
   /** Power-of-two BVH leaf slots over `right`. Defaults to the next power of two of its feature count. */
   leafCapacity?: number;
   /**
-   * A prepared (static) right-hand side over the same views as `right`: its BVH is reused across
-   * encodings until the handle is invalidated, instead of being rebuilt every encoding. The handle
+   * A prepared (static) right-hand side over the same views as `right`: its retained geometry
+   * changes only when invalidated. Public BVH builds replay on that snapshot each encoding.
+   * Exact refinement reads the same retained coordinates and offsets as the bounds. Source IDs
+   * remain live caller data. The handle
    * must be added to the graph before the join. Spatially sorted candidates are restored to source
    * row order before refinement. Its `leafCapacity` wins over this join's.
    */
@@ -528,14 +547,18 @@ type SpatialPredicateJoinViews = Omit<GPUSpatialPredicateJoinProps<never>, 'outp
  * `dwithin` keep their short-circuiting kernels (an `intersects` test stops at the first shared
  * point, where the matrix needs every part located) and are routed through the matrix only when
  * `relate` output is requested; the test suite checks both paths agree. `covers`, `coveredBy`,
- * `touches`, `crosses`, `overlaps`, `equals`, `containsProperly` and `relate` always use the matrix.
+ * `touches`, `crosses`, `overlaps`, `equals`, `containsProperly` and `relate` use the matrix.
+ * Multipart `coveredBy` retains its fast coverage route unless the matrix route is requested.
  *
- * Multipart point/line operands support intersects, within and coveredBy through the fast route,
- * with any-part intersection, all-part coverage and at least one interior intersection for within.
- * Other multipart predicates and DE-9IM output are refused until their reductions are implemented.
+ * Multipart point/line operands support every predicate and the relate output. A feature has one
+ * matrix: line endpoints use the mod-2 boundary and exterior cells test coverage by the union of
+ * all parts, using exact supplied-coordinate interval merging for line coverage. Polygon
+ * featureOffsets already group all polygon rings and use the same whole-feature classification.
  *
  * Single-point/polygon pairs use the robust double-single classifier `GPUPairwisePointInPolygon` for the
- * point location in every predicate. Every other combination uses exact orientation signs in both
+ * point location in every predicate, except resident live-left polygon prefixes: those may retain
+ * unused allocated tails and use the feature-bounded exact kernels instead of compact global
+ * offset validation. Every other combination uses exact orientation signs in both
  * the short-circuiting kernels and the relate engine (`orientSign`, an f32 filter with an exact
  * 256-bit integer fallback, one inlined call per kernel), so `engine: 'fast'`, `'relate'` and the
  * `'auto'` choice agree on shared-edge and collinear configurations. The exactness is with respect
@@ -549,9 +572,14 @@ type SpatialPredicateJoinViews = Omit<GPUSpatialPredicateJoinProps<never>, 'outp
  * `pairs`. Only bounding-box candidates are enumerated, so pairs that do not intersect never appear.
  *
  * **Anti joins.** `how: 'anti'` emits the left rows with no match into `output.unmatched`.
+ * Supply `output.unmatched.status.candidateOverflow` unless `candidateCapacity` covers the product
+ * of allocated left and right feature counts, the BVH has at least one leaf slot per right feature,
+ * and there are no live left count or completeness views.
  *
  * **Static right-hand side.** Pass a {@link GPUSpatialJoinPrepared} handle as `prepared` to reuse the
- * right-hand BVH across encodings.
+ * right-hand BVH storage across encodings. Bounds and exact refinement read the same retained
+ * positions and full offset hierarchy until an invalidated generation executes. Source-ID mapping
+ * remains live, and left/query inputs are evaluated for every encoding.
  *
  * Weights output: a join is a cross spatial-weights matrix (rows are left features, neighbors are
  * right rows, ascending), so `output.weights` writes the CSR directly from the sorted pairs. For a
@@ -568,9 +596,13 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSpatialPredicateJoinProps<FrameParameters>;
+  /** Compact pairs with candidate loss attached, including private or prepared BVH loss. */
+  readonly outputPairs?: GPUCompactPairPort & {
+    status: GPUCompactPairPort['status'] & {candidateOverflow: GraphDataView<'uint32'>};
+  };
   /** CSR result with both completeness signals attached. Pass this port to statistics. */
-  readonly outputWeights?: GPUSpatialWeights & {
-    status: NonNullable<GPUSpatialWeights['status']> & {
+  readonly outputWeights?: Omit<GPUSpatialWeights, 'status'> & {
+    status: NonNullable<NonNullable<GPUSpatialPredicateJoinOutput['weights']>['status']> & {
       overflow: GraphDataView<'uint32'>;
       candidateOverflow: GraphDataView<'uint32'>;
     };
@@ -587,6 +619,7 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
   readonly candidateCapacity: number;
   /** Bounded candidate scratch shared by ordered pages. */
   readonly candidatePages: ReturnType<typeof planSpatialJoinCandidatePages>;
+  private readonly usesRobustPointPolygon: boolean;
   /** Conservative page and primitive command budget. */
   readonly estimatedCommandNodeCount: number;
   /** Matched pair capacity. Zero for `how: 'anti'`. */
@@ -610,11 +643,14 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
   private readonly patternView: GraphDataView<'uint32'> | undefined;
   /** Per-frame `dwithin` distance row, or undefined when the distance is compile-time. */
   private readonly distanceView: GraphDataView<'float32'> | undefined;
+  private readonly graphOwnedStatusCount: number;
 
   constructor(props: GPUSpatialPredicateJoinProps<FrameParameters>) {
     const snapshot = snapshotConstructionFields(props, [
       'id',
       'left',
+      'leftFeatureCount',
+      'leftStatus',
       'right',
       'predicate',
       'engine',
@@ -645,6 +681,15 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
     props = Object.freeze({
       ...snapshot,
       left: snapshotJoinGeometry(snapshot.left),
+      ...(snapshot.leftStatus
+        ? {
+            leftStatus: snapshotConstructionFields(snapshot.leftStatus, [
+              'overflow',
+              'candidateOverflow',
+              'complete'
+            ])
+          }
+        : {}),
       right: snapshotJoinGeometry(snapshot.right),
       ...(snapshot.spatialContext
         ? {spatialContext: snapshotConstructionSpatialContext(snapshot.spatialContext)}
@@ -676,21 +721,23 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
     };
     this.views = views;
     const {id} = this;
-    const multipart = isMultipartJoinGeometry(views.left) || isMultipartJoinGeometry(views.right);
-    const supportsMultipart =
-      ['intersects', 'within', 'coveredBy'].includes(views.predicate) &&
-      views.relate === undefined &&
-      views.engine !== 'relate';
-    if (multipart)
+    const weightsStatus = views.weights?.status as GPUSpatialWeights['status'];
+    for (const [name, destination] of Object.entries(weightsStatus ?? {})) {
       validateRequirement(
         id,
-        supportsMultipart,
-        'featureOffsets multipart joins support intersects, within and coveredBy with engine auto/fast and no relate output; the requested predicate or route is unsupported'
+        destination === undefined ||
+          ['count', 'requiredCount', 'overflow', 'candidateOverflow', 'uncertainCount'].includes(
+            name
+          ),
+        `output.weights.status.${name} is unsupported because this join publishes only count, requiredCount, overflow, candidateOverflow and uncertainCount; omit ${name} and use those result diagnostics`
       );
-    validateSpatialJoinGeometry(id, 'left', views.left, {allowMultipart: supportsMultipart});
-    validateSpatialJoinGeometry(id, 'right', views.right, {allowMultipart: supportsMultipart});
+    }
+    const multipart = isMultipartJoinGeometry(views.left) || isMultipartJoinGeometry(views.right);
+    validateSpatialJoinGeometry(id, 'left', views.left, {allowMultipart: true});
+    validateSpatialJoinGeometry(id, 'right', views.right, {allowMultipart: true});
     this.leftCount = getSpatialJoinFeatureCount(views.left);
     this.rightCount = getSpatialJoinFeatureCount(views.right);
+    validateSpatialJoinLeftInput(id, views.leftFeatureCount, views.leftStatus);
     const {predicate} = views;
     const isLegacy =
       (LEGACY_PREDICATES as readonly string[]).includes(predicate) ||
@@ -719,7 +766,9 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
         );
       }
     } else if (!isLegacy && !(RELATE_PREDICATES as readonly string[]).includes(predicate)) {
-      throw new Error(`${id} unknown predicate ${String(predicate)}`);
+      throw new Error(
+        `${id} predicate must be ${[...LEGACY_PREDICATES, ...RELATE_PREDICATES].join(', ')}; received ${String(predicate)}`
+      );
     }
     const context = resolveGPUSpatialContext(
       id,
@@ -770,7 +819,7 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
     }
     this.how = views.how ?? 'inner';
     if (this.how !== 'inner' && this.how !== 'anti') {
-      throw new Error(`${id} unknown how ${String(this.how)}`);
+      throw new Error(`${id} how must be inner or anti; received ${String(this.how)}`);
     }
     if (predicate === 'relate') {
       if (views.pattern === undefined) {
@@ -779,12 +828,10 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
     } else if (views.pattern !== undefined) {
       throw new Error(`${id} pattern requires predicate 'relate'`);
     }
-    if (views.relate && predicate === 'dwithin') {
-      throw new Error(`${id} relate output is not available for dwithin`);
-    }
+    validateSpatialPredicateRelateOutput(id, predicate, views.relate !== undefined);
     const engine = views.engine ?? 'auto';
     if (engine !== 'auto' && engine !== 'fast' && engine !== 'relate') {
-      throw new Error(`${id} unknown engine ${String(engine)}`);
+      throw new Error(`${id} engine must be auto, fast or relate; received ${String(engine)}`);
     }
     if (engine === 'fast' && !isLegacy) {
       throw new Error(`${id} engine 'fast' needs intersects, contains, within or dwithin`);
@@ -792,13 +839,24 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
     if (this.sphereRadius !== undefined && engine === 'relate') {
       throw new Error(`${id} engine 'relate' is not available for great-circle dwithin`);
     }
-    const prefersWorkgroups =
-      !multipart &&
-      (engine === 'relate' || (engine === 'auto' && prefersRelateEngine(views.left, views.right)));
-    this.usesRelateEngine =
-      !isLegacy || views.relate !== undefined || (predicate !== 'dwithin' && prefersWorkgroups);
-    this.usesWorkgroupDistance =
-      predicate === 'dwithin' && prefersWorkgroups && this.sphereRadius === undefined;
+    const route = getGPUSpatialPredicateJoinExecutionPlan(
+      {
+        predicate,
+        engine,
+        leftKind: views.left.kind,
+        rightKind: views.right.kind,
+        leftCount: this.leftCount,
+        rightCount: this.rightCount,
+        leftVertexCount: views.left.positions.length,
+        rightVertexCount: views.right.positions.length,
+        multipart,
+        outputRelate: views.relate !== undefined,
+        greatCircle: this.sphereRadius !== undefined
+      },
+      id
+    );
+    this.usesRelateEngine = route.usesRelateEngine;
+    this.usesWorkgroupDistance = route.usesWorkgroupDistance;
     if (this.patternView) {
       const words = this.patternView;
       validateSinglePackedView(words, ['uint32'], `${id} pattern`);
@@ -830,23 +888,24 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
     } else {
       this.relatePatterns = [];
     }
-    this.candidateCapacity =
-      views.candidateCapacity ??
-      getDefaultSpatialJoinCandidateCapacity(this.leftCount, this.rightCount);
-    // Candidate pairs are stored as two words each in a uint32-addressed buffer.
-    validateCapacity(
+    this.candidateCapacity = resolveSpatialPredicateCandidateCapacity(
       id,
-      'candidateCapacity',
-      this.candidateCapacity,
-      1,
-      GPU_SPATIAL_PREDICATE_JOIN_MAXIMUM_CANDIDATES
+      this.leftCount,
+      this.rightCount,
+      views.candidateCapacity
     );
     // Cooperative kernels launch one workgroup per candidate slot, and their invocation index is
     // a u32, so the lane product must stay below 2^32 (the dispatch itself is by live count).
     const isPointPolygonPair =
+      !multipart &&
       predicate !== 'dwithin' &&
+      // The public pairwise classifier requires compact global terminal coverage. A live
+      // polygon prefix can retain unused allocated vertex/ring tails, so classify that route
+      // through the existing feature-bounded exact predicate/relate kernels instead.
+      !(views.left.kind === 'polygons' && views.leftFeatureCount) &&
       ((views.left.kind === 'points' && views.right.kind === 'polygons') ||
         (views.left.kind === 'polygons' && views.right.kind === 'points'));
+    this.usesRobustPointPolygon = isPointPolygonPair;
     const cooperativeLaneCount = this.usesWorkgroupDistance
       ? SPATIAL_DWITHIN_WORKGROUP_SIZE
       : this.usesRelateEngine && !isPointPolygonPair
@@ -870,11 +929,21 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
         throw new Error(`${id} how 'anti' writes only output.unmatched`);
       }
       validateCompactOutput(id, views.unmatched);
+      const maximumCandidateCount = this.leftCount * this.rightCount;
+      validateRequirement(
+        id,
+        Boolean(views.unmatched.status.candidateOverflow) ||
+          (this.candidateCapacity >= maximumCandidateCount &&
+            this.leafCapacity >= this.rightCount &&
+            !views.leftFeatureCount &&
+            !views.leftStatus?.overflow &&
+            !views.leftStatus?.candidateOverflow &&
+            !views.leftStatus?.complete),
+        `how 'anti' can lose candidates. Add output.unmatched.status.candidateOverflow unless candidateCapacity (${this.candidateCapacity}) covers all ${maximumCandidateCount} potential feature pairs, leafCapacity (${this.leafCapacity}) covers all ${this.rightCount} right features and there are no live left count or completeness views.`
+      );
       this.pairCapacity = 0;
     } else {
-      if (views.unmatched) {
-        throw new Error(`${id} output.unmatched needs how 'anti'`);
-      }
+      if (views.unmatched) validateCompactOutput(id, views.unmatched);
       if (!views.pairs && !views.weights) {
         throw new Error(`${id} needs output.pairs or output.weights`);
       }
@@ -953,27 +1022,22 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
       1,
       SPATIAL_JOIN_MAXIMUM_INDEX
     );
-    this.candidatePages = planSpatialJoinCandidatePages(
+    this.candidatePages = getSpatialPredicateCandidatePagePlan(
       (views.left.positions.buffer.graph as GPUCommandGraph).device,
       id,
       this.candidateCapacity,
       props.candidateTileCapacity,
-      isPointPolygonPair ? 16 : 8,
-      isPointPolygonPair ? 8 : this.distanceView ? 8 : 0,
-      1,
+      isPointPolygonPair,
+      Boolean(this.distanceView),
       cooperativeLaneCount
-    );
-    validateCapacity(
-      id,
-      'candidate tile invocations',
-      this.candidatePages.capacity * cooperativeLaneCount
     );
     this.estimatedCommandNodeCount = this.candidatePages.estimatedCommandNodeCount;
     const scalarOutputs = this.getScalarOutputs().filter(
       ([name, view]) =>
         view !== undefined ||
         Boolean(
-          views.weights && (name === 'weightsOverflow' || name === 'weightsCandidateOverflow')
+          (views.weights && (name === 'weightsOverflow' || name === 'weightsCandidateOverflow')) ||
+            (views.pairs && name === 'pairsCandidateOverflow')
         )
     );
     const scalarGroups = [];
@@ -1008,6 +1072,28 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
         ],
         scalarOutputs.map(([, view]) => view)
       );
+    this.graphOwnedStatusCount =
+      Number(Boolean(views.pairs && !views.pairs.status.candidateOverflow)) +
+      Number(Boolean(views.weights && !views.weights.status?.overflow)) +
+      Number(Boolean(views.weights && !views.weights.status?.candidateOverflow));
+    if (views.pairs) {
+      const graph = views.left.positions.buffer.graph as GPUCommandGraph;
+      this.outputPairs = Object.freeze({
+        ...views.pairs,
+        status: Object.freeze({
+          ...views.pairs.status,
+          candidateOverflow:
+            views.pairs.status.candidateOverflow ??
+            createTransientView(
+              graph,
+              `${id}-pairs-candidate-overflow-${predicateOutputAllocation++}`,
+              'uint32',
+              1
+            )
+        })
+      });
+      views.pairs = this.outputPairs;
+    }
     if (views.weights) {
       const graph = views.left.positions.buffer.graph as GPUCommandGraph;
       const weights = views.weights;
@@ -1015,10 +1101,20 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
         ...(weights.status ? snapshotJoinStatus(weights.status) : {}),
         overflow:
           weights.status?.overflow ??
-          createTransientView(graph, `${id}-weights-overflow`, 'uint32', 1),
+          createTransientView(
+            graph,
+            `${id}-weights-overflow-${predicateOutputAllocation++}`,
+            'uint32',
+            1
+          ),
         candidateOverflow:
           weights.status?.candidateOverflow ??
-          createTransientView(graph, `${id}-weights-candidate-overflow`, 'uint32', 1)
+          createTransientView(
+            graph,
+            `${id}-weights-candidate-overflow-${predicateOutputAllocation++}`,
+            'uint32',
+            1
+          )
       };
       this.outputWeights = Object.freeze({...weights, status: Object.freeze(status)});
       views.weights = this.outputWeights;
@@ -1054,6 +1150,8 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
   private getInputViews(): GraphDataView[] {
     return [
       ...getSpatialJoinGeometryViews(this.views.left),
+      ...(this.views.leftFeatureCount ? [this.views.leftFeatureCount] : []),
+      ...Object.values(this.views.leftStatus ?? {}),
       ...getSpatialJoinGeometryViews(this.views.right),
       ...Object.values(
         this.views.prepared?.isDeclaredIn(this.views.left.positions.buffer.graph)
@@ -1124,8 +1222,10 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
       leftKind: views.left.kind,
       rightKind: views.right.kind,
       relate: this.usesRelateEngine,
+      robustPointPolygon: this.usesRobustPointPolygon,
       leafCapacity: this.leafCapacity,
       candidateTileCapacity: this.candidatePages.capacity,
+      graphOwnedStatusCount: this.graphOwnedStatusCount,
       observedCandidateCount: observation.candidateCount,
       observedRequiredCount: observation.requiredCount
     });
@@ -1141,11 +1241,14 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, views, leftCount, rightCount, candidateCapacity, pairCapacity, how} = this;
-    const {left, right, predicate, pairs, weights, prepared, unmatched, relate} = views;
+    const {left, predicate, pairs, weights, prepared, unmatched, relate} = views;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     if (prepared && !prepared.isDeclaredIn(graph)) {
       throw new Error(`${id} requires prepared to be added to the graph first`);
     }
+    const right = prepared
+      ? {...prepared.getGeometry(graph), sourceIds: views.right.sourceIds}
+      : views.right;
     // All caller bindings (including alignment prefixes) and every derived allocation are
     // checked before bounds, BVH or candidate nodes can mutate the graph. A failure is retryable.
     const boundViews = [
@@ -1153,32 +1256,29 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
       ...this.getOutputViews(),
       ...Object.values(prepared?.storage ?? {})
     ];
-    const usesRobustPointPolygon =
-      !isMultipartJoinGeometry(left) &&
-      !isMultipartJoinGeometry(right) &&
-      predicate !== 'dwithin' &&
-      ((left.kind === 'points' && right.kind === 'polygons') ||
-        (left.kind === 'polygons' && right.kind === 'points'));
+    const usesRobustPointPolygon = this.usesRobustPointPolygon;
     const tileCapacity = this.candidatePages.capacity;
-    const scratchBytes = {
-      state: 6 * 4,
-      'candidate dispatch': 3 * 4,
-      'candidate pairs': (tileCapacity + (this.distanceView ? 1 : 0)) * 8,
-      'candidate flags/offsets/matrices': (tileCapacity + 1) * 4,
-      // The saturated scan owns separate low/high words; no combined 8-byte row binding.
-      'candidate probe counts/offsets/scan': (leftCount + SPATIAL_JOIN_PAGE_QUERY_WORD_COUNT) * 4,
-      'left feature bounds/rings': leftCount * 8,
-      'right feature bounds/rings': prepared ? 0 : rightCount * 8,
-      'BVH node bounds/children': prepared ? 0 : (2 * this.leafCapacity - 1) * 8,
-      'BVH leaf IDs': prepared ? 0 : this.leafCapacity * 4,
-      'matched pair IDs': pairCapacity * 4,
-      'distance pairs': weights?.distances ? pairCapacity * 8 : 0,
-      'left match counts': weights || how === 'anti' ? (leftCount + 1) * 4 : 0,
-      'anti flags/offsets': how === 'anti' ? leftCount * 4 : 0,
-      'candidate truncated': how === 'anti' || views.candidateTruncatedCount ? leftCount * 4 : 0,
-      'robust pair points': usesRobustPointPolygon ? (2 * tileCapacity + 1) * 8 : 0,
-      'robust geometry offsets': usesRobustPointPolygon ? (2 * tileCapacity + 2) * 4 : 0
-    };
+    const scratchBytes = getSpatialPredicateScratchByteLengths({
+      leftCount,
+      rightCount,
+      tileCapacity,
+      pairCapacity,
+      leafCapacity: this.leafCapacity,
+      prepared: Boolean(prepared),
+      hasDistanceView: Boolean(this.distanceView),
+      hasWeightsDistances: Boolean(weights?.distances),
+      hasWeights: Boolean(weights),
+      hasUnmatched: Boolean(unmatched),
+      hasCandidateTruncatedCount: Boolean(views.candidateTruncatedCount),
+      robustPointPolygon: usesRobustPointPolygon,
+      liveGeographicRingOffsetCount:
+        left.kind === 'polygons' &&
+        views.leftFeatureCount &&
+        this.spatialContext.coordinateSpace === 'longitude-latitude' &&
+        hasLonLatPolygonStatus(views)
+          ? left.ringOffsets.length
+          : 0
+    });
     validateSpatialJoinBindings(
       graph,
       id,
@@ -1209,12 +1309,23 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
       for (const [polygonIndex, polygons] of [left, right]
         .filter(geometry => geometry.kind === 'polygons')
         .entries()) {
+        let ringOffsets = polygons.ringOffsets;
+        if (polygons === left && views.leftFeatureCount) {
+          const liveRings = createSpatialJoinLiveRingOffsets(
+            graph,
+            id,
+            polygons,
+            views.leftFeatureCount
+          );
+          nodes.push(liveRings.node);
+          ringOffsets = liveRings.ringOffsets;
+        }
         nodes.push(
           createLonLatPolygonCheckNode(graph, {
             id: `${id}-lon-lat-polygon-check-${polygonIndex}`,
             operation: OPERATION,
             positions: polygons.positions,
-            ringOffsets: polygons.ringOffsets,
+            ringOffsets,
             status: {
               antimeridianUncertainCount: views.antimeridianUncertainCount,
               poleUncertainCount: views.poleUncertainCount
@@ -1257,6 +1368,7 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
       }
       nodes.push(
         createBoundsNode<Parameters>(graph, `${id}-${side.name}-bounds`, {
+          rejectNonFiniteFeature: true,
           featureCount: side.count,
           geometry: side.geometry,
           featureRings,
@@ -1297,12 +1409,23 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
       bvhOverflow = bvh.overflow;
     }
 
+    const liveInput = createSpatialJoinLiveInputNodes(graph, id, {
+      capacity: leftCount,
+      count: views.leftFeatureCount,
+      status: views.leftStatus,
+      minima: leftSide.minima!,
+      maxima: leftSide.maxima!,
+      bvhOverflow
+    });
+    nodes.push(...liveInput.nodes);
+    bvhOverflow = liveInput.loss;
+
     // state: [candidate total, uncertain count, match total, unmatched total, truncated rows, live page rows]
     const state = createTransientView(graph, `${id}-state`, 'uint32', 6);
     // Left rows that lost candidates; an anti join needs them to keep unknown rows out of its output.
     const candidateTruncated =
       views.candidateTruncated ??
-      (isAnti || views.candidateTruncatedCount
+      (unmatched || views.candidateTruncatedCount
         ? createTransientView(graph, `${id}-candidate-truncated`, 'uint32', leftCount)
         : undefined);
     const pageCounts = createTransientView(graph, `${id}-page-counts`, 'uint32', leftCount);
@@ -1349,7 +1472,7 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
       ? undefined
       : (pairs?.rightRows ?? createTransientView(graph, `${id}-right-ids`, 'uint32', pairCapacity));
     const leftMatchCounts =
-      weights || isAnti
+      weights || unmatched
         ? createTransientView(graph, `${id}-left-match-counts`, 'uint32', leftCount + 1)
         : undefined;
     const matrices = this.usesRelateEngine
@@ -1548,6 +1671,15 @@ export class GPUSpatialPredicateJoin<FrameParameters = unknown> implements GPUCo
           bvhOverflow
         })
       );
+      if (pageIndex === 0 && views.leftFeatureCount && candidateTruncated)
+        nodes.push(
+          createSpatialJoinLiveTruncationNode(
+            graph,
+            this.id,
+            views.leftFeatureCount,
+            candidateTruncated
+          )
+        );
       if (pageIndex === 0 && views.candidateTruncatedCount && candidateTruncated) {
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
@@ -1839,7 +1971,8 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
   let right = candidatePairs[candidatePairsOffset + slot * 2u + 1u];
   let matched = dwithinWorkgroupPair(left, right, left != NO_FEATURE, localInvocationIndex);
   if (localInvocationIndex == 0u) {
-    flags[flagsOffset + slot] = select(0u, 1u, matched${sameRowTest});
+    flags[flagsOffset + slot] = select(0u, 1u, matched${sameRowTest}) |
+      select(0u, 2u, atomicLoad(&dwithinUncertain) != 0u);
   }`
                 }
               : {
@@ -1866,7 +1999,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
                 })
           })
         );
-        if (!this.usesWorkgroupDistance && !tracksUncertainty) {
+        if (!tracksUncertainty) {
           nodes.push(
             createWGSLKernelNode<Parameters>(graph, {
               id: `${id}-count-uncertainty`,
@@ -1886,7 +2019,7 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
         }
       }
 
-      if (isAnti && unmatched && leftMatchCounts) {
+      if (unmatched && leftMatchCounts) {
         this.addAntiNodes(graph, nodes, {
           id,
           candidateCapacity,
@@ -1899,7 +2032,8 @@ const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;`,
           candidateTruncated,
           candidateCondition: candidateDispatch.condition
         });
-      } else if (leftRows && rightRows && flagOffsets) {
+      }
+      if (leftRows && rightRows && flagOffsets) {
         // Stable compaction of flagged candidates into the (left, right) output.
         nodes.push(
           ...new GPUScan({
@@ -1980,7 +2114,7 @@ const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
         );
       }
     }
-    if (isAnti && unmatched && leftMatchCounts)
+    if (unmatched && leftMatchCounts)
       this.addAntiNodes(graph, nodes, {
         id,
         candidateCapacity: tileCapacity,
@@ -2047,7 +2181,7 @@ const PAIR_CAPACITY: u32 = ${pairCapacity}u;
 const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
             body: `let candidateTotal = state[stateOffset];
   let matchTotal = ${isAnti ? '0u' : 'state[stateOffset + 2u]'};
-  let unmatchedTotalValue = ${isAnti ? 'state[stateOffset + 3u]' : '0u'};
+  let unmatchedTotalValue = ${unmatched ? 'state[stateOffset + 3u]' : '0u'};
   let candidateIncomplete = bvhOverflow[bvhOverflowOffset] != 0u || candidateTotal > CANDIDATE_CAPACITY;
   let pairIncomplete = matchTotal > PAIR_CAPACITY;
   let unmatchedIncomplete = unmatchedTotalValue > UNMATCHED_CAPACITY;
@@ -2060,6 +2194,16 @@ const UNMATCHED_CAPACITY: u32 = ${unmatched?.ids.length ?? 0}u;`,
 
     // Optional CSR: rows are left features and pairs are already sorted by left row.
     if (weights && leftMatchCounts && leftRows && rightRows) {
+      if (unmatched)
+        nodes.push(
+          createFillNode(graph, {
+            id: `${id}-clear-csr-counts`,
+            operation: OPERATION,
+            view: leftMatchCounts,
+            type: 'u32',
+            value: '0u'
+          })
+        );
       const pairDispatch = createWGSLActiveCountDispatch(graph, {
         id: `${id}-pair-dispatch`,
         operation: OPERATION,
@@ -2311,112 +2455,12 @@ ${
   private addAntiNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
     nodes: GPUCommandNode<Parameters>[],
-    context: {
-      id: string;
-      candidateCapacity: number;
-      countOnly?: boolean;
-      finishOnly?: boolean;
-      candidatePairs: GraphDataView<'uint32x2'>;
-      flags: GraphDataView<'uint32'>;
-      leftMatchCounts: GraphDataView<'uint32'>;
-      unmatched: GPUCompactOutput;
-      state: GraphDataView<'uint32'>;
-      /** Left rows whose candidates were dropped: unknown, never reported as unmatched. */
-      candidateTruncated?: GraphDataView<'uint32'>;
-      candidateCondition?: GPUCommandGraphGPUIndirectCondition;
-    }
+    context: Omit<SpatialPredicateUnmatchedContext, 'leftCount' | 'leftFeatureCount'>
   ): void {
-    const {leftCount} = this;
-    const {id, candidateCapacity} = context;
-    const {candidatePairs, flags, leftMatchCounts, unmatched, state} = context;
-    if (!context.finishOnly)
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-count-left-matches`,
-          operation: OPERATION,
-          variant: 'count-left-matches',
-          bindings: [
-            {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
-            {name: 'flags', view: flags, type: 'u32', access: 'read'},
-            {
-              name: 'leftMatchCounts',
-              view: leftMatchCounts,
-              type: 'atomic<u32>',
-              access: 'read_write'
-            }
-          ],
-          invocationCount: candidateCapacity,
-          condition: context.candidateCondition,
-          body: `if (flags[flagsOffset + index] != 0u) {
-    atomicAdd(&leftMatchCounts[leftMatchCountsOffset + candidatePairs[candidatePairsOffset + index * 2u]], 1u);
-  }`
-        })
-      );
-    if (context.countOnly) return;
-    const unmatchedFlags = createTransientView(graph, `${id}-unmatched-flags`, 'uint32', leftCount);
-    const unmatchedOffsets = createTransientView(
-      graph,
-      `${id}-unmatched-offsets`,
-      'uint32',
-      leftCount
-    );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-unmatched-flags`,
-        operation: OPERATION,
-        variant: 'unmatched-flags',
-        bindings: [
-          {name: 'leftMatchCounts', view: leftMatchCounts, type: 'u32', access: 'read'},
-          ...(context.candidateTruncated
-            ? [
-                {
-                  name: 'candidateTruncated',
-                  view: context.candidateTruncated,
-                  type: 'u32',
-                  access: 'read'
-                } as const
-              ]
-            : []),
-          {name: 'unmatchedFlags', view: unmatchedFlags, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: leftCount,
-        // A row that lost candidates to the capacity may have a match among them, so it is unknown.
-        body: `unmatchedFlags[unmatchedFlagsOffset + index] = select(0u, 1u, leftMatchCounts[leftMatchCountsOffset + index] == 0u${
-          context.candidateTruncated
-            ? ' && candidateTruncated[candidateTruncatedOffset + index] == 0u'
-            : ''
-        });`
-      })
-    );
-    nodes.push(
-      ...new GPUScan({
-        id: `${id}-scan-unmatched`,
-        input: unmatchedFlags,
-        output: unmatchedOffsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph)
-    );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-scatter-unmatched`,
-        operation: OPERATION,
-        variant: 'scatter-unmatched',
-        bindings: [
-          {name: 'unmatchedFlags', view: unmatchedFlags, type: 'u32', access: 'read'},
-          {name: 'unmatchedOffsets', view: unmatchedOffsets, type: 'u32', access: 'read'},
-          {name: 'ids', view: unmatched.ids, type: 'u32', access: 'read_write'},
-          {name: 'state', view: state, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: leftCount,
-        declarations: `const UNMATCHED_CAPACITY: u32 = ${unmatched.ids.length}u;`,
-        body: `if (unmatchedFlags[unmatchedFlagsOffset + index] != 0u) {
-    let slot = unmatchedOffsets[unmatchedOffsetsOffset + index];
-    if (slot < UNMATCHED_CAPACITY) { ids[idsOffset + slot] = index; }
-  }
-  if (index == ${leftCount - 1}u) {
-    state[stateOffset + 3u] = unmatchedOffsets[unmatchedOffsetsOffset + index] + unmatchedFlags[unmatchedFlagsOffset + index];
-  }`
-      })
-    );
+    addSpatialPredicateUnmatchedNodes(graph, nodes, {
+      ...context,
+      leftCount: this.leftCount,
+      leftFeatureCount: this.views.leftFeatureCount
+    });
   }
 }

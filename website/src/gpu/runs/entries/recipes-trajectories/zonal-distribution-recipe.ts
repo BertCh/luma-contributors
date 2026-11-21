@@ -40,7 +40,7 @@ export default defineOperationRun({
       },
       values: pointValues.view,
       probabilities: probabilities.view,
-      outputs: {quantiles: quantiles.view}
+      output: {quantiles: quantiles.view}
     });
     return {
       outputs: {quantiles, mesh, pointPositions},

@@ -305,10 +305,10 @@ export default defineScene<SiteSuitabilityOptions>({
       label: 'Nodata in the support',
       group: 'Candidate sites (GPURasterSampling)',
       apply: 'param',
-      default: 'strict',
+      default: 'propagate',
       help: 'Strict: any nodata neighbour makes the sample NaN, so sites near water and built-up land vanish. Renormalize: weights over the valid neighbours are rescaled.',
       options: [
-        {value: 'strict', label: 'Strict (NaN near nodata)'},
+        {value: 'propagate', label: 'Strict (NaN near nodata)'},
         {value: 'renormalize', label: 'Renormalize over valid cells'}
       ]
     },

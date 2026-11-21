@@ -31,6 +31,7 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 
@@ -70,6 +71,7 @@ export function getGPUTerrainFlowFieldParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainFlowFieldParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainFlowFieldParameterValues',
     target,
@@ -155,6 +157,8 @@ export class GPUTerrainFlowField implements GPUCommandNodeProducer, GPURasterHal
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_FLOW_FIELD_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     validateSinglePackedView(output.velocities, ['float32x2'], `${id} output.velocities`);
     if (output.velocities.length !== cellCount) {
       throw new Error(`${id} output.velocities must contain one row per cell`);

@@ -22,15 +22,13 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView,
-  type GraphVectorView
+  type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLActiveCountDispatch,
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {
   GPUCompactOutput,
   GPUUint32Rows
@@ -65,7 +63,7 @@ import {
   validateDisjointOutputs,
   validateMatchingChunks
 } from './spatial-join-passes';
-import {NEAREST_NODE_WORDS} from './nearest-wgsl';
+import {NEAREST_NODE_WORDS, NEAREST_COMMON_WGSL, NEAREST_DISTANCE_RANK_WGSL} from './nearest-wgsl';
 import {validateSpatialJoinReadWriteBindings} from './spatial-join-binding-preflight';
 import type {GPUNearestFeatureSource, GPUSpatialJoinOnAttribute} from './spatial-join-types';
 import {
@@ -74,12 +72,6 @@ import {
   isMultipartJoinGeometry,
   isSameSpatialJoinGeometry
 } from './spatial-join-geometry';
-import type {
-  GPULineGeometryPort,
-  GPUMultipartGeometryPort,
-  GPUPackedGeometryPort,
-  GPUPolygonGeometryPort
-} from '../../analysis-core/contracts/index';
 import type {GPUSpatialJoinPrepared} from './gpu-spatial-join-prepared';
 import {
   getNearestEstimatedCommandNodeCount,
@@ -106,6 +98,11 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import type {Device} from '@luma.gl/core';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotJoinStatus} from './spatial-join-construction-snapshot';
 
 /** Planar or great-circle contexts suitable for distance measurements in their length unit. */
 const NEAREST_FEATURE_JOIN_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -120,7 +117,13 @@ const MAXIMUM_SHADER_FLOAT = 3.4028234663852886e38;
 /** A positive radius must remain nonzero in the shader's f32 representation. */
 const MINIMUM_SHADER_POSITIVE_FLOAT = 1.401298464324817e-45;
 
-type NearestDistanceRows = GraphDataView<'float32'> | GraphVectorView<'float32'>;
+import {
+  getNearestFeatureJoinViews,
+  getNearestFeatureJoinInputViews as getInputs,
+  getNearestFeatureJoinOutputViews as getOutputs,
+  type NearestFeatureJoinViews,
+  type NearestDistanceRows
+} from './nearest-feature-views';
 
 /** Caller-owned outputs of {@link GPUNearestFeatureJoin}. */
 export type GPUNearestFeatureJoinOutput<
@@ -128,10 +131,12 @@ export type GPUNearestFeatureJoinOutput<
   DistanceRows extends NearestDistanceRows = GraphDataView<'float32'>
 > = {
   /**
-   * Nearest-feature mode: per-point nearest feature ID or row, or `GPU_SPATIAL_JOIN_NO_FEATURE`.
-   * Chunked like the query points.
+   * Nearest-feature mode: per-query nearest feature ID or row, or `GPU_SPATIAL_JOIN_NO_FEATURE`.
+   * Chunked like single-point queries; packed with one row per multipart, line or polygon query.
    */
   nearestFeatureIds?: IdRows;
+  /** Nearest feature row before source-ID remapping, or 0xffffffff. Same topology as nearestFeatureIds. */
+  nearestFeatureRows?: IdRows;
   /**
    * Neighbors mode: feature ID (or row, without `features.sourceIds`) per `(query, slot)` at index
    * `query * neighborCapacity + slot`, ordered by distance then feature row, padded with
@@ -170,25 +175,25 @@ export type GPUNearestFeatureJoinOutput<
    * vertex order is returned, which may differ from GEOS.
    */
   neighborQueryPoints?: GraphDataView<'float32x2'>;
-  /** Nearest-feature mode: optional per-point distance to the nearest feature (in the spatial context length unit), or -1. Chunked like the query points. */
+  /** Nearest-feature mode: optional per-query distance to the nearest feature (in the spatial context length unit), or -1. Same row topology as nearestFeatureIds. */
   nearestDistances?: DistanceRows;
-  /** Nearest-feature mode: optional per-feature count of points whose nearest feature it is. */
+  /** Nearest-feature mode: optional per-feature count of query features whose nearest feature it is. */
   featureCounts?: GraphDataView<'uint32'>;
-  /** Optional compact stable IDs of points with a feature within the radius. */
+  /** Optional compact stable query IDs (or query rows without sourceIds) with a feature within the radius. */
   matches?: GPUCompactOutput;
   /**
    * Optional per-query-row flag (one `uint32` per query, in row order across point chunks), 1 when
    * that query's search may be incomplete. A flagged query may report a farther feature than the
    * true nearest, or none (in neighbors mode, wrong or missing neighbors).
    *
-   * - Planar nearest-feature mode: 1 when that point lost candidates because the candidate total
+   * - Planar single-point queries against single points/segments in nearest-feature mode: 1 when that point lost candidates because the candidate total
    *   exceeded `candidateCapacity`. Candidates are laid out in point-row order and the slots past
    *   the capacity are dropped, so the flagged points are the point whose candidates cross the
    *   capacity (it keeps its first ones) and every later point that had a candidate (it keeps
    *   none); earlier points are complete.
    * - Every mode (planar and great-circle nearest-feature, neighbors): a BVH overflow (more
    *   features than `leafCapacity`) drops features that may be the nearest of any query, so it
-   *   flags every query. Neighbors mode and the great-circle search have no candidate table, so
+   *   flags every query. Neighbors mode, multipart/line/polygon nearest-feature mode and the great-circle search have no candidate table, so
    *   this is their only cause.
    */
   candidateTruncated?: GraphDataView<'uint32'>;
@@ -206,14 +211,15 @@ export type GPUNearestFeatureJoinOutput<
        * candidate capacity.
        */
       overflow: GraphDataView<'uint32'>;
-      /** Optional one-row unclamped candidate count. */
+      /** Optional one-row unclamped candidate count; zero on geometry-aware and great-circle traversal routes, including neighbors mode. */
       candidateCount?: GraphDataView<'uint32'>;
     };
 };
 
 /**
  * Largest packed node table of {@link GPUNearestFeatureJoin} on `device`, in uint32 words, in
- * neighbors mode and on a great-circle context: `5 * (2 * leafCapacity - 1) + 2 * queryCount`, plus
+ * neighbors mode, geometry-aware nearest-feature mode and on a great-circle context:
+ * `5 * (2 * leafCapacity - 1) + 2 * queryCount`, plus
  * `2 * featureCount` with `exclusive` or `onAttribute`. The table is read at random by the BVH
  * traversal and must fit one storage binding, so 2^25 words on a default device (128 MiB
  * bindings). Without queries or filters that allows `leafCapacity` up to 2^21 (2097152 features).
@@ -238,8 +244,10 @@ export function getGPUNearestFeatureJoinMaximumLeafCapacity(device: Device): num
  *
  * Two output modes share one class:
  *
- * - **Nearest-feature mode**: point `queries`, `radius`, `candidateCapacity` and
- *   `output.nearestFeatureIds`. One nearest point or segment feature per point within a radius.
+ * - **Nearest-feature mode**: `queries`, `radius` and `output.nearestFeatureIds`. One nearest
+ *   feature per query within a radius. Multipart points/lines and polygons use minimum part-pair
+ *   distance in both modes; k-nearest and counts always count logical features, not parts.
+ *   Planar single-point queries against single points/segments also require `candidateCapacity`.
  * - **Neighbors mode**: set `output.neighborIds` and `output.neighborCounts`. Each query (a chunked
  *   point set, or any line or polygon set) gets its `k` nearest features from a
  *   branch-and-bound BVH traversal, in dense slots of `neighborCapacity` per query, ordered by
@@ -248,7 +256,7 @@ export function getGPUNearestFeatureJoinMaximumLeafCapacity(device: Device): num
  *   `sjoin_nearest` and PostGIS `ORDER BY a <-> b LIMIT k`.
  *
  * Per-frame: `radius` and the contents of every input buffer. Topology: view
- * lengths and chunking, `k`, `neighborCapacity`, `ties`, `candidateCapacity`, `leafCapacity`,
+ * lengths and chunking, `neighborCount`, `neighborCapacity`, `ties`, `candidateCapacity`, `leafCapacity`,
  * `spatialSort`, and which optional views exist.
  */
 export type GPUNearestFeatureJoinProps<
@@ -290,15 +298,16 @@ export type GPUNearestFeatureJoinProps<
    */
   featuresSpatialContext?: GPUSpatialContext;
   /**
-   * Query geometry, one query per row. Points may be chunked (their optional `sourceIds`, with the
-   * same chunk topology, are the IDs written to `output.matches`); line and polygon queries
-   * (neighbors mode only) are one packed view each.
+   * Query geometry, one query per feature row in both output modes. Single points may be chunked;
+   * multipart points/lines and polygons are packed. Optional `sourceIds` (one per query feature,
+   * chunked like single points) are the IDs written to `output.matches`.
    */
   queries: QueryGeometry;
   /**
-   * Features. Nearest-feature mode accepts points and segments; neighbors mode also accepts
-   * linestrings and polygons. Polygon containment gives distance 0. Optional `sourceIds` are
-   * stable feature IDs written instead of feature rows.
+   * Features: points, segments, linestrings or polygons in both output modes. Multipart points
+   * and lines group parts through featureOffsets. Distance is the minimum over part pairs;
+   * polygon containment gives distance 0. Ties between features choose the lowest feature row.
+   * Optional `sourceIds` are stable feature IDs written instead of feature rows.
    */
   features: GPUNearestFeatureGeometry;
   /**
@@ -327,16 +336,16 @@ export type GPUNearestFeatureJoinProps<
    * presence, per-frame contents. Combines with `exclusive`. Works in both modes.
    */
   onAttribute?: GPUSpatialJoinOnAttribute;
-  /** Nearest-feature mode only: maximum `(point, feature)` bounding-box candidates per encoding. */
+  /** Planar single-point queries against single points/segments in nearest-feature mode: maximum bounding-box candidates per encoding. Other geometry or great-circle routes ignore this prop and write candidateCount = 0. */
   candidateCapacity?: number;
   /** Neighbors mode: neighbors wanted per query, a positive integer. Default 1. */
-  k?: number;
+  neighborCount?: number;
   /**
-   * Neighbors mode: output slots per query, at least `k` (storage-backed above 64). Defaults to `k`. It only
+   * Neighbors mode: output slots per query, at least `neighborCount` (storage-backed above 64). Defaults to `neighborCount`. It only
    * matters with `ties: 'all'`: ties beyond the capacity are dropped and `overflow` is set.
    */
   neighborCapacity?: number;
-  /** Neighbors mode: tie rule at the k-th distance. Default `'lowest-id'`. */
+  /** Neighbors mode: tie rule at the k-th distance. Default keeps the lowest rows. */
   ties?: GPUNearestTieMode;
   /**
    * Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. In
@@ -388,77 +397,22 @@ export type GPUNearestFeatureJoinProps<
   /** Caller-owned outputs; `neighborIds` selects neighbors mode. */
   output: GPUNearestFeatureJoinOutput<IdRows, DistanceRows>;
   /**
-   * Prepared (static) feature index from {@link GPUSpatialJoinPrepared}: reuses its bounds and BVH
-   * across encodings instead of rebuilding them, and takes `leafCapacity` and `spatialSort` from
-   * the handle. The handle must be added to the graph before this join, be built over the same
-   * `features` (points, lines or polygons), and be invalidated when they change. It reuses a
-   * build; results are never cached.
+   * Prepared feature index from {@link GPUSpatialJoinPrepared}, taking leafCapacity and spatialSort
+   * from the handle. Add the handle before this join with the same feature views. Traversal and
+   * distance refinement read the retained coordinates and offsets until an invalidated generation
+   * executes; source IDs remain live caller data. Results are recomputed for every encoding.
    */
   prepared?: GPUSpatialJoinPrepared<Parameters>;
 };
 
-/** Flat internal view of the props that the node builders read. */
-type NearestFeatureJoinViews = Omit<
-  GPUNearestFeatureJoinProps<GPUUint32Rows, NearestDistanceRows, GPUNearestQueryGeometry, never>,
-  'queries' | 'output'
-> &
-  Omit<GPUNearestFeatureJoinOutput<GPUUint32Rows, NearestDistanceRows>, 'status'> &
-  GPULonLatPolygonStatusPort & {
-    /** Point queries, possibly chunked. */
-    points?: GPUFloat32Positions;
-    /** Line or polygon queries. */
-    queries?: GPUPackedGeometryPort<
-      GPULineGeometryPort | GPUPolygonGeometryPort | GPUMultipartGeometryPort
-    >;
-    /** Point query IDs with the chunk topology of `points`. */
-    sourceIds?: GPUUint32Rows;
-    /** Feature IDs written instead of feature rows. */
-    featureIds?: GraphDataView<'uint32'>;
-    overflow: GraphDataView<'uint32'>;
-    candidateCount?: GraphDataView<'uint32'>;
-    candidateOverflow?: GraphDataView<'uint32'>;
-  };
-
-function getNearestFeatureJoinViews(
-  props: GPUNearestFeatureJoinProps<
-    GPUUint32Rows,
-    NearestDistanceRows,
-    GPUNearestQueryGeometry,
-    never
-  >
-): NearestFeatureJoinViews {
-  const {queries, output, ...scalars} = props;
-  const {status, ...outputs} = output;
-  return {
-    ...scalars,
-    ...outputs,
-    points:
-      queries.kind === 'points' && !isMultipartJoinGeometry(queries)
-        ? queries.positions
-        : undefined,
-    queries:
-      queries.kind === 'points' && !isMultipartJoinGeometry(queries)
-        ? undefined
-        : (queries as NearestFeatureJoinViews['queries']),
-    sourceIds:
-      queries.kind === 'points' && !isMultipartJoinGeometry(queries)
-        ? queries.sourceIds
-        : undefined,
-    featureIds: props.features.sourceIds,
-    overflow: status.overflow,
-    candidateCount: status.candidateCount,
-    candidateOverflow: status.candidateOverflow,
-    antimeridianUncertainCount: status.antimeridianUncertainCount,
-    poleUncertainCount: status.poleUncertainCount
-  };
-}
-
 /**
  * Joins queries to their nearest features by planar or great-circle distance.
  *
- * Nearest-feature mode: a `GPUBVH` over feature bounds produces candidates inside the radius box,
- * a squared point-to-segment distance kernel measures them, and deterministic `atomicMin` passes keep the
- * nearest feature (ties go to the smallest feature row).
+ * Planar nearest-feature mode with single-point queries and single points/segments: a `GPUBVH`
+ * over feature bounds produces candidates inside the radius box, a squared point-to-segment
+ * distance kernel measures them, and deterministic `atomicMin` passes keep the nearest feature
+ * (ties go to the smallest feature row). Multipart, line/polygon and great-circle inputs instead
+ * use the feature-level neighbors traversal with `k = 1` and publish the same output columns.
  *
  * Neighbors mode (`neighborIds` set): every query walks the BVH with a stack, nearer child first,
  * pruning nodes farther than its current k-th distance, and keeps the best rows ordered by
@@ -498,7 +452,7 @@ export class GPUNearestFeatureJoin<
   /** Whether queries are processed in Hilbert order. */
   readonly querySort: boolean;
   /** Resolved neighbors per query (1 in nearest-feature mode). */
-  readonly k: number;
+  readonly neighborCount: number;
   /** Resolved output slots per query (1 in nearest-feature mode). */
   readonly neighborCapacity: number;
   /** Resolved tie rule. */
@@ -507,17 +461,109 @@ export class GPUNearestFeatureJoin<
   readonly spatialContext: GPUSpatialContext;
   /** Sphere radius in the context length unit of a great-circle search, or undefined for planar distances. */
   readonly sphereRadius: number | undefined;
+  /** Geometry-aware nearest-feature mode uses the same feature-level traversal as neighbors. */
+  private readonly traversalNearestFeature: boolean;
 
   constructor(props: GPUNearestFeatureJoinProps<IdRows, DistanceRows, QueryGeometry, Parameters>) {
-    this.id = props.id ?? 'nearest-feature-join';
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'featuresSpatialContext',
+      'queries',
+      'features',
+      'radius',
+      'exclusive',
+      'queryIds',
+      'onAttribute',
+      'candidateCapacity',
+      'neighborCount',
+      'neighborCapacity',
+      'ties',
+      'leafCapacity',
+      'spatialSort',
+      'spatialSortCurve',
+      'querySort',
+      'output',
+      'prepared'
+    ]);
+    const id = snapshot.id ?? 'nearest-feature-join';
+    validateRequirement(
+      {id, contributor: 'GPUNearestFeatureJoin', messagePrefix: `${id}:`},
+      !('k' in props),
+      'k was renamed; use neighborCount'
+    );
+    validateRequirement(
+      id,
+      (snapshot.ties as unknown) !== 'lowest-id',
+      "ties 'lowest-id' was renamed; use 'lowest-row'"
+    );
+    validateRequirement(
+      id,
+      snapshot.ties === undefined || ['lowest-row', 'all'].includes(snapshot.ties),
+      `ties must be 'lowest-row' or 'all'; received ${String(snapshot.ties)}`
+    );
+    const snapshotGeometry = <Geometry extends {kind: string}>(geometry: Geometry): Geometry =>
+      snapshotConstructionFields(geometry, [
+        'kind',
+        'positions',
+        'sourceIds',
+        'lineOffsets',
+        'featureOffsets',
+        'polygonOffsets',
+        'ringOffsets',
+        'starts',
+        'ends'
+      ] as readonly (keyof Geometry)[]);
+    const output = snapshotConstructionFields(snapshot.output, [
+      'nearestFeatureIds',
+      'nearestFeatureRows',
+      'neighborIds',
+      'neighborRows',
+      'neighborCounts',
+      'neighborDistances',
+      'neighborFootPoints',
+      'neighborSegmentIndices',
+      'neighborQueryPoints',
+      'nearestDistances',
+      'featureCounts',
+      'matches',
+      'candidateTruncated',
+      'status'
+    ]);
+    const matches = output.matches && snapshotConstructionFields(output.matches, ['ids', 'status']);
+    const spatialContext =
+      snapshot.spatialContext && snapshotConstructionSpatialContext(snapshot.spatialContext);
+    const featuresSpatialContext =
+      snapshot.featuresSpatialContext === snapshot.spatialContext
+        ? spatialContext
+        : snapshot.featuresSpatialContext &&
+          snapshotConstructionSpatialContext(snapshot.featuresSpatialContext);
+    props = Object.freeze({
+      ...snapshot,
+      queries: snapshotGeometry(snapshot.queries),
+      features: snapshotGeometry(snapshot.features),
+      ...(spatialContext ? {spatialContext} : {}),
+      ...(featuresSpatialContext ? {featuresSpatialContext} : {}),
+      ...(snapshot.onAttribute
+        ? {onAttribute: snapshotConstructionFields(snapshot.onAttribute, ['left', 'right'])}
+        : {}),
+      output: Object.freeze({
+        ...output,
+        status: snapshotJoinStatus(output.status),
+        ...(matches
+          ? {
+              matches: Object.freeze({
+                ...matches,
+                status: snapshotJoinStatus(matches.status)
+              })
+            }
+          : {})
+      })
+    });
+    this.id = id;
     const multipart =
       isMultipartJoinGeometry(props.queries) || isMultipartJoinGeometry(props.features);
-    if (multipart) {
-      validateRequirement(
-        this.id,
-        props.output.neighborIds !== undefined,
-        'featureOffsets multipart nearest requires neighbors mode (neighborIds and neighborCounts)'
-      );
+    if (multipart && props.output.neighborIds) {
       if (props.features.kind !== 'segments')
         validateSpatialJoinGeometry(this.id, 'features', props.features, {
           allowMultipart: true,
@@ -532,7 +578,6 @@ export class GPUNearestFeatureJoin<
     this.props = props;
     const views = getNearestFeatureJoinViews(props);
     this.views = views;
-    const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
       id,
       views.spatialContext,
@@ -556,9 +601,14 @@ export class GPUNearestFeatureJoin<
       );
     }
     this.mode = views.neighborIds ? 'neighbors' : 'nearest-feature';
+    this.traversalNearestFeature =
+      this.sphereRadius !== undefined ||
+      multipart ||
+      views.queries !== undefined ||
+      (views.features.kind !== 'points' && views.features.kind !== 'segments');
     this.featureCount = getNearestGeometryCount(views.features);
-    this.k = views.k ?? 1;
-    this.ties = views.ties ?? 'lowest-id';
+    this.neighborCount = views.neighborCount ?? 1;
+    this.ties = views.ties ?? 'lowest-row';
     const {prepared} = views;
     if (prepared) {
       if (
@@ -616,12 +666,12 @@ export class GPUNearestFeatureJoin<
     }
     validateStatusScalars(id, props.output.status);
     if (this.mode === 'neighbors') {
-      this.neighborCapacity = views.neighborCapacity ?? this.k;
+      this.neighborCapacity = views.neighborCapacity ?? this.neighborCount;
       this.candidateCapacity = 0;
       this.queryCount = this.validateNeighbors();
     } else {
       this.neighborCapacity = 1;
-      this.candidateCapacity = this.sphereRadius === undefined ? (views.candidateCapacity ?? 0) : 0;
+      this.candidateCapacity = this.traversalNearestFeature ? 0 : (views.candidateCapacity ?? 0);
       this.queryCount = this.validateNearestFeature();
     }
     if (views.candidateTruncated) {
@@ -698,22 +748,25 @@ export class GPUNearestFeatureJoin<
 
   /** Validates the neighbors-mode views and returns the query count. */
   private validateNeighbors(): number {
-    const {id, views, k, neighborCapacity} = this;
-    validateCapacity(id, 'k', k, 1, NEAREST_MAXIMUM_NEIGHBOR_CAPACITY);
+    const {id, views, neighborCount, neighborCapacity} = this;
+    validateCapacity(id, 'neighborCount', neighborCount, 1, NEAREST_MAXIMUM_NEIGHBOR_CAPACITY);
     validateCapacity(
       id,
       'neighborCapacity',
       neighborCapacity,
-      k,
+      neighborCount,
       NEAREST_MAXIMUM_NEIGHBOR_CAPACITY
     );
-    if (neighborCapacity > k && this.ties !== 'all') {
-      throw new Error(`${id} neighborCapacity above k needs ties: 'all'`);
+    if (neighborCapacity > neighborCount && this.ties !== 'all') {
+      throw new Error(`${id} neighborCapacity above neighborCount needs ties: 'all'`);
     }
-    if (!['lowest-id', 'all'].includes(this.ties)) {
-      throw new Error(`${id} ties must be 'lowest-id' or 'all'`);
-    }
-    if (views.nearestFeatureIds || views.nearestDistances || views.featureCounts || views.matches) {
+    if (
+      views.nearestFeatureIds ||
+      views.nearestFeatureRows ||
+      views.nearestDistances ||
+      views.featureCounts ||
+      views.matches
+    ) {
       throw new Error(`${id} nearest-feature outputs need nearestFeatureIds`);
     }
     let queryCount: number;
@@ -767,48 +820,83 @@ export class GPUNearestFeatureJoin<
   private validateNearestFeature(): number {
     const {id, views} = this;
     const {features} = views;
-    validateRequirement(id, !views.neighborRows, 'output.neighborRows requires output.neighborIds');
-    if (
-      views.queries ||
-      views.k !== undefined ||
-      views.neighborCapacity ||
-      views.ties ||
-      views.neighborQueryPoints
-    ) {
-      throw new Error(`${id} line/polygon queries, k and ties need neighborIds`);
+    for (const port of [
+      'neighborRows',
+      'neighborCounts',
+      'neighborDistances',
+      'neighborFootPoints',
+      'neighborSegmentIndices',
+      'neighborQueryPoints'
+    ] as const) {
+      validateRequirement(id, !views[port], `output.${port} requires output.neighborIds`);
     }
-    if (!views.points || !views.nearestFeatureIds) {
-      throw new Error(`${id} needs point queries and nearestFeatureIds`);
+    if (views.neighborCount !== undefined || views.neighborCapacity || views.ties) {
+      throw new Error(`${id} neighborCount and ties need neighborIds`);
     }
-    if (features.kind !== 'points' && features.kind !== 'segments') {
-      throw new Error(`${id} nearest-feature mode needs point or segment features`);
+    if (!views.nearestFeatureIds && !views.nearestFeatureRows) {
+      throw new Error(`${id} needs nearestFeatureIds or nearestFeatureRows`);
     }
     if (!views.radius) {
       throw new Error(`${id} needs radius`);
     }
-    for (const chunk of getGraphViewChunks(views.points)) {
+    const queryCount = views.points?.length ?? getNearestGeometryCount(views.queries!);
+    if (views.queries) {
+      validateSpatialJoinGeometry(id, 'queries', views.queries, {
+        allowMultipart: true,
+        allowEmpty: true
+      });
+    }
+    if (features.kind !== 'segments' && this.traversalNearestFeature) {
+      validateSpatialJoinGeometry(id, 'features', features, {
+        allowMultipart: true,
+        allowEmpty: true
+      });
+    }
+    for (const chunk of views.points ? getGraphViewChunks(views.points) : []) {
       validateSinglePackedView(chunk, ['float32x2'], `${id} queries.positions`);
     }
     for (const [name, view] of [
       ['output.nearestFeatureIds', views.nearestFeatureIds],
+      ['output.nearestFeatureRows', views.nearestFeatureRows],
       ['queries.sourceIds', views.sourceIds]
     ] as const) {
       for (const chunk of view ? getGraphViewChunks(view) : []) {
         validateSinglePackedView(chunk, ['uint32'], `${id} ${name}`);
       }
-      validateMatchingChunks(id, name, views.points, view);
+      if (views.points) validateMatchingChunks(id, name, views.points, view);
+      else if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+        validateRequirement(
+          id,
+          view.length === queryCount,
+          `${name} needs one row per query feature`
+        );
+      }
     }
     for (const chunk of views.nearestDistances ? getGraphViewChunks(views.nearestDistances) : []) {
       validateSinglePackedView(chunk, ['float32'], `${id} output.nearestDistances`);
     }
-    validateMatchingChunks(id, 'output.nearestDistances', views.points, views.nearestDistances);
+    if (views.points) {
+      validateMatchingChunks(id, 'output.nearestDistances', views.points, views.nearestDistances);
+    } else if (views.nearestDistances) {
+      validateSinglePackedView(
+        views.nearestDistances,
+        ['float32'],
+        `${id} output.nearestDistances`
+      );
+      validateRequirement(
+        id,
+        views.nearestDistances.length === queryCount,
+        'output.nearestDistances needs one row per query feature'
+      );
+    }
     if (views.matches) {
       validateCompactOutput(id, views.matches);
     }
-    if (this.sphereRadius === undefined) {
+    if (!this.traversalNearestFeature) {
       validateCapacity(id, 'candidateCapacity', this.candidateCapacity);
     }
-    return views.points.length;
+    return queryCount;
   }
 
   /** Resolved neighbors-mode inputs, shared by preflight and declaration. */
@@ -823,7 +911,7 @@ export class GPUNearestFeatureJoin<
       queryCount: this.queryCount,
       features: views.features,
       featureCount: this.featureCount,
-      k: this.k,
+      neighborCount: this.neighborCount,
       capacity: this.neighborCapacity,
       ties: this.ties,
       leafCapacity: this.leafCapacity,
@@ -864,7 +952,7 @@ export class GPUNearestFeatureJoin<
       1,
       getGPUNearestFeatureJoinMaximumLeafCapacity(graph.device)
     );
-    if (this.mode === 'neighbors' || this.sphereRadius !== undefined) {
+    if (this.mode === 'neighbors' || this.traversalNearestFeature) {
       // The traversal reads one packed node table: 5 words per BVH node (2 * leafCapacity - 1
       // nodes), 2 per query and, with a candidate filter, 2 per feature.
       validateMaximumCount(
@@ -911,16 +999,18 @@ export class GPUNearestFeatureJoin<
     }
     if (this.mode === 'neighbors') {
       validateNearestNeighborBindings(graph, this.getNeighborNodeProps());
-    } else if (this.sphereRadius !== undefined) {
+    } else if (this.traversalNearestFeature) {
       // Preflight the traversal before declaring the nearest-feature adapter's own scratch.
       validateNearestNeighborBindings(graph, {
         id: this.id,
         operation: OPERATION,
-        queries: {kind: 'points', points: views.points!},
+        queries: views.points
+          ? {kind: 'points', points: views.points}
+          : {kind: 'geometry', geometry: views.queries!},
         queryCount: this.queryCount,
         features: views.features,
         featureCount: this.featureCount,
-        k: 1,
+        neighborCount: 1,
         capacity: 1,
         leafCapacity: this.leafCapacity,
         spatialSort: this.spatialSort,
@@ -953,7 +1043,10 @@ export class GPUNearestFeatureJoin<
           );
         }
       }
-      for (const [polygonIndex, polygons] of [views.queries, views.features]
+      for (const [polygonIndex, polygons] of [
+        views.queries,
+        views.prepared?.getGeometry(graph) ?? views.features
+      ]
         .filter(geometry => geometry?.kind === 'polygons')
         .entries()) {
         nodes.push(
@@ -983,26 +1076,37 @@ export class GPUNearestFeatureJoin<
           candidateOverflow: views.candidateOverflow
         })
       );
+      if (views.candidateCount) {
+        nodes.push(
+          createFillNode(graph, {
+            id: `${this.id}-clear-candidate-count`,
+            operation: OPERATION,
+            view: views.candidateCount,
+            type: 'u32',
+            value: '0u',
+            componentCount: 1
+          })
+        );
+      }
     } else {
       nodes.push(
-        ...(this.sphereRadius === undefined
-          ? this.getNearestFeatureNodes(graph)
-          : this.getGreatCircleNearestFeatureNodes(graph))
+        ...(this.traversalNearestFeature
+          ? this.getTraversalNearestFeatureNodes(graph)
+          : this.getNearestFeatureNodes(graph))
       );
     }
     return nodes;
   }
 
   /**
-   * Nearest-feature mode on longitude/latitude: the neighbors traversal with `k = 1` (ties to the
+   * Geometry-aware nearest-feature mode: the neighbors traversal with `k = 1` (ties to the
    * smallest feature row) followed by the nearest-feature outputs (IDs, distances, counts,
    * matches, overflow).
    */
-  private getGreatCircleNearestFeatureNodes<Parameters>(
+  private getTraversalNearestFeatureNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, views, featureCount, queryCount} = this;
-    const points = views.points!;
     const {matches} = views;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const state = createTransientView(graph, `${id}-state`, 'uint32', 4);
@@ -1024,11 +1128,13 @@ export class GPUNearestFeatureJoin<
     const {nodes: traversalNodes, bvh: traversalBVH} = getNearestNeighborNodes<Parameters>(graph, {
       id,
       operation: OPERATION,
-      queries: {kind: 'points', points},
+      queries: views.points
+        ? {kind: 'points', points: views.points}
+        : {kind: 'geometry', geometry: views.queries!},
       queryCount,
       features: views.features,
       featureCount,
-      k: 1,
+      neighborCount: 1,
       capacity: 1,
       leafCapacity: this.leafCapacity,
       spatialSort: this.spatialSort,
@@ -1061,7 +1167,12 @@ export class GPUNearestFeatureJoin<
 
     const distanceChunks = views.nearestDistances ? getGraphViewChunks(views.nearestDistances) : [];
     let chunkFirstRow = 0;
-    for (const [chunkIndex, chunk] of getGraphViewChunks(views.nearestFeatureIds!).entries()) {
+    const primaryOutput = views.nearestFeatureIds ?? views.nearestFeatureRows!;
+    const rowChunks =
+      views.nearestFeatureIds && views.nearestFeatureRows
+        ? getGraphViewChunks(views.nearestFeatureRows)
+        : [];
+    for (const [chunkIndex, chunk] of getGraphViewChunks(primaryOutput).entries()) {
       if (chunk.length > 0) {
         const bindings: WGSLKernelBinding[] = [
           {
@@ -1076,7 +1187,15 @@ export class GPUNearestFeatureJoin<
           },
           {name: 'pointFeatureIds', view: chunk, type: 'u32', access: 'read_write'}
         ];
-        if (views.featureIds) {
+        const rowChunk = rowChunks[chunkIndex];
+        if (rowChunk)
+          bindings.push({
+            name: 'pointFeatureRows',
+            view: rowChunk,
+            type: 'u32',
+            access: 'read_write'
+          });
+        if (views.featureIds && views.nearestFeatureIds) {
           bindings.push({name: 'featureIds', view: views.featureIds, type: 'u32', access: 'read'});
         }
         if (views.featureCounts) {
@@ -1105,7 +1224,7 @@ export class GPUNearestFeatureJoin<
         }
         nodes.push(
           createStorageTopKNode<Parameters>(graph, {
-            id: getChunkNodeId(`${id}-assign`, views.nearestFeatureIds!, chunkIndex),
+            id: getChunkNodeId(`${id}-assign`, primaryOutput, chunkIndex),
             operation: OPERATION,
             variant: 'assign-great-circle',
             bindings,
@@ -1115,8 +1234,9 @@ export class GPUNearestFeatureJoin<
   let featureRow = featureRows[featureRowsOffset + row];
   let matched = featureRow != NO_FEATURE;
   var featureId = featureRow;
-  ${views.featureIds ? 'if (matched) { featureId = featureIds[featureIdsOffset + featureRow]; }' : ''}
+  ${views.featureIds && views.nearestFeatureIds ? 'if (matched) { featureId = featureIds[featureIdsOffset + featureRow]; }' : ''}
   pointFeatureIds[pointFeatureIdsOffset + index] = featureId;
+  ${rowChunk ? 'pointFeatureRows[pointFeatureRowsOffset + index] = featureRow;' : ''}
   ${views.featureCounts ? 'if (matched) { atomicAdd(&featureCounts[featureCountsOffset + featureRow], 1u); }' : ''}
   ${distanceChunk ? 'distances[distancesOffset + index] = select(-1.0, rowDistances[rowDistancesOffset + row], matched);' : ''}`
           })
@@ -1129,7 +1249,9 @@ export class GPUNearestFeatureJoin<
         ...getSpatialJoinCollectNodes<Parameters>(graph, {
           id: `${id}-collect-matches`,
           operation: OPERATION,
-          points,
+          // Collection uses only row topology, never coordinates. Geometry queries are packed
+          // and featureRows has exactly one row per logical feature, unlike their vertex table.
+          points: views.points ?? featureRows,
           assignment: featureRows,
           state,
           sourceIds: views.sourceIds,
@@ -1159,7 +1281,11 @@ export class GPUNearestFeatureJoin<
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, views, featureCount, leafCapacity, candidateCapacity} = this;
     const points = views.points!;
-    const features = views.features as GPUNearestFeatureSource;
+    const features = (
+      views.prepared
+        ? {...views.prepared.getGeometry(graph), sourceIds: views.features.sourceIds}
+        : views.features
+    ) as GPUNearestFeatureSource;
     const radius = views.radius!;
     const {matches} = views;
     const pointCount = points.length;
@@ -1289,11 +1415,10 @@ export class GPUNearestFeatureJoin<
   candidateEnds[candidateEndsOffset + index * 2u + 1u] = ${endSource}[${endSource}Offset + featureRow * 2u + 1u];`
       })
     );
-    // Keep candidate distances squared through radius filtering and both reductions.
-    // A native length/sqrt can round an exact boundary distance upward (75,100 -> 125),
-    // rejecting an inclusive match. Only the published distance needs a square root.
+    // Keep the same robust squared-distance rank as neighbors mode through both reductions.
     const distanceBindings: WGSLKernelBinding[] = [
       {name: 'state', view: state, type: 'u32', access: 'read'},
+      {name: 'radius', view: radius, type: 'f32', access: 'read'},
       {name: 'candidatePoints', view: candidatePoints, type: 'f32', access: 'read'},
       {name: 'candidateStarts', view: candidateStarts, type: 'f32', access: 'read'},
       {name: 'candidateEnds', view: candidateEnds, type: 'f32', access: 'read'},
@@ -1312,24 +1437,27 @@ export class GPUNearestFeatureJoin<
         bindings: distanceBindings,
         invocationCount: candidateCapacity,
         condition: candidateDispatch.condition,
-        declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
+        declarations: `${NEAREST_COMMON_WGSL}
+const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
         body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let point = vec2f(candidatePoints[candidatePointsOffset + index * 2u], candidatePoints[candidatePointsOffset + index * 2u + 1u]);
   let start = vec2f(candidateStarts[candidateStartsOffset + index * 2u], candidateStarts[candidateStartsOffset + index * 2u + 1u]);
-  var offset = point - start;
-  ${
-    features.kind === 'segments'
-      ? `let end = vec2f(candidateEnds[candidateEndsOffset + index * 2u], candidateEnds[candidateEndsOffset + index * 2u + 1u]);
-  let segment = end - start;
-  let squaredLength = dot(segment, segment);
-  if (squaredLength > 0.0) {
-    let fraction = clamp(dot(offset, segment) / squaredLength, 0.0, 1.0);
-    offset -= fraction * segment;
-  }`
-      : ''
+  let end = vec2f(candidateEnds[candidateEndsOffset + index * 2u], candidateEnds[candidateEndsOffset + index * 2u + 1u]);
+  if (!(isFiniteValue(point.x) && isFiniteValue(point.y) && isFiniteValue(start.x) && isFiniteValue(start.y) && isFiniteValue(end.x) && isFiniteValue(end.y))) {
+    candidateSquaredDistances[candidateSquaredDistancesOffset + index] = NEAREST_INVALID_DISTANCE;
+    return;
   }
-  candidateSquaredDistances[candidateSquaredDistancesOffset + index] = dot(offset, offset);`
+  var rank = pointSegmentDistanceSq(point, start, end);
+  let searchRadius = radius[radiusOffset];
+  if (searchRadius >= 0.0 && isFiniteValue(searchRadius)) {
+    let radiusRank = encodeNearestDistance(searchRadius);
+    if (nearestRadiusNeedsCertification(rank, radiusRank)) {
+      if (!pointWithinSegmentDistance(point, start, end, searchRadius)) { rank = NEAREST_INVALID_DISTANCE; }
+      else { rank = minimumNearestDistance(rank, radiusRank); }
+    }
+  }
+  candidateSquaredDistances[candidateSquaredDistancesOffset + index] = rank;`
       })
     );
     // Candidates failing `exclusive` or `onAttribute` never compete for the nearest feature.
@@ -1363,7 +1491,7 @@ export class GPUNearestFeatureJoin<
       );
     }
     if (filterTests.length) {
-      // A separate pass marks filtered candidates with distance -1, which the reductions reject.
+      // A separate pass gives filtered candidates the invalid rank, which reductions reject.
       // Folding the filter views into the reductions bound up to 10 storage buffers, above the
       // default limit of 8.
       nodes.push(
@@ -1384,8 +1512,9 @@ export class GPUNearestFeatureJoin<
           ],
           invocationCount: candidateCapacity,
           condition: candidateDispatch.condition,
-          declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
-fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDistancesOffset + index] = -1.0; }`,
+          declarations: `${NEAREST_DISTANCE_RANK_WGSL}
+const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
+fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDistancesOffset + index] = NEAREST_INVALID_DISTANCE; }`,
           body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
@@ -1399,9 +1528,10 @@ fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDista
   let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
   let distance = candidateSquaredDistances[candidateSquaredDistancesOffset + index];
   let searchRadius = radius[radiusOffset];
-  if (!(searchRadius >= 0.0 && distance >= 0.0 && distance <= searchRadius * searchRadius)) { return; }
-  // Fold -0.0 so the bit pattern of non-negative distances is monotone.
-  let distanceBits = select(bitcast<u32>(distance), 0u, distance == 0.0);`;
+  let distanceBits = bitcast<u32>(distance);
+  if (!(searchRadius >= 0.0 && searchRadius <= 3.402823466e+38) ||
+      distanceBits >= NEAREST_OVERFLOW_DISTANCE ||
+      !nearestDistanceAtMost(distance, encodeNearestDistance(searchRadius))) { return; }`;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-reduce-distance`,
@@ -1426,7 +1556,8 @@ fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDista
         ],
         invocationCount: candidateCapacity,
         condition: candidateDispatch.condition,
-        declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
+        declarations: `${NEAREST_DISTANCE_RANK_WGSL}
+const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
         body: `${reducePrologue}
   atomicMin(&bestDistanceBits[bestDistanceBitsOffset + pointRow], distanceBits);`
       })
@@ -1451,7 +1582,8 @@ fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDista
         ],
         invocationCount: candidateCapacity,
         condition: candidateDispatch.condition,
-        declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
+        declarations: `${NEAREST_DISTANCE_RANK_WGSL}
+const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
         body: `${reducePrologue}
   if (distanceBits == bestDistanceBits[bestDistanceBitsOffset + pointRow]) {
     let featureRow = candidatePairs[candidatePairsOffset + index * 2u + 1u];
@@ -1464,11 +1596,12 @@ fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDista
         id: `${id}-assign`,
         operation: OPERATION,
         assignment,
-        pointFeatureIds: views.nearestFeatureIds!,
+        pointFeatureIds: views.nearestFeatureIds,
+        pointFeatureRows: views.nearestFeatureRows,
         featureIds: views.featureIds,
         featureCounts: views.featureCounts,
         bestDistanceBits,
-        squaredDistances: true,
+        distanceRankWGSL: NEAREST_DISTANCE_RANK_WGSL,
         distances: views.nearestDistances
       })
     );
@@ -1499,50 +1632,4 @@ fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDista
     );
     return nodes;
   }
-}
-
-/** Returns every read-only view of a nearest-feature join. */
-function getInputs(
-  props: NearestFeatureJoinViews
-): (GraphDataView | GraphVectorView | undefined)[] {
-  return [
-    props.points,
-    ...(props.queries ? getNearestGeometryViews(props.queries) : []),
-    props.sourceIds,
-    props.featureIds,
-    props.queryIds,
-    props.onAttribute?.left,
-    props.onAttribute?.right,
-    props.radius,
-    ...getNearestGeometryViews(props.features)
-  ];
-}
-
-/** Returns every writable view of a nearest-feature join. */
-function getOutputs(
-  props: NearestFeatureJoinViews
-): (GraphDataView | GraphVectorView | undefined)[] {
-  return [
-    props.nearestFeatureIds,
-    props.nearestDistances,
-    props.featureCounts,
-    props.overflow,
-    props.candidateCount,
-    props.candidateOverflow,
-    props.candidateTruncated,
-    props.antimeridianUncertainCount,
-    props.poleUncertainCount,
-    props.neighborIds,
-    props.neighborRows,
-    props.neighborCounts,
-    props.neighborDistances,
-    props.neighborFootPoints,
-    props.neighborSegmentIndices,
-    props.neighborQueryPoints,
-    props.matches?.ids,
-    props.matches?.status.count,
-    props.matches?.status.overflow,
-    props.matches?.status.requiredCount,
-    props.matches?.status.candidateOverflow
-  ];
 }

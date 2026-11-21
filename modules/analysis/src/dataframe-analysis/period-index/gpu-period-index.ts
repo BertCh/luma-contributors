@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  captureDataframeConstructorProps,
+  type DataframePropKeys
+} from '../calendar-buckets/dataframe-constructor-contracts';
+
+import {
   createGraphChunkGroupKernelNode,
   validateGraphChunkGroupKernelSupport
 } from '../../analysis-core/kernels/graph-chunk-groups';
@@ -28,6 +33,7 @@ import {
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
+  isGraphDataView,
   getGraphViewChunks,
   validateCommandNodeBudget,
   validateSinglePackedView,
@@ -209,7 +215,25 @@ export class GPUPeriodIndex<
   readonly estimatedCommandNodeCount: number;
   private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: Props) {
+  constructor(
+    input: Props &
+      Record<
+        Exclude<
+          DataframePropKeys<Props>,
+          DataframePropKeys<GPUPeriodIndexProps<GraphDataView | GraphVectorView>>
+        >,
+        never
+      >
+  ) {
+    const props = captureDataframeConstructorProps(input.id ?? 'period-index', input, [
+      'id',
+      'temporalContext',
+      'periods',
+      'columns',
+      'timestamps',
+      'mask',
+      'output'
+    ]);
     this.id = props.id ?? 'period-index';
     this.props = props as Props & GPUPeriodIndexProps<Props['output']['periods']>;
     const id = this.id;
@@ -218,6 +242,11 @@ export class GPUPeriodIndex<
       id,
       props.temporalContext,
       TEMPORAL_CONTEXT_SUPPORT
+    );
+    validateRequirement(
+      id,
+      periods.kind === 'calendar' || periods.kind === 'fixed',
+      `periods.kind must be 'calendar' or 'fixed'; received ${periods.kind}`
     );
     validateCapacity(id, 'periods.count', periods.count, 1, GPU_PERIOD_INDEX_MAXIMUM_COUNT);
     if (periods.kind === 'calendar') {
@@ -243,7 +272,7 @@ export class GPUPeriodIndex<
     validateGPUStatusPort(id, {invalidCount: output.status?.invalidCount});
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
     const periodRows =
-      output.periods instanceof GraphDataView && output.periods.length > this.rowCount
+      isGraphDataView(output.periods) && output.periods.length > this.rowCount
         ? new GraphDataView(output.periods.buffer, {...output.periods, length: this.rowCount})
         : output.periods;
     validateDisjointWritableViews(id, {
@@ -310,6 +339,7 @@ export class GPUPeriodIndex<
           id: `${id}-clear-invalid-count`,
           operation: OPERATION,
           view: invalidCount,
+          componentCount: 1,
           type: 'u32',
           value: '0u'
         })

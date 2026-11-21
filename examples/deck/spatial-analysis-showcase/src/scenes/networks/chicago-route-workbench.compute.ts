@@ -235,16 +235,16 @@ export async function createChicagoRouteWorkbench(
   const nodeCount = network.nodes.length / 2;
   const edgeCount = network.sources.length;
   const segmentCount = network.segmentEdges.length;
-  const restrictionStateGraph = prepareGPUNetworkRestrictionStates(
+  const restrictionStateGraph = prepareGPUNetworkRestrictionStates({
     nodeCount,
-    Array.from({length: edgeCount}, (_, edge) => ({
-      source: network.sources[edge],
-      target: network.targets[edge]
-    })),
-    [HYPOTHETICAL_FORBIDDEN_TURN]
-  );
-  const restrictionStateCount = restrictionStateGraph.stateVertices.length;
-  const restrictionTransitionCount = restrictionStateGraph.originalEdges.length;
+    edges: Array.from(
+      {length: edgeCount},
+      (_, edge) => [network.sources[edge], network.targets[edge]] as const
+    ),
+    restrictions: [HYPOTHETICAL_FORBIDDEN_TURN]
+  });
+  const {stateCount: restrictionStateCount, transitionCount: restrictionTransitionCount} =
+    restrictionStateGraph;
   const resources = new SpatialAnalysisResources(device, 'chicago-route-workbench');
   const edgeSegmentsBuffer = resources.createBuffer(
     'chicago-route-workbench-edge-segments',
@@ -337,15 +337,9 @@ export async function createChicagoRouteWorkbench(
     'chicago-route-workbench-restriction-state-vertices',
     restrictionStateGraph.stateVertices
   );
-  const restrictionTransitions = new Uint32Array(restrictionTransitionCount * 2);
-  for (let transition = 0; transition < restrictionTransitionCount; transition++) {
-    restrictionTransitions[transition * 2] = restrictionStateGraph.transitions[transition * 2];
-    restrictionTransitions[transition * 2 + 1] =
-      restrictionStateGraph.transitions[transition * 2 + 1];
-  }
   const restrictionTransitionsBuffer = resources.createBuffer(
     'chicago-route-workbench-restriction-transitions',
-    restrictionTransitions
+    restrictionStateGraph.transitions
   );
   const restrictionOriginalEdgesBuffer = resources.createBuffer(
     'chicago-route-workbench-restriction-original-edges',
@@ -517,12 +511,12 @@ export async function createChicagoRouteWorkbench(
   );
   const restrictionStateView = view(
     restrictionStateVerticesBuffer,
-    'uint32',
+    restrictionStateGraph.formats.stateVertices,
     restrictionStateCount
   );
   const restrictionTransitionView = view(
     restrictionTransitionsBuffer,
-    'uint32x2',
+    restrictionStateGraph.formats.transitions,
     restrictionTransitionCount
   );
   const restrictionTransitionWordsView = view(
@@ -532,7 +526,7 @@ export async function createChicagoRouteWorkbench(
   );
   const restrictionOriginalEdgeView = view(
     restrictionOriginalEdgesBuffer,
-    'uint32',
+    restrictionStateGraph.formats.originalEdges,
     restrictionTransitionCount
   );
   const restrictionCostView = view(restrictionCostsBuffer, 'float32x2', restrictionTransitionCount);

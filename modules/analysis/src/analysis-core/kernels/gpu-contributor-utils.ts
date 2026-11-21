@@ -7,20 +7,172 @@ import {
   createGPUComputeCommandNode,
   createGPUCopyCommandNode,
   createGPURenderCommandNode,
-  GraphVectorView,
-  validatePackedUint32View,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUComputeCommandNode,
   type GPUCopyCommandNode,
   type GPURenderCommandNode,
-  GraphDataView,
+  type GraphDataView,
   validatePackedView as validatePackedGraphView
 } from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {GPUCompactOutput} from './gpu-contributor-types';
 import {getCoreDefaultBuffer} from '../contracts/network-topology';
 import type {GPUSpatialParameterArray} from '../contracts/parameter-schema';
+
+import {
+  AnalysisValidationError,
+  type AnalysisValidationIdentity,
+  validateOption,
+  validateRequirement
+} from './analysis-validation-error';
+
+export {getPackedUint32Values, getPackedFloat32Values, readPackedBuffer} from './packed-readback';
+export type {GPUPackedReadbackValues, GPUPackedReadbackFormat} from './packed-readback';
+
+export {
+  AnalysisValidationError,
+  validateOption,
+  validateRequirement
+} from './analysis-validation-error';
+export type {
+  AnalysisValidationCode,
+  AnalysisValidationIdentity,
+  AnalysisValidationDetails
+} from './analysis-validation-error';
+
+/** Published graph-data shape, independent of the module condition that constructed it. */
+export function isGraphDataView(view: unknown): view is GraphDataView {
+  if (!view || typeof view !== 'object') return false;
+  const candidate = view as GraphDataView;
+  return (
+    typeof candidate.format === 'string' &&
+    typeof candidate.length === 'number' &&
+    typeof candidate.byteOffset === 'number' &&
+    typeof candidate.byteStride === 'number' &&
+    typeof candidate.rowByteLength === 'number' &&
+    Boolean(
+      candidate.buffer &&
+        typeof candidate.buffer === 'object' &&
+        typeof candidate.buffer.id === 'string' &&
+        typeof candidate.buffer.transient === 'boolean' &&
+        candidate.buffer.graph &&
+        typeof candidate.buffer.graph === 'object'
+    )
+  );
+}
+
+/** Published ordered-vector shape; accepts empty vectors and preserves data-view identities. */
+export function isGraphVectorView<Format extends GPUVectorFormat>(
+  view: GraphDataView<Format> | GraphVectorView<Format>
+): view is GraphVectorView<Format>;
+export function isGraphVectorView(view: unknown): view is GraphVectorView;
+export function isGraphVectorView(view: unknown): view is GraphVectorView {
+  if (!view || typeof view !== 'object') return false;
+  const candidate = view as GraphVectorView;
+  // Published graph vectors own their id and chunk arrays. GPUVector instead exposes a computed
+  // chunks getter and physical GPUData, even when empty. Never walk chunks to discriminate shape.
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.format === 'string' &&
+    typeof candidate.length === 'number' &&
+    Array.isArray(Object.getOwnPropertyDescriptor(view, 'data')?.value) &&
+    Array.isArray(Object.getOwnPropertyDescriptor(view, 'chunks')?.value)
+  );
+}
+
+/** A named constructor port: presence, accepted published view shape, and explicit formats. */
+export type GPUGraphPortDescriptor = {
+  readonly required: boolean;
+  readonly viewType: 'data' | 'vector' | 'either';
+  readonly formats: readonly GPUVectorFormat[];
+};
+
+/**
+ * Checks all named ports before a caller dereferences, snapshots, or validates packed layouts.
+ * Descriptor keys may be dotted paths into nested port maps. No GPU resources are changed.
+ */
+export function validateGraphPorts(
+  id: AnalysisValidationIdentity,
+  ports: Readonly<Record<string, unknown>>,
+  descriptors: Readonly<Record<string, GPUGraphPortDescriptor>>
+): void {
+  const capturedPorts = Object.entries(descriptors).map(([path, descriptor]) => {
+    let value: unknown;
+    if (Object.prototype.hasOwnProperty.call(ports, path)) {
+      value = ports[path];
+    } else {
+      value = ports;
+      for (const name of path.split('.')) {
+        value =
+          value && typeof value === 'object' ? (value as Record<string, unknown>)[name] : undefined;
+      }
+    }
+    return {path, descriptor, value};
+  });
+  // Presence has precedence over any shape/format metadata, including accessor-backed formats.
+  for (const {path, descriptor, value} of capturedPorts) {
+    if (descriptor.required && (value === undefined || value === null)) {
+      throw new AnalysisValidationError(
+        id,
+        `${path} must be a ${descriptor.viewType} graph view of ${descriptor.formats.join(' or ')}; received ${value}`,
+        {
+          code: 'MISSING_PROP',
+          path,
+          received: value,
+          expected: {viewType: descriptor.viewType, formats: descriptor.formats}
+        }
+      );
+    }
+  }
+  for (const {path, descriptor, value} of capturedPorts) {
+    validateOption(id, `${path} descriptor.viewType`, descriptor.viewType, [
+      'data',
+      'vector',
+      'either'
+    ]);
+    if (value === undefined || value === null) continue;
+    const expected = {viewType: descriptor.viewType, formats: descriptor.formats};
+    const matchesType =
+      descriptor.viewType === 'data'
+        ? isGraphDataView(value)
+        : descriptor.viewType === 'vector'
+          ? isGraphVectorView(value)
+          : isGraphDataView(value) || isGraphVectorView(value);
+    if (!matchesType)
+      throw new AnalysisValidationError(id, `${path} must be a ${descriptor.viewType} graph view`, {
+        code: 'VIEW_FORMAT',
+        path,
+        received: value,
+        expected
+      });
+    const view = value as GraphDataView | GraphVectorView;
+    if (!descriptor.formats.includes(view.format))
+      throw new AnalysisValidationError(
+        id,
+        `${path} must have format ${descriptor.formats.join(' or ')}; received ${view.format}`,
+        {code: 'VIEW_FORMAT', path, received: view.format, expected}
+      );
+    for (const chunk of getGraphViewChunks(view)) {
+      if (!isGraphDataView(chunk)) {
+        throw new AnalysisValidationError(id, `${path} chunks must be graph data views`, {
+          code: 'VIEW_FORMAT',
+          path,
+          received: chunk,
+          expected
+        });
+      }
+      if (!descriptor.formats.includes(chunk.format))
+        throw new AnalysisValidationError(
+          id,
+          `${path} chunks must have format ${descriptor.formats.join(' or ')}; received ${chunk.format}`,
+          {code: 'VIEW_FORMAT', path, received: chunk.format, expected}
+        );
+    }
+  }
+}
 
 /** Scalar formats supported by {@link GPUParameterBuffer}. */
 export type GPUParameterFormat = 'float32' | 'uint32' | 'sint32';
@@ -74,22 +226,35 @@ export class GPUParameterBuffer<Format extends GPUParameterFormat = GPUParameter
     this.id = props.id;
     this.format = props.format;
     this.length = props.length;
-    validateRequirement(
-      `GPUParameterBuffer ${this.id}`,
-      ['float32', 'uint32', 'sint32'].includes(this.format),
-      'format must be float32, uint32 or sint32'
-    );
-    validateCapacity(`GPUParameterBuffer ${this.id}`, 'length', this.length, 0);
-    if (props.values !== undefined) {
-      validateGPUParameterValues(this, props.values);
+    // Each prop is read once: the checked values are the ones allocated and written.
+    const values = props.values;
+    const identity = {
+      id: this.id,
+      contributor: 'GPUParameterBuffer',
+      messagePrefix: `GPUParameterBuffer ${this.id}`
+    };
+    validateOption(identity, 'format', this.format, ['float32', 'uint32', 'sint32']);
+    validateCapacity(identity, 'length', this.length, 0);
+    if (values !== undefined) {
+      validateGPUParameterValues(this, values);
     }
     this.buffer = device.createBuffer({
-      id: props.id,
-      byteLength: Math.max(props.length, 1) * Uint32Array.BYTES_PER_ELEMENT,
+      id: this.id,
+      byteLength: Math.max(this.length, 1) * Uint32Array.BYTES_PER_ELEMENT,
       usage: Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC
     });
-    if (props.values !== undefined) {
-      this.write(props.values);
+    try {
+      if (values !== undefined) {
+        this.write(values);
+      }
+    } catch (error) {
+      // Preserve the upload error even if device-loss cleanup also fails.
+      try {
+        this.buffer.destroy();
+      } catch {
+        /* The original upload error is authoritative. */
+      }
+      throw error;
     }
   }
 
@@ -124,7 +289,11 @@ export function validateGPUParameterValues<Format extends GPUParameterFormat>(
   values: GPUParameterValues<Format>,
   firstElement = 0
 ): void {
-  const id = `GPUParameterBuffer ${parameters.id}`;
+  const id = {
+    id: parameters.id,
+    contributor: 'GPUParameterBuffer',
+    messagePrefix: `GPUParameterBuffer ${parameters.id}`
+  };
   const parameterArrayName =
     parameters.format === 'float32'
       ? 'Float32Array'
@@ -135,7 +304,13 @@ export function validateGPUParameterValues<Format extends GPUParameterFormat>(
     id,
     ArrayBuffer.isView(values) &&
       GET_PARAMETER_TYPED_ARRAY_NAME.call(values) === parameterArrayName,
-    `values must match format ${parameters.format}`
+    `values must match format ${parameters.format}`,
+    {
+      code: 'VIEW_FORMAT',
+      path: 'values',
+      received: values,
+      expected: {format: parameters.format, array: parameterArrayName}
+    }
   );
   validateCapacity(id, 'firstElement', firstElement, 0, parameters.length);
   validateMaximumCount(id, 'values length', values.length, parameters.length - firstElement);
@@ -172,7 +347,7 @@ export function importGraphBuffer<Format extends GPUVectorFormat, Parameters>(
 export function getGraphViewChunks<Format extends GPUVectorFormat>(
   view: GraphDataView<Format> | GraphVectorView<Format>
 ): readonly GraphDataView<Format>[] {
-  return view instanceof GraphVectorView ? view.data : [view];
+  return isGraphVectorView<Format>(view) ? view.data : [view];
 }
 
 /** Throws when any view or vector chunk belongs to a different graph than `graph`. */
@@ -253,7 +428,7 @@ export function validateGraphViewTopology(
   const templateChunks = getGraphViewChunks(template);
   const viewChunks = getGraphViewChunks(view);
   if (
-    template instanceof GraphVectorView !== view instanceof GraphVectorView ||
+    isGraphVectorView(template) !== isGraphVectorView(view) ||
     templateChunks.length !== viewChunks.length ||
     templateChunks.some((chunk, chunkIndex) => chunk.length !== viewChunks[chunkIndex].length)
   ) {
@@ -269,17 +444,73 @@ export function validateGraphViewTopology(
  *
  * @param view View to check.
  * @param formats Accepted formats.
- * @param name Prop name prefixed with the contributor ID, for the message.
+ * Pass `{id, contributor}` and a separate path for structured diagnostics. Legacy combined
+ * labels stay opaque unless an explicit identity lets the helper strip its exact ID prefix.
+ * @param name Prop name prefixed with the contributor ID, for the legacy message.
  */
 export function validateSinglePackedView<Format extends GPUVectorFormat>(
   view: GraphDataView | GraphVectorView,
   formats: readonly Format[],
-  name: string
+  identity: Exclude<AnalysisValidationIdentity, string>,
+  path: string
+): asserts view is GraphDataView<Format>;
+export function validateSinglePackedView<Format extends GPUVectorFormat>(
+  view: GraphDataView | GraphVectorView,
+  formats: readonly Format[],
+  name: string,
+  identity?: AnalysisValidationIdentity
+): asserts view is GraphDataView<Format>;
+export function validateSinglePackedView<Format extends GPUVectorFormat>(
+  view: GraphDataView | GraphVectorView,
+  formats: readonly Format[],
+  nameOrIdentity: AnalysisValidationIdentity,
+  identityOrPath?: AnalysisValidationIdentity
 ): asserts view is GraphDataView<Format> {
-  if (view instanceof GraphVectorView) {
-    throw new Error(`${name} must be one packed view`);
+  const separatePath = typeof nameOrIdentity !== 'string' && typeof identityOrPath === 'string';
+  const identity =
+    separatePath || typeof nameOrIdentity !== 'string'
+      ? nameOrIdentity
+      : (identityOrPath ?? nameOrIdentity);
+  const identityId = typeof identity === 'string' ? identity : identity.id;
+  // Legacy combined labels are opaque: guessing at spaces corrupts IDs and chunk paths.
+  const path = separatePath
+    ? identityOrPath
+    : typeof nameOrIdentity === 'string' &&
+        identityOrPath &&
+        nameOrIdentity.startsWith(`${identityId} `)
+      ? nameOrIdentity.slice(identityId.length + 1)
+      : 'view';
+  const messagePath = separatePath || identityOrPath ? `${path} ` : '';
+  const fail = (
+    code: 'MISSING_PROP' | 'VIEW_FORMAT',
+    message: string,
+    received: unknown,
+    expected: unknown
+  ): never => {
+    throw new AnalysisValidationError(identity, `${messagePath}${message}`, {
+      code,
+      path,
+      received,
+      expected
+    });
+  };
+  if (view === undefined || view === null)
+    return fail('MISSING_PROP', `must be one packed view; received ${view}`, view, {formats});
+  if (isGraphVectorView(view))
+    return fail('VIEW_FORMAT', 'must be one packed view', 'vector', {viewType: 'data', formats});
+  if (!isGraphDataView(view))
+    return fail('VIEW_FORMAT', 'must be a graph data view', view, {viewType: 'data', formats});
+  const label = separatePath || identityOrPath ? `${identityId} ${path}` : String(nameOrIdentity);
+  try {
+    validatePackedGraphView(view, formats, label);
+  } catch {
+    fail(
+      'VIEW_FORMAT',
+      `must be packed, uint32-aligned ${formats.join(' or ')} GPU data; received ${view.format}`,
+      view.format,
+      {formats, packed: true, byteAlignment: 4}
+    );
   }
-  validatePackedGraphView(view, formats, name);
 }
 
 /**
@@ -292,14 +523,24 @@ export function validateSinglePackedView<Format extends GPUVectorFormat>(
  * @param maximum Largest accepted value. Defaults to `2^32 - 1`, the largest uint32 row count.
  */
 export function validateCapacity(
-  id: string,
+  id: AnalysisValidationIdentity,
   name: string,
   value: number,
   minimum: number = 1,
-  maximum: number = 0xffffffff
+  maximum: number = 0xffffffff,
+  source?: string
 ): void {
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${id} ${name} must be an integer in [${minimum}, ${maximum}]`);
+    throw new AnalysisValidationError(
+      id,
+      `${name} must be an integer in [${minimum}, ${maximum}]`,
+      {
+        code: 'INTEGER_RANGE',
+        path: name,
+        received: value,
+        expected: {minimum, maximum, ...(source ? {source} : {})}
+      }
+    );
   }
 }
 
@@ -314,13 +555,19 @@ export function validateCapacity(
  * @param maximum Largest accepted count.
  */
 export function validateMaximumCount(
-  id: string,
+  id: AnalysisValidationIdentity,
   name: string,
   value: number,
-  maximum: number
+  maximum: number,
+  source?: string
 ): void {
   if (!(value <= maximum)) {
-    throw new Error(`${id} ${name} must be at most ${maximum}`);
+    throw new AnalysisValidationError(id, `${name} must be at most ${maximum}`, {
+      code: 'INTEGER_RANGE',
+      path: name,
+      received: value,
+      expected: {maximum, ...(source ? {source} : {})}
+    });
   }
 }
 
@@ -402,13 +649,18 @@ export function getCoreBindingElementLimit(
  * @param name Prop name, for the message. Defaults to `'extent'`.
  */
 export function validateExtent(
-  id: string,
+  id: AnalysisValidationIdentity,
   extent: readonly number[],
   name: string = 'extent'
 ): void {
   const [minX, minY, maxX, maxY] = extent;
   if (extent.length !== 4 || !extent.every(Number.isFinite) || !(maxX > minX) || !(maxY > minY)) {
-    throw new Error(`${id} ${name} must be finite with max > min`);
+    throw new AnalysisValidationError(id, `${name} must be finite with max > min`, {
+      code: 'NUMBER_RANGE',
+      path: name,
+      received: extent,
+      expected: {length: 4, finite: true, relationship: 'max > min on both axes'}
+    });
   }
 }
 
@@ -422,7 +674,7 @@ export function validateExtent(
  * @param maximum Largest accepted value. Defaults to `2^31`, the largest uint32 power of two.
  */
 export function validatePowerOfTwo(
-  id: string,
+  id: AnalysisValidationIdentity,
   name: string,
   value: number,
   minimum: number = 1,
@@ -434,25 +686,69 @@ export function validatePowerOfTwo(
     value > maximum ||
     getNextPowerOfTwo(value) !== value
   ) {
-    throw new Error(`${id} ${name} must be a power of two in [${minimum}, ${maximum}]`);
+    throw new AnalysisValidationError(
+      id,
+      `${name} must be a power of two in [${minimum}, ${maximum}]`,
+      {
+        code: 'INTEGER_RANGE',
+        path: name,
+        received: value,
+        expected: {minimum, maximum, powerOfTwo: true}
+      }
+    );
   }
 }
 
 /** Validates the packed layout and minimum row counts of a {@link GPUCompactOutput}. */
-export function validateCompactOutput(id: string, output: GPUCompactOutput): void {
-  validatePackedUint32View(output.ids, `${id} output.ids`);
-  for (const [name, scalar] of [
-    ['count', output.status.count],
-    ['overflow', output.status.overflow],
-    ['candidateOverflow', output.status.candidateOverflow],
-    ['requiredCount', output.status.requiredCount]
-  ] as const) {
-    if (!scalar) {
-      continue;
-    }
-    validatePackedUint32View(scalar, `${id} output.status.${name}`);
+export function validateCompactOutput(
+  id: AnalysisValidationIdentity,
+  output: GPUCompactOutput,
+  path = 'output'
+): void {
+  const status = output?.status;
+  if (!status || typeof status !== 'object') {
+    throw new AnalysisValidationError(
+      id,
+      `${path}.status must contain count and overflow uint32 views`,
+      {
+        code: 'MISSING_PROP',
+        path: `${path}.status`,
+        received: status,
+        expected: {required: ['count', 'overflow']}
+      }
+    );
+  }
+  const ids = output.ids;
+  // Canonical properties may be prototype getters. Capture each exactly once before validating.
+  const scalars = [
+    ['count', status.count],
+    ['overflow', status.overflow],
+    ['candidateOverflow', status.candidateOverflow],
+    ['requiredCount', status.requiredCount]
+  ] as const;
+  const ports = Object.fromEntries([
+    [`${path}.ids`, ids],
+    ...scalars.map(([name, value]) => [`${path}.status.${name}`, value])
+  ]);
+  validateGraphPorts(id, ports, {
+    [`${path}.ids`]: {required: true, viewType: 'data', formats: ['uint32']},
+    [`${path}.status.count`]: {required: true, viewType: 'data', formats: ['uint32']},
+    [`${path}.status.overflow`]: {required: true, viewType: 'data', formats: ['uint32']},
+    [`${path}.status.candidateOverflow`]: {required: false, viewType: 'data', formats: ['uint32']},
+    [`${path}.status.requiredCount`]: {required: false, viewType: 'data', formats: ['uint32']}
+  });
+  const identity = typeof id === 'string' ? {id, contributor: id} : id;
+  validateSinglePackedView(ids, ['uint32'], identity, `${path}.ids`);
+  for (const [name, scalar] of scalars) {
+    if (scalar === undefined || scalar === null) continue;
+    validateSinglePackedView(scalar, ['uint32'], identity, `${path}.status.${name}`);
     if (scalar.length < 1) {
-      throw new Error(`${id} output.status.${name} must contain one uint32 row`);
+      throw new AnalysisValidationError(id, `${path}.status.${name} must contain one uint32 row`, {
+        code: 'VIEW_LENGTH',
+        path: `${path}.status.${name}`,
+        received: scalar.length,
+        expected: {minimumRows: 1}
+      });
     }
   }
 }
@@ -527,7 +823,7 @@ export function getNextPowerOfTwo(value: number): number {
  */
 export function validateGPUStorageBindingByteLength(
   device: Device,
-  id: string,
+  id: AnalysisValidationIdentity,
   name: string,
   byteLength: number,
   hint: string
@@ -535,12 +831,25 @@ export function validateGPUStorageBindingByteLength(
   validateRequirement(
     id,
     Number.isSafeInteger(byteLength) && byteLength >= 0,
-    `${name} byteLength must be a nonnegative safe integer, received ${byteLength}`
+    `${name} byteLength must be a nonnegative safe integer, received ${byteLength}`,
+    {
+      code: 'INTEGER_RANGE',
+      path: name,
+      received: byteLength,
+      expected: {minimum: 0, safeInteger: true}
+    }
   );
   const limit = device.limits.maxStorageBufferBindingSize;
   if (byteLength > limit) {
-    throw new Error(
-      `${id} ${name} needs ${byteLength} bytes in one binding (limit ${limit}); ${hint}`
+    throw new AnalysisValidationError(
+      id,
+      `${name} needs ${byteLength} bytes in one binding (limit ${limit}); ${hint}`,
+      {
+        code: 'INTEGER_RANGE',
+        path: name,
+        received: byteLength,
+        expected: {maximum: limit, source: 'device.limits.maxStorageBufferBindingSize', hint}
+      }
     );
   }
 }
@@ -570,23 +879,13 @@ export function validateCommandNodeBudget(
   validateMaximumCount(id, 'estimated command node count', estimatedCommandNodeCount, maximum);
 }
 
-/**
- * Throws `${id} ${requirement}` unless the construction-time requirement holds. Use it where no
- * more specific validator ({@link validateCapacity}, {@link validateMaximumCount},
- * {@link validateExtent}, {@link validatePowerOfTwo}) fits; the requirement names the prop and
- * the accepted range, such as `'sampleSpacing must be a positive finite number'`.
- *
- * @param id Contributor ID, for the message.
- * @param isSatisfied Whether the requirement holds.
- * @param requirement The requirement, stated as what must be true.
- */
-export function validateRequirement(
-  id: string,
-  isSatisfied: boolean,
-  requirement: string
-): asserts isSatisfied {
-  if (!isSatisfied) {
-    throw new Error(`${id} ${requirement}`);
+/** Formats diagnostic values without losing signed zero or masking the validation error. */
+function formatValidationValue(value: unknown): string {
+  if (Object.is(value, -0)) return '-0';
+  try {
+    return String(value);
+  } catch {
+    return '<unprintable>';
   }
 }
 
@@ -601,15 +900,28 @@ export function validateRequirement(
  * @param maximum Largest accepted value.
  */
 export function validateFiniteNumber(
-  id: string,
+  id: AnalysisValidationIdentity,
   name: string,
   value: number,
   minimum: number = -Infinity,
   maximum: number = Infinity
 ): void {
-  const float32Value = Math.fround(value);
+  const float32Value = typeof value === 'number' ? Math.fround(value) : NaN;
   if (!Number.isFinite(float32Value) || float32Value < minimum || float32Value > maximum) {
-    throw new Error(`${id} ${name} must be a finite number in [${minimum}, ${maximum}]`);
+    throw new AnalysisValidationError(
+      id,
+      `${name} must be a finite number in [${minimum}, ${maximum}]; received ${formatValidationValue(value)}${
+        typeof value !== 'number' || Object.is(value, float32Value)
+          ? ''
+          : `; encoded ${formatValidationValue(float32Value)}`
+      }`,
+      {
+        code: 'NUMBER_RANGE',
+        path: name,
+        received: value,
+        expected: {minimum, maximum, precision: 'float32'}
+      }
+    );
   }
 }
 
@@ -621,10 +933,19 @@ export function validateFiniteNumber(
  * @param name Prop name, for the message.
  * @param value Value to check.
  */
-export function validateNonZeroFiniteNumber(id: string, name: string, value: number): void {
-  const float32Value = Math.fround(value);
+export function validateNonZeroFiniteNumber(
+  id: AnalysisValidationIdentity,
+  name: string,
+  value: number
+): void {
+  const float32Value = typeof value === 'number' ? Math.fround(value) : NaN;
   if (!Number.isFinite(float32Value) || float32Value === 0) {
-    throw new Error(`${id} ${name} must be a finite number other than 0`);
+    throw new AnalysisValidationError(id, `${name} must be a finite number other than 0`, {
+      code: 'NUMBER_RANGE',
+      path: name,
+      received: value,
+      expected: {finite: true, nonzero: true, precision: 'float32'}
+    });
   }
 }
 
@@ -637,13 +958,27 @@ export function validateNonZeroFiniteNumber(id: string, name: string, value: num
  * @param expectedLength Required row count.
  */
 export function validateViewLength(
-  id: string,
+  id: AnalysisValidationIdentity,
   name: string,
   view: {readonly length: number},
-  expectedLength: number
+  expectedLength: number,
+  source?: string
 ): void {
+  if (!view) {
+    throw new AnalysisValidationError(id, `${name} must be a view`, {
+      code: 'MISSING_PROP',
+      path: name,
+      received: view,
+      expected: {rows: expectedLength, ...(source ? {source} : {})}
+    });
+  }
   if (view.length !== expectedLength) {
-    throw new Error(`${id} ${name} must have ${expectedLength} rows`);
+    throw new AnalysisValidationError(id, `${name} must have ${expectedLength} rows`, {
+      code: 'VIEW_LENGTH',
+      path: name,
+      received: view.length,
+      expected: {rows: expectedLength, ...(source ? {source} : {})}
+    });
   }
 }
 
@@ -651,5 +986,5 @@ export function validateViewLength(
 export function getGraphOutputViews(output: object): GraphDataView[] {
   return Object.entries(output)
     .flatMap(([name, value]) => (name === 'status' ? Object.values(value ?? {}) : [value]))
-    .filter((value): value is GraphDataView => value instanceof GraphDataView);
+    .filter((value): value is GraphDataView => isGraphDataView(value));
 }

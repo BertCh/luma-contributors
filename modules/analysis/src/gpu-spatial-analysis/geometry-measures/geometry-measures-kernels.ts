@@ -10,7 +10,8 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {LON_LAT_RING_WGSL} from '../../analysis-core/kernels/lon-lat-ring-wgsl';
-import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {COMPENSATED_SUM_WGSL} from '../../analysis-core/kernels/compensated-sum-wgsl';
+import {POLYGON_SHELL_RING_WGSL} from '../../analysis-core/ring-assembly/polygon-ring-ranges-wgsl';
 import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
   GPU_WGS84_ELLIPSOID,
@@ -436,9 +437,9 @@ export function createFeatureMeasuresNode<Parameters>(
   const isGeographic = coordinateSystem !== 'planar';
   const isEllipsoidal = coordinateSystem === 'wgs84' || coordinateSystem === 'geodesic';
   const isGeodesic = coordinateSystem === 'geodesic';
-  const bindings: WGSLKernelBinding[] = [
-    {name: 'positions', view: props.positions, type: 'f32', access: 'read'}
-  ];
+  const bindings: WGSLKernelBinding[] = props.positions.length
+    ? [{name: 'positions', view: props.positions, type: 'f32', access: 'read'}]
+    : [];
   if (props.ringOffsets) {
     bindings.push({name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'});
   }
@@ -524,24 +525,7 @@ ${
   props.polygonOffsets
     ? `const POLYGON_COUNT: u32 = ${props.polygonOffsets.length - 1}u;
 
-// GeoArrow ring role by position: ring 'ring' is a shell when it starts a polygon (binary search
-// of polygonOffsets). A ring outside the polygonOffsets range keeps the first-ring rule.
-fn isShellRing(ring: u32, isFirstRing: bool) -> bool {
-  if (ring < polygonOffsets[polygonOffsetsOffset] || ring >= polygonOffsets[polygonOffsetsOffset + POLYGON_COUNT]) {
-    return isFirstRing;
-  }
-  var low = 0u;
-  var high = POLYGON_COUNT;
-  while (low < high) {
-    let middle = (low + high) / 2u;
-    if (polygonOffsets[polygonOffsetsOffset + middle] < ring) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
-  return polygonOffsets[polygonOffsetsOffset + low] == ring;
-}`
+${POLYGON_SHELL_RING_WGSL}`
     : `fn isShellRing(ring: u32, isFirstRing: bool) -> bool {
   return isFirstRing;
 }`
@@ -565,7 +549,7 @@ fn isAmbiguousEdge(first: vec2<f32>, second: vec2<f32>) -> bool {
 }
 
 fn getPosition(row: u32) -> vec2<f32> {
-  return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
+  return ${props.positions.length ? 'vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u])' : 'vec2<f32>(0.0)'};
 }
 
 fn getEdgeLength(a: vec2<f32>, b: vec2<f32>) -> f32 {
@@ -577,21 +561,7 @@ fn getAreaY(position: vec2<f32>, origin: vec2<f32>) -> f32 {
 }
 ${isGeodesic ? (props.geodesicAreaTolerance !== undefined ? getAdaptiveGeodesicAreaWGSL(props.geodesicAreaTolerance, props.geodesicAreaMaximumSegments ?? 256, props.areaRadius) : GEODESIC_AREA_WGSL) : ''}
 
-${ADDITION_ROUNDING_ERROR_WGSL}
-// Compensated addition: sum.x holds the running sum, sum.y the accumulated rounding errors of its
-// additions. The error comes from getAdditionRoundingError, which reads it off the integer
-// significands. The float Neumaier term ((sum - total) + value) is algebraically zero and the
-// test GPU's shader compiler folds it away: a 300,000-vertex ring was 1.1e-3 off, the plain f32 sum.
-fn addCompensated(sum: ptr<function, vec2<f32>>, value: f32) {
-  let previous = (*sum).x;
-  let total = previous + value;
-  (*sum).y = (*sum).y + getAdditionRoundingError(previous, value, total);
-  (*sum).x = total;
-}
-
-fn getCompensated(sum: vec2<f32>) -> f32 {
-  return sum.x + sum.y;
-}
+${COMPENSATED_SUM_WGSL}
 
 fn writeStat(feature: u32, slot: u32, value: f32) {
   featureStats[featureStatsOffset + feature * STATS_STRIDE + slot] = bitcast<u32>(value);
@@ -606,6 +576,7 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
   let isInvalid = invalidRings > 0u;
   let signedArea = select(select(0.0, 0.5 * crossSum * areaScale, IS_POLYGON), invalidNan, isInvalid);
   var centroid = vertexSum / f32(vertexCount);
+  if(!IS_POINT && !IS_POLYGON && totalLength==0.0 && fallbackCount>0u){centroid=fallbackSum/f32(fallbackCount);}
   var centroidX = origin.x + centroid.x;
   var centroidY = origin.y + centroid.y;
   // Centroids use the straight (Lambert) edges even when the area follows geodesics.
@@ -629,17 +600,18 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
   writeStat(index, 2u, abs(signedArea) * LENGTH_SCALE * LENGTH_SCALE);
   writeStat(index, 3u, select(centroidX, invalidNan, isInvalid));
   writeStat(index, 4u, select(centroidY, invalidNan, isInvalid));
-  writeStat(index, 5u, origin.x + boundsMin.x);
-  writeStat(index, 6u, origin.y + boundsMin.y);
-  writeStat(index, 7u, origin.x + boundsMax.x);
-  writeStat(index, 8u, origin.y + boundsMax.y);
+  let boundsOrigin=select(vec2<f32>(0.0),origin,IS_GEOGRAPHIC);
+  writeStat(index, 5u, boundsOrigin.x + boundsMin.x);
+  writeStat(index, 6u, boundsOrigin.y + boundsMin.y);
+  writeStat(index, 7u, boundsOrigin.x + boundsMax.x);
+  writeStat(index, 8u, boundsOrigin.y + boundsMax.y);
   featureStats[featureStatsOffset + index * STATS_STRIDE + 9u] = vertexCount;
   featureStats[featureStatsOffset + index * STATS_STRIDE + 10u] = 1u;
   for (var slot = 0u; slot < 4u; slot++) {
     featureStats[featureStatsOffset + index * STATS_STRIDE + 11u + slot] = extremeRows[slot];
   }
   featureStats[featureStatsOffset + index * STATS_STRIDE + 15u] = invalidRings;`.replace(
-      /\b(invalidRings|areaSum|lengthSum|vertexSum|vertexCount|straightSum|momentX|momentY|lineMomentX|lineMomentY|boundsMin|boundsMax|extremeRows)\b/g,
+      /\b(invalidRings|areaSum|lengthSum|vertexSum|vertexCount|fallbackSum|fallbackCount|straightSum|momentX|momentY|lineMomentX|lineMomentY|boundsMin|boundsMax|extremeRows)\b/g,
       name => `${prefix}${name}`
     );
 
@@ -726,8 +698,11 @@ ${getCooperativeSource({
   var lineMomentX = vec2<f32>(0.0);
   var lineMomentY = vec2<f32>(0.0);
   var vertexSum = vec2<f32>(0.0);
-  var boundsMin = vec2<f32>(3.4e38);
-  var boundsMax = vec2<f32>(-3.4e38);
+  var fallbackSum=vec2<f32>(0.0);
+  var fallbackCount=0u;
+  // Finite sentinels are valid WGSL constant expressions. Row ties below also admit FLT_MAX.
+  var boundsMin = vec2<f32>(bitcast<f32>(0x7f7fffffu));
+  var boundsMax = vec2<f32>(bitcast<f32>(0xff7fffffu));
   var vertexCount = 0u;
   var extremeRows = vec4<u32>(0xffffffffu);
   var straightSum = vec2<f32>(0.0);
@@ -754,9 +729,10 @@ ${getCooperativeSource({
     // Local display coordinates (degrees for geographic, longitudes unwrapped along the ring).
     var local = firstPosition - origin;
     if (IS_GEOGRAPHIC) {
-      local.x = geodesicWrapLongitudeDelta(firstPosition.x - origin.x);
+      local.x = geodesicLongitudeDelta(origin.x, firstPosition.x);
     }
     let firstLocal = local;
+    if(!IS_POINT && !IS_POLYGON){fallbackSum+=firstLocal;fallbackCount+=1u;}
     var areaX = local.x;
     if (IS_GEOGRAPHIC) {
       areaX = local.x * GEODESIC_DEGREES_TO_RADIANS;
@@ -765,21 +741,22 @@ ${getCooperativeSource({
     var position = firstPosition;
     let edgeCount = select(rowCount - 1u, rowCount, IS_POLYGON);
     for (var vertex = 0u; vertex < rowCount; vertex++) {
-      // Strict comparisons keep the lowest vertex row on ties.
-      if (local.x < boundsMin.x) {
+      // Coordinate order, then row order: FLT_MAX can equal the finite sentinel.
+      let boundsPosition=select(getPosition(rowBegin+vertex),local,IS_GEOGRAPHIC);
+    if (boundsPosition.x < boundsMin.x || (boundsPosition.x == boundsMin.x && rowBegin + vertex < extremeRows.x)) {
         extremeRows.x = rowBegin + vertex;
       }
-      if (local.y < boundsMin.y) {
+    if (boundsPosition.y < boundsMin.y || (boundsPosition.y == boundsMin.y && rowBegin + vertex < extremeRows.y)) {
         extremeRows.y = rowBegin + vertex;
       }
-      if (local.x > boundsMax.x) {
+    if (boundsPosition.x > boundsMax.x || (boundsPosition.x == boundsMax.x && rowBegin + vertex < extremeRows.z)) {
         extremeRows.z = rowBegin + vertex;
       }
-      if (local.y > boundsMax.y) {
+    if (boundsPosition.y > boundsMax.y || (boundsPosition.y == boundsMax.y && rowBegin + vertex < extremeRows.w)) {
         extremeRows.w = rowBegin + vertex;
       }
-      boundsMin = min(boundsMin, local);
-      boundsMax = max(boundsMax, local);
+      boundsMin = min(boundsMin, boundsPosition);
+      boundsMax = max(boundsMax, boundsPosition);
       vertexSum += local;
       if (IS_POINT) {
         // Point sets have no edges; longitudes unwrap against the shared origin.
@@ -787,7 +764,7 @@ ${getCooperativeSource({
           let nextPoint = getPosition(rowBegin + vertex + 1u);
           local = nextPoint - origin;
           if (IS_GEOGRAPHIC) {
-            local.x = geodesicWrapLongitudeDelta(nextPoint.x - origin.x);
+            local.x = geodesicLongitudeDelta(origin.x, nextPoint.x);
           }
         }
         continue;
@@ -979,13 +956,21 @@ export function createGroupSortPrepareNode<Parameters>(
 const GROUP_WORKGROUP_SIZE = 128;
 const GROUP_SUM_SLOTS = 11;
 
+/** Whole-turn alignment of a feature interval to the first group interval. @internal */
+export const GEOMETRY_GROUP_INTERVAL_WGSL = /* wgsl */ `fn getGeometryGroupIntervalTurn(reference: vec2<f32>, feature: vec2<f32>) -> f32 {
+  // Align centers, not minima: a contained endpoint of a wide interval must stay contained.
+  let referenceCenter = 0.5 * reference.x + 0.5 * reference.y;
+  let featureCenter = 0.5 * feature.x + 0.5 * feature.y;
+  let turn = 360.0 * round((referenceCenter - featureCenter) / 360.0);
+  return select(turn, 0.0, turn == 0.0);
+}`;
+
 /**
  * Reduces feature stats into group stats with one workgroup per group: strided per-thread partials
  * over the group's features in sorted (ascending feature row) order, then a fixed binary tree, so
  * results are bitwise reproducible. The group centroid is the weighted mean of feature centroids
  * (weights are areas for polygons, lengths for lines), falling back to the unweighted mean when
  * the total weight is zero.
- *
  * @internal
  */
 export function createGroupReduceNode<Parameters>(
@@ -1025,6 +1010,7 @@ const IS_GEOGRAPHIC: bool = ${props.isGeographic ?? false};
 const ROW_COUNT: u32 = ${props.sortedIndices.length}u;
 const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;
 const RADIANS_TO_DEGREES: f32 = 57.2957795130823;
+${GEOMETRY_GROUP_INTERVAL_WGSL}
 // Slots: length, signedArea, area, weight, weightedX, weightedY, meanX, meanY, centroidCount,
 // weightedZ, meanZ. Geographic groups sum unit vectors (x, y, z) in the X, Y, Z slots, so the
 // centroid is the spherical mean and longitudes are never averaged naively across the antimeridian.
@@ -1032,6 +1018,7 @@ var<workgroup> partialSums: array<array<f32, ${GROUP_SUM_SLOTS}>, ${GROUP_WORKGR
 var<workgroup> partialMinimum: array<vec2<f32>, ${GROUP_WORKGROUP_SIZE}>;
 var<workgroup> partialMaximum: array<vec2<f32>, ${GROUP_WORKGROUP_SIZE}>;
 var<workgroup> partialVertices: array<u32, ${GROUP_WORKGROUP_SIZE}>;
+var<workgroup> firstBoundRow: atomic<u32>;
 
 fn getFeatureStat(word: u32) -> f32 {
   return bitcast<f32>(featureStats[word]);
@@ -1043,14 +1030,32 @@ fn getFeatureStat(word: u32) -> f32 {
   for (var slot = 0u; slot < SUM_SLOTS; slot++) {
     sums[slot] = 0.0;
   }
-  var minimum = vec2<f32>(3.4e38);
-  var maximum = vec2<f32>(-3.4e38);
+  // Every finite bound fits, including equality with these sentinels.
+  var minimum = vec2<f32>(bitcast<f32>(0x7f7fffffu));
+  var maximum = vec2<f32>(bitcast<f32>(0xff7fffffu));
   var vertices = 0u;
   var begin = 0u;
   var end = 0u;
+  if (localInvocationIndex == 0u) { atomicStore(&firstBoundRow, ROW_COUNT); }
+  workgroupBarrier();
   if (isInRange) {
     begin = groupOffsets[groupOffsetsOffset + group];
     end = min(groupOffsets[groupOffsetsOffset + group + 1u], ROW_COUNT);
+    if (IS_GEOGRAPHIC) {
+      for (var row = begin + localInvocationIndex; row < end; row += ${GROUP_WORKGROUP_SIZE}u) {
+        let base = featureStatsOffset + sortedIndices[sortedIndicesOffset + row] * STATS_STRIDE;
+        if (featureStats[base + 9u] > 0u) { atomicMin(&firstBoundRow, row); }
+      }
+    }
+  }
+  workgroupBarrier();
+  var referenceInterval = vec2<f32>(0.0);
+  let referenceRow = atomicLoad(&firstBoundRow);
+  if (IS_GEOGRAPHIC && referenceRow < end) {
+    let base = featureStatsOffset + sortedIndices[sortedIndicesOffset + referenceRow] * STATS_STRIDE;
+    referenceInterval = vec2<f32>(getFeatureStat(base + 5u), getFeatureStat(base + 7u));
+  }
+  if (isInRange) {
     for (var row = begin + localInvocationIndex; row < end; row += ${GROUP_WORKGROUP_SIZE}u) {
       let base = featureStatsOffset + sortedIndices[sortedIndicesOffset + row] * STATS_STRIDE;
       let vertexCount = featureStats[base + 9u];
@@ -1080,8 +1085,16 @@ fn getFeatureStat(word: u32) -> f32 {
         sums[7] += point.y;
         sums[10] += point.z;
         sums[8] += 1.0;
-        minimum = min(minimum, vec2<f32>(getFeatureStat(base + 5u), getFeatureStat(base + 6u)));
-        maximum = max(maximum, vec2<f32>(getFeatureStat(base + 7u), getFeatureStat(base + 8u)));
+        var featureMinimum = vec2<f32>(getFeatureStat(base + 5u), getFeatureStat(base + 6u));
+        var featureMaximum = vec2<f32>(getFeatureStat(base + 7u), getFeatureStat(base + 8u));
+        if (IS_GEOGRAPHIC) {
+          // Translate the complete interval by one whole turn, never wrap its two ends separately.
+          let turn = getGeometryGroupIntervalTurn(referenceInterval, vec2<f32>(featureMinimum.x, featureMaximum.x));
+          featureMinimum.x += turn;
+          featureMaximum.x += turn;
+        }
+        minimum = min(minimum, featureMinimum);
+        maximum = max(maximum, featureMaximum);
         vertices += vertexCount;
       }
     }

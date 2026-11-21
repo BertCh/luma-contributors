@@ -5,14 +5,14 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {Buffer} from '@luma.gl/core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {afterAll, afterEach, expect, it, vi} from 'vitest';
+import {afterAll, afterEach, describe, expect, it, vi} from 'vitest';
 import {
   GPUArealInterpolation,
   type GPUArealInterpolationProps
 } from '../../../src/gpu-spatial-analysis/areal-interpolation/gpu-areal-interpolation';
 import {
-  GPUPycnophylactic,
-  type GPUPycnophylacticProps
+  GPUPycnophylacticInterpolation,
+  type GPUPycnophylacticInterpolationProps
 } from '../../../src/gpu-spatial-analysis/areal-interpolation/gpu-pycnophylactic';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import {getZoneAnchorNodes} from '../../../src/gpu-spatial-analysis/areal-interpolation/zone-anchor-nodes';
@@ -23,8 +23,234 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {WGSL_RESERVED_WORDS} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {expectValidQueryShaderLiterals} from '../linear-referencing/gpu-linear-referencing-chunks.test-utils';
+import {addChangeOfSupportRecipe} from '../../../src/gpu-spatial-analysis/recipes/change-of-support-recipe';
+import {createArealRecipeRectangleFixture} from './areal-interpolation-output-oracle-fixtures';
+import {
+  GPUPolygonRasterization,
+  getGPUPolygonRasterizationParameterValues
+} from '../../../src/raster-analysis/polygon-rasterization/index';
+import {useCPUExecutorTestHooks} from '../segment-intersection/cpu-executor-test-hooks';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
+import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord,
+  createWGSLKernelNode
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+
+describe('areal rectangle recipe raster oracle', () => {
+  useCPUExecutorTestHooks();
+  it('places the recipe rectangle raster over both positive-y source polygons', () => {
+    const {grid} = createArealRecipeRectangleFixture();
+    // North-up rows must have centres at y=1.5 and .5, with bottom edge zero.
+    expect(Array.from(getGPUPolygonRasterizationParameterValues(grid))).toEqual([0, 0, 1, -1]);
+  });
+  for (const [capacity, sourceCrossingCapacity] of [
+    [1, 8],
+    [2, 8],
+    [1, 4]
+  ] as const) {
+    it(`rasterizes recipe rectangles with pair capacity ${capacity} and source crossing capacity ${sourceCrossingCapacity}`, () => {
+      const rectangle = createArealRecipeRectangleFixture();
+      rectangle.source.crossingCapacity = sourceCrossingCapacity;
+      const graph = new GPUCommandGraph(device),
+        memory = createCPUGraphMemory();
+      recordWGSLKernelNodes(graph);
+      const scalar = (name: string) => createTransientView(graph, name, 'uint32', 1);
+      const parameters = createTransientView(graph, 'parameters', 'float32', 4);
+      memory.write(parameters, getGPUPolygonRasterizationParameterValues(rectangle.grid));
+      const rasters = [rectangle.source, rectangle.target].map((system, index) => {
+        const prefix = `raster-${index}`;
+        const positions = createTransientView(
+          graph,
+          `${prefix}-positions`,
+          'float32x2',
+          system.positions.length / 2
+        );
+        const featureOffsets = createTransientView(
+          graph,
+          `${prefix}-features`,
+          'uint32',
+          system.featureOffsets.length
+        );
+        const polygonOffsets = createTransientView(
+          graph,
+          `${prefix}-polygons`,
+          'uint32',
+          system.polygonOffsets.length
+        );
+        const ringOffsets = createTransientView(
+          graph,
+          `${prefix}-rings`,
+          'uint32',
+          system.ringOffsets.length
+        );
+        const zones = createTransientView(graph, `${prefix}-zones`, 'uint32', 8);
+        const overflow = scalar(`${prefix}-overflow`),
+          crossingCount = scalar(`${prefix}-crossings`);
+        memory.write(positions, system.positions);
+        memory.write(featureOffsets, system.featureOffsets);
+        memory.write(polygonOffsets, system.polygonOffsets);
+        memory.write(ringOffsets, system.ringOffsets);
+        const nodes = new GPUPolygonRasterization({
+          id: prefix,
+          grid: rectangle.grid,
+          parameters,
+          positions,
+          featureOffsets,
+          polygonOffsets,
+          ringOffsets,
+          crossingCapacity: system.crossingCapacity,
+          output: {zones, status: {overflow, crossingCount}}
+        }).getCommandNodes(graph);
+        const interpretedNodes = nodes.map(node => {
+          const record = getWGSLKernelNodeRecord(graph, node.id);
+          if (!record?.declarations?.includes('struct RasterExtent')) return node;
+          // The shared interpreter fixes bool struct layout only for one member per line.
+          // Reformat this inline declaration without changing WGSL tokens or GPU behavior.
+          const declarations = record.declarations.replace(
+            'struct RasterExtent { origin: vec2<f32>, cellSize: vec2<f32>, valid: bool, flipped: bool };',
+            'struct RasterExtent {\n  origin: vec2<f32>,\n  cellSize: vec2<f32>,\n  valid: bool,\n  flipped: bool\n};'
+          );
+          return createWGSLKernelNode(graph, {
+            id: `${node.id}-cpu-format`,
+            operation: record.operation,
+            bindings: record.bindings,
+            invocationCount: record.invocationCount,
+            workgroupSize: record.workgroupSize[0],
+            declarations,
+            body: record.body
+          });
+        });
+        executeCommandNodesOnCPU(interpretedNodes, memory);
+        // Each rectangle has two vertical edges crossing each of two rows: 4 records per polygon.
+        expect(memory.readUint32(crossingCount)[0]).toBe(index === 0 ? 8 : 4);
+        const expectedOverflow = index === 0 && sourceCrossingCapacity === 4 ? 1 : 0;
+        expect(memory.readUint32(overflow)[0]).toBe(expectedOverflow);
+        expect(Array.from(memory.readUint32(zones))).toEqual(
+          expectedOverflow
+            ? Array(8).fill(0xffffffff)
+            : index === 0
+              ? [0, 0, 1, 1, 0, 0, 1, 1]
+              : [0xffffffff, 0, 0, 0xffffffff, 0xffffffff, 0, 0, 0xffffffff]
+        );
+        return zones;
+      });
+      if (sourceCrossingCapacity === 4) return; // The negative control intentionally leaves no source zones.
+      const overflow = scalar('pair-overflow'),
+        requiredPairCount = scalar('pair-count');
+      const weights = {
+        offsets: createTransientView(graph, 'offsets', 'uint32', 2),
+        neighbors: createTransientView(graph, 'neighbors', 'uint32', capacity),
+        weights: createTransientView(graph, 'weights', 'float32', capacity),
+        status: {overflow}
+      };
+      executeCommandNodesOnCPU(
+        new GPUArealInterpolation({
+          grid: rectangle.grid,
+          sourceZones: rasters[0],
+          targetZones: rasters[1],
+          sourceZoneCount: 2,
+          targetZoneCount: 1,
+          output: {weights, status: {overflow, requiredPairCount}}
+        }).getCommandNodes(graph),
+        memory
+      );
+      expect(memory.readUint32(requiredPairCount)[0]).toBe(2);
+      expect(memory.readUint32(overflow)[0]).toBe(capacity === 1 ? 1 : 0);
+      expect(Array.from(memory.readFloat32(weights.weights))).toEqual(Array(capacity).fill(0.5));
+    });
+  }
+});
+
+it('keeps the recipe caller nested overflow word and refuses conflicting overrides', () => {
+  const graph = new GPUCommandGraph(device);
+  const scalar = (name: string) => createTransientView(graph, name, 'uint32', 1);
+  const zones = {
+    kind: 'polygons' as const,
+    positions: createTransientView(graph, 'positions', 'float32x2', 4),
+    featureOffsets: createTransientView(graph, 'features', 'uint32', 2),
+    polygonOffsets: createTransientView(graph, 'polygons', 'uint32', 2),
+    ringOffsets: createTransientView(graph, 'rings', 'uint32', 2),
+    crossingCapacity: 4
+  };
+  const overflow = scalar('caller-overflow');
+  const props = {
+    grid: makeGPURasterMetadata({width: 4, height: 2}),
+    source: zones,
+    target: zones,
+    pairCapacity: 1,
+    parameters: createTransientView(graph, 'parameters', 'float32', 4),
+    output: {extensiveWeights: {status: {overflow}}}
+  };
+  const result = addChangeOfSupportRecipe(graph, props);
+  expect(result.status.overflow).toBe(overflow);
+  expect(result.extensiveWeights.status.overflow).toBe(overflow);
+  expect(() =>
+    addChangeOfSupportRecipe(graph, {
+      ...props,
+      id: 'conflicting',
+      output: {
+        ...props.output,
+        status: {overflow: scalar('other-overflow')}
+      }
+    })
+  ).toThrow(/overflow.*same|overflow.*reference/);
+});
+
+it('validates the first areal overflow descriptor once and retains prototype ports', () => {
+  const graph = new GPUCommandGraph(device);
+  const props = createArealProps(graph);
+  const canonical = props.output.status.overflow;
+  const independent = createTransientView(graph, 'independent', 'uint32', 1);
+  props.output.weights.status = {overflow: canonical};
+  let reads = 0;
+  Object.defineProperty(props.output.status, 'overflow', {
+    enumerable: true,
+    get: () => (reads++ === 0 ? independent : canonical)
+  });
+  expect(() => new GPUArealInterpolation(props)).toThrow(/weights.status.overflow/);
+  expect(reads).toBe(1);
+  const stable = createArealProps(new GPUCommandGraph(device));
+  const overflow = stable.output.status.overflow;
+  stable.output.status = Object.create({
+    get overflow() {
+      return overflow;
+    }
+  });
+  const contributor = new GPUArealInterpolation(stable);
+  expect(contributor.props.output.status.overflow).toBe(overflow);
+});
 
 const device = createNullWebGPUDevice();
+
+it('rejects an independent nested overflow flag before an areal CSR reaches a consumer', () => {
+  const graph = new GPUCommandGraph(device);
+  const overflow = createTransientView(graph, 'outer-overflow', 'uint32', 1);
+  const props = {
+    grid: makeGPURasterMetadata({width: 2, height: 2}),
+    sourceZones: createTransientView(graph, 'source', 'uint32', 4),
+    targetZones: createTransientView(graph, 'target', 'uint32', 4),
+    sourceZoneCount: 2,
+    targetZoneCount: 1,
+    output: {
+      weights: {
+        offsets: createTransientView(graph, 'offsets', 'uint32', 2),
+        neighbors: createTransientView(graph, 'neighbors', 'uint32', 1),
+        weights: createTransientView(graph, 'weights', 'float32', 1),
+        status: {overflow: createTransientView(graph, 'stale-overflow', 'uint32', 1)}
+      },
+      status: {overflow}
+    }
+  };
+  expect(() => new GPUArealInterpolation(props)).toThrow(
+    /weights.status.overflow.*output.status.overflow/
+  );
+  props.output.weights.status.overflow = overflow;
+  expect(() => new GPUArealInterpolation(props)).not.toThrow();
+});
 afterEach(() => vi.restoreAllMocks());
 afterAll(() => device.destroy());
 
@@ -150,7 +376,124 @@ function createArealProps(graph: GPUCommandGraph): GPUArealInterpolationProps {
   };
 }
 
-function createPycnophylacticProps(graph: GPUCommandGraph): GPUPycnophylacticProps {
+describe('areal nested status writers', () => {
+  useCPUExecutorTestHooks();
+  it.each([
+    'count',
+    'requiredCount'
+  ] as const)('rejects same-buffer read/write copies for disjoint nested %s', field => {
+    const graph = new GPUCommandGraph(device);
+    const props = createArealProps(graph);
+    const backing = createTransientView(graph, 'packed-status', 'uint32', 65);
+    const source = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      length: field === 'count' ? 2 : 1
+    });
+    const destination = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      byteOffset: 256,
+      length: 1
+    });
+    if (field === 'count') props.output.weights.offsets = source;
+    else props.output.status.requiredPairCount = source;
+    props.output.weights.status = {[field]: destination};
+    expect(() => new GPUArealInterpolation(props)).toThrow(
+      /storage-write.*storage-read.*physical buffer/
+    );
+  });
+  it('checks inherited unsupported destinations before narrowing and captures supported accessors once', () => {
+    const graph = new GPUCommandGraph(device);
+    const props = createArealProps(graph);
+    props.output.weights.status = Object.create({
+      complete: createTransientView(graph, 'complete', 'uint32', 1)
+    });
+    expect(() => new GPUArealInterpolation(props)).toThrow('output.weights.status.complete');
+    const count = createTransientView(graph, 'count', 'uint32', 1);
+    let reads = 0;
+    props.output.weights.status = Object.create({
+      get count() {
+        reads++;
+        return count;
+      }
+    });
+    expect(new GPUArealInterpolation(props).props.output.weights.status?.count).toBe(count);
+    expect(reads).toBe(1);
+  });
+  it.each([
+    true,
+    false
+  ])('publishes clamped count and unclamped aliased counts (shared=%s)', shared => {
+    const graph = new GPUCommandGraph(device);
+    const memory = createCPUGraphMemory();
+    recordWGSLKernelNodes(graph);
+    const props = createArealProps(graph);
+    props.output.weights.neighbors = createTransientView(graph, 'neighbors-small', 'uint32', 1);
+    props.output.weights.weights = createTransientView(graph, 'weights-small', 'float32', 1);
+    const count = createTransientView(graph, 'count', 'uint32', 1);
+    const requiredPairCount = createTransientView(graph, 'required-pair-count', 'uint32', 1);
+    const requiredCount = shared
+      ? requiredPairCount
+      : createTransientView(graph, 'required-count', 'uint32', 1);
+    props.output.status.requiredPairCount = requiredPairCount;
+    props.output.weights.status = {count, requiredCount, overflow: props.output.status.overflow};
+    memory.write(props.sourceZones, Uint32Array.of(0, 1, 0, 1));
+    memory.write(props.targetZones, new Uint32Array(4));
+    executeCommandNodesOnCPU(new GPUArealInterpolation(props).getCommandNodes(graph), memory);
+    expect(Array.from(memory.readUint32(count))).toEqual([1]);
+    expect(Array.from(memory.readUint32(requiredCount))).toEqual([2]);
+    expect(Array.from(memory.readUint32(requiredPairCount))).toEqual([2]);
+    expect(Array.from(memory.readUint32(props.output.status.overflow))).toEqual([1]);
+  });
+  for (const unweightedFastPath of [true]) {
+    it(`resets poisoned nested loss and count aliases on reuse (fast=${unweightedFastPath})`, () => {
+      const graph = new GPUCommandGraph(device);
+      const memory = createCPUGraphMemory();
+      recordWGSLKernelNodes(graph);
+      const props = createArealProps(graph);
+      props.unweightedFastPath = unweightedFastPath;
+      const count = createTransientView(graph, 'nested-count', 'uint32', 1);
+      const requiredCount = createTransientView(graph, 'nested-required', 'uint32', 1);
+      const candidateOverflow = createTransientView(graph, 'nested-candidate', 'uint32', 1);
+      props.output.weights.status = {
+        overflow: props.output.status.overflow,
+        count,
+        requiredCount,
+        candidateOverflow
+      };
+      memory.write(props.sourceZones, Uint32Array.of(0, 1, 0, 1));
+      memory.write(props.targetZones, new Uint32Array(4));
+      const nodes = new GPUArealInterpolation(props).getCommandNodes(graph);
+      for (const poisoned of [1, 99]) {
+        for (const destination of [count, requiredCount, candidateOverflow])
+          memory.write(destination, Uint32Array.of(poisoned));
+        executeCommandNodesOnCPU(nodes, memory);
+        // Two distinct target/source pairs; each source occupies two of the four cells.
+        expect(Array.from(memory.readUint32(count))).toEqual([2]);
+        expect(Array.from(memory.readUint32(requiredCount))).toEqual([2]);
+        expect(Array.from(memory.readUint32(candidateOverflow))).toEqual([0]);
+      }
+    });
+  }
+  it.each([
+    'complete',
+    'unresolvedCount',
+    'uncertainCount',
+    'invalidCount',
+    'iterationCount',
+    'converged',
+    'iterationLimitReached',
+    'approximation'
+  ] as const)('rejects unsupported output.weights.status.%s at construction', field => {
+    const graph = new GPUCommandGraph(device);
+    const props = createArealProps(graph);
+    props.output.weights.status = {
+      [field]: createTransientView(graph, `unsupported-${field}`, 'uint32', 1)
+    };
+    expect(() => new GPUArealInterpolation(props)).toThrow(`output.weights.status.${field}`);
+  });
+});
+
+function createPycnophylacticProps(graph: GPUCommandGraph): GPUPycnophylacticInterpolationProps {
   return {
     grid: makeGPURasterMetadata({width: 2, height: 2}),
     zones: createTransientView(graph, 'zones', 'uint32', 4),
@@ -247,7 +590,7 @@ it('rejects physical input/output aliases through offset views of one import', (
   try {
     props.zones = importGraphBuffer(graph, 'zones-import', buffer, 'uint32', 4);
     props.output.mass = graph.createDataView(props.zones.buffer, {format: 'float32', length: 4});
-    expect(() => new GPUPycnophylactic(props)).toThrow(
+    expect(() => new GPUPycnophylacticInterpolation(props)).toThrow(
       /outputs must not share buffers with inputs/
     );
   } finally {
@@ -260,7 +603,7 @@ it('rejects pycnophylactic mass/density and scalar status aliases at constructio
   const props = createPycnophylacticProps(graph);
   expect(
     () =>
-      new GPUPycnophylactic({
+      new GPUPycnophylacticInterpolation({
         ...props,
         output: {...props.output, density: props.output.mass}
       })
@@ -268,7 +611,7 @@ it('rejects pycnophylactic mass/density and scalar status aliases at constructio
   const status = createTransientView(graph, 'shared-status', 'uint32', 1);
   expect(
     () =>
-      new GPUPycnophylactic({
+      new GPUPycnophylacticInterpolation({
         ...props,
         tolerance: createTransientView(graph, 'tolerance', 'float32', 1),
         output: {...props.output, status: {converged: status, invalidCount: status}}
@@ -288,10 +631,10 @@ it('accepts packed pycnophylactic mass/status outputs used in separate passes', 
       length: 1
     })
   };
-  expect(() => graph.add(new GPUPycnophylactic(props))).not.toThrow();
+  expect(() => graph.add(new GPUPycnophylacticInterpolation(props))).not.toThrow();
 });
 
-it('prechecks aligned areal output ranges before declaring any resources', () => {
+it('rejects a non-scalar outer loss view before declaring any resources', () => {
   const graph = new GPUCommandGraph(device);
   const props = createArealProps(graph);
   const backing = createTransientView(graph, 'oversized-status', 'uint32', 33_554_433);
@@ -300,11 +643,10 @@ it('prechecks aligned areal output ranges before declaring any resources', () =>
     byteOffset: 4,
     length: 33_554_432
   });
-  const contributor = new GPUArealInterpolation(props);
   expectNoDeclarations(
     graph,
-    () => contributor.getCommandNodes(graph),
-    /output.status.overflow.*134217732 bytes/
+    () => new GPUArealInterpolation(props),
+    /overflow must contain one uint32 row/
   );
 });
 
@@ -331,14 +673,14 @@ it('prechecks pycnophylactic aligned inputs and derived trailing offsets', () =>
     byteOffset: 4,
     length: 33_554_432
   });
-  const contributor = new GPUPycnophylactic({...props, tolerance});
+  const contributor = new GPUPycnophylacticInterpolation({...props, tolerance});
   expectNoDeclarations(
     graph,
     () => contributor.getCommandNodes(graph),
     /tolerance.*134217732 bytes/
   );
   vi.restoreAllMocks();
-  const large = new GPUPycnophylactic({
+  const large = new GPUPycnophylacticInterpolation({
     ...props,
     zoneCount: 33_554_432,
     totals: createTransientView(graph, 'large-totals', 'float32', 33_554_432)
@@ -424,5 +766,33 @@ it('rejects aligned areal neighbors/weights sharing read/write storage scope', (
   });
   expect(() => new GPUArealInterpolation(props)).toThrow(
     /storage-write.*storage-read.*physical buffer/
+  );
+});
+
+it.each([
+  true,
+  false
+])('publishes mandatory outer areal loss without a nested alias (fast=%s)', unweightedFastPath => {
+  const graph = new GPUCommandGraph(device);
+  const props = {...createArealProps(graph), unweightedFastPath};
+  const outer = props.output.status.overflow;
+  const producer = new GPUArealInterpolation(props);
+  expect(producer.props.output.weights.status?.overflow === outer).toBe(true);
+  const conflicting = createTransientView(graph, 'conflicting-overflow', 'uint32', 1);
+  props.output.weights.status = {overflow: conflicting};
+  expect(() => new GPUArealInterpolation(props)).toThrow(/status.overflow.*reference/);
+});
+
+it('validates a supplied nested overflow scalar before replacing its alias', () => {
+  const graph = new GPUCommandGraph(device);
+  const props = createArealProps(graph);
+  const backing = createTransientView(graph, 'malformed-alias', 'uint32', 2);
+  props.output.status.overflow = graph.createDataView(backing.buffer, {
+    format: 'uint32',
+    length: 1
+  });
+  props.output.weights.status = {overflow: backing};
+  expect(() => new GPUArealInterpolation(props)).toThrow(
+    /output.weights.status overflow must contain one uint32 row/
   );
 });

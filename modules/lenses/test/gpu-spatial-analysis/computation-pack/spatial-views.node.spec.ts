@@ -46,7 +46,16 @@ function makeRecord(standardisation = 'row'): LensRecord {
     createdAt: '2026-10-14T00:00:00Z',
     adapter: {backend: 'webgpu', description: 'Fixture adapter'},
     domains: ['gpu-spatial-analysis'],
-    graphs: [],
+    // Unqualified captures must resolve to exactly one graph when loading a recorded twin.
+    graphs: [
+      {
+        id: 'spatial-fixture',
+        form: 'compiled',
+        domain: 'gpu-spatial-analysis',
+        nodes: [],
+        edges: []
+      }
+    ],
     axes: {
       axes: [{id: 'entity', label: 'row', kind: 'data', keySpace: 'row', size: 8}],
       keySpaces: [{id: 'row', label: 'row', size: 8}],

@@ -3,13 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, expectTypeOf, it} from 'vitest';
 import {
   getGPURasterStretchParameterValues,
   GPU_RASTER_STRETCH_PARAMETER_LENGTH,
   GPU_RASTER_STRETCH_STATISTICS_INDEX,
   GPURasterStretch
 } from '../../../src/raster-analysis/raster-stretch/index';
+import {
+  GPU_RASTER_STRETCH_MAXIMUM_HISTOGRAM_BIN_COUNT,
+  GPU_RASTER_STRETCH_MAXIMUM_RANK_SEARCH_STEPS
+} from '../../../src/raster-analysis/raster-stretch/gpu-raster-stretch';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import {
   createNullWebGPUDevice,
@@ -21,6 +25,24 @@ import {
   packColor,
   stretchValueOnCPU
 } from './raster-stretch-oracle';
+
+it('DEF-09 requires a terminal stretch output and accepts a statistics-only selection', () => {
+  type Output = ConstructorParameters<typeof GPURasterStretch>[0]['output'];
+  expectTypeOf<{}>().not.toExtend<Output>();
+  expectTypeOf<{statistics: undefined}>().not.toExtend<Output>();
+  withGraph(graph => {
+    const output = {statistics: view(graph, 'float32', 8)} satisfies Output;
+    expect(
+      () =>
+        new GPURasterStretch({
+          grid: makeGPURasterMetadata({width: 1, height: 1}),
+          values: view(graph, 'float32', 1),
+          parameters: view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH),
+          output
+        })
+    ).not.toThrow();
+  });
+});
 
 let serial = 0;
 
@@ -144,6 +166,7 @@ it('GPURasterStretch validates props', () => {
     const values = view(graph, 'float32', 12);
     const parameters = view(graph, 'float32', GPU_RASTER_STRETCH_PARAMETER_LENGTH);
     const base = {values, grid: makeGPURasterMetadata({width: 4, height: 3}), parameters};
+    // @ts-expect-error Deliberately invalid JavaScript call exercises the runtime output guard.
     expect(() => new GPURasterStretch({...base, output: {}})).toThrow(/at least one output/);
     expect(
       () => new GPURasterStretch({...base, output: {colors: view(graph, 'uint32', 12)}})
@@ -362,5 +385,81 @@ it('GPURasterStretch takes the contract mask', () => {
       } as ConstructorParameters<typeof GPURasterStretch>[0]);
     expect(stretch({mask}).props.mask).toBe(mask);
     expect(() => stretch({mask: view(graph, 'uint32', 11)})).toThrow(/^stretch mask/);
+  });
+});
+
+it('admits 65,536 histogram bins and bounds each percentile rank search to sixteen halvings', () => {
+  expect(GPU_RASTER_STRETCH_MAXIMUM_HISTOGRAM_BIN_COUNT).toBe(65536);
+  expect(GPU_RASTER_STRETCH_MAXIMUM_RANK_SEARCH_STEPS).toBe(16);
+  // A binary interval of 2^16 candidates needs at most 16 halvings, per rank.
+  expect(2 ** GPU_RASTER_STRETCH_MAXIMUM_RANK_SEARCH_STEPS).toBe(
+    GPU_RASTER_STRETCH_MAXIMUM_HISTOGRAM_BIN_COUNT
+  );
+  withGraph(graph => {
+    const base = {
+      values: view(graph, 'float32', 1),
+      grid: makeGPURasterMetadata({width: 1, height: 1}),
+      parameters: view(graph, 'float32', 16),
+      output: {stretched: view(graph, 'float32', 1)}
+    };
+    expect(() => new GPURasterStretch({...base, binCount: 65536})).not.toThrow();
+    expect(() => new GPURasterStretch({...base, binCount: 65537})).toThrow(/binCount/);
+  });
+});
+
+it('B4 refuses typo-only JavaScript stretch output selections', () => {
+  withGraph(graph => {
+    const output: ConstructorParameters<typeof GPURasterStretch>[0]['output'] = {
+      // @ts-expect-error Deliberately unknown JavaScript output name.
+      typo: view(graph, 'float32', 1)
+    };
+    expect(
+      () =>
+        new GPURasterStretch({
+          grid: makeGPURasterMetadata({width: 1, height: 1}),
+          values: view(graph, 'float32', 1),
+          parameters: view(graph, 'float32', 16),
+          output
+        })
+    ).toThrow(/at least one output/);
+  });
+});
+it('B4 captures getter-only stretch statistics for graph wiring', () => {
+  withGraph(graph => {
+    const original = view(graph, 'float32', 8);
+    let destination = original;
+    let reads = 0;
+    const output = new (class {
+      get statistics() {
+        reads++;
+        return destination;
+      }
+    })();
+    const contributor = new GPURasterStretch({
+      grid: makeGPURasterMetadata({width: 1, height: 1}),
+      values: view(graph, 'float32', 1),
+      parameters: view(graph, 'float32', 16),
+      output
+    });
+    destination = view(graph, 'float32', 8);
+    expect(contributor.props.output.statistics).toBe(original);
+    expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+    expect(reads).toBe(1);
+  });
+});
+
+it('B4 refuses a null-only JavaScript stretch terminal', () => {
+  withGraph(graph => {
+    // @ts-expect-error A null value is not a usable terminal view.
+    const output: ConstructorParameters<typeof GPURasterStretch>[0]['output'] = {statistics: null};
+    expect(
+      () =>
+        new GPURasterStretch({
+          grid: makeGPURasterMetadata({width: 1, height: 1}),
+          values: view(graph, 'float32', 1),
+          parameters: view(graph, 'float32', 16),
+          output
+        })
+    ).toThrow(/at least one output/);
   });
 });

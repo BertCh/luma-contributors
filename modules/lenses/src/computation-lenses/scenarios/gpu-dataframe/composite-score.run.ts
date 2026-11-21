@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
 import {
@@ -64,9 +65,9 @@ function splitPackedViews(captures: readonly GPUComputationCapture[]): GPUComput
 }
 
 /** Executes the recorded composite score once and reads inputs and outputs from GPU buffers. */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-tracts');
+  const dataset = await loadDataFrameLensData('f-chicago-tracts', options?.datasetResolver);
   const {poverty150Pct, unemployedPct, uninsuredPct, noVehicle, households} = dataset.columns;
   const rowCount = dataset.rowCount;
   // Count columns would rank big tracts, so the vehicle indicator is a rate.

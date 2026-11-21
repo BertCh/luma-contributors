@@ -577,7 +577,7 @@ test('Local Moran mode transitions keep bivariate permutations and ordered multi
   }
 });
 
-test('Quantile LISA retains exact large seeds, quantile limits and its exploratory method notice', () => {
+test('Quantile LISA retains exact large seeds, quantile limits and its explicit alternative notice', () => {
   const onApply = vi.fn();
   const settings = {
     longitudeColumn: 'east',
@@ -600,9 +600,9 @@ test('Quantile LISA retains exact large seeds, quantile limits and its explorato
   try {
     let sheet = sheetProperties(probe.render(properties));
     expect(sheet.checks).toEqual([]);
-    expect(sheet.method).toContain('results are exploratory');
+    expect(sheet.method).toContain('Choose the p-value alternative explicitly');
     sheet.onApply(sheetValues(sheet));
-    expect(onApply).toHaveBeenCalledExactlyOnceWith(settings);
+    expect(onApply).toHaveBeenCalledExactlyOnceWith({...settings, alternative: 'geoda-legacy'});
     sheet.onChange('selectedQuantile', 5);
     sheet = sheetProperties(probe.render(properties));
     expect(sheet.checks.join(' ')).toContain('Choose a quantile from 1 through the quantile count');

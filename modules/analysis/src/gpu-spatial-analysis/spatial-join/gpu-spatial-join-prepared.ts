@@ -3,6 +3,25 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer} from '@luma.gl/core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotJoinGeometry} from './spatial-join-construction-snapshot';
+import {
+  createSpatialPreparationRetryViews,
+  validateSpatialPreparationRetryView
+} from './spatial-preparation-retry';
+import {
+  getGPUSpatialJoinPreparedMemoryPlan,
+  resolveSpatialJoinPreparedShape
+} from './spatial-join-prepared-planning';
+export {
+  getGPUSpatialJoinPreparedMemoryPlan,
+  GPU_SPATIAL_JOIN_PREPARED_PLANNER,
+  GPU_SPATIAL_JOIN_PREPARED_ROUTES
+} from './spatial-join-prepared-planning';
+export type {
+  GPUSpatialJoinPreparedShape,
+  GPUSpatialJoinPreparedDeviceLimits
+} from './spatial-join-prepared-planning';
 import {
   createTransientView,
   GPUBVH,
@@ -13,11 +32,10 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   importGraphBuffer,
-  getStorageBindingElementLimit,
   validateCapacity,
   validateSinglePackedView,
-  validatePowerOfTwo,
-  validateRequirement
+  validateRequirement,
+  validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUPartitionDescriptor,
@@ -28,23 +46,18 @@ import {
   createFeatureRingsNode,
   getSpatialJoinFeatureCount,
   getSpatialJoinGeometryViews,
+  isMultipartJoinGeometry,
   validateSpatialJoinGeometry
 } from './spatial-join-geometry';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  getDefaultSpatialSort,
-  getNextPowerOfTwo,
   getPolygonEdgeLayoutLength,
   getPolygonEdgeLayoutNodes,
   getSortedFeatureBVHNodes,
   validateDisjointOutputs,
   type SpatialJoinBVHStorage
 } from './spatial-join-passes';
-import {
-  getPolygonEdgeSlabNodes,
-  POLYGON_EDGE_SLAB_PARAMS_STRIDE,
-  type PolygonEdgeSlabs
-} from './polygon-edge-slabs';
+import {getPolygonEdgeSlabNodes, type PolygonEdgeSlabs} from './polygon-edge-slabs';
 import {
   validateSpatialJoinBindings,
   validateSpatialJoinReadWriteBindings
@@ -58,16 +71,6 @@ import {
 
 /** Geometry lengths and every generated row address are uint32. */
 const SPATIAL_JOIN_PREPARED_MAXIMUM_ROWS = 0xffffffff;
-/** A complete binary tree has 2 * leafCapacity - 1 uint32-addressed nodes. */
-const SPATIAL_JOIN_PREPARED_MAXIMUM_LEAF_CAPACITY = 0x80000000;
-/** Published radix sort processes 256 keys per workgroup and four key bits per digit. */
-const SPATIAL_JOIN_PREPARED_SORT_WORKGROUP_SIZE = 256;
-/** Four-bit radix digits have sixteen histogram buckets. */
-const SPATIAL_JOIN_PREPARED_RADIX_BUCKET_COUNT = 16;
-/** Matches the shared edge-slab builder's default entry budget, including small geometries. */
-const SPATIAL_JOIN_PREPARED_SLAB_ENTRIES_PER_VERTEX = 4;
-/** The shared slab builder reserves at least this many optional edge entries. */
-const SPATIAL_JOIN_PREPARED_MINIMUM_SLAB_ENTRIES = 1024;
 
 /**
  * Persistent output storage of a {@link GPUSpatialJoinPrepared} handle.
@@ -89,7 +92,7 @@ export type GPUSpatialJoinPreparedProps<Parameters = unknown> = {
    * views as their `right` (and, for `GPUPointInPolygonJoin`, the same polygon views).
    */
   geometry: GPUSpatialJoinGeometry;
-  /** Feature-row partitions retained by the prepared index for tiled and streaming execution. */
+  /** Feature-row partition metadata. The BVH remains whole-domain: each bounds/children binding needs 8 * (2 * leafCapacity - 1) bytes. At 128 MiB that binding fits at most 8,388,608 features with default padded leaves, even with partitions. Use getGPUSpatialJoinPreparedMemoryPlan for all binding checks. */
   partitioning?: GPUPartitionDescriptor;
   /** Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. */
   leafCapacity?: number;
@@ -100,15 +103,18 @@ export type GPUSpatialJoinPreparedProps<Parameters = unknown> = {
    */
   spatialSort?: boolean;
   /**
-   * Polygon geometry only. Also builds, once per rebuild, the polygon edge-slab index and edge
-   * layout that `GPUPointInPolygonJoin` uses for its exact refine (`edgeSlabs`), so repeated joins
-   * reuse it like the BVH. A join given this handle defaults its `edgeSlabs` to the handle's
-   * value. Costs memory of about `(vertexCount + 4 * vertexCount)` pairs of words in persistent
-   * storage. Default false: other join kinds do not read it.
+   * Polygon geometry only. Builds the polygon edge-slab index and edge layout used by
+   * `GPUPointInPolygonJoin` exact refinement (`edgeSlabs`) on every encoding, against the retained
+   * geometry snapshot. All consumers after this handle in the same graph encoding share that
+   * preparation. A join given this handle defaults its `edgeSlabs` to the handle's value.
+   * Retains edge layout and slab storage in addition to the geometry snapshot and BVH storage.
+   * Default false: other join kinds do not read it.
    */
   edgeSlabs?: boolean;
   /**
-   * Caller-owned persistent storage. When omitted the handle allocates and imports its own buffers
+   * Caller-owned persistent storage. The handle captures these bindings in its own descriptor,
+   * retaining each view and buffer identity; it never frees caller-owned buffers.
+   * When omitted the handle allocates and imports its own buffers
    * when it first produces nodes, and {@link GPUSpatialJoinPrepared.destroy} frees them.
    */
   storage?: GPUSpatialJoinPreparedStorage;
@@ -123,8 +129,9 @@ export type GPUSpatialJoinPreparedProps<Parameters = unknown> = {
 
 /**
  * A prepared static right-hand side whose geometry snapshot changes only when invalidated.
- * Animated left features query bounds of the retained geometry. Published BVH/sort builders replay
- * against that snapshot on every encoding; geometry refresh alone uses GPU generation gating.
+ * Animated left features query bounds of the retained geometry. Feature-ring mapping (polygons),
+ * bounds, optional Hilbert sorting, BVH construction and optional polygon edge-layout/slab stages
+ * replay against that snapshot on every encoding; geometry refresh alone uses GPU generation gating.
  *
  * It reuses geometry. It never caches results: every join still evaluates every candidate against
  * the current left geometry on every encoding.
@@ -133,12 +140,28 @@ export type GPUSpatialJoinPreparedProps<Parameters = unknown> = {
  * `prepared`. The first submitted encoding captures the geometry. Invalidate or rebuildWhen requests
  * a new generation, committed only after the complete build executes; discarded encodings retry
  * automatically. Replaying public builders avoids private dispatch APIs and repeats build work.
- * Resident overhead is one copy of every geometry view plus 24 generation-control bytes.
- * If the right-hand side changes and the index is
- * not invalidated, joins keep querying the stale index (by design: the contract of a static
- * right-hand side). Changing view lengths still requires a new handle and graph.
+ * Resident overhead is one copy of every geometry view plus 1072 generation-control bytes
+ * (a fixed 1024-byte lookup table, 32-byte request and 16-byte state).
+ * Partition metadata does not tile the index. Each whole-domain bounds/children binding uses
+ * 8 * (2 * leafCapacity - 1) bytes: a 128 MiB binding admits at most 8,388,608 features with
+ * default leaf padding for this check. Other bindings and device limits still apply.
+ * A failed node construction releases acquired buffers and does not publish readiness. The failed
+ * graph may retain imported IDs: retry on a fresh graph. Imported persistent input identities
+ * reuse the fresh graph's canonical imports; transient inputs require recreating their producers
+ * and this handle. Node-registration errors after getCommandNodes returns cannot be observed by
+ * the producer: call recoverFailedDeclaration, discard the graph, then retry.
+ * Prepared traversal and exact refinement use the same retained positions and offsets.
+ * Source coordinate or topology edits become visible after invalidate plus a submitted rebuild;
+ * source-ID contents remain live for consumer output mapping. Changing view lengths requires
+ * a new handle and graph. getGeometry(graph) exposes captured views only while declared there.
  *
- * One handle belongs to one graph. Several joins in that graph may share it.
+ * The snapshot retains positions and the geometry's line/feature/polygon/ring offsets when present.
+ * Construction captures their view identities; their buffer contents are copied only when a
+ * requested generation executes. Source-ID contents remain live for consumer output mapping.
+ * The handle also retains prepared output storage. Sort and
+ * other build scratch is repopulated on every encoding.
+ * One handle belongs to one graph. Add it once before its consumers: several joins in that graph
+ * encoding share the single preparation. Separate encodings each replay all preparation stages.
  */
 export class GPUSpatialJoinPrepared<Parameters = unknown>
   implements GPUCommandNodeProducer<Parameters>
@@ -163,15 +186,81 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
   encodedBuildCount = 0;
 
   private graph: unknown;
+  private capturedGeometry: GPUSpatialJoinGeometry | undefined;
   private preparedStorage: GPUSpatialJoinPreparedStorage | undefined;
   private ownsPreparedStorage = false;
   private ownedBuffers: Buffer[] = [];
+  private failedDeclaration = false;
+  private retryViews:
+    | {
+        graph: GPUCommandGraph<Parameters>;
+        geometry?: GPUSpatialJoinGeometry;
+        storage?: GPUSpatialJoinPreparedStorage;
+      }
+    | undefined;
   private readonly rebuildGeneration = new Uint32Array([1, 0]);
   private encodingRequestPending = true;
   private internalNodeCount = 0;
   private slabStorage: {slabs: PolygonEdgeSlabs; layout: GraphDataView<'uint32'>} | undefined;
 
   constructor(props: GPUSpatialJoinPreparedProps<Parameters>) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'geometry',
+      'partitioning',
+      'leafCapacity',
+      'spatialSort',
+      'edgeSlabs',
+      'storage',
+      'rebuildWhen'
+    ]);
+    const partitioning =
+      props.partitioning &&
+      snapshotConstructionFields(props.partitioning, [
+        'length',
+        'partitions',
+        'seamOwnership',
+        'haloDistance'
+      ]);
+    props = Object.freeze({
+      ...props,
+      geometry: snapshotJoinGeometry(props.geometry),
+      ...(props.storage
+        ? {
+            storage: snapshotConstructionFields(props.storage, [
+              'nodeMinima',
+              'nodeMaxima',
+              'nodeChildren',
+              'leafIds',
+              'count',
+              'overflow',
+              'featureRings'
+            ])
+          }
+        : {}),
+      ...(partitioning
+        ? {
+            partitioning: Object.freeze({
+              ...partitioning,
+              partitions: Object.freeze(
+                partitioning.partitions.map(partition =>
+                  snapshotConstructionFields(partition, [
+                    'id',
+                    'coreStart',
+                    'coreEnd',
+                    'haloStart',
+                    'haloEnd'
+                  ])
+                )
+              ),
+              seamOwnership: snapshotConstructionFields(partitioning.seamOwnership, [
+                'kind',
+                'sourceSide'
+              ] as readonly (keyof typeof partitioning.seamOwnership)[])
+            })
+          }
+        : {})
+    });
     this.id = props.id ?? 'spatial-join-prepared';
     this.props = props;
     this.geometry = props.geometry;
@@ -196,15 +285,18 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
     if (this.edgeSlabs && props.geometry.kind !== 'polygons') {
       throw new Error(`${this.id} edgeSlabs needs polygon geometry`);
     }
-    this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(Math.max(this.featureCount, 1));
-    validatePowerOfTwo(
-      this.id,
-      'leafCapacity',
-      this.leafCapacity,
-      1,
-      SPATIAL_JOIN_PREPARED_MAXIMUM_LEAF_CAPACITY
+    const shape = resolveSpatialJoinPreparedShape(
+      {
+        kind: this.geometry.kind,
+        featureCount: this.featureCount,
+        vertexCount: this.geometry.positions.length,
+        leafCapacity: props.leafCapacity,
+        spatialSort: props.spatialSort
+      },
+      this.id
     );
-    this.spatialSort = props.spatialSort ?? getDefaultSpatialSort(this.featureCount);
+    this.leafCapacity = shape.leafCapacity;
+    this.spatialSort = shape.spatialSort;
     this.preparedStorage = props.storage;
     if (props.storage) {
       this.validateStorage(props.storage);
@@ -243,11 +335,12 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
   }
 
   /**
-   * Persistent BVH storage. Throws until the handle has produced nodes for a graph, because
-   * self-allocated storage is imported into that graph.
+   * Persistent BVH storage. Captured caller storage remains accessible before declaration and
+   * after destroy. Internally allocated storage is exposed only after node construction succeeds.
    */
   get storage(): GPUSpatialJoinPreparedStorage {
-    if (!this.preparedStorage) {
+    if (!this.graph && this.props.storage) return this.props.storage;
+    if (!this.graph || !this.preparedStorage) {
       throw new Error(`${this.id} storage needs graph.add first`);
     }
     return this.preparedStorage;
@@ -258,17 +351,108 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
    * undefined. Available after the handle has produced nodes.
    */
   get edgeSlabStorage(): {slabs: PolygonEdgeSlabs; layout: GraphDataView<'uint32'>} | undefined {
-    return this.slabStorage;
+    return this.graph ? this.slabStorage : undefined;
   }
 
   /** Number of BVH internal nodes. Available after the handle has produced nodes. */
   get bvhInternalNodeCount(): number {
-    return this.internalNodeCount;
+    return this.graph ? this.internalNodeCount : 0;
   }
 
   /** Returns whether `getCommandNodes` has declared this handle in `graph`. */
   isDeclaredIn(graph: unknown): boolean {
     return this.graph !== undefined && this.graph === graph;
+  }
+
+  /**
+   * Geometry retained by this graph's requested generation. Coordinates and offsets refresh only
+   * after invalidation; sourceIds remain live caller data. Available after successful declaration
+   * and only until destroy or recoverFailedDeclaration releases the snapshot resources.
+   */
+  getGeometry(graph: unknown): GPUSpatialJoinGeometry {
+    if (!this.isDeclaredIn(graph) || !this.capturedGeometry)
+      throw new Error(`${this.id} geometry snapshot needs graph.add on the target graph first`);
+    return this.capturedGeometry;
+  }
+
+  /**
+   * Releases a declaration after graph.add failed while registering returned nodes. The producer
+   * API observes node construction, not registration: discard that graph and call this method
+   * before retrying on a fresh graph. Do not call it on a successfully submitted graph.
+   */
+  recoverFailedDeclaration(): void {
+    this.destroy();
+    this.failedDeclaration = true;
+  }
+
+  /**
+   * Select the actual fresh producer views after a failed declaration, before graph.add(this).
+   * Their physical ranges must equal the original persistent views. Explicit mappings avoid a
+   * second logical import when DynamicBuffer/core Buffer or usage descriptors differ. Supplied
+   * maps are captured; omitted fields retain automatic import behavior. Transients cannot move.
+   */
+  setRetryViews(
+    graph: GPUCommandGraph<Parameters>,
+    views: {
+      geometry?: GPUSpatialJoinGeometry;
+      storage?: GPUSpatialJoinPreparedStorage;
+    }
+  ): void {
+    validateRequirement(
+      this.id,
+      this.failedDeclaration && !this.graph,
+      'setRetryViews requires a failed declaration and a fresh graph before graph.add'
+    );
+    const geometry = views.geometry && snapshotJoinGeometry(views.geometry);
+    const storage = views.storage && Object.freeze({...views.storage});
+    if (geometry) {
+      validateRequirement(
+        this.id,
+        geometry.kind === this.geometry.kind,
+        `retry geometry.kind must equal ${this.geometry.kind}; received ${geometry.kind}`
+      );
+      for (const [name, source] of Object.entries(this.geometry)) {
+        if (source && typeof source === 'object' && 'buffer' in source) {
+          const replacement = Object.entries(geometry).find(([key]) => key === name)?.[1];
+          validateRequirement(
+            this.id,
+            Boolean(replacement && typeof replacement === 'object' && 'buffer' in replacement),
+            `retry geometry.${name} must supply the original view`
+          );
+          validateSpatialPreparationRetryView(
+            graph,
+            this.id,
+            `geometry.${name}`,
+            source,
+            replacement as GraphDataView
+          );
+        }
+      }
+    }
+    if (storage) {
+      validateRequirement(
+        this.id,
+        Boolean(this.props.storage),
+        'retry storage requires original caller-owned storage'
+      );
+      for (const [name, source] of Object.entries(this.props.storage ?? {})) {
+        if (!source) continue;
+        const replacement = storage[name as keyof GPUSpatialJoinPreparedStorage];
+        validateRequirement(
+          this.id,
+          Boolean(replacement),
+          `retry storage.${name} must supply the original view`
+        );
+        validateSpatialPreparationRetryView(
+          graph,
+          this.id,
+          `storage.${name}`,
+          source,
+          replacement!
+        );
+      }
+    }
+    this.retryViews = {graph, geometry, storage};
   }
 
   /** Forces the next encoding to rebuild the index. Call it after the right-hand side changed. */
@@ -290,6 +474,8 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
     this.slabStorage = undefined;
     this.ownedBuffers = [];
     this.graph = undefined;
+    this.retryViews = undefined;
+    this.capturedGeometry = undefined;
     this.rebuildGeneration.set([1, 0]);
     this.encodingRequestPending = true;
   }
@@ -445,64 +631,78 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
     ];
   }
 
-  /** Mirrors the shared builder's binding-sized budget, before its transient declarations. */
-  private getEdgeSlabEntryCapacity<Parameters>(graph: GPUCommandGraph<Parameters>): number {
-    const vertexCount = this.geometry.positions.length;
-    return Math.min(
-      Math.max(0, getStorageBindingElementLimit(graph.device, 8, vertexCount)),
-      Math.max(
-        SPATIAL_JOIN_PREPARED_SLAB_ENTRIES_PER_VERTEX * vertexCount,
-        SPATIAL_JOIN_PREPARED_MINIMUM_SLAB_ENTRIES
-      )
-    );
-  }
-
   /**
-   * Returns gated geometry refresh, replayed public builds, and a final GPU generation commit.
+   * Returns gated geometry refresh, replayed builds and final generation commit. Readiness means
+   * node construction completed; if graph.add subsequently fails to register those nodes, call
+   * recoverFailedDeclaration and discard the graph before retrying.
    */
   getCommandNodes(graph: GPUCommandGraph<Parameters>): readonly GPUCommandNode<Parameters>[] {
+    if (this.graph) throw new Error(`${this.id} is already added to a graph`);
+    const previousStorage = this.preparedStorage;
+    const previousInternalNodeCount = this.internalNodeCount;
+    try {
+      validateRequirement(
+        this.id,
+        !this.retryViews || this.retryViews.graph === graph,
+        'retry views must belong to the target graph selected by setRetryViews'
+      );
+      if (this.failedDeclaration && this.preparedStorage)
+        this.preparedStorage = createSpatialPreparationRetryViews(
+          graph,
+          `${this.id}-storage`,
+          this.preparedStorage,
+          this.retryViews?.storage
+        );
+      const nodes = this.createCommandNodes(graph);
+      this.graph = graph;
+      this.failedDeclaration = false;
+      this.retryViews = undefined;
+      return nodes;
+    } catch (error) {
+      // Imported IDs can remain in the failed graph. Rebuild that graph before retrying.
+      this.destroy();
+      this.preparedStorage = previousStorage;
+      this.internalNodeCount = previousInternalNodeCount;
+      this.failedDeclaration = true;
+      throw error;
+    }
+  }
+
+  private createCommandNodes(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     const {id, featureCount} = this;
-    let geometry = this.geometry;
+    let geometry = this.failedDeclaration
+      ? createSpatialPreparationRetryViews(graph, this.id, this.geometry, this.retryViews?.geometry)
+      : this.geometry;
     if (this.graph) {
       throw new Error(`${id} is already added to a graph`);
     }
     // All caller ranges/usage and nested allocation envelopes precede persistent allocation,
     // graph declaration and handle state changes, so a failed preflight is retryable.
+    validateGraphViewsBelongToGraph(id, graph, [geometry.sourceIds]);
     const caller = this.preparedStorage;
     const inputViews = Object.fromEntries(
       getSpatialJoinGeometryViews(geometry).map((view, index) => [`geometry[${index}]`, view])
     );
-    const treeNodeCount = 2 * this.leafCapacity - 1;
-    const sort = this.spatialSort && featureCount > 1;
-    const scratchBytes: Record<string, number> = {
-      'BVH node bounds/children': caller ? 0 : treeNodeCount * 8,
-      'BVH leaf IDs': caller ? 0 : this.leafCapacity * 4,
-      'BVH status': 4,
-      'feature bounds and sorted bounds': featureCount * 8,
-      'feature radix histogram': sort
-        ? SPATIAL_JOIN_PREPARED_RADIX_BUCKET_COUNT *
-          Math.ceil(featureCount / SPATIAL_JOIN_PREPARED_SORT_WORKGROUP_SIZE) *
-          4
-        : 0,
-      'feature sort tile/scene bounds': sort
-        ? Math.max(1, Math.ceil(featureCount / SPATIAL_JOIN_PREPARED_SORT_WORKGROUP_SIZE)) * 16
-        : 0,
-      'feature ring ranges': geometry.kind === 'polygons' && !caller ? featureCount * 8 : 0
-    };
-    const slabEntryCapacity = this.edgeSlabs ? this.getEdgeSlabEntryCapacity(graph) : 0;
-    if (this.edgeSlabs && geometry.kind === 'polygons') {
-      const vertexCount = geometry.positions.length;
-      const ownerCount = geometry.polygonOffsets.length - 1;
-      Object.assign(scratchBytes, {
-        'edge slab parameters': Math.max(ownerCount, 1) * POLYGON_EDGE_SLAB_PARAMS_STRIDE * 4,
-        'edge slab owner scans': (ownerCount + 1) * 4,
-        'edge slab ring owners': Math.max(geometry.ringOffsets.length - 1, 1) * 4,
-        'edge slab vertex owners': vertexCount * 4,
-        'edge slab counters/offsets': (Math.floor(vertexCount / 4) + 2) * 4,
-        'edge slab entries': (vertexCount + slabEntryCapacity) * 8,
-        'edge slab layout': getPolygonEdgeLayoutLength(vertexCount, featureCount) * 4
-      });
-    }
+    const plan = getGPUSpatialJoinPreparedMemoryPlan(
+      {
+        kind: geometry.kind,
+        featureCount,
+        vertexCount: geometry.positions.length,
+        multipart: isMultipartJoinGeometry(geometry),
+        partCount: geometry.kind === 'lines' ? geometry.lineOffsets.length - 1 : undefined,
+        polygonCount: geometry.kind === 'polygons' ? geometry.polygonOffsets.length - 1 : undefined,
+        ringCount: geometry.kind === 'polygons' ? geometry.ringOffsets.length - 1 : undefined,
+        leafCapacity: this.leafCapacity,
+        spatialSort: this.spatialSort,
+        edgeSlabs: this.edgeSlabs,
+        externalStorage: Boolean(caller)
+      },
+      graph.device.limits
+    );
+    const scratchBytes = plan.scratchByteLengths;
+    const slabEntryCapacity = plan.slabEntryCapacity;
     validateSpatialJoinBindings(
       graph,
       id,
@@ -547,7 +747,6 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
       }
     });
     geometry = {...geometry, ...snapshot.views} as GPUSpatialJoinGeometry;
-    this.graph = graph;
     if (!this.preparedStorage) {
       this.preparedStorage = this.allocateStorage(graph);
       this.ownsPreparedStorage = true;
@@ -592,6 +791,8 @@ export class GPUSpatialJoinPrepared<Parameters = unknown>
       nodes.push(...this.getEdgeSlabNodes(graph, geometry, slabEntryCapacity));
     }
 
-    return [...snapshot.nodes, ...nodes, snapshot.commit(nodes)];
+    const result = [...snapshot.nodes, ...nodes, snapshot.commit(nodes)];
+    this.capturedGeometry = Object.freeze(geometry);
+    return result;
   }
 }

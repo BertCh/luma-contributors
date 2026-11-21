@@ -367,6 +367,16 @@ export type SpatialWeightsExampleExecution = {
   views: Readonly<Record<string, GraphDataView>>;
 };
 
+/** Capture producer diagnostics independently of an example's optional presentation view map. */
+export function getTractWeightsCaptureViews(execution: SpatialWeightsExampleExecution) {
+  const status = execution.weights.status;
+  return {
+    ...execution.views,
+    ...(status?.overflow && {weightsOverflow: status.overflow}),
+    ...(status?.candidateOverflow && {weightsCandidateOverflow: status.candidateOverflow})
+  };
+}
+
 /** Adds native geometry and factual island metadata to captured GPU outputs, without recalculating them. */
 export function finishSpatialWeightsRecord(
   record: GPUComputationRecordWithSidecars,
@@ -384,6 +394,7 @@ export function finishSpatialWeightsRecord(
     ...capture,
     ...geometries[capture.name]
   }));
+  validateSpatialWeightsCaptures(snapshots);
   const counts = snapshots.find(capture => capture.name === 'counts');
   const islandCount = counts?.values[2];
   // Fail explicitly instead of drawing truncated adjacency or an invalid nominal map.
@@ -534,7 +545,7 @@ export async function runTractWeightsScenario(props: {
     'searchParameters',
     getGPUNeighborSearchParameterValues({
       bounds: [-88, 41, -87, 43],
-      weightKind: 'binary',
+      weightType: 'binary',
       rowStandardize: false
     }),
     'float32'
@@ -629,7 +640,7 @@ export async function runTractWeightsScenario(props: {
         // maps). The other presentations draw no map, so their 0.1 MB of vertices is not read back.
         ...(['graph', 'coloring', 'lag'].includes(props.presentation) && geometry.views),
         ...(props.presentation === 'lag' && {values: values.view}),
-        ...execution.views
+        ...getTractWeightsCaptureViews(execution)
       },
       entry: props.entry,
       choices: props.choices,

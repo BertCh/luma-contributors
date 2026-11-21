@@ -18,18 +18,26 @@ export function isWideNumericType(type: DataType): boolean {
 
 /**
  * Converts one Int64, Uint64 or Decimal value to a JavaScript number. Rejects integers that
- * binary64 cannot represent; Decimal coefficients may round before scaling. For precision-policy
+ * binary64 cannot represent; Decimal coefficients and scales round once to binary64. For precision-policy
  * enforcement against original coefficients use prepareArrowTableForGPUAnalytics instead.
  */
 export function convertWideNumericValue(type: DataType, value: unknown): number | null {
   if (value === null || value === undefined) return null;
+  // JavaScript numbers are already converted values, including for Decimal source metadata.
+  if (typeof value === 'number') return value;
+  if (DataType.isDecimal(type)) {
+    const coefficient = getWideNumericCoefficient(value);
+    if (coefficient === 0n) return 0;
+    // ECMAScript decimal string conversion rounds the original exact coefficient/exponent
+    // once, ties to even. No intermediate power of ten can overflow or underflow.
+    return Number(`${coefficient}e${-type.scale}`);
+  }
   if (typeof value === 'bigint') {
     const rounded = Number(value);
     // Float64 cannot hold this integer; do not hide the loss from the Float32 error budget.
-    if (BigInt(rounded) !== value) throw new Error('Float64 column exceeds its precision policy');
+    if (BigInt(rounded) !== value) throw new Error(`${type} column exceeds its precision policy`);
     return rounded;
   }
-  if (typeof value === 'number') return value;
   // Decimal values are little-endian two's-complement words scaled by 10^-scale.
   const words = value as ArrayLike<number>;
   let integer = BigInt(0);
@@ -37,8 +45,7 @@ export function convertWideNumericValue(type: DataType, value: unknown): number 
     integer = (integer << BigInt(32)) | BigInt(words[index] >>> 0);
   const bitWidth = words.length * 32;
   if (integer >= BigInt(1) << BigInt(bitWidth - 1)) integer -= BigInt(1) << BigInt(bitWidth);
-  const scale = DataType.isDecimal(type) ? type.scale : 0;
-  return scale === 0 ? Number(integer) : Number(integer) / 10 ** scale;
+  return Number(integer);
 }
 
 /** Maps a chunk through JavaScript numbers; this does not check original Decimal precision. */
@@ -61,7 +68,7 @@ export function narrowWideNumericValue(
 ): number | null {
   if (value === null || value === undefined) return null;
   const reject = () => {
-    throw new Error(`Float64 column "${report.name}" exceeds its precision policy`);
+    throw new Error(`${type} column "${report.name}" exceeds its precision policy`);
   };
   const coefficient = getWideNumericCoefficient(value);
   if (coefficient === 0n) return 0;

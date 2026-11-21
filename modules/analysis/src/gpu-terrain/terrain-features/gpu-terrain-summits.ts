@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {
   validateTerrainBindings,
   getTerrainPyramidParameterScratch
@@ -50,6 +51,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -97,6 +99,7 @@ export function getGPUTerrainSummitsParameterValues(
   validateTerrainFeaturesScalar(name, 'radius', settings.radius, 0, true);
   validateTerrainFeaturesScalar(name, 'minimumDrop', settings.minimumDrop ?? 0, 0);
   validateTerrainFeaturesCellSize(name, getRasterGridGeoreference(grid).cellSize);
+  validateRasterGridOrthogonal('getGPUTerrainSummitsParameterValues', grid);
   target[0] = settings.radius;
   target[1] = settings.minimumDrop ?? 0;
   target[6] = 0;
@@ -112,24 +115,27 @@ export type GPUTerrainSummitsStatus = {
 };
 
 /** Caller-owned outputs of {@link GPUTerrainSummits}; at least one of the first three is required. */
-export type GPUTerrainSummitsOutput = {
-  /** `uint32` per pixel: 1 for a summit, otherwise 0. */
-  summitMask?: GraphDataView<'uint32'>;
-  /** `float32` per pixel: the drop at a summit, NaN elsewhere. */
-  drop?: GraphDataView<'float32'>;
-  /**
-   * Capacity-bounded compact list of summit pixel indices (`row * width + column`), ascending.
-   * `count` is clamped and `overflow` is raised when more summits exist.
-   */
-  summits?: GPUCompactOutput;
-  /**
-   * `float32` column aligned with `summits.ids` (at least `summits.ids.length` rows) holding each
-   * listed summit's drop. Rows at or beyond `summits.count` are NaN. Requires `summits`.
-   */
-  summitDrop?: GraphDataView<'float32'>;
-  /** Optional status words. */
-  status?: GPUTerrainSummitsStatus;
-};
+export type GPUTerrainSummitsOutput = TerrainAtLeastOne<
+  {
+    /** `uint32` per pixel: 1 for a summit, otherwise 0. */
+    summitMask?: GraphDataView<'uint32'>;
+    /** `float32` per pixel: the drop at a summit, NaN elsewhere. */
+    drop?: GraphDataView<'float32'>;
+    /**
+     * Capacity-bounded compact list of summit pixel indices (`row * width + column`), ascending.
+     * `count` is clamped and `overflow` is raised when more summits exist.
+     */
+    summits?: GPUCompactOutput;
+    /**
+     * `float32` column aligned with `summits.ids` (at least `summits.ids.length` rows) holding each
+     * listed summit's drop. Rows at or beyond `summits.count` are NaN. Requires `summits`.
+     */
+    summitDrop?: GraphDataView<'float32'>;
+    /** Optional status words. */
+    status?: GPUTerrainSummitsStatus;
+  },
+  'summitMask' | 'drop' | 'summits'
+>;
 
 /**
  * Properties for {@link GPUTerrainSummits}.
@@ -233,6 +239,8 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
     const pixelCount = validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     validateTerrainFeaturesMaximumRadiusPixels(id, props.maximumRadiusPixels);
     if (
       props.incompleteNeighborhood !== undefined &&

@@ -8,8 +8,10 @@ export {
   getGPUNetworkCoarseningMaximumWeightedEdgeCapacity,
   GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
   GPU_NETWORK_COARSENING_SUMMARY_WORD,
-  decodeGPUNetworkCoarseningSummary,
+  decodeGPUNetworkCoarseningSummaryWords,
+  decodeGPUNetworkCoarseningSummaryFromBytes,
   type GPUNetworkCoarseningOutput,
   type GPUNetworkCoarseningProps,
   type GPUNetworkCoarseningSummary
 } from './gpu-network-coarsening';
+export type {NetworkReadbackBytes} from '../network-statistics/network-packed-readback';

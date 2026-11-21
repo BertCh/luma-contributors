@@ -4,7 +4,7 @@
 import ts from 'typescript';
 import type {InventoryContract} from './extract-inventory';
 
-/** Select a retained overload from the mode on the actual example call; omitted mode uses its default. */
+/** Select a concrete contract for the mode and required options in an inline example call. */
 export function selectInventoryContract<
   Value extends {props: unknown; outputs?: unknown; overloads?: InventoryContract[]}
 >(inventory: Value, symbol: string, example: string): Value {
@@ -48,18 +48,28 @@ export function selectInventoryContract<
   };
   visit(source);
   if (!found) throw new Error(`${symbol}: no example call found for overload validation`);
-  let matches = inventory.overloads.filter(contract =>
-    mode === undefined ? contract.mode?.optional : contract.mode?.values.includes(mode)
-  );
-  if (matches.length > 1)
-    matches = matches.filter(contract =>
+  const modeMatches = inventory.overloads.flatMap(contract => {
+    const declaredMode = contract.mode;
+    if (
+      !declaredMode ||
+      !(mode === undefined ? declaredMode.optional : declaredMode.values.includes(mode))
+    )
+      return [];
+    return [{contract, modeCount: declaredMode.values.length + Number(declaredMode.optional)}];
+  });
+  // The union overload serves callers with union-typed options. Its merged props cannot validate
+  // a concrete example because fields required by only one route become optional in the union.
+  const narrowestModeCount = Math.min(...modeMatches.map(match => match.modeCount));
+  const matches = modeMatches.filter(
+    ({contract, modeCount}) =>
+      modeCount === narrowestModeCount &&
       contract.props.every(property => property.optional || provided.has(property.name))
-    );
+  );
   if (matches.length !== 1)
     throw new Error(
       `${symbol}: no unique overload for mode ${JSON.stringify(mode ?? '(omitted)')}`
     );
-  return {...inventory, ...matches[0]};
+  return {...inventory, ...matches[0].contract};
 }
 
 /** Output checks shared by the CLI and its regression: nested names refer to their root field. */

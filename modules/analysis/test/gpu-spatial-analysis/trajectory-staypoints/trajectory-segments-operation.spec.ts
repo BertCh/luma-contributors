@@ -7,7 +7,7 @@ import {expect, it} from 'vitest';
 import {CPUTrajectorySegmentsOperation} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/cpu-trajectory-segments-operation';
 import {GPUTrajectorySegmentsOperation} from '../../../src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {getSegmentsFixture, getSegmentsProps} from './trajectory-segments-operation-fixture';
 
 it('refuses omitted candidate destinations before creating either operation graph', () => {
@@ -112,3 +112,79 @@ for (const scene of [
     expect(cpu['triplegCandidateOverflow'][0]).toBe(Number(scene === 'upstream-loss'));
   });
 }
+
+it('parallel trip offsets preserve empty tracks, ordering and retained prefixes across workgroups', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const trackCount = 513;
+  const moving = new Set([1, 257, 512]);
+  const stationary = new Set([0, 256, 511]);
+  const offsets = [0];
+  const positions: number[] = [];
+  const timestamps: number[] = [];
+  const starts: number[] = [];
+  for (let track = 0; track < trackCount; track++) {
+    if (moving.has(track) || stationary.has(track)) {
+      if (moving.has(track)) starts.push(timestamps.length);
+      positions.push(0, 0, moving.has(track) ? 1 : 0, 0);
+      timestamps.push(0, 1);
+    }
+    offsets.push(timestamps.length);
+  }
+  // Hand timeline: the only nonstationary tracks are 1,257,512; each makes one trip.
+  // Other tracks have no rows or a stationary two-row run, hence zero trips.
+  expect(starts).toEqual([2, 6, 10]);
+  for (const [triplegCapacity, tripCapacity, count, required, finalLoss, candidateLoss] of [
+    [6, 5, 3, 3, 0, 0],
+    [6, 2, 2, 3, 1, 0],
+    [2, 5, 2, 2, 0, 1]
+  ]) {
+    const operation = new GPUTrajectorySegmentsOperation({
+      ...getSegmentsProps(triplegCapacity, tripCapacity),
+      rowCount: timestamps.length
+    });
+    const result = await runOperationGraph(device, {
+      inputs: {
+        positions: {format: 'float32x2', values: Float32Array.from(positions)},
+        timestamps: {format: 'float32', values: Float32Array.from(timestamps)},
+        trackOffsets: {format: 'uint32', values: Uint32Array.from(offsets)},
+        staypointIds: {
+          format: 'uint32',
+          values: new Uint32Array(timestamps.length).fill(0xffffffff)
+        },
+        parameters: {format: 'float32', values: Float32Array.of(0, 1, 0, 0)},
+        stayTracks: {format: 'uint32', values: Uint32Array.of(0)},
+        stayStartRows: {format: 'uint32', values: Uint32Array.of(0)},
+        stayFinishRows: {format: 'uint32', values: Uint32Array.of(0)},
+        stayDurations: {format: 'float32', values: Float32Array.of(0)},
+        stayCount: {format: 'uint32', values: Uint32Array.of(0)}
+      },
+      operations: [operation],
+      outputs: [
+        'tripIds',
+        'tripStartRows',
+        'tripFinishRows',
+        'tripCount',
+        'tripRequiredCount',
+        'tripOverflow',
+        'tripCandidateOverflow',
+        'triplegOverflow',
+        'triplegRequiredCount'
+      ]
+    });
+    expect(Array.from(result['tripCount'])).toEqual([count]);
+    expect(Array.from(result['tripRequiredCount'])).toEqual([required]);
+    expect(Array.from(result['tripOverflow'])).toEqual([finalLoss]);
+    expect(Array.from(result['tripCandidateOverflow'])).toEqual([candidateLoss]);
+    expect(Array.from(result['triplegRequiredCount'])).toEqual([3]);
+    expect(Array.from(result['triplegOverflow'])).toEqual([triplegCapacity < 3 ? 1 : 0]);
+    expect(Array.from(result['tripIds']).slice(0, count)).toEqual([1, 257, 512].slice(0, count));
+    expect(Array.from(result['tripStartRows']).slice(0, count)).toEqual([2, 6, 10].slice(0, count));
+    expect(Array.from(result['tripFinishRows']).slice(0, count)).toEqual(
+      [3, 7, 11].slice(0, count)
+    );
+    expect(Array.from(result['tripIds']).slice(count)).toEqual(
+      new Array(tripCapacity - count).fill(0xffffffff)
+    );
+  }
+});

@@ -5,7 +5,7 @@
 export {
   GPUSpatialWeightsMinimumSpanningTree,
   GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS,
-  GPU_MINIMUM_SPANNING_TREE_STATUS
+  GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT
 } from './gpu-spatial-weights-minimum-spanning-tree';
 export type {
   GPUSpatialWeightsMinimumSpanningTreeOutput,
@@ -45,7 +45,7 @@ export {
   GPU_AZP_MAXIMUM_SCAN_DEGREE,
   getGPUAZPMaximumTableWordCount,
   GPU_AZP_REGIONS_PARAMETER_LENGTH,
-  GPU_AZP_STATUS
+  GPU_AZP_STATUS_LAYOUT
 } from './gpu-azp-regions';
 export type {
   GPUAZPRegionsOutput,
@@ -59,7 +59,7 @@ export {
   getGPUWardMaximumRegionTableWordCount,
   GPU_WARD_REGIONS_PARAMETER_LENGTH,
   GPU_WARD_ROUND_COUNT_STATUS_WORD,
-  GPU_WARD_STATUS
+  GPU_WARD_STATUS_LAYOUT
 } from './gpu-ward-regions';
 export type {
   GPUWardMergeSchedule,
@@ -77,7 +77,10 @@ export {
   getGPUMaxPMaximumSlotCount,
   GPU_MAX_P_MAXIMUM_START_COUNT,
   GPU_MAX_P_REGIONS_PARAMETER_LENGTH,
-  GPU_MAX_P_STATUS
+  GPU_MAX_P_STATUS_LAYOUT,
+  GPU_MAX_P_STATUS_WORD_COUNT,
+  GPU_MAX_P_EVIDENCE,
+  decodeGPUMaxPRegionsEvidence
 } from './gpu-max-p-regions';
 export type {
   GPUMaxPRegionsOutput,
@@ -115,3 +118,5 @@ export {GPUAZPRegionsOperation} from './gpu-azp-regions-operation';
 export type {AZPRegionsOperationProps} from './gpu-azp-regions-operation';
 export {GPUMaxPRegionsOperation} from './gpu-max-p-regions-operation';
 export type {MaxPRegionsOperationProps} from './gpu-max-p-regions-operation';
+export {compactRegionLabels} from './compact-region-labels';
+export type {CompactRegionLabelsResult} from './compact-region-labels';

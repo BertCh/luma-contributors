@@ -49,6 +49,7 @@ it('GPUTerrainRuggedness schedules one window kernel and validates props', () =>
       .every(node => node.id.startsWith('tri-'))
   ).toBe(true);
 
+  // @ts-expect-error Empty output is deliberately exercised through the JavaScript guard.
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() =>
     create({output: {roughness: createTransientView(graph, 'short', 'float32', 29)}})
@@ -126,6 +127,7 @@ it('GPUTerrainVectorRuggedness schedules normals and window kernels', () => {
   expect(() => getGPUTerrainVectorRuggednessParameterValues({radius: 0}, unit)).toThrow(/radius/);
   expect(() => getGPUTerrainVectorRuggednessParameterValues({radius: 1.5}, unit)).toThrow(/radius/);
 
+  // @ts-expect-error Empty output is deliberately exercised through the JavaScript guard.
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() => create({maximumRadius: 0})).toThrow(/maximumRadius/);
   expect(() => create({maximumRadius: 1.5})).toThrow(/maximumRadius/);

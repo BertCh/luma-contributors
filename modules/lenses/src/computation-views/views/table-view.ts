@@ -8,6 +8,7 @@ import type {MarkProvenance} from '../types';
 import {h} from '../view-node';
 import type {ViewElementNode} from '../view-node';
 import {getAdapterLabel, getMostConcreteGraph, getRecordCaptures} from './view-utils';
+import {isUnknownCaptureValue} from './capture-missing-values';
 import {getDatumKeySpace, getCaptureFirstKey} from './record-queries';
 
 /** A display table with inferred column types and bounded row count. */
@@ -74,9 +75,11 @@ function summarizeCapture(
   let finiteCount = 0;
   let nanCount = 0;
   let infinityCount = 0;
+  let unknownCount = 0;
   for (let index = 0; index < capture.values.length; index++) {
     const value = capture.values[index];
-    if (Number.isNaN(value)) nanCount++;
+    if (isUnknownCaptureValue(context.record, capture, value)) unknownCount++;
+    else if (Number.isNaN(value)) nanCount++;
     else if (!Number.isFinite(value)) infinityCount++;
     else {
       minimum = Math.min(minimum, value);
@@ -95,8 +98,11 @@ function summarizeCapture(
     max: finiteCount ? maximum : undefined,
     'NaN count': nanCount,
     'Inf count': infinityCount,
+    ...(unknownCount ? {'unknown count': unknownCount} : {}),
     provenance: capture.provenance === 'gpu-replay' ? 'GPU replay' : 'GPU readback'
   };
+  const displayValue = (value: number) =>
+    isUnknownCaptureValue(context.record, capture, value) ? 'unknown' : value;
   const entity = context.bindings.entity;
   if (entity !== undefined) {
     const components = capture.components ?? 1;
@@ -112,8 +118,10 @@ function summarizeCapture(
     row[`value at ${Array.isArray(entity) ? `{${entity.length} keys}` : entity}`] =
       index >= 0 && index + components <= capture.values.length
         ? components === 1
-          ? capture.values[index]
-          : Array.from({length: components}, (_, offset) => capture.values[index + offset])
+          ? displayValue(capture.values[index])
+          : Array.from({length: components}, (_, offset) =>
+              displayValue(capture.values[index + offset])
+            )
         : undefined;
   }
   return row;

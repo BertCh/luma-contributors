@@ -397,7 +397,7 @@ const catchment = addDriveTimeCatchmentRecipe(graph, {
     costBreaks: breaks, parameters,
     raster: {width: 1024, height: 640, mode: '${state.rasterMode}', output: {triangles, triangleBands, status: {count, vertexCount, overflow}}}
   },
-  outputs: {assignments, nodeCosts, demandBands, bands: {keys, counts, sumValues, status: {count, overflow}}}
+  output: {assignments, nodeCosts, demandBands, bands: {keys, counts, sumValues, status: {count, overflow}}}
 });
 // Closed rings of the reached ${state.cellChoice.startsWith('h3') ? 'H3' : 'Quadbin'} cells (resolution ${state.cellChoice.split('-')[1]}):
 graph.add(new GPUNetworkIsochrones({
@@ -415,7 +415,7 @@ const straight = new GPUCommandGraph(device, {id: 'straight'});
 addStraightLineCatchmentsRecipe(straight, {
         spatialContext: network.projection.spatialContext,
   grid, parameters, facilities: {kind: 'points', positions: facilityPositions}, facilityCount, values: populationRaster,
-  mode: '${state.distanceMode}', sumOrder: '${state.sumOrder}', outputs: {allocation, distances, statistics}
+  mode: '${state.distanceMode}', sumOrder: '${state.sumOrder}', output: {allocation, distances, statistics}
 });
 // grid: origin at the south-west corner, rows advance north (planar meters)
 const grid = makeGPURasterMetadata({width, height, cellSize, origin: [minX, minY], rowDirection: 'north'});

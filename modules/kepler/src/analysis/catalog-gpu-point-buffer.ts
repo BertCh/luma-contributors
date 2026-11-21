@@ -177,7 +177,10 @@ function createPointBufferResources(
       parameters: parameterView,
       offsets: output.view,
       verticesPerRing: parameters.segmentsPerQuarter * 4,
-      coordinateSystem: parameters.coordinateSystem === 'EPSG:4326' ? 'geographic' : 'planar'
+      spatialContext:
+        parameters.coordinateSystem === 'EPSG:4326'
+          ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+          : {coordinateSpace: 'planar', metric: 'native'}
     })
   );
   return {output, parameterView};

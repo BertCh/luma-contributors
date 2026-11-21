@@ -281,7 +281,7 @@ export function createNetworkFlowPathNodes<Parameters>(
       id: `${id}-paths`,
       operation: 'GPUNetworkFlow',
       variant: 'reference-path-decomposition',
-      // contract-allow: single-invocation -- optional reference decomposition: construction caps 128 vertices, 1024 edges and 1024 paths; each path saturates at least one edge.
+      // contract-allow: single-invocation -- optional reference decomposition: construction enforces NETWORK_FLOW_REFERENCE_MAXIMUM_NODE_COUNT = 128 and NETWORK_FLOW_REFERENCE_MAXIMUM_EDGE_COUNT = 1024; the edge bound also caps path capacity and extracted paths because each path saturates at least one edge.
       invocationCount: 1,
       workgroupSize: 2,
       bindings: [

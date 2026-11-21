@@ -160,7 +160,7 @@ function createRun(
       queryCount,
       features: featureGeometry,
       featureCount,
-      k: 2,
+      neighborCount: 2,
       capacity,
       leafCapacity: 2 ** Math.ceil(Math.log2(featureCount)),
       spatialSort: true,
@@ -269,7 +269,7 @@ for (const queryKind of ['lines', 'polygons'] as const) {
               features: off.queries.features.slice(0, 3)
             } as NearestOracleGeometry;
             const oracle = nearestNeighborsOracle(finiteQueries, off.features, {
-              k: 2,
+              neighborCount: 2,
               ties: 'all',
               maxDistance: 12,
               featureIds: [100, 101, 102, 103]

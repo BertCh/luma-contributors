@@ -6,6 +6,8 @@ import type {GPUComputationFormulaSymbol} from '@luma-contributors/analysis/comp
 import type {LensRecord} from '../registry/view-registration';
 import type {MarkProvenance} from '../types';
 import {getAllCaptures, getCaptureProvenance, getCaptureValue} from './record-queries';
+import {isUnknownCaptureValue} from './capture-missing-values';
+import {resolveGPUComputationCaptureGraph} from '@luma-contributors/analysis/computation-record';
 
 /** Pass to KaTeX's `macros` option to retain symbol ids as HTML data attributes. */
 export const FORMULA_TEX_MACROS: Readonly<Record<string, string>> = {
@@ -145,26 +147,42 @@ export function resolveSymbolBinding(
     : {status: 'unknown', reason: `${kind} ${target} not found in this record`};
 }
 
-/** Finds the latest resource capture (then a symbol-named capture) and its first component. */
+/** Read a symbol only in one graph and applicable frame; ambiguous bindings stay unavailable. */
 export function getSymbolValueAt(
   record: LensRecord,
   symbol: GPUComputationFormulaSymbol,
-  entity: number
+  entity: number,
+  scope?: {graph: string; iteration?: number}
 ): {value: number; provenance: MarkProvenance; captureId: string} | undefined {
   const captures = getAllCaptures(record);
   const resource = symbol.binding?.startsWith('resource:') ? symbol.binding.slice(9) : undefined;
   const resourceCaptures = resource
     ? captures.filter(capture => capture.resource === resource)
     : [];
-  const candidates = resourceCaptures.length
+  let candidates = resourceCaptures.length
     ? resourceCaptures
     : captures.filter(capture => capture.name === symbol.id);
-  const capture = candidates.sort(
-    (first, second) => (second.iteration ?? Infinity) - (first.iteration ?? Infinity)
-  )[0];
+  const graphs = new Set(
+    candidates.map(candidate => resolveGPUComputationCaptureGraph(record, candidate)?.id)
+  );
+  const graph = scope?.graph ?? (graphs.size === 1 ? [...graphs][0] : undefined);
+  if (!graph) return undefined;
+  candidates = candidates.filter(
+    candidate => resolveGPUComputationCaptureGraph(record, candidate)?.id === graph
+  );
+  if (scope) {
+    const exact = candidates.filter(candidate => candidate.iteration === scope.iteration);
+    candidates = exact.length
+      ? exact
+      : candidates.filter(candidate => candidate.iteration === undefined);
+  } else {
+    const latest = Math.max(...candidates.map(candidate => candidate.iteration ?? Infinity));
+    candidates = candidates.filter(candidate => (candidate.iteration ?? Infinity) === latest);
+  }
+  const capture = candidates.length === 1 ? candidates[0] : undefined;
   if (!capture) return undefined;
   const value = getCaptureValue(capture, entity);
-  return value === undefined
+  return value === undefined || isUnknownCaptureValue(record, capture, value)
     ? undefined
     : {value, provenance: getCaptureProvenance(capture), captureId: capture.id};
 }

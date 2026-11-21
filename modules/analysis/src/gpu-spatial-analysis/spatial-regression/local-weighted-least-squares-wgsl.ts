@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getEquilibratedCholeskyWGSL as getCoreEquilibratedCholeskyWGSL} from '../../analysis-core/kernels/dense-solve-wgsl';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE} from './ordinary-least-squares-parameters';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
@@ -72,23 +73,7 @@ fn getLocalKernelWeight(distance: f32, bandwidth: f32, isBisquare: bool) -> f32 
  * @internal
  */
 export function getEquilibratedCholeskyWGSL(size: number): string {
-  const minimumPivotRatio = getWGSLFloatLiteral(GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE ** 2);
-  return /* wgsl */ `
-fn factorEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>) -> bool {
-  let factorization = factorDenseCholesky_${size}(a, ${size}u, true, ${minimumPivotRatio});
-  *scale = factorization.scale;
-  return factorization.status == 0u;
-}
-
-fn solveEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>, vector: ptr<function, array<f32, ${size}>>) {
-  var factorization = DenseCholesky_${size}(*scale, ${size}u, 0u, 1.0);
-  solveDenseCholesky_${size}(a, &factorization, vector);
-}
-
-fn inverseDiagonalEquilibrated_${size}(a: ptr<function, array<f32, ${size * size}>>, scale: ptr<function, array<f32, ${size}>>, column: u32) -> f32 {
-  return choleskyInverseDiagonal_${size}(a, column) * (*scale)[column] * (*scale)[column];
-}
-`;
+  return getCoreEquilibratedCholeskyWGSL(size, GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE);
 }
 
 /**

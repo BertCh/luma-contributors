@@ -133,8 +133,8 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
     getGPUNeighborSearchParameterValues({
       spatialContext: HOT_SPOT_SPATIAL_CONTEXT,
       bounds,
-      radius: radiusCells * cellMeters,
-      weightKind: 'binary'
+      searchRadius: radiusCells * cellMeters,
+      weightType: 'binary'
     })
   );
   const autocorrelation = kit.parameterBuffer(
@@ -213,7 +213,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
         status: {count: tableCount.view, overflow: tableOverflow.view}
       }
     },
-    outputs: {
+    output: {
       bins: bins.view,
       globalStatistics: globalStatistics.view,
       status: {weightsOverflow: weightsOverflow.view, invalidCount: invalidCount.view},
@@ -295,8 +295,8 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       getGPUNeighborSearchParameterValues({
         spatialContext: HOT_SPOT_SPATIAL_CONTEXT,
         bounds,
-        radius: radiusCells * cellMeters,
-        weightKind: 'binary'
+        searchRadius: radiusCells * cellMeters,
+        weightType: 'binary'
       })
     );
     encoder.markDirty();
@@ -477,7 +477,7 @@ export const buildPeriodComparisonScene: RecipeSceneBuilder = async host => {
       before: {status: {count: beforeTableCount.view}},
       after: {status: {count: afterTableCount.view}}
     },
-    outputs: {
+    output: {
       comparison: {
         cells: unionCells.view,
         delta: delta.view,
@@ -765,7 +765,7 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
     },
     settings: getSettings(),
     parameters: emerging,
-    outputs: {
+    output: {
       category: category.view,
       hotSliceCount: hotSlices.view,
       coldSliceCount: coldSlices.view,

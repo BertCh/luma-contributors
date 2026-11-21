@@ -133,7 +133,7 @@ export function createPolygonJoinRun(
       boundaryRule: options.boundaryRule ?? 'closed',
       output: {
         pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
-        featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
+        polygonAssignmentCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
         status: {
           overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
           candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)

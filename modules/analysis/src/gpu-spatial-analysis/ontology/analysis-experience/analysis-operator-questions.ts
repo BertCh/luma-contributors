@@ -39,8 +39,8 @@ const OPERATOR_QUESTION_OVERRIDES: ReadonlyMap<string, QuestionList> = new Map([
   ['addRateClusterMapRecipe', ['where-significant', 'how-much-per-area']],
   ['addExcessRiskRecipe', ['how-much-per-area', 'where-significant']],
   ['GPUSpatialScanStatistic', ['where-significant', 'where-concentrated']],
-  ['GPUSpatialClustering', ['which-groups-or-regions', 'where-concentrated']],
-  ['GPUHierarchicalDensityClustering', ['which-groups-or-regions', 'where-concentrated']],
+  ['GPUDBSCAN', ['which-groups-or-regions', 'where-concentrated']],
+  ['GPUHDBSCAN', ['which-groups-or-regions', 'where-concentrated']],
   ['GPUOPTICS', ['which-groups-or-regions', 'where-concentrated']],
   ['GPUSpaceTimeHawkes', ['where-concentrated', 'what-changed']],
   // A utilisation distribution is a density of where a tracked animal or vehicle spends time.
@@ -58,7 +58,7 @@ const OPERATOR_QUESTION_OVERRIDES: ReadonlyMap<string, QuestionList> = new Map([
   ['GPUPointInPolygonJoin', ['how-much-per-area']],
   // Change of support moves totals between areas; it lives in a transforming family.
   ['GPUArealInterpolation', ['how-much-per-area']],
-  ['GPUPycnophylactic', ['how-much-per-area', 'value-where-unmeasured']],
+  ['GPUPycnophylacticInterpolation', ['how-much-per-area', 'value-where-unmeasured']],
   ['GPUSpatialCrossValidatedOLS', ['how-related']],
   ['GPUSpatialInteraction', ['how-it-moves', 'how-related']],
   // Raster layers that say what is on the ground, or how a place scores, sit in transforming families.
@@ -89,6 +89,8 @@ const OPERATOR_QUESTION_OVERRIDES: ReadonlyMap<string, QuestionList> = new Map([
   ['addLandscapeMetricsRecipe', ['how-much-per-area']],
   ['addClusterAndOutlineRecipe', ['which-groups-or-regions']],
   ['addBuildingTessellationRecipe', ['prepare-data']],
+  ['addBuildingTessellationReferenceRecipe', ['prepare-data']],
+  ['addLocalBuildingTessellationRecipe', ['prepare-data']],
   ['addFleetDwellRecipe', ['how-it-moves', 'how-much-per-area']],
   ['addPointsInPolygonsChoroplethRecipe', ['how-much-per-area']]
 ] as [string, QuestionList][]);
@@ -111,7 +113,7 @@ const NAME_RULES: readonly NameRule[] = [
   // Preparation that shares words with analyses, and plumbing that only looks like analysis.
   {
     pattern:
-      /GapFill|Prep$|Preparation|Selector$|Renumbering|Export$|Encoder|Decoder|StandardizedIndexCalibration|TerrainBreach|DepressionHierarchy|SpikeRepair|RGBDecode|DEMCoregistration|EmbeddingDequantize|EmbeddingCovariance|EmbeddingProjection|EmbeddingPyramidLevel|SurfacePreparation|StudyWindowPreparation|PolygonRasterization|MapColoring|RasterSieve|ClassAssignment|ClassificationFit|FuzzyContiguity|IslandAttachment|FocalStatistics|RasterSkeleton|RasterMedialAxis|KeyJoin|ColumnProfile|NetworkCostWeights|RollingMean|Whittaker|HANTS|TemporalResample|Composite|BestAvailablePixel|StreamingAccumulator|TrajectoryRestriction|TrackQuality|TrajectorySortCheck|^CellLevelSelection$|^PickRegionMask$|^RegionMask$|^AssuncaoReisStandardization$|^ShapeDescriptors$|^GeometryMeasures$|^NeighborhoodSummary$|^SpatialCrossValidation$|^SpatialWeightsTraces$|^AdjacencyMatrix(Order)?$|^NetworkAnalyticsColumns$|^RasterTemporal$/,
+      /GapFill|Prep$|Preparation|Selector$|Renumbering|Export$|Encoder|Decoder|StandardizedIndexCalibration|TerrainBreach|DepressionHierarchy|SpikeRepair|RGBDecode|DEMCoregistration|EmbeddingDequantize|EmbeddingCovariance|EmbeddingProjection|EmbeddingPyramidLevel|SurfacePreparation|StudyWindowPreparation|PolygonRasterization|MapColoring|RasterSieve|ClassAssignment|ClassificationFit|FuzzyContiguity|IslandAttachment|FocalStatistics|RasterSkeleton|RasterMedialAxis|KeyLookup|ColumnProfile|NetworkCostWeights|RollingMean|Whittaker|HANTS|TemporalResample|Composite|BestAvailablePixel|StreamingAccumulator|TrajectoryRestriction|TrackQuality|TrajectorySortCheck|^CellLevelSelection$|^PickRegionMask$|^RegionMask$|^AssuncaoReisStandardization$|^ShapeDescriptors$|^GeometryMeasures$|^NeighborhoodSummary$|^SpatialCrossValidation$|^SpatialWeightsTraces$|^AdjacencyMatrix(Order)?$|^NetworkAnalyticsColumns$|^RasterTemporal$/,
     questions: ['prepare-data']
   },
   {

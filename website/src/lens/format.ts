@@ -7,9 +7,9 @@ import type {LensResourceBytesKind} from './types.ts';
 export function getResourceBytesKind(
   resources: readonly {bytesKind?: LensResourceBytesKind}[]
 ): LensResourceBytesKind {
+  if (resources.some(resource => resource.bytesKind === 'unavailable')) return 'unavailable';
   if (resources.some(resource => !resource.bytesKind || resource.bytesKind === 'unspecified'))
     return 'unspecified';
-  if (resources.some(resource => resource.bytesKind === 'unavailable')) return 'unavailable';
   if (resources.some(resource => resource.bytesKind === 'estimated')) return 'estimated';
   return resources.some(resource => resource.bytesKind === 'lower-bound')
     ? 'lower-bound'
@@ -35,7 +35,7 @@ export function formatResourceBytes(bytes: number, bytesKind?: LensResourceBytes
 export function formatResourceCount(resources: {count: number; inventoryKnown?: boolean}): string {
   return resources.inventoryKnown === false
     ? 'inventory unavailable'
-    : `${formatCount(resources.count)} buffers`;
+    : `${formatCount(resources.count)} ${resources.count === 1 ? 'resource' : 'resources'}`;
 }
 
 export function formatBytes(bytes: number): string {

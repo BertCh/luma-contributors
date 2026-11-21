@@ -362,3 +362,47 @@ it('GPUTerrainFlow rejects routing scratch above the binding limit at getCommand
   declarations.mockRestore();
   device.destroy();
 });
+
+it('R1-N1 captures inherited output and nested status getters exactly once', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const grid = makeGPURasterMetadata({width: 1, height: 1});
+  const directions = createTransientView(graph, 'inherited-directions', 'uint32', 1);
+  const converged = createTransientView(graph, 'inherited-converged', 'uint32', 1);
+  let dataReads = 0;
+  let statusReads = 0;
+  let convergedReads = 0;
+  class Status {
+    get fillConverged() {
+      convergedReads++;
+      return converged;
+    }
+  }
+  const status = new Status();
+  class Output {
+    get flowDirections() {
+      dataReads++;
+      return directions;
+    }
+    get status() {
+      statusReads++;
+      return status;
+    }
+  }
+  try {
+    const flow = new GPUTerrainFlow({
+      grid,
+      elevation: makeGPURasterBand(createTransientView(graph, 'elevation', 'float32', 1), grid),
+      parameters: createTransientView(graph, 'parameters', 'float32', 8),
+      fillDepressions: true,
+      output: new Output()
+    });
+    expect(flow.props.output.flowDirections).toBe(directions);
+    expect(flow.props.output.status?.fillConverged).toBe(converged);
+    expect([dataReads, statusReads, convergedReads]).toEqual([1, 1, 1]);
+    expect(flow.getCommandNodes(graph).length).toBeGreaterThan(0);
+    expect([dataReads, statusReads, convergedReads]).toEqual([1, 1, 1]);
+  } finally {
+    device.destroy();
+  }
+});

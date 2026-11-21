@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
+import {ValueCubeRig} from '../value-cube/value-cube-rig';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -27,7 +28,7 @@ import {
   readFloat32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const NOW = 1_700_000_000_000n;
 const YEAR = 365n * 24n * 3600n * 1000n;
@@ -93,11 +94,16 @@ async function runWordFilter(
     starts: readonly bigint[];
     ends?: readonly bigint[];
     windows: readonly GPUTimeWindowFilterWordSettings[];
+    validity?: readonly number[];
+    sorted?: boolean;
+    sourceRowOffset?: number;
     withFade?: boolean;
     withClip?: boolean;
     chunkSize?: number;
   }
-): Promise<{mask: number[]; ids: number[]; weights: number[]; clip: number[]}[]> {
+): Promise<
+  {mask: number[]; ids: number[]; weights: number[]; clip: number[]; sourceRows?: number[]}[]
+> {
   const rows = props.starts.length;
   const buffers: Buffer[] = [];
   const track = (buffer: Buffer): Buffer => {
@@ -157,6 +163,8 @@ async function runWordFilter(
     length: GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
     values: getGPUTimeWindowFilterWordParameterValues(props.windows[0])
   });
+  const sourceRowsBuffer =
+    props.sourceRowOffset === undefined ? undefined : track(createOutputBuffer(device, rows));
   const maskBuffer = track(createOutputBuffer(device, rows));
   const idsBuffer = track(createOutputBuffer(device, rows));
   const countBuffer = track(createOutputBuffer(device, 1));
@@ -166,11 +174,44 @@ async function runWordFilter(
     : importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows);
   graph.add(
     new GPUTimeWindowFilter({
+      sorted: props.sorted,
+      sourceIds:
+        props.sourceRowOffset === undefined
+          ? undefined
+          : importGraphBuffer(
+              graph,
+              'original-source-rows',
+              track(
+                createInputBuffer(
+                  device,
+                  Uint32Array.from({length: rows}, (_, row) => row + props.sourceRowOffset!)
+                )
+              ),
+              'uint32',
+              rows
+            ),
       timestamps: importWords('starts', props.starts),
+      additionalPredicates: props.validity
+        ? [
+            {
+              kind: 'selection',
+              mask: importGraphBuffer(
+                graph,
+                'time-validity',
+                track(createInputBuffer(device, Uint32Array.from(props.validity))),
+                'uint32',
+                rows
+              )
+            }
+          ]
+        : undefined,
       endTimestamps: props.ends ? importWords('ends', props.ends) : undefined,
       window: window.importToGraph(graph),
       output: {
         rows: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', rows),
+        ids: sourceRowsBuffer
+          ? importGraphBuffer(graph, 'source-rows', sourceRowsBuffer, 'uint32', rows)
+          : undefined,
         status: {
           count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
           overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
@@ -192,6 +233,9 @@ async function runWordFilter(
     results.push({
       mask,
       ids,
+      sourceRows: sourceRowsBuffer
+        ? await readCompactIds(sourceRowsBuffer, countBuffer)
+        : undefined,
       weights: weightOutput ? await readChunks(weightOutput.buffers, rows) : [],
       clip: clipOutput ? await readChunks(clipOutput.buffers, rows * 2) : []
     });
@@ -475,4 +519,104 @@ it('GPUTimeWindowFilter validates word and float inputs', async () => {
     buffer.destroy();
   }
   for (const buffer of [wordWindow, shortWordWindow, floatWindow]) buffer.destroy();
+});
+
+it('nullable word times preserve epoch zero with leading and trailing nulls (UDF-07)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Arrow null slots and a genuine epoch both upload as zero words. Only validity distinguishes them.
+  for (const fixture of [
+    {starts: [0n, 0n, 10n], validity: [0, 1, 1], expected: [1]},
+    {starts: [0n, 10n, 0n], validity: [1, 1, 0], expected: [0]}
+  ]) {
+    const [result] = await runWordFilter(device, {...fixture, windows: [{start: 0n, end: 0n}]});
+    expect(result.ids).toEqual(fixture.expected);
+    expect(result.ids.length).toBe(1);
+  }
+});
+
+it('sorted all-valid slices retain their original source rows explicitly (UDF-07)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Caller has proved rows [1,3) of [null,0n,10n] are all valid and sorted.
+  // Rows remain local to that slice; sourceIds retains the original source offset.
+  const [result] = await runWordFilter(device, {
+    starts: [0n, 10n],
+    sorted: true,
+    sourceRowOffset: 1,
+    windows: [{start: 0n, end: 0n}]
+  });
+  expect(result.ids).toEqual([0]);
+  expect(result.sourceRows).toEqual([1]);
+});
+
+it('composes foreign vector optional ports with nullable word selection (B1)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new ValueCubeRig(device);
+  let serial = 0;
+  // A foreign published vector shape: browser tests cannot require a second CommonJS module.
+  // The Node regression independently uses genuine CJS constructors with the same chunk handles.
+  const foreignChunks = (view: GraphDataView<'uint32'>): GraphVectorView<'uint32'> => ({
+    ...createVectorView(`foreign-port-${serial++}`, 'uint32', [
+      rig.graph.createDataView(view.buffer, {
+        format: 'uint32',
+        length: 2,
+        byteOffset: view.byteOffset
+      }),
+      rig.graph.createDataView(view.buffer, {
+        format: 'uint32',
+        length: 3,
+        byteOffset: view.byteOffset + 8
+      })
+    ])
+  });
+  const rows = rig.output('uint32', 5);
+  const ids = rig.output('uint32', 5);
+  const mask = rig.output('uint32', 5);
+  const tracks = rig.output('uint32', 2);
+  const count = rig.output('uint32', 1);
+  const overflow = rig.output('uint32', 1);
+  const requiredCount = rig.output('uint32', 1);
+  rig.run(
+    new GPUTimeWindowFilter({
+      timestamps: (() => {
+        const words = rig.input(
+          getInt64TimeWords(BigInt64Array.from([0n, 0n, 10n, 0n, 20n])),
+          'uint32x2'
+        );
+        return createVectorView('nullable-times', 'uint32x2', [
+          rig.graph.createDataView(words.buffer, {format: 'uint32x2', length: 2}),
+          rig.graph.createDataView(words.buffer, {format: 'uint32x2', length: 3, byteOffset: 16})
+        ]);
+      })(),
+      window: rig.input(getGPUTimeWindowFilterWordParameterValues({start: 0n, end: 0n}), 'uint32'),
+      additionalPredicates: [
+        {
+          kind: 'selection',
+          mask: foreignChunks(rig.input(new Uint32Array([0, 7, 1, 3, 1]), 'uint32'))
+        }
+      ],
+      sourceIds: foreignChunks(rig.input(new Uint32Array([50, 51, 52, 53, 54]), 'uint32')),
+      trackIds: foreignChunks(rig.input(new Uint32Array([0, 0, 1, 1, 1]), 'uint32')),
+      output: {
+        rows,
+        ids,
+        outputMask: foreignChunks(mask),
+        trackVisibleCounts: tracks,
+        status: {count, overflow, requiredCount}
+      }
+    })
+  );
+  try {
+    expect(await rig.readUint(count)).toEqual([2]);
+    expect(await rig.readUint(requiredCount)).toEqual([2]);
+    expect(await rig.readUint(overflow)).toEqual([0]);
+    expect((await rig.readUint(rows)).slice(0, 2)).toEqual([1, 3]);
+    expect((await rig.readUint(ids)).slice(0, 2)).toEqual([51, 53]);
+    expect(await rig.readUint(mask)).toEqual([0, 1, 0, 1, 0]);
+    expect(await rig.readUint(tracks)).toEqual([1, 1]);
+  } finally {
+    rig.destroy();
+  }
 });

@@ -130,7 +130,7 @@ it('final1 buffer selection preserves a getter-backed caller ID 42 at query row 
         kind: 'points',
         positions: fixture.importInput('feature', Float32Array.of(0, 0), 'float32x2', 1)
       },
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 1,
       output: {
         matches: {
@@ -316,7 +316,7 @@ it('GPUBufferSelection selects points near polylines and follows a per-frame dis
         )
       },
       features: getSegmentFeatures(fixture, segments),
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 200000,
       output: {
         outputMask: outputMask.view,
@@ -409,7 +409,7 @@ it('GPUBufferSelection selects points near point features without source IDs', a
           featurePositions.length
         )
       },
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 100000,
       output: {
         matches: {
@@ -462,7 +462,7 @@ it('GPUBufferSelection treats distance <= radius as inclusive on exact boundarie
         )
       },
       features: getSegmentFeatures(fixture, segments),
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 64,
       output: {outputMask: outputMask.view}
     })
@@ -516,7 +516,7 @@ it('GPUBufferSelection preserves chunked points for the mask and source IDs', as
         )
       },
       features: getSegmentFeatures(fixture, segments),
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 100000,
       output: {
         outputMask: createVectorView(
@@ -568,7 +568,7 @@ it('GPUBufferSelection clamps output and reports overflow when capacity is too s
         )
       },
       features: getSegmentFeatures(fixture, segments),
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 100000,
       output: {
         drawInstanceCount: drawInstanceCount.view,
@@ -622,7 +622,7 @@ it('GPUBufferSelection drawInstanceCount follows the per-frame distance and need
       new GPUBufferSelection({
         points: pointsView,
         features,
-        distance,
+        radius: distance,
         candidateCapacity: 100000,
         output: {
           outputMask: fixture.importOutput('mask', points.length).view,
@@ -634,7 +634,7 @@ it('GPUBufferSelection drawInstanceCount follows the per-frame distance and need
     new GPUBufferSelection({
       points: pointsView,
       features,
-      distance,
+      radius: distance,
       candidateCapacity: 100000,
       output: {
         drawInstanceCount: drawInstanceCount.view,
@@ -683,7 +683,7 @@ it('GPUBufferSelection reports join overflow when candidateCapacity is too small
         )
       },
       features: getSegmentFeatures(fixture, segments),
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 2,
       output: {
         matches: {
@@ -739,7 +739,7 @@ it('GPUBufferSelection uses kilometers for great-circle distances and the buffer
         kind: 'points',
         positions: fixture.importInput('feature', Float32Array.of(0, 0), 'float32x2', 1)
       },
-      distance: fixture.distance.importToGraph(fixture.graph),
+      radius: fixture.distance.importToGraph(fixture.graph),
       candidateCapacity: 3,
       output: {outputMask: mask.view, distances: distances.view}
     })

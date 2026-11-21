@@ -16,12 +16,14 @@ import {
   getGPUNeighborSearchParameterValues,
   GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
+  GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA,
   GPUEmergingHotSpots,
   GPUNeighborSearch,
   type GPUSpaceTimeHotSpotsRecipeSettings,
   type GPUSpatialWeightsOutput
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {
+  packGPUSpatialParameterValues,
   type GPUInferenceMetadata,
   type GPUMultipleTestingMethod
 } from '@luma-contributors/analysis/analysis-core';
@@ -430,7 +432,7 @@ export async function createEmergingHotSpots(
         cellMask: v('cell-mask', cellMaskBuffer, 'uint32', cellCount),
         settings,
         parameters: hotSpotParameters,
-        outputs: {
+        output: {
           cube: v('counts', counts, 'uint32', binCount),
           giZScores: v('gi-z', giZ, 'float32', binCount),
           trendZ: v('trend-z', trendZ, 'float32', cellCount),
@@ -567,25 +569,32 @@ export async function createEmergingHotSpots(
       current.inference = current.applySettings(getHotSpotSettings());
       publishInference();
     }
+    const searchBounds = [
+      bounds[0] - CELL_METERS,
+      bounds[1] - CELL_METERS,
+      bounds[2] + CELL_METERS,
+      bounds[3] + CELL_METERS
+    ] as const;
+    const searchRadius = options.radius * CELL_METERS;
+    // A zero cutoff emits an empty CSR. Gi* adds the focal cell's self weight separately.
     searchParameters.write(
-      getGPUNeighborSearchParameterValues({
-        bounds: [
-          bounds[0] - CELL_METERS,
-          bounds[1] - CELL_METERS,
-          bounds[2] + CELL_METERS,
-          bounds[3] + CELL_METERS
-        ],
-        radius: options.radius * CELL_METERS,
-        weightKind:
-          options.weightKind === 'inverse-distance'
-            ? 'inverseDistance'
-            : options.weightKind === 'kernel'
-              ? 'kernel'
-              : 'binary',
-        power: 1,
-        distanceFloor: CELL_METERS / 2,
-        kernel: 'triangular'
-      })
+      searchRadius === 0
+        ? packGPUSpatialParameterValues(GPU_NEIGHBOR_SEARCH_PARAMETER_SCHEMA, {
+            minimumX: searchBounds[0],
+            minimumY: searchBounds[1],
+            maximumX: searchBounds[2],
+            maximumY: searchBounds[3],
+            maximumDistance: 0
+          })
+        : getGPUNeighborSearchParameterValues({
+            mode: 'radius',
+            bounds: searchBounds,
+            searchRadius,
+            weightType: options.weightKind,
+            power: 1,
+            distanceFloor: CELL_METERS / 2,
+            kernel: 'triangular'
+          })
     );
     dirty = true;
   }

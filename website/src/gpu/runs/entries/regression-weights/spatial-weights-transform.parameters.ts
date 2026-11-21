@@ -12,7 +12,7 @@ export const parameters: GpuSceneParameter[] = [
     max: 5,
     step: 1,
     default: 2,
-    options: ['row', 'binary', 'kernel', 'double', 'variance', 'symmetrize']
+    options: ['row', 'binary', 'kernel', 'double', 'variance', 'average-reciprocal']
   },
   {
     id: 'kernel',

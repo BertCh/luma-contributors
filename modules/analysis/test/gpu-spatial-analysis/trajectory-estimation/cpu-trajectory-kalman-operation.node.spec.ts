@@ -283,7 +283,11 @@ it('returns status 4 for invalid parameter values, rather than throwing', () => 
 
 it('clamps track offsets and leaves unowned rows zero, including no-track input', () => {
   const input = createInput();
-  for (const trackOffsets of [Uint32Array.of(999), Uint32Array.of(999, 1000)]) {
+  for (const trackOffsets of [
+    Uint32Array.of(999),
+    Uint32Array.of(999, 1000),
+    Uint32Array.of(999, 999, 1000)
+  ]) {
     const result = computeTrajectoryKalmanOnCPU({...input, trackOffsets}, {smooth: true});
     for (const values of Object.values(result))
       expect(values!.every(value => value === 0)).toBe(true);

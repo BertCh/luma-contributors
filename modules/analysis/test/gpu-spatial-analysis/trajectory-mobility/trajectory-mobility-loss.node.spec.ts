@@ -237,14 +237,14 @@ it('snapshots loss maps once and suppresses actual modal kernels on either flag'
         status
       },
       modeCount: 1,
-      modeSpeedBreaks: [Infinity],
+      modeSpeedUpperBoundsFloat32: [Infinity],
       metric: 'count' as const,
       output
     };
     const contributor = new GPUModalSplit(props);
     expect(reads).toBe(1);
     status.overflow = view('uint32');
-    props.modeSpeedBreaks[0] = 1;
+    props.modeSpeedUpperBoundsFloat32[0] = 1;
     const originalOutput = output.modalSplit;
     output.modalSplit = view('float32', 2);
     recordWGSLKernelNodes(graph);

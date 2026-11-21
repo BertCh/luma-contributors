@@ -4,7 +4,12 @@
 
 import {getGraphOutputViews as getRasterPreflightOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createFillNode,
@@ -22,6 +27,7 @@ import {
   validateRasterAlgebraView
 } from './raster-algebra-utils';
 import {GPU_RASTER_RECLASSIFY_PARAMETER_LENGTH} from './reclassify-parameters';
+import type {RasterAlgebraAtLeastOne} from './raster-algebra-output';
 
 import {
   getRasterAlgebraInputNodes,
@@ -37,14 +43,14 @@ const OPERATION = 'GPURasterReclassify';
 const CLASSIFY_WORKGROUP_SIZE = 256;
 
 /** Caller-owned outputs of {@link GPURasterReclassify}. Provide any non-empty subset. */
-export type GPURasterReclassifyOutput = {
+export type GPURasterReclassifyOutput = RasterAlgebraAtLeastOne<{
   /** Class per row: the number of breaks below the value, `0xffffffff` for nodata rows. */
   classes?: GraphDataView<'uint32'>;
   /** `classValues[class]` per row, NaN for nodata rows. Requires `classValues`. */
   reclassified?: GraphDataView<'float32'>;
   /** Rows per class, `maximumBreakCount + 1` rows; nodata rows are not counted. */
   classCounts?: GraphDataView<'uint32'>;
-};
+}>;
 
 /**
  * Properties for {@link GPURasterReclassify}.
@@ -73,6 +79,11 @@ export type GPURasterReclassifyProps = {
   classValues?: GraphDataView<'float32'>;
   /** Per-frame float32 view written with `getGPURasterReclassifyParameterValues`. */
   parameters: GraphDataView<'float32'>;
+  /** Optional exact uint32 active count (one word), clamped to breaks.length. Overrides
+   * parameters[0]; pack breakCount: 0 in the float32 parameters when using this route.
+   * Write with Uint32Array.of(count). Supports counts beyond float32 integer precision.
+   */
+  activeBreakCount?: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPURasterReclassifyOutput;
 };
@@ -109,6 +120,7 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     validateRasterAlgebraView(id, 'mask', props.mask, 'uint32', this.rowCount);
     validateRasterAlgebraView(id, 'breaks', props.breaks, 'float32', 1);
     this.maximumBreakCount = props.breaks.length;
+    validateRasterAlgebraView(id, 'activeBreakCount', props.activeBreakCount, 'uint32', 1);
     validateRasterAlgebraView(
       id,
       'classValues',
@@ -156,7 +168,8 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
         mask: props.mask,
         breaks: props.breaks,
         classValues: props.classValues,
-        parameters: props.parameters
+        parameters: props.parameters,
+        activeBreakCount: props.activeBreakCount
       }
     );
   }
@@ -167,13 +180,19 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const storageProps = this.props;
     validateRasterAlgebraInputBindings(graph, this.id, [storageProps.values], storageProps.grid);
-    validateRasterStorageBindings(graph, this.id, [
-      storageProps.mask,
-      storageProps.breaks,
-      storageProps.classValues,
-      storageProps.parameters,
-      ...getRasterPreflightOutputViews(storageProps.output)
-    ]);
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.mask,
+        storageProps.breaks,
+        storageProps.classValues,
+        storageProps.parameters,
+        storageProps.activeBreakCount,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {'exact count and closure': storageProps.activeBreakCount ? 8 : 0}
+    );
 
     const {id, props, rowCount, maximumBreakCount} = this;
     const {output} = props;
@@ -183,12 +202,33 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
       props.breaks,
       props.classValues,
       props.parameters,
+      props.activeBreakCount,
       output.classes,
       output.reclassified,
       output.classCounts
     ]);
     const source = getRasterAlgebraInputNodes(graph, `${id}-input`, props.values, props.grid);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
+    // Merge both per-frame controls on the GPU so maximal classification still binds eight
+    // storage buffers. This preserves the exact count and rereads closure on every submission.
+    const exactParameters = props.activeBreakCount
+      ? createTransientView(graph, `${id}-exact-parameters`, 'uint32', 2)
+      : undefined;
+    if (props.activeBreakCount && exactParameters) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-pack-exact-parameters`,
+          operation: OPERATION,
+          invocationCount: 2,
+          bindings: [
+            {name: 'activeBreakCount', view: props.activeBreakCount, type: 'u32', access: 'read'},
+            {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
+            {name: 'packed', view: exactParameters, type: 'u32', access: 'read_write'}
+          ],
+          body: 'if(index==0u){packed[packedOffset]=activeBreakCount[activeBreakCountOffset];}else{packed[packedOffset+1u]=u32(parameters[parametersOffset+1u]!=0.0);}'
+        })
+      );
+    }
     if (output.classCounts) {
       nodes.push(
         createFillNode<Parameters>(graph, {
@@ -207,7 +247,12 @@ export class GPURasterReclassify implements GPUCommandNodeProducer {
     const bindings: WGSLKernelBinding[] = [
       {name: 'source', view: source.values, type: 'f32', access: 'read'},
       {name: 'breaks', view: props.breaks, type: 'f32', access: 'read'},
-      {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
+      {
+        name: 'params',
+        view: exactParameters ?? props.parameters,
+        type: exactParameters ? 'u32' : 'f32',
+        access: 'read'
+      }
     ];
     if (props.mask) {
       bindings.push({name: 'validity', view: props.mask, type: 'u32', access: 'read'});
@@ -263,9 +308,13 @@ ${getBreakSearchWGSL('countBreaksBelow', 'breaks')}`,
   let value = source[sourceOffset + index];
   var isValid = !isNoDataValue(value);
   ${props.mask ? 'isValid = isValid && validity[validityOffset + index] != 0u;' : ''}
-  let breakCountValue = params[paramsOffset];
-  let breakCount = min(u32(clamp(select(0.0, breakCountValue, isFiniteValue(breakCountValue)), 0.0, 4294967040.0)), MAXIMUM_BREAK_COUNT);
-  let closedRight = params[paramsOffset + 1u] != 0.0;
+  ${
+    props.activeBreakCount
+      ? 'let breakCount = min(params[paramsOffset], MAXIMUM_BREAK_COUNT);'
+      : `let breakCountValue = params[paramsOffset];
+  let breakCount = min(u32(clamp(select(0.0, breakCountValue, isFiniteValue(breakCountValue)), 0.0, 4294967040.0)), MAXIMUM_BREAK_COUNT);`
+  }
+  let closedRight = params[paramsOffset + 1u] != ${exactParameters ? '0u' : '0.0'};
   var classIndex = NO_DATA_CLASS;
   if (isValid) {
     classIndex = countBreaksBelow(0u, breakCount, value, closedRight);

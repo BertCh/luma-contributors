@@ -28,6 +28,7 @@ import {
 } from './gpu-space-time-diggle-test';
 import {
   GPUSpaceTimeDiggleTestOperation,
+  snapshotSpaceTimeDiggleOperationProps,
   type SpaceTimeDiggleTestOperationProps
 } from './gpu-space-time-diggle-test-operation';
 import {
@@ -329,7 +330,8 @@ export function computeSpaceTimeDiggleTestOnCPU(
 
 /** CPU twin, without GPU class/histogram/permutation or node-budget limits. */
 export class CPUSpaceTimeDiggleTestOperation extends GPUCPUOperation {
-  constructor(props: SpaceTimeDiggleTestOperationProps) {
+  constructor(inputProps: SpaceTimeDiggleTestOperationProps) {
+    const props = snapshotSpaceTimeDiggleOperationProps(inputProps);
     const operation = new GPUSpaceTimeDiggleTestOperation(props);
     const {id} = operation;
     validateCapacity(id, 'rowCount', props.rowCount);

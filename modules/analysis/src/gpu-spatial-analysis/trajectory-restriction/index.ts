@@ -15,6 +15,7 @@ export {
 } from './cpu-trajectory-restriction-operation';
 export type {
   CPUTrajectoryRestrictionInput,
+  CPUTrajectoryRestrictionGraphInput,
   CPUTrajectoryRestrictionOptions,
   CPUTrajectoryRestrictionResult
 } from './cpu-trajectory-restriction-operation';

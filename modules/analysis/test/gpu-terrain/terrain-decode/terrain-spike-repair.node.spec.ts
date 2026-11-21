@@ -6,7 +6,6 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   GPU_TERRAIN_SPIKE_REPAIR_STATISTICS,
-  GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED,
   GPUTerrainSpikeRepair,
   type GPUTerrainSpikeRepairOutput,
   type GPUTerrainSpikeRepairProps
@@ -172,11 +171,12 @@ it('review C-09: unconverged labelling marks the repaired outputs instead of cop
     maximumComponentIterations: 1
   }).getCommandNodes(graph);
   const sources = getRasterPipelines(nodes).map(pipeline => pipeline.source);
-  // Before: an unconverged run copied the input, which reads as "nothing to repair".
+  // Output validity is a usability flag. A nonzero unresolved label sentinel would
+  // incorrectly admit the unusable +Infinity height to every downstream consumer.
   expect(
     sources.some(source =>
-      source.includes(
-        `validityOut[validityOutOffset + index] = ${GPU_TERRAIN_SPIKE_REPAIR_UNRESOLVED}u;`
+      /if \(converged\[convergedOffset\] == 0u\) \{[^}]*validityOut\[validityOutOffset \+ index\] = 0u;/.test(
+        source
       )
     )
   ).toBe(true);

@@ -12,6 +12,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -79,19 +80,17 @@ export function validateSpaceTimeStopping(
   permutationCount: GraphDataView<'uint32'> | undefined
 ): void {
   if (stopAfterExceedances === undefined) {
-    if (permutationCount) {
-      throw new Error(`${id} output.permutationCount needs stopAfterExceedances`);
-    }
+    validateRequirement(
+      id,
+      !permutationCount,
+      'output.permutationCount needs stopAfterExceedances'
+    );
     return;
   }
   validateCapacity(id, 'stopAfterExceedances', stopAfterExceedances, 1, maximumPermutations);
-  if (!permutationCount) {
-    throw new Error(`${id} stopAfterExceedances needs output.permutationCount`);
-  }
+  validateRequirement(id, !!permutationCount, 'stopAfterExceedances needs output.permutationCount');
   validateSinglePackedView(permutationCount, ['uint32'], `${id} output.permutationCount`);
-  if (permutationCount.length < 1) {
-    throw new Error(`${id} output.permutationCount needs 1 row`);
-  }
+  validateRequirement(id, !(permutationCount.length < 1), 'output.permutationCount needs 1 row');
 }
 
 /** Node ID and gate of one batch kernel, passed to the callbacks of {@link createSpaceTimeStoppingNodes}. @internal */
@@ -113,6 +112,10 @@ export type SpaceTimeStoppingProps<Parameters> = {
   statisticType: 'u32' | 'f32';
   parameters: GraphDataView<'uint32'>;
   statistics: GraphDataView<'uint32' | 'float32'>;
+  /** Optional finite 0/1 comparison stream; observed slot is 1. */
+  comparisonStatistics?: GraphDataView<'float32'>;
+  /** Builds finite comparison flags in parallel before the unchanged scalar prefix scan. */
+  createComparisonNode?: (batch: SpaceTimeBatchNodeProps<Parameters>) => GPUCommandNode<Parameters>;
   /** Transient `uint32` view of {@link SPACE_TIME_STATE_LENGTH} words. */
   state: GraphDataView<'uint32'>;
   /** Output of `getSpaceTimeCommonWGSL`. */
@@ -142,6 +145,7 @@ export function createSpaceTimeStoppingNodes<Parameters>(
   props: SpaceTimeStoppingProps<Parameters>
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, state, statistics, parameters, common} = props;
+  const comparisonStatistics = props.comparisonStatistics ?? statistics;
   const batchSize = getSpaceTimeStoppingBatchSize(props.slotCount);
   const batchCount = Math.ceil(props.slotCount / batchSize);
   const gate = createWGSLDispatchGate<Parameters>(graph, {
@@ -181,13 +185,21 @@ export function createSpaceTimeStoppingNodes<Parameters>(
     nodes.push(
       props.createPartialsNode(gateNode(`${id}-batch-${batch}-partials`, 0)),
       props.createReduceNode(gateNode(`${id}-batch-${batch}-reduce`, 1)),
+      ...(props.createComparisonNode
+        ? [props.createComparisonNode(gateNode(`${id}-batch-${batch}-compare`, 1))]
+        : []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-batch-${batch}-scan`,
         operation,
         variant: 'stop-scan',
         bindings: [
           {name: 'parameters', view: parameters, type: 'u32', access: 'read'},
-          {name: 'statistics', view: statistics, type: props.statisticType, access: 'read'},
+          {
+            name: 'statistics',
+            view: comparisonStatistics,
+            type: props.statisticType,
+            access: 'read'
+          },
           stateBinding('read_write'),
           gate.binding
         ],

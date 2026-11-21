@@ -823,7 +823,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         getGPUVariogramParameterValues({
           bounds,
           maximumDistance,
-          azimuthOffset: toRadians(azimuthDegrees)
+          sectorOffsetRadians: toRadians(azimuthDegrees)
         })
       );
       parameterBuffers.correlogram.write(
@@ -832,7 +832,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       parameterBuffers.indices.write(
         getGPUPointPatternIndicesParameterValues({
           bounds,
-          maximumDistance,
+          indexCellSizeHint: maximumDistance,
           clarkEvansCorrection: 'guard',
           guardDistance
         })
@@ -1126,7 +1126,8 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       }))
     });
     context.controls.addNote(
-      'Discs are mean centres; circles are standard distances, ellipses the standard deviational ' +
+      'CPU window refresh requests include discarded request encodings; window preparation kernels replay every encoding against retained geometry. ' +
+        'Discs are mean centres; circles are standard distances, ellipses the standard deviational ' +
         'ellipse. Charts: Ripley L(r) - r (above 0 is clustered), G and F against the complete-spatial-randomness curve and J (below 1 is clustered), the empirical semivariogram ' +
         '(points sized by pair count) with its fitted model and the variance as sill, and ' +
         "Moran's I per distance band (filled where |z| > 1.96)."
@@ -1157,7 +1158,9 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
     const intensityReadout = context.controls.addReadout('Intensity (points / km² of window)');
     const landShareReadout = context.controls.addReadout('Land share of view rectangle');
     const guardReadout = context.controls.addReadout('Clark-Evans guard distance');
-    const preparationReadout = context.controls.addReadout('Pattern variants / window builds');
+    const preparationReadout = context.controls.addReadout(
+      'Pattern variants / CPU window refresh requests'
+    );
     const clarkEvansReadout = context.controls.addReadout(
       'Clark-Evans R (z, two-sided p, edge corrected)'
     );

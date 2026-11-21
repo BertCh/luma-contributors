@@ -4,10 +4,16 @@
 
 export {
   GPUTrackSimilarity,
+  decodeGPUTrackSimilarityPairStatus,
+  decodeGPUTrackSimilarityStatus,
   GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT,
   GPU_TRACK_SIMILARITY_STATUS
 } from './gpu-track-similarity';
-export type {GPUTrackSimilarityOutput, GPUTrackSimilarityProps} from './gpu-track-similarity';
+export type {
+  GPUTrackSimilarityOutput,
+  GPUTrackSimilarityProps,
+  GPUTrackSimilarityPairStatus
+} from './gpu-track-similarity';
 export {GPUTrackSimilaritySearch} from './gpu-track-similarity-search';
 export type {GPUTrackSimilaritySearchProps} from './gpu-track-similarity-search';
 

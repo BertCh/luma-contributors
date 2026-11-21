@@ -18,6 +18,7 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateRequirement,
   validateCommandNodeBudget,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
@@ -31,7 +32,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {
   type GPUSpatialWeights,
-  validateGPUSpatialWeights,
   getGPUSpatialWeightsViews
 } from '../spatial-weights/spatial-weights';
 import {getCholeskyWGSL, getPivotLimitedCholeskyWGSL} from './spatial-regression-solve';
@@ -42,14 +42,32 @@ import {
   getRowTileSumNodes,
   REGRESSION_TILE_MAXIMUM_ROW_COUNT
 } from './regression-row-tiles';
+import {
+  getProbitSpatialLagNodes,
+  getProbitWeightsFailureStatusEntries,
+  getProbitStatusFailureComparison,
+  getProbitWeightsStatusSummary,
+  PROBIT_SPATIAL_LAG_COMMAND_NODE_COUNT,
+  validateProbitSpatialLagStorage,
+  validateProbitSpatialWeights,
+  getProbitWeightsStatusNodeCount
+} from './probit-spatial-lag-nodes';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+import {
+  getGPUProbitConvergenceThreshold,
+  PROBIT_STEP_VERDICT_WGSL,
+  resolveProbitConvergenceTolerance
+} from './probit-convergence';
 
 const OPERATION = 'GPUProbitRegression';
+/** Three statistic/probability pairs in the spatial diagnostic output. */
+export const GPU_PROBIT_SPATIAL_DIAGNOSTIC_FIELD_COUNT = 6;
 /** Largest predictor count: the 12 x 12 information matrix is factored in one invocation. */
 const MAXIMUM_PREDICTOR_COUNT = 11;
 /** Largest `maximumIterations`: bounds the unrolled Fisher-scoring nodes (6 per iteration). */
 const MAXIMUM_ITERATION_COUNT = 256;
 const DEFAULT_MAXIMUM_ITERATIONS = 64;
-const DEFAULT_TOLERANCE = 1e-5;
 /** Step halvings evaluated by the line search: steps 1, 1/2, ..., 2^-23 (as the serial search). */
 const LINE_SEARCH_STEP_COUNT = 24;
 /**
@@ -118,7 +136,30 @@ export type GPUProbitRegressionProps = {
   response: GraphDataView<'float32'>;
   mask?: GraphDataView<'uint32'>;
   maximumIterations?: number;
+  /** Positive finite relative per-coefficient step threshold in centered/scaled coordinates;
+   * default 1e-5. Requests must be at most 1e-2 (`MAXIMUM_PROBIT_TOLERANCE`).
+   * Success requires min(tolerance, 1e-5). The kernel compares in float32:
+   * the threshold is rounded to float32 and floored at 2^-126, and a request below about 1.2e-7
+   * asks for more than a float32 step can show, so it usually ends at status 3.
+   */
   tolerance?: number;
+  /** One-step weighted linearized GMM for a latent spatial-lag probit, about rho = 0.
+   * Complete rows induce W without renormalization; islands remain as zero spatial rows.
+   * Instruments are [X, WX, W²X], including intercept lags when independent.
+   */
+  spatialLag?: {
+    weights: GPUSpatialWeights;
+    output: {
+      /** Intercept, predictor slopes, then rho; NaN on failure except status 4. */
+      coefficients: GraphDataView<'float32'>;
+      /** HC0 structural-residual 2SLS sandwich errors, in coefficient order. */
+      standardErrors: GraphDataView<'float32'>;
+      /** GPU_PROBIT_SPATIAL_LAG_STATUS: 0 valid, 1 ordinary fit failed, 2 singular first
+       * stage, 3 singular second stage/nonfinite result, 4 |rho| >= 1 (published),
+       * 5 invalid/incomplete weights. */
+      status: GraphDataView<'uint32'>;
+    };
+  };
   /** Pinkse, Kelejian-Prucha and Pinkse-Slade diagnostics under independent binary probit.
    * Supplied square weights have zero diagonal; complete cases induce the retained graph.
    * These are asymptotic model diagnostics, not latent spatial-lag coefficient estimates.
@@ -182,8 +223,11 @@ export type GPUProbitRegressionProps = {
  * correct to a float32 step of `mean * slope` and is kept as a published output.
  *
  * Status. Three invariants hold:
- * - Status 0 (converged) is a maximum: a step below `tolerance` on data none of whose tested
- *   directions was certified or left undecided (see below).
+ * - Status 0 requires, for every coefficient, both the accepted step and the full unshortened
+ *   scoring direction to be at most min(tolerance, 1e-5) * (1 + |that coefficient|) in
+ *   centered/scaled coordinates (one large coefficient cannot certify another), on data
+ *   none of whose tested directions was certified or left undecided (see below). Requests up to
+ *   1e-2 are accepted; values below 1e-5 tighten the certificate.
  * - Status 4 for binary data means separated, and only with a certificate: a direction that
  *   provably moves no row towards the wrong side and some row towards the right side. Data that
  *   are not separated are never status 4.
@@ -199,8 +243,8 @@ export type GPUProbitRegressionProps = {
  * returned with status 0. A row on the wrong side leaves the float32 range of `Phi` near 13, so
  * trial steps are halved until the likelihood does not decrease and every row on the wrong side
  * has |linear predictor| <= 12. A fit is pinned when that bound, not the likelihood, shortened
- * the accepted step and the shortened step is below `tolerance` while the full Fisher step is
- * not: its maximum needs a misclassified row beyond 12 (a probability below 2e-33), which this
+ * the accepted step and the shortened step is below min(tolerance, 1e-5) while the full Fisher
+ * step is not: its maximum needs a misclassified row beyond 12 (a probability below 2e-33), which this
  * kernel cannot evaluate. Such data are not separated: the status is 3 and the pinned iterate
  * is written (it was 4 with NaN coefficients).
  *
@@ -279,22 +323,93 @@ export type GPUProbitRegressionProps = {
  * The expected information is singular (status 2) when a Cholesky pivot, relative to its diagonal,
  * is below `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (`1e-3`), the limit of
  * `GPUOrdinaryLeastSquares`: near-collinear predictors report status 2, not an estimate.
- * This is not a latent spatial-lag probit. Spatial residual diagnostics require explicit downstream
- * residual construction and spatial-statistic inference with the appropriate model assumptions.
+ * Optional latent spatial lag. For y* = rho W y* + X beta + e with standard normal e,
+ * differentiating Phi((I-rho W)^-1 X beta) at (beta0, 0) gives G_beta = phi(X beta0) X
+ * and G_rho = phi(X beta0) W X beta0. Zero-diagonal W makes the derivative of the latent
+ * variance zero there. Thus y - p + G_beta beta0 = [G_beta, G_rho] (beta, rho) + error
+ * to first order. The Klier-McMillen probability-residual variant used here multiplies this
+ * target and every gradient by 1/sqrt(p(1-p)), with p clamped as for fitted probabilities.
+ * Project these weighted gradients on unweighted Z = [X, WX, W²X], including W1 and W²1,
+ * then regress the weighted target on the projected gradients H. Complete the spatial blocks
+ * on the centered/scaled ordinary design, then center every nonconstant instrument column
+ * before its Gram matrix. This preserves the full span under predictor translation even on
+ * masked graphs and islands. Redundant
+ * instrument columns are dropped in declared order at the ordinary 1e-3 factor-pivot limit;
+ * fewer independent instruments than coefficients is status 2. The second stage uses the
+ * same pivot limit. HC0 covariance is (H'H)^-1 H'diag(r²)H (H'H)^-1 with structural
+ * residual r = weightedTarget - weightedGradient * estimate; no degrees-of-freedom correction.
+ * Computation uses the centered ordinary design and transforms beta and its covariance back
+ * to raw units; instruments retain the span of raw X, WX and W²X even at masked rows/islands.
+ * Masks and missing data induce W on complete cases without re-standardization, regardless of
+ * weights metadata. Islands remain in the fit. Invalid CSR, negative/nonfinite weights, or a
+ * nonzero loss/invalid/approximation flag (or complete or converged equal to zero) suppress the optional estimate.
+ * Ordinary output remains the independent probit. |rho| >= 1 is published with status 4.
+ * Before second-stage normalization, W eta must exceed a propagated ordinary-fit rounding
+ * floor on at least one row: (predictorCount + 8) * 2^-23 times
+ * [1 + sum_j |design_j| (1 + |beta0_j|)] in eta, propagated through nonnegative W.
+ * Otherwise rho is numerically unidentified (status 3). This check scales with W.
+ * Status vectors hold exactly one uint32. requiredCount exceeding count or edge capacity
+ * proves loss without overflow. Empty CSR edges are accepted; all-island graphs cannot
+ * identify rho (status 2). Writable output ranges must be disjoint. Copied configuration
+ * and port maps are frozen; input buffer contents remain mutable per-frame data.
+ * This is a local expansion about rho = 0, not constrained spatial maximum likelihood;
+ * strong dependence can have substantial bias (see coverage-statistics.md for simulation).
+ * The independent 2,000-row, 50-seed ring simulation gives mean rho 0.21738 (sample SD 0.06593)
+ * at true rho 0.2 and mean 0.85474 (SD 0.08858) at rho 0.6. This variant has upward bias in
+ * that experiment; a general bias towards zero or equivalence to McSpatial is not asserted.
+ * Compile-time: all scalar props and port maps. Per-frame: contents of all input views.
  */
 export class GPUProbitRegression implements GPUCommandNodeProducer {
   readonly id: string;
   /** Number of command nodes `getCommandNodes` returns. */
   readonly estimatedCommandNodeCount: number;
-  constructor(readonly props: GPUProbitRegressionProps) {
+  readonly props: GPUProbitRegressionProps;
+  constructor(props: GPUProbitRegressionProps) {
+    this.props = props = {
+      ...props,
+      output: {...props.output},
+      spatialDiagnostics: props.spatialDiagnostics
+        ? {
+            ...props.spatialDiagnostics,
+            weights: {
+              ...props.spatialDiagnostics.weights,
+              status: {...props.spatialDiagnostics.weights.status}
+            },
+            output: {...props.spatialDiagnostics.output}
+          }
+        : undefined,
+      spatialLag: props.spatialLag
+        ? {
+            ...props.spatialLag,
+            weights: {...props.spatialLag.weights, status: {...props.spatialLag.weights.status}},
+            output: {...props.spatialLag.output}
+          }
+        : undefined
+    };
     this.id = props.id ?? 'probit-regression';
     const rows = props.response.length;
     const columns = props.predictorCount;
+    if (props.spatialLag) {
+      validateRequirement(
+        this.id,
+        validateProbitSpatialWeights(this.id, props.spatialLag.weights, 'spatialLag.weights') ===
+          rows,
+        'spatialLag.weights row count must equal response.length'
+      );
+      for (const [name, view] of Object.entries(props.spatialLag.output)) {
+        validateSinglePackedView(view, [name === 'status' ? 'uint32' : 'float32'], this.id);
+        validateRequirement(
+          this.id,
+          view.length === (name === 'status' ? 1 : columns + 2),
+          `spatialLag.output.${name} length must equal ${name === 'status' ? 1 : columns + 2}`
+        );
+      }
+    }
     if (props.spatialDiagnostics) {
       const diagnostics = props.spatialDiagnostics;
       if (
-        validateGPUSpatialWeights(this.id, diagnostics.weights) !== rows ||
-        diagnostics.output.tests.length !== 6 ||
+        validateProbitSpatialWeights(this.id, diagnostics.weights) !== rows ||
+        diagnostics.output.tests.length !== GPU_PROBIT_SPATIAL_DIAGNOSTIC_FIELD_COUNT ||
         diagnostics.output.status.length !== 1
       )
         throw new Error(`${this.id}: diagnostic shape mismatch`);
@@ -315,11 +430,7 @@ export class GPUProbitRegression implements GPUCommandNodeProducer {
     validateCapacity(this.id, 'predictorCount', columns, 1, MAXIMUM_PREDICTOR_COUNT);
     const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     validateCapacity(this.id, 'maximumIterations', maximumIterations, 1, MAXIMUM_ITERATION_COUNT);
-    if (
-      !Number.isFinite(props.tolerance ?? DEFAULT_TOLERANCE) ||
-      (props.tolerance ?? DEFAULT_TOLERANCE) <= 0
-    )
-      throw new Error(`${this.id}: invalid tolerance`);
+    resolveProbitConvergenceTolerance(this.id, props.tolerance);
     for (const [view, format, length] of [
       [props.predictors, 'float32', rows * columns],
       [props.response, 'float32', rows],
@@ -340,13 +451,79 @@ export class GPUProbitRegression implements GPUCommandNodeProducer {
       props.response,
       props.mask
     ]);
+    validateDisjointWritableViews(
+      this.id,
+      Object.fromEntries([
+        ...Object.entries(props.output).map(([name, view]) => [`output.${name}`, view]),
+        ...Object.entries(props.spatialLag?.output ?? {}).map(([name, view]) => [
+          `spatialLag.output.${name}`,
+          view
+        ]),
+        ...Object.entries(props.spatialDiagnostics?.output ?? {}).map(([name, view]) => [
+          `spatialDiagnostics.output.${name}`,
+          view
+        ])
+      ])
+    );
+    if (props.spatialLag || props.spatialDiagnostics) {
+      validateGraphOutputsDisjointFromInputs(
+        this.id,
+        [
+          ...Object.values(props.output),
+          ...Object.values(props.spatialLag?.output ?? {}),
+          ...Object.values(props.spatialDiagnostics?.output ?? {})
+        ],
+        [
+          props.predictors,
+          props.response,
+          props.mask,
+          ...(props.spatialLag
+            ? [
+                ...getGPUSpatialWeightsViews(props.spatialLag.weights),
+                ...Object.values(props.spatialLag.weights.status ?? {})
+              ]
+            : []),
+          ...(props.spatialDiagnostics
+            ? [
+                ...getGPUSpatialWeightsViews(props.spatialDiagnostics.weights),
+                ...Object.values(props.spatialDiagnostics.weights.status ?? {})
+              ]
+            : [])
+        ]
+      );
+    }
     // Prologue: two tile passes (4 nodes), initialization, initial likelihood (2). Per iteration:
     // information tiles and merge, solve, line-search tiles and merge, decide; the last iteration
     // stops after its solve. Epilogue: finish, predict, effect tiles (2), effects, and with
     // diagnostics the residual, tile (2) and finish nodes.
     this.estimatedCommandNodeCount =
-      7 + 6 * maximumIterations + 3 + 5 + (props.spatialDiagnostics ? 4 : 0);
+      7 +
+      6 * maximumIterations +
+      3 +
+      5 +
+      (props.spatialDiagnostics
+        ? 4 +
+          (props.spatialDiagnostics.weights.status?.requiredCount ||
+          props.spatialDiagnostics.weights.status?.count ||
+          getProbitWeightsFailureStatusEntries(props.spatialDiagnostics.weights).length > 4
+            ? getProbitWeightsStatusNodeCount(props.spatialDiagnostics.weights)
+            : 0)
+        : 0) +
+      (props.spatialLag
+        ? PROBIT_SPATIAL_LAG_COMMAND_NODE_COUNT +
+          getProbitWeightsStatusNodeCount(props.spatialLag.weights)
+        : 0);
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    for (const spatial of [props.spatialLag, props.spatialDiagnostics]) {
+      if (spatial) {
+        Object.freeze(spatial.output);
+        Object.freeze(spatial.weights.status);
+        Object.freeze(spatial.weights);
+        Object.freeze(spatial);
+      }
+    }
+    Object.freeze(props.output);
+    Object.freeze(props);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -356,6 +533,14 @@ export class GPUProbitRegression implements GPUCommandNodeProducer {
     const columns = props.predictorCount;
     const size = columns + 1;
     const maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
+    if (props.spatialLag) {
+      validateProbitSpatialLagStorage(graph, id, rows, columns);
+      validateGraphViewsBelongToGraph(id, graph, [
+        ...Object.values(props.spatialLag.output),
+        ...getGPUSpatialWeightsViews(props.spatialLag.weights),
+        ...Object.values(props.spatialLag.weights.status ?? {})
+      ]);
+    }
     // The predictor view (and the diagnostic residual rows) are the largest bindings.
     validateCapacity(
       id,
@@ -571,7 +756,7 @@ ${
         declarations,
         body
       });
-    const tolerance = getWGSLFloatLiteral(props.tolerance ?? DEFAULT_TOLERANCE);
+    const tolerance = getWGSLFloatLiteral(getGPUProbitConvergenceThreshold(id, props.tolerance));
 
     const nodes: GPUCommandNode<Parameters>[] = [
       // Complete-row count, successes, column sums and a nonbinary-response flag.
@@ -583,7 +768,9 @@ ${
 const C: u32 = ${columns}u;
 fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
  if (!included(row)) { return; } let outcome = response[responseOffset + row];
- if (outcome != 0.0 && outcome != 1.0) { (*terms)[SUM_COUNT] = 1.0; }
+ // Binary means the stored bits are +0, -0 or exactly 1.0: a float comparison may flush a subnormal word to zero and admit it.
+ let outcomeBits = bitcast<u32>(outcome);
+ if (outcomeBits != 0u && outcomeBits != 0x80000000u && outcomeBits != 0x3f800000u) { (*terms)[SUM_COUNT] = 1.0; }
  (*terms)[0] += 1.0; (*terms)[1] += outcome;
  for (var column = 0u; column < C; column++) { (*terms)[2u + column] += predictors[predictorsOffset + row * C + column]; }
 }`,
@@ -742,7 +929,7 @@ state[stateOffset + S_THRESHOLDS + 1u] = thresholdValue; state[stateOffset + S_T
         singleNode(
           `${prefix}-decide`,
           [binding('state', state, 'read_write'), gate.binding],
-          `${IS_FINITE_BITS_WGSL}\n${stateWGSL}\n${orderKeyWGSL}`,
+          `${IS_FINITE_BITS_WGSL}\n${stateWGSL}\n${orderKeyWGSL}\n${PROBIT_STEP_VERDICT_WGSL}`,
           `if (stateAt(S_DONE) != 0.0) { return; }
 // Separation is certified by a direction that provably moves some row towards the right side and no row towards the wrong side: the candidate direction when the sign of every row's move was decided, or a single-column threshold (exact comparisons). Data that are not separated have no such direction. The certificate is kept once found, because the directions of a separated fit end as rounding (the score of the separated rows falls below the float32 noise of the score sums near a linear predictor of 6).
 let separation = S_LINE_SEARCH + ${2 * LINE_SEARCH_STEP_COUNT}u;
@@ -761,21 +948,22 @@ if (thresholdSign != 0.0) {
 state[stateOffset + S_THRESHOLDS + 3u] = stateAt(S_THRESHOLDS); state[stateOffset + S_THRESHOLDS + 4u] = lowerValue; state[stateOffset + S_THRESHOLDS + 5u] = lowerSign;
 state[stateOffset + S_THRESHOLDS + 6u] = stateAt(S_THRESHOLDS); state[stateOffset + S_THRESHOLDS + 7u] = upperValue; state[stateOffset + S_THRESHOLDS + 8u] = upperSign;
 let current = stateAt(S_CURRENT); let noiseScale = stateAt(S_NOISE);
-var scale = 1.0; var accepted = false; var chosen = 0u; var limitedByBound = false;
+var scale = 1.0; var accepted = false; var chosen = 0u;
 for (var attempt = 0u; attempt < ${LINE_SEARCH_STEP_COUNT}u; attempt++) {
  let candidateLikelihood = stateAt(S_LINE_SEARCH + attempt); let lastLargestLinear = stateAt(S_LINE_SEARCH + ${LINE_SEARCH_STEP_COUNT}u + attempt);
  // Halve the step until the likelihood does not decrease beyond its noise and every row the step puts on the wrong side stays bounded (|eta| <= 12, the largest value the line-search pass reports); rows on the right side are not bounded.
  let likelihoodAccepts = candidateLikelihood >= current - noiseScale * (abs(current) + 1.0) && isFiniteBits(candidateLikelihood);
  if (likelihoodAccepts && lastLargestLinear <= 12.0) { accepted = true; chosen = attempt; break; }
- // A step the likelihood would take but the bound refuses: the accepted step is shortened by the bound, not by the likelihood.
- if (likelihoodAccepts) { limitedByBound = true; } scale *= 0.5; }
+ // A step shortened here, by the bound or by the likelihood, is tested against its full direction below (verdict 1).
+ scale *= 0.5; }
 if (!accepted) { state[stateOffset + S_DONE] = 1.0; ${gate.disarmWGSL} return; }
-var largest = 0.0; var magnitude = 0.0; var largestDirection = 0.0;
-for (var column = 0u; column < P; column++) { let direction = stateAt(S_DIRECTION + column); let step = scale * direction; let candidate = stateAt(S_ESTIMATE + column) + step; largest = max(largest, abs(step)); largestDirection = max(largestDirection, abs(direction)); magnitude = max(magnitude, abs(candidate)); state[stateOffset + S_ESTIMATE + column] = candidate; }
+// Per coefficient, so that one large coefficient cannot certify an unrelated small one: the verdict is the minimum of getProbitStepVerdict over the coefficients (0 step too large, 1 step small but full direction large, 2 both small).
+var verdict = 2u;
+for (var column = 0u; column < P; column++) { let direction = stateAt(S_DIRECTION + column); let candidate = stateAt(S_ESTIMATE + column) + scale * direction; verdict = min(verdict, getProbitStepVerdict(scale, direction, candidate, ${tolerance})); state[stateOffset + S_ESTIMATE + column] = candidate; }
 state[stateOffset + S_CURRENT] = stateAt(S_LINE_SEARCH + chosen); state[stateOffset + S_ITERATIONS] = stateAt(S_ITERATIONS) + 1.0;
-if (largest <= ${tolerance} * (1.0 + magnitude)) {
- // A small accepted step means convergence only when the full Fisher step is small too. A step that is small because the bound shortened it is a fit whose maximum needs a misclassified row beyond the bound, which float32 cannot evaluate: not converged (the code stays 3 and the iterate is written), and no further step can do better.
- if (limitedByBound && !(largestDirection <= ${tolerance} * (1.0 + magnitude))) { state[stateOffset + S_DONE] = 1.0; ${gate.disarmWGSL} return; }
+if (verdict != 0u) {
+ // A small accepted step means convergence only when the full Fisher step is small too. A step shortened by the bound or by likelihood backtracking cannot certify a large full direction: not converged (the code stays 3 and the iterate is written).
+ if (verdict == 1u) { state[stateOffset + S_DONE] = 1.0; ${gate.disarmWGSL} return; }
  // Separated data have no maximum to converge to: a small step there is a step along the separating direction below the tolerance, or rounding. Status 4, not 0.
  if (stateAt(S_SEPARATING) == 1.0) { state[stateOffset + S_CODE] = 4.0; state[stateOffset + S_DONE] = 1.0; ${gate.disarmWGSL} return; }
  // A direction of this fit could not be told from a separating one: the small step is not accepted as a maximum (the code stays 3).
@@ -864,6 +1052,14 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
 
     if (props.spatialDiagnostics) {
       const diagnostics = props.spatialDiagnostics;
+      const statusEntries = getProbitWeightsFailureStatusEntries(diagnostics.weights);
+      const statusSummary =
+        diagnostics.weights.status?.requiredCount ||
+        diagnostics.weights.status?.count ||
+        statusEntries.length > 4
+          ? getProbitWeightsStatusSummary(graph, `${id}-diagnostic`, diagnostics.weights)
+          : {nodes: [], entries: statusEntries};
+      const failureStatuses = statusSummary.entries;
       const neighborCount = diagnostics.weights.neighbors.length;
       const residuals = createTransientView(
         graph,
@@ -873,9 +1069,11 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
       );
       validateGraphViewsBelongToGraph(id, graph, [
         ...Object.values(diagnostics.output),
-        ...getGPUSpatialWeightsViews(diagnostics.weights)
+        ...getGPUSpatialWeightsViews(diagnostics.weights),
+        ...Object.values(diagnostics.weights.status ?? {})
       ]);
       nodes.push(
+        ...statusSummary.nodes,
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-diagnostic-residuals`,
           operation: OPERATION,
@@ -904,11 +1102,11 @@ residuals[residualsOffset + index * 5u] = naive; residuals[residualsOffset + ind
           1,
           `${IS_FINITE_BITS_WGSL}
 fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
- if (!isFiniteBits(residuals[residualsOffset + row * 5u])) { return; }
- (*terms)[0] += 1.0; (*terms)[1] += residuals[residualsOffset + row * 5u + 4u];
- let begin = offsets[offsetsOffset + row]; let end = offsets[offsetsOffset + row + 1u]; if (end < begin || end > ${neighborCount}u) { (*terms)[SUM_COUNT] = 1.0; return; }
- for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot]; if (neighbor >= ROW_COUNT || neighbor == row || !isFiniteBits(weight) || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { (*terms)[SUM_COUNT] = 1.0; return; }
- if (!isFiniteBits(residuals[residualsOffset + neighbor * 5u])) { continue; }
+ let retained = isFiniteBits(residuals[residualsOffset + row * 5u]);
+ if (retained) { (*terms)[0] += 1.0; (*terms)[1] += residuals[residualsOffset + row * 5u + 4u]; }
+ let begin = offsets[offsetsOffset + row]; let end = offsets[offsetsOffset + row + 1u]; if (offsets[offsetsOffset] != 0u || end < begin || end > ${neighborCount}u) { (*terms)[SUM_COUNT] = 1.0; return; }
+ for (var slot = begin; slot < end; slot++) { let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot]; if (neighbor >= ROW_COUNT || neighbor == row || !isFiniteBits(weight) || weight < 0.0 || (slot > begin && neighbors[neighborsOffset + slot - 1u] >= neighbor)) { (*terms)[SUM_COUNT] = 1.0; return; }
+ if (!retained || !isFiniteBits(residuals[residualsOffset + neighbor * 5u])) { continue; }
  var reciprocal = 0.0; for (var other = offsets[offsetsOffset + neighbor]; other < min(offsets[offsetsOffset + neighbor + 1u], ${neighborCount}u); other++) { if (neighbors[neighborsOffset + other] == row) { reciprocal = weights[weightsOffset + other]; } }
  let contribution = weight * (weight + reciprocal); (*terms)[2] += contribution; (*terms)[3] += contribution * residuals[residualsOffset + row * 5u + 3u] * residuals[residualsOffset + neighbor * 5u + 3u];
  (*terms)[4] += weight * residuals[residualsOffset + row * 5u] * residuals[residualsOffset + neighbor * 5u]; (*terms)[5] += weight * residuals[residualsOffset + row * 5u + 1u] * residuals[residualsOffset + neighbor * 5u + 1u]; (*terms)[6] += weight * residuals[residualsOffset + row * 5u + 2u] * residuals[residualsOffset + neighbor * 5u + 2u]; }
@@ -926,25 +1124,44 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
           id: `${id}-spatial-diagnostics`,
           operation: OPERATION,
           variant: 'pinkse-kp-pinkse-slade',
+          // contract-allow: single-invocation -- GPU_PROBIT_SPATIAL_DIAGNOSTIC_FIELD_COUNT = 6 diagnostic fields and fixed scalar arithmetic; no row loop.
           invocationCount: 1,
           bindings: [
             binding('state', state),
-            ...(diagnostics.weights.status?.overflow
-              ? [binding('overflow', diagnostics.weights.status.overflow, 'read', 'u32')]
-              : []),
+            ...failureStatuses.map(([, view], index) =>
+              binding(`weightStatus${index}`, view, 'read', 'u32')
+            ),
             binding('modelStatus', props.output.status, 'read', 'u32'),
             binding('tests', diagnostics.output.tests, 'read_write'),
             binding('diagnosticStatus', diagnostics.output.status, 'read_write', 'u32')
           ],
           declarations: `${GET_NAN_WGSL}\n${ERFC_VALUE_WGSL}\n${stateWGSL}`,
-          body: `diagnosticStatus[diagnosticStatusOffset] = 1u; for (var slot = 0u; slot < 6u; slot++) { tests[testsOffset + slot] = getNaN(); } if (modelStatus[modelStatusOffset] != 0u) { return; }
-${diagnostics.weights.status?.overflow ? 'if (overflow[overflowOffset] != 0u) { diagnosticStatus[diagnosticStatusOffset] = 2u; return; }' : ''}
+          body: `diagnosticStatus[diagnosticStatusOffset] = 1u; ${Array.from({length: GPU_PROBIT_SPATIAL_DIAGNOSTIC_FIELD_COUNT}, (_, slot) => `tests[testsOffset + ${slot}u] = getNaN();`).join(' ')} if (modelStatus[modelStatusOffset] != 0u) { return; }
+${failureStatuses.map(([name], index) => `if (weightStatus${index}[weightStatus${index}Offset] ${getProbitStatusFailureComparison(name)} 0u) { diagnosticStatus[diagnosticStatusOffset] = 2u; return; }`).join('\n')}
 if (stateAt(S_DIAGNOSTICS + 7u) != 0.0) { diagnosticStatus[diagnosticStatusOffset] = 2u; return; }
 let count = stateAt(S_DIAGNOSTICS); var information = stateAt(S_DIAGNOSTICS + 1u); let trace = stateAt(S_DIAGNOSTICS + 2u); let varianceTrace = stateAt(S_DIAGNOSTICS + 3u);
 let naiveProduct = stateAt(S_DIAGNOSTICS + 4u); let generalizedProduct = stateAt(S_DIAGNOSTICS + 5u); let standardizedProduct = stateAt(S_DIAGNOSTICS + 6u);
 if (!(count > 0.0)) { return; } diagnosticStatus[diagnosticStatusOffset] = 3u; information /= count; if (!(trace > 0.0 && varianceTrace > 0.0 && information > 0.0)) { return; }
 let pinkse = generalizedProduct * generalizedProduct / (information * information * trace); let kelejian = naiveProduct / sqrt(varianceTrace); let slade = standardizedProduct * standardizedProduct / trace;
 tests[testsOffset] = pinkse; tests[testsOffset + 1u] = erfcValue(sqrt(pinkse * 0.5)); tests[testsOffset + 2u] = kelejian; tests[testsOffset + 3u] = erfcValue(abs(kelejian) * 0.7071067811865476); tests[testsOffset + 4u] = slade; tests[testsOffset + 5u] = erfcValue(sqrt(slade * 0.5)); diagnosticStatus[diagnosticStatusOffset] = 0u;`
+        })
+      );
+    }
+    if (props.spatialLag) {
+      nodes.push(
+        ...getProbitSpatialLagNodes(graph, {
+          id,
+          rows,
+          columns,
+          predictors: props.predictors,
+          modelStatus: props.output.status,
+          weights: props.spatialLag.weights,
+          output: props.spatialLag.output,
+          rowBindings: stateBindings,
+          rowDeclarations,
+          state,
+          meansSlot: layout.means,
+          scalesSlot: layout.scales
         })
       );
     }

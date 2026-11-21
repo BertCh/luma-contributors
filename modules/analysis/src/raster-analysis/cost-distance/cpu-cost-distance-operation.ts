@@ -19,7 +19,13 @@ import {
 } from '../raster-grid/raster-operation-band';
 import {validateRasterGridAxisAligned, validateRasterGridOrthogonal} from '../raster-band-utils';
 import {validateRasterCellSizeMode} from '../../analysis-core/contracts/raster-grid';
-import {GPU_COST_DISTANCE_NONE, GPU_COST_DISTANCE_PARAMETER_LENGTH} from './gpu-cost-distance';
+import {
+  GPU_COST_DISTANCE_NONE,
+  GPU_COST_DISTANCE_PARAMETER_LENGTH,
+  GPU_COST_DISTANCE_UNRESOLVED
+} from './gpu-cost-distance';
+import {validateRasterIterations} from './raster-relaxation';
+import {relaxCostDistanceRasterOnCPU} from './cpu-raster-relaxation';
 import {GPU_RASTER_D8_DIRECTIONS, getRasterD8Distance} from './raster-grid-utils';
 import {
   GPUCostDistanceOperation,
@@ -36,7 +42,10 @@ export type CPUCostDistanceInput = {
   sourceMask?: Uint32Array;
   costBreaks?: Float32Array;
 };
-export type CPUCostDistanceOptions = Pick<CostDistanceOperationProps, 'grid' | 'cellSizeMode'>;
+export type CPUCostDistanceOptions = Pick<
+  CostDistanceOperationProps,
+  'grid' | 'cellSizeMode' | 'maximumIterations' | 'maximumTieIterations' | 'sweepAfterIteration'
+>;
 export type CPUCostDistanceResult = {
   costs: Float32Array;
   settledAt: Uint32Array;
@@ -49,16 +58,20 @@ export type CPUCostDistanceResult = {
 };
 
 /**
- * Computes least costs with a float64 Dijkstra heap and cycle-safe plateau breadth-first levels.
+ * Computes least costs with float64 Dijkstra when unbounded, or bounded tiled relaxation,
+ * and cycle-safe plateau levels. The pure function returns back-links, so it applies the tie budget;
+ * the operation omits that phase when back-links are not requested.
  * Strict predecessors minimize candidate cost, with smallest D8 direction on ties; plateau
  * links use the smallest direction one level nearer a strict entry or surviving source.
  *
  * What differs from the GPU contributor:
- * - No cost or tie round limit: converged is always 1, iterationLimitReached always 0; no
- *   UNRESOLVED values are produced. Stateful continuation is omitted.
+ * - Explicit cost/tie budgets use 16x16 tiled rounds, with round-start snapshots between
+ *   workgroups and ordered writes within sweep lines. The final unchanged round consumes budget.
+ *   Without an explicit budget the CPU computes the full fixed point. Stateful continuation is omitted.
  * - settledAt is the minimum hop count of a float64 least-cost path from a surviving seed,
  *   or zero for unreached cells. iterationCount is the largest such count plus one (the first
- *   unchanged synchronous round). These diagnostics differ from GPU tiled/sweep rounds.
+ *   unchanged synchronous round). With an explicit cost budget these become tiled last-decrease
+ *   stamps and the executed tiled round count. GPU scheduling can give different diagnostics.
  * - Calibration, distances and path sums use float64, rounded once at output. Compare costs
  *   with relative tolerance 3e-5. Near ties, threshold bands and back-links can differ.
  * - Strict tightness uses the GPU's 4-ulp relative slack in float64. Equal-cost edges use its
@@ -72,6 +85,14 @@ export type CPUCostDistanceResult = {
 export function computeCostDistanceOnCPU(
   input: CPUCostDistanceInput,
   options: CPUCostDistanceOptions
+): CPUCostDistanceResult {
+  return computeCostDistance(input, options, true);
+}
+
+function computeCostDistance(
+  input: CPUCostDistanceInput,
+  options: CPUCostDistanceOptions,
+  includeBackLinks: boolean
 ): CPUCostDistanceResult {
   const id = 'computeCostDistanceOnCPU';
   validateRasterOperationBand(id, input.friction, options.grid);
@@ -143,7 +164,7 @@ export function computeCostDistanceOnCPU(
     seeds[cell] = Math.min(seeds[cell], cost);
     if (cost < costs[cell]) {
       costs[cell] = cost;
-      push(cell, cost);
+      if (options.maximumIterations === undefined) push(cell, cost);
     }
   };
   for (
@@ -153,6 +174,38 @@ export function computeCostDistanceOnCPU(
   )
     seedCell(input.sources![source], input.sourceCosts?.[source] ?? 0);
   for (let cell = 0; cell < length; cell++) if (input.sourceMask?.[cell]) seedCell(cell, 0);
+  const settledAt = new Uint32Array(length);
+  const costState =
+    options.maximumIterations === undefined
+      ? undefined
+      : relaxCostDistanceRasterOnCPU({
+          width,
+          height,
+          values: costs,
+          maximumIterations: options.maximumIterations,
+          sweepAfterIteration: options.sweepAfterIteration ?? 96,
+          costLimit,
+          participates: cell => Number.isFinite(friction[cell]),
+          getEdgeCost: getEdge,
+          settledAt
+        });
+  if (costState && !costState.converged) {
+    // Stop here: neither unbounded Dijkstra nor the dependent tie phase may consume more rounds.
+    return {
+      costs: Float32Array.from(friction, value => (Number.isFinite(value) ? NaN : Infinity)),
+      settledAt,
+      iterationCount: Uint32Array.of(costState.iterationCount),
+      backLinks: Uint32Array.from(friction, value =>
+        Number.isFinite(value) ? GPU_COST_DISTANCE_UNRESOLVED : GPU_COST_DISTANCE_NONE
+      ),
+      bands: Uint32Array.from(friction, value =>
+        Number.isFinite(value) ? GPU_COST_DISTANCE_UNRESOLVED : GPU_COST_DISTANCE_NONE
+      ),
+      bandCounts: new Uint32Array(input.costBreaks?.length ?? 0).fill(GPU_COST_DISTANCE_UNRESOLVED),
+      converged: Uint32Array.of(0),
+      iterationLimitReached: Uint32Array.of(1)
+    };
+  }
   while (heap.length) {
     const current = heap[0];
     const last = heap.pop()!;
@@ -182,15 +235,15 @@ export function computeCostDistanceOnCPU(
     }
   }
   const publishedCosts = Float32Array.from(costs, cost => (cost === 0 ? 0 : cost));
-  const settledAt = new Uint32Array(length);
   const hopCounts = new Float64Array(length).fill(Infinity);
   const hopQueue: number[] = [];
-  for (let cell = 0; cell < length; cell++) {
-    if (Number.isFinite(publishedCosts[cell]) && seeds[cell] === costs[cell]) {
-      hopCounts[cell] = 0;
-      hopQueue.push(cell);
+  if (!costState)
+    for (let cell = 0; cell < length; cell++) {
+      if (Number.isFinite(publishedCosts[cell]) && seeds[cell] === costs[cell]) {
+        hopCounts[cell] = 0;
+        hopQueue.push(cell);
+      }
     }
-  }
   let maximumHopCount = 0;
   for (let position = 0; position < hopQueue.length; position++) {
     const cell = hopQueue[position];
@@ -210,6 +263,11 @@ export function computeCostDistanceOnCPU(
       hopQueue.push(neighbor);
     }
   }
+  const iterationCount = costState?.iterationCount ?? maximumHopCount + 1;
+  if (costState) {
+    for (let cell = 0; cell < length; cell++)
+      if (!Number.isFinite(publishedCosts[cell])) settledAt[cell] = 0;
+  }
   const backLinks = new Uint32Array(length).fill(GPU_COST_DISTANCE_NONE);
   const levels = new Float64Array(length).fill(Infinity);
   const queue: number[] = [];
@@ -220,51 +278,73 @@ export function computeCostDistanceOnCPU(
     Number.isFinite(friction[neighbor]) &&
     costs[neighbor] === costs[cell] &&
     costs[neighbor] + getEdge(cell, neighbor, direction) <= costs[cell];
-  for (let cell = 0; cell < length; cell++) {
-    if (!Number.isFinite(publishedCosts[cell])) continue;
-    let best = Infinity;
-    let bestDirection = -1;
-    for (let direction = 0; direction < 8; direction++) {
-      const neighbor = getNeighbor(cell, direction);
-      if (neighbor < 0 || !(costs[neighbor] < costs[cell])) continue;
-      const candidate = costs[neighbor] + getEdge(cell, neighbor, direction);
-      if (candidate < best) {
-        best = candidate;
-        bestDirection = direction;
+  if (includeBackLinks)
+    for (let cell = 0; cell < length; cell++) {
+      if (!Number.isFinite(publishedCosts[cell])) continue;
+      let best = Infinity;
+      let bestDirection = -1;
+      for (let direction = 0; direction < 8; direction++) {
+        const neighbor = getNeighbor(cell, direction);
+        if (neighbor < 0 || !(costs[neighbor] < costs[cell])) continue;
+        const candidate = costs[neighbor] + getEdge(cell, neighbor, direction);
+        if (candidate < best) {
+          best = candidate;
+          bestDirection = direction;
+        }
+      }
+      if (bestDirection >= 0 && best <= costs[cell] * (1 + 4.76837158e-7))
+        backLinks[cell] = 1 << bestDirection;
+      if (backLinks[cell] !== GPU_COST_DISTANCE_NONE || seeds[cell] === costs[cell]) {
+        levels[cell] = 0;
+        queue.push(cell);
+        if (backLinks[cell] === GPU_COST_DISTANCE_NONE) backLinks[cell] = 0;
       }
     }
-    if (bestDirection >= 0 && best <= costs[cell] * (1 + 4.76837158e-7))
-      backLinks[cell] = 1 << bestDirection;
-    if (backLinks[cell] !== GPU_COST_DISTANCE_NONE || seeds[cell] === costs[cell]) {
-      levels[cell] = 0;
-      queue.push(cell);
-      if (backLinks[cell] === GPU_COST_DISTANCE_NONE) backLinks[cell] = 0;
-    }
-  }
-  for (let position = 0; position < queue.length; position++) {
-    const cell = queue[position];
-    for (let direction = 0; direction < 8; direction++) {
-      const neighbor = getNeighbor(cell, direction);
-      if (
-        neighbor >= 0 &&
-        levels[neighbor] === Infinity &&
-        isTie(neighbor, cell, (direction + 4) % 8)
-      ) {
-        levels[neighbor] = levels[cell] + 1;
-        queue.push(neighbor);
+  const maximumTieIterations = includeBackLinks
+    ? (options.maximumTieIterations ?? options.maximumIterations)
+    : undefined;
+  let tieConverged = true;
+  if (maximumTieIterations !== undefined) {
+    tieConverged = relaxCostDistanceRasterOnCPU({
+      width,
+      height,
+      values: levels,
+      maximumIterations: maximumTieIterations,
+      sweepAfterIteration: options.sweepAfterIteration ?? 96,
+      costLimit: Infinity,
+      participates: cell => Number.isFinite(publishedCosts[cell]),
+      getEdgeCost: (cell, neighbor, direction) => (isTie(cell, neighbor, direction) ? 1 : Infinity)
+    }).converged;
+  } else
+    for (let position = 0; position < queue.length; position++) {
+      const cell = queue[position];
+      for (let direction = 0; direction < 8; direction++) {
+        const neighbor = getNeighbor(cell, direction);
+        if (
+          neighbor >= 0 &&
+          levels[neighbor] === Infinity &&
+          isTie(neighbor, cell, (direction + 4) % 8)
+        ) {
+          levels[neighbor] = levels[cell] + 1;
+          queue.push(neighbor);
+        }
       }
     }
-  }
-  for (let cell = 0; cell < length; cell++) {
-    if (!(levels[cell] > 0) || !Number.isFinite(levels[cell])) continue;
-    for (let direction = 0; direction < 8; direction++) {
-      const neighbor = getNeighbor(cell, direction);
-      if (isTie(cell, neighbor, direction) && levels[neighbor] === levels[cell] - 1) {
-        backLinks[cell] = 1 << direction;
-        break;
+  if (includeBackLinks)
+    for (let cell = 0; cell < length; cell++) {
+      if (Number.isFinite(publishedCosts[cell]) && levels[cell] === Infinity) {
+        backLinks[cell] = GPU_COST_DISTANCE_UNRESOLVED;
+        continue;
+      }
+      if (!(levels[cell] > 0) || !Number.isFinite(levels[cell])) continue;
+      for (let direction = 0; direction < 8; direction++) {
+        const neighbor = getNeighbor(cell, direction);
+        if (isTie(cell, neighbor, direction) && levels[neighbor] === levels[cell] - 1) {
+          backLinks[cell] = 1 << direction;
+          break;
+        }
       }
     }
-  }
   const bands = new Uint32Array(length).fill(GPU_COST_DISTANCE_NONE);
   const bandCounts = new Uint32Array(input.costBreaks?.length ?? 0);
   for (let cell = 0; cell < length; cell++) {
@@ -279,12 +359,12 @@ export function computeCostDistanceOnCPU(
   return {
     costs: publishedCosts,
     settledAt,
-    iterationCount: Uint32Array.of(maximumHopCount + 1),
+    iterationCount: Uint32Array.of(iterationCount),
     backLinks,
     bands,
     bandCounts,
-    converged: Uint32Array.of(1),
-    iterationLimitReached: Uint32Array.of(0)
+    converged: Uint32Array.of(Number(tieConverged)),
+    iterationLimitReached: Uint32Array.of(Number(!tieConverged))
   };
 }
 
@@ -292,11 +372,21 @@ function validateOptions(id: string, options: CPUCostDistanceOptions): void {
   validateRasterCellSizeMode(id, options.cellSizeMode);
   validateRasterGridAxisAligned(id, options.grid, options.cellSizeMode);
   validateRasterGridOrthogonal(id, options.grid);
+  for (const name of ['maximumIterations', 'maximumTieIterations'] as const)
+    if (options[name] !== undefined) validateRasterIterations(id, name, options[name]);
+  if (options.sweepAfterIteration !== undefined)
+    validateCapacity(id, 'sweepAfterIteration', options.sweepAfterIteration, 0, 0xffffffff);
 }
 
-/** Exact CPU fixed point; no GPU iteration budget. */
+/** CPU fixed point with explicit tiled cost/tie budgets and unresolved output propagation. */
 export class CPUCostDistanceOperation extends GPUCPUOperation {
   constructor(props: CostDistanceOperationProps) {
+    props = {
+      ...props,
+      grid: {...props.grid, affine: [...props.grid.affine]},
+      friction: {...props.friction, storage: {...props.friction.storage}},
+      output: {...props.output, status: {...props.output.status}}
+    };
     const operation = new GPUCostDistanceOperation(props);
     const {id} = operation;
     validateRasterOperationBand(id, props.friction, props.grid);
@@ -318,8 +408,6 @@ export class CPUCostDistanceOperation extends GPUCPUOperation {
     );
     if (props.output.bandCounts !== undefined)
       validateCapacity(id, 'costBreakCount', props.costBreakCount!);
-    for (const port of ['maximumIterations', 'maximumTieIterations'] as const)
-      if (props[port] !== undefined) validateCapacity(id, port, props[port]!);
     super({
       id,
       inputs: operation.inputs,
@@ -343,7 +431,7 @@ export class CPUCostDistanceOperation extends GPUCPUOperation {
           input.costBreaks?.length !== props.costBreakCount
         )
           throw new Error(`${id} costBreaks must match costBreakCount`);
-        const result = computeCostDistanceOnCPU(input, props);
+        const result = computeCostDistance(input, props, props.output.backLinks !== undefined);
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
             output.value,

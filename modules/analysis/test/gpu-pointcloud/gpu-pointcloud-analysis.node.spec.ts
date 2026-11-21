@@ -131,7 +131,7 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
     new GPUPointCloudSMRF({
       positions,
       classifications,
-      selection: view('uint32', 9),
+      mask: view('uint32', 9),
       grid,
       window: 2,
       cut: 1,
@@ -150,7 +150,7 @@ it('point-cloud analysis generated shaders pass reserved-word and baseline resou
       targetGrid: {origin: [0, 0, 0], cellSize: 2, dimensions: [3, 3, 3]},
       robust: {method: 'tukey', scale: 1},
       maximumDistance: 10,
-      iterations: 2,
+      maximumIterations: 2,
       output: {
         transform: view('float32', 16),
         history: view('float32x3', 2),
@@ -255,7 +255,7 @@ it('rejects robust ICP scales whose generated squared float32 scale underflows o
     source: view('float32x3', 3),
     target: view('float32x3', 3),
     maximumDistance: 1,
-    iterations: 1,
+    maximumIterations: 1,
     output: {
       transform: view('float32', 16),
       history: view('float32x3', 1),

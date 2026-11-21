@@ -10,6 +10,7 @@ import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   GPURasterCellStatistics,
+  type GPURasterCellStatisticsOutput,
   GPUWeightedOverlay,
   getGPURasterCellStatisticsParameterValues,
   getGPUWeightedOverlayParameterValues
@@ -224,12 +225,15 @@ it.each([
           'float32',
           getGPURasterCellStatisticsParameterValues({noDataPolicy, minimumValidCount})
         ).view,
-        output: Object.fromEntries(
-          [...Object.entries(floats), ...Object.entries(integers)].map(([name, value]) => [
-            name,
-            value.view
-          ])
-        )
+        output: {
+          ...Object.fromEntries(
+            [...Object.entries(floats), ...Object.entries(integers)].map(([name, value]) => [
+              name,
+              value.view
+            ])
+          ),
+          mean: floats.mean.view
+        } satisfies GPURasterCellStatisticsOutput
       })
     );
     return {noDataPolicy, minimumValidCount, floats, integers};

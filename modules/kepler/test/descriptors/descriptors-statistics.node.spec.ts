@@ -5,7 +5,7 @@
 import {
   validateGPUAnalysisResultEncoding,
   type GPUAnalysisCoordinateModel
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 import {describe, expect, it} from 'vitest';
 import {
   getCatalogBinding,
@@ -1034,7 +1034,12 @@ describe('policies stated by the descriptors', () => {
       expect(descriptorOf(id).notes?.length, id).toBeGreaterThan(0);
     }
     expect(descriptorOf('local-moran-statistics').notes!.join(' ')).toMatch(/999/);
-    expect(descriptorOf('density-clustering').notes!.join(' ')).toMatch(/6,324/);
+    expect(descriptorOf('density-clustering').notes!.join(' ')).toMatch(
+      /bucketed CPU.*20,000 total points/
+    );
+    expect(descriptorOf('density-clustering').notes!.join(' ')).toMatch(
+      /curated.*6,000 total points/
+    );
     expect(descriptorOf('kriging-grid').action).toBe('Krige with a stated variogram');
     expect(descriptorOf('hierarchical-density-clustering').action).toBe(
       'Cluster by density (one cut)'

@@ -121,7 +121,7 @@ function createFixture(
         pairCapacity: options.pairCapacity,
         maximumCrossingCount: options.maximumCrossingCount,
         output: {
-          lengths: outputs['lengths'] as never,
+          clippedLengths: outputs['lengths'] as never,
           weightedLengths: options.weights ? (outputs['weightedLengths'] as never) : undefined,
           segmentCounts: outputs['segmentCounts'] as never,
           status: {

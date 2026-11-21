@@ -404,7 +404,7 @@ const GEOMETRY_BINDINGS: readonly CatalogOperationBinding[] = [
       )
     ],
     declaredBehavior: [
-      'Planar tests on the raw coordinates; boundary contact counts as inside.',
+      'Planar tests relative to the minimum corner of each candidate pair, so translating the pair or adding unrelated features does not change the result; bounds filtering includes the boundary tolerance; a point within 1e-12 times the larger of 1 and its local coordinate magnitude of an edge is on the boundary, and boundary contact counts as inside.',
       'within: every part of the left geometry lies in the right polygons (holes respected). contains: the left polygons cover the right polygon.',
       'Left features without geometry match nothing; more than 200,000 pairs throws.'
     ],
@@ -443,11 +443,11 @@ const GEOMETRY_BINDINGS: readonly CatalogOperationBinding[] = [
       )
     ],
     declaredBehavior: [
-      'Pairs overlap when their edges properly cross or a vertex, edge midpoint or interior probe of one is strictly inside the other; shared edges are valid.',
-      'Features are never modified or repaired.'
+      'Pairs overlap when their edges properly cross or a vertex, edge midpoint or verified interior point of a polygon part is strictly inside the other; shared edges are valid.',
+      'Tests use binary64 coordinates relative to each candidate pair’s minimum corner, with boundary tolerance 1e-12 times the larger of 1 and the local coordinate magnitude. Features are never modified or repaired.'
     ],
     limitation:
-      'Overlap detection only on planar raw coordinates; gaps and slivers between polygons are not detected.',
+      'Overlap detection only on planar coordinates in a candidate-pair local frame; gaps and slivers between polygons are not detected.',
     run: inputs => runCoverageValidity(inputs['polygons'])
   }),
   defineCpuBinding({
@@ -562,12 +562,13 @@ const GEOMETRY_BINDINGS: readonly CatalogOperationBinding[] = [
       makeOutputSpec(
         'polygon-triangles',
         'Polygon triangles',
-        'polygon',
+        'mixed',
         ['triangle_id', 'source_index', 'source_id'],
         100000
       )
     ],
     declaredBehavior: [
+      "Counted triangle rows preserve their IDs; degeneracy is 'none', 'line' or 'point', with Polygon, LineString or Point geometry respectively.",
       'Holes are joined to the shell by visible bridges before ear clipping.',
       'Each part is limited to 1,500 vertices (excluding closing duplicates); larger parts fail validation before triangulation. Invalid or self-intersecting rings may stall and keep the triangles found so far.'
     ],

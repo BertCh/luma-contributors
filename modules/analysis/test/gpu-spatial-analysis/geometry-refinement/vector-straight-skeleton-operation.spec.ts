@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
+import {PENTAGON_POSITIONS, expectPentagonSupports} from './pentagon-support-oracle';
 import {expect, it} from 'vitest';
 import {CPUVectorStraightSkeletonOperation} from '../../../src/gpu-spatial-analysis/geometry-refinement/cpu-vector-straight-skeleton-operation';
 import {
@@ -10,7 +11,40 @@ import {
   type VectorStraightSkeletonOperationProps
 } from '../../../src/gpu-spatial-analysis/geometry-refinement/gpu-vector-straight-skeleton-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {
+  SQUARE_HOLE_INPUT,
+  SQUARE_HOLE_SEGMENTS,
+  SQUARE_HOLE_SOURCE_EDGES
+} from './vector-square-hole-fixture';
+
+it('GPU square-with-hole capture pins every live arc and final source-edge pairs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const props = {
+    ...createReviewProps(1),
+    maximumVertices: 8,
+    maximumEvents: 16,
+    segmentCapacity: 32,
+    offsetDistance: 0.25,
+    eventTolerance: 1e-5
+  };
+  const result = await runOperationGraph(device, {
+    inputs: {
+      positions: {format: 'float32x2', values: SQUARE_HOLE_INPUT.positions},
+      ringOffsets: {format: 'uint32', values: SQUARE_HOLE_INPUT.ringOffsets},
+      polygonOffsets: {format: 'uint32', values: SQUARE_HOLE_INPUT.polygonOffsets},
+      featureOffsets: {format: 'uint32', values: SQUARE_HOLE_INPUT.featureOffsets}
+    },
+    operations: [new GPUVectorStraightSkeletonOperation(props)],
+    outputs: ['segments', 'sourceEdges', 'status']
+  });
+  expect(Array.from(result['status'])).toEqual([12, 12, 8, 0]);
+  expect(Array.from(result['segments'].slice(0, 48))).toEqual(SQUARE_HOLE_SEGMENTS);
+  expect(Array.from(result['sourceEdges'].slice(0, 24))).toEqual(SQUARE_HOLE_SOURCE_EDGES);
+  // Read rows 8–11 explicitly before the geometry-guide owner refreshes the lens capture.
+  expect(Array.from(result['sourceEdges'].slice(16, 24))).toEqual([7, 0, 1, 6, 2, 5, 3, 4]);
+});
 
 function createReviewProps(polygonCount: number): VectorStraightSkeletonOperationProps {
   return {
@@ -105,6 +139,12 @@ for (const scene of ['ordinary', 'overflow', 'extinct', 'unsupported', 'empty'] 
       },
       featureOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 2)}
     };
+    // Two declared empty polygons own no rings or rows: compact terminal coverage (UGE-10)
+    // rejects uncovered children, so the empty scene declares none.
+    if (scene === 'empty') {
+      inputs.positions.values = new Float32Array();
+      inputs.ringOffsets.values = Uint32Array.of(0);
+    }
     const outputs = Object.values(props.output);
     const gpu = await runOperationGraph(device, {
       inputs,
@@ -142,7 +182,7 @@ for (const scene of ['ordinary', 'overflow', 'extinct', 'unsupported', 'empty'] 
   });
 }
 
-it('reports a repeated same-time CPU wavefront and checks the GPU zero-budget hypothesis', async () => {
+it('both execution forms honor zero event work after capturing the initial snapshot', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const props = createReviewProps(1);
@@ -171,10 +211,9 @@ it('reports a repeated same-time CPU wavefront and checks the GPU zero-budget hy
   expect(Array.from(gpu['status'])).toEqual([0, 0, 7, 4]);
   expect(gpu['segments'].every(value => value === 0)).toBe(true);
   expect(gpu['sourceEdges'].every(value => value === 0)).toBe(true);
-  // The documented CPU difference removes the event budget but diagnoses an exact cycle.
-  expect(Array.from(cpu['status'].subarray(2))).toEqual([7, 8]);
+  expect(Array.from(cpu['status'])).toEqual([0, 0, 7, 4]);
   expect(cpu['status'][0]).toBe(cpu['status'][1]);
-  expect(cpu['status'][0]).toBeGreaterThan(0);
+  expect(cpu['status'][0]).toBe(0);
   expect(cpu['status'][0]).toBeLessThan(128);
   expect(cpu['segments'].every(Number.isFinite)).toBe(true);
   expect(cpu['segments'].length).toBe(gpu['segments'].length);
@@ -211,5 +250,39 @@ it('compares all five zero-length outputs for a zero-polygon batch', async () =>
     expect(gpu[output]).toHaveLength(0);
     expect(cpu[output]).toHaveLength(0);
     expect(Array.from(gpu[output])).toEqual(Array.from(cpu[output]));
+  }
+});
+
+it('terminal oblique pentagon arcs retain both independent supporting edges on every form', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const inputs = {
+    positions: {format: 'float32x2' as const, values: Float32Array.from(PENTAGON_POSITIONS)},
+    ringOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 5)},
+    polygonOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 1)},
+    featureOffsets: {format: 'uint32' as const, values: Uint32Array.of(0, 1)}
+  };
+  const props = {
+    ...createReviewProps(1),
+    maximumVertices: 32,
+    maximumEvents: 64,
+    segmentCapacity: 128,
+    offsetDistance: 0.25,
+    eventTolerance: 1e-5
+  };
+  for (const operation of [
+    new GPUVectorStraightSkeletonOperation(props),
+    new CPUVectorStraightSkeletonOperation(props)
+  ]) {
+    const rows = await runOperationGraph(device, {
+      inputs,
+      operations: [operation],
+      outputs: ['segments', 'sourceEdges', 'status']
+    });
+    expectPentagonSupports({
+      segments: rows['segments'],
+      sourceEdges: rows['sourceEdges'],
+      status: rows['status']
+    });
   }
 });

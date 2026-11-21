@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 // Fast workspace artifact check. Build first; packed-consumer verification is a separate gate.
-import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
+import {existsSync, readdirSync, readFileSync, realpathSync, statSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {getTypeScriptProjectInputs} from './typescript-project-inputs.mjs';
+import {getTypeScriptProjectInputs, getTypeScriptOutputPlan} from './typescript-project-inputs.mjs';
 import {checkBuildRecord} from './build-record.mjs';
 
 const require = createRequire(import.meta.url);
@@ -17,6 +17,84 @@ const SIDE_EFFECT_ENTRIES = new Set([
 ]);
 const failures = [];
 let checked = 0;
+
+function getLoaderConditions(loader) {
+  const conditions = new Set(['node', loader]);
+  if (process.features.require_module) conditions.add('module-sync');
+  let addons = true;
+  const environmentOptions =
+    (process.env.NODE_OPTIONS ?? '').match(/(?:[^\s"]+|"(?:\\.|[^"])*")+/g) ?? [];
+  const arguments_ = [
+    ...environmentOptions.map(value =>
+      value.replace(/"((?:\\.|[^"])*)"/g, (_match, quoted) => quoted.replace(/\\(.)/g, '$1'))
+    ),
+    ...process.execArgv
+  ];
+  for (let index = 0; index < arguments_.length; index++) {
+    const argument = arguments_[index];
+    if (argument === '--no-addons') addons = false;
+    else if (argument === '--addons') addons = true;
+    else if (argument === '--conditions' || argument === '-C') conditions.add(arguments_[++index]);
+    else if (argument.startsWith('--conditions='))
+      conditions.add(argument.slice('--conditions='.length));
+    else if (argument.startsWith('-C') && argument.length > 2) conditions.add(argument.slice(2));
+  }
+  if (addons) conditions.add('node-addons');
+  return conditions;
+}
+
+function selectTarget(target, conditions) {
+  if (typeof target === 'string' || target === null) return target;
+  if (Array.isArray(target)) {
+    for (const value of target) {
+      const selected = selectTarget(value, conditions);
+      if (selected !== undefined && selected !== null) return selected;
+    }
+    return null;
+  }
+  for (const [condition, value] of Object.entries(target)) {
+    if (condition === 'default' || conditions.has(condition)) {
+      const selected = selectTarget(value, conditions);
+      if (selected !== undefined) return selected;
+    }
+  }
+}
+
+function listTargets(target) {
+  if (typeof target === 'string') return [target];
+  if (target === null) return [];
+  if (typeof target !== 'object') throw new Error('unsupported export condition');
+  return Object.values(target).flatMap(listTargets);
+}
+
+function replaceTargets(target, replacement) {
+  if (typeof target === 'string') return target.replaceAll('*', replacement);
+  if (target === null) return null;
+  if (Array.isArray(target)) return target.map(value => replaceTargets(value, replacement));
+  return Object.fromEntries(
+    Object.entries(target).map(([condition, value]) => [
+      condition,
+      replaceTargets(value, replacement)
+    ])
+  );
+}
+
+function hasRequireCondition(target) {
+  return (
+    target !== null &&
+    typeof target === 'object' &&
+    (Object.hasOwn(target, 'require') || Object.values(target).some(hasRequireCondition))
+  );
+}
+
+function verifyResolvedTarget(specifier, resolved, directory, target, condition) {
+  const expected = realpathSync(path.resolve(directory, target));
+  const selected = realpathSync(resolved);
+  if (selected !== expected)
+    throw new Error(
+      `${specifier}: ${condition} target mismatch; expected ${expected}, resolved ${selected}`
+    );
+}
 
 function listFiles(directory) {
   if (!existsSync(directory)) return [];
@@ -28,9 +106,8 @@ function listFiles(directory) {
 
 function expandEntries(key, target, directory) {
   if (!key.includes('*')) return [[key, target]];
-  const conditions = typeof target === 'string' ? {default: target} : target;
   const replacements = new Set();
-  for (const pattern of Object.values(conditions)) {
+  for (const pattern of listTargets(target)) {
     if (typeof pattern !== 'string' || !pattern.includes('*')) continue;
     const [prefix, suffix] = pattern.split('*');
     const searchDirectory = prefix.endsWith('/')
@@ -46,17 +123,7 @@ function expandEntries(key, target, directory) {
   if (!replacements.size) throw new Error(`wildcard ${key} has no built targets`);
   return [...replacements]
     .sort()
-    .map(replacement => [
-      key.replaceAll('*', replacement),
-      typeof target === 'string'
-        ? target.replaceAll('*', replacement)
-        : Object.fromEntries(
-            Object.entries(target).map(([condition, value]) => [
-              condition,
-              typeof value === 'string' ? value.replaceAll('*', replacement) : value
-            ])
-          )
-    ]);
+    .map(replacement => [key.replaceAll('*', replacement), replaceTargets(target, replacement)]);
 }
 
 for (const moduleName of ['analysis', 'lenses', 'kepler']) {
@@ -78,29 +145,21 @@ for (const moduleName of ['analysis', 'lenses', 'kepler']) {
         existsSync(path.join(directory, file)) ? statSync(path.join(directory, file)).mtimeMs : 0
     )
   );
-  for (const source of sources) {
-    const sourceRelative = path.relative(path.join(directory, 'src'), source);
-    const relative = sourceRelative.replace(/\.[^.]+$/, '');
-    const extensions = source.endsWith('.json')
-      ? ['.json']
-      : /\.[cm][jt]s$/.test(source)
-        ? source.endsWith('mts') || source.endsWith('mjs')
-          ? ['.mjs', '.d.mts']
-          : ['.cjs', '.d.cts']
-        : /\.[jt]sx$/.test(source) && [1, 3].includes(project.options.jsx)
-          ? ['.jsx', '.d.ts']
-          : ['.js', '.cjs', '.d.ts'];
-    for (const extension of extensions) {
-      const emitted = path.join(directory, 'dist', relative + extension);
+  for (const {source, compilerOutputs, transformedOutputs} of getTypeScriptOutputPlan(
+    project,
+    directory
+  )) {
+    for (const output of [...compilerOutputs, ...transformedOutputs]) {
+      const emitted = path.join(directory, 'dist', output);
       if (!existsSync(emitted) || !statSync(emitted).isFile())
-        failures.push(`${packageJson.name}: missing build output dist/${relative}${extension}`);
+        failures.push(`${packageJson.name}: missing build output dist/${output}`);
       else if (
         buildRecord.present
-          ? !buildRecord.outputFiles.includes(`dist/${relative}${extension}`)
+          ? !buildRecord.outputFiles.includes(`dist/${output}`)
           : statSync(emitted).mtimeMs < Math.max(statSync(source).mtimeMs, metadataTime)
       ) {
         failures.push(
-          `${packageJson.name}: stale build output dist/${relative}${extension}; rebuild after current source/config`
+          `${packageJson.name}: stale build output dist/${output}; rebuild after current source/config`
         );
       }
     }
@@ -110,13 +169,15 @@ for (const moduleName of ['analysis', 'lenses', 'kepler']) {
       for (const [entryKey, entryTarget] of expandEntries(key, target, directory)) {
         const specifier =
           entryKey === '.' ? packageJson.name : `${packageJson.name}/${entryKey.slice(2)}`;
-        const conditions = typeof entryTarget === 'string' ? {default: entryTarget} : entryTarget;
-        for (const value of Object.values(conditions)) {
+        for (const value of listTargets(entryTarget)) {
           if (typeof value !== 'string')
             throw new Error(`${specifier}: unsupported export condition`);
+          const relativeTarget = path.relative(directory, path.resolve(directory, value));
           if (
             !value.startsWith('./') ||
-            path.relative(directory, path.resolve(directory, value)).startsWith('..')
+            relativeTarget === '..' ||
+            relativeTarget.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeTarget)
           )
             throw new Error(`${specifier}: invalid package export target ${value}`);
           if (
@@ -125,18 +186,38 @@ for (const moduleName of ['analysis', 'lenses', 'kepler']) {
           )
             throw new Error(`${specifier}: missing target ${value}`);
         }
-        const importTarget = conditions.import ?? conditions.default;
+        // Conditional export keys are tested in manifest order, including node before default.
+        const importTarget = selectTarget(entryTarget, getLoaderConditions('import'));
+        const requireTarget = hasRequireCondition(entryTarget)
+          ? selectTarget(entryTarget, getLoaderConditions('require'))
+          : undefined;
+        // Preflight both native targets before either loader can run initialization.
+        if (importTarget && /\.(mjs|cjs|js)$/.test(importTarget)) {
+          verifyResolvedTarget(
+            specifier,
+            fileURLToPath(import.meta.resolve(specifier)),
+            directory,
+            importTarget,
+            'ESM'
+          );
+        }
+        if (requireTarget && /\.(mjs|cjs|js)$/.test(requireTarget)) {
+          verifyResolvedTarget(
+            specifier,
+            require.resolve(specifier),
+            directory,
+            requireTarget,
+            'CommonJS'
+          );
+        }
         let names;
-        if (
-          importTarget &&
-          (typeof entryTarget !== 'string' || /\.(mjs|cjs|js)$/.test(importTarget))
-        ) {
+        if (importTarget && /\.(mjs|cjs|js)$/.test(importTarget)) {
           const moduleExports = await import(specifier);
           names = Object.keys(moduleExports).sort();
           if (!names.length && !SIDE_EFFECT_ENTRIES.has(specifier))
             throw new Error(`${specifier}: ESM entry has no exports`);
         }
-        if (conditions.require) {
+        if (requireTarget && /\.(mjs|cjs|js)$/.test(requireTarget)) {
           const commonJSNames = Object.keys(require(specifier)).sort();
           if (!commonJSNames.length && !SIDE_EFFECT_ENTRIES.has(specifier))
             throw new Error(`${specifier}: CommonJS entry has no exports`);
@@ -146,8 +227,7 @@ for (const moduleName of ['analysis', 'lenses', 'kepler']) {
             );
           }
         }
-        if (typeof entryTarget === 'string' && !/\.(mjs|cjs|js)$/.test(entryTarget))
-          import.meta.resolve(specifier);
+        if (importTarget && !/\.(mjs|cjs|js)$/.test(importTarget)) import.meta.resolve(specifier);
         checked++;
       }
     } catch (error) {

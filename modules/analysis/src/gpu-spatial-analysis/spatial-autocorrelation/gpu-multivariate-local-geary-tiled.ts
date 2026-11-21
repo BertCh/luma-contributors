@@ -1,6 +1,9 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+import {getLocalVariabilityCenteringNodes} from './local-variability-centering';
+import {ROUNDED_DIFFERENCE_WGSL} from '../spatial-regression/rounded-difference-wgsl';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 import {
   createTransientView,
@@ -39,7 +42,6 @@ export type TiledMultivariateLocalGearyProps = {
   permutations: number;
   parameters: GraphDataView<'uint32'>;
   classifyDirections: boolean;
-  correction: 'none' | 'bonferroni';
   tail: 'equal-tail' | 'esda-min-tail';
   rowTileSize: number;
   permutationTileSize: number;
@@ -82,7 +84,12 @@ export function getTiledMultivariateLocalGearyNodes<Parameters>(
   // One count plus the three parameter words; simulation keeps its existing eight bindings.
   const inferenceState = createTransientView(graph, `${id}-inference-state`, 'uint32', 4);
   const validCount = graph.createDataView(inferenceState.buffer, {format: 'uint32', length: 1});
-  const standardized = createTransientView(graph, `${id}-standardized`, 'float32', rows * columns);
+  const standardized = createTransientView(
+    graph,
+    `${id}-standardized`,
+    'float32',
+    rows * columns + columns + 1
+  );
   const partials = createTransientView(
     graph,
     `${id}-moment-partials`,
@@ -136,6 +143,14 @@ ${body}`
     : [];
 
   const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
+  const centered = getLocalVariabilityCenteringNodes(graph, {
+    id,
+    rows,
+    columns,
+    values: props.values,
+    bindings: [binding('valid', valid, 'read', 'u32')],
+    declarations: 'fn included(row: u32) -> bool { return valid[validOffset + row] != 0u; }'
+  });
   const localRow = (dispatch: {isWhole: boolean}) => (void dispatch, '(row - WEIGHTS_ROW_START)');
   const nodes: GPUCommandNode<Parameters>[] = [
     node(
@@ -172,11 +187,12 @@ rowIdentifiers[rowIdentifiersOffset + index] = index;`
       count: validCount
     }).getCommandNodes(graph),
     // One invocation per (column, chunk) folds its rows with Welford's update.
+    ...centered.nodes,
     node(
       'moment-chunks',
       columns * chunkCount,
       [
-        binding('values', props.values),
+        binding('values', centered.values),
         binding('valid', valid, 'read', 'u32'),
         binding('partials', partials, 'read_write')
       ],
@@ -205,7 +221,7 @@ for (var chunk = 0u; chunk < ${chunkCount}u; chunk++) {
  }
 }
 var scale = getNaN();
-if (count > 1u && squares > 0.0 && isFiniteBits(squares) && isFiniteBits(mean)) { scale = sqrt(divideSpatialCountByValue(count, squares)); }
+if (count > 1u && squares > 0.0 && isFiniteBits(squares) && isFiniteBits(mean)) { scale = sqrt(divideBySpatialCount(squares, count)); }
 moments[momentsOffset + index * 2u] = mean; moments[momentsOffset + index * 2u + 1u] = scale;`,
       SPATIAL_STATISTICS_COUNTS_WGSL
     ),
@@ -220,12 +236,15 @@ moments[momentsOffset + index * 2u] = mean; moments[momentsOffset + index * 2u +
       ],
       `let row = index / ${columns}u; let column = index % ${columns}u;
 var value = getNaN();
-if (valid[validOffset + row] != 0u) { value = (values[valuesOffset + index] - moments[momentsOffset + column * 2u]) * moments[momentsOffset + column * 2u + 1u]; }
+let deviation = moments[momentsOffset + column * 2u + 1u];
+if (valid[validOffset + row] != 0u && deviation > 0.0 && isFiniteBits(deviation)) { value = values[valuesOffset + index]; }
+if (row == 0u) { standardized[standardizedOffset + ${rows * columns}u + column] = deviation; }
+if (index == 0u) { standardized[standardizedOffset + ${rows * columns + columns}u] = 0.0; }
 standardized[standardizedOffset + index] = value;`
     )
   ];
 
-  const sharedDeclarations = `${PERMUTATION_RANDOM_WGSL}
+  const sharedDeclarations = `${PERMUTATION_RANDOM_WGSL}\n${ROUNDED_DIFFERENCE_WGSL}\n${SCALED_QUOTIENT_WGSL}
 const ROWS: u32 = ${rows}u;
 const COLUMNS: u32 = ${columns}u;
 const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighbors}u;
@@ -234,7 +253,7 @@ const PAIR_CAPACITY: u32 = ${2 * maximumNeighbors}u;
 fn isRowValid(row: u32) -> bool { return isFiniteBits(standardized[standardizedOffset + row * COLUMNS]); }
 fn getVectorDistance(row: u32, candidate: u32) -> f32 {
  var distance = 0.0;
- for (var column = 0u; column < COLUMNS; column++) { let difference = standardized[standardizedOffset + row * COLUMNS + column] - standardized[standardizedOffset + candidate * COLUMNS + column]; distance += difference * difference; }
+ for (var column = 0u; column < COLUMNS; column++) { let difference = getRoundedDifference(standardized[standardizedOffset + row * COLUMNS + column], standardized[standardizedOffset + candidate * COLUMNS + column], bitcast<u32>(standardized[standardizedOffset + ROWS*COLUMNS+COLUMNS])); let deviation = standardized[standardizedOffset + ROWS*COLUMNS + column]; var normalized = getNaN(); if (deviation > 0.0 && isFiniteBits(deviation)) { normalized = getScaledQuotient(difference, deviation, 1.0, 0); } distance += normalized * normalized; }
  return distance;
 }`;
 
@@ -318,7 +337,7 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
  while (rankLow < rankHigh) { let middle = (rankLow + rankHigh) / 2u; if (validRows[validRowsOffset + middle] < row) { rankLow = middle + 1u; } else { rankHigh = middle; } }
  let rank = rankLow;
  var lower = accumulators[accumulatorsOffset + row]; var upper = accumulators[accumulatorsOffset + ROWS + row];
- var invalid = accumulators[accumulatorsOffset + 2u * ROWS + row]; var average = accumulators[accumulatorsOffset + 3u * ROWS + row];
+ var invalid = accumulators[accumulatorsOffset + 2u * ROWS + row]; var differenceAverage = accumulators[accumulatorsOffset + 3u * ROWS + row];
  for (var tileStep = 0u; tileStep < REPLICATE_COUNT; tileStep++) {
   let replicate = REPLICATE_BASE + tileStep + 1u;
   var stream = createPhiloxStream(vec2<u32>(validCount[validCountOffset + 1u], validCount[validCountOffset + 2u]), row, replicate, ${PHILOX_PURPOSES.localPermutationTest.id}u);
@@ -340,10 +359,10 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
   if (!overflowed && weightSum > 0.0) { value = total / weightSum; }
   invalid += select(0.0, 1.0, !isFiniteBits(value));
   lower += select(0.0, 1.0, value <= observedValue); upper += select(0.0, 1.0, value >= observedValue);
-  average += value / ${permutations}.0;
+  if (value != observedValue) { differenceAverage += (value - observedValue) / ${permutations}.0; }
  }
  accumulators[accumulatorsOffset + row] = lower; accumulators[accumulatorsOffset + ROWS + row] = upper;
- accumulators[accumulatorsOffset + 2u * ROWS + row] = invalid; accumulators[accumulatorsOffset + 3u * ROWS + row] = average;
+ accumulators[accumulatorsOffset + 2u * ROWS + row] = invalid; accumulators[accumulatorsOffset + 3u * ROWS + row] = differenceAverage;
 }
 }`,
             simulateDeclarations,
@@ -371,13 +390,12 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
       ],
       `let observedValue = observed[observedOffset + index];
 let lower = u32(accumulators[accumulatorsOffset + index]); let upper = u32(accumulators[accumulatorsOffset + ${rows}u + index]);
-let average = accumulators[accumulatorsOffset + 3u * ${rows}u + index];
+let differenceAverage = accumulators[accumulatorsOffset + 3u * ${rows}u + index];
 let finite = isFiniteBits(observedValue) && accumulators[accumulatorsOffset + 2u * ${rows}u + index] == 0.0;
 var probability = getNaN(); var classification = 0xffffffffu;
 if (finite) { probability = ${props.tail === 'esda-min-tail' ? `f32(min(upper, ${permutations}u - upper) + 1u) / ${permutations + 1}.0` : `min(1.0, 2.0 * f32(min(lower, upper) + 1u) / ${permutations + 1}.0)`};
-${props.correction === 'bonferroni' ? `probability = min(1.0, probability * f32(validCount[validCountOffset]));` : 'probability = min(1.0, probability);'}
 classification = 0u;
-if (probability <= ${props.classifyDirections ? '0.999999' : 'bitcast<f32>(validCount[validCountOffset + 3u])'}) { classification = select(2u, 1u, observedValue < average); }
+if (probability <= ${props.classifyDirections ? '0.999999' : 'bitcast<f32>(validCount[validCountOffset + 3u])'}) { classification = select(2u, 1u, differenceAverage > 0.0); }
 }
 pValues[pValuesOffset + index] = probability; classes[classesOffset + index] = classification;`
     )

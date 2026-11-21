@@ -118,7 +118,7 @@ export default defineScene<HurricaneFamiliesOptions>({
       max: 8,
       step: 1,
       default: 5,
-      help: 'k, the number of clusters. It is fixed when GPUSpatialKMeans is compiled, so changing it rebuilds the clustering graph (the distances are not recomputed).'
+      help: 'The number of clusters. It is fixed when GPUSpatialKMeans is compiled, so changing it rebuilds the clustering graph (the distances are not recomputed).'
     },
     {
       kind: 'select',
@@ -377,7 +377,7 @@ similarity.add(new GPUTrackSimilarity({
 const families = new GPUCommandGraph(device, {id: 'families'});
 families.add(new GPUSpatialKMeans({
   positions: embedding,                    // float32x2 per storm
-  k: ${state.familyCount}, maximumIterations: ${state.iterations},
+  clusterCount: ${state.familyCount}, maximumIterations: ${state.iterations},
   initialization: '${state.initialization}',
   parameters: kmeansParameters.importToGraph(families),   // getGPUSpatialKMeansParameterValues({seed: ${state.seed}})
   output: {labels, centers, sizes, squaredDistances, status: {iterationCount, converged}}

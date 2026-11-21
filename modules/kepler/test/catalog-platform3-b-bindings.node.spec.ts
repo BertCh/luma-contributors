@@ -12,6 +12,51 @@ import {
 } from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
 import {PLATFORM3_B_BINDINGS} from '../src/analysis/catalog-platform3-b-bindings';
+import {preparePointGrid} from '../src/analysis/catalog-platform3-b-grids';
+import {resolveCatalogParameterUnit} from '../src/analysis/catalog-parameter-constraints';
+
+test('metric grid declarations match 100 metre geographic and planar coordinate controls', () => {
+  const collection = points([{coordinates: [0, 0]}, {coordinates: [0.01, 0]}]);
+  // 0.01 degree at the equator spans about 1111.95 m: ceil(span / 100) = 12.
+  expect(preparePointGrid(collection, '', 'EPSG:4326', 100).grid.columns).toBe(12);
+  expect(preparePointGrid(collection, '', 'planar', 100).grid.columns).toBe(1);
+  for (const [id, names] of Object.entries({
+    'idw-grid': ['cellSize', 'searchRadius'],
+    'kernel-density-grid': ['cellSize', 'bandwidth', 'padding'],
+    'point-density-grid': ['cellSize'],
+    'line-density-grid': ['cellSize'],
+    'kriging-grid': ['cellSize', 'range', 'searchRadius']
+  })) {
+    for (const name of names) {
+      const spec = getCatalogBinding(id)!.parameters.find(parameter => parameter.name === name)!;
+      expect(resolveCatalogParameterUnit(spec, 'EPSG:4326')).toBe('metres');
+      expect(resolveCatalogParameterUnit(spec, 'planar')).toBe('coordinate units');
+    }
+  }
+  expect(resolveCatalogParameterUnit({unit: 'source-coordinate-units'}, 'EPSG:4326')).toBe(
+    'source coordinate units'
+  );
+});
+
+test('bucketed CPU DBSCAN admits sparse 8000 and 20000 point fixtures', () => {
+  for (const count of [8000, 20000]) {
+    // Every point is isolated: spacing 2 exceeds epsilon 1; minimumSamples 2 makes all noise.
+    const collection = points(
+      Array.from({length: count}, (_, index) => ({coordinates: [index * 2, 0]}))
+    );
+    const result = run('density-clustering', {epsilon: 1, minimumSamples: 2}, {points: collection});
+    expect(result.tables[0].rowCount).toBe(count);
+    expect(result.summary['noiseCount']).toBe(count);
+    expect(result.summary['clusterCount']).toBe(0);
+  }
+  expect(() =>
+    run(
+      'density-clustering',
+      {epsilon: 1},
+      {points: points(Array.from({length: 20001}, (_, index) => ({coordinates: [index * 2, 0]})))}
+    )
+  ).toThrow();
+});
 
 type Row = {
   coordinates: number[];
@@ -118,7 +163,7 @@ test('family B bindings are complete, runnable and visible in the catalog entrie
       expect(registered.gpuContributorNames).toEqual([]);
     }
     for (const name of binding.contributorNames) {
-      const entry = entries.find(candidate => candidate.contributorName === name);
+      const entry = entries.find(candidate => candidate.identity.exportName === name);
       expect(entry?.runnable, name).toBe('catalog-binding');
       expect(entry?.bindingIds).toContain(binding.id);
     }
@@ -162,7 +207,7 @@ test('idw-grid interpolates by radius, reports counts and rejects bad input', ()
     'No usable samples'
   );
   expect(() => run('idw-grid', {valueProperty: 'v', power: 99}, {points: samples})).toThrow(
-    'Parameter out of range'
+    'idw-grid: power must be at most 8; received 99'
   );
 });
 
@@ -196,7 +241,7 @@ test('kernel-density-grid conserves mass and honors weights and padding', () => 
     (sparse.summary['columns'] as number) * (sparse.summary['rows'] as number)
   );
   expect(() => run('kernel-density-grid', {cellSize: 5, bandwidth: 0}, {points: samples})).toThrow(
-    'Parameter out of range'
+    'kernel-density-grid: bandwidth must be at least 0.000001; received 0'
   );
 });
 
@@ -614,7 +659,7 @@ const blobs = () =>
   ]);
 
 test('density-clustering labels canonical DBSCAN clusters and noise', () => {
-  const result = run('density-clustering', {epsilon: 3, minimumPoints: 3}, {points: blobs()});
+  const result = run('density-clustering', {epsilon: 3, minimumSamples: 3}, {points: blobs()});
   const clustered = table(result, 'points');
   expect(clustered.columns['cluster']).toEqual([0, 0, 0, 0, 1, 1, 1, 1, -1]);
   expect(clustered.columns['is_core'][8]).toBe(false);
@@ -623,7 +668,7 @@ test('density-clustering labels canonical DBSCAN clusters and noise', () => {
   expect(clusters.columns['size']).toEqual([4, 4]);
   expect(result.summary['noiseCount']).toBe(1);
   expect(() => run('density-clustering', {epsilon: 0}, {points: blobs()})).toThrow(
-    'Parameter out of range'
+    'density-clustering: epsilon must be at least 1e-9; received 0'
   );
 });
 

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainOutputSelection} from './terrain-output-selection';
+
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -26,6 +28,8 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   captureGraphCommandNodes,
+  validateRequirement,
+  validateFiniteNumber,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -37,6 +41,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters,
   validateRasterOutputTexture
 } from '../../raster-analysis/raster-band-utils';
@@ -203,12 +208,18 @@ export function getGPUReliefShadingParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_RELIEF_SHADING_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUReliefShadingParameterValues', grid);
   validateParameterTarget(
     'getGPUReliefShadingParameterValues',
     target,
     GPU_RELIEF_SHADING_PARAMETER_LENGTH
   );
   const lightSet = settings.lights ?? 'mdow';
+  validateRequirement(
+    'getGPUReliefShadingParameterValues',
+    lightSet === 'mdow' || Array.isArray(lightSet),
+    `lights must be mdow or an array of lights; received ${String(lightSet)}`
+  );
   const lights = lightSet === 'mdow' ? GPU_RELIEF_SHADING_MDOW_LIGHTS : lightSet;
   if (lights.length < 1 || lights.length > GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT) {
     throw new Error('Relief shading needs 1 to 8 lights');
@@ -221,8 +232,42 @@ export function getGPUReliefShadingParameterValues(
     if (!(stops[index].elevation > stops[index - 1].elevation)) {
       throw new Error('Relief shading elevation stops must be strictly ascending');
     }
+    const low = stops[index - 1].elevation;
+    const high = stops[index].elevation;
+    validateRequirement(
+      'getGPUReliefShadingParameterValues',
+      Math.fround(high) > Math.fround(low),
+      `elevationStops must remain strictly ascending: requested ${low}, ${high}; encoded ${Math.fround(low)}, ${Math.fround(high)}`
+    );
+  }
+  for (const [index, stop] of stops.entries()) {
+    validateFiniteNumber(
+      'getGPUReliefShadingParameterValues',
+      `elevationStops[${index}].elevation`,
+      stop.elevation
+    );
+  }
+  const contrastLow = settings.contrastLowElevation ?? 0;
+  const contrastHigh = settings.contrastHighElevation ?? 0;
+  if ((settings.contrastStrength ?? 0) !== 0) {
+    validateFiniteNumber('getGPUReliefShadingParameterValues', 'contrastLowElevation', contrastLow);
+    validateFiniteNumber(
+      'getGPUReliefShadingParameterValues',
+      'contrastHighElevation',
+      contrastHigh
+    );
+    validateRequirement(
+      'getGPUReliefShadingParameterValues',
+      contrastHigh <= contrastLow || Math.fround(contrastHigh) > Math.fround(contrastLow),
+      `contrast elevations must retain distinct endpoints: requested ${contrastLow}, ${contrastHigh}; encoded ${Math.fround(contrastLow)}, ${Math.fround(contrastHigh)}`
+    );
   }
   const weighting = settings.lightWeighting ?? (lightSet === 'mdow' ? 'aspect' : 'fixed');
+  validateRequirement(
+    'getGPUReliefShadingParameterValues',
+    weighting === 'fixed' || weighting === 'aspect' || weighting === 'imhof-swing',
+    `lightWeighting must be fixed, aspect or imhof-swing; received ${weighting}`
+  );
   const warm = settings.warmColor ?? [1, 0.95, 0.85];
   const cool = settings.coolColor ?? [0.8, 0.85, 1];
   target.fill(0, 0, GPU_RELIEF_SHADING_PARAMETER_LENGTH);
@@ -271,7 +316,7 @@ export function getGPUReliefShadingParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUReliefShading}; at least one is required. */
-export type GPUReliefShadingOutput = {
+export type GPUReliefShadingOutput = TerrainOutputSelection<{
   /** Multidirectional hillshade per pixel in `[0, 1]`. */
   hillshade?: GraphDataView<'float32'>;
   /** Blended relief luminance per pixel in `[0, 1]`. */
@@ -284,7 +329,7 @@ export type GPUReliefShadingOutput = {
   hillshadeTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
   /** Storage texture (`r32float` or `rgba32float`, channel 0) receiving the relief. */
   reliefTexture?: GraphTextureView<'r32float' | 'rgba32float'>;
-};
+}>;
 
 /**
  * Properties for {@link GPUReliefShading}.
@@ -335,12 +380,6 @@ export type GPUReliefShadingProps = {
    * in the outer ring of pixels.
    */
   borderMode?: 'one-sided' | GPURasterBorderMode;
-  /**
-   * Topology switch that adds the `'imhof-swing'` hillshade node (default false). Without it the
-   * `'imhof-swing'` weighting behaves like `'aspect'`. The node runs every frame but exits at once
-   * unless the per-frame weighting is `'imhof-swing'`, and it keeps the other weightings bit-identical.
-   */
-  imhofSwing?: boolean;
 };
 
 /**
@@ -384,6 +423,11 @@ export class GPUReliefShading implements GPUCommandNodeProducer, GPURasterHaloSt
     this.props = props;
     this.requiredHalo = props.borderMode === 'one-sided' ? 2 : 1;
     const {id} = this;
+    validateRequirement(
+      id,
+      !('imhofSwing' in props),
+      "imhofSwing was removed; set lightWeighting: 'imhof-swing' in the parameter settings"
+    );
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);
     if (
@@ -422,6 +466,8 @@ export class GPUReliefShading implements GPUCommandNodeProducer, GPURasterHaloSt
     }
     validateRasterCellSizeMode(id, props.cellSizeMode ?? 'uniform');
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     this.rowDirection = resolveTerrainRowDirection(id, props.grid, props.rowDirection);
     validateRasterBuffersDistinct(
       id,
@@ -587,6 +633,7 @@ ${getRasterRowNorthSignWGSL(this.rowDirection)}
 const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
 const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT}u;
 ${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
+${GUARDED_ATAN2_WGSL}
 ${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
         body: `let row = index / WIDTH;
   ${gradientIndexWGSL}
@@ -600,14 +647,24 @@ ${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
   let normal = normalize(vec3<f32>(-eastGradient, -northGradient, 1.0));
   let isFlat = eastGradient == 0.0 && northGradient == 0.0;
   // Downslope aspect clockwise from north.
-  let aspect = atan2(-eastGradient, -northGradient);
+  let aspect = guardedAtan2(-eastGradient, -northGradient);
   let lightCount = min(u32(max(settings[settingsOffset + 5u], 0.0)), MAX_LIGHT_COUNT);
-  let aspectWeighting = settings[settingsOffset + 6u] != 0.0;
+  // Read the enum as bits: floating comparisons may flush unsupported subnormal words to zero.
+  let weighting = bitcast<u32>(settings[settingsOffset + 6u]);
+  let fixedWeighting = (weighting & 0x7fffffffu) == 0u;
+  let aspectWeighting = weighting == 0x3f800000u;
+  let swingWeighting = weighting == 0x40000000u;
+  let swingRadians = settings[settingsOffset + 19u] * DEGREES_TO_RADIANS;
+  let swingFactor = smoothstep(0.05, 0.4, length(normal.xy));
   var weightedSum = 0.0;
   var weightSum = 0.0;
   for (var light = 0u; light < lightCount; light++) {
     let slot = settingsOffset + LIGHT_OFFSET + light * 3u;
-    let azimuth = settings[slot] * DEGREES_TO_RADIANS;
+    let baseAzimuth = settings[slot] * DEGREES_TO_RADIANS;
+    var azimuth = baseAzimuth;
+    if (swingWeighting) {
+      azimuth += swingRadians * sin(aspect - baseAzimuth) * swingFactor;
+    }
     let altitude = settings[slot + 1u] * DEGREES_TO_RADIANS;
     var weight = settings[slot + 2u];
     if (aspectWeighting) {
@@ -620,30 +677,13 @@ ${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
   }
   let shade = select(0.0, weightedSum / weightSum, weightSum > 0.0);
   let isValid = gradientValidity[gradientValidityOffset + gradientIndex] != 0u &&
+    (fixedWeighting || aspectWeighting || swingWeighting) &&
+    (!swingWeighting || isFiniteValue(swingRadians)) &&
     isFiniteValue(rawX) && isFiniteValue(rawY) && groundCell.x > 0.0 && groundCell.y > 0.0 &&
     isFiniteValue(shade);
   hillshadeValues[hillshadeValuesOffset + index] = select(getQuietNaN(index), shade, isValid);`
       })
     );
-    // A separate node (only with `imhofSwing`) keeps the fixed and aspect hillshade kernel above
-    // bit-identical: it overwrites the hillshade only while the per-frame weighting is 'imhof-swing'.
-    if (props.imhofSwing) {
-      nodes.push(
-        getSwingNode(graph, {
-          id: `${id}-hillshade-swing`,
-          width,
-          height,
-          cellSizeMode,
-          rowDirection: this.rowDirection,
-          gradientIndexWGSL,
-          gradientX: gradients[0].values,
-          gradientY: gradients[1].values,
-          gradientValidity: gradients[0].validity,
-          settings: props.parameters,
-          hillshade: hillshadeTarget
-        })
-      );
-    }
     const reliefTarget =
       output.relief ??
       (output.reliefTexture
@@ -717,88 +757,6 @@ ${getRasterGroundCellSizeWGSL(cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
     }
     return nodes;
   }
-}
-
-/**
- * Builds the `'imhof-swing'` hillshade kernel. It recomputes Horn's normal exactly as the main
- * hillshade kernel and, only when settings slot 6 is 2, overwrites the hillshade with the
- * fixed-weight sum of lights whose azimuths are swung by
- * `swing * sin(aspect - azimuth) * smoothstep(0.05, 0.4, sin(slope))`.
- */
-function getSwingNode<Parameters>(
-  graph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    width: number;
-    height: number;
-    cellSizeMode: GPURasterCellSizeMode;
-    rowDirection: GPURasterRowDirection;
-    /** Declares `gradientIndex`, the element of pixel `index` in the gradient rasters. */
-    gradientIndexWGSL: string;
-    gradientX: GraphDataView<'float32'>;
-    gradientY: GraphDataView<'float32'>;
-    gradientValidity: GraphDataView<'uint32'>;
-    settings: GraphDataView<'float32'>;
-    hillshade: GraphDataView<'float32'>;
-  }
-): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
-    id: props.id,
-    operation: 'GPUReliefShading',
-    variant: `hillshade-swing-${props.cellSizeMode}`,
-    bindings: [
-      {name: 'gradientX', view: props.gradientX, type: 'f32', access: 'read'},
-      {name: 'gradientY', view: props.gradientY, type: 'f32', access: 'read'},
-      {name: 'gradientValidity', view: props.gradientValidity, type: 'u32', access: 'read'},
-      {name: 'settings', view: props.settings, type: 'f32', access: 'read'},
-      {name: 'hillshadeValues', view: props.hillshade, type: 'f32', access: 'read_write'}
-    ],
-    invocationCount: props.width * props.height,
-    declarations: `const WIDTH: u32 = ${props.width}u;
-const HEIGHT: u32 = ${props.height}u;
-${getRasterRowNorthSignWGSL(props.rowDirection)}
-const LIGHT_OFFSET: u32 = ${LIGHT_OFFSET}u;
-const MAX_LIGHT_COUNT: u32 = ${GPU_RELIEF_SHADING_MAXIMUM_LIGHT_COUNT}u;
-${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}
-${GUARDED_ATAN2_WGSL}
-${getRasterGroundCellSizeWGSL(props.cellSizeMode, RELIEF_SHADING_GRID_SLOTS)}`,
-    body: `if (settings[settingsOffset + 6u] != 2.0) {
-    return;
-  }
-  let row = index / WIDTH;
-  ${props.gradientIndexWGSL}
-  let rawX = gradientX[gradientXOffset + gradientIndex];
-  let rawY = gradientY[gradientYOffset + gradientIndex];
-  let groundCell = getGroundCellSize(row);
-  let zFactor = settings[settingsOffset + 2u];
-  let eastGradient = zFactor * rawX / (8.0 * groundCell.x);
-  let northGradient = ROW_NORTH_SIGN * zFactor * rawY / (8.0 * groundCell.y);
-  let normal = normalize(vec3<f32>(-eastGradient, -northGradient, 1.0));
-  // -northGradient is -0.0 on a pure east or west slope with north row order, and both
-  // arguments are zero on a flat cell, where guardedAtan2 returns 0 and the zero swing factor
-  // keeps every light at its base azimuth (FX-17, terrain-surface-05).
-  let aspect = guardedAtan2(-eastGradient, -northGradient);
-  let lightCount = min(u32(max(settings[settingsOffset + 5u], 0.0)), MAX_LIGHT_COUNT);
-  let swingRadians = settings[settingsOffset + 19u] * DEGREES_TO_RADIANS;
-  let swingFactor = smoothstep(0.05, 0.4, length(normal.xy));
-  var weightedSum = 0.0;
-  var weightSum = 0.0;
-  for (var light = 0u; light < lightCount; light++) {
-    let slot = settingsOffset + LIGHT_OFFSET + light * 3u;
-    let baseAzimuth = settings[slot] * DEGREES_TO_RADIANS;
-    let azimuth = baseAzimuth + swingRadians * sin(aspect - baseAzimuth) * swingFactor;
-    let altitude = settings[slot + 1u] * DEGREES_TO_RADIANS;
-    let weight = settings[slot + 2u];
-    let direction = vec3<f32>(sin(azimuth) * cos(altitude), cos(azimuth) * cos(altitude), sin(altitude));
-    weightedSum += weight * max(dot(normal, direction), 0.0);
-    weightSum += weight;
-  }
-  let shade = select(0.0, weightedSum / weightSum, weightSum > 0.0);
-  let isValid = gradientValidity[gradientValidityOffset + gradientIndex] != 0u &&
-    isFiniteValue(rawX) && isFiniteValue(rawY) && groundCell.x > 0.0 && groundCell.y > 0.0 &&
-    isFiniteValue(shade);
-  hillshadeValues[hillshadeValuesOffset + index] = select(getQuietNaN(index), shade, isValid);`
-  });
 }
 
 /**

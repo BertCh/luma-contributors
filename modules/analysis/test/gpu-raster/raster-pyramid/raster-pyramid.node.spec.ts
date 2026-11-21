@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, expectTypeOf, it} from 'vitest';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPURasterExtremaPyramidLayout,
@@ -19,6 +19,39 @@ import {
   computeRasterExtremaPyramid,
   computeRasterExtremaPyramidDirect
 } from './raster-pyramid-oracle';
+
+it('DEF-09 requires a terminal pyramid view and accepts each minimal selection', () => {
+  expectTypeOf<{}>().not.toExtend<GPURasterExtremaPyramidProps['output']>();
+  expectTypeOf<{maximum: undefined}>().not.toExtend<GPURasterExtremaPyramidProps['output']>();
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  try {
+    for (const name of ['minimum', 'maximum', 'combined'] as const) {
+      const input = createTransientView(graph, `${name}-input`, 'float32', 1);
+      const view = createTransientView(
+        graph,
+        `${name}-output`,
+        'float32',
+        name === 'combined' ? 2 : 1
+      );
+      const output: GPURasterExtremaPyramidProps['output'] =
+        name === 'minimum'
+          ? {minimum: view}
+          : name === 'maximum'
+            ? {maximum: view}
+            : {combined: view};
+      expect(
+        () =>
+          new GPURasterExtremaPyramid({
+            grid: makeGPURasterMetadata({width: 1, height: 1}),
+            input: {id: name, format: 'float32', storage: {kind: 'buffer', values: input}},
+            output
+          })
+      ).not.toThrow();
+    }
+  } finally {
+    graph.device.destroy();
+  }
+});
 
 it('getGPURasterExtremaPyramidLayout computes levels, widths, offsets and length', () => {
   const layout = getGPURasterExtremaPyramidLayout(makeGPURasterMetadata({width: 37, height: 23}));
@@ -130,6 +163,7 @@ it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four level
       .filter(node => node.id.startsWith('p-level')).length
   ).toBe(2);
 
+  // @ts-expect-error Deliberately invalid JavaScript call exercises the runtime output guard.
   expect(() => create({output: {}})).toThrow(/at least one output/);
   expect(() =>
     create({output: {maximum: createTransientView(graph, 'short', 'float32', layout.length - 1)}})

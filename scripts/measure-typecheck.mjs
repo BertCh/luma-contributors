@@ -22,6 +22,7 @@ import {performance} from 'node:perf_hooks';
 import {fileURLToPath} from 'node:url';
 import typescript from 'typescript';
 import {getChildNodeOptions, readTreeRSS} from './verification-policy.mjs';
+import {listTypeScriptDependencyInputs} from './typescript-project-inputs.mjs';
 
 const ROOT = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const GIBIBYTE = 1024 ** 3;
@@ -106,101 +107,10 @@ function captureInputFingerprint(configuration) {
     for (const reference of parsed.projectReferences ?? []) {
       visitProject(typescript.resolveProjectReferencePath(reference));
     }
-    const moduleCache = typescript.createModuleResolutionCache(ROOT, file => file, parsed.options);
-    const queue = [...parsed.fileNames];
-    const visitedFiles = new Set();
-    const libraryDirectory = dirname(typescript.getDefaultLibFilePath(parsed.options));
-    queue.push(
-      ...(parsed.options.lib ?? [typescript.getDefaultLibFileName(parsed.options)]).map(file =>
-        join(libraryDirectory, file)
-      )
+    listTypeScriptDependencyInputs(
+      {files: parsed.fileNames, options: parsed.options},
+      {host, includeLibraries: true}
     );
-    function addTypeReference(name, containingFile) {
-      const reference = typescript.resolveTypeReferenceDirective(
-        name,
-        containingFile,
-        parsed.options,
-        host
-      ).resolvedTypeReferenceDirective;
-      if (reference) queue.push(reference.resolvedFileName);
-    }
-    for (const name of typescript.getAutomaticTypeDirectiveNames(parsed.options, host))
-      addTypeReference(name, original);
-    for (let index = 0; index < queue.length; index++) {
-      const file = resolve(queue[index]);
-      if (visitedFiles.has(file)) continue;
-      visitedFiles.add(file);
-      const source = readTrackedFile(file);
-      if (source === undefined || !/\.(?:[cm]?[jt]s|[jt]sx)$/.test(file)) continue;
-      const dependencies = typescript.preProcessFile(source, true, true);
-      const moduleSpecifiers = new Set(
-        dependencies.importedFiles.map(imported => imported.fileName)
-      );
-      // preProcessFile omits JSDoc and automatic JSX imports. Parse files that can carry
-      // those dependencies, using the compiler's own JSX option/pragma selection.
-      const hasJSXRuntime =
-        !/\.d\.[cm]?ts$/.test(file) &&
-        (parsed.options.jsx === typescript.JsxEmit.ReactJSX ||
-          parsed.options.jsx === typescript.JsxEmit.ReactJSXDev ||
-          parsed.options.jsxImportSource ||
-          source.includes('@jsx'));
-      if (
-        hasJSXRuntime ||
-        source.includes('@import') ||
-        (/\.[cm]?jsx?$/.test(file) && source.includes('/**'))
-      ) {
-        const sourceFile = typescript.createSourceFile(
-          file,
-          source,
-          {
-            languageVersion: typescript.ScriptTarget.Latest,
-            jsDocParsingMode: typescript.JSDocParsingMode.ParseAll
-          },
-          true
-        );
-        function visitImports(node) {
-          if (
-            typescript.isJSDocImportTag(node) &&
-            typescript.isStringLiteralLike(node.moduleSpecifier)
-          ) {
-            moduleSpecifiers.add(node.moduleSpecifier.text);
-          }
-          if (
-            typescript.isImportTypeNode(node) &&
-            typescript.isLiteralTypeNode(node.argument) &&
-            typescript.isStringLiteralLike(node.argument.literal)
-          ) {
-            moduleSpecifiers.add(node.argument.literal.text);
-          }
-          for (const documentation of node.jsDoc ?? []) visitImports(documentation);
-          typescript.forEachChild(node, visitImports);
-        }
-        visitImports(sourceFile);
-        if (hasJSXRuntime) {
-          const runtime = typescript.getJSXRuntimeImport(
-            typescript.getJSXImplicitImportBase(parsed.options, sourceFile),
-            parsed.options
-          );
-          if (runtime) moduleSpecifiers.add(runtime);
-        }
-      }
-      for (const moduleSpecifier of moduleSpecifiers) {
-        const resolved = typescript.resolveModuleName(
-          moduleSpecifier,
-          file,
-          parsed.options,
-          host,
-          moduleCache
-        ).resolvedModule;
-        if (resolved) queue.push(resolved.resolvedFileName);
-      }
-      for (const reference of dependencies.referencedFiles)
-        queue.push(resolve(dirname(file), reference.fileName));
-      for (const reference of dependencies.typeReferenceDirectives)
-        addTypeReference(reference.fileName, file);
-      for (const reference of dependencies.libReferenceDirectives)
-        queue.push(join(libraryDirectory, `lib.${reference.fileName.toLowerCase()}.d.ts`));
-    }
   }
   visitProject(configuration);
   return createHash('sha256')

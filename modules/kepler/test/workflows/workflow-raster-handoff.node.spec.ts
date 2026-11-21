@@ -104,6 +104,7 @@ test('the workflow runner automatically hands prepared planar raster samples to 
     elevation: {stepId: 'prepare', output: 'prepared-surface'}
   });
   const plan = planWorkflow(document, {registry, host});
+  expect(plan.steps['prepare'].issues.filter(issue => issue.severity === 'error')).toEqual([]);
   expect(plan.steps['drainage'].issues.filter(issue => issue.severity === 'error')).toEqual([]);
   expect(
     plan.steps['drainage'].issues.filter(issue => issue.code === 'capacity-may-exceed')

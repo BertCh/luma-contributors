@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createRecipeLossReadback} from './recipe-loss-readback';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -23,7 +24,7 @@ import {
   SLICE_EVENTS
 } from '../emerging-hot-spots/emerging-hot-spots-oracle';
 import {RecipeTestFixture, isClose} from './recipe-harness';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 const WIDTH = 6;
 const HEIGHT = 5;
@@ -76,7 +77,7 @@ it('H1 six identical hot slices classify persistent with finite trends on the fi
         'float32',
         GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
       ),
-      outputs: {
+      output: {
         category: category.view,
         trendZ: trendZ.view,
         trendP: trendP.view,
@@ -187,7 +188,7 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
         'float32',
         GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
       ),
-      outputs: {
+      output: {
         cube: cubeOutput.view,
         giZScores: giZScores.view,
         adjustedPValues: adjustedPValues.view,
@@ -328,7 +329,7 @@ it('addSpaceTimeHotSpotsRecipe accepts cell ids with weights and skips out-of-ra
         'float32',
         GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
       ),
-      outputs: {cube: cubeOutput.view, giZScores: giZScores.view}
+      output: {cube: cubeOutput.view, giZScores: giZScores.view}
     });
     fixture.run();
     expect(await fixture.readUint32(cubeOutput, CELLS * sliceCount)).toEqual([...expected]);
@@ -458,7 +459,7 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
           cells,
           settings,
           parameters: createParameters(),
-          outputs: {
+          output: {
             cube: cube.view,
             giZScores: giZScores.view,
             category: category.view,
@@ -466,7 +467,8 @@ it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics
             ...(path === 'sorted' ? {status: {groupOverflow: groupOverflowView}} : {})
           }
         });
-        expect(recipe.contributors.length, name).toBe(path === 'sorted' ? 9 : 7);
+        // Sorted truncation has a separate inference-mask writer before inference.
+        expect(recipe.contributors.length, name).toBe(path === 'sorted' ? 10 : 7);
         // The slice-range stage is always present; the sorted path adds cube-counts.
         expect(recipe.status.stages.length, name).toBe(
           (path === 'sorted' ? 2 : 1) + (cellsName === 'ids' ? 1 : 0)
@@ -578,7 +580,7 @@ it('addSpaceTimeHotSpotsRecipe bins absolute time steps across year boundaries (
         },
         settings,
         parameters: createParameters(),
-        outputs: {cube: cube.view, status: {skippedEventCount: skipped.view}}
+        output: {cube: cube.view, status: {skippedEventCount: skipped.view}}
       });
       // The slice-range stage exposes the same count as invalidCount.
       expect(recipe.status.stages[0].stage).toBe('slice-range');
@@ -602,3 +604,225 @@ it('addSpaceTimeHotSpotsRecipe bins absolute time steps across year boundaries (
     fixture.destroy();
   }
 }, 120000);
+
+for (const sorted of [false, true]) {
+  it(`ever-occupied ${sorted ? 'sorted' : 'atomic'} cube mask retains zero bins and rebuilds on submission`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = new RecipeTestFixture(device, 'occupied-cube');
+    try {
+      // Cells 0,1,2 contain [3,0,0], [0,1,0], [0,0,2]. Cell 3 is caller-excluded,
+      // despite its nine events; cell 4 has only an out-of-range and a masked event initially.
+      const months = [0, 0, 0, 1, 2, 2, ...new Array<number>(9).fill(2), 6, 1];
+      const timestamps = Uint32Array.from(
+        months.flatMap(month => {
+          const time = Date.UTC(2023, month, 1);
+          return [time % 2 ** 32, Math.floor(time / 2 ** 32)];
+        })
+      );
+      const positions = fixture.output('event-positions', 'float32x2', months.length);
+      const effectiveMask = fixture.output('effective-mask', 'uint32', 5);
+      const cube = fixture.output('cube', 'uint32', 15);
+      const giZScores = fixture.output('gi-z', 'float32', 15);
+      const pValues = fixture.output('p', 'float32', 15);
+      const adjustedPValues = fixture.output('adjusted-p', 'float32', 15);
+      const recipe = addSpaceTimeHotSpotsRecipe(fixture.graph, {
+        timestamps: fixture.input('timestamps', timestamps, 'uint32x2', months.length),
+        calendarParameters: fixture.input(
+          'calendar',
+          getGPUCalendarBucketsParameterValues(0),
+          'sint32',
+          2
+        ),
+        slices: {step: 'month', origin: {year: 2023}, count: 3},
+        cells: {
+          kind: 'lattice',
+          positions: positions.view,
+          width: 5,
+          height: 1,
+          bounds: [0, 0, 5, 1]
+        },
+        occupiedCellsOnly: true,
+        mask: fixture.input(
+          'event-mask',
+          Uint32Array.from({length: months.length}, (_, row) =>
+            row === months.length - 1 ? 0 : 1
+          ),
+          'uint32',
+          months.length
+        ),
+        cellMask: fixture.input('caller-mask', Uint32Array.of(1, 1, 1, 0, 1), 'uint32', 5),
+        settings: {radius: 0, temporalWindow: 0},
+        parameters: fixture.parameterBuffer(
+          'settings',
+          'float32',
+          GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+        ),
+        ...(sorted ? {scratch: {keys: fixture.output('keys', 'uint32', months.length).view}} : {}),
+        output: {
+          cube: cube.view,
+          giZScores: giZScores.view,
+          pValues: pValues.view,
+          adjustedPValues: adjustedPValues.view
+        }
+      });
+      fixture.graph.add(
+        createRecipeLossReadback(
+          fixture.graph,
+          'read-mask',
+          recipe.intermediates.cellMask!,
+          effectiveMask.view,
+          'u32'
+        )
+      );
+      // Independent reference: /usr/bin/python3 with scipy.stats.false_discovery_control.
+      // x=[3,0,0,0,1,0,0,0,2]; z=(x-2/3)/sqrt(10/9); p=2*ndtr(-abs(z)); BH(p).
+      const expectedZ = [
+        2.2135943621, -0.632455532, -0.632455532, -0.632455532, 0.316227766, -0.632455532,
+        -0.632455532, -0.632455532, 1.2649110641
+      ];
+      const expectedP = [
+        0.0268566955, 0.5270892569, 0.5270892569, 0.5270892569, 0.751829634, 0.5270892569,
+        0.5270892569, 0.5270892569, 0.2059032107
+      ];
+      const expectedAdjusted = [
+        0.2417102596, 0.592975414, 0.592975414, 0.592975414, 0.751829634, 0.592975414, 0.592975414,
+        0.592975414, 0.592975414
+      ];
+      for (const moved of [false, true]) {
+        const thirdCell = moved ? 4 : 2;
+        positions.buffer.write(
+          Float32Array.from(
+            [0, 0, 0, 1, thirdCell, thirdCell, ...new Array<number>(9).fill(3), 4, 4].flatMap(
+              cell => [cell + 0.5, 0.5]
+            )
+          )
+        );
+        fixture.run();
+        const mask = await fixture.readUint32(effectiveMask, 5);
+        expect(mask).toEqual(moved ? [1, 1, 0, 0, 1] : [1, 1, 1, 0, 0]);
+        expect(mask.reduce((total, value) => total + value, 0) * 3).toBe(9);
+        const actualCube = await fixture.readUint32(cube, 15);
+        const actualZ = await fixture.readFloat32(giZScores, 15);
+        const actualP = await fixture.readFloat32(pValues, 15);
+        const actualAdjusted = await fixture.readFloat32(adjustedPValues, 15);
+        const rows = [0, 1, 2, 3, 4, 5, thirdCell * 3, thirdCell * 3 + 1, thirdCell * 3 + 2];
+        expect(rows.map(row => actualCube[row])).toEqual([3, 0, 0, 0, 1, 0, 0, 0, 2]);
+        for (const [index, row] of rows.entries()) {
+          expect(Number.isFinite(actualZ[row])).toBe(true);
+          expect(Number.isFinite(actualP[row])).toBe(true);
+          expect(Number.isFinite(actualAdjusted[row])).toBe(true);
+          expect(actualZ[row]).toBeCloseTo(expectedZ[index], 4);
+          expect(actualP[row]).toBeCloseTo(expectedP[index], 4);
+          expect(actualAdjusted[row]).toBeCloseTo(expectedAdjusted[index], 4);
+        }
+        for (let cell = 0; cell < 5; cell++) {
+          if (mask[cell]) continue;
+          for (let slice = 0; slice < 3; slice++) {
+            expect(actualZ[cell * 3 + slice]).toBeNaN();
+            expect(actualAdjusted[cell * 3 + slice]).toBeNaN();
+          }
+        }
+      }
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
+
+it('B2 sorted truncation preserves event occupancy and recovers inference on a complete submission', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new RecipeTestFixture(device, 'sorted-truncation');
+  try {
+    const words = Uint32Array.from(
+      [0, 0, 1, 0, 0].flatMap(month => {
+        const time = Date.UTC(2023, month, 1);
+        return [time % 2 ** 32, Math.floor(time / 2 ** 32)];
+      })
+    );
+    const positions = fixture.output('positions', 'float32x2', 5);
+    const occupancy = fixture.output('occupancy', 'uint32', 4);
+    const overflow = fixture.output('group-overflow', 'uint32', 1);
+    const required = fixture.output('group-required', 'uint32', 1);
+    const giZScores = fixture.output('z', 'float32', 12);
+    const adjustedPValues = fixture.output('adjusted', 'float32', 12);
+    const cube = fixture.output('cube', 'uint32', 12);
+    const recipe = addSpaceTimeHotSpotsRecipe(fixture.graph, {
+      timestamps: fixture.input('timestamps', words, 'uint32x2', 5),
+      calendarParameters: fixture.input(
+        'calendar',
+        getGPUCalendarBucketsParameterValues(0),
+        'sint32',
+        2
+      ),
+      slices: {step: 'month', origin: {year: 2023}, count: 3},
+      cells: {
+        kind: 'lattice',
+        positions: positions.view,
+        width: 4,
+        height: 1,
+        bounds: [0, 0, 4, 1]
+      },
+      occupiedCellsOnly: true,
+      settings: {radius: 0, temporalWindow: 0},
+      scratch: {
+        groupKeys: fixture.output('group-keys', 'uint32', 2).view,
+        groupCounts: fixture.output('group-counts', 'uint32', 2).view
+      },
+      parameters: fixture.parameterBuffer(
+        'parameters',
+        'float32',
+        GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+      ),
+      output: {
+        cube: cube.view,
+        giZScores: giZScores.view,
+        adjustedPValues: adjustedPValues.view,
+        status: {groupOverflow: overflow.view, groupRequiredCount: required.view}
+      }
+    });
+    fixture.graph.add(
+      createRecipeLossReadback(
+        fixture.graph,
+        'read-occupancy',
+        recipe.intermediates.cellMask!,
+        occupancy.view,
+        'u32'
+      )
+    );
+    for (const truncated of [true, false]) {
+      positions.buffer.write(
+        truncated
+          ? Float32Array.of(0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1.5, 0.5, 2.5, 0.5)
+          : new Float32Array(10).fill(0.5)
+      );
+      fixture.run();
+      expect(await fixture.readUint32(overflow, 1)).toEqual([truncated ? 1 : 0]);
+      expect(await fixture.readUint32(required, 1)).toEqual([truncated ? 4 : 2]);
+      expect(await fixture.readUint32(occupancy, 4)).toEqual(
+        truncated ? [1, 1, 1, 0] : [1, 0, 0, 0]
+      );
+      const scores = await fixture.readFloat32(giZScores, 12);
+      const adjusted = await fixture.readFloat32(adjustedPValues, 12);
+      if (truncated) {
+        expect(scores).toEqual(new Array(12).fill(NaN));
+        expect(adjusted).toEqual(new Array(12).fill(NaN));
+      } else {
+        expect(await fixture.readUint32(cube, 12)).toEqual([4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // Independent SciPy reference: x=[4,1,0], mean=5/3, variance=26/9;
+        // z=(x-mean)/sqrt(variance); q=false_discovery_control(2*ndtr(-abs(z))).
+        const expectedZ = [1.372812945967, -0.392232270276, -0.980580675691];
+        const expectedAdjusted = [0.490199351503, 0.694886602372, 0.490199351503];
+        for (let row = 0; row < 3; row++) {
+          expect(Number.isFinite(scores[row])).toBe(true);
+          expect(Number.isFinite(adjusted[row])).toBe(true);
+          expect(scores[row]).toBeCloseTo(expectedZ[row], 4);
+          expect(adjusted[row]).toBeCloseTo(expectedAdjusted[row], 4);
+        }
+      }
+    }
+  } finally {
+    fixture.destroy();
+  }
+});

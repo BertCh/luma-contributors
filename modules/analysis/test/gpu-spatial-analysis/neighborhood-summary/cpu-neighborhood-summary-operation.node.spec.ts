@@ -133,7 +133,7 @@ it('keeps categorical membership separate and handles masks, truncation and clam
   expect(nonfinite.modes[0]).toBe(3);
   expect(nonfinite.entropy[0]).toBeCloseTo(-0.25 * Math.log(0.25) - 0.75 * Math.log(0.75), 7);
   const truncated = computeNeighborhoodSummaryOnCPU(
-    {...INPUT, mask: new Uint32Array([1, 0, 1]), weightsOverflow: Uint32Array.of(1)},
+    {...INPUT, mask: new Uint32Array([1, 0, 1]), status: {overflow: Uint32Array.of(1)}},
     {statistics: ['count', 'mean']}
   );
   expect(Array.from(truncated.table)).toEqual([NaN, NaN, 0, NaN, NaN, NaN]);
@@ -157,7 +157,7 @@ it('checks inconsistent arrays and construction-time props', () => {
     {values: new Float32Array(2)},
     {categories: new Uint32Array(2)},
     {mask: new Uint32Array(2)},
-    {weightsOverflow: new Uint32Array(0)}
+    {status: {overflow: new Uint32Array(0)}}
   ]) {
     expect(() =>
       computeNeighborhoodSummaryOnCPU({...INPUT, ...replacement}, {statistics: STATISTICS})

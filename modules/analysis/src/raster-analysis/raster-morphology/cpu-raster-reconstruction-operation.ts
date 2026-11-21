@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterOperationArray} from '../raster-grid/raster-operation-band';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
+import {validateOperationGraphNames} from '../../analysis-core/operations/gpu-contributor-operation';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
 import {
   calibrateRasterOperationBand,
   readRasterOperationBand,
+  snapshotRasterOperationBand,
   validateRasterOperationBand,
   type CPURasterOperationBand
 } from '../raster-grid/raster-operation-band';
@@ -49,6 +53,8 @@ export function computeRasterReconstructionOnCPU(
   options: CPURasterReconstructionOptions
 ): CPURasterReconstructionResult {
   const id = 'computeRasterReconstructionOnCPU';
+  validateRasterOperationArray(id, 'marker', marker, 'Float32Array');
+  validateRasterOperationArray(id, 'mask', mask, 'Float32Array');
   validateRasterMorphologyOptions(id, options);
   validateRequirement(
     id,
@@ -109,10 +115,43 @@ export function computeRasterReconstructionOnCPU(
 /**
  * CPU reconstruction with the GPU propagation budget and verification count. Band values and
  * validity may have spare capacity; calibration reads only the grid prefix at their original offsets.
+ * Band samples, scale and offset use float32 conversion before multiplication/addition, as on the GPU.
  */
 export class CPURasterReconstructionOperation extends GPUCPUOperation {
   constructor(props: RasterReconstructionOperationProps) {
-    props = captureRasterMorphologyOperationProps(props);
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'marker',
+      'mask',
+      'method',
+      'connectivity',
+      'maximumIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['values', 'validity', 'status']);
+    props = {
+      ...props,
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'converged',
+          'iterationCount',
+          'iterationLimitReached'
+        ])
+      })
+    };
+    props = captureRasterMorphologyOperationProps(
+      {
+        ...props,
+        marker:
+          typeof props.marker === 'string'
+            ? props.marker
+            : snapshotRasterOperationBand(props.marker),
+        mask: typeof props.mask === 'string' ? props.mask : snapshotRasterOperationBand(props.mask)
+      },
+      'reconstruction'
+    );
     const id = props.id ?? 'raster-reconstruction';
     validateRasterMorphologyOptions(id, props);
     validateRequirement(
@@ -124,18 +163,29 @@ export class CPURasterReconstructionOperation extends GPUCPUOperation {
     for (const input of [props.marker, props.mask]) {
       if (typeof input !== 'string') validateRasterOperationBand(id, input, props.grid);
     }
+    const inputs = {
+      marker: typeof props.marker === 'string' ? props.marker : props.marker.storage.values,
+      mask: typeof props.mask === 'string' ? props.mask : props.mask.storage.values,
+      ...(typeof props.marker !== 'string' && props.marker.validity !== undefined
+        ? {markerValidity: props.marker.validity}
+        : {}),
+      ...(typeof props.mask !== 'string' && props.mask.validity !== undefined
+        ? {maskValidity: props.mask.validity}
+        : {})
+    };
+    validateOperationGraphNames(id, inputs, {
+      values: props.output.values,
+      validity: props.output.validity,
+      'status.converged': props.output.status.converged,
+      ...Object.fromEntries(
+        Object.entries(props.output.status)
+          .filter(([, value]) => value !== undefined)
+          .map(([port, value]) => [`status.${port}`, value])
+      )
+    });
     super({
       id,
-      inputs: {
-        marker: typeof props.marker === 'string' ? props.marker : props.marker.storage.values,
-        mask: typeof props.mask === 'string' ? props.mask : props.mask.storage.values,
-        ...(typeof props.marker !== 'string' && props.marker.validity
-          ? {markerValidity: props.marker.validity}
-          : {}),
-        ...(typeof props.mask !== 'string' && props.mask.validity
-          ? {maskValidity: props.mask.validity}
-          : {})
-      },
+      inputs,
       outputs: {
         [props.output.values]: gpuGraph.vector('float32', {length}),
         [props.output.validity]: gpuGraph.vector('uint32', {length}),
@@ -156,7 +206,9 @@ export class CPURasterReconstructionOperation extends GPUCPUOperation {
                   id,
                   {
                     values: inputs['marker'],
-                    ...(props.marker.validity ? {validity: inputs['markerValidity']} : {})
+                    ...(props.marker.validity !== undefined
+                      ? {validity: inputs['markerValidity']}
+                      : {})
                   },
                   props.marker
                 ),
@@ -171,7 +223,7 @@ export class CPURasterReconstructionOperation extends GPUCPUOperation {
                   id,
                   {
                     values: inputs['mask'],
-                    ...(props.mask.validity ? {validity: inputs['maskValidity']} : {})
+                    ...(props.mask.validity !== undefined ? {validity: inputs['maskValidity']} : {})
                   },
                   props.mask
                 ),
@@ -212,14 +264,19 @@ function calibrateReconstructionBand(
     !band.validity || band.validity.length >= count,
     `${port}.validity must hold at least ${count} flags for grid.width * grid.height`
   );
-  return Float32Array.from(
-    calibrateRasterOperationBand(
-      {
-        ...band,
-        values: band.values.subarray(0, count),
-        validity: band.validity?.subarray(0, count)
-      },
-      count
-    )
-  );
+  const metadata = {
+    id: band.id,
+    scale: band.scale,
+    offset: band.offset,
+    noDataValue: band.noDataValue,
+    validity: band.validity?.subarray(0, count)
+  };
+  // Narrow before slicing so each format remains correlated with its scalar array type.
+  const prefix: CPURasterOperationBand =
+    band.format === 'float32'
+      ? {...metadata, format: band.format, values: band.values.subarray(0, count)}
+      : band.format === 'sint32'
+        ? {...metadata, format: band.format, values: band.values.subarray(0, count)}
+        : {...metadata, format: band.format, values: band.values.subarray(0, count)};
+  return Float32Array.from(calibrateRasterOperationBand(prefix, count, true));
 }

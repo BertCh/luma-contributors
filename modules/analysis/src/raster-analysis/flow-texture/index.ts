@@ -13,7 +13,10 @@ export {
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
   GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH
 } from './line-integral-convolution-parameters';
-export type {GPULineIntegralConvolutionSettings} from './line-integral-convolution-parameters';
+export type {
+  GPULineIntegralConvolutionSettings,
+  GPULineIntegralConvolutionParameterSettings
+} from './line-integral-convolution-parameters';
 export {GPUStreamlines} from './gpu-streamlines';
 export type {
   GPUStreamlinesOutput,
@@ -27,7 +30,10 @@ export {
   GPU_STREAMLINES_PARAMETER_LENGTH,
   GPU_STREAMLINES_UINT32_PARAMETER_LENGTH
 } from './streamlines-parameters';
-export type {GPUStreamlinesSettings} from './streamlines-parameters';
+export type {
+  GPUStreamlinesSettings,
+  GPUStreamlinesParameterSettings
+} from './streamlines-parameters';
 
 // GPUGraph operation forms and CPU twins (dev-docs/contributor-contract.md, section 14).
 export {

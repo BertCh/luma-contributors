@@ -2,12 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  createTransientView,
-  GPUCommandGraph,
-  type GraphVectorView,
-  type GraphDataView
-} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {afterAll, afterEach, expect, it, vi} from 'vitest';
 import {
   GPULocalRBF,
@@ -70,15 +65,14 @@ it('validates row topology, packed shared views, and writable aliases at constru
         output: {...props.output, status: createTransientView(graph, 'wrong-topology', 'uint32', 6)}
       })
   ).toThrow(/status.*topology/);
-  expect(
-    () =>
-      new GPULocalRBF({
+  expect(() =>
+    Reflect.construct(GPULocalRBF, [
+      {
         ...props,
-        positions: createVectorView('shared', 'float32x2', [
-          props.positions
-        ]) as unknown as GraphDataView<'float32x2'>
-      })
-  ).toThrow(/positions must be one packed view/);
+        positions: createVectorView('shared', 'float32x2', [props.positions])
+      }
+    ])
+  ).toThrow(/local-rbf positions must be a data graph view/);
   const overlappingGraph = new GPUCommandGraph(device);
   const overlapping = createProps(overlappingGraph, [2, 2]);
   const chunks = 'data' in overlapping.output.values ? overlapping.output.values.data : [];

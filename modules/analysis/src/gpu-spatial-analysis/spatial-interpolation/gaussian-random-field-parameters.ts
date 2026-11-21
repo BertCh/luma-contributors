@@ -57,16 +57,17 @@ export function getGPUGaussianRandomFieldParameterValues(
     ['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2', 'matern'].includes(
       settings.variogram.model
     ),
-    'variogram.model must be a supported covariance family'
+    'variogram.model must be spherical, exponential, gaussian, matern-3/2, matern-5/2 or matern'
   );
-  target.fill(0);
+  const destination = target;
+  target = new Float32Array(GPU_GAUSSIAN_RANDOM_FIELD_PARAMETER_LENGTH);
   getGPULocalKrigingParameterValues({covariance: settings.variogram}, target.subarray(0, 8));
   target[8] = settings.mean ?? 0;
   const words = new Uint32Array(target.buffer, target.byteOffset, target.length);
   words[9] = settings.seed;
   words[10] = settings.realization ?? 0;
   if (settings.grid) {
-    const [startX, startY] = getRasterGridCorners(id, settings.grid);
+    const [startX, startY] = getRasterGridCorners(id, settings.grid, false);
     const stepX = settings.grid.affine[0];
     const stepY = settings.grid.affine[4];
     target.set([startX + stepX / 2, startY + stepY / 2, stepX, stepY], 11);
@@ -77,8 +78,11 @@ export function getGPUGaussianRandomFieldParameterValues(
     id,
     [0, 4, 5, 6, 7, 8, 11, 12, 13, 14].every(index => Number.isFinite(target[index]!)) &&
       target[0]! > 0 &&
-      target[7]! > 0,
-    'settings must remain finite with positive variance and range in float32'
+      target[7]! > 0 &&
+      target[13]! !== 0 &&
+      target[14]! !== 0,
+    'settings must remain finite with positive variance/range and nonzero cell steps in float32'
   );
-  return target;
+  destination.set(target);
+  return destination;
 }

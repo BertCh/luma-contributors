@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSpatialStatisticsCommonMaskNodes} from './spatial-statistics-common-mask';
+
+import {snapshotSpatialAutocorrelationProps} from './spatial-autocorrelation-construction';
+import {
+  getRegressionCompletenessViews,
+  getRegressionCountGroups,
+  getRegressionWeightsLossNodes
+} from '../spatial-regression/regression-weights-completeness';
+
 import {
   createTransientView,
   validatePackedUint32View,
@@ -17,7 +26,9 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUInferenceMetadata,
@@ -245,6 +256,8 @@ export type GPULocalMoranProps = {
  * The compatible globalStatistics float32 summary rounds counts above 2^24. Packed row views and each CSR chunk must fit device bindings.
  */
 export class GPULocalMoran implements GPUCommandNodeProducer {
+  /** Compose observation completeness with a common row mask for this class and permutation inference. */
+  static readonly createCommonMaskNodes = createSpatialStatisticsCommonMaskNodes;
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -257,9 +270,17 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
   readonly minimumNeighbors: number;
 
   constructor(props: GPULocalMoranProps) {
+    props = snapshotSpatialAutocorrelationProps(props);
     this.id = props.id ?? 'local-moran';
     this.props = props;
     const id = this.id;
+    validateRequirement(
+      id,
+      props.quadrantGating === undefined ||
+        props.quadrantGating === 'analytic' ||
+        props.quadrantGating === 'none',
+      `quadrantGating must be analytic or none; received ${props.quadrantGating}`
+    );
     this.islands = resolveGPUIslandPolicy(id, props.islands);
     this.minimumNeighbors = resolveSpatialAutocorrelationMinimumNeighbors(
       id,
@@ -272,6 +293,10 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       globalCounts: props.output.globalCounts,
       globalStatistics: props.output.globalStatistics
     });
+    for (const view of getRegressionCompletenessViews(props.weights)) {
+      validatePackedUint32View(view, `${id} weights.status`);
+      validateCapacity(id, 'weights.status length', view.length, 1);
+    }
     for (const [name, view] of [
       ['zScores', props.output.zScores],
       ['localI', props.output.localI],
@@ -336,6 +361,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
         ...getGPUSpatialWeightsOrChunksViews(props.weights),
         props.weights.status?.overflow,
         props.weights.status?.candidateOverflow,
+        ...getRegressionCompletenessViews(props.weights),
         props.values,
         props.parameters,
         props.mask
@@ -385,14 +411,17 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
-    const {weights, parameters} = props;
+    const {id} = this;
+    let props = this.props;
+    let {weights} = props;
+    const {parameters} = props;
     const {zScores} = props.output;
     const dispatches = getGPUSpatialWeightsChunkDispatches(weights);
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUSpatialWeightsOrChunksViews(weights),
       weights.status?.overflow,
       weights.status?.candidateOverflow,
+      ...getRegressionCompletenessViews(weights),
       props.values,
       parameters,
       props.mask,
@@ -419,6 +448,13 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       props.output.quadrants,
       ...Object.values(props.output.status ?? {})
     ]);
+    const completeness = getRegressionCountGroups(weights).length
+      ? getRegressionWeightsLossNodes(graph, id, weights, false)
+      : {nodes: []};
+    if (completeness.loss) {
+      weights = {...weights, status: {...weights.status, overflow: completeness.loss}};
+      props = {...props, weights};
+    }
     const statusNodes = getSpatialAutocorrelationStatusNodes(graph, id, OPERATION, props);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes<Parameters>(graph, {
@@ -429,7 +465,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       islands: this.islands,
       operation: OPERATION
     });
-    const nodes = [...statusNodes, ...inputs.nodes];
+    const nodes = [...completeness.nodes, ...statusNodes, ...inputs.nodes];
     // `readParameter` needs the `parameters` binding, so only kernels that bind it include it.
     const neighborConstantsWGSL = `const ROWS: u32 = ${rows}u;
 const MOMENTS: u32 = ${rows}u;
@@ -623,8 +659,10 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`;
     var neighborSum = 0.0;
     var weightSum = 0.0;
     var squareSum = 0.0;
+    var minimumWeight = 3.402823466e38; var maximumWeight = 0.0;
     ${getSpatialWeightsNeighborLoopWGSL(
       `neighborSum += weight * statistics[statisticsOffset + neighbor];
+      minimumWeight = min(minimumWeight, weight); maximumWeight = max(maximumWeight, weight);
       weightSum += weight;
       squareSum += weight * weight;
       neighborCount++;`,
@@ -638,13 +676,15 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`;
     }
     lag = neighborSum;
     let othersCount = max(counts[countsOffset], 1u) - 1u;
+    let constantWeightPopulation = neighborCount == othersCount && minimumWeight == maximumWeight;
     let others = f32(othersCount);
     let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
     let otherMean = divideBySpatialCount(-centered, othersCount);
     let otherVariance = divideBySpatialCount(sumOfSquares - centered * centered, othersCount) - otherMean * otherMean;
+    let constantOthers = (statistics[statisticsOffset + MOMENTS + 8u] != 0.0 && centered == statistics[statisticsOffset + MOMENTS + 7u]) || (statistics[statisticsOffset + MOMENTS + 9u] != 0.0 && centered == statistics[statisticsOffset + MOMENTS + 6u]);
     let lagVariance = otherVariance * divideBySpatialCount(multiplyBySpatialCount(squareSum, othersCount) - weightSum * weightSum, max(othersCount, 1u) - 1u);
     if (others >= 2.0 && centered != 0.0 && neighborCount >= MINIMUM_NEIGHBORS &&
-        lagVariance > 0.0 && isFiniteFloat(lagVariance)) {
+        !constantOthers && !constantWeightPopulation && lagVariance > 0.0 && isFiniteFloat(lagVariance)) {
       let lagZ = (neighborSum - weightSum * otherMean) / sqrt(lagVariance);
       zScore = select(lagZ, -lagZ, centered < 0.0);
     }

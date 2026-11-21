@@ -112,7 +112,7 @@ it('join collection resets stored and required counts without overwriting candid
       candidateCapacity: pointCount,
       output: {
         pointFeatureIds: pointFeatureIds.view,
-        featureCounts: featureCounts.view,
+        polygonAssignmentCounts: featureCounts.view,
         matches: {
           ids: matchIds.view,
           status: {

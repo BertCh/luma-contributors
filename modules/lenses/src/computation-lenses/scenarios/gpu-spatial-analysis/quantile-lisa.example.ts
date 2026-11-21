@@ -11,6 +11,7 @@ export async function runExample(
   props: ConstructorParameters<typeof GPUQuantileLISA>[0]
 ) {
   // #region example
+  // The caller supplies the explicit inference alternative in props.
   graph.add(new GPUQuantileLISA(props));
   // #endregion example
 }

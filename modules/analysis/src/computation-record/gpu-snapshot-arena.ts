@@ -7,6 +7,7 @@ import type {
   GPUComputationCapture,
   GPUComputationCaptureElementType
 } from './computation-record-types';
+import {validateOption, validateRequirement} from '../analysis-core/kernels/gpu-contributor-utils';
 
 /** One packed, four-byte-aligned range in every snapshot frame. */
 export type GPUSnapshotSlot = {
@@ -30,7 +31,9 @@ export type GPUSnapshotLabel = {
   label?: string;
 };
 
-/** Copies frames into one bounded readback buffer, then maps that buffer once. */
+type GPUSnapshotReservation = {state: 'reserved' | 'submitted' | 'discarded'};
+
+/** Reserves copied frames in one bounded buffer, then reads and caches only the retained prefix. */
 export class GPUSnapshotArena {
   /** Device owning the readback buffer. */
   readonly device: Device;
@@ -46,7 +49,12 @@ export class GPUSnapshotArena {
   private readonly buffer: Buffer;
   private readonly labels: GPUSnapshotLabel[] = [];
   private readback?: Promise<Uint8Array>;
+  private submittedCount = 0;
+  private readonly encoderReservations = new WeakMap<CommandEncoder, GPUSnapshotReservation>();
+  private readonly frameReservations: GPUSnapshotReservation[] = [];
+  private readonly checkpoints = new WeakMap<object, GPUSnapshotLabel | undefined>();
   private destroyed = false;
+  private sealed = false;
 
   /** Allocates at most `maximumByteLength` bytes (64 MiB by default). */
   constructor(
@@ -61,9 +69,14 @@ export class GPUSnapshotArena {
     this.device = device;
     this.id = props.id ?? 'gpu-snapshot-arena';
     this.capacity = props.capacity;
-    this.slots = props.slots.map(slot => Object.freeze({...slot}));
+    this.slots = Object.freeze(props.slots.map(slot => Object.freeze({...slot})));
     const names = new Set<string>();
     for (const slot of this.slots) {
+      validateOption(this.id, `slot "${slot.name}" elementType`, slot.elementType, [
+        'f32',
+        'i32',
+        'u32'
+      ]);
       this.validateByteRange(slot.byteLength, `slot "${slot.name}" byteLength`);
       if (names.has(slot.name)) throw new Error(`${this.id} duplicate slot "${slot.name}"`);
       names.add(slot.name);
@@ -97,9 +110,51 @@ export class GPUSnapshotArena {
     });
   }
 
-  /** Number of frames recorded so far. */
+  /** Number of reserved frames, including unsubmitted copies; discard removes an abandoned suffix. */
   get count(): number {
     return this.labels.length;
+  }
+
+  /**
+   * Marks the start of an unsubmitted suffix, including reservations made by taps. Take this before
+   * encoding. The returned token belongs to this arena and is invalid if its prefix is discarded.
+   */
+  checkpoint(): Readonly<{count: number}> {
+    this.validateOpen();
+    const checkpoint = Object.freeze({count: this.count});
+    this.checkpoints.set(checkpoint, this.labels[this.count - 1]);
+    return checkpoint;
+  }
+
+  /**
+   * Protects a contiguous prefix through `checkpoint` (or all current frames when omitted). Call
+   * immediately before submitting that prefix's encoders. Later reserved encoders remain discardable.
+   * The boundary cannot split any encoder's reservations; submitted encoders cannot reserve again.
+   * Submitted and in-flight indices are never reused. Submission failure leaves the prefix protected.
+   */
+  markSubmitted(checkpoint?: Readonly<{count: number}>): void {
+    this.validateOpen();
+    const count = checkpoint === undefined ? this.count : this.validateCheckpoint(checkpoint);
+    this.validateSubmissionCount(count);
+    this.validateEncoderBoundary(count);
+    for (const reservation of this.frameReservations.slice(0, count))
+      reservation.state = 'submitted';
+    this.submittedCount = count;
+  }
+
+  /**
+   * Removes only the unsubmitted suffix since `checkpoint`, without splitting any encoder's frames.
+   * Every encoder containing a removed copy must be abandoned permanently: never submit or encode
+   * into it later. Earlier submitted indices stay unchanged.
+   */
+  discard(checkpoint: Readonly<{count: number}>): void {
+    this.validateOpen();
+    const count = this.validateCheckpoint(checkpoint);
+    this.validateSubmissionCount(count);
+    this.validateEncoderBoundary(count);
+    for (const reservation of this.frameReservations.slice(count)) reservation.state = 'discarded';
+    this.labels.length = count;
+    this.frameReservations.length = count;
   }
 
   /** Records every slot into the next frame and returns its zero-based index. */
@@ -108,21 +163,32 @@ export class GPUSnapshotArena {
     sources: Readonly<Record<string, {buffer: Buffer; byteOffset?: number}>>,
     label: GPUSnapshotLabel = {}
   ): number {
-    if (this.destroyed || this.readback) throw new Error(`${this.id} is closed for snapshots`);
+    this.validateOpen();
     if (this.count >= this.capacity) throw new Error(`${this.id} snapshot arena is full`);
-    // Validate the entire frame before recording any copies.
-    for (const slot of this.slots) {
-      const source = sources[slot.name];
+    const reservation = this.encoderReservations.get(commandEncoder) ?? {
+      state: 'reserved' as const
+    };
+    validateRequirement(
+      this.id,
+      reservation.state === 'reserved',
+      `commandEncoder must be unsubmitted and not discarded; received ${reservation.state}`
+    );
+    // Capture and validate the entire frame before recording any copies or rereading caller getters.
+    const frameSources = this.slots.map(slot => {
+      const source = Object.hasOwn(sources, slot.name) ? sources[slot.name] : undefined;
       if (!source) throw new Error(`${this.id} missing source for slot "${slot.name}"`);
-      this.validateByteRange(source.byteOffset ?? 0, `slot "${slot.name}" byteOffset`);
-      if ((source.byteOffset ?? 0) + slot.byteLength > source.buffer.byteLength) {
+      const buffer = source.buffer;
+      const byteOffset = source.byteOffset ?? 0;
+      this.validateByteRange(byteOffset, `slot "${slot.name}" byteOffset`);
+      if (byteOffset + slot.byteLength > buffer.byteLength) {
         throw new Error(`${this.id} source for slot "${slot.name}" is too small`);
       }
-    }
+      return {buffer, byteOffset};
+    });
     const frame = this.count;
     let destinationOffset = frame * this.frameByteLength;
-    for (const slot of this.slots) {
-      const source = sources[slot.name];
+    for (const [index, slot] of this.slots.entries()) {
+      const source = frameSources[index];
       if (slot.byteLength > 0) {
         commandEncoder.copyBufferToBuffer({
           sourceBuffer: source.buffer,
@@ -134,13 +200,17 @@ export class GPUSnapshotArena {
       }
       destinationOffset += slot.byteLength;
     }
+    this.encoderReservations.set(commandEncoder, reservation);
+    this.frameReservations.push(reservation);
     this.labels.push({...label});
     return frame;
   }
 
   /**
-   * Maps once after all frames have been submitted. Each capture owns a copy of its values.
-   * `runId` belongs to the enclosing capture sidecar, not individual capture entries.
+   * Seals the frame set at the first call; submit all retained encoders before reading. Maps only
+   * `(0, count * frameByteLength)`, skips empty ranges, shares an in-flight mapping and caches
+   * successful bytes. A rejected mapping may be retried, without reopening capture or discard.
+   * Each returned capture owns its values. `runId` belongs to the enclosing capture sidecar.
    */
   async read(
     props: {
@@ -151,10 +221,24 @@ export class GPUSnapshotArena {
     } = {}
   ): Promise<GPUComputationCapture[]> {
     if (this.destroyed) throw new Error(`${this.id} has been destroyed`);
-    this.readback ??=
-      this.count && this.frameByteLength
-        ? this.buffer.readAsync()
-        : Promise.resolve(new Uint8Array(0));
+    this.sealed = true;
+    const byteLength = this.count * this.frameByteLength;
+    this.readback ??= byteLength
+      ? Promise.resolve()
+          .then(() => this.buffer.readAsync(0, byteLength))
+          .then(bytes => {
+            validateRequirement(
+              this.id,
+              bytes.byteLength === byteLength,
+              `readback byteLength must equal ${byteLength}; received ${bytes.byteLength}`
+            );
+            return new Uint8Array(bytes);
+          })
+          .catch(error => {
+            this.readback = undefined;
+            throw error;
+          })
+      : Promise.resolve(new Uint8Array(0));
     const bytes = await this.readback;
     const captures: GPUComputationCapture[] = [];
     for (const [frame, label] of this.labels.entries()) {
@@ -167,8 +251,14 @@ export class GPUSnapshotArena {
             : slot.elementType === 'i32'
               ? Int32Array
               : Uint32Array;
-        const resource = props.resources?.[slot.name];
-        const keySpace = props.keySpaces?.[slot.name];
+        const resource =
+          props.resources && Object.hasOwn(props.resources, slot.name)
+            ? props.resources[slot.name]
+            : undefined;
+        const keySpace =
+          props.keySpaces && Object.hasOwn(props.keySpaces, slot.name)
+            ? props.keySpaces[slot.name]
+            : undefined;
         captures.push({
           id: `${this.id}-${slot.name}-${frame}`,
           name: slot.name,
@@ -193,6 +283,38 @@ export class GPUSnapshotArena {
   destroy(): void {
     if (!this.destroyed) this.buffer.destroy();
     this.destroyed = true;
+  }
+
+  private validateCheckpoint(checkpoint: Readonly<{count: number}>): number {
+    validateRequirement(
+      this.id,
+      this.checkpoints.has(checkpoint) &&
+        checkpoint.count <= this.count &&
+        this.checkpoints.get(checkpoint) === this.labels[checkpoint.count - 1],
+      'checkpoint must belong to this arena and retain its original prefix'
+    );
+    return checkpoint.count;
+  }
+
+  private validateSubmissionCount(count: number): void {
+    validateRequirement(
+      this.id,
+      count >= this.submittedCount,
+      `checkpoint count ${count} must be at least submitted frame count ${this.submittedCount}`
+    );
+  }
+
+  private validateEncoderBoundary(count: number): void {
+    const prefix = new Set(this.frameReservations.slice(0, count));
+    validateRequirement(
+      this.id,
+      this.frameReservations.slice(count).every(reservation => !prefix.has(reservation)),
+      `checkpoint count ${count} must not split an encoder's reservations`
+    );
+  }
+
+  private validateOpen(): void {
+    if (this.destroyed || this.sealed) throw new Error(`${this.id} is closed for snapshots`);
   }
 
   private validateByteRange(value: number, name: string): void {

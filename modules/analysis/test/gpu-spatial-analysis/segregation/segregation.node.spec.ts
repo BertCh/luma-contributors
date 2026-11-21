@@ -18,6 +18,71 @@ import {computeSegregationOracle} from './segregation-oracle';
 
 let serial = 0;
 
+it.each([
+  'complete',
+  'converged',
+  'iterationLimitReached',
+  'requiredCount'
+] as const)('refuses a scale carrying unqualifiable %s evidence', name => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `scale-certificate-${serial++}`, format, length);
+  try {
+    const weights = {
+      offsets: view('uint32', 3),
+      neighbors: view('uint32', 2),
+      weights: view('float32', 2)
+    };
+    const props = {
+      groupCount: 2,
+      groupCounts: view('float32', 4),
+      output: {indices: view('float32', getGPUSegregationLayout(2).stride)}
+    };
+    // Overflow words have a runtime guard. These four other kinds of evidence have
+    // no writer/guard, so admitting their views could publish an incomplete result.
+    expect(() => new GPUSegregation({...props, scales: [weights]})).not.toThrow();
+    expect(
+      () =>
+        new GPUSegregation({
+          ...props,
+          scales: [{...weights, status: {[name]: view('uint32', 1)}}]
+        })
+    ).toThrow(/scales\[0\].status/);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('UST-10 captures missing-count settings and rejects unknown spatial forms', () => {
+  const device = createNullWebGPUDevice(),
+    graph = new GPUCommandGraph(device);
+  const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
+    createTransientView(graph, `missing-contract-${serial++}`, format, length);
+  try {
+    const props = {
+      groupCount: 2,
+      groupCounts: view('float32', 4),
+      missingCountPolicy: 'exclude-unit' as 'zero' | 'exclude-unit',
+      output: {
+        indices: view('float32', getGPUSegregationLayout(2).stride),
+        invalidUnitCount: view('uint32', 1)
+      }
+    };
+    const contributor = new GPUSegregation(props),
+      originalCount = props.output.invalidUnitCount;
+    props.missingCountPolicy = 'zero';
+    props.output.invalidUnitCount = view('uint32', 1);
+    expect(contributor.props.missingCountPolicy).toBe('exclude-unit');
+    expect(contributor.props.output.invalidUnitCount).toBe(originalCount);
+    expect(() => new GPUSegregation({...props, spatialForm: 'unknown' as 'environment'})).toThrow(
+      /environment.*smoothed-population/
+    );
+  } finally {
+    device.destroy();
+  }
+});
+
 it('GPUSegregation declares nodes and validates its props', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'segregation-nodes'});
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
@@ -87,7 +152,11 @@ it('segregation oracle writes NaN for undefined indices and local values', () =>
 });
 
 it('GPUSegregation scales share one pipeline per kernel (rule 12) and parse as WGSL', () => {
-  const build = (spatialScaleCount: number, spatialForm?: 'smoothed-population') => {
+  const build = (
+    spatialScaleCount: number,
+    spatialForm: 'environment' | 'smoothed-population' | undefined,
+    flagged: boolean
+  ) => {
     const graph = new GPUCommandGraph(createNullWebGPUDevice());
     const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
       createTransientView(graph, `scales-${serial++}`, format, length);
@@ -95,7 +164,10 @@ it('GPUSegregation scales share one pipeline per kernel (rule 12) and parse as W
     const weights = {
       offsets: view('uint32', 11),
       neighbors: view('uint32', 20),
-      weights: view('float32', 20)
+      weights: view('float32', 20),
+      ...(flagged
+        ? {status: {overflow: view('uint32', 1), candidateOverflow: view('uint32', 1)}}
+        : {})
     };
     const scales = [null, ...Array.from({length: spatialScaleCount}, () => weights)];
     return new GPUSegregation({
@@ -112,12 +184,14 @@ it('GPUSegregation scales share one pipeline per kernel (rule 12) and parse as W
       }
     }).getCommandNodes(graph);
   };
-  for (const spatialForm of [undefined, 'smoothed-population'] as const) {
-    expect(getGPUCommandNodePipelineKeys(build(3, spatialForm)).size, spatialForm).toBe(
-      getGPUCommandNodePipelineKeys(build(2, spatialForm)).size
-    );
-    for (const {id, source} of getGPUCommandNodeKernelSources(build(2, spatialForm))) {
-      expect(() => new WgslReflect(source), id).not.toThrow();
+  for (const spatialForm of [undefined, 'environment', 'smoothed-population'] as const) {
+    for (const flagged of [false, true]) {
+      expect(getGPUCommandNodePipelineKeys(build(3, spatialForm, flagged)).size, spatialForm).toBe(
+        getGPUCommandNodePipelineKeys(build(2, spatialForm, flagged)).size
+      );
+      for (const {id, source} of getGPUCommandNodeKernelSources(build(2, spatialForm, flagged))) {
+        expect(() => new WgslReflect(source), id).not.toThrow();
+      }
     }
   }
 });

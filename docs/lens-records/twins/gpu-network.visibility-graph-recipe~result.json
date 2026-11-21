@@ -4,9 +4,9 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const visibility = addVisibilityGraphRecipe(graph, props);\nreturn visibility;",
+    "code": "export async function runExample(graph: GPUCommandGraph, props: GPUNetworkVisibilityGraphCSRProps) {\n  const visibility = addVisibilityGraphRecipe(graph, props);\n  return visibility;\n}",
     "language": "ts",
-    "lineCount": 2
+    "lineCount": 4
   },
   "scenarioId": "gpu-network.visibility-graph-recipe",
   "viewId": "result-view",
@@ -24,8 +24,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:17.520Z",
-    "runId": "run-c4434575",
+    "date": "2026-11-20T23:48:50.976Z",
+    "runId": "run-ee17f945",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -33,7 +33,7 @@
     ]
   },
   "state": {
-    "runId": "run-c4434575",
+    "runId": "run-ee17f945",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCapacity, validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {EMBEDDED_DATASET_LOADERS} from './embedded-dataset-loaders.js';
 import type {Device} from '@luma.gl/core';
-import type {LensScenarioDescriptor, LensScenarioResult} from './types';
+import type {LensScenarioDescriptor, LensScenarioResult, LensDatasetResolver} from './types';
 
 /**
  * Lets a lens scenario run on the caller's own table instead of its embedded dataset. A scenario
  * that loads one of the embedded dataframe datasets (see `loadDataFrameLensData`) reads its
  * columns by name; while user input is active those names resolve to the caller's mapped columns.
  * Reading a column that was not mapped throws `LensUserInputRoleError`, which names the role so a
- * host can ask for that field. Runs are serialized because the input is module scoped.
+ * host can ask for that field. Each run resolves its own mapped input.
  */
 export type LensUserColumn = ArrayLike<number | null>;
 export type LensUserInput = {
@@ -31,19 +32,25 @@ export class LensUserInputRoleError extends Error {
   }
 }
 
-type ActiveInput = {input: LensUserInput; accessedRoles: Set<string>};
-let activeInput: ActiveInput | null = null;
-let queue: Promise<unknown> = Promise.resolve();
+type ActiveInput = {input: LensUserInput; accessedRoles: Set<string>; resolved: boolean};
 
 /**
- * Returns the embedded dataset, or while user input is active for it a copy whose `rowCount` and
- * `columns` come from the caller. Other embedded fields (projection, units) are kept.
+ * Resolves through the explicitly supplied run resolver; without one returns embedded data.
+ * Other embedded fields (projection, units) are kept by the mapped-run resolver.
  */
 export function applyLensUserInput<Dataset extends {id: string; rowCount: number; columns: object}>(
-  dataset: Dataset
+  dataset: Dataset,
+  resolver?: LensDatasetResolver
 ): Dataset {
-  const active = activeInput;
-  if (!active || active.input.datasetId !== dataset.id) return dataset;
+  return resolver ? resolver(dataset) : dataset;
+}
+
+function resolveMappedDataset<Dataset extends {id: string; rowCount: number; columns: object}>(
+  dataset: Dataset,
+  active: ActiveInput
+): Dataset {
+  if (active.input.datasetId !== dataset.id) return dataset;
+  active.resolved = true;
   const columns = new Proxy(
     {},
     {
@@ -91,24 +98,55 @@ export async function runLensScenarioWithUserInput(
   if (getLensUserInputDatasetId(descriptor) !== input.datasetId)
     // The scenario does not read this embedded dataset, so a mapping cannot apply.
     throw new Error('Scenario cannot run on user data for this dataset');
+  const contributorId = descriptor.id;
+  validateCapacity(contributorId, 'rowCount', input.rowCount, 1, Number.MAX_SAFE_INTEGER);
+  for (const [role, values] of Object.entries(input.columns)) {
+    validateRequirement(
+      contributorId,
+      values.length === input.rowCount,
+      `columns.${role} length received ${values.length}; must equal rowCount ${input.rowCount}`
+    );
+  }
   const run = async () => {
-    const active: ActiveInput = {input, accessedRoles: new Set()};
-    activeInput = active;
+    const active: ActiveInput = {
+      input: {
+        ...input,
+        columns: Object.fromEntries(
+          Object.entries(input.columns).map(([role, values]) => [role, Array.from(values)])
+        )
+      },
+      accessedRoles: new Set(),
+      resolved: false
+    };
+    for (const binding of descriptor.inputBindings ?? []) {
+      if (binding.required && !Object.hasOwn(active.input.columns, binding.role)) {
+        const error = new LensUserInputRoleError(binding.role);
+        (error as LensUserInputRoleError & {accessedRoles: string[]}).accessedRoles = [
+          binding.role
+        ];
+        throw error;
+      }
+    }
+
     try {
       const loaded = await descriptor.load();
-      const record = await loaded.run(device, options);
+      const record = await loaded.run(device, {
+        ...options,
+        datasetResolver: dataset => resolveMappedDataset(dataset, active)
+      });
+      validateRequirement(
+        contributorId,
+        active.resolved,
+        'datasetResolver was ignored; forward options.datasetResolver to the dataset loader to run mapped input'
+      );
       return {record, accessedRoles: [...active.accessedRoles]};
     } catch (error) {
       if (error instanceof Error)
         (error as Error & {accessedRoles?: string[]}).accessedRoles = [...active.accessedRoles];
       throw error;
-    } finally {
-      activeInput = null;
     }
   };
-  const result = queue.then(run, run);
-  queue = result.catch(() => undefined);
-  return result;
+  return run();
 }
 
 const EMBEDDED_DATASETS = {
@@ -122,11 +160,14 @@ export type LensUserInputRole = {
   role: string;
   /** First embedded value, shown as a hint for the expected unit and range. */
   example: number | null;
+  port?: string;
+  required?: boolean;
+  missing?: 'exclude';
 };
 
 /**
- * Candidate roles of a scenario that can run on user data: every column of its embedded dataset.
- * A scenario reads only some of them; the run reports the ones it needs but were not mapped.
+ * Declared input roles, or every embedded column for legacy scenarios without declarations.
+ * Required declared roles are checked before loading GPU code.
  */
 export async function listLensUserInputRoles(
   descriptor: LensScenarioDescriptor
@@ -138,9 +179,14 @@ export async function listLensUserInputRoles(
   };
   return {
     datasetId,
-    roles: Object.entries(dataset.columns).map(([role, values]) => ({
-      role,
-      example: values[0] ?? null
-    }))
+    roles: descriptor.inputBindings
+      ? descriptor.inputBindings.map(binding => ({
+          ...binding,
+          example: dataset.columns[binding.role]?.[0] ?? null
+        }))
+      : Object.entries(dataset.columns).map(([role, values]) => ({
+          role,
+          example: values[0] ?? null
+        }))
   };
 }

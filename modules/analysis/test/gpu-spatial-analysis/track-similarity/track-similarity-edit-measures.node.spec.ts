@@ -153,16 +153,16 @@ it('GPUTrackSimilarity edit-measure kernels fit the core limits at maximal optio
     'track-similarity-edit-distance-with-real-penalty',
     'track-similarity-symmetric-segment-path'
   ]) {
-    const source = sources.get(id);
-    expect(source, id).toBeDefined();
-    expect(getStorageBindingCount(source!), id).toBeLessThanOrEqual(8);
-    for (const kernel of sources.getConfigurations(id)) {
+    const configurations = sources.getConfigurations(id);
+    expect(configurations.length, id).toBeGreaterThan(0);
+    for (const kernel of configurations) {
+      expect(getStorageBindingCount(kernel.source), id).toBeLessThanOrEqual(8);
       expect(getWorkgroupMemoryBytes(kernel.source, kernel.constants), id).toBeLessThanOrEqual(
         16384
       );
+      // Fixed-order sums only: no atomics.
+      expect(kernel.source, id).not.toContain('atomic');
     }
-    // Fixed-order sums only: no atomics.
-    expect(source, id).not.toContain('atomic');
   }
 });
 

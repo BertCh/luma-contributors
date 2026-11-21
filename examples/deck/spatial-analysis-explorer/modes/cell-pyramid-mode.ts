@@ -15,9 +15,10 @@
  * resolution is a kernel constant, so each choice has its own tiny graph, all compiled in `create`;
  * picking one is a re-encode, not a rebuild. The map can show the parents coloured by count
  * density or by mean trip time, and readouts compare the finest totals with the parent totals:
- * counts and fixed-point sums are integers, so the roll-up conserves them exactly.
+ * counts are conserved on complete tables; fixed-point sums are certified only without sum saturation.
  */
 
+import {addShowcaseCertifiedSumCountsNode} from '../../spatial-analysis-showcase/src/scenes/cells/cell-pyramid-sums';
 import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
@@ -124,6 +125,9 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
       resources.createBuffer(`level-candidate-overflow-${parity}`, LEVEL_COUNT * 4)
     );
     // Fixed-point sums of the finest level only; coarser pyramid levels do not need them.
+    const finestSumOverflowBuffer = resources.createBuffer('finest-sum-overflow', 4);
+    const rollupSumOverflowBuffer = resources.createBuffer('rollup-sum-overflow', 4);
+    const rollupSumCountsBuffer = resources.createBuffer('rollup-sum-counts', capacity * 4);
     const finestSumsBuffer = resources.createBuffer('finest-sums', capacity * 8);
     // Roll-up output table (shared by every parent resolution; only one graph is encoded at a time).
     const rollupCellsBuffer = resources.createBuffer('rollup-cells', capacity * 8);
@@ -198,7 +202,10 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
             1
           ),
           ...(levelIndex === 0
-            ? {requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1)}
+            ? {
+                requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
+                sumOverflow: importSlice(finestSumOverflowBuffer, 'uint32', 4, 0, 1)
+              }
             : {})
         },
         ...(levelIndex === 0
@@ -315,7 +322,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
             status: {
               count: view(tableCountBuffers[0], 'uint32', 4, 1),
               overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1),
-              candidateOverflow: view(levelCandidateOverflowBuffers[0], 'uint32', 4, 1)
+              candidateOverflow: view(levelCandidateOverflowBuffers[0], 'uint32', 4, 1),
+              sumOverflow: view(finestSumOverflowBuffer, 'uint32', 4, 1)
             }
           },
           sumScale: GPU_CELL_DEFAULT_SUM_SCALE,
@@ -332,10 +340,27 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
                 byteOffset: Uint32Array.BYTES_PER_ELEMENT
               }),
               overflow: view(rollupOverflowBuffer, 'uint32', 4, 1),
-              candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1)
+              candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1),
+              sumOverflow: view(rollupSumOverflowBuffer, 'uint32', 4, 1)
             }
           }
         })
+      );
+      addShowcaseCertifiedSumCountsNode(
+        graph,
+        'certified-rollup-sum-counts',
+        view(rollupCountsBuffer, 'uint32', 4, capacity),
+        {
+          count: graph.createDataView(drawView.buffer, {
+            format: 'uint32',
+            length: 1,
+            byteOffset: 4
+          }),
+          overflow: view(rollupOverflowBuffer, 'uint32', 4, 1),
+          candidateOverflow: view(rollupCandidateOverflowBuffer, 'uint32', 4, 1),
+          sumOverflow: view(rollupSumOverflowBuffer, 'uint32', 4, 1)
+        },
+        view(rollupSumCountsBuffer, 'uint32', 4, capacity)
       );
       return resources.track(await graph.compileAsync());
     };
@@ -563,7 +588,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
     };
 
     /** Fine rows/loss, draw record, parent loss, then inherited loss for fine and parent. */
-    const TOTALS_HEADER_BYTES = 28;
+    const TOTALS_HEADER_BYTES = 36;
     const totalsByteLength = TOTALS_HEADER_BYTES + capacity * (4 + 8) * 2;
     const totalsRing = resources.track(
       new GPUReadbackRing(device, {id: 'cell-rollup-totals', byteLength: totalsByteLength})
@@ -594,6 +619,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         [rollupOverflowBuffer, 4, 16],
         [levelCandidateOverflowBuffers[0], 4, 20],
         [rollupCandidateOverflowBuffer, 4, 24],
+        [finestSumOverflowBuffer, 4, 28],
+        [rollupSumOverflowBuffer, 4, 32],
         [countsSlabs[0], capacity * 4, TOTALS_HEADER_BYTES],
         [finestSumsBuffer, capacity * 8, TOTALS_HEADER_BYTES + capacity * 4],
         [rollupCountsBuffer, capacity * 4, TOTALS_HEADER_BYTES + capacity * 12],
@@ -613,8 +640,9 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copy = bytes.slice();
-        const header = new Uint32Array(copy.buffer, copy.byteOffset, 7);
+        const header = new Uint32Array(copy.buffer, copy.byteOffset, 9);
         const [fineRows, fineOverflow, , , rollupOverflow] = header;
+        const sumOverflow = Boolean(header[7] || header[8]);
         const incomplete = Boolean(fineOverflow || rollupOverflow || header[5] || header[6]);
         const parentRows = new Uint32Array(copy.buffer, copy.byteOffset + 8, 2)[1];
         const arrayWords = (byteOffset: number, length: number) =>
@@ -643,8 +671,10 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
             (incomplete ? '(incomplete)' : fineCount === parentCount ? '(conserved)' : '(DIFFERS)')
         );
         rollupSumReadout.setValue(
-          `${toMinutes(fineSum).toFixed(1)} → ${toMinutes(parentSum).toFixed(1)} min ` +
-            (incomplete ? '(incomplete)' : fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)')
+          sumOverflow || incomplete
+            ? 'unavailable: input loss or fixed-point sum saturation'
+            : `${toMinutes(fineSum).toFixed(1)} → ${toMinutes(parentSum).toFixed(1)} min ` +
+                (incomplete ? '(incomplete)' : fineSum === parentSum ? '(bit-exact)' : '(DIFFERS)')
         );
       } catch {
         // The ring or device was destroyed while the read was in flight.
@@ -699,8 +729,8 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
               id: 'cell-rollup-cells',
               cellsEven: rollupCellsBuffer,
               cellsOdd: rollupCellsBuffer,
-              countsEven: rollupCountsBuffer,
-              countsOdd: rollupCountsBuffer,
+              countsEven: rollupColorByMeanValue ? rollupSumCountsBuffer : rollupCountsBuffer,
+              countsOdd: rollupColorByMeanValue ? rollupSumCountsBuffer : rollupCountsBuffer,
               values: rollupSumValuesBuffer,
               colorByMeanValue: rollupColorByMeanValue,
               meanValueRange: [0, maximumMeanValue],

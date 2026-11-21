@@ -54,7 +54,7 @@ export default defineOperationRun({
       costBreaks: breaks.view,
       bandCapacity: BAND_COUNT,
       maximumIterations: 64,
-      outputs: {demandBands: demandBands.view}
+      output: {demandBands: demandBands.view}
     });
     return {
       outputs: {

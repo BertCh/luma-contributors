@@ -41,25 +41,36 @@ counts are zero for selection/preflight failures and count completed IRLS steps 
 
 This is a reference-tier contributor: dense neighborhood traversal and its dense local solves have
 explicit shape limits. Neighbor selection runs entirely on GPU before local IRLS; there is no control readback or CPU fallback. Optional bandwidth search and inference are described below. Dense neighbor selection costs `O(rows² * neighborCount)` and the existing
-fit costs `O(rows² * iterations * predictorCount²)`. Bounds are 65,536 rows, 1–24 predictors
+fit costs `O(rows² * iterations * predictorCount²)`. Dense fits allow 65,536 rows, 1–24 predictors
 and 128 iterations (`GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT`,
 `GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT`); they were 16,384 rows and 11 predictors. These are
 shape limits, not performance promises. The per-focus fit state is tiled over focal rows when it
 would exceed one storage binding.
 
-Two opt-in options use the shared local weighted least squares engine that GWR also uses.
+The grid options use the shared local weighted least squares engine that GWR also uses.
 `indexGridSize: [columns, rows]` builds an internal grid index over the training rows, so bisquare
 fits (fixed or adaptive bandwidth) visit only the cells covering the bandwidth and the row limit
-rises to 1,048,576 (`GPU_LOCAL_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT`). Adaptive k-nearest selection
+rises to 16,777,216 for finite-support generalized GWR (bisquare or explicit Gaussian cutoff),
+subject to device binding and command-node limits. Indexed untruncated Gaussian generalized GWR
+retains its 1,048,576-row reference cap. Adaptive k-nearest selection
 walks grid rings around each focus and selects the same neighbors as the dense scan. The Gaussian
-kernel uses the grid only with `gaussianCutoff` (in bandwidth multiples; 5 omits at most about
-3.7e-6 of a unit weight); without it the Gaussian stays exact and scans every row. Sums run in cell
-order, so results differ from the dense scan in float32 rounding only. A great-circle `spatialContext`
+kernel narrows traversal only with `gaussianCutoff` (in bandwidth multiples; 5 omits at most about
+3.7e-6 of a unit weight). An explicit grid with fixed, untruncated Gaussian scans every training
+row at each focal fit and IRLS iteration. This costs `O(rows² * iterations)` pair visits and
+`O(rows² * iterations * predictorCount²)` fit work. Summation follows cell order. A great-circle `spatialContext`
 (`{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`) takes `(longitude, latitude)`
 degrees and measures bandwidths in the context units (meters on a sphere of `sphereRadius`); it is
-planar-grid exclusive. The same two options, limits and the engine apply to
-`GPUMultiscaleGeographicallyWeightedRegression`; its full-inference mode keeps its 128-row budget.
-Both default to the previous dense, planar behavior.
+planar-grid exclusive. `GPUMultiscaleGeographicallyWeightedRegression` uses the same options and
+engine, with separate limits of 65,536 dense rows and 1,048,576 indexed rows; its full-inference
+mode keeps its 128-row budget.
+With `indexGridSize` omitted, planar finite-support generalized GWR automatically indexes above
+65,536 rows; planar finite-support MGWR automatically indexes from 1,024 rows. Finite support means
+bisquare or an explicit Gaussian cutoff. `indexGridSize: false` forces dense traversal and its
+65,536-row limit. MGWR also uses dense traversal for untruncated Gaussian, even with a grid
+specified. Great-circle fits use dense traversal.
+Generalized-GWR local inference follows its fit route's row and device-binding limits; MGWR's
+full coupled inference separately permits at most 128 rows and
+`rows³ * (predictorCount + 1) * maximumIterations <= 268,435,456`.
 
 The committed `test/oracles/adaptive-generalized-gwr.py` generator composes NumPy order-statistic
 distances with statsmodels frequency-weighted GLMs, separately from the GPU Newton solver.
@@ -84,12 +95,39 @@ selected model's predictions, without requiring their response values. Adaptive 
 only eligible training neighbors; leave-one-out removes the focus from that count. A held-out query's
 finite offset remains a caller-supplied prediction input. Rebuild this graph with each outer fold's
 training mask and compute held-out metrics afterward.
+Poisson query linear predictors also obey the documented `[-30, 30]` numerical limit. An
+out-of-range or nonfinite query predictor receives status 4 with NaN fit and inference outputs;
+its completed IRLS step count is retained.
+Logistic training likelihood evaluations require finite links in `[-80, 80]`. A prediction-only
+logistic query may have any finite link: stable evaluation can publish exactly 0 or 1, and its
+influence is zero. For example, a held-out logistic query with offset 100 remains valid.
+Prediction-only designs are centered on a positive-weight training row and scaled from training
+deviations; an extrapolating query does not determine the training system's conditioning.
+
+Poisson fits retain the ordinary zero-intercept start when the weighted response/exposure ratio
+is near one. A large unit mismatch uses `log(sum(w*y)) - log(sum(w*exp(offset)))` as its initial
+intercept, so bounded step halving can reach the likelihood basin after an exposure-unit change.
+The exposure sum is anchored in log space to avoid exponentiating a large absolute offset.
+When the positive-weight training links have a common feasible intercept interval, the initial
+intercept is kept inside that interval. Subsequent links still obey the `[-30, 30]` diagnostic.
+Rounded interval endpoints are checked by reconstructing their float32 training links and moved
+inward by one representable intercept when rounding would put the link outside the guard.
+Leave-one-out fits center on a positive-weight training row when the focus has no training weight;
+this also applies to every leave-one-out bandwidth-selection candidate.
+`iterationCount` counts accepted coefficient updates; a singular first information matrix has zero
+completed updates. Prediction failure after a successful fit retains the completed count.
 
 Optional `inference` contains `standardErrors` (focus-major, intercept first) and `influence` (one
 per focus). The scale-one Poisson/logistic covariance uses `A^-1 X' V W² X A^-1`, with
 `A = X' V W X`, and influence is the diagonal of the local GLM smoother. These are model-specific
 local-fit errors, not multiscale backfitting uncertainty. Failed fits retain NaN inference. The direct
 mgwr 2.2.1 fixture verifies both families, and a separate exact-LOO fixture verifies candidate scores.
+Prediction-only queries have exactly zero diagonal influence: their responses do not enter the
+training fit. Their coefficient standard errors still describe the local model estimated from
+training rows. The independent `generalized-gwr-audit.oracle.py` uses closed-form weighted
+two-category likelihood solutions and matrix covariance to check every output, including iteration
+counts, tied distances, masked queries, offsets and coordinate/predictor rescaling. Node specs
+interpret emitted WGSL; a separate headless spec checks the same literals on WebGPU.
 
 ## AICc golden-section bandwidth selection
 
@@ -139,10 +177,14 @@ Every eligible training focus must converge with finite influence, and `n - K - 
 Otherwise the score is NaN. Masked/nonfinite/out-of-family rows do not count toward `n`, `D` or `K`.
 Poisson offsets are log exposures. Logistic scores use the link scale to preserve confident
 predictions; variance/influence use a stable logistic-tail formula even when the response-scale
-mean rounds to one. AICc grid and golden searches are capped at **4,096 total input slots**
-(`GENERALIZED_GWR_MAXIMUM_SEARCH_ROWS`, an internal reference-work limit). Candidate score
-sums use bounded 256-row tiles followed by at most 16 tile totals in AICc mode; legacy LOO selection
-can use the normal row limit (at most 4,096 tile totals).
+mean rounds to one. Poisson unit deviances for nearby means use a direct series for
+`2*y*(delta-log1p(delta))`, `delta=(mean-y)/y`, with a separate `2*mean` zero-count case;
+small deviances of large counts do not subtract count-sized likelihood terms.
+AICc grid and golden searches using dense or untruncated Gaussian traversal are capped at
+**4,096 total input slots** (`GENERALIZED_GWR_MAXIMUM_SEARCH_ROWS`, a reference-work limit).
+Finite-support indexed generalized GWR scores all training rows up to its 16,777,216-row cap,
+subject to binding and command-node limits. Scores sum bounded 256-row tiles, merge adjacent
+groups of at most 256 tile totals when needed, then combine at most 256 final partials.
 
 Both methods accept optional `bandwidthSelection.status: {iterationCount, converged,
 iterationLimitReached}` scalar uint32 views, using the canonical iteration status port.
@@ -170,4 +212,6 @@ separation and score history. There is no generalized-GWR CPU operation twin in 
 
 All final-fit, inference and selection output byte ranges must be pairwise disjoint, including
 search status scalars. Construction rejects any overlap, even across different publishing stages.
+This check resolves imported physical buffers, including one buffer imported under different
+graph IDs; separate logical handles cannot hide overlapping fitted/influence bytes.
 Adjacent slices in one buffer may be used across stages when their ranges do not overlap.

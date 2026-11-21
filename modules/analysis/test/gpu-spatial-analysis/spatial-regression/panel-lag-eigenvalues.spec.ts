@@ -247,8 +247,9 @@ for (const scene of [
             outputs: OUTPUTS
           });
         if (scene === 'short' || scene === 'long') {
-          await expect(run()).rejects.toEqual(
-            new Error('review-panel eigenvalues must hold one value per entity')
+          await expect(run()).rejects.toHaveProperty(
+            'message',
+            'review-panel eigenvalues must hold one value per entity'
           );
           continue;
         }

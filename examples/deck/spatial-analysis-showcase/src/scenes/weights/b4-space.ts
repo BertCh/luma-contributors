@@ -265,6 +265,26 @@ export async function createAnalysisSpace(props: {
           offsets: importGraphBuffer(graph, 'offsets', csr.offsets, 'uint32', rows + 1),
           neighbors: importGraphBuffer(graph, 'neighbors', csr.neighbors, 'uint32', slots),
           weights: importGraphBuffer(graph, 'weights', csr.weights, 'float32', slots),
+          status: {
+            overflow: importGraphBuffer(
+              graph,
+              'producer-overflow',
+              props.producer.overflow,
+              'uint32',
+              1
+            ),
+            ...(props.producer.candidateOverflow
+              ? {
+                  candidateOverflow: importGraphBuffer(
+                    graph,
+                    'producer-candidate-overflow',
+                    props.producer.candidateOverflow,
+                    'uint32',
+                    1
+                  )
+                }
+              : {})
+          },
           information: getWeightsInfo(rows, rowStandardized)
         },
         values: importGraphBuffer(graph, 'values', values, 'float32', rows),

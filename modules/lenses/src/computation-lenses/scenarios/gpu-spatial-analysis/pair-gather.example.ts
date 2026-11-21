@@ -186,8 +186,7 @@ export async function runExample(graph: GPUCommandGraph<undefined>, input: PairG
       output: {
         leftRows: parkRows,
         rightRows: tractRows,
-        rowCount,
-        status: {overflow, candidateOverflow}
+        status: {count: rowCount, overflow, candidateOverflow}
       }
     })
   );

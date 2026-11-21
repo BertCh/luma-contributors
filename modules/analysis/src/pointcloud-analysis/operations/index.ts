@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export * from './gpu-pointcloud-change';
+export * from './gpu-pointcloud-coverage-validity';
 export * from './gpu-pointcloud-features';
 export * from './gpu-pointcloud-ground';
 export * from './gpu-pointcloud-height';
@@ -14,6 +15,7 @@ export * from './gpu-pointcloud-statistical-filter';
 export {
   GPU_POINT_CLOUD_COVERAGE_ANY_POINT,
   GPU_POINT_CLOUD_COVERAGE_GROUND,
+  getRasterMetadataFromPointCloudGrid,
   GPUPointCloudSurfaces
 } from './gpu-pointcloud-surfaces';
 export type {

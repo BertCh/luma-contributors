@@ -163,7 +163,8 @@ it('linear referencing selects planar or great-circle through spatialContext', (
   const sphericalReferencing = new GPULinearReferencing(
     createReferencingProps(graph, {spatialContext: greatCircle, candidateCapacity: undefined})
   );
-  expect(sphericalReferencing.spatialContext).toBe(greatCircle);
+  expect(sphericalReferencing.spatialContext).not.toBe(greatCircle);
+  expect(sphericalReferencing.spatialContext).toEqual(greatCircle);
   expect(getGPUSphereRadius(sphericalReferencing.spatialContext)).toBe(6371008.8);
   for (const construct of [
     () =>

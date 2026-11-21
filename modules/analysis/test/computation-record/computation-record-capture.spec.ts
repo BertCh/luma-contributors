@@ -9,6 +9,7 @@ import {
   GPUComputationRecorder,
   GPUSnapshotArena,
   GPUSnapshotTap,
+  GPUTransferMask,
   createGPUComputationCaptures,
   describeGPUCommandGraph,
   createGPUComputationRecord,
@@ -18,6 +19,7 @@ import {
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
 import {requireTestDevice} from '../../src/testing/require-test-device';
+import {createSegmentSumNode} from '../../src/analysis-core/kernels/sorted-segment-sums';
 
 /** Three iterations of a counter, each followed by a tap that snapshots the state. */
 function createChain(device: Device, recorder: GPUComputationRecorder, arena: GPUSnapshotArena) {
@@ -190,3 +192,188 @@ test('R3 repeated encodings copy the original range after the caller mutates its
     buffer.destroy();
   }
 });
+
+test('LIF-13: discarded tap encodings disappear before submitted capture', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const recorder = new GPUComputationRecorder();
+  const arena = new GPUSnapshotArena(device, {
+    id: 'discarded-chain',
+    slots: [{name: 'state', byteLength: 4, elementType: 'u32'}],
+    capacity: 6
+  });
+  const {graph} = createChain(device, recorder, arena);
+  const compiled = graph.compile();
+  try {
+    const first = device.createCommandEncoder();
+    compiled.encode(first, {parameters: undefined});
+    const boundary = arena.checkpoint();
+    const abandoned = device.createCommandEncoder();
+    compiled.encode(abandoned, {parameters: undefined});
+    expect(arena.count).toBe(6);
+    arena.markSubmitted(boundary);
+    device.submit(first.finish());
+    arena.discard(boundary); // This encoder is never submitted.
+    expect(arena.count).toBe(3);
+    const submitted = device.createCommandEncoder();
+    compiled.encode(submitted, {parameters: undefined});
+    arena.markSubmitted();
+    device.submit(submitted.finish());
+    const captures = await arena.read();
+    expect(
+      captures.map(capture => [capture.iteration, capture.afterNode, Array.from(capture.values)])
+    ).toEqual([
+      [0, 'iteration-1', [1]],
+      [1, 'iteration-2', [2]],
+      [2, 'iteration-3', [3]],
+      [3, 'iteration-1', [4]],
+      [4, 'iteration-2', [5]],
+      [5, 'iteration-3', [6]]
+    ]);
+  } finally {
+    compiled.destroy();
+    arena.destroy();
+  }
+});
+
+test('ENT-03/B3: capture qualifies the recorded reduction with literal segment sums', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const recorder = new GPUComputationRecorder({sourceText: true});
+  const graph = recorder.recordKernels(new GPUCommandGraph(device, {id: 'recorded-reduction'}));
+  const inputBuffer = device.createBuffer({
+    data: new Float32Array([2, 3, 7]),
+    usage: Buffer.STORAGE
+  });
+  const offsetsBuffer = device.createBuffer({
+    data: new Uint32Array([0, 2, 3, 3, 3, 3]),
+    usage: Buffer.STORAGE
+  });
+  const input = graph.createDataView(
+    graph.importBuffer(
+      {id: 'input', byteLength: inputBuffer.byteLength, usage: inputBuffer.usage},
+      inputBuffer
+    ),
+    {format: 'float32', length: 3}
+  );
+  const offsets = graph.createDataView(
+    graph.importBuffer(
+      {id: 'offsets', byteLength: offsetsBuffer.byteLength, usage: offsetsBuffer.usage},
+      offsetsBuffer
+    ),
+    {format: 'uint32', length: 6}
+  );
+  const output = createTransientView(
+    graph,
+    'output',
+    'float32',
+    5,
+    Buffer.STORAGE | Buffer.COPY_SRC
+  );
+  const reduction = createSegmentSumNode(graph, {
+    id: 'sum',
+    operation: 'RecordedSum',
+    segmentCount: 2,
+    input,
+    segmentOffsets: offsets,
+    output
+  });
+  graph.add(reduction);
+  const arena = new GPUSnapshotArena(device, {
+    slots: [{name: 'sums', byteLength: 8, elementType: 'f32'}],
+    capacity: 1
+  });
+  graph.add(
+    new GPUSnapshotTap({id: 'observe-sum', arena, views: {sums: output}, afterNode: reduction.id})
+  );
+  const compiled = graph.compile();
+  try {
+    const description = describeGPUCommandGraph(compiled, {recorder});
+    const serialized = description.graph.nodes.find(node => node.id === reduction.id)!;
+    expect(serialized.op).toBe('RecordedSum');
+    expect(serialized.bindings?.map(binding => binding.length)).toEqual([3, 6, 5]);
+    expect(serialized.dispatch?.workgroups).toEqual([2, 1, 1]);
+    expect(description.sources.find(source => source.id === serialized.source)?.text).toContain(
+      'partialSums'
+    );
+    const encoder = device.createCommandEncoder();
+    compiled.encode(encoder, {parameters: undefined});
+    arena.markSubmitted();
+    device.submit(encoder.finish());
+    const captures = await arena.read();
+    expect(Array.from(captures[0].values).every(Number.isFinite)).toBe(true);
+    // Closed-form sums: rows [0,2) contain 2+3=5; rows [2,3) contain 7.
+    expect(Array.from(captures[0].values)).toEqual([5, 7]);
+  } finally {
+    compiled.destroy();
+    arena.destroy();
+    inputBuffer.destroy();
+    offsetsBuffer.destroy();
+  }
+});
+
+for (const mode of ['any', 'count'] as const) {
+  test(`VAL-04: ${mode} aggregates two selected sources into one target`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const graph = new GPUCommandGraph(device);
+    const sourceBuffer = device.createBuffer({
+      data: new Uint32Array([1, 1]),
+      usage: Buffer.STORAGE
+    });
+    const targetsBuffer = device.createBuffer({
+      data: new Uint32Array([0, 0]),
+      usage: Buffer.STORAGE
+    });
+    const source = graph.createDataView(
+      graph.importBuffer({id: 'source', byteLength: 8, usage: sourceBuffer.usage}, sourceBuffer),
+      {format: 'uint32', length: 2}
+    );
+    const targets = graph.createDataView(
+      graph.importBuffer({id: 'targets', byteLength: 8, usage: targetsBuffer.usage}, targetsBuffer),
+      {format: 'uint32', length: 2}
+    );
+    const target = createTransientView(
+      graph,
+      'target',
+      'uint32',
+      1,
+      Buffer.STORAGE | Buffer.COPY_SRC
+    );
+    graph.add(
+      new GPUTransferMask({
+        id: 'transfer',
+        source,
+        relation: {layout: 'index', targets},
+        target,
+        mode
+      })
+    );
+    const arena = new GPUSnapshotArena(device, {
+      slots: [{name: 'mask', byteLength: 4, elementType: 'u32'}],
+      capacity: 1
+    });
+    graph.add(
+      new GPUSnapshotTap({
+        id: 'observe-mask',
+        arena,
+        views: {mask: target},
+        afterNode: 'transfer-scatter'
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      const encoder = device.createCommandEncoder();
+      compiled.encode(encoder, {parameters: undefined});
+      arena.markSubmitted();
+      device.submit(encoder.finish());
+      // Two selected incoming entries: logical OR is 1, incoming entry count is 2.
+      expect(Array.from((await arena.read())[0].values)).toEqual([mode === 'count' ? 2 : 1]);
+    } finally {
+      compiled.destroy();
+      arena.destroy();
+      sourceBuffer.destroy();
+      targetsBuffer.destroy();
+    }
+  });
+}

@@ -1,8 +1,12 @@
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveRecipeDestinations} from './recipe-utils';
+
 import {addPreparedRecipe} from './prepared-recipe';
+import {snapshotRecipeRasterMetadata} from './recipe-raster-metadata';
 
 import {getRecipeView as getOrCreateView, validateRecipeBoundary} from './recipe-utils';
 import {getRasterBandViews} from '../../raster-analysis/raster-band-utils';
@@ -19,8 +23,11 @@ import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {RecipeBuilder} from './recipe-utils';
 import {
   addZonalDistributionRecipe,
-  type GPUZonalDistributionRecipeProps
+  type GPUZonalDistributionOutput,
+  type GPUZonalDistributionRecipeProps,
+  type GPUZonalDistributionRecipeResult
 } from './zonal-distribution-recipe';
+import type {GPURecipeStatusPort, GPUSpatialContext} from '../../analysis-core/contracts/index';
 
 /** @internal Resolve raw nodata before calibration; every missing output is NaN. */
 function prepareBand<Parameters>(
@@ -68,33 +75,39 @@ function declareRasterZonalDistributionRecipe<Parameters>(
   props: GPURasterZonalDistributionRecipeProps
 ) {
   const id = props.id ?? 'raster-zonal-distribution-recipe';
+  const destinations = resolveRecipeDestinations(id, props);
   validateRecipeBoundary(
     graph,
     id,
     [...getRasterBandViews(props.input), props.zones, props.probabilities],
     [
-      props.outputs?.zoneIds,
-      props.outputs?.rowCounts,
-      props.outputs?.validCounts,
-      props.outputs?.medians,
-      props.outputs?.modes,
-      props.outputs?.uniqueCounts,
-      props.outputs?.quantiles
+      destinations?.zoneIds,
+      destinations?.rowCounts,
+      destinations?.validCounts,
+      destinations?.medians,
+      destinations?.modes,
+      destinations?.uniqueCounts,
+      destinations?.quantiles
     ]
   );
   const builder = new RecipeBuilder(graph);
   const band = prepareBand(builder, `${id}-calibrate`, props.grid, props.input);
-  const result = addZonalDistributionRecipe(graph, {
+  // Named so the emitted declaration references imported types, not extensionless paths.
+  const result: GPUZonalDistributionRecipeResult & {
+    outputs: GPUZonalDistributionOutput;
+    status: GPURecipeStatusPort;
+    spatialContext?: GPUSpatialContext;
+  } = addZonalDistributionRecipe(graph, {
     id,
     probabilities: props.probabilities,
-    outputs: props.outputs,
+    output: destinations,
     values: band.storage.values,
-    source: {kind: 'zones', zones: props.zones, zoneCount: props.zoneCount, mask: band.validity}
+    source: {kind: 'zones', zones: props.zones, zoneCount: props.zoneCount}
   });
   return {
     ...result,
     contributors: [...builder.contributors, ...result.contributors],
-    intermediates: {...result.intermediates, band, grid: props.grid}
+    intermediates: {...result.intermediates, band, grid: snapshotRecipeRasterMetadata(props.grid)}
   };
 }
 
@@ -110,6 +123,8 @@ export type GPUExposureByZoneRecipeProps = {
   /** One whole-cell zone ID per cell. No implicit polygon boundary allocation. */
   zones: GraphDataView<'uint32'>;
   zoneCount: number;
+  /** Optional live polygon-rasterizer loss word; nonzero suppresses all zonal summaries. */
+  producerOverflow?: GraphDataView<'uint32'>;
   /** One-row per-frame hazard cutoff; values >= cutoff count as exposed. */
   threshold: GraphDataView<'float32'>;
 };
@@ -126,6 +141,11 @@ function declareExposureByZoneRecipe<Parameters>(
   props: GPUExposureByZoneRecipeProps
 ) {
   const id = props.id ?? 'exposure-by-zone-recipe';
+  validateRequirement(
+    id,
+    props.weightMeaning === 'count' || props.weightMeaning === 'density',
+    `weightMeaning must be count or density; received ${props.weightMeaning}`
+  );
   const builder = new RecipeBuilder(graph);
   const count = props.grid.width * props.grid.height;
   if (
@@ -196,17 +216,19 @@ exposed[exposedOffset + index] = select(missing, select(0.0, weight, value >= th
     ['exposed', exposed, exposedPopulation]
   ] as const) {
     const overflow = getOrCreateView(graph, `${id}-${name}-overflow`, 'uint32', 1);
+    const candidateOverflow = getOrCreateView(graph, `${id}-${name}-incomplete`, 'uint32', 1);
     builder.add(
       new GPURasterZonalStatistics({
         id: `${id}-${name}`,
         grid: props.grid,
         zones: props.zones,
+        producerOverflow: props.producerOverflow,
         values: {id: name, format: 'float32', storage: {kind: 'buffer', values}},
         zoneCapacity: props.zoneCount,
-        output: {sums, status: {overflow}}
+        output: {sums, status: {overflow, incomplete: candidateOverflow}}
       })
     );
-    stages.push({stage: `${name}-population`, status: {overflow}});
+    stages.push({stage: `${name}-population`, status: {overflow, candidateOverflow}});
   }
   builder.addGlue(
     'shares',
@@ -242,7 +264,12 @@ if (index == 0u) { thresholdInvalid[thresholdInvalidOffset] = select(1u, 0u, thr
       exposedShare,
       thresholdInvalidCount
     },
-    intermediates: {hazard, population, zones: props.zones, grid: props.grid},
+    intermediates: {
+      hazard,
+      population,
+      zones: props.zones,
+      grid: snapshotRecipeRasterMetadata(props.grid)
+    },
     status: {
       stages: [
         ...stages,
@@ -259,6 +286,8 @@ export type GPURegionalRasterChangeRecipeProps = {
   change: Omit<GPUChangeDetectionProps, 'id' | 'output' | 'cellCount' | 'bandCount'>;
   zones: GraphDataView<'uint32'>;
   zoneCount: number;
+  /** Optional live polygon-rasterizer loss word; nonzero suppresses all zonal summaries. */
+  producerOverflow?: GraphDataView<'uint32'>;
   cellAreas: GraphDataView<'float32'>;
   /** Absolute difference threshold, one-row live view. No inferential regional claim. */
   threshold: GraphDataView<'float32'>;
@@ -334,30 +363,41 @@ changed[changedOffset + index] = select(missing, select(0.0, area, abs(delta) >=
     ['changed', changedAreas, areaOutputs.changedArea]
   ] as const) {
     const overflow = getOrCreateView(graph, `${id}-${name}-overflow`, 'uint32', 1);
+    const candidateOverflow = getOrCreateView(graph, `${id}-${name}-incomplete`, 'uint32', 1);
     builder.add(
       new GPURasterZonalStatistics({
         id: `${id}-${name}`,
         grid: props.grid,
         zones: props.zones,
+        producerOverflow: props.producerOverflow,
         values: {id: name, format: 'float32', storage: {kind: 'buffer', values}},
         zoneCapacity: props.zoneCount,
-        output: {sums, status: {overflow}}
+        output: {sums, status: {overflow, incomplete: candidateOverflow}}
       })
     );
-    stages.push({stage: `${name}-area`, status: {overflow}});
+    stages.push({stage: `${name}-area`, status: {overflow, candidateOverflow}});
   }
   const summaryOverflow = getOrCreateView(graph, `${id}-summary-overflow`, 'uint32', 1);
+  const summaryIncomplete = getOrCreateView(graph, `${id}-summary-incomplete`, 'uint32', 1);
   builder.add(
     new GPURasterZonalStatistics({
       id: `${id}-summary`,
       grid: props.grid,
       zones: props.zones,
+      producerOverflow: props.producerOverflow,
       values: {id: 'difference', format: 'float32', storage: {kind: 'buffer', values: difference}},
       zoneCapacity: props.zoneCount,
-      output: {valueCounts: validCounts, means: meanChanges, status: {overflow: summaryOverflow}}
+      output: {
+        valueCounts: validCounts,
+        means: meanChanges,
+        status: {overflow: summaryOverflow, incomplete: summaryIncomplete}
+      }
     })
   );
-  stages.push({stage: 'change-summary', status: {overflow: summaryOverflow}});
+  stages.push({
+    stage: 'change-summary',
+    status: {overflow: summaryOverflow, candidateOverflow: summaryIncomplete}
+  });
   const coverage = getOrCreateView(graph, `${id}-coverage`, 'float32', props.zoneCount);
   const thresholdInvalidCount = getOrCreateView(graph, `${id}-threshold-invalid`, 'uint32', 1);
   builder.addGlue(
@@ -392,7 +432,7 @@ if (index == 0u) { thresholdInvalid[thresholdInvalidOffset] = select(1u, 0u, thr
       coverage,
       thresholdInvalidCount
     },
-    intermediates: {grid: props.grid, zones: props.zones},
+    intermediates: {grid: snapshotRecipeRasterMetadata(props.grid), zones: props.zones},
     status: {
       stages: [
         ...stages,

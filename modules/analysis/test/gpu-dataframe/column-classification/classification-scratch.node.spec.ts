@@ -57,11 +57,14 @@ it('retains explicit exact and approximate monotone route envelopes as named lim
 it('rejects row scratch above maxBufferSize before declaring any resources', () => {
   const {device, graph, props} = createFixture(64);
   try {
-    // Inputs fit 512 bytes; the two task lists need 64 * 8 * 4 = 2048 bytes.
+    // Inputs fit 512 bytes. Sorted moment/prefix scratch is checked first and needs
+    // 64 * 5 * 4 = 1280 bytes; the later task lists also exceed this limit (2048 bytes).
     Object.defineProperty(device, 'limits', {value: {...device.limits, maxBufferSize: 512}});
     const contributor = new GPUClassBreaks(props);
     const declareScratch = vi.spyOn(graph, 'createTransientBuffer');
-    expect(() => contributor.getCommandNodes(graph)).toThrow(/monotone partitions.*maxBufferSize/);
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      /sorted moments\/prefix.*maxBufferSize/
+    );
     expect(declareScratch).not.toHaveBeenCalled();
   } finally {
     device.destroy();

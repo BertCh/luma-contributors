@@ -515,6 +515,10 @@ it.each<GPUClassBreaksMethod>([
         const classCount = (await harness.readWords(`${route}-class-count`))[0];
         expect(classCount).toBeGreaterThan(0);
         expect(classCount).toBeLessThanOrEqual(6);
+        if (method === 'custom')
+          expect(Array.from(await harness.readWords(`${route}-counts`))).toEqual([
+            927, 626, 614, 617, 620, 457
+          ]);
         const breakWords = await harness.readWords(`${route}-breaks`);
         expect(await harness.readWords(`${route}-counts`)).toEqual(
           countClassesOracle(values, mask, new Float32Array(breakWords.buffer), classCount, 6)
@@ -625,7 +629,10 @@ it(
     const harness = createHarness(device, 40_000_000, lengths);
     const {graph, input, packedOutput} = harness;
     // Generate the source on the GPU, avoiding a row-sized host fixture or a packed GPU binding.
+    let startingRow = 0;
     const chunks = lengths.map((length, chunkIndex) => {
+      const globalStartingRow = startingRow;
+      startingRow += length;
       const view = createTransientView(graph, `values-${chunkIndex}`, 'float32', length);
       if (length > 0)
         graph.add(
@@ -634,7 +641,8 @@ it(
             operation: 'QuantileTestFixture',
             invocationCount: length,
             bindings: [{name: 'values', view, type: 'f32', access: 'read_write'}],
-            body: 'values[valuesOffset + index] = f32(index % 1001u);'
+            body: `let globalRow = ${globalStartingRow}u + index;
+  values[valuesOffset + index] = select(1.0, 0.0, globalRow <= 13333333u);`
           })
         );
       return view;
@@ -672,20 +680,9 @@ it(
     const compiled = graph.compile();
     try {
       submitGraph(device, compiled);
-      const histogram = Array.from({length: 1001}, (_, value) =>
-        lengths.reduce(
-          (sum, length) => sum + Math.floor(length / 1001) + Number(value < length % 1001),
-          0
-        )
-      );
-      const expected = Float32Array.from(ratios, ([numerator, denominator]) => {
-        const rank = ((40_000_000n - 1n) * BigInt(numerator)) / BigInt(denominator);
-        let prefix = 0n;
-        return histogram.findIndex(count => {
-          prefix += BigInt(count);
-          return prefix > rank;
-        });
-      });
+      // floor((40,000,000 - 1) / 3) = 13,333,333; float32 ranking gives 13,333,334.
+      // The transition after the exact rank makes the two routes observably different.
+      const expected = Float32Array.of(0, 0, 1, 1, 1);
       expect(await harness.readWords('quantiles')).toEqual(new Uint32Array(expected.buffer));
       expect(await harness.readWords('count')).toEqual(Uint32Array.of(40_000_000));
     } finally {

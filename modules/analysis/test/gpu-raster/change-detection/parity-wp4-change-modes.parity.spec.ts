@@ -64,8 +64,14 @@ for (const scene of fixture.cases) {
           return buffer;
         };
         const outputBuffers = new Map<OutputName, Buffer>();
-        const output: GPUChangeDetectionOutput = {};
+        const difference = createOutputBuffer(device, scene.cellCount);
+        buffers.push(difference);
+        outputBuffers.set('difference', difference);
+        const output: GPUChangeDetectionOutput = {
+          difference: importGraphBuffer(graph, 'difference', difference, 'float32', scene.cellCount)
+        };
         for (const name of FLOAT_OUTPUTS) {
+          if (name === 'difference') continue;
           const buffer = createOutputBuffer(device, scene.cellCount);
           buffers.push(buffer);
           outputBuffers.set(name, buffer);
@@ -176,9 +182,21 @@ for (const scene of vectors) {
     requireTestDevice(device);
     const graph = new GPUCommandGraph(device);
     const buffers: Buffer[] = [];
-    const output: GPUChangeDetectionOutput = {};
     const outputs = new Map<string, Buffer>();
+    const difference = createOutputBuffer(device, scene.expected['difference'].length);
+    buffers.push(difference);
+    outputs.set('difference', difference);
+    const output: GPUChangeDetectionOutput = {
+      difference: importGraphBuffer(
+        graph,
+        'difference',
+        difference,
+        'float32',
+        scene.expected['difference'].length
+      )
+    };
     for (const name of ['difference', 'logRatio', 'percentChange', 'changeMagnitude'] as const) {
+      if (name === 'difference') continue;
       const buffer = createOutputBuffer(device, scene.expected[name].length);
       buffers.push(buffer);
       outputs.set(name, buffer);

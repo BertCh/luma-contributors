@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SpatialInteractionCycleDetector} from './spatial-interaction-cycle-detector';
+import {isSpatialInteractionCovariateAbsorbed} from './spatial-interaction-identification-exact';
+import {SPATIAL_INTERACTION_PROFILE_RELATIVE_TOLERANCE} from './spatial-interaction-identification';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -25,7 +28,7 @@ export type CPUSpatialInteractionInput = {
   covariate: Float32Array;
   pairState?: Uint32Array;
 };
-/** Model settings. GPU iteration budgets are accepted but do not stop the float64 solve. */
+/** Model settings. Explicit iteration budgets also bind the float64 solve. */
 export type CPUSpatialInteractionOptions = Pick<
   SpatialInteractionOperationProps,
   | 'originCount'
@@ -43,6 +46,8 @@ export type CPUSpatialInteractionResult = {
   predictions: Float32Array;
   summary: Float32Array;
   status: Uint32Array;
+  /** Identification evidence independent of prediction status; see decodeGPUSpatialInteractionCoefficientStatus. */
+  coefficientStatus: Uint32Array;
   candidates: Float32Array;
   calibration?: Float32Array;
   originResiduals: Float32Array;
@@ -108,16 +113,20 @@ function getLogSum(values: readonly number[]): number {
  *   is never set). Predictions outside the float64 exponential range become zero internally;
  *   their finite log means still contribute to deviance. Final float32 rounding can underflow
  *   additional predictions. Subnormals are retained internally.
- * - Pair/group/candidate caps and both GPU iteration caps are dropped. Balancing continues to
- *   tolerance or float64 stagnation; bounded calibration continues to coefficientTolerance or
- *   an unrepresentable narrower bracket. Candidate code 1/status 3 can therefore describe
- *   stagnation, and status 4 only a bracket that float64 cannot narrow. Exhausted GPU fits may
- *   succeed; iteration counts may differ at tolerance boundaries.
+ * - Pair/group/candidate caps and GPU upper limits on iteration budgets are dropped. Explicit
+ *   maximumIterations and maximumCalibrationIterations still bind the solve. Without a budget,
+ *   balancing continues to tolerance or float64 stagnation, and ordinary bounded calibration
+ *   continues to coefficientTolerance or an unrepresentable narrower bracket. Recovery when
+ *   both probes fail preserves the interval and defaults to 32 exploratory rounds; an explicit
+ *   maximumCalibrationIterations overrides that limit. Candidate code 1/status 3
+ *   describe balancing exhaustion or stagnation; status 4 describes a coefficient bracket that
+ *   did not converge. Iteration counts may differ from the GPU at tolerance boundaries.
  * - Plain numeric props stay float64. Coefficients need not be representable as float32 shader
  *   literals. A non-finite float64 coefficient-times-covariate product reports invalid input.
  * - Output arithmetic is rounded once. Compare predictions/deviance with 5e-4 relative tolerance;
  *   marginal errors/residuals near numerical zero need absolute tolerance relative to mass.
- *   Grid ties choose the first candidate; bounded ties retain the lower bracket, as on the GPU.
+ *   Grid ties choose the first candidate; ordinary bounded ties retain the lower bracket and
+ *   exploratory ties retain the incumbent, as on the GPU.
  * - A candidate with finite float64 deviance remains successful even if publishing that deviance
  *   as float32 gives Infinity. The GPU's finite-deviance gate may instead reject it (candidate
  *   code 1/status 3); the target-device outcome is covered by a pending headless case.
@@ -204,9 +213,9 @@ export function computeSpatialInteractionOnCPU(
       normalize(active, observed);
       updatePredictions();
     } else {
-      const seenStates = new Set<string>();
-      while (true) {
-        const previous = active.map(pair => logMeans[pair]);
+      // Brent cycle detection retains one checkpoint, independent of the iteration budget.
+      const cycleDetector = new SpatialInteractionCycleDetector(active.map(pair => logMeans[pair]));
+      while (iterations < (options.maximumIterations ?? Infinity)) {
         if (options.constraint !== 'destination')
           originPairs.forEach((pairs, group) => normalize(pairs, originTotals[group]));
         if (options.constraint !== 'origin')
@@ -233,15 +242,7 @@ export function computeSpatialInteractionOnCPU(
             );
           });
         converged = error <= (options.tolerance ?? 1e-5);
-        if (
-          converged ||
-          active.every((pair, index) => logMeans[pair] === previous[index]) ||
-          !Number.isFinite(error)
-        )
-          break;
-        const state = active.map(pair => logMeans[pair]).join(',');
-        if (seenStates.has(state)) break;
-        seenStates.add(state);
+        if (converged || cycleDetector.observe(logMeans, active) || !Number.isFinite(error)) break;
       }
     }
     let deviance = 0;
@@ -272,14 +273,71 @@ export function computeSpatialInteractionOnCPU(
   if (options.calibration === 'bounded') {
     let lower = coefficients[0];
     let upper = coefficients[1];
+    const initialLower = lower;
+    const initialUpper = upper;
+    let exploring = false;
+    let explorationIndex = 0;
+    const sampleUnresolvedInterval = () => {
+      const sample = explorationIndex++;
+      if (sample < 2) return sample === 0 ? initialLower : initialUpper;
+      let ordinal = sample - 2;
+      let denominator = 2;
+      while (ordinal >= denominator / 2) {
+        ordinal -= denominator / 2;
+        denominator *= 2;
+      }
+      return initialLower + (initialUpper - initialLower) * ((2 * ordinal + 1) / denominator);
+    };
     const ratio = (Math.sqrt(5) - 1) / 2;
+    let refinements = 0;
+    coefficients = [ratio * lower + (1 - ratio) * upper, (1 - ratio) * lower + ratio * upper];
+    const selectExploredFit = () => {
+      const firstValid = fits[0].diagnostics[3] === 0;
+      const secondValid = fits[1].diagnostics[3] === 0;
+      return firstValid && (!secondValid || fits[0].diagnostics[0] <= fits[1].diagnostics[0])
+        ? 0
+        : secondValid
+          ? 1
+          : -1;
+    };
+    // A zero-deviance fit (to float64 arithmetic precision) certifies the global lower bound;
+    // no unresolved part can improve on zero. Checked on every evaluated pair, including the
+    // pair evaluated with the last refinement of the budget, before exhaustion is published.
+    const certifyExactExploredFit = () => {
+      if (!exploring) return false;
+      const best = selectExploredFit();
+      if (best < 0 || !(fits[best].diagnostics[0] <= observed * 16 * Number.EPSILON ** 2))
+        return false;
+      lower = coefficients[best];
+      upper = lower;
+      coefficients = [lower, lower];
+      fits = [fits[best], fits[best]];
+      return true;
+    };
     while (true) {
-      coefficients = [ratio * lower + (1 - ratio) * upper, (1 - ratio) * lower + ratio * upper];
       fits = coefficients.map(fitCoefficient);
       const firstValid = fits[0].diagnostics[3] === 0;
       const secondValid = fits[1].diagnostics[3] === 0;
-      if (upper - lower <= (options.coefficientTolerance ?? 1e-5) || (!firstValid && !secondValid))
+      if ((firstValid || secondValid) && upper - lower <= (options.coefficientTolerance ?? 1e-5))
         break;
+      if (certifyExactExploredFit()) break;
+      if (refinements >= (options.maximumCalibrationIterations ?? (exploring ? 32 : Infinity)))
+        break;
+      if (!firstValid && !secondValid) {
+        if (fits.some(fit => fit.diagnostics[3] !== 1)) break;
+        exploring = true;
+      }
+      if (exploring) {
+        const best = selectExploredFit();
+        // Failed inner fits do not order the objective. Cover both endpoints and
+        // successive dyadic levels of the ORIGINAL interval, retaining a valid incumbent.
+        coefficients =
+          best < 0
+            ? [sampleUnresolvedInterval(), sampleUnresolvedInterval()]
+            : [coefficients[best], sampleUnresolvedInterval()];
+        refinements++;
+        continue;
+      }
       const chooseFirst =
         firstValid && (!secondValid || fits[0].diagnostics[0] <= fits[1].diagnostics[0]);
       const nextLower = chooseFirst ? lower : coefficients[0];
@@ -287,8 +345,16 @@ export function computeSpatialInteractionOnCPU(
       if (nextLower === lower && nextUpper === upper) break;
       lower = nextLower;
       upper = nextUpper;
+      // Retain the successful coefficient exactly: reconstructing it through a
+      // rounded algebraic identity could turn a feasible inner fit into a failure.
+      coefficients = chooseFirst
+        ? [ratio * lower + (1 - ratio) * upper, coefficients[0]]
+        : [coefficients[1], (1 - ratio) * lower + ratio * upper];
+      refinements++;
     }
-    bracketConverged = upper - lower <= (options.coefficientTolerance ?? 1e-5);
+    bracketConverged =
+      fits.some(fit => fit.diagnostics[3] === 0) &&
+      upper - lower <= (options.coefficientTolerance ?? 1e-5);
     calibration = Float32Array.of(lower, upper, upper - lower, Number(bracketConverged));
   } else fits = coefficients.map(fitCoefficient);
   let chosen = -1;
@@ -306,6 +372,7 @@ export function computeSpatialInteractionOnCPU(
     predictions: new Float32Array(count).fill(NaN),
     summary: new Float32Array(4).fill(NaN),
     status: Uint32Array.of(code),
+    coefficientStatus: Uint32Array.of(0),
     candidates: Float32Array.from(fits.flatMap(fit => fit.diagnostics)),
     calibration,
     originResiduals: new Float32Array(options.originCount).fill(NaN),
@@ -329,12 +396,46 @@ export function computeSpatialInteractionOnCPU(
       );
     }
   }
+  if (chosen >= 0) {
+    const absorbed = isSpatialInteractionCovariateAbsorbed(
+      input.origins,
+      input.destinations,
+      input.covariate,
+      active,
+      options.originCount,
+      options.destinationCount,
+      options.constraint
+    );
+    const successful = fits.filter(fit => fit.diagnostics[3] === 0);
+    const distinct = options.calibration !== 'bounded' && new Set(coefficients).size > 1;
+    result.coefficientStatus[0] = absorbed
+      ? 1
+      : !distinct ||
+          successful.length !== fits.length ||
+          successful.some(fit => !Number.isFinite(Math.fround(fit.diagnostics[0])))
+        ? 0
+        : successful.every(
+              fit =>
+                Math.abs(
+                  Math.fround(fit.diagnostics[0]) - Math.fround(successful[0].diagnostics[0])
+                ) <=
+                SPATIAL_INTERACTION_PROFILE_RELATIVE_TOLERANCE *
+                  Math.max(
+                    1,
+                    Math.abs(Math.fround(fit.diagnostics[0])),
+                    Math.abs(Math.fround(successful[0].diagnostics[0]))
+                  )
+            )
+          ? 2
+          : 3;
+  }
   return result;
 }
 
-/** CPU gravity operation; GPU size and iteration caps are dropped. */
+/** CPU gravity operation; GPU size caps are dropped and explicit iteration budgets are honored. */
 export class CPUSpatialInteractionOperation extends GPUCPUOperation {
   constructor(props: SpatialInteractionOperationProps) {
+    props = {...props, coefficients: [...props.coefficients], output: {...props.output}};
     const id = props.id ?? 'spatial-interaction';
     validateOptions(id, props);
     validateCapacity(id, 'pairCount', props.pairCount);

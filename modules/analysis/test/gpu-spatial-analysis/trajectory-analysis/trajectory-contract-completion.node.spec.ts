@@ -4,7 +4,10 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
-import {GPUTrackSimilaritySearch} from '../../../src/gpu-spatial-analysis/track-similarity/gpu-track-similarity-search';
+import {
+  GPUTrackSimilaritySearch,
+  type GPUTrackSimilaritySearchProps
+} from '../../../src/gpu-spatial-analysis/track-similarity/gpu-track-similarity-search';
 import {GPUTrajectoryThinning} from '../../../src/gpu-spatial-analysis/trajectory-cleaning/index';
 import {
   GPUTrajectoryClosestApproach,
@@ -32,33 +35,60 @@ const LAMBERT_FRAME = {
   frame: {id: 'lambert', kind: 'local-lambert-equal-area'}
 } as const;
 
-function createSearch(overrides: Record<string, unknown> = {}, outputOverrides = {}) {
+function createSearch(
+  overrides: Partial<Omit<GPUTrackSimilaritySearchProps, 'output'>> = {},
+  outputOverrides: Partial<GPUTrackSimilaritySearchProps['output']> = {}
+) {
   const {view} = createFixture();
+  const metric = overrides.metric ?? 'dynamic-time-warping';
   return new GPUTrackSimilaritySearch({
-    metric: 'dynamic-time-warping',
+    metric,
     linesA: {kind: 'lines', positions: view('float32x2', 8), lineOffsets: view('uint32', 3)},
     pairA: view('uint32', 4),
     pairB: view('uint32', 4),
     threshold: view('float32', 1),
     output: {
-      distance: view('float32', 4),
-      lowerBound: view('float32', 4),
+      ...(metric === 'longest-common-subsequence'
+        ? {similarity: view('float32', 4), upperBound: view('float32', 4)}
+        : {distance: view('float32', 4), lowerBound: view('float32', 4)}),
       matched: view('uint32', 4),
       status: view('uint32', 4),
       ...outputOverrides
     },
     ...overrides
-  } as never);
+  });
 }
+
+// Compile-only controls for the lead's test typecheck. Never invoke invalid constructors here.
+function checkSearchFixtureTypes() {
+  // @ts-expect-error Unknown metrics must be rejected by the fixture type.
+  createSearch({metric: 'misspelled-metric'});
+  // @ts-expect-error Misspelled output ports must be rejected by the fixture type.
+  createSearch({}, {similarty: undefined});
+}
+void checkSearchFixtureTypes;
 
 it('GPUTrackSimilaritySearch refuses invalid props with its ID, the prop and the limit', () => {
   expect(() => createSearch()).not.toThrow();
   expect(() => createSearch({}, {lowerBound: undefined})).toThrow(
     /^track-similarity-search output\.distance and output\.lowerBound are required/
   );
-  expect(() =>
-    createSearch({metric: 'longest-common-subsequence'}, {similarity: undefined})
-  ).toThrow(/^track-similarity-search output\.similarity and output\.upperBound are required/);
+  expect(() => createSearch({metric: 'longest-common-subsequence'})).not.toThrow();
+  for (const name of ['similarity', 'upperBound'] as const) {
+    expect(() => createSearch({metric: 'longest-common-subsequence'}, {[name]: undefined})).toThrow(
+      /^track-similarity-search output\.similarity and output\.upperBound are required/
+    );
+  }
+  const {view} = createFixture();
+  for (const name of ['distance', 'lowerBound'] as const) {
+    expect(() =>
+      createSearch({metric: 'longest-common-subsequence'}, {[name]: view('float32', 4)})
+    ).toThrow(
+      new RegExp(
+        `^track-similarity-search output\\.${name} is inactive for metric longest-common-subsequence; omit output\\.${name}`
+      )
+    );
+  }
   expect(() => createSearch({lcssTolerance: -1})).toThrow(
     /^track-similarity-search lcssTolerance must be a finite number in \[0, Infinity\]/
   );
@@ -71,7 +101,6 @@ it('GPUTrackSimilaritySearch refuses invalid props with its ID, the prop and the
   expect(() => createSearch({topK: 2})).toThrow(
     /^track-similarity-search topK needs output\.topKIndices and output\.topKSummary/
   );
-  const {view} = createFixture();
   expect(() => createSearch({threshold: view('float32', 2)})).toThrow(
     /^track-similarity-search threshold must have 1 rows/
   );
@@ -255,7 +284,7 @@ it('trajectory encounter classes take `mask` and no longer accept `trackValid`',
   expect(statusNode?.id).toBe('trajectory-closest-approach-status');
 });
 
-it('GPUTrajectoryThinning takes `output.validity` and names it in validation messages', () => {
+it('GPUTrajectoryThinning takes `output.sourceSelectionMask` and names it in validation messages', () => {
   const {view} = createFixture();
   const props = (output: Record<string, unknown>) =>
     ({
@@ -265,15 +294,21 @@ it('GPUTrajectoryThinning takes `output.validity` and names it in validation mes
       parameters: view('float32', 4),
       mode: 'minimum-distance',
       output: {
-        rowIds: view('uint32', 8),
+        sourceRows: view('uint32', 8),
         trackOffsets: view('uint32', 2),
-        status: {count: view('uint32', 1), overflow: view('uint32', 1)},
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1),
+          candidateOverflow: view('uint32', 1)
+        },
         ...output
       }
     }) as never;
-  const validity = view('uint32', 8);
-  expect(new GPUTrajectoryThinning(props({validity})).props.output.validity).toBe(validity);
-  expect(() => new GPUTrajectoryThinning(props({validity: view('uint32', 7)}))).toThrow(
-    /^trajectory-thinning output\.validity must have 8 rows/
+  const sourceSelectionMask = view('uint32', 8);
+  expect(
+    new GPUTrajectoryThinning(props({sourceSelectionMask})).props.output.sourceSelectionMask
+  ).toBe(sourceSelectionMask);
+  expect(() => new GPUTrajectoryThinning(props({sourceSelectionMask: view('uint32', 7)}))).toThrow(
+    /^trajectory-thinning output\.sourceSelectionMask must have 8 rows/
   );
 });

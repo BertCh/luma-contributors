@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {captureUrbanLandscapeDestinations} from './urban-landscape-destinations';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   captureGraphCommandNodes,
   validateCapacity,
+  validateGraphViewsBelongToGraph,
   validateCommandNodeBudget,
   validateMaximumCount,
+  validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -25,6 +28,7 @@ import {
   getRasterBufferBandNodes,
   validateParameterTarget,
   validateRasterBand,
+  validateRasterBandBelongsToGraph,
   validateRasterGrid,
   validateRasterGridAxisAligned,
   validateRasterParameters
@@ -43,6 +47,7 @@ import {
   SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_ITERATIONS,
   SPARSE_RESISTANCE_CONNECTIVITY_MAXIMUM_VERTEX_COUNT
 } from './sparse-resistance-connectivity';
+import {validateProvidedRecipeViews} from './urban-landscape-recipe-validation';
 
 const OPERATION = 'addRasterResistanceConnectivityRecipe';
 
@@ -83,13 +88,18 @@ function getEdgeSlotsPerCell(neighborhood: 4 | 8): number {
  * Packs the per-frame parameters of {@link addRasterResistanceConnectivityRecipe}: the affine
  * `a, b, d, e` (edge lengths in `'uniform'` mode), the cell size and the north and south row edges
  * (edge lengths in `'web-mercator'` and `'geographic'` mode). Changing the grid georeference
- * rewrites these values without recompiling.
+ * rewrites these values without recompiling. Pass the recipe's compile-time `cellSizeMode` as the
+ * third argument to guard updates: geographic and Web Mercator grids must remain axis-aligned
+ * on every frame. Omitting it preserves the uniform-mode packer, including rotation and shear.
  */
 export function getRasterResistanceConnectivityParameterValues(
   grid: RasterGridAffine,
-  target: Float32Array = new Float32Array(GPU_RASTER_RESISTANCE_CONNECTIVITY_PARAMETER_LENGTH)
+  target: Float32Array = new Float32Array(GPU_RASTER_RESISTANCE_CONNECTIVITY_PARAMETER_LENGTH),
+  cellSizeMode: GPURasterCellSizeMode = 'uniform'
 ): Float32Array {
   validateParameterTarget(OPERATION, target, GPU_RASTER_RESISTANCE_CONNECTIVITY_PARAMETER_LENGTH);
+  validateRasterCellSizeMode(OPERATION, cellSizeMode);
+  validateRasterGridAxisAligned(OPERATION, grid, cellSizeMode);
   const [a, b, , d, e] = grid.affine;
   target[AFFINE_SLOT] = a;
   target[AFFINE_SLOT + 1] = b;
@@ -158,7 +168,8 @@ export type GPURasterResistanceConnectivityProps = {
   /**
    * Ground model for edge lengths. Default `'uniform'` (affine units, exact for rotated and
    * sheared grids). `'web-mercator'` and `'geographic'` measure WGS84 ground meters at the midpoint
-   * row of each edge and need an axis-aligned grid. Compile-time.
+   * row of each edge and need an axis-aligned grid at construction and every parameter update.
+   * Pass this mode as the packer's third argument to validate updates. Compile-time.
    */
   cellSizeMode?: GPURasterCellSizeMode;
   /** Source cell index, `row * width + column`. Compile-time. */
@@ -171,7 +182,11 @@ export type GPURasterResistanceConnectivityProps = {
   tolerance?: number;
   /** Passed to the sparse solve: 1 to 1,024, default 128. Compile-time. */
   connectivityIterations?: number;
-  output: GPURasterResistanceConnectivityOutput;
+  output: Pick<
+    GPURasterResistanceConnectivityOutput,
+    'potentials' | 'vertexCurrents' | 'diagnostics' | 'solverStatus'
+  > &
+    Partial<GPURasterResistanceConnectivityOutput>;
 };
 
 export type GPURasterResistanceConnectivityRecipeResult = GPURecipeResult<
@@ -272,7 +287,28 @@ export function addRasterResistanceConnectivityRecipe<Parameters>(
   props: GPURasterResistanceConnectivityProps
 ): GPURasterResistanceConnectivityRecipeResult {
   const id = props.id ?? 'raster-resistance-connectivity';
-  const {grid, output} = props;
+  const output = captureUrbanLandscapeDestinations(id, props, [
+    'potentials',
+    'vertexCurrents',
+    'diagnostics',
+    'solverStatus',
+    'currents',
+    'edges',
+    'conductances',
+    'status'
+  ]);
+  validateRequirement(
+    id,
+    output !== undefined,
+    'output must supply raster resistance destinations'
+  );
+  for (const name of ['potentials', 'vertexCurrents', 'diagnostics', 'solverStatus'] as const)
+    validateRequirement(
+      id,
+      Boolean(output[name]),
+      `output.${name} is required; received missing destination`
+    );
+  const {grid} = props;
   const neighborhood = props.neighborhood ?? 8;
   const cellSizeMode = props.cellSizeMode ?? 'uniform';
   const maximumIterations = props.maximumIterations ?? 1024;
@@ -320,6 +356,17 @@ export function addRasterResistanceConnectivityRecipe<Parameters>(
   validateRasterCellSizeMode(id, cellSizeMode);
   validateRasterGridAxisAligned(id, grid, cellSizeMode);
   validateRasterBand(props.resistance, grid, `${id} resistance`);
+  validateRasterBandBelongsToGraph(id, graph, props.resistance, []);
+  if (props.resistance.storage.kind === 'buffer') {
+    validateSinglePackedView(
+      props.resistance.storage.values,
+      [props.resistance.format],
+      id + ' resistance.storage.values'
+    );
+  }
+  if (props.resistance.validity)
+    validateSinglePackedView(props.resistance.validity, ['uint32'], id + ' resistance.validity');
+  validateGraphViewsBelongToGraph(`${id} parameters`, graph, [props.parameters]);
   validateRequirement(
     id,
     !props.resistance.validity || props.resistance.validity.length === cellCount,
@@ -333,6 +380,25 @@ export function addRasterResistanceConnectivityRecipe<Parameters>(
   validateViewLength(id, 'output.potentials', output.potentials, cellCount);
   validateViewLength(id, 'output.vertexCurrents', output.vertexCurrents, cellCount);
   if (output.currents) validateViewLength(id, 'output.currents', output.currents, edgeCount);
+  // The nested sparse solve checks these again with the same IDs, after this recipe's glue nodes.
+  validateProvidedRecipeViews(graph, [
+    [`${id}-solve-potentials`, 'float32', cellCount, output.potentials],
+    [`${id}-solve-currents`, 'float32', edgeCount, output.currents],
+    [`${id}-solve-vertex-currents`, 'float32', cellCount, output.vertexCurrents],
+    [`${id}-solve-diagnostics`, 'float32x4', 1, output.diagnostics],
+    [`${id}-solve-status`, 'uint32x4', 1, output.solverStatus],
+    [`${id}-edges`, 'uint32x2', edgeCount, output.edges],
+    [`${id}-conductances`, 'float32', edgeCount, output.conductances],
+    ...(
+      [
+        'invalidCellCount',
+        'converged',
+        'iterationCount',
+        'iterationLimitReached',
+        'invalidEdgeCount'
+      ] as const
+    ).map(name => [`${id}-${name}`, 'uint32', 1, output.status?.[name]] as const)
+  ]);
   const estimatedCommandNodeCount = estimateRasterResistanceCommandNodeCount(
     maximumIterations,
     connectivityIterations

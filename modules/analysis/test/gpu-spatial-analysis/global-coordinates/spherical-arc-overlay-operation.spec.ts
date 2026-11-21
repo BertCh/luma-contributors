@@ -203,27 +203,24 @@ it('derives four-vertex operand lengths from vectors despite stale count metadat
   }
 });
 
-it('probes the documented unique-count difference for coincident squares beyond GPU scratch capacity', async () => {
+it('coincident squares require four unique edges in both forms at capacities three and four', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const square = projectRings([rectangle(-0.6, -0.4, 0.4, 0.5)]);
-  const props = {...getProps(), operation: 'union' as const, capacity: 3};
-  for (const Operation of [GPUSphericalArcOverlayOperation, CPUSphericalArcOverlayOperation]) {
-    const result = await runOperationGraph(device, {
-      inputs: getInputs(square, square),
-      operations: [new Operation(props)],
-      outputs: Object.values(props.output)
-    });
-    // Four distinct boundary edges; the GPU's bounded scratch is hypothesized to count
-    // the unstored fourth edge twice. This assertion lets the device confirm or refute it.
-    expect(Array.from(result['counts'])).toEqual([
-      0,
-      0,
-      Operation === GPUSphericalArcOverlayOperation ? 5 : 4,
-      0
-    ]);
-    expect(Array.from(result['status'])).toEqual([2]);
-    expect(result['positions'].every(value => value === 0)).toBe(true);
-    expect(result['ringOffsets'].every(value => value === 0)).toBe(true);
-  }
+  for (const capacity of [3, 4])
+    for (const Operation of [GPUSphericalArcOverlayOperation, CPUSphericalArcOverlayOperation]) {
+      const props = {...getProps(), operation: 'union' as const, capacity};
+      const result = await runOperationGraph(device, {
+        inputs: getInputs(square, square),
+        operations: [new Operation(props)],
+        outputs: Object.values(props.output)
+      });
+      // Set union has four unique oriented edges even when only three output slots exist.
+      expect(Array.from(result['counts'])).toEqual(capacity === 3 ? [0, 0, 4, 0] : [4, 1, 4, 0]);
+      expect(Array.from(result['status'])).toEqual([capacity === 3 ? 2 : 0]);
+      if (capacity === 3) {
+        expect(result['positions'].every(value => value === 0)).toBe(true);
+        expect(result['ringOffsets'].every(value => value === 0)).toBe(true);
+      }
+    }
 });

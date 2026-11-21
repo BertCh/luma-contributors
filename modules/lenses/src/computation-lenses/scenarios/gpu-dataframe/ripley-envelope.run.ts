@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {LensScenarioRunOptions} from '../../types';
 import type {Device} from '@luma.gl/core';
 import {GPU_RIPLEY_EDGE_CORRECTION} from '@luma-contributors/analysis/dataframe-analysis';
 import {runExample} from './ripley-envelope.example';
@@ -26,9 +27,9 @@ const STATISTICS_LENGTH = 6;
  * The per-simulation K curves live in a graph-internal transient and are not an observable
  * output, so they are not captured.
  */
-export async function run(device: Device, options?: {signal?: AbortSignal}) {
+export async function run(device: Device, options?: LensScenarioRunOptions) {
   options?.signal?.throwIfAborted();
-  const dataset = await loadDataFrameLensData('f-chicago-nature');
+  const dataset = await loadDataFrameLensData('f-chicago-nature', options?.datasetResolver);
   const {x, y} = dataset.columns;
   const positions = new Float32Array(x.length * 2);
   x.forEach((value, index) => {

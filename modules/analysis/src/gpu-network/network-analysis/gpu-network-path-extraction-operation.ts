@@ -14,7 +14,13 @@ import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-u
 export type NetworkPathExtractionCompactOperationOutput = {
   capacity: number;
   ids: string;
-  status: {count: string; overflow: string; requiredCount: string; candidateOverflow?: string};
+  status: {
+    count: string;
+    overflow: string;
+    requiredCount: string;
+    candidateOverflow?: string;
+    unrepresentable?: string;
+  };
   lineOffsets?: string;
 };
 
@@ -36,6 +42,7 @@ export type NetworkPathExtractionOperationProps = {
   nodeCount: number;
   targetCapacity: number;
   predecessors: string;
+  predecessorEdges?: string;
   costs: string;
   targets: string;
   /** Numeric compile-time active count, or uint32 one-row graph value. */
@@ -61,6 +68,7 @@ export function snapshotNetworkPathExtractionOperationProps(
     'nodeCount',
     'targetCapacity',
     'predecessors',
+    'predecessorEdges',
     'costs',
     'targets',
     'targetCount',
@@ -103,7 +111,13 @@ export function snapshotNetworkPathExtractionOperationProps(
       'status',
       'lineOffsets'
     ]);
-  const statusFields = ['count', 'overflow', 'requiredCount', 'candidateOverflow'] as const;
+  const statusFields = [
+    'count',
+    'overflow',
+    'requiredCount',
+    'candidateOverflow',
+    'unrepresentable'
+  ] as const;
   return Object.freeze({
     ...snapshot,
     output: Object.freeze({
@@ -132,7 +146,7 @@ export function snapshotNetworkPathExtractionOperationProps(
 /**
  * GPU path extraction as a vector operation, including optional edge extraction. Compile with
  * GPU_CONTRIBUTOR_OPERATION_LOWERING. Input contents are per-frame. Output capacities must be
- * positive; omit zero-length optional outputs when targetCapacity is zero (executor limit).
+ * nonnegative; zero payload capacity retains required scalar diagnostics.
  */
 export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
   constructor(props: NetworkPathExtractionOperationProps) {
@@ -142,6 +156,7 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
       costs: props.costs,
       targets: props.targets
     };
+    if (props.predecessorEdges !== undefined) inputs['predecessorEdges'] = props.predecessorEdges;
     if (typeof props.targetCount === 'string') inputs['targetCount'] = props.targetCount;
     if (props.predecessorsComplete !== undefined)
       inputs['predecessorsComplete'] = props.predecessorsComplete;
@@ -154,6 +169,12 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
       outputs[`${prefix}ids`] = {value: output.ids, format: 'uint32', length: output.capacity};
       for (const field of ['count', 'overflow', 'requiredCount'] as const)
         outputs[`${prefix}${field}`] = {value: output.status[field], format: 'uint32', length: 1};
+      if (output.status.unrepresentable !== undefined)
+        outputs[`${prefix}unrepresentable`] = {
+          value: output.status.unrepresentable,
+          format: 'uint32',
+          length: 1
+        };
       if (output.status.candidateOverflow !== undefined)
         outputs[`${prefix}candidateOverflow`] = {
           value: output.status.candidateOverflow,
@@ -205,6 +226,7 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
       id: props.id ?? 'network-path-extraction',
       inputs,
       outputs,
+      emptyOutputPorts: ['ids', 'nodeRows', 'pathCosts', 'pathFound', 'edge-ids', 'edge-edgeRows'],
       createContributor: getView => {
         const getCompactOutput = (
           output: NetworkPathExtractionCompactOperationOutput,
@@ -213,6 +235,10 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
           ids: getView<'uint32'>(`${prefix}ids`),
           status: {
             count: getView<'uint32'>(`${prefix}count`),
+            unrepresentable:
+              output.status.unrepresentable === undefined
+                ? undefined
+                : getView<'uint32'>(`${prefix}unrepresentable`),
             overflow: getView<'uint32'>(`${prefix}overflow`),
             candidateOverflow:
               output.status.candidateOverflow === undefined
@@ -226,6 +252,10 @@ export class GPUNetworkPathExtractionOperation extends GPUContributorOperation {
         return new GPUNetworkPathExtraction({
           id: props.id,
           predecessors: getView<'uint32'>('predecessors'),
+          predecessorEdges:
+            props.predecessorEdges === undefined
+              ? undefined
+              : getView<'uint32'>('predecessorEdges'),
           costs: getView<'float32'>('costs'),
           targets: getView<'uint32'>('targets'),
           targetCount:

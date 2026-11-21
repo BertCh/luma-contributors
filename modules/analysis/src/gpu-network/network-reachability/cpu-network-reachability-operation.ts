@@ -20,7 +20,8 @@ import {
 
 import {
   computeNetworkRoutingDistances,
-  computeNetworkRoutingPredecessors,
+  resolveNetworkRoutingCostPrecision,
+  computeNetworkRoutingPredecessorsWithStatus,
   type CPUNetworkRoutingInput
 } from '../../analysis-core/operations/cpu-network-routing';
 
@@ -39,6 +40,8 @@ export type CPUNetworkReachabilityOptions = {
 export type CPUNetworkReachabilityResult = {
   costs: Float32Array;
   predecessors: Uint32Array;
+  /** Authoritative CSR slots; minimum passable parallel weight, then smallest slot. */
+  predecessorEdges: Uint32Array;
   bands: Uint32Array;
   bandCounts: Uint32Array;
   unresolvedCount: Uint32Array;
@@ -51,12 +54,13 @@ export type CPUNetworkReachabilityResult = {
 
 /**
  * Computes shortest paths and the contributor's cycle-safe predecessor and band rules.
- * Overlapping CSR rows share slot-indexed tie flags exactly as on the GPU; predecessors can then
- * follow an edge that is not tight for that source, outside the valid-CSR cycle-safety guarantee.
+ * The CPU predecessor reader keeps tie witnesses specific to their source, including when
+ * clamped CSR rows overlap. An edge tight for one source cannot supply another source's parent.
  *
  * What differs from the GPU contributor:
- * - Float64 costs and tight-edge tests precede one float32 output rounding. Near ties, cutoff
- *   decisions, subnormal weights and sums overflowing float32 can differ from GPU arithmetic.
+ * - costPrecision defaults to float64 costs/tight-edge tests and one output rounding.
+ *   float32-per-edge rounds every addition before cutoff and predecessor tests. Subnormal
+ *   weights and overflowing sums can still differ from GPU arithmetic.
  * - With explicit round budgets or activeIterations, a synchronous CPU frontier consumes at most
  *   localIterations hops per round (default 32). GPU workgroup scheduling can finish fewer hops.
  *   Without explicit budgets, searches and tie levels run to completion. Device limits are dropped.
@@ -73,6 +77,23 @@ export function computeNetworkReachabilityOnCPU(
   input: CPUNetworkReachabilityInput,
   options: CPUNetworkReachabilityOptions = {}
 ): CPUNetworkReachabilityResult {
+  input = snapshotConstructionFields(input, [
+    'topology',
+    'startNodes',
+    'startCosts',
+    'startCount',
+    'costLimit',
+    'costBreaks',
+    'activeIterations',
+    'costPrecision'
+  ]);
+  input = {
+    ...input,
+    costPrecision: resolveNetworkRoutingCostPrecision(
+      'computeNetworkReachabilityOnCPU',
+      input.costPrecision
+    )
+  };
   options = snapshotConstructionFields(options, [
     'laneCount',
     'maximumIterations',
@@ -100,9 +121,9 @@ export function computeNetworkReachabilityOnCPU(
     laneCount,
     bounded ? roundLimit * localIterations : Infinity
   );
-  const predecessors =
+  const predecessorResult =
     laneCount === 1
-      ? computeNetworkRoutingPredecessors(
+      ? computeNetworkRoutingPredecessorsWithStatus(
           input,
           distances,
           undefined,
@@ -110,7 +131,11 @@ export function computeNetworkReachabilityOnCPU(
             ? Infinity
             : options.maximumTieIterations * localIterations
         )
-      : new Uint32Array(distances.length).fill(NONE);
+      : undefined;
+  const predecessors =
+    predecessorResult?.predecessors ?? new Uint32Array(distances.length).fill(NONE);
+  const predecessorEdges =
+    predecessorResult?.predecessorEdges ?? new Uint32Array(predecessors.length).fill(NONE);
   const bands = new Uint32Array(distances.length).fill(NONE);
   const bandCounts = new Uint32Array(input.costBreaks?.length ?? 0);
   if (input.costBreaks) {
@@ -143,10 +168,15 @@ export function computeNetworkReachabilityOnCPU(
     for (let node = 0; node < distances.length; node++)
       if (Number.isFinite(distances[node]) && predecessors[node] === NONE && !roots.has(node))
         unresolvedCount++;
-  const converged = costsConverged && unresolvedCount === 0 && (!bounded || roundLimit > 0);
+  const converged =
+    costsConverged &&
+    (predecessorResult?.converged ?? true) &&
+    unresolvedCount === 0 &&
+    (!bounded || roundLimit > 0);
   return {
     costs: Float32Array.from(distances),
     predecessors,
+    predecessorEdges,
     bands,
     bandCounts,
     unresolvedCount: Uint32Array.of(unresolvedCount),
@@ -165,6 +195,7 @@ export class CPUNetworkReachabilityOperation extends GPUCPUOperation {
   constructor(props: NetworkReachabilityOperationProps) {
     props = snapshotNetworkReachabilityConstructionProps(props);
     const id = props.id ?? 'network-reachability';
+    const costPrecision = resolveNetworkRoutingCostPrecision(id, props.costPrecision);
     validateCapacity(id, 'nodeCount', props.nodeCount);
     validateCapacity(id, 'laneCount', props.laneCount ?? 1);
     validateCapacity(id, 'nodeCount * laneCount', props.nodeCount * (props.laneCount ?? 1));
@@ -189,7 +220,7 @@ export class CPUNetworkReachabilityOperation extends GPUCPUOperation {
       validateCapacity(id, 'costBreakCount', props.costBreakCount ?? 0);
     if (typeof props.startCount === 'number')
       validateCapacity(id, 'startCount', props.startCount, 0);
-    const operation = new GPUNetworkReachabilityOperation(props);
+    const operation = new GPUNetworkReachabilityOperation({...props, costPrecision: undefined});
     super({
       id,
       inputs: operation.inputs,
@@ -219,6 +250,7 @@ export class CPUNetworkReachabilityOperation extends GPUCPUOperation {
           throw new Error(`${id} topology.offsets length must equal nodeCount + 1`);
         const result = computeNetworkReachabilityOnCPU(
           {
+            costPrecision,
             topology,
             startNodes: getCPUOperationUint32Rows(id, inputs, 'startNodes'),
             startCosts:

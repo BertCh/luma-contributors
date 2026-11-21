@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validatePermutationInputBindings} from '../permutation-inference/permutation-inference-kernels';
+import {PERMUTATION_SIGNIFICANCE_WGSL} from '../permutation-inference/permutation-significance';
+import type {GPUQuantileLISAAlternative} from '../../analysis-core/contracts/inference';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotWeightsDescription} from '../spatial-weights/weights-construction-snapshot';
+import {snapshotSpatialAutocorrelationProps} from './spatial-autocorrelation-construction';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -10,10 +17,11 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {UINT64_WGSL} from '../../analysis-core/kernels/uint64-wgsl';
+import {ORDER_STATISTIC_WGSL} from '../../dataframe-analysis/column-classification/order-statistic-wgsl';
 import {
   validateCapacity,
   validateCommandNodeBudget,
-  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -64,6 +72,8 @@ export type GPUQuantileLISAOutput = Omit<
   GPULocalPermutationTestOutput,
   'classes' | 'quadrants' | 'adjustedPValues' | 'permutationCounts'
 > & {
+  /** One for rows actually tested; zero for missing, isolated or suppressed rows. */
+  tested?: GraphDataView<'uint32'>;
   /** Intersection of every selected-class indicator, zero for missing rows. */
   membership: GraphDataView<'uint32'>;
   /** Type-5 [lower, upper] pairs in variable order. Exterior bounds are infinities. */
@@ -88,6 +98,8 @@ export type GPUQuantileLISAProps = {
   quantileParameters: GraphDataView<'uint32'>;
   /** Resident permutation parameters from getGPUPermutationParameterValues. */
   parameters: GraphDataView<'uint32'>;
+  /** Explicit inference rule. Inclusive tails retain tied draws; legacy preserves the former implicit rule. */
+  alternative: GPUQuantileLISAAlternative;
   maximumPermutations: number;
   maximumNeighbors?: number;
   output: GPUQuantileLISAOutput;
@@ -97,13 +109,17 @@ export type GPUQuantileLISAProps = {
  * Univariate or multivariate selected-quantile conditional local join counts. Quantile boundaries follow pinned libgeoda
  * gda_quantilelisa: type-5 percentiles and lower-inclusive, upper-exclusive membership.
  * Missing values are omitted before quantiling (the pinned upstream missing-value defect is
- * deliberately corrected). Uses the legacy directed pseudo p-value for GeoDa parity; it is
- * anti-conservative and does not provide a two-sided error-control guarantee.
+ * deliberately corrected). Requires 'greater', 'two-sided' (inclusive ties) or 'geoda-legacy'
+ * (the former implicit, anti-conservative strict-complement rule). Optional output.tested distinguishes
+ * untested rows without changing existing class codes.
  * Quantile each variable independently, then intersect the indicators and finite-row masks.
  * An empty intersection stays empty; no bivariate no-colocation fallback is applied.
  * Per-frame: values, common mask, quantile settings, weights, permutation parameters.
- * Compile-time: variable count, view layouts, maximumPermutations and maximumNeighbors.
+ * Compile-time: variable count, view layouts, alternative, maximumPermutations and maximumNeighbors.
+ * The local inference route supports at most MAXIMUM_PERMUTATION_COUNT = 1,048,576 draws per submission.
  * Inputs are packed resident views; chunked inputs must be packed explicitly by the caller.
+ * The largest row-proportional inference binding is 4 * (rows + 1) bytes for row positions;
+ * the eight preparation columns use separate 4 * rows bindings. Source ranks cap rows at 16,777,215.
  * No submission, readback or input ownership transfer occurs.
  */
 export class GPUQuantileLISA implements GPUCommandNodeProducer {
@@ -111,7 +127,62 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
   readonly estimatedCommandNodeCount: number;
   private readonly variables: readonly GPUQuantileLISAVariable[];
   constructor(readonly props: GPUQuantileLISAProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'values',
+      'additionalVariables',
+      'mask',
+      'weights',
+      'quantileParameters',
+      'parameters',
+      'maximumPermutations',
+      'maximumNeighbors',
+      'alternative',
+      'output'
+    ]);
+    const capturedOutput = snapshotConstructionFields(props.output, [
+      'analysisCount',
+      'islandCount',
+      'exceedances',
+      'pseudoPValues',
+      'observed',
+      'significant',
+      'status',
+      'membership',
+      'boundaries',
+      'validCount',
+      'classes',
+      'invalidQuantile',
+      'tested'
+    ]);
+    props = Object.freeze({...props, output: capturedOutput});
+    const tested = props.output.tested;
+    const status = snapshotConstructionFields(props.output.status, [
+      'overflow',
+      'invalidCount',
+      'weightsOverflow',
+      'candidateOverflow',
+      'neighborOverflow',
+      'invalidInput'
+    ]);
+    const weights = snapshotWeightsDescription(props.weights);
+    props = snapshotSpatialAutocorrelationProps({...props, output: {...props.output, status}});
+    props = Object.freeze({
+      ...props,
+      weights,
+      output: Object.freeze({...props.output, tested, status})
+    });
+    this.props = props;
     this.id = props.id ?? 'quantile-lisa';
+    validateRequirement(
+      this.id,
+      ['greater', 'two-sided', 'geoda-legacy'].includes(props.alternative),
+      `alternative must be 'greater', 'two-sided' or 'geoda-legacy'; received ${String(props.alternative)}`
+    );
+    if (tested) {
+      validateSinglePackedView(tested, ['uint32'], `${this.id} output.tested`);
+      validateViewLength(this.id, 'output.tested', tested, props.values.length);
+    }
     this.variables = [props, ...(props.additionalVariables ?? [])];
     validateCapacity(this.id, 'variable count', this.variables.length, 1, MAXIMUM_VARIABLE_COUNT);
     const rows = props.values.length;
@@ -158,7 +229,9 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
       ...props,
       id: this.id,
       statistic: 'localJoinCount',
+      alternative: props.alternative === 'geoda-legacy' ? 'greater' : props.alternative,
       output: {
+        analysisCount: props.output.analysisCount,
         exceedances: props.output.exceedances,
         pseudoPValues: props.output.pseudoPValues,
         observed: props.output.observed,
@@ -168,6 +241,7 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
       }
     });
     const outputs = [
+      props.output.analysisCount,
       props.output.membership,
       props.output.boundaries,
       props.output.validCount,
@@ -178,14 +252,14 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
       props.output.observed,
       props.output.significant,
       props.output.islandCount,
-      props.output.status.overflow,
-      props.output.status.invalidCount
+      ...Object.values(props.output.status),
+      tested
     ];
     validateGraphOutputsDisjointFromInputs(this.id, outputs, [
       ...this.variables.flatMap(variable => [variable.values, variable.quantileParameters]),
       props.mask,
       props.parameters,
-      ...getGPUSpatialWeightsOrChunksViews(props.weights),
+      ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
       props.weights.status?.overflow
     ]);
     const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
@@ -202,21 +276,15 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
     const {props, id} = this;
     const rows = props.values.length;
     const output = props.output;
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'inference matrix scratch',
-      rows * 8 * Float32Array.BYTES_PER_ELEMENT,
-      'use fewer source rows or a larger storage binding limit'
-    );
     validateGraphViewsBelongToGraph(id, graph, [
       ...this.variables.flatMap(variable => [variable.values, variable.quantileParameters]),
       props.mask,
       props.quantileParameters,
       props.parameters,
-      ...getGPUSpatialWeightsOrChunksViews(props.weights),
+      ...getGPUSpatialWeightsOrChunksViews(props.weights, true),
       props.weights.status?.overflow,
       output.membership,
+      output.analysisCount,
       output.boundaries,
       output.validCount,
       output.classes,
@@ -225,10 +293,35 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
       output.pseudoPValues,
       output.observed,
       output.significant,
-      output.status.overflow,
-      output.status.invalidCount,
+      ...Object.values(output.status),
+      output.tested,
       output.islandCount
     ]);
+    // Preflight the actual split-column preparation and all borrowed bindings before scratch.
+    validatePermutationInputBindings(
+      graph,
+      {
+        ...props,
+        id,
+        operation: 'GPUQuantileLISA',
+        analysisCount: output.analysisCount,
+        islandCount: output.islandCount
+      },
+      [
+        ...this.variables.flatMap(variable => [variable.values, variable.quantileParameters]),
+        output.membership,
+        output.boundaries,
+        output.validCount,
+        output.classes,
+        output.invalidQuantile,
+        output.exceedances,
+        output.pseudoPValues,
+        output.observed,
+        output.significant,
+        output.tested,
+        ...Object.values(output.status)
+      ]
+    );
     const view = <Format extends 'float32' | 'uint32'>(
       name: string,
       format: Format,
@@ -243,11 +336,18 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
     for (const [variableIndex, variable] of this.variables.entries()) {
       const variableId = variableIndex === 0 ? id : `${id}-variable-${variableIndex}`;
       const countParameters = view(`count-parameters-${variableIndex}`, 'float32', 5);
-      const boundaryParameters = view(`boundary-parameters-${variableIndex}`, 'float32', 6);
+      const boundaryParameters = view(`boundary-parameters-${variableIndex}`, 'float32', 8);
+      const boundaryRanks = view(`boundary-ranks-${variableIndex}`, 'uint32', 8);
       const unusedQuantile = view(`count-quantile-${variableIndex}`, 'float32', 1);
       const unusedCount = view(`boundary-count-${variableIndex}`, 'uint32', 1);
       const variableCount = view(`valid-count-${variableIndex}`, 'uint32', 1);
-      const rawBoundaries = view(`raw-boundaries-${variableIndex}`, 'float32', 2);
+      // Four exact order statistics followed by the two type-5 interpolation fractions.
+      const rawBoundaries = view(`raw-boundaries-${variableIndex}`, 'float32', 6);
+      const selectedBoundaries = graph.createDataView(rawBoundaries.buffer, {
+        format: 'float32',
+        byteOffset: rawBoundaries.byteOffset,
+        length: 4
+      });
       nodes.push(
         createWGSLKernelNode(graph, {
           id: `${variableId}-count-parameters`,
@@ -279,13 +379,15 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
           id: `${variableId}-boundary-parameters`,
           operation: 'GPUQuantileLISA',
           variant: 'type-five-probabilities',
-          declarations: GET_NAN_WGSL,
+          declarations: `${GET_NAN_WGSL}\n${UINT64_WGSL}`,
           invocationCount: 1,
           bindings: [
             {name: 'settings', view: variable.quantileParameters, type: 'u32', access: 'read'},
             {name: 'count', view: variableCount, type: 'u32', access: 'read'},
             {name: 'counts', view: output.validCount, type: 'u32', access: 'read_write'},
             {name: 'outputParameters', view: boundaryParameters, type: 'f32', access: 'read_write'},
+            {name: 'ranks', view: boundaryRanks, type: 'u32', access: 'read_write'},
+            {name: 'rawBoundaries', view: rawBoundaries, type: 'f32', access: 'read_write'},
             {name: 'invalid', view: output.invalidQuantile, type: 'u32', access: 'read_write'}
           ],
           body: `let quantileCount = settings[settingsOffset];
@@ -297,13 +399,31 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
   outputParameters[outputParametersOffset + 1u] = 0.0;
   outputParameters[outputParametersOffset + 2u] = 1.0;
   outputParameters[outputParametersOffset + 3u] = 0.0;
-  let countValue = f32(count[countOffset]);
-  // Type 5 h = n*p - 0.5, expressed as type 7 probabilities for resident radix selection.
-  let probabilities = vec2<f32>(f32(selectedQuantile - 1u), f32(selectedQuantile)) / f32(max(quantileCount, 1u));
-  let ranks = clamp(countValue * probabilities - vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(max(countValue - 1.0, 0.0)));
-  let converted = ranks / max(countValue - 1.0, 1.0);
-  outputParameters[outputParametersOffset + 4u] = select(getNaN(), converted.x, valid);
-  outputParameters[outputParametersOffset + 5u] = select(getNaN(), converted.y, valid);`
+  let countValue = count[countOffset];
+  // h = (2*n*k-q)/(2*q). Compute its integer part/remainder without a float probability
+  // round trip, then select floor(h) and ceil(h) through exact rational type-7 ranks.
+  ${[0, 1]
+    .map(
+      boundary => `{
+    let boundary = ${boundary}u;
+    var lower = 0u; var upper = 0u; var fraction = getNaN(); var denominator = 0u;
+    if (valid && countValue > 0u) {
+      let term = multiplyUint32Wide(countValue, 2u * (selectedQuantile - 1u + boundary));
+      denominator = max(countValue - 1u, 1u); fraction = 0.0;
+      if (compareUint64(term, vec2<u32>(0u, quantileCount)) > 0i) {
+        let rank = divideUint64ByUint32(subtractUint64(term, vec2<u32>(0u, quantileCount)), 2u * quantileCount);
+        lower = min(rank.quotient.y, countValue - 1u); upper = min(lower + u32(rank.remainder != 0u), countValue - 1u);
+        if (upper != lower) { fraction = f32(rank.remainder) / f32(2u * quantileCount); }
+      }
+    }
+    let base = ranksOffset + boundary * 4u;
+    ranks[base] = lower; ranks[base + 1u] = denominator; ranks[base + 2u] = upper; ranks[base + 3u] = denominator;
+    rawBoundaries[rawBoundariesOffset + 4u + boundary] = fraction;
+    outputParameters[outputParametersOffset + 4u + 2u * boundary] = 0.0;
+    outputParameters[outputParametersOffset + 5u + 2u * boundary] = 0.0;
+  }`
+    )
+    .join('\n')}`
         })
       );
       nodes.push(
@@ -312,8 +432,9 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
           values: variable.values,
           mask: props.mask,
           parameters: boundaryParameters,
-          quantileCount: 2,
-          output: {quantiles: rawBoundaries, validCount: unusedCount}
+          quantileCount: 4,
+          rationalProbabilities: boundaryRanks,
+          output: {quantiles: selectedBoundaries, validCount: unusedCount}
         }).getCommandNodes(graph)
       );
       nodes.push(
@@ -321,7 +442,7 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
           id: `${variableId}-membership`,
           operation: 'GPUQuantileLISA',
           variant: 'lower-inclusive',
-          declarations: IS_FINITE_BITS_WGSL,
+          declarations: `${ORDER_STATISTIC_WGSL}\n${IS_FINITE_BITS_WGSL}`,
           invocationCount: rows,
           bindings: [
             {name: 'values', view: variable.values, type: 'f32', access: 'read'},
@@ -338,8 +459,11 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
           body: `let value = values[valuesOffset + index];
   let valid = isFiniteBits(value) ${props.mask ? '&& mask[maskOffset + index] != 0u' : ''} && invalid[invalidOffset] == 0u;
   var infinityBits = 0x7f800000u;
-  let lower = select(rawBoundaries[rawBoundariesOffset], bitcast<f32>(infinityBits | 0x80000000u), settings[settingsOffset + 1u] == 1u);
-  let upper = select(rawBoundaries[rawBoundariesOffset + 1u], bitcast<f32>(infinityBits), settings[settingsOffset + 1u] == settings[settingsOffset]);
+  let zero = settings[settingsOffset] >> 31u;
+  let lowerValue = interpolateOrderStatistic(rawBoundaries[rawBoundariesOffset], rawBoundaries[rawBoundariesOffset + 1u], rawBoundaries[rawBoundariesOffset + 4u], zero);
+  let upperValue = interpolateOrderStatistic(rawBoundaries[rawBoundariesOffset + 2u], rawBoundaries[rawBoundariesOffset + 3u], rawBoundaries[rawBoundariesOffset + 5u], zero);
+  let lower = select(lowerValue, bitcast<f32>(infinityBits | 0x80000000u), settings[settingsOffset + 1u] == 1u);
+  let upper = select(upperValue, bitcast<f32>(infinityBits), settings[settingsOffset + 1u] == settings[settingsOffset]);
   if (index == 0u) { boundaries[boundariesOffset + ${2 * variableIndex}u] = lower; boundaries[boundariesOffset + ${2 * variableIndex + 1}u] = upper; }
   validMask[validMaskOffset + index] = select(0u, 1u, valid)${variableIndex === 0 ? '' : ' & validMask[validMaskOffset + index]'};
   membership[membershipOffset + index] = select(0u, 1u, valid && value >= lower && value < upper)${variableIndex === 0 ? '' : ' & membership[membershipOffset + index]'};`
@@ -354,11 +478,12 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
         mask: validMask,
         parameters: props.parameters,
         statistic: 'localJoinCount',
-        alternative: 'greater',
+        alternative: props.alternative === 'geoda-legacy' ? 'greater' : props.alternative,
         islands: 'exclude',
         maximumPermutations: props.maximumPermutations,
         maximumNeighbors: props.maximumNeighbors,
         output: {
+          analysisCount: output.analysisCount,
           exceedances: upperExceedances,
           pseudoPValues: unusedPValues,
           observed,
@@ -372,15 +497,25 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
       createWGSLKernelNode(graph, {
         id: `${id}-geoda-tail`,
         operation: 'GPUQuantileLISA',
-        variant: 'strict-complement-tail',
+        variant: props.alternative === 'geoda-legacy' ? 'strict-complement-tail' : 'inclusive-tail',
         invocationCount: rows,
-        declarations: GET_NAN_WGSL,
+        declarations: `${GET_NAN_WGSL}\n${PERMUTATION_SIGNIFICANCE_WGSL}`,
         bindings: [
           {name: 'upperExceedances', view: upperExceedances, type: 'u32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'u32', access: 'read'},
           {name: 'exceedances', view: output.exceedances, type: 'u32', access: 'read_write'},
           {name: 'pseudoPValues', view: output.pseudoPValues, type: 'f32', access: 'read_write'},
-          {name: 'significant', view: significant, type: 'u32', access: 'read_write'}
+          {name: 'significant', view: significant, type: 'u32', access: 'read_write'},
+          ...(output.tested
+            ? [
+                {
+                  name: 'tested',
+                  view: output.tested,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         body: `let upperCount = upperExceedances[upperExceedancesOffset + index];
   let permutationCount = parameters[parametersOffset + 2u];
@@ -388,14 +523,15 @@ export class GPUQuantileLISA implements GPUCommandNodeProducer {
   var probability = getNaN();
   var isSignificant = 0u;
   if (upperCount != 0xffffffffu) {
-    count = min(upperCount, permutationCount - upperCount);
-    probability = f32(count + 1u) / f32(permutationCount + 1u);
+    count = ${props.alternative === 'geoda-legacy' ? 'min(upperCount, permutationCount - upperCount)' : 'upperCount'};
+    probability = min(1.0, f32(${props.alternative === 'two-sided' ? '2u * ' : ''}(count + 1u)) / f32(permutationCount + 1u));
     let level = bitcast<f32>(parameters[parametersOffset + 3u]);
-    isSignificant = select(0u, 1u, f32(count + 1u) <= level * f32(permutationCount + 1u));
+    isSignificant = select(0u, 1u, isPermutationRatioSignificant(${props.alternative === 'two-sided' ? '2u * ' : ''}(count + 1u), permutationCount + 1u, level));
   }
   exceedances[exceedancesOffset + index] = count;
   pseudoPValues[pseudoPValuesOffset + index] = probability;
-  significant[significantOffset + index] = isSignificant;`
+  significant[significantOffset + index] = isSignificant;
+  ${output.tested ? 'tested[testedOffset + index] = u32(upperCount != 0xffffffffu);' : ''}`
       })
     );
     nodes.push(

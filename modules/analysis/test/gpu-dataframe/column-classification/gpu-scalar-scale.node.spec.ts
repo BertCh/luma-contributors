@@ -234,3 +234,45 @@ it('accepts mask as the row filter, keeps validity as a deprecated alias, and na
     device.destroy();
   }
 });
+
+it.each([
+  {domain: []},
+  {domain: [42]}
+])('ING-18 constructs a minimal point domain using prepared metadata: %j', ({domain}) => {
+  const controls = prepareGPUScalarScaleControls({scale: 'point', domain});
+  expect(controls.domain.length).toBe(domain.length);
+  expect(controls.counts.domainCount).toBe(domain.length);
+  expect(controls.minimumDomainCapacity).toBe(2);
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    expect(
+      () =>
+        new GPUScalarScale({
+          values: createTransientView(graph, 'prepared-values', 'float32', 1),
+          domain: createTransientView(
+            graph,
+            'prepared-domain',
+            controls.formats.domain,
+            controls.minimumDomainCapacity
+          ),
+          range: createTransientView(
+            graph,
+            'prepared-range',
+            controls.formats.range,
+            controls.counts.rangeCount
+          ),
+          parameters: createTransientView(
+            graph,
+            'prepared-parameters',
+            controls.formats.parameters,
+            controls.counts.parameterCount
+          ),
+          maximumDomainCount: controls.minimumDomainCapacity,
+          output: {values: createTransientView(graph, 'prepared-output', 'float32', 1)}
+        })
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});

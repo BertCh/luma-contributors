@@ -17,10 +17,12 @@ export type {GPUVariogramSettings} from './variogram-parameters';
 export {
   evaluateVariogramModel,
   fitVariogramModel,
+  fitVariogramModelWithDiagnostics,
   getVariogramModelShape
 } from './variogram-model';
 export type {
   VariogramModel,
+  VariogramModelFitDiagnostics,
   VariogramModelInput,
   VariogramModelOptions,
   VariogramModelType,
@@ -77,6 +79,7 @@ export {
 } from './point-pattern-indices-parameters';
 export type {
   GPUClarkEvansCorrection,
+  GPUPointPatternIndicesHintSettings,
   GPUPointPatternIndicesSettings
 } from './point-pattern-indices-parameters';
 export {GPURipleyDistanceFunctions} from './gpu-ripley-distance-functions';
@@ -105,6 +108,19 @@ export type {
   GPUSpaceTimeVariogramProps,
   GPUSpaceTimeVariogramSettings
 } from './gpu-space-time-variogram';
+export {
+  getGPUSpaceTimeVariogramBinLags,
+  fitSpaceTimeVariogramModel,
+  evaluateSpaceTimeVariogramModel
+} from './space-time-variogram-model';
+export type {
+  SpaceTimeVariogramFit,
+  SpaceTimeVariogramFitOptions,
+  SpaceTimeVariogramInput,
+  SpaceTimeVariogramModel,
+  SpaceTimeVariogramModelType,
+  SpaceTimeVariogramStructure
+} from './space-time-variogram-model';
 export {
   GPUMarkedPointStatistics,
   GPU_MARKED_POINT_STATISTICS_COLUMNS

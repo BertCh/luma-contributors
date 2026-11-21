@@ -81,7 +81,7 @@ export async function runExample(
     settings: {significanceLevel: 0.05, seed: 7, permutationCount: 199},
     permutation: {parameters: permutationParameters, maximumPermutations: 199},
     palette: palette.importToGraph(graph),
-    outputs: {standardizedRates, zScores, quadrants, colors, permutation}
+    output: {standardizedRates, zScores, quadrants, colors, permutation}
   });
   // quadrants colours each tract: 0 not significant, then high-high, low-high, low-low, high-low
   // #endregion example

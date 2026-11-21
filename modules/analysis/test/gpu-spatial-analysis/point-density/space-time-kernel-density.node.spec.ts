@@ -14,7 +14,7 @@ import {
   evaluateGPUSpaceTimeTemporalKernel,
   getGPUSpaceTimeKernelDensityParameterValues,
   getGPUSpaceTimeTemporalSupportRadius,
-  getGPUSpaceTimeTemporalWindowMass,
+  getGPUSpaceTimeTemporalWindowOverlap,
   GPUSpaceTimeKernelDensity,
   GPUSpaceTimeRelativeRisk,
   type GPUSpaceTimeTemporalKernel
@@ -67,7 +67,7 @@ it('temporal window mass is the integral of the kernel over the window', () => {
               : evaluateGPUSpaceTimeTemporalKernel(kernel, bandwidth, offset)) * step;
         }
       }
-      expect(getGPUSpaceTimeTemporalWindowMass(kernel, bandwidth, time, window)).toBeCloseTo(
+      expect(getGPUSpaceTimeTemporalWindowOverlap(kernel, bandwidth, time, window)).toBeCloseTo(
         integral,
         7
       );
@@ -157,9 +157,11 @@ function createDensity(overrides: Record<string, unknown> = {}, rows = 8, sliceC
 it('validates props at construction with the contributor ID and the prop', () => {
   expect(createDensity().density.voxelCount).toBe(60);
   expect(() => createDensity({spatialKernel: 'box'})).toThrow(
-    /space-time-kernel-density spatialKernel/
+    /space-time-kernel-density spatialKernel.*box.*gaussian, quartic, epanechnikov, bisquare/
   );
-  expect(() => createDensity({temporalKernel: 'box'})).toThrow(/temporalKernel/);
+  expect(() => createDensity({temporalKernel: 'box'})).toThrow(
+    /space-time-kernel-density temporalKernel.*box.*gaussian, quartic, epanechnikov, bisquare/
+  );
   expect(() => createDensity({temporalEdgeCorrection: 'diggle'})).toThrow(/edge corrections/);
   expect(() => createDensity({normalization: 'count'})).toThrow(/normalization/);
   expect(() => createDensity({sliceCount: 0})).toThrow(/sliceCount/);

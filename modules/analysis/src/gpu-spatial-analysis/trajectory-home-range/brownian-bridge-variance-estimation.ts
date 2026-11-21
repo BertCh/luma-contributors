@@ -169,6 +169,13 @@ function maximizeLikelihood(
   ) {
     return {motionVariance: NaN, status: {lowerBoundReached: false}};
   }
+  // A zero-error, zero-residual bridge has unbounded density as motion tends to
+  // zero. Other zero-error bridges must also have zero residual: any positive
+  // residual instead contributes a dominating negative inverse-variance term.
+  const zeroErrorTerms = terms.filter(term => term.errorVariance === 0);
+  if (zeroErrorTerms.length > 0 && zeroErrorTerms.every(term => term.squaredResidual === 0)) {
+    return {motionVariance: 0, status: {lowerBoundReached: true}};
+  }
   // Scale of the answer: the closed form of the error-free estimator,
   // sigma^2 = mean(r^2 / (2 w)), which is exact when every location error is 0.
   let scale = 0;

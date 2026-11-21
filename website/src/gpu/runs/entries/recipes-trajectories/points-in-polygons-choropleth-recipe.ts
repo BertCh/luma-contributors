@@ -61,7 +61,7 @@ export default defineOperationRun({
       },
       values: pointValues.view,
       polygons: {...getPolygonPort(mesh), candidateCapacity: 1 << 16},
-      outputs: {
+      output: {
         counts: counts.view,
         featureValues: featureValues.view,
         color: {

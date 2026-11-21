@@ -5,9 +5,12 @@
 // intersection is a query; roads are colored by the triangular-kernel intensity of the events
 // (dots) within the network bandwidth.
 
-import {GPUNetworkKernelDensity} from '@luma-contributors/analysis/gpu-network';
+import {
+  GPUNetworkCostMatrix,
+  GPUNetworkKernelDensity
+} from '@luma-contributors/analysis/gpu-network';
 import {defineOperationRun} from '../../define-run';
-import {addCostMatrix, uploadSearch} from './shared/access';
+import {uploadSearch} from './shared/access';
 import {createLegend} from '../../text';
 import {addMatrixFootprint, addZoneSegments} from './shared/display';
 import {chooseSticky} from '../../pick';
@@ -65,21 +68,38 @@ export default defineOperationRun({
   build(builder, inputs, values) {
     const {network} = inputs;
     const search = uploadSearch(builder, network);
-    const queries = Uint32Array.from({length: network.nodeCount}, (_, index) => index);
+    const queries = builder.upload(
+      'start-nodes',
+      'uint32',
+      Uint32Array.from({length: network.nodeCount}, (_, index) => index)
+    );
     // Events change with the clustering slider, so their nodes are rewritten each frame.
     const eventNodes = builder.allocate('event-nodes', 'uint32', EVENT_COUNT);
-    const distances = addCostMatrix(builder, search, queries, network.nodeCount, eventNodes);
+    const distances = builder.allocate('cost-matrix', 'float32', network.nodeCount * EVENT_COUNT);
+    const costsComplete = builder.allocate('costs-complete', 'uint32', 1);
+    builder.graph.add(
+      new GPUNetworkCostMatrix({
+        topology: search.topology,
+        startNodes: queries.view,
+        targetNodes: eventNodes.view,
+        costLimit: search.costLimit.view,
+        maximumIterations: 48,
+        output: {costs: distances.view, status: {converged: costsComplete.view}}
+      })
+    );
     const intensity = builder.allocate('intensity', 'float32', network.nodeCount);
     const kernelMass = builder.allocate('kernel-mass', 'float32', EVENT_COUNT);
-    const status = builder.allocate('status', 'uint32', network.nodeCount);
+    const validity = builder.allocate('validity', 'uint32', network.nodeCount);
     builder.graph.add(
       new GPUNetworkKernelDensity({
         distances: distances.view,
+        costsComplete: costsComplete.view,
+        costLimit: search.costLimit.view,
         eventCount: EVENT_COUNT,
         quadratureLengths: builder.upload('quadrature-lengths', 'float32', inputs.quadratureLengths)
           .view,
         bandwidth: values.bandwidth,
-        output: {intensity: intensity.view, kernelMass: kernelMass.view, status: status.view}
+        output: {intensity: intensity.view, kernelMass: kernelMass.view, validity: validity.view}
       })
     );
     // The dragged event's own kernel: 1 at the event falling to 0 at the bandwidth along the roads,
@@ -116,6 +136,8 @@ export default defineOperationRun({
       outputs: {
         ...roads,
         intensity,
+        validity,
+        costsComplete,
         reach,
         events
       },
@@ -129,6 +151,10 @@ export default defineOperationRun({
         search.costLimit.write(Float32Array.of(4));
       }
     };
+  },
+  async afterRun({outputs}) {
+    const bytes = await outputs.costsComplete.buffer.readAsync();
+    return {costsComplete: new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0] !== 0};
   },
   rebuildOn: ['bandwidth'],
   // The pointer carries one event along the roads; the intensity re-forms around it.
@@ -146,9 +172,15 @@ export default defineOperationRun({
       const changed = node !== inputs.dragNode;
       inputs.dragNode = node;
       const intensity = peek(outputs.intensity);
-      let peak = 0;
-      if (intensity)
-        for (const value of intensity) if (Number.isFinite(value)) peak = Math.max(peak, value);
+      const validity = peek(outputs.validity);
+      let peak = -Infinity;
+      if (intensity && validity) {
+        for (let query = 0; query < intensity.length; query++) {
+          if (validity[query] && Number.isFinite(intensity[query])) {
+            peak = Math.max(peak, intensity[query]);
+          }
+        }
+      }
       const at: [number, number] = [
         inputs.network.nodes[node * 2],
         inputs.network.nodes[node * 2 + 1]
@@ -156,15 +188,24 @@ export default defineOperationRun({
       return {
         rerun: changed,
         glyphs: [{shape: 'crosshair', at, size: 12}],
-        readout: `event at node ${node} · bandwidth ${values.bandwidth.toFixed(2)} · peak ${peak.toFixed(1)}`
+        readout: `event at node ${node} · bandwidth ${values.bandwidth.toFixed(2)} · ${Number.isFinite(peak) ? `peak ${peak.toFixed(1)}` : 'density unavailable'}`
       };
     }
   },
-  draw: ({outputs, theme}) => [
+  draw: ({outputs, extra, theme}) => [
     getRoadContext(outputs),
     // The footprint of the dragged event: a halo along the roads within the bandwidth of it.
-    {layer: 'lines', segments: outputs.reach, radius: 6, color: [...theme.ink, 0.35]},
-    getRoadValues(outputs, outputs.intensity, {radius: 3, range: [0, 9]}),
+    ...(extra?.costsComplete
+      ? [
+          {
+            layer: 'lines' as const,
+            segments: outputs.reach,
+            radius: 6,
+            color: [...theme.ink, 0.35] as const
+          },
+          getRoadValues(outputs, outputs.intensity, {radius: 3, range: [0, 9]})
+        ]
+      : []),
     {layer: 'dots', positions: outputs.events, radius: 4.5, color: [...theme.ink, 1]},
     {
       layer: 'text',

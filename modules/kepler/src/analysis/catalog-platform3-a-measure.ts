@@ -150,7 +150,7 @@ export function runShapeDescriptors(
           const next = ring[(index + 1) % ring.length];
           perimeter += Math.hypot(next[0] - ring[index][0], next[1] - ring[index][1]);
         }
-        if (ringIndex === 0) shellPoints.push(...ring);
+        if (ringIndex === 0) for (const position of ring) shellPoints.push(position);
       });
     const hull = getConvexHull(shellPoints);
     const hullArea = hull.length >= 3 ? Math.abs(getSignedArea(hull)) : 0;

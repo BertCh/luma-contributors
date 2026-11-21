@@ -30,6 +30,25 @@ const PROPS: MapColoringOperationProps = {
   output: {colors: 'colors'}
 };
 
+it('B3 snapshots inherited loss names once in both operation forms', () => {
+  for (const Operation of [CPUMapColoringOperation, GPUMapColoringOperation]) {
+    let reads = 0;
+    const status = {overflow: 'loss'};
+    const weights = Object.create(PROPS.weights, {
+      status: {
+        get() {
+          reads++;
+          return status;
+        }
+      }
+    });
+    const operation = new Operation({...PROPS, weights});
+    status.overflow = 'changed-loss';
+    expect(reads).toBe(1);
+    expect(operation.inputs['overflow']).toBe('loss');
+  }
+});
+
 it('sequential CPU coloring agrees with independent synchronous Jones-Plassmann rounds', () => {
   for (const pattern of [createCliqueCSR(35), createRookLatticeCSR(6, 5), createStarCSR(12)]) {
     for (const seed of [0, 17, 0xffffffff]) {

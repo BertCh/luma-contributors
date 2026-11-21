@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {DENSITY_AUTO_ROUTE_WGSL} from './density-auto-route';
+import {getBoundedDispatchLayout} from '@luma.gl/graph/gpu-core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -24,7 +26,9 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GRID_COORDINATE_WGSL} from '../spatial-interpolation/gpu-inverse-distance-weighting';
+import {GPU_GRID_COORDINATE_WGSL} from '@luma.gl/graph/gpu-core';
+import {BANDWIDTH_RESOLUTION_WGSL} from './density-bandwidth-resolution-wgsl';
+import {DENSITY_VALUE_WGSL} from './density-neighbor-wgsl';
 import type {
   GPUKernelDensityEdgeCorrection,
   GPUKernelDensityNormalization
@@ -107,6 +111,8 @@ export type GPUKernelDensityBinnedProps = {
   normalization: GPUKernelDensityNormalization;
   /** Optional one-row uint32: 1 when `method: 'binned'` ran with less margin than it needs. */
   insufficientPadding?: GraphDataView<'uint32'>;
+  /** Per-frame diagnostic for a binned bandwidth below three cells on either axis. */
+  bandwidthBelowThreeCells?: GraphDataView<'uint32'>;
   /** Gate the binned nodes and the exact gather on the bandwidth (`method: 'auto'`). */
   autoGate: boolean;
 };
@@ -250,7 +256,7 @@ const MARGIN: u32 = ${margin}u;`;
       ],
       invocationCount: 1,
       declarations: `${gridConstants}
-${GRID_COORDINATE_WGSL}
+${DENSITY_VALUE_WGSL}${GPU_GRID_COORDINATE_WGSL}
 const EXPONENTIAL_SHARE: f32 = ${getWGSLFloatLiteral(GPU_KERNEL_DENSITY_BINNED_EXPONENTIAL_VARIANCE_SHARE)};
 const BOX_PASS_COUNT: f32 = ${getWGSLFloatLiteral(GPU_KERNEL_DENSITY_BINNED_BOX_PASS_COUNT)};
 const MINIMUM_REFRESH_INTERVAL: f32 = ${getWGSLFloatLiteral(MINIMUM_REFRESH_INTERVAL)};
@@ -317,6 +323,96 @@ fn writeAxisPlan(base: u32, sigma: f32, lineLength: f32) {
   }`
     })
   ];
+
+  if (props.bandwidthBelowThreeCells) {
+    planNodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-bandwidth-resolution`,
+        operation: OPERATION,
+        variant: 'bandwidth-resolution',
+        invocationCount: 1,
+        bindings: [
+          gridBindings('params'),
+          ...props.bandwidthBindings,
+          {
+            name: 'resolution',
+            view: props.bandwidthBelowThreeCells,
+            type: 'u32',
+            access: 'read_write'
+          }
+        ],
+        declarations: `${gridConstants}\n${DENSITY_VALUE_WGSL}${GPU_GRID_COORDINATE_WGSL}\n${BANDWIDTH_RESOLUTION_WGSL}`,
+        body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
+  let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  let bandwidth = ${props.bandwidthExpression};
+  let cellSize = (gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
+  let cellArea = abs(cellSize.x * cellSize.y);
+  let sigmaCells = abs(vec2f(bandwidth) / cellSize);
+  let valid = isFiniteValue(bandwidth) && bandwidth > 0.0 && isFiniteValue(cellSize.x) &&
+    isFiniteValue(cellSize.y) && all(gridEnd != gridStart) && isFiniteValue(cellArea) &&
+    cellArea > 0.0 && isFiniteValue(sigmaCells.x) && isFiniteValue(sigmaCells.y);
+  let sigma = min(sigmaCells, vec2f(${getWGSLFloatLiteral(MAXIMUM_SIGMA_CELLS)}));
+  let useBinned = valid ${props.autoGate ? `&& f32(MARGIN) >= ${getWGSLFloatLiteral(GPU_KERNEL_DENSITY_BINNED_MARGIN_BANDWIDTHS)} * max(sigma.x, sigma.y) && ${getWGSLFloatLiteral(GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION)} * max(sigma.x, sigma.y) > ${getWGSLFloatLiteral(GPU_KERNEL_DENSITY_AUTO_SUPPORT_CELLS)}` : ''};
+  resolution[resolutionOffset] = select(0u, 1u, useBinned && (isBandwidthBelowThreeCells(bandwidth, abs(cellSize.x)) || isBandwidthBelowThreeCells(bandwidth, abs(cellSize.y))));`
+      })
+    );
+  }
+
+  // Correct the auto dispatch in a separate parallel pass; the baselined serial blur planner
+  // and its filter arithmetic remain byte-for-byte unchanged.
+  if (gate) {
+    const shapes = [
+      [cellCount, POINT_WORKGROUP_SIZE],
+      [pointCount, POINT_WORKGROUP_SIZE],
+      [paddedCellCount, POINT_WORKGROUP_SIZE],
+      [paddedHeight, LINE_WORKGROUP_SIZE],
+      [paddedWidth, LINE_WORKGROUP_SIZE],
+      [cellCount, POINT_WORKGROUP_SIZE]
+    ] as const;
+    const layouts = shapes.map(([count, size]) =>
+      getBoundedDispatchLayout(
+        OPERATION,
+        Math.max(1, count),
+        size,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      )
+    );
+    planNodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-auto-route`,
+        operation: OPERATION,
+        variant: 'auto-route',
+        invocationCount: shapes.length,
+        bindings: [
+          gridBindings('params'),
+          ...props.bandwidthBindings,
+          gate.binding,
+          ...(props.bandwidthBelowThreeCells
+            ? [
+                {
+                  name: 'resolution',
+                  view: props.bandwidthBelowThreeCells,
+                  type: 'u32',
+                  access: 'read_write'
+                } as const
+              ]
+            : [])
+        ],
+        declarations: `${gridConstants}\n${DENSITY_VALUE_WGSL}${DENSITY_AUTO_ROUTE_WGSL}${BANDWIDTH_RESOLUTION_WGSL}`,
+        body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
+  let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
+  let bandwidth = ${props.bandwidthExpression};
+  let cellSize = (gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
+  let useBinned = useDensityBinnedRoute(bandwidth, cellSize, MARGIN);
+  let shapes = array<vec3u, 6>(${layouts.map(layout => `vec3u(${layout.x}u, ${layout.y}u, ${layout.z}u)`).join(', ')});
+  let isRouteEnabled = select(useBinned, !useBinned, index == 0u);
+  dispatch[dispatchOffset + 3u * index] = select(0u, shapes[index].x, isRouteEnabled);
+  dispatch[dispatchOffset + 3u * index + 1u] = shapes[index].y;
+  dispatch[dispatchOffset + 3u * index + 2u] = shapes[index].z;
+  ${props.bandwidthBelowThreeCells ? 'if (index == 0u) { resolution[resolutionOffset] = select(0u, 1u, useBinned && (isBandwidthBelowThreeCells(bandwidth, abs(cellSize.x)) || isBandwidthBelowThreeCells(bandwidth, abs(cellSize.y)))); }' : ''}`
+      })
+    );
+  }
 
   const positionChunks = getGraphViewChunks(props.positions);
   const pointWeightChunks = getGraphViewChunks(props.pointWeights);
@@ -478,7 +574,7 @@ ${kind === 'box' ? BOX_BLUR_DECLARATIONS : ''}`,
       workgroupSize: POINT_WORKGROUP_SIZE,
       ...getGate(GATE_SLOT.finish),
       declarations: `${gridConstants}
-${GRID_COORDINATE_WGSL}
+${DENSITY_VALUE_WGSL}${GPU_GRID_COORDINATE_WGSL}
 ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'uniform' ? 'gaussian' : undefined) : edgeCorrection === 'none' ? '' : getWindowMassWGSL('gaussian')}`,
       body: `let column = index % WIDTH;
   let rasterRow = index / WIDTH;

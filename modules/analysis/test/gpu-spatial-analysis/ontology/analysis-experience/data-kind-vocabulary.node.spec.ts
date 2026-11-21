@@ -326,8 +326,8 @@ describe('operator kind supplements', () => {
     // The catalogue gives OPTICS and HDBSCAN labels attributes; regions are for regionalization.
     expect(catalogueByName.get('GPUOPTICS')?.outputs).toContain('attributes');
     expect(catalogueByName.get('GPUOPTICS')?.outputs).not.toContain('regions');
-    expect(outputs('GPUSpatialClustering')).toContain('attributes');
-    expect(outputs('GPUSpatialClustering')).not.toContain('regions');
+    expect(outputs('GPUDBSCAN')).toContain('attributes');
+    expect(outputs('GPUDBSCAN')).not.toContain('regions');
     expect(outputs('GPUSpatialKMeans')).not.toContain('regions');
     expect(outputs('GPUSkaterRegions')).toContain('regions');
     expect(GPU_ANALYSIS_OPERATOR_KIND_SUPPLEMENTS['GPUGroupConvexHull'].inputs).toEqual(
@@ -354,14 +354,7 @@ describe('operator kind supplements', () => {
 
   // Evidence for a spread of rows. `ports` are strings that must occur in the source file (relative
   // to modules/analysis/src); the kinds are an independent statement of what those ports imply.
-  const POINT_INPUT_PORT = [
-    'points: PointGeometry &',
-    '    (0 extends 1 & PointGeometry',
-    '      ? unknown',
-    '      : [PointGeometry] extends [GPUMultipartPointGeometryPort]',
-    '        ? never',
-    '        : unknown)'
-  ].join('\n');
+  const POINT_INPUT_PORT = 'points: PointGeometry';
 
   const EVIDENCE: readonly {
     name: string;
@@ -455,7 +448,7 @@ describe('operator kind supplements', () => {
       file: 'gpu-spatial-analysis/geometry-validity/gpu-geometry-validity.ts',
       ports: [
         'polygons?: GPUPackedGeometryPort<GPUPolygonGeometryPort>',
-        'lines?: GPUPackedGeometryPort<GPULineGeometryPort>',
+        'lines?: GPULineFeatureGeometry',
         "issueCode: GraphDataView<'uint32'>",
         "validity?: GraphDataView<'uint32'>"
       ],
@@ -480,7 +473,7 @@ describe('operator kind supplements', () => {
       name: 'GPULineClipByPolygon',
       file: 'gpu-spatial-analysis/line-clip/gpu-line-clip-by-polygon.ts',
       ports: [
-        'lines: GPUPackedGeometryPort<GPULineGeometryPort>',
+        'lines: GPULineFeatureGeometry',
         'polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>',
         'pieces: GPULineSplitPieces'
       ],
@@ -512,7 +505,9 @@ describe('operator kind supplements', () => {
       ports: [
         POINT_INPUT_PORT,
         'polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>',
-        'pointFeatureIds: GPUUint32Rows'
+        // Either the source-ID output or the row output satisfies the join's output contract.
+        'pointFeatureIds?: GPUUint32Rows',
+        'pointFeatureRows?: GPUUint32Rows'
       ],
       inputs: ['points', 'polygons'],
       outputs: ['attributes']
@@ -625,12 +620,12 @@ describe('operator kind supplements', () => {
     {
       name: 'GPUPickRegionMask',
       file: 'gpu-spatial-analysis/region-statistics/gpu-pick-region-mask.ts',
-      ports: ["picks: GraphDataView<'uint32'>", 'GPURegionMaskOutput'],
+      ports: ["picks: GraphDataView<'uint32'>", 'output: GPUPickRegionMaskOutput'],
       inputs: ['attributes'],
       outputs: ['attributes']
     },
     {
-      name: 'GPUSpatialClustering',
+      name: 'GPUDBSCAN',
       file: 'gpu-spatial-analysis/spatial-clustering/gpu-spatial-clustering.ts',
       ports: ["positions: GraphDataView<'float32x2'>", "labels: GraphDataView<'uint32'>"],
       inputs: ['points'],
@@ -769,7 +764,7 @@ describe('operator kind supplements', () => {
       name: 'GPUTrackSimilarity',
       file: 'gpu-spatial-analysis/track-similarity/gpu-track-similarity.ts',
       ports: [
-        'linesA: GPUPackedGeometryPort<GPULineGeometryPort>',
+        'linesA: GPULineFeatureGeometry',
         "pairA: GraphDataView<'uint32'>",
         'hausdorff?: GraphDataView'
       ],

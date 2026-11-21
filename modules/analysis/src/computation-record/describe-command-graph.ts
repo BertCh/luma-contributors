@@ -3,6 +3,7 @@
 
 import {
   getViewElementOffset,
+  getViewBindingRange,
   type CompiledGPUCommandGraph,
   type GPUCommandGraph,
   type GPUCommandGraphEncodingStats,
@@ -12,7 +13,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {textureFormatDecoder, type TextureFormat} from '@luma.gl/core';
 import {
-  getWGSLKernelNodeRecord,
+  getCompiledWGSLKernelNodeRecord,
   type WGSLKernelNodeRecord
 } from '../analysis-core/kernels/wgsl-kernel-nodes';
 import type {
@@ -27,6 +28,7 @@ import type {
 } from './computation-record-types';
 import type {GPUComputationRecorder} from './computation-recorder';
 import {hashGPUComputationText} from './hash-computation-text';
+import {mergeGPUComputationSourceRefs} from './merge-computation-source';
 
 /** Compiled graph structure and its deduplicated source references. */
 export type GPUCommandGraphDescription = {
@@ -47,10 +49,16 @@ export type DescribeGPUCommandGraphOptions = {
   /** Annotations recorded while the graph was built; without it nodes carry published facts only. */
   recorder?: GPUComputationRecorder;
   /**
-   * Graph that was compiled, when it was passed to `recordWGSLKernelNodes` (or the recorder's
-   * `recordKernels`, which is the default) before nodes were added.
+   * Graph that was compiled, when it was passed to `recordWGSLKernelNodes` before nodes were
+   * added. When omitted, the recorder's `getRecordedGraphDescription` supplies the description
+   * if the recorder was attached with `recordKernels`. The fallback requires the exact compiled
+   * object returned by that builder.
    * Every node built by `createWGSLKernelNode` then gets its source, workgroup size, dispatch,
    * bindings and operation name, and the graph gets its published transient allocation totals.
+   * A graph builder supports one compilation. Provenance must come from the callbacks selected
+   * by that graph; standalone node compilation or inspection before or after it is not selection.
+   * Custom nodes without attributable compiled records contribute only their published compiled
+   * metadata.
    * Recorder annotations win field by field.
    */
   graph?: GPUCommandGraph<any>;
@@ -90,10 +98,21 @@ export function describeGPUCommandGraph(
   compiled: Pick<CompiledGPUCommandGraph, 'id' | 'stats' | 'preflight'>,
   options: DescribeGPUCommandGraphOptions = {}
 ): GPUCommandGraphDescription {
+  const recordedDescription = options.graph
+    ? undefined
+    : options.recorder?.getRecordedGraphDescription(compiled, options);
+  return recordedDescription ?? buildGPUCommandGraphDescription(compiled, options);
+}
+
+/** Builds a description using an explicit graph or public compiled metadata alone. @internal */
+export function buildGPUCommandGraphDescription(
+  compiled: Pick<CompiledGPUCommandGraph, 'id' | 'stats' | 'preflight'>,
+  options: DescribeGPUCommandGraphOptions
+): GPUCommandGraphDescription {
   const graphId = options.graphId ?? `${compiled.id}-compiled`;
   validateGraphId(graphId);
   const recorder = options.recorder;
-  const kernelGraph = options.graph ?? recorder?.graph;
+  const kernelGraph = options.graph;
   const sourceText = options.sourceText ?? recorder?.sourceText ?? false;
   /** Handles of resources bound by recorded kernels, so their ownership is stated, not assumed. */
   const kernelHandles = new Map<string, GraphBufferHandle | GraphTextureHandle>();
@@ -125,24 +144,39 @@ export function describeGPUCommandGraph(
   for (const nodeId of compiled.stats.nodeOrder) {
     const node = preflightById.get(nodeId) as GPUCommandGraphNodePreflight | undefined;
     if (!node) continue;
-    const kernel = kernelGraph && getWGSLKernelNodeRecord(kernelGraph, nodeId);
+    const kernel = kernelGraph && getCompiledWGSLKernelNodeRecord(kernelGraph, nodeId);
     if (kernel) {
       for (const binding of kernel.bindings)
         kernelHandles.set(binding.view.buffer.id, binding.view.buffer);
       for (const binding of kernel.textures)
         kernelHandles.set(binding.texture.texture.id, binding.texture.texture);
     }
-    const record = mergeKernelAnnotation(
+    let record = mergeKernelAnnotation(
       recorder?.getNodeRecord(nodeId),
-      kernel && createWGSLKernelNodeAnnotation(kernel, sourceText)
+      mergeKernelAnnotation(
+        kernel && createWGSLKernelNodeAnnotation(kernel, sourceText),
+        createPublicKernelAnnotation(node, sourceText)
+      )
     );
+    // Compilation retaining source is independent of the recording opt-in.
+    if (record?.source && !sourceText) {
+      const {text: omittedText, ...sourceWithoutText} = record.source;
+      record = {...record, source: sourceWithoutText};
+    }
+    // The source ref is shared by every node with the same text, so its entry point and constants
+    // are those of the first node; per-pipeline values are kept on each node.
+    let entryPoint = record?.entryPoint;
     if (record?.source) {
       const previous = sources.get(record.source.id);
-      if (previous && previous.text !== record.source.text) {
-        throw new Error(`Source id "${record.source.id}" has conflicting text`);
-      }
-      if (!previous) sources.set(record.source.id, record.source);
+      sources.set(
+        record.source.id,
+        previous ? mergeGPUComputationSourceRefs(previous, record.source) : record.source
+      );
+      if (previous && record.source.entryPoint !== previous.entryPoint)
+        entryPoint ??= record.source.entryPoint;
     }
+    if (record?.source && entryPoint === sources.get(record.source.id)?.entryPoint)
+      entryPoint = undefined;
     const reads = new Set<string>();
     const writes = new Set<string>();
     for (const resource of node.resources ?? []) {
@@ -204,8 +238,10 @@ export function describeGPUCommandGraph(
         formula: record?.formula,
         source: record?.source?.id,
         workgroupSize: record?.workgroupSize,
-        constants: record?.constants,
+        constants: record?.constants ?? record?.source?.constants,
+        entryPoint,
         bindings: record?.bindings,
+        declaredBindings: record?.declaredBindings,
         dispatch: record?.dispatch,
         reads: [...reads],
         writes: [...writes],
@@ -336,6 +372,7 @@ export function createWGSLKernelNodeAnnotation(
     },
     // Overrides differ per pipeline while the module text is shared, so they belong to the node.
     constants: kernel.constants,
+    entryPoint: kernel.entryPoint,
     workgroupSize: kernel.workgroupSize,
     dispatch: {
       workgroups: kernel.workgroups,
@@ -349,6 +386,8 @@ export function createWGSLKernelNodeAnnotation(
         access: binding.access,
         elementType: binding.type,
         elementOffset: getViewElementOffset(binding.view),
+        bindingByteOffset: getViewBindingRange(binding.view).offset,
+        bindingByteLength: getViewBindingRange(binding.view).size,
         length: binding.view.length
       })),
       ...kernel.textures.map(binding => ({
@@ -360,17 +399,54 @@ export function createWGSLKernelNodeAnnotation(
   };
 }
 
+/** Published layout facts never imply a resource-to-slot mapping or pipeline overrides. */
+function createPublicKernelAnnotation(
+  node: GPUCommandGraphNodePreflight,
+  sourceText: boolean
+): GPUComputationNodeAnnotation | undefined {
+  const kernel = node.kernel;
+  if (!kernel) return undefined;
+  const hash = kernel.source === undefined ? undefined : hashGPUComputationText(kernel.source);
+  return {
+    entryPoint: kernel.entryPoint,
+    workgroupSize: kernel.workgroupSize,
+    declaredBindings: kernel.bindings.map(binding => ({...binding})),
+    ...(hash !== undefined && {
+      source: {
+        id: `wgsl:${hash}`,
+        language: 'wgsl' as const,
+        moduleId: node.variant
+          ? `${node.operation ?? node.id}/${node.variant}`
+          : (node.operation ?? node.id),
+        hash,
+        entryPoint: kernel.entryPoint,
+        ...(sourceText && {text: kernel.source})
+      }
+    })
+  };
+}
+
 /** Recorder annotation over kernel facts: every field the recorder sets wins. */
 function mergeKernelAnnotation<Annotation extends GPUComputationNodeAnnotation>(
   recorded: Annotation | undefined,
   kernel: GPUComputationNodeAnnotation | undefined
 ): Annotation | undefined {
-  if (!kernel) return recorded;
-  if (!recorded) return kernel as Annotation;
-  const merged: Record<string, unknown> = {...kernel};
-  for (const [key, value] of Object.entries(recorded)) {
-    if (value !== undefined) merged[key] = value;
-  }
+  const normalize = (annotation: GPUComputationNodeAnnotation | undefined) =>
+    annotation && {
+      ...annotation,
+      entryPoint: annotation.entryPoint ?? annotation.source?.entryPoint,
+      constants: annotation.constants ?? annotation.source?.constants
+    };
+  const preferred = normalize(recorded);
+  const fallback = normalize(kernel);
+  if (!fallback) return preferred as Annotation | undefined;
+  if (!preferred) return fallback as Annotation;
+  const merged = {
+    ...fallback,
+    ...Object.fromEntries(Object.entries(preferred).filter(([, value]) => value !== undefined))
+  };
+  if (preferred.source && fallback.source)
+    merged.source = mergeGPUComputationSourceRefs(preferred.source, fallback.source);
   return merged as Annotation;
 }
 
@@ -422,6 +498,8 @@ export function getGPUCommandGraphPassIndices(
  * Describes the realized passes of one encoding. Per-node pass membership is not published, so it
  * is inferred by {@link getGPUCommandGraphPassIndices}; when that disagrees with the encoding's
  * pass count, each compute node is listed in its own pass and the graph gets `passGrouping: 'unknown'`.
+ * Pass ids number compute and render passes in one encoded order, so a render pass never shares an
+ * id with a compute pass.
  */
 export function describeGPUCommandGraphEncoding(
   stats: GPUCommandGraphEncodingStats,
@@ -434,7 +512,10 @@ export function describeGPUCommandGraphEncoding(
   const nodes: GPUComputationNode[] = [];
   const passes = new Map<number, GPUComputationNode>();
   const skipped: string[] = [];
-  let fallbackPassIndex = 0;
+  // One ordered pass sequence for every pass type; inferred compute membership only decides which
+  // consecutive compute nodes share a pass.
+  const passIndexByComputePass = new Map<number, number>();
+  let passCount = 0;
   for (const node of stats.nodes) {
     if (node.condition?.outcome === 'skipped') {
       skipped.push(node.id);
@@ -454,7 +535,14 @@ export function describeGPUCommandGraphEncoding(
       });
       continue;
     }
-    const passIndex = node.type === 'compute' && inferred ? inferred[node.id] : fallbackPassIndex++;
+    let passIndex: number;
+    if (node.type === 'compute' && inferred) {
+      const computePassIndex = inferred[node.id];
+      passIndex = passIndexByComputePass.get(computePassIndex) ?? passCount++;
+      passIndexByComputePass.set(computePassIndex, passIndex);
+    } else {
+      passIndex = passCount++;
+    }
     const previous = passes.get(passIndex);
     if (previous) {
       previous.derivedFrom = [...previous.derivedFrom!, derivedFrom];

@@ -6,6 +6,7 @@ import {NullDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {expect, test} from 'vitest';
 import {GPUSnapshotArena, GPUSnapshotTap} from '../../src/computation-record/index';
+import {createRecordingSnapshotFixture} from './snapshot-recording-fixture';
 
 test('final1 core:F12 preserves getter-backed tap fields and dependency', () => {
   const device = new NullDevice({id: 'tap-getters'});
@@ -92,6 +93,49 @@ test('snapshot taps reject oversized offset views, strided views and mismatched 
     expect(arena.count).toBe(0);
   } finally {
     arena.destroy();
+    device.destroy();
+  }
+});
+
+test('LIF-13: tap reservations participate in checkpoint and discard', async () => {
+  const fixture = createRecordingSnapshotFixture([
+    {name: 'value', byteLength: 4, elementType: 'u32'}
+  ]);
+  const device = new NullDevice({id: 'tap-discard'});
+  Object.defineProperty(device, 'type', {value: 'webgpu'});
+  const graph = new GPUCommandGraph(device);
+  const view = createTransientView(graph, 'source', 'uint32', 1, Buffer.STORAGE | Buffer.COPY_SRC);
+  const node = new GPUSnapshotTap({
+    id: 'tap',
+    arena: fixture.arena,
+    views: {value: view}
+  }).getCommandNodes(graph)[0];
+  const compiled = node.compile({device} as never);
+  try {
+    const boundary = fixture.arena.checkpoint();
+    const abandoned = fixture.createEncoder();
+    compiled.encode({
+      commandEncoder: abandoned.encoder,
+      getBuffer: () => fixture.createSource([7])
+    } as never);
+    expect(fixture.arena.count).toBe(1);
+    fixture.arena.discard(boundary);
+    const submitted = fixture.createEncoder();
+    compiled.encode({
+      commandEncoder: submitted.encoder,
+      getBuffer: () => fixture.createSource([9])
+    } as never);
+    fixture.arena.markSubmitted();
+    submitted.submit();
+    expect(
+      (await fixture.arena.read()).map(capture => [
+        capture.iteration,
+        capture.meaning,
+        Array.from(capture.values)
+      ])
+    ).toEqual([[0, 'tap', [9]]]);
+  } finally {
+    fixture.arena.destroy();
     device.destroy();
   }
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSinkhornTransportRadiusOption} from './sinkhorn-transport-radius';
 import {
   validateInterpolationOutputsDisjointFromInputs,
   validateInterpolationOutputPasses
@@ -46,7 +47,11 @@ import {
   getRowTileSumNodes,
   REGRESSION_TILE_MAXIMUM_ROW_COUNT
 } from '../spatial-regression/regression-row-tiles';
-import {GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH} from './sinkhorn-divergence-parameters';
+import {
+  getGPUSinkhornDivergenceParameterValues,
+  type GPUSinkhornDivergenceSettings,
+  GPU_SINKHORN_DIVERGENCE_PARAMETER_LENGTH
+} from './sinkhorn-divergence-parameters';
 import {
   SINKHORN_DIVERGENCE_STATE_LENGTH,
   SINKHORN_DIVERGENCE_STATE_SLOTS,
@@ -105,7 +110,7 @@ export type GPUSinkhornDivergenceOutput = {
  *
  * Per-frame (no recompile): the contents of `parameters` (cell size, regularization, tolerance,
  * schedule) and of `source` and `target`. Compile-time (needs a new graph): the grid size,
- * `maximumIterations`, `blurRadius` and which optional outputs are present.
+ * `maximumIterations`, `transportRadius` and which optional outputs are present.
  */
 export type GPUSinkhornDivergenceProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'sinkhorn-divergence'`. */
@@ -143,7 +148,8 @@ export type GPUSinkhornDivergenceProps = {
    * negligible against the nearest mass, and sets `status.approximation`; a cell with no mass
    * inside its window gets a huge potential.
    */
-  blurRadius?: number;
+  /** Radius in grid cells of each separable transport window; omitted means full support. */
+  transportRadius?: number;
   /** Caller-owned outputs. */
   output: GPUSinkhornDivergenceOutput;
 };
@@ -188,6 +194,8 @@ export type GPUSinkhornDivergenceProps = {
 export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  /** Resolved outputs, including graph-owned stopping views after graph.add(). */
+  output: GPUSinkhornDivergenceOutput;
   /** Validated properties. */
   readonly props: GPUSinkhornDivergenceProps;
   /** Resolved coordinate and metric contract (planar/native). */
@@ -195,7 +203,7 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
   /** Unrolled iteration count. */
   readonly maximumIterations: number;
   /** Blur window radius in cells. */
-  readonly blurRadius: number;
+  readonly transportRadius: number;
   /** Whether the blur window covers the whole row and column (the result is exact). */
   readonly isExactBlur: boolean;
   /** Upper bound of the command nodes `getCommandNodes` returns. */
@@ -203,7 +211,14 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
 
   constructor(props: GPUSinkhornDivergenceProps) {
     this.id = props.id ?? 'sinkhorn-divergence';
+    validateSinkhornTransportRadiusOption(this.id, props);
+    props = {
+      ...props,
+      grid: {...props.grid},
+      output: {...props.output, status: {...props.output.status}}
+    };
     this.props = props;
+    this.output = props.output;
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, {
       ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -229,15 +244,15 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
       GPU_SINKHORN_DIVERGENCE_MAXIMUM_ITERATIONS
     );
     const fullRadius = Math.max(width, height) - 1;
-    this.blurRadius = props.blurRadius ?? Math.max(fullRadius, 1);
+    this.transportRadius = props.transportRadius ?? Math.max(fullRadius, 1);
     validateCapacity(
       id,
-      'blurRadius',
-      this.blurRadius,
-      1,
+      'transportRadius',
+      this.transportRadius,
+      0,
       GPU_SINKHORN_DIVERGENCE_MAXIMUM_GRID_SIDE
     );
-    this.isExactBlur = this.blurRadius >= fullRadius;
+    this.isExactBlur = this.transportRadius >= fullRadius;
     validateSinglePackedView(props.source, ['float32'], `${id} source`);
     validateSinglePackedView(props.target, ['float32'], `${id} target`);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
@@ -326,11 +341,30 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
    * the unrolled iterations (cross-problem and self-problem blurs, marginal error, update, and
    * the second half-update), the final sums, and the publication of values and status.
    */
+  /** Packs a schedule that can reach its requested final regularization in float32. */
+  getParameterValues(settings: GPUSinkhornDivergenceSettings, target?: Float32Array): Float32Array {
+    const values = getGPUSinkhornDivergenceParameterValues(settings);
+    validateRequirement(
+      this.id,
+      !(values[4] > values[2] && values[5] === 1),
+      `scalingFactor must encode below 1 when epsilonStart exceeds epsilon; received ${settings.scalingFactor ?? 1}; write scalingFactor below 1 or epsilonStart equal to epsilon`
+    );
+    if (target) {
+      validateRequirement(
+        this.id,
+        target.length >= values.length,
+        `target must hold ${values.length} elements; received ${target.length}`
+      );
+      target.set(values);
+      return target;
+    }
+    return values;
+  }
+
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, maximumIterations, blurRadius} = this;
-    const {output} = props;
+    const {id, props, maximumIterations, transportRadius} = this;
     const {width, height} = props.grid;
     const cellCount = width * height;
     validateGraphChunkBindingRanges(graph, id, {
@@ -374,6 +408,24 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
         length * Float32Array.BYTES_PER_ELEMENT,
         'reduce the grid size'
       );
+    const status = {...props.output.status};
+    for (const name of [
+      'converged',
+      'iterationLimitReached',
+      'iterationCount',
+      'invalidCount',
+      'approximation'
+    ] as const) {
+      status[name] ??= createTransientView(graph, `${id}-status-${name}`, 'uint32', 1);
+    }
+    const output = {
+      ...props.output,
+      status,
+      marginalError:
+        props.output.marginalError ??
+        createTransientView(graph, `${id}-marginal-error`, 'float32', 1)
+    };
+    this.output = output;
     const slots = SINKHORN_DIVERGENCE_STATE_SLOTS;
     const f32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', Math.max(length, 1));
@@ -400,7 +452,7 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
     const gridConstants = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const N: u32 = ${cellCount}u;
-const RADIUS: u32 = ${blurRadius}u;`;
+const RADIUS: u32 = ${transportRadius}u;`;
     const nanDeclaration =
       'fn getNaN() -> f32 { var bits = 0x7fc00000u; return bitcast<f32>(bits); }';
     const read = (name: string, view: GraphDataView): WGSLKernelBinding => ({
@@ -797,7 +849,6 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
   ${output.marginalError ? 'marginalError[marginalErrorOffset] = select(invalidValue, state[stateOffset + S_MARGINAL_ERROR], valid);' : ''}`
       })
     );
-    const status = output.status ?? {};
     const statusBindings = (
       [
         ['converged', status.converged],

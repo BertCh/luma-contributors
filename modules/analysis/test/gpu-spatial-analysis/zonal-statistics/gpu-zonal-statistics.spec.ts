@@ -37,7 +37,7 @@ import {
   computeZonalStatistics,
   type ZonalOracleResult
 } from './zonal-statistics-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 
 type Point = [number, number];
 type OutputKey =
@@ -1024,7 +1024,107 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
   }
 }
 
+// GEO-105: values at projected-coordinate magnitude over many rows of one feature. Row i of
+// feature 0 is `1e7 + ((i * 7919) % 5) - 2` (exact in float32), weight `1 + (i % 3)`; feature 1
+// holds two rows of 1 and 3 (variance 2). Unweighted oracle in closed form: each offset -2..2
+// occurs 20,000 times, so the variance is `(4 + 1 + 0 + 1 + 4) * 20000 / 99999 = 200000 / 99999`.
+// Weighted oracle: numpy float64 `cov(v, aweights=w, ddof=1)` = 2.0000133334888908 (script
+// `<scratchpad>/review19/fixes/fix-geometry/zonal_fixture.py`). A float32 model of the former
+// single-pass-around-the-mean form gives 123 (unweighted) and 38 (weighted) in sorted order.
+const LARGE_OFFSET_ROW_COUNT = 100_000;
+const LARGE_OFFSET_ROWS = [...Array.from({length: LARGE_OFFSET_ROW_COUNT}, () => 0), 1, 1];
+const LARGE_OFFSET_VALUES = [
+  ...Array.from({length: LARGE_OFFSET_ROW_COUNT}, (_, row) => 1e7 + ((row * 7919) % 5) - 2),
+  1,
+  3
+];
+const LARGE_OFFSET_WEIGHTS = [
+  ...Array.from({length: LARGE_OFFSET_ROW_COUNT}, (_, row) => 1 + (row % 3)),
+  1,
+  1
+];
+
+for (const sumOrder of ['atomic', 'sorted'] as const) {
+  for (const weighted of [false, true]) {
+    it(`GPUZonalStatistics variances stay accurate at 1e7 over 100,000 rows (${sumOrder}, ${weighted ? 'weighted' : 'unweighted'})`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const fixture = createRowsFixture(device, {
+        rows: LARGE_OFFSET_ROWS,
+        featureCount: 2,
+        values: LARGE_OFFSET_VALUES,
+        weights: weighted ? LARGE_OFFSET_WEIGHTS : undefined,
+        sumOrder,
+        outputKeys: ['variances', 'standardDeviations']
+      });
+      fixture.run();
+      const variances = await readFloat32(fixture.outputs.variances!, 2);
+      const standardDeviations = await readFloat32(fixture.outputs.standardDeviations!, 2);
+      for (const value of [...variances, ...standardDeviations]) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+      const expected = weighted ? 2.0000133334888908 : 200000 / 99999;
+      expectRows(variances, [expected, 2], 1e-4);
+      expectRows(standardDeviations, [Math.sqrt(expected), Math.SQRT2], 1e-4);
+      fixture.destroy();
+    });
+  }
+}
+
 registerPolygonConsumerGPUTests('GPUZonalStatistics');
+
+it('constant 1e7 has exact zero variance on the 17-feature atomic route (B4)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createRowsFixture(device, {
+    rows: new Array(500000).fill(0),
+    featureCount: 17,
+    values: new Array(500000).fill(10000000),
+    sumOrder: 'atomic',
+    outputKeys: ['variances', 'standardDeviations']
+  });
+  try {
+    fixture.run();
+    const variances = await readFloat32(fixture.outputs.variances!, 17);
+    const deviations = await readFloat32(fixture.outputs.standardDeviations!, 17);
+    // Closed form: every observation equals the true mean, so every deviation is zero.
+    expect(Number.isFinite(variances[0])).toBe(true);
+    expect(Number.isFinite(deviations[0])).toBe(true);
+    expect(variances[0]).toBe(0);
+    expect(deviations[0]).toBe(0);
+    for (let feature = 1; feature < 17; feature++) {
+      expect(variances[feature]).toBeNaN();
+      expect(deviations[feature]).toBeNaN();
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
+
+for (const sumOrder of ['atomic', 'sorted'] as const) {
+  it(`signed weights retain negative variance and explicit NaN deviation (${sumOrder}, review note)`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createRowsFixture(device, {
+      rows: [0, 0, 0, 0],
+      featureCount: 1,
+      values: [0, 0, 0, 5],
+      weights: [2, 2, 2, -1],
+      sumOrder,
+      outputKeys: ['variances', 'standardDeviations']
+    });
+    try {
+      fixture.run();
+      // Hand mean -1, SSD -30, V1=5, V2=13: -30/(5-13/5)=-12.5.
+      const [variance] = await readFloat32(fixture.outputs.variances!, 1);
+      expect(Number.isFinite(variance)).toBe(true);
+      expect(variance).toBeCloseTo(-12.5, 5);
+      expect((await readFloat32(fixture.outputs.standardDeviations!, 1))[0]).toBeNaN();
+    } finally {
+      fixture.destroy();
+    }
+  });
+}
 
 it('zonal quotients retain finite weighted means and densities across extreme normal scales', async () => {
   const device = await getWebGPUTestDevice();

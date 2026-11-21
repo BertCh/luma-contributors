@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {withoutComplete, validateRationalAccessOptions} from './optimization-cost-completeness';
 import {
   getNetworkOptimizationStatusOutputs,
   type NetworkOptimizationStatusValues
@@ -20,6 +22,8 @@ export type NetworkRationalAccessOperationProps = Pick<
   originCount: number;
   facilityCount: number;
   costs: string;
+  costsComplete?: string;
+  costLimit?: string;
   demand: string;
   supply: string;
   /** float32: tau, rho, initial step, minimum step, half-life, gap tolerance. */
@@ -29,17 +33,26 @@ export type NetworkRationalAccessOperationProps = Pick<
     scores: string;
     unservedDemand: string;
     summary: string;
-    status?: NetworkOptimizationStatusValues;
+    status?: NetworkOptimizationStatusValues & {complete?: string};
   };
 };
 
 /** GPU rational access as a graph operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNetworkRationalAccessOperation extends GPUContributorOperation {
   constructor(props: NetworkRationalAccessOperationProps) {
+    validateRationalAccessOptions(props.id ?? 'network-rational-access', props);
+    validateRequirement(
+      props.id ?? 'network-rational-access',
+      (props.costsComplete === undefined && props.costLimit === undefined) ||
+        props.output.status?.complete !== undefined,
+      'costsComplete or costLimit requires output.status.complete; inspect it before using the decision'
+    );
     super({
       id: props.id ?? 'network-rational-access',
       inputs: {
         costs: props.costs,
+        ...(props.costsComplete !== undefined ? {costsComplete: props.costsComplete} : {}),
+        ...(props.costLimit !== undefined ? {costLimit: props.costLimit} : {}),
         demand: props.demand,
         supply: props.supply,
         parameters: props.parameters
@@ -56,16 +69,22 @@ export class GPUNetworkRationalAccessOperation extends GPUContributorOperation {
           format: 'float32',
           length: props.originCount
         },
+        ...(props.output.status?.complete !== undefined
+          ? {complete: {value: props.output.status.complete, format: 'uint32' as const, length: 1}}
+          : {}),
         summary: {value: props.output.summary, format: 'uint32', length: 4},
         ...getNetworkOptimizationStatusOutputs(
           props.id ?? 'network-rational-access',
-          props.output.status
+          withoutComplete(props.output.status)
         )
       },
       createContributor: getView =>
         new GPUNetworkRationalAccess({
           ...props,
           costs: getView<'float32'>('costs'),
+          costsComplete:
+            props.costsComplete !== undefined ? getView<'uint32'>('costsComplete') : undefined,
+          costLimit: props.costLimit !== undefined ? getView<'float32'>('costLimit') : undefined,
           demand: getView<'float32'>('demand'),
           supply: getView<'float32'>('supply'),
           parameters: getView<'float32'>('parameters'),

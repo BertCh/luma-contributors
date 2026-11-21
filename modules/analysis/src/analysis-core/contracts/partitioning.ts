@@ -3,7 +3,6 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUFeatureGeometryPort} from './ports';
-import type {GPUSpatialContext} from './spatial-context';
 
 /** One contiguous core range and the halo rows made visible to its worker. */
 export type GPUPartitionRange = {
@@ -55,14 +54,6 @@ export type GPUTilePartition = {
 export type GPUTilePartitionDescriptor = {
   tiles: readonly GPUTilePartition[];
   seamOwnership: 'lowest-tile-id';
-};
-
-/** Immutable identity required to reuse a prepared index across operators or frames. @internal */
-export type GPUPreparedIndexDescriptor = {
-  spatialContext: GPUSpatialContext;
-  partitioning: GPUPartitionDescriptor;
-  /** Caller-managed identity of the indexed values. */
-  revision: string | number;
 };
 
 /** Measurements available while planning a spatial query without a GPU readback. @internal */
@@ -210,23 +201,6 @@ export function getGPUTileSeamOwner(
   return owner;
 }
 
-/** Throws when a prepared index cannot be reused without rebuilding or repartitioning. @internal */
-export function assertCompatibleGPUPreparedIndexes(
-  id: string,
-  prepared: GPUPreparedIndexDescriptor,
-  requested: GPUPreparedIndexDescriptor
-): void {
-  if (prepared.revision !== requested.revision) {
-    throw new Error(`${id} prepared index revision differs`);
-  }
-  if (!equalSpatialContexts(prepared.spatialContext, requested.spatialContext)) {
-    throw new Error(`${id} prepared index spatial context differs`);
-  }
-  if (!equalPartitionDescriptors(prepared.partitioning, requested.partitioning)) {
-    throw new Error(`${id} prepared index partitioning differs`);
-  }
-}
-
 /** Selects scan, populated-grid, or prepared-BVH execution from bounded CPU-side metadata. @internal */
 export function getGPUSpatialQueryCostPlan(
   measurements: GPUSpatialQueryCostMeasurements
@@ -302,43 +276,4 @@ function validateCostMeasurements(measurements: GPUSpatialQueryCostMeasurements)
       throw new Error(`${name} must be a non-negative integer`);
     }
   }
-}
-
-function equalSpatialContexts(left: GPUSpatialContext, right: GPUSpatialContext): boolean {
-  return (
-    left.coordinateSpace === right.coordinateSpace &&
-    left.metric === right.metric &&
-    left.units === right.units &&
-    left.sphereRadius === right.sphereRadius &&
-    left.gridFamily === right.gridFamily &&
-    left.gridResolution === right.gridResolution &&
-    left.ellipsoid?.semiMajorAxis === right.ellipsoid?.semiMajorAxis &&
-    left.ellipsoid?.flattening === right.ellipsoid?.flattening
-  );
-}
-
-function equalPartitionDescriptors(
-  left: GPUPartitionDescriptor,
-  right: GPUPartitionDescriptor
-): boolean {
-  return (
-    left.length === right.length &&
-    left.haloDistance === right.haloDistance &&
-    left.seamOwnership.kind === right.seamOwnership.kind &&
-    (left.seamOwnership.kind !== 'source-core' ||
-      (right.seamOwnership.kind === 'source-core' &&
-        left.seamOwnership.sourceSide === right.seamOwnership.sourceSide)) &&
-    left.partitions.length === right.partitions.length &&
-    left.partitions.every((partition, index) => {
-      const other = right.partitions[index];
-      return (
-        other !== undefined &&
-        partition.id === other.id &&
-        partition.coreStart === other.coreStart &&
-        partition.coreEnd === other.coreEnd &&
-        partition.haloStart === other.haloStart &&
-        partition.haloEnd === other.haloEnd
-      );
-    })
-  );
 }

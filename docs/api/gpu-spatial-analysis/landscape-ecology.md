@@ -1,5 +1,7 @@
 # Landscape ecology recipes
 
+Related tasks: [urban morphology and visibility](./urban-morphology.md) · [workflow recipes](./recipes.md).
+
 All recipes append GPU kernels to a caller-owned command graph without hidden CPU computation or
 readback. Inputs remain caller-owned. Outputs are graph-owned transient views unless the caller passes
 an `output` prop (see below); export transient results through a graph copy when CPU readback is
@@ -8,9 +10,11 @@ numerical definitions, provenance and failure evidence over large-domain perform
 
 ## Caller-owned outputs and limits
 
-Each recipe takes an optional `output` prop. Every entry is a view the caller created in the same
-graph, with the format and length of the recipe's transient view of that name; an absent entry is a
-graph-owned transient view, as before. The `outputs` of the result are the views actually used.
+Most recipes take an optional `output` prop. `addRasterResistanceConnectivityRecipe` requires
+`output.potentials`, `output.vertexCurrents`, `output.diagnostics` and `output.solverStatus`. Every
+supplied view must belong to the same graph and have the required format and length. Omitted
+optional destinations use graph-owned transient views. The returned `outputs` map contains the
+views the recipe used.
 
 | Recipe | `output` entries |
 | --- | --- |
@@ -21,7 +25,7 @@ graph-owned transient view, as before. The `outputs` of the result are the views
 | `addRasterResistanceConnectivityRecipe` | required `potentials`, `vertexCurrents`, `diagnostics`, `solverStatus`; optional `currents`, `edges`, `conductances` and the `status` scalars |
 | `addSegregationDecompositionRecipe` | `indices`, `validity`, `decomposition`, and with `randomization` `distribution`, `inference` |
 | `addSegregationCounterfactualRecipe` | the decomposition entries, `compositionOnly`, `spatialOnly` |
-| `addPopulationSupportAlignmentRecipe` | `populations`, `alignmentCode`, `matchedMask`, `status` (packed certificate, returned as `packedStatus`) |
+| `addPopulationSupportAlignmentRecipe` | `populations`, `alignmentCode`, `matchedMask`, `status` (storage for the named status stages) |
 
 Limits are named constants and are rejected with a message that starts with the recipe ID and names
 the prop: 256 classes (landscape metrics), 256 vertices, 65,536 edges and 4,096 iterations (dense
@@ -54,13 +58,61 @@ Tile IDs must be globally unique before this operation; tile-local ID collisions
 The returned provenance retains both the input and reconciled labels and the parent mapping.
 Merged-away patch rows have zero area. Halos must be removed before assembling the complete grid;
 there is no implicit out-of-core fetch or independently normalized per-tile summary.
-Every supplied `output` view is checked for packed format, exact logical length, ownership and
-aliases before allocating default outputs or scheduling reconciliation. Patch metrics/parents have
+Every supplied `output` view is checked for packed format, exact logical length, ownership,
+STORAGE binding usage/ranges and aliases before allocating defaults or scheduling reconciliation. Patch metrics/parents have
 one row per patch; class metrics/aggregation one per class; adjacency has `classCount` squared rows;
 reconciled labels have one row per cell; landscape metrics have one row. Correct a rejected view and
 retry with the same recipe ID on the unchanged graph.
+Use exactly one patch-label spelling: `patches` is the legacy zero-based patch-row raster,
+with out-of-range rows as background; `denseLabels` accepts the native `GPURasterPatchLabels`
+port (0 background, labels 1..N). The dense adapter maps label `k` to patch row `k - 1` and retains
+`converged`, `overflow` and `componentCount` evidence; never pass native labels as `patches`.
+For unit cells, native labels `[0, 1, 1]` with one class give patch area **2**, excluding the first
+background cell. Keep `patchClasses[0]` as the class for label 1. Incomplete native labels suppress
+the dependent measurements; preserve the input status when retrying.
+
+```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {addLandscapeMetricsRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const graph: GPUCommandGraph;
+// Native 3 x 1 labels [0, 1, 1], with complete producer status, imported into graph.
+declare const denseLabels: NonNullable<Parameters<typeof addLandscapeMetricsRecipe>[1]['denseLabels']>;
+declare const patchClasses: GraphDataView<'uint32'>; // one row, containing class 0
+const landscape = addLandscapeMetricsRecipe(graph, {
+  id: 'native-landscape', width: 3, height: 1, cellSize: [1, 1],
+  denseLabels, patchClasses, classCount: 1, connectivity: 4
+});
+// landscape.outputs.patchMetrics row 0 area = 2 square units (two foreground cells).
+```
+
+Both inputs, `patches` and `patchClasses`, must be packed `uint32` views whose buffers include
+`Buffer.STORAGE`. Format, stride, graph ownership and aligned binding ranges/usage are checked before
+any defaults or reconciliation, so correcting a rejected input permits the same retry.
 
 - `patchMetrics`: `[area, perimeter, cellCount, sameClassDirectedSideCount]`.
+
+The following slots are scalar words after reading the packed outputs; `p` and `c` are zero-based
+patch and class rows. Areas use square `cellSize` coordinate units and perimeters use its length
+unit. Percentages are already 0–100, with no hectare conversion.
+
+| Metric | Actual slot | Unit and undefined cases |
+| --- | --- | --- |
+| AREA | `patchMetrics[4 * p]`, `classMetrics[4 * c]`, `landscape[2]` | Square coordinate units; empty patch rows have 0 area; excluded patch rows retain their measured area; excluded class rows and valid landscape area omit those cells |
+| MESH | `classMetrics[4 * c + 2]`, `landscape[1]` | Square coordinate units; class MESH is NaN with no valid landscape cells (the landscape sum is then NaN) |
+| COHESION | `classMetrics[4 * c + 3]`, `landscapeCohesion[0]` | Percent; NaN with at most one valid landscape cell or zero weighted perimeter |
+| AI | `aggregation[c]`, `landscapeAggregation[0]` | Percent; a class with at most one cell is NaN; its landscape contribution is 0; an empty landscape is NaN |
+| CONTAG | `landscape[0]` | Percent; NaN with fewer than two present classes or a present class with no valid adjacency |
+
+On metre grids, MESH in hectares is `landscape[1] / 10_000`; AREA uses the same conversion.
+A `100 m × 100 m` single patch has `10,000 m² = 1 ha`, and its landscape MESH is also
+`10_000 m²`, hence `1 ha`. For a single valid raster cell, class `aggregation[0]` is NaN and
+`landscapeAggregation[0]` is 0; cohesion is NaN. These cell-count cases hold even when the cell's
+physical area is 10,000 m².
+Patch measurements retain excluded-class areas: patch rows `[0, 0, 1]`, classes `[0, 1]`,
+`backgroundClass: 0` and cell area 6 produce patch areas `[12, 6]`, but valid landscape area 6.
+Class/landscape exclusion does not erase the measured geometry of an existing patch.
+
 - `classMetrics`: `[area, sumPatchPerimeters, effectiveMeshSize, cohesionPercent]`.
 - `classAdjacency`: directed same/different-class side counts in a dense class-by-class matrix.
 - `aggregation`: 100 × observed same-class joins / maximum joins for that class's cell count.
@@ -109,10 +161,59 @@ are checked before graph nodes are appended. The final dense class summary remai
 Explicit `mode: 'boundary'` uses O(cells + patches + candidateCapacity) storage. `candidateRadius`
 (default `searchRadius`) bounds the neighbor search. Inspect per-patch certification and
 `status.candidateOverflow`: a radius cannot certify an omitted neighbor, and capacity overflow
-invalidates all rows. The reference layout remains the default. Boundary work is bounded by
-4,096 neighborhood visits, 1,073,741,823 rows and 1,431,655,765 candidate records, plus device limits.
+invalidates all rows. In boundary mode `status.overflow` is always 0 and `status.requiredCount` is the patch
+count; `status.count` is the number of valid patches. The first two words of the four-word
+`uint32` view `intermediates.candidateRequirement` are the unclamped directed boundary-cell
+candidate count and the capacity-exhaustion flag (0 or 1); the remaining words are reserved scratch.
+Insufficient radius can set `candidateOverflow` while these first two words remain `[0, 0]`;
+capacity exhaustion sets word 1 and invalidates every patch row. The reference layout remains the
+default. Boundary work is bounded by 4,096 neighborhood visits, 1,073,741,823 rows and 1,431,655,765 candidate records, plus device limits.
 
-Use complete-domain patch labels and physical rectangular cell sizes. `edgeDepth` is a distance in
+Use exactly one patch-label spelling: `patches` is the legacy zero-based patch-row raster,
+with out-of-range rows as background; `denseLabels` accepts the native `GPURasterPatchLabels`
+port (0 background, labels 1..N). The dense adapter maps label `k` to patch row `k - 1` and retains
+`converged`, `overflow` and `componentCount` evidence; never pass native labels as `patches`.
+For unit cells, native labels `[0, 1, 1]` with one class give patch area **2**, excluding the first
+background cell. Keep `patchClasses[0]` as the class for label 1.
+
+The `proximity.inputStatus?.converged`, `proximity.inputStatus?.overflow` and
+`proximity.inputStatus?.componentCount` guards are GPU views. After the submission finishes, read word zero
+from each supplied guard's buffer, honoring the view's byte offset. Compare the decoded component count
+with `patchClasses.length`; compare the decoded convergence and overflow words with zero.
+A supplied convergence word of zero, nonzero producer overflow, or too many
+components suppresses dependent measurements to NaN. In boundary mode it also clears every
+`outputs.validity` row and `status.count` to zero; requested reconciliation labels and parents
+become `0xffffffff`. This upstream labeling loss does not set search `status.candidateOverflow`.
+That flag retains its radius/candidate-capacity meaning and the four-word
+`intermediates.candidateRequirement` layout above remains unchanged. Check both input guards and
+search diagnostics: a zero search flag cannot certify unfinished labels.
+
+For nonconvergence, recover at the labeling producer (for example, increase its iteration budget
+and finish labeling), then rerun the dependent recipe with the producer's guards still connected.
+For producer/component capacity loss, rebuild the producer and affected consumers with sufficient
+storage and patch-class rows. For search loss, increase `candidateRadius` or `candidateCapacity`
+as indicated by the search diagnostics and rebuild. A later clean submission with converged,
+fitting labels and sufficient search coverage restores validity, count, measurements and
+reconciliation; resubmission can reuse existing allocations when the new input fits them.
+
+```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {addPatchProximityRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const graph: GPUCommandGraph;
+// Native 3 x 1 labels [0, 1, 1], with complete producer status, imported into graph.
+declare const denseLabels: NonNullable<Parameters<typeof addPatchProximityRecipe>[1]['denseLabels']>;
+declare const patchClasses: GraphDataView<'uint32'>; // one row, containing class 0
+const proximity = addPatchProximityRecipe(graph, {
+  id: 'native-proximity', width: 3, height: 1, cellSize: [1, 1],
+  denseLabels, patchClasses, edgeDepth: 0, searchRadius: 5
+});
+// proximity.outputs.metrics row 0 patchArea = 2 square units, not 1 background cell.
+```
+
+Use complete-domain patch labels and physical rectangular cell sizes. Landscape metric cell widths
+and heights must remain finite and positive after float32 rounding; values such as `1e-47` round
+to zero and are rejected before output reservation. `edgeDepth` is a distance in
 the same units. A pixel is core only when its center is strictly farther than this depth from its
 patch exterior, including background and the outer raster boundary. The exact cell-rectangle
 boundary distance is used, not the distance between cell centers. `core` retains the per-cell mask.
@@ -272,7 +373,7 @@ stages through the recipe builder and returns `contributors`, `outputs`, `interm
 
 Props: `grid` (the raster grid), `resistance` (a published raster band: buffer or texture; scale,
 offset and the no-data value are resolved first), `parameters` (at least 8 float32 values packed by
-`getRasterResistanceConnectivityParameterValues(grid)`: the affine and the row georeference, so a
+`getRasterResistanceConnectivityParameterValues(grid, target, cellSizeMode)`: the affine and the row georeference, so a
 new georeference does not recompile), `neighborhood` (4 or 8, default 8), `cellSizeMode` (default
 `'uniform'`), `source` and `sink` (cell indices `row * width + column`), and the sparse solve's
 `maximumIterations` (1 to 4,096, default 1,024), `tolerance` (default 1e-4) and
@@ -283,7 +384,11 @@ the resistance values.
 Edge length: in `'uniform'` mode the affine maps the pixel step to a world step, so rotated and
 sheared grids are exact (lengths are in affine units; geographic degrees are not meters).
 `'web-mercator'` and `'geographic'` measure WGS84 ground meters with the row scale at the midpoint
-row of the edge, the rule of the terrain flow measures, and need an axis-aligned grid.
+row of the edge, the rule of the terrain flow measures, and need an axis-aligned grid on every
+frame. When updating the georeference, call
+`getRasterResistanceConnectivityParameterValues(grid, target, cellSizeMode)` with the recipe's
+fixed mode; pass `undefined` for `target` when allocating a fresh parameter array. Geographic and
+Web Mercator updates reject rotation/shear. Uniform mode supports both rotation and shear.
 
 Edge slots have a fixed layout, `cell * slotsPerCell + direction`: east and south for four
 neighbours (two slots per cell), plus south-east and south-west for eight (four slots per cell).
@@ -311,7 +416,7 @@ the sink's component), `diagnostics` and `solverStatus` as in the sparse recipe 
 its `status`), and optionally `currents` (one per edge slot), `edges` and `conductances`. The status
 stages are `resistance` (`invalidCount`) and `solve` (`converged`, `iterationCount`,
 `iterationLimitReached`, `invalidCount`); pass `output.status` views to read them, otherwise they
-are graph-owned.
+are graph-owned. Read the third word of `solverStatus` for the sparse solve's reachability code.
 
 Limits: at most 1,048,576 cells (the vertex limit of the sparse solve) and at most 2,097,152 edge
 slots (its edge limit): 1024 × 1024 cells with four neighbours, 524,288 cells (for example
@@ -349,24 +454,32 @@ recomputes both dissimilarities. The null requires exchangeability of those two 
 unit; it is not a spatial-independence or random-location assumption. Philox seed/replicate/unit
 identity is replayable, or supply a `swaps` mask with one 0/1 value per replicate/unit. The distribution
 and inference `[observedChange, twoSidedPlusOneP, validReplicates, extremeReplicates]` are separate
-outputs. Any invalid replicate withholds the p-value instead of silently dropping it. Alternative
-segregation statistics remain separately named analyses.
+outputs. Any invalid replicate withholds the p-value instead of silently dropping it. A replicate
+is extreme when its absolute change is at least that of the observed change recomputed in the
+replicates' own serial summation order, so an exchange that leaves both tables unchanged (no swap,
+every swap, or swaps of units whose baseline and final rows are equal) ties it exactly; the
+published `observedChange` stays the tree-reduced difference of `indices`, which can differ from
+it by a few float32 units in the last place. Every option is validated before the recipe adds a
+command node. Caller outputs must have disjoint logical byte ranges from all population tables,
+optional swap masks and other outputs, including aliases imported through different handles.
+Disjoint ranges may share one graph buffer handle when they are used in separate dispatches;
+co-bound read/write views must use separate physical buffers. These checks occur before scenario
+nodes or transient outputs are added, so a corrected output can retry the same recipe ID.
+All supplied binding ranges and STORAGE usages are also checked here, including large optional
+swap tables and caller-owned inference outputs; an invalid device binding reserves no output IDs.
+Alternative segregation statistics remain separately named analyses.
 
 ## Explicit support alignment and counterfactual generation
 
 `addPopulationSupportAlignmentRecipe` joins `sourceIds` and `targetIds` on GPU, reordering focal and
 complement counts onto a caller-chosen support. Duplicate or missing IDs produce NaN rows.
-The recipe returns the canonical `{contributors, outputs, intermediates, status}` shape, plus
-provenance and `packedStatus`. Its three diagnostic substages are `missing-targets`,
-`ambiguous-targets` and `excluded-sources`; each exposes a scalar `status.invalidCount` for that
-reason. They are views of the corresponding packed words, with no readback or extra GPU commands.
-`intermediates` is empty because this recipe adds one contributor.
-`packedStatus` retains `[complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows]`;
-the contributor, CPU twin and operation forms keep their existing packed `output.status` layout.
-Recipe consumers formerly reading `result.status` as a view now read `result.packedStatus`.
-Completeness requires a one-to-one support match with no excluded mass. This is exact ID alignment, not implicit
-polygon overlay or areal interpolation across changed boundaries. Use the existing conservative
-areal redistribution before this join when geographic supports differ.
+The recipe returns `{contributors, outputs, intermediates, status, provenance}`. Under
+`status.stages`, `missing-targets`, `ambiguous-targets` and `excluded-sources` each expose a
+one-row `uint32` `status.invalidCount`. The `alignment` stage exposes a one-row `uint32`
+`status.complete`, set to 1 when the supports match one-to-one with no excluded source rows.
+The four views address the corresponding words of the contributor's certificate and require no
+extra GPU commands. `intermediates` is empty because this recipe adds one contributor.
+Use conservative areal redistribution before aligning IDs when geographic supports differ.
 
 ## `GPUPopulationSupportAlignment`
 
@@ -383,11 +496,13 @@ target, an excluded source, and a valid `0xffffffff` ID. Its target alignment co
 `[0, 2, 1, 2, 2, 0]`, its matched mask is `[1, 0, 0, 0, 0, 1]`, and its packed status is
 `[0, 1, 3, 1]`.
 
-The recipe now delegates to this contributor with caller-owned `output.populations` (`float32x2`,
-one row per target), `output.alignmentCode` and `output.matchedMask` (`uint32`, one row per target),
-and `output.status` (`uint32x4`, one row). The recipe accepts optional caller-owned overrides for
-each view, returns the row outputs under `outputs`, and returns whole-operation `status` separately.
-Two indexed `GPUKeyJoin` operations replace exhaustive source/target scans: one matches targets to
+The class takes `GPUPopulationSupportAlignmentProps` with four required views.
+`output.populations` is `float32x2` with one row per target. `output.alignmentCode` and
+`output.matchedMask` are `uint32` with one row per target, and `output.status` is one
+`uint32x4` row. `GPUPopulationSupportAlignmentRecipeProps` lets callers supply any of these
+views under `output` and allocates transient views for omissions. The recipe returns the row
+views under `outputs` and the certificate scalars under `status.stages`.
+Two indexed `GPUKeyLookup` operations replace exhaustive source/target scans: one matches targets to
 sources and reports excluded sources, and one detects repeated target IDs. Counts use parallel
 reductions. Work is sorting plus indexed lookups; no invocation scans an entire support table.
 Population values are copied without checking whether they are finite or nonnegative. This stage
@@ -408,10 +523,11 @@ aliases before allocating transient outputs, so a corrected override can retry w
 on the same graph after a validation error.
 Only the four declared output keys participate in layout, ownership and alias validation;
 metadata on an override variable is ignored. The retired `validity` key is still rejected.
-Status remains `[aligned, missingTargetRows, ambiguousTargetRows, excludedSourceRows]`; excluded rows are counted
-individually even if they share an ID. Every uint32 identifier, including `0xffffffff`, remains a
-valid support ID. Internally, a zero high word widens keys to uint32x2 so the key join's missing-key
-sentinel cannot discard that legacy ID.
+The contributor and operation forms use
+`[complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows]` for their packed status.
+Excluded rows are counted individually even if they share an ID. Every uint32 identifier, including
+`0xffffffff`, is a valid support ID. Internally, a zero high word widens keys to uint32x2 so the
+key lookup's missing-key sentinel cannot discard that ID.
 
 Per-frame inputs are the contents of `populations`, `sourceIds` and `targetIds`. View lengths and
 output bindings are compile-time. All inputs must be single packed views, and widened keys and
@@ -440,6 +556,8 @@ without application-managed readback/upload glue.
 import {GPUGraph} from '@luma.gl/graph/gpu-core';
 import {CPUPopulationSupportAlignmentOperation} from '@luma-contributors/analysis/gpu-spatial-analysis';
 
+// Number of target analysis-unit rows, fixed when constructing this operation.
+const analysisUnitCount = 4;
 const graph = new GPUGraph({id: 'population-alignment'});
 graph.add(new CPUPopulationSupportAlignmentOperation({
   populations: 'sourcePopulation',

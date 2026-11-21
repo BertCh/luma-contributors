@@ -128,3 +128,51 @@ it('publishes trip candidate loss from triplegs and stays, and clears it on a la
     device.destroy();
   }
 });
+
+it('trip offsets use a public scan whose nodes contribute planning estimates', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let serial = 0;
+  const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `offset-view-${serial++}`, format, length);
+  recordWGSLKernelNodes(graph);
+  const contributor = new GPUTrajectorySegments({
+    id: 'parallel-trips',
+    positions: view('float32x2', 4),
+    timestamps: view('float32', 4),
+    trackOffsets: view('uint32', 514),
+    staypointIds: view('uint32', 4),
+    parameters: view('float32', 4),
+    staypoints: {
+      tracks: view('uint32', 1),
+      startRows: view('uint32', 1),
+      finishRows: view('uint32', 1),
+      durations: view('float32', 1),
+      status: {count: view('uint32', 1)}
+    },
+    output: {
+      triplegs: {
+        ids: view('uint32', 4),
+        status: {count: view('uint32', 1), overflow: view('uint32', 1)}
+      },
+      trips: {
+        ids: view('uint32', 2),
+        status: {
+          count: view('uint32', 1),
+          overflow: view('uint32', 1),
+          candidateOverflow: view('uint32', 1)
+        }
+      }
+    }
+  });
+  const nodes = contributor.getCommandNodes(graph);
+  const scanNodes = nodes.filter(node => node.id.startsWith('parallel-trips-trip-offset-scan'));
+  expect(scanNodes.length).toBeGreaterThan(1);
+  for (const node of scanNodes) {
+    expect(node.workload?.commandCount).toBeGreaterThan(0);
+    expect(node.workload?.maximumInvocationCount).toBeGreaterThan(0);
+  }
+  const terminal = getWGSLKernelNodeRecord(graph, 'parallel-trips-trip-offsets')!;
+  expect(terminal.body).not.toMatch(/for\s*\(/);
+});

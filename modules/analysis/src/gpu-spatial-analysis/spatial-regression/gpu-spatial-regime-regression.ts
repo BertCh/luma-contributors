@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 import {validateRegressionAllocations} from './spatial-likelihood-allocations';
 
@@ -67,6 +68,8 @@ export type GPUSpatialRegimeRegressionProps = {
  * uses centered predictors; this avoids cancellation from large coordinate-like predictor means.
  * Equivalent to fully varying spreg.OLS_Regimes point estimates (no spatial lag/error term,
  * covariance estimates, pooled restrictions or Chow test). Empty/singular regimes return NaNs.
+ * Counts, view identities and the output map are snapshotted at construction; buffer contents
+ * remain per-frame data.
  * A regime is singular (status 2) when a centered predictor has no variance or a Cholesky pivot,
  * relative to its diagonal, is below `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` (`1e-3`): the
  * limit of `GPUOrdinaryLeastSquares`, a predictor within `1 - 1e-6` (squared correlation) of the
@@ -81,6 +84,26 @@ export type GPUSpatialRegimeRegressionProps = {
 export class GPUSpatialRegimeRegression implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUSpatialRegimeRegressionProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'predictors',
+      'predictorCount',
+      'response',
+      'regimes',
+      'regimeCount',
+      'mask',
+      'output'
+    ]);
+    this.props = Object.freeze({
+      ...captured,
+      output: snapshotConstructionFields(captured.output, [
+        'coefficients',
+        'fitted',
+        'status',
+        'counts'
+      ])
+    });
+    props = this.props;
     this.id = props.id ?? 'spatial-regime-regression';
     const rows = props.response.length;
     validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, MAXIMUM_PREDICTOR_COUNT);

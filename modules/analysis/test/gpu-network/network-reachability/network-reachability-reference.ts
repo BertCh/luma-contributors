@@ -45,11 +45,14 @@ export function compareShortestPathCosts(
   scene: ShortestPathReferenceScene,
   costs: ArrayLike<number>
 ): string | undefined {
+  if (costs.length !== scene.nodeCount) {
+    return `costs length: expected ${scene.nodeCount}, got ${costs.length}`;
+  }
   for (let node = 0; node < scene.nodeCount; node++) {
     const expected = scene.costs[node];
     const actual = costs[node];
     if (expected === null) {
-      if (Number.isFinite(actual)) {
+      if (actual !== Infinity) {
         return `node ${node}: expected unreached, got ${actual}`;
       }
       continue;

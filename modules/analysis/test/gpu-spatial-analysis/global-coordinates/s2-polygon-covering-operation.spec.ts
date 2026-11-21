@@ -10,10 +10,54 @@ import {
   type S2PolygonCoveringOperationProps
 } from '../../../src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering-operation';
 import {runOperationGraph} from '../../utils/mixed-execution-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import fixtures from './s2-polygon-covering-operation-fixture.json';
 
 for (const refinement of ['serial', 'level-synchronous'] as const) {
+  it(`named polygon operations exclude the short-edge antipode with ${refinement}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const longitude = Math.PI / 4;
+    const halfWidth = 0.75e-6;
+    const vertices = [
+      [Math.cos(longitude - halfWidth), Math.sin(longitude - halfWidth), 0],
+      [Math.cos(longitude + halfWidth), Math.sin(longitude + halfWidth), 0],
+      [
+        Math.cos(Math.PI / 18) * Math.cos(longitude),
+        Math.cos(Math.PI / 18) * Math.sin(longitude),
+        Math.sin(Math.PI / 18)
+      ]
+    ];
+    for (const Operation of [GPUS2PolygonCoveringOperation, CPUS2PolygonCoveringOperation]) {
+      const result = await runOperationGraph(device, {
+        inputs: {
+          positions: {format: 'float32x3', values: Float32Array.from(vertices.flat())},
+          ringOffsets: {format: 'uint32', values: Uint32Array.of(0, 3)}
+        },
+        operations: [
+          new Operation({
+            positions: 'positions',
+            ringOffsets: 'ringOffsets',
+            positionCount: 3,
+            ringOffsetCount: 2,
+            maximumLevel: 0,
+            maximumVisitedCells: 6,
+            capacity: 6,
+            refinement,
+            mode: 'exterior',
+            output: {cells: 'cells', counts: 'counts', status: 'status'}
+          })
+        ],
+        outputs: ['cells', 'counts', 'status']
+      });
+      // The whole triangle has x,y>z>=0 and crosses x=y: precisely roots 0 and 1.
+      expect(Array.from(result['counts'])).toEqual([2, 2]);
+      expect(Array.from(result['status'])).toEqual([0]);
+      expect(Array.from(result['cells'])).toEqual([
+        0, 0x10000000, 0, 0x30000000, 0, 0, 0, 0, 0, 0, 0, 0
+      ]);
+    }
+  });
   for (const mode of ['exterior', 'interior'] as const) {
     for (const complement of [false, true]) {
       it(`polygon operations agree on a shell and hole: ${refinement}, ${mode}, complement ${complement}`, async () => {

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+export {
+  MAXIMUM_WORKFLOW_TABLE_COLUMNS,
+  MAXIMUM_WORKFLOW_TABLE_CELLS
+} from './workflow-table-source-operation';
+import {makeWorkflowTableSourceOperation} from './workflow-table-source-operation';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import {applyKeplerDatasetProfileDeclarations} from '../profile/dataset-profile';
 import {parseKeplerDatasetProfileDeclarations} from '../profile/dataset-profile-cache';
@@ -749,6 +754,7 @@ export function getWorkflowSourceOperations(): readonly WorkflowOperation[] {
           dispatchedContributors: []
         };
       }
-    }
+    },
+    makeWorkflowTableSourceOperation()
   ];
 }

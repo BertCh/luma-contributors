@@ -6,7 +6,11 @@
 
 import {existsSync, readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, expectTypeOf, it} from 'vitest';
+import {
+  GPU_ANALYSIS_WEBSITE_HELPER_KINDS,
+  getGPUAnalysisWebsiteDataTypes
+} from '../../../../src/gpu-spatial-analysis/ontology/index';
 import {getGPUAnalysisOperatorCatalog} from '../../../../src/gpu-spatial-analysis/ontology/all-entry-points/analysis-operator-catalog';
 import {
   GPU_ANALYSIS_HANDLE_OPERATORS,
@@ -30,6 +34,45 @@ import {
 
 const KIND_SIDES = ['inputs', 'outputs'] as const;
 type KindRecord = Pick<GPUAnalysisOperator, 'exportName' | 'inputs' | 'outputs'>;
+
+it('types known website helper contracts and leaves missing names undefined', () => {
+  function getContract(name: string) {
+    return GPU_ANALYSIS_WEBSITE_HELPER_KINDS[name];
+  }
+  expectTypeOf(getContract).returns.toEqualTypeOf<
+    | Readonly<{
+        input: readonly GPUSpatialAnalysisDataKind[];
+        output: readonly GPUSpatialAnalysisDataKind[];
+      }>
+    | undefined
+  >();
+  expectTypeOf(GPU_ANALYSIS_WEBSITE_HELPER_KINDS.createGroundSeedCoverageNode.output).toEqualTypeOf<
+    readonly ['attributes']
+  >();
+  expect(getContract('unknown-helper')).toBeUndefined();
+  expect(getContract('constructor')).toBeUndefined();
+});
+
+it('projects ground seed coverage as a raster input and an attribute mask output', () => {
+  // The node reads one packed coverage word per raster cell and writes one validity bit per cell.
+  const {input, output} = GPU_ANALYSIS_WEBSITE_HELPER_KINDS.createGroundSeedCoverageNode;
+  expect(input).toEqual(['surface']);
+  expect(output).toEqual(['attributes']);
+  expect(input.flatMap(getGPUAnalysisWebsiteDataTypes)).toEqual(['raster', 'terrain']);
+  expect(output.flatMap(getGPUAnalysisWebsiteDataTypes)).toEqual(['table']);
+});
+
+it('lists no GPU data ports for the host-only raster encoding plans', () => {
+  // The factories consume host settings and return immutable plans; separate packers write GPU
+  // parameter values when a plan is used.
+  for (const helper of [
+    'createGPURasterStreamingAccumulatorEncodingPlan',
+    'createGPURasterStandardizedIndexCalibrationEncodingPlan',
+    'createGPURasterClimateRunAccumulatorEncodingPlan'
+  ] as const) {
+    expect(GPU_ANALYSIS_WEBSITE_HELPER_KINDS[helper], helper).toEqual({input: [], output: []});
+  }
+});
 
 /** Inspect both raw and resolved sides: resolving an empty raw record cannot hide a catalogue gap. */
 function findKindCompletenessFailures(operators: readonly KindRecord[]): string[] {
@@ -67,6 +110,28 @@ function findKindCompletenessFailures(operators: readonly KindRecord[]): string[
 describe('authoritative operator kind completeness', () => {
   const catalogue = getGPUAnalysisOperatorCatalog();
   const catalogueByName = new Map(catalogue.map(operator => [operator.exportName, operator]));
+
+  it('describes the building tessellation recipe from its boundary and result ports', () => {
+    // Both routes read building edges and polygon enclosures. Local mode also reads parameters.
+    // The outputs are cells, their building attributes and completeness diagnostics.
+    const recipe = catalogueByName.get('addBuildingTessellationRecipe');
+    expect(recipe).toBeDefined();
+    expect(resolveGPUAnalysisOperatorKinds(recipe!)).toMatchObject({
+      inputs: ['lines', 'polygons', 'attributes', 'parameters'],
+      outputs: ['polygons', 'attributes', 'summary']
+    });
+    expect(catalogueByName.get('addBuildingTessellationReferenceRecipe')?.inputs).toEqual([
+      'lines',
+      'polygons',
+      'attributes'
+    ]);
+  });
+
+  it('describes population support alignment as ID and population columns', () => {
+    const recipe = catalogueByName.get('addPopulationSupportAlignmentRecipe');
+    expect(recipe?.inputs).toEqual(['attributes']);
+    expect(recipe?.status).toEqual(['invalidCount', 'complete']);
+  });
 
   it('fails every unexplained empty or unknown side across all entry points, including helpers', () => {
     const failures = findKindCompletenessFailures(catalogue);

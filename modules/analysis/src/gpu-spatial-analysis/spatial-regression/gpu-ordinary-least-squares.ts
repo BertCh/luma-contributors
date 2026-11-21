@@ -16,10 +16,13 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  resolveOrdinaryLeastSquaresPredictorCount,
   GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_BREUSCH_PAGAN_P_VALUE,
@@ -46,7 +49,14 @@ import type {GPUSolverStatusPort} from '../../analysis-core/contracts/index';
 import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/contracts/model-result';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {
+  getRegressionTileLayout,
+  getRowTileMergeNodes,
+  getRowTileMergeScratchLength,
+  REGRESSION_TILE_MERGE_GROUP_SIZE
+} from './regression-row-tiles';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {LOCAL_REGRESSION_PAIRS_WGSL} from './local-regression-pairs-wgsl';
 import {
   CENTERED_REGRESSION_PREDICTION_WGSL,
   getCenteredRegressionContributionWGSL
@@ -55,11 +65,22 @@ import {
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateRegressionAllocations} from './spatial-likelihood-allocations';
 import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+
+import {
+  createOrdinaryLeastSquaresDesign,
+  createOrdinaryLeastSquaresJoinedTableMask,
+  type OrdinaryLeastSquaresJoinedTable
+} from './ordinary-least-squares-composition';
+
+import {
+  getOrdinaryLeastSquaresResponseScaleNodes,
+  getOrdinaryLeastSquaresResponseRestoreNodes,
+  ORDINARY_LEAST_SQUARES_RESPONSE_SCALE_WGSL
+} from './ordinary-least-squares-response-scale';
 
 const OPERATION = 'GPUOrdinaryLeastSquares';
 const TILE_WORKGROUP_SIZE = 64;
-const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
-const MINIMUM_DEFAULT_TILE_ROWS = 64;
 
 /** Caller-owned outputs of {@link GPUOrdinaryLeastSquares}. */
 export type GPUOrdinaryLeastSquaresOutput = {
@@ -112,7 +133,7 @@ export type GPUOrdinaryLeastSquaresProps = {
    * `getGPUOrdinaryLeastSquaresParameterValues` (ridge lambda). Omit for a plain OLS fit.
    */
   parameters?: GraphDataView<'float32'>;
-  /** Number of predictor columns, compile-time, 1 to 15. The intercept is added internally. */
+  /** Number of predictor columns, 1 to 15. Defaults to the exact predictors.length / response.length for nonempty rows. */
   predictorCount: number;
   /**
    * Rows reduced by one invocation in the accumulation passes. Defaults to
@@ -122,6 +143,16 @@ export type GPUOrdinaryLeastSquaresProps = {
   tileRowCount?: number;
   /** Caller-owned outputs. */
   output: GPUOrdinaryLeastSquaresOutput;
+};
+
+/** Construction input allowing predictor-count inference from exact nonempty views.
+ * The operation form retains an explicit count because its graph names carry no view lengths.
+ */
+export type GPUOrdinaryLeastSquaresInputProps = Omit<
+  GPUOrdinaryLeastSquaresProps,
+  'predictorCount'
+> & {
+  predictorCount?: number;
 };
 
 /**
@@ -134,7 +165,11 @@ export type GPUOrdinaryLeastSquaresProps = {
  * intercept) by the 16-wide function-local Cholesky factorization of the solve.
  *
  * Rows with a non-finite predictor or response, or with a zero `mask`, are excluded. An optional
- * per-frame ridge penalty `lambda >= 0` shrinks the slopes (never the intercept).
+ * per-frame ridge penalty shrinks slopes (never the intercept). Use the parameter packer: positive
+ * penalties must remain normal float32 values, at least 2^-126; smaller requests are rejected.
+ * Response magnitudes outside binary exponents [-32,32] are normalized by an exact power of two
+ * before centering. Reports and row outputs are restored to caller units; exponent arithmetic
+ * carries the original units through the likelihood even when original residuals are subnormal.
  *
  * Accumulation is deterministic and well-conditioned, with no float atomics:
  * 1. One origin pass selects the first complete training row of each tile. A tile pass sums
@@ -153,8 +188,10 @@ export type GPUOrdinaryLeastSquaresProps = {
  *    `choleskyFactor_p`, and solves for the slopes. A pivot below
  *    `GPU_ORDINARY_LEAST_SQUARES_PIVOT_TOLERANCE` reports status 1.
  * 4. A per-row pass writes residuals and fitted values from the centered form
- *    `e = (y - ybar) - sum(b (x - xbar)) - offset`, and a tile and merge pass sums `e^2`, `e^3`,
- *    `e^4` so the residual sum of squares is accurate even when `R2` is close to 1. `offset` is
+ *    `e = (y - ybar) - sum(b (x - xbar)) - offset`. Tile/merge passes retain raw RSS and the largest
+ *    absolute residual, then sum squared/cubed/fourth-power residuals normalized by that maximum.
+ *    This keeps standardized diagnostics independent of response units without overflowing or
+ *    underflowing raw fourth powers. The raw RSS remains accurate near `R2 = 1`. `offset` is
  *    what the stored means miss of the true means, carried through the fit (the response part
  *    minus the slopes times the predictor parts), so the residuals sum to zero as least squares
  *    with an intercept requires, also for a response whose mean is thousands of residual
@@ -167,8 +204,10 @@ export type GPUOrdinaryLeastSquaresProps = {
  * 5. A single-invocation finish kernel computes the report. Standard errors are
  *    `sqrt(sigma2 * diag((X'X + lambda I)^-1))` (for a ridge fit they ignore the shrinkage bias),
  *    the intercept variance is `sigma2 (1/n + xbar' (X'X)^-1 xbar)`. The log-likelihood is
- *    Gaussian with `sigma2 = RSS / n`, floored at the smallest normal f32 so an exact fit stays
- *    finite. AIC and BIC count `p = predictorCount + 1` parameters (the GeoDa convention): the
+ *    Gaussian with `sigma2 = RSS / n`, evaluated from scaled residual squares and their
+ *    scale in log space for every positive RSS. Exactly zero RSS alone uses variance
+ *    `1.17549435e-38`, preserving the finite exact-fit convention. AIC and BIC count
+ *    `p = predictorCount + 1` parameters (the GeoDa convention): the
  *    intercept and the predictors, not the error variance. The other estimators follow their own
  *    reference: `GPUSpatialLagMaximumLikelihood` counts `p + 1` (it adds `rho`),
  *    `GPUSpatialErrorMaximumLikelihood` counts `p` (not `lambda`), and the GWR family counts
@@ -181,8 +220,12 @@ export type GPUOrdinaryLeastSquaresProps = {
  *    classic Breusch-Pagan (normal errors) is `0.5 R2_aux n (K - 1)` with the residual kurtosis
  *    `K`, which equals the explained sum of squares over two of `e^2 / s2 - 1` on `[1, X]` with
  *    `s2 = RSS / n`. Both use a chi-square p-value on `predictorCount` degrees of freedom
- *    (regularized upper incomplete gamma with a fixed iteration cap, mirrored on the CPU by
- *    `getChiSquareSurvival`). They differ strongly for non-normal errors, which is when
+ *    (regularized upper incomplete gamma with a fixed GPU iteration cap; the host helper uses
+ *    a converged shape-dependent budget). Classic BP is zero with p=1 for positive constant
+ *    squared residuals; KB is undefined there. The auxiliary response is normalized e² minus one,
+ *    formed from differences of magnitudes to retain small deviations. This constant shift leaves
+ *    both statistics unchanged. Positive normalized residual sums, rather than raw squares that
+ *    can underflow, distinguish a nonzero residual fit. The tests differ for non-normal errors, when
  *    Jarque-Bera rejects: prefer Koenker-Bassett then.
  * 7. Conditioning is computed in the finish kernel from the quantities already in the workspace:
  *    the Belsley condition number of the raw `[1, X]` design with unit-length columns (spreg
@@ -199,6 +242,8 @@ export type GPUOrdinaryLeastSquaresProps = {
  *
  * Inputs must be single packed views. Skipped-row masking, NaN propagation and the status word
  * make a failed fit leave every statistic NaN, never partial garbage.
+ * Construction captures scalar options and input/output view identities, including nested status;
+ * changing caller props afterward cannot change the validated topology. Buffer contents stay dynamic.
  */
 export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -211,19 +256,131 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
   readonly tileRowCount: number;
   /** Number of accumulation tiles. */
   readonly tileCount: number;
+  /** Fixed main/BP stages, including the extra hierarchical reduction stages when needed. */
+  readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUOrdinaryLeastSquaresProps) {
-    this.id = props.id ?? 'ordinary-least-squares';
-    this.props = props;
-    const id = this.id;
-    const {predictorCount, output} = props;
+  /** Adapts predictor columns in coefficient order to the row-major design. */
+  static createDesign = createOrdinaryLeastSquaresDesign;
+
+  /** Adds a completeness-aware joined-table fit and retains join loss status beside its outputs. */
+  static addJoinedTableFit<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPUOrdinaryLeastSquaresInputProps,
+    joinedTable: OrdinaryLeastSquaresJoinedTable
+  ) {
+    // Construction validates and snapshots every declared field without allocating graph resources.
+    const captured = new GPUOrdinaryLeastSquares(props).props;
+    const capturedTable = {
+      matched: joinedTable.matched,
+      status: snapshotConstructionFields(joinedTable.status, ['complete', 'candidateOverflow'])
+    };
     validateCapacity(
-      id,
+      captured.id ?? 'ordinary-least-squares',
+      'joinedTable.matched.length',
+      capturedTable.matched.length,
+      captured.response.length,
+      captured.response.length
+    );
+    for (const view of [
+      captured.predictors,
+      captured.response,
+      captured.mask,
+      captured.parameters,
+      captured.output.coefficients,
+      captured.output.standardErrors,
+      captured.output.tStatistics,
+      captured.output.summary,
+      captured.output.status.code,
+      captured.output.residuals,
+      captured.output.fitted,
+      captured.output.predictions,
+      capturedTable.matched,
+      capturedTable.status.complete,
+      capturedTable.status.candidateOverflow
+    ]) {
+      if (view)
+        validateRequirement(
+          captured.id ?? 'ordinary-least-squares',
+          view.buffer.graph === graph,
+          'joined fit input and output views must belong to the supplied graph'
+        );
+    }
+    validateGraphChunkBindingRanges(graph, captured.id ?? 'ordinary-least-squares', {
+      predictors: captured.predictors,
+      response: captured.response,
+      mask: captured.mask,
+      parameters: captured.parameters,
+      coefficients: captured.output.coefficients,
+      standardErrors: captured.output.standardErrors,
+      tStatistics: captured.output.tStatistics,
+      summary: captured.output.summary,
+      code: captured.output.status.code,
+      residuals: captured.output.residuals,
+      fitted: captured.output.fitted,
+      predictions: captured.output.predictions,
+      joinedMatched: capturedTable.matched,
+      joinedComplete: capturedTable.status.complete,
+      joinedCandidateOverflow: capturedTable.status.candidateOverflow
+    });
+    validateRegressionAllocations(
+      graph.device,
+      captured.id ?? 'ordinary-least-squares',
+      getOrdinaryLeastSquaresAllocationLengths(
+        captured.response.length,
+        captured.predictorCount,
+        captured.tileRowCount
+      )
+    );
+    const composition = createOrdinaryLeastSquaresJoinedTableMask(
+      graph,
+      capturedTable,
+      captured.mask,
+      `${captured.id ?? 'ordinary-least-squares'}-join`
+    );
+    const fit = new GPUOrdinaryLeastSquares({...captured, mask: composition.mask});
+    graph.add(fit);
+    return {fit, mask: composition.mask, status: composition.status};
+  }
+
+  constructor(props: GPUOrdinaryLeastSquaresInputProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'predictors',
+      'response',
+      'mask',
+      'parameters',
       'predictorCount',
-      predictorCount,
-      1,
+      'tileRowCount',
+      'output'
+    ]);
+    const outputSnapshot = snapshotConstructionFields(captured.output, [
+      'status',
+      'coefficients',
+      'standardErrors',
+      'tStatistics',
+      'summary',
+      'residuals',
+      'fitted',
+      'predictions'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      output: Object.freeze({
+        ...outputSnapshot,
+        status: snapshotConstructionFields(outputSnapshot.status, ['code'])
+      })
+    });
+    this.id = props.id ?? 'ordinary-least-squares';
+    const id = this.id;
+    const {output} = props;
+    const predictorCount = resolveOrdinaryLeastSquaresPredictorCount(
+      id,
+      props.predictors.length,
+      props.response.length,
+      props.predictorCount,
       SPATIAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT - 1
     );
+    this.props = Object.freeze({...props, predictorCount});
     validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     validateSinglePackedView(props.response, ['float32'], `${id} response`);
     const rows = props.response.length;
@@ -277,10 +434,16 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
     }
     this.rowCount = rows;
-    this.tileRowCount =
-      props.tileRowCount ??
-      Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
-    this.tileCount = Math.ceil(rows / this.tileRowCount);
+    const tileLayout = getRegressionTileLayout(rows, props.tileRowCount);
+    this.tileRowCount = tileLayout.tileRowCount;
+    this.tileCount = tileLayout.tileCount;
+    this.estimatedCommandNodeCount =
+      20 +
+      (this.tileCount > REGRESSION_TILE_MERGE_GROUP_SIZE ? 10 : 0) +
+      Math.max(1, Math.ceil(Math.log(rows) / Math.log(256))) +
+      4 +
+      (output.residuals || output.fitted || output.predictions ? 1 : 0);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateRegressionOutputDispatches(
       id,
       {
@@ -321,10 +484,12 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
    * in order.
    */
   getCommandNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>
+    graph: GPUCommandGraph<Parameters>,
+    useRefinedScalarSlope = false
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, rowCount, tileRowCount, tileCount} = this;
     const {output, predictorCount} = props;
+    const refineScalarSlope = useRefinedScalarSlope && predictorCount === 1 && !props.parameters;
     validateGraphChunkBindingRanges(graph, id, {
       predictors: props.predictors,
       response: props.response,
@@ -352,7 +517,8 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       createTransientView(graph, `${id}-${name}`, 'float32', length);
     const residualView = output.residuals ?? f32('residuals', rowCount);
     const squaredView = f32('squared-residuals', rowCount);
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const responseScale = getOrdinaryLeastSquaresResponseScaleNodes(graph, props);
+    const nodes: GPUCommandNode<Parameters>[] = [...responseScale.nodes];
     const accumulationProps = {
       id,
       operation: OPERATION,
@@ -369,7 +535,7 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       ...getAccumulationNodes(graph, {
         ...accumulationProps,
         prefix: id,
-        response: props.response,
+        response: responseScale.response,
         workspace: mainWorkspace,
         partialMeans: u32('partial-means', tileCount * getMeanPartialStride(k)),
         partialMoments: u32('partial-moments', tileCount * (layout.momentCount + k + 1))
@@ -385,8 +551,8 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
         ],
         invocationCount: 1,
         declarations: `${getSharedWGSL(layout, true)}
-${getCholeskyWGSL(k)}`,
-        body: getSolveBody(k, Boolean(props.parameters))
+${getCholeskyWGSL(k)}${refineScalarSlope ? `\n${LOCAL_REGRESSION_PAIRS_WGSL}` : ''}`,
+        body: getSolveBody(k, Boolean(props.parameters), refineScalarSlope)
       })
     );
 
@@ -396,7 +562,7 @@ ${getCholeskyWGSL(k)}`,
         variant: 'residuals',
         bindings: [
           read('design', props.predictors, 'f32'),
-          read('response', props.response, 'f32'),
+          read('response', responseScale.response, 'f32'),
           ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
           readWorkspace(mainWorkspace),
           write('residualOut', residualView, 'f32'),
@@ -438,7 +604,7 @@ ${getRowWGSL(rowCount, k, tileRowCount, Boolean(props.mask))}`,
       })
     );
 
-    const partialResiduals = u32('partial-residuals', tileCount * RESIDUAL_SUM_COUNT);
+    const partialResiduals = f32('partial-residuals', tileCount * RESIDUAL_SUM_COUNT);
     nodes.push(
       createKernel(graph, {
         id: `${id}-residual-tiles`,
@@ -446,7 +612,7 @@ ${getRowWGSL(rowCount, k, tileRowCount, Boolean(props.mask))}`,
         workgroupSize: TILE_WORKGROUP_SIZE,
         bindings: [
           read('residualIn', residualView, 'f32'),
-          write('partial', partialResiduals, 'u32')
+          write('partial', partialResiduals, 'f32')
         ],
         invocationCount: tileCount,
         declarations: `const ROW_COUNT: u32 = ${rowCount}u;
@@ -455,8 +621,7 @@ ${FINITE_WGSL}`,
         body: `let firstRow = index * TILE_ROWS;
   let lastRow = min(firstRow + TILE_ROWS, ROW_COUNT);
   var sumSquares = 0.0;
-  var sumCubes = 0.0;
-  var sumFourth = 0.0;
+  var maximumResidual = 0.0;
   for (var row = firstRow; row < lastRow; row++) {
     let e = residualIn[residualInOffset + row];
     if (!isFiniteValue(e)) {
@@ -464,26 +629,99 @@ ${FINITE_WGSL}`,
     }
     let e2 = e * e;
     sumSquares = sumSquares + e2;
-    sumCubes = sumCubes + e2 * e;
-    sumFourth = sumFourth + e2 * e2;
+    maximumResidual = max(maximumResidual, abs(e));
   }
   let base = partialOffset + index * ${RESIDUAL_SUM_COUNT}u;
-  partial[base] = bitcast<u32>(sumSquares);
-  partial[base + 1u] = bitcast<u32>(sumCubes);
-  partial[base + 2u] = bitcast<u32>(sumFourth);`
+  partial[base] = sumSquares;
+  partial[base + 1u] = maximumResidual;
+  partial[base + 2u] = 0.0;`
       })
     );
     nodes.push(
-      createKernel(graph, {
-        id: `${id}-residual-merge`,
-        variant: 'residual-merge',
-        bindings: [read('partial', partialResiduals, 'u32'), writeWorkspace(mainWorkspace)],
-        invocationCount: RESIDUAL_SUM_COUNT,
-        declarations: `${getSharedWGSL(layout, true)}
+      ...getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-residual-merge`,
+          operation: OPERATION,
+          variant: 'residual-merge',
+          bindings: [read('partial', partialResiduals, 'f32'), writeWorkspace(mainWorkspace)],
+          invocationCount: RESIDUAL_SUM_COUNT,
+          declarations: `${getSharedWGSL(layout, true)}
 const TILE_COUNT: u32 = ${tileCount}u;`,
-        body: `${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `bitcast<f32>(partial[partialOffset + sumItem * ${RESIDUAL_SUM_COUNT}u + index])`})}
+          body: `if (index == 1u) {
+    var largest = 0.0;
+    for (var tile = 0u; tile < TILE_COUNT; tile++) {
+      largest = max(largest, partial[partialOffset + tile * ${RESIDUAL_SUM_COUNT}u + 1u]);
+    }
+    wsSet(W_RESIDUAL_SCALE, largest);
+    return;
+  }
+  ${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `partial[partialOffset + sumItem * ${RESIDUAL_SUM_COUNT}u + index]`})}
   wsSet(W_RESIDUAL_SUMS + index, sum);`
+        },
+        {
+          tileCount,
+          partials: [{name: 'partial', termCount: RESIDUAL_SUM_COUNT, maxima: {1: 0}}]
+        }
+      )
+    );
+
+    // Normalize by the largest actual residual before cubing/squaring diagnostic responses.
+    // Reuse the partial allocation after the raw RSS/scale merge; raw RSS stays untouched.
+    nodes.push(
+      createKernel(graph, {
+        id: `${id}-standardized-residual-tiles`,
+        variant: 'standardized-residual-tiles',
+        workgroupSize: TILE_WORKGROUP_SIZE,
+        invocationCount: tileCount,
+        bindings: [
+          read('residualIn', residualView, 'f32'),
+          readWorkspace(mainWorkspace),
+          write('partial', partialResiduals, 'f32'),
+          write('squaredOut', squaredView, 'f32')
+        ],
+        declarations: `${getSharedWGSL(layout, false)}
+const ROW_COUNT:u32=${rowCount}u;
+const TILE_ROWS:u32=${tileRowCount}u;`,
+        body: `let scale=wsGet(W_RESIDUAL_SCALE);
+  var sumSquares=0.0;var sumCubes=0.0;var sumFourth=0.0;
+  let firstRow=index*TILE_ROWS;let lastRow=min(firstRow+TILE_ROWS,ROW_COUNT);
+  for(var row=firstRow;row<lastRow;row++) {
+    let residual=residualIn[residualInOffset+row];
+    squaredOut[squaredOutOffset+row]=getNaN();
+    if(!isFiniteValue(residual)){continue;}
+    var standardized=0.0;
+    if(scale>0.0){standardized=residual/scale;}
+    let squared=standardized*standardized;
+    // Center e²/scale² at one before storing it. Direct squaring near one discards the
+    // differences that the auxiliary regression needs (and can reverse the KB decision).
+    var auxiliary=0.0;
+    if(scale>0.0){
+      let difference=getRoundedDifference(abs(residual),scale,ws[wsOffset+W_RUNTIME_ZERO]);
+      auxiliary=(difference/scale)*(abs(standardized)+1.0);
+    }
+    squaredOut[squaredOutOffset+row]=auxiliary;
+    sumSquares+=squared;sumCubes+=squared*standardized;sumFourth+=squared*squared;
+  }
+  let base=partialOffset+index*${RESIDUAL_SUM_COUNT}u;
+  partial[base]=sumSquares;partial[base+1u]=sumCubes;partial[base+2u]=sumFourth;`
       })
+    );
+    nodes.push(
+      ...getRowTileMergeNodes(
+        graph,
+        {
+          id: `${id}-standardized-residual-merge`,
+          operation: OPERATION,
+          variant: 'standardized-residual-merge',
+          bindings: [read('partial', partialResiduals, 'f32'), writeWorkspace(mainWorkspace)],
+          invocationCount: RESIDUAL_SUM_COUNT,
+          declarations: `${getSharedWGSL(layout, true)}\nconst TILE_COUNT: u32 = ${tileCount}u;`,
+          body: `${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `partial[partialOffset+sumItem*${RESIDUAL_SUM_COUNT}u+index]`})}
+  wsSet(W_STANDARDIZED_SUMS+index,sum);`
+        },
+        {tileCount, partials: [{name: 'partial', termCount: RESIDUAL_SUM_COUNT}]}
+      )
     );
 
     nodes.push(
@@ -507,6 +745,35 @@ ${getBelsleyConditionNumberWGSL(k)}`,
       })
     );
 
+    // Each invocation owns one criterion. Reuse the normalized residual accumulation so positive
+    // subnormal raw RSS never enters a logarithm (Metal may flush raw squares to zero).
+    nodes.push(
+      createKernel(graph, {
+        id: `${id}-scaled-likelihood`,
+        variant: 'scaled-likelihood',
+        invocationCount: 3,
+        bindings: [
+          readWorkspace(mainWorkspace),
+          read('responseMaximum', responseScale.maximum, 'u32'),
+          write('summaryOut', output.summary, 'f32')
+        ],
+        declarations: `${getSharedWGSL(layout, false)}\n${ORDINARY_LEAST_SQUARES_RESPONSE_SCALE_WGSL}`,
+        body: `if (ws[wsOffset + W_STATUS] != 0u) { return; }
+  let n = f32(ws[wsOffset + W_COUNT]);
+  let scale = wsGet(W_RESIDUAL_SCALE);
+  var logVariance = log(1.17549435e-38);
+  if ((bitcast<u32>(scale) & 0x7fffffffu) != 0u) {
+    logVariance = log(wsGet(W_STANDARDIZED_SUMS) / n) + 2.0 * log(scale) +
+      1.3862943611198906 * f32(getOLSResponseExponent(responseMaximum[responseMaximumOffset]));
+  }
+  let likelihood = -0.5 * n * (1.8378770664093453 + logVariance + 1.0);
+  var value = likelihood;
+  if (index == 1u) { value = 2.0 * ${k + 1}.0 - 2.0 * likelihood; }
+  if (index == 2u) { value = ${k + 1}.0 * log(n) - 2.0 * likelihood; }
+  summaryOut[summaryOutOffset + 4u + index] = value;`
+      })
+    );
+
     // Koenker-Bassett and Breusch-Pagan: regress e^2 on the same predictors with no ridge.
     const bpWorkspace = u32('bp-workspace', layout.length);
     nodes.push(
@@ -527,7 +794,7 @@ ${getBelsleyConditionNumberWGSL(k)}`,
         invocationCount: 1,
         declarations: `${getSharedWGSL(layout, true)}
 ${getCholeskyWGSL(k)}`,
-        body: getSolveBody(k, false)
+        body: getSolveBody(k, false, false)
       })
     );
     nodes.push(
@@ -545,6 +812,7 @@ ${getChiSquareWGSL(k)}`,
         body: getBreuschPaganBody(k)
       })
     );
+    nodes.push(...getOrdinaryLeastSquaresResponseRestoreNodes(graph, props, responseScale.maximum));
     return nodes;
   }
 }
@@ -559,6 +827,8 @@ type WorkspaceLayout = {
   status: number;
   lambda: number;
   residualSums: number;
+  residualScale: number;
+  standardizedSums: number;
   scale: number;
   slopes: number;
   factor: number;
@@ -578,7 +848,8 @@ type WorkspaceLayout = {
  * and statuses survive denormal handling):
  * means (k + 1), count, status, lambda, residual sums (3), scale (k), slopes (k), factor (k*k),
  * packed upper-triangular moments about the stored means (d (d + 1) / 2 with d = k + 1), the sums
- * of the deviations from the stored means (d), the residual offset, and the runtime zero.
+ * of the deviations from the stored means (d), the residual offset, the runtime zero,
+ * the maximum absolute residual, and three normalized residual sums.
  */
 /** Allocation-free scratch plan for OLS and composite panel/SUR callers. @internal */
 export function getOrdinaryLeastSquaresAllocationLengths(
@@ -590,10 +861,16 @@ export function getOrdinaryLeastSquaresAllocationLengths(
   const tileCount = Math.ceil(rowCount / tileRowCount);
   return {
     'OLS residuals/squared residuals': rowCount,
+    'OLS normalized response/magnitude scratch': rowCount,
     'OLS workspace': layout.length,
     'OLS mean partials': tileCount * getMeanPartialStride(predictorCount),
     'OLS moment partials': tileCount * (layout.momentCount + predictorCount + 1),
-    'OLS residual partials': tileCount * RESIDUAL_SUM_COUNT
+    'OLS residual partials': tileCount * RESIDUAL_SUM_COUNT,
+    'OLS mean metadata groups': getRowTileMergeScratchLength(tileCount, 2),
+    'OLS merge groups': getRowTileMergeScratchLength(
+      tileCount,
+      layout.momentCount + predictorCount + 1
+    )
   };
 }
 
@@ -611,6 +888,8 @@ function getWorkspaceLayout(k: number): WorkspaceLayout {
   const moments = factor + k * k;
   const deviationSums = moments + momentCount;
   const residualOffset = deviationSums + d;
+  const residualScale = residualOffset + 2;
+  const standardizedSums = residualScale + 1;
   return {
     momentCount,
     means,
@@ -624,8 +903,10 @@ function getWorkspaceLayout(k: number): WorkspaceLayout {
     moments,
     deviationSums,
     residualOffset,
+    residualScale,
+    standardizedSums,
     runtimeZero: residualOffset + 1,
-    length: residualOffset + 2
+    length: standardizedSums + RESIDUAL_SUM_COUNT
   };
 }
 
@@ -653,6 +934,8 @@ const W_COUNT: u32 = ${layout.count}u;
 const W_STATUS: u32 = ${layout.status}u;
 const W_LAMBDA: u32 = ${layout.lambda}u;
 const W_RESIDUAL_SUMS: u32 = ${layout.residualSums}u;
+const W_RESIDUAL_SCALE: u32 = ${layout.residualScale}u;
+const W_STANDARDIZED_SUMS: u32 = ${layout.standardizedSums}u;
 const W_SCALE: u32 = ${layout.scale}u;
 const W_SLOPES: u32 = ${layout.slopes}u;
 const W_FACTOR: u32 = ${layout.factor}u;
@@ -749,7 +1032,7 @@ ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`;
 const TILE_COUNT: u32 = ${tileCount}u;`;
   const mergeLoop = (stride: string) =>
     `${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `bitcast<f32>(partial[partialOffset + sumItem * ${stride} + index])`})}`;
-  return [
+  const nodes = [
     createKernel(graph, {
       id: `${prefix}-means-origins`,
       variant: 'means-origins',
@@ -893,10 +1176,124 @@ ${getRowWGSL(rowCount, k, tileRowCount, hasMask)}`,
   wsSet(W_MOMENTS + index, sum);`
     })
   ];
+  if (tileCount <= REGRESSION_TILE_MERGE_GROUP_SIZE) return nodes;
+  return nodes.flatMap(node => {
+    if (node.id === `${prefix}-means-merge`) return getHierarchicalMeanMergeNodes(graph, props);
+    if (node.id === `${prefix}-moments-merge`)
+      return getRowTileMergeNodes(
+        graph,
+        {
+          id: node.id,
+          operation: OPERATION,
+          variant: 'moments-merge',
+          bindings: [read('partial', props.partialMoments, 'u32'), writeWorkspace(workspace)],
+          invocationCount: momentCount + d,
+          declarations: mergeDeclarations,
+          body: `${mergeLoop(`${momentCount + d}u`)}\nwsSet(W_MOMENTS + index, sum);`
+        },
+        {tileCount, partials: [{name: 'partial', termCount: momentCount + d, bitcastSource: true}]}
+      );
+    return [node];
+  });
+}
+
+/** Preserve the first usable global origin and exact integer counts before grouped float sums. */
+function getHierarchicalMeanMergeNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: AccumulationProps
+): GPUCommandNode<Parameters>[] {
+  const {prefix, k: predictorCount, tileCount, workspace, partialMeans} = props;
+  const dimension = predictorCount + 1;
+  const stride = getMeanPartialStride(predictorCount);
+  const groupCount = Math.ceil(tileCount / REGRESSION_TILE_MERGE_GROUP_SIZE);
+  const metadata = createTransientView(
+    graph,
+    `${prefix}-mean-group-metadata`,
+    'uint32',
+    groupCount * 2
+  );
+  const partial = createTransientView(
+    graph,
+    `${prefix}-mean-group-sums`,
+    'float32',
+    groupCount * dimension
+  );
+  const shared = getSharedWGSL(getWorkspaceLayout(predictorCount), true);
+  return [
+    createKernel(graph, {
+      id: `${prefix}-means-metadata`,
+      variant: 'means-metadata',
+      invocationCount: groupCount,
+      bindings: [read('source', partialMeans, 'u32'), write('metadata', metadata, 'u32')],
+      body: `let firstTile = index * 4096u;
+  let lastTile = min(firstTile + 4096u, ${tileCount}u);
+  var rows = 0u; var referenceTile = firstTile;
+  for (var tile = firstTile; tile < lastTile; tile++) {
+    let count = source[sourceOffset + tile * ${stride}u + ${2 * dimension}u];
+    if (rows == 0u && count > 0u) { referenceTile = tile; }
+    rows += count;
+  }
+  metadata[metadataOffset + index * 2u] = rows;
+  metadata[metadataOffset + index * 2u + 1u] = referenceTile;`
+    }),
+    createKernel(graph, {
+      id: `${prefix}-means-reference`,
+      variant: 'means-reference',
+      invocationCount: dimension,
+      bindings: [
+        read('source', partialMeans, 'u32'),
+        read('metadata', metadata, 'u32'),
+        writeWorkspace(workspace)
+      ],
+      declarations: shared,
+      body: `var rows = 0u; var referenceTile = 0u;
+  for (var group = 0u; group < ${groupCount}u; group++) {
+    let count = metadata[metadataOffset + group * 2u];
+    if (rows == 0u && count > 0u) { referenceTile = metadata[metadataOffset + group * 2u + 1u]; }
+    rows += count;
+  }
+  wsSet(W_MEANS + index, bitcast<f32>(source[sourceOffset + referenceTile * ${stride}u + index]));
+  if (index == 0u) { ws[wsOffset + W_COUNT] = rows; ws[wsOffset + W_RUNTIME_ZERO] = 0u; }`
+    }),
+    createKernel(graph, {
+      id: `${prefix}-means-groups`,
+      variant: 'means-groups',
+      invocationCount: groupCount * dimension,
+      bindings: [
+        read('source', partialMeans, 'u32'),
+        readWorkspace(workspace),
+        write('partial', partial, 'f32')
+      ],
+      declarations: getSharedWGSL(getWorkspaceLayout(predictorCount), false),
+      body: `let group = index / ${dimension}u; let column = index % ${dimension}u;
+  let firstTile = group * 4096u; let lastTile = min(firstTile + 4096u, ${tileCount}u);
+  let origin = wsGet(W_MEANS + column);
+  let runtimeZero = ws[wsOffset + W_RUNTIME_ZERO];
+  ${getPairwiseSumWGSL({
+    count: 'lastTile - firstTile',
+    setup: `let base = sourceOffset + (firstTile + sumItem) * ${stride}u;
+    let rows = source[base + ${2 * dimension}u];
+    var contribution = 0.0;
+    if (rows > 0u) { contribution = bitcast<f32>(source[base + ${dimension}u + column]) + getRoundedDifference(bitcast<f32>(source[base + column]), origin, runtimeZero) * f32(rows); }`,
+    term: 'contribution'
+  })}
+  partial[partialOffset + index] = sum;`
+    }),
+    createKernel(graph, {
+      id: `${prefix}-means-merge`,
+      variant: 'means-merge',
+      invocationCount: dimension,
+      bindings: [read('partial', partial, 'f32'), writeWorkspace(workspace)],
+      declarations: `${shared}\nconst TILE_COUNT: u32 = ${groupCount}u;`,
+      body: `${getPairwiseSumWGSL({count: 'TILE_COUNT', term: `partial[partialOffset + sumItem * ${dimension}u + index]`})}
+  let rows = ws[wsOffset + W_COUNT];
+  wsSet(W_MEANS + index, select(0.0, wsGet(W_MEANS + index) + sum / max(f32(rows), 1.0), rows > 0u));`
+    })
+  ];
 }
 
 /** Single-invocation solve of the (optionally ridge-penalized) scaled normal equations. */
-function getSolveBody(k: number, hasRidge: boolean): string {
+function getSolveBody(k: number, hasRidge: boolean, refineScalarSlope: boolean): string {
   return /* wgsl */ `let rows = ws[wsOffset + W_COUNT];
   ${
     hasRidge
@@ -947,8 +1344,19 @@ function getSolveBody(k: number, hasRidge: boolean): string {
   var residualOffset = getMeanCorrection(K);
   for (var i = 0u; i < K; i++) {
     wsSet(W_SCALE + i, scale[i]);
-    wsSet(W_SLOPES + i, rhs[i] / scale[i]);
-    residualOffset = residualOffset - (rhs[i] / scale[i]) * getMeanCorrection(i);
+    ${
+      refineScalarSlope
+        ? `var slope = rhs[i] / scale[i];
+    let variance = momentAt(i, i);
+    if (variance >= 1.1754943508222875e-38 && variance <= 8.507059173023462e37) {
+      let refined = divideRegressionPair(vec2f(momentAt(i, K), 0.0), vec2f(variance, 0.0)).x;
+      if (isFiniteValue(refined)) { slope = refined; }
+    }
+    wsSet(W_SLOPES + i, slope);
+    residualOffset = residualOffset - slope * getMeanCorrection(i);`
+        : `wsSet(W_SLOPES + i, rhs[i] / scale[i]);
+    residualOffset = residualOffset - (rhs[i] / scale[i]) * getMeanCorrection(i);`
+    }
   }
   wsSet(W_RESIDUAL_OFFSET, residualOffset);
   ws[wsOffset + W_STATUS] = 0u;`;
@@ -1023,10 +1431,10 @@ function getFinishBody(k: number): string {
   var jarqueBeraP = nan;
   var skewness = nan;
   var kurtosis = nan;
-  let m2 = residualSumSquares / n;
+  let m2 = wsGet(W_STANDARDIZED_SUMS) / n;
   if (m2 > 0.0) {
-    let m3 = wsGet(W_RESIDUAL_SUMS + 1u) / n;
-    let m4 = wsGet(W_RESIDUAL_SUMS + 2u) / n;
+    let m3 = wsGet(W_STANDARDIZED_SUMS + 1u) / n;
+    let m4 = wsGet(W_STANDARDIZED_SUMS + 2u) / n;
     skewness = m3 / (m2 * sqrt(m2));
     kurtosis = m4 / (m2 * m2);
     let excess = kurtosis - 3.0;
@@ -1102,8 +1510,11 @@ const DEGREES_OF_FREEDOM: u32 = ${degreesOfFreedom}u;
 const LOG_GAMMA: f32 = ${getWGSLFloatLiteral(getLogGammaOfHalfInteger(degreesOfFreedom))};
 
 fn getChiSquareSurvival(value: f32) -> f32 {
-  if (!(value > 0.0)) {
+  if (value <= 0.0) {
     return 1.0;
+  }
+  if (!isFiniteValue(value)) {
+    return select(getNaN(), 0.0, value > 0.0);
   }
   let a = f32(DEGREES_OF_FREEDOM) * 0.5;
   let x = value * 0.5;
@@ -1157,21 +1568,21 @@ function getBreuschPaganBody(k: number): string {
   var breusch = nan;
   var breuschP = nan;
   let totalSumSquares = momentAt(K, K);
-  if (status == 0u && totalSumSquares > 0.0) {
+  if (status == 0u) {
     var explained = 0.0;
     for (var i = 0u; i < ${k}u; i++) {
       explained = explained + wsGet(W_SLOPES + i) * momentAt(i, K);
     }
-    let rSquared = clamp(explained / totalSumSquares, 0.0, 1.0);
     let n = f32(ws[wsOffset + W_COUNT]);
-    koenker = n * rSquared;
-    koenkerP = getChiSquareSurvival(koenker);
-    // Classic Breusch-Pagan: 0.5 R2 (sum e^4 / s2^2 - n) = 0.5 R2 n (kurtosis - 1), s2 = RSS / n.
-    let residualSumSquares = bitcast<f32>(mainWs[mainWsOffset + W_RESIDUAL_SUMS]);
-    let sumFourth = bitcast<f32>(mainWs[mainWsOffset + W_RESIDUAL_SUMS + 2u]);
-    if (residualSumSquares > 0.0) {
-      let kurtosis = sumFourth * n / (residualSumSquares * residualSumSquares);
-      breusch = max(0.5 * rSquared * n * (kurtosis - 1.0), 0.0);
+    if (totalSumSquares > 0.0) {
+      koenker = n * clamp(explained / totalSumSquares, 0.0, 1.0);
+      koenkerP = getChiSquareSurvival(koenker);
+    }
+    // Classic BP uses explained SS, even when the squared residuals have zero variance.
+    let normalizedSquaredSum = bitcast<f32>(mainWs[mainWsOffset + W_STANDARDIZED_SUMS]);
+    if (normalizedSquaredSum > 0.0) {
+      let meanSquare = normalizedSquaredSum / n;
+      breusch = max(0.5 * (explained / meanSquare) / meanSquare, 0.0);
       breuschP = getChiSquareSurvival(breusch);
     }
   }

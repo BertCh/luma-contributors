@@ -8,7 +8,7 @@ import {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {KeplerComputeSession} from '../src/session/compute-session';
 import {AnalysisRuntime} from '../../../examples/deck/kepler-compute/src/analysis-runtime';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 
 test('projected point weights preserve planar roles, null validity and source chunks through capacity recovery, selection and inference', async () => {
   const device = await getWebGPUTestDevice();
@@ -150,6 +150,7 @@ test('projected point weights preserve planar roles, null validity and source ch
     expect(JSON.parse(analysis.serializeRecipe()).operation.weights).toEqual(expectedWeights);
     // The isolated valid point contributes 90; the null coordinate's 1000 is excluded.
     expect(analysis.summary?.quantileLisa).toEqual({
+      alternative: 'geoda-legacy',
       boundaries: [-Infinity, 40],
       validCount: 4,
       islandCount: 1,

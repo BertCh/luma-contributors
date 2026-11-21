@@ -8,9 +8,11 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createRestrictionCompactionNodes} from './trajectory-restriction-compaction';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {
+  createFillNode,
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -141,6 +143,14 @@ export function createTrajectoryRestrictionNodes<Parameters>(
       queryOnBoundary = onBoundary;
     }`;
   const nodes: GPUCommandNode<Parameters>[] = [
+    // Geometry only visits current track ranges; clear all presence/loss bits each submission.
+    createFillNode<Parameters>(graph, {
+      id: `${id}-interval-status-clear`,
+      operation: 'GPUTrajectoryRestriction',
+      view: props.output.status,
+      type: 'u32',
+      value: '0u'
+    }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-intervals`,
       operation: 'GPUTrajectoryRestriction',
@@ -356,80 +366,6 @@ if (supportCount == 0u || unknownCount > 0u) { if (!anyInside) { ever = 0xffffff
 relationships[relationshipsOffset + 4u * index] = ever; relationships[relationshipsOffset + 4u * index + 1u] = always; relationships[relationshipsOffset + 4u * index + 2u] = supportCount; relationships[relationshipsOffset + 4u * index + 3u] = unknownCount;`
     })
   ];
-  const output = props.output;
-  if (
-    output.compactIntervals &&
-    output.compactPositions &&
-    output.compactSources &&
-    output.compactStatus &&
-    output.compactSummary
-  ) {
-    // Stable streaming interval union: the count remains exact even when output capacity is exhausted.
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-compact`,
-        operation: 'GPUTrajectoryRestriction',
-        variant: props.mergeIntervals ? 'merge-intervals' : 'compact-intervals',
-        invocationCount: 1,
-        workgroupSize: 2,
-        bindings: [
-          {name: 'intervals', view: output.intervals, type: 'f32', access: 'read'},
-          {name: 'status', view: output.status, type: 'u32', access: 'read'},
-          {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
-          {name: 'result', view: output.compactIntervals, type: 'f32', access: 'read_write'},
-          {name: 'sources', view: output.compactSources, type: 'u32', access: 'read_write'},
-          {name: 'resultStatus', view: output.compactStatus, type: 'u32', access: 'read_write'},
-          {name: 'summary', view: output.compactSummary, type: 'u32', access: 'read_write'}
-        ],
-        body: `var nanBits = 0x7fc00000u; let missing = bitcast<f32>(nanBits);
-for (var row = 0u; row < ${output.compactIntervals.length}u; row++) {
-  result[resultOffset + 2u * row] = missing; result[resultOffset + 2u * row + 1u] = missing;
-  sources[sourcesOffset + 2u * row] = 0xffffffffu; sources[sourcesOffset + 2u * row + 1u] = 0xffffffffu; resultStatus[resultStatusOffset + row] = 0u;
-}
-var required = 0u; var upstreamOverflow = 0u; var track = 0u; var previousTrack = 0xffffffffu; var previousBegin = 0.0; var previousEnd = 0.0; var previousFlags = 0u;
-for (var row = 0u; row < ${output.intervals.length}u; row++) {
-  let flags = status[statusOffset + row]; if ((flags & 256u) != 0u) { upstreamOverflow++; }
-  if ((flags & 3u) == 0u) { continue; }
-  let sourceRow = row / ${slots}u;
-  while (track + 1u < ${props.offsets.length - 1}u && sourceRow >= offsets[offsetsOffset + track + 1u]) { track++; }
-  let begin = intervals[intervalsOffset + 2u * row]; let finish = intervals[intervalsOffset + 2u * row + 1u];
-  let merge = ${props.mergeIntervals ? 'required > 0u && track == previousTrack && (begin < previousEnd || (begin == previousEnd && ((previousFlags & 128u) == 0u || (flags & 64u) == 0u)))' : 'false'};
-  if (merge) {
-    let extendsInterval = finish >= previousEnd;
-    if (extendsInterval) { previousEnd = finish; previousFlags = (previousFlags & ~128u) | (flags & 128u); }
-    previousFlags = (previousFlags & ~3u) | select(1u,2u,previousBegin == previousEnd);
-    if (required <= ${output.compactIntervals.length}u) {
-      let previous = required - 1u; result[resultOffset + 2u * previous + 1u] = previousEnd; resultStatus[resultStatusOffset + previous] = previousFlags;
-      if (extendsInterval) { sources[sourcesOffset + 2u * previous + 1u] = row; }
-    }
-    continue;
-  }
-  previousTrack = track; previousBegin = begin; previousEnd = finish; previousFlags = flags;
-  if (required < ${output.compactIntervals.length}u) {
-    result[resultOffset + 2u * required] = begin; result[resultOffset + 2u * required + 1u] = finish;
-    sources[sourcesOffset + 2u * required] = row; sources[sourcesOffset + 2u * required + 1u] = row; resultStatus[resultStatusOffset + required] = flags;
-  }
-  required++;
-}
-summary[summaryOffset] = required; summary[summaryOffset + 1u] = min(required, ${output.compactIntervals.length}u); summary[summaryOffset + 2u] = required - min(required, ${output.compactIntervals.length}u) + upstreamOverflow;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-compact-positions`,
-        operation: 'GPUTrajectoryRestriction',
-        variant: 'compact-positions-and-provenance',
-        invocationCount: output.compactIntervals.length,
-        bindings: [
-          {name: 'positions', view: output.positions, type: 'f32', access: 'read'},
-          {name: 'sources', view: output.compactSources, type: 'u32', access: 'read_write'},
-          {name: 'result', view: output.compactPositions, type: 'f32', access: 'read_write'}
-        ],
-        body: `let first = sources[sourcesOffset + 2u * index]; let last = sources[sourcesOffset + 2u * index + 1u];
-if (first == 0xffffffffu) { var bits = 0x7fc00000u; for (var component = 0u; component < 4u; component++) { result[resultOffset + 4u * index + component] = bitcast<f32>(bits); } return; }
-result[resultOffset + 4u * index] = positions[positionsOffset + 4u * first]; result[resultOffset + 4u * index + 1u] = positions[positionsOffset + 4u * first + 1u];
-result[resultOffset + 4u * index + 2u] = positions[positionsOffset + 4u * last + 2u]; result[resultOffset + 4u * index + 3u] = positions[positionsOffset + 4u * last + 3u];
-sources[sourcesOffset + 2u * index] = first / ${slots}u; sources[sourcesOffset + 2u * index + 1u] = last / ${slots}u;`
-      })
-    );
-  }
+  nodes.push(...createRestrictionCompactionNodes(graph, id, props));
   return nodes;
 }

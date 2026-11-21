@@ -19,6 +19,23 @@ These contributors are exported by `@luma-contributors/analysis/raster-analysis`
 `GPURasterTexture` processes one supplied integer `offset` direction at a time. It quantizes to 2–32 levels using a supplied finite increasing `range`, clamps out-of-range values, and builds a private histogram for a square window with radius 1–8. Both endpoints must be inside the clipped window and pass the per-cell `mask` and finite-value checks. Symmetric mode inserts the reverse pair too, including diagonal pairs, and `pairCount` includes those reverse insertions.
 
 `features` has seven floats per cell: contrast, dissimilarity, homogeneity, angular second moment, energy, correlation and natural-log entropy. All properties use normalized pair frequencies. Correlation is 1 when either marginal variance is effectively zero; no pairs produces seven NaNs. `requiredHalo` equals the radius because no pair endpoint outside the window is read. Evaluate on a halo-expanded source and retain only core outputs to avoid tile seams. Multiple directions are separate calls; there is no implicit direction averaging.
+Range endpoints must remain finite, strictly increasing and have a finite positive span after
+float32 conversion. The captured float32 endpoints define equally spaced internal boundaries,
+computed on the host and rounded upward to the smallest float32 value at least as large as each
+boundary. The shader compares each sample directly against these boundaries: equality enters the upper bin.
+Values outside the range clamp to the first or last bin; the high endpoint belongs to the last bin.
+Distinct host endpoints that collapse in float32 are rejected. No shader quotient determines a bin.
+
+For range `[0, 25]` and five levels, boundaries are `[5, 10, 15, 20]`; samples `[0, 5]`
+occupy bins `[0, 1]`, giving contrast 1 for their pair. With four levels and host range
+`[10000000.49, 10000002.51]`, the captured endpoints are `[10000000, 10000003]`.
+The three upward-rounded boundaries are `[10000001, 10000002, 10000003]`; samples
+`[10000000, 10000002]` occupy bins `[0, 2]`, giving contrast 4. Both examples use a two-cell
+row, radius 1 and offset `[1, 0]`, so each cell's window contains that one directed pair.
+
+Range `[0, 77]` with 11 levels has boundaries at exact multiples of 7. Samples `[56, 63]`
+land on boundaries and enter bins `[8, 9]`. In the same two-cell setup, their single directed
+pair gives contrast `(9 - 8)^2 = 1` in both cells' windows.
 
 ## Temporal stacks (RS06)
 
@@ -26,9 +43,81 @@ These contributors are exported by `@luma-contributors/analysis/raster-analysis`
 
 `operation` selects `mean`, `minimum`, `maximum`, `median` or `savitzky-golay`. Composites write one result per cell. Extrema use the earliest original slice on ties. The median is the middle stable-sorted observation for odd counts, or the average of the two middle observations for even counts. `chosenSlice` reports the actual selected acquisition; means, even medians and smoothing write `0xffffffff`. `counts` always reports the valid support.
 
-Savitzky–Golay writes one result for every original observation. `windowLength` is odd, 3–15, no longer than the stack; `polynomialOrder` is 0–3 and less than the window length. `edgeMode: 'interp'` (default) shifts a full-width window inward at edges and evaluates the fitted polynomial at the target date; `'truncate'` clips the centered window. Missing observations trigger an actual QR refit on the remaining original time coordinates. Signed coefficients are never renormalized. Status is 0 for a fit, 1 for fewer than degree+1 valid samples, or 2 for rank/nonfinite failure. For composites, status is 0 or 1 for empty support. There is no irregular-time interpretation or implicit resampling.
+Savitzky–Golay writes one result for every original observation. `windowLength` is odd, 3–15, no longer than the stack; `polynomialOrder` is 0–3 and less than the window length. `edgeMode: 'interp'` (default) shifts a full-width window inward at edges and evaluates the fitted polynomial at the target date; `'truncate'` clips the centered window. Missing observations trigger an actual QR refit on the remaining original time coordinates. Signed coefficients are never renormalized. Status is 0 for a fit, 1 for fewer than degree+1 valid samples, or 2 for rank/nonfinite failure. For composites, status is 0 or 1 for empty support. With `dateAxis` ([irregular date axis](./raster-time-series.md#irregular-date-axis)) the polynomial is fitted on real elapsed time across the same window of neighbouring acquisitions; without it the fit uses slot indices. Composites ignore the dates. There is no implicit resampling.
+
+### NDVI to temporal mean
+
+Date images concatenated as `[date0 cell0, date0 cell1, date1 cell0, date1 cell1]` are
+period-major. `GPURasterTemporal` expects `[cell0 date0, cell0 date1, cell1 date0, cell1 date1]`.
+Transpose both the values and their per-observation validity before reducing:
+
+```ts
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPURasterNDVI, type GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import {GPUCubeLayoutTranspose} from '@luma-contributors/analysis/dataframe-analysis';
+import {GPURasterTemporal} from '@luma-contributors/analysis/raster-analysis';
+
+declare const acquisitions: readonly [
+  {nearInfrared: GPURasterBufferBand; red: GPURasterBufferBand},
+  {nearInfrared: GPURasterBufferBand; red: GPURasterBufferBand}
+];
+// Each date has two cells (width 2, height 1); stack buffers have four rows.
+declare const dateMajorNDVI: GraphDataView<'float32'>;
+declare const dateMajorQA: GraphDataView<'uint32'>;
+declare const cellMajorNDVI: GraphDataView<'float32'>;
+declare const cellMajorQA: GraphDataView<'uint32'>;
+// All four composite output ports have two rows, one per cell, in separate buffers.
+declare const values: GraphDataView<'float32'>;
+declare const counts: GraphDataView<'uint32'>;
+declare const chosenSlice: GraphDataView<'uint32'>;
+declare const status: GraphDataView<'uint32'>;
+declare const graph: GPUCommandGraph;
+const cellCount = 2;
+const sliceCount = 2;
+acquisitions.forEach((bands, dateIndex) => {
+  const output = graph.createDataView(dateMajorNDVI.buffer, {
+    format: 'float32', length: cellCount,
+    byteOffset: dateMajorNDVI.byteOffset + dateIndex * cellCount * 4
+  });
+  const outputValidity = graph.createDataView(dateMajorQA.buffer, {
+    format: 'uint32', length: cellCount,
+    byteOffset: dateMajorQA.byteOffset + dateIndex * cellCount * 4
+  });
+  new GPURasterNDVI({
+    id: `ndvi-date-${dateIndex}`, width: 2, height: 1, ...bands, output, outputValidity
+  }).addToGraph(graph);
+});
+graph.add(new GPUCubeLayoutTranspose({
+  id: 'ndvi-layout', values: dateMajorNDVI, from: 'period-major',
+  cellCount, periodCount: sliceCount, output: cellMajorNDVI
+}));
+graph.add(new GPUCubeLayoutTranspose({
+  id: 'qa-layout', values: dateMajorQA, from: 'period-major',
+  cellCount, periodCount: sliceCount, output: cellMajorQA
+}));
+graph.add(new GPURasterTemporal({
+  cellCount, sliceCount, values: cellMajorNDVI, mask: cellMajorQA,
+  operation: 'mean', output: {values, counts, chosenSlice, status}
+}));
+```
+
+For NIR `[1,3]`, red `[1,2]` on date 0 and NIR `[4,2]`, red `[1,0]` on date 1,
+the date outputs are `[0,0.2]` and `[0.6,1]`. The transpose gives `[0,0.6,0.2,1]`, so
+means are `[0.3,0.6]`, counts `[2,2]`, chosen slices `[0xffffffff,0xffffffff]` and status
+`[0,0]` (within float32 tolerance for means). Reading the concatenation directly as cell-major
+would instead produce the wrong means `[0.1,0.8]`.
+
+Externally supplied cloud/QA flags must first intersect the source validity (or the NDVI validity)
+and use the same period-major layout before the matching uint32 transpose. Zero means missing;
+nonzero means usable. Texture acquisitions need the explicit gather or texture-capable zero-adjustment SAVI
+route in [spectral indices](./spectral-indices.md). Keep all per-date views on the same graph;
+do not import the same physical buffer separately for each date.
 
 ## Translation registration (RS07)
+
+Registration captures options, grid metadata and the output map at construction. Later edits to
+the caller's map cannot redirect checked output bindings; graph view identities are retained and
+their buffer contents remain the per-execution inputs.
 
 `GPURasterRegistration` defaults to `mode: 'periodic'`, computing unmasked phase correlation between finite scalar images. Both dimensions are powers of two from 2 to 2048. Graph-native FFT2D produces the spectra; normalized cross-power rejects DC and products at or below `max(1e-20, 1e-6 * maximumProductMagnitude)` so numerically empty spectral bins do not become arbitrary unit phases. An inverse FFT locates the integer peak, with the peak, the secondary peak and the spectral scale found by parallel two-pass argmax reductions (a 256-wide workgroup tree per group, then one workgroup folding the group maxima); the lowest cell index wins ties, as a serial strict-greater scan would. Input screening counts nonfinite and non-varying values with exact integer counting nodes. A separable localized inverse DFT refines the shift with spacing `1 / upsampleFactor` (integer 1–32, default 20).
 
@@ -46,13 +135,82 @@ Frequency-domain low/high/band-pass, Gaussian and paired-notch raster filtering 
 
 ## Region adjacency and merging (RS08)
 
-`GPURasterRegionGraph` is a **reference-tier** contributor: the dense `regionCount²` matrices and the one-invocation merge are enforced by `MAXIMUM_REGION_GRAPH_REGION_COUNT` (256 regions) and `MAXIMUM_REGION_GRAPH_ITERATIONS` (256 rounds), and constructors reject larger values with a message that names the prop. It consumes complete-domain row-major labels and scalar observations, with up to 256 region IDs `0..regionCount-1`; all other IDs are background. It counts shared four-neighbor boundaries into a symmetric dense `regionCount²` `adjacency` matrix, computes each original region's finite-value mean, and writes absolute mean differences into `weights`. Absent edges and edges touching regions without valid values receive NaN weights.
+`GPURasterRegionGraph` is a **reference-tier** contributor: the dense `regionCount²` matrices are always allocated, the GPU dense and adaptive routes are limited to `MAXIMUM_REGION_GRAPH_REGION_COUNT` (256 regions), the fixed-linkage Boruvka route accepts up to 65,535 regions (`MAXIMUM_BORUVKA_REGION_GRAPH_REGION_COUNT`, subject to device bindings for the `4 * regionCount²`-byte matrices), and GPU `maximumIterations` is at most `MAXIMUM_REGION_GRAPH_ITERATIONS` (256) on every route. Constructors reject larger values with a message that names the prop. It consumes complete-domain row-major labels and scalar observations, with region IDs `0..regionCount-1`; all other IDs are background. It counts shared four-neighbor boundaries into a symmetric dense `regionCount²` `adjacency` matrix, computes each original region's finite-value mean, and writes absolute mean differences into `weights`. Absent edges and edges touching regions without valid values receive NaN weights.
 
-`mergeMode: 'fixed'` (default) uses `mergeThreshold` to select static edges whose weights are no greater than the threshold. `maximumIterations` (1–256) bounds minimum-source-label propagation along these edges. `mapping` preserves the original region index and contains its smallest reachable source ID after the configured rounds. The single word `output.status.iterationLimitReached` is 1 if a further propagation round would change any mapping, otherwise 0. Graph scratch is ping-ponged between dispatches. `mergeMode: 'adaptive'` instead performs one global closest eligible pair merge per round. Component means are recomputed from original finite sample counts and means after each merge, and adjacency is the quotient of original boundaries under the current source mapping. Equal distances choose the lexicographically smallest pair of source roots; the smaller root survives. `maximumIterations` is therefore a merge budget in adaptive mode, with at most `regionCount - 1` meaningful merges. No eligible pair leaves the mapping unchanged. The final `output.status.iterationLimitReached` checks whether another eligible adaptive merge remains; final `weights` describe current component-mean differences at original source-edge positions and are NaN for edges whose endpoints have merged. `adjacency` retains original boundary counts and `mapping` retains stable original-region indexing.
+`mergeMode: 'fixed'` (default) uses `mergeThreshold` to select static edges whose weights are no greater than the threshold. The meaning of one iteration depends on the selected GPU route:
+
+- Dense fixed linkage performs one synchronous label-propagation round with one invocation per region. Each region reads the previous round's neighbor labels. Graph scratch is ping-ponged between dispatches; only the final diagnostic uses one invocation.
+- Fixed Borůvka performs one component-merging phase, selecting eligible component edges and joining their roots. A phase can collapse more than one hop, so its partial mapping differs from dense propagation.
+- Adaptive linkage performs one closest-pair merge, updating component means before the next iteration.
+
+`mapping` preserves original-region indexing. On complete fixed linkage it contains the smallest source ID in each reachable component. Partial mappings are route-specific: for the chain with values `[0,0,10,10,20,20,30,30]`, threshold 10 and one Borůvka phase, the mapping is `[0,0,2,2,4,4,6,6]`; one dense round instead gives `[0,0,1,2,3,4,5,6]`. The single word `output.status.iterationLimitReached` is 1 when another eligible join remains, otherwise 0. `mergeMode: 'adaptive'` instead performs one global closest eligible pair merge per round. Component means are recomputed from original finite sample counts and means after each merge, and adjacency is the quotient of original boundaries under the current source mapping. Equal distances choose the lexicographically smallest pair of source roots; the smaller root survives. `maximumIterations` is therefore a merge budget in adaptive mode, with at most `regionCount - 1` meaningful merges. No eligible pair leaves the mapping unchanged. The final `output.status.iterationLimitReached` checks whether another eligible adaptive merge remains; final `weights` describe current component-mean differences at original source-edge positions and are NaN for edges whose endpoints have merged. `adjacency` retains original boundary counts and `mapping` retains stable original-region indexing.
+
+Use `contributor.getExecutionPlan(device)` before declaring work to inspect the actual route,
+resource byte bounds and command-node estimate. Record
+`contributor.getExecutionPlan(device).selectedSearchStructure` for execution provenance.
+Auto can fall back to dense for at most 256 regions
+when Borůvka boundary scratch exceeds device limits; an explicit Borůvka request does not silently
+fall back. Admission checks include mandatory input label/value planes, output matrices, scratch
+byte bounds and the selected route's storage-binding count; instance plans also check aligned
+caller binding ranges. Dense public matrices remain allocated on every route. Only the first
+`grid.width * grid.height` values set the region fixed-point scale: value padding beyond the grid
+does not change means, weights or threshold decisions. A plan does not certify labels.
+When the source partition may be unfinished, pass its nonzero-complete word as `labelsComplete`
+and request `output.status.complete`. The output complete word forwards that source evidence;
+`iterationLimitReached` separately diagnoses the local merge budget. Incumbent matrices and mappings
+remain available for inspection when source completeness is zero and must not be presented as a
+complete partition. Without `labelsComplete`, the caller promises a complete source partition;
+zero is a real region ID here, unlike dense patch labels' background zero.
 
 Adaptive distances use observation-count-weighted scalar means, matching this declared graph objective. Custom merge callbacks, vector color metrics and arbitrary linkage definitions are outside the API. Cross-tile labels and seam adjacency must be reconciled before this complete-domain call.
 
-`addRasterRegionGraphTiles(graph, props)` explicitly assembles a complete partition of disjoint tile cores on the GPU before applying the same region operation. Each tile provides `grid`, integer global `origin`, `labels`, `values`, and optional `sourceRegionIds` mapping local labels to stable global IDs. Core rectangles must cover the destination exactly without overlaps; halos must be excluded. Out-of-range local labels map to background. Supply equivalence IDs from cross-tile components or caller topology: this recipe does not infer them from radiometry. Repeated source IDs combine observations before mean calculation, and seam edges are counted once in the assembled domain. Direct scikit-image hierarchical partitions and tiled/untiled edge counts are tested.
+The direct contributor and both operation wrappers capture the merge budget, route, threshold, grid metadata and output maps at construction. Later caller edits cannot add rounds or change output bindings. Bound graph views retain their identities and their per-frame contents remain caller-controlled. CRS metadata is captured through its declared fields, accepting transparent proxy descriptors and copying nested projection JSON.
+
+The CPU helper selects its route before reading cells. Dense and adaptive routes retain no raster boundary list; Boruvka retains only the first raster occurrence of each distinct undirected region pair, bounded by `regionCount * (regionCount - 1) / 2`. Duplicate boundaries still contribute to `adjacency`. Adaptive execution does not allocate the fixed-route float64 weight matrix.
+
+`CPURasterRegionGraphOperation` honors the same explicit iteration budget: one dense propagation round, one Boruvka phase, or one adaptive merge per iteration. Its `searchStructure` accepts `auto`, `dense` and `boruvka`, with Boruvka restricted to fixed linkage. An unfinished mapping is accompanied by `iterationLimitReached: 1`. The CPU drops GPU region/round caps and uses float64 means; its auto route has no device-dependent sparse-scratch fallback. Select `dense` explicitly when matching a GPU that falls back because its sparse boundary storage does not fit.
+
+The pure CPU helper `computeRasterRegionGraphOnCPU(labels, values, options)` accepts optional
+`options.labelsComplete` as a `Uint32Array` holding exactly one element. Zero means incomplete;
+any nonzero word means complete. Its returned one-element `complete` array forwards that
+evidence independently of `iterationLimitReached`. Omitting the certificate promises complete
+input and returns `complete = [1]`; a graph value name or another typed-array format is not CPU evidence.
+
+```typescript
+import {computeRasterRegionGraphOnCPU} from '@luma-contributors/analysis/raster-analysis';
+import type {CPURasterRegionGraphOptions} from '@luma-contributors/analysis/raster-analysis';
+
+const options: CPURasterRegionGraphOptions = {
+  grid: {width: 3, height: 1, affine: [1, 0, 0, 0, 1, 0], pixelInterpretation: 'area'},
+  regionCount: 3,
+  searchStructure: 'dense',
+  mergeThreshold: 0,
+  maximumIterations: 1
+};
+const labels = Uint32Array.of(0, 1, 2);
+const values = Float32Array.of(0, 0, 0);
+const provisional = computeRasterRegionGraphOnCPU(labels, values, {
+  ...options,
+  labelsComplete: Uint32Array.of(0)
+});
+provisional.complete; // Uint32Array [0]: retain the incumbent as incomplete.
+const omitted = computeRasterRegionGraphOnCPU(labels, values, options);
+omitted.complete; // Uint32Array [1]: omission promises complete input.
+omitted.iterationLimitReached; // Uint32Array [1]: the dense chain still needs another round.
+```
+
+`addRasterRegionGraphTiles(graph, props)` explicitly assembles a complete partition of disjoint tile cores on the GPU before applying the same region operation. Each tile provides `grid`, integer global `origin`, `labels`, `values`, and optional `sourceRegionIds` mapping local labels to stable global IDs. Core rectangles must cover the destination exactly without overlaps; halos must be excluded. Out-of-range local labels map to background. Supply equivalence IDs from cross-tile components or caller topology: this recipe does not infer them from radiometry. Repeated source IDs combine observations before mean calculation, and seam edges are counted once in the assembled domain. Tile `labelsComplete` words and the recipe-level `labelsComplete` word are combined by logical
+AND into `output.status.complete`; supplying any certificate requires that output. Omitting a
+certificate promises completeness for that source. Geometry coverage alone cannot certify a
+finished label partition. `getRasterRegionGraphExecutionPlan(props, device)` checks the device
+route and matrix/scratch byte bounds without declaring work; the returned recipe's
+`estimatedRecipeCommandNodeCount` includes region reduction, tile assembly and certificate nodes.
+Use that estimate for the whole recipe rather than the inner contributor's command-node estimate.
+Before adding work, recipe admission checks mandatory input/output bindings, assembly bindings,
+route-specific scratch and command-node bounds, and logical input/output overlap. Tile cores must
+not overlap; writable outputs must remain separated under each dispatch's logical and physical
+binding rules. A failed admission leaves the graph unchanged for a corrected retry.
+Direct scikit-image hierarchical partitions and tiled/untiled edge counts are tested.
 
 ## Spectral unmixing (RS10)
 
@@ -66,7 +224,11 @@ Band and endmember limits are joint: with `b` bands and `m` endmembers, unconstr
 - `nonnegative`: projected-gradient NNLS with a conservative Frobenius-norm step bound.
 - `simplex`: projected-gradient least squares with exact Euclidean projection onto nonnegative abundances summing to one.
 
-`maximumIterations` is 1–4096 (default 256), and positive `tolerance` defaults to `1e-5`. Convergence compares the infinity norm of the projected-gradient mapping with tolerance times the larger of one and the initial unconstrained gradient norm. `abundances` is pixel-major; `residual` is the sum of squared errors over valid bands; `iterationCounts` is zero for direct QR. Status is 0 for solved, 1 for insufficient bands, 2 for rank/nonfinite failure, or 4 for exhausted iteration budget. Exhausted constrained fits retain feasible abundances and residuals. There is no condition-number certificate or automatic regularization; nearly collinear endmembers may fail QR or exhaust constrained iterations.
+`maximumIterations` is 1–4096 (default 256), and positive `tolerance` defaults to `1e-5`. Constrained solves jointly normalize the pixel spectra and endmember spectra by the maximum
+absolute endmember coefficient before forming products. Convergence compares the infinity norm
+of the projected-gradient mapping with `tolerance` times the gradient infinity norm at the
+actual starting coefficients: zero for nonnegative fitting, and uniform `1 / endmemberCount`
+for simplex fitting. It does not use a floor of one or the gradient of a different initial fit. `abundances` is pixel-major; `residual` is the sum of squared errors over valid bands in the original input units squared; `iterationCounts` is zero for direct QR. Status is 0 for solved, 1 for insufficient bands, 2 for rank/nonfinite failure, or 4 for exhausted iteration budget. Exhausted constrained fits retain feasible abundances and residuals. There is no condition-number certificate or automatic regularization; nearly collinear endmembers may fail QR or exhaust constrained iterations.
 
 ## Seasonal decomposition, breaks and monitoring (RS11)
 
@@ -94,7 +256,7 @@ the two orthogonalization passes and arithmetic order are unchanged.
 
 ### Named limits and remaining serial steps
 
-Construction rejects out-of-range props with a message that starts with the contributor ID and names the prop and the accepted range. The limits are exported constants: `MAXIMUM_PERIODIC_REGISTRATION_DIMENSION` (2048), `MAXIMUM_MASKED_REGISTRATION_DIMENSION` (512), `MAXIMUM_REGISTRATION_UPSAMPLE_FACTOR` (32), `MAXIMUM_TEMPORAL_SLICE_COUNT` (256), `MAXIMUM_SEASONAL_BREAK_SLICE_COUNT` (256), `MAXIMUM_UNMIXING_BAND_COUNT` (256), `MAXIMUM_UNMIXING_ENDMEMBER_COUNT` (8), `UNMIXING_WORKING_MEMORY_FLOAT_COUNT` (2048 floats, 8 KiB), `MAXIMUM_UNMIXING_ITERATIONS` (4096), `MAXIMUM_TEXTURE_LEVELS` (32), `MAXIMUM_TEXTURE_RADIUS` (8), `MAXIMUM_CONSERVATIVE_CANDIDATE_CELLS` (256), `MAXIMUM_REGION_GRAPH_REGION_COUNT` and `MAXIMUM_REGION_GRAPH_ITERATIONS` (256 each).
+Construction rejects out-of-range props with a message that starts with the contributor ID and names the prop and the accepted range. The limits are exported constants: `MAXIMUM_PERIODIC_REGISTRATION_DIMENSION` (2048), `MAXIMUM_MASKED_REGISTRATION_DIMENSION` (512), `MAXIMUM_REGISTRATION_UPSAMPLE_FACTOR` (32), `MAXIMUM_TEMPORAL_SLICE_COUNT` (256), `MAXIMUM_SEASONAL_BREAK_SLICE_COUNT` (256), `MAXIMUM_UNMIXING_BAND_COUNT` (256), `MAXIMUM_UNMIXING_ENDMEMBER_COUNT` (8), `UNMIXING_WORKING_MEMORY_FLOAT_COUNT` (2048 floats, 8 KiB), `MAXIMUM_UNMIXING_ITERATIONS` (4096), `MAXIMUM_TEXTURE_LEVELS` (32), `MAXIMUM_TEXTURE_RADIUS` (8), `MAXIMUM_CONSERVATIVE_CANDIDATE_CELLS` (256), `MAXIMUM_REGION_GRAPH_REGION_COUNT` and `MAXIMUM_REGION_GRAPH_ITERATIONS` (256 each; the fixed-linkage Boruvka route allows 65,535 regions, `MAXIMUM_BORUVKA_REGION_GRAPH_REGION_COUNT`).
 
 Masked registration still runs three bounded serial steps: the running means (one invocation over at most 512 x 512 cells; a parallel sum would change float32 rounding), the refinement scoring (one invocation per candidate, each looping over every cell), and the final choice among at most 33 x 33 refinement candidates. The peak search over the search window runs as parallel argmax reductions.
 
@@ -126,11 +288,15 @@ Each lens executes its public contributor on explicit synthetic inputs and expos
 
 ### GPURasterConservativeRemapping
 
+Construct `GPURasterConservativeRemapping` using the [Inputs, outputs and limits](#conservative-remapping-rs03).
+
 {/* lens:GPURasterConservativeRemapping */}
 
 ::lens{scenario=gpu-raster.raster-conservative-remapping rung=graph}
 
 ### GPURasterTexture
+
+Construct `GPURasterTexture` using the [Quantization, masks and features](#glcm-texture-rs04).
 
 {/* lens:GPURasterTexture */}
 
@@ -138,11 +304,15 @@ Each lens executes its public contributor on explicit synthetic inputs and expos
 
 ### GPURasterTemporal
 
+Construct `GPURasterTemporal` using the [Stack layout, outputs and limits](#temporal-stacks-rs06).
+
 {/* lens:GPURasterTemporal */}
 
 ::lens{scenario=gpu-raster.raster-temporal rung=graph}
 
 ### GPURasterRegistration
+
+Construct `GPURasterRegistration` using the [Translation modes and diagnostics](#translation-registration-rs07).
 
 {/* lens:GPURasterRegistration */}
 
@@ -161,11 +331,15 @@ This example assembles two tile cores with different local label numbering throu
 
 ### GPURasterSpectralUnmixing
 
+Construct `GPURasterSpectralUnmixing` using the [Constraints, stopping and residuals](#spectral-unmixing-rs10).
+
 {/* lens:GPURasterSpectralUnmixing */}
 
 ::lens{scenario=gpu-raster.raster-spectral-unmixing rung=graph}
 
 ### GPURasterSeasonalBreak
+
+Construct `GPURasterSeasonalBreak` using the [Fitting and monitoring contracts](#seasonal-decomposition-breaks-and-monitoring-rs11).
 
 {/* lens:GPURasterSeasonalBreak */}
 

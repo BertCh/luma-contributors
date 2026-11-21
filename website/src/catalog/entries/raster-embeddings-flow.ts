@@ -684,7 +684,7 @@ export const entries: CatalogEntry[] = [
       symbols: ['getGPULagrangianFlowMapParameterValues', 'GPULagrangianFlowMap'],
       setup: ['const seedCount = 256 * 256; const cellCount = 360 * 180;'],
       parameters:
-        'getGPULagrangianFlowMapParameterValues({fieldExtent: [0, 0, 1, 1], startTime: 0, timeStep: -0.1, sliceStartTime: 0, sliceEndTime: 6})',
+        'getGPULagrangianFlowMapParameterValues({fieldPlacement: {origin: [0, 0], cellSize: [1, 1]}, startTime: 0, timeStep: -0.1, sliceStartTime: 0, sliceEndTime: 6})',
       constructorSymbol: 'GPULagrangianFlowMap',
       props: [
         'fieldWidth: 360, fieldHeight: 180, stepCount: 60,',

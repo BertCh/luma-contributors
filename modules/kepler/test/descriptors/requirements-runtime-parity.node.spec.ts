@@ -133,7 +133,7 @@ const REJECTIONS: readonly RejectionFixture[] = [
     bindingId: 'density-clustering',
     defect: '20,001 points exceed the declared 20,000-feature capacity',
     inputs: {points: makePoints(20001)},
-    parameters: {epsilon: 1, minimumPoints: 4},
+    parameters: {epsilon: 1, minimumSamples: 4},
     reason: /20,001.*20,000|20,000.*20,001/,
     remedy: /filter|aggregate|GPU/i,
     runtimeError: /Input feature capacity exceeded/,

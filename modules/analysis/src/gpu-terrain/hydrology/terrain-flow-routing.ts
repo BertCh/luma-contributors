@@ -389,7 +389,12 @@ fn tryFinalize(cell: u32) -> bool {
       sum = sum + fraction * bitcast<f32>(donorBits);
     }
   }
-  return atomicCompareExchangeWeak(&acc[accOffset + cell], SENTINEL, bitcast<u32>(sum)).exchanged;
+  // A weak exchange may fail without another owner. Retry within this logical round.
+  loop {
+    let exchange = atomicCompareExchangeWeak(&acc[accOffset + cell], SENTINEL, bitcast<u32>(sum));
+    if (exchange.exchanged) { return true; }
+    if (exchange.old_value != SENTINEL) { return false; }
+  }
 }`;
   const getBody = (
     markChangedWGSL: string

@@ -24,6 +24,12 @@ import {
 } from '../../analysis-core/operations/cpu-trajectory-rows';
 import {getCPUTrajectoryDistance} from '../../analysis-core/operations/cpu-trajectory-distance';
 import {GPU_MOVEMENT_SENTINEL} from '../trajectory-staypoints/movement-common';
+import {
+  resolveModalSpeedOptions,
+  validateModalSpeedOptionName,
+  type ModalSpeedOptions
+} from './modal-split-options';
+import {isModalSpeedBelowBound} from './modal-speed-comparison';
 import type {GPUModalSplitMetric} from './gpu-modal-split';
 import {
   GPUModalSplitOperation,
@@ -44,54 +50,44 @@ export type CPUModalSplitInput = CPUTrajectoryRows & {
   modes?: Uint32Array;
 };
 /** Plain numeric settings are compile-time, as in GPUModalSplit. */
-export type CPUModalSplitOptions = {
+export type CPUModalSplitOptions = ModalSpeedOptions & {
   modeCount: number;
   metric: GPUModalSplitMetric;
-  modeSpeedBreaks?: readonly number[];
   spatialContext?: GPUSpatialContext;
 };
 /** Track-major metric and predicted modes; incomplete input yields NaN and missing modes. */
 export type CPUModalSplitResult = {modalSplit: Float32Array; predictedModes: Uint32Array};
 
-function validateOptions(id: string, options: CPUModalSplitOptions): void {
-  validateCapacity(id, 'modeCount', options.modeCount);
+function validateOptions(id: string, options: CPUModalSplitOptions): readonly number[] | undefined {
+  validateModalSpeedOptionName(id, options);
   validateRequirement(
     id,
     ['count', 'distance', 'duration'].includes(options.metric),
     "metric must be 'count', 'distance' or 'duration'"
   );
-  if (options.modeSpeedBreaks) {
-    validateRequirement(
-      id,
-      options.modeSpeedBreaks.length === options.modeCount,
-      'modeSpeedBreaks must hold modeCount values'
-    );
-    validateRequirement(
-      id,
-      options.modeSpeedBreaks.every(
-        (value, index, values) => index === 0 || value > values[index - 1]
-      ),
-      'modeSpeedBreaks must be strictly ascending'
-    );
-  }
+  return resolveModalSpeedOptions(id, options);
 }
 
 /**
  * Classifies average tripleg speeds and accumulates count, path length or endpoint duration by
  * track and mode. Missing modes are excluded; other out-of-range keys enter the last mode. Speed
- * class bounds are exclusive and the final class is unbounded. As in the GPU literal builder,
- * nonfinite speed breaks become the largest finite float32.
+ * class bounds are exclusive and the final class is unbounded. Bounds and compared speeds are
+ * encoded to float32 in every form. Each step distance and each ordered path-sum addition is
+ * binary32. Classification compares length < duration*bound exactly, without a rounded quotient.
+ * Positive infinity is allowed only as the final bound.
  *
  * What differs from the GPU contributor:
- * - Lengths, speeds and sums use float64, with one rounding at the metric output. Near speed
- *   thresholds and for paths whose float32 length overflows, classifications can differ.
+ * - Step distance functions use host float64 arithmetic rounded to binary32; GPU elementary
+ *   distance functions can differ near their own rounding boundaries. Ordered path accumulation
+ *   and the exclusive cross-product comparison use the same binary32 values in every form.
+ *   Per-mode CPU aggregate sums use float64 before final output rounding.
  * - Int64 timestamps are subtracted exactly before conversion to float64.
  * - Decreasing clamped trackOffsets and inconsistent, unordered or out-of-track tripleg arrays
  *   throw an Error. Empty triplegs are accepted for supplied-mode count/distance aggregation;
  *   prediction and duration aggregation still reject them because endRows minus one does not
  *   identify a member of an empty tripleg.
  * - Prediction omits the optional input modes port, which the contributor otherwise writes in
- *   place. predictedModes without prediction is omitted from the operation outputs.
+ *   place. Supplied-mode runs publish missing keys in predictedModes.
  * - Nonfinite coordinates/times use JavaScript arithmetic; nonfinite predicted speeds are missing.
  *   The GPU does not specify nonfinite trajectory input behavior.
  *
@@ -101,7 +97,7 @@ export function computeModalSplitOnCPU(
   input: CPUModalSplitInput,
   options: CPUModalSplitOptions
 ): CPUModalSplitResult {
-  validateOptions('modal-split', options);
+  const speedBounds = validateOptions('modal-split', options);
   const {rowCount, trackOffsets, getTimeDifference} = getCPUTrajectoryRows(input);
   const trackCount = trackOffsets.length - 1;
   const {triplegs} = input;
@@ -124,10 +120,10 @@ export function computeModalSplitOnCPU(
   if (triplegs.count.length < 1) throw new Error('triplegs.count must contain at least one row');
   if (input.modes && input.modes.length !== capacity)
     throw new Error('modes length must match triplegs.tracks');
-  if (!options.modeSpeedBreaks && !input.modes)
-    throw new Error('modes is required without modeSpeedBreaks');
+  if (!speedBounds && !input.modes)
+    throw new Error('modes is required without modeSpeedUpperBoundsFloat32');
   const total = Math.min(triplegs.count[0], capacity);
-  const needsDuration = Boolean(options.modeSpeedBreaks) || options.metric === 'duration';
+  const needsDuration = Boolean(speedBounds) || options.metric === 'duration';
   for (let tripleg = 0; tripleg < total; tripleg++) {
     const track = triplegs.tracks[tripleg];
     if (track >= trackCount || (tripleg > 0 && track < triplegs.tracks[tripleg - 1]))
@@ -146,25 +142,26 @@ export function computeModalSplitOnCPU(
   });
   const radius = getGPUGreatCircleRadius(context);
   const totals = new Float64Array(trackCount * options.modeCount);
-  const predictedModes = new Uint32Array(capacity);
+  const predictedModes = new Uint32Array(capacity).fill(speedBounds ? 0 : GPU_MOVEMENT_SENTINEL);
   for (let tripleg = 0; tripleg < total; tripleg++) {
     const start = triplegs.startRows[tripleg];
     const end = triplegs.endRows[tripleg];
-    const duration = needsDuration ? getTimeDifference(end - 1, start) : 0;
+    const duration = needsDuration ? Math.fround(getTimeDifference(end - 1, start)) : 0;
     let length = 0;
-    if (options.modeSpeedBreaks || options.metric === 'distance')
+    if (speedBounds || options.metric === 'distance')
       for (let row = start + 1; row < end; row++)
-        length += getCPUTrajectoryDistance(input.positions, row - 1, row, radius);
+        length = Math.fround(
+          length + Math.fround(getCPUTrajectoryDistance(input.positions, row - 1, row, radius))
+        );
     let mode = input.modes?.[tripleg] ?? GPU_MOVEMENT_SENTINEL;
-    if (options.modeSpeedBreaks) {
+    if (speedBounds) {
       mode = GPU_MOVEMENT_SENTINEL;
-      const speed = length / duration;
-      if (duration > 0 && Number.isFinite(speed)) {
+      if (duration > 0 && Number.isFinite(duration) && Number.isFinite(length)) {
         mode = options.modeCount - 1;
         for (let candidate = 0; candidate < options.modeCount; candidate++) {
-          const rawBreak = options.modeSpeedBreaks[candidate];
+          const rawBreak = speedBounds[candidate];
           const speedBreak = Number.isFinite(rawBreak) ? rawBreak : 3.4028234663852886e38;
-          if (speed < speedBreak) {
+          if (isModalSpeedBelowBound(length, duration, speedBreak)) {
             mode = candidate;
             break;
           }
@@ -172,7 +169,11 @@ export function computeModalSplitOnCPU(
       }
       predictedModes[tripleg] = mode;
     }
-    if (mode === GPU_MOVEMENT_SENTINEL) continue;
+    if (
+      mode === GPU_MOVEMENT_SENTINEL ||
+      (options.unknownModePolicy === 'exclude' && mode >= options.modeCount)
+    )
+      continue;
     mode = Math.min(mode, options.modeCount - 1);
     totals[triplegs.tracks[tripleg] * options.modeCount + mode] +=
       options.metric === 'count' ? 1 : options.metric === 'distance' ? length : duration;
@@ -187,13 +188,13 @@ export class CPUModalSplitOperation extends GPUCPUOperation {
     const id = props.id ?? 'modal-split';
     validateOptions(id, props);
     validateCapacity(id, 'rowCount', props.rowCount, 0);
-    validateCapacity(id, 'trackCount', props.trackCount);
+    validateCapacity(id, 'trackCount', props.trackCount, 0);
     validateCapacity(id, 'triplegCapacity', props.triplegCapacity, 0);
-    validateCapacity(id, 'trackCount * modeCount', props.trackCount * props.modeCount);
+    validateCapacity(id, 'trackCount * modeCount', props.trackCount * props.modeCount, 0);
     validateRequirement(
       id,
-      Boolean(props.modeSpeedBreaks) || props.modes !== undefined,
-      'modes or modeSpeedBreaks is required'
+      Boolean(props.modeSpeedUpperBoundsFloat32) || props.modes !== undefined,
+      'modes or modeSpeedUpperBoundsFloat32 is required'
     );
     validateRequirement(
       id,
@@ -233,6 +234,7 @@ export class CPUModalSplitOperation extends GPUCPUOperation {
         const result = computeModalSplitOnCPU(
           {
             positions,
+            storage: 'resident-capacity',
             timestamps:
               props.timestampFormat === 'uint32x2'
                 ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')
@@ -253,7 +255,7 @@ export class CPUModalSplitOperation extends GPUCPUOperation {
                   : undefined
             },
             modes:
-              !props.modeSpeedBreaks && props.modes !== undefined
+              !props.modeSpeedUpperBoundsFloat32 && props.modes !== undefined
                 ? getCPUOperationUint32Rows(id, inputs, 'modes')
                 : undefined
           },

@@ -103,8 +103,8 @@ export class GPUTrajectoryHampel implements GPUCommandNodeProducer {
     validateSinglePackedView(parameters, ['float32'], `${id} parameters`);
     validateRequirement(
       id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
+      trackOffsets.length >= 1,
+      'trackOffsets must contain at least one terminal row'
     );
     validateRequirement(
       id,

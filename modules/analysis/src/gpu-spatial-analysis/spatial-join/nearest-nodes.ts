@@ -126,9 +126,9 @@ export type NearestNeighborNodeProps = {
   queryCount: number;
   features: GPUNearestFeatureGeometry;
   featureCount: number;
-  k: number;
+  neighborCount: number;
   capacity: number;
-  ties?: 'all' | 'lowest-id';
+  ties?: 'all' | 'lowest-row';
   leafCapacity: number;
   spatialSort: boolean;
   spatialSortCurve?: SpatialSortCurve;
@@ -429,7 +429,9 @@ export function validateNearestNeighborBindings<Parameters>(
   );
   const isChunked = queryCount > scratchQueryCount;
   if (scratchQueryCount < 1) {
-    throw new Error(`${id} needs more scratch per query than one binding holds; reduce k`);
+    throw new Error(
+      `${id} needs more scratch per query than one binding holds; reduce neighborCount`
+    );
   }
   // Word of `topk` that holds the first query (relative to the current query-side chunk) of the
   // scratch chunk being processed. A 1-thread node advances it, so the chunk index never reaches
@@ -441,7 +443,7 @@ export function validateNearestNeighborBindings<Parameters>(
     id,
     'topk',
     (scratchQueryCount * stride + 3) * 4,
-    'reduce the query count or k'
+    'reduce the query count or neighborCount'
   );
 
   const queryViews =
@@ -663,7 +665,17 @@ export function getNearestNeighborNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: NearestNeighborNodeProps
 ): {nodes: GPUCommandNode<Parameters>[]; bvh: NearestBVH} {
-  const {id, operation, features, featureCount, queryCount, k, capacity, sphereRadius} = props;
+  if (props.prepared) {
+    props = {
+      ...props,
+      features: {
+        ...props.prepared.getGeometry(graph),
+        sourceIds: props.features.sourceIds
+      }
+    };
+  }
+  const {id, operation, features, featureCount, queryCount, neighborCount, capacity, sphereRadius} =
+    props;
   const {stride, needsFootPass, scratchQueryCount, isChunked, cursorWord, dispatchWord} =
     validateNearestNeighborBindings(graph, props);
   const greatCircle = sphereRadius !== undefined;
@@ -791,7 +803,8 @@ const FEATURE_COUNT: u32 = ${featureCount}u;`,
   if (props.maxDistance) {
     clearBindings.push({name: 'maxDistance', view: props.maxDistance, type: 'f32', access: 'read'});
   }
-  // Initial distance rank (central angle on the sphere) of every query.
+  // Keep the original planar radius for exact threshold fallback. Great-circle searches store
+  // their central-angle bound; the planar traversal encodes its rank after reading the radius.
   const clearBoundWGSL = `// A NaN, negative or infinite maxDistance sets a reserved finite rank that matches nothing.
     ${
       props.maxDistance
@@ -800,7 +813,7 @@ const FEATURE_COUNT: u32 = ${featureCount}u;`,
     if (limit >= 0.0 && limit <= FLOAT32_MAXIMUM) { bound = ${
       greatCircle
         ? '// Canonicalize negative zero before storing the central-angle rank.\n    abs(limit / SPHERE_RADIUS)'
-        : 'encodeNearestDistance(limit)'
+        : 'abs(limit)'
     }; }`
         : 'let bound = NEAREST_NO_DISTANCE;'
     }
@@ -1055,7 +1068,7 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
       id,
       'extras',
       scratchQueryCount * capacity * EXTRA_WORDS * 4,
-      'reduce the query count or k, or omit the neighbor foot-point outputs'
+      'reduce the query count or neighborCount, or omit the neighbor foot-point outputs'
     );
   }
   const extras = needsFootPass
@@ -1246,7 +1259,7 @@ const NO_SEGMENT: u32 = 0xffffffffu;${
       : [];
     const traversal = getNearestTraversalWGSL({
       ties: props.ties,
-      k,
+      neighborCount,
       capacity,
       featureCount,
       internalNodeCount: bvh.internalNodeCount,
@@ -1265,7 +1278,7 @@ const NO_SEGMENT: u32 = 0xffffffffu;${
           }
         : undefined
     });
-    const sideWGSL = `${greatCircle ? NEAREST_GEODESIC_WGSL : NEAREST_COMMON_WGSL}${getNearestSideWGSL(dispatch.side)}${getNearestSideWGSL(featureSide)}${getNearestPairWGSL(dispatch.side, featureSide)}`;
+    const sideWGSL = `${greatCircle ? NEAREST_GEODESIC_WGSL : NEAREST_COMMON_WGSL}${getNearestSideWGSL(dispatch.side)}${getNearestSideWGSL(featureSide)}${getNearestPairWGSL(dispatch.side, featureSide, greatCircle)}`;
 
     nodes.push(
       createStorageTopKNode<Parameters>(graph, {

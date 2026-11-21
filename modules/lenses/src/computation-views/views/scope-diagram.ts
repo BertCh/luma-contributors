@@ -12,7 +12,8 @@ import {
   getBoundNode,
   getDatumKeySpace,
   getMostConcreteGraph,
-  getPinnedEntity
+  getPinnedEntity,
+  getRecordedOperatorPackKey
 } from './record-queries';
 
 /** Schematic scope geometry derived solely from an operator descriptor. */
@@ -45,8 +46,9 @@ function chooseOperator(context: ViewContext): ({op: string} & OperatorDescripto
       : (getMostConcreteGraph(context.record)?.nodes ?? []);
   for (const node of nodes) {
     if (!node.op) continue;
+    const currentOperator = getRecordedOperatorPackKey(node.op);
     for (const pack of context.packs ?? []) {
-      const descriptor = pack.operators?.[node.op];
+      const descriptor = pack.operators?.[node.op] ?? pack.operators?.[currentOperator];
       if (descriptor) return {op: node.op, ...descriptor};
     }
   }

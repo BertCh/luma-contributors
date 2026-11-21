@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUSpatialAnalysisCapability} from '../spatial-analysis-ontology';
+import {
+  freezeCatalog,
+  withCatalogStability,
+  type CatalogCapabilityDefinition
+} from '../freeze-catalog';
 
 /**
  * Capability families for the contributors and recipes of the entry points other than
@@ -10,7 +15,7 @@ import type {GPUSpatialAnalysisCapability} from '../spatial-analysis-ontology';
  * consumers of that list (the website inventory generator and the kepler catalog bindings) see
  * what they saw before. Use `getGPUAnalysisCapabilityCatalog()` for the whole set.
  */
-export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = [
+const ENTRY_POINT_CAPABILITY_DEFINITIONS: readonly CatalogCapabilityDefinition[] = [
   {
     id: 'forest-inference',
     title: 'Imported forest inference',
@@ -666,7 +671,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
     outputBound: 'capacity-bounded',
     operators: [
       'GPUGroupStatistics',
-      'GPUKeyJoin',
+      'GPUKeyLookup',
       'GPUColumnProfile',
       'GPUCompositeScore',
       'GPUInequality'
@@ -772,6 +777,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
       'GPUPointCloudGround',
       'GPUPointCloudSMRF',
       'GPUPointCloudSurfaces',
+      'GPUPointCloudCoverageValidity',
       'GPUPointCloudHeight'
     ]
   },
@@ -816,3 +822,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
     operators: ['GPUDatumGridTransform', 'GPUPointBuffer']
   }
 ];
+
+export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] = freezeCatalog(
+  ENTRY_POINT_CAPABILITY_DEFINITIONS.map(withCatalogStability)
+);

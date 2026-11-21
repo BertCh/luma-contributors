@@ -4,7 +4,11 @@
 
 import {Buffer} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/graph';
-import {registerWGSLKernelNodeRecord} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  registerWGSLKernelNodeRecord,
+  registerCompiledWGSLKernelNodeRecord,
+  type WGSLKernelNodeRecord
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -77,7 +81,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>, @builtin(num_workgroups) 
   ${props.bindings.map(binding => `_ = &${binding.name};`).join('\n')}
   ${props.body}
 }`;
-  registerWGSLKernelNodeRecord(graph, {
+  const kernelRecord: WGSLKernelNodeRecord = {
     id: props.id,
     operation: props.operation,
     variant: props.variant,
@@ -92,7 +96,8 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>, @builtin(num_workgroups) 
     bindings: props.bindings,
     textures: [],
     indirect: props.condition?.source === 'gpu' && props.condition.mode === 'indirect'
-  });
+  };
+  registerWGSLKernelNodeRecord(graph, kernelRecord);
   return createGPUComputeCommandNode<Parameters>({
     id: props.id,
     condition: props.condition,
@@ -117,7 +122,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>, @builtin(num_workgroups) 
         .filter(binding => binding.access !== 'read')
         .reduce((sum, binding) => sum + binding.view.length * binding.view.rowByteLength, 0)
     },
-    compile: ({device}) => {
+    compile: function compileRecordedKernel({device}) {
       const parameters = device.createBuffer({
         id: `${props.id}-parameters`,
         data: values,
@@ -146,6 +151,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3<u32>, @builtin(num_workgroups) 
             ]
           }
         });
+        registerCompiledWGSLKernelNodeRecord(graph, kernelRecord, compileRecordedKernel);
       } catch (error) {
         parameters.destroy();
         throw error;

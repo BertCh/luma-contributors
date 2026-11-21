@@ -431,3 +431,21 @@ it('publishes intermediate CSR exhaustion only through canonical candidateOverfl
     /candidateOverflow.*requiredCount 12/
   );
 });
+
+it('keeps the neighbor-search parameter view and clear endpoint at twelve words', () => {
+  for (const geographic of [false, true]) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    recordWGSLKernelNodes(graph);
+    const props = createProps(graph, 4);
+    new GPUAnalysisSpacing({
+      ...props,
+      spatialContext: geographic
+        ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+        : props.spatialContext
+    }).getCommandNodes(graph);
+    const record = getWGSLKernelNodeRecord(graph, `${props.id}-search-parameters`)!;
+    expect(record.bindings.find(binding => binding.name === 'parameters')!.view.length).toBe(12);
+    expect(record.body).toContain('word < 12u; word++');
+    graph.device.destroy();
+  }
+});

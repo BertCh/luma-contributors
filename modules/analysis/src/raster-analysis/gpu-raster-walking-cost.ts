@@ -6,6 +6,11 @@ import {
   validateRasterStorageBindings,
   getRasterIterationSlotByteLength
 } from './raster-grid/raster-storage-preflight';
+import {snapshotConstructionFields} from '../analysis-core/kernels/construction-snapshot';
+import {
+  snapshotRasterGrid,
+  snapshotRasterWalkingModel
+} from './raster-grid/raster-construction-snapshot';
 import {
   getGraphOutputViews,
   validateCommandNodeBudget,
@@ -27,10 +32,13 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   getRasterBufferBandNodes,
   getRasterBandViews,
+  validateRasterTextureBand,
+  validateRasterBandBelongsToGraph,
+  snapshotRasterBand,
   validateParameterTarget,
   validateRasterGridAxisAligned,
   validateRasterParameters
@@ -43,6 +51,8 @@ import {
   getRasterJacobiLoopNodeCount,
   requireRasterLength,
   validateRasterExpansionViews,
+  validateRasterExpansionPorts,
+  validateRasterExpansionBand,
   validateRasterExpansionGraph,
   type RasterIterationStatusOutputs
 } from './raster-expansion-utils';
@@ -110,6 +120,13 @@ export function getGPURasterWalkingCostParameterValues(
 
 /** Validates the per-frame settings shared by the props and the packer. */
 function validateWalkingCostSettings(id: string, settings: GPURasterWalkingCostSettings): void {
+  validateRequirement(
+    id,
+    settings.model === undefined ||
+      settings.model.kind === 'tobler' ||
+      settings.model.kind === 'grass',
+    `model.kind must be 'tobler' or 'grass' (received ${String(settings.model?.kind)})`
+  );
   validateFiniteNumber(id, 'frictionWeight', settings.frictionWeight ?? 1, 0);
   if (settings.model?.kind === 'grass') {
     validateRequirement(
@@ -130,8 +147,10 @@ function validateWalkingCostSettings(id: string, settings: GPURasterWalkingCostS
 export type GPURasterWalkingCostProps = {
   id?: string;
   grid: GPURasterMetadata;
-  elevation: GPURasterBufferBand;
-  friction: GPURasterBufferBand;
+  /** Buffer or sampled-texture elevation band; calibration follows raw nodata and validity checks. */
+  elevation: GPURasterBand;
+  /** Buffer or sampled-texture friction band; negative calibrated friction is impassable. */
+  friction: GPURasterBand;
   sources: GraphDataView<'uint32'>;
   /**
    * Per-frame parameters with at least {@link GPU_RASTER_WALKING_COST_PARAMETER_LENGTH} float32
@@ -198,9 +217,68 @@ export class GPURasterWalkingCost implements GPUCommandNodeProducer {
   /** Command nodes `getCommandNodes` returns, at most; checked against the node budget. */
   readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterWalkingCostProps) {
+    // Validate before the model snapshot can select a default representation.
+    validateWalkingCostSettings(props.id ?? 'raster-walking-cost', {model: props.model});
+    props = snapshotConstructionFields(props, [
+      'id',
+      'grid',
+      'elevation',
+      'friction',
+      'sources',
+      'parameters',
+      'cellSizeMode',
+      'model',
+      'maximumIterations',
+      'output'
+    ]);
+    const output = snapshotConstructionFields(props.output, ['costs', 'validity', 'status']);
+    props = Object.freeze({
+      ...props,
+      grid: snapshotRasterGrid(props.grid),
+      model: snapshotRasterWalkingModel(props.model),
+      elevation: Object.freeze(snapshotRasterBand(props.elevation)) as GPURasterBand,
+      friction: Object.freeze(snapshotRasterBand(props.friction)) as GPURasterBand,
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, [
+          'converged',
+          'iterationLimitReached',
+          'iterationCount',
+          'invalidCount'
+        ])
+      })
+    });
     this.id = props.id ?? 'raster-walking-cost';
     this.props = props;
     const {id} = this;
+    validateRasterTextureBand(id, props.elevation, props.grid);
+    validateRasterTextureBand(id, props.friction, props.grid);
+    validateRasterExpansionBand(id, 'elevation', props.elevation);
+    validateRasterExpansionBand(id, 'friction', props.friction);
+    validateRasterExpansionPorts(
+      id,
+      props,
+      {
+        sources: ['uint32'],
+        parameters: ['float32'],
+        'output.costs': ['float32'],
+        'output.validity': ['uint32'],
+        'output.status.converged': ['uint32'],
+        'output.status.iterationLimitReached': ['uint32'],
+        'output.status.iterationCount': ['uint32'],
+        'output.status.invalidCount': ['uint32']
+      },
+      [
+        'output.status.iterationLimitReached',
+        'output.status.iterationCount',
+        'output.status.invalidCount'
+      ]
+    );
+    validateRequirement(
+      id,
+      Boolean(props.output.status.converged),
+      'output.status.converged is required; provide a uint32 convergence view'
+    );
     const count = validateRasterExpansionViews(
       id,
       props.grid,
@@ -234,7 +312,6 @@ export class GPURasterWalkingCost implements GPUCommandNodeProducer {
       Number.isInteger(maximumIterations) && maximumIterations > 0,
       'maximumIterations must be a positive integer'
     );
-    validateWalkingCostSettings(id, {model: props.model});
     this.estimatedCommandNodeCount =
       2 * RASTER_BAND_CANONICALIZATION_NODE_COUNT +
       2 +
@@ -245,6 +322,8 @@ export class GPURasterWalkingCost implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateRasterBandBelongsToGraph(this.id, graph, this.props.elevation, []);
+    validateRasterBandBelongsToGraph(this.id, graph, this.props.friction, []);
     const storageProps = this.props;
     const storageCellCount = storageProps.grid.width * storageProps.grid.height;
     validateRasterStorageBindings(

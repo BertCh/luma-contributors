@@ -5,10 +5,7 @@
 import {ScatterplotLayer} from '@deck.gl/layers';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUHierarchicalDensityClustering,
-  GPUOPTICS
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {GPUHDBSCAN, GPUOPTICS} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {CHICAGO, findPlace} from '../../cartography/gazetteer';
 import {formatCount, formatDistance} from '../../cartography/live-text';
 import type {LngLat} from '../../cartography/types';
@@ -53,7 +50,10 @@ type PatternVariant = {
     reachability: Buffer;
     predecessors: Buffer;
     labels: Buffer;
-    status: Buffer;
+    clusterCount: Buffer;
+    iterationCount: Buffer;
+    converged: Buffer;
+    invalidCount: Buffer;
     intervals: Buffer;
     summary: Buffer;
   };
@@ -326,13 +326,16 @@ export async function createObservationHierarchy(
         reachability: variantResources.createBuffer('reachability', rowCount * 4),
         predecessors: variantResources.createBuffer('predecessors', rowCount * 4),
         labels: variantResources.createBuffer('labels', rowCount * 4),
-        status: variantResources.createBuffer('status', 3 * 4),
+        clusterCount: variantResources.createBuffer('cluster-count', 4),
+        iterationCount: variantResources.createBuffer('optics-iteration-count', 4),
+        converged: variantResources.createBuffer('optics-converged', 4),
+        invalidCount: variantResources.createBuffer('optics-invalid-count', 4),
         intervals: variantResources.createBuffer('xi-intervals', rowCount * 8),
         summary: variantResources.createBuffer('xi-summary', 2 * 4)
       };
       if (options.algorithm === 'hdbscan') {
         graph.add(
-          new GPUHierarchicalDensityClustering({
+          new GPUHDBSCAN({
             id: 'hdbscan-eom',
             spatialContext: projection.spatialContext,
             positions: positionView,
@@ -346,7 +349,7 @@ export async function createObservationHierarchy(
                 'float32',
                 rowCount
               ),
-              status: {count: createOutputView('cluster-count', buffers.status, 'uint32', 1)}
+              status: {count: createOutputView('cluster-count', buffers.clusterCount, 'uint32', 1)}
             }
           })
         );
@@ -387,7 +390,23 @@ export async function createObservationHierarchy(
                 rowCount
               ),
               labels: createOutputView('labels', buffers.labels, 'uint32', rowCount),
-              status: createOutputView('status', buffers.status, 'uint32', 3),
+              ports: {
+                status: {
+                  iterationCount: createOutputView(
+                    'optics-iteration-count',
+                    buffers.iterationCount,
+                    'uint32',
+                    1
+                  ),
+                  converged: createOutputView('optics-converged', buffers.converged, 'uint32', 1),
+                  invalidCount: createOutputView(
+                    'optics-invalid-count',
+                    buffers.invalidCount,
+                    'uint32',
+                    1
+                  )
+                }
+              },
               ...(isXi
                 ? {
                     clusterIntervals: createOutputView(
@@ -410,7 +429,7 @@ export async function createObservationHierarchy(
           ? [
               {buffer: buffers.labels, size: rowCount * 4},
               {buffer: buffers.coreDistances, size: rowCount * 4},
-              {buffer: buffers.status, size: 4}
+              {buffer: buffers.clusterCount, size: 4}
             ]
           : [
               {buffer: buffers.ordering, size: rowCount * 4},
@@ -418,7 +437,9 @@ export async function createObservationHierarchy(
               {buffer: buffers.reachability, size: rowCount * 4},
               {buffer: buffers.predecessors, size: rowCount * 4},
               {buffer: buffers.labels, size: rowCount * 4},
-              {buffer: buffers.status, size: 3 * 4},
+              {buffer: buffers.iterationCount, size: 4},
+              {buffer: buffers.converged, size: 4},
+              {buffer: buffers.invalidCount, size: 4},
               ...(options.algorithm === 'optics-xi'
                 ? [
                     {buffer: buffers.intervals, size: rowCount * 8},

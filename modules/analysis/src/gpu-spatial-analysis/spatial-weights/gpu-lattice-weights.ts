@@ -1,15 +1,16 @@
+import {snapshotWeightsFields, snapshotWeightsDescription} from './weights-construction-snapshot';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createWeightsCountNodes} from './spatial-weights-count';
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
-import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
-  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
-  GraphDataView
+  type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {GPUContributorCapacityPlan} from '../../analysis-core/contracts/capacity-planning';
@@ -20,6 +21,7 @@ import {
   GPU_LATTICE_WEIGHTS_PARAMETER_LENGTH
 } from './spatial-weights-parameters';
 import {
+  isGraphDataView,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement,
@@ -34,11 +36,11 @@ import {
   getGPUSpatialWeightsViews,
   type GPUSpatialWeights,
   type GPUSpatialWeightsCapacityPlan,
-  type GPUSpatialWeightsOutput,
+  type GPUSpatialWeightsProducerOutput as GPUSpatialWeightsOutput,
   validateGPUSpatialWeightsOutput
 } from './spatial-weights';
 
-/** uint32 transients per cell: neighbor counts and their exclusive scan. */
+/** uint32 transients per cell, excluding scan scratch: neighbor counts and exclusive offsets. */
 const CELL_WORDS = 2;
 /** Smallest positive float32 distance scale accepted by the distance kernel. */
 const MINIMUM_CELL_SIZE = 2 ** -149;
@@ -83,7 +85,8 @@ export type GPULatticeWeightsProps = {
    * Caller-owned output CSR with `width * height + 1` offsets. Binary weights (1); `distances`
    * (optional) hold the Euclidean distance between cell centers. `status.overflow` (required) is
    * 1 when the neighbors did not fit the capacity; `status.requiredCount` (optional) receives the
-   * exact unclamped neighbor total.
+   * unclamped neighbor total, saturated at `0xffffffff`. Prefixes also saturate before capacity
+   * clamping so offsets remain nondecreasing across uint32 carries.
    */
   output: GPUSpatialWeightsOutput;
 };
@@ -111,6 +114,7 @@ export type GPULatticeWeightsCapacityPlan = GPUContributorCapacityPlan & {
  * `getCapacityPlan({requiredCount}).slots.capacity` slots and rebuild.
  * {@link GPULatticeWeights.outputWeights} is `output` with `information` (`transform: 'binary'`,
  * `symmetric: true`, provenance with criterion and order = radius) and `status` attached.
+ * Optional output.status.count is written from the terminal CSR offset; tails beyond it are unspecified.
  */
 export class GPULatticeWeights implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -122,6 +126,23 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
   private readonly cellSizeParameters: Float32Array | GraphDataView<'float32'>;
 
   constructor(props: GPULatticeWeightsProps) {
+    props = snapshotWeightsFields(props, [
+      'id',
+      'width',
+      'height',
+      'criterion',
+      'radius',
+      'mask',
+      'cellSize',
+      'output'
+    ]);
+    props = {
+      ...props,
+      output: snapshotWeightsDescription(props.output),
+      cellSize: Array.isArray(props.cellSize)
+        ? ([...props.cellSize] as [number, number])
+        : props.cellSize
+    };
     const id = props.id ?? 'lattice-weights';
     this.id = id;
     this.props = props;
@@ -133,7 +154,7 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     validateCapacity(id, 'width * height', props.width * props.height, 1, 2 ** 31 - 1);
     const radius = props.radius ?? 1;
     validateCapacity(id, 'radius', radius, 1, GPU_LATTICE_WEIGHTS_MAXIMUM_RADIUS);
-    if (props.cellSize instanceof GraphDataView) {
+    if (isGraphDataView(props.cellSize)) {
       validateSinglePackedView(props.cellSize, ['float32'], `${id} cellSize`);
       validateCapacity(
         id,
@@ -158,10 +179,15 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     }
     const writableOutput = getLatticeWritableOutput(props.output);
     if (
-      validateGPUSpatialWeightsOutput(id, writableOutput, [
-        ['offsets', 'overflow', 'requiredCount'],
-        ['neighbors', 'weights', 'distances']
-      ]) !== rows
+      validateGPUSpatialWeightsOutput(
+        id,
+        writableOutput,
+        [
+          ['offsets', 'overflow', 'requiredCount'],
+          ['neighbors', 'weights', 'distances']
+        ],
+        true
+      ) !== rows
     ) {
       throw new Error(`${id} output rows must equal width * height`);
     }
@@ -186,9 +212,9 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
       id,
       [
         ...getGPUSpatialWeightsViews(props.output),
-        ...getGPUSpatialWeightsStatusViews(writableOutput)
+        ...getGPUSpatialWeightsStatusViews(writableOutput, true)
       ],
-      [props.mask, props.cellSize instanceof GraphDataView ? props.cellSize : undefined]
+      [props.mask, isGraphDataView(props.cellSize) ? props.cellSize : undefined]
     );
   }
 
@@ -196,7 +222,7 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
    * Plans the next slot allocation of the grow loop from the read-back `requiredCount` (or, without
    * one, the current capacity). `estimatedPeakTransientBytes` counts the per-cell transients and
    * uploaded distance parameters this contributor declares; borrowed parameter views and the
-   * device-dependent gpgpu scan scratch are not included.
+   * scan scratch are not included.
    */
   getCapacityPlan(observation: {requiredCount?: number} = {}): GPULatticeWeightsCapacityPlan {
     const rows = this.props.width * this.props.height;
@@ -223,6 +249,15 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    return [
+      ...this.getWeightsCommandNodes(graph),
+      ...createWeightsCountNodes(graph, this.id, this.props.output)
+    ];
+  }
+
+  private getWeightsCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
     validateSpatialStatisticsBindings(
       graph,
       this.id,
@@ -237,9 +272,9 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
     const {overflow, requiredCount} = weights.status;
     validateGraphViewsBelongToGraph(id, graph, [
       mask,
-      props.cellSize instanceof GraphDataView ? props.cellSize : undefined,
+      isGraphDataView(props.cellSize) ? props.cellSize : undefined,
       ...getGPUSpatialWeightsViews(weights),
-      ...getGPUSpatialWeightsStatusViews(getLatticeWritableOutput(weights))
+      ...getGPUSpatialWeightsStatusViews(getLatticeWritableOutput(weights), true)
     ]);
     const rows = width * height;
     const capacity = weights.neighbors.length;
@@ -316,14 +351,8 @@ const QUEEN: bool = ${props.criterion === 'queen'};`;
   ${visitWGSL('count++;')}
   counts[countsOffset + index] = count;`
       }),
-      ...new GPUScan({
+      ...createSaturatedCountScanNodes<Parameters>(graph, {
         id: `${id}-scan`,
-        input: counts,
-        output: starts,
-        mode: 'exclusive'
-      }).getCommandNodes(graph),
-      ...createSaturatedScanTotalNodes<Parameters>(graph, {
-        id: id,
         operation: OPERATION,
         counts: counts,
         offsets: starts,

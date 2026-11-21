@@ -104,9 +104,11 @@ test('DBSCAN includes points exactly epsilon apart after shifting, matching scik
 test('CPU DBSCAN honors the 20,000 point declaration without pair-work or quadratic memory failure', () => {
   const input = points(Array.from({length: 20000}, (_, index) => [index * 10, 0]));
   const sample = readPointSamples(input, '', makeLocalFrame('planar', []));
-  expect(computeDbscanLabels(sample, 1, 2).labels.every(label => label === -1)).toBe(true);
+  const labels = computeDbscanLabels(sample, 1, 2).labels;
+  expect(labels).toHaveLength(20000);
+  expect(labels.every(label => label === -1)).toBe(true);
   expect(() => computeDbscanLabels({...sample, count: 20001}, 1, 2)).toThrow(
-    'density-clustering: points count exceeds the 20,000 point limit'
+    'points count must be at most 20000; received 20001'
   );
 });
 

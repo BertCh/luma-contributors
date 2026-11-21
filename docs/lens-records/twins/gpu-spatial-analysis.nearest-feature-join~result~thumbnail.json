@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.nearest-feature-join: observations, libraries, l…",
   "description": "Result of gpu-spatial-analysis.nearest-feature-join: observations, libraries, librarySourceRows → joinOverflow. rows: 1. values read back from the GPU run. input observations: 2344 points.",
-  "llms": "Result of gpu-spatial-analysis.nearest-feature-join: observations, libraries, librarySourceRows → joinOverflow\n\n- rows: 1\n- input observations: 2344 points\n- input libraries: 14 points\n- input librarySourceRows: 14 rows\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 14 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.nearest-feature-join: observations, libraries, librarySourceRows → joinOverflow\n\n- rows: 1\n- input observations: 2344 points\n- input libraries: 14 points\n- input librarySourceRows: 14 rows\n- Coordinate model unknown: drawn as planar x, y.\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 14 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2344 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 14 categories; 5 largest coloured\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "1"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:50.134Z",
-    "runId": "run-e2b7e23e",
+    "date": "2026-11-20T23:50:15.757Z",
+    "runId": "run-83f571f8",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-e2b7e23e",
+    "runId": "run-83f571f8",
     "rung": "result",
     "bindings": {},
     "clauses": [],

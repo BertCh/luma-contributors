@@ -10,7 +10,7 @@ import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {RecipeTestFixture} from '../recipes/recipe-harness';
 
-it('reads distinct canonical diagnostic counts and clears them on the same compiled graph', async () => {
+it('reads the alignment certificate and diagnostic counts on the same compiled graph', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const fixture = new RecipeTestFixture(device, 'alignment-result-replay');
@@ -25,7 +25,7 @@ it('reads distinct canonical diagnostic counts and clears them on the same compi
       sourceIds: sourceIds.view,
       targetIds: fixture.input('target-ids', targetIds, 'uint32', 6)
     });
-    const readout = fixture.output('stage-readout', 'uint32', 3);
+    const readout = fixture.output('stage-readout', 'uint32', 4);
     // Separate copy nodes exercise the offset of each scalar alias, including nonzero words.
     for (const [index, stage] of recipe.status.stages.entries()) {
       fixture.graph.add(
@@ -34,7 +34,12 @@ it('reads distinct canonical diagnostic counts and clears them on the same compi
           operation: 'alignment-status-test',
           invocationCount: 1,
           bindings: [
-            {name: 'source', view: stage.status.invalidCount, type: 'u32', access: 'read'},
+            {
+              name: 'source',
+              view: stage.stage === 'alignment' ? stage.status.complete : stage.status.invalidCount,
+              type: 'u32',
+              access: 'read'
+            },
             {name: 'destination', view: readout.view, type: 'u32', access: 'read_write'}
           ],
           body: `destination[destinationOffset + ${index}u] = source[sourceOffset];`
@@ -43,7 +48,8 @@ it('reads distinct canonical diagnostic counts and clears them on the same compi
     }
     compiled = fixture.graph.compile();
     submitGraph(device, compiled, undefined);
-    expect(await fixture.readUint32(readout, 3)).toEqual([4, 1, 3]);
+    // Missing targets 30, 70, 80 and 90, ambiguous target 10, and source-only rows 40, 50 and 60.
+    expect(await fixture.readUint32(readout, 4)).toEqual([4, 1, 3, 0]);
     const reference = computePopulationSupportAlignmentOnCPU({
       populations,
       sourceIds: new Uint32Array([20, 10, 10, 40, 50, 60]),
@@ -52,7 +58,7 @@ it('reads distinct canonical diagnostic counts and clears them on the same compi
     expect(Array.from(reference.status).slice(1)).toEqual([4, 1, 3]);
     sourceIds.buffer.write(targetIds);
     submitGraph(device, compiled, undefined);
-    expect(await fixture.readUint32(readout, 3)).toEqual([0, 0, 0]);
+    expect(await fixture.readUint32(readout, 4)).toEqual([0, 0, 0, 1]);
   } finally {
     compiled?.destroy();
     fixture.destroy();

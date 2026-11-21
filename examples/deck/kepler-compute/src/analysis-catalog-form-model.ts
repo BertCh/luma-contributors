@@ -9,15 +9,16 @@ import {
   evaluateKeplerOperationApplicability,
   isKeplerDatasetCompatibleWithInput,
   normalizeCatalogParameters,
+  parseCatalogInvocation,
   parseKeplerDatasetProfileDeclarations,
-  parseCatalogFeatureCollection,
   profileKeplerFeatureCollection,
+  profileKeplerColumnTable,
+  type CatalogDataInput,
   resolveKeplerOperationDescriptor,
   getKeplerEffectiveEngine,
   profileKeplerDatasetNetwork,
   withKeplerDatasetNetworkProfile,
   type CatalogOperationBinding,
-  type CatalogFeatureCollection,
   type CatalogParameterValue,
   type KeplerDatasetProfile,
   type KeplerParameterResolution
@@ -25,7 +26,8 @@ import {
 import {
   getCatalogSampleInputs,
   getCatalogSampleInputDeclarations,
-  readCatalogPointColumns
+  readCatalogPointColumns,
+  readCatalogTextInput
 } from './analysis-catalog-input';
 import {
   ANALYSIS_PROFILE_LIMITS,
@@ -67,7 +69,7 @@ export function resolveAnalysisCatalogInputProfiles(
   for (const input of binding.inputs) {
     const draft = drafts[`${binding.id}:${input.name}`] ?? EMPTY_CATALOG_INPUT_DRAFT;
     try {
-      if (input.dataKind && input.dataKind !== 'features') {
+      if (input.dataKind && input.dataKind !== 'features' && input.dataKind !== 'table') {
         throw new Error(
           'This catalog form reads GeoJSON features only. Open the typed workflow input instead.'
         );
@@ -77,15 +79,30 @@ export function resolveAnalysisCatalogInputProfiles(
         const columns = readCatalogPointColumns(draft.field);
         const matches =
           entry &&
-          (columns
-            ? columns.every(Boolean) &&
-              columns[0] === entry.profile.pointColumns?.longitude &&
-              columns[1] === entry.profile.pointColumns?.latitude
-            : Boolean(draft.field) && draft.field === entry.dataset.geometryColumn);
+          ((input.acceptsTable || input.dataKind === 'table') && !draft.field
+            ? true
+            : columns
+              ? columns.every(Boolean) &&
+                columns[0] === entry.profile.pointColumns?.longitude &&
+                columns[1] === entry.profile.pointColumns?.latitude
+              : Boolean(draft.field) && draft.field === entry.dataset.geometryColumn);
+        const selectedProfile =
+          entry && (input.acceptsTable || input.dataKind === 'table') && !draft.field
+            ? {
+                ...entry.profile,
+                kind: 'attributes' as const,
+                catalogGeometry: undefined,
+                geometryColumns: [],
+                pointColumns: undefined,
+                coordinates: undefined,
+                spacing: undefined,
+                vertexCount: undefined
+              }
+            : entry?.profile;
         if (checkedProfiles?.[input.name]) {
           // The panel admits checked profiles only for the current source, revision and mapping.
           // Keep their exact counts while carrying forward declarations from shared metadata.
-          const shared = matches ? entry?.profile : undefined;
+          const shared = matches ? selectedProfile : undefined;
           const coordinateModel =
             shared?.coordinates?.source === 'declared'
               ? shared.coordinates.model
@@ -132,10 +149,10 @@ export function resolveAnalysisCatalogInputProfiles(
           throw new Error(
             'This mapping has not been profiled. Choose the shared geometry or coordinate columns, or Check selected inputs.'
           );
-        profiles[input.name] = entry.profile;
+        profiles[input.name] = selectedProfile!;
         if (draft.profileDeclarations)
           profiles[input.name] = applyKeplerDatasetProfileDeclarations(
-            entry.profile,
+            selectedProfile!,
             parseKeplerDatasetProfileDeclarations(draft.profileDeclarations)
           );
         if (!entry.dataset.provider.readColumnValues)
@@ -161,8 +178,9 @@ export function resolveAnalysisCatalogInputProfiles(
         throw new Error(
           'No built-in sample is available for this input. Choose a dataset or GeoJSON text.'
         );
-      const collection = parseCatalogFeatureCollection(
-        draft.mode === 'sample' ? samples![input.name] : draft.text
+      const collection = readCatalogTextInput(
+        draft.mode === 'sample' ? samples![input.name] : draft.text,
+        input
       );
       profiles[input.name] =
         checkedProfiles?.[input.name] ??
@@ -199,13 +217,33 @@ export function resolveAnalysisCatalogInputProfiles(
 export function profileAnalysisCatalogInput(
   binding: CatalogOperationBinding,
   inputName: string,
-  collection: CatalogFeatureCollection,
+  collection: CatalogDataInput,
   options?: {
     parameters: Readonly<Record<string, CatalogParameterValue>>;
     executionEngine: 'cpu' | 'gpu';
   }
 ): KeplerDatasetProfile {
   const input = binding.inputs.find(candidate => candidate.name === inputName)!;
+  if (collection.type === 'table') {
+    validateRequirement(
+      binding.id,
+      Boolean(input.acceptsTable || input.dataKind === 'table'),
+      `${input.name} does not accept tables`
+    );
+    validateRequirement(
+      binding.id,
+      collection.table.rowCount <= input.maximumFeatures,
+      `${input.name}: rowCount must be at most ${input.maximumFeatures}; received ${collection.table.rowCount}`
+    );
+    return profileKeplerColumnTable(collection.table, {
+      inferPointColumns: false,
+      datasetId: `${binding.id}:${input.name}`,
+      label: input.label,
+      maximumSampleSize: ANALYSIS_PROFILE_LIMITS.maximumSampleSize
+    });
+  }
+  if (collection.type !== 'FeatureCollection')
+    throw new Error(`${binding.id}: use the typed raster workflow input`);
   validateRequirement(
     binding.id,
     collection.features.length <= input.maximumFeatures,
@@ -243,6 +281,47 @@ export function profileAnalysisCatalogInput(
     : profile;
 }
 
+/** Keep a single editable spelling while accepting legacy saved invocations. Conflicts stay errors. */
+export function canonicalizeAnalysisCatalogOverrides(
+  binding: CatalogOperationBinding,
+  raw: Readonly<Record<string, CatalogParameterValue>>
+): Record<string, CatalogParameterValue>;
+export function canonicalizeAnalysisCatalogOverrides(
+  binding: CatalogOperationBinding,
+  raw: Readonly<Record<string, unknown>>
+): Record<string, unknown>;
+export function canonicalizeAnalysisCatalogOverrides(
+  binding: CatalogOperationBinding,
+  raw: Readonly<Record<string, unknown>>
+): Record<string, unknown> {
+  const normalized = normalizeCatalogParameters(binding, raw);
+  const canonical: Record<string, unknown> = {...raw};
+  for (const specification of binding.parameters) {
+    if (!specification.aliasFor) continue;
+    if (raw[specification.name] !== undefined || raw[specification.aliasFor] !== undefined)
+      canonical[specification.aliasFor] = normalized[specification.aliasFor];
+    delete canonical[specification.name];
+  }
+  return canonical;
+}
+
+/** Editing or resetting a canonical value also discards its saved aliases. */
+export function editAnalysisCatalogOverride(
+  binding: CatalogOperationBinding,
+  current: Readonly<Record<string, unknown>>,
+  name: string,
+  value: unknown
+): Record<string, unknown> {
+  const canonicalName =
+    binding.parameters.find(parameter => parameter.name === name)?.aliasFor ?? name;
+  const next = {...current};
+  for (const specification of binding.parameters)
+    if (specification.aliasFor === canonicalName) delete next[specification.name];
+  if (value === undefined) delete next[canonicalName];
+  else next[canonicalName] = value;
+  return next;
+}
+
 /** Explicit edits are separate from defaults: refinement can replace only unedited values. */
 export function createAnalysisCatalogFormModel(
   binding: CatalogOperationBinding,
@@ -256,7 +335,7 @@ export function createAnalysisCatalogFormModel(
 ) {
   const {descriptor} = resolveKeplerOperationDescriptor(binding);
   const problems = [...(options.inputProblems ?? [])];
-  const overrides: Record<string, CatalogParameterValue> = {};
+  let overrides: Record<string, CatalogParameterValue> = {};
   // Validate the edited parameter alone, so normalizing does not turn defaults into overrides.
   for (const [name, value] of Object.entries(options.overrides ?? {})) {
     const specification = binding.parameters.find(parameter => parameter.name === name);
@@ -265,11 +344,21 @@ export function createAnalysisCatalogFormModel(
         {id: binding.id, parameters: specification ? [specification] : []},
         {[name]: value}
       )[name];
-    } catch {
+    } catch (failure) {
       problems.push(
-        `${binding.id}: ${specification?.label ?? name} needs a valid ${specification?.kind ?? 'declared parameter'}${specification?.minimum !== undefined ? ` in ${specification.minimum} to ${specification.maximum ?? 'unbounded'}` : ''}. Correct this setting before Run.`
+        `${failure instanceof Error ? failure.message : String(failure)}. Correct this setting before Run.`
       );
     }
+  }
+  try {
+    overrides = canonicalizeAnalysisCatalogOverrides(binding, overrides);
+  } catch (failure) {
+    problems.push(
+      `${failure instanceof Error ? failure.message : String(failure)}. Correct this setting before Run.`
+    );
+    // Keep the valid canonical edit available to render; the problem above blocks execution.
+    for (const specification of binding.parameters)
+      if (specification.aliasFor) delete overrides[specification.name];
   }
   const executionEngine = options.executionEngine ?? 'gpu';
   // Empty strings are deliberate unbindings. The checker ignores them in overrides, so pass
@@ -351,7 +440,10 @@ export function createAnalysisCatalogFormModel(
       profiles[input.name]?.vertexCount ??
       (profiles[input.name]?.kind === 'points' ? profiles[input.name]?.rowCount : undefined),
     maximumRows: input.dataKind === 'raster' ? input.maximumCells : input.maximumFeatures,
-    maximumVertices: input.maximumVertices
+    maximumVertices: input.maximumVertices,
+    tableRoute:
+      profiles[input.name]?.kind === 'attributes' &&
+      Boolean(input.acceptsTable || input.dataKind === 'table')
   }));
   const selectionChecks = binding.inputs.flatMap(input => {
     const profile = profiles[input.name];
@@ -407,4 +499,24 @@ export function describeAnalysisCatalogParameter(resolution: KeplerParameterReso
   ]
     .filter(Boolean)
     .join(' · ');
+}
+
+/** Restore editor state without weakening execution admission. */
+export function restoreAnalysisCatalogInvocation(text: string) {
+  const restored = parseCatalogInvocation(text, {deferParameterValidation: true});
+  try {
+    return {
+      ...restored,
+      invocation: {
+        ...restored.invocation,
+        parameters: canonicalizeAnalysisCatalogOverrides(
+          restored.binding,
+          restored.invocation.parameters
+        )
+      }
+    };
+  } catch {
+    // The form validates these original explicit spellings and displays a blocking named problem.
+    return restored;
+  }
 }

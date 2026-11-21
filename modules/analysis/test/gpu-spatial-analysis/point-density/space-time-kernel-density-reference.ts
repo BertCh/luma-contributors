@@ -2,11 +2,53 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  evaluateGPUKernelDensityKernel,
-  getGPUKernelDensityWindowMass,
-  type GPUKernelDensityKernel
-} from '../../../src/gpu-spatial-analysis/point-density/index';
+import type {GPUKernelDensityKernel} from '../../../src/gpu-spatial-analysis/point-density/index';
+import {getOracleKernelMassFan} from '../../analysis-core/study-window-oracle';
+
+/** Independent normalized radial densities, with support radius h (Gaussian: 5h). */
+function getSpatialKernel(
+  kernel: GPUKernelDensityKernel,
+  bandwidth: number,
+  distance: number
+): number {
+  const squared = (distance / bandwidth) ** 2;
+  if (kernel === 'gaussian') {
+    return squared < 25 ? Math.exp(-0.5 * squared) / (2 * Math.PI * bandwidth ** 2) : 0;
+  }
+  if (squared >= 1) return 0;
+  return kernel === 'quartic'
+    ? (3 * (1 - squared) ** 2) / (Math.PI * bandwidth ** 2)
+    : (2 * (1 - squared)) / (Math.PI * bandwidth ** 2);
+}
+
+function getSpatialMass(
+  kernel: GPUKernelDensityKernel,
+  bandwidth: number,
+  center: readonly [number, number],
+  extent: readonly [number, number, number, number]
+): number {
+  const [minimumX, minimumY, maximumX, maximumY] = extent;
+  // Independent angular integration of exact radial mass over a rectangle's oriented edges.
+  return getOracleKernelMassFan(
+    {
+      positions: new Float64Array([
+        minimumX,
+        minimumY,
+        maximumX,
+        minimumY,
+        maximumX,
+        maximumY,
+        minimumX,
+        maximumY
+      ]),
+      polygonOffsets: new Uint32Array([0, 1]),
+      ringOffsets: new Uint32Array([0, 4])
+    },
+    center,
+    bandwidth,
+    kernel
+  );
+}
 
 /**
  * Binary64 CPU reference of the space-time kernel density of sparr 2.3-16 `spattemp.density`
@@ -14,8 +56,9 @@ import {
  * the sparr fixture is pending and this brute-force triple loop, written from the definition in the
  * `GPUSpaceTimeKernelDensity` documentation, is the oracle.
  *
- * It does not call the temporal kernel or temporal window mass of the source under test: the
- * temporal kernels are written out here and the temporal window mass is a Simpson integral.
+ * Spatial and temporal kernels are independent formulas. Spatial window mass uses angular
+ * integration of radial mass; temporal window mass uses a Simpson integral. No runtime math
+ * from the contributor under test is used.
  */
 export type SpaceTimeDensityScene = {
   /** Interleaved x, y; already rounded to float32 by the caller. */
@@ -148,18 +191,13 @@ export function getSpaceTimeDensityReference(options: SpaceTimeDensityReferenceO
           );
           total +=
             (scene.weights ? scene.weights[point] : 1) *
-            evaluateGPUKernelDensityKernel(options.spatialKernel, bandwidth, distance) *
+            getSpatialKernel(options.spatialKernel, bandwidth, distance) *
             getTemporalKernel(options.temporalKernel, temporalBandwidth, time - scene.times[point]);
         }
         let valid = true;
         if (options.spatialEdge) {
           // Included points are inside the extent, which is also the spatial window here.
-          total /= getGPUKernelDensityWindowMass(
-            options.spatialKernel,
-            bandwidth,
-            [centerX, centerY],
-            extent
-          );
+          total /= getSpatialMass(options.spatialKernel, bandwidth, [centerX, centerY], extent);
         }
         if (options.temporalEdge) {
           valid = time >= timeWindow[0] && time <= timeWindow[1];

@@ -9,6 +9,7 @@ import {runExample as runInhomogeneous} from './inhomogeneous-point-pattern.exam
 import {runExample as runEnvelope} from './point-pattern-envelope.example';
 import {runExample as runSample} from './spatial-balanced-sample.example';
 import {runExample as runOPTICS} from './optics.example';
+import {getPointProcessCaptureMetadata} from './point-process-domains';
 
 export async function buildPointProcessScenario(
   element: string,
@@ -21,7 +22,7 @@ export async function buildPointProcessScenario(
     view: GraphDataView<Format>,
     role: 'input' | 'output'
   ) => {
-    captures[name] = {view, role, keySpace: 'entry'};
+    captures[name] = {view, role, ...getPointProcessCaptureMetadata(element, name)};
     return view;
   };
   const floats = (name: string, values: number[]) =>
@@ -119,7 +120,13 @@ export async function buildPointProcessScenario(
         reachability: output('reachability', 'float32', 4),
         predecessors: output('predecessors', 'uint32', 4),
         labels: output('labels', 'uint32', 4),
-        status: output('status', 'uint32', 3)
+        ports: {
+          status: {
+            iterationCount: output('iterationCount', 'uint32', 1),
+            converged: output('converged', 'uint32', 1),
+            invalidCount: output('invalidCount', 'uint32', 1)
+          }
+        }
       }
     });
   } else {

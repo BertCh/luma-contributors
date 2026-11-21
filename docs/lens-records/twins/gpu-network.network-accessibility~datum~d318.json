@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of network node 318. gravity-nodes: -87.62275695800781, 41.894168853759766. values read back from the GPU run. search: 1 quantities.",
   "description": "Receipt of network node 318. gravity-nodes: -87.62275695800781, 41.894168853759766. values read back from the GPU run. search: 1 quantities.",
-  "llms": "Receipt of network node 318\n\n- gravity-nodes: -87.62275695800781, 41.894168853759766\n- search: 1 quantities\n- summary: 1 quantities\n- result: 2 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of network node 318\n\n- gravity-nodes: -87.62275695800781, 41.894168853759766\n- search: 1 quantities\n- summary: 1 quantities\n- result: 2 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "gravity-nodes",
     "value": "-87.62275695800781, 41.894168853759766"
@@ -65,16 +65,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:15.308Z",
-    "runId": "run-bf5029d5",
+    "date": "2026-11-20T23:48:43.520Z",
+    "runId": "run-39716fce",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
+      "lens twin: transients accessibilityComplete, matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-bf5029d5",
+    "runId": "run-39716fce",
     "rung": "datum",
     "bindings": {
       "entity": 318

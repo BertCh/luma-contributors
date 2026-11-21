@@ -46,6 +46,7 @@ it('GPULabelPoint is planar only', () => {
   expect(() => create(LONGITUDE_LATITUDE)).toThrow(UNSUPPORTED);
   expect(create().spatialContext.coordinateSpace).toBe('planar');
   expect(create(LOCAL_FRAME).spatialContext.frame?.id).toBe('test-frame');
+  expect(create(LOCAL_FRAME).spatialContext.units).toBe('native');
 });
 
 it('review S-5: both search kernels fall back to the largest ring before the first vertex', () => {

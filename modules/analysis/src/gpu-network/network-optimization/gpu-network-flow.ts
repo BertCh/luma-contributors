@@ -417,7 +417,7 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
               id,
               operation: 'GPUNetworkFlow',
               variant: props.costs ? 'minimum-cost' : 'maximum-flow',
-              // contract-allow: single-invocation -- reference only: construction caps 128 nodes, 1024 edges and 65536 augmentations; serial axes are vertices, edges and augmenting paths.
+              // contract-allow: single-invocation -- reference only: construction enforces MAXIMUM_NODE_COUNT = 128, MAXIMUM_EDGE_COUNT = 1024 and MAXIMUM_AUGMENTATIONS = 65536; serial axes are vertices, edges and augmenting paths.
               invocationCount: 1,
               workgroupSize: 2,
               bindings: [
@@ -558,7 +558,7 @@ summary[summaryOffset + 7u] = select(0u, 1u, exhausted && cutCapacity == value);
           id: `${id}-validate-reference-topology`,
           operation: 'GPUNetworkFlow',
           variant: 'validate-reference-topology',
-          // contract-allow: single-invocation -- reference is capped at 128 vertices and 1024 edges.
+          // contract-allow: single-invocation -- reference topology validation is bounded by constructor limits MAXIMUM_NODE_COUNT = 128 and MAXIMUM_EDGE_COUNT = 1024.
           invocationCount: 1,
           workgroupSize: 2,
           bindings: [

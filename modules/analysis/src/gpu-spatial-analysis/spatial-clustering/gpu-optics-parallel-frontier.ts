@@ -33,12 +33,13 @@ export function createOPTICSParallelFrontierNodes<Parameters>(
     neighbors: GraphDataView<'uint32'>;
     overflow: GraphDataView<'uint32'>;
     processed: GraphDataView<'uint32'>;
+    frontierStatus: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters>[] {
   const id = `${props.id ?? 'optics'}-parallel`;
   const rows = props.positions.length;
   const {output} = props;
-  const {distanceSource, points, offsets, neighbors, overflow, processed} = views;
+  const {distanceSource, points, offsets, neighbors, overflow, processed, frontierStatus} = views;
   const keys = createTransientView(graph, `${id}-keys`, 'uint32', rows);
   const ties = createTransientView(graph, `${id}-ties`, 'uint32', rows);
   const minimum = createTransientView(graph, `${id}-minimum`, 'uint32', 1);
@@ -83,7 +84,7 @@ export function createOPTICSParallelFrontierNodes<Parameters>(
         {name: 'processed', view: processed, type: 'u32', access: 'read'},
         {name: 'overflow', view: overflow, type: 'u32', access: 'read'},
         {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
-        {name: 'status', view: output.status, type: 'u32', access: 'read_write'},
+        {name: 'status', view: frontierStatus, type: 'u32', access: 'read_write'},
         gate.binding
       ],
       body: `keys[keysOffset + index] = select(0x7f800000u, 0xffffffffu, processed[processedOffset + index] != 0u);
@@ -121,7 +122,7 @@ export function createOPTICSParallelFrontierNodes<Parameters>(
       {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
       {name: 'processed', view: processed, type: 'u32', access: 'read_write'},
       {name: 'ordering', view: output.ordering, type: 'u32', access: 'read_write'},
-      {name: 'status', view: output.status, type: 'u32', access: 'read_write'},
+      {name: 'status', view: frontierStatus, type: 'u32', access: 'read_write'},
       gate.binding
     ],
     body: `if (dispatch[dispatchOffset] == 0u) { return; }

@@ -54,6 +54,95 @@ it('censuses adjacent math and luma imports as separate declarations', () => {
   }
 });
 
+it('review LUMA-105: attributes usage to the exact entry point, not to every entry with the name', () => {
+  const fixture = createToolFixture();
+  try {
+    // The graph root re-exports `GPUScan` from the same declaration file as `gpu-core`.
+    fixture.write(
+      'exports.json',
+      JSON.stringify({
+        '@luma.gl/graph': {
+          GPUScan: {kind: 'class', file: 'dist/gpu-core/gpu-scan.d.ts'},
+          GPUSort: {kind: 'class', file: 'dist/gpu-core/gpu-sort.d.ts'}
+        },
+        '@luma.gl/graph/gpu-core': {
+          GPUScan: {kind: 'class', file: 'dist/gpu-core/gpu-scan.d.ts'},
+          GPUSort: {kind: 'class', file: 'dist/gpu-core/gpu-sort.d.ts'}
+        }
+      })
+    );
+    fixture.write(
+      'modules/analysis/src/imports.ts',
+      "import {GPUScan} from '@luma.gl/graph/gpu-core';\nimport {GPUSort} from '@luma.gl/graph';\n"
+    );
+    fixture.run('usage', ['exports.json', 'usage.json', 'report.json']);
+    const report = JSON.parse(readFileSync(join(fixture.directory, 'report.json'), 'utf8'));
+    // Before the fix both entries reported usedInSrc 2: usage was joined by bare name.
+    expect(report['@luma.gl/graph']).toEqual({
+      values: 2,
+      usedInSrc: 1,
+      unused: ['GPUScan'],
+      testOnly: [],
+      usedThroughOtherEntries: {GPUScan: ['@luma.gl/graph/gpu-core']}
+    });
+    expect(report['@luma.gl/graph/gpu-core']).toEqual({
+      values: 2,
+      usedInSrc: 1,
+      unused: ['GPUSort'],
+      testOnly: [],
+      usedThroughOtherEntries: {GPUSort: ['@luma.gl/graph']}
+    });
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('review LUMA-112: diff reports changed declarations and string values under unchanged names', () => {
+  const fixture = createToolFixture();
+  try {
+    const writeVersion = (root: string, signature: string, wgsl: string) => {
+      for (const name of ['core', 'graph', 'shaders', 'engine']) {
+        fixture.write(
+          `${root}/${name}/package.json`,
+          JSON.stringify({exports: {'.': {types: './index.d.ts', import: './index.js'}}})
+        );
+        fixture.write(
+          `${root}/${name}/index.d.ts`,
+          `export declare function getCell(${signature}): number;\nexport declare const GRID_WGSL: string;\nexport declare const STABLE_WGSL: string;\n`
+        );
+        fixture.write(
+          `${root}/${name}/index.js`,
+          `export function getCell() { return 0; }\nexport const GRID_WGSL = ${JSON.stringify(wgsl)};\nexport const STABLE_WGSL = 'fn stable() {}';\n`
+        );
+      }
+    };
+    writeVersion('old', 'x: number', 'fn cell(x: f32) -> f32 { return floor(x / size); }');
+    writeVersion(
+      'new',
+      'x: number, size: number',
+      'fn cell(x: f32) -> f32 { return floor(x * inverseSize); }'
+    );
+    fixture.run('exports', ['old', 'old.json']);
+    fixture.run('exports', ['new', 'new.json']);
+    // Names and kinds are identical, so the name-only diff (the only diff before) prints nothing.
+    expect(fixture.run('diff', ['old.json', 'new.json'])).toBe('');
+    const output = fixture.run('diff', ['old.json', 'new.json', 'old', 'new']);
+    expect(output).toMatch(/^CHANGED DECLARATIONS 4\n/);
+    expect(output).toMatch(
+      /^ {2}@luma\.gl\/graph getCell\(function\) [0-9a-f]{12} -> [0-9a-f]{12}$/m
+    );
+    expect(output).toContain('CHANGED STRING VALUES 4\n');
+    expect(output).toMatch(/^ {2}@luma\.gl\/graph GRID_WGSL [0-9a-f]{12} -> [0-9a-f]{12}$/m);
+    expect(output).not.toContain('STABLE_WGSL');
+    expect(output).not.toContain('UNLOADED ENTRY');
+    expect(fixture.run('diff', ['old.json', 'old.json', 'old', 'old'])).toBe(
+      'CHANGED DECLARATIONS 0\nCHANGED STRING VALUES 0\n'
+    );
+  } finally {
+    fixture.destroy();
+  }
+});
+
 it('keeps equivalent conditional and string export targets and reports unresolved public entries', () => {
   const fixture = createToolFixture();
   try {
@@ -156,7 +245,8 @@ it('runs the maintained export, usage and diff tools on public entries', () => {
       values: 1,
       usedInSrc: 1,
       unused: [],
-      testOnly: []
+      testOnly: [],
+      usedThroughOtherEntries: {}
     });
     writeFixture(
       'previous.json',

@@ -28,7 +28,7 @@ import {
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
-import {runHierarchicalDensityClustering} from '../spatial-clustering/hierarchical-density-clustering-harness';
+import {runHDBSCAN} from '../spatial-clustering/hierarchical-density-clustering-harness';
 import {
   createClusteredPoints,
   createSeededRandom
@@ -72,7 +72,7 @@ async function timeSearch(
   device: Device,
   points: Float32Array,
   options: {
-    k?: number;
+    neighborCount?: number;
     radius?: number;
     times?: Float32Array;
     timeRadius?: number;
@@ -96,7 +96,7 @@ async function timeSearch(
       : GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
     values: getGPUNeighborSearchParameterValues({
       bounds: [0, 0, EXTENT, EXTENT],
-      radius: options.radius,
+      searchRadius: options.radius,
       timeRadius: options.timeRadius,
       timeBounds: options.times ? [0, 1000] : undefined
     })
@@ -113,7 +113,7 @@ async function timeSearch(
     graph.add(
       new GPUNeighborSearch({
         mode: options.radius ? 'radius' : 'knn',
-        k: options.k,
+        neighborCount: options.neighborCount,
         gridSize: [columns, columns],
         positions: importGraphBuffer(
           graph,
@@ -169,7 +169,7 @@ async function timeOPTICS(
     buffers.push(buffer);
     return buffer;
   };
-  const status = create(createOutputBuffer(device, 3));
+  const iterationCount = create(createOutputBuffer(device, 1));
   const uintOutput = (name: string, length: number) =>
     importGraphBuffer(graph, name, create(createOutputBuffer(device, length)), 'uint32', length);
   const floatOutput = (name: string, length: number) =>
@@ -194,12 +194,22 @@ async function timeOPTICS(
           reachability: floatOutput('reachability', rows),
           predecessors: uintOutput('predecessors', rows),
           labels: uintOutput('labels', rows),
-          status: importGraphBuffer(graph, 'status', status, 'uint32', 3)
+          ports: {
+            status: {
+              iterationCount: importGraphBuffer(
+                graph,
+                'iteration-count',
+                iterationCount,
+                'uint32',
+                1
+              )
+            }
+          }
         }
       })
     );
     compiled = await graph.compileAsync();
-    return await timeEncodings(device, compiled, status);
+    return await timeEncodings(device, compiled, iterationCount);
   } finally {
     compiled?.destroy();
     for (const buffer of buffers) buffer.destroy();
@@ -232,7 +242,7 @@ it.skipIf(!RUN_BENCHMARK)(
       ['clustered', points],
       ['clustered plus far outlier', outlierPoints]
     ] as const) {
-      const result = await runHierarchicalDensityClustering(device, scene, {
+      const result = await runHDBSCAN(device, scene, {
         minimumClusterSize: 50,
         minimumSamples: 10,
         timedEncodings: 3
@@ -241,9 +251,12 @@ it.skipIf(!RUN_BENCHMARK)(
         `hdbscan ${name} rows=${rows}: ${result.medianEncodingMilliseconds?.toFixed(1)} ms, clusters ${result.clusterCount}`
       );
     }
-    for (const k of [8, 32, 64, 128, 256]) {
-      const result = await timeSearch(device, points, {k, capacity: rows * k});
-      lines.push(`knn rows=${rows} k=${k}: ${result.milliseconds.toFixed(1)} ms`);
+    for (const neighborCount of [8, 32, 64, 128, 256]) {
+      const result = await timeSearch(device, points, {
+        neighborCount,
+        capacity: rows * neighborCount
+      });
+      lines.push(`knn rows=${rows} k=${neighborCount}: ${result.milliseconds.toFixed(1)} ms`);
       expect(result.total).toBeGreaterThan(0);
     }
     const random = createSeededRandom(9);
@@ -251,7 +264,7 @@ it.skipIf(!RUN_BENCHMARK)(
     for (const timeBucketCount of [1, 8, 64]) {
       for (const [name, search] of [
         ['radius', {radius: 5, capacity: rows * 256}],
-        ['knn', {k: 16, capacity: rows * 16}]
+        ['knn', {neighborCount: 16, capacity: rows * 16}]
       ] as const) {
         const result = await timeSearch(device, points, {
           ...search,

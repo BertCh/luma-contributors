@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionSpatialContext} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotThinningOutput} from './thinning-output-aliases';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -44,9 +46,9 @@ export type CPUTrajectoryThinningOptions = {
 };
 /** All ports, including pre-capacity keep flags and capacity-clamped per-track offsets. */
 export type CPUTrajectoryThinningResult = {
-  rowIds: Uint32Array;
+  sourceRows: Uint32Array;
+  sourceSelectionMask: Uint32Array;
   outputTrackOffsets: Uint32Array;
-  validity: Uint32Array;
   count: Uint32Array;
   requiredCount: Uint32Array;
   overflow: Uint32Array;
@@ -64,7 +66,8 @@ export type CPUTrajectoryThinningResult = {
  *   set candidateOverflow exactly as on the GPU.
  * - Distances and time differences use float64 with one output rounding; Int64 subtraction is
  *   exact before conversion. Threshold decisions at float32 rounding boundaries can differ.
- * - Decreasing trackOffsets after clamping throw an Error.
+ * - Compact trackOffsets must terminate at the row count; storage: 'resident-capacity' opts
+ *   into GPU-compatible clamping. Decreasing offsets throw.
  * - Unwritten copied geometry capacity rows are zero; the GPU leaves them untouched.
  * - Nonfinite distances or times fail the tolerance comparison when NaN; track endpoints are
  *   still kept. GPU results for nonfinite coordinates or times are unspecified.
@@ -95,10 +98,12 @@ export function computeTrajectoryThinningOnCPU(
     throw new Error('parameters must hold the trajectory thinning parameter layout');
   const [tolerance] = input.parameters;
   const {capacity} = options;
+  const sourceRows = new Uint32Array(capacity).fill(GPU_MOVEMENT_SENTINEL);
+  const sourceSelectionMask = new Uint32Array(rowCount);
   const result: CPUTrajectoryThinningResult = {
-    rowIds: new Uint32Array(capacity).fill(GPU_MOVEMENT_SENTINEL),
+    sourceRows,
+    sourceSelectionMask,
     outputTrackOffsets: new Uint32Array(trackOffsets.length),
-    validity: new Uint32Array(rowCount),
     count: new Uint32Array(1),
     requiredCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
@@ -111,9 +116,9 @@ export function computeTrajectoryThinningOnCPU(
   };
   let requiredCount = 0;
   const keepRow = (row: number) => {
-    result.validity[row] = 1;
+    result.sourceSelectionMask[row] = 1;
     if (requiredCount < capacity) {
-      result.rowIds[requiredCount] = row;
+      result.sourceRows[requiredCount] = row;
       result.outputPositions.set(input.positions.subarray(row * 2, row * 2 + 2), requiredCount * 2);
       if (input.timestamps instanceof Uint32Array)
         result.outputTimestamps.set(
@@ -150,7 +155,7 @@ export function computeTrajectoryThinningOnCPU(
         if (successor === anchor) break;
         anchor = successor;
       }
-      if (result.validity[end - 1] === 0) keepRow(end - 1);
+      if (result.sourceSelectionMask[end - 1] === 0) keepRow(end - 1);
     }
     result.outputTrackOffsets[track + 1] = Math.min(requiredCount, capacity);
   }
@@ -160,12 +165,22 @@ export function computeTrajectoryThinningOnCPU(
   return result;
 }
 
-/** CPU twin; follows the same explicitly bounded anchor chain as the contributor. */
+/**
+ * CPU thinning operation. The bounded anchor chain publishes its search-loss flag under
+ * the required `output.status.candidateOverflow` graph value.
+ */
 export class CPUTrajectoryThinningOperation extends GPUCPUOperation {
   constructor(props: TrajectoryThinningOperationProps) {
     const id = props.id ?? 'trajectory-thinning';
+    props = {
+      ...props,
+      spatialContext: props.spatialContext
+        ? snapshotConstructionSpatialContext(props.spatialContext)
+        : undefined,
+      output: snapshotThinningOutput(id, props.output)
+    };
     validateCapacity(id, 'rowCount', props.rowCount, 0);
-    validateCapacity(id, 'trackCount', props.trackCount);
+    validateCapacity(id, 'trackCount', props.trackCount, 0);
     validateCapacity(id, 'capacity', props.capacity);
     if (props.maximumSearchRows !== undefined)
       validateCapacity(
@@ -216,6 +231,7 @@ export class CPUTrajectoryThinningOperation extends GPUCPUOperation {
         const result = computeTrajectoryThinningOnCPU(
           {
             positions,
+            storage: 'resident-capacity',
             timestamps:
               props.timestampFormat === 'uint32x2'
                 ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')

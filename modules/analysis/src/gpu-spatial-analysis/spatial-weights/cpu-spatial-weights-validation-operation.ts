@@ -3,13 +3,23 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getCPUOperationFloat32Rows,
   getCPUOperationUint32Rows
 } from '../../analysis-core/operations/cpu-operation-rows';
 import {GPU_SPATIAL_WEIGHTS_VIOLATION} from './gpu-spatial-weights-validation';
-import type {SpatialWeightsValidationOperationProps} from './gpu-spatial-weights-validation-operation';
+import {snapshotWeightsValidationOperationProps} from './weights-construction-snapshot';
+import {
+  GPUSpatialWeightsValidationOperation,
+  type SpatialWeightsValidationOperationProps
+} from './gpu-spatial-weights-validation-operation';
+import {
+  resolveSpatialWeightsValidationOptions,
+  type SpatialWeightsValidationOptions
+} from './spatial-weights-validation-options';
+
+/** Per-target-row violation bits and one-word count of rows with any violation. */
+export type CPUSpatialWeightsValidationResult = {flags: Uint32Array; invalidCount: Uint32Array};
 
 /**
  * Checks whole CSR and returns the contributor's exact per-row violation bits and invalid count.
@@ -27,8 +37,9 @@ import type {SpatialWeightsValidationOperationProps} from './gpu-spatial-weights
 export function computeSpatialWeightsValidationOnCPU(
   offsets: Uint32Array,
   neighbors: Uint32Array,
-  weights: Float32Array
-): {flags: Uint32Array; invalidCount: Uint32Array} {
+  weights: Float32Array,
+  options: SpatialWeightsValidationOptions = {}
+): CPUSpatialWeightsValidationResult {
   if (offsets.length < 2)
     throw new Error(
       'computeSpatialWeightsValidationOnCPU offsets must contain at least two entries'
@@ -38,6 +49,11 @@ export function computeSpatialWeightsValidationOnCPU(
       'computeSpatialWeightsValidationOnCPU weights length must equal neighbors length'
     );
   const rowCount = offsets.length - 1;
+  const {columnCount, diagonal} = resolveSpatialWeightsValidationOptions(
+    'computeSpatialWeightsValidationOnCPU',
+    rowCount,
+    options
+  );
   const capacity = neighbors.length;
   const flags = new Uint32Array(rowCount);
   const bits = GPU_SPATIAL_WEIGHTS_VIOLATION;
@@ -49,15 +65,21 @@ export function computeSpatialWeightsValidationOnCPU(
     if ((row === 0 && begin !== 0) || begin > end || (row + 1 === rowCount && end > capacity))
       rowFlags |= bits.offsets;
     let previous = 0;
+    let hasUnitDiagonal = false;
     for (let slot = begin; slot < Math.min(end, capacity); slot++) {
       const neighbor = neighbors[slot];
       const weight = weights[slot];
-      if (neighbor >= rowCount) rowFlags |= bits.neighborRange;
-      if (neighbor === row) rowFlags |= bits.self;
+      if (neighbor >= columnCount) rowFlags |= bits.neighborRange;
+      if (neighbor === row) {
+        if (diagonal === 'forbid' || (diagonal === 'require-unit' && weight !== 1))
+          rowFlags |= bits.self;
+        if (weight === 1) hasUnitDiagonal = true;
+      }
       if (slot > begin && neighbor <= previous) rowFlags |= bits.order;
       if (!Number.isFinite(weight) || weight < 0) rowFlags |= bits.weight;
       previous = neighbor;
     }
+    if (diagonal === 'require-unit' && !hasUnitDiagonal) rowFlags |= bits.self;
     flags[row] = rowFlags;
     if (rowFlags !== 0) invalidCount++;
   }
@@ -67,33 +89,48 @@ export function computeSpatialWeightsValidationOnCPU(
 /** CPU twin for whole packed CSR. Optional flags are computed internally when omitted. */
 export class CPUSpatialWeightsValidationOperation extends GPUCPUOperation {
   constructor(props: SpatialWeightsValidationOperationProps) {
+    const {columnCount, diagonal} = props;
+    props = Object.freeze({
+      ...snapshotWeightsValidationOperationProps(props),
+      columnCount,
+      diagonal
+    });
     const id = props.id ?? 'spatial-weights-validation';
-    validateCapacity(id, 'rowCount', props.rowCount, 1, 0xfffffffe);
-    super({
+    const rowCount = props.rowCount;
+    const options = resolveSpatialWeightsValidationOptions(id, rowCount, props);
+    const outputFlags = props.output.flags;
+    const outputInvalidCount = props.output.status.invalidCount;
+    const operation = new GPUSpatialWeightsValidationOperation({
       id,
-      inputs: {
+      rowCount,
+      ...options,
+      weights: {
         offsets: props.weights.offsets,
         neighbors: props.weights.neighbors,
         weights: props.weights.weights
       },
+      output: {flags: outputFlags, status: {invalidCount: outputInvalidCount}}
+    });
+    super({
+      id,
+      inputs: operation.inputs,
       outputs: {
-        [props.output.status.invalidCount]: gpuGraph.vector('uint32', {length: 1}),
-        ...(props.output.flags
-          ? {[props.output.flags]: gpuGraph.vector('uint32', {length: props.rowCount})}
-          : {})
+        [outputInvalidCount]: gpuGraph.vector('uint32', {length: 1}),
+        ...(outputFlags ? {[outputFlags]: gpuGraph.vector('uint32', {length: rowCount})} : {})
       },
       execute({inputs}) {
         const offsets = getCPUOperationUint32Rows(id, inputs, 'offsets');
-        if (offsets.length !== props.rowCount + 1)
+        if (offsets.length !== rowCount + 1)
           throw new Error(`${id} offsets length must equal rowCount + 1`);
         const result = computeSpatialWeightsValidationOnCPU(
           offsets,
           getCPUOperationUint32Rows(id, inputs, 'neighbors'),
-          getCPUOperationFloat32Rows(id, inputs, 'weights')
+          getCPUOperationFloat32Rows(id, inputs, 'weights'),
+          options
         );
         return {
-          [props.output.status.invalidCount]: result.invalidCount,
-          ...(props.output.flags ? {[props.output.flags]: result.flags} : {})
+          [outputInvalidCount]: result.invalidCount,
+          ...(outputFlags ? {[outputFlags]: result.flags} : {})
         };
       }
     });

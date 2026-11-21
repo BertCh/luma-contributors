@@ -112,6 +112,7 @@ defineLensScenario({
               count: {view: output.status.count, role: 'intermediate'},
               requiredCount: {view: output.status.requiredCount, role: 'intermediate'},
               overflow: {view: output.status.overflow, role: 'intermediate'},
+              converged: {view: output.status.converged, role: 'intermediate'},
               voronoiEdges: {
                 view: endpoints,
                 role: 'output',

@@ -2,8 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  prepareLandscapePatchInput,
+  addLandscapePatchInput,
+  validateLandscapePatchDestinations,
+  suppressUnresolvedLandscapeResults,
+  type LandscapePatchInput
+} from './landscape-patch-input';
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
 import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {addLandscapePatchMetrics} from './landscape-patch-metrics';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
@@ -21,6 +29,7 @@ import {
   validateCapacity,
   validateMaximumCount,
   validateGPUStorageBindingByteLength,
+  validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
@@ -54,10 +63,9 @@ export type GPULandscapeMetricsOutput = {
   patchParents: GraphDataView<'uint32'>;
 };
 
-export type GPULandscapeMetricsProps = {
+export type GPULandscapeMetricsProps = LandscapePatchInput & {
   id?: string;
-  /** Complete domain, with stable connected-patch IDs; IDs >= patchClasses.length are background. */
-  patches: GraphDataView<'uint32'>;
+  /** Class for each zero-based patch row (or dense label minus one). */
   patchClasses: GraphDataView<'uint32'>;
   width: number;
   height: number;
@@ -86,11 +94,18 @@ export type GPULandscapeMetricsProps = {
 /** Named class/landscape metrics from a complete, already labelled categorical raster. */
 export function addLandscapeMetricsRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: GPULandscapeMetricsProps
+  inputProps: GPULandscapeMetricsProps
 ) {
+  validateRequirement(
+    inputProps.id ?? 'landscape-metrics',
+    !('outputs' in inputProps),
+    'outputs was removed; use output'
+  );
+  let props = prepareLandscapePatchInput(graph, inputProps.id ?? 'landscape-metrics', inputProps);
   props = snapshotConstructionFields(props, [
     'id',
     'patches',
+    'denseLabels',
     'patchClasses',
     'width',
     'height',
@@ -105,6 +120,19 @@ export function addLandscapeMetricsRecipe<Parameters>(
     'output'
   ]);
   const id = props.id ?? 'landscape-metrics';
+  validateRequirement(
+    id,
+    props.contagionWeighting === undefined ||
+      props.contagionWeighting === 'area' ||
+      props.contagionWeighting === 'adjacency',
+    "contagionWeighting must be 'area' or 'adjacency'"
+  );
+  validateSinglePackedView(props.patches, ['uint32'], `${id} patches`);
+  validateSinglePackedView(props.patchClasses, ['uint32'], `${id} patchClasses`);
+  validateGraphChunkBindingRanges(graph, id, {
+    patches: props.patches,
+    patchClasses: props.patchClasses
+  });
   const {width, height, classCount, cellSize} = props;
   const cellCount = width * height;
   const patchCount = props.patchClasses.length;
@@ -122,8 +150,9 @@ export function addLandscapeMetricsRecipe<Parameters>(
   validateCapacity(id, 'classCount', classCount, 1, LANDSCAPE_METRICS_MAXIMUM_CLASS_COUNT);
   validateRequirement(
     id,
-    cellSize.every(value => Number.isFinite(Math.fround(value)) && value > 0),
-    'cellSize entries must be positive finite float32 numbers'
+    cellSize.length === 2 &&
+      cellSize.every(value => Number.isFinite(Math.fround(value)) && Math.fround(value) > 0),
+    'cellSize must have 2 positive finite float32 entries'
   );
   validateRequirement(
     id,
@@ -145,17 +174,20 @@ export function addLandscapeMetricsRecipe<Parameters>(
     patchCount * 16,
     'reduce the patch count'
   );
-  const output = snapshotConstructionFields(props.output ?? {}, [
-    'patchMetrics',
-    'classMetrics',
-    'classAdjacency',
-    'aggregation',
-    'landscape',
-    'landscapeAggregation',
-    'landscapeCohesion',
-    'reconciledPatches',
-    'patchParents'
-  ]);
+  const output = snapshotConstructionFields<NonNullable<GPULandscapeMetricsProps['output']>>(
+    props.output ?? {},
+    [
+      'patchMetrics',
+      'classMetrics',
+      'classAdjacency',
+      'aggregation',
+      'landscape',
+      'landscapeAggregation',
+      'landscapeCohesion',
+      'reconciledPatches',
+      'patchParents'
+    ]
+  );
   validateRecipeBoundary(
     graph,
     id,
@@ -176,15 +208,19 @@ export function addLandscapeMetricsRecipe<Parameters>(
     const view = output[name];
     if (view) getRecipeView(graph, `${id} output.${name}`, format, length, view);
   }
+  validateGraphChunkBindingRanges(graph, id, output);
+  validateLandscapePatchDestinations(graph, id, props, Object.values(output));
+  const inputPatches = addLandscapePatchInput(graph, id, props);
   // Every supplied output is validated before reconciliation or default allocation.
   const reconciled = props.reconcilePatches
     ? reconcileLandscapePatchLabels(graph, {
         ...props,
+        patches: inputPatches,
         id,
         output: {patches: output?.reconciledPatches, parents: output?.patchParents}
       })
     : undefined;
-  const patches = reconciled?.patches ?? props.patches;
+  const patches = reconciled?.patches ?? inputPatches;
   const patchMetrics = getRecipeView(
     graph,
     `${id}-patches`,
@@ -439,7 +475,18 @@ landscapeAggregation[landscapeAggregationOffset]=aggregate;
 landscapeCohesion[landscapeCohesionOffset]=cohesion;`
     })
   );
+  suppressUnresolvedLandscapeResults(graph, id, props, [
+    patchMetrics,
+    classMetrics,
+    classAdjacency,
+    aggregation,
+    landscape,
+    landscapeAggregation,
+    landscapeCohesion,
+    ...(reconciled ? [reconciled.patches, reconciled.parents] : [])
+  ]);
   return {
+    inputStatus: props.denseLabels?.status,
     outputs: {
       patchMetrics,
       classMetrics,
@@ -450,7 +497,8 @@ landscapeCohesion[landscapeCohesionOffset]=cohesion;`
       landscapeCohesion
     },
     provenance: {
-      patches: props.patches,
+      patches: inputPatches,
+      denseLabels: props.denseLabels,
       reconciledPatches: reconciled?.patches,
       patchParents: reconciled?.parents,
       patchClasses: props.patchClasses,

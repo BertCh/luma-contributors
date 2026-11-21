@@ -25,6 +25,8 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
+  validateFiniteNumber,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -44,6 +46,7 @@ import {
   validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
+  validateRasterGridOrthogonal,
   validateRasterParameters
 } from '../../raster-analysis/raster-band-utils';
 import {
@@ -95,7 +98,7 @@ export type GPUTerrainLineOfSightSettings = {
   tolerancePerKilometer?: number;
   /** Metres at the target end that are not tested. Defaults to 0. */
   targetIgnoreDistance?: number;
-  /** Fraction of the distance at the target end that is not tested. Defaults to 0. */
+  /** Fraction in [0, 1] of the distance at the target end that is not tested. Defaults to 0. */
   targetIgnoreFraction?: number;
 };
 
@@ -117,12 +120,25 @@ export function getGPUTerrainLineOfSightParameterValues(
   grid: GPURasterMetadata,
   target: Float32Array = new Float32Array(GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH)
 ): Float32Array {
+  validateRasterGridOrthogonal('getGPUTerrainLineOfSightParameterValues', grid);
   validateParameterTarget(
     'getGPUTerrainLineOfSightParameterValues',
     target,
     GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH
   );
   const {cellSize, northEdge, southEdge} = getRasterGridGeoreference(grid);
+  for (const [name, value] of Object.entries({
+    observerHeight: settings.observerHeight ?? 1.7,
+    targetHeight: settings.targetHeight ?? 0,
+    maximumDistance: settings.maximumDistance ?? 0,
+    curvatureCoefficient: settings.curvatureCoefficient ?? 0,
+    toleranceMeters: settings.toleranceMeters ?? 0,
+    tolerancePerKilometer: settings.tolerancePerKilometer ?? 0,
+    targetIgnoreDistance: settings.targetIgnoreDistance ?? 0,
+    targetIgnoreFraction: settings.targetIgnoreFraction ?? 0
+  })) {
+    validateFiniteNumber('getGPUTerrainLineOfSightParameterValues', name, value);
+  }
   if (!cellSize.every(size => Number.isFinite(size) && size > 0)) {
     throw new Error(
       'getGPUTerrainLineOfSightParameterValues grid cell size must be finite and positive'
@@ -134,6 +150,11 @@ export function getGPUTerrainLineOfSightParameterValues(
     settings.targetIgnoreDistance ?? 0,
     settings.targetIgnoreFraction ?? 0
   ];
+  validateRequirement(
+    'getGPUTerrainLineOfSightParameterValues',
+    tolerance[3] >= 0 && tolerance[3] <= 1,
+    `targetIgnoreFraction must be non-negative and in [0, 1]; received ${tolerance[3]}`
+  );
   if (!tolerance.every(value => Number.isFinite(value) && value >= 0)) {
     throw new Error(
       'getGPUTerrainLineOfSightParameterValues tolerance values must be finite and non-negative'
@@ -324,6 +345,8 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
     validateRasterGrid(id, props.grid);
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
+    // Distances and gradients use the two pixel-axis lengths as if perpendicular.
+    validateRasterGridOrthogonal(id, props.grid);
     validateSinglePackedView(props.pairs, ['float32x4'], `${id} pairs`);
     const pairCount = props.pairs.length;
     if (props.pairHeights) {

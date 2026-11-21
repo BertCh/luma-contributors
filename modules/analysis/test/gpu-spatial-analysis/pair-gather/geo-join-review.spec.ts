@@ -56,7 +56,7 @@ for (const metric of ['planar', 'great-circle'] as const) {
               positions: inputs['features'] as GraphDataView<'float32x2'>,
               sourceIds: inputs['featureIds'] as GraphDataView<'uint32'>
             },
-            distance: inputs['radius'] as GraphDataView<'float32'>,
+            radius: inputs['radius'] as GraphDataView<'float32'>,
             candidateCapacity: 1,
             output: {
               nearestFeatureRows: outputs['rows'] as GraphDataView<'uint32'>,
@@ -123,7 +123,7 @@ it('R6 two winning segment rows with source IDs [7,7] produce distinct CSR colum
             ends: inputs['ends'] as GraphDataView<'float32x2'>,
             sourceIds: inputs['sourceIds'] as GraphDataView<'uint32'>
           },
-          k: 2,
+          neighborCount: 2,
           output: {
             neighborIds: outputs['neighborIds'] as GraphDataView<'uint32'>,
             neighborRows,

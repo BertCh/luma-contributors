@@ -129,7 +129,7 @@ def algebraCases(datasetIndex, dataset, left, right, mask):
         cases.append(dict(name=dataset['name']+'/'+name, reference='scipy.sparse arithmetic; scipy.sparse.csgraph.shortest_path',
             n=dataset['n'], datasetIndex=datasetIndex, operation=operation, **parameters,
             expected=pack(result), rowSums=numpy.asarray(result.sum(axis=1)).ravel()))
-    for operation, support in [('union',union),('intersection',overlap),('difference',leftOnly),('symmetricDifference',leftOnly+rightOnly)]:
+    for operation, support in [('union',union),('intersection',overlap),('difference',leftOnly),('symmetric-difference',leftOnly+rightOnly)]:
         rules = ['left','right','sum','min','max','product','binary'] if operation in ['union','intersection'] else ['left','binary']
         for rule in rules:
             if rule == 'binary': values = support

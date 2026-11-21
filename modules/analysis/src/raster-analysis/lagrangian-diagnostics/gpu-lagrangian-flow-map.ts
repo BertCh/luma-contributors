@@ -3,6 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+
+import {
+  resolveFlowRasterPlacement,
+  resolveFlowLocalOrigin,
+  type FlowRasterPlacement
+} from '../flow-texture/flow-raster-placement';
+
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -15,6 +26,7 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
+  validateNonZeroFiniteNumber,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
@@ -50,12 +62,22 @@ export const GPU_LAGRANGIAN_NO_REGION = 0xffffffff;
 
 /** Per-frame settings of {@link GPULagrangianFlowMap}. */
 export type GPULagrangianFlowMapSettings = {
+  /** Planar origin subtracted before float32 packing. Upload seeds as world minus this origin
+   * before narrowing; positions are local too. Add it in binary64 on readback. Do not use with
+   * longitude-latitude projection mode. Defaults to [0, 0]. */
+  localOrigin?: readonly [number, number];
   /**
-   * Field raster placement `[originX, originY, cellWidth, cellHeight]`, the placement of
-   * `GPUParticleAdvection`: row 0 has the smallest y and cell `(i, j)` is centred at
-   * `origin + (i + 0.5, j + 0.5) * cellSize`.
+   * Field raster placement with an outer-corner `origin` and `cellSize`, the placement of
+   * `GPUParticleAdvection`: cell `(i, j)` is centred at `origin + (i + 0.5, j + 0.5) * cellSize`.
+   * Cell sizes are signed: a positive cellHeight puts row 0 at the smallest y; a negative one
+   * (north-up, origin at the top edge) puts row 0 at the largest y. A cell size that is zero or
+   * not finite in float32 throws.
    */
-  fieldExtent: readonly [number, number, number, number];
+  fieldPlacement: FlowRasterPlacement;
+  /** Absolute time origin subtracted from startTime, sliceStartTime and sliceEndTime in binary64.
+   * Durations (timeStep and residenceTimes) are unchanged. For epoch timestamps, use
+   * timeOrigin: sliceStartTime. Distinct slices that still alias in float32 throw. Defaults to 0. */
+  timeOrigin?: number;
   /** Time at which the particles are released, in the time unit of the field velocities. */
   startTime: number;
   /**
@@ -69,18 +91,21 @@ export type GPULagrangianFlowMapSettings = {
   sliceEndTime: number;
 };
 
+/** Settings accepted by the float parameter packer. */
+export type GPULagrangianFlowMapParameterSettings = GPULagrangianFlowMapSettings;
+
 /**
  * Packs the float parameters of {@link GPULagrangianFlowMap}.
  *
  * Layout: `[originX, originY, cellWidth, cellHeight, startTime, timeStep, sliceStartTime,
- * sliceEndTime]` as float32. Times are float32 on the GPU, so release times far from the slice
- * times should be given relative to `sliceStartTime`.
+ * sliceEndTime]` as float32. Absolute instants are relative to `timeOrigin` (default 0);
+ * `timeStep` is a duration and is never rebased.
  *
  * @param settings Per-frame settings.
  * @param target Optional destination of at least {@link GPU_LAGRANGIAN_FLOW_MAP_PARAMETER_LENGTH} elements.
  */
 export function getGPULagrangianFlowMapParameterValues(
-  settings: GPULagrangianFlowMapSettings,
+  settings: GPULagrangianFlowMapParameterSettings,
   target: Float32Array = new Float32Array(GPU_LAGRANGIAN_FLOW_MAP_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_LAGRANGIAN_FLOW_MAP_PARAMETER_LENGTH) {
@@ -88,13 +113,16 @@ export function getGPULagrangianFlowMapParameterValues(
       `${OPERATION} parameter target must hold ${GPU_LAGRANGIAN_FLOW_MAP_PARAMETER_LENGTH} elements`
     );
   }
-  const [originX, originY, cellWidth, cellHeight] = settings.fieldExtent;
-  for (const [name, value] of [
-    ['cellWidth', cellWidth],
-    ['cellHeight', cellHeight]
-  ] as const) {
-    validateFiniteNumber(OPERATION, name, value, Number.MIN_VALUE);
-  }
+  const [originX, originY, cellWidth, cellHeight] = resolveFlowRasterPlacement(
+    OPERATION,
+    settings,
+    'fieldPlacement',
+    'fieldExtent'
+  );
+  // Signed cell sizes are part of the placement contract; only zero and non-finite sizes (after
+  // float32 rounding) are rejected, as in GPUParticleAdvection and GPUStreamlines.
+  validateNonZeroFiniteNumber(OPERATION, 'fieldPlacement cellWidth', cellWidth);
+  validateNonZeroFiniteNumber(OPERATION, 'fieldPlacement cellHeight', cellHeight);
   for (const [name, value] of [
     ['originX', originX],
     ['originY', originY],
@@ -103,17 +131,47 @@ export function getGPULagrangianFlowMapParameterValues(
     ['sliceStartTime', settings.sliceStartTime],
     ['sliceEndTime', settings.sliceEndTime]
   ] as const) {
-    validateFiniteNumber(OPERATION, name, value);
+    validateRequirement(
+      OPERATION,
+      Number.isFinite(value),
+      `${name} must be finite; received ${value}`
+    );
   }
+  const [localOriginX, localOriginY] = resolveFlowLocalOrigin(OPERATION, settings.localOrigin);
+  validateFiniteNumber(OPERATION, 'timeStep', settings.timeStep);
+  validateFiniteNumber(OPERATION, 'fieldPlacement originX - localOrigin', originX - localOriginX);
+  validateFiniteNumber(OPERATION, 'fieldPlacement originY - localOrigin', originY - localOriginY);
+  const timeOrigin = settings.timeOrigin ?? 0;
+  validateRequirement(
+    OPERATION,
+    Number.isFinite(timeOrigin),
+    `timeOrigin must be finite; received ${timeOrigin}`
+  );
+  const startTime = settings.startTime - timeOrigin;
+  const sliceStartTime = settings.sliceStartTime - timeOrigin;
+  const sliceEndTime = settings.sliceEndTime - timeOrigin;
+  for (const [name, value] of [
+    ['startTime', startTime],
+    ['sliceStartTime', sliceStartTime],
+    ['sliceEndTime', sliceEndTime]
+  ] as const) {
+    validateFiniteNumber(OPERATION, `${name} - timeOrigin (received ${value})`, value);
+  }
+  validateRequirement(
+    OPERATION,
+    settings.sliceStartTime === settings.sliceEndTime ||
+      Math.fround(sliceStartTime) !== Math.fround(sliceEndTime),
+    `sliceStartTime (${settings.sliceStartTime}) and sliceEndTime (${settings.sliceEndTime}) must remain distinct in float32; supply timeOrigin near the slice times (received ${timeOrigin})`
+  );
   target.set([
-    originX,
-    originY,
+    originX - localOriginX,
+    originY - localOriginY,
     cellWidth,
     cellHeight,
-    settings.startTime,
+    startTime,
     settings.timeStep,
-    settings.sliceStartTime,
-    settings.sliceEndTime
+    sliceStartTime,
+    sliceEndTime
   ]);
   return target;
 }
@@ -156,7 +214,8 @@ export type GPULagrangianFlowMapProps = {
   id?: string;
   /** Planar (default), or longitude-latitude with metric 'none' for internally projected integration. */
   spatialContext?: GPUSpatialContext;
-  /** Seed positions in the field's frame; degrees in longitude-latitude mode. */
+  /** Seeds in the packed field frame: with planar localOrigin, upload world minus origin
+   * before narrowing. Output positions use this same local frame. Degrees in geographic mode. */
   seeds: GraphDataView<'float32x2'>;
   /** Packed row-major `(u, v)` field valid at `sliceStartTime`, `fieldWidth * fieldHeight` rows. */
   velocitiesStart: GraphDataView<'float32x2'>;
@@ -203,12 +262,17 @@ function getSecondFieldSamplingWGSL(bindingName: string, width: number, height: 
  * bilinear sampling in space (the sampler of `GPUParticleAdvection`) and linear interpolation in
  * time between two slices: `v(p, t) = (1 - w) velocitiesStart(p) + w velocitiesEnd(p)` with
  * `w = (t - sliceStartTime) / (sliceEndTime - sliceStartTime)` clamped to `[0, 1]`, so the field is
- * held constant outside the slice interval. The caller advances a longer record by swapping the
+ * held constant outside the slice interval. Intentionally equal slice times select the first
+ * slice at every release time (weight zero). The caller advances a longer record by swapping the
  * two slices and the slice times between encodings. There is no respawn, no randomness and no
  * atomic: every particle is independent and a run is bitwise reproducible.
  *
+ * Planar localOrigin rebases the field placement; seeds must be rebased before float32 upload.
+ * Final positions stay local; reconstruct world positions by adding localOrigin in binary64.
+ * Without localOrigin, planar seeds and positions remain absolute.
+ *
  * Planar velocities are field units per time unit. In longitude-latitude mode, seeds, output
- * positions and fieldExtent are degrees; velocities are Web Mercator projected metres per time
+ * positions and fieldPlacement are in degrees; velocities are Web Mercator projected metres per time
  * unit, NOT ground east/north velocities. Published projection programs project seeds internally
  * and invert each RK2 sampling position into the geographic raster. No wrapping or clamping is
  * performed; outside the Web Mercator square-world domain a particle is lost. Float32 absolute
@@ -223,11 +287,12 @@ function getSecondFieldSamplingWGSL(bindingName: string, width: number, height: 
  * Lagrangian_diags tutorial; tests use a binary64 CPU reference and linear flows with a closed form.
  *
  * Row direction: with positive cellHeight, row zero is on the smallest-y side of the field extent and
- * rows advance toward larger y; `v` is the velocity toward larger y. Signed cell sizes explicitly
- * reverse the corresponding index direction; sample centers are origin + (index + 0.5) * cell size. No grid affine is read and
- * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
- * must have its row order reversed by the caller before upload, or the flow is mirrored north to
- * south. Following a grid affine is deferred (roadmap 12.4).
+ * rows advance toward larger y. Signed cell sizes reverse the corresponding index direction;
+ * sample centers are origin + (index + 0.5) * cell size. `v` is always the velocity toward larger
+ * y. A north-up field (row 0 at the top, the usual raster order) is uploaded as is with
+ * `originY` at its top edge and a negative cellHeight; with a positive cellHeight its rows must be
+ * reversed first, or the flow is mirrored north to south. No grid affine is read and nothing is
+ * checked at construction. Following a grid affine is deferred (roadmap 12.4).
  */
 export class GPULagrangianFlowMap implements GPUCommandNodeProducer {
   /** Prefix for graph node IDs. */
@@ -238,6 +303,30 @@ export class GPULagrangianFlowMap implements GPUCommandNodeProducer {
   readonly props: Readonly<GPULagrangianFlowMapProps>;
 
   constructor(props: GPULagrangianFlowMapProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'seeds',
+      'velocitiesStart',
+      'velocitiesEnd',
+      'fieldWidth',
+      'fieldHeight',
+      'stepCount',
+      'parameters',
+      'regions',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...props,
+      spatialContext:
+        props.spatialContext && snapshotConstructionSpatialContext(props.spatialContext),
+      output: snapshotConstructionFields(props.output, [
+        'positions',
+        'validity',
+        'regionClasses',
+        'residenceTimes'
+      ])
+    });
     const id = props.id ?? 'lagrangian-flow-map';
     resolveLagrangianSpatialContext(id, props.spatialContext);
     const {fieldWidth, fieldHeight, stepCount, output} = props;
@@ -468,7 +557,8 @@ ${
       break;
     }
     position = position + timeStep * second.xy;
-    if (!isInsideField(position, extent)) {
+    let weightEnd = clamp((time + timeStep - sliceStart) * inverseSpan, 0.0, 1.0);
+    if (sampleVelocity(position, extent, weightEnd).z == 0.0) {
       lost = true;
     }
   }

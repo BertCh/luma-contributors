@@ -121,7 +121,7 @@ for (const operation of [
   'kernel',
   'double',
   'variance',
-  'symmetrize'
+  'average-reciprocal'
 ] as GPUSpatialWeightsTransformOperation[]) {
   BUILDERS[`transform-${operation}`] = (graph, chunkCount) => {
     const {left} = createChunked(graph, chunkCount);
@@ -130,7 +130,7 @@ for (const operation of [
       weights: left,
       bandwidth: 10,
       output:
-        operation === 'symmetrize'
+        operation === 'average-reciprocal'
           ? left.chunks.map((chunk, index) =>
               view(graph, `tout${index}`, 'float32', chunk.weights.neighbors.length)
             )

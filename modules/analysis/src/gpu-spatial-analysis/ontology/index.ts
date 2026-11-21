@@ -18,6 +18,7 @@ export {
   queryGPUSpatialAnalysisCapabilities
 } from './spatial-analysis-catalog';
 export {
+  GPU_ANALYSIS_STABILITY_VALUES,
   GPU_SPATIAL_ANALYSIS_COORDINATE_MODELS,
   GPU_SPATIAL_ANALYSIS_DATA_KINDS,
   GPU_SPATIAL_ANALYSIS_DATA_ONTOLOGY,
@@ -28,15 +29,25 @@ export {
   getGPUAnalysisCapabilityCatalog,
   getGPUAnalysisOperator,
   getGPUAnalysisOperatorCatalog,
+  describeOutputs,
+  searchGPUAnalysisTasks,
   queryGPUAnalysisOperators
 } from './all-entry-points/analysis-operator-catalog';
+export type {GPUAnalysisTaskResult} from './all-entry-points/analysis-operator-catalog';
 export type {
   GPUAnalysisLimit,
+  GPUAnalysisRoute,
+  GPUAnalysisExecutionPlanner,
+  GPUAnalysisArrayForm,
+  GPUAnalysisFormContract,
+  GPUAnalysisOutputDeclaration,
+  GPUAnalysisOutputDescription,
   GPUAnalysisCapability,
   GPUAnalysisOperatorIdentity,
   GPUAnalysisOperator,
   GPUAnalysisOperatorQuery,
   GPUAnalysisPackage,
+  GPUAnalysisStability,
   GPUAnalysisTier,
   GPUSpatialAnalysisCapability,
   GPUSpatialAnalysisCapabilityConnections,

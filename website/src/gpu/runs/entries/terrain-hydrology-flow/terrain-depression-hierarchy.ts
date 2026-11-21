@@ -67,6 +67,9 @@ export default defineOperationRun({
     const levels = builder.allocate('levels', 'float32', nodeCapacity * 2);
     const cellNodes = builder.allocate('cell-nodes', 'uint32', terrain.cellCount);
     const curves = builder.allocate('curves', 'float32', nodeCapacity * stageCount * 2);
+    const count = builder.allocate('count', 'uint32', 1);
+    const requiredCount = builder.allocate('required-count', 'uint32', 1);
+    const overflow = builder.allocate('overflow', 'uint32', 1);
     builder.graph.add(
       new GPUTerrainDepressionHierarchy({
         grid: terrain.grid,
@@ -79,7 +82,7 @@ export default defineOperationRun({
           levels: levels.view,
           cellNodes: cellNodes.view,
           curves: curves.view,
-          status: builder.allocate('status', 'uint32', 3).view
+          status: {count: count.view, requiredCount: requiredCount.view, overflow: overflow.view}
         }
       })
     );
@@ -95,13 +98,16 @@ export default defineOperationRun({
             {name: 'owners', view: cellNodes.view, type: 'u32', access: 'read'},
             {name: 'levels', view: levels.view, type: 'f32', access: 'read'},
             {name: 'ground', view: elevation.view, type: 'f32', access: 'read'},
+            {name: 'storedCount', view: count.view, type: 'u32', access: 'read'},
+            {name: 'overflow', view: overflow.view, type: 'u32', access: 'read'},
             {name: 'depth', view: fillDepth.view, type: 'f32', access: 'read_write'}
           ],
           invocationCount: terrain.cellCount,
           body: `let node = owners[ownersOffset + index];
   let spill = levels[levelsOffset + min(node, ${nodeCapacity - 1}u) * 2u + 1u];
   let missing = bitcast<f32>(0x7fc00000u | (index & 0u));
-  depth[depthOffset + index] = select(missing, spill - ground[groundOffset + index], node < ${nodeCapacity}u && spill < 1.0e20);`
+  let usable = overflow[overflowOffset] == 0u && node < storedCount[storedCountOffset];
+  depth[depthOffset + index] = select(missing, spill - ground[groundOffset + index], usable && spill < 1.0e20);`
         })
       ]
     });
@@ -121,23 +127,30 @@ export default defineOperationRun({
             {name: 'owners', view: cellNodes.view, type: 'u32', access: 'read'},
             {name: 'nodes', view: nodes.view, type: 'u32', access: 'read'},
             {name: 'curves', view: curves.view, type: 'f32', access: 'read'},
+            {name: 'storedCount', view: count.view, type: 'u32', access: 'read'},
+            {name: 'overflow', view: overflow.view, type: 'u32', access: 'read'},
             {name: 'chart', view: curve.view, type: 'f32', access: 'read_write'}
           ],
           invocationCount: stageCount * 2,
           body: `let kind = index / ${stageCount}u;
   let stage = index % ${stageCount}u;
+  if (overflow[overflowOffset] != 0u) {
+    chart[chartOffset + index] = 0.0;
+    return;
+  }
+  let nodeCount = storedCount[storedCountOffset];
   var node = owners[ownersOffset + ${restCell}u];
-  if (node < ${nodeCapacity}u) {
+  if (node < nodeCount) {
     let parent = nodes[nodesOffset + node * 4u];
-    if (parent < ${nodeCapacity}u) { node = parent; }
+    if (parent < nodeCount) { node = parent; }
   }
   var maximum = 1.0e-9;
-  for (var entry = 0u; entry < ${nodeCapacity * stageCount}u; entry++) {
+  for (var entry = 0u; entry < nodeCount * ${stageCount}u; entry++) {
     let value = curves[curvesOffset + entry * 2u + kind];
     if (value == value && value < 1.0e20) { maximum = max(maximum, value); }
   }
   var own = 0.0;
-  if (node < ${nodeCapacity}u) {
+  if (node < nodeCount) {
     let value = curves[curvesOffset + (node * ${stageCount}u + stage) * 2u + kind];
     if (value == value && value < 1.0e20) { own = value; }
   }
@@ -146,7 +159,19 @@ export default defineOperationRun({
       ]
     });
     return {
-      outputs: {elevation, nodes, levels, cellNodes, curves, fillDepth, highlight, curve}
+      outputs: {
+        elevation,
+        nodes,
+        levels,
+        cellNodes,
+        curves,
+        count,
+        requiredCount,
+        overflow,
+        fillDepth,
+        highlight,
+        curve
+      }
     };
   },
   rebuildOn: ['nodeCapacity', 'stages'],
@@ -162,22 +187,33 @@ export default defineOperationRun({
       const levels = peek(outputs.levels);
       const curves = peek(outputs.curves);
       if (!cellNodes || !nodes || !levels || !curves) return {};
-      const nodeCapacity = Math.round(values.nodeCapacity);
+      const storedCount = peek(outputs.count)?.[0];
+      const requiredCount = peek(outputs.requiredCount)?.[0];
+      const overflow = peek(outputs.overflow)?.[0];
+      if (storedCount === undefined || requiredCount === undefined || overflow === undefined)
+        return {};
+      if (overflow) {
+        return {
+          focus: -1,
+          spotlight: null,
+          readout: `Hierarchy capacity exceeded (${requiredCount} nodes needed)`
+        };
+      }
       const stageCount = Math.round(values.stages);
       const cell = getTerrainCell(inputs, world, pointer.x, pointer.y);
       const [restX, restY] = getRestPoint(inputs, toUnit);
       const isRest = Math.hypot(pointer.unitX - restX, pointer.unitY - restY) < 0.003;
-      const focused = !isRest && cellNodes[cell.index] < nodeCapacity ? cellNodes[cell.index] : -1;
+      const focused = !isRest && cellNodes[cell.index] < storedCount ? cellNodes[cell.index] : -1;
       // The chart keeps the depression under the pointer even at rest, so it always shows curves.
-      let charted = cellNodes[cell.index] < nodeCapacity ? cellNodes[cell.index] : -1;
-      if (isRest && charted >= 0 && nodes[charted * 4] < nodeCapacity) charted = nodes[charted * 4];
+      let charted = cellNodes[cell.index] < storedCount ? cellNodes[cell.index] : -1;
+      if (isRest && charted >= 0 && nodes[charted * 4] < storedCount) charted = nodes[charted * 4];
       const focusKey = focused * 100000 + charted * 100 + stageCount;
       if (inputs.focus.node !== focusKey || inputs.focus.source !== cellNodes) {
         inputs.focus = {node: focusKey, source: cellNodes};
         const parent = focused < 0 ? NO_NODE : nodes[focused * 4];
         const isInside = (start: number, ancestor: number) => {
           let node = start;
-          for (let step = 0; step < nodeCapacity && node < nodeCapacity; step++) {
+          for (let step = 0; step < storedCount && node < storedCount; step++) {
             if (node === ancestor) return true;
             node = nodes[node * 4];
           }
@@ -185,14 +221,14 @@ export default defineOperationRun({
         };
         outputs.highlight.write(
           Uint32Array.from(cellNodes, owner => {
-            if (focused < 0 || owner >= nodeCapacity) return 0;
+            if (focused < 0 || owner >= storedCount) return 0;
             if (isInside(owner, focused)) return 2;
-            return parent < nodeCapacity && isInside(owner, parent) ? 1 : 0;
+            return parent < storedCount && isInside(owner, parent) ? 1 : 0;
           })
         );
         let maximumArea = 1e-9;
         let maximumVolume = 1e-9;
-        for (let index = 0; index < nodeCapacity * stageCount; index++) {
+        for (let index = 0; index < storedCount * stageCount; index++) {
           maximumArea = Math.max(maximumArea, curves[index * 2] || 0);
           maximumVolume = Math.max(maximumVolume, curves[index * 2 + 1] || 0);
         }
@@ -214,7 +250,7 @@ export default defineOperationRun({
         focus: focused,
         spotlight: null,
         glyphs: [{shape: 'crosshair', at: [pointer.x, pointer.y]}],
-        readout: `depression ${focused} · spill ${Number.isFinite(spill) ? spill.toFixed(3) : 'open'} · ${parent < nodeCapacity ? `parent ${parent}` : 'root'} · volume ${volume.toFixed(2)}`
+        readout: `depression ${focused} · spill ${Number.isFinite(spill) ? spill.toFixed(3) : 'open'} · ${parent < storedCount ? `parent ${parent}` : 'root'} · volume ${volume.toFixed(2)}`
       };
     }
   },

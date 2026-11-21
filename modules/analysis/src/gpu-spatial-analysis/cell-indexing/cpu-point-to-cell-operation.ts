@@ -5,6 +5,9 @@
 
 // H3 hex quantization and digit rotations derive from Uber's Apache-2.0 H3.
 
+import {resolveCellPrecision} from './cell-precision';
+import {resolveCellLongitudePolicy, wrapCellLongitudeDegrees} from './cell-longitude-policy';
+import {snapshotCellConstruction} from './cell-construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
@@ -22,7 +25,7 @@ import {
 import {getCellKeyLayout, QUADBIN_FIXED_POINT_CONSTANTS} from '../cell-aggregation/cell-keys';
 import {GPU_CELL_INDEX_RESOLUTION_RANGES, type GPUCellIndexFamily} from './cell-index-families';
 import {S2_POSITION_TO_IJ, S2_POSITION_TO_ORIENTATION} from './cell-index-wgsl';
-import {parseDggsFaceTable} from './h3-index-extended-wgsl';
+import {getFaceBasisVectors} from './h3-index-extended-wgsl';
 import {
   CELL_INDEX_H3_BASE_CELL_PACKED_TABLE,
   CELL_INDEX_H3_CW_OFFSET_PENTAGON_FACES
@@ -35,7 +38,7 @@ import {
 /** Options of the pure point-to-cell computation. */
 export type CPUPointToCellOptions = Pick<
   PointToCellOperationProps,
-  'family' | 'resolution' | 'precision' | 'spatialContext'
+  'family' | 'resolution' | 'precision' | 'longitudePolicy' | 'spatialContext'
 >;
 
 /** Little-endian key words and row-aligned validity (zero keys are invalid). */
@@ -47,12 +50,12 @@ export type CPUPointToCellResult = {cells: Uint32Array; validity: Uint32Array};
  * What differs from the GPU contributor:
  * - S2 uses float64 trigonometry and projection, so keys near cell edges can differ, especially
  *   at levels 26–30. Exact quadrant reduction preserves poles and equivalent ±180 longitudes.
- * - H3 uses float64 projection for both precision options; it does not emulate float32 or
+ * - H3 uses binary64 projection for every precision option; it does not emulate float32 or
  *   double-float intermediates. Cell-edge decisions can differ from either GPU precision.
  * - Nothing differs for Quadbin, quadkey or geohash keys: their integer-defined cell methods
  *   are retained. Quadbin/quadkey fixed-point arithmetic uses exact BigInt intermediates.
- * - Empty arrays are accepted by the pure function; graph operations require at least one row.
- * - Non-finite rows produce zero keys. H3 also returns zero for magnitudes at least 3e38,
+ * - Empty arrays and zero-row named graph operations return empty cells and validity arrays.
+ * - Non-finite rows produce zero keys. With family-default, H3 also returns zero for magnitudes at least 3e38,
  *   matching its kernel guard. Other finite S2/H3 longitudes are reduced modulo 360;
  *   S2 clamps latitude to ±90, H3 treats it as a periodic angle. Subnormals are retained.
  *
@@ -71,7 +74,10 @@ export function computePointToCellOnCPU(
   const cells = new Uint32Array(rowCount * 2);
   const validity = new Uint32Array(rowCount);
   for (let row = 0; row < rowCount; row++) {
-    const longitude = positions[row * 2];
+    const longitude =
+      options.longitudePolicy === 'wrap'
+        ? wrapCellLongitudeDegrees(positions[row * 2])
+        : positions[row * 2];
     const latitude = positions[row * 2 + 1];
     if ((mask && mask[row] === 0) || !Number.isFinite(longitude) || !Number.isFinite(latitude))
       continue;
@@ -117,9 +123,21 @@ export function computePointToCellOnCPU(
 /** CPU twin with the same vector ports and packed keys as GPUPointToCellOperation. */
 export class CPUPointToCellOperation extends GPUCPUOperation {
   constructor(props: PointToCellOperationProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'family',
+      'resolution',
+      'precision',
+      'longitudePolicy',
+      'spatialContext',
+      'positions',
+      'mask',
+      'rowCount',
+      ['output', ['cells', 'validity']]
+    ]);
     const operation = new GPUPointToCellOperation(props);
     const {id} = operation;
-    validateCapacity(id, 'rowCount', props.rowCount);
+    validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateOptions(id, props);
     super({
       id,
@@ -149,6 +167,8 @@ export class CPUPointToCellOperation extends GPUCPUOperation {
 }
 
 function validateOptions(id: string, options: CPUPointToCellOptions): void {
+  resolveCellPrecision(id, options.precision, options.family === 'h3');
+  resolveCellLongitudePolicy(id, options.longitudePolicy);
   validateRequirement(
     id,
     Object.hasOwn(GPU_CELL_INDEX_RESOLUTION_RANGES, options.family),
@@ -345,23 +365,8 @@ const H3_ROTATE_CLOCKWISE = [0, 3, 6, 2, 5, 1, 4, 7];
 const H3_FACE_BASES = getH3FaceBases();
 
 function getH3FaceBases(): number[][][] {
-  const centers = parseDggsFaceTable('dggs_h3_get_face_center_geo', 2);
-  const azimuths = parseDggsFaceTable('dggs_h3_get_face_axis_azimuths', 3);
-  return centers.map(([latitude, longitude], face) => {
-    const latitudeSine = Math.sin(latitude);
-    const latitudeCosine = Math.cos(latitude);
-    const longitudeSine = Math.sin(longitude);
-    const longitudeCosine = Math.cos(longitude);
-    const north = [-latitudeSine * longitudeCosine, -latitudeSine * longitudeSine, latitudeCosine];
-    const east = [-longitudeSine, longitudeCosine, 0];
-    const getDirection = (azimuth: number) =>
-      north.map((value, axis) => Math.cos(azimuth) * value + Math.sin(azimuth) * east[axis]);
-    return [
-      [latitudeCosine * longitudeCosine, latitudeCosine * longitudeSine, latitudeSine],
-      getDirection(azimuths[face][0]),
-      getDirection(azimuths[face][0] - Math.PI / 2)
-    ];
-  });
+  const bases = getFaceBasisVectors();
+  return Array.from({length: 20}, (_, face) => bases.slice(3 * face, 3 * face + 3));
 }
 
 function normalizeCoordinates(coordinates: CoordinateTriple): CoordinateTriple {

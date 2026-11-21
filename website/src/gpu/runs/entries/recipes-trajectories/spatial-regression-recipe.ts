@@ -62,7 +62,7 @@ export default defineOperationRun({
           length: GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
         })
       ),
-      outputs: {
+      output: {
         ols: {
           coefficients: coefficients.view,
           status: {code: olsStatus.view},

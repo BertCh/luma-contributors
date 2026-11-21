@@ -76,7 +76,7 @@ export type GPULineChunkSettings = {
  * @throws If a value is NaN, the chunk length is negative, or `target` is too short.
  */
 export function getGPULineChunkParameterValues(
-  settings: GPULineChunkSettings,
+  settings: GPULineChunkSettings = {},
   target: Float32Array = new Float32Array(GPU_LINE_CHUNK_PARAMETER_LENGTH)
 ): Float32Array {
   if (target.length < GPU_LINE_CHUNK_PARAMETER_LENGTH) {
@@ -134,7 +134,8 @@ export type GPULineChunkProps = {
    * vertices. In `'chunk'` mode the line capacity is `output.lineOffsets.length - 1` and the piece
    * count is data dependent (`sourceLineIndices` gives each piece's input line), counted
    * independently of the output capacity. `requiredCount` saturates at `0xffffffff` if the
-   * requirement reaches the uint32 limit (per-line counts use float32 length division). In
+   * requirement reaches the uint32 limit. Per-line counts check the float32 division estimate
+   * against rounded chunk boundaries within the exact float32 integer index range. In
    * `'substring'` mode there is exactly one output line per input line.
    */
   output: GPULineGeometryOutput;
@@ -145,13 +146,18 @@ export type GPULineChunkProps = {
  *
  * Measures are cumulative line lengths (planar, or great-circle times the sphere radius, meters by default) from a per-line
  * Neumaier-compensated prefix. Chunk `i` of a line of length `L` covers
- * `[i * chunkLength, min((i + 1) * chunkLength, L)]`; a line gets `ceil(L / chunkLength)` chunks,
+ * `[i * chunkLength, min((i + 1) * chunkLength, L)]`. The piece count is the first rounded
+ * float32 chunk boundary that reaches `L` within the exact integer index range (up to 2²⁴).
+ * Beyond that range the count uses `ceil(L / chunkLength)` in float32.
  * Output layout counts are capped at the line capacity plus one to prevent wrapping offsets;
  * a separate count scan reports the full requirement, saturated at the uint32 maximum.
- * Every piece is an interpolated start vertex, the input vertices strictly inside its range, and an
- * interpolated end vertex, so consecutive chunks share their boundary point. Zero-length lines
- * (including single vertices) are copied as one piece; empty lines produce none. A substring whose
- * clamped start is past its clamped end is an empty line; equal measures give two equal vertices.
+ * Each cut at a published float32 vertex measure selects the first row with that measure.
+ * A cut at the line's total measure selects the last row. Other cuts interpolate their position.
+ * Each piece retains all input rows between its cuts in row order, including coincident vertices
+ * and distinct vertices whose published measures coincide. Consecutive chunks share their boundary
+ * point. Zero-length lines (including single vertices) are copied as one piece; empty lines produce
+ * none. A substring whose clamped start is past its clamped end is an empty line; equal measures
+ * give two equal vertices on positive-length lines.
  *
  * Composition: piece counts per line, exclusive `GPUScan`, one range kernel per piece slot (binary
  * searches over measures), vertex counts scan, one emit kernel per piece, and a publish kernel that

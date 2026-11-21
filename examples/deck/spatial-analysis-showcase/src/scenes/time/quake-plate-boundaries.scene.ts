@@ -610,7 +610,7 @@ distanceGraph.add(new GPUDistanceField({
 // Depth statistics per distance bin (dense keys 0..63, rows masked by magnitude).
 statisticsGraph.add(new GPUGroupStatistics({
   keys: keyDistance, mask: maskMagnitude, keyCount: 64, variance: '${state.variance}',
-  percentiles,                                  // [${state.lowerFraction}, 0.5, ${state.upperFraction}]
+  probabilities,                                // [${state.lowerFraction}, 0.5, ${state.upperFraction}]
   columns: [{values: depth, statistics: ['mean', 'standardDeviation', 'percentiles'], output}],
   output: {keys, counts, status: {count, overflow}}
 }));

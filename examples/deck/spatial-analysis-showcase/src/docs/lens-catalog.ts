@@ -21,7 +21,7 @@ export type LensCatalogFamily = {family: string; tiles: LensCatalogTile[]};
 
 /** Validates the catalog's sole optional attribute. */
 export function parseLensCatalogAttributes(
-  attributes: Record<string, unknown> = {}
+  attributes: Record<string, unknown> & {entry?: unknown} = {}
 ): string | undefined {
   for (const name of Object.keys(attributes)) {
     if (name !== 'entry') throw new Error(`Unknown lens-catalog attribute: ${name}`);
@@ -163,8 +163,12 @@ export function buildLensCatalogModel(
       } catch (error) {
         throw new Error(`${page.path}:${lineIndex + 1}: ${String(error)}`);
       }
-      const scenario = attributes.scenario;
-      if (attributes.rung !== 'result' || !scenario || (entry && scenario.split('.')[0] !== entry))
+      const scenario = attributes['scenario'];
+      if (
+        attributes['rung'] !== 'result' ||
+        !scenario ||
+        (entry && scenario.split('.')[0] !== entry)
+      )
         continue;
       const route = `/docs/${page.path
         .replace(/^docs\//, '')

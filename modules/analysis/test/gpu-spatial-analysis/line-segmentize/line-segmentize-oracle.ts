@@ -74,6 +74,19 @@ function getLength(
   return spherical ? getCentralAngle(a, b) * radius : Math.hypot(b[0] - a[0], b[1] - a[1]);
 }
 
+/** Apply only the contributor's float32 cutoff; keep the independent Karney path outside it. */
+function interpolateContributorGreatCircle(
+  source: readonly number[],
+  target: readonly number[],
+  fraction: number
+): number[] {
+  const angle = getCentralAngle(source, target);
+  if (fraction > 0 && fraction < 1 && Math.fround(Math.PI) - Math.fround(angle) < 1e-6) {
+    return [Number.NaN, Number.NaN];
+  }
+  return interpolateGreatCircle(source, target, fraction);
+}
+
 /** Binary64 reference for open/closed, length/degree-step and wrapped-turn segmentization. */
 export function segmentizeLines(
   lines: FlatLines,
@@ -152,7 +165,7 @@ export function segmentizeLines(
           piece === 0
             ? [...vertex]
             : interpolation === 'great-circle'
-              ? interpolateGreatCircle(vertex, next, fraction)
+              ? interpolateContributorGreatCircle(vertex, next, fraction)
               : [
                   vertex[0] + (geographic ? longitudeStep : next[0] - vertex[0]) * fraction,
                   vertex[1] + (next[1] - vertex[1]) * fraction
@@ -197,7 +210,12 @@ export function tessellateGreatCircleArcs(
     measures: []
   };
   sources.forEach((source, pair) => {
-    const target = [source[0] + wrapLongitudeDelta(targets[pair][0] - source[0]), targets[pair][1]];
+    const rawTarget = targets[pair];
+    const delta = rawTarget[0] - source[0];
+    const target = [
+      Math.abs(delta) <= 180 ? rawTarget[0] : rawTarget[0] - 360 * Math.round(delta / 360),
+      rawTarget[1]
+    ];
     const angle = getCentralAngle(source, target);
     const distance = angle * options.radius;
     let segments =
@@ -215,7 +233,7 @@ export function tessellateGreatCircleArcs(
           ? [source[0], source[1]]
           : vertex === segments
             ? target
-            : interpolateGreatCircle(source, target, fraction)
+            : interpolateContributorGreatCircle(source, target, fraction)
       );
       result.sourceRows.push(pair);
       result.measures.push(distance * fraction);

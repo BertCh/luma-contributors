@@ -39,7 +39,7 @@ export default defineOperationRun({
       zones: builder.upload('zone-raster', 'uint32', zoneRaster).view,
       zoneCount: zones.count,
       probabilities: probabilities.view,
-      outputs: {quantiles: quantiles.view}
+      output: {quantiles: quantiles.view}
     });
     return {
       outputs: {band, quantiles, mesh},

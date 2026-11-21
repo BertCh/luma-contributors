@@ -478,6 +478,7 @@ export function uploadS2CountyShapes(
   const geometry = (valuesCapture?: string): GPUComputationCaptureGeometry => ({
     kind: 'polygons',
     offsetsCapture: 'countyOffsets',
+    featureKeySpace: 'county',
     coordinateModel: 'geographic',
     ...(valuesCapture && {valuesCapture})
   });
@@ -487,7 +488,7 @@ export function uploadS2CountyShapes(
     counties: {
       view: vertices,
       role: 'context',
-      keySpace: 'county',
+      keySpace: 'county-vertex',
       geometry: geometry()
     }
   };
@@ -499,7 +500,7 @@ export function uploadS2CountyShapes(
     paint: (valuesCapture: string): S2CaptureSpec => ({
       view: vertices,
       role: 'output',
-      keySpace: 'county',
+      keySpace: 'county-vertex',
       geometry: geometry(valuesCapture)
     })
   };

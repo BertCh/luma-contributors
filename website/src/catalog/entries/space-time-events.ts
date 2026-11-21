@@ -41,7 +41,7 @@ export const entries: CatalogEntry[] = [
     title: 'Jacquez k-nearest-neighbor test',
     summary: 'Tests whether events that are nearest neighbors in space are also nearest in time.',
     explanation:
-      'A space-time interaction test that needs no distance or time threshold, only `k`. It counts (event, neighbor) pairs that are among the k nearest in both space and time and compares the count with permuted times.',
+      'A space-time interaction test that needs no distance or time threshold, only `neighborCount`. It counts (event, neighbor) pairs that are among the k nearest in both space and time and compares the count with permuted times.',
     dataTypes: {input: ['points', 'spatial-weights', 'time-series'], output: ['table']},
     useCases: ['model', 'find-patterns'],
     domains: ['spatial-statistics'],
@@ -60,7 +60,7 @@ export const entries: CatalogEntry[] = [
         description: 'getGPUSpaceTimeParameterValues: seed and permutation count.'
       },
       {
-        name: 'k',
+        name: 'neighborCount',
         type: 'number',
         required: true,
         description: 'Nearest neighbors in time, 1 to 256.'
@@ -101,9 +101,9 @@ export const entries: CatalogEntry[] = [
   getGPUSpaceTimeParameterValues
 } from '${IMPORT_PATH}';
 
-// neighbors: GPUNeighborSearch in knn mode with k = 5; times: days since the first event
+// neighbors: GPUNeighborSearch in knn mode with neighborCount = 5; times: days since the first event
 graph.add(new GPUJacquezTest({
-  neighbors, times, k: 5, maximumPermutations: 499,
+  neighbors, times, neighborCount: 5, maximumPermutations: 499,
   parameters: graph.importBuffer(parameterBuffer, 'uint32'),
   output: {statistics, summary}
 }));

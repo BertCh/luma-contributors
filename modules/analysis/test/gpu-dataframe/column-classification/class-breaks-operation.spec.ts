@@ -242,7 +242,7 @@ for (const method of GPU_CLASS_BREAKS_METHODS) {
 }
 
 for (const method of ['custom', 'maximum-breaks'] as const) {
-  it(`class-break operations preserve signed-zero key distinctions for ${method}`, async () => {
+  it(`class-break operations merge signed zeros numerically for ${method}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const custom = method === 'custom';
@@ -277,15 +277,16 @@ for (const method of ['custom', 'maximum-breaks'] as const) {
       outputs,
       operations: [new GPUClassBreaksOperation(props)]
     });
-    const expectedEdges = custom ? [-1, 0, 1] : [-1, -0.5, 0, 0.5, 1];
-    // Integer counts differ under numeric comparisons: this tests key semantics, not zero signs.
+    const expectedEdges = custom ? [-1, 0, 1] : [-1, -0.5, 0.5, 1, NaN];
+    // Numeric membership puts both signed zeros in the same class.
     for (const rows of [cpu, gpu]) {
-      expect(Array.from(rows['classCount'])).toEqual([maximumClassCount]);
-      expect(Array.from(rows['classCounts'])).toEqual(new Array<number>(maximumClassCount).fill(1));
+      expect(Array.from(rows['classCount'])).toEqual([custom ? 2 : 3]);
+      expect(Array.from(rows['classCounts'])).toEqual(custom ? [0, 2] : [1, 2, 1, 0]);
       expect(rows['breaks'].length).toBe(expectedEdges.length);
-      expectedEdges.forEach((expected, edge) =>
-        expect(rows['breaks'][edge] === expected).toBe(true)
-      );
+      expectedEdges.forEach((expected, edge) => {
+        if (Number.isNaN(expected)) expect(Number.isNaN(rows['breaks'][edge])).toBe(true);
+        else expect(rows['breaks'][edge] === expected).toBe(true);
+      });
     }
   });
 }

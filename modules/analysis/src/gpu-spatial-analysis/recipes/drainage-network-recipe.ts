@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {addPreparedRecipe} from './prepared-recipe';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotRasterGrid} from '../../raster-analysis/raster-grid/raster-construction-snapshot';
+import {snapshotRasterBand} from '../../raster-analysis/raster-band-utils';
 
 import {getRecipeView as getOrCreateView} from './recipe-utils';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
@@ -12,8 +15,14 @@ import {
 } from '../../gpu-terrain/hydrology/gpu-terrain-flow';
 import {GPUTerrainStreamOrder} from '../../gpu-terrain/hydrology/gpu-terrain-stream-order';
 import {GPUTerrainWatersheds} from '../../gpu-terrain/hydrology/gpu-terrain-watersheds';
-import {GPUTerrainFlowDistance} from '../../gpu-terrain/hydrology/gpu-terrain-flow-distance';
-import {GPUTerrainStreamNetwork} from '../../gpu-terrain/hydrology/gpu-terrain-stream-network';
+import {
+  GPUTerrainFlowDistance,
+  type GPUTerrainFlowDistanceProps
+} from '../../gpu-terrain/hydrology/gpu-terrain-flow-distance';
+import {
+  GPUTerrainStreamNetwork,
+  type GPUTerrainStreamNetworkProps
+} from '../../gpu-terrain/hydrology/gpu-terrain-stream-network';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
 import {addRecipeCountNodes, RecipeBuilder} from './recipe-utils';
 
@@ -26,7 +35,22 @@ export type GPUDrainageNetworkRecipeProps = {
   reachCapacity?: number;
   vertexCapacity?: number;
 };
-/** One complete planar D8 domain; graph-owned outputs can feed rendering or explicit readback copies. */
+
+type GPUDrainageNetworkCatchmentSummary = {
+  catchmentIds: GraphDataView<'uint32'>;
+  cellCounts: GraphDataView<'uint32'>;
+  /** Mean downstream distance per catchment, in affine units by default or ground metres in geographic and Web Mercator modes. */
+  meanDownstreamDistance: GraphDataView<'float32'>;
+  count: GraphDataView<'uint32'>;
+  overflow: GraphDataView<'uint32'>;
+};
+
+/**
+ * Builds a drainage network on one complete D8 domain. Downstream distances, reach lengths and
+ * mean downstream distances use affine units by default and ground metres when `flow.cellSizeMode`
+ * is `'geographic'` or `'web-mercator'`. Graph-owned outputs can feed rendering or explicit readback
+ * copies.
+ */
 export function addDrainageNetworkRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUDrainageNetworkRecipeProps
@@ -40,23 +64,50 @@ function declareDrainageNetworkRecipe<Parameters>(
 ) {
   const id = props.id ?? 'drainage-network-recipe';
   const builder = new RecipeBuilder(graph);
-  const grid = props.flow.grid;
+  const capturedFlow = snapshotConstructionFields(props.flow, [
+    'grid',
+    'elevation',
+    'parameters',
+    'cellSizeMode',
+    'fillDepressions',
+    'resolveFlats',
+    'accumulationUnits',
+    'maximumFillIterations',
+    'maximumFlatIterations',
+    'maximumAccumulationIterations',
+    'runoff',
+    'flatContinuation'
+  ]);
+  const grid = snapshotRasterGrid(capturedFlow.grid);
+  const continuation =
+    capturedFlow.flatContinuation &&
+    snapshotConstructionFields(capturedFlow.flatContinuation, ['lower', 'higher', 'maximum']);
+  const flow = {
+    ...capturedFlow,
+    grid,
+    elevation: snapshotRasterBand(capturedFlow.elevation),
+    flatContinuation: continuation && {
+      lower: snapshotConstructionFields(continuation.lower, ['state', 'values']),
+      higher: snapshotConstructionFields(continuation.higher, ['state', 'values']),
+      maximum: snapshotConstructionFields(continuation.maximum, ['state', 'values'])
+    }
+  };
   const count = grid.width * grid.height;
   const flowDirections = getOrCreateView(graph, `${id}-directions`, 'uint32', count);
   const streams = getOrCreateView(graph, `${id}-streams`, 'uint32', count);
   const accumulation = getOrCreateView(graph, `${id}-accumulation`, 'float32', count);
   const flowStatus = {
-    fillConverged: props.flow.fillDepressions
+    fillConverged: flow.fillDepressions
       ? getOrCreateView(graph, `${id}-fill-converged`, 'uint32', 1)
       : undefined,
     accumulationConverged: getOrCreateView(graph, `${id}-accumulation-converged`, 'uint32', 1),
-    flatsConverged: props.flow.resolveFlats
+    flatsConverged: flow.resolveFlats
       ? getOrCreateView(graph, `${id}-flats-converged`, 'uint32', 1)
       : undefined
   };
   builder.add(
     new GPUTerrainFlow({
-      ...props.flow,
+      ...flow,
       id: `${id}-flow`,
       flowRouting: 'd8',
       output: {flowDirections, accumulation, streams, status: flowStatus}
@@ -86,7 +137,7 @@ function declareDrainageNetworkRecipe<Parameters>(
       output: {labels: catchments, status: catchmentStatus}
     })
   );
-  const distance = {
+  const distance: GPUTerrainFlowDistanceProps['output'] = {
     distance: getOrCreateView(graph, `${id}-distance`, 'float32', count),
     validity: getOrCreateView(graph, `${id}-distance-validity`, 'uint32', count),
     terminalCells: getOrCreateView(graph, `${id}-terminals`, 'uint32', count)
@@ -96,6 +147,7 @@ function declareDrainageNetworkRecipe<Parameters>(
       id: `${id}-distance`,
       grid,
       flowDirections,
+      cellSizeMode: flow.cellSizeMode,
       maximumSteps: props.maximumSteps,
       output: distance
     })
@@ -116,7 +168,7 @@ function declareDrainageNetworkRecipe<Parameters>(
   });
   const reachCapacity = props.reachCapacity ?? count;
   const vertexCapacity = props.vertexCapacity ?? 2 * count;
-  const network = {
+  const network: GPUTerrainStreamNetworkProps['output'] = {
     sourceCells: getOrCreateView(graph, `${id}-sources`, 'uint32', reachCapacity),
     targetCells: getOrCreateView(graph, `${id}-targets`, 'uint32', reachCapacity),
     vertexOffsets: getOrCreateView(graph, `${id}-offsets`, 'uint32', reachCapacity + 1),
@@ -133,11 +185,12 @@ function declareDrainageNetworkRecipe<Parameters>(
       grid,
       flowDirections,
       streams,
+      cellSizeMode: flow.cellSizeMode,
       maximumSteps: props.maximumSteps,
       output: network
     })
   );
-  const summary = {
+  const summary: GPUDrainageNetworkCatchmentSummary = {
     catchmentIds: getOrCreateView(graph, `${id}-summary-ids`, 'uint32', count),
     cellCounts: getOrCreateView(graph, `${id}-summary-counts`, 'uint32', count),
     meanDownstreamDistance: getOrCreateView(graph, `${id}-summary-distance`, 'float32', count),
@@ -187,13 +240,18 @@ function declareDrainageNetworkRecipe<Parameters>(
         {stage: 'accumulation', status: {converged: flowStatus.accumulationConverged}},
         {stage: 'stream-order', status: orderStatus},
         {stage: 'catchments', status: catchmentStatus},
-        {stage: 'downstream-distance', status: {uncertainCount: unresolvedDistanceCount}},
+        {
+          stage: 'downstream-distance',
+          status: {
+            unresolvedCount: unresolvedDistanceCount
+          }
+        },
         {
           stage: 'stream-network',
           status: {
             count: network.reachCount,
             overflow: network.status.overflow,
-            uncertainCount: network.unresolvedCount
+            unresolvedCount: network.unresolvedCount
           }
         },
         {stage: 'catchment-summary', status: {count: summary.count, overflow: summary.overflow}}

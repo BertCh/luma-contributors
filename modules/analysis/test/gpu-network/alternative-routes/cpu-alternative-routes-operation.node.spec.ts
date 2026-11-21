@@ -67,8 +67,16 @@ it('rejects malformed arrays and validates both operation output shapes at const
       complete: 'complete'
     }
   };
-  for (const Operation of [CPUAlternativeRoutesOperation, GPUAlternativeRoutesOperation])
-    expect(() => new Operation({...props, routeCount: 0})).toThrow(/^check-alternatives/);
+  for (const Operation of [CPUAlternativeRoutesOperation, GPUAlternativeRoutesOperation]) {
+    for (const queryCount of [0, 2]) {
+      expect(() => new Operation({...props, queryCount, routeCount: 0})).toThrow(
+        /^check-alternatives.*routeCount/
+      );
+    }
+    // Zero queries are valid; 0 * routeCount * nodeCount gives no route or certificate rows.
+    const empty = new Operation({...props, queryCount: 0});
+    for (const output of Object.values(empty.outputs)) expect(output.length).toBe(0);
+  }
   expect(
     () =>
       new CPUAlternativeRoutesOperation({

@@ -54,6 +54,7 @@ it('GPUTimeWindowFilter sorted schedules a range search, ids, and publish withou
   const graph = new GPUCommandGraph(device);
   const nodes = new GPUTimeWindowFilter(createProps(graph)).getCommandNodes(graph);
   expect(nodes.map(node => node.id)).toEqual([
+    'time-window-filter-range-search-boundaries',
     'time-window-filter-range-search',
     'time-window-filter-ids',
     'time-window-filter-publish'
@@ -81,9 +82,10 @@ it('GPUTimeWindowFilter sorted adds mask, fade, and order-check nodes only when 
   })
     .getCommandNodes(graph)
     .map(node => node.id);
-  expect(ids.slice(0, 3)).toEqual([
+  expect(ids.slice(0, 4)).toEqual([
     'time-window-filter-order-fill',
     'time-window-filter-order-check',
+    'time-window-filter-range-search-boundaries',
     'time-window-filter-range-search'
   ]);
   expect(ids).toContain('time-window-filter-classify');
@@ -113,13 +115,17 @@ it('GPUTimeWindowFilter sorted generates parsing kernels in float, double-single
     const nodes = new GPUTimeWindowFilter(props).getCommandNodes(graph);
     const sources = getParsedKernelSources(nodes);
     // With no rows the ids kernel is skipped: the count is always 0.
-    expect(sources.size, mode).toBe(mode === 'empty' ? 2 : 3);
-    const search = sources.get('time-window-filter-range-search')!;
-    expect(search.includes('loop {'), mode).toBe(mode !== 'empty');
+    expect(sources.size, mode).toBe(mode === 'empty' ? 2 : isWords ? 3 : 4);
+    const search = sources.get(
+      !isWords && mode !== 'empty'
+        ? 'time-window-filter-range-search-boundaries'
+        : 'time-window-filter-range-search'
+    )!;
+    expect(/loop \{|for \(/.test(search), mode).toBe(mode !== 'empty');
     if (isWords) {
       expect(search).toContain('isTimeWordsAtLeast');
     } else if (mode !== 'empty') {
-      expect(search).toContain('isTimeAtLeast');
+      expect(search).toContain('isTimeBitsAtLeast');
     }
   }
   device.destroy();
@@ -134,7 +140,7 @@ it('GPUTimeWindowFilter sorted shares one range-search module across row counts'
   };
   // Rule 12: the row count is an override, never WGSL text.
   expect(count(1000)).toBe(count(1001));
-  expect(count(1000)).toBe(3);
+  expect(count(1000)).toBe(4);
   device.destroy();
 });
 

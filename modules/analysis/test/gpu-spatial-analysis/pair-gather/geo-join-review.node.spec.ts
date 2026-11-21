@@ -102,30 +102,49 @@ function execute(
 
 for (const kind of ['points', 'lines'] as const) {
   for (const side of ['left', 'right'] as const) {
-    it(`R2 rejects unsupported multipart contains and retains feature rows for nearest/prepared ${kind} on ${side}`, () => {
-      const {device, positions, integers} = createFixture();
+    it(`R2 supports multipart contains and retains feature rows for nearest/prepared ${kind} on ${side}`, () => {
+      const {device, graph, positions, integers} = createFixture();
       const geometry =
         kind === 'lines'
           ? {kind, positions: positions(4), lineOffsets: integers(3), featureOffsets: integers(2)}
           : {kind, positions: positions(2), featureOffsets: integers(2)};
       const point = {kind: 'points' as const, positions: positions()};
       try {
-        expect(
-          () =>
-            new GPUSpatialPredicateJoin({
-              left: point,
-              right: point,
-              [side]: geometry,
-              predicate: 'contains',
-              output: {
-                pairs: {
-                  leftRows: integers(2),
-                  rightRows: integers(2),
-                  status: {count: integers(), overflow: integers()}
-                }
-              }
-            })
-        ).toThrow(/featureOffsets.*multipart.*unsupported/);
+        const join = new GPUSpatialPredicateJoin({
+          left: point,
+          right: point,
+          [side]: geometry,
+          predicate: 'contains',
+          output: {
+            pairs: {
+              leftRows: integers(2),
+              rightRows: integers(2),
+              status: {count: integers(), overflow: integers()}
+            }
+          }
+        });
+        expect(join.leftCount).toBe(1);
+        expect(join.rightCount).toBe(1);
+        const kernels = getGPUCommandNodeKernelSources(
+          join.getCommandNodes(graph).filter(node => node.id === `${join.id}-exact`)
+        );
+        expect(kernels).toHaveLength(1);
+        // Hand fixture: the multipoint {(0,0),(1,0)} contains (1,0). The two line parts
+        // [(0,0),(1,0)] and [(1,0),(2,0)] contain their shared endpoint because its mod-2
+        // boundary cancels. Conversely, the singleton (1,0) contains neither whole feature.
+        const multipartPositions =
+          kind === 'points' ? Float32Array.of(0, 0, 1, 0) : Float32Array.of(0, 0, 1, 0, 1, 0, 2, 0);
+        const flags = new Uint32Array(2);
+        execute(kernels[0].source, kernels[0].constants, {
+          leftPositions: side === 'left' ? multipartPositions : Float32Array.of(1, 0),
+          rightPositions: side === 'right' ? multipartPositions : Float32Array.of(1, 0),
+          [`${side}FeatureOffsets`]: Uint32Array.of(0, 2),
+          ...(kind === 'lines' ? {[`${side}RingOffsets`]: Uint32Array.of(0, 2, 4)} : {}),
+          candidatePairs: Uint32Array.of(0, 0),
+          flags,
+          state: new Uint32Array(6)
+        });
+        expect(flags[0]).toBe(side === 'left' ? 1 : 0);
         const nearest = new GPUNearestFeatureJoin({
           queries: side === 'left' ? geometry : point,
           features: side === 'right' ? geometry : point,
@@ -214,8 +233,7 @@ it('R4 gather retains its validated neighbor map and capacity after caller mutat
     output: {
       leftRows: integers(),
       rightRows: integers(),
-      rowCount: integers(),
-      status: {overflow: integers()}
+      status: {count: integers(), overflow: integers()}
     }
   };
   const gather = new GPUPairGather(props);
@@ -248,7 +266,7 @@ for (const sourceId of [100, 0xffffffff]) {
     const selection = new GPUBufferSelection({
       points: {kind: 'points', positions: positions()},
       features: {kind: 'points', positions: positions(), sourceIds: integers()},
-      distance: createTransientView(graph, 'radius', 'float32', 1),
+      radius: createTransientView(graph, 'radius', 'float32', 1),
       candidateCapacity: 1,
       output: {nearestFeatureRows: integers(), outputMask: integers()}
     });
@@ -294,7 +312,7 @@ it('R6 row-indexed weights preserve distinct segment rows despite equal applicat
         ends: positions(2),
         sourceIds: integers(2)
       },
-      k: 2,
+      neighborCount: 2,
       output: {neighborIds, neighborRows, neighborCounts, status: {overflow: integers()}}
     });
     const publisher = join
@@ -396,8 +414,7 @@ it('final1 preserves inherited gather candidate status ports', () => {
       output: {
         leftRows: integers(),
         rightRows: integers(),
-        rowCount: integers(),
-        status: {overflow: integers(), candidateOverflow: integers()}
+        status: {count: integers(), overflow: integers(), candidateOverflow: integers()}
       }
     });
     expect(gather.props.pairs?.status.candidateOverflow === candidateOverflow).toBe(true);
@@ -434,7 +451,7 @@ it('final1 preserves inherited point identities in buffer selection', () => {
       points,
       candidateCapacity: 1,
       features: {kind: 'points', positions: positions()},
-      distance: createTransientView(graph, 'distance', 'float32', 1),
+      radius: createTransientView(graph, 'distance', 'float32', 1),
       output: {
         outputMask: integers(),
         matches: {ids: integers(), status: {count: integers(), overflow: integers()}}
@@ -551,8 +568,7 @@ it('final1 compact pairs reject ambiguous application-ID names', () => {
           output: {
             leftRows: integers(),
             rightRows: integers(),
-            rowCount: integers(),
-            status: {overflow: integers()}
+            status: {count: integers(), overflow: integers()}
           }
         })
     ).toThrow(/leftRows.*rightRows/);
@@ -574,8 +590,7 @@ it('final1 compact pair rows gather attributes while caller IDs remain permuted'
       output: {
         leftRows: integers(2),
         rightRows: integers(2),
-        rowCount: integers(),
-        status: {overflow: integers()}
+        status: {count: integers(), overflow: integers()}
       }
     });
     const nodes = gather.getCommandNodes(graph);

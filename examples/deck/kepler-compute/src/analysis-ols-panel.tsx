@@ -139,6 +139,7 @@ export function OLSResults({analysis}: {analysis: AnalysisRuntime}) {
   const report = analysis.summary?.ols;
   if (!report) return null;
   const penalized = report.inference === 'penalized-descriptive';
+  const ordinary = report.inference === 'classical-homoskedastic';
   const testNames: Record<string, string> = {
     jarqueBera: 'Jarque–Bera normality',
     breuschPagan: 'Breusch–Pagan heteroskedasticity',
@@ -147,14 +148,26 @@ export function OLSResults({analysis}: {analysis: AnalysisRuntime}) {
   return (
     <section className="analysis-ols-results" aria-label="Regression report">
       <p>
-        {penalized ? 'Ridge descriptive fit' : 'Ordinary least squares fit'} · {report.rowCount}{' '}
-        complete observations
-        {!penalized && ` · ${report.degreesOfFreedom} residual degrees of freedom`}
+        {penalized
+          ? 'Ridge descriptive fit'
+          : ordinary
+            ? 'Ordinary least squares fit'
+            : 'Least-squares fit (inference metadata unavailable)'}{' '}
+        · {report.rowCount} complete observations
+        {ordinary && ` · ${report.degreesOfFreedom} residual degrees of freedom`}
+      </p>
+      <p className="hint">
+        Coefficient inference:{' '}
+        {report.inferenceMethod === 'ridge-approximate'
+          ? 'approximate inverse-penalized-normal-matrix inference (inferential cells suppressed)'
+          : (report.inferenceMethod ?? 'unavailable')}
       </p>
       {report.conditioning?.illConditioned && (
         <p role="status" className="error">
-          Precision warning: the predictor correlation matrix is ill-conditioned. Float32 estimates
-          may have lost several significant digits; inspect predictor scaling and collinearity.
+          Conditioning diagnostic: the predictor correlation matrix is ill-conditioned. Float32
+          estimates may have lost significant digits; inspect predictor scaling and collinearity.
+          This numerical diagnostic does not establish that a coefficient-inference convention is
+          available.
         </p>
       )}
       <div style={{overflowX: 'auto'}}>
@@ -186,13 +199,19 @@ export function OLSResults({analysis}: {analysis: AnalysisRuntime}) {
         {formatOLSNumber(report.residualSumOfSquares)}
         {penalized
           ? ` · ridge penalty: ${formatOLSNumber(report.ridgeLambda)}`
-          : ` · adjusted R²: ${formatOLSNumber(report.adjustedRSquared)}`}
+          : ordinary
+            ? ` · adjusted R²: ${formatOLSNumber(report.adjustedRSquared)}`
+            : ' · inference metadata unavailable'}
       </p>
       {penalized ? (
         <p className="hint">
           Penalized coefficients are descriptive. Standard errors, t tests, p-values, residual
           variance, likelihood and information criteria are not reported. No effective degrees of
           freedom or predictive validation is claimed.
+        </p>
+      ) : !ordinary ? (
+        <p className="hint">
+          Inference metadata unavailable; coefficient tests and model inference are suppressed.
         </p>
       ) : (
         <p className="hint">

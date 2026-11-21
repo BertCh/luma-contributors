@@ -40,7 +40,7 @@ export type CPUTerrainDepressionHierarchyResult = {
   levels: Float32Array;
   cellNodes: Uint32Array;
   curves: Float32Array;
-  status: Uint32Array;
+  count: Uint32Array;
   requiredCount: Uint32Array;
   overflow: Uint32Array;
 };
@@ -54,7 +54,7 @@ export type CPUTerrainDepressionHierarchyResult = {
  * What differs from the GPU contributor:
  * - Ground areas, depths, products and curve sums use float64, rounded once at output, instead
  *   of fixed-point sums of float32 terms. Compare nonzero finite curves with relative tolerance
- *   2e-5. Node IDs, stable ties, birth/spill levels, ownership and status words agree exactly.
+ *   2e-5. Node IDs, stable ties, birth/spill levels, ownership and status ports agree exactly.
  * - The CPU has no GPU watchdog or storage-binding scratch limit. Overflow still invalidates
  *   every published node/curve, while cellNodes retains the full internal ownership IDs.
  * - The pure function accepts an empty stages array. The operation form requires stageCount
@@ -180,7 +180,7 @@ export function computeTerrainDepressionHierarchyOnCPU(
     levels,
     cellNodes,
     curves,
-    status: Uint32Array.of(stored, required, Number(overflowed)),
+    count: Uint32Array.of(stored),
     requiredCount: Uint32Array.of(required),
     overflow: Uint32Array.of(Number(overflowed))
   };
@@ -214,6 +214,12 @@ export class CPUTerrainDepressionHierarchyOperation extends GPUCPUOperation {
       TERRAIN_OPERATION_MAXIMUM_WORD_COUNT
     );
     const operation = new GPUTerrainDepressionHierarchyOperation(props);
+    const {stageCount, cellSizeMode, grid, nodeCapacity, validity} = props;
+    const options: CPUTerrainDepressionHierarchyOptions = {
+      grid: {...grid, affine: [...grid.affine]},
+      cellSizeMode,
+      nodeCapacity
+    };
     super({
       id,
       inputs: operation.inputs,
@@ -225,7 +231,7 @@ export class CPUTerrainDepressionHierarchyOperation extends GPUCPUOperation {
       ),
       execute({inputs}) {
         const stages = getCPUOperationFloat32Rows(id, inputs, 'stages');
-        if (stages.length !== props.stageCount)
+        if (stages.length !== stageCount)
           throw new Error(`${id} stages length must equal stageCount`);
         const result = computeTerrainDepressionHierarchyOnCPU(
           {
@@ -233,11 +239,9 @@ export class CPUTerrainDepressionHierarchyOperation extends GPUCPUOperation {
             outlets: getCPUOperationUint32Rows(id, inputs, 'outlets'),
             stages,
             validity:
-              props.validity !== undefined
-                ? getCPUOperationUint32Rows(id, inputs, 'validity')
-                : undefined
+              validity !== undefined ? getCPUOperationUint32Rows(id, inputs, 'validity') : undefined
           },
-          props
+          options
         );
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [

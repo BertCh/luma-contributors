@@ -63,9 +63,11 @@ it('GPUContiguityWeights validates props and declares nodes', () => {
   expect(() => new GPUContiguityWeights({...base, criterion: 'bishop' as 'queen'})).toThrow(
     /criterion/
   );
-  expect(() => new GPUContiguityWeights({...base, output: output(3, 8)})).toThrow(/feature count/);
+  expect(() => new GPUContiguityWeights({...base, output: output(3, 8, false)})).toThrow(
+    /feature count/
+  );
   expect(
-    () => new GPUContiguityWeights({...base, output: {...output(2, 8), status: {}} as never})
+    () => new GPUContiguityWeights({...base, output: {...output(2, 8, false), status: {}} as never})
   ).toThrow(/overflow/);
   expect(() => new GPUContiguityWeights({...base, snapTolerance: -1})).toThrow(/snapTolerance/);
   // The snap range has a named limit: extent / tolerance at most 2^24 cells.
@@ -198,18 +200,18 @@ it('GPUSpatialWeightsTransform and GPUSpatialLag validate props', () => {
   expect(
     () => new GPUSpatialWeightsTransform({operation: 'kernel', bandwidth: -1, weights: input})
   ).toThrow(/bandwidth/);
-  expect(() => new GPUSpatialWeightsTransform({operation: 'symmetrize', weights: input})).toThrow(
-    /separate/
-  );
+  expect(
+    () => new GPUSpatialWeightsTransform({operation: 'average-reciprocal', weights: input})
+  ).toThrow(/separate/);
   expect(
     new GPUSpatialWeightsTransform({
-      operation: 'symmetrize',
+      operation: 'average-reciprocal',
       weights: input,
       output: view('float32', 10)
     })
       .getCommandNodes(graph)
       .map(node => node.id)
-  ).toEqual(['spatial-weights-transform-symmetrize']);
+  ).toEqual(['spatial-weights-transform-average-reciprocal']);
   // The value row count is derived (values.length / columnCount): cross weights are allowed.
   expect(
     () =>

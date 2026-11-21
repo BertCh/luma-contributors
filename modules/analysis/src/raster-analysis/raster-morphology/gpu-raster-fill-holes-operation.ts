@@ -21,7 +21,7 @@ export type RasterFillHolesOperationProps = Pick<
 /** GPU hole filling as a vector operation; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPURasterFillHolesOperation extends GPUContributorOperation {
   constructor(props: RasterFillHolesOperationProps) {
-    props = captureRasterMorphologyOperationProps(props);
+    props = captureRasterMorphologyOperationProps(props, 'fill-holes');
     super({
       id: props.id ?? 'raster-fill-holes',
       inputs: {input: props.input},

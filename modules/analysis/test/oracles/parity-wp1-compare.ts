@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {expect} from 'vitest';
+import {getParityScale, measureParity} from './parity-measurements';
 
 export function compareParity(
   className: string,
@@ -14,26 +15,15 @@ export function compareParity(
   absoluteOverride?: number,
   relativeOverride?: number
 ): void {
-  const scale = expected.reduce(
-    (maximum, value) => (Number.isFinite(value) ? Math.max(maximum, Math.abs(value)) : maximum),
-    1
-  );
+  const scale = getParityScale(expected);
   const absolute = absoluteOverride ?? (profile === 'E' ? 0 : 1e-6 * scale);
   const relative = relativeOverride ?? (profile === 'E' ? 0 : 1e-4);
-  let maxAbs = 0;
-  let maxRel = 0;
-  let mismatches = Math.abs(actual.length - expected.length);
-  expected.forEach((value, index) => {
-    const measured = actual[index];
-    if (!Number.isFinite(value) || !Number.isFinite(measured)) {
-      if (!Object.is(value, measured)) mismatches++;
-      return;
-    }
-    const error = Math.abs(measured - value);
-    maxAbs = Math.max(maxAbs, error);
-    maxRel = Math.max(maxRel, error / Math.max(Math.abs(value), Number.MIN_VALUE));
-    if (error > absolute + relative * Math.abs(value)) mismatches++;
-  });
+  const {maxAbs, maxRel, mismatches} = measureParity(
+    actual,
+    expected,
+    target => absolute + relative * Math.abs(target),
+    (error, target) => error / Math.max(Math.abs(target), Number.MIN_VALUE)
+  );
   console.log(
     'PARITY',
     JSON.stringify({

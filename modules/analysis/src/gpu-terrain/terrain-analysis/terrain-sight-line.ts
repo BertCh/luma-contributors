@@ -38,6 +38,45 @@ export type GPUTerrainSightLineTraversal = 'march' | 'pyramid';
 /** Relative slack of the pyramid skip bound: 2^-17, more than 100 float32 ULP. @internal */
 const TERRAIN_SIGHT_LINE_SKIP_EPSILON = 7.62939453125e-6;
 
+/** Shared position arithmetic for the direct march and tolerance-aware routes. @internal */
+export const TERRAIN_SIGHT_LINE_SAMPLE_POSITION_WGSL = /* wgsl */ `
+// Integer endpoint coordinates retain exact lattice hits. Reduce k/n before multiplying so
+// divisibility is decided in u32 arithmetic, without a rounded reciprocal or a wide product.
+fn rayCoordinate(origin: f32, delta: f32, sampleIndex: u32, count: u32) -> f32 {
+  let magnitude = abs(delta);
+  if (origin == floor(origin) && magnitude == floor(magnitude)) {
+    let integerDelta = u32(magnitude);
+    if (integerDelta == 0u) { return origin; }
+    var divisor = count;
+    var multiplier = sampleIndex;
+    if (integerDelta != count) {
+      var first = count;
+      var second = sampleIndex;
+      // Euclid on u32 takes fewer than 48 remainder steps (consecutive Fibonacci worst case).
+      for (var iteration = 0u; iteration < 48u; iteration++) {
+        if (second == 0u) { break; }
+        let remainder = first % second;
+        first = second;
+        second = remainder;
+      }
+      divisor = count / first;
+      multiplier = sampleIndex / first;
+    }
+    if (integerDelta % divisor == 0u) {
+      let offset = (integerDelta / divisor) * multiplier;
+      if (delta < 0.0) { return f32(u32(origin) - offset); }
+      return f32(u32(origin) + offset);
+    }
+  }
+  return origin + delta * (f32(sampleIndex) / f32(count));
+}
+fn rayPosition(observer: vec2<f32>, delta: vec2<f32>, sampleIndex: u32, count: u32) -> vec2<f32> {
+  return vec2<f32>(
+    rayCoordinate(observer.x, delta.x, sampleIndex, count),
+    rayCoordinate(observer.y, delta.y, sampleIndex, count)
+  );
+}`;
+
 /** Options for {@link getTerrainSightLineWGSL}. @internal */
 export type TerrainSightLineWGSLOptions = {
   /** Grid width in pixels. */
@@ -62,7 +101,7 @@ export type TerrainSightLineWGSLOptions = {
  * `getElevation`, `sampleElevation` and `traceSightLine`.
  *
  * Sample lattice and expressions are the legacy viewshed ones (`k = 1 .. n-1` at
- * `observer + delta * (f32(k) / f32(n))`, bilinear `sampleElevation`, slope
+ * the rational position `observer + delta * k / n`, bilinear `sampleElevation`, slope
  * `(h - c*s*s - zo) / s`). Both traversals evaluate this identical per-sample expression.
  *
  * ### Why `'pyramid'` returns bit-identical results to `'march'`
@@ -74,15 +113,16 @@ export type TerrainSightLineWGSLOptions = {
  * crosses `T - beta` or `T + beta`; the early-exit state `maxS > T - beta` is therefore the same in
  * both traversals).
  *
- * 1. Membership. For sample indices `i <= k <= j` the ray position per axis is `o + d * f(k)`
- *    with `f(k) = f32(k) / f32(n)`. Division, multiplication and addition by a fixed value are
+ * 1. Membership. For sample indices `i <= k <= j` the ray position per axis is `o + d * k/n`.
+ *    Integer-endpoint lattice hits use exact integer divisibility rather than a rounded fraction.
+ *    The remaining division, multiplication and addition by a fixed value are
  *    monotone under round-to-nearest, so each axis is a monotone function of `k`, and so are the
  *    clamp and `floor`. If the base pixels of samples `i` and `j` (recomputed with the identical
  *    code) are in the same S x S block, every `k` between has its base pixel in that block (a
  *    monotone coordinate cannot leave an interval and come back). The `'bilinear'` pyramid footprint
  *    contains every corner a bilinear sample with such a base reads, so the sample value lies in
- *    `[Hmin, Hmax]` up to the rounding of `mix` (a few ULP). Samples with an invalid corner are
- *    ignored by the march anyway. The candidate `j` is the analytic block exit; it is verified by
+ *    `[Hmin, Hmax]` up to the rounding of `mix` (a few ULP). Samples with an invalid participating
+ *    corner are ignored by the march anyway. The candidate `j` is the analytic block exit; it is verified by
  *    recomputing its position and decremented up to three times, so an inexact exit estimate
  *    only costs skipping power, never correctness. Distances `s_k = D * f(k)` are monotone too,
  *    so `s_i <= s_k <= s_j`.
@@ -247,31 +287,48 @@ fn isValidPixel(column: u32, row: u32) -> bool {
 fn getElevation(column: u32, row: u32) -> f32 {
   return elevationValues[elevationValuesOffset + row * WIDTH + column];
 }
-// Bilinear elevation at a clamped pixel-center position; .y is 0 when any corner is invalid.
+fn interpolateElevation(first: f32, second: f32, fraction: f32) -> f32 {
+  if (fraction == 0.0 || first == second) { return first; }
+  if (fraction == 1.0) { return second; }
+  return mix(first, second, fraction);
+}
+// Bilinear elevation at a clamped pixel-center position; only positive-weight corners participate.
 fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let maximum = vec2<f32>(f32(WIDTH - 1u), f32(HEIGHT - 1u));
   let clamped = clamp(position, vec2<f32>(0.0), maximum);
   let base = vec2<u32>(floor(clamped));
   let next = min(base + vec2<u32>(1u), vec2<u32>(WIDTH - 1u, HEIGHT - 1u));
   let fraction = clamped - floor(clamped);
-  // Canonical elevation is NaN exactly where a pixel is invalid, so one bit test per corner
-  // replaces four validity loads; the interpolation below is unchanged.
-  let corner00 = getElevation(base.x, base.y);
-  let corner10 = getElevation(next.x, base.y);
-  let corner01 = getElevation(base.x, next.y);
-  let corner11 = getElevation(next.x, next.y);
-  if (!isFiniteValue(corner00) || !isFiniteValue(corner10) ||
-      !isFiniteValue(corner01) || !isFiniteValue(corner11)) {
-    return vec2<f32>(0.0, 0.0);
+  let weights = vec4<f32>(
+    (1.0 - fraction.x) * (1.0 - fraction.y), fraction.x * (1.0 - fraction.y),
+    (1.0 - fraction.x) * fraction.y, fraction.x * fraction.y
+  );
+  // Neutral finite values for unused corners keep interpolation free of 0 * NaN.
+  var corner00 = 0.0;
+  var corner10 = 0.0;
+  var corner01 = 0.0;
+  var corner11 = 0.0;
+  if (weights.x > 0.0) {
+    corner00 = getElevation(base.x, base.y);
+    if (!isFiniteValue(corner00)) { return vec2<f32>(0.0, 0.0); }
   }
-  let top = mix(corner00, corner10, fraction.x);
-  let bottom = mix(corner01, corner11, fraction.x);
-  return vec2<f32>(mix(top, bottom, fraction.y), 1.0);
+  if (weights.y > 0.0) {
+    corner10 = getElevation(next.x, base.y);
+    if (!isFiniteValue(corner10)) { return vec2<f32>(0.0, 0.0); }
+  }
+  if (weights.z > 0.0) {
+    corner01 = getElevation(base.x, next.y);
+    if (!isFiniteValue(corner01)) { return vec2<f32>(0.0, 0.0); }
+  }
+  if (weights.w > 0.0) {
+    corner11 = getElevation(next.x, next.y);
+    if (!isFiniteValue(corner11)) { return vec2<f32>(0.0, 0.0); }
+  }
+  let top = interpolateElevation(corner00, corner10, fraction.x);
+  let bottom = interpolateElevation(corner01, corner11, fraction.x);
+  return vec2<f32>(interpolateElevation(top, bottom, fraction.y), 1.0);
 }
-fn rayPosition(observer: vec2<f32>, delta: vec2<f32>, sampleIndex: u32, count: u32) -> vec2<f32> {
-  let fraction = f32(sampleIndex) / f32(count);
-  return observer + delta * fraction;
-}
+${TERRAIN_SIGHT_LINE_SAMPLE_POSITION_WGSL}
 fn rayDistance(targetDistance: f32, sampleIndex: u32, count: u32) -> f32 {
   let fraction = f32(sampleIndex) / f32(count);
   return targetDistance * fraction;
@@ -294,6 +351,9 @@ fn traceSightLine(
   maxDistance: f32,
   tolerance: vec4<f32>
 ) -> SightLineResult {
+  if (!isFiniteValue(eye) || !isFiniteValue(targetTop)) {
+    return SightLineResult(NO_DATA, bitcast<f32>(0x7fc00000u | (bitcast<u32>(eye) & 0u)));
+  }
   let delta = targetPosition - observer;
   let targetDistance = length(delta * cellSize);
   if (maxDistance > 0.0 && targetDistance > maxDistance) {

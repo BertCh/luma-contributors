@@ -49,6 +49,56 @@ const REGIONAL_RASTER_CHANGE_ANALYSIS = {
 
 const parameters = {confirmComparable: true, threshold: 1};
 
+it('ignores informational counts while gating declared loss words (S2)', () => {
+  const status = {
+    rasterOverflow: 0,
+    requiredCrossings: 0,
+    crossingCapacity: 16,
+    stages: [
+      {name: 'summary.count', value: 1},
+      {name: 'summary.complete', value: 1},
+      {name: 'summary.requiredCount', value: 2}
+    ]
+  };
+  expect(() => validateRegionalRasterChangeStatus(status)).not.toThrow();
+  for (const field of [
+    'overflow',
+    'candidateOverflow',
+    'invalidInput',
+    'invalidCount',
+    'iterationLimit',
+    'unresolvedCount',
+    'incomplete'
+  ])
+    expect(() =>
+      validateRegionalRasterChangeStatus({
+        ...status,
+        stages: [...status.stages, {name: `summary.${field}`, value: 1}]
+      })
+    ).toThrow(new RegExp(field));
+});
+
+it('uses positive completeness and negative loss polarity through clean, loss and recovery', () => {
+  const status = {
+    rasterOverflow: 0,
+    requiredCrossings: 0,
+    crossingCapacity: 16,
+    stages: [
+      {name: 'summary.complete', value: 1},
+      {name: 'summary.overflow', value: 0}
+    ]
+  };
+  expect(() => validateRegionalRasterChangeStatus(status)).not.toThrow();
+  status.stages[0].value = 0;
+  expect(() => validateRegionalRasterChangeStatus(status)).toThrow(/summary.complete/);
+  status.stages[0].value = 1;
+  status.stages[1].value = 1;
+  expect(() => validateRegionalRasterChangeStatus(status)).toThrow(/summary.overflow/);
+  status.stages[1].value = 0;
+  expect(() => validateRegionalRasterChangeStatus(status)).not.toThrow();
+  expect(() => validateRegionalRasterChangeStatus({...status, stages: []})).not.toThrow();
+});
+
 it.each([
   {dataset: 'normalized recipe fixture', means: [2, -0.5], scale: 'diverging'},
   {dataset: 'independent north-up dataset', means: [1 / 3, 0, null], scale: 'sequential'}

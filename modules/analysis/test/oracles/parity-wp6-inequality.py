@@ -23,7 +23,10 @@ NaN for zero income. Empty/zero-total zones have NaN indices and Lorenz knots;
 mean is NaN/0 respectively. Atkinson for strictly positive incomes uses the
 library; for zero incomes and epsilon < 1, composite reference from Atkinson
 (1970), Journal of Economic Theory 2, 244-263, DOI 10.1016/0022-0531(70)90039-6,
-using scipy.stats.pmean. At epsilon >= 1 map zero-income cases to API NaN.
+using scipy.stats.pmean. At epsilon >= 1 a positive-mean population with a
+positive-weight zero income has Atkinson 1 by continuous extension; an all-zero
+or empty population remains undefined. This boundary is a limiting derivation,
+not a result attributed to inequality.Atkinson. Theil L remains API NaN at zero.
 Lorenz knots and fractional Palma cuts interpolate inequality.Schutz's
 published Lorenz table (Schutz 1951, doi:10.2307/1908078); Hoover is its
 maximum vertical distance. All decomposition fields come from TheilD.
@@ -40,6 +43,7 @@ import math
 import os
 import tempfile
 import platform
+import sys
 from pathlib import Path
 
 # Avoid user-home cache writes from the reference library's plotting imports.
@@ -98,6 +102,10 @@ def computeZone(values, weights, settings, replicationScale):
         result['atkinson'] = Atkinson(population, epsilon).A
     elif epsilon < 1:
         result['atkinson'] = 1 - pmean(population, 1 - epsilon) / population.mean()
+    else:
+        # Positive mean is established above. The equivalent income tends to zero
+        # as any retained zero income approaches zero from above (epsilon >= 1).
+        result['atkinson'] = 1.0
     lorenz = Schutz(pd.DataFrame({'income': population}), 'income')
     result['hoover'] = lorenz.distance
     populationShares = np.r_[0, lorenz.df_processed['ucpct'].to_numpy()]
@@ -147,6 +155,28 @@ def makeCase(name, values, zoneIds, zoneCount, weights=None, mask=None, replicat
     return case
 
 
+def verifyReferenceBoundaries():
+    """Read-only zero-income limits, also checked before pinned regeneration.
+
+    --check-reference runs the actual zone calculation without reading source
+    data or writing a fixture. Limits below are independently hand derived.
+    """
+    for epsilon, expected in [(0, 0), (.5, 3/7), (1, 1), (2, 1)]:
+        settings = {'epsilon': epsilon, 'palmaTopShare': .1, 'palmaBottomShare': .4}
+        mixed = computeZone(np.array([0.,0.,12.]), np.array([1.,.5,2.]), settings, 4)
+        assert mixed['mean'] == 48/7
+        assert math.isfinite(mixed['atkinson']) and abs(mixed['atkinson'] - expected) < 1e-12
+        assert math.isnan(mixed['theilL'])
+        for values, weights in [([0.,0.], [1.,2.]), ([], [])]:
+            control = computeZone(np.array(values), np.array(weights), settings, 4)
+            assert math.isnan(control['atkinson']) and math.isnan(control['theilL'])
+
+
+verifyReferenceBoundaries()
+if '--check-reference' in sys.argv:
+    print('inequality reference boundaries: passed (read-only)')
+    raise SystemExit(0)
+
 sourceFiles = ['perCapitaIncome.bin', 'communityArea.bin', 'population.bin', 'manifest.json']
 manifest = json.loads((DATA / 'manifest.json').read_text())
 incomes = np.fromfile(DATA / 'perCapitaIncome.bin', dtype='<f4')
@@ -170,7 +200,7 @@ fixture = {
     'generator': Path(__file__).name,
     'versions': {'python': platform.python_version(), 'numpy': np.__version__, 'scipy': scipy.__version__, 'pandas': pd.__version__, 'inequality': inequality.__version__},
     'sources': {str((DATA / name).relative_to(ROOT)): hashlib.sha256((DATA / name).read_bytes()).hexdigest() for name in sourceFiles},
-    'conventions': {'input': 'f32 then f64', 'weights': 'frequency; exact replication', 'counts': 'source rows, not weight sums', 'zeroIncome': 'retained; Theil L and Atkinson epsilon>=1 become NaN', 'selection': 'all 791 source rows; API validity filter', 'crs': 'not applicable', 'seed': 'none'},
+    'conventions': {'input': 'f32 then f64', 'weights': 'frequency; exact replication', 'counts': 'source rows, not weight sums', 'zeroIncome': 'retained; Theil L becomes NaN; Atkinson epsilon>=1 is 1 for positive mean by continuous extension, undefined for all-zero or empty populations', 'selection': 'all 791 source rows; API validity filter', 'crs': 'not applicable', 'seed': 'none'},
     'reference': 'inequality.Gini/Theil/TheilD/Atkinson/Schutz; scipy.stats.entropy/pmean; numpy.interp',
     'tolerance': {'profile': 'S', 'absoluteScale': 1e-6, 'relative': 1e-4},
     'lorenzKnotCount': KNOT_COUNT,

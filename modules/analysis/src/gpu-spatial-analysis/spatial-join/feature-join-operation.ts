@@ -20,11 +20,14 @@ import {GPUNearestFeatureJoin} from './gpu-nearest-feature-join';
 import {
   computeSpatialPredicateJoinOnCPU,
   computeNearestFeatureJoinOnCPU,
-  FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY,
+  validateFeatureJoinOptions,
+  type CPUFeatureJoinOptions,
   type CPUSpatialJoinGeometry,
   type MultipartJoinPredicate
 } from './cpu-feature-join';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {decodeGPUSpatialJoinGeometry} from './spatial-join-geometry';
 
 /** One packed graph value and its compile-time row count. */
 export type FeatureJoinValue = Readonly<{value: string; length: number}>;
@@ -42,18 +45,36 @@ export type FeatureJoinGeometryValues = Readonly<{
 export type SpatialPredicateJoinOperationProps = {
   id?: string;
   left: FeatureJoinGeometryValues;
+  /** Named one-row uint32 live feature count, bounded by left capacity. */
+  leftFeatureCount?: string;
+  /** Named one-row uint32 producer loss/certification inputs. */
+  leftStatus?: {overflow?: string; candidateOverflow?: string; complete?: string};
   right: FeatureJoinGeometryValues;
   predicate: MultipartJoinPredicate;
+  pattern?: CPUFeatureJoinOptions['pattern'];
+  distance?: number;
+  engine?: CPUFeatureJoinOptions['engine'];
+  how?: CPUFeatureJoinOptions['how'];
   candidateCapacity: number;
   pairCapacity: number;
   output: {
-    leftRows: string;
-    rightRows: string;
+    leftRows?: string;
+    rightRows?: string;
+    /** Ascending left feature rows without a known match; pairCapacity slots, readable only through the unmatched count (count for anti). Tails are unspecified. */
+    unmatchedRows?: string;
+    /** Independent compact absence diagnostics for an inner join's unmatchedRows. */
+    unmatchedCount?: string;
+    unmatchedRequiredCount?: string;
+    unmatchedOverflow?: string;
+    unmatchedCandidateOverflow?: string;
+    relate?: string;
     count: string;
     requiredCount: string;
     overflow: string;
     candidateOverflow: string;
     candidateTruncated?: string;
+    /** Provisional GPU pairs with uncertified orientations; the exact CPU twin writes zero. */
+    uncertainCount?: string;
   };
 };
 /** Planar, unprepared one-neighbor operation; ties select the lowest target FEATURE row. */
@@ -198,6 +219,20 @@ function readGeometry(
   } as CPUSpatialJoinGeometry;
 }
 
+function resolvePredicateScalar(
+  id: string,
+  port: string,
+  getView: GPUContributorOperationViewGetter
+) {
+  const view = getView(port, 'uint32');
+  validateRequirement(
+    id,
+    view.length === 1,
+    `${port} needs one uint32 row; received ${view.length}`
+  );
+  return view;
+}
+
 /** Internal graph adapter using the existing GPUContributorOperation. @internal */
 export function createSpatialPredicateJoinOperation(
   input: SpatialPredicateJoinOperationProps
@@ -205,66 +240,196 @@ export function createSpatialPredicateJoinOperation(
   const id = input.id ?? 'spatial-predicate-join-operation';
   const left = snapshotGeometry(id, input.left),
     right = snapshotGeometry(id, input.right);
-  const {predicate, candidateCapacity, pairCapacity} = input;
-  const output = Object.freeze({...input.output});
-  validateCapacity(
-    id,
-    'candidateCapacity',
+  const leftFeatureCount = input.leftFeatureCount;
+  const originalLeftStatus = input.leftStatus;
+  const leftStatus =
+    originalLeftStatus &&
+    snapshotConstructionFields(originalLeftStatus, ['overflow', 'candidateOverflow', 'complete']);
+  const {
+    predicate,
     candidateCapacity,
-    1,
-    FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY
-  );
-  validateCapacity(id, 'pairCapacity', pairCapacity, 1, FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY);
+    pairCapacity,
+    distance,
+    engine,
+    how,
+    pattern: originalPattern
+  } = input;
+  const pattern = Array.isArray(originalPattern)
+    ? Object.freeze([...originalPattern])
+    : originalPattern;
+  const output = snapshotConstructionFields(input.output, [
+    'leftRows',
+    'rightRows',
+    'unmatchedRows',
+    'unmatchedCount',
+    'unmatchedRequiredCount',
+    'unmatchedOverflow',
+    'unmatchedCandidateOverflow',
+    'relate',
+    'count',
+    'requiredCount',
+    'overflow',
+    'candidateOverflow',
+    'candidateTruncated',
+    'uncertainCount'
+  ]);
   validateRequirement(
     id,
-    ['intersects', 'within', 'coveredBy'].includes(predicate),
-    'predicate must be intersects, within or coveredBy'
+    predicate !== 'dwithin' || !output.relate,
+    'output.relate requires a topological predicate because dwithin measures proximity; use a separate relate join'
+  );
+  validateFeatureJoinOptions(
+    id,
+    {predicate, candidateCapacity, pairCapacity, distance, engine, how, pattern},
+    Boolean(
+      (left.kind !== 'polygons' && left.featureOffsets) ||
+        (right.kind !== 'polygons' && right.featureOffsets)
+    )
   );
   validateRequirement(
     id,
-    left.kind !== 'polygons' || right.kind !== 'polygons' || predicate === 'intersects',
-    'polygon/polygon containment is unsupported by the feature-join operation forms'
+    how === 'anti'
+      ? Boolean(output.unmatchedRows) && !output.relate && !output.leftRows && !output.rightRows
+      : Boolean(output.leftRows && output.rightRows),
+    'output requires unmatchedRows for how anti, or leftRows and rightRows for an inner join; relate requires an inner join'
   );
+  validateRequirement(
+    id,
+    how === 'anti' ||
+      !output.unmatchedRows ||
+      Boolean(output.unmatchedCount && output.unmatchedOverflow),
+    'inner output.unmatchedRows requires separate unmatchedCount and unmatchedOverflow destinations'
+  );
+  validateRequirement(
+    id,
+    ![
+      'unmatchedCount',
+      'unmatchedRequiredCount',
+      'unmatchedOverflow',
+      'unmatchedCandidateOverflow'
+    ].some(field => output[field as keyof typeof output] !== undefined) ||
+      (how !== 'anti' && Boolean(output.unmatchedRows)),
+    'separate unmatched diagnostics require inner output.unmatchedRows; anti uses count, requiredCount, overflow and candidateOverflow'
+  );
+  for (const field of ['count', 'requiredCount', 'overflow', 'candidateOverflow'] as const) {
+    validateRequirement(
+      id,
+      typeof output[field] === 'string' && output[field].length > 0,
+      how === 'anti' && field === 'candidateOverflow'
+        ? "how 'anti' requires output.candidateOverflow. Add a non-empty graph value name for candidate loss."
+        : `outputs.${field}.value must be a non-empty graph value name`
+    );
+  }
   return new GPUContributorOperation({
     id,
-    inputs: {...getGeometryInputs('left', left), ...getGeometryInputs('right', right)},
+    inputs: {
+      ...getGeometryInputs('left', left),
+      ...getGeometryInputs('right', right),
+      ...(leftFeatureCount !== undefined ? {leftFeatureCount} : {}),
+      ...Object.fromEntries(
+        Object.entries(leftStatus ?? {})
+          .filter(([, value]) => value !== undefined)
+          .map(([field, value]) => [getPortName('leftStatus', field), value!])
+      )
+    },
     outputs: Object.fromEntries(
-      Object.entries(output).map(([field, value]) => [
-        field,
-        {
-          value,
-          format: 'uint32' as const,
-          length:
-            field === 'leftRows' || field === 'rightRows'
-              ? pairCapacity
-              : field === 'candidateTruncated'
-                ? getFeatureCount(left)
-                : 1
-        }
-      ])
+      Object.entries(output)
+        .filter(
+          ([field, value]) =>
+            value !== undefined ||
+            ['count', 'requiredCount', 'overflow', 'candidateOverflow'].includes(field)
+        )
+        .map(([field, value]) => [
+          field,
+          {
+            value,
+            format: 'uint32' as const,
+            length:
+              field === 'leftRows' ||
+              field === 'rightRows' ||
+              field === 'unmatchedRows' ||
+              field === 'relate'
+                ? pairCapacity
+                : field === 'candidateTruncated'
+                  ? getFeatureCount(left)
+                  : 1
+          }
+        ])
     ),
-    emptyOutputPorts: ['leftRows', 'rightRows'],
+    emptyOutputPorts: ['unmatchedRows', 'leftRows', 'rightRows'],
     createContributor: getView =>
       new GPUSpatialPredicateJoin({
         id,
         left: resolveGeometry(id, 'left', left, getView),
+        leftFeatureCount:
+          leftFeatureCount !== undefined
+            ? resolvePredicateScalar(id, 'leftFeatureCount', getView)
+            : undefined,
+        leftStatus:
+          leftStatus &&
+          Object.fromEntries(
+            Object.entries(leftStatus)
+              .filter(([, value]) => value !== undefined)
+              .map(([field]) => [
+                field,
+                resolvePredicateScalar(id, getPortName('leftStatus', field), getView)
+              ])
+          ),
         right: resolveGeometry(id, 'right', right, getView),
         predicate,
-        engine: predicate === 'coveredBy' ? 'auto' : 'fast',
+        pattern,
+        distance,
+        how,
+        engine,
         candidateCapacity,
         output: {
-          pairs: {
-            leftRows: getView<'uint32'>('leftRows'),
-            rightRows: getView<'uint32'>('rightRows'),
-            status: {
-              count: getView<'uint32'>('count'),
-              requiredCount: getView<'uint32'>('requiredCount'),
-              overflow: getView<'uint32'>('overflow'),
-              candidateOverflow: getView<'uint32'>('candidateOverflow')
-            }
-          },
+          ...(how === 'anti'
+            ? {
+                unmatched: {
+                  ids: getView<'uint32'>('unmatchedRows'),
+                  status: {
+                    count: getView<'uint32'>('count'),
+                    requiredCount: getView<'uint32'>('requiredCount'),
+                    overflow: getView<'uint32'>('overflow'),
+                    candidateOverflow: getView<'uint32'>('candidateOverflow')
+                  }
+                }
+              }
+            : {
+                pairs: {
+                  leftRows: getView<'uint32'>('leftRows'),
+                  rightRows: getView<'uint32'>('rightRows'),
+                  status: {
+                    count: getView<'uint32'>('count'),
+                    requiredCount: getView<'uint32'>('requiredCount'),
+                    overflow: getView<'uint32'>('overflow'),
+                    candidateOverflow: getView<'uint32'>('candidateOverflow')
+                  }
+                }
+              }),
+          ...(how !== 'anti' && output.unmatchedRows
+            ? {
+                unmatched: {
+                  ids: getView<'uint32'>('unmatchedRows'),
+                  status: {
+                    count: getView<'uint32'>('unmatchedCount'),
+                    overflow: getView<'uint32'>('unmatchedOverflow'),
+                    ...(output.unmatchedRequiredCount
+                      ? {requiredCount: getView<'uint32'>('unmatchedRequiredCount')}
+                      : {}),
+                    ...(output.unmatchedCandidateOverflow
+                      ? {candidateOverflow: getView<'uint32'>('unmatchedCandidateOverflow')}
+                      : {})
+                  }
+                }
+              }
+            : {}),
+          ...(output.relate ? {relate: getView<'uint32'>('relate')} : {}),
           ...(output.candidateTruncated
             ? {candidateTruncated: getView<'uint32'>('candidateTruncated')}
+            : {}),
+          ...(output.uncertainCount
+            ? {status: {uncertainCount: getView<'uint32'>('uncertainCount')}}
             : {})
         }
       })
@@ -277,21 +442,39 @@ export function createCPUSpatialPredicateJoinOperation(
   const {
     id,
     left: originalLeft,
+    leftFeatureCount,
+    leftStatus: originalLeftStatus,
     right: originalRight,
     predicate,
     candidateCapacity,
     pairCapacity,
+    pattern: originalPattern,
+    distance,
+    engine,
+    how,
     output
   } = input;
+  const pattern = Array.isArray(originalPattern)
+    ? Object.freeze([...originalPattern])
+    : originalPattern;
   const left = snapshotGeometry(id ?? 'spatial-predicate-join-operation', originalLeft),
     right = snapshotGeometry(id ?? 'spatial-predicate-join-operation', originalRight);
+  const leftStatus =
+    originalLeftStatus &&
+    snapshotConstructionFields(originalLeftStatus, ['overflow', 'candidateOverflow', 'complete']);
   const operation = createSpatialPredicateJoinOperation({
     id,
     left,
+    leftFeatureCount,
+    leftStatus,
     right,
     predicate,
     candidateCapacity,
     pairCapacity,
+    pattern,
+    distance,
+    engine,
+    how,
     output
   });
   return new GPUCPUOperation({
@@ -304,17 +487,65 @@ export function createCPUSpatialPredicateJoinOperation(
       ])
     ),
     execute({inputs}) {
+      const readScalar = (port: string): number => {
+        const values = getCPUOperationUint32Rows(operation.id, inputs, port);
+        validateRequirement(
+          operation.id,
+          values.length === 1,
+          `${port} needs one uint32 row; received ${values.length}`
+        );
+        return values[0];
+      };
+      const capacity = getFeatureCount(left);
+      const count = leftFeatureCount !== undefined ? readScalar('leftFeatureCount') : capacity;
+      const invalidCount = count > capacity;
+      const status = Object.fromEntries(
+        Object.entries(leftStatus ?? {})
+          .filter(([, value]) => value !== undefined)
+          .map(([field]) => [field, readScalar(getPortName('leftStatus', field))])
+      );
+      if (invalidCount) status['overflow'] = 1;
+      const leftGeometry = readGeometry(operation.id, 'left', left, inputs);
       const result = computeSpatialPredicateJoinOnCPU(
-        readGeometry(operation.id, 'left', left, inputs),
+        leftFeatureCount !== undefined
+          ? decodeGPUSpatialJoinGeometry(leftGeometry, invalidCount ? 0 : count)
+          : leftGeometry,
         readGeometry(operation.id, 'right', right, inputs),
-        {predicate, candidateCapacity, pairCapacity}
+        {
+          predicate,
+          candidateCapacity,
+          pairCapacity,
+          pattern,
+          distance,
+          engine,
+          how,
+          leftStatus: status,
+          relate: Boolean(operation.outputs['relate'])
+        }
       );
       const arrays: Record<string, Uint32Array> = {
         leftRows: result.leftRows,
         rightRows: result.rightRows,
-        candidateTruncated: result.candidateTruncated
+        unmatchedRows: result.unmatchedRows,
+        unmatchedCount: Uint32Array.of(result.unmatchedStatus.count),
+        unmatchedRequiredCount: Uint32Array.of(result.unmatchedStatus.requiredCount),
+        unmatchedOverflow: Uint32Array.of(result.unmatchedStatus.overflow),
+        unmatchedCandidateOverflow: Uint32Array.of(result.unmatchedStatus.candidateOverflow),
+        relate: result.relate,
+        uncertainCount: Uint32Array.of(0)
       };
-      for (const [name, value] of Object.entries(result.status))
+      if (operation.outputs['candidateTruncated']) {
+        const truncated = result.candidateTruncated;
+        if (truncated.length === capacity) arrays['candidateTruncated'] = truncated;
+        else {
+          const padded = new Uint32Array(capacity);
+          padded.set(truncated);
+          arrays['candidateTruncated'] = padded;
+        }
+      }
+      for (const [name, value] of Object.entries(
+        how === 'anti' ? result.unmatchedStatus : result.status
+      ))
         arrays[name] = Uint32Array.of(value);
       return Object.fromEntries(
         Object.entries(operation.outputs).map(([port, output]) => [output.value, arrays[port]])
@@ -329,7 +560,14 @@ export function createNearestFeatureJoinOperation(
   const id = input.id ?? 'nearest-feature-join-operation';
   const queries = snapshotGeometry(id, input.queries, 0),
     features = snapshotGeometry(id, input.features, 0);
-  const output = Object.freeze({...input.output});
+  const output = snapshotConstructionFields(input.output, [
+    'neighborRows',
+    'neighborIds',
+    'neighborCounts',
+    'neighborDistances',
+    'overflow',
+    'candidateOverflow'
+  ]);
   return new GPUContributorOperation({
     id,
     inputs: {...getGeometryInputs('queries', queries), ...getGeometryInputs('features', features)},

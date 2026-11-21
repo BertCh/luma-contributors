@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
+import {
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -149,6 +153,23 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUVertexSnapProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'positions',
+      'referencePositions',
+      'featureOffsets',
+      'referenceOffsets',
+      'parameters',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(props.spatialContext)}
+        : {}),
+      output: snapshotConstructionFields(props.output, ['positions', 'referenceRows'])
+    });
     this.id = props.id ?? 'vertex-snap';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,

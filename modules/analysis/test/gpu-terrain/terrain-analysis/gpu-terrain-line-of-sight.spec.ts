@@ -34,7 +34,7 @@ import {
   readUint32
 } from '../../utils/gpu-contributor-test-utils';
 import {computeTerrainSightLine, createFractalTerrain} from './terrain-analysis-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import type {GPUTerrainHeightReference} from '../../../src/analysis-core/contracts/vertical-datum';
 
 type LineOfSightRun = {codes: number[]; clearance: number[]};
@@ -431,3 +431,114 @@ it('GPUTerrainLineOfSight geographic pairs at 60 degrees match the ground-meter 
   expect(march.codes).toContain(V.visible);
   expect(march.codes).toContain(V.hidden);
 });
+
+for (const traversal of ['march', 'pyramid'] as const) {
+  it(`URT-02 positive-weight corners and participating missing-data controls: ${traversal}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // Literal geometry: integer target height 0, ridge slope 10 > target slope 0.
+    // A participating missing endpoint is noData; a participating missing interior is skipped.
+    const fixtures = [
+      {values: [0, 0, NaN], height: 1, target: 1, code: V.visible},
+      {values: [0, 10, 0, 0, 0, NaN], height: 2, target: 2, code: V.hidden},
+      {values: [0, NaN, 0], height: 1, target: 1, code: V.noData},
+      {values: [0, NaN, 0], height: 1, target: 2, code: V.visible}
+    ];
+    for (const fixture of fixtures) {
+      const grid = makeGPURasterMetadata({width: 3, height: fixture.height, cellSize: 1});
+      const settings = {observerHeight: 0, targetHeight: 0, curvatureCoefficient: 0};
+      const result = await runLineOfSight(
+        device,
+        Float32Array.from(fixture.values),
+        grid,
+        Float32Array.of(0, 0, fixture.target, 0),
+        settings,
+        {traversal}
+      );
+      expect(result.codes).toEqual([fixture.code]);
+      expect(result.clearance).toHaveLength(1);
+      if (fixture.code === V.hidden) expect(result.clearance).toEqual([-20]);
+      if (fixture.code !== V.noData) {
+        expect(Number.isFinite(result.clearance[0])).toBe(true);
+      }
+      // A fractional target includes the missing right corner with positive weight.
+      if (fixture.target === 1 && fixture.code === V.visible) {
+        const missing = await runLineOfSight(
+          device,
+          Float32Array.from(fixture.values),
+          grid,
+          Float32Array.of(0, 0, 1.5, 0),
+          settings,
+          {traversal}
+        );
+        expect(missing.codes).toEqual([V.noData]);
+      }
+    }
+  });
+}
+
+for (const traversal of ['march', 'pyramid'] as const) {
+  it(`B1/B2 exact diagonal ridge, fractional missing corner and flat grazing ray: ${traversal}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const ridge = new Float32Array(900);
+    ridge[15 * 30 + 15] = 50;
+    ridge[15 * 30 + 14] = ridge[15 * 30 + 16] = NaN;
+    const fractional = ridge.slice();
+    fractional[14 * 30 + 15] = NaN;
+    const fixtures = [
+      {
+        values: ridge,
+        width: 30,
+        height: 30,
+        observer: [0, 0] as [number, number],
+        target: [29, 29] as [number, number],
+        targetHeight: 5,
+        code: V.hidden
+      },
+      {
+        values: fractional,
+        width: 30,
+        height: 30,
+        observer: [0, 0] as [number, number],
+        target: [29, 28] as [number, number],
+        targetHeight: 5,
+        code: V.visible
+      },
+      {
+        values: new Float32Array(8).fill(3),
+        width: 2,
+        height: 4,
+        observer: [0, 0.125] as [number, number],
+        target: [1, 3] as [number, number],
+        targetHeight: 0,
+        code: V.visible
+      }
+    ];
+    // Step 15 of the diagonal is exactly (15,15), with slope 50/(15*sqrt(2)) > 5/(29*sqrt(2)).
+    // On the fractional ray row 420/29 gives the NaN positive weight; on the flat every slope is 0.
+    for (const fixture of fixtures) {
+      const grid = makeGPURasterMetadata({
+        width: fixture.width,
+        height: fixture.height,
+        cellSize: 1
+      });
+      const settings = {
+        observerHeight: 0,
+        targetHeight: fixture.targetHeight,
+        curvatureCoefficient: 0
+      };
+      const result = await runLineOfSight(
+        device,
+        fixture.values,
+        grid,
+        Float32Array.from([...fixture.observer, ...fixture.target]),
+        settings,
+        {traversal}
+      );
+      expect(result.codes).toEqual([fixture.code]);
+      expect(result.clearance).toHaveLength(1);
+      expect(Number.isFinite(result.clearance[0])).toBe(true);
+    }
+  });
+}

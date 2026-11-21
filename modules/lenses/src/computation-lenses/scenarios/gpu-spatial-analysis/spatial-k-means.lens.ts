@@ -35,6 +35,7 @@ defineLensScenario({
             k: K_MEANS_CLUSTER_COUNT,
             maximumIterations: 20,
             initialization: 'kmeans++',
+            centerCoordinates: true,
             restartCount: 1,
             seed: 3
           },

@@ -4,9 +4,9 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const output = {\n  segments: segmentSlots,\n  siteIds: createTransientView(graph, 'siteIds', 'uint32x2', segmentSlots.length, usage),\n  status: {\n    count: scalar('count'),\n    requiredCount: scalar('requiredCount'),\n    overflow: scalar('overflow')\n  }\n};\nconst {triangles} = delaunay;\ngraph.add(\n  new GPUVoronoiDiagram({positions: places, triangles, triangleCount, clipBounds, output})\n);\n// segments: (startX, startY, endX, endY) in m; siteIds: the two places each segment separates\nconst {segments, siteIds} = output;",
+    "code": "const output = {\n  segments: segmentSlots,\n  siteIds: createTransientView(graph, 'siteIds', 'uint32x2', segmentSlots.length, usage),\n  status: {\n    count: scalar('count'),\n    requiredCount: scalar('requiredCount'),\n    overflow: scalar('overflow'),\n    candidateOverflow: scalar('candidateOverflow'),\n    converged: scalar('converged')\n  }\n};\nconst {triangles} = delaunay;\ngraph.add(\n  new GPUVoronoiDiagram({\n    positions: places,\n    triangles,\n    triangleCount,\n    triangleStatus: delaunay.status,\n    clipBounds,\n    output\n  })\n);\n// segments: (startX, startY, endX, endY) in m; siteIds: the two places each segment separates\nconst {segments, siteIds} = output;",
     "language": "ts",
-    "lineCount": 15
+    "lineCount": 24
   },
   "scenarioId": "gpu-spatial-analysis.voronoi-diagram",
   "viewId": "result-view",
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:30:13.297Z",
-    "runId": "run-4537a563",
+    "date": "2026-11-20T23:51:39.972Z",
+    "runId": "run-ce62c436",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-4537a563",
+    "runId": "run-ce62c436",
     "rung": "result",
     "bindings": {},
     "clauses": [],

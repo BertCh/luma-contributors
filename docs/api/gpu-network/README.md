@@ -20,8 +20,49 @@ command nodes into a caller-owned [`GPUCommandGraph`](https://luma.gl/docs/api-r
 `getCommandNodes(graph)` (`GPUCommandNodeProducer`). It never compiles, submits, encodes, or reads
 back.
 
-See [network structure, alternative routes, edge centrality and spatial topology extensions](./expansion.md)
+See [network structure, routes and network topology](./expansion.md)
 for the bounded expansion APIs, their result contracts and reference checks.
+
+## Choose a network task
+
+### Start and choose
+
+- [GPU Network concepts](./concepts.md)
+- [GPU Network operators](./operators.md)
+
+### Route and measure access
+
+- [Alternative routes](./alternative-routes.md)
+- [K-shortest simple paths](./k-shortest-paths.md)
+- [Network time geography](./network-time-geography.md)
+
+### Analyze topology and spatial patterns
+
+- [GPUNetworkLouvain](./louvain.md)
+- [Visibility graph and network centrality](./visibility-graph.md)
+- [Network structure, routes and spatial topology extensions](./expansion.md)
+- [Network point processes](./point-process.md)
+
+### Analyze movement and flows
+
+- [Bounded network optimization and trajectory analysis](./network-movement-coverage.md)
+- [Network and movement measurements](./network-movement-benchmarks.md)
+- [Flow models on origin-destination aggregation](./origin-destination-flow-models.md)
+- [Edge volumes of map-matched tracks](./map-matched-edge-volumes.md)
+
+### Inspect recorded outputs and status
+
+- [Network status and count checks](./status-oracles.md)
+
+### Compatibility URLs
+
+These links preserve older routes; the task chooser above uses the canonical guides.
+
+- [Flow models on origin-destination aggregation (legacy URL)](./flow-models-mob10.md)
+- [Edge volumes of map-matched tracks (legacy URL)](./map-matched-edge-volumes-mob05.md)
+- [Network time geography (legacy URL)](./network-time-geography-mob09.md)
+
+See also the [sidebar-backed network chooser](../analysis-catalog.md#network-chooser).
 
 ## When to use it
 
@@ -93,6 +134,51 @@ Compile, encode, submit and read these buffers with the walkthrough's lifecycle.
 `iterationLimitReached` with the costs: when it is 1, propagate incompleteness, suppress dependent
 results, or continue/fall back rather than treating unreached nodes as proof of no route.
 
+## CPU first run
+
+These array functions need no GPU device. Edge weights are travel costs in the caller's chosen
+unit (seconds in this example); rows are zero-based vertex indices.
+
+```ts
+import {
+  computeNetworkReachabilityOnCPU,
+  computeNetworkCostMatrixOnCPU
+} from '@luma-contributors/analysis/gpu-network';
+const topology = {
+  offsets: Uint32Array.of(0, 1, 2, 2),
+  neighbors: Uint32Array.of(1, 2),
+  weights: Float32Array.of(2, 3)
+};
+const reachable = computeNetworkReachabilityOnCPU({
+  topology, startNodes: Uint32Array.of(0)
+});
+console.log(Array.from(reachable.costs)); // [0, 2, 5]
+const matrix = computeNetworkCostMatrixOnCPU({
+  topology,
+  startNodes: Uint32Array.of(0, 2),
+  targetNodes: Uint32Array.of(1, 2)
+}, {rowCount: 2});
+console.log(Array.from(matrix.costs)); // [2, 5, Infinity, 0]
+```
+
+The OD matrix has two origin rows (vertices 0 and 2) and two target columns (vertices 1 and 2).
+Origin 2 cannot reach target 1, so that entry is positive infinity. Without an explicit iteration
+budget these CPU searches run to completion; supplying a budget retains its bounded-search contract.
+
+| Task | Entry and reading contract |
+| --- | --- |
+| Weak component labels | `GPUNetworkAnalyticsColumns` components output, one row per vertex |
+| Strong component labels | `GPUNetworkStructure` or `GPUNetworkStronglyConnectedComponents`; inspect SCC status |
+| Component summaries | `GPUNetworkStatistics` packed summary and its decoder |
+| Route geometry | `GPUNetworkPathExtraction`; forward predecessor completeness when composing |
+| OD costs | `GPUNetworkCostMatrix` / `computeNetworkCostMatrixOnCPU`; `targetNodes` sets column order |
+| Lexicographic simple alternatives | `GPUAlternativeRoutes`: CSR edge-slot tie order, `nodeCount` path stride, per-query completion |
+| Bounded Yen alternatives | `GPUKShortestPaths`: `maximumPathLength` path stride, batch interruption status |
+
+`computeNetworkStructureOnCPU` accepts either flat `{offsets, neighbors, reverseEdgeSlots?}`
+or named `{topology: {offsets, neighbors}, reverseEdgeSlots?}` input. Reverse slots are needed
+for undirected resilience outputs; SCC-only use does not require them.
+
 ## Concepts and operators
 
 - [GPU Network concepts](./concepts.md): conventions, units and the GPU execution model.
@@ -101,9 +187,9 @@ results, or continue/fall back rather than treating unreached nodes as proof of 
 
 ## Catalog
 
-One figure per contributor, each drawn from a recorded GPU run on real data; click through to its card.
-
-::lens-catalog{entry=gpu-network}
+[Browse network operations in the catalog](/explore/?data=network) to inspect contracts and
+available recordings. A recording's own provenance identifies its dataset, device and execution;
+listing an operation does not establish a GPU qualification run.
 
 ## Limits and compatibility
 

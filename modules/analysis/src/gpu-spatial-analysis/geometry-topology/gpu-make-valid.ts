@@ -21,6 +21,7 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   validateCapacity,
+  validateRequirement,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -28,11 +29,21 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {getMakeValidSegmentIndexNodes} from './make-valid-segment-index';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {validateLineNodingBounds} from './gpu-line-noding';
 import {GPUPolygonize, type GPUPolygonizeProps} from './gpu-polygonize';
-import {validatePolygonizeStatus} from './topology-status';
+import {
+  validatePolygonizeStatus,
+  validateSupportedTopologyStatus,
+  validateTopologyStatusScalars,
+  validateTopologyStatusAliases,
+  snapshotTopologyStatus
+} from './topology-status';
 import {
   GPU_TOPOLOGY_NONE,
   type GPUPolygonizeOutput,
@@ -113,6 +124,9 @@ export type GPUMakeValidProps = {
  * the active output provenance prefix.
  * If an orientation cannot be certified (non-finite coordinates or a span of more than 200 binary
  * orders of magnitude) the face is kept. Open and cut remnants stay in `output.diagnostics`.
+ * Only cardinality, overflow and uncertainty status destinations are published. Inherited
+ * invalidity, iteration and approximation destinations are refused at construction; omit them
+ * and use `candidateOverflow`, `uncertainCount` and the edge diagnostics instead.
  */
 export class GPUMakeValid implements GPUCommandNodeProducer {
   readonly id: string;
@@ -121,10 +135,108 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUMakeValidProps) {
-    this.id = props.id ?? 'make-valid';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    const snapshot = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'polygons',
+      'intersectionCapacity',
+      'precision',
+      'snapRounding',
+      'output',
+      'spatialSort',
+      'leafCapacity'
+    ]);
+    this.id = snapshot.id ?? 'make-valid';
+    this.spatialContext = snapshotConstructionSpatialContext(
+      resolveGPUSpatialContext(this.id, snapshot.spatialContext)
+    );
+    const output = snapshotConstructionFields(snapshot.output, [
+      'nodedSegments',
+      'directedEdges',
+      'polygons',
+      'diagnostics',
+      'status'
+    ]);
+    // Capture rejected fields as well as supported ones, so validation sees the caller's
+    // complete declared status vocabulary before any unsupported field could be discarded.
+    const snapshotStatus = snapshotTopologyStatus;
+    props = Object.freeze({
+      ...snapshot,
+      spatialContext: this.spatialContext,
+      polygons: snapshotConstructionFields(snapshot.polygons, [
+        'kind',
+        'positions',
+        'featureOffsets',
+        'polygonOffsets',
+        'ringOffsets',
+        'sourceIds'
+      ]),
+      precision: snapshotConstructionFields(snapshot.precision, [
+        'vertexTolerance',
+        'predicates',
+        'storage'
+      ]),
+      snapRounding:
+        snapshot.snapRounding &&
+        snapshotConstructionFields(snapshot.snapRounding, ['gridSize', 'lattice']),
+      output: Object.freeze({
+        nodedSegments: Object.freeze({
+          ...snapshotConstructionFields(output.nodedSegments, [
+            'endpoints',
+            'sourceFeatureIds',
+            'sourceRingIds',
+            'sourceEdgeIds',
+            'sourceStartParameters',
+            'sourceEndParameters'
+          ]),
+          status: snapshotStatus(output.nodedSegments.status)
+        }),
+        directedEdges: Object.freeze({
+          ...snapshotConstructionFields(output.directedEdges, [
+            'endpoints',
+            'sourceSegmentIds',
+            'sourceFeatureIds',
+            'twinIds',
+            'ringIds',
+            'flags'
+          ]),
+          status: snapshotStatus(output.directedEdges.status)
+        }),
+        polygons: snapshotConstructionFields(output.polygons, [
+          'kind',
+          'positions',
+          'featureOffsets',
+          'polygonOffsets',
+          'ringOffsets',
+          'sourceIds'
+        ]),
+        diagnostics: snapshotConstructionFields(output.diagnostics, [
+          'edgeClasses',
+          'closedRingCount',
+          'openChainCount',
+          'cutEdgeCount',
+          'dangleCount',
+          'unusedEdgeCount'
+        ]),
+        status: snapshotStatus(output.status)
+      })
+    });
     this.props = props;
+    validateRequirement(
+      this.id,
+      !('requiredRingCount' in props.output.directedEdges.status),
+      'output.directedEdges.status.requiredRingCount is final-only; use output.directedEdges.status.requiredCount or output.status.requiredRingCount'
+    );
+    for (const [path, status] of [
+      ['output.status', props.output.status],
+      ['output.nodedSegments.status', props.output.nodedSegments.status],
+      ['output.directedEdges.status', props.output.directedEdges.status]
+    ] as const) {
+      validateSupportedTopologyStatus(this.id, status, path);
+      if (path !== 'output.status') validateTopologyStatusScalars(this.id, status, path);
+    }
     validatePolygonizeStatus(this.id, props.output.status);
+    validateTopologyStatusAliases(this.id, props.output);
     if (props.polygons.kind !== 'polygons') {
       throw new Error(`${this.id} polygons.kind must be polygons`);
     }
@@ -185,6 +297,18 @@ export class GPUMakeValid implements GPUCommandNodeProducer {
       'reduce output.nodedSegments.endpoints.length'
     );
     const ringCount = polygons.ringOffsets.length - 1;
+    // Noding consumes open line paths, while polygon rings close implicitly: one repeated first
+    // vertex per ring makes the closing edge part of the arrangement (as GPUPolygonOverlay does).
+    // A ring that already repeats its first vertex gains a zero-length edge, which noding drops.
+    const vertexCount = polygons.positions.length;
+    const closedVertexCount = vertexCount + ringCount;
+    validateLineNodingBounds(
+      id,
+      graph.device,
+      closedVertexCount,
+      ringCount,
+      props.intersectionCapacity
+    );
     const ringSourceIds = createTransientView(graph, `${id}-ring-source-ids`, 'uint32', ringCount);
     const ringFeatureRows = createTransientView(
       graph,
@@ -253,18 +377,6 @@ const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;`,
       ...Object.values(output.nodedSegments.status),
       ...Object.values(output.status)
     ]);
-    // Noding consumes open line paths, while polygon rings close implicitly: one repeated first
-    // vertex per ring makes the closing edge part of the arrangement (as GPUPolygonOverlay does).
-    // A ring that already repeats its first vertex gains a zero-length edge, which noding drops.
-    const vertexCount = polygons.positions.length;
-    const closedVertexCount = vertexCount + ringCount;
-    validateLineNodingBounds(
-      id,
-      graph.device,
-      closedVertexCount,
-      props.polygons.ringOffsets.length - 1,
-      props.intersectionCapacity
-    );
     const closedPositions = createTransientView(
       graph,
       `${id}-ring-closure-positions`,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {captureUrbanLandscapeDestinations} from '../landscape-ecology/urban-landscape-destinations';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {GUARDED_ATAN2_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -97,8 +98,8 @@ export type GPUIsovistsOutput = {
   segments: GraphDataView<'uint32'>;
   /** `uint32`, the same expanded per-ray row count as endpoints: one when the ray is valid. */
   validity: GraphDataView<'uint32'>;
-  /** `float32x4`, one row per viewpoint: area, perimeter, maximum distance, validity. */
-  measures: GraphDataView<'float32x4'>;
+  /** `float32x4`, one row per viewpoint: local area (coordinate units squared), perimeter and maximum distance (coordinate units), validity. */
+  localMeasures: GraphDataView<'float32x4'>;
   /** `float32`, the same expanded per-ray row count as endpoints: ray angles, ascending per viewpoint. */
   angles: GraphDataView<'float32'>;
   /** `uint32`, one row per viewpoint: 0 free, 1 blocked, 2 boundary, 3 non-finite. */
@@ -139,6 +140,13 @@ export function addIsovistsRecipe<Parameters>(
   props: GPUIsovistsProps
 ) {
   const id = props.id ?? 'isovists';
+  validateRequirement(id, !('outputs' in props), 'outputs was removed; use output');
+  validateRequirement(
+    id,
+    props.obstacleIndex === undefined ||
+      (['auto', 'brute-force', 'bvh'] as readonly string[]).includes(props.obstacleIndex),
+    `obstacleIndex must be auto or brute-force or bvh; received ${String(props.obstacleIndex)}`
+  );
   validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
   validateSinglePackedView(props.segments, ['float32x4'], `${id} segments`);
   const maximumDistance = props.maximumDistance;
@@ -172,7 +180,21 @@ export function addIsovistsRecipe<Parameters>(
     Number.isFinite(tolerance) && tolerance > 0,
     'tolerance must be a positive finite number'
   );
-  const output = props.output;
+  const suppliedOutput = props.output;
+  validateRequirement(
+    id,
+    !suppliedOutput || !('measures' in suppliedOutput),
+    'output.measures was removed; use output.localMeasures'
+  );
+  const output = captureUrbanLandscapeDestinations(id, {output: suppliedOutput}, [
+    'endpoints',
+    'distances',
+    'segments',
+    'validity',
+    'localMeasures',
+    'angles',
+    'viewpointClassifications'
+  ]);
   const rayRows = viewpointCount * rayCount;
   const inputs = {positions: props.positions, segments: props.segments};
   validateUrbanLandscapeRecipeViews(
@@ -184,7 +206,7 @@ export function addIsovistsRecipe<Parameters>(
       distances: {view: output?.distances, format: 'float32', length: rayRows},
       segments: {view: output?.segments, format: 'uint32', length: rayRows},
       validity: {view: output?.validity, format: 'uint32', length: rayRows},
-      measures: {view: output?.measures, format: 'float32x4', length: viewpointCount},
+      localMeasures: {view: output?.localMeasures, format: 'float32x4', length: viewpointCount},
       angles: {view: output?.angles, format: 'float32', length: rayRows},
       viewpointClassifications: {
         view: output?.viewpointClassifications,
@@ -214,11 +236,11 @@ export function addIsovistsRecipe<Parameters>(
       },
       {
         reads: {
-          positions: props.positions,
-          endpoints: output?.endpoints,
+          angles: output?.angles,
+          distances: output?.distances,
           validity: output?.validity
         },
-        writes: {measures: output?.measures}
+        writes: {localMeasures: output?.localMeasures}
       }
     ]
   );
@@ -239,7 +261,7 @@ export function addIsovistsRecipe<Parameters>(
     `${id}-measures`,
     'float32x4',
     viewpointCount,
-    output?.measures
+    output?.localMeasures
   );
   const classificationOutput = getRecipeView(
     graph,
@@ -372,13 +394,12 @@ validity[validityOffset+index]=u32(valid);`
       operation: id,
       invocationCount: viewpointCount,
       bindings: [
-        {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-        {name: 'endpoints', view: endpoints, type: 'f32', access: 'read'},
+        {name: 'angles', view: angles, type: 'f32', access: 'read'},
+        {name: 'distances', view: distances, type: 'f32', access: 'read'},
         {name: 'validity', view: validity, type: 'u32', access: 'read'},
         {name: 'output', view: measures, type: 'f32', access: 'read_write'}
       ],
-      body: `let origin=vec2<f32>(positions[positionsOffset+2u*index],positions[positionsOffset+2u*index+1u]);
-var area=0.0;
+      body: `var area=0.0;
 var perimeter=0.0;
 var maximum=0.0;
 var valid=true;
@@ -386,11 +407,14 @@ for(var ray=0u;ray<${rayCount}u;ray++){
   let first=index*${rayCount}u+ray;
   let second=index*${rayCount}u+(ray+1u)%${rayCount}u;
   valid=valid&&validity[validityOffset+first]!=0u;
-  let start=vec2<f32>(endpoints[endpointsOffset+2u*first],endpoints[endpointsOffset+2u*first+1u])-origin;
-  let end=vec2<f32>(endpoints[endpointsOffset+2u*second],endpoints[endpointsOffset+2u*second+1u])-origin;
+  let firstAngle=angles[anglesOffset+first];
+  let secondAngle=angles[anglesOffset+second];
+  let firstDistance=distances[distancesOffset+first];
+  let start=vec2<f32>(cos(firstAngle),sin(firstAngle))*firstDistance;
+  let end=vec2<f32>(cos(secondAngle),sin(secondAngle))*distances[distancesOffset+second];
   area+=0.5*(start.x*end.y-start.y*end.x);
   perimeter+=distance(start,end);
-  maximum=max(maximum,length(start));
+  maximum=max(maximum,firstDistance);
 }
 let missing=bitcast<f32>(0x7fc00000u | (index & 0u));
 output[outputOffset+4u*index]=select(missing,area,valid);
@@ -400,7 +424,15 @@ output[outputOffset+4u*index+3u]=f32(valid);`
     })
   );
   return {
-    outputs: {endpoints, distances, segments, validity, measures, angles, viewpointClassifications},
+    outputs: {
+      endpoints,
+      distances,
+      segments,
+      validity,
+      localMeasures: measures,
+      angles,
+      viewpointClassifications
+    },
     provenance: {
       positions: props.positions,
       obstacles: props.segments,

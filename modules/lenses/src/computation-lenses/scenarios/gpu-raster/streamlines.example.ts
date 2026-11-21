@@ -47,8 +47,8 @@ export async function runExample(device: Device, input: StreamlinesExampleInput)
   const south = grid.affine[5] - grid.height * cell; // field rows start at the south edge
   parameters.write(
     getGPUStreamlinesParameterValues({
-      fieldExtent: [west, south, cell, cell], // degrees
-      gridExtent: [west, south, 0.5, 0.5], // 0.5 degree separation between lines
+      fieldPlacement: {origin: [west, south], cellSize: [cell, cell]}, // degrees
+      gridPlacement: {origin: [west, south], cellSize: [0.5, 0.5]}, // 0.5 degree separation between lines
       stepLength: 0.1 // degrees per step
     })
   );

@@ -452,3 +452,36 @@ it('checks all added topology, hierarchy and high-order UNIQ branches against th
     )
   );
 });
+
+it('HEALPix uses the shared row kernel while preserving one shader for unequal chunks (DGGS-115)', () => {
+  const graph = new GPUCommandGraph(device);
+  const fields = createCellChunkFields(graph, [1, 4, 2], 1);
+  const contributor = new GPUHealpixPointToCell({
+    order: 0,
+    positions: fields.positions,
+    output: {cells: fields.outputCells}
+  });
+  const nodes = addCellChunkNodes(graph, contributor);
+  expect(getParsedKernelSources(nodes).size).toBe(1);
+  const kernels = getGPUCommandNodeKernelSources(nodes);
+  expect(kernels).toHaveLength(3);
+  expect(kernels.every(kernel => kernel.source.includes('let chunkParametersOffset = 0u;'))).toBe(
+    true
+  );
+});
+
+it.each(
+  CELL_CHUNK_CASES.filter(
+    testCase => testCase.name === 'GPUCellGridPath' || testCase.name === 'GPUS2CellHierarchy'
+  )
+)('$name uses the shared row dispatcher for remaining one-row routes (UNFINISHED)', testCase => {
+  const graph = new GPUCommandGraph(device);
+  const fields = createCellChunkFields(graph, [1, 4, 2], testCase.stride);
+  const nodes = addCellChunkNodes(graph, testCase.create(fields));
+  expect(getParsedKernelSources(nodes).size).toBe(1);
+  expect(
+    getGPUCommandNodeKernelSources(nodes).every(kernel =>
+      kernel.source.includes('let chunkParametersOffset = 0u;')
+    )
+  ).toBe(true);
+});

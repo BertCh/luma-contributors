@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  getViewBindingRange,
   getViewElementOffset,
   type GraphBufferHandle,
   type GraphDataView
@@ -83,6 +84,8 @@ export function createGPUKernelAnnotation(
       text: source,
       ...(constants && {constants})
     },
+    constants: constants ?? {},
+    entryPoint: entryPoint ?? 'main',
     workgroupSize,
     dispatch: {
       workgroups,
@@ -97,6 +100,8 @@ export function createGPUKernelAnnotation(
         ...('buffer' in view && {
           elementType: elementType ?? getGPUElementType(view.format),
           elementOffset: getViewElementOffset(view),
+          bindingByteOffset: getViewBindingRange(view).offset,
+          bindingByteLength: getViewBindingRange(view).size,
           length: view.length
         })
       }))

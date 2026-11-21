@@ -8,6 +8,7 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {expect, it} from 'vitest';
 import {REPOSITORY_ROOT} from './lens-directives';
+import {writeNativeWorkspaceLoader} from './native-workspace-loader';
 
 it('loads network scenarios through the public native ESM registry without a GPU', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'lens-native-registry-'));
@@ -15,6 +16,7 @@ it('loads network scenarios through the public native ESM registry without a GPU
     // Erase TypeScript on demand, without bundling or rewriting JSON imports. Native Node still
     // enforces JSON attributes, unlike the Vitest SSR runner or an esbuild bundle.
     const launcher = join(temporary, 'registry.mjs');
+    const workspaceLoader = writeNativeWorkspaceLoader(temporary);
     writeFileSync(
       launcher,
       `
@@ -63,7 +65,7 @@ it('loads network scenarios through the public native ESM registry without a GPU
       console.log(JSON.stringify(loaded));
     `
     );
-    const output = execFileSync(process.execPath, [launcher], {
+    const output = execFileSync(process.execPath, ['--import', workspaceLoader, launcher], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 20_000

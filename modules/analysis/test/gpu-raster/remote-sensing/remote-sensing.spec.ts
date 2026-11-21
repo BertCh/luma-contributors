@@ -26,7 +26,9 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+import {GPURasterNDVI} from '@luma.gl/graph/gpu-raster';
+import {GPUCubeLayoutTranspose} from '../../../src/dataframe-analysis/cube-layout/gpu-cube-layout-transpose';
 
 it('RS03 conserves source totals and distinguishes uncovered from dynamic missing support', async () => {
   const device = await getWebGPUTestDevice();
@@ -604,5 +606,192 @@ it('RS11 rejects overflowing training energy in both default and explicit harmon
     expect(result['coefficients'].every(Number.isNaN)).toBe(true);
     expect(result['components'].every(Number.isNaN)).toBe(true);
     expect(result['improvement'].every(Number.isNaN)).toBe(true);
+  }
+});
+
+it('WGS-02 GLCM uses one float32 endpoint interval at large offsets', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createRemoteSensingHarness(device);
+  const result = await harness.run(
+    new GPURasterTexture({
+      grid: makeGPURasterMetadata({width: 2, height: 1}),
+      values: harness.input([10000000, 10000002]),
+      levels: 4,
+      range: [10000000.49, 10000002.51],
+      radius: 1,
+      offset: [1, 0],
+      features: harness.output('features', 'float32', 14),
+      pairCount: harness.output('pairs', 'uint32', 2)
+    })
+  );
+  // Rounded endpoints [10000000,10000003] give bins [0,2], hence (2-0)^2=4.
+  expect(result['features']).toHaveLength(14);
+  expect(result['pairs']).toEqual([1, 1]);
+  for (const cell of [0, 1]) {
+    expect(Number.isFinite(result['features'][cell * 7])).toBe(true);
+    expect(result['features'][cell * 7]).toBe(4);
+  }
+});
+
+it('B1 GLCM keeps integer upper-bin equality for eleven levels', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createRemoteSensingHarness(device);
+  const result = await harness.run(
+    new GPURasterTexture({
+      grid: makeGPURasterMetadata({width: 2, height: 1}),
+      values: harness.input([56, 63]),
+      levels: 11,
+      range: [0, 77],
+      radius: 1,
+      offset: [1, 0],
+      features: harness.output('features', 'float32', 14),
+      pairCount: harness.output('pairs', 'uint32', 2)
+    })
+  );
+  // Exact width 77/11=7: samples 56 and 63 are bins 8 and 9, contrast (9-8)^2=1.
+  expect(result['features']).toHaveLength(14);
+  expect(result['pairs']).toEqual([1, 1]);
+  for (const cell of [0, 1]) {
+    expect(Number.isFinite(result['features'][cell * 7])).toBe(true);
+    expect(result['features'][cell * 7]).toBe(1);
+  }
+});
+
+it.each([
+  {
+    label: 'all dates',
+    qa: [1, 2, 3, 4],
+    transposedQA: [1, 3, 2, 4],
+    means: [0.3, 0.6],
+    counts: [2, 2]
+  },
+  {
+    label: 'one QA exclusion',
+    qa: [1, 0, 3, 4],
+    transposedQA: [1, 3, 0, 4],
+    means: [0.3, 1],
+    counts: [2, 1]
+  }
+])('W3-06 upstream NDVI dates and external QA transpose into per-cell temporal means ($label)', async ({
+  qa,
+  transposedQA,
+  means,
+  counts
+}) => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createRemoteSensingHarness(device);
+  const dateMajorValues = harness.output('date-major', 'float32', 4);
+  const dateMajorValidity = harness.output('date-validity', 'uint32', 4);
+  const cellMajorValues = harness.output('cell-major', 'float32', 4);
+  const cellMajorQA = harness.output('cell-qa', 'uint32', 4);
+  const nearInfrared = [
+    [1, 3],
+    [4, 2]
+  ];
+  const red = [
+    [1, 2],
+    [1, 0]
+  ];
+  for (const date of [0, 1]) {
+    new GPURasterNDVI({
+      id: `ndvi-date-${date}`,
+      width: 2,
+      height: 1,
+      nearInfrared: {
+        id: `nir-${date}`,
+        format: 'float32',
+        storage: {kind: 'buffer', values: harness.input(nearInfrared[date])}
+      },
+      red: {
+        id: `red-${date}`,
+        format: 'float32',
+        storage: {kind: 'buffer', values: harness.input(red[date])}
+      },
+      output: harness.graph.createDataView(dateMajorValues.buffer, {
+        format: 'float32',
+        byteOffset: date * 2 * 4,
+        length: 2
+      }),
+      outputValidity: harness.graph.createDataView(dateMajorValidity.buffer, {
+        format: 'uint32',
+        byteOffset: date * 2 * 4,
+        length: 2
+      })
+    }).addToGraph(harness.graph);
+  }
+  harness.graph.add(
+    new GPUCubeLayoutTranspose({
+      id: 'transpose-ndvi',
+      values: dateMajorValues,
+      from: 'period-major',
+      cellCount: 2,
+      periodCount: 2,
+      output: cellMajorValues
+    })
+  );
+  harness.graph.add(
+    new GPUCubeLayoutTranspose({
+      id: 'transpose-qa',
+      values: harness.mask(qa),
+      from: 'period-major',
+      cellCount: 2,
+      periodCount: 2,
+      output: cellMajorQA
+    })
+  );
+  const result = await harness.run(
+    new GPURasterTemporal({
+      cellCount: 2,
+      sliceCount: 2,
+      values: cellMajorValues,
+      mask: cellMajorQA,
+      operation: 'mean',
+      output: {
+        values: harness.output('means', 'float32', 2),
+        counts: harness.output('counts', 'uint32', 2),
+        chosenSlice: harness.output('chosen', 'uint32', 2),
+        status: harness.output('status', 'uint32', 2)
+      }
+    })
+  );
+  // NDVI date rows are [0,1/5] and [3/5,1]. Cell means are 3/10 and 3/5;
+  // treating the date-major buffer as cell-major instead would yield [1/10,4/5].
+  expect(result['date-validity']).toEqual([1, 1, 1, 1]);
+  expect(result['cell-qa']).toEqual(transposedQA);
+  expect(result['means']).toHaveLength(2);
+  expect(result['counts']).toEqual(counts);
+  expect(result['chosen']).toEqual([0xffffffff, 0xffffffff]);
+  expect(result['status']).toEqual([0, 0]);
+  for (const [cell, expected] of means.entries()) {
+    expect(Number.isFinite(result['means'][cell])).toBe(true);
+    expect(result['means'][cell]).toBeCloseTo(expected, 6);
+  }
+});
+
+it('B3 exact GLCM bin boundaries remain stable under reciprocal division', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = createRemoteSensingHarness(device);
+  const result = await harness.run(
+    new GPURasterTexture({
+      grid: makeGPURasterMetadata({width: 2, height: 1}),
+      values: harness.input([0, 5]),
+      levels: 5,
+      range: [0, 25],
+      radius: 1,
+      offset: [1, 0],
+      features: harness.output('features', 'float32', 14),
+      pairCount: harness.output('pairs', 'uint32', 2)
+    })
+  );
+  expect(result['features']).toHaveLength(14);
+  expect(result['pairs']).toEqual([1, 1]);
+  // Five equal bins span [0,25]: 0 is in bin 0, and 5 is exactly the start of bin 1.
+  for (const cell of [0, 1]) {
+    expect(Number.isFinite(result['features'][cell * 7])).toBe(true);
+    expect(result['features'][cell * 7]).toBe(1);
   }
 });

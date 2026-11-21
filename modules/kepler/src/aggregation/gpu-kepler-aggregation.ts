@@ -12,6 +12,7 @@ import {
   getGPUPointDensityHexagonGridSize,
   type GPUPointDensityStatistic
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {validateKeplerPointDensityGpuBounds} from './point-density-bounds';
 
 export type GPUKeplerAggregationTopology =
   | {
@@ -70,6 +71,9 @@ export type GPUKeplerAggregationPolygons = {
  * nonfinite weights contribute zero but still count. Supply validity to exclude missing weights
  * from both numerator and denominator. Means are sums/counts, with zero for an empty cell.
  * Deterministic sums use GPUPointDensity's documented fixed-point quantization, not f64 sums.
+ * For rectangular grids, each of the four bounds must have magnitude below 2^125 after rounding
+ * to float32, so counts and sums both use the published grid coordinate rule. Rebase or rescale
+ * positions and bounds together for larger magnitudes.
  *
  * Output row identity is always row * columns + column, including empty cells. No member list is
  * materialized. GPUColumnLayer/GPUGridCellLayer can borrow centers and values directly; their
@@ -100,6 +104,7 @@ export class GPUKeplerAggregation {
     this.device = props.device;
     const id = props.id ?? 'kepler-aggregation';
     validateInputs(props, this.layout);
+    if (this.layout.kind === 'grid') validateKeplerPointDensityGpuBounds(id, this.layout.bounds);
     this.graph = new GPUCommandGraph(this.device, {id});
     try {
       const {cellCount, gridSize, bounds, radius, kind} = this.layout;

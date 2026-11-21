@@ -52,21 +52,21 @@ import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {getZoneAnchorNodes} from './zone-anchor-nodes';
 
-const OPERATION = 'GPUPycnophylactic';
+const OPERATION = 'GPUPycnophylacticInterpolation';
 /** Planar coordinates, or longitude/latitude rasters smoothed as density per spherical cell area. */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
   ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   measure: 'area'
 });
 
-/** Maximum number of smoothing iterations of {@link GPUPycnophylactic}. */
+/** Maximum number of smoothing iterations of {@link GPUPycnophylacticInterpolation}. */
 export const GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS = 512;
 
-/** Smoothing neighborhood of {@link GPUPycnophylactic}. */
-export type GPUPycnophylacticKernel = 'rook' | 'box';
+/** Smoothing neighborhood of {@link GPUPycnophylacticInterpolation}. */
+export type GPUPycnophylacticInterpolationKernel = 'rook' | 'box';
 
-/** Caller-owned outputs of {@link GPUPycnophylactic}. */
-export type GPUPycnophylacticOutput = {
+/** Caller-owned outputs of {@link GPUPycnophylacticInterpolation}. */
+export type GPUPycnophylacticInterpolationOutput = {
   /**
    * `grid.width * grid.height` result: the mass per cell. The cells of zone `z` sum to `totals[z]` (to
    * float32 accuracy) and are non-negative. Cells outside the study area and cells of zones
@@ -98,13 +98,13 @@ export type GPUPycnophylacticOutput = {
 };
 
 /**
- * Properties for {@link GPUPycnophylactic}.
+ * Properties for {@link GPUPycnophylacticInterpolation}.
  *
  * Compile-time: the `grid` size, `zoneCount`, `maximumIterations`, `kernel`, `spatialContext` and which
  * optional views exist. Per-frame: the contents of `zones`, `totals`, `parameters`, `zoneAnchorCells`
  * and `tolerance`.
  */
-export type GPUPycnophylacticProps = {
+export type GPUPycnophylacticInterpolationProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'pycnophylactic'`. */
   id?: string;
   /** Raster grid: its width and height size the kernels, and `zones` holds `grid.width * grid.height` rows. */
@@ -165,9 +165,9 @@ export type GPUPycnophylacticProps = {
    * Focal mean: `'rook'` (default, Tobler 1979) averages the 4 edge neighbors inside the study
    * area; `'box'` averages the 3x3 block including the cell itself.
    */
-  kernel?: GPUPycnophylacticKernel;
+  kernel?: GPUPycnophylacticInterpolationKernel;
   /** Caller-owned outputs. */
-  output: GPUPycnophylacticOutput;
+  output: GPUPycnophylacticInterpolationOutput;
 };
 
 /**
@@ -215,15 +215,15 @@ export type GPUPycnophylacticProps = {
  * Limitation: no ancillary (dasymetric) initial surface and no barriers; the study area is the
  * union of the zone cells, and the focal mean is by cell index, not by ground distance.
  */
-export class GPUPycnophylactic implements GPUCommandNodeProducer {
+export class GPUPycnophylacticInterpolation implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUPycnophylacticProps;
+  readonly props: GPUPycnophylacticInterpolationProps;
   /** Resolved coordinate context: native planar unless a longitude/latitude raster was declared. */
   readonly spatialContext: GPUSpatialContext;
 
-  constructor(props: GPUPycnophylacticProps) {
+  constructor(props: GPUPycnophylacticInterpolationProps) {
     const id = props.id ?? 'pycnophylactic';
     this.id = id;
     this.props = props;

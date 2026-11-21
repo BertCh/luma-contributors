@@ -3,18 +3,25 @@
 
 import type {GpuSceneParameter} from '../../../types';
 
-// All three are compile-time props of GPUModalSplit: the two finite entries of modeSpeedBreaks
+// All three are compile-time props of GPUModalSplit: the two finite entries of modeSpeedUpperBoundsFloat32
 // (world units per playback second; the third is Infinity) and the metric.
 export const parameters: GpuSceneParameter[] = [
   {
     id: 'slowBreak',
-    label: 'modeSpeedBreaks[0]',
+    label: 'modeSpeedUpperBoundsFloat32[0]',
     min: 0.004,
     max: 0.016,
     step: 0.004,
     default: 0.012
   },
-  {id: 'fastBreak', label: 'modeSpeedBreaks[1]', min: 0.02, max: 0.05, step: 0.005, default: 0.03},
+  {
+    id: 'fastBreak',
+    label: 'modeSpeedUpperBoundsFloat32[1]',
+    min: 0.02,
+    max: 0.05,
+    step: 0.005,
+    default: 0.03
+  },
   {
     id: 'metric',
     label: 'metric',

@@ -125,7 +125,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
       synthetic: getSyntheticPopulationValues(zips)
     };
     const maskOn = getTerrainMask(terrain);
-    const {maskExtent, sourceRows} = getAreaMaskMapping(terrain, projection);
+    const {maskPlacement, sourceRows} = getAreaMaskMapping(terrain, projection);
     const maskOff = new Float32Array(maskOn.length).fill(1);
 
     // Inputs. Values, mask weights, parameters and per-feature counts are rewritten at runtime.
@@ -277,13 +277,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
             DOT_CAPACITY
           ),
           slotCounts: importGraphBuffer(dotGraph, 'slot-counts', slotCounts, 'uint32', slotCount),
-          slotOffsets: importGraphBuffer(
-            dotGraph,
-            'slot-offsets',
-            slotOffsets,
-            'uint32',
-            slotCount
-          ),
+          slotStarts: importGraphBuffer(dotGraph, 'slot-offsets', slotOffsets, 'uint32', slotCount),
           status: {
             failedCount: importGraphBuffer(dotGraph, 'dot-failed', dotFailed, 'uint32', 1)
           }
@@ -492,14 +486,14 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
 
     const writeParameters = (dotsPerUnit: number) => {
       parameters.write(
-        getGPUDotDensityParameterValues({seed: randomSeed, dotsPerUnit, maskExtent})
+        getGPUDotDensityParameterValues({seed: randomSeed, dotsPerUnit, maskPlacement})
       );
     };
 
     /** Encodes the dot graph at `dotsPerUnit` outside the frame and returns CPU copies. */
     const runDotsOutsideFrame = async (dotsPerUnit: number) => {
       parameters.write(
-        getGPUDotDensityParameterValues({seed: randomSeed, dotsPerUnit, maskExtent})
+        getGPUDotDensityParameterValues({seed: randomSeed, dotsPerUnit, maskPlacement})
       );
       const encoder = device.createCommandEncoder();
       compiledDots.encode(encoder, {parameters: undefined});
@@ -567,7 +561,9 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
       randomTimingReadout.setValue('measuring...');
       try {
         writeParameters(getDotsPerUnit(REFERENCE_ZOOM));
-        randomParameters.write(getGPUDotDensityParameterValues({seed: randomSeed + 1, maskExtent}));
+        randomParameters.write(
+          getGPUDotDensityParameterValues({seed: randomSeed + 1, maskPlacement})
+        );
         const options = {
           parameters: undefined,
           completionBuffer: dotOverflow,
@@ -654,7 +650,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
           randomParameters.write(
             getGPUDotDensityParameterValues({
               seed: randomSeed + 1,
-              maskExtent
+              maskPlacement
             })
           );
           compiledRandom.encode(commandEncoder, {parameters: undefined});
@@ -831,7 +827,7 @@ function getAreaMaskMapping(
   terrain: SpatialAnalysisTerrain,
   areaFrame: GPULocalFrame
 ): {
-  maskExtent: readonly [number, number, number, number];
+  maskPlacement: {origin: readonly [number, number]; cellSize: readonly [number, number]};
   sourceRows: Uint32Array;
 } {
   const [minimumX, minimumY, maximumX, maximumY] = terrain.bounds;
@@ -877,5 +873,8 @@ function getAreaMaskMapping(
       }
     }
   }
-  return {maskExtent: [bounds[0], bounds[1], cellWidth, cellHeight], sourceRows};
+  return {
+    maskPlacement: {origin: [bounds[0], bounds[1]], cellSize: [cellWidth, cellHeight]},
+    sourceRows
+  };
 }

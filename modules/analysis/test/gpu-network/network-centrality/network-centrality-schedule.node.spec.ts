@@ -33,7 +33,9 @@ function createProps(
   graph: GPUCommandGraph,
   nodeCount = 40,
   pivotCount = 2
-): GPUNetworkCentralityProps {
+): GPUNetworkCentralityProps & {
+  reverseTopology: NonNullable<GPUNetworkCentralityProps['reverseTopology']>;
+} {
   let viewCount = 0;
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `schedule-view-${viewCount++}`, format, length);

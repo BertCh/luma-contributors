@@ -1,10 +1,72 @@
 {
-  "extends": "../../tsconfig.json",
-  "include": ["src/**/*", "src/**/*.json", "test/**/*"],
-  "exclude": ["node_modules"],
+  "extends": "../../tsconfig.test.json",
+  "include": [
+    "src/**/*",
+    "src/**/*.json",
+    "test/**/*"
+  ],
+  "exclude": [
+    "node_modules"
+  ],
   "compilerOptions": {
     "noEmit": true,
     "composite": false,
-    "incremental": false
+    "incremental": false,
+    "paths": {
+      "@luma-contributors/analysis": [
+        "../../modules/analysis/src/index.ts"
+      ],
+      "@luma-contributors/analysis/computation-record": [
+        "../../modules/analysis/src/computation-record/index.ts"
+      ],
+      "@luma-contributors/analysis/gpu-spatial-analysis": [
+        "../../modules/analysis/src/gpu-spatial-analysis/index.ts"
+      ],
+      "@luma-contributors/analysis/gpu-spatial-analysis/ontology": [
+        "../../modules/analysis/src/gpu-spatial-analysis/ontology/index.ts"
+      ],
+      "@luma-contributors/analysis/gpu-network": [
+        "../../modules/analysis/src/gpu-network/index.ts"
+      ],
+      "@luma-contributors/analysis/gpu-terrain": [
+        "../../modules/analysis/src/gpu-terrain/index.ts"
+      ],
+      "@luma-contributors/analysis/dataframe-analysis": [
+        "../../modules/analysis/src/dataframe-analysis/index.ts"
+      ],
+      "@luma-contributors/analysis/raster-analysis": [
+        "../../modules/analysis/src/raster-analysis/index.ts"
+      ],
+      "@luma-contributors/analysis/pointcloud-analysis": [
+        "../../modules/analysis/src/pointcloud-analysis/index.ts"
+      ],
+      "@luma-contributors/analysis/geospatial-analysis": [
+        "../../modules/analysis/src/geospatial-analysis/index.ts"
+      ],
+      "@luma-contributors/analysis/analysis-core": [
+        "../../modules/analysis/src/analysis-core/index.ts"
+      ],
+      "@luma-contributors/analysis/testing": [
+        "../../modules/analysis/src/testing/index.ts"
+      ],
+      "@luma-contributors/analysis/test/*": [
+        "../../modules/analysis/test/*"
+      ],
+      "@luma-contributors/kepler": [
+        "../../modules/kepler/src/index.ts"
+      ],
+      "@luma-contributors/lenses": [
+        "../../modules/lenses/src/index.ts"
+      ],
+      "@luma-contributors/kepler/*": [
+        "../../modules/kepler/src/*"
+      ],
+      "@luma-contributors/lenses/*": [
+        "../../modules/lenses/src/*"
+      ],
+      "test/*": [
+        "../../test/*"
+      ]
+    }
   }
 }

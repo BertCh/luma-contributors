@@ -82,6 +82,7 @@ function createStatusFixture(device: Device, mode: 'hull' | 'bounds', withDetail
   const sizes = track(createOutputBuffer(device, 3));
   const indices = track(createOutputBuffer(device, 3));
   const bounds = track(createOutputBuffer(device, 12));
+  const diameters = mode === 'bounds' ? track(createOutputBuffer(device, 3)) : undefined;
   if (mode === 'hull')
     graph.add(
       new GPUGroupConvexHull({
@@ -113,7 +114,8 @@ function createStatusFixture(device: Device, mode: 'hull' | 'bounds', withDetail
         groupCount: 3,
         maximumHullVertices: 3,
         output: {
-          bounds: importGraphBuffer(graph, 'bounds', bounds, 'float32x4', 3),
+          sourceBounds: importGraphBuffer(graph, 'bounds', bounds, 'float32x4', 3),
+          diameters: importGraphBuffer(graph, 'diameters', diameters!, 'float32', 3),
           hullSizes: importGraphBuffer(graph, 'sizes', sizes, 'uint32', 3),
           status: {overflow: status.overflow, groupOverflow: status.groupOverflow}
         }
@@ -136,7 +138,8 @@ function createStatusFixture(device: Device, mode: 'hull' | 'bounds', withDetail
         counts: mode === 'hull' ? await readUint32(counts, 3) : undefined,
         indices: mode === 'hull' ? await readUint32(indices, 3) : undefined,
         sizes: await readUint32(sizes, 3),
-        bounds: mode === 'bounds' ? await readFloat32(bounds, 12) : undefined
+        sourceBounds: mode === 'bounds' ? await readFloat32(bounds, 12) : undefined,
+        diameters: diameters ? await readFloat32(diameters, 3) : undefined
       };
     },
     destroy() {
@@ -183,7 +186,7 @@ for (const withDetails of [false, true]) {
     }
   });
 
-  it(`minimum bounds forwards the group limit without changing shape rows (details=${withDetails})`, async () => {
+  it(`minimum bounds forwards the group limit and preserves source bounds (details=${withDetails})`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const fixture = createStatusFixture(device, 'bounds', withDetails);
@@ -192,17 +195,26 @@ for (const withDetails of [false, true]) {
       expect(limited.overflow).toBe(1);
       if (withDetails) expect(limited.groupOverflow).toBe(1);
       expect(limited.sizes).toEqual([4, 3, 3]);
-      expect(limited.bounds!.slice(0, 4).every(Number.isNaN)).toBe(true);
-      expect(limited.bounds!.slice(4)).toEqual([10, 0, 12, 2, 20, 0, 22, 2]);
+      // The square's four extreme vertices exceed the cap. Its source envelope is still known.
+      expect(limited.sourceBounds).toEqual([0, 0, 2, 2, 10, 0, 12, 2, 20, 0, 22, 2]);
+      expect(limited.diameters![0]).toBeNaN();
+      // Each remaining group is a right triangle with legs of length 2.
+      expect(limited.diameters![1]).toBeCloseTo(Math.sqrt(8), 6);
+      expect(limited.diameters![2]).toBeCloseTo(Math.sqrt(8), 6);
       const complete = await fixture.run(COMPLETE);
       expect(complete.overflow).toBe(0);
       if (withDetails) expect(complete.groupOverflow).toBe(0);
-      expect(complete.bounds!.slice(0, 4)).toEqual([0, 0, 2, 2]);
+      expect(complete.sizes).toEqual([3, 0, 0]);
+      expect(complete.sourceBounds).toEqual([0, 0, 2, 2, ...Array(8).fill(NaN)]);
+      expect(complete.diameters).toHaveLength(3);
+      expect(complete.diameters![0]).toBeCloseTo(Math.sqrt(8), 6);
+      expect(complete.diameters!.slice(1)).toEqual([NaN, NaN]);
       const empty = await fixture.run(EMPTY);
       expect(empty.overflow).toBe(0);
       if (withDetails) expect(empty.groupOverflow).toBe(0);
       expect(empty.sizes).toEqual([0, 0, 0]);
-      expect(empty.bounds!.every(Number.isNaN)).toBe(true);
+      expect(empty.sourceBounds).toEqual(Array(12).fill(NaN));
+      expect(empty.diameters).toEqual([NaN, NaN, NaN]);
     } finally {
       fixture.destroy();
     }

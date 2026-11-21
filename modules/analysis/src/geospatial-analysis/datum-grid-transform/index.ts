@@ -2,3 +2,4 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export * from './gpu-datum-grid-transform';
+export * from './decode-datum-grid-transform';

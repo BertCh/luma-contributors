@@ -325,6 +325,7 @@ export class CPUTrajectorySegmentsOperation extends GPUCPUOperation {
         const result = computeTrajectorySegmentsOnCPU(
           {
             positions,
+            storage: 'resident-capacity',
             timestamps:
               props.timestampFormat === 'uint32x2'
                 ? getCPUOperationUint32Rows(id, inputs, 'timestamps', 'uint32x2')

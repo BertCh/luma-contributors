@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createCaptureValueInterpreter} from './capture-missing-values';
+import {resolveCaptureCompanion, resolvePointCaptureWindow} from './capture-scope';
+import {resolveGPUComputationCaptureGraph} from '@luma-contributors/analysis/computation-record';
+import {getRecordOperator} from '../registry/record-operator';
 import {clamp} from '@math.gl/core';
 import {renderRasterImage} from '../encoding/raster-image';
 import type {GPUComputationCapture} from '@luma-contributors/analysis/computation-record';
@@ -16,9 +20,17 @@ import {createQuantileScaleSpec, type ResolvedScale, ScaleRegistry} from '../sca
 import type {MarkProvenance, ProvisionalState, VariableKind, ViewGround} from '../types';
 import {h, type ViewElementNode} from '../view-node';
 import type {LensRecord, ViewContext} from '../registry/view-registration';
-import {getAllCaptures} from './record-queries';
+import {
+  getAllCaptures,
+  getCaptureFirstKey,
+  getCaptureRowCount,
+  getCaptureValue,
+  getRecordedOperatorPackKey
+} from './record-queries';
 
 const RUN_SCALE_REGISTRIES = new WeakMap<LensRecord, ScaleRegistry>();
+const AUTOMATIC_SCALE_REGISTRIES = new WeakMap<ScaleRegistry, Map<string, ScaleRegistry>>();
+const SHARED_AUTOMATIC_SCOPES = new WeakMap<ScaleRegistry, Map<string, string>>();
 
 /**
  * The run's scale registry: `context.scales` when the host supplies one, otherwise one registry
@@ -61,13 +73,62 @@ export function getDeclaredVariableKind(
   context: ViewContext,
   name: string
 ): VariableKind | undefined {
-  for (const pack of context.packs ?? []) {
-    const kind = pack.variableKinds?.[name];
-    if (kind) {
-      return kind;
+  const operator = getRecordOperator(context, name);
+  const port = name.startsWith('result.') ? name.slice('result.'.length) : name;
+  // Operator metadata wins even when another domain supplies a same-named fallback.
+  if (operator) {
+    const currentOperator = getRecordedOperatorPackKey(operator);
+    for (const pack of context.packs ?? []) {
+      const descriptor = pack.operators?.[operator] ?? pack.operators?.[currentOperator];
+      const kinds = descriptor?.variableKinds;
+      const kind = kinds?.[name] ?? kinds?.[port];
+      if (kind) return kind;
     }
   }
+  for (const pack of context.packs ?? []) {
+    const kind = pack.variableKinds?.[name] ?? pack.variableKinds?.[port];
+    if (kind) return kind;
+  }
   return undefined;
+}
+
+/** Automatic point scales use only final captured keys in the published active prefix. */
+function getAutomaticScaleValues(
+  record: LensRecord,
+  values: GPUComputationCapture
+): ArrayLike<number> {
+  let counted = false;
+  const keys = new Set<number>();
+  for (const points of getAllCaptures(record)) {
+    const geometry = points.geometry;
+    if (
+      geometry?.kind !== 'points' ||
+      geometry.countCapture === undefined ||
+      (geometry.valuesCapture !== values.name && geometry.valuesCapture !== values.id) ||
+      getAllCaptures(record).some(
+        candidate =>
+          candidate.name === points.name &&
+          resolveGPUComputationCaptureGraph(record, candidate) ===
+            resolveGPUComputationCaptureGraph(record, points) &&
+          (candidate.iteration ?? Infinity) > (points.iteration ?? Infinity)
+      )
+    )
+      continue;
+    const pointGraph = resolveGPUComputationCaptureGraph(record, points);
+    if (pointGraph && pointGraph !== resolveGPUComputationCaptureGraph(record, values)) continue;
+    counted = true;
+    const companion = resolveCaptureCompanion(record, points, geometry.valuesCapture);
+    if (companion !== values) continue;
+    const window = resolvePointCaptureWindow(record, points);
+    if (!window) continue;
+    const first = Math.max(window.first, getCaptureFirstKey(values));
+    const end = Math.min(window.end, getCaptureFirstKey(values) + getCaptureRowCount(values));
+    for (let key = first; key < end; key++) keys.add(key);
+  }
+  const automaticValues = counted
+    ? [...keys].sort((first, second) => first - second).map(key => getCaptureValue(values, key)!)
+    : values.values;
+  return Array.from(automaticValues, createCaptureValueInterpreter(record, values).interpret);
 }
 
 /**
@@ -80,29 +141,75 @@ export function getDeclaredVariableKind(
  */
 export function resolveValueScale(
   context: ViewContext,
-  name: string
+  name: string,
+  capture?: GPUComputationCapture
 ): {scale: ResolvedScale; levelDeclared: boolean} | undefined {
   const registry = getRunScaleRegistry(context);
   const existing = registry.getByVariable(name);
   const declaredKind = getDeclaredVariableKind(context, name);
-  if (existing) {
+  const sharedScopes = SHARED_AUTOMATIC_SCOPES.get(registry);
+  if (existing && !sharedScopes?.has(name)) {
     return {scale: registry.get(existing), levelDeclared: Boolean(declaredKind)};
   }
-  const finalCapture = getFinalStateCapture(context.record, name);
-  if (!finalCapture || !hasFiniteValue(finalCapture.values)) {
+  const candidates = getAllCaptures(context.record).filter(candidate => candidate.name === name);
+  const graphs = new Set(
+    candidates.map(candidate => resolveGPUComputationCaptureGraph(context.record, candidate)?.id)
+  );
+  const graph = capture
+    ? resolveGPUComputationCaptureGraph(context.record, capture)?.id
+    : graphs.size === 1
+      ? [...graphs][0]
+      : undefined;
+  if (!graph) return undefined;
+  const scoped = candidates.filter(
+    candidate => resolveGPUComputationCaptureGraph(context.record, candidate)?.id === graph
+  );
+  const latest = Math.max(...scoped.map(candidate => candidate.iteration ?? Infinity));
+  const finalCaptures = scoped.filter(candidate => (candidate.iteration ?? Infinity) === latest);
+  const finalCapture = finalCaptures.length === 1 ? finalCaptures[0] : undefined;
+  const finalValues = finalCapture && getAutomaticScaleValues(context.record, finalCapture);
+  if (!finalValues || !hasFiniteValue(finalValues)) {
     return undefined;
   }
+  let automaticRegistries = AUTOMATIC_SCALE_REGISTRIES.get(registry);
+  if (!automaticRegistries) {
+    automaticRegistries = new Map();
+    AUTOMATIC_SCALE_REGISTRIES.set(registry, automaticRegistries);
+  }
+  const scope = `${graph}:${context.ground}`;
+  if (existing && sharedScopes?.get(name) === scope)
+    return {scale: registry.get(existing), levelDeclared: Boolean(declaredKind)};
+  let automaticRegistry = automaticRegistries.get(scope);
+  if (!automaticRegistry) {
+    automaticRegistry = new ScaleRegistry({runId: context.record.runId});
+    automaticRegistries.set(scope, automaticRegistry);
+  }
+  const automatic = automaticRegistry.getByVariable(name);
+  if (automatic)
+    return {scale: automaticRegistry.get(automatic), levelDeclared: Boolean(declaredKind)};
   const spec = createQuantileScaleSpec({
-    id: `${context.record.runId}:${name}`,
+    id: `${context.record.runId}:${graph}:${name}`,
     variable: name,
     variableKind: declaredKind ?? {level: 'interval'},
     ramp: CARD_PALETTE_SOURCES.seq[context.ground].ramp,
     noDataColor: rgbToHex(NO_DATA_COLOR[context.ground]),
     ground: context.ground,
-    finalStateValues: finalCapture.values,
+    finalStateValues: finalValues,
     classCount: 5
   });
-  return {scale: registry.get(registry.register(spec)), levelDeclared: Boolean(declaredKind)};
+  // A globally unambiguous variable keeps the public run-registry registration. Only names
+  // shared across graphs (or another ground) need the separate automatic scope registry.
+  if (graphs.size === 1 && !existing) {
+    const reference = registry.register(spec);
+    const scopes = sharedScopes ?? new Map<string, string>();
+    scopes.set(name, scope);
+    SHARED_AUTOMATIC_SCOPES.set(registry, scopes);
+    return {scale: registry.get(reference), levelDeclared: Boolean(declaredKind)};
+  }
+  return {
+    scale: automaticRegistry.get(automaticRegistry.register(spec)),
+    levelDeclared: Boolean(declaredKind)
+  };
 }
 
 /** Props of {@link renderValueStrip}. */

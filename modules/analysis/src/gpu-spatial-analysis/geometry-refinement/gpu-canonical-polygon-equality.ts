@@ -2,9 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateRefinementOutputLength,
+  validateRefinementNumber
+} from './refinement-output-validation';
 import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
-import {validateRefinementShaderNumber} from './refinement-storage-validation';
+import {
+  getCanonicalEqualityMetricWGSL,
+  validateCanonicalEqualityMetric
+} from './canonical-equality-metric';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -17,17 +24,16 @@ import {
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 export type GPUCanonicalPolygonEqualityProps = {
   id?: string;
   left: GPUPolygonGeometryFields;
   right: GPUPolygonGeometryFields;
-  /** Absolute per-coordinate tolerance in the normalized coordinate space, default zero. */
+  /** Absolute tolerance in normalized coordinate units, default zero. */
   tolerance?: number;
+  /** Default per-coordinate preserves the existing coordinate-wise comparison. */
+  toleranceMetric?: 'per-coordinate' | 'euclidean';
   /** Equal=1, unequal=0, nonfinite=2 per pair of normalized features. */
   output: GraphDataView<'uint32'>;
 };
@@ -38,28 +44,52 @@ export class GPUCanonicalPolygonEquality implements GPUCommandNodeProducer {
   readonly props: GPUCanonicalPolygonEqualityProps;
   constructor(props: GPUCanonicalPolygonEqualityProps) {
     this.id = props.id ?? 'canonical-polygon-equality';
+    props = {...props, left: {...props.left}, right: {...props.right}};
     this.props = props;
-    validateRefinementShaderNumber(this.id, 'tolerance', props.tolerance ?? 0);
-    if (!(Number.isFinite(props.tolerance ?? 0) && (props.tolerance ?? 0) >= 0)) {
-      throw new Error('Invalid equality tolerance');
-    }
-    for (const geometry of [props.left, props.right]) {
-      validateSinglePackedView(geometry.positions, ['float32x2'], this.id);
-      for (const offsets of [
-        geometry.ringOffsets,
-        geometry.polygonOffsets,
-        geometry.featureOffsets
-      ]) {
-        validateSinglePackedView(offsets, ['uint32'], this.id);
+    validateCanonicalEqualityMetric(this.id, props.toleranceMetric);
+    validateRefinementNumber(
+      {id: this.id, contributor: 'GPUCanonicalPolygonEquality'},
+      'tolerance',
+      props.tolerance ?? 0
+    );
+
+    for (const [side, geometry] of [
+      ['left', props.left],
+      ['right', props.right]
+    ] as const) {
+      validateSinglePackedView(
+        geometry.positions,
+        ['float32x2'],
+        {id: this.id, contributor: 'GPUCanonicalPolygonEquality'},
+        `${side}.positions`
+      );
+      for (const name of ['ringOffsets', 'polygonOffsets', 'featureOffsets'] as const) {
+        validateSinglePackedView(
+          geometry[name],
+          ['uint32'],
+          {id: this.id, contributor: 'GPUCanonicalPolygonEquality'},
+          `${side}.${name}`
+        );
       }
     }
-    validateSinglePackedView(props.output, ['uint32'], this.id);
-    if (
-      props.left.featureOffsets.length !== props.right.featureOffsets.length ||
-      props.output.length !== props.left.featureOffsets.length - 1
-    ) {
-      throw new Error('Canonical equality feature count mismatch');
-    }
+    validateSinglePackedView(props.output, ['uint32'], `${this.id} output`, {
+      id: this.id,
+      contributor: 'GPUCanonicalPolygonEquality'
+    });
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPUCanonicalPolygonEquality'},
+      'right.featureOffsets',
+      props.right.featureOffsets,
+      props.left.featureOffsets.length,
+      'left.featureOffsets.length'
+    );
+    validateRefinementOutputLength(
+      {id: this.id, contributor: 'GPUCanonicalPolygonEquality'},
+      'output',
+      props.output,
+      props.left.featureOffsets.length - 1,
+      'left.featureOffsets.length - 1'
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [props.output],
@@ -126,13 +156,14 @@ spans[spansOffset + index * 4u + 2u] = leftEnd - leftStart; spans[spansOffset + 
           {name: 'spans', view: spans, type: 'u32', access: 'read'},
           {name: 'output', view: props.output, type: 'u32', access: 'read_write'}
         ],
+        declarations: getCanonicalEqualityMetricWGSL(props.tolerance ?? 0, props.toleranceMetric),
         body: `var result = spans[spansOffset + index * 4u + 3u];
 if (result == 1u) {
   let leftStart = spans[spansOffset + index * 4u] * 2u; let rightStart = spans[spansOffset + index * 4u + 1u] * 2u;
   for (var component = 0u; component < spans[spansOffset + index * 4u + 2u] * 2u; component++) {
     let leftValue = left[leftOffset + leftStart + component]; let rightValue = right[rightOffset + rightStart + component];
     if (((bitcast<u32>(leftValue) & 0x7f800000u) == 0x7f800000u) || ((bitcast<u32>(rightValue) & 0x7f800000u) == 0x7f800000u)) { result = 2u; break; }
-    if (abs(leftValue - rightValue) > ${getWGSLFloatLiteral(props.tolerance ?? 0)}) { result = 0u; }
+    if (component % 2u == 0u && !withinTolerance(vec2f(leftValue,left[leftOffset + leftStart + component + 1u]),vec2f(rightValue,right[rightOffset + rightStart + component + 1u]))) { result = 0u; }
   }
 }
 output[outputOffset + index] = result;`

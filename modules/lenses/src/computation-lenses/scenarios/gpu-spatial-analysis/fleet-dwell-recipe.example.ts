@@ -74,7 +74,7 @@ export async function runExample(
     parameters: parameters.importToGraph(graph),
     stopCapacity,
     zones: {...anchorages, candidateCapacity: 4096},
-    outputs: {stops, table},
+    output: {stops, table},
     scratch: {stopZones}
   });
   // table.counts and table.sumValues give stops and total dwell seconds per anchorage

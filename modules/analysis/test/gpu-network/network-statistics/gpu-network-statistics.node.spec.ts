@@ -7,7 +7,7 @@ import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  decodeGPUNetworkStatistics,
+  decodeGPUNetworkStatisticsWords,
   getGPUNetworkStatisticsParameterValues,
   getGPUNetworkStatisticsLength,
   GPUNetworkStatistics,
@@ -117,6 +117,7 @@ it('GPUNetworkStatistics validates props', () => {
   expect(() => create({degreeBinCount: 0})).toThrow(/degreeBinCount/);
   expect(() => create({degreeBinCount: 2.5})).toThrow(/degreeBinCount/);
   expect(() => create({degreeBinning: 'sqrt' as never})).toThrow(/degreeBinning/);
+  expect(() => create({degreeBinning: '' as never})).toThrow(/degreeBinning.*linear.*log2/);
   expect(() => create({maximumComponentIterations: 0})).toThrow(/maximumComponentIterations/);
   expect(() => create({output: importView('output-short', 10)})).toThrow(
     /output must contain exactly 28 rows/
@@ -174,7 +175,7 @@ it('GPUNetworkStatistics stays inside the 8 storage binding limit', () => {
   device.destroy();
 });
 
-it('getGPUNetworkStatisticsParameterValues and decodeGPUNetworkStatistics round trip', () => {
+it('getGPUNetworkStatisticsParameterValues and decodeGPUNetworkStatisticsWords round trip', () => {
   const words = getGPUNetworkStatisticsParameterValues({resolution: 1.5, degreeBinWidth: 4.7});
   expect(words[1]).toBe(4);
   expect(new Float32Array(words.buffer)[0]).toBe(1.5);
@@ -185,7 +186,7 @@ it('getGPUNetworkStatisticsParameterValues and decodeGPUNetworkStatistics round 
   summary.set([7, 8, 9, 2, 5, 1, 1, 4, 3, 6, 0, 1, 11, 2]);
   new Float32Array(summary.buffer)[10] = 0.25;
   summary.set([1, 2, 3, 4, 5, 6, 7, 8, 9], 16);
-  const decoded = decodeGPUNetworkStatistics(summary, {degreeBinCount: 3});
+  const decoded = decodeGPUNetworkStatisticsWords(summary, {degreeBinCount: 3});
   expect(decoded).toMatchObject({
     liveNodeCount: 7,
     liveEdgeCount: 8,
@@ -205,8 +206,8 @@ it('getGPUNetworkStatisticsParameterValues and decodeGPUNetworkStatistics round 
     inDegreeHistogram: [4, 5, 6],
     totalDegreeHistogram: [7, 8, 9]
   });
-  expect(() => decodeGPUNetworkStatistics(new Uint32Array(5), {degreeBinCount: 3})).toThrow(
-    /full summary/
+  expect(() => decodeGPUNetworkStatisticsWords(new Uint32Array(5), {degreeBinCount: 3})).toThrow(
+    /summary.*16.*5/
   );
 });
 

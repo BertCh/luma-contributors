@@ -16,7 +16,10 @@ export type {
   GPUCostDistanceSettings,
   GPUCostDistanceStatus
 } from './gpu-cost-distance';
-export {GPUCostDistancePath} from './gpu-cost-distance-path';
+export {
+  GPUCostDistancePath,
+  MAXIMUM_COST_DISTANCE_PATH_REFERENCE_CELLS
+} from './gpu-cost-distance-path';
 export type {
   GPUCostDistancePathOutput,
   GPUCostDistancePathProps,

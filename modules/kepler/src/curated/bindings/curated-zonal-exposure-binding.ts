@@ -273,9 +273,14 @@ export function publishZonalExposure(
   prepared: PreparedZonalExposure,
   result: ZonalExposureReadback
 ): CatalogRunOutput {
-  const incomplete = result.stages.some(
-    ({fields}) => (fields['overflow'] ?? 0) !== 0 || (fields['candidateOverflow'] ?? 0) !== 0
+  const overflow = result.stages.some(({fields}) => (fields['overflow'] ?? 0) !== 0);
+  const candidateOverflow = result.stages.some(
+    ({fields}) => (fields['candidateOverflow'] ?? 0) !== 0
   );
+  const certificateLoss = result.stages.some(
+    ({fields}) => fields['complete'] !== undefined && fields['complete'] !== 1
+  );
+  const incomplete = overflow || candidateOverflow || certificateLoss;
   const invalidThreshold = result.stages.some(({fields}) => (fields['invalidCount'] ?? 0) !== 0);
   const summary = makeCatalogTable(
     'zone-summary',
@@ -360,14 +365,25 @@ export function publishZonalExposure(
         message:
           'Cells use the supplied zone indices; zone polygons are preserved, and boundary fractions are not inferred. Quantiles are unweighted. Exposed share uses observed population; coverage is observed over total population.'
       },
-      ...(incomplete
+      ...(overflow || candidateOverflow
         ? [
             {
               code: 'recipe-overflow',
               severity: 'error' as const,
               count: 1,
               message:
-                'A recipe stage overflowed. Statistics are withheld; inspect recipe-status before increasing capacities.'
+                'A recipe stage exceeded an output or candidate capacity. Statistics are withheld; inspect recipe-status before retrying.'
+            }
+          ]
+        : []),
+      ...(certificateLoss
+        ? [
+            {
+              code: 'recipe-incomplete',
+              severity: 'error' as const,
+              count: 1,
+              message:
+                'A recipe stage did not certify completeness. Statistics are withheld; inspect recipe-status before retrying.'
             }
           ]
         : []),
@@ -392,7 +408,9 @@ export function publishZonalExposure(
       exposureEnabled: Number(prepared.weightMeaning !== 'none'),
       weightMeaning: prepared.weightMeaning,
       densityAreaUnit: prepared.areaUnit,
-      overflow: Number(incomplete),
+      complete: Number(!incomplete && !invalidThreshold),
+      overflow: Number(overflow),
+      candidateOverflow: Number(candidateOverflow),
       invalidThreshold: Number(invalidThreshold)
     }
   };
@@ -676,7 +694,8 @@ export const CURATED_ZONAL_EXPOSURE_BINDING: CatalogOperationBinding = {
     'Hazard nodata and validity are applied before float32 statistics. Distributions are unweighted linear quantiles; empty zones remain present with zero counts and null statistics.',
     'weightMeaning=none runs only the distribution recipe. Count weights are people per cell; density weights require positive per-cell areas and matching explicit denominator units.',
     'Invalid or negative populations and invalid areas are omitted by the exposure recipe. Missing hazard retains population in total_population; exposed_share divides by observed_population and coverage divides observed by total.',
-    'All recipe status words are published. Overflow withholds statistics. The summary retains each supplied zone polygon and source ID in feature order, including empty zones; the other outputs are reports keyed by zone ID or recipe stage.'
+    'All recipe status words are published. Overflow or a supplied complete certificate other than 1 withholds statistics; an omitted optional certificate remains supported. The summary retains each supplied zone polygon and source ID in feature order, including empty zones; the other outputs are reports keyed by zone ID or recipe stage.',
+    'Summary overflow and candidateOverflow report only their respective capacity flags. Summary complete is 1 when no capacity, certificate or threshold loss prevents the promised statistics. A failed certificate emits recipe-incomplete separately from recipe-overflow.'
   ],
   limitation:
     'GPU only; numeric samples and thresholds are rounded to float32. Requires a complete bounded decoded raster and an explicit cell-ownership table; no polygon rasterization, fractional-cell allocation, density-unit conversion or new zone map geometry is inferred.',

@@ -22,7 +22,7 @@ describe('resolveGPUSpatialContext support table', () => {
   it('narrows metrics per coordinate space', () => {
     const support = GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT;
     expect(resolveGPUSpatialContext('op', undefined, support).coordinateSpace).toBe('planar');
-    expect(resolveGPUSpatialContext('op', GREAT_CIRCLE, support)).toBe(GREAT_CIRCLE);
+    expect(resolveGPUSpatialContext('op', GREAT_CIRCLE, support)).toStrictEqual(GREAT_CIRCLE);
     expect(
       resolveGPUSpatialContext('op', {coordinateSpace: 'planar', metric: 'none'}, support).metric
     ).toBe('none');
@@ -67,7 +67,7 @@ describe('resolveGPUSpatialContext support table', () => {
 
   it('rejects units outside the support table and ignores omitted units', () => {
     const meters = GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT;
-    expect(resolveGPUSpatialContext('op', GREAT_CIRCLE, meters)).toBe(GREAT_CIRCLE);
+    expect(resolveGPUSpatialContext('op', GREAT_CIRCLE, meters)).toStrictEqual(GREAT_CIRCLE);
     expect(resolveGPUSpatialContext('op', {...GREAT_CIRCLE, units: 'meters'}, meters).units).toBe(
       'meters'
     );

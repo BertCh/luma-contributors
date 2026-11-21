@@ -28,6 +28,8 @@ import {createRasterCountNodes} from './remote-sensing/raster-kernel-utils';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
   requireRasterLength,
+  validateRasterExpansionPorts,
+  validateRasterExpansionBand,
   validateRasterExpansionGraph,
   validateRasterExpansionViews
 } from './raster-expansion-utils';
@@ -79,6 +81,18 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-fill-nodata';
     this.props = props;
     validateRasterTextureBand(this.id, props.input, props.grid);
+    validateRasterExpansionBand(this.id, 'input', props.input);
+    validateRasterExpansionPorts(
+      this.id,
+      props,
+      {
+        'output.values': ['float32'],
+        'output.validity': ['uint32'],
+        'output.filled': ['uint32'],
+        'output.status.invalidCount': ['uint32']
+      },
+      ['output.status.invalidCount']
+    );
     // Reject unsupported interpolation names instead of silently choosing all-donor IDW.
     validateRequirement(
       this.id,

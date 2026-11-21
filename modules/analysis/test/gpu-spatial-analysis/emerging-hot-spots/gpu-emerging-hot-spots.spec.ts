@@ -800,7 +800,7 @@ it('GPUEmergingHotSpots weights mode consumes weights written by GPUNeighborSear
     weights: {
       kind: 'neighbor-search',
       positions,
-      parameters: {bounds: [0, 0, 100, 100], radius: 10},
+      parameters: {bounds: [0, 0, 100, 100], searchRadius: 10},
       capacity: 150 * 150
     }
   });
@@ -809,7 +809,7 @@ it('GPUEmergingHotSpots weights mode consumes weights written by GPUNeighborSear
       const frame = {temporalWindow: 3};
       const result = await harness.run(frame, {
         bounds: [0, 0, 100, 100],
-        radius
+        searchRadius: radius
       });
       const expected = createDistanceBandWeights(positions, radius);
       const used = result.csr.offsets[150];

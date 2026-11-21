@@ -2,12 +2,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {
-  getGPUAnalysisCapabilityCatalog,
-  getGPUAnalysisOperator
-} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
-import {KEPLER_CATALOG_BINDINGS, type CatalogEntry} from '@luma-contributors/kepler';
-
 const SPACETIME_OPERATION_IDS = new Set([
   'space-time-kernel-density',
   'space-time-relative-risk',
@@ -24,36 +18,6 @@ const SPACETIME_OPERATION_IDS = new Set([
   'pettitt-test',
   'location-change-points'
 ]);
-
-/** The legacy discovery list covers the original spatial entry point; include bound newer operators. */
-export function includeSpacetimeCatalogEntries(entries: readonly CatalogEntry[]): CatalogEntry[] {
-  const result = [...entries];
-  const seen = new Set(entries.map(entry => entry.contributorName));
-  for (const binding of KEPLER_CATALOG_BINDINGS.filter(candidate =>
-    SPACETIME_OPERATION_IDS.has(candidate.id)
-  ))
-    for (const contributorName of binding.contributorNames) {
-      if (seen.has(contributorName)) continue;
-      const operator = getGPUAnalysisOperator(contributorName);
-      if (!operator) continue;
-      const capability = getGPUAnalysisCapabilityCatalog().find(
-        candidate => candidate.id === operator.primaryCapability
-      );
-      result.push({
-        contributorName,
-        capabilityId: operator.primaryCapability,
-        capabilityTitle: capability?.title ?? operator.primaryCapability,
-        domain: capability?.domain ?? 'workflow',
-        runnable: 'catalog-binding',
-        engine: binding.engine,
-        bindingIds: KEPLER_CATALOG_BINDINGS.filter(candidate =>
-          candidate.contributorNames.includes(contributorName)
-        ).map(candidate => candidate.id)
-      });
-      seen.add(contributorName);
-    }
-  return result;
-}
 
 /** Small synthetic fixture for built-in UI samples, not bundled third-party data. */
 export function getSpacetimeCatalogSample(operationId: string): string | undefined {

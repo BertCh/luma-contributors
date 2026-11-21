@@ -32,7 +32,10 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
       const harness = createRound4Harness(device);
       try {
         const geometry = buildPolygonFeatureArrays(testCase.features);
-        const output: GPUZonalStatisticsOutput = {extentStatistic: 'mean'};
+        const output: GPUZonalStatisticsOutput = {
+          extentStatistic: 'mean',
+          counts: harness.output('counts', testCase.featureCount, 'uint32')
+        };
         for (const key of ZONAL_FLOAT_OUTPUTS) {
           output[key] = harness.output(
             key,
@@ -40,7 +43,6 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
             'float32'
           );
         }
-        output.counts = harness.output('counts', testCase.featureCount, 'uint32');
         output.valueCounts = harness.output('valueCounts', testCase.featureCount, 'uint32');
         output.pointFeatureRows = harness.output('pointFeatureRows', testCase.n, 'uint32');
         output.status = {

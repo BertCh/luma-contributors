@@ -7,6 +7,11 @@ import {
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
 import {GPUNetworkCostTable, validateNetworkCostTableIterations} from './gpu-network-cost-table';
+import {
+  resolveNetworkRoutingCostPrecision,
+  type CPUNetworkRoutingCostPrecision
+} from '../../analysis-core/operations/cpu-network-routing';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Graph-value properties with explicit node count and entry capacity. */
 export type NetworkCostTableOperationProps = {
@@ -15,10 +20,13 @@ export type NetworkCostTableOperationProps = {
   capacity: number;
   topology: {offsets: string; neighbors: string; weights: string; nodePositions?: string};
   costLimit: string;
+  /** CPU default float32-per-edge; GPU supports only float32-per-edge. */
+  costPrecision?: CPUNetworkRoutingCostPrecision;
   laneCount?: number;
   maximumIterations?: number;
   localIterations?: number;
   output: {
+    builtCostLimit?: string;
     offsets: string;
     targets: string;
     costs: string;
@@ -44,6 +52,7 @@ export function snapshotNetworkCostTableOperationProps(
     nodeCount: props.nodeCount,
     capacity: props.capacity,
     costLimit: props.costLimit,
+    costPrecision: props.costPrecision,
     laneCount: props.laneCount,
     maximumIterations: props.maximumIterations,
     localIterations: props.localIterations,
@@ -54,6 +63,7 @@ export function snapshotNetworkCostTableOperationProps(
       nodePositions: topology.nodePositions
     }),
     output: Object.freeze({
+      builtCostLimit: output.builtCostLimit,
       offsets: output.offsets,
       targets: output.targets,
       costs: output.costs,
@@ -73,6 +83,15 @@ export function snapshotNetworkCostTableOperationProps(
 export class GPUNetworkCostTableOperation extends GPUContributorOperation {
   constructor(props: NetworkCostTableOperationProps) {
     props = snapshotNetworkCostTableOperationProps(props);
+    const costPrecision = resolveNetworkRoutingCostPrecision(
+      props.id ?? 'network-cost-table',
+      props.costPrecision === undefined ? 'float32-per-edge' : props.costPrecision
+    );
+    validateRequirement(
+      props.id ?? 'network-cost-table',
+      costPrecision === 'float32-per-edge',
+      `costPrecision must be float32-per-edge on GPU; received ${costPrecision}; use CPUNetworkCostTableOperation for float64`
+    );
     validateNetworkCostTableIterations(props.id ?? 'network-cost-table', props);
     const inputs: Record<string, string> = {
       offsets: props.topology.offsets,
@@ -87,6 +106,12 @@ export class GPUNetworkCostTableOperation extends GPUContributorOperation {
       targets: {value: props.output.targets, format: 'uint32', length: props.capacity},
       costs: {value: props.output.costs, format: 'float32', length: props.capacity}
     };
+    if (props.output.builtCostLimit !== undefined)
+      outputs['builtCostLimit'] = {
+        value: props.output.builtCostLimit,
+        format: 'float32',
+        length: 1
+      };
     for (const [port, value] of Object.entries(props.output.status ?? {}))
       if (value !== undefined) outputs[port] = {value, format: 'uint32', length: 1};
     super({
@@ -110,6 +135,10 @@ export class GPUNetworkCostTableOperation extends GPUContributorOperation {
           maximumIterations: props.maximumIterations,
           localIterations: props.localIterations,
           output: {
+            builtCostLimit:
+              props.output.builtCostLimit === undefined
+                ? undefined
+                : getView<'float32'>('builtCostLimit'),
             offsets: getView<'uint32'>('outputOffsets'),
             targets: getView<'uint32'>('targets'),
             costs: getView<'float32'>('costs'),

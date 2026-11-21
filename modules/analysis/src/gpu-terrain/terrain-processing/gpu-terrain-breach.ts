@@ -13,6 +13,7 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {createRasterCountNodes} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import {
+  validateGraphPorts,
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
@@ -86,6 +87,19 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
   readonly id: string;
   readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUTerrainBreachProps) {
+    validateGraphPorts(props.id ?? 'terrain-breach', props, {
+      elevation: {required: true, viewType: 'data', formats: ['float32']},
+      validity: {required: false, viewType: 'data', formats: ['uint32']},
+      pitCells: {required: true, viewType: 'data', formats: ['uint32']},
+      burnDepth: {required: false, viewType: 'data', formats: ['float32']},
+      'output.elevation': {required: true, viewType: 'data', formats: ['float32']},
+      'output.cutDepth': {required: true, viewType: 'data', formats: ['float32']},
+      'output.modificationMask': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.pathCells': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.pathLengths': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.pitStatus': {required: true, viewType: 'data', formats: ['uint32']},
+      'output.unresolvedCount': {required: true, viewType: 'data', formats: ['uint32']}
+    });
     this.id = props.id ?? 'terrain-breach';
     const count = validateRasterGrid(this.id, props.grid);
     validateViewLength(this.id, 'elevation', props.elevation, count);
@@ -137,7 +151,7 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
       props.output.pathLengths,
       props.output.pitStatus
     ]) {
-      validateSinglePackedView(view, [view.format], this.id);
+      validateSinglePackedView(view, ['uint32'], this.id);
     }
     checkTerrainViews(
       this.id,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegionalizationWeightsCompleteness} from './adjacency-loss-suppression';
 import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {
   snapshotWeightsFields,
@@ -53,7 +54,7 @@ const SPANNING_TREE_ROUND_NODE_ALLOWANCE = 7;
 export const GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS = 32;
 
 /** Packed words of {@link GPUSpatialWeightsMinimumSpanningTreeOutput.status}. */
-export const GPU_MINIMUM_SPANNING_TREE_STATUS = {
+export const GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT = {
   /** Number of non-finite entries of `values`; those entries are skipped (see the class). */
   invalidCount: 0,
   /** Either upstream adjacency loss cause, normalized to 0 or 1, independently of compact edges. */
@@ -73,8 +74,9 @@ export type GPUSpatialWeightsMinimumSpanningTreeProps = {
   id?: string;
   /**
    * Symmetric contiguity or neighbor weights. Every listed slot is a link; the weight value is
-   * ignored (cost is attribute dissimilarity). Every link must be listed in both rows, as
-   * `GPUContiguityWeights` and `GPUSpatialWeightsTransform` guarantee.
+   * ignored (cost is attribute dissimilarity). Every link must be listed in both rows.
+   * `GPUContiguityWeights` supplies reciprocal links. For directed weights, take the union with
+   * their transpose before constructing the tree.
    */
   weights: GPUSpatialWeights;
   /** Attribute table, row-major with `columnCount` columns: `rows * columnCount` entries. */
@@ -115,7 +117,7 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
    */
   edges?: GPUCompactOutput;
   /**
-   * Optional packed words indexed by {@link GPU_MINIMUM_SPANNING_TREE_STATUS}: `invalidCount`
+   * Optional packed words indexed by {@link GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT}: `invalidCount`
    * counts non-finite attribute entries before standardisation; `candidateOverflow` reports either
    * upstream adjacency loss cause, even without compact edges. Attribute invalidity alone still
    * builds the tree. Adjacency loss suppresses the forest. Spare words are untouched.
@@ -135,6 +137,9 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
  * selections merge trees, and labels are flattened by pointer jumping, for
  * `ceil(log2(rows))` unrolled rounds. A disconnected graph yields a spanning forest with one
  * tree per connected component.
+ * The forest accepts 1–32 attribute columns and at most 32,768 estimated command nodes.
+ * The attribute table, row scratch and slot scratch must each fit one storage binding
+ * (33,554,432 32-bit entries at 128 MiB).
  * Either input loss flag suppresses the forest: flags are zero, component labels are 0xffffffff,
  * and compact count/requiredCount are zero. Compact candidateOverflow carries either upstream
  * cause; compact overflow remains destination-capacity loss. The complete publication port is
@@ -212,6 +217,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     this.id = id;
     this.props = props;
     const rows = validateGPUSpatialWeights(id, props.weights);
+    validateRegionalizationWeightsCompleteness(id, props.weights);
     const columnCount = props.columnCount ?? 1;
     const {output} = props;
     validateCapacity(id, 'columnCount', columnCount, 1, GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS);
@@ -242,9 +248,9 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     }
     if (output.status) {
       validateSinglePackedView(output.status, ['uint32'], `${id} output.status`);
-      if (output.status.length < GPU_MINIMUM_SPANNING_TREE_STATUS.length) {
+      if (output.status.length < GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length) {
         throw new Error(
-          `${id} output.status must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS.length} word`
+          `${id} output.status must hold ${GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.length} word`
         );
       }
     }
@@ -457,7 +463,7 @@ ${REGIONALIZATION_CSR_WGSL}`;
           ],
           invocationCount: 1,
           body: `status[statusOffset] = 0u;
-  status[statusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow}u] = ${loss.view ? 'loss[lossOffset]' : '0u'};`
+  status[statusOffset + ${GPU_MINIMUM_SPANNING_TREE_STATUS_LAYOUT.candidateOverflow}u] = ${loss.view ? 'loss[lossOffset]' : '0u'};`
         }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-count-invalid`,

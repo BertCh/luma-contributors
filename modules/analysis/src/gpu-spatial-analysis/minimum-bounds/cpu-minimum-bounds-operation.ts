@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateCPUHostOffsets,
+  type CPUHostRowsOptions
+} from '../../analysis-core/operations/compact-host-offsets';
+
+import {
+  snapshotConstructionFields,
+  snapshotConstructionSpatialContext
+} from '../../analysis-core/kernels/construction-snapshot';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
@@ -20,6 +29,9 @@ import {
 
 /** Packed points with either labels or the polygon CSR hierarchy. */
 export type CPUMinimumBoundsInput = {
+  labelsComplete?: Uint32Array;
+  /** Compact host offsets are strict; opt into resident capacity for partial coverage. */
+  storage?: CPUHostRowsOptions['storage'];
   positions: Float32Array;
 } & (
   | {labels: Uint32Array; groupCount: number}
@@ -28,12 +40,17 @@ export type CPUMinimumBoundsInput = {
 
 /** All fixed-size shape columns, including the completeness scalars. */
 export type CPUMinimumBoundsResult = {
+  /** One completion word for the supplied labels; independent of geometry limits. */
+  labelsComplete: Uint32Array;
   rectangleCorners: Float32Array;
   rectangleSizes: Float32Array;
   circles: Float32Array;
   longestLines: Float32Array;
   diameters: Float32Array;
-  bounds: Float32Array;
+  /** Finite source envelope, independent of hull quantization. */
+  sourceBounds: Float32Array;
+  /** Per group: quantization moved at least one finite source coordinate. */
+  precisionLimited: Uint32Array;
   hullSizes: Uint32Array;
   overflow: Uint32Array;
   /** Always zero: the CPU twin has no per-group hull limit. */
@@ -53,13 +70,13 @@ function roundRectangleAngle(angle: number): number {
   return rounded > Math.PI || rounded <= -Math.PI ? MAXIMUM_RECTANGLE_ANGLE : rounded || 0;
 }
 
-function validateOffsets(name: string, offsets: Uint32Array, limit: number): void {
-  if (offsets.length < 2) throw new Error(`${name} must contain at least two entries`);
-  for (let index = 0; index < offsets.length; index++) {
-    if (offsets[index] > limit || (index > 0 && offsets[index] < offsets[index - 1])) {
-      throw new Error(`${name} must be nondecreasing and in [0, ${limit}]`);
-    }
-  }
+function validateOffsets(
+  name: string,
+  offsets: Uint32Array,
+  limit: number,
+  storage?: CPUHostRowsOptions['storage']
+): void {
+  validateCPUHostOffsets('computeMinimumBoundsOnCPU', name, offsets, limit, {storage});
 }
 
 function findOwner(offsets: Uint32Array, value: number): number {
@@ -220,19 +237,34 @@ function computeCircle(hull: Point[], group: number): Circle {
  */
 export function computeMinimumBoundsOnCPU(input: CPUMinimumBoundsInput): CPUMinimumBoundsResult {
   if (input.positions.length % 2 !== 0) throw new Error('positions must contain float32x2 rows');
+  validateRequirement(
+    'computeMinimumBoundsOnCPU',
+    input.labelsComplete === undefined || input.labelsComplete.length === 1,
+    `labelsComplete must contain one word; received ${input.labelsComplete?.length}`
+  );
   const rowCount = input.positions.length / 2;
   let groupCount: number;
   let labels: Uint32Array;
   if ('labels' in input) {
     groupCount = input.groupCount;
-    validateCapacity('computeMinimumBoundsOnCPU', 'groupCount', groupCount);
+    validateCapacity('computeMinimumBoundsOnCPU', 'groupCount', groupCount, 0);
     if (input.labels.length !== rowCount)
       throw new Error('labels length must equal positions row count');
     labels = input.labels;
   } else {
-    validateOffsets('ringOffsets', input.ringOffsets, rowCount);
-    validateOffsets('polygonOffsets', input.polygonOffsets, input.ringOffsets.length - 1);
-    validateOffsets('featureOffsets', input.featureOffsets, input.polygonOffsets.length - 1);
+    validateOffsets('ringOffsets', input.ringOffsets, rowCount, input.storage);
+    validateOffsets(
+      'polygonOffsets',
+      input.polygonOffsets,
+      input.ringOffsets.length - 1,
+      input.storage
+    );
+    validateOffsets(
+      'featureOffsets',
+      input.featureOffsets,
+      input.polygonOffsets.length - 1,
+      input.storage
+    );
     groupCount = input.featureOffsets.length - 1;
     labels = new Uint32Array(rowCount).fill(0xffffffff);
     for (let row = 0; row < rowCount; row++) {
@@ -242,6 +274,7 @@ export function computeMinimumBoundsOnCPU(input: CPUMinimumBoundsInput): CPUMini
       if (feature >= 0) labels[row] = feature;
     }
   }
+  const sourceBounds = new Float32Array(groupCount * 4).fill(NaN);
   const groups: Point[][] = Array.from({length: groupCount}, () => []);
   let minimumX = Infinity;
   let minimumY = Infinity;
@@ -255,17 +288,30 @@ export function computeMinimumBoundsOnCPU(input: CPUMinimumBoundsInput): CPUMini
     minimumY = Math.min(minimumY, y);
     maximumX = Math.max(maximumX, x);
     maximumY = Math.max(maximumY, y);
-    groups[labels[row]].push({x, y, latticeX: 0, latticeY: 0, row});
+    const group = labels[row];
+    const offset = group * 4;
+    if (groups[group].length === 0) sourceBounds.set([x, y, x, y], offset);
+    else {
+      sourceBounds[offset] = Math.min(sourceBounds[offset], x);
+      sourceBounds[offset + 1] = Math.min(sourceBounds[offset + 1], y);
+      sourceBounds[offset + 2] = Math.max(sourceBounds[offset + 2], x);
+      sourceBounds[offset + 3] = Math.max(sourceBounds[offset + 3], y);
+    }
+    groups[group].push({x, y, latticeX: 0, latticeY: 0, row});
   }
   const extent = Math.max(maximumX - minimumX, maximumY - minimumY);
   const scale = extent > 0 ? 2 ** (28 - Math.max(-99, Math.floor(Math.log2(extent)))) : 1;
   const result: CPUMinimumBoundsResult = {
+    labelsComplete: new Uint32Array([
+      input.labelsComplete === undefined || input.labelsComplete[0] !== 0 ? 1 : 0
+    ]),
     rectangleCorners: new Float32Array(groupCount * 8).fill(NaN),
     rectangleSizes: new Float32Array(groupCount * 4).fill(NaN),
     circles: new Float32Array(groupCount * 3).fill(NaN),
     longestLines: new Float32Array(groupCount * 4).fill(NaN),
     diameters: new Float32Array(groupCount).fill(NaN),
-    bounds: new Float32Array(groupCount * 4).fill(NaN),
+    sourceBounds,
+    precisionLimited: new Uint32Array(groupCount),
     hullSizes: new Uint32Array(groupCount),
     overflow: new Uint32Array(1),
     groupOverflow: new Uint32Array(1)
@@ -274,6 +320,11 @@ export function computeMinimumBoundsOnCPU(input: CPUMinimumBoundsInput): CPUMini
     for (const point of groups[group]) {
       point.latticeX = Math.floor((point.x - minimumX) * scale + 0.5);
       point.latticeY = Math.floor((point.y - minimumY) * scale + 0.5);
+      if (
+        point.latticeX / scale + minimumX !== point.x ||
+        point.latticeY / scale + minimumY !== point.y
+      )
+        result.precisionLimited[group] = 1;
     }
     const hull = computeHull(groups[group]);
     result.hullSizes[group] = hull.length;
@@ -284,16 +335,8 @@ export function computeMinimumBoundsOnCPU(input: CPUMinimumBoundsInput): CPUMini
     let bestRange = [0, 0, 0, 0];
     let longestSquared = -1;
     let longestPair = [anchor, anchor];
-    let lowX = Infinity;
-    let lowY = Infinity;
-    let highX = -Infinity;
-    let highY = -Infinity;
     for (let edge = 0; edge < hull.length; edge++) {
       const point = hull[edge];
-      lowX = Math.min(lowX, point.x);
-      lowY = Math.min(lowY, point.y);
-      highX = Math.max(highX, point.x);
-      highY = Math.max(highY, point.y);
       for (let other = edge; other < hull.length; other++) {
         const squared = computeSquaredDistance(point, hull[other]);
         if (squared > longestSquared) {
@@ -366,21 +409,67 @@ export function computeMinimumBoundsOnCPU(input: CPUMinimumBoundsInput): CPUMini
       group * 4
     );
     result.diameters[group] = Math.sqrt(longestSquared);
-    result.bounds.set([lowX, lowY, highX, highY], group * 4);
   }
   return result;
 }
 
 /** CPU minimum bounds twin with no GPU row or hull budget. */
 export class CPUMinimumBoundsOperation extends GPUCPUOperation {
+  /** Label provenance alongside the incumbent geometry; omission denotes categorical labels. */
+  readonly partitionProvenance: Readonly<{labelsComplete?: string}>;
   constructor(props: MinimumBoundsOperationProps) {
+    props = snapshotConstructionFields(props, [
+      'id',
+      'spatialContext',
+      'storage',
+      'positions',
+      'rowCount',
+      'maximumHullVertices',
+      'output',
+      'labels',
+      'labelsComplete',
+      'groupCount',
+      'ringOffsets',
+      'polygonOffsets',
+      'featureOffsets',
+      'featureCount'
+    ]);
+    validateRequirement(
+      props.id ?? 'minimum-bounds',
+      !('bounds' in props.output),
+      'output.bounds was removed; use output.sourceBounds'
+    );
+    const output = snapshotConstructionFields(props.output, [
+      'rectangleCorners',
+      'rectangleSizes',
+      'circles',
+      'longestLines',
+      'diameters',
+
+      'sourceBounds',
+      'labelsComplete',
+      'precisionLimited',
+      'hullSizes',
+      'status'
+    ]);
+    props = Object.freeze({
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(props.spatialContext)}
+        : {}),
+      output: Object.freeze({
+        ...output,
+        status: snapshotConstructionFields(output.status, ['overflow', 'groupOverflow'])
+      })
+    });
     const id = props.id ?? 'minimum-bounds';
     resolveGPUSpatialContext(id, props.spatialContext);
-    validateCapacity(id, 'rowCount', props.rowCount);
+    validateCapacity(id, 'rowCount', props.rowCount, 0);
     validateCapacity(
       id,
       props.labels !== undefined ? 'groupCount' : 'featureCount',
-      props.labels !== undefined ? props.groupCount : props.featureCount
+      props.labels !== undefined ? props.groupCount : props.featureCount,
+      0
     );
     validateCapacity(
       id,
@@ -390,9 +479,15 @@ export class CPUMinimumBoundsOperation extends GPUCPUOperation {
     );
     validateRequirement(
       id,
-      ['rectangleCorners', 'rectangleSizes', 'circles', 'longestLines', 'diameters', 'bounds'].some(
-        port => props.output[port as keyof typeof props.output] !== undefined
-      ),
+      [
+        'rectangleCorners',
+        'rectangleSizes',
+        'circles',
+        'longestLines',
+        'diameters',
+
+        'sourceBounds'
+      ].some(port => props.output[port as keyof typeof props.output] !== undefined),
       'output requires at least one shape column'
     );
     const operation = new GPUMinimumBoundsOperation(props);
@@ -422,8 +517,11 @@ export class CPUMinimumBoundsOperation extends GPUCPUOperation {
                 polygonOffsets: getCPUOperationUint32Rows(id, inputs, 'polygonOffsets'),
                 featureOffsets: getCPUOperationUint32Rows(id, inputs, 'featureOffsets')
               };
+        input.storage = props.storage;
         if ('featureOffsets' in input && input.featureOffsets.length !== props.featureCount! + 1)
           throw new Error(`${id} featureOffsets length must equal featureCount + 1`);
+        if (props.labelsComplete !== undefined)
+          input.labelsComplete = getCPUOperationUint32Rows(id, inputs, 'inputLabelsComplete');
         const result = computeMinimumBoundsOnCPU(input);
         return Object.fromEntries(
           Object.entries(operation.outputs).map(([port, output]) => [
@@ -432,6 +530,9 @@ export class CPUMinimumBoundsOperation extends GPUCPUOperation {
           ])
         );
       }
+    });
+    this.partitionProvenance = Object.freeze({
+      labelsComplete: props.output.labelsComplete ?? props.labelsComplete
     });
   }
 }

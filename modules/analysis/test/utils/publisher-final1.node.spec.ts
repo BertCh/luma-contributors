@@ -364,8 +364,8 @@ test('core:F7 CPU streamline pruning honors a one-round budget', () => {
     {
       velocities: new Float32Array([3, 0]),
       parameters: getGPUStreamlinesParameterValues({
-        fieldExtent: [0, 0, 10, 10],
-        gridExtent: [0, 0, 10, 10],
+        fieldPlacement: {origin: [0, 0], cellSize: [10, 10]},
+        gridPlacement: {origin: [0, 0], cellSize: [10, 10]},
         stepLength: 0.125
       }),
       uint32Parameters: getGPUStreamlinesUint32ParameterValues({seed: 7})
@@ -457,7 +457,7 @@ test('spatial-3:F14 rendered buffer-selection snippet uses row names and distinc
       new GPUBufferSelection({
         points: {kind: 'points', positions: view('float32x2')},
         features: {kind: 'points', positions: view('float32x2')},
-        distance: view('float32'),
+        radius: view('float32'),
         candidateCapacity: 1,
         output: {[nearestName]: scalar(), distances: view('float32'), matches: compact()}
       }).getCommandNodes(graph)

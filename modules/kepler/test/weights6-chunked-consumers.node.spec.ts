@@ -85,9 +85,13 @@ function createGraph() {
   return {graph, view, pointWeights};
 }
 
-test('quantile LISA accepts chunked point weights and emits one classes kernel per chunk', () => {
+test.each([
+  'geoda-legacy',
+  'greater',
+  'two-sided'
+] as const)('quantile LISA accepts chunked point weights with %s', alternative => {
   const {graph, view, pointWeights} = createGraph();
-  addKeplerPointQuantileLISA(graph, {
+  const result = addKeplerPointQuantileLISA(graph, {
     source,
     population: 'all',
     values: view('values', 'float32'),
@@ -99,12 +103,15 @@ test('quantile LISA accepts chunked point weights and emits one classes kernel p
       seed: 7,
       permutationCount: 99,
       significanceLevel: 0.05,
-      inference: 'legacy-directed-pseudo',
+      alternative,
       multipleTesting: 'none',
       islands: 'exclude',
       quantileMethod: 'type-5'
     }
-  } as never);
+  });
+  expect(result.settings.alternative).toBe(alternative);
+  expect(result.inference.alternative).toBe(alternative);
+  result.destroyParameters();
   graph.device.destroy();
 });
 

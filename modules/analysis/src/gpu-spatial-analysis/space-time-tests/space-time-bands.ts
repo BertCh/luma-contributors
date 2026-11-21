@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   resolveGPUTemporalContext,
   type GPUTemporalContext
@@ -38,17 +39,23 @@ export function validateSpaceTimeBandEdges(
   name: string,
   edges: readonly number[]
 ): void {
-  if (edges.length < 2 || edges.length > GPU_NEAR_REPEAT_MAXIMUM_BANDS + 1) {
-    throw new Error(`${id} ${name} needs 2 to ${GPU_NEAR_REPEAT_MAXIMUM_BANDS + 1} edges`);
-  }
+  validateRequirement(
+    id,
+    !(edges.length < 2 || edges.length > GPU_NEAR_REPEAT_MAXIMUM_BANDS + 1),
+    `${name} needs 2 to ${GPU_NEAR_REPEAT_MAXIMUM_BANDS + 1} edges`
+  );
   edges.forEach((edge, index) => {
     // Edges compare as float32 on the GPU: two edges that round together would make an empty band.
-    if (!Number.isFinite(Math.fround(edge)) || edge < 0) {
-      throw new Error(`${id} ${name} edges must be finite and non-negative`);
-    }
-    if (index > 0 && Math.fround(edge) <= Math.fround(edges[index - 1])) {
-      throw new Error(`${id} ${name} edges must be strictly ascending as float32`);
-    }
+    validateRequirement(
+      id,
+      !(!Number.isFinite(Math.fround(edge)) || edge < 0),
+      `${name} edges must be finite and non-negative`
+    );
+    validateRequirement(
+      id,
+      !(index > 0 && Math.fround(edge) <= Math.fround(edges[index - 1])),
+      `${name} edges must be strictly ascending as float32`
+    );
   });
 }
 
@@ -154,13 +161,17 @@ export function getGPUSpaceTimeGuardedRelativeTimes(
   const {unit, epoch, timeZone} = temporalContext;
   return {
     ...relative,
-    temporalContext: {
-      unit,
-      epoch: (epoch === 'unix' ? 0n : epoch) + BigInt(relative.origin),
-      encoding: 'float32-relative',
-      ...(timeZone === undefined ? {} : {timeZone}),
-      axis: {kind: 'irregular'}
-    }
+    temporalContext: resolveGPUTemporalContext(
+      'space-time',
+      {
+        unit,
+        epoch: (epoch === 'unix' ? 0n : epoch) + BigInt(relative.origin),
+        encoding: 'float32-relative',
+        ...(timeZone === undefined ? {} : {timeZone}),
+        axis: {kind: 'irregular'}
+      },
+      {encodings: ['float32-relative']}
+    )
   };
 }
 

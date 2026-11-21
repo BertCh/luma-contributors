@@ -578,7 +578,8 @@ export type RasterTiledRelaxationProps = {
    * and otherwise restarts from scratch. The working values must be caller-owned too: they carry
    * the progress. Callers that change any input must set the restart word. The schedule (plain
    * tiled passes, then sweeps from `sweepAfterIteration`) follows the cumulative iteration count,
-   * so a continued run takes the trajectory of one long execution.
+   * preserving the pass sequence. In-place halo visibility can change the trajectory and round
+   * count between executions; the converged fixed point remains the same.
    */
   continuation?: RasterTiledRelaxationContinuation;
 };
@@ -758,9 +759,11 @@ fn getRelaxationTile(cell: u32) -> u32 {
  * `value[c] = min(value[c], min over valid D8 neighbors n of getRelaxationCandidate(...))`.
  * A workgroup loads its 16x16 tile plus a one-cell halo of `values` and `auxiliary` into
  * workgroup memory and repeats the update up to `innerIterations` times with barriers, so a
- * global iteration propagates across a whole tile. Only the owning workgroup writes a cell, so the
- * result never depends on scheduling beyond float rounding of equal-cost alternatives, and values
- * may be any finite or infinite float (no unsigned bit-order trick). A cell or neighbor whose
+ * global iteration propagates across a whole tile. Only the owning workgroup writes a cell, but
+ * another workgroup can observe those writes in its halo during the same round. The completed
+ * fixed point is deterministic; trajectories, last-decrease stamps, round counts and whether a
+ * fixed budget suffices can depend on scheduling. Values may be any finite or infinite float
+ * (no unsigned bit-order trick). A cell or neighbor whose
  * auxiliary value is NaN is excluded.
  *
  * Unless `additiveEdgeCosts` is set, `declarations` must define

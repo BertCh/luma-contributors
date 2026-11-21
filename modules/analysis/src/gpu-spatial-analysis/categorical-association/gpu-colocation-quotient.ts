@@ -35,6 +35,11 @@ import {GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT} from '../spatial-entrop
 
 import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  snapshotCategoricalAssociationProps,
+  createCategoricalSuppressionNodes,
+  validateCategoricalCompleteness
+} from './categorical-association-contract';
 
 const OPERATION = 'GPUColocationQuotient';
 
@@ -96,15 +101,26 @@ export type GPUColocationQuotientOutput = {
  * One invocation per row walks its own links (a bounded neighbourhood) and accumulates its shares
  * into the shared deterministic fixed-point accumulator, so the global quotients are exact sums of
  * the float32 shares in any thread order.
+ * Neighborhoods whose largest eligible weight is below 2^-64 are raised by 2^64 before
+ * summing; those at or above 2^64 are scaled down by 2^-64. Bit-based subnormal handling
+ * keeps the sum and its reciprocal normal on either route, including a single tiny weight.
  *
  * Not implemented: the permutation significance test of Leslie and Kronenfeld, and a column
  * limit beyond 32 categories.
+ * Accepts 1–32 categories.
  *
  * **Reference.** Leslie and Kronenfeld (2011) define the statistic. No pinned package
  * implements it (Esri's tool is closed); the expectation in the specs is an independent binary64
  * evaluation of the definition above.
  *
  * Compile-time: row count, `categoryCount`, which outputs exist. There are no per-frame numbers.
+ * Producer overflow/candidateOverflow flags remain live: either nonzero flag suppresses the
+ * logical quotient prefixes to NaN. Category row counts and trailing storage are preserved.
+ * A requiredCount view is accepted only with the producer's overflow flag.
+ * Verify CSR completeness before supplying it and omit upstream convergence, iteration-limit
+ * and unresolved-work views.
+ * When supplied, status.complete is also live: zero suppresses the same dependent outputs,
+ * even when both overflow flags are clear; a nonzero certificate never overrides either loss.
  */
 export class GPUColocationQuotient implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -115,10 +131,16 @@ export class GPUColocationQuotient implements GPUCommandNodeProducer {
   readonly rowCount: number;
 
   constructor(props: GPUColocationQuotientProps) {
+    props = snapshotCategoricalAssociationProps(props, [
+      'globalQuotients',
+      'localQuotients',
+      'categoryRowCounts'
+    ]);
     const id = props.id ?? 'colocation-quotient';
     this.id = id;
     this.props = props;
     this.rowCount = validateGPUSpatialWeights(id, props.weights);
+    validateCategoricalCompleteness(id, props.weights);
     validateCapacity(
       id,
       'categoryCount',
@@ -170,7 +192,13 @@ export class GPUColocationQuotient implements GPUCommandNodeProducer {
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.globalQuotients, props.output.localQuotients, props.output.categoryRowCounts],
-      [props.categories, props.weights.offsets, props.weights.neighbors, props.weights.weights]
+      [
+        props.categories,
+        props.weights.offsets,
+        props.weights.neighbors,
+        props.weights.weights,
+        ...Object.values(props.weights.status ?? {})
+      ]
     );
   }
 
@@ -269,7 +297,21 @@ const SLOTS: u32 = ${slots}u;
 const CATEGORIES: u32 = ${categoryCount}u;
 ${GET_NAN_WGSL}
 ${FIXED_POINT_WGSL}
-${getFixedPointAtomicAddWGSL('shareWords')}`,
+${getFixedPointAtomicAddWGSL('shareWords')}
+fn getScaledColocationWeight(weight: f32) -> f32 {
+  let bits = bitcast<u32>(weight);
+  // Divide by 2^64 through exponent bits where the result is normal. In particular,
+  // do not divide by the largest weight: its reciprocal can flush to zero on Metal.
+  if (bits >= 0x20800000u) { return bitcast<f32>(bits - 0x20000000u); }
+  return weight * 5.421010862427522e-20;
+}
+fn getRaisedColocationWeight(weight: f32) -> f32 {
+  let bits = bitcast<u32>(weight);
+  // Multiply by 2^64 without arithmetic on a subnormal input: its integer
+  // significand times 2^-85 is normal even for the smallest positive f32.
+  if (bits < 0x00800000u) { return f32(bits) * 2.5849394142282115e-26; }
+  return bitcast<f32>(bits + 0x20000000u);
+}`,
         constants,
         body: `let own = categories[categoriesOffset + index];
   if (own >= CATEGORIES) {
@@ -282,16 +324,38 @@ ${getFixedPointAtomicAddWGSL('shareWords')}`,
     shares[b] = 0.0;
   }
   var total = 0.0;
+  var maximumWeightBits = 0u;
   let first = min(offsets[offsetsOffset + index], SLOTS);
   let last = min(offsets[offsetsOffset + index + 1u], SLOTS);
   for (var slot = first; slot < last; slot++) {
     let neighbor = neighbors[neighborsOffset + slot];
     let weight = linkWeights[linkWeightsOffset + slot];
-    if (neighbor < ROWS && neighbor != index && weight > 0.0 && weight < 3.0e38) {
+    let weightBits = bitcast<u32>(weight);
+    if (neighbor < ROWS && neighbor != index && weightBits > 0u && weightBits < 0x7f800000u) {
       let other = categories[categoriesOffset + neighbor];
       if (other < CATEGORIES) {
-        shares[other] += weight;
-        total += weight;
+        maximumWeightBits = max(maximumWeightBits, bitcast<u32>(weight));
+      }
+    }
+  }
+  // With at most uint32 slots, a largest weight below 2^64 bounds the sum below
+  // 2^96. Otherwise scale all eligible weights by 2^-64 before any accumulation.
+  // The large-weight path keeps the sum and its reciprocal normal, even at the
+  // largest finite weight, without detecting an already-overflowed float sum.
+  let scaleDown = maximumWeightBits >= 0x5f800000u;
+  let scaleUp = maximumWeightBits < 0x1f800000u;
+  for (var slot = first; slot < last; slot++) {
+    let neighbor = neighbors[neighborsOffset + slot];
+    let weight = linkWeights[linkWeightsOffset + slot];
+    let weightBits = bitcast<u32>(weight);
+    if (neighbor < ROWS && neighbor != index && weightBits > 0u && weightBits < 0x7f800000u) {
+      let other = categories[categoriesOffset + neighbor];
+      if (other < CATEGORIES) {
+        var scaledWeight = weight;
+        if (scaleDown) { scaledWeight = getScaledColocationWeight(weight); }
+        if (scaleUp) { scaledWeight = getRaisedColocationWeight(weight); }
+        shares[other] += scaledWeight;
+        total += scaledWeight;
       }
     }
   }
@@ -375,6 +439,24 @@ ${GET_NAN_WGSL}${IS_NAN_BITS_WGSL}`,
   localValues[localValuesOffset + index] = select(getNaN(), share * f32(total - 1u) / f32(otherRows), valid);`
         })
       );
+    }
+    // Incomplete weights (status.overflow or status.candidateOverflow): NaN quotients.
+    for (const [name, view] of Object.entries({
+      globalQuotients: output.globalQuotients,
+      localQuotients: output.localQuotients
+    })) {
+      if (view) {
+        nodes.push(
+          ...createCategoricalSuppressionNodes(
+            graph,
+            `${id}-${name}`,
+            OPERATION,
+            weights,
+            view,
+            name === 'globalQuotients' ? cellCount : rowCount * categoryCount
+          )
+        );
+      }
     }
     return nodes;
   }

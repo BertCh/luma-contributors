@@ -8,6 +8,7 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {AnalysisValidationError} from '../../../src/analysis-core/kernels/analysis-validation-error';
 import {getCPUOperationFloat32Rows} from '../../../src/analysis-core/operations/cpu-operation-rows';
 import {CPUVariogramModelFitOperation} from '../../../src/dataframe-analysis/pair-statistics/cpu-variogram-model-fit-operation';
 import {
@@ -52,9 +53,8 @@ function getFitProps(semivariances: string): VariogramModelFitOperationProps {
 it.each([
   'output/output',
   'input/output'
-] as const)('both variogram graph entry points refuse %s collisions before planning', async collision => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
+] as const)('both variogram graph entry points refuse %s collisions before planning', collision => {
+  expect.assertions(4);
   const props = getFitProps('semivariances');
   if (collision === 'output/output') {
     props.output.parameters = 'x';
@@ -62,17 +62,22 @@ it.each([
   } else props.output.parameters = props.distances;
   const port = collision === 'output/output' ? 'diagnostics' : 'parameters';
   const value = collision === 'output/output' ? 'x' : props.distances;
-  const error = new Error(
-    `fit outputs.${port} must name a graph value ("${value}") that no other port uses`
-  );
+  const requirement = `outputs.${port} must name a graph value ("${value}") that no other port uses`;
   for (const Operation of [GPUVariogramModelFitOperation, CPUVariogramModelFitOperation]) {
-    await expect(async () =>
-      runOperationGraph(device, {
-        inputs: getInputs(),
-        operations: [new Operation(props)],
-        outputs: Object.values(props.output)
-      })
-    ).rejects.toEqual(error);
+    try {
+      new Operation(props);
+    } catch (error) {
+      expect(error).toBeInstanceOf(AnalysisValidationError);
+      expect(error).toMatchObject({
+        message: `fit ${requirement}`,
+        code: 'REQUIREMENT',
+        contributor: 'fit',
+        id: 'fit',
+        path: `outputs.${port}`,
+        received: false,
+        expected: requirement
+      });
+    }
   }
 });
 

@@ -63,7 +63,7 @@ it('validates both operation output shapes at construction and CPU order/context
     output: {cells: 'cells', validity: 'validity'}
   };
   for (const Operation of [GPUHealpixPointToCellOperation, CPUHealpixPointToCellOperation]) {
-    expect(() => new Operation({...props, rowCount: 0})).toThrow(/^healpix-test .*length/);
+    expect(() => new Operation({...props, rowCount: -1})).toThrow(/^healpix-test rowCount/);
     expect(() => new Operation({...props, output: {cells: 'positions'}})).toThrow(/^healpix-test /);
   }
   expect(() => new CPUHealpixPointToCellOperation({...props, order: 30})).toThrow(
@@ -76,4 +76,39 @@ it('validates both operation output shapes at construction and CPU order/context
         spatialContext: {coordinateSpace: 'planar', metric: 'native'}
       })
   ).toThrow(/^healpix-test /);
+});
+
+it('matches the mpmath reference at the belt corner and for longitudes beyond 2^24 (DGGS-104)', () => {
+  // Expected keys: ang2pix_nest (Gorski et al. 2005) in 60-digit mpmath on the float32-rounded
+  // input, longitude reduced exactly with Fraction(float32) % 360; the transcription matches the
+  // healpix-geo fixture on every sampled non-vertex row. The twin evaluates in binary64, so unlike
+  // the f32 kernel it does not round 0.5 + tt to 4.5 for these belt-edge points.
+  const positions = new Float32Array([
+    -1.54e-5,
+    41.8103142,
+    -4e-5,
+    -41.8102913,
+    1e8,
+    10,
+    2 ** 30,
+    60,
+    -3e9,
+    -30,
+    1e30,
+    5,
+    -3.4e38,
+    -70
+  ]);
+  const expected: Record<number, bigint[]> = {
+    4: [853n, 2901n, 1989n, 209n, 2682n, 1374n, 2319n],
+    12: [55924053n, 190141781n, 130380280n, 13738371n, 175793766n, 90086953n, 151992142n]
+  };
+  for (const order of [4, 12]) {
+    const result = computeHealpixPointToCellOnCPU(positions, {order});
+    const keys = expected[order].map(
+      (_, row) => BigInt(result.cells[row * 2]) | (BigInt(result.cells[row * 2 + 1]) << 32n)
+    );
+    expect(keys, `order ${order}`).toEqual(expected[order]);
+    expect(Array.from(result.validity)).toEqual([1, 1, 1, 1, 1, 1, 1]);
+  }
 });

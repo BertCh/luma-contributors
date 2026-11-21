@@ -348,7 +348,7 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     // `disjoint-coverage` is not declared: this operation is the check for it.
     requirements: [
       ...limitCapacity('polygons', 3000, 50000),
-      // Overlaps are found on the raw coordinates, also for longitude and latitude.
+      // Overlaps use pair-local planar binary64 evaluation; longitude/latitude remain planar.
       {
         id: 'planar-coordinates',
         severity: 'warn',
@@ -510,13 +510,13 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     outputs: [
       {
         tableId: 'polygon-triangles',
-        kind: 'polygons',
+        kind: 'render-geometry',
         presentation: {column: 'area', scale: 'sequential'},
         interpretation: {summary: 'row-count', cautions: []}
       }
     ],
     notes: [
-      'A polygon part with more than 1,500 vertices is skipped: it gives no rows and a warning. An invalid or self-crossing ring may stop early and keep the triangles found so far.'
+      "Counted rows retain their triangle IDs. degeneracy='none' emits a Polygon, 'line' emits a LineString and 'point' emits a Point. Parts over 1,500 vertices fail validation; invalid or self-crossing rings may stop early and keep the triangles found so far."
     ]
   },
   {

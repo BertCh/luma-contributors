@@ -156,7 +156,7 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
         parameters: stopParameters.view,
         stopCapacity: FLEET_STOP_CAPACITY,
         zones: {...zonePorts, candidateCapacity: FLEET_STOP_CAPACITY * 4},
-        outputs: {
+        output: {
           stops: {
             status: {count: stopTotal.view, overflow: stopOverflow.view},
             centroids: stopCentroids.view,
@@ -174,7 +174,7 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
         zones: zonePorts,
         candidateCapacity: FLEET_CANDIDATE_CAPACITY,
         trackEventCapacity: 64,
-        outputs: {
+        output: {
           events: {status: {count: eventCount.view, overflow: eventOverflow.view}},
           status: {
             candidateCount: candidateCount.view,

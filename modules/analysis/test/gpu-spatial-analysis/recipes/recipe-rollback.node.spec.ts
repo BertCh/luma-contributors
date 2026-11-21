@@ -22,6 +22,7 @@ import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contribu
 import {addPreparedRecipe} from '../../../src/gpu-spatial-analysis/recipes/prepared-recipe';
 import {RecipeBuilder} from '../../../src/gpu-spatial-analysis/recipes/recipe-utils';
 import {addPointsInPolygonsChoroplethRecipe} from '../../../src/gpu-spatial-analysis/recipes/points-in-polygons-choropleth-recipe';
+import {addTrackQualityRecipe} from '../../../src/gpu-network/recipes/track-quality-recipe';
 import {getGPULonLatPolygonPreparationParameterValues} from '../../../src/gpu-spatial-analysis/lon-lat-polygons/index';
 import {FIJI_TRANSMERIDIAN, createLonLatPolygonFixtureViews} from '../lon-lat-polygons/fixtures';
 
@@ -43,6 +44,45 @@ const recipes = [
   {name: 'addExcessRiskRecipe', add: addExcessRiskRecipe},
   {name: 'addSpatialRateRecipe', add: addSpatialRateRecipe}
 ] as const;
+
+it('R6 rejects unequal track pairs before reserving caller graph resources', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const props = {
+    id: 'retry',
+    trajectory: {
+      positions: createTransientView(graph, 'positions', 'float32x2', 4),
+      timestamps: createTransientView(graph, 'timestamps', 'float32', 4),
+      trackOffsets: createTransientView(graph, 'track-offsets', 'uint32', 2)
+    },
+    thresholds: createTransientView(graph, 'thresholds', 'float32', 2),
+    similarity: {
+      pairA: createTransientView(graph, 'pair-a', 'uint32', 2),
+      pairB: createTransientView(graph, 'pair-b', 'uint32', 2),
+      maximumFrechetVertexCount: 8
+    }
+  };
+  const shortPairB = createTransientView(graph, 'short-pair-b', 'uint32', 1);
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  const importBuffer = vi.spyOn(graph, 'importBuffer');
+  const add = vi.spyOn(graph, 'add');
+  try {
+    expect(() =>
+      addTrackQualityRecipe(graph, {...props, similarity: {...props.similarity, pairB: shortPairB}})
+    ).toThrow(/^retry-similarity pairB\.length must equal pairA\.length 2; received 1$/);
+    expect(allocate).not.toHaveBeenCalled();
+    expect(importBuffer).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+    expect(() => addTrackQualityRecipe(graph, props)).not.toThrow();
+    expect(allocate).toHaveBeenCalled();
+    expect(add).toHaveBeenCalled();
+  } finally {
+    add.mockRestore();
+    importBuffer.mockRestore();
+    allocate.mockRestore();
+    device.destroy();
+  }
+});
 
 it.each(
   recipes

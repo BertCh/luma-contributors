@@ -9,7 +9,12 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {snapshotWeightsPort} from '../spatial-weights/weights-construction-snapshot';
+import {
+  createWGSLKernelNode,
+  type WGSLKernelBinding
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -30,6 +35,7 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
+  getGPUSpatialWeightsLossViews,
   getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
@@ -88,7 +94,7 @@ export type GPUSpatialEmpiricalBayesRatesProps = {
  *
  * For each included focus row `i`, the neighborhood is `i` itself plus its active neighbors (slots
  * with positive weight to another row, the shared neighbor rule) that are included (mask nonzero,
- * finite `e`, finite `b > 0`). Weights are used as binary structure (esda sets
+ * finite nonnegative `e`, finite `b > 0`). Weights are used as binary structure (esda sets
  * `w.transform = 'b'`). With `E = sum e`, `B = sum b` and `n` members:
  * - Spatial rate: `r_i = E / B`, exactly `Spatial_Rate.r` (`(e_i + lag e) / (b_i + lag b)`).
  * - Local prior mean `m = E / B`, local variance `s2 = sum b_j (e_j / b_j - m)^2 / B`,
@@ -118,6 +124,24 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
   readonly props: GPUSpatialEmpiricalBayesRatesProps;
 
   constructor(props: GPUSpatialEmpiricalBayesRatesProps) {
+    const captured = snapshotConstructionFields(props, [
+      'id',
+      'events',
+      'populations',
+      'weights',
+      'mask',
+      'output'
+    ]);
+    props = Object.freeze({
+      ...captured,
+      weights: snapshotWeightsPort(captured.weights),
+      output: snapshotConstructionFields(captured.output, [
+        'spatialRates',
+        'smoothedRates',
+        'priorMeans',
+        'priorVariances'
+      ])
+    });
     const id = props.id ?? 'spatial-empirical-bayes-rates';
     this.id = id;
     this.props = props;
@@ -190,7 +214,7 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
       ? [{name: 'mask', view: mask, type: 'u32', access: 'read'}]
       : [];
     const includedWGSL = (row: string) =>
-      `(${mask ? `mask[maskOffset + ${row}] != 0u && ` : ''}isFiniteFloat(events[eventsOffset + ${row}]) && isFiniteFloat(populations[populationsOffset + ${row}]) && populations[populationsOffset + ${row}] > 0.0)`;
+      `(${mask ? `mask[maskOffset + ${row}] != 0u && ` : ''}isFiniteFloat(events[eventsOffset + ${row}]) && events[eventsOffset + ${row}] >= 0.0 && isFiniteFloat(populations[populationsOffset + ${row}]) && populations[populationsOffset + ${row}] > 0.0)`;
     const outputBindings: WGSLKernelBinding[] = outputs.map(([name, view]) => ({
       name,
       view,
@@ -274,7 +298,22 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
         })
       );
     });
-    return [...eventValues.nodes, ...populationValues.nodes, ...smoothNodes];
+    // A truncated neighborhood cannot support either pooled moments or smoothed rates.
+    // Suppress all dependent outputs for outer and chunk-local loss flags alike.
+    const incompleteNodes = getGPUSpatialWeightsLossViews(weights).map((loss, lossIndex) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-incomplete-${lossIndex}`,
+        operation: OPERATION,
+        variant: 'incomplete-input',
+        bindings: [{name: 'loss', view: loss, type: 'u32', access: 'read'}, ...outputBindings],
+        invocationCount: rows,
+        declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
+        body: `if (loss[lossOffset] != 0u) {
+  ${writeOutputs(outputBindings, () => 'getQuietNaN(index)')}
+}`
+      })
+    );
+    return [...eventValues.nodes, ...populationValues.nodes, ...smoothNodes, ...incompleteNodes];
   }
 
   private _getOutputs(): [string, GraphDataView<'float32'>][] {

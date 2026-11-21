@@ -6,6 +6,7 @@ import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCompactPairPort,
   GPULineGeometryPort,
+  GPUMultipartLineGeometryPort,
   GPUPackedGeometryPort,
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
@@ -53,9 +54,12 @@ export const GPU_SEGMENT_NONE = 0xffffffff;
  * than three vertices are ignored; linestrings need two vertices and have no closing segment. A
  * zero-length segment (equal consecutive vertices) or a segment with a non-finite coordinate is
  * skipped and never intersects anything.
+ * Optional line `featureOffsets` groups line parts into feature rows: feature columns and
+ * `sameFeatureOnly` use that grouping, while ring columns and segment rows retain part/vertex indices.
  */
 export type GPUSegmentGeometry =
   | GPUPackedGeometryPort<GPULineGeometryPort>
+  | GPUPackedGeometryPort<GPUMultipartLineGeometryPort>
   | GPUPackedGeometryPort<GPUPolygonGeometryPort>;
 
 /**

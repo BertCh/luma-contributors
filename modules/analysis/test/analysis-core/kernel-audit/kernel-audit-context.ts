@@ -17,8 +17,56 @@ import type {WGSLDeclaredBinding} from './kernel-audit-wgsl';
 /** Fixed-width vector formats a builder can request with {@link KernelAuditContext.view}. */
 export type KernelAuditViewFormat = Exclude<GPUVectorFormat, `${string}-list` | `${string}list`>;
 
+export type RejectionPhase = 'construction' | 'declaration';
+export type AuditResourceCounts = {
+  nodes: number;
+  buffers: number;
+  textures: number;
+  externalTextures: number;
+  deviceResources: number;
+};
+export type RejectionObservation = {
+  /** Exact exception that escaped this operation; recovered failures cannot certify another. */
+  error: unknown;
+  phase: RejectionPhase;
+  before: AuditResourceCounts;
+  after: AuditResourceCounts;
+};
+const deviceResourceCounts = new WeakMap<Device, () => number>();
+
+/** Actual logical graph registrations and live device allocations (fixtures included). */
+export function getAuditResourceCounts(
+  context: Pick<KernelAuditContext, 'graph' | 'device'>
+): AuditResourceCounts {
+  const graph = context.graph as unknown as {
+    nodes: unknown[];
+    buffers: Map<string, unknown>;
+    textures: Map<string, unknown>;
+    externalTextures: Map<string, unknown>;
+  };
+  return {
+    nodes: graph.nodes.length,
+    buffers: graph.buffers.size,
+    textures: graph.textures.size,
+    externalTextures: graph.externalTextures.size,
+    deviceResources: deviceResourceCounts.get(context.device)?.() ?? 0
+  };
+}
+
 /** What a kernel-audit builder gets: a fake core device, its graph and transient-view factories. */
 export type KernelAuditContext = {
+  /** Evaluate fixture arguments first, then measure immediately around construction. */
+  construct: <Arguments extends unknown[], Contributor>(
+    contributorConstructor: new (...arguments_: Arguments) => Contributor,
+    ...arguments_: Arguments
+  ) => Contributor;
+  /** Measures recipe declaration after its fixture arguments are evaluated. */
+  declare: <Arguments extends unknown[], Value>(
+    operation: (...arguments_: Arguments) => Value,
+    ...arguments_: Arguments
+  ) => Value;
+  /** The outermost failing operation, excluding fixture allocation. */
+  rejectionObservation?: RejectionObservation;
   /** CPU-only WebGPU device with the core limits (8 storage buffers, 128 MiB bindings, ...). */
   device: Device;
   /** Graph the builder adds its contributor to (`graph.add`, `addToGraph` or `add*Recipe`). */
@@ -63,6 +111,11 @@ export type KernelAuditContext = {
 export type KernelAuditCase = {
   /** Barrel export name of the contributor or recipe function. */
   exportName: string;
+  /**
+   * Analysis entry (an `ANALYSIS_BARRELS` key) the export is taken from. Required when several
+   * entries export different functions under `exportName`; the inventory then keys by both.
+   */
+  entry?: string;
   /** Short configuration label, unique per export. */
   name: string;
   /** Adds the contributor to `context.graph`. */
@@ -74,28 +127,47 @@ function createCoreDevice(): Device {
   const device = createNullWebGPUDevice();
   // NullDevice.destroy() only releases its command encoder. Recipes also allocate caller-owned
   // parameter/draw buffers, and a failed compile can leave shaders or pipelines behind.
-  const resources = new Set<{destroy: () => void}>();
-  const trackResource = <Resource extends {destroy: () => void}>(resource: Resource): Resource => {
+  type TrackedResource = {destroy: () => void; readonly destroyed: boolean};
+  const resources = new Set<TrackedResource>();
+  const countLiveResources = () => {
+    for (const resource of resources) if (resource.destroyed) resources.delete(resource);
+    return resources.size;
+  };
+  deviceResourceCounts.set(device, countLiveResources);
+  const trackResource = <Resource extends TrackedResource>(resource: Resource): Resource => {
+    // Sealed resources (notably transform feedback) cannot have destroy monkey-patched.
+    // Observe the public lifecycle flag and preserve the exact resource identity instead.
+    countLiveResources();
     resources.add(resource);
-    const destroyResource = resource.destroy.bind(resource);
-    resource.destroy = () => {
-      resources.delete(resource);
-      destroyResource();
-    };
     return resource;
   };
-  const createBuffer = device.createBuffer.bind(device);
-  const createTexture = device.createTexture.bind(device);
-  const createShader = device.createShader.bind(device);
-  const createRenderPipeline = device.createRenderPipeline.bind(device);
+  const trackFactory =
+    <Arguments extends unknown[], Resource extends TrackedResource>(
+      factory: (...arguments_: Arguments) => Resource
+    ) =>
+    (...arguments_: Arguments): Resource =>
+      trackResource(factory(...arguments_));
   const destroyDevice = device.destroy.bind(device);
-  device.createBuffer = props => trackResource(createBuffer(props));
-  device.createTexture = props => trackResource(createTexture(props));
-  device.createShader = props => trackResource(createShader(props));
-  device.createRenderPipeline = props => trackResource(createRenderPipeline(props));
+  // All Device resource factories supported by NullDevice. Async pipeline factories delegate
+  // to these sync methods. Unsupported compute/external/bundle factories throw before tracking.
+  // Canvas/presentation contexts are surfaces, rather than DeviceResource allocations.
+  device.createBuffer = trackFactory(device.createBuffer.bind(device));
+  device.createTexture = trackFactory(device.createTexture.bind(device));
+  device.createSampler = trackFactory(device.createSampler.bind(device));
+  device.createShader = trackFactory(device.createShader.bind(device));
+  device.createFramebuffer = trackFactory(device.createFramebuffer.bind(device));
+  device.createVertexArray = trackFactory(device.createVertexArray.bind(device));
+  device.createTransformFeedback = trackFactory(device.createTransformFeedback.bind(device));
+  device.createQuerySet = trackFactory(device.createQuerySet.bind(device));
+  device.createFence = trackFactory(device.createFence.bind(device));
+  device.createRenderPipeline = trackFactory(device.createRenderPipeline.bind(device));
+  device.createComputePipeline = trackFactory(device.createComputePipeline.bind(device));
+  device.createExternalTexture = trackFactory(device.createExternalTexture.bind(device));
+  device.createRenderBundleEncoder = trackFactory(device.createRenderBundleEncoder.bind(device));
+  device.createCommandEncoder = trackFactory(device.createCommandEncoder.bind(device));
   device.destroy = () => {
     try {
-      for (const resource of [...resources].reverse()) resource.destroy();
+      for (const resource of [...resources].reverse()) if (!resource.destroyed) resource.destroy();
     } finally {
       resources.clear();
       destroyDevice();
@@ -122,7 +194,10 @@ export function createKernelAuditContext(id: string): KernelAuditContext {
   const graph = new GPUCommandGraph(device, {id: `kernel-audit-${id}-${serial++}`});
   const view: KernelAuditContext['view'] = (format, length, name = 'view') =>
     createTransientView(graph, `${name}-${serial++}`, format as never, length) as never;
-  return {
+  const context: KernelAuditContext = {
+    declare: (operation, ...arguments_) => measure('declaration', () => operation(...arguments_)),
+    construct: (contributorConstructor, ...arguments_) =>
+      measure('construction', () => new contributorConstructor(...arguments_)),
     device,
     graph,
     view,
@@ -148,6 +223,18 @@ export function createKernelAuditContext(id: string): KernelAuditContext {
     }),
     maximumRows: bytesPerRow => Math.floor(device.limits.maxStorageBufferBindingSize / bytesPerRow)
   };
+  function measure<Value>(phase: RejectionPhase, operation: () => Value): Value {
+    const before = getAuditResourceCounts(context);
+    try {
+      return operation();
+    } catch (error) {
+      context.rejectionObservation = {error, phase, before, after: getAuditResourceCounts(context)};
+      throw error;
+    }
+  }
+  const add = graph.add.bind(graph);
+  graph.add = node => measure('declaration', () => add(node));
+  return context;
 }
 
 /** The command nodes a case declared (the graph stores them in declaration order). */

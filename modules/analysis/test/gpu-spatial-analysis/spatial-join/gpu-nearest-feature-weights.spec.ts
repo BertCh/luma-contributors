@@ -112,7 +112,7 @@ it('final1 bounded nearest join propagates candidate loss through CSR to Moran a
           leafCapacity,
           spatialSort: false,
           querySort: false,
-          k: 1,
+          neighborCount: 1,
           output: {
             neighborRows: neighborRows.view,
             neighborIds: neighborIds.view,
@@ -245,7 +245,7 @@ async function runAdapter(
     new GPUNearestFeatureJoin({
       queries: {kind: 'points', positions: points(queries)},
       features: {kind: 'points', positions: points(features)},
-      k: joinK,
+      neighborCount: joinK,
       radius: maxDistance,
       output: {
         neighborIds: ids.view,
@@ -260,7 +260,7 @@ async function runAdapter(
       neighborCounts: counts.view,
       neighborDistances: distances.view,
       slotCapacity: joinK,
-      k: options.k,
+      neighborCount: options.k,
       excludeSelf: options.selfJoin,
       weightType: options.weightType,
       output: {...output.spatialWeights, status: {overflow: overflow.view}}
@@ -510,7 +510,7 @@ it('weights batches exclude self and padding, keep k below slotCapacity, and sor
     rig.run(
       new GPUNearestFeatureWeights({
         slotCapacity,
-        k: 65,
+        neighborCount: 65,
         excludeSelf: true,
         scratchChunkRowCount: 1,
         weightType: 'inverse-distance',

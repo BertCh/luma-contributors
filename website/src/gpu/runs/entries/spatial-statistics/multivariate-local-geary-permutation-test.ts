@@ -39,10 +39,10 @@ export default defineOperationRun({
         weights: uploadSpatialWeights(builder, graph.weights),
         values: valueBuffer.view,
         variableCount,
-        maximumPermutations: values.maximumPermutations,
+        permutationCount: values.permutationCount,
         seed: [1, 2],
         tail: TAILS[values.tail],
-        output: {statistic: statistic.view, pValues: pValues.view, classes: classes.view}
+        output: {statistic: statistic.view, pseudoPValues: pValues.view, classes: classes.view}
       })
     );
     return {
@@ -56,7 +56,7 @@ export default defineOperationRun({
         valueBuffer.write(createInterleavedValues(points.field, variableCount, current.noise))
     };
   },
-  rebuildOn: ['variableCount', 'tail', 'maximumPermutations'],
+  rebuildOn: ['variableCount', 'tail', 'permutationCount'],
   interaction: {
     kind: 'probe',
     hint: 'hover a point',

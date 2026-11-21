@@ -7,7 +7,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, test} from 'vitest';
 import {getCatalogBinding, runCatalogOperationAsync} from '../src/analysis/catalog-bindings';
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
-import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
+import {requireTestDevice} from '../../analysis/src/testing/require-test-device';
 
 // These bindings have no CPU engine: independent CPU formulas in this spec are the oracle.
 
@@ -144,11 +144,50 @@ test('local-lisa-variants matches independent local statistics', async () => {
   const g = await run({variant: 'local-getis-ord-g', valueProperty: 'xShifted'});
   expect(g.engine, g.fallbackReason).toBe('gpu');
   const gStatistic = g.tables[0].columns['statistic'] as number[];
+  for (const name of ['statistic', 'p_value', 'significant'])
+    expect(g.tables[0].columns[name]).toHaveLength(ROWS * COLUMNS);
   neighbors.forEach((list, row) => {
     const expected =
       list.reduce((sum, other) => sum + xShifted[other] / list.length, 0) / (total - xShifted[row]);
     expect(Math.abs(gStatistic[row] - expected), `G ${row}`).toBeLessThan(1e-4);
   });
+  // Independent Python Philox / Fisher-Yates enumeration:
+  // .typecheck/r19/scratch/consumer-seams-lenses-w5-quantile-lisa/independent-counts.py
+  // source row 10 has tails (93, 6), hence p=2*(6+1)/100=.14, and is nonsignificant.
+  expect(Number.isFinite(gStatistic[10])).toBe(true);
+  expect((g.tables[0].columns['p_value'] as number[])[10]).toBeCloseTo(0.14, 6);
+  expect((g.tables[0].columns['significant'] as boolean[])[10]).toBe(false);
+
+  // Source row 51 (canonical row 13) has tails (0,39) or (0,49), independently
+  // enumerated with Python full-width Philox multiplication. Thus p=2/40=1/20 or 2/50=1/25.
+  const boundary = await run({
+    variant: 'local-getis-ord-g',
+    valueProperty: 'xShifted',
+    permutations: 39
+  });
+  expect(boundary.engine, boundary.fallbackReason).toBe('gpu');
+  for (const name of ['statistic', 'p_value', 'significant'])
+    expect(boundary.tables[0].columns[name]).toHaveLength(ROWS * COLUMNS);
+  expect(Number.isFinite((boundary.tables[0].columns['statistic'] as number[])[51])).toBe(true);
+  expect((boundary.tables[0].columns['p_value'] as number[])[51]).toBe(Math.fround(0.05));
+  expect((boundary.tables[0].columns['significant'] as boolean[])[51]).toBe(true);
+
+  // The packed .04 cutoff
+  // is 0.03999999910593033, strictly smaller than 1/25, so it must not reject.
+  const smallerCutoff = await run({
+    variant: 'local-getis-ord-g',
+    valueProperty: 'xShifted',
+    permutations: 49,
+    significance: 0.04
+  });
+  expect(smallerCutoff.engine, smallerCutoff.fallbackReason).toBe('gpu');
+  for (const name of ['statistic', 'p_value', 'significant'])
+    expect(smallerCutoff.tables[0].columns[name]).toHaveLength(ROWS * COLUMNS);
+  expect(Number.isFinite((smallerCutoff.tables[0].columns['statistic'] as number[])[51])).toBe(
+    true
+  );
+  expect((smallerCutoff.tables[0].columns['p_value'] as number[])[51]).toBe(Math.fround(0.04));
+  expect((smallerCutoff.tables[0].columns['significant'] as boolean[])[51]).toBe(false);
 
   const star = await run({variant: 'local-getis-ord-g-star', valueProperty: 'xShifted'});
   expect(star.engine, star.fallbackReason).toBe('gpu');

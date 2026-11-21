@@ -121,10 +121,13 @@ it('scales geographic candidate radii before dividing by a near-maximum sphere r
     cellSize: 45,
     candidateCount: 1
   }).getCommandNodes(graph);
-  const source = getParsedKernelSources(nodes).get('map-matching-candidates')!;
-  expect(auditWGSLModule(source)).toEqual([]);
-  expect(source).toContain('getScaledQuotient(radius, NETWORK_EARTH_RADIUS, 1.0, 0)');
-  expect(source).not.toContain('radius / NETWORK_EARTH_RADIUS');
+  for (const {source, constants} of getParsedKernelSources(nodes).getConfigurations(
+    'map-matching-candidates'
+  )) {
+    expect(auditWGSLModule(source, constants)).toEqual([]);
+    expect(source).toContain('getScaledQuotient(radius, NETWORK_EARTH_RADIUS, 1.0, 0)');
+    expect(source).not.toContain('radius / NETWORK_EARTH_RADIUS');
+  }
 });
 
 it('settles a route-search key exactly at a bound where adding one rounds away', () => {

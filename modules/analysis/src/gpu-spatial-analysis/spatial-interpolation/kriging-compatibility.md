@@ -17,6 +17,8 @@ interchangeable.
 | Exact hits | Returns the coalesced observation mean and variance zero before solving | Solves the covariance system; measurement error can smooth an exact hit |
 | Coordinates | Raster/index-relative planar coordinates and supported geographic metrics | Native planar coordinates only |
 | Selection | Indexed nearest neighbors ordered by squared distance and source row; distinct-position minimum | Supplied candidates, bounded scan or shared sample grid; Euclidean-distance ties by source row |
+| Minimum neighborhood | Default `minimumNeighborCount = 3` distinct positions after duplicate coalescing (the exact-hit branch precedes this check) | One usable sample for simple/ordinary (simple allows zero only with `emptyNeighborhood: 'prior'`); universal needs at least 3 for its affine design, or `driftCount` supplied columns; external drift needs `driftCount`; known-mean co-kriging needs one usable sample of any variable; ordinary co-kriging needs at least its active variable constraints, including the target; each design must also have full rank |
+| Conditioning | Pivots and pivot ratios tested on the normalized semivariogram augmented system, before any equilibration (none is applied) | Four symmetric Ruiz equilibration passes precede pivot and pivot-ratio tests on the covariance/design system; the same numeric ratio threshold therefore tests a different scaled matrix |
 | Diagnostics | Raster validity and invalid/uncertain counts, plus optional cross-validation | Per-query success, insufficient-neighborhood or rank-failure status; retained count and pivot ratio; optional weights |
 
 A future adapter should construct raster-center supports without CPU readback, retain the raster

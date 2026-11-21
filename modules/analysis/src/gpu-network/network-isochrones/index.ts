@@ -6,7 +6,8 @@ export {GPUNetworkIsochrones} from './gpu-network-isochrones';
 export type {
   GPUNetworkIsochronesCellOutline,
   GPUNetworkIsochronesRaster,
-  GPUNetworkIsochronesProps
+  GPUNetworkIsochronesProps,
+  GPUNetworkIsochronesOutput
 } from './gpu-network-isochrones';
 export {
   getGPUNetworkIsochronesParameterValues,

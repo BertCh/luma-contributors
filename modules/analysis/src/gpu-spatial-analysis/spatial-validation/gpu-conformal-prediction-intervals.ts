@@ -26,6 +26,7 @@ import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernel
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createConformalScoreNodes,
+  snapshotConformalPredictionProps,
   getConformalInputViews,
   GPU_CONFORMAL_PREDICTION_PARAMETER_LENGTH,
   validateConformalInputs,
@@ -45,8 +46,60 @@ export const GPU_CONFORMAL_STATUS_UPPER_UNBOUNDED = 2;
 export const GPU_CONFORMAL_STATUS_INVALID_QUERY = 4;
 /** Interval status bits: no calibration row (or neighbour weight) is usable; the interval is NaN. */
 export const GPU_CONFORMAL_STATUS_NO_CALIBRATION = 8;
-/** Interval status bits: the query has more neighbours than the maximum and the tail was dropped. */
+/** Supplied CSR span exceeds the internal 256-entry cap; its tail was dropped. Distinct from upstream input loss. */
 export const GPU_CONFORMAL_STATUS_NEIGHBORS_TRUNCATED = 16;
+/** Upstream calibration-neighbor loss; the localized interval is suppressed to NaN. */
+export const GPU_CONFORMAL_STATUS_INPUT_INCOMPLETE = 32;
+
+/** Decodes independent bits of one row, or the first word of a validated uint32 readback. */
+export function decodeConformalStatus(input: number | Uint32Array | Uint8Array | ArrayBuffer) {
+  let word: number;
+  if (typeof input === 'number') {
+    word = input;
+  } else {
+    let bytes: Uint8Array;
+    if (ArrayBuffer.isView(input)) {
+      const kind = Object.prototype.toString.call(input);
+      if (kind !== '[object Uint32Array]' && kind !== '[object Uint8Array]') {
+        throw new Error(
+          'decodeConformalStatus: readback must be Uint32Array, Uint8Array or ArrayBuffer'
+        );
+      }
+      bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    } else {
+      // The intrinsic getter checks the ArrayBuffer internal slot across realms.
+      try {
+        const byteLength = Object.getOwnPropertyDescriptor(
+          ArrayBuffer.prototype,
+          'byteLength'
+        )!.get!.call(input) as number;
+        bytes = new Uint8Array(input as ArrayBuffer, 0, byteLength);
+      } catch {
+        throw new Error(
+          'decodeConformalStatus: readback must be Uint32Array, Uint8Array or ArrayBuffer'
+        );
+      }
+    }
+    if (bytes.byteLength < 4 || bytes.byteLength % 4 !== 0) {
+      throw new Error(
+        'decodeConformalStatus: readback must contain whole uint32 words and at least one word'
+      );
+    }
+    // DataView also accepts a byte view whose offset is not uint32 aligned.
+    word = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
+  }
+  if (!Number.isInteger(word) || word < 0 || word > 0xffffffff) {
+    throw new Error('decodeConformalStatus: word must be a uint32');
+  }
+  return {
+    lowerUnbounded: Boolean(word & GPU_CONFORMAL_STATUS_LOWER_UNBOUNDED),
+    upperUnbounded: Boolean(word & GPU_CONFORMAL_STATUS_UPPER_UNBOUNDED),
+    invalidQuery: Boolean(word & GPU_CONFORMAL_STATUS_INVALID_QUERY),
+    noCalibration: Boolean(word & GPU_CONFORMAL_STATUS_NO_CALIBRATION),
+    neighborsTruncated: Boolean(word & GPU_CONFORMAL_STATUS_NEIGHBORS_TRUNCATED),
+    inputIncomplete: Boolean(word & GPU_CONFORMAL_STATUS_INPUT_INCOMPLETE)
+  };
+}
 
 const OPERATION = 'GPUConformalPredictionIntervals';
 
@@ -58,6 +111,9 @@ fn getInfinity() -> f32 { var bits = 0x7f800000u; return bitcast<f32>(bits); }
 const ORDERED_KEY_WGSL = /* wgsl */ `
 fn getOrderedKey(value: f32) -> u32 {
   let bits = bitcast<u32>(value);
+  // Numerical ties include both signed zeros. Do not use a float comparison here:
+  // Metal may also compare a subnormal value as zero.
+  if ((bits & 0x7fffffffu) == 0u) { return 0x80000000u; }
   return select(bits | 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
 }
 fn getKeyedValue(key: u32) -> f32 {
@@ -112,15 +168,25 @@ export type GPUConformalPredictionIntervalsProps = {
  * exactly from the packed float32 alpha and integer count, without snapping decimal boundaries
  * (see `getConformalPredictionRanks`). The count plus one must fit uint32.
  *
- * Guarantee: for exchangeable data, split intervals cover with probability at least `1 - alpha`
- * and, when calibration and test scores are almost surely distinct, at most
- * `1 - alpha + 1/(n + 1)`. Ties can increase coverage. CV+ guarantees at least `1 - 2 alpha`.
+ * Coverage is conditional on statistical assumptions, which these input views cannot verify.
+ * Split conformal requires exchangeable calibration/test scores from a common scoring rule
+ * fitted independently of those rows: coverage is at least `1 - alpha`, and at most
+ * `1 - alpha + 1/(n + 1)` for almost surely distinct scores. Ties can increase coverage.
+ * The CV+ theorem requires balanced folds fixed independently of the observations and
+ * permutation-invariant fitting on each training complement; its finite-sample bound depends
+ * on calibration size and fold count. Arbitrary group/spatial folds do not inherit a universal
+ * `1 - 2 alpha` guarantee from row exchangeability alone. This class computes endpoints only.
+ * The global route accepts 1–64 folds and at most 4,294,967,294 calibration rows before
+ * the device binding and sort limits are applied.
  */
 export class GPUConformalPredictionIntervals implements GPUCommandNodeProducer {
   readonly id: string;
   readonly foldCount: number;
   readonly queryRows: number;
-  constructor(readonly props: GPUConformalPredictionIntervalsProps) {
+  readonly props: GPUConformalPredictionIntervalsProps;
+  constructor(props: GPUConformalPredictionIntervalsProps) {
+    props = snapshotConformalPredictionProps(props);
+    this.props = props;
     this.id = props.id ?? 'conformal-prediction-intervals';
     const {id} = this;
     this.foldCount = props.foldCount ?? 1;
@@ -137,6 +203,12 @@ export class GPUConformalPredictionIntervals implements GPUCommandNodeProducer {
       GPU_CONFORMAL_MAXIMUM_CALIBRATION_COUNT
     );
     validateConformalOutput(id, props.parameters, props.output, this.queryRows);
+    validateSinglePackedView(
+      props.output.calibrationCount,
+      ['uint32'],
+      `${id} output.calibrationCount`
+    );
+    validateViewLength(id, 'output.calibrationCount', props.output.calibrationCount, 1);
     validateRegressionOutputDispatches(this.id, props.output, [['intervals', 'status']]);
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
       ...getConformalInputViews(props.calibration, props.query),
@@ -264,7 +336,7 @@ fn getShifted(prediction: f32, scale: f32, score: f32, sign: f32) -> f32 {
 }
 // Values of one fold at or below the threshold. Upper values rise with the sorted score and
 // lower values fall, so each count is one binary search over the fold's sorted segment.
-fn countAtOrBelow(fold: u32, threshold: f32, prediction: f32, scale: f32, sign: f32) -> u32 {
+fn countAtOrBelow(fold: u32, threshold: u32, prediction: f32, scale: f32, sign: f32) -> u32 {
   let first = foldOffsets[foldOffsetsOffset + fold];
   let last = foldOffsets[foldOffsetsOffset + fold + 1u];
   var low = first;
@@ -272,14 +344,14 @@ fn countAtOrBelow(fold: u32, threshold: f32, prediction: f32, scale: f32, sign: 
   for (var step = 0u; step < 32u; step++) {
     if (low >= high) { break; }
     let middle = low + (high - low) / 2u;
-    let value = getShifted(prediction, scale, sortedScores[sortedScoresOffset + middle], sign);
+    let value = getOrderedKey(getShifted(prediction, scale, sortedScores[sortedScoresOffset + middle], sign));
     // Advance past the values that are at or below the threshold (rising values) or above it (falling values).
     let goRight = select(value > threshold, value <= threshold, sign > 0.0);
     if (goRight) { low = middle + 1u; } else { high = middle; }
   }
   return select(last - low, low - first, sign > 0.0);
 }
-fn getTotalCount(threshold: f32, query: u32, scale: f32, sign: f32) -> u32 {
+fn getTotalCount(threshold: u32, query: u32, scale: f32, sign: f32) -> u32 {
   var total = 0u;
   for (var fold = 0u; fold < ${foldCount}u; fold++) {
     total += countAtOrBelow(fold, threshold, queryPredictions[queryPredictionsOffset + fold * ${queryRows}u + query], scale, sign);
@@ -287,6 +359,8 @@ fn getTotalCount(threshold: f32, query: u32, scale: f32, sign: f32) -> u32 {
   return total;
 }
 // Smallest candidate value whose count reaches the rank, by bisection over ordered float32 keys.
+// Compare keys throughout: decoding a subnormal threshold for a float comparison can
+// flush it to zero on Metal and return a value that is not a candidate.
 fn getOrderStatistic(rank: u32, query: u32, scale: f32, sign: f32) -> f32 {
   // Keys of minus and plus infinity: NaN keys outside the range would break the monotone count.
   var low = 0x007fffffu;
@@ -294,7 +368,7 @@ fn getOrderStatistic(rank: u32, query: u32, scale: f32, sign: f32) -> f32 {
   for (var step = 0u; step < 32u; step++) {
     if (low >= high) { break; }
     let middle = low + (high - low) / 2u;
-    if (getTotalCount(getKeyedValue(middle), query, scale, sign) >= rank) { high = middle; } else { low = middle + 1u; }
+    if (getTotalCount(middle, query, scale, sign) >= rank) { high = middle; } else { low = middle + 1u; }
   }
   return getKeyedValue(low);
 }`,

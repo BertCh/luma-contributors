@@ -5,20 +5,23 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {gridDisk, latLngToCell} from 'h3-js';
 import {describe, expect, it} from 'vitest';
+import {
+  unpackGPUCellPeriodKeyChecked,
+  type GPUCellPeriodKeyLayout
+} from '../../../src/dataframe-analysis/index';
 import {GPUGroupStatistics} from '../../../src/dataframe-analysis/group-statistics/index';
 import {
   GPUCellPeriodKeys,
   getGPUCellKeyFreeBits,
   getGPUCellPeriodKeyPeriodBits,
   packGPUCellPeriodKey,
-  unpackGPUCellPeriodKey,
   type GPUCellPeriodKeyFill
 } from '../../../src/dataframe-analysis/value-cube/index';
 import {
   h3ToBigInt,
   quadbinTileToCell
 } from '../../gpu-spatial-analysis/cell-aggregation/cell-aggregation-oracle';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
 import {createValueCubeRandom, getKeyWords, ValueCubeRig} from './value-cube-rig';
 
 const ALL_ONES = 0xffffffffffffffffn;
@@ -64,11 +67,13 @@ function createFamilies(): Family[] {
 }
 
 describe('GPUCellPeriodKeys', () => {
+  const layout = 'legacy-one-bit';
+
   it('states the free key bits per resolution', () => {
-    expect(getGPUCellPeriodKeyPeriodBits(365)).toBe(9);
-    expect(getGPUCellPeriodKeyPeriodBits(512)).toBe(9);
-    expect(getGPUCellPeriodKeyPeriodBits(513)).toBe(10);
-    expect(getGPUCellPeriodKeyPeriodBits(1)).toBe(1);
+    expect(getGPUCellPeriodKeyPeriodBits(365, layout)).toBe(9);
+    expect(getGPUCellPeriodKeyPeriodBits(512, layout)).toBe(9);
+    expect(getGPUCellPeriodKeyPeriodBits(513, layout)).toBe(10);
+    expect(getGPUCellPeriodKeyPeriodBits(1, 'zero-period-bit-identity')).toBe(0);
     // Derived from the key layouts: H3 digits below the resolution are 7, Quadbin footer is ones.
     expect(getGPUCellKeyFreeBits('h3', 9)).toBe(18);
     expect(getGPUCellKeyFreeBits('quadbin', 12)).toBe(28);
@@ -152,6 +157,7 @@ describe('GPUCellPeriodKeys', () => {
           periods: rig.input(Uint32Array.from(periods), 'uint32'),
           periodCount: PERIOD_COUNT,
           fill: family.fill,
+          layout,
           mask: rig.input(Uint32Array.from(mask), 'uint32'),
           output: {keys: packed, status: {invalidCount}}
         }),
@@ -175,8 +181,13 @@ describe('GPUCellPeriodKeys', () => {
         const wanted =
           !mask[row] || cellKeys[row] === ALL_ONES || periods[row] === 0xffffffff
             ? ALL_ONES
-            : (packGPUCellPeriodKey(cellKeys[row], periods[row], PERIOD_COUNT, family.fill) ??
-              ALL_ONES);
+            : (packGPUCellPeriodKey(
+                cellKeys[row],
+                periods[row],
+                PERIOD_COUNT,
+                family.fill,
+                layout
+              ) ?? ALL_ONES);
         expect(packedKeys[row], `row ${row}`).toBe(wanted);
       }
       expect((await rig.readUint(invalidCount))[0]).toBe(expectedInvalid);
@@ -191,7 +202,10 @@ describe('GPUCellPeriodKeys', () => {
       const sums = await rig.readFloat(sumValues);
       const meansRead = await rig.readFloat(means);
       keys.forEach((key, index) => {
-        const {cellKey, period} = unpackGPUCellPeriodKey(key, PERIOD_COUNT, family.fill);
+        const unpacked = unpackGPUCellPeriodKeyChecked(key, PERIOD_COUNT, family.fill, layout);
+        expect(unpacked).toBeDefined();
+        if (!unpacked) throw new Error('group key must not be missing');
+        const {cellKey, period} = unpacked;
         const group = expectedGroups.get(`${cellKey}:${period}`);
         expect(group, `group ${cellKey}:${period}`).toBeDefined();
         const total = group!.values.reduce((sum, value) => sum + value, 0);
@@ -200,8 +214,59 @@ describe('GPUCellPeriodKeys', () => {
         expect(Math.abs(meansRead[index] - total / group!.values.length)).toBeLessThan(
           1e-4 * (1 + Math.abs(total / group!.values.length))
         );
+        expect(expectedGroups.delete(`${cellKey}:${period}`)).toBe(true);
       });
+      expect(expectedGroups.size).toBe(0);
       rig.destroy();
     });
+  }
+});
+
+it('identity layout packs a finest S2 cell without consuming its low bit (EGR-04)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new ValueCubeRig(device);
+  const layout: GPUCellPeriodKeyLayout = 'zero-period-bit-identity';
+  const cells = rig.input(new Uint32Array([1, 0]), 'uint32x2');
+  const periods = rig.input(new Uint32Array([0]), 'uint32');
+  const keys = rig.output('uint32x2', 1);
+  const invalidCount = rig.output('uint32', 1);
+  rig.graph.add(
+    new GPUCellPeriodKeys({
+      cells,
+      periods,
+      periodCount: 1,
+      fill: 'zeros',
+      layout,
+      output: {keys, status: {invalidCount}}
+    })
+  );
+  rig.run();
+  expect(await rig.readKeys(keys)).toEqual([1n]);
+  expect(await rig.readUint(invalidCount)).toEqual([0]);
+  rig.destroy();
+});
+
+it('counts packed-sentinel collisions as invalid instead of publishing a group (earlier-fix note 2)', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new ValueCubeRig(device);
+  const keys = rig.output('uint32x2', 2);
+  const invalidCount = rig.output('uint32', 1);
+  rig.run(
+    new GPUCellPeriodKeys({
+      cells: rig.input(getKeyWords([0xfffffffffffffff8n, 0xfffffffffffffff8n]), 'uint32x2'),
+      periods: rig.input(new Uint32Array([7, 6]), 'uint32'),
+      periodCount: 8,
+      fill: 'zeros',
+      layout: 'legacy-one-bit',
+      output: {keys, status: {invalidCount}}
+    })
+  );
+  try {
+    expect(await rig.readKeys(keys)).toEqual([0xffffffffffffffffn, 0xfffffffffffffffen]);
+    expect(await rig.readUint(invalidCount)).toEqual([1]);
+  } finally {
+    rig.destroy();
   }
 });

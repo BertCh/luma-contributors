@@ -7,6 +7,7 @@ export * from './analysis-questions';
 export * from './analysis-operator-questions';
 export * from './data-kind-vocabulary';
 export * from './analysis-operator-kind-supplements';
+export {GPU_ANALYSIS_WEBSITE_HELPER_KINDS} from './analysis-website-helper-kinds';
 export * from './analysis-data-roles';
 export * from './analysis-requirements';
 export * from './analysis-spacing-statistics';

@@ -380,25 +380,18 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
             buffers: set.pick
           });
           extraMask = importGraphBuffer(graph, 'pick-mask', set.pick.mask, 'uint32', set.count);
-          graph.add(
-            new GPUPickRegionMask({
-              id: 'lasso-pick-region-mask',
-              picks: result,
-              output: {
-                mask: extraMask,
-                status: {
-                  overflow: importGraphBuffer(
-                    graph,
-                    'pick-overflow',
-                    set.pick.overflow,
-                    'uint32',
-                    1
-                  )
-                }
+          const maskProducer = new GPUPickRegionMask({
+            id: 'lasso-pick-region-mask',
+            picks: result,
+            output: {
+              mask: extraMask,
+              status: {
+                overflow: importGraphBuffer(graph, 'pick-overflow', set.pick.overflow, 'uint32', 1)
               }
-            })
-          );
-          selection = {kind: 'mask', mask: extraMask};
+            }
+          });
+          graph.add(maskProducer);
+          selection = {kind: 'mask', ...maskProducer.props.output};
         } else {
           extraMask = importGraphBuffer(
             graph,
@@ -407,30 +400,29 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
             'uint32',
             set.count
           );
-          graph.add(
-            new GPURegionMask({
-              spatialContext: bikeParking.frame.spatialContext,
-              id: 'lasso-region-mask',
-              positions,
-              region:
-                graphKey === 'mask-polygon'
-                  ? polygonShape()
-                  : {kind: 'rectangle', bounds: rectangleParameters.importToGraph(graph)},
-              output: {
-                mask: extraMask,
-                status: {
-                  overflow: importGraphBuffer(
-                    graph,
-                    'region-mask-overflow',
-                    set.regionMaskOverflow,
-                    'uint32',
-                    1
-                  )
-                }
+          const maskProducer = new GPURegionMask({
+            spatialContext: bikeParking.frame.spatialContext,
+            id: 'lasso-region-mask',
+            positions,
+            region:
+              graphKey === 'mask-polygon'
+                ? polygonShape()
+                : {kind: 'rectangle', bounds: rectangleParameters.importToGraph(graph)},
+            output: {
+              mask: extraMask,
+              status: {
+                overflow: importGraphBuffer(
+                  graph,
+                  'region-mask-overflow',
+                  set.regionMaskOverflow,
+                  'uint32',
+                  1
+                )
               }
-            })
-          );
-          selection = {kind: 'mask', mask: extraMask};
+            }
+          });
+          graph.add(maskProducer);
+          selection = {kind: 'mask', ...maskProducer.props.output};
         }
         graph.add(
           new GPURegionStatistics({

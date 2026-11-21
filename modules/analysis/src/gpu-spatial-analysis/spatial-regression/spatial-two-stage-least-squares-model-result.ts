@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateRegressionStatusReadback,
+  type RegressionStatusReadback
+} from './regression-status-readback';
+
+import {
   createGPURegressionModelResult,
   getGPURegressionPredictorNames,
   type GPURegressionCoefficient,
@@ -10,6 +15,8 @@ import {
 } from '../../analysis-core/contracts/model-result';
 import {getChiSquareSurvival} from './ordinary-least-squares-statistics';
 import {getRegressionTablePredictorCount} from './regression-table-layout';
+import {readRegressionSummaryFlag} from './regression-summary-flag';
+import type {GPUInstrumentalVariablesCovarianceMethod} from './instrumental-variables-covariance-parameters';
 import {
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE,
@@ -35,6 +42,25 @@ export type GPUSpatialTwoStageLeastSquaresReadback = {
   /** At least `GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH` values. */
   summary: Float32Array;
   status: Uint32Array;
+  /** Supply the method and covariance status whenever table inference is robust. */
+  robust?: {method: GPUInstrumentalVariablesCovarianceMethod; status: Uint32Array};
+};
+
+/** Primary and covariance status may also be supplied as exact buffer reads. */
+export type GPUSpatialTwoStageLeastSquaresReadbackInput = Omit<
+  GPUSpatialTwoStageLeastSquaresReadback,
+  'status' | 'robust'
+> & {
+  status: RegressionStatusReadback;
+  robust?: {method: GPUInstrumentalVariablesCovarianceMethod; status: RegressionStatusReadback};
+};
+
+/** Point-fit status stays in status; covariance inference has its own method and status. */
+export type GPUSpatialTwoStageLeastSquaresModelResult = GPURegressionModelResult & {
+  covarianceInference: {
+    method: 'classical' | GPUInstrumentalVariablesCovarianceMethod;
+    status: {code: number; ok: boolean};
+  };
 };
 
 /** Options of {@link getGPUSpatialTwoStageLeastSquaresModelResult}. */
@@ -51,8 +77,8 @@ export type GPUSpatialTwoStageLeastSquaresDiagnostics = {
   firstStageF: number;
   /** Partial R squared of the excluded instruments in the first stage. */
   firstStagePartialRSquared: number;
-  /** True when `|rho| ||W||_inf >= 1`: `rho` is outside the interval where `I - rho W` is guaranteed invertible. */
-  rhoOutsideAdmissibleRange: boolean;
+  /** True when `|rho| ||W||_inf >= 1`; null when the summary flag is unavailable. */
+  rhoOutsideAdmissibleRange: boolean | null;
   /** `||W||_inf`, the largest absolute row sum of `W`. */
   weightsInfinityNorm: number;
   /** Correlation condition number of the instrument system. */
@@ -72,8 +98,9 @@ export function getGPUSpatialTwoStageLeastSquaresDiagnostics(
     firstStageF: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_F],
     firstStagePartialRSquared:
       summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_FIRST_STAGE_PARTIAL_R_SQUARED],
-    rhoOutsideAdmissibleRange:
-      summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RHO_OUTSIDE_ADMISSIBLE_RANGE] === 1,
+    rhoOutsideAdmissibleRange: readRegressionSummaryFlag(
+      summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RHO_OUTSIDE_ADMISSIBLE_RANGE]
+    ),
     weightsInfinityNorm: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_WEIGHTS_INFINITY_NORM],
     instrumentCorrelationConditionNumber:
       summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_INSTRUMENT_CORRELATION_CONDITION_NUMBER]
@@ -87,8 +114,10 @@ export function getGPUSpatialTwoStageLeastSquaresDiagnostics(
  * Rows are the intercept, the predictors and the spatial lag `W y` (role `'spatial-lag'`, name
  * `'W_y'`, the coefficient `rho`). Statistics are z with p-values recomputed in float64 from the z
  * statistic (standard normal, two-sided). `parameterCount` is `predictorCount + 2`, so
- * `degreesOfFreedom` is `n - k`; the standard errors use `sigma2 = u'u / n`
- * (`standardErrorSigmaSquared: 'maximum-likelihood'`, spreg `sig2n`) and `residualSumOfSquares` is
+ * `degreesOfFreedom` is `n - k`; classical standard errors use `sigma2 = u'u / n`
+ * (`standardErrorSigmaSquared: 'maximum-likelihood'`, spreg `sig2n`). A supplied robust readback
+ * uses label `'robust'` and exposes method/code/ok in `covarianceInference`; `status` continues
+ * to describe the point fit independently of covariance failure. `residualSumOfSquares` is
  * the structural `u'u`. `pseudoRSquared` is spreg `pr2`; no likelihood is defined (null). The test
  * `anselinKelejian` is the 1-df chi-square test of residual spatial autocorrelation. Conditioning
  * is the second stage's, except that `correlationConditionNumber` is the larger of the
@@ -97,9 +126,21 @@ export function getGPUSpatialTwoStageLeastSquaresDiagnostics(
  * flag are in {@link getGPUSpatialTwoStageLeastSquaresDiagnostics}.
  */
 export function getGPUSpatialTwoStageLeastSquaresModelResult(
-  readback: GPUSpatialTwoStageLeastSquaresReadback,
+  readback: GPUSpatialTwoStageLeastSquaresReadbackInput,
   options: GPUSpatialTwoStageLeastSquaresModelResultOptions = {}
-): GPURegressionModelResult {
+): GPUSpatialTwoStageLeastSquaresModelResult {
+  const statusCode = validateRegressionStatusReadback(
+    'getGPUSpatialTwoStageLeastSquaresModelResult',
+    readback.status
+  );
+  const robust = readback.robust;
+  const covarianceCode = robust
+    ? validateRegressionStatusReadback(
+        'getGPUSpatialTwoStageLeastSquaresModelResult',
+        robust.status,
+        'robust.status'
+      )
+    : statusCode;
   const {table, summary} = readback;
   if (summary.length < GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH) {
     throw new Error(
@@ -139,32 +180,38 @@ export function getGPUSpatialTwoStageLeastSquaresModelResult(
     summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_INSTRUMENT_CORRELATION_CONDITION_NUMBER];
   const hasConditioning = Number.isFinite(conditionNumber) && Number.isFinite(secondStage);
   const anselinKelejian = summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN];
-  return createGPURegressionModelResult({
-    kind: 'spatial-lag-two-stage-least-squares',
-    coefficients,
-    rowCount: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ROW_COUNT],
-    residualSumOfSquares:
-      summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES],
-    standardErrorSigmaSquared: 'maximum-likelihood',
-    statusCode: readback.status[0],
-    pseudoRSquared: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED],
-    logLikelihood: null,
-    conditioning: hasConditioning
-      ? {
-          conditionNumber,
-          correlationConditionNumber: Number.isFinite(instruments)
-            ? Math.max(secondStage, instruments)
-            : secondStage,
-          maximumVarianceInflationFactor:
-            summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR]
+  return {
+    ...createGPURegressionModelResult({
+      kind: 'spatial-lag-two-stage-least-squares',
+      coefficients,
+      rowCount: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ROW_COUNT],
+      residualSumOfSquares:
+        summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_RESIDUAL_SUM_OF_SQUARES],
+      standardErrorSigmaSquared: robust ? 'robust' : 'maximum-likelihood',
+      statusCode,
+      pseudoRSquared: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_PSEUDO_R_SQUARED],
+      logLikelihood: null,
+      conditioning: hasConditioning
+        ? {
+            conditionNumber,
+            correlationConditionNumber: Number.isFinite(instruments)
+              ? Math.max(secondStage, instruments)
+              : secondStage,
+            maximumVarianceInflationFactor:
+              summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_MAXIMUM_VARIANCE_INFLATION_FACTOR]
+          }
+        : null,
+      tests: {
+        anselinKelejian: {
+          statistic: anselinKelejian,
+          degreesOfFreedom: 1,
+          pValue: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE]
         }
-      : null,
-    tests: {
-      anselinKelejian: {
-        statistic: anselinKelejian,
-        degreesOfFreedom: 1,
-        pValue: summary[GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_ANSELIN_KELEJIAN_P_VALUE]
       }
+    }),
+    covarianceInference: {
+      method: robust?.method ?? 'classical',
+      status: {code: covarianceCode, ok: covarianceCode === 0}
     }
-  });
+  };
 }

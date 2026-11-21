@@ -37,7 +37,7 @@ const VENDOR_PALETTE = [
  * single compiled `GPUTimeWindowFilter` (interval mode) selects the segments inside a moving
  * window, writes fade weights and trail clip fractions, compacts the ids, and writes the visible
  * count straight into an indirect draw record. The window is the only per-frame input and nothing
- * is read back to draw.
+ * is read back to draw. Uploaded and displayed bounds use a 1/1024-second grid, rounded down.
  */
 export const timeMode: SpatialAnalysisModeDefinition = {
   id: 'time',
@@ -204,7 +204,7 @@ export const timeMode: SpatialAnalysisModeDefinition = {
       format: value => `${value} s`,
       onChange: value => {
         trailSeconds = value;
-        scrubber.setValue(currentTime);
+        scrubber.setValue(Math.floor(currentTime * 1024) / 1024);
       }
     });
     const scrubber = context.controls.addSlider({
@@ -287,20 +287,22 @@ export const timeMode: SpatialAnalysisModeDefinition = {
         if (currentTime > loopEnd() || currentTime < loopStart()) {
           currentTime = loopStart() + ((((currentTime - loopStart()) % span) + span) % span);
         }
+        // Playback uses a 1/1024-second grid. Quantize both endpoints independently so
+        // the strict split-float packer accepts fractional animation frames exactly.
+        const windowStart = Math.floor((currentTime - trailSeconds) * 1024) / 1024;
+        const windowEnd = Math.floor(currentTime * 1024) / 1024;
         windowBuffer.write(
           getGPUTimeWindowFilterParameterValues({
-            start: currentTime - trailSeconds,
-            end: currentTime,
+            start: windowStart,
+            end: windowEnd,
             startFadeDuration: trailSeconds
           })
         );
         compiled.encode(commandEncoder, {parameters: undefined});
         if (frame.frameIndex % SCRUBBER_INTERVAL_FRAMES === 0) {
-          scrubber.setValue(currentTime);
-          clockReadout.setValue(formatClock(currentTime));
-          windowReadout.setValue(
-            `${formatClock(currentTime - trailSeconds)} – ${formatClock(currentTime)}`
-          );
+          scrubber.setValue(windowEnd);
+          clockReadout.setValue(formatClock(windowEnd));
+          windowReadout.setValue(`${formatClock(windowStart)} – ${formatClock(windowEnd)}`);
         }
         if (frame.frameIndex % READBACK_INTERVAL_FRAMES === 0 && !readbackPending) {
           void readSummary(commandEncoder);

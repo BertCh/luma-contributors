@@ -465,7 +465,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
         description: 'Dissolve label of every feature.'
       },
       {
-        name: 'snapTolerance',
+        name: 'snapGridSize',
         type: 'number',
         description: 'Vertex matching tolerance in position units.'
       },
@@ -510,7 +510,7 @@ graph.add(new GPUCoverageDissolve({
   polygonOffsets,
   ringOffsets,
   labels: districtIds,
-  snapTolerance: 1e-5,
+  snapGridSize: 1e-5,
   output
 }));
 const compiled = await graph.compileAsync();
@@ -575,7 +575,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
         description: 'Also simplify the outer coverage boundary.'
       },
       {
-        name: 'snapTolerance',
+        name: 'snapGridSize',
         type: 'number',
         description: 'Vertex matching tolerance in position units.'
       },
@@ -3292,7 +3292,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});`,
     outputs: [
       {
         name: 'outputs',
-        type: '{endpoints, distances, measures, validity}',
+        type: '{endpoints, distances, localMeasures, validity}',
         description: 'Ray hits, ray lengths, isovist measures and viewpoint validity.'
       },
       {
@@ -3315,7 +3315,7 @@ const {outputs} = addIsovistsRecipe(graph, {
 });
 const compiled = await graph.compileAsync();
 compiled.encode(device.commandEncoder, {parameters: undefined});
-// outputs.endpoints are ray hits; outputs.measures hold area and perimeter`,
+// outputs.endpoints are ray hits; outputs.localMeasures hold area and perimeter`,
     preview: {kind: 'polygons', seed: 4137, caption: 'What is visible from one street corner.'},
     related: ['visibility-graph-recipe', 'street-profiles-recipe'],
     lensScenario: 'gpu-spatial-analysis.isovists-recipe',

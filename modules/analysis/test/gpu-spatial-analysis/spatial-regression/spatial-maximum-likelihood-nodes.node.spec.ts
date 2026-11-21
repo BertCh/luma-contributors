@@ -93,7 +93,14 @@ it('GPUSpatialLagMaximumLikelihood validates its inputs and declares its nodes',
     // W (y - ybar) with the exact row sums, the row sum it is formed about, and the lag column.
     'lagged-response-tiles',
     'row-sum-merge',
+    // Certify that every raw lag equals row zero before using one common rounded lag.
+    'constant-lag-witness',
+    'constant-lag-tiles',
+    'constant-lag-merge',
     'lagged-response-shift',
+    // For a certified constant lag the second OLS has only an intercept and zero residuals.
+    'constant-lag-coefficients',
+    'constant-lag-residuals',
     'moments-tiles',
     // rho0 and the residual sum of squares at rho0 summed per row: the search does not
     // difference e0'e0 - 2 rho e0'e1 + rho^2 e1'e1.
@@ -135,7 +142,9 @@ it('GPUSpatialLagMaximumLikelihood checks its first-order condition with ratios 
     }).getCommandNodes(graph)
   );
   const search = kernels.find(kernel => kernel.id === 'lag-rho-search')!;
+  const lagShift = kernels.find(kernel => kernel.id === 'lag-lagged-response-shift')!;
   const finish = kernels.find(kernel => kernel.id === 'lag-finish')!;
+  expect(lagShift.source).toContain('if (lagMismatch[lagMismatchOffset] == 0.0)');
   // math-review-lag-conditioning.spec.ts displaces the searched rho through this slot.
   expect(search.source).toContain('const W_PARAMETER: u32 = 2u;');
   // The check forms u'e1 / u'u and e1'e1 / u'u before anything is multiplied: the squares of

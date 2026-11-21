@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import type {GPURasterBufferBand} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand} from '@luma.gl/graph/gpu-raster';
 import {
   RasterSpectralIndex,
   snapshotSpectralIndexProps,
@@ -12,8 +12,8 @@ import {
 
 /** SAVI bands must calibrate to unitless reflectance before the soil adjustment is applied. */
 export type GPURasterSAVIProps = SpectralIndexProps & {
-  nearInfrared: GPURasterBufferBand;
-  red: GPURasterBufferBand;
+  nearInfrared: GPURasterBand;
+  red: GPURasterBand;
   /** Soil brightness adjustment L in [0, 1]. Defaults to 0.5; zero gives the NDVI formula. */
   soilAdjustment?: number;
 };

@@ -6,12 +6,16 @@ import {readFileSync, readdirSync, statSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {resolve} from 'node:path';
 import {expect, it} from 'vitest';
+import {
+  decodeSavedLICSettings,
+  decodeSavedParticleAdvectionSettings,
+  type SavedParticleAdvectionSettings
+} from './flow-texture/saved-flow-parameters';
 import {decodeOracleFixture} from '../oracles/oracle-fixture';
 import {compareRasterParity} from '../oracles/parity-wp4-compare';
 import {
   getGPUParticleAdvectionParameterValues,
   getGPUParticleAdvectionUint32ParameterValues,
-  type GPUParticleAdvectionSettings,
   type GPUParticleAdvectionUint32Settings
 } from '../../src/raster-analysis/particle-advection/index';
 import {
@@ -57,7 +61,7 @@ type LifecycleCase = {
   trailLength: number;
   outputMode: string;
   frames: {
-    settings: GPUParticleAdvectionSettings;
+    settings: SavedParticleAdvectionSettings;
     words: GPUParticleAdvectionUint32Settings;
     velocity: number[];
     positions: number[];
@@ -88,7 +92,10 @@ for (const name of names.filter(name => name.includes('lifecycle'))) {
               (_, index) => frame.velocity[index % 2]
             )
           },
-          getGPUParticleAdvectionParameterValues(frame.settings, [scene.width, scene.height]),
+          getGPUParticleAdvectionParameterValues(
+            decodeSavedParticleAdvectionSettings(frame.settings),
+            [scene.width, scene.height]
+          ),
           getGPUParticleAdvectionUint32ParameterValues(frame.words),
           scene.trailLength
         );
@@ -130,7 +137,7 @@ for (const name of names.filter(name => name.includes('lic-modes'))) {
         scene.width,
         scene.height,
         scene.stepCount,
-        getGPULineIntegralConvolutionParameterValues(scene.settings),
+        getGPULineIntegralConvolutionParameterValues(decodeSavedLICSettings(scene.settings)),
         19
       );
       compareLICMode(scene, actual.values, 'CPU diagnostic/');

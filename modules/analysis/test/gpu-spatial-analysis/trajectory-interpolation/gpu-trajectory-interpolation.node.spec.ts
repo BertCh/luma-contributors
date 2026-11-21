@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import {loadGuideFunction} from '../cell-aggregation/family-guide-execution.test-utils';
 import {
   getGPUTrajectoryPlayheadParameterValues,
   getGPUTrajectoryPlayheadWordParameterValues,
@@ -369,4 +371,65 @@ it('resample oracle: time and arc-length spacing, single points, and empty track
   expect(time.samples.slice(20, 30)).toEqual([3, 4, 3, 4, 3, 4, 3, 4, 3, 4]);
   expect(time.samples.slice(30, 40)).toEqual(new Array(10).fill(0));
   expect(computeResampleOracle(tracks, 1, 'time').samples.slice(0, 2)).toEqual([0, 0]);
+});
+
+it('UCT-09 guide resample supplies elevations for sampled elevations', () => {
+  const device = createNullWebGPUDevice();
+  const allocations = vi.spyOn(device, 'createBuffer');
+  const imports = vi.spyOn(GPUCommandGraph.prototype, 'importBuffer');
+  const additions = vi.spyOn(GPUCommandGraph.prototype, 'add');
+  try {
+    const result = loadGuideFunction<
+      (device: Device) => {inputBuffers: import('@luma.gl/core').Buffer[]}
+    >(
+      'operators-lines',
+      'declareTrajectoryResample'
+    )(device);
+    const data = allocations.mock.calls
+      .map(([props]) => ('data' in props ? props.data : undefined))
+      .filter(value => ArrayBuffer.isView(value))
+      .map(value => Array.from(value as Float32Array | Uint32Array));
+    expect(data).toEqual(
+      expect.arrayContaining([
+        [0, 0, 1, 0, 2, 0],
+        [0, 1, 2],
+        [0, 3],
+        [0, 10, 20]
+      ])
+    );
+    const resample = additions.mock.calls
+      .map(([producer]) => producer)
+      .find(producer => producer instanceof GPUTrajectoryResample);
+    if (!(resample instanceof GPUTrajectoryResample))
+      throw new Error('Guide did not add its resample');
+    for (const [id, port] of [
+      ['positions', 'positions'],
+      ['timestamps', 'timestamps'],
+      ['tracks', 'trackOffsets'],
+      ['elevations', 'elevations']
+    ] as const) {
+      const index = imports.mock.calls.findIndex(([descriptor]) => descriptor.id === id);
+      expect(index, id).toBeGreaterThanOrEqual(0);
+      expect(result.inputBuffers).toContain(imports.mock.calls[index][1]);
+      expect(resample.props[port]).toMatchObject({buffer: imports.mock.results[index].value});
+    }
+    for (const buffer of result.inputBuffers) buffer.destroy();
+  } finally {
+    allocations.mockRestore();
+    imports.mockRestore();
+    additions.mockRestore();
+  }
+});
+
+it('UCT-09 reproduces sampled elevations without an elevation input', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  expect(() =>
+    graph.add(
+      new GPUTrajectoryResample(
+        createResampleProps(graph, {
+          output: {sampleElevations: createTransientView(graph, 'unbound-elevations', 'float32', 8)}
+        })
+      )
+    )
+  ).toThrow(/sampleElevations requires elevations/);
 });

@@ -32,6 +32,8 @@ import {getLensHistoryAction} from './url-state';
 /** Pure lens inputs; DOM and device ownership belong to the host. */
 export type LensControllerOptions = {
   record: LensRecord;
+  /** Exported operator name when a record has no registered scenario. */
+  element?: string;
   registry: ViewRegistry;
   rung: LensRungId;
   viewId?: string;
@@ -103,7 +105,7 @@ export class LensController {
   private destroyed = false;
 
   constructor(options: LensControllerOptions) {
-    this.options = options;
+    this.options = {...options};
     this.record = options.record;
     this.coordinator = options.coordinator ?? new LadderCoordinator();
     this.state = {
@@ -361,7 +363,11 @@ export class LensController {
       reducedMotion: this.options.reducedMotion,
       renderTeX: this.options.renderTeX,
       packs: this.options.registry.getPacksFor(this.record),
-      options: {...this.options.presentation, ...this.state.params},
+      options: {
+        ...this.options.presentation,
+        ...this.state.params,
+        ...(this.options.element ? {element: this.options.element} : {})
+      },
       scales: this.scales
     });
   }

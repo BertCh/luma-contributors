@@ -12,6 +12,7 @@ import {
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
   type GPUDistanceFieldProps
 } from '../../../src/raster-analysis/distance-field/index';
+import {GPU_DISTANCE_FIELD_MAXIMUM_REFINEMENT_COUNT} from '../../../src/raster-analysis/distance-field/distance-field-parameters';
 import {getDistanceFieldJumpFloodSteps} from '../../../src/raster-analysis/distance-field/distance-field-kernels';
 import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
@@ -23,18 +24,20 @@ const HEIGHT = 10;
 const CELLS = WIDTH * HEIGHT;
 const NONE = GPU_DISTANCE_FIELD_NONE;
 
-function createProps(
-  graph: GPUCommandGraph,
-  overrides: Partial<GPUDistanceFieldProps> = {}
-): GPUDistanceFieldProps {
+function createBaseProps(graph: GPUCommandGraph) {
   return {
     grid: makeGPURasterMetadata({width: WIDTH, height: HEIGHT}),
     parameters: createTransientView(graph, 'parameters', 'float32', 8),
-    seedPositions: createTransientView(graph, 'positions', 'float32x2', 4),
     output: {
       distances: createTransientView(graph, 'distances', 'float32', CELLS)
-    },
-    ...overrides
+    }
+  };
+}
+
+function createPointProps(graph: GPUCommandGraph) {
+  return {
+    ...createBaseProps(graph),
+    seedPositions: createTransientView(graph, 'positions', 'float32x2', 4)
   };
 }
 
@@ -80,17 +83,17 @@ it('packs distance-field settings', () => {
 
 it('GPUDistanceField builds deterministic exact and jump-flood node lists', () => {
   const device = createNullWebGPUDevice();
-  const getNodeIds = (overrides: Partial<GPUDistanceFieldProps>) => {
+  const getNodeIds = (mode?: GPUDistanceFieldProps['mode']) => {
     const graph = new GPUCommandGraph(device);
     const contributor = new GPUDistanceField({
-      ...createProps(graph),
+      ...createPointProps(graph),
       id: 'df',
-      ...overrides
+      mode
     });
     const first = contributor.getCommandNodes(graph).map(node => node.id);
     return first;
   };
-  expect(getNodeIds({})).toEqual([
+  expect(getNodeIds()).toEqual([
     'df-seed-clear',
     'df-seed-scatter',
     'df-column-bands',
@@ -105,7 +108,7 @@ it('GPUDistanceField builds deterministic exact and jump-flood node lists', () =
     'df-finalize'
   ]);
   // 20x10 rounds up to 32: steps 16, 8, 4, 2, 1 plus one refinement pass.
-  expect(getNodeIds({mode: 'jump-flood'})).toEqual([
+  expect(getNodeIds('jump-flood')).toEqual([
     'df-seed-clear',
     'df-seed-scatter',
     'df-jump-flood-initialize',
@@ -113,14 +116,10 @@ it('GPUDistanceField builds deterministic exact and jump-flood node lists', () =
     ...[0, 1, 2, 3, 4, 5].map(step => `df-jump-flood-${step}`),
     'df-finalize'
   ]);
-  const maskOnly = (graph: GPUCommandGraph) => ({
-    seedPositions: undefined,
-    seedMask: createTransientView(graph, 'mask', 'uint32', CELLS)
-  });
   const graph = new GPUCommandGraph(device);
   const contributor = new GPUDistanceField({
-    ...createProps(graph),
-    ...maskOnly(graph)
+    ...createBaseProps(graph),
+    seedMask: createTransientView(graph, 'mask', 'uint32', CELLS)
   });
   expect(contributor.id).toBe('distance-field');
   expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
@@ -150,8 +149,8 @@ it('getDistanceFieldJumpFloodSteps halves from the padded size and appends refin
 it('GPUDistanceField validates its props', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  const baseProps = createProps(graph);
-  const create = (overrides: Partial<GPUDistanceFieldProps>) =>
+  const baseProps = createPointProps(graph);
+  const create = (overrides: Partial<Omit<GPUDistanceFieldProps, 'seedPositions'>>) =>
     new GPUDistanceField({...baseProps, ...overrides});
   const otherGraph = new GPUCommandGraph(device);
   expect(() => create({grid: makeGPURasterMetadata({width: 0, height: HEIGHT})})).toThrow(
@@ -164,19 +163,11 @@ it('GPUDistanceField validates its props', () => {
   ).toThrow(/height/);
   expect(() => create({mode: 'nearest' as never})).toThrow(/mode/);
   expect(() => create({jumpFloodRefinementIterationCount: 3 as never})).toThrow(
-    /refinement|0, 1, or 2/
+    /jumpFloodRefinementIterationCount/
   );
   expect(() => create({parameters: createTransientView(graph, 's4', 'float32', 4)})).toThrow(
     /at least 8 values/
   );
-  expect(() => create({seedPositions: undefined})).toThrow(/seedPositions or seedMask/);
-  expect(() =>
-    create({
-      seedPositions: undefined,
-      seedMask: createTransientView(graph, 'm', 'uint32', CELLS),
-      seedCount: createTransientView(graph, 'c', 'uint32', 1)
-    })
-  ).toThrow(/require seedPositions/);
   expect(() => create({seedIds: createTransientView(graph, 'ids3', 'uint32', 3)})).toThrow(
     /seedIds length/
   );
@@ -204,19 +195,16 @@ it('GPUDistanceField validates its props', () => {
       }
     })
   ).toThrow(/separate buffers/);
-  const parameters = createTransientView(graph, 's8', 'float32', 8);
+  // A distance view over a buffer that also backs the parameters must reach the alias guard,
+  // so the larger distance view is allocated first and the parameters view reuses its buffer.
+  const aliasedDistances = createTransientView(graph, 'd8', 'float32', CELLS);
   expect(() =>
     create({
-      parameters,
-      output: {
-        distances: graph.createDataView(parameters.buffer, {
-          format: 'float32',
-          length: CELLS
-        })
-      }
+      parameters: graph.createDataView(aliasedDistances.buffer, {format: 'float32', length: 8}),
+      output: {distances: aliasedDistances}
     })
-  ).toThrow();
-  const foreign = new GPUDistanceField(createProps(otherGraph));
+  ).toThrow(/outputs must not share buffers with inputs/);
+  const foreign = new GPUDistanceField(createPointProps(otherGraph));
   expect(() => foreign.getCommandNodes(graph)).toThrow(/target graph/);
 });
 
@@ -256,7 +244,7 @@ it('rule 12: every jump-flood step reads its offset from a step word', () => {
   ]) {
     const graph = new GPUCommandGraph(device);
     const nodes = new GPUDistanceField({
-      ...createProps(graph),
+      ...createPointProps(graph),
       grid: makeGPURasterMetadata({width, height}),
       output: {distances: createTransientView(graph, 'distances-sized', 'float32', width * height)},
       mode: 'jump-flood'
@@ -269,4 +257,35 @@ it('rule 12: every jump-flood step reads its offset from a step word', () => {
     expect(steps[0].source).not.toMatch(/const STEP:/);
   }
   device.destroy();
+});
+
+it('bounds the largest jump schedule by fifteen halvings and two refinements', () => {
+  const grid = {width: 32768, height: 1};
+  // 32768 = 2^15, so the exact halving schedule is 2^14 down to 2^0.
+  const halves = [16384, 8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1];
+  expect(getDistanceFieldJumpFloodSteps(grid, 0)).toEqual(halves);
+  expect(getDistanceFieldJumpFloodSteps(grid, 2)).toEqual([...halves, 2, 1]);
+  expect(GPU_DISTANCE_FIELD_MAXIMUM_REFINEMENT_COUNT).toBe(2);
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createPointProps(graph);
+  expect(
+    () => new GPUDistanceField({...props, jumpFloodRefinementIterationCount: 2})
+  ).not.toThrow();
+  expect(
+    () => new GPUDistanceField({...props, jumpFloodRefinementIterationCount: 3 as never})
+  ).toThrow(/jumpFloodRefinementIterationCount/);
+});
+
+it('uses the named refinement capacity admission with minimum zero', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  const props = createPointProps(graph);
+  for (const value of [-1, 0.5, NaN, Infinity, 3]) {
+    expect(
+      () => new GPUDistanceField({...props, jumpFloodRefinementIterationCount: value as never})
+    ).toThrow('distance-field jumpFloodRefinementIterationCount must be an integer in [0, 2]');
+  }
+  for (const value of [0, 1, 2] as const)
+    expect(
+      () => new GPUDistanceField({...props, jumpFloodRefinementIterationCount: value})
+    ).not.toThrow();
 });

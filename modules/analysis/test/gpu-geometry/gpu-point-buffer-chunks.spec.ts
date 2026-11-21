@@ -85,7 +85,10 @@ for (const coordinateSystem of ['planar', 'geographic'] as const) {
       graph.add(
         new GPUPointBuffer({
           id: `point-buffer-${routeIndex}`,
-          coordinateSystem,
+          spatialContext:
+            coordinateSystem === 'geographic'
+              ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+              : {coordinateSpace: 'planar', metric: 'native'},
           verticesPerRing,
           parameters,
           points:
@@ -174,7 +177,7 @@ it('buffers more points than the old single-binding ring output can hold', async
   buffers.push(parameterBuffer);
   graph.add(
     new GPUPointBuffer({
-      coordinateSystem: 'planar',
+      spatialContext: {coordinateSpace: 'planar', metric: 'native'},
       verticesPerRing: 4,
       parameters: importGraphBuffer(graph, 'large-parameters', parameterBuffer, 'float32', 2),
       points: createVectorView('large-points', 'float32x2', inputChunks),
@@ -258,7 +261,7 @@ it('writes consecutive shared-buffer chunks with empty and workgroup-boundary ch
   }
   graph.add(
     new GPUPointBuffer({
-      coordinateSystem: 'planar',
+      spatialContext: {coordinateSpace: 'planar', metric: 'native'},
       verticesPerRing,
       parameters: importGraphBuffer(graph, 'shared-parameters', parameterBuffer, 'float32', 2),
       points: createVectorView('points', 'float32x2', pointChunks),

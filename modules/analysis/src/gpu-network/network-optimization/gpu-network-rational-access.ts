@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  withoutComplete,
+  validateRationalAccessOptions,
+  validateOptimizationCosts,
+  createOptimizationCostCompletionNodes
+} from './optimization-cost-completeness';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -59,13 +65,22 @@ export type GPUNetworkRationalAccessOutput = {
    * completed allocation shifts; the initial gap evaluation is cycle zero. Only the final
    * equilibrium gap certifies convergence; a rounding stall still reaches the cycle limit.
    */
-  status?: GPUInvalidStatusPort & GPUIterationStatusPort;
+  status?: GPUInvalidStatusPort &
+    GPUIterationStatusPort & {
+      /** 1 only when local work finished on complete costs within the required horizon.
+       * A zero leaves incumbent outputs provisional; iteration/enumeration diagnostics remain independent. */
+      complete?: GraphDataView<'uint32'>;
+    };
 };
 
 export type GPUNetworkRationalAccessProps = {
   id?: string;
   /** Origin-major travel costs; +Infinity is unreachable. */
   costs: GraphDataView<'float32'>;
+  /** One-row upstream completeness witness. Omitted means caller promises complete costs. */
+  costsComplete?: GraphDataView<'uint32'>;
+  /** One-row travel horizon; unbounded objectives require +Infinity. */
+  costLimit?: GraphDataView<'float32'>;
   /** Nonnegative demand, integral by default; total <= 2^24. */
   demand: GraphDataView<'float32'>;
   supply: GraphDataView<'float32'>;
@@ -104,6 +119,8 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
     this.id = props.id ?? 'network-rational-access';
     this.props = props;
     const {id} = this;
+    validateOptimizationCosts(id, props);
+    validateRationalAccessOptions(id, props);
     validateCapacity(id, 'demand rows', props.demand.length, 1, MAXIMUM_ORIGIN_COUNT);
     validateCapacity(id, 'supply rows', props.supply.length, 1, MAXIMUM_FACILITY_COUNT);
     validateCapacity(
@@ -167,14 +184,21 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
         props.output.assignments,
         props.output.scores,
         props.output.unservedDemand,
-        props.output.summary
+        props.output.summary,
+        ...[props.output.status?.complete].filter(view => view !== undefined)
       ],
-      props.output.status
+      withoutComplete(props.output.status)
     );
     validateNetworkOptimizationInputOutputBuffers(
       this.id,
       getRationalAccessOutputViews(props.output),
-      [props.costs, props.demand, props.supply, props.parameters]
+      [
+        props.costs,
+        props.demand,
+        props.supply,
+        props.parameters,
+        ...[props.costsComplete, props.costLimit].filter(view => view !== undefined)
+      ]
     );
   }
   getCommandNodes<Parameters>(
@@ -190,6 +214,7 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
           props.demand,
           props.supply,
           props.parameters,
+          ...[props.costsComplete, props.costLimit].filter(view => view !== undefined),
           ...getRationalAccessOutputViews(props.output)
         ].map((view, index) => [`view ${index}`, view])
       )
@@ -265,7 +290,7 @@ summary[summaryOffset] = 1u;
         id,
         'GPUNetworkRationalAccess',
         props.output.summary,
-        props.output.status,
+        withoutComplete(props.output.status),
         {
           invalidCount: '1u - summary[summaryOffset]',
           iterationCount: 'summary[summaryOffset + 2u]',
@@ -273,6 +298,14 @@ summary[summaryOffset] = 1u;
           iterationLimitReached: 'summary[summaryOffset] * (1u - summary[summaryOffset + 1u])'
         }
       )
+    );
+    nodes.push(
+      ...createOptimizationCostCompletionNodes(graph, id, {
+        costsComplete: props.costsComplete,
+        costLimit: props.costLimit,
+        summary: props.output.summary,
+        complete: props.output.status?.complete
+      })
     );
     return nodes;
   }

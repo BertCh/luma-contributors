@@ -57,7 +57,7 @@ export function RecordParts({model}: {model: LensViewModel}) {
           </p>
         </li>
         <li className="lenses-part">
-          <span className="lenses-part__name">Buffers</span>
+          <span className="lenses-part__name">Resources</span>
           <span className="lenses-part__value">
             {formatResourceCount(model.resources)},{' '}
             {formatResourceBytes(model.resources.totalBytes, model.resources.totalBytesKind)}
@@ -108,7 +108,7 @@ export type KernelSpread = {
 };
 
 export function KernelSpreadChart({spread}: {spread: KernelSpread}) {
-  const tallest = Math.max(...spread.bins.map(bin => bin.count));
+  const tallest = Math.max(1, ...spread.bins.map(bin => bin.count));
   return (
     <div className="lenses-spread">
       <ol

@@ -358,7 +358,8 @@ export const COVERAGE_NETWORK_MOVEMENT_CASES: readonly KernelAuditCase[] = [
     exportName: 'GPUTrajectoryKalman',
     name: 'binding-limited observations,filter and smoother',
     build: ({graph, view, maximumRows}) => {
-      const observationCount = maximumRows(16);
+      // Metadata stores four header words plus four words per observation.
+      const observationCount = maximumRows(16) - 1;
       graph.add(
         new GPUTrajectoryKalman({
           positions: view('float32x2', observationCount),

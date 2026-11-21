@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {captureUrbanLandscapeDestinations} from '../landscape-ecology/urban-landscape-destinations';
 import {getSpatialAnalysisPackedKernelNodes} from '../geographic-distribution/spatial-analysis-packed-kernel';
 import type {VertexFormat} from '@luma.gl/core';
 import {
@@ -28,12 +30,19 @@ import {
   validateUrbanStorageByteLength
 } from './building-tessellation-validation';
 import {getRecipeView} from '../recipes/expansion-recipe-utils';
-import {GPUPolygonOverlay, type GPUPolygonOverlayOutput} from '../polygon-overlay/index';
+import {addPreparedRecipe} from '../recipes/prepared-recipe';
+import {validateProvidedRecipeViews} from '../landscape-ecology/urban-landscape-recipe-validation';
+import {
+  GPUPolygonOverlay,
+  planGPUPolygonOverlay,
+  type GPUPolygonOverlayOutput
+} from '../polygon-overlay/index';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateSinglePackedView,
+  validateGraphViewsBelongToGraph,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
@@ -117,6 +126,10 @@ export type GPUBuildingTessellationProps = {
 /** Bounded local route, selected by candidateRadius, or the explicit reference overlay route. */
 export function addBuildingTessellationRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
+  props: GPUBuildingTessellationProps & {mode: 'reference'; candidateRadius?: number}
+): ReturnType<typeof addBuildingTessellationReferenceRecipe>;
+export function addBuildingTessellationRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
   props: GPUBuildingTessellationLocalProps
 ): ReturnType<typeof addLocalBuildingTessellationRecipe>;
 export function addBuildingTessellationRecipe<Parameters>(
@@ -126,19 +139,116 @@ export function addBuildingTessellationRecipe<Parameters>(
 export function addBuildingTessellationRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUBuildingTessellationProps | GPUBuildingTessellationLocalProps
+):
+  | ReturnType<typeof addLocalBuildingTessellationRecipe>
+  | ReturnType<typeof addBuildingTessellationReferenceRecipe>;
+export function addBuildingTessellationRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUBuildingTessellationProps | GPUBuildingTessellationLocalProps
 ) {
+  validateRequirement(
+    props.id ?? 'building-tessellation',
+    props.mode === undefined || props.mode === 'reference' || props.mode === 'local',
+    "mode must be 'reference' or 'local'"
+  );
   if (props.mode === 'local' || ('candidateRadius' in props && props.mode !== 'reference')) {
     return addLocalBuildingTessellationRecipe(graph, props as GPUBuildingTessellationLocalProps);
   }
   return addBuildingTessellationReferenceRecipe(graph, props as GPUBuildingTessellationProps);
 }
 
-/** Boundary-sampled, enclosure-clipped reference Voronoi fragments dissolved per building. */
-function addBuildingTessellationReferenceRecipe<Parameters>(
+/**
+ * Boundary-sampled reference Voronoi fragments dissolved per building, with an optional simple
+ * enclosure clip. This route accepts at most 64 buildings, 32 total enclosure vertices and 128
+ * total boundary samples per call. Every overlay must also fit the caller device's storage and
+ * vertex limits; the complete declaration is checked before the caller graph is mutated.
+ * The legacy dispatcher selects this same typed reference entry.
+ */
+export function addBuildingTessellationReferenceRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUBuildingTessellationProps
+) {
+  const hasRemovedOutputs = 'outputs' in props;
+  props = snapshotConstructionFields(props, [
+    'id',
+    'mode',
+    'segments',
+    'segmentBuildingIds',
+    'buildingCount',
+    'enclosure',
+    'enclosureMode',
+    'enclosureRingOffsets',
+    'sampleSpacing',
+    'sampleCapacity',
+    'searchStructure',
+    'vertexTolerance',
+    'capacity',
+    'output'
+  ]);
+  const id = props.id ?? 'building-tessellation';
+  validateRequirement(id, !hasRemovedOutputs, 'outputs was removed; use output');
+  props = {
+    ...props,
+    output: captureUrbanLandscapeDestinations(id, {output: props.output}, [
+      'overlays',
+      'samples',
+      'owners',
+      'fragments',
+      'fragmentCounts',
+      'samplingStatus',
+      'complete'
+    ])
+  };
+  // Validate named caller fields before preparation maps resources, preserving error context.
+  for (const [name, view] of Object.entries({
+    segments: props.segments,
+    segmentBuildingIds: props.segmentBuildingIds,
+    enclosure: props.enclosure,
+    enclosureRingOffsets: props.enclosureRingOffsets
+  })) {
+    validateGraphViewsBelongToGraph(`${props.id ?? 'building-tessellation'} ${name}`, graph, [
+      view
+    ]);
+  }
+  validateUrbanRecipeBindings(
+    graph,
+    props.id ?? 'building-tessellation',
+    {
+      segments: props.segments,
+      segmentBuildingIds: props.segmentBuildingIds,
+      enclosure: props.enclosure,
+      enclosureRingOffsets: props.enclosureRingOffsets
+    },
+    props.output
+  );
+  const providedOverlays = props.output?.overlays;
+  const result = addPreparedRecipe(graph, props, declareBuildingTessellationReferenceRecipe);
+  // Preparation captures configuration records but supplied result records remain caller-owned.
+  if (providedOverlays) {
+    result.outputs = result.outputs.map(
+      (overlay, building) => providedOverlays[building] ?? overlay
+    );
+  }
+  return result;
+}
+
+function declareBuildingTessellationReferenceRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUBuildingTessellationProps
 ) {
   const id = props.id ?? 'building-tessellation';
+  validateRequirement(
+    id,
+    props.enclosureMode === undefined ||
+      (['convex', 'simple'] as readonly string[]).includes(props.enclosureMode),
+    `enclosureMode must be convex or simple; received ${String(props.enclosureMode)}`
+  );
+  validateRequirement(
+    id,
+    props.searchStructure === undefined ||
+      (['grid', 'brute-force'] as readonly string[]).includes(props.searchStructure),
+    `searchStructure must be grid or brute-force; received ${String(props.searchStructure)}`
+  );
   validateSinglePackedView(props.segments, ['float32x4'], `${id} segments`);
   validateSinglePackedView(props.segmentBuildingIds, ['uint32'], `${id} segmentBuildingIds`);
   validateSinglePackedView(props.enclosure, ['float32x2'], `${id} enclosure`);
@@ -204,22 +314,50 @@ function addBuildingTessellationReferenceRecipe<Parameters>(
     },
     props.output
   );
-  const maximumOverlayVertexCount = Math.max(
-    sampleCapacity * (vertexCapacity + 1),
-    simpleEnclosure
-      ? props.capacity.vertices +
-          enclosureCount +
-          props.capacity.rings +
-          (props.enclosureRingOffsets?.length ?? 2) -
-          1
-      : 0
-  );
-  const overlayHotPixelCapacity = maximumOverlayVertexCount + props.capacity.intersections;
-  const overlayIncidenceCapacity = Math.max(
-    props.capacity.nodedSegments + maximumOverlayVertexCount,
-    2 * overlayHotPixelCapacity
-  );
-  // Recipe declaration is the allocation boundary (there is no separate getCommandNodes).
+  // Plan every overlay, including later supplied destinations and the optional clip, before
+  // creating any recipe resource. Operand dimensions describe padded allocations, not live rows.
+  for (let building = 0; building < props.buildingCount; building++) {
+    const supplied = props.output?.overlays?.[building];
+    const defaultDimensions = {
+      vertexCapacity: props.capacity.vertices,
+      ringCapacity: props.capacity.rings,
+      boundaryCapacity: props.capacity.nodedSegments
+    };
+    const finalDimensions = supplied
+      ? {
+          vertexCapacity: supplied.geometry.positions.length,
+          ringCapacity: supplied.geometry.ringOffsets.length - 1,
+          boundaryCapacity: supplied.boundary.endpoints.length
+        }
+      : defaultDimensions;
+    const dissolvedDimensions = simpleEnclosure ? defaultDimensions : finalDimensions;
+    planGPUPolygonOverlay(graph.device, {
+      id: `${id}-building-${building}-dissolve`,
+      operation: 'dissolve',
+      left: {vertexCount: sampleCapacity * vertexCapacity, ringCount: sampleCapacity},
+      capacity: props.capacity,
+      vertexTolerance: props.vertexTolerance,
+      output: dissolvedDimensions
+    });
+    if (simpleEnclosure)
+      planGPUPolygonOverlay(graph.device, {
+        id: `${id}-building-${building}-clip-enclosure`,
+        operation: 'intersection',
+        left: {
+          vertexCount: dissolvedDimensions.vertexCapacity,
+          ringCount: dissolvedDimensions.ringCapacity
+        },
+        right: {
+          vertexCount: enclosureCount,
+          ringCount: (props.enclosureRingOffsets?.length ?? 2) - 1
+        },
+        capacity: props.capacity,
+        vertexTolerance: props.vertexTolerance,
+        output: finalDimensions
+      });
+  }
+  // Overlay storage is checked by the actual plans above. Check only recipe-owned scratch
+  // here: caller-supplied outputs can replace the larger default overlay allocations entirely.
   for (const [name, byteLength, hint] of [
     [
       'point grid',
@@ -237,26 +375,32 @@ function addBuildingTessellationReferenceRecipe<Parameters>(
     ],
     ['per-building offsets', (sampleCapacity + 1) * 4, 'reduce sampleCapacity'],
     ['complete', props.buildingCount * 4, 'reduce buildingCount'],
-    ['aligned building parameters', props.buildingCount * 256, 'reduce buildingCount'],
-    [
-      'overlay hot-pixel scratch',
-      overlayHotPixelCapacity * 128,
-      'reduce capacity.intersections or the overlay input'
-    ],
-    [
-      'overlay candidate scratch',
-      overlayIncidenceCapacity * 8,
-      'reduce capacity.intersections or capacity.nodedSegments'
-    ],
-    ['overlay boundary', props.capacity.nodedSegments * 16, 'reduce capacity.nodedSegments'],
-    ['overlay positions', props.capacity.vertices * 8, 'reduce capacity.vertices'],
-    ['overlay offsets', (props.capacity.rings + 1) * 4, 'reduce capacity.rings']
+    ['aligned building parameters', props.buildingCount * 256, 'reduce buildingCount']
   ] as const) {
     validateUrbanStorageByteLength(graph.device, id, name, byteLength, hint);
   }
+  const output = props.output;
+  // Supplied output layouts, before the first node: these views are otherwise resolved between
+  // kernels, and each overlay output only when its building's overlay is constructed.
+  validateProvidedRecipeViews(graph, [
+    [`${id}-fragment-counts`, 'uint32', sampleCapacity, output?.fragmentCounts],
+    [`${id}-complete`, 'uint32', props.buildingCount, output?.complete]
+  ]);
+  output?.overlays?.forEach((overlay, building) => {
+    if (!overlay || building >= props.buildingCount) return;
+    // The constructor checks the output layout without touching the graph; the output geometry
+    // stands in for the per-building packed input, which the recipe creates itself.
+    new GPUPolygonOverlay({
+      id: `${id}-building-${building}-${simpleEnclosure ? 'clip-enclosure' : 'dissolve'}`,
+      left: overlay.geometry,
+      operation: 'dissolve',
+      capacity: props.capacity,
+      vertexTolerance: props.vertexTolerance,
+      output: overlay
+    });
+  });
   const view = <Format extends VertexFormat>(name: string, format: Format, length: number) =>
     getRecipeView(graph, `${id}-${name}`, format, length);
-  const output = props.output;
   const samples = getRecipeView(
     graph,
     `${id}-samples`,
@@ -577,42 +721,42 @@ for(var sampleRow=0u;sampleRow<${sampleCapacity}u;sampleRow++){if(valid&&owners[
     let overlay: GPUPolygonOverlayOutput =
       !simpleEnclosure && providedOverlay ? providedOverlay : makeOverlayOutput('');
 
-    graph.add(
-      new GPUPolygonOverlay({
-        id: `${id}-${prefix}-dissolve`,
-        left: {
-          kind: 'polygons',
-          positions,
-          featureOffsets: indices,
-          polygonOffsets: indices,
-          ringOffsets: offsets
-        },
-        operation: 'dissolve',
-        capacity: props.capacity,
-        vertexTolerance: props.vertexTolerance,
-        output: overlay
-      })
-    );
+    const dissolve = new GPUPolygonOverlay({
+      id: `${id}-${prefix}-dissolve`,
+      left: {
+        kind: 'polygons',
+        positions,
+        featureOffsets: indices,
+        polygonOffsets: indices,
+        ringOffsets: offsets
+      },
+      operation: 'dissolve',
+      capacity: props.capacity,
+      vertexTolerance: props.vertexTolerance,
+      output: overlay
+    });
+    dissolve.preflight(graph);
+    graph.add(dissolve);
     const dissolvedOutput = overlay;
     if (simpleEnclosure) {
       overlay = providedOverlay ?? makeOverlayOutput('clip-');
-      graph.add(
-        new GPUPolygonOverlay({
-          id: `${id}-${prefix}-clip-enclosure`,
-          left: dissolvedOutput.geometry,
-          right: {
-            kind: 'polygons',
-            positions: props.enclosure,
-            featureOffsets: enclosureIndices,
-            polygonOffsets: enclosurePolygons,
-            ringOffsets: props.enclosureRingOffsets ?? enclosureOffsets
-          },
-          operation: 'intersection',
-          capacity: props.capacity,
-          vertexTolerance: props.vertexTolerance,
-          output: overlay
-        })
-      );
+      const clip = new GPUPolygonOverlay({
+        id: `${id}-${prefix}-clip-enclosure`,
+        left: dissolvedOutput.geometry,
+        right: {
+          kind: 'polygons',
+          positions: props.enclosure,
+          featureOffsets: enclosureIndices,
+          polygonOffsets: enclosurePolygons,
+          ringOffsets: props.enclosureRingOffsets ?? enclosureOffsets
+        },
+        operation: 'intersection',
+        capacity: props.capacity,
+        vertexTolerance: props.vertexTolerance,
+        output: overlay
+      });
+      clip.preflight(graph);
+      graph.add(clip);
     }
     const finalOverlay = overlay;
     outputs.push(finalOverlay);

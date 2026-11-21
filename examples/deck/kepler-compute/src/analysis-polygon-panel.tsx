@@ -74,6 +74,7 @@ export function makePolygonSheetDefaults(
     quantileSeed: quantile?.seed ?? 314159,
     quantilePermutations: quantile?.permutationCount ?? 199,
     quantileSignificance: quantile?.significanceLevel ?? 0.05,
+    quantileAlternative: quantile?.alternative ?? 'geoda-legacy',
     editedFields: '[]'
   };
 }
@@ -134,7 +135,7 @@ export function getPolygonSheetOperation(
       seed: number('quantileSeed'),
       permutationCount: number('quantilePermutations'),
       significanceLevel: number('quantileSignificance'),
-      inference: 'legacy-directed-pseudo',
+      alternative: values['quantileAlternative'] as 'greater' | 'two-sided' | 'geoda-legacy',
       multipleTesting: 'none',
       islands: 'exclude',
       quantileMethod: 'type-5'
@@ -249,6 +250,12 @@ export function createPolygonSheetSpecifications(
         ]
       : quantile
         ? [
+            enumeration(
+              'quantileAlternative',
+              'Polygon Quantile LISA p-value alternative',
+              'analysis-polygon-quantile-alternative',
+              ['greater', 'two-sided', 'geoda-legacy']
+            ),
             {
               ...number(
                 'quantileCount',
@@ -382,7 +389,8 @@ export function PolygonPanel({analysis}: {analysis: AnalysisRuntime}) {
               'selectedQuantile',
               'quantileSeed',
               'quantilePermutations',
-              'quantileSignificance'
+              'quantileSignificance',
+              'quantileAlternative'
             ].includes(name)));
       if (savedField) return 'Saved resident settings';
       if (name === 'geometryColumn')
@@ -457,15 +465,16 @@ export function PolygonPanel({analysis}: {analysis: AnalysisRuntime}) {
         <p className="hint">
           Quantile LISA uses type-5 quantiles, including the lower boundary and excluding the upper.
           Ties stay together and may leave empty quantiles. Missing values and nonpolygon rows are
-          omitted. Legacy directed pseudo p-values use (min(upper-tail count, permutations −
-          upper-tail count) + 1) / (permutations + 1). This anti-conservative exploratory method has
-          no two-sided error-control guarantee and no multiple-testing correction. Tied or constant
+          omitted. Greater uses the inclusive upper tail; two-sided uses inclusive tails (all ties
+          give 1). The geoda-legacy choice uses (min(upper-tail count, permutations − upper-tail
+          count) + 1) / (permutations + 1). This anti-conservative exploratory method has no
+          two-sided error-control guarantee and no multiple-testing correction. Tied or constant
           memberships can appear significant. Only selected-quantile members with positive local
           joins are tested; islands are excluded from inference but can remain in the quantile
           distribution. More than 64 active neighbors makes inference unavailable. Gray includes
-          nonsignificant and untested rows, red marks legacy significance, orange marks islands. The
-          table retains membership, join count, pseudo p-value and tail count. A fixed seed
-          reproduces this implementation, without GeoDa random-stream parity.
+          nonsignificant and untested rows, red marks significance under the chosen alternative,
+          orange marks islands. The table retains membership, join count, pseudo p-value and tail
+          count. A fixed seed reproduces this implementation, without GeoDa random-stream parity.
         </p>
       ) : (
         <p className="hint">

@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const leftKeys = importColumn('leftKeys', observations.tract, 'uint32');\nconst rightKeys = importColumn('tractKeys', tracts.tract, 'uint32');\nconst rightMask = importColumn('hasEstimate', tracts.hasEstimate, 'uint32');\nconst rightPoverty = importColumn('poverty150Pct', tracts.poverty150Pct, 'float32');\nconst joinedPoverty = view('joinedPoverty', 'float32', rowCount);\nconst output = {\n  rightRows: view('rightRows', 'uint32', rowCount), // 0xffffffff when unmatched\n  matchCounts: view('matchCounts', 'uint32', rowCount),\n  matched: view('matched', 'uint32', rowCount)\n};\ngraph.add(\n  new GPUKeyJoin({\n    leftKeys,\n    rightKeys,\n    rightMask,\n    kind: 'left', // 'inner' also compacts the matched row ids\n    gather: [{column: rightPoverty, output: joinedPoverty}],\n    output\n  })\n);\nconst {rightRows, matchCounts, matched} = output;",
+    "code": "const leftKeys = importColumn('leftKeys', observations.tract, 'uint32');\nconst rightKeys = importColumn('tractKeys', tracts.tract, 'uint32');\nconst rightMask = importColumn('hasEstimate', tracts.hasEstimate, 'uint32');\nconst rightPoverty = importColumn('poverty150Pct', tracts.poverty150Pct, 'float32');\nconst joinedPoverty = view('joinedPoverty', 'float32', rowCount);\nconst output = {\n  rightRows: view('rightRows', 'uint32', rowCount), // 0xffffffff when unmatched\n  matchCounts: view('matchCounts', 'uint32', rowCount),\n  matched: view('matched', 'uint32', rowCount)\n};\ngraph.add(\n  new GPUKeyLookup({\n    leftKeys,\n    rightKeys,\n    rightMask,\n    compactMatchedLeftRows: false,\n    gather: [{column: rightPoverty, output: joinedPoverty}],\n    output\n  })\n);\nconst {rightRows, matchCounts, matched} = output;",
     "language": "ts",
     "lineCount": 21
   },
@@ -24,12 +24,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:12.047Z",
-    "runId": "run-22146329",
+    "date": "2026-11-20T23:48:35.510Z",
+    "runId": "run-58c32842",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-22146329",
+    "runId": "run-58c32842",
     "rung": "result",
     "bindings": {},
     "clauses": [],

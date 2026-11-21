@@ -17,13 +17,16 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
+  createWGSLKernelNode,
   createTransientUint32Rows
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import type {GPUUint32Rows} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   getGraphViewChunks,
+  isGraphVectorView,
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateGraphViewTopology,
@@ -53,6 +56,7 @@ import {
   createZonalStatisticsDensityNode,
   createZonalStatisticsDeviationNode,
   createZonalStatisticsMeanNode,
+  createZonalStatisticsRefinedMeanNode,
   createZonalStatisticsVarianceNode,
   createZonalStatisticsWeightedDensityNode,
   createZonalStatisticsPrepareNodes,
@@ -125,6 +129,19 @@ export type GPUZonalStatisticsFeatureRows = {
   pointFeatureRows: GPUUint32Rows;
   /** Number of features, which is the row count of every per-feature output. Compile-time. */
   featureCount: number;
+  /**
+   * Optional upstream membership diagnostics, copied on every encoding. Each supplied scalar
+   * requires its matching `output.status` view so incomplete membership cannot appear clean.
+   * `uncertainCount` preserves the upstream count, rather than reducing it to a boolean.
+   */
+  status?: Pick<
+    NonNullable<GPUZonalStatisticsOutput['status']>,
+    | 'overflow'
+    | 'candidateOverflow'
+    | 'uncertainCount'
+    | 'antimeridianUncertainCount'
+    | 'poleUncertainCount'
+  >;
 };
 
 /** Feature membership source for {@link GPUZonalStatistics}. */
@@ -158,18 +175,32 @@ export type GPUZonalStatisticsExtentStatistic =
  *
  * Every per-feature output has exactly `featureCount` rows and is rewritten on every encoding.
  */
-export type GPUZonalStatisticsOutput = {
+type GPUZonalStatisticsOutputFields = {
   /** Points assigned to the feature, regardless of value validity. */
   counts?: GraphDataView<'uint32'>;
-  /** Assigned points with a finite value (and a finite weight when weights are given). */
+  /**
+   * Assigned points with a finite value (and a finite weight when weights are given).
+   * Includes rows whose weighted product overflows float32 and is omitted from `sums`.
+   */
   valueCounts?: GraphDataView<'uint32'>;
-  /** `sum(v)`, or `sum(w * v)` with weights, over value-valid rows. 0 for empty features. */
+  /**
+   * `sum(v)`, or `sum(w * v)` with weights, over value-valid rows, omitting products that
+   * overflow float32. Their rows still contribute to `valueCounts`, `weightSums` and extrema.
+   * 0 for empty features. Applies in both sum orders.
+   */
   sums?: GraphDataView<'float32'>;
-  /** `sum(w)` over value-valid rows. Requires `weights`. 0 for empty features. */
+  /**
+   * `sum(w)` over value-valid rows, including rows whose product is omitted from `sums`.
+   * Requires `weights`. 0 for empty features.
+   */
   weightSums?: GraphDataView<'float32'>;
   /**
    * `sum(v) / valueCount`, or `sum(w * v) / sum(w)` with weights. Quiet NaN (`0x7fc00000`) when the
    * feature has no valid rows or the weight sum is 0.
+   * An overflowing product is omitted only from the numerator: values `[2^127, 2]` and weights
+   * `[4, 1]` give `sums = 2`, `weightSums = 5`, `valueCounts = 2` and a mean of `0.4` in both
+   * sum orders. Variance refinement starts from this mean; extreme magnitudes can also overflow
+   * its float32 deviation products, so variance and standard deviation need not be finite.
    */
   means?: GraphDataView<'float32'>;
   /** Minimum of the valid values, never weighted. NaN for features without valid rows. */
@@ -180,12 +211,24 @@ export type GPUZonalStatisticsOutput = {
    * Unbiased sample variance of the valid values. Unweighted: `sum (v - mean)^2 / (n - 1)`. With
    * `weights`, which act as reliability weights: `sum w (v - m)^2 / (V1 - V2 / V1)` with
    * `m` the weighted mean, `V1 = sum w` and `V2 = sum w^2`, which reduces to the unweighted form
-   * for unit weights (`numpy.cov(v, aweights=w, ddof=1)`). Two passes (mean first), so there is no
-   * catastrophic cancellation. Quiet NaN for features with fewer than two valid rows or a
-   * non-positive denominator. Requires packed (not chunked) point views.
+   * for unit weights (`numpy.cov(v, aweights=w, ddof=1)`). Computed in float32 around a refined
+   * mean: one pass over the points refines the float32 mean with the sum of `w (v - mean)`, a
+   * second sums `w d^2` and `w d` around it, and the corrected two-pass term
+   * `sum w d^2 - (sum w d)^2 / V1` is used, so values at projected-coordinate magnitudes (1e7)
+   * over many rows keep their small variance. Quiet NaN for features with fewer than two valid rows
+   * or a non-positive denominator. Requires packed (not chunked) point views.
+   * Deviation products that overflow float32 are omitted. This can leave a finite, misleading
+   * result: values `[2^127, 2]` with weights `[4, 1]` yield variance about `0.8192` although the
+   * true variance is enormous. A finite result does not certify that every term was retained.
+   * Signed weights remain accepted; they can give a negative variance and NaN standard deviation.
+   * The mean-refinement and deviation reductions use fixed trees in both public sum orders.
    */
   variances?: GraphDataView<'float32'>;
-  /** `sqrt(variances)`; NaN where the variance is NaN. Same requirements as `variances`. */
+  /**
+   * `sqrt(variances)`; NaN for NaN or negative variance. Same requirements and overflow-term
+   * limitations as `variances`: the `[2^127, 2]`, weights `[4, 1]` example gives about `0.9051`,
+   * a finite but misleading result.
+   */
   standardDeviations?: GraphDataView<'float32'>;
   /**
    * `counts / area` when the area is finite and positive, otherwise NaN. The area is `areas` when
@@ -224,7 +267,8 @@ export type GPUZonalStatisticsOutput = {
   /**
    * Two rows `[minimum, maximum]` of `extentStatistic` over features whose count is positive and
    * whose statistic is finite. `[0, 0]` when no feature qualifies. Counts and extrema are exact;
-   * counts above 2^24 lose precision as float32.
+   * counts above 2^24 lose precision as float32. Sum and mean extents follow the overflowing
+   * product exclusions documented on `sums` and `means`.
    */
   extent?: GraphDataView<'float32'>;
   /**
@@ -234,14 +278,16 @@ export type GPUZonalStatisticsOutput = {
   extentStatistic?: GPUZonalStatisticsExtentStatistic;
   /**
    * Optional membership status. `antimeridianUncertainCount` counts unprepared crossing rings;
-   * `poleUncertainCount` counts uncapped pole rings. Planar and feature-row inputs leave both untouched.
+   * `poleUncertainCount` counts uncapped pole rings. Feature-row inputs copy supplied geographic
+   * counts on every encoding and write zero when absent. Planar polygon inputs leave both untouched.
    */
   status?: GPULonLatPolygonStatusPort &
     GPUCandidateStatusPort & {
       /**
        * One row: 1 when the join overflowed a BVH leaf or candidate capacity, otherwise 0. Always 0
-       * for `kind: 'feature-rows'`. `candidateOverflow` reports the same two intermediate
-       * capacities under the shared status name (also 0 for `kind: 'feature-rows'`); see
+       * when `kind: 'feature-rows'` has no upstream overflow. Feature-row inputs copy the
+       * corresponding `features.status` scalar. `candidateOverflow` reports intermediate
+       * capacity loss (or copies the upstream candidate flag for feature rows); see
        * `candidateTruncated` for the points affected.
        */
       overflow?: GraphDataView<'uint32'>;
@@ -250,7 +296,7 @@ export type GPUZonalStatisticsOutput = {
        * proven (non-finite input, malformed offsets, or a predicate outside the double-single
        * arithmetic envelope). Uncertain pairs are never assigned: a point whose only candidates were
        * uncertain stays unassigned, so a nonzero value means `counts` and the other statistics may be
-       * low. Always 0 for `kind: 'feature-rows'`.
+       * low. Feature-row inputs copy `features.status.uncertainCount`, or write 0 when absent.
        */
       uncertainCount?: GraphDataView<'uint32'>;
     };
@@ -302,6 +348,8 @@ export type GPUZonalStatisticsProps = {
    * Per-point weights with the topology of `values`. Requires `values`. With weights, `sums` is
    * `sum(w * v)` and `means` is `sum(w * v) / sum(w)`; a row with a non-finite weight is invalid
    * for every value statistic. Products that overflow float32 are dropped from sums.
+   * Such rows remain in value counts, weight sums and extrema; see `output.means` for the
+   * resulting numerator/denominator asymmetry and its effect on variance refinement.
    */
   weights?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /**
@@ -353,6 +401,20 @@ function getOutputViews(output: GPUZonalStatisticsOutput) {
     output.status?.poleUncertainCount
   ];
 }
+
+type RequireZonalOutputLeaf<Fields> = {
+  [Field in keyof Fields]-?: Required<Pick<Fields, Field>>;
+}[keyof Fields];
+
+/** At least one destination view is required; extentStatistic and an empty status map are not destinations. */
+export type GPUZonalStatisticsOutput = GPUZonalStatisticsOutputFields &
+  (
+    | RequireZonalOutputLeaf<Omit<GPUZonalStatisticsOutputFields, 'extentStatistic' | 'status'>>
+    | {
+        status: NonNullable<GPUZonalStatisticsOutputFields['status']> &
+          RequireZonalOutputLeaf<NonNullable<GPUZonalStatisticsOutputFields['status']>>;
+      }
+  );
 
 /**
  * Choropleth aggregation: joins points to features and reduces optional per-point values and
@@ -412,6 +474,63 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
   readonly plan: ZonalStatisticsPlan;
 
   constructor(props: GPUZonalStatisticsProps) {
+    if (props.features.kind === 'feature-rows') {
+      props = snapshotConstructionFields(props, [
+        'id',
+        'features',
+        'output',
+        'positions',
+        'values',
+        'weights',
+        'areas',
+        'spatialContext',
+        'featuresSpatialContext',
+        'sumOrder'
+      ]);
+      // Capture declared fields rather than spreading caller maps: views may be inherited
+      // or exposed through non-enumerable getters.
+      const outputFields = snapshotConstructionFields(props.output, [
+        ...OUTPUT_NAMES,
+        'candidateTruncated',
+        'extentStatistic',
+        'status'
+      ]);
+      // Snapshotting the parent map retains the already checked discriminator.
+      const featureRows = props.features as GPUZonalStatisticsFeatureRows;
+      const features = snapshotConstructionFields(featureRows, [
+        'kind',
+        'pointFeatureRows',
+        'featureCount',
+        'status'
+      ]);
+      const status =
+        features.status &&
+        snapshotConstructionFields(features.status, [
+          'overflow',
+          'candidateOverflow',
+          'uncertainCount',
+          'antimeridianUncertainCount',
+          'poleUncertainCount'
+        ]);
+      const output = {
+        ...outputFields,
+        status:
+          outputFields.status &&
+          snapshotConstructionFields(outputFields.status, [
+            'overflow',
+            'candidateOverflow',
+            'uncertainCount',
+            'antimeridianUncertainCount',
+            'poleUncertainCount'
+          ])
+      };
+      props = {
+        ...props,
+        features: Object.freeze({...features, status}),
+        // Every declared leaf was captured above; spreading the status snapshot widens its union.
+        output: Object.freeze(output) as GPUZonalStatisticsOutput
+      };
+    }
     this.id = props.id ?? 'zonal-statistics';
     this.props = props;
     const {features, output, values, weights, areas} = props;
@@ -454,6 +573,27 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       }
       this.featureCount = features.featureCount;
       this.pointCount = features.pointFeatureRows.length;
+      if (features.status) {
+        validateGPUStatusPort(`${id} features.status`, features.status);
+        for (const name of [
+          'overflow',
+          'candidateOverflow',
+          'uncertainCount',
+          'antimeridianUncertainCount',
+          'poleUncertainCount'
+        ] as const) {
+          const view = features.status[name];
+          if (view) {
+            validatePackedUint32View(view, `${id} features.status.${name}`);
+            validateRequirement(id, view.length === 1, `features.status.${name} requires one row`);
+            validateRequirement(
+              id,
+              Boolean(output.status?.[name]),
+              `features.status.${name} requires output.status.${name}`
+            );
+          }
+        }
+      }
     }
     if (this.featureCount < 1) {
       throw new Error(`${id} requires at least one feature`);
@@ -617,7 +757,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           features.kind === 'polygons' ? output.pointFeatureRows : features.pointFeatureRows
         ]
       ] as const) {
-        if (view instanceof GraphVectorView) {
+        if (isGraphVectorView(view)) {
           throw new Error(`${id} variances require packed ${name}`);
         }
       }
@@ -632,7 +772,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         ['weights', weights],
         ['pointFeatureRows', rows]
       ] as const) {
-        if (view instanceof GraphVectorView) {
+        if (isGraphVectorView(view)) {
           throw new Error(`${id} sorted sum order requires packed ${name}`);
         }
       }
@@ -649,7 +789,8 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         features.kind === 'polygons' ? features.featureOffsets : undefined,
         features.kind === 'polygons' ? features.polygonOffsets : undefined,
         features.kind === 'polygons' ? features.ringOffsets : undefined,
-        features.kind === 'feature-rows' ? features.pointFeatureRows : undefined
+        features.kind === 'feature-rows' ? features.pointFeatureRows : undefined,
+        ...(features.kind === 'feature-rows' ? Object.values(features.status ?? {}) : [])
       ],
       getOutputViews(output)
     );
@@ -687,6 +828,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       features.kind === 'polygons' ? features.polygonOffsets : undefined,
       features.kind === 'polygons' ? features.ringOffsets : undefined,
       features.kind === 'feature-rows' ? features.pointFeatureRows : undefined,
+      ...(features.kind === 'feature-rows' ? Object.values(features.status ?? {}) : []),
       ...getOutputViews(output)
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -765,20 +907,20 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           spatialContext: getPointInPolygonContainmentContext(this.spatialContext),
           polygonsSpatialContext: props.featuresSpatialContext,
           points: {kind: 'points', positions: props.positions!},
-          // No `sourceIds`: the join must write feature rows, which index the outputs.
           polygons: {
             kind: 'polygons',
             positions: features.positions,
             featureOffsets: features.featureOffsets,
             polygonOffsets: features.polygonOffsets,
-            ringOffsets: features.ringOffsets
+            ringOffsets: features.ringOffsets,
+            sourceIds: features.sourceIds
           },
           candidateCapacity: features.candidateCapacity,
           leafCapacity: features.leafCapacity,
           boundaryRule: features.boundaryRule,
           output: {
-            pointFeatureIds: pointFeatureRows,
-            featureCounts: counts,
+            pointFeatureRows,
+            polygonAssignmentCounts: counts,
             candidateTruncated: output.candidateTruncated,
             status: {
               overflow,
@@ -794,45 +936,41 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         nodes.push(
           ...new GPUGroupAggregation({
             id: `${id}-count-aggregation`,
-            keys: pointFeatureRows,
+            keys: getZonalAggregationView(pointFeatureRows),
             output: counts
           }).getCommandNodes(graph)
         );
       }
-      if (output.status?.overflow) {
+      for (const [name, suffix] of [
+        ['overflow', 'overflow'],
+        ['candidateOverflow', 'candidate-overflow'],
+        ['uncertainCount', 'uncertain-count'],
+        ['antimeridianUncertainCount', 'antimeridianUncertainCount'],
+        ['poleUncertainCount', 'poleUncertainCount']
+      ] as const) {
+        const target = output.status?.[name];
+        if (!target) continue;
+        const source = features.status?.[name];
         nodes.push(
-          createFillNode<Parameters>(graph, {
-            id: `${id}-overflow`,
-            operation: OPERATION,
-            view: output.status.overflow,
-            type: 'u32',
-            value: '0u',
-            componentCount: 1
-          })
-        );
-      }
-      if (output.status?.candidateOverflow) {
-        nodes.push(
-          createFillNode<Parameters>(graph, {
-            id: `${id}-candidate-overflow`,
-            operation: OPERATION,
-            view: output.status.candidateOverflow,
-            type: 'u32',
-            value: '0u',
-            componentCount: 1
-          })
-        );
-      }
-      if (output.status?.uncertainCount) {
-        nodes.push(
-          createFillNode<Parameters>(graph, {
-            id: `${id}-uncertain-count`,
-            operation: OPERATION,
-            view: output.status.uncertainCount,
-            type: 'u32',
-            value: '0u',
-            componentCount: 1
-          })
+          source
+            ? createWGSLKernelNode<Parameters>(graph, {
+                id: `${id}-${suffix}`,
+                operation: OPERATION,
+                invocationCount: 1,
+                bindings: [
+                  {name: 'inputStatus', view: source, type: 'u32', access: 'read'},
+                  {name: 'outputStatus', view: target, type: 'u32', access: 'read_write'}
+                ],
+                body: 'outputStatus[outputStatusOffset] = inputStatus[inputStatusOffset];'
+              })
+            : createFillNode<Parameters>(graph, {
+                id: `${id}-${suffix}`,
+                operation: OPERATION,
+                view: target,
+                type: 'u32',
+                value: '0u',
+                componentCount: 1
+              })
         );
       }
     }
@@ -888,8 +1026,8 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
         nodes.push(
           ...new GPUGroupAggregation({
             id: `${id}-value-count-aggregation`,
-            keys: pointFeatureRows,
-            mask: valueMask,
+            keys: getZonalAggregationView(pointFeatureRows),
+            mask: getZonalAggregationView(valueMask),
             output: valueCounts
           }).getCommandNodes(graph)
         );
@@ -915,9 +1053,9 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
           nodes.push(
             ...new GPUGroupAggregation({
               id: `${id}-${name}-aggregation`,
-              keys: pointFeatureRows,
-              values: source,
-              mask: valueMask,
+              keys: getZonalAggregationView(pointFeatureRows),
+              values: getZonalAggregationView(source),
+              mask: getZonalAggregationView(valueMask),
               output: destination,
               operation
             }).getCommandNodes(graph)
@@ -965,76 +1103,110 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       );
     }
 
-    // 5b. Variances: a second pass over the points around the finished means.
+    // 5b. Variances. A float32 mean of values near 1e7 over many rows can be several units off,
+    // and `sum (v - mean)^2` then carries `n * error^2`. Pass one sums `w * (v - mean)` to refine
+    // the mean; pass two sums `w * (v - refined)^2` and `w * (v - refined)`, and the variance node
+    // subtracts the corrected two-pass term `(sum w d)^2 / V1` (Chan, Golub and LeVeque).
     if (plan.needVariances && valueMask && values) {
       const packedValues = values as GraphDataView<'float32'>;
       const packedWeights = weights as GraphDataView<'float32'> | undefined;
-      const deviations = createTransientView(graph, `${id}-deviations`, 'float32', this.pointCount);
-      const weightSquares = plan.needWeightSquareSums
-        ? createTransientView(graph, `${id}-weight-squares`, 'float32', this.pointCount)
-        : undefined;
-      const squaredDeviationSums = createTransientView(
-        graph,
-        `${id}-squared-deviation-sums`,
-        'float32',
-        featureCount
-      );
-      const weightSquareSums = weightSquares
-        ? createTransientView(graph, `${id}-weight-square-sums`, 'float32', featureCount)
-        : undefined;
+      const packedMask = valueMask as GraphDataView<'uint32'>;
+      const packedRows = pointFeatureRows as GraphDataView<'uint32'>;
+      const pointRows = (name: string) =>
+        createTransientView(graph, `${id}-${name}`, 'float32', this.pointCount);
+      const featureRows = (name: string) =>
+        createTransientView(graph, `${id}-${name}`, 'float32', featureCount);
+      const firstLinearDeviations = pointRows('first-linear-deviations');
+      const firstLinearDeviationSums = featureRows('first-linear-deviation-sums');
+      const refinedMeans = featureRows('refined-mean-rows');
+      const squaredDeviations = pointRows('deviations');
+      const linearDeviations = pointRows('linear-deviations');
+      const weightSquares = plan.needWeightSquareSums ? pointRows('weight-squares') : undefined;
+      const squaredDeviationSums = featureRows('squared-deviation-sums');
+      const linearDeviationSums = featureRows('linear-deviation-sums');
+      const weightSquareSums = weightSquares ? featureRows('weight-square-sums') : undefined;
+      const minimumWeights = packedWeights ? featureRows('minimum-weights') : undefined;
+      if (packedWeights && minimumWeights) {
+        nodes.push(
+          ...new GPUGroupAggregation({
+            id: `${id}-minimum-weight-aggregation`,
+            keys: packedRows,
+            values: packedWeights,
+            mask: packedMask,
+            output: minimumWeights,
+            operation: 'min'
+          }).getCommandNodes(graph)
+        );
+      }
+      const sumRows = (
+        name: string,
+        rows: readonly (readonly [string, GraphDataView<'float32'>, GraphDataView<'float32'>])[]
+      ): GPUCommandNode<Parameters>[] => {
+        // The public sums may be atomic. Variance corrections need stable reductions even
+        // then: a second long sequence of identical atomic additions can reintroduce error.
+        return getSortedSegmentSumNodes<Parameters>(graph, {
+          id: `${id}-${name}`,
+          operation: OPERATION,
+          segmentCount: featureCount,
+          segmentKeys: packedRows,
+          reductions: rows.map(([reductionName, contributions, output]) => ({
+            name: reductionName,
+            contributions,
+            output
+          }))
+        });
+      };
       nodes.push(
+        createZonalStatisticsDeviationNode<Parameters>(graph, {
+          id: `${id}-first-deviation`,
+          featureCount,
+          values: packedValues,
+          weights: packedWeights,
+          valueMask: packedMask,
+          pointFeatureRows: packedRows,
+          means: means!,
+          linearDeviations: firstLinearDeviations
+        }),
+        ...sumRows('mean-refinement', [
+          ['first-linear-deviation', firstLinearDeviations, firstLinearDeviationSums]
+        ]),
+        createZonalStatisticsRefinedMeanNode<Parameters>(graph, {
+          id: `${id}-refined-means`,
+          featureCount,
+          means: means!,
+          linearDeviationSums: firstLinearDeviationSums,
+          valueCounts: weights ? undefined : valueCounts,
+          weightSums: weights ? weightSums : undefined,
+          refinedMeans
+        }),
         createZonalStatisticsDeviationNode<Parameters>(graph, {
           id: `${id}-deviation`,
           featureCount,
           values: packedValues,
           weights: packedWeights,
-          valueMask: valueMask as GraphDataView<'uint32'>,
-          pointFeatureRows: pointFeatureRows as GraphDataView<'uint32'>,
-          means: means!,
-          deviations,
+          valueMask: packedMask,
+          pointFeatureRows: packedRows,
+          means: refinedMeans,
+          squaredDeviations,
+          linearDeviations,
           weightSquares
-        })
-      );
-      if (sumOrder === 'sorted') {
-        nodes.push(
-          ...getSortedSegmentSumNodes<Parameters>(graph, {
-            id: `${id}-variance`,
-            operation: OPERATION,
-            segmentCount: featureCount,
-            segmentKeys: pointFeatureRows as GraphDataView<'uint32'>,
-            sumContributions: deviations,
-            weightContributions: weightSquares,
-            sums: squaredDeviationSums,
-            weightSums: weightSquareSums
-          })
-        );
-      } else {
-        for (const [name, source, destination] of [
-          ['deviation', deviations, squaredDeviationSums],
-          ['weight-square', weightSquares, weightSquareSums]
-        ] as const) {
-          if (source && destination) {
-            nodes.push(
-              ...new GPUGroupAggregation({
-                id: `${id}-${name}-aggregation`,
-                keys: pointFeatureRows,
-                values: source,
-                mask: valueMask,
-                output: destination,
-                operation: 'sum'
-              }).getCommandNodes(graph)
-            );
-          }
-        }
-      }
-      nodes.push(
+        }),
+        ...sumRows('variance', [
+          ['deviation', squaredDeviations, squaredDeviationSums],
+          ['linear-deviation', linearDeviations, linearDeviationSums],
+          ...(weightSquares && weightSquareSums
+            ? [['weight-square', weightSquares, weightSquareSums] as const]
+            : [])
+        ]),
         createZonalStatisticsVarianceNode<Parameters>(graph, {
           id: `${id}-variances`,
           featureCount,
           valueCounts: valueCounts!,
           squaredDeviationSums,
+          linearDeviationSums,
           weightSums: weightSquares ? weightSums : undefined,
           weightSquareSums,
+          minimumWeights,
           variances: output.variances,
           standardDeviations: output.standardDeviations
         })
@@ -1082,5 +1254,11 @@ function getDefaultZonalSumOrder(props: GPUZonalStatisticsProps): GPUZonalStatis
   const {features, output, values, weights} = props;
   const rows = features.kind === 'polygons' ? output.pointFeatureRows : features.pointFeatureRows;
   const views = [features.kind === 'polygons' ? props.positions : undefined, values, weights, rows];
-  return views.some(view => view instanceof GraphVectorView) ? 'atomic' : 'sorted';
+  return views.some(view => isGraphVectorView(view)) ? 'atomic' : 'sorted';
+}
+/** Adapt foreign-format vectors to the public upstream constructor at its aggregation boundary. */
+function getZonalAggregationView<Format extends 'float32' | 'uint32'>(
+  view: GraphDataView<Format> | GraphVectorView<Format>
+): GraphDataView<Format> | GraphVectorView<Format> {
+  return isGraphVectorView(view) ? new GraphVectorView<Format>({...view, data: view.data}) : view;
 }

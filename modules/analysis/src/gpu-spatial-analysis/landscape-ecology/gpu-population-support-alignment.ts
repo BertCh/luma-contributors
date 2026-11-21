@@ -10,8 +10,9 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {GPUKeyJoin} from '../../dataframe-analysis/key-join/gpu-key-join';
+import {GPUKeyLookup} from '../../dataframe-analysis/key-join/gpu-key-join';
 import {getCoreDefaultBuffer} from '../../analysis-core/contracts/network-topology';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
@@ -52,16 +53,24 @@ export type GPUPopulationSupportAlignmentOutput = {
   alignmentCode: GraphDataView<'uint32'>;
   /** 1 for a unique source and target match, otherwise 0; usable as a downstream mask. */
   matchedMask: GraphDataView<'uint32'>;
-  /** uint32x4: [aligned, missingTargetRows, ambiguousTargetRows, excludedSourceRows]. */
+  /** uint32x4: [complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows]. */
   status: GraphDataView<'uint32x4'>;
 };
 
-/** Input and optional caller-owned recipe outputs; the contributor requires all four outputs. */
+/** Inputs and all four caller-owned outputs of {@link GPUPopulationSupportAlignment}. */
 export type GPUPopulationSupportAlignmentProps = {
   id?: string;
   populations: GraphDataView<'float32x2'>;
   sourceIds: GraphDataView<'uint32'>;
   targetIds: GraphDataView<'uint32'>;
+  output: GPUPopulationSupportAlignmentOutput;
+};
+
+/** Inputs and optional caller-owned outputs of the population support alignment recipe. */
+export type GPUPopulationSupportAlignmentRecipeProps = Omit<
+  GPUPopulationSupportAlignmentProps,
+  'output'
+> & {
   output?: Partial<GPUPopulationSupportAlignmentOutput>;
 };
 
@@ -75,7 +84,7 @@ const POPULATION_SUPPORT_ALIGNMENT_OUTPUT_NAMES = [
 /** Validate supplied views without reserving graph resources; absent recipe outputs are allowed. @internal */
 export function validatePopulationSupportAlignmentViews<Parameters>(
   id: string,
-  props: GPUPopulationSupportAlignmentProps,
+  props: GPUPopulationSupportAlignmentRecipeProps,
   graph?: GPUCommandGraph<Parameters>
 ): void {
   validateRequirement(id, props.populations.length > 0, 'populations must have at least 1 row');
@@ -147,13 +156,25 @@ export function validatePopulationSupportAlignmentViews<Parameters>(
  */
 export class GPUPopulationSupportAlignment implements GPUCommandNodeProducer {
   readonly id: string;
-  readonly props: GPUPopulationSupportAlignmentProps & {
-    output: GPUPopulationSupportAlignmentOutput;
-  };
+  readonly props: GPUPopulationSupportAlignmentProps;
 
-  constructor(
-    props: GPUPopulationSupportAlignmentProps & {output: GPUPopulationSupportAlignmentOutput}
-  ) {
+  constructor(props: GPUPopulationSupportAlignmentProps) {
+    validateRequirement(
+      props.id ?? 'population-support-alignment',
+      !('outputs' in props),
+      'outputs was removed; use output'
+    );
+    const construction = snapshotConstructionFields(props, [
+      'id',
+      'populations',
+      'sourceIds',
+      'targetIds',
+      'output'
+    ]);
+    const output =
+      construction.output &&
+      snapshotConstructionFields(construction.output, POPULATION_SUPPORT_ALIGNMENT_OUTPUT_NAMES);
+    props = Object.freeze({...construction, output});
     this.id = props.id ?? 'population-support-alignment';
     this.props = props;
     const {id} = this;
@@ -217,7 +238,7 @@ output[outputOffset + 2u * index + 1u] = 0u;`
     const targetMatches = createTransientView(graph, `${id}-target-matches`, 'uint32', targetCount);
     const sourceMatched = createTransientView(graph, `${id}-source-matched`, 'uint32', sourceCount);
     nodes.push(
-      ...new GPUKeyJoin({
+      ...new GPUKeyLookup({
         id: `${id}-sources`,
         leftKeys: targetKeys,
         rightKeys: sourceKeys,
@@ -225,7 +246,7 @@ output[outputOffset + 2u * index + 1u] = 0u;`
       }).getCommandNodes(graph)
     );
     nodes.push(
-      ...new GPUKeyJoin({
+      ...new GPUKeyLookup({
         id: `${id}-targets`,
         leftKeys: targetKeys,
         rightKeys: targetKeys,

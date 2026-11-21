@@ -10,6 +10,7 @@ import {bindAxes} from '../../interaction';
 import {
   createMovementFleet,
   addStaypoints,
+  readUint32,
   uploadFleet,
   writeStaypointSettings
 } from './_lib/movement';
@@ -23,6 +24,8 @@ type Outputs = {
   centroids: RunBuffer;
   durations: RunBuffer;
   count: RunBuffer;
+  overflow: RunBuffer;
+  candidateOverflow: RunBuffer;
 };
 
 export default defineOperationRun({
@@ -39,9 +42,22 @@ export default defineOperationRun({
       rowStaypointIds: staypoints.rowStaypointIds,
       centroids: staypoints.centroids,
       durations: staypoints.durations,
-      count: staypoints.count
+      count: staypoints.count,
+      overflow: staypoints.overflow,
+      candidateOverflow: staypoints.candidateOverflow
     };
     return {outputs, update: current => writeStaypointSettings(staypoints, current)};
+  },
+  async afterRun({outputs}) {
+    const [count, overflow, candidateOverflow] = await Promise.all([
+      readUint32(outputs.count),
+      readUint32(outputs.overflow),
+      readUint32(outputs.candidateOverflow)
+    ]);
+    return {
+      staypointCount: count[0],
+      complete: overflow[0] === 0 && candidateOverflow[0] === 0
+    };
   },
   // A pad: x is distanceThreshold, y is timeThreshold. A ring of the distance is drawn around the
   // longest staypoint, so the reader sees the radius that holds it together.
@@ -52,9 +68,14 @@ export default defineOperationRun({
     y: 'timeThreshold',
     decorate: (values, _pointer, {inputs, outputs, peek}) => {
       const count = peek(outputs.count);
+      const overflow = peek(outputs.overflow);
+      const candidateOverflow = peek(outputs.candidateOverflow);
       const durations = peek(outputs.durations);
       const centroids = peek(outputs.centroids);
-      const staypointCount = count ? count[0] : 0;
+      if (!count || !overflow || !candidateOverflow) return {};
+      if (overflow[0] || candidateOverflow[0])
+        return {readout: 'Staypoints unavailable due to an incomplete result'};
+      const staypointCount = count[0];
       let longest = -1;
       if (durations) {
         for (let row = 0; row < staypointCount; row++) {
@@ -76,17 +97,27 @@ export default defineOperationRun({
       };
     }
   }),
-  draw: ({inputs, outputs}) => [
+  draw: ({inputs, outputs, extra}) => [
     {layer: 'lines', context: true, segments: outputs.segments, count: inputs.segmentCount},
-    {layer: 'dots', positions: outputs.positions, values: outputs.rowStaypointIds, radius: 3},
-    {
-      layer: 'dots',
-      positions: outputs.centroids,
-      values: outputs.durations,
-      radius: 11,
-      fade: true,
-      range: [0, 200],
-      alpha: 0.85
-    }
+    ...(extra?.complete
+      ? [
+          {
+            layer: 'dots' as const,
+            positions: outputs.positions,
+            values: outputs.rowStaypointIds,
+            radius: 3
+          },
+          {
+            layer: 'dots' as const,
+            positions: outputs.centroids,
+            values: outputs.durations,
+            count: extra.staypointCount,
+            radius: 11,
+            fade: true,
+            range: [0, 200] as const,
+            alpha: 0.85
+          }
+        ]
+      : [{layer: 'dots' as const, context: true, positions: outputs.positions, radius: 3}])
   ]
 });

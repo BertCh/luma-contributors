@@ -3,8 +3,22 @@
 
 import {
   validateCapacity,
+  validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {computeTriangulationOrientation} from '../../analysis-core/polygon-triangulation/cpu-triangulation-predicates';
+import {validateCPUHostOffsets} from '../../analysis-core/operations/compact-host-offsets';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {computeFeatureRelate} from './cpu-feature-relate';
+import {createCPUFeatureDistanceRank} from './cpu-nearest-distance-rank';
+import {
+  getPredicateRelatePatterns,
+  parseRelatePattern,
+  getRelatePatterns,
+  doesRelatePatternAdmitDisjoint,
+  type GPUSpatialRelatePattern
+} from './spatial-relate-types';
+import type {SpatialPredicateName} from './spatial-predicate-wgsl';
 
 /** Packed planar CPU geometry; offsets and sourceIds have the shared geometry-port meanings. */
 export type CPUSpatialJoinGeometry = {
@@ -17,27 +31,152 @@ export type CPUSpatialJoinGeometry = {
   sourceIds?: Uint32Array;
 };
 /** Predicates with feature-level CPU and GPU reductions. */
-export type MultipartJoinPredicate = 'intersects' | 'within' | 'coveredBy';
+export type MultipartJoinPredicate = SpatialPredicateName;
 type Position = readonly [number, number];
-type Feature = {kind: CPUSpatialJoinGeometry['kind']; parts: Position[][]; bounds: number[]};
+/** Parsed CPU geometry used by exact feature-level topology. @internal */
+export type CPUSpatialFeature = {
+  kind: CPUSpatialJoinGeometry['kind'];
+  parts: Position[][];
+  bounds: number[];
+};
+type Feature = CPUSpatialFeature;
+
+/** Compile-time predicate options shared by the pure CPU form and operation adapters. */
+export type CPUFeatureJoinOptions = {
+  predicate: MultipartJoinPredicate;
+  pattern?: GPUSpatialRelatePattern;
+  distance?: number;
+  engine?: 'auto' | 'fast' | 'relate';
+  how?: 'inner' | 'anti';
+  /** Materialize packed matrices for retained inner pairs. Defaults to false (an empty array). */
+  relate?: boolean;
+  candidateCapacity: number;
+  pairCapacity: number;
+  /** Completeness of the supplied left prefix; loss suppresses unknown unmatched rows. */
+  leftStatus?: {overflow?: number; candidateOverflow?: number; complete?: number};
+};
+
+/** Feature-pair rows and completeness diagnostics from the CPU predicate join. */
+export type CPUSpatialPredicateJoinResult = {
+  leftRows: Uint32Array;
+  rightRows: Uint32Array;
+  relate: Uint32Array;
+  candidateTruncated: Uint32Array;
+  candidateBoundsTestCount: number;
+  /** Separate ascending absence result, derived before matched-pair truncation. */
+  unmatchedRows: Uint32Array;
+  unmatchedStatus: {
+    count: number;
+    requiredCount: number;
+    overflow: number;
+    /** Always returned, including for anti-only joins. One when candidates or left input were lost. */
+    candidateOverflow: number;
+  };
+  status: {count: number; requiredCount: number; overflow: number; candidateOverflow: number};
+};
+/** One nearest feature per query; rows precede application-ID remapping. */
+export type CPUNearestFeatureJoinResult = {
+  neighborRows: Uint32Array;
+  neighborIds: Uint32Array;
+  neighborCounts: Uint32Array;
+  neighborDistances: Float32Array;
+  status: {overflow: number; candidateOverflow: number};
+};
 
 /** Shared signed-compatible cutoff for two-word predicate candidate addressing. @internal */
 export const FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY = 0x7ffffffe;
+/** Shared CPU/GPU threshold limit: the GPU literal must remain finite float32. @internal */
+export const FEATURE_JOIN_MAXIMUM_DISTANCE = 3.4028234663852886e38;
 
-function readFeatures(geometry: CPUSpatialJoinGeometry): Feature[] {
+/** Shared construction validation for the planar operation forms. @internal */
+export function validateFeatureJoinOptions(
+  id: string,
+  options: CPUFeatureJoinOptions,
+  multipart: boolean
+): void {
+  validateCapacity(
+    id,
+    'candidateCapacity',
+    options.candidateCapacity,
+    1,
+    FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY
+  );
+  validateCapacity(id, 'pairCapacity', options.pairCapacity, 1, FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY);
+  for (const field of ['overflow', 'candidateOverflow', 'complete'] as const) {
+    const value = options.leftStatus?.[field];
+    if (value !== undefined) validateCapacity(id, `leftStatus.${field}`, value, 0, 0xffffffff);
+  }
+  validateRequirement(
+    id,
+    [
+      'intersects',
+      'within',
+      'coveredBy',
+      'contains',
+      'covers',
+      'containsProperly',
+      'touches',
+      'crosses',
+      'overlaps',
+      'equals',
+      'relate',
+      'dwithin'
+    ].includes(options.predicate),
+    'predicate must be a named spatial predicate or relate'
+  );
+  validateRequirement(
+    id,
+    options.how === undefined || ['inner', 'anti'].includes(options.how),
+    'how must be inner or anti'
+  );
+  validateRequirement(
+    id,
+    options.engine === undefined || ['auto', 'fast', 'relate'].includes(options.engine),
+    'engine must be auto, fast or relate'
+  );
+  validateRequirement(
+    id,
+    options.engine !== 'fast' ||
+      ['intersects', 'within', 'contains', 'dwithin'].includes(options.predicate) ||
+      (multipart && options.predicate === 'coveredBy'),
+    'engine fast requires intersects, within, contains or dwithin (or coveredBy for multipart input); use engine relate for other predicates'
+  );
+  validateRequirement(
+    id,
+    options.predicate !== 'dwithin' ||
+      (Number.isFinite(options.distance) && options.distance! >= 0),
+    'distance must be finite and non-negative for dwithin'
+  );
+  if (options.predicate === 'dwithin')
+    validateFiniteNumber(id, 'distance', options.distance!, 0, FEATURE_JOIN_MAXIMUM_DISTANCE);
+  validateRequirement(
+    id,
+    !options.relate || (options.predicate !== 'dwithin' && options.how !== 'anti'),
+    'relate requires an inner topological predicate; distance and anti results have no matrix output'
+  );
+  validateRequirement(
+    id,
+    options.predicate === 'relate' ? options.pattern !== undefined : options.pattern === undefined,
+    'pattern is required exactly when predicate is relate'
+  );
+  if (options.predicate === 'relate') {
+    const patterns = getRelatePatterns(options.pattern!);
+    validateRequirement(
+      id,
+      patterns.length > 0 && !doesRelatePatternAdmitDisjoint(patterns),
+      'pattern must be nonempty and exclude disjoint geometries; use how anti with intersects for disjoint'
+    );
+  }
+}
+
+function readFeatures(geometry: CPUSpatialJoinGeometry, skipNonFinite = false): Feature[] {
   const id = 'CPUFeatureJoin';
   const {positions, kind, featureOffsets, lineOffsets, polygonOffsets, ringOffsets} = geometry;
   validateRequirement(id, positions.length % 2 === 0, 'positions must contain complete XY rows');
   const vertexCount = positions.length / 2;
   const checkOffsets = (name: string, offsets: Uint32Array | undefined, childCount: number) => {
     validateRequirement(id, Boolean(offsets?.length), `${name} requires a terminal entry`);
-    validateRequirement(
-      id,
-      offsets![0] === 0 && offsets![offsets!.length - 1] === childCount,
-      `${name} must span all child rows`
-    );
-    for (let row = 1; row < offsets!.length; row++)
-      validateRequirement(id, offsets![row - 1] <= offsets![row], `${name} must be nondecreasing`);
+    validateCPUHostOffsets(id, name, offsets!, childCount);
   };
   if (kind === 'lines') checkOffsets('lineOffsets', lineOffsets, vertexCount);
   if (kind === 'polygons') {
@@ -78,8 +217,10 @@ function readFeatures(geometry: CPUSpatialJoinGeometry): Feature[] {
       const vertices: Position[] = [];
       for (let vertex = start; vertex < stop; vertex++) {
         const position: Position = [positions[vertex * 2], positions[vertex * 2 + 1]];
-        validateRequirement(id, position.every(Number.isFinite), 'positions must be finite');
+        const finite = position.every(Number.isFinite);
+        if (!skipNonFinite) validateRequirement(id, finite, 'positions must be finite');
         vertices.push(position);
+        if (!finite) continue;
         bounds[0] = Math.min(bounds[0], position[0]);
         bounds[1] = Math.min(bounds[1], position[1]);
         bounds[2] = Math.max(bounds[2], position[0]);
@@ -87,7 +228,18 @@ function readFeatures(geometry: CPUSpatialJoinGeometry): Feature[] {
       }
       // Bounds retain short-part vertices like the GPU builder; exact predicates treat those
       // parts as empty. This preserves candidate ordering and budget loss on both forms.
-      if (stop - start >= (kind === 'points' ? 1 : kind === 'lines' ? 2 : 3)) parts.push(vertices);
+      if (stop - start >= (kind === 'points' ? 1 : kind === 'lines' ? 2 : 3)) {
+        const usable =
+          !skipNonFinite ||
+          vertices.some(
+            (position, vertex) =>
+              position.every(Number.isFinite) &&
+              (kind === 'points' ||
+                ((kind === 'polygons' || vertex + 1 < vertices.length) &&
+                  vertices[(vertex + 1) % vertices.length].every(Number.isFinite)))
+          );
+        if (usable) parts.push(vertices);
+      }
     }
     features.push({kind, parts, bounds});
   }
@@ -102,34 +254,19 @@ function* getFeatureEdges(feature: Feature): Generator<readonly [Position, Posit
       (feature.kind === 'points' ? 1 : feature.kind === 'polygons' ? part.length : part.length - 1);
       vertex++
     ) {
-      yield [part[vertex], part[feature.kind === 'points' ? vertex : (vertex + 1) % part.length]];
+      const start = part[vertex];
+      const end = part[feature.kind === 'points' ? vertex : (vertex + 1) % part.length];
+      // Nearest geometry permits unusable vertices; never bridge a gap across one.
+      if (start.every(Number.isFinite) && end.every(Number.isFinite)) yield [start, end];
     }
 }
 function arePositionsEqual(first: Position, second: Position): boolean {
   return first[0] === second[0] && first[1] === second[1];
 }
 function getOrientationSign(first: Position, second: Position, query: Position): number {
-  const firstProduct = (second[0] - first[0]) * (query[1] - first[1]);
-  const secondProduct = (second[1] - first[1]) * (query[0] - first[0]);
-  const determinant = firstProduct - secondProduct;
-  if (
-    Math.abs(determinant) >
-    (Math.abs(firstProduct) + Math.abs(secondProduct)) * Number.EPSILON * 8
-  )
-    return Math.sign(determinant);
-  // Exact dyadic fallback for the represented doubles, including derived segment probes.
-  const bits = new DataView(new ArrayBuffer(8));
-  const integer = (value: number) => {
-    bits.setFloat64(0, value);
-    const word = bits.getBigUint64(0);
-    const exponent = Number((word >> 52n) & 2047n);
-    const significand = (word & ((1n << 52n) - 1n)) | (exponent ? 1n << 52n : 0n);
-    return (word >> 63n ? -significand : significand) << BigInt(Math.max(0, exponent - 1));
-  };
-  const exact =
-    (integer(second[0]) - integer(first[0])) * (integer(query[1]) - integer(first[1])) -
-    (integer(second[1]) - integer(first[1])) * (integer(query[0]) - integer(first[0]));
-  return exact < 0n ? -1 : exact > 0n ? 1 : 0;
+  const orientation = computeTriangulationOrientation(first, second, query);
+  // The shared predicate uses 2 for nonfinite inputs; do not treat that as a positive sign.
+  return orientation === 2 ? Number.NaN : orientation;
 }
 function isPositionOnSegment(first: Position, second: Position, query: Position): boolean {
   return (
@@ -187,201 +324,88 @@ function doFeaturesIntersect(first: Feature, second: Feature): boolean {
   }
   return (
     first.kind === 'polygons' &&
-    second.parts.some(part => part.some(position => locatePosition(first, position) !== 0))
+    second.parts.some(part =>
+      part.some(
+        position => position.every(Number.isFinite) && locatePosition(first, position) !== 0
+      )
+    )
   );
 }
 
-// Keep boundary crossings as rational parameters over the supplied dyadic coordinates. A
-// reconstructed floating-point intersection or midpoint can move off an oblique boundary.
-function getPolygonSegmentCoverage(
-  polygon: Feature,
-  start: Position,
-  end: Position
-): [boolean, boolean] {
-  if (arePositionsEqual(start, end)) {
-    const location = locatePosition(polygon, start);
-    return [location !== 0, location === 1];
-  }
-  const bits = new DataView(new ArrayBuffer(8));
-  const integer = (value: number): bigint => {
-    bits.setFloat64(0, value);
-    const word = bits.getBigUint64(0),
-      exponent = Number((word >> 52n) & 2047n);
-    const significand = (word & ((1n << 52n) - 1n)) | (exponent ? 1n << 52n : 0n);
-    return (word >> 63n ? -significand : significand) << BigInt(Math.max(0, exponent - 1));
-  };
-  type ExactPosition = readonly [bigint, bigint];
-  type Fraction = readonly [bigint, bigint];
-  const exact = (point: Position): ExactPosition => [integer(point[0]), integer(point[1])];
-  const subtract = (first: ExactPosition, second: ExactPosition): ExactPosition => [
-    first[0] - second[0],
-    first[1] - second[1]
-  ];
-  const cross = (first: ExactPosition, second: ExactPosition) =>
-    first[0] * second[1] - first[1] * second[0];
-  const first = exact(start),
-    direction = subtract(exact(end), first);
-  const edges = Array.from(
-    getFeatureEdges(polygon),
-    ([edgeStart, edgeEnd]) => [exact(edgeStart), exact(edgeEnd)] as const
-  );
-  const breaks: Fraction[] = [
-    [0n, 1n],
-    [1n, 1n]
-  ];
-  const append = (numerator: bigint, denominator: bigint) => {
-    if (denominator < 0n) {
-      numerator = -numerator;
-      denominator = -denominator;
-    }
-    if (numerator >= 0n && numerator <= denominator) breaks.push([numerator, denominator]);
-  };
-  const axis = direction[0] * direction[0] >= direction[1] * direction[1] ? 0 : 1;
-  for (const [edgeStart, edgeEnd] of edges) {
-    const edge = subtract(edgeEnd, edgeStart),
-      offset = subtract(edgeStart, first),
-      denominator = cross(direction, edge);
-    if (denominator !== 0n) {
-      const alongEdge = cross(offset, direction);
-      if (
-        denominator > 0n
-          ? alongEdge >= 0n && alongEdge <= denominator
-          : alongEdge <= 0n && alongEdge >= denominator
-      )
-        append(cross(offset, edge), denominator);
-    } else if (cross(offset, direction) === 0n) {
-      append(edgeStart[axis] - first[axis], direction[axis]);
-      append(edgeEnd[axis] - first[axis], direction[axis]);
-    }
-  }
-  breaks.sort((firstFraction, secondFraction) => {
-    const difference = firstFraction[0] * secondFraction[1] - secondFraction[0] * firstFraction[1];
-    return difference < 0n ? -1 : difference > 0n ? 1 : 0;
-  });
-  const locate = ([numerator, denominator]: Fraction): number => {
-    const query: ExactPosition = [
-      first[0] * denominator + direction[0] * numerator,
-      first[1] * denominator + direction[1] * numerator
-    ];
-    let inside = false;
-    for (const [edgeStart, edgeEnd] of edges) {
-      const side = cross(subtract(edgeEnd, edgeStart), [
-        query[0] - edgeStart[0] * denominator,
-        query[1] - edgeStart[1] * denominator
-      ]);
-      if (
-        side === 0n &&
-        query[0] >= (edgeStart[0] < edgeEnd[0] ? edgeStart[0] : edgeEnd[0]) * denominator &&
-        query[0] <= (edgeStart[0] > edgeEnd[0] ? edgeStart[0] : edgeEnd[0]) * denominator &&
-        query[1] >= (edgeStart[1] < edgeEnd[1] ? edgeStart[1] : edgeEnd[1]) * denominator &&
-        query[1] <= (edgeStart[1] > edgeEnd[1] ? edgeStart[1] : edgeEnd[1]) * denominator
-      )
-        return 2;
-      if (
-        edgeStart[1] * denominator > query[1] !== edgeEnd[1] * denominator > query[1] &&
-        edgeEnd[1] > edgeStart[1] === side > 0n
-      )
-        inside = !inside;
-    }
-    return inside ? 1 : 0;
-  };
-  let interior = false;
-  for (let index = 0; index < breaks.length; index++) {
-    const current = breaks[index],
-      next = breaks[index + 1];
-    const samples: Fraction[] = [current];
-    if (next && current[0] * next[1] < next[0] * current[1])
-      samples.push([current[0] * next[1] + next[0] * current[1], 2n * current[1] * next[1]]);
-    for (const fraction of samples) {
-      const location = locate(fraction);
-      if (!location) return [false, false];
-      interior ||= location === 1;
-    }
-  }
-  return [true, interior];
-}
-
-function containsFeature(outer: Feature, inner: Feature, includeBoundary: boolean): boolean {
-  if (!outer.parts.length || !inner.parts.length) return false;
-  if (inner.kind === 'polygons' && outer.kind !== 'polygons') return false;
-  if (outer.kind === 'points' && inner.kind !== 'points') return false;
-  let interior = false;
-  for (const [start, end] of getFeatureEdges(inner)) {
-    if (outer.kind === 'lines' && !arePositionsEqual(start, end)) {
-      // Merge supplied endpoint intervals, never reconstructed parameter midpoints. A rounded
-      // midpoint of an oblique segment need not remain exactly collinear with its endpoints.
-      const axis = Math.abs(end[0] - start[0]) >= Math.abs(end[1] - start[1]) ? 0 : 1;
-      let reach = Math.min(start[axis], end[axis]);
-      const limit = Math.max(start[axis], end[axis]);
-      const intervals: number[][] = [];
-      for (const [first, second] of getFeatureEdges(outer)) {
-        if (
-          getOrientationSign(start, end, first) === 0 &&
-          getOrientationSign(start, end, second) === 0
-        )
-          intervals.push([
-            Math.min(first[axis], second[axis]),
-            Math.max(first[axis], second[axis])
-          ]);
-      }
-      intervals.sort((first, second) => first[0] - second[0]);
-      for (const [first, last] of intervals) {
-        if (first > reach) break;
-        reach = Math.max(reach, last);
-        if (reach >= limit) break;
-      }
-      if (reach < limit) return false;
-      interior = true;
-      continue;
-    }
-    if (outer.kind === 'polygons') {
-      const [covered, hasInterior] = getPolygonSegmentCoverage(outer, start, end);
-      if (!covered) return false;
-      interior ||= hasInterior;
-    } else {
-      const location = locatePosition(outer, start);
-      if (!location) return false;
-      interior ||= location === 1;
-    }
-  }
-  return includeBoundary || interior;
-}
 function doBoundsOverlap(first: number[], second: number[]): boolean {
   return (
     first[0] <= second[2] && second[0] <= first[2] && first[1] <= second[3] && second[1] <= first[3]
   );
 }
 
-/** Planar feature-level predicate join. Candidate slots count logical feature pairs in row order. */
+/** Exact planar matrix of one feature pair, including empty operands. @internal */
+export function computeSpatialRelateOnCPU(
+  left: CPUSpatialJoinGeometry,
+  right: CPUSpatialJoinGeometry,
+  leftRow = 0,
+  rightRow = 0
+): number {
+  const leftFeatures = readFeatures(left),
+    rightFeatures = readFeatures(right);
+  validateRequirement(
+    'CPUFeatureJoin',
+    Boolean(leftFeatures[leftRow] && rightFeatures[rightRow]),
+    'leftRow and rightRow must identify existing features'
+  );
+  return computeFeatureRelate(leftFeatures[leftRow], rightFeatures[rightRow]);
+}
+
+/**
+ * Planar feature-level predicate join. Candidate slots count logical feature pairs in row order.
+ * What differs from the GPU contributor: rational CPU topology has no orientation uncertainty;
+ * distances compute in float64. Empty features have no candidates. In anti mode leftRows are
+ * unmatched left rows and rightRows retain the missing-row sentinel.
+ */
 export function computeSpatialPredicateJoinOnCPU(
   left: CPUSpatialJoinGeometry,
   right: CPUSpatialJoinGeometry,
-  options: {predicate: MultipartJoinPredicate; candidateCapacity: number; pairCapacity: number}
-) {
-  validateCapacity(
-    'CPUFeatureJoin',
+  options: CPUFeatureJoinOptions
+): CPUSpatialPredicateJoinResult {
+  const capturedOptions = snapshotConstructionFields(options, [
+    'predicate',
+    'pattern',
+    'distance',
+    'engine',
+    'how',
+    'relate',
     'candidateCapacity',
-    options.candidateCapacity,
-    1,
-    FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY
-  );
-  validateCapacity(
-    'CPUFeatureJoin',
     'pairCapacity',
-    options.pairCapacity,
-    1,
-    FEATURE_JOIN_MAXIMUM_PAIR_CAPACITY
-  );
-  validateRequirement(
+    'leftStatus'
+  ]);
+  options = {
+    ...capturedOptions,
+    leftStatus:
+      capturedOptions.leftStatus &&
+      snapshotConstructionFields(capturedOptions.leftStatus, [
+        'overflow',
+        'candidateOverflow',
+        'complete'
+      ])
+  };
+  validateFeatureJoinOptions(
     'CPUFeatureJoin',
-    ['intersects', 'within', 'coveredBy'].includes(options.predicate),
-    'predicate must be intersects, within or coveredBy'
+    options,
+    Boolean(
+      (left.kind !== 'polygons' && left.featureOffsets) ||
+        (right.kind !== 'polygons' && right.featureOffsets)
+    )
   );
-  validateRequirement(
-    'CPUFeatureJoin',
-    left.kind !== 'polygons' || right.kind !== 'polygons' || options.predicate === 'intersects',
-    'polygon/polygon containment is unsupported by the feature-join operation forms'
-  );
+  const patterns =
+    options.predicate === 'relate'
+      ? getRelatePatterns(options.pattern!)
+      : options.predicate === 'dwithin'
+        ? []
+        : getPredicateRelatePatterns(
+            options.predicate,
+            left.kind === 'points' ? 0 : left.kind === 'lines' ? 1 : 2,
+            right.kind === 'points' ? 0 : right.kind === 'lines' ? 1 : 2
+          );
+  const masks = patterns.map(parseRelatePattern);
   const leftFeatures = readFeatures(left),
     rightFeatures = readFeatures(right);
   const ordered = rightFeatures
@@ -409,17 +433,37 @@ export function computeSpatialPredicateJoinOnCPU(
   }
   const leftRows = new Uint32Array(options.pairCapacity).fill(0xffffffff),
     rightRows = new Uint32Array(options.pairCapacity).fill(0xffffffff);
+  const relate = new Uint32Array(options.relate ? options.pairCapacity : 0);
+  const matched = new Uint32Array(leftFeatures.length);
   const candidateTruncated = new Uint32Array(leftFeatures.length);
+  const inputLoss = Boolean(
+    options.leftStatus?.overflow ||
+      options.leftStatus?.candidateOverflow ||
+      options.leftStatus?.complete === 0
+  );
   let candidateCount = 0,
     requiredCount = 0;
   let candidateBoundsTestCount = 0;
   for (const [leftRow, feature] of leftFeatures.entries()) {
+    if (options.leftStatus?.complete === 0) continue;
     const candidates: typeof ordered = [];
     const pending = [1];
     while (pending.length) {
       const node = pending.pop()!;
       candidateBoundsTestCount++;
-      if (!doBoundsOverlap(feature.bounds, boundsIndex[node])) continue;
+      const margin = options.predicate === 'dwithin' ? options.distance! : 0;
+      if (
+        !doBoundsOverlap(
+          [
+            feature.bounds[0] - margin,
+            feature.bounds[1] - margin,
+            feature.bounds[2] + margin,
+            feature.bounds[3] + margin
+          ],
+          boundsIndex[node]
+        )
+      )
+        continue;
       if (node >= leafCapacity) {
         const row = node - leafCapacity;
         if (row < ordered.length) candidates.push(ordered[row]);
@@ -433,33 +477,149 @@ export function computeSpatialPredicateJoinOnCPU(
         candidateTruncated[leftRow] = 1;
         continue;
       }
+      const matrix =
+        options.relate || (options.predicate !== 'intersects' && options.predicate !== 'dwithin')
+          ? computeFeatureRelate(feature, candidate.feature)
+          : 0;
       const match =
-        options.predicate === 'intersects'
+        options.predicate === 'intersects' && !options.relate
           ? doFeaturesIntersect(feature, candidate.feature)
-          : containsFeature(candidate.feature, feature, options.predicate === 'coveredBy');
+          : options.predicate === 'dwithin'
+            ? areFeaturesWithinDistance(feature, candidate.feature, options.distance!)
+            : masks.some(pattern =>
+                pattern.every((mask, cell) => (mask & (1 << ((matrix >>> (cell * 2)) & 3))) !== 0)
+              );
       if (!match) continue;
+      matched[leftRow] = 1;
+      if (options.how === 'anti') continue;
       if (requiredCount < options.pairCapacity) {
         leftRows[requiredCount] = leftRow;
         rightRows[requiredCount] = candidate.row;
+        if (options.relate) relate[requiredCount] = matrix;
       }
       requiredCount++;
     }
   }
+  const unmatchedRows = new Uint32Array(options.pairCapacity).fill(0xffffffff);
+  let unmatchedRequiredCount = 0;
+  for (let row = 0; row < leftFeatures.length; row++) {
+    if (inputLoss) candidateTruncated[row] = 1;
+    if (matched[row] || candidateTruncated[row]) continue;
+    if (unmatchedRequiredCount < options.pairCapacity) unmatchedRows[unmatchedRequiredCount] = row;
+    unmatchedRequiredCount++;
+  }
+  const candidateOverflow = Number(inputLoss || candidateCount > options.candidateCapacity);
+  if (options.how === 'anti') {
+    leftRows.set(unmatchedRows);
+    requiredCount = unmatchedRequiredCount;
+  }
   return {
     leftRows,
     rightRows,
+    relate,
     candidateTruncated,
     candidateBoundsTestCount,
+    unmatchedRows,
+    unmatchedStatus: {
+      count: Math.min(unmatchedRequiredCount, options.pairCapacity),
+      requiredCount: unmatchedRequiredCount,
+      overflow: Number(unmatchedRequiredCount > options.pairCapacity),
+      candidateOverflow
+    },
     status: {
       count: Math.min(requiredCount, options.pairCapacity),
       requiredCount,
       overflow: Number(requiredCount > options.pairCapacity),
-      candidateOverflow: Number(candidateCount > options.candidateCapacity)
+      candidateOverflow
     }
   };
 }
 
-function getPointSegmentDistance(query: Position, start: Position, end: Position): number {
+function areFeaturesWithinDistance(first: Feature, second: Feature, distance: number): boolean {
+  if (!first.parts.length || !second.parts.length) return false;
+  if (doFeaturesIntersect(first, second)) return true;
+  if (distance === 0) return false;
+  for (const [start, end] of getFeatureEdges(first))
+    for (const [otherStart, otherEnd] of getFeatureEdges(second))
+      if (
+        isPointWithinSegmentDistance(start, otherStart, otherEnd, distance) ||
+        isPointWithinSegmentDistance(end, otherStart, otherEnd, distance) ||
+        isPointWithinSegmentDistance(otherStart, start, end, distance) ||
+        isPointWithinSegmentDistance(otherEnd, start, end, distance)
+      )
+        return true;
+  return false;
+}
+
+export function isPointWithinSegmentDistance(
+  query: Position,
+  start: Position,
+  end: Position,
+  distance: number
+): boolean {
+  const direction = [end[0] - start[0], end[1] - start[1]];
+  const offset = [query[0] - start[0], query[1] - start[1]];
+  const lengthSquared = direction[0] ** 2 + direction[1] ** 2;
+  const projection = offset[0] * direction[0] + offset[1] * direction[1];
+  const fromEnd = [query[0] - end[0], query[1] - end[1]];
+  const endProjection = fromEnd[0] * direction[0] + fromEnd[1] * direction[1];
+  const firstProduct = offset[0] * direction[1];
+  const secondProduct = offset[1] * direction[0];
+  const cross = firstProduct - secondProduct;
+  const perpendicular = lengthSquared > 0 && projection > 0 && endProjection < 0;
+  const actual = perpendicular
+    ? cross ** 2
+    : projection <= 0 || lengthSquared === 0
+      ? offset[0] ** 2 + offset[1] ** 2
+      : fromEnd[0] ** 2 + fromEnd[1] ** 2;
+  const limit = distance ** 2 * (perpendicular ? lengthSquared : 1);
+  const crossError = (Math.abs(firstProduct) + Math.abs(secondProduct)) * Number.EPSILON * 16;
+  const comparisonError =
+    (Math.abs(actual) + Math.abs(limit)) * Number.EPSILON * 32 +
+    (perpendicular ? crossError * (2 * Math.abs(cross) + crossError) : 0);
+  // Dot products at opposite endpoints avoid subtracting lengthSquared from a rounded
+  // projection. Include coordinate subtraction error before trusting either sign.
+  const coordinateScale = Math.max(
+    ...query.map(Math.abs),
+    ...start.map(Math.abs),
+    ...end.map(Math.abs)
+  );
+  const projectionError =
+    Number.EPSILON * 32 * coordinateScale * (Math.abs(direction[0]) + Math.abs(direction[1]));
+  if (
+    ((start[0] === end[0] && start[1] === end[1]) ||
+      (Math.abs(projection) > projectionError && Math.abs(endProjection) > projectionError)) &&
+    Math.abs(actual - limit) > comparisonError
+  )
+    return actual < limit;
+  // Resolve threshold ties on the exact represented coordinates and caller threshold. All
+  // integers use the common 2^-1074 unit, so no rounded projection or square root is needed.
+  const bits = new DataView(new ArrayBuffer(8));
+  const integer = (value: number): bigint => {
+    bits.setFloat64(0, value);
+    const word = bits.getBigUint64(0),
+      exponent = Number((word >> 52n) & 2047n);
+    const significand = (word & ((1n << 52n) - 1n)) | (exponent ? 1n << 52n : 0n);
+    return (word >> 63n ? -significand : significand) << BigInt(Math.max(0, exponent - 1));
+  };
+  const directionX = integer(end[0]) - integer(start[0]),
+    directionY = integer(end[1]) - integer(start[1]);
+  let offsetX = integer(query[0]) - integer(start[0]),
+    offsetY = integer(query[1]) - integer(start[1]);
+  const exactLength = directionX ** 2n + directionY ** 2n;
+  const exactProjection = offsetX * directionX + offsetY * directionY;
+  const exactLimit = integer(distance) ** 2n;
+  if (exactLength > 0n && exactProjection > 0n && exactProjection < exactLength)
+    return (offsetX * directionY - offsetY * directionX) ** 2n <= exactLimit * exactLength;
+  if (exactProjection > 0n) {
+    offsetX = integer(query[0]) - integer(end[0]);
+    offsetY = integer(query[1]) - integer(end[1]);
+  }
+  return offsetX ** 2n + offsetY ** 2n <= exactLimit;
+}
+
+/** Distance on original float32 coordinates, retaining direction-invariant determinants. @internal */
+export function getPointSegmentDistance(query: Position, start: Position, end: Position): number {
   const difference = [end[0] - start[0], end[1] - start[1]];
   const length = Math.hypot(...difference);
   if (!length) return Math.hypot(query[0] - start[0], query[1] - start[1]);
@@ -468,45 +628,37 @@ function getPointSegmentDistance(query: Position, start: Position, end: Position
   if (fromStart[0] * difference[0] + fromStart[1] * difference[1] <= 0)
     return Math.hypot(...fromStart);
   if (fromEnd[0] * difference[0] + fromEnd[1] * difference[1] >= 0) return Math.hypot(...fromEnd);
-  const projection = Math.max(
-    0,
-    Math.min(
-      length,
-      (query[0] - start[0]) * (difference[0] / length) +
-        (query[1] - start[1]) * (difference[1] / length)
-    )
-  );
-  return Math.hypot(
-    query[0] - start[0] - (difference[0] / length) * projection,
-    query[1] - start[1] - (difference[1] / length) * projection
-  );
+  // Original float32 coordinates are dyadic integers in units of 2^-149. Computing the
+  // six-product determinant in that integer domain avoids subtraction/projection cancellation
+  // and gives identical magnitudes when a segment's vertices are reversed.
+  const bits = new DataView(new ArrayBuffer(4));
+  const integer = (value: number): bigint => {
+    bits.setFloat32(0, value);
+    const word = bits.getUint32(0),
+      exponent = (word >>> 23) & 255;
+    const significand = BigInt((word & 0x7fffff) | (exponent ? 0x800000 : 0));
+    return (word >>> 31 ? -significand : significand) << BigInt(Math.max(0, exponent - 1));
+  };
+  const startX = integer(start[0]),
+    startY = integer(start[1]);
+  const endX = integer(end[0]),
+    endY = integer(end[1]);
+  const queryX = integer(query[0]),
+    queryY = integer(query[1]);
+  const determinant = (queryX - startX) * (endY - startY) - (queryY - startY) * (endX - startX);
+  return Math.abs(Number(determinant) * 2 ** -298) / length;
 }
-/** Exact one-neighbor planar feature search, with minimum distance over all usable parts. */
+/**
+ * Exact one-neighbor planar feature search, with minimum distance over all usable parts.
+ * Nonfinite point parts and edges are skipped; no usable edge means a missing neighbor.
+ */
 export function computeNearestFeatureJoinOnCPU(
   queries: CPUSpatialJoinGeometry,
   targets: CPUSpatialJoinGeometry
-) {
-  const queryFeatures = readFeatures(queries),
-    targetFeatures = readFeatures(targets);
-  const rankFloat = new Float32Array(1),
-    rankBits = new Uint32Array(rankFloat.buffer);
-  const getDistanceRank = (distance: number) => {
-    if (distance === 0) return 0;
-    if (!Number.isFinite(distance)) return 0xff7ffffd;
-    const squared = distance * distance;
-    let exponent = Math.floor(Math.log2(squared)) + 1;
-    rankFloat[0] = squared / 2 ** exponent;
-    if (rankFloat[0] === 1) {
-      rankFloat[0] = 0.5;
-      exponent++;
-    }
-    if (exponent > 256 || (exponent === 256 && rankFloat[0] > 0.9999998807907104))
-      return 0xff7ffffd;
-    if (exponent < -251) return 0x00800000;
-    let word = (exponent + 252) * 0x800000 + (rankBits[0] & 0x7fffff);
-    if (word >= 0x7f800000) word += 0x01000000;
-    return Math.min(word, 0xff7ffffc);
-  };
+): CPUNearestFeatureJoinResult {
+  const queryFeatures = readFeatures(queries, true),
+    targetFeatures = readFeatures(targets, true);
+  const getDistanceRank = createCPUFeatureDistanceRank();
   // A sorted x index with prefix/suffix union bounds supports outward branch-and-bound search.
   // Whole remaining ranges are pruned before any part-distance evaluation, including wide features
   // whose minimum x is far from the query but whose later parts reach it.

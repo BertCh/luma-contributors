@@ -17,9 +17,9 @@ import {
   importGraphBuffer
 } from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  getGPUSpatialClusteringParameterValues,
-  GPUSpatialClustering,
-  GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH
+  getGPUDBSCANParameterValues,
+  GPUDBSCAN,
+  GPU_DBSCAN_PARAMETER_LENGTH
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/index';
 import {
   createInputBuffer,
@@ -58,16 +58,16 @@ it('DBSCAN cell-ordered scans: median time on 200k shuffled points in 4 blobs', 
   const parameterBuffer = new GPUParameterBuffer(device, {
     id: 'ab-parameters',
     format: 'float32',
-    length: GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
-    values: getGPUSpatialClusteringParameterValues({
+    length: GPU_DBSCAN_PARAMETER_LENGTH,
+    values: getGPUDBSCANParameterValues({
       bounds: [-200, -200, 1200, 1200],
       epsilon: 4,
-      minimumPoints: 8
+      minimumSamples: 8
     })
   });
   const graph = new GPUCommandGraph(device, {id: 'dbscan-ab'});
   graph.add(
-    new GPUSpatialClustering({
+    new GPUDBSCAN({
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', ROWS),
       parameters: parameterBuffer.importToGraph(graph),
       gridSize: [512, 512],

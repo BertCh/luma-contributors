@@ -13,11 +13,25 @@ can be followed by `graph.add(contributor)` without consuming the producer or du
 The cached node lists are frozen and returned as readonly arrays; inspecting them cannot change
 the passes that a later `graph.add` schedules. The same rule applies to the four spectral indices.
 
-Layout. A raster is `pixelCount` pixels, row-major, each with `dimensions` float32 components (1–1,024 for streaming contributors; 1–128 for the reference covariance family):
+Optional outputs can be omitted independently: projection supports RGB without the projected
+score view, a linear probe supports labels/confidence without the full probability table, and
+change detection supports similarity without angle. Pyramid vectors do not require validity or
+support-count outputs, and zone means do not require weights. Omitting these views does not
+change the remaining numerical results.
+
+Layout. A raster is `pixelCount` pixels, row-major, each with `dimensions` float32 components.
+Five packed classes accept 1–128 dimensions: `GPURasterEmbeddingNearestPixels`,
+`GPURasterEmbeddingKMeans`, `GPURasterEmbeddingCovariance`, `GPURasterEmbeddingZoneMean`, and
+`GPURasterEmbeddingPyramidLevel`. Seven chunk-capable classes accept 1–1,024 dimensions:
+`GPURasterEmbeddingDequantize`, `GPURasterEmbeddingQuantize`, `GPURasterEmbeddingSimilarity`,
+`GPURasterEmbeddingChange`, `GPURasterEmbeddingKNearestClassifier`, `GPURasterEmbeddingLinearProbe`,
+and `GPURasterEmbeddingProjection`. Their pixel chunks preserve complete vectors:
+
 `vectors[pixel * dimensions + band]`. An invalid pixel is marked by `mask` (zero) or by a non-finite
 component; the decoder writes NaN for every component of a NoData pixel. int8 data is `uint32` words of four
 little-endian signed bytes, pixel-major, as an `Int8Array` uploaded unchanged. Band-sequential files are
-interleaved by the host adapter. The element count `pixelCount * dimensions` must stay below 2^32, and a
+interleaved by the host adapter. The component-address limit is below 2^32 per pixel chunk on streaming routes and for the whole input
+on packed routes. A
 128-band float32 raster of 262,144 pixels fills one 128 MiB storage binding on a default device; tile larger
 rasters.
 
@@ -31,7 +45,7 @@ described in [Embedding raster codecs](./raster-embedding-codecs.md). Model infe
 ## `GPURasterEmbeddingDequantize`
 
 Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
-records stay together. Reference covariance-family dimensions remain 128.
+records stay together.
 
 AlphaEarth stores each component as an int8 `q` and decodes it as `sign(q) * (q / 127.5)^2`, with `q = -128`
 as NoData; a pixel with NoData in any band is invalid. The decoded vector has length close to one, not
@@ -39,6 +53,14 @@ exactly one, because of the 8-bit rounding; set `normalize` to divide by the len
 exact cosines. `output.validity` is optional.
 
 ```ts
+import {GPURasterEmbeddingDequantize} from '@luma-contributors/analysis/raster-analysis';
+import type {GraphDataView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+// Borrowed application inputs and allocated output views.
+declare const graph: GPUCommandGraph;
+declare const width: number, height: number;
+declare const int8Words: GraphDataView<'uint32'>;
+declare const vectors: GraphDataView<'float32'>;
+declare const validity: GraphDataView<'uint32'>;
 graph.add(new GPURasterEmbeddingDequantize({
   pixelCount: width * height,
   dimensions: 64,
@@ -51,17 +73,31 @@ graph.add(new GPURasterEmbeddingDequantize({
 ## `GPURasterEmbeddingSimilarity`
 
 Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
-records stay together. Reference covariance-family dimensions remain 128.
+records stay together.
 
 Cosine (or dot) similarity of every pixel to up to 64 query vectors: `similarity` for every pixel and
 query, the `maximum` over the queries, the `bestQuery` (the lowest on ties) and a `matches` mask for a
 per-frame threshold. Queries come from clicked pixels or from `GPURasterEmbeddingZoneMean` (the mean of a
 polygon, renormalized). Cosine follows the published `GPUSimilaritySearch`: two zero vectors have
-similarity one and exactly one gives zero.
+similarity one and exactly one gives zero. A non-finite query receives a NaN score and is excluded
+from the winner reduction. With no eligible query, maximum is NaN, bestQuery is `0xffffffff`, and
+matches is zero. Only finite computed scores are eligible: finite dot-product inputs can overflow
+to an infinite score, which remains in the score table but cannot win. For pixel `[2^64]` and query
+rows `[2^64]`, `[1]`, scores are `[+Infinity,2^64]` and the second query wins. Finite negative dot products remain eligible, including values below `-3e38`.
+
+Similarity dot products and linear-probe logits accumulate in float32. Decisions near a threshold
+or competing logit have an accumulation-error margin and can vary with band order and compiler
+reassociation. For weights `[.5,.5,.5]`, the exact score of `[.5,2^-26,-.5]` and
+`[.5,-.5,2^-26]` is `2^-27`. At threshold (or competing class-0 bias) `2^-28`, exact arithmetic
+would give match 1 and class 1. Sequential float32 addition gives scores 0 and `2^-27`, hence
+matches/classes 0 and 1 respectively. These boundary decisions are not a portable exact-arithmetic
+guarantee; callers needing stable labels must keep their decision margin larger than rounding error.
 
 {/* parameters: GPURasterEmbeddingSimilarity generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPURasterEmbeddingSimilarity` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterEmbeddingSimilarity`.
 
 - Packer: `getGPURasterEmbeddingSimilarityParameterValues(settings)`, writes `GPU_RASTER_EMBEDDING_SIMILARITY_PARAMETER_LENGTH` (1) `float32` values.
 
@@ -85,7 +121,7 @@ Kepler exposes these as the `pixel_row` column; these values are not caller iden
 ## `GPURasterEmbeddingChange`
 
 Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
-records stay together. Reference covariance-family dimensions remain 128.
+records stay together.
 
 The use Google recommends for AlphaEarth: the dot product between two years. Outputs are the cosine
 similarity, the angle between the vectors (computed as `2 atan2(|u - v|, |u + v|)` of the two unit
@@ -97,6 +133,8 @@ cosine is below a per-frame threshold. A pixel invalid in either year is NaN. Co
 {/* parameters: GPURasterEmbeddingChange generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPURasterEmbeddingChange` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterEmbeddingChange`.
 
 - Packer: `getGPURasterEmbeddingChangeParameterValues(settings)`, writes `GPU_RASTER_EMBEDDING_CHANGE_PARAMETER_LENGTH` (1) `float32` values.
 
@@ -120,11 +158,36 @@ The optional status is `[executedIterations, changedLabels, converged]`, with `c
 when labels stopped changing. Reaching the iteration budget with `converged = 0` leaves a provisional
 clustering. Kepler requests this status for its fixed 32-round budget and refuses to publish the
 label column if convergence was not reached; the error reports executed rounds and changed labels.
+`output.counts[cluster]` is the membership count of that specific cluster, in the same order as
+`output.centroids`; the sum alone does not validate the count vector. For vectors `[0,0,10,10,10]`
+and two clusters, deterministic seed rows 0 and 2 produce counts `[2,3]`. The first round reports
+`[1,5,0]`; a second round confirms unchanged labels and reports `[2,0,1]`. Omitting status keeps
+the same labels, centers and counts. Call `contributor.getResult(graph)` to obtain all output views,
+including a graph-owned `status` when none was allocated by the caller. This materializes passes
+without scheduling them; schedule with `graph.add(contributor)`. Decode a uint32 or byte read with
+`decodeGPURasterEmbeddingKMeansStatus` from `@luma-contributors/analysis/raster-analysis`.
+
+```ts
+import {
+  decodeGPURasterEmbeddingKMeansStatus,
+  type GPURasterEmbeddingKMeansStatus,
+  type GPURasterEmbeddingKMeansResult
+} from '@luma-contributors/analysis/raster-analysis';
+declare const result: GPURasterEmbeddingKMeansResult;
+declare const statusReadback: Uint8Array;
+const stopping: GPURasterEmbeddingKMeansStatus = decodeGPURasterEmbeddingKMeansStatus(statusReadback);
+console.log(result.status, stopping.converged);
+```
+
+Convergence tests unchanged assignments, not a center-displacement tolerance, and the last iterate
+remains available even at the iteration limit.
 
 ## `GPURasterEmbeddingKNearestClassifier`
 
-Default searchStructure tiled performs exact exhaustive training in 256-row tiles. Brute-force
-retains 4,096 training rows. Training count times dimensions must fit uint32 addressing, device
+Default `searchStructure: 'tiled'` performs exact exhaustive training with at most 256 training rows
+per tiled invocation. The `'brute-force'` route accepts at most 4,096 training rows total.
+The tiled route uses two scratch bindings, each `pixelChunkLength × neighborCount` elements
+(one float32 distance and one uint32 training-row index per neighbor). Training count times dimensions must fit uint32 addressing, device
 bindings and the command budget; aligned whole-pixel chunks support 1–1,024 dimensions.
 
 Exact tiled k-nearest-neighbour classification against a labelled training set, with
@@ -133,11 +196,15 @@ nearest, the smallest class on a vote tie, the lower sample on equal distances. 
 or `'cosine'` (distance `1 - cosine`; two zero vectors have similarity 1 and exactly one zero vector gives
 0, as in the published `GPUSimilaritySearch`). Outputs are the label, the vote share of the winner and the share of
 every class. The cost is `pixelCount x trainingCount x dimensions`.
+Both routes are compared against the published `GPUSimilaritySearch`, including zero vectors,
+invalid rows, ties, and training-tile boundaries. Upstream search can retain a valid row whose
+float32 Euclidean distance is infinite; the local classifier requires a finite distance to count
+that row as a vote. Infinite upstream distances therefore do not imply local vote eligibility.
 
 ## `GPURasterEmbeddingLinearProbe`
 
 Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
-records stay together. Reference covariance-family dimensions remain 128.
+records stay together.
 
 Inference of a host-trained linear probe: `softmax(W x + b)`, the prediction of a multinomial
 `LogisticRegression` (`coef_`, `intercept_`) with up to 64 classes, computed with the maximum subtracted so
@@ -147,8 +214,7 @@ intercepts `[0, b]`.
 ## PCA to RGB
 
 `GPURasterEmbeddingProjection`: Aligned GraphVectorView pixel records support chunked input with
-1–1,024 components; whole embedding records stay together. Reference covariance-family dimensions
-remain 128.
+1–1,024 components; whole embedding records stay together.
 
 Three steps, with only the eigenproblem on the CPU:
 
@@ -162,7 +228,22 @@ Three steps, with only the eigenproblem on the CPU:
 3. `GPURasterEmbeddingProjection` writes the scores `(x - mean) . component` and, for three or more
    components, an RGB image stretched to `[0, 1]`.
 
+Only positive finite spreads after float32 conversion are usable. An unusable spread falls back
+to the widest usable spread; if none is usable, every range is `[-1,1]`. For eigenvalues
+`[1e100,0,0]`, even the first binary64 spread overflows float32, so all three use `[-1,1]`.
+Projection normalizes wide finite stretch endpoints in a common power-of-two frame before subtraction;
+`[-2^127,2^127]` maps score zero to 0.5. Covariance centers in an anchor-relative frame,
+independently of the rounded public mean, to retain low-contrast variance. Compensated range sums
+and their compensated merge compute the public mean separately in caller units, so an unrepresentative
+anchor does not introduce cancellation into a sparse band’s public mean.
+
 ```ts
+import {
+  getRasterEmbeddingPrincipalComponents,
+  getRasterEmbeddingStretchRanges,
+  getGPURasterEmbeddingProjectionParameterValues
+} from '@luma-contributors/analysis/raster-analysis';
+declare const covarianceReadback: Float32Array;
 const {components, eigenvalues} = getRasterEmbeddingPrincipalComponents(covarianceReadback, 64, 3);
 const stretchRanges = getRasterEmbeddingStretchRanges(eigenvalues, 2);
 const parameters = getGPURasterEmbeddingProjectionParameterValues({stretchRanges});
@@ -171,6 +252,8 @@ const parameters = getGPURasterEmbeddingProjectionParameterValues({stretchRanges
 {/* parameters: GPURasterEmbeddingProjection generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPURasterEmbeddingProjection` parameters
+
+Import from `@luma-contributors/analysis/raster-analysis`: `GPURasterEmbeddingProjection`.
 
 - Packer: `getGPURasterEmbeddingProjectionParameterValues(settings)`, writes `GPU_RASTER_EMBEDDING_PROJECTION_PARAMETER_LENGTH` (6) `float32` values.
 
@@ -186,11 +269,40 @@ Settings of `getGPURasterEmbeddingProjectionParameterValues`:
 
 The mean embedding of each polygon, weighted by coverage and renormalized to unit length: a descriptor to
 search with, or to compare zones. Pixels come from a `zoneRaster` (one id per pixel, weight one) or from
-the compact tuples of `GPURasterFractionalCoverage` (`zoneIds`, `cellIds`, `fractions`, `status.count`), so a
+the complete output of `GPURasterFractionalCoverage`, so a
 border pixel shared by two polygons counts toward each in proportion to its overlap. Sums are 96-bit
 fixed-point integers added atomically, so they do not depend on thread order; the only rounding is the
 conversion to float32. `output.meanLengths` is the length of the mean before renormalization, 1 when the
 zone points one way and near 0 when its pixels cancel. A zone without usable weight is NaN.
+
+Pass the whole producer output as `tuples: coverage`. `status.count` bounds the readable compact
+prefix; tails are unspecified. Without candidate exhaustion, `requiredCount` counts required tuples,
+and `overflow` means tuple output did not fit. With candidate exhaustion, `candidateOverflow` is nonzero
+and `requiredCount` is the sentinel `0xffffffff`: the true required tuple count is unknown, so this
+sentinel is not a tuple-capacity request. Increase the candidate budget and rerun this route before
+sizing tuple output from the resulting count. `overflow` can still be zero on candidate loss.
+`zoneValidity` is in the zone row domain; zero suppresses the corresponding zone's mean and weight. The reducer suppresses incomplete means and weights as NaN
+when these controls indicate loss. `zoneValidity` must occupy a different physical buffer from
+writable means/weights, even when byte ranges would be disjoint. A count-only tuple input is appropriate
+only for externally certified complete tuples.
+
+```ts
+import {
+  GPURasterEmbeddingZoneMean,
+  GPURasterFractionalCoverage
+} from '@luma-contributors/analysis/raster-analysis';
+import type {GraphDataView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+declare const graph: GPUCommandGraph;
+declare const coverage: ConstructorParameters<typeof GPURasterFractionalCoverage>[0]['output'];
+declare const pixelCount: number, zoneCount: number;
+declare const vectors: GraphDataView<'float32'>;
+declare const means: GraphDataView<'float32'>;
+declare const weights: GraphDataView<'float32'>;
+graph.add(new GPURasterEmbeddingZoneMean({
+  pixelCount, dimensions: 64, zoneCount, vectors, tuples: coverage,
+  output: {means, weights}
+}));
+```
 
 ## `GPURasterEmbeddingPyramidLevel`
 

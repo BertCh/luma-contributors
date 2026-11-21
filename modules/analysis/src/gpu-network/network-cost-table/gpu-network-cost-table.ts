@@ -75,6 +75,8 @@ export type GPUNetworkCostTableOutput = {
    * `nodeCount + 1` exclusive row offsets into `targets` and `costs`, clamped to the capacity so
    * the CSR is always consistent (possibly truncated).
    */
+  /** One-row captured cutoff. Retain this with the CSR and bind as routeTable.costLimit. Rebuild after topology, edge-length or increased certified-limit changes. */
+  builtCostLimit?: GraphDataView<'float32'>;
   offsets: GraphDataView<'uint32'>;
   /**
    * Target node per entry, ascending within each row. Its length is the entry capacity. Row `u`
@@ -216,6 +218,7 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
         nodePositions: callerTopology.nodePositions
       }),
       output: Object.freeze({
+        builtCostLimit: callerOutput.builtCostLimit,
         offsets: callerOutput.offsets,
         targets: callerOutput.targets,
         costs: callerOutput.costs,
@@ -237,6 +240,7 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     validateNetworkWritableViews(this.id, props.output, [
       {outputs: {offsets: props.output.offsets}},
       {outputs: {targets: props.output.targets, costs: props.output.costs}},
+      {outputs: {builtCostLimit: props.output.builtCostLimit}},
       {outputs: {status: props.output.status}}
     ]);
     const {output} = props;
@@ -245,6 +249,14 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     validateSinglePackedView(props.costLimit, ['float32'], `${id} costLimit`);
     if (props.costLimit.length !== 1) {
       throw new Error(`${id} costLimit must contain exactly one row`);
+    }
+    if (output.builtCostLimit) {
+      validateSinglePackedView(output.builtCostLimit, ['float32'], `${id} output.builtCostLimit`);
+      validateRequirement(
+        id,
+        output.builtCostLimit.length === 1,
+        'output.builtCostLimit must contain exactly one row'
+      );
     }
     validateSinglePackedView(output.offsets, ['uint32'], `${id} output.offsets`);
     if (output.offsets.length !== nodeCount + 1) {
@@ -293,7 +305,8 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
       2 +
       (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) +
       Number(Boolean(converged || iterationLimitReached || complete));
-    this.estimatedCommandNodeCount = 2 + this.batchCount * (4 + reachabilityNodeCount);
+    this.estimatedCommandNodeCount =
+      2 + Number(Boolean(output.builtCostLimit)) + this.batchCount * (4 + reachabilityNodeCount);
     // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const outputs = getOutputs(props);
@@ -371,6 +384,20 @@ fn isTableEntry(cost: f32) -> bool {
   state[stateOffset + 3u] = 0u;`
       })
     ];
+    if (output.builtCostLimit)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-capture-limit`,
+          operation: OPERATION,
+          variant: 'capture-limit',
+          bindings: [
+            read('costLimit', props.costLimit, 'f32'),
+            write('builtCostLimit', output.builtCostLimit, 'f32')
+          ],
+          invocationCount: 1,
+          body: 'builtCostLimit[builtCostLimitOffset] = costLimit[costLimitOffset];'
+        })
+      );
     for (let batch = 0; batch < batchCount; batch++) {
       nodes.push(
         // Lane `l` searches from node `firstRow + l`, which is expanded node `l * nodeCount + row`.
@@ -580,6 +607,7 @@ function getInputs(props: GPUNetworkCostTableProps): (GraphDataView | undefined)
 function getOutputs(props: GPUNetworkCostTableProps): (GraphDataView | undefined)[] {
   const {output} = props;
   return [
+    output.builtCostLimit,
     output.offsets,
     output.targets,
     output.costs,

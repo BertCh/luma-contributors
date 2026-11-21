@@ -487,13 +487,13 @@ export default defineScene<SpectralTextureOptions>({
       label: 'Profile QA gaps',
       group: 'Transect',
       apply: 'compile',
-      default: 'strict',
+      default: 'propagate',
       options: [
-        {value: 'strict', label: 'Strict support'},
+        {value: 'propagate', label: 'Strict support'},
         {value: 'renormalize', label: 'Renormalize valid neighbors'}
       ],
       disabledWhen: state => state.profileMethod === 'nearest',
-      help: 'For bilinear interpolation, strict requires complete support and renormalize uses valid neighbors only.'
+      help: 'For bilinear interpolation, `propagate` requires complete support and renormalize uses valid neighbors only.'
     },
     {
       kind: 'select',

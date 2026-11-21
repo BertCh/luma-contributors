@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {createHash} from 'node:crypto';
 import {Buffer, type Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getResourceBuffer} from '../network-resource-buffers';
@@ -10,7 +15,7 @@ import {expect, it, vi} from 'vitest';
 import {getForbiddenFlowWGSLIdentifiers} from '../flow-aggregation/flow-wgsl-review';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  decodeGPUNetworkCoarseningSummary,
+  decodeGPUNetworkCoarseningSummaryWords,
   GPUNetworkCoarsening,
   GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY,
   getGPUNetworkCoarseningMaximumWeightedEdgeCapacity,
@@ -195,7 +200,7 @@ it('coarsening oracle helpers quantize, wrap and order deterministically', () =>
   expect(Array.from(result.groupVertexCount)).toEqual([2, 1, 0]);
   expect(Array.from(result.groupIntraEdgeCount)).toEqual([2, 0, 0]);
   expect(result.edges).toEqual([]);
-  expect(decodeGPUNetworkCoarseningSummary(result.summary)).toMatchObject({
+  expect(decodeGPUNetworkCoarseningSummaryWords(result.summary)).toMatchObject({
     liveNodeCount: 4,
     overflowedNodeCount: 1,
     droppedEdgeCount: 1,
@@ -204,7 +209,7 @@ it('coarsening oracle helpers quantize, wrap and order deterministically', () =>
   });
   expect(result.overflow).toBe(false);
   expect(result.candidateOverflow).toBe(true);
-  expect(() => decodeGPUNetworkCoarseningSummary([1, 2])).toThrow(/eight words/);
+  expect(() => decodeGPUNetworkCoarseningSummaryWords([1, 2])).toThrow(/8 words/);
 });
 
 it('GPUNetworkCoarsening gives CSR tail slots the sentinel key and folds its counters', () => {
@@ -515,4 +520,152 @@ it('coarsening bounds node and output capacity literals before creating command 
   Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 2 ** 36});
   expect(getGPUNetworkCoarseningMaximumWeightedEdgeCapacity(device)).toBe(2147483647);
   device.destroy();
+});
+
+it('NET-125 captures topology descriptors, optional writers and nested compact ports', () => {
+  const device = createNullWebGPUDevice();
+  const {graph, props, importView} = createContext(device);
+  const original = props();
+  try {
+    const contributor = new GPUNetworkCoarsening(original);
+    const originalNeighbors = original.topology.neighbors;
+    const originalIds = original.output.edges.ids;
+    const originalCount = original.output.edges.status.count;
+    original.directed = true;
+    original.groupCapacity = 128;
+    original.topology.neighbors = importView('redirect-neighbors', 'uint32', 2);
+    original.output.edges.ids = importView('redirect-edges', 'uint32', EDGE_CAPACITY);
+    original.output.edges.status.count = importView('redirect-count', 'uint32', 1);
+    original.output.groupValueSum = importView('redirect-values', 'float32', GROUP_CAPACITY);
+    expect(contributor.props.groupCapacity).toBe(4);
+    expect(contributor.props.directed).toBeUndefined();
+    expect(contributor.props.topology.neighbors).toBe(originalNeighbors);
+    expect(contributor.props.output.edges.ids).toBe(originalIds);
+    expect(contributor.props.output.edges.status.count).toBe(originalCount);
+    expect(contributor.props.output.groupValueSum).toBeUndefined();
+    expect(contributor.props.labels).toBe(original.labels);
+    const nodes = contributor.getCommandNodes(graph);
+    expect([contributor.nodeCount, contributor.groupCapacity, contributor.edgeCapacity]).toEqual([
+      6, 4, 5
+    ]);
+    const resources = nodes.flatMap(node => (node.resources ?? []).map(getResourceBuffer));
+    expect(resources).toContain(originalNeighbors);
+    expect(resources).toContain(originalIds);
+    expect(resources).toContain(originalCount);
+    expect(resources).not.toContain(original.output.edges.ids);
+    expect(resources).not.toContain(original.output.edges.status.count);
+    expect(nodes).toHaveLength(20);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('NET-126 pins coarsening reductions, fixed-point encoding and all optional writers before extraction', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const fixedPointScale of [undefined, 65536]) {
+      const {graph, props, importView} = createContext(device);
+      recordWGSLKernelNodes(graph);
+      const contributor = new GPUNetworkCoarsening(
+        props({
+          fixedPointScale,
+          directed: true,
+          topology: {
+            offsets: importView('pin-offsets', 'uint32', 7),
+            neighbors: importView('pin-neighbors', 'uint32', 10),
+            weights: importView('pin-weights', 'float32', 10),
+            nodePositions: importView('pin-positions', 'float32x2', 6)
+          },
+          nodeValues: importView('pin-values', 'float32', 6),
+          output: {
+            groupIntraEdgeCount: importView('pin-intra-counts', 'uint32', 4),
+            groupIntraWeight: importView('pin-intra-weights', 'float32', 4),
+            groupCentroid: importView('pin-centroids', 'float32x2', 4),
+            groupBounds: importView('pin-bounds', 'float32x4', 4),
+            groupValueSum: importView('pin-sums', 'float32', 4),
+            edgeWeights: importView('pin-edge-weights', 'float32', 5),
+            summary: importView('pin-summary', 'uint32', 8)
+          }
+        })
+      );
+      const nodes = contributor.getCommandNodes(graph);
+      const digest = createHash('sha256')
+        .update(JSON.stringify([...getParsedKernelSources(nodes)]))
+        .digest('hex');
+      const bindings = new Map(
+        nodes.flatMap(
+          node =>
+            getWGSLKernelNodeRecord(graph, node.id)?.bindings.map(
+              binding => [`${node.id}:${binding.name}`, binding.view] as const
+            ) ?? []
+        )
+      );
+      const {output} = contributor.props;
+      const expectedBindings: Record<string, GraphDataView> = {
+        'network-coarsening-groups:groupCounts': output.groupNodeCount,
+        'network-coarsening-groups:centroidOut': output.groupCentroid!,
+        'network-coarsening-groups:boundsOut': output.groupBounds!,
+        'network-coarsening-groups:valueOut': output.groupValueSum!,
+        'network-coarsening-intra-groups:intraCountOut': output.groupIntraEdgeCount!,
+        'network-coarsening-intra-groups:intraWeightOut': output.groupIntraWeight!,
+        'network-coarsening-segments:edgeIds': output.edges.ids,
+        'network-coarsening-segments:edgeTargets': output.edgeTargetGroups,
+        'network-coarsening-segments:edgeCounts': output.edgeCounts,
+        'network-coarsening-edge-weights:edgeWeights': output.edgeWeights!,
+        'network-coarsening-publish:countOut': output.edges.status.count,
+        'network-coarsening-publish:overflowOut': output.edges.status.overflow,
+        'network-coarsening-summary:summary': output.summary!
+      };
+      const assertDeclaration = (bindingViews: ReadonlyMap<string, GraphDataView>) => {
+        for (const [name, expectedView] of Object.entries(expectedBindings)) {
+          expect(bindingViews.get(name), name).toBe(expectedView);
+        }
+        expect
+          .soft(digest, `fixedPointScale=${fixedPointScale}`)
+          .toBe(
+            fixedPointScale
+              ? '5226c3f191797b985a831cd8fbe6cc841fe81a19298eac392717adfd7406476f'
+              : '8fd250fed294bc122b813719fdc5cc522217c865e20878d805907672ed91e36a'
+          );
+      };
+      assertDeclaration(bindings);
+      // Same-format optional outputs can be swapped without changing shader text or IDs.
+      const swapped = new Map(bindings);
+      swapped.set(
+        'network-coarsening-groups:valueOut',
+        expectedBindings['network-coarsening-intra-groups:intraWeightOut']
+      );
+      swapped.set(
+        'network-coarsening-intra-groups:intraWeightOut',
+        expectedBindings['network-coarsening-groups:valueOut']
+      );
+      expect(() => assertDeclaration(swapped)).toThrow();
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('coarsening retains optional partition provenance beside the incumbent quotient (CPL-14)', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const {graph, importView, props} = createContext(device);
+    const labelsComplete = importView('labels-complete', 'uint32', 1);
+    const published = importView('published-complete', 'uint32', 1);
+    const contributor = new GPUNetworkCoarsening(
+      props({labelsComplete, output: {labelsComplete: published}})
+    );
+    expect(contributor.props.labelsComplete).toBe(labelsComplete);
+    expect(contributor.partitionProvenance.labelsComplete).toBe(published);
+    expect(contributor.getCommandNodes(graph).map(node => node.id)).toContain(
+      'network-coarsening-partition-provenance'
+    );
+    expect(
+      () =>
+        new GPUNetworkCoarsening(props({labelsComplete: importView('short-complete', 'uint32', 0)}))
+    ).toThrow(/labelsComplete/);
+    expect(new GPUNetworkCoarsening(props()).partitionProvenance.labelsComplete).toBeUndefined();
+  } finally {
+    device.destroy();
+  }
 });

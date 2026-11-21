@@ -23,7 +23,104 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {reclassifyOnCPU, type ReclassifyScene} from './raster-algebra-oracle';
 import {createRandom, expectFloatArraysClose} from './raster-algebra-test-utils';
-import {requireTestDevice} from '../../utils/require-test-device';
+import {requireTestDevice} from '../../../src/testing/require-test-device';
+
+it('B2 exact count supports all terminals and rereads count and closure on resubmission', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers = [
+    createInputBuffer(device, Float32Array.of(1, 7, 100, NaN)),
+    createInputBuffer(
+      device,
+      Float32Array.from({length: 31}, (_, index) => index)
+    ),
+    createInputBuffer(
+      device,
+      Float32Array.from({length: 32}, (_, index) => 10 * index)
+    ),
+    createInputBuffer(device, Uint32Array.of(1, 0, 1, 1)),
+    createInputBuffer(device, getGPURasterReclassifyParameterValues({breakCount: 0})),
+    createInputBuffer(device, Uint32Array.of(31)),
+    createOutputBuffer(device, 4),
+    createOutputBuffer(device, 4),
+    createOutputBuffer(device, 32)
+  ];
+  graph.add(
+    new GPURasterReclassify({
+      values: importGraphBuffer(graph, 'values', buffers[0], 'float32', 4),
+      breaks: importGraphBuffer(graph, 'breaks', buffers[1], 'float32', 31),
+      classValues: importGraphBuffer(graph, 'class-values', buffers[2], 'float32', 32),
+      mask: importGraphBuffer(graph, 'mask', buffers[3], 'uint32', 4),
+      parameters: importGraphBuffer(graph, 'parameters', buffers[4], 'float32', 4),
+      activeBreakCount: importGraphBuffer(graph, 'active', buffers[5], 'uint32', 1),
+      output: {
+        classes: importGraphBuffer(graph, 'classes', buffers[6], 'uint32', 4),
+        reclassified: importGraphBuffer(graph, 'reclassified', buffers[7], 'float32', 4),
+        classCounts: importGraphBuffer(graph, 'counts', buffers[8], 'uint32', 32)
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    for (const right of [false, true]) {
+      if (right) {
+        buffers[4].write(getGPURasterReclassifyParameterValues({breakCount: 0, closed: 'right'}));
+        buffers[5].write(Uint32Array.of(30));
+      }
+      submitGraph(device, compiled, undefined);
+      // Left counts breaks <= x; right counts breaks < x. Masked/NaN rows never count.
+      const first = right ? 1 : 2;
+      const last = right ? 30 : 31;
+      expect(await readUint32(buffers[6], 4)).toEqual([first, 0xffffffff, last, 0xffffffff]);
+      const mapped = await readFloat32(buffers[7], 4);
+      expect(mapped[0]).toBe(first * 10);
+      expect(mapped[1]).toBeNaN();
+      expect(mapped[2]).toBe(last * 10);
+      expect(mapped[3]).toBeNaN();
+      expect(await readUint32(buffers[8], 32)).toEqual(
+        Array.from({length: 32}, (_, index) => (index === first || index === last ? 1 : 0))
+      );
+    }
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+it('PCK-08 exact active count retains the final break beyond float32 integer precision', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const count = 16777217;
+  // Exact ascending breaks 0..2^24 are all representable. Input is the final break;
+  // left closure counts all 2^24+1 breaks, so its literal class is 16777217.
+  const breaks = Float32Array.from({length: count}, (_, index) => index);
+  const buffers = [
+    createInputBuffer(device, breaks),
+    createInputBuffer(device, Float32Array.of(16777216)),
+    createInputBuffer(device, getGPURasterReclassifyParameterValues({breakCount: 0})),
+    createInputBuffer(device, Uint32Array.of(count)),
+    createOutputBuffer(device, 1)
+  ];
+  const graph = new GPUCommandGraph(device);
+  graph.add(
+    new GPURasterReclassify({
+      values: importGraphBuffer(graph, 'values', buffers[1], 'float32', 1),
+      breaks: importGraphBuffer(graph, 'breaks', buffers[0], 'float32', count),
+      parameters: importGraphBuffer(graph, 'params', buffers[2], 'float32', 4),
+      activeBreakCount: importGraphBuffer(graph, 'count', buffers[3], 'uint32', 1),
+      output: {classes: importGraphBuffer(graph, 'classes', buffers[4], 'uint32', 1)}
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(buffers[4], 1)).toEqual([16777217]);
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
 
 it('GPURasterReclassify matches the CPU oracle as breaks and closure change without rebuilding', async () => {
   const device = await getWebGPUTestDevice();

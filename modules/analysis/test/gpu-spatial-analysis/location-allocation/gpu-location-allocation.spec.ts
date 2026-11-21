@@ -7,7 +7,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
   GPULocationAllocation,
-  GPU_LOCATION_ALLOCATION_STATUS,
+  GPU_LOCATION_ALLOCATION_STATUS_LAYOUT,
   type GPULocationAllocationOperation
 } from '../../../src/gpu-spatial-analysis/location-allocation/index';
 import {
@@ -72,7 +72,7 @@ async function runAllocation(
   const assignmentsBuffer = createOutputBuffer(device, demandCount);
   const assignedCostsBuffer = createOutputBuffer(device, demandCount);
   const objectiveBuffer = createOutputBuffer(device, 1);
-  const statusBuffer = createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS.length);
+  const statusBuffer = createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length);
   const graph = new GPUCommandGraph(device, {id: `location-allocation-${operation}`});
   graph.add(
     new GPULocationAllocation({
@@ -141,7 +141,7 @@ async function runAllocation(
           'status',
           statusBuffer,
           'uint32',
-          GPU_LOCATION_ALLOCATION_STATUS.length
+          GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length
         )
       }
     })
@@ -153,7 +153,7 @@ async function runAllocation(
     assignments: await readUint32(assignmentsBuffer, demandCount),
     assignedCosts: await readFloat32(assignedCostsBuffer, demandCount),
     objective: (await readFloat32(objectiveBuffer, 1))[0],
-    status: await readUint32(statusBuffer, GPU_LOCATION_ALLOCATION_STATUS.length)
+    status: await readUint32(statusBuffer, GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
   };
   compiled.destroy();
   costsBuffer.destroy();
@@ -481,15 +481,16 @@ it('GPULocationAllocation swap phase equals the CPU swap mirror and never worsen
         } else {
           expect(objective, label).toBeLessThanOrEqual(optimum);
         }
-        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount], label).toBe(
+        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.swapIterationCount], label).toBe(
           mirror.swapIterations
         );
-        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.converged], label).toBe(
+        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.converged], label).toBe(
           mirror.converged ? 1 : 0
         );
-        expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.iterationLimitReached], label).toBe(
-          mirror.iterationLimitReached ? 1 : 0
-        );
+        expect(
+          result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.iterationLimitReached],
+          label
+        ).toBe(mirror.iterationLimitReached ? 1 : 0);
       }
     }
   }
@@ -501,16 +502,16 @@ it('GPULocationAllocation swap phase closes the classic p-median greedy gap and 
   if (!full) return;
   expect(full.selected).toEqual([0, 1, 1]);
   expect(full.objective).toBe(2);
-  expect(full.status[GPU_LOCATION_ALLOCATION_STATUS.converged]).toBe(1);
+  expect(full.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.converged]).toBe(1);
   const greedyOnly = await runAllocation('p-median', costs, 3, 2, undefined, 0);
   if (!greedyOnly) return;
   expect(greedyOnly.objective).toBeGreaterThan(full.objective);
   expect(greedyOnly.status.slice(4)).toEqual([0, 0, 0]);
   const limited = await runAllocation('p-median', costs, 3, 2, undefined, 1);
   if (!limited) return;
-  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount]).toBe(1);
-  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.iterationLimitReached]).toBe(1);
-  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS.converged]).toBe(0);
+  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.swapIterationCount]).toBe(1);
+  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.iterationLimitReached]).toBe(1);
+  expect(limited.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.converged]).toBe(0);
 });
 
 for (const sparse of [false, true])
@@ -589,7 +590,7 @@ for (const sparse of [false, true])
     expect(result.assignedCosts).toEqual([0, 0, 0, 0, 1]);
     expect(Number.isFinite(result.objective)).toBe(true);
     expect(result.objective).toBe(4 * scale);
-    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.uncoveredDemandCount]).toBe(1);
     expect(result.status.slice(4)).toEqual([1, 0, 1]);
   });
 
@@ -600,7 +601,7 @@ it('GPULocationAllocation rejects a NaN cost instead of treating it as a valid c
   new Uint32Array(costs.buffer)[1] = 0x7fc00000;
   const result = await runAllocation('p-median', costs, 2, 1);
   if (!result) return;
-  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount]).toBeGreaterThan(0);
+  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.invalidCount]).toBeGreaterThan(0);
 });
 
 it('GPULocationAllocation p-median never sums unreachable rows into the objective', async () => {
@@ -610,8 +611,8 @@ it('GPULocationAllocation p-median never sums unreachable rows into the objectiv
   // A summed 1e30 sentinel ties both facilities in float32 and picks facility 0 (cost 18).
   expect(getSelectedFacilities(result.selected)).toEqual([expectedFacility]);
   expect(result.objective).toBe(expectedObjective);
-  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount]).toBe(1);
-  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount]).toBe(0);
+  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.uncoveredDemandCount]).toBe(1);
+  expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.invalidCount]).toBe(0);
   expect(result.assignments[0]).toBe(0xffffffff);
   expect(result.assignedCosts[0]).toBe(Infinity);
 
@@ -634,9 +635,10 @@ it('GPULocationAllocation p-median never sums unreachable rows into the objectiv
       expect(getSelectedFacilities(swapped.selected), label).toEqual(mirror.selected);
       // Integer costs: the reachable-row sum is exact in float32.
       expect(swapped.objective, label).toBe(parts.cost);
-      expect(swapped.status[GPU_LOCATION_ALLOCATION_STATUS.uncoveredDemandCount], label).toBe(
-        parts.unreachable
-      );
+      expect(
+        swapped.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.uncoveredDemandCount],
+        label
+      ).toBe(parts.unreachable);
     }
   }
 });
@@ -676,9 +678,9 @@ it('GPULocationAllocation p-median meets the scipy MILP optimum bound on the pro
     };
     expect(compareWeightedPMedianParts(parts, optimum), label).toBeGreaterThanOrEqual(0);
     expect(result.objective, label).toBe(parts.cost);
-    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount], label).toBe(0);
-    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.complete], label).toBe(1);
-    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.converged], label).toBe(1);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.invalidCount], label).toBe(0);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.complete], label).toBe(1);
+    expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.converged], label).toBe(1);
     expect(
       isWeightedPMedianSwapLocalOptimum(
         instance.costs,
@@ -754,13 +756,13 @@ it('GPULocationAllocation swap phase equals the decomposed CPU mirror on weighte
             mirror.selected
           );
           expect(
-            result.status[GPU_LOCATION_ALLOCATION_STATUS.swapIterationCount],
+            result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.swapIterationCount],
             `${label} sparse ${sparse}`
           ).toBe(mirror.swapIterations);
-          expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.converged], label).toBe(
+          expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.converged], label).toBe(
             mirror.converged ? 1 : 0
           );
-          expect(result.status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount], label).toBe(0);
+          expect(result.status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.invalidCount], label).toBe(0);
         }
       }
     }
@@ -859,7 +861,7 @@ it('GPULocationAllocation rejects unsorted, duplicated or out-of-range sparse ro
       createOutputBuffer(device, facilityCount),
       createOutputBuffer(device, 2),
       createOutputBuffer(device, 1),
-      createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS.length)
+      createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
     ];
     graph.add(
       new GPULocationAllocation({
@@ -886,15 +888,15 @@ it('GPULocationAllocation rejects unsorted, duplicated or out-of-range sparse ro
             'status',
             buffers[6],
             'uint32',
-            GPU_LOCATION_ALLOCATION_STATUS.length
+            GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length
           )
         }
       })
     );
     const compiled = graph.compile();
     submitGraph(device, compiled, undefined);
-    const status = await readUint32(buffers[6], GPU_LOCATION_ALLOCATION_STATUS.length);
-    expect(status[GPU_LOCATION_ALLOCATION_STATUS.invalidCount], name).toBeGreaterThan(0);
+    const status = await readUint32(buffers[6], GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length);
+    expect(status[GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.invalidCount], name).toBeGreaterThan(0);
     compiled.destroy();
     for (const buffer of buffers) buffer.destroy();
   }
@@ -941,7 +943,7 @@ it('A/B swap phase: pair-per-thread (old) vs decomposition (new) vs sparse, 2000
       selected: createOutputBuffer(device, facilityCount),
       assignments: createOutputBuffer(device, demandCount),
       objective: createOutputBuffer(device, 1),
-      status: createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS.length)
+      status: createOutputBuffer(device, GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length)
     };
     const costsView =
       variant === 'sparse'
@@ -959,7 +961,7 @@ it('A/B swap phase: pair-per-thread (old) vs decomposition (new) vs sparse, 2000
       'status',
       buffers.status,
       'uint32',
-      GPU_LOCATION_ALLOCATION_STATUS.length
+      GPU_LOCATION_ALLOCATION_STATUS_LAYOUT.length
     );
     const allocation = new GPULocationAllocation({
       id: 'ab',

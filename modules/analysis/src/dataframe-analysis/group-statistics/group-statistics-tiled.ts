@@ -256,6 +256,7 @@ export function getTiledGroupStatisticsNodes<Parameters>(
         },
         valueChunks,
         sumScale,
+        scaleMode: props.scaleMode,
         variance,
         needs: {
           sums: requested.has('sum') || requested.has('mean'),

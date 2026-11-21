@@ -4,6 +4,7 @@
 
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
 import {GPUReadbackRing, type GPUReadbackTicket} from '@luma.gl/graph/gpu-core';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_REGION_STATISTICS_FLAGS,
   GPU_REGION_STATISTICS_HEADER_LENGTH,
@@ -13,6 +14,7 @@ import {
 
 /** Returns the summary length in `uint32` words for a histogram bin count. */
 export function getGPURegionStatisticsSummaryLength(binCount: number = 0): number {
+  validateCapacity('region-statistics-readback', 'binCount', binCount, 0, 65536);
   return GPU_REGION_STATISTICS_HEADER_LENGTH + binCount;
 }
 
@@ -54,7 +56,7 @@ export function decodeGPURegionStatistics(
 export type GPURegionStatisticsReadbackProps = {
   /** Staging buffer ID prefix. */
   id?: string;
-  /** Histogram bin count of the summary. Defaults to 0. */
+  /** Histogram bin count of the summary, an integer in [0,65536]. Defaults to 0. */
   binCount?: number;
   /** Number of in-flight staging buffers. Defaults to 3. */
   slotCount?: number;
@@ -91,10 +93,15 @@ export class GPURegionStatisticsReadback {
     byteOffset: number = 0
   ): GPUReadbackTicket | null {
     const ticket = this.ring.tryAcquire();
-    ticket?.copyFrom(commandEncoder, summaryBuffer, {
-      sourceOffset: byteOffset,
-      byteLength: this.byteLength
-    });
+    try {
+      ticket?.copyFrom(commandEncoder, summaryBuffer, {
+        sourceOffset: byteOffset,
+        byteLength: this.byteLength
+      });
+    } catch (error) {
+      ticket?.cancel();
+      throw error;
+    }
     return ticket;
   }
 

@@ -14,7 +14,7 @@ it('honors an explicit one-row search budget on a stationary track', () => {
     },
     {mode: 'minimum-time', capacity: 4, maximumSearchRows: 1}
   );
-  expect(Array.from(result.rowIds)).toEqual([0, 2, 3, 0xffffffff]);
+  expect(Array.from(result.sourceRows)).toEqual([0, 2, 3, 0xffffffff]);
   expect(result.candidateOverflow[0]).toBe(1);
 });
 import {
@@ -43,12 +43,12 @@ it('follows hand-computed sequential chains, including equal tolerance and force
       {...INPUT, parameters: getGPUTrajectoryThinningParameterValues({tolerance})},
       {mode, capacity: 8}
     );
-    expect(Array.from(result.rowIds)).toEqual([
+    expect(Array.from(result.sourceRows)).toEqual([
       ...rows,
       ...new Array(8 - rows.length).fill(0xffffffff)
     ]);
     expect(Array.from(result.outputTrackOffsets)).toEqual(offsets);
-    expect(Array.from(result.validity)).toEqual(
+    expect(Array.from(result.sourceSelectionMask)).toEqual(
       Array.from({length: 10}, (_, row) => Number((rows as readonly number[]).includes(row)))
     );
     expect(result.requiredCount[0]).toBe(rows.length);
@@ -65,11 +65,11 @@ it('follows hand-computed sequential chains, including equal tolerance and force
     ]);
   }
   const overflow = computeTrajectoryThinningOnCPU(INPUT, {mode: 'minimum-distance', capacity: 2});
-  expect(Array.from(overflow.rowIds)).toEqual([0, 3]);
+  expect(Array.from(overflow.sourceRows)).toEqual([0, 3]);
   expect(Array.from(overflow.outputTrackOffsets)).toEqual([0, 2, 2, 2]);
   expect(overflow.requiredCount[0]).toBe(5);
   expect(overflow.overflow[0]).toBe(1);
-  expect(Array.from(overflow.validity)).toEqual([1, 0, 0, 1, 0, 1, 1, 0, 0, 1]);
+  expect(Array.from(overflow.sourceSelectionMask)).toEqual([1, 0, 0, 1, 0, 1, 1, 0, 0, 1]);
 });
 
 it('uses spherical arc lengths and identifies equivalent dateline and pole fixes', () => {
@@ -100,7 +100,7 @@ it('uses spherical arc lengths and identifies equivalent dateline and pole fixes
       }
     );
     // On the equator the central angle is the absolute longitude separation in radians.
-    expect(Array.from(result.rowIds)).toEqual(expected);
+    expect(Array.from(result.sourceRows)).toEqual(expected);
   }
 });
 
@@ -115,7 +115,7 @@ it('keeps only endpoints on long stationary tracks instead of introducing search
     },
     {mode: 'minimum-distance', capacity: 2}
   );
-  expect(Array.from(result.rowIds)).toEqual([0, rowCount - 1]);
+  expect(Array.from(result.sourceRows)).toEqual([0, rowCount - 1]);
   expect(result.candidateOverflow[0]).toBe(0);
 });
 
@@ -131,10 +131,11 @@ it('handles exact Int64 differences across a low-word carry, partial tracks and 
     positions: new Float32Array(8),
     timestamps,
     trackOffsets: new Uint32Array([0, 99]),
+    storage: 'resident-capacity' as const,
     parameters: getGPUTrajectoryThinningParameterValues({tolerance: 3})
   };
   const result = computeTrajectoryThinningOnCPU(input, {mode: 'minimum-time', capacity: 3});
-  expect(Array.from(result.rowIds)).toEqual([0, 2, 3]);
+  expect(Array.from(result.sourceRows)).toEqual([0, 2, 3]);
   expect(Array.from(result.outputTimestamps)).toEqual([
     ...timestamps.subarray(0, 2),
     ...timestamps.subarray(4)
@@ -147,7 +148,7 @@ it('handles exact Int64 differences across a low-word carry, partial tracks and 
     },
     {mode: 'minimum-time', capacity: 2}
   );
-  expect(Array.from(partial.validity)).toEqual([0, 1, 1, 0]);
+  expect(Array.from(partial.sourceSelectionMask)).toEqual([0, 1, 1, 0]);
 });
 
 it('rejects inconsistent arrays and validates construction-time output contracts', () => {
@@ -174,21 +175,78 @@ it('rejects inconsistent arrays and validates construction-time output contracts
     trackCount: 3,
     capacity: 5,
     output: {
-      rowIds: 'rowIds',
+      sourceRows: 'rowIds',
       trackOffsets: 'outputTrackOffsets',
-      status: {count: 'count', overflow: 'overflow'}
+      status: {count: 'count', candidateOverflow: 'candidateOverflow', overflow: 'overflow'}
     }
   };
   for (const Operation of [GPUTrajectoryThinningOperation, CPUTrajectoryThinningOperation]) {
     expect(() => new Operation({...props, capacity: 0})).toThrow(/^thinning-test /);
-    expect(() => new Operation({...props, output: {...props.output, rowIds: 'positions'}})).toThrow(
-      /^thinning-test /
-    );
+    expect(
+      () => new Operation({...props, output: {...props.output, sourceRows: 'positions'}})
+    ).toThrow(/^thinning-test /);
   }
-  expect(() => new CPUTrajectoryThinningOperation({...props, trackCount: 0})).toThrow(
+  expect(() => new CPUTrajectoryThinningOperation({...props, trackCount: -1})).toThrow(
     /^thinning-test trackCount/
   );
   expect(
     () => new CPUTrajectoryThinningOperation({...props, maximumSearchRows: 1e9})
   ).not.toThrow();
+});
+it('captures inherited output destinations once in both named thinning forms', () => {
+  for (const Operation of [GPUTrajectoryThinningOperation, CPUTrajectoryThinningOperation]) {
+    let reads = 0;
+    const status = new (class {
+      count = 'count';
+      overflow = 'overflow';
+      get candidateOverflow() {
+        reads++;
+        return reads === 1 ? 'lost' : 'unused';
+      }
+    })();
+    let sourceRowsReads = 0;
+    const output = new (class {
+      trackOffsets = 'outputTrackOffsets';
+      status = status;
+      get sourceRows() {
+        sourceRowsReads++;
+        return 'sourceRows';
+      }
+      get sourceSelectionMask() {
+        return 'selection';
+      }
+    })();
+    const operation = new Operation({
+      id: 'thinning-inherited-loss',
+      mode: 'minimum-distance',
+      positions: 'positions',
+      timestamps: 'timestamps',
+      trackOffsets: 'trackOffsets',
+      parameters: 'parameters',
+      rowCount: 2,
+      trackCount: 1,
+      capacity: 2,
+      output
+    });
+    expect(operation.contract.outputs).toHaveProperty('sourceRows');
+    expect(operation.contract.outputs).toHaveProperty('selection');
+    expect(sourceRowsReads).toBe(1);
+    expect(operation.contract.outputs).toHaveProperty('lost');
+    expect(operation.contract.outputs).not.toHaveProperty('unused');
+    expect(reads).toBe(1);
+  }
+});
+
+it('B9 keeps the zero-track thinning terminal offset without inventing a track', () => {
+  const result = computeTrajectoryThinningOnCPU(
+    {
+      positions: new Float32Array(),
+      timestamps: new Float32Array(),
+      trackOffsets: Uint32Array.of(0),
+      parameters: Float32Array.of(1, 0, 0, 0)
+    },
+    {mode: 'minimum-distance', capacity: 1}
+  );
+  expect(result.outputTrackOffsets).toEqual(Uint32Array.of(0));
+  expect(result.count).toEqual(Uint32Array.of(0));
 });

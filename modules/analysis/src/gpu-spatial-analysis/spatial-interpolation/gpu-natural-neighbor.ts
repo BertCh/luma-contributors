@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateInterpolationPorts} from './interpolation-view-validation';
+
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {snapshotInterpolationConstructionProps} from './interpolation-construction-snapshot';
+
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -22,7 +28,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
-  validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -143,8 +148,33 @@ export class GPUNaturalNeighbor<
   constructor(
     props: GPUNaturalNeighborProps<QueryRows, ValueRows, StatusRows, WeightRows, SeedRows>
   ) {
-    this.props = props;
+    this.props = props = snapshotInterpolationConstructionProps(
+      props,
+      [
+        'id',
+        'maximumNeighborCount',
+        'maximumVertexCount',
+        'output',
+        'positions',
+        'queries',
+        'queryTriangles',
+        'spatialContext',
+        'triangles',
+        'values'
+      ],
+      ['values', 'status', 'weights']
+    );
     this.id = props.id ?? 'natural-neighbor';
+    validateInterpolationPorts({id: this.id, contributor: 'GPUNaturalNeighbor'}, props, {
+      positions: {required: true, viewType: 'data', formats: ['float32x2']},
+      values: {required: true, viewType: 'data', formats: ['float32']},
+      queries: {required: true, viewType: 'either', formats: ['float32x2']},
+      triangles: {required: false, viewType: 'data', formats: ['uint32']},
+      queryTriangles: {required: false, viewType: 'either', formats: ['uint32']},
+      'output.values': {required: true, viewType: 'either', formats: ['float32x4']},
+      'output.status': {required: true, viewType: 'either', formats: ['uint32']},
+      'output.weights': {required: false, viewType: 'either', formats: ['float32', 'float32x2']}
+    });
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
@@ -154,29 +184,32 @@ export class GPUNaturalNeighbor<
     this.maximumNeighborCount = props.maximumNeighborCount ?? 32;
     validateCapacity(this.id, 'maximumNeighborCount', this.maximumNeighborCount, 3);
     validateCapacity(this.id, 'maximumVertexCount', this.maximumVertexCount, 3);
-    if (
-      this.maximumVertexCount > 64 ||
-      props.positions.length > 0x1000000 ||
-      (props.output.weights &&
-        props.output.weights.format !== (props.triangles ? 'float32x2' : 'float32')) ||
-      (!props.triangles && props.positions.length > this.maximumNeighborCount) ||
-      this.maximumNeighborCount > 64 ||
-      Boolean(props.triangles) !== Boolean(props.queryTriangles) ||
-      (props.triangles &&
-        (props.triangles.length % 6 !== 0 ||
-          props.queryTriangles!.length !== props.queries.length)) ||
-      props.positions.length !== props.values.length ||
-      props.output.values.length < props.queries.length ||
-      props.output.status.length < props.queries.length ||
-      (props.output.weights &&
-        props.output.weights.length <
-          props.queries.length *
-            (props.triangles ? this.maximumNeighborCount : props.positions.length))
-    ) {
-      throw new Error(`${this.id} invalid capacities`);
-    }
-    this.chunkPlan = planGraphChunkGroups(
+    validateRequirement(
       this.id,
+      !(
+        this.maximumVertexCount > 64 ||
+        props.positions.length > 0x1000000 ||
+        (props.output.weights &&
+          props.output.weights.format !== (props.triangles ? 'float32x2' : 'float32')) ||
+        (!props.triangles && props.positions.length > this.maximumNeighborCount) ||
+        this.maximumNeighborCount > 64 ||
+        Boolean(props.triangles) !== Boolean(props.queryTriangles) ||
+        (props.triangles &&
+          (props.triangles.length % 6 !== 0 ||
+            props.queryTriangles!.length !== props.queries.length)) ||
+        props.positions.length !== props.values.length ||
+        props.output.values.length < props.queries.length ||
+        props.output.status.length < props.queries.length ||
+        (props.output.weights &&
+          props.output.weights.length <
+            props.queries.length *
+              (props.triangles ? this.maximumNeighborCount : props.positions.length))
+      ),
+      `maximumVertexCount and maximumNeighborCount must be in [3, 64]; positions.length at most 16777216 and at most maximumNeighborCount without triangles; triangles/queryTriangles must both be supplied with six entries per triangle and one seed per query; values must match positions and output views must cover queries`
+    );
+
+    this.chunkPlan = planGraphChunkGroups(
+      {id: this.id, contributor: 'GPUNaturalNeighbor'},
       {view: props.queries},
       {
         queries: {view: props.queries},
@@ -192,12 +225,6 @@ export class GPUNaturalNeighbor<
           : undefined
       }
     );
-    for (const [name, view] of Object.entries({
-      positions: props.positions,
-      sampleValues: props.values,
-      triangles: props.triangles
-    }))
-      if (view) validateSinglePackedView(view, [view.format], `${this.id} ${name}`);
     validateDisjointWritableViews(this.id, props.output);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,

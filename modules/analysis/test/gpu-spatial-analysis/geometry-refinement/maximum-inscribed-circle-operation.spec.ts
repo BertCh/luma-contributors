@@ -77,7 +77,7 @@ for (const edgeCase of [false, true]) {
     }
     expect(Array.from(results[0]['status'])).toEqual(edgeCase ? [2, 3] : [0, 0, 0]);
     expect(Array.from(results[0]['status'])).toEqual(Array.from(results[1]['status']));
-    for (const result of results) {
+    for (const [route, result] of results.entries()) {
       for (let feature = 0; feature < props.featureCount; feature++) {
         if (result['status'][feature] === 0) {
           const error = result['circles'][feature * 4 + 3];
@@ -86,9 +86,13 @@ for (const edgeCase of [false, true]) {
         }
       }
       if (!edgeCase) {
-        // Square cells adjacent to the optimum have error (sqrt(2) - 1) * halfSize.
-        // HalfSize 1/32 exceeds tolerance; 1/64 is the first successful level.
-        expect(Math.abs(result['circles'][3] - (Math.SQRT2 - 1) / 64)).toBeLessThanOrEqual(2e-6);
+        // GPU square cells adjacent to the optimum have error (sqrt(2) - 1) * halfSize.
+        // HalfSize 1/32 exceeds tolerance; 1/64 is the first successful GPU level.
+        // The CPU half-short-side bound certifies the square's optimum with zero error.
+        expect(Number.isFinite(result['circles'][3])).toBe(true);
+        expect(
+          Math.abs(result['circles'][3] - (route === 0 ? (Math.SQRT2 - 1) / 64 : 0))
+        ).toBeLessThanOrEqual(2e-6);
         // The triangle's bounds-center seed (2, 2) is on its hypotenuse, with radius zero.
         // Its analytic inradius is 4 - 2*sqrt(2), so the search must improve the seed.
         const triangleRadius = result['circles'][10];
@@ -104,6 +108,7 @@ for (const edgeCase of [false, true]) {
     for (const column of ['circles', 'witnesses']) {
       expect(results[0][column].length).toBe(results[1][column].length);
       results[1][column].forEach((expected, index) => {
+        if (column === 'circles' && index % 4 === 3 && !edgeCase) return;
         if (Number.isNaN(expected)) expect(Number.isNaN(results[0][column][index])).toBe(true);
         else
           expect(Math.abs(results[0][column][index] - expected)).toBeLessThanOrEqual(

@@ -27,6 +27,7 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getFocalPairsDeclarations, getFocalPairsBody} from './raster-focal-pairs-wgsl';
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
 
 /** Window radius: a (2 * radius + 1) squared window (17 by 17) bounds each invocation's work and needs no private sample array. */
 export const MAXIMUM_FOCAL_PAIRS_RADIUS = 8;
@@ -82,8 +83,10 @@ export type GPURasterFocalPairsProps = {
   radius: number;
   /** Defaults to nodata (clipped windows). Reflect excludes duplicated edge pixels. */
   borderMode?: 'nodata' | 'clamp' | 'reflect';
-  /** Defaults to ignore: drop a pair if either calibrated observation is invalid. */
-  noDataPolicy?: 'ignore' | 'propagate';
+  /** Defaults to ignore: drop a pair if either calibrated observation is invalid.
+   * strict is accepted as an alias of propagate.
+   */
+  noDataPolicy?: 'ignore' | 'propagate' | 'strict';
   /** Defaults to false. If true, an invalid pair at the center invalidates all float outputs. */
   propagateCenterNoData?: boolean;
   /** Integer in [2, 289]. Defaults to 2; pairedCount is always written. */
@@ -124,6 +127,24 @@ export class GPURasterFocalPairs implements GPUCommandNodeProducer, GPURasterHal
   readonly requiredHalo: number;
 
   constructor(props: GPURasterFocalPairsProps) {
+    if (props.noDataPolicy === 'strict') {
+      props = {
+        ...snapshotConstructionFields(props, [
+          'id',
+          'grid',
+          'predictor',
+          'response',
+          'radius',
+          'borderMode',
+          'noDataPolicy',
+          'propagateCenterNoData',
+          'minimumCount',
+          'covarianceNormalization',
+          'output'
+        ]),
+        noDataPolicy: 'propagate'
+      };
+    }
     this.id = props.id ?? 'raster-focal-pairs';
     this.props = props;
     this.requiredHalo = props.radius;
@@ -141,12 +162,12 @@ export class GPURasterFocalPairs implements GPUCommandNodeProducer, GPURasterHal
     validateRequirement(
       this.id,
       ['nodata', 'clamp', 'reflect'].includes(props.borderMode ?? 'nodata'),
-      "borderMode must be 'nodata', 'clamp' or 'reflect'"
+      `borderMode must be 'nodata', 'clamp' or 'reflect' (got ${props.borderMode})`
     );
     validateRequirement(
       this.id,
       ['ignore', 'propagate'].includes(props.noDataPolicy ?? 'ignore'),
-      "noDataPolicy must be 'ignore' or 'propagate'"
+      `noDataPolicy must be 'ignore', 'propagate' or 'strict' (got ${props.noDataPolicy})`
     );
     validateRequirement(
       this.id,

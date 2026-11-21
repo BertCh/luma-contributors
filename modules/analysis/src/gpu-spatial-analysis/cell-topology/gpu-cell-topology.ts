@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotCellConstruction} from '../cell-indexing/cell-construction-snapshot';
 import {
   createGPUComputeCommandNode,
   getBoundedDispatchLayout,
@@ -31,6 +32,9 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  registerCompiledWGSLKernelNodeRecord,
+  registerWGSLKernelNodeRecord,
+  type WGSLKernelNodeRecord,
   type WGSLKernelProps,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -210,6 +214,15 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
   private readonly recordChunks: Readonly<Record<string, readonly GraphDataView[]>>;
 
   constructor(props: GPUCellTopologyProps) {
+    props = snapshotCellConstruction(props, [
+      'id',
+      'family',
+      ['operation', ['type', 'k', 'resolution', 'inputResolution']],
+      'cells',
+      'wordOrder',
+      'mask',
+      ['output', ['cells', 'distances', 'counts']]
+    ]);
     this.id = props.id ?? 'cell-topology';
     this.props = props;
     const id = this.id;
@@ -569,6 +582,23 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
         const kernelBindings = kernelProps.bindings;
         const operationName = kernelProps.operation;
         const layout = layouts[chunk.chunkIndex];
+        const kernelRecord: WGSLKernelNodeRecord = {
+          id: `${kernelProps.id}-${chunk.chunkIndex}`,
+          operation: operationName,
+          ...(kernelProps.variant ? {variant: kernelProps.variant} : {}),
+          source,
+          body: kernelProps.body,
+          declarations: kernelProps.declarations,
+          entryPoint: 'main',
+          workgroupSize: [CHUNK_WORKGROUP_SIZE, 1, 1],
+          workgroups: [layout.x, layout.y, layout.z],
+          invocationCount: chunk.length * invocationsPerRow,
+          constants: {},
+          bindings: kernelBindings,
+          textures: [],
+          indirect: false
+        };
+        registerWGSLKernelNodeRecord(graph, kernelRecord);
         return createGPUComputeCommandNode<Parameters>({
           id: `${kernelProps.id}-${chunk.chunkIndex}`,
           resources: kernelProps.bindings.map(binding => ({
@@ -582,7 +612,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
             maximumWorkgroupCount: layout.x * layout.y * layout.z,
             maximumInvocationCount: chunk.length * invocationsPerRow
           },
-          compile: ({device}) => {
+          compile: function compileRecordedKernel({device}) {
             const kernel = new Kernel(device, {
               id: operationName,
               source,
@@ -595,6 +625,7 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
                 }))
               }
             });
+            registerCompiledWGSLKernelNodeRecord(graph, kernelRecord, compileRecordedKernel);
             return {
               encode: ({computePass, getBuffer}) =>
                 kernel.dispatch(computePass, {

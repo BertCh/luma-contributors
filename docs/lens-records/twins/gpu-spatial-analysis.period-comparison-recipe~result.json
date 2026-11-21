@@ -4,7 +4,7 @@
   "rung": "result",
   "size": "full",
   "example": {
-    "code": "const comparison = addPeriodComparisonRecipe(graph, {\n  family: 'quadbin',\n  resolution: 16,\n  tableCapacity,\n  unionCapacity,\n  before: {positions: spring},\n  after: {positions: autumn},\n  classify: 'delta',\n  classBreaksParameters: parameters[0].importToGraph(graph),\n  colorScaleParameters: parameters[1].importToGraph(graph),\n  palette: parameters[2].importToGraph(graph),\n  methods: ['custom'],\n  maximumClassCount: 5,\n  maximumPaletteCount: 5,\n  outputs: {comparison: {cells, delta, zScore, status: {count, overflow}}, classIndices, colors}\n});\n// delta is autumn minus spring per cell; classIndices holds its diverging class",
+    "code": "const comparison = addPeriodComparisonRecipe(graph, {\n  family: 'quadbin',\n  resolution: 16,\n  tableCapacity,\n  unionCapacity,\n  before: {positions: spring},\n  after: {positions: autumn},\n  classify: 'delta',\n  classBreaksParameters: parameters[0].importToGraph(graph),\n  colorScaleParameters: parameters[1].importToGraph(graph),\n  palette: parameters[2].importToGraph(graph),\n  methods: ['custom'],\n  maximumClassCount: 5,\n  maximumPaletteCount: 5,\n  output: {comparison: {cells, delta, zScore, status: {count, overflow}}, classIndices, colors}\n});\n// delta is autumn minus spring per cell; classIndices holds its diverging class",
     "language": "ts",
     "lineCount": 17
   },
@@ -35,12 +35,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-18T20:29:53.058Z",
-    "runId": "run-feb1d39d",
+    "date": "2026-11-20T23:50:29.064Z",
+    "runId": "run-f295241e",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-feb1d39d",
+    "runId": "run-f295241e",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -1,9 +1,11 @@
+import {validateAndSnapshotWeightsAlgebraProps} from './spatial-weights-operation-name';
+import {createWeightsCountNodes} from './spatial-weights-count';
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
-import {snapshotWeightsAlgebraProps, snapshotWeightsPort} from './weights-construction-snapshot';
+import {snapshotWeightsPort} from './weights-construction-snapshot';
 import {
   createWeightsLossNodes,
   getWeightsLossSources,
@@ -11,6 +13,7 @@ import {
 } from './spatial-weights-loss';
 import {
   assertCompatibleGPUSpatialContexts,
+  validateGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -30,12 +33,13 @@ import {
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  validateGPUSpatialWeightsProducerStatus,
   describeGPUSpatialWeights,
   getGPUSpatialWeightsStatusViews,
   getGPUSpatialWeightsViews,
   type GPUSpatialWeights,
   type GPUSpatialWeightsInformation,
-  type GPUSpatialWeightsOutput,
+  type GPUSpatialWeightsProducerOutput as GPUSpatialWeightsOutput,
   type GPUSpatialWeightsTransformState,
   validateGPUSpatialWeights,
   validateGPUSpatialWeightsOutput
@@ -43,7 +47,8 @@ import {
 import {
   createCSRStages,
   getContainsFunctionWGSL,
-  getMergeVisitWGSL
+  getMergeVisitWGSL,
+  type SpatialWeightsMergeOperation
 } from './spatial-weights-algebra-wgsl';
 import {
   getSpaceTimeStages,
@@ -69,7 +74,7 @@ export const GPU_SPATIAL_WEIGHTS_MAXIMUM_ORDER = 32;
  * - `'right'`: the weight of `right`.
  * - `'sum'`, `'min'`, `'max'`, `'product'`: the named combination of the two weights.
  * - `'binary'`: every output weight is 1 for every operation, including `difference` and
- *   `symmetricDifference`. This is what libpysal 4.15 `Graph.union/intersection/difference/
+ *   `symmetric-difference`. This is what libpysal 4.15 `Graph.union/intersection/difference/
  *   symmetric_difference` return (verified: they ignore the operands' weights and give 1.0).
  */
 export type GPUSpatialWeightsCombineRule =
@@ -94,10 +99,10 @@ export type GPUSpatialWeightsAlgebraBaseProps = {
    * else 0. On overflow the output is still a valid CSR: offsets are clamped to the capacity, so
    * the leading rows are complete, the row in which the capacity runs out is a sorted prefix and
    * the following rows are empty. `status.requiredCount` (optional) receives the slot count the
-   * final result needs, even past the capacity. It is exact for every operation except
-   * `'higherOrder'` with `order > 1`, where an overflowing intermediate set makes it a lower
-   * bound, so `outputWeights.status` does not publish it in that case; raise `workCapacity`
-   * instead.
+   * retained computation needs, even past the capacity. After input or intermediate loss this
+   * is not a bound on the complete result: an exact-order search can forget a shorter path and
+   * rediscover its neighbor at a later order. `outputWeights.status` does not publish it for
+   * `'higherOrder'` with `order > 1`; raise `workCapacity` and retry instead.
    */
   output: GPUSpatialWeightsOutput;
 };
@@ -108,12 +113,13 @@ export type GPUSpatialWeightsAlgebraBaseProps = {
  * - `'union'`: IDs in either operand.
  * - `'intersection'`: IDs in both.
  * - `'difference'`: IDs in `left` but not `right` (weights from `left`).
- * - `'symmetricDifference'`: IDs in exactly one operand (weights from the operand that has it).
+ * - `'symmetric-difference'`: IDs in exactly one operand (weights from the operand that has it).
  *
  * Distances come from `left` where it lists the neighbor, else from `right`.
  */
 export type GPUSpatialWeightsBinaryProps = GPUSpatialWeightsAlgebraBaseProps & {
-  operation: 'union' | 'intersection' | 'difference' | 'symmetricDifference';
+  /** Set operation. */
+  operation: SpatialWeightsMergeOperation;
   /** Left operand. */
   left: GPUSpatialWeights;
   /** Right operand, with the same row count as `left`. */
@@ -264,7 +270,7 @@ function getAlgebraOutputInformation(
     case 'union':
     case 'intersection':
     case 'difference':
-    case 'symmetricDifference': {
+    case 'symmetric-difference': {
       const operands = props.operation === 'difference' ? [props.left] : [props.left, props.right];
       return {
         rowCount,
@@ -284,7 +290,15 @@ function getAlgebraOutputInformation(
                 ),
         // Difference of two symmetric operands is symmetric too, so both are required.
         symmetric: allSymmetric(props.left, props.right),
-        hasSelfWeights: false,
+        hasSelfWeights:
+          props.operation === 'intersection' &&
+          operands.some(operand => operand.information?.hasSelfWeights === false)
+            ? false
+            : operands.some(operand => operand.information?.hasSelfWeights)
+              ? true
+              : operands.every(operand => operand.information?.hasSelfWeights === false)
+                ? false
+                : undefined,
         provenance
       };
     }
@@ -347,7 +361,7 @@ function getAlgebraOutputInformation(
  * Weight rules: libpysal 4.15 set operations return weight 1 for every link (use
  * `weightRule: 'binary'` to match). By default we keep information instead: `union` and
  * `intersection` keep the left operand's weight where both list a link (see `weightRule`),
- * `difference` keeps left weights, `symmetricDifference` keeps the weight of the operand that has
+ * `difference` keeps left weights, `symmetric-difference` keeps the weight of the operand that has
  * the link. `higherOrder` and `block` give weight 1 (as libpysal `higher_order`); `subgraph`
  * keeps weights unchanged. For a binary operation the left operand's row count defines the row
  * space; both operands need the same count.
@@ -355,7 +369,7 @@ function getAlgebraOutputInformation(
  * Self weights: `'selfWeight'` writes `w_ii != 0`, which relaxes the `w_ii = 0` invariant. Consumers
  * that sum over slots keep the self term and accept it: `GPUSpatialLag` (a lag with the self
  * weight gives Getis-Ord G* style sums), `GPUSpatialWeightsTransform` (row, binary, kernel,
- * symmetrize, double, variance) and this class's own operations. The permutation tests,
+ * average-reciprocal, double, variance) and this class's own operations. The permutation tests,
  * `GPUGlobalSpatialStatistics`, the local spatial-autocorrelation kernels, `GPUCategoryPairCounts`
  * (and `GPUSpatialEntropy`), `GPUColocationQuotient`, `GPULocalCategoryDependence`,
  * `GPUSegregation` and `GPUSpatialEmpiricalBayesRates` skip `neighbor == row` entries by design
@@ -368,7 +382,8 @@ function getAlgebraOutputInformation(
  * `higherOrder`, `selfWeight` or `subgraph` input, and `block`), else `'unknown'`. The
  * outputWeights preserves all operand loss in candidateOverflow. Destination overflow reports
  * only this operation's final capacity; candidateOverflow also carries higher-order work loss.
- * Both flags are overwritten on every submission; requiredCount is a lower bound after loss.
+ * Both flags are overwritten on every submission; requiredCount describes the retained
+ * computation after loss and is not a bound on the complete result.
  *
  * Capacity grow loop: pass `output.status.requiredCount`, read it and `overflow` after a frame;
  * when `overflow` is 1 reallocate the output with
@@ -377,6 +392,7 @@ function getAlgebraOutputInformation(
  *
  * Capacity: row counts run first, then an exclusive scan and clamped offsets, so an operation
  * that fits reproduces the CPU result exactly and an overflowing one is flagged and truncated.
+ * Optional output.status.count is written from the terminal CSR offset; tails beyond it are unspecified.
  */
 export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -387,20 +403,32 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUSpatialWeightsAlgebraProps) {
-    props = snapshotWeightsAlgebraProps(props);
+    props = validateAndSnapshotWeightsAlgebraProps(props);
+    validateGPUSpatialWeightsProducerStatus(
+      props.id ?? 'spatial-weights-algebra',
+      props.output.status
+    );
+    getWeightsLossSources(
+      'left' in props ? [props.left, props.right] : 'weights' in props ? [props.weights] : [],
+      props.id ?? 'spatial-weights-algebra',
+      true
+    );
     const id = props.id ?? 'spatial-weights-algebra';
     this.id = id;
     this.props = props;
-    const outputRows = validateGPUSpatialWeightsOutput(id, props.output);
+    const outputRows = validateGPUSpatialWeightsOutput(id, props.output, undefined, true);
     const inputs = this.getInputWeights();
-    const inputLossViews = validateWeightsLossSources(id, inputs);
+    const inputLossViews = validateWeightsLossSources(id, inputs, true);
     let spatialContext: GPUSpatialContext | undefined;
     for (const input of inputs) {
       if (spatialContext && input.spatialContext) {
-        assertCompatibleGPUSpatialContexts(id, spatialContext, input.spatialContext);
+        assertCompatibleGPUSpatialContexts(id, spatialContext, input.spatialContext, {
+          purpose: 'metric-results'
+        });
       }
       spatialContext ??= input.spatialContext;
     }
+    if (spatialContext) validateGPUSpatialContext(id, spatialContext);
     const checkRows = (weights: GPUSpatialWeights, name: string) => {
       const rows = validateGPUSpatialWeights(id, weights, name);
       if (rows !== outputRows) {
@@ -411,7 +439,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       case 'union':
       case 'intersection':
       case 'difference':
-      case 'symmetricDifference':
+      case 'symmetric-difference':
         checkRows(props.left, 'left');
         checkRows(props.right, 'right');
         if (props.weightRule && !(props.weightRule in COMBINE_RULES)) {
@@ -419,7 +447,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
         }
         if (props.output.distances) {
           const needsRight =
-            props.operation === 'union' || props.operation === 'symmetricDifference';
+            props.operation === 'union' || props.operation === 'symmetric-difference';
           if (!props.left.distances || (needsRight && !props.right.distances)) {
             throw new Error(`${id} output.distances needs operand distances`);
           }
@@ -513,7 +541,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     });
     const outputViews = [
       ...getGPUSpatialWeightsViews(props.output),
-      ...getGPUSpatialWeightsStatusViews(props.output)
+      ...getGPUSpatialWeightsStatusViews(props.output, true)
     ];
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       ...inputs.flatMap(getGPUSpatialWeightsViews),
@@ -554,7 +582,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       case 'union':
       case 'intersection':
       case 'difference':
-      case 'symmetricDifference':
+      case 'symmetric-difference':
         return [props.left, props.right];
       case 'higherOrder':
       case 'selfWeight':
@@ -568,6 +596,15 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
 
   /** Returns the algebra nodes in dependency order. */
   getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    return [
+      ...this.getWeightsCommandNodes(graph),
+      ...createWeightsCountNodes(graph, this.id, this.props.output)
+    ];
+  }
+
+  private getWeightsCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     validateSpatialStatisticsBindings(graph, this.id, this.props, {
@@ -590,9 +627,9 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     } as GPUSpatialWeightsAlgebraProps;
     validateGraphViewsBelongToGraph(id, graph, [
       ...this.getInputWeights().flatMap(getGPUSpatialWeightsViews),
-      ...validateWeightsLossSources(id, this.getInputWeights()),
+      ...validateWeightsLossSources(id, this.getInputWeights(), true),
       ...getGPUSpatialWeightsViews(props.output),
-      ...getGPUSpatialWeightsStatusViews(props.output),
+      ...getGPUSpatialWeightsStatusViews(props.output, true),
       props.operation === 'subgraph' ? props.mask : undefined,
       props.operation === 'block' ? props.groupIds : undefined,
       props.operation === 'selfWeight' && typeof props.selfWeight !== 'number'
@@ -618,7 +655,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
           return this.getBinaryNodes(graph, props);
       }
     })();
-    const sources = getWeightsLossSources(this.getInputWeights());
+    const sources = getWeightsLossSources(this.getInputWeights(), id, true);
     const candidate = props.output.status.candidateOverflow;
     return [
       ...(candidate ? createWeightsLossNodes(graph, `${id}-candidate-clear`, [], candidate) : []),
@@ -629,7 +666,8 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
             `${id}-inherited-candidate`,
             [...sources.overflow, ...sources.candidateOverflow],
             candidate,
-            true
+            true,
+            sources.complete
           )
         : [])
     ];

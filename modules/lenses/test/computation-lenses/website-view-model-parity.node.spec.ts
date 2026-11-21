@@ -6,6 +6,7 @@ import {expect, test} from 'vitest';
 import {fromRecordedLensFile} from '../../src/computation-lenses/registry';
 import {extractLensViewModel} from '../../../../website/src/lens/extract-lens-view-model';
 import {getResourceBytesKind} from '../../../../website/src/lens/format';
+import {createLensPageData} from '../../../../website/src/lens/generation-metadata';
 import type {LensSummary, LensViewModel} from '../../../../website/src/lens/types';
 import {
   LOCAL_MORAN_RECORD,
@@ -17,6 +18,22 @@ const modelsDirectory = new URL('../../../../website/src/lens/generated/', impor
 const recordFiles = readdirSync(recordsDirectory)
   .filter(file => file.endsWith('.json'))
   .sort();
+
+test('review 2 R1 histogram includes copy-only and fixed 49/50-compute fixtures', () => {
+  const entries = [
+    {id: 'gpu-spatial-analysis.kernel-density', kernels: 49, recordBytes: 1, viewModelBytes: 1},
+    {id: 'gpu-spatial-analysis.local-moran', kernels: 50, recordBytes: 1, viewModelBytes: 1},
+    {id: 'gpu-network.network-service-areas', kernels: 0, recordBytes: 1, viewModelBytes: 1}
+  ];
+  expect(createLensPageData(entries).bins.map(bin => bin.count)).toEqual([
+    1, 0, 0, 0, 0, 1, 1, 0, 0
+  ]);
+  expect(createLensPageData(entries).bins.reduce((total, bin) => total + bin.count, 0)).toBe(3);
+  entries[0].kernels = 52;
+  expect(createLensPageData(entries).bins.map(bin => bin.count)).toEqual([
+    1, 0, 0, 0, 0, 0, 2, 0, 0
+  ]);
+});
 
 function readRecord(file: string) {
   return fromRecordedLensFile(JSON.parse(readFileSync(new URL(file, recordsDirectory), 'utf8')))
@@ -36,14 +53,24 @@ function getModelComparison(model: LensViewModel) {
 
 type SummaryComparisonInput = Pick<
   LensSummary,
-  'recordCount' | 'packs' | 'bufferBytesKind' | 'recordBytes' | 'viewModelBytes'
+  | 'recordCount'
+  | 'packs'
+  | 'inventoryKnown'
+  | 'resourceCount'
+  | 'resourceBytes'
+  | 'resourceBytesKind'
+  | 'recordBytes'
+  | 'viewModelBytes'
 >;
 
 function getSummaryComparison(summary: SummaryComparisonInput) {
   return {
     recordCount: summary.recordCount,
     packs: summary.packs,
-    bufferBytesKind: summary.bufferBytesKind,
+    inventoryKnown: summary.inventoryKnown,
+    resourceCount: summary.resourceCount,
+    resourceBytes: summary.resourceBytes,
+    resourceBytesKind: summary.resourceBytesKind,
     recordBytes: summary.recordBytes,
     viewModelBytes: summary.viewModelBytes
   };
@@ -51,8 +78,11 @@ function getSummaryComparison(summary: SummaryComparisonInput) {
 
 function extractSummaryComparison(): SummaryComparisonInput {
   const packs: Record<string, number> = {};
-  let bufferBytesKind: LensSummary['bufferBytesKind'] = 'logical';
+  let resourceBytesKind: LensSummary['resourceBytesKind'] = 'logical';
   let recordBytes = 0;
+  let inventoryKnown = true;
+  let resourceCount = 0;
+  let resourceBytes = 0;
   let viewModelBytes = 0;
   for (const file of recordFiles) {
     const record = readRecord(file);
@@ -62,12 +92,23 @@ function extractSummaryComparison(): SummaryComparisonInput {
       record.graphs.find(candidate => candidate.form === 'compiled') ?? record.graphs[0];
     const pack = file.slice(0, file.indexOf('.'));
     packs[pack] = (packs[pack] ?? 0) + 1;
-    bufferBytesKind = getResourceBytesKind([
-      {bytesKind: bufferBytesKind},
-      ...(graph.resources ?? [])
-    ]);
+    if (graph.resources === undefined) inventoryKnown = false;
+    resourceCount += graph.resources?.length ?? 0;
+    resourceBytes += (graph.resources ?? []).reduce((total, resource) => total + resource.bytes, 0);
+    resourceBytesKind = !inventoryKnown
+      ? 'unavailable'
+      : getResourceBytesKind([{bytesKind: resourceBytesKind}, ...(graph.resources ?? [])]);
   }
-  return {recordCount: recordFiles.length, packs, bufferBytesKind, recordBytes, viewModelBytes};
+  return {
+    recordCount: recordFiles.length,
+    packs,
+    inventoryKnown,
+    resourceCount,
+    resourceBytes,
+    resourceBytesKind,
+    recordBytes,
+    viewModelBytes
+  };
 }
 
 test('website lens/generated scenario membership matches the committed records exactly', () => {
@@ -118,6 +159,74 @@ test('X3 zero count and finite spare-slot outliers cannot affect the map', () =>
     extractLensViewModel(id, record).map!.layers.find(layer => layer.name === 'intersections')!
       .positions
   ).toEqual([]);
+});
+
+test('R7 website count uses logical buffer capacity when domain size is absent', () => {
+  const id = 'gpu-spatial-analysis.segment-intersection';
+  const record = readRecord(`${id}.json`);
+  const points = record.captures!.snapshots.find(capture => capture.name === 'intersections')!;
+  const count = record.captures!.snapshots.find(capture => capture.name === 'count')!;
+  record.axes.keySpaces = record.axes.keySpaces.map(space => ({...space, size: undefined}));
+  const resource = record.graphs
+    .find(graph => graph.id === points.graph)!
+    .resources!.find(resource => resource.id === points.resource)!;
+  expect(resource).toMatchObject({kind: 'buffer', bytesKind: 'logical', bytes: 65536});
+  // Make every slot finite: with a 1,200-point budget, 8,192 slots use stride 7,
+  // hence ceil(8192/7)=1171 marks. The source's logical 65,536 bytes allow exactly 8192 float32x2 rows.
+  points.values = Array.from({length: 8192 * 2}, () => 0);
+  for (const [active, marks] of [
+    [1802, 901],
+    [8192, 1171],
+    [8193, 0]
+  ]) {
+    count.values = [active];
+    expect(
+      extractLensViewModel(id, record).map!.layers.find(layer => layer.name === 'intersections')!
+        .positions
+    ).toHaveLength(marks * 2);
+  }
+  resource.bytesKind = 'lower-bound';
+  expect(
+    extractLensViewModel(id, record).map!.layers.find(layer => layer.name === 'intersections')!
+      .positions
+  ).toHaveLength(1171 * 2);
+});
+
+test('v2-1 logical point capacity uses capture provenance and preserves partial windows', () => {
+  const id = 'gpu-spatial-analysis.segment-intersection';
+  const record = readRecord(`${id}.json`);
+  const points = record.captures!.snapshots.find(capture => capture.name === 'intersections')!;
+  const count = record.captures!.snapshots.find(capture => capture.name === 'count')!;
+  record.axes.keySpaces = record.axes.keySpaces.map(space => ({...space, size: undefined}));
+  const graph = record.graphs.find(graph => graph.id === points.graph)!;
+  const resource = graph.resources!.find(resource => resource.id === points.resource)!;
+  // 65536 / (2 * 4) = 8192 total rows. This capture contains only rows 8190 and 8191;
+  // its two-row window is not the operation's capacity. Two points require four coordinates.
+  points.meaning = 'first:8190';
+  points.values = [0, 0, 0, 0];
+  const positions = () =>
+    extractLensViewModel(id, record).map!.layers.find(layer => layer.name === 'intersections')!
+      .positions;
+  count.values = [8192];
+  expect(positions()).toEqual([0.5, 0.5, 0.5, 0.5]);
+  count.values = [8193];
+  expect(positions()).toEqual([]);
+  // Approximate sizes and an unrelated resource/graph cannot certify an upper bound.
+  resource.bytesKind = 'lower-bound';
+  expect(positions()).toEqual([0.5, 0.5, 0.5, 0.5]);
+  resource.bytesKind = 'logical';
+  points.graph = 'uncaptured-graph';
+  expect(positions()).toEqual([0.5, 0.5, 0.5, 0.5]);
+  points.graph = graph.id;
+  points.resource = 'uncaptured-resource';
+  expect(positions()).toEqual([0.5, 0.5, 0.5, 0.5]);
+  points.resource = resource.id;
+  // An explicit domain size still takes precedence over resource metadata.
+  record.axes.keySpaces = record.axes.keySpaces.map(space =>
+    space.id === points.keySpace ? {...space, size: 8191} : space
+  );
+  count.values = [8192];
+  expect(positions()).toEqual([]);
 });
 
 test('website lens/generated graphs, maps and byte precision match fresh extraction', () => {
@@ -172,9 +281,9 @@ test('R3 generated model parity rejects the lower_bound byte-precision mutation'
 
 test('R3 generated summary parity rejects the lower_bound byte-precision mutation', () => {
   const expected = extractSummaryComparison();
-  expect(expected.bufferBytesKind).toBe('lower-bound');
+  expect(expected.resourceBytesKind).toBe('lower-bound');
   const malformed = JSON.parse(JSON.stringify(expected));
-  malformed.bufferBytesKind = 'lower_bound';
+  malformed.resourceBytesKind = 'lower_bound';
   expect(getSummaryComparison(malformed)).not.toEqual(getSummaryComparison(expected));
 });
 
@@ -220,16 +329,36 @@ test('X1 lens page histogram accounts for every shipped model', () => {
 test('X1 lens page median scenario and compute count match shipped models', () => {
   const counts = recordFiles
     .map(file => {
-      const model: LensViewModel = JSON.parse(readFileSync(new URL(file, modelsDirectory), 'utf8'));
+      const record = readRecord(file);
+      const graph = record.graphs.find(graph => graph.form === 'compiled') ?? record.graphs[0];
       return {
         id: file.slice(0, -5),
-        kernels: model.nodes
-          .filter(node => node.kind === 'compute')
-          .reduce((total, node) => total + node.count, 0)
+        kernels: graph.nodes.filter(node => node.kind === 'compute').length
       };
     })
     .sort((left, right) => left.kernels - right.kernels);
   expect(readLensesPageData().median).toEqual(counts[Math.floor(counts.length / 2)]);
+});
+
+test('R2 every shipped histogram bin counts compute nodes from current recordings', () => {
+  const counts = recordFiles.map(file => {
+    const record = readRecord(file);
+    const graph = record.graphs.find(graph => graph.form === 'compiled') ?? record.graphs[0];
+    return {
+      id: file.slice(0, -5),
+      kernels: graph.nodes.filter(node => node.kind === 'compute').length
+    };
+  });
+  const starts = [0, 1, 2, 5, 10, 20, 50, 100, 300];
+  const expected = starts.map(
+    (start, index) =>
+      counts.filter(
+        entry =>
+          entry.kernels >= start &&
+          (starts[index + 1] === undefined || entry.kernels < starts[index + 1])
+      ).length
+  );
+  expect(readLensesPageData().bins.map(bin => bin.count)).toEqual(expected);
 });
 
 test('X1 featured record and model byte sizes match the shipped files', () => {

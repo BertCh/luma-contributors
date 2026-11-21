@@ -6,7 +6,7 @@ import {validateSpatialAnalysisPackedOutputAllocations} from '../geographic-dist
 import type {Device} from '@luma.gl/core';
 import {
   getViewBindingRange,
-  GraphVectorView,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
@@ -18,6 +18,8 @@ import {
 } from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   getGraphViewChunks,
+  isGraphDataView,
+  isGraphVectorView,
   validateCapacity,
   validateGPUStorageBindingByteLength,
   validateRequirement
@@ -34,12 +36,19 @@ export function validateUrbanRecipeBindings<Parameters>(
   const writable: Record<string, GraphDataView | GraphVectorView> = {};
   const collect = (value: unknown, name: string): void => {
     if (!value || typeof value !== 'object') return;
-    if (
-      value instanceof GraphVectorView ||
-      ('buffer' in value && 'format' in value && 'byteOffset' in value)
-    ) {
+    if (isGraphVectorView(value) || isGraphDataView(value)) {
       writable[name] = value as GraphDataView | GraphVectorView;
-    } else for (const [field, child] of Object.entries(value)) collect(child, `${name}.${field}`);
+    } else {
+      validateRequirement(
+        id,
+        !(
+          ('buffer' in value && ('format' in value || 'byteOffset' in value)) ||
+          ('data' in value && 'chunks' in value)
+        ),
+        `${name} must be a complete public graph data or vector view; received malformed view-shaped output`
+      );
+      for (const [field, child] of Object.entries(value)) collect(child, `${name}.${field}`);
+    }
   };
   collect(outputs, 'output');
   validateSpatialAnalysisPackedOutputAllocations(graph, id, writable);

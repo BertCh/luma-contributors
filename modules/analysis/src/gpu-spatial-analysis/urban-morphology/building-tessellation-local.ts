@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionFields} from '../../analysis-core/kernels/construction-snapshot';
+import {captureUrbanLandscapeDestinations} from '../landscape-ecology/urban-landscape-destinations';
 import {getSpatialAnalysisPackedKernelNodes} from '../geographic-distribution/spatial-analysis-packed-kernel';
 import {
   createTransientView,
@@ -168,13 +170,52 @@ export type GPUBuildingTessellationLocalProps = {
  * every building, regardless of building count.
  * Per-frame: input contents and optional parameters (spacing, radius, tolerance). Compile-time: lengths and capacities.
  * The legacy overlay recipe remains the reference for dissolved shell/hole rings.
- * @internal Implementation of the public addBuildingTessellationRecipe local overload.
+ * Per call: at most 1,000,000 buildings, 16,777,216 total samples, 32 total enclosure vertices
+ * and 32 enclosure rings. Per building: at most 32 own samples and 256 candidate samples.
+ * Per convex piece: at most 128 vertices. Each indexed query attempt visits at most 8,192 rows.
+ * Device storage limits may lower these bounds. The named entry and legacy local overload share
+ * this implementation and the sample-cell-union output representation.
+ * The legacy dispatcher selects this same typed local entry.
  */
 export function addLocalBuildingTessellationRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUBuildingTessellationLocalProps
 ) {
+  const hasRemovedOutputs = 'outputs' in props;
+  props = snapshotConstructionFields(props, [
+    'id',
+    'mode',
+    'segments',
+    'segmentBuildingIds',
+    'buildingCount',
+    'enclosure',
+    'enclosureMode',
+    'enclosureRingOffsets',
+    'spatialContext',
+    'sampleSpacing',
+    'sampleCapacity',
+    'parameters',
+    'candidateRadius',
+    'maximumSamplesPerBuilding',
+    'candidateCapacity',
+    'cellVertexCapacity',
+    'maximumGridVisits',
+    'vertexTolerance',
+    'output'
+  ]);
+
   const id = props.id ?? 'building-tessellation';
+  validateRequirement(id, !hasRemovedOutputs, 'outputs was removed; use output');
+  props = {
+    ...props,
+    output: captureUrbanLandscapeDestinations(id, {output: props.output}, [
+      'positions',
+      'cells',
+      'buildingStatus',
+      'samplingStatus',
+      'status'
+    ])
+  };
   const maximumSamplesPerBuilding =
     props.maximumSamplesPerBuilding ?? BUILDING_TESSELLATION_LOCAL_DEFAULT_SAMPLES_PER_BUILDING;
   const candidateCapacity =

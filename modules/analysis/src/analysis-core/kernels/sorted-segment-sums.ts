@@ -4,16 +4,30 @@
 
 import {
   createTransientView,
+  getBoundedDispatchLayout,
   GPUGather,
   GPUSort,
+  GPUSegmentedReduction,
   type GPUCommandGraph,
   type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {validateMaximumCount} from './gpu-contributor-utils';
-import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {
+  validateCapacity,
+  validateMaximumCount,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
+  validateSinglePackedView,
+  validateGraphViewsBelongToGraph
+} from './gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from './graph-chunk-dispatch';
+import {
+  createWGSLKernelNode,
+  getAutomaticWGSLKernelWorkgroupSize,
+  isRecordingWGSLKernelNodes
+} from './wgsl-kernel-nodes';
 import {getSortedSegmentOffsetNodes} from './sorted-segment-offsets';
 
 /** Reduction applied by the segment tree kernel. @internal */
@@ -81,7 +95,7 @@ export function getSortKeyBits(maximumKey: number): number {
 export type SortedSegmentReduction = {
   /** Short name used in generated node and transient IDs. Must be unique per call. */
   name: string;
-  /** Per-row contributions aligned with `segmentKeys`; invalid rows contribute 0. */
+  /** Covers every key row; word-aligned float32 strides are supported. Invalid keys contribute 0. */
   contributions: GraphDataView<'float32'>;
   /** Per-segment sums (`segmentCount` rows). */
   output: GraphDataView<'float32'>;
@@ -94,7 +108,9 @@ export type SortedSegmentReduction = {
  * sorted order, and one segmented sum, so the results are bitwise reproducible.
  *
  * `segmentKeys` holds a segment key per row; keys at or above `segmentCount` sort last and never
- * contribute. Callers need no per-segment counts (no atomics, no scan).
+ * contribute. Keys and outputs must be packed scalar views. Contributions must cover every key
+ * row and may use word-aligned float32 strides. Empty runs do not bind contribution storage.
+ * Callers need no per-segment counts (no atomics, no scan).
  *
  * @internal
  */
@@ -115,7 +131,121 @@ export function getSortedSegmentSumNodes<Parameters>(
   }
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, segmentCount, segmentKeys} = props;
+  validateCapacity(id, 'segmentCount', segmentCount, 0);
+  validateRequirement(
+    id,
+    props.sums === undefined || props.sumContributions !== undefined,
+    'sums requires sumContributions'
+  );
+  validateRequirement(
+    id,
+    props.weightSums === undefined || props.weightContributions !== undefined,
+    'weightSums requires weightContributions'
+  );
   const pointCount = segmentKeys.length;
+  const reductions: SortedSegmentReduction[] = [];
+  if (props.sums && props.sumContributions) {
+    reductions.push({name: 'sums', contributions: props.sumContributions, output: props.sums});
+  }
+  if (props.weightSums && props.weightContributions) {
+    reductions.push({
+      name: 'weight-sums',
+      contributions: props.weightContributions,
+      output: props.weightSums
+    });
+  }
+  reductions.push(...(props.reductions ?? []));
+  // Validate every reduction before the first graph declaration, so a refused call reserves no
+  // resource IDs and a corrected call with the same ID can follow.
+  validateSinglePackedView(segmentKeys, ['uint32'], `${id} segmentKeys`);
+  const reductionNames = new Set<string>();
+  for (const reduction of reductions) {
+    validateRequirement(
+      id,
+      !reductionNames.has(reduction.name),
+      `reduction name "${reduction.name}" must be unique`
+    );
+    reductionNames.add(reduction.name);
+    validateSinglePackedView(reduction.output, ['float32'], `${id} ${reduction.name} output`);
+    validateMaximumCount(
+      id,
+      `${reduction.name} contributions required rows`,
+      pointCount,
+      reduction.contributions.length
+    );
+    // Gather permits strided scalar sources, provided every row is word aligned. Its constructor
+    // runs even for empty indices; validate that layout here before declaring any shared scratch.
+    const contributions = reduction.contributions;
+    validateRequirement(
+      id,
+      contributions.format === 'float32' &&
+        contributions.rowByteLength === 4 &&
+        contributions.byteStride >= 4 &&
+        contributions.byteStride % 4 === 0 &&
+        contributions.byteOffset % 4 === 0,
+      `${reduction.name} contributions must have uint32-aligned float32 rows and word-aligned stride`
+    );
+    validateGraphViewsBelongToGraph(id, graph, [contributions]);
+    validateMaximumCount(
+      `${id}-reduce-${reduction.name}`,
+      'segmentCount',
+      segmentCount,
+      reduction.output.length
+    );
+  }
+  // Caller views can be larger than the active prefix, or have an unaligned binding prefix.
+  // Nonempty gather and the WGSL nodes bind those whole ranges. Check them, and both scratch shapes,
+  // before reserving the sort IDs so a corrected same-ID call remains possible.
+  validateGraphChunkBindingRanges(graph, id, {
+    segmentKeys,
+    ...Object.fromEntries(
+      reductions.flatMap(reduction => [
+        ...(pointCount > 0 ? [[`${reduction.name} contributions`, reduction.contributions]] : []),
+        [`${reduction.name} output`, reduction.output]
+      ])
+    )
+  });
+  for (const [name, length] of [
+    ['sort scratch', Math.max(pointCount, 1)],
+    ['segment offsets', segmentCount + 1]
+  ] as const) {
+    const byteLength = length * Uint32Array.BYTES_PER_ELEMENT;
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      byteLength,
+      'reduce the row or segment count'
+    );
+    validateMaximumCount(id, `${name} byteLength`, byteLength, graph.device.limits.maxBufferSize);
+  }
+  validateMaximumCount(
+    id,
+    'sort preparation storage bindings',
+    3,
+    graph.device.limits.maxStorageBuffersPerShaderStage
+  );
+  // GPUSort's internally generated views are packed, equally sized, disjoint and graph-owned.
+  // Its radix histogram/scan scratch (at most 16 * ceil(pointCount / 256) words) is no larger
+  // than sort scratch on the radix route (pointCount > 256).
+  validateMaximumCount(id, 'pointCount', pointCount, 0x80000000);
+  for (const invocationCount of [pointCount, segmentCount + 1]) {
+    getBoundedDispatchLayout(
+      `${id} ${operation}`,
+      Math.max(invocationCount, 1),
+      getAutomaticWGSLKernelWorkgroupSize(invocationCount),
+      graph.device.limits.maxComputeWorkgroupsPerDimension
+    );
+  }
+  if (reductions.length > 0) {
+    const [invocationCount, workgroupSize] = getSegmentSumDispatchShape(segmentCount);
+    getBoundedDispatchLayout(
+      `${id} ${operation}`,
+      Math.max(invocationCount, 1),
+      workgroupSize,
+      graph.device.limits.maxComputeWorkgroupsPerDimension
+    );
+  }
   const nodes: GPUCommandNode<Parameters>[] = [];
   const sortKeys = createTransientView(graph, `${id}-sort-keys`, 'uint32', pointCount);
   const sortIndices = createTransientView(graph, `${id}-sort-indices`, 'uint32', pointCount);
@@ -167,22 +297,10 @@ export function getSortedSegmentSumNodes<Parameters>(
     })
   );
 
-  const reductions: SortedSegmentReduction[] = [];
-  if (props.sums && props.sumContributions) {
-    reductions.push({name: 'sums', contributions: props.sumContributions, output: props.sums});
-  }
-  if (props.weightSums && props.weightContributions) {
-    reductions.push({
-      name: 'weight-sums',
-      contributions: props.weightContributions,
-      output: props.weightSums
-    });
-  }
-  reductions.push(...(props.reductions ?? []));
   for (const reduction of reductions) {
     const sortedContributions = createTransientView(
       graph,
-      `${id}-sorted-${reduction.name}`,
+      `${id}-reduction-${reduction.name}-sorted`,
       'float32',
       pointCount
     );
@@ -213,6 +331,11 @@ export function getSortedSegmentSumNodes<Parameters>(
  * bitwise reproducible. Segments are workgroups of a bounded 3D dispatch, so the segment count is
  * not limited, and `end` is clamped to `input.length`. The segment count is always a build-time
  * number here; there is no indirect (GPU-only count) variant.
+ * Ungated sums with packed scalar views and a separate output buffer delegate to the published
+ * GPUSegmentedReduction with active offset/output prefixes. Zero segments, other reductions,
+ * aliased storage, conditions, extra resources and recording graphs retain the local node and its
+ * dispatch shape. Public dispatches whose padded invocation count exceeds uint32 also stay local.
+ * All three direct views must be packed scalars; use the sorted-gather helper for strided input.
  *
  * With a `condition` (the sums of an unrolled loop with a data-dependent exit skip converged
  * rounds) the node is gated. An indirect condition supplies the dispatch dimensions of the node,
@@ -238,6 +361,10 @@ export function createSegmentSumNode<Parameters>(
     extraResources?: readonly GraphBufferUse[];
   }
 ): GPUCommandNode<Parameters> {
+  validateCapacity(props.id, 'segmentCount', props.segmentCount, 0);
+  validateSinglePackedView(props.input, ['float32'], `${props.id} input`);
+  validateSinglePackedView(props.segmentOffsets, ['uint32'], `${props.id} segmentOffsets`);
+  validateSinglePackedView(props.output, ['float32'], `${props.id} output`);
   // The offsets and output views must cover every segment; the kernel reads and
   // write `segmentCount + 1` offsets and `segmentCount` sums without bounds checks of their own.
   validateMaximumCount(
@@ -247,7 +374,54 @@ export function createSegmentSumNode<Parameters>(
     props.segmentOffsets.length
   );
   validateMaximumCount(props.id, 'segmentCount', props.segmentCount, props.output.length);
-  return createSegmentSumKernelNode(graph, props);
+  // Keep the local declaration preflight for every route (binding ranges and dispatch limits
+  // included). It reserves no resources. The published sum uses exactly the same
+  // per-lane strided additions and 128..1 tree; gates and extra uses remain analysis-owned.
+  const localNode = createSegmentSumKernelNode(graph, props);
+  if (
+    props.segmentCount > 0 &&
+    props.segmentCount <= MAXIMUM_SEGMENT_WORKGROUPS &&
+    !isRecordingWGSLKernelNodes(graph) &&
+    (props.reduction ?? 'sum') === 'sum' &&
+    props.condition === undefined &&
+    props.extraResources === undefined &&
+    props.input.byteStride === 4 &&
+    props.input.rowByteLength === 4 &&
+    props.segmentOffsets.byteStride === 4 &&
+    props.segmentOffsets.rowByteLength === 4 &&
+    props.output.byteStride === 4 &&
+    props.output.rowByteLength === 4 &&
+    props.output.buffer !== props.input.buffer &&
+    props.output.buffer !== props.segmentOffsets.buffer
+  ) {
+    // This public planner gives exactly the published reducer's workgroup layout when the
+    // logical invocation count is segmentCount * 256. Its padded product can exceed uint32
+    // even though the logical count fits. The local kernel guards and strides that case.
+    const layout = getBoundedDispatchLayout(
+      props.id,
+      props.segmentCount * SEGMENT_WORKGROUP_SIZE,
+      SEGMENT_WORKGROUP_SIZE,
+      graph.device.limits.maxComputeWorkgroupsPerDimension
+    );
+    if (layout.x * layout.y * layout.z * SEGMENT_WORKGROUP_SIZE > 0xffffffff) return localNode;
+    const [node] = new GPUSegmentedReduction({
+      id: props.id,
+      input: props.input,
+      segmentOffsets: graph.createDataView(props.segmentOffsets.buffer, {
+        format: 'uint32',
+        length: props.segmentCount + 1,
+        byteOffset: props.segmentOffsets.byteOffset
+      }),
+      output: graph.createDataView(props.output.buffer, {
+        format: 'float32',
+        length: props.segmentCount,
+        byteOffset: props.output.byteOffset
+      }),
+      operation: 'sum'
+    }).getCommandNodes(graph);
+    return {...node, workload: {...node.workload, operation: props.operation}};
+  }
+  return localNode;
 }
 
 function createSegmentSumKernelNode<Parameters>(

@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {
+  GPUAnalysisPackage,
+  GPUAnalysisOperatorIdentity,
+  GPUAnalysisRoute
+} from '../../analysis-core/contracts/analysis-execution-planning';
+export type {
+  GPUAnalysisPackage,
+  GPUAnalysisOperatorIdentity,
+  GPUAnalysisRoute,
+  GPUAnalysisExecutionPlanner
+} from '../../analysis-core/contracts/analysis-execution-planning';
+
 /** Canonical kinds of data exchanged by GPU spatial-analysis contributors. */
 export const GPU_SPATIAL_ANALYSIS_DATA_KINDS = Object.freeze([
   'parameters',
@@ -207,11 +219,16 @@ export const GPU_SPATIAL_ANALYSIS_DATA_ONTOLOGY: readonly GPUSpatialAnalysisData
   }
 ];
 
+/** Release stability for an analysis catalog record. */
+export const GPU_ANALYSIS_STABILITY_VALUES = Object.freeze(['stable', 'experimental'] as const);
+export type GPUAnalysisStability = (typeof GPU_ANALYSIS_STABILITY_VALUES)[number];
+
 /** A discoverable family of related contributors or a named missing capability. */
 export type GPUSpatialAnalysisCapability = Readonly<{
   /** Stable kebab-case identifier. */
   id: string;
   title: string;
+  stability: GPUAnalysisStability;
   status: GPUSpatialAnalysisCapabilityStatus;
   domain: GPUSpatialAnalysisDomain;
   stage: GPUSpatialAnalysisStage;
@@ -268,11 +285,14 @@ export type GPUSpatialAnalysisReadback = 'none' | 'explicit-adapter' | 'unknown'
 
 /** Status fields that an operator may publish on GPU-resident one-row views. */
 export type GPUSpatialAnalysisStatusKind =
+  | 'complete'
+  | 'unresolvedCount'
   | 'count'
   | 'matchedCount'
   | 'requiredCount'
   | 'overflow'
   | 'candidateOverflow'
+  | 'excludedLocationCount'
   | 'uncertainCount'
   | 'invalidCount'
   | 'converged'
@@ -285,24 +305,6 @@ export type GPUSpatialAnalysisStatusKind =
   | 'ringCount'
   | 'requiredRingCount'
   | 'nodedSegmentRequiredCount';
-
-/** The nine public entry points whose contributors the operator catalog covers. */
-export type GPUAnalysisPackage =
-  | '@luma-contributors/analysis/computation-record'
-  | '@luma-contributors/analysis/gpu-spatial-analysis'
-  | '@luma-contributors/analysis/gpu-network'
-  | '@luma-contributors/analysis/gpu-terrain'
-  | '@luma-contributors/analysis/raster-analysis'
-  | '@luma-contributors/analysis/dataframe-analysis'
-  | '@luma-contributors/analysis/pointcloud-analysis'
-  | '@luma-contributors/analysis/geospatial-analysis'
-  | '@luma-contributors/analysis/analysis-core';
-
-/** Public identity: the full entry-point subpath and its exported name. */
-export type GPUAnalysisOperatorIdentity = Readonly<{
-  package: GPUAnalysisPackage;
-  exportName: string;
-}>;
 
 /** All-entry family membership, including identities when export names overlap. */
 export type GPUAnalysisCapability = GPUSpatialAnalysisCapability &
@@ -325,10 +327,51 @@ export type GPUAnalysisLimit = Readonly<{
   source?: string;
 }>;
 
+/** Public array signature and source-backed contract notes, without importing executable code. */
+export type GPUAnalysisArrayForm = GPUAnalysisOperatorIdentity &
+  Readonly<{
+    contract?: GPUAnalysisFormContract;
+    signature: string;
+    supportedInputs: readonly string[];
+    /** Source contract notes; unknown means no audited semantic comparison is available. */
+    differences: readonly string[] | 'unknown';
+  }>;
+
+/** Source-backed invocation details, expressed as source rules rather than executable plans. */
+export type GPUAnalysisFormContract = Readonly<{
+  signature: string;
+  supportedInputs: readonly string[];
+  defaults: readonly string[] | 'unknown';
+  limits: readonly string[] | 'unknown';
+  optionHandling: readonly string[] | 'unknown';
+  source: string;
+}>;
+
+export type GPUAnalysisOutputDeclaration = Readonly<{
+  path: string;
+  format: 'float32' | 'float32x2' | 'uint32';
+  capacity: number;
+  minimumCapacity: number;
+  activeLength?: number;
+  activeLengthRule: string;
+  status: readonly string[];
+  optional: boolean;
+  tail: string;
+  meaning?: string;
+}>;
+
+export type GPUAnalysisOutputDescription = Readonly<{
+  declaration: 'declared' | 'absent';
+  outputs: readonly GPUAnalysisOutputDeclaration[];
+  /** Input-dependent admission constraints; unchecked entries require additional sizes. */
+  constraints?: readonly Readonly<{expression: string; checked: boolean}>[];
+}>;
+
 /** Operator-level descriptor used for discovery and generated audits. */
 export type GPUSpatialAnalysisOperator = Readonly<{
   /** Public export name. Constructors are deliberately not stored here. */
   exportName: string;
+  stability: GPUAnalysisStability;
   /** Capability that owns this operator. */
   primaryCapability: string;
   /** Additional capability IDs that describe secondary roles. */
@@ -412,8 +455,27 @@ export type GPUAnalysisOperatorQuery = Omit<GPUSpatialAnalysisOperatorQuery, 'st
  */
 export type GPUAnalysisOperator = Omit<GPUSpatialAnalysisOperator, 'evidence' | 'status'> &
   Readonly<{
-    /** `'unknown'` means unaudited; an empty array means confirmed absence of scalar status. */
+    /** `'unknown'` means unaudited; an empty array means no audited scalar under a catalog status name. */
     status: readonly GPUSpatialAnalysisStatusKind[] | 'unknown';
+    /** Optional public operation wrappers and CPU twins; these are not additional contributors. */
+    forms?: Readonly<{
+      cpu?: GPUAnalysisOperatorIdentity & Readonly<{contract?: GPUAnalysisFormContract}>;
+      gpu?: GPUAnalysisOperatorIdentity & Readonly<{contract?: GPUAnalysisFormContract}>;
+      arrays?: readonly GPUAnalysisArrayForm[];
+      variants?: readonly (GPUAnalysisOperatorIdentity &
+        Readonly<{
+          relationship: string;
+          differences: readonly string[] | 'unknown';
+          contract?: GPUAnalysisFormContract;
+        }>)[];
+      recipeStages?: readonly (GPUAnalysisOperatorIdentity & Readonly<{appliesWhen?: string}>)[];
+      /** Recipes with no analysis contributor stages may implement kernels directly. */
+      recipeImplementation?: string;
+      contractNotes?: readonly string[];
+    }>;
+    routes?: readonly GPUAnalysisRoute[];
+    /** Audited mode IDs accepted by describeOutputs; absent means the layout is undisclosed. */
+    outputDeclarations?: readonly string[];
     evidence: Omit<
       GPUSpatialAnalysisOperator['evidence'],
       'representativeSourceRows' | 'transientMemory' | 'dispatch' | 'correctnessOracle'

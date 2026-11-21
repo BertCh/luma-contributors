@@ -25,7 +25,7 @@ have no operators, which makes coverage and missing connective tissue queryable 
 import {
   getGPUSpatialAnalysisCapabilityForOperator,
   queryGPUSpatialAnalysisCapabilities
-} from '@luma-contributors/analysis/gpu-spatial-analysis';
+} from '@luma-contributors/analysis/gpu-spatial-analysis/ontology';
 
 const producers = queryGPUSpatialAnalysisCapabilities({
   status: 'available',
@@ -97,10 +97,22 @@ line parts still have an owner. Uncovered parts receive `GPU_MULTIPART_NO_FEATUR
 `featureOffsets` and output views, and each aligned binding must fit the device's
 `maxStorageBufferBindingSize`. It does not validate offset contents or make a join feature-aware;
 each consumer must explicitly support multipart input.
-Predicate joins support feature-level `intersects`, `within` and `coveredBy`; nearest joins support
+Predicate joins support every feature-level predicate, DE-9IM output and both engines; nearest joins support
 multipart queries and targets in neighbors mode, and prepared indices use feature bounds.
 See [multipart join rules and operation forms](./operators-joins.md) for supported routes,
 candidate budgets and CPU twins.
+
+A zero nearest-neighbor count establishes that a query is unmatched only with sufficient
+producer completeness evidence. Forward the same encoding's `neighborRows`, live `neighborCounts`,
+`neighborCapacity`, producer `status` and per-query `candidateTruncated` into `GPUPairGather`, and
+request gather `output.status.candidateOverflow` as well as final `overflow`. Per-query evidence
+withholds affected zero-count queries from derived unmatched rows. Without per-query attribution,
+supplied unattributed global loss withholds **all** derived unmatched rows; the legacy
+`candidateOverflowSources` input also represents unattributed global loss. A clear final overflow
+alone does not certify the producer's search. Gather `output.status.count` bounds the readable
+result prefix, including emitted unmatched rows; tails are unspecified. See the checked
+[predicate-to-gather and nearest-to-gather examples](./operators-joins.md#gpupairgather-gpuoffsetexpansion-and-gpuboundsfilter)
+for the live-count, capacity and loss wiring.
 
 Contributors with one geometry take these fields flat (`GPUPolygonGeometryFields`,
 `GPULineGeometryFields`, `GPUTrajectoryGeometryFields`); contributors with two geometries, such as
@@ -137,6 +149,8 @@ Terrain heights declare a vertical datum the same way (`GPUTerrainHeightReferenc
 Compatibility helpers reject invalid workflow connections during graph construction and contain no
 CRS parsing or reprojection; that remains the responsibility of GPU Project.
 
+Both spatial-context resolvers capture declared metadata once before validation. Supplied contexts and nested frame, unit and ellipsoid metadata are copied and frozen. Known resolved snapshots are reused between stages; later mutation of a caller descriptor cannot change them. An omitted secondary returns the resolved primary object.
+
 `GPUSpatialParameterSchema` describes packed layouts without changing their WGSL representation.
 Schemas are published for geometry predicates, neighbor search, line segmentizing, great-circle
 arcs, spatial autocorrelation and line density. The generic packer validates defaults, offsets,
@@ -153,6 +167,11 @@ grow independently: a candidate overflow (for example `output.status.candidateOv
 so growing only the output is invalid.
 
 ```ts
+import type {GPUContiguityWeights} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+declare const contiguity: GPUContiguityWeights;
+declare const requiredCount: number;
+declare const candidateOverflow: number;
 const plan = contiguity.getCapacityPlan({requiredCount, candidateOverflow: candidateOverflow === 1});
 // Reallocate plan.slots.capacity slots and rebuild with pairCapacity: plan.pairs.capacity.
 ```
@@ -167,6 +186,34 @@ retaining its global batch ID and row offset; destroying each yielded result bef
 GPU residency to one partition. The tile-LOD explorer declares explicit core, halo and cross-tile
 ownership rules with the tile contract. Execution remains consumer-owned.
 
+Partitioning sizes input consumption; the prepared BVH still covers the whole indexed domain.
+Its default `leafCapacity` is `nextPowerOfTwo(featureCount)`, and each whole-domain bounds/children
+binding needs `8 * (2 * leafCapacity - 1)` bytes. At a **128 MiB per-binding limit**, 8,388,608
+features need 134,217,720 bytes per bounds/children binding and pass this particular check.
+8,388,609 features round to 16,777,216 leaves and need 268,435,448 bytes per binding, so partitioning
+the input cannot make that index fit. Use independent prepared handles over separate domains if
+necessary, and check the binding byte sizes evaluated by the public memory planner against
+`maxStorageBufferBindingSize` and `maxBufferSize` before allocation. Graph declaration separately
+checks kernel support, including the requirement for eight storage bindings:
+
+```ts
+import {getGPUSpatialJoinPreparedMemoryPlan} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+const limits = {maxStorageBufferBindingSize: 128 * 1024 ** 2, maxBufferSize: 256 * 1024 ** 2};
+for (const featureCount of [8_388_608, 8_388_609]) {
+  const plan = getGPUSpatialJoinPreparedMemoryPlan({
+    kind: 'points', featureCount, vertexCount: featureCount
+  }, limits);
+  console.log(plan.leafCapacity, plan.bindingByteLengths['BVH node bounds/children'], plan.feasible);
+}
+// 8388608, 134217720, true
+// 16777216, 268435448, false
+```
+
+The handle's fixed generation-control storage is **1,072 bytes**: a 1,024-byte lookup table,
+32 requested-generation bytes and 16 state bytes. This excludes copies of geometry positions and
+offsets, the BVH, and other preparation scratch; the planner accounts for them separately.
+
 Recipe results use a required common envelope with `outputs`, `intermediates` and stage-owned
 `status` in addition to `contributors`. Result-level status words sit in `result.status` next to
 `result.status.stages` (for example `result.status.weightsOverflow`), and sub-results own a `status`
@@ -176,7 +223,9 @@ Recipe results use a required common envelope with `outputs`, `intermediates` an
 
 - **Graph views in, graph views out.** Inputs and outputs are `GraphDataView`, `GraphVectorView`, or
   `GraphTextureView` objects created on the target graph. Outputs are always caller-owned; scratch
-  storage is graph transients that die with `compiled.destroy()`. Contributors never compile, encode,
+  storage normally uses graph transients that die with `compiled.destroy()`. Some contributors
+  additionally own persistent buffers or preparation state; retain and destroy those owners as
+  described in [Running contributors](#running-contributors). Contributors never compile, encode,
   submit, or read back.
 - **Per-frame values never recompile.** Viewports, thresholds, radii, observer positions, budgets,
   and region shapes are read from storage views, usually a `GPUParameterBuffer` that the
@@ -288,12 +337,12 @@ The exported helpers are `getGPULongitudeLatitudeQuantum(context)`,
 - **Tier 1 — construction.** `GPUSpatialPredicateJoin` checks numeric `dwithin` distances;
   `GPUTrajectoryEncounters` checks its derived `maximumDistance`.
 - **Tier 2 — per-frame writers.** Pass optional `spatialContext` in the settings passed to the
-  parameter writer to check neighbor-search `radius`, DBSCAN `epsilon`, IDW `searchRadius`,
+  parameter writer to check neighbor-search `searchRadius`, DBSCAN `epsilon`, IDW `searchRadius`,
   kriging `searchRadius` and `range`, Douglas-Peucker `tolerance`, line segmentize / great-circle
   arcs `maximumSegmentLength`, line chunk `chunkLength`, outline `distance`, map matching
   `sigma` and `searchRadius`, and GWR fixed `bandwidths`. Packed parameter layouts are unchanged;
   omitting the settings context disables this warning.
-- **Tier 3 — GPU views.** No warning is possible for `GPUBufferSelection.distance`,
+- **Tier 3 — GPU views.** No warning is possible for `GPUBufferSelection.radius`,
   `GPUNearestFeatureJoin.radius`, a view-valued `GPUSpatialPredicateJoin.distance`,
   `GPUTrajectoryEncounters.distance`, `GPUTrackSimilarity.frechetEpsilon`,
   `GPULinearReferencing.radius`, `GPUNetworkSnapping.maximumSnapDistance`,
@@ -311,6 +360,32 @@ kernels compiles. `graph.compile()` gives the same result but blocks the main th
 pipeline exists; keep it for tests and scripts. Either call freezes the graph, and a graph compiles
 once, including when `compileAsync()` rejects.
 
+Use `graph.add(producer)` to declare and add a contributor in one call. For inspection, declare
+once and add the returned nodes:
+
+```ts
+import type {GPUCommandGraph, GPUCommandNode, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+
+declare const graph: GPUCommandGraph<void>;
+declare const producer: GPUCommandNodeProducer<void>;
+declare function inspect(nodes: readonly GPUCommandNode<void>[]): void;
+const nodes = producer.getCommandNodes(graph);
+inspect(nodes);
+graph.add(nodes);
+```
+
+Declaration can allocate graph resources and contributor-owned buffers. Calling
+`getCommandNodes(graph)` for inspection and then `graph.add(producer)` declares twice and can
+collide on resource IDs or violate an owner's one-declaration guard. Repeatable declaration is an
+optional implementation detail. Replay the compiled work with `compiled.encode(...)`.
+
+Keep these seven cleanup owners when using them: `GPUConditionalGaussianSimulation`,
+`GPULocalFrameProjection`, `GPUSpatialJoinPrepared`, `GPUStudyWindowPreparation`,
+`GPUTerrainSpikeRepair`, `GPURasterReprojection` and `GPURasterTileReprojection`. Their owned
+resources are distinct from graph-transient storage. Destroy the compiled graph first, then call
+each owner's `destroy()`, then release caller-owned imported buffers. Retained preparation belongs
+to its handle and graph; rebuild it with a new owner for a new topology.
+
 Compile once per topology and rewrite parameter buffers every frame. A compile-time option (a grid
 size, a method that adds nodes, an optional output) needs a new graph. Build the new graph and await
 its compile while the old compiled graph keeps encoding. Then swap the new graph in, and only then
@@ -318,27 +393,59 @@ destroy the old one. If a later request arrives before the compile finishes, des
 result instead of swapping it in.
 
 ```ts
-type Options = {gridSize: [number, number]};
-declare function buildGraph(options: Options): GPUCommandGraph;
+import type {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 
-let compiled = await buildGraph(options).compileAsync();
+type Options = {gridSize: [number, number]};
+// The application builder retains every contributor needing destroy(). Its destroy method
+// releases those contributors, including after a failed compile. It also rolls back if building throws.
+type GraphOwner = {graph: GPUCommandGraph<void>; destroy(): void};
+type CompiledOwner = {
+  compiled: Awaited<ReturnType<GPUCommandGraph<void>['compileAsync']>>;
+  owner: GraphOwner;
+};
+declare function buildGraph(options: Options): GraphOwner;
+const options: Options = {gridSize: [64, 64]};
+
+async function compileOwner(owner: GraphOwner): Promise<CompiledOwner> {
+  try {
+    return {compiled: await owner.graph.compileAsync(), owner};
+  } catch (error) {
+    owner.destroy();
+    throw error;
+  }
+}
+
+function release(pair: CompiledOwner): void {
+  try {
+    pair.compiled.destroy();
+  } finally {
+    pair.owner.destroy();
+  }
+}
+
+let current = await compileOwner(buildGraph(options));
 let latestRequest = 0;
 
 async function rebuild(nextOptions: Options): Promise<void> {
   const request = ++latestRequest;
-  const next = await buildGraph(nextOptions).compileAsync(); // the old graph keeps encoding
+  const next = await compileOwner(buildGraph(nextOptions)); // the old graph keeps encoding
   if (request !== latestRequest) {
-    next.destroy(); // a later rebuild superseded this one
+    release(next); // graph first, then its contributors, when a later request supersedes this one
     return;
   }
-  const previous = compiled;
-  compiled = next; // swap first
-  previous.destroy(); // then release transients and node state
+  const previous = current;
+  current = next; // swap first
+  release(previous); // then release the previous graph and its contributors
 }
 
 // every frame: record into the device's default encoder, then submit it
-compiled.encode(device.commandEncoder, {parameters: undefined});
+current.compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();
+// On application teardown, invalidate pending rebuilds before releasing the active pair.
+function destroy(): void {
+  ++latestRequest;
+  release(current);
+}
 ```
 
 `encode()` only records commands; the application submits (`device.submit()` for the device's
@@ -356,18 +463,40 @@ including when an encoding is discarded. The current public builders replay agai
 geometry snapshot each encoding; geometry refresh alone is GPU-gated. Use one active resumable
 execution per handle/graph.
 
+Prepared joins replay ring mapping, bounds, sorting, BVH and optional edge-slab construction from
+that retained snapshot on every encoding; consumers share the preparation within that encoding.
+For predicate joins, retained bounds, feature-ring mappings and exact refinement all read
+**the same retained right positions/offsets** through `prepared.getGeometry(graph)`.
+Source coordinate and topology edits become visible after `invalidate()` (or a true
+`rebuildWhen`) and a submitted rebuild refresh the snapshot.
+Source-ID contents remain live for output mapping; changing an ID does not change a retained
+feature row or its geometry. Changing view lengths requires a new handle and graph;
+invalidation alone does not resize them.
+
 ```ts
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUSpatialJoinPrepared, type GPUSpatialJoinPreparedProps} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 type Frame = {geometryChanged: boolean};
+// Import or create every polygon view on the graph that will declare its consumers.
+declare function importPolygons(graph: GPUCommandGraph<Frame>): GPUSpatialJoinPreparedProps<Frame>['geometry'];
 const graph = new GPUCommandGraph<Frame>(device);
+const polygons = importPolygons(graph);
 const prepared = new GPUSpatialJoinPrepared<Frame>({
   geometry: polygons,
   rebuildWhen: frame => frame.geometryChanged
 });
-graph.add(prepared);
-// Add the joins that consume prepared before compiling.
-const compiled = graph.compile();
-compiled.encode(device.commandEncoder, {parameters: {geometryChanged: true}});
-device.submit();
+let compiled: Awaited<ReturnType<typeof graph.compileAsync>> | undefined;
+try {
+  graph.add(prepared);
+  // Add the joins that consume prepared before compiling.
+  compiled = await graph.compileAsync();
+  compiled.encode(device.commandEncoder, {parameters: {geometryChanged: true}});
+  device.submit();
+} finally {
+  compiled?.destroy();
+  prepared.destroy();
+}
 ```
 
 Both handles default their frame type to `unknown`; an annotated callback can infer it. When
@@ -387,8 +516,8 @@ The gpu-raster base operators (`GPURasterStatistics`, the filters, morphology an
 predate `GPUCommandNodeProducer`: they declare their work with `operator.addToGraph(graph)` instead
 of `graph.add(operator)`. Compiling, encoding and submitting are the same.
 
-Destroy a compiled graph before the caller-owned buffers it imports. Never compile, submit or read
-back synchronously inside the frame loop.
+Destroy a compiled graph before the caller-owned buffers it imports. Keep compilation and blocking
+readback outside the frame loop; encode and submit each frame without waiting for GPU completion.
 
 
 ## GPU execution model

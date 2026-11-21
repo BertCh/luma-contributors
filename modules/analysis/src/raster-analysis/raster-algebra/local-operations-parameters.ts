@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {validateParameterTarget} from '../raster-band-utils';
+import {validateParameterTarget, validateRasterOption} from '../raster-band-utils';
 
 /** Number of float32 elements in a {@link GPURasterCellStatistics} parameter view. */
 export const GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH = 4;
@@ -15,9 +15,9 @@ export const GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH = 8;
 export type GPURasterCellStatisticsSettings = {
   /**
    * `'ignore'` (default, ArcGIS "DATA"): statistics use the valid layers of each cell.
-   * `'propagate'`: any nodata layer makes the cell nodata.
+   * `'propagate'`: any nodata layer makes the cell nodata. `'strict'` is an alias for propagate.
    */
-  noDataPolicy?: 'ignore' | 'propagate';
+  noDataPolicy?: 'ignore' | 'propagate' | 'strict';
   /** Cells with fewer valid layers are nodata. Defaults to 1. */
   minimumValidCount?: number;
 };
@@ -40,12 +40,18 @@ export function getGPURasterCellStatisticsParameterValues(
     GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH
   );
   const minimumValidCount = settings.minimumValidCount ?? 1;
+  validateRasterOption(
+    'getGPURasterCellStatisticsParameterValues',
+    'noDataPolicy',
+    settings.noDataPolicy ?? 'ignore',
+    ['ignore', 'propagate', 'strict']
+  );
   if (!Number.isSafeInteger(minimumValidCount) || minimumValidCount < 0) {
     throw new Error(
       'getGPURasterCellStatisticsParameterValues minimumValidCount must be a non-negative integer'
     );
   }
-  target[0] = settings.noDataPolicy === 'propagate' ? 1 : 0;
+  target[0] = settings.noDataPolicy === 'propagate' || settings.noDataPolicy === 'strict' ? 1 : 0;
   target[1] = minimumValidCount;
   target[2] = 0;
   target[3] = 0;

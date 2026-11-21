@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {ERFC_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {DENSITY_NORMAL_INTERVAL_WGSL} from './density-normal-interval-wgsl';
 import {GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION} from './kernel-density-math';
 import type {GPUSpaceTimeTemporalKernel} from './space-time-kernel-density-math';
 
@@ -37,7 +37,7 @@ fn getTemporalKernelValue(offset: f32, bandwidth: f32) -> f32 {
 
 /**
  * WGSL `getTemporalWindowMass(time, windowStart, windowEnd, bandwidth)`: the float32 mirror of
- * {@link getGPUSpaceTimeTemporalWindowMass}. `includeErfc` is false when the module already holds
+ * {@link getGPUSpaceTimeTemporalWindowOverlap}. `includeErfc` is false when the module already holds
  * `ERFC_VALUE_WGSL` (the spatial window mass of a gaussian kernel declares it).
  * @internal
  */
@@ -47,28 +47,31 @@ export function getTemporalWindowMassWGSL(
 ): string {
   if (kernel === 'gaussian') {
     return /* wgsl */ `
-${includeErfc ? ERFC_VALUE_WGSL : ''}
-fn getTemporalUpperTail(z: f32) -> f32 { return 0.5 * erfcValue(z * 0.70710678); }
-fn getTemporalNormalMass(low: f32, high: f32) -> f32 {
-  if (low > 0.0) { return getTemporalUpperTail(low) - getTemporalUpperTail(high); }
-  if (high < 0.0) { return getTemporalUpperTail(-high) - getTemporalUpperTail(-low); }
-  return 1.0 - getTemporalUpperTail(-low) - getTemporalUpperTail(high);
-}
+${includeErfc ? DENSITY_NORMAL_INTERVAL_WGSL : ''}
 fn getTemporalWindowMass(time: f32, windowStart: f32, windowEnd: f32, bandwidth: f32) -> f32 {
-  return getTemporalNormalMass((windowStart - time) / bandwidth, (windowEnd - time) / bandwidth);
+  return getDensityNormalIntervalMassWithWidth((windowStart - time) / bandwidth, (windowEnd - time) / bandwidth, (windowEnd - windowStart) / bandwidth);
 }`;
   }
-  const cumulative =
+  const tail =
     kernel === 'epanechnikov'
-      ? '0.5 + 0.75 * (c - c * c * c / 3.0)'
-      : '0.5 + 0.9375 * (c - 2.0 * c * c * c / 3.0 + c * c * c * c * c / 5.0)';
+      ? '0.25 * remaining * remaining * (3.0 - remaining)'
+      : '0.0625 * remaining * remaining * remaining * (20.0 - 15.0 * remaining + 3.0 * remaining * remaining)';
   return /* wgsl */ `
-fn getTemporalCumulative(s: f32) -> f32 {
-  let c = clamp(s, -1.0, 1.0);
-  return ${cumulative};
+fn getTemporalCompactTail(value: f32) -> f32 {
+  let remaining = max(0.0, 1.0 - min(1.0, value));
+  return ${tail};
 }
 fn getTemporalWindowMass(time: f32, windowStart: f32, windowEnd: f32, bandwidth: f32) -> f32 {
-  return getTemporalCumulative((windowEnd - time) / bandwidth) -
-    getTemporalCumulative((windowStart - time) / bandwidth);
+  let low = (windowStart - time) / bandwidth;
+  let high = (windowEnd - time) / bandwidth;
+  if (low >= -0.5 && high <= 0.5) {
+    let width = (windowEnd - windowStart) / bandwidth;
+    let midpoint = low + 0.5 * width;
+    let squared = midpoint * midpoint;
+    ${kernel === 'epanechnikov' ? 'return 0.75 * width * (1.0 - squared - width * width / 12.0);' : 'return 0.9375 * width * ((1.0 - squared) * (1.0 - squared) + (6.0 * squared - 2.0) * width * width / 12.0 + width * width * width * width / 80.0);'}
+  }
+  if (low >= 0.0) { return getTemporalCompactTail(low) - getTemporalCompactTail(high); }
+  if (high <= 0.0) { return getTemporalCompactTail(-high) - getTemporalCompactTail(-low); }
+  return 1.0 - getTemporalCompactTail(-low) - getTemporalCompactTail(high);
 }`;
 }

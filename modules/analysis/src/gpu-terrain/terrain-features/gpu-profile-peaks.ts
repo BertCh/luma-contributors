@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {TerrainAtLeastOne} from '../hydrology/terrain-output';
 import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
@@ -64,10 +65,12 @@ export const GPU_PROFILE_PEAKS_UNRESOLVED_MASK = 0xffffffff;
 
 /**
  * Value written to `output.prominence`, `output.refinedIndex` and `output.refinedValue` at a
- * candidate that suppression
- * left undecided: `+Infinity`. A converged run writes finite values at kept peaks and NaN
- * elsewhere, and a prominence or refined value is a difference of finite samples, so it never
- * produces `+Infinity`. Compare with `value === Infinity`, not `Number.isNaN`.
+ * candidate that suppression left undecided: `+Infinity`. At extreme finite input magnitudes,
+ * arithmetic or float32 output rounding can also overflow to `+Infinity` at a kept peak even
+ * when suppression converged. Use `output.peakMask` (1 kept, `GPU_PROFILE_PEAKS_UNRESOLVED_MASK`
+ * undecided) or request `output.status.converged` / `output.status.iterationLimitReached` to
+ * establish suppression completeness. `value === Infinity` alone cannot distinguish numeric
+ * overflow from an undecided candidate. Non-peak rows are NaN.
  */
 export const GPU_PROFILE_PEAKS_UNRESOLVED_VALUE = Number.POSITIVE_INFINITY;
 
@@ -86,7 +89,8 @@ export const GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED = 1;
  */
 export type GPUProfilePeaksSettings = {
   /**
-   * Minimum prominence, in profile-value units. A candidate with
+   * Minimum prominence, in profile-value units, packed as float32. Acceptance and candidate
+   * ranking use the reported float32 prominence in both GPU and CPU forms. A candidate with
    * `prominence < minimumProminence` is rejected. Must not be NaN; a value at or below zero accepts
    * every candidate.
    */
@@ -118,9 +122,10 @@ export function getGPUProfilePeaksParameterValues(
 export type GPUProfilePeaksStatus = {
   /**
    * One-row scalar: 1 when suppression converged within `maximumSuppressionIterations` rounds,
-   * otherwise 0. Optional because the data carries the answer: when 0, undecided candidates are
-   * marked with the `GPU_PROFILE_PEAKS_UNRESOLVED_*` sentinels and the overflow bit, never reported
-   * as kept or as absent.
+   * otherwise 0. Dense outputs mark undecided candidates with the
+   * `GPU_PROFILE_PEAKS_UNRESOLVED_*` sentinels, never as kept or absent; optional candidateOverflow
+   * reports the same loss for compact outputs. Compact-only readers need candidateOverflow or this
+   * convergence status as well as capacity overflow to establish completeness.
    */
   converged?: GraphDataView<'uint32'>;
   /**
@@ -131,37 +136,55 @@ export type GPUProfilePeaksStatus = {
 };
 
 /** Caller-owned outputs of {@link GPUProfilePeaks}; at least one is required. */
-export type GPUProfilePeaksOutput = {
-  /**
-   * Per-sample prominence of kept peaks, NaN elsewhere, and
-   * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at undecided candidates.
-   */
-  prominence?: GraphDataView<'float32'>;
-  /**
-   * Per-sample refined fractional index of kept peaks inside their own profile (`0` is the
-   * profile's first sample), NaN elsewhere, {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at
-   * undecided candidates.
-   */
-  refinedIndex?: GraphDataView<'float32'>;
-  /**
-   * Per-sample parabola-refined value of kept peaks, NaN elsewhere,
-   * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at undecided candidates.
-   */
-  refinedValue?: GraphDataView<'float32'>;
-  /**
-   * Per-sample mask: 1 on a kept peak's sample row, otherwise 0, and
-   * {@link GPU_PROFILE_PEAKS_UNRESOLVED_MASK} at undecided candidates.
-   */
-  peakMask?: GraphDataView<'uint32'>;
-  /**
-   * Compact result: sample row IDs (indices into `values`) of kept peaks in ascending order, with
-   * a clamped count and final-capacity overflow. Undecided candidates are not listed; optional
-   * `candidateOverflow` then has {@link GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED} set.
-   */
-  peaks?: GPUCompactOutput;
-  /** Optional status words. */
-  status?: GPUProfilePeaksStatus;
-};
+export type GPUProfilePeaksOutput =
+  | TerrainAtLeastOne<
+      {
+        /**
+         * Per-sample prominence of kept peaks, NaN elsewhere, and
+         * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at undecided candidates.
+         */
+        prominence?: GraphDataView<'float32'>;
+        /**
+         * Per-sample refined fractional index of kept peaks inside their own profile (`0` is the
+         * profile's first sample), NaN elsewhere, {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at
+         * undecided candidates.
+         */
+        refinedIndex?: GraphDataView<'float32'>;
+        /**
+         * Per-sample parabola-refined value of kept peaks, NaN elsewhere,
+         * {@link GPU_PROFILE_PEAKS_UNRESOLVED_VALUE} at undecided candidates.
+         */
+        refinedValue?: GraphDataView<'float32'>;
+        /**
+         * Per-sample mask: 1 on a kept peak's sample row, otherwise 0, and
+         * {@link GPU_PROFILE_PEAKS_UNRESOLVED_MASK} at undecided candidates.
+         * Test equality to 1 for membership, not nonzero. To feed a zero/nonzero validity input or a
+         * distance seed mask, convert kept membership explicitly and retain the undecided evidence;
+         * suppress downstream results until candidateOverflow is 0 or converged is 1.
+         */
+        peakMask?: GraphDataView<'uint32'>;
+        /**
+         * Compact result: sample row IDs (indices into `values`) of kept peaks in ascending order, with
+         * a clamped count and final-capacity overflow. Undecided candidates are not listed; optional
+         * `candidateOverflow` then has {@link GPU_PROFILE_PEAKS_CANDIDATE_UNCONVERGED} set.
+         * `overflow == 0` alone does not establish completeness. Request candidateOverflow == 0,
+         * converged == 1, or iterationLimitReached == 0 as well. requiredCount counts decided kept
+         * peaks before capacity, so equality to count does not prove suppression finished.
+         */
+        peaks?: GPUCompactOutput;
+        /** Optional status words. */
+        status?: GPUProfilePeaksStatus;
+      },
+      'prominence' | 'refinedIndex' | 'refinedValue' | 'peakMask' | 'peaks'
+    >
+  | {
+      prominence?: GraphDataView<'float32'>;
+      refinedIndex?: GraphDataView<'float32'>;
+      refinedValue?: GraphDataView<'float32'>;
+      peakMask?: GraphDataView<'uint32'>;
+      peaks?: GPUCompactOutput;
+      status: TerrainAtLeastOne<GPUProfilePeaksStatus>;
+    };
 
 /**
  * Properties for {@link GPUProfilePeaks}.
@@ -181,7 +204,9 @@ export type GPUProfilePeaksProps = {
    */
   values: GraphDataView<'float32'>;
   /**
-   * Optional packed uint32 validity, one word per sample; zero marks a gap. A gap's value is never
+   * Optional packed uint32 validity, one word per sample; zero marks a gap, every nonzero word
+   * marks usable input (subject to finite values). This does not decode peakMask's undecided
+   * 0xffffffff code. Invert bad/outlier flags before wiring them as validity. A gap's value is never
    * read, so a sentinel such as `-32768` or `1e30` stored there cannot influence any output.
    */
   validity?: GraphDataView<'uint32'>;

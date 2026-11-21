@@ -67,7 +67,9 @@ export default defineOperationRun({
         output: result.output
       })
     );
-    const drawing = addPolygonDrawing(builder, 'buffer', result.polygons, result.count);
+    const drawing = addPolygonDrawing(builder, 'buffer', result.polygons, result.count, {
+      status: result.output.status
+    });
     const input = builder.upload(
       'input',
       'float32x4',

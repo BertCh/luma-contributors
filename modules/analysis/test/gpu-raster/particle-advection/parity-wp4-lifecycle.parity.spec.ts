@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  decodeSavedParticleAdvectionSettings,
+  type SavedParticleAdvectionSettings
+} from '../flow-texture/saved-flow-parameters';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it} from 'vitest';
 import {
   GPUParticleAdvection,
   getGPUParticleAdvectionParameterValues,
   getGPUParticleAdvectionUint32ParameterValues,
-  type GPUParticleAdvectionSettings,
   type GPUParticleAdvectionUint32Settings
 } from '../../../src/raster-analysis/particle-advection/index';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -26,7 +29,7 @@ import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-
 import {requireTestDevice} from '../../utils/require-test-device';
 
 type Frame = {
-  settings: GPUParticleAdvectionSettings;
+  settings: SavedParticleAdvectionSettings;
   words: GPUParticleAdvectionUint32Settings;
   velocity: number[];
   positions: number[];
@@ -95,7 +98,10 @@ for (const encoded of [first, second, ocean, third, fourth, fifth, sixth]) {
             )
           );
           parameters.write(
-            getGPUParticleAdvectionParameterValues(frame.settings, [scene.width, scene.height])
+            getGPUParticleAdvectionParameterValues(
+              decodeSavedParticleAdvectionSettings(frame.settings),
+              [scene.width, scene.height]
+            )
           );
           words.write(getGPUParticleAdvectionUint32ParameterValues(frame.words));
           submitGraph(device, compiled, undefined);

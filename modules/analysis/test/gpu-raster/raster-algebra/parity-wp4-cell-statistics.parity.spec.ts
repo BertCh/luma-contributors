@@ -6,6 +6,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it} from 'vitest';
 import {
   GPURasterCellStatistics,
+  type GPURasterCellStatisticsOutput,
   getGPURasterCellStatisticsParameterValues
 } from '../../../src/raster-analysis/raster-algebra/index';
 import {GPUParameterBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -49,9 +50,10 @@ for (const scene of statisticsCases) {
           new Float32Array(await decodePackedNumbers(scene.stack))
         ),
         parameters: parameters.importToGraph(owner.graph),
-        output: Object.fromEntries(
-          [...floats, ...integers].map(output => [output.name, output.view])
-        )
+        output: {
+          ...Object.fromEntries([...floats, ...integers].map(output => [output.name, output.view])),
+          mean: floats.find(output => output.name === 'mean')!.view
+        } satisfies GPURasterCellStatisticsOutput
       })
     );
     const compiled = owner.graph.compile();

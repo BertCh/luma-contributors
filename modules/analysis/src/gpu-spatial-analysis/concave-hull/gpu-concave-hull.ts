@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {snapshotConstructionSpatialContext} from '../../analysis-core/kernels/construction-snapshot';
+
+import {
+  captureGeometryPartitionProvenance,
+  getGeometryPartitionProvenanceNodes
+} from '../group-geometry/partition-provenance';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -329,12 +336,20 @@ export type GPUGroupConcaveHullPackedOutput = GPUConcaveHullProps['output'] & {
 };
 
 export type GPUGroupConcaveHullProps = Omit<GPUConcaveHullProps, 'output'> & {
+  /** Optional one-word solver completion; omitted for categorical labels. */
+  labelsComplete?: GraphDataView<'uint32'>;
   groupIds: GraphDataView<'uint32'>;
   /** Explicit group capacity; groups outside [0,groupCount) are omitted. */
   groupCount: number;
 } & (
-    | {layout?: 'fixed'; output: GPUConcaveHullProps['output']}
-    | {layout: 'packed'; output: GPUGroupConcaveHullPackedOutput}
+    | {
+        layout?: 'fixed';
+        output: GPUConcaveHullProps['output'] & {labelsComplete?: GraphDataView<'uint32'>};
+      }
+    | {
+        layout: 'packed';
+        output: GPUGroupConcaveHullPackedOutput & {labelsComplete?: GraphDataView<'uint32'>};
+      }
   );
 
 /**
@@ -352,6 +367,7 @@ export type GPUGroupConcaveHullProps = Omit<GPUConcaveHullProps, 'output'> & {
  */
 export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly partitionProvenance: Readonly<{labelsComplete?: GraphDataView<'uint32'>}>;
   readonly props: GPUGroupConcaveHullProps;
   constructor(props: GPUGroupConcaveHullProps) {
     // Keep validated topology and output maps independent of later caller mutations; borrow views.
@@ -367,7 +383,18 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
           }
         : {...props, output: {...props.output, status: {...props.output.status}}};
     this.id = props.id ?? 'group-concave-hull';
+    props = {
+      ...props,
+      ...(props.spatialContext
+        ? {spatialContext: snapshotConstructionSpatialContext(props.spatialContext)}
+        : {})
+    };
     this.props = props;
+    this.partitionProvenance = captureGeometryPartitionProvenance(
+      this.id,
+      props.labelsComplete,
+      props.output.labelsComplete
+    );
     validateCapacity(this.id, 'groupCount', props.groupCount);
     validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`);
     validateSinglePackedView(props.groupIds, ['uint32'], `${this.id} groupIds`);
@@ -420,10 +447,11 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
       }
     }
     validateConcaveHullOutput(this.id, props.output, capacity, props.groupCount);
-    validateGraphOutputsDisjointFromInputs(this.id, getConcaveHullOutputViews(props.output), [
-      props.positions,
-      props.groupIds
-    ]);
+    validateGraphOutputsDisjointFromInputs(
+      this.id,
+      [...getConcaveHullOutputViews(props.output), props.output.labelsComplete],
+      [props.positions, props.groupIds, props.labelsComplete]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -467,6 +495,12 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
     const packedEdgeValidity = scalar('packed-edge-validity', 3 * capacity);
     const adjacency = scalar('adjacency', 3 * capacity);
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...getGeometryPartitionProvenanceNodes(
+        graph,
+        id,
+        props.labelsComplete,
+        output.labelsComplete
+      ),
       ...new GPUDelaunayTessellation({
         id: `${id}-delaunay`,
         positions: props.positions,
